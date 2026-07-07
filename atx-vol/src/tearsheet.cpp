@@ -1,0 +1,248 @@
+#include "atx/vol/tearsheet.hpp"
+
+#include <cmath>
+#include <cstdio>
+#include <fstream>
+#include <ios>
+#include <string>
+#include <vector>
+
+#include "atx/core/error.hpp"    // Err, Ok, ErrorCode
+#include "atx/vol/backtest.hpp"  // BacktestResult
+
+namespace atx::vol {
+
+using atx::core::Err;
+using atx::core::ErrorCode;
+using atx::core::Ok;
+
+namespace {
+
+// Sample mean + std (count-1 denominator) over `v`. std == 0 when fewer than two
+// observations. Accumulated in element order (deterministic).
+struct MeanStd {
+  double mean{0.0};
+  double std{0.0};
+};
+
+[[nodiscard]] MeanStd mean_std(const std::vector<double>& v) noexcept {
+  const std::size_t m = v.size();
+  if (m == 0) {
+    return {};
+  }
+  double sum = 0.0;
+  for (const double x : v) {
+    sum += x;
+  }
+  const double mean = sum / static_cast<double>(m);
+  if (m < 2) {
+    return {mean, 0.0};
+  }
+  double ss = 0.0;
+  for (const double x : v) {
+    const double d = x - mean;
+    ss += d * d;
+  }
+  const double var = ss / static_cast<double>(m - 1);
+  return {mean, std::sqrt(var)};
+}
+
+// Σ over the whole column (row order).
+[[nodiscard]] double col_sum(const std::vector<double>& v) noexcept {
+  double s = 0.0;
+  for (const double x : v) {
+    s += x;
+  }
+  return s;
+}
+
+}  // namespace
+
+TearSheet tearsheet(const BacktestResult& r, double periods_per_year) {
+  TearSheet ts;
+  const std::size_t n = r.size();
+  if (n == 0) {
+    return ts;  // well-defined all-zero sheet
+  }
+
+  const double ppy = periods_per_year;
+  const double sqrt_ppy = ppy > 0.0 ? std::sqrt(ppy) : 0.0;
+
+  // ── Standard: total return + return-series stats (rows 1..n-1) ──
+  ts.total_return = r.nav.back();
+
+  std::vector<double> returns;  // pnl_total over rows 1..n-1
+  returns.reserve(n > 0 ? n - 1 : 0);
+  std::size_t wins = 0;
+  for (std::size_t i = 1; i < n; ++i) {
+    const double p = r.pnl_total[i];
+    returns.push_back(p);
+    if (p > 0.0) {
+      ++wins;
+    }
+  }
+  const MeanStd ret = mean_std(returns);
+  ts.ann_return = ret.mean * ppy;
+  ts.ann_vol = ret.std * sqrt_ppy;
+  ts.sharpe = ts.ann_vol > 0.0 ? ts.ann_return / ts.ann_vol : 0.0;
+  ts.hit_rate = returns.empty()
+                    ? 0.0
+                    : static_cast<double>(wins) / static_cast<double>(returns.size());
+
+  // Max drawdown: peak-to-trough of nav, in $ (>= 0), over all rows.
+  double peak = r.nav[0];
+  double max_dd = 0.0;
+  for (std::size_t i = 0; i < n; ++i) {
+    if (r.nav[i] > peak) {
+      peak = r.nav[i];
+    }
+    const double dd = peak - r.nav[i];
+    if (dd > max_dd) {
+      max_dd = dd;
+    }
+  }
+  ts.max_drawdown = max_dd;
+
+  // Average turnover over the traded rows (1..n-1).
+  if (n > 1) {
+    double tsum = 0.0;
+    for (std::size_t i = 1; i < n; ++i) {
+      tsum += r.turnover_notional[i];
+    }
+    ts.avg_turnover = tsum / static_cast<double>(n - 1);
+  }
+  ts.total_cost = col_sum(r.cost);
+  ts.total_financing = col_sum(r.financing);
+
+  // ── Attribution totals (Σ over all rows). ──
+  ts.attr_delta = col_sum(r.pnl_delta);
+  ts.attr_gamma = col_sum(r.pnl_gamma);
+  ts.attr_vega = col_sum(r.pnl_vega);
+  ts.attr_vanna = col_sum(r.pnl_vanna);
+  ts.attr_volga = col_sum(r.pnl_volga);
+  ts.attr_theta = col_sum(r.pnl_theta);
+  ts.attr_rho = col_sum(r.pnl_rho);
+  ts.attr_charm = col_sum(r.pnl_charm);
+  ts.attr_unexplained = col_sum(r.pnl_unexplained);
+  ts.attr_settlement = col_sum(r.pnl_settlement);
+  ts.attr_shares = col_sum(r.pnl_shares);
+  ts.attr_financing = col_sum(r.financing);
+  ts.attr_cost = col_sum(r.cost);
+
+  // ── Vega-scaled / per-unit-risk ──
+  double vega_sum = 0.0;
+  double abs_vega_sum = 0.0;
+  double gamma_sum = 0.0;
+  for (std::size_t i = 0; i < n; ++i) {
+    vega_sum += r.gross_vega[i];
+    abs_vega_sum += std::fabs(r.gross_vega[i]);
+    gamma_sum += r.gross_gamma[i];
+  }
+  ts.avg_gross_vega = vega_sum / static_cast<double>(n);
+  ts.avg_gross_gamma = gamma_sum / static_cast<double>(n);
+  const double mean_abs_vega = abs_vega_sum / static_cast<double>(n);
+  ts.return_on_gross_vega = mean_abs_vega > 0.0 ? ts.total_return / mean_abs_vega : 0.0;
+
+  // vega_adj_sharpe: per-step PnL scaled by the PRIOR row's |gross_vega|.
+  std::vector<double> x;
+  x.reserve(n > 0 ? n - 1 : 0);
+  for (std::size_t i = 1; i < n; ++i) {
+    const double gv_prev = std::fabs(r.gross_vega[i - 1]);
+    if (gv_prev > 0.0) {
+      x.push_back(r.pnl_total[i] / gv_prev);
+    }
+  }
+  const MeanStd xs = mean_std(x);
+  ts.vega_adj_sharpe = xs.std > 0.0 ? (xs.mean / xs.std) * sqrt_ppy : 0.0;
+
+  const double tv_sum = col_sum(r.turnover_vega);
+  ts.pnl_per_vega_traded = tv_sum > 0.0 ? ts.total_return / tv_sum : 0.0;
+
+  return ts;
+}
+
+Status write_backtest_tsv(const BacktestResult& r, std::string_view path) {
+  // Binary mode: no CRLF translation so the byte stream is deterministic and
+  // uses `\n` line endings on every platform.
+  std::ofstream os(std::string(path), std::ios::binary | std::ios::trunc);
+  if (!os) {
+    return Err(ErrorCode::IoError, "write_backtest_tsv: cannot open file");
+  }
+
+  // Fixed column order (must match the header). `date` and `ts_ns` are special;
+  // the rest are plain double columns written with %.17g for a bit-exact
+  // round-trip, followed by one column per signal series.
+  const std::pair<const char*, const std::vector<double>*> dbl_cols[] = {
+      {"pnl_total", &r.pnl_total},
+      {"pnl_delta", &r.pnl_delta},
+      {"pnl_gamma", &r.pnl_gamma},
+      {"pnl_vega", &r.pnl_vega},
+      {"pnl_vanna", &r.pnl_vanna},
+      {"pnl_volga", &r.pnl_volga},
+      {"pnl_theta", &r.pnl_theta},
+      {"pnl_rho", &r.pnl_rho},
+      {"pnl_charm", &r.pnl_charm},
+      {"pnl_unexplained", &r.pnl_unexplained},
+      {"pnl_settlement", &r.pnl_settlement},
+      {"pnl_shares", &r.pnl_shares},
+      {"financing", &r.financing},
+      {"cost", &r.cost},
+      {"nav", &r.nav},
+      {"cash", &r.cash},
+      {"gross_delta", &r.gross_delta},
+      {"gross_gamma", &r.gross_gamma},
+      {"gross_vega", &r.gross_vega},
+      {"gross_theta", &r.gross_theta},
+      {"turnover_notional", &r.turnover_notional},
+      {"turnover_vega", &r.turnover_vega},
+      {"n_open_lots", &r.n_open_lots},
+  };
+
+  std::string out;
+  out.reserve(r.size() * 640 + 256);
+
+  char buf[64];
+  const auto put_double = [&](double v) {
+    const int len = std::snprintf(buf, sizeof buf, "%.17g", v);
+    out.append(buf, static_cast<std::size_t>(len > 0 ? len : 0));
+  };
+
+  // ── Header ──
+  out += "date\tts_ns";
+  for (const auto& [name, col] : dbl_cols) {
+    (void)col;
+    out += '\t';
+    out += name;
+  }
+  for (const auto& sig : r.signals) {
+    out += '\t';
+    out += sig.first;
+  }
+  out += '\n';
+
+  // ── Data rows ──
+  for (std::size_t i = 0; i < r.size(); ++i) {
+    out += r.date[i];
+    out += '\t';
+    const int len = std::snprintf(buf, sizeof buf, "%lld", static_cast<long long>(r.ts_ns[i]));
+    out.append(buf, static_cast<std::size_t>(len > 0 ? len : 0));
+    for (const auto& [name, col] : dbl_cols) {
+      (void)name;
+      out += '\t';
+      put_double((*col)[i]);
+    }
+    for (const auto& sig : r.signals) {
+      out += '\t';
+      put_double(sig.second[i]);
+    }
+    out += '\n';
+  }
+
+  os.write(out.data(), static_cast<std::streamsize>(out.size()));
+  if (!os) {
+    return Err(ErrorCode::IoError, "write_backtest_tsv: write failed");
+  }
+  return Ok();
+}
+
+}  // namespace atx::vol

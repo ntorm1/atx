@@ -69,6 +69,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/backtest.cpp
     src/strategy.cpp
     src/dispersion_strategy.cpp
+    src/tearsheet.cpp
 )
 add_library(atx::vol ALIAS atx-vol)
 
@@ -158,4 +159,14 @@ if(ATX_BUILD_EXAMPLES)
     # determinism, and pnl_explain rate. See examples/portfolio_pricer_bench.cpp.
     add_executable(portfolio_pricer_bench examples/portfolio_pricer_bench.cpp)
     target_link_libraries(portfolio_pricer_bench PRIVATE atx::vol atx::core atx_warnings)
+
+    # Backtest engine (Phase B3) worked examples on a synthetic corpus: build ->
+    # run_backtest -> tearsheet headline metrics -> write_backtest_tsv. Both are
+    # OFF-by-default demonstrations; the worked-example GATE lives in the test
+    # suite (tests/tearsheet_test.cpp, self-contained). See examples/*.cpp.
+    add_executable(atxvol_dispersion_backtest examples/dispersion_backtest.cpp)
+    target_link_libraries(atxvol_dispersion_backtest PRIVATE atx::vol atx::core atx_warnings)
+
+    add_executable(atxvol_strategy_examples examples/strategy_examples.cpp)
+    target_link_libraries(atxvol_strategy_examples PRIVATE atx::vol atx::core atx_warnings)
 endif()
