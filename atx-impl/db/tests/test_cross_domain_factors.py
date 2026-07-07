@@ -211,6 +211,115 @@ def test_price_liquidity_mapper_emits_ranked_rows_with_lineage_and_native_crossc
     assert report["mismatch_count"] == 0
 
 
+def test_cross_domain_rank_dedups_to_latest_visible_revision() -> None:
+    as_of = dt.date(2024, 3, 1)
+    stale_revision = _price_metric(
+        "SEC-A",
+        "AAA",
+        momentum_21d=0.20,
+        momentum_126d=0.40,
+        realized_vol_20d=0.10,
+        realized_vol_60d=0.15,
+        pct_from_high_252d=-0.01,
+        avg_dollar_volume_21d=20_000_000.0,
+        amihud_illiquidity_21d=0.10,
+        beta_60d=0.80,
+        idiosyncratic_vol_60d=0.12,
+        max_drawdown_126d=-0.05,
+        momentum_21d_cs_pct_rank=0.5,
+        realized_vol_20d_cs_pct_rank=0.5,
+        amihud_illiquidity_21d_cs_pct_rank=0.5,
+        as_of_date=as_of,
+        available_at="2024-03-01 21:00:00",
+    )
+    latest_revision = _price_metric(
+        "SEC-A",
+        "AAA",
+        momentum_21d=0.50,
+        momentum_126d=0.40,
+        realized_vol_20d=0.10,
+        realized_vol_60d=0.15,
+        pct_from_high_252d=-0.01,
+        avg_dollar_volume_21d=20_000_000.0,
+        amihud_illiquidity_21d=0.10,
+        beta_60d=0.80,
+        idiosyncratic_vol_60d=0.12,
+        max_drawdown_126d=-0.05,
+        momentum_21d_cs_pct_rank=0.5,
+        realized_vol_20d_cs_pct_rank=0.5,
+        amihud_illiquidity_21d_cs_pct_rank=0.5,
+        as_of_date=as_of,
+        available_at="2024-03-01 23:00:00",
+    )
+    latest_revision["metric_id"] = "metric-SEC-A-rev2"
+
+    frame = pd.DataFrame(
+        [
+            stale_revision,
+            latest_revision,
+            _price_metric(
+                "SEC-B",
+                "BBB",
+                momentum_21d=0.10,
+                momentum_126d=0.20,
+                realized_vol_20d=0.20,
+                realized_vol_60d=0.30,
+                pct_from_high_252d=-0.08,
+                avg_dollar_volume_21d=10_000_000.0,
+                amihud_illiquidity_21d=0.20,
+                beta_60d=1.10,
+                idiosyncratic_vol_60d=0.18,
+                max_drawdown_126d=-0.15,
+                momentum_21d_cs_pct_rank=0.5,
+                realized_vol_20d_cs_pct_rank=0.5,
+                amihud_illiquidity_21d_cs_pct_rank=0.5,
+                as_of_date=as_of,
+            ),
+            _price_metric(
+                "SEC-C",
+                "CCC",
+                momentum_21d=0.00,
+                momentum_126d=-0.10,
+                realized_vol_20d=0.30,
+                realized_vol_60d=0.45,
+                pct_from_high_252d=-0.20,
+                avg_dollar_volume_21d=5_000_000.0,
+                amihud_illiquidity_21d=0.30,
+                beta_60d=1.40,
+                idiosyncratic_vol_60d=0.25,
+                max_drawdown_126d=-0.30,
+                momentum_21d_cs_pct_rank=0.5,
+                realized_vol_20d_cs_pct_rank=0.5,
+                amihud_illiquidity_21d_cs_pct_rank=0.5,
+                as_of_date=as_of,
+            ),
+        ]
+    )
+
+    rows = compute_price_liquidity_factor_rows(frame, run_id="s3-5-dedup-run")
+
+    # (a) exactly one row per (factor_id, security_id, as_of_date) across every spec -
+    # the duplicate visible revision of SEC-A must not survive into the cross-section.
+    counts = rows.groupby(["factor_id", "security_id", "as_of_date"]).size()
+    assert (counts == 1).all()
+    assert len(rows) == 3 * len(PRICE_LIQUIDITY_SPECS)
+
+    momentum_rows = rows[rows["factor_id"] == "price_momentum_21d"]
+    assert set(momentum_rows["security_id"]) == {"SEC-A", "SEC-B", "SEC-C"}
+
+    sec_a = momentum_rows.loc[momentum_rows["security_id"] == "SEC-A"].iloc[0]
+    assert sec_a.raw_value == pytest.approx(0.50)
+    assert sec_a.available_at == pd.Timestamp("2024-03-01 23:00:00")
+
+    # (b) the percent-rank denominator equals the number of DISTINCT securities (3), not
+    # the number of visible rows (4) - the duplicate must not inflate the cross-section.
+    sec_b = momentum_rows.loc[momentum_rows["security_id"] == "SEC-B"].iloc[0]
+    sec_c = momentum_rows.loc[momentum_rows["security_id"] == "SEC-C"].iloc[0]
+    assert sec_a.value == pytest.approx(1.0)
+    assert sec_b.value == pytest.approx(0.5)
+    assert sec_c.value == pytest.approx(0.0)
+
+
 def test_price_liquidity_seed_rows_round_trip_into_catalog(tmp_store) -> None:
     seeded = tmp_store.con.execute(
         """

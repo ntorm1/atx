@@ -741,6 +741,12 @@ def _compute_source_factor_rows(
         subset = source_frame.dropna(subset=[spec.source_column]).copy()
         if subset.empty:
             continue
+        subset = (
+            subset.sort_values(["security_id", "as_of_date", "available_at", "source_row_id"], kind="mergesort")
+            .groupby(["security_id", "as_of_date"], dropna=False)
+            .tail(1)
+            .reset_index(drop=True)
+        )
         subset["native_percent_rank_value"] = _native_percent_rank(subset, spec)
         line_columns = list(dict.fromkeys(column for column in spec.lineage_columns if column in subset.columns))
         native_columns = [spec.native_rank_column] if spec.native_rank_column and spec.native_rank_column in subset.columns else []
@@ -831,6 +837,12 @@ def compute_price_liquidity_factor_rows(
         subset = source_frame.dropna(subset=[spec.source_column]).copy()
         if subset.empty:
             continue
+        subset = (
+            subset.sort_values(["security_id", "as_of_date", "available_at", "metric_id"], kind="mergesort")
+            .groupby(["security_id", "as_of_date"], dropna=False)
+            .tail(1)
+            .reset_index(drop=True)
+        )
         subset["native_percent_rank_value"] = _native_percent_rank(subset, spec)
         temp = subset[
             [
