@@ -64,8 +64,11 @@ constexpr double kPxScale = 1e-9;
     return 0;
   }
   if (col->dtype == io::DType::Timestamp) {
-    const auto v = table.column_view<atx::core::time::Timestamp>("ts");
-    if (v.has_value() && !v->empty()) {
+    // column_view<Timestamp> is a rejected specialization (Arrow stores raw i64 in
+    // the array's own unit, so it cannot alias) — it ALWAYS errors. Must go through
+    // to_column<Timestamp>, which copies + normalises each cell to i64 nanoseconds.
+    const auto v = table.to_column<atx::core::time::Timestamp>("ts");
+    if (v.has_value() && v->size() > 0) {
       return (*v)[0].unix_nanos();
     }
   } else if (col->dtype == io::DType::Int64) {

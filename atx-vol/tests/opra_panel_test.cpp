@@ -277,6 +277,57 @@ TEST(OpraPanel, Load_SpotOverride_UsesOverrideNotPcp) {
   fs::remove_all(dir);
 }
 
+// Regression: the `ts` column may arrive as a real Arrow TIMESTAMP (this is how
+// the databento OPRA puller writes it), not the Int64(ns) the other fixtures use.
+// first_ts_ns() must read it through to_column<Timestamp> — column_view<Timestamp>
+// is a rejected specialization that ALWAYS errors, which previously left every
+// real snapshot_ts_ns == 0 (collapsing backtest aging dt -> 0, zeroing theta PnL).
+// With no snapshot_iso override, snapshot_ts_ns is derived from the ts column, so
+// this exercises exactly that path.
+TEST(OpraPanel, Load_TimestampTsColumn_PopulatesSnapshotNs) {
+  using atx::core::time::Timestamp;
+  const i64 kSnapNs = 1780000000000000000LL;  // round (ns == us == ms aligned) -> unit-agnostic
+  std::vector<Timestamp> ts_col = {Timestamp::from_unix_nanos(kSnapNs),
+                                   Timestamp::from_unix_nanos(kSnapNs)};
+  std::vector<std::string> und_col = {"XOM", "XOM"};
+  std::vector<std::string> sym_col = {"XOM   260619C00110000", "XOM   260619P00110000"};
+  std::vector<i64> bidpx = {static_cast<i64>(std::llround(2.0 * 1e9)),
+                            static_cast<i64>(std::llround(1.0 * 1e9))};
+  std::vector<i64> askpx = {static_cast<i64>(std::llround(2.2 * 1e9)),
+                            static_cast<i64>(std::llround(1.2 * 1e9))};
+  std::vector<i64> bidsz = {10, 10};
+  std::vector<i64> asksz = {12, 12};
+
+  const std::vector<io::WriteColumn> cols = {
+      {"ts", std::span<const Timestamp>(ts_col)},
+      {"underlying", std::span<const std::string>(und_col)},
+      {"symbol", std::span<const std::string>(sym_col)},
+      {"bid_px", std::span<const i64>(bidpx)},
+      {"ask_px", std::span<const i64>(askpx)},
+      {"bid_sz", std::span<const i64>(bidsz)},
+      {"ask_sz", std::span<const i64>(asksz)},
+  };
+
+  const fs::path dir = fs::temp_directory_path() / "atx_opra_panel_tsts_test";
+  fs::create_directories(dir);
+  const fs::path path = dir / "xom_ts.parquet";
+  fs::remove(path);
+  ASSERT_TRUE(io::write_parquet(cols, path.string()).has_value());
+
+  OpraLoadSpec spec;
+  spec.path = path.string();
+  spec.underlying = "XOM";
+  spec.r = 0.04;
+  spec.spot_override = 123.45;  // one strike/pair -> no PCP needed
+  // NOTE: snapshot_iso intentionally left empty so snapshot_ts_ns comes from `ts`.
+
+  const auto loaded = load_opra_cbbo_parquet(spec);
+  ASSERT_TRUE(loaded.has_value()) << loaded.error().to_string();
+  EXPECT_EQ(loaded->frame.snapshot_ts_ns, kSnapNs);  // the bug returned 0 here
+
+  fs::remove_all(dir);
+}
+
 TEST(OpraPanel, Load_MissingFile_ReturnsInvalidArgument) {
   OpraLoadSpec spec;
   spec.path = (fs::temp_directory_path() / "atx_opra_does_not_exist.parquet").string();
