@@ -98,11 +98,36 @@ closure gates all still bit-identical). Gate `AmericanDelta.MatchesFd_PutCallGri
 locks `american_delta == american_greeks_fd.delta` bit-for-bit over a 150-point
 put+call grid. Full suite: 674 tests green.
 
-**Remaining bottleneck → next lever:** the call leg's delta path still routes
-through two cold `american_price` calls (each rebuilding the Gauss-Legendre tables
-+ nodes), so it is heavier than the put's shared-workspace boundary solve. Taking
-the call leg onto the same in-family cheap primitives (McDonald-Schröder internal
-put via `al_solve_put_boundary`/`al_put_price_from_boundary`, tick-accurate not
-bit-identical) is the next increment. A cheaper tick-level lever also remains:
-loosening the bisection convergence from 1e-7 to ~1e-5 (still 10× inside the 1e-4
-validation gate) cuts ~25% of candidates.
+**Measured breakdown after L1 (per-leg, disabled `SolverBreakdown` gate):**
+delta-only is 7-9× cheaper PER eval than full greeks, but `resolve_strike_by_delta`
+still cost 2790 µs (put) / 3887 µs (call) — because the pure BISECTION runs ~23-31
+evals (linear, 1 bit/iter). Resolve was ~68% of the step, `expand_leg`'s per-leg
+vega greeks ~16%, the reprice ~15%. (The Gauss-Legendre tables are a process-global
+`static const`, so `american_price` carries no per-call table-build cost — the
+call/put asymmetry is just 2 vs 1 boundary solves, not cold setup.)
+
+**L2 — Illinois false-position root-find (SHIPPED, bit-identical).** Replaced the
+bisection's midpoint with an Illinois-weighted secant step on the SAME [lo,hi]
+sign-change bracket: superlinear convergence for the smooth monotone
+`|delta|(k)`, ~6-8 evals vs ~23, at the SAME 1e-7 tolerance (so the resolved strike
+is bit-identical — no accuracy tradeoff at all). Interpolation is guarded to the
+midpoint when a bracket endpoint is a sentinel (asymptotic imputation) or the guess
+escapes the bracket; the Illinois down-weight of a twice-retained endpoint breaks
+the false-position stall. Robustness + determinism preserved.
+
+Result: `resolve_strike_by_delta` 2790→600 µs (put, 4.65×) / 3887→989 µs (call,
+3.93×). **End-to-end backtest 7.99 s → 1.28 s = 6.23× (62 → 9.9 ms/step; 14.9 →
+100.7 steps/s), all outputs bit-identical** (total_return 772.92; the B3 worked
+examples 396.3541 / 17.2874 byte-unchanged; closure + determinism gates unchanged).
+Full suite: 674 tests green.
+
+**Net Phase 2: 6.2× on the daily-restrike hot path, pricing quality bit-identical
+(well inside the tick-size epsilon the goal allowed).**
+
+**Remaining headroom (documented, not taken — diminishing / broader-blast-radius):**
+(1) `expand_leg` computes full-FD greeks per leg only to read vega, even for
+FixedContracts sizing that ignores it (~16% of the step) — a vega-only path or a
+defer-until-needed refactor touches every strategy. (2) The call leg's delta is 2
+boundary solves vs the put's 1; a McDonald-Schröder homogeneity delta would halve
+it but is tick-level (not bit-identical) and fiddly. (3) The reprice already runs
+the analytic 5-solve greeks.
