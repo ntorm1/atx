@@ -60,6 +60,8 @@ add_executable(atx-vol-tests
     strategy_test.cpp
     backtest_exec_test.cpp
     tearsheet_test.cpp
+    backtest_real_test.cpp
+    backtest_bench_test.cpp
 )
 
 target_link_libraries(atx-vol-tests
