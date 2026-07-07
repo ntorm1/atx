@@ -228,6 +228,62 @@ def test_breadth_matches_known_fixture_coverage() -> None:
     assert np.allclose(breadth["coverage_fraction"], 0.6)
 
 
+def test_compute_breadth_available_at_is_max_of_inputs() -> None:
+    # available_at on the breadth fact must be the max input available_at over the
+    # (factor_id, as_of_date) group -- the fact cannot be known before all its inputs were.
+    d = _dates(1)[0]
+    secs = [f"S{i}" for i in range(5)]
+    rows = []
+    for i, s in enumerate(secs):
+        rows.append({"security_id": s, "as_of_date": d, "factor_id": "b", "value": float(i),
+                     "available_at": pd.Timestamp("2020-01-01") + pd.Timedelta(days=i)})
+    breadth = compute_breadth(pd.DataFrame(rows))
+    assert breadth["available_at"].iloc[0] == pd.Timestamp("2020-01-05")   # max of the 5 inputs
+    # Order-invariant: shuffling the input rows must not change the (deterministic) max.
+    shuffled = compute_breadth(pd.DataFrame(rows).sample(frac=1.0, random_state=4).reset_index(drop=True))
+    assert shuffled["available_at"].iloc[0] == pd.Timestamp("2020-01-05")
+
+
+def test_persist_breadth_populates_pit_columns_without_exemption(tmp_store) -> None:
+    # factor_breadth carries all five canonical PIT columns physically (no pit_exemption):
+    # available_at is set PIT-correctly by compute_breadth; source_loaded_at / is_latest_revision
+    # are auto-filled by db.warehouse._insert_projection on the persist_breadth insert path.
+    from db.quality import pit_column_presence_check
+    from db.signal_eval import (
+        DEFAULT_UNIVERSE_ID,
+        SOURCE_NAME,
+        _build_breadth_manifest,
+        persist_breadth,
+    )
+
+    dates = _dates(3); secs = [f"S{i}" for i in range(6)]
+    avail = pd.Timestamp("2020-02-01 09:30:00")
+    rows = []
+    for d in dates:
+        for i, s in enumerate(secs):
+            rows.append({"security_id": s, "as_of_date": d, "factor_id": "b", "value": float(i),
+                         "available_at": avail})
+    panel = pd.DataFrame(rows)
+    breadth = compute_breadth(panel)
+    manifest = _build_breadth_manifest(panel, breadth, universe_id=DEFAULT_UNIVERSE_ID,
+                                       source=SOURCE_NAME, run_id="rid-b")
+    counts = persist_breadth(tmp_store, manifest=manifest, breadth=breadth,
+                             universe_id=DEFAULT_UNIVERSE_ID, run_id="rid-b")
+    assert counts["factor_breadth"] == 3
+
+    got = tmp_store.con.execute(
+        "SELECT available_at, source_loaded_at, is_latest_revision FROM factor_breadth"
+    ).df()
+    assert len(got) == 3
+    assert got["available_at"].notna().all()
+    assert (pd.to_datetime(got["available_at"]) == avail).all()          # PIT-correct: max input
+    assert got["source_loaded_at"].notna().all()                         # auto-filled by insert
+    assert got["is_latest_revision"].astype(bool).all()                  # auto-filled true
+    # pit_column_presence_check must NOT flag factor_breadth (no exemption in play).
+    result = pit_column_presence_check(tmp_store)
+    assert "factor_breadth" not in result.details["tables_missing_pit_columns"]
+
+
 def test_compute_correlation_is_order_invariant() -> None:
     rng = np.random.default_rng(31)
     dates = _dates(12); secs = [f"S{i}" for i in range(20)]

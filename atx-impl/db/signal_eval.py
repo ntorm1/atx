@@ -103,6 +103,7 @@ _BREADTH_COLUMNS = [
     "universe_size",
     "coverage_fraction",
     "effective_breadth",
+    "available_at",
 ]
 
 _FACTOR_EVAL_MANIFEST_COLUMNS = [
@@ -198,6 +199,10 @@ _FACTOR_CROWDING_TABLE_COLUMNS = [
     "source",
     "run_id",
 ]
+# NOTE: source_loaded_at / is_latest_revision are deliberately absent from this frame subset:
+# db.warehouse._insert_projection auto-populates them (now() / true) on any target table that
+# HAS those columns but whose insert frame omits them. available_at IS included here because
+# _insert_projection does NOT auto-fill it -- it is populated PIT-correctly in compute_breadth.
 _FACTOR_BREADTH_TABLE_COLUMNS = [
     "eval_id",
     "factor_id",
@@ -207,6 +212,7 @@ _FACTOR_BREADTH_TABLE_COLUMNS = [
     "universe_size",
     "coverage_fraction",
     "effective_breadth",
+    "available_at",
     "universe_id",
     "source",
     "run_id",
@@ -780,31 +786,56 @@ def _empty_breadth() -> pd.DataFrame:
 def compute_breadth(panel: pd.DataFrame, universe_counts: pd.DataFrame | None = None) -> pd.DataFrame:
     """Per-(factor, as_of_date) cross-sectional breadth: names, non-null coverage, universe fraction.
 
-    ``panel``: security_id, as_of_date, factor_id, value. ``n_names`` counts distinct
-    ``security_id`` rows present for the factor on that date (whether or not ``value`` is
-    null); ``n_non_null`` counts only the non-null ``value`` rows. If ``universe_counts``
-    (``as_of_date``, ``universe_size``) is supplied it is left-joined on ``as_of_date`` to
-    derive ``coverage_fraction = n_non_null / universe_size``; without it ``universe_size``
-    and ``coverage_fraction`` are NaN (SQL NULL once persisted). ``effective_breadth`` is
-    documented in ``field_catalog`` as a placeholder equal to ``n_non_null`` -- a true
-    weight-based effective-number-of-bets measure is a later sprint's concern. Stable-sorted
-    by ["factor_id", "as_of_date"] with a reset index so identical inputs (any row order)
-    reproduce byte-identical rows.
+    ``panel``: security_id, as_of_date, factor_id, value (and, when available,
+    ``available_at``). ``n_names`` counts distinct ``security_id`` rows present for the factor
+    on that date (whether or not ``value`` is null); ``n_non_null`` counts only the non-null
+    ``value`` rows. If ``universe_counts`` (``as_of_date``, ``universe_size``) is supplied it is
+    left-joined on ``as_of_date`` to derive ``coverage_fraction = n_non_null / universe_size``;
+    without it ``universe_size`` and ``coverage_fraction`` are NaN (SQL NULL once persisted).
+    ``effective_breadth`` is documented in ``field_catalog`` as a placeholder equal to
+    ``n_non_null`` -- a true weight-based effective-number-of-bets measure is a later sprint's
+    concern.
+
+    ``available_at`` is the PIT availability of the breadth fact: ``max(panel.available_at)``
+    over that ``(factor_id, as_of_date)`` group -- the breadth could not be *known* before all
+    of its input factor rows were themselves available. When the panel carries no
+    ``available_at`` column (pure-transform fixtures that omit it), it falls back to a single
+    compute-time ``now()`` for every row, which is conservative/PIT-safe (never earlier than any
+    input). Any group whose input ``available_at`` values are all NULL likewise falls back to
+    that ``now()``. Stable-sorted by ["factor_id", "as_of_date"] with a reset index so identical
+    inputs (any row order) reproduce byte-identical rows (the ``available_at`` ``max`` aggregate
+    is itself order-independent).
     """
 
     if panel is None or panel.empty:
         return _empty_breadth()
 
-    frame = panel.loc[:, ["security_id", "as_of_date", "factor_id", "value"]].copy()
+    has_available = "available_at" in panel.columns
+    input_columns = ["security_id", "as_of_date", "factor_id", "value"]
+    if has_available:
+        input_columns = input_columns + ["available_at"]
+    frame = panel.loc[:, input_columns].copy()
     frame = _normalize_asof(frame)
+    if has_available:
+        frame["available_at"] = pd.to_datetime(frame["available_at"])
 
-    breadth = (
-        frame.groupby(["factor_id", "as_of_date"], sort=True)
-        .agg(n_names=("security_id", "nunique"), n_non_null=("value", "count"))
-        .reset_index()
-    )
+    agg_kwargs: dict[str, tuple[str, str]] = {
+        "n_names": ("security_id", "nunique"),
+        "n_non_null": ("value", "count"),
+    }
+    if has_available:
+        agg_kwargs["available_at"] = ("available_at", "max")
+    breadth = frame.groupby(["factor_id", "as_of_date"], sort=True).agg(**agg_kwargs).reset_index()
     breadth["n_names"] = breadth["n_names"].astype(int)
     breadth["n_non_null"] = breadth["n_non_null"].astype(int)
+
+    # Conservative PIT-safe availability fallback: a single compute-time now() where the panel
+    # supplied no available_at at all, or where a group's inputs were all NULL.
+    fallback_available_at = pd.Timestamp.now()
+    if has_available:
+        breadth["available_at"] = breadth["available_at"].fillna(fallback_available_at)
+    else:
+        breadth["available_at"] = fallback_available_at
 
     if universe_counts is not None and not universe_counts.empty:
         uni = universe_counts.loc[:, ["as_of_date", "universe_size"]].copy()

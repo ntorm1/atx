@@ -205,6 +205,9 @@ def _pf4_s1_correlation_breadth(conn: duckdb.DuckDBPyConnection) -> None:
             universe_size BIGINT,
             coverage_fraction DOUBLE,
             effective_breadth DOUBLE,
+            available_at TIMESTAMP,
+            source_loaded_at TIMESTAMP,
+            is_latest_revision BOOLEAN,
             universe_id VARCHAR NOT NULL,
             source VARCHAR NOT NULL,
             run_id VARCHAR,
@@ -235,29 +238,14 @@ def _pf4_s1_correlation_breadth(conn: duckdb.DuckDBPyConnection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_factor_breadth_factor_date ON factor_breadth(factor_id, as_of_date)",
     ):
         conn.execute(stmt)
-    # factor_breadth carries as_of_date (a strong bitemporal marker) as the cross-section
-    # label of a *derived, deterministically-recomputable* evaluation metric -- not a
-    # bitemporal fact row. as_of_date + run_id carry its PIT/lineage semantics; per-row
-    # available_at / source_loaded_at / is_latest_revision are not meaningful for a metric
-    # recomputed wholesale by evaluate_panel. Register that narrowly with the schema-contract
-    # PIT-exemption registry (mirroring the est_* dimension exemptions) so
-    # pit_column_presence_check stays green. factor_correlation / factor_crowding carry no
-    # strong marker and need no exemption.
-    conn.execute(
-        """
-        INSERT OR REPLACE INTO pit_exemption (
-            table_name, missing_columns, reason, exempted_by, exempted_at, source_loaded_at
-        )
-        VALUES (
-            'factor_breadth',
-            '["available_at","source_loaded_at","is_latest_revision"]',
-            'factor_breadth is a derived, deterministically-recomputable signal-evaluation metric keyed by (factor_id, as_of_date, universe_id, run_id). Its as_of_date is the cross-section label and run_id carries lineage; per-row available_at, source_loaded_at, and is_latest_revision are not meaningful for a metric recomputed wholesale from the read-only panel.',
-            'pf4-s1-s1-2',
-            now(),
-            now()
-        )
-        """
-    )
+    # factor_breadth carries as_of_date (a strong bitemporal marker), so the schema contract
+    # classifies it as a fact/derived table that must carry the full canonical PIT column set.
+    # Rather than exempt it, it declares all five physically: as_of_date + run_id were already
+    # present; available_at is populated PIT-correctly in compute_breadth (max input
+    # available_at, falling back to a conservative compute-time now()); source_loaded_at /
+    # is_latest_revision are auto-filled by db.warehouse._insert_projection on insert. No
+    # pit_exemption is needed. factor_correlation / factor_crowding carry no strong marker and
+    # are (correctly) not treated as PIT-fact tables.
     _catalog_fields_for_tables(conn, ("factor_correlation", "factor_crowding", "factor_breadth"))
     _refresh_schema_contract_v2_pin(conn)
 
