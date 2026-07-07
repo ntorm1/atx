@@ -405,7 +405,18 @@ def test_universe_decision_coverage_quality_check_fails_for_undecided_overlap_da
 
 
 def _long_history_dates(n: int = 60) -> list[dt.date]:
-    return [dt.date(2020, 1, 1) + dt.timedelta(days=i) for i in range(n)]
+    # Weekday-only trading calendar (skips Sat/Sun, plus one holiday) so the
+    # calendar-day-vs-trading-day gap in the lookback read buffer is actually
+    # exercised -- a fixture with a bar on every literal calendar day cannot
+    # distinguish a calendar-day buffer from a trading-day buffer.
+    holiday = dt.date(2020, 1, 20)  # e.g. MLK Day -- a weekday with no bar
+    dates: list[dt.date] = []
+    day = dt.date(2020, 1, 1)
+    while len(dates) < n:
+        if day.weekday() < 5 and day != holiday:
+            dates.append(day)
+        day += dt.timedelta(days=1)
+    return dates
 
 
 def _long_history_bar_rows(security_id: str, symbol: str, dates: list[dt.date]) -> pd.DataFrame:

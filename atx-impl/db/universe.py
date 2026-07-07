@@ -295,7 +295,13 @@ class GovernedUniverseMembershipDataset(Dataset):
             # history_days / avg_dollar_volume windows (computed below) are not
             # truncated at the left edge of the emit window. Only in-window
             # decisions are returned -- see the final SELECT filter below.
-            read_start = options.start_date - dt.timedelta(days=options.lookback_days)
+            # The trailing window below counts TRADING-DAY bars
+            # (lookback_preceding = lookback_days - 1), but this buffer is read
+            # in CALENDAR days -- under a real trading calendar (~5 bars per 7
+            # calendar days, plus holidays) `lookback_days` calendar days yields
+            # too few bars. Use 2x so the buffer covers at least
+            # lookback_preceding trading bars even across weekends/holidays.
+            read_start = options.start_date - dt.timedelta(days=2 * options.lookback_days)
             filters.append("b.trade_date >= ?")
             params.append(read_start)
         if options.end_date is not None:
