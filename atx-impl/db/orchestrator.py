@@ -9,6 +9,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
+import duckdb
+
 from .quality import GateDecision, GateResult, evaluate_quality_gate
 
 
@@ -1586,6 +1588,30 @@ class DatasetOrchestrator:
             ts=ts,
         )
 
+    def _panel_gate_dataset(self, dataset_id: str) -> bool:
+        """True when ``dataset_id`` has at least one enabled ``panel_gate_config`` row.
+
+        PF4-S2 S2-1: additive to pf2-S10's gate -- only datasets registered in
+        ``panel_gate_config`` (currently ``factor_panel``) take the panel-gate branch in
+        ``_run_step``; every other dataset's gate evaluation is byte-identical to before.
+
+        The only tolerated failure is a pre-PF4-S2 warehouse where migration 0180 has not
+        yet created ``panel_gate_config`` -- DuckDB raises ``CatalogException`` for the
+        missing relation, which we treat as "no panel gate configured" and fall through to
+        the pf2-S10 fundamentals path. Any OTHER DB error (corruption, lock, type error)
+        propagates: silently swallowing it would wrongly downgrade a genuinely panel-gated
+        ``factor_panel`` run to the fundamentals evaluator (wrong evaluator + a live
+        leakage/coverage recompute), masking a real fault instead of halting.
+        """
+        try:
+            row = self.store.con.execute(
+                "SELECT count(*) FROM panel_gate_config WHERE dataset_id = ? AND enabled",
+                [dataset_id],
+            ).fetchone()
+        except duckdb.CatalogException:
+            return False
+        return bool(row and row[0])
+
     def _run_step(
         self,
         run_id: str,
@@ -1687,8 +1713,25 @@ class DatasetOrchestrator:
             gate_result: GateResult | None = None
             gate_decision: GateDecision = "pass"
             if gate:
-                gate_result = evaluate_quality_gate(self.store, dataset_id)
+                panel_gated = self._panel_gate_dataset(dataset_id)
+                if panel_gated:
+                    from .observability import evaluate_panel_gate
+
+                    # Bound the recorded leakage/coverage read to THIS attempt's step
+                    # start so a stale prior-run outcome cannot satisfy (or falsely halt)
+                    # the current run; fail-open on absence is preserved inside
+                    # evaluate_panel_gate.
+                    gate_result = evaluate_panel_gate(
+                        self.store, dataset_id, recorded_since=started_at
+                    )
+                else:
+                    gate_result = evaluate_quality_gate(self.store, dataset_id)
                 gate_decision = gate_result.decision
+                halt_action = "panel_quality_gate_halt" if panel_gated else "step_quality_gate_halt"
+                degrade_action = (
+                    "panel_quality_gate_degrade" if panel_gated else "step_quality_gate_degrade"
+                )
+                warn_action = "panel_quality_gate_warn" if panel_gated else "step_quality_gate_warn"
                 if gate_decision == "halt":
                     failed_at = self.clock()
                     error_message = str(QualityGateError(dataset_id, gate_result))
@@ -1716,7 +1759,7 @@ class DatasetOrchestrator:
                         run_id=run_id,
                         dataset_id=dataset_id,
                         actor=self.actor,
-                        action="step_quality_gate_halt",
+                        action=halt_action,
                         details=_quality_gate_details(gate_result),
                         ts=failed_at,
                     )
@@ -1727,7 +1770,7 @@ class DatasetOrchestrator:
                         run_id=run_id,
                         dataset_id=dataset_id,
                         actor=self.actor,
-                        action="step_quality_gate_degrade",
+                        action=degrade_action,
                         details=_quality_gate_details(gate_result),
                         ts=self.clock(),
                     )
@@ -1737,7 +1780,7 @@ class DatasetOrchestrator:
                         run_id=run_id,
                         dataset_id=dataset_id,
                         actor=self.actor,
-                        action="step_quality_gate_warn",
+                        action=warn_action,
                         details=_quality_gate_details(gate_result),
                         ts=self.clock(),
                     )
