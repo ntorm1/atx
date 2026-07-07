@@ -177,4 +177,10 @@ if(ATX_BUILD_EXAMPLES)
     # GATE is tests/spy_strangle_backtest_test.cpp. See examples/spy_strangle_backtest.cpp.
     add_executable(spy_strangle_backtest examples/spy_strangle_backtest.cpp)
     target_link_libraries(spy_strangle_backtest PRIVATE atx::vol atx::core atx_warnings)
+
+    # Build a REAL SPY surface corpus from a pulled OPRA parquet hive
+    # (databento_bulk_opra output): load_opra_daterange -> build_corpus -> ATXVSA
+    # archives + manifest, which spy_strangle_backtest --manifest then backtests.
+    add_executable(spy_ytd_corpus examples/spy_ytd_corpus.cpp)
+    target_link_libraries(spy_ytd_corpus PRIVATE atx::vol atx::core atx_warnings)
 endif()

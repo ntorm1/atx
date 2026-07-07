@@ -43,11 +43,14 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <random>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -165,17 +168,17 @@ constexpr double kTenorT = 0.5;  // 6-month strangle
   return m;
 }
 
-// The short 40-delta 6m strangle, restriked every day.
-[[nodiscard]] StrategySpec make_strangle_spec(double n_strangles) {
+// The short 40-delta 6m strangle, restriked every day, sized by `size`.
+[[nodiscard]] StrategySpec make_strangle_spec(SizeSpec size) {
   StrategySpec spec;
   spec.name = "spy-short-40d-6m-strangle-daily-restrike";
   LegSpec leg;
-  leg.uid = kSpyUid;
+  leg.symbol = "SPY";  // resolved to uid per snapshot (works for synthetic + real corpora)
   leg.tenor.target_T = kTenorT;
   leg.structure.kind = StructureSpec::Kind::Strangle;
   leg.structure.call_leg = StrikeSelector{StrikeSelector::Kind::Delta, 0.40};
   leg.structure.put_leg = StrikeSelector{StrikeSelector::Kind::Delta, 0.40};
-  leg.size = SizeSpec{SizeSpec::Kind::FixedContracts, n_strangles, -1.0};  // SHORT
+  leg.size = size;
   spec.legs.push_back(leg);
   // Restrike every day: a single cohort, rolled whenever residual T < roll_at_T.
   // With roll_at_T = 1.0 > the 0.5 tenor, the ~0.5 residual is always below it, so
@@ -258,50 +261,116 @@ void confirm_quote_slice_store(const fs::path& dir) {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  // Data source: a REAL corpus manifest (e.g. from spy_ytd_corpus over a Databento
+  // OPRA pull) when --manifest / a positional path is given, else the built-in
+  // deterministic synthetic corpus. --theta-per-day sets the constant-risk target.
+  std::string manifest_path;
+  double target_theta_per_day = 10'000.0;  // $/day book theta (constant-risk sizing)
+  for (int i = 1; i < argc; ++i) {
+    const std::string_view a = argv[i];
+    const auto nv = [&]() -> const char* { return (i + 1 < argc) ? argv[++i] : ""; };
+    if (a == "--manifest") {
+      manifest_path = nv();
+    } else if (a == "--theta-per-day") {
+      target_theta_per_day = std::strtod(nv(), nullptr);
+    } else if (!a.empty() && a.front() != '-' && manifest_path.empty()) {
+      manifest_path = argv[i];  // positional manifest path
+    } else {
+      std::fprintf(stderr, "unknown arg: %s\n", argv[i]);
+      return 2;
+    }
+  }
+  const bool synthetic = manifest_path.empty();
+
   const fs::path base = fs::temp_directory_path() / "atx-spy-strangle-backtest";
   std::error_code ec;
-  fs::remove_all(base, ec);
   const fs::path arch_dir = base / "archives";
 
-  // ── 1. Build the deterministic rolling-vol SPY corpus ─────────────────────
-  const std::vector<std::string> dates = business_days("2026-01-02", "2026-07-02");
-  std::mt19937_64 rng(0x5391A11ED5EEDULL);  // fixed seed; NEVER time-based
-  std::normal_distribution<double> z(0.0, 1.0);
-  const double sig_d = 0.12 / std::sqrt(252.0);      // ~12%/yr realized daily vol
-  const double mu_d = 0.05 / 252.0 - 0.5 * sig_d * sig_d;  // small drift, Ito-corrected
-  double S = 600.0;
-  double vb = 0.0;  // AR(1) vol-regime bump
-
-  const auto t_build0 = std::chrono::steady_clock::now();
-  std::vector<std::pair<std::string, std::string>> dp;
-  dp.reserve(dates.size());
+  // ── 1. Corpus: synthetic (built here) OR real (loaded from a manifest) ─────
+  std::vector<std::string> dates;
+  std::string first_archive;  // representative archive path (reload-latency probe)
+  std::string data_source;
+  double build_ms = 0.0;
   std::uintmax_t total_arch_bytes = 0;
-  for (const std::string& date : dates) {
-    const std::int64_t now = iso_to_ns(date);
-    const PricedSurface spy = make_spy_surface(S, now, vb);
-    const std::string path = write_archive(arch_dir, date, spy);
-    total_arch_bytes += fs::file_size(path, ec);
-    dp.emplace_back(date, path);
-    // Advance the seeded path for the next date. The vol regime is a slow AR(1)
-    // with a realistic vol-of-vol (~0.4 var-pt/day innovation ~ a few % relative
-    // daily ATM-vol move), so the short-vol carry (theta) reads against modest
-    // vega noise rather than being swamped by an over-jumpy synthetic vol path.
-    S *= std::exp(mu_d + sig_d * z(rng));
-    vb = 0.96 * vb + 0.004 * z(rng);            // mean-reverting regime
-    vb = std::min(0.05, std::max(-0.015, vb));  // keep eSSVI theta > 0
-  }
-  const auto t_build1 = std::chrono::steady_clock::now();
-  const CorpusManifest manifest = make_manifest(dp);
+  std::optional<Clock> clock;
 
-  auto clock = Clock::from_manifest(manifest);
-  if (!clock) {
-    std::fprintf(stderr, "clock: %s\n", clock.error().to_string().c_str());
+  if (synthetic) {
+    fs::remove_all(base, ec);
+    data_source = "synthetic rolling-vol eSSVI SPY corpus";
+    dates = business_days("2026-01-02", "2026-07-02");
+    std::mt19937_64 rng(0x5391A11ED5EEDULL);  // fixed seed; NEVER time-based
+    std::normal_distribution<double> z(0.0, 1.0);
+    const double sig_d = 0.12 / std::sqrt(252.0);            // ~12%/yr realized daily vol
+    const double mu_d = 0.05 / 252.0 - 0.5 * sig_d * sig_d;  // small drift, Ito-corrected
+    double S = 600.0;
+    double vb = 0.0;  // AR(1) vol-regime bump
+    const auto t0 = std::chrono::steady_clock::now();
+    std::vector<std::pair<std::string, std::string>> dp;
+    dp.reserve(dates.size());
+    for (const std::string& date : dates) {
+      const std::int64_t now = iso_to_ns(date);
+      const PricedSurface spy = make_spy_surface(S, now, vb);
+      const std::string path = write_archive(arch_dir, date, spy);
+      total_arch_bytes += fs::file_size(path, ec);
+      dp.emplace_back(date, path);
+      // Advance the seeded path: a slow AR(1) vol regime with a realistic vol-of-vol.
+      S *= std::exp(mu_d + sig_d * z(rng));
+      vb = 0.96 * vb + 0.004 * z(rng);
+      vb = std::min(0.05, std::max(-0.015, vb));  // keep eSSVI theta > 0
+    }
+    build_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    first_archive = dp.front().second;
+    auto ck = Clock::from_manifest(make_manifest(dp));
+    if (!ck) {
+      std::fprintf(stderr, "clock: %s\n", ck.error().to_string().c_str());
+      return 1;
+    }
+    clock = std::move(*ck);
+  } else {
+    data_source = "REAL OPRA (Databento cbbo-1m, 19:55Z NBBO)";
+    const Result<CorpusManifest> man = read_manifest_file(manifest_path);
+    if (!man) {
+      std::fprintf(stderr, "read_manifest_file(%s): %s\n", manifest_path.c_str(),
+                   man.error().to_string().c_str());
+      return 1;
+    }
+    for (const CorpusEntry& e : man->entries) {
+      if (e.status != CorpusFitStatus::Ok) {
+        continue;
+      }
+      if (dates.empty() || dates.back() != e.date) {
+        dates.push_back(e.date);
+      }
+      if (first_archive.empty()) {
+        first_archive = e.archive_path;
+      }
+      std::error_code fe;
+      total_arch_bytes += fs::file_size(e.archive_path, fe);
+    }
+    auto ck = Clock::from_manifest(*man);
+    if (!ck) {
+      std::fprintf(stderr, "clock: %s\n", ck.error().to_string().c_str());
+      return 1;
+    }
+    clock = std::move(*ck);
+  }
+  if (dates.empty()) {
+    std::fprintf(stderr, "corpus has no dates\n");
     return 1;
   }
+  std::printf("[data] %s: %zu dates %s..%s\n", data_source.c_str(), dates.size(),
+              dates.front().c_str(), dates.back().c_str());
 
   // ── 2. Run the backtest (timed) ───────────────────────────────────────────
-  const StrategySpec spec = make_strangle_spec(/*n_strangles=*/1.0);
+  // Constant-risk sizing: resolve the unit count DAILY so the book theta is pinned
+  // at `target_theta_per_day` $/DAY regardless of where the surface is. `sign=-1`
+  // => short; under the daily restrike the per-unit theta moves with spot/vol, so
+  // the resolved unit count floats each day to hold it. (gross_theta is annualized
+  // == target * 365.25.)
+  const double kTargetThetaPerDay = target_theta_per_day;
+  const SizeSpec size{SizeSpec::Kind::TargetTheta, kTargetThetaPerDay, -1.0};
+  const StrategySpec spec = make_strangle_spec(size);
   DeclarativeStrategy strat{spec};
   const auto t_run0 = std::chrono::steady_clock::now();
   auto res = run_backtest(*clock, strat);  // RunConfig{}: all-cores, analytic greeks
@@ -321,7 +390,6 @@ int main() {
     return 1;
   }
 
-  const double build_ms = std::chrono::duration<double, std::milli>(t_build1 - t_build0).count();
   const double run_ms = std::chrono::duration<double, std::milli>(t_run1 - t_run0).count();
   const int priced_steps = static_cast<int>(r.size()) - 1;
 
@@ -336,14 +404,17 @@ int main() {
     os.precision(10);
     os << "# symbol=SPY\n"
        << "# strategy=Short 40-Delta 6M Strangle, Daily Restrike\n"
+       << "# data_source=" << data_source << "\n"
        << "# window_start=" << dates.front() << "\n"
        << "# window_end=" << dates.back() << "\n"
        << "# business_days=" << dates.size() << "\n"
        << "# priced_steps=" << priced_steps << "\n"
-       << "# n_strangles=1\n"
        << "# multiplier=100\n"
        << "# tenor_years=" << kTenorT << "\n"
        << "# delta_target=0.40\n"
+       << "# sizing=Target book theta $" << kTargetThetaPerDay << "/day (units resolved daily)\n"
+       << "# target_theta_daily=" << kTargetThetaPerDay << "\n"
+       << "# target_theta=" << (kTargetThetaPerDay * 365.25) << "\n"  // annual; matches gross_theta
        << "# wall_clock_ms=" << run_ms << "\n"
        << "# steps_per_s=" << sps << "\n"
        << "# total_return=" << t.total_return << "\n"
@@ -369,12 +440,16 @@ int main() {
   const double run_s = run_ms / 1000.0;
   const double steps_per_s = (run_s > 0.0) ? static_cast<double>(priced_steps) / run_s : 0.0;
 
-  std::printf("\n=== SPY short 40-delta 6m strangle, restriked daily (2026-01-02 -> 2026-07-02) ===\n");
-  std::printf("corpus: %zu business days, %.1f KB archives (%.2f KB/surface), build %.0f ms\n",
+  std::printf("\n=== SPY short 40-delta 6m strangle, restriked daily (%s -> %s) ===\n",
+              dates.front().c_str(), dates.back().c_str());
+  std::printf("corpus: %s | %zu dates, %.1f KB archives (%.2f KB/surface)%s\n", data_source.c_str(),
               dates.size(), static_cast<double>(total_arch_bytes) / 1024.0,
               static_cast<double>(total_arch_bytes) / 1024.0 / static_cast<double>(dates.size()),
-              build_ms);
-  confirm_quote_slice_store(base / "quotes");
+              synthetic ? "" : " [fit offline by spy_ytd_corpus]");
+  if (synthetic) {
+    std::printf("synthetic-corpus build: %.0f ms\n", build_ms);
+    confirm_quote_slice_store(base / "quotes");
+  }
 
   // Archive reload latency (single-symbol map).
   {
@@ -382,7 +457,7 @@ int main() {
     constexpr int kReps = 200;
     volatile std::size_t sink = 0;
     for (int i = 0; i < kReps; ++i) {
-      auto snap = MarketSnapshot::load(dp.front().second);
+      auto snap = MarketSnapshot::load(first_archive);
       if (snap) {
         sink += snap->surfaces().size();
       }
@@ -399,7 +474,8 @@ int main() {
               (priced_steps > 0) ? run_ms / priced_steps : 0.0,
               (leg_reprices > 0) ? run_ms / static_cast<double>(leg_reprices) : 0.0);
 
-  std::printf("\n[tearsheet] (1 strangle, mult 100, frictionless)\n");
+  std::printf("\n[tearsheet] (short 40d 6m strangle, TARGET book theta $%.0f/day, mult 100, "
+              "frictionless)\n", kTargetThetaPerDay);
   std::printf("  total_return   = %.2f  ($ PnL, cumulative)\n", t.total_return);
   std::printf("  ann_return     = %.2f   ann_vol = %.2f   sharpe = %.3f\n", t.ann_return,
               t.ann_vol, t.sharpe);

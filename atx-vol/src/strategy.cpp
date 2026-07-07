@@ -210,6 +210,8 @@ Result<std::vector<ResolvedLeg>> expand_leg(const MarketSnapshot& snap, const Le
     rl.T = T;
     rl.sigma = surf->iv(*K, T);
     rl.vega = gr->vega;  // signed greek vega (> 0 for both call and put)
+    rl.theta = gr->theta;
+    rl.gamma = gr->gamma;
     rl.side = side;
     rl.group = leg.group;
     return Ok(rl);
@@ -243,6 +245,8 @@ Result<std::vector<ResolvedLeg>> expand_leg(const MarketSnapshot& snap, const Le
         rl.T = T;
         rl.sigma = sigma;
         rl.vega = gr->vega;
+        rl.theta = gr->theta;
+        rl.gamma = gr->gamma;
         rl.side = side;
         rl.group = leg.group;
         out.push_back(rl);
@@ -303,15 +307,42 @@ Result<std::vector<SizedLeg>> resolve_spec(const MarketSnapshot& snap, const Str
       case SizeSpec::Kind::Weight:
         qty = ls.size.sign * ls.size.value;  // Weight: unitless, pre-constraint
         break;
-      case SizeSpec::Kind::TargetVega: {
-        double structure_vega = 0.0;
+      case SizeSpec::Kind::TargetVega:
+      case SizeSpec::Kind::TargetTheta:
+      case SizeSpec::Kind::TargetGamma: {
+        // Size to a book GREEK: qty = sign * target / (|Σ leg greek| * mult), so
+        // `value` is the target |book greek| and `sign` picks long/short. |Σ| makes
+        // the target axis-agnostic (theta < 0 for a long option), so a short strangle
+        // sized TargetTheta holds +value book theta. TargetVega is bit-identical to
+        // the old form (structure vega is already > 0, so |.| is a no-op).
+        //
+        // THETA CONVENTION: the American greek theta is dP/dt with t in YEARS (per
+        // kNsPerYear), so it is an ANNUALIZED $ theta. TargetTheta's `value` is a
+        // per-CALENDAR-DAY theta (how traders quote it), converted to the annualized
+        // book theta the greek carries by * 365.25 (the kNsPerYear day count).
+        constexpr double kCalendarDaysPerYear = 365.25;  // matches kNsPerYear
+        const auto pick = [&](const ResolvedLeg& o) -> double {
+          switch (ls.size.kind) {
+            case SizeSpec::Kind::TargetTheta:
+              return o.theta;
+            case SizeSpec::Kind::TargetGamma:
+              return o.gamma;
+            default:
+              return o.vega;
+          }
+        };
+        double structure_greek = 0.0;
         for (const ResolvedLeg& o : opts) {
-          structure_vega += o.vega;
+          structure_greek += pick(o);
         }
-        if (!(std::isfinite(structure_vega) && std::fabs(structure_vega) > 0.0)) {
-          return Err(ErrorCode::Unavailable, "resolve_spec: degenerate structure vega");
+        if (!(std::isfinite(structure_greek) && std::fabs(structure_greek) > 0.0)) {
+          return Err(ErrorCode::Unavailable,
+                     "resolve_spec: degenerate structure greek for target sizing");
         }
-        qty = ls.size.sign * ls.size.value / (structure_vega * kMult);
+        const double target = (ls.size.kind == SizeSpec::Kind::TargetTheta)
+                                  ? ls.size.value * kCalendarDaysPerYear  // $/day -> $/yr
+                                  : ls.size.value;
+        qty = ls.size.sign * target / (std::fabs(structure_greek) * kMult);
         break;
       }
     }

@@ -289,6 +289,53 @@ TEST(SpyStrangleBacktest, FortyDeltaEntry) {
   }
 }
 
+// ── 5. Greek-target sizing: pin book theta constant while restriking daily ───
+TEST(SpyStrangleBacktest, TargetThetaHoldsConstant) {
+  const fs::path dir = fs::temp_directory_path() / "atx-spy-strangle-theta";
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+  const Corpus c = make_corpus(dir, 15);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  // Short 40d 6m strangle, restriked daily, sized so |book theta| == $50/DAY. The
+  // recorded gross_theta is annualized (the greek is dP/dt in years), so it pins at
+  // 50 * 365.25 == $18,262.5/yr.
+  constexpr double kTargetPerDay = 50.0;
+  constexpr double kTargetAnnual = kTargetPerDay * 365.25;
+  StrategySpec spec = make_spec();
+  spec.legs[0].size = SizeSpec{SizeSpec::Kind::TargetTheta, kTargetPerDay, -1.0};
+  DeclarativeStrategy strat{spec};
+  auto res = run_backtest(*clock, strat);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  const BacktestResult& r = *res;
+
+  // Book theta is pinned near +$18.26k/yr (== $50/day; short => positive theta). The
+  // small wobble is the sizing greek (FD theta at entry) vs the recorded book greek
+  // (analytic PDE theta) — the same axis, methods agreeing to ~sub-%, so a 3% band.
+  for (std::size_t i = 0; i < r.size(); ++i) {
+    EXPECT_EQ(r.n_open_lots[i], 2.0) << "row " << i;
+    EXPECT_NEAR(r.gross_theta[i], kTargetAnnual, 0.03 * kTargetAnnual) << "row " << i;
+    EXPECT_LT(r.gross_vega[i], 0.0) << "row " << i << " (short vega)";
+  }
+
+  // The unit count genuinely FLOATS: with theta pinned, the book vega (which rides
+  // the same units) must vary across the run — otherwise sizing was effectively
+  // fixed. Compare an early vs a late row's gross vega.
+  double vmin = r.gross_vega[1];
+  double vmax = r.gross_vega[1];
+  for (std::size_t i = 1; i < r.size(); ++i) {
+    vmin = std::min(vmin, r.gross_vega[i]);
+    vmax = std::max(vmax, r.gross_vega[i]);
+  }
+  EXPECT_GT(std::fabs(vmax - vmin), 1.0) << "units did not float (vega constant)";
+
+  std::printf("[spy-strangle] target-theta: gross_theta[0]=%.1f gross_theta[last]=%.1f "
+              "(target $%.0f/day = %.0f/yr); gross_vega in [%.0f, %.0f]\n",
+              r.gross_theta.front(), r.gross_theta.back(), kTargetPerDay, kTargetAnnual, vmin,
+              vmax);
+}
+
 // ── 3./4. Short sign + closure identity + thread determinism ─────────────────
 TEST(SpyStrangleBacktest, ShortSignClosureAndDeterminism) {
   const fs::path dir = fs::temp_directory_path() / "atx-spy-strangle-close";

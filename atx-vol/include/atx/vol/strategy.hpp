@@ -55,11 +55,30 @@ struct StructureSpec {
   StrikeSelector put_leg{};      // Strangle/RR: OTM put selector (e.g. Delta 0.40)
 };
 
-// HOW MUCH. Resolved after strikes are known (needs per-leg vega).
+// HOW MUCH. Resolved after strikes are known (needs the per-leg greeks).
+//
+// The Target* kinds size to a book GREEK: `qty = sign * target / (|Σ leg greek| *
+// multiplier)`, so `value` is the target MAGNITUDE of that book greek and `sign`
+// picks long/short. Using the absolute structure greek makes the target
+// axis-agnostic (theta is < 0 for a long option, vega > 0), so a SHORT (sign = -1)
+// strangle sized `TargetTheta 50` holds a book theta of +$50/day regardless of the
+// surface. Re-resolved every entry, so under a daily restrike the unit count floats
+// each day to hold the greek constant (constant-risk sizing).
+//
+// THETA UNITS: `value` for TargetTheta is a per-CALENDAR-DAY $ theta (the trader
+// convention). The American greek theta is annualized (dP/dt, t in years), so the
+// interpreter scales the target by 365.25 internally; the recorded book `gross_theta`
+// remains annualized (== value * 365.25).
 struct SizeSpec {
-  enum class Kind : std::uint8_t { FixedContracts = 0, TargetVega = 1, Weight = 2 };
+  enum class Kind : std::uint8_t {
+    FixedContracts = 0,
+    TargetVega = 1,
+    Weight = 2,
+    TargetTheta = 3,  // size so |book theta| == value $ PER DAY (annualized greek / 365.25)
+    TargetGamma = 4,  // size so |book gamma| == value
+  };
   Kind kind{Kind::TargetVega};
-  double value{10'000.0};  // contracts, target vega, or a relative weight
+  double value{10'000.0};  // contracts, target |greek| ($ vega, $/day theta, or gamma), or weight
   double sign{+1.0};       // +1 long / -1 short the structure
 };
 
@@ -123,7 +142,9 @@ struct ResolvedLeg {
   double K{0.0};
   double T{0.0};
   double sigma{0.0};
-  double vega{0.0};
+  double vega{0.0};   // per-share American vega (> 0 for both call and put)
+  double theta{0.0};  // per-share American theta (dP/dt, calendar; < 0 for a long option)
+  double gamma{0.0};  // per-share American gamma (> 0 for a long option)
   Side side{Side::Call};
   std::string group;
 };

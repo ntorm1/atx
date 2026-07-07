@@ -157,18 +157,34 @@ def build(meta: dict, df: pd.DataFrame, out: Path) -> None:
         ("gross_gamma", "Gross Gamma", GREEK_C["gamma"], ""),
         ("gross_delta", "Gross Delta", GREEK_C["delta"], ""),
     ]
+    tgt_theta = _f(meta, "target_theta") if "target_theta" in meta else None
     for i, (col, label, c, unit) in enumerate(panels):
         axg = fig.add_subplot(gs[2, i])
         _style_axis(axg)
-        axg.plot(d, df[col], color=c, linewidth=1.5)
+        axg.plot(d, df[col], color=c, linewidth=1.5, zorder=4)
         axg.fill_between(d, df[col], df[col].iloc[0], color=c, alpha=0.10)
+        # When the book is theta-targeted, draw the target so the pin is visible.
+        if col == "gross_theta" and tgt_theta:
+            axg.axhline(tgt_theta, color=INK, linewidth=1.1, linestyle=(0, (4, 3)),
+                        alpha=0.85, zorder=5)
+            tgt_lbl = (f"target ${_f(meta,'target_theta_daily'):,.0f}/day"
+                       if "target_theta_daily" in meta else f"target ${tgt_theta:,.0f}")
+            axg.annotate(tgt_lbl, (d.iloc[0], tgt_theta),
+                         textcoords="offset points", xytext=(2, -12), fontsize=7.5,
+                         color=INK)
+            # Band the axis around the target so the PIN reads as flat (the series
+            # only wobbles a few $ around $10k — autoscale would magnify that noise).
+            axg.set_ylim(tgt_theta * 0.6, tgt_theta * 1.4)
+            lab = f"{label}  (pinned)"
+        else:
+            lab = label
         if unit == "$":
             _money(axg)
         else:
             axg.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:,.2f}"))
         axg.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
         axg.xaxis.set_major_formatter(mdates.DateFormatter("%b"))
-        axg.set_title(label, fontsize=9.5, fontweight="bold", color=INK, loc="left", pad=5)
+        axg.set_title(lab, fontsize=9.5, fontweight="bold", color=INK, loc="left", pad=5)
 
     # ── titles / metadata ───────────────────────────────────────────────────
     symbol = meta.get("symbol", "?")
@@ -177,15 +193,20 @@ def build(meta: dict, df: pd.DataFrame, out: Path) -> None:
         f"{symbol}  ·  {strat}",
         x=0.068, y=0.965, ha="left", fontsize=18, fontweight="bold", color=INK,
     )
-    sub = (
+    sizing = meta.get("sizing", f"fixed {meta.get('n_strangles','1')}x (mult {meta.get('multiplier','100')})")
+    line1 = (
         f"{meta.get('window_start','?')} → {meta.get('window_end','?')}   |   "
         f"{meta.get('business_days','?')} business days, {meta.get('priced_steps','?')} priced steps   |   "
-        f"tenor {_f(meta,'tenor_years'):.2f}y, {meta.get('delta_target','?')}Δ, "
-        f"{meta.get('n_strangles','1')}× (mult {meta.get('multiplier','100')})   |   "
+        f"tenor {_f(meta,'tenor_years'):.2f}y, {meta.get('delta_target','?')}Δ"
+    )
+    line2 = (
+        f"sizing: {sizing}   |   "
         f"wall-clock {_f(meta,'wall_clock_ms'):.0f} ms  ({_f(meta,'steps_per_s'):.0f} steps/s)"
     )
-    fig.text(0.068, 0.905, sub, ha="left", fontsize=10.5, color=MUTE)
-    fig.text(0.965, 0.018, "atx-vol backtest engine · synthetic SPY corpus",
+    fig.text(0.068, 0.912, line1, ha="left", fontsize=10.5, color=MUTE)
+    fig.text(0.068, 0.884, line2, ha="left", fontsize=10.5, color=MUTE)
+    src = meta.get("data_source", "synthetic SPY corpus")
+    fig.text(0.965, 0.018, f"atx-vol backtest engine · {src}",
              ha="right", fontsize=8.5, color=MUTE, style="italic")
 
     fig.savefig(out, dpi=150, facecolor=PAPER)
