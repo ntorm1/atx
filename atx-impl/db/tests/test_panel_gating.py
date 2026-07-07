@@ -174,3 +174,69 @@ def test_stale_passed_row_not_consumed_by_bounded_read(tmp_store):
         tmp_store, "factor_panel", recorded_since=dt.datetime(2026, 7, 6, 12, 0, 0)
     )
     assert gate.decision == "pass"
+
+
+# --- PF4-S2 S2-2: factor observability (freshness SLA + panel anomaly + lineage) ---
+
+
+def test_factor_freshness_sla_flags_stale_not_fresh(tmp_store):
+    from db.observability import evaluate_factor_freshness_slas
+    from db.quality import evaluate_quality_gate
+    tmp_store.con.execute(
+        "INSERT OR REPLACE INTO factor_freshness_sla (dataset_id, max_lag_days, severity, enabled, updated_at)"
+        " VALUES ('panel_stale', 3, 'critical', true, ?), ('panel_fresh', 3, 'critical', true, ?)",
+        [dt.datetime(2026, 7, 6, 12, 0, 0), dt.datetime(2026, 7, 6, 12, 0, 0)])
+    # Migration 0181 also seeds a 'factor_panel' freshness SLA row (critical, max_lag_days=3);
+    # give it a fresh watermark too so the assertion below isolates the two rows this test
+    # is exercising (panel_stale / panel_fresh) without a spurious extra breach.
+    for ds, val in (("panel_stale", "2026-06-01T00:00:00"), ("panel_fresh", "2026-07-05T00:00:00"),
+                     ("factor_panel", "2026-07-05T00:00:00")):
+        tmp_store.con.execute(
+            "INSERT OR REPLACE INTO dataset_watermarks (dataset_id, watermark_name, watermark_value, updated_at)"
+            " VALUES (?, 'max_available_at', ?, ?)", [ds, val, dt.datetime(2026, 7, 6, 12, 0, 0)])
+    results = evaluate_factor_freshness_slas(tmp_store, as_of=dt.datetime(2026, 7, 6, 12, 0, 0))
+    assert [r.dataset_id for r in results] == ["panel_stale"]
+    assert results[0].status == "failed" and results[0].severity == "critical"
+    gate = evaluate_quality_gate(tmp_store, "panel_stale", record=False, additional_results=results)
+    assert gate.decision == "halt"
+
+
+def test_panel_rowcount_anomaly_flags_collapse_not_stable(tmp_store):
+    from db.observability import detect_panel_rowcount_anomaly
+    collapse = [("2026-07-01", 4000), ("2026-07-02", 4010), ("2026-07-03", 3990),
+                ("2026-07-06", 4000), ("2026-07-07", 40)]
+    stable = [("2026-07-01", 4000), ("2026-07-02", 4010), ("2026-07-03", 3990),
+              ("2026-07-06", 4000), ("2026-07-07", 4005)]
+    anomaly = detect_panel_rowcount_anomaly(tmp_store, cross_section_sizes=collapse)
+    assert anomaly is not None and anomaly.observed_value == 40 and abs(anomaly.z_score) > 3.5
+    row = tmp_store.con.execute(
+        "SELECT z_score, is_anomaly FROM panel_rowcount_anomaly WHERE anomaly_id = ?",
+        [anomaly.anomaly_id]).fetchone()
+    assert row[1] is True and abs(row[0]) > 3.5
+    assert detect_panel_rowcount_anomaly(tmp_store, cross_section_sizes=stable) is None
+
+
+def test_lineage_completeness_flags_broken_not_traced(tmp_store):
+    from db.observability import evaluate_lineage_completeness
+    # evaluate_lineage_completeness also requires a factor_definition row per factor_id
+    # (the "does this panel factor still resolve a live definition" edge); seed both
+    # fixture factor_ids so this test isolates the lineage-edge completeness it targets.
+    tmp_store.con.execute(
+        "INSERT OR REPLACE INTO factor_definition (factor_id, factor_name, family, description, "
+        "expression, input_ids_json, direction, lookback_days, neutralization_spec_json, unit, "
+        "sign, scale, available_at_policy, declared_in, source) VALUES "
+        "('f_traced', 'f_traced', 'test', 'test fixture factor', 'x', '[]', 1, 0, '{}', 'raw', "
+        "'higher_is_better', 'raw', 't_plus_0', 'test', 'test'), "
+        "('f_broken', 'f_broken', 'test', 'test fixture factor', 'x', '[]', 1, 0, '{}', 'raw', "
+        "'higher_is_better', 'raw', 't_plus_0', 'test', 'test')"
+    )
+    traced = {"source_fact": "revenue", "formula": "roe", "standardization_rule": "z", "vintage": "v1"}
+    broken = {"source_fact": "revenue", "standardization_rule": "z", "vintage": "v1"}  # no formula
+    failures = evaluate_lineage_completeness(
+        tmp_store, panel_factors=[("f_traced", traced), ("f_broken", broken)])
+    assert [f[0] for f in failures] == ["f_broken"]
+    assert "formula" in dict(failures)["f_broken"]
+    counts = dict(tmp_store.con.execute(
+        "SELECT factor_id, is_complete FROM lineage_completeness_checks "
+        "WHERE factor_id IN ('f_traced', 'f_broken')").fetchall())
+    assert counts["f_traced"] is True and counts["f_broken"] is False

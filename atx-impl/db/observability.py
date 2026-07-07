@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import math
 import re
 import statistics
@@ -464,3 +465,225 @@ def evaluate_panel_gate(
             )
         )
     return summarize_quality_gate(dataset_id, results)
+
+
+# --- PF4-S2 S2-2: factor-domain observability surfaces -------------------------------
+#
+# All three functions below are factor-scoped siblings of the fundamentals-scoped
+# primitives above (evaluate_freshness_slas / detect_rowcount_anomalies): they reuse
+# _median_mad / _robust_z / _parse_timestamp / _slug / _coerce_severity /
+# _upsert_quality_registry / quality_check / _table_exists / now_utc_naive rather than
+# re-implementing them, and each routes any breach through quality_check so a
+# severity=critical result lands in data_quality_checks and can halt via S2-1's
+# evaluate_panel_gate / evaluate_quality_gate(additional_results=...) path.
+
+
+def evaluate_factor_freshness_slas(
+    store: DuckDBStore,
+    *,
+    as_of: dt.datetime | dt.date | str | None = None,
+) -> list[QualityResult]:
+    """Evaluate factor/panel freshness SLAs against ``dataset_watermarks``.
+
+    Fresh datasets produce no rows; a panel staler than its SLA emits one
+    severity-tagged ``data_quality_checks`` row that routes through the S2-1 gate.
+    """
+    if not _table_exists(store, "factor_freshness_sla"):
+        return []
+    as_of_ts = _parse_timestamp(as_of) or now_utc_naive()
+    rows = store.con.execute(
+        "SELECT dataset_id, max_lag_days, severity FROM factor_freshness_sla "
+        "WHERE enabled ORDER BY dataset_id"
+    ).fetchall()
+    results: list[QualityResult] = []
+    for dataset_id, max_lag_days, severity in rows:
+        dataset_id = str(dataset_id)
+        severity_value = _coerce_severity(severity, "warning")
+        marks = store.con.execute(
+            "SELECT watermark_value FROM dataset_watermarks WHERE dataset_id = ?", [dataset_id]
+        ).fetchall()
+        parsed = [_parse_timestamp(v) for (v,) in marks]
+        latest = max((m for m in parsed if m is not None), default=None)
+        max_lag = int(max_lag_days)
+        lag_days = math.inf if latest is None else (as_of_ts - latest).total_seconds() / 86400.0
+        if latest is not None and lag_days <= max_lag:
+            continue
+        check_name = f"factor_freshness_sla_{_slug(dataset_id)}"
+        status = "warning" if severity_value == "warning" else "failed"
+        observed = None if math.isinf(lag_days) else float(lag_days)
+        details = {"as_of": as_of_ts.isoformat(), "max_lag_days": max_lag,
+                   "latest_watermark": None if latest is None else latest.isoformat()}
+        _upsert_quality_registry(
+            store, check_name=check_name, dataset_id=dataset_id,
+            table_name="dataset_watermarks", severity=severity_value,
+            threshold_value=float(max_lag), comparator="le",
+            failure_status="warning" if severity_value == "warning" else "failed",
+            source="factor_freshness_sla")
+        quality_check(store, dataset_id=dataset_id, table_name="dataset_watermarks",
+                      check_name=check_name, status=status, severity=severity_value,
+                      observed_value=observed, threshold_value=float(max_lag), details=details)
+        results.append(QualityResult(
+            dataset_id=dataset_id, table_name="dataset_watermarks", check_name=check_name,
+            status=status, observed_value=observed, threshold_value=float(max_lag),
+            details=details, severity=severity_value))
+    return results
+
+
+@dataclass(frozen=True)
+class PanelRowcountAnomaly:
+    anomaly_id: str
+    dataset_id: str
+    as_of_date: str
+    baseline_median: float
+    baseline_mad: float
+    observed_value: float
+    z_score: float
+    severity: Severity
+
+
+def detect_panel_rowcount_anomaly(
+    store: DuckDBStore,
+    *,
+    window: int = 4,
+    z_threshold: float = 3.5,
+    severity: Severity = "critical",
+    dataset_id: str = "factor_panel",
+    cross_section_sizes: list[tuple[object, object]] | None = None,
+) -> PanelRowcountAnomaly | None:
+    """Flag a collapsed (or blown-out) factor-panel cross section via median/MAD z-score.
+
+    ``cross_section_sizes`` is an injectable ``[(as_of_date, count), ...]`` series for
+    offline tests; the production default reads live per-as-of sizes from
+    ``v_factor_panel`` (confirmed to carry an ``as_of_date`` column -- PF3-S10
+    ``bodies_0164_0167._pf3_s10_factor_panel_views``).
+    """
+    if window < 2:
+        raise ValueError("window must be at least 2")
+    if not _table_exists(store, "panel_rowcount_anomaly"):
+        return None
+    if cross_section_sizes is None:
+        cross_section_sizes = store.con.execute(
+            "SELECT as_of_date, count(*) FROM v_factor_panel GROUP BY as_of_date ORDER BY as_of_date"
+        ).fetchall()
+    series = [(str(d), float(n)) for d, n in cross_section_sizes]
+    if len(series) <= window:
+        return None
+    prior = [n for _d, n in series[-(window + 1):-1]]
+    as_of_date, observed = series[-1]
+    median, mad = _median_mad(prior)
+    z_score = _robust_z(observed, median, mad)
+    if abs(z_score) < z_threshold:
+        return None
+    severity_value = _coerce_severity(severity, "warning")
+    status = "warning" if severity_value == "warning" else "failed"
+    anomaly_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{dataset_id}:{as_of_date}:{observed}"))
+    checked_at = now_utc_naive()
+    details = {"window": window, "z_threshold": z_threshold, "baseline_values": prior,
+               "as_of_date": as_of_date}
+    store.con.execute(
+        """
+        INSERT OR REPLACE INTO panel_rowcount_anomaly (
+            anomaly_id, dataset_id, as_of_date, baseline_median, baseline_mad,
+            observed_value, z_score, is_anomaly, severity, details_json, checked_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, true, ?, ?, ?)
+        """,
+        [anomaly_id, dataset_id, as_of_date, median, mad, observed, z_score,
+         severity_value, json_dumps(details), checked_at],
+    )
+    check_name = f"panel_rowcount_anomaly_{_slug(dataset_id)}"
+    quality_check(store, dataset_id=dataset_id, table_name="v_factor_panel", check_name=check_name,
+                  status=status, severity=severity_value,
+                  observed_value=abs(z_score) if math.isfinite(z_score) else float("inf"),
+                  threshold_value=float(z_threshold), details=details)
+    return PanelRowcountAnomaly(anomaly_id, dataset_id, as_of_date, median, mad, observed,
+                                z_score, severity_value)
+
+
+# Named lineage edges per the PF4-S2 sprint plan / task brief. NOTE (reconciliation):
+# the LANDED per-row ``input_lineage_json`` payload on v_factor_panel (populated by
+# db/factors/engine.py:_lineage_for, db/factors/fundamental_families.py, and
+# db/factors/cross_domain.py) is a flat JSON *list* of raw dependency/input records
+# (factor_id/security_id/as_of_date/available_at/value, or measure-level lineage
+# columns) -- there is no dict keyed by these four named edges anywhere in pf3's landed
+# lineage surfaces. The closest landed completeness contract is
+# db/factors/fundamental_families.py:fundamental_factor_lineage_completeness, which
+# treats "traced" as: payload present and parses to a non-empty list. The injectable
+# ``panel_factors`` test path below still accepts a dict keyed by these edge names
+# (matching the brief's fixtures exactly); the production default path -- which reads
+# the real list-shaped payload -- is reconciled to the landed list-based contract (see
+# the list branch in the parsing below) rather than fabricating named-edge keys that do
+# not exist in the data.
+_LINEAGE_EDGES = ("source_fact", "formula", "standardization_rule", "vintage")
+
+
+def evaluate_lineage_completeness(
+    store: DuckDBStore,
+    *,
+    panel_factors: list[tuple[str, object]] | None = None,
+    required_edges: tuple[str, ...] = _LINEAGE_EDGES,
+    severity: Severity = "critical",
+) -> list[tuple[str, list[str]]]:
+    """Flag panel factors whose lineage chain does not fully resolve.
+
+    Each emitted panel factor must resolve every edge in ``required_edges`` plus have a
+    row in ``factor_definition`` (confirmed present with a ``factor_id`` primary key --
+    ``bodies_0152_0155._pf3_s7_factor_definition``). A missing edge is a surpass-axis-1
+    regression: the factor silently lost part of its lineage chain.
+    """
+    if not _table_exists(store, "lineage_completeness_checks"):
+        return []
+    if panel_factors is None:
+        rows = store.con.execute(
+            "SELECT DISTINCT factor_id, input_lineage_json FROM v_factor_panel "
+            "WHERE input_lineage_json IS NOT NULL ORDER BY factor_id"
+        ).fetchall()
+        panel_factors = [(str(f), lineage) for f, lineage in rows]
+    severity_value = _coerce_severity(severity, "critical")
+    checked_at = now_utc_naive()
+    failures: list[tuple[str, list[str]]] = []
+    for factor_id, lineage_json in panel_factors:
+        if isinstance(lineage_json, dict):
+            lineage = lineage_json
+        else:
+            try:
+                parsed = json.loads(str(lineage_json))
+            except Exception:
+                parsed = None
+            if isinstance(parsed, dict):
+                lineage = parsed
+            elif isinstance(parsed, list):
+                # Landed list-shaped payload (see module note above): a non-empty list
+                # means the factor's dependency chain resolved, so every named edge is
+                # considered present; an empty/missing list means the whole chain is
+                # unresolved, so every named edge is considered missing.
+                lineage = {edge: bool(parsed) for edge in required_edges}
+            else:
+                lineage = {}
+        has_definition = bool(store.con.execute(
+            "SELECT count(*) FROM factor_definition WHERE factor_id = ?", [str(factor_id)]
+        ).fetchone()[0]) if _table_exists(store, "factor_definition") else True
+        missing = [edge for edge in required_edges if not lineage.get(edge)]
+        if not has_definition:
+            missing.append("factor_definition")
+        is_complete = not missing
+        check_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"lineage:{factor_id}:{checked_at.isoformat()}"))
+        store.con.execute(
+            """
+            INSERT OR REPLACE INTO lineage_completeness_checks (
+                check_id, dataset_id, factor_id, missing_edges_json, is_complete,
+                severity, details_json, checked_at
+            )
+            VALUES (?, 'factor_panel', ?, ?, ?, ?, ?, ?)
+            """,
+            [check_id, str(factor_id), json_dumps(missing), is_complete, severity_value,
+             json_dumps({"required_edges": list(required_edges)}), checked_at],
+        )
+        if not is_complete:
+            check_name = f"lineage_completeness_{_slug(str(factor_id))}"
+            quality_check(store, dataset_id="factor_panel", table_name="v_factor_panel",
+                          check_name=check_name, status="failed", severity=severity_value,
+                          observed_value=float(len(missing)), threshold_value=0.0,
+                          details={"factor_id": str(factor_id), "missing_edges": missing})
+            failures.append((str(factor_id), missing))
+    return failures
