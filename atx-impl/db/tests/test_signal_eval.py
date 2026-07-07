@@ -366,3 +366,72 @@ def test_factor_dqc_included_in_sweep_when_panel_empty(tmp_store) -> None:
     for r in results:
         if r.check_name in {LEAKAGE_DQC_CHECK_NAME, COVERAGE_DQC_CHECK_NAME}:
             assert r.severity == "critical" and r.status in {"passed", "skipped"}
+
+
+def test_persist_factor_dqc_is_idempotent(tmp_store) -> None:
+    # persist_factor_dqc writes the per-factor DQC audit trail into factor_dqc_result via an
+    # idempotent DELETE-then-insert keyed (check_name, factor_id, run_id). Re-persisting the
+    # SAME frame must not duplicate rows -- and the NULL-safe key must keep run_id=None as its
+    # own partition (distinct from a real run_id) while still being idempotent on its own.
+    from db.signal_eval import persist_factor_dqc
+
+    dates = _dates(6); secs = [f"S{i}" for i in range(12)]
+    rows, sdr = [], []
+    for d in dates:
+        for i, s in enumerate(secs):
+            same_day = float(i)
+            sdr.append({"security_id": s, "as_of_date": d, "same_day_return": same_day})
+            rows.append({"security_id": s, "as_of_date": d, "factor_id": "leaky", "value": same_day})
+            rows.append({"security_id": s, "as_of_date": d, "factor_id": "clean",
+                         "value": float(i) if i < 4 else None})
+    panel = pd.DataFrame(rows)
+    leakage = compute_leakage(panel, pd.DataFrame(sdr), threshold=0.10)   # 2 factor rows
+    uni = pd.DataFrame({"as_of_date": dates, "universe_size": [12] * len(dates)})
+    coverage = compute_coverage(panel, uni, min_fraction=0.50)           # 2 factor rows
+    per_run = len(leakage) + len(coverage)
+    assert per_run == 4
+
+    def _count() -> int:
+        return tmp_store.con.execute("SELECT count(*) FROM factor_dqc_result").fetchone()[0]
+
+    # Real run_id: rows land; the returned count matches what is persisted.
+    counts = persist_factor_dqc(tmp_store, leakage=leakage, coverage=coverage, run_id="rid-dqc")
+    assert counts["factor_dqc_result"] == per_run
+    assert _count() == per_run
+    # Re-persist the SAME frame -> no duplication (idempotent).
+    persist_factor_dqc(tmp_store, leakage=leakage, coverage=coverage, run_id="rid-dqc")
+    assert _count() == per_run
+
+    # run_id=None is a distinct (NULL-safe) partition: it adds its own rows, not replacing the
+    # "rid-dqc" ones, and re-persisting it is likewise idempotent.
+    persist_factor_dqc(tmp_store, leakage=leakage, coverage=coverage, run_id=None)
+    assert _count() == 2 * per_run
+    persist_factor_dqc(tmp_store, leakage=leakage, coverage=coverage, run_id=None)
+    assert _count() == 2 * per_run
+
+    # Both partitions coexist with the expected statuses (leaky -> failed, clean -> passed).
+    got = tmp_store.con.execute(
+        "SELECT check_name, factor_id, status, run_id FROM factor_dqc_result ORDER BY run_id NULLS FIRST, check_name, factor_id"
+    ).df()
+    assert set(got["run_id"].where(got["run_id"].notna(), None)) == {None, "rid-dqc"}
+    leaky_row = got[(got["check_name"] == LEAKAGE_DQC_CHECK_NAME) & (got["factor_id"] == "leaky")]
+    assert (leaky_row["status"] == "failed").all()
+
+
+def test_factor_dqc_existence_probes_are_lazy_for_unrelated_checks(tmp_store, monkeypatch) -> None:
+    # The v_factor_panel / equity_daily_bars existence probes must run ONLY inside each check's
+    # gated block, never up-front: a shared run_warehouse_quality_checks sweep for an UNRELATED
+    # check must not touch them (so no caller pays a v_factor_panel view materialization for a
+    # factor-DQC check it did not request). Patch the probe to explode if ever called; requesting
+    # only an unrelated check must complete without firing it.
+    import db.signal_eval as signal_eval
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("factor-DQC existence probe ran for an unrelated check")
+
+    monkeypatch.setattr(signal_eval, "_relation_exists", _boom)
+    results = run_warehouse_quality_checks(
+        tmp_store, check_names=["duplicate_equity_daily_bars"], record=False
+    )
+    names = {r.check_name for r in results}
+    assert LEAKAGE_DQC_CHECK_NAME not in names and COVERAGE_DQC_CHECK_NAME not in names

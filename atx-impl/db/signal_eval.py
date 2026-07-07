@@ -1757,6 +1757,30 @@ def _relation_row_count(store, relation_name: str) -> int | None:
     return int(store.con.execute(f"SELECT count(*) FROM {relation_name}").fetchone()[0])
 
 
+def _relation_exists(store, relation_name: str) -> bool:
+    """True iff ``relation_name`` (table or view) exists, WITHOUT materializing it.
+
+    Probes ``duckdb_columns()`` catalog metadata only (mirrors
+    ``db.factor_panel._table_or_view_exists``) so testing a VIEW's existence never executes
+    its underlying query -- unlike ``SELECT count(*)``, which for ``v_factor_panel`` would run
+    the entire panel-assembly query. This is the free existence probe the gated factor DQC
+    uses so the shared ``run_warehouse_quality_checks`` sweep pays nothing for a check that is
+    not requested/enabled, and pays no view materialization even when it is (existence, not
+    row count, is all the skip/run decision needs).
+    """
+
+    row = store.con.execute(
+        """
+        SELECT 1
+        FROM duckdb_columns()
+        WHERE schema_name = 'main' AND table_name = ?
+        LIMIT 1
+        """,
+        [relation_name],
+    ).fetchone()
+    return row is not None
+
+
 def _derive_same_day_returns_from_prices(store) -> pd.DataFrame:
     """Contemporaneous (t+0) return per (security_id, as_of_date) from ``equity_daily_bars``.
 
@@ -1934,7 +1958,12 @@ def signal_eval_dqc_results(
 
     Mirrors the ``PANEL_EXPORT_GATE_CHECK_NAME`` block in ``db.quality._runner``: each check
     is gated by ``_registry_allows_check`` plus the same requested-checks/requested-datasets
-    filter logic, and emits 0/1/2 ``QualityResult`` rows total. If ``v_factor_panel`` or
+    filter logic, and emits 0/1/2 ``QualityResult`` rows total. Crucially the existence probe
+    for each check is done LAZILY *inside* that check's gated block (via the free
+    ``_relation_exists`` catalog lookup), never up-front -- so a caller of the shared
+    ``run_warehouse_quality_checks`` sweep that did not request/enable the leakage/coverage
+    checks pays nothing here, and even a caller that did pays only a catalog metadata lookup,
+    never a ``v_factor_panel`` view materialization. If ``v_factor_panel`` or
     ``equity_daily_bars`` does not exist at all, the corresponding check is emitted as
     ``status="skipped"`` (mirrors ``warn_if_missing``) so a warehouse that predates these
     objects never spuriously halts the gate. An EMPTY-but-present relation (e.g. a freshly
@@ -1952,17 +1981,12 @@ def signal_eval_dqc_results(
 
     results: list[QualityResult] = []
 
-    panel_rows = _relation_row_count(store, "v_factor_panel")
-    bars_rows = _relation_row_count(store, "equity_daily_bars")
-    panel_exists = panel_rows is not None
-    bars_exists = bars_rows is not None
-
     if _registry_allows_check(LEAKAGE_DQC_CHECK_NAME, registry) and _dqc_check_requested(
         LEAKAGE_DQC_CHECK_NAME,
         requested_checks=requested_checks,
         requested_datasets=requested_datasets,
     ):
-        if not (panel_exists and bars_exists):
+        if not (_relation_exists(store, "v_factor_panel") and _relation_exists(store, "equity_daily_bars")):
             results.append(
                 _skipped_dqc_result(
                     LEAKAGE_DQC_CHECK_NAME,
@@ -1991,7 +2015,7 @@ def signal_eval_dqc_results(
         requested_checks=requested_checks,
         requested_datasets=requested_datasets,
     ):
-        if not panel_exists:
+        if not _relation_exists(store, "v_factor_panel"):
             results.append(
                 _skipped_dqc_result(
                     COVERAGE_DQC_CHECK_NAME,
