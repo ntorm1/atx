@@ -332,18 +332,40 @@ def detect_rowcount_anomalies(
     return anomalies
 
 
-def _latest_recorded_check(store: DuckDBStore, dataset_id: str, check_name: str):
-    """Return the most recently recorded ``data_quality_checks`` row for one check, or None."""
+def _latest_recorded_check(
+    store: DuckDBStore,
+    dataset_id: str,
+    check_name: str,
+    *,
+    recorded_since: dt.datetime | dt.date | str | None = None,
+):
+    """Return the most recently recorded ``data_quality_checks`` row for one check, or None.
 
+    ``recorded_since`` bounds the read to the current run (PF4-S2 S2-1 review hardening,
+    clause G): when supplied, only a row recorded at/after that step-start timestamp
+    counts, so a stale prior-run outcome can neither satisfy nor falsely halt the current
+    gate. Absence of a fresh row returns ``None`` -> the caller treats the check as
+    not-evaluated-this-cycle (fail-open), never fail-closed. ``check_id`` (the
+    ``data_quality_checks`` primary key) is the deterministic tiebreaker so two rows with
+    an identical ``checked_at`` resolve to the same pick on every run.
+    """
+
+    since = _parse_timestamp(recorded_since) if recorded_since is not None else None
+    params: list[object] = [dataset_id, check_name]
+    since_clause = ""
+    if since is not None:
+        since_clause = "AND checked_at >= ?"
+        params.append(since)
     row = store.con.execute(
-        """
+        f"""
         SELECT status, observed_value, threshold_value, table_name
         FROM data_quality_checks
         WHERE dataset_id = ? AND check_name = ?
-        ORDER BY checked_at DESC
+        {since_clause}
+        ORDER BY checked_at DESC, check_id DESC
         LIMIT 1
         """,
-        [dataset_id, check_name],
+        params,
     ).fetchone()
     return row
 
@@ -365,7 +387,13 @@ _PANEL_GATE_RECORDED_ONLY_CHECK_NAMES: frozenset[str] = frozenset(
 )
 
 
-def evaluate_panel_gate(store: DuckDBStore, dataset_id: str, *, record: bool = True) -> "GateResult":
+def evaluate_panel_gate(
+    store: DuckDBStore,
+    dataset_id: str,
+    *,
+    record: bool = True,
+    recorded_since: dt.datetime | dt.date | str | None = None,
+) -> "GateResult":
     """Assemble the factor-panel halt decision from the ``panel_gate_config`` critical set.
 
     Reuses pf2-S10's ``run_warehouse_quality_checks`` (for the live schema/export-contract
@@ -378,6 +406,13 @@ def evaluate_panel_gate(store: DuckDBStore, dataset_id: str, *, record: bool = T
     evaluate this cycle -- fall back to their latest recorded ``data_quality_checks``
     outcome, so the gate consumes historically-recorded facts rather than re-computing
     anything PF4-S1's evaluators already own.
+
+    ``recorded_since`` (the orchestrator passes the step's start timestamp) bounds that
+    recorded-row fallback to the current run: a stale prior-run leakage/coverage outcome
+    is ignored (treated as not-evaluated-this-cycle -> fail-open pass), never consumed as
+    if it described this build. It is deliberately fail-open, not fail-closed: the sprint
+    risk section warns against false-halt flakiness, so absence of a fresh recorded row
+    does not halt.
     """
 
     config_rows = store.con.execute(
@@ -410,7 +445,9 @@ def evaluate_panel_gate(store: DuckDBStore, dataset_id: str, *, record: bool = T
             idx = live_by_name[check_name]
             results[idx] = replace(results[idx], severity=gate_severity)
             continue
-        recorded = _latest_recorded_check(store, dataset_id, check_name)
+        recorded = _latest_recorded_check(
+            store, dataset_id, check_name, recorded_since=recorded_since
+        )
         if recorded is None:
             continue  # not yet evaluated this cycle -> treated as pass for the gate
         status, observed, threshold, table_name = recorded

@@ -37,7 +37,7 @@ _REGISTRY = {
 }
 
 
-def _plant_leakage_breach(store, *, status="failed"):
+def _plant_leakage_breach(store, *, status="failed", checked_at=dt.datetime(2026, 7, 6, 12, 0, 0)):
     import uuid
     store.con.execute(
         """
@@ -48,7 +48,7 @@ def _plant_leakage_breach(store, *, status="failed"):
         VALUES (?, 'factor_panel', 'v_factor_panel', 'factor_leakage_tplus0',
                 ?, 'critical', 3.0, 0.0, '{}', ?)
         """,
-        [str(uuid.uuid4()), status, dt.datetime(2026, 7, 6, 12, 0, 0)],
+        [str(uuid.uuid4()), status, checked_at],
     )
 
 
@@ -122,3 +122,55 @@ def test_clean_panel_passes(tmp_store):
     result = orch.run(run_id="run_clean", gate=True)
     assert result.status == "succeeded"
     assert _step_status(tmp_store, "run_clean", "factor_panel") == "succeeded"
+
+
+# --- PF4-S2 S2-1 review hardening: bound the recorded leakage/coverage read to the run ---
+
+
+def test_stale_recorded_breach_not_consumed_end_to_end(tmp_store):
+    # A stale (prior-run) critical breach recorded BEFORE this run's step start must NOT
+    # halt the new gated run: evaluate_panel_gate reads leakage/coverage bounded to the
+    # step-start timestamp, so the Day-1 row is excluded (treated as not-evaluated ->
+    # fail-open pass). Without the bound this stale critical row would be the latest
+    # recorded outcome and would wrongly halt -- so a green run here proves non-consumption.
+    _plant_leakage_breach(tmp_store, checked_at=dt.datetime(2026, 7, 5, 12, 0, 0))  # Day-1
+    orch = DatasetOrchestrator(tmp_store, _REGISTRY,
+                               clock=lambda: dt.datetime(2026, 7, 6, 12, 0, 0))       # Day-2
+    result = orch.run(run_id="run_stale", gate=True)
+    assert result.status == "succeeded"
+    assert _step_status(tmp_store, "run_stale", "factor_panel") == "succeeded"
+    assert "panel_quality_gate_halt" not in _audit_actions(tmp_store, "run_stale")
+
+
+def test_fresh_recorded_breach_within_run_halts(tmp_store):
+    # A breach recorded AT the step start (this build's own DQC; the >= bound is inclusive)
+    # is fresh and DOES halt.
+    _plant_leakage_breach(tmp_store, checked_at=dt.datetime(2026, 7, 6, 12, 0, 0))
+    orch = DatasetOrchestrator(tmp_store, _REGISTRY,
+                               clock=lambda: dt.datetime(2026, 7, 6, 12, 0, 0))
+    with pytest.raises(QualityGateError) as excinfo:
+        orch.run(run_id="run_fresh", gate=True)
+    assert excinfo.value.dataset_id == "factor_panel"
+    assert _step_status(tmp_store, "run_fresh", "factor_panel") == "failed"
+    assert "panel_quality_gate_halt" in _audit_actions(tmp_store, "run_fresh")
+
+
+def test_stale_passed_row_not_consumed_by_bounded_read(tmp_store):
+    # The reviewer's Day-1-passed / Day-2-leaky hole at the function boundary: a stale
+    # `passed` leakage row must not be consumed as if it described the current build.
+    from db.observability import _latest_recorded_check, evaluate_panel_gate
+
+    _plant_leakage_breach(
+        tmp_store, status="passed", checked_at=dt.datetime(2026, 7, 5, 12, 0, 0)
+    )
+    # Unbounded read still sees the stale row; a read bounded to the new step start does not.
+    assert _latest_recorded_check(tmp_store, "factor_panel", "factor_leakage_tplus0") is not None
+    assert _latest_recorded_check(
+        tmp_store, "factor_panel", "factor_leakage_tplus0",
+        recorded_since=dt.datetime(2026, 7, 6, 12, 0, 0),
+    ) is None
+    # The assembler, bounded to the new run, does not consume the stale pass (fail-open).
+    gate = evaluate_panel_gate(
+        tmp_store, "factor_panel", recorded_since=dt.datetime(2026, 7, 6, 12, 0, 0)
+    )
+    assert gate.decision == "pass"

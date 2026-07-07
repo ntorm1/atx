@@ -9,6 +9,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
+import duckdb
+
 from .quality import GateDecision, GateResult, evaluate_quality_gate
 
 
@@ -1592,15 +1594,21 @@ class DatasetOrchestrator:
         PF4-S2 S2-1: additive to pf2-S10's gate -- only datasets registered in
         ``panel_gate_config`` (currently ``factor_panel``) take the panel-gate branch in
         ``_run_step``; every other dataset's gate evaluation is byte-identical to before.
-        Guarded with try/except so a pre-PF4-S2 warehouse (migration 0180 not yet applied)
-        degrades to the pf2-S10 fundamentals path instead of raising.
+
+        The only tolerated failure is a pre-PF4-S2 warehouse where migration 0180 has not
+        yet created ``panel_gate_config`` -- DuckDB raises ``CatalogException`` for the
+        missing relation, which we treat as "no panel gate configured" and fall through to
+        the pf2-S10 fundamentals path. Any OTHER DB error (corruption, lock, type error)
+        propagates: silently swallowing it would wrongly downgrade a genuinely panel-gated
+        ``factor_panel`` run to the fundamentals evaluator (wrong evaluator + a live
+        leakage/coverage recompute), masking a real fault instead of halting.
         """
         try:
             row = self.store.con.execute(
                 "SELECT count(*) FROM panel_gate_config WHERE dataset_id = ? AND enabled",
                 [dataset_id],
             ).fetchone()
-        except Exception:
+        except duckdb.CatalogException:
             return False
         return bool(row and row[0])
 
@@ -1709,7 +1717,13 @@ class DatasetOrchestrator:
                 if panel_gated:
                     from .observability import evaluate_panel_gate
 
-                    gate_result = evaluate_panel_gate(self.store, dataset_id)
+                    # Bound the recorded leakage/coverage read to THIS attempt's step
+                    # start so a stale prior-run outcome cannot satisfy (or falsely halt)
+                    # the current run; fail-open on absence is preserved inside
+                    # evaluate_panel_gate.
+                    gate_result = evaluate_panel_gate(
+                        self.store, dataset_id, recorded_since=started_at
+                    )
                 else:
                     gate_result = evaluate_quality_gate(self.store, dataset_id)
                 gate_decision = gate_result.decision
