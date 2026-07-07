@@ -161,7 +161,11 @@ struct FinancingConfig {
 // ── Run config + result ─────────────────────────────────────────────────────
 
 struct RunConfig {
-  PriceOptions price{};              // pricer thread fan-out (bit-deterministic)
+  // Pricer thread fan-out. Default 0 => use all hardware cores (clamped to the
+  // book's unique-contract count). Output is bit-identical to any thread count
+  // (PortfolioPricer's serial-scatter reduction), so parallel-by-default is a free
+  // throughput win — a backtest step reprices the whole book, the dominant cost.
+  PriceOptions price{/*n_threads=*/0};
   FrictionModel frictions{};         // execution frictions (B2; default: frictionless)
   FinancingConfig financing{};       // cash/borrow ledger (B2; default: off => B1-identity)
   unsigned record_every_n{1};        // persist every Nth step (1 = every step)
