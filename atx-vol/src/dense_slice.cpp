@@ -29,17 +29,18 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
 // ── Primal active-set QP ────────────────────────────────────────────────────
 //
-// Minimize ½ xᵀH x + qᵀx subject to G x >= 0 (all bounds are homogeneous here),
-// H symmetric positive-definite, starting from a STRICTLY feasible x0 (G x0 > 0).
-// Nocedal & Wright Alg. 16.3: each iterate solves the working-set-equality KKT
+// Minimize ½ xᵀH x + qᵀx subject to G x >= h, H symmetric positive-definite,
+// starting from a STRICTLY feasible x0 (G x0 > h). h=0 recovers the prior
+// homogeneous form bit-for-bit. Nocedal & Wright Alg. 16.3: each iterate solves
+// the working-set-equality KKT
 //   [ H   −G_Wᵀ ] [ p ]   [ −g ]
 //   [ G_W    0  ] [ λ ] = [  0 ]
 // (g = H x + q). At p ≈ 0 the λ are the constraint multipliers; a negative one
 // means dropping that constraint decreases the objective. Otherwise a ratio test
 // caps the step at the nearest inactive constraint and adds it to the set.
 [[nodiscard]] atx::core::Result<VecX> qp_active_set(const MatX& H, const VecX& q,
-                                                    const MatX& G, VecX x,
-                                                    int max_iter) {
+                                                    const MatX& G, const VecX& h,
+                                                    VecX x, int max_iter) {
   const Eigen::Index n = H.rows();
   const Eigen::Index nc = G.rows();
   std::vector<char> in_w(static_cast<std::size_t>(nc), 0);  // working-set membership
@@ -103,7 +104,7 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
       continue;
     }
 
-    // Ratio test: largest α ∈ (0, 1] keeping G(x + αp) >= 0 for inactive rows.
+    // Ratio test: largest α ∈ (0, 1] keeping G(x + αp) >= h for inactive rows.
     double alpha = 1.0;
     Eigen::Index block = -1;
     for (Eigen::Index i = 0; i < nc; ++i) {
@@ -112,8 +113,8 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
       }
       const double gip = G.row(i).dot(p);
       if (gip < -1.0e-14) {
-        const double gix = G.row(i).dot(x);
-        const double ai = -gix / gip;  // = (gix - 0)/(-gip) >= 0 since gix >= 0
+        const double gix = G.row(i).dot(x) - h(i);   // residual to the RHS
+        const double ai = -gix / gip;                 // >= 0 since gix >= 0
         if (ai < alpha) {
           alpha = ai;
           block = i;
@@ -301,20 +302,27 @@ Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs, double F,
   }
   const VecX q = -2.0 * (BtW * co);  // N
 
-  // Constraints G g >= 0 on the node values: positivity (N), monotone
-  // non-increasing (N−1), convexity via divided second differences (N−2).
+  // Constraints G g >= h on the node values: positivity (N), monotone
+  // non-increasing (N−1), convexity via divided second differences (N−2), and
+  // (optionally) the slope-below bound (N−1). `hrows` carries each row's RHS in
+  // parallel with `rows` — 0 for the homogeneous positivity/monotone/convexity
+  // rows, −df·Δ for the slope-below rows.
   std::vector<VecX> rows;
-  rows.reserve(static_cast<std::size_t>(3 * N));
+  std::vector<double> hrows;
+  rows.reserve(static_cast<std::size_t>(4 * N));
+  hrows.reserve(static_cast<std::size_t>(4 * N));
   for (Eigen::Index i = 0; i < N; ++i) {  // g_i >= 0
     VecX rrow = VecX::Zero(N);
     rrow(i) = 1.0;
     rows.push_back(rrow);
+    hrows.push_back(0.0);
   }
   for (Eigen::Index i = 0; i + 1 < N; ++i) {  // g_i - g_{i+1} >= 0
     VecX rrow = VecX::Zero(N);
     rrow(i) = 1.0;
     rrow(i + 1) = -1.0;
     rows.push_back(rrow);
+    hrows.push_back(0.0);
   }
   for (Eigen::Index i = 1; i + 1 < N; ++i) {  // convexity (divided 2nd difference)
     const double a = 1.0 / (un(i) - un(i - 1));
@@ -324,14 +332,26 @@ Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs, double F,
     rrow(i) = -(a + b);
     rrow(i + 1) = b;
     rows.push_back(rrow);
+    hrows.push_back(0.0);
   }
   // NOTE: the ∂C/∂K >= −df slope-below bound (opts.bound_slope_below) is a
-  // NON-homogeneous inequality (row·g >= −df·Δ); the current homogeneous QP form
-  // (G g >= 0) cannot encode it, so it is deferred to Phase 2 (augmented form).
+  // NON-homogeneous inequality (row·g >= −df·Δ), now encoded directly via the
+  // augmented Gg >= h form of qp_active_set (rows below, h != 0).
+  if (opts.bound_slope_below) {
+    for (Eigen::Index i = 0; i + 1 < N; ++i) {  // (g_{i+1} - g_i) >= -df*(u_{i+1}-u_i)
+      VecX rrow = VecX::Zero(N);
+      rrow(i + 1) = 1.0;
+      rrow(i) = -1.0;
+      rows.push_back(rrow);
+      hrows.push_back(-df * (un(i + 1) - un(i)));
+    }
+  }
   const auto nc = static_cast<Eigen::Index>(rows.size());
   MatX G(nc, N);
+  VecX h(nc);
   for (Eigen::Index i = 0; i < nc; ++i) {
     G.row(i) = rows[static_cast<std::size_t>(i)].transpose();
+    h(i) = hrows[static_cast<std::size_t>(i)];
   }
 
   // Strictly feasible start: a quadratic decreasing from cmax to a small floor —
@@ -348,7 +368,7 @@ Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs, double F,
     x0(j) = floor + cmax * t * t;
   }
 
-  ATX_TRY(VecX gn, qp_active_set(H, q, G, x0, opts.max_iter));
+  ATX_TRY(VecX gn, qp_active_set(H, q, G, h, x0, opts.max_iter));
 
   ConvexSliceFit fit;
   fit.T = T;

@@ -68,6 +68,30 @@ std::vector<double> strike_grid(double F) {
   return ks;
 }
 
+// An in-the-money-heavy observation set (~11 strikes) at a flat vol, with one
+// deep-ITM print forced far below its no-arb intrinsic floor (df*(F-K)) and
+// pinned to a tight spread (=> high fit weight). With only convexity +
+// monotonicity enforced (no slope-below bound), the near-interpolating fit can
+// produce a segment whose slope dips below -df around this print — that is the
+// case `bound_slope_below` is meant to rule out.
+std::vector<FitObs> make_synthetic_slice_obs(double F, double T, double df,
+                                              double sigma) {
+  const std::vector<double> strikes = {40, 55, 65, 72, 78, 84, 90, 96, 104, 115, 130};
+  std::vector<FitObs> obs;
+  obs.reserve(strikes.size());
+  for (const double K : strikes) {
+    obs.push_back(mk_obs(F, T, df, K, sigma));
+  }
+  for (FitObs& o : obs) {
+    if (std::fabs(o.K - 65.0) < 1.0e-9) {
+      o.mid *= 0.5;             // artificially cheap deep-ITM print
+      o.spread = 1.0e-4;        // tight spread => near-interpolated by the fit
+      o.vega = std::max(o.vega, 1.0);
+    }
+  }
+  return obs;
+}
+
 }  // namespace
 
 TEST(DenseSlice, FlatVolIsRecoveredAndArbFree) {
@@ -165,4 +189,20 @@ TEST(DenseSlice, RejectsTooFewStrikes) {
   std::vector<FitObs> obs = {mk_obs(F, T, df, 95.0, 0.2),
                              mk_obs(F, T, df, 105.0, 0.2)};
   EXPECT_FALSE(fit_convex_slice(obs, F, T, df, {}).has_value());
+}
+
+TEST(ConvexSliceFit, SlopeBelowBoundHonored) {
+  using namespace atx::vol;
+  // Build a simple in-the-money-heavy obs set where the unconstrained slope could
+  // dip below -df; enable the bound and assert it holds at every node pair.
+  std::vector<FitObs> obs = make_synthetic_slice_obs(/*F=*/100.0, /*T=*/0.5,
+                                                     /*df=*/0.98, /*sigma=*/0.2);
+  ConvexFitOpts opts; opts.bound_slope_below = true;
+  auto fit = fit_convex_slice(obs, 100.0, 0.5, 0.98, opts);
+  ASSERT_TRUE(fit.has_value());
+  const double df = 0.98;
+  for (std::size_t j = 0; j + 1 < fit->u.size(); ++j) {
+    const double slope = (fit->C[j + 1] - fit->C[j]) / (fit->u[j + 1] - fit->u[j]);
+    EXPECT_GE(slope, -df - 1e-7);
+  }
 }
