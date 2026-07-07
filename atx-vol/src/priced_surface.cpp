@@ -135,6 +135,9 @@ Result<AmericanGreeks> PricedSurface::greeks(double K, double T, Side side) cons
   // American Greeks via finite differences on the SAME cold american_price (method
   // + resolved AL preset) fair_value() prices with, so greeks().price == fair_value()
   // bit-identical and the coefficients are American (not the European Black-76 leg).
+  // Cold (warm_start=false) keeps greeks bit-reproducible across a surface archive
+  // round-trip (the LifecycleIntegration contract); the warm hot path lives in the
+  // backtest engine (cross-step reuse), not this bit-stable reprice primitive.
   return american_greeks_fd(pricing_.S, K, T, sigma, pricing_.r, fc.q_eff, side,
                             pricing_.method, std::optional<AlOpts>{pricing_.al_opts});
 }

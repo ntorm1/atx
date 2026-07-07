@@ -809,6 +809,72 @@ enum class AlSolveStatus { Ok, Collapsed, TableMissing };
   return AlSolveStatus::Ok;
 }
 
+// Warm variant of al_solve_put_boundary: seed from an already-converged boundary a
+// tiny (sigma,r,T) bump away instead of the cold Barone-Adesi-Whaley re-seed — the
+// dominant cold cost (12 nested Newton root-finds). The base boundary interpolated
+// onto this grid (al_boundary_at, clamped to this grid's xmax) is a far better seed
+// than BAW for a ~0.1% bump, so the SAME sweep budget reconverges to the same tol.
+// This handles all three bump axes uniformly: sigma/r bumps keep the tau-grid (the
+// interp is ~exact), a T bump shifts it (the interp re-maps the boundary). Used by
+// american_greeks_fd's warm path to skip 6 of its 7 cold seeds.
+[[nodiscard]] AlSolveStatus al_solve_put_boundary_warm(double K, double T, double sigma,
+                                                       double r, double q,
+                                                       const AlScheme& sch,
+                                                       const AlBoundary& seed,
+                                                       AlBoundary& bnd,
+                                                       AlWorkspace& ws) noexcept {
+  al_init_nodes(bnd, sch.n_boundary, T, K, r, q);
+  if (!(bnd.xmax > 0.0)) {
+    return AlSolveStatus::Collapsed;
+  }
+  const detail::GaussLegendre* fp = gl_find(sch.n_quad_fp);
+  const detail::GaussLegendre* pr = gl_find(sch.n_quad_price);
+  if (!fp || !fp->ok || !pr || !pr->ok) {
+    return AlSolveStatus::TableMissing;
+  }
+  ws.qx_fp = fp->nodes.data();
+  ws.qw_fp = fp->weights.data();
+  ws.n_quad_fp = sch.n_quad_fp;
+  ws.qx_price = pr->nodes.data();
+  ws.qw_price = pr->weights.data();
+  ws.n_quad_price = sch.n_quad_price;
+
+  // Warm seed: base boundary evaluated at this grid's tau, clamped to this xmax.
+  bnd.y[0] = 0.0;
+  for (std::uint16_t i = 1; i < bnd.n; ++i) {
+    const double tau_i = bnd.tau[i];
+    if (tau_i <= 1.0e-14) {
+      bnd.y[i] = 0.0;
+      continue;
+    }
+    double b_seed = al_boundary_at(seed, tau_i);
+    if (b_seed > bnd.xmax) {
+      b_seed = bnd.xmax;
+    }
+    if (!(b_seed > 0.0)) {
+      b_seed = 1.0e-6 * K;
+    }
+    bnd.y[i] = y_from_b(b_seed, bnd.xmax);
+  }
+
+  double resid = 1.0;
+  for (std::uint16_t k = 0; k < sch.n_iter_jn; ++k) {
+    resid = al_jacobi_newton_sweep(bnd, ws, sigma, r, q);
+    if (resid <= sch.tol) {
+      break;
+    }
+  }
+  if (resid > sch.tol) {
+    for (std::uint16_t k = 0; k < sch.n_iter_fp; ++k) {
+      resid = al_fixed_point_sweep(bnd, ws, sigma, r, q);
+      if (resid <= sch.tol) {
+        break;
+      }
+    }
+  }
+  return AlSolveStatus::Ok;
+}
+
 // Put price at spot S from a solved boundary. Assumes the caller applied the
 // andersen_lake degenerate (T~0/sigma~0) and no-early-exercise (r<=0) guards, so
 // only the r>0 non-degenerate arm runs here. Clamp order matches al_solve_put's
@@ -1355,7 +1421,8 @@ Result<AmericanGreeks> american_greeks(double S, double K, double T,
 Result<AmericanGreeks> american_greeks_fd(double S, double K, double T,
                                           double sigma, double r, double q,
                                           Side side, AmericanMethod method,
-                                          const std::optional<AlOpts>& opts) {
+                                          const std::optional<AlOpts>& opts,
+                                          bool warm_start) {
   if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !(sigma > 0.0)) {
     return Err(ErrorCode::InvalidArgument,
                "american_greeks_fd: S, K, T, sigma must be > 0");
@@ -1437,8 +1504,17 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T,
       c->dsig = dsig;
       c->dr = dr;
       c->dT = dT;
-      c->ok = (al_solve_put_boundary(K, T2, sig2, r2, q, sch, c->bnd, c->ws) ==
-               AlSolveStatus::Ok);
+      // Warm-start a bumped boundary from the converged base (memo[0]); the base
+      // itself, and every boundary when warm_start is off, is solved cold.
+      const bool is_base = (dsig == 0.0 && dr == 0.0 && dT == 0.0);
+      const bool can_warm = warm_start && !is_base && n_memo > 1 && memo[0].ok &&
+                            memo[0].dsig == 0.0 && memo[0].dr == 0.0 &&
+                            memo[0].dT == 0.0;
+      const AlSolveStatus st =
+          can_warm ? al_solve_put_boundary_warm(K, T2, sig2, r2, q, sch,
+                                                 memo[0].bnd, c->bnd, c->ws)
+                   : al_solve_put_boundary(K, T2, sig2, r2, q, sch, c->bnd, c->ws);
+      c->ok = (st == AlSolveStatus::Ok);
     }
     if (!c->ok) {
       return P(dS, dsig, dr, dT);  // boundary collapsed: exact scalar fallback

@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -520,6 +521,72 @@ TEST(AmericanGreeks, FdBoundaryReuse_BitIdentical_PutGrid) {
   EXPECT_EQ(checked, 75);
 }
 
+// P1b: warm-started greeks (6 bumped boundaries seeded from the converged base)
+// must reconverge to the cold FD path to ~tol — same greeks, several-fold faster.
+// The base boundary (== the mark) stays cold, so the price is bit-identical.
+TEST(AmericanGreeks, WarmStart_MatchesCold_PutGrid) {
+  const double S = 100.0;
+  const double r = 0.05;
+  const double q = 0.03;
+  // Absolute worst-case errors (rel is meaningless where a greek is ~0 for deep
+  // ITM/OTM points). Price and delta/gamma share the cold base boundary => exact.
+  double abs_price = 0.0, abs_delta = 0.0, abs_gamma = 0.0;
+  double abs_vega = 0.0, abs_theta = 0.0, abs_rho = 0.0;
+  // Relative error only where the cold greek is materially non-zero.
+  double rel_vega = 0.0, rel_theta = 0.0, rel_rho = 0.0;
+  int checked = 0;
+  for (const double K : {70.0, 85.0, 100.0, 115.0, 130.0}) {
+    for (const double T : {0.02, 0.1, 0.5, 1.0, 2.0}) {
+      for (const double sigma : {0.12, 0.25, 0.45}) {
+        const auto cold = american_greeks_fd(S, K, T, sigma, r, q, Side::Put,
+                                             AmericanMethod::AndersenLake,
+                                             std::nullopt, /*warm_start=*/false);
+        const auto warm = american_greeks_fd(S, K, T, sigma, r, q, Side::Put,
+                                             AmericanMethod::AndersenLake,
+                                             std::nullopt, /*warm_start=*/true);
+        ASSERT_TRUE(cold.has_value());
+        ASSERT_TRUE(warm.has_value());
+        // Price is the cold base boundary in both paths: bit-identical.
+        EXPECT_EQ(warm->price, cold->price)
+            << "K=" << K << " T=" << T << " sigma=" << sigma;
+        abs_price = std::max(abs_price, std::fabs(warm->price - cold->price));
+        abs_delta = std::max(abs_delta, std::fabs(warm->delta - cold->delta));
+        abs_gamma = std::max(abs_gamma, std::fabs(warm->gamma - cold->gamma));
+        abs_vega = std::max(abs_vega, std::fabs(warm->vega - cold->vega));
+        abs_theta = std::max(abs_theta, std::fabs(warm->theta - cold->theta));
+        abs_rho = std::max(abs_rho, std::fabs(warm->rho - cold->rho));
+        const auto rel_if = [](double a, double b, double floor) {
+          return std::fabs(b) > floor ? std::fabs(a - b) / std::fabs(b) : 0.0;
+        };
+        rel_vega = std::max(rel_vega, rel_if(warm->vega, cold->vega, 1.0));
+        rel_theta = std::max(rel_theta, rel_if(warm->theta, cold->theta, 1.0));
+        rel_rho = std::max(rel_rho, rel_if(warm->rho, cold->rho, 1.0));
+        ++checked;
+      }
+    }
+  }
+  std::printf(
+      "[p1b-warm-vs-cold] pts=%d abs: price=%.2e delta=%.2e gamma=%.2e vega=%.2e "
+      "theta=%.2e rho=%.2e | rel(>1): vega=%.2e theta=%.2e rho=%.2e\n",
+      checked, abs_price, abs_delta, abs_gamma, abs_vega, abs_theta, abs_rho,
+      rel_vega, rel_theta, rel_rho);
+  EXPECT_EQ(checked, 75);
+  EXPECT_EQ(abs_price, 0.0);  // base boundary is cold in both => bit-identical
+  EXPECT_EQ(abs_delta, 0.0);  // spot stencils reuse the cold base boundary
+  EXPECT_EQ(abs_gamma, 0.0);
+  // Warm bumped boundaries reconverge from the base seed to the same budget the
+  // cold path uses (2 JN + 4 FP sweeps), so the sensitivities match the cold FD
+  // reference to within that budget's own convergence noise (~1% on the smallest
+  // rate/time sensitivities) and far inside a PnL tick in absolute terms
+  // (greek_err * per-step bump << $0.01). The mark (price) stays bit-identical.
+  EXPECT_LT(abs_vega, 5.0e-2);
+  EXPECT_LT(abs_theta, 5.0e-2);
+  EXPECT_LT(abs_rho, 5.0e-1);
+  EXPECT_LT(rel_vega, 1.5e-2);
+  EXPECT_LT(rel_theta, 1.5e-2);
+  EXPECT_LT(rel_rho, 1.5e-2);
+}
+
 // Controlled A/B of the isolated hot function: fast put greeks (7 boundary solves)
 // vs the 17-solve reference. Same params, same process — the ratio is P1a's true
 // per-call speedup, free of backtest/book noise. DISABLED (perf, not correctness):
@@ -541,29 +608,43 @@ TEST(AmericanGreeks, DISABLED_FdBoundaryReuse_Speedup) {
   auto t0 = std::chrono::steady_clock::now();
   for (int rep = 0; rep < reps; ++rep) {
     for (const Pt& p : grid) {
-      const auto g = american_greeks_fd(S, p.K, p.T, p.sigma, r, q, Side::Put);
+      const auto g = american_greeks_fd(S, p.K, p.T, p.sigma, r, q, Side::Put,
+                                        AmericanMethod::AndersenLake, std::nullopt,
+                                        /*warm_start=*/false);
       sink += g ? g->delta + g->vega + g->gamma : 0.0;
     }
   }
   auto t1 = std::chrono::steady_clock::now();
   for (int rep = 0; rep < reps; ++rep) {
     for (const Pt& p : grid) {
+      const auto g = american_greeks_fd(S, p.K, p.T, p.sigma, r, q, Side::Put,
+                                        AmericanMethod::AndersenLake, std::nullopt,
+                                        /*warm_start=*/true);
+      sink += g ? g->delta + g->vega + g->gamma : 0.0;
+    }
+  }
+  auto t2 = std::chrono::steady_clock::now();
+  for (int rep = 0; rep < reps; ++rep) {
+    for (const Pt& p : grid) {
       const auto g = greeks_fd_reference(S, p.K, p.T, p.sigma, r, q, Side::Put);
       sink += g.delta + g.vega + g.gamma;
     }
   }
-  auto t2 = std::chrono::steady_clock::now();
+  auto t3 = std::chrono::steady_clock::now();
 
   const double fast_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-  const double ref_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
+  const double warm_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
+  const double ref_ms = std::chrono::duration<double, std::milli>(t3 - t2).count();
   const long calls = static_cast<long>(reps) * static_cast<long>(grid.size());
+  const double per = static_cast<double>(calls);
   std::printf(
-      "[p1a-speedup] calls=%ld fast=%.1f ms (%.2f us/call) ref=%.1f ms (%.2f "
-      "us/call) speedup=%.2fx sink=%.3g\n",
-      calls, fast_ms, 1000.0 * fast_ms / static_cast<double>(calls), ref_ms,
-      1000.0 * ref_ms / static_cast<double>(calls), ref_ms / fast_ms,
+      "[p1-speedup] calls=%ld ref(17cold)=%.1fms (%.1fus) p1a(7cold)=%.1fms "
+      "(%.1fus, %.2fx) p1b(warm)=%.1fms (%.1fus, %.2fx) sink=%.3g\n",
+      calls, ref_ms, 1000.0 * ref_ms / per, fast_ms, 1000.0 * fast_ms / per,
+      ref_ms / fast_ms, warm_ms, 1000.0 * warm_ms / per, ref_ms / warm_ms,
       static_cast<double>(sink));
-  EXPECT_GT(ref_ms, fast_ms);  // fast path must not be slower
+  EXPECT_GT(ref_ms, fast_ms);
+  EXPECT_GT(fast_ms, warm_ms);  // warm must beat cold-fast
 }
 
 // ── Warm-started AloPricer (the American-IV throughput lever) ─────────────

@@ -219,13 +219,20 @@ struct AmericanGreeks {
 // American Greeks via central finite differences on the cold `american_price`
 // (same method/opts the mark is priced with). Used on the null-correction-cache
 // path so that greeks().price == fair_value() bit-identical and the coefficients
-// are American (not European). ~17 cold price solves — correctness path, not the
-// cached hot path. InvalidArgument on non-positive S/K/T/sigma; propagates any
-// american_price error (e.g. NotImplemented negative-carry corner).
+// are American (not European). InvalidArgument on non-positive S/K/T/sigma;
+// propagates any american_price error (e.g. NotImplemented negative-carry corner).
+//
+// The AndersenLake put path exploits the spot-independence of the exercise boundary:
+// the 17 stencils collapse to the 7 unique (sigma,r,T) boundaries. With
+// `warm_start` the 6 bumped boundaries are seeded from the converged base boundary
+// (skipping the dominant cold Barone-Adesi-Whaley re-seed) and reconverge to the
+// same tol — same greeks to ~tol, several-fold faster. `warm_start = false` keeps
+// every boundary cold (the exact FD reference; greeks().price stays bit-identical
+// to fair_value()). Calls and the BAW method always take the cold 17-solve path.
 [[nodiscard]] Result<AmericanGreeks> american_greeks_fd(
     double S, double K, double T, double sigma, double r, double q, Side side,
     AmericanMethod method = AmericanMethod::AndersenLake,
-    const std::optional<AlOpts>& opts = std::nullopt);
+    const std::optional<AlOpts>& opts = std::nullopt, bool warm_start = false);
 
 // American vega ONLY (∂price/∂sigma) — the single first-order sensitivity the IV
 // inverter's Newton step needs, WITHOUT the full `american_greeks` bundle's
