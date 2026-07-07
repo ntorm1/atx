@@ -148,6 +148,31 @@ def _pf4_s2_factor_observability_schema(conn: duckdb.DuckDBPyConnection) -> None
         conn,
         ("factor_freshness_sla", "panel_rowcount_anomaly", "lineage_completeness_checks"),
     )
+    # panel_rowcount_anomaly is a monitoring/detection-results artifact (median/MAD z-score
+    # anomalies over the factor-panel cross-section size), analogous to data_quality_checks: its
+    # as_of_date is the monitored panel date and checked_at the detection time. It has no
+    # bitemporal revision chain and no warehouse-load lineage, so available_at / source_loaded_at /
+    # run_id / is_latest_revision are not meaningful. Exempt them explicitly rather than inventing
+    # PIT columns on a derived monitoring table.
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO pit_exemption (
+            table_name, missing_columns, reason, exempted_by, exempted_at, source_loaded_at
+        )
+        VALUES (
+            'panel_rowcount_anomaly',
+            '["available_at","source_loaded_at","run_id","is_latest_revision"]',
+            'panel_rowcount_anomaly is a derived monitoring/detection-results table (median/MAD '
+            'z-score anomalies over factor-panel cross-section size). as_of_date is the monitored '
+            'panel date and checked_at the detection time; there is no row revision chain and no '
+            'warehouse-load lineage, so available_at/source_loaded_at/run_id/is_latest_revision are '
+            'not meaningful.',
+            'pf4-s2-s2-2',
+            now(),
+            now()
+        )
+        """
+    )
     _refresh_schema_contract_v2_pin(conn)
 
 
