@@ -196,6 +196,72 @@ def test_compute_factor_rows_uses_dependency_order_and_max_input_available_at() 
     assert json.loads(manifest.iloc[0]["topological_order_json"]) == ["base_a", "base_b", "spread", "combo"]
 
 
+def test_compute_factor_rows_selects_one_latest_revision_per_key() -> None:
+    rows = (
+        _factor("base_a"),
+        _factor("base_b"),
+        _factor("spread", "base_a - base_b", ("factor:base_a", "factor:base_b")),
+    )
+
+    # For each dependency, the chronologically-latest revision (V_new) is placed
+    # BEFORE the stale revision (V_old) in the input frame. A buggy
+    # `pivot_table(aggfunc="last")` selects whichever row is positionally last in
+    # the frame -- V_old -- even though `available_at` (computed via `.max()`)
+    # correctly reflects V_new's later timestamp. The fix must select V_new's
+    # value (and V_new's available_at) for both dependencies, regardless of row
+    # order.
+    base_rows = [
+        {
+            "factor_id": "base_a",
+            "security_id": "SEC-A",
+            "symbol": "AAA",
+            "as_of_date": dt.date(2023, 1, 3),
+            "value": 10.0,  # V_new
+            "available_at": pd.Timestamp("2023-01-03 09:30:00"),
+        },
+        {
+            "factor_id": "base_a",
+            "security_id": "SEC-A",
+            "symbol": "AAA",
+            "as_of_date": dt.date(2023, 1, 3),
+            "value": 999.0,  # V_old (stale), positioned after V_new
+            "available_at": pd.Timestamp("2023-01-03 09:00:00"),
+        },
+        {
+            "factor_id": "base_b",
+            "security_id": "SEC-A",
+            "symbol": "AAA",
+            "as_of_date": dt.date(2023, 1, 3),
+            "value": 3.0,  # V_new
+            "available_at": pd.Timestamp("2023-01-03 10:00:00"),
+        },
+        {
+            "factor_id": "base_b",
+            "security_id": "SEC-A",
+            "symbol": "AAA",
+            "as_of_date": dt.date(2023, 1, 3),
+            "value": 888.0,  # V_old (stale), positioned after V_new
+            "available_at": pd.Timestamp("2023-01-03 09:15:00"),
+        },
+    ]
+
+    input_values = pd.DataFrame(base_rows)
+    shuffled_values = pd.DataFrame(list(reversed(base_rows))).reset_index(drop=True)
+
+    result = compute_factor_rows(input_values, rows, target_factor_ids=("spread",), run_id="revision-run")
+    shuffled_result = compute_factor_rows(shuffled_values, rows, target_factor_ids=("spread",), run_id="revision-run")
+
+    assert len(result.frame) == 1
+    row = result.frame.iloc[0]
+    assert row["value"] == pytest.approx(7.0)  # 10.0 (base_a V_new) - 3.0 (base_b V_new)
+    assert row["available_at"] == pd.Timestamp("2023-01-03 10:00:00")
+
+    pd.testing.assert_frame_equal(
+        result.frame.reset_index(drop=True),
+        shuffled_result.frame.reset_index(drop=True),
+    )
+
+
 _MANIFEST_ID_PROBE_SOURCE = '''
 import datetime as dt
 import json
