@@ -1586,6 +1586,24 @@ class DatasetOrchestrator:
             ts=ts,
         )
 
+    def _panel_gate_dataset(self, dataset_id: str) -> bool:
+        """True when ``dataset_id`` has at least one enabled ``panel_gate_config`` row.
+
+        PF4-S2 S2-1: additive to pf2-S10's gate -- only datasets registered in
+        ``panel_gate_config`` (currently ``factor_panel``) take the panel-gate branch in
+        ``_run_step``; every other dataset's gate evaluation is byte-identical to before.
+        Guarded with try/except so a pre-PF4-S2 warehouse (migration 0180 not yet applied)
+        degrades to the pf2-S10 fundamentals path instead of raising.
+        """
+        try:
+            row = self.store.con.execute(
+                "SELECT count(*) FROM panel_gate_config WHERE dataset_id = ? AND enabled",
+                [dataset_id],
+            ).fetchone()
+        except Exception:
+            return False
+        return bool(row and row[0])
+
     def _run_step(
         self,
         run_id: str,
@@ -1687,8 +1705,19 @@ class DatasetOrchestrator:
             gate_result: GateResult | None = None
             gate_decision: GateDecision = "pass"
             if gate:
-                gate_result = evaluate_quality_gate(self.store, dataset_id)
+                panel_gated = self._panel_gate_dataset(dataset_id)
+                if panel_gated:
+                    from .observability import evaluate_panel_gate
+
+                    gate_result = evaluate_panel_gate(self.store, dataset_id)
+                else:
+                    gate_result = evaluate_quality_gate(self.store, dataset_id)
                 gate_decision = gate_result.decision
+                halt_action = "panel_quality_gate_halt" if panel_gated else "step_quality_gate_halt"
+                degrade_action = (
+                    "panel_quality_gate_degrade" if panel_gated else "step_quality_gate_degrade"
+                )
+                warn_action = "panel_quality_gate_warn" if panel_gated else "step_quality_gate_warn"
                 if gate_decision == "halt":
                     failed_at = self.clock()
                     error_message = str(QualityGateError(dataset_id, gate_result))
@@ -1716,7 +1745,7 @@ class DatasetOrchestrator:
                         run_id=run_id,
                         dataset_id=dataset_id,
                         actor=self.actor,
-                        action="step_quality_gate_halt",
+                        action=halt_action,
                         details=_quality_gate_details(gate_result),
                         ts=failed_at,
                     )
@@ -1727,7 +1756,7 @@ class DatasetOrchestrator:
                         run_id=run_id,
                         dataset_id=dataset_id,
                         actor=self.actor,
-                        action="step_quality_gate_degrade",
+                        action=degrade_action,
                         details=_quality_gate_details(gate_result),
                         ts=self.clock(),
                     )
@@ -1737,7 +1766,7 @@ class DatasetOrchestrator:
                         run_id=run_id,
                         dataset_id=dataset_id,
                         actor=self.actor,
-                        action="step_quality_gate_warn",
+                        action=warn_action,
                         details=_quality_gate_details(gate_result),
                         ts=self.clock(),
                     )

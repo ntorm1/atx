@@ -6,11 +6,18 @@ import re
 import statistics
 import uuid
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Iterable
 
 from .connection import DuckDBStore
-from .quality import QualityResult, Severity, _coerce_severity
+from .quality import (
+    GateResult,
+    QualityResult,
+    Severity,
+    _coerce_severity,
+    run_warehouse_quality_checks,
+    summarize_quality_gate,
+)
 from .warehouse import json_dumps, now_utc_naive, quality_check
 
 
@@ -323,3 +330,100 @@ def detect_rowcount_anomalies(
             )
         )
     return anomalies
+
+
+def _latest_recorded_check(store: DuckDBStore, dataset_id: str, check_name: str):
+    """Return the most recently recorded ``data_quality_checks`` row for one check, or None."""
+
+    row = store.con.execute(
+        """
+        SELECT status, observed_value, threshold_value, table_name
+        FROM data_quality_checks
+        WHERE dataset_id = ? AND check_name = ?
+        ORDER BY checked_at DESC
+        LIMIT 1
+        """,
+        [dataset_id, check_name],
+    ).fetchone()
+    return row
+
+
+# PF4-S1's leakage/coverage DQC (signal_eval.LEAKAGE_DQC_CHECK_NAME /
+# COVERAGE_DQC_CHECK_NAME) are facts this assembler CONSUMES from data_quality_checks,
+# never re-derives. They cannot be included in evaluate_panel_gate's own narrow live
+# sweep: db.quality._runner.run_warehouse_quality_checks wires signal_eval_dqc_results
+# in behind a *dataset_id* match, and once dataset_ids includes "factor_panel" that
+# match fires unconditionally (independent of any check_names narrowing), which would
+# silently re-run S1's evaluator on every gate check and overwrite whatever it most
+# recently recorded with a same-cycle recompute -- exactly the re-implementation the
+# PF4-S2 mandate forbids. Excluding them here keeps the live sweep scoped to the
+# schema/export-contract checks it legitimately owns, while leakage/coverage always
+# fold in through the "latest recorded" path below, matching the PIT (G) contract:
+# "the gate reads only already-materialized panel rows + recorded outcomes."
+_PANEL_GATE_RECORDED_ONLY_CHECK_NAMES: frozenset[str] = frozenset(
+    {"factor_leakage_tplus0", "factor_coverage_asof_universe"}
+)
+
+
+def evaluate_panel_gate(store: DuckDBStore, dataset_id: str, *, record: bool = True) -> "GateResult":
+    """Assemble the factor-panel halt decision from the ``panel_gate_config`` critical set.
+
+    Reuses pf2-S10's ``run_warehouse_quality_checks`` (for the live schema/export-contract
+    check(s) this assembler owns) and ``summarize_quality_gate`` (the unchanged
+    critical->halt / error->partial / warning->pass decision) -- this never re-implements
+    either. Each configured check's severity is re-tagged to the ``panel_gate_config``
+    value so a check can be demoted (e.g. critical -> warning) without a code deploy.
+    PF4-S1's leakage/coverage checks (``_PANEL_GATE_RECORDED_ONLY_CHECK_NAMES``) are never
+    part of the live sweep; they -- and any other configured check the live sweep did not
+    evaluate this cycle -- fall back to their latest recorded ``data_quality_checks``
+    outcome, so the gate consumes historically-recorded facts rather than re-computing
+    anything PF4-S1's evaluators already own.
+    """
+
+    config_rows = store.con.execute(
+        """
+        SELECT check_name, severity, enabled
+        FROM panel_gate_config
+        WHERE dataset_id = ?
+        ORDER BY check_name
+        """,
+        [dataset_id],
+    ).fetchall()
+    live_check_names = tuple(
+        str(check_name)
+        for check_name, _severity, enabled in config_rows
+        if bool(enabled) and str(check_name) not in _PANEL_GATE_RECORDED_ONLY_CHECK_NAMES
+    )
+    live = (
+        run_warehouse_quality_checks(store, record=record, check_names=live_check_names)
+        if live_check_names
+        else []
+    )
+    live_by_name = {result.check_name: idx for idx, result in enumerate(live)}
+    results = list(live)
+    for check_name, severity, enabled in config_rows:
+        check_name = str(check_name)
+        gate_severity = _coerce_severity(severity, "critical")
+        if not bool(enabled):
+            continue
+        if check_name in live_by_name:
+            idx = live_by_name[check_name]
+            results[idx] = replace(results[idx], severity=gate_severity)
+            continue
+        recorded = _latest_recorded_check(store, dataset_id, check_name)
+        if recorded is None:
+            continue  # not yet evaluated this cycle -> treated as pass for the gate
+        status, observed, threshold, table_name = recorded
+        results.append(
+            QualityResult(
+                dataset_id=dataset_id,
+                table_name=str(table_name or "data_quality_checks"),
+                check_name=check_name,
+                status=str(status),
+                observed_value=None if observed is None else float(observed),
+                threshold_value=None if threshold is None else float(threshold),
+                details={"source": "panel_gate_config", "panel_gate": True},
+                severity=gate_severity,
+            )
+        )
+    return summarize_quality_gate(dataset_id, results)
