@@ -287,7 +287,7 @@ def compute_factor_rows(
 
     frame = pd.concat(outputs, ignore_index=True) if outputs else pd.DataFrame(columns=FACTOR_VALUE_COLUMNS)
     manifest = {
-        "manifest_id": _hash_id("factor_build_manifest", tuple(targets), run_id, len(input_values), len(frame)),
+        "manifest_id": _hash_id("factor_build_manifest", tuple(sorted(targets)), run_id, len(input_values), len(frame)),
         "run_id": run_id,
         "factor_ids": sorted(targets),
         "topological_order": list(order),

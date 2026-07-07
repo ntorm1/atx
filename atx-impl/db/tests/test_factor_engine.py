@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import json
 import datetime as dt
+import os
+import subprocess
+import sys
 from dataclasses import replace
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -190,6 +194,108 @@ def test_compute_factor_rows_uses_dependency_order_and_max_input_available_at() 
     assert json.loads(result.frame.iloc[0]["input_lineage_json"])[0]["factor_id"] == "spread"
     assert json.loads(manifest.iloc[0]["factor_ids_json"]) == ["combo"]
     assert json.loads(manifest.iloc[0]["topological_order_json"]) == ["base_a", "base_b", "spread", "combo"]
+
+
+_MANIFEST_ID_PROBE_SOURCE = '''
+import datetime as dt
+import json
+import sys
+
+import pandas as pd
+
+from db.factors.catalog import FactorDefinition
+from db.factors.engine import compute_factor_rows, factor_build_manifest_frame
+
+
+def _factor(factor_id, expression="source", inputs=()):
+    return FactorDefinition(
+        factor_id=factor_id,
+        factor_name=factor_id,
+        family="fixture",
+        description=f"{factor_id} fixture factor",
+        expression=expression,
+        input_ids_json=json.dumps(list(inputs)),
+        direction=1,
+        lookback_days=0,
+        neutralization_spec_json=json.dumps({"method": "none", "by": []}),
+        unit="score",
+        sign="signed",
+        scale="1",
+        is_point_in_time_safe=True,
+        available_at_policy="fixture",
+        declared_in="test",
+        owner="test",
+        source="test",
+    )
+
+
+rows = (
+    _factor("base_a"),
+    _factor("base_b"),
+    _factor("combo_sum", "base_a + base_b", ("factor:base_a", "factor:base_b")),
+    _factor("combo_diff", "base_a - base_b", ("factor:base_a", "factor:base_b")),
+    _factor("combo_prod", "base_a * base_b", ("factor:base_a", "factor:base_b")),
+)
+input_values = pd.DataFrame(
+    [
+        {
+            "factor_id": "base_a",
+            "security_id": "SEC-A",
+            "symbol": "AAA",
+            "as_of_date": dt.date(2023, 1, 3),
+            "value": 10.0,
+            "available_at": pd.Timestamp("2023-01-03 09:30:00"),
+        },
+        {
+            "factor_id": "base_b",
+            "security_id": "SEC-A",
+            "symbol": "AAA",
+            "as_of_date": dt.date(2023, 1, 3),
+            "value": 3.0,
+            "available_at": pd.Timestamp("2023-01-03 10:00:00"),
+        },
+    ]
+)
+targets = tuple(sys.argv[1:])
+result = compute_factor_rows(input_values, rows, target_factor_ids=targets, run_id="factor-run")
+manifest = factor_build_manifest_frame(result)
+print(manifest.iloc[0]["manifest_id"])
+'''
+
+
+def test_factor_build_manifest_id_is_hashseed_independent(tmp_path) -> None:
+    # A multi-target (>=3 factor ids) build's manifest_id must not depend on
+    # PYTHONHASHSEED or on the iteration order of `target_factor_ids` -- both of
+    # which perturb a plain `set` build. Force distinct interpreter hash seeds via
+    # subprocesses so the assertion is deterministic regardless of the ambient
+    # hash seed this pytest process happens to run under.
+    repo_root = Path(__file__).resolve().parents[2]
+    script = tmp_path / "manifest_id_probe.py"
+    script.write_text(_MANIFEST_ID_PROBE_SOURCE, encoding="utf-8")
+
+    def manifest_id(order: tuple[str, ...], hashseed: str) -> str:
+        env = dict(os.environ, PYTHONHASHSEED=hashseed, PYTHONPATH=str(repo_root))
+        completed = subprocess.run(
+            [sys.executable, str(script), *order],
+            cwd=repo_root,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return completed.stdout.strip()
+
+    targets = ("combo_sum", "combo_diff", "combo_prod")
+    permuted_targets = ("combo_prod", "combo_sum", "combo_diff")
+
+    manifest_seed0 = manifest_id(targets, "0")
+    manifest_seed0_again = manifest_id(targets, "0")
+    manifest_seed1 = manifest_id(targets, "1")
+    manifest_seed0_permuted = manifest_id(permuted_targets, "0")
+
+    assert manifest_seed0 == manifest_seed0_again
+    assert manifest_seed0 == manifest_seed1
+    assert manifest_seed0 == manifest_seed0_permuted
 
 
 def test_factor_dependency_migration_seeds_legacy_edges(tmp_store) -> None:
