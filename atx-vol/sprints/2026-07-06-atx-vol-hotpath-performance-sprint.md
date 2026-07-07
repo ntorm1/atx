@@ -271,10 +271,32 @@ FD path, and single-run wall swings ±40% under load):
 
 The backtest reprices puts via P2. Net backtest put hot path: **18→6 boundary
 solves/contract/step** (P1a+P1c+P2) on top of C1's 13.4× parallel throughput.
-Remaining levers (next cycle): P3 cross-step warm-start (temporal coherence — the
-book holds the same contracts day-to-day; warm-start + early-exit-at-tol cuts the
-dominant sweeps), call-side analytic (extend PDE θ/charm to calls, 7→5), P4 kernel,
-P5 correction-cache for dispersion-scale.
+
+### Next-cycle levers (found this cycle, deferred as too invasive for one pass)
+
+Two are **exact/bit-identical** structural wins in the backtest loop (`backtest.cpp`),
+higher-ROI than the approximate cross-step warm-start:
+
+1. **Double base-greeks elimination (~11→6 solves/step, exact).** Each snapshot's
+   base greeks are computed *twice*: once by `book_greeks(base)` (recording the
+   gross greeks row) and again inside the next iteration's
+   `pnl_explain(base, shifted)` (the Taylor coefficients). Same surface, same
+   contracts, same residual T ⇒ identical. Eliminating the duplicate needs a
+   one-iteration defer of the recorded row plus reconciling the expiring-lot set
+   difference — invasive to the PnL/recording path, so gated behind its own sprint.
+2. **Target-reprice reuse (6→5 solves/step, exact).** `pnl_explain`'s shifted mark
+   `pt = fair_value(shifted, T_t)` at step *i* is bit-identically the base greeks
+   mark at step *i+1* (move-swap makes shifted the next base, and `T_t(i)==T_b(i+1)`).
+   Carry the mark forward instead of re-solving.
+
+Then the approximate levers: **P3** cross-step boundary warm-start (temporal
+coherence — book holds the same contracts day-to-day; warm-start + early-exit-at-tol
+cuts the dominant sweeps; needs a mutable per-contract boundary cache threaded
+through the currently-stateless pricing API); **call-side analytic** (calls still take
+the 17-solve FD path — extend boundary-reuse via the strike-homogeneity of the
+McDonald-Schröder internal-put boundary `y[]`, plus PDE θ/charm, for 17→5);
+**P4** kernel (norm_cdf hoist — note SIMD is a measured dead end); **P5**
+per-surface correction cache for dispersion-scale books.
 
 ### Key measured finding — sweeps dominate, not the seed
 
