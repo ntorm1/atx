@@ -236,7 +236,10 @@ Result<ObsSet> build_observations(const Chain &chain, double F, double T,
 Result<ObsSet> build_observations_european(const Chain &chain, double S, double r,
                                            double F, double T, double df,
                                            const CalibOpts &opts,
-                                           const AmericanCorrectionCaches &caches) {
+                                           const AmericanCorrectionCaches &caches,
+                                           const std::optional<AlOpts> &al_opts,
+                                           double iv_tol,
+                                           std::uint16_t iv_max_iter) {
   if (!(S > 0.0) || !(F > 0.0) || !(T > 0.0) || !(df > 0.0) || !std::isfinite(r)) {
     return Err(ErrorCode::InvalidArgument,
                "build_observations_european: S, F, T, df must be positive");
@@ -257,8 +260,8 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
     // anchor). Recover the European-equivalent lognormal vol, then restate the
     // observation entirely in European terms.
     const Result<double> sig = american_implied_vol(
-        o.mid, S, o.K, T, r, q_eff, o.side, AmericanMethod::AndersenLake, 1.0e-7,
-        64, std::nullopt, caches.for_side(o.side));
+        o.mid, S, o.K, T, r, q_eff, o.side, AmericanMethod::AndersenLake, iv_tol,
+        iv_max_iter, al_opts, caches.for_side(o.side));
     if (!sig.has_value() || !(*sig > kObsIvMin && *sig < kObsIvMax)) {
       ++out.n_dropped;
       continue;

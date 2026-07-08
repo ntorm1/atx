@@ -102,6 +102,17 @@ struct SurfaceParityInputs {
   CalibOpts calib{};                     // per-slice curve-fit policy
   double band_k{1.0};                    // minimum-edge band multiplier (parity)
   CalendarRepair repair{CalendarRepair::None};  // post-assembly calendar-arb repair
+
+  // Worker count for the per-chain de-Americanization pre-pass in
+  // `fit_curve_surface` (S0-1). Matches the `parallel_for` contract exactly:
+  // 0 => std::thread::hardware_concurrency(); 1 => serial (recovers the
+  // pre-S0-1 single-threaded path bit-for-bit); N => N workers. The fit itself
+  // (calendar-floor dependent) always stays sequential; only the cold per-chain
+  // de-Am (resolve_chain_forward + build_observations_european) fans out, over
+  // disjoint per-chain output slots, so the result is bit-identical for any
+  // worker count. `run_surface_parity` (the eSSVI path) does not read this
+  // field and is unaffected.
+  unsigned fit_workers{0};
 };
 
 // Per-fitted-slice pricing context: everything the composable facade

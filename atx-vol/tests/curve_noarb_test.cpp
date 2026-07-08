@@ -29,6 +29,7 @@
 
 namespace {
 
+using atx::vol::al_fast_opts;
 using atx::vol::arb_check_calendar;
 using atx::vol::CalendarRepair;
 using atx::vol::CurveConfig;
@@ -88,6 +89,14 @@ TEST(CurveSurfaceNoArb, SpyDenseIsCalendarArbFree) {
   in.now_ts_ns = panel->frame.snapshot_ts_ns;
   in.band_k = 1.0;
   in.repair = CalendarRepair::None;
+  // De-Americanize with the SAME fast-cold Andersen-Lake preset the served path
+  // uses (session Fast/Hft: al_fast_opts + iv_tol 1e-5 + single ATM borrow pair).
+  // This is what production actually serves, and it keeps the per-strike de-Am
+  // fast-cold instead of the ACCURATE default — a full-board fit at machine
+  // precision is ~5x wasted cost the surface (RMSE ~1e-2) never needed.
+  in.deam.al_opts = al_fast_opts();
+  in.deam.iv_tol = 1.0e-5;
+  in.deam.n_atm = 1;
 
   CurveConfig cfg;  // default = ConvexDense (the served dense surface)
   auto rep = fit_curve_surface(*U, in, cfg);

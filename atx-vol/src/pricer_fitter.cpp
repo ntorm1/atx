@@ -2,67 +2,18 @@
 
 #include <cmath>
 #include <limits>
-#include <thread>
 #include <vector>
 
 #include "atx/core/error.hpp"
 #include "atx/vol/american_iv.hpp"  // american_implied_vol
 #include "atx/vol/correction.hpp"   // AmericanCorrectionCaches (cached inversion hot path)
+#include "atx/vol/parallel_for.hpp" // parallel_for (shared block-partition fan-out)
 
 namespace atx::vol {
 
 using atx::core::Err;
 using atx::core::ErrorCode;
 using atx::core::Ok;
-
-namespace {
-
-// Deterministic block-partitioned fan-out over [0, n): each worker owns a
-// contiguous index range and writes only its own output slots, so the result is
-// identical for any thread count (the calibrate_pool determinism pattern). 0 =>
-// hardware_concurrency; 1 => serial. `fn` must be safe to call concurrently over
-// disjoint indices (pure const reads + disjoint writes).
-template <class F>
-void parallel_for(std::size_t n, unsigned n_threads, F&& fn) {
-  if (n == 0) {
-    return;
-  }
-  unsigned nt = n_threads;
-  if (nt == 0) {
-    nt = std::thread::hardware_concurrency();
-    if (nt == 0) {
-      nt = 1u;
-    }
-  }
-  if (nt > n) {
-    nt = static_cast<unsigned>(n);
-  }
-  if (nt <= 1u) {
-    for (std::size_t i = 0; i < n; ++i) {
-      fn(i);
-    }
-    return;
-  }
-  const std::size_t chunk = (n + nt - 1u) / nt;
-  std::vector<std::jthread> workers;
-  workers.reserve(nt);
-  for (unsigned t = 0; t < nt; ++t) {
-    const std::size_t lo = static_cast<std::size_t>(t) * chunk;
-    if (lo >= n) {
-      break;
-    }
-    const std::size_t hi = (lo + chunk < n) ? (lo + chunk) : n;
-    workers.emplace_back([lo, hi, &fn] {
-      for (std::size_t i = lo; i < hi; ++i) {
-        fn(i);
-      }
-    });
-  }
-  // std::jthread joins on destruction — the loop below (scope exit) is the
-  // barrier; every worker has finished before value_chain returns.
-}
-
-}  // namespace
 
 std::optional<std::size_t> ChainValuation::row_of(OptionId id) const {
   for (std::size_t i = 0; i < ids.size(); ++i) {

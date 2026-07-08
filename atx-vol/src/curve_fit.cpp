@@ -10,10 +10,11 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
-#include "atx/vol/calib.hpp"    // build_observations_european, ObsSet, FitObs
-#include "atx/vol/deamer.hpp"   // resolve_chain_forward, european_equiv_iv, otm_side, DeAmOptions
-#include "atx/vol/parity.hpp"   // chain_parity, ParityInputs, ParityReport
-#include "atx/vol/universe.hpp" // Chain, chain_index
+#include "atx/vol/calib.hpp"        // build_observations_european, ObsSet, FitObs
+#include "atx/vol/deamer.hpp"       // resolve_chain_forward, european_equiv_iv, otm_side, DeAmOptions
+#include "atx/vol/parallel_for.hpp" // parallel_for (block-partition fan-out)
+#include "atx/vol/parity.hpp"       // chain_parity, ParityInputs, ParityReport
+#include "atx/vol/universe.hpp"     // Chain, chain_index
 
 namespace atx::vol {
 
@@ -79,6 +80,71 @@ struct ParityData {
   return p;
 }
 
+// Per-chain output slot for the parallel de-Am pre-pass (phase 1). `usable`
+// mirrors EXACTLY the set of `continue` gates the old sequential loop applied
+// (T<=0, forward resolve failed, F non-finite/non-positive, obs < kMinUsableObs)
+// so phase 2 skips precisely the chains the pre-S0-1 code skipped. Written by
+// AT MOST one worker (its own chain index) and read only after every worker has
+// joined (parallel_for's scope-exit barrier) — no cross-thread reduction, pure
+// const reads of `under`/`in`, disjoint writes into `slot[i]`. Bit-identical for
+// any worker count (the value_chain / calibrate_pool determinism pattern).
+struct ChainPrepass {
+  bool usable = false;
+  double T = 0.0;
+  double F = 0.0;
+  double borrow = 0.0;
+  double q_eff = 0.0;
+  double df = 0.0;
+  ObsSet obs;  // meaningful only when `usable`
+};
+
+// Phase 1: the cold, per-chain de-Am (resolve_chain_forward + the European
+// observation build) fanned out over `n_threads` workers. Pure per-chain work,
+// disjoint output slots — see `ChainPrepass` above.
+[[nodiscard]] std::vector<ChainPrepass> run_deam_prepass(const Underlying& under,
+                                                         const SurfaceParityInputs& in,
+                                                         unsigned n_threads) {
+  std::vector<ChainPrepass> prepass(under.chains.size());
+  parallel_for(under.chains.size(), n_threads, [&](std::size_t i) {
+    const Chain& chain = under.chains[i];
+    ChainPrepass& slot = prepass[i];
+    const double T = chain.T;
+    if (!(T > 0.0)) {
+      return;
+    }
+    const auto d_res = resolve_chain_forward(chain, in.S, in.r, in.cash_divs,
+                                             in.now_ts_ns, in.deam);
+    if (!d_res) {
+      return;
+    }
+    const double F = d_res->forward;
+    if (!(F > 0.0) || !std::isfinite(F)) {
+      return;
+    }
+    const double q_eff = in.r - std::log(F / in.S) / T;
+    const double df = std::exp(-in.r * T);
+
+    // COLD per-strike de-Am (no correction cache) at the caller's Andersen-Lake
+    // accuracy: see the HARD CONSTRAINT note on the (now sequential-only)
+    // fit/parity walk below — this pre-pass must stay cold for the same reason.
+    auto obs = build_observations_european(chain, in.S, in.r, F, T, df, in.calib,
+                                           AmericanCorrectionCaches{}, in.deam.al_opts,
+                                           in.deam.iv_tol, in.deam.iv_max_iter);
+    if (!obs || obs->obs.size() < kMinUsableObs) {
+      return;
+    }
+
+    slot.T = T;
+    slot.F = F;
+    slot.borrow = d_res->borrow;
+    slot.q_eff = q_eff;
+    slot.df = df;
+    slot.obs = std::move(*obs);
+    slot.usable = true;
+  });
+  return prepass;
+}
+
 }  // namespace
 
 Result<CurveSurfaceReport> fit_curve_surface(const Underlying& under,
@@ -97,34 +163,33 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying& under,
   out.per_expiry.reserve(under.chains.size());
   double worst = std::numeric_limits<double>::infinity();
 
-  for (const Chain& chain : under.chains) {
-    const double T = chain.T;
-    if (!(T > 0.0)) {
-      continue;
-    }
-    // 1. Term (forward, borrow) — the borrow-only front half of the de-Am.
-    const auto d_res = resolve_chain_forward(chain, in.S, in.r, in.cash_divs,
-                                             in.now_ts_ns, in.deam);
-    if (!d_res) {
-      continue;
-    }
-    const double F = d_res->forward;
-    if (!(F > 0.0) || !std::isfinite(F)) {
-      continue;
-    }
-    const double q_eff = in.r - std::log(F / in.S) / T;
-    const double df = std::exp(-in.r * T);
+  // Phase 1 (PARALLEL): the cold per-chain de-Am — resolve_chain_forward (term
+  // forward/borrow) + build_observations_european (the 99.5% recipe's European
+  // fit observations) — is independent per chain, so it fans out over
+  // `in.fit_workers` disjoint output slots (0 => hardware_concurrency; 1 =>
+  // serial, bit-identical to the pre-S0-1 path). MUST stay COLD (no correction
+  // cache): a near-interpolating convex fit propagates any de-Am bias straight
+  // into the served IV, so the small carry-bias of the cached-de-Am hot path
+  // (fine for the coarse eSSVI backbone) knocks the penny-tight dense fit out
+  // of band. Correctness over speed here — cold Andersen-Lake per strike, just
+  // run concurrently across chains.
+  const std::vector<ChainPrepass> prepass = run_deam_prepass(under, in, in.fit_workers);
 
-    // 2. De-Americanized fit observations (the 99.5% recipe). MUST be COLD: a
-    //    near-interpolating convex fit propagates any de-Am bias straight into the
-    //    served IV, so the small carry-bias of the cached-de-Am hot path (fine for
-    //    the coarse eSSVI backbone) knocks the penny-tight dense fit out of band.
-    //    Correctness over speed here — cold Andersen-Lake per strike.
-    const auto obs = build_observations_european(chain, in.S, in.r, F, T, df,
-                                                 in.calib);
-    if (!obs || obs->obs.size() < kMinUsableObs) {
+  // Phase 2 (SEQUENTIAL): the fit is order-dependent — each fitted slice's w(k)
+  // becomes the calendar floor for the next (ascending-T) slice — so this walk
+  // stays single-threaded, unchanged from the pre-S0-1 logic. It only reads the
+  // phase-1 pre-pass results (skipping EXACTLY the chains phase 1 flagged) and
+  // re-derives nothing the pre-pass already computed.
+  for (std::size_t ci = 0; ci < under.chains.size(); ++ci) {
+    const ChainPrepass& pre = prepass[ci];
+    if (!pre.usable) {
       continue;
     }
+    const Chain& chain = under.chains[ci];
+    const double T = pre.T;
+    const double F = pre.F;
+    const double q_eff = pre.q_eff;
+    const double df = pre.df;
 
     // 3. Fit the configured curve kind from the European obs.
     //    Calendar floor: previous fitted slice's total variance (ascending T).
@@ -143,7 +208,7 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying& under,
     // so enforcement does not materially slow the fit. On boards with genuine
     // calendar structure this trades some price-in-band tightness for no-arb — an
     // explicit product choice (see spy_bidask_regression_test's rebaselined floor).
-    auto slice_res = fit_slice_curve(cfg, obs->obs, F, T, df, w_prev);
+    auto slice_res = fit_slice_curve(cfg, pre.obs.obs, F, T, df, w_prev);
     if (!slice_res) {
       continue;
     }
@@ -151,6 +216,8 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying& under,
 
     // 4. Score re-Americanized parity off the fitted slice's own iv(k). A parity
     //    (diagnostic) failure is non-fatal: keep the slice, push a zeroed report.
+    //    NOTE (S0-2 follow-up): this is the SECOND cold de-Am pass over the
+    //    chain (build_parity_data re-inverts every OTM leg); left as-is here.
     const ParityData pd = build_parity_data(chain, in.S, in.r, F, q_eff, in.deam);
     ParityReport parity{};
     if (pd.strike.size() >= 4) {
@@ -178,9 +245,9 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying& under,
 
     // 5. Commit the slice + its context (ascending T by construction).
     out.surface.push(std::move(*slice_res));
-    out.context.push_back(SliceContext{T, F, d_res->borrow, q_eff,
-                                       obs->obs.size(),
-                                       static_cast<std::size_t>(obs->n_dropped)});
+    out.context.push_back(SliceContext{T, F, pre.borrow, q_eff,
+                                       pre.obs.obs.size(),
+                                       static_cast<std::size_t>(pre.obs.n_dropped)});
     out.per_expiry.push_back(parity);
     if (parity.n > 0) {
       worst = std::min(worst, parity.frac_fv_within_bidask);

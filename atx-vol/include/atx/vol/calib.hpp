@@ -42,8 +42,10 @@
 // concurrently against a fixed chain from any number of threads.
 
 #include <cstdint>
+#include <optional>
 #include <vector>
 
+#include "atx/vol/american.hpp"     // AlOpts (de-Am Andersen-Lake accuracy preset)
 #include "atx/vol/correction.hpp"   // AmericanCorrectionCaches (optional de-Am hot path)
 #include "atx/vol/types.hpp"        // Side, Result
 #include "atx/vol/universe.hpp"     // Chain (SoA quote layout)
@@ -290,9 +292,19 @@ struct ObsSet {
 // Andersen-Lake solve — the SAME accurate, self-consistent de-Am the eSSVI path
 // uses, orders of magnitude faster on a wide board. Default-empty => cold
 // (bit-identical to the historical behaviour).
+//
+// `al_opts` / `iv_tol` / `iv_max_iter` tune the COLD Andersen-Lake inversion (the
+// path taken when `caches` is empty). They default to the ACCURATE preset
+// (nullopt = al_default_opts, 1e-7 / 64) so an unchanged caller is bit-identical.
+// The fast-preset served path (session Fast/Hft) passes its `DeAmOptions`
+// al_opts (al_fast_opts) + iv_tol here so the per-strike de-Am honors the SAME
+// fast-cold accuracy as the borrow solve — the surface only needs ~1e-4 price
+// accuracy (RMSE ~1e-2), and machine-precision cold AL was ~5x wasted cost.
 [[nodiscard]] Result<ObsSet> build_observations_european(
     const Chain &chain, double S, double r, double F, double T, double df,
-    const CalibOpts &opts, const AmericanCorrectionCaches &caches = {});
+    const CalibOpts &opts, const AmericanCorrectionCaches &caches = {},
+    const std::optional<AlOpts> &al_opts = std::nullopt, double iv_tol = 1.0e-7,
+    std::uint16_t iv_max_iter = 64);
 
 // O(1) calibrator-population predicate (ports `ats_vol_calib_obs_accepted`):
 // would the (strike_idx, side) tuple survive the same cascade as one row of
