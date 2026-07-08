@@ -4,6 +4,7 @@ import datetime as dt
 import inspect
 import threading
 
+import pandas as pd
 import pytest
 
 
@@ -923,6 +924,184 @@ def test_backfill_with_dependencies_holds_dependent_partitions_until_upstream_fi
         if event[0] == "finish" and event[1] == BarrierSourceDataset.dataset_id
     )
     assert first_dependent_start > last_source_finish
+
+
+def test_full_rebuild_partition_deletes_only_within_window(tmp_store):
+    """S3-11: prove a per-partition ``full_rebuild`` backfill never table-wipes
+    another partition's rows.
+
+    ``backfill._partition_params`` sets ``full_rebuild=True`` together with
+    per-partition ``start_date``/``end_date``/``window_lo``/``window_hi`` for
+    every windowed dataset backfill (665-687). ``enterprise_value``'s delete
+    scope (``_delete_enterprise_value_scope``) never looks at ``full_rebuild``
+    at all -- it always scopes the delete by ``start_date``/``end_date`` when
+    present. This test seeds real ``enterprise_value`` rows in two disjoint
+    trade-date partitions (Jan and Feb 2020), then runs a ``full_rebuild``
+    backfill of ONLY the Feb partition, and asserts:
+      * the Jan partition's row survives byte-for-byte (proves the delete did
+        not table-wipe the other partition), and
+      * the Feb partition's row was actually deleted and recomputed (proves
+        the assertion above isn't vacuously true because nothing ran).
+    """
+    from db.backfill import run_backfill
+    from db.enterprise_value import EnterpriseValueOptions, refresh_enterprise_value
+    from db.warehouse import insert_frame
+
+    security_id = "SEC-EV-WINDOW"
+    symbol = "EVW"
+    jan_trade_date = dt.date(2020, 1, 2)
+    feb_trade_date = dt.date(2020, 2, 15)
+
+    def _market_cap_row(trade_date: dt.date) -> dict[str, object]:
+        available_at = dt.datetime.combine(trade_date, dt.time(22, 0))
+        return {
+            "market_cap_id": f"mc-{security_id}-{trade_date}",
+            "source": "derived_market_cap_v1",
+            "price_source": "fixture_prices",
+            "share_source": "fixture_shares",
+            "security_id": security_id,
+            "symbol": symbol,
+            "trade_date": trade_date,
+            "close": 10.0,
+            "share_count": 100.0,
+            "share_count_type_used": "shares_diluted_avg",
+            "market_cap": 1000.0,
+            "is_latest_revision": True,
+            "as_of_date": trade_date,
+            "available_at": available_at,
+            "price_available_at": available_at,
+            "share_available_at": available_at,
+            "price_run_id": "price-run",
+            "share_run_id": "share-run",
+            "share_history_id": f"share-{security_id}",
+            "input_codes_json": '{"market_cap": "fixture"}',
+            "input_lineage_json": '{"market_cap": "fixture"}',
+            "run_id": "market-run",
+        }
+
+    def _statement_row(metric: str, value: float, *, available_at: dt.datetime) -> dict[str, object]:
+        period_end = dt.date(2019, 12, 31)
+        return {
+            "statement_point_id": f"stmt-{security_id}-{metric}",
+            "fact_revision_id": f"fact-{security_id}-{metric}",
+            "revision_group_id": f"rg-{security_id}-{metric}",
+            "source": "fixture_statement",
+            "security_id": security_id,
+            "symbol": symbol,
+            "cik": "0000000099",
+            "statement_type": "balance_sheet",
+            "statement_section": "valuation",
+            "canonical_metric": metric,
+            "canonical_label": metric.replace("_", " ").title(),
+            "taxonomy": "us-gaap",
+            "concept": metric,
+            "unit": "USD",
+            "unit_type": "monetary",
+            "period_type": "instant",
+            "normal_balance": "credit",
+            "period_start": None,
+            "period_end": period_end,
+            "as_of_date": period_end,
+            "available_at": available_at,
+            "fiscal_year": period_end.year,
+            "fiscal_period": "FY",
+            "form": "10-K",
+            "accession_number": f"acc-{security_id}-{period_end:%Y%m%d}",
+            "revision_sequence": 1,
+            "revision_count": 1,
+            "is_latest_revision": True,
+            "is_value_changed": False,
+            "raw_value": value,
+            "value": value,
+            "previous_raw_value": None,
+            "previous_value": None,
+            "value_delta": None,
+            "value_delta_percent": None,
+            "run_id": "statement-run",
+            "source_url": "fixture",
+            "source_loaded_at": available_at,
+        }
+
+    insert_frame(
+        tmp_store,
+        pd.DataFrame([_market_cap_row(jan_trade_date), _market_cap_row(feb_trade_date)]),
+        "market_cap",
+        "s3_11_market_cap_seed",
+    )
+    insert_frame(
+        tmp_store,
+        pd.DataFrame(
+            [
+                _statement_row("total_debt", 200.0, available_at=dt.datetime(2020, 2, 1, 10)),
+                _statement_row("pref_stock", 25.0, available_at=dt.datetime(2020, 2, 2, 10)),
+                _statement_row("minority_int_bs", 10.0, available_at=dt.datetime(2020, 2, 3, 10)),
+                _statement_row("cash_st_inv", 50.0, available_at=dt.datetime(2020, 2, 5, 10)),
+            ]
+        ),
+        "fundamental_statement_points",
+        "s3_11_statement_seed",
+    )
+
+    # Seed BOTH partitions' rows directly (unscoped refresh) before any backfill runs.
+    assert refresh_enterprise_value(tmp_store, EnterpriseValueOptions(run_id="seed-run")) == 2
+
+    before_rows = {
+        row[0]: row
+        for row in tmp_store.con.execute(
+            """
+            SELECT trade_date, run_id, enterprise_value, market_cap
+            FROM enterprise_value
+            ORDER BY trade_date
+            """
+        ).fetchall()
+    }
+    assert set(before_rows) == {jan_trade_date, feb_trade_date}
+    assert before_rows[jan_trade_date][1] == "seed-run"
+    assert before_rows[feb_trade_date][1] == "seed-run"
+
+    # A single-partition full_rebuild backfill window that covers ONLY February.
+    result = run_backfill(
+        tmp_store,
+        "enterprise_value",
+        dt.date(2020, 2, 1),
+        dt.date(2020, 3, 1),
+        "1mo",
+        include_dependencies=False,
+        backfill_run_id="s3-11-feb-full-rebuild",
+        clock=TickClock(),
+    )
+
+    assert result.status == "succeeded"
+    assert result.partitions_planned == 1
+    assert result.partitions_succeeded == 1
+    partition_result = result.partition_results[0]
+    assert partition_result.status == "succeeded"
+    assert partition_result.rows_written == 1
+    assert partition_result.partition.window_lo == dt.date(2020, 2, 1)
+    assert partition_result.partition.window_hi == dt.date(2020, 3, 1)
+
+    after_rows = {
+        row[0]: row
+        for row in tmp_store.con.execute(
+            """
+            SELECT trade_date, run_id, enterprise_value, market_cap
+            FROM enterprise_value
+            ORDER BY trade_date
+            """
+        ).fetchall()
+    }
+    assert set(after_rows) == {jan_trade_date, feb_trade_date}, (
+        "a full_rebuild of the Feb partition must not table-wipe the Jan "
+        "partition's row"
+    )
+    assert after_rows[jan_trade_date] == before_rows[jan_trade_date], (
+        "the OTHER partition's row must survive byte-for-byte -- the "
+        "full_rebuild delete must be scoped to the target partition's window"
+    )
+    assert after_rows[feb_trade_date][1] != "seed-run", (
+        "the target partition's row must have been deleted and recomputed by "
+        "the full_rebuild -- only the target window's rows were replaced"
+    )
 
 
 def test_run_maintenance_rejects_invalid_max_parallel_without_running_header(tmp_store):
