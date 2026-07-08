@@ -277,71 +277,6 @@ def _input_lineage_json(row: pd.Series) -> str:
     )
 
 
-_EV_COMPONENT_COLUMNS = [
-    "market_cap",
-    "total_debt",
-    "preferred_equity",
-    "minority_interest",
-    "cash_and_equivalents",
-]
-
-_EV_AVAILABLE_AT_COLUMNS = [
-    "market_cap_available_at",
-    "total_debt_available_at",
-    "preferred_equity_available_at",
-    "minority_interest_available_at",
-    "cash_and_equivalents_available_at",
-]
-
-# Columns `_input_lineage_json`/`_component_lineage` read via `row.get(...)`. Selecting
-# exactly these (in this order) lets the batched lineage pass reconstruct per-row dicts
-# from `itertuples()` tuples without ever materializing a full-width per-row Series
-# (which is what makes `DataFrame.iterrows()` slow).
-_EV_LINEAGE_COLUMNS = [
-    "market_cap_source",
-    "market_cap_id",
-    "security_id",
-    "trade_date",
-    "market_cap",
-    "market_cap_available_at",
-    "market_cap_input_lineage_json",
-    "period_end",
-    "total_debt_id",
-    "total_debt_source",
-    "total_debt",
-    "total_debt_available_at",
-    "preferred_equity_id",
-    "preferred_equity_source",
-    "preferred_equity",
-    "preferred_equity_available_at",
-    "minority_interest_id",
-    "minority_interest_source",
-    "minority_interest",
-    "minority_interest_available_at",
-    "cash_and_equivalents_id",
-    "cash_and_equivalents_source",
-    "cash_and_equivalents",
-    "cash_and_equivalents_available_at",
-]
-
-
-def _raise_first_negative_component(components: pd.DataFrame) -> None:
-    """Vectorized equivalent of calling `_assert_non_negative_component` inside a
-    `for _, row in selected.iterrows()` loop: finds the same (row, column) violation
-    the original row-major/column-minor scan would hit first -- market_cap, then
-    total_debt, preferred_equity, minority_interest, cash_and_equivalents, checked row
-    by row in `selected` order -- and raises the identical error message.
-    """
-    negative = components.to_numpy() < 0
-    row_has_negative = negative.any(axis=1)
-    if not row_has_negative.any():
-        return
-    first_row = int(row_has_negative.argmax())
-    first_col = int(negative[first_row].argmax())
-    column = _EV_COMPONENT_COLUMNS[first_col]
-    raise ValueError(f"{column} must be a non-negative enterprise-value component")
-
-
 def compute_enterprise_value_rows(
     inputs: pd.DataFrame,
     *,
@@ -354,7 +289,73 @@ def compute_enterprise_value_rows(
     if selected.empty:
         return _empty_enterprise_value_frame()
 
-    components = selected[_EV_COMPONENT_COLUMNS].astype(float)
+    # Function-local (not module-level) so `compute_enterprise_value_rows` stays the
+    # only place these column lists exist -- keeps the vectorized assembly free of any
+    # new public-API surface. Rebuilt per call; the lists are tiny literals.
+    component_columns = [
+        "market_cap",
+        "total_debt",
+        "preferred_equity",
+        "minority_interest",
+        "cash_and_equivalents",
+    ]
+    available_at_columns = [
+        "market_cap_available_at",
+        "total_debt_available_at",
+        "preferred_equity_available_at",
+        "minority_interest_available_at",
+        "cash_and_equivalents_available_at",
+    ]
+    # Columns `_input_lineage_json`/`_component_lineage` read via `row.get(...)`. Selecting
+    # exactly these (in this order) lets the batched lineage pass reconstruct per-row dicts
+    # from `itertuples()` tuples without ever materializing a full-width per-row Series
+    # (which is what makes `DataFrame.iterrows()` slow). Read from `selected` -- the raw,
+    # pre-`astype(float)` component values -- not `prepared`, so an int-valued component
+    # still renders as a JSON int in the lineage, matching the pre-vectorization output.
+    lineage_columns = [
+        "market_cap_source",
+        "market_cap_id",
+        "security_id",
+        "trade_date",
+        "market_cap",
+        "market_cap_available_at",
+        "market_cap_input_lineage_json",
+        "period_end",
+        "total_debt_id",
+        "total_debt_source",
+        "total_debt",
+        "total_debt_available_at",
+        "preferred_equity_id",
+        "preferred_equity_source",
+        "preferred_equity",
+        "preferred_equity_available_at",
+        "minority_interest_id",
+        "minority_interest_source",
+        "minority_interest",
+        "minority_interest_available_at",
+        "cash_and_equivalents_id",
+        "cash_and_equivalents_source",
+        "cash_and_equivalents",
+        "cash_and_equivalents_available_at",
+    ]
+
+    def _raise_first_negative_component(frame: pd.DataFrame) -> None:
+        """Vectorized equivalent of calling `_assert_non_negative_component` inside a
+        `for _, row in selected.iterrows()` loop: finds the same (row, column) violation
+        the original row-major/column-minor scan would hit first -- market_cap, then
+        total_debt, preferred_equity, minority_interest, cash_and_equivalents, checked row
+        by row in `selected` order -- and raises the identical error message.
+        """
+        negative = frame.to_numpy() < 0
+        row_has_negative = negative.any(axis=1)
+        if not row_has_negative.any():
+            return
+        first_row = int(row_has_negative.argmax())
+        first_col = int(negative[first_row].argmax())
+        column = component_columns[first_col]
+        raise ValueError(f"{column} must be a non-negative enterprise-value component")
+
+    components = selected[component_columns].astype(float)
     _raise_first_negative_component(components)
 
     prepared = selected.copy()
@@ -372,7 +373,7 @@ def compute_enterprise_value_rows(
     )
     prepared["is_latest_revision"] = True
     prepared["as_of_date"] = selected["trade_date"]
-    prepared["available_at"] = selected[_EV_AVAILABLE_AT_COLUMNS].max(axis=1)
+    prepared["available_at"] = selected[available_at_columns].max(axis=1)
     prepared["source"] = source
     prepared["enterprise_value_id"] = [
         _enterprise_value_id(source, str(market_cap_source), str(security_id), trade_date)
@@ -391,8 +392,8 @@ def compute_enterprise_value_rows(
     # Series, so per-cell values/dtypes (incl. pd.NA/Timestamp/date) are preserved
     # exactly, but building the M-row list stays a single, cheap tuple-unpacking loop.
     prepared["input_lineage_json"] = [
-        _input_lineage_json(dict(zip(_EV_LINEAGE_COLUMNS, values)))
-        for values in prepared[_EV_LINEAGE_COLUMNS].itertuples(index=False, name=None)
+        _input_lineage_json(dict(zip(lineage_columns, values)))
+        for values in selected[lineage_columns].itertuples(index=False, name=None)
     ]
 
     return prepared[ENTERPRISE_VALUE_COLUMNS].reset_index(drop=True)

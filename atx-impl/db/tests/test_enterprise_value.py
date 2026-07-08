@@ -269,6 +269,46 @@ def test_compute_enterprise_value_rows_returns_hand_computed_ev_and_lineage() ->
     assert lineage["components"]["total_debt"]["sign"] == "add"
 
 
+def test_ev_lineage_preserves_raw_int_component_dtype() -> None:
+    """PF4-S3 S3-6 fix (Finding 1): ``input_lineage_json`` values must come from the raw,
+    pre-``astype(float)`` component values (``selected``), not the float-overwritten
+    ``prepared`` frame -- an int-valued component must still render as a JSON int
+    (``1000``), matching the pre-vectorization per-row ``_input_lineage_json(row)``
+    output, not ``1000.0``.
+    """
+    int_row = _wide_row(
+        market_cap=1000,
+        total_debt=200,
+        preferred_equity=25,
+        minority_interest=10,
+        cash_and_equivalents=50,
+    )
+    rows = compute_enterprise_value_rows(pd.DataFrame([int_row]), run_id="ev-int-run")
+
+    assert len(rows) == 1
+    row = rows.iloc[0]
+
+    # Numeric OUTPUT columns are unaffected by this fix -- they were float pre-fix too.
+    assert row["market_cap"] == 1000.0
+    assert isinstance(row["market_cap"], float)
+
+    lineage_json = row["input_lineage_json"]
+    assert "1000.0" not in lineage_json
+
+    components = json.loads(lineage_json)["components"]
+    assert (components["market_cap"]["value"], type(components["market_cap"]["value"])) == (1000, int)
+    assert (components["total_debt"]["value"], type(components["total_debt"]["value"])) == (200, int)
+    assert (components["preferred_equity"]["value"], type(components["preferred_equity"]["value"])) == (25, int)
+    assert (components["minority_interest"]["value"], type(components["minority_interest"]["value"])) == (
+        10,
+        int,
+    )
+    assert (components["cash_and_equivalents"]["value"], type(components["cash_and_equivalents"]["value"])) == (
+        50,
+        int,
+    )
+
+
 def test_compute_enterprise_value_rejects_negative_cash_component() -> None:
     with pytest.raises(ValueError, match="cash_and_equivalents"):
         compute_enterprise_value_rows(pd.DataFrame([_wide_row(cash_and_equivalents=-50.0)]))
