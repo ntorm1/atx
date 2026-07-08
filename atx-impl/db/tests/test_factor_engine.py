@@ -8,6 +8,7 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -496,6 +497,78 @@ def test_pit_safety_report_flags_future_inputs_and_cross_date_pooling() -> None:
     assert future_report["future_input_count"] == 1
     assert pooled_report["status"] == "failed"
     assert pooled_report["operator_mismatch_count"] > 0
+
+
+def test_zscore_guards_inf_and_pit_safety_covers_neutralize() -> None:
+    # (a) A cross-section whose standardization overflows: three securities that
+    # each report a huge-magnitude value push mean/std computation past float64
+    # range. Today `_z` only guards std == 0 / NaN, so std landing on `inf`
+    # (rather than 0 or NaN) slips past that guard and the division proceeds,
+    # leaking a raw (non-nullable) non-finite float into the "value" column
+    # instead of the `pd.NA` sentinel the std==0 branch already returns.
+    overflow_frame = pd.DataFrame(
+        [
+            {"factor_id": "value", "security_id": "A", "as_of_date": dt.date(2023, 1, 3), "value": 1e308},
+            {"factor_id": "value", "security_id": "B", "as_of_date": dt.date(2023, 1, 3), "value": 1e308},
+            {"factor_id": "value", "security_id": "C", "as_of_date": dt.date(2023, 1, 3), "value": 1e308},
+        ]
+    )
+
+    standardized = zscore(overflow_frame)
+
+    assert not np.isinf(pd.to_numeric(standardized["value"], errors="coerce")).any()
+    assert standardized["value"].dtype == "Float64"
+    assert standardized["value"].isna().all()
+
+    # (b) `neutralize` is a valid PIT-safe operator but is missing from the
+    # `_operator_by_name` map used by `pit_safety_report`'s recompute, so the
+    # report cannot validate it today.
+    neutralize_frame = pd.DataFrame(
+        [
+            {
+                "factor_id": "value",
+                "security_id": "A",
+                "sector": "tech",
+                "as_of_date": dt.date(2023, 1, 3),
+                "value": 1.0,
+                "available_at": pd.Timestamp("2023-01-03"),
+            },
+            {
+                "factor_id": "value",
+                "security_id": "B",
+                "sector": "tech",
+                "as_of_date": dt.date(2023, 1, 3),
+                "value": 3.0,
+                "available_at": pd.Timestamp("2023-01-03"),
+            },
+            {
+                "factor_id": "value",
+                "security_id": "C",
+                "sector": "energy",
+                "as_of_date": dt.date(2023, 1, 3),
+                "value": 10.0,
+                "available_at": pd.Timestamp("2023-01-03"),
+            },
+            {
+                "factor_id": "value",
+                "security_id": "D",
+                "sector": "energy",
+                "as_of_date": dt.date(2023, 1, 3),
+                "value": 14.0,
+                "available_at": pd.Timestamp("2023-01-03"),
+            },
+        ]
+    )
+    neutralized = neutralize(neutralize_frame, by=("sector",))
+
+    report = pit_safety_report(
+        neutralize_frame,
+        transformed_frame=neutralized,
+        operator="neutralize",
+        operator_kwargs={"by": ("sector",)},
+    )
+
+    assert report["status"] == "passed"
 
 
 def test_factor_engine_catalog_view_and_pit_safety_gate_are_registered(tmp_store) -> None:
