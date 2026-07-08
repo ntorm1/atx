@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
 
 import pandas as pd
 import pytest
@@ -309,9 +310,37 @@ def test_ev_lineage_preserves_raw_int_component_dtype() -> None:
     )
 
 
-def test_compute_enterprise_value_rejects_negative_cash_component() -> None:
-    with pytest.raises(ValueError, match="cash_and_equivalents"):
-        compute_enterprise_value_rows(pd.DataFrame([_wide_row(cash_and_equivalents=-50.0)]))
+def test_compute_enterprise_value_skips_negative_cash_component(caplog: pytest.LogCaptureFixture) -> None:
+    """PF4-S3 S3-10: the assembly loop no longer raises and aborts the batch on a
+    negative component -- it skips the dirty row and flags it via a log record.
+    """
+    with caplog.at_level(logging.WARNING):
+        rows = compute_enterprise_value_rows(pd.DataFrame([_wide_row(cash_and_equivalents=-50.0)]))
+
+    assert rows.empty
+    assert any("cash_and_equivalents" in record.message for record in caplog.records)
+
+
+def test_ev_skips_and_flags_bad_component_without_aborting(caplog: pytest.LogCaptureFixture) -> None:
+    """PF4-S3 S3-10: a dirty security-day (negative component) must be skipped and
+    flagged, not abort the whole refresh -- the clean security's EV row is still
+    produced.
+    """
+    clean_row = _wide_row(security_id="SEC-EV-CLEAN")
+    dirty_row = _wide_row(security_id="SEC-EV-DIRTY", cash_and_equivalents=-50.0)
+
+    with caplog.at_level(logging.WARNING):
+        rows = compute_enterprise_value_rows(
+            pd.DataFrame([clean_row, dirty_row]), run_id="ev-skip-run"
+        )
+
+    assert rows["security_id"].tolist() == ["SEC-EV-CLEAN"]
+    assert rows.iloc[0]["enterprise_value"] == pytest.approx(1185.0)
+
+    assert any(
+        "SEC-EV-DIRTY" in record.message and "cash_and_equivalents" in record.message
+        for record in caplog.records
+    ), "expected the dirty row to be recorded/flagged, not silently dropped"
 
 
 def test_refresh_enterprise_value_is_idempotent_and_asof_visible(tmp_store) -> None:

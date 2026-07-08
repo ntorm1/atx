@@ -339,24 +339,52 @@ def compute_enterprise_value_rows(
         "cash_and_equivalents_available_at",
     ]
 
-    def _raise_first_negative_component(frame: pd.DataFrame) -> None:
-        """Vectorized equivalent of calling `_assert_non_negative_component` inside a
-        `for _, row in selected.iterrows()` loop: finds the same (row, column) violation
-        the original row-major/column-minor scan would hit first -- market_cap, then
-        total_debt, preferred_equity, minority_interest, cash_and_equivalents, checked row
-        by row in `selected` order -- and raises the identical error message.
+    def _skip_bad_component_rows(frame: pd.DataFrame) -> pd.Series:
+        """PF4-S3 S3-10: skip-and-flag replacement for the old raising check (which
+        called `_assert_non_negative_component`-equivalent logic and aborted the whole
+        refresh for one dirty security-day). Vectorized equivalent of a
+        `for _, row in selected.iterrows()` scan that coerces each of the 5 EV
+        components and, on the first None/NaN or negative value in a row (checked in
+        `component_columns` order -- market_cap, total_debt, preferred_equity,
+        minority_interest, cash_and_equivalents, same order the original per-row scan
+        used), records `(security_id, trade_date, component)` to a skipped-rows
+        collector and logs it instead of raising. `import logging` is function-local so
+        this snapshot-tracked module gains no new module-level symbol.
         """
-        negative = frame.to_numpy() < 0
-        row_has_negative = negative.any(axis=1)
-        if not row_has_negative.any():
-            return
-        first_row = int(row_has_negative.argmax())
-        first_col = int(negative[first_row].argmax())
-        column = component_columns[first_col]
-        raise ValueError(f"{column} must be a non-negative enterprise-value component")
+        import logging
+
+        values = frame.to_numpy()
+        is_bad_cell = pd.isna(frame).to_numpy() | (values < 0)
+        row_is_bad = is_bad_cell.any(axis=1)
+
+        skipped: list[tuple[Any, Any, str]] = []
+        for row_pos, is_bad in enumerate(row_is_bad):
+            if not is_bad:
+                continue
+            column = component_columns[int(is_bad_cell[row_pos].argmax())]
+            bad_row = selected.iloc[row_pos]
+            skipped.append((bad_row.get("security_id"), bad_row.get("trade_date"), column))
+
+        if skipped:
+            logger = logging.getLogger(__name__)
+            for security_id, trade_date, column in skipped:
+                logger.warning(
+                    "Skipping enterprise-value row security_id=%s trade_date=%s: "
+                    "%s must be a non-negative enterprise-value component",
+                    security_id,
+                    trade_date,
+                    column,
+                )
+
+        return pd.Series(~row_is_bad, index=frame.index)
 
     components = selected[component_columns].astype(float)
-    _raise_first_negative_component(components)
+    clean_mask = _skip_bad_component_rows(components)
+    if not clean_mask.all():
+        selected = selected.loc[clean_mask].reset_index(drop=True)
+        components = components.loc[clean_mask].reset_index(drop=True)
+        if selected.empty:
+            return _empty_enterprise_value_frame()
 
     prepared = selected.copy()
     prepared["market_cap"] = components["market_cap"]
