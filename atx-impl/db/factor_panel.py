@@ -681,7 +681,7 @@ def read_panel_asof(
             security_ids=security_ids,
         )
     else:
-        with connect(db_path, read_only=False) as opened:
+        with connect(db_path, read_only=True) as opened:
             long = _read_panel_asof_active(
                 opened,
                 as_of_date=resolved_date,
@@ -738,7 +738,7 @@ def describe_factor_panel(db_path: Path | str = DEFAULT_DB_PATH, *, store=None) 
 
     if store is not None:
         return _run(store)
-    with connect(db_path, read_only=False) as opened:
+    with connect(db_path, read_only=True) as opened:
         return _run(opened)
 
 
@@ -750,7 +750,7 @@ def export_factor_panel(
 ) -> LakeExportResult:
     """Export the long factor panel through the governed lake exporter."""
 
-    with connect(db_path, read_only=False) as store:
+    with connect(db_path, read_only=True) as store:
         assert_factor_panel_export_ready(store)
     return LakehouseExporter(db_path=db_path, lake_root=lake_root).export_objects(
         ("v_factor_panel",),

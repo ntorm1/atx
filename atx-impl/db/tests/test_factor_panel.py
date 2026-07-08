@@ -587,3 +587,37 @@ def test_read_panel_asof_catalog_and_cli_round_trip(tmp_store, tmp_path, capsys)
     export_payload = json.loads(capsys.readouterr().out)
     assert export_payload["object_name"] == "v_factor_panel"
     assert export_payload["rows"] == 3
+
+
+def test_panel_read_paths_open_read_only(tmp_store, tmp_path, monkeypatch) -> None:
+    """S3-8: read_panel_asof/describe_factor_panel/export_factor_panel must not open the
+    warehouse writable when driving off a db_path (writer-lock hazard for concurrent reads).
+    """
+    import contextlib
+
+    from db import factor_panel as factor_panel_module
+
+    _insert_factor_value_fixtures(tmp_store)
+
+    db_path = tmp_store.path
+    tmp_store.con.execute("CHECKPOINT")
+    tmp_store.connection.close()
+    tmp_store.connection = None
+
+    captured_read_only: list[bool] = []
+    real_connect = factor_panel_module.connect
+
+    @contextlib.contextmanager
+    def _capturing_connect(path, *, read_only=False):
+        captured_read_only.append(read_only)
+        with real_connect(path, read_only=read_only) as store:
+            yield store
+
+    monkeypatch.setattr(factor_panel_module, "connect", _capturing_connect)
+
+    read_panel_asof(dt.date(2024, 2, 1), db_path=db_path)
+    describe_factor_panel(db_path=db_path)
+    export_factor_panel(db_path, lake_root=tmp_path / "read_only_lake")
+
+    assert len(captured_read_only) == 3
+    assert captured_read_only == [True, True, True]
