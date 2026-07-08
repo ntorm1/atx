@@ -791,14 +791,18 @@ def _insider_metric(
     cluster_purchase_value: float,
     is_cluster_buy: bool,
     plan_sale_value_ratio: float,
+    signal_date: dt.date = dt.date(2024, 6, 3),
+    window_days: int = 30,
+    available_at: str = "2024-06-04 09:30:00",
+    metric_id: str | None = None,
 ) -> dict[str, object]:
     return {
-        "metric_id": f"insider-{security_id}",
+        "metric_id": metric_id or f"insider-{security_id}",
         "security_id": security_id,
         "issuer_trading_symbol": symbol,
-        "signal_date": dt.date(2024, 6, 3),
-        "as_of_date": dt.date(2024, 6, 3),
-        "window_days": 30,
+        "signal_date": signal_date,
+        "as_of_date": signal_date,
+        "window_days": window_days,
         "transaction_count": 4,
         "gross_purchase_value": max(net_purchase_value, 0.0),
         "gross_sale_value": max(-net_purchase_value, 0.0) + 1000.0,
@@ -814,7 +818,7 @@ def _insider_metric(
         "plan_sale_count": 1 if plan_sale_value_ratio else 0,
         "plan_sale_value_ratio": plan_sale_value_ratio,
         "is_cluster_buy": is_cluster_buy,
-        "available_at": pd.Timestamp("2024-06-04 09:30:00"),
+        "available_at": pd.Timestamp(available_at),
         "is_latest_revision": True,
         "source": "fixture_insider_transaction_metrics",
     }
@@ -876,6 +880,111 @@ def test_insider_mapper_emits_net_buy_cluster_and_plan_sale_factors() -> None:
     assert lineage["source_row_id"] == "insider-SEC-A"
     assert lineage["signal_date"] == "2024-06-03"
     assert lineage["gross_purchase_value"] == 100000.0
+
+
+def test_insider_dedup_collapses_same_window_days_revision_to_latest_available() -> None:
+    """S3-5 fix regression: two rows sharing the FULL natural key (security_id,
+    as_of_date, window_days) - i.e. a true same-window revision - must still
+    collapse to only the latest-available row (the dedup this fix must not break)."""
+
+    stale_revision = _insider_metric(
+        "SEC-A",
+        "AAA",
+        net_purchase_value=10_000.0,
+        net_purchase_shares=1_000.0,
+        cluster_purchase_value=5_000.0,
+        is_cluster_buy=False,
+        plan_sale_value_ratio=0.0,
+        window_days=30,
+        available_at="2024-06-04 09:30:00",
+        metric_id="insider-SEC-A-rev1",
+    )
+    latest_revision = _insider_metric(
+        "SEC-A",
+        "AAA",
+        net_purchase_value=100_000.0,
+        net_purchase_shares=10_000.0,
+        cluster_purchase_value=80_000.0,
+        is_cluster_buy=True,
+        plan_sale_value_ratio=0.0,
+        window_days=30,
+        available_at="2024-06-04 15:00:00",
+        metric_id="insider-SEC-A-rev2",
+    )
+    other_security = _insider_metric(
+        "SEC-B",
+        "BBB",
+        net_purchase_value=0.0,
+        net_purchase_shares=0.0,
+        cluster_purchase_value=10_000.0,
+        is_cluster_buy=False,
+        plan_sale_value_ratio=0.5,
+    )
+
+    frame = pd.DataFrame([stale_revision, latest_revision, other_security])
+    rows = compute_insider_factor_rows(frame, as_of_date=dt.date(2024, 6, 5), run_id="s3-5-insider-revision")
+
+    net_buy_rows = rows[(rows["factor_id"] == "insider_net_purchase_value") & (rows["security_id"] == "SEC-A")]
+    assert len(net_buy_rows) == 1
+    survivor = net_buy_rows.iloc[0]
+    assert survivor.raw_value == pytest.approx(100_000.0)
+    assert survivor.available_at == pd.Timestamp("2024-06-04 15:00:00")
+
+
+def test_insider_dedup_preserves_distinct_window_days_on_same_signal_date() -> None:
+    """S3-5 fix regression: insider_transaction_metrics carries a first-class
+    window_days dimension - two rows sharing (security_id, as_of_date) but with
+    DIFFERENT window_days are distinct observations and must both survive.
+
+    Against commit 502ce72 (pre-fix), the dedup grouped only on
+    (security_id, as_of_date), so one of these two window_days rows was silently
+    dropped before ranking - this test is RED on that commit."""
+
+    window_30 = _insider_metric(
+        "SEC-A",
+        "AAA",
+        net_purchase_value=100_000.0,
+        net_purchase_shares=10_000.0,
+        cluster_purchase_value=80_000.0,
+        is_cluster_buy=True,
+        plan_sale_value_ratio=0.0,
+        window_days=30,
+        available_at="2024-06-04 09:30:00",
+        metric_id="insider-SEC-A-w30",
+    )
+    window_90 = _insider_metric(
+        "SEC-A",
+        "AAA",
+        net_purchase_value=250_000.0,
+        net_purchase_shares=25_000.0,
+        cluster_purchase_value=200_000.0,
+        is_cluster_buy=True,
+        plan_sale_value_ratio=0.0,
+        window_days=90,
+        available_at="2024-06-04 09:30:00",
+        metric_id="insider-SEC-A-w90",
+    )
+    other_security = _insider_metric(
+        "SEC-B",
+        "BBB",
+        net_purchase_value=0.0,
+        net_purchase_shares=0.0,
+        cluster_purchase_value=10_000.0,
+        is_cluster_buy=False,
+        plan_sale_value_ratio=0.5,
+    )
+
+    frame = pd.DataFrame([window_30, window_90, other_security])
+    rows = compute_insider_factor_rows(frame, as_of_date=dt.date(2024, 6, 5), run_id="s3-5-insider-distinct-window")
+
+    net_buy_rows = rows[(rows["factor_id"] == "insider_net_purchase_value") & (rows["security_id"] == "SEC-A")]
+    # Both window_days observations must survive - neither silently dropped.
+    assert len(net_buy_rows) == 2
+    raw_values_by_window = {}
+    for row in net_buy_rows.itertuples(index=False):
+        lineage = json.loads(row.input_lineage_json)[0]
+        raw_values_by_window[lineage["window_days"]] = row.raw_value
+    assert raw_values_by_window == {30: pytest.approx(100_000.0), 90: pytest.approx(250_000.0)}
 
 
 def test_short_insider_seed_rows_round_trip_into_catalog(tmp_store) -> None:
