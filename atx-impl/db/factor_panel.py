@@ -218,7 +218,10 @@ def assemble_factor_panel_long(
     if panel.empty:
         return _empty_panel()
 
-    panel = panel.sort_values(["as_of_date", "security_id", "factor_id", "available_at", "source_loaded_at"])
+    panel = panel.sort_values(
+        ["as_of_date", "security_id", "factor_id", "available_at", "source_loaded_at", "run_id"],
+        kind="mergesort",
+    )
     panel = panel.drop_duplicates(["security_id", "as_of_date", "factor_id"], keep="last")
     return panel.loc[:, FACTOR_PANEL_COLUMNS].reset_index(drop=True)
 

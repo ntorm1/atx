@@ -276,6 +276,44 @@ def test_assemble_factor_panel_long_uses_decision_dates_and_universe_membership(
     assert wide.loc[0, "profitability_gross_profitability"] == 0.8
 
 
+def test_panel_dedup_is_deterministic_on_availability_ties() -> None:
+    row_low = _factor_row(
+        "fundamental",
+        "SEC-A",
+        "profitability_gross_profitability",
+        0.8,
+        as_of_date="2024-02-01",
+        available_at="2024-02-01 10:00:00",
+        source_loaded_at="2024-02-01 12:00:00",
+    )
+    row_low["run_id"] = "run-aaaa"
+    row_low["factor_value_id"] = "fundamental-SEC-A-tie-a"
+
+    row_high = _factor_row(
+        "fundamental",
+        "SEC-A",
+        "profitability_gross_profitability",
+        0.5,
+        as_of_date="2024-02-01",
+        available_at="2024-02-01 10:00:00",
+        source_loaded_at="2024-02-01 12:00:00",
+    )
+    row_high["run_id"] = "run-bbbb"
+    row_high["factor_value_id"] = "fundamental-SEC-A-tie-b"
+
+    forward = pd.DataFrame([row_low, row_high])
+    shuffled = pd.DataFrame([row_high, row_low])
+
+    panel_forward = assemble_factor_panel_long(forward)
+    panel_shuffled = assemble_factor_panel_long(shuffled)
+
+    assert len(panel_forward) == 1
+    assert len(panel_shuffled) == 1
+    assert panel_forward.loc[0, "run_id"] == panel_shuffled.loc[0, "run_id"]
+    assert panel_forward.loc[0, "value"] == panel_shuffled.loc[0, "value"]
+    assert panel_forward.loc[0, "run_id"] == "run-bbbb"
+
+
 def test_factor_panel_views_resolve_long_and_wide_with_pit_universe_filter(tmp_store) -> None:
     _insert_factor_value_fixtures(tmp_store)
 
