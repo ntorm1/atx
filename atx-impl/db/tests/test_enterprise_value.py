@@ -6,6 +6,7 @@ import json
 import pandas as pd
 import pytest
 
+import db.enterprise_value as ev_mod
 from db.enterprise_value import (
     EnterpriseValueDataset,
     EnterpriseValueOptions,
@@ -654,3 +655,138 @@ def test_valuation_input_catalog_migration_registry_and_indexes_are_present(tmp_
             True,
         ),
     ]
+
+
+def _reference_compute_enterprise_value_rows(
+    inputs: pd.DataFrame,
+    *,
+    source: str = ev_mod.DEFAULT_ENTERPRISE_VALUE_SOURCE,
+    run_id: str | None = None,
+) -> pd.DataFrame:
+    """PF4-S3 S3-6: frozen pre-vectorization reference.
+
+    Verbatim copy of the ``for _, row in selected.iterrows(): ...`` body that
+    ``compute_enterprise_value_rows`` used before S3-6. Kept independent of the
+    production function (which is now vectorized) so the vectorized output can be
+    checked for byte-for-byte equivalence against the original per-row algorithm,
+    not just against itself.
+    """
+    selected = ev_mod._select_latest_enterprise_value_inputs(inputs)
+    if selected.empty:
+        return ev_mod._empty_enterprise_value_frame()
+
+    records: list[dict[str, object]] = []
+    for _, row in selected.iterrows():
+        market_cap = ev_mod._assert_non_negative_component(row, "market_cap")
+        total_debt = ev_mod._assert_non_negative_component(row, "total_debt")
+        preferred_equity = ev_mod._assert_non_negative_component(row, "preferred_equity")
+        minority_interest = ev_mod._assert_non_negative_component(row, "minority_interest")
+        cash_and_equivalents = ev_mod._assert_non_negative_component(row, "cash_and_equivalents")
+        enterprise_value = market_cap + total_debt + preferred_equity + minority_interest - cash_and_equivalents
+        available_at = max(
+            row["market_cap_available_at"],
+            row["total_debt_available_at"],
+            row["preferred_equity_available_at"],
+            row["minority_interest_available_at"],
+            row["cash_and_equivalents_available_at"],
+        )
+        records.append(
+            {
+                "enterprise_value_id": ev_mod._enterprise_value_id(
+                    source,
+                    str(row["market_cap_source"]),
+                    str(row["security_id"]),
+                    row["trade_date"],
+                ),
+                "source": source,
+                "market_cap_source": row["market_cap_source"],
+                "market_cap_id": row.get("market_cap_id"),
+                "security_id": row["security_id"],
+                "symbol": row.get("symbol"),
+                "trade_date": row["trade_date"],
+                "period_start": row.get("period_start"),
+                "period_end": row["period_end"],
+                "fiscal_year": row.get("fiscal_year"),
+                "fiscal_period": row.get("fiscal_period"),
+                "price": row.get("price"),
+                "share_count": row.get("share_count"),
+                "share_count_type_used": row.get("share_count_type_used"),
+                "market_cap": market_cap,
+                "total_debt": total_debt,
+                "preferred_equity": preferred_equity,
+                "minority_interest": minority_interest,
+                "cash_and_equivalents": cash_and_equivalents,
+                "enterprise_value": enterprise_value,
+                "is_latest_revision": True,
+                "as_of_date": row["trade_date"],
+                "available_at": available_at,
+                "market_cap_available_at": row["market_cap_available_at"],
+                "price_available_at": row["price_available_at"],
+                "share_available_at": row["share_available_at"],
+                "total_debt_available_at": row["total_debt_available_at"],
+                "preferred_equity_available_at": row["preferred_equity_available_at"],
+                "minority_interest_available_at": row["minority_interest_available_at"],
+                "cash_and_equivalents_available_at": row["cash_and_equivalents_available_at"],
+                "input_codes_json": ev_mod.json_dumps(ev_mod.COMPONENT_CODE_MAP),
+                "input_lineage_json": ev_mod._input_lineage_json(row),
+                "formula_version": "enterprise_value_v1",
+                "run_id": run_id,
+            }
+        )
+    return pd.DataFrame(records, columns=ev_mod.ENTERPRISE_VALUE_COLUMNS)
+
+
+def _scale_enterprise_value_fixture(n_rows: int) -> pd.DataFrame:
+    return pd.DataFrame([_wide_row(security_id=f"SEC-SCALE-{i:05d}") for i in range(n_rows)])
+
+
+def test_ev_row_assembly_is_vectorized_and_matches_reference(monkeypatch) -> None:
+    small_fixture = pd.DataFrame([_wide_row()])
+    scale_fixture = _scale_enterprise_value_fixture(2000)
+
+    # Capture the pre-fix reference BEFORE any monkeypatching, using the frozen
+    # per-row algorithm above (not the production function under test).
+    reference_small = _reference_compute_enterprise_value_rows(small_fixture, run_id="ev-scale-run")
+    reference_scale = _reference_compute_enterprise_value_rows(scale_fixture, run_id="ev-scale-run")
+
+    iterrows_calls = {"n": 0}
+    original_iterrows = pd.DataFrame.iterrows
+
+    def counting_iterrows(self, *args, **kwargs):
+        iterrows_calls["n"] += 1
+        return original_iterrows(self, *args, **kwargs)
+
+    monkeypatch.setattr(pd.DataFrame, "iterrows", counting_iterrows)
+
+    json_dumps_calls = {"n": 0}
+    original_json_dumps = ev_mod.json_dumps
+
+    def counting_json_dumps(*args, **kwargs):
+        json_dumps_calls["n"] += 1
+        return original_json_dumps(*args, **kwargs)
+
+    monkeypatch.setattr(ev_mod, "json_dumps", counting_json_dumps)
+
+    vectorized_scale = compute_enterprise_value_rows(scale_fixture, run_id="ev-scale-run")
+    vectorized_small = compute_enterprise_value_rows(small_fixture, run_id="ev-scale-run")
+
+    n_rows = len(scale_fixture)
+    assert iterrows_calls["n"] == 0, (
+        f"compute_enterprise_value_rows must not use DataFrame.iterrows (saw {iterrows_calls['n']} calls)"
+    )
+    # Pre-fix: json_dumps is called twice per row (COMPONENT_CODE_MAP recomputed on every
+    # row, plus the per-row lineage payload) -> ~2 * n_rows. Post-fix: COMPONENT_CODE_MAP
+    # is hoisted to a single call and only the per-row lineage remains -> ~n_rows + O(1).
+    assert json_dumps_calls["n"] <= n_rows + 5, (
+        f"json_dumps should be batched to ~one call per row (plus O(1) constants), "
+        f"got {json_dumps_calls['n']} calls for {n_rows} rows"
+    )
+
+    pd.testing.assert_frame_equal(
+        vectorized_scale.reset_index(drop=True),
+        reference_scale.reset_index(drop=True),
+    )
+    pd.testing.assert_frame_equal(
+        vectorized_small.reset_index(drop=True),
+        reference_small.reset_index(drop=True),
+    )

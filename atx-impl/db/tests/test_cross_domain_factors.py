@@ -7,11 +7,13 @@ from dataclasses import replace
 import pandas as pd
 import pytest
 
+import db.factors.cross_domain as cd_mod
 from db.factors.catalog import validate_catalog
 from db.factors.cross_domain import (
     ESTIMATE_13F_SPECS,
     PRICE_LIQUIDITY_SPECS,
     SHORT_INSIDER_SPECS,
+    SHORT_INTEREST_SPECS,
     compute_cross_domain_factor_rows,
     compute_estimate_revision_factor_rows,
     compute_insider_factor_rows,
@@ -1166,3 +1168,309 @@ def test_unified_cross_domain_surface_catalog_and_gate_registry_are_present(tmp_
         "available_at",
         "input_lineage_json",
     } <= value_columns
+
+
+def _reference_compute_source_factor_rows(
+    source_frame: pd.DataFrame,
+    *,
+    specs,
+    run_id: str | None,
+    source: str,
+    hash_prefix: str,
+    revision_key_columns: tuple[str, ...] = ("security_id", "as_of_date"),
+) -> pd.DataFrame:
+    """PF4-S3 S3-6: frozen pre-batching reference.
+
+    Verbatim copy of `_compute_source_factor_rows` before S3-6: `spec.input_ids_json`
+    (a property that calls `json_dumps` on every access) and
+    `json_dumps([lineage_record])` are both evaluated inside the per-row
+    `ranked.itertuples()` loop. Kept independent of the production function so the
+    batched version can be checked for byte-for-byte equivalence.
+    """
+    if source_frame.empty:
+        return pd.DataFrame(columns=cd_mod.CROSS_DOMAIN_FACTOR_COLUMNS)
+    rows: list[dict[str, object]] = []
+    for spec in specs:
+        if spec.source_column not in source_frame.columns:
+            continue
+        subset = source_frame.dropna(subset=[spec.source_column]).copy()
+        if subset.empty:
+            continue
+        group_columns = [column for column in revision_key_columns if column in subset.columns]
+        if not group_columns:
+            group_columns = ["security_id", "as_of_date"]
+        subset = (
+            subset.sort_values([*group_columns, "available_at", "source_row_id"], kind="mergesort")
+            .groupby(group_columns, dropna=False)
+            .tail(1)
+            .reset_index(drop=True)
+        )
+        subset["native_percent_rank_value"] = cd_mod._native_percent_rank(subset, spec)
+        line_columns = list(dict.fromkeys(column for column in spec.lineage_columns if column in subset.columns))
+        native_columns = [spec.native_rank_column] if spec.native_rank_column and spec.native_rank_column in subset.columns else []
+        temp = subset[
+            [
+                "security_id",
+                "symbol",
+                "as_of_date",
+                "available_at",
+                "source_row_id",
+                "native_percent_rank_value",
+                spec.source_column,
+            ]
+            + native_columns
+            + [column for column in line_columns if column not in {spec.source_column, *native_columns}]
+        ].rename(columns={spec.source_column: "raw_value"})
+        ranked = cd_mod.cs_rank(
+            temp.assign(factor_id=spec.factor_id, value=temp["raw_value"]),
+            value_column="value",
+            output_column="value",
+            partition_columns=("factor_id", "as_of_date"),
+            ascending=spec.direction >= 0,
+        )
+        for row in ranked.itertuples(index=False):
+            lineage_record = {
+                "source_table": spec.source_table,
+                "source_column": spec.source_column,
+                "source_row_id": cd_mod._json_scalar(row.source_row_id),
+                "as_of_date": cd_mod._json_scalar(row.as_of_date),
+                "available_at": cd_mod._json_scalar(pd.Timestamp(row.available_at)),
+                "raw_value": float(row.raw_value),
+                "native_rank_column": spec.native_rank_column,
+                "native_rank_value": None
+                if not spec.native_rank_column or pd.isna(getattr(row, spec.native_rank_column, pd.NA))
+                else float(getattr(row, spec.native_rank_column)),
+                "native_percent_rank_value": None
+                if pd.isna(row.native_percent_rank_value)
+                else float(row.native_percent_rank_value),
+            }
+            for column in line_columns:
+                if column == spec.source_column:
+                    continue
+                lineage_record[column] = cd_mod._json_scalar(getattr(row, column))
+            rows.append(
+                {
+                    "factor_value_id": cd_mod._hash_id(
+                        hash_prefix, spec.factor_id, row.security_id, row.as_of_date, row.available_at, run_id
+                    ),
+                    "factor_id": spec.factor_id,
+                    "factor_name": spec.factor_name,
+                    "domain": spec.domain,
+                    "family": spec.family,
+                    "security_id": str(row.security_id),
+                    "symbol": row.symbol,
+                    "as_of_date": row.as_of_date,
+                    "raw_value": float(row.raw_value),
+                    "value": float(row.value) if not pd.isna(row.value) else pd.NA,
+                    "available_at": pd.Timestamp(row.available_at),
+                    "source_row_id": cd_mod._json_scalar(row.source_row_id),
+                    "input_ids_json": spec.input_ids_json,
+                    "input_lineage_json": cd_mod.json_dumps([lineage_record]),
+                    "is_latest_revision": True,
+                    "run_id": run_id,
+                    "source": source,
+                }
+            )
+    if not rows:
+        return pd.DataFrame(columns=cd_mod.CROSS_DOMAIN_FACTOR_COLUMNS)
+    return pd.DataFrame(rows)[cd_mod.CROSS_DOMAIN_FACTOR_COLUMNS].sort_values(
+        ["domain", "factor_id", "as_of_date", "security_id"], kind="mergesort"
+    ).reset_index(drop=True)
+
+
+def _reference_compute_price_liquidity_factor_rows(
+    price_metrics: pd.DataFrame,
+    *,
+    specs=PRICE_LIQUIDITY_SPECS,
+    run_id: str | None = None,
+    source: str = cd_mod.SOURCE_NAME,
+) -> pd.DataFrame:
+    """PF4-S3 S3-6: frozen pre-batching reference for `compute_price_liquidity_factor_rows`."""
+    source_frame = cd_mod._normalize_price_metrics(price_metrics)
+    if source_frame.empty:
+        return pd.DataFrame(columns=cd_mod.CROSS_DOMAIN_FACTOR_COLUMNS)
+    rows: list[dict[str, object]] = []
+    for spec in specs:
+        if spec.source_column not in source_frame.columns:
+            continue
+        subset = source_frame.dropna(subset=[spec.source_column]).copy()
+        if subset.empty:
+            continue
+        subset = (
+            subset.sort_values(["security_id", "as_of_date", "available_at", "metric_id"], kind="mergesort")
+            .groupby(["security_id", "as_of_date"], dropna=False)
+            .tail(1)
+            .reset_index(drop=True)
+        )
+        subset["native_percent_rank_value"] = cd_mod._native_percent_rank(subset, spec)
+        temp = subset[
+            [
+                "security_id",
+                "symbol",
+                "as_of_date",
+                "available_at",
+                "metric_id",
+                "native_percent_rank_value",
+                spec.source_column,
+            ]
+            + ([spec.native_rank_column] if spec.native_rank_column and spec.native_rank_column in subset.columns else [])
+        ].rename(columns={spec.source_column: "raw_value"})
+        ranked = cd_mod.cs_rank(
+            temp.assign(factor_id=spec.factor_id, value=temp["raw_value"]),
+            value_column="value",
+            output_column="value",
+            partition_columns=("factor_id", "as_of_date"),
+            ascending=spec.direction >= 0,
+        )
+        for row in ranked.itertuples(index=False):
+            lineage = [
+                {
+                    "source_table": "equity_price_metrics",
+                    "source_column": spec.source_column,
+                    "source_row_id": None if pd.isna(row.metric_id) else str(row.metric_id),
+                    "as_of_date": row.as_of_date.isoformat() if isinstance(row.as_of_date, dt.date) else str(row.as_of_date),
+                    "available_at": pd.Timestamp(row.available_at).isoformat(),
+                    "raw_value": float(row.raw_value),
+                    "native_rank_column": spec.native_rank_column,
+                    "native_rank_value": None
+                    if not spec.native_rank_column or pd.isna(getattr(row, spec.native_rank_column, pd.NA))
+                    else float(getattr(row, spec.native_rank_column)),
+                    "native_percent_rank_value": None
+                    if pd.isna(row.native_percent_rank_value)
+                    else float(row.native_percent_rank_value),
+                }
+            ]
+            rows.append(
+                {
+                    "factor_value_id": cd_mod._hash_id(
+                        "cross_domain_factor", spec.factor_id, row.security_id, row.as_of_date, row.available_at, run_id
+                    ),
+                    "factor_id": spec.factor_id,
+                    "factor_name": spec.factor_name,
+                    "domain": spec.domain,
+                    "family": spec.family,
+                    "security_id": str(row.security_id),
+                    "symbol": row.symbol,
+                    "as_of_date": row.as_of_date,
+                    "raw_value": float(row.raw_value),
+                    "value": float(row.value) if not pd.isna(row.value) else pd.NA,
+                    "available_at": pd.Timestamp(row.available_at),
+                    "source_row_id": None if pd.isna(row.metric_id) else str(row.metric_id),
+                    "input_ids_json": spec.input_ids_json,
+                    "input_lineage_json": cd_mod.json_dumps(lineage),
+                    "is_latest_revision": True,
+                    "run_id": run_id,
+                    "source": source,
+                }
+            )
+    if not rows:
+        return pd.DataFrame(columns=cd_mod.CROSS_DOMAIN_FACTOR_COLUMNS)
+    return pd.DataFrame(rows)[cd_mod.CROSS_DOMAIN_FACTOR_COLUMNS].sort_values(
+        ["domain", "factor_id", "as_of_date", "security_id"], kind="mergesort"
+    ).reset_index(drop=True)
+
+
+def _scale_price_metrics_fixture(n_securities: int) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            _price_metric(
+                f"SEC-SCALE-{i:05d}",
+                f"SYM{i:05d}",
+                momentum_21d=0.01 * (i % 50),
+                momentum_126d=0.02 * (i % 50),
+                realized_vol_20d=0.05 + 0.001 * (i % 50),
+                realized_vol_60d=0.07 + 0.001 * (i % 50),
+                pct_from_high_252d=-0.01 * (i % 50),
+                avg_dollar_volume_21d=1_000_000.0 + 1_000.0 * i,
+                amihud_illiquidity_21d=0.01 + 0.0001 * (i % 50),
+                beta_60d=0.8 + 0.001 * (i % 50),
+                idiosyncratic_vol_60d=0.1 + 0.0001 * (i % 50),
+                max_drawdown_126d=-0.02 * (i % 50),
+                momentum_21d_cs_pct_rank=((i % 50) + 1) / 50.0,
+                realized_vol_20d_cs_pct_rank=((i % 50) + 1) / 50.0,
+                amihud_illiquidity_21d_cs_pct_rank=((i % 50) + 1) / 50.0,
+            )
+            for i in range(n_securities)
+        ]
+    )
+
+
+def _scale_short_interest_fixture(n_securities: int) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            _short_interest_metric(
+                f"SEC-SCALE-{i:05d}",
+                f"SYM{i:05d}",
+                days_to_cover=1.0 + (i % 20) * 0.5,
+                short_pct_shares_outstanding=0.01 + (i % 20) * 0.01,
+                short_interest_change_pct=-0.1 + (i % 20) * 0.01,
+                short_interest_momentum_3=-0.2 + (i % 20) * 0.02,
+                short_pressure_score=10.0 + (i % 20) * 4.0,
+            )
+            for i in range(n_securities)
+        ]
+    )
+
+
+def test_lineage_json_is_batched(monkeypatch) -> None:
+    # Equivalence, small fixtures (existing helpers).
+    reference_price = _reference_compute_price_liquidity_factor_rows(
+        _price_metrics_fixture(), run_id="s9-price-run"
+    )
+    reference_short = _reference_compute_source_factor_rows(
+        cd_mod._normalize_source_metrics(
+            _short_interest_fixture(), source_row_id_column="metric_id", date_columns=("as_of_date", "settlement_date")
+        ),
+        specs=SHORT_INTEREST_SPECS,
+        run_id="short-run",
+        source=cd_mod.SOURCE_NAME,
+        hash_prefix="short_interest_factor",
+    )
+
+    # Scale fixtures for the batching/complexity assertion.
+    n_securities = 300
+    scale_price_metrics = _scale_price_metrics_fixture(n_securities)
+    scale_short_interest = _scale_short_interest_fixture(n_securities)
+
+    json_dumps_calls = {"n": 0}
+    original_json_dumps = cd_mod.json_dumps
+
+    def counting_json_dumps(*args, **kwargs):
+        json_dumps_calls["n"] += 1
+        return original_json_dumps(*args, **kwargs)
+
+    monkeypatch.setattr(cd_mod, "json_dumps", counting_json_dumps)
+
+    vectorized_price = compute_price_liquidity_factor_rows(scale_price_metrics, run_id="s9-price-scale-run")
+    vectorized_short = compute_short_interest_factor_rows(scale_short_interest, run_id="short-scale-run")
+
+    n_price_rows = len(vectorized_price)
+    n_short_rows = len(vectorized_short)
+    assert n_price_rows == n_securities * len(PRICE_LIQUIDITY_SPECS)
+    assert n_short_rows == n_securities * len(SHORT_INTEREST_SPECS)
+
+    # Pre-fix: json_dumps is called twice per row -- once for `spec.input_ids_json`
+    # (a property that re-serializes the same literal on every row access) and once
+    # for the per-row lineage payload -- so call count is ~2 * total_rows. Post-fix:
+    # `input_ids_json` is hoisted to one call per spec and the lineage pass, while
+    # still O(rows), is the only per-row json_dumps left.
+    total_rows = n_price_rows + n_short_rows
+    max_specs = len(PRICE_LIQUIDITY_SPECS) + len(SHORT_INTEREST_SPECS)
+    assert json_dumps_calls["n"] <= total_rows + max_specs + 5, (
+        f"json_dumps should be batched to ~one call per row (plus O(num_specs) "
+        f"constants), got {json_dumps_calls['n']} calls for {total_rows} rows"
+    )
+
+    monkeypatch.undo()
+
+    vectorized_price_small = compute_price_liquidity_factor_rows(_price_metrics_fixture(), run_id="s9-price-run")
+    pd.testing.assert_frame_equal(
+        vectorized_price_small.reset_index(drop=True),
+        reference_price.reset_index(drop=True),
+    )
+
+    vectorized_short_small = compute_short_interest_factor_rows(_short_interest_fixture(), run_id="short-run")
+    pd.testing.assert_frame_equal(
+        vectorized_short_small.reset_index(drop=True),
+        reference_short.reset_index(drop=True),
+    )

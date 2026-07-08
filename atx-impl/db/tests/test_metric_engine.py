@@ -6,6 +6,7 @@ import json
 import pandas as pd
 import pytest
 
+import db.metric_engine as me_mod
 from db.metric_engine import (
     FundamentalGrowthOptions,
     GrowthFormulaSpec,
@@ -412,3 +413,232 @@ def test_fundamental_growth_migration_catalog_and_formula_seed_are_present(tmp_s
         "metric_lineage_completeness",
         "fundamental_ratio_reconciliation",
     } <= gate_checks
+
+
+def _reference_compute_growth_rows(
+    metric_history: pd.DataFrame,
+    *,
+    specs: tuple[GrowthFormulaSpec, ...] | None = None,
+    source: str = me_mod.DEFAULT_SOURCE,
+    run_id: str | None = None,
+) -> pd.DataFrame:
+    """PF4-S3 S3-6: frozen pre-vectorization reference.
+
+    Verbatim copy of the nested ``for key, group ... for _, current ... for spec:
+    _base_row(group, current, spec)`` body that ``compute_growth_rows`` used before
+    S3-6. Kept independent of the production function (whose base-pairing is now
+    O(M) instead of O(M^2)) so the new implementation can be checked for
+    byte-for-byte equivalence against the original per-current-row rescan algorithm,
+    not just against itself. Reuses every other helper (`_base_row`, `_pair_record`,
+    `_stability_record`, ...) unchanged from the module.
+    """
+    history = me_mod._normalize_metric_history(metric_history)
+    if history.empty:
+        return pd.DataFrame(columns=me_mod.FUNDAMENTAL_GROWTH_COLUMNS)
+    resolved_specs = specs or me_mod.load_growth_formula_specs()
+    specs_by_key: dict[tuple[str, str], list[GrowthFormulaSpec]] = {}
+    for spec in resolved_specs:
+        specs_by_key.setdefault((spec.metric_code, spec.basis), []).append(spec)
+
+    records: list[dict[str, object]] = []
+    for key, group in history.groupby(["metric_code", "basis", "security_id"], sort=False):
+        metric_code, basis, _security_id = key
+        group_specs = specs_by_key.get((str(metric_code), str(basis)), [])
+        if not group_specs:
+            continue
+        group = group.sort_values(["period_end_ts", "available_at", "source_metric_id"], kind="mergesort")
+        for _, current in group.iterrows():
+            current_value = me_mod._safe_float(current.get("value"))
+            if current_value is None:
+                continue
+            for spec in group_specs:
+                if spec.growth_method in {"stability", "consistency"}:
+                    record = me_mod._stability_record(spec, group, current, source=source, run_id=run_id)
+                    if record is not None:
+                        records.append(record)
+                    continue
+                base = me_mod._base_row(group, current, spec)
+                if base is None:
+                    continue
+                base_value = me_mod._safe_float(base.get("value"))
+                if base_value is None:
+                    continue
+                years = me_mod._elapsed_years(current, base)
+                if spec.growth_method in {"yoy", "qoq"}:
+                    value = me_mod._pct_change_value(current_value, base_value)
+                    if value is None:
+                        continue
+                    is_meaningful = (not spec.require_positive_base) or base_value > 0
+                elif spec.growth_method == "cagr":
+                    value = me_mod._cagr_value(current_value, base_value, years)
+                    if value is None:
+                        continue
+                    is_meaningful = True
+                else:
+                    raise ValueError(f"Unsupported growth method {spec.growth_method!r}")
+                records.append(
+                    me_mod._pair_record(
+                        spec,
+                        current,
+                        base,
+                        source=source,
+                        run_id=run_id,
+                        value=value,
+                        is_meaningful=is_meaningful,
+                        elapsed_years=years,
+                    )
+                )
+
+    if not records:
+        return pd.DataFrame(columns=me_mod.FUNDAMENTAL_GROWTH_COLUMNS)
+    return pd.DataFrame(records, columns=me_mod.FUNDAMENTAL_GROWTH_COLUMNS)
+
+
+def _regularly_spaced_growth_history(n_periods: int, *, start: dt.date = dt.date(1990, 1, 1)) -> pd.DataFrame:
+    # 91-day (quarterly) spacing lines up cleanly with the qoq (91d/25d), yoy
+    # (365.25d/35d) and 3y-cagr (1095.75d/54d) gap/tolerance windows used below, so
+    # each `current` row has a small, bounded set of in-tolerance base candidates
+    # regardless of how large `n_periods` gets.
+    rows = []
+    for i in range(n_periods):
+        period_end = start + dt.timedelta(days=91 * i)
+        available_at = dt.datetime.combine(period_end + dt.timedelta(days=20), dt.time(10, 0))
+        rows.append(_metric_row("revenue", period_end, 100.0 + i, available_at.isoformat(sep=" ")))
+    return pd.DataFrame(rows)
+
+
+def _growth_history_with_revisions(n_periods: int, *, start: dt.date = dt.date(1995, 1, 1)) -> pd.DataFrame:
+    """Same cadence as `_regularly_spaced_growth_history`, but every 7th period also
+    carries a stale revision (earlier available_at, distinct source_metric_id) ahead
+    of the latest one -- exercises the available_at/source_metric_id tie-break that
+    `_base_row` resolves via its multi-key sort.
+    """
+    rows = []
+    for i in range(n_periods):
+        period_end = start + dt.timedelta(days=91 * i)
+        base_available_at = dt.datetime.combine(period_end + dt.timedelta(days=20), dt.time(10, 0))
+        if i > 0 and i % 7 == 0:
+            rows.append(
+                _metric_row(
+                    "revenue",
+                    period_end,
+                    100.0 + i - 0.5,
+                    base_available_at.isoformat(sep=" "),
+                    source_metric_id=f"revenue-{period_end.isoformat()}-rev1",
+                )
+            )
+            rows.append(
+                _metric_row(
+                    "revenue",
+                    period_end,
+                    100.0 + i,
+                    (base_available_at + dt.timedelta(days=5)).isoformat(sep=" "),
+                    source_metric_id=f"revenue-{period_end.isoformat()}-rev2",
+                )
+            )
+        else:
+            rows.append(_metric_row("revenue", period_end, 100.0 + i, base_available_at.isoformat(sep=" ")))
+    return pd.DataFrame(rows)
+
+
+_SCALE_GROWTH_SPECS = (
+    GrowthFormulaSpec(
+        formula_code="revenue_growth_yoy",
+        family="growth",
+        kind="growth",
+        unit="ratio",
+        metric_code="revenue",
+        basis="ttm",
+        growth_method="yoy",
+        horizon_years=1.0,
+        transform="pct_change",
+        require_positive_base=True,
+    ),
+    GrowthFormulaSpec(
+        formula_code="revenue_growth_qoq",
+        family="growth",
+        kind="growth",
+        unit="ratio",
+        metric_code="revenue",
+        basis="ttm",
+        growth_method="qoq",
+        horizon_years=0.25,
+        transform="pct_change",
+        require_positive_base=True,
+    ),
+    GrowthFormulaSpec(
+        formula_code="revenue_cagr_3y",
+        family="growth_cagr",
+        kind="growth",
+        unit="ratio",
+        metric_code="revenue",
+        basis="ttm",
+        growth_method="cagr",
+        horizon_years=3.0,
+        transform="cagr",
+        require_positive_base=True,
+    ),
+)
+
+
+def test_growth_base_pairing_is_linear(monkeypatch) -> None:
+    # Equivalence, small fixture (existing 5-row history/spec mix incl. stability).
+    small_specs = (
+        _spec("revenue_growth_yoy", "yoy", 1.0),
+        _spec("revenue_growth_qoq", "qoq", 0.25),
+        _spec("revenue_cagr_3y", "cagr", 3.0, transform="cagr"),
+        _spec("revenue_growth_stability_3y", "stability", 3.0, transform="stability"),
+        _spec("revenue_growth_consistency_3y", "consistency", 3.0, transform="consistency"),
+    )
+    small_history = _history()
+    reference_small = _reference_compute_growth_rows(small_history, specs=small_specs, source="test-growth", run_id="run-1")
+
+    # Equivalence, medium fixture with same-period revisions (tie-break coverage).
+    medium_history = _growth_history_with_revisions(28)
+    reference_medium = _reference_compute_growth_rows(
+        medium_history, specs=_SCALE_GROWTH_SPECS, source="test-growth-medium", run_id="run-medium"
+    )
+
+    # Complexity, scale fixture: M=600 periods, one security, no stability/consistency
+    # specs (those still use unmodified `_base_row` via `_stability_observations` and
+    # are out of scope for this fix) -> isolates the flagged main-loop pairing.
+    M = 600
+    scale_history = _regularly_spaced_growth_history(M)
+
+    base_row_scan_totals = {"group_rows_scanned": 0, "calls": 0}
+    original_base_row = me_mod._base_row
+
+    def counting_base_row(group, current, spec):
+        base_row_scan_totals["group_rows_scanned"] += len(group)
+        base_row_scan_totals["calls"] += 1
+        return original_base_row(group, current, spec)
+
+    monkeypatch.setattr(me_mod, "_base_row", counting_base_row)
+
+    vectorized_scale = compute_growth_rows(scale_history, specs=_SCALE_GROWTH_SPECS, source="test-growth-scale", run_id="run-scale")
+
+    assert len(vectorized_scale) > 0
+    # Pre-fix: `_base_row` is called ~M times per spec and rescans the full M-row
+    # group each time -> ~M^2 * len(specs) group-row scans (~1M+ for M=600, 3 specs).
+    # Post-fix: the main pairing loop no longer calls `_base_row` at all.
+    assert base_row_scan_totals["group_rows_scanned"] <= 5 * M, (
+        "compute_growth_rows's base-pairing loop must not rescan the full group via "
+        f"_base_row per (current, spec) pair; saw {base_row_scan_totals['group_rows_scanned']} "
+        f"group-row scans ({base_row_scan_totals['calls']} calls) for M={M} periods"
+    )
+
+    monkeypatch.undo()
+
+    vectorized_small = compute_growth_rows(small_history, specs=small_specs, source="test-growth", run_id="run-1")
+    pd.testing.assert_frame_equal(
+        vectorized_small.reset_index(drop=True),
+        reference_small.reset_index(drop=True),
+    )
+
+    vectorized_medium = compute_growth_rows(
+        medium_history, specs=_SCALE_GROWTH_SPECS, source="test-growth-medium", run_id="run-medium"
+    )
+    pd.testing.assert_frame_equal(
+        vectorized_medium.reset_index(drop=True),
+        reference_medium.reset_index(drop=True),
+    )

@@ -774,6 +774,12 @@ def _compute_source_factor_rows(
             partition_columns=("factor_id", "as_of_date"),
             ascending=spec.direction >= 0,
         )
+        # `spec.input_ids_json` is a property that calls `json_dumps` on every access
+        # but is the same literal for every row of this spec -- evaluate it once here
+        # instead of once per row.
+        spec_input_ids_json = spec.input_ids_json
+        lineage_records: list[dict[str, object]] = []
+        partial_rows: list[dict[str, object]] = []
         for row in ranked.itertuples(index=False):
             lineage_record = {
                 "source_table": spec.source_table,
@@ -794,7 +800,8 @@ def _compute_source_factor_rows(
                 if column == spec.source_column:
                     continue
                 lineage_record[column] = _json_scalar(getattr(row, column))
-            rows.append(
+            lineage_records.append(lineage_record)
+            partial_rows.append(
                 {
                     "factor_value_id": _hash_id(hash_prefix, spec.factor_id, row.security_id, row.as_of_date, row.available_at, run_id),
                     "factor_id": spec.factor_id,
@@ -808,13 +815,17 @@ def _compute_source_factor_rows(
                     "value": float(row.value) if not pd.isna(row.value) else pd.NA,
                     "available_at": pd.Timestamp(row.available_at),
                     "source_row_id": _json_scalar(row.source_row_id),
-                    "input_ids_json": spec.input_ids_json,
-                    "input_lineage_json": json_dumps([lineage_record]),
+                    "input_ids_json": spec_input_ids_json,
                     "is_latest_revision": True,
                     "run_id": run_id,
                     "source": source,
                 }
             )
+        # Single batched lineage-JSON pass, after the itertuples row-assembly above
+        # instead of interleaved with it.
+        for partial_row, lineage_record in zip(partial_rows, lineage_records):
+            partial_row["input_lineage_json"] = json_dumps([lineage_record])
+        rows.extend(partial_rows)
     if not rows:
         return pd.DataFrame(columns=CROSS_DOMAIN_FACTOR_COLUMNS)
     return pd.DataFrame(rows)[CROSS_DOMAIN_FACTOR_COLUMNS].sort_values(
@@ -867,6 +878,12 @@ def compute_price_liquidity_factor_rows(
             partition_columns=("factor_id", "as_of_date"),
             ascending=spec.direction >= 0,
         )
+        # `spec.input_ids_json` is a property that calls `json_dumps` on every access
+        # but is the same literal for every row of this spec -- evaluate it once here
+        # instead of once per row.
+        spec_input_ids_json = spec.input_ids_json
+        lineage_lists: list[list[dict[str, object]]] = []
+        partial_rows: list[dict[str, object]] = []
         for row in ranked.itertuples(index=False):
             lineage = [
                 {
@@ -885,7 +902,8 @@ def compute_price_liquidity_factor_rows(
                     else float(row.native_percent_rank_value),
                 }
             ]
-            rows.append(
+            lineage_lists.append(lineage)
+            partial_rows.append(
                 {
                     "factor_value_id": _hash_id("cross_domain_factor", spec.factor_id, row.security_id, row.as_of_date, row.available_at, run_id),
                     "factor_id": spec.factor_id,
@@ -899,13 +917,17 @@ def compute_price_liquidity_factor_rows(
                     "value": float(row.value) if not pd.isna(row.value) else pd.NA,
                     "available_at": pd.Timestamp(row.available_at),
                     "source_row_id": None if pd.isna(row.metric_id) else str(row.metric_id),
-                    "input_ids_json": spec.input_ids_json,
-                    "input_lineage_json": json_dumps(lineage),
+                    "input_ids_json": spec_input_ids_json,
                     "is_latest_revision": True,
                     "run_id": run_id,
                     "source": source,
                 }
             )
+        # Single batched lineage-JSON pass, after the itertuples row-assembly above
+        # instead of interleaved with it.
+        for partial_row, lineage in zip(partial_rows, lineage_lists):
+            partial_row["input_lineage_json"] = json_dumps(lineage)
+        rows.extend(partial_rows)
     if not rows:
         return pd.DataFrame(columns=CROSS_DOMAIN_FACTOR_COLUMNS)
     return pd.DataFrame(rows)[CROSS_DOMAIN_FACTOR_COLUMNS].sort_values(
