@@ -45,6 +45,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <span>
 #include <vector>
@@ -242,8 +243,14 @@ struct CurveConfig {
 // @return InvalidArgument on a degenerate (F/T/df <= 0) or empty `obs_eu`; the
 //         underlying fitter's error (Unavailable / Internal) on a fit failure;
 //         otherwise the fitted polymorphic slice.
+//
+// `w_prev` (optional): the immediately-shorter expiry's total-variance curve
+// w(k) as a log-moneyness callback. When set on the ConvexDense path it becomes
+// a per-node CALENDAR FLOOR (via `fit_convex_slice`), so this slice's total
+// variance cannot dip below the previous expiry's at the fit nodes. Left empty
+// (the default) the floor is skipped and the fit is bit-identical.
 [[nodiscard]] Result<std::unique_ptr<IVolCurve>> fit_slice_curve(
     const CurveConfig& cfg, std::span<const FitObs> obs_eu, double F, double T,
-    double df);
+    double df, const std::function<double(double)>& w_prev = {});
 
 }  // namespace atx::vol

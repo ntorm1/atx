@@ -46,6 +46,7 @@ add_executable(atx-vol-tests
     session_test.cpp
     vol_umbrella_test.cpp
     spy_real_test.cpp
+    curve_noarb_test.cpp
     pricer_fitter_test.cpp
     spy_bidask_regression_test.cpp
     breadth_regime_test.cpp

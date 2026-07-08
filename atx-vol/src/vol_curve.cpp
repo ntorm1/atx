@@ -148,9 +148,9 @@ double CurveSurface::forward_at(double T) const noexcept {
 
 // ── fit_slice_curve ─────────────────────────────────────────────────────────
 
-Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig& cfg,
-                                                   std::span<const FitObs> obs_eu,
-                                                   double F, double T, double df) {
+Result<std::unique_ptr<IVolCurve>> fit_slice_curve(
+    const CurveConfig& cfg, std::span<const FitObs> obs_eu, double F, double T,
+    double df, const std::function<double(double)>& w_prev) {
   if (!(F > 0.0) || !(T > 0.0) || !(df > 0.0)) {
     return Err(ErrorCode::InvalidArgument,
                "fit_slice_curve: F/T/df must be positive");
@@ -161,12 +161,17 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig& cfg,
 
   switch (cfg.kind) {
     case VolCurveKind::ConvexDense: {
+      // `w_prev` (when set) becomes the per-node calendar floor: this slice's
+      // total variance cannot dip below the previous expiry's at the fit nodes.
       ATX_TRY(ConvexSliceFit fit,
-              fit_convex_slice(obs_eu, F, T, df, cfg.convex));
+              fit_convex_slice(obs_eu, F, T, df, cfg.convex, w_prev));
       std::unique_ptr<IVolCurve> curve =
           std::make_unique<ConvexDenseCurve>(std::move(fit));
       return Ok(std::move(curve));
     }
+    // Essvi/Svi IGNORE `w_prev`: their calendar handling is unchanged (eSSVI is
+    // arb-free by construction through Mingone; raw-SVI relies on the post-fit
+    // `arb_project_calendar_svi` repair, not a per-slice floor).
     case VolCurveKind::Essvi: {
       ATX_TRY(EssviParams slice,
               essvi_fit_slice(obs_eu, T, F, cfg.parametric));

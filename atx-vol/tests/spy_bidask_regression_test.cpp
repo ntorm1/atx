@@ -1,12 +1,16 @@
-// SPY bid-ask accuracy regression — LOCK IN THE DEPTH.
+// SPY bid-ask accuracy regression — served-surface price-in-band gate.
 //
-// The carry/de-Americanization fix + arb-free convex dense fit reach 99.5%
-// price-in-band on the locally-convex (clean) subset of the SPY OPRA board. That
-// number was previously only demonstrable in bench code (fit_convex_slice called
-// by hand). These tests assert it is MAINTAINED through the production facade:
-// the convex surface fit via VolaSession / PricerFitter and SERVED by
-// `fair_value` (the price the library actually produces). They also verify the
-// CurveSelector auto-picks the dense curve for SPY.
+// The carry/de-Americanization fix + arb-free convex dense fit reach ~99.5%
+// price-in-band on the locally-convex (clean) subset of the SPY OPRA board. These
+// tests assert that depth is served through the production facade (VolaSession /
+// PricerFitter -> fair_value, the price the library actually produces), and that
+// the CurveSelector auto-picks the dense curve for SPY.
+//
+// NOTE: the served dense surface now ENFORCES calendar no-arbitrage by construction
+// (the sequential ascending-T floor in fit_curve_surface). SPY's front slices carry
+// genuine calendar structure, so enforcement trades ~4.8pp of price-in-band
+// (~99.5% -> ~94.65%) for a calendar-arb-free surface — a deliberate product choice.
+// The gate (kPxCleanFloor) sits below the enforced number; see its comment.
 //
 // The test GTEST_SKIPs cleanly when the SPY parquet fixture is not present.
 
@@ -25,15 +29,21 @@ using atx::vol::testkit::price_in_band;
 
 namespace {
 
-// The regression floor. The convex-QP(40n) fit measures ~99.5% pxCLN; the served
-// (cached-pricer) round-trip may drift a few hundredths. 99.0 is a firm floor
-// that still catches any real regression (the pre-fix number was 65.8%, and the
-// eSSVI backbone is ~10% on this metric).
-constexpr double kPxCleanFloor = 99.0;
+// The served-surface price-in-band floor. Calendar no-arbitrage is ENFORCED by
+// construction on the dense surface (the sequential ascending-T calendar floor in
+// fit_curve_surface feeds each fitted slice's variance as the next slice's lower
+// bound). On the SPY board the front slices carry GENUINE calendar structure, so
+// removing those crossings pulls some marks off-mid: served pxCLN is ~94.65% WITH
+// enforcement vs ~99.5% without. That ~4.8pp is the explicit, deliberate cost of a
+// calendar-arb-free served surface — an MM product decision (never mark outside the
+// tradeable band to chase tightness at the expense of a clean surface), NOT a
+// regression. 94.0 is a firm floor below the enforced number that still catches any
+// real fit regression (pre-fix was 65.8%; the eSSVI backbone is ~10% on this metric).
+constexpr double kPxCleanFloor = 94.0;
 
 }  // namespace
 
-TEST(SpyBidAskRegression, ConvexDenseServedViaSessionMaintains99) {
+TEST(SpyBidAskRegression, ConvexDenseServedViaSessionInBand) {
   auto board = load_opra_board("spy", "SPY");
   if (!board.has_value()) {
     GTEST_SKIP() << "SPY OPRA parquet fixture not found";
@@ -60,7 +70,7 @@ TEST(SpyBidAskRegression, ConvexDenseServedViaSessionMaintains99) {
   EXPECT_GE(sc.px_clean, kPxCleanFloor);
 }
 
-TEST(SpyBidAskRegression, PricerFitterExplicitConvexMaintains99) {
+TEST(SpyBidAskRegression, PricerFitterExplicitConvexInBand) {
   auto board = load_opra_board("spy", "SPY");
   if (!board.has_value()) {
     GTEST_SKIP() << "SPY OPRA parquet fixture not found";

@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <utility>
@@ -126,7 +127,23 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying& under,
     }
 
     // 3. Fit the configured curve kind from the European obs.
-    auto slice_res = fit_slice_curve(cfg, obs->obs, F, T, df);
+    //    Calendar floor: previous fitted slice's total variance (ascending T).
+    //    Guard on the prior slice's T so a non-ascending input degrades to
+    //    no-enforcement (never an inverted floor). The loader sorts ascending-T
+    //    (data.cpp sort_chains_by_T), so on the standard board this is always
+    //    the immediately-shorter expiry.
+    std::function<double(double)> w_prev;
+    if (!out.surface.empty() && out.context.back().T < T) {
+      const IVolCurve* prev = out.surface.slices().back().get();
+      w_prev = [prev](double k) { return prev->w(k); };
+    }
+    // The calendar floor inside fit_convex_slice enforces w_curr >= w_prev at the
+    // fit nodes (STRICT, per the served-surface policy: calendar-arb-free by
+    // construction). It adds constraint ROWS to the N-node QP, not slack variables,
+    // so enforcement does not materially slow the fit. On boards with genuine
+    // calendar structure this trades some price-in-band tightness for no-arb — an
+    // explicit product choice (see spy_bidask_regression_test's rebaselined floor).
+    auto slice_res = fit_slice_curve(cfg, obs->obs, F, T, df, w_prev);
     if (!slice_res) {
       continue;
     }

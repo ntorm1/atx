@@ -2,8 +2,7 @@
 //
 // Proves the headline: a fitted surface can be serialized to the ATXVSA v3 binary
 // archive, deserialized, slotted back into the pricer, and reproduce the SAME theo
-// values — on the real SPY OPRA board where the convex-dense fit hits ~99.5%
-// price-in-band. The chain is:
+// values on the real SPY OPRA board. The chain is:
 //
 //   OPRA board -> VolaSession(ConvexDense) -> to_priced_surface()
 //              -> write_surface_archive -> SurfaceArchive::open -> map_symbol("SPY")
@@ -13,7 +12,9 @@
 //   1. the reconstructed surface's fair_value / iv are BIT-IDENTICAL to the live
 //      session's across every clean liquid quote (the archive loses nothing);
 //   2. the reconstructed surface's own served price is in the raw NBBO band on
-//      >= 99% of the clean subset (it reproduces the SPY board accuracy).
+//      >= kPxCleanFloor of the clean subset (it reproduces the served accuracy).
+//      The served dense surface enforces calendar no-arb by construction, which on
+//      SPY trades ~4.8pp of that in-band accuracy (see kPxCleanFloor).
 //
 // GTEST_SKIPs cleanly when the SPY parquet fixture is absent.
 
@@ -41,7 +42,14 @@ using atx::vol::testkit::load_opra_board;
 
 namespace {
 
-constexpr double kPxCleanFloor = 99.0;
+// Served price-in-band floor for the RECONSTRUCTED surface. The served dense
+// surface now ENFORCES calendar no-arbitrage by construction (the sequential floor
+// in fit_curve_surface); on SPY that trades ~4.8pp of price-in-band (~99.5% ->
+// ~94.65%) for a calendar-arb-free surface — a deliberate product choice, matching
+// spy_bidask_regression_test's rebaselined floor. Round-trip FIDELITY (bit-identical
+// iv/fv below) is unaffected; only this accuracy number rebaselines. 94.0 is a firm
+// floor below the enforced ~94.65% that still catches any real fit/serialize regression.
+constexpr double kPxCleanFloor = 94.0;
 
 [[nodiscard]] bool bits_equal(double a, double b) noexcept {
   std::uint64_t ba = 0;
