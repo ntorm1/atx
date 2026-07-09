@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -41,15 +42,24 @@ Status DispersionStrategy::on_step(const MarketSnapshot& base, std::size_t step_
   }
 
   // Bind the (possibly symbol-only) universe to THIS snapshot's uid scheme before
-  // sizing, so one authored universe works across every date of a corpus.
-  Result<DispersionUniverse> ru =
-      resolve_universe_uids(universe_, [&](std::string_view s) { return base.uid_of(s); });
+  // sizing, so one authored universe works across every date of a corpus. Under
+  // DropRenormalize a name absent from the snapshot is dropped here (not fatal);
+  // an unresolved INDEX or an authoring bug is still a hard error.
+  Result<ResolvedUniverse> ru = resolve_universe_uids(
+      universe_, [&](std::string_view s) { return base.uid_of(s); }, cfg_.missing);
   if (!ru) {
     return Err(ru.error());
   }
 
-  Result<DispersionBook> built = build_dispersion_book(*ru, base.set(), cfg_);
+  Result<DispersionBook> built = build_dispersion_book(ru->universe, base.set(), cfg_);
   if (!built) {
+    // NO-TRADE CONTRACT: under DropRenormalize an Unavailable book means too few
+    // names survived today => a flat / no-trade step. Open no lots, leave the
+    // existing book untouched, and continue. Any other code stays fatal.
+    if (cfg_.missing.policy == MissingNamePolicy::DropRenormalize &&
+        built.error().code() == ErrorCode::Unavailable) {
+      return Ok();
+    }
     return Err(built.error());
   }
   const std::uint32_t cohort = cohort_counter_++;
@@ -80,25 +90,50 @@ Status DispersionStrategy::on_step(const MarketSnapshot& base, std::size_t step_
 
 std::vector<std::pair<std::string, double>> DispersionStrategy::signals(
     const MarketSnapshot& base) const {
-  const Result<DispersionUniverse> ru =
-      resolve_universe_uids(universe_, [&](std::string_view s) { return base.uid_of(s); });
+  const Result<ResolvedUniverse> ru = resolve_universe_uids(
+      universe_, [&](std::string_view s) { return base.uid_of(s); }, cfg_.missing);
   if (!ru) {
-    return {};  // no signal on this snapshot — same behaviour as a failed signal
+    return {};  // universe can't bind (index missing / authoring bug): no signal, as pre-S1-3
   }
-  const Result<DispersionSignal> sig = dispersion_signal(*ru, base.set(), cfg_.target_T);
+  const double n_resolve_dropped = static_cast<double>(ru->dropped.size());
+  const Result<DispersionSignal> sig = dispersion_signal(ru->universe, base.set(), cfg_.target_T,
+                                                         cfg_.missing);
   if (!sig) {
-    return {};
+    // No tradeable signal this snapshot (e.g. too few survivors => Unavailable):
+    // emit implied_corr as NaN but still surface the drops we know about, so the
+    // series stay full-length and the drop shows up in the run diagnostics.
+    return {{"implied_corr", std::numeric_limits<double>::quiet_NaN()},
+            {"n_names_dropped", n_resolve_dropped}};
   }
-  return {{"implied_corr", sig->implied_corr}};
+  return {{"implied_corr", sig->implied_corr},
+          {"n_names_dropped", n_resolve_dropped + static_cast<double>(sig->dropped.size())}};
 }
 
 Result<DispersionBook> DispersionStrategy::build_book(const MarketSnapshot& base) const {
-  const Result<DispersionUniverse> ru =
-      resolve_universe_uids(universe_, [&](std::string_view s) { return base.uid_of(s); });
+  const Result<ResolvedUniverse> ru = resolve_universe_uids(
+      universe_, [&](std::string_view s) { return base.uid_of(s); }, cfg_.missing);
   if (!ru) {
     return Err(ru.error());
   }
-  return build_dispersion_book(*ru, base.set(), cfg_);
+  return build_dispersion_book(ru->universe, base.set(), cfg_);
+}
+
+std::vector<DroppedName> DispersionStrategy::dropped_on(const MarketSnapshot& base) const {
+  std::vector<DroppedName> out;
+  const Result<ResolvedUniverse> ru = resolve_universe_uids(
+      universe_, [&](std::string_view s) { return base.uid_of(s); }, cfg_.missing);
+  if (!ru) {
+    return out;  // universe can't bind: no per-name drop list
+  }
+  out = ru->dropped;  // resolve-stage drops (symbol absent from the snapshot)
+  const Result<DispersionSignal> sig = dispersion_signal(ru->universe, base.set(), cfg_.target_T,
+                                                         cfg_.missing);
+  if (sig) {
+    for (const DroppedName& d : sig->dropped) {  // signal-stage drops (surface / unusable)
+      out.push_back(d);
+    }
+  }
+  return out;
 }
 
 }  // namespace atx::vol

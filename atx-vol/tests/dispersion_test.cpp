@@ -464,3 +464,258 @@ TEST(Dispersion, ResolveUniverseUids) {
     EXPECT_NE(r.error().to_string().find("ZERO"), std::string::npos) << r.error().to_string();
   }
 }
+
+// ── S1-3: DropRenormalize drops a missing name and renormalizes survivors ─────
+//
+// Renormalizing over survivors is exactly equivalent to just deleting the name,
+// so the surviving implied_corr must equal a 2-name universe of the survivors
+// with their ORIGINAL (un-renormalized) weights — the strongest check available.
+TEST(Dispersion, DropRenormalizeSkipsMissingNameAndRenormalizes) {
+  const std::vector<PricedSurface> surfaces = build_surfaces();  // IDX=1, NM0=2, NM1=3
+  auto set = SurfaceSet::create(as_ptrs(surfaces));
+  ASSERT_TRUE(set.has_value()) << set.error().to_string();
+
+  // 3 names, the middle bound to a uid ABSENT from the set (99). Weights are
+  // deliberately un-normalized (0.5, 0.3, 0.2) to exercise the renormalization.
+  DispersionUniverse u;
+  u.index = DispersionMember{"IDX", kIndexUid, 0.0};
+  u.names.push_back(DispersionMember{"NM0", kName0Uid, 0.5});
+  u.names.push_back(DispersionMember{"MISS", 99u, 0.3});
+  u.names.push_back(DispersionMember{"NM1", kName1Uid, 0.2});
+
+  // Error policy (default): the missing name is a hard NotFound — the pre-S1-3
+  // abort this task removes.
+  {
+    auto sig = dispersion_signal(u, *set, kTargetT);
+    ASSERT_FALSE(sig.has_value());
+    EXPECT_EQ(sig.error().code(), ErrorCode::NotFound);
+    EXPECT_NE(sig.error().to_string().find("MISS"), std::string::npos) << sig.error().to_string();
+  }
+
+  // DropRenormalize: drop MISS, renormalize over {NM0, NM1}.
+  MissingNameSpec drop;
+  drop.policy = MissingNamePolicy::DropRenormalize;
+  auto sig = dispersion_signal(u, *set, kTargetT, drop);
+  ASSERT_TRUE(sig.has_value()) << sig.error().to_string();
+
+  ASSERT_EQ(sig->dropped.size(), 1u);
+  EXPECT_EQ(sig->dropped[0].symbol, "MISS");
+  EXPECT_EQ(sig->dropped[0].reason, DropReason::SurfaceNotFound);
+  EXPECT_FALSE(sig->dropped[0].detail.empty());
+
+  ASSERT_EQ(sig->used_names.size(), 2u);
+  EXPECT_EQ(sig->used_names[0], 0u);
+  EXPECT_EQ(sig->used_names[1], 2u);
+  ASSERT_EQ(sig->sigma_names.size(), 2u);
+
+  // ŵ over survivors sum to 1 (renormalization actually happened).
+  const double sum_surv = 0.5 + 0.2;
+  EXPECT_NEAR(0.5 / sum_surv + 0.2 / sum_surv, 1.0, 1e-15);
+
+  // Dropping+renormalizing == a 2-name universe of the survivors with their
+  // ORIGINAL weights (bit-identical: the exact same arithmetic sequence).
+  DispersionUniverse two;
+  two.index = DispersionMember{"IDX", kIndexUid, 0.0};
+  two.names.push_back(DispersionMember{"NM0", kName0Uid, 0.5});
+  two.names.push_back(DispersionMember{"NM1", kName1Uid, 0.2});
+  auto ref = dispersion_signal(two, *set, kTargetT);
+  ASSERT_TRUE(ref.has_value()) << ref.error().to_string();
+  EXPECT_NEAR(sig->implied_corr, ref->implied_corr, 1e-15);
+  EXPECT_TRUE(bits_equal(sig->implied_corr, ref->implied_corr))
+      << sig->implied_corr << " vs " << ref->implied_corr;
+  EXPECT_TRUE(bits_equal(sig->sum_w_sigma, ref->sum_w_sigma));
+  EXPECT_TRUE(bits_equal(sig->sum_w2_sigma2, ref->sum_w2_sigma2));
+}
+
+// ── S1-3: the survivor book is vega-neutral over the survivors only ──────────
+TEST(Dispersion, DropRenormalizeBookIsVegaNeutralOverSurvivors) {
+  const std::vector<PricedSurface> surfaces = build_surfaces();
+  auto set = SurfaceSet::create(as_ptrs(surfaces));
+  ASSERT_TRUE(set.has_value()) << set.error().to_string();
+
+  DispersionUniverse u;
+  u.index = DispersionMember{"IDX", kIndexUid, 0.0};
+  u.names.push_back(DispersionMember{"NM0", kName0Uid, 0.5});
+  u.names.push_back(DispersionMember{"MISS", 99u, 0.3});
+  u.names.push_back(DispersionMember{"NM1", kName1Uid, 0.2});
+
+  DispersionConfig cfg;
+  cfg.missing.policy = MissingNamePolicy::DropRenormalize;
+  auto book = build_dispersion_book(u, *set, cfg);
+  ASSERT_TRUE(book.has_value()) << book.error().to_string();
+
+  // Survivors only: 1 index + 2 names => 6 positions, 2 name legs, 1 drop.
+  EXPECT_EQ(book->positions.size(), 2u * (1u + 2u));
+  ASSERT_EQ(book->name_legs.size(), 2u);
+  ASSERT_EQ(book->dropped.size(), 1u);
+  EXPECT_EQ(book->dropped[0].symbol, "MISS");
+  EXPECT_EQ(book->dropped[0].reason, DropReason::SurfaceNotFound);
+
+  // Σ|name-leg gross vega| == index-leg gross vega: vega-neutral over survivors.
+  const BucketedVega v = price_bucketed_vega(*book, *set, u.index.uid);
+  EXPECT_TRUE(close(v.index, -v.names, 1e-9)) << v.index << " vs " << -v.names;
+  EXPECT_TRUE(close(std::fabs(v.index), cfg.target_vega, 1e-9)) << v.index;
+  EXPECT_LT(v.index, 0.0);  // short index
+}
+
+// ── S1-3: below the minimum surviving basket size the date is Unavailable ────
+TEST(Dispersion, BelowMinNamesIsUnavailable) {
+  const std::vector<PricedSurface> surfaces = build_surfaces();
+  auto set = SurfaceSet::create(as_ptrs(surfaces));
+  ASSERT_TRUE(set.has_value()) << set.error().to_string();
+
+  // 3 names, TWO bound to absent uids => only 1 survivor < min_names (2).
+  DispersionUniverse u;
+  u.index = DispersionMember{"IDX", kIndexUid, 0.0};
+  u.names.push_back(DispersionMember{"NM0", kName0Uid, 0.5});
+  u.names.push_back(DispersionMember{"MISS1", 98u, 0.3});
+  u.names.push_back(DispersionMember{"MISS2", 99u, 0.2});
+
+  MissingNameSpec drop;
+  drop.policy = MissingNamePolicy::DropRenormalize;
+  auto sig = dispersion_signal(u, *set, kTargetT, drop);
+  ASSERT_FALSE(sig.has_value());
+  EXPECT_EQ(sig.error().code(), ErrorCode::Unavailable);
+  const std::string msg = sig.error().to_string();
+  EXPECT_NE(msg.find("1 of 3"), std::string::npos) << msg;
+  EXPECT_NE(msg.find("min 2"), std::string::npos) << msg;
+
+  // min_names < 2 is degenerate (the correlation denominator needs >= 2 names).
+  MissingNameSpec bad;
+  bad.policy = MissingNamePolicy::DropRenormalize;
+  bad.min_names = 1;
+  auto r = dispersion_signal(make_universe(), *set, kTargetT, bad);
+  ASSERT_FALSE(r.has_value());
+  EXPECT_EQ(r.error().code(), ErrorCode::InvalidArgument);
+}
+
+// ── S1-3: the index leg is never droppable, under either policy ──────────────
+TEST(Dispersion, IndexIsNeverDropped) {
+  const std::vector<PricedSurface> surfaces = build_surfaces();
+  auto set = SurfaceSet::create(as_ptrs(surfaces));
+  ASSERT_TRUE(set.has_value()) << set.error().to_string();
+
+  DispersionUniverse u = make_universe();       // NM0=2, NM1=3
+  u.index = DispersionMember{"IDX", 97u, 0.0};  // index bound to an absent uid
+
+  auto err_sig = dispersion_signal(u, *set, kTargetT);  // Error policy
+  ASSERT_FALSE(err_sig.has_value());
+  EXPECT_EQ(err_sig.error().code(), ErrorCode::NotFound);
+
+  MissingNameSpec drop;
+  drop.policy = MissingNamePolicy::DropRenormalize;
+  auto drop_sig = dispersion_signal(u, *set, kTargetT, drop);
+  ASSERT_FALSE(drop_sig.has_value());
+  EXPECT_EQ(drop_sig.error().code(), ErrorCode::NotFound) << "index must never be dropped";
+}
+
+// ── S1-3: authoring bugs stay fatal even under DropRenormalize ───────────────
+TEST(Dispersion, AuthoringBugsStayFatalUnderDropPolicy) {
+  const auto lookup = [](std::string_view s) -> std::optional<std::uint32_t> {
+    if (s == "IDX") return 10u;
+    if (s == "NM0") return 20u;
+    if (s == "NM1") return 30u;
+    if (s == "ZERO") return 0u;  // reserved sentinel
+    if (s == "DUP") return 20u;  // collides with NM0's uid
+    return std::nullopt;
+  };
+  const auto make = [](std::string idx, std::vector<std::string> names) {
+    DispersionUniverse u;
+    u.index = DispersionMember{std::move(idx), 0u, 0.0};
+    for (std::string& nm : names) {
+      u.names.push_back(DispersionMember{std::move(nm), 0u, 1.0});
+    }
+    return u;
+  };
+  MissingNameSpec drop;
+  drop.policy = MissingNamePolicy::DropRenormalize;
+
+  // Duplicate symbol -> InvalidArgument even under DropRenormalize.
+  {
+    auto r = resolve_universe_uids(make("IDX", {"NM0", "NM0"}), lookup, drop);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code(), ErrorCode::InvalidArgument);
+  }
+  // Two symbols colliding to one uid -> InvalidArgument.
+  {
+    auto r = resolve_universe_uids(make("IDX", {"NM0", "DUP"}), lookup, drop);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code(), ErrorCode::InvalidArgument);
+  }
+  // A symbol resolving to the reserved uid 0 -> InvalidArgument.
+  {
+    auto r = resolve_universe_uids(make("IDX", {"NM0", "ZERO"}), lookup, drop);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code(), ErrorCode::InvalidArgument);
+  }
+  // An unknown NAME is DROPPED (not fatal); the index stays bound; order kept.
+  {
+    auto r = resolve_universe_uids(make("IDX", {"NM0", "GONE", "NM1"}), lookup, drop);
+    ASSERT_TRUE(r.has_value()) << r.error().to_string();
+    ASSERT_EQ(r->dropped.size(), 1u);
+    EXPECT_EQ(r->dropped[0].symbol, "GONE");
+    EXPECT_EQ(r->dropped[0].reason, DropReason::NotInSnapshot);
+    ASSERT_EQ(r->universe.names.size(), 2u);
+    EXPECT_EQ(r->universe.names[0].symbol, "NM0");
+    EXPECT_EQ(r->universe.names[1].symbol, "NM1");
+    EXPECT_EQ(r->universe.index.uid, 10u);
+  }
+  // An unknown INDEX is a hard NotFound even under DropRenormalize.
+  {
+    auto r = resolve_universe_uids(make("NOPE", {"NM0", "NM1"}), lookup, drop);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code(), ErrorCode::NotFound);
+  }
+  // A non-finite weight is InvalidArgument even under DropRenormalize (it can never
+  // hide behind a drop): resolve binds fine, dispersion_signal rejects the NaN.
+  {
+    DispersionUniverse u = make("IDX", {"NM0", "NM1"});
+    u.names[0].weight = std::nan("");
+    auto ru = resolve_universe_uids(u, lookup, drop);
+    ASSERT_TRUE(ru.has_value()) << ru.error().to_string();
+    const std::vector<const PricedSurface*> none;
+    auto empty = SurfaceSet::create(none);
+    ASSERT_TRUE(empty.has_value());
+    auto sig = dispersion_signal(ru->universe, *empty, kTargetT, drop);
+    ASSERT_FALSE(sig.has_value());
+    EXPECT_EQ(sig.error().code(), ErrorCode::InvalidArgument);
+  }
+}
+
+// ── S1-3: the default Error policy is bit-identical to the pre-S1-3 baseline ──
+TEST(Dispersion, ErrorPolicyIsBitIdenticalToBaseline) {
+  const std::vector<PricedSurface> surfaces = build_surfaces();
+  auto set = SurfaceSet::create(as_ptrs(surfaces));
+  ASSERT_TRUE(set.has_value()) << set.error().to_string();
+  const DispersionUniverse u = make_universe();  // 2 names, weights 0.6 / 0.4
+
+  auto sig_default = dispersion_signal(u, *set, kTargetT);                   // default spec
+  auto sig_explicit = dispersion_signal(u, *set, kTargetT, MissingNameSpec{});
+  ASSERT_TRUE(sig_default.has_value()) << sig_default.error().to_string();
+  ASSERT_TRUE(sig_explicit.has_value());
+
+  // Nothing dropped; survivors are exactly {0, 1}.
+  EXPECT_TRUE(sig_default->dropped.empty());
+  ASSERT_EQ(sig_default->used_names.size(), 2u);
+  EXPECT_EQ(sig_default->used_names[0], 0u);
+  EXPECT_EQ(sig_default->used_names[1], 1u);
+
+  // The pre-S1-3 closed form (as in Signal_MatchesClosedForm), reproduced exactly.
+  const double si = surfaces[0].iv(surfaces[0].forward_at(kTargetT), kTargetT);
+  const double s0 = surfaces[1].iv(surfaces[1].forward_at(kTargetT), kTargetT);
+  const double s1 = surfaces[2].iv(surfaces[2].forward_at(kTargetT), kTargetT);
+  const double sws = kW0 * s0 + kW1 * s1;
+  const double sw2s2 = kW0 * kW0 * s0 * s0 + kW1 * kW1 * s1 * s1;
+  const double rho = (si * si - sw2s2) / (sws * sws - sw2s2);
+  EXPECT_NEAR(sig_default->implied_corr, rho, 1e-12);
+  EXPECT_TRUE(bits_equal(sig_default->implied_corr, sig_explicit->implied_corr));
+
+  // The book under the default (Error) policy: survivors == all names, no drops.
+  DispersionConfig cfg;
+  auto book = build_dispersion_book(u, *set, cfg);
+  ASSERT_TRUE(book.has_value()) << book.error().to_string();
+  EXPECT_TRUE(book->dropped.empty());
+  ASSERT_EQ(book->name_legs.size(), 2u);
+  EXPECT_EQ(book->positions.size(), 2u * (1u + 2u));
+  EXPECT_EQ(book->signal.used_names.size(), 2u);
+}

@@ -45,6 +45,7 @@
 #include "atx/vol/panel.hpp"           // make_synthetic_american_panel, SynthPanelSpec
 #include "atx/vol/s3.hpp"              // S3Params
 #include "atx/vol/spy_fixture.hpp"     // make_spy_synthetic_spec
+#include "atx/vol/strategy.hpp"        // DispersionStrategy
 #include "atx/vol/universe.hpp"        // uid_for_symbol
 #include "atx/vol/vol_curve.hpp"       // CurveConfig, VolCurveKind
 
@@ -347,4 +348,158 @@ TEST(MultinamePipeline, UidForSymbolValuesArePinned) {
   EXPECT_EQ(uid_for_symbol("CCC"), 1716134816u);
   // Case folds at the source, matching the pinned upper-case value.
   EXPECT_EQ(uid_for_symbol("spy"), 1478221309u);
+}
+
+// ── S1-3: a corpus with one name absent on one date runs to completion ────────
+//
+// The inception date omits CCC (its board is absent from that date's archive);
+// every later date carries it. Under the Error policy the missing name aborts the
+// whole run (RED); under DropRenormalize CCC is dropped on the inception date, the
+// surviving basket is renormalized and the backtest runs to completion. The engine
+// cannot MTM a lot whose surface later vanishes, so the demonstrable drop is at an
+// OPEN where the name is not subsequently held — here the inception open, which
+// never puts a CCC lot into the book.
+TEST(MultinamePipeline, CorpusWithMissingNameOnOneDateRunsToCompletion) {
+  const fs::path out = fresh_out_dir("s1-3-missing-one");
+  const std::vector<std::string> dates = {"2026-06-17", "2026-06-18", "2026-06-19"};
+
+  std::vector<CorpusBoard> boards;
+  for (std::size_t di = 0; di < dates.size(); ++di) {
+    const std::string& d = dates[di];
+    boards.push_back(board_from_spec(make_index_spec(d, 600.0), d, "SPY", convex_dense_pin()));
+    boards.push_back(board_from_spec(make_singlename_spec(d, 110.0), d, "AAA"));
+    boards.push_back(board_from_spec(make_singlename_spec(d, 85.0), d, "BBB"));
+    if (di != 0) {  // inception date omits CCC
+      boards.push_back(board_from_spec(make_singlename_spec(d, 220.0), d, "CCC"));
+    }
+  }
+  auto man_res = build_corpus(boards, out.string());
+  ASSERT_TRUE(man_res.has_value()) << man_res.error().to_string();
+  ASSERT_EQ(man_res->n_ok, boards.size()) << "every synthetic board must fit Ok";
+
+  auto clock = Clock::from_manifest(*man_res);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  DispersionUniverse u;
+  u.index = DispersionMember{"SPY", 0u, 0.0};
+  u.names.push_back(DispersionMember{"AAA", 0u, 0.5});
+  u.names.push_back(DispersionMember{"BBB", 0u, 0.3});
+  u.names.push_back(DispersionMember{"CCC", 0u, 0.2});
+
+  // RED: under the Error policy the missing CCC on the inception date aborts the
+  // whole run with NotFound (the pre-S1-3 behaviour this task removes).
+  {
+    DispersionConfig cfg_err;  // default Error
+    DispersionStrategy strat_err{u, cfg_err};
+    auto res = run_backtest(*clock, strat_err);
+    ASSERT_FALSE(res.has_value()) << "Error policy must abort on the missing name";
+    EXPECT_EQ(res.error().code(), ErrorCode::NotFound);
+    std::printf("[s1-3] Error-policy run aborts on missing name: %s\n",
+                res.error().to_string().c_str());
+  }
+
+  // GREEN: DropRenormalize drops CCC on the inception date and runs to completion.
+  DispersionConfig cfg;
+  cfg.missing.policy = MissingNamePolicy::DropRenormalize;
+  DispersionStrategy strat{u, cfg};
+  auto res = run_backtest(*clock, strat);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  ASSERT_EQ(res->size(), dates.size());
+
+  const std::vector<double>* dropped = nullptr;
+  const std::vector<double>* corr = nullptr;
+  for (const auto& s : res->signals) {
+    if (s.first == "n_names_dropped") dropped = &s.second;
+    if (s.first == "implied_corr") corr = &s.second;
+  }
+  ASSERT_NE(dropped, nullptr) << "n_names_dropped series not recorded";
+  ASSERT_NE(corr, nullptr) << "implied_corr series not recorded";
+  ASSERT_EQ(dropped->size(), res->size());
+  ASSERT_EQ(corr->size(), res->size());
+
+  // Exactly one drop on the inception date, none elsewhere.
+  EXPECT_EQ((*dropped)[0], 1.0);
+  for (std::size_t i = 1; i < dropped->size(); ++i) {
+    EXPECT_EQ((*dropped)[i], 0.0) << "row " << i;
+  }
+  // A full-length implied_corr series, finite on every row (survivors always trade).
+  for (std::size_t i = 0; i < corr->size(); ++i) {
+    EXPECT_TRUE(std::isfinite((*corr)[i])) << "row " << i;
+  }
+
+  // dropped_on(inception) names CCC with reason NotInSnapshot.
+  auto snap0 = MarketSnapshot::load((out / (dates[0] + ".atxvsa")).string());
+  ASSERT_TRUE(snap0.has_value()) << snap0.error().to_string();
+  const std::vector<DroppedName> dn = strat.dropped_on(*snap0);
+  ASSERT_EQ(dn.size(), 1u);
+  EXPECT_EQ(dn[0].symbol, "CCC");
+  EXPECT_EQ(dn[0].reason, DropReason::NotInSnapshot);
+  std::printf("[s1-3] drop-renorm run completes: rows=%zu drops=[%.0f,%.0f,%.0f]\n", res->size(),
+              (*dropped)[0], (*dropped)[1], (*dropped)[2]);
+}
+
+// ── S1-3: a date below min_names is a no-trade step, not an abort ─────────────
+//
+// The inception date carries ONLY the index (all names vanish), so the surviving
+// basket falls under min_names: that step opens no lots and emits a NaN
+// implied_corr, but the run continues and later full-basket dates trade normally.
+TEST(MultinamePipeline, AllNamesMissingIsNoTradeStepNotAbort) {
+  const fs::path out = fresh_out_dir("s1-3-all-missing");
+  const std::vector<std::string> dates = {"2026-06-17", "2026-06-18", "2026-06-19"};
+
+  std::vector<CorpusBoard> boards;
+  for (std::size_t di = 0; di < dates.size(); ++di) {
+    const std::string& d = dates[di];
+    boards.push_back(board_from_spec(make_index_spec(d, 600.0), d, "SPY", convex_dense_pin()));
+    if (di != 0) {  // inception date has only the index
+      boards.push_back(board_from_spec(make_singlename_spec(d, 110.0), d, "AAA"));
+      boards.push_back(board_from_spec(make_singlename_spec(d, 85.0), d, "BBB"));
+      boards.push_back(board_from_spec(make_singlename_spec(d, 220.0), d, "CCC"));
+    }
+  }
+  auto man_res = build_corpus(boards, out.string());
+  ASSERT_TRUE(man_res.has_value()) << man_res.error().to_string();
+  ASSERT_EQ(man_res->n_ok, boards.size()) << "every synthetic board must fit Ok";
+  auto clock = Clock::from_manifest(*man_res);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  DispersionUniverse u;
+  u.index = DispersionMember{"SPY", 0u, 0.0};
+  u.names.push_back(DispersionMember{"AAA", 0u, 0.5});
+  u.names.push_back(DispersionMember{"BBB", 0u, 0.3});
+  u.names.push_back(DispersionMember{"CCC", 0u, 0.2});
+
+  DispersionConfig cfg;
+  cfg.missing.policy = MissingNamePolicy::DropRenormalize;
+  DispersionStrategy strat{u, cfg};
+  auto res = run_backtest(*clock, strat);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  ASSERT_EQ(res->size(), dates.size());
+
+  // Inception is a no-trade step: no lots opened, but the run continues.
+  ASSERT_EQ(res->n_open_lots.size(), res->size());
+  EXPECT_EQ(res->n_open_lots[0], 0.0) << "the no-trade inception step must open no lots";
+  bool traded_later = false;
+  for (std::size_t i = 1; i < res->size(); ++i) {
+    if (res->n_open_lots[i] > 0.0) traded_later = true;
+  }
+  EXPECT_TRUE(traded_later) << "a later full-basket date must trade";
+
+  // PnL is well-defined on every row (no blow-up from the no-trade step).
+  for (std::size_t i = 0; i < res->size(); ++i) {
+    EXPECT_TRUE(std::isfinite(res->pnl_total[i])) << "row " << i;
+    EXPECT_TRUE(std::isfinite(res->nav[i])) << "row " << i;
+  }
+
+  // The inception no-trade step drops the full basket; implied_corr is NaN there.
+  const std::vector<double>* dropped = nullptr;
+  const std::vector<double>* corr = nullptr;
+  for (const auto& s : res->signals) {
+    if (s.first == "n_names_dropped") dropped = &s.second;
+    if (s.first == "implied_corr") corr = &s.second;
+  }
+  ASSERT_NE(dropped, nullptr);
+  ASSERT_NE(corr, nullptr);
+  EXPECT_EQ((*dropped)[0], 3.0);
+  EXPECT_TRUE(std::isnan((*corr)[0])) << (*corr)[0];
 }

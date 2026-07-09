@@ -256,7 +256,18 @@ class DeclarativeStrategy : public IStrategy {
 // An IStrategy over a dispersion universe. On entry it calls the existing
 // `build_dispersion_book` (authoritative P4-1 sizing — NOT reimplemented) and
 // converts the emitted `Position`s into `Lot`s; `signals` surfaces the
-// implied-correlation diagnostic. Default lifecycle: RollAtHorizon.
+// implied-correlation diagnostic plus an `n_names_dropped` count. Default
+// lifecycle: RollAtHorizon.
+//
+// Missing-name handling rides in `cfg.missing` (S1-3). Under `DropRenormalize` a
+// member absent/unusable on a date is dropped and the basket renormalized rather
+// than aborting the run. NO-TRADE CONTRACT: if `build_dispersion_book` fails with
+// `ErrorCode::Unavailable` (too few names survived that date) AND the policy is
+// `DropRenormalize`, the step is treated as a flat / no-trade step — no lots are
+// opened, the existing book is left untouched, and the run continues. Any other
+// error code (InvalidArgument, NotFound — including an unresolved INDEX) stays
+// fatal. Under the default `Error` policy nothing is dropped and behaviour is
+// bit-identical to pre-S1-3.
 class DispersionStrategy : public IStrategy {
  public:
   DispersionStrategy(DispersionUniverse universe, DispersionConfig cfg, LifecycleSpec lifecycle = {})
@@ -270,6 +281,11 @@ class DispersionStrategy : public IStrategy {
 
   // Parity accessor: the exact P4-1 book this strategy would open on `base`.
   [[nodiscard]] Result<DispersionBook> build_book(const MarketSnapshot& base) const;
+
+  // Diagnostic accessor: the names dropped on `base` under `cfg.missing` — both
+  // resolve-stage drops (symbol absent from the snapshot) and signal-stage drops
+  // (surface missing / ATM straddle unusable), in that order. Empty under Error.
+  [[nodiscard]] std::vector<DroppedName> dropped_on(const MarketSnapshot& base) const;
 
  private:
   DispersionUniverse universe_;
