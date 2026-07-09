@@ -1,6 +1,23 @@
 from __future__ import annotations
 
+import importlib
+import pkgutil
 from pathlib import Path
+
+import db
+
+# The public-API snapshot pins the submodule list of the ``db`` package, but a
+# submodule only enters ``dir(db)`` once it has been imported somewhere in the
+# process. Several public top-level feature modules (backfill, factor_panel,
+# factors, signal_eval, identifiers_figi, identifiers_lei) are not eagerly
+# imported by ``db/__init__``, so their presence in ``dir(db)`` would otherwise
+# depend on xdist worker/test ordering and make this snapshot flaky. Import every
+# public top-level ``db`` submodule here so the snapshot measures a deterministic,
+# complete surface in any run. This does not touch ``db.migrations`` body modules,
+# which ``db/migrations/__init__`` deliberately keeps private.
+for _submodule in pkgutil.iter_modules(db.__path__):
+    if not _submodule.name.startswith("_") and _submodule.name != "tests":
+        importlib.import_module(f"db.{_submodule.name}")
 
 from db.module_boundaries import (
     DECOMPOSED_PACKAGES,

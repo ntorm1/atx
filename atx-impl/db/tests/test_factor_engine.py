@@ -19,6 +19,8 @@ from db.factors.catalog import (
     legacy_factor_definitions,
     validate_catalog,
 )
+from db.factors.cross_domain import cross_domain_factor_definitions
+from db.factors.fundamental_families import factor_seed_definitions
 from db.factors.engine import (
     FactorGraphError,
     compute_factor_rows,
@@ -93,7 +95,15 @@ def test_validate_catalog_rejects_undeclared_factor_input() -> None:
 
 
 def test_factor_definition_migration_seeds_catalog_rows(tmp_store) -> None:
-    expected_count = len(legacy_factor_definitions())
+    # factor_definition is seeded from three authoritative sources, matching the
+    # migrations that populate it: legacy S7-0 rows (migration 0152), the S8
+    # definition-as-data seed CSV (migrations 0156-0159), and the S9 cross-domain
+    # specs (migrations 0160-0163).
+    expected_count = (
+        len(legacy_factor_definitions())
+        + len(factor_seed_definitions())
+        + len(cross_domain_factor_definitions())
+    )
     count = tmp_store.con.execute("SELECT count(*) FROM factor_definition").fetchone()[0]
     ret = tmp_store.con.execute(
         """

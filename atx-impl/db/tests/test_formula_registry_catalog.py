@@ -29,6 +29,13 @@ import duckdb
 import pytest
 
 
+# Injected as-of reference date for the "over the committed seed" assertions.
+# Frozen so the "every committed formula is queryable as-of" checks evaluate at a
+# FIXED as-of and can never expire on wall-clock passage. All committed formula
+# rows are open-ended (valid_from 1900-01-01, valid_to NULL), so any frozen date
+# in their validity window keeps the assertion semantics intact.
+AS_OF = dt.date(2026, 7, 6)
+
 NEW_VIEWS = ("v_formula_registry",)
 
 EXPECTED_VIEW_COLUMNS = (
@@ -81,8 +88,15 @@ def _columns(con: duckdb.DuckDBPyConnection, name: str) -> list[str]:
 
 
 def _seed_two_rows(store) -> None:
-    """Seed two formula_registry rows with distinct valid_from and one retired row."""
+    """Seed exactly two formula_registry rows (one open-ended, one retired).
+
+    The warehouse bootstrap now seeds the committed formula catalog (migrations
+    0148-0151, PF3-S6), so the table is non-empty in the template. Clear it first
+    so this helper establishes a controlled two-row world and the exact-equality
+    assertions over the view/reader remain deterministic.
+    """
     con = store.con
+    con.execute("DELETE FROM formula_registry")
     con.execute(
         """
         INSERT INTO formula_registry (
@@ -290,7 +304,7 @@ class TestFormulaRegistryAsofOverCommittedSeed:
         seeded_count = seed_formula_registry(tmp_store)
         assert seeded_count > 0
 
-        result = formula_registry_asof(dt.date.today(), store=tmp_store)
+        result = formula_registry_asof(AS_OF, store=tmp_store)
         assert len(result) == seeded_count
 
         # Every row must carry a human definition; citation may be blank for
@@ -304,7 +318,7 @@ class TestFormulaRegistryAsofOverCommittedSeed:
 
         seed_formula_registry(tmp_store)
         result = formula_registry_asof(
-            dt.date.today(), store=tmp_store, formula_codes=["altman_z_double_prime"]
+            AS_OF, store=tmp_store, formula_codes=["altman_z_double_prime"]
         )
         assert len(result) == 1
         row = result.iloc[0]
