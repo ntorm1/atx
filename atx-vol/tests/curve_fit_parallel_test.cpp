@@ -30,6 +30,13 @@
 // proves the same identity on the real 13.9k-contract SPY board and reports
 // the measured wall-clock speedup; it SKIPs cleanly if the (gitignored) cached
 // parquet fixture is absent — it never triggers a Databento pull.
+//
+// S0-3 gate (both cases above, via `expect_per_expiry_bit_identical`):
+// `build_parity_data` (the second, re-Americanization-diagnostic de-Am) moved
+// from the sequential phase-2 walk into this same parallel prepass. `in` in
+// both cases leaves `score_parity` at its default (true), so both cases now
+// also assert `per_expiry` is bit-identical across worker counts -- a PURE
+// PERF REFACTOR characterization, not a behavior change (see task S0-3).
 
 namespace {
 
@@ -190,6 +197,31 @@ void expect_bit_identical(const atx::vol::CurveSurfaceReport& a,
   }
 }
 
+// S0-3 gate: the SECOND cold de-Am (`build_parity_data`, the re-Americanized
+// parity diagnostic's market-side board re-inversion) moved from the
+// sequential phase-2 walk into the parallel per-chain prepass. It is a PURE
+// PERF REFACTOR -- every `ParityReport` field in `per_expiry` must be
+// bit-identical across worker counts with `score_parity=true` (each chain's
+// ParityData is an independent, disjoint prepass slot -- the value_chain
+// determinism pattern already relied on for the fitted surface itself).
+// Compares every field with EXPECT_EQ (bit-exact, not a tolerance check).
+void expect_per_expiry_bit_identical(const atx::vol::CurveSurfaceReport& a,
+                                     const atx::vol::CurveSurfaceReport& b) {
+  ASSERT_EQ(a.per_expiry.size(), b.per_expiry.size());
+  for (std::size_t i = 0; i < a.per_expiry.size(); ++i) {
+    const auto& pa = a.per_expiry[i];
+    const auto& pb = b.per_expiry[i];
+    EXPECT_EQ(pa.n, pb.n) << "slice " << i;
+    EXPECT_EQ(pa.n_within, pb.n_within) << "slice " << i;
+    EXPECT_EQ(pa.frac_fv_within_bidask, pb.frac_fv_within_bidask) << "slice " << i;
+    EXPECT_EQ(pa.rmse_mid_price, pb.rmse_mid_price) << "slice " << i;
+    EXPECT_EQ(pa.rmse_mid_vol, pb.rmse_mid_vol) << "slice " << i;
+    EXPECT_EQ(pa.chi2_reduced, pb.chi2_reduced) << "slice " << i;
+    EXPECT_EQ(pa.frac_within_edge_band, pb.frac_within_edge_band) << "slice " << i;
+    EXPECT_EQ(pa.mean_edge_vol, pb.mean_edge_vol) << "slice " << i;
+  }
+}
+
 // Locate the cached SPY parquet across the paths a test binary might run from.
 // (Copied from curve_noarb_test.cpp / spy_real_test.cpp — same gitignored fixture.)
 [[nodiscard]] std::string find_spy_parquet() {
@@ -223,6 +255,10 @@ TEST(CurveFitParallel, SyntheticBoardBitIdenticalAcrossWorkers) {
 
   ASSERT_EQ(rep1->n_slices, 4u);
   expect_bit_identical(*rep1, *rep8, /*strict_finite*/ true);
+  // S0-3: base_inputs() leaves score_parity at its default (true), so this
+  // also exercises the fanned-out second de-Am -- per_expiry must be
+  // bit-identical across worker counts too.
+  expect_per_expiry_bit_identical(*rep1, *rep8);
 }
 
 TEST(CurveFitParallel, SpyBoardBitIdenticalAcrossWorkers) {
@@ -285,6 +321,12 @@ TEST(CurveFitParallel, SpyBoardBitIdenticalAcrossWorkers) {
       ms1, ms0, (ms0 > 0.0) ? (ms1 / ms0) : 0.0);
 
   expect_bit_identical(*rep1, *rep0, /*strict_finite*/ false);
+  // S0-3: `in` above never sets score_parity, so it defaults true -- both fits
+  // above already pay for (fit_workers=1: sequential, fit_workers=0: fanned)
+  // the second de-Am, so the ms1 vs ms0 print above IS the parity-ON
+  // speedup vs the pre-S0-3 sequential-parity baseline. Assert the fanned-out
+  // second de-Am did not perturb the diagnostic itself.
+  expect_per_expiry_bit_identical(*rep1, *rep0);
 }
 
 // S0-2 gate: `SurfaceParityInputs::score_parity` (default true) lets a caller

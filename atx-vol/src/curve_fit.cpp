@@ -95,7 +95,8 @@ struct ChainPrepass {
   double borrow = 0.0;
   double q_eff = 0.0;
   double df = 0.0;
-  ObsSet obs;  // meaningful only when `usable`
+  ObsSet obs;         // meaningful only when `usable`
+  ParityData parity;  // meaningful only when `usable && in.score_parity` (S0-3)
 };
 
 // Phase 1: the cold, per-chain de-Am (resolve_chain_forward + the European
@@ -140,6 +141,16 @@ struct ChainPrepass {
     slot.q_eff = q_eff;
     slot.df = df;
     slot.obs = std::move(*obs);
+    // S0-3: fan the SECOND cold de-Am (the re-Americanized parity diagnostic's
+    // market-side board re-inversion) out into this same per-chain task. Pure
+    // per-chain work into this task's own disjoint `slot` -- concurrent reads
+    // through a populated AmericanCorrectionCaches are already proven race-free
+    // (S0-1 review; `value_chain` fans out `american_implied_vol` against a
+    // populated cache with this identical parallel_for helper). Phase 2 below
+    // just reads `pre.parity`; `build_parity_data` itself is unchanged.
+    if (in.score_parity) {
+      slot.parity = build_parity_data(chain, in.S, in.r, F, q_eff, in.deam);
+    }
     slot.usable = true;
   });
   return prepass;
@@ -185,7 +196,6 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying& under,
     if (!pre.usable) {
       continue;
     }
-    const Chain& chain = under.chains[ci];
     const double T = pre.T;
     const double F = pre.F;
     const double q_eff = pre.q_eff;
@@ -217,15 +227,19 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying& under,
     // 4. Score re-Americanized parity off the fitted slice's own iv(k). A parity
     //    (diagnostic) failure is non-fatal: keep the slice, push a zeroed report.
     //    `in.score_parity` (S0-2) opts OUT of this block entirely: it is the
-    //    SECOND cold de-Am pass over the chain (build_parity_data re-inverts
-    //    every OTM leg) -- a caller that only needs the fitted surface skips it.
-    //    `parity` stays the default-constructed zeroed ParityReport{} (n == 0),
-    //    so `worst` below never advances past its `infinity` init and
-    //    `worst_frac_within_bidask` resolves to 0.0 -- the intended
-    //    "no diagnostic" sentinel.
+    //    SECOND cold de-Am pass over the chain -- a caller that only needs the
+    //    fitted surface skips it. `parity` stays the default-constructed zeroed
+    //    ParityReport{} (n == 0), so `worst` below never advances past its
+    //    `infinity` init and `worst_frac_within_bidask` resolves to 0.0 -- the
+    //    intended "no diagnostic" sentinel.
+    //    S0-3: the market-side de-Am (`build_parity_data`) already ran in phase
+    //    1's parallel prepass (under the same `in.score_parity` guard); this
+    //    block only reads the precomputed slot and does the cheap fitted-model
+    //    scoring (`slice->iv(k)` + `chain_parity`) that genuinely needs the
+    //    fitted slice.
     ParityReport parity{};
     if (in.score_parity) {
-      const ParityData pd = build_parity_data(chain, in.S, in.r, F, q_eff, in.deam);
+      const ParityData& pd = pre.parity;
       if (pd.strike.size() >= 4) {
         std::vector<double> model_iv;
         model_iv.reserve(pd.k_log.size());
