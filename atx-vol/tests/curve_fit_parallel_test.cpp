@@ -286,3 +286,107 @@ TEST(CurveFitParallel, SpyBoardBitIdenticalAcrossWorkers) {
 
   expect_bit_identical(*rep1, *rep0, /*strict_finite*/ false);
 }
+
+// S0-2 gate: `SurfaceParityInputs::score_parity` (default true) lets a caller
+// that does not need the re-Americanized parity diagnostic skip the SECOND
+// cold de-Am pass (`build_parity_data`) entirely. The fitted surface and every
+// `SliceContext` must stay bit-identical regardless of the flag -- parity is a
+// pure diagnostic and must not perturb the fit.
+TEST(CurveFitParity, ParityOffMatchesParityOnSurface) {
+  const Underlying under = make_synthetic_underlying();
+  CurveConfig cfg;  // default = ConvexDense
+
+  SurfaceParityInputs in_on = base_inputs(1);
+  in_on.score_parity = true;
+  auto rep_on = fit_curve_surface(under, in_on, cfg);
+  ASSERT_TRUE(rep_on.has_value()) << rep_on.error().to_string();
+
+  SurfaceParityInputs in_off = base_inputs(1);
+  in_off.score_parity = false;
+  auto rep_off = fit_curve_surface(under, in_off, cfg);
+  ASSERT_TRUE(rep_off.has_value()) << rep_off.error().to_string();
+
+  ASSERT_EQ(rep_on->n_slices, 4u);
+  expect_bit_identical(*rep_on, *rep_off, /*strict_finite*/ true);
+
+  ASSERT_EQ(rep_on->per_expiry.size(), rep_off->per_expiry.size());
+  std::size_t n_scored_on = 0;
+  for (const auto& pr : rep_on->per_expiry) {
+    if (pr.n > 0) {
+      ++n_scored_on;
+    }
+  }
+  EXPECT_GE(n_scored_on, 1u) << "score_parity=true should score at least one slice";
+
+  for (const auto& pr : rep_off->per_expiry) {
+    EXPECT_EQ(pr.n, 0u) << "score_parity=false must leave per_expiry zeroed";
+  }
+  EXPECT_EQ(rep_off->worst_frac_within_bidask, 0.0);
+}
+
+// Informational: with the diagnostic off, the fit skips the second cold de-Am
+// pass over the real SPY board. Report both wall-clocks + the speedup factor;
+// do NOT hard-assert timing (flaky under shared CI load).
+TEST(CurveFitParity, ParityOffSkipsSecondDeAmOnSpy) {
+  const std::string path = find_spy_parquet();
+  if (path.empty()) {
+    GTEST_SKIP() << "cached SPY OPRA parquet not found; run the databento pull + "
+                    "opra_dbn_to_parquet to materialise the fixture.";
+  }
+
+  OpraLoadSpec spec;
+  spec.path = path;
+  spec.underlying = "SPY";
+  spec.snapshot_iso = "2026-06-05T19:55:00Z";
+  spec.r = 0.043;
+  const auto panel = load_opra_cbbo_parquet(spec);
+  ASSERT_TRUE(panel.has_value()) << panel.error().to_string();
+
+  Universe u;
+  const auto uid = data_install(u, panel->frame);
+  ASSERT_TRUE(uid.has_value());
+  const auto under = u.get_underlying(*uid);
+  ASSERT_TRUE(under.has_value());
+  const Underlying* U = *under;
+
+  SurfaceParityInputs in{};
+  in.S = panel->implied_spot;
+  in.r = spec.r;
+  in.now_ts_ns = panel->frame.snapshot_ts_ns;
+  in.band_k = 1.0;
+  in.repair = CalendarRepair::None;
+  in.deam.al_opts = al_fast_opts();
+  in.deam.iv_tol = 1.0e-5;
+  in.deam.n_atm = 1;
+  in.fit_workers = 0;  // auto -- the served worker policy
+
+  CurveConfig cfg;  // default = ConvexDense (the served dense surface)
+
+  SurfaceParityInputs in_on = in;
+  in_on.score_parity = true;
+  const auto t0 = std::chrono::steady_clock::now();
+  auto rep_on = fit_curve_surface(*U, in_on, cfg);
+  const auto t1 = std::chrono::steady_clock::now();
+  ASSERT_TRUE(rep_on.has_value()) << rep_on.error().to_string();
+
+  SurfaceParityInputs in_off = in;
+  in_off.score_parity = false;
+  const auto t2 = std::chrono::steady_clock::now();
+  auto rep_off = fit_curve_surface(*U, in_off, cfg);
+  const auto t3 = std::chrono::steady_clock::now();
+  ASSERT_TRUE(rep_off.has_value()) << rep_off.error().to_string();
+
+  const double ms_on = std::chrono::duration<double, std::milli>(t1 - t0).count();
+  const double ms_off = std::chrono::duration<double, std::milli>(t3 - t2).count();
+  std::printf(
+      "[CurveFitParity SPY] score_parity=true %.1fms, score_parity=false %.1fms, "
+      "speedup=%.2fx\n",
+      ms_on, ms_off, (ms_off > 0.0) ? (ms_on / ms_off) : 0.0);
+
+  expect_bit_identical(*rep_on, *rep_off, /*strict_finite*/ false);
+
+  for (const auto& pr : rep_off->per_expiry) {
+    EXPECT_EQ(pr.n, 0u);
+  }
+  EXPECT_EQ(rep_off->worst_frac_within_bidask, 0.0);
+}

@@ -113,6 +113,18 @@ struct SurfaceParityInputs {
   // worker count. `run_surface_parity` (the eSSVI path) does not read this
   // field and is unaffected.
   unsigned fit_workers{0};
+
+  // Score the re-Americanized per-expiry parity diagnostic (a SECOND cold
+  // de-Am of the board via `build_parity_data` in `fit_curve_surface`; S0-2).
+  // true (default) = bit-identical to the historical served path -- production
+  // still gets the quality diagnostic. false = skip it: the fitted surface is
+  // UNCHANGED (parity is a pure diagnostic), but `SurfaceParityReport::per_expiry`
+  // /`CurveSurfaceReport::per_expiry` are zeroed `ParityReport{}` (n == 0) and
+  // `worst_frac_within_bidask` resolves to 0.0 -- so a caller that only needs
+  // the fitted surface avoids the redundant second de-Am pass. Only consulted
+  // by `fit_curve_surface`; `run_surface_parity` (the eSSVI path) always scores
+  // parity and does not read this field.
+  bool score_parity{true};
 };
 
 // Per-fitted-slice pricing context: everything the composable facade

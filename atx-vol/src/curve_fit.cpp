@@ -216,30 +216,37 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying& under,
 
     // 4. Score re-Americanized parity off the fitted slice's own iv(k). A parity
     //    (diagnostic) failure is non-fatal: keep the slice, push a zeroed report.
-    //    NOTE (S0-2 follow-up): this is the SECOND cold de-Am pass over the
-    //    chain (build_parity_data re-inverts every OTM leg); left as-is here.
-    const ParityData pd = build_parity_data(chain, in.S, in.r, F, q_eff, in.deam);
+    //    `in.score_parity` (S0-2) opts OUT of this block entirely: it is the
+    //    SECOND cold de-Am pass over the chain (build_parity_data re-inverts
+    //    every OTM leg) -- a caller that only needs the fitted surface skips it.
+    //    `parity` stays the default-constructed zeroed ParityReport{} (n == 0),
+    //    so `worst` below never advances past its `infinity` init and
+    //    `worst_frac_within_bidask` resolves to 0.0 -- the intended
+    //    "no diagnostic" sentinel.
     ParityReport parity{};
-    if (pd.strike.size() >= 4) {
-      std::vector<double> model_iv;
-      model_iv.reserve(pd.k_log.size());
-      for (const double k : pd.k_log) {
-        model_iv.push_back(slice->iv(k));
-      }
-      ParityInputs pin{};
-      pin.S = in.S;
-      pin.r = in.r;
-      pin.q_eff = q_eff;
-      pin.T = T;
-      pin.method = in.deam.method;
-      pin.al_opts = in.deam.al_opts;
-      pin.band_k = in.band_k;
-      pin.n_curve_params = 3;  // nominal chi2 dof (informational for dense fits)
-      pin.caches = in.deam.caches;
-      auto pr = chain_parity(pd.strike, pd.bid, pd.ask, pd.mid, pd.side, model_iv,
-                             pd.market_iv, pin);
-      if (pr) {
-        parity = *pr;
+    if (in.score_parity) {
+      const ParityData pd = build_parity_data(chain, in.S, in.r, F, q_eff, in.deam);
+      if (pd.strike.size() >= 4) {
+        std::vector<double> model_iv;
+        model_iv.reserve(pd.k_log.size());
+        for (const double k : pd.k_log) {
+          model_iv.push_back(slice->iv(k));
+        }
+        ParityInputs pin{};
+        pin.S = in.S;
+        pin.r = in.r;
+        pin.q_eff = q_eff;
+        pin.T = T;
+        pin.method = in.deam.method;
+        pin.al_opts = in.deam.al_opts;
+        pin.band_k = in.band_k;
+        pin.n_curve_params = 3;  // nominal chi2 dof (informational for dense fits)
+        pin.caches = in.deam.caches;
+        auto pr = chain_parity(pd.strike, pd.bid, pd.ask, pd.mid, pd.side, model_iv,
+                               pd.market_iv, pin);
+        if (pr) {
+          parity = *pr;
+        }
       }
     }
 
