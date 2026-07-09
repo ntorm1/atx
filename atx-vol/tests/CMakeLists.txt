@@ -58,6 +58,7 @@ add_executable(atx-vol-tests
     pnl_greeks_consistency_test.cpp
     lifecycle_integration_test.cpp
     corpus_test.cpp
+    multiname_pipeline_test.cpp
     dispersion_test.cpp
     backtest_test.cpp
     strategy_test.cpp

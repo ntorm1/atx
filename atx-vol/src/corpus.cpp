@@ -18,8 +18,10 @@
 
 #include "atx/vol/chain.hpp"            // OptionChain
 #include "atx/vol/curve_selector.hpp"   // SelectorResult, CandidateScore
+#include "atx/vol/dispersion.hpp"       // with_uid
 #include "atx/vol/priced_surface.hpp"   // PricedSurface
 #include "atx/vol/session.hpp"          // VolaSession::to_priced_surface
+#include "atx/vol/universe.hpp"         // uid_for_symbol
 
 namespace atx::vol {
 
@@ -260,14 +262,36 @@ Result<CorpusManifest> build_corpus(std::span<const CorpusBoard> boards,
     }
 
     if (date_has_ok) {
-      // Non-owning items into the still-live slots + boards storage (both outlive
-      // this write). Symbol-ascending, matching the archive's own directory sort.
+      // Distinct per-symbol uid at write (S1-1 — the multi-name northstar
+      // blocker). Each board fits in its own single-symbol `Universe`, so
+      // `slots[idx].surface`'s in-memory uid is ALWAYS 1 (universe.cpp:71 — the
+      // sole interned ticker of a fresh Universe). Left unstamped, a date with
+      // more than one Ok symbol would archive every surface at uid=1 and
+      // `MarketSnapshot::load`'s `SurfaceSet::create` would reject the archive
+      // ("duplicate uid", portfolio_pricer.cpp). Stamp a symbol-derived uid
+      // (`uid_for_symbol`) onto an ARCHIVED COPY — `with_uid` deep-clones
+      // curves + context, a one-time cost at corpus-write time, not the pricing
+      // hot path — so the in-memory `slots[idx].surface` (and any live session
+      // built from the same board) is untouched: single-symbol served/session
+      // pricing keeps uid=1 exactly as before.
+      std::vector<PricedSurface> restamped;  // owns this date's uid-corrected copies
+      restamped.reserve(j - i);
+      // Non-owning items into `restamped` (reserved above, so no reallocation
+      // invalidates the pointers taken below) + the still-live `boards` storage
+      // (outlives this write). Symbol-ascending, matching the archive's own
+      // directory sort.
       std::vector<SurfaceArchiveItem> items;
       items.reserve(j - i);
       for (std::size_t k = i; k < j; ++k) {
         const std::size_t idx = order[k];
         if (slots[idx].status == CorpusFitStatus::Ok) {
-          items.push_back(SurfaceArchiveItem{boards[idx].symbol, &slots[idx].surface.value()});
+          const std::uint32_t uid = uid_for_symbol(boards[idx].symbol);
+          Result<PricedSurface> stamped = with_uid(slots[idx].surface.value(), uid);
+          if (!stamped) {
+            return Err(stamped.error());
+          }
+          restamped.push_back(std::move(*stamped));
+          items.push_back(SurfaceArchiveItem{boards[idx].symbol, &restamped.back()});
         }
       }
       const Status w = write_surface_archive_file(apath, items, cfg.write_opts);

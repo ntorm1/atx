@@ -81,6 +81,25 @@ inline constexpr std::size_t kMaxTickerLen = 16u;
 inline constexpr std::size_t kMaxChainsPerUnderlying = 0x8000u; // 32768
 inline constexpr std::size_t kMaxStrikesPerChain = 0x4000u;     // 16384
 
+// ── Symbol -> uid (archive stamping) ────────────────────────────────────────
+//
+// A STABLE, deterministic, NON-ZERO uid derived purely from a ticker's
+// canonical form (ASCII-upper, truncated to the archive's symbol cap — see
+// `kArchiveSymbolMax` in surface_archive.hpp; duplicated as a local constant in
+// universe.cpp, not `#include`d, to keep this header free of the archive's
+// heavier `PricedSurface` dependency — keep the two constants in lock-step).
+//
+// Every fresh single-symbol `Universe` assigns its sole interned ticker uid 1
+// (`intern_ticker` below), so a corpus that fits one board per (date, symbol)
+// in its own `Universe` produces surfaces that ALL carry uid=1. `uid_for_symbol`
+// gives the corpus/archive WRITER (corpus.cpp) a symbol-derived uid to stamp
+// on the persisted copy instead, so a date's archive holds distinct uids per
+// symbol. Pure function of the canonical bytes: identical across calls,
+// processes, dates, and thread counts (no process- or ASLR-seeded hash state,
+// unlike `atx::core::hash_bytes`/wyhash). Maps a 0 digest to 1 (0 is
+// `kInvalidUid`, this module's reserved sentinel).
+[[nodiscard]] std::uint32_t uid_for_symbol(std::string_view symbol) noexcept;
+
 // ── Contract-id codec ───────────────────────────────────────────────────────
 //
 // Bit-for-bit identical to the C `ats_vol_cid_make` and its decoders:

@@ -1,10 +1,12 @@
 #include "atx/vol/universe.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -22,7 +24,50 @@ namespace {
 // not redefine any `kQuietNaN` another atx-vol header may also declare.
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
+// Canonical-symbol length cap for `uid_for_symbol`. MUST match
+// `atx::vol::kArchiveSymbolMax` (surface_archive.hpp) — duplicated here (not
+// `#include`d) so this header/TU stays free of the archive's heavier
+// `PricedSurface` dependency. If the archive's cap ever changes, update this
+// constant too; `MultinamePipeline.UidForSymbol_StableAndCaseInsensitive`
+// (multiname_pipeline_test.cpp) exercises the canonicalization this guards.
+inline constexpr std::size_t kSymbolCanonMax = 32u;
+
+// FNV-1a 32-bit — a small, dependency-free, deterministic byte hash. Chosen
+// over `atx::core::hash_bytes` (wyhash) because that helper's contract is
+// explicitly "NOT stable across process restarts or platforms"; `uid_for_symbol`
+// must agree across processes (the corpus writer and any later reader are
+// typically different process invocations).
+[[nodiscard]] constexpr std::uint32_t fnv1a32(std::string_view bytes) noexcept {
+  constexpr std::uint32_t kOffsetBasis = 0x811C'9DC5u;
+  constexpr std::uint32_t kPrime = 0x0100'0193u;
+  std::uint32_t h = kOffsetBasis;
+  for (const char c : bytes) {
+    h ^= static_cast<std::uint32_t>(static_cast<unsigned char>(c));
+    h *= kPrime;
+  }
+  return h;
+}
+
 } // namespace
+
+std::uint32_t uid_for_symbol(std::string_view symbol) noexcept {
+  // ASCII upper-case, truncated to kSymbolCanonMax — matches the archive's own
+  // canonicalizer (surface_archive.cpp's file-local `canonicalize`): upper-case
+  // then truncate, no trimming of interior bytes. Hashing exactly the truncated
+  // length (not a zero-padded buffer) mirrors how the archive hashes
+  // `plan.symbol_len` bytes, not the full padded array.
+  std::array<char, kSymbolCanonMax> canon{};
+  const std::size_t n = std::min(symbol.size(), kSymbolCanonMax);
+  for (std::size_t i = 0; i < n; ++i) {
+    char c = symbol[i];
+    if (c >= 'a' && c <= 'z') {
+      c = static_cast<char>(c - 'a' + 'A');
+    }
+    canon[i] = c;
+  }
+  const std::uint32_t h = fnv1a32(std::string_view(canon.data(), n));
+  return h == 0u ? 1u : h; // 0 is kInvalidUid, the reserved sentinel
+}
 
 // ── Construction ────────────────────────────────────────────────────────────
 
