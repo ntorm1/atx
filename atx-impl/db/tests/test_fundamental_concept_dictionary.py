@@ -20,11 +20,13 @@ import datetime as dt
 import pytest
 
 
-# 1044-1049 are the share-count/float completeness inputs (EntityPublicFloat,
+# 1045-1050 are the share-count/float completeness inputs (EntityPublicFloat,
 # TreasuryStockShares, ClassA-D CommonStockSharesOutstanding) added to the ALL
 # statement map by PF3-S5 (commit 3a1d3af "add share count completeness inputs").
+# 1044 remains a reserved gap id and is not authorized.
 AUTHORIZED_S4A_ITEM_IDS = (
-    set(range(1001, 1050))
+    set(range(1001, 1044))
+    | set(range(1045, 1051))
     | set(range(1101, 1120))
     | set(range(1201, 1224))
     | set(range(1301, 1326))

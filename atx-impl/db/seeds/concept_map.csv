@@ -108,7 +108,13 @@ us-gaap,EarningsPerShareDiluted,eps_diluted,1035,per_share,ALL
 us-gaap,IncomeLossFromContinuingOperationsPerBasicShare,eps_basic_cont,1036,per_share,ALL
 us-gaap,IncomeLossFromContinuingOperationsPerDilutedShare,eps_diluted_cont,1037,per_share,ALL
 dei,EntityCommonStockSharesOutstanding,shares_outstanding,1039,share_count,ALL
+dei,EntityPublicFloat,float,1045,share_count,ALL
+us-gaap,ClassACommonStockSharesOutstanding,class_a,1047,share_count,ALL
+us-gaap,ClassBCommonStockSharesOutstanding,class_b,1048,share_count,ALL
+us-gaap,ClassCCommonStockSharesOutstanding,class_c,1049,share_count,ALL
+us-gaap,ClassDCommonStockSharesOutstanding,class_d,1050,share_count,ALL
 us-gaap,CommonStockSharesOutstanding,shares_outstanding,1039,share_count,ALL
+us-gaap,TreasuryStockShares,treasury,1046,share_count,ALL
 us-gaap,WeightedAverageNumberOfDilutedSharesOutstanding,shares_diluted_avg,1041,share_count,ALL
 us-gaap,WeightedAverageNumberOfSharesOutstandingBasic,shares_basic_avg,1040,share_count,ALL
 us-gaap,PayablesToBrokerDealersAndClearingOrganizations,payables_broker_dealers,1903,broker_dealer_statement,BD
