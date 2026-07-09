@@ -29,14 +29,17 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <vector>
 
 #include "atx/vol/backtest.hpp"        // MarketSnapshot
 #include "atx/vol/corpus.hpp"          // build_corpus, CorpusBoard, CorpusManifest
+#include "atx/vol/dispersion.hpp"      // DispersionUniverse, dispersion_signal, resolve_universe_uids
 #include "atx/vol/data.hpp"            // iso_to_ns, year_fraction
 #include "atx/vol/market_env.hpp"      // MarketEnv
 #include "atx/vol/panel.hpp"           // make_synthetic_american_panel, SynthPanelSpec
@@ -210,4 +213,138 @@ TEST(MultinamePipeline, UidForSymbol_StableAndCaseInsensitive) {
   EXPECT_NE(uid_for_symbol("SPY"), uid_for_symbol("AAA"));
   EXPECT_NE(uid_for_symbol("AAA"), uid_for_symbol("BBB"));
   EXPECT_NE(uid_for_symbol("BBB"), uid_for_symbol("CCC"));
+}
+
+// ── S1-2: a symbol-authored dispersion universe resolves on every date ───────
+//
+// A real basket is authored in SYMBOLS (uid=0); the uid scheme is an archive
+// detail nobody hand-writes. `resolve_universe_uids` binds every leg by symbol
+// against the loaded snapshot's directory so the same universe works across
+// dates regardless of the uid scheme.
+TEST(MultinamePipeline, UniverseAuthoredBySymbolResolvesOnEveryDate) {
+  const fs::path out = fresh_out_dir("s1-2-resolve");
+  const std::vector<std::string> dates = {"2026-06-17", "2026-06-18"};
+
+  auto man_res = build_corpus(make_multiname_boards(dates), out.string());
+  ASSERT_TRUE(man_res.has_value()) << man_res.error().to_string();
+  ASSERT_EQ(man_res->n_ok, 8u) << "every synthetic board must fit Ok";
+
+  // Authored in symbols only; every uid left at the reserved 0.
+  DispersionUniverse u;
+  u.index = DispersionMember{"SPY", 0u, 0.0};
+  u.names.push_back(DispersionMember{"AAA", 0u, 1.0});
+  u.names.push_back(DispersionMember{"BBB", 0u, 1.0});
+  u.names.push_back(DispersionMember{"CCC", 0u, 1.0});
+  const double T = 30.0 / 365.25;
+
+  std::optional<std::uint32_t> spy_uid_across_dates;
+  for (const std::string& d : dates) {
+    const std::string archive_path = (out / (d + ".atxvsa")).string();
+    auto snap = MarketSnapshot::load(archive_path);
+    ASSERT_TRUE(snap.has_value()) << d << ": " << snap.error().to_string();
+
+    // Motivating failure (RED): the unresolved (uid=0) universe cannot price —
+    // uid 0 is never registered in the SurfaceSet, so the index leg is NotFound.
+    auto unresolved = dispersion_signal(u, snap->set(), T);
+    ASSERT_FALSE(unresolved.has_value()) << d;
+    EXPECT_EQ(unresolved.error().code(), ErrorCode::NotFound) << d;
+    std::printf("[multiname] %s unresolved dispersion_signal -> %s\n", d.c_str(),
+                unresolved.error().to_string().c_str());
+
+    // Resolution binds each leg by symbol against the snapshot directory.
+    auto ru = resolve_universe_uids(u, [&](std::string_view s) { return snap->uid_of(s); });
+    ASSERT_TRUE(ru.has_value()) << d << ": " << ru.error().to_string();
+
+    // Every leg's uid is non-zero and equal to uid_for_symbol(symbol).
+    EXPECT_EQ(ru->index.uid, uid_for_symbol("SPY")) << d;
+    EXPECT_EQ(ru->names[0].uid, uid_for_symbol("AAA")) << d;
+    EXPECT_EQ(ru->names[1].uid, uid_for_symbol("BBB")) << d;
+    EXPECT_EQ(ru->names[2].uid, uid_for_symbol("CCC")) << d;
+
+    std::vector<std::uint32_t> uids = {ru->index.uid, ru->names[0].uid, ru->names[1].uid,
+                                       ru->names[2].uid};
+    for (const std::uint32_t uid : uids) {
+      EXPECT_NE(uid, 0u) << d << ": resolved uid must be non-zero";
+    }
+    std::sort(uids.begin(), uids.end());
+    EXPECT_EQ(std::adjacent_find(uids.begin(), uids.end()), uids.end())
+        << d << ": the 4 resolved uids must be pairwise distinct";
+
+    // The resolved uid for a symbol is identical across dates.
+    if (spy_uid_across_dates.has_value()) {
+      EXPECT_EQ(*spy_uid_across_dates, ru->index.uid) << d;
+    } else {
+      spy_uid_across_dates = ru->index.uid;
+    }
+
+    // dispersion_signal on the RESOLVED universe now succeeds.
+    auto sig = dispersion_signal(*ru, snap->set(), T);
+    ASSERT_TRUE(sig.has_value()) << d << ": " << sig.error().to_string();
+  }
+}
+
+// ── S1-2: resolution fails loudly on unknown and duplicate symbols ───────────
+TEST(MultinamePipeline, ResolveUniverseRejectsUnknownAndDuplicateSymbols) {
+  const fs::path out = fresh_out_dir("s1-2-reject");
+  auto man_res = build_corpus(make_multiname_boards({"2026-06-17"}), out.string());
+  ASSERT_TRUE(man_res.has_value()) << man_res.error().to_string();
+
+  auto snap = MarketSnapshot::load((out / "2026-06-17.atxvsa").string());
+  ASSERT_TRUE(snap.has_value()) << snap.error().to_string();
+  const auto lookup = [&](std::string_view s) { return snap->uid_of(s); };
+
+  // A name absent from the directory -> NotFound naming it.
+  {
+    DispersionUniverse u;
+    u.index = DispersionMember{"SPY", 0u, 0.0};
+    u.names.push_back(DispersionMember{"AAA", 0u, 1.0});
+    u.names.push_back(DispersionMember{"ZZZ", 0u, 1.0});  // never archived
+    auto r = resolve_universe_uids(u, lookup);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code(), ErrorCode::NotFound);
+    EXPECT_NE(r.error().to_string().find("ZZZ"), std::string::npos) << r.error().to_string();
+  }
+  // The same symbol listed twice -> InvalidArgument.
+  {
+    DispersionUniverse u;
+    u.index = DispersionMember{"SPY", 0u, 0.0};
+    u.names.push_back(DispersionMember{"AAA", 0u, 1.0});
+    u.names.push_back(DispersionMember{"AAA", 0u, 1.0});  // duplicate leg
+    auto r = resolve_universe_uids(u, lookup);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code(), ErrorCode::InvalidArgument);
+    EXPECT_NE(r.error().to_string().find("AAA"), std::string::npos) << r.error().to_string();
+  }
+}
+
+// ── S1-2: uid_of canonicalizes its query (case-insensitive) ──────────────────
+TEST(MultinamePipeline, UidOfIsCaseInsensitive) {
+  const fs::path out = fresh_out_dir("s1-2-case");
+  auto man_res = build_corpus(make_multiname_boards({"2026-06-17"}), out.string());
+  ASSERT_TRUE(man_res.has_value()) << man_res.error().to_string();
+
+  auto snap = MarketSnapshot::load((out / "2026-06-17.atxvsa").string());
+  ASSERT_TRUE(snap.has_value()) << snap.error().to_string();
+
+  const std::optional<std::uint32_t> lo = snap->uid_of("spy");
+  const std::optional<std::uint32_t> hi = snap->uid_of("SPY");
+  ASSERT_TRUE(hi.has_value());
+  ASSERT_TRUE(lo.has_value()) << "uid_of must canonicalize its query (case-insensitive)";
+  EXPECT_EQ(*lo, *hi);
+  EXPECT_EQ(*hi, uid_for_symbol("SPY"));
+}
+
+// ── S1-2: the on-disk uid scheme is frozen (canonical_symbol refactor guard) ─
+//
+// Pinned to the literal values produced at c7721aa: FNV-1a32 over the canonical
+// (ASCII-upper, <=32-byte) symbol, mapping a 0 digest to 1. The canonical_symbol
+// refactor must NOT move these — a change here means the persisted uid scheme
+// moved and every existing archive would fail to resolve.
+TEST(MultinamePipeline, UidForSymbolValuesArePinned) {
+  EXPECT_EQ(uid_for_symbol("SPY"), 1478221309u);
+  EXPECT_EQ(uid_for_symbol("AAA"), 3061902210u);
+  EXPECT_EQ(uid_for_symbol("BBB"), 2641672453u);
+  EXPECT_EQ(uid_for_symbol("CCC"), 1716134816u);
+  // Case folds at the source, matching the pinned upper-case value.
+  EXPECT_EQ(uid_for_symbol("spy"), 1478221309u);
 }

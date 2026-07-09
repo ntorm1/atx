@@ -18,6 +18,7 @@
 #include "atx/core/error.hpp"
 #include "atx/vol/strategy.hpp"         // IStrategy
 #include "atx/vol/surface_archive.hpp"  // SurfaceArchive
+#include "atx/vol/universe.hpp"         // canonical_symbol
 
 namespace atx::vol {
 
@@ -203,8 +204,14 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path) {
 }
 
 std::optional<std::uint32_t> MarketSnapshot::uid_of(std::string_view symbol) const {
+  // The directory stores CANONICAL symbol bytes (ASCII-upper, truncated), so
+  // canonicalize the query the same way before comparing. Without this a
+  // lower-case or over-long query would miss a symbol that is present — and a
+  // universe authored in lower case would fail to resolve. `canonical_symbol` is
+  // the single source of truth shared with `uid_for_symbol` (the write side).
+  const std::string query = canonical_symbol(symbol);
   for (const auto& [sym, uid] : syms_) {
-    if (sym == symbol) {
+    if (sym == query) {
       return uid;
     }
   }

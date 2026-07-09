@@ -100,6 +100,14 @@ inline constexpr std::size_t kMaxStrikesPerChain = 0x4000u;     // 16384
 // `kInvalidUid`, this module's reserved sentinel).
 [[nodiscard]] std::uint32_t uid_for_symbol(std::string_view symbol) noexcept;
 
+// Canonical archive form of `symbol`: ASCII upper-case, truncated to the
+// archive's symbol cap (`kArchiveSymbolMax` in surface_archive.hpp). The single
+// source of truth shared by `uid_for_symbol` (which hashes these bytes) and the
+// snapshot-directory lookup (`MarketSnapshot::uid_of`), so a symbol authored in
+// any case resolves to the same uid the corpus writer stamped. Pure function of
+// its input.
+[[nodiscard]] std::string canonical_symbol(std::string_view symbol);
+
 // ── Contract-id codec ───────────────────────────────────────────────────────
 //
 // Bit-for-bit identical to the C `ats_vol_cid_make` and its decoders:

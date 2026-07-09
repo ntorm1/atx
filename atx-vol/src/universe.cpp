@@ -1,7 +1,6 @@
 #include "atx/vol/universe.hpp"
 
 #include <algorithm>
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -11,6 +10,7 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
+#include "atx/vol/surface_archive.hpp"  // kArchiveSymbolMax (static_assert only; this TU, not the header)
 
 namespace atx::vol {
 
@@ -25,12 +25,20 @@ namespace {
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
 // Canonical-symbol length cap for `uid_for_symbol`. MUST match
-// `atx::vol::kArchiveSymbolMax` (surface_archive.hpp) — duplicated here (not
-// `#include`d) so this header/TU stays free of the archive's heavier
-// `PricedSurface` dependency. If the archive's cap ever changes, update this
-// constant too; `MultinamePipeline.UidForSymbol_StableAndCaseInsensitive`
+// `atx::vol::kArchiveSymbolMax` (surface_archive.hpp) — kept as a local constant
+// so the PUBLIC header `universe.hpp` stays free of the archive's heavier
+// `PricedSurface` dependency (surface_archive.hpp is pulled into THIS .cpp only,
+// solely for the drift static_assert below). `MultinamePipeline.UidForSymbol_*`
 // (multiname_pipeline_test.cpp) exercises the canonicalization this guards.
 inline constexpr std::size_t kSymbolCanonMax = 32u;
+
+// The canonical-symbol cap MUST equal the archive's inline symbol cap: the corpus
+// writer canonicalizes to kArchiveSymbolMax bytes and `uid_for_symbol` must hash
+// the identical truncation, else a >32-byte symbol would resolve to a different
+// uid than the one stamped on disk. A static_assert (not just the comment above)
+// turns any future drift between the two constants into a compile error.
+static_assert(kSymbolCanonMax == static_cast<std::size_t>(kArchiveSymbolMax),
+              "uid_for_symbol's canonical cap must match the archive symbol cap");
 
 // FNV-1a 32-bit — a small, dependency-free, deterministic byte hash. Chosen
 // over `atx::core::hash_bytes` (wyhash) because that helper's contract is
@@ -50,22 +58,30 @@ inline constexpr std::size_t kSymbolCanonMax = 32u;
 
 } // namespace
 
-std::uint32_t uid_for_symbol(std::string_view symbol) noexcept {
+std::string canonical_symbol(std::string_view symbol) {
   // ASCII upper-case, truncated to kSymbolCanonMax — matches the archive's own
   // canonicalizer (surface_archive.cpp's file-local `canonicalize`): upper-case
-  // then truncate, no trimming of interior bytes. Hashing exactly the truncated
-  // length (not a zero-padded buffer) mirrors how the archive hashes
+  // then truncate, no trimming of interior bytes, and NO zero-pad. Returning
+  // exactly the truncated-length bytes mirrors how the archive hashes
   // `plan.symbol_len` bytes, not the full padded array.
-  std::array<char, kSymbolCanonMax> canon{};
   const std::size_t n = std::min(symbol.size(), kSymbolCanonMax);
+  std::string canon;
+  canon.reserve(n);
   for (std::size_t i = 0; i < n; ++i) {
     char c = symbol[i];
     if (c >= 'a' && c <= 'z') {
       c = static_cast<char>(c - 'a' + 'A');
     }
-    canon[i] = c;
+    canon.push_back(c);
   }
-  const std::uint32_t h = fnv1a32(std::string_view(canon.data(), n));
+  return canon;
+}
+
+std::uint32_t uid_for_symbol(std::string_view symbol) noexcept {
+  // Hash exactly the canonical bytes (single source of truth: `canonical_symbol`).
+  // The observable value is UNCHANGED from the prior inline canonicalization —
+  // pinned by MultinamePipeline.UidForSymbolValuesArePinned.
+  const std::uint32_t h = fnv1a32(canonical_symbol(symbol));
   return h == 0u ? 1u : h; // 0 is kInvalidUid, the reserved sentinel
 }
 

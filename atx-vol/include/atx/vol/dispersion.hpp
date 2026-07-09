@@ -41,7 +41,10 @@
 // `Position`s are ready to hand to `Portfolio::create` / `PortfolioPricer`.
 
 #include <cstdint>
+#include <functional>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "atx/vol/portfolio_pricer.hpp"  // Position, SurfaceSet
@@ -64,6 +67,26 @@ struct DispersionUniverse {
   DispersionMember index;
   std::vector<DispersionMember> names;
 };
+
+// A symbol -> uid lookup (typically MarketSnapshot::uid_of, bound by the caller).
+// Kept as a callable seam so this module never learns about MarketSnapshot / the
+// backtest layer — see the "Purity" note above. Called once per snapshot, never
+// in a hot loop, so `std::function` is fine.
+using SymbolUidLookup = std::function<std::optional<std::uint32_t>(std::string_view)>;
+
+// Return a copy of `universe` with every member's `uid` rebound from its `symbol`
+// via `lookup`. Symbols and weights are untouched, so a universe authored purely
+// in symbols (uid=0) becomes resolvable against any snapshot regardless of its
+// uid scheme. The index weight stays as authored (it is ignored downstream).
+//
+// Fails loudly rather than silently dropping or double-counting a leg:
+//   InvalidArgument — any member symbol is empty; the same symbol appears twice;
+//                     two members resolve to the SAME uid; or a symbol resolves
+//                     to the reserved uid 0.
+//   NotFound        — `lookup(symbol)` is nullopt for the index or any name.
+// The message names the offending symbol(s).
+[[nodiscard]] Result<DispersionUniverse> resolve_universe_uids(const DispersionUniverse& universe,
+                                                               const SymbolUidLookup& lookup);
 
 // Which side of the dispersion the book takes. Signs the index vs. name legs.
 enum class DispersionSide : std::uint8_t {

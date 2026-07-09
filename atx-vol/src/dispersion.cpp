@@ -5,7 +5,11 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <optional>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #include "atx/vol/american.hpp"        // AmericanGreeks
@@ -209,6 +213,60 @@ Result<DispersionBook> build_dispersion_book(const DispersionUniverse& universe,
   }
 
   return Ok(std::move(book));
+}
+
+Result<DispersionUniverse> resolve_universe_uids(const DispersionUniverse& universe,
+                                                 const SymbolUidLookup& lookup) {
+  // Copy first: symbols + weights are preserved verbatim; only the uid fields on
+  // the copy are rebound below.
+  DispersionUniverse out = universe;
+
+  // Flatten index + names into one pass over the copy's members.
+  std::vector<DispersionMember*> members;
+  members.reserve(1u + out.names.size());
+  members.push_back(&out.index);
+  for (DispersionMember& n : out.names) {
+    members.push_back(&n);
+  }
+
+  // (symbol, resolved uid) already bound — small basket, so a linear scan for the
+  // two "must fail loudly" duplicate checks is fine (never a hot path).
+  std::vector<std::pair<std::string, std::uint32_t>> bound;
+  bound.reserve(members.size());
+
+  for (DispersionMember* m : members) {
+    if (m->symbol.empty()) {
+      return Err(ErrorCode::InvalidArgument, "dispersion: universe member has an empty symbol");
+    }
+    // Reject a symbol listed twice (would double-count the leg).
+    for (const auto& [sym, uid] : bound) {
+      if (sym == m->symbol) {
+        return Err(ErrorCode::InvalidArgument,
+                   "dispersion: symbol '" + m->symbol + "' appears twice in the universe");
+      }
+    }
+    const std::optional<std::uint32_t> uid = lookup(m->symbol);
+    if (!uid.has_value()) {
+      return Err(ErrorCode::NotFound,
+                 "dispersion: symbol '" + m->symbol + "' not present in snapshot directory");
+    }
+    if (*uid == 0u) {
+      return Err(ErrorCode::InvalidArgument,
+                 "dispersion: symbol '" + m->symbol + "' resolved to the reserved uid 0");
+    }
+    // Reject two distinct symbols that collapse to the same uid (would double-
+    // count one surface as two legs).
+    for (const auto& [sym, prev] : bound) {
+      if (prev == *uid) {
+        return Err(ErrorCode::InvalidArgument, "dispersion: symbols '" + sym + "' and '" +
+                                                   m->symbol + "' resolve to the same uid");
+      }
+    }
+    m->uid = *uid;
+    bound.emplace_back(m->symbol, *uid);
+  }
+
+  return Ok(std::move(out));
 }
 
 Result<PricedSurface> with_uid(const PricedSurface& src, std::uint32_t uid) {

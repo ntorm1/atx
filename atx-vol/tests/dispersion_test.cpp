@@ -25,7 +25,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -387,5 +389,78 @@ TEST(Dispersion, Rejections) {
     auto r = dispersion_signal(u, *empty_set, kTargetT);
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code(), ErrorCode::NotFound);
+  }
+}
+
+// ── 5. resolve_universe_uids — pure symbol->uid rebinding (no snapshot) ──────
+//
+// Exercises the callable-seam resolver against a hand-rolled lookup, so the pure
+// function is covered without a MarketSnapshot. Happy path rebinds every leg;
+// each failure mode Errs loudly with the right code and names the symbol.
+TEST(Dispersion, ResolveUniverseUids) {
+  // A directory: IDX->10, NM0->20, NM1->30. NM2 and BAD are absent.
+  const auto lookup = [](std::string_view s) -> std::optional<std::uint32_t> {
+    if (s == "IDX") return 10u;
+    if (s == "NM0") return 20u;
+    if (s == "NM1") return 30u;
+    if (s == "ZERO") return 0u;   // resolves to the reserved sentinel
+    if (s == "DUP") return 20u;   // collides with NM0's uid
+    return std::nullopt;
+  };
+
+  const auto make = [](std::string idx, std::vector<std::string> names) {
+    DispersionUniverse u;
+    u.index = DispersionMember{std::move(idx), 0u, 0.0};
+    for (std::string& nm : names) {
+      u.names.push_back(DispersionMember{std::move(nm), 0u, 1.0});
+    }
+    return u;
+  };
+
+  // Happy path: every uid rebound from its symbol; symbols + weights untouched.
+  {
+    auto r = resolve_universe_uids(make("IDX", {"NM0", "NM1"}), lookup);
+    ASSERT_TRUE(r.has_value()) << r.error().to_string();
+    EXPECT_EQ(r->index.uid, 10u);
+    EXPECT_EQ(r->index.symbol, "IDX");
+    ASSERT_EQ(r->names.size(), 2u);
+    EXPECT_EQ(r->names[0].uid, 20u);
+    EXPECT_EQ(r->names[1].uid, 30u);
+    EXPECT_EQ(r->names[0].weight, 1.0);
+  }
+  // Empty symbol -> InvalidArgument.
+  {
+    auto r = resolve_universe_uids(make("", {"NM0", "NM1"}), lookup);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code(), ErrorCode::InvalidArgument);
+  }
+  // Unknown name -> NotFound naming it.
+  {
+    auto r = resolve_universe_uids(make("IDX", {"NM0", "BAD"}), lookup);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code(), ErrorCode::NotFound);
+    EXPECT_NE(r.error().to_string().find("BAD"), std::string::npos) << r.error().to_string();
+  }
+  // A symbol listed twice -> InvalidArgument naming it.
+  {
+    auto r = resolve_universe_uids(make("IDX", {"NM0", "NM0"}), lookup);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code(), ErrorCode::InvalidArgument);
+    EXPECT_NE(r.error().to_string().find("NM0"), std::string::npos) << r.error().to_string();
+  }
+  // Two symbols collapsing to the same uid -> InvalidArgument naming both.
+  {
+    auto r = resolve_universe_uids(make("IDX", {"NM0", "DUP"}), lookup);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code(), ErrorCode::InvalidArgument);
+    EXPECT_NE(r.error().to_string().find("NM0"), std::string::npos) << r.error().to_string();
+    EXPECT_NE(r.error().to_string().find("DUP"), std::string::npos) << r.error().to_string();
+  }
+  // A symbol resolving to the reserved uid 0 -> InvalidArgument.
+  {
+    auto r = resolve_universe_uids(make("IDX", {"NM0", "ZERO"}), lookup);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code(), ErrorCode::InvalidArgument);
+    EXPECT_NE(r.error().to_string().find("ZERO"), std::string::npos) << r.error().to_string();
   }
 }

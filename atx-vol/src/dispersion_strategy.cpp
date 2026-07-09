@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -39,7 +40,15 @@ Status DispersionStrategy::on_step(const MarketSnapshot& base, std::size_t step_
     have_front_ = false;
   }
 
-  Result<DispersionBook> built = build_dispersion_book(universe_, base.set(), cfg_);
+  // Bind the (possibly symbol-only) universe to THIS snapshot's uid scheme before
+  // sizing, so one authored universe works across every date of a corpus.
+  Result<DispersionUniverse> ru =
+      resolve_universe_uids(universe_, [&](std::string_view s) { return base.uid_of(s); });
+  if (!ru) {
+    return Err(ru.error());
+  }
+
+  Result<DispersionBook> built = build_dispersion_book(*ru, base.set(), cfg_);
   if (!built) {
     return Err(built.error());
   }
@@ -71,7 +80,12 @@ Status DispersionStrategy::on_step(const MarketSnapshot& base, std::size_t step_
 
 std::vector<std::pair<std::string, double>> DispersionStrategy::signals(
     const MarketSnapshot& base) const {
-  const Result<DispersionSignal> sig = dispersion_signal(universe_, base.set(), cfg_.target_T);
+  const Result<DispersionUniverse> ru =
+      resolve_universe_uids(universe_, [&](std::string_view s) { return base.uid_of(s); });
+  if (!ru) {
+    return {};  // no signal on this snapshot — same behaviour as a failed signal
+  }
+  const Result<DispersionSignal> sig = dispersion_signal(*ru, base.set(), cfg_.target_T);
   if (!sig) {
     return {};
   }
@@ -79,7 +93,12 @@ std::vector<std::pair<std::string, double>> DispersionStrategy::signals(
 }
 
 Result<DispersionBook> DispersionStrategy::build_book(const MarketSnapshot& base) const {
-  return build_dispersion_book(universe_, base.set(), cfg_);
+  const Result<DispersionUniverse> ru =
+      resolve_universe_uids(universe_, [&](std::string_view s) { return base.uid_of(s); });
+  if (!ru) {
+    return Err(ru.error());
+  }
+  return build_dispersion_book(*ru, base.set(), cfg_);
 }
 
 }  // namespace atx::vol
