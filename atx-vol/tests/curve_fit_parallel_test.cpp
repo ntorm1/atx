@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <limits>
 #include <optional>
@@ -15,6 +16,7 @@
 #include "atx/vol/curve_fit.hpp"       // fit_curve_surface, CurveSurfaceReport
 #include "atx/vol/dividend.hpp"        // hybrid_forward, HybridDivParams
 #include "atx/vol/opra_panel.hpp"      // load_opra_cbbo_parquet, OpraLoadSpec
+#include "atx/vol/parallel_for.hpp"    // atx_auto_worker_count
 #include "atx/vol/surface_parity.hpp"  // SurfaceParityInputs, SliceContext, CalendarRepair
 #include "atx/vol/types.hpp"           // Side
 #include "atx/vol/universe.hpp"        // Underlying, Chain, chain_index, Universe, data_install
@@ -239,6 +241,54 @@ void expect_per_expiry_bit_identical(const atx::vol::CurveSurfaceReport& a,
   return {};
 }
 
+// S0-4': portable ATX_VOL_FIT_WORKERS env set/unset for the cap test below.
+#if defined(_MSC_VER)
+void set_fit_workers_env(const char* value) { ::_putenv_s("ATX_VOL_FIT_WORKERS", value); }
+void unset_fit_workers_env() { ::_putenv_s("ATX_VOL_FIT_WORKERS", ""); }
+#else
+void set_fit_workers_env(const char* value) { ::setenv("ATX_VOL_FIT_WORKERS", value, 1); }
+void unset_fit_workers_env() { ::unsetenv("ATX_VOL_FIT_WORKERS"); }
+#endif
+
+// RAII guard: captures ATX_VOL_FIT_WORKERS on construction and restores it on
+// destruction. Using a destructor (rather than plain end-of-test cleanup)
+// means the prior value is restored even if an ASSERT_* below exits the test
+// early -- this test can never leak env state into another test sharing the
+// process.
+class FitWorkersEnvGuard {
+ public:
+  FitWorkersEnvGuard() {
+#if defined(_MSC_VER)
+    char* prev = nullptr;
+    std::size_t prev_n = 0;
+    had_prev_ = (::_dupenv_s(&prev, &prev_n, "ATX_VOL_FIT_WORKERS") == 0) && (prev != nullptr);
+    if (prev != nullptr) {
+      prev_val_ = prev;
+      std::free(prev);
+    }
+#else
+    const char* prev = std::getenv("ATX_VOL_FIT_WORKERS");
+    had_prev_ = prev != nullptr;
+    if (prev != nullptr) {
+      prev_val_ = prev;
+    }
+#endif
+  }
+  FitWorkersEnvGuard(const FitWorkersEnvGuard&) = delete;
+  FitWorkersEnvGuard& operator=(const FitWorkersEnvGuard&) = delete;
+  ~FitWorkersEnvGuard() {
+    if (had_prev_) {
+      set_fit_workers_env(prev_val_.c_str());
+    } else {
+      unset_fit_workers_env();
+    }
+  }
+
+ private:
+  bool had_prev_ = false;
+  std::string prev_val_;
+};
+
 }  // namespace
 
 TEST(CurveFitParallel, SyntheticBoardBitIdenticalAcrossWorkers) {
@@ -259,6 +309,33 @@ TEST(CurveFitParallel, SyntheticBoardBitIdenticalAcrossWorkers) {
   // also exercises the fanned-out second de-Am -- per_expiry must be
   // bit-identical across worker counts too.
   expect_per_expiry_bit_identical(*rep1, *rep8);
+}
+
+// S0-4': the ATX_VOL_FIT_WORKERS env cap changes only what
+// `atx_auto_worker_count()` resolves the AUTO (fit_workers=0) case to -- never
+// the fitted result. Fit twice with fit_workers=0 (auto): once with the env
+// forcing serial (=1), once with the env unset (hardware_concurrency), and
+// assert bit-identical output -- proving the cap is perf-only.
+TEST(CurveFitParallel, FitBitIdenticalUnderEnvCap) {
+  FitWorkersEnvGuard env_guard;  // restores ATX_VOL_FIT_WORKERS on scope exit
+
+  const Underlying under = make_synthetic_underlying();
+  CurveConfig cfg;  // default = ConvexDense
+
+  set_fit_workers_env("1");
+  ASSERT_EQ(atx::vol::atx_auto_worker_count(), 1u);
+  const SurfaceParityInputs in_capped = base_inputs(0);  // auto -- capped to 1 by env
+  auto rep_capped = fit_curve_surface(under, in_capped, cfg);
+  ASSERT_TRUE(rep_capped.has_value()) << rep_capped.error().to_string();
+
+  unset_fit_workers_env();
+  const SurfaceParityInputs in_auto = base_inputs(0);  // auto -- hardware_concurrency
+  auto rep_auto = fit_curve_surface(under, in_auto, cfg);
+  ASSERT_TRUE(rep_auto.has_value()) << rep_auto.error().to_string();
+
+  ASSERT_EQ(rep_capped->n_slices, 4u);
+  expect_bit_identical(*rep_capped, *rep_auto, /*strict_finite*/ true);
+  expect_per_expiry_bit_identical(*rep_capped, *rep_auto);
 }
 
 TEST(CurveFitParallel, SpyBoardBitIdenticalAcrossWorkers) {
