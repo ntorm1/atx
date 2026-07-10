@@ -19,9 +19,11 @@ consume:
    asserted performance-regression gate.
 
 This is the next sprint after the American pricing/portfolio performance sprint.
-The following sprint should implement the QIS instrument layer (variance-strip
-dispersion and flatness modes). We do not put that math on top of an unqualified
-corpus.
+The following sprint is the traditional SPY listed-options vega-flat backtest in
+`2026-07-10-atx-vol-spy-listed-options-vega-flat-backtest-sprint.md`. It first proves
+the basic fit -> serialize -> reload -> listed-contract price/risk -> backtest loop on
+qualified surfaces. Variance strips and additional flatness modes are deliberately
+deferred.
 
 ---
 
@@ -220,17 +222,13 @@ We will call the new path "mapped open," not "zero-copy surfaces." Archive-backe
 curve views are a separate redesign and are out unless P4's measured spike proves
 they are required to meet the system budget.
 
-### 2.6 Why qualification precedes QIS methodology
+### 2.6 Why qualification precedes the listed-options backtest
 
-The public Cboe DSPX methodology derives expected dispersion from OPRA options on
-the index and selected constituents using a modified VIX methodology. It is a
-many-board calculation, so a single-name surface silently admitted with no OOS
-evidence can contaminate the reported correlation/dispersion signal. The primary
-methodology is:
-<https://cdn.cboe.com/resources/indices/documents/methodology-the-dispersion-index.pdf>.
-
-This sprint does not implement DSPX or the variance strip. It makes the inputs to
-that next sprint auditable and reproducible.
+The public Cboe description of traditional dispersion sells an ATM index straddle
+and buys ATM straddles on component stocks. It is a many-board trade, so one silently
+bad single-name surface can corrupt contract sizing, Greeks, and P&L. The next sprint
+therefore consumes only admitted, serialized surfaces and reconciles every selected
+listed contract to OPRA. This sprint makes those inputs auditable and reproducible.
 
 ---
 
@@ -1226,12 +1224,12 @@ they landed. No paid data command belongs in this sprint.
       are green;
 - [ ] README and example quality/performance artifacts are committed without
       licensed OPRA data; and
-- [ ] the pf2 progress ledger marks S1 fully closed and identifies QIS variance-
-      strip methodology as the next sprint.
+- [ ] the pf2 progress ledger marks S1 fully closed and identifies the traditional
+      SPY listed-options vega-flat backtest as the next sprint.
 
 At close, the project has an auditable answer to two questions before it changes
 strategy math: "Which real/synthetic boards were safe enough to trade, and why?"
 and "Can the exact fitted artifact be persisted and reloaded at corpus scale
-without becoming the bottleneck?" The next sprint can then implement the public
-QIS variance-dispersion methodology on qualified inputs.
+without becoming the bottleneck?" The next sprint can then run a traditional
+vega-flat SPY/component ATM-straddle book on qualified, reloaded surfaces.
 

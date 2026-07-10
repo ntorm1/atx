@@ -326,6 +326,14 @@ per-name fit-quality + drop scoreboard. No paid pull. Full `atx_vol` gate green;
 
 ## Sprint S2 — QIS methodology: variance-swap dispersion + flatness modes
 
+**STATUS: SUPERSEDED BY THE LOCKED NEXT-SPRINT PLAN.** Do not implement the historical
+S2 tasks below. The active implementation plan is
+`2026-07-10-atx-vol-spy-listed-options-vega-flat-backtest-sprint.md`: a real OPRA,
+traditional vega-flat SPY/component listed-ATM-straddle backtest that proves fitting,
+serialization, reload, American pricing/Greeks, daily hedging, P&L reconciliation,
+and throughput. Variance strips, correlation signals, and additional flatness modes
+move after that basic artifact.
+
 **Goal.** Re-express the dispersion book the way a bank QIS desk sizes it: **variance-swap
 / log-strip legs** (spot-invariant vega), **three flatness modes** (vega-flat / gamma-flat
 / theta-flat), the **√ρ vega-scaling**, and **clean-vs-dirty implied correlation + the
