@@ -142,6 +142,12 @@ inline void reset() noexcept {
 [[nodiscard]] inline Snapshot snapshot() noexcept { return Snapshot{}; }
 inline void reset() noexcept {}
 
+// CAUTION: the OFF expansion below drops `n` entirely (never evaluated) — that
+// is required for zero-cost, but it means a future ATX_VOL_COUNT_N call site
+// whose `n` argument has a side effect (e.g. `ATX_VOL_COUNT_N(X, ++foo)`) would
+// silently lose that side effect in the OFF build. Every call site today
+// (FrameBytes, WorkerLaunches, ...) passes a side-effect-free expression, so
+// this is currently safe; keep it that way, or gate the side effect separately.
 #define ATX_VOL_COUNT(counter) ((void)0)
 #define ATX_VOL_COUNT_N(counter, n) ((void)0)
 

@@ -91,8 +91,11 @@ python bench/compare_baseline.py bench/baselines/i7-1260p-clang18-sse2-american.
   CV | verdict`.
 - **Fails (exit 1) only on a ratio > 1.10 where the new run's CV <= 5%.** A move
   under noise is not signal.
-- **`CV` (coefficient of variation) = stddev / mean of the 5 repetition medians.**
-  It is the run's own noise floor. A benchmark with `CV > 5%` is printed `NOISY`
+- **`CV` (coefficient of variation) = stddev / mean of the 5 per-repetition times**
+  (each repetition's value is itself the mean over that repetition's iterations —
+  not the repetitions' medians; Google Benchmark hands the `cv` statistic lambda
+  the raw per-repetition means). It is the run's own noise floor. A benchmark
+  with `CV > 5%` is printed `NOISY`
   and *never* fails the gate — you cannot trust a 10% regression call when the
   measurement itself swings 15%. Sub-microsecond rows (e.g. the cached price ~4 µs,
   the position scatter) are inherently noisy on an unpinned laptop; treat their

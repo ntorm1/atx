@@ -12,9 +12,12 @@
 //   4. A position-scatter-only benchmark: the uniques are priced ONCE outside the
 //      timed region, and only the per-position scale+store is timed — isolating
 //      the store-bandwidth path from the pricing kernel.
-//   5. An explicit KERNEL FLOOR: the exact per-unique fused op price() runs
-//      (PricedSurface::greeks — which already yields the price), NOT the example's
-//      fair_value + greeks double-solve.
+//   5. An explicit KERNEL FLOOR: the exact per-unique fused op price() runs —
+//      PricedSurface::iv() THEN PricedSurface::greeks() (greeks() already yields
+//      the price) — NOT the example's fair_value + greeks double-solve. price()
+//      always resolves iv() before its fair_value/greeks/greeks_analytic branch
+//      (portfolio_pricer.cpp), so every floor variant below times that same
+//      iv()-then-op sequence, not the second call in isolation.
 //
 // Every price()/pnl row emits unique_contracts/s, positions/s AND bytes/s
 // together (a positions/s figure is meaningless without its dedup ratio, so the
@@ -276,6 +279,10 @@ void run_scatter(benchmark::State& state, std::size_t n_unique, std::size_t rati
 
 // ── 5. Kernel floor ───────────────────────────────────────────────────────
 // The exact per-unique fused op price() runs, single-threaded over the uniques.
+// price() (portfolio_pricer.cpp) always resolves `out.iv = surf->iv(c.K, c.T)`
+// BEFORE its fair_value/greeks/greeks_analytic branch, so the floor includes
+// that iv() call too — otherwise it times only the second half of the fused
+// operation and understates price()'s true per-unique work.
 enum class Floor { Greeks, FairValue, GreeksAnalytic };
 
 void run_floor(benchmark::State& state, std::size_t n_unique, Floor kind) {
@@ -288,6 +295,8 @@ void run_floor(benchmark::State& state, std::size_t n_unique, Floor kind) {
       if (s == nullptr) {
         continue;
       }
+      double iv = s->iv(oc.K, oc.T);  // price() always runs this first.
+      benchmark::DoNotOptimize(iv);
       switch (kind) {
         case Floor::Greeks: {
           auto g = s->greeks(oc.K, oc.T, oc.side);

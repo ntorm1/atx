@@ -72,6 +72,12 @@ inline benchmark::internal::Benchmark* apply_common(benchmark::internal::Benchma
       ->Repetitions(5)
       ->ReportAggregatesOnly(false)
       ->ComputeStatistics("p95", stat_p95)
+      // NOTE: registering a StatisticUnit::kPercentage statistic makes Google
+      // Benchmark emit TWO identical "cv" aggregate rows per case in the JSON
+      // (a quirk of that unit; "p95" above emits only one). Harmless — both
+      // rows carry the same value, so compare_baseline.py's dict-by-name
+      // parse just overwrites one with the other — but don't be surprised by
+      // the duplicate line if you're eyeballing raw JSON output.
       ->ComputeStatistics("cv", stat_cv, benchmark::StatisticUnit::kPercentage);
 }
 

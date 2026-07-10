@@ -409,10 +409,15 @@ double CorrectionCache::eval(double k_log, double T, double sigma) const noexcep
   if (!populated_) {
     return 0.0;
   }
+#if defined(ATX_VOL_COUNTERS)
+  // The box test itself (not just the counter increment) only exists in the ON
+  // build: with ATX_VOL_COUNTERS undefined this whole block is gone at the
+  // preprocessor, not merely dead code left for the optimizer to remove.
   if ((k_log < k_log_min_) || (k_log > k_log_max_) || (T < T_min_) ||
       (T > T_max_) || (sigma < sigma_min_) || (sigma > sigma_max_)) {
     ATX_VOL_COUNT(CacheOutOfBoxClamps);
   }
+#endif
   k_log = atx::core::clamp(k_log, k_log_min_, k_log_max_);
   T = atx::core::clamp(T, T_min_, T_max_);
   sigma = atx::core::clamp(sigma, sigma_min_, sigma_max_);

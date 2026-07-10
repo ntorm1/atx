@@ -2,22 +2,34 @@
 """Compare two Google Benchmark JSON runs and gate on regressions.
 
 Reads a BASELINE and a NEW Google Benchmark JSON (``--benchmark_out_format=json``),
-matches benchmarks by name, and fails ONLY on a statistically significant
-regression: new/baseline median ratio > 1.10 AND the new run's coefficient of
-variation (the custom ``cv`` statistic this suite emits) is <= 5%. A noisy new
-run (CV > 5%) is reported ``NOISY`` and never fails the gate — a 10% move under
-20% noise is not signal.
+matches benchmarks by name, and fails on either:
+
+  * a statistically significant regression: new/baseline median ratio > 1.10 AND
+    the new run's coefficient of variation (the custom ``cv`` statistic this
+    suite emits) is <= 5%. A noisy new run (CV > 5%, OR the ``cv`` statistic is
+    missing entirely) is reported ``NOISY`` and never fails the gate on ratio
+    alone — a 10% move under unknown or >20% noise is not signal, and a missing
+    CV is not evidence of a CV of zero; or
+  * a benchmark present in BASELINE but ABSENT from the new run — e.g. it
+    crashed and produced no output. That is a regression until proven
+    otherwise, so it fails loudly by name rather than silently passing as a
+    bare count. Pass ``--allow-missing`` if a benchmark was deliberately removed.
 
 Absolute nanoseconds are pinned to one host, so only RATIOS are gated. The host
 metadata Google Benchmark records (num_cpus, mhz_per_cpu, library_build_type,
-caches) is printed for both files and a loud warning is raised on any mismatch —
-comparing ratios across different silicon or a debug-vs-release build is invalid.
+caches) is printed for both files. On any mismatch, a loud warning is raised and
+ratio-based regressions are downgraded to ADVISORY ONLY (printed, exit 0) —
+comparing ratios across different silicon or a debug-vs-release build is
+invalid, so gating on them would be gating on noise. Missing-benchmark failures
+are NOT downgraded by a host mismatch: whether a benchmark ran at all has
+nothing to do with which host it ran on.
 
-stdlib only. Exit code 0 = no gated regression; 1 = at least one regression (or
-a usage/parse error).
+stdlib only. Exit code 0 = no gated regression; 1 = at least one regression on a
+matching host, or a missing benchmark (without --allow-missing), or a
+usage/parse error.
 
 Usage:
-    python compare_baseline.py BASELINE.json NEW.json [--threshold 0.10] [--cv-max 0.05]
+    python compare_baseline.py BASELINE.json NEW.json [--threshold 0.10] [--cv-max 0.05] [--allow-missing]
 """
 
 from __future__ import annotations
@@ -98,6 +110,9 @@ def main() -> int:
                     help="fractional regression that fails the gate (default 0.10 = 10%%)")
     ap.add_argument("--cv-max", type=float, default=0.05,
                     help="max new-run CV (fraction) to trust a regression (default 0.05 = 5%%)")
+    ap.add_argument("--allow-missing", action="store_true",
+                    help="do not fail the gate when a baseline benchmark is absent from "
+                         "the new run (e.g. it was deliberately deleted)")
     args = ap.parse_args()
 
     try:
@@ -127,7 +142,9 @@ def main() -> int:
         compared += 1
         ratio = n_med / b_med
         cv_pct = (n_cv * 100.0) if n_cv is not None else float("nan")
-        if n_cv is not None and n_cv > args.cv_max:
+        # A missing/None CV is NOT a trustworthy zero — treat it exactly like a
+        # too-high CV: flag NOISY rather than gating the ratio.
+        if n_cv is None or n_cv > args.cv_max:
             verdict = "NOISY"
             noisy += 1
         elif ratio > 1.0 + args.threshold:
@@ -142,21 +159,51 @@ def main() -> int:
 
     only_base = sorted(set(base) - set(new))
     only_new = sorted(set(new) - set(base))
+    missing = len(only_base)
     print()
     print(f"compared={compared}  regressions={regressions}  noisy={noisy}  "
-          f"only_in_baseline={len(only_base)}  only_in_new={len(only_new)}")
+          f"missing={missing}  only_in_new={len(only_new)}")
     if only_new:
         print("  note: benchmarks only in NEW run (not gated):",
               ", ".join(n.replace('/min_warmup_time:0.500/repeats:5', '') for n in only_new[:8]),
               "..." if len(only_new) > 8 else "")
 
+    if only_base:
+        print()
+        print("!! MISSING: benchmark(s) present in BASELINE but ABSENT from the NEW run "
+              "(crashed / produced no output?). A vanished benchmark is a regression "
+              "until proven otherwise:")
+        for n in only_base:
+            print(f"    - {n.replace('/min_warmup_time:0.500/repeats:5', '')}")
+        if args.allow_missing:
+            print("  --allow-missing set: not gating on the above.")
+        else:
+            print("  Pass --allow-missing if these were deliberately removed.")
+
     if not host_ok:
-        print("\nRESULT: host mismatch - verdicts advisory (see loud warning above).")
-    if regressions:
-        print(f"\nRESULT: FAIL - {regressions} significant regression(s) > "
-              f"{args.threshold*100:.0f}% at CV <= {args.cv_max*100:.0f}%.")
+        print("\n!! host/build metadata mismatch: ratio-based regressions above are "
+              "ADVISORY ONLY (see loud warning above) — absolute numbers (and hence "
+              "ratios) are not comparable across hosts/builds.")
+
+    fail_reasons = []
+    # Ratio regressions only gate on a matching host — the whole basis for a
+    # ratio (the two runs being on comparable silicon/build) is absent otherwise.
+    if regressions and host_ok:
+        fail_reasons.append(
+            f"{regressions} significant regression(s) > {args.threshold*100:.0f}% "
+            f"at CV <= {args.cv_max*100:.0f}%")
+    elif regressions and not host_ok:
+        print(f"  ({regressions} regression(s) at trusted CV would gate on matching hardware)")
+    # A missing benchmark gates regardless of host: whether it ran has nothing
+    # to do with which host it ran on.
+    if missing and not args.allow_missing:
+        fail_reasons.append(f"{missing} benchmark(s) missing from the new run")
+
+    if fail_reasons:
+        print(f"\nRESULT: FAIL - {'; '.join(fail_reasons)}.")
         return 1
-    print("\nRESULT: PASS - no significant regression at trusted CV.")
+    suffix = " (host mismatch: ratio verdicts advisory)" if not host_ok else ""
+    print(f"\nRESULT: PASS{suffix} - no gated regression.")
     return 0
 
 
