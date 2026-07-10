@@ -1016,15 +1016,17 @@ void american_greeks_first_order(double S, double K, double T, double sigma,
 
     double dc_ds_up = 0.0;
     double dc_ds_dn = 0.0;
-    correction->eval_grad(k_up, T, sigma, nullptr, nullptr, &dc_ds_up);
-    correction->eval_grad(k_dn, T, sigma, nullptr, nullptr, &dc_ds_dn);
+    // Value discarded here -> eval_partials skips the (unused) value sweep.
+    correction->eval_partials(k_up, T, sigma, nullptr, nullptr, &dc_ds_up);
+    correction->eval_partials(k_dn, T, sigma, nullptr, nullptr, &dc_ds_dn);
     const double d2c_dF_ds = (dc_ds_up - dc_ds_dn) / (2.0 * hF);
     out.vanna = m * (gB.vanna + dc_ds + F * d2c_dF_ds);
 
     double dc_ds_p = 0.0;
     double dc_ds_m = 0.0;
-    correction->eval_grad(k_log, T, sigma + hS, nullptr, nullptr, &dc_ds_p);
-    correction->eval_grad(k_log, T, sigma - hS, nullptr, nullptr, &dc_ds_m);
+    // Value discarded here -> eval_partials skips the (unused) value sweep.
+    correction->eval_partials(k_log, T, sigma + hS, nullptr, nullptr, &dc_ds_p);
+    correction->eval_partials(k_log, T, sigma - hS, nullptr, nullptr, &dc_ds_m);
     const double d2c_ds2 = (dc_ds_p - dc_ds_m) / (2.0 * hS);
     out.volga = gB.volga + F * d2c_ds2;
 

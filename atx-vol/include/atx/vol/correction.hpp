@@ -110,9 +110,21 @@ class CorrectionCache {
 
   // Value + selected first-order partials. Partials whose axis is out of the box
   // are zeroed (the value still clamps). Pass nullptr to skip a partial. The
-  // return (the value) may be discarded when only the partials are wanted.
+  // return (the value) may be discarded when only the partials are wanted; when
+  // it is, call eval_partials instead to skip the (discarded) value sweep.
+  //
+  // Bit-identical to eval() for the value and to eval_partials() for the partials
+  // (it is literally their composition), so callers can mix the three freely.
   double eval_grad(double k_log, double T, double sigma, double* out_dk_log,
                    double* out_dT, double* out_dsigma) const noexcept;
+
+  // Selected first-order partials ONLY — never runs the 3D Chebyshev value sweep.
+  // Identical partials, box handling, and nullptr-skip semantics to eval_grad; use
+  // this on the hot path when the value is not wanted (e.g. the finite-difference
+  // stencils in american_greeks that consume only a partial). noexcept and
+  // allocation-free, like eval / eval_grad.
+  void eval_partials(double k_log, double T, double sigma, double* out_dk_log,
+                     double* out_dT, double* out_dsigma) const noexcept;
 
   // Mask-driven query honouring the stamped extrap policy.
   //
