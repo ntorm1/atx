@@ -409,17 +409,48 @@ void reduce_price_totals(std::span<const Position> positions, const Portfolio &p
   }
 }
 
-// (Re)build the retained PreparedPortfolio only when the book identity or the
-// Greek route changed; otherwise reuse it (the T5 roll-up: the prepared
-// substrate is built ONCE for a fixed book and reused across snapshots). Emits
-// PreparedBuilds on an actual build so the reuse is observable under counters.
+// A cheap, allocation-free O(1) fingerprint of a book's first unique
+// contract's exact bits (uid, K, T, side) -- one input to the
+// PortfolioWorkspace ABA guard (see the contract doc on PortfolioWorkspace in
+// the header). This is NOT a full content hash: it narrows, but does not
+// close, the "same address, same unique-contract count, different
+// middle-of-book content" reuse window. The real contract remains one
+// PortfolioWorkspace per live book.
+[[nodiscard]] std::uint64_t book_fingerprint(const Portfolio &pf) noexcept {
+  const std::span<const OptionContract> contracts = pf.contracts();
+  if (contracts.empty()) {
+    return 0;
+  }
+  const OptionContract &c = contracts.front();
+  std::uint64_t h = static_cast<std::uint64_t>(c.uid);
+  h = h * 1099511628211ULL ^ std::bit_cast<std::uint64_t>(c.K);
+  h = h * 1099511628211ULL ^ std::bit_cast<std::uint64_t>(c.T);
+  h = h * 1099511628211ULL ^ static_cast<std::uint64_t>(c.side);
+  return h;
+}
+
+// (Re)build the retained PreparedPortfolio only when the book identity
+// changes: the owning Portfolio's address, its unique-contract count
+// (pf.n_contracts()), AND the first-unique-contract fingerprint above must all
+// match what the cache already holds -- closing the pointer-identity-only ABA
+// hazard where a PortfolioPricer reconstructed at the same address as a prior
+// one (e.g. a loop rebuilding a local PortfolioPricer per book) could
+// otherwise reuse a stale, wrongly-sized substrate and drive solve_uniques()
+// out of bounds (or silently mis-price if the stale unique count happened to
+// be <= the new book's). The Greek route/mask no longer gates a rebuild:
+// PreparedPortfolio's permutation, groups, oci, and aligned K/T/uid columns
+// derive purely from (uid,side,T), so the substrate is byte-identical for
+// Marks and FullGreeks -- only the `route` stamped on each ContractGroup
+// differs, and nothing reads it yet (T13's AVX2 packer will own route
+// correctness there). Emits PreparedBuilds on an actual build so the reuse is
+// observable under counters.
 [[nodiscard]] Status ensure_prepared(const Portfolio &pf, bool want_greeks, bool analytic,
                                      std::optional<PreparedPortfolio> &prepared,
-                                     const Portfolio *&prepared_book, GroupRoute &prepared_route) {
-  const GroupRoute route{analytic, !want_greeks};
-  if (prepared.has_value() && prepared_book == &pf &&
-      prepared_route.analytic_greeks == route.analytic_greeks &&
-      prepared_route.prices_only == route.prices_only) {
+                                     const Portfolio *&prepared_book,
+                                     std::uint64_t &prepared_fingerprint) {
+  const std::uint64_t fp = book_fingerprint(pf);
+  if (prepared.has_value() && prepared_book == &pf && prepared->n_unique() == pf.n_contracts() &&
+      prepared_fingerprint == fp) {
     return atx::core::Ok();
   }
   PriceOptions build_opts;
@@ -432,7 +463,7 @@ void reduce_price_totals(std::span<const Position> positions, const Portfolio &p
   ATX_VOL_COUNT(PreparedBuilds);
   prepared.emplace(std::move(*pp));
   prepared_book = &pf;
-  prepared_route = route;
+  prepared_fingerprint = fp;
   return atx::core::Ok();
 }
 
@@ -448,7 +479,7 @@ struct PortfolioWorkspace::Impl {
   std::vector<Status> b_status;
   std::optional<PreparedPortfolio> prepared; // retained across snapshots (built once)
   const Portfolio *prepared_book{nullptr};   // book identity the substrate is for
-  GroupRoute prepared_route{};               // Greek route the substrate was built under
+  std::uint64_t prepared_fingerprint{0};     // ABA guard: see book_fingerprint()
 };
 
 PortfolioWorkspace::PortfolioWorkspace() : impl_(std::make_unique<Impl>()) {}
@@ -498,7 +529,7 @@ Status PortfolioPricer::price_into(const SurfaceSet &surfaces, PriceFieldMask fi
   PortfolioWorkspace::Impl &w = *ws.impl_;
   const bool analytic = want_greeks ? opts.analytic_greeks : false;
   if (Status s = ensure_prepared(pf_, want_greeks, analytic, w.prepared, w.prepared_book,
-                                 w.prepared_route);
+                                 w.prepared_fingerprint);
       !s.has_value()) {
     return Err(s.error());
   }
@@ -508,7 +539,8 @@ Status PortfolioPricer::price_into(const SurfaceSet &surfaces, PriceFieldMask fi
 
   // FrameBytes reflects the mask (37 B/pos Marks, 101 B/pos FullGreeks). No
   // FrameAllocations: the output spans are caller-owned and the scratch was
-  // reserved, so the hot path allocates nothing.
+  // reserved, so the hot path allocates no frame memory (n_threads>1 still
+  // allocates a worker-thread vector; see PortfolioWorkspace).
   ATX_VOL_COUNT_N(FrameBytes, n * bytes_per_position(fields));
 
   scatter_rows(positions, pf_, w.px, want_greeks, opts.n_threads, out);
@@ -527,7 +559,7 @@ Result<PriceTotals> PortfolioPricer::price_totals(const SurfaceSet &surfaces, Pr
   PortfolioWorkspace::Impl &w = *ws.impl_;
   const bool analytic = want_greeks ? opts.analytic_greeks : false;
   if (Status s = ensure_prepared(pf_, want_greeks, analytic, w.prepared, w.prepared_book,
-                                 w.prepared_route);
+                                 w.prepared_fingerprint);
       !s.has_value()) {
     return Err(s.error());
   }

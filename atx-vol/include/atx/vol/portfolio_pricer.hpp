@@ -256,7 +256,8 @@ struct PriceFrame {
 
 // A caller-owned output view for `price_into`: one span per PriceFrame column
 // plus a totals sink. `price_into` writes into these spans and — given a
-// reserved workspace and correctly-sized view — allocates nothing. The eight
+// reserved workspace and correctly-sized view — allocates no frame memory (see
+// PortfolioWorkspace for the n_threads>1 worker-pool caveat). The eight
 // Greek spans may be left EMPTY under the Marks mask; `price_into` never touches
 // an empty Greek span. Every marks span (`id/uid/pv/price/iv/status`) and
 // `total` must be present and sized to the position count.
@@ -281,10 +282,32 @@ struct PriceFrameView {
 // Reusable scratch for repeated pricing of a FIXED book across many surface
 // snapshots. `reserve()` sizes the internal buffers once; `price_into` /
 // `price_totals` then reuse the unique-result SoA, the batch-eval SoA, and a
-// RETAINED PreparedPortfolio (built once, rebuilt only when the book identity or
-// the Greek route changes) — performing zero heap allocation on the hot path.
+// RETAINED PreparedPortfolio (built once, rebuilt only when the book identity
+// changes — the Greek route/mask no longer forces a rebuild: the permutation,
+// groups, oci, and aligned K/T/uid columns derive purely from (uid,side,T), so
+// the substrate is byte-identical for Marks and FullGreeks) — performing no
+// *frame* allocation on the hot path. (At `PriceOptions::n_threads > 1` the
+// worker fan-out allocates a `std::vector<std::jthread>` plus thread stacks —
+// a threading-layer cost, not a frame allocation; only `n_threads == 1` is
+// fully allocation-free end to end.)
 // Move-only (owns scratch); the implementation is pimpl'd so the header stays
 // free of the aligned-substrate and per-contract-result types.
+//
+// ## CONTRACT: one workspace per LIVE book
+//
+// The retained-substrate cache invalidates on (a) the ADDRESS of the owning
+// `PortfolioPricer::pf_`, (b) the current unique-contract count
+// (`pf.n_contracts()`), and (c) a cheap O(1) fingerprint of the book's first
+// unique contract's exact bits — all allocation-free, pointer/integer-only
+// checks, but NOT a full content hash. A `Portfolio`/`PortfolioPricer`
+// destroyed and reconstructed at the SAME address (e.g. a loop that rebuilds a
+// local `PortfolioPricer` per iteration) can still slip past this guard if the
+// new book happens to match the old one's unique-contract count AND
+// first-contract fingerprint while differing only in the middle of the book —
+// a residual ABA hazard. Given that, treat a `PortfolioWorkspace` as bound to
+// ONE logical book for its lifetime: build a fresh workspace per book (or keep
+// a keyed pool) rather than looping a single reused workspace across a
+// sequence of distinct books built at a recurring address.
 class PortfolioWorkspace {
 public:
   PortfolioWorkspace();
@@ -394,8 +417,10 @@ public:
   // In-place price: solve the book against one surface per underlying and scatter
   // the result into the caller-owned spans of `out`. With a reserved `ws` and a
   // view whose marks spans (and, under a Greeks mask, greek spans) are sized to
-  // the position count, this allocates NOTHING on the hot path — the retained
-  // PreparedPortfolio and the scratch SoA in `ws` are reused across snapshots.
+  // the position count, this allocates no *frame* memory on the hot path — the
+  // retained PreparedPortfolio and the scratch SoA in `ws` are reused across
+  // snapshots. (At `opts.n_threads > 1` the worker fan-out itself allocates a
+  // thread vector; see PortfolioWorkspace.)
   //
   // `fields` selects which columns to materialize: `Marks` writes only
   // {id,uid,pv,price,iv,status} (leaving the greek spans untouched — they may be

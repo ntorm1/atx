@@ -868,8 +868,10 @@ TEST(PortfolioPricer, PriceInto_ZeroAllocation_And_PreparedReuse) {
     EXPECT_EQ(sg.get(Counter::FrameBytes), std::uint64_t{101} * n);
     EXPECT_EQ(sg.get(Counter::PreparedBuilds), 0u); // reused, not rebuilt
 
-    // Marks touches 37 B/pos and still allocates nothing. The greeks->marks route
-    // change rebuilds the substrate once, so warm it, then measure the reuse.
+    // Marks touches 37 B/pos and still allocates nothing. The retained substrate
+    // is shared across masks (it depends only on (uid,side,T), not the Greek
+    // route), so this Marks call reuses the SAME PreparedPortfolio built above
+    // -- no rebuild -- and the reuse is re-measured below.
     FrameStore fm(n, /*want_greeks=*/false);
     PriceFrameView vm = fm.view();
     ASSERT_TRUE(pricer.price_into(surfaces, PriceFieldMask::Marks, vm, ws).has_value());
@@ -879,6 +881,128 @@ TEST(PortfolioPricer, PriceInto_ZeroAllocation_And_PreparedReuse) {
     EXPECT_EQ(sm.get(Counter::FrameAllocations), 0u);
     EXPECT_EQ(sm.get(Counter::FrameBytes), std::uint64_t{37} * n);
     EXPECT_EQ(sm.get(Counter::PreparedBuilds), 0u);
+  } else {
+    EXPECT_FALSE(atx::vol::counters::snapshot().enabled);
+    SUCCEED();
+  }
+}
+
+// Regression for the workspace-cache ABA hazard: a single PortfolioWorkspace
+// reused across two DIFFERENT books (different unique-contract counts) held,
+// one after another, by the SAME PortfolioPricer variable (its address is
+// fixed for its whole lifetime; reassigning it mirrors the reviewer's
+// `PortfolioPricer pr(build(book));` reconstructed-at-the-same-address loop).
+// Before the ensure_prepared fix, `prepared_book == &pf` alone would consider
+// the first (larger) book's substrate still valid for the second (smaller)
+// book, so solve_uniques() would index oci[p] up to the STALE larger
+// n_unique while px had only been resized to the new, smaller book's contract
+// count -- a heap out-of-bounds write (or, had the stale count been <= the new
+// count, a silent mis-price). The fix additionally requires
+// prepared->n_unique() == pf.n_contracts() and a content fingerprint match, so
+// the substrate is correctly rebuilt for the new book and the result below
+// must be bit-identical to a fresh-workspace price of the same book.
+TEST(PortfolioPricer, PriceInto_WorkspaceReuseAcrossDifferentBooksAtSamePricerAddress) {
+  const PricedSurface s1 = make_convex(1, 4, 32);
+  const PricedSurface s2 = make_essvi(2, 5);
+  const PricedSurface s3 = make_svi(3, 4);
+  const SurfaceSet surfaces = set_of({&s1, &s2, &s3});
+
+  // Book A: 6 unique contracts -- LARGER unique count.
+  std::vector<Position> book_a;
+  std::uint64_t id_a = 0;
+  for (double K : {90.0, 95.0, 100.0, 105.0, 110.0, 115.0}) {
+    book_a.push_back({id_a++, {1, K, 0.18, Side::Call}, 1.0, 100.0});
+  }
+  auto pf_a = Portfolio::create(book_a);
+  ASSERT_TRUE(pf_a.has_value());
+  ASSERT_EQ(pf_a->n_contracts(), 6u);
+
+  // Book B: 2 unique contracts -- SMALLER unique count, different uids.
+  const std::vector<Position> book_b{
+      {100, {2, 105.0, 0.25, Side::Call}, 3.0, 100.0},
+      {101, {3, 98.0, 0.15, Side::Put}, 7.0, 100.0},
+  };
+  auto pf_b = Portfolio::create(book_b);
+  ASSERT_TRUE(pf_b.has_value());
+  ASSERT_EQ(pf_b->n_contracts(), 2u);
+
+  PortfolioWorkspace ws;
+  PortfolioPricer pr(std::move(*pf_a));
+  const void *addr_before = static_cast<const void *>(&pr);
+
+  {
+    const std::size_t na = pr.portfolio().n_positions();
+    FrameStore fa(na, /*want_greeks=*/true);
+    ASSERT_TRUE(pr.price_into(surfaces, PriceFieldMask::FullGreeks, fa.view(), ws).has_value());
+  }
+
+  // Reassign the SAME variable to a DIFFERENT, SMALLER book. `pr` occupies one
+  // stack slot for its whole lifetime, so its (and its `pf_` member's) address
+  // is unchanged by the reassignment.
+  pr = PortfolioPricer(std::move(*pf_b));
+  ASSERT_EQ(static_cast<const void *>(&pr), addr_before);
+  const std::size_t nb = pr.portfolio().n_positions();
+
+  FrameStore fb_reused(nb, /*want_greeks=*/true);
+  ASSERT_TRUE(
+      pr.price_into(surfaces, PriceFieldMask::FullGreeks, fb_reused.view(), ws).has_value());
+
+  // Reference: a FRESH workspace pricing the SAME book B.
+  PortfolioWorkspace ws_fresh;
+  FrameStore fb_fresh(nb, /*want_greeks=*/true);
+  ASSERT_TRUE(
+      pr.price_into(surfaces, PriceFieldMask::FullGreeks, fb_fresh.view(), ws_fresh).has_value());
+
+  ASSERT_EQ(fb_reused.status.size(), fb_fresh.status.size());
+  for (std::size_t i = 0; i < nb; ++i) {
+    EXPECT_EQ(fb_reused.status[i], fb_fresh.status[i]) << i;
+    EXPECT_TRUE(bits_equal(fb_reused.pv[i], fb_fresh.pv[i])) << i;
+    EXPECT_TRUE(bits_equal(fb_reused.delta[i], fb_fresh.delta[i])) << i;
+    EXPECT_TRUE(bits_equal(fb_reused.gamma[i], fb_fresh.gamma[i])) << i;
+    EXPECT_TRUE(bits_equal(fb_reused.vega[i], fb_fresh.vega[i])) << i;
+    EXPECT_TRUE(bits_equal(fb_reused.theta[i], fb_fresh.theta[i])) << i;
+    EXPECT_TRUE(bits_equal(fb_reused.rho[i], fb_fresh.rho[i])) << i;
+    EXPECT_TRUE(bits_equal(fb_reused.vanna[i], fb_fresh.vanna[i])) << i;
+    EXPECT_TRUE(bits_equal(fb_reused.volga[i], fb_fresh.volga[i])) << i;
+    EXPECT_TRUE(bits_equal(fb_reused.charm[i], fb_fresh.charm[i])) << i;
+  }
+  EXPECT_TRUE(bits_equal(fb_reused.total.pv, fb_fresh.total.pv));
+}
+
+// Minor #2 regression: PreparedPortfolio's permutation/groups/oci/aligned
+// columns depend only on (uid,side,T), not the Greek route, so alternating
+// Marks <-> FullGreeks on one warm workspace must NOT rebuild the substrate --
+// exactly one PreparedPortfolio build for the whole sequence (the initial
+// warm-up before the counter reset below). Meaningful only under
+// -DATX_VOL_COUNTERS=ON; the OFF build checks the disabled-sentinel so the
+// default suite still exercises the mask-alternation path.
+TEST(PortfolioPricer, PriceInto_AlternatingMasks_NoRebuild) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+  const PricedSurface surface = make_essvi(1, 5);
+  const SurfaceSet surfaces = set_of({&surface});
+  auto pf = Portfolio::create(pnl_book());
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+  const std::size_t n = pricer.portfolio().n_positions();
+
+  PortfolioWorkspace ws;
+  FrameStore fg(n, /*want_greeks=*/true);
+  FrameStore fm(n, /*want_greeks=*/false);
+  PriceFrameView vg = fg.view();
+  PriceFrameView vm = fm.view();
+
+  // Warm-up build (the mask does not affect the substrate it builds).
+  ASSERT_TRUE(pricer.price_into(surfaces, PriceFieldMask::FullGreeks, vg, ws).has_value());
+
+  if constexpr (counters_enabled()) {
+    atx::vol::counters::reset();
+    ASSERT_TRUE(pricer.price_into(surfaces, PriceFieldMask::Marks, vm, ws).has_value());
+    ASSERT_TRUE(pricer.price_into(surfaces, PriceFieldMask::FullGreeks, vg, ws).has_value());
+    ASSERT_TRUE(pricer.price_into(surfaces, PriceFieldMask::Marks, vm, ws).has_value());
+    ASSERT_TRUE(pricer.price_into(surfaces, PriceFieldMask::FullGreeks, vg, ws).has_value());
+    const auto snap = atx::vol::counters::snapshot();
+    EXPECT_EQ(snap.get(Counter::PreparedBuilds), 0u); // reused across every mask flip
   } else {
     EXPECT_FALSE(atx::vol::counters::snapshot().enabled);
     SUCCEED();
