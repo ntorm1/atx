@@ -12,8 +12,9 @@
 #include <thread>
 #include <unordered_map>
 
-#include "atx/vol/american.hpp" // AmericanGreeks
-#include "atx/vol/counters.hpp" // ATX_VOL_COUNT (opt-in P0.2; no-op when OFF)
+#include "atx/vol/american.hpp"           // AmericanGreeks
+#include "atx/vol/counters.hpp"           // ATX_VOL_COUNT (opt-in P0.2; no-op when OFF)
+#include "atx/vol/prepared_portfolio.hpp" // PreparedPortfolio (grouped exec substrate)
 
 namespace atx::vol {
 
@@ -196,51 +197,114 @@ Result<PriceFrame> PortfolioPricer::price(const SurfaceSet &surfaces,
   const std::span<const OptionContract> contracts = pf_.contracts();
   const std::span<const Position> positions = pf_.positions();
 
-  // 1. Parallel: one Greeks solve per UNIQUE contract into disjoint slots.
+  // 0. Build the grouped, aligned execution substrate over the UNIQUE contracts.
+  // Built per call for now (T7 hoists it to a member); the build cost is measured
+  // in the sprint report. It PERMUTES only the unique-contract execution order
+  // (grouped by (uid,side), ascending-T ladders inside); positions and their input
+  // order are untouched.
+  Result<PreparedPortfolio> prepared = PreparedPortfolio::create(pf_, opts);
+  if (!prepared.has_value()) {
+    return Err(prepared.error());
+  }
+  const PreparedPortfolio &pp = *prepared;
+  const std::size_t n_unique = pp.n_unique();
+
+  // 1. Grouped per-unique solve into disjoint slots. THE BIT-IDENTITY ARGUMENT:
+  // each unique result is written into px[original_contract_index()[p]] — i.e. back
+  // into the SAME Portfolio contract slot the ungrouped loop used — so the
+  // downstream position scatter (px[pf_.contract_ix(i)]) and the fixed-order totals
+  // reduction are byte-for-byte unchanged. The solve writes DISJOINT slots (the
+  // reverse permutation is a bijection onto [0, n_unique)), so permuting the ORDER
+  // in which they are computed cannot change any output. What the permutation buys:
+  // (a) surfaces.find(uid) is hoisted to ONE lower_bound per (uid,side) group
+  // instead of one per unique contract; (b) a run of raw-bit-equal-T contracts
+  // reuses one T-bracket+carry via evaluate_batch (bit-identical to per-contract
+  // evaluate, since the reused carry equals the per-entry interpolation exactly).
   std::vector<ContractPx> px(contracts.size());
-  parallel_blocks(contracts.size(), opts.n_threads, [&](std::size_t i) {
-    const OptionContract &c = contracts[i];
-    ContractPx &out = px[i];
-    if (degenerate(c)) {
-      out.status = PriceStatus::InvalidContract;
-      return;
-    }
-    const PricedSurface *surf = surfaces.find(c.uid);
+
+  using EF = PricedSurface::EvalField;
+  const EF fields = opts.prices_only
+                        ? (EF::Iv | EF::Price)
+                        : (EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder);
+  const bool analytic = opts.prices_only ? false : opts.analytic_greeks;
+  const bool want_greeks = !opts.prices_only;
+
+  // Batch output scratch in PERMUTED order. Groups own disjoint [begin,end) slices,
+  // so one shared allocation per column is race-free across the group fan-out.
+  std::vector<double> b_iv(n_unique);
+  std::vector<double> b_price(n_unique);
+  std::vector<AmericanGreeks> b_greeks(want_greeks ? n_unique : 0);
+  std::vector<Status> b_status(n_unique);
+
+  const std::span<const ContractGroup> groups = pp.groups();
+  const std::span<const std::uint32_t> oci = pp.original_contract_index();
+  const std::span<const double> kcol = pp.k();
+  const std::span<const double> tcol = pp.t();
+  const std::span<const Side> scol = pp.side();
+
+  parallel_blocks(groups.size(), opts.n_threads, [&](std::size_t gi) {
+    const ContractGroup &g = groups[gi];
+    const std::uint32_t begin = g.begin;
+    const std::uint32_t end = g.end;
+    const std::size_t gsz = static_cast<std::size_t>(end - begin);
+    const PricedSurface *surf = surfaces.find(g.uid); // hoisted: one lower_bound / group
+
     if (surf == nullptr) {
-      out.status = PriceStatus::ModelUnavailable;
-      return;
-    }
-    // One fused resolution per unique contract: iv + mark (+ Greeks) off a SINGLE
-    // surface resolve, killing the old separate surf->iv() resolution that ran
-    // ahead of the fair_value/greeks call at the same (K,T,side).
-    using EF = PricedSurface::EvalField;
-    if (opts.prices_only) {
-      const PricedSurface::FusedResult fr =
-          surf->evaluate(c.K, c.T, c.side, EF::Iv | EF::Price, /*analytic=*/false);
-      out.iv = fr.iv;
-      if (!fr.status.has_value() || !std::isfinite(fr.price)) {
-        out.status = PriceStatus::NumericError;
-        return;
+      // Degenerate is checked FIRST (matching the ungrouped precedence: an invalid
+      // contract is InvalidContract even when its uid has no surface).
+      for (std::uint32_t p = begin; p < end; ++p) {
+        const std::uint32_t orig = oci[p];
+        px[orig].status = degenerate(contracts[orig]) ? PriceStatus::InvalidContract
+                                                      : PriceStatus::ModelUnavailable;
       }
-      out.fair_value = fr.price;
+      return;
+    }
+
+    // Ladder-evaluate the whole (uid,side) run; evaluate_batch reuses the T-bracket
+    // across each raw-bit-equal-T sub-run. Degenerate entries resolve invalid inside
+    // the batch and are overwritten below — bit-identical to the ungrouped path,
+    // which set InvalidContract without consulting the surface. (A degenerate-by-K
+    // entry shares its T-run's carry harmlessly: carry depends only on T, and its
+    // own resolve fails on K<=0; a degenerate-by-T entry never shares a T-run with a
+    // valid entry, whose T>0.)
+    PricedSurface::EvaluationSoA soa{
+        std::span<double>(b_iv).subspan(begin, gsz), std::span<double>(b_price).subspan(begin, gsz),
+        want_greeks ? std::span<AmericanGreeks>(b_greeks).subspan(begin, gsz)
+                    : std::span<AmericanGreeks>{},
+        std::span<Status>(b_status).subspan(begin, gsz)};
+    // evaluate_batch fails only on a span-length mismatch, which cannot happen here
+    // (every span is sized gsz); the returned Status is intentionally unused.
+    (void)surf->evaluate_batch(kcol.subspan(begin, gsz), tcol.subspan(begin, gsz),
+                               scol.subspan(begin, gsz), fields, analytic, soa);
+
+    for (std::uint32_t p = begin; p < end; ++p) {
+      const std::uint32_t orig = oci[p];
+      ContractPx &out = px[orig];
+      if (degenerate(contracts[orig])) {
+        out.status = PriceStatus::InvalidContract;
+        continue;
+      }
+      out.iv = b_iv[p]; // set before the finite check, exactly as the ungrouped path
+      if (opts.prices_only) {
+        if (!b_status[p].has_value() || !std::isfinite(b_price[p])) {
+          out.status = PriceStatus::NumericError;
+          continue;
+        }
+        out.fair_value = b_price[p];
+        out.status = PriceStatus::Ok;
+        continue;
+      }
+      if (!b_status[p].has_value() || !std::isfinite(b_greeks[p].price)) {
+        out.status = PriceStatus::NumericError;
+        continue;
+      }
+      // greeks().price IS the American fair_value (bit-identical, the P0 cold-FD
+      // invariant gated by PnlGreeksConsistency), so the mark comes straight off the
+      // fused greeks bundle.
+      out.fair_value = b_greeks[p].price;
+      out.g = b_greeks[p];
       out.status = PriceStatus::Ok;
-      return;
     }
-    const PricedSurface::FusedResult fr =
-        surf->evaluate(c.K, c.T, c.side, EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder,
-                       opts.analytic_greeks); // iv + greeks + mark, one resolve
-    out.iv = fr.iv;
-    if (!fr.status.has_value() || !std::isfinite(fr.greeks.price)) {
-      out.status = PriceStatus::NumericError;
-      return;
-    }
-    // greeks().price IS the American fair_value (bit-identical, the P0 cold-FD
-    // invariant gated by PnlGreeksConsistency), so the mark comes straight off the
-    // fused greeks bundle — no separate fair_value() (a duplicate AL solve) and no
-    // separate surf->iv() (a duplicate resolution) at the same (K,T,side).
-    out.fair_value = fr.greeks.price;
-    out.g = fr.greeks;
-    out.status = PriceStatus::Ok;
   });
 
   // 2. Cache-line-disjoint SoA scatter. A million-position book is memory-bandwidth

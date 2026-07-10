@@ -64,6 +64,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/curve_fit.cpp
     src/curve_selector.cpp
     src/priced_surface.cpp
+    src/prepared_portfolio.cpp
     src/portfolio_pricer.cpp
     src/corpus.cpp
     src/dispersion.cpp
