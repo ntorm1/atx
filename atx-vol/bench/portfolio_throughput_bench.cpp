@@ -104,6 +104,36 @@ constexpr double kPnlRowBytes = 141.0;    // 19 columns
   return *cache.back().pr;
 }
 
+// A SINGLE-UNDERLYING chain on market uid 1 (convex/index): one uid, both sides, a
+// wide strike ladder at every slice — the shape of a real single-name book (a SPY
+// strangle backtest). The grouped solve yields only 2 (uid,side) groups, so this is
+// the row that guards price()'s per-unique fan-out from regressing back to per-group
+// (which stranded all but 2 workers on this shape). ~500 unique contracts, priced
+// once (ratio 1) so the timed cost is the solve fan-out, not the position scatter.
+[[nodiscard]] const PortfolioPricer& single_name_pricer() {
+  static const PortfolioPricer pr = [] {
+    constexpr int kStrikesPerSlice = 42;  // 6 slices x 42 strikes x 2 sides = 504 uniques
+    std::vector<Position> book;
+    book.reserve(static_cast<std::size_t>(kSlices) * kStrikesPerSlice * 2);
+    std::uint64_t id = 0;
+    for (int i = 0; i < kSlices; ++i) {
+      const double T = atx::vol::bench::slice_T(i);
+      for (int s = 0; s < kStrikesPerSlice; ++s) {
+        // [78, 122] — inside the convex surface's [70, 130] node domain.
+        const double K = 78.0 + 44.0 * static_cast<double>(s) /
+                                    static_cast<double>(kStrikesPerSlice - 1);
+        for (const Side side : {Side::Put, Side::Call}) {
+          book.push_back(Position{id++, OptionContract{1u, K, T, side}, 5.0, 100.0});
+        }
+      }
+    }
+    PortfolioBuildOptions opts;
+    opts.expected_unique_contracts = book.size();
+    return PortfolioPricer(Portfolio::create(book, opts).value());
+  }();
+  return pr;
+}
+
 // Emit the always-together dedup counters plus positions/s, unique_contracts/s and
 // bytes/s. `row_bytes` is the per-position frame width the API materializes.
 void emit_book_counters(benchmark::State& state, const PortfolioPricer& pr,
@@ -257,6 +287,22 @@ void run_price(benchmark::State& state, std::size_t n_unique, std::size_t ratio,
     auto fr = pr.price(surfaces, opts);
     benchmark::DoNotOptimize(fr->total.pv);
   });
+}
+
+// price() over the single-name chain at a given thread count. Isolates the solve
+// fan-out on the 2-group shape so its 1->N-thread scaling is measurable.
+void run_price_single_name(benchmark::State& state, unsigned n_threads) {
+  const PortfolioPricer& pr = single_name_pricer();
+  const SurfaceSet& surfaces = market().base_set();
+  PriceOptions opts;
+  opts.n_threads = n_threads;
+  for (auto _ : state) {
+    auto fr = pr.price(surfaces, opts);
+    benchmark::DoNotOptimize(fr->total.pv);
+    benchmark::ClobberMemory();
+  }
+  emit_book_counters(state, pr, kPriceRowBytes);
+  state.counters["threads"] = static_cast<double>(n_threads);
 }
 
 void run_pnl(benchmark::State& state, std::size_t n_unique, std::size_t ratio,
@@ -474,6 +520,19 @@ void register_all() {
             ->UseRealTime();
       }
     }
+  }
+
+  // 2d. Single-name chain: ONE uid, both sides (=> 2 groups), ~500 strikes. Guards
+  // price()'s per-unique fan-out from regressing to per-group on the single-name
+  // (SPY-strangle) shape; t in {1,4,8} exposes the 1->8 thread scaling that a
+  // per-group fan-out strands (only 2 of 8 workers fed).
+  for (const unsigned nt : {1u, 4u, 8u}) {
+    char buf[128];
+    std::snprintf(buf, sizeof buf, "port/price/greeks/single_name/u504/r1/t%u", nt);
+    apply_common(benchmark::RegisterBenchmark(
+                     buf, [nt](benchmark::State& st) { run_price_single_name(st, nt); }))
+        ->Unit(benchmark::kMicrosecond)
+        ->UseRealTime();
   }
 
   // 3. pnl_explain (subset).

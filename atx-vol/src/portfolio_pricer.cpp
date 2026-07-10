@@ -72,6 +72,44 @@ template <class F> void parallel_blocks(std::size_t n, unsigned n_threads, F &&b
   // jthreads join on destruction.
 }
 
+// Split [0, n) into up to `n_threads` disjoint contiguous blocks and run
+// body(lo, hi) ONCE per block across std::jthreads (block 0 on the calling
+// thread). Identical clamp/scheduling to parallel_blocks, but each worker receives
+// its whole contiguous range so the body can amortize per-range setup (e.g. resolve
+// a group's surface once, evaluate_batch a sub-ladder) instead of paying it per
+// element. Blocks own disjoint index ranges; the body must write only slots derived
+// from its own [lo, hi), so there is no shared mutable state. `n_threads==0` selects
+// hardware concurrency; the count is clamped to n.
+template <class F> void parallel_ranges(std::size_t n, unsigned n_threads, F &&body) {
+  if (n == 0) {
+    return;
+  }
+  unsigned nt = n_threads;
+  if (nt == 0) {
+    nt = std::max(1u, std::thread::hardware_concurrency());
+  }
+  nt = std::min<unsigned>(nt, static_cast<unsigned>(n));
+  if (nt <= 1) {
+    body(std::size_t{0}, n);
+    return;
+  }
+  const std::size_t block = (n + nt - 1) / nt;
+  std::vector<std::jthread> workers;
+  workers.reserve(nt - 1);
+  ATX_VOL_COUNT_N(WorkerLaunches, nt - 1);  // helper threads (block 0 stays inline)
+  for (unsigned t = 1; t < nt; ++t) {
+    const std::size_t lo = std::min(n, static_cast<std::size_t>(t) * block);
+    const std::size_t hi = std::min(n, lo + block);
+    if (lo >= hi) {
+      break;
+    }
+    workers.emplace_back([lo, hi, &body] { body(lo, hi); });
+  }
+  const std::size_t hi0 = std::min(n, block);
+  body(std::size_t{0}, hi0);
+  // jthreads join on destruction.
+}
+
 // Bit-exact contract identity for dedup.
 struct ContractKey {
   std::uint32_t uid;
@@ -242,17 +280,21 @@ Result<PriceFrame> PortfolioPricer::price(const SurfaceSet &surfaces,
   const std::span<const double> tcol = pp.t();
   const std::span<const Side> scol = pp.side();
 
-  parallel_blocks(groups.size(), opts.n_threads, [&](std::size_t gi) {
-    const ContractGroup &g = groups[gi];
-    const std::uint32_t begin = g.begin;
-    const std::uint32_t end = g.end;
-    const std::size_t gsz = static_cast<std::size_t>(end - begin);
-    const PricedSurface *surf = surfaces.find(g.uid); // hoisted: one lower_bound / group
+  // Solve one contiguous sub-span [s,e) of a SINGLE (uid,side) group: resolve the
+  // surface ONCE (hoisted find) and evaluate_batch the sub-ladder. A worker boundary
+  // that falls mid-group splits that group's ladder across two sub-spans; each half
+  // re-resolves its own T-carry (interp_forward(t) is a deterministic function of t,
+  // and resolve_with_carry(K,t,interp_forward(t)) == resolve(K,t)), so the split is
+  // bit-identical to solving the whole group at once. Every slot p writes the DISJOINT
+  // px[oci[p]], so partitioning the solve order cannot change any output.
+  const auto solve_span = [&](const ContractGroup &g, std::uint32_t s, std::uint32_t e) {
+    const std::size_t gsz = static_cast<std::size_t>(e - s);
+    const PricedSurface *surf = surfaces.find(g.uid); // hoisted: one lower_bound / sub-span
 
     if (surf == nullptr) {
       // Degenerate is checked FIRST (matching the ungrouped precedence: an invalid
       // contract is InvalidContract even when its uid has no surface).
-      for (std::uint32_t p = begin; p < end; ++p) {
+      for (std::uint32_t p = s; p < e; ++p) {
         const std::uint32_t orig = oci[p];
         px[orig].status = degenerate(contracts[orig]) ? PriceStatus::InvalidContract
                                                       : PriceStatus::ModelUnavailable;
@@ -260,24 +302,24 @@ Result<PriceFrame> PortfolioPricer::price(const SurfaceSet &surfaces,
       return;
     }
 
-    // Ladder-evaluate the whole (uid,side) run; evaluate_batch reuses the T-bracket
-    // across each raw-bit-equal-T sub-run. Degenerate entries resolve invalid inside
+    // Ladder-evaluate this sub-run; evaluate_batch reuses the T-bracket across each
+    // raw-bit-equal-T sub-run it covers. Degenerate entries resolve invalid inside
     // the batch and are overwritten below — bit-identical to the ungrouped path,
     // which set InvalidContract without consulting the surface. (A degenerate-by-K
     // entry shares its T-run's carry harmlessly: carry depends only on T, and its
     // own resolve fails on K<=0; a degenerate-by-T entry never shares a T-run with a
     // valid entry, whose T>0.)
     PricedSurface::EvaluationSoA soa{
-        std::span<double>(b_iv).subspan(begin, gsz), std::span<double>(b_price).subspan(begin, gsz),
-        want_greeks ? std::span<AmericanGreeks>(b_greeks).subspan(begin, gsz)
+        std::span<double>(b_iv).subspan(s, gsz), std::span<double>(b_price).subspan(s, gsz),
+        want_greeks ? std::span<AmericanGreeks>(b_greeks).subspan(s, gsz)
                     : std::span<AmericanGreeks>{},
-        std::span<Status>(b_status).subspan(begin, gsz)};
+        std::span<Status>(b_status).subspan(s, gsz)};
     // evaluate_batch fails only on a span-length mismatch, which cannot happen here
     // (every span is sized gsz); the returned Status is intentionally unused.
-    (void)surf->evaluate_batch(kcol.subspan(begin, gsz), tcol.subspan(begin, gsz),
-                               scol.subspan(begin, gsz), fields, analytic, soa);
+    (void)surf->evaluate_batch(kcol.subspan(s, gsz), tcol.subspan(s, gsz), scol.subspan(s, gsz),
+                               fields, analytic, soa);
 
-    for (std::uint32_t p = begin; p < end; ++p) {
+    for (std::uint32_t p = s; p < e; ++p) {
       const std::uint32_t orig = oci[p];
       ContractPx &out = px[orig];
       if (degenerate(contracts[orig])) {
@@ -304,6 +346,27 @@ Result<PriceFrame> PortfolioPricer::price(const SurfaceSet &surfaces,
       out.fair_value = b_greeks[p].price;
       out.g = b_greeks[p];
       out.status = PriceStatus::Ok;
+    }
+  };
+
+  // Fan out over the FLATTENED permuted unique-contract index [0, n_unique) — NOT
+  // over groups — so the thread pool scales to n_threads even on a single-uid /
+  // few-group book (the SPY-strangle single-name path is a PRIMARY workload, not a
+  // corner case). Each worker owns a contiguous permuted range [lo,hi) and walks the
+  // group boundaries it overlaps: it resolves each touched group's surface once (a
+  // worker spanning k groups does k finds; a worker inside one big group does 1) and
+  // evaluate_batch-es the sub-span it covers. Group boundaries tile [0, n_unique)
+  // contiguously, so an upper_bound locates the first group containing `lo`.
+  parallel_ranges(n_unique, opts.n_threads, [&](std::size_t lo, std::size_t hi) {
+    const std::uint32_t lo32 = static_cast<std::uint32_t>(lo);
+    const std::uint32_t hi32 = static_cast<std::uint32_t>(hi);
+    auto git = std::upper_bound(
+        groups.begin(), groups.end(), lo32,
+        [](std::uint32_t v, const ContractGroup &grp) { return v < grp.end; });
+    for (; git != groups.end() && git->begin < hi32; ++git) {
+      const std::uint32_t s = std::max<std::uint32_t>(git->begin, lo32);
+      const std::uint32_t e = std::min<std::uint32_t>(git->end, hi32);
+      solve_span(*git, s, e);
     }
   });
 
