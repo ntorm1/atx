@@ -232,6 +232,23 @@ def compute_factor_rows(
         if complete_keys.empty:
             continue
         needed = needed.merge(complete_keys, on=["security_id", "as_of_date"], how="inner")
+        # Reduce to one row per (factor_id, security_id, symbol, as_of_date) --
+        # the latest-available revision -- BEFORE pivoting, so `value` and
+        # `available_at` are always derived from the same revision instead of
+        # `pivot_table(aggfunc="last")` picking an arbitrary (input-order
+        # dependent) revision while availability is separately `max()`-ed over
+        # all revisions. Mirrors the fundamental_families.py latest-revision
+        # pattern; "value" is the deterministic tiebreak since this frame has
+        # no unique row id.
+        needed = (
+            needed.sort_values(
+                ["factor_id", "security_id", "symbol", "as_of_date", "available_at", "value"],
+                kind="mergesort",
+                na_position="first",
+            )
+            .groupby(["factor_id", "security_id", "symbol", "as_of_date"], as_index=False, dropna=False)
+            .tail(1)
+        )
         value_wide = needed.pivot_table(
             index=["security_id", "symbol", "as_of_date"],
             columns="factor_id",
@@ -287,7 +304,7 @@ def compute_factor_rows(
 
     frame = pd.concat(outputs, ignore_index=True) if outputs else pd.DataFrame(columns=FACTOR_VALUE_COLUMNS)
     manifest = {
-        "manifest_id": _hash_id("factor_build_manifest", tuple(targets), run_id, len(input_values), len(frame)),
+        "manifest_id": _hash_id("factor_build_manifest", tuple(sorted(targets)), run_id, len(input_values), len(frame)),
         "run_id": run_id,
         "factor_ids": sorted(targets),
         "topological_order": list(order),

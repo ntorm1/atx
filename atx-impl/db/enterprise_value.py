@@ -209,12 +209,18 @@ def _select_latest_enterprise_value_inputs(inputs: pd.DataFrame) -> pd.DataFrame
         "cash_and_equivalents_available_at",
     ]
     out["fundamental_available_at"] = out[component_av[1:]].max(axis=1)
+    # Prefer periods already visible as of trade_date over a not-yet-filed later
+    # period; only fall back to an unavailable period when no available one exists
+    # for that trade_date (mirrors the `matched` CTE ranking in load_enterprise_value_inputs).
+    out["fundamental_is_available"] = out["fundamental_available_at"] <= out["trade_date"]
     key_columns = ["market_cap_source", "security_id", "trade_date"]
     out = out.sort_values(
-        key_columns + ["period_end", "fundamental_available_at", "fundamental_sort_key"],
-        ascending=[True, True, True, False, False, False],
+        key_columns
+        + ["fundamental_is_available", "period_end", "fundamental_available_at", "fundamental_sort_key"],
+        ascending=[True, True, True, False, False, False, False],
         kind="mergesort",
     )
+    out = out.drop(columns=["fundamental_is_available"])
     return out.drop_duplicates(key_columns, keep="first").reset_index(drop=True)
 
 
@@ -283,65 +289,142 @@ def compute_enterprise_value_rows(
     if selected.empty:
         return _empty_enterprise_value_frame()
 
-    records: list[dict[str, Any]] = []
-    for _, row in selected.iterrows():
-        market_cap = _assert_non_negative_component(row, "market_cap")
-        total_debt = _assert_non_negative_component(row, "total_debt")
-        preferred_equity = _assert_non_negative_component(row, "preferred_equity")
-        minority_interest = _assert_non_negative_component(row, "minority_interest")
-        cash_and_equivalents = _assert_non_negative_component(row, "cash_and_equivalents")
-        enterprise_value = market_cap + total_debt + preferred_equity + minority_interest - cash_and_equivalents
-        available_at = max(
-            row["market_cap_available_at"],
-            row["total_debt_available_at"],
-            row["preferred_equity_available_at"],
-            row["minority_interest_available_at"],
-            row["cash_and_equivalents_available_at"],
+    # Function-local (not module-level) so `compute_enterprise_value_rows` stays the
+    # only place these column lists exist -- keeps the vectorized assembly free of any
+    # new public-API surface. Rebuilt per call; the lists are tiny literals.
+    component_columns = [
+        "market_cap",
+        "total_debt",
+        "preferred_equity",
+        "minority_interest",
+        "cash_and_equivalents",
+    ]
+    available_at_columns = [
+        "market_cap_available_at",
+        "total_debt_available_at",
+        "preferred_equity_available_at",
+        "minority_interest_available_at",
+        "cash_and_equivalents_available_at",
+    ]
+    # Columns `_input_lineage_json`/`_component_lineage` read via `row.get(...)`. Selecting
+    # exactly these (in this order) lets the batched lineage pass reconstruct per-row dicts
+    # from `itertuples()` tuples without ever materializing a full-width per-row Series
+    # (which is what makes `DataFrame.iterrows()` slow). Read from `selected` -- the raw,
+    # pre-`astype(float)` component values -- not `prepared`, so an int-valued component
+    # still renders as a JSON int in the lineage, matching the pre-vectorization output.
+    lineage_columns = [
+        "market_cap_source",
+        "market_cap_id",
+        "security_id",
+        "trade_date",
+        "market_cap",
+        "market_cap_available_at",
+        "market_cap_input_lineage_json",
+        "period_end",
+        "total_debt_id",
+        "total_debt_source",
+        "total_debt",
+        "total_debt_available_at",
+        "preferred_equity_id",
+        "preferred_equity_source",
+        "preferred_equity",
+        "preferred_equity_available_at",
+        "minority_interest_id",
+        "minority_interest_source",
+        "minority_interest",
+        "minority_interest_available_at",
+        "cash_and_equivalents_id",
+        "cash_and_equivalents_source",
+        "cash_and_equivalents",
+        "cash_and_equivalents_available_at",
+    ]
+
+    def _skip_bad_component_rows(frame: pd.DataFrame) -> pd.Series:
+        """PF4-S3 S3-10: skip-and-flag replacement for the old raising check (which
+        called `_assert_non_negative_component`-equivalent logic and aborted the whole
+        refresh for one dirty security-day). Vectorized equivalent of a
+        `for _, row in selected.iterrows()` scan that coerces each of the 5 EV
+        components and, on the first None/NaN or negative value in a row (checked in
+        `component_columns` order -- market_cap, total_debt, preferred_equity,
+        minority_interest, cash_and_equivalents, same order the original per-row scan
+        used), records `(security_id, trade_date, component)` to a skipped-rows
+        collector and logs it instead of raising. `import logging` is function-local so
+        this snapshot-tracked module gains no new module-level symbol.
+        """
+        import logging
+
+        values = frame.to_numpy()
+        is_bad_cell = pd.isna(frame).to_numpy() | (values < 0)
+        row_is_bad = is_bad_cell.any(axis=1)
+
+        skipped: list[tuple[Any, Any, str]] = []
+        for row_pos, is_bad in enumerate(row_is_bad):
+            if not is_bad:
+                continue
+            column = component_columns[int(is_bad_cell[row_pos].argmax())]
+            bad_row = selected.iloc[row_pos]
+            skipped.append((bad_row.get("security_id"), bad_row.get("trade_date"), column))
+
+        if skipped:
+            logger = logging.getLogger(__name__)
+            for security_id, trade_date, column in skipped:
+                logger.warning(
+                    "Skipping enterprise-value row security_id=%s trade_date=%s: "
+                    "%s must be a non-negative enterprise-value component",
+                    security_id,
+                    trade_date,
+                    column,
+                )
+
+        return pd.Series(~row_is_bad, index=frame.index)
+
+    components = selected[component_columns].astype(float)
+    clean_mask = _skip_bad_component_rows(components)
+    if not clean_mask.all():
+        selected = selected.loc[clean_mask].reset_index(drop=True)
+        components = components.loc[clean_mask].reset_index(drop=True)
+        if selected.empty:
+            return _empty_enterprise_value_frame()
+
+    prepared = selected.copy()
+    prepared["market_cap"] = components["market_cap"]
+    prepared["total_debt"] = components["total_debt"]
+    prepared["preferred_equity"] = components["preferred_equity"]
+    prepared["minority_interest"] = components["minority_interest"]
+    prepared["cash_and_equivalents"] = components["cash_and_equivalents"]
+    prepared["enterprise_value"] = (
+        components["market_cap"]
+        + components["total_debt"]
+        + components["preferred_equity"]
+        + components["minority_interest"]
+        - components["cash_and_equivalents"]
+    )
+    prepared["is_latest_revision"] = True
+    prepared["as_of_date"] = selected["trade_date"]
+    prepared["available_at"] = selected[available_at_columns].max(axis=1)
+    prepared["source"] = source
+    prepared["enterprise_value_id"] = [
+        _enterprise_value_id(source, str(market_cap_source), str(security_id), trade_date)
+        for market_cap_source, security_id, trade_date in zip(
+            selected["market_cap_source"], selected["security_id"], selected["trade_date"]
         )
-        records.append(
-            {
-                "enterprise_value_id": _enterprise_value_id(
-                    source,
-                    str(row["market_cap_source"]),
-                    str(row["security_id"]),
-                    row["trade_date"],
-                ),
-                "source": source,
-                "market_cap_source": row["market_cap_source"],
-                "market_cap_id": row.get("market_cap_id"),
-                "security_id": row["security_id"],
-                "symbol": row.get("symbol"),
-                "trade_date": row["trade_date"],
-                "period_start": row.get("period_start"),
-                "period_end": row["period_end"],
-                "fiscal_year": row.get("fiscal_year"),
-                "fiscal_period": row.get("fiscal_period"),
-                "price": row.get("price"),
-                "share_count": row.get("share_count"),
-                "share_count_type_used": row.get("share_count_type_used"),
-                "market_cap": market_cap,
-                "total_debt": total_debt,
-                "preferred_equity": preferred_equity,
-                "minority_interest": minority_interest,
-                "cash_and_equivalents": cash_and_equivalents,
-                "enterprise_value": enterprise_value,
-                "is_latest_revision": True,
-                "as_of_date": row["trade_date"],
-                "available_at": available_at,
-                "market_cap_available_at": row["market_cap_available_at"],
-                "price_available_at": row["price_available_at"],
-                "share_available_at": row["share_available_at"],
-                "total_debt_available_at": row["total_debt_available_at"],
-                "preferred_equity_available_at": row["preferred_equity_available_at"],
-                "minority_interest_available_at": row["minority_interest_available_at"],
-                "cash_and_equivalents_available_at": row["cash_and_equivalents_available_at"],
-                "input_codes_json": json_dumps(COMPONENT_CODE_MAP),
-                "input_lineage_json": _input_lineage_json(row),
-                "formula_version": "enterprise_value_v1",
-                "run_id": run_id,
-            }
-        )
-    return pd.DataFrame(records, columns=ENTERPRISE_VALUE_COLUMNS)
+    ]
+    # `COMPONENT_CODE_MAP` is the same literal for every row; hoisted out of the
+    # per-row pass so json_dumps is called once here instead of once per row.
+    prepared["input_codes_json"] = json_dumps(COMPONENT_CODE_MAP)
+    prepared["formula_version"] = "enterprise_value_v1"
+    prepared["run_id"] = run_id
+
+    # Single batched lineage-JSON pass: `itertuples()` (unlike `iterrows()`) reads each
+    # column's native array directly instead of materializing a full-width per-row
+    # Series, so per-cell values/dtypes (incl. pd.NA/Timestamp/date) are preserved
+    # exactly, but building the M-row list stays a single, cheap tuple-unpacking loop.
+    prepared["input_lineage_json"] = [
+        _input_lineage_json(dict(zip(lineage_columns, values)))
+        for values in selected[lineage_columns].itertuples(index=False, name=None)
+    ]
+
+    return prepared[ENTERPRISE_VALUE_COLUMNS].reset_index(drop=True)
 
 
 def load_enterprise_value_inputs(store: DuckDBStore, options: EnterpriseValueOptions) -> pd.DataFrame:
@@ -495,7 +578,11 @@ def load_enterprise_value_inputs(store: DuckDBStore, options: EnterpriseValueOpt
                 f.fundamental_sort_key,
                 row_number() OVER (
                     PARTITION BY mc.market_cap_source, mc.security_id, mc.trade_date
-                    ORDER BY f.period_end DESC, f.fundamental_available_at DESC, f.fundamental_sort_key DESC
+                    ORDER BY
+                        (f.fundamental_available_at <= mc.trade_date) DESC,
+                        f.period_end DESC,
+                        f.fundamental_available_at DESC,
+                        f.fundamental_sort_key DESC
                 ) AS ev_period_rn
             FROM market_caps mc
             JOIN complete_fundamentals f

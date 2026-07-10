@@ -2,7 +2,7 @@
 
 Groups:
 1. migration:     version 5 recorded; 4 new columns exist on fundamental_statement_map.
-2. seed coverage: exactly 137 authorized S4a item_ids after seeding.
+2. seed coverage: exactly 143 authorized S4a item_ids after seeding.
 2b. overlays:    exactly 47 S4b/S5 industry item_ids under the right templates.
 3. original 16:   all original canonical_metrics still present.
 4. item_ids:      all active rows have non-NULL item_id; multi-concept metrics share item_id
@@ -20,8 +20,13 @@ import datetime as dt
 import pytest
 
 
+# 1045-1050 are the share-count/float completeness inputs (EntityPublicFloat,
+# TreasuryStockShares, ClassA-D CommonStockSharesOutstanding) added to the ALL
+# statement map by PF3-S5 (commit 3a1d3af "add share count completeness inputs").
+# 1044 remains a reserved gap id and is not authorized.
 AUTHORIZED_S4A_ITEM_IDS = (
     set(range(1001, 1044))
+    | set(range(1045, 1051))
     | set(range(1101, 1120))
     | set(range(1201, 1224))
     | set(range(1301, 1326))
@@ -192,7 +197,7 @@ def test_seed_authorized_s4a_item_id_coverage(tmp_store):
             """
         ).fetchall()
     }
-    assert len(AUTHORIZED_S4A_ITEM_IDS) == 137
+    assert len(AUTHORIZED_S4A_ITEM_IDS) == 143
     assert actual == AUTHORIZED_S4A_ITEM_IDS, (
         "Seeded S4a item_ids differ from authorized cross-industry ranges; "
         f"missing={sorted(AUTHORIZED_S4A_ITEM_IDS - actual)}, "

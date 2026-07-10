@@ -276,6 +276,44 @@ def test_assemble_factor_panel_long_uses_decision_dates_and_universe_membership(
     assert wide.loc[0, "profitability_gross_profitability"] == 0.8
 
 
+def test_panel_dedup_is_deterministic_on_availability_ties() -> None:
+    row_low = _factor_row(
+        "fundamental",
+        "SEC-A",
+        "profitability_gross_profitability",
+        0.8,
+        as_of_date="2024-02-01",
+        available_at="2024-02-01 10:00:00",
+        source_loaded_at="2024-02-01 12:00:00",
+    )
+    row_low["run_id"] = "run-aaaa"
+    row_low["factor_value_id"] = "fundamental-SEC-A-tie-a"
+
+    row_high = _factor_row(
+        "fundamental",
+        "SEC-A",
+        "profitability_gross_profitability",
+        0.5,
+        as_of_date="2024-02-01",
+        available_at="2024-02-01 10:00:00",
+        source_loaded_at="2024-02-01 12:00:00",
+    )
+    row_high["run_id"] = "run-bbbb"
+    row_high["factor_value_id"] = "fundamental-SEC-A-tie-b"
+
+    forward = pd.DataFrame([row_low, row_high])
+    shuffled = pd.DataFrame([row_high, row_low])
+
+    panel_forward = assemble_factor_panel_long(forward)
+    panel_shuffled = assemble_factor_panel_long(shuffled)
+
+    assert len(panel_forward) == 1
+    assert len(panel_shuffled) == 1
+    assert panel_forward.loc[0, "run_id"] == panel_shuffled.loc[0, "run_id"]
+    assert panel_forward.loc[0, "value"] == panel_shuffled.loc[0, "value"]
+    assert panel_forward.loc[0, "run_id"] == "run-bbbb"
+
+
 def test_factor_panel_views_resolve_long_and_wide_with_pit_universe_filter(tmp_store) -> None:
     _insert_factor_value_fixtures(tmp_store)
 
@@ -549,3 +587,37 @@ def test_read_panel_asof_catalog_and_cli_round_trip(tmp_store, tmp_path, capsys)
     export_payload = json.loads(capsys.readouterr().out)
     assert export_payload["object_name"] == "v_factor_panel"
     assert export_payload["rows"] == 3
+
+
+def test_panel_read_paths_open_read_only(tmp_store, tmp_path, monkeypatch) -> None:
+    """S3-8: read_panel_asof/describe_factor_panel/export_factor_panel must not open the
+    warehouse writable when driving off a db_path (writer-lock hazard for concurrent reads).
+    """
+    import contextlib
+
+    from db import factor_panel as factor_panel_module
+
+    _insert_factor_value_fixtures(tmp_store)
+
+    db_path = tmp_store.path
+    tmp_store.con.execute("CHECKPOINT")
+    tmp_store.connection.close()
+    tmp_store.connection = None
+
+    captured_read_only: list[bool] = []
+    real_connect = factor_panel_module.connect
+
+    @contextlib.contextmanager
+    def _capturing_connect(path, *, read_only=False):
+        captured_read_only.append(read_only)
+        with real_connect(path, read_only=read_only) as store:
+            yield store
+
+    monkeypatch.setattr(factor_panel_module, "connect", _capturing_connect)
+
+    read_panel_asof(dt.date(2024, 2, 1), db_path=db_path)
+    describe_factor_panel(db_path=db_path)
+    export_factor_panel(db_path, lake_root=tmp_path / "read_only_lake")
+
+    assert len(captured_read_only) == 3
+    assert captured_read_only == [True, True, True]

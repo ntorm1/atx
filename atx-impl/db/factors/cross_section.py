@@ -86,7 +86,8 @@ def zscore(
         std = values.std(skipna=True, ddof=1)
         if pd.isna(std) or std == 0:
             return pd.Series(pd.NA, index=values.index, dtype="Float64")
-        return (values - mean) / std
+        standardized = (values - mean) / std
+        return standardized.where(np.isfinite(standardized)).astype("Float64")
 
     out[output_column] = out.groupby(list(partitions), dropna=False)[value_column].transform(_z)
     return out
@@ -175,6 +176,7 @@ def _operator_by_name(name: str):
         "rank": rank,
         "zscore": zscore,
         "winsorize": winsorize,
+        "neutralize": neutralize,
     }
     try:
         return operators[name]
@@ -187,6 +189,7 @@ def pit_safety_report(
     *,
     transformed_frame: pd.DataFrame | None = None,
     operator: str | None = None,
+    operator_kwargs: dict[str, object] | None = None,
     key_columns: Sequence[str] = ("factor_id", "security_id", "as_of_date"),
     value_column: str = "value",
     available_at_column: str = "available_at",
@@ -203,7 +206,7 @@ def pit_safety_report(
     mismatch_count = 0
     max_abs_delta: float | None = None
     if transformed_frame is not None and operator is not None:
-        expected = _operator_by_name(operator)(input_frame, value_column=value_column)
+        expected = _operator_by_name(operator)(input_frame, value_column=value_column, **(operator_kwargs or {}))
         missing = [column for column in (*key_columns, value_column) if column not in transformed_frame.columns]
         if missing:
             raise CrossSectionOperatorError(f"Transformed frame missing columns: {missing}")

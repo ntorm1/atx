@@ -404,6 +404,120 @@ def test_universe_decision_coverage_quality_check_fails_for_undecided_overlap_da
     ]
 
 
+def _long_history_dates(n: int = 60) -> list[dt.date]:
+    # Weekday-only trading calendar (skips Sat/Sun, plus one holiday) so the
+    # calendar-day-vs-trading-day gap in the lookback read buffer is actually
+    # exercised -- a fixture with a bar on every literal calendar day cannot
+    # distinguish a calendar-day buffer from a trading-day buffer.
+    holiday = dt.date(2020, 1, 20)  # e.g. MLK Day -- a weekday with no bar
+    dates: list[dt.date] = []
+    day = dt.date(2020, 1, 1)
+    while len(dates) < n:
+        if day.weekday() < 5 and day != holiday:
+            dates.append(day)
+        day += dt.timedelta(days=1)
+    return dates
+
+
+def _long_history_bar_rows(security_id: str, symbol: str, dates: list[dt.date]) -> pd.DataFrame:
+    rows = []
+    for i, day in enumerate(dates):
+        volume = 1_000_000 + i * 100_000
+        rows.append(
+            {
+                "source": "fixture",
+                "security_id": security_id,
+                "symbol": symbol,
+                "trade_date": day,
+                "open": 20.0,
+                "high": 21.0,
+                "low": 19.0,
+                "close": 20.0,
+                "volume": volume,
+                "available_at": pd.Timestamp(day) + pd.Timedelta(hours=22),
+                "run_id": "long-history-bars",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _row_at(daily: pd.DataFrame, security_id: str, as_of: dt.date) -> pd.Series:
+    mask = (daily["security_id"] == security_id) & (
+        pd.to_datetime(daily["as_of_date"]).dt.date == as_of
+    )
+    matches = daily[mask]
+    assert len(matches) == 1, f"expected exactly one row for {security_id} on {as_of}"
+    return matches.iloc[0]
+
+
+def _decision_at(intervals: pd.DataFrame, security_id: str, as_of: dt.date) -> tuple[bool, str]:
+    mask = (
+        (intervals["security_id"] == security_id)
+        & (intervals["valid_from"] <= as_of)
+        & (intervals["valid_to"] >= as_of)
+    )
+    matches = intervals[mask]
+    assert len(matches) == 1, f"expected exactly one interval for {security_id} covering {as_of}"
+    row = matches.iloc[0]
+    return bool(row["is_member"]), str(row["reason"])
+
+
+def test_windowed_and_full_build_agree_at_window_start(tmp_store):
+    # A windowed backfill and a full rebuild must agree on the decision at the
+    # start of the windowed build's range: the trailing history_days /
+    # avg_dollar_volume windows must be computed from a lookback buffer read
+    # *before* start_date, not truncated at the emit window's left edge.
+    dates = _long_history_dates(60)
+    window_start = dates[40]
+
+    _insert_security(tmp_store, "LONGHIST", "LNG")
+    insert_frame(
+        tmp_store,
+        _long_history_bar_rows("LONGHIST", "LNG", dates),
+        "equity_daily_bars",
+        "long_history_bars",
+    )
+
+    dataset = GovernedUniverseMembershipDataset()
+
+    full_options = UniverseMembershipOptions(
+        universe_id="full_build",
+        start_date=dates[0],
+        end_date=dates[-1],
+        lookback_days=20,
+        min_history_days=20,
+        min_price=5.0,
+        min_dollar_volume=50_000_000.0,
+        run_id="full-run",
+    )
+    narrow_options = UniverseMembershipOptions(
+        universe_id="narrow_build",
+        start_date=window_start,
+        end_date=dates[-1],
+        lookback_days=20,
+        min_history_days=20,
+        min_price=5.0,
+        min_dollar_volume=50_000_000.0,
+        run_id="narrow-run",
+    )
+
+    full_daily = dataset._daily_decisions(tmp_store, full_options)
+    narrow_daily = dataset._daily_decisions(tmp_store, narrow_options)
+
+    full_row = _row_at(full_daily, "LONGHIST", window_start)
+    narrow_row = _row_at(narrow_daily, "LONGHIST", window_start)
+
+    assert narrow_row["history_days"] == full_row["history_days"]
+    assert narrow_row["avg_dollar_volume"] == full_row["avg_dollar_volume"]
+
+    full_intervals = compute_universe_membership_intervals(full_daily, full_options)
+    narrow_intervals = compute_universe_membership_intervals(narrow_daily, narrow_options)
+
+    assert _decision_at(narrow_intervals, "LONGHIST", window_start) == _decision_at(
+        full_intervals, "LONGHIST", window_start
+    )
+
+
 def test_universe_membership_migration_catalogs_contract_surface(tmp_store):
     tables = {
         row[0]

@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import json
 import datetime as dt
+import os
+import subprocess
+import sys
 from dataclasses import replace
+from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -14,6 +19,8 @@ from db.factors.catalog import (
     legacy_factor_definitions,
     validate_catalog,
 )
+from db.factors.cross_domain import cross_domain_factor_definitions
+from db.factors.fundamental_families import factor_seed_definitions
 from db.factors.engine import (
     FactorGraphError,
     compute_factor_rows,
@@ -88,7 +95,15 @@ def test_validate_catalog_rejects_undeclared_factor_input() -> None:
 
 
 def test_factor_definition_migration_seeds_catalog_rows(tmp_store) -> None:
-    expected_count = len(legacy_factor_definitions())
+    # factor_definition is seeded from three authoritative sources, matching the
+    # migrations that populate it: legacy S7-0 rows (migration 0152), the S8
+    # definition-as-data seed CSV (migrations 0156-0159), and the S9 cross-domain
+    # specs (migrations 0160-0163).
+    expected_count = (
+        len(legacy_factor_definitions())
+        + len(factor_seed_definitions())
+        + len(cross_domain_factor_definitions())
+    )
     count = tmp_store.con.execute("SELECT count(*) FROM factor_definition").fetchone()[0]
     ret = tmp_store.con.execute(
         """
@@ -190,6 +205,174 @@ def test_compute_factor_rows_uses_dependency_order_and_max_input_available_at() 
     assert json.loads(result.frame.iloc[0]["input_lineage_json"])[0]["factor_id"] == "spread"
     assert json.loads(manifest.iloc[0]["factor_ids_json"]) == ["combo"]
     assert json.loads(manifest.iloc[0]["topological_order_json"]) == ["base_a", "base_b", "spread", "combo"]
+
+
+def test_compute_factor_rows_selects_one_latest_revision_per_key() -> None:
+    rows = (
+        _factor("base_a"),
+        _factor("base_b"),
+        _factor("spread", "base_a - base_b", ("factor:base_a", "factor:base_b")),
+    )
+
+    # For each dependency, the chronologically-latest revision (V_new) is placed
+    # BEFORE the stale revision (V_old) in the input frame. A buggy
+    # `pivot_table(aggfunc="last")` selects whichever row is positionally last in
+    # the frame -- V_old -- even though `available_at` (computed via `.max()`)
+    # correctly reflects V_new's later timestamp. The fix must select V_new's
+    # value (and V_new's available_at) for both dependencies, regardless of row
+    # order.
+    base_rows = [
+        {
+            "factor_id": "base_a",
+            "security_id": "SEC-A",
+            "symbol": "AAA",
+            "as_of_date": dt.date(2023, 1, 3),
+            "value": 10.0,  # V_new
+            "available_at": pd.Timestamp("2023-01-03 09:30:00"),
+        },
+        {
+            "factor_id": "base_a",
+            "security_id": "SEC-A",
+            "symbol": "AAA",
+            "as_of_date": dt.date(2023, 1, 3),
+            "value": 999.0,  # V_old (stale), positioned after V_new
+            "available_at": pd.Timestamp("2023-01-03 09:00:00"),
+        },
+        {
+            "factor_id": "base_b",
+            "security_id": "SEC-A",
+            "symbol": "AAA",
+            "as_of_date": dt.date(2023, 1, 3),
+            "value": 3.0,  # V_new
+            "available_at": pd.Timestamp("2023-01-03 10:00:00"),
+        },
+        {
+            "factor_id": "base_b",
+            "security_id": "SEC-A",
+            "symbol": "AAA",
+            "as_of_date": dt.date(2023, 1, 3),
+            "value": 888.0,  # V_old (stale), positioned after V_new
+            "available_at": pd.Timestamp("2023-01-03 09:15:00"),
+        },
+    ]
+
+    input_values = pd.DataFrame(base_rows)
+    shuffled_values = pd.DataFrame(list(reversed(base_rows))).reset_index(drop=True)
+
+    result = compute_factor_rows(input_values, rows, target_factor_ids=("spread",), run_id="revision-run")
+    shuffled_result = compute_factor_rows(shuffled_values, rows, target_factor_ids=("spread",), run_id="revision-run")
+
+    assert len(result.frame) == 1
+    row = result.frame.iloc[0]
+    assert row["value"] == pytest.approx(7.0)  # 10.0 (base_a V_new) - 3.0 (base_b V_new)
+    assert row["available_at"] == pd.Timestamp("2023-01-03 10:00:00")
+
+    pd.testing.assert_frame_equal(
+        result.frame.reset_index(drop=True),
+        shuffled_result.frame.reset_index(drop=True),
+    )
+
+
+_MANIFEST_ID_PROBE_SOURCE = '''
+import datetime as dt
+import json
+import sys
+
+import pandas as pd
+
+from db.factors.catalog import FactorDefinition
+from db.factors.engine import compute_factor_rows, factor_build_manifest_frame
+
+
+def _factor(factor_id, expression="source", inputs=()):
+    return FactorDefinition(
+        factor_id=factor_id,
+        factor_name=factor_id,
+        family="fixture",
+        description=f"{factor_id} fixture factor",
+        expression=expression,
+        input_ids_json=json.dumps(list(inputs)),
+        direction=1,
+        lookback_days=0,
+        neutralization_spec_json=json.dumps({"method": "none", "by": []}),
+        unit="score",
+        sign="signed",
+        scale="1",
+        is_point_in_time_safe=True,
+        available_at_policy="fixture",
+        declared_in="test",
+        owner="test",
+        source="test",
+    )
+
+
+rows = (
+    _factor("base_a"),
+    _factor("base_b"),
+    _factor("combo_sum", "base_a + base_b", ("factor:base_a", "factor:base_b")),
+    _factor("combo_diff", "base_a - base_b", ("factor:base_a", "factor:base_b")),
+    _factor("combo_prod", "base_a * base_b", ("factor:base_a", "factor:base_b")),
+)
+input_values = pd.DataFrame(
+    [
+        {
+            "factor_id": "base_a",
+            "security_id": "SEC-A",
+            "symbol": "AAA",
+            "as_of_date": dt.date(2023, 1, 3),
+            "value": 10.0,
+            "available_at": pd.Timestamp("2023-01-03 09:30:00"),
+        },
+        {
+            "factor_id": "base_b",
+            "security_id": "SEC-A",
+            "symbol": "AAA",
+            "as_of_date": dt.date(2023, 1, 3),
+            "value": 3.0,
+            "available_at": pd.Timestamp("2023-01-03 10:00:00"),
+        },
+    ]
+)
+targets = tuple(sys.argv[1:])
+result = compute_factor_rows(input_values, rows, target_factor_ids=targets, run_id="factor-run")
+manifest = factor_build_manifest_frame(result)
+print(manifest.iloc[0]["manifest_id"])
+'''
+
+
+def test_factor_build_manifest_id_is_hashseed_independent(tmp_path) -> None:
+    # A multi-target (>=3 factor ids) build's manifest_id must not depend on
+    # PYTHONHASHSEED or on the iteration order of `target_factor_ids` -- both of
+    # which perturb a plain `set` build. Force distinct interpreter hash seeds via
+    # subprocesses so the assertion is deterministic regardless of the ambient
+    # hash seed this pytest process happens to run under.
+    repo_root = Path(__file__).resolve().parents[2]
+    script = tmp_path / "manifest_id_probe.py"
+    script.write_text(_MANIFEST_ID_PROBE_SOURCE, encoding="utf-8")
+
+    def manifest_id(order: tuple[str, ...], hashseed: str) -> str:
+        env = dict(os.environ, PYTHONHASHSEED=hashseed, PYTHONPATH=str(repo_root))
+        completed = subprocess.run(
+            [sys.executable, str(script), *order],
+            cwd=repo_root,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return completed.stdout.strip()
+
+    targets = ("combo_sum", "combo_diff", "combo_prod")
+    permuted_targets = ("combo_prod", "combo_sum", "combo_diff")
+
+    manifest_seed0 = manifest_id(targets, "0")
+    manifest_seed0_again = manifest_id(targets, "0")
+    manifest_seed1 = manifest_id(targets, "1")
+    manifest_seed0_permuted = manifest_id(permuted_targets, "0")
+
+    assert manifest_seed0 == manifest_seed0_again
+    assert manifest_seed0 == manifest_seed1
+    assert manifest_seed0 == manifest_seed0_permuted
 
 
 def test_factor_dependency_migration_seeds_legacy_edges(tmp_store) -> None:
@@ -324,6 +507,78 @@ def test_pit_safety_report_flags_future_inputs_and_cross_date_pooling() -> None:
     assert future_report["future_input_count"] == 1
     assert pooled_report["status"] == "failed"
     assert pooled_report["operator_mismatch_count"] > 0
+
+
+def test_zscore_guards_inf_and_pit_safety_covers_neutralize() -> None:
+    # (a) A cross-section whose standardization overflows: three securities that
+    # each report a huge-magnitude value push mean/std computation past float64
+    # range. Today `_z` only guards std == 0 / NaN, so std landing on `inf`
+    # (rather than 0 or NaN) slips past that guard and the division proceeds,
+    # leaking a raw (non-nullable) non-finite float into the "value" column
+    # instead of the `pd.NA` sentinel the std==0 branch already returns.
+    overflow_frame = pd.DataFrame(
+        [
+            {"factor_id": "value", "security_id": "A", "as_of_date": dt.date(2023, 1, 3), "value": 1e308},
+            {"factor_id": "value", "security_id": "B", "as_of_date": dt.date(2023, 1, 3), "value": 1e308},
+            {"factor_id": "value", "security_id": "C", "as_of_date": dt.date(2023, 1, 3), "value": 1e308},
+        ]
+    )
+
+    standardized = zscore(overflow_frame)
+
+    assert not np.isinf(pd.to_numeric(standardized["value"], errors="coerce")).any()
+    assert standardized["value"].dtype == "Float64"
+    assert standardized["value"].isna().all()
+
+    # (b) `neutralize` is a valid PIT-safe operator but is missing from the
+    # `_operator_by_name` map used by `pit_safety_report`'s recompute, so the
+    # report cannot validate it today.
+    neutralize_frame = pd.DataFrame(
+        [
+            {
+                "factor_id": "value",
+                "security_id": "A",
+                "sector": "tech",
+                "as_of_date": dt.date(2023, 1, 3),
+                "value": 1.0,
+                "available_at": pd.Timestamp("2023-01-03"),
+            },
+            {
+                "factor_id": "value",
+                "security_id": "B",
+                "sector": "tech",
+                "as_of_date": dt.date(2023, 1, 3),
+                "value": 3.0,
+                "available_at": pd.Timestamp("2023-01-03"),
+            },
+            {
+                "factor_id": "value",
+                "security_id": "C",
+                "sector": "energy",
+                "as_of_date": dt.date(2023, 1, 3),
+                "value": 10.0,
+                "available_at": pd.Timestamp("2023-01-03"),
+            },
+            {
+                "factor_id": "value",
+                "security_id": "D",
+                "sector": "energy",
+                "as_of_date": dt.date(2023, 1, 3),
+                "value": 14.0,
+                "available_at": pd.Timestamp("2023-01-03"),
+            },
+        ]
+    )
+    neutralized = neutralize(neutralize_frame, by=("sector",))
+
+    report = pit_safety_report(
+        neutralize_frame,
+        transformed_frame=neutralized,
+        operator="neutralize",
+        operator_kwargs={"by": ("sector",)},
+    )
+
+    assert report["status"] == "passed"
 
 
 def test_factor_engine_catalog_view_and_pit_safety_gate_are_registered(tmp_store) -> None:

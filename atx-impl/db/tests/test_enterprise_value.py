@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
 
 import pandas as pd
 import pytest
 
+import db.enterprise_value as ev_mod
 from db.enterprise_value import (
     EnterpriseValueDataset,
     EnterpriseValueOptions,
@@ -268,9 +270,77 @@ def test_compute_enterprise_value_rows_returns_hand_computed_ev_and_lineage() ->
     assert lineage["components"]["total_debt"]["sign"] == "add"
 
 
-def test_compute_enterprise_value_rejects_negative_cash_component() -> None:
-    with pytest.raises(ValueError, match="cash_and_equivalents"):
-        compute_enterprise_value_rows(pd.DataFrame([_wide_row(cash_and_equivalents=-50.0)]))
+def test_ev_lineage_preserves_raw_int_component_dtype() -> None:
+    """PF4-S3 S3-6 fix (Finding 1): ``input_lineage_json`` values must come from the raw,
+    pre-``astype(float)`` component values (``selected``), not the float-overwritten
+    ``prepared`` frame -- an int-valued component must still render as a JSON int
+    (``1000``), matching the pre-vectorization per-row ``_input_lineage_json(row)``
+    output, not ``1000.0``.
+    """
+    int_row = _wide_row(
+        market_cap=1000,
+        total_debt=200,
+        preferred_equity=25,
+        minority_interest=10,
+        cash_and_equivalents=50,
+    )
+    rows = compute_enterprise_value_rows(pd.DataFrame([int_row]), run_id="ev-int-run")
+
+    assert len(rows) == 1
+    row = rows.iloc[0]
+
+    # Numeric OUTPUT columns are unaffected by this fix -- they were float pre-fix too.
+    assert row["market_cap"] == 1000.0
+    assert isinstance(row["market_cap"], float)
+
+    lineage_json = row["input_lineage_json"]
+    assert "1000.0" not in lineage_json
+
+    components = json.loads(lineage_json)["components"]
+    assert (components["market_cap"]["value"], type(components["market_cap"]["value"])) == (1000, int)
+    assert (components["total_debt"]["value"], type(components["total_debt"]["value"])) == (200, int)
+    assert (components["preferred_equity"]["value"], type(components["preferred_equity"]["value"])) == (25, int)
+    assert (components["minority_interest"]["value"], type(components["minority_interest"]["value"])) == (
+        10,
+        int,
+    )
+    assert (components["cash_and_equivalents"]["value"], type(components["cash_and_equivalents"]["value"])) == (
+        50,
+        int,
+    )
+
+
+def test_compute_enterprise_value_skips_negative_cash_component(caplog: pytest.LogCaptureFixture) -> None:
+    """PF4-S3 S3-10: the assembly loop no longer raises and aborts the batch on a
+    negative component -- it skips the dirty row and flags it via a log record.
+    """
+    with caplog.at_level(logging.WARNING):
+        rows = compute_enterprise_value_rows(pd.DataFrame([_wide_row(cash_and_equivalents=-50.0)]))
+
+    assert rows.empty
+    assert any("cash_and_equivalents" in record.message for record in caplog.records)
+
+
+def test_ev_skips_and_flags_bad_component_without_aborting(caplog: pytest.LogCaptureFixture) -> None:
+    """PF4-S3 S3-10: a dirty security-day (negative component) must be skipped and
+    flagged, not abort the whole refresh -- the clean security's EV row is still
+    produced.
+    """
+    clean_row = _wide_row(security_id="SEC-EV-CLEAN")
+    dirty_row = _wide_row(security_id="SEC-EV-DIRTY", cash_and_equivalents=-50.0)
+
+    with caplog.at_level(logging.WARNING):
+        rows = compute_enterprise_value_rows(
+            pd.DataFrame([clean_row, dirty_row]), run_id="ev-skip-run"
+        )
+
+    assert rows["security_id"].tolist() == ["SEC-EV-CLEAN"]
+    assert rows.iloc[0]["enterprise_value"] == pytest.approx(1185.0)
+
+    assert any(
+        "SEC-EV-DIRTY" in record.message and "cash_and_equivalents" in record.message
+        for record in caplog.records
+    ), "expected the dirty row to be recorded/flagged, not silently dropped"
 
 
 def test_refresh_enterprise_value_is_idempotent_and_asof_visible(tmp_store) -> None:
@@ -305,6 +375,96 @@ def test_refresh_enterprise_value_is_idempotent_and_asof_visible(tmp_store) -> N
     assert late[["symbol", "enterprise_value"]].to_dict("records") == [
         {"symbol": "EVT", "enterprise_value": 1185.0}
     ]
+
+
+def test_ev_falls_back_to_latest_available_period_across_filing_boundary(tmp_store) -> None:
+    from db.asof import enterprise_value_asof
+
+    security_id = "SEC-EV-FILING"
+    symbol = "EVF"
+    period_1_end = dt.date(2019, 12, 31)
+    period_1_available = dt.datetime(2020, 2, 5, 10)
+    period_2_end = dt.date(2020, 3, 31)
+    period_2_available = dt.datetime(2020, 5, 10, 10)
+    trade_date_early = dt.date(2020, 5, 2)
+    trade_date_late = dt.date(2020, 5, 15)
+
+    insert_frame(
+        tmp_store,
+        pd.DataFrame(
+            [
+                _market_cap_row(
+                    security_id=security_id,
+                    symbol=symbol,
+                    trade_date=trade_date_early,
+                    available_at=dt.datetime(2020, 5, 2, 22),
+                ),
+                _market_cap_row(
+                    security_id=security_id,
+                    symbol=symbol,
+                    trade_date=trade_date_late,
+                    available_at=dt.datetime(2020, 5, 15, 22),
+                ),
+            ]
+        ),
+        "market_cap",
+        "enterprise_value_filing_boundary_market_cap_seed",
+    )
+
+    statement_rows: list[dict[str, object]] = []
+    for metric, base_value in (
+        ("total_debt", 200.0),
+        ("pref_stock", 25.0),
+        ("minority_int_bs", 10.0),
+        ("cash_st_inv", 50.0),
+    ):
+        p1_row = _statement_row(
+            metric,
+            base_value,
+            security_id=security_id,
+            symbol=symbol,
+            period_end=period_1_end,
+            available_at=period_1_available,
+        )
+        p1_row["statement_point_id"] = f"{p1_row['statement_point_id']}-p1"
+        p1_row["fact_revision_id"] = f"{p1_row['fact_revision_id']}-p1"
+        p1_row["revision_group_id"] = f"{p1_row['revision_group_id']}-p1"
+        statement_rows.append(p1_row)
+
+        p2_row = _statement_row(
+            metric,
+            base_value + 5.0,
+            security_id=security_id,
+            symbol=symbol,
+            period_end=period_2_end,
+            available_at=period_2_available,
+        )
+        p2_row["statement_point_id"] = f"{p2_row['statement_point_id']}-p2"
+        p2_row["fact_revision_id"] = f"{p2_row['fact_revision_id']}-p2"
+        p2_row["revision_group_id"] = f"{p2_row['revision_group_id']}-p2"
+        statement_rows.append(p2_row)
+
+    insert_frame(
+        tmp_store,
+        pd.DataFrame(statement_rows),
+        "fundamental_statement_points",
+        "enterprise_value_filing_boundary_statement_seed",
+    )
+
+    assert refresh_enterprise_value(tmp_store, EnterpriseValueOptions(run_id="filing-boundary-run")) == 2
+
+    early = enterprise_value_asof(trade_date_early, store=tmp_store, symbols=(symbol,))
+    early_at_trade_date = early[early["trade_date"] == pd.Timestamp(trade_date_early)]
+    assert not early_at_trade_date.empty, "EV must not have a coverage hole across the filing boundary"
+    early_row = early_at_trade_date.iloc[0]
+    assert pd.Timestamp(early_row["period_end"]) == pd.Timestamp(period_1_end)
+    assert early_row["available_at"].date() <= trade_date_early
+
+    late = enterprise_value_asof(trade_date_late, store=tmp_store, symbols=(symbol,))
+    late_at_trade_date = late[late["trade_date"] == pd.Timestamp(trade_date_late)]
+    assert not late_at_trade_date.empty
+    late_row = late_at_trade_date.iloc[0]
+    assert pd.Timestamp(late_row["period_end"]) == pd.Timestamp(period_2_end)
 
 
 def test_enterprise_value_dataset_records_quality(tmp_store) -> None:
@@ -564,3 +724,138 @@ def test_valuation_input_catalog_migration_registry_and_indexes_are_present(tmp_
             True,
         ),
     ]
+
+
+def _reference_compute_enterprise_value_rows(
+    inputs: pd.DataFrame,
+    *,
+    source: str = ev_mod.DEFAULT_ENTERPRISE_VALUE_SOURCE,
+    run_id: str | None = None,
+) -> pd.DataFrame:
+    """PF4-S3 S3-6: frozen pre-vectorization reference.
+
+    Verbatim copy of the ``for _, row in selected.iterrows(): ...`` body that
+    ``compute_enterprise_value_rows`` used before S3-6. Kept independent of the
+    production function (which is now vectorized) so the vectorized output can be
+    checked for byte-for-byte equivalence against the original per-row algorithm,
+    not just against itself.
+    """
+    selected = ev_mod._select_latest_enterprise_value_inputs(inputs)
+    if selected.empty:
+        return ev_mod._empty_enterprise_value_frame()
+
+    records: list[dict[str, object]] = []
+    for _, row in selected.iterrows():
+        market_cap = ev_mod._assert_non_negative_component(row, "market_cap")
+        total_debt = ev_mod._assert_non_negative_component(row, "total_debt")
+        preferred_equity = ev_mod._assert_non_negative_component(row, "preferred_equity")
+        minority_interest = ev_mod._assert_non_negative_component(row, "minority_interest")
+        cash_and_equivalents = ev_mod._assert_non_negative_component(row, "cash_and_equivalents")
+        enterprise_value = market_cap + total_debt + preferred_equity + minority_interest - cash_and_equivalents
+        available_at = max(
+            row["market_cap_available_at"],
+            row["total_debt_available_at"],
+            row["preferred_equity_available_at"],
+            row["minority_interest_available_at"],
+            row["cash_and_equivalents_available_at"],
+        )
+        records.append(
+            {
+                "enterprise_value_id": ev_mod._enterprise_value_id(
+                    source,
+                    str(row["market_cap_source"]),
+                    str(row["security_id"]),
+                    row["trade_date"],
+                ),
+                "source": source,
+                "market_cap_source": row["market_cap_source"],
+                "market_cap_id": row.get("market_cap_id"),
+                "security_id": row["security_id"],
+                "symbol": row.get("symbol"),
+                "trade_date": row["trade_date"],
+                "period_start": row.get("period_start"),
+                "period_end": row["period_end"],
+                "fiscal_year": row.get("fiscal_year"),
+                "fiscal_period": row.get("fiscal_period"),
+                "price": row.get("price"),
+                "share_count": row.get("share_count"),
+                "share_count_type_used": row.get("share_count_type_used"),
+                "market_cap": market_cap,
+                "total_debt": total_debt,
+                "preferred_equity": preferred_equity,
+                "minority_interest": minority_interest,
+                "cash_and_equivalents": cash_and_equivalents,
+                "enterprise_value": enterprise_value,
+                "is_latest_revision": True,
+                "as_of_date": row["trade_date"],
+                "available_at": available_at,
+                "market_cap_available_at": row["market_cap_available_at"],
+                "price_available_at": row["price_available_at"],
+                "share_available_at": row["share_available_at"],
+                "total_debt_available_at": row["total_debt_available_at"],
+                "preferred_equity_available_at": row["preferred_equity_available_at"],
+                "minority_interest_available_at": row["minority_interest_available_at"],
+                "cash_and_equivalents_available_at": row["cash_and_equivalents_available_at"],
+                "input_codes_json": ev_mod.json_dumps(ev_mod.COMPONENT_CODE_MAP),
+                "input_lineage_json": ev_mod._input_lineage_json(row),
+                "formula_version": "enterprise_value_v1",
+                "run_id": run_id,
+            }
+        )
+    return pd.DataFrame(records, columns=ev_mod.ENTERPRISE_VALUE_COLUMNS)
+
+
+def _scale_enterprise_value_fixture(n_rows: int) -> pd.DataFrame:
+    return pd.DataFrame([_wide_row(security_id=f"SEC-SCALE-{i:05d}") for i in range(n_rows)])
+
+
+def test_ev_row_assembly_is_vectorized_and_matches_reference(monkeypatch) -> None:
+    small_fixture = pd.DataFrame([_wide_row()])
+    scale_fixture = _scale_enterprise_value_fixture(2000)
+
+    # Capture the pre-fix reference BEFORE any monkeypatching, using the frozen
+    # per-row algorithm above (not the production function under test).
+    reference_small = _reference_compute_enterprise_value_rows(small_fixture, run_id="ev-scale-run")
+    reference_scale = _reference_compute_enterprise_value_rows(scale_fixture, run_id="ev-scale-run")
+
+    iterrows_calls = {"n": 0}
+    original_iterrows = pd.DataFrame.iterrows
+
+    def counting_iterrows(self, *args, **kwargs):
+        iterrows_calls["n"] += 1
+        return original_iterrows(self, *args, **kwargs)
+
+    monkeypatch.setattr(pd.DataFrame, "iterrows", counting_iterrows)
+
+    json_dumps_calls = {"n": 0}
+    original_json_dumps = ev_mod.json_dumps
+
+    def counting_json_dumps(*args, **kwargs):
+        json_dumps_calls["n"] += 1
+        return original_json_dumps(*args, **kwargs)
+
+    monkeypatch.setattr(ev_mod, "json_dumps", counting_json_dumps)
+
+    vectorized_scale = compute_enterprise_value_rows(scale_fixture, run_id="ev-scale-run")
+    vectorized_small = compute_enterprise_value_rows(small_fixture, run_id="ev-scale-run")
+
+    n_rows = len(scale_fixture)
+    assert iterrows_calls["n"] == 0, (
+        f"compute_enterprise_value_rows must not use DataFrame.iterrows (saw {iterrows_calls['n']} calls)"
+    )
+    # Pre-fix: json_dumps is called twice per row (COMPONENT_CODE_MAP recomputed on every
+    # row, plus the per-row lineage payload) -> ~2 * n_rows. Post-fix: COMPONENT_CODE_MAP
+    # is hoisted to a single call and only the per-row lineage remains -> ~n_rows + O(1).
+    assert json_dumps_calls["n"] <= n_rows + 5, (
+        f"json_dumps should be batched to ~one call per row (plus O(1) constants), "
+        f"got {json_dumps_calls['n']} calls for {n_rows} rows"
+    )
+
+    pd.testing.assert_frame_equal(
+        vectorized_scale.reset_index(drop=True),
+        reference_scale.reset_index(drop=True),
+    )
+    pd.testing.assert_frame_equal(
+        vectorized_small.reset_index(drop=True),
+        reference_small.reset_index(drop=True),
+    )

@@ -731,6 +731,7 @@ def _compute_source_factor_rows(
     run_id: str | None,
     source: str,
     hash_prefix: str,
+    revision_key_columns: tuple[str, ...] = ("security_id", "as_of_date"),
 ) -> pd.DataFrame:
     if source_frame.empty:
         return pd.DataFrame(columns=CROSS_DOMAIN_FACTOR_COLUMNS)
@@ -741,6 +742,15 @@ def _compute_source_factor_rows(
         subset = source_frame.dropna(subset=[spec.source_column]).copy()
         if subset.empty:
             continue
+        group_columns = [column for column in revision_key_columns if column in subset.columns]
+        if not group_columns:
+            group_columns = ["security_id", "as_of_date"]
+        subset = (
+            subset.sort_values([*group_columns, "available_at", "source_row_id"], kind="mergesort")
+            .groupby(group_columns, dropna=False)
+            .tail(1)
+            .reset_index(drop=True)
+        )
         subset["native_percent_rank_value"] = _native_percent_rank(subset, spec)
         line_columns = list(dict.fromkeys(column for column in spec.lineage_columns if column in subset.columns))
         native_columns = [spec.native_rank_column] if spec.native_rank_column and spec.native_rank_column in subset.columns else []
@@ -764,6 +774,12 @@ def _compute_source_factor_rows(
             partition_columns=("factor_id", "as_of_date"),
             ascending=spec.direction >= 0,
         )
+        # `spec.input_ids_json` is a property that calls `json_dumps` on every access
+        # but is the same literal for every row of this spec -- evaluate it once here
+        # instead of once per row.
+        spec_input_ids_json = spec.input_ids_json
+        lineage_records: list[dict[str, object]] = []
+        partial_rows: list[dict[str, object]] = []
         for row in ranked.itertuples(index=False):
             lineage_record = {
                 "source_table": spec.source_table,
@@ -784,7 +800,8 @@ def _compute_source_factor_rows(
                 if column == spec.source_column:
                     continue
                 lineage_record[column] = _json_scalar(getattr(row, column))
-            rows.append(
+            lineage_records.append(lineage_record)
+            partial_rows.append(
                 {
                     "factor_value_id": _hash_id(hash_prefix, spec.factor_id, row.security_id, row.as_of_date, row.available_at, run_id),
                     "factor_id": spec.factor_id,
@@ -798,13 +815,17 @@ def _compute_source_factor_rows(
                     "value": float(row.value) if not pd.isna(row.value) else pd.NA,
                     "available_at": pd.Timestamp(row.available_at),
                     "source_row_id": _json_scalar(row.source_row_id),
-                    "input_ids_json": spec.input_ids_json,
-                    "input_lineage_json": json_dumps([lineage_record]),
+                    "input_ids_json": spec_input_ids_json,
                     "is_latest_revision": True,
                     "run_id": run_id,
                     "source": source,
                 }
             )
+        # Single batched lineage-JSON pass, after the itertuples row-assembly above
+        # instead of interleaved with it.
+        for partial_row, lineage_record in zip(partial_rows, lineage_records):
+            partial_row["input_lineage_json"] = json_dumps([lineage_record])
+        rows.extend(partial_rows)
     if not rows:
         return pd.DataFrame(columns=CROSS_DOMAIN_FACTOR_COLUMNS)
     return pd.DataFrame(rows)[CROSS_DOMAIN_FACTOR_COLUMNS].sort_values(
@@ -831,6 +852,12 @@ def compute_price_liquidity_factor_rows(
         subset = source_frame.dropna(subset=[spec.source_column]).copy()
         if subset.empty:
             continue
+        subset = (
+            subset.sort_values(["security_id", "as_of_date", "available_at", "metric_id"], kind="mergesort")
+            .groupby(["security_id", "as_of_date"], dropna=False)
+            .tail(1)
+            .reset_index(drop=True)
+        )
         subset["native_percent_rank_value"] = _native_percent_rank(subset, spec)
         temp = subset[
             [
@@ -851,6 +878,12 @@ def compute_price_liquidity_factor_rows(
             partition_columns=("factor_id", "as_of_date"),
             ascending=spec.direction >= 0,
         )
+        # `spec.input_ids_json` is a property that calls `json_dumps` on every access
+        # but is the same literal for every row of this spec -- evaluate it once here
+        # instead of once per row.
+        spec_input_ids_json = spec.input_ids_json
+        lineage_lists: list[list[dict[str, object]]] = []
+        partial_rows: list[dict[str, object]] = []
         for row in ranked.itertuples(index=False):
             lineage = [
                 {
@@ -869,7 +902,8 @@ def compute_price_liquidity_factor_rows(
                     else float(row.native_percent_rank_value),
                 }
             ]
-            rows.append(
+            lineage_lists.append(lineage)
+            partial_rows.append(
                 {
                     "factor_value_id": _hash_id("cross_domain_factor", spec.factor_id, row.security_id, row.as_of_date, row.available_at, run_id),
                     "factor_id": spec.factor_id,
@@ -883,13 +917,17 @@ def compute_price_liquidity_factor_rows(
                     "value": float(row.value) if not pd.isna(row.value) else pd.NA,
                     "available_at": pd.Timestamp(row.available_at),
                     "source_row_id": None if pd.isna(row.metric_id) else str(row.metric_id),
-                    "input_ids_json": spec.input_ids_json,
-                    "input_lineage_json": json_dumps(lineage),
+                    "input_ids_json": spec_input_ids_json,
                     "is_latest_revision": True,
                     "run_id": run_id,
                     "source": source,
                 }
             )
+        # Single batched lineage-JSON pass, after the itertuples row-assembly above
+        # instead of interleaved with it.
+        for partial_row, lineage in zip(partial_rows, lineage_lists):
+            partial_row["input_lineage_json"] = json_dumps(lineage)
+        rows.extend(partial_rows)
     if not rows:
         return pd.DataFrame(columns=CROSS_DOMAIN_FACTOR_COLUMNS)
     return pd.DataFrame(rows)[CROSS_DOMAIN_FACTOR_COLUMNS].sort_values(
@@ -983,6 +1021,11 @@ def compute_estimate_revision_factor_rows(
             run_id=run_id,
             source=source,
             hash_prefix="estimate_revision_factor",
+            # est_surprise PRIMARY KEY is (security_id, measure_code, fiscal_year,
+            # fiscal_period) - a security/as_of_date can legitimately carry multiple
+            # measure_code rows (EPS_DILUTED, REVENUE, ...); only collapse true
+            # same-measure revisions (later available_at), never distinct measures.
+            revision_key_columns=("security_id", "as_of_date", "measure_code", "fiscal_year", "fiscal_period"),
         ),
         _compute_source_factor_rows(
             consensus_frame,
@@ -990,6 +1033,18 @@ def compute_estimate_revision_factor_rows(
             run_id=run_id,
             source=source,
             hash_prefix="estimate_revision_factor",
+            # Same identity columns _prepare_consensus_revision_frame groups on to
+            # compute prior_mean/revision_breadth (security_id, measure_code,
+            # fiscal_year, fiscal_period, period_end - intersected with what's
+            # present), plus as_of_date for the visible-snapshot dimension.
+            revision_key_columns=(
+                "security_id",
+                "as_of_date",
+                "measure_code",
+                "fiscal_year",
+                "fiscal_period",
+                "period_end",
+            ),
         ),
     ]
     materialized = [piece for piece in pieces if not piece.empty]
@@ -1022,6 +1077,11 @@ def compute_thirteenf_flow_factor_rows(
         run_id=run_id,
         source=source,
         hash_prefix="thirteenf_flow_factor",
+        # thirteenf_concentration_metrics.metric_id and its declared grain
+        # (table_catalog/dataset_catalog: "security_id,cusip,report_period,source_period")
+        # key on cusip and source_period beyond security_id/report_period(as_of_date) -
+        # both are genuine identity dimensions, not revision axes.
+        revision_key_columns=("security_id", "as_of_date", "cusip", "source_period"),
     )
 
 
@@ -1078,6 +1138,10 @@ def compute_short_interest_factor_rows(
         date_columns=("as_of_date", "settlement_date"),
     )
     frame = _filter_decision_time(frame, as_of_date=as_of_date, as_of_ts=as_of_ts)
+    # short_interest_metrics._metric_id keys on (source, security_id, settlement_date,
+    # available_at) and its declared grain is "security_id,settlement_date" - one row
+    # per security/settlement (== as_of_date) with no extra identity dimension, so the
+    # (security_id, as_of_date) default revision key is correct and left unchanged.
     return _compute_source_factor_rows(
         frame,
         specs=SHORT_INTEREST_SPECS,
@@ -1112,6 +1176,11 @@ def compute_insider_factor_rows(
         run_id=run_id,
         source=source,
         hash_prefix="insider_factor",
+        # insider_transaction_metrics.metric_id and _recompute_latest() both key
+        # revisions on (source, security_id, signal_date, window_days) - window_days
+        # is a first-class dimension, not a revision axis; two window_days on the
+        # same signal_date are distinct observations.
+        revision_key_columns=("security_id", "as_of_date", "window_days"),
     )
 
 

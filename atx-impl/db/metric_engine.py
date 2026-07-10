@@ -15,6 +15,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from .connection import DEFAULT_DB_PATH, DuckDBStore, connect
@@ -346,6 +347,83 @@ def _base_row(group: pd.DataFrame, current: pd.Series, spec: GrowthFormulaSpec) 
     return candidates.iloc[0]
 
 
+def _collapse_base_candidates(group: pd.DataFrame) -> pd.DataFrame:
+    """One-time-per-group precompute used by `_match_growth_base_rows`.
+
+    For every distinct `period_end_ts` in the group, keep only the revision that
+    `_base_row`'s tie-break would prefer among same-period duplicates: available_at
+    desc, then source_metric_id desc. Those two keys never depend on the querying
+    `current` row or `spec` (rows sharing a `period_end_ts` also share `gap_distance`
+    for any given current/spec), so collapsing them here means a per-current-row match
+    only has to break ties on gap_distance/period_end_ts. Returned sorted ascending by
+    `period_end_ts` for `np.searchsorted`.
+    """
+    ranked = group.sort_values(
+        ["period_end_ts", "available_at", "source_metric_id"],
+        ascending=[True, False, False],
+        kind="mergesort",
+    )
+    collapsed = ranked.drop_duplicates("period_end_ts", keep="first")
+    return collapsed.sort_values("period_end_ts", kind="mergesort").reset_index(drop=True)
+
+
+def _match_growth_base_rows(
+    base_candidates: pd.DataFrame,
+    current_period_end_ts: np.ndarray,
+    spec: GrowthFormulaSpec,
+) -> list[pd.Series | None]:
+    """Pair every `current` row (by position, `current_period_end_ts[i]`) in a group to
+    its base row via a single per-group search over `base_candidates` (already sorted +
+    revision-collapsed by `_collapse_base_candidates`), instead of calling `_base_row`
+    -- which rescans and resorts the *entire* group -- once per (current, spec) pair
+    (O(M) each, O(M^2) total across a group of M current rows).
+
+    Equivalent to `_base_row(group, current, spec)` for each row: valid candidates have
+    `period_end_ts < current period_end_ts` and `|gap_days - expected| <= tolerance`
+    (both spec-derived constants); the winner is the smallest gap_distance, ties broken
+    toward the larger period_end_ts (availability/source_metric_id ties are already
+    resolved by the collapse step, since same-period_end_ts rows share gap_distance).
+
+    `period_end_ts`/`available_at` are always midnight-aligned dates (see
+    `_normalize_metric_history`), so day counts are exact integers and this
+    Timestamp/Timedelta arithmetic reproduces `_base_row`'s `.dt.days`-based
+    gap_distance filter bit-for-bit.
+    """
+    n = len(current_period_end_ts)
+    if base_candidates.empty or n == 0:
+        return [None] * n
+
+    expected = _expected_gap_days(spec)
+    tolerance = _gap_tolerance_days(spec)
+    expected_td = pd.Timedelta(days=expected)
+    tolerance_td = pd.Timedelta(days=tolerance)
+
+    pe = base_candidates["period_end_ts"].to_numpy()
+    lower = current_period_end_ts - expected_td - tolerance_td
+    upper = current_period_end_ts - expected_td + tolerance_td
+
+    lo_idx = np.searchsorted(pe, lower, side="left")
+    hi_idx = np.minimum(
+        np.searchsorted(pe, upper, side="right"),
+        np.searchsorted(pe, current_period_end_ts, side="left"),
+    )
+
+    matches: list[pd.Series | None] = []
+    for i in range(n):
+        lo, hi = int(lo_idx[i]), int(hi_idx[i])
+        if lo >= hi:
+            matches.append(None)
+            continue
+        window_pe = pe[lo:hi]
+        gap_days = (current_period_end_ts[i] - window_pe) / np.timedelta64(1, "D")
+        gap_distance = np.abs(gap_days - expected)
+        # On an exact gap_distance tie, `_base_row` prefers the larger period_end_ts;
+        # since `window_pe` is ascending, that's the *last* occurrence of the minimum.
+        best_local = len(gap_distance) - 1 - int(np.argmin(gap_distance[::-1]))
+        matches.append(base_candidates.iloc[lo + best_local])
+    return matches
+
+
 def _elapsed_years(current: pd.Series, base: pd.Series) -> float:
     cur = _as_date(current.get("period_end"))
     prev = _as_date(base.get("period_end"))
@@ -600,7 +678,16 @@ def compute_growth_rows(
         if not group_specs:
             continue
         group = group.sort_values(["period_end_ts", "available_at", "source_metric_id"], kind="mergesort")
-        for _, current in group.iterrows():
+        # Pair every current row to its base row in one per-group pass instead of
+        # calling `_base_row` (full group rescan + resort) once per (current, spec).
+        pairing_specs = [spec for spec in group_specs if spec.growth_method not in {"stability", "consistency"}]
+        base_matches: dict[str, list[pd.Series | None]] = {}
+        if pairing_specs:
+            base_candidates = _collapse_base_candidates(group)
+            current_period_end_ts = group["period_end_ts"].to_numpy()
+            for spec in pairing_specs:
+                base_matches[spec.formula_code] = _match_growth_base_rows(base_candidates, current_period_end_ts, spec)
+        for row_position, (_, current) in enumerate(group.iterrows()):
             current_value = _safe_float(current.get("value"))
             if current_value is None:
                 continue
@@ -610,7 +697,7 @@ def compute_growth_rows(
                     if record is not None:
                         records.append(record)
                     continue
-                base = _base_row(group, current, spec)
+                base = base_matches[spec.formula_code][row_position]
                 if base is None:
                     continue
                 base_value = _safe_float(base.get("value"))

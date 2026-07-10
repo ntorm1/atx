@@ -78,10 +78,12 @@ SEED_COLUMNS = (
 
 SEED_PATH = Path(__file__).resolve().parents[1] / "seeds" / "fundamental_items.csv"
 
-# S1-1 plus PF2-S5 source sections define 228 canonical item_ids. The original 460-500
-# acceptance count was a plan defect; gap IDs must not be synthesized.
+# S1-1, PF2-S5, and PF3-S5 source sections define 234 canonical item_ids. The original 460-500
+# acceptance count was a plan defect; gap IDs must not be synthesized. 1045-1050 are the PF3-S5
+# share-count items (public float, treasury, Class A-D); 1044 remains a reserved gap id.
 AUTHORIZED_ITEM_IDS = (
     set(range(1001, 1044))
+    | set(range(1045, 1051))
     | set(range(1101, 1120))
     | set(range(1201, 1224))
     | set(range(1301, 1326))
@@ -312,7 +314,7 @@ def test_fundamental_item_seed_csv_is_stdlib_parseable():
     assert tuple(rows[0].keys()) == SEED_COLUMNS
     seeded_item_ids = {int(row["item_id"]) for row in rows}
     assert seeded_item_ids == AUTHORIZED_ITEM_IDS
-    assert len(seeded_item_ids) == 228
+    assert len(seeded_item_ids) == 234
     assert seeded_item_ids.isdisjoint(UNAUTHORIZED_GAP_ITEM_IDS)
     assert all("ifrs-full:" not in row["alias_code"] for row in rows)
     assert all("ifrs-full:" not in row["vendor_field"] for row in rows)
@@ -450,7 +452,7 @@ def test_seed_fundamental_item_registry_loads_acceptance_count(tmp_store):
     item_count = tmp_store.con.execute("SELECT count(*) FROM fundamental_item").fetchone()[0]
 
     assert inserted == item_count
-    assert item_count == 228
+    assert item_count == 234
 
 
 def test_seed_fundamental_item_registry_rejects_unauthorized_gap_ids(tmp_store):
