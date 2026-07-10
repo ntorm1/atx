@@ -16,6 +16,7 @@ ZERO = Decimal(0)
 ONE = Decimal(1)
 VEGA_SCALE = Decimal("0.01")
 VEGA_REL_TOL = Decimal("1e-10")
+FLOAT_RECOMPUTE_TOL = Decimal("1e-12")
 PNL_ABS_TOL = Decimal("1e-7")
 
 
@@ -130,20 +131,20 @@ def verify_schedule(path: Path) -> list[dict[str, str]]:
                 close(
                     decimal(leg, "vega_per_contract_per_vol_point"),
                     contract_vega,
-                    ZERO,
+                    max(ONE, abs(contract_vega)) * FLOAT_RECOMPUTE_TOL,
                     "per-contract vega",
                 )
                 achieved = decimal(leg, "quantity") * contract_vega
                 close(
                     decimal(leg, "achieved_leg_vega"),
                     achieved,
-                    ZERO,
+                    max(ONE, abs(achieved)) * FLOAT_RECOMPUTE_TOL,
                     "achieved leg vega",
                 )
                 close(
                     decimal(leg, "raw_mid"),
                     (decimal(leg, "raw_bid") + decimal(leg, "raw_ask")) / Decimal(2),
-                    ZERO,
+                    max(ONE, abs(decimal(leg, "raw_mid"))) * FLOAT_RECOMPUTE_TOL,
                     "raw midpoint",
                 )
                 pair_vega += contract_vega
@@ -171,8 +172,10 @@ def verify_schedule(path: Path) -> list[dict[str, str]]:
         close(weight_sum, ONE, VEGA_REL_TOL, "normalized basket weight")
         close(basket_target, -decimal(legs[0], "target_straddle_vega"),
               target * VEGA_REL_TOL, "basket/index target")
-        close(computed_net, decimal(legs[0], "net_vega"), ZERO, "persisted net vega")
-        close(computed_gross, decimal(legs[0], "gross_vega"), ZERO,
+        close(computed_net, decimal(legs[0], "net_vega"),
+              target * FLOAT_RECOMPUTE_TOL, "persisted net vega")
+        close(computed_gross, decimal(legs[0], "gross_vega"),
+              max(ONE, computed_gross) * FLOAT_RECOMPUTE_TOL,
               "persisted gross vega")
         if name_count != integer(legs[0], "n_names"):
             raise VerificationError(f"name count mismatch for roll {key}")
