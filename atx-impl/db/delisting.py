@@ -672,6 +672,478 @@ class DelistingEventDataset(Dataset):
         )
 
 
+# ---------------------------------------------------------------------------
+# PF4-S4 S4-0: observed DLRET terminal-return catalog + DLSTCD reconciliation.
+#
+# delisting_return_observations (above) holds the raw vendor DLRET rows. This section
+# collapses them to exactly one terminal return per delisted (security_id, delist_date) that
+# later PF4-S4 tasks stitch into the forward-return series, and reconciles (reports, never
+# overwrites) the vendor DLSTCD against the warehouse's own public delist_code proxy.
+# terminal_return_source is 'observed' only here; S4-1 adds the deterministic corporate-action
+# 'policy' path via terminal_return_policy_dim (created empty by migration 0185). 'imputed' is
+# never written to delisting_terminal_returns.
+# ---------------------------------------------------------------------------
+
+DEFAULT_TERMINAL_RETURN_SOURCE = "atx_delisting_terminal_return_v1"
+DEFAULT_RECONCILIATION_SOURCE = "atx_delisting_code_reconciliation_v1"
+
+TERMINAL_RETURN_COLUMNS = [
+    "terminal_return_id",
+    "source",
+    "security_id",
+    "symbol",
+    "delist_date",
+    "as_of_date",
+    "available_at",
+    "terminal_return",
+    "terminal_return_ex_div",
+    "terminal_return_source",
+    "terminal_return_policy",
+    "crsp_dlstcd",
+    "return_basis",
+    "successor_security_id",
+    "return_observation_id",
+    "run_id",
+]
+
+RECONCILIATION_COLUMNS = [
+    "reconciliation_id",
+    "source",
+    "security_id",
+    "symbol",
+    "delist_date",
+    "as_of_date",
+    "available_at",
+    "warehouse_delist_code",
+    "warehouse_reason_category",
+    "vendor_crsp_dlstcd",
+    "vendor_dlstcd_family",
+    "reconciliation_status",
+    "mismatch_reason",
+    "delisting_event_id",
+    "delisting_return_observation_id",
+    "run_id",
+]
+
+# Coarse CRSP DLSTCD -> family mapping: 2xx merger, 3xx exchange, 4xx liquidation, 5xx dropped.
+_DLSTCD_FAMILY_BY_PREFIX = {2: "merger", 3: "exchange", 4: "liquidation", 5: "dropped"}
+
+# The warehouse's own public delist_code proxy is built from listing-status deletes, not a
+# corporate-action feed: it can only ever assert "this name stopped trading", never *why*. It is
+# therefore only compatible with vendor DLSTCD families that likewise carry no distinguishing
+# corporate action (a plain exchange delete / dropped-for-cause). A vendor "merger" or
+# "liquidation" is a real disagreement the generic proxy could not have seen on its own, and must
+# be surfaced as a mismatch -- this is exactly the invisible-disagreement gap S4-0 fixes.
+RECONCILIATION_COMPATIBLE_FAMILIES = {
+    "exchange_delete": frozenset({"exchange", "dropped"}),
+    "snapshot_absence": frozenset({"exchange", "dropped"}),
+}
+
+
+@dataclass(frozen=True)
+class DelistingTerminalReturnOptions:
+    source: str = DEFAULT_TERMINAL_RETURN_SOURCE
+    run_id: str | None = None
+
+
+@dataclass(frozen=True)
+class DelistingCodeReconciliationOptions:
+    source: str = DEFAULT_RECONCILIATION_SOURCE
+    run_id: str | None = None
+
+
+def _empty_terminal_return_frame() -> pd.DataFrame:
+    return pd.DataFrame(columns=TERMINAL_RETURN_COLUMNS)
+
+
+def _stable_terminal_return_id(row: pd.Series) -> str:
+    parts = [row.get("source"), row.get("security_id"), row.get("delist_date"), row.get("terminal_return_source")]
+    payload = "|".join("" if pd.isna(part) else str(part) for part in parts)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def compute_delisting_terminal_returns(
+    observations: pd.DataFrame,
+    events: pd.DataFrame,
+    policy_dim: pd.DataFrame,
+    *,
+    source: str = DEFAULT_TERMINAL_RETURN_SOURCE,
+    run_id: str | None = None,
+) -> pd.DataFrame:
+    """Collapse ``delisting_return_observations`` to one terminal return per
+    ``(security_id, delist_date)``.
+
+    The latest-visible observation wins: ``ORDER BY available_at DESC, source_loaded_at
+    DESC, delisting_return_observation_id DESC`` -- the same tie-break
+    ``DELISTING_EVENTS_ASOF_SQL``'s ``observation_candidates`` CTE already uses (see
+    ``db/asof/security.py``). Every emitted row is tagged ``terminal_return_source='observed'``;
+    ``policy_dim`` is accepted for signature stability so S4-1 can add the deterministic
+    corporate-action policy path without changing this function's call sites. ``imputed`` is
+    never written here.
+
+    ``available_at`` is inherited verbatim from the observation's ``available_at`` (the
+    delisting-confirmation timestamp), never the delist event date -- the no-lookahead
+    invariant the survivorship fix depends on.
+    """
+
+    del policy_dim  # unused in S4-0; S4-1 wires the deterministic policy path through here.
+
+    if observations.empty:
+        return _empty_terminal_return_frame()
+
+    obs = observations.copy().reset_index(drop=True)
+
+    # Backfill a missing observation security_id from the public delisting-events proxy using
+    # the same (delist_date, symbol) fallback the observation_candidates CTE in
+    # DELISTING_EVENTS_ASOF_SQL uses when an observation carries no security_id of its own.
+    if (
+        not events.empty
+        and "security_id" in obs.columns
+        and "symbol" in obs.columns
+        and {"security_id", "symbol", "delist_date"}.issubset(events.columns)
+    ):
+        missing = obs["security_id"].isna() & obs["symbol"].notna()
+        if bool(missing.any()):
+            proxy = (
+                events[["security_id", "symbol", "delist_date"]]
+                .dropna(subset=["security_id", "symbol", "delist_date"])
+                .drop_duplicates(subset=["symbol", "delist_date"])
+            )
+            backfilled = obs.loc[missing, ["symbol", "delist_date"]].merge(
+                proxy, on=["symbol", "delist_date"], how="left"
+            )
+            obs.loc[missing, "security_id"] = backfilled["security_id"].to_numpy()
+
+    obs = obs[
+        obs["security_id"].notna() & obs["delist_date"].notna() & obs["delisting_return"].notna()
+    ].copy()
+    if obs.empty:
+        return _empty_terminal_return_frame()
+
+    if "source_loaded_at" not in obs.columns:
+        obs["source_loaded_at"] = pd.NaT
+
+    # Stable collapse: latest-visible observation wins per (security_id, delist_date).
+    # kind="mergesort" is a stable sort so ties beyond the explicit tie-break columns still
+    # resolve deterministically -- required for "same inputs -> byte-identical rows".
+    obs = obs.sort_values(
+        by=["security_id", "delist_date", "available_at", "source_loaded_at", "delisting_return_observation_id"],
+        ascending=[True, True, False, False, False],
+        kind="mergesort",
+        na_position="last",
+    )
+    winners = obs.drop_duplicates(subset=["security_id", "delist_date"], keep="first").reset_index(drop=True)
+
+    result = pd.DataFrame(
+        {
+            "source": source,
+            "security_id": winners["security_id"],
+            "symbol": winners["symbol"] if "symbol" in winners.columns else pd.NA,
+            "delist_date": winners["delist_date"],
+            "as_of_date": winners["as_of_date"] if "as_of_date" in winners.columns else winners["delist_date"],
+            "available_at": winners["available_at"],
+            "terminal_return": winners["delisting_return"],
+            "terminal_return_ex_div": (
+                winners["delisting_return_ex_div"] if "delisting_return_ex_div" in winners.columns else pd.NA
+            ),
+            "terminal_return_source": "observed",
+            "terminal_return_policy": pd.NA,
+            "crsp_dlstcd": winners["crsp_dlstcd"] if "crsp_dlstcd" in winners.columns else pd.NA,
+            "return_basis": winners["return_basis"] if "return_basis" in winners.columns else pd.NA,
+            "successor_security_id": (
+                winners["successor_security_id"] if "successor_security_id" in winners.columns else pd.NA
+            ),
+            "return_observation_id": winners["delisting_return_observation_id"],
+            "run_id": run_id,
+        }
+    )
+    result["terminal_return_id"] = result.apply(_stable_terminal_return_id, axis=1)
+    return result[TERMINAL_RETURN_COLUMNS]
+
+
+def _empty_reconciliation_frame() -> pd.DataFrame:
+    return pd.DataFrame(columns=RECONCILIATION_COLUMNS)
+
+
+def _dlstcd_family(code: object) -> str | None:
+    try:
+        if pd.isna(code):
+            return None
+    except (TypeError, ValueError):
+        pass
+    try:
+        value = int(code)
+    except (TypeError, ValueError):
+        return None
+    return _DLSTCD_FAMILY_BY_PREFIX.get(value // 100)
+
+
+def _reconciliation_match_key(security_id: object, symbol: object) -> object:
+    if pd.notna(security_id):
+        return f"SID:{security_id}"
+    if pd.notna(symbol):
+        return f"SYM:{symbol}"
+    return pd.NA
+
+
+def _coalesce_later(left: object, right: object) -> object:
+    if pd.isna(left):
+        return right
+    if pd.isna(right):
+        return left
+    return left if left >= right else right
+
+
+def _reconciliation_status(
+    *, has_event: bool, has_observation: bool, vendor_family: object, warehouse_reason: object
+) -> tuple[str, str | None]:
+    if has_event and not has_observation:
+        return "warehouse_only", None
+    if has_observation and not has_event:
+        return "vendor_only", None
+    if pd.isna(vendor_family):
+        return "unmapped", "vendor_dlstcd_family_unresolved"
+    compatible = RECONCILIATION_COMPATIBLE_FAMILIES.get(warehouse_reason)
+    if compatible is None:
+        return "unmapped", "warehouse_reason_category_unmapped"
+    if vendor_family in compatible:
+        return "match", None
+    return "mismatch", f"vendor_family={vendor_family}_vs_warehouse_reason={warehouse_reason}"
+
+
+def _stable_reconciliation_id(row: pd.Series) -> str:
+    parts = [row.get("source"), row.get("security_id"), row.get("symbol"), row.get("delist_date")]
+    payload = "|".join("" if pd.isna(part) else str(part) for part in parts)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def compute_delisting_code_reconciliation(
+    events: pd.DataFrame,
+    terminal_returns: pd.DataFrame,
+    code_dim: pd.DataFrame,
+    *,
+    source: str = DEFAULT_RECONCILIATION_SOURCE,
+    run_id: str | None = None,
+) -> pd.DataFrame:
+    """Reconcile (report only, never overwrite) the vendor DLSTCD against the warehouse's own
+    public ``delist_code`` proxy, joined on ``(security_id, delist_date)`` with a symbol
+    fallback when either side carries no ``security_id``.
+
+    ``reconciliation_status`` is one of ``match | mismatch | vendor_only | warehouse_only |
+    unmapped``. ``mismatch`` is an expected, non-failing signal that a vendor DLSTCD family
+    disagrees with the warehouse's reason category; only ``unmapped`` -- a DLSTCD this function
+    cannot even coarse-map, or a warehouse reason category with no known-compatible family --
+    is a genuine gap. The warehouse ``delist_code`` is read-only input here; it is never
+    rewritten.
+    """
+
+    if events.empty and terminal_returns.empty:
+        return _empty_reconciliation_frame()
+
+    event_columns = [
+        "delisting_event_id", "security_id", "symbol", "delist_date", "as_of_date",
+        "available_at", "delist_code",
+    ]
+    obs_columns = [
+        "return_observation_id", "security_id", "symbol", "delist_date", "as_of_date",
+        "available_at", "crsp_dlstcd",
+    ]
+
+    ev = events.copy().reset_index(drop=True) if not events.empty else pd.DataFrame(columns=event_columns)
+    tr = (
+        terminal_returns.copy().reset_index(drop=True)
+        if not terminal_returns.empty
+        else pd.DataFrame(columns=obs_columns)
+    )
+
+    if not ev.empty and not code_dim.empty and "delist_code" in ev.columns:
+        ev = ev.merge(code_dim[["delist_code", "reason_category"]], on="delist_code", how="left")
+    else:
+        ev["reason_category"] = pd.NA
+
+    ev["match_key"] = [
+        _reconciliation_match_key(sid, sym)
+        for sid, sym in zip(ev.get("security_id", pd.Series(dtype=object)), ev.get("symbol", pd.Series(dtype=object)))
+    ]
+    tr["match_key"] = [
+        _reconciliation_match_key(sid, sym)
+        for sid, sym in zip(tr.get("security_id", pd.Series(dtype=object)), tr.get("symbol", pd.Series(dtype=object)))
+    ]
+
+    ev = ev.rename(columns={
+        "security_id": "security_id_event",
+        "symbol": "symbol_event",
+        "as_of_date": "as_of_date_event",
+        "available_at": "available_at_event",
+    })
+    tr = tr.rename(columns={
+        "security_id": "security_id_obs",
+        "symbol": "symbol_obs",
+        "as_of_date": "as_of_date_obs",
+        "available_at": "available_at_obs",
+    })
+
+    merged = ev.merge(tr, on=["match_key", "delist_date"], how="outer")
+    if merged.empty:
+        return _empty_reconciliation_frame()
+
+    merged["security_id"] = merged["security_id_event"].where(
+        merged["security_id_event"].notna(), merged["security_id_obs"]
+    )
+    merged["symbol"] = merged["symbol_event"].where(merged["symbol_event"].notna(), merged["symbol_obs"])
+    merged["as_of_date"] = [
+        _coalesce_later(a, b) for a, b in zip(merged["as_of_date_event"], merged["as_of_date_obs"])
+    ]
+    merged["available_at"] = [
+        _coalesce_later(a, b) for a, b in zip(merged["available_at_event"], merged["available_at_obs"])
+    ]
+    merged["vendor_dlstcd_family"] = [
+        _dlstcd_family(code) for code in merged.get("crsp_dlstcd", pd.Series(dtype=object))
+    ]
+
+    statuses = [
+        _reconciliation_status(
+            has_event=pd.notna(event_id),
+            has_observation=pd.notna(obs_id),
+            vendor_family=family,
+            warehouse_reason=reason,
+        )
+        for event_id, obs_id, family, reason in zip(
+            merged.get("delisting_event_id", pd.Series(dtype=object)),
+            merged.get("return_observation_id", pd.Series(dtype=object)),
+            merged["vendor_dlstcd_family"],
+            merged.get("reason_category", pd.Series(dtype=object)),
+        )
+    ]
+    merged["reconciliation_status"] = [status for status, _ in statuses]
+    merged["mismatch_reason"] = [reason for _, reason in statuses]
+
+    result = pd.DataFrame(
+        {
+            "source": source,
+            "security_id": merged["security_id"],
+            "symbol": merged["symbol"],
+            "delist_date": merged["delist_date"],
+            "as_of_date": merged["as_of_date"],
+            "available_at": merged["available_at"],
+            "warehouse_delist_code": merged.get("delist_code"),
+            "warehouse_reason_category": merged.get("reason_category"),
+            "vendor_crsp_dlstcd": merged.get("crsp_dlstcd"),
+            "vendor_dlstcd_family": merged["vendor_dlstcd_family"],
+            "reconciliation_status": merged["reconciliation_status"],
+            "mismatch_reason": merged["mismatch_reason"],
+            "delisting_event_id": merged.get("delisting_event_id"),
+            "delisting_return_observation_id": merged.get("return_observation_id"),
+            "run_id": run_id,
+        }
+    )
+    result = result.sort_values(
+        by=["security_id", "delist_date", "symbol"], kind="mergesort", na_position="last"
+    ).reset_index(drop=True)
+    result["reconciliation_id"] = result.apply(_stable_reconciliation_id, axis=1)
+    return result[RECONCILIATION_COLUMNS]
+
+
+def refresh_delisting_terminal_returns(
+    store: DuckDBStore,
+    options: DelistingTerminalReturnOptions | None = None,
+) -> int:
+    """Materialize ``delisting_terminal_returns`` from the landed observation/event/policy
+    tables via :func:`compute_delisting_terminal_returns`, replacing prior rows by source.
+    """
+
+    options = options or DelistingTerminalReturnOptions()
+    store.initialize()
+
+    observations = store.con.execute(
+        """
+        SELECT
+            delisting_return_observation_id,
+            source,
+            security_id,
+            symbol,
+            delist_date,
+            as_of_date,
+            available_at,
+            source_loaded_at,
+            crsp_dlstcd,
+            delisting_return,
+            delisting_return_ex_div,
+            return_basis,
+            successor_security_id
+        FROM delisting_return_observations
+        """
+    ).df()
+    events = store.con.execute(
+        """
+        SELECT delisting_event_id, security_id, symbol, delist_date, as_of_date, available_at, delist_code
+        FROM delisting_events
+        """
+    ).df()
+    policy_dim = store.con.execute(
+        """
+        SELECT
+            policy_code, corporate_action_type, terminal_return_basis,
+            combine_successor, default_return, is_observed_required, description
+        FROM terminal_return_policy_dim
+        """
+    ).df()
+
+    terminal_returns = compute_delisting_terminal_returns(
+        observations, events, policy_dim, source=options.source, run_id=options.run_id
+    )
+
+    with store.transaction():
+        store.con.execute("DELETE FROM delisting_terminal_returns WHERE source = ?", [options.source])
+        if not terminal_returns.empty:
+            insert_frame(
+                store, terminal_returns, "delisting_terminal_returns", "delisting_terminal_returns_insert"
+            )
+
+    return int(len(terminal_returns))
+
+
+def reconcile_delisting_codes(
+    store: DuckDBStore,
+    options: DelistingCodeReconciliationOptions | None = None,
+) -> int:
+    """Materialize ``delisting_code_reconciliation`` from the landed
+    ``delisting_events``/``delisting_terminal_returns``/``delist_code_dim`` tables via
+    :func:`compute_delisting_code_reconciliation`, replacing prior rows by source. Reports
+    only; never rewrites the warehouse ``delist_code``.
+    """
+
+    options = options or DelistingCodeReconciliationOptions()
+    store.initialize()
+
+    events = store.con.execute(
+        """
+        SELECT delisting_event_id, security_id, symbol, delist_date, as_of_date, available_at, delist_code
+        FROM delisting_events
+        """
+    ).df()
+    terminal_returns = store.con.execute(
+        """
+        SELECT return_observation_id, security_id, symbol, delist_date, as_of_date, available_at, crsp_dlstcd
+        FROM delisting_terminal_returns
+        """
+    ).df()
+    code_dim = store.con.execute("SELECT delist_code, reason_category FROM delist_code_dim").df()
+
+    reconciliation = compute_delisting_code_reconciliation(
+        events, terminal_returns, code_dim, source=options.source, run_id=options.run_id
+    )
+
+    with store.transaction():
+        store.con.execute("DELETE FROM delisting_code_reconciliation WHERE source = ?", [options.source])
+        if not reconciliation.empty:
+            insert_frame(
+                store, reconciliation, "delisting_code_reconciliation", "delisting_code_reconciliation_insert"
+            )
+
+    return int(len(reconciliation))
+
+
 class DelistingReturnObservationDataset(Dataset):
     dataset_id = "delisting_return_observations"
     source_name = "Injectable observed delisting returns"
