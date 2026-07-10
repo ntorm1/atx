@@ -13,6 +13,7 @@
 #include <unordered_map>
 
 #include "atx/vol/american.hpp" // AmericanGreeks
+#include "atx/vol/counters.hpp" // ATX_VOL_COUNT (opt-in P0.2; no-op when OFF)
 
 namespace atx::vol {
 
@@ -50,6 +51,7 @@ template <class F> void parallel_blocks(std::size_t n, unsigned n_threads, F &&b
   const std::size_t block = (n + nt - 1) / nt;
   std::vector<std::jthread> workers;
   workers.reserve(nt - 1);
+  ATX_VOL_COUNT_N(WorkerLaunches, nt - 1);  // helper threads (block 0 stays inline)
   for (unsigned t = 1; t < nt; ++t) {
     const std::size_t lo = std::min(n, static_cast<std::size_t>(t) * block);
     const std::size_t hi = std::min(n, lo + block);
@@ -240,6 +242,9 @@ Result<PriceFrame> PortfolioPricer::price(const SurfaceSet &surfaces,
   // for every thread count.
   PriceFrame f;
   const std::size_t n = positions.size();
+  // 14 per-row columns = 101 bytes/position (8+4+8*11+1).
+  ATX_VOL_COUNT_N(FrameAllocations, 14);
+  ATX_VOL_COUNT_N(FrameBytes, n * 101);
   f.id.resize(n);
   f.uid.resize(n);
   f.pv.resize(n);
@@ -385,6 +390,9 @@ Result<PnlFrame> PortfolioPricer::pnl_explain(const SurfaceSet &base, const Surf
   // 2. Serial scatter (input order) + fixed-order total reduction.
   PnlFrame f;
   const std::size_t n = positions.size();
+  // 19 per-row columns = 141 bytes/position (8+4+8*16+1).
+  ATX_VOL_COUNT_N(FrameAllocations, 19);
+  ATX_VOL_COUNT_N(FrameBytes, n * 141);
   f.id.resize(n);
   f.uid.resize(n);
   f.pv_base.resize(n);

@@ -10,6 +10,7 @@
 #include "atx/core/math.hpp"
 #include "atx/vol/american.hpp"
 #include "atx/vol/black76.hpp"
+#include "atx/vol/counters.hpp"  // ATX_VOL_COUNT (opt-in P0.2; no-op when OFF)
 
 namespace atx::vol {
 
@@ -407,6 +408,10 @@ Result<CorrectionCache> CorrectionCache::build(
 double CorrectionCache::eval(double k_log, double T, double sigma) const noexcept {
   if (!populated_) {
     return 0.0;
+  }
+  if ((k_log < k_log_min_) || (k_log > k_log_max_) || (T < T_min_) ||
+      (T > T_max_) || (sigma < sigma_min_) || (sigma > sigma_max_)) {
+    ATX_VOL_COUNT(CacheOutOfBoxClamps);
   }
   k_log = atx::core::clamp(k_log, k_log_min_, k_log_max_);
   T = atx::core::clamp(T, T_min_, T_max_);

@@ -8,6 +8,7 @@
 #include "atx/core/math.hpp"
 #include "atx/vol/black76.hpp"
 #include "atx/vol/correction.hpp"
+#include "atx/vol/counters.hpp"  // ATX_VOL_COUNT (opt-in P0.2; no-op when OFF)
 #include "atx/vol/greeks.hpp"
 
 namespace atx::vol {
@@ -537,6 +538,7 @@ void al_init_nodes(AlBoundary& b, std::uint16_t n, double T, double K, double r,
 }
 
 void al_seed_boundary(AlBoundary& b, double sigma, double r, double q) noexcept {
+  ATX_VOL_COUNT(BoundarySolves);  // one cold boundary seed (BAW re-seed per node)
   b.y[0] = 0.0;
   for (std::uint16_t i = 1; i < b.n; ++i) {
     const double tau_i = b.tau[i];
@@ -580,6 +582,7 @@ void eqn_b_ND(const AlBoundary& bnd, const AlWorkspace& ws, double tau,
   }
   const double tip_p = norm_cdf(d_plus(tau, b_val / K, sigma, r, q));
   const double tip_m = norm_cdf(d_minus(tau, b_val / K, sigma, r, q));
+  ATX_VOL_COUNT_N(NormCdfCalls, 2);  // tip_p, tip_m
 
   const double* xs = ws.qx_fp;
   const double* wv = ws.qw_fp;
@@ -615,6 +618,9 @@ void eqn_b_ND(const AlBoundary& bnd, const AlWorkspace& ws, double tau,
     const double dmv = base - 0.5 * v;
     n_int += wv[i] * std::exp(r * u) * norm_cdf(dmv);
     d_int += wv[i] * std::exp(q * u) * norm_cdf(dpv);
+    ATX_VOL_COUNT(LogCalls);
+    ATX_VOL_COUNT_N(ExpCalls, 2);
+    ATX_VOL_COUNT_N(NormCdfCalls, 2);
   }
   n_int *= half_tau;
   d_int *= half_tau;
@@ -641,6 +647,7 @@ void eqn_b_NDd(const AlBoundary& bnd, double tau, double b_val, double sigma,
 
 [[nodiscard]] double al_jacobi_newton_sweep(AlBoundary& b, AlWorkspace& ws,
                                             double sigma, double r, double q) noexcept {
+  ATX_VOL_COUNT(JacobiNewtonSweeps);
   double max_dy = 0.0;
   ws.next_y[0] = 0.0;
   for (std::uint16_t i = 1; i < b.n; ++i) {
@@ -688,6 +695,7 @@ void eqn_b_NDd(const AlBoundary& bnd, double tau, double b_val, double sigma,
 
 [[nodiscard]] double al_fixed_point_sweep(AlBoundary& b, AlWorkspace& ws,
                                           double sigma, double r, double q) noexcept {
+  ATX_VOL_COUNT(FixedPointSweeps);
   double max_dy = 0.0;
   ws.next_y[0] = 0.0;
   for (std::uint16_t i = 1; i < b.n; ++i) {
@@ -741,6 +749,10 @@ void eqn_b_NDd(const AlBoundary& bnd, double tau, double b_val, double sigma,
   const double dq = std::exp(-q * t);
   const double dr = std::exp(-r * t);
   const double dp = std::log(S * dq / (b_t * dr)) / v + 0.5 * v;
+  ATX_VOL_COUNT(PremiumQuadEvals);
+  ATX_VOL_COUNT(LogCalls);
+  ATX_VOL_COUNT_N(ExpCalls, 2);
+  ATX_VOL_COUNT_N(NormCdfCalls, 2);
   return 2.0 * z *
          (r * b.K * dr * norm_cdf(-dp + v) - q * S * dq * norm_cdf(-dp));
 }
@@ -801,6 +813,7 @@ enum class AlSolveStatus { Ok, Collapsed, TableMissing };
   for (std::uint16_t k = 0; k < sch.n_iter_jn; ++k) {
     resid = al_jacobi_newton_sweep(bnd, ws, sigma, r, q);
     if (resid <= sch.tol) {
+      ATX_VOL_COUNT(EarlyResidualExits);
       break;
     }
   }
@@ -808,6 +821,7 @@ enum class AlSolveStatus { Ok, Collapsed, TableMissing };
     for (std::uint16_t k = 0; k < sch.n_iter_fp; ++k) {
       resid = al_fixed_point_sweep(bnd, ws, sigma, r, q);
       if (resid <= sch.tol) {
+        ATX_VOL_COUNT(EarlyResidualExits);
         break;
       }
     }
@@ -1462,6 +1476,7 @@ double american_price_cached(double S, double K, double T, double sigma,
                              double r, double q, Side side,
                              const CorrectionCache* correction) {
   if (!correction || !correction->populated()) {
+    ATX_VOL_COUNT(CacheColdFallbacks);
     const Result<double> p = andersen_lake(S, K, T, sigma, r, q, side, std::nullopt);
     return p ? *p : std::numeric_limits<double>::quiet_NaN();
   }
@@ -1479,6 +1494,7 @@ double american_price_cached(double S, double K, double T, double sigma,
   const double euro = black76_price(F, K, T, sigma, df, side);
   const double k_log = std::log(K / F);
   const double corr = correction->eval(k_log, T, sigma);
+  ATX_VOL_COUNT(CacheHits);
   return euro + F * corr;
 }
 
