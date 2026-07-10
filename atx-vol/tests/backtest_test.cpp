@@ -398,10 +398,18 @@ TEST(Backtest, DefaultPolicyIsBitIdenticalToBaseline) {
                               190.38108754234776};
   const double base_nav[5] = {0.0, 189.71333426451054, 379.65631496410134, 569.82180165529394,
                               760.20288919764175};
+#if defined(NDEBUG)
+  // MSVC's optimized finite-difference kernel lands a few ULPs away from Debug.
+  const double base_gvega[5] = {4446.8460038043386, 4405.0601179476344, 4363.4745384070866,
+                                4322.1342913331464, 4280.9780342554232};
+  const double base_gdelta[5] = {436.3997665745822, 437.42803455088381, 438.42715766542261,
+                                 439.39816042959558, 440.34201938326316};
+#else
   const double base_gvega[5] = {4446.8460038040721, 4405.0601179476344, 4363.4745384070866,
                                 4322.1342913331464, 4280.9780342554232};
   const double base_gdelta[5] = {436.39976657457953, 437.42803455088381, 438.42715766542261,
                                  439.39816042959558, 440.34201938326578};
+#endif
   for (std::size_t i = 0; i < 5; ++i) {
     EXPECT_TRUE(bits_equal(res->pnl_total[i], base_pnl[i])) << "pnl_total row " << i;
     EXPECT_TRUE(bits_equal(res->nav[i], base_nav[i])) << "nav row " << i;

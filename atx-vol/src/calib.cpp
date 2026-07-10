@@ -354,6 +354,12 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
   ObsSet out;
   out.obs.reserve(am->obs.size());
   out.n_dropped = am->n_dropped;
+  // Warm-starting changes the last few bits of a tolerance-terminated IV solve.
+  // Keep the historical/default full-board path cold so its fitted surface stays
+  // bit-identical; the accelerated path opts in through either of its explicit
+  // observation shortcuts.
+  const bool warm_start_deam = opts.max_obs_per_slice > 0 ||
+                                opts.max_otm_shortcut_premium_spread_frac > 0.0;
   double warm_call = 0.0;
   double warm_put = 0.0;
   for (FitObs o : am->obs) {
@@ -369,7 +375,7 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
       out.obs.push_back(o);
       continue;
     }
-    const double warm = (o.side == Side::Call) ? warm_call : warm_put;
+    const double warm = warm_start_deam ? ((o.side == Side::Call) ? warm_call : warm_put) : 0.0;
     const Result<double> sig =
         american_implied_vol(o.mid, S, o.K, T, r, q_eff, o.side, method, iv_tol, iv_max_iter,
                              al_opts, caches.for_side(o.side), warm);
@@ -378,10 +384,12 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
       continue;
     }
     const double sigma_eu = *sig;
-    if (o.side == Side::Call) {
-      warm_call = sigma_eu;
-    } else {
-      warm_put = sigma_eu;
+    if (warm_start_deam) {
+      if (o.side == Side::Call) {
+        warm_call = sigma_eu;
+      } else {
+        warm_put = sigma_eu;
+      }
     }
     const double eu_px = black76_price(F, o.K, T, sigma_eu, df, o.side);
     if (!(eu_px > 0.0) || !std::isfinite(eu_px)) {
