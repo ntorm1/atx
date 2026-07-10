@@ -75,6 +75,12 @@ std::atomic<std::uint64_t> g_open_count{0};
 struct StepPnl {
   PnlTotals totals{};
   double settlement{0.0};
+  // Alive (non-expiring) positions the pricer could not value this step (surface
+  // absent, rolled past expiry, or numeric failure) — i.e. alive.size() - n_ok.
+  // Their PnL is excluded from `totals`. `first_unpriced_uid` names the first such
+  // position (input order) for the Error-policy diagnostic; 0 when none.
+  std::uint32_t n_unpriced{0};
+  std::uint32_t first_unpriced_uid{0};
 };
 
 [[nodiscard]] Result<StepPnl> compute_step(const MarketSnapshot& base, const MarketSnapshot& shifted,
@@ -108,6 +114,8 @@ struct StepPnl {
   }
 
   PnlTotals t{};
+  std::uint32_t n_unpriced = 0;
+  std::uint32_t first_unpriced_uid = 0;
   if (!alive.empty()) {
     auto pf = Portfolio::create(alive);
     if (!pf) {
@@ -119,8 +127,31 @@ struct StepPnl {
       return Err(fr.error());
     }
     t = fr->total;
+    // Count the alive positions the reduction skipped. `n_ok` is produced by the
+    // same serial-scatter reduction (bit-identical across thread counts) and can
+    // never exceed the position count; guard the subtraction rather than underflow.
+    const std::size_t n_pos = alive.size();
+    const std::size_t n_ok = t.n_ok;
+    n_unpriced = static_cast<std::uint32_t>((n_pos >= n_ok) ? (n_pos - n_ok) : std::size_t{0});
+    if (n_unpriced > 0) {
+      for (std::size_t i = 0; i < fr->size(); ++i) {
+        if (fr->status[i] != PriceStatus::Ok) {
+          first_unpriced_uid = fr->uid[i];
+          break;
+        }
+      }
+    }
   }
-  return Ok(StepPnl{t, settlement});
+  return Ok(StepPnl{t, settlement, n_unpriced, first_unpriced_uid});
+}
+
+// The Error-policy message for a step that has `n_unpriced` held lots with no
+// surface. Kept next to `compute_step` so both run_backtest overloads word it the
+// same. Non-empty precondition: callers only build this when n_unpriced > 0.
+[[nodiscard]] std::string unpriced_error_message(std::uint32_t n_unpriced,
+                                                 std::uint32_t first_uid) {
+  return "run_backtest: " + std::to_string(n_unpriced) +
+         " held lot(s) have no surface this step (first uid=" + std::to_string(first_uid) + ")";
 }
 
 }  // namespace
@@ -236,7 +267,7 @@ Result<BacktestResult> run_backtest(const Clock& clock, PortfolioState initial,
                                double p_delta, double p_gamma, double p_vega, double p_vanna,
                                double p_volga, double p_theta, double p_rho, double p_charm,
                                double p_unexpl, double p_settle, double nav_v,
-                               const PriceTotals& g, std::size_t n_lots) {
+                               const PriceTotals& g, std::size_t n_lots, double n_unpriced) {
     out.date.push_back(date);
     out.ts_ns.push_back(ts);
     out.pnl_total.push_back(p_total);
@@ -263,6 +294,7 @@ Result<BacktestResult> run_backtest(const Clock& clock, PortfolioState initial,
     out.turnover_notional.push_back(0.0);
     out.turnover_vega.push_back(0.0);
     out.n_open_lots.push_back(static_cast<double>(n_lots));
+    out.n_unpriced_lots.push_back(n_unpriced);
   };
 
   // base = load(refs[0]) — the inception snapshot.
@@ -281,7 +313,7 @@ Result<BacktestResult> run_backtest(const Clock& clock, PortfolioState initial,
       return Err(g.error());
     }
     push_row(refs[0].date, base.ts_ns(), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-             0.0, *g, book.lots.size());
+             0.0, *g, book.lots.size(), 0.0);
   }
 
   for (std::size_t i = 1; i < refs.size(); ++i) {
@@ -291,49 +323,19 @@ Result<BacktestResult> run_backtest(const Clock& clock, PortfolioState initial,
     }
     MarketSnapshot shifted = std::move(*shifted_res);
 
-    // Partition: expiring lots settle at intrinsic; the rest are Taylor-explained.
-    std::vector<Position> alive;
-    alive.reserve(book.lots.size());
-    double settlement = 0.0;
-    for (const Lot& lot : book.lots) {
-      if (lot.expiry_ts_ns <= shifted.ts_ns()) {
-        const double T_base = residual_T(lot.expiry_ts_ns, base.ts_ns());
-        const PricedSurface* bs = base.find(lot.contract.uid);
-        const PricedSurface* ss = shifted.find(lot.contract.uid);
-        if (bs == nullptr || ss == nullptr) {
-          return Err(ErrorCode::NotFound, "run_backtest: no surface for settling lot");
-        }
-        auto mark = bs->fair_value(lot.contract.K, T_base, lot.contract.side);
-        if (!mark) {
-          return Err(mark.error());
-        }
-        const double S = ss->pricing().S;
-        const double K = lot.contract.K;
-        const double intrinsic =
-            (lot.contract.side == Side::Call) ? std::max(0.0, S - K) : std::max(0.0, K - S);
-        settlement += lot.qty * lot.multiplier * (intrinsic - *mark);
-      } else {
-        const double T_base = residual_T(lot.expiry_ts_ns, base.ts_ns());
-        alive.push_back(
-            Position{lot.id, OptionContract{lot.contract.uid, lot.contract.K, T_base, lot.contract.side},
-                     lot.qty, lot.multiplier});
-      }
+    // Partition + Taylor PnL-explain: byte-identical arithmetic to the strategy
+    // overload's step (shared `compute_step`), which now also reports the count of
+    // held lots the pricer could not value this step.
+    auto step = compute_step(base, shifted, book.lots, cfg.price);
+    if (!step) {
+      return Err(step.error());
     }
-
-    // Taylor PnL-explain of the surviving book: base -> shifted (ages T by the ts gap).
-    PnlTotals t{};
-    if (!alive.empty()) {
-      auto pf = Portfolio::create(alive);
-      if (!pf) {
-        return Err(pf.error());
-      }
-      const PortfolioPricer pricer(std::move(*pf));
-      auto fr = pricer.pnl_explain(base.set(), shifted.set(), cfg.price);
-      if (!fr) {
-        return Err(fr.error());
-      }
-      t = fr->total;
+    if (cfg.unpriced == UnpricedLotPolicy::Error && step->n_unpriced > 0) {
+      return Err(ErrorCode::NotFound,
+                 unpriced_error_message(step->n_unpriced, step->first_unpriced_uid));
     }
+    const PnlTotals& t = step->totals;
+    const double settlement = step->settlement;
 
     const double step_total = t.pnl_total + settlement;
     nav += step_total;  // cumulative every step, regardless of recording
@@ -352,7 +354,7 @@ Result<BacktestResult> run_backtest(const Clock& clock, PortfolioState initial,
       }
       push_row(refs[i].date, base.ts_ns(), step_total, t.pnl_delta, t.pnl_gamma, t.pnl_vega,
                t.pnl_vanna, t.pnl_volga, t.pnl_theta, t.pnl_rho, t.pnl_charm, t.pnl_unexplained,
-               settlement, nav, *g, book.lots.size());
+               settlement, nav, *g, book.lots.size(), static_cast<double>(step->n_unpriced));
     }
   }
 
@@ -425,7 +427,7 @@ Result<BacktestResult> run_backtest(const Clock& clock, IStrategy& strat, const 
                                double p_unexpl, double p_settle, double p_shares, double p_fin,
                                double p_cost, double nav_v, double cash_v, double g_delta,
                                const PriceTotals& g, double turn_notl, double turn_vega,
-                               std::size_t n_lots) {
+                               std::size_t n_lots, double n_unpriced) {
     out.date.push_back(date);
     out.ts_ns.push_back(ts);
     out.pnl_total.push_back(p_total);
@@ -451,6 +453,7 @@ Result<BacktestResult> run_backtest(const Clock& clock, IStrategy& strat, const 
     out.turnover_notional.push_back(turn_notl);
     out.turnover_vega.push_back(turn_vega);
     out.n_open_lots.push_back(static_cast<double>(n_lots));
+    out.n_unpriced_lots.push_back(n_unpriced);
   };
 
   // Signal series: names captured on the first recorded row, then one value per
@@ -647,7 +650,7 @@ Result<BacktestResult> run_backtest(const Clock& clock, IStrategy& strat, const 
     const double g_delta = g->delta + shares_sum();
     push_row(refs[0].date, base.ts_ns(), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
              0.0, ex->cost, 0.0, cash, g_delta, *g, ex->turnover_notional, ex->turnover_vega,
-             book.lots.size());
+             book.lots.size(), 0.0);
     record_signals(base);
   }
 
@@ -662,6 +665,10 @@ Result<BacktestResult> run_backtest(const Clock& clock, IStrategy& strat, const 
     auto step = compute_step(base, shifted, book.lots, cfg.price);
     if (!step) {
       return Err(step.error());
+    }
+    if (cfg.unpriced == UnpricedLotPolicy::Error && step->n_unpriced > 0) {
+      return Err(ErrorCode::NotFound,
+                 unpriced_error_message(step->n_unpriced, step->first_unpriced_uid));
     }
     const PnlTotals& t = step->totals;
     const double settlement = step->settlement;
@@ -742,7 +749,8 @@ Result<BacktestResult> run_backtest(const Clock& clock, IStrategy& strat, const 
       push_row(refs[i].date, base.ts_ns(), step_total, t.pnl_delta, t.pnl_gamma, t.pnl_vega,
                t.pnl_vanna, t.pnl_volga, t.pnl_theta, t.pnl_rho, t.pnl_charm, t.pnl_unexplained,
                settlement, shares_pnl, financing, ex->cost, nav, cash, g_delta, *g,
-               ex->turnover_notional, ex->turnover_vega, book.lots.size());
+               ex->turnover_notional, ex->turnover_vega, book.lots.size(),
+               static_cast<double>(step->n_unpriced));
       record_signals(base);
     }
   }

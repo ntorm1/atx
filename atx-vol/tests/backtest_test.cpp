@@ -370,3 +370,44 @@ TEST(Backtest, ExpirySettlement) {
   std::printf("[backtest] settlement=%.4f (intrinsic=%.2f base_mark=%.4f) survivors=%.0f\n",
               r.pnl_settlement[1], intrinsic, *mark, r.n_open_lots[1]);
 }
+
+// ── S1-3b: the fixed-book overload counts unpriced lots and stays bit-identical ─
+//
+// The fixed-book step loop was inlined body-for-body from `compute_step`; S1-3b
+// routes it through the shared implementation and adds the `n_unpriced_lots`
+// column. On a clean corpus (surface present every date) nothing is unpriced and
+// EVERY column is bit-identical to the pre-change (d54c191) run — the pins below
+// were captured on d54c191 before the routing change.
+TEST(Backtest, DefaultPolicyIsBitIdenticalToBaseline) {
+  const fs::path dir = fresh_dir("s1-3b-default");
+  const CorpusManifest man = make_evolving_corpus(dir, "SPX", 5);
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  const std::int64_t expiry = kBaseNow + 120 * kDayNs;  // survives every date
+  auto res = run_backtest(*clock, survivor_book(expiry));  // default: ExcludeAndReport
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  ASSERT_EQ(res->size(), 5u);
+
+  ASSERT_EQ(res->n_unpriced_lots.size(), 5u);
+  for (std::size_t i = 0; i < 5; ++i) {
+    EXPECT_EQ(res->n_unpriced_lots[i], 0.0) << "row " << i;  // nothing ever missing
+  }
+
+  const double base_pnl[5] = {0.0, 189.71333426451054, 189.94298069959081, 190.1654866911926,
+                              190.38108754234776};
+  const double base_nav[5] = {0.0, 189.71333426451054, 379.65631496410134, 569.82180165529394,
+                              760.20288919764175};
+  const double base_gvega[5] = {4446.8460038040721, 4405.0601179476344, 4363.4745384070866,
+                                4322.1342913331464, 4280.9780342554232};
+  const double base_gdelta[5] = {436.39976657457953, 437.42803455088381, 438.42715766542261,
+                                 439.39816042959558, 440.34201938326578};
+  for (std::size_t i = 0; i < 5; ++i) {
+    EXPECT_TRUE(bits_equal(res->pnl_total[i], base_pnl[i])) << "pnl_total row " << i;
+    EXPECT_TRUE(bits_equal(res->nav[i], base_nav[i])) << "nav row " << i;
+    EXPECT_TRUE(bits_equal(res->gross_vega[i], base_gvega[i])) << "gvega row " << i;
+    EXPECT_TRUE(bits_equal(res->gross_delta[i], base_gdelta[i])) << "gdelta row " << i;
+    EXPECT_EQ(res->pnl_settlement[i], 0.0) << "settle row " << i;
+    EXPECT_EQ(res->n_open_lots[i], 2.0) << "nlots row " << i;
+  }
+  std::printf("[s1-3b] fixed-book bit-identical over 5 rows, all n_unpriced_lots == 0\n");
+}

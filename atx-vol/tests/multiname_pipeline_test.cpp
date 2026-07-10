@@ -30,8 +30,11 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -48,6 +51,7 @@
 #include "atx/vol/s3.hpp"              // S3Params
 #include "atx/vol/spy_fixture.hpp"     // make_spy_synthetic_spec
 #include "atx/vol/strategy.hpp"        // DispersionStrategy
+#include "atx/vol/tearsheet.hpp"       // write_backtest_tsv
 #include "atx/vol/universe.hpp"        // uid_for_symbol
 #include "atx/vol/vol_curve.hpp"       // CurveConfig, VolCurveKind
 
@@ -733,4 +737,213 @@ TEST(MultinamePipeline, HeldNameGoesMissingMidRunAndRunCompletes) {
   std::printf("[s1-3a] held-BBB gap step: %zu/8 legs ModelUnavailable, total.n_ok=%u, "
               "run pnl_total[1]=%.6f (BBB contribution silently truncated; S1-3b)\n",
               n_unavailable, frame->total.n_ok, res->pnl_total[1]);
+}
+
+// ── S1-3b: the silent-truncation defect the S1-3a test pinned is now COUNTED ──
+//
+// Shared fixtures for the S1-3b gates: the exact present->absent->present corpus
+// S1-3a used (BBB held across a gap where its board vanishes on the middle date)
+// and the basket that trades it.
+namespace {
+[[nodiscard]] std::vector<CorpusBoard> missing_bbb_boards(const std::vector<std::string>& dates) {
+  std::vector<CorpusBoard> boards;
+  for (std::size_t di = 0; di < dates.size(); ++di) {
+    const std::string& d = dates[di];
+    boards.push_back(board_from_spec(make_index_spec(d, 600.0), d, "SPY", convex_dense_pin()));
+    boards.push_back(board_from_spec(make_singlename_spec(d, 110.0), d, "AAA"));
+    if (di != 1) {  // the middle date omits BBB
+      boards.push_back(board_from_spec(make_singlename_spec(d, 85.0), d, "BBB"));
+    }
+    boards.push_back(board_from_spec(make_singlename_spec(d, 220.0), d, "CCC"));
+  }
+  return boards;
+}
+[[nodiscard]] DispersionUniverse basket_universe() {
+  DispersionUniverse u;
+  u.index = DispersionMember{"SPY", 0u, 0.0};
+  u.names.push_back(DispersionMember{"AAA", 0u, 0.5});
+  u.names.push_back(DispersionMember{"BBB", 0u, 0.3});
+  u.names.push_back(DispersionMember{"CCC", 0u, 0.2});
+  return u;
+}
+// Extract one named double column from a `write_backtest_tsv` file (header-driven).
+[[nodiscard]] std::vector<double> tsv_column(const std::string& path, const std::string& name) {
+  std::ifstream is(path, std::ios::binary);
+  EXPECT_TRUE(is.good()) << path;
+  std::string content((std::istreambuf_iterator<char>(is)), std::istreambuf_iterator<char>());
+  std::vector<std::vector<std::string>> rows;
+  std::size_t start = 0;
+  while (start <= content.size()) {
+    const std::size_t nl = content.find('\n', start);
+    if (nl == std::string::npos) break;
+    const std::string line = content.substr(start, nl - start);
+    std::vector<std::string> cells;
+    std::size_t cs = 0;
+    while (true) {
+      const std::size_t tab = line.find('\t', cs);
+      if (tab == std::string::npos) {
+        cells.push_back(line.substr(cs));
+        break;
+      }
+      cells.push_back(line.substr(cs, tab - cs));
+      cs = tab + 1;
+    }
+    rows.push_back(std::move(cells));
+    start = nl + 1;
+  }
+  std::vector<double> out;
+  if (rows.empty()) return out;
+  std::size_t ci = rows.front().size();
+  for (std::size_t i = 0; i < rows.front().size(); ++i) {
+    if (rows.front()[i] == name) {
+      ci = i;
+      break;
+    }
+  }
+  EXPECT_LT(ci, rows.front().size()) << "column not found: " << name;
+  if (ci >= rows.front().size()) return out;
+  for (std::size_t r = 1; r < rows.size(); ++r) {
+    out.push_back(std::strtod(rows[r][ci].c_str(), nullptr));
+  }
+  return out;
+}
+}  // namespace
+
+// ── S1-3b gate 1: a held lot with no surface is COUNTED, not silently hidden ──
+//
+// Same corpus S1-3a pinned as silently truncating (BBB held, board absent on the
+// middle date). Under the default policy (ExcludeAndReport) the run still returns
+// Ok and every pre-existing column is bit-identical to the pre-change (d54c191)
+// engine — but the excluded legs are now surfaced in `n_unpriced_lots`.
+//
+// NOTE — the S1-3b brief predicted n_unpriced_lots == {0,2,0}. The engine actually
+// produces {0,2,2}: the two BBB legs are unpriced on BOTH the date1->date2 step
+// (BBB absent from the SHIFTED snapshot) AND the date2->date3 step (BBB absent from
+// the BASE snapshot, and the basket is HELD so the BBB legs are still in the book).
+// Verified directly: pnl_explain n_ok is 6/8 on each of those two steps. We assert
+// the engine's real behaviour, per "trust the SOURCE". (See report.)
+TEST(MultinamePipeline, HeldLotWithoutSurfaceIsCountedNotHidden) {
+  const fs::path out = fresh_out_dir("s1-3b-counted");
+  const std::vector<std::string> dates = {"2026-06-17", "2026-06-18", "2026-06-19"};
+  auto man = build_corpus(missing_bbb_boards(dates), out.string());
+  ASSERT_TRUE(man.has_value()) << man.error().to_string();
+  auto clock = Clock::from_manifest(*man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  DispersionUniverse u = basket_universe();
+  DispersionConfig cfg;
+  cfg.missing.policy = MissingNamePolicy::DropRenormalize;
+  DispersionStrategy strat{u, cfg};
+
+  auto res = run_backtest(*clock, strat);  // default RunConfig: ExcludeAndReport
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  ASSERT_EQ(res->size(), dates.size());
+
+  // The count is now visible: 0 at inception, 2 on each step where the held BBB
+  // straddle (call+put) is off a BBB-less surface.
+  ASSERT_EQ(res->n_unpriced_lots.size(), dates.size());
+  EXPECT_EQ(res->n_unpriced_lots[0], 0.0);
+  EXPECT_EQ(res->n_unpriced_lots[1], 2.0);
+  EXPECT_EQ(res->n_unpriced_lots[2], 2.0);
+
+  // Every pre-existing column is BIT-IDENTICAL to the pre-change (d54c191) run —
+  // the new column is purely additive. Values pinned from the d54c191 capture.
+  const double base_pnl[3] = {0.0, -23.481526548028217, -81.067015959714382};
+  const double base_settle[3] = {0.0, 0.0, 0.0};
+  const double base_nav[3] = {0.0, -23.481526548028217, -104.5485425077426};
+  const double base_gvega[3] = {-6.8212102632969618e-13, -2942.9786807243208,
+                                -81.942673890886567};
+  const double base_gdelta[3] = {18.188082442655293, 12.352773156198332, 21.068239480111913};
+  const double base_ggamma[3] = {25.758494010213717, 11.800666536901046, 27.213470414234781};
+  const double base_gtheta[3] = {-15313.462173697242, -8882.6645785835717, -15894.598059770382};
+  for (std::size_t i = 0; i < dates.size(); ++i) {
+    EXPECT_TRUE(bits_equal(res->pnl_total[i], base_pnl[i])) << "pnl_total row " << i;
+    EXPECT_TRUE(bits_equal(res->pnl_settlement[i], base_settle[i])) << "settle row " << i;
+    EXPECT_TRUE(bits_equal(res->nav[i], base_nav[i])) << "nav row " << i;
+    EXPECT_TRUE(bits_equal(res->gross_vega[i], base_gvega[i])) << "gvega row " << i;
+    EXPECT_TRUE(bits_equal(res->gross_delta[i], base_gdelta[i])) << "gdelta row " << i;
+    EXPECT_TRUE(bits_equal(res->gross_gamma[i], base_ggamma[i])) << "ggamma row " << i;
+    EXPECT_TRUE(bits_equal(res->gross_theta[i], base_gtheta[i])) << "gtheta row " << i;
+    EXPECT_EQ(res->n_open_lots[i], 8.0) << "nlots row " << i;
+  }
+
+  // The new column round-trips through the TSV export bit-exactly.
+  const std::string path = (out / "run.tsv").string();
+  ASSERT_TRUE(write_backtest_tsv(*res, path).has_value());
+  const std::vector<double> col = tsv_column(path, "n_unpriced_lots");
+  ASSERT_EQ(col.size(), res->size());
+  for (std::size_t i = 0; i < col.size(); ++i) {
+    EXPECT_TRUE(bits_equal(col[i], res->n_unpriced_lots[i])) << "tsv n_unpriced_lots row " << i;
+  }
+  std::printf("[s1-3b] counted (not hidden): n_unpriced_lots=[%.0f,%.0f,%.0f]\n",
+              res->n_unpriced_lots[0], res->n_unpriced_lots[1], res->n_unpriced_lots[2]);
+}
+
+// ── S1-3b gate 2: the strict Error policy aborts, naming the count + first uid ─
+TEST(MultinamePipeline, UnpricedLotPolicyErrorAborts) {
+  const fs::path out = fresh_out_dir("s1-3b-error");
+  const std::vector<std::string> dates = {"2026-06-17", "2026-06-18", "2026-06-19"};
+  auto man = build_corpus(missing_bbb_boards(dates), out.string());
+  ASSERT_TRUE(man.has_value()) << man.error().to_string();
+  auto clock = Clock::from_manifest(*man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  DispersionUniverse u = basket_universe();
+  DispersionConfig cfg;
+  cfg.missing.policy = MissingNamePolicy::DropRenormalize;
+  DispersionStrategy strat{u, cfg};
+
+  RunConfig rc;
+  rc.unpriced = UnpricedLotPolicy::Error;  // the mode a production QIS run would use
+  auto res = run_backtest(*clock, strat, rc);
+  ASSERT_FALSE(res.has_value()) << "Error policy must abort when a held lot has no surface";
+  EXPECT_EQ(res.error().code(), ErrorCode::NotFound);
+  const std::string msg = res.error().to_string();
+  EXPECT_NE(msg.find("2 held lot"), std::string::npos) << msg;                 // the count
+  EXPECT_NE(msg.find(std::to_string(uid_for_symbol("BBB"))), std::string::npos) << msg;  // uid
+  std::printf("[s1-3b] Error policy aborts: %s\n", msg.c_str());
+}
+
+// ── S1-3b gate 3: the default policy is bit-identical on a clean corpus ────────
+//
+// A full basket present on every date: nothing is ever unpriced, every column
+// equals the pre-change (d54c191) run, and Error policy also completes (no abort).
+TEST(MultinamePipeline, DefaultPolicyFullBasketBitIdentical) {
+  const fs::path out = fresh_out_dir("s1-3b-full");
+  const std::vector<std::string> dates = {"2026-06-17", "2026-06-18", "2026-06-19"};
+  auto man = build_corpus(make_multiname_boards(dates), out.string());
+  ASSERT_TRUE(man.has_value()) << man.error().to_string();
+  auto clock = Clock::from_manifest(*man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  DispersionUniverse u = basket_universe();
+  DispersionConfig cfg;
+  cfg.missing.policy = MissingNamePolicy::DropRenormalize;
+  DispersionStrategy strat{u, cfg};
+
+  auto res = run_backtest(*clock, strat);  // default: ExcludeAndReport
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  ASSERT_EQ(res->size(), dates.size());
+
+  ASSERT_EQ(res->n_unpriced_lots.size(), dates.size());
+  for (std::size_t i = 0; i < dates.size(); ++i) {
+    EXPECT_EQ(res->n_unpriced_lots[i], 0.0) << "row " << i;
+  }
+
+  const double base_pnl[3] = {0.0, -41.891113474001244, -99.786633631448794};
+  const double base_nav[3] = {0.0, -41.891113474001244, -141.67774710545004};
+  const double base_gvega[3] = {-6.8212102632969618e-13, 6.9200891721370681, -81.942673890886567};
+  for (std::size_t i = 0; i < dates.size(); ++i) {
+    EXPECT_TRUE(bits_equal(res->pnl_total[i], base_pnl[i])) << "pnl_total row " << i;
+    EXPECT_TRUE(bits_equal(res->nav[i], base_nav[i])) << "nav row " << i;
+    EXPECT_TRUE(bits_equal(res->gross_vega[i], base_gvega[i])) << "gvega row " << i;
+  }
+
+  // Error policy must NOT abort a clean corpus (nothing unpriced on any step).
+  RunConfig rc;
+  rc.unpriced = UnpricedLotPolicy::Error;
+  DispersionStrategy strat_e{u, cfg};
+  auto res_e = run_backtest(*clock, strat_e, rc);
+  ASSERT_TRUE(res_e.has_value()) << res_e.error().to_string();
+  std::printf("[s1-3b] full basket bit-identical, all n_unpriced_lots == 0\n");
 }

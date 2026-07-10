@@ -160,6 +160,19 @@ struct FinancingConfig {
 
 // ── Run config + result ─────────────────────────────────────────────────────
 
+// What to do on a step when a HELD (non-expiring) lot's surface is absent from the
+// base or shifted snapshot. The pricer marks such a lot `ModelUnavailable` and the
+// reduction skips it, so its PnL and greeks are excluded from that step's totals.
+enum class UnpricedLotPolicy : std::uint8_t {
+  // Preserve the historical arithmetic exactly (skip the lot) and merely REPORT the
+  // exclusion in `BacktestResult::n_unpriced_lots`. This is the default: the only
+  // change from the pre-report engine is that the count is surfaced, not discarded.
+  ExcludeAndReport = 0,
+  // Abort the run: any step with an unpriced held lot returns Err(NotFound). The mode
+  // a production QIS run uses so a missing board can never silently truncate PnL.
+  Error = 1,
+};
+
 struct RunConfig {
   // Pricer thread fan-out. Default 0 => use all hardware cores (clamped to the
   // book's unique-contract count). Output is bit-identical to any thread count
@@ -174,6 +187,9 @@ struct RunConfig {
   FinancingConfig financing{};       // cash/borrow ledger (B2; default: off => B1-identity)
   unsigned record_every_n{1};        // persist every Nth step (1 = every step)
   bool retain_position_frames{false};  // reserved for B1 (per-position frames)
+  // Policy for a held lot with no surface this step. DEFAULT ExcludeAndReport keeps
+  // the pre-report arithmetic bit-for-bit and only reports the count in the result.
+  UnpricedLotPolicy unpriced{UnpricedLotPolicy::ExcludeAndReport};
 };
 
 // SoA time series. Row 0 is inception (all-zero PnL, nav 0, book greeks on the
@@ -195,6 +211,10 @@ struct BacktestResult {
   std::vector<double> gross_delta, gross_gamma, gross_vega, gross_theta;  // book greeks on the base
   std::vector<double> turnover_notional, turnover_vega;  // traded |notional| / |vega| this step
   std::vector<double> n_open_lots;
+  // Positions whose surface was absent this step; their PnL and greeks are EXCLUDED
+  // from this row's totals. 0.0 at inception. Under RunConfig::unpriced == Error a
+  // step with a non-zero count aborts the run instead of recording a row.
+  std::vector<double> n_unpriced_lots;
   // Strategy diagnostics: name -> per-recorded-row series (parallel to `date`).
   // Empty for the fixed-book overload; populated by the IStrategy overload.
   std::vector<std::pair<std::string, std::vector<double>>> signals;
