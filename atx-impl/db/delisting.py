@@ -1034,6 +1034,32 @@ def _empty_terminal_return_frame() -> pd.DataFrame:
     return pd.DataFrame(columns=TERMINAL_RETURN_COLUMNS)
 
 
+def _concat_terminal_return_frames(frames: list[pd.DataFrame]) -> pd.DataFrame:
+    """Union the observed and policy terminal-return frames without tripping pandas 2.2's
+    all-NA/empty concat ``FutureWarning`` (S4-1-fix M1).
+
+    Empty pieces are dropped, and any column that is entirely NA in *some* remaining piece is
+    coerced to ``object`` in *every* piece before the concat. Without this, pandas excludes the
+    all-NA piece from result-dtype inference and warns that the dtype will change in a future
+    version -- the concrete trigger here is a float64 observed ``terminal_return_ex_div`` (a real
+    DLRETX value) unioned with an all-NA policy ``terminal_return_ex_div``. Object-aligning the
+    affected columns makes the exclusion a no-op, so the union is warning-clean and safe to insert
+    into DuckDB (which coerces each object column back to its declared type). Non-conflicting
+    columns keep their dtypes.
+    """
+
+    frames = [frame for frame in frames if not frame.empty]
+    if not frames:
+        return _empty_terminal_return_frame()
+    all_na_columns = {column for frame in frames for column in frame.columns if frame[column].isna().all()}
+    if all_na_columns:
+        frames = [
+            frame.astype({column: object for column in all_na_columns if column in frame.columns})
+            for frame in frames
+        ]
+    return pd.concat(frames, ignore_index=True)
+
+
 def _stable_terminal_return_id(row: pd.Series) -> str:
     parts = [row.get("source"), row.get("security_id"), row.get("delist_date"), row.get("terminal_return_source")]
     payload = "|".join("" if pd.isna(part) else str(part) for part in parts)
@@ -1233,7 +1259,7 @@ def compute_delisting_terminal_returns(
     policy_result["terminal_return_id"] = policy_result.apply(_stable_terminal_return_id, axis=1)
     policy_result = policy_result[TERMINAL_RETURN_COLUMNS]
 
-    combined = pd.concat([result, policy_result], ignore_index=True)
+    combined = _concat_terminal_return_frames([result, policy_result])
     # Sort on a normalized copy of delist_date, not the column itself: result's delist_date
     # (observations-sourced) and policy_result's (events-sourced) can carry different concrete
     # date representations (e.g. one DuckDB-native, one a hand-built datetime.date in a test),

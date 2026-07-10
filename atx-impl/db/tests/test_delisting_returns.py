@@ -9,6 +9,7 @@ can seed more than one security without changing behavior for the two verbatim T
 from __future__ import annotations
 
 import datetime as dt
+import warnings
 
 import pandas as pd
 import pytest
@@ -996,3 +997,128 @@ def test_apply_terminal_return_policy_is_shuffle_invariant(tmp_store) -> None:
     shuffled = apply_terminal_return_policy(shuffled_events, shuffled_actions, policy).reset_index(drop=True)
 
     pd.testing.assert_frame_equal(baseline, shuffled)
+
+
+# ---------------------------------------------------------------------------
+# PF4-S4 S4-1-fix: two carried Minors folded in before S4-2.
+# ---------------------------------------------------------------------------
+
+
+def test_compute_terminal_returns_union_is_futurewarning_clean(tmp_store) -> None:
+    # M1: unioning an observed row that carries a REAL terminal_return_ex_div (DLRETX, float64)
+    # with an uncovered-merger policy row (all-NA object ex_div) used to raise the pandas 2.2
+    # "concatenation with empty or all-NA entries is deprecated" FutureWarning at the concat of
+    # the observed and policy frames. The union must be warning-clean (the frame is inserted into
+    # DuckDB downstream). Discriminates: reverting to a bare pd.concat re-raises here.
+    from db.delisting import compute_delisting_terminal_returns, load_terminal_return_policy_dim
+
+    policy = load_terminal_return_policy_dim(tmp_store)
+    observations = pd.DataFrame(
+        [
+            {
+                "delisting_return_observation_id": "obs-m1",
+                "source": "crsp_sample",
+                "security_id": "SEC-M1-OBS",
+                "symbol": "M1O",
+                "delist_date": dt.date(2024, 5, 1),
+                "as_of_date": dt.date(2024, 5, 1),
+                "available_at": dt.datetime(2024, 5, 3, 12, 0),
+                "source_loaded_at": dt.datetime(2024, 5, 3, 12, 0),
+                "crsp_dlstcd": 233,
+                "delisting_return": -0.60,
+                "delisting_return_ex_div": -0.58,  # a REAL DLRETX value -> float64 column
+                "return_basis": None,
+                "successor_security_id": None,
+            }
+        ]
+    )
+    events = pd.DataFrame(
+        [
+            {
+                "security_id": "SEC-M1-OBS",
+                "symbol": "M1O",
+                "delist_date": dt.date(2024, 5, 1),
+                "as_of_date": dt.date(2024, 5, 1),
+                "available_at": dt.datetime(2024, 5, 2, 12, 0),
+            },
+            {
+                "security_id": "SEC-M1-POLICY",
+                "symbol": "M1P",
+                "delist_date": dt.date(2024, 5, 5),
+                "as_of_date": dt.date(2024, 5, 5),
+                "available_at": dt.datetime(2024, 5, 6, 12, 0),
+            },
+        ]
+    )
+    corporate_actions = pd.DataFrame(
+        [
+            {
+                "security_id": "SEC-M1-POLICY",
+                "action_type": "merger",
+                "ex_date": dt.date(2024, 5, 5),
+                "cash_amount": 15.0,
+                "last_pre_delist_adjusted_close": 10.0,
+                "available_at": dt.datetime(2024, 5, 5, 22, 0),
+            }
+        ]
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", FutureWarning)
+        result = compute_delisting_terminal_returns(
+            observations, events, policy, corporate_actions=corporate_actions
+        )
+
+    assert set(result["terminal_return_source"]) == {"observed", "policy"}
+    observed_row = result[result["security_id"] == "SEC-M1-OBS"].iloc[0]
+    assert observed_row["terminal_return_ex_div"] == pytest.approx(-0.58)  # real ex-div survives the union
+    policy_row = result[result["security_id"] == "SEC-M1-POLICY"].iloc[0]
+    assert pd.isna(policy_row["terminal_return_ex_div"])  # policy side is genuinely NA, not fabricated
+
+
+def test_exchange_delete_with_full_merger_inputs_still_yields_no_policy_return(tmp_store) -> None:
+    # M2: the plan's exchange_delete test fed an EMPTY corporate_actions, so apply_terminal_return_
+    # policy short-circuited at its top guard and never exercised the is_observed_required filter.
+    # Here corporate_actions is NON-empty and carries a full cash-merger input set that WOULD
+    # compute a terminal return if exchange_delete were treated like a merger -- the merge + policy
+    # candidate loop actually run, and the is_observed_required policy must still yield no row.
+    from db.delisting import apply_terminal_return_policy, load_terminal_return_policy_dim
+
+    policy = load_terminal_return_policy_dim(tmp_store)
+    events = pd.DataFrame(
+        [
+            {
+                "security_id": SECURITY_ID,
+                "symbol": "DLS",
+                "delist_date": dt.date(2024, 4, 1),
+                "as_of_date": dt.date(2024, 4, 1),
+                "available_at": dt.datetime(2024, 4, 2, 12, 0),
+                "corporate_action_type": "exchange_delete",
+            }
+        ]
+    )
+    actions = pd.DataFrame(
+        [
+            {
+                "security_id": SECURITY_ID,
+                "ex_date": dt.date(2024, 4, 1),
+                "action_type": "exchange_delete",
+                "cash_amount": 21.0,  # full cash-merger inputs, deliberately present
+                "last_pre_delist_adjusted_close": 20.0,
+                "available_at": dt.datetime(2024, 4, 1, 22, 0),
+            }
+        ]
+    )
+    out = apply_terminal_return_policy(events, actions, policy)
+    assert out.empty  # is_observed_required policy: exchange_delete never gets a policy return
+
+    # Discrimination: the IDENTICAL financial inputs under a 'merger' event DO produce a row, so
+    # out.empty above is the is_observed_required policy at work, not merely absent inputs.
+    merger_out = apply_terminal_return_policy(
+        events.assign(corporate_action_type="merger"),
+        actions.assign(action_type="cash_merger"),
+        policy,
+    )
+    assert len(merger_out) == 1
+    assert merger_out.iloc[0]["terminal_return_policy"] == "merger_cash"
+    assert merger_out.iloc[0]["terminal_return"] == pytest.approx(0.05)  # 21/20 - 1
