@@ -34,15 +34,56 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <optional>
+#include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
+#include "atx/vol/corpus.hpp"       // CorpusBoard
 #include "atx/vol/data.hpp"         // QuoteFrame
 #include "atx/vol/market_env.hpp"   // MarketEnv
 #include "atx/vol/opra_panel.hpp"   // OpraPanel, OpraLoadSpec
 #include "atx/vol/types.hpp"        // Result
 
 namespace atx::vol {
+
+enum class MissingMarketInputPolicy : std::uint8_t {
+  UseFallback = 0,
+  Quarantine = 1,
+  Error = 2,
+};
+
+// Point-in-time external inputs for exactly one canonical (date, symbol) cell.
+// The table constructor canonicalizes/sorts keys, validates term pillars and
+// rejects future as-of tags before any OPRA file is opened.
+struct CorpusMarketInputCell {
+  std::string date{};
+  std::string symbol{};
+  std::optional<double> spot_override{};
+  std::vector<double> yc_pillar_t{};
+  std::vector<double> yc_pillar_r{};
+  std::vector<DividendEvent> cash_divs{};
+  FitContext fit_context{};
+  OpraMarketInputProvenance provenance{};
+};
+
+class CorpusMarketInputTable {
+public:
+  CorpusMarketInputTable() = default;
+
+  [[nodiscard]] static Result<CorpusMarketInputTable>
+  create(std::vector<CorpusMarketInputCell> cells);
+
+  [[nodiscard]] const CorpusMarketInputCell *find(std::string_view date,
+                                                  std::string_view symbol) const;
+  [[nodiscard]] std::span<const CorpusMarketInputCell> cells() const noexcept { return cells_; }
+  [[nodiscard]] std::uint64_t fingerprint() const noexcept { return fingerprint_; }
+
+private:
+  std::vector<CorpusMarketInputCell> cells_{};
+  std::uint64_t fingerprint_{0};
+};
 
 // Spec for `load_opra_daterange`.
 struct OpraBatchSpec {
@@ -68,6 +109,9 @@ struct OpraBatchSpec {
   // two arrays must be equal length (a mismatch is a malformed-spec top-level Err).
   std::vector<double> yc_pillar_t;
   std::vector<double> yc_pillar_r;
+  CorpusMarketInputTable market_inputs{};
+  MissingMarketInputPolicy missing_market_inputs{MissingMarketInputPolicy::UseFallback};
+  OpraProvenanceMode provenance_mode{OpraProvenanceMode::Compatibility};
 };
 
 // One (symbol, date) cell of a batch. `panel` is `Ok` on a successful load,
@@ -82,6 +126,8 @@ struct OpraBatchEntry {
   // batch shares across the symbols of a date (see load_opra_daterange). Populated
   // even for a missing file (there is no frame to read it from otherwise).
   std::int64_t snapshot_ts_ns = 0;
+  bool used_market_input_fallback{false};
+  std::uint64_t market_input_fingerprint{0};
 
   Result<OpraPanel> panel;            // Ok | Err(NotFound) | Err(load failure)
 };
@@ -149,5 +195,10 @@ load_opra_daterange(const OpraBatchSpec& spec, const OpraBatchProgress& progress
 // `rate_at(front_T)` instead of a hardcoded flat 1y rate — the multi-date corruption
 // P2-3 targets.
 [[nodiscard]] MarketEnv market_env_from_frame(const QuoteFrame& frame);
+
+// Lossless bridge into corpus fitting: the frame supplies spot/rates/dividends,
+// the panel supplies FitContext and strict source-provenance state.
+[[nodiscard]] CorpusBoard corpus_board_from_opra(std::string date, std::string symbol,
+                                                 OpraPanel panel);
 
 } // namespace atx::vol

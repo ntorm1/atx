@@ -69,6 +69,8 @@ namespace atx::vol {
 struct SessionInputs {
   double S{0.0};                          // spot (> 0); the OpraPanel implied_spot when built from a frame
   double r{0.0};                          // continuously-compounded rate (finite)
+  std::vector<double> expiry_rate_T;      // empty => legacy scalar r
+  std::vector<double> expiry_rates;       // aligned with expiry_rate_T
   std::vector<DividendEvent> cash_divs;   // discrete cash-dividend schedule
   std::int64_t now_ts_ns{0};              // valuation timestamp (epoch ns)
   DeAmOptions deam{};                     // borrow-implication + pricer method / AL opts
@@ -330,6 +332,7 @@ class VolaSession {
   // refit. Both return 0 for a non-finite / non-positive T (no slice to locate).
   [[nodiscard]] double forward_at(double T) const noexcept;
   [[nodiscard]] double q_eff_at(double T) const noexcept;
+  [[nodiscard]] double rate_at(double T) const noexcept;
 
   // The per-side correction caches this session built (null pointers where a side
   // is on the cold path). Lets a batch / whole-chain evaluator route its
@@ -346,6 +349,7 @@ class VolaSession {
   struct ForwardCarry {
     double forward{0.0};
     double q_eff{0.0};
+    double rate{0.0};
   };
 
   // Constructed only via build/from_frame (VolSurface's default ctor is private,

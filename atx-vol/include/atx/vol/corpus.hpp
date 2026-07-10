@@ -38,6 +38,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 #include "atx/vol/data.hpp"            // QuoteFrame
@@ -69,6 +70,13 @@ struct CorpusBoard {
   std::optional<CurveConfig> curve{};
   FitContext fit_context{}; // event/session/HTB facts for unified routing
   bool source_provenance_complete{false};
+  std::uint32_t source_schema_version{0};
+  std::uint64_t source_fingerprint{0};
+  std::uint64_t market_input_fingerprint{0};
+};
+
+enum class CorpusDividendTreatment : std::uint8_t {
+  EscrowedForward = 0,
 };
 
 // Per-board fit outcome, mirroring calib_pool.hpp's FitStatus but kept local so
@@ -138,6 +146,11 @@ struct CorpusQualityMetrics {
   bool curve_pinned{false};
   bool final_kind_consistent{true};
   bool provenance_complete{false};
+  std::uint32_t source_schema_version{0};
+  std::uint64_t source_fingerprint{0};
+  std::uint64_t market_input_fingerprint{0};
+  CorpusDividendTreatment dividend_treatment{CorpusDividendTreatment::EscrowedForward};
+  std::uint32_t n_cash_dividends{0};
   std::uint32_t n_raw_quotes{0};
   std::uint32_t n_two_sided{0};
   std::uint32_t n_slices{0};
@@ -303,6 +316,48 @@ struct QualifiedCorpusConfig {
 struct QualifiedCorpusManifest {
   CorpusManifest manifest{};
   CorpusQualityReport quality{};
+  std::uint32_t peak_live_fitted_surfaces{0};
+};
+
+struct CorpusSourceFailure {
+  std::string date{};
+  std::string symbol{};
+  CorpusAdmissionReason reason{CorpusAdmissionReason::MissingSource};
+  ErrorCode error_code{ErrorCode::NotFound};
+  std::uint32_t source_schema_version{0};
+  std::uint64_t source_fingerprint{0};
+  std::uint64_t market_input_fingerprint{0};
+};
+
+using CorpusCellInput = std::variant<CorpusBoard, CorpusSourceFailure>;
+
+class CorpusBuildSession {
+public:
+  CorpusBuildSession(CorpusBuildSession &&) noexcept = default;
+  CorpusBuildSession &operator=(CorpusBuildSession &&) noexcept = default;
+  CorpusBuildSession(const CorpusBuildSession &) = delete;
+  CorpusBuildSession &operator=(const CorpusBuildSession &) = delete;
+
+  [[nodiscard]] static Result<CorpusBuildSession> create(std::string_view out_dir,
+                                                         const QualifiedCorpusConfig &cfg);
+
+  // Dates must be strictly ascending. Every cell key must match `date`, and
+  // canonical symbols must be unique within the batch.
+  [[nodiscard]] Status append_date(std::string_view date, std::span<const CorpusCellInput> cells);
+
+  [[nodiscard]] Result<QualifiedCorpusManifest> finish();
+
+private:
+  CorpusBuildSession(std::string out_dir, QualifiedCorpusConfig cfg);
+
+  std::string out_dir_{};
+  QualifiedCorpusConfig cfg_{};
+  std::string last_date_{};
+  std::string input_fingerprint_material_{};
+  CorpusManifest manifest_{};
+  CorpusQualityReport quality_{};
+  std::uint32_t peak_live_fitted_surfaces_{0};
+  bool finished_{false};
 };
 
 // ── Driver ──────────────────────────────────────────────────────────────────

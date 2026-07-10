@@ -4,6 +4,7 @@
 
 #include <algorithm> // std::sort, std::min, std::max, std::find
 #include <array>
+#include <bit>
 #include <charconv> // std::to_chars, std::from_chars
 #include <cmath>
 #include <cstddef>
@@ -19,6 +20,7 @@
 #include <utility>      // std::move
 #include <vector>
 
+#include "atx/core/hash.hpp"
 #include "atx/vol/arb.hpp"            // arb_check_calendar
 #include "atx/vol/chain.hpp"          // OptionChain
 #include "atx/vol/curve_selector.hpp" // SelectorResult, CandidateScore
@@ -167,8 +169,52 @@ void record_failure(CorpusAdmissionFailureMask &mask, CorpusAdmissionReason reas
 
 [[nodiscard]] bool quality_has_non_finite(const CorpusQualityMetrics &metrics) noexcept {
   return non_finite(metrics.fit_in_band) || non_finite(metrics.oos_in_band) ||
-         non_finite(metrics.oos_vega_weighted) || non_finite(metrics.mean_vol_rmse) ||
+         non_finite(metrics.oos_vega_weighted) || non_finite(metrics.oos_vega_weight_in_band) ||
+         non_finite(metrics.oos_vega_weight_total) || non_finite(metrics.mean_vol_rmse) ||
          non_finite(metrics.mean_reduced_chi2);
+}
+
+[[nodiscard]] bool ratio_evidence_missing(const std::optional<double> &ratio,
+                                          std::uint32_t numerator,
+                                          std::uint32_t denominator) noexcept {
+  return !ratio.has_value() && (numerator != 0u || denominator != 0u);
+}
+
+[[nodiscard]] bool ratio_evidence_invalid(const std::optional<double> &ratio,
+                                          std::uint32_t numerator,
+                                          std::uint32_t denominator) noexcept {
+  if (!ratio.has_value()) {
+    return false;
+  }
+  if (denominator == 0u || numerator > denominator || !std::isfinite(*ratio)) {
+    return true;
+  }
+  const double expected = static_cast<double>(numerator) / static_cast<double>(denominator);
+  return std::fabs(*ratio - expected) > 8.0 * std::numeric_limits<double>::epsilon();
+}
+
+[[nodiscard]] bool weighted_evidence_missing(const CorpusQualityMetrics &metrics) noexcept {
+  const bool in = metrics.oos_vega_weight_in_band.has_value();
+  const bool total = metrics.oos_vega_weight_total.has_value();
+  return in != total || (!in && metrics.oos_vega_weighted.has_value()) ||
+         (in && *metrics.oos_vega_weight_total > 0.0 && !metrics.oos_vega_weighted.has_value());
+}
+
+[[nodiscard]] bool weighted_evidence_invalid(const CorpusQualityMetrics &metrics) noexcept {
+  if (!metrics.oos_vega_weight_in_band.has_value() || !metrics.oos_vega_weight_total.has_value()) {
+    return false;
+  }
+  const double in = *metrics.oos_vega_weight_in_band;
+  const double total = *metrics.oos_vega_weight_total;
+  if (!std::isfinite(in) || !std::isfinite(total) || in < 0.0 || total < 0.0 || in > total) {
+    return true;
+  }
+  if (total == 0.0) {
+    return metrics.oos_vega_weighted.has_value();
+  }
+  return !metrics.oos_vega_weighted.has_value() || !std::isfinite(*metrics.oos_vega_weighted) ||
+         std::fabs(*metrics.oos_vega_weighted - in / total) >
+             8.0 * std::numeric_limits<double>::epsilon();
 }
 
 [[nodiscard]] bool quality_out_of_range(const CorpusQualityMetrics &metrics) noexcept {
@@ -217,10 +263,20 @@ CorpusAdmissionDecision evaluate_corpus_admission(const CorpusQualityMetrics &me
   if (required_metric_missing(metrics, rule)) {
     record_failure(failures, CorpusAdmissionReason::QualityUnavailable);
   }
+  if (ratio_evidence_missing(metrics.fit_in_band, metrics.n_fit_in_band, metrics.n_fit_scorable) ||
+      ratio_evidence_missing(metrics.oos_in_band, metrics.n_oos_in_band, metrics.n_holdout) ||
+      weighted_evidence_missing(metrics)) {
+    record_failure(failures, CorpusAdmissionReason::QualityUnavailable);
+  }
   if (quality_has_non_finite(metrics)) {
     record_failure(failures, CorpusAdmissionReason::NonFiniteMetric);
   }
   if (quality_out_of_range(metrics)) {
+    record_failure(failures, CorpusAdmissionReason::MetricOutOfRange);
+  }
+  if (ratio_evidence_invalid(metrics.fit_in_band, metrics.n_fit_in_band, metrics.n_fit_scorable) ||
+      ratio_evidence_invalid(metrics.oos_in_band, metrics.n_oos_in_band, metrics.n_holdout) ||
+      weighted_evidence_invalid(metrics)) {
     record_failure(failures, CorpusAdmissionReason::MetricOutOfRange);
   }
   if (!metrics.final_kind_consistent) {
@@ -315,6 +371,10 @@ collect_quality(const CorpusBoard &board, const OptionChain &chain, const Pricer
   quality.n_two_sided = count_two_sided_quotes(board.frame);
   quality.n_slices = saturated_u32(surface.n_slices());
   quality.provenance_complete = board.source_provenance_complete;
+  quality.source_schema_version = board.source_schema_version;
+  quality.source_fingerprint = board.source_fingerprint;
+  quality.market_input_fingerprint = board.market_input_fingerprint;
+  quality.n_cash_dividends = saturated_u32(board.frame.divs.size());
 
   const std::optional<FitDecision> &actual = fitter.decision();
   if (actual.has_value()) {
@@ -383,6 +443,8 @@ collect_quality(const CorpusBoard &board, const OptionChain &chain, const Pricer
     SurfaceParityInputs scoring;
     scoring.S = resolved.S;
     scoring.r = resolved.r;
+    scoring.expiry_rate_T = resolved.expiry_rate_T;
+    scoring.expiry_rates = resolved.expiry_rates;
     scoring.cash_divs = resolved.cash_divs;
     scoring.now_ts_ns = resolved.now_ts_ns;
     scoring.deam = resolved.deam;
@@ -437,6 +499,10 @@ collect_quality(const CorpusBoard &board, const OptionChain &chain, const Pricer
   slot.quality.n_raw_quotes = saturated_u32(board.frame.rows.size());
   slot.quality.n_two_sided = count_two_sided_quotes(board.frame);
   slot.quality.provenance_complete = board.source_provenance_complete;
+  slot.quality.source_schema_version = board.source_schema_version;
+  slot.quality.source_fingerprint = board.source_fingerprint;
+  slot.quality.market_input_fingerprint = board.market_input_fingerprint;
+  slot.quality.n_cash_dividends = saturated_u32(board.frame.divs.size());
 
   if (board.frame.rows.empty()) {
     slot.status = CorpusFitStatus::Skipped; // nothing fittable
@@ -536,9 +602,170 @@ collect_quality(const CorpusBoard &board, const OptionChain &chain, const Pricer
 
 namespace {
 
+void fingerprint_append_u64(std::string &out, std::uint64_t value) {
+  char text[32];
+  const auto [ptr, ec] = std::to_chars(text, text + sizeof text, value);
+  (void)ec;
+  out.append(text, static_cast<std::size_t>(ptr - text));
+  out.push_back('|');
+}
+
+void fingerprint_append_text(std::string &out, std::string_view value) {
+  fingerprint_append_u64(out, value.size());
+  out.append(value);
+  out.push_back('|');
+}
+
+void fingerprint_append_double(std::string &out, double value) {
+  fingerprint_append_u64(out, std::bit_cast<std::uint64_t>(value));
+}
+
+void fingerprint_append_optional_double(std::string &out, const std::optional<double> &value) {
+  fingerprint_append_u64(out, value.has_value() ? 1u : 0u);
+  if (value.has_value()) {
+    fingerprint_append_double(out, *value);
+  }
+}
+
+void fingerprint_append_fit_context(std::string &out, const FitContext &context) {
+  fingerprint_append_u64(out, context.profile_override.has_value() ? 1u : 0u);
+  if (context.profile_override.has_value()) {
+    fingerprint_append_u64(out, static_cast<std::uint64_t>(*context.profile_override));
+  }
+  fingerprint_append_u64(out, static_cast<std::uint64_t>(context.session_phase));
+  fingerprint_append_u64(out, static_cast<std::uint64_t>(context.event_phase));
+  fingerprint_append_u64(out, context.event_distance_days.has_value() ? 1u : 0u);
+  if (context.event_distance_days.has_value()) {
+    fingerprint_append_u64(out, *context.event_distance_days);
+  }
+  fingerprint_append_optional_double(out, context.forward_dispersion_bp);
+  fingerprint_append_optional_double(out, context.median_q_eff);
+  fingerprint_append_u64(out, context.htb.has_value() ? 1u : 0u);
+  if (context.htb.has_value()) {
+    fingerprint_append_u64(out, *context.htb ? 1u : 0u);
+  }
+  fingerprint_append_u64(out, context.vol_product ? 1u : 0u);
+}
+
+[[nodiscard]] std::uint64_t fingerprint_bytes(std::string_view bytes) noexcept {
+  const std::uint64_t hash = atx::core::hash_bytes(bytes.data(), bytes.size());
+  return hash == 0u ? 1u : hash;
+}
+
+[[nodiscard]] std::uint64_t fingerprint_corpus_inputs(std::span<const CorpusBoard> boards) {
+  std::vector<std::size_t> order(boards.size());
+  for (std::size_t i = 0; i < order.size(); ++i) {
+    order[i] = i;
+  }
+  std::sort(order.begin(), order.end(), [&boards](std::size_t lhs, std::size_t rhs) {
+    return boards[lhs].date != boards[rhs].date ? boards[lhs].date < boards[rhs].date
+                                                : boards[lhs].symbol < boards[rhs].symbol;
+  });
+  std::string bytes;
+  for (const std::size_t index : order) {
+    const CorpusBoard &board = boards[index];
+    fingerprint_append_text(bytes, board.date);
+    fingerprint_append_text(bytes, board.symbol);
+    fingerprint_append_u64(bytes, board.source_schema_version);
+    fingerprint_append_u64(bytes, board.source_fingerprint);
+    fingerprint_append_u64(bytes, board.market_input_fingerprint);
+    fingerprint_append_u64(bytes, board.source_provenance_complete ? 1u : 0u);
+    fingerprint_append_u64(bytes, board.curve.has_value() ? 1u : 0u);
+    if (board.curve.has_value()) {
+      fingerprint_append_u64(bytes, static_cast<std::uint64_t>(board.curve->kind));
+    }
+    fingerprint_append_fit_context(bytes, board.fit_context);
+    fingerprint_append_text(bytes, board.frame.snapshot_iso);
+    fingerprint_append_u64(bytes, static_cast<std::uint64_t>(board.frame.snapshot_ts_ns));
+    fingerprint_append_double(bytes, board.frame.spot);
+    for (std::size_t i = 0; i < board.frame.yc_pillar_t.size(); ++i) {
+      fingerprint_append_double(bytes, board.frame.yc_pillar_t[i]);
+      if (i < board.frame.yc_pillar_r.size()) {
+        fingerprint_append_double(bytes, board.frame.yc_pillar_r[i]);
+      }
+    }
+    for (const DividendEvent &dividend : board.frame.divs) {
+      fingerprint_append_u64(bytes, static_cast<std::uint64_t>(dividend.ex_date_ns));
+      fingerprint_append_double(bytes, dividend.amount);
+    }
+    for (const QuoteRow &row : board.frame.rows) {
+      fingerprint_append_text(bytes, row.uid);
+      fingerprint_append_text(bytes, row.expiry_iso);
+      fingerprint_append_double(bytes, row.strike);
+      fingerprint_append_u64(bytes, static_cast<std::uint64_t>(row.side));
+      fingerprint_append_double(bytes, row.bid);
+      fingerprint_append_double(bytes, row.ask);
+      fingerprint_append_u64(bytes, static_cast<std::uint64_t>(row.bid_size));
+      fingerprint_append_u64(bytes, static_cast<std::uint64_t>(row.ask_size));
+      fingerprint_append_u64(bytes, static_cast<std::uint64_t>(row.ts_ns));
+    }
+  }
+  return fingerprint_bytes(bytes);
+}
+
+void fingerprint_append_admission_rule(std::string &out, const CorpusAdmissionRule &rule) {
+  fingerprint_append_u64(out, rule.min_quotes);
+  fingerprint_append_u64(out, rule.min_slices);
+  fingerprint_append_u64(out, rule.min_holdout);
+  fingerprint_append_optional_double(out, rule.min_fit_in_band);
+  fingerprint_append_optional_double(out, rule.min_oos_in_band);
+  fingerprint_append_optional_double(out, rule.min_oos_vega_weighted);
+  fingerprint_append_optional_double(out, rule.max_mean_vol_rmse);
+  fingerprint_append_optional_double(out, rule.max_mean_reduced_chi2);
+  fingerprint_append_u64(out, rule.require_calendar_arb_free ? 1u : 0u);
+  fingerprint_append_u64(out, rule.require_source_provenance ? 1u : 0u);
+}
+
+[[nodiscard]] std::uint64_t fingerprint_corpus_policy(const QualifiedCorpusConfig &cfg) {
+  std::string bytes;
+  fingerprint_append_u64(bytes, cfg.admission.enabled ? 1u : 0u);
+  for (const CorpusAdmissionRule &rule : cfg.admission.by_profile) {
+    fingerprint_append_admission_rule(bytes, rule);
+  }
+  const PricerConfig &fit = cfg.build.fit_template;
+  fingerprint_append_u64(bytes, static_cast<std::uint64_t>(fit.preset));
+  fingerprint_append_u64(bytes, fit.curve.has_value() ? 1u : 0u);
+  if (fit.curve.has_value()) {
+    fingerprint_append_u64(bytes, static_cast<std::uint64_t>(fit.curve->kind));
+  }
+  fingerprint_append_u64(bytes, static_cast<std::uint64_t>(fit.policy.mode));
+  fingerprint_append_double(bytes, fit.policy.min_direct_confidence);
+  fingerprint_append_u64(bytes, fit.policy.validate_ambiguous ? 1u : 0u);
+  fingerprint_append_u64(bytes, fit.policy.sparse_validation_floor);
+  fingerprint_append_u64(bytes, fit.policy.dense_node_cap);
+  fingerprint_append_u64(bytes, cfg.build.write_opts.flags);
+  fingerprint_append_u64(bytes, cfg.build.write_opts.lookup_load_pct);
+  fingerprint_append_u64(bytes, cfg.build.write_opts.blob_alignment);
+  fingerprint_append_u64(bytes, cfg.build.write_opts.array_alignment);
+  fingerprint_append_u64(bytes, static_cast<std::uint64_t>(cfg.build.write_opts.created_ts_ns));
+  return fingerprint_bytes(bytes);
+}
+
+[[nodiscard]] std::string canonical_corpus_symbol(std::string_view symbol) {
+  while (!symbol.empty() && symbol.front() == ' ') {
+    symbol.remove_prefix(1u);
+  }
+  while (!symbol.empty() && symbol.back() == ' ') {
+    symbol.remove_suffix(1u);
+  }
+  std::string canonical;
+  canonical.reserve(std::min<std::size_t>(symbol.size(), 32u));
+  for (const char ch : symbol.substr(0u, 32u)) {
+    canonical.push_back(ch >= 'a' && ch <= 'z' ? static_cast<char>(ch - ('a' - 'A')) : ch);
+  }
+  return canonical;
+}
+
+[[nodiscard]] bool valid_source_failure_reason(CorpusAdmissionReason reason) noexcept {
+  return reason == CorpusAdmissionReason::MissingSource ||
+         reason == CorpusAdmissionReason::InvalidSourceSchema ||
+         reason == CorpusAdmissionReason::AmbiguousSourceIdentity;
+}
+
 struct CorpusBuildArtifacts {
   CorpusManifest manifest{};
   std::optional<CorpusQualityReport> quality{};
+  std::uint32_t peak_live_fitted_surfaces{0};
 };
 
 void count_disposition(CorpusQualityReport &report, CorpusDisposition disposition) noexcept;
@@ -551,7 +778,8 @@ void count_disposition(CorpusQualityReport &report, CorpusDisposition dispositio
 [[nodiscard]] Result<CorpusBuildArtifacts>
 build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
                   const CorpusConfig &cfg, const CorpusAdmissionPolicy *admission,
-                  std::uint64_t input_fingerprint, std::uint64_t policy_fingerprint) {
+                  std::uint64_t input_fingerprint, std::uint64_t policy_fingerprint,
+                  bool write_sidecars) {
   if (boards.empty()) {
     return Err(ErrorCode::InvalidArgument, "build_corpus: empty boards");
   }
@@ -604,6 +832,9 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
     }
     // workers join here (jthread RAII) before we read `slots`.
   }
+
+  const std::size_t live_surfaces = static_cast<std::size_t>(std::count_if(
+      slots.begin(), slots.end(), [](const FitSlot &slot) { return slot.surface.has_value(); }));
 
   // ── Deterministic output order: (date asc, symbol asc, board index) ────────
   std::vector<std::size_t> order(n);
@@ -745,14 +976,19 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
   }
 
   // ── Manifest file ──────────────────────────────────────────────────────────
-  const std::string mpath = (std::filesystem::path(out_dir) / "manifest.tsv").generic_string();
-  ATX_TRY_VOID(write_manifest_file(mpath, man));
+  if (write_sidecars) {
+    const std::string mpath = (std::filesystem::path(out_dir) / "manifest.tsv").generic_string();
+    ATX_TRY_VOID(write_manifest_file(mpath, man));
+  }
 
   CorpusBuildArtifacts artifacts;
   artifacts.manifest = std::move(man);
+  artifacts.peak_live_fitted_surfaces = saturated_u32(live_surfaces);
   if (qualified) {
-    const std::string qpath = (std::filesystem::path(out_dir) / "quality.tsv").generic_string();
-    ATX_TRY_VOID(write_quality_report_file(qpath, quality));
+    if (write_sidecars) {
+      const std::string qpath = (std::filesystem::path(out_dir) / "quality.tsv").generic_string();
+      ATX_TRY_VOID(write_quality_report_file(qpath, quality));
+    }
     artifacts.quality = std::move(quality);
   }
   return Ok(std::move(artifacts));
@@ -760,22 +996,270 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
 
 } // namespace
 
+CorpusBuildSession::CorpusBuildSession(std::string out_dir, QualifiedCorpusConfig cfg)
+    : out_dir_{std::move(out_dir)}, cfg_{std::move(cfg)} {
+  quality_.input_fingerprint = cfg_.input_fingerprint;
+  quality_.policy_fingerprint =
+      cfg_.policy_fingerprint != 0u ? cfg_.policy_fingerprint : fingerprint_corpus_policy(cfg_);
+}
+
+Result<CorpusBuildSession> CorpusBuildSession::create(std::string_view out_dir,
+                                                      const QualifiedCorpusConfig &cfg) {
+  if (out_dir.empty()) {
+    return Err(ErrorCode::InvalidArgument, "CorpusBuildSession::create: empty out_dir");
+  }
+  std::error_code ec;
+  std::filesystem::create_directories(std::filesystem::path(out_dir), ec);
+  if (ec) {
+    return Err(ErrorCode::IoError, "CorpusBuildSession::create: cannot create out_dir");
+  }
+  return Ok(CorpusBuildSession{std::string(out_dir), cfg});
+}
+
+Status CorpusBuildSession::append_date(std::string_view date,
+                                       std::span<const CorpusCellInput> cells) {
+  if (finished_) {
+    return Err(ErrorCode::InvalidArgument,
+               "CorpusBuildSession::append_date: session already finished");
+  }
+  if (date.empty() || cells.empty() || (!last_date_.empty() && date <= last_date_)) {
+    return Err(ErrorCode::InvalidArgument,
+               "CorpusBuildSession::append_date: dates must be nonempty and strictly ascending");
+  }
+
+  std::vector<CorpusBoard> boards;
+  std::vector<CorpusSourceFailure> source_failures;
+  std::vector<std::string> symbols;
+  std::vector<std::pair<std::string, std::string>> fingerprint_cells;
+  std::string date_fingerprint_material;
+  boards.reserve(cells.size());
+  source_failures.reserve(cells.size());
+  symbols.reserve(cells.size());
+  for (const CorpusCellInput &cell : cells) {
+    if (const CorpusBoard *board = std::get_if<CorpusBoard>(&cell)) {
+      if (board->date != date) {
+        return Err(ErrorCode::InvalidArgument,
+                   "CorpusBuildSession::append_date: board date mismatch");
+      }
+      CorpusBoard copy = *board;
+      copy.symbol = canonical_corpus_symbol(copy.symbol);
+      if (copy.symbol.empty()) {
+        return Err(ErrorCode::InvalidArgument,
+                   "CorpusBuildSession::append_date: empty canonical symbol");
+      }
+      symbols.push_back(copy.symbol);
+      const std::uint64_t cell_fingerprint =
+          fingerprint_corpus_inputs(std::span<const CorpusBoard>(&copy, 1u));
+      std::string material;
+      fingerprint_append_text(material, date);
+      fingerprint_append_text(material, copy.symbol);
+      fingerprint_append_u64(material, cell_fingerprint);
+      fingerprint_cells.emplace_back(copy.symbol, std::move(material));
+      boards.push_back(std::move(copy));
+    } else {
+      CorpusSourceFailure failure = std::get<CorpusSourceFailure>(cell);
+      if (failure.date != date || !valid_source_failure_reason(failure.reason)) {
+        return Err(ErrorCode::InvalidArgument,
+                   "CorpusBuildSession::append_date: invalid source-failure cell");
+      }
+      failure.symbol = canonical_corpus_symbol(failure.symbol);
+      if (failure.symbol.empty()) {
+        return Err(ErrorCode::InvalidArgument,
+                   "CorpusBuildSession::append_date: empty canonical symbol");
+      }
+      symbols.push_back(failure.symbol);
+      std::string material;
+      fingerprint_append_text(material, date);
+      fingerprint_append_text(material, failure.symbol);
+      fingerprint_append_u64(material, static_cast<std::uint64_t>(failure.reason));
+      fingerprint_append_u64(material, failure.source_schema_version);
+      fingerprint_append_u64(material, failure.source_fingerprint);
+      fingerprint_append_u64(material, failure.market_input_fingerprint);
+      fingerprint_cells.emplace_back(failure.symbol, std::move(material));
+      source_failures.push_back(std::move(failure));
+    }
+  }
+  std::sort(symbols.begin(), symbols.end());
+  if (std::adjacent_find(symbols.begin(), symbols.end()) != symbols.end()) {
+    return Err(ErrorCode::AlreadyExists,
+               "CorpusBuildSession::append_date: duplicate canonical symbol");
+  }
+  std::sort(fingerprint_cells.begin(), fingerprint_cells.end(),
+            [](const auto &lhs, const auto &rhs) { return lhs.first < rhs.first; });
+  for (const auto &[symbol, material] : fingerprint_cells) {
+    (void)symbol;
+    date_fingerprint_material.append(material);
+  }
+  if (cells.size() > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()) ||
+      static_cast<std::uint64_t>(manifest_.n_boards) + cells.size() >
+          std::numeric_limits<std::uint32_t>::max()) {
+    return Err(ErrorCode::InvalidArgument,
+               "CorpusBuildSession::append_date: too many planned cells");
+  }
+
+  std::vector<CorpusEntry> manifest_entries;
+  std::vector<QualifiedCorpusEntry> quality_entries;
+  manifest_entries.reserve(cells.size());
+  quality_entries.reserve(cells.size());
+  std::uint32_t date_peak = 0u;
+  if (!boards.empty()) {
+    ATX_TRY(CorpusBuildArtifacts artifacts,
+            build_corpus_core(boards, out_dir_, cfg_.build, &cfg_.admission,
+                              quality_.input_fingerprint, quality_.policy_fingerprint, false));
+    date_peak = artifacts.peak_live_fitted_surfaces;
+    manifest_entries = std::move(artifacts.manifest.entries);
+    if (!artifacts.quality.has_value()) {
+      return Err(ErrorCode::Internal, "CorpusBuildSession::append_date: quality unavailable");
+    }
+    quality_entries = std::move(artifacts.quality->entries);
+  }
+
+  for (const CorpusSourceFailure &failure : source_failures) {
+    CorpusEntry legacy;
+    legacy.date = failure.date;
+    legacy.symbol = failure.symbol;
+    legacy.status = CorpusFitStatus::Failed;
+    legacy.error_code = failure.error_code;
+    manifest_entries.push_back(std::move(legacy));
+
+    QualifiedCorpusEntry quality;
+    quality.date = failure.date;
+    quality.symbol = failure.symbol;
+    quality.disposition = CorpusDisposition::SourceFailed;
+    quality.primary_reason = failure.reason;
+    quality.failed_checks = admission_reason_mask(failure.reason);
+    quality.source_or_fit_error = failure.error_code;
+    quality.quality.source_schema_version = failure.source_schema_version;
+    quality.quality.source_fingerprint = failure.source_fingerprint;
+    quality.quality.market_input_fingerprint = failure.market_input_fingerprint;
+    quality_entries.push_back(std::move(quality));
+  }
+
+  std::sort(manifest_entries.begin(), manifest_entries.end(),
+            [](const CorpusEntry &lhs, const CorpusEntry &rhs) { return lhs.symbol < rhs.symbol; });
+  std::sort(quality_entries.begin(), quality_entries.end(),
+            [](const QualifiedCorpusEntry &lhs, const QualifiedCorpusEntry &rhs) {
+              return lhs.symbol < rhs.symbol;
+            });
+
+  manifest_.dates.emplace_back(date);
+  for (CorpusEntry &entry : manifest_entries) {
+    switch (entry.status) {
+    case CorpusFitStatus::Ok:
+      ++manifest_.n_ok;
+      break;
+    case CorpusFitStatus::Failed:
+      ++manifest_.n_failed;
+      break;
+    case CorpusFitStatus::Skipped:
+      ++manifest_.n_skipped;
+      break;
+    }
+    manifest_.entries.push_back(std::move(entry));
+  }
+  for (QualifiedCorpusEntry &entry : quality_entries) {
+    count_disposition(quality_, entry.disposition);
+    quality_.entries.push_back(std::move(entry));
+  }
+  manifest_.n_boards += saturated_u32(cells.size());
+  quality_.n_planned += saturated_u32(cells.size());
+  peak_live_fitted_surfaces_ = std::max(peak_live_fitted_surfaces_, date_peak);
+  input_fingerprint_material_.append(date_fingerprint_material);
+  last_date_ = std::string(date);
+  return Ok();
+}
+
+Result<QualifiedCorpusManifest> CorpusBuildSession::finish() {
+  if (finished_ || manifest_.dates.empty()) {
+    return Err(ErrorCode::InvalidArgument, "CorpusBuildSession::finish: empty or already finished");
+  }
+  if (quality_.input_fingerprint == 0u) {
+    quality_.input_fingerprint = fingerprint_bytes(input_fingerprint_material_);
+  }
+  const std::string manifest_path =
+      (std::filesystem::path(out_dir_) / "manifest.tsv").generic_string();
+  const std::string quality_path =
+      (std::filesystem::path(out_dir_) / "quality.tsv").generic_string();
+  const std::string manifest_pending = manifest_path + ".pending";
+  const std::string quality_pending = quality_path + ".pending";
+  ATX_TRY_VOID(write_manifest_file(manifest_pending, manifest_));
+  const Status quality_write = write_quality_report_file(quality_pending, quality_);
+  if (!quality_write) {
+    std::error_code cleanup;
+    std::filesystem::remove(manifest_pending, cleanup);
+    return Err(quality_write.error());
+  }
+  std::error_code rename_error;
+  std::filesystem::rename(manifest_pending, manifest_path, rename_error);
+  if (rename_error) {
+    std::error_code cleanup;
+    std::filesystem::remove(manifest_pending, cleanup);
+    std::filesystem::remove(quality_pending, cleanup);
+    return Err(ErrorCode::IoError, "CorpusBuildSession::finish: manifest commit failed");
+  }
+  std::filesystem::rename(quality_pending, quality_path, rename_error);
+  if (rename_error) {
+    std::error_code cleanup;
+    std::filesystem::remove(quality_pending, cleanup);
+    std::filesystem::remove(manifest_path, cleanup);
+    return Err(ErrorCode::IoError, "CorpusBuildSession::finish: quality commit failed");
+  }
+  finished_ = true;
+  return Ok(QualifiedCorpusManifest{std::move(manifest_), std::move(quality_),
+                                    peak_live_fitted_surfaces_});
+}
+
 Result<CorpusManifest> build_corpus(std::span<const CorpusBoard> boards, std::string_view out_dir,
                                     const CorpusConfig &cfg) {
-  ATX_TRY(CorpusBuildArtifacts artifacts, build_corpus_core(boards, out_dir, cfg, nullptr, 0u, 0u));
+  ATX_TRY(CorpusBuildArtifacts artifacts,
+          build_corpus_core(boards, out_dir, cfg, nullptr, 0u, 0u, true));
   return Ok(std::move(artifacts.manifest));
 }
 
 Result<QualifiedCorpusManifest> build_qualified_corpus(std::span<const CorpusBoard> boards,
                                                        std::string_view out_dir,
                                                        const QualifiedCorpusConfig &cfg) {
-  ATX_TRY(CorpusBuildArtifacts artifacts,
-          build_corpus_core(boards, out_dir, cfg.build, &cfg.admission, cfg.input_fingerprint,
-                            cfg.policy_fingerprint));
-  if (!artifacts.quality.has_value()) {
-    return Err(ErrorCode::Internal, "build_qualified_corpus: quality report unavailable");
+  if (boards.empty() || out_dir.empty()) {
+    return Err(ErrorCode::InvalidArgument, "build_qualified_corpus: empty boards or out_dir");
   }
-  return Ok(QualifiedCorpusManifest{std::move(artifacts.manifest), std::move(*artifacts.quality)});
+  QualifiedCorpusConfig resolved = cfg;
+  if (resolved.input_fingerprint == 0u) {
+    resolved.input_fingerprint = fingerprint_corpus_inputs(boards);
+  }
+  if (resolved.policy_fingerprint == 0u) {
+    resolved.policy_fingerprint = fingerprint_corpus_policy(resolved);
+  }
+  ATX_TRY(CorpusBuildSession session, CorpusBuildSession::create(out_dir, resolved));
+
+  std::vector<std::size_t> order(boards.size());
+  for (std::size_t i = 0u; i < order.size(); ++i) {
+    order[i] = i;
+  }
+  std::sort(order.begin(), order.end(), [&boards](std::size_t lhs, std::size_t rhs) {
+    if (boards[lhs].date != boards[rhs].date) {
+      return boards[lhs].date < boards[rhs].date;
+    }
+    if (boards[lhs].symbol != boards[rhs].symbol) {
+      return boards[lhs].symbol < boards[rhs].symbol;
+    }
+    return lhs < rhs;
+  });
+  std::size_t first = 0u;
+  while (first < order.size()) {
+    const std::string &date = boards[order[first]].date;
+    std::size_t last = first + 1u;
+    while (last < order.size() && boards[order[last]].date == date) {
+      ++last;
+    }
+    std::vector<CorpusCellInput> cells;
+    cells.reserve(last - first);
+    for (std::size_t i = first; i < last; ++i) {
+      cells.emplace_back(boards[order[i]]);
+    }
+    ATX_TRY_VOID(session.append_date(date, cells));
+    first = last;
+  }
+  return session.finish();
 }
 
 // ── Manifest TSV (de)serialization ──────────────────────────────────────────
@@ -787,12 +1271,14 @@ constexpr std::string_view kQualityReportMagic = "atx-corpus-quality\tv1";
 constexpr std::string_view kQualityColumns =
     "date\tsymbol\tdisposition\tprimary_reason\tfailed_checks\terror_code\tprofile\t"
     "decision_source\tpreset\tprimary_kind\tfinal_kind\tused_fallback\tcurve_pinned\t"
-    "final_kind_consistent\tprovenance_complete\tn_raw_quotes\tn_two_sided\tn_slices\t"
-    "n_holdout\tn_fit_scorable\tn_fit_in_band\tn_oos_in_band\tfit_in_band\t"
+    "final_kind_consistent\tprovenance_complete\tsource_schema_version\t"
+    "source_fingerprint\tmarket_input_fingerprint\tdividend_treatment\t"
+    "n_cash_dividends\tn_raw_quotes\tn_two_sided\tn_slices\tn_holdout\t"
+    "n_fit_scorable\tn_fit_in_band\tn_oos_in_band\tfit_in_band\t"
     "oos_in_band\toos_vega_weighted\toos_vega_weight_in_band\t"
     "oos_vega_weight_total\tmean_vol_rmse\tmean_reduced_chi2\t"
     "calendar_violations\tarchive_path";
-constexpr std::size_t kQualityFieldCount = 31u;
+constexpr std::size_t kQualityFieldCount = 36u;
 
 // Append an unsigned integer as decimal text.
 void append_u32(std::string &out, std::uint32_t v) {
@@ -1007,6 +1493,14 @@ void append_optional_u32(std::string &out, const std::optional<std::uint32_t> &v
   return true;
 }
 
+[[nodiscard]] bool to_dividend_treatment(std::uint32_t v, CorpusDividendTreatment &out) noexcept {
+  if (v != static_cast<std::uint32_t>(CorpusDividendTreatment::EscrowedForward)) {
+    return false;
+  }
+  out = CorpusDividendTreatment::EscrowedForward;
+  return true;
+}
+
 [[nodiscard]] bool valid_failure_mask(CorpusAdmissionFailureMask mask) noexcept {
   constexpr unsigned count = static_cast<unsigned>(CorpusAdmissionReason::Count);
   constexpr CorpusAdmissionFailureMask valid = (CorpusAdmissionFailureMask{1u} << count) - 1u;
@@ -1018,26 +1512,29 @@ void append_quality_entry(std::string &out, const QualifiedCorpusEntry &e) {
   out.append(e.date);
   out.push_back('\t');
   out.append(e.symbol);
-  for (const std::uint32_t v : {static_cast<std::uint32_t>(e.disposition),
-                                static_cast<std::uint32_t>(e.primary_reason),
-                                e.failed_checks,
-                                static_cast<std::uint32_t>(e.source_or_fit_error),
-                                static_cast<std::uint32_t>(e.quality.profile),
-                                static_cast<std::uint32_t>(e.quality.decision_source),
-                                static_cast<std::uint32_t>(e.quality.preset),
-                                static_cast<std::uint32_t>(e.quality.primary_kind),
-                                static_cast<std::uint32_t>(e.quality.final_kind),
-                                e.quality.used_fallback ? 1u : 0u,
-                                e.quality.curve_pinned ? 1u : 0u,
-                                e.quality.final_kind_consistent ? 1u : 0u,
-                                e.quality.provenance_complete ? 1u : 0u,
-                                e.quality.n_raw_quotes,
-                                e.quality.n_two_sided,
-                                e.quality.n_slices,
-                                e.quality.n_holdout,
-                                e.quality.n_fit_scorable,
-                                e.quality.n_fit_in_band,
-                                e.quality.n_oos_in_band}) {
+  for (const std::uint32_t v :
+       {static_cast<std::uint32_t>(e.disposition), static_cast<std::uint32_t>(e.primary_reason),
+        e.failed_checks, static_cast<std::uint32_t>(e.source_or_fit_error),
+        static_cast<std::uint32_t>(e.quality.profile),
+        static_cast<std::uint32_t>(e.quality.decision_source),
+        static_cast<std::uint32_t>(e.quality.preset),
+        static_cast<std::uint32_t>(e.quality.primary_kind),
+        static_cast<std::uint32_t>(e.quality.final_kind), e.quality.used_fallback ? 1u : 0u,
+        e.quality.curve_pinned ? 1u : 0u, e.quality.final_kind_consistent ? 1u : 0u,
+        e.quality.provenance_complete ? 1u : 0u}) {
+    out.push_back('\t');
+    append_u32(out, v);
+  }
+  out.push_back('\t');
+  append_u32(out, e.quality.source_schema_version);
+  out.push_back('\t');
+  append_u64(out, e.quality.source_fingerprint);
+  out.push_back('\t');
+  append_u64(out, e.quality.market_input_fingerprint);
+  for (const std::uint32_t v :
+       {static_cast<std::uint32_t>(e.quality.dividend_treatment), e.quality.n_cash_dividends,
+        e.quality.n_raw_quotes, e.quality.n_two_sided, e.quality.n_slices, e.quality.n_holdout,
+        e.quality.n_fit_scorable, e.quality.n_fit_in_band, e.quality.n_oos_in_band}) {
     out.push_back('\t');
     append_u32(out, v);
   }
@@ -1065,6 +1562,7 @@ void append_quality_entry(std::string &out, const QualifiedCorpusEntry &e) {
   std::uint32_t preset = 0u;
   std::uint32_t primary = 0u;
   std::uint32_t final = 0u;
+  std::uint32_t dividend_treatment = 0u;
   return parse_u32(f[2], disposition) && to_disposition(disposition, e.disposition) &&
          parse_u32(f[3], reason) && to_admission_reason(reason, e.primary_reason) &&
          parse_u32(f[5], error) && to_error_code(error, e.source_or_fit_error) &&
@@ -1072,7 +1570,9 @@ void append_quality_entry(std::string &out, const QualifiedCorpusEntry &e) {
          parse_u32(f[7], source) && to_decision_source(source, e.quality.decision_source) &&
          parse_u32(f[8], preset) && to_fit_preset(preset, e.quality.preset) &&
          parse_u32(f[9], primary) && to_curve_kind(primary, e.quality.primary_kind) &&
-         parse_u32(f[10], final) && to_curve_kind(final, e.quality.final_kind);
+         parse_u32(f[10], final) && to_curve_kind(final, e.quality.final_kind) &&
+         parse_u32(f[18], dividend_treatment) &&
+         to_dividend_treatment(dividend_treatment, e.quality.dividend_treatment);
 }
 
 [[nodiscard]] bool parse_quality_scalars(const std::vector<std::string_view> &f,
@@ -1081,18 +1581,21 @@ void append_quality_entry(std::string &out, const QualifiedCorpusEntry &e) {
          parse_bool(f[11], e.quality.used_fallback) && parse_bool(f[12], e.quality.curve_pinned) &&
          parse_bool(f[13], e.quality.final_kind_consistent) &&
          parse_bool(f[14], e.quality.provenance_complete) &&
-         parse_u32(f[15], e.quality.n_raw_quotes) && parse_u32(f[16], e.quality.n_two_sided) &&
-         parse_u32(f[17], e.quality.n_slices) && parse_u32(f[18], e.quality.n_holdout) &&
-         parse_u32(f[19], e.quality.n_fit_scorable) && parse_u32(f[20], e.quality.n_fit_in_band) &&
-         parse_u32(f[21], e.quality.n_oos_in_band) &&
-         parse_optional_double(f[22], e.quality.fit_in_band) &&
-         parse_optional_double(f[23], e.quality.oos_in_band) &&
-         parse_optional_double(f[24], e.quality.oos_vega_weighted) &&
-         parse_optional_double(f[25], e.quality.oos_vega_weight_in_band) &&
-         parse_optional_double(f[26], e.quality.oos_vega_weight_total) &&
-         parse_optional_double(f[27], e.quality.mean_vol_rmse) &&
-         parse_optional_double(f[28], e.quality.mean_reduced_chi2) &&
-         parse_optional_u32(f[29], e.quality.calendar_violations);
+         parse_u32(f[15], e.quality.source_schema_version) &&
+         parse_u64(f[16], e.quality.source_fingerprint) &&
+         parse_u64(f[17], e.quality.market_input_fingerprint) &&
+         parse_u32(f[19], e.quality.n_cash_dividends) && parse_u32(f[20], e.quality.n_raw_quotes) &&
+         parse_u32(f[21], e.quality.n_two_sided) && parse_u32(f[22], e.quality.n_slices) &&
+         parse_u32(f[23], e.quality.n_holdout) && parse_u32(f[24], e.quality.n_fit_scorable) &&
+         parse_u32(f[25], e.quality.n_fit_in_band) && parse_u32(f[26], e.quality.n_oos_in_band) &&
+         parse_optional_double(f[27], e.quality.fit_in_band) &&
+         parse_optional_double(f[28], e.quality.oos_in_band) &&
+         parse_optional_double(f[29], e.quality.oos_vega_weighted) &&
+         parse_optional_double(f[30], e.quality.oos_vega_weight_in_band) &&
+         parse_optional_double(f[31], e.quality.oos_vega_weight_total) &&
+         parse_optional_double(f[32], e.quality.mean_vol_rmse) &&
+         parse_optional_double(f[33], e.quality.mean_reduced_chi2) &&
+         parse_optional_u32(f[34], e.quality.calendar_violations);
 }
 
 [[nodiscard]] bool ratio_evidence_consistent(const std::optional<double> &ratio,
@@ -1139,7 +1642,7 @@ void append_quality_entry(std::string &out, const QualifiedCorpusEntry &e) {
 [[nodiscard]] Result<QualifiedCorpusEntry> parse_quality_entry(std::string_view line) {
   const std::vector<std::string_view> f = split_tabs(line);
   if (f.size() != kQualityFieldCount) {
-    return Err(ErrorCode::ParseError, "parse_quality_report: entry row must have 31 fields");
+    return Err(ErrorCode::ParseError, "parse_quality_report: entry row must have 36 fields");
   }
 
   QualifiedCorpusEntry e;
@@ -1149,7 +1652,7 @@ void append_quality_entry(std::string &out, const QualifiedCorpusEntry &e) {
       !parse_quality_scalars(f, e) || !quality_evidence_consistent(e.quality)) {
     return Err(ErrorCode::ParseError, "parse_quality_report: invalid entry field");
   }
-  e.archive_path = std::string(f[30]);
+  e.archive_path = std::string(f[35]);
 
   const bool admitted = e.disposition == CorpusDisposition::Admitted;
   if (admitted && (e.primary_reason != CorpusAdmissionReason::None || e.failed_checks != 0u)) {

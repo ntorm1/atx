@@ -29,12 +29,14 @@
 // duration of the call and returns an owning panel. No shared mutable state.
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "atx/vol/curve.hpp" // DividendEvent
 #include "atx/vol/data.hpp"  // QuoteFrame
+#include "atx/vol/fit_policy.hpp" // FitContext
 #include "atx/vol/types.hpp" // Result, Side
 
 namespace atx::vol {
@@ -47,6 +49,42 @@ struct OsiSymbol {
   std::string expiry_iso; // "YYYY-MM-DD", year = 2000 + YY
   Side side = Side::Call;
   double strike = 0.0; // dollars (8-digit field / 1000)
+};
+
+enum class OpraProvenanceMode : std::uint8_t {
+  Compatibility = 0,
+  Strict = 1,
+};
+
+// One date-scoped Databento source identity. Raw OSI text is dictionary-owned
+// once per instrument id; observations carry only the aligned numeric id plane.
+struct OpraInstrumentIdentity {
+  std::uint32_t instrument_id{0};
+  std::string raw_symbol{};
+
+  [[nodiscard]] bool operator==(const OpraInstrumentIdentity &) const = default;
+};
+
+struct ExternalInputTag {
+  std::string source{};
+  std::string as_of{};
+
+  [[nodiscard]] bool operator==(const ExternalInputTag &) const = default;
+};
+
+enum class DividendTreatment : std::uint8_t {
+  EscrowedForward = 0,
+};
+
+struct OpraMarketInputProvenance {
+  ExternalInputTag spot{};
+  ExternalInputTag rates{};
+  ExternalInputTag dividends{};
+  ExternalInputTag fit_context{};
+  DividendTreatment dividend_treatment{DividendTreatment::EscrowedForward};
+  std::uint64_t fingerprint{0};
+
+  [[nodiscard]] bool operator==(const OpraMarketInputProvenance &) const = default;
 };
 
 // Parse an OSI/OCC option symbol (variable root padding tolerated).
@@ -81,6 +119,9 @@ struct OpraLoadSpec {
   // bit-identical — because a 1-pillar curve does not interpolate flat.
   std::vector<double> yc_pillar_t; // pillar year-fractions (empty => flat r)
   std::vector<double> yc_pillar_r; // pillar zero rates (same length as _t)
+  OpraProvenanceMode provenance_mode{OpraProvenanceMode::Compatibility};
+  FitContext fit_context{};
+  OpraMarketInputProvenance market_input_provenance{};
 };
 
 // Result of loading one OPRA cbbo-1m slice.
@@ -92,6 +133,13 @@ struct OpraPanel {
   std::size_t n_contracts = 0; // rows kept
   std::size_t n_expiries = 0;  // distinct expiries kept
   std::size_t n_dropped = 0;   // rows skipped (bad symbol / unset px / crossed)
+  std::uint32_t source_schema_version{1}; // 1=legacy, 2=instrument_id
+  std::uint64_t source_fingerprint{0};
+  bool provenance_complete{false};
+  std::vector<std::uint32_t> source_instrument_ids;      // aligned with frame.rows
+  std::vector<OpraInstrumentIdentity> source_identities; // id ascending
+  FitContext fit_context{};
+  OpraMarketInputProvenance market_input_provenance{};
 };
 
 // Load an OPRA cbbo-1m Parquet slice into a QuoteFrame.

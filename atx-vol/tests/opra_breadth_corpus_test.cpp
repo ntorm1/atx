@@ -1,13 +1,18 @@
 // Real OPRA unified-policy breadth gate. Payloads are optional external fixtures;
 // a fixture-enabled run requires the complete fourteen-board matrix.
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <filesystem>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <gtest/gtest.h>
 
 #include "atx/vol/chain.hpp"
+#include "atx/vol/corpus.hpp"
 #include "atx/vol/pricer_fitter.hpp"
 #include "support/breadth_fit_fixture.hpp"
 
@@ -54,6 +59,68 @@ TEST(OpraBreadthCorpus, UnifiedPolicyFitsEveryAvailableBoard) {
   }
   EXPECT_EQ(loaded, kBreadthFitFixtures.size())
       << "partial breadth corpus: materialize all fourteen fixtures";
+}
+
+TEST(OpraBreadthCorpus, CompleteCachedSetProducesQualifiedScoreboard) {
+  struct LoadedFixture {
+    const BreadthFitFixture *fixture{nullptr};
+    OpraBoard board;
+  };
+  std::vector<LoadedFixture> loaded;
+  loaded.reserve(kBreadthFitFixtures.size());
+  for (const BreadthFitFixture &fixture : kBreadthFitFixtures) {
+    auto board = load_breadth_fit_fixture(fixture);
+    if (board.has_value()) {
+      loaded.push_back(LoadedFixture{&fixture, std::move(*board)});
+    }
+  }
+  if (loaded.empty()) {
+    GTEST_SKIP() << "OPRA breadth corpus not found under data/vol_breadth_slices";
+  }
+  ASSERT_EQ(loaded.size(), kBreadthFitFixtures.size())
+      << "partial breadth corpus: materialize all fourteen fixtures";
+
+  std::vector<CorpusBoard> boards;
+  boards.reserve(loaded.size());
+  for (const LoadedFixture &item : loaded) {
+    std::string date = item.fixture->snapshot_iso;
+    std::replace(date.begin(), date.end(), ':', '-');
+    CorpusBoard board;
+    board.date = std::move(date);
+    board.symbol = item.fixture->symbol;
+    board.frame = item.board.panel.frame;
+    board.env = item.board.env();
+    board.fit_context = breadth_fit_context(*item.fixture);
+    board.source_schema_version = item.board.panel.source_schema_version;
+    board.source_fingerprint = item.board.panel.source_fingerprint;
+    // Cached legacy fixtures predate the instrument-id column. The scoreboard
+    // remains diagnostic; strict real-pilot admission requires new v2 pulls.
+    board.source_provenance_complete = item.board.panel.provenance_complete;
+    boards.push_back(std::move(board));
+  }
+
+  QualifiedCorpusConfig config;
+  config.admission.enabled = true;
+  for (CorpusAdmissionRule &rule : config.admission.by_profile) {
+    rule.require_calendar_arb_free = false;
+  }
+  config.build.write_opts.created_ts_ns = 1;
+  const std::filesystem::path out =
+      std::filesystem::temp_directory_path() / "atx-opra-qualified-breadth";
+  std::error_code ec;
+  std::filesystem::remove_all(out, ec);
+  auto corpus = build_qualified_corpus(boards, out.string(), config);
+  ASSERT_TRUE(corpus.has_value()) << corpus.error().to_string();
+  EXPECT_EQ(corpus->quality.n_planned, kBreadthFitFixtures.size());
+  EXPECT_EQ(corpus->quality.n_admitted, kBreadthFitFixtures.size());
+  EXPECT_EQ(corpus->quality.entries.size(), kBreadthFitFixtures.size());
+
+  const auto vxx =
+      std::find_if(corpus->quality.entries.begin(), corpus->quality.entries.end(),
+                   [](const QualifiedCorpusEntry &entry) { return entry.symbol == "VXX"; });
+  ASSERT_NE(vxx, corpus->quality.entries.end());
+  EXPECT_EQ(vxx->quality.profile, ProfileKind::VolProduct)
+      << "VXX remains a distinct diagnostic profile";
 }
 
 } // namespace

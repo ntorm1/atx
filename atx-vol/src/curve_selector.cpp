@@ -48,12 +48,37 @@ struct Accum {
   std::size_t dof_sum = 0, n_slices = 0;
 };
 
+[[nodiscard]] bool valid_expiry_rates(const SurfaceParityInputs &in,
+                                      const Underlying &under) noexcept {
+  if (in.expiry_rates.empty() && in.expiry_rate_T.empty()) {
+    return true;
+  }
+  if (in.expiry_rates.size() != under.chains.size() ||
+      in.expiry_rate_T.size() != under.chains.size()) {
+    return false;
+  }
+  for (std::size_t i = 0; i < under.chains.size(); ++i) {
+    if (!std::isfinite(in.expiry_rates[i]) || !std::isfinite(in.expiry_rate_T[i]) ||
+        !(in.expiry_rate_T[i] > 0.0) || in.expiry_rate_T[i] != under.chains[i].T) {
+      return false;
+    }
+  }
+  return true;
+}
+
+[[nodiscard]] double expiry_rate(const SurfaceParityInputs &in, std::size_t index) noexcept {
+  return in.expiry_rates.empty() ? in.r : in.expiry_rates[index];
+}
+
 } // namespace
 
 Result<SelectorResult> select_curve(const Underlying &under, const SurfaceParityInputs &in,
                                     const SelectorConfig &sel) {
   if (!(in.S > 0.0) || !std::isfinite(in.r)) {
     return Err(ErrorCode::InvalidArgument, "select_curve: non-positive S or non-finite r");
+  }
+  if (!valid_expiry_rates(in, under)) {
+    return Err(ErrorCode::InvalidArgument, "select_curve: invalid expiry rate vectors");
   }
   const std::vector<CurveConfig> candidates =
       sel.candidates.empty() ? default_selector_candidates() : sel.candidates;
@@ -78,7 +103,9 @@ Result<SelectorResult> select_curve(const Underlying &under, const SurfaceParity
 
   std::vector<Accum> acc(candidates.size());
   unsigned scored_expiries = 0;
-  for (const Chain &chain : under.chains) {
+  for (std::size_t chain_index = 0u; chain_index < under.chains.size(); ++chain_index) {
+    const Chain &chain = under.chains[chain_index];
+    const double rate = expiry_rate(in, chain_index);
     const double T = chain.T;
     if (!(T > 0.019)) {
       continue;
@@ -86,7 +113,7 @@ Result<SelectorResult> select_curve(const Underlying &under, const SurfaceParity
     if (sel.oos_max_expiries > 0 && scored_expiries >= sel.oos_max_expiries) {
       break;
     }
-    const auto d = resolve_chain_forward(chain, in.S, in.r, in.cash_divs, in.now_ts_ns, in.deam);
+    const auto d = resolve_chain_forward(chain, in.S, rate, in.cash_divs, in.now_ts_ns, in.deam);
     if (!d) {
       continue;
     }
@@ -94,11 +121,11 @@ Result<SelectorResult> select_curve(const Underlying &under, const SurfaceParity
     if (!(F > 0.0) || !std::isfinite(F)) {
       continue;
     }
-    const double q_eff = in.r - std::log(F / in.S) / T;
-    const double df = std::exp(-in.r * T);
+    const double q_eff = rate - std::log(F / in.S) / T;
+    const double df = std::exp(-rate * T);
 
     const auto am = build_observations(chain, F, T, df, sel_calib);
-    const auto eu = build_observations_european(chain, in.S, in.r, F, T, df, sel_calib);
+    const auto eu = build_observations_european(chain, in.S, rate, F, T, df, sel_calib);
     if (!am || !eu) {
       continue;
     }
@@ -141,7 +168,7 @@ Result<SelectorResult> select_curve(const Underlying &under, const SurfaceParity
         if (!std::isfinite(miv)) {
           continue;
         }
-        const auto fv = american_price(in.S, oa.K, T, miv, in.r, q_eff, oa.side, in.deam.method,
+        const auto fv = american_price(in.S, oa.K, T, miv, rate, q_eff, oa.side, in.deam.method,
                                        in.deam.al_opts);
         if (!fv) {
           continue;

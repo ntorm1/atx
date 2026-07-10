@@ -133,6 +133,9 @@ class PricedSurface {
   // `q_eff_at` exactly.
   [[nodiscard]] double forward_at(double T) const noexcept;
   [[nodiscard]] double q_eff_at(double T) const noexcept;
+  // Per-expiry rate derived from each stored curve's discount factor. Old
+  // archives fall back to `PricingContext::r` if a slice carries invalid df/T.
+  [[nodiscard]] double rate_at(double T) const noexcept;
 
   // ── Introspection ──────────────────────────────────────────────────────────
 
@@ -151,12 +154,17 @@ class PricedSurface {
 
   // The interpolated (forward, q_eff) at T — the session's exact clamp-outside /
   // linear-between mechanic. Precondition: ctx_ non-empty, ascending T.
-  struct ForwardCarry { double forward{0.0}; double q_eff{0.0}; };
+  struct ForwardCarry {
+    double forward{0.0};
+    double q_eff{0.0};
+    double rate{0.0};
+  };
   [[nodiscard]] ForwardCarry interp_forward(double T) const noexcept;
 
   CurveSurface surface_;              // fitted curves (any kind), ascending T
   std::vector<SliceContext> ctx_;     // per-slice carry (‖ surface_ slices)
   PricingContext pricing_;            // cold re-pricing scalars
+  bool term_rates_{false};            // any slice df differs from scalar-r df
 };
 
 }  // namespace atx::vol

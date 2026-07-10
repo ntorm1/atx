@@ -1,6 +1,7 @@
 #include "atx/vol/opra_panel.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <charconv>
 #include <cmath>
 #include <cstdint>
@@ -15,6 +16,7 @@
 
 #include "atx/core/datetime.hpp"       // time::Timestamp
 #include "atx/core/error.hpp"          // Ok, Err, ErrorCode, ATX_TRY
+#include "atx/core/hash.hpp"           // hash_bytes
 #include "atx/core/io/parquet.hpp"     // read_parquet, ParquetTable, DType
 #include "atx/vol/data.hpp"            // QuoteFrame/Row, build_uid_list, year_fraction
 #include "atx/vol/dividend.hpp"        // imply_forward_atm_pcp, CoTermQuote
@@ -54,6 +56,60 @@ constexpr double kPxScale = 1e-9;
   const char* last = s.data() + s.size();
   const std::from_chars_result res = std::from_chars(first, last, out);
   return res.ec == std::errc{} && res.ptr == last;
+}
+
+[[nodiscard]] bool numeric_symbol_fallback(std::string_view symbol,
+                                           std::int64_t instrument_id) noexcept {
+  std::int64_t parsed = 0;
+  const std::from_chars_result result =
+      std::from_chars(symbol.data(), symbol.data() + symbol.size(), parsed);
+  return result.ec == std::errc{} && result.ptr == symbol.data() + symbol.size() &&
+         parsed == instrument_id;
+}
+
+void append_source_u64(std::string &out, std::uint64_t value) {
+  char text[32];
+  const auto [ptr, ec] = std::to_chars(text, text + sizeof text, value);
+  (void)ec;
+  out.append(text, static_cast<std::size_t>(ptr - text));
+  out.push_back('|');
+}
+
+void append_source_text(std::string &out, std::string_view value) {
+  append_source_u64(out, value.size());
+  out.append(value);
+  out.push_back('|');
+}
+
+[[nodiscard]] std::uint64_t
+source_fingerprint(const QuoteFrame &frame, std::span<const std::uint32_t> instrument_ids,
+                   const std::map<std::uint32_t, std::string> &identities,
+                   std::uint32_t schema_version) {
+  std::string bytes;
+  append_source_u64(bytes, schema_version);
+  append_source_text(bytes, frame.snapshot_iso);
+  append_source_u64(bytes, static_cast<std::uint64_t>(frame.snapshot_ts_ns));
+  append_source_text(bytes, frame.uid);
+  append_source_u64(bytes, frame.rows.size());
+  for (std::size_t i = 0; i < frame.rows.size(); ++i) {
+    const QuoteRow &row = frame.rows[i];
+    append_source_text(bytes, row.uid);
+    append_source_text(bytes, row.expiry_iso);
+    append_source_u64(bytes, std::bit_cast<std::uint64_t>(row.strike));
+    append_source_u64(bytes, static_cast<std::uint64_t>(row.side));
+    append_source_u64(bytes, std::bit_cast<std::uint64_t>(row.bid));
+    append_source_u64(bytes, std::bit_cast<std::uint64_t>(row.ask));
+    append_source_u64(bytes, static_cast<std::uint64_t>(row.bid_size));
+    append_source_u64(bytes, static_cast<std::uint64_t>(row.ask_size));
+    append_source_u64(bytes, i < instrument_ids.size() ? instrument_ids[i] : 0u);
+  }
+  append_source_u64(bytes, identities.size());
+  for (const auto &[instrument_id, raw_symbol] : identities) {
+    append_source_u64(bytes, instrument_id);
+    append_source_text(bytes, raw_symbol);
+  }
+  const std::uint64_t hash = atx::core::hash_bytes(bytes.data(), bytes.size());
+  return hash == 0u ? 1u : hash;
 }
 
 // Record the first row's `ts` as epoch nanoseconds, tolerating either the real
@@ -214,6 +270,15 @@ Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
   ATX_TRY(const auto bid_null, table.null_mask("bid_px"));
   ATX_TRY(const auto ask_null, table.null_mask("ask_px"));
 
+  std::span<const std::int64_t> instrument_ids;
+  const bool has_instrument_id = schema.find("instrument_id") != nullptr;
+  if (has_instrument_id) {
+    ATX_TRY(auto ids, table.column_view<std::int64_t>("instrument_id"));
+    instrument_ids = ids;
+  } else if (spec.provenance_mode == OpraProvenanceMode::Strict) {
+    return Err(ErrorCode::InvalidArgument, "strict OPRA provenance requires 'instrument_id'");
+  }
+
   std::vector<std::string_view> underlyings;
   const bool has_underlying = schema.find("underlying") != nullptr;
   if (has_underlying) {
@@ -264,6 +329,36 @@ Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
     }
   }
 
+  bool provenance_complete = has_instrument_id;
+  std::map<std::uint32_t, std::string> source_mappings;
+  if (has_instrument_id) {
+    for (std::size_t i = 0; i < n_rows; ++i) {
+      const std::string_view und = has_underlying ? underlyings[i] : std::string_view{};
+      if (!filter.empty() && und != filter) {
+        continue;
+      }
+      const std::int64_t raw_id = instrument_ids[i];
+      const bool valid_id = raw_id > 0 && raw_id <= static_cast<std::int64_t>(
+                                                        std::numeric_limits<std::uint32_t>::max());
+      const bool fallback = numeric_symbol_fallback(symbols[i], raw_id);
+      if (!valid_id || fallback) {
+        provenance_complete = false;
+        if (spec.provenance_mode == OpraProvenanceMode::Strict) {
+          return Err(ErrorCode::InvalidArgument,
+                     fallback ? "strict OPRA provenance rejects numeric-symbol fallback"
+                              : "strict OPRA provenance rejects invalid instrument_id");
+        }
+        continue;
+      }
+      const std::uint32_t id = static_cast<std::uint32_t>(raw_id);
+      const auto [it, inserted] = source_mappings.try_emplace(id, std::string(symbols[i]));
+      if (!inserted && it->second != symbols[i]) {
+        return Err(ErrorCode::InvalidArgument,
+                   "ambiguous instrument_id maps to multiple raw symbols");
+      }
+    }
+  }
+
   // Snapshot stamp is hoisted above the row loop so the loop can drop expired /
   // same-day contracts by year-fraction. (snapshot_ts_ns / snapshot_iso depend only
   // on the table + spec, never on the kept rows.)
@@ -275,6 +370,9 @@ Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
 
   std::vector<QuoteRow> rows;
   rows.reserve(n_rows);
+  std::vector<std::uint32_t> kept_instrument_ids;
+  kept_instrument_ids.reserve(n_rows);
+  std::map<std::uint32_t, std::string> kept_mappings;
   std::size_t n_dropped = 0;
   std::string first_underlying;
   std::string first_root;
@@ -326,6 +424,15 @@ Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
     row.bid_size = static_cast<std::int32_t>(bid_sz[i]);
     row.ask_size = static_cast<std::int32_t>(ask_sz[i]);
     rows.push_back(std::move(row));
+    if (has_instrument_id && instrument_ids[i] > 0 &&
+        instrument_ids[i] <= static_cast<std::int64_t>(std::numeric_limits<std::uint32_t>::max()) &&
+        !numeric_symbol_fallback(symbols[i], instrument_ids[i])) {
+      const std::uint32_t id = static_cast<std::uint32_t>(instrument_ids[i]);
+      kept_instrument_ids.push_back(id);
+      kept_mappings.try_emplace(id, std::string(symbols[i]));
+    } else {
+      kept_instrument_ids.push_back(0u);
+    }
   }
 
   std::string frame_uid = spec.underlying;
@@ -419,6 +526,17 @@ Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
   panel.n_contracts = n_contracts;
   panel.n_expiries = n_expiries;
   panel.n_dropped = n_dropped;
+  panel.source_schema_version = has_instrument_id ? 2u : 1u;
+  panel.source_fingerprint = source_fingerprint(panel.frame, kept_instrument_ids, kept_mappings,
+                                                panel.source_schema_version);
+  panel.provenance_complete = provenance_complete;
+  panel.source_instrument_ids = std::move(kept_instrument_ids);
+  panel.source_identities.reserve(kept_mappings.size());
+  for (auto &[instrument_id, raw_symbol] : kept_mappings) {
+    panel.source_identities.push_back(OpraInstrumentIdentity{instrument_id, std::move(raw_symbol)});
+  }
+  panel.fit_context = spec.fit_context;
+  panel.market_input_provenance = spec.market_input_provenance;
   return Ok(std::move(panel));
 }
 

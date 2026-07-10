@@ -118,6 +118,7 @@ struct ParityData {
 struct ChainPrepass {
   bool usable = false;
   double T = 0.0;
+  double rate = 0.0;
   double F = 0.0;
   double borrow = 0.0;
   double q_eff = 0.0;
@@ -128,6 +129,23 @@ struct ChainPrepass {
   double ms_obs_eu = 0.0;
   double ms_parity_data = 0.0;
 };
+
+[[nodiscard]] bool valid_expiry_rates(const SurfaceParityInputs &in,
+                                      const Underlying &under) noexcept {
+  return (in.expiry_rates.empty() && in.expiry_rate_T.empty()) ||
+         (in.expiry_rates.size() == under.chains.size() &&
+          in.expiry_rate_T.size() == under.chains.size() &&
+          std::all_of(in.expiry_rates.begin(), in.expiry_rates.end(),
+                      [](double rate) { return std::isfinite(rate); }) &&
+          std::equal(in.expiry_rate_T.begin(), in.expiry_rate_T.end(), under.chains.begin(),
+                     [](double T, const Chain &chain) {
+                       return std::isfinite(T) && T > 0.0 && T == chain.T;
+                     }));
+}
+
+[[nodiscard]] double expiry_rate(const SurfaceParityInputs &in, std::size_t index) noexcept {
+  return in.expiry_rates.empty() ? in.r : in.expiry_rates[index];
+}
 
 // Phase 1: the cold, per-chain de-Am (resolve_chain_forward + the European
 // observation build) fanned out over `n_threads` workers. Pure per-chain work,
@@ -149,12 +167,13 @@ struct ChainPrepass {
     const Chain& chain = under.chains[i];
     ChainPrepass& slot = prepass[i];
     const double T = chain.T;
+    const double rate = expiry_rate(in, i);
     if (!(T > 0.0)) {
       return;
     }
     const auto t_forward0 = ProfileClock::now();
-    const auto d_res = resolve_chain_forward(chain, in.S, in.r, in.cash_divs,
-                                             in.now_ts_ns, in.deam);
+    const auto d_res =
+        resolve_chain_forward(chain, in.S, rate, in.cash_divs, in.now_ts_ns, in.deam);
     if (profile) {
       slot.ms_forward_borrow = elapsed_ms(t_forward0, ProfileClock::now());
     }
@@ -165,8 +184,8 @@ struct ChainPrepass {
     if (!(F > 0.0) || !std::isfinite(F)) {
       return;
     }
-    const double q_eff = in.r - std::log(F / in.S) / T;
-    const double df = std::exp(-in.r * T);
+    const double q_eff = rate - std::log(F / in.S) / T;
+    const double df = std::exp(-rate * T);
 
     // COLD per-strike de-Am (no correction cache) at the caller's Andersen-Lake
     // accuracy: see the HARD CONSTRAINT note on the (now sequential-only)
@@ -174,7 +193,7 @@ struct ChainPrepass {
     const AmericanCorrectionCaches fit_caches =
         in.use_deam_cache_for_fit ? in.deam.caches : AmericanCorrectionCaches{};
     const auto t_obs0 = ProfileClock::now();
-    auto obs = build_observations_european(chain, in.S, in.r, F, T, df, in.calib, fit_caches,
+    auto obs = build_observations_european(chain, in.S, rate, F, T, df, in.calib, fit_caches,
                                            in.deam.al_opts, in.deam.iv_tol, in.deam.iv_max_iter,
                                            in.deam.method);
     if (profile) {
@@ -185,6 +204,7 @@ struct ChainPrepass {
     }
 
     slot.T = T;
+    slot.rate = rate;
     slot.F = F;
     slot.borrow = d_res->borrow;
     slot.q_eff = q_eff;
@@ -199,7 +219,7 @@ struct ChainPrepass {
     // just reads `pre.parity`; `build_parity_data` itself is unchanged.
     if (in.score_parity) {
       const auto t_parity0 = ProfileClock::now();
-      slot.parity = build_parity_data(chain, in.S, in.r, F, q_eff, in.deam);
+      slot.parity = build_parity_data(chain, in.S, rate, F, q_eff, in.deam);
       if (profile) {
         slot.ms_parity_data = elapsed_ms(t_parity0, ProfileClock::now());
       }
@@ -217,6 +237,9 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying& under,
   if (!(in.S > 0.0) || !std::isfinite(in.r)) {
     return Err(ErrorCode::InvalidArgument,
                "fit_curve_surface: non-positive S or non-finite r");
+  }
+  if (!valid_expiry_rates(in, under)) {
+    return Err(ErrorCode::InvalidArgument, "fit_curve_surface: invalid expiry rate vectors");
   }
   if (under.chains.empty()) {
     return Err(ErrorCode::NotFound, "fit_curve_surface: underlying carries no chains");
@@ -312,7 +335,7 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying& under,
         }
         ParityInputs pin{};
         pin.S = in.S;
-        pin.r = in.r;
+        pin.r = pre.rate;
         pin.q_eff = q_eff;
         pin.T = T;
         pin.method = in.deam.method;

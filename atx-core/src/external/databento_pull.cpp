@@ -196,6 +196,7 @@ Result<PullStats> pull_opra_cbbo_1m_to_parquet(
   PullStats stats;
   L1Columns c;
   std::vector<std::string> underlying_col;
+  std::vector<i64> instrument_id_col;
   std::unordered_set<std::string> seen;
   try {
     auto client = make_client(api_key);
@@ -234,6 +235,7 @@ Result<PullStats> pull_opra_cbbo_1m_to_parquet(
               const std::string sym =
                   mapped ? *it->second : std::to_string(q.hd.instrument_id);
               underlying_col.push_back(mapped ? osi_root(sym) : sym);
+              instrument_id_col.push_back(static_cast<i64>(q.hd.instrument_id));
               seen.insert(sym);
               c.push(q.ts_recv.time_since_epoch().count(), sym, px_or_unset(l.bid_px),
                      px_or_unset(l.ask_px), l.bid_sz, l.ask_sz);
@@ -251,6 +253,7 @@ Result<PullStats> pull_opra_cbbo_1m_to_parquet(
       {"ts", std::span<const time::Timestamp>(c.ts)},
       {"underlying", std::span<const std::string>(underlying_col)},
       {"symbol", std::span<const std::string>(c.symbol)},
+      {"instrument_id", std::span<const i64>(instrument_id_col)},
       {"bid_px", std::span<const i64>(c.bid_px)},
       {"ask_px", std::span<const i64>(c.ask_px)},
       {"bid_sz", std::span<const i64>(c.bid_sz)},

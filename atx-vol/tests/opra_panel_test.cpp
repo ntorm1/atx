@@ -55,9 +55,10 @@ struct RawRow {
 
 // Write a cbbo-1m slice (ts/[underlying]/symbol/bid_px/ask_px/bid_sz/ask_sz)
 // from raw rows and return its path. `with_underlying=false` omits the column.
-[[nodiscard]] std::string write_slice(const std::string& name,
-                                      const std::vector<RawRow>& rows,
-                                      bool with_underlying = true) {
+[[nodiscard]] std::string write_slice(const std::string &name, const std::vector<RawRow> &rows,
+                                      bool with_underlying = true,
+                                      std::span<const i64> instrument_ids = {}) {
+  EXPECT_TRUE(instrument_ids.empty() || instrument_ids.size() == rows.size());
   const auto to_px = [](double d) { return static_cast<i64>(std::llround(d * 1e9)); };
   std::vector<i64> ts_col, bidpx, askpx, bidsz, asksz;
   std::vector<std::string> und_col, sym_col;
@@ -76,6 +77,9 @@ struct RawRow {
     cols.push_back({"underlying", std::span<const std::string>(und_col)});
   }
   cols.push_back({"symbol", std::span<const std::string>(sym_col)});
+  if (!instrument_ids.empty()) {
+    cols.push_back({"instrument_id", instrument_ids});
+  }
   cols.push_back({"bid_px", std::span<const i64>(bidpx)});
   cols.push_back({"ask_px", std::span<const i64>(askpx)});
   cols.push_back({"bid_sz", std::span<const i64>(bidsz)});
@@ -336,6 +340,99 @@ TEST(OpraPanel, Load_MissingFile_ReturnsInvalidArgument) {
   const auto loaded = load_opra_cbbo_parquet(spec);
   ASSERT_FALSE(loaded.has_value());
   EXPECT_EQ(loaded.error().code(), atx::vol::ErrorCode::InvalidArgument);
+}
+
+TEST(OpraPanel, LegacyFileIsCompatibleButStrictModeRejectsMissingIdentity) {
+  const std::vector<RawRow> rows = {
+      {"XOM", osi_sym("XOM", "260918", 'C', 110.0), 5.0, 5.1},
+      {"XOM", osi_sym("XOM", "260918", 'P', 110.0), 4.0, 4.1},
+  };
+  const std::string path = write_slice("legacy_identity.parquet", rows);
+  OpraLoadSpec compatible;
+  compatible.path = path;
+  compatible.underlying = "XOM";
+  compatible.snapshot_iso = "2026-05-01";
+  compatible.spot_override = 110.0;
+  const auto legacy = load_opra_cbbo_parquet(compatible);
+  ASSERT_TRUE(legacy.has_value()) << legacy.error().to_string();
+  EXPECT_EQ(legacy->source_schema_version, 1u);
+  EXPECT_FALSE(legacy->provenance_complete);
+  EXPECT_EQ(legacy->source_instrument_ids, std::vector<std::uint32_t>({0u, 0u}));
+
+  compatible.provenance_mode = atx::vol::OpraProvenanceMode::Strict;
+  const auto strict = load_opra_cbbo_parquet(compatible);
+  ASSERT_FALSE(strict.has_value());
+  EXPECT_EQ(strict.error().code(), atx::vol::ErrorCode::InvalidArgument);
+}
+
+TEST(OpraPanel, StrictIdentityPreservesAlignedIdsAndDeduplicatesRawSymbols) {
+  const std::vector<RawRow> rows = {
+      {"XOM", osi_sym("XOM", "260918", 'C', 110.0), 5.0, 5.1},
+      {"XOM", osi_sym("XOM", "260918", 'P', 110.0), 4.0, 4.1},
+      {"XOM", osi_sym("XOM", "260918", 'C', 110.0), 5.0, 5.1},
+  };
+  const std::vector<i64> ids = {101, 102, 101};
+  const std::string path = write_slice("strict_identity.parquet", rows, true, ids);
+  OpraLoadSpec spec;
+  spec.path = path;
+  spec.underlying = "XOM";
+  spec.snapshot_iso = "2026-05-01";
+  spec.spot_override = 110.0;
+  spec.provenance_mode = atx::vol::OpraProvenanceMode::Strict;
+  const auto loaded = load_opra_cbbo_parquet(spec);
+  ASSERT_TRUE(loaded.has_value()) << loaded.error().to_string();
+  EXPECT_EQ(loaded->source_schema_version, 2u);
+  EXPECT_TRUE(loaded->provenance_complete);
+  EXPECT_EQ(loaded->source_instrument_ids, std::vector<std::uint32_t>({101u, 102u, 101u}));
+  ASSERT_EQ(loaded->source_identities.size(), 2u);
+  EXPECT_EQ(loaded->source_identities[0].instrument_id, 101u);
+  EXPECT_EQ(loaded->source_identities[1].instrument_id, 102u);
+}
+
+TEST(OpraPanel, SameDateInstrumentIdMappingToTwoRawSymbolsIsRejected) {
+  const std::vector<RawRow> rows = {
+      {"XOM", osi_sym("XOM", "260918", 'C', 110.0), 5.0, 5.1},
+      {"XOM", osi_sym("XOM", "260918", 'P', 110.0), 4.0, 4.1},
+  };
+  const std::vector<i64> ids = {777, 777};
+  const std::string path = write_slice("ambiguous_identity.parquet", rows, true, ids);
+  OpraLoadSpec spec;
+  spec.path = path;
+  spec.underlying = "XOM";
+  spec.snapshot_iso = "2026-05-01";
+  spec.spot_override = 110.0;
+  const auto loaded = load_opra_cbbo_parquet(spec);
+  ASSERT_FALSE(loaded.has_value());
+  EXPECT_EQ(loaded.error().code(), atx::vol::ErrorCode::InvalidArgument);
+  EXPECT_NE(loaded.error().to_string().find("ambiguous instrument_id"), std::string::npos);
+}
+
+TEST(OpraPanel, InstrumentIdReuseAcrossDatesIsDateScopedAndLegal) {
+  const std::vector<i64> ids = {404};
+  const std::vector<RawRow> first = {
+      {"XOM", osi_sym("XOM", "260918", 'C', 110.0), 5.0, 5.1},
+  };
+  const std::vector<RawRow> second = {
+      {"XOM", osi_sym("XOM", "261218", 'C', 110.0), 6.0, 6.1},
+  };
+  OpraLoadSpec spec;
+  spec.underlying = "XOM";
+  spec.spot_override = 110.0;
+  spec.provenance_mode = atx::vol::OpraProvenanceMode::Strict;
+
+  spec.path = write_slice("identity_date_one.parquet", first, true, ids);
+  spec.snapshot_iso = "2026-05-01";
+  const auto date_one = load_opra_cbbo_parquet(spec);
+  ASSERT_TRUE(date_one.has_value()) << date_one.error().to_string();
+
+  spec.path = write_slice("identity_date_two.parquet", second, true, ids);
+  spec.snapshot_iso = "2026-05-02";
+  const auto date_two = load_opra_cbbo_parquet(spec);
+  ASSERT_TRUE(date_two.has_value()) << date_two.error().to_string();
+  EXPECT_EQ(date_one->source_identities.front().instrument_id,
+            date_two->source_identities.front().instrument_id);
+  EXPECT_NE(date_one->source_identities.front().raw_symbol,
+            date_two->source_identities.front().raw_symbol);
 }
 
 // ── P2-2 multi-symbol validation ────────────────────────────────────────────

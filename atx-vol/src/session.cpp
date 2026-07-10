@@ -58,6 +58,59 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
   return std::isfinite(K) && (K > 0.0) && std::isfinite(T) && (T > 0.0);
 }
 
+[[nodiscard]] bool valid_term_rates(const SessionInputs &in) noexcept {
+  if (in.expiry_rate_T.empty() && in.expiry_rates.empty()) {
+    return true;
+  }
+  if (in.expiry_rate_T.size() != in.expiry_rates.size() || in.expiry_rate_T.empty()) {
+    return false;
+  }
+  for (std::size_t i = 0; i < in.expiry_rates.size(); ++i) {
+    if (!(in.expiry_rate_T[i] > 0.0) || !std::isfinite(in.expiry_rate_T[i]) ||
+        !std::isfinite(in.expiry_rates[i]) ||
+        (i > 0u && !(in.expiry_rate_T[i] > in.expiry_rate_T[i - 1u]))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+[[nodiscard]] double input_rate_at(const SessionInputs &in, double T) noexcept {
+  if (in.expiry_rates.empty()) {
+    return in.r;
+  }
+  if (T <= in.expiry_rate_T.front()) {
+    return in.expiry_rates.front();
+  }
+  if (T >= in.expiry_rate_T.back()) {
+    return in.expiry_rates.back();
+  }
+  std::size_t hi = 1u;
+  while (hi < in.expiry_rate_T.size() && in.expiry_rate_T[hi] <= T) {
+    ++hi;
+  }
+  const std::size_t lo = hi - 1u;
+  const double span = in.expiry_rate_T[hi] - in.expiry_rate_T[lo];
+  const double alpha = (T - in.expiry_rate_T[lo]) / span;
+  return in.expiry_rates[lo] + alpha * (in.expiry_rates[hi] - in.expiry_rates[lo]);
+}
+
+void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> context) {
+  if (in.expiry_rates.empty()) {
+    return;
+  }
+  std::vector<double> fitted_T;
+  std::vector<double> fitted_rates;
+  fitted_T.reserve(context.size());
+  fitted_rates.reserve(context.size());
+  for (const SliceContext &slice : context) {
+    fitted_T.push_back(slice.T);
+    fitted_rates.push_back(input_rate_at(in, slice.T));
+  }
+  in.expiry_rate_T = std::move(fitted_T);
+  in.expiry_rates = std::move(fitted_rates);
+}
+
 }  // namespace
 
 VolaSession::VolaSession(VolSurface&& surface, std::vector<SliceContext>&& ctx,
@@ -242,6 +295,13 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
   // the parity run, and is the copy stored for the const queries so the cold
   // fair_value/greeks fallback prices on the same scheme it was fit with.
   SessionInputs eff = in;
+  if (!valid_term_rates(eff)) {
+    return Err(ErrorCode::InvalidArgument, "VolaSession::build: invalid expiry rate vectors");
+  }
+  if (!eff.expiry_rates.empty()) {
+    eff.use_correction_cache = false;
+    eff.use_deam_cache_for_fit = false;
+  }
   if (!eff.deam.al_opts) {
     eff.deam.al_opts = al_fast_opts();
     // Match the inversion tol to the fast pricer's ~1e-4 accuracy floor. 1e-5 is
@@ -261,6 +321,8 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
   SurfaceParityInputs sp;
   sp.S = eff.S;
   sp.r = eff.r;
+  sp.expiry_rate_T = eff.expiry_rate_T;
+  sp.expiry_rates = eff.expiry_rates;
   sp.cash_divs = eff.cash_divs;
   sp.now_ts_ns = eff.now_ts_ns;
   sp.deam = eff.deam;
@@ -339,6 +401,7 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
             VolSurface::create(under.uid, Parametrization::Essvi,
                                std::max<std::size_t>(std::size_t{1},
                                                      under.chains.size())));
+    retain_fitted_term_rates(eff, crep.context);
     return Ok(VolaSession{std::move(placeholder), std::move(crep.context),
                           std::move(crep.per_expiry), std::move(eff), cdiag,
                           std::move(caches.call), std::move(caches.put),
@@ -379,6 +442,7 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
   }
   diag.n_quotes = n_quotes;
 
+  retain_fitted_term_rates(eff, rep.context);
   return Ok(VolaSession{std::move(rep.surface), std::move(rep.context),
                         std::move(rep.per_expiry), std::move(eff), diag,
                         std::move(caches.call), std::move(caches.put),
@@ -398,10 +462,10 @@ VolaSession::ForwardCarry VolaSession::interp_forward(double T) const noexcept {
   const SliceContext& first = ctx_.front();
   const SliceContext& last = ctx_.back();
   if (T <= first.T) {
-    return ForwardCarry{first.forward, first.q_eff};
+    return ForwardCarry{first.forward, first.q_eff, input_rate_at(in_, T)};
   }
   if (T >= last.T) {
-    return ForwardCarry{last.forward, last.q_eff};
+    return ForwardCarry{last.forward, last.q_eff, input_rate_at(in_, T)};
   }
 
   // Strictly between the endpoints: find the first slice whose T exceeds the
@@ -417,7 +481,7 @@ VolaSession::ForwardCarry VolaSession::interp_forward(double T) const noexcept {
   const double span = b.T - a.T;
   const double alpha = (span > 0.0) ? (T - a.T) / span : 0.0;
   return ForwardCarry{a.forward + alpha * (b.forward - a.forward),
-                      a.q_eff + alpha * (b.q_eff - a.q_eff)};
+                      a.q_eff + alpha * (b.q_eff - a.q_eff), input_rate_at(in_, T)};
 }
 
 double VolaSession::forward_at(double T) const noexcept {
@@ -432,6 +496,13 @@ double VolaSession::q_eff_at(double T) const noexcept {
     return 0.0;
   }
   return interp_forward(T).q_eff;
+}
+
+double VolaSession::rate_at(double T) const noexcept {
+  if (!(T > 0.0)) {
+    return 0.0;
+  }
+  return input_rate_at(in_, T);
 }
 
 Result<PricedSurface> VolaSession::to_priced_surface() const {
@@ -457,7 +528,7 @@ Result<PricedSurface> VolaSession::to_priced_surface() const {
     // parallel to ctx_) so the snapshot serves through the SAME polymorphic path.
     const std::span<const EssviParams> sl = surface_.essvi_slices();
     for (const EssviParams& e : sl) {
-      const double df = std::exp(-in_.r * e.T);
+      const double df = std::exp(-input_rate_at(in_, e.T) * e.T);
       cs.push(std::make_unique<EssviCurve>(e, df));
     }
   }
@@ -497,16 +568,15 @@ Result<double> VolaSession::fair_value(double K, double T, Side side) const {
   // high-accuracy override surface (see served_cache).
   const CorrectionCache* const cc = served_cache(side);
   if (cc != nullptr) {
-    const double fv =
-        american_price_cached(in_.S, K, T, sigma, in_.r, fc.q_eff, side, cc);
+    const double fv = american_price_cached(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, cc);
     if (!std::isfinite(fv)) {
       return Err(ErrorCode::Internal,
                  "VolaSession::fair_value: cached pricer produced a non-finite price");
     }
     return Ok(fv);
   }
-  return american_price(in_.S, K, T, sigma, in_.r, fc.q_eff, side,
-                        in_.deam.method, in_.deam.al_opts);
+  return american_price(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, in_.deam.method,
+                        in_.deam.al_opts);
 }
 
 Result<AmericanGreeks> VolaSession::greeks(double K, double T, Side side) const {
@@ -524,10 +594,10 @@ Result<AmericanGreeks> VolaSession::greeks(double K, double T, Side side) const 
   // so greeks().price == fair_value() bit-identical (American, not Black-76).
   const CorrectionCache* const use = served_cache(side);
   if (use != nullptr) {
-    return american_greeks(in_.S, K, T, sigma, in_.r, fc.q_eff, side, use);
+    return american_greeks(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, use);
   }
-  return american_greeks_fd(in_.S, K, T, sigma, in_.r, fc.q_eff, side,
-                            in_.deam.method, in_.deam.al_opts);
+  return american_greeks_fd(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, in_.deam.method,
+                            in_.deam.al_opts);
 }
 
 Status VolaSession::fair_value_ladder(double T, std::span<const double> strikes,
@@ -556,11 +626,10 @@ Status VolaSession::fair_value_ladder(double T, std::span<const double> strikes,
     const double sigma = model_iv(k, T);
     const CorrectionCache* const cc = served_cache(side);
     if (cc != nullptr) {
-      out[i] =
-          american_price_cached(in_.S, K, T, sigma, in_.r, fc.q_eff, side, cc);
+      out[i] = american_price_cached(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, cc);
     } else {
-      const auto p = american_price(in_.S, K, T, sigma, in_.r, fc.q_eff, side,
-                                    in_.deam.method, in_.deam.al_opts);
+      const auto p = american_price(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, in_.deam.method,
+                                    in_.deam.al_opts);
       out[i] = p.has_value() ? *p : kNaN;
     }
   }
@@ -592,11 +661,10 @@ Status VolaSession::greeks_ladder(double T, std::span<const double> strikes,
     const CorrectionCache* const use = served_cache(side);
     // Cached hot path differentiates the cached graph; the null-cache cold path
     // finite-differences american_price so greeks.price == the cold fair_value.
-    const auto g =
-        (use != nullptr)
-            ? american_greeks(in_.S, K, T, sigma, in_.r, fc.q_eff, side, use)
-            : american_greeks_fd(in_.S, K, T, sigma, in_.r, fc.q_eff, side,
-                                 in_.deam.method, in_.deam.al_opts);
+    const auto g = (use != nullptr)
+                       ? american_greeks(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, use)
+                       : american_greeks_fd(in_.S, K, T, sigma, fc.rate, fc.q_eff, side,
+                                            in_.deam.method, in_.deam.al_opts);
     if (g.has_value()) {
       out[i] = *g;
     } else {

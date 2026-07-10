@@ -69,6 +69,14 @@ Status PricerFitter::fit(const OptionChain &chain) {
 
   SessionInputs in =
       make_session_inputs(effective_preset, chain.spot(), chain.rate(), chain.now_ns());
+  if (chain.env().yield.size() > 0u) {
+    in.expiry_rate_T.reserve(chain.underlying().chains.size());
+    in.expiry_rates.reserve(chain.underlying().chains.size());
+    for (const Chain &expiry : chain.underlying().chains) {
+      in.expiry_rate_T.push_back(expiry.T);
+      in.expiry_rates.push_back(chain.env().rate_at(expiry.T));
+    }
+  }
   // Apply the selected profile's existing quote/calibration policy through the
   // same SessionInputs consumed by every curve family. Reapply the preset after
   // copying the profile so latency/fidelity controls (HFT knot cap, shortcut,
@@ -101,6 +109,12 @@ Status PricerFitter::fit(const OptionChain &chain) {
   if (cfg_.max_otm_shortcut_premium_spread_frac.has_value()) {
     in.calib.max_otm_shortcut_premium_spread_frac = *cfg_.max_otm_shortcut_premium_spread_frac;
   }
+  if (!in.expiry_rates.empty()) {
+    // CorrectionCache is built at one scalar (r, q) pair. A term-rate board
+    // must stay on the cold pricer until the cache itself becomes term-aware.
+    in.use_correction_cache = false;
+    in.use_deam_cache_for_fit = false;
+  }
 
   // Curve config: pinned, profile-direct, or held-out selected for this board.
   if (cfg_.curve.has_value()) {
@@ -124,6 +138,8 @@ Status PricerFitter::fit(const OptionChain &chain) {
     SurfaceParityInputs sp;
     sp.S = in.S;
     sp.r = in.r;
+    sp.expiry_rate_T = in.expiry_rate_T;
+    sp.expiry_rates = in.expiry_rates;
     sp.cash_divs = in.cash_divs;
     sp.now_ts_ns = in.now_ts_ns;
     sp.deam = in.deam;
@@ -188,7 +204,6 @@ Result<ChainValuation> PricerFitter::value_chain(const OptionChain &chain, Outpu
   }
   const VolaSession &sess = surface_->session();
   const double S = chain.spot();
-  const double r = chain.rate();
   const double nan = std::numeric_limits<double>::quiet_NaN();
 
   ChainValuation val;
@@ -236,6 +251,7 @@ Result<ChainValuation> PricerFitter::value_chain(const OptionChain &chain, Outpu
       return; // decode failed or degenerate expiry — leave the row NaN
     }
     const double q = sess.q_eff_at(T);
+    const double rate = sess.rate_at(T);
     if (has(fields, OutputField::ModelIV)) {
       val.model_iv[i] = sess.iv(K, T);
     }
@@ -261,8 +277,8 @@ Result<ChainValuation> PricerFitter::value_chain(const OptionChain &chain, Outpu
     const double miv = sess.iv(K, T);
     const double ws = (std::isfinite(miv) && miv > 0.0) ? miv : 0.0;
     const auto invert = [&](double px) {
-      return american_implied_vol(px, S, K, T, r, q, side, AmericanMethod::AndersenLake, 1.0e-7, 64,
-                                  std::nullopt, cc, ws);
+      return american_implied_vol(px, S, K, T, rate, q, side, AmericanMethod::AndersenLake, 1.0e-7,
+                                  64, std::nullopt, cc, ws);
     };
     if (has(fields, OutputField::BidIV) && snap.bid[i] > 0.0) {
       const auto iv = invert(snap.bid[i]);

@@ -96,6 +96,11 @@ enum class CalendarRepair : std::uint8_t {
 struct SurfaceParityInputs {
   double S{0.0};                         // spot (> 0)
   double r{0.0};                         // continuously-compounded rate (finite)
+  // Optional vectors aligned with `Underlying::chains`. Empty preserves the
+  // legacy scalar `r` path bit-for-bit; otherwise each expiry uses its own
+  // continuously-compounded zero rate.
+  std::vector<double> expiry_rate_T;
+  std::vector<double> expiry_rates;
   std::vector<DividendEvent> cash_divs;  // discrete cash-dividend schedule
   std::int64_t now_ts_ns{0};             // valuation timestamp (epoch ns)
   DeAmOptions deam{};                    // borrow-implication / pricer policy

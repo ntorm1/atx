@@ -1,8 +1,12 @@
 #include "atx/vol/opra_batch.hpp"
 
+#include <algorithm>
+#include <bit>
 #include <charconv>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -10,6 +14,7 @@
 #include <utility>
 
 #include "atx/core/error.hpp"       // Ok, Err, ErrorCode
+#include "atx/core/hash.hpp"        // hash_bytes
 #include "atx/vol/curve.hpp"        // YieldCurve
 #include "atx/vol/data.hpp"         // iso_to_ns
 
@@ -118,7 +123,187 @@ struct Civil {
   return out;
 }
 
+[[nodiscard]] std::string canonical_market_symbol(std::string_view symbol) {
+  while (!symbol.empty() && symbol.front() == ' ') {
+    symbol.remove_prefix(1u);
+  }
+  while (!symbol.empty() && symbol.back() == ' ') {
+    symbol.remove_suffix(1u);
+  }
+  std::string out;
+  out.reserve(symbol.size());
+  for (const char ch : symbol) {
+    out.push_back(ch >= 'a' && ch <= 'z' ? static_cast<char>(ch - ('a' - 'A')) : ch);
+  }
+  return out;
+}
+
+[[nodiscard]] bool valid_as_of(const ExternalInputTag &tag, std::string_view cell_date) noexcept {
+  if (tag.source.empty() || tag.as_of.size() < 10u) {
+    return false;
+  }
+  Civil cell;
+  Civil as_of;
+  if (!parse_civil(cell_date, cell) ||
+      !parse_civil(std::string_view(tag.as_of).substr(0u, 10u), as_of)) {
+    return false;
+  }
+  return days_from_civil(as_of.y, as_of.m, as_of.d) <= days_from_civil(cell.y, cell.m, cell.d);
+}
+
+void append_token(std::string &out, std::string_view value) {
+  char size[32];
+  const auto [ptr, ec] = std::to_chars(size, size + sizeof size, value.size());
+  (void)ec;
+  out.append(size, static_cast<std::size_t>(ptr - size));
+  out.push_back(':');
+  out.append(value);
+  out.push_back('|');
+}
+
+void append_u64(std::string &out, std::uint64_t value) {
+  char text[32];
+  const auto [ptr, ec] = std::to_chars(text, text + sizeof text, value);
+  (void)ec;
+  out.append(text, static_cast<std::size_t>(ptr - text));
+  out.push_back('|');
+}
+
+void append_optional_double(std::string &out, const std::optional<double> &value) {
+  append_u64(out, value.has_value() ? 1u : 0u);
+  if (value.has_value()) {
+    append_u64(out, std::bit_cast<std::uint64_t>(*value));
+  }
+}
+
+void append_tag(std::string &out, const ExternalInputTag &tag) {
+  append_token(out, tag.source);
+  append_token(out, tag.as_of);
+}
+
+void append_market_cell(std::string &out, const CorpusMarketInputCell &cell) {
+  append_token(out, cell.date);
+  append_token(out, cell.symbol);
+  append_optional_double(out, cell.spot_override);
+  append_u64(out, cell.yc_pillar_t.size());
+  for (std::size_t i = 0; i < cell.yc_pillar_t.size(); ++i) {
+    append_u64(out, std::bit_cast<std::uint64_t>(cell.yc_pillar_t[i]));
+    append_u64(out, std::bit_cast<std::uint64_t>(cell.yc_pillar_r[i]));
+  }
+  append_u64(out, cell.cash_divs.size());
+  for (const DividendEvent &dividend : cell.cash_divs) {
+    append_u64(out, static_cast<std::uint64_t>(dividend.ex_date_ns));
+    append_u64(out, std::bit_cast<std::uint64_t>(dividend.amount));
+  }
+  append_u64(out, cell.fit_context.profile_override.has_value() ? 1u : 0u);
+  if (cell.fit_context.profile_override.has_value()) {
+    append_u64(out, static_cast<std::uint64_t>(*cell.fit_context.profile_override));
+  }
+  append_u64(out, static_cast<std::uint64_t>(cell.fit_context.session_phase));
+  append_u64(out, static_cast<std::uint64_t>(cell.fit_context.event_phase));
+  append_u64(out, cell.fit_context.event_distance_days.has_value() ? 1u : 0u);
+  if (cell.fit_context.event_distance_days.has_value()) {
+    append_u64(out, *cell.fit_context.event_distance_days);
+  }
+  append_optional_double(out, cell.fit_context.forward_dispersion_bp);
+  append_optional_double(out, cell.fit_context.median_q_eff);
+  append_u64(out, cell.fit_context.htb.has_value() ? 1u : 0u);
+  if (cell.fit_context.htb.has_value()) {
+    append_u64(out, *cell.fit_context.htb ? 1u : 0u);
+  }
+  append_u64(out, cell.fit_context.vol_product ? 1u : 0u);
+  append_tag(out, cell.provenance.spot);
+  append_tag(out, cell.provenance.rates);
+  append_tag(out, cell.provenance.dividends);
+  append_tag(out, cell.provenance.fit_context);
+  append_u64(out, static_cast<std::uint64_t>(cell.provenance.dividend_treatment));
+}
+
+[[nodiscard]] std::uint64_t stable_hash(std::string_view bytes) noexcept {
+  const std::uint64_t hash = atx::core::hash_bytes(bytes.data(), bytes.size());
+  return hash == 0u ? 1u : hash;
+}
+
+[[nodiscard]] bool valid_market_cell(const CorpusMarketInputCell &cell) {
+  Civil date;
+  if (!parse_civil(cell.date, date) || cell.symbol.empty() ||
+      (cell.spot_override.has_value() &&
+       (!std::isfinite(*cell.spot_override) || *cell.spot_override <= 0.0)) ||
+      cell.yc_pillar_t.size() != cell.yc_pillar_r.size() ||
+      !valid_as_of(cell.provenance.spot, cell.date) ||
+      !valid_as_of(cell.provenance.rates, cell.date) ||
+      !valid_as_of(cell.provenance.dividends, cell.date) ||
+      !valid_as_of(cell.provenance.fit_context, cell.date)) {
+    return false;
+  }
+  double previous_t = 0.0;
+  for (std::size_t i = 0; i < cell.yc_pillar_t.size(); ++i) {
+    if (!std::isfinite(cell.yc_pillar_t[i]) || !std::isfinite(cell.yc_pillar_r[i]) ||
+        cell.yc_pillar_t[i] <= previous_t) {
+      return false;
+    }
+    previous_t = cell.yc_pillar_t[i];
+  }
+  for (const DividendEvent &dividend : cell.cash_divs) {
+    if (dividend.ex_date_ns <= 0 || !std::isfinite(dividend.amount) || dividend.amount < 0.0) {
+      return false;
+    }
+  }
+  return !cell.fit_context.forward_dispersion_bp.has_value() ||
+         std::isfinite(*cell.fit_context.forward_dispersion_bp);
+}
+
 } // namespace
+
+Result<CorpusMarketInputTable>
+CorpusMarketInputTable::create(std::vector<CorpusMarketInputCell> cells) {
+  for (CorpusMarketInputCell &cell : cells) {
+    cell.symbol = canonical_market_symbol(cell.symbol);
+    std::sort(cell.cash_divs.begin(), cell.cash_divs.end(),
+              [](const DividendEvent &lhs, const DividendEvent &rhs) {
+                if (lhs.ex_date_ns != rhs.ex_date_ns) {
+                  return lhs.ex_date_ns < rhs.ex_date_ns;
+                }
+                return lhs.amount < rhs.amount;
+              });
+    if (!valid_market_cell(cell) || (cell.fit_context.median_q_eff.has_value() &&
+                                     !std::isfinite(*cell.fit_context.median_q_eff))) {
+      return Err(ErrorCode::InvalidArgument, "invalid or future-dated corpus market input cell");
+    }
+  }
+  std::sort(cells.begin(), cells.end(),
+            [](const CorpusMarketInputCell &lhs, const CorpusMarketInputCell &rhs) {
+              return lhs.date != rhs.date ? lhs.date < rhs.date : lhs.symbol < rhs.symbol;
+            });
+  for (std::size_t i = 1u; i < cells.size(); ++i) {
+    if (cells[i - 1u].date == cells[i].date && cells[i - 1u].symbol == cells[i].symbol) {
+      return Err(ErrorCode::InvalidArgument, "duplicate corpus market input cell");
+    }
+  }
+
+  std::string table_bytes;
+  for (CorpusMarketInputCell &cell : cells) {
+    std::string cell_bytes;
+    append_market_cell(cell_bytes, cell);
+    cell.provenance.fingerprint = stable_hash(cell_bytes);
+    table_bytes.append(cell_bytes);
+  }
+  CorpusMarketInputTable table;
+  table.cells_ = std::move(cells);
+  table.fingerprint_ = stable_hash(table_bytes);
+  return Ok(std::move(table));
+}
+
+const CorpusMarketInputCell *CorpusMarketInputTable::find(std::string_view date,
+                                                          std::string_view symbol) const {
+  const std::string canonical = canonical_market_symbol(symbol);
+  const auto it = std::lower_bound(
+      cells_.begin(), cells_.end(), std::pair{date, std::string_view(canonical)},
+      [](const CorpusMarketInputCell &cell, const auto &key) {
+        return cell.date != key.first ? cell.date < key.first : cell.symbol < key.second;
+      });
+  return it != cells_.end() && it->date == date && it->symbol == canonical ? &*it : nullptr;
+}
 
 Result<OpraBatchResult> load_opra_daterange(const OpraBatchSpec& spec,
                                             const OpraBatchProgress& progress) {
@@ -177,6 +362,27 @@ Result<OpraBatchResult> load_opra_daterange(const OpraBatchSpec& spec,
       path.make_preferred();
       entry.path = path.string();
 
+      const CorpusMarketInputCell *market = spec.market_inputs.find(date, symbol);
+      if (market == nullptr) {
+        entry.used_market_input_fallback = true;
+        if (spec.missing_market_inputs == MissingMarketInputPolicy::Error) {
+          return Err(ErrorCode::Unavailable, "missing market inputs for " + date + " " + symbol);
+        }
+        if (spec.missing_market_inputs == MissingMarketInputPolicy::Quarantine) {
+          entry.panel =
+              Err(ErrorCode::Unavailable, "missing market inputs for " + date + " " + symbol);
+          ++result.n_error;
+          ++done;
+          result.entries.push_back(std::move(entry));
+          if (progress) {
+            progress(done, result.n_total, result.entries.back());
+          }
+          continue;
+        }
+      } else {
+        entry.market_input_fingerprint = market->provenance.fingerprint;
+      }
+
       std::error_code ec;
       const bool present = fs::exists(path, ec) && !ec;
       if (!present) {
@@ -188,8 +394,18 @@ Result<OpraBatchResult> load_opra_daterange(const OpraBatchSpec& spec,
         load.underlying = symbol;
         load.snapshot_iso = snapshot_iso;
         load.r = spec.r;
-        load.yc_pillar_t = spec.yc_pillar_t;
-        load.yc_pillar_r = spec.yc_pillar_r;
+        load.provenance_mode = spec.provenance_mode;
+        if (market != nullptr) {
+          load.spot_override = market->spot_override.value_or(0.0);
+          load.yc_pillar_t = market->yc_pillar_t.empty() ? spec.yc_pillar_t : market->yc_pillar_t;
+          load.yc_pillar_r = market->yc_pillar_r.empty() ? spec.yc_pillar_r : market->yc_pillar_r;
+          load.cash_divs = market->cash_divs;
+          load.fit_context = market->fit_context;
+          load.market_input_provenance = market->provenance;
+        } else {
+          load.yc_pillar_t = spec.yc_pillar_t;
+          load.yc_pillar_r = spec.yc_pillar_r;
+        }
         Result<OpraPanel> loaded = load_opra_cbbo_parquet(load);
         if (loaded.has_value()) {
           ++result.n_loaded;
@@ -229,6 +445,20 @@ MarketEnv market_env_from_frame(const QuoteFrame& frame) {
     // create() failed (e.g. non-ascending pillars): fall back to flat.
   }
   return MarketEnv::flat(frame.spot, flat_r, frame.snapshot_ts_ns, frame.divs);
+}
+
+CorpusBoard corpus_board_from_opra(std::string date, std::string symbol, OpraPanel panel) {
+  CorpusBoard board;
+  board.date = std::move(date);
+  board.symbol = std::move(symbol);
+  board.frame = std::move(panel.frame);
+  board.env = market_env_from_frame(board.frame);
+  board.fit_context = panel.fit_context;
+  board.source_provenance_complete = panel.provenance_complete;
+  board.source_schema_version = panel.source_schema_version;
+  board.source_fingerprint = panel.source_fingerprint;
+  board.market_input_fingerprint = panel.market_input_provenance.fingerprint;
+  return board;
 }
 
 } // namespace atx::vol

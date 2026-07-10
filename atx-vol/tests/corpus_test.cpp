@@ -26,6 +26,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -35,6 +36,7 @@
 #include <filesystem>
 #include <limits>
 #include <optional>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -494,6 +496,10 @@ namespace {
   q.primary_kind = VolCurveKind::Essvi;
   q.final_kind = VolCurveKind::Essvi;
   q.provenance_complete = true;
+  q.source_schema_version = 2u;
+  q.source_fingerprint = 0x1234u;
+  q.market_input_fingerprint = 0x5678u;
+  q.n_cash_dividends = 2u;
   q.n_raw_quotes = 800u;
   q.n_two_sided = 360u;
   q.n_slices = 6u;
@@ -626,6 +632,14 @@ TEST(CorpusAdmission, InvalidRulesAndOutOfRangeMeasurementsAreQuarantined) {
       evaluate_corpus_admission(quality, ordinary_liquid_rule());
   EXPECT_EQ(out_of_range.primary_reason, CorpusAdmissionReason::MetricOutOfRange);
   EXPECT_TRUE(out_of_range.failed(CorpusAdmissionReason::MetricOutOfRange));
+
+  quality = passing_quality_metrics();
+  quality.n_holdout = 0u;
+  quality.n_oos_in_band = 0u;
+  const CorpusAdmissionDecision inconsistent =
+      evaluate_corpus_admission(quality, ordinary_liquid_rule());
+  EXPECT_EQ(inconsistent.primary_reason, CorpusAdmissionReason::MetricOutOfRange);
+  EXPECT_TRUE(inconsistent.failed(CorpusAdmissionReason::MetricOutOfRange));
 }
 
 TEST(CorpusAdmission, SparseProfileCanPassItsOwnEvidenceFloor) {
@@ -634,6 +648,11 @@ TEST(CorpusAdmission, SparseProfileCanPassItsOwnEvidenceFloor) {
   sparse.n_two_sided = 24u;
   sparse.n_slices = 3u;
   sparse.n_holdout = 4u;
+  sparse.n_fit_scorable = 24u;
+  sparse.n_fit_in_band = 23u;
+  sparse.n_oos_in_band = 4u;
+  sparse.fit_in_band = 23.0 / 24.0;
+  sparse.oos_in_band = 1.0;
 
   CorpusAdmissionRule sparse_rule;
   sparse_rule.min_quotes = 20u;
@@ -794,6 +813,8 @@ TEST(QualifiedCorpus, SuccessfulOneSidedBoardIsQuarantinedWithExactEvidence) {
   auto built = build_qualified_corpus(std::span<const CorpusBoard>(&board, 1u), out.string(), cfg);
   ASSERT_TRUE(built.has_value()) << built.error().to_string();
   ASSERT_EQ(built->quality.entries.size(), 1u);
+  EXPECT_NE(built->quality.input_fingerprint, 0u);
+  EXPECT_NE(built->quality.policy_fingerprint, 0u);
   const QualifiedCorpusEntry &entry = built->quality.entries.front();
   EXPECT_EQ(entry.disposition, CorpusDisposition::Quarantined);
   EXPECT_EQ(entry.primary_reason, CorpusAdmissionReason::TooFewQuotes);
@@ -802,6 +823,305 @@ TEST(QualifiedCorpus, SuccessfulOneSidedBoardIsQuarantinedWithExactEvidence) {
   EXPECT_GT(entry.quality.n_slices, 0u);
   EXPECT_EQ(built->manifest.n_failed, 1u);
   EXPECT_FALSE(fs::exists(out / "2026-06-17.atxvsa"));
+}
+
+TEST(CorpusAdmission, FixedSeedPropertyBatteryProducesOneDispositionPerCell) {
+  std::mt19937_64 rng{0xA7C0'2026u};
+  CorpusQualityReport report;
+  report.input_fingerprint = 1u;
+  report.policy_fingerprint = 2u;
+  constexpr std::size_t kBoards = 250u;
+  report.entries.reserve(kBoards);
+  for (std::size_t i = 0u; i < kBoards; ++i) {
+    CorpusQualityMetrics quality = passing_quality_metrics();
+    quality.profile = static_cast<ProfileKind>(i % kProfileKindCount);
+    quality.n_two_sided = static_cast<std::uint32_t>(10u + rng() % 500u);
+    quality.n_slices = static_cast<std::uint32_t>(1u + rng() % 8u);
+    quality.n_holdout = static_cast<std::uint32_t>(1u + rng() % 100u);
+    quality.n_oos_in_band =
+        static_cast<std::uint32_t>(rng() % (static_cast<std::uint64_t>(quality.n_holdout) + 1u));
+    quality.oos_in_band =
+        static_cast<double>(quality.n_oos_in_band) / static_cast<double>(quality.n_holdout);
+    if (i % 11u == 0u) {
+      quality.oos_in_band.reset();
+      quality.n_holdout = 0u;
+      quality.n_oos_in_band = 0u;
+      quality.oos_vega_weighted.reset();
+      quality.oos_vega_weight_in_band.reset();
+      quality.oos_vega_weight_total.reset();
+    }
+    if (i % 17u == 0u) {
+      quality.mean_vol_rmse = std::numeric_limits<double>::quiet_NaN();
+    }
+
+    CorpusAdmissionRule rule;
+    rule.min_quotes = quality.profile == ProfileKind::IlliquidSmallCap ? 20u : 100u;
+    rule.min_slices = 2u;
+    rule.min_holdout = 5u;
+    rule.min_oos_in_band = 0.50;
+    rule.max_mean_vol_rmse = 0.10;
+    rule.require_calendar_arb_free = true;
+    const CorpusAdmissionDecision decision = evaluate_corpus_admission(quality, rule);
+    ASSERT_TRUE(decision.disposition == CorpusDisposition::Admitted ||
+                decision.disposition == CorpusDisposition::Quarantined);
+    if (decision.disposition == CorpusDisposition::Admitted) {
+      EXPECT_EQ(decision.primary_reason, CorpusAdmissionReason::None);
+      EXPECT_EQ(decision.failed_checks, 0u);
+      ++report.n_admitted;
+    } else {
+      EXPECT_NE(decision.primary_reason, CorpusAdmissionReason::None);
+      EXPECT_TRUE(decision.failed(decision.primary_reason));
+      ++report.n_quarantined;
+    }
+
+    QualifiedCorpusEntry entry;
+    entry.date = "2026-06-17";
+    entry.symbol = "FUZZ" + std::to_string(i);
+    entry.disposition = decision.disposition;
+    entry.primary_reason = decision.primary_reason;
+    entry.failed_checks = decision.failed_checks;
+    entry.quality = std::move(quality);
+    report.entries.push_back(std::move(entry));
+  }
+  report.n_planned = static_cast<std::uint32_t>(report.entries.size());
+  const std::string serialized = serialize_quality_report(report);
+  auto parsed = parse_quality_report(serialized);
+  ASSERT_TRUE(parsed.has_value()) << parsed.error().to_string();
+  EXPECT_EQ(serialize_quality_report(*parsed), serialized)
+      << "NaN evidence is compared through canonical artifact bytes";
+}
+
+TEST(CorpusBuildSession, StreamsDatesRetainsSourceFailuresAndBoundsLiveSurfaces) {
+  const fs::path out = fresh_out_dir("streaming-qualified");
+  QualifiedCorpusConfig cfg;
+  cfg.admission = provenance_policy();
+  cfg.build.write_opts.created_ts_ns = 1;
+  auto session = CorpusBuildSession::create(out.string(), cfg);
+  ASSERT_TRUE(session.has_value()) << session.error().to_string();
+
+  CorpusBoard spy = board_from_spec(make_index_spec("SPY", "2026-06-17", 600.0), "2026-06-17",
+                                    "SPY", convex_dense_pin());
+  spy.source_provenance_complete = true;
+  CorpusSourceFailure missing;
+  missing.date = "2026-06-17";
+  missing.symbol = "missing";
+  missing.reason = CorpusAdmissionReason::MissingSource;
+  missing.error_code = ErrorCode::NotFound;
+  missing.source_schema_version = 2u;
+  missing.market_input_fingerprint = 0xA1u;
+  const std::array<CorpusCellInput, 2> first = {CorpusCellInput{spy}, CorpusCellInput{missing}};
+  ASSERT_TRUE(session->append_date("2026-06-17", first).has_value());
+
+  EXPECT_FALSE(session->append_date("2026-06-17", first).has_value())
+      << "date commits must be strictly ascending";
+
+  CorpusBoard xom =
+      board_from_spec(make_singlename_spec("XOM", "2026-06-18", 110.0), "2026-06-18", "XOM");
+  xom.source_provenance_complete = false;
+  const std::array<CorpusCellInput, 1> second = {CorpusCellInput{xom}};
+  ASSERT_TRUE(session->append_date("2026-06-18", second).has_value());
+
+  auto built = session->finish();
+  ASSERT_TRUE(built.has_value()) << built.error().to_string();
+  EXPECT_EQ(built->manifest.n_boards, 3u);
+  EXPECT_EQ(built->manifest.n_ok, 1u);
+  EXPECT_EQ(built->manifest.n_failed, 2u);
+  EXPECT_EQ(built->quality.n_planned, 3u);
+  EXPECT_EQ(built->quality.n_admitted, 1u);
+  EXPECT_EQ(built->quality.n_quarantined, 1u);
+  EXPECT_EQ(built->quality.n_source_failed, 1u);
+  EXPECT_EQ(built->peak_live_fitted_surfaces, 1u);
+  EXPECT_NE(built->quality.input_fingerprint, 0u);
+  EXPECT_NE(built->quality.policy_fingerprint, 0u);
+  ASSERT_EQ(built->quality.entries.size(), 3u);
+  EXPECT_EQ(built->quality.entries[0].symbol, "MISSING");
+  EXPECT_EQ(built->quality.entries[0].disposition, CorpusDisposition::SourceFailed);
+  EXPECT_EQ(built->quality.entries[0].primary_reason, CorpusAdmissionReason::MissingSource);
+  EXPECT_EQ(built->quality.entries[1].symbol, "SPY");
+  EXPECT_EQ(built->quality.entries[2].symbol, "XOM");
+  EXPECT_EQ(built->quality.entries[2].disposition, CorpusDisposition::Quarantined);
+
+  EXPECT_TRUE(fs::exists(out / "2026-06-17.atxvsa"));
+  EXPECT_FALSE(fs::exists(out / "2026-06-18.atxvsa"));
+  auto quality = read_quality_report_file((out / "quality.tsv").string());
+  auto manifest = read_manifest_file((out / "manifest.tsv").string());
+  ASSERT_TRUE(quality.has_value() && manifest.has_value());
+  EXPECT_EQ(*quality, built->quality);
+  EXPECT_EQ(*manifest, built->manifest);
+  EXPECT_FALSE(session->append_date("2026-06-19", second).has_value());
+}
+
+TEST(CorpusBuildSession, RejectsDuplicateCanonicalSymbolsBeforeFitting) {
+  const fs::path out = fresh_out_dir("streaming-duplicate");
+  QualifiedCorpusConfig cfg;
+  auto session = CorpusBuildSession::create(out.string(), cfg);
+  ASSERT_TRUE(session.has_value()) << session.error().to_string();
+
+  CorpusBoard board = board_from_spec(make_index_spec("SPY", "2026-06-17", 600.0), "2026-06-17",
+                                      "SPY", convex_dense_pin());
+  CorpusSourceFailure duplicate;
+  duplicate.date = "2026-06-17";
+  duplicate.symbol = "spy";
+  duplicate.reason = CorpusAdmissionReason::MissingSource;
+  const std::array<CorpusCellInput, 2> cells = {CorpusCellInput{board}, CorpusCellInput{duplicate}};
+  const Status status = session->append_date("2026-06-17", cells);
+  ASSERT_FALSE(status.has_value());
+  EXPECT_EQ(status.error().code(), ErrorCode::AlreadyExists);
+  EXPECT_FALSE(fs::exists(out / "2026-06-17.atxvsa"));
+}
+
+TEST(CorpusBuildSession, InterruptedBuildLeavesDateArchiveButNoPartialIndexes) {
+  const fs::path out = fresh_out_dir("streaming-interrupted");
+  {
+    QualifiedCorpusConfig cfg;
+    cfg.build.write_opts.created_ts_ns = 1;
+    auto session = CorpusBuildSession::create(out.string(), cfg);
+    ASSERT_TRUE(session.has_value()) << session.error().to_string();
+    CorpusBoard board = board_from_spec(make_index_spec("SPY", "2026-06-17", 600.0), "2026-06-17",
+                                        "SPY", convex_dense_pin());
+    const std::array<CorpusCellInput, 1> cells = {CorpusCellInput{board}};
+    ASSERT_TRUE(session->append_date("2026-06-17", cells).has_value());
+  }
+  EXPECT_TRUE(fs::exists(out / "2026-06-17.atxvsa"));
+  EXPECT_FALSE(fs::exists(out / "manifest.tsv"));
+  EXPECT_FALSE(fs::exists(out / "quality.tsv"));
+  EXPECT_FALSE(fs::exists(out / "manifest.tsv.pending"));
+  EXPECT_FALSE(fs::exists(out / "quality.tsv.pending"));
+}
+
+TEST(CorpusBuildSession, SyntheticThirteenNameThreeDateBreadthScoreboard) {
+  const fs::path out = fresh_out_dir("streaming-breadth");
+  QualifiedCorpusConfig cfg;
+  cfg.admission.enabled = true;
+  CorpusAdmissionRule rule;
+  rule.min_quotes = 90u;
+  rule.min_slices = 3u;
+  rule.require_calendar_arb_free = false;
+  rule.require_source_provenance = true;
+  for (CorpusAdmissionRule &profile_rule : cfg.admission.by_profile) {
+    profile_rule = rule;
+  }
+  cfg.build.write_opts.created_ts_ns = 1;
+  auto session = CorpusBuildSession::create(out.string(), cfg);
+  ASSERT_TRUE(session.has_value()) << session.error().to_string();
+
+  const auto source_failure = [](const std::string &date, std::string symbol,
+                                 CorpusAdmissionReason reason) {
+    CorpusSourceFailure failure;
+    failure.date = date;
+    failure.symbol = std::move(symbol);
+    failure.reason = reason;
+    failure.error_code = reason == CorpusAdmissionReason::MissingSource ? ErrorCode::NotFound
+                                                                        : ErrorCode::ParseError;
+    failure.source_schema_version = 2u;
+    return CorpusCellInput{std::move(failure)};
+  };
+  const auto make_empty = [](const std::string &date, std::string symbol) {
+    CorpusBoard board;
+    board.date = date;
+    board.symbol = std::move(symbol);
+    board.env = MarketEnv::flat(100.0, 0.04, iso_to_ns(date), {});
+    board.source_provenance_complete = true;
+    return board;
+  };
+
+  const std::vector<std::string> dates = {"2026-06-15", "2026-06-16", "2026-06-17"};
+  for (std::size_t date_index = 0u; date_index < dates.size(); ++date_index) {
+    const std::string &date = dates[date_index];
+    std::vector<CorpusCellInput> cells;
+    CorpusBoard spy =
+        board_from_spec(make_index_spec("SPY", date, 600.0), date, "SPY", convex_dense_pin());
+    spy.source_provenance_complete = true;
+    cells.emplace_back(std::move(spy));
+
+    if (date_index == 2u) {
+      for (const std::string &symbol : {"XOM", "LOW", "AAPL", "HTB", "THIN", "SPARSE", "MISSING",
+                                        "CORRUPT", "AMBIG", "EMPTY", "BADFIT", "ABSENT"}) {
+        cells.push_back(source_failure(date, symbol, CorpusAdmissionReason::MissingSource));
+      }
+      ASSERT_TRUE(session->append_date(date, cells).has_value());
+      continue;
+    }
+
+    CorpusBoard xom = board_from_spec(make_singlename_spec("XOM", date, 110.0), date, "XOM");
+    xom.source_provenance_complete = true;
+    cells.emplace_back(std::move(xom));
+
+    CorpusBoard low = board_from_spec(make_singlename_spec("LOW", date, 5.0), date, "LOW");
+    low.source_provenance_complete = true;
+    cells.emplace_back(std::move(low));
+
+    CorpusBoard event = board_from_spec(make_singlename_spec("AAPL", date, 200.0), date, "AAPL");
+    event.fit_context.profile_override = ProfileKind::MegaCapEvent;
+    event.fit_context.event_phase = EventPhase::PreAnnouncement;
+    event.fit_context.event_distance_days = 2u;
+    event.source_provenance_complete = true;
+    cells.emplace_back(std::move(event));
+
+    SynthPanelSpec htb_spec = make_singlename_spec("HTB", date, 40.0);
+    htb_spec.cash_divs = {{iso_to_ns("2026-07-01"), 0.75}};
+    CorpusBoard htb = board_from_spec(htb_spec, date, "HTB");
+    htb.fit_context.profile_override = ProfileKind::HtbDividendName;
+    htb.fit_context.htb = true;
+    htb.source_provenance_complete = true;
+    cells.emplace_back(std::move(htb));
+
+    CurveConfig essvi;
+    essvi.kind = VolCurveKind::Essvi;
+    CorpusBoard thin =
+        board_from_spec(make_singlename_spec("THIN", date, 75.0), date, "THIN", essvi);
+    thin.source_provenance_complete = true;
+    for (std::size_t i = 0u; i < thin.frame.rows.size(); i += 4u) {
+      thin.frame.rows[i].bid = 0.0;
+    }
+    cells.emplace_back(std::move(thin));
+
+    CorpusBoard sparse =
+        board_from_spec(make_singlename_spec("SPARSE", date, 25.0), date, "SPARSE", essvi);
+    sparse.fit_context.profile_override = ProfileKind::IlliquidSmallCap;
+    sparse.source_provenance_complete = true;
+    for (std::size_t i = 1u; i < sparse.frame.rows.size(); i += 4u) {
+      sparse.frame.rows[i].ask = 0.0;
+    }
+    cells.emplace_back(std::move(sparse));
+
+    cells.push_back(source_failure(date, "MISSING", CorpusAdmissionReason::MissingSource));
+    cells.push_back(source_failure(date, "CORRUPT", CorpusAdmissionReason::InvalidSourceSchema));
+    cells.push_back(source_failure(date, "AMBIG", CorpusAdmissionReason::AmbiguousSourceIdentity));
+    cells.emplace_back(make_empty(date, "EMPTY"));
+
+    CorpusBoard bad_fit = make_empty(date, "BADFIT");
+    bad_fit.frame.uid = "BADFIT";
+    bad_fit.frame.snapshot_iso = date;
+    bad_fit.frame.spot = 100.0;
+    bad_fit.frame.rows.push_back(QuoteRow{});
+    cells.emplace_back(std::move(bad_fit));
+    cells.push_back(source_failure(date, "ABSENT", CorpusAdmissionReason::MissingSource));
+    ASSERT_EQ(cells.size(), 13u);
+    ASSERT_TRUE(session->append_date(date, cells).has_value());
+  }
+
+  auto built = session->finish();
+  ASSERT_TRUE(built.has_value()) << built.error().to_string();
+  EXPECT_EQ(built->quality.n_planned, 39u);
+  EXPECT_EQ(built->quality.entries.size(), 39u);
+  EXPECT_EQ(built->quality.n_admitted, 11u);
+  EXPECT_EQ(built->quality.n_quarantined, 4u);
+  EXPECT_EQ(built->quality.n_source_failed, 20u);
+  EXPECT_EQ(built->quality.n_fit_failed, 2u);
+  EXPECT_EQ(built->quality.n_empty, 2u);
+  EXPECT_LE(built->peak_live_fitted_surfaces, 7u);
+  EXPECT_TRUE(fs::exists(out / "2026-06-15.atxvsa"));
+  EXPECT_TRUE(fs::exists(out / "2026-06-16.atxvsa"));
+  EXPECT_TRUE(fs::exists(out / "2026-06-17.atxvsa"));
+
+  const std::size_t last_date_admitted = static_cast<std::size_t>(std::count_if(
+      built->quality.entries.begin(), built->quality.entries.end(),
+      [](const QualifiedCorpusEntry &entry) {
+        return entry.date == "2026-06-17" && entry.disposition == CorpusDisposition::Admitted;
+      }));
+  EXPECT_EQ(last_date_admitted, 1u)
+      << "the final date must exercise the below-minimum-survivor regime";
 }
 
 TEST(Corpus, Throughput_FitsUnderCeiling) {

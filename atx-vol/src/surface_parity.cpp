@@ -289,6 +289,16 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying& under,
     return Err(ErrorCode::NotFound,
                "run_surface_parity: underlying carries no chains");
   }
+  if (!((in.expiry_rates.empty() && in.expiry_rate_T.empty()) ||
+        (in.expiry_rates.size() == n_chains && in.expiry_rate_T.size() == n_chains))) {
+    return Err(ErrorCode::InvalidArgument, "run_surface_parity: invalid expiry rate vectors");
+  }
+  for (std::size_t i = 0u; i < in.expiry_rates.size(); ++i) {
+    if (!std::isfinite(in.expiry_rates[i]) || !std::isfinite(in.expiry_rate_T[i]) ||
+        !(in.expiry_rate_T[i] > 0.0) || in.expiry_rate_T[i] != under.chains[i].T) {
+      return Err(ErrorCode::InvalidArgument, "run_surface_parity: invalid expiry rate value");
+    }
+  }
 
   ATX_TRY(VolSurface surface,
           VolSurface::create(under.uid, Parametrization::Essvi, n_chains));
@@ -308,6 +318,7 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying& under,
   struct PendingSlice {
     AlignedObs a;               // aligned obs (strike/bid/ask/mid/side/k/mkt-iv)
     double T{0.0};              // slice maturity
+    double rate{0.0};           // expiry-specific continuously-compounded rate
     double q_eff{0.0};          // effective carry for the re-Am scoring
     std::uint16_t slice_idx{0}; // surface write index for iv_on_slice read-back
   };
@@ -340,8 +351,10 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying& under,
 
   // Chains are stored ascending in T; walk them in that order so slices land
   // in the surface ascending as set_slice_essvi requires.
-  for (const Chain& chain : under.chains) {
+  for (std::size_t chain_index = 0u; chain_index < under.chains.size(); ++chain_index) {
+    const Chain &chain = under.chains[chain_index];
     const double T = chain.T;
+    const double rate = in.expiry_rates.empty() ? in.r : in.expiry_rates[chain_index];
     if (!(T > 0.0)) {
       continue;  // degenerate maturity: skip (not fatal)
     }
@@ -351,8 +364,8 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying& under,
     //    calling the full de_americanize_chain here would invert every strike a
     //    second, wasted time. resolve_chain_forward is its borrow-only front half.
     const double t_deam = profile ? now_ns() : 0.0;
-    const auto d_res = resolve_chain_forward(chain, in.S, in.r, in.cash_divs,
-                                             in.now_ts_ns, in.deam);
+    const auto d_res =
+        resolve_chain_forward(chain, in.S, rate, in.cash_divs, in.now_ts_ns, in.deam);
     if (profile) ms_deam += now_ns() - t_deam;
     if (!d_res) {
       continue;  // an expiry we cannot de-Americanize contributes no slice
@@ -362,11 +375,11 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying& under,
       continue;
     }
     // q_eff bridge: S*e^{(r-q_eff)T} == F exactly.
-    const double q_eff = in.r - std::log(F / in.S) / T;
+    const double q_eff = rate - std::log(F / in.S) / T;
 
     // 2. Aligned, self-contained observation rebuild on (F, q_eff).
     const double t_align = profile ? now_ns() : 0.0;
-    AlignedObs a = build_aligned_obs(chain, in.S, in.r, F, q_eff, in.deam);
+    AlignedObs a = build_aligned_obs(chain, in.S, rate, F, q_eff, in.deam);
     if (profile) ms_align += now_ns() - t_align;
     if (a.obs.size() < kMinUsableObs) {
       continue;  // fewer than the minimum usable strikes: skip this slice
@@ -379,9 +392,8 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying& under,
     FitDiag diag{};
     Result<EssviParams> slice_res =
         (in.repair == CalendarRepair::MonotoneFit)
-            ? fit_slice_calendar_floored(a, T, F, in.calib, &diag,
-                                         has_prev ? &prev_slice : nullptr,
-                                         std::exp(-in.r * T))
+            ? fit_slice_calendar_floored(a, T, F, in.calib, &diag, has_prev ? &prev_slice : nullptr,
+                                         std::exp(-rate * T))
             : essvi_fit_slice(a.obs, T, F, in.calib, &diag);
     if (profile) ms_fit += now_ns() - t_fit;
     if (!slice_res) {
@@ -399,8 +411,7 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying& under,
     //    fully assembled and (optionally) calendar-repaired.
     context.push_back(SliceContext{T, F, d_res->borrow, q_eff, a.obs.size(),
                                    a.n_dropped});
-    pending.push_back(
-        PendingSlice{std::move(a), T, q_eff, static_cast<std::uint16_t>(idx)});
+    pending.push_back(PendingSlice{std::move(a), T, rate, q_eff, static_cast<std::uint16_t>(idx)});
 
     ++idx;
   }
@@ -445,7 +456,7 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying& under,
 
     ParityInputs pin{};
     pin.S = in.S;
-    pin.r = in.r;
+    pin.r = ps.rate;
     pin.q_eff = ps.q_eff;
     pin.T = ps.T;
     pin.method = in.deam.method;
