@@ -58,6 +58,7 @@ add_executable(atx-vol-tests
     opra_breadth_corpus_test.cpp
     spy_archive_roundtrip_test.cpp
     portfolio_pricer_test.cpp
+    pricing_executor_test.cpp
     prepared_portfolio_test.cpp
     priced_surface_test.cpp
     spy_portfolio_pnl_test.cpp

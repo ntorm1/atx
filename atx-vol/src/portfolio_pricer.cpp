@@ -11,12 +11,12 @@
 #include <limits>
 #include <memory>
 #include <optional>
-#include <thread>
 #include <unordered_map>
 
 #include "atx/vol/american.hpp"           // AmericanGreeks
 #include "atx/vol/counters.hpp"           // ATX_VOL_COUNT (opt-in P0.2; no-op when OFF)
 #include "atx/vol/prepared_portfolio.hpp" // PreparedPortfolio (grouped exec substrate)
+#include "atx/vol/pricing_executor.hpp"   // pricing_executor(): the persistent P1.4 pool
 
 namespace atx::vol {
 
@@ -29,87 +29,6 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 // (matches the legacy portfolio dollar convention).
 [[nodiscard]] double eff_multiplier(double m) noexcept {
   return (std::isfinite(m) && m > 0.0) ? m : 100.0;
-}
-
-// Run body(i) for i in [0, n), splitting [0, n) into `n_threads` disjoint
-// contiguous blocks across std::jthreads (block 0 on the calling thread). Each i
-// writes its own output slot, so there is no shared mutable state; the caller's
-// serial scatter after this call keeps the reduction order fixed. `n_threads==0`
-// selects hardware concurrency; the count is clamped to n.
-template <class F> void parallel_blocks(std::size_t n, unsigned n_threads, F &&body) {
-  if (n == 0) {
-    return;
-  }
-  unsigned nt = n_threads;
-  if (nt == 0) {
-    nt = std::max(1u, std::thread::hardware_concurrency());
-  }
-  nt = std::min<unsigned>(nt, static_cast<unsigned>(n));
-  if (nt <= 1) {
-    for (std::size_t i = 0; i < n; ++i) {
-      body(i);
-    }
-    return;
-  }
-  const std::size_t block = (n + nt - 1) / nt;
-  std::vector<std::jthread> workers;
-  workers.reserve(nt - 1);
-  ATX_VOL_COUNT_N(WorkerLaunches, nt - 1);  // helper threads (block 0 stays inline)
-  for (unsigned t = 1; t < nt; ++t) {
-    const std::size_t lo = std::min(n, static_cast<std::size_t>(t) * block);
-    const std::size_t hi = std::min(n, lo + block);
-    if (lo >= hi) {
-      break;
-    }
-    workers.emplace_back([lo, hi, &body] {
-      for (std::size_t i = lo; i < hi; ++i) {
-        body(i);
-      }
-    });
-  }
-  const std::size_t hi0 = std::min(n, block);
-  for (std::size_t i = 0; i < hi0; ++i) {
-    body(i);
-  }
-  // jthreads join on destruction.
-}
-
-// Split [0, n) into up to `n_threads` disjoint contiguous blocks and run
-// body(lo, hi) ONCE per block across std::jthreads (block 0 on the calling
-// thread). Identical clamp/scheduling to parallel_blocks, but each worker receives
-// its whole contiguous range so the body can amortize per-range setup (e.g. resolve
-// a group's surface once, evaluate_batch a sub-ladder) instead of paying it per
-// element. Blocks own disjoint index ranges; the body must write only slots derived
-// from its own [lo, hi), so there is no shared mutable state. `n_threads==0` selects
-// hardware concurrency; the count is clamped to n.
-template <class F> void parallel_ranges(std::size_t n, unsigned n_threads, F &&body) {
-  if (n == 0) {
-    return;
-  }
-  unsigned nt = n_threads;
-  if (nt == 0) {
-    nt = std::max(1u, std::thread::hardware_concurrency());
-  }
-  nt = std::min<unsigned>(nt, static_cast<unsigned>(n));
-  if (nt <= 1) {
-    body(std::size_t{0}, n);
-    return;
-  }
-  const std::size_t block = (n + nt - 1) / nt;
-  std::vector<std::jthread> workers;
-  workers.reserve(nt - 1);
-  ATX_VOL_COUNT_N(WorkerLaunches, nt - 1);  // helper threads (block 0 stays inline)
-  for (unsigned t = 1; t < nt; ++t) {
-    const std::size_t lo = std::min(n, static_cast<std::size_t>(t) * block);
-    const std::size_t hi = std::min(n, lo + block);
-    if (lo >= hi) {
-      break;
-    }
-    workers.emplace_back([lo, hi, &body] { body(lo, hi); });
-  }
-  const std::size_t hi0 = std::min(n, block);
-  body(std::size_t{0}, hi0);
-  // jthreads join on destruction.
 }
 
 // Bit-exact contract identity for dedup.
@@ -317,7 +236,7 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
   // Fan out over the FLATTENED permuted unique-contract index [0, n_unique) so
   // the pool scales even on a single-uid book; each worker walks the group
   // boundaries its contiguous [lo,hi) overlaps (one find per touched group).
-  parallel_ranges(n_unique, n_threads, [&](std::size_t lo, std::size_t hi) {
+  pricing_executor().run_ranges(n_unique, n_threads, [&](std::size_t lo, std::size_t hi) {
     const std::uint32_t lo32 = static_cast<std::uint32_t>(lo);
     const std::uint32_t hi32 = static_cast<std::uint32_t>(hi);
     auto git = std::upper_bound(
@@ -339,7 +258,7 @@ void scatter_rows(std::span<const Position> positions, const Portfolio &pf,
                   std::span<const ContractPx> px, bool want_greeks, unsigned n_threads,
                   const PriceFrameView &out) {
   const std::size_t n = positions.size();
-  parallel_blocks(n, n_threads, [&](std::size_t i) {
+  pricing_executor().run_blocks(n, n_threads, [&](std::size_t i) {
     const Position &p = positions[i];
     const ContractPx &c = px[pf.contract_ix(i)];
     const double w = p.qty * eff_multiplier(p.multiplier);
@@ -642,7 +561,7 @@ Result<PnlFrame> PortfolioPricer::pnl_explain(const SurfaceSet &base, const Surf
 
   // 1. Parallel: per unique contract, base Greeks + target reprice + state moves.
   std::vector<ContractPnl> pnl(contracts.size());
-  parallel_blocks(contracts.size(), opts.n_threads, [&](std::size_t i) {
+  pricing_executor().run_blocks(contracts.size(), opts.n_threads, [&](std::size_t i) {
     const OptionContract &c = contracts[i];
     ContractPnl &out = pnl[i];
     if (degenerate(c)) {

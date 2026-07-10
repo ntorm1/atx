@@ -1009,6 +1009,87 @@ TEST(PortfolioPricer, PriceInto_AlternatingMasks_NoRebuild) {
   }
 }
 
+// P1.4 steady-state proof: the persistent pricing pool creates its worker threads
+// ONCE (at first use), so a warmed reprise at n_threads>1 creates NO threads. The
+// WorkerLaunches counter now means "pool worker threads actually created"; after a
+// warm-up it reads 0 for every subsequent snapshot (mirrors T6's FrameAllocations
+// proof). Meaningful only under -DATX_VOL_COUNTERS=ON.
+TEST(PortfolioPricer, PriceInto_SteadyState_NoThreadCreation) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+  const PricedSurface s1 = make_convex(1, 4, 32);
+  const PricedSurface s2 = make_essvi(2, 5);
+  const PricedSurface s3 = make_svi(3, 4);
+  const SurfaceSet surfaces = set_of({&s1, &s2, &s3});
+  auto pf = Portfolio::create(multi_uid_book());
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+  const std::size_t n = pricer.portfolio().n_positions();
+
+  PortfolioWorkspace ws;
+  ws.reserve(pricer.portfolio().n_contracts(), n);
+  FrameStore fs(n, /*want_greeks=*/true);
+  PriceFrameView v = fs.view();
+  const PriceOptions opts{.n_threads = 4};
+  // Warm-up: builds the substrate AND ensures the process pool's workers exist.
+  ASSERT_TRUE(pricer.price_into(surfaces, PriceFieldMask::FullGreeks, v, ws, opts).has_value());
+
+  if constexpr (counters_enabled()) {
+    atx::vol::counters::reset();
+    // Second reprice at n_threads>1: reuses the pool, creates no thread.
+    ASSERT_TRUE(pricer.price_into(surfaces, PriceFieldMask::FullGreeks, v, ws, opts).has_value());
+    const auto snap = atx::vol::counters::snapshot();
+    EXPECT_EQ(snap.get(Counter::WorkerLaunches), 0u); // no threads created in steady state
+  } else {
+    EXPECT_FALSE(atx::vol::counters::snapshot().enabled);
+    SUCCEED();
+  }
+}
+
+// Repeated concurrent stress: reprice a fixed multi-uid book many times at
+// n_threads in {2,4,8} and assert every frame column + total is bit-identical to
+// the single-thread reference. A data race on the disjoint-write scatter/solve
+// would surface as nondeterminism here. (clang-cl/Windows has no usable TSan, so
+// this repeated bit-identity IS the race evidence — see pricing_executor_test.cpp.)
+TEST(PortfolioPricer, PriceInto_RepeatedThreadCounts_BitIdentical) {
+  const PricedSurface surface = make_essvi(1, 5);
+  const SurfaceSet surfaces = set_of({&surface});
+  auto pf = Portfolio::create(pnl_book());
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+  const std::size_t n = pricer.portfolio().n_positions();
+
+  PortfolioWorkspace ws;
+  FrameStore ref(n, /*want_greeks=*/true);
+  {
+    PriceFrameView rv = ref.view();
+    ASSERT_TRUE(pricer.price_into(surfaces, PriceFieldMask::FullGreeks, rv, ws,
+                                  PriceOptions{.n_threads = 1})
+                    .has_value());
+  }
+
+  for (int rep = 0; rep < 100; ++rep) {
+    for (unsigned nt : {2u, 4u, 8u}) {
+      FrameStore fs(n, /*want_greeks=*/true);
+      PriceFrameView v = fs.view();
+      ASSERT_TRUE(pricer.price_into(surfaces, PriceFieldMask::FullGreeks, v, ws,
+                                    PriceOptions{.n_threads = nt})
+                      .has_value());
+      for (std::size_t i = 0; i < n; ++i) {
+        ASSERT_TRUE(bits_equal(fs.pv[i], ref.pv[i])) << "rep=" << rep << " nt=" << nt << " i=" << i;
+        ASSERT_TRUE(bits_equal(fs.price[i], ref.price[i])) << rep << " " << nt << " " << i;
+        ASSERT_TRUE(bits_equal(fs.delta[i], ref.delta[i])) << rep << " " << nt << " " << i;
+        ASSERT_TRUE(bits_equal(fs.gamma[i], ref.gamma[i])) << rep << " " << nt << " " << i;
+        ASSERT_TRUE(bits_equal(fs.vega[i], ref.vega[i])) << rep << " " << nt << " " << i;
+        ASSERT_TRUE(bits_equal(fs.theta[i], ref.theta[i])) << rep << " " << nt << " " << i;
+      }
+      ASSERT_TRUE(bits_equal(fs.total.pv, ref.total.pv)) << "rep=" << rep << " nt=" << nt;
+      ASSERT_TRUE(bits_equal(fs.total.delta, ref.total.delta)) << "rep=" << rep << " nt=" << nt;
+      ASSERT_EQ(fs.total.n_ok, ref.total.n_ok);
+    }
+  }
+}
+
 // An over-sized hint is advisory, not load-bearing: it must not change the dedup
 // result, and must not reach reserve() unclamped.
 TEST(PortfolioPricer, OversizedUniqueContractHintIsClampedAndHarmless) {
