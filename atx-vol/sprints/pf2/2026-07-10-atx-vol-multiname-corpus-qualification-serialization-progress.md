@@ -49,11 +49,11 @@ deferred rather than creating competing infrastructure.
 | P2-4 per-expiry rate fit/query/archive | complete-no-framing-change | term rates reach selector/fit/parity/live/archive queries; existing slice `df` persists them |
 | P2-5 source/config fingerprint | complete | semantic path-free source, market-input, automatic run-input, and policy fingerprints |
 | P3-1 streaming qualified corpus | complete | shared fit core, ordered `CorpusBuildSession`, source-failure variant, peak-live counter |
-| P3-2 crash-safe/resumable commit | partial | interrupted builds publish date archives but no partial indexes; fingerprinted reuse remains deferred |
+| P3-2 crash-safe/resumable commit | complete | atomic date checkpoints reuse only exact input/policy matches and CRC-valid mapped archives; stale/partial state fails loudly |
 | P3-3 synthetic multi-profile corpus | complete | 1 index + 12 names x 3 dates; all five dispositions and below-survivor date asserted |
 | P3-4 cached-real breadth corpus | complete | all 14 cached fixtures produced a qualified scoreboard; no network path |
 | P3-5 property/fuzz corpus | partial | 250-case fixed-seed admission/report battery green; 10k overnight full-fit generator remains |
-| P3-6 existing dispersion e2e smoke | pending | requires full P3-3 fixture |
+| P3-6 existing dispersion e2e smoke | complete | admitted 39-cell archives feed ATM-straddle strategy; drop/unpriced/closure and determinism gates asserted |
 | P4 archive performance | deferred-conflict | wait for completed performance archive and benchmark shape |
 | P5 committed performance gate | deferred-conflict | wait for completed performance baseline tooling |
 
@@ -89,9 +89,16 @@ deferred rather than creating competing infrastructure.
 - 2026-07-10: `SurfaceArchive.*:Corpus.*:PricerFitterPolicy.*` passed 25/25
   correctness tests; the one opt-in throughput timing test skipped as designed.
 - 2026-07-10: the existing `MultinamePipeline.*` backtest regression suite
-  passed 17/17. P3-6 remains open because this suite does not yet consume the
-  admitted archives from the new 39-cell qualified-corpus fixture.
+  passed 17/17 before the qualified-corpus-specific P3-6 gate was added.
+- 2026-07-10: P3-6 now runs the admitted 39-cell archives directly through the
+  existing dispersion strategy; explicit drop reasons, unpriced lot/Greek
+  counts, attribution closure, worker determinism, and promised analytic/FD
+  identities passed.
+- 2026-07-10: P3-2 interruption/resume gate passed: exact date checkpoints
+  avoid refitting, completed indexes reuse on equality, and input or policy
+  fingerprint changes fail loudly rather than accepting an existing archive.
 
 ## Commits
 
 - `8119e5e feat(atx-vol): qualify corpus fits with evidence`
+- `8bfcb3c feat(atx-vol): stream point-in-time qualified corpora`

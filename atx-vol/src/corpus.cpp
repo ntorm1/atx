@@ -994,6 +994,167 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
   return Ok(std::move(artifacts));
 }
 
+struct CorpusDateCheckpoint {
+  CorpusManifest manifest{};
+  CorpusQualityReport quality{};
+};
+
+[[nodiscard]] std::filesystem::path checkpoint_path(std::string_view out_dir, std::string_view date,
+                                                    std::string_view suffix) {
+  return std::filesystem::path(out_dir) / ".checkpoints" /
+         (std::string(date) + std::string(suffix));
+}
+
+[[nodiscard]] Result<std::optional<CorpusDateCheckpoint>>
+read_date_checkpoint(std::string_view out_dir, std::string_view date,
+                     std::span<const std::string> expected_symbols, std::uint64_t input_fingerprint,
+                     std::uint64_t policy_fingerprint) {
+  const std::filesystem::path manifest_path = checkpoint_path(out_dir, date, ".manifest.tsv");
+  const std::filesystem::path quality_path = checkpoint_path(out_dir, date, ".quality.tsv");
+  std::error_code manifest_error;
+  std::error_code quality_error;
+  const bool manifest_exists = std::filesystem::exists(manifest_path, manifest_error);
+  const bool quality_exists = std::filesystem::exists(quality_path, quality_error);
+  if (manifest_error || quality_error) {
+    return Err(ErrorCode::IoError, "CorpusBuildSession: cannot inspect date checkpoint");
+  }
+  if (!manifest_exists && !quality_exists) {
+    return Ok(std::optional<CorpusDateCheckpoint>{});
+  }
+  if (manifest_exists != quality_exists) {
+    return Err(ErrorCode::AlreadyExists, "CorpusBuildSession: incomplete date checkpoint");
+  }
+
+  ATX_TRY(CorpusManifest manifest, read_manifest_file(manifest_path.generic_string()));
+  ATX_TRY(CorpusQualityReport quality, read_quality_report_file(quality_path.generic_string()));
+  if (quality.input_fingerprint != input_fingerprint ||
+      quality.policy_fingerprint != policy_fingerprint) {
+    return Err(ErrorCode::AlreadyExists,
+               "CorpusBuildSession: date checkpoint fingerprint mismatch");
+  }
+  if (manifest.dates != std::vector<std::string>{std::string(date)} ||
+      manifest.entries.size() != expected_symbols.size() ||
+      quality.entries.size() != expected_symbols.size() ||
+      manifest.n_boards != expected_symbols.size() ||
+      quality.n_planned != expected_symbols.size()) {
+    return Err(ErrorCode::ParseError, "CorpusBuildSession: date checkpoint shape mismatch");
+  }
+
+  std::uint32_t admitted = 0u;
+  const std::filesystem::path expected_archive =
+      std::filesystem::path(out_dir) / (std::string(date) + ".atxvsa");
+  for (std::size_t i = 0u; i < expected_symbols.size(); ++i) {
+    const CorpusEntry &legacy = manifest.entries[i];
+    const QualifiedCorpusEntry &qualified = quality.entries[i];
+    if (legacy.date != date || qualified.date != date || legacy.symbol != expected_symbols[i] ||
+        qualified.symbol != expected_symbols[i] || legacy.symbol != qualified.symbol) {
+      return Err(ErrorCode::ParseError, "CorpusBuildSession: date checkpoint key mismatch");
+    }
+    const bool is_admitted = qualified.disposition == CorpusDisposition::Admitted;
+    if (is_admitted != (legacy.status == CorpusFitStatus::Ok)) {
+      return Err(ErrorCode::ParseError, "CorpusBuildSession: date checkpoint disposition mismatch");
+    }
+    if (is_admitted) {
+      ++admitted;
+      if (std::filesystem::path(legacy.archive_path) != expected_archive ||
+          std::filesystem::path(qualified.archive_path) != expected_archive) {
+        return Err(ErrorCode::ParseError, "CorpusBuildSession: date checkpoint archive mismatch");
+      }
+    } else if (!legacy.archive_path.empty() || !qualified.archive_path.empty()) {
+      return Err(ErrorCode::ParseError,
+                 "CorpusBuildSession: rejected checkpoint row names an archive");
+    }
+  }
+
+  std::error_code archive_error;
+  const bool archive_exists = std::filesystem::exists(expected_archive, archive_error);
+  if (archive_error || archive_exists != (admitted != 0u)) {
+    return Err(ErrorCode::AlreadyExists, "CorpusBuildSession: date checkpoint archive unavailable");
+  }
+  if (archive_exists) {
+    ATX_TRY(SurfaceArchive archive, SurfaceArchive::open_file(expected_archive.generic_string()));
+    if (archive.count() != admitted) {
+      return Err(ErrorCode::ParseError,
+                 "CorpusBuildSession: date checkpoint archive count mismatch");
+    }
+    ATX_TRY(std::vector<PricedSurface> mapped, archive.map_all());
+    if (mapped.size() != admitted) {
+      return Err(ErrorCode::ParseError, "CorpusBuildSession: date checkpoint archive map mismatch");
+    }
+    for (const CorpusEntry &entry : manifest.entries) {
+      if (entry.status == CorpusFitStatus::Ok && !archive.find(entry.symbol)) {
+        return Err(ErrorCode::ParseError,
+                   "CorpusBuildSession: date checkpoint archive symbol mismatch");
+      }
+    }
+  }
+
+  return Ok(std::optional<CorpusDateCheckpoint>{
+      CorpusDateCheckpoint{std::move(manifest), std::move(quality)}});
+}
+
+[[nodiscard]] Status write_date_checkpoint(std::string_view out_dir, std::string_view date,
+                                           std::uint64_t input_fingerprint,
+                                           std::uint64_t policy_fingerprint,
+                                           std::span<const CorpusEntry> manifest_entries,
+                                           std::span<const QualifiedCorpusEntry> quality_entries) {
+  CorpusManifest manifest;
+  manifest.dates.emplace_back(date);
+  manifest.entries.assign(manifest_entries.begin(), manifest_entries.end());
+  manifest.n_boards = saturated_u32(manifest.entries.size());
+  for (const CorpusEntry &entry : manifest.entries) {
+    switch (entry.status) {
+    case CorpusFitStatus::Ok:
+      ++manifest.n_ok;
+      break;
+    case CorpusFitStatus::Failed:
+      ++manifest.n_failed;
+      break;
+    case CorpusFitStatus::Skipped:
+      ++manifest.n_skipped;
+      break;
+    }
+  }
+
+  CorpusQualityReport quality;
+  quality.input_fingerprint = input_fingerprint;
+  quality.policy_fingerprint = policy_fingerprint;
+  quality.entries.assign(quality_entries.begin(), quality_entries.end());
+  quality.n_planned = saturated_u32(quality.entries.size());
+  for (const QualifiedCorpusEntry &entry : quality.entries) {
+    count_disposition(quality, entry.disposition);
+  }
+
+  const std::filesystem::path manifest_path = checkpoint_path(out_dir, date, ".manifest.tsv");
+  const std::filesystem::path quality_path = checkpoint_path(out_dir, date, ".quality.tsv");
+  const std::filesystem::path manifest_pending = manifest_path.string() + ".pending";
+  const std::filesystem::path quality_pending = quality_path.string() + ".pending";
+  ATX_TRY_VOID(write_manifest_file(manifest_pending.generic_string(), manifest));
+  const Status quality_write = write_quality_report_file(quality_pending.generic_string(), quality);
+  if (!quality_write) {
+    std::error_code cleanup;
+    std::filesystem::remove(manifest_pending, cleanup);
+    return Err(quality_write.error());
+  }
+
+  std::error_code rename_error;
+  std::filesystem::rename(manifest_pending, manifest_path, rename_error);
+  if (rename_error) {
+    std::error_code cleanup;
+    std::filesystem::remove(manifest_pending, cleanup);
+    std::filesystem::remove(quality_pending, cleanup);
+    return Err(ErrorCode::IoError, "CorpusBuildSession: manifest checkpoint commit failed");
+  }
+  std::filesystem::rename(quality_pending, quality_path, rename_error);
+  if (rename_error) {
+    std::error_code cleanup;
+    std::filesystem::remove(quality_pending, cleanup);
+    std::filesystem::remove(manifest_path, cleanup);
+    return Err(ErrorCode::IoError, "CorpusBuildSession: quality checkpoint commit failed");
+  }
+  return Ok();
+}
+
 } // namespace
 
 CorpusBuildSession::CorpusBuildSession(std::string out_dir, QualifiedCorpusConfig cfg)
@@ -1090,6 +1251,7 @@ Status CorpusBuildSession::append_date(std::string_view date,
     (void)symbol;
     date_fingerprint_material.append(material);
   }
+  const std::uint64_t date_input_fingerprint = fingerprint_bytes(date_fingerprint_material);
   if (cells.size() > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()) ||
       static_cast<std::uint64_t>(manifest_.n_boards) + cells.size() >
           std::numeric_limits<std::uint32_t>::max()) {
@@ -1102,45 +1264,57 @@ Status CorpusBuildSession::append_date(std::string_view date,
   manifest_entries.reserve(cells.size());
   quality_entries.reserve(cells.size());
   std::uint32_t date_peak = 0u;
-  if (!boards.empty()) {
-    ATX_TRY(CorpusBuildArtifacts artifacts,
-            build_corpus_core(boards, out_dir_, cfg_.build, &cfg_.admission,
-                              quality_.input_fingerprint, quality_.policy_fingerprint, false));
-    date_peak = artifacts.peak_live_fitted_surfaces;
-    manifest_entries = std::move(artifacts.manifest.entries);
-    if (!artifacts.quality.has_value()) {
-      return Err(ErrorCode::Internal, "CorpusBuildSession::append_date: quality unavailable");
+  ATX_TRY(std::optional<CorpusDateCheckpoint> checkpoint,
+          read_date_checkpoint(out_dir_, date, symbols, date_input_fingerprint,
+                               quality_.policy_fingerprint));
+  if (checkpoint.has_value()) {
+    manifest_entries = std::move(checkpoint->manifest.entries);
+    quality_entries = std::move(checkpoint->quality.entries);
+  } else {
+    if (!boards.empty()) {
+      ATX_TRY(CorpusBuildArtifacts artifacts,
+              build_corpus_core(boards, out_dir_, cfg_.build, &cfg_.admission,
+                                quality_.input_fingerprint, quality_.policy_fingerprint, false));
+      date_peak = artifacts.peak_live_fitted_surfaces;
+      manifest_entries = std::move(artifacts.manifest.entries);
+      if (!artifacts.quality.has_value()) {
+        return Err(ErrorCode::Internal, "CorpusBuildSession::append_date: quality unavailable");
+      }
+      quality_entries = std::move(artifacts.quality->entries);
     }
-    quality_entries = std::move(artifacts.quality->entries);
+
+    for (const CorpusSourceFailure &failure : source_failures) {
+      CorpusEntry legacy;
+      legacy.date = failure.date;
+      legacy.symbol = failure.symbol;
+      legacy.status = CorpusFitStatus::Failed;
+      legacy.error_code = failure.error_code;
+      manifest_entries.push_back(std::move(legacy));
+
+      QualifiedCorpusEntry quality;
+      quality.date = failure.date;
+      quality.symbol = failure.symbol;
+      quality.disposition = CorpusDisposition::SourceFailed;
+      quality.primary_reason = failure.reason;
+      quality.failed_checks = admission_reason_mask(failure.reason);
+      quality.source_or_fit_error = failure.error_code;
+      quality.quality.source_schema_version = failure.source_schema_version;
+      quality.quality.source_fingerprint = failure.source_fingerprint;
+      quality.quality.market_input_fingerprint = failure.market_input_fingerprint;
+      quality_entries.push_back(std::move(quality));
+    }
+
+    std::sort(
+        manifest_entries.begin(), manifest_entries.end(),
+        [](const CorpusEntry &lhs, const CorpusEntry &rhs) { return lhs.symbol < rhs.symbol; });
+    std::sort(quality_entries.begin(), quality_entries.end(),
+              [](const QualifiedCorpusEntry &lhs, const QualifiedCorpusEntry &rhs) {
+                return lhs.symbol < rhs.symbol;
+              });
+    ATX_TRY_VOID(write_date_checkpoint(out_dir_, date, date_input_fingerprint,
+                                       quality_.policy_fingerprint, manifest_entries,
+                                       quality_entries));
   }
-
-  for (const CorpusSourceFailure &failure : source_failures) {
-    CorpusEntry legacy;
-    legacy.date = failure.date;
-    legacy.symbol = failure.symbol;
-    legacy.status = CorpusFitStatus::Failed;
-    legacy.error_code = failure.error_code;
-    manifest_entries.push_back(std::move(legacy));
-
-    QualifiedCorpusEntry quality;
-    quality.date = failure.date;
-    quality.symbol = failure.symbol;
-    quality.disposition = CorpusDisposition::SourceFailed;
-    quality.primary_reason = failure.reason;
-    quality.failed_checks = admission_reason_mask(failure.reason);
-    quality.source_or_fit_error = failure.error_code;
-    quality.quality.source_schema_version = failure.source_schema_version;
-    quality.quality.source_fingerprint = failure.source_fingerprint;
-    quality.quality.market_input_fingerprint = failure.market_input_fingerprint;
-    quality_entries.push_back(std::move(quality));
-  }
-
-  std::sort(manifest_entries.begin(), manifest_entries.end(),
-            [](const CorpusEntry &lhs, const CorpusEntry &rhs) { return lhs.symbol < rhs.symbol; });
-  std::sort(quality_entries.begin(), quality_entries.end(),
-            [](const QualifiedCorpusEntry &lhs, const QualifiedCorpusEntry &rhs) {
-              return lhs.symbol < rhs.symbol;
-            });
 
   manifest_.dates.emplace_back(date);
   for (CorpusEntry &entry : manifest_entries) {
@@ -1180,6 +1354,28 @@ Result<QualifiedCorpusManifest> CorpusBuildSession::finish() {
       (std::filesystem::path(out_dir_) / "manifest.tsv").generic_string();
   const std::string quality_path =
       (std::filesystem::path(out_dir_) / "quality.tsv").generic_string();
+  std::error_code manifest_exists_error;
+  std::error_code quality_exists_error;
+  const bool manifest_exists = std::filesystem::exists(manifest_path, manifest_exists_error);
+  const bool quality_exists = std::filesystem::exists(quality_path, quality_exists_error);
+  if (manifest_exists_error || quality_exists_error) {
+    return Err(ErrorCode::IoError, "CorpusBuildSession::finish: cannot inspect final indexes");
+  }
+  if (manifest_exists || quality_exists) {
+    if (manifest_exists != quality_exists) {
+      return Err(ErrorCode::AlreadyExists,
+                 "CorpusBuildSession::finish: incomplete existing final indexes");
+    }
+    ATX_TRY(CorpusManifest existing_manifest, read_manifest_file(manifest_path));
+    ATX_TRY(CorpusQualityReport existing_quality, read_quality_report_file(quality_path));
+    if (existing_manifest != manifest_ || existing_quality != quality_) {
+      return Err(ErrorCode::AlreadyExists,
+                 "CorpusBuildSession::finish: existing final indexes do not match");
+    }
+    finished_ = true;
+    return Ok(QualifiedCorpusManifest{std::move(manifest_), std::move(quality_),
+                                      peak_live_fitted_surfaces_});
+  }
   const std::string manifest_pending = manifest_path + ".pending";
   const std::string quality_pending = quality_path + ".pending";
   ATX_TRY_VOID(write_manifest_file(manifest_pending, manifest_));

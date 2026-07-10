@@ -41,15 +41,18 @@
 #include <vector>
 
 #include "atx/vol/american.hpp"        // AmericanGreeks
+#include "atx/vol/backtest.hpp"        // Clock, MarketSnapshot, run_backtest
 #include "atx/vol/chain.hpp"           // OptionChain
 #include "atx/vol/corpus.hpp"          // build_corpus, CorpusManifest, ...
 #include "atx/vol/data.hpp"            // iso_to_ns, year_fraction
+#include "atx/vol/dispersion.hpp"      // DispersionUniverse, DroppedName
 #include "atx/vol/market_env.hpp"      // MarketEnv
 #include "atx/vol/panel.hpp"           // make_synthetic_american_panel, SynthPanelSpec
 #include "atx/vol/priced_surface.hpp"  // PricedSurface
 #include "atx/vol/pricer_fitter.hpp"   // PricerFitter, PricerConfig
 #include "atx/vol/session.hpp"         // VolaSession::to_priced_surface
 #include "atx/vol/spy_fixture.hpp"     // make_spy_synthetic_spec
+#include "atx/vol/strategy.hpp"        // DispersionStrategy
 #include "atx/vol/surface_archive.hpp" // SurfaceArchive
 #include "atx/vol/types.hpp"           // Side
 #include "atx/vol/vol_curve.hpp"       // CurveConfig, VolCurveKind, to_string
@@ -972,21 +975,59 @@ TEST(CorpusBuildSession, RejectsDuplicateCanonicalSymbolsBeforeFitting) {
 
 TEST(CorpusBuildSession, InterruptedBuildLeavesDateArchiveButNoPartialIndexes) {
   const fs::path out = fresh_out_dir("streaming-interrupted");
+  QualifiedCorpusConfig cfg;
+  cfg.build.write_opts.created_ts_ns = 1;
+  CorpusBoard board = board_from_spec(make_index_spec("SPY", "2026-06-17", 600.0), "2026-06-17",
+                                      "SPY", convex_dense_pin());
+  const std::array<CorpusCellInput, 1> cells = {CorpusCellInput{board}};
   {
-    QualifiedCorpusConfig cfg;
-    cfg.build.write_opts.created_ts_ns = 1;
     auto session = CorpusBuildSession::create(out.string(), cfg);
     ASSERT_TRUE(session.has_value()) << session.error().to_string();
-    CorpusBoard board = board_from_spec(make_index_spec("SPY", "2026-06-17", 600.0), "2026-06-17",
-                                        "SPY", convex_dense_pin());
-    const std::array<CorpusCellInput, 1> cells = {CorpusCellInput{board}};
     ASSERT_TRUE(session->append_date("2026-06-17", cells).has_value());
   }
   EXPECT_TRUE(fs::exists(out / "2026-06-17.atxvsa"));
+  EXPECT_TRUE(fs::exists(out / ".checkpoints" / "2026-06-17.manifest.tsv"));
+  EXPECT_TRUE(fs::exists(out / ".checkpoints" / "2026-06-17.quality.tsv"));
   EXPECT_FALSE(fs::exists(out / "manifest.tsv"));
   EXPECT_FALSE(fs::exists(out / "quality.tsv"));
   EXPECT_FALSE(fs::exists(out / "manifest.tsv.pending"));
   EXPECT_FALSE(fs::exists(out / "quality.tsv.pending"));
+
+  auto resumed = CorpusBuildSession::create(out.string(), cfg);
+  ASSERT_TRUE(resumed.has_value()) << resumed.error().to_string();
+  ASSERT_TRUE(resumed->append_date("2026-06-17", cells).has_value());
+  auto finished = resumed->finish();
+  ASSERT_TRUE(finished.has_value()) << finished.error().to_string();
+  EXPECT_EQ(finished->peak_live_fitted_surfaces, 0u)
+      << "a matching checkpoint must not refit the date";
+  EXPECT_TRUE(fs::exists(out / "manifest.tsv"));
+  EXPECT_TRUE(fs::exists(out / "quality.tsv"));
+
+  auto cached = CorpusBuildSession::create(out.string(), cfg);
+  ASSERT_TRUE(cached.has_value());
+  ASSERT_TRUE(cached->append_date("2026-06-17", cells).has_value());
+  auto cached_result = cached->finish();
+  ASSERT_TRUE(cached_result.has_value()) << cached_result.error().to_string();
+  EXPECT_EQ(cached_result->manifest, finished->manifest);
+  EXPECT_EQ(cached_result->quality, finished->quality);
+  EXPECT_EQ(cached_result->peak_live_fitted_surfaces, 0u);
+
+  CorpusBoard changed_board = board;
+  changed_board.frame.spot += 1.0;
+  const std::array<CorpusCellInput, 1> changed_cells = {CorpusCellInput{changed_board}};
+  auto changed_input = CorpusBuildSession::create(out.string(), cfg);
+  ASSERT_TRUE(changed_input.has_value());
+  const Status changed_input_status = changed_input->append_date("2026-06-17", changed_cells);
+  ASSERT_FALSE(changed_input_status.has_value());
+  EXPECT_EQ(changed_input_status.error().code(), ErrorCode::AlreadyExists);
+
+  QualifiedCorpusConfig changed_cfg = cfg;
+  changed_cfg.admission.enabled = true;
+  auto changed_policy = CorpusBuildSession::create(out.string(), changed_cfg);
+  ASSERT_TRUE(changed_policy.has_value());
+  const Status changed_policy_status = changed_policy->append_date("2026-06-17", cells);
+  ASSERT_FALSE(changed_policy_status.has_value());
+  EXPECT_EQ(changed_policy_status.error().code(), ErrorCode::AlreadyExists);
 }
 
 TEST(CorpusBuildSession, SyntheticThirteenNameThreeDateBreadthScoreboard) {
@@ -1122,6 +1163,85 @@ TEST(CorpusBuildSession, SyntheticThirteenNameThreeDateBreadthScoreboard) {
       }));
   EXPECT_EQ(last_date_admitted, 1u)
       << "the final date must exercise the below-minimum-survivor regime";
+
+  auto clock = Clock::from_manifest(built->manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  ASSERT_EQ(clock->size(), dates.size());
+
+  DispersionUniverse universe;
+  universe.index = DispersionMember{"SPY", 0u, 0.0};
+  for (const char *symbol : {"XOM", "LOW", "AAPL", "HTB"}) {
+    universe.names.push_back(DispersionMember{symbol, 0u, 0.25});
+  }
+  DispersionConfig dispersion_cfg;
+  dispersion_cfg.missing.policy = MissingNamePolicy::DropRenormalize;
+
+  RunConfig serial_cfg;
+  serial_cfg.price.n_threads = 1u;
+  DispersionStrategy serial_strategy{universe, dispersion_cfg};
+  auto serial = run_backtest(*clock, serial_strategy, serial_cfg);
+  ASSERT_TRUE(serial.has_value()) << serial.error().to_string();
+  ASSERT_EQ(serial->size(), dates.size());
+
+  const auto dropped_signal =
+      std::find_if(serial->signals.begin(), serial->signals.end(),
+                   [](const auto &signal) { return signal.first == "n_names_dropped"; });
+  ASSERT_NE(dropped_signal, serial->signals.end());
+  ASSERT_EQ(dropped_signal->second.size(), dates.size());
+  EXPECT_EQ(dropped_signal->second[0], 0.0);
+  EXPECT_EQ(dropped_signal->second[1], 0.0);
+  EXPECT_EQ(dropped_signal->second[2], 4.0);
+  EXPECT_GT(serial->n_unpriced_lots[2], 0.0);
+  EXPECT_GT(serial->n_unpriced_greeks[2], 0.0);
+
+  auto final_snapshot = MarketSnapshot::load((out / "2026-06-17.atxvsa").string());
+  ASSERT_TRUE(final_snapshot.has_value()) << final_snapshot.error().to_string();
+  const std::vector<DroppedName> dropped = serial_strategy.dropped_on(*final_snapshot);
+  ASSERT_EQ(dropped.size(), universe.names.size());
+  for (const DroppedName &name : dropped) {
+    EXPECT_EQ(name.reason, DropReason::NotInSnapshot) << name.symbol;
+    EXPECT_FALSE(name.detail.empty()) << name.symbol;
+  }
+
+  for (std::size_t i = 0u; i < serial->size(); ++i) {
+    const double attribution = serial->pnl_delta[i] + serial->pnl_gamma[i] + serial->pnl_vega[i] +
+                               serial->pnl_vanna[i] + serial->pnl_volga[i] + serial->pnl_theta[i] +
+                               serial->pnl_rho[i] + serial->pnl_charm[i] +
+                               serial->pnl_unexplained[i] + serial->pnl_settlement[i] +
+                               serial->pnl_shares[i] + serial->financing[i] - serial->cost[i];
+    EXPECT_NEAR(attribution, serial->pnl_total[i], 1.0e-6 * (std::fabs(serial->pnl_total[i]) + 1.0))
+        << "row " << i;
+  }
+
+  RunConfig parallel_cfg = serial_cfg;
+  parallel_cfg.price.n_threads = 4u;
+  DispersionStrategy parallel_strategy{universe, dispersion_cfg};
+  auto parallel = run_backtest(*clock, parallel_strategy, parallel_cfg);
+  ASSERT_TRUE(parallel.has_value()) << parallel.error().to_string();
+
+  const auto expect_column_bits_equal = [](const std::vector<double> &lhs,
+                                           const std::vector<double> &rhs) {
+    ASSERT_EQ(lhs.size(), rhs.size());
+    for (std::size_t i = 0u; i < lhs.size(); ++i) {
+      EXPECT_TRUE(bits_equal(lhs[i], rhs[i])) << "row " << i;
+    }
+  };
+  expect_column_bits_equal(serial->pnl_total, parallel->pnl_total);
+  expect_column_bits_equal(serial->nav, parallel->nav);
+  expect_column_bits_equal(serial->gross_vega, parallel->gross_vega);
+  expect_column_bits_equal(serial->n_unpriced_lots, parallel->n_unpriced_lots);
+  expect_column_bits_equal(serial->n_unpriced_greeks, parallel->n_unpriced_greeks);
+
+  RunConfig fd_cfg = parallel_cfg;
+  fd_cfg.price.analytic_greeks = false;
+  DispersionStrategy fd_strategy{universe, dispersion_cfg};
+  auto fd = run_backtest(*clock, fd_strategy, fd_cfg);
+  ASSERT_TRUE(fd.has_value()) << fd.error().to_string();
+  expect_column_bits_equal(parallel->pnl_total, fd->pnl_total);
+  expect_column_bits_equal(parallel->nav, fd->nav);
+  expect_column_bits_equal(parallel->gross_delta, fd->gross_delta);
+  expect_column_bits_equal(parallel->gross_gamma, fd->gross_gamma);
+  expect_column_bits_equal(parallel->gross_vega, fd->gross_vega);
 }
 
 TEST(Corpus, Throughput_FitsUnderCeiling) {
