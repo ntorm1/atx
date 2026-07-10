@@ -3,9 +3,10 @@
 Migration 0185 (delisting_terminal_returns + delisting_code_reconciliation +
 terminal_return_policy_dim, the latter seeded from TERMINAL_RETURN_POLICY_ROWS) lands in
 PF4-S4 S4-0/S4-1. 0186 (forward_returns_survivorship_safe + its latest-revision view) and 0187
-(its indexes) land in this task (PF4-S4 S4-2). 0188 (coverage view + quality_check_registry
-rows) lands in a later PF4-S4 task and is appended to this same file/MIGRATIONS list when it
-lands -- do not renumber or edit 0185 (or 0186/0187) to make room for it.
+(its indexes) land in PF4-S4 S4-2. 0188 (v_delisting_return_coverage coverage view +
+quality_check_registry rows for the survivorship-drop critical check and the DLSTCD-recon error
+check) lands in PF4-S4 S4-3, appended to this same file/MIGRATIONS list -- the 0185/0186/0187
+bodies are unchanged.
 
 S4-1 note on editing 0185's own body (rather than adding a new migration): the dimension is
 policy-as-data, and 0185 has never been applied to any persistent database -- it is this
@@ -389,6 +390,177 @@ def _pf4_s4_forward_returns_survivorship_safe_indexes(conn: duckdb.DuckDBPyConne
     _refresh_schema_contract_v2_pin(conn)
 
 
+def _pf4_s4_survivorship_coverage_and_checks(conn: duckdb.DuckDBPyConnection) -> None:
+    """PF4-S4 S4-3 (0188): survivorship-return coverage view + gate-ready quality checks.
+
+    ``v_delisting_return_coverage`` reports, per delist cohort month, how many delisted
+    security-days carry an ``observed`` vs ``policy`` terminal return vs are still ``missing`` one,
+    and how many were stitched into ``forward_returns_survivorship_safe`` vs dropped. The delist
+    universe is the union of the public delisting-proxy events and the realized terminal returns, so
+    a delist known from either surface is counted. It is a pure monitoring aggregation carrying no
+    strong PIT temporal marker, so (like ``terminal_return_policy_dim``) it needs neither PIT columns
+    nor a ``pit_exemption``.
+
+    Two checks are registered as data in ``quality_check_registry`` (the check SQL lives in
+    ``db.quality.checks_survivorship`` and is run inside ``run_warehouse_quality_checks``):
+
+    * ``survivorship_forward_return_drops_delisted_names`` -- critical, gate-ready. threshold 0.0,
+      comparator ``le`` -> RED (halt) when any delisted name that should have been stitched into a
+      formation window is dropped, GREEN at 0.
+    * ``delisting_code_reconciliation_unresolved`` -- error. Counts ``reconciliation_status =
+      'unmapped'`` rows only; an expected ``'mismatch'`` disagreement is surfaced in the coverage
+      view, never failed.
+    """
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW v_delisting_return_coverage AS
+        WITH delist_universe AS (
+            SELECT DISTINCT security_id, delist_date
+            FROM delisting_events
+            WHERE security_id IS NOT NULL
+            UNION
+            SELECT DISTINCT security_id, delist_date
+            FROM delisting_terminal_returns
+            WHERE is_latest_revision AND security_id IS NOT NULL
+        ),
+        terminal AS (
+            SELECT security_id, delist_date, terminal_return_source
+            FROM delisting_terminal_returns
+            WHERE is_latest_revision
+        ),
+        stitched AS (
+            SELECT DISTINCT security_id, delist_date
+            FROM forward_returns_survivorship_safe
+            WHERE is_stitched AND is_latest_revision
+        )
+        SELECT
+            date_trunc('month', u.delist_date)                                    AS delist_cohort_month,
+            count(*)                                                              AS delist_security_days,
+            count(t.security_id) FILTER (WHERE t.terminal_return_source = 'observed')
+                                                                                  AS observed_terminal_count,
+            count(t.security_id) FILTER (WHERE t.terminal_return_source = 'policy')
+                                                                                  AS policy_terminal_count,
+            count(*) FILTER (WHERE t.security_id IS NULL)                         AS missing_terminal_count,
+            count(s.security_id)                                                  AS stitched_count,
+            count(*) FILTER (WHERE t.security_id IS NOT NULL AND s.security_id IS NULL)
+                                                                                  AS dropped_count
+        FROM delist_universe u
+        LEFT JOIN terminal t
+          ON t.security_id = u.security_id AND t.delist_date = u.delist_date
+        LEFT JOIN stitched s
+          ON s.security_id = u.security_id AND s.delist_date = u.delist_date
+        GROUP BY 1
+        ORDER BY 1
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO dataset_catalog (
+            dataset_id, source_system_id, name, description, grain,
+            primary_table, pit_column, available_at_column, updated_at
+        )
+        VALUES (
+            'delisting_return_coverage', 'atx_warehouse',
+            'Delisting terminal-return coverage',
+            'Per delist-cohort-month coverage of realized terminal returns: observed vs policy vs '
+            'still-missing counts, plus stitched-vs-dropped counts against '
+            'forward_returns_survivorship_safe. Monitoring aggregation over the union of the public '
+            'delisting-proxy events and the realized terminal returns.',
+            'delist_cohort_month',
+            'v_delisting_return_coverage', NULL, NULL, now()
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO table_catalog (
+            table_name, layer, entity, grain, description,
+            natural_key_json, pit_notes, updated_at
+        )
+        VALUES (
+            'v_delisting_return_coverage', 'view', 'delisting_return_coverage',
+            'delist_cohort_month',
+            'Per delist-cohort-month terminal-return coverage: observed/policy/missing terminal '
+            'counts and stitched/dropped counts. Legitimate DLSTCD mismatches are signal and are '
+            'reported upstream, not failed. dropped_count here is the coarse "has a terminal return '
+            'but no stitched row" monitor; the exact halt gate is the '
+            'survivorship_forward_return_drops_delisted_names anti-join.',
+            '["delist_cohort_month"]',
+            'Derived monitoring aggregation; carries none of the three strong PIT temporal markers, '
+            'so no PIT columns or exemption are required.',
+            now()
+        )
+        """
+    )
+    _catalog_fields_for_tables(conn, ("v_delisting_return_coverage",))
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO field_catalog (
+            table_name, field_name, semantic_type, description,
+            nullable, unit, source_field, updated_at
+        )
+        VALUES
+            ('v_delisting_return_coverage', 'delist_cohort_month', 'category',
+             'Delist cohort as the first day of the delist month (date_trunc month of delist_date).',
+             false, NULL, 'delist_date', now()),
+            ('v_delisting_return_coverage', 'observed_terminal_count', 'measure',
+             'Count of delisted security-days in the cohort with an observed (vendor DLRET) terminal '
+             'return.',
+             false, 'count', NULL, now()),
+            ('v_delisting_return_coverage', 'policy_terminal_count', 'measure',
+             'Count of delisted security-days in the cohort with a policy (deterministic '
+             'corporate-action) terminal return.',
+             false, 'count', NULL, now()),
+            ('v_delisting_return_coverage', 'missing_terminal_count', 'measure',
+             'Count of delisted security-days in the cohort with no terminal return at all (an '
+             'uncovered delist; never imputed).',
+             false, 'count', NULL, now()),
+            ('v_delisting_return_coverage', 'stitched_count', 'measure',
+             'Count of delisted security-days in the cohort with at least one stitched '
+             'forward_returns_survivorship_safe row.',
+             false, 'count', NULL, now()),
+            ('v_delisting_return_coverage', 'dropped_count', 'measure',
+             'Count of delisted security-days in the cohort that carry a terminal return but no '
+             'stitched forward-return row (coarse survivorship-drop monitor).',
+             false, 'count', NULL, now())
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO quality_check_registry (
+            check_name, dataset_id, table_name, severity, threshold_value,
+            comparator, enabled, failure_status, source, updated_at
+        )
+        VALUES
+            (
+                'survivorship_forward_return_drops_delisted_names',
+                'forward_returns_survivorship_safe',
+                'forward_returns_survivorship_safe',
+                'critical',
+                0.0,
+                'le',
+                true,
+                'failed',
+                'pf4_s4',
+                now()
+            ),
+            (
+                'delisting_code_reconciliation_unresolved',
+                'delisting_code_reconciliation',
+                'delisting_code_reconciliation',
+                'error',
+                0.0,
+                'le',
+                true,
+                'failed',
+                'pf4_s4',
+                now()
+            )
+        """
+    )
+    _refresh_schema_contract_v2_pin(conn)
+
+
 MIGRATIONS: list[Migration] = [
     Migration(
         version=185,
@@ -404,5 +576,10 @@ MIGRATIONS: list[Migration] = [
         version=187,
         name="pf4_s4_forward_returns_survivorship_safe_indexes",
         up=_pf4_s4_forward_returns_survivorship_safe_indexes,
+    ),
+    Migration(
+        version=188,
+        name="pf4_s4_survivorship_coverage_and_checks",
+        up=_pf4_s4_survivorship_coverage_and_checks,
     ),
 ]

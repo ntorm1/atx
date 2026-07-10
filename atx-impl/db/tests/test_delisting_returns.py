@@ -1291,3 +1291,98 @@ def test_refresh_survivorship_safe_forward_returns_stitches_and_is_idempotent(tm
         "SELECT count(*) FROM forward_returns_survivorship_safe WHERE source = 'ss_itest'"
     ).fetchone()[0]
     assert total == n1  # replaced, not appended
+
+
+# ---------------------------------------------------------------------------
+# PF4-S4 S4-3: survivorship-bias DQC (critical, gate-ready) + DLSTCD-recon gate.
+# The first two tests are the verbatim TDD tests from the S4-3 brief.
+# ---------------------------------------------------------------------------
+
+
+def test_survivorship_dqc_red_on_dropped_delisted_names_green_when_stitched(tmp_store):
+    from db.quality.checks_survivorship import survivorship_forward_return_check
+    # seed one terminal return whose delist falls in a formation window ...
+    tmp_store.con.execute(
+        "INSERT INTO delisting_terminal_returns (terminal_return_id, source, security_id, delist_date, "
+        "as_of_date, available_at, terminal_return, terminal_return_source) "
+        "VALUES ('t1','ss','A', DATE '2024-01-10', DATE '2024-01-10', TIMESTAMP '2024-01-12 12:00', -0.5, 'observed')")
+    # ... and a survivorship-safe panel that DROPS it (only a surviving name, no stitched row for A)
+    tmp_store.con.execute(
+        "INSERT INTO forward_returns_survivorship_safe (forward_return_id, source, security_id, as_of_date, "
+        "horizon_days, forward_end_date, forward_return, is_delisted_in_horizon, is_stitched, available_at) "
+        "VALUES ('f1','ss','Z', DATE '2024-01-02', 21, DATE '2024-01-31', 0.03, false, false, TIMESTAMP '2024-02-01 22:00')")
+    red = survivorship_forward_return_check(tmp_store)      # runs the registered critical check
+    assert red.status == "failed" and red.severity == "critical"
+    # now stitch A in -> GREEN
+    tmp_store.con.execute(
+        "INSERT INTO forward_returns_survivorship_safe (forward_return_id, source, security_id, as_of_date, "
+        "horizon_days, forward_end_date, terminal_return, forward_return, is_delisted_in_horizon, is_stitched, "
+        "delist_date, available_at) VALUES ('f2','ss','A', DATE '2024-01-02', 21, DATE '2024-01-31', -0.5, -0.5, "
+        "true, true, DATE '2024-01-10', TIMESTAMP '2024-01-12 12:00')")
+    green = survivorship_forward_return_check(tmp_store)
+    assert green.status in ("passed", "skipped")
+
+
+def test_dlret_not_visible_before_delist_confirmation(tmp_store, tmp_path):
+    # a terminal return whose available_at is AFTER the read timestamp must not be spliced/visible
+    from db.delisting import (DelistingReturnObservationOptions, load_delisting_return_observations,
+                              refresh_delisting_events, refresh_delisting_terminal_returns)
+    from db.asof import delisting_return_observations_asof
+    _seed_security(tmp_store)
+    _insert_listing_status(tmp_store, listing_status_id="ls-la", status="inactive",
+                           valid_from=dt.date(2024, 4, 1), available_at=dt.datetime(2024, 4, 2, 12, 0))
+    refresh_delisting_events(tmp_store)
+    csv_path = tmp_path / "late_confirm.csv"
+    csv_path.write_text(
+        "PERMNO,security_id,DLSTDT,DLSTCD,DLRET,available_at\n"
+        "12345,SEC-TEST-DELIST,2024-04-01,233,-0.7,2024-04-05T12:00:00\n", encoding="utf-8")
+    load_delisting_return_observations(
+        tmp_store, DelistingReturnObservationOptions(source_file=csv_path, provider="CRSP_SAMPLE"))
+    refresh_delisting_terminal_returns(tmp_store)
+    db_path = tmp_store.path
+    tmp_store.connection.close(); tmp_store.connection = None
+    before = delisting_return_observations_asof(dt.date(2024, 4, 3),
+        as_of_ts=dt.datetime(2024, 4, 3, 13, 0), db_path=db_path, symbols=("DLS",), providers=("CRSP_SAMPLE",))
+    assert before.empty                       # terminal not knowable until 2024-04-05
+
+
+def test_delisting_code_reconciliation_unresolved_fires_on_unmapped_not_mismatch(tmp_store):
+    # error-severity recon gate: only 'unmapped' gaps fail; a real vendor/proxy 'mismatch' is signal.
+    from db.quality.checks_survivorship import delisting_code_reconciliation_check
+    con = tmp_store.con
+    con.execute(
+        "INSERT INTO delisting_code_reconciliation (reconciliation_id, source, security_id, delist_date, "
+        "as_of_date, available_at, reconciliation_status) VALUES "
+        "('r1','ss','A', DATE '2024-01-10', DATE '2024-01-10', TIMESTAMP '2024-01-12 12:00', 'mismatch')")
+    quiet = delisting_code_reconciliation_check(tmp_store)
+    assert quiet.status in ("passed", "skipped")   # mismatch is expected, never a failure
+    con.execute(
+        "INSERT INTO delisting_code_reconciliation (reconciliation_id, source, security_id, delist_date, "
+        "as_of_date, available_at, reconciliation_status) VALUES "
+        "('r2','ss','B', DATE '2024-02-10', DATE '2024-02-10', TIMESTAMP '2024-02-12 12:00', 'unmapped')")
+    fired = delisting_code_reconciliation_check(tmp_store)
+    assert fired.status == "failed" and fired.severity == "error"
+
+
+def test_survivorship_checks_wired_into_warehouse_quality_sweep(tmp_store):
+    # The critical + error checks must actually run inside the production sweep so the gate can halt.
+    from db.quality import run_warehouse_quality_checks
+    from db.quality.checks_survivorship import (
+        DELISTING_CODE_RECONCILIATION_CHECK_NAME,
+        SURVIVORSHIP_FORWARD_RETURN_CHECK_NAME,
+    )
+    tmp_store.con.execute(
+        "INSERT INTO delisting_terminal_returns (terminal_return_id, source, security_id, delist_date, "
+        "as_of_date, available_at, terminal_return, terminal_return_source) "
+        "VALUES ('t1','ss','A', DATE '2024-01-10', DATE '2024-01-10', TIMESTAMP '2024-01-12 12:00', -0.5, 'observed')")
+    tmp_store.con.execute(
+        "INSERT INTO forward_returns_survivorship_safe (forward_return_id, source, security_id, as_of_date, "
+        "horizon_days, forward_end_date, forward_return, is_delisted_in_horizon, is_stitched, available_at) "
+        "VALUES ('f1','ss','Z', DATE '2024-01-02', 21, DATE '2024-01-31', 0.03, false, false, TIMESTAMP '2024-02-01 22:00')")
+    results = run_warehouse_quality_checks(
+        tmp_store, record=False,
+        check_names=[SURVIVORSHIP_FORWARD_RETURN_CHECK_NAME, DELISTING_CODE_RECONCILIATION_CHECK_NAME])
+    by_name = {r.check_name: r for r in results}
+    assert SURVIVORSHIP_FORWARD_RETURN_CHECK_NAME in by_name       # hook is wired into the sweep
+    surv = by_name[SURVIVORSHIP_FORWARD_RETURN_CHECK_NAME]
+    assert surv.severity == "critical" and surv.status == "failed"  # dropped delisted name -> halt-able
