@@ -30,6 +30,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -40,6 +41,7 @@
 #include "atx/vol/backtest.hpp"        // MarketSnapshot
 #include "atx/vol/corpus.hpp"          // build_corpus, CorpusBoard, CorpusManifest
 #include "atx/vol/dispersion.hpp"      // DispersionUniverse, dispersion_signal, resolve_universe_uids
+#include "atx/vol/portfolio_pricer.hpp"  // Portfolio, PortfolioPricer, PriceStatus, PnlFrame
 #include "atx/vol/data.hpp"            // iso_to_ns, year_fraction
 #include "atx/vol/market_env.hpp"      // MarketEnv
 #include "atx/vol/panel.hpp"           // make_synthetic_american_panel, SynthPanelSpec
@@ -53,6 +55,14 @@ using namespace atx::vol;
 namespace fs = std::filesystem;
 
 namespace {
+
+[[nodiscard]] bool bits_equal(double a, double b) noexcept {
+  std::uint64_t ba = 0;
+  std::uint64_t bb = 0;
+  std::memcpy(&ba, &a, sizeof ba);
+  std::memcpy(&bb, &b, sizeof bb);
+  return ba == bb;
+}
 
 [[nodiscard]] fs::path fresh_out_dir(const char* tag) {
   const fs::path dir = fs::temp_directory_path() / (std::string("atx-multiname-") + tag);
@@ -502,4 +512,225 @@ TEST(MultinamePipeline, AllNamesMissingIsNoTradeStepNotAbort) {
   ASSERT_NE(corr, nullptr);
   EXPECT_EQ((*dropped)[0], 3.0);
   EXPECT_TRUE(std::isnan((*corr)[0])) << (*corr)[0];
+}
+
+// ── S1-3a: a no-trade step on a ROLL date must not force-close the held book ───
+//
+// This is the scenario the S1-3 e2e tests missed: both put the missing-name date
+// at INCEPTION, where the book is empty and the roll (`d.clear`) is moot. Here the
+// full basket is opened first, then on the NEXT date (a) the surviving basket has
+// fallen below `min_names` (a no-trade date) AND (b) the front cohort has decayed
+// inside `roll_at_T`, so the lifecycle wants to ROLL. Pre-fix (9db4484) `on_step`
+// cleared the book at the top of the roll branch BEFORE discovering the build was
+// Unavailable, and returned Ok with an EMPTY book — silently force-closing a held
+// basket the contract says must be held flat through the gap. `on_step` is public,
+// so this drives it directly to observe `book.lots` and inject the shortfall.
+TEST(MultinamePipeline, NoTradeOnRollDateLeavesBookIntact) {
+  const fs::path out = fresh_out_dir("s1-3a-roll-notrade");
+  const std::vector<std::string> dates = {"2026-06-17", "2026-06-18"};
+
+  std::vector<CorpusBoard> boards;
+  // date 1: the FULL basket (index + 3 names) -> inception opens 2*(1+3) = 8 lots.
+  boards.push_back(board_from_spec(make_index_spec(dates[0], 600.0), dates[0], "SPY",
+                                   convex_dense_pin()));
+  boards.push_back(board_from_spec(make_singlename_spec(dates[0], 110.0), dates[0], "AAA"));
+  boards.push_back(board_from_spec(make_singlename_spec(dates[0], 85.0), dates[0], "BBB"));
+  boards.push_back(board_from_spec(make_singlename_spec(dates[0], 220.0), dates[0], "CCC"));
+  // date 2: only index + AAA -> one survivor < min_names(2) => Unavailable/no-trade.
+  boards.push_back(board_from_spec(make_index_spec(dates[1], 600.0), dates[1], "SPY",
+                                   convex_dense_pin()));
+  boards.push_back(board_from_spec(make_singlename_spec(dates[1], 110.0), dates[1], "AAA"));
+
+  auto man_res = build_corpus(boards, out.string());
+  ASSERT_TRUE(man_res.has_value()) << man_res.error().to_string();
+  ASSERT_EQ(man_res->n_ok, boards.size()) << "every synthetic board must fit Ok";
+
+  auto snap1 = MarketSnapshot::load((out / (dates[0] + ".atxvsa")).string());
+  ASSERT_TRUE(snap1.has_value()) << snap1.error().to_string();
+  auto snap2 = MarketSnapshot::load((out / (dates[1] + ".atxvsa")).string());
+  ASSERT_TRUE(snap2.has_value()) << snap2.error().to_string();
+
+  DispersionUniverse u;
+  u.index = DispersionMember{"SPY", 0u, 0.0};
+  u.names.push_back(DispersionMember{"AAA", 0u, 0.5});
+  u.names.push_back(DispersionMember{"BBB", 0u, 0.3});
+  u.names.push_back(DispersionMember{"CCC", 0u, 0.2});
+
+  DispersionConfig cfg;  // target_T = 30/365.25
+  cfg.missing.policy = MissingNamePolicy::DropRenormalize;
+  LifecycleSpec lc;  // RollAtHorizon (default holding)
+  lc.roll_at_T = 29.5 / 365.25;  // just below target_T => the one-day-later date rolls
+  DispersionStrategy strat{u, cfg, lc};
+
+  PortfolioState book;
+  std::uint64_t next_id = 1;
+
+  // Inception: the full basket opens 2*(1+3) = 8 lots.
+  ASSERT_TRUE(strat.on_step(*snap1, 0, book, next_id).has_value());
+  ASSERT_EQ(book.lots.size(), 2u * (1u + 3u));
+  const std::vector<Lot> before = book.lots;  // the held book, snapshotted
+  const std::uint64_t next_id_before = next_id;
+
+  // On date 2 the surviving basket is one name < min_names(2), so the book build is
+  // Unavailable — a no-trade date. And the front cohort (residual 29d) is inside
+  // roll_at_T (29.5d), so the lifecycle wants to ROLL (clear then reopen).
+  auto build2 = strat.build_book(*snap2);
+  ASSERT_FALSE(build2.has_value());
+  EXPECT_EQ(build2.error().code(), ErrorCode::Unavailable) << build2.error().to_string();
+
+  // THE no-trade-on-roll step.
+  const Status st = strat.on_step(*snap2, 1, book, next_id);
+  ASSERT_TRUE(st.has_value()) << st.error().to_string();
+
+  // RED against 9db4484: the book comes back EMPTY. Post-fix it is byte-identical to
+  // the held basket — the no-trade step leaves it untouched.
+  ASSERT_EQ(book.lots.size(), before.size())
+      << "a no-trade roll step must not clear the held book";
+  for (std::size_t i = 0; i < before.size(); ++i) {
+    EXPECT_EQ(book.lots[i].id, before[i].id) << i;
+    EXPECT_EQ(book.lots[i].cohort, before[i].cohort) << i;
+    EXPECT_EQ(book.lots[i].expiry_ts_ns, before[i].expiry_ts_ns) << i;
+    EXPECT_EQ(book.lots[i].contract.uid, before[i].contract.uid) << i;
+    EXPECT_EQ(static_cast<int>(book.lots[i].contract.side),
+              static_cast<int>(before[i].contract.side))
+        << i;
+    EXPECT_TRUE(bits_equal(book.lots[i].contract.K, before[i].contract.K)) << i;
+    EXPECT_TRUE(bits_equal(book.lots[i].qty, before[i].qty)) << i;
+    EXPECT_TRUE(bits_equal(book.lots[i].entry_price, before[i].entry_price)) << i;
+  }
+  // No lots opened on a no-trade step => the monotonic id counter did not advance.
+  EXPECT_EQ(next_id, next_id_before);
+}
+
+// ── S1-3a: the plan's ACTUAL gate — a HELD name goes missing mid-run ──────────
+//
+// The plan's S1-3 gate is "a corpus where one name is absent on one date runs to
+// completion." The northstar reading — and the one S1-3 never tested — is a name
+// that is HELD across the gap: present on date 1 (so the strategy opens a straddle
+// in it), absent on date 2 (so the engine must mark a HELD lot whose surface is
+// gone), present again on date 3. S1-3 only tested a name missing at inception,
+// where no lot in it is ever held, on the (verified-false) justification that "the
+// backtest can't MTM a lot whose surface later vanishes."
+//
+// It CAN: for a lot that is alive (not expiring this step) portfolio_pricer marks a
+// missing surface as ModelUnavailable and SILENTLY drops it from the total (it does
+// NOT Err). So the run completes — it just truncates that lot's PnL for the gap
+// step. That silent truncation is a PRE-EXISTING engine defect tracked as S1-3b;
+// this test pins it loudly (backtest.cpp / portfolio_pricer.cpp are untouched here)
+// and does NOT assert it is correct.
+TEST(MultinamePipeline, HeldNameGoesMissingMidRunAndRunCompletes) {
+  const fs::path out = fresh_out_dir("s1-3a-held-missing");
+  const std::vector<std::string> dates = {"2026-06-17", "2026-06-18", "2026-06-19"};
+
+  // BBB present on dates 1 and 3, ABSENT from date 2; every other name present each
+  // date. Default lifecycle (RollAtHorizon, roll_at_T 7/365.25, target_T 30/365.25):
+  // the date-1 straddles have ~29-28d residual on dates 2-3, well above roll_at_T,
+  // so NO roll fires and the date-1 basket (incl. BBB) is HELD across all three
+  // dates. No lot expires (30d out), so no settlement path is hit on the gap date.
+  std::vector<CorpusBoard> boards;
+  for (std::size_t di = 0; di < dates.size(); ++di) {
+    const std::string& d = dates[di];
+    boards.push_back(board_from_spec(make_index_spec(d, 600.0), d, "SPY", convex_dense_pin()));
+    boards.push_back(board_from_spec(make_singlename_spec(d, 110.0), d, "AAA"));
+    if (di != 1) {  // date 2 (index 1) omits BBB
+      boards.push_back(board_from_spec(make_singlename_spec(d, 85.0), d, "BBB"));
+    }
+    boards.push_back(board_from_spec(make_singlename_spec(d, 220.0), d, "CCC"));
+  }
+  auto man_res = build_corpus(boards, out.string());
+  ASSERT_TRUE(man_res.has_value()) << man_res.error().to_string();
+  ASSERT_EQ(man_res->n_ok, boards.size()) << "every synthetic board must fit Ok";
+  auto clock = Clock::from_manifest(*man_res);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  DispersionUniverse u;
+  u.index = DispersionMember{"SPY", 0u, 0.0};
+  u.names.push_back(DispersionMember{"AAA", 0u, 0.5});
+  u.names.push_back(DispersionMember{"BBB", 0u, 0.3});
+  u.names.push_back(DispersionMember{"CCC", 0u, 0.2});
+
+  DispersionConfig cfg;
+  cfg.missing.policy = MissingNamePolicy::DropRenormalize;
+  DispersionStrategy strat{u, cfg};  // default lifecycle: RollAtHorizon
+
+  // THE gate: the run completes with a full-length result (one row per date).
+  auto res = run_backtest(*clock, strat);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  ASSERT_EQ(res->size(), dates.size());
+
+  const std::vector<double>* dropped = nullptr;
+  const std::vector<double>* corr = nullptr;
+  for (const auto& s : res->signals) {
+    if (s.first == "n_names_dropped") dropped = &s.second;
+    if (s.first == "implied_corr") corr = &s.second;
+  }
+  ASSERT_NE(dropped, nullptr) << "n_names_dropped series not recorded";
+  ASSERT_NE(corr, nullptr) << "implied_corr series not recorded";
+  ASSERT_EQ(dropped->size(), dates.size());
+  ASSERT_EQ(corr->size(), dates.size());
+
+  // BBB drops out of the SIGNAL only on the gap date: 0,1,0.
+  EXPECT_EQ((*dropped)[0], 0.0);
+  EXPECT_EQ((*dropped)[1], 1.0);
+  EXPECT_EQ((*dropped)[2], 0.0);
+  // implied_corr finite on every date: dates 1/3 the full 3-name basket, date 2 the
+  // 2-name survivor basket {AAA,CCC} (2 >= min_names).
+  for (std::size_t i = 0; i < corr->size(); ++i) {
+    EXPECT_TRUE(std::isfinite((*corr)[i])) << "row " << i;
+  }
+
+  // The held basket is NOT force-closed on the gap date: 2*(1+3)=8 lots on EVERY
+  // row (inception opens 8; no roll fires on dates 2-3, so all 8 persist, including
+  // the two BBB straddle legs whose surface has vanished on date 2).
+  ASSERT_EQ(res->n_open_lots.size(), dates.size());
+  for (std::size_t i = 0; i < dates.size(); ++i) {
+    EXPECT_EQ(res->n_open_lots[i], 8.0) << "row " << i << ": the date-1 basket is held";
+  }
+
+  // dropped_on(date 2) names BBB with reason NotInSnapshot.
+  auto snap2 = MarketSnapshot::load((out / (dates[1] + ".atxvsa")).string());
+  ASSERT_TRUE(snap2.has_value()) << snap2.error().to_string();
+  const std::vector<DroppedName> dn = strat.dropped_on(*snap2);
+  ASSERT_EQ(dn.size(), 1u);
+  EXPECT_EQ(dn[0].symbol, "BBB");
+  EXPECT_EQ(dn[0].reason, DropReason::NotInSnapshot);
+
+  // ── Pin the PRE-EXISTING silent-PnL-truncation (S1-3b; NOT fixed, NOT asserted
+  //    correct) ────────────────────────────────────────────────────────────────
+  // Reconstruct the exact date-1 basket and PnL-explain it onto date 2's (BBB-less)
+  // surface set — the same operation the engine's compute_step runs internally. The
+  // two BBB legs go ModelUnavailable and are dropped from the reduction; the total
+  // stays FINITE. That is the silent truncation: the run completes, BBB's held PnL
+  // is simply omitted for the gap step. Making it visible is the whole point.
+  auto snap1 = MarketSnapshot::load((out / (dates[0] + ".atxvsa")).string());
+  ASSERT_TRUE(snap1.has_value()) << snap1.error().to_string();
+  auto book1 = strat.build_book(*snap1);  // the exact basket opened at inception
+  ASSERT_TRUE(book1.has_value()) << book1.error().to_string();
+  ASSERT_EQ(book1->positions.size(), 8u);
+  auto pf = Portfolio::create(book1->positions);
+  ASSERT_TRUE(pf.has_value()) << pf.error().to_string();
+  const PortfolioPricer pricer{std::move(*pf)};
+  auto frame = pricer.pnl_explain(snap1->set(), snap2->set());
+  ASSERT_TRUE(frame.has_value()) << frame.error().to_string();  // completes, does NOT Err
+
+  const std::uint32_t bbb_uid = uid_for_symbol("BBB");
+  std::size_t n_unavailable = 0;
+  for (std::size_t i = 0; i < frame->size(); ++i) {
+    if (frame->status[i] != PriceStatus::Ok) {
+      ++n_unavailable;
+      EXPECT_EQ(frame->status[i], PriceStatus::ModelUnavailable) << i;
+      EXPECT_EQ(frame->uid[i], bbb_uid) << i;              // exactly the BBB legs
+      EXPECT_TRUE(std::isnan(frame->pnl_total[i])) << i;   // per-leg PnL is NaN...
+    }
+  }
+  EXPECT_EQ(n_unavailable, 2u) << "the two BBB straddle legs go ModelUnavailable";
+  EXPECT_EQ(frame->total.n_ok, 6u) << "only the six surviving legs enter the total";
+  // ...yet the portfolio total is FINITE — the missing legs are SILENTLY dropped
+  // from the reduction, not NaN-propagated. The run's gap-step PnL is likewise a
+  // finite (BBB-truncated) number. This truncation is S1-3b; do not fix here.
+  EXPECT_TRUE(std::isfinite(frame->total.pnl_total));
+  EXPECT_TRUE(std::isfinite(res->pnl_total[1])) << "gap step completes with finite PnL (row 1)";
+  std::printf("[s1-3a] held-BBB gap step: %zu/8 legs ModelUnavailable, total.n_ok=%u, "
+              "run pnl_total[1]=%.6f (BBB contribution silently truncated; S1-3b)\n",
+              n_unavailable, frame->total.n_ok, res->pnl_total[1]);
 }

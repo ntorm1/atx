@@ -508,9 +508,19 @@ TEST(Dispersion, DropRenormalizeSkipsMissingNameAndRenormalizes) {
   EXPECT_EQ(sig->used_names[1], 2u);
   ASSERT_EQ(sig->sigma_names.size(), 2u);
 
-  // ŵ over survivors sum to 1 (renormalization actually happened).
-  const double sum_surv = 0.5 + 0.2;
-  EXPECT_NEAR(0.5 / sum_surv + 0.2 / sum_surv, 1.0, 1e-15);
+  // Renormalization actually happened over the SURVIVORS: the implementation's OWN
+  // sum_w_sigma / sum_w2_sigma2 must be over weights normalized across survivors
+  // (ŵ = w / Σ_survivors w), reconstructed from the sigmas the implementation
+  // returned — NOT the raw authored weights. A non-renormalizing implementation
+  // would leave Σŵ = 0.7 here and fail this. (Assertion over produced values, not a
+  // literal-only tautology.)
+  const double w_hat0 = 0.5 / (0.5 + 0.2);
+  const double w_hat1 = 0.2 / (0.5 + 0.2);
+  const double surv_s0 = sig->sigma_names[0];
+  const double surv_s1 = sig->sigma_names[1];
+  EXPECT_NEAR(sig->sum_w_sigma, w_hat0 * surv_s0 + w_hat1 * surv_s1, 1e-12);
+  EXPECT_NEAR(sig->sum_w2_sigma2,
+              w_hat0 * w_hat0 * surv_s0 * surv_s0 + w_hat1 * w_hat1 * surv_s1 * surv_s1, 1e-12);
 
   // Dropping+renormalizing == a 2-name universe of the survivors with their
   // ORIGINAL weights (bit-identical: the exact same arithmetic sequence).
@@ -630,6 +640,13 @@ TEST(Dispersion, AuthoringBugsStayFatalUnderDropPolicy) {
   MissingNameSpec drop;
   drop.policy = MissingNamePolicy::DropRenormalize;
 
+  // An empty NAME symbol -> InvalidArgument even under DropRenormalize (an empty
+  // symbol is an authoring bug and is never silently dropped as an "absent name").
+  {
+    auto r = resolve_universe_uids(make("IDX", {"NM0", ""}), lookup, drop);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code(), ErrorCode::InvalidArgument);
+  }
   // Duplicate symbol -> InvalidArgument even under DropRenormalize.
   {
     auto r = resolve_universe_uids(make("IDX", {"NM0", "NM0"}), lookup, drop);

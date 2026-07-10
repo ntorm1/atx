@@ -36,11 +36,16 @@ Status DispersionStrategy::on_step(const MarketSnapshot& base, std::size_t step_
   if (!d.open) {
     return Ok();
   }
-  if (d.clear) {
-    book.lots.clear();
-    have_front_ = false;
-  }
 
+  // Decide the WHOLE no-trade question BEFORE mutating any state. Resolve + size
+  // first; only once `build_dispersion_book` has returned Ok is this a real trading
+  // step where the roll (`d.clear`) and the fresh lots may be applied. On any
+  // no-trade / abort path above the mutation below, `book.lots`, `have_front_`,
+  // `front_expiry_` and `cohort_counter_` are left EXACTLY as found — the documented
+  // no-trade contract. (Pre-fix this cleared the book at the top of the roll branch,
+  // so a no-trade roll step force-closed the held basket; see
+  // NoTradeOnRollDateLeavesBookIntact.)
+  //
   // Bind the (possibly symbol-only) universe to THIS snapshot's uid scheme before
   // sizing, so one authored universe works across every date of a corpus. Under
   // DropRenormalize a name absent from the snapshot is dropped here (not fatal);
@@ -61,6 +66,14 @@ Status DispersionStrategy::on_step(const MarketSnapshot& base, std::size_t step_
       return Ok();
     }
     return Err(built.error());
+  }
+
+  // The build succeeded: this is a real trading step. NOW apply the roll (erase the
+  // prior cohort) and open the fresh lots. Applying `d.clear` here — after the build,
+  // not before — is what keeps a no-trade roll step from force-closing the held book.
+  if (d.clear) {
+    book.lots.clear();
+    have_front_ = false;
   }
   const std::uint32_t cohort = cohort_counter_++;
   const std::int64_t expiry = base.ts_ns() + std::llround(cfg_.target_T * kNsPerYear);
