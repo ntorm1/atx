@@ -13,6 +13,39 @@ its correctness and performance gates pass.
 **Previous sprint:**
 `sprints/pf2/2026-07-10-atx-vol-multiname-corpus-qualification-serialization-sprint.md`
 
+## Implementation status (2026-07-10)
+
+The reusable workflow through P4 and the separate-process command envelope are
+implemented on `feat/atx-vol-spy-listed-dispersion`:
+
+- `4054355` selects actual listed straddles, sizes/persists exact vega-flat rolls,
+  and runs an immutable schedule-driven strategy;
+- `5937f78` joins row-aligned OPRA quotes to point-in-time definitions without
+  inventing expiry, multiplier, monthly, or deliverable fields;
+- `5d104df` exports exact daily contract marks, reconciles model/quote-mid P&L,
+  closes exact option P&L to the canonical backtest, and adds the independent
+  standard-library Python calculator;
+- `53bc28e` adds `build-corpus`, `build-schedule`, `run-backtest`, and `verify`
+  process boundaries plus development run/universe/definition templates; and
+- `e0c016b` exposes the workflow in the public umbrella and makes the independent
+  decimal checker tolerant only to documented binary-float recomputation error.
+
+Verification completed in the isolated worktree:
+
+```text
+focused listed workflow: 27/27 C++ tests passed
+independent calculator:   2/2 Python tests passed
+full atx_vol CTest label: 795 passed, 0 failed
+```
+
+The sprint is not complete. P5 still requires a licensed real Databento artifact
+meeting the 50-name/60-date/three-roll gates. The local inventory audit found no
+such cached OPRA Parquet or definition export, and no paid pull was made. P6 also
+waits for the preceding American-throughput sprint's Google Benchmark/comparator
+layout to finish and land; local `main` does not yet contain that harness. The
+workflow fails explicitly when those inputs are absent and does not substitute
+synthetic contracts or marks.
+
 ## Core deliverable
 
 Ship one reproducible, end-to-end backtest of a traditional long-dispersion book
