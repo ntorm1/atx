@@ -210,29 +210,36 @@ Result<PriceFrame> PortfolioPricer::price(const SurfaceSet &surfaces,
       out.status = PriceStatus::ModelUnavailable;
       return;
     }
-    out.iv = surf->iv(c.K, c.T);
+    // One fused resolution per unique contract: iv + mark (+ Greeks) off a SINGLE
+    // surface resolve, killing the old separate surf->iv() resolution that ran
+    // ahead of the fair_value/greeks call at the same (K,T,side).
+    using EF = PricedSurface::EvalField;
     if (opts.prices_only) {
-      auto fair = surf->fair_value(c.K, c.T, c.side);
-      if (!fair.has_value() || !std::isfinite(*fair)) {
+      const PricedSurface::FusedResult fr =
+          surf->evaluate(c.K, c.T, c.side, EF::Iv | EF::Price, /*analytic=*/false);
+      out.iv = fr.iv;
+      if (!fr.status.has_value() || !std::isfinite(fr.price)) {
         out.status = PriceStatus::NumericError;
         return;
       }
-      out.fair_value = *fair;
+      out.fair_value = fr.price;
       out.status = PriceStatus::Ok;
       return;
     }
-    auto g = opts.analytic_greeks ? surf->greeks_analytic(c.K, c.T, c.side)
-                                  : surf->greeks(c.K, c.T, c.side); // greeks + mark
-    if (!g.has_value() || !std::isfinite(g->price)) {
+    const PricedSurface::FusedResult fr =
+        surf->evaluate(c.K, c.T, c.side, EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder,
+                       opts.analytic_greeks); // iv + greeks + mark, one resolve
+    out.iv = fr.iv;
+    if (!fr.status.has_value() || !std::isfinite(fr.greeks.price)) {
       out.status = PriceStatus::NumericError;
       return;
     }
     // greeks().price IS the American fair_value (bit-identical, the P0 cold-FD
     // invariant gated by PnlGreeksConsistency), so the mark comes straight off the
-    // greeks bundle — the separate fair_value() call would be a duplicate AL solve
-    // at the same (K,T,side).
-    out.fair_value = g->price;
-    out.g = *g;
+    // fused greeks bundle — no separate fair_value() (a duplicate AL solve) and no
+    // separate surf->iv() (a duplicate resolution) at the same (K,T,side).
+    out.fair_value = fr.greeks.price;
+    out.g = fr.greeks;
     out.status = PriceStatus::Ok;
   });
 
@@ -364,21 +371,27 @@ Result<PnlFrame> PortfolioPricer::pnl_explain(const SurfaceSet &base, const Surf
       out.status = PriceStatus::InvalidContract; // rolled past expiry
       return;
     }
-    auto gb = opts.analytic_greeks ? sb->greeks_analytic(c.K, T_b, c.side)
-                                   : sb->greeks(c.K, T_b, c.side); // base greeks + mark
+    // One fused base resolution: base Greeks + base IV (sig_b) off a SINGLE sb
+    // resolve at (K,T_b), killing the old separate sb->iv() that re-resolved sb at
+    // the same (K,T_b) the base greeks already resolved.
+    using EF = PricedSurface::EvalField;
+    const PricedSurface::FusedResult fr_b =
+        sb->evaluate(c.K, T_b, c.side, EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder,
+                     opts.analytic_greeks); // base greeks + mark + iv
     auto pt = st->fair_value(c.K, T_t, c.side); // shifted mark at the rolled maturity
-    if (!gb.has_value() || !std::isfinite(gb->price) || !pt.has_value() || !std::isfinite(*pt)) {
+    if (!fr_b.status.has_value() || !std::isfinite(fr_b.greeks.price) || !pt.has_value() ||
+        !std::isfinite(*pt)) {
       out.status = PriceStatus::NumericError;
       return;
     }
-    const double sig_b = sb->iv(c.K, T_b);
+    const double sig_b = fr_b.iv;          // == sb->iv(c.K,T_b), reused from the base resolve
     const double sig_t = st->iv(c.K, T_b); // common maturity: term roll stays in theta
     if (!(std::isfinite(sig_b) && std::isfinite(sig_t))) {
       out.status = PriceStatus::NumericError;
       return;
     }
-    out.gb = *gb;
-    out.price_base = gb->price; // == sb->fair_value(c.K,T_b,side), bit-identical, no dup solve
+    out.gb = fr_b.greeks;
+    out.price_base = fr_b.greeks.price; // == sb->fair_value(c.K,T_b,side), bit-identical, no dup solve
     out.price_target = *pt;
     out.dS = st->pricing().S - sb->pricing().S;
     out.dvol = sig_t - sig_b;

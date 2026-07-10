@@ -35,6 +35,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <memory>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -171,6 +172,69 @@ void run_query(benchmark::State& state, Query which) {
   state.counters["queries_per_s"] = benchmark::Counter(iters * n, benchmark::Counter::kIsRate);
   state.counters["ns_per_query"] = benchmark::Counter(
       iters * n * 1e-9, benchmark::Counter::kIsRate | benchmark::Counter::kInvert);
+}
+
+// ── 1b. Ladder reuse: evaluate_batch vs per-entry evaluate ────────────────
+// A single-expiry 40-strike ladder priced two ways at one T: `evaluate_batch`
+// resolves the T-bracket + carry ONCE and reuses it across the ladder; the
+// per-entry path calls `evaluate` (which re-resolves) per strike. Bit-identical
+// output (proved in tests); this measures the reuse throughput win. Run at
+// Iv-only (the T-resolution is the whole cost, so reuse shows) and at Iv|Price
+// (the Andersen-Lake solve dominates, so reuse is in the noise) so the report can
+// show WHERE the ladder pays.
+enum class LadderMode { Batch, PerEntry };
+
+void run_ladder(benchmark::State& state, LadderMode mode, PricedSurface::EvalField fields) {
+  const PricedSurface& surf = market().base.front();  // uid 1 (convex/index)
+  const double T = atx::vol::bench::slice_T(2);
+  std::vector<double> Ks;
+  std::vector<double> Ts;
+  std::vector<Side> sides;
+  Ks.reserve(40);
+  Ts.reserve(40);
+  sides.reserve(40);
+  for (int i = 0; i < 40; ++i) {
+    const double K = 70.0 + 60.0 * (static_cast<double>(i) + 0.5) / 40.0;
+    Ks.push_back(K);
+    Ts.push_back(T);
+    sides.push_back((K <= atx::vol::bench::kSpot) ? Side::Put : Side::Call);
+  }
+  const std::size_t n = Ks.size();
+  const bool want_greeks = has_field(fields, PricedSurface::EvalField::FirstOrder) ||
+                           has_field(fields, PricedSurface::EvalField::SecondOrder);
+  std::vector<double> out_iv(n), out_px(n);
+  std::vector<AmericanGreeks> out_gk(n);
+  std::vector<atx::vol::Status> out_st(n);
+  const std::span<AmericanGreeks> gk_span =
+      want_greeks ? std::span<AmericanGreeks>(out_gk) : std::span<AmericanGreeks>{};
+
+  for (auto _ : state) {
+    if (mode == LadderMode::Batch) {
+      auto rc = surf.evaluate_batch(Ks, Ts, sides, fields, /*analytic=*/false,
+                                    PricedSurface::EvaluationSoA{out_iv, out_px, gk_span, out_st});
+      benchmark::DoNotOptimize(rc);
+    } else {
+      for (std::size_t i = 0; i < n; ++i) {
+        const PricedSurface::FusedResult fr =
+            surf.evaluate(Ks[i], Ts[i], sides[i], fields, /*analytic=*/false);
+        // Write the SAME output set evaluate_batch writes, so the batch/per_entry
+        // delta isolates the T-carry reuse, not a difference in stores.
+        out_iv[i] = fr.iv;
+        out_px[i] = fr.price;
+        if (want_greeks) {
+          out_gk[i] = fr.greeks;
+        }
+        out_st[i] = fr.status;
+      }
+    }
+    benchmark::DoNotOptimize(out_iv.data());
+    benchmark::ClobberMemory();
+  }
+  const double iters = static_cast<double>(state.iterations());
+  const double nq = static_cast<double>(n);
+  state.counters["queries_per_s"] = benchmark::Counter(iters * nq, benchmark::Counter::kIsRate);
+  state.counters["ns_per_query"] = benchmark::Counter(
+      iters * nq * 1e-9, benchmark::Counter::kIsRate | benchmark::Counter::kInvert);
 }
 
 // ── 2/3. PortfolioPricer::price / pnl_explain ────────────────────────────
@@ -335,6 +399,25 @@ void register_all() {
     apply_common(benchmark::RegisterBenchmark(
                      std::string("surf/query/") + qr.name,
                      [qr](benchmark::State& st) { run_query(st, qr.q); }))
+        ->Unit(benchmark::kNanosecond);
+  }
+
+  // 1b. Ladder reuse: evaluate_batch vs per-entry, Iv-only and Iv|Price.
+  struct LReg {
+    const char* name;
+    LadderMode mode;
+    PricedSurface::EvalField fields;
+  };
+  const PricedSurface::EvalField iv_only = PricedSurface::EvalField::Iv;
+  const PricedSurface::EvalField iv_px =
+      PricedSurface::EvalField::Iv | PricedSurface::EvalField::Price;
+  for (const LReg& lr : {LReg{"batch/iv", LadderMode::Batch, iv_only},
+                         LReg{"per_entry/iv", LadderMode::PerEntry, iv_only},
+                         LReg{"batch/price", LadderMode::Batch, iv_px},
+                         LReg{"per_entry/price", LadderMode::PerEntry, iv_px}}) {
+    apply_common(benchmark::RegisterBenchmark(
+                     std::string("surf/ladder/") + lr.name,
+                     [lr](benchmark::State& st) { run_ladder(st, lr.mode, lr.fields); }))
         ->Unit(benchmark::kNanosecond);
   }
 
