@@ -63,6 +63,9 @@ add_executable(atx-vol-tests
     corpus_test.cpp
     multiname_pipeline_test.cpp
     dispersion_test.cpp
+    listed_dispersion_test.cpp
+    listed_dispersion_schedule_test.cpp
+    listed_dispersion_strategy_test.cpp
     backtest_test.cpp
     strategy_test.cpp
     backtest_exec_test.cpp
