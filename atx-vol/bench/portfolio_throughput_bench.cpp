@@ -57,8 +57,13 @@ using atx::vol::OptionContract;
 using atx::vol::Portfolio;
 using atx::vol::PortfolioBuildOptions;
 using atx::vol::PortfolioPricer;
+using atx::vol::PortfolioWorkspace;
 using atx::vol::Position;
+using atx::vol::PriceFieldMask;
+using atx::vol::PriceFrameView;
 using atx::vol::PriceOptions;
+using atx::vol::PriceStatus;
+using atx::vol::PriceTotals;
 using atx::vol::PricedSurface;
 using atx::vol::Side;
 using atx::vol::SurfaceSet;
@@ -71,7 +76,8 @@ constexpr int kSlices = 6;       // 64 uids x 6 slices x 7 strikes = 2688 unique
 constexpr int kConvexNodes = 40;
 
 // Per-position frame widths (bytes/row) from portfolio_pricer.hpp.
-constexpr double kPriceRowBytes = 101.0;  // 14 columns
+constexpr double kPriceRowBytes = 101.0;  // 14 columns (FullGreeks)
+constexpr double kMarksRowBytes = 37.0;   // 6 columns  (Marks: id,uid,pv,price,iv,status)
 constexpr double kPnlRowBytes = 141.0;    // 19 columns
 
 // ── Shared fixtures (built once) ─────────────────────────────────────────
@@ -289,6 +295,77 @@ void run_price(benchmark::State& state, std::size_t n_unique, std::size_t ratio,
   });
 }
 
+// price_into() over a WARMED workspace + caller-owned output columns. The
+// retained PreparedPortfolio and scratch are built once outside the timed region,
+// so this row isolates the allocation-free, no-rebuild hot path — its delta from
+// the matching port/price/greeks row is the eliminated per-call PreparedPortfolio
+// build + frame allocation cost.
+void run_price_into(benchmark::State& state, std::size_t n_unique, std::size_t ratio,
+                    unsigned n_threads, PriceFieldMask fields) {
+  const PortfolioPricer& pr = pricer_for(n_unique, ratio);
+  const SurfaceSet& surfaces = market().base_set();
+  const std::size_t np = pr.portfolio().n_positions();
+  const bool want_greeks = has_field(fields, PriceFieldMask::Greeks);
+  PriceOptions opts;
+  opts.n_threads = n_threads;
+
+  // Caller-owned output columns (allocated once, outside the timed region). Greek
+  // columns exist only under a Greeks mask (empty spans under Marks).
+  std::vector<std::uint64_t> id(np);
+  std::vector<std::uint32_t> uid(np);
+  std::vector<double> pv(np), price(np), iv(np);
+  std::vector<double> delta, gamma, vega, theta, rho, vanna, volga, charm;
+  if (want_greeks) {
+    delta.resize(np);
+    gamma.resize(np);
+    vega.resize(np);
+    theta.resize(np);
+    rho.resize(np);
+    vanna.resize(np);
+    volga.resize(np);
+    charm.resize(np);
+  }
+  std::vector<PriceStatus> status(np);
+  PriceTotals total;
+  PriceFrameView view{id,    uid,   pv,    price, iv,     delta,  gamma, vega,
+                      theta, rho,   vanna, volga, charm,  status, &total};
+
+  PortfolioWorkspace ws;
+  ws.reserve(pr.portfolio().n_contracts(), np);
+  (void)pr.price_into(surfaces, fields, view, ws, opts);  // warm substrate + scratch
+
+  for (auto _ : state) {
+    auto s = pr.price_into(surfaces, fields, view, ws, opts);
+    benchmark::DoNotOptimize(s);
+    benchmark::DoNotOptimize(total.pv);
+    benchmark::ClobberMemory();
+  }
+  emit_book_counters(state, pr, want_greeks ? kPriceRowBytes : kMarksRowBytes);
+  state.counters["threads"] = static_cast<double>(n_threads);
+}
+
+// price_totals() over a warmed workspace: solve + fixed-order reduction, NO
+// scatter, NO per-row frame. The delta from run_price_into is the whole
+// per-position scatter/store cost a totals-only caller avoids.
+void run_price_totals(benchmark::State& state, std::size_t n_unique, std::size_t ratio,
+                      unsigned n_threads, PriceFieldMask fields) {
+  const PortfolioPricer& pr = pricer_for(n_unique, ratio);
+  const SurfaceSet& surfaces = market().base_set();
+  PriceOptions opts;
+  opts.n_threads = n_threads;
+  PortfolioWorkspace ws;
+  ws.reserve(pr.portfolio().n_contracts(), pr.portfolio().n_positions());
+  (void)pr.price_totals(surfaces, fields, ws, opts);  // warm substrate + scratch
+
+  for (auto _ : state) {
+    auto t = pr.price_totals(surfaces, fields, ws, opts);
+    benchmark::DoNotOptimize(t->pv);
+    benchmark::ClobberMemory();
+  }
+  emit_book_counters(state, pr, /*row_bytes=*/0.0);  // no per-row frame materialized
+  state.counters["threads"] = static_cast<double>(n_threads);
+}
+
 // price() over the single-name chain at a given thread count. Isolates the solve
 // fan-out on the 2-group shape so its 1->N-thread scaling is measurable.
 void run_price_single_name(benchmark::State& state, unsigned n_threads) {
@@ -502,6 +579,40 @@ void register_all() {
             ->Unit(benchmark::kMicrosecond)
             ->UseRealTime();
       }
+    }
+  }
+
+  // 2b-into. In-place API: price_into (warmed workspace, allocation-free) and
+  // price_totals (no scatter) at the report's 100:1 / 1000:1 dedup rows, both
+  // masks. Compare against the matching port/price/greeks and
+  // port/price/prices_only rows to read the eliminated build/alloc/scatter cost.
+  for (const std::size_t ratio : {std::size_t{100}, std::size_t{1000}}) {
+    for (const unsigned nt : {1u, 8u}) {
+      char buf[128];
+      std::snprintf(buf, sizeof buf, "port/price_into/greeks/u2688/r%zu/t%u", ratio, nt);
+      apply_common(benchmark::RegisterBenchmark(buf, [ratio, nt](benchmark::State& st) {
+                     run_price_into(st, 2688, ratio, nt, PriceFieldMask::FullGreeks);
+                   }))
+          ->Unit(benchmark::kMicrosecond)
+          ->UseRealTime();
+      std::snprintf(buf, sizeof buf, "port/price_into/marks/u2688/r%zu/t%u", ratio, nt);
+      apply_common(benchmark::RegisterBenchmark(buf, [ratio, nt](benchmark::State& st) {
+                     run_price_into(st, 2688, ratio, nt, PriceFieldMask::Marks);
+                   }))
+          ->Unit(benchmark::kMicrosecond)
+          ->UseRealTime();
+      std::snprintf(buf, sizeof buf, "port/price_totals/greeks/u2688/r%zu/t%u", ratio, nt);
+      apply_common(benchmark::RegisterBenchmark(buf, [ratio, nt](benchmark::State& st) {
+                     run_price_totals(st, 2688, ratio, nt, PriceFieldMask::FullGreeks);
+                   }))
+          ->Unit(benchmark::kMicrosecond)
+          ->UseRealTime();
+      std::snprintf(buf, sizeof buf, "port/price_totals/marks/u2688/r%zu/t%u", ratio, nt);
+      apply_common(benchmark::RegisterBenchmark(buf, [ratio, nt](benchmark::State& st) {
+                     run_price_totals(st, 2688, ratio, nt, PriceFieldMask::Marks);
+                   }))
+          ->Unit(benchmark::kMicrosecond)
+          ->UseRealTime();
     }
   }
 

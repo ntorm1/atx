@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "atx/vol/black76.hpp"
+#include "atx/vol/counters.hpp"
 #include "atx/vol/portfolio_pricer.hpp"
 #include "atx/vol/priced_surface.hpp"
 #include "atx/vol/vol_curve.hpp"
@@ -161,6 +162,56 @@ constexpr std::int64_t kNow = 1700000000000000000LL;
   }
   return book;
 }
+
+// A multi-underlying, multi-kind book with a dedup pair (id12/id14) and a
+// no-surface uid (99 -> ModelUnavailable). Priced against {convex 1, essvi 2,
+// svi 3}. Used by the in-place / totals-only bit-identity tests.
+[[nodiscard]] std::vector<Position> multi_uid_book() {
+  return {
+      {10, {1, 100.0, 0.18, Side::Call}, +10.0, 100.0},
+      {11, {1, 95.0, 0.18, Side::Put}, -5.0, 100.0},
+      {12, {2, 105.0, 0.25, Side::Call}, +3.0, 100.0},
+      {13, {3, 98.0, 0.15, Side::Put}, +7.0, 100.0},
+      {14, {2, 105.0, 0.25, Side::Call}, +2.0, 100.0}, // dup of id12's contract
+      {15, {99, 100.0, 0.10, Side::Call}, +1.0, 100.0}, // no surface -> unavailable
+  };
+}
+
+// Caller-owned backing storage for a PriceFrameView, sized to `n`. The eight
+// Greek columns are allocated only under `want_greeks` — mirroring how a
+// marks-only caller sizes its buffers and leaves the greek spans empty.
+struct FrameStore {
+  std::vector<std::uint64_t> id;
+  std::vector<std::uint32_t> uid;
+  std::vector<double> pv, price, iv;
+  std::vector<double> delta, gamma, vega, theta, rho, vanna, volga, charm;
+  std::vector<PriceStatus> status;
+  PriceTotals total{};
+
+  FrameStore(std::size_t n, bool want_greeks) {
+    id.resize(n);
+    uid.resize(n);
+    pv.resize(n);
+    price.resize(n);
+    iv.resize(n);
+    status.resize(n);
+    if (want_greeks) {
+      delta.resize(n);
+      gamma.resize(n);
+      vega.resize(n);
+      theta.resize(n);
+      rho.resize(n);
+      vanna.resize(n);
+      volga.resize(n);
+      charm.resize(n);
+    }
+  }
+
+  [[nodiscard]] PriceFrameView view() {
+    return PriceFrameView{id,    uid,   pv,    price, iv,     delta,  gamma, vega,
+                          theta, rho,   vanna, volga, charm,  status, &total};
+  }
+};
 
 } // namespace
 
@@ -578,13 +629,24 @@ TEST(PortfolioPricer, PricesOnlyPopulatesMarksAndLeavesRiskNaN) {
   auto frame = pricer.price(surfaces, PriceOptions{.n_threads = 4, .prices_only = true});
   ASSERT_TRUE(frame.has_value());
   EXPECT_EQ(frame->total.n_ok, frame->size());
+
+  // Under the Marks mask the eight Greek column vectors are left EMPTY (the
+  // 64 B/pos saving), not resized-and-NaN-filled. A marks-only caller reads the
+  // marks columns and gates any Greek access on greeks_materialized().
+  EXPECT_FALSE(frame->greeks_materialized());
+  EXPECT_EQ(frame->delta.size(), 0u);
+  EXPECT_EQ(frame->gamma.size(), 0u);
+  EXPECT_EQ(frame->vega.size(), 0u);
+  EXPECT_EQ(frame->theta.size(), 0u);
+  EXPECT_EQ(frame->rho.size(), 0u);
+  EXPECT_EQ(frame->vanna.size(), 0u);
+  EXPECT_EQ(frame->volga.size(), 0u);
+  EXPECT_EQ(frame->charm.size(), 0u);
   for (std::size_t i = 0; i < frame->size(); ++i) {
     EXPECT_EQ(frame->status[i], PriceStatus::Ok);
     EXPECT_TRUE(std::isfinite(frame->price[i]));
     EXPECT_TRUE(std::isfinite(frame->pv[i]));
     EXPECT_TRUE(std::isfinite(frame->iv[i]));
-    EXPECT_TRUE(std::isnan(frame->delta[i]));
-    EXPECT_TRUE(std::isnan(frame->vega[i]));
   }
 
   // The aggregate must agree with the columns it aggregates. A finite 0.0 total
@@ -601,6 +663,226 @@ TEST(PortfolioPricer, PricesOnlyPopulatesMarksAndLeavesRiskNaN) {
   EXPECT_TRUE(std::isnan(frame->total.vanna));
   EXPECT_TRUE(std::isnan(frame->total.volga));
   EXPECT_TRUE(std::isnan(frame->total.charm));
+}
+
+// ── In-place API: price_into / price_totals bit-identity + zero-alloc ────────
+
+TEST(PortfolioPricer, PriceInto_FullGreeks_BitIdenticalToPrice) {
+  const PricedSurface s1 = make_convex(1, 4, 32);
+  const PricedSurface s2 = make_essvi(2, 5);
+  const PricedSurface s3 = make_svi(3, 4);
+  const SurfaceSet surfaces = set_of({&s1, &s2, &s3});
+  auto pf = Portfolio::create(multi_uid_book());
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+
+  const PriceOptions opts{.n_threads = 4};
+  auto ref = pricer.price(surfaces, opts);
+  ASSERT_TRUE(ref.has_value());
+  ASSERT_TRUE(ref->greeks_materialized());
+
+  FrameStore fs(ref->size(), /*want_greeks=*/true);
+  PortfolioWorkspace ws;
+  ws.reserve(pricer.portfolio().n_contracts(), pricer.portfolio().n_positions());
+  PriceFrameView v = fs.view();
+  const Status s = pricer.price_into(surfaces, PriceFieldMask::FullGreeks, v, ws, opts);
+  ASSERT_TRUE(s.has_value());
+
+  for (std::size_t i = 0; i < ref->size(); ++i) {
+    EXPECT_EQ(fs.id[i], ref->id[i]) << i;
+    EXPECT_EQ(fs.uid[i], ref->uid[i]) << i;
+    EXPECT_EQ(fs.status[i], ref->status[i]) << i;
+    EXPECT_TRUE(bits_equal(fs.iv[i], ref->iv[i])) << i;
+    EXPECT_TRUE(bits_equal(fs.pv[i], ref->pv[i])) << i;
+    EXPECT_TRUE(bits_equal(fs.price[i], ref->price[i])) << i;
+    EXPECT_TRUE(bits_equal(fs.delta[i], ref->delta[i])) << i;
+    EXPECT_TRUE(bits_equal(fs.gamma[i], ref->gamma[i])) << i;
+    EXPECT_TRUE(bits_equal(fs.vega[i], ref->vega[i])) << i;
+    EXPECT_TRUE(bits_equal(fs.theta[i], ref->theta[i])) << i;
+    EXPECT_TRUE(bits_equal(fs.rho[i], ref->rho[i])) << i;
+    EXPECT_TRUE(bits_equal(fs.vanna[i], ref->vanna[i])) << i;
+    EXPECT_TRUE(bits_equal(fs.volga[i], ref->volga[i])) << i;
+    EXPECT_TRUE(bits_equal(fs.charm[i], ref->charm[i])) << i;
+  }
+  EXPECT_EQ(fs.total.n_ok, ref->total.n_ok);
+  EXPECT_TRUE(bits_equal(fs.total.pv, ref->total.pv));
+  EXPECT_TRUE(bits_equal(fs.total.delta, ref->total.delta));
+  EXPECT_TRUE(bits_equal(fs.total.gamma, ref->total.gamma));
+  EXPECT_TRUE(bits_equal(fs.total.vega, ref->total.vega));
+  EXPECT_TRUE(bits_equal(fs.total.theta, ref->total.theta));
+  EXPECT_TRUE(bits_equal(fs.total.rho, ref->total.rho));
+  EXPECT_TRUE(bits_equal(fs.total.vanna, ref->total.vanna));
+  EXPECT_TRUE(bits_equal(fs.total.volga, ref->total.volga));
+  EXPECT_TRUE(bits_equal(fs.total.charm, ref->total.charm));
+}
+
+TEST(PortfolioPricer, PriceInto_Marks_MarksBitIdentical_GreeksUntouched) {
+  const PricedSurface s1 = make_convex(1, 4, 32);
+  const PricedSurface s2 = make_essvi(2, 5);
+  const PricedSurface s3 = make_svi(3, 4);
+  const SurfaceSet surfaces = set_of({&s1, &s2, &s3});
+  auto pf = Portfolio::create(multi_uid_book());
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+
+  auto ref = pricer.price(surfaces, PriceOptions{.n_threads = 4, .prices_only = true});
+  ASSERT_TRUE(ref.has_value());
+  ASSERT_FALSE(ref->greeks_materialized());
+
+  // A marks-only caller allocates NO greek storage; the greek spans stay empty.
+  FrameStore fs(ref->size(), /*want_greeks=*/false);
+  PortfolioWorkspace ws;
+  PriceFrameView v = fs.view();
+  const Status s = pricer.price_into(surfaces, PriceFieldMask::Marks, v, ws,
+                                     PriceOptions{.n_threads = 4});
+  ASSERT_TRUE(s.has_value());
+
+  for (std::size_t i = 0; i < ref->size(); ++i) {
+    EXPECT_EQ(fs.id[i], ref->id[i]) << i;
+    EXPECT_EQ(fs.uid[i], ref->uid[i]) << i;
+    EXPECT_EQ(fs.status[i], ref->status[i]) << i;
+    EXPECT_TRUE(bits_equal(fs.iv[i], ref->iv[i])) << i;
+    EXPECT_TRUE(bits_equal(fs.pv[i], ref->pv[i])) << i;
+    EXPECT_TRUE(bits_equal(fs.price[i], ref->price[i])) << i;
+  }
+  // Greek spans were never touched (empty), matching the returning API's Marks.
+  EXPECT_EQ(fs.delta.size(), 0u);
+  EXPECT_EQ(fs.charm.size(), 0u);
+
+  // pv total + n_ok bit-identical; greek totals stay NaN (not a clean zero).
+  EXPECT_EQ(fs.total.n_ok, ref->total.n_ok);
+  EXPECT_TRUE(bits_equal(fs.total.pv, ref->total.pv));
+  EXPECT_TRUE(std::isnan(fs.total.delta));
+  EXPECT_TRUE(std::isnan(fs.total.vega));
+  EXPECT_TRUE(std::isnan(fs.total.charm));
+}
+
+TEST(PortfolioPricer, PriceTotals_BitIdenticalToPriceTotal_BothMasks) {
+  const PricedSurface s1 = make_convex(1, 4, 32);
+  const PricedSurface s2 = make_essvi(2, 5);
+  const PricedSurface s3 = make_svi(3, 4);
+  const SurfaceSet surfaces = set_of({&s1, &s2, &s3});
+  auto pf = Portfolio::create(multi_uid_book());
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+
+  const PriceOptions opts{.n_threads = 4};
+  auto ref_full = pricer.price(surfaces, opts);
+  auto ref_marks = pricer.price(surfaces, PriceOptions{.n_threads = 4, .prices_only = true});
+  ASSERT_TRUE(ref_full.has_value() && ref_marks.has_value());
+
+  PortfolioWorkspace ws;
+  auto tf = pricer.price_totals(surfaces, PriceFieldMask::FullGreeks, ws, opts);
+  auto tm = pricer.price_totals(surfaces, PriceFieldMask::Marks, ws, opts);
+  ASSERT_TRUE(tf.has_value() && tm.has_value());
+
+  // FullGreeks: every total field bit-identical to price().total.
+  EXPECT_EQ(tf->n_ok, ref_full->total.n_ok);
+  EXPECT_TRUE(bits_equal(tf->pv, ref_full->total.pv));
+  EXPECT_TRUE(bits_equal(tf->delta, ref_full->total.delta));
+  EXPECT_TRUE(bits_equal(tf->gamma, ref_full->total.gamma));
+  EXPECT_TRUE(bits_equal(tf->vega, ref_full->total.vega));
+  EXPECT_TRUE(bits_equal(tf->theta, ref_full->total.theta));
+  EXPECT_TRUE(bits_equal(tf->rho, ref_full->total.rho));
+  EXPECT_TRUE(bits_equal(tf->vanna, ref_full->total.vanna));
+  EXPECT_TRUE(bits_equal(tf->volga, ref_full->total.volga));
+  EXPECT_TRUE(bits_equal(tf->charm, ref_full->total.charm));
+
+  // Marks: pv + n_ok bit-identical, greek sums NaN.
+  EXPECT_EQ(tm->n_ok, ref_marks->total.n_ok);
+  EXPECT_TRUE(bits_equal(tm->pv, ref_marks->total.pv));
+  EXPECT_TRUE(std::isnan(tm->delta));
+  EXPECT_TRUE(std::isnan(tm->vega));
+}
+
+TEST(PortfolioPricer, PriceInto_ThreadCounts_TotalsBitIdentical) {
+  std::vector<PricedSurface> surfs;
+  std::vector<const PricedSurface *> ptrs;
+  std::vector<Position> book;
+  for (std::uint32_t u = 1; u <= 6; ++u) {
+    surfs.push_back((u & 1u) ? make_convex(u, 4, 28) : make_essvi(u, 5));
+  }
+  for (const PricedSurface &s : surfs) {
+    ptrs.push_back(&s);
+  }
+  const SurfaceSet surfaces = set_of(ptrs);
+  std::uint64_t id = 0;
+  for (std::uint32_t u = 1; u <= 6; ++u) {
+    for (double K : {90.0, 95.0, 100.0, 105.0, 110.0}) {
+      book.push_back({id++, {u, K, 0.18, Side::Call}, 1.0 + 0.1 * static_cast<double>(u), 100.0});
+      book.push_back({id++, {u, K, 0.28, Side::Put}, -2.0, 100.0});
+    }
+  }
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+  const std::size_t n = pricer.portfolio().n_positions();
+
+  PortfolioWorkspace ws;
+  PriceTotals totals[4];
+  const unsigned thread_counts[4] = {1, 2, 4, 8};
+  for (int k = 0; k < 4; ++k) {
+    FrameStore fs(n, /*want_greeks=*/true);
+    PriceFrameView v = fs.view();
+    ASSERT_TRUE(pricer
+                    .price_into(surfaces, PriceFieldMask::FullGreeks, v, ws,
+                                PriceOptions{.n_threads = thread_counts[k]})
+                    .has_value());
+    totals[k] = fs.total;
+  }
+  for (int k = 1; k < 4; ++k) {
+    EXPECT_TRUE(bits_equal(totals[k].pv, totals[0].pv)) << k;
+    EXPECT_TRUE(bits_equal(totals[k].delta, totals[0].delta)) << k;
+    EXPECT_TRUE(bits_equal(totals[k].vega, totals[0].vega)) << k;
+    EXPECT_EQ(totals[k].n_ok, totals[0].n_ok) << k;
+  }
+}
+
+// Zero-allocation proof + retained-substrate reuse. The assertions are only
+// meaningful under -DATX_VOL_COUNTERS=ON; the OFF build compiles it as a
+// disabled-sentinel check so the default suite still exercises the in-place path.
+TEST(PortfolioPricer, PriceInto_ZeroAllocation_And_PreparedReuse) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+  const PricedSurface surface = make_essvi(1, 5);
+  const SurfaceSet surfaces = set_of({&surface});
+  auto pf = Portfolio::create(pnl_book());
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+  const std::size_t n = pricer.portfolio().n_positions();
+  const std::size_t nu = pricer.portfolio().n_contracts();
+
+  PortfolioWorkspace ws;
+  ws.reserve(nu, n);
+  FrameStore fg(n, /*want_greeks=*/true);
+  PriceFrameView vg = fg.view();
+  // Warm up: first call builds the retained PreparedPortfolio + sizes the scratch.
+  ASSERT_TRUE(pricer.price_into(surfaces, PriceFieldMask::FullGreeks, vg, ws).has_value());
+
+  if constexpr (counters_enabled()) {
+    // Second FullGreeks call: reuses the substrate, allocates no frame.
+    atx::vol::counters::reset();
+    ASSERT_TRUE(pricer.price_into(surfaces, PriceFieldMask::FullGreeks, vg, ws).has_value());
+    auto sg = atx::vol::counters::snapshot();
+    EXPECT_EQ(sg.get(Counter::FrameAllocations), 0u);
+    EXPECT_EQ(sg.get(Counter::FrameBytes), std::uint64_t{101} * n);
+    EXPECT_EQ(sg.get(Counter::PreparedBuilds), 0u); // reused, not rebuilt
+
+    // Marks touches 37 B/pos and still allocates nothing. The greeks->marks route
+    // change rebuilds the substrate once, so warm it, then measure the reuse.
+    FrameStore fm(n, /*want_greeks=*/false);
+    PriceFrameView vm = fm.view();
+    ASSERT_TRUE(pricer.price_into(surfaces, PriceFieldMask::Marks, vm, ws).has_value());
+    atx::vol::counters::reset();
+    ASSERT_TRUE(pricer.price_into(surfaces, PriceFieldMask::Marks, vm, ws).has_value());
+    auto sm = atx::vol::counters::snapshot();
+    EXPECT_EQ(sm.get(Counter::FrameAllocations), 0u);
+    EXPECT_EQ(sm.get(Counter::FrameBytes), std::uint64_t{37} * n);
+    EXPECT_EQ(sm.get(Counter::PreparedBuilds), 0u);
+  } else {
+    EXPECT_FALSE(atx::vol::counters::snapshot().enabled);
+    SUCCEED();
+  }
 }
 
 // An over-sized hint is advisory, not load-bearing: it must not change the dedup

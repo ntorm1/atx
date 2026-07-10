@@ -70,6 +70,8 @@ enum class Counter : unsigned {
   // Correction cache 3D Chebyshev kernel (appended last so all prior indices are
   // stable, per the "append before Count_" rule above)
   ClenshawSweeps,         // 3D Clenshaw sweeps (one per cheb_clenshaw3d[_partial] call)
+  // Portfolio pricer — retained-substrate accounting
+  PreparedBuilds,         // PreparedPortfolio::create calls from the pricer (0 on a warm reuse)
   Count_
 };
 
@@ -82,7 +84,7 @@ inline constexpr const char* kNames[kCount] = {
     "cnt_log_calls",           "cnt_exp_calls",            "cnt_scalar_fallback_lanes",
     "cnt_cache_hits",          "cnt_cache_oob_clamps",     "cnt_cache_cold_fallbacks",
     "cnt_frame_allocations",   "cnt_frame_bytes",          "cnt_worker_launches",
-    "cnt_clenshaw_sweeps",
+    "cnt_clenshaw_sweeps",     "cnt_prepared_builds",
 };
 
 // A point-in-time copy of every counter. `enabled == false` is the sentinel a
