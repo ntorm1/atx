@@ -64,6 +64,7 @@ add_executable(atx-vol-tests
     multiname_pipeline_test.cpp
     dispersion_test.cpp
     listed_dispersion_test.cpp
+    listed_opra_test.cpp
     listed_dispersion_schedule_test.cpp
     listed_dispersion_strategy_test.cpp
     backtest_test.cpp

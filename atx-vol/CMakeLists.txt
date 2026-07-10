@@ -68,6 +68,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/corpus.cpp
     src/dispersion.cpp
     src/listed_dispersion.cpp
+    src/listed_opra.cpp
     src/listed_dispersion_schedule.cpp
     src/listed_dispersion_strategy.cpp
     src/backtest.cpp
