@@ -22,8 +22,8 @@
 #include "atx/vol/vol_surface.hpp"
 
 // ATXVSA v3 archive suite: full write -> open -> map round-trip with
-// BIT-IDENTICAL served theo (iv / fair_value) across all three curve kinds
-// (ConvexDense / eSSVI / SVI), symbol lookup, format/corruption rejection, and
+// BIT-IDENTICAL served theo (iv / fair_value) across all five curve kinds
+// (ConvexDense / eSSVI / SVI / LinearVariance / C8), symbol lookup, rejection, and
 // concurrent-read safety against a const parsed archive. The design guarantee is
 // that a fitted surface of ANY kind reproduces the same prices after a
 // serialize/deserialize round-trip.
@@ -33,12 +33,15 @@ namespace {
 using atx::vol::AlOpts;
 using atx::vol::AmericanMethod;
 using atx::vol::ArchiveHeader;
+using atx::vol::C8Curve;
+using atx::vol::C8Params;
 using atx::vol::ConvexDenseCurve;
 using atx::vol::ConvexSliceFit;
 using atx::vol::CurveSurface;
 using atx::vol::ErrorCode;
 using atx::vol::EssviCurve;
 using atx::vol::EssviParams;
+using atx::vol::LinearVarianceCurve;
 using atx::vol::PricedSurface;
 using atx::vol::PricingContext;
 using atx::vol::Side;
@@ -62,7 +65,7 @@ using atx::vol::write_surface_archive;
   return ba == bb;
 }
 
-void flip_byte(std::vector<std::byte>& b, std::size_t off) {
+void flip_byte(std::vector<std::byte> &b, std::size_t off) {
   ASSERT_LT(off, b.size());
   b[off] ^= std::byte{0xFF};
 }
@@ -76,7 +79,7 @@ constexpr double kR = 0.043;
   pc.r = kR;
   pc.now_ts_ns = 1700000000000000000LL;
   pc.method = AmericanMethod::AndersenLake;
-  pc.al_opts = AlOpts{};  // {12, 24, 8, 1e-10}
+  pc.al_opts = AlOpts{}; // {12, 24, 8, 1e-10}
   pc.uid = uid;
   return pc;
 }
@@ -150,11 +153,9 @@ constexpr double kR = 0.043;
     fit.u.resize(static_cast<std::size_t>(nodes));
     fit.C.resize(static_cast<std::size_t>(nodes));
     for (int j = 0; j < nodes; ++j) {
-      const double K =
-          F * (0.7 + 0.6 * static_cast<double>(j) / static_cast<double>(nodes - 1));
+      const double K = F * (0.7 + 0.6 * static_cast<double>(j) / static_cast<double>(nodes - 1));
       fit.u[static_cast<std::size_t>(j)] = K;
-      fit.C[static_cast<std::size_t>(j)] =
-          atx::vol::black76_price(F, K, T, sigma, df, Side::Call);
+      fit.C[static_cast<std::size_t>(j)] = atx::vol::black76_price(F, K, T, sigma, df, Side::Call);
     }
     cs.push(std::make_unique<ConvexDenseCurve>(std::move(fit)));
     ctx.push_back(SliceContext{T, F, 0.0, 0.02, static_cast<std::size_t>(nodes), 2});
@@ -164,9 +165,54 @@ constexpr double kR = 0.043;
   return std::move(*ps);
 }
 
+[[nodiscard]] PricedSurface make_linear(std::uint32_t uid, int n, int nodes) {
+  CurveSurface cs;
+  std::vector<SliceContext> ctx;
+  for (int i = 0; i < n; ++i) {
+    const double T = 0.05 + 0.10 * static_cast<double>(i);
+    const double F = kS;
+    std::vector<double> k(static_cast<std::size_t>(nodes));
+    std::vector<double> w(static_cast<std::size_t>(nodes));
+    for (int j = 0; j < nodes; ++j) {
+      const double x = -0.4 + 0.8 * static_cast<double>(j) / static_cast<double>(nodes - 1);
+      k[static_cast<std::size_t>(j)] = x;
+      w[static_cast<std::size_t>(j)] = (0.20 * 0.20 + 0.01 * x + 0.02 * x * x) * T;
+    }
+    cs.push(
+        std::make_unique<LinearVarianceCurve>(T, F, std::exp(-kR * T), std::move(k), std::move(w)));
+    ctx.push_back(SliceContext{T, F, 0.0, 0.02, static_cast<std::size_t>(nodes), 2});
+  }
+  auto ps = PricedSurface::create(std::move(cs), std::move(ctx), make_pricing(uid));
+  EXPECT_TRUE(ps.has_value());
+  return std::move(*ps);
+}
+
+[[nodiscard]] PricedSurface make_c8(std::uint32_t uid, int n) {
+  CurveSurface cs;
+  std::vector<SliceContext> ctx;
+  for (int i = 0; i < n; ++i) {
+    const double T = 0.05 + 0.10 * static_cast<double>(i);
+    C8Params c8{};
+    c8.T = T;
+    c8.F = kS;
+    c8.v = (0.22 * 0.22) * T;
+    c8.v_min = 0.92 * c8.v;
+    c8.psi = -0.01 * T;
+    c8.kappa = -0.001 * T;
+    c8.q_L = 0.0002 * T;
+    c8.q_R = -0.0001 * T;
+    c8.expiry_id = static_cast<std::uint16_t>(i);
+    cs.push(std::make_unique<C8Curve>(c8, std::exp(-kR * T)));
+    ctx.push_back(SliceContext{T, kS, 0.0, 0.02, 120, 5});
+  }
+  auto ps = PricedSurface::create(std::move(cs), std::move(ctx), make_pricing(uid));
+  EXPECT_TRUE(ps.has_value());
+  return std::move(*ps);
+}
+
 // Assert a reconstructed surface serves BIT-IDENTICAL theo to the original across
 // a (K, T, side) grid: implied vol, total variance, and re-Americanized fair value.
-void expect_theo_bit_identical(const PricedSurface& a, const PricedSurface& b) {
+void expect_theo_bit_identical(const PricedSurface &a, const PricedSurface &b) {
   ASSERT_EQ(a.n_slices(), b.n_slices());
   ASSERT_EQ(a.uid(), b.uid());
   const std::array<double, 4> Ks{85.0, 100.0, 108.0, 120.0};
@@ -188,8 +234,7 @@ void expect_theo_bit_identical(const PricedSurface& a, const PricedSurface& b) {
   }
 }
 
-[[nodiscard]] std::vector<std::byte> build_one(const PricedSurface& ps,
-                                               std::string_view symbol) {
+[[nodiscard]] std::vector<std::byte> build_one(const PricedSurface &ps, std::string_view symbol) {
   const std::array<SurfaceArchiveItem, 1> items{SurfaceArchiveItem{symbol, &ps}};
   auto built = write_surface_archive(items);
   EXPECT_TRUE(built.has_value());
@@ -197,9 +242,8 @@ void expect_theo_bit_identical(const PricedSurface& a, const PricedSurface& b) {
 }
 
 // Full write -> open -> map_symbol, returning the reconstructed surface.
-[[nodiscard]] std::optional<PricedSurface> round_trip(const PricedSurface& ps,
-                                                      std::string_view write_sym,
-                                                      std::string_view read_sym) {
+[[nodiscard]] std::optional<PricedSurface>
+round_trip(const PricedSurface &ps, std::string_view write_sym, std::string_view read_sym) {
   std::vector<std::byte> buf = build_one(ps, write_sym);
   if (buf.empty()) {
     return std::nullopt;
@@ -215,13 +259,13 @@ void expect_theo_bit_identical(const PricedSurface& a, const PricedSurface& b) {
   return std::move(*mapped);
 }
 
-}  // namespace
+} // namespace
 
 // ── Round-trip: theo bit-identical for every curve kind ───────────────────
 
 TEST(SurfaceArchive, RoundTrip_Essvi_TheoBitIdentical) {
   const PricedSurface orig = make_essvi(42, 5);
-  auto got = round_trip(orig, "spy", "SPY");  // case-insensitive
+  auto got = round_trip(orig, "spy", "SPY"); // case-insensitive
   ASSERT_TRUE(got.has_value());
   EXPECT_EQ(got->kind_at(0), VolCurveKind::Essvi);
   expect_theo_bit_identical(orig, *got);
@@ -244,17 +288,51 @@ TEST(SurfaceArchive, RoundTrip_ConvexDense_TheoBitIdentical_AndNodesByteEqual) {
 
   // The convex node arrays (variable-length payload) round-trip byte-for-byte.
   for (std::size_t i = 0; i < orig.n_slices(); ++i) {
-    const auto* ca = static_cast<const ConvexDenseCurve*>(orig.surface().slices()[i].get());
-    const auto* cb = static_cast<const ConvexDenseCurve*>(got->surface().slices()[i].get());
+    const auto *ca = static_cast<const ConvexDenseCurve *>(orig.surface().slices()[i].get());
+    const auto *cb = static_cast<const ConvexDenseCurve *>(got->surface().slices()[i].get());
     ASSERT_EQ(ca->fit().u.size(), cb->fit().u.size());
     ASSERT_EQ(ca->fit().C.size(), cb->fit().C.size());
-    EXPECT_EQ(std::memcmp(ca->fit().u.data(), cb->fit().u.data(),
-                          ca->fit().u.size() * sizeof(double)), 0);
-    EXPECT_EQ(std::memcmp(ca->fit().C.data(), cb->fit().C.data(),
-                          ca->fit().C.size() * sizeof(double)), 0);
+    EXPECT_EQ(
+        std::memcmp(ca->fit().u.data(), cb->fit().u.data(), ca->fit().u.size() * sizeof(double)),
+        0);
+    EXPECT_EQ(
+        std::memcmp(ca->fit().C.data(), cb->fit().C.data(), ca->fit().C.size() * sizeof(double)),
+        0);
     EXPECT_TRUE(bits_equal(ca->fit().rmse_price, cb->fit().rmse_price));
     EXPECT_EQ(ca->fit().n_obs, cb->fit().n_obs);
     EXPECT_EQ(ca->fit().n_active, cb->fit().n_active);
+  }
+}
+
+TEST(SurfaceArchive, RoundTrip_LinearVariance_TheoAndNodesBitIdentical) {
+  const PricedSurface orig = make_linear(12, 5, 17);
+  auto got = round_trip(orig, "SPY", "spy");
+  ASSERT_TRUE(got.has_value());
+  EXPECT_EQ(got->kind_at(0), VolCurveKind::LinearVariance);
+  expect_theo_bit_identical(orig, *got);
+  for (std::size_t i = 0; i < orig.n_slices(); ++i) {
+    const auto *a = static_cast<const LinearVarianceCurve *>(orig.surface().slices()[i].get());
+    const auto *b = static_cast<const LinearVarianceCurve *>(got->surface().slices()[i].get());
+    ASSERT_EQ(a->k_nodes().size(), b->k_nodes().size());
+    EXPECT_EQ(
+        std::memcmp(a->k_nodes().data(), b->k_nodes().data(), a->k_nodes().size() * sizeof(double)),
+        0);
+    EXPECT_EQ(
+        std::memcmp(a->w_nodes().data(), b->w_nodes().data(), a->w_nodes().size() * sizeof(double)),
+        0);
+  }
+}
+
+TEST(SurfaceArchive, RoundTrip_C8_TheoAndParamsBitIdentical) {
+  const PricedSurface orig = make_c8(13, 5);
+  auto got = round_trip(orig, "AAPL", "aapl");
+  ASSERT_TRUE(got.has_value());
+  EXPECT_EQ(got->kind_at(0), VolCurveKind::C8);
+  expect_theo_bit_identical(orig, *got);
+  for (std::size_t i = 0; i < orig.n_slices(); ++i) {
+    const auto *a = static_cast<const C8Curve *>(orig.surface().slices()[i].get());
+    const auto *b = static_cast<const C8Curve *>(got->surface().slices()[i].get());
+    EXPECT_EQ(std::memcmp(&a->slice(), &b->slice(), sizeof(C8Params)), 0);
   }
 }
 
@@ -318,7 +396,7 @@ TEST(SurfaceArchive, Lookup_ManySymbols_ResolveEachToUid) {
   }
   EXPECT_EQ(hits, kN);
 
-  auto de = archive.find("s00042");  // lowercase of S00042 -> uid 43
+  auto de = archive.find("s00042"); // lowercase of S00042 -> uid 43
   ASSERT_TRUE(de.has_value());
   EXPECT_EQ(de->uid, 43u);
 
@@ -344,7 +422,7 @@ TEST(SurfaceArchive, Lookup_LowLoadFactor_ReservesGrowthRoom) {
                                        &surfs[static_cast<std::size_t>(i)]});
   }
   SurfaceArchiveWriteOpts opts;
-  opts.lookup_load_pct = 15;  // 8 / 0.15 ~= 54 -> next pow2 = 64
+  opts.lookup_load_pct = 15; // 8 / 0.15 ~= 54 -> next pow2 = 64
   auto built = write_surface_archive(items, opts);
   ASSERT_TRUE(built.has_value()) << built.error().to_string();
   auto opened = SurfaceArchive::open(std::move(*built));
@@ -375,7 +453,7 @@ TEST(SurfaceArchive, Format_RejectsCorruptedHeaderCrc) {
   const PricedSurface s = make_essvi(1, 3);
   std::vector<std::byte> buf = build_one(s, "TEST");
   ASSERT_FALSE(buf.empty());
-  flip_byte(buf, 120);  // header reserved area (covered by header CRC)
+  flip_byte(buf, 120); // header reserved area (covered by header CRC)
   auto opened = SurfaceArchive::open(std::move(buf));
   ASSERT_FALSE(opened.has_value());
   EXPECT_EQ(opened.error().code(), ErrorCode::ParseError);
@@ -386,7 +464,7 @@ TEST(SurfaceArchive, Format_RejectsSchemaHashMismatch) {
   const PricedSurface s = make_essvi(1, 3);
   std::vector<std::byte> buf = build_one(s, "TEST");
   ASSERT_FALSE(buf.empty());
-  flip_byte(buf, 40);  // schema_hash field -> checked before the header CRC
+  flip_byte(buf, 40); // schema_hash field -> checked before the header CRC
   auto opened = SurfaceArchive::open(std::move(buf));
   ASSERT_FALSE(opened.has_value());
   EXPECT_EQ(opened.error().code(), ErrorCode::ParseError);
@@ -400,11 +478,11 @@ TEST(SurfaceArchive, Format_RejectsCorruptedBlobPayload) {
 
   ArchiveHeader h{};
   std::memcpy(&h, buf.data(), sizeof h);
-  const std::size_t target = static_cast<std::size_t>(h.data_offset) + 256;  // inside first blob
+  const std::size_t target = static_cast<std::size_t>(h.data_offset) + 256; // inside first blob
   flip_byte(buf, target);
 
   auto opened = SurfaceArchive::open(std::move(buf));
-  ASSERT_TRUE(opened.has_value()) << opened.error().to_string();  // header/metadata still valid
+  ASSERT_TRUE(opened.has_value()) << opened.error().to_string(); // header/metadata still valid
   const SurfaceArchive archive = std::move(*opened);
   auto mapped = archive.map_symbol("TEST");
   ASSERT_FALSE(mapped.has_value());
@@ -416,8 +494,7 @@ TEST(SurfaceArchive, Write_RejectsDuplicateCanonicalSymbol) {
   const PricedSurface s1 = make_essvi(1, 3);
   const PricedSurface s2 = make_essvi(2, 3);
   const std::array<SurfaceArchiveItem, 2> items{
-      SurfaceArchiveItem{"AAA", &s1},
-      SurfaceArchiveItem{"aaa", &s2},  // same canonical symbol
+      SurfaceArchiveItem{"AAA", &s1}, SurfaceArchiveItem{"aaa", &s2}, // same canonical symbol
   };
   auto built = write_surface_archive(items);
   ASSERT_FALSE(built.has_value());
@@ -460,7 +537,7 @@ TEST(SurfaceArchive, MultiSymbol_MixedKinds_MapAll_And_CapacityGuard) {
   ASSERT_EQ(archive.count(), 6u);
 
   // Directory kind_bits reflect the surface's curve kind.
-  for (const auto& de : archive.directory()) {
+  for (const auto &de : archive.directory()) {
     const std::string sym(de.symbol, de.symbol_len);
     const std::uint16_t convex_bit = 1u << static_cast<unsigned>(VolCurveKind::ConvexDense);
     const std::uint16_t essvi_bit = 1u << static_cast<unsigned>(VolCurveKind::Essvi);
@@ -478,7 +555,7 @@ TEST(SurfaceArchive, MultiSymbol_MixedKinds_MapAll_And_CapacityGuard) {
   ASSERT_TRUE(all.has_value()) << all.error().to_string();
   EXPECT_EQ(all->size(), 6u);
   std::array<int, 7> seen{};
-  for (const PricedSurface& s : *all) {
+  for (const PricedSurface &s : *all) {
     ASSERT_GE(s.uid(), 1u);
     ASSERT_LE(s.uid(), 6u);
     seen[s.uid()]++;
@@ -502,7 +579,7 @@ TEST(SurfaceArchive, MultiSymbol_MixedKinds_MapAll_And_CapacityGuard) {
   auto wrote = archive.map_all_into(outs);
   ASSERT_TRUE(wrote.has_value()) << wrote.error().to_string();
   EXPECT_EQ(*wrote, 6u);
-  for (const auto& o : outs) {
+  for (const auto &o : outs) {
     EXPECT_TRUE(o.has_value());
   }
 }
@@ -540,15 +617,14 @@ TEST(SurfaceArchive, ConcurrentReads_ConstArchive_AreSafe) {
       int local_ok = 0;
       for (int i = 0; i < kN; ++i) {
         auto m = archive.map_symbol(names[static_cast<std::size_t>(i)]);
-        if (m.has_value() && m->uid() == static_cast<std::uint32_t>(i + 1) &&
-            m->n_slices() == 3u) {
+        if (m.has_value() && m->uid() == static_cast<std::uint32_t>(i + 1) && m->n_slices() == 3u) {
           ++local_ok;
         }
       }
       ok[static_cast<std::size_t>(t)] = local_ok;
     });
   }
-  for (std::thread& th : pool) {
+  for (std::thread &th : pool) {
     th.join();
   }
   for (int t = 0; t < kThreads; ++t) {

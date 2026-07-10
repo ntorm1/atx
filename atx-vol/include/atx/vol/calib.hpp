@@ -144,6 +144,18 @@ struct CalibOpts {
   double min_vega_weight{1.0e-6};  // drop below this weight_sigma = (vega/spread)²
   double max_spread_vol{0.05};     // drop quotes with spread/vega above this
   double max_weight{1.0e3};        // upper clip on vega-spread weights
+  // 0 = use every surviving observation. Positive = cap the per-slice
+  // de-Americanized fit population before the expensive American-IV inversion,
+  // selecting adaptive knots by normalized total-variance interpolation error.
+  // This is a cold-start latency knob for very dense index boards; the default
+  // preserves the historical full-board fit exactly.
+  std::uint32_t max_obs_per_slice{0};
+  // 0 = always de-Americanize each fit row with the configured American-IV
+  // solver. Positive = allow an HFT shortcut for OTM rows whose BAW-estimated
+  // early-exercise premium at the raw Black-76 IV is at most this fraction of
+  // the bid/ask spread; those rows reuse the raw European IV and avoid the cold
+  // Andersen-Lake inversion. The default preserves the historical full solve.
+  double max_otm_shortcut_premium_spread_frac{0.0};
 
   // Warm-start regularization.
   double prior_strength{0.0};  // shrinkage toward θ_prev (0 = none, 1 = strong)
@@ -300,11 +312,12 @@ struct ObsSet {
 // al_opts (al_fast_opts) + iv_tol here so the per-strike de-Am honors the SAME
 // fast-cold accuracy as the borrow solve — the surface only needs ~1e-4 price
 // accuracy (RMSE ~1e-2), and machine-precision cold AL was ~5x wasted cost.
-[[nodiscard]] Result<ObsSet> build_observations_european(
-    const Chain &chain, double S, double r, double F, double T, double df,
-    const CalibOpts &opts, const AmericanCorrectionCaches &caches = {},
-    const std::optional<AlOpts> &al_opts = std::nullopt, double iv_tol = 1.0e-7,
-    std::uint16_t iv_max_iter = 64);
+[[nodiscard]] Result<ObsSet>
+build_observations_european(const Chain &chain, double S, double r, double F, double T, double df,
+                            const CalibOpts &opts, const AmericanCorrectionCaches &caches = {},
+                            const std::optional<AlOpts> &al_opts = std::nullopt,
+                            double iv_tol = 1.0e-7, std::uint16_t iv_max_iter = 64,
+                            AmericanMethod method = AmericanMethod::AndersenLake);
 
 // O(1) calibrator-population predicate (ports `ats_vol_calib_obs_accepted`):
 // would the (strike_idx, side) tuple survive the same cascade as one row of

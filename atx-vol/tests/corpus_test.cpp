@@ -345,6 +345,41 @@ TEST(Corpus, Manifest_RoundTrips) {
   EXPECT_FALSE(parse_manifest("not a manifest").has_value());
 }
 
+// The writer emits whatever kind the selector chose, and the selector enumerates
+// EVERY VolCurveKind. A reader that knows fewer kinds than the writer rejects the
+// corpus's own output, so pin the full set rather than the ones in today's
+// fixture. (C8 shipped write-only: serialize emitted kind 4, parse rejected it.)
+TEST(Corpus, Manifest_RoundTripsEveryCurveKind) {
+  constexpr VolCurveKind kAllKinds[]{VolCurveKind::ConvexDense, VolCurveKind::Essvi,
+                                     VolCurveKind::Svi, VolCurveKind::LinearVariance,
+                                     VolCurveKind::C8};
+
+  CorpusManifest man;
+  man.dates = {"2026-06-17"};
+  for (const VolCurveKind kind : kAllKinds) {
+    CorpusEntry e;
+    e.date = "2026-06-17";
+    // Sorted (date asc, symbol asc) matches ascending enum value.
+    e.symbol = "SYM" + std::to_string(static_cast<int>(kind));
+    e.status = CorpusFitStatus::Ok;
+    e.chosen_kind = kind;
+    e.n_slices = 3u;
+    e.oos_in_band = 0.99;
+    e.archive_path = "2026-06-17.atxvsa";
+    man.entries.push_back(e);
+  }
+  man.n_boards = static_cast<std::uint32_t>(man.entries.size());
+  man.n_ok = man.n_boards;
+
+  auto parsed = parse_manifest(serialize_manifest(man));
+  ASSERT_TRUE(parsed.has_value()) << parsed.error().to_string();
+  EXPECT_EQ(*parsed, man);
+  for (std::size_t i = 0; i < std::size(kAllKinds); ++i) {
+    EXPECT_EQ(parsed->entries[i].chosen_kind, kAllKinds[i])
+        << "kind " << to_string(kAllKinds[i]) << " did not survive the manifest round-trip";
+  }
+}
+
 // ── 7. Resilience: one bad board must not sink the corpus ───────────────────
 TEST(Corpus, BadBoardsAreRecordedAndSkippedNotFatal) {
   const fs::path out = fresh_out_dir("resilient");

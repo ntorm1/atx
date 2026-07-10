@@ -18,7 +18,7 @@
 #include <utility>
 #include <vector>
 
-#include "atx/core/bit.hpp"        // next_pow2, is_pow2
+#include "atx/core/bit.hpp" // next_pow2, is_pow2
 #include "atx/core/error.hpp"
 #include "atx/core/hash.hpp"       // hash_bytes
 #include "atx/vol/american.hpp"    // AlOpts, AmericanMethod
@@ -46,8 +46,20 @@ static_assert(std::is_trivially_copyable_v<EssviParams>,
               "EssviParams must be trivially copyable for byte serialization");
 static_assert(std::is_trivially_copyable_v<SviParams>,
               "SviParams must be trivially copyable for byte serialization");
+static_assert(std::is_trivially_copyable_v<C8Params>,
+              "C8Params must be trivially copyable for byte serialization");
 static_assert(std::is_trivially_copyable_v<AlOpts>,
               "AlOpts must be trivially copyable for byte serialization");
+
+// schema_hash() folds sizeof(EssviParams)/sizeof(SviParams) so a reader built
+// against a different struct shape rejects the file. C8Params cannot join that
+// fold: its kind postdates the v3 fingerprint, and adding it would invalidate
+// every already-written archive that contains no C8 slice at all. Freeze the
+// layout here instead -- same protection, paid at compile time. If you change
+// C8Params, bump kV3Salt in schema_hash() and update this size.
+static_assert(sizeof(C8Params) == 176,
+              "C8Params layout is serialized verbatim; changing it must bump the archive "
+              "schema salt (see schema_hash) so stale C8 archives are rejected, not mis-read");
 
 namespace {
 
@@ -72,7 +84,7 @@ namespace {
 
 inline constexpr std::array<std::uint32_t, 256> kCrc32cTable = make_crc32c_table();
 
-[[nodiscard]] std::uint32_t crc32c_update_table(std::uint32_t crc, const std::byte* p,
+[[nodiscard]] std::uint32_t crc32c_update_table(std::uint32_t crc, const std::byte *p,
                                                 std::size_t n) noexcept {
   for (std::size_t i = 0; i < n; ++i) {
     const auto b = static_cast<std::uint32_t>(std::to_integer<std::uint8_t>(p[i]));
@@ -85,7 +97,7 @@ inline constexpr std::array<std::uint32_t, 256> kCrc32cTable = make_crc32c_table
 [[nodiscard]] bool detect_sse42() noexcept {
   int regs[4] = {0, 0, 0, 0};
   __cpuid(regs, 1);
-  return (regs[2] & (1 << 20)) != 0;  // ECX bit 20 = SSE4.2 (CRC32)
+  return (regs[2] & (1 << 20)) != 0; // ECX bit 20 = SSE4.2 (CRC32)
 }
 // Resolved once at load; the dispatch below is a predictable branch.
 const bool kHasSse42 = detect_sse42();
@@ -98,7 +110,7 @@ const bool kHasSse42 = detect_sse42();
 __attribute__((target("sse4.2")))
 #endif
 std::uint32_t
-crc32c_update_hw(std::uint32_t crc, const std::byte* p, std::size_t n) noexcept {
+crc32c_update_hw(std::uint32_t crc, const std::byte *p, std::size_t n) noexcept {
   std::uint64_t c = crc;
   while (n >= 8) {
     std::uint64_t v = 0;
@@ -118,7 +130,7 @@ crc32c_update_hw(std::uint32_t crc, const std::byte* p, std::size_t n) noexcept 
 #endif
 
 // Continue a CRC-32C over [p, p+n). `crc` is the running (un-finalized) state.
-[[nodiscard]] std::uint32_t crc32c_update(std::uint32_t crc, const std::byte* p,
+[[nodiscard]] std::uint32_t crc32c_update(std::uint32_t crc, const std::byte *p,
                                           std::size_t n) noexcept {
 #if ATX_ARCH_X86
   if (kHasSse42) {
@@ -129,7 +141,7 @@ crc32c_update_hw(std::uint32_t crc, const std::byte* p, std::size_t n) noexcept 
 }
 
 // One-shot CRC-32C with the standard init/final XOR applied.
-[[nodiscard]] std::uint32_t crc32c(const std::byte* p, std::size_t n) noexcept {
+[[nodiscard]] std::uint32_t crc32c(const std::byte *p, std::size_t n) noexcept {
   return crc32c_update(0xFFFFFFFFu, p, n) ^ 0xFFFFFFFFu;
 }
 
@@ -142,11 +154,10 @@ constexpr char kBlobMagic[8] = {'A', 'T', 'X', 'V', 'S', 'B', '0', '3'};
   return (v + (a - 1u)) & ~(a - 1u);
 }
 
-[[nodiscard]] std::byte* buf_at(std::vector<std::byte>& b, std::uint64_t off) noexcept {
+[[nodiscard]] std::byte *buf_at(std::vector<std::byte> &b, std::uint64_t off) noexcept {
   return b.data() + static_cast<std::size_t>(off);
 }
-[[nodiscard]] const std::byte* buf_at(const std::vector<std::byte>& b,
-                                      std::uint64_t off) noexcept {
+[[nodiscard]] const std::byte *buf_at(const std::vector<std::byte> &b, std::uint64_t off) noexcept {
   return b.data() + static_cast<std::size_t>(off);
 }
 
@@ -178,7 +189,7 @@ constexpr char kBlobMagic[8] = {'A', 'T', 'X', 'V', 'S', 'B', '0', '3'};
 
 // ASCII upper-case + truncate to kArchiveSymbolMax; zero-pads the tail.
 [[nodiscard]] std::uint16_t canonicalize(std::string_view src,
-                                         std::array<char, kArchiveSymbolMax>& dst) noexcept {
+                                         std::array<char, kArchiveSymbolMax> &dst) noexcept {
   const std::size_t n = std::min(src.size(), kArchiveSymbolMax);
   for (std::size_t i = 0; i < n; ++i) {
     char c = src[i];
@@ -203,12 +214,16 @@ constexpr char kBlobMagic[8] = {'A', 'T', 'X', 'V', 'S', 'B', '0', '3'};
 [[nodiscard]] std::uint32_t slice_payload_size(VolCurveKind kind,
                                                std::uint32_t node_count) noexcept {
   switch (kind) {
-    case VolCurveKind::ConvexDense:
-      return static_cast<std::uint32_t>(2ull * node_count * sizeof(double));
-    case VolCurveKind::Essvi:
-      return static_cast<std::uint32_t>(sizeof(EssviParams));
-    case VolCurveKind::Svi:
-      return static_cast<std::uint32_t>(sizeof(SviParams));
+  case VolCurveKind::ConvexDense:
+    return static_cast<std::uint32_t>(2ull * node_count * sizeof(double));
+  case VolCurveKind::Essvi:
+    return static_cast<std::uint32_t>(sizeof(EssviParams));
+  case VolCurveKind::Svi:
+    return static_cast<std::uint32_t>(sizeof(SviParams));
+  case VolCurveKind::LinearVariance:
+    return static_cast<std::uint32_t>(2ull * node_count * sizeof(double));
+  case VolCurveKind::C8:
+    return static_cast<std::uint32_t>(sizeof(C8Params));
   }
   return 0;
 }
@@ -218,8 +233,8 @@ struct SlicePlan {
   VolCurveKind kind{VolCurveKind::Essvi};
   std::uint32_t node_count{0};
   std::uint32_t payload_size{0};
-  std::uint64_t rec_size{0};       // header + payload, padded to array_align
-  const IVolCurve* curve{nullptr};
+  std::uint64_t rec_size{0}; // header + payload, padded to array_align
+  const IVolCurve *curve{nullptr};
   SliceContext ctx{};
 };
 
@@ -231,7 +246,7 @@ struct BlobPlan {
   std::uint16_t n_slices{};
   std::uint16_t kind_bits{};
   std::uint32_t uid{};
-  const PricedSurface* surf{nullptr};
+  const PricedSurface *surf{nullptr};
   std::uint64_t symbol_offset{};
   std::uint64_t symbol_size{};
   std::uint64_t pricing_offset{};
@@ -247,7 +262,7 @@ struct BlobPlan {
 
 // Canonical-symbol comparator (memcmp of the shorter prefix, then length) —
 // deterministic layout independent of caller order.
-[[nodiscard]] bool plan_less(const BlobPlan& a, const BlobPlan& b) noexcept {
+[[nodiscard]] bool plan_less(const BlobPlan &a, const BlobPlan &b) noexcept {
   const std::uint16_t n = std::min(a.symbol_len, b.symbol_len);
   const int c = std::memcmp(a.symbol.data(), b.symbol.data(), n);
   if (c != 0) {
@@ -257,7 +272,7 @@ struct BlobPlan {
 }
 
 // Fill an ArchivePricingRecord from a PricedSurface's PricingContext.
-[[nodiscard]] ArchivePricingRecord to_pricing_record(const PricingContext& pc) noexcept {
+[[nodiscard]] ArchivePricingRecord to_pricing_record(const PricingContext &pc) noexcept {
   ArchivePricingRecord pr{};
   pr.S = pc.S;
   pr.r = pc.r;
@@ -271,7 +286,7 @@ struct BlobPlan {
   return pr;
 }
 
-[[nodiscard]] PricingContext from_pricing_record(const ArchivePricingRecord& pr) noexcept {
+[[nodiscard]] PricingContext from_pricing_record(const ArchivePricingRecord &pr) noexcept {
   PricingContext pc;
   pc.S = pr.S;
   pc.r = pr.r;
@@ -285,13 +300,12 @@ struct BlobPlan {
   return pc;
 }
 
-}  // namespace
+} // namespace
 
 // ── Writer ───────────────────────────────────────────────────────────────
 
-Result<std::vector<std::byte>>
-write_surface_archive(std::span<const SurfaceArchiveItem> items,
-                      const SurfaceArchiveWriteOpts& opts) {
+Result<std::vector<std::byte>> write_surface_archive(std::span<const SurfaceArchiveItem> items,
+                                                     const SurfaceArchiveWriteOpts &opts) {
   if (items.empty()) {
     return Err(ErrorCode::InvalidArgument, "write_surface_archive: no items");
   }
@@ -312,14 +326,14 @@ write_surface_archive(std::span<const SurfaceArchiveItem> items,
   // 1. Plan + validate every item.
   std::vector<BlobPlan> plans;
   plans.reserve(n_items);
-  for (const SurfaceArchiveItem& it : items) {
+  for (const SurfaceArchiveItem &it : items) {
     if (it.surface == nullptr) {
       return Err(ErrorCode::InvalidArgument, "write_surface_archive: null surface");
     }
     if (it.symbol.empty()) {
       return Err(ErrorCode::InvalidArgument, "write_surface_archive: empty symbol");
     }
-    const PricedSurface& ps = *it.surface;
+    const PricedSurface &ps = *it.surface;
     const std::size_t n = ps.n_slices();
     if (n == 0) {
       return Err(ErrorCode::InvalidArgument, "write_surface_archive: surface has no slices");
@@ -352,19 +366,27 @@ write_surface_archive(std::span<const SurfaceArchiveItem> items,
     const std::span<const SliceContext> ctx = ps.context();
     plan.slices.reserve(n);
     for (std::size_t i = 0; i < n; ++i) {
-      const IVolCurve* const c = curves[i].get();
+      const IVolCurve *const c = curves[i].get();
       SlicePlan sp;
       sp.kind = c->kind();
       sp.curve = c;
       sp.ctx = ctx[i];
       if (sp.kind == VolCurveKind::ConvexDense) {
-        const auto* cd = static_cast<const ConvexDenseCurve*>(c);
+        const auto *cd = static_cast<const ConvexDenseCurve *>(c);
         // `node_count` is a uint32 field on disk. Guard the narrowing so an
         // (implausibly large) slice cannot silently wrap the count instead of
         // being reported — matches the write-path validation above (>0xFFFF
         // slices, empty surface). Defensive: a >UINT32_MAX-node curve is not
         // reachable in practice.
         const std::size_t node_count = cd->fit().u.size();
+        if (node_count > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())) {
+          return Err(ErrorCode::InvalidArgument,
+                     "write_surface_archive: slice node count exceeds uint32");
+        }
+        sp.node_count = static_cast<std::uint32_t>(node_count);
+      } else if (sp.kind == VolCurveKind::LinearVariance) {
+        const auto *lv = static_cast<const LinearVarianceCurve *>(c);
+        const std::size_t node_count = lv->k_nodes().size();
         if (node_count > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())) {
           return Err(ErrorCode::InvalidArgument,
                      "write_surface_archive: slice node count exceeds uint32");
@@ -401,7 +423,7 @@ write_surface_archive(std::span<const SurfaceArchiveItem> items,
   const std::uint64_t data_offset = align_up(directory_offset + dir_bytes, blob_align);
 
   std::uint64_t cursor = data_offset;
-  for (BlobPlan& plan : plans) {
+  for (BlobPlan &plan : plans) {
     plan.file_offset = align_up(cursor, blob_align);
     cursor = plan.file_offset + plan.blob_size;
   }
@@ -412,16 +434,16 @@ write_surface_archive(std::span<const SurfaceArchiveItem> items,
   std::vector<ArchiveDirEntry> directory(n_items);
   const std::uint64_t mask = static_cast<std::uint64_t>(lookup_slots) - 1ull;
   for (std::size_t idx = 0; idx < plans.size(); ++idx) {
-    BlobPlan& plan = plans[idx];
+    BlobPlan &plan = plans[idx];
     std::uint64_t i = plan.symbol_hash & mask;
     bool placed = false;
     for (std::uint32_t step = 0; step < lookup_slots; ++step) {
-      ArchiveIndexSlot& s = lookup[static_cast<std::size_t>(i)];
+      ArchiveIndexSlot &s = lookup[static_cast<std::size_t>(i)];
       if (s.flags == kArchiveSlotEmpty) {
         s.symbol_hash = plan.symbol_hash;
         s.surface_offset = plan.file_offset;
         s.surface_size = plan.blob_size;
-        s.surface_crc32c = 0;  // patched after the blob is materialized
+        s.surface_crc32c = 0; // patched after the blob is materialized
         s.uid = plan.uid;
         s.symbol_len = plan.symbol_len;
         s.flags = kArchiveSlotOccupied;
@@ -432,8 +454,7 @@ write_surface_archive(std::span<const SurfaceArchiveItem> items,
       }
       if (s.symbol_hash == plan.symbol_hash && s.symbol_len == plan.symbol_len &&
           std::memcmp(s.symbol, plan.symbol.data(), plan.symbol_len) == 0) {
-        return Err(ErrorCode::AlreadyExists,
-                   "write_surface_archive: duplicate canonical symbol");
+        return Err(ErrorCode::AlreadyExists, "write_surface_archive: duplicate canonical symbol");
       }
       i = (i + 1ull) & mask;
     }
@@ -441,7 +462,7 @@ write_surface_archive(std::span<const SurfaceArchiveItem> items,
       return Err(ErrorCode::Internal, "write_surface_archive: lookup table full");
     }
 
-    ArchiveDirEntry& de = directory[idx];
+    ArchiveDirEntry &de = directory[idx];
     de.surface_offset = plan.file_offset;
     de.surface_size = plan.blob_size;
     de.symbol_hash = plan.symbol_hash;
@@ -455,8 +476,8 @@ write_surface_archive(std::span<const SurfaceArchiveItem> items,
   // 5. Materialize the buffer.
   std::vector<std::byte> buffer(static_cast<std::size_t>(file_size));
 
-  for (BlobPlan& plan : plans) {
-    std::byte* base = buf_at(buffer, plan.file_offset);
+  for (BlobPlan &plan : plans) {
+    std::byte *base = buf_at(buffer, plan.file_offset);
 
     // Symbol bytes.
     std::memcpy(base + static_cast<std::size_t>(plan.symbol_offset), plan.symbol.data(),
@@ -468,7 +489,7 @@ write_surface_archive(std::span<const SurfaceArchiveItem> items,
 
     // Sequential slice records.
     std::uint64_t off = plan.slices_offset;
-    for (const SlicePlan& sp : plan.slices) {
+    for (const SlicePlan &sp : plan.slices) {
       ArchiveSliceHeader sh{};
       sh.kind = static_cast<std::uint8_t>(sp.kind);
       sh.rec_size = static_cast<std::uint32_t>(sp.rec_size);
@@ -482,31 +503,43 @@ write_surface_archive(std::span<const SurfaceArchiveItem> items,
       sh.n_used = sp.ctx.n_used;
       sh.n_dropped = sp.ctx.n_dropped;
 
-      std::byte* rec = base + static_cast<std::size_t>(off);
-      std::byte* payload = rec + sizeof(ArchiveSliceHeader);
+      std::byte *rec = base + static_cast<std::size_t>(off);
+      std::byte *payload = rec + sizeof(ArchiveSliceHeader);
       switch (sp.kind) {
-        case VolCurveKind::ConvexDense: {
-          const ConvexSliceFit& fit = static_cast<const ConvexDenseCurve*>(sp.curve)->fit();
-          sh.conv_rmse_price = fit.rmse_price;
-          sh.conv_n_obs = fit.n_obs;
-          sh.conv_n_active = fit.n_active;
-          const std::size_t nb = static_cast<std::size_t>(sp.node_count) * sizeof(double);
-          std::memcpy(payload, fit.u.data(), nb);
-          std::memcpy(payload + nb, fit.C.data(), nb);
-          break;
-        }
-        case VolCurveKind::Essvi: {
-          const EssviParams& e = static_cast<const EssviCurve*>(sp.curve)->slice();
-          std::memcpy(payload, &e, sizeof e);
-          break;
-        }
-        case VolCurveKind::Svi: {
-          const SviParams& v = static_cast<const SviCurve*>(sp.curve)->slice();
-          std::memcpy(payload, &v, sizeof v);
-          break;
-        }
+      case VolCurveKind::ConvexDense: {
+        const ConvexSliceFit &fit = static_cast<const ConvexDenseCurve *>(sp.curve)->fit();
+        sh.conv_rmse_price = fit.rmse_price;
+        sh.conv_n_obs = fit.n_obs;
+        sh.conv_n_active = fit.n_active;
+        const std::size_t nb = static_cast<std::size_t>(sp.node_count) * sizeof(double);
+        std::memcpy(payload, fit.u.data(), nb);
+        std::memcpy(payload + nb, fit.C.data(), nb);
+        break;
       }
-      std::memcpy(rec, &sh, sizeof sh);  // header last (fields now complete)
+      case VolCurveKind::Essvi: {
+        const EssviParams &e = static_cast<const EssviCurve *>(sp.curve)->slice();
+        std::memcpy(payload, &e, sizeof e);
+        break;
+      }
+      case VolCurveKind::Svi: {
+        const SviParams &v = static_cast<const SviCurve *>(sp.curve)->slice();
+        std::memcpy(payload, &v, sizeof v);
+        break;
+      }
+      case VolCurveKind::LinearVariance: {
+        const auto *lv = static_cast<const LinearVarianceCurve *>(sp.curve);
+        const std::size_t nb = static_cast<std::size_t>(sp.node_count) * sizeof(double);
+        std::memcpy(payload, lv->k_nodes().data(), nb);
+        std::memcpy(payload + nb, lv->w_nodes().data(), nb);
+        break;
+      }
+      case VolCurveKind::C8: {
+        const C8Params &c8 = static_cast<const C8Curve *>(sp.curve)->slice();
+        std::memcpy(payload, &c8, sizeof c8);
+        break;
+      }
+      }
+      std::memcpy(rec, &sh, sizeof sh); // header last (fields now complete)
       off += sp.rec_size;
     }
 
@@ -546,9 +579,9 @@ write_surface_archive(std::span<const SurfaceArchiveItem> items,
 
   std::uint32_t meta = crc32c_update(0xFFFFFFFFu, buf_at(buffer, lookup_offset),
                                      static_cast<std::size_t>(lookup_bytes));
-  meta = crc32c_update(meta, buf_at(buffer, directory_offset),
-                       static_cast<std::size_t>(dir_bytes)) ^
-         0xFFFFFFFFu;
+  meta =
+      crc32c_update(meta, buf_at(buffer, directory_offset), static_cast<std::size_t>(dir_bytes)) ^
+      0xFFFFFFFFu;
 
   // 6. Header.
   ArchiveHeader hdr;
@@ -561,9 +594,8 @@ write_surface_archive(std::span<const SurfaceArchiveItem> items,
   hdr.alignment_log2 = 12;
   hdr.flags = opts.flags;
   hdr.file_size = file_size;
-  hdr.created_ts_ns = opts.created_ts_ns != 0
-                          ? static_cast<std::uint64_t>(opts.created_ts_ns)
-                          : static_cast<std::uint64_t>(wall_clock_ns());
+  hdr.created_ts_ns = opts.created_ts_ns != 0 ? static_cast<std::uint64_t>(opts.created_ts_ns)
+                                              : static_cast<std::uint64_t>(wall_clock_ns());
   hdr.schema_hash = schema_hash();
   hdr.writer_version_hash = 0;
   hdr.surface_count = n_items;
@@ -582,14 +614,13 @@ write_surface_archive(std::span<const SurfaceArchiveItem> items,
   return Ok(std::move(buffer));
 }
 
-Status write_surface_archive_file(std::string_view path,
-                                  std::span<const SurfaceArchiveItem> items,
-                                  const SurfaceArchiveWriteOpts& opts) {
+Status write_surface_archive_file(std::string_view path, std::span<const SurfaceArchiveItem> items,
+                                  const SurfaceArchiveWriteOpts &opts) {
   auto built = write_surface_archive(items, opts);
   if (!built) {
     return tl::unexpected<atx::core::Error>(std::move(built).error());
   }
-  const std::vector<std::byte>& buffer = *built;
+  const std::vector<std::byte> &buffer = *built;
 
   const std::filesystem::path dst{std::string(path)};
   std::filesystem::path tmp = dst;
@@ -599,7 +630,7 @@ Status write_surface_archive_file(std::string_view path,
     if (!os) {
       return Err(ErrorCode::IoError, "write_surface_archive_file: cannot open temp file");
     }
-    os.write(reinterpret_cast<const char*>(buffer.data()),
+    os.write(reinterpret_cast<const char *>(buffer.data()),
              static_cast<std::streamsize>(buffer.size()));
     if (!os) {
       std::error_code ec;
@@ -626,7 +657,7 @@ Result<SurfaceArchive> SurfaceArchive::open(std::vector<std::byte> bytes) {
 
   SurfaceArchive a;
   a.buffer_ = std::move(bytes);
-  const std::vector<std::byte>& buf = a.buffer_;
+  const std::vector<std::byte> &buf = a.buffer_;
 
   ArchiveHeader h;
   std::memcpy(&h, buf.data(), sizeof h);
@@ -661,8 +692,7 @@ Result<SurfaceArchive> SurfaceArchive::open(std::vector<std::byte> bytes) {
 
   const std::uint64_t lookup_bytes =
       static_cast<std::uint64_t>(h.lookup_slot_count) * h.index_slot_size;
-  const std::uint64_t dir_bytes =
-      static_cast<std::uint64_t>(h.surface_count) * h.dir_entry_size;
+  const std::uint64_t dir_bytes = static_cast<std::uint64_t>(h.surface_count) * h.dir_entry_size;
   if (h.lookup_offset < sizeof(ArchiveHeader)) {
     return Err(ErrorCode::ParseError, "SurfaceArchive::open: lookup overlaps header");
   }
@@ -687,8 +717,7 @@ Result<SurfaceArchive> SurfaceArchive::open(std::vector<std::byte> bytes) {
 
   std::uint32_t meta = crc32c_update(0xFFFFFFFFu, buf_at(buf, h.lookup_offset),
                                      static_cast<std::size_t>(lookup_bytes));
-  meta = crc32c_update(meta, buf_at(buf, h.directory_offset),
-                       static_cast<std::size_t>(dir_bytes)) ^
+  meta = crc32c_update(meta, buf_at(buf, h.directory_offset), static_cast<std::size_t>(dir_bytes)) ^
          0xFFFFFFFFu;
   if (meta != h.metadata_crc32c) {
     return Err(ErrorCode::ParseError, "SurfaceArchive::open: metadata checksum mismatch");
@@ -706,7 +735,7 @@ Result<SurfaceArchive> SurfaceArchive::open(std::vector<std::byte> bytes) {
                 static_cast<std::size_t>(dir_bytes));
   }
 
-  for (const ArchiveDirEntry& de : a.directory_) {
+  for (const ArchiveDirEntry &de : a.directory_) {
     if (de.surface_offset < h.data_offset) {
       return Err(ErrorCode::ParseError, "SurfaceArchive::open: directory entry precedes data");
     }
@@ -734,14 +763,14 @@ Result<SurfaceArchive> SurfaceArchive::open_file(std::string_view path) {
   }
   std::vector<std::byte> bytes(static_cast<std::size_t>(size));
   is.seekg(0);
-  is.read(reinterpret_cast<char*>(bytes.data()), size);
+  is.read(reinterpret_cast<char *>(bytes.data()), size);
   if (is.gcount() != size) {
     return Err(ErrorCode::IoError, "SurfaceArchive::open_file: short read");
   }
   return open(std::move(bytes));
 }
 
-const ArchiveIndexSlot* SurfaceArchive::find_slot(std::string_view symbol) const noexcept {
+const ArchiveIndexSlot *SurfaceArchive::find_slot(std::string_view symbol) const noexcept {
   if (lookup_.empty()) {
     return nullptr;
   }
@@ -754,7 +783,7 @@ const ArchiveIndexSlot* SurfaceArchive::find_slot(std::string_view symbol) const
   const std::uint64_t mask = static_cast<std::uint64_t>(lookup_.size()) - 1ull;
   std::uint64_t i = h & mask;
   for (std::size_t step = 0; step < lookup_.size(); ++step) {
-    const ArchiveIndexSlot& s = lookup_[static_cast<std::size_t>(i)];
+    const ArchiveIndexSlot &s = lookup_[static_cast<std::size_t>(i)];
     if (s.flags == kArchiveSlotEmpty) {
       return nullptr;
     }
@@ -768,7 +797,7 @@ const ArchiveIndexSlot* SurfaceArchive::find_slot(std::string_view symbol) const
 }
 
 Result<ArchiveDirEntry> SurfaceArchive::find(std::string_view symbol) const {
-  const ArchiveIndexSlot* s = find_slot(symbol);
+  const ArchiveIndexSlot *s = find_slot(symbol);
   if (s == nullptr) {
     return Err(ErrorCode::NotFound, "SurfaceArchive::find: symbol not present");
   }
@@ -790,7 +819,7 @@ Result<PricedSurface> SurfaceArchive::reconstruct(std::uint64_t offset, std::uin
   if (offset > buffer_.size() || size > buffer_.size() - offset) {
     return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: blob out of bounds");
   }
-  const std::byte* base = buf_at(buffer_, offset);
+  const std::byte *base = buf_at(buffer_, offset);
 
   if (crc32c(base, static_cast<std::size_t>(size)) != expected_crc) {
     return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: blob checksum mismatch");
@@ -816,8 +845,8 @@ Result<PricedSurface> SurfaceArchive::reconstruct(std::uint64_t offset, std::uin
 
   // Section bounds.
   if (bh.pricing_offset < sizeof(SurfaceBlobHeader) ||
-      bh.pricing_size < sizeof(ArchivePricingRecord) ||
-      bh.pricing_offset > size || bh.pricing_size > size - bh.pricing_offset) {
+      bh.pricing_size < sizeof(ArchivePricingRecord) || bh.pricing_offset > size ||
+      bh.pricing_size > size - bh.pricing_offset) {
     return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: pricing section out of bounds");
   }
   if (bh.slices_offset < sizeof(SurfaceBlobHeader) || bh.slices_offset > size ||
@@ -851,55 +880,76 @@ Result<PricedSurface> SurfaceArchive::reconstruct(std::uint64_t offset, std::uin
     if (sh.payload_size > sh.rec_size - sizeof(ArchiveSliceHeader)) {
       return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: slice payload out of bounds");
     }
-    const std::byte* payload = base + static_cast<std::size_t>(off + sizeof(ArchiveSliceHeader));
+    const std::byte *payload = base + static_cast<std::size_t>(off + sizeof(ArchiveSliceHeader));
     const auto kind = static_cast<VolCurveKind>(sh.kind);
 
     std::unique_ptr<IVolCurve> curve;
     switch (kind) {
-      case VolCurveKind::ConvexDense: {
-        const std::uint64_t need =
-            2ull * static_cast<std::uint64_t>(sh.node_count) * sizeof(double);
-        if (sh.node_count == 0 || need != sh.payload_size) {
-          return Err(ErrorCode::ParseError,
-                     "SurfaceArchive::reconstruct: convex node payload size mismatch");
-        }
-        ConvexSliceFit fit;
-        fit.T = sh.T;
-        fit.F = sh.forward;
-        fit.df = sh.df;
-        fit.rmse_price = sh.conv_rmse_price;
-        fit.n_obs = static_cast<std::size_t>(sh.conv_n_obs);
-        fit.n_active = static_cast<std::size_t>(sh.conv_n_active);
-        fit.u.resize(sh.node_count);
-        fit.C.resize(sh.node_count);
-        const std::size_t nb = static_cast<std::size_t>(sh.node_count) * sizeof(double);
-        std::memcpy(fit.u.data(), payload, nb);
-        std::memcpy(fit.C.data(), payload + nb, nb);
-        curve = std::make_unique<ConvexDenseCurve>(std::move(fit));
-        break;
+    case VolCurveKind::ConvexDense: {
+      const std::uint64_t need = 2ull * static_cast<std::uint64_t>(sh.node_count) * sizeof(double);
+      if (sh.node_count == 0 || need != sh.payload_size) {
+        return Err(ErrorCode::ParseError,
+                   "SurfaceArchive::reconstruct: convex node payload size mismatch");
       }
-      case VolCurveKind::Essvi: {
-        if (sh.payload_size < sizeof(EssviParams)) {
-          return Err(ErrorCode::ParseError,
-                     "SurfaceArchive::reconstruct: essvi payload too small");
-        }
-        EssviParams e;
-        std::memcpy(&e, payload, sizeof e);
-        curve = std::make_unique<EssviCurve>(e, sh.df);
-        break;
+      ConvexSliceFit fit;
+      fit.T = sh.T;
+      fit.F = sh.forward;
+      fit.df = sh.df;
+      fit.rmse_price = sh.conv_rmse_price;
+      fit.n_obs = static_cast<std::size_t>(sh.conv_n_obs);
+      fit.n_active = static_cast<std::size_t>(sh.conv_n_active);
+      fit.u.resize(sh.node_count);
+      fit.C.resize(sh.node_count);
+      const std::size_t nb = static_cast<std::size_t>(sh.node_count) * sizeof(double);
+      std::memcpy(fit.u.data(), payload, nb);
+      std::memcpy(fit.C.data(), payload + nb, nb);
+      curve = std::make_unique<ConvexDenseCurve>(std::move(fit));
+      break;
+    }
+    case VolCurveKind::Essvi: {
+      if (sh.payload_size < sizeof(EssviParams)) {
+        return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: essvi payload too small");
       }
-      case VolCurveKind::Svi: {
-        if (sh.payload_size < sizeof(SviParams)) {
-          return Err(ErrorCode::ParseError,
-                     "SurfaceArchive::reconstruct: svi payload too small");
-        }
-        SviParams v;
-        std::memcpy(&v, payload, sizeof v);
-        curve = std::make_unique<SviCurve>(v, sh.df);
-        break;
+      EssviParams e;
+      std::memcpy(&e, payload, sizeof e);
+      curve = std::make_unique<EssviCurve>(e, sh.df);
+      break;
+    }
+    case VolCurveKind::Svi: {
+      if (sh.payload_size < sizeof(SviParams)) {
+        return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: svi payload too small");
       }
-      default:
-        return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: unknown curve kind");
+      SviParams v;
+      std::memcpy(&v, payload, sizeof v);
+      curve = std::make_unique<SviCurve>(v, sh.df);
+      break;
+    }
+    case VolCurveKind::LinearVariance: {
+      const std::uint64_t need = 2ull * static_cast<std::uint64_t>(sh.node_count) * sizeof(double);
+      if (sh.node_count < 2 || need != sh.payload_size) {
+        return Err(ErrorCode::ParseError,
+                   "SurfaceArchive::reconstruct: linear node payload size mismatch");
+      }
+      std::vector<double> k(sh.node_count);
+      std::vector<double> w(sh.node_count);
+      const std::size_t nb = static_cast<std::size_t>(sh.node_count) * sizeof(double);
+      std::memcpy(k.data(), payload, nb);
+      std::memcpy(w.data(), payload + nb, nb);
+      curve = std::make_unique<LinearVarianceCurve>(sh.T, sh.forward, sh.df, std::move(k),
+                                                    std::move(w));
+      break;
+    }
+    case VolCurveKind::C8: {
+      if (sh.payload_size < sizeof(C8Params)) {
+        return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: C8 payload too small");
+      }
+      C8Params c8;
+      std::memcpy(&c8, payload, sizeof c8);
+      curve = std::make_unique<C8Curve>(c8, sh.df);
+      break;
+    }
+    default:
+      return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: unknown curve kind");
     }
     surface.push(std::move(curve));
 
@@ -924,7 +974,7 @@ Result<PricedSurface> SurfaceArchive::reconstruct(std::uint64_t offset, std::uin
 }
 
 Result<PricedSurface> SurfaceArchive::map_symbol(std::string_view symbol) const {
-  const ArchiveIndexSlot* s = find_slot(symbol);
+  const ArchiveIndexSlot *s = find_slot(symbol);
   if (s == nullptr) {
     return Err(ErrorCode::NotFound, "SurfaceArchive::map_symbol: symbol not present");
   }
@@ -936,12 +986,12 @@ Result<std::vector<PricedSurface>> SurfaceArchive::map_all() const {
   out.reserve(directory_.size());
   const std::uint64_t mask =
       lookup_.empty() ? 0ull : static_cast<std::uint64_t>(lookup_.size()) - 1ull;
-  for (const ArchiveDirEntry& de : directory_) {
+  for (const ArchiveDirEntry &de : directory_) {
     std::uint32_t expected = 0;
     bool found = false;
     std::uint64_t i = de.symbol_hash & mask;
     for (std::size_t step = 0; step < lookup_.size(); ++step) {
-      const ArchiveIndexSlot& s = lookup_[static_cast<std::size_t>(i)];
+      const ArchiveIndexSlot &s = lookup_[static_cast<std::size_t>(i)];
       if (s.flags == kArchiveSlotEmpty) {
         break;
       }
@@ -965,7 +1015,8 @@ Result<std::vector<PricedSurface>> SurfaceArchive::map_all() const {
   return Ok(std::move(out));
 }
 
-Result<std::size_t> SurfaceArchive::map_all_into(std::span<std::optional<PricedSurface>> out) const {
+Result<std::size_t>
+SurfaceArchive::map_all_into(std::span<std::optional<PricedSurface>> out) const {
   if (out.size() < directory_.size()) {
     return Err(ErrorCode::OutOfRange, "SurfaceArchive::map_all_into: output too small");
   }
@@ -981,4 +1032,4 @@ Result<std::size_t> SurfaceArchive::map_all_into(std::span<std::optional<PricedS
   return Ok(count);
 }
 
-}  // namespace atx::vol
+} // namespace atx::vol

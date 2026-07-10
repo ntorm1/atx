@@ -51,8 +51,8 @@ constexpr std::int64_t kNow = 1700000000000000000LL;
   return std::fabs(a - b) <= rel * (std::fabs(a) + std::fabs(b) + 1e-300);
 }
 
-[[nodiscard]] PricingContext make_pricing(std::uint32_t uid, double S = kS,
-                                          double r = kR, std::int64_t now = kNow) {
+[[nodiscard]] PricingContext make_pricing(std::uint32_t uid, double S = kS, double r = kR,
+                                          std::int64_t now = kNow) {
   PricingContext pc;
   pc.S = S;
   pc.r = r;
@@ -67,8 +67,8 @@ constexpr std::int64_t kNow = 1700000000000000000LL;
 // axis); the forward F stays at the fixed reference kS across all variants so
 // bumping only S / r / now leaves the model IV untouched (clean axis isolation).
 [[nodiscard]] PricedSurface make_essvi(std::uint32_t uid, int n, double theta_bump = 0.0,
-                                       double S = kS, double r = kR,
-                                       std::int64_t now = kNow, double q_eff = 0.02) {
+                                       double S = kS, double r = kR, std::int64_t now = kNow,
+                                       double q_eff = 0.02) {
   CurveSurface cs;
   std::vector<SliceContext> ctx;
   for (int i = 0; i < n; ++i) {
@@ -133,11 +133,9 @@ constexpr std::int64_t kNow = 1700000000000000000LL;
     fit.u.resize(static_cast<std::size_t>(nodes));
     fit.C.resize(static_cast<std::size_t>(nodes));
     for (int j = 0; j < nodes; ++j) {
-      const double K =
-          F * (0.7 + 0.6 * static_cast<double>(j) / static_cast<double>(nodes - 1));
+      const double K = F * (0.7 + 0.6 * static_cast<double>(j) / static_cast<double>(nodes - 1));
       fit.u[static_cast<std::size_t>(j)] = K;
-      fit.C[static_cast<std::size_t>(j)] =
-          atx::vol::black76_price(F, K, T, sigma, df, Side::Call);
+      fit.C[static_cast<std::size_t>(j)] = atx::vol::black76_price(F, K, T, sigma, df, Side::Call);
     }
     cs.push(std::make_unique<ConvexDenseCurve>(std::move(fit)));
     ctx.push_back(SliceContext{T, F, 0.0, 0.02, static_cast<std::size_t>(nodes), 2});
@@ -147,7 +145,7 @@ constexpr std::int64_t kNow = 1700000000000000000LL;
   return std::move(*ps);
 }
 
-[[nodiscard]] SurfaceSet set_of(const std::vector<const PricedSurface*>& v) {
+[[nodiscard]] SurfaceSet set_of(const std::vector<const PricedSurface *> &v) {
   auto ss = SurfaceSet::create(v);
   EXPECT_TRUE(ss.has_value());
   return std::move(*ss);
@@ -164,7 +162,7 @@ constexpr std::int64_t kNow = 1700000000000000000LL;
   return book;
 }
 
-}  // namespace
+} // namespace
 
 // ── Pricing: multi-kind, multi-underlying, dedup, missing uid ────────────────
 
@@ -179,25 +177,25 @@ TEST(PortfolioPricer, Price_MultiKind_MultiUnderlying_BitIdenticalToGreeks) {
       {/*id*/ 11, {1, 95.0, 0.18, Side::Put}, -5.0, 100.0},
       {/*id*/ 12, {2, 105.0, 0.25, Side::Call}, +3.0, 100.0},
       {/*id*/ 13, {3, 98.0, 0.15, Side::Put}, +7.0, 100.0},
-      {/*id*/ 14, {2, 105.0, 0.25, Side::Call}, +2.0, 100.0},   // dup of id 12's contract
-      {/*id*/ 15, {99, 100.0, 0.10, Side::Call}, +1.0, 100.0},  // no surface -> unavailable
+      {/*id*/ 14, {2, 105.0, 0.25, Side::Call}, +2.0, 100.0},  // dup of id 12's contract
+      {/*id*/ 15, {99, 100.0, 0.10, Side::Call}, +1.0, 100.0}, // no surface -> unavailable
   };
   auto pf = Portfolio::create(book);
   ASSERT_TRUE(pf.has_value());
   EXPECT_EQ(pf->n_positions(), 6u);
-  EXPECT_EQ(pf->n_contracts(), 5u);    // id12 & id14 share a contract
-  EXPECT_EQ(pf->n_underlyings(), 4u);  // uids {1,2,3,99}
+  EXPECT_EQ(pf->n_contracts(), 5u);   // id12 & id14 share a contract
+  EXPECT_EQ(pf->n_underlyings(), 4u); // uids {1,2,3,99}
 
   const PortfolioPricer pricer(std::move(*pf));
   auto fr = pricer.price(surfaces);
   ASSERT_TRUE(fr.has_value());
-  const PriceFrame& f = *fr;
+  const PriceFrame &f = *fr;
   ASSERT_EQ(f.size(), 6u);
 
-  const std::array<const PricedSurface*, 4> by_uid{nullptr, &s1, &s2, &s3};
+  const std::array<const PricedSurface *, 4> by_uid{nullptr, &s1, &s2, &s3};
   PriceTotals expect_total{};
   for (std::size_t i = 0; i < book.size(); ++i) {
-    const Position& p = book[i];
+    const Position &p = book[i];
     EXPECT_EQ(f.id[i], p.id);
     EXPECT_EQ(f.uid[i], p.contract.uid);
     if (p.contract.uid == 99) {
@@ -206,13 +204,13 @@ TEST(PortfolioPricer, Price_MultiKind_MultiUnderlying_BitIdenticalToGreeks) {
       continue;
     }
     ASSERT_EQ(f.status[i], PriceStatus::Ok);
-    const PricedSurface& s = *by_uid[p.contract.uid];
+    const PricedSurface &s = *by_uid[p.contract.uid];
     const auto g = s.greeks(p.contract.K, p.contract.T, p.contract.side);
     ASSERT_TRUE(g.has_value());
     const double w = p.qty * p.multiplier;
     const auto fv = s.fair_value(p.contract.K, p.contract.T, p.contract.side);
     ASSERT_TRUE(fv.has_value());
-    EXPECT_TRUE(bits_equal(f.price[i], *fv));  // per-share American mark
+    EXPECT_TRUE(bits_equal(f.price[i], *fv)); // per-share American mark
     EXPECT_TRUE(bits_equal(f.iv[i], s.iv(p.contract.K, p.contract.T)));
     EXPECT_TRUE(bits_equal(f.pv[i], w * *fv));
     EXPECT_TRUE(bits_equal(f.delta[i], w * g->delta));
@@ -236,15 +234,15 @@ TEST(PortfolioPricer, Price_MultiKind_MultiUnderlying_BitIdenticalToGreeks) {
   // id12 and id14 reference one contract: same per-share price/iv, scaled PV.
   EXPECT_TRUE(bits_equal(f.price[2], f.price[4]));
   EXPECT_TRUE(bits_equal(f.iv[2], f.iv[4]));
-  EXPECT_TRUE(bits_equal(f.pv[2], 1.5 * f.pv[4]));  // qty 3 vs 2
+  EXPECT_TRUE(bits_equal(f.pv[2], 1.5 * f.pv[4])); // qty 3 vs 2
 }
 
 TEST(PortfolioPricer, Price_DegenerateContract_Invalid) {
   const PricedSurface s1 = make_essvi(1, 4);
   const SurfaceSet surfaces = set_of({&s1});
   const std::vector<Position> book{
-      {1, {1, -5.0, 0.2, Side::Call}, 1.0, 100.0},   // K <= 0
-      {2, {1, 100.0, 0.0, Side::Call}, 1.0, 100.0},  // T <= 0
+      {1, {1, -5.0, 0.2, Side::Call}, 1.0, 100.0},  // K <= 0
+      {2, {1, 100.0, 0.0, Side::Call}, 1.0, 100.0}, // T <= 0
   };
   auto pf = Portfolio::create(book);
   ASSERT_TRUE(pf.has_value());
@@ -258,12 +256,12 @@ TEST(PortfolioPricer, Price_DegenerateContract_Invalid) {
 
 TEST(PortfolioPricer, Price_ThreadCounts_BitIdentical) {
   std::vector<PricedSurface> surfs;
-  std::vector<const PricedSurface*> ptrs;
+  std::vector<const PricedSurface *> ptrs;
   std::vector<Position> book;
   for (std::uint32_t u = 1; u <= 6; ++u) {
     surfs.push_back((u & 1u) ? make_convex(u, 4, 28) : make_essvi(u, 5));
   }
-  for (const PricedSurface& s : surfs) {
+  for (const PricedSurface &s : surfs) {
     ptrs.push_back(&s);
   }
   const SurfaceSet surfaces = set_of(ptrs);
@@ -280,7 +278,7 @@ TEST(PortfolioPricer, Price_ThreadCounts_BitIdentical) {
 
   auto a = pricer.price(surfaces, PriceOptions{1});
   auto b = pricer.price(surfaces, PriceOptions{8});
-  auto c = pricer.price(surfaces, PriceOptions{0});  // hardware concurrency
+  auto c = pricer.price(surfaces, PriceOptions{0}); // hardware concurrency
   ASSERT_TRUE(a.has_value() && b.has_value() && c.has_value());
   ASSERT_EQ(a->size(), b->size());
   for (std::size_t i = 0; i < a->size(); ++i) {
@@ -298,7 +296,7 @@ TEST(PortfolioPricer, Price_ThreadCounts_BitIdentical) {
 // ── PnL explain: per-axis isolation, coefficient wiring, reconstruction ──────
 
 TEST(PortfolioPricer, PnlExplain_SpotBump_DeltaGammaOnly) {
-  const double dS = 0.05;  // small spot move -> 2nd-order Taylor is tight
+  const double dS = 0.05; // small spot move -> 2nd-order Taylor is tight
   const PricedSurface base = make_essvi(1, 5);
   const PricedSurface shifted = make_essvi(1, 5, /*theta_bump*/ 0.0, /*S*/ kS + dS);
   const SurfaceSet bset = set_of({&base});
@@ -310,12 +308,12 @@ TEST(PortfolioPricer, PnlExplain_SpotBump_DeltaGammaOnly) {
   const PortfolioPricer pricer(std::move(*pf));
   auto er = pricer.pnl_explain(bset, sset);
   ASSERT_TRUE(er.has_value());
-  const PnlFrame& f = *er;
+  const PnlFrame &f = *er;
 
   for (std::size_t i = 0; i < f.size(); ++i) {
     ASSERT_EQ(f.status[i], PriceStatus::Ok) << i;
     EXPECT_NEAR(f.d_spot[i], dS, 1e-12);
-    EXPECT_EQ(f.d_vol[i], 0.0) << i;  // identical curves -> exact zero
+    EXPECT_EQ(f.d_vol[i], 0.0) << i; // identical curves -> exact zero
     EXPECT_EQ(f.d_time[i], 0.0) << i;
     EXPECT_EQ(f.d_rate[i], 0.0) << i;
     // Only spot moved: the non-spot Taylor terms are exactly zero.
@@ -326,7 +324,7 @@ TEST(PortfolioPricer, PnlExplain_SpotBump_DeltaGammaOnly) {
     EXPECT_EQ(f.pnl_rho[i], 0.0) << i;
     EXPECT_EQ(f.pnl_charm[i], 0.0) << i;
     // Coefficient wiring: delta/gamma terms are the base Greeks * move.
-    const Position& p = book[i];
+    const Position &p = book[i];
     const auto g = base.greeks(p.contract.K, p.contract.T, p.contract.side);
     ASSERT_TRUE(g.has_value());
     const double w = p.qty * p.multiplier;
@@ -334,7 +332,8 @@ TEST(PortfolioPricer, PnlExplain_SpotBump_DeltaGammaOnly) {
     EXPECT_TRUE(close(f.pnl_gamma[i], w * 0.5 * g->gamma * dS * dS)) << i;
     // Components + residual == the full reprice (bookkeeping).
     EXPECT_NEAR(f.pnl_delta[i] + f.pnl_gamma[i] + f.pnl_unexplained[i], f.pnl_total[i],
-                1e-6 * (std::fabs(f.pnl_total[i]) + 1.0)) << i;
+                1e-6 * (std::fabs(f.pnl_total[i]) + 1.0))
+        << i;
     // Small move: delta + gamma explain the bulk.
     // (residual is now the pure higher-order Taylor tail: the early-exercise
     // premium lives inside the American delta/gamma. See TaylorReconstruction_Tight.)
@@ -342,7 +341,7 @@ TEST(PortfolioPricer, PnlExplain_SpotBump_DeltaGammaOnly) {
 }
 
 TEST(PortfolioPricer, PnlExplain_RateBump_RhoOnly) {
-  const double dr = 1e-4;  // 1 bp
+  const double dr = 1e-4; // 1 bp
   const PricedSurface base = make_essvi(1, 5);
   const PricedSurface shifted = make_essvi(1, 5, 0.0, kS, kR + dr);
   const SurfaceSet bset = set_of({&base});
@@ -354,7 +353,7 @@ TEST(PortfolioPricer, PnlExplain_RateBump_RhoOnly) {
   const PortfolioPricer pricer(std::move(*pf));
   auto er = pricer.pnl_explain(bset, sset);
   ASSERT_TRUE(er.has_value());
-  const PnlFrame& f = *er;
+  const PnlFrame &f = *er;
 
   for (std::size_t i = 0; i < f.size(); ++i) {
     ASSERT_EQ(f.status[i], PriceStatus::Ok) << i;
@@ -368,13 +367,14 @@ TEST(PortfolioPricer, PnlExplain_RateBump_RhoOnly) {
     EXPECT_EQ(f.pnl_theta[i], 0.0) << i;
     EXPECT_EQ(f.pnl_vanna[i], 0.0) << i;
     EXPECT_EQ(f.pnl_charm[i], 0.0) << i;
-    const Position& p = book[i];
+    const Position &p = book[i];
     const auto g = base.greeks(p.contract.K, p.contract.T, p.contract.side);
     ASSERT_TRUE(g.has_value());
     const double w = p.qty * p.multiplier;
     EXPECT_TRUE(close(f.pnl_rho[i], w * g->rho * dr)) << i;
     EXPECT_NEAR(f.pnl_rho[i] + f.pnl_unexplained[i], f.pnl_total[i],
-                1e-6 * (std::fabs(f.pnl_total[i]) + 1.0)) << i;
+                1e-6 * (std::fabs(f.pnl_total[i]) + 1.0))
+        << i;
     // (residual is now the pure higher-order Taylor tail: the early-exercise
     // premium lives inside the American delta/gamma. See TaylorReconstruction_Tight.)
   }
@@ -392,7 +392,7 @@ TEST(PortfolioPricer, PnlExplain_VolBump_VegaVolgaOnly) {
   const PortfolioPricer pricer(std::move(*pf));
   auto er = pricer.pnl_explain(bset, sset);
   ASSERT_TRUE(er.has_value());
-  const PnlFrame& f = *er;
+  const PnlFrame &f = *er;
 
   for (std::size_t i = 0; i < f.size(); ++i) {
     ASSERT_EQ(f.status[i], PriceStatus::Ok) << i;
@@ -408,14 +408,15 @@ TEST(PortfolioPricer, PnlExplain_VolBump_VegaVolgaOnly) {
     EXPECT_EQ(f.pnl_vanna[i], 0.0) << i;
     EXPECT_EQ(f.pnl_charm[i], 0.0) << i;
     // Coefficient wiring: vega/volga terms are base Greeks * dvol.
-    const Position& p = book[i];
+    const Position &p = book[i];
     const auto g = base.greeks(p.contract.K, p.contract.T, p.contract.side);
     ASSERT_TRUE(g.has_value());
     const double w = p.qty * p.multiplier;
     EXPECT_TRUE(close(f.pnl_vega[i], w * g->vega * f.d_vol[i])) << i;
     EXPECT_TRUE(close(f.pnl_volga[i], w * 0.5 * g->volga * f.d_vol[i] * f.d_vol[i])) << i;
     EXPECT_NEAR(f.pnl_vega[i] + f.pnl_volga[i] + f.pnl_unexplained[i], f.pnl_total[i],
-                1e-6 * (std::fabs(f.pnl_total[i]) + 1.0)) << i;
+                1e-6 * (std::fabs(f.pnl_total[i]) + 1.0))
+        << i;
     // (residual is now the pure higher-order Taylor tail: the early-exercise
     // premium lives inside the American delta/gamma. See TaylorReconstruction_Tight.)
   }
@@ -434,7 +435,7 @@ TEST(PortfolioPricer, PnlExplain_TimeBump_ThetaAndVolRoll) {
   const PortfolioPricer pricer(std::move(*pf));
   auto er = pricer.pnl_explain(bset, sset);
   ASSERT_TRUE(er.has_value());
-  const PnlFrame& f = *er;
+  const PnlFrame &f = *er;
 
   const double dt_expect = static_cast<double>(one_hour) / kNsPerYear;
   for (std::size_t i = 0; i < f.size(); ++i) {
@@ -453,7 +454,7 @@ TEST(PortfolioPricer, PnlExplain_TimeBump_ThetaAndVolRoll) {
     EXPECT_EQ(f.pnl_rho[i], 0.0) << i;
     EXPECT_EQ(f.pnl_vega[i], 0.0) << i;
     EXPECT_EQ(f.pnl_volga[i], 0.0) << i;
-    const Position& p = book[i];
+    const Position &p = book[i];
     const auto g = base.greeks(p.contract.K, p.contract.T, p.contract.side);
     ASSERT_TRUE(g.has_value());
     const double w = p.qty * p.multiplier;
@@ -479,7 +480,7 @@ TEST(PortfolioPricer, PnlExplain_CombinedShift_SumsToTotal_And_ThreadDeterminist
   auto a = pricer.pnl_explain(bset, sset, PriceOptions{1});
   auto b = pricer.pnl_explain(bset, sset, PriceOptions{8});
   ASSERT_TRUE(a.has_value() && b.has_value());
-  const PnlFrame& f = *a;
+  const PnlFrame &f = *a;
 
   for (std::size_t i = 0; i < f.size(); ++i) {
     ASSERT_EQ(f.status[i], PriceStatus::Ok) << i;
@@ -505,8 +506,8 @@ TEST(PortfolioPricer, PnlExplain_CombinedShift_SumsToTotal_And_ThreadDeterminist
 TEST(PortfolioPricer, PnlExplain_TaylorReconstruction_Tight) {
   const double dS = 0.05;
   const double dvol_bump = 0.0004;
-  const PricedSurface base = make_essvi(1, 5);                         // q_eff = 0.02
-  const PricedSurface shifted = make_essvi(1, 5, dvol_bump, kS + dS);  // spot + vol move
+  const PricedSurface base = make_essvi(1, 5);                        // q_eff = 0.02
+  const PricedSurface shifted = make_essvi(1, 5, dvol_bump, kS + dS); // spot + vol move
   const SurfaceSet bset = set_of({&base});
   const SurfaceSet sset = set_of({&shifted});
 
@@ -522,22 +523,21 @@ TEST(PortfolioPricer, PnlExplain_TaylorReconstruction_Tight) {
   const PortfolioPricer pricer(std::move(*pf));
   auto er = pricer.pnl_explain(bset, sset);
   ASSERT_TRUE(er.has_value());
-  const PnlFrame& f = *er;
+  const PnlFrame &f = *er;
 
   for (std::size_t i = 0; i < f.size(); ++i) {
     ASSERT_EQ(f.status[i], PriceStatus::Ok) << i;
     // delta+gamma+vega+volga+vanna explain the American reprice to a tight residual.
     EXPECT_LT(std::fabs(f.pnl_unexplained[i]), 5e-3 * (std::fabs(f.pnl_total[i]) + 1.0)) << i;
   }
-  EXPECT_LT(std::fabs(f.total.pnl_unexplained),
-            5e-3 * (std::fabs(f.total.pnl_total) + 1.0));
+  EXPECT_LT(std::fabs(f.total.pnl_unexplained), 5e-3 * (std::fabs(f.total.pnl_total) + 1.0));
 }
 
 TEST(PortfolioPricer, PnlExplain_MissingShiftedSurface_ModelUnavailable) {
   const PricedSurface base = make_essvi(1, 5);
   const PricedSurface other = make_essvi(2, 5);
   const SurfaceSet bset = set_of({&base});
-  const SurfaceSet sset = set_of({&other});  // uid 1 absent on the shifted side
+  const SurfaceSet sset = set_of({&other}); // uid 1 absent on the shifted side
 
   auto pf = Portfolio::create(pnl_book());
   ASSERT_TRUE(pf.has_value());
@@ -548,4 +548,71 @@ TEST(PortfolioPricer, PnlExplain_MissingShiftedSurface_ModelUnavailable) {
     EXPECT_EQ(st, PriceStatus::ModelUnavailable);
   }
   EXPECT_EQ(er->total.n_ok, 0u);
+}
+
+TEST(Portfolio, HundredThousandPositionsUseBoundedDedupHint) {
+  constexpr std::size_t kUnique = 128;
+  constexpr std::size_t kPositions = 100'000;
+  std::vector<Position> positions;
+  positions.reserve(kPositions);
+  for (std::size_t i = 0; i < kPositions; ++i) {
+    const std::size_t j = i % kUnique;
+    positions.push_back(Position{
+        static_cast<std::uint64_t>(i),
+        OptionContract{1u, 80.0 + static_cast<double>(j), 0.25, (j & 1u) ? Side::Call : Side::Put},
+        1.0, 100.0});
+  }
+  auto portfolio =
+      Portfolio::create(positions, PortfolioBuildOptions{.expected_unique_contracts = kUnique});
+  ASSERT_TRUE(portfolio.has_value());
+  EXPECT_EQ(portfolio->n_positions(), kPositions);
+  EXPECT_EQ(portfolio->n_contracts(), kUnique);
+}
+
+TEST(PortfolioPricer, PricesOnlyPopulatesMarksAndLeavesRiskNaN) {
+  const PricedSurface surface = make_essvi(1, 5);
+  const SurfaceSet surfaces = set_of({&surface});
+  auto pf = Portfolio::create(pnl_book());
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+  auto frame = pricer.price(surfaces, PriceOptions{.n_threads = 4, .prices_only = true});
+  ASSERT_TRUE(frame.has_value());
+  EXPECT_EQ(frame->total.n_ok, frame->size());
+  for (std::size_t i = 0; i < frame->size(); ++i) {
+    EXPECT_EQ(frame->status[i], PriceStatus::Ok);
+    EXPECT_TRUE(std::isfinite(frame->price[i]));
+    EXPECT_TRUE(std::isfinite(frame->pv[i]));
+    EXPECT_TRUE(std::isfinite(frame->iv[i]));
+    EXPECT_TRUE(std::isnan(frame->delta[i]));
+    EXPECT_TRUE(std::isnan(frame->vega[i]));
+  }
+
+  // The aggregate must agree with the columns it aggregates. A finite 0.0 total
+  // vega alongside n_ok > 0 is indistinguishable from a genuinely vega-flat book
+  // -- exactly the false-flat reading the unpriced-greek accounting exists to
+  // prevent. PV stays finite: prices_only computes marks, it only skips risk.
+  EXPECT_GT(frame->total.n_ok, 0u);
+  EXPECT_TRUE(std::isfinite(frame->total.pv));
+  EXPECT_TRUE(std::isnan(frame->total.delta));
+  EXPECT_TRUE(std::isnan(frame->total.gamma));
+  EXPECT_TRUE(std::isnan(frame->total.vega));
+  EXPECT_TRUE(std::isnan(frame->total.theta));
+  EXPECT_TRUE(std::isnan(frame->total.rho));
+  EXPECT_TRUE(std::isnan(frame->total.vanna));
+  EXPECT_TRUE(std::isnan(frame->total.volga));
+  EXPECT_TRUE(std::isnan(frame->total.charm));
+}
+
+// An over-sized hint is advisory, not load-bearing: it must not change the dedup
+// result, and must not reach reserve() unclamped.
+TEST(PortfolioPricer, OversizedUniqueContractHintIsClampedAndHarmless) {
+  const auto positions = pnl_book();
+  auto exact = Portfolio::create(positions);
+  ASSERT_TRUE(exact.has_value());
+
+  auto hinted = Portfolio::create(
+      positions, PortfolioBuildOptions{.expected_unique_contracts = 1'000'000'000u});
+  ASSERT_TRUE(hinted.has_value());
+  EXPECT_EQ(hinted->n_positions(), exact->n_positions());
+  EXPECT_EQ(hinted->n_contracts(), exact->n_contracts());
 }

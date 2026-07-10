@@ -263,6 +263,7 @@ TEST(VolaSession, FromFrame_KnownTruthPanel_BuildsFourSlices) {
 TEST(FitPreset, PopulatesPolicyFieldsPerPreset) {
   using atx::vol::al_default_opts;
   using atx::vol::al_fast_opts;
+  using atx::vol::AmericanMethod;
   using atx::vol::apply_fit_preset;
   using atx::vol::CalendarRepair;
   using atx::vol::FitPreset;
@@ -274,9 +275,16 @@ TEST(FitPreset, PopulatesPolicyFieldsPerPreset) {
   EXPECT_DOUBLE_EQ(fast.r, 0.03);
   EXPECT_EQ(fast.now_ts_ns, std::int64_t{42});
   EXPECT_TRUE(fast.use_correction_cache);
+  EXPECT_TRUE(fast.score_parity);
+  EXPECT_TRUE(fast.enforce_calendar_floor);
+  EXPECT_FALSE(fast.use_deam_cache_for_fit);
+  EXPECT_EQ(fast.calib.max_obs_per_slice, 0u);
+  EXPECT_DOUBLE_EQ(fast.calib.max_otm_shortcut_premium_spread_frac, 0.0);
   ASSERT_TRUE(fast.deam.al_opts.has_value());
   EXPECT_EQ(fast.deam.al_opts->n_collocation, al_fast_opts().n_collocation);
+  EXPECT_EQ(fast.deam.method, AmericanMethod::AndersenLake);
   EXPECT_EQ(fast.deam.n_atm, std::size_t{1});
+  EXPECT_EQ(fast.deam.max_borrow_pairs, std::size_t{12});
   EXPECT_DOUBLE_EQ(fast.deam.iv_tol, 1.0e-5);
   EXPECT_EQ(fast.calendar_repair, CalendarRepair::None);
 
@@ -289,13 +297,23 @@ TEST(FitPreset, PopulatesPolicyFieldsPerPreset) {
   EXPECT_DOUBLE_EQ(robust.r, 0.05);
   ASSERT_TRUE(robust.deam.al_opts.has_value());
   EXPECT_EQ(robust.deam.al_opts->n_collocation, al_default_opts().n_collocation);
+  EXPECT_EQ(robust.deam.method, AmericanMethod::AndersenLake);
   EXPECT_EQ(robust.deam.n_atm, std::size_t{3});
   EXPECT_EQ(robust.calendar_repair, CalendarRepair::MonotoneFit);
 
   SessionInputs hft;
   apply_fit_preset(hft, FitPreset::Hft);
-  EXPECT_EQ(hft.calendar_repair, CalendarRepair::MonotoneFit);
+  EXPECT_EQ(hft.calendar_repair, CalendarRepair::None);
+  EXPECT_EQ(hft.deam.method, AmericanMethod::AndersenLake);
   EXPECT_EQ(hft.deam.n_atm, std::size_t{1});  // fast borrow
+  EXPECT_EQ(hft.deam.max_borrow_pairs, std::size_t{1});
+  EXPECT_EQ(hft.curve.kind, atx::vol::VolCurveKind::LinearVariance);
+  EXPECT_FALSE(hft.use_correction_cache);
+  EXPECT_FALSE(hft.score_parity);
+  EXPECT_FALSE(hft.enforce_calendar_floor);
+  EXPECT_FALSE(hft.use_deam_cache_for_fit);
+  EXPECT_EQ(hft.calib.max_obs_per_slice, 48u);
+  EXPECT_DOUBLE_EQ(hft.calib.max_otm_shortcut_premium_spread_frac, 0.50);
 
   SessionInputs acc;
   apply_fit_preset(acc, FitPreset::Accurate);

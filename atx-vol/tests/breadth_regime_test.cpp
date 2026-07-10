@@ -39,23 +39,22 @@ struct RegimeOutcome {
   std::size_t n_slices{0};
 };
 
-RegimeOutcome fit_regime(const char* label, const SynthPanelSpec& spec) {
+RegimeOutcome fit_regime(const char *label, const SynthPanelSpec &spec) {
   RegimeOutcome out;
   auto panel = make_synthetic_american_panel(spec);
   if (!panel.has_value()) {
-    std::printf("  [%s] panel build FAILED: %s\n", label,
-                panel.error().to_string().c_str());
+    std::printf("  [%s] panel build FAILED: %s\n", label, panel.error().to_string().c_str());
     return out;
   }
   auto chain = OptionChain::from_frame(
-      panel->frame, MarketEnv::flat(spec.spot, spec.r,
-                                    iso_to_ns(spec.snapshot_iso), spec.cash_divs));
+      panel->frame,
+      MarketEnv::flat(spec.spot, spec.r, iso_to_ns(spec.snapshot_iso), spec.cash_divs));
   if (!chain.has_value()) {
     std::printf("  [%s] chain build FAILED\n", label);
     return out;
   }
   PricerConfig cfg;
-  cfg.preset = FitPreset::Fast;  // curve unset => auto-select
+  cfg.preset = FitPreset::Fast; // curve unset => auto-select
   PricerFitter fitter{cfg};
   if (!fitter.fit(*chain).has_value()) {
     std::printf("  [%s] fit FAILED\n", label);
@@ -64,14 +63,16 @@ RegimeOutcome fit_regime(const char* label, const SynthPanelSpec& spec) {
   out.built = true;
   if (fitter.selection().has_value()) {
     out.kind = fitter.selection()->chosen.kind;
+  } else if (fitter.decision().has_value()) {
+    out.kind = fitter.decision()->curve.kind;
   }
-  const auto sc = testkit::price_in_band(fitter.surface()->session(),
-                                         chain->underlying(), spec.spot, spec.r);
+  const auto sc =
+      testkit::price_in_band(fitter.surface()->session(), chain->underlying(), spec.spot, spec.r);
   out.px_clean = sc.px_clean;
   out.px_all = sc.px_all;
   out.n_slices = fitter.surface()->session().expiries().size();
-  std::printf("  [%-14s] curve=%-13s  pxCLN=%6.2f%%  pxALL=%6.2f%%  slices=%zu\n",
-              label, to_string(out.kind), out.px_clean, out.px_all, out.n_slices);
+  std::printf("  [%-14s] curve=%-13s  pxCLN=%6.2f%%  pxALL=%6.2f%%  slices=%zu\n", label,
+              to_string(out.kind), out.px_clean, out.px_all, out.n_slices);
   return out;
 }
 
@@ -79,8 +80,8 @@ RegimeOutcome fit_regime(const char* label, const SynthPanelSpec& spec) {
 // market to a stressed two-sided spread.
 SynthPanelSpec stressed_spec() {
   SynthPanelSpec s = make_spy_synthetic_spec();
-  for (SynthExpiry& e : s.expiries) {
-    e.truth.sigma0 *= 2.6;  // ~10-16% calm -> ~26-42% stressed
+  for (SynthExpiry &e : s.expiries) {
+    e.truth.sigma0 *= 2.6; // ~10-16% calm -> ~26-42% stressed
   }
   s.half_spread_frac = 0.015;
   s.min_half_spread = 0.03;
@@ -111,7 +112,7 @@ SynthPanelSpec pre_earnings_spec() {
   return s;
 }
 
-}  // namespace
+} // namespace
 
 TEST(BreadthRegime, AutoSelectAcrossSyntheticRegimes) {
   std::printf("Synthetic market-regime breadth (auto-select, no per-regime config):\n");
@@ -122,7 +123,7 @@ TEST(BreadthRegime, AutoSelectAcrossSyntheticRegimes) {
   const RegimeOutcome earn = fit_regime("pre-earnings", pre_earnings_spec());
 
   // Every regime must fit and produce a non-empty surface.
-  for (const RegimeOutcome* r : {&calm, &stress, &wide, &earn}) {
+  for (const RegimeOutcome *r : {&calm, &stress, &wide, &earn}) {
     EXPECT_TRUE(r->built);
     EXPECT_GT(r->n_slices, 0u);
   }

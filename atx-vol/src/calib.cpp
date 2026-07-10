@@ -1,10 +1,12 @@
 #include "atx/vol/calib.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <utility>
+#include <vector>
 
 #include "atx/core/error.hpp"
 #include "atx/vol/american_iv.hpp"  // american_implied_vol (de-Americanization)
@@ -186,6 +188,104 @@ struct RowResult {
          chain.mids.size() >= need && chain.flags.size() >= need;
 }
 
+// Cap a very dense per-slice population before the American de-Am inversion.
+// Retain endpoints, then greedily split the segment with the largest normalized
+// total-variance interpolation miss. This is a bounded Ramer-Douglas-Peucker
+// simplifier adapted to option noise: knots are spent where a piecewise-linear
+// market curve would otherwise leave the NBBO first, rather than uniformly on
+// already-linear regions. The raw European-seed w is sufficient for selection;
+// retained rows are still fully de-Americanized below.
+void cap_observations_for_deam(ObsSet &set, std::uint32_t requested_cap) {
+  if (requested_cap == 0 || set.obs.empty()) {
+    return;
+  }
+  const std::size_t cap = std::max<std::size_t>(kMinObs, static_cast<std::size_t>(requested_cap));
+  if (set.obs.size() <= cap) {
+    return;
+  }
+
+  std::vector<FitObs> sorted = std::move(set.obs);
+  std::sort(sorted.begin(), sorted.end(),
+            [](const FitObs &a, const FitObs &b) { return a.k < b.k; });
+
+  const std::size_t m = sorted.size();
+  std::vector<char> selected(m, 0);
+  selected.front() = 1;
+  selected.back() = 1;
+  std::size_t n_selected = 2;
+
+  while (n_selected < cap) {
+    std::size_t best = m;
+    double best_score = -1.0;
+    std::size_t lo = 0;
+    while (lo + 1 < m) {
+      std::size_t hi = lo + 1;
+      while (hi < m && selected[hi] == 0) {
+        ++hi;
+      }
+      if (hi >= m) {
+        break;
+      }
+      const double k_span = sorted[hi].k - sorted[lo].k;
+      if (k_span > 0.0) {
+        for (std::size_t i = lo + 1; i < hi; ++i) {
+          const double a = (sorted[i].k - sorted[lo].k) / k_span;
+          const double w_linear = sorted[lo].w_mkt + a * (sorted[hi].w_mkt - sorted[lo].w_mkt);
+          const double noise_w = std::max(1.0e-12, 2.0 * sorted[i].w_mkt / sorted[i].sigma_mkt *
+                                                       sorted[i].noise_sigma);
+          // A tiny coverage term recursively bisects a perfectly linear segment.
+          const double coverage = std::min(a, 1.0 - a);
+          const double score = std::fabs(sorted[i].w_mkt - w_linear) / noise_w + 1.0e-9 * coverage;
+          if (score > best_score ||
+              (score == best_score &&
+               (best == m || sorted[i].active_weight_w > sorted[best].active_weight_w))) {
+            best = i;
+            best_score = score;
+          }
+        }
+      }
+      lo = hi;
+    }
+    if (best == m) {
+      break;
+    }
+    selected[best] = 1;
+    ++n_selected;
+  }
+
+  std::vector<FitObs> kept;
+  kept.reserve(n_selected);
+  for (std::size_t i = 0; i < m; ++i) {
+    if (selected[i] != 0) {
+      kept.push_back(sorted[i]);
+    }
+  }
+  set.n_dropped += static_cast<std::uint32_t>(m - kept.size());
+  set.obs = std::move(kept);
+}
+
+[[nodiscard]] bool use_otm_shortcut_deam(const FitObs &o, double S, double T, double r,
+                                         double q_eff, const CalibOpts &opts,
+                                         AmericanMethod method) noexcept {
+  if (!(opts.max_otm_shortcut_premium_spread_frac > 0.0) ||
+      opts.anchor_kind != CalibAnchorKind::Mid || method != AmericanMethod::AndersenLake ||
+      !(o.spread > 0.0) || !(o.sigma_mkt > kObsIvMin && o.sigma_mkt < kObsIvMax)) {
+    return false;
+  }
+
+  const Result<double> baw = baw_american(S, o.K, T, o.sigma_mkt, r, q_eff, o.side);
+  if (!baw.has_value() || !std::isfinite(*baw)) {
+    return false;
+  }
+  const double eu = black76_price(o.F, o.K, T, o.sigma_mkt, o.df, o.side);
+  if (!(eu > 0.0) || !std::isfinite(eu)) {
+    return false;
+  }
+  const double premium = *baw - eu;
+  const double tol = opts.max_otm_shortcut_premium_spread_frac * o.spread;
+  return premium >= -0.05 * o.spread && premium <= tol;
+}
+
 }  // namespace
 
 CalibOpts calib_default_opts() noexcept { return CalibOpts{}; }
@@ -233,13 +333,11 @@ Result<ObsSet> build_observations(const Chain &chain, double F, double T,
   return Ok(std::move(out));
 }
 
-Result<ObsSet> build_observations_european(const Chain &chain, double S, double r,
-                                           double F, double T, double df,
-                                           const CalibOpts &opts,
+Result<ObsSet> build_observations_european(const Chain &chain, double S, double r, double F,
+                                           double T, double df, const CalibOpts &opts,
                                            const AmericanCorrectionCaches &caches,
-                                           const std::optional<AlOpts> &al_opts,
-                                           double iv_tol,
-                                           std::uint16_t iv_max_iter) {
+                                           const std::optional<AlOpts> &al_opts, double iv_tol,
+                                           std::uint16_t iv_max_iter, AmericanMethod method) {
   if (!(S > 0.0) || !(F > 0.0) || !(T > 0.0) || !(df > 0.0) || !std::isfinite(r)) {
     return Err(ErrorCode::InvalidArgument,
                "build_observations_european: S, F, T, df must be positive");
@@ -249,24 +347,42 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
   if (!am.has_value()) {
     return am;  // propagate NotFound / InvalidArgument unchanged
   }
+  cap_observations_for_deam(*am, opts.max_obs_per_slice);
   // q_eff bridge: S·e^{(r−q_eff)T} == F exactly (matches the fit/de-Am carry).
   const double q_eff = r - std::log(F / S) / T;
 
   ObsSet out;
   out.obs.reserve(am->obs.size());
   out.n_dropped = am->n_dropped;
+  double warm_call = 0.0;
+  double warm_put = 0.0;
   for (FitObs o : am->obs) {
     // `o.mid` is the anchor premium (the raw American mid under the default Mid
     // anchor). Recover the European-equivalent lognormal vol, then restate the
     // observation entirely in European terms.
-    const Result<double> sig = american_implied_vol(
-        o.mid, S, o.K, T, r, q_eff, o.side, AmericanMethod::AndersenLake, iv_tol,
-        iv_max_iter, al_opts, caches.for_side(o.side));
+    if (use_otm_shortcut_deam(o, S, T, r, q_eff, opts, method)) {
+      if (o.side == Side::Call) {
+        warm_call = o.sigma_mkt;
+      } else {
+        warm_put = o.sigma_mkt;
+      }
+      out.obs.push_back(o);
+      continue;
+    }
+    const double warm = (o.side == Side::Call) ? warm_call : warm_put;
+    const Result<double> sig =
+        american_implied_vol(o.mid, S, o.K, T, r, q_eff, o.side, method, iv_tol, iv_max_iter,
+                             al_opts, caches.for_side(o.side), warm);
     if (!sig.has_value() || !(*sig > kObsIvMin && *sig < kObsIvMax)) {
       ++out.n_dropped;
       continue;
     }
     const double sigma_eu = *sig;
+    if (o.side == Side::Call) {
+      warm_call = sigma_eu;
+    } else {
+      warm_put = sigma_eu;
+    }
     const double eu_px = black76_price(F, o.K, T, sigma_eu, df, o.side);
     if (!(eu_px > 0.0) || !std::isfinite(eu_px)) {
       ++out.n_dropped;

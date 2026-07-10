@@ -93,7 +93,7 @@ int main(int argc, char** argv) {
               chain.spot(), chain.size());
 
   // 2-3. PricerFitter fits and OWNS the surface.
-  PricerFitter fitter{PricerConfig{.preset = FitPreset::Fast}};
+  PricerFitter fitter{PricerConfig{.preset = FitPreset::Hft, .use_correction_cache = true}};
   const double t_fit0 = now_ms();
   const Status fit = fitter.fit(chain);
   const double fit_ms = now_ms() - t_fit0;

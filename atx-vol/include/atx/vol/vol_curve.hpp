@@ -50,10 +50,11 @@
 #include <span>
 #include <vector>
 
-#include "atx/vol/calib.hpp"        // CalibOpts, FitObs
-#include "atx/vol/dense_slice.hpp"  // ConvexSliceFit, ConvexFitOpts
-#include "atx/vol/types.hpp"        // Result
-#include "atx/vol/vol_surface.hpp"  // EssviParams, SviParams, essvi_total_w, svi_total_w
+#include "atx/vol/c8.hpp"          // C8Params
+#include "atx/vol/calib.hpp"       // CalibOpts, FitObs
+#include "atx/vol/dense_slice.hpp" // ConvexSliceFit, ConvexFitOpts
+#include "atx/vol/types.hpp"       // Result
+#include "atx/vol/vol_surface.hpp" // EssviParams, SviParams, essvi_total_w, svi_total_w
 
 namespace atx::vol {
 
@@ -66,17 +67,25 @@ enum class VolCurveKind : std::uint8_t {
   ConvexDense = 0,
   Essvi = 1,
   Svi = 2,
+  // Direct piecewise-linear interpolation of de-Americanized total variance.
+  // This is the low-latency market-mark curve: O(M log M) construction, compact
+  // contiguous nodes, and exact reproduction at retained quote strikes.
+  LinearVariance = 3,
+  // Event-capable SVI-JW backbone plus compact ATM/wing curvature bumps.
+  // Unlike SVI/eSSVI this admits the negative ATM curvature seen around
+  // earnings and scheduled announcements while remaining only eight DoF.
+  C8 = 4,
 };
 
 // Human-readable tag (for diagnostics / bench output). Never nullptr.
-[[nodiscard]] const char* to_string(VolCurveKind kind) noexcept;
+[[nodiscard]] const char *to_string(VolCurveKind kind) noexcept;
 
 // ── The uniform per-slice curve ─────────────────────────────────────────────
 //
 // One fitted expiry. Evaluated at log-moneyness k = ln(K / F()); `w` is total
 // variance sigma^2 * T, `iv` is the European-equivalent lognormal vol.
 class IVolCurve {
- public:
+public:
   virtual ~IVolCurve() = default;
 
   // Total variance w = sigma^2 * T at log-moneyness `k_log`. NaN outside the
@@ -105,7 +114,7 @@ class IVolCurve {
   [[nodiscard]] double F() const noexcept { return F_; }
   [[nodiscard]] double df() const noexcept { return df_; }
 
- protected:
+protected:
   IVolCurve(double T, double F, double df) noexcept : T_(T), F_(F), df_(df) {}
   double T_{0.0};
   double F_{0.0};
@@ -117,7 +126,7 @@ class IVolCurve {
 // Arb-free convex dense fit (the 99.5%-in-band SPY curve). Owns a ConvexSliceFit;
 // `iv` is the fit's own Black-76 inversion of the convex call-price nodes.
 class ConvexDenseCurve final : public IVolCurve {
- public:
+public:
   explicit ConvexDenseCurve(ConvexSliceFit fit) noexcept;
 
   [[nodiscard]] double w(double k_log) const noexcept override;
@@ -128,46 +137,92 @@ class ConvexDenseCurve final : public IVolCurve {
     return std::make_unique<ConvexDenseCurve>(fit_);
   }
 
-  [[nodiscard]] const ConvexSliceFit& fit() const noexcept { return fit_; }
+  [[nodiscard]] const ConvexSliceFit &fit() const noexcept { return fit_; }
 
- private:
+private:
   ConvexSliceFit fit_;
 };
 
 // eSSVI backbone (3 DoF, or 4 with asymmetric rho). Owns an EssviParams slice.
 class EssviCurve final : public IVolCurve {
- public:
-  EssviCurve(const EssviParams& slice, double df) noexcept;
+public:
+  EssviCurve(const EssviParams &slice, double df) noexcept;
 
-  [[nodiscard]] double w(double k_log) const noexcept override { return essvi_total_w(slice_, k_log); }
+  [[nodiscard]] double w(double k_log) const noexcept override {
+    return essvi_total_w(slice_, k_log);
+  }
   [[nodiscard]] VolCurveKind kind() const noexcept override { return VolCurveKind::Essvi; }
-  [[nodiscard]] std::size_t dof() const noexcept override { return slice_.rho_scale > 0.0 ? 4u : 3u; }
+  [[nodiscard]] std::size_t dof() const noexcept override {
+    return slice_.rho_scale > 0.0 ? 4u : 3u;
+  }
   [[nodiscard]] std::unique_ptr<IVolCurve> clone() const override {
     return std::make_unique<EssviCurve>(slice_, df_);
   }
 
-  [[nodiscard]] const EssviParams& slice() const noexcept { return slice_; }
+  [[nodiscard]] const EssviParams &slice() const noexcept { return slice_; }
 
- private:
+private:
   EssviParams slice_;
 };
 
 // Raw-SVI backbone (5 DoF). Owns a SviParams slice.
 class SviCurve final : public IVolCurve {
- public:
-  SviCurve(const SviParams& slice, double df) noexcept;
+public:
+  SviCurve(const SviParams &slice, double df) noexcept;
 
-  [[nodiscard]] double w(double k_log) const noexcept override { return svi_total_w(slice_, k_log); }
+  [[nodiscard]] double w(double k_log) const noexcept override {
+    return svi_total_w(slice_, k_log);
+  }
   [[nodiscard]] VolCurveKind kind() const noexcept override { return VolCurveKind::Svi; }
   [[nodiscard]] std::size_t dof() const noexcept override { return 5u; }
   [[nodiscard]] std::unique_ptr<IVolCurve> clone() const override {
     return std::make_unique<SviCurve>(slice_, df_);
   }
 
-  [[nodiscard]] const SviParams& slice() const noexcept { return slice_; }
+  [[nodiscard]] const SviParams &slice() const noexcept { return slice_; }
 
- private:
+private:
   SviParams slice_;
+};
+
+// Cache-friendly direct market curve. Nodes are sorted by log-moneyness and
+// queried with linear total-variance interpolation (flat at the two wings).
+class LinearVarianceCurve final : public IVolCurve {
+public:
+  LinearVarianceCurve(double T, double F, double df, std::vector<double> k,
+                      std::vector<double> total_variance) noexcept;
+
+  [[nodiscard]] double w(double k_log) const noexcept override;
+  [[nodiscard]] VolCurveKind kind() const noexcept override { return VolCurveKind::LinearVariance; }
+  [[nodiscard]] std::size_t dof() const noexcept override { return k_.size(); }
+  [[nodiscard]] std::unique_ptr<IVolCurve> clone() const override {
+    return std::make_unique<LinearVarianceCurve>(T_, F_, df_, k_, w_);
+  }
+
+  [[nodiscard]] std::span<const double> k_nodes() const noexcept { return k_; }
+  [[nodiscard]] std::span<const double> w_nodes() const noexcept { return w_; }
+
+private:
+  std::vector<double> k_;
+  std::vector<double> w_;
+};
+
+// Event smile: SVI-JW plus three compact curvature bumps (8 DoF).
+class C8Curve final : public IVolCurve {
+public:
+  C8Curve(const C8Params &slice, double df) noexcept;
+
+  [[nodiscard]] double w(double k_log) const noexcept override { return c8_slice_w(slice_, k_log); }
+  [[nodiscard]] VolCurveKind kind() const noexcept override { return VolCurveKind::C8; }
+  [[nodiscard]] std::size_t dof() const noexcept override { return 8u; }
+  [[nodiscard]] std::unique_ptr<IVolCurve> clone() const override {
+    return std::make_unique<C8Curve>(slice_, df_);
+  }
+
+  [[nodiscard]] const C8Params &slice() const noexcept { return slice_; }
+
+private:
+  C8Params slice_;
 };
 
 // ── Unified surface container ───────────────────────────────────────────────
@@ -179,12 +234,12 @@ class SviCurve final : public IVolCurve {
 // past the last slice, or more than 50% below the first, returns NaN. Slices must
 // be pushed in ascending T (the fit driver guarantees it).
 class CurveSurface {
- public:
+public:
   CurveSurface() = default;
-  CurveSurface(CurveSurface&&) noexcept = default;
-  CurveSurface& operator=(CurveSurface&&) noexcept = default;
-  CurveSurface(const CurveSurface&) = delete;
-  CurveSurface& operator=(const CurveSurface&) = delete;
+  CurveSurface(CurveSurface &&) noexcept = default;
+  CurveSurface &operator=(CurveSurface &&) noexcept = default;
+  CurveSurface(const CurveSurface &) = delete;
+  CurveSurface &operator=(const CurveSurface &) = delete;
 
   // Append a slice; precondition (documented, not verified): non-decreasing T.
   void push(std::unique_ptr<IVolCurve> slice);
@@ -212,13 +267,16 @@ class CurveSurface {
     return slices_;
   }
 
- private:
+private:
   // Locate the bracket for T; returns {lo, hi, weight} where the interpolated
   // value is (1-w)*val(lo) + w*val(hi). Clamps to an endpoint outside the range.
-  struct Bracket { std::size_t lo{0}, hi{0}; double frac{0.0}; };
+  struct Bracket {
+    std::size_t lo{0}, hi{0};
+    double frac{0.0};
+  };
   [[nodiscard]] Bracket locate(double T) const noexcept;
 
-  std::vector<std::unique_ptr<IVolCurve>> slices_;  // ascending T
+  std::vector<std::unique_ptr<IVolCurve>> slices_; // ascending T
 };
 
 // ── Curve configuration ─────────────────────────────────────────────────────
@@ -228,8 +286,8 @@ class CurveSurface {
 // new vocabulary. A default `CurveConfig` is a Convex-QP dense fit at node_cap 40.
 struct CurveConfig {
   VolCurveKind kind{VolCurveKind::ConvexDense};
-  ConvexFitOpts convex{};      // ConvexDense knobs (lambda, node_cap, ...)
-  CalibOpts parametric{};      // Essvi / Svi knobs (shared LM/IRLS/filter policy)
+  ConvexFitOpts convex{}; // ConvexDense knobs (lambda, node_cap, ...)
+  CalibOpts parametric{}; // Essvi / Svi knobs (shared LM/IRLS/filter policy)
 };
 
 // ── Per-slice fit dispatch ──────────────────────────────────────────────────
@@ -249,8 +307,8 @@ struct CurveConfig {
 // a per-node CALENDAR FLOOR (via `fit_convex_slice`), so this slice's total
 // variance cannot dip below the previous expiry's at the fit nodes. Left empty
 // (the default) the floor is skipped and the fit is bit-identical.
-[[nodiscard]] Result<std::unique_ptr<IVolCurve>> fit_slice_curve(
-    const CurveConfig& cfg, std::span<const FitObs> obs_eu, double F, double T,
-    double df, const std::function<double(double)>& w_prev = {});
+[[nodiscard]] Result<std::unique_ptr<IVolCurve>>
+fit_slice_curve(const CurveConfig &cfg, std::span<const FitObs> obs_eu, double F, double T,
+                double df, const std::function<double(double)> &w_prev = {});
 
-}  // namespace atx::vol
+} // namespace atx::vol

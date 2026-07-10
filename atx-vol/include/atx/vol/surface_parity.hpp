@@ -125,6 +125,19 @@ struct SurfaceParityInputs {
   // by `fit_curve_surface`; `run_surface_parity` (the eSSVI path) always scores
   // parity and does not read this field.
   bool score_parity{true};
+
+  // Enforce the previous expiry's total-variance curve as a floor while fitting
+  // each later ConvexDense/SVI slice. true preserves the robust served dense
+  // path; false fits each slice independently, which maximizes penny-tight SPY
+  // in-band coverage and avoids the quality cost of cross-expiry lifting. Only
+  // consulted by `fit_curve_surface`; eSSVI calendar handling remains governed
+  // by `repair`.
+  bool enforce_calendar_floor{true};
+
+  // Route the fit-observation American-IV de-Am through the supplied correction
+  // caches instead of cold Andersen-Lake. Default false preserves the reference
+  // dense fit; HFT can opt in after measuring the penny-tight SPY quality trade.
+  bool use_deam_cache_for_fit{false};
 };
 
 // Per-fitted-slice pricing context: everything the composable facade

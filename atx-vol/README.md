@@ -39,6 +39,7 @@ faithfully and mirror the upstream test tolerances.
 | Calibration pool | `calib_pool.hpp` | Cadence priority queue + deterministic multi-underlier fan-out (`std::jthread`) |
 | Vol derivatives | `derivatives.hpp` | Variance-swap strip, Carr–Lee vol swap, aged/marquee PnL, realized-vol tracker |
 | Profile registry | `profile.hpp` | Underlier classification, per-profile calib/filter knobs, optimization-level + refit cadence + tier priority |
+| Unified fit policy | `fit_policy.hpp` | Board/profile/session/event routing to an effective preset + curve; direct high-confidence routes and held-out ambiguity fallback |
 | Portfolio | `portfolio.hpp` | Leg/book/agg types, bulk pricer + select, portfolio pricing + 8-Greek aggregation by agg-mode |
 | Portfolio risk | `portfolio_risk.hpp` | Scenario/shock revaluation, plan/resolve/explain (PnL attribution) |
 | Projection | `projection.hpp` | Projection spine: forward-T interp, coord conversion, inserted-slice eval, delta-solve, project-compare |
@@ -56,6 +57,17 @@ faithfully and mirror the upstream test tolerances.
 | Composable session | `session.hpp` | `VolaSession` — build once from a snapshot, then query `iv`/`fair_value`/`greeks`/`diagnostics` at any `(K,T)`; owns a per-side `CorrectionCache` hot path |
 | Unified library layer | `chain.hpp`, `pricer_fitter.hpp` | `OptionChain` (id-addressed board, tick-to-quote update) → `PricerFitter` (fit + owns `unique_ptr<FittedSurface>`) → deterministic multi-threaded `value_chain` with per-field output flags |
 | Real-data loader | `opra_panel.hpp` | Databento OPRA cbbo-1m (NBBO) Parquet → `QuoteFrame`, OSI/OCC symbol parser, front-PCP spot implication |
+| High-throughput portfolio | `portfolio_pricer.hpp` | Contract dedup, bounded build hints, parallel SoA scatter, price-only quote cadence or full American-Greeks risk cadence |
+
+## Unified auto policy (2026-07)
+
+`PricerConfig{}` now classifies the live board and directly routes dense ETFs and
+dense event boards to the 48-node HFT linear-variance path; sparse, vol-product,
+and event-specific parametric routes remain configurable through `FitContext` and
+`FitPolicyConfig`. On the ten-slice real SPY matrix the default-auto path is
+**88.49 ms p95** with a **98.61%** worst-slice clean price-in-NBBO score. The
+fourteen-board breadth corpus and million-row quote results are documented in
+[the unified fit-policy design](../docs/superpowers/specs/2026-07-09-atx-vol-unified-fit-policy.md).
 
 ## Vola Dynamics parity (American equity options)
 

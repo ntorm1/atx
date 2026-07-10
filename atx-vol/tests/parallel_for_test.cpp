@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "atx/vol/parallel_for.hpp"  // atx_auto_worker_count, parallel_for
 
@@ -73,5 +74,14 @@ TEST(ParallelFor, AutoWorkerCountHonorsEnvCap) {
     set_env(prev_val.c_str());
   } else {
     unset_env();
+  }
+}
+
+TEST(ParallelFor, DynamicSchedulerVisitsEverySlotExactlyOnce) {
+  constexpr std::size_t kN = 257;
+  std::vector<std::size_t> got(kN, kN);
+  atx::vol::parallel_for_dynamic(kN, 7, [&](std::size_t i) { got[i] = i * i; });
+  for (std::size_t i = 0; i < kN; ++i) {
+    EXPECT_EQ(got[i], i * i);
   }
 }

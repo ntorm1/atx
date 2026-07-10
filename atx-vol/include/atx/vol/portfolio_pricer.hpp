@@ -75,8 +75,8 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/priced_surface.hpp"  // PricedSurface, PricingContext
-#include "atx/vol/types.hpp"           // Result, Status, Side
+#include "atx/vol/priced_surface.hpp" // PricedSurface, PricingContext
+#include "atx/vol/types.hpp"          // Result, Status, Side
 
 namespace atx::vol {
 
@@ -101,17 +101,25 @@ struct OptionContract {
 struct Position {
   std::uint64_t id{0};
   OptionContract contract{};
-  double qty{0.0};            // signed: + long / - short
-  double multiplier{100.0};   // deliverable (<=0 / non-finite -> 100)
+  double qty{0.0};          // signed: + long / - short
+  double multiplier{100.0}; // deliverable (<=0 / non-finite -> 100)
+};
+
+struct PortfolioBuildOptions {
+  // Optional dedup-table capacity hint. Zero uses a bounded automatic reserve,
+  // avoiding a multi-million-bucket hash table when a million positions repeat
+  // a much smaller listed-contract universe. A hint is advisory and is clamped to
+  // the position count; an over-estimate costs memory, never correctness.
+  std::size_t expected_unique_contracts{0};
 };
 
 // ── Per-lane status ───────────────────────────────────────────────────────
 
 enum class PriceStatus : std::uint8_t {
   Ok = 0,
-  ModelUnavailable = 1,  // no surface registered for the contract's uid
-  NumericError = 2,      // pricer/greeks failed, or IV/price non-finite
-  InvalidContract = 3,   // K <= 0 or T <= 0 (or non-finite)
+  ModelUnavailable = 1, // no surface registered for the contract's uid
+  NumericError = 2,     // pricer/greeks failed, or IV/price non-finite
+  InvalidContract = 3,  // K <= 0 or T <= 0 (or non-finite)
 };
 
 // ── Portfolio (dedups contracts) ─────────────────────────────────────────
@@ -121,20 +129,19 @@ enum class PriceStatus : std::uint8_t {
 // weight (qty*multiplier) and an index into the unique-contract table. Move-only
 // is unnecessary (Rule of Zero, all-value); copyable.
 class Portfolio {
- public:
+public:
   // Build from positions (any order). An empty book is valid (yields empty
   // frames). @return InvalidArgument only on a structurally impossible input
   // (currently none — reserved for future validation).
-  [[nodiscard]] static Result<Portfolio> create(std::span<const Position> positions);
+  [[nodiscard]] static Result<Portfolio> create(std::span<const Position> positions,
+                                                const PortfolioBuildOptions &options = {});
 
   [[nodiscard]] std::size_t n_positions() const noexcept { return positions_.size(); }
   [[nodiscard]] std::size_t n_contracts() const noexcept { return contracts_.size(); }
   [[nodiscard]] std::size_t n_underlyings() const noexcept { return uids_.size(); }
 
   [[nodiscard]] std::span<const Position> positions() const noexcept { return positions_; }
-  [[nodiscard]] std::span<const OptionContract> contracts() const noexcept {
-    return contracts_;
-  }
+  [[nodiscard]] std::span<const OptionContract> contracts() const noexcept { return contracts_; }
   [[nodiscard]] std::span<const std::uint32_t> uids() const noexcept { return uids_; }
 
   // The unique-contract index that position `i` references (i < n_positions()).
@@ -142,32 +149,31 @@ class Portfolio {
     return pos_contract_ix_[i];
   }
 
- private:
+private:
   Portfolio() = default;
 
-  std::vector<Position> positions_;             // input order preserved
-  std::vector<OptionContract> contracts_;       // unique (uid,K,T,side)
-  std::vector<std::uint32_t> pos_contract_ix_;  // position -> unique-contract idx
-  std::vector<std::uint32_t> uids_;             // sorted unique uids
+  std::vector<Position> positions_;            // input order preserved
+  std::vector<OptionContract> contracts_;      // unique (uid,K,T,side)
+  std::vector<std::uint32_t> pos_contract_ix_; // position -> unique-contract idx
+  std::vector<std::uint32_t> uids_;            // sorted unique uids
 };
 
 // ── SurfaceSet (uid -> PricedSurface, non-owning) ────────────────────────
 
 class SurfaceSet {
- public:
+public:
   // Build from a plain vector of surfaces; each surface supplies its own uid.
   // @return InvalidArgument on a null pointer or a duplicate uid.
-  [[nodiscard]] static Result<SurfaceSet> create(
-      std::span<const PricedSurface* const> surfaces);
+  [[nodiscard]] static Result<SurfaceSet> create(std::span<const PricedSurface *const> surfaces);
 
   // The surface for `uid`, or nullptr if none was registered.
-  [[nodiscard]] const PricedSurface* find(std::uint32_t uid) const noexcept;
+  [[nodiscard]] const PricedSurface *find(std::uint32_t uid) const noexcept;
 
   [[nodiscard]] std::size_t size() const noexcept { return by_uid_.size(); }
 
- private:
+private:
   SurfaceSet() = default;
-  std::vector<std::pair<std::uint32_t, const PricedSurface*>> by_uid_;  // sorted by uid
+  std::vector<std::pair<std::uint32_t, const PricedSurface *>> by_uid_; // sorted by uid
 };
 
 // ── Output frames (SoA, input order) ──────────────────────────────────────
@@ -192,8 +198,8 @@ struct PriceFrame {
   std::vector<std::uint64_t> id;
   std::vector<std::uint32_t> uid;
   std::vector<double> pv;
-  std::vector<double> price;   // per-share American mark (fair_value)
-  std::vector<double> iv;      // per-share Euro-equiv IV
+  std::vector<double> price; // per-share American mark (fair_value)
+  std::vector<double> iv;    // per-share Euro-equiv IV
   std::vector<double> delta;
   std::vector<double> gamma;
   std::vector<double> vega;
@@ -243,7 +249,7 @@ struct PnlFrame {
   std::vector<double> pnl_rho;
   std::vector<double> pnl_charm;
   std::vector<double> pnl_unexplained;
-  std::vector<double> d_spot;   // per-share state moves (base -> shifted)
+  std::vector<double> d_spot; // per-share state moves (base -> shifted)
   std::vector<double> d_vol;
   std::vector<double> d_time;
   std::vector<double> d_rate;
@@ -266,32 +272,40 @@ struct PriceOptions {
   // bit-identical to the FD path; theta/charm become the exact PDE value. Off by
   // default so PortfolioPricer::price is unchanged; the backtest enables it.
   bool analytic_greeks{false};
+  // Quote-refresh mode: compute IV + American mark only (one solve per unique
+  // contract) and leave risk columns NaN. Full Greeks remain the default for
+  // backward compatibility; market-making quote loops should enable this and
+  // run risk on its own cadence.
+  //
+  // Both PriceFrame's per-lane Greek columns and PriceTotals' Greek sums are NaN
+  // under this mode -- never 0.0. A zero would be indistinguishable from a book
+  // that is genuinely delta/vega-flat.
+  bool prices_only{false};
 };
 
 class PortfolioPricer {
- public:
+public:
   // Take ownership of the book (dedup already paid by Portfolio::create). Reuse
   // one pricer across many surface snapshots (fixed book, moving market).
   explicit PortfolioPricer(Portfolio pf) noexcept : pf_(std::move(pf)) {}
 
-  [[nodiscard]] const Portfolio& portfolio() const noexcept { return pf_; }
+  [[nodiscard]] const Portfolio &portfolio() const noexcept { return pf_; }
 
   // Price the book against one surface per underlying. Positions whose uid has no
   // registered surface are ModelUnavailable; degenerate contracts are
   // InvalidContract/NumericError; the rest are priced. @return the frame (the
   // call itself fails only never — an empty book gives an empty frame).
-  [[nodiscard]] Result<PriceFrame> price(const SurfaceSet& surfaces,
-                                         const PriceOptions& opts = {}) const;
+  [[nodiscard]] Result<PriceFrame> price(const SurfaceSet &surfaces,
+                                         const PriceOptions &opts = {}) const;
 
   // Taylor PnL-explain between a base and a shifted surface per underlying. The
   // time-roll dt is taken from the two surfaces' valuation timestamps; when they
   // match (dt=0) the theta/charm terms vanish (pure vol/spot/rate explain).
-  [[nodiscard]] Result<PnlFrame> pnl_explain(const SurfaceSet& base,
-                                             const SurfaceSet& shifted,
-                                             const PriceOptions& opts = {}) const;
+  [[nodiscard]] Result<PnlFrame> pnl_explain(const SurfaceSet &base, const SurfaceSet &shifted,
+                                             const PriceOptions &opts = {}) const;
 
- private:
+private:
   Portfolio pf_;
 };
 
-}  // namespace atx::vol
+} // namespace atx::vol

@@ -57,12 +57,12 @@
 #include <cstdint>
 #include <string_view>
 
-#include "atx/vol/arb.hpp"          // FilterOpts (reused, not redefined)
-#include "atx/vol/calib.hpp"        // CalibOpts, OptimizationLevel, CalibLossKind
-#include "atx/vol/curve.hpp"        // kFwdLowTDefaultYears
-#include "atx/vol/types.hpp"        // Result, ErrorCode
-#include "atx/vol/universe.hpp"     // Underlying, Chain, chain_index
-#include "atx/vol/vol_surface.hpp"  // Parametrization, ResidualBasisKind
+#include "atx/vol/arb.hpp"         // FilterOpts (reused, not redefined)
+#include "atx/vol/calib.hpp"       // CalibOpts, OptimizationLevel, CalibLossKind
+#include "atx/vol/curve.hpp"       // kFwdLowTDefaultYears
+#include "atx/vol/types.hpp"       // Result, ErrorCode
+#include "atx/vol/universe.hpp"    // Underlying, Chain, chain_index
+#include "atx/vol/vol_surface.hpp" // Parametrization, ResidualBasisKind
 
 namespace atx::vol {
 
@@ -71,13 +71,13 @@ namespace atx::vol {
 // Numeric values line up with the C `AtsVolUnderlierProfileKind` enum so a
 // kind round-trips across the ABI boundary unchanged.
 enum class ProfileKind : std::uint8_t {
-  IndexEtfUltraLiquid = 0,  // SPY, SPX, QQQ, IWM, sector ETFs
-  MegaCapEvent = 1,         // AAPL, AMZN, NVDA, TSLA, META
-  LiquidSingleName = 2,     // MSFT, JPM, XOM
-  OrdinarySingleName = 3,   // mid-cap optionable names (the v1 default)
-  IlliquidSmallCap = 4,     // sparse small caps
-  HtbDividendName = 5,      // borrow-sensitive / heavy dividends
-  VolProduct = 6,           // VXX, UVXY, SVIX
+  IndexEtfUltraLiquid = 0, // SPY, SPX, QQQ, IWM, sector ETFs
+  MegaCapEvent = 1,        // AAPL, AMZN, NVDA, TSLA, META
+  LiquidSingleName = 2,    // MSFT, JPM, XOM
+  OrdinarySingleName = 3,  // mid-cap optionable names (the v1 default)
+  IlliquidSmallCap = 4,    // sparse small caps
+  HtbDividendName = 5,     // borrow-sensitive / heavy dividends
+  VolProduct = 6,          // VXX, UVXY, SVIX
 };
 
 // Number of profile kinds (ATS_VOL_PROFILE_KIND_COUNT).
@@ -119,7 +119,7 @@ struct Profile {
 
   // Forward / pricing.
   double forward_atm_band{0.0};
-  double ewma_alpha{0.0};             // per-second EWMA decay
+  double ewma_alpha{0.0}; // per-second EWMA decay
   double low_T_years{kFwdLowTDefaultYears};
 
   // Update cadence (consumed by the universe scan's resequenced warm-start).
@@ -136,20 +136,21 @@ struct Profile {
 // The process-lifetime default profile — ORDINARY_SINGLE_NAME, the v1 fallback
 // the C's `ats_vol_universe_profile_for` returns when no override is set. The
 // reference is stable for the life of the process.
-[[nodiscard]] const Profile& profile_default() noexcept;
+[[nodiscard]] const Profile &profile_default() noexcept;
 
 // Borrowed, immutable pointer to the compiled-in default profile for `kind`
 // (ports `ats_vol_profile_default`). The pointer is stable for the life of the
-// process. Kinds without their own table entry route to the nearest default
-// (VOL_PRODUCT -> spy-like, HTB_DIVIDEND_NAME -> ordinary), matching the C.
+// process. Vol products have a dedicated broad-wing SVI policy;
+// HTB_DIVIDEND_NAME currently routes to ordinary pending the native
+// discrete-dividend pricer.
 // @return NotFound if `kind` is not a valid enumerator (the C's NULL-on-invalid).
-[[nodiscard]] Result<const Profile*> profile_lookup(ProfileKind kind);
+[[nodiscard]] Result<const Profile *> profile_lookup(ProfileKind kind);
 
 // Cold-fast profile factory (Sprint 15a Phase B): derive a latency-prioritized
 // COLD_FAST variant from `base`. Returns a VALUE the caller owns. Ports
 // `ats_vol_profile_make_cold_fast` (which took a nullable pointer; a const-ref
 // cannot be null, so the C's zero-init-on-NULL branch is unreachable here).
-[[nodiscard]] Profile profile_make_cold_fast(const Profile& base) noexcept;
+[[nodiscard]] Profile profile_make_cold_fast(const Profile &base) noexcept;
 
 // Rebuild-scheduler tier priority for `kind` (lower = fits sooner). Ports
 // `ats_vol_profile_tier_priority` (ats_calibrate_pool.c) — a pure ProfileKind
@@ -174,16 +175,16 @@ struct Profile {
 struct ClassifierInputs {
   std::uint32_t n_live_quotes{0u};
   std::uint32_t n_live_expiries{0u};
-  std::uint32_t n_atm_quotes{0u};     // quote count inside |k_log| < 0.05
-  double median_spread_pct{0.0};      // (ask-bid)/mid, median across active
+  std::uint32_t n_atm_quotes{0u}; // quote count inside |k_log| < 0.05
+  double median_spread_pct{0.0};  // (ask-bid)/mid, median across active
   bool has_zerodte{false};
   bool has_weeklies{false};
-  bool htb_flag{false};               // kUflagHtb on the underlier
-  bool vol_product{false};            // operator hint: VXX-family ticker?
-  std::uint16_t n_dividends{0u};      // upcoming divs in the next 12mo
-  std::uint16_t event_distance_days{0u};  // days until next earnings/event
-  double forward_dispersion_bp{0.0};  // p90 PCP-RMSE / F across expiries
-  double median_q_eff{0.0};           // median q across expiries (HTB sniff)
+  bool htb_flag{false};                  // kUflagHtb on the underlier
+  bool vol_product{false};               // operator hint: VXX-family ticker?
+  std::uint16_t n_dividends{0u};         // upcoming divs in the next 12mo
+  std::uint16_t event_distance_days{0u}; // days until next earnings/event
+  double forward_dispersion_bp{0.0};     // p90 PCP-RMSE / F across expiries
+  double median_q_eff{0.0};              // median q across expiries (HTB sniff)
 };
 
 // Classifier verdict: the chosen kind plus a [0, 1] "how many heuristics agree"
@@ -201,7 +202,12 @@ struct ProfileVerdict {
 
 // Classify from supplied rolling metrics (ports `ats_vol_classify_profile`).
 // Simple liquidity / event / borrow heuristics; not a learned model.
-[[nodiscard]] ProfileVerdict classify_profile(const ClassifierInputs& in) noexcept;
+[[nodiscard]] ProfileVerdict classify_profile(const ClassifierInputs &in) noexcept;
+
+// Extract the observable, symbol-independent classifier features from a board.
+// Exposed so the unified fit-policy selector can enrich the same feature vector
+// with caller-supplied event/session/borrow hints before classification.
+[[nodiscard]] ClassifierInputs classifier_inputs_from_underlier(const Underlying &under) noexcept;
 
 // Convenience: build a `ClassifierInputs` from an underlier's live chain state
 // and dispatch (ports `ats_vol_classify_underlier`). The underlier's profile is
@@ -211,12 +217,23 @@ struct ProfileVerdict {
 // `under->curves`; atx-vol's `Underlying` carries no curve link, so those two
 // (and `event_distance_days` / `forward_dispersion_bp`, which the C set to 0)
 // stay 0. None are consumed by the vote, so the verdict matches the C.
-[[nodiscard]] ProfileVerdict classify_underlier(const Underlying& under) noexcept;
+[[nodiscard]] ProfileVerdict classify_underlier(const Underlying &under) noexcept;
+
+// Confidence reported for a verdict that came from the compiled-in seed table.
+inline constexpr double kTickerSeedConfidence = 0.95;
+
+// True when `ticker` matches a compiled-in seed entry, writing the seeded kind to
+// `out_kind`. Exposed because callers need the seed's PROVENANCE, not the score a
+// seeded verdict happens to carry: `confidence` ranks how strongly a board voted,
+// so testing it for equality against `kTickerSeedConfidence` would misclassify any
+// board whose vote ratio ever lands on that value.
+[[nodiscard]] bool ticker_seed_profile(std::string_view ticker, ProfileKind &out_kind) noexcept;
 
 // Ticker-aware classifier (Sprint 24): when `ticker` matches a compiled-in seed
-// entry, return the seed kind with confidence 0.95 and skip quote aggregation.
-// Falls back to `classify_underlier` when `ticker` is empty or not seeded.
-[[nodiscard]] ProfileVerdict classify_underlier_with_ticker(
-    const Underlying& under, std::string_view ticker) noexcept;
+// entry, return the seed kind with confidence `kTickerSeedConfidence` and skip
+// quote aggregation. Falls back to `classify_underlier` when `ticker` is empty or
+// not seeded.
+[[nodiscard]] ProfileVerdict classify_underlier_with_ticker(const Underlying &under,
+                                                            std::string_view ticker) noexcept;
 
-}  // namespace atx::vol
+} // namespace atx::vol
