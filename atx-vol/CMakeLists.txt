@@ -201,4 +201,7 @@ if(ATX_BUILD_EXAMPLES)
     # the gap into strike/tenor granularity vs fit-vs-market fidelity).
     add_executable(spy_strangle_tradeable examples/spy_strangle_tradeable.cpp)
     target_link_libraries(spy_strangle_tradeable PRIVATE atx::vol atx::core atx_warnings)
+
+    add_executable(atxvol_spy_dispersion_backtest examples/spy_dispersion_backtest.cpp)
+    target_link_libraries(atxvol_spy_dispersion_backtest PRIVATE atx::vol atx::core atx_warnings)
 endif()
