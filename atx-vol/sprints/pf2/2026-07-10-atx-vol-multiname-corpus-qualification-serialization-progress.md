@@ -30,6 +30,13 @@ must use already-built source files or header-only pure types; tests land in
 existing registered test translation units. Archive/benchmark tasks remain
 deferred rather than creating competing infrastructure.
 
+Post-implementation audit: the performance worktree later began modifying
+`priced_surface.hpp` and `priced_surface.cpp` after this branch had already
+committed P2 term-rate persistence there. Treat those two files as an explicit
+post-performance rebase hotspot; do not merge either version mechanically.
+`portfolio_pricer.cpp`, test CMake, benchmarks, counters, and performance archive
+work remain untouched on this branch.
+
 ## Task ledger
 
 | Task | State | Evidence / note |
@@ -111,9 +118,13 @@ deferred rather than creating competing infrastructure.
   `SurfaceArchive.*`, legacy `Corpus.*`, term-rate archive parity, and the
   cached-real scoreboard passed 24/24 correctness tests; the opt-in timing test
   and opt-in 10,000-board gate skipped as designed.
+- 2026-07-10: final primary-worktree audit found new in-flight performance edits
+  in `priced_surface.hpp/.cpp`; the overlap is documented for semantic rebase,
+  and no primary-worktree file was changed.
 
 ## Commits
 
 - `8119e5e feat(atx-vol): qualify corpus fits with evidence`
 - `8bfcb3c feat(atx-vol): stream point-in-time qualified corpora`
 - `c9e2110 feat(atx-vol): resume qualified corpus dates safely`
+- `e0fde40 test(atx-vol): gate generated qualified corpora`
