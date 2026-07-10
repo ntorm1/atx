@@ -51,11 +51,19 @@ struct AlOpts {
 };
 
 // The C `ats_pricer_al_default_opts()`: {12, 24, 8, 1e-10}.
+//
+// NOTE: passing al_default_opts() EXPLICITLY is NOT equivalent to passing
+// std::nullopt. std::nullopt selects the internal ACCURATE preset
+// {n_boundary=12, n_quad_fp=24, n_quad_price=48, n_iter_jn=2, n_iter_fp=4,
+// tol=1e-10}. An explicit AlOpts instead drives the premium quadrature off
+// n_quadrature (scheme_from_opts sets n_quad_price = n_quad_fp), so this preset
+// yields n_quad_price=24 (not 48), and max_newton_iter=8 maps to n_iter_jn=2,
+// n_iter_fp=6. Same name, a different (cheaper) cost/accuracy point.
 [[nodiscard]] AlOpts al_default_opts() noexcept;
 
-// Fast ALO preset for the surface-fit hot path: {7, 16, 6, 1e-8}. Maps to a
+// Fast ALO preset for the surface-fit hot path: {7, 16, 4, 1e-8}. Maps to a
 // 7-node boundary, order-16 Gauss-Legendre for BOTH the fixed-point and premium
-// integrals, and 2 Jacobi-Newton + 4 fixed-point sweeps. ~3-6x cheaper per solve
+// integrals, and 2 Jacobi-Newton + 2 fixed-point sweeps. ~3-6x cheaper per solve
 // than the ACCURATE (nullopt) preset while holding price accuracy to ~1e-4 — the
 // regime American-IV inversion and correction-cache sampling actually need
 // (surface RMSE is ~1e-2). This is the ALO "fast config" analogue; the session
@@ -73,8 +81,12 @@ struct AlOpts {
 // @param opts  nullopt selects the ACCURATE preset (matches C `..., NULL, ...`)
 // @return      the American premium, or an Error:
 //                InvalidArgument — S/K <= 0, or non-finite/negative T or sigma
-//                NotImplemented  — negative-rate corner where the asymptotic
-//                                  boundary collapses (xmax <= 0)
+//                NotImplemented  — the double-continuation regime (put q < r <= 0
+//                                  / call r < q <= 0), where early exercise is
+//                                  possible but a second exercise boundary appears
+//                                  that the single-boundary ALO scheme cannot
+//                                  represent; also the negative-carry corner where
+//                                  the asymptotic boundary collapses (xmax <= 0)
 //                Internal        — quadrature-table construction failed
 [[nodiscard]] Result<double> andersen_lake(double S, double K, double T,
                                            double sigma, double r, double q,
@@ -97,12 +109,13 @@ struct AlOpts {
 // common vol): an n_strikes-fold cut in boundary solves.
 //
 // Degenerate T ~ 0 / sigma ~ 0 writes intrinsic per strike; the no-early-exercise
-// corner (q <= 0) writes the European call per strike.
+// European corner (q <= 0 && q <= r) writes the European call per strike.
 //
 // @return InvalidArgument — S <= 0, negative T/sigma, a non-positive strike, or a
 //                           span-length mismatch
-//         NotImplemented  — the negative-carry corner where the asymptotic
-//                           boundary collapses (matches `andersen_lake`)
+//         NotImplemented  — the double-continuation regime (r < q <= 0), or the
+//                           negative-carry corner where the asymptotic boundary
+//                           collapses (matches `andersen_lake`)
 [[nodiscard]] Status andersen_lake_call_slice(
     double S, std::span<const double> strikes, double T, double sigma, double r,
     double q, std::span<double> price_out,

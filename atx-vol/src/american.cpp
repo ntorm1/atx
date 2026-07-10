@@ -899,15 +899,50 @@ enum class AlSolveStatus { Ok, Collapsed, TableMissing };
   return price;
 }
 
+// ── Early-exercise regime classification (Healy 2021 §2.2) ───────────────
+//
+// Under the McDonald-Schroder map C(S,K,r,q) = P(K,S,q,r), a call delegates to
+// al_solve_put with (rate=q, yield=r), so BOTH sides reduce to an internal put
+// characterized purely by its (rate, yield):
+//   - European    : early exercise is never optimal, so American == European
+//                   EXACTLY (rate <= 0 && rate <= yield).
+//   - Unsupported : early exercise IS possible but a double continuation region
+//                   appears (rate <= 0 && rate > yield, i.e. yield < rate <= 0);
+//                   the single-boundary ALO scheme cannot represent two exercise
+//                   boundaries (Battauz-De Donno-Sbuelz 2015, Mgmt Sci 61(5);
+//                   Andersen-Lake 2021). We return NotImplemented rather than a
+//                   silently-wrong European price.
+//   - American    : the standard single-boundary early-exercise regime (rate > 0).
+enum class ExerciseRegime { European, Unsupported, American };
+
+[[nodiscard]] ExerciseRegime classify_regime(double rate, double yield) noexcept {
+  if (rate > 0.0) {
+    return ExerciseRegime::American;
+  }
+  return (rate <= yield) ? ExerciseRegime::European : ExerciseRegime::Unsupported;
+}
+
+// Shared message for the double-continuation corner the ALO scheme cannot price.
+constexpr const char* kDoubleContinuationMsg =
+    "double-continuation regime (put q < r <= 0 / call r < q <= 0): the "
+    "single-boundary Andersen-Lake scheme cannot represent two exercise "
+    "boundaries; see Andersen-Lake 2021 (double-boundary case)";
+
 // Put core — used directly for puts and via McDonald-Schroder for calls.
 [[nodiscard]] Result<double> al_solve_put(double S, double K, double T,
                                           double sigma, double r, double q,
                                           const AlScheme& sch) {
-  if (r <= 0.0) {
-    const double euro = euro_put_sk(S, K, T, sigma, r, q);
-    const double intr = K - S;
-    const double price = (euro > intr) ? euro : (intr > 0.0 ? intr : 0.0);
-    return Ok(price);
+  switch (classify_regime(/*rate=*/r, /*yield=*/q)) {
+    case ExerciseRegime::European: {
+      const double euro = euro_put_sk(S, K, T, sigma, r, q);
+      const double intr = K - S;
+      const double price = (euro > intr) ? euro : (intr > 0.0 ? intr : 0.0);
+      return Ok(price);
+    }
+    case ExerciseRegime::Unsupported:
+      return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
+    case ExerciseRegime::American:
+      break;
   }
 
   AlBoundary bnd;
@@ -1161,14 +1196,19 @@ Result<double> andersen_lake(double S, double K, double T, double sigma,
     return Ok(intr > 0.0 ? intr : 0.0);
   }
 
-  // No-early-exercise short-circuits: American == European.
-  if (side == Side::Call && q <= 0.0) {
-    return Ok(black76_price(S * std::exp((r - q) * T), K, T, sigma,
-                            std::exp(-r * T), Side::Call));
-  }
-  if (side == Side::Put && r <= 0.0) {
-    return Ok(black76_price(S * std::exp((r - q) * T), K, T, sigma,
-                            std::exp(-r * T), Side::Put));
+  // Regime classification in internal-put terms (a call delegates to al_solve_put
+  // with rate=q, yield=r). European short-circuits to the Black-76 European price;
+  // Unsupported is the double-continuation corner the ALO scheme cannot price.
+  const double rate = (side == Side::Put) ? r : q;
+  const double yield = (side == Side::Put) ? q : r;
+  switch (classify_regime(rate, yield)) {
+    case ExerciseRegime::European:
+      return Ok(black76_price(S * std::exp((r - q) * T), K, T, sigma,
+                              std::exp(-r * T), side));
+    case ExerciseRegime::Unsupported:
+      return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
+    case ExerciseRegime::American:
+      break;
   }
 
   const AlScheme sch = scheme_from_opts(opts);
@@ -1212,15 +1252,23 @@ Status andersen_lake_call_slice(double S, std::span<const double> strikes,
     return Ok();
   }
 
-  // No early exercise for calls when q <= 0: American == European (matches the
-  // andersen_lake short-circuit exactly, including its Black-76 evaluation).
-  if (q <= 0.0) {
-    const double F = S * std::exp((r - q) * T);
-    const double df = std::exp(-r * T);
-    for (std::size_t i = 0; i < n; ++i) {
-      price_out[i] = black76_price(F, strikes[i], T, sigma, df, Side::Call);
+  // Regime classification (internal-put rate=q, yield=r, since a call delegates
+  // via McDonald-Schroder). European writes the Black-76 European call per strike
+  // (matches the andersen_lake short-circuit exactly); Unsupported is the
+  // double-continuation corner the ALO scheme cannot price.
+  switch (classify_regime(/*rate=*/q, /*yield=*/r)) {
+    case ExerciseRegime::European: {
+      const double F = S * std::exp((r - q) * T);
+      const double df = std::exp(-r * T);
+      for (std::size_t i = 0; i < n; ++i) {
+        price_out[i] = black76_price(F, strikes[i], T, sigma, df, Side::Call);
+      }
+      return Ok();
     }
-    return Ok();
+    case ExerciseRegime::Unsupported:
+      return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
+    case ExerciseRegime::American:
+      break;
   }
 
   // Boundary case (q > 0). The internal put has strike Kp = S (fixed), spot
@@ -1312,11 +1360,17 @@ Result<double> baw_american(double S, double K, double T, double sigma,
       (side == Side::Call) ? euro_call_sk(S, K, T, sigma, r, q)
                            : euro_put_sk(S, K, T, sigma, r, q);
 
-  if (side == Side::Call && q <= 0.0) {
-    return Ok(euro);
-  }
-  if (side == Side::Put && r <= 0.0) {
-    return Ok(euro);
+  // Same regime classification as andersen_lake (internal-put rate/yield). BAW is
+  // a single-boundary approximation, so it cannot represent the double-continuation
+  // corner either: return the SAME NotImplemented error there.
+  switch (classify_regime(/*rate=*/(side == Side::Put) ? r : q,
+                          /*yield=*/(side == Side::Put) ? q : r)) {
+    case ExerciseRegime::European:
+      return Ok(euro);
+    case ExerciseRegime::Unsupported:
+      return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
+    case ExerciseRegime::American:
+      break;
   }
 
   const double sigma2 = sigma * sigma;
@@ -1488,9 +1542,18 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T,
       const double intr = K - S2;
       return (intr > 0.0) ? intr : 0.0;
     }
-    if (r2 <= 0.0) {  // put no-early-exercise: American == European (Black-76)
-      return black76_price(S2 * std::exp((r2 - q) * T2), K, T2, sig2,
-                           std::exp(-r2 * T2), Side::Put);
+    // Put no-early-exercise regime is American == European (Black-76). The
+    // double-continuation corner (yield q < rate r2 <= 0) is unpriceable — defer
+    // to the scalar P() path so andersen_lake's NotImplemented error propagates
+    // through the bundle instead of a silently-wrong European Greeks set.
+    switch (classify_regime(/*rate=*/r2, /*yield=*/q)) {
+      case ExerciseRegime::European:
+        return black76_price(S2 * std::exp((r2 - q) * T2), K, T2, sig2,
+                             std::exp(-r2 * T2), Side::Put);
+      case ExerciseRegime::Unsupported:
+        return P(dS, dsig, dr, dT);
+      case ExerciseRegime::American:
+        break;
     }
     BndCache* c = nullptr;
     for (std::size_t i = 0; i < n_memo; ++i) {
@@ -1720,9 +1783,24 @@ Result<double> american_delta(double S, double K, double T, double sigma, double
         const double intr = K - S2;
         return (intr > 0.0) ? intr : 0.0;
       }
-      if (r <= 0.0) {
-        return black76_price(S2 * std::exp((r - q) * T), K, T, sigma,
-                             std::exp(-r * T), Side::Put);
+      // European put -> Black-76; the double-continuation corner (q < r <= 0) is
+      // unpriceable -> surface andersen_lake's NotImplemented via american_price.
+      switch (classify_regime(/*rate=*/r, /*yield=*/q)) {
+        case ExerciseRegime::European:
+          return black76_price(S2 * std::exp((r - q) * T), K, T, sigma,
+                               std::exp(-r * T), Side::Put);
+        case ExerciseRegime::Unsupported: {
+          const Result<double> p =
+              american_price(S2, K, T, sigma, r, q, Side::Put, method, opts);
+          if (!p) {
+            failed = true;
+            first_err = p.error();
+            return std::numeric_limits<double>::quiet_NaN();
+          }
+          return *p;
+        }
+        case ExerciseRegime::American:
+          break;
       }
       if (!have_bnd) {
         bnd_ok = (al_solve_put_boundary(K, T, sigma, r, q, sch, bnd, ws) == AlSolveStatus::Ok);

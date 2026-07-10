@@ -4,7 +4,7 @@
 //
 // Ported from the C `ats-vol` library (ats_pricer_correction.c and
 // ats_pricer_correction_cheb.c). The hot-path American pricer is European
-// Black-76 plus a bivariate-tensor Chebyshev interpolation of the correction
+// Black-76 plus a trivariate-tensor Chebyshev interpolation of the correction
 //
 //     C(k_log, T, sigma) = (P_american - P_european) / F
 //
