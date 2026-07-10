@@ -519,3 +519,76 @@ def test_compute_delisting_code_reconciliation_is_shuffle_invariant(tmp_store, t
     ).reset_index(drop=True)
 
     pd.testing.assert_frame_equal(baseline, shuffled)
+
+
+def test_compute_delisting_code_reconciliation_sort_is_total_order_with_colliding_security_day() -> None:
+    # S4-0-fix2 (carried-over Minor from S4-0's review): the final sort keyed on
+    # (security_id, delist_date, symbol) is not a total order once two delisting_events share
+    # that triple -- the duplicate-event case reconciliation_id's own hardening legitimized
+    # (see test_reconciliation_id_is_unique_when_two_delisting_events_share_a_security_day).
+    # kind="mergesort" is stable, so tied rows keep their *input* relative order -- meaning the
+    # emitted row *order* (not the row *set*) flips depending on input order, violating the
+    # sprint's determinism clause D ("same inputs + params -> byte-identical rows"). The prior
+    # shuffle-invariance test above deliberately used distinct (security_id, delist_date, symbol)
+    # combos and therefore cannot catch this. This test uses two events colliding on that triple
+    # (distinct delisting_event_id) with no terminal-return rows at all, so the only thing that
+    # can make output order differ between "forward" and "reversed" input is exactly this bug.
+    from db.delisting import compute_delisting_code_reconciliation
+
+    events = pd.DataFrame(
+        [
+            {
+                "delisting_event_id": "evt-dup-delete",
+                "security_id": "SEC-DUP-SORT",
+                "symbol": "DUP",
+                "delist_date": dt.date(2024, 6, 1),
+                "as_of_date": dt.date(2024, 6, 1),
+                "available_at": dt.datetime(2024, 6, 1, 22, 0),
+                "delist_code": "NASDAQ_DELETE",
+            },
+            {
+                "delisting_event_id": "evt-dup-absence",
+                "security_id": "SEC-DUP-SORT",
+                "symbol": "DUP",
+                "delist_date": dt.date(2024, 6, 1),
+                "as_of_date": dt.date(2024, 6, 1),
+                "available_at": dt.datetime(2024, 6, 1, 23, 0),
+                "delist_code": "SNAPSHOT_ABSENCE",
+            },
+        ]
+    )
+    terminal_returns = pd.DataFrame(
+        columns=[
+            "return_observation_id",
+            "security_id",
+            "symbol",
+            "delist_date",
+            "as_of_date",
+            "available_at",
+            "crsp_dlstcd",
+        ]
+    )
+    code_dim = pd.DataFrame(
+        [
+            {"delist_code": "NASDAQ_DELETE", "reason_category": "DELISTED_OR_TRANSFERRED_UNKNOWN"},
+            {"delist_code": "SNAPSHOT_ABSENCE", "reason_category": "ABSENT_FROM_PUBLIC_DIRECTORY"},
+        ]
+    )
+
+    baseline = compute_delisting_code_reconciliation(events, terminal_returns, code_dim).reset_index(drop=True)
+
+    reversed_events = events.iloc[::-1].reset_index(drop=True)
+    assert list(reversed_events["delisting_event_id"]) != list(events["delisting_event_id"])  # sanity: reordered
+    reversed_result = compute_delisting_code_reconciliation(
+        reversed_events, terminal_returns, code_dim
+    ).reset_index(drop=True)
+
+    # Row *set* is stable regardless (this must hold both before and after the fix)...
+    assert set(baseline["delisting_event_id"]) == set(reversed_result["delisting_event_id"]) == {
+        "evt-dup-delete",
+        "evt-dup-absence",
+    }
+    # ...but row *order* must also be byte-identical -- this is what the missing total-order key
+    # breaks: with only (security_id, delist_date, symbol) as the sort key, both rows tie, the
+    # stable sort preserves input order, and the two calls above fed opposite input orders.
+    pd.testing.assert_frame_equal(baseline, reversed_result)

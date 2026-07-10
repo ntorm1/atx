@@ -1049,10 +1049,15 @@ def compute_delisting_code_reconciliation(
             "run_id": run_id,
         }
     )
-    result = result.sort_values(
-        by=["security_id", "delist_date", "symbol"], kind="mergesort", na_position="last"
-    ).reset_index(drop=True)
     result["reconciliation_id"] = result.apply(_stable_reconciliation_id, axis=1)
+    # reconciliation_id terminates the sort key so it is a total order: (security_id,
+    # delist_date, symbol) alone ties whenever two delisting_events rows share a security-day
+    # (e.g. a listing-status delete and a snapshot-absence event on the same day), and a stable
+    # mergesort would then just preserve whatever order the input frames happened to arrive in --
+    # violating "same inputs + params -> byte-identical rows" even though the row set is stable.
+    result = result.sort_values(
+        by=["security_id", "delist_date", "symbol", "reconciliation_id"], kind="mergesort", na_position="last"
+    ).reset_index(drop=True)
     return result[RECONCILIATION_COLUMNS]
 
 
