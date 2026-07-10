@@ -4,7 +4,10 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
+#include <cstring>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -65,6 +68,31 @@ double euro_put(double S, double K, double T, double sigma, double r, double q) 
 double euro_call(double S, double K, double T, double sigma, double r, double q) {
   return black76_price(S * std::exp((r - q) * T), K, T, sigma, std::exp(-r * T),
                        Side::Call);
+}
+
+// Exact IEEE-754 bit comparison (see backtest_test.cpp): the r>0 corpus must stay
+// bit-for-bit identical across this regime-guard change (Global Constraint 1).
+[[nodiscard]] bool bits_equal(double a, double b) noexcept {
+  std::uint64_t ba = 0;
+  std::uint64_t bb = 0;
+  std::memcpy(&ba, &a, sizeof ba);
+  std::memcpy(&bb, &b, sizeof bb);
+  return ba == bb;
+}
+
+// Independent statement of the Task-1 spec table (in the ORIGINAL option's own
+// (r, q), NOT delegating to the production classifier). Put never-early <=>
+// r<=0 && r<=q; call never-early <=> q<=0 && q<=r. Outside that but with the
+// short-rate side <=0, a double-continuation region appears the single-boundary
+// ALO scheme cannot price.
+enum class Regime { European, Unsupported, American };
+[[nodiscard]] Regime classify_spec(double r, double q, Side side) {
+  const double rate = (side == Side::Put) ? r : q;   // internal-put short rate
+  const double yield = (side == Side::Put) ? q : r;  // internal-put yield
+  if (rate > 0.0) {
+    return Regime::American;
+  }
+  return (rate <= yield) ? Regime::European : Regime::Unsupported;
 }
 
 // ── No-early-exercise short-circuits ────────────────────────────────────
@@ -883,6 +911,314 @@ TEST(AndersenLakeCallSlice, FastPresetDegenerateEuroAndValidation) {
                                         r, q, std::span<double>(short_out),
                                         std::nullopt)
                    .has_value());
+}
+
+// ── Negative-rate regime classification (Task 1, P0.5) ──────────────────────
+//
+// The American pricer's no-early-exercise short-circuit was wrong under negative
+// rates: it returned a European price for options that CAN be optimally exercised
+// early. The fix classifies (r, q, side) into three regimes (Healy 2021 §2.2):
+// European (American == European exactly), Unsupported (a double continuation
+// region the single-boundary ALO cannot price -> NotImplemented), and American.
+
+// Rate/yield corner grid: assert each cell lands in the spec regime with the
+// right behavior (European == Black-76 to 1e-12; Unsupported -> NotImplemented;
+// American -> a sane, above-intrinsic Ok). Cheap (no PDE oracle) so it can sweep
+// the full 5x5 x 2 sides x 3 (S/K,T,sigma) points.
+TEST(AndersenLakeRegime, RateYieldCornerGrid_Classification) {
+  const double rq[] = {-0.02, -0.005, 0.0, 0.005, 0.05};
+  struct Pt { double sk, T, sigma; };
+  const Pt pts[] = {{1.0, 1.0, 0.20}, {0.8, 1.0, 0.20}, {1.25, 0.25, 0.50}};
+  const Side sides[] = {Side::Call, Side::Put};
+  const double K = 100.0;
+  int n_euro = 0, n_unsup = 0, n_amer = 0;
+  for (double r : rq)
+    for (double q : rq)
+      for (Side side : sides)
+        for (const Pt& pt : pts) {
+          const double S = pt.sk * K;
+          const auto res = andersen_lake(S, K, pt.T, pt.sigma, r, q, side);
+          const Regime reg = classify_spec(r, q, side);
+          const std::string where = "r=" + std::to_string(r) + " q=" +
+                                     std::to_string(q) + " S=" +
+                                     std::to_string(S) + " side=" +
+                                     (side == Side::Call ? "C" : "P");
+          if (reg == Regime::European) {
+            ASSERT_TRUE(res.has_value()) << where << " : " << res.error().to_string();
+            const double euro = (side == Side::Call)
+                                    ? euro_call(S, K, pt.T, pt.sigma, r, q)
+                                    : euro_put(S, K, pt.T, pt.sigma, r, q);
+            EXPECT_LT(std::fabs(*res - euro), 1.0e-12) << where;
+            ++n_euro;
+          } else if (reg == Regime::Unsupported) {
+            ASSERT_FALSE(res.has_value()) << where << " expected NotImplemented";
+            EXPECT_EQ(res.error().code(), atx::core::ErrorCode::NotImplemented) << where;
+            ++n_unsup;
+          } else {
+            ASSERT_TRUE(res.has_value()) << where << " : " << res.error().to_string();
+            EXPECT_TRUE(std::isfinite(*res)) << where;
+            const double intr = (side == Side::Call) ? (S - K) : (K - S);
+            EXPECT_GE(*res, std::fmax(intr, 0.0) - 1.0e-9) << where;
+            ++n_amer;
+          }
+        }
+  EXPECT_GT(n_euro, 0);
+  EXPECT_GT(n_unsup, 0);
+  EXPECT_GT(n_amer, 0);
+}
+
+// A curated handful of European and American cells (both sides, mixed rate/yield
+// signs) checked against the independent Crank-Nicolson PDE oracle. In the
+// European regime the American PDE price equals Black-76 (early exercise never
+// optimal); in the American regime AL must track the PDE to the existing
+// AL-vs-PDE tolerance. Oracle calls are kept to a couple dozen (each ~a PDE solve).
+TEST(AndersenLakeRegime, CornerGrid_VsPdeOracle) {
+  struct Cell { double S, r, q; Side side; };
+  const Cell cells[] = {
+      // European (r<=0 && r<=q  put / q<=0 && q<=r call): American == European.
+      {80.0, -0.02, 0.05, Side::Put},   {85.0, -0.005, 0.0, Side::Put},
+      {90.0, 0.0, 0.05, Side::Put},     {120.0, 0.05, -0.02, Side::Call},
+      {115.0, 0.0, -0.005, Side::Call}, {110.0, 0.05, 0.0, Side::Call},
+      // American (r>0 put / q>0 call), including negative opposite-carry corners.
+      {90.0, 0.05, -0.02, Side::Put},   {95.0, 0.05, 0.02, Side::Put},
+      {100.0, 0.05, 0.05, Side::Put},   {105.0, -0.02, 0.05, Side::Call},
+      {105.0, 0.02, 0.05, Side::Call},  {100.0, 0.05, 0.05, Side::Call},
+  };
+  const double K = 100.0, T = 1.0, sigma = 0.25;
+  double max_rel = 0.0;
+  int n_compared = 0;
+  for (const Cell& c : cells) {
+    const double p_al =
+        value_or_fail(andersen_lake(c.S, K, T, sigma, c.r, c.q, c.side));
+    const double p_pde = oracle_pde_american(c.S, K, T, sigma, c.r, c.q, c.side);
+    ASSERT_TRUE(std::isfinite(p_pde));
+    if (p_pde > 0.05) {
+      max_rel = std::fmax(max_rel, std::fabs(p_al - p_pde) / p_pde);
+      ++n_compared;
+    }
+  }
+  EXPECT_GE(n_compared, 12);
+  EXPECT_LT(max_rel, 5.0e-3);
+}
+
+// Regression: the specific deep-ITM put with q < r < 0 (double-continuation).
+// New behavior is an explicit NotImplemented; the OLD guard returned the European
+// price, which the PDE oracle shows was wrong by >> $0.005. This test documents
+// exactly WHY the guard changed.
+TEST(AndersenLakeRegime, UnsupportedPutRegression_OldEuropeanWasWrong) {
+  const double S = 70.0, K = 100.0, T = 1.0, sigma = 0.30, r = -0.005, q = -0.02;
+  ASSERT_EQ(classify_spec(r, q, Side::Put), Regime::Unsupported);
+
+  const auto res = andersen_lake(S, K, T, sigma, r, q, Side::Put);
+  ASSERT_FALSE(res.has_value());
+  EXPECT_EQ(res.error().code(), atx::core::ErrorCode::NotImplemented);
+
+  const double euro = euro_put(S, K, T, sigma, r, q);
+  const double pde = oracle_pde_american(S, K, T, sigma, r, q, Side::Put);
+  ASSERT_TRUE(std::isfinite(pde));
+  EXPECT_GT(std::fabs(euro - pde), 0.005);  // the silent European answer was wrong
+  EXPECT_GT(pde, euro);                     // early exercise has genuine value here
+}
+
+// Global Constraint 1: wherever the corpus lives (r>0 puts / q>0 or European
+// calls), the price is BIT-FOR-BIT what the pre-change code produced. Values were
+// captured from the pre-change binary and hard-coded here.
+TEST(AndersenLakeRegime, PositiveRateGrid_BitIdenticalToPrechange) {
+  struct Pin { double S, K, T, sigma, r, q; Side side; double expected; };
+  const Pin pins[] = {
+      {100.0, 100.0, 1.0, 0.25, 0.03, -0.01, Side::Put, 8.3642096679194555},
+      {100.0, 100.0, 1.0, 0.25, 0.03, 0.00, Side::Put, 8.67484861703951},
+      {100.0, 100.0, 1.0, 0.25, 0.03, 0.02, Side::Put, 9.3465659527747356},
+      {100.0, 100.0, 1.0, 0.25, 0.03, 0.06, Side::Put, 11.013229294069999},
+      {100.0, 100.0, 1.0, 0.25, 0.06, 0.02, Side::Put, 8.2133823819523322},
+      {80.0, 100.0, 1.0, 0.25, 0.03, 0.02, Side::Put, 21.489057874566694},
+      {100.0, 100.0, 1.0, 0.25, 0.03, -0.01, Side::Call, 11.956010735337411},
+      {100.0, 100.0, 1.0, 0.25, 0.03, 0.00, Side::Call, 11.348476825143523},
+      {100.0, 100.0, 1.0, 0.25, 0.03, 0.02, Side::Call, 10.200496715877067},
+      {100.0, 100.0, 1.0, 0.25, 0.03, 0.06, Side::Call, 8.511813671384429},
+      {100.0, 100.0, 1.0, 0.25, 0.06, 0.02, Side::Call, 11.602657346692153},
+      {120.0, 100.0, 1.0, 0.25, 0.03, 0.02, Side::Call, 23.973643280589464},
+  };
+  for (const Pin& p : pins) {
+    const double got =
+        value_or_fail(andersen_lake(p.S, p.K, p.T, p.sigma, p.r, p.q, p.side));
+    EXPECT_TRUE(bits_equal(got, p.expected))
+        << "r=" << p.r << " q=" << p.q << " side="
+        << (p.side == Side::Call ? "C" : "P") << " got=" << got
+        << " expected=" << p.expected;
+  }
+}
+
+// The batched call slice must match the scalar andersen_lake per strike in EVERY
+// regime, including returning the SAME Status classification where the scalar
+// errors (Unsupported).
+TEST(AndersenLakeCallSlice, MatchesScalarPerStrike_AllRegimes) {
+  const double S = 100.0, T = 0.5, sigma = 0.30;
+  const double strikes[] = {80.0, 90.0, 100.0, 110.0, 120.0};
+  const double rq[] = {-0.02, -0.005, 0.0, 0.005, 0.05};
+  std::vector<double> out(std::size(strikes), 0.0);
+  for (double r : rq)
+    for (double q : rq) {
+      const auto st = andersen_lake_call_slice(
+          S, std::span<const double>(strikes), T, sigma, r, q,
+          std::span<double>(out));
+      const Regime reg = classify_spec(r, q, Side::Call);
+      const std::string where = "r=" + std::to_string(r) + " q=" + std::to_string(q);
+      if (reg == Regime::Unsupported) {
+        ASSERT_FALSE(st.has_value()) << where;
+        EXPECT_EQ(st.error().code(), atx::core::ErrorCode::NotImplemented) << where;
+        for (double Kk : strikes) {
+          const auto sc = andersen_lake(S, Kk, T, sigma, r, q, Side::Call);
+          ASSERT_FALSE(sc.has_value()) << where << " K=" << Kk;
+          EXPECT_EQ(sc.error().code(), atx::core::ErrorCode::NotImplemented) << where;
+        }
+      } else {
+        ASSERT_TRUE(st.has_value()) << where << " : " << st.error().to_string();
+        for (std::size_t i = 0; i < std::size(strikes); ++i) {
+          const double sc = value_or_fail(
+              andersen_lake(S, strikes[i], T, sigma, r, q, Side::Call));
+          EXPECT_TRUE(bits_equal(out[i], sc))
+              << where << " K=" << strikes[i] << " slice=" << out[i]
+              << " scalar=" << sc;
+        }
+      }
+    }
+}
+
+// McDonald-Schroder symmetry over the corner grid: C(S,K,r,q) == P(K,S,q,r), and
+// where one errors BOTH must error with the same code.
+TEST(AndersenLakeRegime, CallPutSymmetry_CornerGrid) {
+  const double rq[] = {-0.02, -0.005, 0.0, 0.005, 0.05};
+  const double S = 110.0, K = 100.0, T = 1.0, sigma = 0.25;
+  for (double r : rq)
+    for (double q : rq) {
+      const auto c = andersen_lake(S, K, T, sigma, r, q, Side::Call);
+      const auto p = andersen_lake(K, S, T, sigma, q, r, Side::Put);
+      const std::string where = "r=" + std::to_string(r) + " q=" + std::to_string(q);
+      ASSERT_EQ(c.has_value(), p.has_value()) << where;
+      if (c.has_value()) {
+        const double slack = std::fmax(1.0e-5, 1.0e-3 * std::fmax(*c, *p));
+        EXPECT_LT(std::fabs(*c - *p), slack) << where;
+      } else {
+        EXPECT_EQ(c.error().code(), p.error().code()) << where;
+      }
+    }
+}
+
+// The Greeks paths must SURFACE the NotImplemented error in the Unsupported
+// regime rather than silently returning a bundle built on a wrong European price;
+// the European put regime (r<=0 && r<=q) still returns a bundle (no early ex).
+TEST(AmericanGreeksRegime, UnsupportedRegime_PropagatesNotImplemented) {
+  const double S = 70.0, K = 100.0, T = 1.0, sigma = 0.30, r = -0.005, q = -0.02;
+  ASSERT_EQ(classify_spec(r, q, Side::Put), Regime::Unsupported);
+
+  const auto ga = american_greeks_al(S, K, T, sigma, r, q, Side::Put);
+  ASSERT_FALSE(ga.has_value());
+  EXPECT_EQ(ga.error().code(), atx::core::ErrorCode::NotImplemented);
+
+  const auto gf = american_greeks_fd(S, K, T, sigma, r, q, Side::Put,
+                                     AmericanMethod::AndersenLake, std::nullopt,
+                                     /*warm_start=*/false);
+  ASSERT_FALSE(gf.has_value());
+  EXPECT_EQ(gf.error().code(), atx::core::ErrorCode::NotImplemented);
+
+  const auto d = american_delta(S, K, T, sigma, r, q, Side::Put,
+                                AmericanMethod::AndersenLake, std::nullopt);
+  ASSERT_FALSE(d.has_value());
+  EXPECT_EQ(d.error().code(), atx::core::ErrorCode::NotImplemented);
+
+  // Unsupported CALL (r < q < 0) also errors through the FD routing.
+  const auto gc = american_greeks_al(K, S, T, sigma, q, r, Side::Call);
+  ASSERT_FALSE(gc.has_value());
+  EXPECT_EQ(gc.error().code(), atx::core::ErrorCode::NotImplemented);
+
+  // European put (r<=0 && r<=q): still a valid bundle.
+  const auto ge = american_greeks_al(100.0, 100.0, 1.0, 0.30, -0.01, 0.02, Side::Put);
+  ASSERT_TRUE(ge.has_value());
+}
+
+// Fix-wave 1c: the CorrectionCache Greeks route (`american_greeks`) must ALSO
+// surface NotImplemented in the Unsupported regime, not a Black-76+correction
+// bundle built on a wrong European price.
+TEST(AmericanGreeksRegime, CachedRoute_UnsupportedNotImplemented) {
+  const double S = 70.0, K = 100.0, T = 1.0, sigma = 0.30, r = -0.005, q = -0.02;
+  ASSERT_EQ(classify_spec(r, q, Side::Put), Regime::Unsupported);  // q < r <= 0
+  const auto g = american_greeks(S, K, T, sigma, r, q, Side::Put, nullptr);
+  ASSERT_FALSE(g.has_value());
+  EXPECT_EQ(g.error().code(), atx::core::ErrorCode::NotImplemented);
+  // European put regime still returns a valid bundle (no early exercise).
+  const auto ge = american_greeks(100.0, 100.0, 1.0, 0.30, -0.01, 0.02, Side::Put, nullptr);
+  ASSERT_TRUE(ge.has_value());
+}
+
+// Fix-wave 1b: the hot cached price must surface NaN (not a silent number) in the
+// Unsupported regime. Null-cache path: it delegates to the cold andersen_lake,
+// which now returns NotImplemented -> NaN.
+TEST(AmericanPriceCached, UnsupportedRegime_ReturnsNaN) {
+  const double S = 70.0, K = 100.0, T = 1.0, sigma = 0.30, r = -0.005, q = -0.02;
+  ASSERT_EQ(classify_spec(r, q, Side::Put), Regime::Unsupported);
+  EXPECT_TRUE(std::isnan(
+      american_price_cached(S, K, T, sigma, r, q, Side::Put, nullptr)));
+}
+
+// Fix-wave 1a: the warm-started ALO pricer must surface NaN in the
+// double-continuation regime rather than the old silent European price.
+TEST(AloPricer, UnsupportedRegime_ReturnsNaN) {
+  // Double-continuation put (q < r <= 0).
+  {
+    const double S = 70.0, K = 100.0, T = 1.0, r = -0.005, q = -0.02, sig = 0.30;
+    ASSERT_EQ(classify_spec(r, q, Side::Put), Regime::Unsupported);
+    AloPricer pr(S, K, T, r, q, Side::Put);
+    EXPECT_TRUE(std::isnan(pr.price(sig)));
+    // Degenerate sigma still collapses to intrinsic (K - S) even in this regime.
+    EXPECT_NEAR(pr.price(1.0e-12), 30.0, 1.0e-9);
+  }
+  // Double-continuation call (r < q <= 0), via the internal-put swap.
+  {
+    const double S = 100.0, K = 70.0, T = 1.0, r = -0.02, q = -0.005, sig = 0.30;
+    ASSERT_EQ(classify_spec(r, q, Side::Call), Regime::Unsupported);
+    AloPricer pr(S, K, T, r, q, Side::Call);
+    EXPECT_TRUE(std::isnan(pr.price(sig)));
+  }
+}
+
+// Fix-wave 2: BAW is single-boundary, so it returns the SAME NotImplemented as
+// andersen_lake in the double-continuation regime (previously untested).
+TEST(Baw, UnsupportedRegime_NotImplemented) {
+  const double S = 70.0, K = 100.0, T = 1.0, sigma = 0.30, r = -0.005, q = -0.02;
+  ASSERT_EQ(classify_spec(r, q, Side::Put), Regime::Unsupported);  // r <= 0 && r > q
+  const auto res = baw_american(S, K, T, sigma, r, q, Side::Put);
+  ASSERT_FALSE(res.has_value());
+  EXPECT_EQ(res.error().code(), atx::core::ErrorCode::NotImplemented);
+}
+
+// Fix-wave 3: a non-finite r/q would pass the regime classifier (NaN comparisons
+// are false) and leak a NaN price through an Ok result. Every scalar/slice entry
+// point must reject it as InvalidArgument. No-op for the finite-input corpus.
+TEST(AndersenLake, NonFiniteRateOrYield_IsInvalidArgument) {
+  const double S = 100.0, K = 100.0, T = 1.0, sigma = 0.30;
+  const double inf = std::numeric_limits<double>::infinity();
+  const double bad[] = {std::nan(""), inf, -inf};
+  for (const double x : bad) {
+    for (const Side side : {Side::Call, Side::Put}) {
+      const auto a = andersen_lake(S, K, T, sigma, 0.03, x, side);  // bad q
+      ASSERT_FALSE(a.has_value());
+      EXPECT_EQ(a.error().code(), atx::core::ErrorCode::InvalidArgument);
+      const auto b = andersen_lake(S, K, T, sigma, x, 0.01, side);  // bad r
+      ASSERT_FALSE(b.has_value());
+      EXPECT_EQ(b.error().code(), atx::core::ErrorCode::InvalidArgument);
+    }
+    const auto bw = baw_american(S, K, T, sigma, 0.03, x, Side::Put);
+    ASSERT_FALSE(bw.has_value());
+    EXPECT_EQ(bw.error().code(), atx::core::ErrorCode::InvalidArgument);
+
+    std::vector<double> ks{90.0, 110.0};
+    std::vector<double> px(2, 0.0);
+    const auto sl = andersen_lake_call_slice(S, std::span<const double>(ks), T,
+                                             sigma, 0.03, x, std::span<double>(px));
+    ASSERT_FALSE(sl.has_value());
+    EXPECT_EQ(sl.error().code(), atx::core::ErrorCode::InvalidArgument);
+  }
 }
 
 }  // namespace

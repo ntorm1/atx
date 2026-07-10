@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <utility>
@@ -388,5 +389,163 @@ TEST(CorrectionCache, CachedPrice_MatchesColdAndersenLake) {
   const double hot = atx::vol::american_price_cached(S, K, T, sigma, r, q, Side::Put, &tbl);
   EXPECT_LT(std::fabs(hot - cold) / cold, 1.0e-3);
 }
+
+// Fix-wave 1d: baking a cache at a fixed (r, q, side) that lands in the
+// double-continuation regime would sample only NotImplemented (floored to 0),
+// silently encoding a pure-European surface. Reject the build up front.
+TEST(CorrectionCache, Build_RejectsUnsupportedRegime) {
+  // Double-continuation PUT (q < r <= 0).
+  auto rp = CorrectionCache::build(8, 8, 8, -0.005, -0.02, -0.5, 0.5, 0.1, 1.0,
+                                   0.1, 0.5, Side::Put);
+  ASSERT_FALSE(rp.has_value());
+  EXPECT_EQ(rp.error().code(), atx::core::ErrorCode::NotImplemented);
+  // Double-continuation CALL (r < q <= 0).
+  auto rc = CorrectionCache::build(8, 8, 8, -0.02, -0.005, -0.5, 0.5, 0.1, 1.0,
+                                   0.1, 0.5, Side::Call);
+  ASSERT_FALSE(rc.has_value());
+  EXPECT_EQ(rc.error().code(), atx::core::ErrorCode::NotImplemented);
+  // European corner (put r <= 0 && r <= q) is NOT unsupported — it still builds.
+  auto re = CorrectionCache::build(8, 8, 8, -0.02, -0.005, -0.5, 0.5, 0.1, 1.0,
+                                   0.1, 0.5, Side::Put);
+  EXPECT_TRUE(re.has_value());
+}
+
+// Fix-wave 1b: the POPULATED-cache hot path must return NaN when queried in the
+// Unsupported regime (the guard keys off the query's (r, q), not the cache's).
+TEST(CorrectionCache, CachedPrice_UnsupportedRegime_ReturnsNaN) {
+  const double r = 0.05, q = 0.0;  // American put — a valid, populated cache
+  auto built = CorrectionCache::build(16, 12, 8, r, q, -0.5, 0.5, 0.1, 2.0, 0.1,
+                                      0.8, Side::Put);
+  ASSERT_TRUE(built.has_value());
+  const CorrectionCache tbl = std::move(*built);
+  // Query at an Unsupported (r, q): guard must surface NaN, not euro+F*corr.
+  const double px = atx::vol::american_price_cached(100.0, 100.0, 1.0, 0.30,
+                                                    -0.005, -0.02, Side::Put, &tbl);
+  EXPECT_TRUE(std::isnan(px));
+}
+
+// ── Task 3: bit-identity pins for the value-sweep / scratch waste removal ──
+//
+// These lock the exact double bit patterns of eval / eval_grad / eval_partials
+// and the american_greeks bundle so that removing the discarded value sweep and
+// right-sizing the Clenshaw scratch is provably output-preserving. The expected
+// hex was captured from the PRE-change Release/Debug build; if any of these move,
+// the "pure waste removal" claim is false.
+namespace pin {
+
+using atx::vol::american_greeks;
+using atx::vol::AmericanGreeks;
+
+[[nodiscard]] std::uint64_t bits(double d) noexcept {
+  return std::bit_cast<std::uint64_t>(d);
+}
+
+// Deterministic put cache at production-shaped dims (16 x 8 x 12), r>0/q>=0 carry
+// (a valid American regime, per Task 1). build() is deterministic given its args.
+[[nodiscard]] CorrectionCache make_pin_cache() {
+  auto built = CorrectionCache::build(/*n_k=*/16, /*n_T=*/8, /*n_s=*/12,
+                                      /*r=*/0.05, /*q=*/0.0, /*k_log_min=*/-0.5,
+                                      /*k_log_max=*/0.5, /*T_min=*/30.0 / 365.25,
+                                      /*T_max=*/2.0, /*sigma_min=*/0.10,
+                                      /*sigma_max=*/0.80, Side::Put);
+  EXPECT_TRUE(built.has_value());
+  return std::move(*built);
+}
+
+// Query points: three interior, then one out-of-box per axis (pins the clamp +
+// oob-partial-zeroing that eval_partials must reproduce).
+struct QPt { double k_log, T, sigma; };
+constexpr std::array<QPt, 6> kQ = {{
+    {0.00, 0.25, 0.30}, {-0.30, 1.00, 0.50}, {0.40, 0.15, 0.20},
+    {0.80, 0.25, 0.30},  // k_log > box  -> oob_k
+    {0.00, 0.05, 0.30},  // T < box      -> oob_T
+    {0.00, 0.25, 0.95},  // sigma > box  -> oob_s
+}};
+
+// american_greeks points (r=0.05, q=0.0, Put — matches the cache); all land the
+// internal k_log = log(K/F) inside the box (the common cached path).
+struct GPt { double S, K, T, sigma; };
+constexpr std::array<GPt, 3> kG = {{
+    {100.0, 100.0, 0.25, 0.30}, {100.0, 110.0, 0.50, 0.45}, {100.0, 90.0, 0.15, 0.25},
+}};
+
+// Pre-change bit patterns (captured from the current Debug build; the Release
+// build agrees — SSE2, no fast-math). Columns: {eval, eval_grad_value, dk, dT,
+// dsigma}. Rows 3/4/5 pin the out-of-box clamp + zeroed partial on each axis.
+constexpr std::array<std::array<std::uint64_t, 5>, 6> kEvalPins = {{
+    {{0x3f53d821e0eb7c56, 0x3f53d821e0eb7c56, 0x3f8d4b35b7aa3c38, 0x3f77248f99846db4, 0xbf62bdf240536558}},
+    {{0x3f5ae5637f2e32b2, 0x3f5ae5637f2e32b2, 0x3f8026cccd3c2470, 0x3f69f66357484121, 0x3f7085ebc3eda166}},
+    {{0x3f86c328003cc833, 0x3f86c328003cc833, 0x3f7a56efd8898023, 0x3fb32d46c2331819, 0x3f5ffdd6731a9aba}},
+    {{0x3f94f6c1485f287c, 0x3f94f6c1485f287c, 0x0000000000000000, 0x3fb4b71771002125, 0xbf401eec38c24aa0}},
+    {{0x3f31deddf8f2b080, 0x3f31deddf8f2b080, 0x3f7841a8f90cc7d4, 0x0000000000000000, 0x3f674b203f88188c}},
+    {{0x3f50fa36d6f198a3, 0x3f50fa36d6f198a3, 0x3f74c8b974242669, 0x3f7597b918916db2, 0x0000000000000000}},
+}};
+
+// Pre-change american_greeks bundle bits: {delta,gamma,vega,theta,rho,vanna,volga,charm,price}.
+constexpr std::array<std::array<std::uint64_t, 9>, 3> kGreekPins = {{
+    {{0xbfdcc1435ba70a4f, 0x3f9bc19fa8b9f01f, 0x40338baa7f016d58, 0xc023a60cf9ad4fbc, 0xc029229e12ac2ed8, 0x3faa9866f415e97a, 0xbfeed34a5db9d4f4, 0x3f94d45e9eed1cab, 0x4015c8e2bbd78fd5}},
+    {{0xbfe15513b06efcdb, 0x3f8b8257a7c38b08, 0x403bbc10d4dc0675, 0xc023f8298c7d39c1, 0xc041ce3ecb7f9660, 0x3fd91d32f03b665b, 0x4022fbf470c613e7, 0xbfc3eea44a94656e, 0x403173bba4a7ef98}},
+    {{0xbfbd512b7c16460d, 0x3f94370020cc86fe, 0x401d22186848da2d, 0xc0164b736804f87b, 0xbffcce2aabf1f2b7, 0xbfea6505d7bc7584, 0x40451252fa86ef04, 0x3fe6966c66d6a379, 0x3fe1e55a0dcb12b0}},
+}};
+
+TEST(Pin, EvalAndEvalGradBitIdentical) {
+  const CorrectionCache tbl = make_pin_cache();
+  for (std::size_t i = 0; i < kQ.size(); ++i) {
+    const QPt p = kQ[i];
+    const double v = tbl.eval(p.k_log, p.T, p.sigma);
+    double dk = 0, dT = 0, ds = 0;
+    const double vg = tbl.eval_grad(p.k_log, p.T, p.sigma, &dk, &dT, &ds);
+    EXPECT_EQ(bits(v), kEvalPins[i][0]) << "eval @" << i;
+    EXPECT_EQ(bits(vg), kEvalPins[i][1]) << "eval_grad value @" << i;
+    EXPECT_EQ(bits(dk), kEvalPins[i][2]) << "dk @" << i;
+    EXPECT_EQ(bits(dT), kEvalPins[i][3]) << "dT @" << i;
+    EXPECT_EQ(bits(ds), kEvalPins[i][4]) << "dsigma @" << i;
+    EXPECT_EQ(bits(v), bits(vg)) << "eval vs eval_grad value @" << i;  // public contract
+  }
+}
+
+TEST(Pin, AmericanGreeksBundleBitIdentical) {
+  const CorrectionCache tbl = make_pin_cache();
+  for (std::size_t i = 0; i < kG.size(); ++i) {
+    const GPt g = kG[i];
+    const auto res = american_greeks(g.S, g.K, g.T, g.sigma, 0.05, 0.0, Side::Put, &tbl);
+    ASSERT_TRUE(res.has_value());
+    const AmericanGreeks& a = *res;
+    const std::array<std::uint64_t, 9> got = {
+        bits(a.delta), bits(a.gamma), bits(a.vega), bits(a.theta), bits(a.rho),
+        bits(a.vanna), bits(a.volga), bits(a.charm), bits(a.price)};
+    for (std::size_t f = 0; f < got.size(); ++f) {
+      EXPECT_EQ(got[f], kGreekPins[i][f]) << "field " << f << " @pt " << i;
+    }
+  }
+}
+
+// eval_partials must write bit-identical partials to eval_grad — both the frozen
+// pre-change pins (columns 2..4) and, independently, the live eval_grad output at
+// the same point (robust to any future re-pinning). Also checks nullptr-skip.
+TEST(Pin, EvalPartialsMatchesEvalGrad) {
+  const CorrectionCache tbl = make_pin_cache();
+  for (std::size_t i = 0; i < kQ.size(); ++i) {
+    const QPt p = kQ[i];
+    double gk = 0, gT = 0, gs = 0;
+    tbl.eval_grad(p.k_log, p.T, p.sigma, &gk, &gT, &gs);  // reference partials
+    double pk = 0, pT = 0, ps = 0;
+    tbl.eval_partials(p.k_log, p.T, p.sigma, &pk, &pT, &ps);
+    EXPECT_EQ(bits(pk), kEvalPins[i][2]) << "dk pin @" << i;
+    EXPECT_EQ(bits(pT), kEvalPins[i][3]) << "dT pin @" << i;
+    EXPECT_EQ(bits(ps), kEvalPins[i][4]) << "dsigma pin @" << i;
+    EXPECT_EQ(bits(pk), bits(gk)) << "dk vs eval_grad @" << i;
+    EXPECT_EQ(bits(pT), bits(gT)) << "dT vs eval_grad @" << i;
+    EXPECT_EQ(bits(ps), bits(gs)) << "dsigma vs eval_grad @" << i;
+
+    // nullptr-skip: requesting only dsigma writes exactly the same dsigma bits and
+    // touches nothing else (matches the american_greeks FD call sites).
+    double only_s = 12345.0;
+    tbl.eval_partials(p.k_log, p.T, p.sigma, nullptr, nullptr, &only_s);
+    EXPECT_EQ(bits(only_s), bits(ps)) << "dsigma-only @" << i;
+  }
+}
+
+}  // namespace pin
 
 }  // namespace

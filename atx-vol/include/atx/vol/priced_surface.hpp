@@ -125,6 +125,90 @@ class PricedSurface {
   // seventeen (bit-identical value; same S/sigma/carry plumbing as greeks()).
   [[nodiscard]] Result<double> delta(double K, double T, Side side) const;
 
+  // ── Fused resolution + single-point / batch evaluation (P1.1) ──────────────
+  //
+  // Every query method above independently re-does the SAME resolution: validate
+  // (K, T), interpolate the T-bracket forward/carry, form k = ln(K / F(T)), and
+  // read the surface IV. `resolve` does that work ONCE; `evaluate` /
+  // `evaluate_batch` price + Greek off a single resolution, and the six public
+  // query methods are themselves reimplemented on top of `resolve` so there is
+  // exactly one resolution code path (no six copies).
+
+  // Which outputs a fused evaluation should populate. Bitmask; combine with `|`.
+  // FirstOrder/SecondOrder both request the FULL American Greeks bundle (the FD /
+  // AL kernels compute delta..charm together — there is no cheaper per-axis split
+  // at the bundle level); the split names document caller INTENT.
+  enum class EvalField : std::uint32_t {
+    None = 0,
+    Iv = 1u << 0,          // European-equivalent implied vol (always free once resolved)
+    Price = 1u << 1,       // American mark (fair_value)
+    FirstOrder = 1u << 2,  // delta, gamma, vega, theta, rho
+    SecondOrder = 1u << 3, // vanna, volga, charm
+  };
+
+  // The point resolved once: validate + T-bracket + forward/carry + ln(K/F) +
+  // surface IV. Everything downstream consumes this; nothing re-resolves. `valid`
+  // is false (all other fields left 0) for a non-finite/non-positive K or T.
+  struct ResolvedSurfacePoint {
+    double K{0.0};
+    double T{0.0};
+    double forward{0.0};
+    double q_eff{0.0};
+    double k_log{0.0};
+    double sigma{0.0};
+    double rate{0.0};
+    bool valid{false};
+  };
+
+  // Resolve validate + T-bracket + forward/carry + log(K/F) + surface IV, ONCE.
+  // noexcept + allocation-free. Bit-identical resolution to what every query
+  // method computed individually before P1.1.
+  [[nodiscard]] ResolvedSurfacePoint resolve(double K, double T) const noexcept;
+
+  // One fused single-point evaluation. `iv` and `price` are bit-identical to
+  // `iv(K,T)` / `fair_value(K,T,side).value()`; `greeks` is bit-identical to
+  // `greeks(K,T,side).value()` (or `greeks_analytic` when `analytic` is set).
+  // `status` is Ok, or the propagated pricer error (e.g. the negative-carry
+  // Unsupported corner), in which case the numeric fields are NaN.
+  //
+  // Field routing: requesting FirstOrder|SecondOrder runs the Greek bundle; since
+  // american_greeks_fd().price IS the fair value (bit-identical), requesting
+  // Greeks yields `price` FOR FREE (no extra american_price solve). Requesting
+  // only Price runs american_price alone. Requesting neither does NO pricer solve
+  // (Iv-only is one resolution and nothing else). `iv` is always populated when
+  // the point is valid (it is free from the resolution).
+  struct FusedResult {
+    double iv{0.0};
+    double price{0.0};
+    AmericanGreeks greeks{}; // populated when FirstOrder|SecondOrder requested
+    Status status{};         // default-constructed == Ok
+  };
+
+  [[nodiscard]] FusedResult evaluate(double K, double T, Side side, EvalField fields,
+                                     bool analytic) const;
+
+  // Caller-provided, one-entry-per-query output spans for `evaluate_batch`.
+  // `greeks` may be empty when no Greeks are requested; `iv`, `price` and
+  // `status` must each be sized to the query count.
+  struct EvaluationSoA {
+    std::span<double> iv;
+    std::span<double> price;
+    std::span<AmericanGreeks> greeks; // empty if Greeks not requested
+    std::span<Status> status;
+  };
+
+  // Fused batch/ladder evaluation of a (K, T, side) vector. When consecutive
+  // entries share a bit-identical `T` (a strike ladder), the T-bracket and carry
+  // are resolved ONCE and reused across the run — the per-entry result is
+  // bit-identical to `evaluate` because the reused carry equals the per-entry
+  // interpolation exactly (T compared by raw bits, never a tolerance). Writes
+  // only into `out`'s caller-provided spans; the valid/hot path allocates nothing.
+  // @return InvalidArgument on a K/T/side length mismatch or an out-span sized
+  //         neither 0 (where permitted) nor the query count.
+  [[nodiscard]] Status evaluate_batch(std::span<const double> K, std::span<const double> T,
+                                      std::span<const Side> side, EvalField fields, bool analytic,
+                                      EvaluationSoA out) const;
+
   // ── Term carry accessors (the query re-pricing forward / effective yield) ──
   //
   // The interpolated term forward F(T) and effective carry q_eff(T): clamp to the
@@ -161,10 +245,56 @@ class PricedSurface {
   };
   [[nodiscard]] ForwardCarry interp_forward(double T) const noexcept;
 
+  // Resolve a point given an already-interpolated carry (the ladder-reuse path).
+  // Bit-identical to `resolve(K, T)` when `fc == interp_forward(T)`.
+  [[nodiscard]] ResolvedSurfacePoint resolve_with_carry(double K, double T,
+                                                        ForwardCarry fc) const noexcept;
+
+  // Shared price/Greek routing for `evaluate` / `evaluate_batch` off one resolved
+  // point — the single place the field bitmask drives the pricer calls.
+  [[nodiscard]] FusedResult evaluate_resolved(const ResolvedSurfacePoint& p, Side side,
+                                              EvalField fields, bool analytic) const;
+
   CurveSurface surface_;              // fitted curves (any kind), ascending T
   std::vector<SliceContext> ctx_;     // per-slice carry (‖ surface_ slices)
   PricingContext pricing_;            // cold re-pricing scalars
   bool term_rates_{false};            // any slice df differs from scalar-r df
 };
+
+// ── EvalField bitmask operators ──────────────────────────────────────────────
+// Provided so the enum arithmetic type-checks under /W4 /WX (a scoped enum has no
+// implicit integer conversions). `has_field` is the "is this bit set" test.
+[[nodiscard]] constexpr PricedSurface::EvalField operator|(PricedSurface::EvalField a,
+                                                           PricedSurface::EvalField b) noexcept {
+  return static_cast<PricedSurface::EvalField>(static_cast<std::uint32_t>(a) |
+                                               static_cast<std::uint32_t>(b));
+}
+[[nodiscard]] constexpr PricedSurface::EvalField operator&(PricedSurface::EvalField a,
+                                                           PricedSurface::EvalField b) noexcept {
+  return static_cast<PricedSurface::EvalField>(static_cast<std::uint32_t>(a) &
+                                               static_cast<std::uint32_t>(b));
+}
+[[nodiscard]] constexpr PricedSurface::EvalField operator^(PricedSurface::EvalField a,
+                                                           PricedSurface::EvalField b) noexcept {
+  return static_cast<PricedSurface::EvalField>(static_cast<std::uint32_t>(a) ^
+                                               static_cast<std::uint32_t>(b));
+}
+[[nodiscard]] constexpr PricedSurface::EvalField operator~(PricedSurface::EvalField a) noexcept {
+  return static_cast<PricedSurface::EvalField>(~static_cast<std::uint32_t>(a));
+}
+constexpr PricedSurface::EvalField& operator|=(PricedSurface::EvalField& a,
+                                               PricedSurface::EvalField b) noexcept {
+  a = a | b;
+  return a;
+}
+constexpr PricedSurface::EvalField& operator&=(PricedSurface::EvalField& a,
+                                               PricedSurface::EvalField b) noexcept {
+  a = a & b;
+  return a;
+}
+[[nodiscard]] constexpr bool has_field(PricedSurface::EvalField set,
+                                       PricedSurface::EvalField bit) noexcept {
+  return (static_cast<std::uint32_t>(set) & static_cast<std::uint32_t>(bit)) != 0u;
+}
 
 }  // namespace atx::vol

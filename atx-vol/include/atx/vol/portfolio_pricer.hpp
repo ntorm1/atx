@@ -71,6 +71,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <utility>
 #include <vector>
@@ -176,6 +177,38 @@ private:
   std::vector<std::pair<std::uint32_t, const PricedSurface *>> by_uid_; // sorted by uid
 };
 
+// ── Price field mask (which PriceFrame columns to materialize) ─────────────
+//
+// A bitmask over the PriceFrame column GROUPS — distinct from
+// `PricedSurface::EvalField`, which selects surface OUTPUTS (iv/price/greeks).
+// `Marks` materializes {id, uid, pv, price, iv, status} (37 B/position); the
+// `Greeks` bit adds the eight Greek columns (+64 B/position -> 101 total).
+// Under a mask WITHOUT the Greeks bit the eight Greek column vectors are left
+// EMPTY (`size()==0`) — never resized-and-NaN-filled — which is the 64 B/pos
+// saving `PriceOptions::prices_only` now buys.
+enum class PriceFieldMask : std::uint32_t {
+  None = 0,
+  Marks = 1u << 0,             // id, uid, pv, price, iv, status  (37 B/pos)
+  Greeks = 1u << 1,            // delta, gamma, vega, theta, rho, vanna, volga, charm
+  FullGreeks = (1u << 0) | (1u << 1), // Marks + Greeks (101 B/pos)
+};
+
+[[nodiscard]] constexpr PriceFieldMask operator|(PriceFieldMask a, PriceFieldMask b) noexcept {
+  return static_cast<PriceFieldMask>(static_cast<std::uint32_t>(a) | static_cast<std::uint32_t>(b));
+}
+[[nodiscard]] constexpr PriceFieldMask operator&(PriceFieldMask a, PriceFieldMask b) noexcept {
+  return static_cast<PriceFieldMask>(static_cast<std::uint32_t>(a) & static_cast<std::uint32_t>(b));
+}
+[[nodiscard]] constexpr bool has_field(PriceFieldMask set, PriceFieldMask bit) noexcept {
+  return (static_cast<std::uint32_t>(set) & static_cast<std::uint32_t>(bit)) != 0u;
+}
+// Per-position materialized byte width for a mask: id(8)+uid(4)+pv(8)+price(8)+
+// iv(8)+status(1) = 37; the eight Greek columns add 8*8 = 64 -> 101. Drives the
+// FrameBytes counter and lets a caller size a PriceFrameView's backing storage.
+[[nodiscard]] constexpr std::size_t bytes_per_position(PriceFieldMask fields) noexcept {
+  return has_field(fields, PriceFieldMask::Greeks) ? std::size_t{101} : std::size_t{37};
+}
+
 // ── Output frames (SoA, input order) ──────────────────────────────────────
 
 // Portfolio-level column sums over the Ok lanes of a price frame.
@@ -212,6 +245,89 @@ struct PriceFrame {
   PriceTotals total{};
 
   [[nodiscard]] std::size_t size() const noexcept { return id.size(); }
+
+  // True when the eight Greek columns are populated (the FullGreeks mask). Under
+  // the Marks mask they are left EMPTY, so a marks-only caller must gate any
+  // Greek-column read on this. (Vacuously true for an empty frame — no rows.)
+  [[nodiscard]] bool greeks_materialized() const noexcept { return delta.size() == id.size(); }
+};
+
+// ── In-place price API: caller-owned output view + reusable workspace ──────
+
+// A caller-owned output view for `price_into`: one span per PriceFrame column
+// plus a totals sink. `price_into` writes into these spans and — given a
+// reserved workspace and correctly-sized view — allocates no frame memory (see
+// PortfolioWorkspace for the n_threads>1 worker-pool caveat). The eight
+// Greek spans may be left EMPTY under the Marks mask; `price_into` never touches
+// an empty Greek span. Every marks span (`id/uid/pv/price/iv/status`) and
+// `total` must be present and sized to the position count.
+struct PriceFrameView {
+  std::span<std::uint64_t> id;
+  std::span<std::uint32_t> uid;
+  std::span<double> pv;
+  std::span<double> price;
+  std::span<double> iv;
+  std::span<double> delta;
+  std::span<double> gamma;
+  std::span<double> vega;
+  std::span<double> theta;
+  std::span<double> rho;
+  std::span<double> vanna;
+  std::span<double> volga;
+  std::span<double> charm;
+  std::span<PriceStatus> status;
+  PriceTotals *total{nullptr};
+};
+
+// Reusable scratch for repeated pricing of a FIXED book across many surface
+// snapshots. `reserve()` sizes the internal buffers once; `price_into` /
+// `price_totals` then reuse the unique-result SoA, the batch-eval SoA, and a
+// RETAINED PreparedPortfolio (built once, rebuilt only when the book identity
+// changes — the Greek route/mask no longer forces a rebuild: the permutation,
+// groups, oci, and aligned K/T/uid columns derive purely from (uid,side,T), so
+// the substrate is byte-identical for Marks and FullGreeks) — performing no
+// *frame* allocation on the hot path. (At `PriceOptions::n_threads > 1` the
+// worker fan-out allocates a `std::vector<std::jthread>` plus thread stacks —
+// a threading-layer cost, not a frame allocation; only `n_threads == 1` is
+// fully allocation-free end to end.)
+// Move-only (owns scratch); the implementation is pimpl'd so the header stays
+// free of the aligned-substrate and per-contract-result types.
+//
+// ## CONTRACT: one workspace per LIVE book
+//
+// The retained-substrate cache invalidates on (a) the ADDRESS of the owning
+// `PortfolioPricer::pf_`, (b) the current unique-contract count
+// (`pf.n_contracts()`), and (c) a cheap O(1) fingerprint of the book's first
+// unique contract's exact bits — all allocation-free, pointer/integer-only
+// checks, but NOT a full content hash. A `Portfolio`/`PortfolioPricer`
+// destroyed and reconstructed at the SAME address (e.g. a loop that rebuilds a
+// local `PortfolioPricer` per iteration) can still slip past this guard if the
+// new book happens to match the old one's unique-contract count AND
+// first-contract fingerprint while differing only in the middle of the book —
+// a residual ABA hazard. Given that, treat a `PortfolioWorkspace` as bound to
+// ONE logical book for its lifetime: build a fresh workspace per book (or keep
+// a keyed pool) rather than looping a single reused workspace across a
+// sequence of distinct books built at a recurring address.
+class PortfolioWorkspace {
+public:
+  PortfolioWorkspace();
+  ~PortfolioWorkspace();
+  PortfolioWorkspace(PortfolioWorkspace &&) noexcept;
+  PortfolioWorkspace &operator=(PortfolioWorkspace &&) noexcept;
+  PortfolioWorkspace(const PortfolioWorkspace &) = delete;
+  PortfolioWorkspace &operator=(const PortfolioWorkspace &) = delete;
+
+  // Pre-size the internal scratch for a book of `n_unique` unique contracts
+  // (the per-row output frame is caller-owned, so `n_positions` is advisory).
+  // Idempotent and grow-only; after this a matching `price_into`/`price_totals`
+  // allocates nothing on its own buffers. The retained PreparedPortfolio is
+  // still built lazily on the first call against a given book, then reused.
+  void reserve(std::size_t n_unique, std::size_t n_positions);
+
+private:
+  friend class PortfolioPricer;
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
 };
 
 // Portfolio-level column sums over the Ok lanes of a PnL frame.
@@ -297,6 +413,34 @@ public:
   // call itself fails only never — an empty book gives an empty frame).
   [[nodiscard]] Result<PriceFrame> price(const SurfaceSet &surfaces,
                                          const PriceOptions &opts = {}) const;
+
+  // In-place price: solve the book against one surface per underlying and scatter
+  // the result into the caller-owned spans of `out`. With a reserved `ws` and a
+  // view whose marks spans (and, under a Greeks mask, greek spans) are sized to
+  // the position count, this allocates no *frame* memory on the hot path — the
+  // retained PreparedPortfolio and the scratch SoA in `ws` are reused across
+  // snapshots. (At `opts.n_threads > 1` the worker fan-out itself allocates a
+  // thread vector; see PortfolioWorkspace.)
+  //
+  // `fields` selects which columns to materialize: `Marks` writes only
+  // {id,uid,pv,price,iv,status} (leaving the greek spans untouched — they may be
+  // empty); `FullGreeks` additionally writes the eight Greek columns. The marks
+  // columns and the `pv` total are bit-identical to `price()`; the reduction is
+  // the same fixed-input-order sum, so `out.total` is deterministic across
+  // thread counts. @return InvalidArgument on a view span-size mismatch, or the
+  // propagated substrate-build error.
+  [[nodiscard]] Status price_into(const SurfaceSet &surfaces, PriceFieldMask fields,
+                                  PriceFrameView out, PortfolioWorkspace &ws,
+                                  const PriceOptions &opts = {}) const;
+
+  // Totals only: solve the book and reduce weight*result over positions in fixed
+  // input order, with NO per-row frame allocation and NO scatter. Bit-identical
+  // to `price(...).total` for the matching mask (both masks). The win for a
+  // totals-only caller is that no 101 B/pos (or 37 B/pos) frame is materialized
+  // at all. Shares the retained PreparedPortfolio / scratch in `ws`.
+  [[nodiscard]] Result<PriceTotals> price_totals(const SurfaceSet &surfaces, PriceFieldMask fields,
+                                                 PortfolioWorkspace &ws,
+                                                 const PriceOptions &opts = {}) const;
 
   // Taylor PnL-explain between a base and a shifted surface per underlying. The
   // time-roll dt is taken from the two surfaces' valuation timestamps; when they
