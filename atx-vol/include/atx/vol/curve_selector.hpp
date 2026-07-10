@@ -23,29 +23,29 @@
 #include <cstddef>
 #include <vector>
 
-#include "atx/vol/surface_parity.hpp"  // SurfaceParityInputs
-#include "atx/vol/types.hpp"           // Result
-#include "atx/vol/universe.hpp"        // Underlying
-#include "atx/vol/vol_curve.hpp"       // CurveConfig, VolCurveKind
+#include "atx/vol/surface_parity.hpp" // SurfaceParityInputs
+#include "atx/vol/types.hpp"          // Result
+#include "atx/vol/universe.hpp"       // Underlying
+#include "atx/vol/vol_curve.hpp"      // CurveConfig, VolCurveKind
 
 namespace atx::vol {
 
 // One candidate's out-of-sample score.
 struct CandidateScore {
   VolCurveKind kind{VolCurveKind::ConvexDense};
-  double oos_in_band{0.0};    // held-out price-in-band fraction (0..1)
-  double oos_vw{0.0};         // held-out vega^2-weighted in-band fraction (0..1)
-  std::size_t dof_sum{0};     // summed effective DoF over scored slices (parsimony)
-  std::size_t n_holdout{0};   // held-out strikes scored
-  std::size_t n_slices{0};    // expiries that produced a scorable fit
+  double oos_in_band{0.0};  // held-out price-in-band fraction (0..1)
+  double oos_vw{0.0};       // held-out vega^2-weighted in-band fraction (0..1)
+  std::size_t dof_sum{0};   // summed effective DoF over scored slices (parsimony)
+  std::size_t n_holdout{0}; // held-out strikes scored
+  std::size_t n_slices{0};  // expiries that produced a scorable fit
 };
 
 // The selection outcome. `chosen` is ready to drop into
 // `SessionInputs::curve` / `PricerConfig::curve`.
 struct SelectorResult {
   CurveConfig chosen{};
-  std::size_t chosen_index{0};          // index into the candidate list
-  std::vector<CandidateScore> scores;   // per candidate (‖ candidate list)
+  std::size_t chosen_index{0};        // index into the candidate list
+  std::vector<CandidateScore> scores; // per candidate (‖ candidate list)
 };
 
 // Search policy.
@@ -59,8 +59,9 @@ struct SelectorConfig {
   double parsimony_margin{0.004};
 };
 
-// The default candidate set: the arb-free convex dense fit (node_cap 40) and the
-// eSSVI backbone. This is the SPY-vs-XOM decision the selector is built for.
+// Default family ladder: convex dense, cache-friendly linear variance, eSSVI,
+// raw SVI, and event-capable C8. High-confidence boards bypass this expensive
+// validation; it is the ambiguity fallback and explicit research mode.
 [[nodiscard]] std::vector<CurveConfig> default_selector_candidates();
 
 // Choose the best curve config for `under` under `in` (market/carry policy).
@@ -68,8 +69,8 @@ struct SelectorConfig {
 // @return InvalidArgument if S <= 0 / r non-finite / no candidates; NotFound if
 //         no candidate produced a scorable fit on any expiry; otherwise the
 //         selection (with per-candidate diagnostics).
-[[nodiscard]] Result<SelectorResult> select_curve(const Underlying& under,
-                                                  const SurfaceParityInputs& in,
-                                                  const SelectorConfig& sel = {});
+[[nodiscard]] Result<SelectorResult> select_curve(const Underlying &under,
+                                                  const SurfaceParityInputs &in,
+                                                  const SelectorConfig &sel = {});
 
-}  // namespace atx::vol
+} // namespace atx::vol

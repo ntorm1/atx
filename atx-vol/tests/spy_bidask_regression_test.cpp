@@ -14,6 +14,7 @@
 //
 // The test GTEST_SKIPs cleanly when the SPY parquet fixture is not present.
 
+#include <chrono>
 #include <cstdio>
 
 #include <gtest/gtest.h>
@@ -41,7 +42,7 @@ namespace {
 // real fit regression (pre-fix was 65.8%; the eSSVI backbone is ~10% on this metric).
 constexpr double kPxCleanFloor = 94.0;
 
-}  // namespace
+} // namespace
 
 TEST(SpyBidAskRegression, ConvexDenseServedViaSessionInBand) {
   auto board = load_opra_board("spy", "SPY");
@@ -51,8 +52,7 @@ TEST(SpyBidAskRegression, ConvexDenseServedViaSessionInBand) {
 
   // Fit the arb-free convex dense curve through the session (the path the fixed
   // carry + de-Am feed). node_cap 40 == the headline bench config.
-  SessionInputs in = make_session_inputs(FitPreset::Fast, board->spot(), board->r,
-                                         board->now_ns());
+  SessionInputs in = make_session_inputs(FitPreset::Fast, board->spot(), board->r, board->now_ns());
   in.cash_divs = board->panel.frame.divs;
   in.curve.kind = VolCurveKind::ConvexDense;
   in.curve.convex.node_cap = 40;
@@ -61,10 +61,9 @@ TEST(SpyBidAskRegression, ConvexDenseServedViaSessionInBand) {
   ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
 
   const auto sc = price_in_band(*sess, board->underlying(), board->spot(), board->r);
-  std::printf(
-      "[SPY convex-dense via session] pxCLN(cold)=%.2f%% (%zu/%zu)  "
-      "pxALL=%.2f%%  served(cached)=%.2f%%\n",
-      sc.px_clean, sc.n_clean_in, sc.n_clean, sc.px_all, sc.px_clean_served);
+  std::printf("[SPY convex-dense via session] pxCLN(cold)=%.2f%% (%zu/%zu)  "
+              "pxALL=%.2f%%  served(cached)=%.2f%%\n",
+              sc.px_clean, sc.n_clean_in, sc.n_clean, sc.px_all, sc.px_clean_served);
 
   ASSERT_GT(sc.n_clean, 100u) << "too few clean quotes to be a meaningful gate";
   EXPECT_GE(sc.px_clean, kPxCleanFloor);
@@ -91,11 +90,38 @@ TEST(SpyBidAskRegression, PricerFitterExplicitConvexInBand) {
   ASSERT_TRUE(fitter.fit(*chain).has_value());
   ASSERT_TRUE(fitter.fitted());
 
-  const auto sc = price_in_band(fitter.surface()->session(), chain->underlying(),
-                                board->spot(), board->r);
-  std::printf("[SPY PricerFitter(convex)] pxCLN(cold)=%.2f%% (%zu/%zu)\n",
-              sc.px_clean, sc.n_clean_in, sc.n_clean);
+  const auto sc =
+      price_in_band(fitter.surface()->session(), chain->underlying(), board->spot(), board->r);
+  std::printf("[SPY PricerFitter(convex)] pxCLN(cold)=%.2f%% (%zu/%zu)\n", sc.px_clean,
+              sc.n_clean_in, sc.n_clean);
   EXPECT_GE(sc.px_clean, kPxCleanFloor);
+}
+
+TEST(SpyBidAskRegression, PricerFitterHftColdStartInBand) {
+  auto board = load_opra_board("spy", "SPY");
+  if (!board.has_value()) {
+    GTEST_SKIP() << "SPY OPRA parquet fixture not found";
+  }
+
+  auto chain = OptionChain::from_frame(board->panel.frame, board->env());
+  ASSERT_TRUE(chain.has_value()) << chain.error().to_string();
+
+  PricerFitter fitter{PricerConfig{.preset = FitPreset::Hft}};
+  const auto t0 = std::chrono::steady_clock::now();
+  const Status fit = fitter.fit(*chain);
+  const auto t1 = std::chrono::steady_clock::now();
+  const double fit_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+  ASSERT_TRUE(fit.has_value());
+  ASSERT_TRUE(fitter.fitted());
+  EXPECT_FALSE(fitter.selection().has_value()) << "Hft should skip auto-select";
+
+  const auto sc =
+      price_in_band(fitter.surface()->session(), chain->underlying(), board->spot(), board->r);
+  std::printf("[SPY PricerFitter(Hft)] fit=%.1fms  pxCLN(cold)=%.2f%% (%zu/%zu)  "
+              "pxALL=%.2f%%  served(cached)=%.2f%%  quotes=%zu\n",
+              fit_ms, sc.px_clean, sc.n_clean_in, sc.n_clean, sc.px_all, sc.px_clean_served,
+              fitter.surface()->diagnostics().n_quotes);
+  EXPECT_GE(sc.px_clean, 98.0);
 }
 
 TEST(SpyBidAskRegression, AutoSelectPicksDenseForSpy) {
@@ -104,29 +130,27 @@ TEST(SpyBidAskRegression, AutoSelectPicksDenseForSpy) {
     GTEST_SKIP() << "SPY OPRA parquet fixture not found";
   }
 
-  // No curve config => the CurveSelector searches. On the penny-dense SPY board it
-  // should pick the convex dense curve (it wins out-of-sample).
+  // No curve config => the unified policy recognizes the penny-dense ETF board
+  // and takes the O(N) HFT route without paying for held-out candidate fits.
   auto chain = OptionChain::from_frame(board->panel.frame, board->env());
   ASSERT_TRUE(chain.has_value()) << chain.error().to_string();
 
   PricerConfig cfg;
-  cfg.preset = FitPreset::Fast;  // cfg.curve left unset => auto-select
+  cfg.preset = FitPreset::Fast; // cfg.curve left unset => auto-select
   PricerFitter fitter{cfg};
   ASSERT_TRUE(fitter.fit(*chain).has_value());
 
-  ASSERT_TRUE(fitter.selection().has_value());
-  const auto& sel = *fitter.selection();
-  std::printf("[SPY auto-select] chose %s\n", to_string(sel.chosen.kind));
-  for (const auto& s : sel.scores) {
-    std::printf("    candidate %-13s OOS in-band=%.2f%%  vw=%.2f%%  (%zu held-out)\n",
-                to_string(s.kind), 100.0 * s.oos_in_band, 100.0 * s.oos_vw,
-                s.n_holdout);
-  }
-  EXPECT_EQ(sel.chosen.kind, VolCurveKind::ConvexDense);
+  ASSERT_TRUE(fitter.decision().has_value());
+  const auto &decision = *fitter.decision();
+  std::printf("[SPY auto-policy] chose %s\n", to_string(decision.curve.kind));
+  EXPECT_EQ(decision.profile.kind, atx::vol::ProfileKind::IndexEtfUltraLiquid);
+  EXPECT_EQ(decision.preset, FitPreset::Hft);
+  EXPECT_EQ(decision.curve.kind, VolCurveKind::LinearVariance);
+  EXPECT_FALSE(fitter.selection().has_value());
 
   // And the served surface holds the headline.
-  const auto sc = price_in_band(fitter.surface()->session(), chain->underlying(),
-                                board->spot(), board->r);
+  const auto sc =
+      price_in_band(fitter.surface()->session(), chain->underlying(), board->spot(), board->r);
   std::printf("[SPY auto-select] pxCLN(cold)=%.2f%%\n", sc.px_clean);
   EXPECT_GE(sc.px_clean, kPxCleanFloor);
 }

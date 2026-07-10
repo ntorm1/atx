@@ -40,10 +40,9 @@
 //   // 1. Chain: an id-addressed board + its MarketEnv (spot / rate / cash divs).
 //   OptionChain chain = OptionChain::from_frame(frame,
 //       MarketEnv::flat(spot, r, now_ns, cash_divs)).value();
-//   // 2. Fit: own the fitted surface. Pin ConvexDense for a dense index board,
-//   //    or leave `curve` unset to auto-select per board (eSSVI on sparse names).
-//   PricerFitter fitter{ PricerConfig{ .preset = FitPreset::Fast,
-//                                      .curve = CurveConfig{ /*ConvexDense*/ } } };
+//   // 2. Fit: zero-config auto policy (dense ETF -> HFT linear variance;
+//   //    sparse/event/vol-product boards route by profile and board features).
+//   PricerFitter fitter{ PricerConfig{} };
 //   fitter.fit(chain);
 //   const VolaSession& sess = fitter.surface()->session();
 //   // 3. Snapshot: distil the live fit into a small, cache-free PricedSurface —
@@ -81,8 +80,8 @@
 //     `greeks().price` is bit-identical to `fair_value()`.
 
 // ── Core vocabulary ─────────────────────────────────────────────────────────
-#include "atx/vol/types.hpp"    // Side, ExerciseStyle, Result/Status, numeric bounds
-#include "atx/vol/version.hpp"  // library version string
+#include "atx/vol/types.hpp"   // Side, ExerciseStyle, Result/Status, numeric bounds
+#include "atx/vol/version.hpp" // library version string
 
 // ── European primitives (Black-76 + Greeks + implied vol) ───────────────────
 #include "atx/vol/black76.hpp"
@@ -90,62 +89,63 @@
 #include "atx/vol/implied_vol.hpp"
 
 // ── American pricing / IV + the cached hot path ─────────────────────────────
-#include "atx/vol/american.hpp"     // Andersen-Lake / BAW, cached pricer, Greeks
-#include "atx/vol/american_iv.hpp"  // American -> implied-vol inversion
-#include "atx/vol/correction.hpp"   // Chebyshev CorrectionCache (Black-76 + correction)
+#include "atx/vol/american.hpp"    // Andersen-Lake / BAW, cached pricer, Greeks
+#include "atx/vol/american_iv.hpp" // American -> implied-vol inversion
+#include "atx/vol/correction.hpp"  // Chebyshev CorrectionCache (Black-76 + correction)
 
 // ── SoA batch / vectorized kernels ──────────────────────────────────────────
 #include "atx/vol/batch.hpp"
 
 // ── Surfaces (hot-path evaluator + calibration-grade slice types) ───────────
-#include "atx/vol/surface.hpp"      // Surface<>, Svi/Essvi slice, svi_w/essvi_w
-#include "atx/vol/vol_surface.hpp"  // VolSurface, EssviParams/SviParams, evaluators
+#include "atx/vol/surface.hpp"     // Surface<>, Svi/Essvi slice, svi_w/essvi_w
+#include "atx/vol/vol_surface.hpp" // VolSurface, EssviParams/SviParams, evaluators
 
 // ── Calibration families ────────────────────────────────────────────────────
-#include "atx/vol/calib.hpp"        // CalibOpts, FitObs/FitDiag, build_observations
-#include "atx/vol/essvi_calib.hpp"  // eSSVI per-slice + surface drivers
-#include "atx/vol/svi_calib.hpp"
 #include "atx/vol/c8.hpp"
 #include "atx/vol/c8_calib.hpp"
+#include "atx/vol/calib.hpp" // CalibOpts, FitObs/FitDiag, build_observations
 #include "atx/vol/cstar.hpp"
 #include "atx/vol/cstar_calib.hpp"
+#include "atx/vol/essvi_calib.hpp" // eSSVI per-slice + surface drivers
+#include "atx/vol/svi_calib.hpp"
 
 // ── Static-arbitrage validators + repair ────────────────────────────────────
 #include "atx/vol/arb.hpp"
 
 // ── De-Americanization pipeline (divs -> borrow -> Euro-equiv IV -> fit) ─────
-#include "atx/vol/dividend.hpp"     // hybrid forward + PCP borrow
-#include "atx/vol/s3.hpp"           // S3/SSVI shape reference
-#include "atx/vol/deamer.hpp"       // de_americanize_chain, DeAmOptions
-#include "atx/vol/fit_metrics.hpp"  // reduced-chi2 / error bars
-#include "atx/vol/parity.hpp"       // re-Americanized fair-value-in-bid-ask
+#include "atx/vol/deamer.hpp"      // de_americanize_chain, DeAmOptions
+#include "atx/vol/dividend.hpp"    // hybrid forward + PCP borrow
+#include "atx/vol/fit_metrics.hpp" // reduced-chi2 / error bars
+#include "atx/vol/parity.hpp"      // re-Americanized fair-value-in-bid-ask
+#include "atx/vol/s3.hpp"          // S3/SSVI shape reference
 
 // ── Configurable curve family + auto-selection ──────────────────────────────
-#include "atx/vol/vol_curve.hpp"       // IVolCurve family, CurveSurface, CurveConfig, VolCurveKind
-#include "atx/vol/curve_fit.hpp"       // fit_curve_surface (curve-agnostic driver)
-#include "atx/vol/curve_selector.hpp"  // select_curve (out-of-sample curve/config search)
+#include "atx/vol/curve_fit.hpp"      // fit_curve_surface (curve-agnostic driver)
+#include "atx/vol/curve_selector.hpp" // select_curve (out-of-sample curve/config search)
+#include "atx/vol/fit_policy.hpp"     // profile/session/event -> effective preset + curve
+#include "atx/vol/vol_curve.hpp"      // IVolCurve family, CurveSurface, CurveConfig, VolCurveKind
 
 // ── Whole-surface build + the composable session facade ─────────────────────
-#include "atx/vol/market_env.hpp"      // MarketEnv (spot / rate-curve / divs / valuation ts)
-#include "atx/vol/vola_parity.hpp"     // single-expiry parity harness
-#include "atx/vol/surface_parity.hpp"  // run_surface_parity, CalendarRepair
-#include "atx/vol/session.hpp"         // VolaSession, SessionInputs, FitPreset
-#include "atx/vol/chain.hpp"           // OptionChain, OptionId (unique-id chain handle)
-#include "atx/vol/pricer_fitter.hpp"   // PricerFitter, FittedSurface, OutputField, ChainValuation
+#include "atx/vol/chain.hpp"          // OptionChain, OptionId (unique-id chain handle)
+#include "atx/vol/market_env.hpp"     // MarketEnv (spot / rate-curve / divs / valuation ts)
+#include "atx/vol/pricer_fitter.hpp"  // PricerFitter, FittedSurface, OutputField, ChainValuation
+#include "atx/vol/session.hpp"        // VolaSession, SessionInputs, FitPreset
+#include "atx/vol/surface_parity.hpp" // run_surface_parity, CalendarRepair
+#include "atx/vol/vola_parity.hpp"    // single-expiry parity harness
 
 // ── Surface queries / projection / derivatives ──────────────────────────────
-#include "atx/vol/projection.hpp"   // eval at non-listed T/K, delta anchors
-#include "atx/vol/derivatives.hpp"  // vol-derivative analytics
-#include "atx/vol/curve.hpp"        // CurveSet, DividendEvent
+#include "atx/vol/curve.hpp"       // CurveSet, DividendEvent
+#include "atx/vol/derivatives.hpp" // vol-derivative analytics
+#include "atx/vol/projection.hpp"  // eval at non-listed T/K, delta anchors
 
 // ── Data model (universe, panels, real OPRA loader, archive) ─────────────────
-#include "atx/vol/universe.hpp"        // Universe, Underlying, Chain, Uid
 #include "atx/vol/data.hpp"            // QuoteFrame, data_install
-#include "atx/vol/panel.hpp"           // synthetic + CSV panels
 #include "atx/vol/opra_panel.hpp"      // real Databento OPRA cbbo loader
-#include "atx/vol/spy_fixture.hpp"     // deterministic SPY index known-truth fixture
+#include "atx/vol/panel.hpp"           // synthetic + CSV panels
 #include "atx/vol/priced_surface.hpp"  // PricedSurface (serialization-ready priced surface)
+#include "atx/vol/spy_fixture.hpp"     // deterministic SPY index known-truth fixture
 #include "atx/vol/surface_archive.hpp" // fitted priced-surface archive (v3)
+#include "atx/vol/universe.hpp"        // Universe, Underlying, Chain, Uid
 
 // ── Portfolio / risk analytics ──────────────────────────────────────────────
 //
@@ -160,8 +160,8 @@
 // selection, the multi-shock scenario engine, theoretical/delta-coordinate legs,
 // and forward/vol/route/interp factor PnL attribution. Do not build new features
 // on it; migrate those capabilities onto the PricedSurface path as they are needed.
-#include "atx/vol/portfolio.hpp"           // DEPRECATED legacy VolSurface-bound portfolio + bulk
-#include "atx/vol/portfolio_risk.hpp"      // DEPRECATED legacy scenario / theoretical-leg risk
-#include "atx/vol/portfolio_pricer.hpp"    // CANONICAL PricedSurface-native pricer + Taylor PnL explain
 #include "atx/vol/calib_pool.hpp"
+#include "atx/vol/portfolio.hpp"        // DEPRECATED legacy VolSurface-bound portfolio + bulk
+#include "atx/vol/portfolio_pricer.hpp" // CANONICAL PricedSurface-native pricer + Taylor PnL explain
+#include "atx/vol/portfolio_risk.hpp"   // DEPRECATED legacy scenario / theoretical-leg risk
 #include "atx/vol/profile.hpp"

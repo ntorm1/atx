@@ -13,6 +13,7 @@
 #include "atx/vol/session.hpp"
 #include "atx/vol/spy_fixture.hpp"
 #include "atx/vol/types.hpp"
+#include "atx/vol/vol_curve.hpp"
 
 // Acceptance harness for the unified library layer (chain.hpp + pricer_fitter.hpp):
 // the OptionChain -> PricerFitter -> parallel value_chain lifecycle over the SPY
@@ -45,7 +46,7 @@ bool same(double a, double b) {
 }
 
 class PricerFitterTest : public ::testing::Test {
- protected:
+protected:
   void SetUp() override {
     const SynthPanelSpec spec = make_spy_synthetic_spec();
     r_ = spec.r;
@@ -63,7 +64,7 @@ class PricerFitterTest : public ::testing::Test {
 };
 
 TEST_F(PricerFitterTest, ChainEnumerateDecodeAndSnapshot) {
-  const OptionChain& chain = *chain_;
+  const OptionChain &chain = *chain_;
   EXPECT_EQ(chain.spot(), spot_);
   EXPECT_EQ(chain.rate(), r_);
 
@@ -88,8 +89,25 @@ TEST_F(PricerFitterTest, ChainEnumerateDecodeAndSnapshot) {
   EXPECT_FALSE(chain.at(OptionId{0}).has_value());
 }
 
+TEST_F(PricerFitterTest, ChainSnapshotMatchesStableIdDecodeOrder) {
+  const OptionChain &chain = *chain_;
+  const atx::vol::ChainSnapshot snap = chain.snapshot();
+  ASSERT_EQ(snap.size(), chain.size());
+  ASSERT_EQ(snap.ids, chain.ids());
+  for (std::size_t i = 0; i < snap.size(); ++i) {
+    const auto ref = chain.at(snap.ids[i]);
+    ASSERT_TRUE(ref.has_value());
+    EXPECT_DOUBLE_EQ(snap.T[i], ref->T);
+    EXPECT_DOUBLE_EQ(snap.strike[i], ref->strike);
+    EXPECT_DOUBLE_EQ(snap.bid[i], ref->bid);
+    EXPECT_DOUBLE_EQ(snap.ask[i], ref->ask);
+    EXPECT_DOUBLE_EQ(snap.mid[i], ref->mid);
+    EXPECT_EQ(snap.side[i], ref->side);
+  }
+}
+
 TEST_F(PricerFitterTest, UpdateQuotesReplacesBidAsk) {
-  OptionChain& chain = *chain_;
+  OptionChain &chain = *chain_;
   const OptionId id = chain.ids().front();
   const double nb = 12.34;
   const double na = 12.78;
@@ -97,8 +115,7 @@ TEST_F(PricerFitterTest, UpdateQuotesReplacesBidAsk) {
   std::vector<double> bids{nb};
   std::vector<double> asks{na};
   ASSERT_TRUE(chain
-                  .update_quotes(std::span<const OptionId>(ids),
-                                 std::span<const double>(bids),
+                  .update_quotes(std::span<const OptionId>(ids), std::span<const double>(bids),
                                  std::span<const double>(asks))
                   .has_value());
   const auto ref = chain.at(id);
@@ -126,9 +143,9 @@ TEST_F(PricerFitterTest, ValueChainFieldsMatchSessionScalarQueries) {
 
   const auto valr = fitter.value_chain(*chain_, OutputField::All, 1);
   ASSERT_TRUE(valr.has_value());
-  const ChainValuation& v = *valr;
-  const OptionChain& chain = *chain_;
-  const VolaSession& sess = fitter.surface()->session();
+  const ChainValuation &v = *valr;
+  const OptionChain &chain = *chain_;
+  const VolaSession &sess = fitter.surface()->session();
   ASSERT_EQ(v.size(), chain.ids().size());
 
   int checked = 0;
@@ -153,8 +170,8 @@ TEST_F(PricerFitterTest, ValueChainThreadCountDeterminism) {
   const auto v4r = fitter.value_chain(*chain_, OutputField::All, 4);
   ASSERT_TRUE(v1r.has_value());
   ASSERT_TRUE(v4r.has_value());
-  const ChainValuation& a = *v1r;
-  const ChainValuation& b = *v4r;
+  const ChainValuation &a = *v1r;
+  const ChainValuation &b = *v4r;
   ASSERT_EQ(a.size(), b.size());
 
   for (std::size_t i = 0; i < a.size(); ++i) {
@@ -176,7 +193,7 @@ TEST_F(PricerFitterTest, ValueChainPopulatesOnlyRequestedFields) {
 
   const auto vr = fitter.value_chain(*chain_, OutputField::ModelIV, 1);
   ASSERT_TRUE(vr.has_value());
-  const ChainValuation& v = *vr;
+  const ChainValuation &v = *vr;
   EXPECT_EQ(v.model_iv.size(), v.size());
   EXPECT_TRUE(v.model_price.empty());
   EXPECT_TRUE(v.bid_iv.empty());
@@ -186,4 +203,88 @@ TEST_F(PricerFitterTest, ValueChainPopulatesOnlyRequestedFields) {
   EXPECT_FALSE(atx::vol::has(v.filled, OutputField::ModelPrice));
 }
 
-}  // namespace
+TEST_F(PricerFitterTest, HftUsesDirectLinearVarianceCurve) {
+  PricerFitter fitter{PricerConfig{.preset = FitPreset::Hft}};
+  ASSERT_TRUE(fitter.fit(*chain_).has_value());
+  auto priced = fitter.surface()->session().to_priced_surface();
+  ASSERT_TRUE(priced.has_value()) << priced.error().to_string();
+  ASSERT_GT(priced->n_slices(), 0u);
+  EXPECT_EQ(priced->kind_at(0), atx::vol::VolCurveKind::LinearVariance);
+}
+
+// "A profile is a latency prior, not permission to drop an underlier." Every kind
+// must therefore have somewhere to go, and a rung equal to its own primary is a
+// silent no-op retry -- the shape of the bug where a failed dense LinearVariance
+// board "fell back" to LinearVariance and was dropped.
+TEST(PricerFitterPolicy, EveryCurveKindDeclaresAProgressingFallbackLadder) {
+  using atx::vol::fallback_curve_rungs;
+  using atx::vol::VolCurveKind;
+  constexpr VolCurveKind kAllKinds[]{VolCurveKind::ConvexDense, VolCurveKind::Essvi,
+                                     VolCurveKind::Svi, VolCurveKind::LinearVariance,
+                                     VolCurveKind::C8};
+
+  for (const VolCurveKind primary : kAllKinds) {
+    const std::span<const VolCurveKind> rungs = fallback_curve_rungs(primary);
+    ASSERT_FALSE(rungs.empty()) << to_string(primary) << " has no fallback";
+    for (std::size_t i = 0; i < rungs.size(); ++i) {
+      EXPECT_NE(rungs[i], primary) << to_string(primary) << " retries itself";
+      for (std::size_t j = i + 1; j < rungs.size(); ++j) {
+        EXPECT_NE(rungs[i], rungs[j]) << to_string(primary) << " repeats a rung";
+      }
+    }
+    // Each ladder ends at a minimally identified family: two market nodes
+    // (LinearVariance) or the five-parameter backbone (eSSVI).
+    const VolCurveKind last = rungs.back();
+    EXPECT_TRUE(last == VolCurveKind::LinearVariance || last == VolCurveKind::Essvi)
+        << to_string(primary) << " bottoms out at " << to_string(last);
+  }
+}
+
+// A healthy auto-routed board reports no fallback, so `used_fallback` is a real
+// signal rather than a field that is always false.
+TEST(PricerFitterPolicy, HealthyAutoFitReportsNoFallback) {
+  SynthPanelSpec spec = make_spy_synthetic_spec();
+  auto panel = make_synthetic_american_panel(spec);
+  ASSERT_TRUE(panel.has_value()) << panel.error().message();
+  auto chain = OptionChain::from_frame(panel->frame, spec.r, spec.spot);
+  ASSERT_TRUE(chain.has_value()) << chain.error().message();
+
+  PricerFitter fitter{PricerConfig{}};
+  ASSERT_TRUE(fitter.fit(*chain).has_value());
+  ASSERT_TRUE(fitter.decision().has_value());
+  EXPECT_FALSE(fitter.decision()->used_fallback);
+  EXPECT_EQ(fitter.decision()->primary_curve.kind, fitter.decision()->curve.kind);
+}
+
+TEST(PricerFitterPolicy, EventContextBuildsAndServesC8Surface) {
+  SynthPanelSpec spec = make_spy_synthetic_spec();
+  spec.uid = "AAPL";
+  auto panel = make_synthetic_american_panel(spec);
+  ASSERT_TRUE(panel.has_value()) << panel.error().message();
+  auto chain = OptionChain::from_frame(panel->frame, spec.r, spec.spot);
+  ASSERT_TRUE(chain.has_value()) << chain.error().message();
+
+  PricerConfig cfg;
+  cfg.context.event_phase = atx::vol::EventPhase::PreAnnouncement;
+  cfg.policy.sparse_validation_floor = 0;
+  PricerFitter fitter{cfg};
+  ASSERT_TRUE(fitter.fit(*chain).has_value());
+  ASSERT_TRUE(fitter.decision().has_value());
+  EXPECT_EQ(fitter.decision()->curve.kind, atx::vol::VolCurveKind::C8);
+  auto priced = fitter.surface()->session().to_priced_surface();
+  ASSERT_TRUE(priced.has_value()) << priced.error().to_string();
+  ASSERT_GT(priced->n_slices(), 0u);
+  EXPECT_EQ(priced->kind_at(0), atx::vol::VolCurveKind::C8);
+  EXPECT_TRUE(std::isfinite(priced->iv(spec.spot, spec.expiries.front().T)));
+}
+
+TEST(LinearVarianceCurve, InterpolatesTotalVarianceAndClampsWings) {
+  atx::vol::LinearVarianceCurve curve(0.5, 100.0, 0.98, std::vector<double>{-0.2, 0.0, 0.3},
+                                      std::vector<double>{0.03, 0.04, 0.10});
+  EXPECT_DOUBLE_EQ(curve.w(-1.0), 0.03);
+  EXPECT_DOUBLE_EQ(curve.w(1.0), 0.10);
+  EXPECT_DOUBLE_EQ(curve.w(0.15), 0.07);
+  EXPECT_DOUBLE_EQ(curve.iv(0.0), std::sqrt(0.04 / 0.5));
+}
+
+} // namespace

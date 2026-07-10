@@ -22,6 +22,7 @@
 // joins on scope exit, which is the barrier: every worker has finished before
 // `parallel_for` returns.
 
+#include <atomic>
 #include <charconv>
 #include <cstddef>
 #include <cstdlib>
@@ -113,6 +114,41 @@ void parallel_for(std::size_t n, unsigned n_threads, F&& fn) {
   }
   // std::jthread joins on destruction — the loop below (scope exit) is the
   // barrier; every worker has finished before parallel_for returns.
+}
+
+// Dynamic disjoint-index fan-out for irregular tasks. Results retain the same
+// determinism contract as parallel_for when fn writes only slot i; only the
+// worker that claims a slot changes. Use this for expiry fits whose cost varies
+// materially with maturity/chain density, where contiguous blocks leave cores
+// idle behind one expensive tail.
+template <class F> void parallel_for_dynamic(std::size_t n, unsigned n_threads, F &&fn) {
+  if (n == 0) {
+    return;
+  }
+  unsigned nt = n_threads == 0 ? atx_auto_worker_count() : n_threads;
+  if (nt > n) {
+    nt = static_cast<unsigned>(n);
+  }
+  if (nt <= 1u) {
+    for (std::size_t i = 0; i < n; ++i) {
+      fn(i);
+    }
+    return;
+  }
+  std::atomic<std::size_t> next{0};
+  std::vector<std::jthread> workers;
+  workers.reserve(nt);
+  for (unsigned t = 0; t < nt; ++t) {
+    workers.emplace_back([n, &next, &fn] {
+      for (;;) {
+        const std::size_t i = next.fetch_add(1, std::memory_order_relaxed);
+        if (i >= n) {
+          break;
+        }
+        fn(i);
+      }
+    });
+  }
 }
 
 }  // namespace atx::vol

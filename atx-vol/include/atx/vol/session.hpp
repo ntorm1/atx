@@ -90,6 +90,14 @@ struct SessionInputs {
   // build. Set false to force the reference cold path (e.g. for a cold-vs-cached
   // benchmark).
   bool use_correction_cache{true};
+  // ConvexDense/SVI cold-start controls. `score_parity=false` skips the redundant
+  // diagnostic re-Americanization pass after fitting; the surface is unchanged,
+  // but per-expiry parity diagnostics are intentionally zeroed. Disabling the
+  // calendar floor fits slices independently, recovering the tightest SPY
+  // bid/ask fit at the cost of cross-expiry no-arb enforcement.
+  bool score_parity{true};
+  bool enforce_calendar_floor{true};
+  bool use_deam_cache_for_fit{false};
   // Post-assembly calendar-arbitrage repair (see surface_parity.hpp
   // CalendarRepair). None (default) checks only — the raw independent-per-slice
   // surface may cross in the wings. Project makes the produced surface
@@ -105,8 +113,8 @@ struct SessionInputs {
 // preset + IV-inversion tolerance, borrow ATM-pair count, correction cache, and
 // calendar-arb repair) into one name, so a caller need not hand-assemble the
 // DeAmOptions / CalibOpts / cache / repair knobs and know which combination is
-// coherent. `apply_fit_preset` sets ONLY those policy fields, preserving the
-// market snapshot (S, r, cash_divs, now_ts_ns) the caller has already filled.
+// coherent. `apply_fit_preset` sets policy fields, preserving the market
+// snapshot (S, r, cash_divs, now_ts_ns) the caller has already filled.
 enum class FitPreset : std::uint8_t {
   // Surface-fit hot path: fast Andersen-Lake preset (al_fast_opts), inversion
   // tol matched to its accuracy floor, one ATM borrow pair, correction cache on.
@@ -119,9 +127,9 @@ enum class FitPreset : std::uint8_t {
   // is calendar-arb-free near-money at held fit quality (see surface_parity.hpp
   // CalendarRepair). The recommended production preset for a quoting desk.
   Robust = 2,
-  // Low-latency: Fast + calendar repair + cache; a fast arb-free build feeding
-  // the cheap cached query hot path. Same policy as Robust today; named
-  // separately so the HFT query path can diverge as it grows (Sprint 4).
+  // Low-latency dense index cold-start: adaptive-knot linear total variance,
+  // selective fast de-Am, no diagnostic parity pass, and independent slices.
+  // Optimizes SPY-style penny-tight fit latency and in-band coverage.
   Hft = 3,
 };
 

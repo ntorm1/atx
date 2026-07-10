@@ -247,10 +247,11 @@ resolve_chain_borrow(const Chain& chain, double S, double r,
   // the forward to sub-tick accuracy, and the cold per-pair de-Am is the cost
   // driver, so an unbounded ±6% band (80+ pairs on a $1-strike near-dated chain)
   // would bloat the fit for no accuracy gain.
-  constexpr std::size_t kMaxCarryPairs = 12;
+  const std::size_t max_carry_pairs =
+      opts.max_borrow_pairs == 0 ? std::size_t{1} : opts.max_borrow_pairs;
   const std::size_t k_min = (opts.n_atm == 0 ? std::size_t{1} : opts.n_atm);
-  const std::size_t k = std::min(
-      std::min(std::max(k_min, band), kMaxCarryPairs), both_valid.size());
+  const std::size_t k =
+      std::min(std::min(std::max(k_min, band), max_carry_pairs), both_valid.size());
   std::partial_sort(both_valid.begin(),
                     both_valid.begin() + static_cast<std::ptrdiff_t>(k),
                     both_valid.end(),

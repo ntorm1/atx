@@ -36,6 +36,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/cstar_calib.cpp
     src/dense_slice.cpp
     src/profile.cpp
+    src/fit_policy.cpp
     src/data.cpp
     src/surface_archive.cpp
     src/batch.cpp
@@ -127,6 +128,11 @@ if(ATX_BUILD_EXAMPLES)
     # examples/chain_pricer_bench.cpp.
     add_executable(chain_pricer_bench examples/chain_pricer_bench.cpp)
     target_link_libraries(chain_pricer_bench PRIVATE atx::vol atx::core atx_warnings)
+
+    # Ten real Databento OPRA SPY snapshots spanning intraday/stress regimes:
+    # cold fit latency distribution with a per-slice 98% clean in-band gate.
+    add_executable(spy_fit_matrix_bench examples/spy_fit_matrix_bench.cpp)
+    target_link_libraries(spy_fit_matrix_bench PRIVATE atx::vol atx::core atx_warnings)
 
     # Dump the SPY Dec-2026 vol smile + bid/ask IV bands over z in [-2,2] (CSV on
     # stdout) for plotting. See examples/spy_dec_curve.cpp.

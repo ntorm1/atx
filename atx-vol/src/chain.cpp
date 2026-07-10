@@ -11,19 +11,18 @@ using atx::core::Err;
 using atx::core::ErrorCode;
 using atx::core::Ok;
 
-Result<OptionChain> OptionChain::from_frame(const QuoteFrame& frame,
-                                            MarketEnv env) {
+Result<OptionChain> OptionChain::from_frame(const QuoteFrame &frame, MarketEnv env) {
   OptionChain chain;
   ATX_TRY(const Uid uid, data_install(chain.u_, frame));
   // Validate the underlying resolves (install returned a live uid).
-  ATX_TRY(const Underlying* under, chain.u_.get_underlying(uid));
+  ATX_TRY(const Underlying *under, chain.u_.get_underlying(uid));
   if (under == nullptr) {
     return Err(ErrorCode::NotFound, "OptionChain::from_frame: no underlying installed");
   }
   chain.uid_ = uid;
   chain.env_ = std::move(env);
   if (!(chain.env_.spot > 0.0)) {
-    chain.env_.spot = frame.spot;  // fall back to the frame's spot
+    chain.env_.spot = frame.spot; // fall back to the frame's spot
   }
   if (chain.env_.now_ns == 0) {
     chain.env_.now_ns = frame.snapshot_ts_ns;
@@ -38,14 +37,13 @@ Result<OptionChain> OptionChain::from_frame(const QuoteFrame& frame,
   return Ok(std::move(chain));
 }
 
-Result<OptionChain> OptionChain::from_frame(const QuoteFrame& frame, double r,
-                                            double spot) {
+Result<OptionChain> OptionChain::from_frame(const QuoteFrame &frame, double r, double spot) {
   MarketEnv env = MarketEnv::flat(spot, r, frame.snapshot_ts_ns);
   // A flat env with spot == 0 falls back to frame.spot inside the env overload.
   return from_frame(frame, std::move(env));
 }
 
-const Underlying& OptionChain::underlying() const {
+const Underlying &OptionChain::underlying() const {
   // uid_ is valid for the chain's lifetime (set at from_frame); the deref is
   // safe. get_underlying is O(1) and the deque address is stable.
   return *u_.get_underlying(uid_).value();
@@ -57,8 +55,8 @@ std::size_t OptionChain::size() const noexcept {
     return 0u;
   }
   std::size_t n = 0u;
-  for (const Chain& c : (*under.value()).chains) {
-    n += 2u * c.n_strikes();  // call + put per strike
+  for (const Chain &c : (*under.value()).chains) {
+    n += 2u * c.n_strikes(); // call + put per strike
   }
   return n;
 }
@@ -69,13 +67,46 @@ std::vector<OptionId> OptionChain::ids() const {
   if (!under.has_value()) {
     return out;
   }
-  const Underlying& U = *under.value();
+  const Underlying &U = *under.value();
   out.reserve(size());
-  for (const Chain& c : U.chains) {
+  for (const Chain &c : U.chains) {
     const std::uint16_t ns = static_cast<std::uint16_t>(c.n_strikes());
     for (std::uint16_t si = 0; si < ns; ++si) {
       out.push_back(make_contract_id(uid_, c.expiry_id, si, Side::Call));
       out.push_back(make_contract_id(uid_, c.expiry_id, si, Side::Put));
+    }
+  }
+  return out;
+}
+
+ChainSnapshot OptionChain::snapshot() const {
+  ChainSnapshot out;
+  const auto under = u_.get_underlying(uid_);
+  if (!under.has_value()) {
+    return out;
+  }
+  const Underlying &U = *under.value();
+  const std::size_t n = size();
+  out.ids.reserve(n);
+  out.T.reserve(n);
+  out.strike.reserve(n);
+  out.bid.reserve(n);
+  out.ask.reserve(n);
+  out.mid.reserve(n);
+  out.side.reserve(n);
+  for (const Chain &c : U.chains) {
+    const std::uint16_t ns = static_cast<std::uint16_t>(c.n_strikes());
+    for (std::uint16_t si = 0; si < ns; ++si) {
+      for (const Side side : {Side::Call, Side::Put}) {
+        const std::size_t idx = chain_index(si, side);
+        out.ids.push_back(make_contract_id(uid_, c.expiry_id, si, side));
+        out.T.push_back(c.T);
+        out.strike.push_back(c.strikes[si]);
+        out.bid.push_back(c.bids[idx]);
+        out.ask.push_back(c.asks[idx]);
+        out.mid.push_back(c.mids[idx]);
+        out.side.push_back(side);
+      }
     }
   }
   return out;
@@ -89,12 +120,12 @@ Result<OptionRef> OptionChain::at(OptionId id) const {
   if (!under.has_value()) {
     return Err(ErrorCode::NotFound, "OptionChain::at: underlying not resolvable");
   }
-  const Underlying& U = *under.value();
+  const Underlying &U = *under.value();
   const ExpiryId exp = cid_expiry(id);
   if (exp >= U.chains.size()) {
     return Err(ErrorCode::NotFound, "OptionChain::at: unknown expiry");
   }
-  const Chain& c = U.chains[exp];
+  const Chain &c = U.chains[exp];
   const std::uint16_t si = cid_strike_idx(id);
   if (si >= c.n_strikes()) {
     return Err(ErrorCode::NotFound, "OptionChain::at: unknown strike");
@@ -116,8 +147,7 @@ Result<OptionRef> OptionChain::at(OptionId id) const {
   return Ok(ref);
 }
 
-Status OptionChain::update_quotes(std::span<const OptionId> ids,
-                                  std::span<const double> bids,
+Status OptionChain::update_quotes(std::span<const OptionId> ids, std::span<const double> bids,
                                   std::span<const double> asks) {
   if (ids.size() != bids.size() || ids.size() != asks.size()) {
     return Err(ErrorCode::InvalidArgument,
@@ -148,4 +178,4 @@ Status OptionChain::update_quotes(std::span<const OptionId> ids,
   return u_.apply_quotes(batch);
 }
 
-}  // namespace atx::vol
+} // namespace atx::vol

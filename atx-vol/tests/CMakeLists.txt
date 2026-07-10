@@ -24,6 +24,7 @@ add_executable(atx-vol-tests
     cstar_calib_test.cpp
     dense_slice_test.cpp
     profile_test.cpp
+    fit_policy_test.cpp
     data_test.cpp
     surface_archive_test.cpp
     batch_test.cpp
@@ -51,7 +52,9 @@ add_executable(atx-vol-tests
     parallel_for_test.cpp
     pricer_fitter_test.cpp
     spy_bidask_regression_test.cpp
+    spy_fit_corpus_test.cpp
     breadth_regime_test.cpp
+    opra_breadth_corpus_test.cpp
     spy_archive_roundtrip_test.cpp
     portfolio_pricer_test.cpp
     spy_portfolio_pnl_test.cpp

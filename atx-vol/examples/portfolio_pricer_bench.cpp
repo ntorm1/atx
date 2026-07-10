@@ -15,10 +15,12 @@
 // Data-free: it fabricates a mixed book (dense-convex index surfaces + eSSVI
 // single-name surfaces) so it always runs. Accuracy is proven in the tests.
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <vector>
 
@@ -85,7 +87,8 @@ PricedSurface make_convex(std::uint32_t uid, int n, int nodes) {
     fit.u.resize(static_cast<std::size_t>(nodes));
     fit.C.resize(static_cast<std::size_t>(nodes));
     for (int j = 0; j < nodes; ++j) {
-      const double K = 100.0 * (0.7 + 0.6 * static_cast<double>(j) / static_cast<double>(nodes - 1));
+      const double K =
+          100.0 * (0.7 + 0.6 * static_cast<double>(j) / static_cast<double>(nodes - 1));
       fit.u[static_cast<std::size_t>(j)] = K;
       fit.C[static_cast<std::size_t>(j)] = black76_price(100.0, K, T, sigma, df, Side::Call);
     }
@@ -95,31 +98,31 @@ PricedSurface make_convex(std::uint32_t uid, int n, int nodes) {
   return PricedSurface::create(std::move(cs), std::move(ctx), pc_of(uid)).value();
 }
 
-}  // namespace
+} // namespace
 
-int main() {
+int main(int argc, char **argv) {
   constexpr int kUnderlyings = 64;
   constexpr int kSlices = 6;
 
   // Build one surface per underlying (mixed kinds), and a bumped base/shifted
   // pair for the PnL path.
   std::vector<PricedSurface> surfs;
-  std::vector<const PricedSurface*> ptrs;
+  std::vector<const PricedSurface *> ptrs;
   surfs.reserve(kUnderlyings);
   for (int u = 1; u <= kUnderlyings; ++u) {
     surfs.push_back((u & 1) ? make_convex(static_cast<std::uint32_t>(u), kSlices, 40)
                             : make_essvi(static_cast<std::uint32_t>(u), kSlices));
   }
-  for (const PricedSurface& s : surfs) {
+  for (const PricedSurface &s : surfs) {
     ptrs.push_back(&s);
   }
   auto surfaces = SurfaceSet::create(ptrs).value();
 
   // A shifted set (same curves, spot +0.4%, rate +10bp) for PnL-explain.
   std::vector<PricedSurface> shifts;
-  std::vector<const PricedSurface*> shift_ptrs;
+  std::vector<const PricedSurface *> shift_ptrs;
   shifts.reserve(kUnderlyings);
-  for (const PricedSurface& s : surfs) {
+  for (const PricedSurface &s : surfs) {
     CurveSurface c = s.surface().clone();
     std::vector<SliceContext> ctx(s.context().begin(), s.context().end());
     PricingContext pc = s.pricing();
@@ -127,7 +130,7 @@ int main() {
     pc.r += 0.001;
     shifts.push_back(PricedSurface::create(std::move(c), std::move(ctx), pc).value());
   }
-  for (const PricedSurface& s : shifts) {
+  for (const PricedSurface &s : shifts) {
     shift_ptrs.push_back(&s);
   }
   auto shifted = SurfaceSet::create(shift_ptrs).value();
@@ -144,7 +147,25 @@ int main() {
       }
     }
   }
-  auto pf = Portfolio::create(book).value();
+  const std::size_t base_positions = book.size();
+  const std::size_t target_positions =
+      argc > 1 ? static_cast<std::size_t>(std::max(1, std::atoi(argv[1]))) : base_positions;
+  if (target_positions > book.size()) {
+    const std::vector<Position> seed = book;
+    book.reserve(target_positions);
+    while (book.size() < target_positions) {
+      Position p = seed[book.size() % seed.size()];
+      p.id = id++;
+      book.push_back(p);
+    }
+  } else if (target_positions < book.size()) {
+    book.resize(target_positions);
+  }
+  const double build_t0 = now_ns();
+  auto pf =
+      Portfolio::create(book, PortfolioBuildOptions{.expected_unique_contracts = base_positions})
+          .value();
+  const double build_ms = (now_ns() - build_t0) / 1.0e6;
   const std::size_t n_pos = pf.n_positions();
   const std::size_t n_ctr = pf.n_contracts();
   const PortfolioPricer pricer(std::move(pf));
@@ -153,6 +174,7 @@ int main() {
   std::printf("underlyings        : %d\n", kUnderlyings);
   std::printf("positions          : %zu\n", n_pos);
   std::printf("unique contracts   : %zu\n", n_ctr);
+  std::printf("portfolio build    : %.2f ms\n", build_ms);
 
   // Kernel floor: single-thread loop of the SAME per-contract work price() does
   // (the SOTA Andersen-Lake fair_value solve + the analytic B76 Greeks). This is
@@ -161,8 +183,8 @@ int main() {
     const auto contracts = pricer.portfolio().contracts();
     std::uint64_t sink = 0;
     const double t0 = now_ns();
-    for (const OptionContract& c : contracts) {
-      const PricedSurface* s = surfaces.find(c.uid);
+    for (const OptionContract &c : contracts) {
+      const PricedSurface *s = surfaces.find(c.uid);
       auto fv = s->fair_value(c.K, c.T, c.side);
       auto g = s->greeks(c.K, c.T, c.side);
       if (fv && g) {
@@ -172,8 +194,8 @@ int main() {
     const double t1 = now_ns();
     const double us = (t1 - t0) / 1000.0;
     std::printf("\nkernel floor (fair_value + Greeks loop, 1 thread):\n");
-    std::printf("  %.1f us  |  %.0f contracts/sec  |  %.3f us/contract  [sink %llu]\n",
-                us, static_cast<double>(n_ctr) / (us / 1e6), us / static_cast<double>(n_ctr),
+    std::printf("  %.1f us  |  %.0f contracts/sec  |  %.3f us/contract  [sink %llu]\n", us,
+                static_cast<double>(n_ctr) / (us / 1e6), us / static_cast<double>(n_ctr),
                 static_cast<unsigned long long>(sink));
   }
 
@@ -185,7 +207,7 @@ int main() {
     auto fr = pricer.price(surfaces, PriceOptions{nt});
     const double t1 = now_ns();
     const double us = (t1 - t0) / 1000.0;
-    const char* label = (nt == 0u) ? "hw" : nullptr;
+    const char *label = (nt == 0u) ? "hw" : nullptr;
     char lb[8];
     if (label == nullptr) {
       std::snprintf(lb, sizeof lb, "%u", nt);
@@ -200,6 +222,24 @@ int main() {
                 label, us, static_cast<double>(n_ctr) / (us / 1e6),
                 static_cast<double>(n_pos) / (us / 1e6), fr->total.pv,
                 det ? "[det ok]" : "[DET MISMATCH]");
+  }
+
+  std::printf("\nprice() quote refresh (IV + American mark, no Greeks):\n");
+  for (unsigned nt : {1u, 4u, 8u, 0u}) {
+    const double t0 = now_ns();
+    auto fr = pricer.price(surfaces, PriceOptions{.n_threads = nt, .prices_only = true});
+    const double t1 = now_ns();
+    const double us = (t1 - t0) / 1000.0;
+    char lb[8];
+    if (nt == 0u) {
+      std::snprintf(lb, sizeof lb, "hw");
+    } else {
+      std::snprintf(lb, sizeof lb, "%u", nt);
+    }
+    std::printf("  threads=%-2s : %7.1f us | %10.0f contracts/sec | %9.0f positions/sec | "
+                "total.pv=%.3f\n",
+                lb, us, static_cast<double>(n_ctr) / (us / 1e6),
+                static_cast<double>(n_pos) / (us / 1e6), fr->total.pv);
   }
 
   // pnl_explain() throughput.

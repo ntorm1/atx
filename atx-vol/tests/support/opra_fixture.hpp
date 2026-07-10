@@ -20,25 +20,24 @@
 #include <string>
 #include <vector>
 
-#include "atx/vol/american.hpp"    // american_price, AmericanMethod, al_fast_opts
-#include "atx/vol/calib.hpp"       // FitObs, build_observations, CalibOpts
-#include "atx/vol/data.hpp"        // data_install
-#include "atx/vol/market_env.hpp"  // MarketEnv
-#include "atx/vol/opra_panel.hpp"  // OpraLoadSpec, load_opra_cbbo_parquet
-#include "atx/vol/session.hpp"     // VolaSession
-#include "atx/vol/types.hpp"       // Side
-#include "atx/vol/universe.hpp"    // Universe, Underlying, Chain
+#include "atx/vol/american.hpp"   // american_price, AmericanMethod, al_fast_opts
+#include "atx/vol/calib.hpp"      // FitObs, build_observations, CalibOpts
+#include "atx/vol/data.hpp"       // data_install
+#include "atx/vol/market_env.hpp" // MarketEnv
+#include "atx/vol/opra_panel.hpp" // OpraLoadSpec, load_opra_cbbo_parquet
+#include "atx/vol/session.hpp"    // VolaSession
+#include "atx/vol/types.hpp"      // Side
+#include "atx/vol/universe.hpp"   // Universe, Underlying, Chain
 
 namespace atx::vol::testkit {
 
 // Probe the standard fixture locations for one symbol's cbbo-1m parquet. `symbol`
 // is lowercase (matching the on-disk filename, e.g. "spy" / "xom"). Empty result
 // => not found (caller should GTEST_SKIP).
-[[nodiscard]] inline std::string find_opra_parquet(const std::string& symbol) {
+[[nodiscard]] inline std::string find_opra_parquet(const std::string &symbol) {
   const std::string base = symbol + "_opra_cbbo1m_2026-06-05T1955Z.parquet";
-  const char* dirs[] = {"data/",          "../data/",   "../../data/",
-                        "../../../data/", "C:/atx/data/"};
-  for (const char* d : dirs) {
+  const char *dirs[] = {"data/", "../data/", "../../data/", "../../../data/", "C:/atx/data/"};
+  for (const char *d : dirs) {
     std::string p = std::string(d) + base;
     std::error_code ec;
     if (std::filesystem::exists(p, ec)) {
@@ -55,32 +54,35 @@ struct OpraBoard {
   Uid uid{kInvalidUid};
   double r{0.043};
 
-  [[nodiscard]] const Underlying& underlying() const {
-    return *u.get_underlying(uid).value();
-  }
+  [[nodiscard]] const Underlying &underlying() const { return *u.get_underlying(uid).value(); }
   [[nodiscard]] double spot() const { return panel.implied_spot; }
   [[nodiscard]] std::int64_t now_ns() const { return panel.frame.snapshot_ts_ns; }
   // The market environment (flat rate + the frame's dividend schedule).
   [[nodiscard]] MarketEnv env() const {
-    return MarketEnv::flat(panel.implied_spot, r, panel.frame.snapshot_ts_ns,
-                           panel.frame.divs);
+    return MarketEnv::flat(panel.implied_spot, r, panel.frame.snapshot_ts_ns, panel.frame.divs);
   }
 };
 
 // Load + install one symbol's OPRA board. `symbol` lowercase (filename);
 // `underlying_uc` uppercase (the parquet's `underlying` column / frame uid).
 // std::nullopt when the fixture is absent OR the load/install fails.
-[[nodiscard]] inline std::optional<OpraBoard> load_opra_board(
-    const std::string& symbol, const std::string& underlying_uc,
-    double r = 0.043) {
-  const std::string path = find_opra_parquet(symbol);
+[[nodiscard]] inline std::optional<OpraBoard>
+load_opra_board(const std::string &symbol, const std::string &underlying_uc, double r = 0.043);
+
+// Load + install one explicitly named OPRA snapshot. This is the general form
+// used by the multi-date/intraday SPY fit corpus; the legacy symbol-based helper
+// below remains the convenient one-fixture facade used by older tests.
+[[nodiscard]] inline std::optional<OpraBoard> load_opra_board_path(const std::string &path,
+                                                                   const std::string &underlying_uc,
+                                                                   const std::string &snapshot_iso,
+                                                                   double r = 0.043) {
   if (path.empty()) {
     return std::nullopt;
   }
   OpraLoadSpec spec;
   spec.path = path;
   spec.underlying = underlying_uc;
-  spec.snapshot_iso = "2026-06-05T19:55:00Z";
+  spec.snapshot_iso = snapshot_iso;
   spec.r = r;
   auto panel = load_opra_cbbo_parquet(spec);
   if (!panel.has_value()) {
@@ -97,13 +99,19 @@ struct OpraBoard {
   return b;
 }
 
+[[nodiscard]] inline std::optional<OpraBoard>
+load_opra_board(const std::string &symbol, const std::string &underlying_uc, double r) {
+  const std::string path = find_opra_parquet(symbol);
+  return load_opra_board_path(path, underlying_uc, "2026-06-05T19:55:00Z", r);
+}
+
 // ── Price-in-band scorer (the spy_bidask_bench pxCLN / pxALL metric) ─────────
 
 struct PxBandScore {
   // Headline metric: model IV re-Americanized COLD (the spy_bidask_bench pxCLN
   // definition — this is the "99.5%" number).
-  double px_all{0.0};        // % of liquid quotes with cold model price in band
-  double px_clean{0.0};      // % over the locally-convex (fittable) subset
+  double px_all{0.0};   // % of liquid quotes with cold model price in band
+  double px_clean{0.0}; // % over the locally-convex (fittable) subset
   // What the library SERVES via the cached hot-path pricer (fair_value). Reported
   // for visibility; the cached correction is baked at one representative carry, so
   // it is less penny-accurate than the cold re-Am on carry-distant expiries.
@@ -118,7 +126,7 @@ struct PxBandScore {
 // Per-quote local butterfly-convexity flag (identical to spy_bidask_bench's
 // flag_fittable): an interior same-side quote whose 3-point non-uniform butterfly
 // is negative is arb-inconsistent (un-fittable); endpoints are fittable.
-inline void flag_fittable(const std::vector<FitObs>& obs, std::vector<char>& fit) {
+inline void flag_fittable(const std::vector<FitObs> &obs, std::vector<char> &fit) {
   fit.assign(obs.size(), 1);
   for (int s = 0; s < 2; ++s) {
     const Side want = static_cast<Side>(static_cast<std::uint8_t>(s));
@@ -146,13 +154,11 @@ inline void flag_fittable(const std::vector<FitObs>& obs, std::vector<char>& fit
 // raw NBBO band, over the whole board and the locally-convex (clean) subset. This
 // is the pxCLN headline the convex-QP dense fit hits 99.5% on — now scored
 // through the session, whatever curve it fit.
-[[nodiscard]] inline PxBandScore price_in_band(const VolaSession& sess,
-                                               const Underlying& U, double S,
-                                               double r) {
+[[nodiscard]] inline PxBandScore price_in_band(const VolaSession &sess, const Underlying &U,
+                                               double S, double r, const CalibOpts &opts = {}) {
   PxBandScore bs;
-  const CalibOpts opts{};
   std::vector<char> fit;
-  for (const auto& c : sess.expiries()) {
+  for (const auto &c : sess.expiries()) {
     const double T = c.T;
     if (T < 0.019) {
       continue;
@@ -160,8 +166,8 @@ inline void flag_fittable(const std::vector<FitObs>& obs, std::vector<char>& fit
     const double F = c.forward;
     const double q_eff = c.q_eff;
     const double df = std::exp(-r * T);
-    const Chain* chain = nullptr;
-    for (const Chain& ch : U.chains) {
+    const Chain *chain = nullptr;
+    for (const Chain &ch : U.chains) {
       if (std::fabs(ch.T - T) < 1e-9) {
         chain = &ch;
         break;
@@ -176,7 +182,7 @@ inline void flag_fittable(const std::vector<FitObs>& obs, std::vector<char>& fit
     }
     flag_fittable(obs->obs, fit);
     for (std::size_t j = 0; j < obs->obs.size(); ++j) {
-      const FitObs& o = obs->obs[j];
+      const FitObs &o = obs->obs[j];
       const double half = 0.5 * o.spread;
       const double bid = o.mid - half, ask = o.mid + half;
       if (!(bid > 0.0) || !(ask > bid)) {
@@ -189,8 +195,7 @@ inline void flag_fittable(const std::vector<FitObs>& obs, std::vector<char>& fit
       // Headline: COLD re-Americanization of the served model IV (== the bench
       // pxCLN metric the 99.5% number is defined on).
       const auto fv_cold = american_price(S, o.K, T, miv, r, q_eff, o.side,
-                                          AmericanMethod::AndersenLake,
-                                          al_fast_opts());
+                                          AmericanMethod::AndersenLake, al_fast_opts());
       if (!fv_cold.has_value()) {
         continue;
       }
@@ -201,8 +206,7 @@ inline void flag_fittable(const std::vector<FitObs>& obs, std::vector<char>& fit
       }
       // What the library serves via the cached hot path (fair_value).
       const auto fv_served = sess.fair_value(o.K, T, o.side);
-      const bool in_served =
-          fv_served.has_value() && (*fv_served >= bid && *fv_served <= ask);
+      const bool in_served = fv_served.has_value() && (*fv_served >= bid && *fv_served <= ask);
       if (fit[j] != 0) {
         ++bs.n_clean;
         if (in_cold) {
@@ -223,4 +227,4 @@ inline void flag_fittable(const std::vector<FitObs>& obs, std::vector<char>& fit
   return bs;
 }
 
-}  // namespace atx::vol::testkit
+} // namespace atx::vol::testkit

@@ -12,7 +12,7 @@
 #include <thread>
 #include <unordered_map>
 
-#include "atx/vol/american.hpp"  // AmericanGreeks
+#include "atx/vol/american.hpp" // AmericanGreeks
 
 namespace atx::vol {
 
@@ -32,8 +32,7 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 // writes its own output slot, so there is no shared mutable state; the caller's
 // serial scatter after this call keeps the reduction order fixed. `n_threads==0`
 // selects hardware concurrency; the count is clamped to n.
-template <class F>
-void parallel_blocks(std::size_t n, unsigned n_threads, F&& body) {
+template <class F> void parallel_blocks(std::size_t n, unsigned n_threads, F &&body) {
   if (n == 0) {
     return;
   }
@@ -76,11 +75,11 @@ struct ContractKey {
   std::uint64_t kbits;
   std::uint64_t tbits;
   std::uint8_t side;
-  bool operator==(const ContractKey&) const noexcept = default;
+  bool operator==(const ContractKey &) const noexcept = default;
 };
 
 struct ContractKeyHash {
-  [[nodiscard]] std::size_t operator()(const ContractKey& k) const noexcept {
+  [[nodiscard]] std::size_t operator()(const ContractKey &k) const noexcept {
     std::size_t h = std::hash<std::uint32_t>{}(k.uid);
     auto mix = [&h](std::uint64_t v) {
       h ^= std::hash<std::uint64_t>{}(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
@@ -92,25 +91,35 @@ struct ContractKeyHash {
   }
 };
 
-[[nodiscard]] ContractKey key_of(const OptionContract& c) noexcept {
-  return ContractKey{c.uid, std::bit_cast<std::uint64_t>(c.K),
-                     std::bit_cast<std::uint64_t>(c.T),
+[[nodiscard]] ContractKey key_of(const OptionContract &c) noexcept {
+  return ContractKey{c.uid, std::bit_cast<std::uint64_t>(c.K), std::bit_cast<std::uint64_t>(c.T),
                      static_cast<std::uint8_t>(c.side)};
 }
 
-}  // namespace
+} // namespace
 
 // ── Portfolio ─────────────────────────────────────────────────────────────
 
-Result<Portfolio> Portfolio::create(std::span<const Position> positions) {
+Result<Portfolio> Portfolio::create(std::span<const Position> positions,
+                                    const PortfolioBuildOptions &options) {
   Portfolio pf;
   pf.positions_.assign(positions.begin(), positions.end());
   pf.pos_contract_ix_.resize(positions.size());
 
   std::unordered_map<ContractKey, std::uint32_t, ContractKeyHash> seen;
-  seen.reserve(positions.size() * 2);
+  constexpr std::size_t kAutoUniqueReserveCap = 65'536u;
+  // A hint above the position count cannot be right -- unique contracts are a
+  // subset of positions -- so clamp it. An unclamped hint would let a caller
+  // reinstate exactly the multi-million-bucket dedup table this option exists to
+  // avoid, and a pathological value would throw length_error out of a factory
+  // whose contract is to return a Result.
+  const std::size_t expected =
+      options.expected_unique_contracts > 0
+          ? std::min(options.expected_unique_contracts, positions.size())
+          : std::min(positions.size(), kAutoUniqueReserveCap);
+  seen.reserve(expected);
   for (std::size_t i = 0; i < positions.size(); ++i) {
-    const OptionContract& c = positions[i].contract;
+    const OptionContract &c = positions[i].contract;
     const ContractKey key = key_of(c);
     auto [it, inserted] = seen.try_emplace(key, static_cast<std::uint32_t>(pf.contracts_.size()));
     if (inserted) {
@@ -121,7 +130,7 @@ Result<Portfolio> Portfolio::create(std::span<const Position> positions) {
 
   // Unique, sorted uid set (over the deduped contracts).
   pf.uids_.reserve(pf.contracts_.size());
-  for (const OptionContract& c : pf.contracts_) {
+  for (const OptionContract &c : pf.contracts_) {
     pf.uids_.push_back(c.uid);
   }
   std::sort(pf.uids_.begin(), pf.uids_.end());
@@ -132,17 +141,17 @@ Result<Portfolio> Portfolio::create(std::span<const Position> positions) {
 
 // ── SurfaceSet ────────────────────────────────────────────────────────────
 
-Result<SurfaceSet> SurfaceSet::create(std::span<const PricedSurface* const> surfaces) {
+Result<SurfaceSet> SurfaceSet::create(std::span<const PricedSurface *const> surfaces) {
   SurfaceSet ss;
   ss.by_uid_.reserve(surfaces.size());
-  for (const PricedSurface* s : surfaces) {
+  for (const PricedSurface *s : surfaces) {
     if (s == nullptr) {
       return Err(ErrorCode::InvalidArgument, "SurfaceSet: null surface pointer");
     }
     ss.by_uid_.emplace_back(s->uid(), s);
   }
   std::sort(ss.by_uid_.begin(), ss.by_uid_.end(),
-            [](const auto& a, const auto& b) { return a.first < b.first; });
+            [](const auto &a, const auto &b) { return a.first < b.first; });
   for (std::size_t i = 1; i < ss.by_uid_.size(); ++i) {
     if (ss.by_uid_[i].first == ss.by_uid_[i - 1].first) {
       return Err(ErrorCode::InvalidArgument, "SurfaceSet: duplicate uid");
@@ -151,9 +160,9 @@ Result<SurfaceSet> SurfaceSet::create(std::span<const PricedSurface* const> surf
   return ss;
 }
 
-const PricedSurface* SurfaceSet::find(std::uint32_t uid) const noexcept {
+const PricedSurface *SurfaceSet::find(std::uint32_t uid) const noexcept {
   auto it = std::lower_bound(by_uid_.begin(), by_uid_.end(), uid,
-                             [](const auto& e, std::uint32_t u) { return e.first < u; });
+                             [](const auto &e, std::uint32_t u) { return e.first < u; });
   if (it != by_uid_.end() && it->first == uid) {
     return it->second;
   }
@@ -174,34 +183,44 @@ struct ContractPx {
   PriceStatus status{PriceStatus::ModelUnavailable};
 };
 
-[[nodiscard]] bool degenerate(const OptionContract& c) noexcept {
+[[nodiscard]] bool degenerate(const OptionContract &c) noexcept {
   return !(std::isfinite(c.K) && c.K > 0.0 && std::isfinite(c.T) && c.T > 0.0);
 }
 
-}  // namespace
+} // namespace
 
-Result<PriceFrame> PortfolioPricer::price(const SurfaceSet& surfaces,
-                                          const PriceOptions& opts) const {
+Result<PriceFrame> PortfolioPricer::price(const SurfaceSet &surfaces,
+                                          const PriceOptions &opts) const {
   const std::span<const OptionContract> contracts = pf_.contracts();
   const std::span<const Position> positions = pf_.positions();
 
   // 1. Parallel: one Greeks solve per UNIQUE contract into disjoint slots.
   std::vector<ContractPx> px(contracts.size());
   parallel_blocks(contracts.size(), opts.n_threads, [&](std::size_t i) {
-    const OptionContract& c = contracts[i];
-    ContractPx& out = px[i];
+    const OptionContract &c = contracts[i];
+    ContractPx &out = px[i];
     if (degenerate(c)) {
       out.status = PriceStatus::InvalidContract;
       return;
     }
-    const PricedSurface* surf = surfaces.find(c.uid);
+    const PricedSurface *surf = surfaces.find(c.uid);
     if (surf == nullptr) {
       out.status = PriceStatus::ModelUnavailable;
       return;
     }
     out.iv = surf->iv(c.K, c.T);
+    if (opts.prices_only) {
+      auto fair = surf->fair_value(c.K, c.T, c.side);
+      if (!fair.has_value() || !std::isfinite(*fair)) {
+        out.status = PriceStatus::NumericError;
+        return;
+      }
+      out.fair_value = *fair;
+      out.status = PriceStatus::Ok;
+      return;
+    }
     auto g = opts.analytic_greeks ? surf->greeks_analytic(c.K, c.T, c.side)
-                                  : surf->greeks(c.K, c.T, c.side);  // greeks + mark
+                                  : surf->greeks(c.K, c.T, c.side); // greeks + mark
     if (!g.has_value() || !std::isfinite(g->price)) {
       out.status = PriceStatus::NumericError;
       return;
@@ -215,7 +234,10 @@ Result<PriceFrame> PortfolioPricer::price(const SurfaceSet& surfaces,
     out.status = PriceStatus::Ok;
   });
 
-  // 2. Serial scatter (input order) + fixed-order total reduction.
+  // 2. Cache-line-disjoint SoA scatter. A million-position book is memory-bandwidth
+  // bound here, so fan it out independently of the much smaller unique-contract
+  // solve. Totals are reduced in a second fixed-order pass to remain bit-identical
+  // for every thread count.
   PriceFrame f;
   const std::size_t n = positions.size();
   f.id.resize(n);
@@ -233,9 +255,9 @@ Result<PriceFrame> PortfolioPricer::price(const SurfaceSet& surfaces,
   f.charm.resize(n);
   f.status.resize(n);
 
-  for (std::size_t i = 0; i < n; ++i) {
-    const Position& p = positions[i];
-    const ContractPx& c = px[pf_.contract_ix(i)];
+  parallel_blocks(n, opts.n_threads, [&](std::size_t i) {
+    const Position &p = positions[i];
+    const ContractPx &c = px[pf_.contract_ix(i)];
     const double w = p.qty * eff_multiplier(p.multiplier);
     f.id[i] = p.id;
     f.uid[i] = p.contract.uid;
@@ -246,30 +268,48 @@ Result<PriceFrame> PortfolioPricer::price(const SurfaceSet& surfaces,
       f.price[i] = kNaN;
       f.delta[i] = f.gamma[i] = f.vega[i] = f.theta[i] = f.rho[i] = kNaN;
       f.vanna[i] = f.volga[i] = f.charm[i] = kNaN;
-      continue;
+      return;
     }
-    const AmericanGreeks& g = c.g;
-    f.price[i] = c.fair_value;      // American per-share mark
+    const AmericanGreeks &g = c.g;
+    f.price[i] = c.fair_value; // American per-share mark
     f.pv[i] = w * c.fair_value;
-    f.delta[i] = w * g.delta;
-    f.gamma[i] = w * g.gamma;
-    f.vega[i] = w * g.vega;
-    f.theta[i] = w * g.theta;
-    f.rho[i] = w * g.rho;
-    f.vanna[i] = w * g.vanna;
-    f.volga[i] = w * g.volga;
-    f.charm[i] = w * g.charm;
-
-    f.total.pv += f.pv[i];
-    f.total.delta += f.delta[i];
-    f.total.gamma += f.gamma[i];
-    f.total.vega += f.vega[i];
-    f.total.theta += f.theta[i];
-    f.total.rho += f.rho[i];
-    f.total.vanna += f.vanna[i];
-    f.total.volga += f.volga[i];
-    f.total.charm += f.charm[i];
-    ++f.total.n_ok;
+    if (opts.prices_only) {
+      f.delta[i] = f.gamma[i] = f.vega[i] = f.theta[i] = f.rho[i] = kNaN;
+      f.vanna[i] = f.volga[i] = f.charm[i] = kNaN;
+    } else {
+      f.delta[i] = w * g.delta;
+      f.gamma[i] = w * g.gamma;
+      f.vega[i] = w * g.vega;
+      f.theta[i] = w * g.theta;
+      f.rho[i] = w * g.rho;
+      f.vanna[i] = w * g.vanna;
+      f.volga[i] = w * g.volga;
+      f.charm[i] = w * g.charm;
+    }
+  });
+  // prices_only leaves every per-lane Greek column NaN, so the aggregate must be
+  // NaN as well. PriceTotals default-initializes its Greeks to 0.0; leaving them
+  // there would report a finite, clean zero vega alongside n_ok > 0 -- a book that
+  // reads as vega-flat when its Greeks were simply never computed.
+  if (opts.prices_only) {
+    f.total.delta = f.total.gamma = f.total.vega = f.total.theta = f.total.rho = kNaN;
+    f.total.vanna = f.total.volga = f.total.charm = kNaN;
+  }
+  for (std::size_t i = 0; i < n; ++i) {
+    if (f.status[i] == PriceStatus::Ok) {
+      f.total.pv += f.pv[i];
+      if (!opts.prices_only) {
+        f.total.delta += f.delta[i];
+        f.total.gamma += f.gamma[i];
+        f.total.vega += f.vega[i];
+        f.total.theta += f.theta[i];
+        f.total.rho += f.rho[i];
+        f.total.vanna += f.vanna[i];
+        f.total.volga += f.volga[i];
+        f.total.charm += f.charm[i];
+      }
+      ++f.total.n_ok;
+    }
   }
   return f;
 }
@@ -279,9 +319,9 @@ Result<PriceFrame> PortfolioPricer::price(const SurfaceSet& surfaces,
 namespace {
 
 struct ContractPnl {
-  AmericanGreeks gb{};     // base American (cold-FD) Greeks (the Taylor coefficients)
-  double price_base{0.0};  // base American mark (fair_value)
-  double price_target{0.0};// shifted American mark (fair_value)
+  AmericanGreeks gb{};      // base American (cold-FD) Greeks (the Taylor coefficients)
+  double price_base{0.0};   // base American mark (fair_value)
+  double price_target{0.0}; // shifted American mark (fair_value)
   double dS{0.0};
   double dvol{0.0};
   double dt{0.0};
@@ -289,25 +329,24 @@ struct ContractPnl {
   PriceStatus status{PriceStatus::ModelUnavailable};
 };
 
-}  // namespace
+} // namespace
 
-Result<PnlFrame> PortfolioPricer::pnl_explain(const SurfaceSet& base,
-                                              const SurfaceSet& shifted,
-                                              const PriceOptions& opts) const {
+Result<PnlFrame> PortfolioPricer::pnl_explain(const SurfaceSet &base, const SurfaceSet &shifted,
+                                              const PriceOptions &opts) const {
   const std::span<const OptionContract> contracts = pf_.contracts();
   const std::span<const Position> positions = pf_.positions();
 
   // 1. Parallel: per unique contract, base Greeks + target reprice + state moves.
   std::vector<ContractPnl> pnl(contracts.size());
   parallel_blocks(contracts.size(), opts.n_threads, [&](std::size_t i) {
-    const OptionContract& c = contracts[i];
-    ContractPnl& out = pnl[i];
+    const OptionContract &c = contracts[i];
+    ContractPnl &out = pnl[i];
     if (degenerate(c)) {
       out.status = PriceStatus::InvalidContract;
       return;
     }
-    const PricedSurface* sb = base.find(c.uid);
-    const PricedSurface* st = shifted.find(c.uid);
+    const PricedSurface *sb = base.find(c.uid);
+    const PricedSurface *st = shifted.find(c.uid);
     if (sb == nullptr || st == nullptr) {
       out.status = PriceStatus::ModelUnavailable;
       return;
@@ -317,25 +356,24 @@ Result<PnlFrame> PortfolioPricer::pnl_explain(const SurfaceSet& base,
     const double T_b = c.T;
     const double T_t = T_b - dt;
     if (!(std::isfinite(T_t) && T_t > 0.0)) {
-      out.status = PriceStatus::InvalidContract;  // rolled past expiry
+      out.status = PriceStatus::InvalidContract; // rolled past expiry
       return;
     }
     auto gb = opts.analytic_greeks ? sb->greeks_analytic(c.K, T_b, c.side)
-                                   : sb->greeks(c.K, T_b, c.side);  // base greeks + mark
-    auto pt = st->fair_value(c.K, T_t, c.side);   // shifted mark at the rolled maturity
-    if (!gb.has_value() || !std::isfinite(gb->price) || !pt.has_value() ||
-        !std::isfinite(*pt)) {
+                                   : sb->greeks(c.K, T_b, c.side); // base greeks + mark
+    auto pt = st->fair_value(c.K, T_t, c.side); // shifted mark at the rolled maturity
+    if (!gb.has_value() || !std::isfinite(gb->price) || !pt.has_value() || !std::isfinite(*pt)) {
       out.status = PriceStatus::NumericError;
       return;
     }
     const double sig_b = sb->iv(c.K, T_b);
-    const double sig_t = st->iv(c.K, T_b);  // common maturity: term roll stays in theta
+    const double sig_t = st->iv(c.K, T_b); // common maturity: term roll stays in theta
     if (!(std::isfinite(sig_b) && std::isfinite(sig_t))) {
       out.status = PriceStatus::NumericError;
       return;
     }
     out.gb = *gb;
-    out.price_base = gb->price;  // == sb->fair_value(c.K,T_b,side), bit-identical, no dup solve
+    out.price_base = gb->price; // == sb->fair_value(c.K,T_b,side), bit-identical, no dup solve
     out.price_target = *pt;
     out.dS = st->pricing().S - sb->pricing().S;
     out.dvol = sig_t - sig_b;
@@ -368,8 +406,8 @@ Result<PnlFrame> PortfolioPricer::pnl_explain(const SurfaceSet& base,
   f.status.resize(n);
 
   for (std::size_t i = 0; i < n; ++i) {
-    const Position& p = positions[i];
-    const ContractPnl& c = pnl[pf_.contract_ix(i)];
+    const Position &p = positions[i];
+    const ContractPnl &c = pnl[pf_.contract_ix(i)];
     const double w = p.qty * eff_multiplier(p.multiplier);
     f.id[i] = p.id;
     f.uid[i] = p.contract.uid;
@@ -383,7 +421,7 @@ Result<PnlFrame> PortfolioPricer::pnl_explain(const SurfaceSet& base,
       f.d_spot[i] = f.d_vol[i] = f.d_time[i] = f.d_rate[i] = kNaN;
       continue;
     }
-    const AmericanGreeks& g = c.gb;
+    const AmericanGreeks &g = c.gb;
     // The full American PnL, decomposed by the base AMERICAN (cold-FD) Greeks. The
     // coefficients now carry the early-exercise premium (delta/gamma finite-
     // differenced through american_price), so `unexpl` is the pure higher-order
@@ -435,4 +473,4 @@ Result<PnlFrame> PortfolioPricer::pnl_explain(const SurfaceSet& base,
   return f;
 }
 
-}  // namespace atx::vol
+} // namespace atx::vol

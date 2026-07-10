@@ -45,22 +45,37 @@ using OptionId = ContractId;
 struct OptionRef {
   OptionId id{};
   std::int64_t expiry_ns{};
-  double T{0.0};            // year-fraction to expiry
+  double T{0.0}; // year-fraction to expiry
   double strike{0.0};
   Side side{Side::Call};
   double bid{0.0};
   double ask{0.0};
-  double mid{0.0};          // 0.5*(bid+ask)
+  double mid{0.0}; // 0.5*(bid+ask)
   std::int32_t bid_size{0};
   std::int32_t ask_size{0};
 };
 
+// Cache-friendly immutable flattening of one board. Columns are aligned by row
+// and ordered exactly like ids(). This is the valuation handoff: one linear walk
+// over the Universe SoA, no per-id decode/lookups, and no 72-byte OptionRef AoS.
+struct ChainSnapshot {
+  std::vector<OptionId> ids;
+  std::vector<double> T;
+  std::vector<double> strike;
+  std::vector<double> bid;
+  std::vector<double> ask;
+  std::vector<double> mid;
+  std::vector<Side> side;
+
+  [[nodiscard]] std::size_t size() const noexcept { return ids.size(); }
+};
+
 class OptionChain {
- public:
-  OptionChain(OptionChain&&) noexcept = default;
-  OptionChain& operator=(OptionChain&&) noexcept = default;
-  OptionChain(const OptionChain&) = delete;
-  OptionChain& operator=(const OptionChain&) = delete;
+public:
+  OptionChain(OptionChain &&) noexcept = default;
+  OptionChain &operator=(OptionChain &&) noexcept = default;
+  OptionChain(const OptionChain &) = delete;
+  OptionChain &operator=(const OptionChain &) = delete;
 
   // Install `frame` into an owned `Universe` (`data_install`) and resolve its
   // single underlying, carrying the full `MarketEnv` (spot / rate-curve / divs /
@@ -68,13 +83,12 @@ class OptionChain {
   // fitter needs travels in `env`. `env.spot` overrides `frame.spot` when > 0.
   // Propagates any install error; NotFound if the frame installs no usable
   // underlying.
-  [[nodiscard]] static Result<OptionChain> from_frame(const QuoteFrame& frame,
-                                                      MarketEnv env);
+  [[nodiscard]] static Result<OptionChain> from_frame(const QuoteFrame &frame, MarketEnv env);
 
   // Legacy flat-scalar overload (bit-identical to a flat `MarketEnv`). `r` is the
   // flat continuously-compounded rate; `spot` overrides `frame.spot` when > 0.
-  [[nodiscard]] static Result<OptionChain> from_frame(const QuoteFrame& frame,
-                                                      double r, double spot = 0.0);
+  [[nodiscard]] static Result<OptionChain> from_frame(const QuoteFrame &frame, double r,
+                                                      double spot = 0.0);
 
   // ── Market snapshot ────────────────────────────────────────────────────────
   [[nodiscard]] double spot() const noexcept { return env_.spot; }
@@ -82,7 +96,7 @@ class OptionChain {
   // rate at the front listed expiry; == flat_rate for a flat env).
   [[nodiscard]] double rate() const noexcept { return r_repr_; }
   [[nodiscard]] std::int64_t now_ns() const noexcept { return env_.now_ns; }
-  [[nodiscard]] const MarketEnv& env() const noexcept { return env_; }
+  [[nodiscard]] const MarketEnv &env() const noexcept { return env_; }
   [[nodiscard]] Uid uid() const noexcept { return uid_; }
 
   // ── Enumeration / decode ───────────────────────────────────────────────────
@@ -92,6 +106,11 @@ class OptionChain {
   // then side (call before put). The order is independent of quote content, so a
   // valuation over `ids()` is reproducible.
   [[nodiscard]] std::vector<OptionId> ids() const;
+
+  // Flatten every valuation-relevant field in one cache-linear pass. The
+  // snapshot is detached from later quote updates and safe to fan out across
+  // worker threads. Empty only if the underlying can no longer be resolved.
+  [[nodiscard]] ChainSnapshot snapshot() const;
 
   // Number of option legs present (== ids().size(), without materializing).
   [[nodiscard]] std::size_t size() const noexcept;
@@ -107,20 +126,19 @@ class OptionChain {
   // `Universe::apply_quotes`). Sizes default to 1, timestamp to `now_ns()`.
   //
   // @return InvalidArgument if the three spans differ in length; otherwise Ok().
-  [[nodiscard]] Status update_quotes(std::span<const OptionId> ids,
-                                     std::span<const double> bids,
+  [[nodiscard]] Status update_quotes(std::span<const OptionId> ids, std::span<const double> bids,
                                      std::span<const double> asks);
 
   // Non-owning const view of the installed underlying (the fitter's input).
-  [[nodiscard]] const Underlying& underlying() const;
+  [[nodiscard]] const Underlying &underlying() const;
 
- private:
+private:
   OptionChain() = default;
 
   Universe u_{};
   Uid uid_{kInvalidUid};
-  MarketEnv env_{};       // spot / rate-curve / divs / valuation time
-  double r_repr_{0.0};    // representative pipeline rate (env_.rate_at(front T))
+  MarketEnv env_{};    // spot / rate-curve / divs / valuation time
+  double r_repr_{0.0}; // representative pipeline rate (env_.rate_at(front T))
 };
 
-}  // namespace atx::vol
+} // namespace atx::vol

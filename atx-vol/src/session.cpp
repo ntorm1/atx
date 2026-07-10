@@ -165,9 +165,15 @@ void apply_fit_preset(SessionInputs& in, FitPreset preset) noexcept {
   // Shared across every preset: route the American inversions / re-pricing
   // through the correction-cache hot path.
   in.use_correction_cache = true;
+  in.score_parity = true;
+  in.enforce_calendar_floor = true;
+  in.use_deam_cache_for_fit = false;
+  in.calib.max_obs_per_slice = 0;
+  in.calib.max_otm_shortcut_premium_spread_frac = 0.0;
+  in.deam.method = AmericanMethod::AndersenLake;
+  in.deam.max_borrow_pairs = 12;
   switch (preset) {
     case FitPreset::Fast:
-    case FitPreset::Hft:
       // Fast surface-fit path: the fast Andersen-Lake preset with the inversion
       // tol matched to its ~1e-4 accuracy floor (a tighter tol collapses
       // safeguarded Newton into bisection and slows the fit), and a single ATM
@@ -175,11 +181,22 @@ void apply_fit_preset(SessionInputs& in, FitPreset preset) noexcept {
       in.deam.al_opts = al_fast_opts();
       in.deam.iv_tol = 1.0e-5;
       in.deam.n_atm = 1;
-      // Hft additionally repairs calendar arb (near-money, held quality); Fast
-      // leaves the raw surface. Both feed the cheap cached query path.
-      in.calendar_repair =
-          (preset == FitPreset::Hft) ? CalendarRepair::MonotoneFit
-                                     : CalendarRepair::None;
+      // Fast leaves the raw eSSVI surface and still scores parity diagnostics.
+      in.calendar_repair = CalendarRepair::None;
+      break;
+    case FitPreset::Hft:
+      in.deam.al_opts = al_fast_opts();
+      in.deam.iv_tol = 1.0e-5;
+      in.deam.n_atm = 1;
+      in.deam.max_borrow_pairs = 1;
+      in.curve.kind = VolCurveKind::LinearVariance;
+      in.calib.max_obs_per_slice = 48;
+      in.calib.max_otm_shortcut_premium_spread_frac = 0.50;
+      in.use_correction_cache = false;
+      in.score_parity = false;
+      in.enforce_calendar_floor = false;
+      in.use_deam_cache_for_fit = false;
+      in.calendar_repair = CalendarRepair::None;
       break;
     case FitPreset::Accurate:
     case FitPreset::Robust:
@@ -250,6 +267,9 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
   sp.calib = eff.calib;
   sp.band_k = eff.band_k;
   sp.repair = eff.calendar_repair;
+  sp.score_parity = eff.score_parity;
+  sp.enforce_calendar_floor = eff.enforce_calendar_floor;
+  sp.use_deam_cache_for_fit = eff.use_deam_cache_for_fit;
 
   // SOTA hot path: build per-side correction caches and route every American
   // inversion (de-Am) + re-pricing (parity) through the cached pricer. The

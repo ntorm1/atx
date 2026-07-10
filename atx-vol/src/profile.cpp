@@ -10,6 +10,7 @@
 
 #include <array>
 #include <cmath>
+#include <limits>
 
 namespace atx::vol {
 
@@ -22,9 +23,8 @@ namespace {
 // Starts from a default-constructed `CalibOpts` (== `calib_default_opts()`) and
 // overrides the six knobs the C helper takes. Per-level iteration caps are set
 // by each profile builder below.
-[[nodiscard]] CalibOpts make_calib_defaults(std::uint16_t outer,
-                                            std::uint16_t inner, double huber_k,
-                                            double prior_warm,
+[[nodiscard]] CalibOpts make_calib_defaults(std::uint16_t outer, std::uint16_t inner,
+                                            double huber_k, double prior_warm,
                                             double max_spread_vol,
                                             double min_vega_weight) noexcept {
   CalibOpts c{};
@@ -63,11 +63,11 @@ namespace {
   p.calib.max_iter_risk = 150;
   p.calib.max_iter_reference = 400;
   p.calib.optimization_level = OptimizationLevel::Trading;
-  p.calib.essvi_asymmetric_rho = false;   // Sprint 28 K.2: deferred on SPY
-  p.calib.residual_disable = false;        // Sprint 11: deep-wing residual on
-  p.calib.residual_basis_kind = ResidualBasisKind::Fengler;  // Sprint 29 M
+  p.calib.essvi_asymmetric_rho = false;                     // Sprint 28 K.2: deferred on SPY
+  p.calib.residual_disable = false;                         // Sprint 11: deep-wing residual on
+  p.calib.residual_basis_kind = ResidualBasisKind::Fengler; // Sprint 29 M
   p.calib.residual_n_basis_terms = 16;
-  p.calib.loss_kind = CalibLossKind::Mid;  // Sprint 25: INTERVAL reverted
+  p.calib.loss_kind = CalibLossKind::Mid; // Sprint 25: INTERVAL reverted
   // PORT NOTE: the C also set tenor_buckets (5), residual_candidate_select,
   // fengler_n_basis/ridge/max_proj_iters, selector_loss_aware/safety_pp_weighted
   // and fallback_use_quality_score — all omitted from the ported CalibOpts.
@@ -134,7 +134,7 @@ namespace {
 
   p.filter.stale_seconds = 60;
   p.filter.now_ts_ns = 0;
-  p.filter.wide_spread_pct = 3.00;  // wide markets common
+  p.filter.wide_spread_pct = 3.00; // wide markets common
   p.filter.wide_min_mid = 0.10;
   p.filter.penny_floor = 0.05;
   p.filter.min_vega_filter = 1.0e-4;
@@ -147,6 +147,7 @@ namespace {
   p.calib.max_iter_risk = 60;
   p.calib.max_iter_reference = 150;
   p.calib.optimization_level = OptimizationLevel::QuickMark;
+  p.calib.max_spread_to_mid_pct = 3.00;
 
   p.price_noise_ticks = 2.0;
   p.spread_vol_fraction = 1.0;
@@ -154,26 +155,26 @@ namespace {
   p.marginal_improvement_ticks = 1.0;
 
   p.forward_atm_band = 0.08;
-  p.ewma_alpha = 0.10;  // faster decay
+  p.ewma_alpha = 0.10; // faster decay
   p.low_T_years = kFwdLowTDefaultYears;
   p.full_refit_ms = 5000u;
   p.local_refit_us = 200u;
-  p.subtick_zeroing_ticks = 0.5;  // zero sub-half-tick correction
+  p.subtick_zeroing_ticks = 0.5; // zero sub-half-tick correction
   return p;
 }
 
 // MEGA_CAP_EVENT (Sprint 25) — clone SPY, loosen the single load-bearing
 // prefit spread cap, relax the obs filter, and drop the SPY-tuned residual.
-[[nodiscard]] Profile build_mega_cap_event(const Profile& spy) {
+[[nodiscard]] Profile build_mega_cap_event(const Profile &spy) {
   Profile p = spy;
   p.kind = ProfileKind::MegaCapEvent;
-  p.calib.essvi_asymmetric_rho = false;  // Sprint 28: pin off for single names
-  p.calib.residual_basis_kind = ResidualBasisKind::WingBspline;  // Sprint 29 L/M
+  p.calib.essvi_asymmetric_rho = false; // Sprint 28: pin off for single names
+  p.calib.residual_basis_kind = ResidualBasisKind::WingBspline; // Sprint 29 L/M
   p.calib.residual_n_basis_terms = 16;
-  p.filter.wide_spread_pct = 1.20;  // AAPL near-month spreads run wide
-  p.calib.max_spread_vol = 0.20;    // Sprint 26: let the LM see event weeklies
+  p.filter.wide_spread_pct = 1.20; // AAPL near-month spreads run wide
+  p.calib.max_spread_vol = 0.20;   // Sprint 26: let the LM see event weeklies
   p.calib.min_vega_weight = 1.0e-7;
-  p.calib.residual_disable = true;  // SPY wing-bspline over-fits event wings
+  p.calib.residual_disable = true; // SPY wing-bspline over-fits event wings
   // PORT NOTE: the C also set residual_candidate_select=0, use_source_vol_seed,
   // fallback_local_anchored, fengler_*=0, selector_*=0 and a 5-bucket
   // tenor_buckets table — all fields the ported CalibOpts omits.
@@ -182,7 +183,7 @@ namespace {
 
 // LIQUID_SINGLE_NAME (Sprint 25) — clone SPY, loosen only the prefit spread cap;
 // keep the residual layer enabled (smiles are smoother than mega-cap event).
-[[nodiscard]] Profile build_liquid_single_name(const Profile& spy) {
+[[nodiscard]] Profile build_liquid_single_name(const Profile &spy) {
   Profile p = spy;
   p.kind = ProfileKind::LiquidSingleName;
   p.filter.wide_spread_pct = 1.00;
@@ -194,7 +195,25 @@ namespace {
   return p;
 }
 
-// Immutable registry of the five concrete profiles, built once and pointed into
+// Volatility ETPs have broad, noisy wings and fewer PCP-consistent pairs than
+// equity/ETF boards. Give them a dedicated SVI-oriented profile instead of the
+// old SPY alias, whose tight spread-vol filter could reject every expiry.
+[[nodiscard]] Profile build_vol_product(const Profile &ordinary) {
+  Profile p = ordinary;
+  p.kind = ProfileKind::VolProduct;
+  p.base_surface = Parametrization::Svi;
+  p.filter.wide_spread_pct = 3.00;
+  p.calib.max_outer_iter = 20;
+  p.calib.max_inner_iter = 8;
+  p.calib.max_spread_vol = 0.35;
+  p.calib.min_vega_weight = 1.0e-7;
+  p.calib.max_spread_to_mid_pct = 2.00;
+  p.calib.residual_disable = true;
+  p.full_refit_ms = 1000u;
+  return p;
+}
+
+// Immutable registry of the six concrete profiles, built once and pointed into
 // for the life of the process.
 struct ProfileTable {
   Profile spy_like;
@@ -202,9 +221,10 @@ struct ProfileTable {
   Profile illiquid;
   Profile mega_cap_event;
   Profile liquid_single_name;
+  Profile vol_product;
 };
 
-[[nodiscard]] const ProfileTable& profiles() {
+[[nodiscard]] const ProfileTable &profiles() {
   static const ProfileTable table = [] {
     ProfileTable t{};
     t.spy_like = build_spy_like();
@@ -212,6 +232,7 @@ struct ProfileTable {
     t.illiquid = build_illiquid();
     t.mega_cap_event = build_mega_cap_event(t.spy_like);
     t.liquid_single_name = build_liquid_single_name(t.spy_like);
+    t.vol_product = build_vol_product(t.ordinary);
     return t;
   }();
   return table;
@@ -253,12 +274,11 @@ constexpr std::array<TickerSeed, 21> kTickerSeeds = {{
     {"MRNA", ProfileKind::LiquidSingleName},
 }};
 
-[[nodiscard]] bool ticker_seed_lookup(std::string_view ticker,
-                                      ProfileKind& out_kind) noexcept {
+[[nodiscard]] bool ticker_seed_lookup(std::string_view ticker, ProfileKind &out_kind) noexcept {
   if (ticker.empty()) {
     return false;
   }
-  for (const TickerSeed& seed : kTickerSeeds) {
+  for (const TickerSeed &seed : kTickerSeeds) {
     if (seed.ticker == ticker) {
       out_kind = seed.kind;
       return true;
@@ -267,39 +287,39 @@ constexpr std::array<TickerSeed, 21> kTickerSeeds = {{
   return false;
 }
 
-}  // namespace
+} // namespace
 
 // ── Registry accessors ───────────────────────────────────────────────────
 
-const Profile& profile_default() noexcept { return profiles().ordinary; }
+const Profile &profile_default() noexcept { return profiles().ordinary; }
 
-Result<const Profile*> profile_lookup(ProfileKind kind) {
-  const ProfileTable& t = profiles();
+Result<const Profile *> profile_lookup(ProfileKind kind) {
+  const ProfileTable &t = profiles();
   switch (kind) {
-    case ProfileKind::IndexEtfUltraLiquid:
-      return &t.spy_like;
-    case ProfileKind::MegaCapEvent:
-      return &t.mega_cap_event;
-    case ProfileKind::LiquidSingleName:
-      return &t.liquid_single_name;
-    // VOL_PRODUCT has no fixture yet — route to the spy-like default (matches
-    // the C).
-    case ProfileKind::VolProduct:
-      return &t.spy_like;
-    // ORDINARY / HTB_DIVIDEND both route to the ordinary default.
-    case ProfileKind::OrdinarySingleName:
-      return &t.ordinary;
-    case ProfileKind::HtbDividendName:
-      return &t.ordinary;
-    case ProfileKind::IlliquidSmallCap:
-      return &t.illiquid;
+  case ProfileKind::IndexEtfUltraLiquid:
+    return &t.spy_like;
+  case ProfileKind::MegaCapEvent:
+    return &t.mega_cap_event;
+  case ProfileKind::LiquidSingleName:
+    return &t.liquid_single_name;
+  // VOL_PRODUCT has no fixture yet — route to the spy-like default (matches
+  // the C).
+  case ProfileKind::VolProduct:
+    return &t.vol_product;
+  // ORDINARY / HTB_DIVIDEND both route to the ordinary default.
+  case ProfileKind::OrdinarySingleName:
+    return &t.ordinary;
+  case ProfileKind::HtbDividendName:
+    return &t.ordinary;
+  case ProfileKind::IlliquidSmallCap:
+    return &t.illiquid;
   }
   // Reached only for an out-of-range integer cast to ProfileKind (the C's
   // NULL-on-invalid path); a valid enumerator is handled above.
   return Err(ErrorCode::NotFound, "profile_lookup: unknown ProfileKind");
 }
 
-Profile profile_make_cold_fast(const Profile& base) noexcept {
+Profile profile_make_cold_fast(const Profile &base) noexcept {
   Profile p = base;
   p.optimization_level = OptimizationLevel::ColdFast;
   p.calib.optimization_level = OptimizationLevel::ColdFast;
@@ -320,32 +340,32 @@ Profile profile_make_cold_fast(const Profile& base) noexcept {
 
 std::uint8_t profile_tier_priority(ProfileKind kind) noexcept {
   switch (kind) {
-    case ProfileKind::IndexEtfUltraLiquid:
-      return 0u;
-    case ProfileKind::VolProduct:
-      return 0u;
-    case ProfileKind::MegaCapEvent:
-      return 1u;
-    case ProfileKind::LiquidSingleName:
-      return 1u;
-    case ProfileKind::HtbDividendName:
-      return 2u;
-    case ProfileKind::OrdinarySingleName:
-      return 2u;
-    case ProfileKind::IlliquidSmallCap:
-      return 3u;
+  case ProfileKind::IndexEtfUltraLiquid:
+    return 0u;
+  case ProfileKind::VolProduct:
+    return 0u;
+  case ProfileKind::MegaCapEvent:
+    return 1u;
+  case ProfileKind::LiquidSingleName:
+    return 1u;
+  case ProfileKind::HtbDividendName:
+    return 2u;
+  case ProfileKind::OrdinarySingleName:
+    return 2u;
+  case ProfileKind::IlliquidSmallCap:
+    return 3u;
   }
-  return 3u;  // C default for an out-of-range kind
+  return 3u; // C default for an out-of-range kind
 }
 
 // ── OPRA tick-size lookup ─────────────────────────────────────────────────
 
 double tick_size(double price, bool is_penny_pilot) noexcept {
   if (!std::isfinite(price) || price < 0.0) {
-    return 0.05;  // fall-through
+    return 0.05; // fall-through
   }
   if (is_penny_pilot) {
-    return 0.01;  // 1c across all prices
+    return 0.01; // 1c across all prices
   }
   // Penny Interval Program / standard lattice: 1c below $3, 5c at/above $3.
   return (price < 3.0) ? 0.01 : 0.05;
@@ -353,7 +373,7 @@ double tick_size(double price, bool is_penny_pilot) noexcept {
 
 // ── Heuristic classifier ──────────────────────────────────────────────────
 
-ProfileVerdict classify_profile(const ClassifierInputs& in) noexcept {
+ProfileVerdict classify_profile(const ClassifierInputs &in) noexcept {
   // Vol products: explicit operator hint short-circuits.
   if (in.vol_product) {
     return {ProfileKind::VolProduct, 0.95};
@@ -450,13 +470,11 @@ ProfileVerdict classify_profile(const ClassifierInputs& in) noexcept {
   }
 
   const double confidence =
-      (max_votes > 0) ? static_cast<double>(best_votes) /
-                            static_cast<double>(max_votes)
-                      : 0.5;
+      (max_votes > 0) ? static_cast<double>(best_votes) / static_cast<double>(max_votes) : 0.5;
   return {kind, confidence};
 }
 
-ProfileVerdict classify_underlier(const Underlying& under) noexcept {
+ClassifierInputs classifier_inputs_from_underlier(const Underlying &under) noexcept {
   // Aggregate quote-state across chains.
   std::uint32_t n_live = 0u;
   std::uint32_t n_atm = 0u;
@@ -468,7 +486,7 @@ ProfileVerdict classify_underlier(const Underlying& under) noexcept {
   std::uint32_t n_spreads = 0u;
 
   const double S = (under.spot > 0.0) ? under.spot : 0.0;
-  for (const Chain& c : under.chains) {
+  for (const Chain &c : under.chains) {
     if (c.T <= 0.0) {
       continue;
     }
@@ -513,8 +531,11 @@ ProfileVerdict classify_underlier(const Underlying& under) noexcept {
     }
   }
 
-  // Cheap median estimate: insertion-sort the small reservoir.
-  double median_spread = 0.0;
+  // Cheap median estimate: insertion-sort the small reservoir. A board with no
+  // two-sided quote has no spread to measure; 0.0 would be the TIGHTEST possible
+  // value and would vote IndexEtfUltraLiquid, so a dead board must instead read as
+  // maximally wide.
+  double median_spread = std::numeric_limits<double>::max();
   if (n_spreads > 0u) {
     for (std::uint32_t i = 1u; i < n_spreads; ++i) {
       const double v = spreads[i];
@@ -540,16 +561,24 @@ ProfileVerdict classify_underlier(const Underlying& under) noexcept {
   // n_dividends / median_q_eff / event_distance_days / forward_dispersion_bp
   // stay 0 — see the header PORT NOTE (none feed the vote).
 
-  return classify_profile(in);
+  return in;
 }
 
-ProfileVerdict classify_underlier_with_ticker(const Underlying& under,
+ProfileVerdict classify_underlier(const Underlying &under) noexcept {
+  return classify_profile(classifier_inputs_from_underlier(under));
+}
+
+bool ticker_seed_profile(std::string_view ticker, ProfileKind &out_kind) noexcept {
+  return ticker_seed_lookup(ticker, out_kind);
+}
+
+ProfileVerdict classify_underlier_with_ticker(const Underlying &under,
                                               std::string_view ticker) noexcept {
   ProfileKind seed_kind = ProfileKind::OrdinarySingleName;
   if (ticker_seed_lookup(ticker, seed_kind)) {
-    return {seed_kind, 0.95};
+    return {seed_kind, kTickerSeedConfidence};
   }
   return classify_underlier(under);
 }
 
-}  // namespace atx::vol
+} // namespace atx::vol

@@ -27,15 +27,17 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <vector>
 
-#include "atx/vol/american.hpp"    // AmericanGreeks
-#include "atx/vol/chain.hpp"       // OptionChain, OptionId
-#include "atx/vol/curve.hpp"       // DividendEvent
-#include "atx/vol/curve_selector.hpp"  // SelectorConfig, SelectorResult
-#include "atx/vol/session.hpp"     // VolaSession, FitPreset, SessionDiagnostics
-#include "atx/vol/types.hpp"       // Result, Status, Side
-#include "atx/vol/vol_curve.hpp"   // CurveConfig, VolCurveKind
+#include "atx/vol/american.hpp"       // AmericanGreeks
+#include "atx/vol/chain.hpp"          // OptionChain, OptionId
+#include "atx/vol/curve.hpp"          // DividendEvent
+#include "atx/vol/curve_selector.hpp" // SelectorConfig, SelectorResult
+#include "atx/vol/fit_policy.hpp"     // FitContext, FitPolicyConfig, FitDecision
+#include "atx/vol/session.hpp"        // VolaSession, FitPreset, SessionDiagnostics
+#include "atx/vol/types.hpp"          // Result, Status, Side
+#include "atx/vol/vol_curve.hpp"      // CurveConfig, VolCurveKind
 
 namespace atx::vol {
 
@@ -46,24 +48,22 @@ namespace atx::vol {
 // is NaN, so a bad quote never sinks the rest of the valuation.
 enum class OutputField : std::uint32_t {
   None = 0,
-  ModelPrice = 1u << 0,  // re-Americanized model fair value at (K, T, side)
-  ModelIV = 1u << 1,     // surface European-equivalent IV at (K, T)
-  BidIV = 1u << 2,       // American implied vol of the bid (on the fit's carry)
-  AskIV = 1u << 3,       // American implied vol of the ask
-  MidIV = 1u << 4,       // American implied vol of the mid
-  Greeks = 1u << 5,      // full AmericanGreeks bundle at the model IV
+  ModelPrice = 1u << 0, // re-Americanized model fair value at (K, T, side)
+  ModelIV = 1u << 1,    // surface European-equivalent IV at (K, T)
+  BidIV = 1u << 2,      // American implied vol of the bid (on the fit's carry)
+  AskIV = 1u << 3,      // American implied vol of the ask
+  MidIV = 1u << 4,      // American implied vol of the mid
+  Greeks = 1u << 5,     // full AmericanGreeks bundle at the model IV
   Prices = ModelPrice | ModelIV,
   Bands = BidIV | AskIV | MidIV,
   All = ModelPrice | ModelIV | BidIV | AskIV | MidIV | Greeks,
 };
 
 [[nodiscard]] constexpr OutputField operator|(OutputField a, OutputField b) noexcept {
-  return static_cast<OutputField>(static_cast<std::uint32_t>(a) |
-                                  static_cast<std::uint32_t>(b));
+  return static_cast<OutputField>(static_cast<std::uint32_t>(a) | static_cast<std::uint32_t>(b));
 }
 [[nodiscard]] constexpr OutputField operator&(OutputField a, OutputField b) noexcept {
-  return static_cast<OutputField>(static_cast<std::uint32_t>(a) &
-                                  static_cast<std::uint32_t>(b));
+  return static_cast<OutputField>(static_cast<std::uint32_t>(a) & static_cast<std::uint32_t>(b));
 }
 [[nodiscard]] constexpr bool has(OutputField set, OutputField flag) noexcept {
   return (static_cast<std::uint32_t>(set) & static_cast<std::uint32_t>(flag)) != 0u;
@@ -89,12 +89,27 @@ struct ChainValuation {
   [[nodiscard]] std::optional<std::size_t> row_of(OptionId id) const;
 };
 
+// ── Fallback ladder ─────────────────────────────────────────────────────────
+//
+// Curve families a failed `primary` is retried with, in order, for any board the
+// policy routed (a caller-pinned curve is never substituted). A profile is a
+// latency prior, not permission to drop an underlier, so every kind declares at
+// least one rung and no rung repeats its own primary. `FitDecision::used_fallback`
+// and `::primary_curve` record what happened. Exposed so the routing contract is
+// inspectable, not just observable after a failure.
+[[nodiscard]] std::span<const VolCurveKind> fallback_curve_rungs(VolCurveKind primary) noexcept;
+
 // ── Fit policy ──────────────────────────────────────────────────────────────
 //
 // Thin bundle over the session's fit knobs plus the evaluation thread count.
-// Every field defaults so `PricerConfig{}` is a valid market-maker config
-// (Robust preset: calendar-arb-free near-money at held quality).
+// Every field defaults so `PricerConfig{}` is a valid market-maker config. With
+// no pinned curve, the unified policy routes dense ETF/index boards to the HFT
+// linear-variance path, sparse boards to SVI, event boards to C8, and validates
+// ambiguous boards out of sample.
 struct PricerConfig {
+  // Preset used for pinned curves and as the fallback policy for a forced
+  // cross-validation. Auto policy may choose a profile-specific effective
+  // preset; set Hft explicitly to retain the legacy hard-pinned dense route.
   FitPreset preset{FitPreset::Robust};
   // Curve family + per-kind knobs. std::nullopt (the default) => the CurveSelector
   // searches for the best kind + config for THIS board (out-of-sample
@@ -103,6 +118,23 @@ struct PricerConfig {
   std::optional<CurveConfig> curve{};
   // Search policy used only when `curve` is std::nullopt.
   SelectorConfig selector{};
+  // Unified profile/session/event auto-selection policy and per-snapshot hints.
+  FitPolicyConfig policy{};
+  FitContext context{};
+  // Optional overrides for the preset's cold-fit diagnostic/quality-speed knobs.
+  // nullopt => use the preset default. false for `score_parity` skips the second
+  // de-Am diagnostic pass; false for `enforce_calendar_floor` maximizes raw
+  // in-band fit quality by fitting dense slices independently.
+  std::optional<bool> use_correction_cache{};
+  std::optional<bool> score_parity{};
+  std::optional<bool> enforce_calendar_floor{};
+  std::optional<bool> use_deam_cache_for_fit{};
+  // Optional per-slice cap applied before American-IV de-Am inversion. nullopt
+  // => use the preset default; 0 => no cap.
+  std::optional<std::uint32_t> max_obs_per_slice{};
+  // Reuse raw European IV when the estimated OTM early-exercise premium is at
+  // most this fraction of the NBBO spread. nullopt => preset default.
+  std::optional<double> max_otm_shortcut_premium_spread_frac{};
   // Worker count for value_chain. 0 => std::thread::hardware_concurrency();
   // 1 => serial. A per-call `value_chain(..., n_threads)` overrides this.
   unsigned n_threads{0};
@@ -117,11 +149,11 @@ struct PricerConfig {
 // Wraps a `VolaSession` (the fitted VolSurface + per-slice carry + correction
 // caches). Every query is a const read; move-only (heavy fitted state).
 class FittedSurface {
- public:
-  FittedSurface(FittedSurface&&) noexcept = default;
-  FittedSurface& operator=(FittedSurface&&) noexcept = default;
-  FittedSurface(const FittedSurface&) = delete;
-  FittedSurface& operator=(const FittedSurface&) = delete;
+public:
+  FittedSurface(FittedSurface &&) noexcept = default;
+  FittedSurface &operator=(FittedSurface &&) noexcept = default;
+  FittedSurface(const FittedSurface &) = delete;
+  FittedSurface &operator=(const FittedSurface &) = delete;
 
   [[nodiscard]] double iv(double K, double T) const { return sess_.iv(K, T); }
   [[nodiscard]] Result<double> fair_value(double K, double T, Side s) const {
@@ -130,41 +162,45 @@ class FittedSurface {
   [[nodiscard]] Result<AmericanGreeks> greeks(double K, double T, Side s) const {
     return sess_.greeks(K, T, s);
   }
-  [[nodiscard]] const VolaSession& session() const noexcept { return sess_; }
-  [[nodiscard]] const SessionDiagnostics& diagnostics() const noexcept {
+  [[nodiscard]] const VolaSession &session() const noexcept { return sess_; }
+  [[nodiscard]] const SessionDiagnostics &diagnostics() const noexcept {
     return sess_.diagnostics();
   }
 
- private:
+private:
   friend class PricerFitter;
-  explicit FittedSurface(VolaSession&& sess) : sess_(std::move(sess)) {}
+  explicit FittedSurface(VolaSession &&sess) : sess_(std::move(sess)) {}
   VolaSession sess_;
 };
 
 // ── PricerFitter ────────────────────────────────────────────────────────────
 class PricerFitter {
- public:
+public:
   explicit PricerFitter(PricerConfig cfg = {}) : cfg_(std::move(cfg)) {}
 
   // Fit the surface from `chain` and STORE it as unique_ptr<FittedSurface>,
   // replacing any prior fit. Maps the config onto SessionInputs and drives
   // `VolaSession::build`. Propagates the build error (the prior surface is left
   // intact on failure).
-  [[nodiscard]] Status fit(const OptionChain& chain);
+  [[nodiscard]] Status fit(const OptionChain &chain);
 
   [[nodiscard]] bool fitted() const noexcept { return surface_ != nullptr; }
-  [[nodiscard]] const FittedSurface* surface() const noexcept { return surface_.get(); }
+  [[nodiscard]] const FittedSurface *surface() const noexcept { return surface_.get(); }
 
-  [[nodiscard]] const PricerConfig& config() const noexcept { return cfg_; }
+  [[nodiscard]] const PricerConfig &config() const noexcept { return cfg_; }
   void set_threads(unsigned n) noexcept { cfg_.n_threads = n; }
 
   // The curve-selection outcome from the most recent `fit`, when the config left
   // `curve` unset (auto-select). Empty if `curve` was pinned or no fit has run.
   // Lets a caller see WHICH curve the library chose for this board (and the
   // per-candidate out-of-sample scores).
-  [[nodiscard]] const std::optional<SelectorResult>& selection() const noexcept {
+  [[nodiscard]] const std::optional<SelectorResult> &selection() const noexcept {
     return selection_;
   }
+
+  // Profile/features/effective preset+curve decision from the most recent auto
+  // fit. Unlike selection(), this is populated for the O(N) direct routes too.
+  [[nodiscard]] const std::optional<FitDecision> &decision() const noexcept { return decision_; }
 
   // Price the chain's options for the requested `fields`, fanned out across
   // `n_threads` workers (0 => cfg.n_threads; final 0 => hardware_concurrency,
@@ -172,14 +208,14 @@ class PricerFitter {
   // count (disjoint output slots, pure const reads).
   //
   // @return Unavailable if no surface is fitted; otherwise Ok(valuation).
-  [[nodiscard]] Result<ChainValuation> value_chain(const OptionChain& chain,
-                                                   OutputField fields,
+  [[nodiscard]] Result<ChainValuation> value_chain(const OptionChain &chain, OutputField fields,
                                                    unsigned n_threads = 0) const;
 
- private:
+private:
   PricerConfig cfg_;
   std::unique_ptr<FittedSurface> surface_;
-  std::optional<SelectorResult> selection_;  // last auto-select outcome (if any)
+  std::optional<SelectorResult> selection_; // last auto-select outcome (if any)
+  std::optional<FitDecision> decision_;     // last unified policy outcome
 };
 
-}  // namespace atx::vol
+} // namespace atx::vol

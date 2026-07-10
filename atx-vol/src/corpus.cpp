@@ -386,13 +386,25 @@ void append_double(std::string& out, double v) {
   }
 }
 
+// The writer emits static_cast<uint32_t>(chosen_kind) for whichever kind the
+// selector picked, so this reader must accept every VolCurveKind or the manifest
+// fails its own round-trip. Switching on the enum with no `default:` lets
+// -Wswitch -Werror reject a new kind that forgets to update this mapping.
 [[nodiscard]] bool to_curve_kind(std::uint32_t v, VolCurveKind& out) noexcept {
-  switch (v) {
-    case 0u: out = VolCurveKind::ConvexDense; return true;
-    case 1u: out = VolCurveKind::Essvi; return true;
-    case 2u: out = VolCurveKind::Svi; return true;
-    default: return false;
+  if (v > 0xFFu) {
+    return false;
   }
+  const auto kind = static_cast<VolCurveKind>(static_cast<std::uint8_t>(v));
+  switch (kind) {
+    case VolCurveKind::ConvexDense:
+    case VolCurveKind::Essvi:
+    case VolCurveKind::Svi:
+    case VolCurveKind::LinearVariance:
+    case VolCurveKind::C8:
+      out = kind;
+      return true;
+  }
+  return false;  // unknown kind: manifest written by a newer build
 }
 
 // ErrorCode spans 0..10 (see atx/core/error.hpp).

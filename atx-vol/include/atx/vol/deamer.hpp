@@ -180,6 +180,7 @@ struct DeAmOptions {
   bool imply_borrow = true;    // if false, use borrow_fixed
   double borrow_fixed = 0.0;   // borrow used when imply_borrow == false
   std::size_t n_atm = 3;       // near-ATM co-terminal pairs used for the borrow
+  std::size_t max_borrow_pairs = 12; // cap robust band expansion; 1 = fastest
   // American-IV inversion Newton controls for the per-strike de-Am solve. The
   // default (1e-7 / 64) matches american_implied_vol and keeps the cold path
   // bit-identical; the fast-preset session loosens `iv_tol` to the fast pricer's
