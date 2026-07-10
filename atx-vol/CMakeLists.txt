@@ -70,6 +70,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/listed_dispersion.cpp
     src/listed_opra.cpp
     src/listed_dispersion_schedule.cpp
+    src/listed_dispersion_reconciliation.cpp
     src/listed_dispersion_strategy.cpp
     src/backtest.cpp
     src/strategy.cpp

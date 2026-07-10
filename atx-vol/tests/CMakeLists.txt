@@ -66,6 +66,7 @@ add_executable(atx-vol-tests
     listed_dispersion_test.cpp
     listed_opra_test.cpp
     listed_dispersion_schedule_test.cpp
+    listed_dispersion_reconciliation_test.cpp
     listed_dispersion_strategy_test.cpp
     backtest_test.cpp
     strategy_test.cpp
@@ -86,3 +87,12 @@ target_link_libraries(atx-vol-tests
 
 include(GoogleTest)
 gtest_discover_tests(atx-vol-tests PROPERTIES LABELS atx_vol)
+
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_test(
+        NAME atx-vol-reference-spy-dispersion
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/reference_spy_dispersion_test.py
+    )
+    set_tests_properties(atx-vol-reference-spy-dispersion PROPERTIES LABELS atx_vol)
+endif()
