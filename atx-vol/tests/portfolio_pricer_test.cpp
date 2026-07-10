@@ -213,6 +213,56 @@ struct FrameStore {
   }
 };
 
+// Caller-owned backing storage for a PnlFrameView, sized to `n`. P&L has no field
+// mask, so all 19 columns always materialize.
+struct PnlFrameStore {
+  std::vector<std::uint64_t> id;
+  std::vector<std::uint32_t> uid;
+  std::vector<double> pv_base, pv_target, pnl_total, pnl_delta, pnl_gamma, pnl_vega, pnl_volga,
+      pnl_vanna, pnl_theta, pnl_rho, pnl_charm, pnl_unexplained, d_spot, d_vol, d_time, d_rate;
+  std::vector<PriceStatus> status;
+  PnlTotals total{};
+
+  explicit PnlFrameStore(std::size_t n) {
+    id.resize(n);
+    uid.resize(n);
+    for (std::vector<double> *col :
+         {&pv_base, &pv_target, &pnl_total, &pnl_delta, &pnl_gamma, &pnl_vega, &pnl_volga,
+          &pnl_vanna, &pnl_theta, &pnl_rho, &pnl_charm, &pnl_unexplained, &d_spot, &d_vol, &d_time,
+          &d_rate}) {
+      col->resize(n);
+    }
+    status.resize(n);
+  }
+
+  [[nodiscard]] PnlFrameView view() {
+    return PnlFrameView{id,          uid,       pv_base,   pv_target,       pnl_total,
+                        pnl_delta,   pnl_gamma, pnl_vega,  pnl_volga,       pnl_vanna,
+                        pnl_theta,   pnl_rho,   pnl_charm, pnl_unexplained, d_spot,
+                        d_vol,       d_time,    d_rate,    status,          &total};
+  }
+};
+
+// A multi-underlying (uids 1/2/3 essvi + a no-surface uid 99), multi-expiry,
+// mixed-side book with a dedup pair — exercises the grouped P&L substrate's
+// equal-T ladders (three strikes per (uid,side,T) run) and the ModelUnavailable /
+// InvalidContract lanes. All-essvi so a shifted set can bump every axis.
+[[nodiscard]] std::vector<Position> pnl_multi_book() {
+  std::vector<Position> book;
+  std::uint64_t id = 0;
+  for (std::uint32_t u : {1u, 2u, 3u}) {
+    for (double T : {0.15, 0.25, 0.35}) {
+      for (double K : {92.0, 100.0, 108.0}) {
+        book.push_back({id++, {u, K, T, Side::Call}, +2.0 + 0.1 * static_cast<double>(u), 100.0});
+        book.push_back({id++, {u, K, T, Side::Put}, -1.5, 100.0});
+      }
+    }
+  }
+  book.push_back({id++, {1u, 92.0, 0.15, Side::Call}, +5.0, 100.0}); // dedup of the first contract
+  book.push_back({id++, {99u, 100.0, 0.20, Side::Call}, +1.0, 100.0}); // no surface -> unavailable
+  return book;
+}
+
 } // namespace
 
 // ── Pricing: multi-kind, multi-underlying, dedup, missing uid ────────────────
@@ -1102,4 +1152,289 @@ TEST(PortfolioPricer, OversizedUniqueContractHintIsClampedAndHarmless) {
   ASSERT_TRUE(hinted.has_value());
   EXPECT_EQ(hinted->n_positions(), exact->n_positions());
   EXPECT_EQ(hinted->n_contracts(), exact->n_contracts());
+}
+
+// ── In-place P&L API: pnl_explain_into / pnl_totals bit-identity + zero-alloc ─
+
+namespace {
+
+// Base + shifted (combined-bump) essvi surface sets over uids 1/2/3 for the P&L
+// in-place tests. The shifted set moves spot +0.1, rate +5bp, vol +0.0005 theta,
+// and +1 hour, so every Taylor axis is live. Owns the surfaces; the pointer
+// vectors are populated only after both surface vectors stop growing.
+struct PnlSurfaces {
+  std::vector<PricedSurface> base_s;
+  std::vector<PricedSurface> shift_s;
+  std::vector<const PricedSurface *> base_p;
+  std::vector<const PricedSurface *> shift_p;
+
+  PnlSurfaces() {
+    const std::int64_t one_hour = static_cast<std::int64_t>(3600.0 * 1e9);
+    for (std::uint32_t u : {1u, 2u, 3u}) {
+      base_s.push_back(make_essvi(u, 5));
+    }
+    for (std::uint32_t u : {1u, 2u, 3u}) {
+      shift_s.push_back(make_essvi(u, 5, 0.0005, kS + 0.1, kR + 0.0005, kNow + one_hour));
+    }
+    for (const PricedSurface &s : base_s) {
+      base_p.push_back(&s);
+    }
+    for (const PricedSurface &s : shift_s) {
+      shift_p.push_back(&s);
+    }
+  }
+
+  [[nodiscard]] SurfaceSet base() const { return set_of(base_p); }
+  [[nodiscard]] SurfaceSet shifted() const { return set_of(shift_p); }
+};
+
+} // namespace
+
+TEST(PortfolioPricer, PnlExplainInto_BitIdenticalToPnlExplain) {
+  const PnlSurfaces surf;
+  const SurfaceSet base = surf.base();
+  const SurfaceSet shifted = surf.shifted();
+  auto pf = Portfolio::create(pnl_multi_book());
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+
+  const PriceOptions opts{.n_threads = 4};
+  auto ref = pricer.pnl_explain(base, shifted, opts);
+  ASSERT_TRUE(ref.has_value());
+
+  PnlFrameStore fs(ref->size());
+  PortfolioWorkspace ws;
+  ws.reserve(pricer.portfolio().n_contracts(), pricer.portfolio().n_positions());
+  PnlFrameView v = fs.view();
+  const Status s = pricer.pnl_explain_into(base, shifted, v, ws, opts);
+  ASSERT_TRUE(s.has_value());
+
+  for (std::size_t i = 0; i < ref->size(); ++i) {
+    EXPECT_EQ(fs.id[i], ref->id[i]) << i;
+    EXPECT_EQ(fs.uid[i], ref->uid[i]) << i;
+    EXPECT_EQ(fs.status[i], ref->status[i]) << i;
+    EXPECT_TRUE(bits_equal(fs.pv_base[i], ref->pv_base[i])) << i;
+    EXPECT_TRUE(bits_equal(fs.pv_target[i], ref->pv_target[i])) << i;
+    EXPECT_TRUE(bits_equal(fs.pnl_total[i], ref->pnl_total[i])) << i;
+    EXPECT_TRUE(bits_equal(fs.pnl_delta[i], ref->pnl_delta[i])) << i;
+    EXPECT_TRUE(bits_equal(fs.pnl_gamma[i], ref->pnl_gamma[i])) << i;
+    EXPECT_TRUE(bits_equal(fs.pnl_vega[i], ref->pnl_vega[i])) << i;
+    EXPECT_TRUE(bits_equal(fs.pnl_volga[i], ref->pnl_volga[i])) << i;
+    EXPECT_TRUE(bits_equal(fs.pnl_vanna[i], ref->pnl_vanna[i])) << i;
+    EXPECT_TRUE(bits_equal(fs.pnl_theta[i], ref->pnl_theta[i])) << i;
+    EXPECT_TRUE(bits_equal(fs.pnl_rho[i], ref->pnl_rho[i])) << i;
+    EXPECT_TRUE(bits_equal(fs.pnl_charm[i], ref->pnl_charm[i])) << i;
+    EXPECT_TRUE(bits_equal(fs.pnl_unexplained[i], ref->pnl_unexplained[i])) << i;
+    EXPECT_TRUE(bits_equal(fs.d_spot[i], ref->d_spot[i])) << i;
+    EXPECT_TRUE(bits_equal(fs.d_vol[i], ref->d_vol[i])) << i;
+    EXPECT_TRUE(bits_equal(fs.d_time[i], ref->d_time[i])) << i;
+    EXPECT_TRUE(bits_equal(fs.d_rate[i], ref->d_rate[i])) << i;
+  }
+  EXPECT_EQ(fs.total.n_ok, ref->total.n_ok);
+  EXPECT_TRUE(bits_equal(fs.total.pv_base, ref->total.pv_base));
+  EXPECT_TRUE(bits_equal(fs.total.pv_target, ref->total.pv_target));
+  EXPECT_TRUE(bits_equal(fs.total.pnl_total, ref->total.pnl_total));
+  EXPECT_TRUE(bits_equal(fs.total.pnl_delta, ref->total.pnl_delta));
+  EXPECT_TRUE(bits_equal(fs.total.pnl_gamma, ref->total.pnl_gamma));
+  EXPECT_TRUE(bits_equal(fs.total.pnl_vega, ref->total.pnl_vega));
+  EXPECT_TRUE(bits_equal(fs.total.pnl_volga, ref->total.pnl_volga));
+  EXPECT_TRUE(bits_equal(fs.total.pnl_vanna, ref->total.pnl_vanna));
+  EXPECT_TRUE(bits_equal(fs.total.pnl_theta, ref->total.pnl_theta));
+  EXPECT_TRUE(bits_equal(fs.total.pnl_rho, ref->total.pnl_rho));
+  EXPECT_TRUE(bits_equal(fs.total.pnl_charm, ref->total.pnl_charm));
+  EXPECT_TRUE(bits_equal(fs.total.pnl_unexplained, ref->total.pnl_unexplained));
+}
+
+TEST(PortfolioPricer, PnlTotals_BitIdenticalToPnlExplainTotal) {
+  const PnlSurfaces surf;
+  const SurfaceSet base = surf.base();
+  const SurfaceSet shifted = surf.shifted();
+  auto pf = Portfolio::create(pnl_multi_book());
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+
+  const PriceOptions opts{.n_threads = 4};
+  auto ref = pricer.pnl_explain(base, shifted, opts);
+  ASSERT_TRUE(ref.has_value());
+
+  PortfolioWorkspace ws;
+  auto t = pricer.pnl_totals(base, shifted, ws, opts);
+  ASSERT_TRUE(t.has_value());
+
+  EXPECT_EQ(t->n_ok, ref->total.n_ok);
+  EXPECT_TRUE(bits_equal(t->pv_base, ref->total.pv_base));
+  EXPECT_TRUE(bits_equal(t->pv_target, ref->total.pv_target));
+  EXPECT_TRUE(bits_equal(t->pnl_total, ref->total.pnl_total));
+  EXPECT_TRUE(bits_equal(t->pnl_delta, ref->total.pnl_delta));
+  EXPECT_TRUE(bits_equal(t->pnl_gamma, ref->total.pnl_gamma));
+  EXPECT_TRUE(bits_equal(t->pnl_vega, ref->total.pnl_vega));
+  EXPECT_TRUE(bits_equal(t->pnl_volga, ref->total.pnl_volga));
+  EXPECT_TRUE(bits_equal(t->pnl_vanna, ref->total.pnl_vanna));
+  EXPECT_TRUE(bits_equal(t->pnl_theta, ref->total.pnl_theta));
+  EXPECT_TRUE(bits_equal(t->pnl_rho, ref->total.pnl_rho));
+  EXPECT_TRUE(bits_equal(t->pnl_charm, ref->total.pnl_charm));
+  EXPECT_TRUE(bits_equal(t->pnl_unexplained, ref->total.pnl_unexplained));
+}
+
+TEST(PortfolioPricer, PnlExplainInto_ThreadCounts_TotalsBitIdentical) {
+  const PnlSurfaces surf;
+  const SurfaceSet base = surf.base();
+  const SurfaceSet shifted = surf.shifted();
+  auto pf = Portfolio::create(pnl_multi_book());
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+  const std::size_t n = pricer.portfolio().n_positions();
+
+  PortfolioWorkspace ws;
+  PnlTotals totals[4];
+  const unsigned thread_counts[4] = {1, 2, 4, 8};
+  for (int k = 0; k < 4; ++k) {
+    PnlFrameStore fs(n);
+    PnlFrameView v = fs.view();
+    ASSERT_TRUE(
+        pricer.pnl_explain_into(base, shifted, v, ws, PriceOptions{.n_threads = thread_counts[k]})
+            .has_value());
+    totals[k] = fs.total;
+  }
+  for (int k = 1; k < 4; ++k) {
+    EXPECT_TRUE(bits_equal(totals[k].pnl_total, totals[0].pnl_total)) << k;
+    EXPECT_TRUE(bits_equal(totals[k].pnl_delta, totals[0].pnl_delta)) << k;
+    EXPECT_TRUE(bits_equal(totals[k].pnl_vega, totals[0].pnl_vega)) << k;
+    EXPECT_TRUE(bits_equal(totals[k].pnl_unexplained, totals[0].pnl_unexplained)) << k;
+    EXPECT_EQ(totals[k].n_ok, totals[0].n_ok) << k;
+  }
+}
+
+// Zero-allocation proof + retained-substrate reuse for the P&L path. Meaningful
+// only under -DATX_VOL_COUNTERS=ON; the OFF build still exercises the in-place path.
+TEST(PortfolioPricer, PnlExplainInto_ZeroAllocation) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+  const PnlSurfaces surf;
+  const SurfaceSet base = surf.base();
+  const SurfaceSet shifted = surf.shifted();
+  auto pf = Portfolio::create(pnl_multi_book());
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+  const std::size_t n = pricer.portfolio().n_positions();
+  const std::size_t nu = pricer.portfolio().n_contracts();
+
+  PortfolioWorkspace ws;
+  ws.reserve(nu, n);
+  PnlFrameStore fs(n);
+  PnlFrameView v = fs.view();
+  // Warm up: first call builds the retained PreparedPortfolio + sizes the scratch.
+  ASSERT_TRUE(pricer.pnl_explain_into(base, shifted, v, ws).has_value());
+
+  if constexpr (counters_enabled()) {
+    atx::vol::counters::reset();
+    ASSERT_TRUE(pricer.pnl_explain_into(base, shifted, v, ws).has_value());
+    auto s = atx::vol::counters::snapshot();
+    EXPECT_EQ(s.get(Counter::FrameAllocations), 0u); // caller-owned spans + reused scratch
+    EXPECT_EQ(s.get(Counter::FrameBytes), std::uint64_t{141} * n);
+    EXPECT_EQ(s.get(Counter::PreparedBuilds), 0u); // substrate reused, not rebuilt
+  } else {
+    EXPECT_FALSE(atx::vol::counters::snapshot().enabled);
+    SUCCEED();
+  }
+}
+
+// §4 acceptance gate: the grouped-substrate P&L solve is bit-identical, per
+// contract, to the ungrouped per-contract resolves (sb->evaluate + st->fair_value
+// + st->iv) the pre-change pnl_explain used. Pins the pre-change frame by
+// recomputing it independently on a multi-uid / multi-expiry / mixed-side book.
+TEST(PortfolioPricer, PnlExplain_Grouped_BitIdenticalToUngrouped) {
+  const PnlSurfaces surf;
+  const SurfaceSet base = surf.base();
+  const SurfaceSet shifted = surf.shifted();
+  const std::vector<Position> book = pnl_multi_book();
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+
+  // Grouped substrate output (default opts: analytic_greeks=false, 1 thread).
+  auto er = pricer.pnl_explain(base, shifted);
+  ASSERT_TRUE(er.has_value());
+  const PnlFrame &f = *er;
+  ASSERT_EQ(f.size(), book.size());
+
+  using EF = PricedSurface::EvalField;
+  for (std::size_t i = 0; i < book.size(); ++i) {
+    const OptionContract &c = book[i].contract;
+    const double w = book[i].qty * book[i].multiplier;
+
+    PriceStatus st_expect = PriceStatus::Ok;
+    AmericanGreeks gb{};
+    double price_base = 0.0, price_target = 0.0, dS = 0.0, dvol = 0.0, dt = 0.0, dr = 0.0;
+    if (!(std::isfinite(c.K) && c.K > 0.0 && std::isfinite(c.T) && c.T > 0.0)) {
+      st_expect = PriceStatus::InvalidContract;
+    } else {
+      const PricedSurface *sb = base.find(c.uid);
+      const PricedSurface *sh = shifted.find(c.uid);
+      if (sb == nullptr || sh == nullptr) {
+        st_expect = PriceStatus::ModelUnavailable;
+      } else {
+        dt = static_cast<double>(sh->pricing().now_ts_ns - sb->pricing().now_ts_ns) / kNsPerYear;
+        const double T_b = c.T;
+        const double T_t = T_b - dt;
+        if (!(std::isfinite(T_t) && T_t > 0.0)) {
+          st_expect = PriceStatus::InvalidContract;
+        } else {
+          const PricedSurface::FusedResult fr = sb->evaluate(
+              c.K, T_b, c.side, EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder, false);
+          auto pt = sh->fair_value(c.K, T_t, c.side);
+          if (!fr.status.has_value() || !std::isfinite(fr.greeks.price) || !pt.has_value() ||
+              !std::isfinite(*pt)) {
+            st_expect = PriceStatus::NumericError;
+          } else {
+            const double sig_b = fr.iv;
+            const double sig_t = sh->iv(c.K, T_b);
+            if (!(std::isfinite(sig_b) && std::isfinite(sig_t))) {
+              st_expect = PriceStatus::NumericError;
+            } else {
+              gb = fr.greeks;
+              price_base = fr.greeks.price;
+              price_target = *pt;
+              dS = sh->pricing().S - sb->pricing().S;
+              dvol = sig_t - sig_b;
+              dr = sh->pricing().r - sb->pricing().r;
+            }
+          }
+        }
+      }
+    }
+
+    EXPECT_EQ(f.status[i], st_expect) << i;
+    if (st_expect != PriceStatus::Ok) {
+      continue;
+    }
+    // Recompute the w-scaled decomposition exactly as the scatter does.
+    const double pnl_total_ps = price_target - price_base;
+    const double pd = gb.delta * dS;
+    const double pg = 0.5 * gb.gamma * dS * dS;
+    const double pv = gb.vega * dvol;
+    const double pvol = 0.5 * gb.volga * dvol * dvol;
+    const double pvanna = gb.vanna * dS * dvol;
+    const double pth = gb.theta * dt;
+    const double prho = gb.rho * dr;
+    const double pcharm = gb.charm * dS * dt;
+    const double explained = pd + pg + pv + pvol + pvanna + pth + prho + pcharm;
+    const double unexpl = pnl_total_ps - explained;
+    EXPECT_TRUE(bits_equal(f.pv_base[i], w * price_base)) << i;
+    EXPECT_TRUE(bits_equal(f.pv_target[i], w * price_target)) << i;
+    EXPECT_TRUE(bits_equal(f.pnl_total[i], w * pnl_total_ps)) << i;
+    EXPECT_TRUE(bits_equal(f.pnl_delta[i], w * pd)) << i;
+    EXPECT_TRUE(bits_equal(f.pnl_gamma[i], w * pg)) << i;
+    EXPECT_TRUE(bits_equal(f.pnl_vega[i], w * pv)) << i;
+    EXPECT_TRUE(bits_equal(f.pnl_volga[i], w * pvol)) << i;
+    EXPECT_TRUE(bits_equal(f.pnl_vanna[i], w * pvanna)) << i;
+    EXPECT_TRUE(bits_equal(f.pnl_theta[i], w * pth)) << i;
+    EXPECT_TRUE(bits_equal(f.pnl_rho[i], w * prho)) << i;
+    EXPECT_TRUE(bits_equal(f.pnl_charm[i], w * pcharm)) << i;
+    EXPECT_TRUE(bits_equal(f.pnl_unexplained[i], w * unexpl)) << i;
+    EXPECT_TRUE(bits_equal(f.d_spot[i], dS)) << i;
+    EXPECT_TRUE(bits_equal(f.d_vol[i], dvol)) << i;
+    EXPECT_TRUE(bits_equal(f.d_time[i], dt)) << i;
+    EXPECT_TRUE(bits_equal(f.d_rate[i], dr)) << i;
+  }
 }

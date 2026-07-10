@@ -4,7 +4,6 @@
 #include "atx/vol/pricing_executor.hpp"
 
 #include <algorithm>
-#include <bit>
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
@@ -337,10 +336,17 @@ void PricingExecutor::run_erased(std::size_t n, unsigned n_threads, Trampoline f
     return;
   }
   const std::size_t block = (n + nt - 1u) / nt;
+  // Exception-safe restore of the nested-parallelism guard: if the caller's
+  // block-0 body throws out of dispatch(), the thread-local flag must still be
+  // reset (unreachable on today's non-throwing bodies, but a real latent footgun
+  // — a leaked `true` would wrongly inline every subsequent run_* on this thread).
   const bool prev = t_in_executor;
+  struct FlagRestorer {
+    bool prev;
+    ~FlagRestorer() { t_in_executor = prev; }
+  } restorer{prev};
   t_in_executor = true;
   s.dispatch(fn, cl, n, block, nt - 1u);
-  t_in_executor = prev;
 }
 
 // ── Process singleton + one-time configuration ───────────────────────────────

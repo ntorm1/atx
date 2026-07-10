@@ -258,5 +258,62 @@ int main(int argc, char **argv) {
     std::printf("  threads=%-2s : %7.1f us | %10.0f contracts/sec | total pnl=%.2f\n", lb, us,
                 static_cast<double>(n_ctr) / (us / 1e6), er->total.pnl_total);
   }
+
+  // pnl_explain_into() (in-place, warm workspace) + pnl_totals() (no scatter/frame).
+  // The in-place win over the returning pnl_explain() is the parallel scatter, the
+  // separated fixed-order reduction, and the reused frame/solve scratch (no 141 B/pos
+  // frame + no ContractPnl vector allocated per call).
+  {
+    std::vector<std::uint64_t> id_c(n_pos);
+    std::vector<std::uint32_t> uid_c(n_pos);
+    std::vector<double> c0(n_pos), c1(n_pos), c2(n_pos), c3(n_pos), c4(n_pos), c5(n_pos), c6(n_pos),
+        c7(n_pos), c8(n_pos), c9(n_pos), c10(n_pos), c11(n_pos), c12(n_pos), c13(n_pos), c14(n_pos),
+        c15(n_pos);
+    std::vector<PriceStatus> stat(n_pos);
+    PnlTotals tot{};
+    PnlFrameView view{id_c, uid_c, c0,  c1,  c2,  c3,  c4,   c5,   c6, c7,
+                      c8,   c9,    c10, c11, c12, c13, c14,  c15,  stat, &tot};
+    PortfolioWorkspace ws;
+    ws.reserve(n_ctr, n_pos);
+    (void)pricer.pnl_explain_into(surfaces, shifted, view, ws); // warm the substrate + scratch
+
+    std::printf("\npnl_explain_into() (in-place, warm ws; parallel scatter + separated reduce):\n");
+    std::printf("  dedup ratio        : %.1f positions : 1 unique\n",
+                static_cast<double>(n_pos) / static_cast<double>(n_ctr));
+    for (unsigned nt : {1u, 4u, 0u}) {
+      const double t0 = now_ns();
+      (void)pricer.pnl_explain_into(surfaces, shifted, view, ws, PriceOptions{nt});
+      const double t1 = now_ns();
+      const double us = (t1 - t0) / 1000.0;
+      char lb[8];
+      if (nt == 0u) {
+        std::snprintf(lb, sizeof lb, "hw");
+      } else {
+        std::snprintf(lb, sizeof lb, "%u", nt);
+      }
+      std::printf("  threads=%-2s : %7.1f us | %10.0f contracts/sec | %9.0f positions/sec | "
+                  "total pnl=%.2f\n",
+                  lb, us, static_cast<double>(n_ctr) / (us / 1e6),
+                  static_cast<double>(n_pos) / (us / 1e6), tot.pnl_total);
+    }
+
+    std::printf("\npnl_totals() (no scatter, no frame):\n");
+    for (unsigned nt : {1u, 4u, 0u}) {
+      const double t0 = now_ns();
+      auto tr = pricer.pnl_totals(surfaces, shifted, ws, PriceOptions{nt});
+      const double t1 = now_ns();
+      const double us = (t1 - t0) / 1000.0;
+      char lb[8];
+      if (nt == 0u) {
+        std::snprintf(lb, sizeof lb, "hw");
+      } else {
+        std::snprintf(lb, sizeof lb, "%u", nt);
+      }
+      std::printf("  threads=%-2s : %7.1f us | %10.0f contracts/sec | %9.0f positions/sec | "
+                  "total pnl=%.2f\n",
+                  lb, us, static_cast<double>(n_ctr) / (us / 1e6),
+                  static_cast<double>(n_pos) / (us / 1e6), tr->pnl_total);
+    }
+  }
   return 0;
 }

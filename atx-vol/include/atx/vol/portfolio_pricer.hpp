@@ -375,6 +375,40 @@ struct PnlFrame {
   [[nodiscard]] std::size_t size() const noexcept { return id.size(); }
 };
 
+// ── In-place P&L API: caller-owned output view ─────────────────────────────
+//
+// A caller-owned output view for `pnl_explain_into`: one span per PnlFrame column
+// plus a totals sink. Unlike price's PriceFrameView (whose eight Greek spans may
+// be empty under the Marks mask), P&L has NO field mask — all 19 columns are
+// always materialized, so every span (and `total`) must be present and sized to
+// the position count. With a reserved workspace and a correctly-sized view,
+// `pnl_explain_into` allocates no frame memory on the hot path (the retained
+// PreparedPortfolio and the P&L solve scratch in `ws` are reused across
+// snapshots). (At `opts.n_threads > 1` the worker fan-out itself allocates a
+// thread vector; see PortfolioWorkspace.)
+struct PnlFrameView {
+  std::span<std::uint64_t> id;
+  std::span<std::uint32_t> uid;
+  std::span<double> pv_base;
+  std::span<double> pv_target;
+  std::span<double> pnl_total;
+  std::span<double> pnl_delta;
+  std::span<double> pnl_gamma;
+  std::span<double> pnl_vega;
+  std::span<double> pnl_volga;
+  std::span<double> pnl_vanna;
+  std::span<double> pnl_theta;
+  std::span<double> pnl_rho;
+  std::span<double> pnl_charm;
+  std::span<double> pnl_unexplained;
+  std::span<double> d_spot;
+  std::span<double> d_vol;
+  std::span<double> d_time;
+  std::span<double> d_rate;
+  std::span<PriceStatus> status;
+  PnlTotals *total{nullptr};
+};
+
 // ── The pricer ────────────────────────────────────────────────────────────
 
 struct PriceOptions {
@@ -446,6 +480,30 @@ public:
   // time-roll dt is taken from the two surfaces' valuation timestamps; when they
   // match (dt=0) the theta/charm terms vanish (pure vol/spot/rate explain).
   [[nodiscard]] Result<PnlFrame> pnl_explain(const SurfaceSet &base, const SurfaceSet &shifted,
+                                             const PriceOptions &opts = {}) const;
+
+  // In-place Taylor PnL-explain: reprice the book against a base + shifted surface
+  // per underlying and scatter the full 19-column decomposition into the
+  // caller-owned spans of `out`. With a reserved `ws` and a view whose 19 spans
+  // (and `total`) are all sized to the position count, this allocates no *frame*
+  // memory on the hot path — the retained PreparedPortfolio and the P&L solve
+  // scratch in `ws` are reused across snapshots. (At `opts.n_threads > 1` the
+  // worker fan-out itself allocates a thread vector; see PortfolioWorkspace.)
+  //
+  // Every column and the `total` fields are bit-identical to `pnl_explain()`; the
+  // reduction is the same fixed-input-order sum, so `out.total` is deterministic
+  // across thread counts. @return InvalidArgument on a view span-size mismatch, or
+  // the propagated substrate-build error.
+  [[nodiscard]] Status pnl_explain_into(const SurfaceSet &base, const SurfaceSet &shifted,
+                                        PnlFrameView out, PortfolioWorkspace &ws,
+                                        const PriceOptions &opts = {}) const;
+
+  // Totals only: solve the book against the base + shifted surfaces and reduce the
+  // weighted per-row P&L decomposition over positions in fixed input order, with NO
+  // per-row frame allocation and NO scatter. Bit-identical to `pnl_explain(...).total`.
+  // Shares the retained PreparedPortfolio / scratch in `ws`.
+  [[nodiscard]] Result<PnlTotals> pnl_totals(const SurfaceSet &base, const SurfaceSet &shifted,
+                                             PortfolioWorkspace &ws,
                                              const PriceOptions &opts = {}) const;
 
 private:
