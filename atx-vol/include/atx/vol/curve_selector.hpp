@@ -33,10 +33,13 @@ namespace atx::vol {
 // One candidate's out-of-sample score.
 struct CandidateScore {
   VolCurveKind kind{VolCurveKind::ConvexDense};
-  double oos_in_band{0.0};  // held-out price-in-band fraction (0..1)
-  double oos_vw{0.0};       // held-out vega^2-weighted in-band fraction (0..1)
+  double oos_in_band{0.0}; // held-out price-in-band fraction (0..1)
+  double oos_vw{0.0};      // held-out vega^2-weighted in-band fraction (0..1)
+  double vega_weight_in_band{0.0};
+  double vega_weight_total{0.0};
   std::size_t dof_sum{0};   // summed effective DoF over scored slices (parsimony)
   std::size_t n_holdout{0}; // held-out strikes scored
+  std::size_t n_in_band{0}; // held-out strikes priced inside their bid/ask
   std::size_t n_slices{0};  // expiries that produced a scorable fit
 };
 
@@ -72,5 +75,13 @@ struct SelectorConfig {
 [[nodiscard]] Result<SelectorResult> select_curve(const Underlying &under,
                                                   const SurfaceParityInputs &in,
                                                   const SelectorConfig &sel = {});
+
+// Score one already-selected family on the selector's deterministic even/odd
+// holdout. This performs no all-family search and is the quality path for direct
+// policy routes and successful fallback rungs.
+[[nodiscard]] Result<CandidateScore> score_curve_oos(const Underlying &under,
+                                                     const SurfaceParityInputs &in,
+                                                     const CurveConfig &curve,
+                                                     const SelectorConfig &scoring = {});
 
 } // namespace atx::vol

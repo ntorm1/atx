@@ -169,6 +169,9 @@ Result<SelectorResult> select_curve(const Underlying &under, const SurfaceParity
     cs.dof_sum = a.dof_sum;
     cs.n_slices = a.n_slices;
     cs.n_holdout = a.n;
+    cs.n_in_band = a.in_band;
+    cs.vega_weight_in_band = a.win;
+    cs.vega_weight_total = a.wsum;
     cs.oos_in_band = (a.n > 0) ? static_cast<double>(a.in_band) / static_cast<double>(a.n) : 0.0;
     cs.oos_vw = (a.wsum > 0.0) ? a.win / a.wsum : 0.0;
     out.scores.push_back(cs);
@@ -208,6 +211,17 @@ Result<SelectorResult> select_curve(const Underlying &under, const SurfaceParity
   out.chosen = candidates[best_i];
   out.chosen_index = best_i;
   return Ok(std::move(out));
+}
+
+Result<CandidateScore> score_curve_oos(const Underlying &under, const SurfaceParityInputs &in,
+                                       const CurveConfig &curve, const SelectorConfig &scoring) {
+  SelectorConfig one = scoring;
+  one.candidates = {curve};
+  ATX_TRY(SelectorResult selected, select_curve(under, in, one));
+  if (selected.scores.size() != 1u) {
+    return Err(ErrorCode::Internal, "score_curve_oos: one-family score unavailable");
+  }
+  return Ok(selected.scores.front());
 }
 
 } // namespace atx::vol

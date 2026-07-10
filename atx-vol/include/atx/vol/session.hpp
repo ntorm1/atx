@@ -315,6 +315,11 @@ class VolaSession {
     return diag_;
   }
 
+  // Effective, fully-resolved fit inputs retained by the session. Quality
+  // scoring uses these so a direct/fallback OOS refit sees the same preset,
+  // quote filter, dividends, carry, and pricer policy as the shipped surface.
+  [[nodiscard]] const SessionInputs& inputs() const noexcept { return in_; }
+
   // ── Term carry accessors (the query re-pricing forward / effective yield) ──
   //
   // The interpolated term forward F(T) and effective carry q_eff(T) at an
