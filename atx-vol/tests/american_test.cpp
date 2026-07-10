@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -1134,6 +1135,90 @@ TEST(AmericanGreeksRegime, UnsupportedRegime_PropagatesNotImplemented) {
   // European put (r<=0 && r<=q): still a valid bundle.
   const auto ge = american_greeks_al(100.0, 100.0, 1.0, 0.30, -0.01, 0.02, Side::Put);
   ASSERT_TRUE(ge.has_value());
+}
+
+// Fix-wave 1c: the CorrectionCache Greeks route (`american_greeks`) must ALSO
+// surface NotImplemented in the Unsupported regime, not a Black-76+correction
+// bundle built on a wrong European price.
+TEST(AmericanGreeksRegime, CachedRoute_UnsupportedNotImplemented) {
+  const double S = 70.0, K = 100.0, T = 1.0, sigma = 0.30, r = -0.005, q = -0.02;
+  ASSERT_EQ(classify_spec(r, q, Side::Put), Regime::Unsupported);  // q < r <= 0
+  const auto g = american_greeks(S, K, T, sigma, r, q, Side::Put, nullptr);
+  ASSERT_FALSE(g.has_value());
+  EXPECT_EQ(g.error().code(), atx::core::ErrorCode::NotImplemented);
+  // European put regime still returns a valid bundle (no early exercise).
+  const auto ge = american_greeks(100.0, 100.0, 1.0, 0.30, -0.01, 0.02, Side::Put, nullptr);
+  ASSERT_TRUE(ge.has_value());
+}
+
+// Fix-wave 1b: the hot cached price must surface NaN (not a silent number) in the
+// Unsupported regime. Null-cache path: it delegates to the cold andersen_lake,
+// which now returns NotImplemented -> NaN.
+TEST(AmericanPriceCached, UnsupportedRegime_ReturnsNaN) {
+  const double S = 70.0, K = 100.0, T = 1.0, sigma = 0.30, r = -0.005, q = -0.02;
+  ASSERT_EQ(classify_spec(r, q, Side::Put), Regime::Unsupported);
+  EXPECT_TRUE(std::isnan(
+      american_price_cached(S, K, T, sigma, r, q, Side::Put, nullptr)));
+}
+
+// Fix-wave 1a: the warm-started ALO pricer must surface NaN in the
+// double-continuation regime rather than the old silent European price.
+TEST(AloPricer, UnsupportedRegime_ReturnsNaN) {
+  // Double-continuation put (q < r <= 0).
+  {
+    const double S = 70.0, K = 100.0, T = 1.0, r = -0.005, q = -0.02, sig = 0.30;
+    ASSERT_EQ(classify_spec(r, q, Side::Put), Regime::Unsupported);
+    AloPricer pr(S, K, T, r, q, Side::Put);
+    EXPECT_TRUE(std::isnan(pr.price(sig)));
+    // Degenerate sigma still collapses to intrinsic (K - S) even in this regime.
+    EXPECT_NEAR(pr.price(1.0e-12), 30.0, 1.0e-9);
+  }
+  // Double-continuation call (r < q <= 0), via the internal-put swap.
+  {
+    const double S = 100.0, K = 70.0, T = 1.0, r = -0.02, q = -0.005, sig = 0.30;
+    ASSERT_EQ(classify_spec(r, q, Side::Call), Regime::Unsupported);
+    AloPricer pr(S, K, T, r, q, Side::Call);
+    EXPECT_TRUE(std::isnan(pr.price(sig)));
+  }
+}
+
+// Fix-wave 2: BAW is single-boundary, so it returns the SAME NotImplemented as
+// andersen_lake in the double-continuation regime (previously untested).
+TEST(Baw, UnsupportedRegime_NotImplemented) {
+  const double S = 70.0, K = 100.0, T = 1.0, sigma = 0.30, r = -0.005, q = -0.02;
+  ASSERT_EQ(classify_spec(r, q, Side::Put), Regime::Unsupported);  // r <= 0 && r > q
+  const auto res = baw_american(S, K, T, sigma, r, q, Side::Put);
+  ASSERT_FALSE(res.has_value());
+  EXPECT_EQ(res.error().code(), atx::core::ErrorCode::NotImplemented);
+}
+
+// Fix-wave 3: a non-finite r/q would pass the regime classifier (NaN comparisons
+// are false) and leak a NaN price through an Ok result. Every scalar/slice entry
+// point must reject it as InvalidArgument. No-op for the finite-input corpus.
+TEST(AndersenLake, NonFiniteRateOrYield_IsInvalidArgument) {
+  const double S = 100.0, K = 100.0, T = 1.0, sigma = 0.30;
+  const double inf = std::numeric_limits<double>::infinity();
+  const double bad[] = {std::nan(""), inf, -inf};
+  for (const double x : bad) {
+    for (const Side side : {Side::Call, Side::Put}) {
+      const auto a = andersen_lake(S, K, T, sigma, 0.03, x, side);  // bad q
+      ASSERT_FALSE(a.has_value());
+      EXPECT_EQ(a.error().code(), atx::core::ErrorCode::InvalidArgument);
+      const auto b = andersen_lake(S, K, T, sigma, x, 0.01, side);  // bad r
+      ASSERT_FALSE(b.has_value());
+      EXPECT_EQ(b.error().code(), atx::core::ErrorCode::InvalidArgument);
+    }
+    const auto bw = baw_american(S, K, T, sigma, 0.03, x, Side::Put);
+    ASSERT_FALSE(bw.has_value());
+    EXPECT_EQ(bw.error().code(), atx::core::ErrorCode::InvalidArgument);
+
+    std::vector<double> ks{90.0, 110.0};
+    std::vector<double> px(2, 0.0);
+    const auto sl = andersen_lake_call_slice(S, std::span<const double>(ks), T,
+                                             sigma, 0.03, x, std::span<double>(px));
+    ASSERT_FALSE(sl.has_value());
+    EXPECT_EQ(sl.error().code(), atx::core::ErrorCode::InvalidArgument);
+  }
 }
 
 }  // namespace

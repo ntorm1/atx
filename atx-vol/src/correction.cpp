@@ -267,6 +267,20 @@ Result<CorrectionCache> CorrectionCache::build(
   if (!(T_min > 0.0) || !(sigma_min > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "CorrectionCache::build: non-positive T/sigma floor");
   }
+  // The cache bakes the American-European correction at a FIXED (r, q, side). If
+  // that lands in the double-continuation regime, every andersen_lake sample is
+  // NotImplemented and sample_correction floors it to 0 — the cache would encode
+  // a pure-European surface, i.e. the exact silent mispricing this whole guard
+  // exists to prevent. Reject the build up front (single-source classifier from
+  // american.hpp; internal-put rate/yield: rate=r for a put, rate=q for a call).
+  if (detail::classify_regime(/*rate=*/(side == Side::Put) ? r : q,
+                              /*yield=*/(side == Side::Put) ? q : r) ==
+      detail::ExerciseRegime::Unsupported) {
+    return Err(ErrorCode::NotImplemented,
+               "CorrectionCache::build: double-continuation regime (put q < r <= 0 "
+               "/ call r < q <= 0) is not representable by the single-boundary "
+               "Andersen-Lake scheme; see Andersen-Lake 2021 (double-boundary case)");
+  }
 
   CorrectionCache cache;
   cache.n_k_ = n_log_moneyness;

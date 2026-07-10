@@ -161,9 +161,10 @@ class AloPricer {
   AloPricer& operator=(const AloPricer&) = delete;
 
   // American price at this contract and `sigma` (>= 0). Warm-starts the boundary
-  // from the previous call. Returns NaN only on the negative-rate/carry corner
-  // where the asymptotic boundary collapses (andersen_lake returns NotImplemented
-  // there); a degenerate sigma ~ 0 or T ~ 0 returns intrinsic.
+  // from the previous call. Returns NaN on the negative-rate/carry corners where
+  // andersen_lake returns NotImplemented: the double-continuation regime
+  // (put q < r <= 0 / call r < q <= 0) and the asymptotic boundary collapse.
+  // A degenerate sigma ~ 0 or T ~ 0 returns intrinsic regardless of regime.
   [[nodiscard]] double price(double sigma) noexcept;
 
  private:
@@ -298,6 +299,35 @@ struct AmericanGreeks {
                                    const CorrectionCache* correction) noexcept;
 
 namespace detail {
+
+// ── Early-exercise regime classification (Healy 2021 §2.2) ───────────────
+//
+// SINGLE SOURCE OF TRUTH for the negative-rate early-exercise regime table.
+// Every pricing entry point in the library (american.cpp) and the
+// correction-cache populator (correction.cpp) classifies through this one
+// function so the regime boundaries are encoded in exactly one place.
+//
+// Under the McDonald-Schroder map C(S,K,r,q) = P(K,S,q,r), a call delegates to
+// the internal put with (rate=q, yield=r), so BOTH sides reduce to an internal
+// put characterized purely by its (rate, yield):
+//   - European    : early exercise is never optimal, so American == European
+//                   EXACTLY (rate <= 0 && rate <= yield).
+//   - Unsupported : early exercise IS possible but a double continuation region
+//                   appears (rate <= 0 && rate > yield, i.e. yield < rate <= 0);
+//                   the single-boundary ALO scheme cannot represent two exercise
+//                   boundaries (Battauz-De Donno-Sbuelz 2015, Mgmt Sci 61(5);
+//                   Andersen-Lake 2021). Callers return NotImplemented / NaN
+//                   rather than a silently-wrong European price.
+//   - American    : the standard single-boundary early-exercise regime (rate > 0).
+enum class ExerciseRegime : std::uint8_t { European, Unsupported, American };
+
+[[nodiscard]] inline ExerciseRegime classify_regime(double rate,
+                                                    double yield) noexcept {
+  if (rate > 0.0) {
+    return ExerciseRegime::American;
+  }
+  return (rate <= yield) ? ExerciseRegime::European : ExerciseRegime::Unsupported;
+}
 
 // Max Gauss-Legendre order the AL quadrature supports (matches C ATS_AL_MAX_QUAD).
 inline constexpr unsigned kMaxQuadNodes = 64;

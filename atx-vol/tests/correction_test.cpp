@@ -389,4 +389,38 @@ TEST(CorrectionCache, CachedPrice_MatchesColdAndersenLake) {
   EXPECT_LT(std::fabs(hot - cold) / cold, 1.0e-3);
 }
 
+// Fix-wave 1d: baking a cache at a fixed (r, q, side) that lands in the
+// double-continuation regime would sample only NotImplemented (floored to 0),
+// silently encoding a pure-European surface. Reject the build up front.
+TEST(CorrectionCache, Build_RejectsUnsupportedRegime) {
+  // Double-continuation PUT (q < r <= 0).
+  auto rp = CorrectionCache::build(8, 8, 8, -0.005, -0.02, -0.5, 0.5, 0.1, 1.0,
+                                   0.1, 0.5, Side::Put);
+  ASSERT_FALSE(rp.has_value());
+  EXPECT_EQ(rp.error().code(), atx::core::ErrorCode::NotImplemented);
+  // Double-continuation CALL (r < q <= 0).
+  auto rc = CorrectionCache::build(8, 8, 8, -0.02, -0.005, -0.5, 0.5, 0.1, 1.0,
+                                   0.1, 0.5, Side::Call);
+  ASSERT_FALSE(rc.has_value());
+  EXPECT_EQ(rc.error().code(), atx::core::ErrorCode::NotImplemented);
+  // European corner (put r <= 0 && r <= q) is NOT unsupported — it still builds.
+  auto re = CorrectionCache::build(8, 8, 8, -0.02, -0.005, -0.5, 0.5, 0.1, 1.0,
+                                   0.1, 0.5, Side::Put);
+  EXPECT_TRUE(re.has_value());
+}
+
+// Fix-wave 1b: the POPULATED-cache hot path must return NaN when queried in the
+// Unsupported regime (the guard keys off the query's (r, q), not the cache's).
+TEST(CorrectionCache, CachedPrice_UnsupportedRegime_ReturnsNaN) {
+  const double r = 0.05, q = 0.0;  // American put — a valid, populated cache
+  auto built = CorrectionCache::build(16, 12, 8, r, q, -0.5, 0.5, 0.1, 2.0, 0.1,
+                                      0.8, Side::Put);
+  ASSERT_TRUE(built.has_value());
+  const CorrectionCache tbl = std::move(*built);
+  // Query at an Unsupported (r, q): guard must surface NaN, not euro+F*corr.
+  const double px = atx::vol::american_price_cached(100.0, 100.0, 1.0, 0.30,
+                                                    -0.005, -0.02, Side::Put, &tbl);
+  EXPECT_TRUE(std::isnan(px));
+}
+
 }  // namespace
