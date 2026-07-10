@@ -9,10 +9,14 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <memory>
+#include <optional>
 #include <thread>
 #include <unordered_map>
 
-#include "atx/vol/american.hpp" // AmericanGreeks
+#include "atx/vol/american.hpp"           // AmericanGreeks
+#include "atx/vol/counters.hpp"           // ATX_VOL_COUNT (opt-in P0.2; no-op when OFF)
+#include "atx/vol/prepared_portfolio.hpp" // PreparedPortfolio (grouped exec substrate)
 
 namespace atx::vol {
 
@@ -50,6 +54,7 @@ template <class F> void parallel_blocks(std::size_t n, unsigned n_threads, F &&b
   const std::size_t block = (n + nt - 1) / nt;
   std::vector<std::jthread> workers;
   workers.reserve(nt - 1);
+  ATX_VOL_COUNT_N(WorkerLaunches, nt - 1);  // helper threads (block 0 stays inline)
   for (unsigned t = 1; t < nt; ++t) {
     const std::size_t lo = std::min(n, static_cast<std::size_t>(t) * block);
     const std::size_t hi = std::min(n, lo + block);
@@ -66,6 +71,44 @@ template <class F> void parallel_blocks(std::size_t n, unsigned n_threads, F &&b
   for (std::size_t i = 0; i < hi0; ++i) {
     body(i);
   }
+  // jthreads join on destruction.
+}
+
+// Split [0, n) into up to `n_threads` disjoint contiguous blocks and run
+// body(lo, hi) ONCE per block across std::jthreads (block 0 on the calling
+// thread). Identical clamp/scheduling to parallel_blocks, but each worker receives
+// its whole contiguous range so the body can amortize per-range setup (e.g. resolve
+// a group's surface once, evaluate_batch a sub-ladder) instead of paying it per
+// element. Blocks own disjoint index ranges; the body must write only slots derived
+// from its own [lo, hi), so there is no shared mutable state. `n_threads==0` selects
+// hardware concurrency; the count is clamped to n.
+template <class F> void parallel_ranges(std::size_t n, unsigned n_threads, F &&body) {
+  if (n == 0) {
+    return;
+  }
+  unsigned nt = n_threads;
+  if (nt == 0) {
+    nt = std::max(1u, std::thread::hardware_concurrency());
+  }
+  nt = std::min<unsigned>(nt, static_cast<unsigned>(n));
+  if (nt <= 1) {
+    body(std::size_t{0}, n);
+    return;
+  }
+  const std::size_t block = (n + nt - 1) / nt;
+  std::vector<std::jthread> workers;
+  workers.reserve(nt - 1);
+  ATX_VOL_COUNT_N(WorkerLaunches, nt - 1);  // helper threads (block 0 stays inline)
+  for (unsigned t = 1; t < nt; ++t) {
+    const std::size_t lo = std::min(n, static_cast<std::size_t>(t) * block);
+    const std::size_t hi = std::min(n, lo + block);
+    if (lo >= hi) {
+      break;
+    }
+    workers.emplace_back([lo, hi, &body] { body(lo, hi); });
+  }
+  const std::size_t hi0 = std::min(n, block);
+  body(std::size_t{0}, hi0);
   // jthreads join on destruction.
 }
 
@@ -187,129 +230,390 @@ struct ContractPx {
   return !(std::isfinite(c.K) && c.K > 0.0 && std::isfinite(c.T) && c.T > 0.0);
 }
 
+// Solve every UNIQUE contract into `px` (indexed by the ORIGINAL Portfolio
+// contract index), reusing the caller's batch-eval SoA scratch (`b_*`). This is
+// the T5 grouped, permuted, evaluate_batch fan-out factored verbatim so that
+// price()/price_into()/price_totals() share ONE bit-identical solve. `resize`
+// to the exact needed size is a no-op that keeps a reserved workspace
+// allocation-free.
+//
+// THE BIT-IDENTITY ARGUMENT (unchanged from T5): each unique result is written
+// into px[original_contract_index()[p]] — the SAME slot the ungrouped loop used
+// — so the downstream scatter (px[contract_ix(i)]) and the fixed-order totals
+// reduction are byte-for-byte unchanged. The solve writes DISJOINT slots, so
+// permuting the compute order cannot change any output; grouping only hoists the
+// surface find per (uid,side) and lets evaluate_batch reuse a T-bracket carry
+// across a raw-bit-equal-T ladder (bit-identical to per-contract evaluate).
+void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
+                   std::span<const OptionContract> contracts, bool want_greeks, bool analytic,
+                   unsigned n_threads, std::vector<ContractPx> &px, std::vector<double> &b_iv,
+                   std::vector<double> &b_price, std::vector<AmericanGreeks> &b_greeks,
+                   std::vector<Status> &b_status) {
+  const std::size_t n_unique = pp.n_unique();
+  using EF = PricedSurface::EvalField;
+  const EF fields = want_greeks ? (EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder)
+                                : (EF::Iv | EF::Price);
+
+  px.resize(contracts.size());
+  b_iv.resize(n_unique);
+  b_price.resize(n_unique);
+  b_greeks.resize(want_greeks ? n_unique : 0);
+  b_status.resize(n_unique);
+
+  const std::span<const ContractGroup> groups = pp.groups();
+  const std::span<const std::uint32_t> oci = pp.original_contract_index();
+  const std::span<const double> kcol = pp.k();
+  const std::span<const double> tcol = pp.t();
+  const std::span<const Side> scol = pp.side();
+
+  const auto solve_span = [&](const ContractGroup &g, std::uint32_t s, std::uint32_t e) {
+    const std::size_t gsz = static_cast<std::size_t>(e - s);
+    const PricedSurface *surf = surfaces.find(g.uid); // hoisted: one lower_bound / sub-span
+    if (surf == nullptr) {
+      // Degenerate is checked FIRST (an invalid contract is InvalidContract even
+      // when its uid has no surface) — matching the ungrouped precedence.
+      for (std::uint32_t p = s; p < e; ++p) {
+        const std::uint32_t orig = oci[p];
+        px[orig].status = degenerate(contracts[orig]) ? PriceStatus::InvalidContract
+                                                       : PriceStatus::ModelUnavailable;
+      }
+      return;
+    }
+    PricedSurface::EvaluationSoA soa{
+        std::span<double>(b_iv).subspan(s, gsz), std::span<double>(b_price).subspan(s, gsz),
+        want_greeks ? std::span<AmericanGreeks>(b_greeks).subspan(s, gsz)
+                    : std::span<AmericanGreeks>{},
+        std::span<Status>(b_status).subspan(s, gsz)};
+    (void)surf->evaluate_batch(kcol.subspan(s, gsz), tcol.subspan(s, gsz), scol.subspan(s, gsz),
+                               fields, analytic, soa);
+    for (std::uint32_t p = s; p < e; ++p) {
+      const std::uint32_t orig = oci[p];
+      ContractPx &out = px[orig];
+      if (degenerate(contracts[orig])) {
+        out.status = PriceStatus::InvalidContract;
+        continue;
+      }
+      out.iv = b_iv[p]; // set before the finite check, exactly as the ungrouped path
+      if (!want_greeks) {
+        if (!b_status[p].has_value() || !std::isfinite(b_price[p])) {
+          out.status = PriceStatus::NumericError;
+          continue;
+        }
+        out.fair_value = b_price[p];
+        out.status = PriceStatus::Ok;
+        continue;
+      }
+      if (!b_status[p].has_value() || !std::isfinite(b_greeks[p].price)) {
+        out.status = PriceStatus::NumericError;
+        continue;
+      }
+      // greeks().price IS the American fair_value (bit-identical, cold-FD invariant).
+      out.fair_value = b_greeks[p].price;
+      out.g = b_greeks[p];
+      out.status = PriceStatus::Ok;
+    }
+  };
+
+  // Fan out over the FLATTENED permuted unique-contract index [0, n_unique) so
+  // the pool scales even on a single-uid book; each worker walks the group
+  // boundaries its contiguous [lo,hi) overlaps (one find per touched group).
+  parallel_ranges(n_unique, n_threads, [&](std::size_t lo, std::size_t hi) {
+    const std::uint32_t lo32 = static_cast<std::uint32_t>(lo);
+    const std::uint32_t hi32 = static_cast<std::uint32_t>(hi);
+    auto git = std::upper_bound(
+        groups.begin(), groups.end(), lo32,
+        [](std::uint32_t v, const ContractGroup &grp) { return v < grp.end; });
+    for (; git != groups.end() && git->begin < hi32; ++git) {
+      const std::uint32_t s = std::max<std::uint32_t>(git->begin, lo32);
+      const std::uint32_t e = std::min<std::uint32_t>(git->end, hi32);
+      solve_span(*git, s, e);
+    }
+  });
+}
+
+// Cache-line-disjoint SoA scatter into the caller's output view. `want_greeks`
+// gates the eight Greek columns; under Marks those spans are empty and are NEVER
+// touched (the 64 B/pos saving). Bit-identical to price()'s scatter for the
+// columns it writes.
+void scatter_rows(std::span<const Position> positions, const Portfolio &pf,
+                  std::span<const ContractPx> px, bool want_greeks, unsigned n_threads,
+                  const PriceFrameView &out) {
+  const std::size_t n = positions.size();
+  parallel_blocks(n, n_threads, [&](std::size_t i) {
+    const Position &p = positions[i];
+    const ContractPx &c = px[pf.contract_ix(i)];
+    const double w = p.qty * eff_multiplier(p.multiplier);
+    out.id[i] = p.id;
+    out.uid[i] = p.contract.uid;
+    out.status[i] = c.status;
+    out.iv[i] = c.iv;
+    if (c.status != PriceStatus::Ok) {
+      out.pv[i] = kNaN;
+      out.price[i] = kNaN;
+      if (want_greeks) {
+        out.delta[i] = out.gamma[i] = out.vega[i] = out.theta[i] = out.rho[i] = kNaN;
+        out.vanna[i] = out.volga[i] = out.charm[i] = kNaN;
+      }
+      return;
+    }
+    const AmericanGreeks &g = c.g;
+    out.price[i] = c.fair_value; // American per-share mark
+    out.pv[i] = w * c.fair_value;
+    if (want_greeks) {
+      out.delta[i] = w * g.delta;
+      out.gamma[i] = w * g.gamma;
+      out.vega[i] = w * g.vega;
+      out.theta[i] = w * g.theta;
+      out.rho[i] = w * g.rho;
+      out.vanna[i] = w * g.vanna;
+      out.volga[i] = w * g.volga;
+      out.charm[i] = w * g.charm;
+    }
+  });
+}
+
+// Fixed-input-order totals reduction over the Ok lanes — the deterministic sum
+// (same order, same operand association) price() has always used, so totals are
+// bit-identical across thread counts AND across price()/price_into/price_totals.
+// Reducing `w * c.fair_value` here yields the same bits the scatter stored into
+// the pv column (IEEE double round-trips losslessly). Under !want_greeks the
+// Greek sums stay NaN (a clean 0.0 would read as a genuinely vega-flat book).
+// `t` must be zero-initialized by the caller.
+void reduce_price_totals(std::span<const Position> positions, const Portfolio &pf,
+                         std::span<const ContractPx> px, bool want_greeks, PriceTotals &t) {
+  if (!want_greeks) {
+    t.delta = t.gamma = t.vega = t.theta = t.rho = kNaN;
+    t.vanna = t.volga = t.charm = kNaN;
+  }
+  const std::size_t n = positions.size();
+  for (std::size_t i = 0; i < n; ++i) {
+    const Position &p = positions[i];
+    const ContractPx &c = px[pf.contract_ix(i)];
+    if (c.status != PriceStatus::Ok) {
+      continue;
+    }
+    const double w = p.qty * eff_multiplier(p.multiplier);
+    t.pv += w * c.fair_value;
+    if (want_greeks) {
+      const AmericanGreeks &g = c.g;
+      t.delta += w * g.delta;
+      t.gamma += w * g.gamma;
+      t.vega += w * g.vega;
+      t.theta += w * g.theta;
+      t.rho += w * g.rho;
+      t.vanna += w * g.vanna;
+      t.volga += w * g.volga;
+      t.charm += w * g.charm;
+    }
+    ++t.n_ok;
+  }
+}
+
+// A cheap, allocation-free O(1) fingerprint of a book's first unique
+// contract's exact bits (uid, K, T, side) -- one input to the
+// PortfolioWorkspace ABA guard (see the contract doc on PortfolioWorkspace in
+// the header). This is NOT a full content hash: it narrows, but does not
+// close, the "same address, same unique-contract count, different
+// middle-of-book content" reuse window. The real contract remains one
+// PortfolioWorkspace per live book.
+[[nodiscard]] std::uint64_t book_fingerprint(const Portfolio &pf) noexcept {
+  const std::span<const OptionContract> contracts = pf.contracts();
+  if (contracts.empty()) {
+    return 0;
+  }
+  const OptionContract &c = contracts.front();
+  std::uint64_t h = static_cast<std::uint64_t>(c.uid);
+  h = h * 1099511628211ULL ^ std::bit_cast<std::uint64_t>(c.K);
+  h = h * 1099511628211ULL ^ std::bit_cast<std::uint64_t>(c.T);
+  h = h * 1099511628211ULL ^ static_cast<std::uint64_t>(c.side);
+  return h;
+}
+
+// (Re)build the retained PreparedPortfolio only when the book identity
+// changes: the owning Portfolio's address, its unique-contract count
+// (pf.n_contracts()), AND the first-unique-contract fingerprint above must all
+// match what the cache already holds -- closing the pointer-identity-only ABA
+// hazard where a PortfolioPricer reconstructed at the same address as a prior
+// one (e.g. a loop rebuilding a local PortfolioPricer per book) could
+// otherwise reuse a stale, wrongly-sized substrate and drive solve_uniques()
+// out of bounds (or silently mis-price if the stale unique count happened to
+// be <= the new book's). The Greek route/mask no longer gates a rebuild:
+// PreparedPortfolio's permutation, groups, oci, and aligned K/T/uid columns
+// derive purely from (uid,side,T), so the substrate is byte-identical for
+// Marks and FullGreeks -- only the `route` stamped on each ContractGroup
+// differs, and nothing reads it yet (T13's AVX2 packer will own route
+// correctness there). Emits PreparedBuilds on an actual build so the reuse is
+// observable under counters.
+[[nodiscard]] Status ensure_prepared(const Portfolio &pf, bool want_greeks, bool analytic,
+                                     std::optional<PreparedPortfolio> &prepared,
+                                     const Portfolio *&prepared_book,
+                                     std::uint64_t &prepared_fingerprint) {
+  const std::uint64_t fp = book_fingerprint(pf);
+  if (prepared.has_value() && prepared_book == &pf && prepared->n_unique() == pf.n_contracts() &&
+      prepared_fingerprint == fp) {
+    return atx::core::Ok();
+  }
+  PriceOptions build_opts;
+  build_opts.analytic_greeks = analytic;
+  build_opts.prices_only = !want_greeks;
+  Result<PreparedPortfolio> pp = PreparedPortfolio::create(pf, build_opts);
+  if (!pp.has_value()) {
+    return Err(pp.error());
+  }
+  ATX_VOL_COUNT(PreparedBuilds);
+  prepared.emplace(std::move(*pp));
+  prepared_book = &pf;
+  prepared_fingerprint = fp;
+  return atx::core::Ok();
+}
+
 } // namespace
+
+// ── PortfolioWorkspace (retained substrate + reusable scratch) ─────────────
+
+struct PortfolioWorkspace::Impl {
+  std::vector<ContractPx> px;            // per unique contract, ORIGINAL-index order
+  std::vector<double> b_iv;              // permuted-order batch-eval scratch
+  std::vector<double> b_price;
+  std::vector<AmericanGreeks> b_greeks;  // sized 0 under Marks
+  std::vector<Status> b_status;
+  std::optional<PreparedPortfolio> prepared; // retained across snapshots (built once)
+  const Portfolio *prepared_book{nullptr};   // book identity the substrate is for
+  std::uint64_t prepared_fingerprint{0};     // ABA guard: see book_fingerprint()
+};
+
+PortfolioWorkspace::PortfolioWorkspace() : impl_(std::make_unique<Impl>()) {}
+PortfolioWorkspace::~PortfolioWorkspace() = default;
+PortfolioWorkspace::PortfolioWorkspace(PortfolioWorkspace &&) noexcept = default;
+PortfolioWorkspace &PortfolioWorkspace::operator=(PortfolioWorkspace &&) noexcept = default;
+
+void PortfolioWorkspace::reserve(std::size_t n_unique, std::size_t n_positions) {
+  // The per-row output frame is caller-owned, so only the unique-contract count
+  // sizes the internal scratch; `n_positions` is advisory (kept for API symmetry
+  // and forward use).
+  (void)n_positions;
+  impl_->px.reserve(n_unique);
+  impl_->b_iv.reserve(n_unique);
+  impl_->b_price.reserve(n_unique);
+  impl_->b_greeks.reserve(n_unique);
+  impl_->b_status.reserve(n_unique);
+}
+
+// ── Pricing entry points ───────────────────────────────────────────────────
+
+Status PortfolioPricer::price_into(const SurfaceSet &surfaces, PriceFieldMask fields,
+                                   PriceFrameView out, PortfolioWorkspace &ws,
+                                   const PriceOptions &opts) const {
+  const std::span<const OptionContract> contracts = pf_.contracts();
+  const std::span<const Position> positions = pf_.positions();
+  const std::size_t n = positions.size();
+  const bool want_greeks = has_field(fields, PriceFieldMask::Greeks);
+
+  // Validate the caller's view: marks spans (+ totals sink) are always required;
+  // the eight greek spans are required only when the mask asks for them.
+  const bool marks_ok = out.id.size() == n && out.uid.size() == n && out.pv.size() == n &&
+                        out.price.size() == n && out.iv.size() == n && out.status.size() == n &&
+                        out.total != nullptr;
+  if (!marks_ok) {
+    return Err(ErrorCode::InvalidArgument, "price_into: marks span/size mismatch");
+  }
+  if (want_greeks) {
+    const bool greeks_ok = out.delta.size() == n && out.gamma.size() == n &&
+                           out.vega.size() == n && out.theta.size() == n && out.rho.size() == n &&
+                           out.vanna.size() == n && out.volga.size() == n && out.charm.size() == n;
+    if (!greeks_ok) {
+      return Err(ErrorCode::InvalidArgument, "price_into: greek span/size mismatch");
+    }
+  }
+
+  PortfolioWorkspace::Impl &w = *ws.impl_;
+  const bool analytic = want_greeks ? opts.analytic_greeks : false;
+  if (Status s = ensure_prepared(pf_, want_greeks, analytic, w.prepared, w.prepared_book,
+                                 w.prepared_fingerprint);
+      !s.has_value()) {
+    return Err(s.error());
+  }
+
+  solve_uniques(*w.prepared, surfaces, contracts, want_greeks, analytic, opts.n_threads, w.px,
+                w.b_iv, w.b_price, w.b_greeks, w.b_status);
+
+  // FrameBytes reflects the mask (37 B/pos Marks, 101 B/pos FullGreeks). No
+  // FrameAllocations: the output spans are caller-owned and the scratch was
+  // reserved, so the hot path allocates no frame memory (n_threads>1 still
+  // allocates a worker-thread vector; see PortfolioWorkspace).
+  ATX_VOL_COUNT_N(FrameBytes, n * bytes_per_position(fields));
+
+  scatter_rows(positions, pf_, w.px, want_greeks, opts.n_threads, out);
+  *out.total = PriceTotals{};
+  reduce_price_totals(positions, pf_, w.px, want_greeks, *out.total);
+  return atx::core::Ok();
+}
+
+Result<PriceTotals> PortfolioPricer::price_totals(const SurfaceSet &surfaces, PriceFieldMask fields,
+                                                  PortfolioWorkspace &ws,
+                                                  const PriceOptions &opts) const {
+  const std::span<const OptionContract> contracts = pf_.contracts();
+  const std::span<const Position> positions = pf_.positions();
+  const bool want_greeks = has_field(fields, PriceFieldMask::Greeks);
+
+  PortfolioWorkspace::Impl &w = *ws.impl_;
+  const bool analytic = want_greeks ? opts.analytic_greeks : false;
+  if (Status s = ensure_prepared(pf_, want_greeks, analytic, w.prepared, w.prepared_book,
+                                 w.prepared_fingerprint);
+      !s.has_value()) {
+    return Err(s.error());
+  }
+
+  solve_uniques(*w.prepared, surfaces, contracts, want_greeks, analytic, opts.n_threads, w.px,
+                w.b_iv, w.b_price, w.b_greeks, w.b_status);
+
+  // No scatter, no per-row frame: reduce weight*result over positions in fixed
+  // input order straight off the unique-result SoA — bit-identical to
+  // price(...).total.
+  PriceTotals t{};
+  reduce_price_totals(positions, pf_, w.px, want_greeks, t);
+  return t;
+}
 
 Result<PriceFrame> PortfolioPricer::price(const SurfaceSet &surfaces,
                                           const PriceOptions &opts) const {
-  const std::span<const OptionContract> contracts = pf_.contracts();
-  const std::span<const Position> positions = pf_.positions();
+  const std::size_t n = pf_.positions().size();
+  const PriceFieldMask fields =
+      opts.prices_only ? PriceFieldMask::Marks : PriceFieldMask::FullGreeks;
+  const bool want_greeks = has_field(fields, PriceFieldMask::Greeks);
 
-  // 1. Parallel: one Greeks solve per UNIQUE contract into disjoint slots.
-  std::vector<ContractPx> px(contracts.size());
-  parallel_blocks(contracts.size(), opts.n_threads, [&](std::size_t i) {
-    const OptionContract &c = contracts[i];
-    ContractPx &out = px[i];
-    if (degenerate(c)) {
-      out.status = PriceStatus::InvalidContract;
-      return;
-    }
-    const PricedSurface *surf = surfaces.find(c.uid);
-    if (surf == nullptr) {
-      out.status = PriceStatus::ModelUnavailable;
-      return;
-    }
-    out.iv = surf->iv(c.K, c.T);
-    if (opts.prices_only) {
-      auto fair = surf->fair_value(c.K, c.T, c.side);
-      if (!fair.has_value() || !std::isfinite(*fair)) {
-        out.status = PriceStatus::NumericError;
-        return;
-      }
-      out.fair_value = *fair;
-      out.status = PriceStatus::Ok;
-      return;
-    }
-    auto g = opts.analytic_greeks ? surf->greeks_analytic(c.K, c.T, c.side)
-                                  : surf->greeks(c.K, c.T, c.side); // greeks + mark
-    if (!g.has_value() || !std::isfinite(g->price)) {
-      out.status = PriceStatus::NumericError;
-      return;
-    }
-    // greeks().price IS the American fair_value (bit-identical, the P0 cold-FD
-    // invariant gated by PnlGreeksConsistency), so the mark comes straight off the
-    // greeks bundle — the separate fair_value() call would be a duplicate AL solve
-    // at the same (K,T,side).
-    out.fair_value = g->price;
-    out.g = *g;
-    out.status = PriceStatus::Ok;
-  });
-
-  // 2. Cache-line-disjoint SoA scatter. A million-position book is memory-bandwidth
-  // bound here, so fan it out independently of the much smaller unique-contract
-  // solve. Totals are reduced in a second fixed-order pass to remain bit-identical
-  // for every thread count.
+  // The returning API is a thin wrapper over price_into over a locally-owned
+  // frame + workspace. Allocate EXACTLY the columns the mask materializes: the
+  // six marks columns always, the eight Greek columns only under FullGreeks.
+  // FrameAllocations counts the ACTUAL frame column allocations here (not a
+  // hard-coded 14); the in-place price_into path emits none.
   PriceFrame f;
-  const std::size_t n = positions.size();
+  // Six marks columns always; the eight Greek columns only under FullGreeks. The
+  // count is inlined (not a local) so it does not read as unused when the OFF
+  // build expands ATX_VOL_COUNT_N to ((void)0).
+  ATX_VOL_COUNT_N(FrameAllocations, n > 0 ? (want_greeks ? 14u : 6u) : 0u);
   f.id.resize(n);
   f.uid.resize(n);
   f.pv.resize(n);
   f.price.resize(n);
   f.iv.resize(n);
-  f.delta.resize(n);
-  f.gamma.resize(n);
-  f.vega.resize(n);
-  f.theta.resize(n);
-  f.rho.resize(n);
-  f.vanna.resize(n);
-  f.volga.resize(n);
-  f.charm.resize(n);
   f.status.resize(n);
-
-  parallel_blocks(n, opts.n_threads, [&](std::size_t i) {
-    const Position &p = positions[i];
-    const ContractPx &c = px[pf_.contract_ix(i)];
-    const double w = p.qty * eff_multiplier(p.multiplier);
-    f.id[i] = p.id;
-    f.uid[i] = p.contract.uid;
-    f.status[i] = c.status;
-    f.iv[i] = c.iv;
-    if (c.status != PriceStatus::Ok) {
-      f.pv[i] = kNaN;
-      f.price[i] = kNaN;
-      f.delta[i] = f.gamma[i] = f.vega[i] = f.theta[i] = f.rho[i] = kNaN;
-      f.vanna[i] = f.volga[i] = f.charm[i] = kNaN;
-      return;
-    }
-    const AmericanGreeks &g = c.g;
-    f.price[i] = c.fair_value; // American per-share mark
-    f.pv[i] = w * c.fair_value;
-    if (opts.prices_only) {
-      f.delta[i] = f.gamma[i] = f.vega[i] = f.theta[i] = f.rho[i] = kNaN;
-      f.vanna[i] = f.volga[i] = f.charm[i] = kNaN;
-    } else {
-      f.delta[i] = w * g.delta;
-      f.gamma[i] = w * g.gamma;
-      f.vega[i] = w * g.vega;
-      f.theta[i] = w * g.theta;
-      f.rho[i] = w * g.rho;
-      f.vanna[i] = w * g.vanna;
-      f.volga[i] = w * g.volga;
-      f.charm[i] = w * g.charm;
-    }
-  });
-  // prices_only leaves every per-lane Greek column NaN, so the aggregate must be
-  // NaN as well. PriceTotals default-initializes its Greeks to 0.0; leaving them
-  // there would report a finite, clean zero vega alongside n_ok > 0 -- a book that
-  // reads as vega-flat when its Greeks were simply never computed.
-  if (opts.prices_only) {
-    f.total.delta = f.total.gamma = f.total.vega = f.total.theta = f.total.rho = kNaN;
-    f.total.vanna = f.total.volga = f.total.charm = kNaN;
+  if (want_greeks) {
+    f.delta.resize(n);
+    f.gamma.resize(n);
+    f.vega.resize(n);
+    f.theta.resize(n);
+    f.rho.resize(n);
+    f.vanna.resize(n);
+    f.volga.resize(n);
+    f.charm.resize(n);
   }
-  for (std::size_t i = 0; i < n; ++i) {
-    if (f.status[i] == PriceStatus::Ok) {
-      f.total.pv += f.pv[i];
-      if (!opts.prices_only) {
-        f.total.delta += f.delta[i];
-        f.total.gamma += f.gamma[i];
-        f.total.vega += f.vega[i];
-        f.total.theta += f.theta[i];
-        f.total.rho += f.rho[i];
-        f.total.vanna += f.vanna[i];
-        f.total.volga += f.volga[i];
-        f.total.charm += f.charm[i];
-      }
-      ++f.total.n_ok;
-    }
+
+  PriceFrameView view{f.id,    f.uid,   f.pv,    f.price, f.iv,     f.delta,  f.gamma, f.vega,
+                      f.theta, f.rho,   f.vanna, f.volga, f.charm,  f.status, &f.total};
+  PortfolioWorkspace ws; // one-shot local workspace (the wrapper accepts its alloc)
+  if (Status s = price_into(surfaces, fields, view, ws, opts); !s.has_value()) {
+    return Err(s.error());
   }
   return f;
 }
@@ -359,21 +663,27 @@ Result<PnlFrame> PortfolioPricer::pnl_explain(const SurfaceSet &base, const Surf
       out.status = PriceStatus::InvalidContract; // rolled past expiry
       return;
     }
-    auto gb = opts.analytic_greeks ? sb->greeks_analytic(c.K, T_b, c.side)
-                                   : sb->greeks(c.K, T_b, c.side); // base greeks + mark
+    // One fused base resolution: base Greeks + base IV (sig_b) off a SINGLE sb
+    // resolve at (K,T_b), killing the old separate sb->iv() that re-resolved sb at
+    // the same (K,T_b) the base greeks already resolved.
+    using EF = PricedSurface::EvalField;
+    const PricedSurface::FusedResult fr_b =
+        sb->evaluate(c.K, T_b, c.side, EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder,
+                     opts.analytic_greeks); // base greeks + mark + iv
     auto pt = st->fair_value(c.K, T_t, c.side); // shifted mark at the rolled maturity
-    if (!gb.has_value() || !std::isfinite(gb->price) || !pt.has_value() || !std::isfinite(*pt)) {
+    if (!fr_b.status.has_value() || !std::isfinite(fr_b.greeks.price) || !pt.has_value() ||
+        !std::isfinite(*pt)) {
       out.status = PriceStatus::NumericError;
       return;
     }
-    const double sig_b = sb->iv(c.K, T_b);
+    const double sig_b = fr_b.iv;          // == sb->iv(c.K,T_b), reused from the base resolve
     const double sig_t = st->iv(c.K, T_b); // common maturity: term roll stays in theta
     if (!(std::isfinite(sig_b) && std::isfinite(sig_t))) {
       out.status = PriceStatus::NumericError;
       return;
     }
-    out.gb = *gb;
-    out.price_base = gb->price; // == sb->fair_value(c.K,T_b,side), bit-identical, no dup solve
+    out.gb = fr_b.greeks;
+    out.price_base = fr_b.greeks.price; // == sb->fair_value(c.K,T_b,side), bit-identical, no dup solve
     out.price_target = *pt;
     out.dS = st->pricing().S - sb->pricing().S;
     out.dvol = sig_t - sig_b;
@@ -385,6 +695,9 @@ Result<PnlFrame> PortfolioPricer::pnl_explain(const SurfaceSet &base, const Surf
   // 2. Serial scatter (input order) + fixed-order total reduction.
   PnlFrame f;
   const std::size_t n = positions.size();
+  // 19 per-row columns = 141 bytes/position (8+4+8*16+1).
+  ATX_VOL_COUNT_N(FrameAllocations, 19);
+  ATX_VOL_COUNT_N(FrameBytes, n * 141);
   f.id.resize(n);
   f.uid.resize(n);
   f.pv_base.resize(n);

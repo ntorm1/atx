@@ -79,15 +79,68 @@ ambiguity, destructive risk, or all 12 done. Done = the ROADMAP §North star acc
 
 ---
 
-## Implementation status (updated 2026-07-04, America/New_York)
+## Implementation status (updated 2026-07-05, America/New_York)
 
-Controller: `superpowers:subagent-driven-development`. Durable ledger: `.superpowers/sdd/progress.md`
-(add a PF3 section at the bottom — authoritative; this block is a summary).
+Controller: `superpowers:subagent-driven-development`. Durable ledger was requested at
+`.superpowers/sdd/progress.md`, but that file does not currently exist in the PF3-S2 worktree; create/update it
+before sprint closeout.
 
-**Overall: PF3 planned, not started. PF3-S1…PF3-S12 not started.**
+**Overall: PF3-S1 is landed. PF3-S2 is in progress. PF3-S3...PF3-S12 are not started.**
+
+### Current repo/worktree state
+
+- Primary tree `C:\atx` is on `main` at `3de44b9` (`Merge feat/p9 into main - p9 Tradeable Mega-Book...`).
+  PF3-S1 is already merged into main at `6ef9cd5` (`Merge feat/pf3-s1 into main`). Do not recreate PF3-S1.
+- Active PF3-S2 worktree: `C:\atx-wt\pf3-s2`, branch `feat/pf3-s2`.
+- PF3-S2 committed HEAD is `6b72a92` (`Fix PF3-S2 PIT insert defaults`). Committed PF3-S2 history includes:
+  `edb3981` S2-0 PIT gap close, `f2dff8d`, `84d21f2`, `3d751c8` S2-0 repairs, `848a2c1` S2-1 semantic
+  schema contract, `6c61a75`/`3542ccf` S2-1 repairs, and `6b72a92` runtime PIT insert defaults.
+- After `6b72a92`, full offline DB tests were green (`python -m pytest atx-impl\db\tests -q`) and
+  `git diff --check` was green apart from Git LF/CRLF warnings.
+- The PF3-S2 worktree is dirty with an uncommitted, interrupted S2-2 patch in exactly:
+  `atx-impl/db/migrations.py`, `atx-impl/db/quality.py`,
+  `atx-impl/db/tests/test_schema_contract_v2.py`.
+
+### PF3-S2 task status
+
+- **S2-0 - Close PIT gap:** committed on `feat/pf3-s2` with follow-up fixes. Treat as done unless new review
+  finds regressions.
+- **S2-1 - Semantic column contract:** committed on `feat/pf3-s2` with follow-up fixes. Treat as done unless
+  new review finds regressions.
+- **S2-2 - Semantic validation gate:** in progress and uncommitted. A worker started implementing
+  `semantic_contract_check`, NaN/Inf failures, incomplete semantic declaration failures, disabled-registry
+  suppression, and an append-only registry migration. The worker was intentionally shut down before final
+  verification. Do not assume the patch is complete.
+- **S2-3 - Contract versioning + panel export contract stub:** not started. Watch the migration numbering:
+  the interrupted S2-2 patch appears to add a new `0137` migration for semantic-contract quality registration,
+  while the sprint plan also reserves `0137` for S2-3 `schema_contract_version` and `panel_contract` work. Before
+  committing, reconcile this so PF3-S2 does not burn `0137` on registry-only work and leave no reserved slot for
+  S2-3. One likely path is to compose all remaining PF3-S2 append-only items into the final `0137` migration
+  before committing.
+
+### Last known S2-2 review findings
+
+- High: S2-2 must not mutate already-committed/checksummed migration `0136`; semantic-contract
+  `quality_check_registry` registration must be append-only.
+- Medium: disabling the `semantic_contract` row in `quality_check_registry` should suppress the expensive
+  semantic scan, not merely filter the result afterward.
+- Medium: missing/null semantic declarations (`unit`, `sign`, `scale`, natural-key metadata where applicable)
+  must fail the gate rather than being skipped.
+- Low: repeated scans per constrained column are a scalability risk, but correctness/governance is the priority.
 
 ### Resume instruction
-Read `atx-impl/plans/pf3/ROADMAP.md`, then start PF3-S1 by creating the worktree
-(`scripts/new_db_worktree.sh new pf3-s1`) and dispatching the S1-0 implementer from
-`sprint-1-backfill-maintenance-dag.md`. Follow ROADMAP sequencing. All pf3 worktree / PIT / append-only /
-offline-test / backfill-safe / commit-trailer non-negotiables above bind.
+
+Resume in `C:\atx-wt\pf3-s2` and inspect the uncommitted diff before continuing. Use a fresh SDD implementer or
+reviewer for S2-2; the last worker (`019f330f-433c-7db0-b65c-42a853a09761`) was shut down mid-task.
+
+Minimum verification before committing S2-2/S2-3 work:
+
+```
+python -m pytest atx-impl\db\tests\test_schema_contract_v2.py -q -n0
+python -m pytest atx-impl\db\tests\test_schema_contract.py atx-impl\db\tests\test_schema_contract_v2.py atx-impl\db\tests\test_migration_governance.py -q -n0
+python -m pytest atx-impl\db\tests -q
+git diff --check
+```
+
+Stage only explicit files; never `git add -A`. Use the exact commit trailer:
+`Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.

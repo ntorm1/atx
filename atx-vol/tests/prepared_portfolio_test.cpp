@@ -1,0 +1,416 @@
+// PreparedPortfolio suite — proves the substrate is a stable, aligned, grouped
+// PERMUTATION of a Portfolio's unique contracts, and that wiring it into
+// PortfolioPricer::price() leaves the frame BIT-FOR-BIT identical.
+//
+// Coverage:
+//   * original_contract_index() is a bijection onto [0, n_unique) and applying it
+//     to the permuted SoA recovers Portfolio::contracts() exactly;
+//   * groups() partitions [0, n_unique) (no gap/overlap), every group is
+//     homogeneous in (uid, side), members contiguous;
+//   * equal-T runs within a (uid, side) group are contiguous (ladder-ready);
+//   * stability: distinct-T entries of one (uid, side) come out ascending-T; equal
+//     (uid, side, T) entries (distinct strikes) keep first-appearance order;
+//   * the aligned columns are actually 64-byte aligned;
+//   * the grouped price() equals an INDEPENDENT per-contract oracle bit-for-bit on
+//     a 64-uid / multi-expiry / mixed-side book, and its whole-frame fingerprint
+//     matches a golden captured from the pre-change price() (the pin).
+
+#include <gtest/gtest.h>
+
+#include <cstdint>
+#include <cstring>
+#include <set>
+#include <vector>
+
+#include "atx/vol/black76.hpp"
+#include "atx/vol/portfolio_pricer.hpp"
+#include "atx/vol/prepared_portfolio.hpp"
+#include "atx/vol/priced_surface.hpp"
+#include "atx/vol/vol_curve.hpp"
+#include "atx/vol/vol_surface.hpp"
+
+using namespace atx::vol;
+
+namespace {
+
+constexpr double kS = 100.0;
+constexpr double kR = 0.043;
+constexpr std::int64_t kNow = 1700000000000000000LL;
+
+[[nodiscard]] std::uint64_t bits(double x) noexcept {
+  std::uint64_t b = 0;
+  std::memcpy(&b, &x, sizeof b);
+  return b;
+}
+[[nodiscard]] bool bits_equal(double a, double b) noexcept { return bits(a) == bits(b); }
+
+[[nodiscard]] PricingContext make_pricing(std::uint32_t uid) {
+  PricingContext pc;
+  pc.S = kS;
+  pc.r = kR;
+  pc.now_ts_ns = kNow;
+  pc.method = AmericanMethod::AndersenLake;
+  pc.al_opts = al_fast_opts();
+  pc.uid = uid;
+  return pc;
+}
+
+[[nodiscard]] PricedSurface make_essvi(std::uint32_t uid, int n) {
+  CurveSurface cs;
+  std::vector<SliceContext> ctx;
+  for (int i = 0; i < n; ++i) {
+    const double T = 0.05 + 0.12 * static_cast<double>(i);
+    EssviParams e{};
+    e.theta = 0.04 + 0.006 * static_cast<double>(i);
+    e.phi = 1.4 - 0.04 * static_cast<double>(i);
+    e.rho = -0.35 + 0.015 * static_cast<double>(i);
+    e.psi = 0.5;
+    e.p = 0.5;
+    e.lambda = 0.5;
+    e.T = T;
+    e.F = kS;
+    e.expiry_id = static_cast<std::uint16_t>(i);
+    cs.push(std::make_unique<EssviCurve>(e, std::exp(-kR * T)));
+    ctx.push_back(SliceContext{T, kS, 0.0, 0.02, 200, 5});
+  }
+  return PricedSurface::create(std::move(cs), std::move(ctx), make_pricing(uid)).value();
+}
+
+[[nodiscard]] PricedSurface make_convex(std::uint32_t uid, int n, int nodes) {
+  CurveSurface cs;
+  std::vector<SliceContext> ctx;
+  for (int i = 0; i < n; ++i) {
+    const double T = 0.05 + 0.12 * static_cast<double>(i);
+    const double df = std::exp(-kR * T);
+    const double sigma = 0.18 + 0.01 * static_cast<double>(i);
+    ConvexSliceFit fit;
+    fit.T = T;
+    fit.F = kS;
+    fit.df = df;
+    fit.rmse_price = 0.3;
+    fit.n_obs = static_cast<std::size_t>(nodes);
+    fit.n_active = 4;
+    fit.u.resize(static_cast<std::size_t>(nodes));
+    fit.C.resize(static_cast<std::size_t>(nodes));
+    for (int j = 0; j < nodes; ++j) {
+      const double K = kS * (0.7 + 0.6 * static_cast<double>(j) / static_cast<double>(nodes - 1));
+      fit.u[static_cast<std::size_t>(j)] = K;
+      fit.C[static_cast<std::size_t>(j)] = black76_price(kS, K, T, sigma, df, Side::Call);
+    }
+    cs.push(std::make_unique<ConvexDenseCurve>(std::move(fit)));
+    ctx.push_back(SliceContext{T, kS, 0.0, 0.02, static_cast<std::size_t>(nodes), 3});
+  }
+  return PricedSurface::create(std::move(cs), std::move(ctx), make_pricing(uid)).value();
+}
+
+// A structurally-rich small book: 3 uids, both sides, several expiries, a dup, a
+// scrambled-strike run (to exercise the tie-break), a missing uid, a degenerate.
+[[nodiscard]] std::vector<Position> mixed_book() {
+  std::vector<Position> book;
+  std::uint64_t id = 0;
+  // uid 2, put, one expiry, strikes deliberately OUT OF ORDER (tie-break test):
+  for (double K : {104.0, 96.0, 100.0, 92.0}) {
+    book.push_back({id++, {2, K, 0.30, Side::Put}, -3.0, 100.0});
+  }
+  // uid 1, both sides, two expiries in DESCENDING input order (ascending-T test):
+  for (double T : {0.29, 0.17}) {
+    for (double K : {98.0, 105.0}) {
+      book.push_back({id++, {1, K, T, Side::Call}, +4.0, 100.0});
+      book.push_back({id++, {1, K, T, Side::Put}, -2.0, 100.0});
+    }
+  }
+  // uid 3, calls, one expiry.
+  for (double K : {100.0, 110.0}) {
+    book.push_back({id++, {3, K, 0.18, Side::Call}, +1.0, 100.0});
+  }
+  // A duplicate of an existing contract (same bits) with a different qty.
+  book.push_back({id++, {1, 98.0, 0.17, Side::Call}, +9.0, 100.0});
+  // A missing-uid position and a degenerate contract.
+  book.push_back({id++, {999, 100.0, 0.10, Side::Call}, +1.0, 100.0});
+  book.push_back({id++, {1, -5.0, 0.0, Side::Put}, +1.0, 100.0}); // K<=0 && T<=0
+  return book;
+}
+
+}  // namespace
+
+// ── Substrate structure ──────────────────────────────────────────────────────
+
+TEST(PreparedPortfolio, ReversePermutationIsBijectionRecoveringContracts) {
+  auto pf = Portfolio::create(mixed_book());
+  ASSERT_TRUE(pf.has_value());
+  auto pp = PreparedPortfolio::create(*pf, PriceOptions{});
+  ASSERT_TRUE(pp.has_value());
+
+  const std::size_t n = pp->n_unique();
+  EXPECT_EQ(n, pf->n_contracts());
+
+  const auto oci = pp->original_contract_index();
+  ASSERT_EQ(oci.size(), n);
+  std::set<std::uint32_t> seen;
+  for (std::size_t p = 0; p < n; ++p) {
+    EXPECT_LT(oci[p], n);           // maps into range
+    EXPECT_TRUE(seen.insert(oci[p]).second) << "duplicate original index at " << p;
+  }
+  EXPECT_EQ(seen.size(), n);        // onto: a true permutation
+
+  // Applying the reverse permutation to the permuted SoA recovers contracts().
+  const auto contracts = pf->contracts();
+  for (std::size_t p = 0; p < n; ++p) {
+    const OptionContract& c = contracts[oci[p]];
+    EXPECT_TRUE(bits_equal(pp->k()[p], c.K)) << p;
+    EXPECT_TRUE(bits_equal(pp->t()[p], c.T)) << p;
+    EXPECT_EQ(pp->uid()[p], c.uid) << p;
+    EXPECT_EQ(pp->side()[p], c.side) << p;
+  }
+}
+
+TEST(PreparedPortfolio, GroupsPartitionAndAreHomogeneous) {
+  auto pf = Portfolio::create(mixed_book());
+  ASSERT_TRUE(pf.has_value());
+  auto pp = PreparedPortfolio::create(*pf, PriceOptions{});
+  ASSERT_TRUE(pp.has_value());
+  const std::size_t n = pp->n_unique();
+
+  const auto groups = pp->groups();
+  ASSERT_FALSE(groups.empty());
+  // Tile [0, n): first begins at 0, each begins where the last ended, last ends n.
+  std::uint32_t cursor = 0;
+  for (const ContractGroup& g : groups) {
+    EXPECT_EQ(g.begin, cursor) << "gap/overlap in partition";
+    EXPECT_LT(g.begin, g.end) << "empty group";
+    // Homogeneous in (uid, side); members contiguous.
+    for (std::uint32_t p = g.begin; p < g.end; ++p) {
+      EXPECT_EQ(pp->uid()[p], g.uid) << p;
+      EXPECT_EQ(pp->side()[p], g.side) << p;
+    }
+    cursor = g.end;
+  }
+  EXPECT_EQ(cursor, n);
+}
+
+TEST(PreparedPortfolio, EqualExpiryRunsWithinGroupAreContiguousAndAscending) {
+  auto pf = Portfolio::create(mixed_book());
+  ASSERT_TRUE(pf.has_value());
+  auto pp = PreparedPortfolio::create(*pf, PriceOptions{});
+  ASSERT_TRUE(pp.has_value());
+
+  for (const ContractGroup& g : pp->groups()) {
+    // Within a group, T is non-decreasing, so equal-bit-T entries are contiguous
+    // (a bracket-reuse ladder) and never interleave with a different T.
+    double prev = pp->t()[g.begin];
+    for (std::uint32_t p = g.begin + 1; p < g.end; ++p) {
+      const double cur = pp->t()[p];
+      EXPECT_LE(prev, cur) << "T not ascending within group at slot " << p;
+      prev = cur;
+    }
+  }
+}
+
+TEST(PreparedPortfolio, StableAscendingTAndFirstAppearanceTieBreak) {
+  auto pf = Portfolio::create(mixed_book());
+  ASSERT_TRUE(pf.has_value());
+  auto pp = PreparedPortfolio::create(*pf, PriceOptions{});
+  ASSERT_TRUE(pp.has_value());
+  const auto contracts = pf->contracts();
+  const auto oci = pp->original_contract_index();
+
+  // The uid-2 put run: four strikes at one T, given out of order. After sort they
+  // must be a single contiguous run in FIRST-APPEARANCE (ascending original index)
+  // order — the tie-break, since (uid, side, T) are all equal.
+  for (const ContractGroup& g : pp->groups()) {
+    if (g.uid == 2 && g.side == Side::Put) {
+      std::uint32_t prev_orig = 0;
+      bool first = true;
+      for (std::uint32_t p = g.begin; p < g.end; ++p) {
+        // All share T == 0.30.
+        EXPECT_TRUE(bits_equal(pp->t()[p], 0.30));
+        if (!first) {
+          EXPECT_LT(prev_orig, oci[p]) << "tie not broken by ascending original index";
+        }
+        prev_orig = oci[p];
+        first = false;
+      }
+    }
+    // The uid-1 group's two expiries were input descending (0.29 then 0.17); the
+    // permuted order must be ascending T (0.17 before 0.29).
+    if (g.uid == 1 && g.side == Side::Call) {
+      double prev = -1.0;
+      for (std::uint32_t p = g.begin; p < g.end; ++p) {
+        EXPECT_LE(prev, pp->t()[p]);
+        prev = pp->t()[p];
+      }
+      // The scrambled group must be non-trivial (contains both expiries).
+      EXPECT_GE(g.end - g.begin, 3u);
+    }
+  }
+  (void)contracts;
+}
+
+TEST(PreparedPortfolio, AlignedColumnsAre64ByteAligned) {
+  auto pf = Portfolio::create(mixed_book());
+  ASSERT_TRUE(pf.has_value());
+  auto pp = PreparedPortfolio::create(*pf, PriceOptions{});
+  ASSERT_TRUE(pp.has_value());
+  EXPECT_EQ(reinterpret_cast<std::uintptr_t>(pp->k().data()) % 64u, 0u);
+  EXPECT_EQ(reinterpret_cast<std::uintptr_t>(pp->t().data()) % 64u, 0u);
+  EXPECT_EQ(reinterpret_cast<std::uintptr_t>(pp->uid().data()) % 64u, 0u);
+}
+
+// ── The pin: grouped price() == independent oracle, bit-for-bit ───────────────
+
+namespace {
+
+// Build a 64-uid, mixed-kind, 6-expiry, mixed-side book (matches the bench shape)
+// plus a dup, a missing uid, and a degenerate — the representative frame.
+struct Rig {
+  std::vector<PricedSurface> surfs;
+  std::vector<Position> book;
+};
+
+[[nodiscard]] const PricedSurface* find_surf(const std::vector<PricedSurface>& surfs,
+                                             std::uint32_t uid) {
+  for (const PricedSurface& s : surfs) {
+    if (s.uid() == uid) {
+      return &s;
+    }
+  }
+  return nullptr;
+}
+
+// FNV-1a over the full frame (every numeric column's raw bits + status + totals) —
+// a compact fingerprint of the whole PriceFrame.
+[[nodiscard]] std::uint64_t fingerprint(const PriceFrame& f) noexcept {
+  std::uint64_t h = 1469598103934665603ULL;
+  auto mix = [&h](std::uint64_t v) {
+    for (int b = 0; b < 8; ++b) {
+      h ^= (v >> (8 * b)) & 0xFFu;
+      h *= 1099511628211ULL;
+    }
+  };
+  auto mixd = [&](double d) { mix(bits(d)); };
+  for (std::size_t i = 0; i < f.size(); ++i) {
+    mix(f.id[i]);
+    mix(f.uid[i]);
+    mixd(f.pv[i]);
+    mixd(f.price[i]);
+    mixd(f.iv[i]);
+    mixd(f.delta[i]);
+    mixd(f.gamma[i]);
+    mixd(f.vega[i]);
+    mixd(f.theta[i]);
+    mixd(f.rho[i]);
+    mixd(f.vanna[i]);
+    mixd(f.volga[i]);
+    mixd(f.charm[i]);
+    mix(static_cast<std::uint64_t>(f.status[i]));
+  }
+  mixd(f.total.pv);
+  mixd(f.total.delta);
+  mixd(f.total.gamma);
+  mixd(f.total.vega);
+  mixd(f.total.theta);
+  mixd(f.total.rho);
+  mixd(f.total.vanna);
+  mixd(f.total.volga);
+  mixd(f.total.charm);
+  mix(f.total.n_ok);
+  return h;
+}
+
+}  // namespace
+
+TEST(PreparedPortfolio, GroupedPriceEqualsIndependentOracleAndPinnedFingerprint) {
+  constexpr int kUnderlyings = 64;
+  constexpr int kSlices = 6;
+  Rig rig;
+  rig.surfs.reserve(kUnderlyings);
+  for (int u = 1; u <= kUnderlyings; ++u) {
+    rig.surfs.push_back((u & 1) ? make_convex(static_cast<std::uint32_t>(u), kSlices, 40)
+                                : make_essvi(static_cast<std::uint32_t>(u), kSlices));
+  }
+  std::vector<const PricedSurface*> ptrs;
+  for (const PricedSurface& s : rig.surfs) {
+    ptrs.push_back(&s);
+  }
+  auto surfaces = SurfaceSet::create(ptrs);
+  ASSERT_TRUE(surfaces.has_value());
+
+  std::uint64_t id = 0;
+  for (int u = 1; u <= kUnderlyings; ++u) {
+    for (int i = 0; i < kSlices; ++i) {
+      const double T = 0.05 + 0.12 * static_cast<double>(i);
+      for (double K : {85.0, 92.0, 98.0, 100.0, 102.0, 108.0, 115.0}) {
+        const Side side = (K <= 100.0) ? Side::Put : Side::Call;
+        rig.book.push_back({id++, {static_cast<std::uint32_t>(u), K, T, side}, 5.0, 100.0});
+      }
+    }
+  }
+  // A dup (same contract as the very first position), a missing uid, a degenerate.
+  rig.book.push_back({id++, {1, 85.0, 0.05, Side::Put}, -2.0, 100.0});
+  rig.book.push_back({id++, {999, 100.0, 0.2, Side::Call}, 1.0, 100.0});
+  rig.book.push_back({id++, {2, 0.0, 0.0, Side::Call}, 1.0, 100.0});
+
+  auto pf = Portfolio::create(rig.book);
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+
+  auto fr = pricer.price(*surfaces, PriceOptions{.n_threads = 4});
+  ASSERT_TRUE(fr.has_value());
+  const PriceFrame& f = *fr;
+  ASSERT_EQ(f.size(), rig.book.size());
+
+  // Independent oracle: price each position from direct PricedSurface queries
+  // (the SAME reference the MultiKind guard uses), replicating the pricer's exact
+  // status + iv policy.
+  auto degenerate = [](const OptionContract& c) {
+    return !(std::isfinite(c.K) && c.K > 0.0 && std::isfinite(c.T) && c.T > 0.0);
+  };
+  for (std::size_t i = 0; i < rig.book.size(); ++i) {
+    const Position& p = rig.book[i];
+    const OptionContract& c = p.contract;
+    EXPECT_EQ(f.id[i], p.id);
+    EXPECT_EQ(f.uid[i], c.uid);
+    if (degenerate(c)) {
+      EXPECT_EQ(f.status[i], PriceStatus::InvalidContract) << i;
+      EXPECT_TRUE(bits_equal(f.iv[i], 0.0)) << i;
+      continue;
+    }
+    const PricedSurface* s = find_surf(rig.surfs, c.uid);
+    if (s == nullptr) {
+      EXPECT_EQ(f.status[i], PriceStatus::ModelUnavailable) << i;
+      EXPECT_TRUE(bits_equal(f.iv[i], 0.0)) << i;
+      continue;
+    }
+    ASSERT_EQ(f.status[i], PriceStatus::Ok) << i;
+    const auto g = s->greeks(c.K, c.T, c.side);
+    const auto fv = s->fair_value(c.K, c.T, c.side);
+    ASSERT_TRUE(g.has_value() && fv.has_value());
+    const double w = p.qty * p.multiplier;
+    EXPECT_TRUE(bits_equal(f.price[i], *fv)) << i;
+    EXPECT_TRUE(bits_equal(f.iv[i], s->iv(c.K, c.T))) << i;
+    EXPECT_TRUE(bits_equal(f.pv[i], w * *fv)) << i;
+    EXPECT_TRUE(bits_equal(f.delta[i], w * g->delta)) << i;
+    EXPECT_TRUE(bits_equal(f.gamma[i], w * g->gamma)) << i;
+    EXPECT_TRUE(bits_equal(f.vega[i], w * g->vega)) << i;
+    EXPECT_TRUE(bits_equal(f.theta[i], w * g->theta)) << i;
+    EXPECT_TRUE(bits_equal(f.rho[i], w * g->rho)) << i;
+    EXPECT_TRUE(bits_equal(f.vanna[i], w * g->vanna)) << i;
+    EXPECT_TRUE(bits_equal(f.volga[i], w * g->volga)) << i;
+    EXPECT_TRUE(bits_equal(f.charm[i], w * g->charm)) << i;
+  }
+
+  // Thread-count invariance of the grouped solve (belt-and-suspenders alongside
+  // the existing Price_ThreadCounts guard).
+  auto fr1 = pricer.price(*surfaces, PriceOptions{.n_threads = 1});
+  auto fr8 = pricer.price(*surfaces, PriceOptions{.n_threads = 8});
+  ASSERT_TRUE(fr1.has_value() && fr8.has_value());
+  const std::uint64_t h4 = fingerprint(f);
+  EXPECT_EQ(h4, fingerprint(*fr1));
+  EXPECT_EQ(h4, fingerprint(*fr8));
+
+  // The pin: this fingerprint was captured from the PRE-substrate price() (the
+  // per-contract evaluate() path, before the grouped substrate was wired in) and
+  // must never move. Bit-for-bit identity across the change is the acceptance gate.
+  constexpr std::uint64_t kGoldenFingerprint = 18234180065510186026ULL;
+  EXPECT_EQ(h4, kGoldenFingerprint);
+}

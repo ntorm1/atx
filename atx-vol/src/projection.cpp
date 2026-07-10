@@ -501,6 +501,15 @@ Result<EvalResult> surface_eval_ex(const VolSurface& surface,
         const double q = std::isfinite(cr->q_eff) ? cr->q_eff : 0.0;
         out.price = american_price_cached(S, cr->K, cr->T_clock, iv, cr->r, q,
                                           request.side, correction);
+        if (!std::isfinite(out.price)) {
+          // The cached pricer returns NaN in the double-continuation regime
+          // (put q < r <= 0 / call r < q <= 0); do not launder it into an Ok
+          // price. In practice unreachable — a populated cache implies a
+          // priceable (r, q) — but guard rather than emit a silent NaN.
+          out.flags |= kFlagInvalid;
+          return Err(ErrorCode::NotImplemented,
+                     "american_price_cached: double-continuation regime");
+        }
         out.pricing_route = RoutePolicy::B76AlCache;
         out.flags |= kFlagRouteAmerican;
       } else {

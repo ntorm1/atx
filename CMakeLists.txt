@@ -217,6 +217,14 @@ if(ATX_BUILD_BENCH)
     FetchContent_MakeAvailable(benchmark)
 endif()
 
+# ---- atx-vol algorithm counters (P0.2; opt-in, compile-time) ----
+# When ON, atx-vol is compiled with -DATX_VOL_COUNTERS so the pricer/cache/
+# portfolio hot paths increment the header-only atomic counters in
+# atx/vol/counters.hpp; the bench targets dump them into the JSON. Default OFF:
+# ATX_VOL_COUNT(...) expands to ((void)0) — zero runtime cost, zero ABI change.
+# The definition is attached to the atx-vol target in atx-vol/CMakeLists.txt.
+option(ATX_VOL_COUNTERS "Instrument atx-vol pricing hot paths with opt-in algorithm counters" OFF)
+
 # Only configure tests / GoogleTest when this is the top-level project.
 option(ATX_BUILD_TESTS "Build ATX tests" ${PROJECT_IS_TOP_LEVEL})
 

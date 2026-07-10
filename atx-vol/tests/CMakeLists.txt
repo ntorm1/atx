@@ -11,6 +11,7 @@ add_executable(atx-vol-tests
     vol_surface_test.cpp
     robust_test.cpp
     american_test.cpp
+    counters_test.cpp
     correction_test.cpp
     support/oracle_pricer_pde.cpp
     arb_test.cpp
@@ -57,6 +58,8 @@ add_executable(atx-vol-tests
     opra_breadth_corpus_test.cpp
     spy_archive_roundtrip_test.cpp
     portfolio_pricer_test.cpp
+    prepared_portfolio_test.cpp
+    priced_surface_test.cpp
     spy_portfolio_pnl_test.cpp
     pnl_greeks_consistency_test.cpp
     lifecycle_integration_test.cpp

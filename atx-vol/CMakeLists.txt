@@ -64,6 +64,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/curve_fit.cpp
     src/curve_selector.cpp
     src/priced_surface.cpp
+    src/prepared_portfolio.cpp
     src/portfolio_pricer.cpp
     src/corpus.cpp
     src/dispersion.cpp
@@ -94,8 +95,25 @@ target_link_libraries(atx-vol
         atx_warnings
 )
 
+# ---- Algorithm counters (P0.2) ----
+# PUBLIC so the library AND every consumer (bench/tests that include
+# atx/vol/counters.hpp) agree on the macro's value — the header's inline atomic
+# storage is guarded by it, so a split view would be an ODR hazard. OFF by
+# default: the definition is absent and the macros compile to nothing.
+if(ATX_VOL_COUNTERS)
+    target_compile_definitions(atx-vol PUBLIC ATX_VOL_COUNTERS)
+endif()
+
 if(ATX_BUILD_TESTS)
     add_subdirectory(tests)
+endif()
+
+# ---- Benchmarks (Google Benchmark; opt-in via the shared ATX_BUILD_BENCH) ----
+# Mirrors atx-core/bench and atx-engine/bench. Two targets:
+#   atx-vol-american-bench   — American pricer route/side/API/grid matrix
+#   atx-vol-portfolio-bench  — PricedSurface queries + PortfolioPricer throughput
+if(ATX_BUILD_BENCH)
+    add_subdirectory(bench)
 endif()
 
 # Real-data OPRA parity + throughput benchmark (opt-in via ATX_BUILD_EXAMPLES,

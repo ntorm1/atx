@@ -10,6 +10,7 @@
 #include "atx/core/math.hpp"
 #include "atx/vol/american.hpp"
 #include "atx/vol/black76.hpp"
+#include "atx/vol/counters.hpp"  // ATX_VOL_COUNT (opt-in P0.2; no-op when OFF)
 
 namespace atx::vol {
 
@@ -22,7 +23,12 @@ namespace {
 // clang-cl / MSVC do not define M_PI; carry the extended literal explicitly.
 inline constexpr double kPi = 3.14159265358979323846;
 
-// Scratch size for the 3D Clenshaw workspace (max n_T * n_s).
+// Capacity of the 3D Clenshaw workspace: the pathological 64x64 (n_T*n_s) plane.
+// Real caches are far smaller (production 16x8x12 -> 96 live doubles), and both
+// eval and eval_partials zero only the live n_T*n_s prefix, so the 32 KB is a
+// flat stack-frame reservation, not a per-call memset. A right-sizing that shrank
+// this to an n_s vector (by interleaving the i/j collapses) was implemented and
+// measured to cost ~80 ns/sweep on the hot path, so the plane capacity is kept.
 inline constexpr std::size_t kTmpSize =
     static_cast<std::size_t>(detail::kChebMaxNodes) *
     static_cast<std::size_t>(detail::kChebMaxNodes);
@@ -115,12 +121,20 @@ double cheb_clenshaw3d(const double* coefs, std::uint16_t n_k, std::uint16_t n_T
   if (n_k == 0u || n_T == 0u || n_s == 0u) {
     return 0.0;
   }
+  ATX_VOL_COUNT(ClenshawSweeps);  // one value sweep (opt-in P0.2; no-op when OFF)
   const std::size_t nk = n_k;
   const std::size_t nT = n_T;
   const std::size_t ns = n_s;
   const double two_xi = 2.0 * xi;
   const double two_xj = 2.0 * xj;
   const double two_xk = 2.0 * xk;
+
+  // Two-pass (plane) collapse. A single interleaved-collapse variant that folds
+  // the i/j axes through a 1-D column (shrinking this n_T*n_s plane to an n_s
+  // vector) was tried for the stack right-sizing but measured ~80 ns/sweep SLOWER
+  // — it serializes the i- and j-recursions and loses the ILP the compiler
+  // extracts from the fully-independent 1st pass below — so the plane form is
+  // kept. See CorrectionCache::eval for the (already right-sized) zeroing.
 
   // 1st collapse: i-axis (k_log), innermost in memory.
   for (std::size_t j = 0; j < nT; ++j) {
@@ -168,6 +182,7 @@ double cheb_clenshaw3d_partial(const double* coefs, std::uint16_t n_k,
   if (n_k == 0u || n_T == 0u || n_s == 0u) {
     return 0.0;
   }
+  ATX_VOL_COUNT(ClenshawSweeps);  // one partial sweep (opt-in P0.2; no-op when OFF)
   const std::size_t nk = n_k;
   const std::size_t nT = n_T;
   const std::size_t ns = n_s;
@@ -266,6 +281,20 @@ Result<CorrectionCache> CorrectionCache::build(
   }
   if (!(T_min > 0.0) || !(sigma_min > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "CorrectionCache::build: non-positive T/sigma floor");
+  }
+  // The cache bakes the American-European correction at a FIXED (r, q, side). If
+  // that lands in the double-continuation regime, every andersen_lake sample is
+  // NotImplemented and sample_correction floors it to 0 — the cache would encode
+  // a pure-European surface, i.e. the exact silent mispricing this whole guard
+  // exists to prevent. Reject the build up front (single-source classifier from
+  // american.hpp; internal-put rate/yield: rate=r for a put, rate=q for a call).
+  if (detail::classify_regime(/*rate=*/(side == Side::Put) ? r : q,
+                              /*yield=*/(side == Side::Put) ? q : r) ==
+      detail::ExerciseRegime::Unsupported) {
+    return Err(ErrorCode::NotImplemented,
+               "CorrectionCache::build: double-continuation regime (put q < r <= 0 "
+               "/ call r < q <= 0) is not representable by the single-boundary "
+               "Andersen-Lake scheme; see Andersen-Lake 2021 (double-boundary case)");
   }
 
   CorrectionCache cache;
@@ -394,6 +423,15 @@ double CorrectionCache::eval(double k_log, double T, double sigma) const noexcep
   if (!populated_) {
     return 0.0;
   }
+#if defined(ATX_VOL_COUNTERS)
+  // The box test itself (not just the counter increment) only exists in the ON
+  // build: with ATX_VOL_COUNTERS undefined this whole block is gone at the
+  // preprocessor, not merely dead code left for the optimizer to remove.
+  if ((k_log < k_log_min_) || (k_log > k_log_max_) || (T < T_min_) ||
+      (T > T_max_) || (sigma < sigma_min_) || (sigma > sigma_max_)) {
+    ATX_VOL_COUNT(CacheOutOfBoxClamps);
+  }
+#endif
   k_log = atx::core::clamp(k_log, k_log_min_, k_log_max_);
   T = atx::core::clamp(T, T_min_, T_max_);
   sigma = atx::core::clamp(sigma, sigma_min_, sigma_max_);
@@ -415,9 +453,9 @@ double CorrectionCache::eval(double k_log, double T, double sigma) const noexcep
   return (v > 0.0) ? v : 0.0;
 }
 
-double CorrectionCache::eval_grad(double k_log, double T, double sigma,
-                                  double* out_dk_log, double* out_dT,
-                                  double* out_dsigma) const noexcept {
+void CorrectionCache::eval_partials(double k_log, double T, double sigma,
+                                    double* out_dk_log, double* out_dT,
+                                    double* out_dsigma) const noexcept {
   if (!populated_) {
     if (out_dk_log) {
       *out_dk_log = 0.0;
@@ -428,10 +466,12 @@ double CorrectionCache::eval_grad(double k_log, double T, double sigma,
     if (out_dsigma) {
       *out_dsigma = 0.0;
     }
-    return 0.0;
+    return;
   }
 
-  // Out-of-box on an axis nulls that partial (the value still clamps).
+  // Out-of-box on an axis nulls that partial (the value, via eval, still clamps).
+  // Identical to eval_grad's partial path — this IS that path, minus the value
+  // sweep that eval_grad's callers were discarding.
   const bool oob_k = (k_log < k_log_min_) || (k_log > k_log_max_);
   const bool oob_T = (T < T_min_) || (T > T_max_);
   const bool oob_s = (sigma < sigma_min_) || (sigma > sigma_max_);
@@ -449,12 +489,10 @@ double CorrectionCache::eval_grad(double k_log, double T, double sigma,
   const double scale_s = 2.0 / (sigma_max_ - sigma_min_);
 
   // Bounded live-span init (see eval): the n_T_*n_s_ prefix is written before it
-  // is read by cheb_clenshaw3d / cheb_clenshaw3d_partial; zero just that prefix.
+  // is read by cheb_clenshaw3d_partial; zero just that prefix.
   std::array<double, kTmpSize> tmp_jk;
   std::fill(tmp_jk.data(),
             tmp_jk.data() + static_cast<std::size_t>(n_T_) * n_s_, 0.0);
-  const double v = detail::cheb_clenshaw3d(coefs_.data(), n_k_, n_T_, n_s_, xi, xj,
-                                           xk, tmp_jk.data());
   if (out_dk_log) {
     *out_dk_log = oob_k ? 0.0
                         : detail::cheb_clenshaw3d_partial(coefs_.data(), n_k_, n_T_,
@@ -473,7 +511,19 @@ double CorrectionCache::eval_grad(double k_log, double T, double sigma,
                                                           n_s_, xi, xj, xk, 2,
                                                           scale_s, tmp_jk.data());
   }
-  return (v > 0.0) ? v : 0.0;
+}
+
+double CorrectionCache::eval_grad(double k_log, double T, double sigma,
+                                  double* out_dk_log, double* out_dT,
+                                  double* out_dsigma) const noexcept {
+  // Public value+partials behavior is EXACTLY the composition of the value-only
+  // eval() and the partials-only eval_partials(): the discarded value sweep never
+  // fed the partial sweeps (each partial sweep rewrites its own scratch before
+  // reading it), and eval() reproduces the value computation bit-for-bit. Callers
+  // that discard the value should call eval_partials directly to skip the sweep.
+  const double v = eval(k_log, T, sigma);
+  eval_partials(k_log, T, sigma, out_dk_log, out_dT, out_dsigma);
+  return v;
 }
 
 Result<CorrResult> CorrectionCache::query(double k_log, double T, double sigma,
