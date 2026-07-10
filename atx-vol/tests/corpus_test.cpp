@@ -32,8 +32,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <optional>
 #include <random>
@@ -894,6 +896,279 @@ TEST(CorpusAdmission, FixedSeedPropertyBatteryProducesOneDispositionPerCell) {
       << "NaN evidence is compared through canonical artifact bytes";
 }
 
+namespace {
+
+[[nodiscard]] Result<std::vector<CorpusBoard>> make_generated_property_boards(std::size_t count) {
+  constexpr std::string_view snapshot = "2026-06-17";
+  constexpr std::array<std::string_view, 3> expiries = {"2026-07-17", "2026-08-21", "2026-09-18"};
+  constexpr std::array<ProfileKind, kProfileKindCount> profiles = {
+      ProfileKind::IndexEtfUltraLiquid, ProfileKind::MegaCapEvent,
+      ProfileKind::LiquidSingleName,    ProfileKind::OrdinarySingleName,
+      ProfileKind::IlliquidSmallCap,    ProfileKind::HtbDividendName,
+      ProfileKind::VolProduct};
+
+  std::mt19937_64 rng{0xC0A5'2026u};
+  std::uniform_real_distribution<double> unit{0.0, 1.0};
+  std::vector<CorpusBoard> boards;
+  boards.reserve(count);
+  for (std::size_t i = 0u; i < count; ++i) {
+    const ProfileKind profile = profiles[i % profiles.size()];
+    const double spot = std::exp(std::log(2.0) + unit(rng) * std::log(400.0));
+    const double rate = -0.01 + 0.09 * unit(rng);
+    const double rate_slope = -0.04 + 0.08 * unit(rng);
+    const std::size_t strike_count = 5u + static_cast<std::size_t>(rng() % 5u);
+
+    char symbol_buffer[16]{};
+    std::snprintf(symbol_buffer, sizeof symbol_buffer, "F%05zu", i);
+    SynthPanelSpec spec;
+    spec.uid = symbol_buffer;
+    spec.snapshot_iso = std::string(snapshot);
+    spec.spot = spot;
+    spec.r = rate;
+    spec.borrow =
+        profile == ProfileKind::HtbDividendName ? 0.03 + 0.12 * unit(rng) : 0.01 * unit(rng);
+    spec.half_spread_frac = 0.002 + 0.10 * unit(rng);
+    spec.min_half_spread = 0.001 * spot + 0.02 * unit(rng);
+    if (profile == ProfileKind::HtbDividendName || i % 7u == 0u) {
+      spec.cash_divs.push_back(
+          DividendEvent{iso_to_ns("2026-07-01"), spot * (0.001 + 0.02 * unit(rng))});
+    }
+
+    const double base_sigma = 0.12 + 0.68 * unit(rng);
+    const double skew = -0.9 + 1.1 * unit(rng);
+    const double curvature = 0.2 + 1.8 * unit(rng);
+    for (std::size_t expiry_index = 0u; expiry_index < expiries.size(); ++expiry_index) {
+      const double event_jump = profile == ProfileKind::MegaCapEvent && expiry_index == 0u
+                                    ? 0.05 + 0.25 * unit(rng)
+                                    : 0.0;
+      SynthExpiry expiry;
+      expiry.expiry_iso = std::string(expiries[expiry_index]);
+      expiry.T = year_fraction(snapshot, expiries[expiry_index]);
+      expiry.truth = S3Params{base_sigma + event_jump - 0.02 * expiry_index,
+                              2.0 * std::sqrt(expiry.T) * skew, curvature};
+      spec.expiries.push_back(std::move(expiry));
+    }
+    for (std::size_t strike_index = 0u; strike_index < strike_count; ++strike_index) {
+      const double fraction = strike_count == 1u ? 0.5
+                                                 : static_cast<double>(strike_index) /
+                                                       static_cast<double>(strike_count - 1u);
+      spec.strikes.push_back(spot * (0.72 + 0.56 * fraction));
+    }
+
+    auto panel = make_synthetic_american_panel(spec);
+    if (!panel) {
+      return Err(panel.error());
+    }
+    CorpusBoard board;
+    board.date = std::string(snapshot);
+    board.symbol = symbol_buffer;
+    board.frame = std::move(panel->frame);
+    board.frame.yc_pillar_t = {0.05, 0.5, 1.5};
+    board.frame.yc_pillar_r = {rate, rate + 0.35 * rate_slope, rate + rate_slope};
+    board.env = MarketEnv::flat(spot, rate, iso_to_ns(snapshot), spec.cash_divs);
+    auto yield = YieldCurve::create(board.frame.yc_pillar_t, board.frame.yc_pillar_r);
+    if (!yield) {
+      return Err(yield.error());
+    }
+    board.env.yield = std::move(*yield);
+    board.fit_context.profile_override = profile;
+    board.fit_context.event_phase =
+        profile == ProfileKind::MegaCapEvent ? EventPhase::PreAnnouncement : EventPhase::None;
+    board.fit_context.event_distance_days =
+        profile == ProfileKind::MegaCapEvent ? std::optional<std::uint32_t>{2u} : std::nullopt;
+    board.fit_context.htb = profile == ProfileKind::HtbDividendName;
+    board.fit_context.vol_product = profile == ProfileKind::VolProduct;
+    board.source_provenance_complete = true;
+    board.source_schema_version = 2u;
+    board.source_fingerprint = 0x1000u + i;
+    board.market_input_fingerprint = 0x2000u + i;
+    CurveConfig curve;
+    curve.kind = VolCurveKind::LinearVariance;
+    board.curve = curve;
+
+    for (std::size_t row_index = 0u; row_index < board.frame.rows.size(); ++row_index) {
+      QuoteRow &row = board.frame.rows[row_index];
+      row.bid_size = static_cast<std::uint32_t>(1u + rng() % 500u);
+      row.ask_size = static_cast<std::uint32_t>(1u + rng() % 500u);
+      if ((row_index + i) % 13u == 0u) {
+        row.bid = 0.0;
+      } else if ((row_index + 3u * i) % 29u == 0u) {
+        row.ask = 0.0;
+      }
+    }
+
+    if (i % 37u == 0u) {
+      board.frame.spot = std::numeric_limits<double>::quiet_NaN();
+      board.env.spot = std::numeric_limits<double>::quiet_NaN();
+    } else if (i % 41u == 0u && !board.frame.rows.empty()) {
+      board.frame.rows.front().ask = std::numeric_limits<double>::infinity();
+    } else if (i % 43u == 0u) {
+      board.frame.rows.clear();
+    }
+    boards.push_back(std::move(board));
+  }
+  return atx::core::Ok(std::move(boards));
+}
+
+[[nodiscard]] std::vector<char> read_binary_file(const fs::path &path) {
+  std::ifstream input(path, std::ios::binary);
+  if (!input) {
+    return {};
+  }
+  input.seekg(0, std::ios::end);
+  const std::streamoff size = input.tellg();
+  if (size <= 0) {
+    return {};
+  }
+  input.seekg(0, std::ios::beg);
+  std::vector<char> bytes(static_cast<std::size_t>(size));
+  input.read(bytes.data(), size);
+  if (!input) {
+    return {};
+  }
+  return bytes;
+}
+
+void normalize_output_paths(CorpusManifest &manifest, CorpusQualityReport &quality) {
+  for (CorpusEntry &entry : manifest.entries) {
+    if (!entry.archive_path.empty()) {
+      entry.archive_path = fs::path(entry.archive_path).filename().generic_string();
+    }
+  }
+  for (QualifiedCorpusEntry &entry : quality.entries) {
+    if (!entry.archive_path.empty()) {
+      entry.archive_path = fs::path(entry.archive_path).filename().generic_string();
+    }
+  }
+}
+
+void exercise_generated_property_corpus(std::size_t count, const char *tag) {
+  auto generated = make_generated_property_boards(count);
+  ASSERT_TRUE(generated.has_value()) << generated.error().to_string();
+  ASSERT_EQ(generated->size(), count);
+  std::array<std::size_t, kProfileKindCount> profile_counts{};
+  for (const CorpusBoard &board : *generated) {
+    ASSERT_TRUE(board.fit_context.profile_override.has_value());
+    ++profile_counts[static_cast<std::size_t>(*board.fit_context.profile_override)];
+  }
+  for (const std::size_t profile_count : profile_counts) {
+    EXPECT_GT(profile_count, 0u);
+  }
+
+  QualifiedCorpusConfig serial_cfg;
+  serial_cfg.build.n_threads = 1u;
+  serial_cfg.build.write_opts.created_ts_ns = 1;
+  serial_cfg.admission.enabled = true;
+  CorpusAdmissionRule rule;
+  rule.min_quotes = 6u;
+  rule.min_slices = 2u;
+  rule.require_calendar_arb_free = true;
+  rule.require_source_provenance = true;
+  for (CorpusAdmissionRule &profile_rule : serial_cfg.admission.by_profile) {
+    profile_rule = rule;
+  }
+  QualifiedCorpusConfig parallel_cfg = serial_cfg;
+  parallel_cfg.build.n_threads = 4u;
+
+  const fs::path serial_out = fresh_out_dir((std::string(tag) + "-serial").c_str());
+  const fs::path parallel_out = fresh_out_dir((std::string(tag) + "-parallel").c_str());
+  auto serial = build_qualified_corpus(*generated, serial_out.string(), serial_cfg);
+  auto parallel = build_qualified_corpus(*generated, parallel_out.string(), parallel_cfg);
+  ASSERT_TRUE(serial.has_value()) << serial.error().to_string();
+  ASSERT_TRUE(parallel.has_value()) << parallel.error().to_string();
+
+  ASSERT_EQ(serial->quality.entries.size(), count);
+  EXPECT_EQ(serial->quality.n_planned, count);
+  EXPECT_EQ(static_cast<std::uint64_t>(serial->quality.n_admitted) + serial->quality.n_quarantined +
+                serial->quality.n_source_failed + serial->quality.n_fit_failed +
+                serial->quality.n_empty,
+            count);
+  EXPECT_GT(serial->quality.n_admitted, 0u);
+  EXPECT_GT(serial->quality.n_fit_failed + serial->quality.n_empty, 0u);
+  for (const QualifiedCorpusEntry &entry : serial->quality.entries) {
+    if (entry.disposition == CorpusDisposition::Admitted) {
+      EXPECT_EQ(entry.primary_reason, CorpusAdmissionReason::None) << entry.symbol;
+      ASSERT_TRUE(entry.quality.calendar_violations.has_value()) << entry.symbol;
+      EXPECT_EQ(*entry.quality.calendar_violations, 0u) << entry.symbol;
+      EXPECT_TRUE(entry.quality.final_kind_consistent) << entry.symbol;
+    } else {
+      EXPECT_NE(entry.primary_reason, CorpusAdmissionReason::None) << entry.symbol;
+    }
+  }
+
+  CorpusManifest serial_manifest = serial->manifest;
+  CorpusManifest parallel_manifest = parallel->manifest;
+  CorpusQualityReport serial_quality = serial->quality;
+  CorpusQualityReport parallel_quality = parallel->quality;
+  normalize_output_paths(serial_manifest, serial_quality);
+  normalize_output_paths(parallel_manifest, parallel_quality);
+  EXPECT_EQ(serial_manifest, parallel_manifest);
+  EXPECT_EQ(serial_quality, parallel_quality);
+
+  const fs::path serial_archive = serial_out / "2026-06-17.atxvsa";
+  const fs::path parallel_archive = parallel_out / "2026-06-17.atxvsa";
+  const std::vector<char> serial_bytes = read_binary_file(serial_archive);
+  const std::vector<char> parallel_bytes = read_binary_file(parallel_archive);
+  ASSERT_FALSE(serial_bytes.empty());
+  EXPECT_EQ(serial_bytes, parallel_bytes);
+
+  auto serial_open = SurfaceArchive::open_file(serial_archive.generic_string());
+  auto parallel_open = SurfaceArchive::open_file(parallel_archive.generic_string());
+  ASSERT_TRUE(serial_open.has_value()) << serial_open.error().to_string();
+  ASSERT_TRUE(parallel_open.has_value()) << parallel_open.error().to_string();
+  auto serial_surfaces = serial_open->map_all();
+  auto parallel_surfaces = parallel_open->map_all();
+  ASSERT_TRUE(serial_surfaces.has_value()) << serial_surfaces.error().to_string();
+  ASSERT_TRUE(parallel_surfaces.has_value()) << parallel_surfaces.error().to_string();
+  ASSERT_EQ(serial_surfaces->size(), serial->quality.n_admitted);
+  ASSERT_EQ(serial_surfaces->size(), parallel_surfaces->size());
+  std::size_t query_points = 0u;
+  for (std::size_t surface_index = 0u; surface_index < serial_surfaces->size(); ++surface_index) {
+    const PricedSurface &surface = (*serial_surfaces)[surface_index];
+    const PricedSurface &parallel_surface = (*parallel_surfaces)[surface_index];
+    for (const double k : {-0.10, 0.0, 0.10}) {
+      double previous_w = 0.0;
+      for (const auto &slice : surface.surface().slices()) {
+        const double w = slice->w(k);
+        const double iv = surface.iv(slice->F() * std::exp(k), slice->T());
+        EXPECT_TRUE(std::isfinite(w) && w > 0.0);
+        EXPECT_TRUE(std::isfinite(iv) && iv > 0.0);
+        EXPECT_GE(w + 1.0e-12, previous_w);
+        previous_w = w;
+      }
+    }
+    expect_surfaces_bit_identical(surface, parallel_surface, query_points);
+  }
+  EXPECT_GT(query_points, serial_surfaces->size());
+}
+
+[[nodiscard]] bool long_corpus_enabled() noexcept {
+#if defined(_WIN32)
+  char *value = nullptr;
+  std::size_t size = 0u;
+  const bool present = ::_dupenv_s(&value, &size, "ATX_VOL_LONG_CORPUS") == 0 && value != nullptr;
+  const bool enabled = present && value[0] != '\0' && std::strcmp(value, "0") != 0;
+  std::free(value);
+  return enabled;
+#else
+  const char *value = std::getenv("ATX_VOL_LONG_CORPUS");
+  return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+#endif
+}
+
+} // namespace
+
+TEST(CorpusGeneratedProperty, FixedSeedTwoHundredFiftyBoardGate) {
+  exercise_generated_property_corpus(250u, "generated-250");
+}
+
+TEST(CorpusGeneratedProperty, LongFixedSeedTenThousandBoardGate) {
+  if (!long_corpus_enabled()) {
+    GTEST_SKIP() << "long corpus; set ATX_VOL_LONG_CORPUS=1 to run 10,000 generated boards";
+  }
+  exercise_generated_property_corpus(10'000u, "generated-10000");
+}
+
 TEST(CorpusBuildSession, StreamsDatesRetainsSourceFailuresAndBoundsLiveSurfaces) {
   const fs::path out = fresh_out_dir("streaming-qualified");
   QualifiedCorpusConfig cfg;
@@ -1042,6 +1317,8 @@ TEST(CorpusBuildSession, SyntheticThirteenNameThreeDateBreadthScoreboard) {
   for (CorpusAdmissionRule &profile_rule : cfg.admission.by_profile) {
     profile_rule = rule;
   }
+  cfg.admission.by_profile[static_cast<std::size_t>(ProfileKind::MegaCapEvent)].min_quotes = 20u;
+  cfg.build.fit_template.policy.sparse_validation_floor = 20u;
   cfg.build.write_opts.created_ts_ns = 1;
   auto session = CorpusBuildSession::create(out.string(), cfg);
   ASSERT_TRUE(session.has_value()) << session.error().to_string();
@@ -1092,7 +1369,21 @@ TEST(CorpusBuildSession, SyntheticThirteenNameThreeDateBreadthScoreboard) {
     low.source_provenance_complete = true;
     cells.emplace_back(std::move(low));
 
-    CorpusBoard event = board_from_spec(make_singlename_spec("AAPL", date, 200.0), date, "AAPL");
+    SynthPanelSpec event_spec;
+    event_spec.uid = "AAPL";
+    event_spec.snapshot_iso = date;
+    event_spec.spot = 200.0;
+    event_spec.r = 0.043;
+    for (const std::string_view expiry_iso :
+         {"2026-07-17", "2026-08-21", "2026-09-18", "2026-10-16", "2026-11-20", "2026-12-18"}) {
+      const double T = year_fraction(date, expiry_iso);
+      event_spec.expiries.push_back(
+          SynthExpiry{std::string(expiry_iso), T, S3Params{0.42, -0.9 * std::sqrt(T), 0.8}});
+    }
+    event_spec.strikes = {160.0, 180.0, 200.0, 220.0, 240.0};
+    event_spec.half_spread_frac = 0.03;
+    event_spec.min_half_spread = 0.05;
+    CorpusBoard event = board_from_spec(event_spec, date, "AAPL");
     event.fit_context.profile_override = ProfileKind::MegaCapEvent;
     event.fit_context.event_phase = EventPhase::PreAnnouncement;
     event.fit_context.event_distance_days = 2u;
@@ -1163,6 +1454,16 @@ TEST(CorpusBuildSession, SyntheticThirteenNameThreeDateBreadthScoreboard) {
       }));
   EXPECT_EQ(last_date_admitted, 1u)
       << "the final date must exercise the below-minimum-survivor regime";
+  const auto fallback_entry =
+      std::find_if(built->quality.entries.begin(), built->quality.entries.end(),
+                   [](const QualifiedCorpusEntry &entry) {
+                     return entry.date == "2026-06-15" && entry.symbol == "AAPL";
+                   });
+  ASSERT_NE(fallback_entry, built->quality.entries.end());
+  EXPECT_EQ(fallback_entry->disposition, CorpusDisposition::Admitted);
+  EXPECT_TRUE(fallback_entry->quality.used_fallback);
+  EXPECT_EQ(fallback_entry->quality.primary_kind, VolCurveKind::C8);
+  EXPECT_EQ(fallback_entry->quality.final_kind, VolCurveKind::Essvi);
 
   auto clock = Clock::from_manifest(built->manifest);
   ASSERT_TRUE(clock.has_value()) << clock.error().to_string();

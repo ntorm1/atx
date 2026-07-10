@@ -281,19 +281,16 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
       spread_w.push_back(std::max(dw_dsigma * std::max(o.noise_sigma, 1.0e-7), 1.0e-9));
     }
     if (k.size() < 8) {
-      // A C8 fit is under-identified on a thin board. Return its eSSVI-equivalent
-      // zero-bump seed; the selector's eight-DoF penalty will prefer eSSVI.
+      return Err(ErrorCode::Unavailable, "fit_slice_curve: fewer than 8 observations for C8");
+    }
+    const double seed_sse = c8_residual_sse(seed, k, target_w, spread_w, 1.0e-9);
+    const int max_inner = std::max<int>(4, cfg.parametric.max_inner_iter);
+    const Status status = c8_fit_slice_lm(fitted, k, target_w, spread_w, max_inner, 1.0e-9);
+    const double fit_sse = status ? c8_residual_sse(fitted, k, target_w, spread_w, 1.0e-9)
+                                  : std::numeric_limits<double>::infinity();
+    if (!std::isfinite(fit_sse) || fit_sse > seed_sse * 1.05) {
+      fitted = seed;
       fitted.bumps_active = false;
-    } else {
-      const double seed_sse = c8_residual_sse(seed, k, target_w, spread_w, 1.0e-9);
-      const int max_inner = std::max<int>(4, cfg.parametric.max_inner_iter);
-      const Status status = c8_fit_slice_lm(fitted, k, target_w, spread_w, max_inner, 1.0e-9);
-      const double fit_sse = status ? c8_residual_sse(fitted, k, target_w, spread_w, 1.0e-9)
-                                    : std::numeric_limits<double>::infinity();
-      if (!std::isfinite(fit_sse) || fit_sse > seed_sse * 1.05) {
-        fitted = seed;
-        fitted.bumps_active = false;
-      }
     }
     std::unique_ptr<IVolCurve> curve = std::make_unique<C8Curve>(fitted, df);
     return Ok(std::move(curve));

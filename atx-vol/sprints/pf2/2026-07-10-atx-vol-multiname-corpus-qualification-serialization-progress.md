@@ -52,7 +52,7 @@ deferred rather than creating competing infrastructure.
 | P3-2 crash-safe/resumable commit | complete | atomic date checkpoints reuse only exact input/policy matches and CRC-valid mapped archives; stale/partial state fails loudly |
 | P3-3 synthetic multi-profile corpus | complete | 1 index + 12 names x 3 dates; all five dispositions and below-survivor date asserted |
 | P3-4 cached-real breadth corpus | complete | all 14 cached fixtures produced a qualified scoreboard; no network path |
-| P3-5 property/fuzz corpus | partial | 250-case fixed-seed admission/report battery green; 10k overnight full-fit generator remains |
+| P3-5 property/fuzz corpus | complete-fast/long-ready | 250 generated boards green across all profiles; identical 10k harness is opt-in via `ATX_VOL_LONG_CORPUS=1` |
 | P3-6 existing dispersion e2e smoke | complete | admitted 39-cell archives feed ATM-straddle strategy; drop/unpriced/closure and determinism gates asserted |
 | P4 archive performance | deferred-conflict | wait for completed performance archive and benchmark shape |
 | P5 committed performance gate | deferred-conflict | wait for completed performance baseline tooling |
@@ -97,8 +97,23 @@ deferred rather than creating competing infrastructure.
 - 2026-07-10: P3-2 interruption/resume gate passed: exact date checkpoints
   avoid refitting, completed indexes reuse on equality, and input or policy
   fingerprint changes fail loudly rather than accepting an existing archive.
+- 2026-07-10: fixed-seed 250-board generated-corpus gate passed twice (final
+  formatted run 204.3 s) across all seven profiles, with economic,
+  microstructure, and corruption variation; finite/calendar-clean admitted
+  surfaces; archive query round trips; and byte-identical 1/4-worker outputs.
+  The identical 10,000-board overnight gate is implemented behind
+  `ATX_VOL_LONG_CORPUS=1` but was not run this session.
+- 2026-07-10: the synthetic breadth fixture now proves a real C8-to-eSSVI
+  fallback on an underidentified event board. Direct C8 fitting rejects fewer
+  than eight observations instead of silently labeling a zero-bump seed C8;
+  the healthy event-C8 regression remains green.
+- 2026-07-10: final formatted qualification/fallback matrix passed 18/18.
+  `SurfaceArchive.*`, legacy `Corpus.*`, term-rate archive parity, and the
+  cached-real scoreboard passed 24/24 correctness tests; the opt-in timing test
+  and opt-in 10,000-board gate skipped as designed.
 
 ## Commits
 
 - `8119e5e feat(atx-vol): qualify corpus fits with evidence`
 - `8bfcb3c feat(atx-vol): stream point-in-time qualified corpora`
+- `c9e2110 feat(atx-vol): resume qualified corpus dates safely`
