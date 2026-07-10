@@ -164,7 +164,8 @@ void expect_result_bit_identical(const BacktestResult& a, const BacktestResult& 
       {&a.pnl_settlement, &b.pnl_settlement}, {&a.nav, &b.nav},
       {&a.gross_delta, &b.gross_delta}, {&a.gross_gamma, &b.gross_gamma},
       {&a.gross_vega, &b.gross_vega}, {&a.gross_theta, &b.gross_theta},
-      {&a.n_open_lots, &b.n_open_lots}};
+      {&a.n_open_lots, &b.n_open_lots}, {&a.n_unpriced_lots, &b.n_unpriced_lots},
+      {&a.n_unpriced_greeks, &b.n_unpriced_greeks}};
   for (std::size_t i = 0; i < a.size(); ++i) {
     EXPECT_EQ(a.date[i], b.date[i]) << i;
     EXPECT_EQ(a.ts_ns[i], b.ts_ns[i]) << i;

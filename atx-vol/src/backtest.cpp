@@ -50,11 +50,25 @@ std::atomic<std::uint64_t> g_open_count{0};
   return out;
 }
 
-// Book greeks: price the current lots against `snap` at its residual T. An empty
-// book yields zero totals (an empty portfolio prices to an empty frame).
-[[nodiscard]] Result<PriceTotals> book_greeks(const MarketSnapshot& snap,
-                                              const std::vector<Lot>& lots,
-                                              const PriceOptions& opts) {
+// Book greeks + the count of positions the pricer could not value on THIS
+// snapshot's date. `total`'s `gross_*` sum only the Ok lanes; `n_unpriced`
+// = n_pos - PriceTotals::n_ok is the number EXCLUDED from that sum (surface
+// absent, degenerate contract, or numeric failure). `first_unpriced_uid` names
+// the first such position (input order) for the Error-policy diagnostic; 0 when
+// none. This is a single-date snapshot count — distinct from a STEP's
+// completeness (which needs base AND shifted); see BacktestResult.
+struct BookGreeks {
+  PriceTotals total{};
+  std::uint32_t n_unpriced{0};
+  std::uint32_t first_unpriced_uid{0};
+};
+
+// Price the current lots against `snap` at its residual T and report how many
+// could not be valued. An empty book yields zero totals and n_unpriced 0 (an
+// empty portfolio prices to an empty frame).
+[[nodiscard]] Result<BookGreeks> book_greeks(const MarketSnapshot& snap,
+                                             const std::vector<Lot>& lots,
+                                             const PriceOptions& opts) {
   const std::vector<Position> ps = positions_at(lots, snap.ts_ns());
   auto pf = Portfolio::create(ps);
   if (!pf) {
@@ -65,7 +79,23 @@ std::atomic<std::uint64_t> g_open_count{0};
   if (!fr) {
     return Err(fr.error());
   }
-  return Ok(fr->total);
+  BookGreeks bg;
+  bg.total = fr->total;
+  // Positions the reduction skipped on this date. `n_ok` is produced by the same
+  // serial-scatter reduction (bit-identical across thread counts) and can never
+  // exceed the position count; guard the subtraction rather than underflow.
+  const std::size_t n_pos = fr->size();
+  const std::size_t n_ok = fr->total.n_ok;
+  bg.n_unpriced = static_cast<std::uint32_t>((n_pos >= n_ok) ? (n_pos - n_ok) : std::size_t{0});
+  if (bg.n_unpriced > 0) {
+    for (std::size_t i = 0; i < fr->size(); ++i) {
+      if (fr->status[i] != PriceStatus::Ok) {
+        bg.first_unpriced_uid = fr->uid[i];
+        break;
+      }
+    }
+  }
+  return Ok(bg);
 }
 
 // One priced step base -> shifted over `lots`: partition expiring lots (settled at
@@ -152,6 +182,17 @@ struct StepPnl {
                                                  std::uint32_t first_uid) {
   return "run_backtest: " + std::to_string(n_unpriced) +
          " held lot(s) have no surface this step (first uid=" + std::to_string(first_uid) + ")";
+}
+
+// The Error-policy message for a recorded row whose book greeks could not value
+// `n_unpriced` held lots on `date`. Distinct wording from the step message: this
+// is a single-date snapshot (book_greeks), so it names the date rather than "this
+// step". Non-empty precondition: callers only build this when n_unpriced > 0.
+[[nodiscard]] std::string unpriced_greeks_error_message(std::uint32_t n_unpriced,
+                                                        std::uint32_t first_uid,
+                                                        const std::string& date) {
+  return "run_backtest: " + std::to_string(n_unpriced) + " held lot(s) have no surface on " + date +
+         " (first uid=" + std::to_string(first_uid) + ")";
 }
 
 }  // namespace
@@ -267,7 +308,8 @@ Result<BacktestResult> run_backtest(const Clock& clock, PortfolioState initial,
                                double p_delta, double p_gamma, double p_vega, double p_vanna,
                                double p_volga, double p_theta, double p_rho, double p_charm,
                                double p_unexpl, double p_settle, double nav_v,
-                               const PriceTotals& g, std::size_t n_lots, double n_unpriced) {
+                               const PriceTotals& g, std::size_t n_lots, double n_unpriced,
+                               double n_unpriced_greeks) {
     out.date.push_back(date);
     out.ts_ns.push_back(ts);
     out.pnl_total.push_back(p_total);
@@ -295,6 +337,7 @@ Result<BacktestResult> run_backtest(const Clock& clock, PortfolioState initial,
     out.turnover_vega.push_back(0.0);
     out.n_open_lots.push_back(static_cast<double>(n_lots));
     out.n_unpriced_lots.push_back(n_unpriced);
+    out.n_unpriced_greeks.push_back(n_unpriced_greeks);
   };
 
   // base = load(refs[0]) — the inception snapshot.
@@ -306,14 +349,20 @@ Result<BacktestResult> run_backtest(const Clock& clock, PortfolioState initial,
 
   double nav = 0.0;
 
-  // Row 0: inception (zero PnL, nav 0, book greeks on the first date).
+  // Row 0: inception (zero PnL, nav 0, book greeks on the first date). Even though
+  // no step has run, book_greeks is a real measurement here — an inception book with
+  // an unpriced held lot aborts under the Error policy (an empty book prices to 0).
   {
     auto g = book_greeks(base, book.lots, cfg.price);
     if (!g) {
       return Err(g.error());
     }
+    if (cfg.unpriced == UnpricedLotPolicy::Error && g->n_unpriced > 0) {
+      return Err(ErrorCode::NotFound,
+                 unpriced_greeks_error_message(g->n_unpriced, g->first_unpriced_uid, refs[0].date));
+    }
     push_row(refs[0].date, base.ts_ns(), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-             0.0, *g, book.lots.size(), 0.0);
+             0.0, g->total, book.lots.size(), 0.0, static_cast<double>(g->n_unpriced));
   }
 
   for (std::size_t i = 1; i < refs.size(); ++i) {
@@ -352,9 +401,15 @@ Result<BacktestResult> run_backtest(const Clock& clock, PortfolioState initial,
       if (!g) {
         return Err(g.error());
       }
+      if (cfg.unpriced == UnpricedLotPolicy::Error && g->n_unpriced > 0) {
+        return Err(ErrorCode::NotFound,
+                   unpriced_greeks_error_message(g->n_unpriced, g->first_unpriced_uid,
+                                                 refs[i].date));
+      }
       push_row(refs[i].date, base.ts_ns(), step_total, t.pnl_delta, t.pnl_gamma, t.pnl_vega,
                t.pnl_vanna, t.pnl_volga, t.pnl_theta, t.pnl_rho, t.pnl_charm, t.pnl_unexplained,
-               settlement, nav, *g, book.lots.size(), static_cast<double>(step->n_unpriced));
+               settlement, nav, g->total, book.lots.size(), static_cast<double>(step->n_unpriced),
+               static_cast<double>(g->n_unpriced));
     }
   }
 
@@ -427,7 +482,7 @@ Result<BacktestResult> run_backtest(const Clock& clock, IStrategy& strat, const 
                                double p_unexpl, double p_settle, double p_shares, double p_fin,
                                double p_cost, double nav_v, double cash_v, double g_delta,
                                const PriceTotals& g, double turn_notl, double turn_vega,
-                               std::size_t n_lots, double n_unpriced) {
+                               std::size_t n_lots, double n_unpriced, double n_unpriced_greeks) {
     out.date.push_back(date);
     out.ts_ns.push_back(ts);
     out.pnl_total.push_back(p_total);
@@ -454,6 +509,7 @@ Result<BacktestResult> run_backtest(const Clock& clock, IStrategy& strat, const 
     out.turnover_vega.push_back(turn_vega);
     out.n_open_lots.push_back(static_cast<double>(n_lots));
     out.n_unpriced_lots.push_back(n_unpriced);
+    out.n_unpriced_greeks.push_back(n_unpriced_greeks);
   };
 
   // Signal series: names captured on the first recorded row, then one value per
@@ -647,10 +703,18 @@ Result<BacktestResult> run_backtest(const Clock& clock, IStrategy& strat, const 
     if (!g) {
       return Err(g.error());
     }
-    const double g_delta = g->delta + shares_sum();
+    // Inception book greeks are a real measurement (the strategy has already opened
+    // its entries): under the Error policy an unpriced held lot here aborts, exactly
+    // as a later row would. The strategy never opens a lot in an absent name, so this
+    // is 0 for a normally-opened basket and never fires on an empty book.
+    if (cfg.unpriced == UnpricedLotPolicy::Error && g->n_unpriced > 0) {
+      return Err(ErrorCode::NotFound,
+                 unpriced_greeks_error_message(g->n_unpriced, g->first_unpriced_uid, refs[0].date));
+    }
+    const double g_delta = g->total.delta + shares_sum();
     push_row(refs[0].date, base.ts_ns(), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-             0.0, ex->cost, 0.0, cash, g_delta, *g, ex->turnover_notional, ex->turnover_vega,
-             book.lots.size(), 0.0);
+             0.0, ex->cost, 0.0, cash, g_delta, g->total, ex->turnover_notional, ex->turnover_vega,
+             book.lots.size(), 0.0, static_cast<double>(g->n_unpriced));
     record_signals(base);
   }
 
@@ -745,12 +809,21 @@ Result<BacktestResult> run_backtest(const Clock& clock, IStrategy& strat, const 
       if (!g) {
         return Err(g.error());
       }
-      const double g_delta = g->delta + shares_sum();
+      // The step-level Error guard above already fired for i>=1 whenever a held lot
+      // is unpriced across this step (book_greeks under-counts only when this row's
+      // surface is absent, which also breaks the step's pnl_explain), so this check
+      // is a consistent belt-and-braces here; it is the sole guard only at inception.
+      if (cfg.unpriced == UnpricedLotPolicy::Error && g->n_unpriced > 0) {
+        return Err(ErrorCode::NotFound,
+                   unpriced_greeks_error_message(g->n_unpriced, g->first_unpriced_uid,
+                                                 refs[i].date));
+      }
+      const double g_delta = g->total.delta + shares_sum();
       push_row(refs[i].date, base.ts_ns(), step_total, t.pnl_delta, t.pnl_gamma, t.pnl_vega,
                t.pnl_vanna, t.pnl_volga, t.pnl_theta, t.pnl_rho, t.pnl_charm, t.pnl_unexplained,
-               settlement, shares_pnl, financing, ex->cost, nav, cash, g_delta, *g,
+               settlement, shares_pnl, financing, ex->cost, nav, cash, g_delta, g->total,
                ex->turnover_notional, ex->turnover_vega, book.lots.size(),
-               static_cast<double>(step->n_unpriced));
+               static_cast<double>(step->n_unpriced), static_cast<double>(g->n_unpriced));
       record_signals(base);
     }
   }

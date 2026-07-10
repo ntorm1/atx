@@ -162,7 +162,9 @@ void expect_result_bit_identical(const BacktestResult& a, const BacktestResult& 
       {&a.pnl_total, &b.pnl_total},   {&a.pnl_theta, &b.pnl_theta},
       {&a.pnl_gamma, &b.pnl_gamma},   {&a.pnl_vega, &b.pnl_vega},
       {&a.nav, &b.nav},               {&a.gross_vega, &b.gross_vega},
-      {&a.gross_theta, &b.gross_theta}, {&a.n_open_lots, &b.n_open_lots}};
+      {&a.gross_theta, &b.gross_theta}, {&a.n_open_lots, &b.n_open_lots},
+      {&a.n_unpriced_lots, &b.n_unpriced_lots},
+      {&a.n_unpriced_greeks, &b.n_unpriced_greeks}};
   for (std::size_t i = 0; i < a.size(); ++i) {
     EXPECT_EQ(a.date[i], b.date[i]) << i;
     for (const auto& [va, vb] : cols) {

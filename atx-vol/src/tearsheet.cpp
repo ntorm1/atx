@@ -197,6 +197,7 @@ Status write_backtest_tsv(const BacktestResult& r, std::string_view path) {
       {"turnover_vega", &r.turnover_vega},
       {"n_open_lots", &r.n_open_lots},
       {"n_unpriced_lots", &r.n_unpriced_lots},
+      {"n_unpriced_greeks", &r.n_unpriced_greeks},
   };
 
   std::string out;

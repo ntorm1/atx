@@ -947,3 +947,252 @@ TEST(MultinamePipeline, DefaultPolicyFullBasketBitIdentical) {
   ASSERT_TRUE(res_e.has_value()) << res_e.error().to_string();
   std::printf("[s1-3b] full basket bit-identical, all n_unpriced_lots == 0\n");
 }
+
+// ── S1-3c gate 1: the book-greeks under-count is REPORTED (was silent) ─────────
+//
+// `book_greeks` prices the held book against THIS row's date ALONE (a single-date
+// snapshot). On the missing-BBB corpus (BBB held across the gap, its board absent
+// on the middle date) the two BBB straddle legs cannot be priced on the gap date,
+// so that row's gross_* SILENTLY omitted them. `n_unpriced_greeks` now surfaces it:
+// 2 on the row whose date lacks BBB, 0 on the rows whose dates carry it.
+//
+// This DIVERGES from `n_unpriced_lots`, which measures the STEP's PnL completeness
+// (pnl_explain needs the surface on BOTH base and shifted). n_unpriced_lots is
+// {0,2,2}: the date2->date3 step reads BBB off the (absent) date-2 BASE, whereas
+// book_greeks on date 3 reads the (present) date-3 surface and prices all 8 lots.
+// The two counts are two different signals; row 2 is where they part.
+TEST(MultinamePipeline, BookGreeksUnderCountIsReported) {
+  const fs::path out = fresh_out_dir("s1-3c-greeks-count");
+  const std::vector<std::string> dates = {"2026-06-17", "2026-06-18", "2026-06-19"};
+  auto man = build_corpus(missing_bbb_boards(dates), out.string());
+  ASSERT_TRUE(man.has_value()) << man.error().to_string();
+  auto clock = Clock::from_manifest(*man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  DispersionUniverse u = basket_universe();
+  DispersionConfig cfg;
+  cfg.missing.policy = MissingNamePolicy::DropRenormalize;
+  DispersionStrategy strat{u, cfg};
+
+  auto res = run_backtest(*clock, strat);  // default RunConfig: ExcludeAndReport
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  ASSERT_EQ(res->size(), dates.size());
+
+  // book_greeks prices row i against date i: BBB present on d1/d3 (0 unpriced),
+  // absent on d2 (its call+put straddle legs -> 2 unpriced greeks).
+  ASSERT_EQ(res->n_unpriced_greeks.size(), dates.size());
+  EXPECT_EQ(res->n_unpriced_greeks[0], 0.0);
+  EXPECT_EQ(res->n_unpriced_greeks[1], 2.0);
+  EXPECT_EQ(res->n_unpriced_greeks[2], 0.0);
+
+  // The step-completeness count (S1-3b) is a DIFFERENT signal: {0,2,2}.
+  ASSERT_EQ(res->n_unpriced_lots.size(), dates.size());
+  EXPECT_EQ(res->n_unpriced_lots[0], 0.0);
+  EXPECT_EQ(res->n_unpriced_lots[1], 2.0);
+  EXPECT_EQ(res->n_unpriced_lots[2], 2.0);
+
+  // THE divergence that justifies a separate count: row 2's greeks snapshot is
+  // COMPLETE (BBB back on d3) while its step is INCOMPLETE (BBB absent from d2 base).
+  EXPECT_NE(res->n_unpriced_greeks[2], res->n_unpriced_lots[2]);
+  EXPECT_EQ(res->n_unpriced_greeks[2], 0.0);
+  EXPECT_EQ(res->n_unpriced_lots[2], 2.0);
+
+  // The new column round-trips through the TSV export bit-exactly.
+  const std::string path = (out / "run.tsv").string();
+  ASSERT_TRUE(write_backtest_tsv(*res, path).has_value());
+  const std::vector<double> col = tsv_column(path, "n_unpriced_greeks");
+  ASSERT_EQ(col.size(), res->size());
+  for (std::size_t i = 0; i < col.size(); ++i) {
+    EXPECT_TRUE(bits_equal(col[i], res->n_unpriced_greeks[i])) << "tsv row " << i;
+  }
+  std::printf("[s1-3c] greeks under-count reported: n_unpriced_greeks=[%.0f,%.0f,%.0f] "
+              "vs n_unpriced_lots=[%.0f,%.0f,%.0f] (diverge on row 2)\n",
+              res->n_unpriced_greeks[0], res->n_unpriced_greeks[1], res->n_unpriced_greeks[2],
+              res->n_unpriced_lots[0], res->n_unpriced_lots[1], res->n_unpriced_lots[2]);
+}
+
+// ── S1-3c gate 2: the false-vega-flat trap — gross_vega under-reports a leg ─────
+//
+// On the gap date the held BBB straddle is EXCLUDED from gross_vega (its surface
+// is absent). A vega-flat dispersion claim reads gross_vega directly, so a silently
+// omitted leg is a FALSE vega-flat reading. This does NOT assert the truncated value
+// is correct — only that the run WITHOUT BBB reports strictly less gross_vega on the
+// gap row than the identical run WITH BBB present on every date, and that the miss is
+// isolated to that row (inception, where both corpora carry BBB, is bit-identical).
+TEST(MultinamePipeline, GrossVegaIsUnderReportedWhenALegIsUnpriced) {
+  const std::vector<std::string> dates = {"2026-06-17", "2026-06-18", "2026-06-19"};
+
+  DispersionUniverse u = basket_universe();
+  DispersionConfig cfg;
+  cfg.missing.policy = MissingNamePolicy::DropRenormalize;
+
+  // Missing-BBB corpus (BBB absent on the middle date).
+  const fs::path out_missing = fresh_out_dir("s1-3c-vega-missing");
+  auto man_m = build_corpus(missing_bbb_boards(dates), out_missing.string());
+  ASSERT_TRUE(man_m.has_value()) << man_m.error().to_string();
+  auto clock_m = Clock::from_manifest(*man_m);
+  ASSERT_TRUE(clock_m.has_value()) << clock_m.error().to_string();
+  DispersionStrategy strat_m{u, cfg};
+  auto res_m = run_backtest(*clock_m, strat_m);
+  ASSERT_TRUE(res_m.has_value()) << res_m.error().to_string();
+
+  // Full basket (BBB present on every date), same universe + strategy.
+  const fs::path out_full = fresh_out_dir("s1-3c-vega-full");
+  auto man_f = build_corpus(make_multiname_boards(dates), out_full.string());
+  ASSERT_TRUE(man_f.has_value()) << man_f.error().to_string();
+  auto clock_f = Clock::from_manifest(*man_f);
+  ASSERT_TRUE(clock_f.has_value()) << clock_f.error().to_string();
+  DispersionStrategy strat_f{u, cfg};
+  auto res_f = run_backtest(*clock_f, strat_f);
+  ASSERT_TRUE(res_f.has_value()) << res_f.error().to_string();
+
+  ASSERT_EQ(res_m->size(), dates.size());
+  ASSERT_EQ(res_f->size(), dates.size());
+
+  // Row 1 (the gap date) is exactly where the greeks under-count is 2 (missing) vs 0.
+  ASSERT_EQ(res_m->n_unpriced_greeks[1], 2.0);
+  ASSERT_EQ(res_f->n_unpriced_greeks[1], 0.0);
+
+  // Both finite; the BBB-truncated reading is strictly less (the long BBB straddle
+  // carries large positive vega, so omitting it drops gross_vega on this row).
+  EXPECT_TRUE(std::isfinite(res_m->gross_vega[1]));
+  EXPECT_TRUE(std::isfinite(res_f->gross_vega[1]));
+  EXPECT_LT(res_m->gross_vega[1], res_f->gross_vega[1])
+      << "missing=" << res_m->gross_vega[1] << " full=" << res_f->gross_vega[1];
+
+  // Inception (row 0): BBB present in BOTH corpora, so the greeks snapshot is
+  // complete and gross_vega is bit-identical — the under-report is isolated to the
+  // gap row, not a corpus-wide difference.
+  EXPECT_EQ(res_m->n_unpriced_greeks[0], 0.0);
+  EXPECT_EQ(res_f->n_unpriced_greeks[0], 0.0);
+  EXPECT_TRUE(bits_equal(res_m->gross_vega[0], res_f->gross_vega[0]));
+
+  std::printf("[s1-3c] false-vega-flat: gap-row gross_vega missing=%.6f < full=%.6f "
+              "(BBB leg silently omitted, now counted=%.0f)\n",
+              res_m->gross_vega[1], res_f->gross_vega[1], res_m->n_unpriced_greeks[1]);
+}
+
+// ── S1-3c gate 3: the Error policy also aborts on a book-greeks under-count ─────
+//
+// The step-level Error guard (S1-3b) fires whenever a HELD lot is unpriced across a
+// step (base OR shifted surface absent). For every row i>=1 that guard PREEMPTS the
+// greeks guard: book_greeks on date i under-counts only when date i's surface is
+// absent, which also breaks that step's pnl_explain. The one row with NO preceding
+// step is INCEPTION (row 0) — a book-greeks snapshot with nothing behind it. The
+// dispersion strategy never opens a lot in an absent name, so only the FIXED-book
+// overload can hand inception a lot whose surface is absent; this drives exactly
+// that (a BBB straddle over a corpus whose inception date has no BBB board). See
+// report: this is why the greeks Error is exercised through the fixed-book overload
+// rather than replaying the strategy corpus the step guard already covers.
+TEST(MultinamePipeline, UnpricedGreeksPolicyErrorAborts) {
+  const fs::path out = fresh_out_dir("s1-3c-greeks-error");
+  const std::vector<std::string> dates = {"2026-06-17", "2026-06-18"};
+
+  // Inception (d1) omits BBB; d2 carries it.
+  std::vector<CorpusBoard> boards;
+  for (std::size_t di = 0; di < dates.size(); ++di) {
+    const std::string& d = dates[di];
+    boards.push_back(board_from_spec(make_index_spec(d, 600.0), d, "SPY", convex_dense_pin()));
+    boards.push_back(board_from_spec(make_singlename_spec(d, 110.0), d, "AAA"));
+    if (di != 0) {  // inception omits BBB
+      boards.push_back(board_from_spec(make_singlename_spec(d, 85.0), d, "BBB"));
+    }
+    boards.push_back(board_from_spec(make_singlename_spec(d, 220.0), d, "CCC"));
+  }
+  auto man = build_corpus(boards, out.string());
+  ASSERT_TRUE(man.has_value()) << man.error().to_string();
+  auto clock = Clock::from_manifest(*man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  // A fixed BBB straddle (call+put, K=85 ATM) surviving past d2 (expiry 2026-07-17).
+  const std::uint32_t bbb_uid = uid_for_symbol("BBB");
+  const std::int64_t expiry = iso_to_ns("2026-07-17");
+  const auto bbb_book = [&]() {
+    PortfolioState st;
+    st.lots.push_back(
+        Lot{1, OptionContract{bbb_uid, 85.0, 0.0, Side::Call}, +1.0, 100.0, expiry, 0, 0.0});
+    st.lots.push_back(
+        Lot{2, OptionContract{bbb_uid, 85.0, 0.0, Side::Put}, +1.0, 100.0, expiry, 0, 0.0});
+    return st;
+  };
+
+  // Error policy: the inception book greeks cannot price the BBB straddle (d1 has
+  // no BBB) -> abort naming the count, the DATE, and the BBB uid.
+  RunConfig rc;
+  rc.unpriced = UnpricedLotPolicy::Error;
+  auto res = run_backtest(*clock, bbb_book(), rc);
+  ASSERT_FALSE(res.has_value()) << "Error policy must abort on an inception book-greeks under-count";
+  EXPECT_EQ(res.error().code(), ErrorCode::NotFound);
+  const std::string msg = res.error().to_string();
+  EXPECT_NE(msg.find("2 held lot"), std::string::npos) << msg;               // the count
+  EXPECT_NE(msg.find(dates[0]), std::string::npos) << msg;                   // the date
+  EXPECT_NE(msg.find(std::to_string(bbb_uid)), std::string::npos) << msg;    // the uid
+  std::printf("[s1-3c] greeks Error aborts at inception: %s\n", msg.c_str());
+
+  // It must NOT fire at inception on an EMPTY book (nothing to price) — the run
+  // completes with one row per date and a zero greeks count on every row.
+  RunConfig rc_empty;
+  rc_empty.unpriced = UnpricedLotPolicy::Error;
+  auto res_empty = run_backtest(*clock, PortfolioState{}, rc_empty);
+  ASSERT_TRUE(res_empty.has_value()) << res_empty.error().to_string();
+  ASSERT_EQ(res_empty->size(), dates.size());
+  ASSERT_EQ(res_empty->n_unpriced_greeks.size(), dates.size());
+  for (std::size_t i = 0; i < dates.size(); ++i) {
+    EXPECT_EQ(res_empty->n_unpriced_greeks[i], 0.0) << "row " << i;
+  }
+  std::printf("[s1-3c] empty book: Error policy does not fire at inception\n");
+}
+
+// ── S1-3c gate 4: default policy stays bit-identical; both new columns are 0 ────
+//
+// A full basket present on every date: nothing is ever unpriced, every pre-existing
+// column equals the fed256e run (values pinned in DefaultPolicyFullBasketBitIdentical
+// above), and BOTH the S1-3b and S1-3c count columns are all zeros and round-trip.
+TEST(MultinamePipeline, DefaultPolicyStillBitIdentical) {
+  const fs::path out = fresh_out_dir("s1-3c-bit-identical");
+  const std::vector<std::string> dates = {"2026-06-17", "2026-06-18", "2026-06-19"};
+  auto man = build_corpus(make_multiname_boards(dates), out.string());
+  ASSERT_TRUE(man.has_value()) << man.error().to_string();
+  auto clock = Clock::from_manifest(*man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  DispersionUniverse u = basket_universe();
+  DispersionConfig cfg;
+  cfg.missing.policy = MissingNamePolicy::DropRenormalize;
+  DispersionStrategy strat{u, cfg};
+
+  auto res = run_backtest(*clock, strat);  // default: ExcludeAndReport
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  ASSERT_EQ(res->size(), dates.size());
+
+  // Both count columns are all zero on a clean corpus.
+  ASSERT_EQ(res->n_unpriced_lots.size(), dates.size());
+  ASSERT_EQ(res->n_unpriced_greeks.size(), dates.size());
+  for (std::size_t i = 0; i < dates.size(); ++i) {
+    EXPECT_EQ(res->n_unpriced_lots[i], 0.0) << "n_unpriced_lots row " << i;
+    EXPECT_EQ(res->n_unpriced_greeks[i], 0.0) << "n_unpriced_greeks row " << i;
+  }
+
+  // Pre-existing columns bit-identical to the fed256e full-basket capture.
+  const double base_pnl[3] = {0.0, -41.891113474001244, -99.786633631448794};
+  const double base_nav[3] = {0.0, -41.891113474001244, -141.67774710545004};
+  const double base_gvega[3] = {-6.8212102632969618e-13, 6.9200891721370681, -81.942673890886567};
+  for (std::size_t i = 0; i < dates.size(); ++i) {
+    EXPECT_TRUE(bits_equal(res->pnl_total[i], base_pnl[i])) << "pnl_total row " << i;
+    EXPECT_TRUE(bits_equal(res->nav[i], base_nav[i])) << "nav row " << i;
+    EXPECT_TRUE(bits_equal(res->gross_vega[i], base_gvega[i])) << "gvega row " << i;
+  }
+
+  // Both new columns round-trip through the TSV export as all-zero.
+  const std::string path = (out / "run.tsv").string();
+  ASSERT_TRUE(write_backtest_tsv(*res, path).has_value());
+  for (const char* name : {"n_unpriced_lots", "n_unpriced_greeks"}) {
+    const std::vector<double> col = tsv_column(path, name);
+    ASSERT_EQ(col.size(), res->size()) << name;
+    for (std::size_t i = 0; i < col.size(); ++i) {
+      EXPECT_EQ(col[i], 0.0) << name << " row " << i;
+    }
+  }
+  std::printf("[s1-3c] default policy bit-identical; n_unpriced_lots and "
+              "n_unpriced_greeks both all-zero\n");
+}

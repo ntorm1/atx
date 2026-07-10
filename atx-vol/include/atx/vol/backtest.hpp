@@ -215,6 +215,15 @@ struct BacktestResult {
   // from this row's totals. 0.0 at inception. Under RunConfig::unpriced == Error a
   // step with a non-zero count aborts the run instead of recording a row.
   std::vector<double> n_unpriced_lots;
+  // Positions whose surface was absent on THIS row's date; their greeks are EXCLUDED
+  // from this row's `gross_*`. Distinct from `n_unpriced_lots`, which measures the
+  // step's PnL completeness (base AND shifted): `book_greeks` prices a single-date
+  // snapshot against this row's date alone, so the two counts can diverge (a held
+  // lot absent from the step's base but present again on this row's date is counted
+  // in `n_unpriced_lots` but NOT here). Filled on EVERY row including row 0 —
+  // inception computes book greeks, so its count is a real measurement, not 0.0 by
+  // convention. Under RunConfig::unpriced == Error a row with a non-zero count aborts.
+  std::vector<double> n_unpriced_greeks;
   // Strategy diagnostics: name -> per-recorded-row series (parallel to `date`).
   // Empty for the fixed-book overload; populated by the IStrategy overload.
   std::vector<std::pair<std::string, std::vector<double>>> signals;

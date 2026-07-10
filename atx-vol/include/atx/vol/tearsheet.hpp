@@ -80,8 +80,9 @@ struct TearSheet {
 // naming every column, then one data row per recorded step. Doubles are written
 // with `%.17g` (17 significant digits uniquely identify an IEEE-754 double, so
 // the values round-trip BIT-EXACTLY through strtod); `ts_ns` as a signed integer;
-// `n_open_lots` and `n_unpriced_lots` (positions with no surface this step, whose
-// PnL/greeks are excluded from the row's totals) as doubles. Line endings are
+// `n_open_lots`, `n_unpriced_lots` (positions with no surface this STEP, excluded
+// from the row's PnL) and `n_unpriced_greeks` (positions with no surface on this
+// row's DATE, excluded from the row's `gross_*`) as doubles. Line endings are
 // `\n`, separators `\t`, with no
 // trailing tab. Signal series are appended as one column each, by name, in
 // `r.signals` order. Returns `IoError` if the file cannot be opened/written.

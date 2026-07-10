@@ -258,7 +258,8 @@ TEST(BacktestExec, ZeroFrictionIdentity) {
       {&a.pnl_settlement, &b.pnl_settlement}, {&a.nav, &b.nav},
       {&a.gross_delta, &b.gross_delta},     {&a.gross_gamma, &b.gross_gamma},
       {&a.gross_vega, &b.gross_vega},       {&a.gross_theta, &b.gross_theta},
-      {&a.n_open_lots, &b.n_open_lots}};
+      {&a.n_open_lots, &b.n_open_lots},     {&a.n_unpriced_lots, &b.n_unpriced_lots},
+      {&a.n_unpriced_greeks, &b.n_unpriced_greeks}};
   for (std::size_t i = 0; i < a.size(); ++i) {
     for (const auto& [va, vb] : cols) {
       EXPECT_TRUE(bits_equal((*va)[i], (*vb)[i])) << "col mismatch at row " << i;
