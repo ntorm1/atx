@@ -1122,3 +1122,172 @@ def test_exchange_delete_with_full_merger_inputs_still_yields_no_policy_return(t
     assert len(merger_out) == 1
     assert merger_out.iloc[0]["terminal_return_policy"] == "merger_cash"
     assert merger_out.iloc[0]["terminal_return"] == pytest.approx(0.05)  # 21/20 - 1
+
+
+# ---------------------------------------------------------------------------
+# PF4-S4 S4-2: delisting-return stitching into the forward-return series.
+#
+# The three tests immediately below are verbatim from the task brief; the two after them are this
+# task's own (mandated lookahead + refresh integration), each written to discriminate.
+# ---------------------------------------------------------------------------
+
+
+def test_forward_return_uses_stitched_dlret_when_delisting_midhorizon():
+    from db.delisting import compute_survivorship_safe_forward_returns
+    forward = pd.DataFrame([{ "security_id": "A", "symbol": "A", "as_of_date": dt.date(2024, 1, 2),
+        "horizon_days": 21, "forward_end_date": dt.date(2024, 1, 31), "raw_forward_return": 0.02,
+        "available_at": dt.datetime(2024, 2, 1, 22) }])
+    cohort = pd.DataFrame([{ "security_id": "A", "as_of_date": dt.date(2024, 1, 2), "horizon_days": 21,
+        "delist_date": dt.date(2024, 1, 20), "terminal_return": -0.50, "terminal_return_source": "observed",
+        "return_observation_id": "obs-1", "terminal_available_at": dt.datetime(2024, 1, 22, 12) }])
+    out = compute_survivorship_safe_forward_returns(forward, cohort, source="ss_test")
+    row = out.iloc[0]
+    assert row["is_stitched"] is True or row["is_stitched"] == True
+    assert row["forward_return"] == pytest.approx((1.02) * (1 - 0.50) - 1.0)   # -0.49
+    assert pd.notna(row["forward_return"])                                     # NOT NaN-dropped
+
+
+def test_dropped_name_with_no_surviving_bar_still_gets_terminal_return():
+    from db.delisting import compute_survivorship_safe_forward_returns
+    cohort = pd.DataFrame([{ "security_id": "B", "as_of_date": dt.date(2024, 1, 2), "horizon_days": 5,
+        "delist_date": dt.date(2024, 1, 4), "terminal_return": -0.90, "terminal_return_source": "observed",
+        "return_observation_id": "obs-2", "terminal_available_at": dt.datetime(2024, 1, 6, 12) }])
+    out = compute_survivorship_safe_forward_returns(pd.DataFrame(), cohort, source="ss_test")
+    assert len(out) == 1
+    assert out.iloc[0]["forward_return"] == pytest.approx(-0.90)
+
+
+def test_stitching_is_deterministic_under_input_shuffle():
+    from db.delisting import compute_survivorship_safe_forward_returns
+    forward = pd.DataFrame([
+        { "security_id": s, "symbol": s, "as_of_date": dt.date(2024, 1, 2), "horizon_days": h,
+          "forward_end_date": dt.date(2024, 2, 1), "raw_forward_return": 0.01,
+          "available_at": dt.datetime(2024, 2, 1, 22) }
+        for s in ("A", "B", "C") for h in (1, 5, 21)])
+    a = compute_survivorship_safe_forward_returns(forward, pd.DataFrame(), source="ss_test")
+    b = compute_survivorship_safe_forward_returns(
+        forward.sample(frac=1.0, random_state=7).reset_index(drop=True), pd.DataFrame(), source="ss_test")
+    pd.testing.assert_frame_equal(a, b)
+
+
+def test_stitched_row_carries_max_available_at_and_is_not_consumable_early() -> None:
+    # Mandated no-lookahead test: a terminal confirmed only in the future must not be consumable
+    # by a reader gating on available_at before that timestamp. The stitched row carries
+    # available_at = max(raw.available_at, terminal_available_at); here the terminal's availability
+    # (2024-06-01) far postdates the raw window's availability (2024-02-01), so the row inherits
+    # the later timestamp and a PIT read at 2024-03-01 sees nothing. Discriminates: had the row
+    # kept raw.available_at, the stitch would leak into the earlier read.
+    from db.delisting import compute_survivorship_safe_forward_returns
+
+    forward = pd.DataFrame([{ "security_id": "A", "symbol": "A", "as_of_date": dt.date(2024, 1, 2),
+        "horizon_days": 21, "forward_end_date": dt.date(2024, 1, 31), "raw_forward_return": 0.02,
+        "available_at": dt.datetime(2024, 2, 1, 22) }])
+    cohort = pd.DataFrame([{ "security_id": "A", "as_of_date": dt.date(2024, 1, 2), "horizon_days": 21,
+        "delist_date": dt.date(2024, 1, 20), "terminal_return": -0.50, "terminal_return_source": "observed",
+        "return_observation_id": "obs-1", "terminal_available_at": dt.datetime(2024, 6, 1, 12) }])
+    out = compute_survivorship_safe_forward_returns(forward, cohort, source="ss_test")
+    row = out.iloc[0]
+    assert row["is_stitched"] == True
+    assert pd.Timestamp(row["available_at"]) == pd.Timestamp("2024-06-01 12:00")  # max(raw, terminal)
+
+    read_ts = pd.Timestamp("2024-03-01")
+    visible = out[pd.to_datetime(out["available_at"]) <= read_ts]
+    assert visible.empty  # not consumable until the terminal's availability resolves
+
+
+@pytest.mark.slow
+def test_refresh_survivorship_safe_forward_returns_stitches_and_is_idempotent(tmp_store) -> None:
+    # Integration: a mid-horizon delist produces a stitched row in the materialized table, a
+    # surviving name passes through unchanged, and a second refresh is a replace-by-source no-op
+    # (identical primary-key set and row count, no duplication).
+    from db.delisting import (
+        SurvivorshipSafeForwardReturnOptions,
+        refresh_survivorship_safe_forward_returns,
+    )
+
+    con = tmp_store.con
+    days = [
+        dt.date(2024, 1, 2), dt.date(2024, 1, 3), dt.date(2024, 1, 4), dt.date(2024, 1, 5),
+        dt.date(2024, 1, 8), dt.date(2024, 1, 9), dt.date(2024, 1, 10), dt.date(2024, 1, 11),
+        dt.date(2024, 1, 12), dt.date(2024, 1, 15), dt.date(2024, 1, 16), dt.date(2024, 1, 17),
+    ]
+    con.executemany(
+        "INSERT INTO trading_calendar (calendar_id, trade_date, is_open, source) "
+        "VALUES ('XNYS', ?, true, 'equity_daily_bars calendar')",
+        [(d,) for d in days],
+    )
+    # surviving name: a bar every calendar day, close = 100 + i
+    con.executemany(
+        "INSERT INTO equity_daily_bars (source, security_id, symbol, trade_date, close, available_at) "
+        "VALUES ('test', 'SURV', 'SRV', ?, ?, ?)",
+        [(d, 100.0 + i, dt.datetime.combine(d, dt.time(22, 0))) for i, d in enumerate(days)],
+    )
+    # delisting name: bars on the first three days only, then delists 2024-01-05
+    del_bars = list(zip(days[:3], (50.0, 45.0, 40.0)))
+    con.executemany(
+        "INSERT INTO equity_daily_bars (source, security_id, symbol, trade_date, close, available_at) "
+        "VALUES ('test', 'DEL', 'DEL', ?, ?, ?)",
+        [(d, c, dt.datetime.combine(d, dt.time(22, 0))) for d, c in del_bars],
+    )
+    # observed terminal return for DEL: DLRET -0.5, confirmed 2024-01-06 12:00
+    con.execute(
+        """
+        INSERT INTO delisting_terminal_returns (
+            terminal_return_id, source, security_id, delist_date, as_of_date, available_at,
+            terminal_return, terminal_return_source, is_latest_revision
+        ) VALUES ('tr-del', 'atx_delisting_terminal_return_v1', 'DEL', ?, ?, ?, -0.5, 'observed', true)
+        """,
+        [dt.date(2024, 1, 5), dt.date(2024, 1, 5), dt.datetime(2024, 1, 6, 12, 0)],
+    )
+
+    options = SurvivorshipSafeForwardReturnOptions(source="ss_itest")
+    n1 = refresh_survivorship_safe_forward_returns(tmp_store, options)
+    assert n1 > 0
+
+    rows = con.execute(
+        "SELECT security_id, as_of_date, horizon_days, raw_forward_return, terminal_return, "
+        "forward_return, is_stitched, is_delisted_in_horizon, delist_date, available_at "
+        "FROM forward_returns_survivorship_safe WHERE source = 'ss_itest'"
+    ).df()
+
+    # Surviving name passes through unchanged.
+    surv = rows[rows["security_id"] == "SURV"]
+    assert not surv.empty
+    assert not surv["is_stitched"].astype(bool).any()
+    assert not surv["is_delisted_in_horizon"].astype(bool).any()
+    surv_h1_d1 = surv[
+        (surv["horizon_days"] == 1)
+        & (pd.to_datetime(surv["as_of_date"]) == pd.Timestamp("2024-01-02"))
+    ].iloc[0]
+    assert surv_h1_d1["raw_forward_return"] == pytest.approx(0.01)   # 101/100 - 1
+    assert surv_h1_d1["forward_return"] == pytest.approx(0.01)       # unchanged pass-through
+
+    # Delisting name: a mid-horizon delist is stitched to the terminal DLRET (pure NaN-drop case),
+    # never dropped. All stitched rows equal the terminal return and inherit its availability.
+    del_rows = rows[rows["security_id"] == "DEL"]
+    stitched = del_rows[del_rows["is_stitched"].astype(bool)]
+    assert len(stitched) >= 1
+    assert all(v == pytest.approx(-0.5) for v in stitched["forward_return"].astype(float))
+    assert stitched["is_delisted_in_horizon"].astype(bool).all()
+    assert (pd.to_datetime(stitched["delist_date"]) == pd.Timestamp("2024-01-05")).all()
+    # no-lookahead: the stitched row inherits the terminal confirmation timestamp (raw was absent)
+    assert (pd.to_datetime(stitched["available_at"]) == pd.Timestamp("2024-01-06 12:00")).all()
+
+    # Replace-by-source idempotency: a second refresh is a no-op on the PK set and row count.
+    pk1 = set(
+        con.execute(
+            "SELECT forward_return_id FROM forward_returns_survivorship_safe WHERE source = 'ss_itest'"
+        ).df()["forward_return_id"]
+    )
+    n2 = refresh_survivorship_safe_forward_returns(tmp_store, options)
+    assert n2 == n1
+    pk2 = set(
+        con.execute(
+            "SELECT forward_return_id FROM forward_returns_survivorship_safe WHERE source = 'ss_itest'"
+        ).df()["forward_return_id"]
+    )
+    assert pk1 == pk2
+    total = con.execute(
+        "SELECT count(*) FROM forward_returns_survivorship_safe WHERE source = 'ss_itest'"
+    ).fetchone()[0]
+    assert total == n1  # replaced, not appended
