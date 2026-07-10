@@ -166,13 +166,20 @@ def test_injected_dlret_file_populates_terminal_return_per_delisted_security_day
     rows = refresh_delisting_terminal_returns(tmp_store)
     assert rows == 1
     term = tmp_store.con.execute(
-        "SELECT security_id, delist_date, terminal_return, terminal_return_source, crsp_dlstcd "
+        "SELECT security_id, delist_date, terminal_return, terminal_return_source, crsp_dlstcd, "
+        "available_at "
         "FROM delisting_terminal_returns").fetchone()
     assert term[0] == SECURITY_ID
     assert _date_value(term[1]) == dt.date(2024, 4, 1)
     assert term[2] == pytest.approx(-0.64)
     assert term[3] == "observed"
     assert term[4] == 233
+    # No-lookahead invariant: available_at is the observation's delisting-confirmation
+    # timestamp (the DLRET row's own available_at), never the delist event date and never
+    # now(). A regression stamping it from delist_date or now() must fail this test.
+    assert term[5] == dt.datetime(2024, 4, 3, 12, 0, 0)
+    assert term[5] > dt.datetime(2024, 4, 1, 0, 0, 0)  # strictly postdates delist_date
+    assert term[5] > dt.datetime(2024, 4, 2, 12, 0, 0)  # strictly postdates the listing-status event's available_at
 
 
 def test_dlstcd_reconciliation_flags_vendor_vs_warehouse_mismatch(tmp_store, tmp_path):
@@ -294,3 +301,221 @@ def test_dlstcd_reconciliation_reports_match_vendor_only_and_warehouse_only(tmp_
     assert rows["SEC-TEST-MATCH"] == ("match", "dropped")
     assert rows["SEC-TEST-VENDOR-ONLY"] == ("vendor_only", "exchange")
     assert rows["SEC-TEST-WH-ONLY"] == ("warehouse_only", None)
+
+
+def test_reconciliation_id_is_unique_when_two_delisting_events_share_a_security_day(tmp_store) -> None:
+    # reconciliation_id is delisting_code_reconciliation's PRIMARY KEY. A listing-status
+    # delete and a snapshot-absence event landing on the same (security_id, symbol,
+    # delist_date) are two distinct delisting_events rows (distinct delisting_event_id) that
+    # must not collapse to the same reconciliation_id -- that would raise a PK violation on
+    # insert (or, worse, silently lose a row).
+    from db.delisting import DelistingEventOptions, reconcile_delisting_codes, refresh_delisting_events
+
+    _seed_security(tmp_store, security_id="SEC-TEST-DUP-EVENT", symbol="DUP")
+    # Row A: an exchange delete on 2024-06-01 -> NASDAQ_DELETE event.
+    _insert_listing_status(
+        tmp_store, listing_status_id="ls-dup-delete", status="inactive",
+        valid_from=dt.date(2024, 6, 1), available_at=dt.datetime(2024, 6, 1, 22, 0),
+        security_id="SEC-TEST-DUP-EVENT", symbol="DUP",
+    )
+    # Row B: the same security's last "active" snapshot interval ends the same day ->
+    # SNAPSHOT_ABSENCE event, same (security_id, symbol, delist_date), different delist_code
+    # and different delisting_event_id.
+    _insert_listing_status(
+        tmp_store, listing_status_id="ls-dup-absence", status="active",
+        valid_from=dt.date(2020, 1, 1), valid_to=dt.date(2024, 6, 1),
+        last_evidence_as_of_date=dt.date(2024, 6, 1), last_evidence_at=dt.datetime(2024, 6, 1, 23, 0),
+        security_id="SEC-TEST-DUP-EVENT", symbol="DUP",
+    )
+
+    refresh_delisting_events(tmp_store, DelistingEventOptions(include_snapshot_absence=True))
+
+    event_ids = {
+        row[0]
+        for row in tmp_store.con.execute(
+            "SELECT delisting_event_id FROM delisting_events WHERE security_id = ?",
+            ["SEC-TEST-DUP-EVENT"],
+        ).fetchall()
+    }
+    assert len(event_ids) == 2  # sanity: two distinct events really landed for the same security/day
+
+    # Must not raise a PRIMARY KEY violation on insert.
+    reconcile_delisting_codes(tmp_store)
+
+    reconciliation_ids = [
+        row[0]
+        for row in tmp_store.con.execute(
+            "SELECT reconciliation_id FROM delisting_code_reconciliation WHERE security_id = ?",
+            ["SEC-TEST-DUP-EVENT"],
+        ).fetchall()
+    ]
+    assert len(reconciliation_ids) == 2  # no silent row loss
+    assert len(set(reconciliation_ids)) == 2  # no PK collision
+
+
+def test_refresh_and_reconcile_are_idempotent_on_rerun(tmp_store, tmp_path) -> None:
+    # Both materializers replace-by-source. Calling either twice on unchanged inputs must
+    # leave the table holding exactly the rows it held after the first call -- same row
+    # count, same primary keys -- not a doubled set.
+    from db.delisting import (
+        DelistingReturnObservationOptions, load_delisting_return_observations,
+        reconcile_delisting_codes, refresh_delisting_events, refresh_delisting_terminal_returns)
+
+    _seed_security(tmp_store)
+    _insert_listing_status(tmp_store, listing_status_id="ls-idem", status="inactive",
+                           valid_from=dt.date(2024, 4, 1), available_at=dt.datetime(2024, 4, 2, 12, 0))
+    refresh_delisting_events(tmp_store)
+    csv_path = tmp_path / "crsp_dlret_idem.csv"
+    csv_path.write_text(
+        "PERMNO,security_id,DLSTDT,DLSTCD,DLRET,available_at\n"
+        "12345,SEC-TEST-DELIST,2024-04-01,233,-0.640000,2024-04-03T12:00:00\n",
+        encoding="utf-8")
+    load_delisting_return_observations(
+        tmp_store, DelistingReturnObservationOptions(source_file=csv_path, provider="CRSP_SAMPLE"))
+
+    refresh_delisting_terminal_returns(tmp_store)
+    reconcile_delisting_codes(tmp_store)
+
+    def _pks(table: str, pk: str) -> list:
+        return [row[0] for row in tmp_store.con.execute(f"SELECT {pk} FROM {table} ORDER BY {pk}").fetchall()]
+
+    terminal_pks_1 = _pks("delisting_terminal_returns", "terminal_return_id")
+    reconciliation_pks_1 = _pks("delisting_code_reconciliation", "reconciliation_id")
+    assert terminal_pks_1  # sanity: the first call actually landed rows
+    assert reconciliation_pks_1
+
+    refresh_delisting_terminal_returns(tmp_store)
+    reconcile_delisting_codes(tmp_store)
+
+    assert _pks("delisting_terminal_returns", "terminal_return_id") == terminal_pks_1
+    assert _pks("delisting_code_reconciliation", "reconciliation_id") == reconciliation_pks_1
+
+
+def test_compute_delisting_terminal_returns_is_shuffle_invariant(tmp_store, tmp_path) -> None:
+    # Sprint determinism clause D: row order of the input frames must not affect the output.
+    from db.delisting import (
+        DelistingReturnObservationOptions, compute_delisting_terminal_returns,
+        load_delisting_return_observations, refresh_delisting_events)
+
+    _seed_security(tmp_store, security_id="SEC-SHUF-A", symbol="SHA")
+    _seed_security(tmp_store, security_id="SEC-SHUF-B", symbol="SHB")
+    _insert_listing_status(tmp_store, listing_status_id="ls-shuf-a", status="inactive",
+                           valid_from=dt.date(2024, 7, 1), available_at=dt.datetime(2024, 7, 2, 12, 0),
+                           security_id="SEC-SHUF-A", symbol="SHA")
+    _insert_listing_status(tmp_store, listing_status_id="ls-shuf-b", status="inactive",
+                           valid_from=dt.date(2024, 7, 3), available_at=dt.datetime(2024, 7, 4, 12, 0),
+                           security_id="SEC-SHUF-B", symbol="SHB")
+    refresh_delisting_events(tmp_store)
+
+    csv_path = tmp_path / "crsp_dlret_shuffle.csv"
+    csv_path.write_text(
+        "PERMNO,security_id,DLSTDT,DLSTCD,DLRET,available_at\n"
+        # Two competing observations for SEC-SHUF-A on the same delist_date -- the
+        # later-available_at row must win regardless of row order.
+        "31111,SEC-SHUF-A,2024-07-01,233,-0.100000,2024-07-02T09:00:00\n"
+        "31112,SEC-SHUF-A,2024-07-01,233,-0.200000,2024-07-03T09:00:00\n"
+        "32222,SEC-SHUF-B,2024-07-03,384,0.030000,2024-07-05T09:00:00\n",
+        encoding="utf-8")
+    load_delisting_return_observations(
+        tmp_store, DelistingReturnObservationOptions(source_file=csv_path, provider="CRSP_SAMPLE"))
+
+    observations = tmp_store.con.execute(
+        """
+        SELECT
+            delisting_return_observation_id, source, security_id, symbol, delist_date,
+            as_of_date, available_at, source_loaded_at, crsp_dlstcd, delisting_return,
+            delisting_return_ex_div, return_basis, successor_security_id
+        FROM delisting_return_observations
+        """
+    ).df()
+    events = tmp_store.con.execute(
+        "SELECT delisting_event_id, security_id, symbol, delist_date, as_of_date, available_at, delist_code "
+        "FROM delisting_events"
+    ).df()
+    policy_dim = tmp_store.con.execute(
+        "SELECT policy_code, corporate_action_type, terminal_return_basis, combine_successor, "
+        "default_return, is_observed_required, description FROM terminal_return_policy_dim"
+    ).df()
+    assert len(observations) == 3  # sanity: a real shuffle needs more than one row order
+    assert len(events) == 2
+
+    baseline = compute_delisting_terminal_returns(observations, events, policy_dim).reset_index(drop=True)
+
+    # Deterministic reversal, not an RNG shuffle: with as few as 2 input rows a fixed-seed
+    # `sample(frac=1, random_state=...)` can land on the identity permutation by chance (a
+    # 50/50 coin flip at n=2), which would silently turn this into a no-op property test.
+    # Reversal is a fixed, seedless reordering that is guaranteed to differ from the original
+    # for any frame with 2+ rows.
+    shuffled_observations = observations.iloc[::-1].reset_index(drop=True)
+    shuffled_events = events.iloc[::-1].reset_index(drop=True)
+    assert list(shuffled_observations["delisting_return_observation_id"]) != list(
+        observations["delisting_return_observation_id"]
+    )  # sanity: the reversal actually reordered the rows
+    shuffled = compute_delisting_terminal_returns(
+        shuffled_observations, shuffled_events, policy_dim
+    ).reset_index(drop=True)
+
+    pd.testing.assert_frame_equal(baseline, shuffled)
+
+
+def test_compute_delisting_code_reconciliation_is_shuffle_invariant(tmp_store, tmp_path) -> None:
+    # Sprint determinism clause D: row order of the input frames must not affect the output.
+    # Three securities with distinct (security_id, delist_date, symbol) combos -- no tied sort
+    # keys -- so the assertion isolates order-*independence* rather than a merge tie-break.
+    from db.delisting import (
+        DelistingReturnObservationOptions, compute_delisting_code_reconciliation,
+        load_delisting_return_observations, refresh_delisting_events, refresh_delisting_terminal_returns)
+
+    _seed_security(tmp_store, security_id="SEC-SHUF-MATCH", symbol="SFM")
+    _insert_listing_status(
+        tmp_store, listing_status_id="ls-shuf-match", status="inactive",
+        valid_from=dt.date(2024, 8, 1), available_at=dt.datetime(2024, 8, 2, 12, 0),
+        security_id="SEC-SHUF-MATCH", symbol="SFM",
+    )
+    _seed_security(tmp_store, security_id="SEC-SHUF-VENDOR", symbol="SFV")
+    _seed_security(tmp_store, security_id="SEC-SHUF-WH", symbol="SFW")
+    _insert_listing_status(
+        tmp_store, listing_status_id="ls-shuf-wh", status="inactive",
+        valid_from=dt.date(2024, 8, 3), available_at=dt.datetime(2024, 8, 4, 12, 0),
+        security_id="SEC-SHUF-WH", symbol="SFW",
+    )
+    refresh_delisting_events(tmp_store)
+
+    csv_path = tmp_path / "crsp_dlret_shuffle_recon.csv"
+    csv_path.write_text(
+        "PERMNO,security_id,DLSTDT,DLSTCD,DLRET,available_at\n"
+        "41111,SEC-SHUF-MATCH,2024-08-01,520,-0.010000,2024-08-03T12:00:00\n"
+        "42222,SEC-SHUF-VENDOR,2024-08-05,384,0.015000,2024-08-06T12:00:00\n",
+        encoding="utf-8")
+    load_delisting_return_observations(
+        tmp_store, DelistingReturnObservationOptions(source_file=csv_path, provider="CRSP_SAMPLE"))
+    refresh_delisting_terminal_returns(tmp_store)
+
+    events = tmp_store.con.execute(
+        "SELECT delisting_event_id, security_id, symbol, delist_date, as_of_date, available_at, delist_code "
+        "FROM delisting_events"
+    ).df()
+    terminal_returns = tmp_store.con.execute(
+        "SELECT return_observation_id, security_id, symbol, delist_date, as_of_date, available_at, crsp_dlstcd "
+        "FROM delisting_terminal_returns"
+    ).df()
+    code_dim = tmp_store.con.execute("SELECT delist_code, reason_category FROM delist_code_dim").df()
+    assert len(events) == 2  # sanity: a real shuffle needs more than one row order (MATCH, WH -- VENDOR has no event)
+    assert len(code_dim) >= 2
+
+    baseline = compute_delisting_code_reconciliation(events, terminal_returns, code_dim).reset_index(drop=True)
+
+    # Deterministic reversal, not an RNG shuffle: with as few as 2 input rows a fixed-seed
+    # `sample(frac=1, random_state=...)` can land on the identity permutation by chance (a
+    # 50/50 coin flip at n=2), which would silently turn this into a no-op property test.
+    # Reversal is a fixed, seedless reordering that is guaranteed to differ from the original
+    # for any frame with 2+ rows.
+    shuffled_events = events.iloc[::-1].reset_index(drop=True)
+    shuffled_terminal_returns = terminal_returns.iloc[::-1].reset_index(drop=True)
+    shuffled_code_dim = code_dim.iloc[::-1].reset_index(drop=True)
+    assert list(shuffled_events["delisting_event_id"]) != list(events["delisting_event_id"])  # sanity: reordered
+    shuffled = compute_delisting_code_reconciliation(
+        shuffled_events, shuffled_terminal_returns, shuffled_code_dim
+    ).reset_index(drop=True)
+
+    pd.testing.assert_frame_equal(baseline, shuffled)

@@ -912,7 +912,19 @@ def _reconciliation_status(
 
 
 def _stable_reconciliation_id(row: pd.Series) -> str:
-    parts = [row.get("source"), row.get("security_id"), row.get("symbol"), row.get("delist_date")]
+    # security_id/symbol/delist_date alone are not unique: two delisting_events rows can
+    # legitimately share a security-day (e.g. a listing-status delete and a snapshot-absence
+    # event on the same day), and reconciliation_id is this table's PRIMARY KEY. Folding in
+    # the event/observation identifiers -- rendering a missing side as '' so the id stays
+    # stable for a given logical row across runs -- disambiguates without breaking determinism.
+    parts = [
+        row.get("source"),
+        row.get("security_id"),
+        row.get("symbol"),
+        row.get("delist_date"),
+        row.get("delisting_event_id"),
+        row.get("delisting_return_observation_id"),
+    ]
     payload = "|".join("" if pd.isna(part) else str(part) for part in parts)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
