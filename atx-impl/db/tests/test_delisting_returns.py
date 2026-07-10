@@ -592,3 +592,407 @@ def test_compute_delisting_code_reconciliation_sort_is_total_order_with_collidin
     # breaks: with only (security_id, delist_date, symbol) as the sort key, both rows tie, the
     # stable sort preserves input order, and the two calls above fed opposite input orders.
     pd.testing.assert_frame_equal(baseline, reversed_result)
+
+
+# ---------------------------------------------------------------------------
+# PF4-S4 S4-1: deterministic spinoff/merger terminal-return policy.
+#
+# The two tests immediately below are verbatim from the plan (task-s4-1-plan.md); everything
+# after them is this task's own, each written to discriminate (fail if its behaviour is
+# reverted).
+# ---------------------------------------------------------------------------
+
+
+def test_cash_merger_policy_terminal_return_is_deterministic(tmp_store):
+    from db.delisting import apply_terminal_return_policy, load_terminal_return_policy_dim
+
+    policy = load_terminal_return_policy_dim(tmp_store)  # reads the seeded dim
+    events = pd.DataFrame(
+        [
+            {
+                "security_id": SECURITY_ID,
+                "symbol": "DLS",
+                "delist_date": dt.date(2024, 4, 1),
+                "as_of_date": dt.date(2024, 4, 1),
+                "available_at": dt.datetime(2024, 4, 2, 12, 0),
+                "corporate_action_type": "merger",
+            }
+        ]
+    )
+    actions = pd.DataFrame(
+        [
+            {
+                "security_id": SECURITY_ID,
+                "ex_date": dt.date(2024, 4, 1),
+                "action_type": "cash_merger",
+                "cash_amount": 21.0,
+                "last_pre_delist_adjusted_close": 20.0,
+                "available_at": dt.datetime(2024, 4, 1, 22, 0),
+            }
+        ]
+    )
+    out = apply_terminal_return_policy(events, actions, policy)
+    row = out.iloc[0]
+    assert row["terminal_return"] == pytest.approx(0.05)  # 21/20 - 1
+    assert row["terminal_return_source"] == "policy"
+    assert row["terminal_return_policy"] == "merger_cash"
+
+
+def test_exchange_delete_without_observation_yields_no_policy_return(tmp_store):
+    from db.delisting import apply_terminal_return_policy, load_terminal_return_policy_dim
+
+    policy = load_terminal_return_policy_dim(tmp_store)
+    events = pd.DataFrame(
+        [
+            {
+                "security_id": SECURITY_ID,
+                "symbol": "DLS",
+                "delist_date": dt.date(2024, 4, 1),
+                "as_of_date": dt.date(2024, 4, 1),
+                "available_at": dt.datetime(2024, 4, 2, 12, 0),
+                "corporate_action_type": "exchange_delete",
+            }
+        ]
+    )
+    out = apply_terminal_return_policy(events, pd.DataFrame(), policy)
+    assert out.empty  # DQC flags the uncovered name; policy never invents -30%
+
+
+def test_terminal_return_policy_dim_is_seeded_and_catalogued_idempotently(tmp_store) -> None:
+    # R1: the dimension is policy-as-data, seeded inside migration 0185's own body (not by a
+    # runtime seed_terminal_return_policy_dim() helper). Re-applying 0185 must be a no-op row
+    # count -- INSERT OR REPLACE, not INSERT -- proving the seed is idempotent.
+    from db.delisting import TERMINAL_RETURN_POLICY_ROWS
+    from db.migrations.registry import MIGRATIONS
+
+    expected_codes = {row[0] for row in TERMINAL_RETURN_POLICY_ROWS}
+    assert len(expected_codes) == 6
+
+    rows = tmp_store.con.execute(
+        "SELECT policy_code FROM terminal_return_policy_dim ORDER BY policy_code"
+    ).fetchall()
+    assert {row[0] for row in rows} == expected_codes
+    assert len(rows) == 6
+
+    migration_0185 = next(m for m in MIGRATIONS if m.version == 185)
+    migration_0185.up(tmp_store.con)
+
+    rows_after = tmp_store.con.execute(
+        "SELECT policy_code FROM terminal_return_policy_dim ORDER BY policy_code"
+    ).fetchall()
+    assert len(rows_after) == 6
+    assert {row[0] for row in rows_after} == expected_codes
+
+
+def test_observed_terminal_return_wins_over_policy_when_both_exist(tmp_store, tmp_path) -> None:
+    # R4: compute_delisting_terminal_returns must union observed + policy rows, but observed
+    # always wins -- a delist with BOTH a real DLRET and a matching cash-merger corporate action
+    # must still emit exactly one terminal row, tagged 'observed', never 'policy'.
+    from db.delisting import (
+        DelistingReturnObservationOptions,
+        compute_delisting_terminal_returns,
+        load_delisting_return_observations,
+        load_terminal_return_policy_dim,
+    )
+
+    _seed_security(tmp_store, security_id="SEC-OBS-WINS", symbol="OWS")
+    policy = load_terminal_return_policy_dim(tmp_store)
+
+    csv_path = tmp_path / "crsp_dlret_obs_wins.csv"
+    csv_path.write_text(
+        "PERMNO,security_id,DLSTDT,DLSTCD,DLRET,available_at\n"
+        "51111,SEC-OBS-WINS,2024-04-01,233,-0.600000,2024-04-03T12:00:00\n",
+        encoding="utf-8",
+    )
+    load_delisting_return_observations(
+        tmp_store, DelistingReturnObservationOptions(source_file=csv_path, provider="CRSP_SAMPLE")
+    )
+    observations = tmp_store.con.execute(
+        """
+        SELECT
+            delisting_return_observation_id, source, security_id, symbol, delist_date,
+            as_of_date, available_at, source_loaded_at, crsp_dlstcd, delisting_return,
+            delisting_return_ex_div, return_basis, successor_security_id
+        FROM delisting_return_observations
+        """
+    ).df()
+
+    # events deliberately carries no corporate_action_type -- delisting_events never has that
+    # column; compute_delisting_terminal_returns must derive it from corporate_actions itself.
+    events = pd.DataFrame(
+        [
+            {
+                "security_id": "SEC-OBS-WINS",
+                "symbol": "OWS",
+                "delist_date": dt.date(2024, 4, 1),
+                "as_of_date": dt.date(2024, 4, 1),
+                "available_at": dt.datetime(2024, 4, 2, 12, 0),
+            }
+        ]
+    )
+    corporate_actions = pd.DataFrame(
+        [
+            {
+                "security_id": "SEC-OBS-WINS",
+                "action_type": "merger",
+                "ex_date": dt.date(2024, 4, 1),
+                "cash_amount": 21.0,
+                "last_pre_delist_adjusted_close": 20.0,
+                "available_at": dt.datetime(2024, 4, 1, 22, 0),
+            }
+        ]
+    )
+
+    result = compute_delisting_terminal_returns(
+        observations, events, policy, corporate_actions=corporate_actions
+    )
+    assert len(result) == 1
+    row = result.iloc[0]
+    assert row["terminal_return_source"] == "observed"
+    assert row["terminal_return"] == pytest.approx(-0.6)  # the observed DLRET, not 21/20-1=0.05
+
+
+def test_uncovered_merger_gets_a_policy_row_alongside_an_unrelated_observed_delist(tmp_store, tmp_path) -> None:
+    # R4's union, exercised with TWO securities in one call: one has a real observed DLRET and
+    # no corporate action; the other has no observation but a matching cash-merger corporate
+    # action. Both must land in the same compute_delisting_terminal_returns() output -- the
+    # observed row untouched, and a brand-new policy row for the uncovered merger.
+    from db.delisting import (
+        DelistingReturnObservationOptions,
+        compute_delisting_terminal_returns,
+        load_delisting_return_observations,
+        load_terminal_return_policy_dim,
+    )
+
+    _seed_security(tmp_store, security_id="SEC-OBS-ONLY", symbol="OBO")
+    _seed_security(tmp_store, security_id="SEC-POLICY-ONLY", symbol="POA")
+    policy = load_terminal_return_policy_dim(tmp_store)
+
+    csv_path = tmp_path / "crsp_dlret_union.csv"
+    csv_path.write_text(
+        "PERMNO,security_id,DLSTDT,DLSTCD,DLRET,available_at\n"
+        "61111,SEC-OBS-ONLY,2024-05-01,384,0.010000,2024-05-03T12:00:00\n",
+        encoding="utf-8",
+    )
+    load_delisting_return_observations(
+        tmp_store, DelistingReturnObservationOptions(source_file=csv_path, provider="CRSP_SAMPLE")
+    )
+    observations = tmp_store.con.execute(
+        """
+        SELECT
+            delisting_return_observation_id, source, security_id, symbol, delist_date,
+            as_of_date, available_at, source_loaded_at, crsp_dlstcd, delisting_return,
+            delisting_return_ex_div, return_basis, successor_security_id
+        FROM delisting_return_observations
+        """
+    ).df()
+
+    events = pd.DataFrame(
+        [
+            {
+                "security_id": "SEC-OBS-ONLY",
+                "symbol": "OBO",
+                "delist_date": dt.date(2024, 5, 1),
+                "as_of_date": dt.date(2024, 5, 1),
+                "available_at": dt.datetime(2024, 5, 2, 12, 0),
+            },
+            {
+                "security_id": "SEC-POLICY-ONLY",
+                "symbol": "POA",
+                "delist_date": dt.date(2024, 5, 5),
+                "as_of_date": dt.date(2024, 5, 5),
+                "available_at": dt.datetime(2024, 5, 6, 12, 0),
+            },
+        ]
+    )
+    corporate_actions = pd.DataFrame(
+        [
+            {
+                "security_id": "SEC-POLICY-ONLY",
+                "action_type": "merger",
+                "ex_date": dt.date(2024, 5, 5),
+                "cash_amount": 15.0,
+                "last_pre_delist_adjusted_close": 10.0,
+                "available_at": dt.datetime(2024, 5, 5, 22, 0),
+            }
+        ]
+    )
+
+    result = compute_delisting_terminal_returns(
+        observations, events, policy, corporate_actions=corporate_actions
+    ).set_index("security_id")
+
+    assert set(result.index) == {"SEC-OBS-ONLY", "SEC-POLICY-ONLY"}
+    assert result.loc["SEC-OBS-ONLY", "terminal_return_source"] == "observed"
+    assert result.loc["SEC-OBS-ONLY", "terminal_return"] == pytest.approx(0.01)
+    assert result.loc["SEC-POLICY-ONLY", "terminal_return_source"] == "policy"
+    assert result.loc["SEC-POLICY-ONLY", "terminal_return_policy"] == "merger_cash"
+    assert result.loc["SEC-POLICY-ONLY", "terminal_return"] == pytest.approx(0.5)  # 15/10 - 1
+
+
+def test_stock_merger_falls_through_when_cash_consideration_is_absent(tmp_store) -> None:
+    # R2's ordering rule: merger_cash and merger_stock both key on corporate_action_type=
+    # "merger"; merger_cash is evaluated first (ascending policy_code) but must fail its own
+    # required-input contract (no cash_amount) before merger_stock is even tried.
+    from db.delisting import apply_terminal_return_policy, load_terminal_return_policy_dim
+
+    policy = load_terminal_return_policy_dim(tmp_store)
+    events = pd.DataFrame(
+        [
+            {
+                "security_id": SECURITY_ID,
+                "symbol": "DLS",
+                "delist_date": dt.date(2024, 4, 1),
+                "as_of_date": dt.date(2024, 4, 1),
+                "available_at": dt.datetime(2024, 4, 2, 12, 0),
+                "corporate_action_type": "merger",
+            }
+        ]
+    )
+    actions = pd.DataFrame(
+        [
+            {
+                "security_id": SECURITY_ID,
+                "ex_date": dt.date(2024, 4, 1),
+                "action_type": "stock_merger",
+                # deliberately no cash_amount at all
+                "successor_security_id": "SEC-SUCCESSOR",
+                "successor_value": 25.0,
+                "last_pre_delist_adjusted_close": 20.0,
+                "available_at": dt.datetime(2024, 4, 1, 22, 0),
+            }
+        ]
+    )
+    out = apply_terminal_return_policy(events, actions, policy)
+    assert len(out) == 1
+    row = out.iloc[0]
+    assert row["terminal_return_policy"] == "merger_stock"
+    assert row["terminal_return"] == pytest.approx(0.25)  # 25/20 - 1
+    assert row["successor_security_id"] == "SEC-SUCCESSOR"
+
+
+@pytest.mark.parametrize("bad_close", [0.0, -5.0, None])
+def test_policy_terminal_return_never_divides_by_nonpositive_last_pre_delist_close(tmp_store, bad_close) -> None:
+    from db.delisting import apply_terminal_return_policy, load_terminal_return_policy_dim
+
+    policy = load_terminal_return_policy_dim(tmp_store)
+    events = pd.DataFrame(
+        [
+            {
+                "security_id": SECURITY_ID,
+                "symbol": "DLS",
+                "delist_date": dt.date(2024, 4, 1),
+                "as_of_date": dt.date(2024, 4, 1),
+                "available_at": dt.datetime(2024, 4, 2, 12, 0),
+                "corporate_action_type": "merger",
+            }
+        ]
+    )
+    actions = pd.DataFrame(
+        [
+            {
+                "security_id": SECURITY_ID,
+                "ex_date": dt.date(2024, 4, 1),
+                "action_type": "cash_merger",
+                "cash_amount": 21.0,
+                "last_pre_delist_adjusted_close": bad_close,
+                "available_at": dt.datetime(2024, 4, 1, 22, 0),
+            }
+        ]
+    )
+    out = apply_terminal_return_policy(events, actions, policy)
+    assert out.empty  # never inf/NaN, never a row: last_pre_delist_adjusted_close must be > 0
+
+
+def test_policy_terminal_return_available_at_is_max_of_action_and_last_pre_delist(tmp_store) -> None:
+    # R3: available_at = max(corporate_action.available_at, last_pre_delist_available_at), never
+    # delist_date/as_of_date/now(). last_pre_delist_available_at is set strictly later here so
+    # the assertion actually distinguishes "max" from "always the corporate action's own".
+    from db.delisting import apply_terminal_return_policy, load_terminal_return_policy_dim
+
+    policy = load_terminal_return_policy_dim(tmp_store)
+    events = pd.DataFrame(
+        [
+            {
+                "security_id": SECURITY_ID,
+                "symbol": "DLS",
+                "delist_date": dt.date(2024, 4, 1),
+                "as_of_date": dt.date(2024, 4, 1),
+                "available_at": dt.datetime(2024, 4, 2, 12, 0),
+                "corporate_action_type": "merger",
+            }
+        ]
+    )
+    actions = pd.DataFrame(
+        [
+            {
+                "security_id": SECURITY_ID,
+                "ex_date": dt.date(2024, 4, 1),
+                "action_type": "cash_merger",
+                "cash_amount": 21.0,
+                "last_pre_delist_adjusted_close": 20.0,
+                "available_at": dt.datetime(2024, 4, 1, 22, 0),
+                "last_pre_delist_available_at": dt.datetime(2024, 4, 2, 9, 0),
+            }
+        ]
+    )
+    out = apply_terminal_return_policy(events, actions, policy)
+    row = out.iloc[0]
+    assert row["available_at"] == dt.datetime(2024, 4, 2, 9, 0)
+    assert row["available_at"] > dt.datetime(2024, 4, 1, 0, 0, 0)  # strictly postdates delist_date
+
+
+def test_apply_terminal_return_policy_is_shuffle_invariant(tmp_store) -> None:
+    # Sprint determinism clause D: row order of the input frames must not affect the output.
+    from db.delisting import apply_terminal_return_policy, load_terminal_return_policy_dim
+
+    policy = load_terminal_return_policy_dim(tmp_store)
+    events = pd.DataFrame(
+        [
+            {
+                "security_id": "SEC-SHUF-POL-A",
+                "symbol": "SPA",
+                "delist_date": dt.date(2024, 9, 1),
+                "as_of_date": dt.date(2024, 9, 1),
+                "available_at": dt.datetime(2024, 9, 2, 12, 0),
+                "corporate_action_type": "merger",
+            },
+            {
+                "security_id": "SEC-SHUF-POL-B",
+                "symbol": "SPB",
+                "delist_date": dt.date(2024, 9, 3),
+                "as_of_date": dt.date(2024, 9, 3),
+                "available_at": dt.datetime(2024, 9, 4, 12, 0),
+                "corporate_action_type": "merger",
+            },
+        ]
+    )
+    actions = pd.DataFrame(
+        [
+            {
+                "security_id": "SEC-SHUF-POL-A",
+                "ex_date": dt.date(2024, 9, 1),
+                "action_type": "cash_merger",
+                "cash_amount": 12.0,
+                "last_pre_delist_adjusted_close": 10.0,
+                "available_at": dt.datetime(2024, 9, 1, 22, 0),
+            },
+            {
+                "security_id": "SEC-SHUF-POL-B",
+                "ex_date": dt.date(2024, 9, 3),
+                "action_type": "cash_merger",
+                "cash_amount": 30.0,
+                "last_pre_delist_adjusted_close": 25.0,
+                "available_at": dt.datetime(2024, 9, 3, 22, 0),
+            },
+        ]
+    )
+
+    baseline = apply_terminal_return_policy(events, actions, policy).reset_index(drop=True)
+
+    shuffled_events = events.iloc[::-1].reset_index(drop=True)
+    shuffled_actions = actions.iloc[::-1].reset_index(drop=True)
+    assert list(shuffled_events["security_id"]) != list(events["security_id"])  # sanity: reordered
+    shuffled = apply_terminal_return_policy(shuffled_events, shuffled_actions, policy).reset_index(drop=True)
+
+    pd.testing.assert_frame_equal(baseline, shuffled)

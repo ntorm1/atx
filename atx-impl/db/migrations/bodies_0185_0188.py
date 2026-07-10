@@ -1,10 +1,17 @@
 """PF4-S4 migration bodies: survivorship-safe returns (delisting-return stitching).
 
 Migration 0185 (delisting_terminal_returns + delisting_code_reconciliation +
-terminal_return_policy_dim) lands in this task (PF4-S4 S4-0/S4-1). 0186 (forward_returns_
-survivorship_safe + its view), 0187 (its indexes), and 0188 (coverage view + quality_check_
-registry rows) land in later PF4-S4 tasks and are appended to this same file/MIGRATIONS list
-when their tasks land -- do not renumber or edit 0185 to make room for them.
+terminal_return_policy_dim, the latter seeded from TERMINAL_RETURN_POLICY_ROWS) lands in this
+task (PF4-S4 S4-0/S4-1). 0186 (forward_returns_survivorship_safe + its view), 0187 (its
+indexes), and 0188 (coverage view + quality_check_registry rows) land in later PF4-S4 tasks and
+are appended to this same file/MIGRATIONS list when their tasks land -- do not renumber or edit
+0185 to make room for them.
+
+S4-1 note on editing 0185's own body (rather than adding a new migration): the dimension is
+policy-as-data, and 0185 has never been applied to any persistent database -- it is this
+sprint's own, unreleased migration. The seed below is an idempotent ``INSERT OR REPLACE``
+directly over ``db.delisting.TERMINAL_RETURN_POLICY_ROWS``, so the migration and the Python
+constant can never drift apart into two hand-maintained copies of the same seed data.
 """
 from __future__ import annotations
 
@@ -20,10 +27,11 @@ def _pf4_s4_delisting_terminal_return_catalog(conn: duckdb.DuckDBPyConnection) -
 
     ``delisting_terminal_returns`` collapses ``delisting_return_observations`` to one
     realized terminal return per ``(security_id, delist_date)`` (S4-0, observed only); S4-1
-    adds the deterministic corporate-action policy path via ``terminal_return_policy_dim``
-    (created empty here, seeded by S4-1). ``delisting_code_reconciliation`` reports -- never
-    overwrites -- agreement between the vendor ``crsp_dlstcd`` and the warehouse's own public
-    ``delist_code`` proxy.
+    adds the deterministic corporate-action policy path via ``terminal_return_policy_dim``,
+    which this same function seeds (idempotent ``INSERT OR REPLACE`` over
+    ``db.delisting.TERMINAL_RETURN_POLICY_ROWS``). ``delisting_code_reconciliation`` reports --
+    never overwrites -- agreement between the vendor ``crsp_dlstcd`` and the warehouse's own
+    public ``delist_code`` proxy.
 
     The plan's own ``delisting_code_reconciliation`` DDL omitted ``is_latest_revision`` while
     declaring ``as_of_date`` (a strong PIT marker), which would fail ``pit_column_presence_check``
@@ -96,6 +104,23 @@ def _pf4_s4_delisting_terminal_return_catalog(conn: duckdb.DuckDBPyConnection) -
         )
         """
     )
+    # S4-1: policy-as-data seed. Deferred import (not at module top) so this migration body
+    # module never depends on db.delisting at import time -- only when this migration actually
+    # runs -- keeping the migrations package importable standalone. INSERT OR REPLACE keyed on
+    # policy_code (the table's PRIMARY KEY) makes re-applying this migration idempotent: it
+    # always leaves exactly len(TERMINAL_RETURN_POLICY_ROWS) rows, never duplicates.
+    from ..delisting import TERMINAL_RETURN_POLICY_ROWS
+
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO terminal_return_policy_dim (
+            policy_code, corporate_action_type, terminal_return_basis,
+            combine_successor, default_return, is_observed_required, description
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        list(TERMINAL_RETURN_POLICY_ROWS),
+    )
     conn.execute(
         """
         INSERT OR REPLACE INTO dataset_catalog (
@@ -125,7 +150,8 @@ def _pf4_s4_delisting_terminal_return_catalog(conn: duckdb.DuckDBPyConnection) -
                 'terminal_return_policy_dim', 'atx_warehouse',
                 'Deterministic corporate-action terminal-return policy',
                 'Dimension of deterministic terminal-return policies for non-observed corporate '
-                'actions (spinoff/merger/etc.); seeded by PF4-S4 S4-1. Landed empty here.',
+                'actions (spinoff/merger/etc.), seeded by this same migration from '
+                'db.delisting.TERMINAL_RETURN_POLICY_ROWS (PF4-S4 S4-1).',
                 'policy_code',
                 'terminal_return_policy_dim', NULL, NULL, now()
             )
@@ -164,8 +190,10 @@ def _pf4_s4_delisting_terminal_return_catalog(conn: duckdb.DuckDBPyConnection) -
             (
                 'terminal_return_policy_dim', 'control', 'terminal_return_policy_dim',
                 'policy_code',
-                'Deterministic spinoff/merger terminal-return policy dimension; landed empty in '
-                'S4-0, seeded by S4-1.',
+                'Deterministic spinoff/merger terminal-return policy dimension; seeded here '
+                '(PF4-S4 S4-1) via an idempotent INSERT OR REPLACE over '
+                'db.delisting.TERMINAL_RETURN_POLICY_ROWS -- the migration is the single '
+                'source of truth, there is no runtime seeder.',
                 '["policy_code"]',
                 'Dimension table; carries none of the three strong PIT temporal markers, so no '
                 'PIT columns or exemption are required.',
