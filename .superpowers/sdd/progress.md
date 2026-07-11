@@ -500,7 +500,7 @@ Process notes:
 - Task 1: Clock::from_surface_db (SurfaceDb-backed clock) — COMPLETE
 - Task 2: CloseAtHorizon lifecycle + missing-name policy — COMPLETE
 - Task 3: make_dispersion_strangle_spec builder — COMPLETE
-- Task 4: run_report emitters — PENDING
+- Task 4: run_report emitters — COMPLETE
 - Task 5: populate_surface_db + mag7_surfdb_populate example — PENDING
 - Task 6: mag7_dispersion_backtest example + gate test — PENDING
 - Task 7: tools/mag7_dispersion_report.py + python test — PENDING
@@ -538,3 +538,10 @@ Task 3: complete (commits 766f7bf..922a6ad, review clean — SPEC ✅ / Approved
   acceptance math verified through real resolve_spec_with_policy (40Δ reprice, equal theta, net vega flat).
   Minor (roll-up): (a) no duplicate-name guard in cfg.names (dup name silently double-sizes theta);
   (b) spec.name hardcoded "mag7_dispersion_strangle" regardless of basket contents (cosmetic).
+
+Task 4: complete (commits f48c3d9..a70bf10, review clean — SPEC ✅ / Approved; 0 Critical/Important)
+  11/11 targeted (RunReport|TearSheet) green; pinned 27-column series header + all metric key sets verified
+  byte-for-byte; single shared write_meta_body; all divide-by-zero guards traced.
+  Minor (roll-up): (a) no CSV escaping (matches tearsheet.cpp convention; note for Python consumer);
+  (b) db-stats appended meta can duplicate a colliding caller key (spec-literal, self-flagged);
+  (c) fmt10/fmt_i64/fmt_u64 could be one template (style); (d) redundant defensive sort of partitions().

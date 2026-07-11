@@ -1,149 +1,141 @@
-# Task 4 Report: SurfaceDb partition store
+# Task 4 report: `run_report` emitters — machine-readable run outputs
 
-## What was implemented
+## What was done
 
-Four `SurfaceDb` methods (`write_partition`, `open_partition`, `load_surface`, `drop_partition`)
-plus the private `partition_path` helper, in `atx-vol/src/surface_db.cpp`, exactly per the
-brief's Semantics block:
+Implemented `atx::vol::run_report` — the C++-side emitter for a family of
+metadata-header CSV files consumed by a later Python renderer. All five
+public writers/functions specified in the brief were implemented exactly per
+the pinned interface:
 
-- **`partition_path(canonical_key)`**: `<root>/partitions/<CANONICAL_KEY>.atxvsa`.
-- **`write_partition(key, items, opts)`**: canonicalizes/validates the key first (reusing the
-  existing `canonicalize_key` helper from Task 2/3 — no duplicated validation logic), writes the
-  archive via `write_surface_archive_file` (atomic tmp+rename, and the source of the
-  `InvalidArgument` on empty `items`) **before** touching the manifest, then stats the file and
-  upserts a `DbPartitionInfo{key, count, file_size, now}` under the writer lock via
-  `persist_locked`. Rewriting an existing key replaces its record in place (generation still
-  bumps via `persist_locked`).
-- **`open_partition(key)`**: canonicalizes, looks up the current snapshot via `find_partition`
-  (NotFound if absent), then `SurfaceArchive::open_file` on the resolved path — its
-  ParseError/IoError propagate untouched.
-- **`load_surface(key, symbol)`**: `open_partition` + `map_symbol` — one hash probe, no
-  full-archive scan.
-- **`drop_partition(key)`**: NotFound if absent; removes the manifest entry and persists
-  (generation++) **first**, releases the lock, *then* `std::filesystem::remove`s the file. A
-  code comment at the call site explains why this ordering is binding (see below).
+- `write_backtest_series_csv(r, meta, path)` — per-step backtest series, exact
+  column order pinned in the header comment, plus one column per `r.signals`
+  entry.
+- `write_metrics_csv(meta, metrics, path)` — generic `metric,value` table.
+- `strategy_metrics(ts)` — `TearSheet` → 23-key `MetaKv`.
+- `result_summary_metrics(r)` — `BacktestResult` → 9-key `MetaKv`.
+- `EngineRunStats` + `engine_metrics(s)` — 6-key `MetaKv`, `steps_per_s`
+  derived and guarded against `wall_clock_ms <= 0`.
+- `write_surface_db_stats_csv(db, meta, path)` — `SurfaceDb` partition
+  inventory, caller meta + 5 appended db-level entries, rows sorted ascending
+  by partition key.
 
-Added a shared `decode_symbol_entries` helper (mirrors the existing `decode_partitions`) so
-`write_partition`/`drop_partition` round-trip the untouched symbol table through
-`persist_locked` without duplicating the decode loop.
+All five writers share one internal helper, `write_meta_body` (anonymous
+namespace in `run_report.cpp`), which owns the entire "`# key=value` lines,
+then caller-assembled body" shape — the open/prepend/write/error sequence is
+written exactly once. Double formatting also has a single pair of shared
+`fmt10`/`fmt_i64`/`fmt_u64` helpers; only the series-column `%.17g` path is
+inlined locally in `write_backtest_series_csv` (a `put_double` lambda over a
+stack buffer, mirroring `tearsheet.cpp::write_backtest_tsv`'s existing
+pattern) since it is invoked in a hot per-cell loop.
 
-Added a header doc-comment above the four partition-method declarations in
-`atx-vol/include/atx/vol/surface_db.hpp` documenting that partition symbols and the manifest
-symbol table are orthogonal namespaces (a symbol need not be registered in the symbol table to
-appear in a partition, and vice versa).
+## Tested
 
-### Crash-ordering comment (drop_partition)
+`atx-vol/tests/run_report_test.cpp`, 6 tests (5 from the brief + 1 extra
+guard case), all under the `RunReport` test suite:
 
-From `surface_db.cpp`:
-```cpp
-// Manifest-first ordering is deliberate, not incidental: the index entry is
-// already gone (and generation already bumped) by the time we get here, so
-// a crash right at this line leaves only an orphaned .atxvsa file under
-// partitions/ -- harmless garbage that a future write_partition for the
-// same key silently overwrites, and that no reader ever sees (the manifest
-// no longer lists it, so open_partition/load_surface correctly report
-// NotFound). The reverse order -- unlink the file, then edit the manifest
-// -- would risk a crash between the two steps that leaves a manifest entry
-// pointing at a now-missing file: every later open_partition/load_surface
-// for that key would then surface a confusing IoError/NotFound-on-open
-// instead of a clean "no such partition."
-```
+1. `RunReport.SeriesCsvRoundTrips` — 3-row hand-built `BacktestResult`, one
+   signal column, `pnl_total[1] = 0.1 + 0.2`. Asserts: both meta lines start
+   `# ` and contain `=` (and match exact `key=value` text); header line is
+   byte-identical to the pinned 27-column string + `,sig_name`; exactly 3 data
+   rows, each with 28 cells (`date,ts_ns` + 25 double columns + 1 signal);
+   `0.1 + 0.2` round-trips through `std::stod` to a bit-identical double
+   (memcpy'd-bits comparison); the signal cell round-trips too.
+2. `RunReport.MetricsCsv` — asserts the file is byte-for-byte
+   `"# a=b\nmetric,value\nsharpe,1.25\n"`.
+3. `RunReport.StrategyAndSummaryMetrics` — hand-built `TearSheet` (including
+   `attr_settlement/attr_shares/attr_financing/attr_cost` set to a sentinel
+   999.0 to prove they do NOT leak into the 23-key set) and a 4-row
+   `BacktestResult` with `n_open_lots = {0,2,0,5}` and deliberately extreme
+   `gross_vega`/`gross_theta` values on the two zero-lot rows. Asserts the
+   exact key list (order pinned) for both `strategy_metrics` and
+   `result_summary_metrics`, plus spot values: `total_pnl == nav.back()`,
+   `peak_open_lots == 5`, `avg_net_vega`/`avg_net_theta` computed only over
+   the two open rows (200.0 / -15.0, excluding the 999.0 sentinels),
+   `avg_daily_pnl`, `avg_open_lots`, `total_unpriced_lots`,
+   `total_unpriced_greeks`, `n_steps`.
+4. `RunReport.EngineMetrics` — `EngineRunStats{2000.0, 10, {5,4,3}}` →
+   `steps_per_s == 5`, all six keys present and correct.
+5. `RunReport.EngineMetricsGuardsZeroWallClock` (extra) — `wall_clock_ms=0` →
+   `steps_per_s == 0`, no div-by-zero/inf.
+6. `RunReport.DbStatsCsv` — a real on-disk `SurfaceDb::create`, two partitions
+   written **out of ascending order** (`2026-07-02` then `2026-07-01`) using a
+   1-slice eSSVI `PricedSurface` fixture (trimmed `make_essvi` from
+   `surface_db_test.cpp`, kept self-contained per that file's own stated
+   rationale). Asserts: 9 total lines (1 caller meta + 5 appended db meta + 1
+   header + 2 rows); exact meta-line prefixes/values for `db_root`,
+   `generation`, `n_symbols`, exact `# n_partitions=2`, `total_file_size`
+   prefix; exact header line `key,surface_count,file_size,created_ts_ns`;
+   rows sorted ascending by key regardless of write order.
 
-## Tests added (`atx-vol/tests/surface_db_test.cpp`)
+### TDD evidence
 
-Copied `make_essvi` / `make_convex` / `make_linear` / `make_pricing` / `bits_equal` /
-`expect_theo_bit_identical` from `surface_archive_test.cpp` (the binding bit-identity oracle)
-into this file's anonymous namespace, self-contained, with a comment explaining the
-intentional duplication.
+- **RED**: `run_report_test.cpp` was added to `tests/CMakeLists.txt` before
+  `run_report.cpp` was added to the library's source list. Build attempt
+  failed at the link step with 5 `undefined symbol` errors (one per public
+  writer/function referenced from the new test TU) — proof the tests compile
+  cleanly against the pinned header/signatures but the implementation did not
+  yet exist in the library.
+- **GREEN**: after wiring `src/run_report.cpp` into `atx-vol/CMakeLists.txt`,
+  `& .\scripts\atx-build.ps1 build atx-vol-tests` succeeded (one intermediate
+  `/WX` failure on an unused-function warning for a since-removed dead
+  `fmt17` helper, fixed by deletion — the `%.17g` path is only ever used
+  inline in the per-cell hot loop, so the standalone helper was genuinely
+  unused). `& .\scripts\atx-build.ps1 -Ctest -R "RunReport|TearSheet"` then
+  ran 11/11 tests passed (6 new `RunReport.*` + 5 pre-existing `TearSheet.*`,
+  confirming no regression to the sibling tearsheet suite).
 
-Five `SurfaceDbPartition.*` tests, exactly as specified in the brief:
+## Files
 
-1. `WriteOpenLoad_TheoBitIdentical` — write two eSSVI surfaces into one partition, load one back
-   through the live db (bit-identical theo probe), then reopen the db cold and open the
-   partition/map a second symbol through the fresh instance.
-2. `MixedKinds_ConvexDenseAndLinearVariance_RoundTripBitIdentical` (**mandatory**, present) — one
-   partition holding ConvexDense + LinearVariance + Essvi; each loads back with the archive
-   suite's own assertion blocks (ConvexDense: theo bit-identical + node arrays byte-equal;
-   LinearVariance: theo + k/w node arrays bit-identical; Essvi: theo bit-identical).
-3. `RewriteReplaces_DropRemoves` — rewrite bumps `surface_count` in place (not a duplicate
-   entry); `drop_partition` empties the index, subsequent `open_partition`/`drop_partition` on
-   the same key are `NotFound`, and the `.atxvsa` file is physically gone from disk.
-4. `ManySymbols_ManyPartitions_SingleSurfaceLookup` — 4 partitions x 64 symbols each; single-key
-   lookup succeeds, wrong symbol and wrong partition key both report `NotFound`. Fixed the
-   brief's dangling-`string_view` pitfall by building an owning `std::vector<std::string>` of
-   symbol names before constructing `SurfaceArchiveItem`s that view into it.
-5. `BadKey_Rejected` — `""`, `"a/b"`, `"a\\b"`, `".."`, `"x..y"`, and a 34-char key all reject
-   with `InvalidArgument` from `write_partition` (via the existing `canonicalize_key`).
+- Created: `atx-vol/include/atx/vol/run_report.hpp`
+- Created: `atx-vol/src/run_report.cpp`
+- Created: `atx-vol/tests/run_report_test.cpp`
+- Modified: `atx-vol/CMakeLists.txt` (added `src/run_report.cpp` to the
+  `atx-vol` library source list)
+- Modified: `atx-vol/tests/CMakeLists.txt` (added `run_report_test.cpp` to
+  `atx-vol-tests`)
 
-One deviation from the brief's literal pseudocode, called out as expected: `make_linear`'s real
-signature in `surface_archive_test.cpp` is `(uid, n_slices, n_nodes)` (3 params, not 2 as
-written in the brief's snippet); I called it as `make_linear(12, 2, 17)`.
+Commit: `a70bf10` — `feat(atx-vol): run_report emitters - metadata-header CSV
+outputs for backtest runs`. Staged and committed only the 5 task-4-scoped
+files (the worktree carries other agents' concurrent, unrelated changes;
+`git add` was file-scoped, not `-A`).
 
-## TDD evidence
+## Self-review
 
-**Step 2 — RED** (`& .\scripts\atx-build.ps1 build atx-vol-tests`, after writing tests only,
-before implementing the four methods): link failure, not a compile failure in the new test
-code — confirming the tests themselves are well-formed and only the four undefined methods are
-missing:
-```
-lld-link: error: undefined symbol: ... atx::vol::SurfaceDb::write_partition(...)
-lld-link: error: undefined symbol: ... atx::vol::SurfaceDb::load_surface(...) const
-lld-link: error: undefined symbol: ... atx::vol::SurfaceDb::open_partition(...) const
-lld-link: error: undefined symbol: ... atx::vol::SurfaceDb::drop_partition(...)
-```
-
-**Step 4 — GREEN** (`& .\scripts\atx-build.ps1 build atx-vol-tests` then
-`-Ctest -R "SurfaceDb|SurfaceArchive"`): build produced zero warnings/errors (warnings are
-`/WX` in this project); full run:
-```
-100% tests passed, 0 tests failed out of 30
-```
-including all 5 new `SurfaceDbPartition.*` tests and all 25 pre-existing
-`SurfaceArchive`/`SurfaceDbManifest`/`SurfaceDb` tests (no regressions).
-
-## Files changed
-
-- `atx-vol/src/surface_db.cpp` (+123): the four partition methods, `partition_path`, and the
-  `decode_symbol_entries` helper.
-- `atx-vol/tests/surface_db_test.cpp` (+314): fixtures + 5 new tests.
-- `atx-vol/include/atx/vol/surface_db.hpp` (+10): orthogonal-namespaces doc-comment above the
-  partition method declarations.
-
-## Self-review findings
-
-- Completeness vs brief: all 5 specified tests present, including the mandatory mixed-kind
-  ConvexDense+LinearVariance+Essvi test with the archive suite's exact assertion blocks (node
-  byte-equality, not just theo).
-- Quality: reused existing `canonicalize_key`/`decode_partitions`/`persist_locked` rather than
-  reinventing validation or the mutation path; added one small new shared helper
-  (`decode_symbol_entries`) instead of a third copy of the same decode loop.
-- YAGNI: no methods, options, or test cases added beyond what the brief specifies.
-- Test honesty: all bit-identity assertions are the real oracle (`bits_equal` on raw IEEE-754
-  bit patterns, `memcmp` on node arrays) copied verbatim in pattern from
-  `surface_archive_test.cpp` — no tolerance comparisons, no vacuous `EXPECT_TRUE(true)`.
-- Pristine output: build is warnings-as-errors clean; full `SurfaceDb|SurfaceArchive` ctest run
-  is 30/30 green.
-- Checked `git status`/diff: only the three intended files touched, no stray files.
-- Ran `clang-format --dry-run` as an extra check: found violations, but they are pervasive
-  throughout the *pre-existing* Task 2/3 code in the same file (already committed to `main`,
-  e.g. lines 92, 124–136, 270–271, 301, 342, 417, 478–479, 527–530, 657) — this project has no
-  clang-format CI gate (grepped for `clang-format` in this repo's own build/CI scripts; only
-  third-party vendored deps under `build/_deps` reference it). My new code's few flagged
-  lines are consistent with the codebase's actual (non-canonical-clang-format) style, so I did
-  not reformat — doing so would have dragged unrelated pre-existing lines into this task's diff.
+- **Completeness vs brief**: every column name/order in
+  `write_backtest_series_csv`'s header, every key name/order in
+  `strategy_metrics` (23 keys, deliberately excluding
+  `attr_settlement/attr_shares/attr_financing/attr_cost` per the brief's
+  explicit list), `result_summary_metrics` (9 keys), `engine_metrics` (6
+  keys), and `write_surface_db_stats_csv`'s appended meta + row header were
+  transcribed verbatim from the brief's interface block and cross-checked
+  against the tests.
+- **Quality/YAGNI**: one shared `write_meta_body` helper; no per-writer
+  duplication of the file-open/error-handling sequence. No speculative
+  options, no extra public surface beyond the pinned interface. The one
+  "extra" test (`EngineMetricsGuardsZeroWallClock`) is test-only, not
+  production surface.
+- **Format precision**: series columns use `%.17g` (bit-exact round-trip,
+  verified via memcpy'd-bits comparison on `0.1 + 0.2`, a value that needs
+  full precision); metric scalars use `%.10g`; `SurfaceDb` stats integer
+  fields (`surface_count`, `file_size`, `created_ts_ns`, and the appended meta
+  ints) are formatted as plain integers, not doubles, per the brief.
+- **Determinism**: `\n`-only line endings via `std::ios::binary` (no CRLF
+  translation); no iostream locale/format state (`snprintf` into fixed
+  buffers throughout, matching `tearsheet.cpp`); `write_surface_db_stats_csv`
+  explicitly `std::sort`s partitions by key rather than trusting
+  `SurfaceDb::partitions()`'s current ordering, so behavior is guaranteed
+  even if that internal invariant ever changes.
+- **Build hygiene**: `/W4 /WX` clean; the one dead-code warning encountered
+  mid-implementation (unused `fmt17`) was fixed by removal, not suppression.
 
 ## Concerns
 
-None blocking. Two minor, non-blocking notes for awareness:
-
-- `write_partition` writes the archive file before acquiring the manifest lock (per the brief's
-  literal ordering). If two `SurfaceDb` instances (or threads sharing one, though the API takes
-  `this` by non-const reference so that's less of a concern) call `write_partition` on the exact
-  same key concurrently, the last archive write to land wins, and the manifest update after it
-  reflects that. This isn't tested (not required by the brief) and is a pre-existing
-  single-writer assumption already documented on the `SurfaceDb` class itself
-  ("Cross-process: single writer, many readers").
-- `drop_partition`'s final `std::filesystem::remove` ignores its `std::error_code` (fire and
-  forget) by design — this matches the brief's own framing that a failure to unlink is
-  "harmless garbage," not a caller-visible error, since the manifest (the source of truth) is
-  already correct by that point.
+None blocking. One judgment call worth flagging for the Python-renderer task:
+`write_surface_db_stats_csv`'s appended meta keys (`db_root`, `generation`,
+`n_symbols`, `n_partitions`, `total_file_size`) are unconditionally appended
+after the caller's `meta` entries — if a caller's `meta` already contains a
+key with one of those names, both lines will appear in the file (last one
+wins under typical `# key=value` parsing, but the file will have a duplicate
+key). This matches the brief's literal wording ("Meta gets ... appended") and
+wasn't flagged as an edge case to guard against, so no dedup/override logic
+was added — flagging here in case the renderer wants stricter guarantees.
