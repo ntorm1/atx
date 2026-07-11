@@ -54,9 +54,11 @@
 #include "atx/vol/tearsheet.hpp"       // write_backtest_tsv
 #include "atx/vol/universe.hpp"        // uid_for_symbol
 #include "atx/vol/vol_curve.hpp"       // CurveConfig, VolCurveKind
+#include "support/cached_artifacts.hpp"  // cached_corpus
 
 using namespace atx::vol;
 namespace fs = std::filesystem;
+using atx::vol::test::cached_corpus;
 
 namespace {
 
@@ -381,7 +383,6 @@ TEST(MultinamePipeline, UidForSymbolValuesArePinned) {
 // OPEN where the name is not subsequently held — here the inception open, which
 // never puts a CCC lot into the book.
 TEST(MultinamePipeline, CorpusWithMissingNameOnOneDateRunsToCompletion) {
-  const fs::path out = fresh_out_dir("s1-3-missing-one");
   const std::vector<std::string> dates = {"2026-06-17", "2026-06-18", "2026-06-19"};
 
   std::vector<CorpusBoard> boards;
@@ -394,7 +395,11 @@ TEST(MultinamePipeline, CorpusWithMissingNameOnOneDateRunsToCompletion) {
       boards.push_back(board_from_spec(make_singlename_spec(d, 220.0), d, "CCC"));
     }
   }
-  auto man_res = build_corpus(boards, out.string());
+  // Distinct board set from missing_bbb_boards (this omits CCC at inception,
+  // not BBB mid-run) -- its own cache key.
+  const fs::path out =
+      cached_corpus("multiname-missing-ccc-inception", [&boards] { return boards; });
+  auto man_res = read_manifest_file((out / "manifest.tsv").string());
   ASSERT_TRUE(man_res.has_value()) << man_res.error().to_string();
   ASSERT_EQ(man_res->n_ok, boards.size()) << "every synthetic board must fit Ok";
 
@@ -466,7 +471,6 @@ TEST(MultinamePipeline, CorpusWithMissingNameOnOneDateRunsToCompletion) {
 // basket falls under min_names: that step opens no lots and emits a NaN
 // implied_corr, but the run continues and later full-basket dates trade normally.
 TEST(MultinamePipeline, AllNamesMissingIsNoTradeStepNotAbort) {
-  const fs::path out = fresh_out_dir("s1-3-all-missing");
   const std::vector<std::string> dates = {"2026-06-17", "2026-06-18", "2026-06-19"};
 
   std::vector<CorpusBoard> boards;
@@ -479,7 +483,10 @@ TEST(MultinamePipeline, AllNamesMissingIsNoTradeStepNotAbort) {
       boards.push_back(board_from_spec(make_singlename_spec(d, 220.0), d, "CCC"));
     }
   }
-  auto man_res = build_corpus(boards, out.string());
+  // Distinct board set (inception carries only the index) -- its own key.
+  const fs::path out =
+      cached_corpus("multiname-all-missing-inception", [&boards] { return boards; });
+  auto man_res = read_manifest_file((out / "manifest.tsv").string());
   ASSERT_TRUE(man_res.has_value()) << man_res.error().to_string();
   ASSERT_EQ(man_res->n_ok, boards.size()) << "every synthetic board must fit Ok";
   auto clock = Clock::from_manifest(*man_res);
@@ -539,7 +546,6 @@ TEST(MultinamePipeline, AllNamesMissingIsNoTradeStepNotAbort) {
 // basket the contract says must be held flat through the gap. `on_step` is public,
 // so this drives it directly to observe `book.lots` and inject the shortfall.
 TEST(MultinamePipeline, NoTradeOnRollDateLeavesBookIntact) {
-  const fs::path out = fresh_out_dir("s1-3a-roll-notrade");
   const std::vector<std::string> dates = {"2026-06-17", "2026-06-18"};
 
   std::vector<CorpusBoard> boards;
@@ -554,7 +560,9 @@ TEST(MultinamePipeline, NoTradeOnRollDateLeavesBookIntact) {
                                    convex_dense_pin()));
   boards.push_back(board_from_spec(make_singlename_spec(dates[1], 110.0), dates[1], "AAA"));
 
-  auto man_res = build_corpus(boards, out.string());
+  // Distinct 2-date board set (6 boards, one date below min_names) -- its own key.
+  const fs::path out = cached_corpus("multiname-roll-notrade-2d", [&boards] { return boards; });
+  auto man_res = read_manifest_file((out / "manifest.tsv").string());
   ASSERT_TRUE(man_res.has_value()) << man_res.error().to_string();
   ASSERT_EQ(man_res->n_ok, boards.size()) << "every synthetic board must fit Ok";
 
@@ -632,7 +640,6 @@ TEST(MultinamePipeline, NoTradeOnRollDateLeavesBookIntact) {
 // this test pins it loudly (backtest.cpp / portfolio_pricer.cpp are untouched here)
 // and does NOT assert it is correct.
 TEST(MultinamePipeline, HeldNameGoesMissingMidRunAndRunCompletes) {
-  const fs::path out = fresh_out_dir("s1-3a-held-missing");
   const std::vector<std::string> dates = {"2026-06-17", "2026-06-18", "2026-06-19"};
 
   // BBB present on dates 1 and 3, ABSENT from date 2; every other name present each
@@ -650,7 +657,10 @@ TEST(MultinamePipeline, HeldNameGoesMissingMidRunAndRunCompletes) {
     }
     boards.push_back(board_from_spec(make_singlename_spec(d, 220.0), d, "CCC"));
   }
-  auto man_res = build_corpus(boards, out.string());
+  // Identical construction to missing_bbb_boards(dates) below (BBB absent at
+  // the middle date) -- shares that key with its other consumers.
+  const fs::path out = cached_corpus("multiname-missing-bbb-3d", [&boards] { return boards; });
+  auto man_res = read_manifest_file((out / "manifest.tsv").string());
   ASSERT_TRUE(man_res.has_value()) << man_res.error().to_string();
   ASSERT_EQ(man_res->n_ok, boards.size()) << "every synthetic board must fit Ok";
   auto clock = Clock::from_manifest(*man_res);
@@ -833,9 +843,10 @@ namespace {
 // Verified directly: pnl_explain n_ok is 6/8 on each of those two steps. We assert
 // the engine's real behaviour, per "trust the SOURCE". (See report.)
 TEST(MultinamePipeline, HeldLotWithoutSurfaceIsCountedNotHidden) {
-  const fs::path out = fresh_out_dir("s1-3b-counted");
   const std::vector<std::string> dates = {"2026-06-17", "2026-06-18", "2026-06-19"};
-  auto man = build_corpus(missing_bbb_boards(dates), out.string());
+  const fs::path out =
+      cached_corpus("multiname-missing-bbb-3d", [&dates] { return missing_bbb_boards(dates); });
+  auto man = read_manifest_file((out / "manifest.tsv").string());
   ASSERT_TRUE(man.has_value()) << man.error().to_string();
   auto clock = Clock::from_manifest(*man);
   ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
@@ -898,8 +909,14 @@ TEST(MultinamePipeline, HeldLotWithoutSurfaceIsCountedNotHidden) {
     EXPECT_EQ(res->n_open_lots[i], 8.0) << "nlots row " << i;
   }
 
-  // The new column round-trips through the TSV export bit-exactly.
-  const std::string path = (out / "run.tsv").string();
+  // The new column round-trips through the TSV export bit-exactly. Written to
+  // a per-test scratch dir, NOT the shared corpus cache dir -- other consumers
+  // of the same cached corpus run concurrently under ctest -j and must never
+  // race on a write into that shared directory.
+  const fs::path scratch = fresh_out_dir("s1-3b-counted-out");
+  std::error_code ec;
+  fs::create_directories(scratch, ec);
+  const std::string path = (scratch / "run.tsv").string();
   ASSERT_TRUE(write_backtest_tsv(*res, path).has_value());
   const std::vector<double> col = tsv_column(path, "n_unpriced_lots");
   ASSERT_EQ(col.size(), res->size());
@@ -912,9 +929,10 @@ TEST(MultinamePipeline, HeldLotWithoutSurfaceIsCountedNotHidden) {
 
 // ── S1-3b gate 2: the strict Error policy aborts, naming the count + first uid ─
 TEST(MultinamePipeline, UnpricedLotPolicyErrorAborts) {
-  const fs::path out = fresh_out_dir("s1-3b-error");
   const std::vector<std::string> dates = {"2026-06-17", "2026-06-18", "2026-06-19"};
-  auto man = build_corpus(missing_bbb_boards(dates), out.string());
+  const fs::path out =
+      cached_corpus("multiname-missing-bbb-3d", [&dates] { return missing_bbb_boards(dates); });
+  auto man = read_manifest_file((out / "manifest.tsv").string());
   ASSERT_TRUE(man.has_value()) << man.error().to_string();
   auto clock = Clock::from_manifest(*man);
   ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
@@ -940,9 +958,10 @@ TEST(MultinamePipeline, UnpricedLotPolicyErrorAborts) {
 // A full basket present on every date: nothing is ever unpriced, every column
 // equals the pre-change (d54c191) run, and Error policy also completes (no abort).
 TEST(MultinamePipeline, DefaultPolicyFullBasketBitIdentical) {
-  const fs::path out = fresh_out_dir("s1-3b-full");
   const std::vector<std::string> dates = {"2026-06-17", "2026-06-18", "2026-06-19"};
-  auto man = build_corpus(make_multiname_boards(dates), out.string());
+  const fs::path out =
+      cached_corpus("multiname-full-3d", [&dates] { return make_multiname_boards(dates); });
+  auto man = read_manifest_file((out / "manifest.tsv").string());
   ASSERT_TRUE(man.has_value()) << man.error().to_string();
   auto clock = Clock::from_manifest(*man);
   ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
@@ -1001,9 +1020,10 @@ TEST(MultinamePipeline, DefaultPolicyFullBasketBitIdentical) {
 // book_greeks on date 3 reads the (present) date-3 surface and prices all 8 lots.
 // The two counts are two different signals; row 2 is where they part.
 TEST(MultinamePipeline, BookGreeksUnderCountIsReported) {
-  const fs::path out = fresh_out_dir("s1-3c-greeks-count");
   const std::vector<std::string> dates = {"2026-06-17", "2026-06-18", "2026-06-19"};
-  auto man = build_corpus(missing_bbb_boards(dates), out.string());
+  const fs::path out =
+      cached_corpus("multiname-missing-bbb-3d", [&dates] { return missing_bbb_boards(dates); });
+  auto man = read_manifest_file((out / "manifest.tsv").string());
   ASSERT_TRUE(man.has_value()) << man.error().to_string();
   auto clock = Clock::from_manifest(*man);
   ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
@@ -1036,8 +1056,13 @@ TEST(MultinamePipeline, BookGreeksUnderCountIsReported) {
   EXPECT_EQ(res->n_unpriced_greeks[2], 0.0);
   EXPECT_EQ(res->n_unpriced_lots[2], 2.0);
 
-  // The new column round-trips through the TSV export bit-exactly.
-  const std::string path = (out / "run.tsv").string();
+  // The new column round-trips through the TSV export bit-exactly. Written to
+  // a per-test scratch dir, not the shared corpus cache dir (see the same note
+  // in HeldLotWithoutSurfaceIsCountedNotHidden).
+  const fs::path scratch = fresh_out_dir("s1-3c-greeks-count-out");
+  std::error_code ec;
+  fs::create_directories(scratch, ec);
+  const std::string path = (scratch / "run.tsv").string();
   ASSERT_TRUE(write_backtest_tsv(*res, path).has_value());
   const std::vector<double> col = tsv_column(path, "n_unpriced_greeks");
   ASSERT_EQ(col.size(), res->size());
@@ -1066,8 +1091,9 @@ TEST(MultinamePipeline, GrossVegaIsUnderReportedWhenALegIsUnpriced) {
   cfg.missing.policy = MissingNamePolicy::DropRenormalize;
 
   // Missing-BBB corpus (BBB absent on the middle date).
-  const fs::path out_missing = fresh_out_dir("s1-3c-vega-missing");
-  auto man_m = build_corpus(missing_bbb_boards(dates), out_missing.string());
+  const fs::path out_missing =
+      cached_corpus("multiname-missing-bbb-3d", [&dates] { return missing_bbb_boards(dates); });
+  auto man_m = read_manifest_file((out_missing / "manifest.tsv").string());
   ASSERT_TRUE(man_m.has_value()) << man_m.error().to_string();
   auto clock_m = Clock::from_manifest(*man_m);
   ASSERT_TRUE(clock_m.has_value()) << clock_m.error().to_string();
@@ -1076,8 +1102,9 @@ TEST(MultinamePipeline, GrossVegaIsUnderReportedWhenALegIsUnpriced) {
   ASSERT_TRUE(res_m.has_value()) << res_m.error().to_string();
 
   // Full basket (BBB present on every date), same universe + strategy.
-  const fs::path out_full = fresh_out_dir("s1-3c-vega-full");
-  auto man_f = build_corpus(make_multiname_boards(dates), out_full.string());
+  const fs::path out_full =
+      cached_corpus("multiname-full-3d", [&dates] { return make_multiname_boards(dates); });
+  auto man_f = read_manifest_file((out_full / "manifest.tsv").string());
   ASSERT_TRUE(man_f.has_value()) << man_f.error().to_string();
   auto clock_f = Clock::from_manifest(*man_f);
   ASSERT_TRUE(clock_f.has_value()) << clock_f.error().to_string();
@@ -1124,7 +1151,6 @@ TEST(MultinamePipeline, GrossVegaIsUnderReportedWhenALegIsUnpriced) {
 // report: this is why the greeks Error is exercised through the fixed-book overload
 // rather than replaying the strategy corpus the step guard already covers.
 TEST(MultinamePipeline, UnpricedGreeksPolicyErrorAborts) {
-  const fs::path out = fresh_out_dir("s1-3c-greeks-error");
   const std::vector<std::string> dates = {"2026-06-17", "2026-06-18"};
 
   // Inception (d1) omits BBB; d2 carries it.
@@ -1138,7 +1164,10 @@ TEST(MultinamePipeline, UnpricedGreeksPolicyErrorAborts) {
     }
     boards.push_back(board_from_spec(make_singlename_spec(d, 220.0), d, "CCC"));
   }
-  auto man = build_corpus(boards, out.string());
+  // Distinct 2-date board set (inception omits BBB, not the middle of 3) --
+  // its own key.
+  const fs::path out = cached_corpus("multiname-greeks-error-2d", [&boards] { return boards; });
+  auto man = read_manifest_file((out / "manifest.tsv").string());
   ASSERT_TRUE(man.has_value()) << man.error().to_string();
   auto clock = Clock::from_manifest(*man);
   ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
@@ -1188,9 +1217,10 @@ TEST(MultinamePipeline, UnpricedGreeksPolicyErrorAborts) {
 // column equals the fed256e run (values pinned in DefaultPolicyFullBasketBitIdentical
 // above), and BOTH the S1-3b and S1-3c count columns are all zeros and round-trip.
 TEST(MultinamePipeline, DefaultPolicyStillBitIdentical) {
-  const fs::path out = fresh_out_dir("s1-3c-bit-identical");
   const std::vector<std::string> dates = {"2026-06-17", "2026-06-18", "2026-06-19"};
-  auto man = build_corpus(make_multiname_boards(dates), out.string());
+  const fs::path out =
+      cached_corpus("multiname-full-3d", [&dates] { return make_multiname_boards(dates); });
+  auto man = read_manifest_file((out / "manifest.tsv").string());
   ASSERT_TRUE(man.has_value()) << man.error().to_string();
   auto clock = Clock::from_manifest(*man);
   ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
@@ -1230,8 +1260,13 @@ TEST(MultinamePipeline, DefaultPolicyStillBitIdentical) {
     EXPECT_TRUE(bits_equal(res->gross_vega[i], base_gvega[i])) << "gvega row " << i;
   }
 
-  // Both new columns round-trip through the TSV export as all-zero.
-  const std::string path = (out / "run.tsv").string();
+  // Both new columns round-trip through the TSV export as all-zero. Written
+  // to a per-test scratch dir, not the shared corpus cache dir (see the same
+  // note in HeldLotWithoutSurfaceIsCountedNotHidden).
+  const fs::path scratch = fresh_out_dir("s1-3c-bit-identical-out");
+  std::error_code ec;
+  fs::create_directories(scratch, ec);
+  const std::string path = (scratch / "run.tsv").string();
   ASSERT_TRUE(write_backtest_tsv(*res, path).has_value());
   for (const char* name : {"n_unpriced_lots", "n_unpriced_greeks"}) {
     const std::vector<double> col = tsv_column(path, name);

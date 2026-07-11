@@ -329,13 +329,43 @@ TEST(Corpus, RoundTrip_ReloadedSurfaceReproducesFreshFitBitIdentical) {
 }
 
 // ── 4. Manifest round-trips ─────────────────────────────────────────────────
+//
+// Mirrors Manifest_RoundTripsEveryCurveKind below: the manifest is hand-built
+// rather than produced by an actual `build_corpus` fit. This test asserts only
+// the serializer/parser/file round-trip, so fitting a live corpus (the layout
+// BuildCorpus_MultiDateMultiSymbol_LaysOutOneArchivePerDate test above already
+// covers the fit -> manifest path) was incidental setup cost, not something
+// this test itself exercises. The hand-built manifest carries the same shape
+// `make_mixed_boards` would (2 dates, SPY pinned ConvexDense + XOM auto-eSSVI
+// per date) so a diff against that test's asserted fields stays meaningful.
 TEST(Corpus, Manifest_RoundTrips) {
   const fs::path out = fresh_out_dir("manifest");
-  const std::vector<CorpusBoard> boards = make_mixed_boards({"2026-06-17", "2026-06-18"});
 
-  auto man_res = build_corpus(boards, out.string());
-  ASSERT_TRUE(man_res.has_value()) << man_res.error().to_string();
-  const CorpusManifest &man = *man_res;
+  CorpusManifest man;
+  man.dates = {"2026-06-17", "2026-06-18"};
+  for (const std::string &d : man.dates) {
+    CorpusEntry spy;
+    spy.date = d;
+    spy.symbol = "SPY";
+    spy.status = CorpusFitStatus::Ok;
+    spy.chosen_kind = VolCurveKind::ConvexDense;
+    spy.n_slices = 4u;
+    spy.oos_in_band = 0.0; // curve pinned -> 0, matching build_corpus's convention
+    spy.archive_path = (out / (d + ".atxvsa")).string();
+    man.entries.push_back(spy);
+
+    CorpusEntry xom;
+    xom.date = d;
+    xom.symbol = "XOM";
+    xom.status = CorpusFitStatus::Ok;
+    xom.chosen_kind = VolCurveKind::Essvi;
+    xom.n_slices = 4u;
+    xom.oos_in_band = 0.99;
+    xom.archive_path = (out / (d + ".atxvsa")).string();
+    man.entries.push_back(xom);
+  }
+  man.n_boards = static_cast<std::uint32_t>(man.entries.size());
+  man.n_ok = man.n_boards;
 
   // serialize -> parse.
   const std::string tsv = serialize_manifest(man);
@@ -343,7 +373,8 @@ TEST(Corpus, Manifest_RoundTrips) {
   ASSERT_TRUE(parsed.has_value()) << parsed.error().to_string();
   EXPECT_EQ(*parsed, man);
 
-  // write file -> read file (build_corpus already wrote out/manifest.tsv).
+  // write file -> read file.
+  ASSERT_TRUE(write_manifest_file((out / "manifest.tsv").string(), man).has_value());
   auto readback = read_manifest_file((out / "manifest.tsv").string());
   ASSERT_TRUE(readback.has_value()) << readback.error().to_string();
   EXPECT_EQ(*readback, man);
