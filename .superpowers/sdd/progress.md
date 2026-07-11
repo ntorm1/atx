@@ -437,3 +437,6 @@ Base commit at start: 4133e2d (plan commit; feature work starts after)
 - Configure helper: scratchpad configure-worktree.cmd (vcvars64 -> Ninja PATH -> cmake preset ninja + CMAKE_MT pin).
 Task 1: complete (commits 36ceebd..d9449e3, review clean - Approved)
   Minor (roll-up): CMakeLists src list placement of detail/archive_util.cpp not strictly alphabetical (list already unsorted; cosmetic).
+Task 2: complete (commits 0ea8757..3b9eaa9, review clean after 1 fix loop - Approved)
+  Fix loop: enum wire-range rejection test added (Open_RejectsOutOfRangeEnum) + writer doc reword.
+  Minor (roll-up): test hardcodes record-interior offset +36 (could use offsetof(DbSymbolRecord, preset)); open() runs bounds sanity before header CRC (traced non-exploitable); DbPartitionRecord::flags write-0/never-read (future task).
