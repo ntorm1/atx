@@ -435,3 +435,5 @@ Base commit at start: 4133e2d (plan commit; feature work starts after)
 - pwsh absent; use `& .\scriptstx-build.ps1 ...` from Windows PowerShell 5.1.
 - Fresh-worktree configure: MUST `git submodule update --init --recursive` first (databento-cpp), and pin `-DCMAKE_MT=C:/Program Files (x86)/Windows Kits/10/bin/10.0.22000.0/x64/mt.exe` on the `cmake --preset ninja` call (find_program(mt) fails under this shell chain even though mt.exe is on PATH).
 - Configure helper: scratchpad configure-worktree.cmd (vcvars64 -> Ninja PATH -> cmake preset ninja + CMAKE_MT pin).
+Task 1: complete (commits 36ceebd..d9449e3, review clean - Approved)
+  Minor (roll-up): CMakeLists src list placement of detail/archive_util.cpp not strictly alphabetical (list already unsorted; cosmetic).
