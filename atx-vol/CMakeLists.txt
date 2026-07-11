@@ -88,6 +88,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/strategy.cpp
     src/dispersion_strategy.cpp
     src/tearsheet.cpp
+    src/run_report.cpp
 )
 add_library(atx::vol ALIAS atx-vol)
 
