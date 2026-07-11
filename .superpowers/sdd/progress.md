@@ -499,7 +499,7 @@ Process notes:
 
 - Task 1: Clock::from_surface_db (SurfaceDb-backed clock) — COMPLETE
 - Task 2: CloseAtHorizon lifecycle + missing-name policy — COMPLETE
-- Task 3: make_dispersion_strangle_spec builder — PENDING
+- Task 3: make_dispersion_strangle_spec builder — COMPLETE
 - Task 4: run_report emitters — PENDING
 - Task 5: populate_surface_db + mag7_surfdb_populate example — PENDING
 - Task 6: mag7_dispersion_backtest example + gate test — PENDING
@@ -532,3 +532,9 @@ Task 2: complete (commits be6a7f5..f9f14df, review clean — SPEC ✅ / Approved
   (ordering correct by inspection; T6 gate test partially covers); (b) CloseAtHorizon+EveryNDays cadence
   combination untested (shared code path with HoldToExpiry); (c) ResolveDrop.symbol empty for uid-only
   legs (diagnostic-quality gap).
+
+Task 3: complete (commits 766f7bf..922a6ad, review clean — SPEC ✅ / Approved; 0 Critical/Important)
+  47/47 targeted (DispersionStrangle|Strategy|Dispersion) green; all 9 validation rules implemented+tested;
+  acceptance math verified through real resolve_spec_with_policy (40Δ reprice, equal theta, net vega flat).
+  Minor (roll-up): (a) no duplicate-name guard in cfg.names (dup name silently double-sizes theta);
+  (b) spec.name hardcoded "mag7_dispersion_strangle" regardless of basket contents (cosmetic).

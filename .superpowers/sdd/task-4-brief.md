@@ -1,167 +1,91 @@
-### Task 4: Partition store — `write_partition` / `open_partition` / `load_surface` / `drop_partition`
+### Task 4: `run_report` emitters — machine-readable run outputs
 
-Partitioned surface storage: each partition key maps to one ATXVSA archive file under `partitions/`; the manifest's partition index is the database's "table of contents".
+atx-vol emits data only; the Python renderer consumes these files. Library code with unit tests. The `# key=value` metadata-header convention comes from `spy_strangle_backtest.cpp:398-437`; the deterministic-column discipline from `tearsheet.hpp::write_backtest_tsv`.
 
 **Files:**
-- Modify: `atx-vol/src/surface_db.cpp` (implement the four methods declared in Task 3)
-- Modify: `atx-vol/tests/surface_db_test.cpp`
+- Create: `atx-vol/include/atx/vol/run_report.hpp`
+- Create: `atx-vol/src/run_report.cpp`
+- Create: `atx-vol/tests/run_report_test.cpp`
+- Modify: `atx-vol/CMakeLists.txt` (library source list), `atx-vol/tests/CMakeLists.txt` (test source)
 
 **Interfaces:**
-- Consumes: `write_surface_archive_file` (surface_archive.hpp:275), `SurfaceArchive::open_file` (surface_archive.hpp:292), `SurfaceArchive::map_symbol`, Task 3 `persist_locked`.
-- Produces: the four `SurfaceDb` partition methods exactly as declared in Task 3.
-
-**Semantics (bind the implementation to these):**
-- `write_partition(key, items, opts)`: validate/canonicalize key (InvalidArgument on bad key; empty `items` is InvalidArgument — delegated to the archive writer which already rejects it). Write the archive to `partitions/<KEY>.atxvsa` via `write_surface_archive_file` (which is itself atomic tmp+rename). On success stat the file size, then update the manifest partition index under the writer lock: upsert `DbPartitionInfo{key, count(items), file_size, now}` — **overwriting an existing key is allowed** (a partition rewrite replaces it; generation bumps). Symbols in `items` do NOT need to be in the manifest symbol table (partitions store surfaces; the symbol table stores fit config — orthogonal namespaces; document this in the header comment).
-- `open_partition(key)`: canonicalize; look up the CURRENT snapshot; NotFound if the key is not in the index; `SurfaceArchive::open_file` the path (its ParseError/IoError propagate).
-- `load_surface(key, symbol)`: `open_partition` then `map_symbol(symbol)` — one symbol, no full-archive scan (archive guarantees O(1) probe + single blob parse).
-- `drop_partition(key)`: NotFound if absent from index; remove from the manifest FIRST (persist, generation++), then `std::filesystem::remove` the file (an orphaned file after a crash between the two steps is harmless garbage — never the reverse order which would leave a dangling index entry; put this reasoning in a comment).
-
-**Steps:**
-
-- [ ] **Step 1: Write failing tests.** Synthesize `PricedSurface`s exactly the way surface_archive_test.cpp does — copy its `make_essvi(uid, n_slices)`, `make_convex(uid, n_slices, n_nodes)`, and `make_linear(...)` helpers (top of that file) into surface_db_test.cpp's anonymous namespace (or a tiny shared local helper; keep it self-contained). **ConvexDense and LinearVariance are first-class citizens of this task's coverage — the mixed-kind test below is mandatory, not optional.**
+- Consumes: `BacktestResult`, `TearSheet` + `tearsheet()` (tearsheet.hpp), `SnapshotCacheStats{loads,hits,prefetches}`, `SurfaceDb` (`root()`, `generation()`, `symbols()`, `partitions()`).
+- Produces (all writers: `\n` line endings, `\t`-free CSV with `,` separators, doubles `%.17g` for series and `%.10g` for metric values, `IoError` on failure, deterministic output):
 
 ```cpp
-TEST(SurfaceDbPartition, WriteOpenLoad_TheoBitIdentical) {
-  const auto root = test_root("part_roundtrip");
-  auto db = SurfaceDb::create(root.string());
-  ASSERT_TRUE(db.has_value());
+// run_report.hpp
+namespace atx::vol {
 
-  const auto s1 = make_essvi(/*uid=*/1, /*n_slices=*/3);
-  const auto s2 = make_essvi(/*uid=*/2, /*n_slices=*/2);
-  const std::vector<SurfaceArchiveItem> items{{"AAPL", &s1}, {"MSFT", &s2}};
-  ASSERT_TRUE(db->write_partition("2026-07-10", items).has_value());
-  EXPECT_EQ(db->partitions().size(), 1u);
-  EXPECT_EQ(db->partitions()[0].key, "2026-07-10");
-  EXPECT_EQ(db->partitions()[0].surface_count, 2u);
+using MetaKv = std::vector<std::pair<std::string, std::string>>;
 
-  auto loaded = db->load_surface("2026-07-10", "aapl");
-  ASSERT_TRUE(loaded.has_value());
-  // Bit-identical theo assertion: copy VERBATIM the probe + `bits_equal`
-  // comparison block from surface_archive_test.cpp's
-  // RoundTrip_Essvi_TheoBitIdentical (compare `loaded` against `s1` exactly
-  // the way that test compares its mapped surface against its source —
-  // same probe points, same bits_equal oracle, no tolerance comparisons).
+// File shape shared by every writer below:
+//   # key=value          (one line per meta entry, in given order)
+//   <header row>
+//   <data rows>
+//
+// write_backtest_series_csv columns, exactly this order:
+//   date,ts_ns,pnl_total,nav,pnl_delta,pnl_gamma,pnl_vega,pnl_vanna,pnl_volga,
+//   pnl_theta,pnl_rho,pnl_charm,pnl_unexplained,pnl_settlement,pnl_shares,
+//   financing,cost,cash,gross_delta,gross_gamma,gross_vega,gross_theta,
+//   turnover_notional,turnover_vega,n_open_lots,n_unpriced_lots,
+//   n_unpriced_greeks
+// then one extra column per entry of r.signals, in order, named by the signal.
+[[nodiscard]] Status write_backtest_series_csv(const BacktestResult &r,
+                                               const MetaKv &meta,
+                                               std::string_view path);
 
-  // reopen db cold and load through the fresh instance:
-  auto db2 = SurfaceDb::open(root.string());
-  ASSERT_TRUE(db2.has_value());
-  auto arch = db2->open_partition("2026-07-10");
-  ASSERT_TRUE(arch.has_value());
-  EXPECT_EQ(arch->count(), 2u);
-  ASSERT_TRUE(arch->map_symbol("MSFT").has_value());
-  std::filesystem::remove_all(root);
-}
+// Generic two-column metrics table: header "metric,value"; one row per entry.
+[[nodiscard]] Status write_metrics_csv(const MetaKv &meta, const MetaKv &metrics,
+                                       std::string_view path);
+
+// TearSheet -> metrics rows (keys exactly): total_return, ann_return, ann_vol,
+// sharpe, max_drawdown, hit_rate, avg_turnover, total_cost, total_financing,
+// attr_delta, attr_gamma, attr_vega, attr_vanna, attr_volga, attr_theta,
+// attr_rho, attr_charm, attr_unexplained, return_on_gross_vega,
+// vega_adj_sharpe, pnl_per_vega_traded, avg_gross_vega, avg_gross_gamma.
+[[nodiscard]] MetaKv strategy_metrics(const TearSheet &ts);
+
+// BacktestResult -> summary rows (keys exactly): total_pnl (nav.back()),
+// avg_daily_pnl (mean pnl_total over rows 1..n-1), avg_net_vega
+// (mean gross_vega over rows with n_open_lots > 0), avg_net_theta (same over
+// gross_theta), avg_open_lots, peak_open_lots, total_unpriced_lots,
+// total_unpriced_greeks, n_steps.
+[[nodiscard]] MetaKv result_summary_metrics(const BacktestResult &r);
+
+// Engine performance -> metrics rows (keys exactly): wall_clock_ms,
+// steps_per_s, n_steps, cache_loads, cache_hits, cache_prefetches.
+struct EngineRunStats {
+  double wall_clock_ms{0.0};
+  std::uint64_t n_steps{0};
+  SnapshotCacheStats cache{};
+};
+[[nodiscard]] MetaKv engine_metrics(const EngineRunStats &s);   // steps_per_s derived
+
+// SurfaceDb inventory. Meta gets (in addition to caller meta, appended):
+// db_root, generation, n_symbols, n_partitions, total_file_size.
+// Header: "key,surface_count,file_size,created_ts_ns"; one row per partition,
+// ascending key order.
+[[nodiscard]] Status write_surface_db_stats_csv(const SurfaceDb &db,
+                                                const MetaKv &meta,
+                                                std::string_view path);
+
+}  // namespace atx::vol
 ```
 
-(The implementer copies the exact theo-probe + `bits_equal` assertions from `RoundTrip_Essvi_TheoBitIdentical` — the plan intentionally defers to that file as the bit-identity oracle rather than restating it; it is the binding pattern.)
-
-```cpp
-TEST(SurfaceDbPartition, MixedKinds_ConvexDenseAndLinearVariance_RoundTripBitIdentical) {
-  // Explicit requirement: ConvexDense + LinearVariance surfaces fully
-  // supported through the db's binary path. One partition holding all three
-  // kinds; each loads back with the SAME assertions the archive suite uses:
-  //  - ConvexDense: theo bit-identical AND node arrays byte-equal (copy the
-  //    assertion block from RoundTrip_ConvexDense_TheoBitIdentical_
-  //    AndNodesByteEqual in surface_archive_test.cpp);
-  //  - LinearVariance: theo + nodes bit-identical (copy from RoundTrip_
-  //    LinearVariance_TheoAndNodesBitIdentical);
-  //  - Essvi: theo bit-identical.
-  const auto root = test_root("part_mixed_kinds");
-  auto db = SurfaceDb::create(root.string());
-  ASSERT_TRUE(db.has_value());
-  const auto sc = make_convex(/*uid=*/11, /*n_slices=*/2, /*n_nodes=*/40);
-  const auto sl = make_linear(/*uid=*/12, /*n_slices=*/2);
-  const auto se = make_essvi(/*uid=*/13, /*n_slices=*/2);
-  const std::vector<SurfaceArchiveItem> items{
-      {"CVX", &sc}, {"LIN", &sl}, {"ESS", &se}};
-  ASSERT_TRUE(db->write_partition("2026-07-10", items).has_value());
-  auto db2 = SurfaceDb::open(root.string());
-  ASSERT_TRUE(db2.has_value());
-  auto c = db2->load_surface("2026-07-10", "CVX");
-  ASSERT_TRUE(c.has_value());
-  // <ConvexDense assertions here — theo bit-identity + byte-equal nodes>
-  auto l = db2->load_surface("2026-07-10", "LIN");
-  ASSERT_TRUE(l.has_value());
-  // <LinearVariance assertions here — theo + nodes bit-identical>
-  auto e = db2->load_surface("2026-07-10", "ESS");
-  ASSERT_TRUE(e.has_value());
-  // <Essvi theo bit-identity assertion here>
-  std::filesystem::remove_all(root);
-}
-
-TEST(SurfaceDbPartition, RewriteReplaces_DropRemoves) {
-  const auto root = test_root("part_lifecycle");
-  auto db = SurfaceDb::create(root.string());
-  ASSERT_TRUE(db.has_value());
-  const auto s1 = make_essvi(1, 2);
-  const auto s2 = make_essvi(2, 2);
-  const std::vector<SurfaceArchiveItem> one{{"AAPL", &s1}};
-  const std::vector<SurfaceArchiveItem> two{{"AAPL", &s1}, {"MSFT", &s2}};
-  ASSERT_TRUE(db->write_partition("2026-07-10", one).has_value());
-  ASSERT_TRUE(db->write_partition("2026-07-10", two).has_value());  // rewrite
-  EXPECT_EQ(db->partitions().size(), 1u);
-  EXPECT_EQ(db->partitions()[0].surface_count, 2u);
-
-  ASSERT_TRUE(db->drop_partition("2026-07-10").has_value());
-  EXPECT_TRUE(db->partitions().empty());
-  EXPECT_EQ(db->open_partition("2026-07-10").error().code(), ErrorCode::NotFound);
-  EXPECT_EQ(db->drop_partition("2026-07-10").error().code(), ErrorCode::NotFound);
-  // file physically gone:
-  EXPECT_FALSE(std::filesystem::exists(
-      std::filesystem::path(root) / "partitions" / "2026-07-10.atxvsa"));
-  std::filesystem::remove_all(root);
-}
-
-TEST(SurfaceDbPartition, ManySymbols_ManyPartitions_SingleSurfaceLookup) {
-  const auto root = test_root("part_scale");
-  auto db = SurfaceDb::create(root.string());
-  ASSERT_TRUE(db.has_value());
-  std::vector<PricedSurface> pool;
-  pool.reserve(64);
-  for (int i = 0; i < 64; ++i) pool.push_back(make_essvi(100 + i, 2));
-  for (int p = 0; p < 4; ++p) {
-    std::vector<SurfaceArchiveItem> items;
-    for (int i = 0; i < 64; ++i) {
-      items.push_back({std::string("SYM") + std::to_string(i), &pool[i]});
-    }
-    // NOTE: symbol strings must outlive the call — build a std::vector<std::string>
-    // holder first, then string_views into it.
-    ASSERT_TRUE(db->write_partition("2026-07-1" + std::to_string(p), items).has_value());
-  }
-  EXPECT_EQ(db->partitions().size(), 4u);
-  auto s = db->load_surface("2026-07-12", "SYM42");
-  ASSERT_TRUE(s.has_value());
-  EXPECT_EQ(db->load_surface("2026-07-12", "NOPE").error().code(), ErrorCode::NotFound);
-  EXPECT_EQ(db->load_surface("2026-99-99", "SYM1").error().code(), ErrorCode::NotFound);
-  std::filesystem::remove_all(root);
-}
-
-TEST(SurfaceDbPartition, BadKey_Rejected) {
-  const auto root = test_root("part_badkey");
-  auto db = SurfaceDb::create(root.string());
-  ASSERT_TRUE(db.has_value());
-  const auto s1 = make_essvi(1, 2);
-  const std::vector<SurfaceArchiveItem> items{{"AAPL", &s1}};
-  for (const char* bad : {"", "a/b", "a\\b", "..", "x..y",
-                          "0123456789012345678901234567890123"}) {
-    EXPECT_EQ(db->write_partition(bad, items).error().code(),
-              ErrorCode::InvalidArgument) << bad;
-  }
-  std::filesystem::remove_all(root);
-}
-```
-
-- [ ] **Step 2: Build; verify new tests fail.** (Methods stubbed as `Err(ErrorCode::NotImplemented, ...)` from Task 3 or missing → compile/behavioral failure.)
-
-- [ ] **Step 3: Implement** per the Semantics block above.
-
-- [ ] **Step 4: Build + run all db tests + archive regression.** `& .\scripts\atx-build.ps1 build atx-vol-tests` then `-Ctest -R "SurfaceDb|SurfaceArchive"` — expect ALL PASS.
-
+- [ ] **Step 1: Write the failing tests.** `atx-vol/tests/run_report_test.cpp`:
+  - `RunReport.SeriesCsvRoundTrips`: build a tiny `BacktestResult` by hand (3 rows, one signal series, one double chosen to need full precision e.g. `0.1 + 0.2`), write, re-read the file as text; assert: every meta line starts `# ` and contains `=`; header EXACTLY the pinned column string + `,sig_name`; 3 data rows; the full-precision double round-trips via `std::stod` to bit-equal (`%.17g` discipline).
+  - `RunReport.MetricsCsv`: `write_metrics_csv({{"a","b"}}, {{"sharpe","1.25"}}, path)`; assert file == `"# a=b\nmetric,value\nsharpe,1.25\n"`.
+  - `RunReport.StrategyAndSummaryMetrics`: feed a hand-built `TearSheet`/`BacktestResult`, assert exact key set and spot-check values (`total_pnl == nav.back()`, `peak_open_lots` max, `avg_net_vega` skips zero-lot rows).
+  - `RunReport.EngineMetrics`: `EngineRunStats{2000.0, 10, {5,4,3}}` → `steps_per_s == 5`, all six keys present.
+  - `RunReport.DbStatsCsv`: create a temp `SurfaceDb`, write 2 partitions (reuse `make_essvi`-style fixture from surface_db_test.cpp or a minimal 1-surface archive), write stats; assert meta contains `generation=`, `n_partitions=2`, rows sorted by key.
+- [ ] **Step 2: Build; verify failure.**
+- [ ] **Step 3: Implement** in `src/run_report.cpp`. Single internal helper writes the meta+header+rows shape; all public writers go through it. No iostream formatting state leaks (`snprintf` into a buffer for doubles, like tearsheet.cpp).
+- [ ] **Step 4: Build + run.** `& .\scripts\atx-build.ps1 -Ctest -R "RunReport"` and `-R "TearSheet"` — ALL PASS.
 - [ ] **Step 5: Commit.**
 
 ```bash
 git add -A
-git commit -m "feat(atx-vol): SurfaceDb partition store over ATXVSA archives"
+git commit -m "feat(atx-vol): run_report emitters - metadata-header CSV outputs for backtest runs"
 ```
 
 ---
