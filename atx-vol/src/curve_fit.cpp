@@ -15,8 +15,8 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
-#include "atx/vol/calib.hpp"        // build_observations_european, ObsSet, FitObs
-#include "atx/vol/deamer.hpp"       // resolve_chain_forward, european_equiv_iv, otm_side, DeAmOptions
+#include "atx/vol/calib.hpp"  // build_observations_european, ObsSet, FitObs
+#include "atx/vol/deamer.hpp" // resolve_chain_forward, european_equiv_iv, otm_side, DeAmOptions
 #include "atx/vol/parallel_for.hpp" // parallel_for (block-partition fan-out)
 #include "atx/vol/parity.hpp"       // chain_parity, ParityInputs, ParityReport
 #include "atx/vol/universe.hpp"     // Chain, chain_index
@@ -56,12 +56,11 @@ using ProfileClock = std::chrono::steady_clock;
 
 // A leg's quote is invertible: strictly positive, non-crossed bid/ask, finite
 // positive mid. Identical predicate to surface_parity / de_americanize_chain.
-[[nodiscard]] bool leg_quote_valid(const Chain& chain, std::size_t idx) noexcept {
+[[nodiscard]] bool leg_quote_valid(const Chain &chain, std::size_t idx) noexcept {
   const double bid = chain.bids[idx];
   const double ask = chain.asks[idx];
   const double mid = chain.mids[idx];
-  return (bid > 0.0) && (ask > 0.0) && (ask >= bid) && std::isfinite(mid) &&
-         (mid > 0.0);
+  return (bid > 0.0) && (ask > 0.0) && (ask >= bid) && std::isfinite(mid) && (mid > 0.0);
 }
 
 // Raw American NBBO bands + de-Americanized market IV per surviving OTM leg —
@@ -73,9 +72,8 @@ struct ParityData {
   std::vector<Side> side;
 };
 
-[[nodiscard]] ParityData build_parity_data(const Chain& chain, double S, double r,
-                                           double F, double q_eff,
-                                           const DeAmOptions& deam) {
+[[nodiscard]] ParityData build_parity_data(const Chain &chain, double S, double r, double F,
+                                           double q_eff, const DeAmOptions &deam) {
   const double T = chain.T;
   const std::size_t n = chain.n_strikes();
   ParityData p;
@@ -90,9 +88,9 @@ struct ParityData {
     if (!leg_quote_valid(chain, idx)) {
       continue;
     }
-    const Result<double> iv_res = european_equiv_iv(
-        chain.mids[idx], S, K, T, r, q_eff, side, deam.method, deam.al_opts,
-        deam.caches.for_side(side), deam.iv_tol, deam.iv_max_iter);
+    const Result<double> iv_res =
+        european_equiv_iv(chain.mids[idx], S, K, T, r, q_eff, side, deam.method, deam.al_opts,
+                          deam.caches.for_side(side), deam.iv_tol, deam.iv_max_iter);
     if (!iv_res) {
       continue;
     }
@@ -123,8 +121,8 @@ struct ChainPrepass {
   double borrow = 0.0;
   double q_eff = 0.0;
   double df = 0.0;
-  ObsSet obs;         // meaningful only when `usable`
-  ParityData parity;  // meaningful only when `usable && in.score_parity` (S0-3)
+  ObsSet obs;        // meaningful only when `usable`
+  ParityData parity; // meaningful only when `usable && in.score_parity` (S0-3)
   double ms_forward_borrow = 0.0;
   double ms_obs_eu = 0.0;
   double ms_parity_data = 0.0;
@@ -164,8 +162,8 @@ struct ChainPrepass {
   });
   parallel_for_dynamic(schedule.size(), n_threads, [&](std::size_t task) {
     const std::size_t i = schedule[task];
-    const Chain& chain = under.chains[i];
-    ChainPrepass& slot = prepass[i];
+    const Chain &chain = under.chains[i];
+    ChainPrepass &slot = prepass[i];
     const double T = chain.T;
     const double rate = expiry_rate(in, i);
     if (!(T > 0.0)) {
@@ -229,14 +227,12 @@ struct ChainPrepass {
   return prepass;
 }
 
-}  // namespace
+} // namespace
 
-Result<CurveSurfaceReport> fit_curve_surface(const Underlying& under,
-                                             const SurfaceParityInputs& in,
-                                             const CurveConfig& cfg) {
+Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const SurfaceParityInputs &in,
+                                             const CurveConfig &cfg) {
   if (!(in.S > 0.0) || !std::isfinite(in.r)) {
-    return Err(ErrorCode::InvalidArgument,
-               "fit_curve_surface: non-positive S or non-finite r");
+    return Err(ErrorCode::InvalidArgument, "fit_curve_surface: non-positive S or non-finite r");
   }
   if (!valid_expiry_rates(in, under)) {
     return Err(ErrorCode::InvalidArgument, "fit_curve_surface: invalid expiry rate vectors");
@@ -274,7 +270,7 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying& under,
   double ms_fit_slice = 0.0;
   double ms_chain_parity = 0.0;
   for (std::size_t ci = 0; ci < under.chains.size(); ++ci) {
-    const ChainPrepass& pre = prepass[ci];
+    const ChainPrepass &pre = prepass[ci];
     if (!pre.usable) {
       continue;
     }
@@ -290,9 +286,13 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying& under,
     //    (data.cpp sort_chains_by_T), so on the standard board this is always
     //    the immediately-shorter expiry.
     std::function<double(double)> w_prev;
+    std::span<const double> calendar_floor_knots;
     if (in.enforce_calendar_floor && !out.surface.empty() && out.context.back().T < T) {
-      const IVolCurve* prev = out.surface.slices().back().get();
+      const IVolCurve *prev = out.surface.slices().back().get();
       w_prev = [prev](double k) { return prev->w(k); };
+      if (const auto *linear = dynamic_cast<const LinearVarianceCurve *>(prev); linear != nullptr) {
+        calendar_floor_knots = linear->k_nodes();
+      }
     }
     // The calendar floor inside fit_convex_slice enforces w_curr >= w_prev at the
     // fit nodes (STRICT, per the served-surface policy: calendar-arb-free by
@@ -301,14 +301,14 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying& under,
     // calendar structure this trades some price-in-band tightness for no-arb — an
     // explicit product choice (see spy_bidask_regression_test's rebaselined floor).
     const auto t_slice0 = ProfileClock::now();
-    auto slice_res = fit_slice_curve(cfg, pre.obs.obs, F, T, df, w_prev);
+    auto slice_res = fit_slice_curve(cfg, pre.obs.obs, F, T, df, w_prev, calendar_floor_knots);
     if (profile) {
       ms_fit_slice += elapsed_ms(t_slice0, ProfileClock::now());
     }
     if (!slice_res) {
       continue;
     }
-    const IVolCurve* const slice = slice_res->get();
+    const IVolCurve *const slice = slice_res->get();
 
     // 4. Score re-Americanized parity off the fitted slice's own iv(k). A parity
     //    (diagnostic) failure is non-fatal: keep the slice, push a zeroed report.
@@ -326,7 +326,7 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying& under,
     ParityReport parity{};
     if (in.score_parity) {
       const auto t_parity0 = ProfileClock::now();
-      const ParityData& pd = pre.parity;
+      const ParityData &pd = pre.parity;
       if (pd.strike.size() >= 4) {
         std::vector<double> model_iv;
         model_iv.reserve(pd.k_log.size());
@@ -341,10 +341,10 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying& under,
         pin.method = in.deam.method;
         pin.al_opts = in.deam.al_opts;
         pin.band_k = in.band_k;
-        pin.n_curve_params = 3;  // nominal chi2 dof (informational for dense fits)
+        pin.n_curve_params = 3; // nominal chi2 dof (informational for dense fits)
         pin.caches = in.deam.caches;
-        auto pr = chain_parity(pd.strike, pd.bid, pd.ask, pd.mid, pd.side, model_iv,
-                               pd.market_iv, pin);
+        auto pr =
+            chain_parity(pd.strike, pd.bid, pd.ask, pd.mid, pd.side, model_iv, pd.market_iv, pin);
         if (pr) {
           parity = *pr;
         }
@@ -356,8 +356,7 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying& under,
 
     // 5. Commit the slice + its context (ascending T by construction).
     out.surface.push(std::move(*slice_res));
-    out.context.push_back(SliceContext{T, F, pre.borrow, q_eff,
-                                       pre.obs.obs.size(),
+    out.context.push_back(SliceContext{T, F, pre.borrow, q_eff, pre.obs.obs.size(),
                                        static_cast<std::size_t>(pre.obs.n_dropped)});
     out.per_expiry.push_back(parity);
     if (parity.n > 0) {
@@ -366,8 +365,7 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying& under,
   }
 
   if (out.surface.empty()) {
-    return Err(ErrorCode::NotFound,
-               "fit_curve_surface: no expiry produced a usable slice");
+    return Err(ErrorCode::NotFound, "fit_curve_surface: no expiry produced a usable slice");
   }
   out.n_slices = out.surface.n_slices();
   out.worst_frac_within_bidask = std::isfinite(worst) ? worst : 0.0;
@@ -398,4 +396,4 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying& under,
   return Ok(std::move(out));
 }
 
-}  // namespace atx::vol
+} // namespace atx::vol

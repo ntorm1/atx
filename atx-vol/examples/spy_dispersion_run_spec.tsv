@@ -1,0 +1,21 @@
+key	value
+label	SPY listed-options dispersion proxy development slice
+date_lo	2026-01-02
+date_hi	2026-04-30
+snapshot_suffix	T19:55:00Z
+opra_root	C:/atx-data/spy-dispersion/opra
+path_template	{symbol}/{date}.parquet
+universe_schedule	spy_dispersion_universe.tsv
+definitions	C:/atx-data/spy-dispersion/spy_dispersion_definitions.tsv
+occ_ess_root	C:/atx-data/spy-dispersion/occ-ess
+flat_rate	0.043
+min_names	10
+min_weight_coverage	0.8
+target_dte_days	30
+min_dte_days	21
+max_dte_days	60
+roll_dte_days	7
+gross_index_vega	10000
+delta_band	0
+fit_workers	0
+core_mode	0

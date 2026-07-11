@@ -96,6 +96,8 @@ struct OptionContract {
   double K{0.0};
   double T{0.0};
   Side side{Side::Call};
+
+  [[nodiscard]] bool operator==(const OptionContract &) const = default;
 };
 
 // One held position. `id` is an opaque caller key echoed in every frame row.
@@ -145,6 +147,11 @@ public:
   [[nodiscard]] std::span<const OptionContract> contracts() const noexcept { return contracts_; }
   [[nodiscard]] std::span<const std::uint32_t> uids() const noexcept { return uids_; }
 
+  // Update residual tenor by position while preserving the dedup/group mapping.
+  // Safe when time advances a fixed set of absolute-expiry lots: positions that
+  // shared a contract must receive bit-identical tenors.
+  [[nodiscard]] Status retime(std::span<const double> position_T);
+
   // The unique-contract index that position `i` references (i < n_positions()).
   [[nodiscard]] std::uint32_t contract_ix(std::size_t i) const noexcept {
     return pos_contract_ix_[i];
@@ -188,8 +195,8 @@ private:
 // saving `PriceOptions::prices_only` now buys.
 enum class PriceFieldMask : std::uint32_t {
   None = 0,
-  Marks = 1u << 0,             // id, uid, pv, price, iv, status  (37 B/pos)
-  Greeks = 1u << 1,            // delta, gamma, vega, theta, rho, vanna, volga, charm
+  Marks = 1u << 0,                    // id, uid, pv, price, iv, status  (37 B/pos)
+  Greeks = 1u << 1,                   // delta, gamma, vega, theta, rho, vanna, volga, charm
   FullGreeks = (1u << 0) | (1u << 1), // Marks + Greeks (101 B/pos)
 };
 
@@ -440,6 +447,7 @@ public:
   explicit PortfolioPricer(Portfolio pf) noexcept : pf_(std::move(pf)) {}
 
   [[nodiscard]] const Portfolio &portfolio() const noexcept { return pf_; }
+  [[nodiscard]] Status retime(std::span<const double> position_T) { return pf_.retime(position_T); }
 
   // Price the book against one surface per underlying. Positions whose uid has no
   // registered surface are ModelUnavailable; degenerate contracts are

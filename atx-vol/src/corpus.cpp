@@ -154,7 +154,9 @@ void record_failure(CorpusAdmissionFailureMask &mask, CorpusAdmissionReason reas
          valid_ratio_threshold(rule.min_oos_in_band) &&
          valid_ratio_threshold(rule.min_oos_vega_weighted) &&
          valid_nonnegative_threshold(rule.max_mean_vol_rmse) &&
-         valid_nonnegative_threshold(rule.max_mean_reduced_chi2);
+         valid_nonnegative_threshold(rule.max_mean_reduced_chi2) &&
+         std::isfinite(rule.calendar_abs_k) && rule.calendar_abs_k > 0.0 &&
+         rule.calendar_abs_k <= 3.0;
 }
 
 [[nodiscard]] bool required_metric_missing(const CorpusQualityMetrics &metrics,
@@ -473,7 +475,9 @@ collect_quality(const CorpusBoard &board, const OptionChain &chain, const Pricer
     }
   }
 
-  const auto violations = arb_check_calendar(surface.surface(), -3.0, 3.0, 25u);
+  const double calendar_abs_k = rule != nullptr ? rule->calendar_abs_k : 3.0;
+  const auto violations =
+      arb_check_calendar(surface.surface(), -calendar_abs_k, calendar_abs_k, 25u);
   if (violations.has_value()) {
     quality.calendar_violations = saturated_u32(violations->size());
   }
@@ -713,6 +717,7 @@ void fingerprint_append_admission_rule(std::string &out, const CorpusAdmissionRu
   fingerprint_append_optional_double(out, rule.max_mean_vol_rmse);
   fingerprint_append_optional_double(out, rule.max_mean_reduced_chi2);
   fingerprint_append_u64(out, rule.require_calendar_arb_free ? 1u : 0u);
+  fingerprint_append_double(out, rule.calendar_abs_k);
   fingerprint_append_u64(out, rule.require_source_provenance ? 1u : 0u);
 }
 

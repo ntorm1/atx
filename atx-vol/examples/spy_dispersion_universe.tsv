@@ -1,0 +1,11 @@
+effective_date	symbol	raw_weight	source	as_of
+2026-01-02	AAPL	1	development_equal_weight_proxy	2026-01-02
+2026-01-02	AMZN	1	development_equal_weight_proxy	2026-01-02
+2026-01-02	AVGO	1	development_equal_weight_proxy	2026-01-02
+2026-01-02	LLY	1	development_equal_weight_proxy	2026-01-02
+2026-01-02	GOOGL	1	development_equal_weight_proxy	2026-01-02
+2026-01-02	JPM	1	development_equal_weight_proxy	2026-01-02
+2026-01-02	META	1	development_equal_weight_proxy	2026-01-02
+2026-01-02	MSFT	1	development_equal_weight_proxy	2026-01-02
+2026-01-02	NVDA	1	development_equal_weight_proxy	2026-01-02
+2026-01-02	XOM	1	development_equal_weight_proxy	2026-01-02

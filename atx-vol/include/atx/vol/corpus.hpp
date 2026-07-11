@@ -184,6 +184,10 @@ struct CorpusAdmissionRule {
   std::optional<double> max_mean_vol_rmse{};
   std::optional<double> max_mean_reduced_chi2{};
   bool require_calendar_arb_free{true};
+  // Symmetric log-moneyness domain used for the calendar-arbitrage check.
+  // 3.0 preserves the historical strict wing/extrapolation gate; ATM strategies
+  // may explicitly require the documented MonotoneFit domain (0.7).
+  double calendar_abs_k{3.0};
   bool require_source_provenance{false};
 
   [[nodiscard]] bool operator==(const CorpusAdmissionRule &) const = default;

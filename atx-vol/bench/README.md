@@ -5,13 +5,14 @@ throughput work. Nothing in the performance sprint ships without a measured
 before/after through these targets; every claimed speedup is a **ratio** against
 a checked-in baseline, verified by `compare_baseline.py`.
 
-Two targets, built only when `ATX_BUILD_BENCH=ON` (the shared, atx-wide option —
+Three targets, built only when `ATX_BUILD_BENCH=ON` (the shared, atx-wide option —
 Google Benchmark is **not** a hard atx-vol dependency):
 
 | target                    | source                          | what it measures |
 |---------------------------|---------------------------------|------------------|
 | `atx-vol-american-bench`  | `american_pricing_bench.cpp`    | route x side x API pricer matrix over a moneyness/maturity/vol grid, plus the call-slice batch path |
 | `atx-vol-portfolio-bench` | `portfolio_throughput_bench.cpp`| PricedSurface queries, `PortfolioPricer::price`/`pnl_explain`, position-scatter-only, kernel floor |
+| `atx-vol-projection-bench` | `contract_projection_bench.cpp` | scalar and prepared relative-contract projection, definition/mark/full-Greeks output, batch and thread-count scaling |
 
 The old `examples/*.cpp` hand-timed demos are left untouched — they are human
 demos, not gates.
@@ -20,7 +21,7 @@ demos, not gates.
 
 ```
 cmake --preset rel -DATX_BUILD_BENCH=ON
-cmake --build build-rel --target atx-vol-american-bench atx-vol-portfolio-bench -- -j 12
+cmake --build build-rel --target atx-vol-american-bench atx-vol-portfolio-bench atx-vol-projection-bench -- -j 12
 ```
 
 The `rel` preset is the canonical **Release, x64-default SSE2** build (clang-cl).
@@ -32,6 +33,7 @@ current SSE2 build; that is the whole point of pinning it.
 ```
 ./build-rel/bin/atx-vol-american-bench.exe  --benchmark_out=amer.json --benchmark_out_format=json
 ./build-rel/bin/atx-vol-portfolio-bench.exe --benchmark_out=port.json --benchmark_out_format=json
+./build-rel/bin/atx-vol-projection-bench.exe --benchmark_out=projection.json --benchmark_out_format=json
 ```
 
 JSON is the deliverable format (`compare_baseline.py` reads it). Full-matrix wall
@@ -76,6 +78,7 @@ cmake --preset rel -DATX_BUILD_BENCH=ON
 cmake --build build-rel --target atx-vol-american-bench atx-vol-portfolio-bench -- -j 12
 ./build-rel/bin/atx-vol-american-bench.exe  --benchmark_out=bench/baselines/i7-1260p-clang18-sse2-american.json  --benchmark_out_format=json
 ./build-rel/bin/atx-vol-portfolio-bench.exe --benchmark_out=bench/baselines/i7-1260p-clang18-sse2-portfolio.json --benchmark_out_format=json
+./build-rel/bin/atx-vol-projection-bench.exe --benchmark_out=bench/baselines/i7-1260p-clang18-sse2-projection.json --benchmark_out_format=json
 ```
 
 Quiesce the box first (close other load; the reference host has no CPU-frequency

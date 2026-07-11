@@ -12,6 +12,7 @@ add_executable(atx-vol-tests
     robust_test.cpp
     american_test.cpp
     counters_test.cpp
+    phase_profile_test.cpp
     correction_test.cpp
     support/oracle_pricer_pde.cpp
     arb_test.cpp
@@ -33,6 +34,8 @@ add_executable(atx-vol-tests
     bulk_test.cpp
     calib_pool_test.cpp
     projection_test.cpp
+    contract_projection_test.cpp
+    historical_projection_test.cpp
     portfolio_risk_test.cpp
     american_iv_test.cpp
     dividend_test.cpp
@@ -67,6 +70,12 @@ add_executable(atx-vol-tests
     corpus_test.cpp
     multiname_pipeline_test.cpp
     dispersion_test.cpp
+    listed_dispersion_test.cpp
+    listed_opra_test.cpp
+    occ_ess_test.cpp
+    listed_dispersion_schedule_test.cpp
+    listed_dispersion_reconciliation_test.cpp
+    listed_dispersion_strategy_test.cpp
     backtest_test.cpp
     strategy_test.cpp
     backtest_exec_test.cpp
@@ -103,3 +112,22 @@ endif()
 
 include(GoogleTest)
 gtest_discover_tests(atx-vol-tests PROPERTIES LABELS atx_vol)
+
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_test(
+        NAME atx-vol-reference-spy-dispersion
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/reference_spy_dispersion_test.py
+    )
+    set_tests_properties(atx-vol-reference-spy-dispersion PROPERTIES LABELS atx_vol)
+    add_test(
+        NAME atx-vol-download-occ-ess
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/download_occ_ess_test.py
+    )
+    set_tests_properties(atx-vol-download-occ-ess PROPERTIES LABELS atx_vol)
+    add_test(
+        NAME atx-vol-build-spy-top50-universe
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/build_spy_top50_universe_test.py
+    )
+    set_tests_properties(atx-vol-build-spy-top50-universe PROPERTIES LABELS atx_vol)
+endif()

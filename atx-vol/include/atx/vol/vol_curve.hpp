@@ -303,12 +303,13 @@ struct CurveConfig {
 //         otherwise the fitted polymorphic slice.
 //
 // `w_prev` (optional): the immediately-shorter expiry's total-variance curve
-// w(k) as a log-moneyness callback. When set on the ConvexDense path it becomes
-// a per-node CALENDAR FLOOR (via `fit_convex_slice`), so this slice's total
-// variance cannot dip below the previous expiry's at the fit nodes. Left empty
-// (the default) the floor is skipped and the fit is bit-identical.
+// w(k) as a log-moneyness callback. For ConvexDense it becomes a per-node
+// calendar floor. LinearVariance additionally accepts the previous curve's
+// breakpoints in `calendar_floor_knots`; fitting on the union of both node sets
+// makes the piecewise-linear calendar floor hold between nodes as well.
 [[nodiscard]] Result<std::unique_ptr<IVolCurve>>
 fit_slice_curve(const CurveConfig &cfg, std::span<const FitObs> obs_eu, double F, double T,
-                double df, const std::function<double(double)> &w_prev = {});
+                double df, const std::function<double(double)> &w_prev = {},
+                std::span<const double> calendar_floor_knots = {});
 
 } // namespace atx::vol

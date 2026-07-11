@@ -134,12 +134,17 @@
 #include "atx/vol/vola_parity.hpp"    // single-expiry parity harness
 
 // ── Surface queries / projection / derivatives ──────────────────────────────
-#include "atx/vol/curve.hpp"       // CurveSet, DividendEvent
-#include "atx/vol/derivatives.hpp" // vol-derivative analytics
-#include "atx/vol/projection.hpp"  // eval at non-listed T/K, delta anchors
+#include "atx/vol/contract_projection.hpp" // relative template -> concrete theo option
+#include "atx/vol/historical_projection.hpp" // historical relative-template risk / VaR
+#include "atx/vol/phase_profile.hpp" // compile-time opt-in phase timers
+#include "atx/vol/curve.hpp"               // CurveSet, DividendEvent
+#include "atx/vol/derivatives.hpp"         // vol-derivative analytics
+#include "atx/vol/projection.hpp"          // eval at non-listed T/K, delta anchors
 
 // ── Data model (universe, panels, real OPRA loader, archive) ─────────────────
 #include "atx/vol/data.hpp"            // QuoteFrame, data_install
+#include "atx/vol/listed_opra.hpp"     // strict listed-contract definition join
+#include "atx/vol/occ_ess.hpp"         // OCC non-standard deliverable authority
 #include "atx/vol/opra_panel.hpp"      // real Databento OPRA cbbo loader
 #include "atx/vol/panel.hpp"           // synthetic + CSV panels
 #include "atx/vol/priced_surface.hpp"  // PricedSurface (serialization-ready priced surface)
@@ -165,3 +170,13 @@
 #include "atx/vol/portfolio_pricer.hpp" // CANONICAL PricedSurface-native pricer + Taylor PnL explain
 #include "atx/vol/portfolio_risk.hpp"   // DEPRECATED legacy scenario / theoretical-leg risk
 #include "atx/vol/profile.hpp"
+
+// Traditional listed-options dispersion workflow.
+#include "atx/vol/backtest.hpp"
+#include "atx/vol/dispersion.hpp"
+#include "atx/vol/dispersion_backtest.hpp"
+#include "atx/vol/dispersion_workflow.hpp"
+#include "atx/vol/listed_dispersion.hpp"
+#include "atx/vol/listed_dispersion_reconciliation.hpp"
+#include "atx/vol/listed_dispersion_schedule.hpp"
+#include "atx/vol/listed_dispersion_strategy.hpp"

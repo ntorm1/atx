@@ -172,7 +172,7 @@ constexpr std::int64_t kNow = 1700000000000000000LL;
       {11, {1, 95.0, 0.18, Side::Put}, -5.0, 100.0},
       {12, {2, 105.0, 0.25, Side::Call}, +3.0, 100.0},
       {13, {3, 98.0, 0.15, Side::Put}, +7.0, 100.0},
-      {14, {2, 105.0, 0.25, Side::Call}, +2.0, 100.0}, // dup of id12's contract
+      {14, {2, 105.0, 0.25, Side::Call}, +2.0, 100.0},  // dup of id12's contract
       {15, {99, 100.0, 0.10, Side::Call}, +1.0, 100.0}, // no surface -> unavailable
   };
 }
@@ -208,8 +208,8 @@ struct FrameStore {
   }
 
   [[nodiscard]] PriceFrameView view() {
-    return PriceFrameView{id,    uid,   pv,    price, iv,     delta,  gamma, vega,
-                          theta, rho,   vanna, volga, charm,  status, &total};
+    return PriceFrameView{id,    uid, pv,    price, iv,    delta,  gamma, vega,
+                          theta, rho, vanna, volga, charm, status, &total};
   }
 };
 
@@ -236,10 +236,10 @@ struct PnlFrameStore {
   }
 
   [[nodiscard]] PnlFrameView view() {
-    return PnlFrameView{id,          uid,       pv_base,   pv_target,       pnl_total,
-                        pnl_delta,   pnl_gamma, pnl_vega,  pnl_volga,       pnl_vanna,
-                        pnl_theta,   pnl_rho,   pnl_charm, pnl_unexplained, d_spot,
-                        d_vol,       d_time,    d_rate,    status,          &total};
+    return PnlFrameView{id,        uid,       pv_base,   pv_target,       pnl_total,
+                        pnl_delta, pnl_gamma, pnl_vega,  pnl_volga,       pnl_vanna,
+                        pnl_theta, pnl_rho,   pnl_charm, pnl_unexplained, d_spot,
+                        d_vol,     d_time,    d_rate,    status,          &total};
   }
 };
 
@@ -264,6 +264,26 @@ struct PnlFrameStore {
 }
 
 } // namespace
+
+TEST(PortfolioPricer, RetimePreservesDedupAndRejectsDivergentTenors) {
+  const std::vector<Position> positions = {
+      {1u, {1u, 100.0, 0.25, Side::Call}, 1.0, 100.0},
+      {2u, {1u, 100.0, 0.25, Side::Call}, 2.0, 100.0},
+  };
+  auto portfolio = Portfolio::create(positions);
+  ASSERT_TRUE(portfolio.has_value()) << portfolio.error().to_string();
+  ASSERT_EQ(portfolio->n_contracts(), 1u);
+  const std::array<double, 2> next_t{0.20, 0.20};
+  ASSERT_TRUE(portfolio->retime(next_t).has_value());
+  EXPECT_TRUE(bits_equal(portfolio->contracts()[0].T, 0.20));
+  EXPECT_TRUE(bits_equal(portfolio->positions()[0].contract.T, 0.20));
+  EXPECT_TRUE(bits_equal(portfolio->positions()[1].contract.T, 0.20));
+
+  const std::array<double, 2> inconsistent{0.19, 0.18};
+  const Status status = portfolio->retime(inconsistent);
+  ASSERT_FALSE(status.has_value());
+  EXPECT_EQ(status.error().code(), ErrorCode::InvalidArgument);
+}
 
 // ── Pricing: multi-kind, multi-underlying, dedup, missing uid ────────────────
 
@@ -783,8 +803,8 @@ TEST(PortfolioPricer, PriceInto_Marks_MarksBitIdentical_GreeksUntouched) {
   FrameStore fs(ref->size(), /*want_greeks=*/false);
   PortfolioWorkspace ws;
   PriceFrameView v = fs.view();
-  const Status s = pricer.price_into(surfaces, PriceFieldMask::Marks, v, ws,
-                                     PriceOptions{.n_threads = 4});
+  const Status s =
+      pricer.price_into(surfaces, PriceFieldMask::Marks, v, ws, PriceOptions{.n_threads = 4});
   ASSERT_TRUE(s.has_value());
 
   for (std::size_t i = 0; i < ref->size(); ++i) {
@@ -1113,9 +1133,10 @@ TEST(PortfolioPricer, PriceInto_RepeatedThreadCounts_BitIdentical) {
   FrameStore ref(n, /*want_greeks=*/true);
   {
     PriceFrameView rv = ref.view();
-    ASSERT_TRUE(pricer.price_into(surfaces, PriceFieldMask::FullGreeks, rv, ws,
-                                  PriceOptions{.n_threads = 1})
-                    .has_value());
+    ASSERT_TRUE(
+        pricer
+            .price_into(surfaces, PriceFieldMask::FullGreeks, rv, ws, PriceOptions{.n_threads = 1})
+            .has_value());
   }
 
   // 2 reps: cross-thread bit-identity is deterministic; soak lives in bench.
@@ -1123,8 +1144,9 @@ TEST(PortfolioPricer, PriceInto_RepeatedThreadCounts_BitIdentical) {
     for (unsigned nt : {2u, 4u, 8u}) {
       FrameStore fs(n, /*want_greeks=*/true);
       PriceFrameView v = fs.view();
-      ASSERT_TRUE(pricer.price_into(surfaces, PriceFieldMask::FullGreeks, v, ws,
-                                    PriceOptions{.n_threads = nt})
+      ASSERT_TRUE(pricer
+                      .price_into(surfaces, PriceFieldMask::FullGreeks, v, ws,
+                                  PriceOptions{.n_threads = nt})
                       .has_value());
       for (std::size_t i = 0; i < n; ++i) {
         ASSERT_TRUE(bits_equal(fs.pv[i], ref.pv[i])) << "rep=" << rep << " nt=" << nt << " i=" << i;

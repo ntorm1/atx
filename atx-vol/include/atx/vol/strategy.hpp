@@ -21,11 +21,11 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/backtest.hpp"          // MarketSnapshot, Lot, PortfolioState
-#include "atx/vol/dispersion.hpp"        // DispersionUniverse, DispersionConfig, DispersionBook
-#include "atx/vol/portfolio_pricer.hpp"  // OptionContract, kNsPerYear
-#include "atx/vol/priced_surface.hpp"    // PricedSurface
-#include "atx/vol/types.hpp"             // Result, Status, Side
+#include "atx/vol/backtest.hpp"         // MarketSnapshot, Lot, PortfolioState
+#include "atx/vol/dispersion.hpp"       // DispersionUniverse, DispersionConfig, DispersionBook
+#include "atx/vol/portfolio_pricer.hpp" // OptionContract, kNsPerYear
+#include "atx/vol/priced_surface.hpp"   // PricedSurface
+#include "atx/vol/types.hpp"            // Result, Status, Side
 
 namespace atx::vol {
 
@@ -35,24 +35,24 @@ namespace atx::vol {
 // B1 always prices on the interpolated surface at `target_T` (snap_to_listed is a
 // reserved hook, ignored here).
 struct TenorSpec {
-  double target_T{30.0 / 365.25};  // e.g. 0.25 (3m), 0.75 (9m)
-  bool snap_to_listed{false};      // reserved (B1: false / ignored)
+  double target_T{30.0 / 365.25}; // e.g. 0.25 (3m), 0.75 (9m)
+  bool snap_to_listed{false};     // reserved (B1: false / ignored)
 };
 
 // WHICH strike, per leg-side.
 struct StrikeSelector {
   enum class Kind : std::uint8_t { AtmForward = 0, Delta = 1, Moneyness = 2, AbsStrike = 3 };
   Kind kind{Kind::AtmForward};
-  double value{0.0};  // Delta: target |delta|; Moneyness: k=ln(K/F); AbsStrike: K
+  double value{0.0}; // Delta: target |delta|; Moneyness: k=ln(K/F); AbsStrike: K
 };
 
 // WHAT structure. Each expands to 1..N option legs at resolved strikes.
 struct StructureSpec {
   enum class Kind : std::uint8_t { Single = 0, Straddle = 1, Strangle = 2, RiskReversal = 3 };
   Kind kind{Kind::Straddle};
-  Side single_side{Side::Call};  // Single only
-  StrikeSelector call_leg{};     // Strangle/RR: OTM call selector (e.g. Delta 0.40)
-  StrikeSelector put_leg{};      // Strangle/RR: OTM put selector (e.g. Delta 0.40)
+  Side single_side{Side::Call}; // Single only
+  StrikeSelector call_leg{};    // Strangle/RR: OTM call selector (e.g. Delta 0.40)
+  StrikeSelector put_leg{};     // Strangle/RR: OTM put selector (e.g. Delta 0.40)
 };
 
 // HOW MUCH. Resolved after strikes are known (needs the per-leg greeks).
@@ -74,31 +74,31 @@ struct SizeSpec {
     FixedContracts = 0,
     TargetVega = 1,
     Weight = 2,
-    TargetTheta = 3,  // size so |book theta| == value $ PER DAY (annualized greek / 365.25)
-    TargetGamma = 4,  // size so |book gamma| == value
+    TargetTheta = 3, // size so |book theta| == value $ PER DAY (annualized greek / 365.25)
+    TargetGamma = 4, // size so |book gamma| == value
   };
   Kind kind{Kind::TargetVega};
-  double value{10'000.0};  // contracts, target |greek| ($ vega, $/day theta, or gamma), or weight
-  double sign{+1.0};       // +1 long / -1 short the structure
+  double value{10'000.0}; // contracts, target |greek| ($ vega, $/day theta, or gamma), or weight
+  double sign{+1.0};      // +1 long / -1 short the structure
 };
 
 // ONE leg-template on ONE underlier.
 struct LegSpec {
-  std::string symbol;    // resolved to uid against the snapshot's SurfaceSet
-  std::uint32_t uid{0};  // preferred if nonzero, else `symbol` lookup
+  std::string symbol;   // resolved to uid against the snapshot's SurfaceSet
+  std::uint32_t uid{0}; // preferred if nonzero, else `symbol` lookup
   TenorSpec tenor{};
   StructureSpec structure{};
-  StrikeSelector strike{};  // Single/Straddle strike; Strangle uses structure.{call,put}_leg
+  StrikeSelector strike{}; // Single/Straddle strike; Strangle uses structure.{call,put}_leg
   SizeSpec size{};
-  std::string group;  // cross-leg constraint group tag (e.g. "index"/"basket", "a"/"b")
+  std::string group; // cross-leg constraint group tag (e.g. "index"/"basket", "a"/"b")
 };
 
 // CROSS-LEG sizing constraint applied AFTER per-leg base sizing.
 struct CrossLegConstraint {
   enum class Kind : std::uint8_t { None = 0, FlatVega = 1, VegaNeutralBasket = 2 };
   Kind kind{Kind::None};
-  std::string group_a;  // FlatVega: scale group_b so gross vega(b) == gross vega(a)
-  std::string group_b;  // VegaNeutralBasket: a defaults "index", b defaults "basket"
+  std::string group_a; // FlatVega: scale group_b so gross vega(b) == gross vega(a)
+  std::string group_b; // VegaNeutralBasket: a defaults "index", b defaults "basket"
 };
 
 // LIFECYCLE: when to enter, how long to hold.
@@ -107,7 +107,7 @@ struct LifecycleSpec {
   enum class Holding : std::uint8_t { HoldToExpiry = 0, RollAtHorizon = 1 };
   Entry entry{Entry::EveryNDays};
   Holding holding{Holding::RollAtHorizon};
-  unsigned entry_every_n{21};  // EveryNDays cadence (trading steps)
+  unsigned entry_every_n{21}; // EveryNDays cadence (trading steps)
   // HoldToExpiry => overlapping clips (a new cohort each entry, each aged to its
   // own expiry, auto-closed at T<=0). RollAtHorizon => single book, closed+reopened
   // when the front cohort's residual T falls below `roll_at_T`.
@@ -121,7 +121,7 @@ struct HedgeSpec {
   enum class Cadence : std::uint8_t { AtEntry = 0, Daily = 1 };
   Kind kind{Kind::None};
   Cadence cadence{Cadence::Daily};
-  double band{0.0};  // rebalance only when |net delta| > band (0 = every cadence tick)
+  double band{0.0}; // rebalance only when |net delta| > band (0 = every cadence tick)
 };
 
 struct StrategySpec {
@@ -142,9 +142,9 @@ struct ResolvedLeg {
   double K{0.0};
   double T{0.0};
   double sigma{0.0};
-  double vega{0.0};   // per-share American vega (> 0 for both call and put)
-  double theta{0.0};  // per-share American theta (dP/dt, calendar; < 0 for a long option)
-  double gamma{0.0};  // per-share American gamma (> 0 for a long option)
+  double vega{0.0};  // per-share American vega (> 0 for both call and put)
+  double theta{0.0}; // per-share American theta (dP/dt, calendar; < 0 for a long option)
+  double gamma{0.0}; // per-share American gamma (> 0 for a long option)
   Side side{Side::Call};
   std::string group;
 };
@@ -163,26 +163,26 @@ struct SizedLeg {
 // (fixed bracket, fixed iteration cap). Widens the bracket [-1.5,1.5] -> [-3,3] ->
 // [-5,5] to catch extreme deltas; validates the repriced delta at the root.
 // @return InvalidArgument if the target is outside (0,1) or unreachable.
-[[nodiscard]] Result<double> resolve_strike_by_delta(const PricedSurface& s, double T, Side side,
+[[nodiscard]] Result<double> resolve_strike_by_delta(const PricedSurface &s, double T, Side side,
                                                      double target_abs_delta);
 
 // Resolve a `StrikeSelector` to an absolute strike K (AtmForward = F(target_T);
 // Delta = the solver; Moneyness = F * exp(value); AbsStrike = value).
-[[nodiscard]] Result<double> resolve_strike(const PricedSurface& s, const TenorSpec& tenor,
-                                            Side side, const StrikeSelector& sel);
+[[nodiscard]] Result<double> resolve_strike(const PricedSurface &s, const TenorSpec &tenor,
+                                            Side side, const StrikeSelector &sel);
 
 // Expand a `LegSpec` against a snapshot into concrete (uid,K,T,side) legs with
 // per-share vega + sigma, before sizing. Single -> 1, Straddle/Strangle -> 2,
 // RiskReversal -> InvalidArgument (not in B1).
-[[nodiscard]] Result<std::vector<ResolvedLeg>> expand_leg(const MarketSnapshot& snap,
-                                                          const LegSpec& leg);
+[[nodiscard]] Result<std::vector<ResolvedLeg>> expand_leg(const MarketSnapshot &snap,
+                                                          const LegSpec &leg);
 
 // Resolve a whole `StrategySpec` into a sized book: expand every leg, apply
 // per-leg base sizing (FixedContracts/TargetVega/Weight, multiplier 100), then the
 // `CrossLegConstraint` (FlatVega / VegaNeutralBasket scale one group's gross vega
 // onto another's). Deterministic; emits legs in spec order (call before put).
-[[nodiscard]] Result<std::vector<SizedLeg>> resolve_spec(const MarketSnapshot& snap,
-                                                         const StrategySpec& spec);
+[[nodiscard]] Result<std::vector<SizedLeg>> resolve_spec(const MarketSnapshot &snap,
+                                                         const StrategySpec &spec);
 
 // ── Lifecycle helper (shared by strategies) ─────────────────────────────────
 
@@ -198,7 +198,7 @@ struct LifecycleDecision {
 // (overlapping cohorts). For RollAtHorizon: a single cohort — open when the book
 // is empty OR the front cohort's residual T = (front_expiry - base_ts)/year has
 // fallen below `roll_at_T`; clear the prior cohort when rolling a non-empty book.
-[[nodiscard]] LifecycleDecision lifecycle_decide(const LifecycleSpec& lifecycle,
+[[nodiscard]] LifecycleDecision lifecycle_decide(const LifecycleSpec &lifecycle,
                                                  std::size_t step_index, bool book_empty,
                                                  std::int64_t base_ts, std::int64_t front_expiry,
                                                  bool have_front);
@@ -211,14 +211,14 @@ struct LifecycleDecision {
 // `next_lot_id` (monotonic) for new ids. It must NOT settle expiries — the engine
 // settles at intrinsic and drops expired lots itself.
 class IStrategy {
- public:
+public:
   virtual ~IStrategy() = default;
-  virtual Status on_step(const MarketSnapshot& base, std::size_t step_index, PortfolioState& book,
-                         std::uint64_t& next_lot_id) = 0;
+  virtual Status on_step(const MarketSnapshot &base, std::size_t step_index, PortfolioState &book,
+                         std::uint64_t &next_lot_id) = 0;
   // Strategy diagnostics evaluated on the base snapshot (name -> value), recorded
   // per persisted row. Default: none.
-  [[nodiscard]] virtual std::vector<std::pair<std::string, double>> signals(
-      const MarketSnapshot& /*base*/) const {
+  [[nodiscard]] virtual std::vector<std::pair<std::string, double>>
+  signals(const MarketSnapshot & /*base*/) const {
     return {};
   }
   // The engine-owned delta-hedge overlay this strategy requests (B2). The engine
@@ -230,20 +230,19 @@ class IStrategy {
 // Interprets a `StrategySpec` against each snapshot. Holds the lifecycle state:
 // a monotonic cohort counter and the front cohort's expiry (for RollAtHorizon).
 class DeclarativeStrategy : public IStrategy {
- public:
+public:
   explicit DeclarativeStrategy(StrategySpec spec) noexcept : spec_{std::move(spec)} {}
 
-  Status on_step(const MarketSnapshot& base, std::size_t step_index, PortfolioState& book,
-                 std::uint64_t& next_lot_id) override;
+  Status on_step(const MarketSnapshot &base, std::size_t step_index, PortfolioState &book,
+                 std::uint64_t &next_lot_id) override;
 
   [[nodiscard]] HedgeSpec hedge_spec() const override { return spec_.hedge; }
 
-  [[nodiscard]] const StrategySpec& spec() const noexcept { return spec_; }
+  [[nodiscard]] const StrategySpec &spec() const noexcept { return spec_; }
 
- private:
+private:
   // Resolve the spec against `base` and append a fresh cohort of lots.
-  Status open_cohort(const MarketSnapshot& base, PortfolioState& book,
-                     std::uint64_t& next_lot_id);
+  Status open_cohort(const MarketSnapshot &base, PortfolioState &book, std::uint64_t &next_lot_id);
 
   StrategySpec spec_;
   std::uint32_t cohort_counter_{0};
@@ -255,9 +254,9 @@ class DeclarativeStrategy : public IStrategy {
 
 // An IStrategy over a dispersion universe. On entry it calls the existing
 // `build_dispersion_book` (authoritative P4-1 sizing — NOT reimplemented) and
-// converts the emitted `Position`s into `Lot`s; `signals` surfaces the
-// implied-correlation diagnostic plus an `n_names_dropped` count. Default
-// lifecycle: RollAtHorizon.
+// converts the emitted `Position`s into `Lot`s. Implied correlation and dropped
+// name series are recorded only when `cfg.record_diagnostics` is explicitly
+// enabled. Default lifecycle: RollAtHorizon.
 //
 // Missing-name handling rides in `cfg.missing` (S1-3). Under `DropRenormalize` a
 // member absent/unusable on a date is dropped and the basket renormalized rather
@@ -269,31 +268,34 @@ class DeclarativeStrategy : public IStrategy {
 // fatal. Under the default `Error` policy nothing is dropped and behaviour is
 // bit-identical to pre-S1-3.
 class DispersionStrategy : public IStrategy {
- public:
-  DispersionStrategy(DispersionUniverse universe, DispersionConfig cfg, LifecycleSpec lifecycle = {})
-      : universe_{std::move(universe)}, cfg_{cfg}, lifecycle_{lifecycle} {}
+public:
+  DispersionStrategy(DispersionUniverse universe, DispersionConfig cfg,
+                     LifecycleSpec lifecycle = {}, HedgeSpec hedge = {})
+      : universe_{std::move(universe)}, cfg_{cfg}, lifecycle_{lifecycle}, hedge_{hedge} {}
 
-  Status on_step(const MarketSnapshot& base, std::size_t step_index, PortfolioState& book,
-                 std::uint64_t& next_lot_id) override;
+  Status on_step(const MarketSnapshot &base, std::size_t step_index, PortfolioState &book,
+                 std::uint64_t &next_lot_id) override;
 
-  [[nodiscard]] std::vector<std::pair<std::string, double>> signals(
-      const MarketSnapshot& base) const override;
+  [[nodiscard]] std::vector<std::pair<std::string, double>>
+  signals(const MarketSnapshot &base) const override;
 
   // Parity accessor: the exact P4-1 book this strategy would open on `base`.
-  [[nodiscard]] Result<DispersionBook> build_book(const MarketSnapshot& base) const;
+  [[nodiscard]] Result<DispersionBook> build_book(const MarketSnapshot &base) const;
 
   // Diagnostic accessor: the names dropped on `base` under `cfg.missing` — both
-  // resolve-stage drops (symbol absent from the snapshot) and signal-stage drops
+  // resolve-stage drops (symbol absent from the snapshot) and IV-stage drops
   // (surface missing / ATM straddle unusable), in that order. Empty under Error.
-  [[nodiscard]] std::vector<DroppedName> dropped_on(const MarketSnapshot& base) const;
+  [[nodiscard]] std::vector<DroppedName> dropped_on(const MarketSnapshot &base) const;
+  [[nodiscard]] HedgeSpec hedge_spec() const override { return hedge_; }
 
- private:
+private:
   DispersionUniverse universe_;
   DispersionConfig cfg_;
   LifecycleSpec lifecycle_;
+  HedgeSpec hedge_{};
   std::uint32_t cohort_counter_{0};
   std::int64_t front_expiry_{0};
   bool have_front_{false};
 };
 
-}  // namespace atx::vol
+} // namespace atx::vol

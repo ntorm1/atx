@@ -187,7 +187,8 @@ double CurveSurface::forward_at(double T) const noexcept {
 Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
                                                    std::span<const FitObs> obs_eu, double F,
                                                    double T, double df,
-                                                   const std::function<double(double)> &w_prev) {
+                                                   const std::function<double(double)> &w_prev,
+                                                   std::span<const double> calendar_floor_knots) {
   if (!(F > 0.0) || !(T > 0.0) || !(df > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "fit_slice_curve: F/T/df must be positive");
   }
@@ -245,6 +246,34 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
     }
     if (k.size() < 2) {
       return Err(ErrorCode::NotFound, "fit_slice_curve: fewer than 2 linear-variance nodes");
+    }
+    if (w_prev) {
+      const std::vector<double> market_k = k;
+      const std::vector<double> market_w = w;
+      const auto interpolate_market = [&](double x) noexcept {
+        if (x <= market_k.front()) {
+          return market_w.front();
+        }
+        if (x >= market_k.back()) {
+          return market_w.back();
+        }
+        const auto it = std::lower_bound(market_k.begin(), market_k.end(), x);
+        const std::size_t hi = static_cast<std::size_t>(it - market_k.begin());
+        const std::size_t lo = hi - 1u;
+        const double a = (x - market_k[lo]) / (market_k[hi] - market_k[lo]);
+        return market_w[lo] + a * (market_w[hi] - market_w[lo]);
+      };
+
+      k.insert(k.end(), calendar_floor_knots.begin(), calendar_floor_knots.end());
+      std::sort(k.begin(), k.end());
+      k.erase(std::unique(k.begin(), k.end()), k.end());
+      w.clear();
+      w.reserve(k.size());
+      for (const double x : k) {
+        const double market = interpolate_market(x);
+        const double floor = w_prev(x);
+        w.push_back(std::isfinite(floor) ? std::max(market, floor) : market);
+      }
     }
     std::unique_ptr<IVolCurve> curve =
         std::make_unique<LinearVarianceCurve>(T, F, df, std::move(k), std::move(w));
