@@ -45,6 +45,7 @@
 namespace atx::vol {
 
 class IStrategy; // strategy.hpp — drives the strategy-aware run_backtest overload
+class SurfaceDb; // surface_db.hpp — Clock::from_surface_db source
 
 // ── Timeline ────────────────────────────────────────────────────────────────
 
@@ -60,6 +61,15 @@ struct SnapshotRef {
 class Clock {
 public:
   [[nodiscard]] static Result<Clock> from_manifest(const CorpusManifest &manifest);
+
+  // Build a clock over a SurfaceDb: one SnapshotRef per partition, ordered by
+  // ascending partition key (keys are canonical uppercase; ISO dates like
+  // "2026-07-11" sort chronologically). ref.date = partition key,
+  // ref.archive_path = "<root>/partitions/<KEY>.atxvsa". InvalidArgument if
+  // the db has no partitions. The snapshot files are ordinary ATXVSA
+  // archives, so MarketSnapshot::load / SnapshotCache consume the refs
+  // unchanged.
+  [[nodiscard]] static Result<Clock> from_surface_db(const SurfaceDb &db);
 
   [[nodiscard]] std::span<const SnapshotRef> refs() const noexcept { return refs_; }
   [[nodiscard]] std::size_t size() const noexcept { return refs_.size(); }
