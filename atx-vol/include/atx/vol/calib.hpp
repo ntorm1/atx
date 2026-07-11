@@ -156,6 +156,16 @@ struct CalibOpts {
   // the bid/ask spread; those rows reuse the raw European IV and avoid the cold
   // Andersen-Lake inversion. The default preserves the historical full solve.
   double max_otm_shortcut_premium_spread_frac{0.0};
+  // A shortcut, correction-cache result, or fast Andersen-Lake result is only
+  // a proposal.  Reprice it with the cold accurate Andersen-Lake map and accept
+  // it only inside this fraction of one half-spread; otherwise fall back to an
+  // accurate inversion.  This is a hard residual ceiling, not a speed knob.
+  double max_inversion_residual_half_spreads{0.25};
+  // Proposal guards. Ultra-short, very low-vega and far-wing observations
+  // bypass the raw-European OTM shortcut and go directly to inversion.
+  double min_otm_shortcut_T{7.0 / 365.25};
+  double min_otm_shortcut_vega{1.0e-4};
+  double max_otm_shortcut_abs_k{0.50};
 
   // Warm-start regularization.
   double prior_strength{0.0};  // shrinkage toward θ_prev (0 = none, 1 = strong)
@@ -247,11 +257,37 @@ struct FitDiag {
   std::uint32_t n_quotes_used{0};
 };
 
+struct InversionRouteDiagnostics {
+  std::uint32_t n_proposed{0};
+  std::uint32_t n_audited{0};
+  std::uint32_t n_accepted{0};
+  std::uint32_t n_fallback{0};
+  double p50_residual_half_spreads{0.0};
+  double p95_residual_half_spreads{0.0};
+  double max_residual_half_spreads{0.0};
+};
+
+// Per-observation de-Americanization audit summary.  The route buckets are
+// mutually exclusive for the initial proposal; accurate fallbacks are counted
+// on the originating route and in n_accurate_fallback.
+struct DeAmAuditDiagnostics {
+  InversionRouteDiagnostics shortcut{};
+  InversionRouteDiagnostics cache{};
+  InversionRouteDiagnostics fast{};
+  InversionRouteDiagnostics accurate{};
+  std::uint32_t n_forced_short_tenor{0};
+  std::uint32_t n_forced_low_vega{0};
+  std::uint32_t n_forced_far_wing{0};
+  std::uint32_t n_accurate_fallback{0};
+  std::uint32_t n_rejected_residual{0};
+};
+
 // The output of `build_observations`: the surviving rows plus the count of
 // quotes rejected by the filter cascade (`out_n_dropped` in the C).
 struct ObsSet {
   std::vector<FitObs> obs;
   std::uint32_t n_dropped{0};
+  DeAmAuditDiagnostics deam_audit{};
 };
 
 // ── Observation builder + accept predicate ───────────────────────────────

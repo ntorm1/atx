@@ -3,9 +3,12 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <optional>
+#include <string>
 #include <vector>
 
 #include "atx/vol/arb.hpp"       // QuoteFlag, to_u8
+#include "atx/vol/american.hpp"
 #include "atx/vol/black76.hpp"   // black76_price, black76_value_and_vega
 #include "atx/vol/calib.hpp"
 #include "atx/vol/universe.hpp"  // Chain, chain_index
@@ -24,6 +27,7 @@ namespace {
 using atx::vol::black76_price;
 using atx::vol::black76_value_and_vega;
 using atx::vol::build_observations;
+using atx::vol::build_observations_european;
 using atx::vol::calib_default_opts;
 using atx::vol::CalibAnchorKind;
 using atx::vol::CalibLossKind;
@@ -40,6 +44,8 @@ using atx::vol::QuoteFlag;
 using atx::vol::ResidualBasisKind;
 using atx::vol::Side;
 using atx::vol::to_u8;
+using atx::vol::american_price;
+using atx::vol::AmericanMethod;
 
 // ── Synthetic-chain fixture ─────────────────────────────────────────────
 
@@ -79,6 +85,38 @@ Chain make_priced_chain(const std::vector<double> &strikes) {
       c.mids[idx] = mid;
       c.bids[idx] = mid - kHalfSpread;
       c.asks[idx] = mid + kHalfSpread;
+    }
+  }
+  return c;
+}
+
+Chain make_american_chain(const std::vector<double>& strikes, double T,
+                          double r, double q, double sigma = 0.22) {
+  Chain c;
+  c.uid = 2u;
+  c.expiry_id = 1u;
+  c.T = T;
+  c.strikes = strikes;
+  const std::size_t n2 = 2u * strikes.size();
+  c.bids.assign(n2, 0.0);
+  c.asks.assign(n2, 0.0);
+  c.mids.assign(n2, 0.0);
+  c.ivs.assign(n2, std::numeric_limits<double>::quiet_NaN());
+  c.bid_sizes.assign(n2, 10);
+  c.ask_sizes.assign(n2, 10);
+  c.ts_ns.assign(n2, 0);
+  c.flags.assign(n2, 0u);
+  for (std::size_t i = 0; i < strikes.size(); ++i) {
+    for (Side side : {Side::Call, Side::Put}) {
+      const std::size_t idx = chain_index(static_cast<std::uint16_t>(i), side);
+      const auto p = american_price(100.0, strikes[i], T, sigma, r, q, side,
+                                    AmericanMethod::AndersenLake, std::nullopt);
+      EXPECT_TRUE(p.has_value());
+      const double mid = p ? *p : 1.0;
+      const double half = std::fmin(0.002, 0.10 * mid);
+      c.mids[idx] = mid;
+      c.bids[idx] = mid - half;
+      c.asks[idx] = mid + half;
     }
   }
   return c;
@@ -229,6 +267,59 @@ TEST(BuildObservations, NonPositiveT_ReturnsInvalidArgument) {
   const auto res = build_observations(c, kF, 0.0, kDf, calib_default_opts());
   ASSERT_FALSE(res.has_value());
   EXPECT_EQ(res.error().code(), ErrorCode::InvalidArgument);
+}
+
+TEST(BuildObservationsEuropean, ShortcutIsColdAuditedAndFallsBackWhenNeeded) {
+  constexpr double T = 1.0;
+  constexpr double r = 0.08;
+  constexpr double q = 0.08;
+  constexpr double F = 100.0;
+  const double df = std::exp(-r * T);
+  const Chain chain = make_american_chain(
+      {85.0, 90.0, 95.0, 100.0, 105.0, 110.0, 115.0}, T, r, q);
+  CalibOpts opts = calib_default_opts();
+  opts.max_spread_vol = 1.0;
+  opts.max_otm_shortcut_premium_spread_frac = 100.0;
+  opts.max_inversion_residual_half_spreads = 0.01;
+  opts.min_otm_shortcut_T = 0.0;
+
+  const auto result = build_observations_european(
+      chain, 100.0, r, F, T, df, opts, {}, std::nullopt, 1.0e-7, 64,
+      AmericanMethod::AndersenLake);
+  ASSERT_TRUE(result.has_value())
+      << (result ? std::string{} : result.error().to_string());
+  const auto& diag = result->deam_audit;
+  EXPECT_GT(diag.shortcut.n_proposed, 0u);
+  EXPECT_EQ(diag.shortcut.n_audited, diag.shortcut.n_proposed);
+  EXPECT_GT(diag.n_accurate_fallback, 0u);
+  EXPECT_EQ(diag.n_rejected_residual, 0u);
+  EXPECT_LE(diag.accurate.max_residual_half_spreads,
+            opts.max_inversion_residual_half_spreads);
+  EXPECT_GE(result->obs.size(), 5u);
+}
+
+TEST(BuildObservationsEuropean, UltraShortTenorBypassesShortcut) {
+  constexpr double T = 1.0 / 365.25;
+  constexpr double r = 0.04;
+  constexpr double q = 0.02;
+  const double F = 100.0 * std::exp((r - q) * T);
+  const double df = std::exp(-r * T);
+  const Chain chain = make_american_chain(
+      {97.0, 98.0, 99.0, 100.0, 101.0, 102.0, 103.0}, T, r, q, 0.30);
+  CalibOpts opts = calib_default_opts();
+  opts.max_spread_vol = 5.0;
+  opts.min_vega_weight = 0.0;
+  opts.max_otm_shortcut_premium_spread_frac = 100.0;
+  opts.min_otm_shortcut_T = 7.0 / 365.25;
+
+  const auto result = build_observations_european(
+      chain, 100.0, r, F, T, df, opts, {}, std::nullopt, 1.0e-7, 64,
+      AmericanMethod::AndersenLake);
+  ASSERT_TRUE(result.has_value())
+      << (result ? std::string{} : result.error().to_string());
+  EXPECT_EQ(result->deam_audit.shortcut.n_proposed, 0u);
+  EXPECT_GT(result->deam_audit.n_forced_short_tenor, 0u);
+  EXPECT_EQ(result->deam_audit.accurate.n_accepted, result->obs.size());
 }
 
 // ── obs_accepted: agreement with the builder ─────────────────────────────

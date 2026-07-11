@@ -25,6 +25,7 @@ namespace {
 
 using atx::vol::american_implied_vol;
 using atx::vol::american_price;
+using atx::vol::audit_european_equiv_iv;
 using atx::vol::AmericanMethod;
 using atx::vol::Chain;
 using atx::vol::chain_index;
@@ -38,6 +39,7 @@ using atx::vol::hybrid_forward;
 using atx::vol::HybridDivParams;
 using atx::vol::imply_term_borrow;
 using atx::vol::otm_side;
+using atx::vol::resolve_chain_forward;
 using atx::vol::Side;
 
 // Year-fraction → epoch-ns (365.25-day year, matching hybrid_forward).
@@ -166,6 +168,78 @@ TEST(DeAmer, ImplyTermBorrow_RecoversInjectedBorrow) {
   EXPECT_LT(res->rmse_pcp, 1e-6);
 }
 
+TEST(DeAmer, RobustCarryRejectsOneBadAtmPairAndReportsSensitivity) {
+  const Scenario sc;
+  const double b_true = 0.031;
+  const std::vector<double> strikes{94.0, 96.0, 98.0, 100.0,
+                                    102.0, 104.0, 106.0};
+  Chain chain = make_synthetic_chain(sc, b_true, strikes);
+
+  // Keep a valid/tight quote but dislocate one pair's call mid. A simple mean
+  // moves materially; the robust strip should identify and discard this pair.
+  const std::size_t bad = chain_index(3u, Side::Call);
+  chain.mids[bad] += 1.00;
+  chain.bids[bad] = chain.mids[bad] - 0.01;
+  chain.asks[bad] = chain.mids[bad] + 0.01;
+
+  DeAmOptions opts;
+  opts.hyb = sc.hyb;
+  opts.n_atm = strikes.size();
+  opts.max_borrow_pairs = strikes.size();
+  opts.require_carry_confidence = true;
+
+  const auto result = resolve_chain_forward(chain, sc.S, sc.r, sc.divs,
+                                            sc.now_ns, opts);
+  ASSERT_TRUE(result.has_value())
+      << (result ? std::string{} : result.error().to_string());
+  const double expected = hybrid_forward(sc.S, sc.r, b_true, sc.T, sc.divs,
+                                         sc.expiry_ns, sc.now_ns, sc.hyb);
+  EXPECT_NEAR(result->forward, expected, 0.05);
+  EXPECT_TRUE(result->carry.confident);
+  EXPECT_GE(result->carry.n_solved, 6u);
+  EXPECT_TRUE(result->carry.n_solved < result->carry.n_attempted ||
+              result->carry.n_retained < result->carry.n_solved);
+  EXPECT_LT(result->carry.max_leave_one_out_shift,
+            opts.max_carry_leave_one_out);
+  EXPECT_GE(result->carry.confidence_half_width, 0.0);
+}
+
+TEST(DeAmer, CarryConfidenceGateRejectsSinglePair) {
+  const Scenario sc;
+  Chain chain = make_synthetic_chain(sc, 0.02, {100.0});
+  DeAmOptions opts;
+  opts.hyb = sc.hyb;
+  opts.n_atm = 1;
+  opts.max_borrow_pairs = 1;
+  opts.min_confident_borrow_pairs = 3;
+  opts.require_carry_confidence = true;
+
+  const auto result = resolve_chain_forward(chain, sc.S, sc.r, sc.divs,
+                                            sc.now_ns, opts);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::Unavailable);
+}
+
+TEST(DeAmer, RobustCarrySupportsHardToBorrowStrip) {
+  const Scenario sc;
+  const double b_true = 0.15;
+  Chain chain = make_synthetic_chain(sc, b_true,
+                                     {94.0, 96.0, 98.0, 100.0, 102.0, 104.0});
+  DeAmOptions opts;
+  opts.hyb = sc.hyb;
+  opts.n_atm = 6;
+  opts.max_borrow_pairs = 6;
+  opts.require_carry_confidence = true;
+
+  const auto result = resolve_chain_forward(chain, sc.S, sc.r, sc.divs,
+                                            sc.now_ns, opts);
+  ASSERT_TRUE(result.has_value())
+      << (result ? std::string{} : result.error().to_string());
+  EXPECT_NEAR(result->borrow, b_true, 1e-4);
+  EXPECT_TRUE(result->carry.confident);
+  EXPECT_GE(result->carry.effective_pair_count, 3.0);
+}
+
 // ── Single-quote consistency ─────────────────────────────────────────────
 
 TEST(DeAmer, EuropeanEquivIv_EqualsAmericanImpliedVol) {
@@ -180,6 +254,19 @@ TEST(DeAmer, EuropeanEquivIv_EqualsAmericanImpliedVol) {
   ASSERT_TRUE(b.has_value());
   EXPECT_DOUBLE_EQ(*a, *b);
   EXPECT_NEAR(*b, sig, 1e-5);
+}
+
+TEST(DeAmer, AccurateRepricingAuditCertifiesKnownSigma) {
+  const double S = 100.0, K = 95.0, T = 0.5, r = 0.05, q = 0.01;
+  const double sigma = 0.24;
+  const double mid = value_or_fail(american_price(
+      S, K, T, sigma, r, q, Side::Put, AmericanMethod::AndersenLake));
+  const auto audit = audit_european_equiv_iv(
+      mid, 0.04, sigma, S, K, T, r, q, Side::Put, 0.25);
+  ASSERT_TRUE(audit.has_value())
+      << (audit ? std::string{} : audit.error().to_string());
+  EXPECT_TRUE(audit->passed);
+  EXPECT_LT(audit->residual_half_spreads, 1.0e-6);
 }
 
 // ── OTM-side selection rule ──────────────────────────────────────────────

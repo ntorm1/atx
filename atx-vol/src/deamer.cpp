@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <span>
 #include <utility>
@@ -12,6 +13,7 @@
 #include "atx/core/error.hpp"
 #include "atx/vol/american.hpp"
 #include "atx/vol/american_iv.hpp"
+#include "atx/vol/arb.hpp"
 #include "atx/vol/black76.hpp"
 #include "atx/vol/curve.hpp"
 #include "atx/vol/dividend.hpp"
@@ -68,6 +70,29 @@ Result<double> european_equiv_iv(double american_mid, double S, double K,
   // routes the inversion through the cached hot path.
   return american_implied_vol(american_mid, S, K, T, r, q_eff, side, method, tol,
                               max_iter, opts, correction);
+}
+
+Result<IvRepricingAudit> audit_european_equiv_iv(
+    double american_mid, double bid_ask_spread, double sigma, double S,
+    double K, double T, double r, double q_eff, Side side,
+    double max_residual_half_spreads) noexcept {
+  if (!(american_mid > 0.0) || !(bid_ask_spread > 0.0) || !(sigma > 0.0) ||
+      !(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !std::isfinite(r) ||
+      !std::isfinite(q_eff) || !(max_residual_half_spreads >= 0.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               "audit_european_equiv_iv: invalid price/model/budget input");
+  }
+  ATX_TRY(const double price,
+          american_price(S, K, T, sigma, r, q_eff, side,
+                         AmericanMethod::AndersenLake, std::nullopt));
+  if (!std::isfinite(price)) {
+    return Err(ErrorCode::Internal,
+               "audit_european_equiv_iv: accurate pricer returned non-finite price");
+  }
+  const double residual = std::fabs(price - american_mid);
+  const double normalized = residual / (0.5 * bid_ask_spread);
+  return Ok(IvRepricingAudit{price, residual, normalized,
+                             normalized <= max_residual_half_spreads});
 }
 
 namespace {
@@ -189,6 +214,14 @@ namespace {
 // True iff the chosen leg's quote is invertible: strictly positive, non-crossed
 // bid/ask and a finite positive mid. `idx` is chain_index(strike_idx, side).
 [[nodiscard]] bool leg_quote_valid(const Chain& chain, std::size_t idx) noexcept {
+  constexpr QuoteFlag kill_mask = QuoteFlag::Locked | QuoteFlag::Crossed |
+                                  QuoteFlag::Stale | QuoteFlag::Halted |
+                                  QuoteFlag::WideSpread | QuoteFlag::Penny |
+                                  QuoteFlag::LowVega;
+  if (idx < chain.flags.size() &&
+      has_flag(static_cast<QuoteFlag>(chain.flags[idx]), kill_mask)) {
+    return false;
+  }
   const double bid = chain.bids[idx];
   const double ask = chain.asks[idx];
   const double mid = chain.mids[idx];
@@ -196,15 +229,101 @@ namespace {
          (mid > 0.0);
 }
 
-// Resolve the borrow for the whole chain: the mean over the n_atm near-ATM
-// co-terminal pairs whose BOTH legs are quotable, or borrow_fixed when implying
-// is disabled.
-[[nodiscard]] Result<double>
-resolve_chain_borrow(const Chain& chain, double S, double r,
-                     std::span<const DividendEvent> cash_divs,
-                     std::int64_t now_ts_ns, const DeAmOptions& opts) noexcept {
+[[nodiscard]] double weighted_median(
+    const std::vector<CarryPairDiagnostic>& pairs, std::size_t skip,
+    bool robust_weights, bool absolute, double center) {
+  std::vector<std::pair<double, double>> values;
+  values.reserve(pairs.size());
+  double total = 0.0;
+  for (std::size_t i = 0; i < pairs.size(); ++i) {
+    if (i == skip) continue;
+    const double weight = robust_weights ? pairs[i].robust_weight : pairs[i].base_weight;
+    if (!(weight > 0.0) || !std::isfinite(weight)) continue;
+    const double value = absolute ? std::fabs(pairs[i].borrow - center) : pairs[i].borrow;
+    values.emplace_back(value, weight);
+    total += weight;
+  }
+  if (values.empty() || !(total > 0.0)) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  std::sort(values.begin(), values.end(),
+            [](const auto& a, const auto& b) { return a.first < b.first; });
+  double cumulative = 0.0;
+  for (const auto& [value, weight] : values) {
+    cumulative += weight;
+    if (cumulative >= 0.5 * total) return value;
+  }
+  return values.back().first;
+}
+
+[[nodiscard]] double robust_location(std::vector<CarryPairDiagnostic>& pairs,
+                                     std::size_t skip, bool stamp_weights) {
+  const double median = weighted_median(pairs, skip, false, false, 0.0);
+  if (!std::isfinite(median)) return median;
+  const double mad = weighted_median(pairs, skip, false, true, median);
+  const double scale = std::fmax(1.0e-4, 1.4826 * (std::isfinite(mad) ? mad : 0.0));
+  const double cutoff = 5.0 * scale;
+  double sum_w = 0.0;
+  double sum_wb = 0.0;
+  for (std::size_t i = 0; i < pairs.size(); ++i) {
+    double robust_weight = 0.0;
+    if (i != skip) {
+      const double z = std::fabs(pairs[i].borrow - median);
+      if (z <= cutoff) {
+        const double huber = (z <= 2.5 * scale || z == 0.0) ? 1.0 : (2.5 * scale / z);
+        robust_weight = pairs[i].base_weight * huber;
+        sum_w += robust_weight;
+        sum_wb += robust_weight * pairs[i].borrow;
+      }
+    }
+    if (stamp_weights) {
+      pairs[i].robust_weight = robust_weight;
+      pairs[i].retained = robust_weight > 0.0;
+    }
+  }
+  return (sum_w > 0.0) ? (sum_wb / sum_w) : median;
+}
+
+[[nodiscard]] double quote_relative_spread(const Chain& chain,
+                                           std::size_t call_idx,
+                                           std::size_t put_idx) noexcept {
+  const double call_rel = (chain.asks[call_idx] - chain.bids[call_idx]) /
+                          std::fmax(chain.mids[call_idx], kMinSpread);
+  const double put_rel = (chain.asks[put_idx] - chain.bids[put_idx]) /
+                         std::fmax(chain.mids[put_idx], kMinSpread);
+  return std::fmax(0.0, call_rel) + std::fmax(0.0, put_rel);
+}
+
+[[nodiscard]] double quote_age_seconds(const Chain& chain, std::size_t call_idx,
+                                       std::size_t put_idx,
+                                       std::int64_t now_ts_ns) noexcept {
+  if (call_idx >= chain.ts_ns.size() || put_idx >= chain.ts_ns.size() ||
+      now_ts_ns <= 0) {
+    return 0.0;
+  }
+  const std::int64_t ts = std::min(chain.ts_ns[call_idx], chain.ts_ns[put_idx]);
+  return ts > 0 && now_ts_ns > ts
+             ? static_cast<double>(now_ts_ns - ts) * 1.0e-9
+             : 0.0;
+}
+
+// Resolve carry from a scored near-ATM strip. The robust center is a
+// deterministic weighted Huber location, while dispersion and leave-one-out
+// movement are retained for the independent admission layer.
+[[nodiscard]] Result<ChainForward>
+resolve_chain_carry(const Chain& chain, double S, double r,
+                    std::span<const DividendEvent> cash_divs,
+                    std::int64_t now_ts_ns, const DeAmOptions& opts) noexcept {
   if (!opts.imply_borrow) {
-    return Ok(opts.borrow_fixed);
+    const double F = hybrid_forward(S, r, opts.borrow_fixed, chain.T, cash_divs,
+                                    chain.expiry_ns, now_ts_ns, opts.hyb);
+    if (!(F > 0.0) || !std::isfinite(F)) {
+      return Err(ErrorCode::Internal,
+                 "resolve_chain_forward: invalid fixed-borrow forward");
+    }
+    CarryDiagnostics fixed{};
+    fixed.confident = true;
+    return Ok(ChainForward{F, opts.borrow_fixed, std::move(fixed)});
   }
 
   const std::size_t n = chain.n_strikes();
@@ -241,7 +360,7 @@ resolve_chain_borrow(const Chain& chain, double S, double r,
   const AmericanCorrectionCaches cold_caches{};
   std::size_t band = 0;
   for (std::size_t j = 0; j < both_valid.size(); ++j) {
-    if (std::fabs(chain.strikes[both_valid[j]] / S - 1.0) <= 0.06) ++band;
+    if (std::fabs(chain.strikes[both_valid[j]] / S - 1.0) <= opts.carry_atm_band) ++band;
   }
   // Cap the solve at the 12 nearest pairs: a dozen near-money pairs already pin
   // the forward to sub-tick accuracy, and the cold per-pair de-Am is the cost
@@ -260,8 +379,10 @@ resolve_chain_borrow(const Chain& chain, double S, double r,
                              std::fabs(chain.strikes[b] - S);
                     });
 
-  double sum = 0.0;
-  std::size_t hits = 0;
+  CarryDiagnostics diag{};
+  diag.n_candidates = both_valid.size();
+  diag.n_attempted = k;
+  diag.pairs.reserve(k);
   for (std::size_t j = 0; j < k; ++j) {
     const std::size_t i = both_valid[j];
     const double K = chain.strikes[i];
@@ -271,15 +392,93 @@ resolve_chain_borrow(const Chain& chain, double S, double r,
         chain.mids[ci], chain.mids[pi], S, K, T, r, cash_divs, chain.expiry_ns,
         now_ts_ns, opts.hyb, opts.method, opts.al_opts, cold_caches);
     if (tb) {
-      sum += tb->borrow;
-      ++hits;
+      const double relative_spread = quote_relative_spread(chain, ci, pi);
+      const double age = quote_age_seconds(chain, ci, pi, now_ts_ns);
+      const double distance = std::fabs(std::log(K / S));
+      const double distance_weight = 1.0 / (1.0 + std::pow(distance / 0.04, 2.0));
+      const double quality_weight = 1.0 / std::pow(0.0025 + relative_spread, 2.0);
+      const double freshness_weight = 1.0 / (1.0 + age / 5.0);
+      const double base_weight =
+          std::fmin(1.0e8, quality_weight * distance_weight * freshness_weight);
+      diag.pairs.push_back(CarryPairDiagnostic{
+          static_cast<std::uint16_t>(i), K, tb->borrow, tb->forward,
+          tb->rmse_pcp, relative_spread, age, base_weight, 0.0, false});
+      diag.max_pcp_residual = std::fmax(diag.max_pcp_residual, tb->rmse_pcp);
     }
   }
-  if (hits == 0) {
+  diag.n_solved = diag.pairs.size();
+  if (diag.pairs.empty()) {
     return Err(ErrorCode::Unavailable,
                "de_americanize_chain: term-borrow solve failed on all ATM pairs");
   }
-  return Ok(sum / static_cast<double>(hits));
+
+  // A displayed one-tick spread must not let one internally inconsistent pair
+  // own the estimator. Winsorize quality weights relative to the cross-section
+  // before applying the robust location; freshness and ATM proximity still
+  // differentiate pairs without allowing a single quote to exceed ~43% of a
+  // three-pair strip solely through its claimed spread.
+  std::vector<double> base_weights;
+  base_weights.reserve(diag.pairs.size());
+  for (const CarryPairDiagnostic& pair : diag.pairs) {
+    base_weights.push_back(pair.base_weight);
+  }
+  std::sort(base_weights.begin(), base_weights.end());
+  const double median_weight = base_weights[base_weights.size() / 2];
+  const double weight_cap = 1.5 * median_weight;
+  for (CarryPairDiagnostic& pair : diag.pairs) {
+    pair.base_weight = std::fmin(pair.base_weight, weight_cap);
+  }
+
+  const double borrow = robust_location(diag.pairs, diag.pairs.size(), true);
+  if (!std::isfinite(borrow)) {
+    return Err(ErrorCode::Unavailable,
+               "de_americanize_chain: robust term-borrow aggregation failed");
+  }
+  double sum_w = 0.0;
+  double sum_w2 = 0.0;
+  double sum_var = 0.0;
+  for (const CarryPairDiagnostic& pair : diag.pairs) {
+    if (!pair.retained) continue;
+    ++diag.n_retained;
+    sum_w += pair.robust_weight;
+    sum_w2 += pair.robust_weight * pair.robust_weight;
+    sum_var += pair.robust_weight * std::pow(pair.borrow - borrow, 2.0);
+  }
+  diag.effective_pair_count =
+      (sum_w2 > 0.0) ? (sum_w * sum_w / sum_w2) : 0.0;
+  diag.dispersion = (sum_w > 0.0) ? std::sqrt(sum_var / sum_w) : 0.0;
+
+  if (diag.n_retained > 1) {
+    for (std::size_t i = 0; i < diag.pairs.size(); ++i) {
+      if (!diag.pairs[i].retained) continue;
+      std::vector<CarryPairDiagnostic> loo_pairs = diag.pairs;
+      const double loo = robust_location(loo_pairs, i, false);
+      if (std::isfinite(loo)) {
+        diag.max_leave_one_out_shift =
+            std::fmax(diag.max_leave_one_out_shift, std::fabs(loo - borrow));
+      }
+    }
+  }
+  const double sampling =
+      diag.effective_pair_count > 0.0
+          ? 2.576 * diag.dispersion / std::sqrt(diag.effective_pair_count)
+          : std::numeric_limits<double>::infinity();
+  diag.confidence_half_width = std::fmax(sampling, diag.max_leave_one_out_shift);
+  diag.confident = diag.n_retained >= opts.min_confident_borrow_pairs &&
+                   diag.dispersion <= opts.max_carry_dispersion &&
+                   diag.max_leave_one_out_shift <= opts.max_carry_leave_one_out;
+  if (opts.require_carry_confidence && !diag.confident) {
+    return Err(ErrorCode::Unavailable,
+               "de_americanize_chain: robust carry confidence gate failed");
+  }
+
+  const double F = hybrid_forward(S, r, borrow, T, cash_divs, chain.expiry_ns,
+                                  now_ts_ns, opts.hyb);
+  if (!(F > 0.0) || !std::isfinite(F)) {
+    return Err(ErrorCode::Internal,
+               "resolve_chain_forward: non-positive or non-finite term forward");
+  }
+  return Ok(ChainForward{F, borrow, std::move(diag)});
 }
 
 }  // namespace
@@ -293,15 +492,7 @@ Result<ChainForward> resolve_chain_forward(
     return Err(ErrorCode::InvalidArgument,
                "resolve_chain_forward: non-finite/non-positive input or empty chain");
   }
-  ATX_TRY(const double borrow,
-          resolve_chain_borrow(chain, S, r, cash_divs, now_ts_ns, opts));
-  const double F = hybrid_forward(S, r, borrow, T, cash_divs, chain.expiry_ns,
-                                  now_ts_ns, opts.hyb);
-  if (!(F > 0.0) || !std::isfinite(F)) {
-    return Err(ErrorCode::Internal,
-               "resolve_chain_forward: non-positive or non-finite term forward");
-  }
-  return Ok(ChainForward{F, borrow});
+  return resolve_chain_carry(chain, S, r, cash_divs, now_ts_ns, opts);
 }
 
 Result<DeAmResult> de_americanize_chain(const Chain& chain, double S, double r,
@@ -314,15 +505,10 @@ Result<DeAmResult> de_americanize_chain(const Chain& chain, double S, double r,
                "de_americanize_chain: non-finite/non-positive input or empty chain");
   }
 
-  ATX_TRY(const double borrow,
-          resolve_chain_borrow(chain, S, r, cash_divs, now_ts_ns, opts));
-
-  const double F =
-      hybrid_forward(S, r, borrow, T, cash_divs, chain.expiry_ns, now_ts_ns, opts.hyb);
-  if (!(F > 0.0) || !std::isfinite(F)) {
-    return Err(ErrorCode::Internal,
-               "de_americanize_chain: non-positive or non-finite term forward");
-  }
+  ATX_TRY(ChainForward chain_forward,
+          resolve_chain_carry(chain, S, r, cash_divs, now_ts_ns, opts));
+  const double borrow = chain_forward.borrow;
+  const double F = chain_forward.forward;
 
   // q_eff bridge: one scalar carry reproduces the discrete-div forward exactly.
   const double q_eff = r - std::log(F / S) / T;
@@ -331,6 +517,7 @@ Result<DeAmResult> de_americanize_chain(const Chain& chain, double S, double r,
   DeAmResult out;
   out.forward = F;
   out.borrow = borrow;
+  out.carry = std::move(chain_forward.carry);
   const std::size_t n = chain.n_strikes();
   out.k_log.reserve(n);
   out.iv.reserve(n);
@@ -351,20 +538,55 @@ Result<DeAmResult> de_americanize_chain(const Chain& chain, double S, double r,
       continue;
     }
 
-    const Result<double> iv =
+    const double spread = chain.asks[idx] - chain.bids[idx];
+    const CorrectionCache* cache = opts.caches.for_side(side);
+    Result<double> iv =
         european_equiv_iv(chain.mids[idx], S, K, T, r, q_eff, side, opts.method,
-                          opts.al_opts, opts.caches.for_side(side), opts.iv_tol,
-                          opts.iv_max_iter);
+                          opts.al_opts, cache, opts.iv_tol, opts.iv_max_iter);
     if (!iv) {
       ++out.n_dropped;
       continue;
+    }
+    const bool approximate_proposal =
+        opts.method == AmericanMethod::AndersenLake &&
+        (opts.al_opts.has_value() ||
+         (cache != nullptr && cache->populated() && cache->side() == side));
+    if (approximate_proposal) {
+      ++out.n_iv_audited;
+      Result<IvRepricingAudit> audit = audit_european_equiv_iv(
+          chain.mids[idx], spread, *iv, S, K, T, r, q_eff, side,
+          opts.max_iv_residual_half_spreads);
+      if (audit && audit->passed) {
+        out.max_iv_residual_half_spreads =
+            std::fmax(out.max_iv_residual_half_spreads,
+                      audit->residual_half_spreads);
+      }
+      if (!audit || !audit->passed) {
+        ++out.n_iv_fallback;
+        iv = american_implied_vol(chain.mids[idx], S, K, T, r, q_eff, side,
+                                  AmericanMethod::AndersenLake, 1.0e-7, 64,
+                                  std::nullopt, nullptr, *iv);
+        if (!iv) {
+          ++out.n_dropped;
+          continue;
+        }
+        audit = audit_european_equiv_iv(
+            chain.mids[idx], spread, *iv, S, K, T, r, q_eff, side,
+            opts.max_iv_residual_half_spreads);
+        if (!audit || !audit->passed) {
+          ++out.n_dropped;
+          continue;
+        }
+        out.max_iv_residual_half_spreads =
+            std::fmax(out.max_iv_residual_half_spreads,
+                      audit->residual_half_spreads);
+      }
     }
 
     // Weight hint: Black-76 vega / bid-ask spread — rewards tight, high-vega
     // quotes. Optional and not load-bearing; the caller may ignore it.
     const double vega =
         black76_value_and_vega(F, K, T, *iv, df, side).vega;
-    const double spread = chain.asks[idx] - chain.bids[idx];
     const double weight = vega / std::fmax(spread, kMinSpread);
 
     out.k_log.push_back(k);
