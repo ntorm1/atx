@@ -16,6 +16,7 @@
 #include <string_view>
 #include <vector>
 
+#include "atx/vol/american.hpp"           // AlOpts
 #include "atx/vol/corpus.hpp"
 #include "atx/vol/data.hpp"              // iso_to_ns, year_fraction
 #include "atx/vol/market_env.hpp"
@@ -305,6 +306,120 @@ TEST(SurfaceDbPopulate, StatsCsvShape) {
   EXPECT_NE(text.find("BBB,2,2,0,0,1,nan\n"), std::string::npos) << text;
 
   std::filesystem::remove_all(root);
+}
+
+// Discriminates "the session_overlay lambda populate_surface_db passes into
+// fit_board actually reached PricerFitter::fit's SessionInputs" from "the
+// per-symbol config was resolved but silently dropped before the fit ran"
+// (the finding: PinnedConfigHonored's node_cap=48/kind_at(0) probe passes
+// even though ConvexDense would have been auto-selected anyway, and no test
+// exercises a field PricerConfig cannot carry at all).
+//
+// al_override/al is exactly such a field: pricer_config_for_symbol's
+// PricerConfig translation (this file, above) has no al_opts member
+// whatsoever, so the ONLY way a manifest's al_override can ever reach
+// SessionInputs::deam.al_opts is apply_symbol_config running inside the
+// session_overlay hook (surface_db.cpp's apply_symbol_config,
+// pricer_fitter.cpp:166-168). Both configs below pin the SAME preset
+// (FitPreset::Fast) so PricerConfig(A) and PricerConfig(B) are IDENTICAL --
+// isolating the comparison to al_override/al alone (a preset mismatch would
+// also change PricerConfig::preset, confounding "did the overlay run" with
+// "was a different preset selected").
+TEST(SurfaceDbPopulate, SymbolConfigOverlayReachesFit) {
+  const std::vector<CorpusBoard> single_board = {make_board(kDate0, "AAA", 100.0, 0.28)};
+  const double probe_K = 100.0;
+  const double probe_T = year_fraction(kDate0, "2026-04-17");
+
+  // A distinctive AlOpts (all 4 fields differ from al_fast_opts()'s
+  // {7,16,4,1e-8} -- see american.hpp) that only apply_symbol_config's
+  // al_override branch can install.
+  AlOpts distinctive_al;
+  distinctive_al.n_collocation = 10;
+  distinctive_al.n_quadrature = 20;
+  distinctive_al.max_newton_iter = 6;
+  distinctive_al.tol = 1.0e-9;
+
+  SymbolFitConfig fallback_a;
+  fallback_a.preset = FitPreset::Fast;
+  fallback_a.al_override = false; // baseline: preset's own al_opts stands
+
+  SymbolFitConfig cfg_b;
+  cfg_b.preset = FitPreset::Fast; // SAME preset as fallback_a
+  cfg_b.al_override = true;
+  cfg_b.al = distinctive_al;
+
+  // db A: AAA absent from the manifest -> resolves to `fallback_a`.
+  const auto root_a = test_root("overlay_a");
+  auto db_a = SurfaceDb::create(root_a.string());
+  ASSERT_TRUE(db_a.has_value());
+  SurfaceDbPopulateConfig cfg_a;
+  cfg_a.fallback = fallback_a;
+  auto result_a = populate_surface_db(*db_a, single_board, cfg_a);
+  ASSERT_TRUE(result_a.has_value()) << (result_a ? "" : result_a.error().to_string());
+  ASSERT_EQ(result_a->n_ok, 1u);
+  auto s_a = db_a->load_surface(kDate0, "AAA");
+  ASSERT_TRUE(s_a.has_value()) << (s_a ? "" : s_a.error().to_string());
+
+  // db B: AAA's manifest entry carries the al_override.
+  const auto root_b = test_root("overlay_b");
+  auto db_b = SurfaceDb::create(root_b.string());
+  ASSERT_TRUE(db_b.has_value());
+  ASSERT_TRUE(db_b->upsert_symbol("AAA", cfg_b).has_value());
+  auto result_b = populate_surface_db(*db_b, single_board, SurfaceDbPopulateConfig{});
+  ASSERT_TRUE(result_b.has_value()) << (result_b ? "" : result_b.error().to_string());
+  ASSERT_EQ(result_b->n_ok, 1u);
+  auto s_b = db_b->load_surface(kDate0, "AAA");
+  ASSERT_TRUE(s_b.has_value()) << (s_b ? "" : s_b.error().to_string());
+
+  // ── Discriminating assertions: A (no override) must differ from B ───────
+  // Structural: the stored PricedSurface's PricingContext::al_opts (which
+  // to_priced_surface() stamps straight from the fit's resolved
+  // SessionInputs::deam.al_opts) differs bit-exactly.
+  const AlOpts &al_a = s_a->pricing().al_opts;
+  const AlOpts &al_b = s_b->pricing().al_opts;
+  EXPECT_NE(al_a.n_collocation, al_b.n_collocation);
+  EXPECT_NE(al_a.n_quadrature, al_b.n_quadrature);
+  EXPECT_NE(al_a.max_newton_iter, al_b.max_newton_iter);
+  EXPECT_NE(al_a.tol, al_b.tol);
+  // B's stored al_opts equal exactly the manifest's distinctive value -- the
+  // VALUE reached the fit, not just "some field changed".
+  EXPECT_EQ(al_b.n_collocation, distinctive_al.n_collocation);
+  EXPECT_EQ(al_b.n_quadrature, distinctive_al.n_quadrature);
+  EXPECT_EQ(al_b.max_newton_iter, distinctive_al.max_newton_iter);
+  EXPECT_EQ(al_b.tol, distinctive_al.tol);
+
+  // Behavioral: a different Andersen-Lake discretization re-prices the SAME
+  // (K, T, side) on the SAME fitted board to a genuinely different American
+  // value -- not just a different label on an otherwise-identical surface.
+  auto fv_a = s_a->fair_value(probe_K, probe_T, Side::Call);
+  auto fv_b = s_b->fair_value(probe_K, probe_T, Side::Call);
+  ASSERT_TRUE(fv_a.has_value()) << (fv_a ? "" : fv_a.error().to_string());
+  ASSERT_TRUE(fv_b.has_value()) << (fv_b ? "" : fv_b.error().to_string());
+  EXPECT_NE(*fv_a, *fv_b);
+
+  // ── Flake guard: the SAME manifest config into a fresh db reproduces the
+  // SAME surface (rules out "A and B just happened to differ this run"). ──
+  const auto root_c = test_root("overlay_c");
+  auto db_c = SurfaceDb::create(root_c.string());
+  ASSERT_TRUE(db_c.has_value());
+  ASSERT_TRUE(db_c->upsert_symbol("AAA", cfg_b).has_value());
+  auto result_c = populate_surface_db(*db_c, single_board, SurfaceDbPopulateConfig{});
+  ASSERT_TRUE(result_c.has_value()) << (result_c ? "" : result_c.error().to_string());
+  auto s_c = db_c->load_surface(kDate0, "AAA");
+  ASSERT_TRUE(s_c.has_value()) << (s_c ? "" : s_c.error().to_string());
+
+  const AlOpts &al_c = s_c->pricing().al_opts;
+  EXPECT_EQ(al_b.n_collocation, al_c.n_collocation);
+  EXPECT_EQ(al_b.n_quadrature, al_c.n_quadrature);
+  EXPECT_EQ(al_b.max_newton_iter, al_c.max_newton_iter);
+  EXPECT_EQ(al_b.tol, al_c.tol);
+  auto fv_c = s_c->fair_value(probe_K, probe_T, Side::Call);
+  ASSERT_TRUE(fv_c.has_value()) << (fv_c ? "" : fv_c.error().to_string());
+  EXPECT_EQ(*fv_b, *fv_c);
+
+  std::filesystem::remove_all(root_a);
+  std::filesystem::remove_all(root_b);
+  std::filesystem::remove_all(root_c);
 }
 
 TEST(SurfaceDbPopulate, PinnedConfigHonored) {
