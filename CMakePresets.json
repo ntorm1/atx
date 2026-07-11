@@ -95,28 +95,46 @@
     {
       "name": "ninja",
       "configurePreset": "ninja",
-      "output": { "outputOnFailure": true }
+      "output": { "outputOnFailure": true },
+      "execution": { "jobs": 16, "scheduleRandom": false }
+    },
+    {
+      "name": "ninja-fast",
+      "configurePreset": "ninja",
+      "output": { "outputOnFailure": true },
+      "execution": { "jobs": 16, "scheduleRandom": false },
+      "filter": { "include": { "label": "atx_vol_fast" } }
     },
     {
       "name": "dev",
       "configurePreset": "dev",
-      "output": { "outputOnFailure": true }
+      "output": { "outputOnFailure": true },
+      "execution": { "jobs": 16, "scheduleRandom": false }
     },
     {
       "name": "dev-shared",
       "configurePreset": "dev-shared",
-      "output": { "outputOnFailure": true }
+      "output": { "outputOnFailure": true },
+      "execution": { "jobs": 16, "scheduleRandom": false }
+    },
+    {
+      "name": "rel",
+      "configurePreset": "rel",
+      "output": { "outputOnFailure": true },
+      "execution": { "jobs": 16, "scheduleRandom": false }
     },
     {
       "name": "hygiene",
       "configurePreset": "hygiene",
-      "output": { "outputOnFailure": true }
+      "output": { "outputOnFailure": true },
+      "execution": { "jobs": 16, "scheduleRandom": false }
     },
     {
       "name": "vs",
       "configurePreset": "vs",
       "configuration": "Debug",
-      "output": { "outputOnFailure": true }
+      "output": { "outputOnFailure": true },
+      "execution": { "jobs": 16, "scheduleRandom": false }
     }
   ]
 }

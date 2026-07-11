@@ -25,6 +25,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -32,11 +33,14 @@
 #include "atx/vol/portfolio_pricer.hpp"
 #include "atx/vol/priced_surface.hpp"
 #include "atx/vol/session.hpp"
+#include "atx/vol/surface_archive.hpp"
 #include "atx/vol/universe.hpp"
 #include "atx/vol/vol_curve.hpp"
+#include "support/cached_artifacts.hpp"
 #include "support/opra_fixture.hpp"
 
 using namespace atx::vol;
+using atx::vol::test::cached_spy_convex_dense;
 using atx::vol::testkit::load_opra_board;
 
 namespace {
@@ -64,9 +68,21 @@ namespace {
 
 // Build a liquid listed-contract book over `sess`'s expiries: a few strikes
 // straddling the forward per expiry, both sides. Contracts carry `uid`.
-void append_book(const VolaSession& sess, std::uint32_t uid, double qty_scale,
+// Templated so it runs identically off a live `VolaSession` (XOM, fit live
+// below) or a reloaded `PricedSurface` (SPY, off the cached archive) — the two
+// types expose the same `iv()`; only the expiry-span accessor's name differs
+// (`expiries()` vs `context()`), branched via `if constexpr`.
+template <typename Surface>
+void append_book(const Surface& sess, std::uint32_t uid, double qty_scale,
                  std::vector<Position>& book, std::uint64_t& next_id) {
-  for (const auto& c : sess.expiries()) {
+  const auto expiries = [&sess]() -> std::span<const SliceContext> {
+    if constexpr (requires { sess.expiries(); }) {
+      return sess.expiries();
+    } else {
+      return sess.context();
+    }
+  }();
+  for (const auto& c : expiries) {
     const double T = c.T;
     if (T < 0.03 || T > 1.5) {
       continue;
@@ -90,37 +106,43 @@ void append_book(const VolaSession& sess, std::uint32_t uid, double qty_scale,
 TEST(SpyPortfolioPnl, MultiUnderlying_Price_And_ControlledExplain) {
   auto spy_board = load_opra_board("spy", "SPY");
   auto xom_board = load_opra_board("xom", "XOM");
-  if (!spy_board.has_value() || !xom_board.has_value()) {
+  const auto spy_archive_path = cached_spy_convex_dense();
+  if (!spy_board.has_value() || !xom_board.has_value() || spy_archive_path.empty()) {
     GTEST_SKIP() << "SPY/XOM OPRA parquet fixtures not found";
   }
 
-  // Install both boards into ONE universe -> distinct uids (SPY=1, XOM=2).
+  // Install both boards into ONE universe -> distinct uids (SPY=1, XOM=2). SPY
+  // is still installed (though no longer fit live below) purely to reserve its
+  // uid slot ahead of XOM: universe.hpp guarantees a fresh single-symbol
+  // Universe always assigns uid 1 to its sole ticker, so cached_spy_convex_dense's
+  // OWN (single-symbol) install stamped the archived surface with uid=1 too --
+  // installing SPY first here keeps the two uids in lock-step (checked below).
   Universe uni;
   auto spy_uid = data_install(uni, spy_board->panel.frame);
   auto xom_uid = data_install(uni, xom_board->panel.frame);
   ASSERT_TRUE(spy_uid.has_value() && xom_uid.has_value());
   ASSERT_NE(*spy_uid, *xom_uid);
-  const Underlying& spy_u = *uni.get_underlying(*spy_uid).value();
   const Underlying& xom_u = *uni.get_underlying(*xom_uid).value();
 
-  // SPY: index ConvexDense fit (the 99.5% recipe). XOM: single-name default.
-  SessionInputs spy_in = make_session_inputs(FitPreset::Fast, spy_board->spot(),
-                                             spy_board->r, spy_board->now_ns());
-  spy_in.cash_divs = spy_board->panel.frame.divs;
-  spy_in.curve.kind = VolCurveKind::ConvexDense;
-  spy_in.curve.convex.node_cap = 40;
+  // SPY: reload the shared cached ConvexDense archive (the canary
+  // PnlGreeksConsistency.Session_ConvexDense_GreeksPrice_BitEqual_FairValue and
+  // spy_archive_roundtrip_test both prove the reload prices bit-identically to
+  // a live session). XOM: single-name default, still fit live (21 KB board,
+  // cheap -- no cache needed).
+  auto arch = SurfaceArchive::open_file(spy_archive_path.string());
+  ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
+  auto spy_ps = arch->map_symbol("SPY");
+  ASSERT_TRUE(spy_ps.has_value()) << spy_ps.error().to_string();
+  ASSERT_EQ(spy_ps->uid(), *spy_uid) << "archived SPY uid must match this test's reserved slot";
+
   SessionInputs xom_in = make_session_inputs(FitPreset::Fast, xom_board->spot(),
                                              xom_board->r, xom_board->now_ns());
   xom_in.cash_divs = xom_board->panel.frame.divs;
 
-  auto spy_sess = VolaSession::build(spy_u, spy_in);
-  ASSERT_TRUE(spy_sess.has_value()) << spy_sess.error().to_string();
   auto xom_sess = VolaSession::build(xom_u, xom_in);
   ASSERT_TRUE(xom_sess.has_value()) << xom_sess.error().to_string();
 
-  auto spy_ps = spy_sess->to_priced_surface();
   auto xom_ps = xom_sess->to_priced_surface();
-  ASSERT_TRUE(spy_ps.has_value()) << spy_ps.error().to_string();
   ASSERT_TRUE(xom_ps.has_value()) << xom_ps.error().to_string();
   ASSERT_NE(spy_ps->uid(), xom_ps->uid());
 
@@ -131,7 +153,7 @@ TEST(SpyPortfolioPnl, MultiUnderlying_Price_And_ControlledExplain) {
   // Multi-underlying book across both names.
   std::vector<Position> book;
   std::uint64_t id = 0;
-  append_book(*spy_sess, spy_ps->uid(), 10.0, book, id);
+  append_book(*spy_ps, spy_ps->uid(), 10.0, book, id);
   append_book(*xom_sess, xom_ps->uid(), 25.0, book, id);
   ASSERT_GT(book.size(), 40u);
 

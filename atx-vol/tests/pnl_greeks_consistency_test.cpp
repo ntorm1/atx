@@ -26,16 +26,14 @@
 #include <vector>
 
 #include "atx/vol/black76.hpp"
-#include "atx/vol/data.hpp"
 #include "atx/vol/portfolio_pricer.hpp"
 #include "atx/vol/priced_surface.hpp"
-#include "atx/vol/session.hpp"
-#include "atx/vol/universe.hpp"
+#include "atx/vol/surface_archive.hpp"
 #include "atx/vol/vol_curve.hpp"
-#include "support/opra_fixture.hpp"
+#include "support/cached_artifacts.hpp"
 
 using namespace atx::vol;
-using atx::vol::testkit::load_opra_board;
+using atx::vol::test::cached_spy_convex_dense;
 
 namespace {
 
@@ -140,25 +138,21 @@ TEST(PnlGreeksConsistency, PricedSurface_GreeksPrice_BitEqual_FairValue) {
   EXPECT_GT(n_premium, 0) << "no early-exercise premium anywhere — test is vacuous";
 }
 
-// ── 1b. VolaSession (ConvexDense SPY cold path): greeks->price == fair_value. ──
+// ── 1b. Cached SPY ConvexDense archive (cold path): greeks->price == fair_value.
+// Reloads the shared fitted+serialized surface (see cached_artifacts.hpp)
+// instead of re-fitting the 14k-contract board live; spy_archive_roundtrip_test
+// proves the reload prices bit-identically to the live VolaSession, so this is
+// the exact same bit-equality guarantee at load-time cost instead of fit cost.
 TEST(PnlGreeksConsistency, Session_ConvexDense_GreeksPrice_BitEqual_FairValue) {
-  auto spy_board = load_opra_board("spy", "SPY");
-  if (!spy_board.has_value()) {
+  const auto archive_path = cached_spy_convex_dense();
+  if (archive_path.empty()) {
     GTEST_SKIP() << "SPY OPRA parquet fixture not found";
   }
-  Universe uni;
-  auto spy_uid = data_install(uni, spy_board->panel.frame);
-  ASSERT_TRUE(spy_uid.has_value());
-  const Underlying& spy_u = *uni.get_underlying(*spy_uid).value();
-
-  SessionInputs spy_in = make_session_inputs(FitPreset::Fast, spy_board->spot(),
-                                             spy_board->r, spy_board->now_ns());
-  spy_in.cash_divs = spy_board->panel.frame.divs;
-  spy_in.curve.kind = VolCurveKind::ConvexDense;
-  spy_in.curve.convex.node_cap = 40;
-
-  auto spy_sess = VolaSession::build(spy_u, spy_in);
-  ASSERT_TRUE(spy_sess.has_value()) << spy_sess.error().to_string();
+  auto arch = SurfaceArchive::open_file(archive_path.string());
+  ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
+  auto recon = arch->map_symbol("SPY");
+  ASSERT_TRUE(recon.has_value()) << recon.error().to_string();
+  const PricedSurface& spy_sess = *recon;
 
   int n_checked = 0;
   // greeks()->price == fair_value() is a PER-CONTRACT property, so checking
@@ -166,7 +160,7 @@ TEST(PnlGreeksConsistency, Session_ConvexDense_GreeksPrice_BitEqual_FairValue) {
   // at most ~6 expiries evenly spanning the term structure (front / middle /
   // back T), still honoring the same T in [0.03, 1.5] tradeable window and all
   // 5 moneyness points per sampled expiry.
-  const std::span<const SliceContext> exps = spy_sess->expiries();
+  const std::span<const SliceContext> exps = spy_sess.context();
   std::vector<std::size_t> eligible;
   for (std::size_t i = 0; i < exps.size(); ++i) {
     if (exps[i].T >= 0.03 && exps[i].T <= 1.5) {
@@ -182,12 +176,12 @@ TEST(PnlGreeksConsistency, Session_ConvexDense_GreeksPrice_BitEqual_FairValue) {
     const double F = c.forward;
     for (double m : {0.92, 0.98, 1.0, 1.02, 1.08}) {
       const double K = F * m;
-      if (!std::isfinite(spy_sess->iv(K, T))) {
+      if (!std::isfinite(spy_sess.iv(K, T))) {
         continue;
       }
       const Side side = (m <= 1.0) ? Side::Put : Side::Call;
-      const auto fv = spy_sess->fair_value(K, T, side);
-      const auto g = spy_sess->greeks(K, T, side);
+      const auto fv = spy_sess.fair_value(K, T, side);
+      const auto g = spy_sess.greeks(K, T, side);
       ASSERT_TRUE(fv.has_value());
       ASSERT_TRUE(g.has_value());
       EXPECT_TRUE(bits_equal(g->price, *fv)) << "K=" << K << " T=" << T;

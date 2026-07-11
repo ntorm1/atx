@@ -45,7 +45,7 @@ if ($Ctest) {
   # ctest only runs the built exes (DLLs are applocal-staged beside them), so it
   # needs neither vcvars nor Ninja — invoke it directly to avoid cmd.exe parsing
   # of regex metacharacters like '|' in -R patterns.
-  $ctestArgs = @("--test-dir", "$RepoRoot\build", "--output-on-failure") + $Args
+  $ctestArgs = @("--test-dir", "$RepoRoot\build", "--output-on-failure", "-j", "16") + $Args
   Write-Host "[atx-build] ctest $($ctestArgs -join ' ')" -ForegroundColor Cyan
   & ctest @ctestArgs
   exit $LASTEXITCODE

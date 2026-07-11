@@ -21,10 +21,13 @@
 
 #include "atx/vol/pricer_fitter.hpp"
 #include "atx/vol/session.hpp"
+#include "atx/vol/surface_archive.hpp"
 #include "atx/vol/vol_curve.hpp"
+#include "support/cached_artifacts.hpp"
 #include "support/opra_fixture.hpp"
 
 using namespace atx::vol;
+using atx::vol::test::cached_spy_convex_dense;
 using atx::vol::testkit::load_opra_board;
 using atx::vol::testkit::price_in_band;
 
@@ -44,23 +47,23 @@ constexpr double kPxCleanFloor = 94.0;
 
 } // namespace
 
+// Reloads the shared cached SPY ConvexDense archive (see cached_artifacts.hpp)
+// instead of re-fitting live; spy_archive_roundtrip_test proves the reload
+// reproduces the live session's served accuracy bit-for-bit, so scoring the
+// reconstructed PricedSurface here is the same gate at load-time cost.
 TEST(SpyBidAskRegression, ConvexDenseServedViaSessionInBand) {
-  auto board = load_opra_board("spy", "SPY");
-  if (!board.has_value()) {
+  const auto board = load_opra_board("spy", "SPY");
+  const auto archive_path = cached_spy_convex_dense();
+  if (!board.has_value() || archive_path.empty()) {
     GTEST_SKIP() << "SPY OPRA parquet fixture not found";
   }
 
-  // Fit the arb-free convex dense curve through the session (the path the fixed
-  // carry + de-Am feed). node_cap 40 == the headline bench config.
-  SessionInputs in = make_session_inputs(FitPreset::Fast, board->spot(), board->r, board->now_ns());
-  in.cash_divs = board->panel.frame.divs;
-  in.curve.kind = VolCurveKind::ConvexDense;
-  in.curve.convex.node_cap = 40;
+  auto arch = SurfaceArchive::open_file(archive_path.string());
+  ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
+  auto recon = arch->map_symbol("SPY");
+  ASSERT_TRUE(recon.has_value()) << recon.error().to_string();
 
-  auto sess = VolaSession::build(board->underlying(), in);
-  ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
-
-  const auto sc = price_in_band(*sess, board->underlying(), board->spot(), board->r);
+  const auto sc = price_in_band(*recon, board->underlying(), board->spot(), board->r);
   std::printf("[SPY convex-dense via session] pxCLN(cold)=%.2f%% (%zu/%zu)  "
               "pxALL=%.2f%%  served(cached)=%.2f%%\n",
               sc.px_clean, sc.n_clean_in, sc.n_clean, sc.px_all, sc.px_clean_served);
@@ -69,6 +72,11 @@ TEST(SpyBidAskRegression, ConvexDenseServedViaSessionInBand) {
   EXPECT_GE(sc.px_clean, kPxCleanFloor);
 }
 
+// Deliberately fits LIVE through the explicit PricerFitter facade on the real
+// OPRA board (not the cached archive) — ConvexDenseServedViaSessionInBand above
+// reloads the cached artifact instead. Do NOT convert this one to the cache: it
+// would become a byte-for-byte duplicate of that sibling and drop the only
+// real-board exercise of the explicit PricerFitter::fit() facade.
 TEST(SpyBidAskRegression, PricerFitterExplicitConvexInBand) {
   auto board = load_opra_board("spy", "SPY");
   if (!board.has_value()) {

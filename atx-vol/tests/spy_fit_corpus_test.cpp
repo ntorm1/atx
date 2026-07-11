@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <cstdlib>
 #include <optional>
 #include <span>
 #include <string>
@@ -16,15 +17,38 @@
 #include "atx/vol/calib.hpp"
 #include "atx/vol/chain.hpp"
 #include "atx/vol/pricer_fitter.hpp"
+#include "atx/vol/surface_archive.hpp"
 #include "atx/vol/universe.hpp"
+#include "support/cached_artifacts.hpp"
 #include "support/spy_fit_fixture.hpp"
 
 namespace {
 
 using namespace atx::vol;
+using atx::vol::test::cached_hft_fit;
 using atx::vol::testkit::kSpyFitFixtures;
 using atx::vol::testkit::load_spy_fit_fixture;
 using atx::vol::testkit::price_in_band;
+
+// True when ATX_VOL_SCOREBOARDS is set non-empty and not "0" — the nightly
+// full-sweep preset (Task 7). Read with _dupenv_s under MSVC/clang-cl: plain
+// std::getenv trips /WX (-Wdeprecated-declarations); same pattern as
+// support/bench_gate.hpp.
+[[nodiscard]] bool scoreboards_enabled() noexcept {
+#if defined(_MSC_VER)
+  char *e = nullptr;
+  std::size_t n = 0;
+  if (::_dupenv_s(&e, &n, "ATX_VOL_SCOREBOARDS") != 0 || e == nullptr) {
+    return false;
+  }
+  const bool on = e[0] != '\0' && !(e[0] == '0' && e[1] == '\0');
+  std::free(e);
+  return on;
+#else
+  const char *e = std::getenv("ATX_VOL_SCOREBOARDS");
+  return e != nullptr && e[0] != '\0' && !(e[0] == '0' && e[1] == '\0');
+#endif
+}
 
 TEST(SpyFitCorpus, HftColdStartPreserves98PctOnEveryAvailableSlice) {
   std::size_t loaded = 0;
@@ -66,28 +90,41 @@ TEST(SpyFitCorpus, HftColdStartPreserves98PctOnEveryAvailableSlice) {
 // Task 11 (P2.5) real-corpus accuracy gate: on each fitted SPY board, price every
 // (expiry, side) smile ladder through the σ-boundary interpolant and confirm it
 // stays within $0.001/share of the cold per-strike Andersen-Lake price. Reports
-// the ColdFallback rate. Uses the fitted model IV per strike (sess.iv) as the
+// the ColdFallback rate. Uses the fitted model IV per strike (surface.iv) as the
 // per-strike σ — the exact fitted-smile board the interpolant is designed for.
+//
+// Reloads each fixture's Hft-preset fit from the cached archive (see
+// cached_artifacts.hpp) instead of re-fitting live — HftColdStart... above
+// already fits these SAME ten boards live in the same suite run, and
+// spy_archive_roundtrip_test proves the reload reproduces the live session's
+// iv()/context() bit-for-bit. The cold per-strike Andersen-Lake parity sweep
+// below IS the assertion under test and stays fully live.
 TEST(SigmaInterpCorpus, RealBoard_WithinGates) {
   std::size_t loaded = 0, n_slices = 0, n_priced = 0, n_fallback = 0;
   double max_gap = 0.0;
+  // Every parity ladder is still built, interpolant-priced, and asserted; the
+  // default subsamples the cold-AL reference comparison to every 2nd strike
+  // (deterministic: indices 0, 2, 4, ...) for wall-time. The full-strike sweep
+  // (a strict superset, same tolerances) runs under ATX_VOL_SCOREBOARDS=1
+  // (nightly preset, Task 7).
+  const std::size_t stride = scoreboards_enabled() ? 1 : 2;
   for (const auto &fixture : kSpyFitFixtures) {
     auto board = load_spy_fit_fixture(fixture);
-    if (!board.has_value()) {
+    const auto archive_path = cached_hft_fit(fixture);
+    if (!board.has_value() || archive_path.empty()) {
       continue;
     }
+    auto arch = SurfaceArchive::open_file(archive_path.string());
+    ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
+    auto recon = arch->map_symbol("SPY");
+    ASSERT_TRUE(recon.has_value()) << recon.error().to_string();
     ++loaded;
-    auto chain = OptionChain::from_frame(board->panel.frame, board->env());
-    ASSERT_TRUE(chain.has_value()) << chain.error().to_string();
-    PricerFitter fitter{PricerConfig{.preset = FitPreset::Hft}};
-    ASSERT_TRUE(fitter.fit(*chain).has_value());
-    const VolaSession &sess = fitter.surface()->session();
     const double S = board->spot();
     const double r = board->r;
     const Underlying &U = board->underlying();
     const CalibOpts copts;
 
-    for (const auto &c : sess.expiries()) {
+    for (const auto &c : recon->context()) {
       const double T = c.T;
       if (T < 0.019) {
         continue;
@@ -115,7 +152,7 @@ TEST(SigmaInterpCorpus, RealBoard_WithinGates) {
           if (o.side != side) {
             continue;
           }
-          const double miv = sess.iv(o.K, T);
+          const double miv = recon->iv(o.K, T);
           if (!std::isfinite(miv) || miv <= 0.0) {
             continue;
           }
@@ -141,7 +178,7 @@ TEST(SigmaInterpCorpus, RealBoard_WithinGates) {
         }
         ++n_slices;
         n_fallback += st.n_cold_fallback;
-        for (std::size_t i = 0; i < strikes.size(); ++i) {
+        for (std::size_t i = 0; i < strikes.size(); i += stride) {
           const auto cold =
               andersen_lake(S, strikes[i], T, sigmas[i], r, q_eff, side, std::nullopt);
           if (!cold.has_value()) {

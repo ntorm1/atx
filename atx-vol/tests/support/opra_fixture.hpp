@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -154,11 +155,28 @@ inline void flag_fittable(const std::vector<FitObs> &obs, std::vector<char> &fit
 // raw NBBO band, over the whole board and the locally-convex (clean) subset. This
 // is the pxCLN headline the convex-QP dense fit hits 99.5% on — now scored
 // through the session, whatever curve it fit.
-[[nodiscard]] inline PxBandScore price_in_band(const VolaSession &sess, const Underlying &U,
+//
+// Templated on `Surface` so this scorer works identically off a live
+// `VolaSession` (`expiries()`/`iv()`/`fair_value()`) or a reloaded
+// `PricedSurface` (`context()`/`iv()`/`fair_value()` — the same semantics per
+// priced_surface.hpp; `to_priced_surface()`/the archive round-trip proves the
+// two agree bit-for-bit). `expiries()` vs `context()` is the only name that
+// differs between the two types, so it is the only thing branched on here;
+// existing `VolaSession` call sites are unaffected (template argument
+// deduction instantiates the identical `Surface=VolaSession` specialization).
+template <typename Surface>
+[[nodiscard]] inline PxBandScore price_in_band(const Surface &sess, const Underlying &U,
                                                double S, double r, const CalibOpts &opts = {}) {
   PxBandScore bs;
   std::vector<char> fit;
-  for (const auto &c : sess.expiries()) {
+  const auto expiries = [&sess]() -> std::span<const SliceContext> {
+    if constexpr (requires { sess.expiries(); }) {
+      return sess.expiries();
+    } else {
+      return sess.context();
+    }
+  }();
+  for (const auto &c : expiries) {
     const double T = c.T;
     if (T < 0.019) {
       continue;

@@ -18,6 +18,7 @@
 #include "atx/vol/correction.hpp"
 #include "atx/vol/counters.hpp"
 #include "atx/vol/greeks.hpp"
+#include "support/oracle_pde_golden.hpp"
 #include "support/oracle_pricer_pde.hpp"
 
 // American pricer coverage, ported from the C ats-vol tests test_pricer_al.c,
@@ -58,6 +59,7 @@ using atx::vol::black76_price;
 using atx::vol::CorrectionCache;
 using atx::vol::Side;
 using atx::vol::test::oracle_pde_american;
+using atx::vol::test::oracle_pde_golden;
 
 // Unwrap a Result<double> in a test, failing loudly on an unexpected error.
 double value_or_fail(const atx::core::Result<double>& r) {
@@ -248,7 +250,7 @@ TEST(AndersenLake, VsPdeOracle_PutGrid) {
       for (double T : Ts) {
         const double p_al =
             value_or_fail(andersen_lake(S, K, T, sigma, r, q, Side::Put));
-        const double p_pde = oracle_pde_american(S, K, T, sigma, r, q, Side::Put);
+        const double p_pde = oracle_pde_golden(S, K, T, sigma, r, q, Side::Put);
         ASSERT_TRUE(std::isfinite(p_pde));
         if (p_pde > 0.05) {
           max_rel = std::fmax(max_rel, std::fabs(p_al - p_pde) / p_pde);
@@ -273,7 +275,7 @@ TEST(AndersenLake, VsPdeOracle_CallGrid) {
         const double p_al =
             value_or_fail(andersen_lake(S, K, T, sigma, r, q, Side::Call));
         const double p_pde =
-            oracle_pde_american(S, K, T, sigma, r, q, Side::Call);
+            oracle_pde_golden(S, K, T, sigma, r, q, Side::Call);
         ASSERT_TRUE(std::isfinite(p_pde));
         if (p_pde > 0.05) {
           max_rel = std::fmax(max_rel, std::fabs(p_al - p_pde) / p_pde);
@@ -306,7 +308,7 @@ TEST(Baw, VsPdeOracle_WithinApproximationTolerance) {
   // here). Assert BAW >= European and within a generous BAW tolerance.
   const double S = 100.0, K = 100.0, T = 1.0, sigma = 0.25, r = 0.04, q = 0.0;
   const double p_baw = value_or_fail(baw_american(S, K, T, sigma, r, q, Side::Put));
-  const double p_pde = oracle_pde_american(S, K, T, sigma, r, q, Side::Put);
+  const double p_pde = oracle_pde_golden(S, K, T, sigma, r, q, Side::Put);
   ASSERT_TRUE(std::isfinite(p_pde));
   EXPECT_GE(p_baw, euro_put(S, K, T, sigma, r, q));
   EXPECT_LT(std::fabs(p_baw - p_pde) / p_pde, 5.0e-2);
@@ -678,9 +680,9 @@ TEST(CallGreeksFd, Fast_MeetsPdeGreekGates) {
     ASSERT_TRUE(fast.has_value()) << c.tag;
     // PDE price + central-difference delta/gamma from one triple of oracle solves.
     const double h = 0.01 * c.S;
-    const double v0 = oracle_pde_american(c.S, K, c.T, c.sigma, c.r, c.q, Side::Call, grid);
-    const double vp = oracle_pde_american(c.S + h, K, c.T, c.sigma, c.r, c.q, Side::Call, grid);
-    const double vm = oracle_pde_american(c.S - h, K, c.T, c.sigma, c.r, c.q, Side::Call, grid);
+    const double v0 = oracle_pde_golden(c.S, K, c.T, c.sigma, c.r, c.q, Side::Call, grid);
+    const double vp = oracle_pde_golden(c.S + h, K, c.T, c.sigma, c.r, c.q, Side::Call, grid);
+    const double vm = oracle_pde_golden(c.S - h, K, c.T, c.sigma, c.r, c.q, Side::Call, grid);
     ASSERT_TRUE(std::isfinite(v0) && std::isfinite(vp) && std::isfinite(vm)) << c.tag;
     const double pde_delta = (vp - vm) / (2.0 * h);
     const double pde_gamma = (vp - 2.0 * v0 + vm) / (h * h);
@@ -809,19 +811,19 @@ TEST(CallGreeksAl, MeetsPdeGreekGates) {
     // External anchors from the Crank-Nicolson PDE oracle: price + a numeric calendar
     // theta (central in T). Catches a wrong internal-put mapping or a flipped PDE sign
     // (either would move theta O(1), not O(oracle-noise)).
-    const double v0 = oracle_pde_american(c.S, K, c.T, c.sigma, c.r, c.q, Side::Call, grid);
+    const double v0 = oracle_pde_golden(c.S, K, c.T, c.sigma, c.r, c.q, Side::Call, grid);
     ASSERT_TRUE(std::isfinite(v0)) << c.tag;
     EXPECT_LT(std::fabs(a->price - v0) / std::fmax(v0, 1.0e-6), 5.0e-3) << c.tag << " price-vs-pde";
     const double hd = 0.01 * c.S;
-    const double vSp = oracle_pde_american(c.S + hd, K, c.T, c.sigma, c.r, c.q, Side::Call, grid);
-    const double vSm = oracle_pde_american(c.S - hd, K, c.T, c.sigma, c.r, c.q, Side::Call, grid);
+    const double vSp = oracle_pde_golden(c.S + hd, K, c.T, c.sigma, c.r, c.q, Side::Call, grid);
+    const double vSm = oracle_pde_golden(c.S - hd, K, c.T, c.sigma, c.r, c.q, Side::Call, grid);
     ASSERT_TRUE(std::isfinite(vSp) && std::isfinite(vSm)) << c.tag;
     const double delta_pde = (vSp - vSm) / (2.0 * hd);
     max_delta_ext = std::max(max_delta_ext, std::fabs(a->delta - delta_pde));
     EXPECT_LT(std::fabs(a->delta - delta_pde), 1.0e-2) << c.tag << " delta-vs-pde";
     const double hT = 1.0e-2;
-    const double vTp = oracle_pde_american(c.S, K, c.T + hT, c.sigma, c.r, c.q, Side::Call, grid);
-    const double vTm = oracle_pde_american(c.S, K, c.T - hT, c.sigma, c.r, c.q, Side::Call, grid);
+    const double vTp = oracle_pde_golden(c.S, K, c.T + hT, c.sigma, c.r, c.q, Side::Call, grid);
+    const double vTm = oracle_pde_golden(c.S, K, c.T - hT, c.sigma, c.r, c.q, Side::Call, grid);
     ASSERT_TRUE(std::isfinite(vTp) && std::isfinite(vTm)) << c.tag;
     const double theta_pde = -(vTp - vTm) / (2.0 * hT);  // calendar theta = dV/dt
     max_theta_gap = std::max(max_theta_gap, std::fabs(a->theta - theta_pde) / 365.0);
@@ -858,13 +860,13 @@ TEST(CallGreeksAl, ThetaCharm_MoreAccurateThanFd) {
     const auto fd = american_greeks_fd(c.S, K, c.T, c.sigma, c.r, c.q, Side::Call);
     ASSERT_TRUE(al.has_value() && fd.has_value()) << c.tag;
     const double hT = 5.0e-3, hS = 0.01 * c.S;
-    const double vTp = oracle_pde_american(c.S, K, c.T + hT, c.sigma, c.r, c.q, Side::Call, fine);
-    const double vTm = oracle_pde_american(c.S, K, c.T - hT, c.sigma, c.r, c.q, Side::Call, fine);
+    const double vTp = oracle_pde_golden(c.S, K, c.T + hT, c.sigma, c.r, c.q, Side::Call, fine);
+    const double vTm = oracle_pde_golden(c.S, K, c.T - hT, c.sigma, c.r, c.q, Side::Call, fine);
     // charm = d(theta)/dS: central difference of the numeric oracle theta in S.
-    const double vSpTp = oracle_pde_american(c.S + hS, K, c.T + hT, c.sigma, c.r, c.q, Side::Call, fine);
-    const double vSpTm = oracle_pde_american(c.S + hS, K, c.T - hT, c.sigma, c.r, c.q, Side::Call, fine);
-    const double vSmTp = oracle_pde_american(c.S - hS, K, c.T + hT, c.sigma, c.r, c.q, Side::Call, fine);
-    const double vSmTm = oracle_pde_american(c.S - hS, K, c.T - hT, c.sigma, c.r, c.q, Side::Call, fine);
+    const double vSpTp = oracle_pde_golden(c.S + hS, K, c.T + hT, c.sigma, c.r, c.q, Side::Call, fine);
+    const double vSpTm = oracle_pde_golden(c.S + hS, K, c.T - hT, c.sigma, c.r, c.q, Side::Call, fine);
+    const double vSmTp = oracle_pde_golden(c.S - hS, K, c.T + hT, c.sigma, c.r, c.q, Side::Call, fine);
+    const double vSmTm = oracle_pde_golden(c.S - hS, K, c.T - hT, c.sigma, c.r, c.q, Side::Call, fine);
     ASSERT_TRUE(std::isfinite(vTp) && std::isfinite(vTm));
     const double theta_ref = -(vTp - vTm) / (2.0 * hT);
     const double charm_ref = -((vSpTp - vSpTm) - (vSmTp - vSmTm)) / (2.0 * hS * 2.0 * hT);
@@ -1738,7 +1740,7 @@ TEST(AndersenLakeRegime, CornerGrid_VsPdeOracle) {
   for (const Cell& c : cells) {
     const double p_al =
         value_or_fail(andersen_lake(c.S, K, T, sigma, c.r, c.q, c.side));
-    const double p_pde = oracle_pde_american(c.S, K, T, sigma, c.r, c.q, c.side);
+    const double p_pde = oracle_pde_golden(c.S, K, T, sigma, c.r, c.q, c.side);
     ASSERT_TRUE(std::isfinite(p_pde));
     if (p_pde > 0.05) {
       max_rel = std::fmax(max_rel, std::fabs(p_al - p_pde) / p_pde);
@@ -1762,7 +1764,7 @@ TEST(AndersenLakeRegime, UnsupportedPutRegression_OldEuropeanWasWrong) {
   EXPECT_EQ(res.error().code(), atx::core::ErrorCode::NotImplemented);
 
   const double euro = euro_put(S, K, T, sigma, r, q);
-  const double pde = oracle_pde_american(S, K, T, sigma, r, q, Side::Put);
+  const double pde = oracle_pde_golden(S, K, T, sigma, r, q, Side::Put);
   ASSERT_TRUE(std::isfinite(pde));
   EXPECT_GT(std::fabs(euro - pde), 0.005);  // the silent European answer was wrong
   EXPECT_GT(pde, euro);                     // early exercise has genuine value here
@@ -2338,13 +2340,13 @@ TEST(SigmaInterp, MeetsPdeGreekGates) {
           << sd << c.tag << " charm-contrib";
       max_delta_gap = std::max(max_delta_gap, std::fabs(g.delta - cold.delta));
       // External anchor: the Crank-Nicolson PDE oracle price + numeric δ.
-      const double v0 = oracle_pde_american(c.S, c.K, c.T, c.sigma, c.r, c.q, side, grid);
+      const double v0 = oracle_pde_golden(c.S, c.K, c.T, c.sigma, c.r, c.q, side, grid);
       ASSERT_TRUE(std::isfinite(v0)) << sd << c.tag;
       EXPECT_LT(std::fabs(g.price - v0) / std::fmax(v0, 1.0e-6), 5.0e-3) << sd << c.tag << " price-vs-pde";
       max_price_gap = std::max(max_price_gap, std::fabs(g.price - v0));
       const double hd = 0.01 * c.S;
-      const double vSp = oracle_pde_american(c.S + hd, c.K, c.T, c.sigma, c.r, c.q, side, grid);
-      const double vSm = oracle_pde_american(c.S - hd, c.K, c.T, c.sigma, c.r, c.q, side, grid);
+      const double vSp = oracle_pde_golden(c.S + hd, c.K, c.T, c.sigma, c.r, c.q, side, grid);
+      const double vSm = oracle_pde_golden(c.S - hd, c.K, c.T, c.sigma, c.r, c.q, side, grid);
       ASSERT_TRUE(std::isfinite(vSp) && std::isfinite(vSm)) << sd << c.tag;
       EXPECT_LT(std::fabs(g.delta - (vSp - vSm) / (2.0 * hd)), 1.0e-2) << sd << c.tag << " delta-vs-pde";
     }

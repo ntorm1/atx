@@ -2,15 +2,10 @@
 
 #include <cstddef>
 #include <cstdio>
-#include <filesystem>
-#include <string>
 
 #include "atx/vol/arb.hpp"             // arb_check_calendar(CurveSurface, ...)
-#include "atx/vol/curve_fit.hpp"       // fit_curve_surface, CurveSurfaceReport
-#include "atx/vol/opra_panel.hpp"      // load_opra_cbbo_parquet, OpraLoadSpec
-#include "atx/vol/surface_parity.hpp"  // SurfaceParityInputs, CalendarRepair
-#include "atx/vol/universe.hpp"        // Universe, data_install, Underlying
-#include "atx/vol/vol_curve.hpp"       // CurveConfig (default = ConvexDense)
+#include "atx/vol/surface_archive.hpp" // SurfaceArchive
+#include "support/cached_artifacts.hpp"
 
 // By-construction calendar no-arb gate for the SERVED dense surface.
 //
@@ -20,89 +15,38 @@
 // total variance can never dip below a shorter-dated one's AT THE NODES, and the
 // served `CurveSurface` should be calendar-arb-free.
 //
-// This mirrors the spy_real_test.cpp fixture (same cached SPY OPRA parquet), but
-// routes the board through `fit_curve_surface` with the DEFAULT ConvexDense
-// config and CRUCIALLY with `CalendarRepair::None` — the assertion must prove
-// the FIT itself is arb-free by construction, NOT a post-assembly repair pass.
+// Reloads the shared cached SPY ConvexDense archive (see cached_artifacts.hpp)
+// instead of re-fitting live: cached_spy_convex_dense() fits with the SAME
+// recipe this test used to build inline (Fast preset -> SessionInputs ->
+// SurfaceParityInputs 1:1, CalendarRepair::None, al_fast_opts + iv_tol 1e-5 +
+// n_atm 1, default ConvexDense node_cap 40 — see session.cpp's
+// apply_fit_preset(Fast) and VolaSession::build), and the archive round-trip
+// (spy_archive_roundtrip_test) proves the reload's CurveSurface is bit-
+// identical to the live fit's, so `arb_check_calendar` below sees the exact
+// same calendar residuals — the property under test lives in the artifact.
 // The parquet is gitignored; if it is absent the test SKIPS (never triggers a
 // Databento pull).
 
 namespace {
 
-using atx::vol::al_fast_opts;
 using atx::vol::arb_check_calendar;
-using atx::vol::CalendarRepair;
-using atx::vol::CurveConfig;
-using atx::vol::data_install;
-using atx::vol::fit_curve_surface;
-using atx::vol::load_opra_cbbo_parquet;
-using atx::vol::OpraLoadSpec;
-using atx::vol::SurfaceParityInputs;
-using atx::vol::Underlying;
-using atx::vol::Universe;
-
-// Locate the cached SPY parquet across the paths a test binary might run from.
-// (Copied from spy_real_test.cpp — same fixture, same gitignored data.)
-[[nodiscard]] std::string find_spy_parquet() {
-  const char* candidates[] = {
-      "data/spy_opra_cbbo1m_2026-06-05T1955Z.parquet",
-      "../data/spy_opra_cbbo1m_2026-06-05T1955Z.parquet",
-      "../../data/spy_opra_cbbo1m_2026-06-05T1955Z.parquet",
-      "C:/atx/data/spy_opra_cbbo1m_2026-06-05T1955Z.parquet",
-  };
-  for (const char* c : candidates) {
-    if (std::filesystem::exists(c)) {
-      return c;
-    }
-  }
-  return {};
-}
+using atx::vol::SurfaceArchive;
 
 }  // namespace
 
 TEST(CurveSurfaceNoArb, SpyDenseIsCalendarArbFree) {
-  const std::string path = find_spy_parquet();
-  if (path.empty()) {
+  const auto archive_path = atx::vol::test::cached_spy_convex_dense();
+  if (archive_path.empty()) {
     GTEST_SKIP() << "cached SPY OPRA parquet not found; run the databento pull + "
                     "opra_dbn_to_parquet to materialise the fixture.";
   }
 
-  OpraLoadSpec spec;
-  spec.path = path;
-  spec.underlying = "SPY";
-  spec.snapshot_iso = "2026-06-05T19:55:00Z";
-  spec.r = 0.043;
-  const auto panel = load_opra_cbbo_parquet(spec);
-  ASSERT_TRUE(panel.has_value()) << panel.error().to_string();
+  auto arch = SurfaceArchive::open_file(archive_path.string());
+  ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
+  auto recon = arch->map_symbol("SPY");
+  ASSERT_TRUE(recon.has_value()) << recon.error().to_string();
 
-  Universe u;
-  const auto uid = data_install(u, panel->frame);
-  ASSERT_TRUE(uid.has_value());
-  const auto under = u.get_underlying(*uid);
-  ASSERT_TRUE(under.has_value());
-  const Underlying* U = *under;
-
-  // Prove the FIT is arb-free by construction, so repair MUST be None here.
-  SurfaceParityInputs in{};
-  in.S = panel->implied_spot;
-  in.r = spec.r;
-  in.now_ts_ns = panel->frame.snapshot_ts_ns;
-  in.band_k = 1.0;
-  in.repair = CalendarRepair::None;
-  // De-Americanize with the SAME fast-cold Andersen-Lake preset the served path
-  // uses (session Fast/Hft: al_fast_opts + iv_tol 1e-5 + single ATM borrow pair).
-  // This is what production actually serves, and it keeps the per-strike de-Am
-  // fast-cold instead of the ACCURATE default — a full-board fit at machine
-  // precision is ~5x wasted cost the surface (RMSE ~1e-2) never needed.
-  in.deam.al_opts = al_fast_opts();
-  in.deam.iv_tol = 1.0e-5;
-  in.deam.n_atm = 1;
-
-  CurveConfig cfg;  // default = ConvexDense (the served dense surface)
-  auto rep = fit_curve_surface(*U, in, cfg);
-  ASSERT_TRUE(rep.has_value()) << rep.error().to_string();
-
-  auto viol = arb_check_calendar(rep->surface, -0.6, 0.6, 64);
+  auto viol = arb_check_calendar(recon->surface(), -0.6, 0.6, 64);
   ASSERT_TRUE(viol.has_value()) << viol.error().to_string();
 
   // Dump every residual crossing (k, T_prev, T_curr, slack = w_prev - w_curr).
