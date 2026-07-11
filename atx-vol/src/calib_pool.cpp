@@ -167,7 +167,11 @@ struct UidPlan {
                                     const CalibOpts& opts, FitDiag* diag) {
   switch (param) {
     case Parametrization::Essvi:
-      return essvi_calib_surface(surface, under, curves, opts, diag);
+      // calib_pool already fans across names on its own jthread pool; force
+      // n_workers=1 so the per-expiry chain loop stays serial and does not nest
+      // a second fan-out under it (documented oversubscription risk).
+      return essvi_calib_surface(surface, under, curves, opts, diag,
+                                 /*prior=*/nullptr, /*n_workers=*/1u);
     case Parametrization::Svi:
       return svi_calib_surface(surface, under, curves, opts, diag);
     case Parametrization::SviMm:

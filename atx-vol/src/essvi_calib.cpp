@@ -16,6 +16,7 @@
 #include "atx/vol/detail/calib_shared.hpp"  // detail::outer_cap + shared LM constants
 #include "atx/vol/detail/resid_basis.hpp"  // dense C2 residual basis (shared with hot-path eval)
 #include "atx/vol/detail/robust.hpp"   // huber_weights_strided
+#include "atx/vol/parallel_for.hpp"    // parallel_for_dynamic, atx_auto_worker_count
 #include "atx/vol/simd/essvi_batch.hpp"  // batched w + w-grad kernels (fit hot path)
 #include "atx/vol/vol_surface.hpp"     // essvi_backbone_w, essvi_w_grad3, essvi_phi_max
 
@@ -670,11 +671,52 @@ void fit_wing_residual(std::span<const FitObs> obs, EssviParams& slice,
   slice.resid_n_basis = 5;
 }
 
+// ── Per-slice fit-core scratch arena ─────────────────────────────────────
+//
+// Owns the 13 per-`fit_core` vectors so they can be allocated ONCE and reused
+// across every slice a driver fits (serial drivers keep one; the parallel
+// driver keeps one PER WORKER, indexed by the fan-out's worker id — race-free).
+// `reset(n)` re-establishes each buffer as exactly n zero-initialised doubles,
+// reproducing the historical `std::vector<double> x(n)` value-initialisation
+// bit-for-bit: every element is 0.0 before any read, so reuse can never leak a
+// prior slice's state, and no allocation occurs once capacity has stabilised.
+struct FitScratch {
+  std::vector<double> base_w;  // fixed obs weights
+  std::vector<double> active;  // IRLS-mutable weight copy
+  std::vector<double> kbuf;    // contiguous obs log-moneyness (LM-invariant)
+  std::vector<double> wbuf;    // batch model-w output
+  std::vector<double> dth;     // batch ∂w/∂theta
+  std::vector<double> dphi;    // batch ∂w/∂phi
+  std::vector<double> drho;    // batch ∂w/∂rho
+  std::vector<double> r;       // LM residuals
+  std::vector<double> jpsi;    // LM Jacobian column ∂/∂psi
+  std::vector<double> jp;      // LM Jacobian column ∂/∂p
+  std::vector<double> jl;      // LM Jacobian column ∂/∂lambda
+  std::vector<double> r_abs;   // |w-residual| for the IRLS reweight
+  std::vector<double> hw;      // Huber weights
+
+  void reset(std::size_t n) {
+    base_w.assign(n, 0.0);
+    active.assign(n, 0.0);
+    kbuf.assign(n, 0.0);
+    wbuf.assign(n, 0.0);
+    dth.assign(n, 0.0);
+    dphi.assign(n, 0.0);
+    drho.assign(n, 0.0);
+    r.assign(n, 0.0);
+    jpsi.assign(n, 0.0);
+    jp.assign(n, 0.0);
+    jl.assign(n, 0.0);
+    r_abs.assign(n, 0.0);
+    hw.assign(n, 0.0);
+  }
+};
+
 // ── Per-slice fit core (parameterized by the theta band) ─────────────────
 [[nodiscard]] Result<EssviParams> fit_core(std::span<const FitObs> obs, double T,
                                            double F, const CalibOpts& opts,
                                            const ThetaBand& band,
-                                           FitDiag* out_diag,
+                                           FitDiag* out_diag, FitScratch& scratch,
                                            const EssviParams* warm = nullptr) {
   if (obs.empty() || !(T > 0.0)) {
     return Err(ErrorCode::InvalidArgument,
@@ -682,9 +724,14 @@ void fit_wing_residual(std::span<const FitObs> obs, EssviParams& slice,
   }
   const std::size_t n = obs.size();
 
+  // Reset the scratch arena to n zeroed doubles (matches the historical fresh
+  // per-call vector(n) value-init exactly; no allocation once warmed). Local
+  // references below keep the LM body identical to the pre-arena code.
+  scratch.reset(n);
+
   // Base (fixed) weights and the IRLS-mutable active copy.
-  std::vector<double> base_w(n);
-  std::vector<double> active(n);
+  std::vector<double>& base_w = scratch.base_w;
+  std::vector<double>& active = scratch.active;
   double total_base_w = 0.0;
   for (std::size_t i = 0; i < n; ++i) {
     base_w[i] = (obs[i].weight_w > 0.0) ? obs[i].weight_w : 1.0;
@@ -768,22 +815,22 @@ void fit_wing_residual(std::span<const FitObs> obs, EssviParams& slice,
   // obs span is fixed). Plus the reusable per-iteration batch-output scratch
   // (model w + the three natural partials) — all allocated once per fit_core,
   // never per LM iteration.
-  std::vector<double> kbuf(n);
+  std::vector<double>& kbuf = scratch.kbuf;
   for (std::size_t i = 0; i < n; ++i) {
     kbuf[i] = obs[i].k;
   }
-  std::vector<double> wbuf(n);
-  std::vector<double> dth(n);
-  std::vector<double> dphi(n);
-  std::vector<double> drho(n);
+  std::vector<double>& wbuf = scratch.wbuf;
+  std::vector<double>& dth = scratch.dth;
+  std::vector<double>& dphi = scratch.dphi;
+  std::vector<double>& drho = scratch.drho;
 
   // LM scratch (residuals + 3 Jacobian columns).
-  std::vector<double> r(n);
-  std::vector<double> jpsi(n);
-  std::vector<double> jp(n);
-  std::vector<double> jl(n);
-  std::vector<double> r_abs(n);
-  std::vector<double> hw(n);
+  std::vector<double>& r = scratch.r;
+  std::vector<double>& jpsi = scratch.jpsi;
+  std::vector<double>& jp = scratch.jp;
+  std::vector<double>& jl = scratch.jl;
+  std::vector<double>& r_abs = scratch.r_abs;
+  std::vector<double>& hw = scratch.hw;
 
   std::uint16_t outer_iters = 0;
   std::uint16_t inner_total = 0;
@@ -932,15 +979,101 @@ void fit_wing_residual(std::span<const FitObs> obs, EssviParams& slice,
   return is_usable_warm_seed(*best) ? best : nullptr;
 }
 
+// One chain's independent fit work: obs-build -> theta band -> warm seed ->
+// fit_core -> post-fit sigma clamp. PURE w.r.t. shared state (reads `c`,
+// `curves`, `opts`, `prior` const; writes only its own `scratch`), so it is
+// safe to run concurrently over disjoint chains — this is the unit BOTH surface
+// drivers use: the serial path calls it inline (live theta_floor), the parallel
+// path fans it out. `theta_floor` (> 0 only in the sequential driver) raises the
+// theta band's lower bound; in the parallel driver it is always 0. The returned
+// result carries everything phase 2 needs to replicate the serial control flow
+// WITHOUT recomputing.
+struct ChainFitResult {
+  bool obs_built = false;       // build_observations succeeded -> n_dropped valid
+  std::uint32_t n_dropped = 0;  // dropped-quote count for this chain
+  bool success = false;         // a slice was produced AND passed the sigma clamp
+  EssviParams slice{};          // fitted slice (valid iff success)
+  FitDiag diag{};               // per-chain diagnostics (valid iff success)
+};
+
+[[nodiscard]] ChainFitResult fit_one_chain(const Chain& c, const CurveSet& curves,
+                                           const CalibOpts& opts, bool sequential,
+                                           double theta_floor,
+                                           const VolSurface* prior,
+                                           FitScratch& scratch) {
+  ChainFitResult res{};
+  const double T = c.T;
+  if (!(T > kTMinFit)) {
+    return res;  // sub-threshold expiry: no obs, no slot
+  }
+  const double F = curves.forward.forward_at(c.expiry_id);
+  if (!std::isfinite(F) || !(F > 0.0)) {
+    return res;
+  }
+  const double df = curves.yield.disc(T);
+
+  const Result<ObsSet> obs_res = build_observations(c, F, T, df, opts);
+  if (!obs_res.has_value()) {
+    return res;  // too few survivors / malformed chain: skip this expiry
+  }
+  const ObsSet& os = *obs_res;
+  res.obs_built = true;
+  res.n_dropped = os.n_dropped;
+  if (os.obs.size() < opts.min_obs_per_slice) {
+    return res;  // below the min-obs floor: drops counted, no slot
+  }
+
+  // Theta band: default, or floored at the previous slice's theta. Cap the
+  // raised floor a RELATIVE margin below theta_hi so the band stays strictly
+  // non-inverted (theta_lo < theta_hi) even when theta_hi is near zero on a
+  // tiny-T slice — an absolute 1e-12 gap could vanish against a small theta_hi.
+  ThetaBand band = default_band(T);
+  if (sequential && theta_floor > band.lo) {
+    const double margin = std::max(2.0e-12, 1.0e-9 * band.hi);
+    band.lo = std::min(theta_floor, band.hi - margin);
+  }
+
+  const EssviParams* warm = find_warm_seed(prior, T);
+
+  FitDiag diag{};
+  const Result<EssviParams> fit = fit_core(
+      std::span<const FitObs>{os.obs}, T, F, opts, band, &diag, scratch, warm);
+  if (!fit.has_value()) {
+    return res;  // LM failure: skip (fallback machinery deferred, see PORT NOTE)
+  }
+  EssviParams slice = *fit;
+  slice.T = T;
+  slice.F = F;
+  slice.expiry_id = c.expiry_id;
+  slice.expiry_ns = c.expiry_ns;
+
+  // Post-fit ATM-σ clamp (mirror of the C robustness guard).
+  if (opts.max_post_fit_sigma > 0.0 && slice.theta > 0.0) {
+    const double sigma_atm = std::sqrt(slice.theta / T);
+    if (sigma_atm > opts.max_post_fit_sigma) {
+      return res;  // clamp reject: drops already counted, no slot
+    }
+  }
+
+  res.success = true;
+  res.slice = slice;
+  res.diag = diag;
+  return res;
+}
+
 // Shared chain walk for both surface drivers. `sequential` raises the theta
-// floor to the previous slice's theta. `prior` (optional) is a previously-fit
-// surface each slice is warm-started from via `find_warm_seed`.
+// floor to the previous slice's theta (a RAW loop-carry, so that driver stays
+// serial). `prior` (optional) is a previously-fit surface each slice is warm-
+// started from via `find_warm_seed`. `n_workers` fans the (order-independent)
+// NON-sequential per-expiry fit across a thread pool; the serial phase-2
+// reduction keeps results + FitDiag bit-identical at every worker count.
 [[nodiscard]] Status calib_surface_impl(VolSurface& surface,
                                         const Underlying& under,
                                         const CurveSet& curves,
                                         const CalibOpts& opts,
                                         FitDiag* out_diag, bool sequential,
-                                        const VolSurface* prior) {
+                                        const VolSurface* prior,
+                                        unsigned n_workers) {
   if (surface.param() != Parametrization::Essvi) {
     return Err(ErrorCode::InvalidArgument,
                "essvi_calib_surface: surface is not eSSVI-parametrized");
@@ -961,76 +1094,95 @@ void fit_wing_residual(std::span<const FitObs> obs, EssviParams& slice,
   // Sequential theta floor: 0 disables it (first slice / non-sequential).
   double theta_floor = 0.0;
 
-  for (const Chain& c : under.chains) {
-    if (n_fit_ok >= surface.capacity()) {
-      break;
-    }
-    const double T = c.T;
-    if (!(T > kTMinFit)) {
-      continue;
-    }
-    const double F = curves.forward.forward_at(c.expiry_id);
-    if (!std::isfinite(F) || !(F > 0.0)) {
-      continue;
-    }
-    const double df = curves.yield.disc(T);
+  const std::size_t n_chains = under.chains.size();
 
-    const Result<ObsSet> obs_res = build_observations(c, F, T, df, opts);
-    if (!obs_res.has_value()) {
-      continue;  // too few survivors / malformed chain: skip this expiry
+  // Phase-2 consumption of one chain's fit result, in ORIGINAL chain order.
+  // Replicates the serial control flow EXACTLY: accumulate this chain's drops
+  // (only when its observations were built — matching the serial `total_dropped
+  // += os.n_dropped` placement after a successful build), then, on success,
+  // compact it into the next ascending-T slot (`set_slice_essvi(n_fit_ok, ...)`
+  // — a PREFIX-SUM over earlier successes, NOT a disjoint write, so failed
+  // chains leave no hole), raise the theta floor, and reduce its diagnostics in
+  // chain order (identical FP summation order => identical bits). The caller
+  // checks the capacity break BEFORE invoking, so speculative fits beyond the
+  // break are discarded here unconsumed and never counted.
+  auto consume = [&](const ChainFitResult& res) -> Status {
+    if (res.obs_built) {
+      total_dropped += res.n_dropped;
     }
-    const ObsSet& os = *obs_res;
-    total_dropped += os.n_dropped;
-    if (os.obs.size() < opts.min_obs_per_slice) {
-      continue;
+    if (!res.success) {
+      return Ok();
     }
-
-    // Theta band: default, or floored at the previous slice's theta. Cap the
-    // raised floor a RELATIVE margin below theta_hi so the band stays strictly
-    // non-inverted (theta_lo < theta_hi) even when theta_hi is near zero on a
-    // tiny-T slice — an absolute 1e-12 gap could vanish against a small theta_hi.
-    ThetaBand band = default_band(T);
-    if (sequential && theta_floor > band.lo) {
-      const double margin = std::max(2.0e-12, 1.0e-9 * band.hi);
-      band.lo = std::min(theta_floor, band.hi - margin);
-    }
-
-    const EssviParams* warm = find_warm_seed(prior, T);
-
-    FitDiag diag{};
-    const Result<EssviParams> fit = fit_core(
-        std::span<const FitObs>{os.obs}, T, F, opts, band, &diag, warm);
-    if (!fit.has_value()) {
-      continue;  // LM failure: skip (fallback machinery deferred, see PORT NOTE)
-    }
-    EssviParams slice = *fit;
-    slice.T = T;
-    slice.F = F;
-    slice.expiry_id = c.expiry_id;
-    slice.expiry_ns = c.expiry_ns;
-
-    // Post-fit ATM-σ clamp (mirror of the C robustness guard).
-    if (opts.max_post_fit_sigma > 0.0 && slice.theta > 0.0) {
-      const double sigma_atm = std::sqrt(slice.theta / T);
-      if (sigma_atm > opts.max_post_fit_sigma) {
-        continue;
-      }
-    }
-
-    const Status set_st = surface.set_slice_essvi(n_fit_ok, slice);
+    const Status set_st = surface.set_slice_essvi(n_fit_ok, res.slice);
     if (!set_st.has_value()) {
       return set_st;  // capacity / parametrization mismatch (should not happen)
     }
-    theta_floor = slice.theta;
-
-    total_used += diag.n_quotes_used;
-    sum_sse += diag.rmse_vol_vega_weighted * diag.rmse_vol_vega_weighted *
-               static_cast<double>(diag.n_quotes_used);
-    sum_w += static_cast<double>(diag.n_quotes_used);
-    max_res = std::max(max_res, diag.max_residual_vol);
-    agg_outer += diag.outer_iters;
-    agg_inner += diag.inner_iters_total;
+    theta_floor = res.slice.theta;
+    total_used += res.diag.n_quotes_used;
+    sum_sse += res.diag.rmse_vol_vega_weighted * res.diag.rmse_vol_vega_weighted *
+               static_cast<double>(res.diag.n_quotes_used);
+    sum_w += static_cast<double>(res.diag.n_quotes_used);
+    max_res = std::max(max_res, res.diag.max_residual_vol);
+    agg_outer += res.diag.outer_iters;
+    agg_inner += res.diag.inner_iters_total;
     ++n_fit_ok;
+    return Ok();
+  };
+
+  // Worker count: 0 -> auto (env cap / hardware_concurrency), clamped to the
+  // chain count. The sequential driver's RAW theta-floor loop-carry forbids
+  // fan-out, so it always takes the serial path.
+  unsigned nt = (n_workers == 0u) ? atx_auto_worker_count() : n_workers;
+  if (nt > n_chains) {
+    nt = static_cast<unsigned>(n_chains);
+  }
+  const bool use_parallel = !sequential && nt > 1u && n_chains > 1u;
+
+  if (!use_parallel) {
+    // Serial driver (also the sequential driver's only path): compute each
+    // chain inline — passing the LIVE theta_floor — then consume it. One
+    // scratch arena reused across every chain.
+    FitScratch scratch;
+    for (std::size_t i = 0; i < n_chains; ++i) {
+      if (n_fit_ok >= surface.capacity()) {
+        break;
+      }
+      const ChainFitResult res = fit_one_chain(
+          under.chains[i], curves, opts, sequential, theta_floor, prior, scratch);
+      const Status st = consume(res);
+      if (!st.has_value()) {
+        return st;
+      }
+    }
+  } else {
+    // Parallel driver (non-sequential): phase 1 fits every chain into its own
+    // DISJOINT slot (theta_floor is always 0 here — the floor is a sequential-
+    // only feature), one scratch arena per worker indexed by the fan-out's
+    // worker id (race-free). Phase 2 walks the results in original chain order
+    // and runs the SAME `consume` reduction, so slice order/count + FitDiag are
+    // bit-identical to the serial path. A worker exception is recorded as a
+    // failed slot — an escape would std::terminate the jthread (calib_pool
+    // precedent).
+    std::vector<ChainFitResult> results(n_chains);
+    std::vector<FitScratch> scratch(nt);
+    parallel_for_dynamic(n_chains, nt, [&](std::size_t i, unsigned wid) {
+      try {
+        results[i] = fit_one_chain(under.chains[i], curves, opts,
+                                   /*sequential=*/false, /*theta_floor=*/0.0,
+                                   prior, scratch[wid]);
+      } catch (...) {
+        results[i] = ChainFitResult{};  // failed slot (no obs, no slice)
+      }
+    });
+    for (std::size_t i = 0; i < n_chains; ++i) {
+      if (n_fit_ok >= surface.capacity()) {
+        break;
+      }
+      const Status st = consume(results[i]);
+      if (!st.has_value()) {
+        return st;
+      }
+    }
   }
 
   // Backbone calendar projection (no-op on an already-monotone surface). The
@@ -1082,7 +1234,11 @@ Result<EssviParams> essvi_fit_slice(std::span<const FitObs> obs, double T,
     const double margin = std::max(2.0e-12, 1.0e-9 * band.hi);
     band.lo = std::min(theta_floor, band.hi - margin);
   }
-  return fit_core(obs, T, F, opts, band, out_diag, warm);
+  // A per-call scratch arena: this public single-slice entry point is a pure
+  // read of its inputs (safe to call concurrently), so it owns its own arena.
+  // The surface drivers reuse ONE arena per worker across many slices instead.
+  FitScratch scratch;
+  return fit_core(obs, T, F, opts, band, out_diag, scratch, warm);
 }
 
 std::array<double, 3> essvi_w_cube_grad(const EssviParams& slice,
@@ -1094,9 +1250,10 @@ std::array<double, 3> essvi_w_cube_grad(const EssviParams& slice,
 
 Status essvi_calib_surface(VolSurface& surface, const Underlying& under,
                            const CurveSet& curves, const CalibOpts& opts,
-                           FitDiag* out_diag, const VolSurface* prior) {
+                           FitDiag* out_diag, const VolSurface* prior,
+                           unsigned n_workers) {
   return calib_surface_impl(surface, under, curves, opts, out_diag,
-                            /*sequential=*/false, prior);
+                            /*sequential=*/false, prior, n_workers);
 }
 
 Status essvi_calib_surface_sequential(VolSurface& surface,
@@ -1104,8 +1261,10 @@ Status essvi_calib_surface_sequential(VolSurface& surface,
                                       const CurveSet& curves,
                                       const CalibOpts& opts, FitDiag* out_diag,
                                       const VolSurface* prior) {
+  // Sequential driver: the theta-floor RAW loop-carry is inherently serial, so
+  // it always takes the serial path (n_workers is inert here — pass 1).
   return calib_surface_impl(surface, under, curves, opts, out_diag,
-                            /*sequential=*/true, prior);
+                            /*sequential=*/true, prior, /*n_workers=*/1u);
 }
 
 }  // namespace atx::vol

@@ -144,6 +144,17 @@ namespace atx::vol {
 //              seed exactly as when `prior` is null. Null (default) is
 //              byte-identical to the historical behavior — nothing about the
 //              fit changes, only the LM's starting point.
+// @param n_workers  PERF-ONLY thread count for the per-expiry chain fan-out.
+//              The chains are fit independently (a two-phase driver: a parallel
+//              per-chain fit, then a serial in-order reduction that writes the
+//              surface + FitDiag), so the worker count is a pure performance
+//              knob: fitted params, slice order/count, Status codes, and FitDiag
+//              are BIT-IDENTICAL for every worker count and vs the serial path.
+//              0 (default) resolves to `atx_auto_worker_count()` (honors the
+//              ATX_VOL_FIT_WORKERS env cap, else hardware_concurrency); 1 forces
+//              the serial path. Values above the chain count are clamped down.
+//              The calib_pool per-name fan-out passes 1 here to avoid nesting a
+//              second fan-out under it (oversubscription).
 // @return InvalidArgument if `surface` is not eSSVI-parametrized; NotFound if
 //         the underlier has no chains or not a single slice fit; otherwise Ok.
 [[nodiscard]] Status essvi_calib_surface(VolSurface& surface,
@@ -151,7 +162,8 @@ namespace atx::vol {
                                          const CurveSet& curves,
                                          const CalibOpts& opts,
                                          FitDiag* out_diag = nullptr,
-                                         const VolSurface* prior = nullptr);
+                                         const VolSurface* prior = nullptr,
+                                         unsigned n_workers = 0);
 
 // Mingone sequential surface driver. Identical chain walk to
 // `essvi_calib_surface`, but each slice is fit with a theta floor equal to the
