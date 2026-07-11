@@ -57,6 +57,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/s3.cpp
     src/fit_metrics.cpp
     src/vol_time.cpp
+    src/event_vol.cpp
     src/deamer.cpp
     src/parity.cpp
     src/panel.cpp

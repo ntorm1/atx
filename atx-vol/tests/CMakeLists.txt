@@ -47,6 +47,7 @@ add_executable(atx-vol-tests
     s3_test.cpp
     fit_metrics_test.cpp
     vol_time_test.cpp
+    event_vol_test.cpp
     deamer_test.cpp
     parity_test.cpp
     panel_test.cpp
