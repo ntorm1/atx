@@ -265,6 +265,43 @@ SymbolFitConfig decode_symbol_record(const DbSymbolRecord &rec) {
   return cfg;
 }
 
+// ── Fitting-pipeline binding ────────────────────────────────────────────────
+
+void apply_symbol_config(const SymbolFitConfig &cfg, SessionInputs &in) {
+  apply_fit_preset(in, cfg.preset);
+  if (cfg.pin_curve) {
+    in.curve = cfg.curve;
+    in.calib = cfg.curve.parametric;
+  }
+  if (cfg.al_override) {
+    in.deam.al_opts = cfg.al;
+  }
+  in.band_k = cfg.band_k;
+  in.calendar_repair = cfg.calendar_repair;
+  in.use_correction_cache = cfg.use_correction_cache;
+  in.score_parity = cfg.score_parity;
+  in.enforce_calendar_floor = cfg.enforce_calendar_floor;
+  in.use_deam_cache_for_fit = cfg.use_deam_cache_for_fit;
+}
+
+SymbolFitConfig symbol_config_from_preset(FitPreset preset) {
+  SessionInputs tmp;
+  apply_fit_preset(tmp, preset);
+  SymbolFitConfig cfg;
+  cfg.preset = preset;
+  cfg.pin_curve = false;
+  cfg.curve = tmp.curve;
+  cfg.al_override = tmp.deam.al_opts.has_value();
+  cfg.al = tmp.deam.al_opts.value_or(AlOpts{});
+  cfg.band_k = tmp.band_k;
+  cfg.calendar_repair = tmp.calendar_repair;
+  cfg.use_correction_cache = tmp.use_correction_cache;
+  cfg.score_parity = tmp.score_parity;
+  cfg.enforce_calendar_floor = tmp.enforce_calendar_floor;
+  cfg.use_deam_cache_for_fit = tmp.use_deam_cache_for_fit;
+  return cfg;
+}
+
 // ── Writer ───────────────────────────────────────────────────────────────
 
 Result<std::vector<std::byte>> write_db_manifest(std::span<const DbSymbolEntry> symbols,

@@ -120,6 +120,24 @@ struct SymbolFitConfig {
   bool use_deam_cache_for_fit{false};
 };
 
+// ── Fitting-pipeline binding ───────────────────────────────────────────────
+
+// Map `cfg` onto the fit-policy fields of `in`, leaving the market snapshot
+// (S, r, expiry rates, cash_divs, now_ts_ns) untouched. Order: apply_fit_preset
+// (cfg.preset) first — it sets the DeAm/cache/inversion policy — then every
+// explicit SymbolFitConfig field overwrites the preset's choice:
+//   in.curve = cfg.curve (when pin_curve; otherwise the preset's curve stands),
+//   in.calib = cfg.curve.parametric (when pin_curve),
+//   in.deam.al_opts = cfg.al (when al_override),
+//   in.band_k / in.calendar_repair / in.use_correction_cache / in.score_parity
+//   / in.enforce_calendar_floor / in.use_deam_cache_for_fit = cfg.<same>.
+void apply_symbol_config(const SymbolFitConfig& cfg, SessionInputs& in);
+
+// Capture `preset`'s effective policy into a SymbolFitConfig whose explicit
+// fields equal what apply_fit_preset(in, preset) would produce — the identity
+// starting point for per-symbol tuning (adjust one knob, store, done).
+[[nodiscard]] SymbolFitConfig symbol_config_from_preset(FitPreset preset);
+
 // ── On-disk records (POD, little-endian, fixed layout) ────────────────────
 
 // Manifest file header, at offset 0. `header_crc32c` covers the header with
