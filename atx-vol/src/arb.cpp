@@ -1,5 +1,6 @@
 #include "atx/vol/arb.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -8,6 +9,7 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
+#include "atx/vol/c8.hpp"
 #include "atx/vol/curve.hpp"
 #include "atx/vol/universe.hpp"
 #include "atx/vol/vol_curve.hpp"
@@ -22,6 +24,7 @@ using atx::core::Ok;
 namespace {
 
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+constexpr double kCalendarPairTol = 1.0e-7;
 
 // Wing-residual coefficient width — mirrors the C `ATS_VOL_ESSVI_RESID_N`.
 constexpr int kEssviResidN = 16;
@@ -102,6 +105,44 @@ constexpr std::int64_t kNsPerSecond = 1'000'000'000;
   return max_def;
 }
 
+struct SharedGridGap {
+  double max_deficit{};
+  double max_ratio{1.0};
+  bool finite{true};
+};
+
+template <class Eval>
+[[nodiscard]] SharedGridGap shared_grid_gap(
+    const std::function<double(double)> &w_prev, Eval &&w_current,
+    double k_min, double k_max, std::uint32_t n_grid) noexcept {
+  SharedGridGap out;
+  const double dk = (k_max - k_min) / static_cast<double>(n_grid);
+  for (std::uint32_t gi = 0; gi <= n_grid; ++gi) {
+    const double k = k_min + dk * static_cast<double>(gi);
+    const double wp = w_prev(k);
+    const double wc = w_current(k);
+    if (!std::isfinite(wp) || !std::isfinite(wc) || !(wc > 0.0)) {
+      out.finite = false;
+      continue;
+    }
+    out.max_deficit = std::max(out.max_deficit, wp - wc);
+    if (wp > 0.0) {
+      out.max_ratio = std::max(out.max_ratio, wp / wc);
+    }
+  }
+  return out;
+}
+
+[[nodiscard]] Result<CalendarPairProjection> validate_pair_projection_inputs(
+    const std::function<double(double)> &w_prev, double k_min, double k_max,
+    std::uint32_t n_grid) {
+  if (!w_prev || n_grid == 0 || !(k_max > k_min)) {
+    return Err(ErrorCode::InvalidArgument,
+               "calendar pair projection: require previous curve and valid grid");
+  }
+  return Ok(CalendarPairProjection{});
+}
+
 }  // namespace
 
 // ── Calendar / butterfly checks ──────────────────────────────────────────
@@ -165,6 +206,46 @@ Result<std::vector<ArbViolation>> arb_check_calendar(const CurveSurface &s,
         out.push_back(ArbViolation{k, prev.T(), curr.T(), slack,
                                    ArbViolation::Kind::Calendar});
       }
+    }
+  }
+  return Ok(std::move(out));
+}
+
+Result<std::vector<ArbViolation>> arb_check_butterfly(
+    const IVolCurve &curve, double k_min, double k_max,
+    std::uint32_t n_grid) {
+  std::vector<ArbViolation> out;
+  if (n_grid < 4) {
+    return Ok(std::move(out));
+  }
+  if (!(k_max > k_min)) {
+    return Err(ErrorCode::InvalidArgument,
+               "arb_check_butterfly(curve): require k_max > k_min");
+  }
+  const double dk = (k_max - k_min) / static_cast<double>(n_grid);
+  const double inv_2dk = 0.5 / dk;
+  const double inv_dksq = 1.0 / (dk * dk);
+  for (std::uint32_t gi = 1; gi < n_grid; ++gi) {
+    const double k = k_min + static_cast<double>(gi) * dk;
+    const double w_lo = curve.w(k - dk);
+    const double w_mi = curve.w(k);
+    const double w_hi = curve.w(k + dk);
+    if (!(w_mi > 1.0e-12) || !std::isfinite(w_lo) ||
+        !std::isfinite(w_mi) || !std::isfinite(w_hi)) {
+      out.push_back(ArbViolation{k, curve.T(), curve.T(),
+                                 std::numeric_limits<double>::infinity(),
+                                 ArbViolation::Kind::Butterfly});
+      continue;
+    }
+    const double w_p = (w_hi - w_lo) * inv_2dk;
+    const double w_pp = (w_hi - 2.0 * w_mi + w_lo) * inv_dksq;
+    const double a = 1.0 - 0.5 * k * w_p / w_mi;
+    const double density = a * a -
+                           0.25 * w_p * w_p * (0.25 + 1.0 / w_mi) +
+                           0.5 * w_pp;
+    if (density < -1.0e-9) {
+      out.push_back(ArbViolation{k, curve.T(), curve.T(), -density,
+                                 ArbViolation::Kind::Butterfly});
     }
   }
   return Ok(std::move(out));
@@ -370,6 +451,123 @@ Result<SviMmAdmissibility> arb_check_butterfly_svi_mm_surface(const VolSurface &
 }
 
 // ── Calendar-spread projection / repair ──────────────────────────────────
+
+Result<CalendarPairProjection> arb_project_calendar_essvi_pair(
+    EssviParams &current, const std::function<double(double)> &w_prev,
+    double k_min, double k_max, std::uint32_t n_grid) {
+  ATX_TRY(CalendarPairProjection out,
+          validate_pair_projection_inputs(w_prev, k_min, k_max, n_grid));
+  const SharedGridGap before = shared_grid_gap(
+      w_prev, [&](double k) { return essvi_total_w(current, k); },
+      k_min, k_max, n_grid);
+  if (!before.finite) {
+    return Err(ErrorCode::Unavailable,
+               "eSSVI calendar pair projection: non-finite candidate");
+  }
+  out.max_deficit_before = before.max_deficit;
+  for (std::uint32_t pass = 0; pass < 6; ++pass) {
+    const SharedGridGap gap = shared_grid_gap(
+        w_prev, [&](double k) { return essvi_total_w(current, k); },
+        k_min, k_max, n_grid);
+    if (gap.finite && gap.max_deficit <= kCalendarPairTol) {
+      return Ok(out);
+    }
+    if (!gap.finite || !std::isfinite(gap.max_ratio) ||
+        !(gap.max_ratio > 1.0)) {
+      return Err(ErrorCode::Unavailable,
+                 "eSSVI calendar pair projection: invalid scale");
+    }
+    const double scale = gap.max_ratio * (1.0 + 1.0e-9);
+    current.theta *= scale;
+    for (double &coef : current.resid_coef) {
+      coef *= scale;
+    }
+    current.phi = std::min(current.phi,
+                           essvi_phi_max(current.theta, current.rho));
+    out.scale *= scale;
+    ++out.passes;
+  }
+  const SharedGridGap final_gap = shared_grid_gap(
+      w_prev, [&](double k) { return essvi_total_w(current, k); },
+      k_min, k_max, n_grid);
+  if (!final_gap.finite || final_gap.max_deficit > kCalendarPairTol) {
+    return Err(ErrorCode::Unavailable,
+               "eSSVI calendar pair projection did not converge");
+  }
+  return Ok(out);
+}
+
+Result<CalendarPairProjection> arb_project_calendar_svi_pair(
+    SviParams &current, const std::function<double(double)> &w_prev,
+    double k_min, double k_max, std::uint32_t n_grid) {
+  ATX_TRY(CalendarPairProjection out,
+          validate_pair_projection_inputs(w_prev, k_min, k_max, n_grid));
+  const SharedGridGap before = shared_grid_gap(
+      w_prev, [&](double k) { return svi_total_w(current, k); },
+      k_min, k_max, n_grid);
+  if (!before.finite) {
+    return Err(ErrorCode::Unavailable,
+               "SVI calendar pair projection: non-finite candidate");
+  }
+  out.max_deficit_before = before.max_deficit;
+  if (before.max_deficit > kCalendarPairTol) {
+    current.a += before.max_deficit + 1.0e-9;
+    out.passes = 1;
+  }
+  const SharedGridGap final_gap = shared_grid_gap(
+      w_prev, [&](double k) { return svi_total_w(current, k); },
+      k_min, k_max, n_grid);
+  if (!final_gap.finite || final_gap.max_deficit > kCalendarPairTol) {
+    return Err(ErrorCode::Unavailable,
+               "SVI calendar pair projection did not converge");
+  }
+  return Ok(out);
+}
+
+Result<CalendarPairProjection> arb_project_calendar_c8_pair(
+    C8Params &current, const std::function<double(double)> &w_prev,
+    double k_min, double k_max, std::uint32_t n_grid) {
+  ATX_TRY(CalendarPairProjection out,
+          validate_pair_projection_inputs(w_prev, k_min, k_max, n_grid));
+  const SharedGridGap before = shared_grid_gap(
+      w_prev, [&](double k) { return c8_slice_w(current, k); },
+      k_min, k_max, n_grid);
+  if (!before.finite) {
+    return Err(ErrorCode::Unavailable,
+               "C8 calendar pair projection: non-finite candidate");
+  }
+  out.max_deficit_before = before.max_deficit;
+  for (std::uint32_t pass = 0; pass < 6; ++pass) {
+    const SharedGridGap gap = shared_grid_gap(
+        w_prev, [&](double k) { return c8_slice_w(current, k); },
+        k_min, k_max, n_grid);
+    if (gap.finite && gap.max_deficit <= kCalendarPairTol) {
+      return Ok(out);
+    }
+    if (!gap.finite || !std::isfinite(gap.max_deficit) ||
+        !(gap.max_deficit > 0.0)) {
+      return Err(ErrorCode::Unavailable,
+                 "C8 calendar pair projection: invalid level shift");
+    }
+    // In JW coordinates, adding the same constant to v and v_min is exactly
+    // a parallel shift of raw-SVI `a`: slopes, minimum location, and all compact
+    // bump coefficients stay unchanged. This is the minimum shape-preserving
+    // move, analogous to the raw-SVI `a` projection above.
+    const double shift = gap.max_deficit + 1.0e-9;
+    current.v += shift;
+    current.v_min += shift;
+    c8_arb_project(current);
+    ++out.passes;
+  }
+  const SharedGridGap final_gap = shared_grid_gap(
+      w_prev, [&](double k) { return c8_slice_w(current, k); },
+      k_min, k_max, n_grid);
+  if (!final_gap.finite || final_gap.max_deficit > kCalendarPairTol) {
+    return Err(ErrorCode::Unavailable,
+               "C8 calendar pair projection did not converge");
+  }
+  return Ok(out);
+}
 
 Status arb_project_calendar_svi(VolSurface &s, double k_min, double k_max,
                                 std::uint32_t n_grid) {

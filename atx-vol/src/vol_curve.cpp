@@ -6,6 +6,7 @@
 #include <utility>
 
 #include "atx/core/error.hpp"
+#include "atx/vol/arb.hpp"          // shared-k pair projection + independent shape check
 #include "atx/vol/c8_calib.hpp"    // c8_fit_slice_lm
 #include "atx/vol/essvi_calib.hpp" // essvi_fit_slice
 #include "atx/vol/svi_calib.hpp"   // svi_fit_slice
@@ -18,6 +19,21 @@ using atx::core::Ok;
 
 namespace {
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+constexpr double kRiskCalendarMin = -0.60;
+constexpr double kRiskCalendarMax = 0.60;
+constexpr std::uint32_t kRiskCalendarIntervals = 64;
+constexpr std::uint32_t kRiskShapeIntervals = 256;
+
+[[nodiscard]] Status validate_parametric_risk_shape(const IVolCurve &curve) {
+  ATX_TRY(const std::vector<ArbViolation> violations,
+          arb_check_butterfly(curve, kRiskCalendarMin, kRiskCalendarMax,
+                              kRiskShapeIntervals));
+  if (!violations.empty()) {
+    return Err(ErrorCode::Unavailable,
+               "fit_slice_curve: post-calendar strike-shape admission failed");
+  }
+  return Ok();
+}
 } // namespace
 
 const char *to_string(VolCurveKind kind) noexcept {
@@ -205,9 +221,6 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
     // price-shape cone and the calendar cone: every iterate remains bounded,
     // monotone and convex because calendar repair happens inside the QP, never
     // by mutating total variance after the fit.
-    constexpr double kCalendarMin = -0.60;
-    constexpr double kCalendarMax = 0.60;
-    constexpr std::uint32_t kCalendarIntervals = 64;
     constexpr double kCalendarTol = 1.0e-7;
     constexpr int kMaxCalendarRefits = 4;
 
@@ -230,10 +243,10 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
 
       std::vector<double> violations;
       violations.reserve(8);
-      const double dk = (kCalendarMax - kCalendarMin) /
-                        static_cast<double>(kCalendarIntervals);
-      for (std::uint32_t gi = 0; gi <= kCalendarIntervals; ++gi) {
-        const double k = kCalendarMin + dk * static_cast<double>(gi);
+      const double dk = (kRiskCalendarMax - kRiskCalendarMin) /
+                        static_cast<double>(kRiskCalendarIntervals);
+      for (std::uint32_t gi = 0; gi <= kRiskCalendarIntervals; ++gi) {
+        const double k = kRiskCalendarMin + dk * static_cast<double>(gi);
         const double wp = w_prev(k);
         const double wc = fit.iv(k);
         const double w_curr = (std::isfinite(wc) && wc > 0.0) ? wc * wc * T : kNaN;
@@ -265,17 +278,33 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
     return Err(ErrorCode::Internal,
                "fit_slice_curve: unreachable shared-k calendar state");
   }
-  // Essvi/Svi IGNORE `w_prev`: their calendar handling is unchanged (eSSVI is
-  // arb-free by construction through Mingone; raw-SVI relies on the post-fit
-  // `arb_project_calendar_svi` repair, not a per-slice floor).
+  // Parametric candidates use their native shape-preserving level projection
+  // on the same shared-k lattice, then pass an independent served-value Roper
+  // check. A model's own successful projection never certifies itself.
   case VolCurveKind::Essvi: {
     ATX_TRY(EssviParams slice, essvi_fit_slice(obs_eu, T, F, cfg.parametric));
+    if (w_prev) {
+      ATX_TRY(const CalendarPairProjection projection,
+              arb_project_calendar_essvi_pair(
+                  slice, w_prev, kRiskCalendarMin, kRiskCalendarMax,
+                  kRiskCalendarIntervals));
+      (void)projection;
+    }
     std::unique_ptr<IVolCurve> curve = std::make_unique<EssviCurve>(slice, df);
+    ATX_TRY_VOID(validate_parametric_risk_shape(*curve));
     return Ok(std::move(curve));
   }
   case VolCurveKind::Svi: {
     ATX_TRY(SviParams slice, svi_fit_slice(obs_eu, T, F, cfg.parametric));
+    if (w_prev) {
+      ATX_TRY(const CalendarPairProjection projection,
+              arb_project_calendar_svi_pair(
+                  slice, w_prev, kRiskCalendarMin, kRiskCalendarMax,
+                  kRiskCalendarIntervals));
+      (void)projection;
+    }
     std::unique_ptr<IVolCurve> curve = std::make_unique<SviCurve>(slice, df);
+    ATX_TRY_VOID(validate_parametric_risk_shape(*curve));
     return Ok(std::move(curve));
   }
   case VolCurveKind::LinearVariance: {
@@ -382,7 +411,15 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
       fitted = seed;
       fitted.bumps_active = false;
     }
+    if (w_prev) {
+      ATX_TRY(const CalendarPairProjection projection,
+              arb_project_calendar_c8_pair(
+                  fitted, w_prev, kRiskCalendarMin, kRiskCalendarMax,
+                  kRiskCalendarIntervals));
+      (void)projection;
+    }
     std::unique_ptr<IVolCurve> curve = std::make_unique<C8Curve>(fitted, df);
+    ATX_TRY_VOID(validate_parametric_risk_shape(*curve));
     return Ok(std::move(curve));
   }
   }

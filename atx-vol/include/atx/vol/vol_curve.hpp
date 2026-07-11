@@ -307,6 +307,8 @@ struct CurveConfig {
 // nodes, then checks a shared 64-interval k lattice and promotes every residual
 // breach to an exact constrained QP node until admitted. This preserves the
 // per-slice price cone while closing between-node calendar crossings.
+// eSSVI, SVI, and C8 use their native shape-preserving parameter projection on
+// the same lattice and then undergo an independent served-value butterfly check.
 // LinearVariance additionally accepts the previous curve's breakpoints in
 // `calendar_floor_knots`; fitting on the union of both node sets makes its
 // piecewise-linear calendar floor hold between nodes as well.

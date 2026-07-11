@@ -44,10 +44,12 @@
 // fences them against any concurrent reader.
 
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <vector>
 
 #include "atx/vol/curve.hpp"
+#include "atx/vol/c8.hpp"
 #include "atx/vol/types.hpp"
 #include "atx/vol/universe.hpp"
 #include "atx/vol/vol_curve.hpp"
@@ -124,6 +126,13 @@ arb_check_calendar(const VolSurface &s, double k_min, double k_max,
 arb_check_calendar(const CurveSurface &s, double k_min, double k_max,
                    std::uint32_t n_grid);
 
+// Independent per-curve Lee/Roper density check used after parameter-space
+// calendar projection. Unlike a model's own admissibility predicate, this
+// samples the final IVolCurve values that downstream consumers receive.
+[[nodiscard]] Result<std::vector<ArbViolation>>
+arb_check_butterfly(const IVolCurve &curve, double k_min, double k_max,
+                    std::uint32_t n_grid);
+
 // Per-slice Lee/Roper density positivity via finite-difference w'/w'' on the
 // total surface variance. Empty result means "no butterfly arbitrage". No-op
 // (empty) when the surface has no slices or `n_grid < 4`.
@@ -188,6 +197,30 @@ arb_check_butterfly_svi_mm(const SviParams &slice, double T) noexcept;
 // tighter set by construction) — mirrors the C no-op.
 [[nodiscard]] Result<SviMmAdmissibility>
 arb_check_butterfly_svi_mm_surface(const VolSurface &s);
+
+// Diagnostics from a shared-k pair projection. `scale` is the cumulative
+// multiplicative level change (SVI's additive a-shift is reported as 1), and
+// `max_deficit_before` is in total-variance units.
+struct CalendarPairProjection {
+  std::uint32_t passes{};
+  double scale{1.0};
+  double max_deficit_before{};
+};
+
+// Project one longer-dated parametric candidate above an arbitrary previously
+// admitted w(k) curve on a shared lattice. Each projection stays in the model's
+// shape-safe parameterization; callers must then run the independent butterfly
+// checker above before publication. Failure to close the calendar gap returns
+// Unavailable rather than an unchecked candidate.
+[[nodiscard]] Result<CalendarPairProjection> arb_project_calendar_essvi_pair(
+    EssviParams &current, const std::function<double(double)> &w_prev,
+    double k_min, double k_max, std::uint32_t n_grid);
+[[nodiscard]] Result<CalendarPairProjection> arb_project_calendar_svi_pair(
+    SviParams &current, const std::function<double(double)> &w_prev,
+    double k_min, double k_max, std::uint32_t n_grid);
+[[nodiscard]] Result<CalendarPairProjection> arb_project_calendar_c8_pair(
+    C8Params &current, const std::function<double(double)> &w_prev,
+    double k_min, double k_max, std::uint32_t n_grid);
 
 // ── Calendar-spread arb projection / repair (post-fit, mutating) ─────────
 
