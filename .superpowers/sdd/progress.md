@@ -464,3 +464,17 @@ Task 5: complete (commits 90608b5..8d99c49, review clean - Approved, opus; 0 Cri
   (correction_cache/score_parity/calendar_floor already false); market-snapshot preservation asserted only
   for S/r/now_ts_ns (expiry_rates/cash_divs by inspection); apply_symbol_config could be noexcept to match
   apply_fit_preset.
+
+FINAL WHOLE-BRANCH REVIEW (fable, 896a100..d9d852e): "With fixes" -> fix wave 3f12b43 -> re-verified
+  "Ready to merge: Yes". Findings fixed: (Imp#1) writer-side enum wire-range validation in
+  write_db_manifest + persist_locked reordered to parse-validate BEFORE rename (bricking hazard closed;
+  new test SurfaceDb.UpsertBadEnum_FailsCleanly_DbStillOpens); (Imp#2) drop_partition unlink moved inside
+  lock + header thread-safety paragraph corrected (same-key partition mutations must not race in-process;
+  write_partition pre-lock archive write is plan-mandated residual window, documented); (Min#4) Task-N
+  scaffolding comment sweep across all three product files. Targeted suite 34/34 PASS, /WX clean.
+  Roll-up triage: all remaining Minors accepted as post-merge follow-ups (refresh magic peek,
+  find_partition canonicalize_key unification, enum-cap static_asserts, SymPlan/PartPlan scaffolding,
+  find_slot std::string alloc on >15-char symbols, Windows rename-while-open transient note).
+  OUTSTANDING BEFORE MERGE: full-module gate `& .\scripts\atx-build.ps1 -Ctest -L atx_vol` on 3f12b43 —
+  DEFERRED TO OPERATOR by explicit instruction (targeted SurfaceDb|SurfaceArchive 34/34 is the evidence
+  on record). Feature branch worktree-feat-atx-vol-surface-db is otherwise merge-ready.
