@@ -25,6 +25,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/derivatives.cpp
     src/vol_surface.cpp
     src/american.cpp
+    src/boundary_interp.cpp
     src/correction.cpp
     src/arb.cpp
     src/calib.cpp

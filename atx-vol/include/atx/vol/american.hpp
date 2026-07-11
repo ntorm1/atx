@@ -26,6 +26,7 @@
 // Stateless and pure — every entry is safe to call concurrently from any thread.
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -155,6 +156,73 @@ struct AlOpts {
     double S, std::span<const double> strikes, double T, double sigma, double r,
     double q, std::span<double> price_out,
     const std::optional<AlOpts>& opts = std::nullopt);
+
+// ── σ-axis Chebyshev boundary interpolation (fitted-smile board, P2.5) ───
+//
+// A fitted-smile slice carries a DIFFERENT σ per strike, so andersen_lake_*_slice
+// (one σ, one boundary) does not apply — today it costs one cold Andersen-Lake
+// boundary solve per strike. The *dimensionless* boundary y[] depends only on
+// (σ, r, q, τ), NOT on strike, and is smooth in σ. andersen_lake_{put,call}_slice
+// _sigma therefore builds ONE σ-Chebyshev interpolant of y[] per (expiry, r, q)
+// group — n_σ cold solves shared by the whole ladder — and prices each strike by
+// interpolating y[] at that strike's σ, rescaling to its K (strike homogeneity),
+// and running the existing premium quadrature. Calls go through the same object
+// via the McDonald-Schroder internal-put map.
+//
+// GATED (Task 11 / sprint §P2.5): the interpolant introduces a boundary
+// approximation, so it is OPT-IN. With `use_sigma_boundary_interp == false` (the
+// default) every strike takes the cold per-strike solve — BIT-IDENTICAL to
+// andersen_lake(S, K_i, T, σ_i, r, q, side) — so the flag-off route is exactly
+// the scalar reference. With the flag ON, strikes whose σ clears the box + guards
+// take the interpolant; any strike outside the σ box, below the small-σ guard, or
+// (whole slice) below the near-expiry τ guard takes the cold solve, tagged
+// ColdFallback (bit-identical to the direct solve). See at-task-11-report.md for
+// the measured accuracy/throughput and the ship/flag decision.
+struct SigmaInterpOptions {
+  // Master flag. SHIPPED default ON (Task 11): the interpolant cleared the §P2.5
+  // ship gate on a real SPY board — 8.1x board-price throughput, all §9 gates
+  // green (max price gap 3.8e-5 vs cold over 51,755 corpus strikes, δ gap 3e-7,
+  // 0% ColdFallback). OFF forces the cold per-strike solve for every strike —
+  // BIT-IDENTICAL to andersen_lake(S, K_i, T, σ_i, r, q, side) — the reference.
+  bool use_sigma_boundary_interp = true;
+  std::uint16_t n_sigma = 8;               // σ Chebyshev-Lobatto nodes (cold solves)
+  double sigma_lo = 0.0;    // σ box lower bound; <= 0 => auto = min over in-guard σ
+  double sigma_hi = 0.0;    // σ box upper bound; <= 0 => auto = max over in-guard σ
+  double min_tau = 3.0 / 365.0;  // near-expiry guard: whole slice cold below this τ
+  double min_sigma = 0.01;       // small-σ guard: that strike cold below this σ
+};
+
+// Diagnostics from a *_slice_sigma call (optional out-param).
+struct SigmaSliceStats {
+  std::size_t n_strikes = 0;
+  std::size_t n_boundary_solves = 0;  // n_σ build solves (+ one per ColdFallback)
+  std::size_t n_cold_fallback = 0;    // strikes routed to the cold solve
+  std::size_t n_interp = 0;           // strikes priced through the interpolant
+  std::uint16_t n_sigma = 0;          // σ-nodes actually used (0 when not built)
+  double sigma_lo = 0.0;
+  double sigma_hi = 0.0;
+  bool used_interp = false;           // the interpolant was built for this slice
+};
+
+// Price MANY American PUT strikes, each at its OWN σ_i, at a fixed (S, T, r, q).
+// See SigmaInterpOptions. Regimes/degenerate handling route exactly like
+// andersen_lake_put_slice (degenerate T~0/σ~0 -> intrinsic; European r<=0&&r<=q
+// -> Black-76 put per strike; Unsupported -> NotImplemented).
+//
+// @return InvalidArgument — S <= 0, negative T, a non-positive strike, a negative
+//                           σ, a span-length mismatch, or non-finite r/q
+//         NotImplemented  — the double-continuation corner, or a boundary collapse
+[[nodiscard]] Status andersen_lake_put_slice_sigma(
+    double S, std::span<const double> strikes, std::span<const double> sigmas, double T,
+    double r, double q, std::span<double> price_out, const SigmaInterpOptions& sopts = {},
+    const std::optional<AlOpts>& opts = std::nullopt, SigmaSliceStats* stats = nullptr);
+
+// Price MANY American CALL strikes, each at its OWN σ_i, via the McDonald-Schroder
+// internal-put map. See andersen_lake_put_slice_sigma / SigmaInterpOptions.
+[[nodiscard]] Status andersen_lake_call_slice_sigma(
+    double S, std::span<const double> strikes, std::span<const double> sigmas, double T,
+    double r, double q, std::span<double> price_out, const SigmaInterpOptions& sopts = {},
+    const std::optional<AlOpts>& opts = std::nullopt, SigmaSliceStats* stats = nullptr);
 
 // Barone-Adesi-Whaley American approximation.
 //

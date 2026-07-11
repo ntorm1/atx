@@ -10,8 +10,15 @@
 #include "atx/vol/correction.hpp"
 #include "atx/vol/counters.hpp"  // ATX_VOL_COUNT (opt-in P0.2; no-op when OFF)
 #include "atx/vol/greeks.hpp"
+#include "american_boundary.hpp"  // amer:: seam (structs + boundary-solve decls)
 
 namespace atx::vol {
+
+// The Andersen-Lake boundary primitives (types, constants, solve/price helpers)
+// live in `namespace amer` (american_boundary.hpp) so boundary_interp.cpp can
+// reuse them. Bring them into scope unqualified — every existing call site below
+// (and the anonymous-namespace helpers) resolves them exactly as before.
+using namespace amer;
 
 using atx::core::Err;
 using atx::core::ErrorCode;
@@ -32,7 +39,8 @@ using atx::core::norm_pdf;
 inline constexpr double kPi = 3.14159265358979323846;
 
 // Hard limits — every per-solve buffer is stack-bounded (matches C ATS_AL_*).
-inline constexpr std::uint16_t kAlMaxNodes = 32;
+// kAlMaxNodes now lives in namespace amer (american_boundary.hpp); in scope here
+// via the `using namespace amer;` above.
 inline constexpr unsigned kAlMaxQuad = detail::kMaxQuadNodes;  // 64
 
 // ── European legs (Black-76 reuse) ──────────────────────────────────────
@@ -465,27 +473,10 @@ template <unsigned NB>
 }
 
 // ── AL boundary state + scheme ──────────────────────────────────────────
-
-struct AlScheme {
-  std::uint16_t n_boundary = 12;
-  std::uint16_t n_quad_fp = 24;
-  std::uint16_t n_quad_price = 48;
-  std::uint16_t n_iter_jn = 2;
-  std::uint16_t n_iter_fp = 4;
-  double tol = 1.0e-10;
-};
-
-struct AlBoundary {
-  std::array<double, kAlMaxNodes> z{};
-  std::array<double, kAlMaxNodes> wbary{};  // 2nd-kind barycentric weights (fixed)
-  std::array<double, kAlMaxNodes> x{};
-  std::array<double, kAlMaxNodes> tau{};
-  std::array<double, kAlMaxNodes> y{};  // H(τ) values — the live state
-  std::uint16_t n = 0;
-  double T = 0.0;
-  double K = 0.0;
-  double xmax = 0.0;  // asymptotic boundary B(∞)
-};
+//
+// AlScheme / AlBoundary / AlWorkspace and the kGeo* geometry-sizing constants
+// now live in namespace amer (american_boundary.hpp); in scope here via the
+// file-level `using namespace amer;`.
 
 // ── P2.2 sweep-invariant geometry precompute sizing ──────────────────────
 //
@@ -496,9 +487,8 @@ struct AlBoundary {
 // {12, 24}. The generic (arbitrary AlOpts) path stays the un-hoisted scalar
 // reference. So the per-solve geometry table needs only cover those (nb, nq); the
 // strides carry headroom above the largest specialized scheme.
-inline constexpr unsigned kGeoNodeMax = 16;    // >= max specialized n_boundary (12)
-inline constexpr unsigned kGeoQuadStride = 32;  // >= max specialized n_quad_fp (24)
-inline constexpr unsigned kGeoSize = kGeoNodeMax * kGeoQuadStride;  // 512 doubles
+// kGeoNodeMax / kGeoQuadStride / kGeoSize now live in namespace amer
+// (american_boundary.hpp); in scope here via the file-level `using namespace amer;`.
 
 // Is (nb, nq) a specialized fixed-point scheme (compile-time trip counts + geometry
 // hoist)? Kept in ONE place so the sweep dispatch, premium dispatch, and geometry
@@ -507,28 +497,15 @@ inline constexpr unsigned kGeoSize = kGeoNodeMax * kGeoQuadStride;  // 512 doubl
   return (nb == 7 && nq == 16) || (nb == 12 && nq == 24);
 }
 
-struct AlWorkspace {
-  const double* qx_fp = nullptr;
-  const double* qw_fp = nullptr;
-  unsigned n_quad_fp = 0;
-  const double* qx_price = nullptr;
-  const double* qw_price = nullptr;
-  unsigned n_quad_price = 0;
-  std::array<double, kAlMaxNodes> next_y{};  // iteration scratch
-  // Force the generic (runtime trip-count) kernel even for a specialized scheme —
-  // the test seam behind detail::andersen_lake_generic_kernel. Default true so
-  // every production solve specializes.
-  bool specialize = true;
-  // Sweep-invariant geometry for eqn_b_ND, filled ONCE per solve by
-  // al_bind_geometry when the scheme is specialized, indexed [j*kGeoQuadStride + i]
-  // for collocation node j (1..n-1) and fixed-point quad node i. NOT zero-init'd
-  // (filled before read; only the active (j,i) are read) so the greeks paths that
-  // stack several workspaces do not pay a 512-double memset each.
-  std::array<double, kGeoSize> geo_zc;    // clamped Chebyshev argument z_ji
-  std::array<double, kGeoSize> geo_v;     // sigma * sqrt(t_u_ji)
-  std::array<double, kGeoSize> geo_weru;  // qw_fp[i] * exp(r * u_ji)
-  std::array<double, kGeoSize> geo_wequ;  // qw_fp[i] * exp(q * u_ji)
-};
+// AlWorkspace now lives in namespace amer (american_boundary.hpp).
+
+}  // anonymous namespace — closed so the seam definitions below get EXTERNAL
+   // linkage in atx::vol::amer (matching american_boundary.hpp). The file's
+   // anonymous namespace is reopened right after al_xmax_put.
+
+// scheme_from_opts / al_xmax_put are part of the boundary seam (amer). Definitions
+// stay here; declarations are in american_boundary.hpp.
+namespace amer {
 
 // ACCURATE preset when opts == nullopt; otherwise map the public knobs.
 [[nodiscard]] AlScheme scheme_from_opts(const std::optional<AlOpts>& opts) noexcept {
@@ -592,6 +569,10 @@ struct AlWorkspace {
   }
   return 0.0;
 }
+
+}  // namespace amer
+
+namespace {  // reopen the file's anonymous namespace
 
 [[nodiscard]] double y_from_b(double b_val, double xmax) noexcept {
   if (b_val <= 0.0 || xmax <= 0.0) {
@@ -1060,7 +1041,13 @@ template <unsigned NP>
 // al_put_premium reads it. Splitting al_solve_put here lets a greeks bundle solve
 // one boundary and re-price every SPOT stencil against it (american_greeks_fd),
 // collapsing the 17 solves to the 7 unique (sigma,r,T) boundaries — bit-identical.
-enum class AlSolveStatus { Ok, Collapsed, TableMissing };
+//
+// AlSolveStatus and the three entry points below (al_solve_put_boundary[_warm],
+// al_put_price_from_boundary) are part of the boundary seam (amer) reused by
+// boundary_interp.cpp. The enum's declaration is in american_boundary.hpp.
+}  // anonymous namespace — closed so the seam definitions below get EXTERNAL
+   // linkage in atx::vol::amer; reopened right after al_put_price_from_boundary.
+namespace amer {
 
 // S-independent: init nodes, bind quadrature, seed + iterate the boundary. On Ok,
 // `bnd`/`ws` hold a converged boundary ready for al_put_price_from_boundary.
@@ -1069,7 +1056,7 @@ enum class AlSolveStatus { Ok, Collapsed, TableMissing };
                                                   const AlScheme& sch,
                                                   AlBoundary& bnd,
                                                   AlWorkspace& ws,
-                                                  bool specialize = true) noexcept {
+                                                  bool specialize) noexcept {  // default in header
   al_init_nodes(bnd, sch.n_boundary, T, K, r, q);
   if (!(bnd.xmax > 0.0)) {
     // Negative-rate/carry corner: AL cannot run. Flagged unsupported.
@@ -1202,6 +1189,10 @@ enum class AlSolveStatus { Ok, Collapsed, TableMissing };
   }
   return price;
 }
+
+}  // namespace amer
+
+namespace {  // reopen the file's anonymous namespace
 
 // ExerciseRegime / classify_regime are defined once in american.hpp detail (the
 // single source of truth for the early-exercise regime table) and used here via
