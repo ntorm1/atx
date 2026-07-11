@@ -131,13 +131,27 @@ namespace atx::vol {
 // the surface is calendar-arb-free. Populates `surface`'s diagnostics
 // (rmse_vol, n_quotes_used/dropped) and, if provided, `out_diag`.
 //
+// @param prior  optional previously-fit surface (e.g. the prior snapshot's
+//              calibration) used to warm-start each slice's fit. For a slice
+//              being fit at maturity T, the prior slice minimizing |T_prior -
+//              T| is used as the warm seed (see `essvi_fit_slice`'s `warm`
+//              param) iff |T_prior - T| <= kWarmPriorMaxTenorGap (5 calendar
+//              days in year-fraction units — cross-snapshot T drifts intraday
+//              and across a few days; beyond that a stale seed is worse than
+//              cold) AND that prior slice is a usable eSSVI fit (finite
+//              theta/psi/p/lambda and theta > 0). No match, an empty/null
+//              `prior`, or a non-eSSVI `prior` surface falls back to the cold
+//              seed exactly as when `prior` is null. Null (default) is
+//              byte-identical to the historical behavior — nothing about the
+//              fit changes, only the LM's starting point.
 // @return InvalidArgument if `surface` is not eSSVI-parametrized; NotFound if
 //         the underlier has no chains or not a single slice fit; otherwise Ok.
 [[nodiscard]] Status essvi_calib_surface(VolSurface& surface,
                                          const Underlying& under,
                                          const CurveSet& curves,
                                          const CalibOpts& opts,
-                                         FitDiag* out_diag = nullptr);
+                                         FitDiag* out_diag = nullptr,
+                                         const VolSurface* prior = nullptr);
 
 // Mingone sequential surface driver. Identical chain walk to
 // `essvi_calib_surface`, but each slice is fit with a theta floor equal to the
@@ -146,11 +160,13 @@ namespace atx::vol {
 // projection of the ATM level is needed. See the PORT NOTE in the source for
 // the (φ, ρ)-wing coupling the θ-floor alone does not remove.
 //
+// @param prior  same warm-start contract as `essvi_calib_surface`'s `prior`.
 // @return same contract as `essvi_calib_surface`.
 [[nodiscard]] Status essvi_calib_surface_sequential(VolSurface& surface,
                                                     const Underlying& under,
                                                     const CurveSet& curves,
                                                     const CalibOpts& opts,
-                                                    FitDiag* out_diag = nullptr);
+                                                    FitDiag* out_diag = nullptr,
+                                                    const VolSurface* prior = nullptr);
 
 }  // namespace atx::vol

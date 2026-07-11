@@ -52,6 +52,12 @@ constexpr double kCubeEdge = 1.0e-6;
 // surface driver (mirrors the C `T_MIN_FIT`: half an hour in year units).
 constexpr double kTMinFit = 1.0 / (365.25 * 24.0 * 2.0);
 
+// Surface-driver warm-start prior-slice matching tolerance: the closest prior
+// slice by |T_prior - T| is used as the warm seed only within this gap (5
+// calendar days in year-fraction units). Cross-snapshot T drifts intraday and
+// across a few days; beyond this a stale seed is worse than a cold fit.
+constexpr double kWarmPriorMaxTenorGap = 5.0 / 365.0;
+
 // LM control constants — canonical values live in
 // atx/vol/detail/calib_shared.hpp and are shared with the SVI-MM and CStar
 // fitters (routed here so a value can never drift between calibrators).
@@ -891,13 +897,50 @@ void fit_wing_residual(std::span<const FitObs> obs, EssviParams& slice,
   return Ok(slice);
 }
 
+// A prior slice is a usable warm seed only if its cube/theta coordinates are
+// finite and represent an actual fit (theta > 0). `vol_surface.hpp` carries no
+// separate per-slice fit-validity flag, so this finiteness + positivity check
+// is the guard.
+[[nodiscard]] bool is_usable_warm_seed(const EssviParams& s) noexcept {
+  return std::isfinite(s.theta) && s.theta > 0.0 && std::isfinite(s.psi) &&
+         std::isfinite(s.p) && std::isfinite(s.lambda);
+}
+
+// Pick `prior`'s slice minimizing |T_prior - T| and return it as the warm
+// seed iff the gap is within `kWarmPriorMaxTenorGap` and the slice is a
+// usable eSSVI fit. Returns nullptr (cold fit) on a null/empty/non-eSSVI
+// `prior`, no slice within tolerance, or an unusable closest slice — `prior`
+// surfaces only populate their `essvi_slices()` vector when eSSVI-
+// parametrized, so a non-eSSVI prior naturally yields an empty scan here.
+[[nodiscard]] const EssviParams* find_warm_seed(const VolSurface* prior,
+                                                double T) noexcept {
+  if (prior == nullptr || prior->param() != Parametrization::Essvi) {
+    return nullptr;
+  }
+  const EssviParams* best = nullptr;
+  double best_gap = std::numeric_limits<double>::infinity();
+  for (const EssviParams& s : prior->essvi_slices()) {
+    const double gap = std::fabs(s.T - T);
+    if (gap < best_gap) {
+      best_gap = gap;
+      best = &s;
+    }
+  }
+  if (best == nullptr || best_gap > kWarmPriorMaxTenorGap) {
+    return nullptr;
+  }
+  return is_usable_warm_seed(*best) ? best : nullptr;
+}
+
 // Shared chain walk for both surface drivers. `sequential` raises the theta
-// floor to the previous slice's theta.
+// floor to the previous slice's theta. `prior` (optional) is a previously-fit
+// surface each slice is warm-started from via `find_warm_seed`.
 [[nodiscard]] Status calib_surface_impl(VolSurface& surface,
                                         const Underlying& under,
                                         const CurveSet& curves,
                                         const CalibOpts& opts,
-                                        FitDiag* out_diag, bool sequential) {
+                                        FitDiag* out_diag, bool sequential,
+                                        const VolSurface* prior) {
   if (surface.param() != Parametrization::Essvi) {
     return Err(ErrorCode::InvalidArgument,
                "essvi_calib_surface: surface is not eSSVI-parametrized");
@@ -952,9 +995,11 @@ void fit_wing_residual(std::span<const FitObs> obs, EssviParams& slice,
       band.lo = std::min(theta_floor, band.hi - margin);
     }
 
+    const EssviParams* warm = find_warm_seed(prior, T);
+
     FitDiag diag{};
-    const Result<EssviParams> fit =
-        fit_core(std::span<const FitObs>{os.obs}, T, F, opts, band, &diag);
+    const Result<EssviParams> fit = fit_core(
+        std::span<const FitObs>{os.obs}, T, F, opts, band, &diag, warm);
     if (!fit.has_value()) {
       continue;  // LM failure: skip (fallback machinery deferred, see PORT NOTE)
     }
@@ -1049,17 +1094,18 @@ std::array<double, 3> essvi_w_cube_grad(const EssviParams& slice,
 
 Status essvi_calib_surface(VolSurface& surface, const Underlying& under,
                            const CurveSet& curves, const CalibOpts& opts,
-                           FitDiag* out_diag) {
+                           FitDiag* out_diag, const VolSurface* prior) {
   return calib_surface_impl(surface, under, curves, opts, out_diag,
-                            /*sequential=*/false);
+                            /*sequential=*/false, prior);
 }
 
 Status essvi_calib_surface_sequential(VolSurface& surface,
                                       const Underlying& under,
                                       const CurveSet& curves,
-                                      const CalibOpts& opts, FitDiag* out_diag) {
+                                      const CalibOpts& opts, FitDiag* out_diag,
+                                      const VolSurface* prior) {
   return calib_surface_impl(surface, under, curves, opts, out_diag,
-                            /*sequential=*/true);
+                            /*sequential=*/true, prior);
 }
 
 }  // namespace atx::vol

@@ -522,4 +522,161 @@ TEST(EssviCalibSurfaceSequential, ProducesThetaMonotoneSurface) {
   EXPECT_EQ(arb->n_calendar, 0u);
 }
 
+// ── Test 5: surface-level warm-start threading ───────────────────────────
+
+// A warm prior surface at the SAME tenors cuts the total LM work of a refit
+// on a slightly-perturbed re-generation of the same board, at the same
+// recovery quality — the surface-driver analogue of
+// EssviFitSlice.WarmStart_ReducesIterationsOnTick.
+TEST(EssviCalibSurface, WarmPrior_ReducesTotalIterations) {
+  const SurfaceFixture fx;
+  const Underlying under = fx.make_under();
+  const CurveSet curves = fx.make_curves(under);
+
+  // Pre-tick fit (the retained prior surface).
+  auto prior_surf_res =
+      VolSurface::create(1u, Parametrization::Essvi, under.chains.size());
+  ASSERT_TRUE(prior_surf_res.has_value());
+  VolSurface prior_surface = *prior_surf_res;
+  const auto prior_st = essvi_calib_surface(prior_surface, under, curves,
+                                            calib_default_opts());
+  ASSERT_TRUE(prior_st.has_value());
+
+  // A tick: every slice's ATM total variance nudges up 0.5 % (tenors
+  // unchanged, so every prior slice matches exactly).
+  SurfaceFixture fx_ticked = fx;
+  for (double& th : fx_ticked.thetas) {
+    th *= 1.005;
+  }
+  const Underlying under_ticked = fx_ticked.make_under();
+  const CurveSet curves_ticked = fx_ticked.make_curves(under_ticked);
+
+  auto cold_surf_res = VolSurface::create(1u, Parametrization::Essvi,
+                                          under_ticked.chains.size());
+  ASSERT_TRUE(cold_surf_res.has_value());
+  VolSurface cold_surface = *cold_surf_res;
+  FitDiag cold_diag{};
+  const auto cold_st = essvi_calib_surface(
+      cold_surface, under_ticked, curves_ticked, calib_default_opts(), &cold_diag);
+  ASSERT_TRUE(cold_st.has_value());
+
+  auto warm_surf_res = VolSurface::create(1u, Parametrization::Essvi,
+                                          under_ticked.chains.size());
+  ASSERT_TRUE(warm_surf_res.has_value());
+  VolSurface warm_surface = *warm_surf_res;
+  FitDiag warm_diag{};
+  const auto warm_st =
+      essvi_calib_surface(warm_surface, under_ticked, curves_ticked,
+                          calib_default_opts(), &warm_diag, &prior_surface);
+  ASSERT_TRUE(warm_st.has_value());
+
+  EXPECT_LT(warm_diag.inner_iters_total, cold_diag.inner_iters_total);
+
+  // Same recovery tolerance as RecoversSyntheticSurface_WithinTolerance.
+  double max_dv = 0.0;
+  for (std::size_t si = 0; si < warm_surface.n_slices(); ++si) {
+    const EssviParams tr = fx_ticked.truth(si);
+    for (int i = -12; i <= 12; ++i) {
+      const double k = 0.01 * static_cast<double>(i);
+      const double iv_true = slice_iv(tr, k, fx_ticked.ts[si]);
+      const double iv_fit =
+          warm_surface.iv_on_slice(static_cast<std::uint16_t>(si), k);
+      max_dv = std::max(max_dv, std::fabs(iv_fit - iv_true));
+    }
+  }
+  EXPECT_LT(max_dv, 2.0e-3);
+}
+
+// `prior == nullptr` (default or explicit) must take today's exact cold path:
+// two cold fits of the same board reproduce bit-for-bit identical params.
+TEST(EssviCalibSurface, WarmPrior_NullIsByteIdentical) {
+  const SurfaceFixture fx;
+  const Underlying under = fx.make_under();
+  const CurveSet curves = fx.make_curves(under);
+
+  auto surf_a_res =
+      VolSurface::create(1u, Parametrization::Essvi, under.chains.size());
+  ASSERT_TRUE(surf_a_res.has_value());
+  VolSurface surface_a = *surf_a_res;
+  const auto st_a =
+      essvi_calib_surface(surface_a, under, curves, calib_default_opts());
+  ASSERT_TRUE(st_a.has_value());
+
+  auto surf_b_res =
+      VolSurface::create(1u, Parametrization::Essvi, under.chains.size());
+  ASSERT_TRUE(surf_b_res.has_value());
+  VolSurface surface_b = *surf_b_res;
+  const auto st_b =
+      essvi_calib_surface(surface_b, under, curves, calib_default_opts(),
+                          /*out_diag=*/nullptr, /*prior=*/nullptr);
+  ASSERT_TRUE(st_b.has_value());
+
+  ASSERT_EQ(surface_a.n_slices(), surface_b.n_slices());
+  const auto slices_a = surface_a.essvi_slices();
+  const auto slices_b = surface_b.essvi_slices();
+  for (std::size_t i = 0; i < slices_a.size(); ++i) {
+    EXPECT_EQ(slices_a[i].theta, slices_b[i].theta);
+    EXPECT_EQ(slices_a[i].phi, slices_b[i].phi);
+    EXPECT_EQ(slices_a[i].rho, slices_b[i].rho);
+    EXPECT_EQ(slices_a[i].psi, slices_b[i].psi);
+    EXPECT_EQ(slices_a[i].p, slices_b[i].p);
+    EXPECT_EQ(slices_a[i].lambda, slices_b[i].lambda);
+  }
+}
+
+// A prior surface whose slices are all far outside the tenor-gap tolerance
+// (all maturities shifted by a year) must fall back to the cold seed exactly,
+// producing bit-identical results to a plain cold fit.
+TEST(EssviCalibSurface, WarmPrior_MismatchedTenorFallsBackCold) {
+  const SurfaceFixture fx;
+  const Underlying under = fx.make_under();
+  const CurveSet curves = fx.make_curves(under);
+
+  auto cold_surf_res =
+      VolSurface::create(1u, Parametrization::Essvi, under.chains.size());
+  ASSERT_TRUE(cold_surf_res.has_value());
+  VolSurface cold_surface = *cold_surf_res;
+  const auto cold_st =
+      essvi_calib_surface(cold_surface, under, curves, calib_default_opts());
+  ASSERT_TRUE(cold_st.has_value());
+
+  // A prior surface fit at wildly different tenors (+1 year each): every
+  // |T_prior - T| exceeds kWarmPriorMaxTenorGap (5/365), so no slice matches.
+  SurfaceFixture fx_far = fx;
+  for (double& t : fx_far.ts) {
+    t += 1.0;
+  }
+  const Underlying under_far = fx_far.make_under();
+  const CurveSet curves_far = fx_far.make_curves(under_far);
+  auto far_surf_res =
+      VolSurface::create(1u, Parametrization::Essvi, under_far.chains.size());
+  ASSERT_TRUE(far_surf_res.has_value());
+  VolSurface far_surface = *far_surf_res;
+  const auto far_st = essvi_calib_surface(far_surface, under_far, curves_far,
+                                          calib_default_opts());
+  ASSERT_TRUE(far_st.has_value());
+
+  auto mismatched_surf_res =
+      VolSurface::create(1u, Parametrization::Essvi, under.chains.size());
+  ASSERT_TRUE(mismatched_surf_res.has_value());
+  VolSurface mismatched_surface = *mismatched_surf_res;
+  const auto mismatched_st =
+      essvi_calib_surface(mismatched_surface, under, curves,
+                          calib_default_opts(), /*out_diag=*/nullptr,
+                          &far_surface);
+  ASSERT_TRUE(mismatched_st.has_value());
+
+  ASSERT_EQ(cold_surface.n_slices(), mismatched_surface.n_slices());
+  const auto slices_cold = cold_surface.essvi_slices();
+  const auto slices_mismatched = mismatched_surface.essvi_slices();
+  for (std::size_t i = 0; i < slices_cold.size(); ++i) {
+    EXPECT_EQ(slices_cold[i].theta, slices_mismatched[i].theta);
+    EXPECT_EQ(slices_cold[i].phi, slices_mismatched[i].phi);
+    EXPECT_EQ(slices_cold[i].rho, slices_mismatched[i].rho);
+    EXPECT_EQ(slices_cold[i].psi, slices_mismatched[i].psi);
+    EXPECT_EQ(slices_cold[i].p, slices_mismatched[i].p);
+    EXPECT_EQ(slices_cold[i].lambda, slices_mismatched[i].lambda);
+  }
+}
+
 }  // namespace
