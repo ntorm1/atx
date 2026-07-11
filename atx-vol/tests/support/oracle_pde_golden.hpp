@@ -8,11 +8,15 @@
 // wall per run. This shim serves the values from a committed TSV instead.
 //
 // Regenerate (release build, single process) after ANY oracle change:
-//   $env:ATX_VOL_ORACLE_REGEN = "1"
-//   build-rel/bin/atx-vol-tests.exe --gtest_filter=<affected suites>
-//   Remove-Item Env:ATX_VOL_ORACLE_REGEN
+//   Step 1: Empty the table (regen only fills misses, not cache hits):
+//     Clear-Content atx-vol/tests/support/oracle_pde_golden.tsv
+//   Step 2: Run with regen enabled:
+//     $env:ATX_VOL_ORACLE_REGEN = "1"
+//     build-rel/bin/atx-vol-tests.exe --gtest_filter=<affected suites>
+//     Remove-Item Env:ATX_VOL_ORACLE_REGEN
 // then commit the updated oracle_pde_golden.tsv. Keys are exact %.17g
-// round-trips of the inputs; any drift in inputs is a MISS, never a stale hit.
+// round-trips of the inputs; any drift in inputs is a MISS, never a stale
+// hit. Duplicate appended keys are ignored (first wins).
 
 #include "atx/vol/types.hpp"
 #include "oracle_pricer_pde.hpp"
