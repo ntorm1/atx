@@ -501,7 +501,7 @@ Process notes:
 - Task 2: CloseAtHorizon lifecycle + missing-name policy — COMPLETE
 - Task 3: make_dispersion_strangle_spec builder — COMPLETE
 - Task 4: run_report emitters — COMPLETE
-- Task 5: populate_surface_db + mag7_surfdb_populate example — PENDING
+- Task 5: populate_surface_db + mag7_surfdb_populate example — COMPLETE
 - Task 6: mag7_dispersion_backtest example + gate test — PENDING
 - Task 7: tools/mag7_dispersion_report.py + python test — PENDING
 - Task 8: real-data pull/populate/run/report (operator-gated) — PENDING
@@ -545,3 +545,17 @@ Task 4: complete (commits f48c3d9..a70bf10, review clean — SPEC ✅ / Approved
   Minor (roll-up): (a) no CSV escaping (matches tearsheet.cpp convention; note for Python consumer);
   (b) db-stats appended meta can duplicate a colliding caller key (spec-literal, self-flagged);
   (c) fmt10/fmt_i64/fmt_u64 could be one template (style); (d) redundant defensive sort of partitions().
+
+Task 5: complete (commits 73c6996..05bc3eb + fix 1347d7d, review "Approved" opus, 1 Important fixed →
+  re-verified "Spec ✅ / Approved"; 0 remaining Critical/Important)
+  8/8 SurfaceDbPopulate + 57/57 db/corpus + 67/67 fit-path regression sweep green.
+  ACCEPTED DEVIATION (reviewer-judged justified-extra): fit_board extracted verbatim from corpus.cpp into
+  private src/corpus_board_fit.{hpp,cpp} (pure move, verified vs pre-image); NEW additive `session_overlay`
+  hook on PricerFitter::fit (default-empty, verified inert at ALL existing call sites) — needed because
+  apply_symbol_config sets SessionInputs fields PricerConfig can't carry (band_k, al_opts, calendar_repair,
+  pinned calib). Fix wave added SurfaceDbPopulate.SymbolConfigOverlayReachesFit (al_override oracle,
+  neuter-RED/restore-GREEN evidenced).
+  Minor (roll-up): (a) skip_existing uses open_partition (opens+CRC-validates; corrupt existing partition
+  aborts populate instead of skipping — membership check via partitions() would be resume-robust);
+  (b) example upserts symbol_config_from_preset(parsed --preset) vs constraint's literal FitPreset::Fast
+  (default matches; flag-honoring defensible).
