@@ -136,4 +136,9 @@ if(Python3_Interpreter_FOUND)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/build_spy_top50_universe_test.py
     )
     set_tests_properties(atx-vol-build-spy-top50-universe PROPERTIES LABELS atx_vol)
+    add_test(
+        NAME Mag7DispersionReport
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/mag7_dispersion_report_test.py
+    )
+    set_tests_properties(Mag7DispersionReport PROPERTIES LABELS atx_vol)
 endif()
