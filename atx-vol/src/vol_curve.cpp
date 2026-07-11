@@ -123,6 +123,24 @@ void CurveSurface::push(std::unique_ptr<IVolCurve> slice) {
   }
 }
 
+Status CurveSurface::replace(std::size_t index,
+                             std::unique_ptr<IVolCurve> slice) {
+  if (index >= slices_.size() || slice == nullptr) {
+    return Err(ErrorCode::InvalidArgument,
+               "CurveSurface::replace: invalid index or null slice");
+  }
+  const double lower_T = index > 0 ? slices_[index - 1]->T() : 0.0;
+  const double upper_T = index + 1 < slices_.size()
+                             ? slices_[index + 1]->T()
+                             : std::numeric_limits<double>::infinity();
+  if (!(slice->T() > lower_T) || !(slice->T() < upper_T)) {
+    return Err(ErrorCode::InvalidArgument,
+               "CurveSurface::replace: replacement breaks maturity order");
+  }
+  slices_[index] = std::move(slice);
+  return Ok();
+}
+
 CurveSurface CurveSurface::clone() const {
   CurveSurface out;
   out.slices_.reserve(slices_.size());
@@ -424,6 +442,143 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
   }
   }
   return Err(ErrorCode::InvalidArgument, "fit_slice_curve: unknown curve kind");
+}
+
+Result<std::unique_ptr<IVolCurve>> refit_slice_curve(
+    const CurveConfig &cfg, const IVolCurve &current,
+    std::span<const FitObs> obs_eu, double F, double T, double df,
+    const std::function<double(double)> &w_prev, FitDiag *diag) {
+  if (current.kind() != cfg.kind || obs_eu.empty() || !(F > 0.0) ||
+      !(T > 0.0) || !(df > 0.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               "refit_slice_curve: incompatible curve or invalid inputs");
+  }
+  if (diag != nullptr) {
+    *diag = FitDiag{};
+  }
+
+  switch (cfg.kind) {
+  case VolCurveKind::ConvexDense: {
+    const auto *warm = dynamic_cast<const ConvexDenseCurve *>(&current);
+    if (warm == nullptr) {
+      return Err(ErrorCode::InvalidArgument,
+                 "refit_slice_curve: missing ConvexDense warm state");
+    }
+    std::vector<double> warm_k;
+    warm_k.reserve(warm->fit().u.size());
+    for (const double K : warm->fit().u) {
+      if (K > 0.0) {
+        warm_k.push_back(std::log(K / F));
+      }
+    }
+    ATX_TRY(std::unique_ptr<IVolCurve> curve,
+            fit_slice_curve(cfg, obs_eu, F, T, df, w_prev, warm_k));
+    if (diag != nullptr) {
+      diag->n_quotes_used = static_cast<std::uint32_t>(obs_eu.size());
+    }
+    return Ok(std::move(curve));
+  }
+  case VolCurveKind::Essvi: {
+    const auto *warm = dynamic_cast<const EssviCurve *>(&current);
+    if (warm == nullptr) {
+      return Err(ErrorCode::InvalidArgument,
+                 "refit_slice_curve: missing eSSVI warm state");
+    }
+    ATX_TRY(EssviParams slice,
+            essvi_fit_slice(obs_eu, T, F, cfg.parametric, diag, 0.0,
+                            &warm->slice()));
+    slice.expiry_id = warm->slice().expiry_id;
+    slice.expiry_ns = warm->slice().expiry_ns;
+    if (w_prev) {
+      ATX_TRY(const CalendarPairProjection projection,
+              arb_project_calendar_essvi_pair(
+                  slice, w_prev, kRiskCalendarMin, kRiskCalendarMax,
+                  kRiskCalendarIntervals));
+      (void)projection;
+    }
+    std::unique_ptr<IVolCurve> curve = std::make_unique<EssviCurve>(slice, df);
+    ATX_TRY_VOID(validate_parametric_risk_shape(*curve));
+    return Ok(std::move(curve));
+  }
+  case VolCurveKind::Svi: {
+    ATX_TRY(SviParams slice,
+            svi_fit_slice(obs_eu, T, F, cfg.parametric, diag));
+    if (w_prev) {
+      ATX_TRY(const CalendarPairProjection projection,
+              arb_project_calendar_svi_pair(
+                  slice, w_prev, kRiskCalendarMin, kRiskCalendarMax,
+                  kRiskCalendarIntervals));
+      (void)projection;
+    }
+    std::unique_ptr<IVolCurve> curve = std::make_unique<SviCurve>(slice, df);
+    ATX_TRY_VOID(validate_parametric_risk_shape(*curve));
+    return Ok(std::move(curve));
+  }
+  case VolCurveKind::C8: {
+    const auto *warm = dynamic_cast<const C8Curve *>(&current);
+    if (warm == nullptr) {
+      return Err(ErrorCode::InvalidArgument,
+                 "refit_slice_curve: missing C8 warm state");
+    }
+    C8Params fitted = warm->slice();
+    std::vector<double> k;
+    std::vector<double> target_w;
+    std::vector<double> spread_w;
+    k.reserve(obs_eu.size());
+    target_w.reserve(obs_eu.size());
+    spread_w.reserve(obs_eu.size());
+    for (const FitObs &o : obs_eu) {
+      if (!std::isfinite(o.k) || !(o.w_mkt > 0.0)) {
+        continue;
+      }
+      k.push_back(o.k);
+      target_w.push_back(o.w_mkt);
+      const double dw_dsigma = 2.0 * std::max(o.sigma_mkt, 0.005) * T;
+      spread_w.push_back(
+          std::max(dw_dsigma * std::max(o.noise_sigma, 1.0e-7), 1.0e-9));
+    }
+    if (k.size() < 8) {
+      return Err(ErrorCode::Unavailable,
+                 "refit_slice_curve: fewer than 8 observations for C8");
+    }
+    const double warm_sse =
+        c8_residual_sse(fitted, k, target_w, spread_w, 1.0e-9);
+    const int max_inner = std::max<int>(4, cfg.parametric.max_inner_iter);
+    ATX_TRY_VOID(c8_fit_slice_lm(fitted, k, target_w, spread_w, max_inner,
+                                 1.0e-9));
+    const double fit_sse =
+        c8_residual_sse(fitted, k, target_w, spread_w, 1.0e-9);
+    const double quality_ceiling =
+        std::max(warm_sse * 1.05, warm_sse + 1.0e-10);
+    if (!std::isfinite(fit_sse) || fit_sse > quality_ceiling) {
+      return Err(ErrorCode::Unavailable,
+                 "refit_slice_curve: C8 warm update failed quality gate");
+    }
+    fitted.expiry_id = warm->slice().expiry_id;
+    fitted.expiry_ns = warm->slice().expiry_ns;
+    c8_arb_project(fitted);
+    if (w_prev) {
+      ATX_TRY(const CalendarPairProjection projection,
+              arb_project_calendar_c8_pair(
+                  fitted, w_prev, kRiskCalendarMin, kRiskCalendarMax,
+                  kRiskCalendarIntervals));
+      (void)projection;
+    }
+    std::unique_ptr<IVolCurve> curve = std::make_unique<C8Curve>(fitted, df);
+    ATX_TRY_VOID(validate_parametric_risk_shape(*curve));
+    if (diag != nullptr) {
+      diag->n_quotes_used = static_cast<std::uint32_t>(k.size());
+      diag->inner_iters_total = static_cast<std::uint16_t>(
+          std::clamp(fitted.n_lm_iters, 0, 65535));
+    }
+    return Ok(std::move(curve));
+  }
+  case VolCurveKind::LinearVariance:
+    return Err(ErrorCode::InvalidArgument,
+               "refit_slice_curve: LinearVariance is not an admitted risk curve");
+  }
+  return Err(ErrorCode::InvalidArgument,
+             "refit_slice_curve: unknown curve kind");
 }
 
 } // namespace atx::vol

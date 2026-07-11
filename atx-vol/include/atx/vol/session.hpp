@@ -147,6 +147,22 @@ void apply_fit_preset(SessionInputs& in, FitPreset preset) noexcept;
                                                 double r,
                                                 std::int64_t now_ts_ns = 0);
 
+// Timing and outcome counters for the local one-expiry update path. Durations
+// are wall-clock milliseconds from the most recent attempt.
+struct IncrementalRefitDiagnostics {
+  std::size_t attempts{0};
+  std::size_t committed{0};
+  std::size_t rolled_back{0};
+  std::size_t last_slice_index{0};
+  VolCurveKind last_kind{VolCurveKind::Essvi};
+  std::size_t last_adjacent_pairs_checked{0};
+  double last_fit_ms{0.0};
+  double last_calendar_ms{0.0};
+  double last_validation_ms{0.0};
+  double last_total_ms{0.0};
+  bool last_committed{false};
+};
+
 // Aggregate surface-quality summary, distilled from the per-expiry parity
 // reports and the per-slice context at build time.
 struct SessionDiagnostics {
@@ -171,6 +187,7 @@ struct SessionDiagnostics {
   double max_iv_proposal_residual_half_spreads{0.0};
   bool carry_confident{false};             // true iff every fitted slice is confident
   bool inversion_certified{false};         // true iff all AL proposals were audited/accepted
+  IncrementalRefitDiagnostics incremental{};
 };
 
 // Compact, persistence-friendly carry summary. Raw quotes and the individual
@@ -312,6 +329,12 @@ class VolaSession {
   // `parity()` fracs are NOT re-scored (the raw market quotes are not retained);
   // fit quality is in the returned diag. On a fit failure the surface is left
   // untouched and the fit error is propagated.
+  //
+  // For ConvexDense/SVI/C8, the replacement is fit on a staged local candidate,
+  // checked only against its previous/next shared-k calendar pairs, independently
+  // shape-validated, and atomically published. A failed fit or admission leaves
+  // every served value unchanged; timing/outcome counters are in
+  // `diagnostics().incremental`.
   //
   // @return InvalidArgument for an out-of-range `slice_idx`, empty `new_obs`, or
   //         a surface with no eSSVI slice at that index; the fit's own error

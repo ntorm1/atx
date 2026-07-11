@@ -1,9 +1,11 @@
 #include "atx/vol/session.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -826,6 +828,135 @@ Result<FitDiag> VolaSession::refit_slice(std::size_t slice_idx,
     return Err(ErrorCode::InvalidArgument,
                "VolaSession::refit_slice: empty observation set");
   }
+
+  // Polymorphic risk surfaces stage the entire publication object but refit and
+  // revalidate only the touched pillar and its two adjacent calendar pairs.
+  // The live optional is not moved or mutated until every check succeeds.
+  if (curve_override_.has_value()) {
+    const auto live_slices = curve_override_->slices();
+    if (slice_idx >= live_slices.size()) {
+      return Err(ErrorCode::InvalidArgument,
+                 "VolaSession::refit_slice: no override slice at that index");
+    }
+    const IVolCurve &current = *live_slices[slice_idx];
+    if (current.kind() != VolCurveKind::ConvexDense &&
+        current.kind() != VolCurveKind::Svi &&
+        current.kind() != VolCurveKind::C8) {
+      return Err(ErrorCode::InvalidArgument,
+                 "VolaSession::refit_slice: override kind is not locally admitted");
+    }
+
+    using RefitClock = std::chrono::steady_clock;
+    const auto elapsed_ms = [](RefitClock::time_point begin,
+                               RefitClock::time_point end) noexcept {
+      return std::chrono::duration<double, std::milli>(end - begin).count();
+    };
+    IncrementalRefitDiagnostics &incremental = diag_.incremental;
+    ++incremental.attempts;
+    incremental.last_slice_index = slice_idx;
+    incremental.last_kind = current.kind();
+    incremental.last_adjacent_pairs_checked = 0;
+    incremental.last_fit_ms = 0.0;
+    incremental.last_calendar_ms = 0.0;
+    incremental.last_validation_ms = 0.0;
+    incremental.last_total_ms = 0.0;
+    incremental.last_committed = false;
+    const auto total_begin = RefitClock::now();
+    const auto reject = [&]() noexcept {
+      ++incremental.rolled_back;
+      incremental.last_total_ms =
+          elapsed_ms(total_begin, RefitClock::now());
+    };
+
+    std::function<double(double)> w_prev;
+    if (slice_idx > 0) {
+      const IVolCurve *previous = live_slices[slice_idx - 1].get();
+      w_prev = [previous](double k) { return previous->w(k); };
+    }
+    const SliceContext &sc = ctx_[slice_idx];
+    const auto fit_begin = RefitClock::now();
+    FitDiag fit_diag{};
+    auto fitted = refit_slice_curve(in_.curve, current, new_obs, sc.forward,
+                                    sc.T, current.df(), w_prev, &fit_diag);
+    incremental.last_fit_ms =
+        elapsed_ms(fit_begin, RefitClock::now());
+    if (!fitted.has_value()) {
+      reject();
+      return Err(std::move(fitted).error());
+    }
+
+    // Re-run served-value shape validation even though the family fitter already
+    // admitted its result. ConvexDense is certified directly in call-price space;
+    // the FD Roper check is inappropriate at its deliberate piecewise-linear
+    // knots, so only smooth parametric families use it here.
+    const auto validation_begin = RefitClock::now();
+    if ((*fitted)->kind() != VolCurveKind::ConvexDense) {
+      auto shape = arb_check_butterfly(**fitted, -0.60, 0.60, 256);
+      if (!shape.has_value()) {
+        incremental.last_validation_ms =
+            elapsed_ms(validation_begin, RefitClock::now());
+        reject();
+        return Err(std::move(shape).error());
+      }
+      if (!shape->empty()) {
+        incremental.last_validation_ms =
+            elapsed_ms(validation_begin, RefitClock::now());
+        reject();
+        return Err(ErrorCode::Unavailable,
+                   "VolaSession::refit_slice: strike-shape admission failed");
+      }
+    }
+    incremental.last_validation_ms =
+        elapsed_ms(validation_begin, RefitClock::now());
+
+    // Build an adjacent-only surface [previous?, candidate, next?]. The fitter
+    // already projected candidate above previous; this independent check also
+    // enforces the upper relation to next. A violation rolls back instead of
+    // cascading a local tick through untouched maturities.
+    const auto calendar_begin = RefitClock::now();
+    CurveSurface adjacent;
+    if (slice_idx > 0) {
+      adjacent.push(live_slices[slice_idx - 1]->clone());
+      ++incremental.last_adjacent_pairs_checked;
+    }
+    adjacent.push((*fitted)->clone());
+    if (slice_idx + 1 < live_slices.size()) {
+      adjacent.push(live_slices[slice_idx + 1]->clone());
+      ++incremental.last_adjacent_pairs_checked;
+    }
+    auto calendar = arb_check_calendar(adjacent, -0.60, 0.60, 64);
+    incremental.last_calendar_ms =
+        elapsed_ms(calendar_begin, RefitClock::now());
+    if (!calendar.has_value()) {
+      reject();
+      return Err(std::move(calendar).error());
+    }
+    if (!calendar->empty()) {
+      reject();
+      return Err(ErrorCode::Unavailable,
+                 "VolaSession::refit_slice: adjacent calendar admission failed");
+    }
+
+    CurveSurface staged = curve_override_->clone();
+    if (Status replace = staged.replace(slice_idx, std::move(*fitted));
+        !replace.has_value()) {
+      reject();
+      return Err(std::move(replace).error());
+    }
+    curve_override_ = std::move(staged);
+    const std::size_t old_n_used = ctx_[slice_idx].n_used;
+    ctx_[slice_idx].n_used = new_obs.size();
+    diag_.n_quotes = diag_.n_quotes >= old_n_used
+                         ? diag_.n_quotes - old_n_used + new_obs.size()
+                         : new_obs.size();
+    diag_.calendar_arb_free = true;
+    ++incremental.committed;
+    incremental.last_committed = true;
+    incremental.last_total_ms =
+        elapsed_ms(total_begin, RefitClock::now());
+    return Ok(fit_diag);
+  }
+
   const std::span<const EssviParams> slices = surface_.essvi_slices();
   if (slice_idx >= slices.size()) {
     return Err(ErrorCode::InvalidArgument,

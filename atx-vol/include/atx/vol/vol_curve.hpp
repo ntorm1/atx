@@ -244,6 +244,12 @@ public:
   // Append a slice; precondition (documented, not verified): non-decreasing T.
   void push(std::unique_ptr<IVolCurve> slice);
 
+  // Replace one pillar without exposing a partially-mutated surface. The caller
+  // normally applies this to a staged clone and publishes the clone only after
+  // adjacent calendar and independent strike-shape admission pass.
+  [[nodiscard]] Status replace(std::size_t index,
+                               std::unique_ptr<IVolCurve> slice);
+
   // Deep copy — every slice cloned into a fresh independently-owned surface. Lets
   // a caller duplicate this move-only container (e.g. snapshot a live session's
   // fitted surface for archiving without disturbing the session).
@@ -316,5 +322,15 @@ struct CurveConfig {
 fit_slice_curve(const CurveConfig &cfg, std::span<const FitObs> obs_eu, double F, double T,
                 double df, const std::function<double(double)> &w_prev = {},
                 std::span<const double> calendar_floor_knots = {});
+
+// Local/warm analogue of fit_slice_curve. Reuses the current curve's state where
+// the family supports it: eSSVI/C8 parameters seed LM directly and ConvexDense
+// retains its active knot lattice; SVI remains a local one-slice solve. The
+// result has already passed the same previous-expiry calendar projection and
+// independent strike-shape admission as a cold build. It is not published.
+[[nodiscard]] Result<std::unique_ptr<IVolCurve>> refit_slice_curve(
+    const CurveConfig &cfg, const IVolCurve &current,
+    std::span<const FitObs> obs_eu, double F, double T, double df,
+    const std::function<double(double)> &w_prev = {}, FitDiag *diag = nullptr);
 
 } // namespace atx::vol

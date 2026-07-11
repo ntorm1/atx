@@ -28,6 +28,7 @@
 namespace {
 
 using atx::vol::build_observations;
+using atx::vol::build_observations_european;
 using atx::vol::CalibOpts;
 using atx::vol::chain_index;
 using atx::vol::data_install;
@@ -43,6 +44,7 @@ using atx::vol::SynthPanelSpec;
 using atx::vol::Underlying;
 using atx::vol::Universe;
 using atx::vol::VolaSession;
+using atx::vol::VolCurveKind;
 using atx::vol::year_fraction;
 
 // The 4-expiry known-truth panel spec (mirrors surface_parity_test's panel; the
@@ -463,4 +465,103 @@ TEST(VolaSession, RefitSlice_WarmUpdatesOneExpiryAndGuardsArgs) {
   EXPECT_FALSE(sess->refit_slice(99, obs->obs).has_value());
   const std::vector<atx::vol::FitObs> empty;
   EXPECT_FALSE(sess->refit_slice(idx, empty).has_value());
+}
+
+TEST(VolaSession, OverrideRefitIsLocalDeterministicAndTimed) {
+  const SynthPanelSpec spec = make_spec();
+  Universe u;
+  const Underlying* under = install(spec, u);
+  ASSERT_NE(under, nullptr);
+  constexpr std::size_t idx = 1;
+
+  for (const VolCurveKind kind : {VolCurveKind::ConvexDense,
+                                  VolCurveKind::Svi,
+                                  VolCurveKind::C8}) {
+    SessionInputs in = make_inputs(spec);
+    in.curve.kind = kind;
+    in.enforce_calendar_floor = true;
+    auto session = VolaSession::build(*under, in);
+    ASSERT_TRUE(session.has_value())
+        << "kind=" << static_cast<int>(kind) << " "
+        << session.error().to_string();
+
+    const double T = session->expiries()[idx].T;
+    const double F = session->expiries()[idx].forward;
+    const double df = std::exp(-spec.r * T);
+    auto obs = build_observations_european(
+        under->chains[idx], spec.spot, spec.r, F, T, df, in.calib);
+    ASSERT_TRUE(obs.has_value()) << obs.error().to_string();
+    ASSERT_GE(obs->obs.size(), std::size_t{8});
+
+    const double left_before = session->iv(100.0, session->expiries()[idx - 1].T);
+    const double right_before = session->iv(100.0, session->expiries()[idx + 1].T);
+    auto first = session->refit_slice(idx, obs->obs);
+    ASSERT_TRUE(first.has_value())
+        << "kind=" << static_cast<int>(kind) << " "
+        << first.error().to_string();
+    const auto first_diag = session->diagnostics().incremental;
+    EXPECT_EQ(first_diag.attempts, 1u);
+    EXPECT_EQ(first_diag.committed, 1u);
+    EXPECT_EQ(first_diag.rolled_back, 0u);
+    EXPECT_TRUE(first_diag.last_committed);
+    EXPECT_EQ(first_diag.last_slice_index, idx);
+    EXPECT_EQ(first_diag.last_kind, kind);
+    EXPECT_EQ(first_diag.last_adjacent_pairs_checked, 2u);
+    EXPECT_GE(first_diag.last_total_ms, 0.0);
+    EXPECT_GE(first_diag.last_fit_ms, 0.0);
+    EXPECT_GE(first_diag.last_calendar_ms, 0.0);
+    EXPECT_DOUBLE_EQ(session->iv(100.0, session->expiries()[idx - 1].T),
+                     left_before);
+    EXPECT_DOUBLE_EQ(session->iv(100.0, session->expiries()[idx + 1].T),
+                     right_before);
+
+    const double first_value = session->iv(100.0, T);
+    auto second = session->refit_slice(idx, obs->obs);
+    ASSERT_TRUE(second.has_value()) << second.error().to_string();
+    EXPECT_NEAR(session->iv(100.0, T), first_value, 1.0e-10);
+    EXPECT_EQ(session->diagnostics().incremental.attempts, 2u);
+    EXPECT_EQ(session->diagnostics().incremental.committed, 2u);
+  }
+}
+
+TEST(VolaSession, OverrideRefitCalendarFailureRollsBackAtomically) {
+  const SynthPanelSpec spec = make_spec();
+  Universe u;
+  const Underlying* under = install(spec, u);
+  ASSERT_NE(under, nullptr);
+  SessionInputs in = make_inputs(spec);
+  in.curve.kind = VolCurveKind::Svi;
+  in.enforce_calendar_floor = true;
+  auto session = VolaSession::build(*under, in);
+  ASSERT_TRUE(session.has_value()) << session.error().to_string();
+
+  constexpr std::size_t idx = 1;
+  const double T = session->expiries()[idx].T;
+  const double F = session->expiries()[idx].forward;
+  const double df = std::exp(-spec.r * T);
+  auto obs = build_observations_european(
+      under->chains[idx], spec.spot, spec.r, F, T, df, in.calib);
+  ASSERT_TRUE(obs.has_value()) << obs.error().to_string();
+  for (auto &o : obs->obs) {
+    o.sigma_mkt = 2.0;
+    o.w_mkt = 4.0 * T;
+  }
+
+  std::vector<double> before;
+  for (std::size_t i = 0; i < session->expiries().size(); ++i) {
+    before.push_back(session->iv(100.0, session->expiries()[i].T));
+  }
+  const std::size_t used_before = session->expiries()[idx].n_used;
+  const auto failed = session->refit_slice(idx, obs->obs);
+  EXPECT_FALSE(failed.has_value());
+  for (std::size_t i = 0; i < before.size(); ++i) {
+    EXPECT_DOUBLE_EQ(session->iv(100.0, session->expiries()[i].T), before[i]);
+  }
+  EXPECT_EQ(session->expiries()[idx].n_used, used_before);
+  const auto &diag = session->diagnostics().incremental;
+  EXPECT_EQ(diag.attempts, 1u);
+  EXPECT_EQ(diag.committed, 0u);
+  EXPECT_EQ(diag.rolled_back, 1u);
+  EXPECT_FALSE(diag.last_committed);
+  EXPECT_EQ(diag.last_adjacent_pairs_checked, 2u);
 }
