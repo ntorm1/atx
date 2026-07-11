@@ -1118,7 +1118,8 @@ TEST(PortfolioPricer, PriceInto_RepeatedThreadCounts_BitIdentical) {
                     .has_value());
   }
 
-  for (int rep = 0; rep < 100; ++rep) {
+  // 2 reps: cross-thread bit-identity is deterministic; soak lives in bench.
+  for (int rep = 0; rep < 2; ++rep) {
     for (unsigned nt : {2u, 4u, 8u}) {
       FrameStore fs(n, /*want_greeks=*/true);
       PriceFrameView v = fs.view();

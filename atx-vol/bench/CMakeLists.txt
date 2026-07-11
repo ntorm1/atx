@@ -63,3 +63,26 @@ target_link_libraries(atx-vol-simd-bench
         atx_warnings
         Threads::Threads
 )
+
+# Throughput/perf cases RELOCATED out of the test suite (they measured timing,
+# not correctness, so they do not belong in the fast test gate). Each is a proper
+# Google Benchmark now:
+#   backtest_throughput_bench.cpp     <- tests/backtest_bench_test.cpp (whole file)
+#   corpus_build_bench.cpp            <- tests/corpus_test.cpp   :: Throughput_FitsUnderCeiling
+#   american_greeks_reuse_bench.cpp   <- tests/american_test.cpp :: DISABLED_FdBoundaryReuse_Speedup
+#   strangle_solver_bench.cpp         <- tests/spy_strangle_backtest_test.cpp :: DISABLED_SolverBreakdown
+add_executable(atx-vol-reloc-bench
+    bench_main.cpp
+    backtest_throughput_bench.cpp
+    corpus_build_bench.cpp
+    american_greeks_reuse_bench.cpp
+    strangle_solver_bench.cpp
+)
+target_link_libraries(atx-vol-reloc-bench
+    PRIVATE
+        atx::vol
+        atx::core
+        benchmark::benchmark
+        atx_warnings
+        Threads::Threads
+)

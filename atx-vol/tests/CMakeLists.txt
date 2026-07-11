@@ -72,9 +72,10 @@ add_executable(atx-vol-tests
     backtest_exec_test.cpp
     tearsheet_test.cpp
     backtest_real_test.cpp
-    backtest_bench_test.cpp
     spy_strangle_backtest_test.cpp
 )
+# backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
+# (it is a throughput benchmark, not a correctness gate).
 
 # SIMD/AVX2 batch-kernel parity gates: any tests/simd_*_test.cpp auto-joins the
 # test executable (subagents add per-kernel parity tests without editing here).
@@ -89,6 +90,16 @@ target_link_libraries(atx-vol-tests
         GTest::gtest_main
         atx_warnings
 )
+
+# Precompiled header (opt-in: ATX_USE_PCH; ON in the ninja/dev/rel presets, OFF
+# in `hygiene`). GoogleTest is #included by ~79 of the test TUs and is by far the
+# dominant per-TU parse cost; precompiling it (plus the ubiquitous std headers and
+# the stable atx-core vocabulary — see pch.hpp) parses that payload once instead
+# of once per TU, which is the single biggest lever on this suite's compile time.
+# Mirrors atx-engine/tests. The one monolithic target owns its own PCH.
+if(ATX_USE_PCH)
+    target_precompile_headers(atx-vol-tests PRIVATE pch.hpp)
+endif()
 
 include(GoogleTest)
 gtest_discover_tests(atx-vol-tests PROPERTIES LABELS atx_vol)

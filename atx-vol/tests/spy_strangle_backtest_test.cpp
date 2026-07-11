@@ -16,7 +16,6 @@
 
 #include <gtest/gtest.h>
 
-#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -175,51 +174,7 @@ void expect_result_bit_identical(const BacktestResult& a, const BacktestResult& 
 
 }  // namespace
 
-// ── Perf breakdown (disabled): where does a restrike step's time go? ─────────
-TEST(SpyStrangleBacktest, DISABLED_SolverBreakdown) {
-  const fs::path dir = fs::temp_directory_path() / "atx-spy-strangle-perf";
-  std::error_code ec;
-  fs::remove_all(dir, ec);
-  const Corpus c = make_corpus(dir, 1);
-  auto snap = MarketSnapshot::load(c.dp.front().second);
-  ASSERT_TRUE(snap.has_value());
-  const PricedSurface* s = snap->find(kSpy);
-  ASSERT_NE(s, nullptr);
-  const double F = s->forward_at(kTenorT);
-
-  const auto time_us = [](auto&& fn, int reps) {
-    const auto t0 = std::chrono::steady_clock::now();
-    volatile double sink = 0.0;
-    for (int i = 0; i < reps; ++i) {
-      sink += fn();
-    }
-    const auto t1 = std::chrono::steady_clock::now();
-    (void)sink;
-    return std::chrono::duration<double, std::micro>(t1 - t0).count() / reps;
-  };
-
-  const double Kc = 1.05 * F;
-  const double Kp = 0.95 * F;
-  // Per-evaluation cost: full FD greeks vs delta-only, both sides.
-  const double g_put = time_us([&] { return s->greeks(Kp, kTenorT, Side::Put)->delta; }, 400);
-  const double d_put = time_us([&] { return s->delta(Kp, kTenorT, Side::Put).value_or(0); }, 400);
-  const double g_call = time_us([&] { return s->greeks(Kc, kTenorT, Side::Call)->delta; }, 400);
-  const double d_call = time_us([&] { return s->delta(Kc, kTenorT, Side::Call).value_or(0); }, 400);
-  // Whole-solve cost (new delta path) + the vega greeks expand_leg computes per leg.
-  const double solve_put =
-      time_us([&] { return resolve_strike_by_delta(*s, kTenorT, Side::Put, 0.40).value_or(0); }, 200);
-  const double solve_call =
-      time_us([&] { return resolve_strike_by_delta(*s, kTenorT, Side::Call, 0.40).value_or(0); }, 200);
-  const double vega_put = time_us([&] { return s->greeks(Kp, kTenorT, Side::Put)->vega; }, 400);
-  const double vega_call = time_us([&] { return s->greeks(Kc, kTenorT, Side::Call)->vega; }, 400);
-
-  std::printf("[perf] per-eval us: greeks put=%.1f delta put=%.1f (%.1fx) | greeks call=%.1f "
-              "delta call=%.1f (%.1fx)\n",
-              g_put, d_put, g_put / d_put, g_call, d_call, g_call / d_call);
-  std::printf("[perf] resolve us: put=%.1f call=%.1f | expand_leg vega-greeks us: put=%.1f "
-              "call=%.1f (per step: 2 resolves + 2 vega-greeks + reprice)\n",
-              solve_put, solve_call, vega_put, vega_call);
-}
+// Per-eval timing relocated to bench/strangle_solver_bench.cpp.
 
 // ── 1. Restrike invariant: single cohort (2 lots) every row, strikes MOVE ────
 TEST(SpyStrangleBacktest, RestrikeSingleCohortStrikesMove) {

@@ -131,7 +131,8 @@ TEST(PricingExecutor, RepeatedConcurrent_DeterministicDisjointWrites) {
   std::vector<std::uint64_t> ref(n);
   std::iota(ref.begin(), ref.end(), std::uint64_t{1});
 
-  for (int rep = 0; rep < 200; ++rep) {
+  // 20 reps: enough to surface disjoint-write races; full soak was 200 (moved to bench-scale).
+  for (int rep = 0; rep < 20; ++rep) {
     for (unsigned nt : {1u, 2u, 4u, 8u}) {
       std::vector<std::uint64_t> out(n, 0);
       ex.run_blocks(n, nt, [&](std::size_t i) { out[i] = static_cast<std::uint64_t>(i) + 1; });

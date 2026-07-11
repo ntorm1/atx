@@ -21,13 +21,13 @@
 //                    POD blobs) surfaces bit-for-bit;
 //   3. integrity   — every Ok entry's reloaded surface reproduces a fresh fit of
 //                    the same board BIT-for-BIT (iv / fair_value / every Greek);
-//   4. manifest    — parse(serialize(m)) == m and write->read round-trips;
-//   5. throughput  — a 20-board corpus builds under a generous wall ceiling.
+//   4. manifest    — parse(serialize(m)) == m and write->read round-trips.
+//
+// (Corpus build throughput lives in bench/corpus_build_bench.cpp.)
 
 #include <gtest/gtest.h>
 
 #include <array>
-#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -58,7 +58,6 @@
 #include "atx/vol/surface_archive.hpp" // SurfaceArchive
 #include "atx/vol/types.hpp"           // Side
 #include "atx/vol/vol_curve.hpp"       // CurveConfig, VolCurveKind, to_string
-#include "support/bench_gate.hpp"      // ATX_VOL_SKIP_UNLESS_BENCH
 
 using namespace atx::vol;
 namespace fs = std::filesystem;
@@ -1158,14 +1157,19 @@ void exercise_generated_property_corpus(std::size_t count, const char *tag) {
 
 } // namespace
 
-TEST(CorpusGeneratedProperty, FixedSeedTwoHundredFiftyBoardGate) {
-  exercise_generated_property_corpus(250u, "generated-250");
+TEST(CorpusGeneratedProperty, FixedSeedGeneratedPropertyGate) {
+  // Default fast gate: 56 boards covers all 7 profile kinds + all failure-injection
+  // classes + parallel==serial determinism. The 250/10k scale sweeps live behind
+  // ATX_VOL_LONG_CORPUS.
+  exercise_generated_property_corpus(56u, "generated-56");
 }
 
 TEST(CorpusGeneratedProperty, LongFixedSeedTenThousandBoardGate) {
   if (!long_corpus_enabled()) {
-    GTEST_SKIP() << "long corpus; set ATX_VOL_LONG_CORPUS=1 to run 10,000 generated boards";
+    GTEST_SKIP() << "long corpus; set ATX_VOL_LONG_CORPUS=1 to run the 250 + 10,000 board sweeps";
   }
+  // Preserve the old 250-board coverage on demand, then the full 10k scale sweep.
+  exercise_generated_property_corpus(250u, "generated-250");
   exercise_generated_property_corpus(10'000u, "generated-10000");
 }
 
@@ -1545,33 +1549,4 @@ TEST(CorpusBuildSession, SyntheticThirteenNameThreeDateBreadthScoreboard) {
   expect_column_bits_equal(parallel->gross_vega, fd->gross_vega);
 }
 
-TEST(Corpus, Throughput_FitsUnderCeiling) {
-  ATX_VOL_SKIP_UNLESS_BENCH();
-  const fs::path out = fresh_out_dir("throughput");
-
-  // 10 dates x 2 symbols = 20 boards. Snapshots are all before the earliest
-  // listed expiry so every year-fraction is positive.
-  std::vector<std::string> dates;
-  for (int day = 8; day <= 17; ++day) {
-    char date[16];
-    std::snprintf(date, sizeof date, "2026-06-%02d", day);
-    dates.emplace_back(date);
-  }
-  const std::vector<CorpusBoard> boards = make_mixed_boards(dates);
-  ASSERT_EQ(boards.size(), 20u);
-
-  const auto t0 = std::chrono::steady_clock::now();
-  auto man_res = build_corpus(boards, out.string()); // fan-out across boards
-  const auto t1 = std::chrono::steady_clock::now();
-  ASSERT_TRUE(man_res.has_value()) << man_res.error().to_string();
-  const CorpusManifest &man = *man_res;
-
-  const double wall_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-  EXPECT_EQ(man.n_boards, 20u);
-  EXPECT_EQ(man.n_ok, 20u);
-  EXPECT_EQ(man.dates.size(), 10u);
-  EXPECT_LT(wall_ms, 60000.0) << "throughput ceiling exceeded";
-
-  std::printf("[corpus] throughput: boards=%u dates=%zu ok=%u wall=%.0f ms\n", man.n_boards,
-              man.dates.size(), man.n_ok, wall_ms);
-}
+// Throughput relocated to bench/corpus_build_bench.cpp.

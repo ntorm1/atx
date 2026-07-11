@@ -1,0 +1,195 @@
+// american_greeks_reuse_bench.cpp — the FD-boundary-reuse A/B, as a benchmark.
+//
+// Relocated from TEST(AmericanGreeks, DISABLED_FdBoundaryReuse_Speedup) in
+// tests/american_test.cpp, which timed four American-put-greeks implementations
+// over a fixed 40-point grid and asserted an EXPECT_GT ordering on elapsed
+// milliseconds — a flaky A/B micro-benchmark, not a correctness check.
+//
+// Here each of the four measured code paths is its own benchmark case over the
+// SAME grid, so Google Benchmark's ns/op and items/s (greeks computed per second)
+// make the speedup comparison directly instead of a brittle wall-clock EXPECT_GT:
+//
+//   american_greeks/fd_ref        — the pre-P1a 17-solve cold FD reference
+//   american_greeks/fd_fast       — american_greeks_fd, 7 cold boundary solves
+//   american_greeks/fd_warm       — american_greeks_fd, 6 bumped boundaries warm-seeded
+//   american_greeks/andersen_lake — american_greeks_al, the ~5-solve analytic path
+//
+// The former test's ordering (ref > fast > warm, fast > al) is now read straight
+// off the per-case rates. Setup (grid, opts) lives outside the timed loop; each
+// case reports items_processed = iterations x grid_points.
+
+#include <cstdint>
+#include <optional>
+#include <vector>
+
+#include <benchmark/benchmark.h>
+
+#include "atx/vol/american.hpp"
+#include "atx/vol/types.hpp"
+
+#include "bench_util.hpp"
+
+namespace atx::vol::bench {
+namespace {
+
+// The base contract and the 40-point put grid the relocated A/B swept:
+// 5 strikes x 4 maturities x 2 vols. S/r/q are fixed across the grid.
+constexpr double kS = 100.0;
+constexpr double kR = 0.05;
+constexpr double kQ = 0.03;
+
+struct Pt {
+  double K;
+  double T;
+  double sigma;
+};
+
+[[nodiscard]] std::vector<Pt> make_grid() {
+  std::vector<Pt> grid;
+  for (const double K : {70.0, 85.0, 100.0, 115.0, 130.0}) {
+    for (const double T : {0.05, 0.25, 0.75, 1.5}) {
+      for (const double sigma : {0.15, 0.30}) {
+        grid.push_back({K, T, sigma});
+      }
+    }
+  }
+  return grid;
+}
+
+// The pre-P1a algorithm, reproduced verbatim from the former test so fd_ref
+// measures the true 17-stencil cold cost (every stencil a full cold
+// american_price). A failed price reads 0.0 — the grid is all valid American
+// puts, so this branch is never taken; it only keeps the path total-function.
+[[nodiscard]] AmericanGreeks greeks_fd_reference(double S, double K, double T,
+                                                 double sigma, double r, double q,
+                                                 Side side) {
+  const double hS = 1.0e-3 * S;
+  double hv = 1.0e-3;
+  if (sigma - hv <= 0.0) {
+    hv = 0.5 * sigma;
+  }
+  const double hr = 1.0e-4;
+  const double hT = 1.0e-3;
+  const bool near_expiry = (T - hT <= 1.0e-8);
+  auto P = [&](double dS, double dsig, double dr, double dT) {
+    const auto p = american_price(S + dS, K, T + dT, sigma + dsig, r + dr, q, side,
+                                  AmericanMethod::AndersenLake, std::nullopt);
+    return p ? *p : 0.0;
+  };
+  const double p0 = P(0, 0, 0, 0);
+  const double p_Sp = P(+hS, 0, 0, 0);
+  const double p_Sm = P(-hS, 0, 0, 0);
+  const double p_vp = P(0, +hv, 0, 0);
+  const double p_vm = P(0, -hv, 0, 0);
+  const double p_rp = P(0, 0, +hr, 0);
+  const double p_rm = P(0, 0, -hr, 0);
+  const double p_Tp = P(0, 0, 0, +hT);
+  const double p_Tm = near_expiry ? p0 : P(0, 0, 0, -hT);
+  const double p_SpVp = P(+hS, +hv, 0, 0);
+  const double p_SpVm = P(+hS, -hv, 0, 0);
+  const double p_SmVp = P(-hS, +hv, 0, 0);
+  const double p_SmVm = P(-hS, -hv, 0, 0);
+  const double p_SpTp = P(+hS, 0, 0, +hT);
+  const double p_SmTp = P(-hS, 0, 0, +hT);
+  const double p_SpTm = near_expiry ? p_Sp : P(+hS, 0, 0, -hT);
+  const double p_SmTm = near_expiry ? p_Sm : P(-hS, 0, 0, -hT);
+  const double dT_den = near_expiry ? hT : (2.0 * hT);
+  AmericanGreeks g;
+  g.price = p0;
+  g.delta = (p_Sp - p_Sm) / (2.0 * hS);
+  g.gamma = (p_Sp - 2.0 * p0 + p_Sm) / (hS * hS);
+  g.vega = (p_vp - p_vm) / (2.0 * hv);
+  g.volga = (p_vp - 2.0 * p0 + p_vm) / (hv * hv);
+  g.rho = (p_rp - p_rm) / (2.0 * hr);
+  g.theta = -(p_Tp - p_Tm) / dT_den;
+  g.vanna = (p_SpVp - p_SpVm - p_SmVp + p_SmVm) / (4.0 * hS * hv);
+  g.charm = -(p_SpTp - p_SpTm - p_SmTp + p_SmTm) / (2.0 * hS * dT_den);
+  return g;
+}
+
+// ── The 17-solve cold FD reference ────────────────────────────────────────
+void BM_FdRef(benchmark::State& state) {
+  const std::vector<Pt> grid = make_grid();
+  double sink = 0.0;
+  for (auto _ : state) {
+    for (const Pt& p : grid) {
+      const AmericanGreeks g =
+          greeks_fd_reference(kS, p.K, p.T, p.sigma, kR, kQ, Side::Put);
+      sink += g.delta + g.vega + g.gamma;
+    }
+    benchmark::DoNotOptimize(sink);
+  }
+  state.SetItemsProcessed(state.iterations() *
+                          static_cast<std::int64_t>(grid.size()));
+}
+
+// ── Fast FD: 7 cold boundary solves (P1a) ─────────────────────────────────
+void BM_FdFast(benchmark::State& state) {
+  const std::vector<Pt> grid = make_grid();
+  const std::optional<AlOpts> opts = std::nullopt;
+  double sink = 0.0;
+  for (auto _ : state) {
+    for (const Pt& p : grid) {
+      const auto g =
+          american_greeks_fd(kS, p.K, p.T, p.sigma, kR, kQ, Side::Put,
+                             AmericanMethod::AndersenLake, opts,
+                             /*warm_start=*/false);
+      sink += g ? g->delta + g->vega + g->gamma : 0.0;
+    }
+    benchmark::DoNotOptimize(sink);
+  }
+  state.SetItemsProcessed(state.iterations() *
+                          static_cast<std::int64_t>(grid.size()));
+}
+
+// ── Warm FD: 6 bumped boundaries seeded from the base boundary (P1b) ───────
+void BM_FdWarm(benchmark::State& state) {
+  const std::vector<Pt> grid = make_grid();
+  const std::optional<AlOpts> opts = std::nullopt;
+  double sink = 0.0;
+  for (auto _ : state) {
+    for (const Pt& p : grid) {
+      const auto g =
+          american_greeks_fd(kS, p.K, p.T, p.sigma, kR, kQ, Side::Put,
+                             AmericanMethod::AndersenLake, opts,
+                             /*warm_start=*/true);
+      sink += g ? g->delta + g->vega + g->gamma : 0.0;
+    }
+    benchmark::DoNotOptimize(sink);
+  }
+  state.SetItemsProcessed(state.iterations() *
+                          static_cast<std::int64_t>(grid.size()));
+}
+
+// ── Analytic Andersen-Lake greeks: ~5 solves (P2) ─────────────────────────
+void BM_AndersenLake(benchmark::State& state) {
+  const std::vector<Pt> grid = make_grid();
+  double sink = 0.0;
+  for (auto _ : state) {
+    for (const Pt& p : grid) {
+      const auto g = american_greeks_al(kS, p.K, p.T, p.sigma, kR, kQ, Side::Put);
+      sink += g ? g->delta + g->vega + g->gamma : 0.0;
+    }
+    benchmark::DoNotOptimize(sink);
+  }
+  state.SetItemsProcessed(state.iterations() *
+                          static_cast<std::int64_t>(grid.size()));
+}
+
+// Register with the mandated common knobs (warm-up, 5 reps, p95 + CV).
+const int kRegistered = [] {
+  apply_common(benchmark::RegisterBenchmark("american_greeks/fd_ref", BM_FdRef))
+      ->Unit(benchmark::kMicrosecond);
+  apply_common(benchmark::RegisterBenchmark("american_greeks/fd_fast", BM_FdFast))
+      ->Unit(benchmark::kMicrosecond);
+  apply_common(benchmark::RegisterBenchmark("american_greeks/fd_warm", BM_FdWarm))
+      ->Unit(benchmark::kMicrosecond);
+  apply_common(benchmark::RegisterBenchmark("american_greeks/andersen_lake",
+                                            BM_AndersenLake))
+      ->Unit(benchmark::kMicrosecond);
+  return 0;
+}();
+
+}  // namespace
+
+}  // namespace atx::vol::bench

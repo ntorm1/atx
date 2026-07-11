@@ -1,7 +1,6 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -727,75 +726,7 @@ TEST(AmericanGreeks, Analytic_VsFd_PutGrid) {
   EXPECT_LT(charm.rel, 5.0e-3);
 }
 
-// Controlled A/B of the isolated hot function: fast put greeks (7 boundary solves)
-// vs the 17-solve reference. Same params, same process — the ratio is P1a's true
-// per-call speedup, free of backtest/book noise. DISABLED (perf, not correctness):
-//   run: --gtest_also_run_disabled_tests --gtest_filter=*FdBoundaryReuse_Speedup*
-TEST(AmericanGreeks, DISABLED_FdBoundaryReuse_Speedup) {
-  const double S = 100.0, r = 0.05, q = 0.03;
-  struct Pt { double K, T, sigma; };
-  std::vector<Pt> grid;
-  for (const double K : {70.0, 85.0, 100.0, 115.0, 130.0}) {
-    for (const double T : {0.05, 0.25, 0.75, 1.5}) {
-      for (const double sigma : {0.15, 0.30}) {
-        grid.push_back({K, T, sigma});
-      }
-    }
-  }
-  const int reps = 400;
-  volatile double sink = 0.0;
-
-  auto t0 = std::chrono::steady_clock::now();
-  for (int rep = 0; rep < reps; ++rep) {
-    for (const Pt& p : grid) {
-      const auto g = american_greeks_fd(S, p.K, p.T, p.sigma, r, q, Side::Put,
-                                        AmericanMethod::AndersenLake, std::nullopt,
-                                        /*warm_start=*/false);
-      sink += g ? g->delta + g->vega + g->gamma : 0.0;
-    }
-  }
-  auto t1 = std::chrono::steady_clock::now();
-  for (int rep = 0; rep < reps; ++rep) {
-    for (const Pt& p : grid) {
-      const auto g = american_greeks_fd(S, p.K, p.T, p.sigma, r, q, Side::Put,
-                                        AmericanMethod::AndersenLake, std::nullopt,
-                                        /*warm_start=*/true);
-      sink += g ? g->delta + g->vega + g->gamma : 0.0;
-    }
-  }
-  auto t2 = std::chrono::steady_clock::now();
-  for (int rep = 0; rep < reps; ++rep) {
-    for (const Pt& p : grid) {
-      const auto g = american_greeks_al(S, p.K, p.T, p.sigma, r, q, Side::Put);
-      sink += g ? g->delta + g->vega + g->gamma : 0.0;
-    }
-  }
-  auto t3 = std::chrono::steady_clock::now();
-  for (int rep = 0; rep < reps; ++rep) {
-    for (const Pt& p : grid) {
-      const auto g = greeks_fd_reference(S, p.K, p.T, p.sigma, r, q, Side::Put);
-      sink += g.delta + g.vega + g.gamma;
-    }
-  }
-  auto t4 = std::chrono::steady_clock::now();
-
-  const double fast_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-  const double warm_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
-  const double al_ms = std::chrono::duration<double, std::milli>(t3 - t2).count();
-  const double ref_ms = std::chrono::duration<double, std::milli>(t4 - t3).count();
-  const long calls = static_cast<long>(reps) * static_cast<long>(grid.size());
-  const double per = static_cast<double>(calls);
-  std::printf(
-      "[greeks-speedup] calls=%ld ref(17cold)=%.1fms (%.1fus)\n"
-      "  p1a(7cold)=%.1fms (%.1fus, %.2fx) p1b(warm)=%.1fms (%.1fus, %.2fx) "
-      "p2(al,5solve)=%.1fms (%.1fus, %.2fx) sink=%.3g\n",
-      calls, ref_ms, 1000.0 * ref_ms / per, fast_ms, 1000.0 * fast_ms / per,
-      ref_ms / fast_ms, warm_ms, 1000.0 * warm_ms / per, ref_ms / warm_ms, al_ms,
-      1000.0 * al_ms / per, ref_ms / al_ms, static_cast<double>(sink));
-  EXPECT_GT(ref_ms, fast_ms);
-  EXPECT_GT(fast_ms, warm_ms);  // warm must beat cold-fast
-  EXPECT_GT(fast_ms, al_ms);    // analytic (5 solves) must beat P1a (7 solves)
-}
+// Perf A/B relocated to bench/american_greeks_reuse_bench.cpp.
 
 // ── Warm-started AloPricer (the American-IV throughput lever) ─────────────
 

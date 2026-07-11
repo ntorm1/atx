@@ -1,45 +1,51 @@
-// atx-vol backtest engine (Phase C0) — throughput benchmark (smoke).
+// backtest_throughput_bench.cpp — Google Benchmark throughput for the atx-vol
+// backtest engine's `run_backtest` over a non-trivial multi-underlier American book.
 //
-// Establishes a deterministic steps/s number for `run_backtest` over a non-trivial
-// multi-underlier book, and guards it with a GENEROUS ceiling (>= 5x headroom, a
-// smoke guard — NOT a tight perf gate, so it never flakes).
+// Relocated from tests/backtest_bench_test.cpp (which was a throughput smoke gated
+// by ATX_VOL_SKIP_UNLESS_BENCH, asserting only a generous wall-clock ceiling — not a
+// correctness gate). Here the same measurement becomes a proper benchmark: the
+// engine's steps/s (backtest steps priced per wall-second) is what items/s reports.
 //
-// SYNTHETIC surfaces only (the backtest_test / tearsheet_test make_surface pattern
-// — analytic eSSVI, no fitting): a real corpus fit is slow and would swamp the
-// timing. We write one synthetic archive per date (U surfaces, distinct uids /
-// symbols) over D dates, then run a multi-leg straddle strategy (one straddle clip
-// per underlier, EveryStep / HoldToExpiry) so the book is genuinely large. The run
-// is timed with std::chrono::steady_clock (the same mechanic as
-// Corpus.Throughput_FitsUnderCeiling). Determinism is NOT re-checked here (the real
-// litmus covers it) — this stays a pure timing smoke.
+// SYNTHETIC surfaces only (the backtest_test / tearsheet_test make_surface pattern —
+// analytic eSSVI, no fitting): a real corpus fit is slow and would swamp the timing.
+// We write one synthetic archive per date (U surfaces, distinct uids / symbols) over
+// D dates, then run a multi-leg straddle strategy (one straddle clip per underlier,
+// EveryStep / HoldToExpiry) so the book grows to D*U*2 overlapping lots — a genuinely
+// large multi-underlier American book. The corpus/archives + Clock are built ONCE
+// (static fixture, the bench-suite convention) OUTSIDE the timed loop; only
+// `run_backtest` is timed. `run_backtest` fans out over all cores by default, so the
+// case runs `->UseRealTime()` — the reported time (and hence items/s = steps/s) is
+// wall-clock, matching the test's original steady_clock measurement.
 
-#include <gtest/gtest.h>
-
-#include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include <benchmark/benchmark.h>
+
 #include "atx/vol/american.hpp"         // al_fast_opts, AmericanMethod
-#include "atx/vol/backtest.hpp"         // Clock, run_backtest, RunConfig, BacktestResult
+#include "atx/vol/backtest.hpp"         // Clock, run_backtest, BacktestResult
 #include "atx/vol/corpus.hpp"           // CorpusManifest, CorpusEntry, CorpusFitStatus
 #include "atx/vol/priced_surface.hpp"   // PricedSurface, PricingContext
 #include "atx/vol/strategy.hpp"         // DeclarativeStrategy, StrategySpec
 #include "atx/vol/surface_archive.hpp"  // write_surface_archive_file, SurfaceArchiveItem
 #include "atx/vol/surface_parity.hpp"   // SliceContext
-#include "atx/vol/types.hpp"            // Side, Result, Status
+#include "atx/vol/types.hpp"            // Side, Status
 #include "atx/vol/vol_curve.hpp"        // CurveSurface, EssviCurve
 #include "atx/vol/vol_surface.hpp"      // EssviParams
-#include "support/bench_gate.hpp"       // ATX_VOL_SKIP_UNLESS_BENCH
 
-using namespace atx::vol;
-namespace fs = std::filesystem;
+#include "bench_util.hpp"
 
+namespace atx::vol::bench {
 namespace {
+
+namespace fs = std::filesystem;
 
 constexpr double kR = 0.043;
 constexpr std::int64_t kBaseNow = 1700000000000000000LL;
@@ -48,14 +54,20 @@ constexpr std::int64_t kDayNs = 86400LL * 1000000000LL;
 // Bench dimensions. D dates x U underliers. A straddle clip (2 legs per underlier)
 // is opened EVERY step and held to expiry, so the book grows to D*U*2 lots — a
 // genuinely non-trivial multi-underlier American book. Sized so the whole run
-// stays a few seconds (American greeks over a growing book are ~ms/lot): the real
-// litmus (backtest_real_test) already proves the full engine, so this is a pure
-// timing smoke. The straddle tenor stays inside the synthetic grid's [0.05, 1.0] T
-// span across the whole run (front cohort ages to ~0.10, never below 0.05).
+// stays a few seconds (American greeks over a growing book are ~ms/lot). The
+// straddle tenor stays inside the synthetic grid's [0.05, 1.0] T span across the
+// whole run (front cohort ages to ~0.10, never below 0.05).
 constexpr int kD = 20;                  // dates (=> D-1 priced steps)
 constexpr int kU = 4;                   // underliers per date
 constexpr std::uint32_t kUidBase = 100;
 constexpr double kTargetT = 0.15;       // straddle tenor (in-grid all run)
+
+// Setup failures happen once, outside the timed region (static fixture init), so an
+// abort is the honest response — a benchmark of an error return measures nothing.
+[[noreturn]] void bench_fatal(const std::string& msg) {
+  std::fprintf(stderr, "FATAL(backtest-throughput-bench): %s\n", msg.c_str());
+  std::abort();
+}
 
 // A synthetic eSSVI PricedSurface (flat forward, genuine American premium via
 // q_eff=0.02), slices T in [0.05, 1.0]. Mirrors backtest_test's make_surface.
@@ -88,7 +100,9 @@ constexpr double kTargetT = 0.15;       // straddle tenor (in-grid all run)
   pc.al_opts = al_fast_opts();
   pc.uid = uid;
   auto ps = PricedSurface::create(std::move(cs), std::move(ctx), pc);
-  EXPECT_TRUE(ps.has_value()) << (ps.has_value() ? std::string{} : ps.error().to_string());
+  if (!ps.has_value()) {
+    bench_fatal(ps.error().to_string());
+  }
   return std::move(*ps);
 }
 
@@ -105,7 +119,9 @@ constexpr double kTargetT = 0.15;       // straddle tenor (in-grid all run)
     its.push_back(SurfaceArchiveItem{sym, ps});
   }
   const Status st = write_surface_archive_file(path, its);
-  EXPECT_TRUE(st.has_value()) << (st.has_value() ? std::string{} : st.error().to_string());
+  if (!st.has_value()) {
+    bench_fatal(st.error().to_string());
+  }
   return path;
 }
 
@@ -125,21 +141,19 @@ constexpr double kTargetT = 0.15;       // straddle tenor (in-grid all run)
   return m;
 }
 
-}  // namespace
-
-// ── Throughput smoke: D dates x U underliers, straddle clips held to expiry ──
-TEST(BacktestBench, MultiUnderlierStraddle_StepsPerSecond) {
-  ATX_VOL_SKIP_UNLESS_BENCH();
-  const fs::path dir = fs::temp_directory_path() / "atx-backtest-bench";
+// Build the D per-date archives (each holding U distinct-uid synthetic surfaces) and
+// return the Clock over them. Run ONCE (static fixture) — the archives are written to
+// a process-lifetime temp dir and read from disk by each `run_backtest`.
+[[nodiscard]] Clock build_corpus() {
+  const fs::path dir = fs::temp_directory_path() / "atx-backtest-throughput-bench";
   std::error_code ec;
   fs::remove_all(dir, ec);
 
-  // Build D per-date archives, each holding U distinct-uid synthetic surfaces.
-  // Surfaces are kept alive in `owned` for the duration of every archive write.
   std::vector<std::pair<std::string, std::string>> dp;
   dp.reserve(static_cast<std::size_t>(kD));
   for (int d = 0; d < kD; ++d) {
     const std::int64_t now = kBaseNow + static_cast<std::int64_t>(d) * kDayNs;
+    // Surfaces are kept alive in `owned` for the duration of the archive write.
     std::vector<PricedSurface> owned;
     owned.reserve(static_cast<std::size_t>(kU));
     std::vector<std::pair<std::string, const PricedSurface*>> items;
@@ -160,11 +174,25 @@ TEST(BacktestBench, MultiUnderlierStraddle_StepsPerSecond) {
     std::snprintf(buf, sizeof buf, "2027-%02d-%02d", 1 + d / 28, 1 + d % 28);
     dp.emplace_back(buf, write_archive(dir, buf, items));
   }
-  auto clock = Clock::from_manifest(make_manifest(dp));
-  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
-  ASSERT_EQ(clock->size(), static_cast<std::size_t>(kD));
 
-  // One ATM straddle clip per underlier, a fresh cohort every step, held to expiry.
+  auto clock = Clock::from_manifest(make_manifest(dp));
+  if (!clock.has_value()) {
+    bench_fatal(clock.error().to_string());
+  }
+  if (clock->size() != static_cast<std::size_t>(kD)) {
+    bench_fatal("clock size mismatch");
+  }
+  return std::move(*clock);
+}
+
+// Process-lifetime Clock fixture (built once on first use).
+[[nodiscard]] const Clock& corpus_clock() {
+  static const Clock clock = build_corpus();
+  return clock;
+}
+
+// One ATM straddle clip per underlier, a fresh cohort every step, held to expiry.
+[[nodiscard]] StrategySpec make_spec() {
   StrategySpec spec;
   spec.name = "bench-multi-underlier-straddle";
   for (int u = 0; u < kU; ++u) {
@@ -177,35 +205,54 @@ TEST(BacktestBench, MultiUnderlierStraddle_StepsPerSecond) {
   }
   spec.lifecycle.entry = LifecycleSpec::Entry::EveryStep;
   spec.lifecycle.holding = LifecycleSpec::Holding::HoldToExpiry;
-
-  DeclarativeStrategy strat{spec};
-
-  const auto t0 = std::chrono::steady_clock::now();
-  auto res = run_backtest(*clock, strat);
-  const auto t1 = std::chrono::steady_clock::now();
-  ASSERT_TRUE(res.has_value()) << res.error().to_string();
-  const BacktestResult& r = *res;
-  ASSERT_EQ(r.size(), static_cast<std::size_t>(kD));
-
-  const double wall_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-  const double wall_s = wall_ms / 1000.0;
-  const int priced_steps = kD - 1;                 // headline unit
-  const long long leg_steps = static_cast<long long>(priced_steps) * kU * 2;  // straddle = 2 legs
-  const double steps_per_s = (wall_s > 0.0) ? static_cast<double>(priced_steps) / wall_s : 0.0;
-  const double leg_steps_per_s = (wall_s > 0.0) ? static_cast<double>(leg_steps) / wall_s : 0.0;
-
-  // Book grew genuinely non-trivial (many overlapping straddle cohorts).
-  EXPECT_GT(r.n_open_lots.back(), static_cast<double>(kU));
-
-  // Generous smoke ceiling (nominal wall ~5 s => ~12x headroom, matching the
-  // Corpus.Throughput convention): a pure timing guard, not a perf gate.
-  EXPECT_LT(wall_ms, 60000.0) << "throughput ceiling exceeded";
-
-  std::printf(
-      "[backtest-bench] D=%d U=%d priced_steps=%d leg_steps=%lld wall=%.0f ms "
-      "steps/s=%.1f leg_steps/s=%.1f final_open_lots=%.0f\n",
-      kD, kU, priced_steps, leg_steps, wall_ms, steps_per_s, leg_steps_per_s,
-      r.n_open_lots.back());
-
-  fs::remove_all(dir, ec);
+  return spec;
 }
+
+// ── Throughput: D dates x U underliers, straddle clips held to expiry ──────────
+void BM_MultiUnderlierStraddle(benchmark::State& state) {
+  const Clock& clock = corpus_clock();
+  const StrategySpec spec = make_spec();
+
+  double final_open_lots = 0.0;
+  for (auto _ : state) {
+    // Fresh strategy each iteration (cheap spec copy) so every timed run opens the
+    // same deterministic cohort sequence; the ~µs construction is negligible against
+    // the multi-second backtest and keeps runs independent.
+    DeclarativeStrategy strat{spec};
+    auto res = run_backtest(clock, strat);
+    if (!res.has_value()) {
+      state.SkipWithError(res.error().to_string().c_str());
+      break;
+    }
+    if (res->size() != static_cast<std::size_t>(kD)) {
+      state.SkipWithError("run_backtest produced unexpected row count");
+      break;
+    }
+    if (!res->n_open_lots.empty()) {
+      final_open_lots = res->n_open_lots.back();
+    }
+    benchmark::DoNotOptimize(res->nav.data());
+    benchmark::ClobberMemory();
+  }
+
+  // Headline unit: priced steps (D-1). items/s == steps/s (the metric the test
+  // measured). leg_steps = straddle (2 legs) x U underliers x priced_steps.
+  const int priced_steps = kD - 1;
+  const long long leg_steps = static_cast<long long>(priced_steps) * kU * 2;
+  const double iters = static_cast<double>(state.iterations());
+  state.SetItemsProcessed(state.iterations() * static_cast<std::int64_t>(priced_steps));
+  state.counters["leg_steps_per_s"] =
+      benchmark::Counter(iters * static_cast<double>(leg_steps), benchmark::Counter::kIsRate);
+  state.counters["final_open_lots"] = final_open_lots;
+}
+
+const int kRegistered = [] {
+  apply_common(benchmark::RegisterBenchmark("backtest/multiunderlier_straddle/steps",
+                                            BM_MultiUnderlierStraddle))
+      ->Unit(benchmark::kMillisecond)
+      ->UseRealTime();
+  return 0;
+}();
+
+}  // namespace
+}  // namespace atx::vol::bench
