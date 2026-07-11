@@ -27,6 +27,21 @@ void svi_total_w_batch_scalar(const SviParams& slice, const double* k_log,
     }
 }
 
+// Quasi-explicit rotated basis (u, v) — source-of-truth scalar loop, op-for-op
+// with svi_calib.cpp's build_and_solve_normal (div, mul+add, sqrt; 1/sqrt(2) ==
+// kInvSqrt2). The non-AVX2 path is therefore bit-identical to the pre-C2.2 fit.
+void svi_qe_basis_batch_scalar(double m, double sigma, const double* k,
+                               double* u_out, double* v_out,
+                               std::size_t n) noexcept {
+    constexpr double kInvSqrt2 = 0.70710678118654752440;
+    for (std::size_t i = 0; i < n; ++i) {
+        const double y = (k[i] - m) / sigma;
+        const double z = std::sqrt(y * y + 1.0);
+        u_out[i] = (y + z) * kInvSqrt2;
+        v_out[i] = (z - y) * kInvSqrt2;
+    }
+}
+
 void essvi_backbone_sigma_batch_scalar(const EssviParams& slice,
                                        const double* k_log, double* sigma_out,
                                        std::size_t n) noexcept {
@@ -82,6 +97,15 @@ void svi_total_w_batch(const SviParams& slice, const double* k_log,
         detail::svi_total_w_batch_avx2(slice, k_log, w_out, n);
     } else {
         svi_total_w_batch_scalar(slice, k_log, w_out, n);
+    }
+}
+
+void svi_qe_basis_batch(double m, double sigma, const double* k, double* u_out,
+                        double* v_out, std::size_t n) noexcept {
+    if (have_avx2()) {
+        detail::svi_qe_basis_batch_avx2(m, sigma, k, u_out, v_out, n);
+    } else {
+        svi_qe_basis_batch_scalar(m, sigma, k, u_out, v_out, n);
     }
 }
 

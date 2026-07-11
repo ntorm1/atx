@@ -210,5 +210,82 @@ TEST(SimdEssviBatch, GradBatchZeroLengthIsNoOp) {
   EXPECT_EQ(drho, 4.0);
 }
 
+// ── Quasi-explicit rotated basis (svi_qe_basis_batch) ───────────────────────
+//
+// The raw-SVI quasi-explicit fitter's per-strike (u, v) basis at fixed (m,
+// sigma). This kernel IS the numerical source of truth (there is no pre-existing
+// scalar per-strike function it wraps), so the oracle here is an independent
+// op-for-op reimplementation of svi_calib.cpp's build_and_solve_normal loop.
+// Parity target ~1e-12 (in practice bit-exact: div, mul+add, sqrt are all
+// correctly-rounded IEEE and the kernel avoids FMA on y*y+1).
+
+// 1/sqrt(2) as spelled in svi_calib.cpp (kInvSqrt2) — the exact constant.
+constexpr double kQeInvSqrt2 = 0.70710678118654752440;
+
+// Independent op-for-op reference for one strike (mirrors svi_calib.cpp:149-152).
+void qe_basis_ref(double m, double sigma, double k, double& u, double& v) {
+  const double y = (k - m) / sigma;
+  const double z = std::sqrt(y * y + 1.0);
+  u = (y + z) * kQeInvSqrt2;
+  v = (z - y) * kQeInvSqrt2;
+}
+
+// (m, sigma) grid spanning ATM/shifted centers and a range of widths incl. a
+// tiny sigma (the fit's sigma_min floor is 1e-3).
+std::vector<std::array<double, 2>> make_ms_grid() {
+  std::vector<std::array<double, 2>> g;
+  for (const double m : {-0.35, -0.05, 0.0, 0.08, 0.30}) {
+    for (const double sigma : {1.0e-3, 0.02, 0.10, 0.25, 0.60}) {
+      g.push_back({m, sigma});
+    }
+  }
+  return g;
+}
+
+TEST(SviQeBasisBatch, MatchesScalarAllSlices) {
+  const std::vector<double> k = make_k_grid();
+  const std::size_t n = k.size();
+  double max_abs = 0.0;
+  for (const std::array<double, 2>& ms : make_ms_grid()) {
+    std::vector<double> u(n, 0.0), v(n, 0.0);
+    simd::svi_qe_basis_batch(ms[0], ms[1], k.data(), u.data(), v.data(), n);
+    for (std::size_t i = 0; i < n; ++i) {
+      double uref = 0.0, vref = 0.0;
+      qe_basis_ref(ms[0], ms[1], k[i], uref, vref);
+      max_abs = std::max(max_abs, std::abs(u[i] - uref));
+      max_abs = std::max(max_abs, std::abs(v[i] - vref));
+      expect_close(u[i], uref, "qe.u", i);
+      expect_close(v[i], vref, "qe.v", i);
+    }
+  }
+  EXPECT_LT(max_abs, 1e-11);
+}
+
+// Every n % 4 tail residue on a representative (m, sigma), for both outputs.
+TEST(SviQeBasisBatch, HandlesEveryTailResidue) {
+  const std::vector<double> k = make_k_grid();
+  for (const std::array<double, 2>& ms : {std::array<double, 2>{0.0, 0.10},
+                                          std::array<double, 2>{-0.12, 1.0e-3}}) {
+    for (std::size_t n = 1; n <= 11; ++n) {
+      std::vector<double> u(n, 0.0), v(n, 0.0);
+      simd::svi_qe_basis_batch(ms[0], ms[1], k.data(), u.data(), v.data(), n);
+      for (std::size_t i = 0; i < n; ++i) {
+        double uref = 0.0, vref = 0.0;
+        qe_basis_ref(ms[0], ms[1], k[i], uref, vref);
+        expect_close(u[i], uref, "qe.tail.u", i);
+        expect_close(v[i], vref, "qe.tail.v", i);
+      }
+    }
+  }
+}
+
+TEST(SviQeBasisBatch, ZeroLengthIsNoOp) {
+  double u = 7.0, v = 9.0;
+  const double k = 0.0;
+  simd::svi_qe_basis_batch(0.0, 0.10, &k, &u, &v, 0);
+  EXPECT_EQ(u, 7.0);
+  EXPECT_EQ(v, 9.0);
+}
+
 } // namespace
 } // namespace atx::vol

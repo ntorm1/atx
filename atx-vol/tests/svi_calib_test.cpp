@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -196,6 +197,70 @@ TEST(SviCalib, NonPositiveT_ReturnsInvalidArgument) {
       svi_fit_slice(std::span<const FitObs>(obs), 0.0, 100.0, calib_default_opts());
   ASSERT_FALSE(res.has_value());
   EXPECT_EQ(res.error().code(), ErrorCode::InvalidArgument);
+}
+
+// ── q90 selection: nth_element must reproduce the old partial-sort ────────
+//
+// The SVI-MM IRLS Huber threshold is the q90 of half-spread-normalized price
+// residuals. C2.2 replaces an O(n^2) partial selection sort with
+// std::nth_element on the same scratch — the q90 VALUE must be identical
+// (identical downstream weights). Both algorithms are replicated here (the
+// selection sort copied verbatim from the pre-C2.2 code) as the oracle, since
+// the production routine is file-local. Exercised with duplicates and (pre-abs)
+// negative residuals across several n so 0.90*n lands on varied indices.
+
+// Pre-C2.2 partial selection sort up to q_idx, returning rnorm[q_idx].
+[[nodiscard]] double q90_selection_sort(std::vector<double> rnorm) {
+  const std::size_t n = rnorm.size();
+  std::size_t q_idx = static_cast<std::size_t>(0.90 * static_cast<double>(n));
+  if (q_idx >= n) {
+    q_idx = n - 1;
+  }
+  for (std::size_t i = 0; i <= q_idx && i < n; ++i) {
+    std::size_t mn = i;
+    for (std::size_t j = i + 1; j < n; ++j) {
+      if (rnorm[j] < rnorm[mn]) {
+        mn = j;
+      }
+    }
+    std::swap(rnorm[i], rnorm[mn]);
+  }
+  return rnorm[q_idx];
+}
+
+// C2.2 replacement: std::nth_element to the same q_idx, returning rnorm[q_idx].
+[[nodiscard]] double q90_nth_element(std::vector<double> rnorm) {
+  const std::size_t n = rnorm.size();
+  std::size_t q_idx = static_cast<std::size_t>(0.90 * static_cast<double>(n));
+  if (q_idx >= n) {
+    q_idx = n - 1;
+  }
+  std::nth_element(rnorm.begin(),
+                   rnorm.begin() + static_cast<std::ptrdiff_t>(q_idx),
+                   rnorm.end());
+  return rnorm[q_idx];
+}
+
+TEST(SviCalib, NthElementQ90MatchesSelectionSort) {
+  // Raw residuals (with negatives + duplicates) and matching half-spreads; the
+  // production code forms rnorm[i] = |resid[i]| / hs[i] before selecting q90.
+  const std::vector<std::vector<double>> resid_cases = {
+      {-3.0, 1.0, -1.0, 2.0, 0.5, 0.5, -0.5, 4.0, -2.0, 2.0},        // n=10, dup 0.5/2.0
+      {0.0, -0.0, 1.5, -1.5, 1.5, 3.0, -3.0, 0.25, 0.25, 0.25, 9.0}, // n=11, dup 1.5/0.25
+      {-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0},                    // n=7, all-equal-abs
+      {5.0, -4.0, 3.0, -2.0, 1.0, 0.0, -1.0, 2.0, -3.0, 4.0, -5.0, 6.0, -7.0}, // n=13
+      {2.0},                                                         // n=1 edge
+  };
+  for (const std::vector<double>& resid : resid_cases) {
+    // hs alternates to make normalization non-trivial (still all-positive rnorm).
+    std::vector<double> rnorm(resid.size(), 0.0);
+    for (std::size_t i = 0; i < resid.size(); ++i) {
+      const double hs = (i % 2 == 0) ? 0.5 : 0.25;
+      rnorm[i] = std::fabs(resid[i]) / hs;
+    }
+    EXPECT_EQ(q90_selection_sort(rnorm), q90_nth_element(rnorm))
+        << "n=" << rnorm.size();
+  }
 }
 
 // ── SVI-MM constrained recovery + admissibility ──────────────────────────

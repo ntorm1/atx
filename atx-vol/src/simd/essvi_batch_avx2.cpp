@@ -184,6 +184,44 @@ void svi_total_w_batch_avx2(const SviParams& slice, const double* k_log,
     }
 }
 
+// Raw-SVI quasi-explicit rotated basis, per strike k at fixed (m, sigma):
+//   y = (k - m) / sigma,  z = sqrt(y² + 1)
+//   u = (y + z) / sqrt(2),  v = (z - y) / sqrt(2)
+// Op-for-op with the scalar source of truth (svi_calib.cpp build_and_solve_normal
+// / svi_qe_sse): the y²+1 step is a mul THEN add (NOT fmadd), so it matches the
+// scalar two-rounding sequence — div and sqrt are correctly-rounded IEEE — and
+// parity is bit-exact (the VALUES-ONLY rule keeps the fit's H/g accumulation a
+// scalar loop in the caller). Always vectorized; n % 4 tail via the exact ops.
+void svi_qe_basis_batch_avx2(double m, double sigma, const double* k,
+                             double* u_out, double* v_out,
+                             std::size_t n) noexcept {
+    constexpr double kInvSqrt2 = 0.70710678118654752440;
+    const __m256d m_v = _mm256_set1_pd(m);
+    const __m256d sigma_v = _mm256_set1_pd(sigma);
+    const __m256d one = _mm256_set1_pd(1.0);
+    const __m256d invsqrt2_v = _mm256_set1_pd(kInvSqrt2);
+
+    std::size_t i = 0;
+    for (; i + 4 <= n; i += 4) {
+        const __m256d kv = _mm256_loadu_pd(k + i);
+        const __m256d dk = _mm256_sub_pd(kv, m_v);
+        const __m256d y = _mm256_div_pd(dk, sigma_v);      // (k - m) / sigma
+        const __m256d yy = _mm256_mul_pd(y, y);
+        const __m256d t = _mm256_add_pd(yy, one);          // y² + 1 (no fma)
+        const __m256d z = _mm256_sqrt_pd(t);
+        const __m256d u = _mm256_mul_pd(_mm256_add_pd(y, z), invsqrt2_v);
+        const __m256d v = _mm256_mul_pd(_mm256_sub_pd(z, y), invsqrt2_v);
+        _mm256_storeu_pd(u_out + i, u);
+        _mm256_storeu_pd(v_out + i, v);
+    }
+    for (; i < n; ++i) {
+        const double y = (k[i] - m) / sigma;
+        const double z = std::sqrt(y * y + 1.0);
+        u_out[i] = (y + z) * kInvSqrt2;
+        v_out[i] = (z - y) * kInvSqrt2;
+    }
+}
+
 void essvi_backbone_sigma_batch_avx2(const EssviParams& slice,
                                      const double* k_log, double* sigma_out,
                                      std::size_t n) noexcept {

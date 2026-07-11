@@ -22,6 +22,10 @@ void essvi_backbone_w_grad_batch_avx2(const EssviParams& slice,
 void svi_total_w_batch_avx2(const SviParams& slice, const double* k_log,
                             double* w_out, std::size_t n) noexcept;
 
+void svi_qe_basis_batch_avx2(double m, double sigma, const double* k,
+                             double* u_out, double* v_out,
+                             std::size_t n) noexcept;
+
 void essvi_backbone_sigma_batch_avx2(const EssviParams& slice,
                                      const double* k_log, double* sigma_out,
                                      std::size_t n) noexcept;

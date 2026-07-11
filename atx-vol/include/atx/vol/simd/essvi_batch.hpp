@@ -60,6 +60,23 @@ void essvi_backbone_w_grad_batch(const EssviParams& slice, const double* k_log,
 void svi_total_w_batch(const SviParams& slice, const double* k_log,
                        double* w_out, std::size_t n) noexcept;
 
+// Raw-SVI quasi-explicit rotated basis (u, v) for each strike at fixed (m, sigma)
+// — the De Marco-Martini fitter's per-strike hot loop (svi_calib.cpp's
+// build_and_solve_normal / svi_qe_sse):
+//   y        = (k[i] - m) / sigma
+//   z        = sqrt(y*y + 1)
+//   u_out[i] = (y + z) / sqrt(2)
+//   v_out[i] = (z - y) / sqrt(2)
+// VALUES-ONLY: this fills the basis arrays; the weighted normal-equation
+// accumulation stays a scalar loop in the caller (summation order preserved).
+// Pure arithmetic + one sqrt; always vectorized (no data-dependent fallback).
+// Ops are op-for-op the scalar loop (div, mul+add — NOT fma — then sqrt), so the
+// non-AVX2 path is bit-identical and the AVX2 path matches to ~1e-12. Assumes
+// sigma != 0 (the fit's sigma_min floor guarantees it). The two length-`n`
+// outputs must not alias each other or the input; n == 0 is a no-op.
+void svi_qe_basis_batch(double m, double sigma, const double* k, double* u_out,
+                        double* v_out, std::size_t n) noexcept;
+
 // eSSVI backbone implied vol for each strike:
 // sigma_out[i] = sqrt(max(essvi_backbone_w(slice, k_log[i]), 0) / slice.T).
 // Shares the backbone work, then one extra max/div/sqrt — the shape a

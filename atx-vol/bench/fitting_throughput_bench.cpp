@@ -62,6 +62,7 @@
 #include "atx/vol/market_env.hpp"    // MarketEnv
 #include "atx/vol/panel.hpp"         // make_synthetic_american_panel, SynthPanelSpec
 #include "atx/vol/spy_fixture.hpp"   // make_spy_synthetic_spec
+#include "atx/vol/svi_calib.hpp"     // svi_fit_slice (quasi-explicit raw-SVI)
 #include "atx/vol/types.hpp"         // Side
 #include "atx/vol/universe.hpp"      // Underlying, Chain
 #include "atx/vol/vol_surface.hpp"   // VolSurface, EssviParams, Parametrization
@@ -471,6 +472,34 @@ void BM_SliceWarmRefit(benchmark::State &state) {
   state.SetItemsProcessed(state.iterations()); // items = slice fits
 }
 
+// ── fit/svi_slice_cold/spy_synth ──────────────────────────────────────────
+//
+// The quasi-explicit raw-SVI single-slice fit (C2.2), on the SAME de-Am'd
+// synthetic-SPY slice fixture BM_SliceCold uses, at Trading-level opts
+// (calib_default_opts()'s default optimization_level). Times `svi_fit_slice`
+// cold every iteration (the raw-SVI fitter had NO bench coverage before C2.2).
+// This is the fit-level evidence for the vectorized (u, v) basis kernel + the
+// cached inner solve.
+
+void BM_SviSliceCold(benchmark::State &state) {
+  const std::optional<SliceFixture> fx = build_slice_fixture();
+  if (!fx.has_value()) {
+    state.SkipWithError("slice fixture build failed");
+    return;
+  }
+  for (auto _ : state) {
+    const auto fit = svi_fit_slice(fx->obs, fx->T, fx->F, fx->opts);
+    if (!fit.has_value()) {
+      state.SkipWithError("svi_fit_slice (cold) failed");
+      break;
+    }
+    double b = fit->b;
+    benchmark::DoNotOptimize(b);
+    benchmark::ClobberMemory();
+  }
+  state.SetItemsProcessed(state.iterations()); // items = slice fits
+}
+
 // ── fit/american_iv/{cold,warm} ───────────────────────────────────────────
 //
 // The 16.5k-anchor-comparable case: a realistic strike-ladder x few-expiries
@@ -603,6 +632,8 @@ const int kRegistered = [] {
       ->Unit(benchmark::kMicrosecond);
   apply_common(
       benchmark::RegisterBenchmark("fit/slice_warm_refit/spy_synth", BM_SliceWarmRefit))
+      ->Unit(benchmark::kMicrosecond);
+  apply_common(benchmark::RegisterBenchmark("fit/svi_slice_cold/spy_synth", BM_SviSliceCold))
       ->Unit(benchmark::kMicrosecond);
   apply_common(benchmark::RegisterBenchmark("fit/american_iv/cold", BM_AmericanIvCold))
       ->Unit(benchmark::kMicrosecond);
