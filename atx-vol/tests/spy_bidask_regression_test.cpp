@@ -72,24 +72,34 @@ TEST(SpyBidAskRegression, ConvexDenseServedViaSessionInBand) {
   EXPECT_GE(sc.px_clean, kPxCleanFloor);
 }
 
-// Same cached archive, scored via the PricerFitter-facade's board load (this
-// test's point is the facade's MarketEnv/OptionChain plumbing feeds the SAME
-// board the cached fit was produced from — the served accuracy is identical
-// either way; the fitter itself is exercised live in PricerFitterHftColdStartInBand
-// / AutoSelectPicksDenseForSpy below).
+// Deliberately fits LIVE through the explicit PricerFitter facade on the real
+// OPRA board (not the cached archive) — ConvexDenseServedViaSessionInBand above
+// reloads the cached artifact instead. Do NOT convert this one to the cache: it
+// would become a byte-for-byte duplicate of that sibling and drop the only
+// real-board exercise of the explicit PricerFitter::fit() facade.
 TEST(SpyBidAskRegression, PricerFitterExplicitConvexInBand) {
   auto board = load_opra_board("spy", "SPY");
-  const auto archive_path = cached_spy_convex_dense();
-  if (!board.has_value() || archive_path.empty()) {
+  if (!board.has_value()) {
     GTEST_SKIP() << "SPY OPRA parquet fixture not found";
   }
 
-  auto arch = SurfaceArchive::open_file(archive_path.string());
-  ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
-  auto recon = arch->map_symbol("SPY");
-  ASSERT_TRUE(recon.has_value()) << recon.error().to_string();
+  // Self-contained facade: MarketEnv in, surface out. Pin the convex curve.
+  auto chain = OptionChain::from_frame(board->panel.frame, board->env());
+  ASSERT_TRUE(chain.has_value()) << chain.error().to_string();
 
-  const auto sc = price_in_band(*recon, board->underlying(), board->spot(), board->r);
+  PricerConfig cfg;
+  cfg.preset = FitPreset::Fast;
+  CurveConfig cc;
+  cc.kind = VolCurveKind::ConvexDense;
+  cc.convex.node_cap = 40;
+  cfg.curve = cc;
+
+  PricerFitter fitter{cfg};
+  ASSERT_TRUE(fitter.fit(*chain).has_value());
+  ASSERT_TRUE(fitter.fitted());
+
+  const auto sc =
+      price_in_band(fitter.surface()->session(), chain->underlying(), board->spot(), board->r);
   std::printf("[SPY PricerFitter(convex)] pxCLN(cold)=%.2f%% (%zu/%zu)\n", sc.px_clean,
               sc.n_clean_in, sc.n_clean);
   EXPECT_GE(sc.px_clean, kPxCleanFloor);

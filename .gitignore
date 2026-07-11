@@ -15,6 +15,10 @@ cmake-build-*/
 # so it never shadows source dirs like atx-engine/{include/atx/engine,src}/data/.
 /data/
 
+# Test-cached fitted-surface artifacts (dropped at repo root when running the
+# test exe from there) — see atx-vol/tests/support/cached_artifacts.cpp.
+/artifact-cache/
+
 # clangd / tooling
 .cache/
 compile_commands.json
