@@ -84,15 +84,23 @@ struct NormalEq {
                                        double eps_floor) noexcept {
   NormalEq ne{};
   const std::size_t n = k.size();
+  // The JW->raw conversion and its 5x5 Jacobian are strike-invariant (functions
+  // of `s` only), so hoist both out of the per-observation loop: one c8_jw_to_raw
+  // + one analytic c8_jw_to_raw_jac per call instead of 12 conversions per obs.
+  const C8Jw jw{s.v, s.psi, s.p, s.c, s.v_min};
+  const std::optional<C8RawSvi> raw_conv = c8_jw_to_raw(jw, s.T, 1e-4);
+  const std::optional<std::array<std::array<double, 5>, 5>> jac_conv =
+      c8_jw_to_raw_jac(jw, s.T, 1e-4);
   for (std::size_t i = 0; i < n; ++i) {
     const double sdi = (sd[i] > eps_floor) ? sd[i] : eps_floor;
-    const double w_model = c8_slice_w(s, k[i]);
+    const double w_model = c8_slice_w(s, k[i], raw_conv);
     const double w0 = weights.empty() ? 1.0 : weights[i];
     const double rw = std::sqrt(w0 > 0.0 ? w0 : 0.0);
     const double r = rw * (w_model - mid[i]) / sdi;
     ne.sse += r * r;
 
-    const std::optional<std::array<double, 8>> grad = c8_slice_grad_w(s, k[i]);
+    const std::optional<std::array<double, 8>> grad =
+        c8_slice_grad_w(s, k[i], raw_conv, jac_conv);
     if (!grad.has_value()) {
       ++ne.grad_failures;
       continue;
@@ -180,12 +188,17 @@ int fit_lm_inner(C8Params& s, std::span<const double> k,
   const std::size_t n = k.size();
   std::array<double, 8> x = c8_pack(s);
   double lambda = 1e-3;
-  double best_sse = build_normal_eq(s, k, mid, sd, weights, eps_floor).sse;
+  // Hold the current point's normal equations across iterations. `s` only
+  // changes on an accepted step, and build_normal_eq is a pure function of the
+  // point, so the accepted trial's NE is bit-identical to the NE the next
+  // iteration would recompute for `s` — carry it forward instead (one
+  // build_normal_eq per iteration for the trial, not two).
+  NormalEq ne_cur = build_normal_eq(s, k, mid, sd, weights, eps_floor);
+  double best_sse = ne_cur.sse;
 
   int it_done = 0;
   for (int it = 0; it < max_inner_iters; ++it) {
-    const NormalEq ne = build_normal_eq(s, k, mid, sd, weights, eps_floor);
-    const std::optional<std::array<double, 8>> dx = solve_lm_step(ne, lambda);
+    const std::optional<std::array<double, 8>> dx = solve_lm_step(ne_cur, lambda);
     if (!dx.has_value()) {
       lambda *= 4.0;
       continue;
@@ -196,13 +209,15 @@ int fit_lm_inner(C8Params& s, std::span<const double> k,
     }
     C8Params trial = s;
     c8_unpack(x_trial, s.T, trial);
-    const double sse_trial =
-        build_normal_eq(trial, k, mid, sd, weights, eps_floor).sse;
+    const NormalEq ne_trial =
+        build_normal_eq(trial, k, mid, sd, weights, eps_floor);
+    const double sse_trial = ne_trial.sse;
 
     if (sse_trial < best_sse) {
       best_sse = sse_trial;
       x = x_trial;
       s = trial;
+      ne_cur = ne_trial;  // reuse: identical inputs -> identical NE next iter
       lambda *= 0.5;
       it_done = it + 1;
       s.n_lm_iters = it_done;

@@ -154,17 +154,150 @@ std::optional<C8RawSvi> c8_jw_to_raw(const C8Jw& jw, double T,
   return raw;
 }
 
+std::optional<std::array<std::array<double, 5>, 5>> c8_jw_to_raw_jac(
+    const C8Jw& jw, double T, double sigma_floor) noexcept {
+  (void)T;  // matches c8_jw_to_raw: T-domain checks left to the calibrator.
+  // Same admissibility gate as c8_jw_to_raw — an inadmissible JW point has no
+  // conversion and hence no Jacobian (grad availability tracks the conversion).
+  if (jw.v <= 0.0 || jw.p < 0.0 || jw.c < 0.0 || jw.v_min < 0.0 ||
+      jw.v_min > jw.v + 1e-12) {
+    return std::nullopt;
+  }
+  const double cp_sum = jw.p + jw.c;
+  if (cp_sum <= 0.0) {
+    return std::nullopt;
+  }
+
+  // ── Recompute the forward map bit-identically to c8_jw_to_raw so the
+  //    Jacobian is the exact derivative of the code AS WRITTEN. ─────────────
+  const double b = 0.5 * cp_sum;
+
+  const double rho_clip = 1.0 - 1e-9;
+  const double rho_u = 1.0 - 2.0 * jw.p / cp_sum;
+  const double rho = std::clamp(rho_u, -rho_clip, rho_clip);
+  const bool rho_clamped = (rho_u < -rho_clip) || (rho_u > rho_clip);
+
+  const double beta_u = rho - 2.0 * jw.psi / b;
+  const double beta = std::clamp(beta_u, -rho_clip, rho_clip);
+  const bool beta_clamped = (beta_u < -rho_clip) || (beta_u > rho_clip);
+
+  const double R = std::sqrt(1.0 - rho * rho);  // sqrt(1-rho^2), in a & denom
+
+  const double beta_floor = 1e-3;
+  const bool degenerate_pre =
+      (std::fabs(jw.v - jw.v_min) < 1e-12) || (std::fabs(beta) < beta_floor);
+
+  double m = 0.0;              // 0 on the degenerate branch
+  double sigma = sigma_floor;  // floor on the degenerate branch
+  bool m_const = true;         // m is a hard constant (0) -> zero m-row
+  bool sigma_const = true;     // sigma pinned to the floor -> zero sigma-row
+  double alpha = 0.0;
+  double s_alpha = 0.0;
+  double S = 0.0;  // sqrt(1+alpha^2)
+  double denom = 0.0;
+  if (!degenerate_pre) {
+    const double alpha_mag = std::sqrt(1.0 / (beta * beta) - 1.0);
+    alpha = (beta >= 0.0) ? alpha_mag : -alpha_mag;
+    s_alpha = (alpha >= 0.0) ? 1.0 : -1.0;
+    S = std::sqrt(1.0 + alpha * alpha);
+    denom = -rho + s_alpha * S - alpha * R;
+    if (std::fabs(denom) >= 1e-12) {
+      m = (jw.v - jw.v_min) / (b * denom);
+      m_const = false;
+      const double sigma_raw = alpha * m;
+      if (sigma_raw < sigma_floor) {
+        sigma = sigma_floor;  // floor clamp active -> sigma stays constant
+      } else {
+        sigma = sigma_raw;
+        sigma_const = false;
+      }
+    }
+    // else |denom| tiny: m := 0, sigma := floor (both stay constant).
+  }
+
+  // ── Base column partials (branch-independent). Columns: v,psi,p,c,v_min. ──
+  const double inv_cp2 = 1.0 / (cp_sum * cp_sum);
+  const std::array<double, 5> b_j{0.0, 0.0, 0.5, 0.5, 0.0};  // b = (p+c)/2
+  std::array<double, 5> rho_j{};                              // 0 when clamped
+  if (!rho_clamped) {
+    rho_j[2] = -2.0 * jw.c * inv_cp2;  // d rho / d p = -2c/(p+c)^2
+    rho_j[3] = 2.0 * jw.p * inv_cp2;   // d rho / d c =  2p/(p+c)^2
+  }
+  // beta = rho - 2*psi/b: beta_p,c pick up +psi/b^2 via b's p,c dependence.
+  std::array<double, 5> beta_j{};  // 0 when clamped
+  if (!beta_clamped) {
+    const double psi_over_b2 = jw.psi / (b * b);
+    beta_j[0] = rho_j[0];                // v
+    beta_j[1] = rho_j[1] - 2.0 / b;      // psi
+    beta_j[2] = rho_j[2] + psi_over_b2;  // p
+    beta_j[3] = rho_j[3] + psi_over_b2;  // c
+    beta_j[4] = rho_j[4];                // v_min
+  }
+
+  // m- and sigma-rows: identically zero on the degenerate/floored branches.
+  std::array<double, 5> m_j{};
+  std::array<double, 5> sigma_j{};
+  if (!m_const) {
+    // alpha depends on beta only; from alpha^2 = 1/beta^2 - 1,
+    //   d alpha / d beta = -1 / (beta^3 * alpha).
+    const double dalpha_dbeta = -1.0 / (beta * beta * beta * alpha);
+    std::array<double, 5> alpha_j{};
+    for (std::size_t j = 0; j < 5; ++j) {
+      alpha_j[j] = dalpha_dbeta * beta_j[j];
+    }
+    // denom = -rho + s_alpha*S - alpha*R, with S_j = alpha*alpha_j/S and
+    //   R_j = -rho*rho_j/R:
+    //   denom_j = (-1 + alpha*rho/R) rho_j + (s_alpha*alpha/S - R) alpha_j.
+    const double coef_rho = -1.0 + alpha * rho / R;
+    const double coef_alpha = s_alpha * alpha / S - R;
+    std::array<double, 5> denom_j{};
+    for (std::size_t j = 0; j < 5; ++j) {
+      denom_j[j] = coef_rho * rho_j[j] + coef_alpha * alpha_j[j];
+    }
+    // m = N / (b*denom), N = v - v_min:
+    //   m_j = N_j/(b*denom) - m*(b_j/b + denom_j/denom).
+    const std::array<double, 5> N_j{1.0, 0.0, 0.0, 0.0, -1.0};
+    const double inv_bden = 1.0 / (b * denom);
+    for (std::size_t j = 0; j < 5; ++j) {
+      m_j[j] = N_j[j] * inv_bden - m * (b_j[j] / b + denom_j[j] / denom);
+    }
+    // sigma = alpha*m, unless floored (then sigma_j stays 0).
+    if (!sigma_const) {
+      for (std::size_t j = 0; j < 5; ++j) {
+        sigma_j[j] = alpha_j[j] * m + alpha * m_j[j];
+      }
+    }
+  }
+
+  // a = v_min - b*sigma*R (R = sqrt(1-rho^2)); full chain in b, sigma, rho:
+  //   a_j = vmin_j - b_j*sigma*R - b*sigma_j*R + (b*sigma*rho/R) rho_j.
+  const std::array<double, 5> vmin_j{0.0, 0.0, 0.0, 0.0, 1.0};
+  const double bsig_rho_over_R = b * sigma * rho / R;
+  std::array<double, 5> a_j{};
+  for (std::size_t j = 0; j < 5; ++j) {
+    a_j[j] = vmin_j[j] - b_j[j] * sigma * R - b * sigma_j[j] * R +
+             bsig_rho_over_R * rho_j[j];
+  }
+
+  std::array<std::array<double, 5>, 5> jac{};
+  jac[0] = a_j;      // d a
+  jac[1] = b_j;      // d b
+  jac[2] = rho_j;    // d rho
+  jac[3] = m_j;      // d m
+  jac[4] = sigma_j;  // d sigma
+  return jac;
+}
+
 // ── Slice evaluator ───────────────────────────────────────────────────────
 
-double c8_slice_w(const C8Params& s, double k_log) noexcept {
-  const std::optional<C8RawSvi> raw = c8_jw_to_raw(
-      C8Jw{s.v, s.psi, s.p, s.c, s.v_min}, s.T, 1e-4);
-  if (!raw.has_value()) {
+double c8_slice_w(const C8Params& s, double k_log,
+                  const std::optional<C8RawSvi>& raw_conv) noexcept {
+  if (!raw_conv.has_value()) {
     // jw_to_raw was hardened to always succeed on admissible input; if it still
     // rejects (e.g. v <= 0), fall back to the stored v to keep w finite.
     return (s.v > 0.0) ? s.v : 1e-9;
   }
-  double w = c8_raw_svi_w(k_log, *raw);
+  double w = c8_raw_svi_w(k_log, *raw_conv);
   if (!std::isfinite(w)) {
     w = (s.v > 0.0) ? s.v : 1e-9;
   }
@@ -178,6 +311,12 @@ double c8_slice_w(const C8Params& s, double k_log) noexcept {
     w = 1e-12;
   }
   return w;
+}
+
+double c8_slice_w(const C8Params& s, double k_log) noexcept {
+  return c8_slice_w(
+      s, k_log,
+      c8_jw_to_raw(C8Jw{s.v, s.psi, s.p, s.c, s.v_min}, s.T, 1e-4));
 }
 
 // ── 8-parameter gradient ──────────────────────────────────────────────────
@@ -198,61 +337,23 @@ namespace {
   };
 }
 
-// d(a,b,rho,m,sigma)/d(v,psi,p,c,v_min) via central FD on jw_to_raw. Returns
-// nullopt if any FD evaluation hits a JW-domain failure.
-[[nodiscard]] std::optional<std::array<std::array<double, 5>, 5>> jw_to_raw_jac(
-    const C8Jw& jw, double T) noexcept {
-  const double h_rel = 1e-5;
-  const std::array<double, 5> base{jw.v, jw.psi, jw.p, jw.c, jw.v_min};
-  std::array<std::array<double, 5>, 5> jac{};  // jac[i][j] = d raw_i / d jw_j
-  for (std::size_t j = 0; j < 5; ++j) {
-    const double saved = base[j];
-    const double h = h_rel * (std::fabs(saved) + 1.0);
-    std::array<double, 5> pj = base;
-    pj[j] = saved + h;
-    const std::optional<C8RawSvi> rp =
-        c8_jw_to_raw(C8Jw{pj[0], pj[1], pj[2], pj[3], pj[4]}, T, 1e-4);
-    if (!rp.has_value()) {
-      return std::nullopt;
-    }
-    pj[j] = saved - h;
-    const std::optional<C8RawSvi> rm =
-        c8_jw_to_raw(C8Jw{pj[0], pj[1], pj[2], pj[3], pj[4]}, T, 1e-4);
-    if (!rm.has_value()) {
-      return std::nullopt;
-    }
-    const double inv = 1.0 / (2.0 * h);
-    jac[0][j] = (rp->a - rm->a) * inv;
-    jac[1][j] = (rp->b - rm->b) * inv;
-    jac[2][j] = (rp->rho - rm->rho) * inv;
-    jac[3][j] = (rp->m - rm->m) * inv;
-    jac[4][j] = (rp->sigma - rm->sigma) * inv;
-  }
-  return jac;
-}
-
 }  // namespace
 
-std::optional<std::array<double, 8>> c8_slice_grad_w(const C8Params& s,
-                                                     double k_log) noexcept {
-  const C8Jw jw{s.v, s.psi, s.p, s.c, s.v_min};
-  const std::optional<C8RawSvi> raw = c8_jw_to_raw(jw, s.T, 1e-4);
-  if (!raw.has_value()) {
+std::optional<std::array<double, 8>> c8_slice_grad_w(
+    const C8Params& s, double k_log, const std::optional<C8RawSvi>& raw_conv,
+    const std::optional<std::array<std::array<double, 5>, 5>>&
+        jac_conv) noexcept {
+  if (!raw_conv.has_value() || !jac_conv.has_value()) {
     return std::nullopt;
   }
-  const std::array<double, 5> rg = raw_svi_grad(k_log, *raw);
-  const std::optional<std::array<std::array<double, 5>, 5>> jac =
-      jw_to_raw_jac(jw, s.T);
-  if (!jac.has_value()) {
-    return std::nullopt;
-  }
+  const std::array<double, 5> rg = raw_svi_grad(k_log, *raw_conv);
 
   std::array<double, 8> grad{};
   // Chain: d w / d jw_j = sum_i (d w / d raw_i) * (d raw_i / d jw_j).
   for (std::size_t j = 0; j < 5; ++j) {
     double acc = 0.0;
     for (std::size_t i = 0; i < 5; ++i) {
-      acc += rg[i] * (*jac)[i][j];
+      acc += rg[i] * (*jac_conv)[i][j];
     }
     grad[j] = acc;
   }
@@ -267,6 +368,13 @@ std::optional<std::array<double, 8>> c8_slice_grad_w(const C8Params& s,
     grad[7] = 0.0;
   }
   return grad;
+}
+
+std::optional<std::array<double, 8>> c8_slice_grad_w(const C8Params& s,
+                                                     double k_log) noexcept {
+  const C8Jw jw{s.v, s.psi, s.p, s.c, s.v_min};
+  return c8_slice_grad_w(s, k_log, c8_jw_to_raw(jw, s.T, 1e-4),
+                         c8_jw_to_raw_jac(jw, s.T, 1e-4));
 }
 
 // ── eSSVI warm-start seed ─────────────────────────────────────────────────

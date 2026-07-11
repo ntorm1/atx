@@ -143,6 +143,20 @@ struct C8Jw {
 [[nodiscard]] std::optional<C8RawSvi> c8_jw_to_raw(const C8Jw& jw, double T,
                                                    double sigma_floor) noexcept;
 
+// Closed-form Jacobian of c8_jw_to_raw: jac[i][j] = d raw_i / d jw_j with raw
+// order (a, b, rho, m, sigma) and jw order (v, psi, p, c, v_min). It is the
+// EXACT derivative of the algebra c8_jw_to_raw evaluates, differentiated as
+// written: an active rho / beta clamp (at +/-(1-1e-9)) or an active sigma floor
+// contributes a ZERO partial for the clamped quantity, and the degenerate
+// branch (|v-v_min| < 1e-12 or |beta| < 1e-3 or |denom| < 1e-12, where m := 0
+// and sigma := sigma_floor) yields identically-zero m- and sigma-rows. The a
+// row always carries the full a = v_min - b*sigma*sqrt(1-rho^2) chain (b, rho,
+// sigma each functions of jw; the sigma term drops when sigma is floored/const).
+// Returns nullopt on exactly the inadmissible JW inputs that make c8_jw_to_raw
+// return nullopt (so a slice's gradient availability tracks its conversion).
+[[nodiscard]] std::optional<std::array<std::array<double, 5>, 5>>
+c8_jw_to_raw_jac(const C8Jw& jw, double T, double sigma_floor) noexcept;
+
 // ── Slice evaluator + 8-parameter gradient ────────────────────────────────
 
 // Total variance w(k) of the C8 slice at log-moneyness k. Falls back to the
@@ -150,12 +164,30 @@ struct C8Jw {
 // then floors the result at 1e-12 so downstream IV inversion stays finite.
 [[nodiscard]] double c8_slice_w(const C8Params& s, double k_log) noexcept;
 
+// Overload taking a PRECOMPUTED JW->raw conversion (nullopt = conversion
+// failed). The JW->raw step is strike-invariant, so a caller sweeping many k at
+// one parameter point converts once and reuses `raw_conv` here; identical ops to
+// the single-argument form. `raw_conv` must be c8_jw_to_raw(jw(s), s.T, 1e-4).
+[[nodiscard]] double c8_slice_w(
+    const C8Params& s, double k_log,
+    const std::optional<C8RawSvi>& raw_conv) noexcept;
+
 // Partial derivatives of c8_slice_w w.r.t the 8 parameters in canonical order
-// {v, psi, p, c, v_min, kappa, q_L, q_R}. The raw-SVI -> bumps chain is
-// closed-form; the JW -> raw step uses central finite differences (5 jw_to_raw
-// evals). Returns nullopt on a JW-domain failure (matches the C's non-zero rc).
+// {v, psi, p, c, v_min, kappa, q_L, q_R}. The raw-SVI -> bumps chain and the
+// JW -> raw step are both closed-form (see c8_jw_to_raw_jac). Returns nullopt on
+// a JW-domain failure (matches the C's non-zero rc).
 [[nodiscard]] std::optional<std::array<double, 8>> c8_slice_grad_w(
     const C8Params& s, double k_log) noexcept;
+
+// Overload taking the PRECOMPUTED strike-invariant conversion + Jacobian
+// (nullopt = conversion/Jacobian unavailable -> nullopt gradient). Lets the
+// calibrator convert + build the 5x5 Jacobian ONCE per parameter point and reuse
+// them across every observation. `raw_conv`/`jac_conv` must be
+// c8_jw_to_raw / c8_jw_to_raw_jac of jw(s) at (s.T, 1e-4).
+[[nodiscard]] std::optional<std::array<double, 8>> c8_slice_grad_w(
+    const C8Params& s, double k_log, const std::optional<C8RawSvi>& raw_conv,
+    const std::optional<std::array<std::array<double, 5>, 5>>&
+        jac_conv) noexcept;
 
 // ── eSSVI warm-start seed ─────────────────────────────────────────────────
 
