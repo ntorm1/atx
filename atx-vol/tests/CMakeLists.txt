@@ -19,6 +19,7 @@ add_executable(atx-vol-tests
     support/oracle_pde_golden.cpp
     support/cached_artifacts.cpp
     arb_test.cpp
+    risk_surface_validation_test.cpp
     calib_test.cpp
     c8_test.cpp
     c8_calib_test.cpp

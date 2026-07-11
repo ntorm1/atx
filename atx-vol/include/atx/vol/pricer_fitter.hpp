@@ -36,6 +36,7 @@
 #include "atx/vol/curve_selector.hpp" // SelectorConfig, SelectorResult
 #include "atx/vol/fit_policy.hpp"     // FitContext, FitPolicyConfig, FitDecision
 #include "atx/vol/session.hpp"        // VolaSession, FitPreset, SessionDiagnostics
+#include "atx/vol/surface_policy.hpp" // explicit mark/risk purpose and quality policy
 #include "atx/vol/types.hpp"          // Result, Status, Side
 #include "atx/vol/vol_curve.hpp"      // CurveConfig, VolCurveKind
 
@@ -142,6 +143,13 @@ struct PricerConfig {
   // empty — the chain's `MarketEnv` supplies the dividend schedule; a non-empty
   // value here overrides the env's divs.
   std::vector<DividendEvent> cash_divs{};
+  // V2 product policy. Quality changes the work budget, never the mandatory
+  // admission floor. The production default requests both a market-following
+  // mark and an independently admitted Balanced risk surface.
+  FitQualityMode quality_mode{FitQualityMode::Balanced};
+  SurfaceOutputs outputs{SurfaceOutputs::MarketMarkAndRisk};
+  RiskAdmission risk_admission{RiskAdmission::Required};
+  SurfaceFallback fallback{SurfaceFallback::LastKnownGood};
 };
 
 // ── Fitted surface handle (the owned fit output) ────────────────────────────

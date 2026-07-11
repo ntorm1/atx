@@ -29,6 +29,8 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/boundary_interp.cpp
     src/correction.cpp
     src/arb.cpp
+    src/surface_policy.cpp
+    src/risk_surface_validation.cpp
     src/calib.cpp
     src/c8.cpp
     src/c8_calib.cpp
