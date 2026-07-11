@@ -55,6 +55,7 @@ using atx::vol::al_fast_opts;
 using atx::vol::AmericanMethod;
 using atx::vol::andersen_lake;
 using atx::vol::andersen_lake_call_slice;
+using atx::vol::andersen_lake_put_slice;
 using atx::vol::american_delta;
 using atx::vol::american_greeks;
 using atx::vol::american_greeks_al;
@@ -277,6 +278,80 @@ void run_slice(benchmark::State& state) {
   });
 }
 
+// ── Put-slice batch throughput (one boundary solve reused by homogeneity) ──
+// Prices `batch` American put strikes at one sigma via andersen_lake_put_slice:
+// ONE boundary solve at the reference strike, reused across the ladder by strike
+// homogeneity (rescale K + xmax, same y[]). American put regime (r>0, q=0).
+void run_put_slice(benchmark::State& state) {
+  const auto batch = static_cast<std::size_t>(state.range(0));
+  const double S = 100.0;
+  const double T = 0.5;
+  const double sigma = 0.30;
+  const double r = 0.043;
+  const double q = 0.0;  // American put regime
+  std::vector<double> strikes(batch);
+  std::vector<double> out(batch);
+  for (std::size_t i = 0; i < batch; ++i) {
+    strikes[i] = 70.0 + 60.0 * (static_cast<double>(i) + 0.5) / static_cast<double>(batch);
+  }
+  std::uint64_t fallbacks = 0;
+  for (auto _ : state) {
+    const auto st = andersen_lake_put_slice(S, strikes, T, sigma, r, q, out, std::nullopt);
+    benchmark::DoNotOptimize(out.data());
+    if (!st) {
+      ++fallbacks;
+    }
+  }
+  const double n = static_cast<double>(batch);
+  state.SetItemsProcessed(state.iterations() * static_cast<std::int64_t>(batch));
+  state.counters["contracts_per_s"] =
+      benchmark::Counter(static_cast<double>(state.iterations()) * n, benchmark::Counter::kIsRate);
+  state.counters["ns_per_option"] = benchmark::Counter(
+      static_cast<double>(state.iterations()) * n * 1e-9,
+      benchmark::Counter::kIsRate | benchmark::Counter::kInvert);
+  state.counters["fallback_rate"] =
+      benchmark::Counter(static_cast<double>(fallbacks), benchmark::Counter::kAvgIterations);
+  state.counters["batch"] = n;
+  dump_counters(state, [&] {
+    benchmark::DoNotOptimize(
+        andersen_lake_put_slice(S, strikes, T, sigma, r, q, out, std::nullopt));
+  });
+}
+
+// Baseline: the SAME put ladder priced per strike with a fresh cold boundary solve
+// each (N solves), to quantify the put-slice's N->1 boundary-solve speedup.
+void run_put_per_strike(benchmark::State& state) {
+  const auto batch = static_cast<std::size_t>(state.range(0));
+  const double S = 100.0;
+  const double T = 0.5;
+  const double sigma = 0.30;
+  const double r = 0.043;
+  const double q = 0.0;  // American put regime
+  std::vector<double> strikes(batch);
+  std::vector<double> out(batch);
+  for (std::size_t i = 0; i < batch; ++i) {
+    strikes[i] = 70.0 + 60.0 * (static_cast<double>(i) + 0.5) / static_cast<double>(batch);
+  }
+  std::uint64_t fallbacks = 0;
+  for (auto _ : state) {
+    for (std::size_t i = 0; i < batch; ++i) {
+      const auto p = andersen_lake(S, strikes[i], T, sigma, r, q, Side::Put, std::nullopt);
+      out[i] = p ? *p : (++fallbacks, 0.0);
+    }
+    benchmark::DoNotOptimize(out.data());
+  }
+  const double n = static_cast<double>(batch);
+  state.SetItemsProcessed(state.iterations() * static_cast<std::int64_t>(batch));
+  state.counters["contracts_per_s"] =
+      benchmark::Counter(static_cast<double>(state.iterations()) * n, benchmark::Counter::kIsRate);
+  state.counters["ns_per_option"] = benchmark::Counter(
+      static_cast<double>(state.iterations()) * n * 1e-9,
+      benchmark::Counter::kIsRate | benchmark::Counter::kInvert);
+  state.counters["fallback_rate"] =
+      benchmark::Counter(static_cast<double>(fallbacks), benchmark::Counter::kAvgIterations);
+  state.counters["batch"] = n;
+}
+
 // ── Register the whole matrix (data-driven, at static-init) ──────────────
 void register_all() {
   const std::vector<GridPoint> full = grid_full();
@@ -336,6 +411,24 @@ void register_all() {
       ->Arg(1)
       ->Arg(4)
       ->Arg(16)
+      ->Arg(256)
+      ->Arg(4096)
+      ->Unit(benchmark::kNanosecond);
+
+  // ── put-slice batch throughput + per-strike baseline (N->1 boundary solves) ─
+  apply_common(benchmark::RegisterBenchmark("amer/andersen_lake_put_slice/put", run_put_slice))
+      ->Arg(1)
+      ->Arg(4)
+      ->Arg(16)
+      ->Arg(40)
+      ->Arg(256)
+      ->Arg(4096)
+      ->Unit(benchmark::kNanosecond);
+  apply_common(benchmark::RegisterBenchmark("amer/put_per_strike_baseline/put", run_put_per_strike))
+      ->Arg(1)
+      ->Arg(4)
+      ->Arg(16)
+      ->Arg(40)
       ->Arg(256)
       ->Arg(4096)
       ->Unit(benchmark::kNanosecond);

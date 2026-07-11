@@ -47,6 +47,7 @@ using atx::vol::al_fast_opts;
 using atx::vol::american_price_cached;
 using atx::vol::andersen_lake;
 using atx::vol::andersen_lake_call_slice;
+using atx::vol::andersen_lake_put_slice;
 using atx::vol::baw_american;
 using atx::vol::black76_greeks;
 using atx::vol::black76_price;
@@ -78,6 +79,18 @@ double euro_call(double S, double K, double T, double sigma, double r, double q)
   std::memcpy(&ba, &a, sizeof ba);
   std::memcpy(&bb, &b, sizeof bb);
   return ba == bb;
+}
+
+// ULP distance between two NON-NEGATIVE doubles (prices are >= 0 here). For
+// non-negative IEEE-754 doubles the bit pattern is monotonic in value, so the
+// unsigned difference of the patterns is exactly the count of representable
+// doubles between them. Used by the put-slice homogeneity-reuse spike.
+[[nodiscard]] std::uint64_t ulp_distance_nonneg(double a, double b) noexcept {
+  std::uint64_t ba = 0;
+  std::uint64_t bb = 0;
+  std::memcpy(&ba, &a, sizeof ba);
+  std::memcpy(&bb, &b, sizeof bb);
+  return (ba >= bb) ? (ba - bb) : (bb - ba);
 }
 
 // Independent statement of the Task-1 spec table (in the ORIGINAL option's own
@@ -910,6 +923,274 @@ TEST(AndersenLakeCallSlice, FastPresetDegenerateEuroAndValidation) {
   EXPECT_FALSE(andersen_lake_call_slice(S, std::span<const double>(strikes), T, 0.2,
                                         r, q, std::span<double>(short_out),
                                         std::nullopt)
+                   .has_value());
+}
+
+// ── Cross-strike put-slice pricer (one boundary, many strikes) ───────────
+//
+// Unlike the call slice (bit-identical to per-strike andersen_lake because its
+// internal put has a FIXED strike Kp = S), the put slice reuses ONE boundary
+// across strikes by strike homogeneity. That reuse is exact only in ℝ: the AL
+// sweeps carry b.K in absolute (non-ratio) terms, so a reference-strike boundary
+// reused at another strike differs from a fresh per-strike solve by a few ULP.
+
+// STEP-1 SPIKE (kept as a regression). Measure the ULP distribution of the
+// one-boundary-reused-then-rescaled put price vs a fresh per-strike andersen_lake
+// over an ATM/wing/near-expiry/deep-ITM x (r,q)-corner grid, with the
+// forward-normalized spot S = e^{-(r-q)T} the correction cache samples at. Assert
+// the MEASURED bound (max ULP + max absolute), and prove the reference strike is
+// bit-identical. This is the evidence that decides the correction-cache branch:
+// a non-zero ULP gap => the cache put row STAYS on the scalar path (deferred to
+// T9's normalized-boundary refactor), so no archive/pin/corpus guard moves.
+TEST(AndersenLakePutSlice, StepOneReusedBoundaryUlpSpike) {
+  const double rs[] = {0.01, 0.03, 0.05, 0.08};
+  const double qs[] = {0.0, 0.01, 0.02, 0.04, 0.07};
+  const double Ts[] = {0.02, 0.1, 0.5, 1.0, 2.0};
+  const double sigmas[] = {0.1, 0.2, 0.35, 0.6};
+  // Forward-normalized strike ladder: deep-OTM put (small K) -> deep-ITM (large K).
+  const double Ks[] = {0.5, 0.7, 0.85, 0.95, 1.0, 1.05, 1.15, 1.3, 1.6, 2.0};
+
+  // A "meaningful" price floor: below it, absolute gaps are sub-1e-9 but the ULP /
+  // relative counts explode on tiny deep-OTM values. Correctness is gated on
+  // absolute gap everywhere AND relative gap above this floor.
+  constexpr double kPriceFloor = 1.0e-3;
+
+  std::uint64_t max_ulp = 0;                 // over all points
+  std::uint64_t max_ulp_meaningful = 0;      // prices >= floor
+  double max_abs = 0.0;                       // over all points
+  double max_rel_meaningful = 0.0;            // prices >= floor
+  std::uint64_t n_pts = 0;
+  std::uint64_t n_bit_identical = 0;
+  std::uint64_t ref_strike_pts = 0;
+  std::uint64_t ref_strike_bit_identical = 0;
+  double worst_r = 0, worst_q = 0, worst_T = 0, worst_s = 0, worst_K = 0;
+  double worst_slice = 0, worst_ref = 0;
+
+  std::vector<double> strikes(std::begin(Ks), std::end(Ks));
+  std::vector<double> px(strikes.size(), 0.0);
+
+  for (double r : rs)
+    for (double q : qs)
+      for (double T : Ts)
+        for (double sigma : sigmas) {
+          const double S = std::exp(-(r - q) * T);
+          const auto st = andersen_lake_put_slice(
+              S, std::span<const double>(strikes), T, sigma, r, q,
+              std::span<double>(px), std::nullopt);
+          ASSERT_TRUE(st.has_value())
+              << "r=" << r << " q=" << q << " T=" << T << " sigma=" << sigma
+              << " : " << st.error().to_string();
+          for (std::size_t i = 0; i < strikes.size(); ++i) {
+            const double ref = value_or_fail(andersen_lake(
+                S, strikes[i], T, sigma, r, q, Side::Put, std::nullopt));
+            const std::uint64_t u = ulp_distance_nonneg(px[i], ref);
+            const double a = std::fabs(px[i] - ref);
+            if (u > max_ulp) max_ulp = u;
+            if (a > max_abs) {
+              max_abs = a;
+              worst_r = r; worst_q = q; worst_T = T; worst_s = sigma;
+              worst_K = strikes[i]; worst_slice = px[i]; worst_ref = ref;
+            }
+            if (ref >= kPriceFloor) {
+              if (u > max_ulp_meaningful) max_ulp_meaningful = u;
+              const double rel = a / ref;
+              if (rel > max_rel_meaningful) max_rel_meaningful = rel;
+            }
+            ++n_pts;
+            if (u == 0) ++n_bit_identical;
+            if (i == 0) {  // strikes[0] is the reference strike => must be exact
+              ++ref_strike_pts;
+              if (u == 0) ++ref_strike_bit_identical;
+              EXPECT_TRUE(bits_equal(px[i], ref))
+                  << "reference strike not bit-identical: r=" << r << " q=" << q
+                  << " T=" << T << " sigma=" << sigma;
+            }
+          }
+        }
+
+  std::printf(
+      "[put-slice spike] points=%llu  bit-identical=%llu (%.1f%%)  "
+      "max_ulp(all)=%llu  max_abs(all)=%.3e\n"
+      "                  meaningful(price>=%.0e): max_ulp=%llu  max_rel=%.3e\n"
+      "                  worst-abs @ r=%.3f q=%.3f T=%.3f sigma=%.3f K=%.3f "
+      "slice=%.12e ref=%.12e\n"
+      "                  ref-strike bit-identical=%llu/%llu\n",
+      static_cast<unsigned long long>(n_pts),
+      static_cast<unsigned long long>(n_bit_identical),
+      100.0 * static_cast<double>(n_bit_identical) / static_cast<double>(n_pts),
+      static_cast<unsigned long long>(max_ulp), max_abs, kPriceFloor,
+      static_cast<unsigned long long>(max_ulp_meaningful), max_rel_meaningful,
+      worst_r, worst_q, worst_T, worst_s, worst_K, worst_slice, worst_ref,
+      static_cast<unsigned long long>(ref_strike_bit_identical),
+      static_cast<unsigned long long>(ref_strike_pts));
+
+  // The reference strike (strikes[0]) is ALWAYS bit-identical: same solve, same
+  // clamp path as al_solve_put. This is the ONE strike whose price does not move.
+  EXPECT_EQ(ref_strike_bit_identical, ref_strike_pts);
+
+  // MEASURED bounds (nullopt/ACCURATE preset, this grid). Homogeneity boundary
+  // reuse is NOT bit-exact: the reused y[] equals a fresh per-strike y[] only in
+  // exact arithmetic (absolute-K terms in the sweep + finite convergence tol), so
+  // the gap sits at the boundary-convergence-tolerance level, NOT machine epsilon.
+  // A non-zero gap is the recorded evidence for DEFERRING the correction-cache
+  // put-row collapse to T9's normalized-boundary refactor. The bounds below are
+  // deterministic on this toolchain (measured max_abs ~ 3.2e-8, max_rel ~ 8e-9);
+  // they gate a real blow-up while tolerating last-bit toolchain drift.
+  EXPECT_LT(max_abs, 1.0e-7);
+  EXPECT_LT(max_rel_meaningful, 1.0e-6);
+}
+
+// Core correctness gate: the put slice matches a per-strike andersen_lake loop
+// across a rate/yield/wing/near-expiry/deep-ITM grid to the MEASURED tolerance.
+// The put boundary is homogeneity-reused (one solve rescaled per strike), exact
+// only in ℝ, so this is NOT bit-identical like the call slice — the gap sits at
+// the boundary-convergence-tolerance level (~1e-6 relative for the ACCURATE
+// preset; step-1 spike measured max_rel ~ 1.1e-7). Combined absolute+relative
+// tolerance 1e-6·max(1,ref) covers both large ITM and tiny OTM prices.
+TEST(AndersenLakePutSlice, MatchesPerStrikeAndersenLake) {
+  const double S = 100.0, T = 0.4, sigma = 0.28;
+  struct RQ { double r, q; };
+  const RQ corners[] = {{0.05, 0.0}, {0.05, 0.02}, {0.03, 0.05}, {0.08, 0.07}, {0.02, 0.01}};
+  std::vector<double> strikes;
+  for (double K = 60.0; K <= 160.0 + 1e-9; K += 5.0) {
+    strikes.push_back(K);
+  }
+  std::vector<double> px(strikes.size(), 0.0);
+  for (const RQ& c : corners) {
+    const auto st = andersen_lake_put_slice(
+        S, std::span<const double>(strikes), T, sigma, c.r, c.q,
+        std::span<double>(px), std::nullopt);
+    ASSERT_TRUE(st.has_value())
+        << "r=" << c.r << " q=" << c.q << " : " << st.error().to_string();
+    for (std::size_t i = 0; i < strikes.size(); ++i) {
+      const double ref = value_or_fail(andersen_lake(
+          S, strikes[i], T, sigma, c.r, c.q, Side::Put, std::nullopt));
+      EXPECT_LT(std::fabs(px[i] - ref), 1.0e-6 * std::fmax(1.0, ref))
+          << "K=" << strikes[i] << " r=" << c.r << " q=" << c.q
+          << " slice=" << px[i] << " scalar=" << ref;
+    }
+  }
+}
+
+// n=1 ladder equals andersen_lake bit-identically (the single strike IS the
+// reference strike, so no homogeneity rescale error).
+TEST(AndersenLakePutSlice, SingleStrike_EqualsAndersenLake) {
+  const double S = 100.0, T = 0.75, sigma = 0.33, r = 0.06, q = 0.02;
+  const double Ks[] = {70.0, 100.0, 140.0};
+  for (double K : Ks) {
+    const double strike[] = {K};
+    double out = 0.0;
+    const auto st = andersen_lake_put_slice(
+        S, std::span<const double>(strike), T, sigma, r, q,
+        std::span<double>(&out, 1), std::nullopt);
+    ASSERT_TRUE(st.has_value()) << st.error().to_string();
+    const double ref =
+        value_or_fail(andersen_lake(S, K, T, sigma, r, q, Side::Put, std::nullopt));
+    EXPECT_TRUE(bits_equal(out, ref)) << "K=" << K << " slice=" << out << " scalar=" << ref;
+  }
+}
+
+// Fast preset also reuses one boundary across strikes to the same tolerance.
+TEST(AndersenLakePutSlice, FastPresetMatchesPerStrike) {
+  const double S = 100.0, T = 0.5, sigma = 0.3, r = 0.04, q = 0.01;
+  const double strikes[] = {75.0, 90.0, 100.0, 110.0, 130.0};
+  std::vector<double> px(std::size(strikes), 0.0);
+  const AlOpts fast = al_fast_opts();
+  ASSERT_TRUE(andersen_lake_put_slice(S, std::span<const double>(strikes), T, sigma,
+                                      r, q, std::span<double>(px), fast)
+                  .has_value());
+  for (std::size_t i = 0; i < std::size(strikes); ++i) {
+    const double ref = value_or_fail(
+        andersen_lake(S, strikes[i], T, sigma, r, q, Side::Put, fast));
+    // Fast preset (tol=1e-8, fewer sweeps): looser boundary-reuse gap than ACCURATE.
+    EXPECT_LT(std::fabs(px[i] - ref), 1.0e-4 * std::fmax(1.0, ref)) << "K=" << strikes[i];
+  }
+}
+
+// Degenerate sigma / T -> put intrinsic max(K_i - S, 0) per strike.
+TEST(AndersenLakePutSlice, Degenerate_Intrinsic) {
+  const double S = 100.0, T = 0.5, r = 0.03, q = 0.02;
+  const double strikes[] = {80.0, 100.0, 130.0};
+  std::vector<double> px(3, 0.0);
+  ASSERT_TRUE(andersen_lake_put_slice(S, std::span<const double>(strikes), T, 0.0,
+                                      r, q, std::span<double>(px), std::nullopt)
+                  .has_value());
+  EXPECT_DOUBLE_EQ(px[0], 0.0);   // max(80 - 100, 0)
+  EXPECT_DOUBLE_EQ(px[1], 0.0);   // max(100 - 100, 0)
+  EXPECT_DOUBLE_EQ(px[2], 30.0);  // 130 - 100
+  // Degenerate T likewise.
+  ASSERT_TRUE(andersen_lake_put_slice(S, std::span<const double>(strikes), 0.0, 0.3,
+                                      r, q, std::span<double>(px), std::nullopt)
+                  .has_value());
+  EXPECT_DOUBLE_EQ(px[2], 30.0);
+}
+
+// European corner (r <= 0 && r <= q): Black-76 European put per strike, matching
+// the andersen_lake short-circuit exactly.
+TEST(AndersenLakePutSlice, European_Black76) {
+  const double S = 100.0, T = 1.0, sigma = 0.3, r = -0.01, q = 0.02;
+  ASSERT_EQ(classify_spec(r, q, Side::Put), Regime::European);
+  const double strikes[] = {80.0, 100.0, 120.0};
+  std::vector<double> px(3, 0.0);
+  ASSERT_TRUE(andersen_lake_put_slice(S, std::span<const double>(strikes), T, sigma,
+                                      r, q, std::span<double>(px), std::nullopt)
+                  .has_value());
+  for (std::size_t i = 0; i < 3; ++i) {
+    const double ref = value_or_fail(
+        andersen_lake(S, strikes[i], T, sigma, r, q, Side::Put, std::nullopt));
+    EXPECT_TRUE(bits_equal(px[i], ref)) << "K=" << strikes[i];
+    EXPECT_TRUE(bits_equal(px[i], euro_put(S, strikes[i], T, sigma, r, q)));
+  }
+}
+
+// Unsupported double-continuation corner (q < r <= 0): NotImplemented, and every
+// per-strike scalar solve errors the same way.
+TEST(AndersenLakePutSlice, Unsupported_NotImplemented) {
+  const double S = 100.0, T = 1.0, sigma = 0.3, r = -0.005, q = -0.02;
+  ASSERT_EQ(classify_spec(r, q, Side::Put), Regime::Unsupported);
+  const double strikes[] = {80.0, 100.0, 120.0};
+  std::vector<double> px(3, 0.0);
+  const auto st = andersen_lake_put_slice(S, std::span<const double>(strikes), T,
+                                          sigma, r, q, std::span<double>(px),
+                                          std::nullopt);
+  ASSERT_FALSE(st.has_value());
+  EXPECT_EQ(st.error().code(), atx::core::ErrorCode::NotImplemented);
+  for (double K : strikes) {
+    const auto sc = andersen_lake(S, K, T, sigma, r, q, Side::Put);
+    ASSERT_FALSE(sc.has_value());
+    EXPECT_EQ(sc.error().code(), atx::core::ErrorCode::NotImplemented);
+  }
+}
+
+// Input-validation errors mirror the call slice.
+TEST(AndersenLakePutSlice, InputValidation) {
+  const double strikes[] = {90.0, 100.0, 110.0};
+  std::vector<double> px(3, 0.0);
+  // S <= 0
+  EXPECT_FALSE(andersen_lake_put_slice(0.0, std::span<const double>(strikes), 0.5,
+                                       0.2, 0.03, 0.0, std::span<double>(px))
+                   .has_value());
+  // negative T
+  EXPECT_FALSE(andersen_lake_put_slice(100.0, std::span<const double>(strikes), -0.1,
+                                       0.2, 0.03, 0.0, std::span<double>(px))
+                   .has_value());
+  // negative sigma
+  EXPECT_FALSE(andersen_lake_put_slice(100.0, std::span<const double>(strikes), 0.5,
+                                       -0.2, 0.03, 0.0, std::span<double>(px))
+                   .has_value());
+  // non-positive strike
+  const double bad_strikes[] = {90.0, 0.0, 110.0};
+  EXPECT_FALSE(andersen_lake_put_slice(100.0, std::span<const double>(bad_strikes),
+                                       0.5, 0.2, 0.03, 0.0, std::span<double>(px))
+                   .has_value());
+  // non-finite r
+  EXPECT_FALSE(andersen_lake_put_slice(100.0, std::span<const double>(strikes), 0.5,
+                                       0.2, std::nan(""), 0.0, std::span<double>(px))
+                   .has_value());
+  // length mismatch
+  std::vector<double> short_out(2, 0.0);
+  EXPECT_FALSE(andersen_lake_put_slice(100.0, std::span<const double>(strikes), 0.5,
+                                       0.2, 0.03, 0.0, std::span<double>(short_out))
                    .has_value());
 }
 

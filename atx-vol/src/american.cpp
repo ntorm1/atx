@@ -1368,6 +1368,102 @@ Status andersen_lake_call_slice(double S, std::span<const double> strikes,
   return Ok();
 }
 
+Status andersen_lake_put_slice(double S, std::span<const double> strikes,
+                               double T, double sigma, double r, double q,
+                               std::span<double> price_out,
+                               const std::optional<AlOpts>& opts) {
+  if (!(S > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "andersen_lake_put_slice: S must be > 0");
+  }
+  if (!(T >= 0.0) || !(sigma >= 0.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               "andersen_lake_put_slice: T and sigma must be >= 0");
+  }
+  if (strikes.size() != price_out.size()) {
+    return Err(ErrorCode::InvalidArgument,
+               "andersen_lake_put_slice: strikes / price_out length mismatch");
+  }
+  for (const double K : strikes) {
+    if (!(K > 0.0)) {
+      return Err(ErrorCode::InvalidArgument,
+                 "andersen_lake_put_slice: every strike must be > 0");
+    }
+  }
+  if (!(std::isfinite(r) && std::isfinite(q))) {
+    return Err(ErrorCode::InvalidArgument,
+               "andersen_lake_put_slice: r and q must be finite");
+  }
+
+  const std::size_t n = strikes.size();
+
+  // Degenerate: T ~ 0 or sigma ~ 0 collapses to intrinsic (mirrors andersen_lake).
+  if (T <= 1.0e-12 || sigma <= 1.0e-8) {
+    for (std::size_t i = 0; i < n; ++i) {
+      const double intr = strikes[i] - S;  // put intrinsic K_i - S
+      price_out[i] = (intr > 0.0) ? intr : 0.0;
+    }
+    return Ok();
+  }
+
+  // Regime classification in the put's OWN (rate = r, yield = q) terms — the put
+  // convention, NOT the call slice's (q, r). European writes the Black-76 European
+  // put per strike (matches andersen_lake's short-circuit exactly); Unsupported is
+  // the double-continuation corner the ALO scheme cannot price.
+  switch (classify_regime(/*rate=*/r, /*yield=*/q)) {
+    case ExerciseRegime::European: {
+      const double F = S * std::exp((r - q) * T);
+      const double df = std::exp(-r * T);
+      for (std::size_t i = 0; i < n; ++i) {
+        price_out[i] = black76_price(F, strikes[i], T, sigma, df, Side::Put);
+      }
+      return Ok();
+    }
+    case ExerciseRegime::Unsupported:
+      return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
+    case ExerciseRegime::American:
+      break;
+  }
+
+  // American (r > 0). Solve ONE boundary at the reference strike strikes[0], then
+  // reuse it for every K_i by strike HOMOGENEITY: the live state y = (log(b/xmax))²
+  // is K-independent, so keep y[] and rescale only (K, xmax = al_xmax_put(K_i,r,q)),
+  // which scales the boundary b = xmax·exp(-sqrt(y)) linearly in K. Each price runs
+  // the SAME euro + premium + clamp path as al_solve_put (al_put_price_from_boundary),
+  // so the reference strike strikes[0] is BIT-IDENTICAL to andersen_lake(S,strikes[0],
+  // …,Put), and every other strike matches to a few ULP: the sweep kernels carry b.K
+  // in absolute (non-ratio) terms — alpha = K·e^{-(r-q)τ}, y_from_b(b, K·min(1,r/q)) —
+  // so the reused y[] equals a fresh per-strike y[] only in EXACT arithmetic. The
+  // measured gap (see at-task-8-report.md) is why the correction cache's put row is
+  // NOT rerouted here — that stays on the scalar path so its bit-identity guards hold.
+  //
+  // Formulation: SCALE-BOUNDARY (fix spot S, rescale the boundary to K_i) is chosen
+  // over SCALE-SPOT (solve at K=1, price K_i·P(S/K_i,1)) because scale-boundary reuses
+  // euro_put_sk(S,K_i) and al_put_premium unchanged, so the ONLY divergence from a
+  // fresh solve is the reused y[]; scale-spot layers S/K_i-division and ×K_i rounding
+  // on top, measurably widening the ULP gap (step-1 spike measured both).
+  const AlScheme sch = scheme_from_opts(opts);
+  AlBoundary bnd;
+  AlWorkspace ws;
+  switch (al_solve_put_boundary(/*K=*/strikes[0], T, sigma, r, q, sch, bnd, ws)) {
+    case AlSolveStatus::Collapsed:
+      return Err(ErrorCode::NotImplemented,
+                 "andersen_lake_put_slice: asymptotic boundary collapsed (xmax <= 0)");
+    case AlSolveStatus::TableMissing:
+      return Err(ErrorCode::Internal,
+                 "andersen_lake_put_slice: Gauss-Legendre table unavailable");
+    case AlSolveStatus::Ok:
+      break;
+  }
+
+  for (std::size_t i = 0; i < n; ++i) {
+    const double Ki = strikes[i];
+    bnd.K = Ki;                        // homogeneity rescale: strike …
+    bnd.xmax = al_xmax_put(Ki, r, q);  // … and asymptotic level B(∞), same y[]
+    price_out[i] = al_put_price_from_boundary(bnd, ws, S, Ki, T, sigma, r, q);
+  }
+  return Ok();
+}
+
 Result<double> baw_american(double S, double K, double T, double sigma,
                             double r, double q, Side side,
                             std::uint16_t max_iter, double tol) {
