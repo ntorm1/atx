@@ -9,6 +9,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string>
+#include <vector>
+
+#include "atx/vol/universe.hpp" // canonical_symbol — same rule the snapshot resolver uses
 
 namespace atx::vol {
 
@@ -59,10 +63,33 @@ Result<StrategySpec> make_dispersion_strangle_spec(const DispersionStrangleConfi
     return Err(ErrorCode::InvalidArgument,
                "make_dispersion_strangle_spec: index_symbol must be non-empty");
   }
-  if (std::find(cfg.names.begin(), cfg.names.end(), cfg.index_symbol) != cfg.names.end()) {
-    return Err(ErrorCode::InvalidArgument,
-               "make_dispersion_strangle_spec: index_symbol '" + cfg.index_symbol +
-                   "' must not also appear in names");
+  // Canonicalize names/index_symbol with the SAME rule the snapshot resolver uses
+  // (`MarketSnapshot::uid_of` / `uid_for_symbol`, both keyed on `canonical_symbol`:
+  // ASCII-upper) before comparing. A raw-string comparison would let a
+  // same-symbol-different-case index/name collision ("spy" vs "SPY") or a
+  // duplicate name slip through here and only surface later as a degenerate
+  // self-hedged cohort or a silently double-sized theta leg.
+  {
+    std::vector<std::string> canon_names;
+    canon_names.reserve(cfg.names.size());
+    for (const std::string &name : cfg.names) {
+      canon_names.push_back(canonical_symbol(name));
+    }
+    for (std::size_t i = 0; i < canon_names.size(); ++i) {
+      for (std::size_t j = i + 1; j < canon_names.size(); ++j) {
+        if (canon_names[i] == canon_names[j]) {
+          return Err(ErrorCode::InvalidArgument,
+                     "make_dispersion_strangle_spec: duplicate name '" + cfg.names[j] +
+                         "' in names");
+        }
+      }
+    }
+    const std::string canon_index = canonical_symbol(cfg.index_symbol);
+    if (std::find(canon_names.begin(), canon_names.end(), canon_index) != canon_names.end()) {
+      return Err(ErrorCode::InvalidArgument,
+                 "make_dispersion_strangle_spec: index_symbol '" + cfg.index_symbol +
+                     "' must not also appear in names");
+    }
   }
   if (!(std::isfinite(cfg.target_abs_delta) && cfg.target_abs_delta > 0.0 &&
         cfg.target_abs_delta < 1.0)) {
@@ -88,6 +115,10 @@ Result<StrategySpec> make_dispersion_strangle_spec(const DispersionStrangleConfi
   if (cfg.entry_every_n_days == 0) {
     return Err(ErrorCode::InvalidArgument,
                "make_dispersion_strangle_spec: entry_every_n_days must be >= 1");
+  }
+  if (cfg.missing.min_names == 0) {
+    return Err(ErrorCode::InvalidArgument,
+               "make_dispersion_strangle_spec: missing.min_names must be >= 1");
   }
   if (cfg.missing.min_names > cfg.names.size()) {
     return Err(ErrorCode::InvalidArgument,

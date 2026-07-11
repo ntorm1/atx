@@ -165,3 +165,130 @@ happens to always pass.
 - Real-data run (Task 8) will be the first time this CLI sees a non-synthetic
   `SurfaceDb`; nothing in this task exercises that path (by design — Task 8
   is operator-gated).
+
+## Final-review polish fix report
+
+Five bounded Minor items from the final whole-branch review (verdict already
+"Ready to merge" — this is polish, not a correctness gate). Base HEAD before
+the fix: `126aa35`.
+
+1. **`backtest.hpp` `Clock` comment** — `atx-vol/include/atx/vol/backtest.hpp:59-62`.
+   Extended the pre-existing "backtest timeline enumerated from a corpus
+   manifest" comment by one line noting the SurfaceDb-backed route
+   (`from_surface_db`, documented in full just below on the same class).
+   Comment-only, no code change.
+
+2. **Restored trimmed comparator columns** —
+   `atx-vol/tests/mag7_dispersion_backtest_test.cpp:169-180`
+   (`expect_result_bit_identical`). The mag7 copy of
+   `spy_strangle_backtest_test.cpp:158`'s helper had dropped `pnl_theta`,
+   `pnl_gamma`, `pnl_vega` from the bit-identity column set. Restored all
+   three so the mag7 fixture's determinism check (`DeterminismAcrossThreads`,
+   the only caller) covers the full attribution vector the spy fixture does.
+   Updated the header comment ("trimmed to the columns this fixture
+   exercises" -> "same column set") since the two helpers are now identical
+   in coverage.
+
+3. **`missing.min_names >= 1` validation** —
+   `atx-vol/src/dispersion_strangle.cpp:119-122`. Added an
+   `ErrorCode::InvalidArgument` rejection for `cfg.missing.min_names == 0`,
+   placed before the existing `min_names > names.size()` check, message
+   `"make_dispersion_strangle_spec: missing.min_names must be >= 1"`
+   (consistent phrasing with the neighboring `entry_every_n_days must be >=
+   1` message). Previously `min_names == 0` was silently admitted; if every
+   basket name dropped at resolve time, the FlatVega constraint's
+   `gross_a == 0` denominator would zero out the index leg's scale,
+   producing zero-qty index lots that pollute the book instead of failing
+   fast at config time.
+   Test: `atx-vol/tests/dispersion_strangle_test.cpp:170`
+   (`expect_reject([](auto &c) { c.missing.min_names = 0; });`) added to
+   `DispersionStrangle.RejectsBadConfig`.
+
+4. **Case-insensitive index/name validation + duplicate-name guard** —
+   `atx-vol/src/dispersion_strangle.cpp:66-93`. The prior
+   `index_symbol ∈ names` check compared raw strings while the snapshot
+   resolver (`MarketSnapshot::uid_of` / `uid_for_symbol`) canonicalizes via
+   `canonical_symbol` (`atx-vol/src/universe.cpp:61`, ASCII-upper,
+   `<atx/vol/universe.hpp>`) before comparing — so `"spy"` vs `"SPY"` slipped
+   past the builder's guard and only surfaced later as a degenerate
+   self-hedged cohort. Included `atx/vol/universe.hpp` (already a
+   `src/universe.cpp` library TU per `atx-vol/CMakeLists.txt:24`, so this is
+   not a new link dependency) and reused `canonical_symbol` directly — same
+   canonicalization the resolver uses, no duplicated logic. Canonicalized
+   both `cfg.names` and `cfg.index_symbol` before the containment check, and
+   added an O(n^2) pairwise duplicate-name check over the canonicalized
+   names (small n: mag7 baskets are single digits) per review roll-up T3-a
+   ("dup name silently double-sizes theta"). Also updated the
+   `dispersion_strangle.hpp` InvalidArgument doc list
+   (`atx-vol/include/atx/vol/dispersion_strangle.hpp:49-54`) to describe the
+   canonicalized/duplicate-name conditions and `min_names == 0`.
+   Tests: `atx-vol/tests/dispersion_strangle_test.cpp:164-168` —
+   `names={"AAA"}, index="aaa"` rejected and `names={"AAA","aaa"}` rejected,
+   both added to `DispersionStrangle.RejectsBadConfig`.
+
+5. **Python: unpriced rows double-rendered** —
+   `atx-vol/tools/mag7_dispersion_report.py:288-296` (`_strategy_section`).
+   `UNPRICED_METRIC_KEYS` (`total_unpriced_lots`, `total_unpriced_greeks`,
+   line 83) is documented as belonging on the engine panel instead, and
+   `_engine_section` (line 293) already copies those rows there, but
+   `_strategy_section` rendered every `strategy_metrics.csv` row unfiltered
+   — so both keys appeared on both tables. Filtered `UNPRICED_METRIC_KEYS`
+   out of the strategy table's row list, matching the docstring.
+   Test: `atx-vol/tests/mag7_dispersion_report_test.py` —
+   `test_full_run_dir_renders_self_contained_report` extended to slice the
+   rendered HTML into strategy/engine/surface fragments by heading text and
+   assert `total_unpriced_lots`/`total_unpriced_greeks` are absent from the
+   strategy fragment and present in the engine fragment (the synthetic
+   fixture's `STRATEGY_METRIC_ROWS` already carries both keys with value
+   `"0"`, so the test would have failed pre-fix).
+
+### Test commands + output tails
+
+C++ build:
+```
+& .\scripts\atx-build.ps1 build atx-vol-tests
+...
+[29/31] Linking CXX static library lib\atx-vol.lib
+[30/31] Linking CXX executable bin\atx-vol-tests.exe
+```
+(clean build, no warnings — `/WX` clean.)
+
+C++ tests:
+```
+& .\scripts\atx-build.ps1 -Ctest -R "Mag7DispersionBacktest|DispersionStrangle"
+...
+    Start 907: DispersionStrangle.SpecShape
+1/8 Test #907: DispersionStrangle.SpecShape ..................................   Passed    1.00 sec
+    Start 908: DispersionStrangle.RejectsBadConfig
+2/8 Test #908: DispersionStrangle.RejectsBadConfig ...........................   Passed    0.67 sec
+    Start 909: DispersionStrangle.EntryMath_EqualTheta_VegaFlat_FortyDelta
+3/8 Test #909: DispersionStrangle.EntryMath_EqualTheta_VegaFlat_FortyDelta ...   Passed    0.94 sec
+    Start 943: Mag7DispersionBacktest.EndToEnd_DbToEmittedFiles
+4/8 Test #943: Mag7DispersionBacktest.EndToEnd_DbToEmittedFiles ..............   Passed    9.74 sec
+    Start 944: Mag7DispersionBacktest.FortyDeltaOnDbSurfaces
+5/8 Test #944: Mag7DispersionBacktest.FortyDeltaOnDbSurfaces .................   Passed    0.88 sec
+    Start 945: Mag7DispersionBacktest.CohortMechanics
+6/8 Test #945: Mag7DispersionBacktest.CohortMechanics ........................   Passed    6.49 sec
+    Start 946: Mag7DispersionBacktest.VegaFlatAtEntry
+7/8 Test #946: Mag7DispersionBacktest.VegaFlatAtEntry ........................   Passed    1.91 sec
+    Start 947: Mag7DispersionBacktest.DeterminismAcrossThreads
+8/8 Test #947: Mag7DispersionBacktest.DeterminismAcrossThreads ...............   Passed    7.84 sec
+
+100% tests passed, 0 tests failed out of 8
+```
+
+Python:
+```
+python atx-vol/tests/mag7_dispersion_report_test.py -v
+...
+test_full_run_dir_renders_self_contained_report (__main__.Mag7DispersionReportTest.test_full_run_dir_renders_self_contained_report) ... ok
+test_missing_required_file_is_a_clean_error (__main__.Mag7DispersionReportTest.test_missing_required_file_is_a_clean_error) ... ok
+test_populate_stats_absent_still_renders (__main__.Mag7DispersionReportTest.test_populate_stats_absent_still_renders) ... ok
+
+----------------------------------------------------------------------
+Ran 8 tests in 7.253s
+
+OK
+```
+
+The full `-L atx_vol` gate was intentionally NOT run per the fix-wave scope.

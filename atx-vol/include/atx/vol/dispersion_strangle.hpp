@@ -46,10 +46,12 @@ struct DispersionStrangleConfig {
 //    entry_every_n, Holding::CloseAtHorizon, roll_at_T = close_dte_days/365.25;
 //  - spec.missing = cfg.missing, spec.hedge = cfg.hedge,
 //    spec.name = "mag7_dispersion_strangle" (or names.size()-agnostic label).
-// InvalidArgument when: names empty; index_symbol empty or contained in
-// names; target_abs_delta outside (0,1); tenor_days <= close_dte_days;
+// InvalidArgument when: names empty; index_symbol empty; names contains a
+// duplicate or index_symbol also appears in names (both compared
+// case-insensitively, the same canonicalization the snapshot resolver uses);
+// target_abs_delta outside (0,1); tenor_days <= close_dte_days;
 // close_dte_days < 0; theta_per_name_daily <= 0; index_base_vega <= 0;
-// entry_every_n_days == 0; missing.min_names > names.size().
+// entry_every_n_days == 0; missing.min_names == 0 or > names.size().
 [[nodiscard]] Result<StrategySpec>
 make_dispersion_strangle_spec(const DispersionStrangleConfig &cfg);
 

@@ -286,7 +286,14 @@ def _header_html(meta: dict) -> str:
 
 
 def _strategy_section(strat_df: pd.DataFrame) -> str:
-    rows = [(r.metric, _fmt_value(r.value)) for r in strat_df.itertuples(index=False)]
+    # UNPRICED_METRIC_KEYS rows belong on the engine panel instead (see the
+    # constant's docstring) -- `_engine_section` copies them there, so drop
+    # them here to avoid rendering the same rows on both tables.
+    rows = [
+        (r.metric, _fmt_value(r.value))
+        for r in strat_df.itertuples(index=False)
+        if r.metric not in UNPRICED_METRIC_KEYS
+    ]
     return _kv_table_html(H_STRATEGY, rows)
 
 

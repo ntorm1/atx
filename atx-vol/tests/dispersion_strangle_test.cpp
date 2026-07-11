@@ -160,6 +160,11 @@ TEST(DispersionStrangle, RejectsBadConfig) {
   expect_reject([](auto &c) { c.names.clear(); });
   expect_reject([](auto &c) { c.index_symbol = "AAA"; });
   expect_reject([](auto &c) { c.index_symbol = ""; });
+  // Case-insensitive index/name collision: names={"AAA"}, index="aaa" must
+  // resolve to the same canonical symbol as an exact-case collision.
+  expect_reject([](auto &c) { c.index_symbol = "aaa"; });
+  // Duplicate name under the same canonicalization.
+  expect_reject([](auto &c) { c.names = {"AAA", "aaa"}; });
   expect_reject([](auto &c) { c.target_abs_delta = 1.0; });
   expect_reject([](auto &c) { c.target_abs_delta = 0.0; });
   expect_reject([](auto &c) { c.tenor_days = 10.0; c.close_dte_days = 10.0; });
@@ -167,6 +172,7 @@ TEST(DispersionStrangle, RejectsBadConfig) {
   expect_reject([](auto &c) { c.theta_per_name_daily = 0.0; });
   expect_reject([](auto &c) { c.index_base_vega = 0.0; });
   expect_reject([](auto &c) { c.entry_every_n_days = 0; });
+  expect_reject([](auto &c) { c.missing.min_names = 0; });
   expect_reject([](auto &c) { c.missing.min_names = 5; });
 }
 

@@ -57,7 +57,9 @@ struct SnapshotRef {
 };
 
 // The backtest timeline enumerated from a corpus manifest: one `SnapshotRef` per
-// unique date (ascending) pointing at that date's first Ok archive.
+// unique date (ascending) pointing at that date's first Ok archive. A
+// SurfaceDb-backed route is also available (`from_surface_db` below), one
+// `SnapshotRef` per partition instead of per manifest entry.
 class Clock {
 public:
   [[nodiscard]] static Result<Clock> from_manifest(const CorpusManifest &manifest);

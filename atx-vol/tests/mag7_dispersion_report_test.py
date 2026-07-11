@@ -212,6 +212,19 @@ class Mag7DispersionReportTest(unittest.TestCase):
             self.assertIn("AAPL", text)
             self.assertIn("mean_oos_in_band", text)
 
+            # UNPRICED_METRIC_KEYS rows (total_unpriced_lots, total_unpriced_greeks)
+            # belong on the engine panel only, not duplicated onto the strategy
+            # table (STRATEGY_METRIC_ROWS above carries both keys).
+            strategy_start = text.index("Strategy metrics")
+            engine_start = text.index("Engine metrics")
+            surface_start = text.index("Surface/db statistics")
+            strategy_html = text[strategy_start:engine_start]
+            engine_html = text[engine_start:surface_start]
+            self.assertNotIn("total_unpriced_lots", strategy_html)
+            self.assertNotIn("total_unpriced_greeks", strategy_html)
+            self.assertIn("total_unpriced_lots", engine_html)
+            self.assertIn("total_unpriced_greeks", engine_html)
+
     def test_populate_stats_absent_still_renders(self):
         with tempfile.TemporaryDirectory() as directory:
             run_dir = write_run_dir(pathlib.Path(directory), with_populate=False)
