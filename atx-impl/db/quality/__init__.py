@@ -40,6 +40,8 @@ for _name in (
     "checks_fundamentals",
     "checks_market_reference",
     "checks_ownership",
+    "checks_survivorship",
+    "survivorship_dqc_results",
 ):
     globals().pop(_name, None)
 

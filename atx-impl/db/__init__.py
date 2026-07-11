@@ -78,12 +78,19 @@ from .daily_adjustments import (
     refresh_daily_adjustment_factors,
 )
 from .delisting import (
+    DelistingCodeReconciliationOptions,
     DelistingEventDataset,
     DelistingEventOptions,
     DelistingReturnObservationDataset,
     DelistingReturnObservationOptions,
+    DelistingTerminalReturnOptions,
+    SurvivorshipSafeForwardReturnOptions,
     load_delisting_return_observations,
+    load_terminal_return_policy_dim,
+    reconcile_delisting_codes,
     refresh_delisting_events,
+    refresh_delisting_terminal_returns,
+    refresh_survivorship_safe_forward_returns,
     seed_delist_code_dim,
 )
 from .dataset import Dataset, DatasetLoadResult
@@ -459,6 +466,13 @@ __all__ = [
     "DelistingEventOptions",
     "DelistingReturnObservationDataset",
     "DelistingReturnObservationOptions",
+    "DelistingCodeReconciliationOptions",
+    "DelistingTerminalReturnOptions",
+    "SurvivorshipSafeForwardReturnOptions",
+    "load_terminal_return_policy_dim",
+    "reconcile_delisting_codes",
+    "refresh_delisting_terminal_returns",
+    "refresh_survivorship_safe_forward_returns",
     "DuckDBStore",
     "EquityDailyFeatureDataset",
     "FeatureBuildOptions",
