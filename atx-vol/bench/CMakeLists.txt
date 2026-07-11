@@ -121,3 +121,13 @@ target_link_libraries(atx-vol-fitting-bench
         atx_warnings
         Threads::Threads
 )
+# fitting_throughput_bench.cpp's real-OPRA case (C0.2) reaches the testkit
+# fixture loaders via `#include "support/spy_fit_fixture.hpp"` — the same
+# quoted path every tests/*.cpp uses, resolved there via same-directory
+# lookup (tests/support/ sits beside the including tests/*.cpp). bench/ has
+# no such sibling, so add ../tests as an extra quoted-include root, PRIVATE
+# so it does not leak into any other bench target.
+target_include_directories(atx-vol-fitting-bench
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../tests
+)

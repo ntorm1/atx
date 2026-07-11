@@ -15,6 +15,17 @@
 //
 //   fit/surface_cold/spy_synth   — whole-surface eSSVI fit via the public
 //                                  `essvi_calib_surface` driver.
+//   fit/surface_cold/spy_real    — the SAME `essvi_calib_surface` driver, timed
+//                                  against ONE real Databento SPY OPRA slice
+//                                  (C0.2: the suite was 100% synthetic before
+//                                  this case). Pinned to `kSpyFitFixtures[0]`
+//                                  ("selloff-open", SPY_2026-02-12T1435Z) for a
+//                                  reproducible timing target; registered only
+//                                  when the fixture's parquet is found on this
+//                                  machine (spy_fit_fixture.hpp's filesystem
+//                                  probe over data/spy_fit_slices, mirrored so
+//                                  a source-only checkout skips cleanly instead
+//                                  of crashing).
 //   fit/slice_cold/spy_synth     — single-slice `essvi_fit_slice`, no seed.
 //   fit/slice_warm_refit/spy_synth — same slice, seeded with its own
 //                                  converged params (essvi_fit_slice DOES
@@ -29,6 +40,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -42,6 +54,7 @@
 #include "atx/vol/chain.hpp"         // OptionChain
 #include "atx/vol/curve.hpp"         // CurveSet, ForwardPoint
 #include "atx/vol/data.hpp"          // iso_to_ns
+#include "atx/vol/dividend.hpp"      // hybrid_forward, HybridDivParams (real-board forward)
 #include "atx/vol/essvi_calib.hpp"   // essvi_fit_slice, essvi_calib_surface
 #include "atx/vol/market_env.hpp"    // MarketEnv
 #include "atx/vol/panel.hpp"         // make_synthetic_american_panel, SynthPanelSpec
@@ -51,6 +64,7 @@
 #include "atx/vol/vol_surface.hpp"   // VolSurface, EssviParams, Parametrization
 
 #include "bench_util.hpp"
+#include "support/spy_fit_fixture.hpp" // kSpyFitFixtures, find_spy_fit_parquet, load_spy_fit_fixture
 
 namespace atx::vol::bench {
 namespace {
@@ -138,6 +152,96 @@ void BM_SurfaceCold(benchmark::State &state) {
     const Status st = essvi_calib_surface(surface, board->under, board->curves, opts);
     if (!st.has_value()) {
       state.SkipWithError("essvi_calib_surface failed");
+      break;
+    }
+    benchmark::DoNotOptimize(surface.n_slices());
+    benchmark::ClobberMemory();
+  }
+  state.SetItemsProcessed(state.iterations()); // items = surfaces
+}
+
+// ── fit/surface_cold/spy_real ─────────────────────────────────────────────
+//
+// The real-OPRA counterpart to BM_SurfaceCold above (C0.2): identical timed
+// call (`essvi_calib_surface` on an `Underlying`/`CurveSet` pair built ONCE
+// outside the loop), but the board comes from one pinned real Databento SPY
+// slice instead of the synthetic panel. Pinned fixture: `kSpyFitFixtures[0]`
+// ("selloff-open", SPY_2026-02-12T1435Z.parquet) — chosen simply as the
+// first entry for a stable, reproducible timing target; the corpus's other
+// nine slices are exercised for ACCURACY (not throughput) by
+// spy_fit_corpus_test.cpp.
+//
+// The forward per expiry is the same hybrid dividend forward
+// (`hybrid_forward`, dividend.hpp) production code derives from a real
+// board's cash-dividend schedule — there is no "truth forward" for real
+// data the way the synthetic panel provides one.
+
+struct SpyBoardReal {
+  Underlying under;
+  CurveSet curves;
+  double spot{0.0};
+  double r{0.0};
+};
+
+[[nodiscard]] std::optional<SpyBoardReal> build_spy_board_real() {
+  const auto &fixture = atx::vol::testkit::kSpyFitFixtures[0];
+  const std::optional<atx::vol::testkit::OpraBoard> opra =
+      atx::vol::testkit::load_spy_fit_fixture(fixture);
+  if (!opra.has_value()) {
+    return std::nullopt;
+  }
+  auto chain_res = OptionChain::from_frame(opra->panel.frame, opra->env());
+  if (!chain_res.has_value()) {
+    return std::nullopt;
+  }
+
+  SpyBoardReal board;
+  board.under = chain_res->underlying();
+  board.spot = opra->spot();
+  board.r = opra->r;
+
+  board.curves.spot = board.spot;
+  const std::array<double, 2> pillar_t{1.0e-3, 50.0};
+  const std::array<double, 2> pillar_r{board.r, board.r};
+  if (!board.curves.set_yield(pillar_t, pillar_r).has_value()) {
+    return std::nullopt;
+  }
+
+  const HybridDivParams hyb{}; // pure escrowed-cash (blend = 0), matches session.cpp's q_rep recipe
+  std::vector<ForwardPoint> fps;
+  fps.reserve(board.under.chains.size());
+  for (const Chain &c : board.under.chains) {
+    ForwardPoint fp{};
+    fp.expiry_ns = c.expiry_ns;
+    fp.T = c.T;
+    const double F = hybrid_forward(board.spot, board.r, 0.0, c.T, opra->panel.frame.divs,
+                                    c.expiry_ns, opra->now_ns(), hyb);
+    fp.F = (std::isfinite(F) && F > 0.0) ? F : board.spot; // fallback mirrors build_spy_board()
+    fps.push_back(fp);
+  }
+  board.curves.forward.set(fps);
+  return board;
+}
+
+void BM_SurfaceColdReal(benchmark::State &state) {
+  const std::optional<SpyBoardReal> board = build_spy_board_real();
+  if (!board.has_value()) {
+    state.SkipWithError("real SPY board build failed");
+    return;
+  }
+  auto surf_res =
+      VolSurface::create(1u, Parametrization::Essvi, board->under.chains.size());
+  if (!surf_res.has_value()) {
+    state.SkipWithError("VolSurface::create failed");
+    return;
+  }
+  VolSurface surface = *surf_res;
+  const CalibOpts opts = calib_default_opts();
+
+  for (auto _ : state) {
+    const Status st = essvi_calib_surface(surface, board->under, board->curves, opts);
+    if (!st.has_value()) {
+      state.SkipWithError("essvi_calib_surface (real) failed");
       break;
     }
     benchmark::DoNotOptimize(surface.n_slices());
@@ -337,6 +441,19 @@ void BM_AmericanIvWarm(benchmark::State &state) {
 const int kRegistered = [] {
   apply_common(benchmark::RegisterBenchmark("fit/surface_cold/spy_synth", BM_SurfaceCold))
       ->Unit(benchmark::kMicrosecond);
+  // Register the real-OPRA case only when the pinned fixture's parquet is
+  // actually present (source-only checkouts / CI without data/ skip cleanly
+  // rather than SkipWithError-ing a benchmark that was never meant to run).
+  // Each iteration is a whole cold surface fit on a real board (measured
+  // ~25-60ms in Release on this fixture — faster than a first estimate of
+  // ~0.3-0.5s, since kSpyFitFixtures[0]'s board is smaller than assumed) —
+  // MinTime(2s) so Repetitions(5) still lands dozens of iterations per
+  // repetition instead of just a handful.
+  if (!atx::vol::testkit::find_spy_fit_parquet(atx::vol::testkit::kSpyFitFixtures[0]).empty()) {
+    apply_common(benchmark::RegisterBenchmark("fit/surface_cold/spy_real", BM_SurfaceColdReal))
+        ->Unit(benchmark::kMicrosecond)
+        ->MinTime(2.0);
+  }
   apply_common(benchmark::RegisterBenchmark("fit/slice_cold/spy_synth", BM_SliceCold))
       ->Unit(benchmark::kMicrosecond);
   apply_common(
