@@ -440,3 +440,9 @@ Task 1: complete (commits 36ceebd..d9449e3, review clean - Approved)
 Task 2: complete (commits 0ea8757..3b9eaa9, review clean after 1 fix loop - Approved)
   Fix loop: enum wire-range rejection test added (Open_RejectsOutOfRangeEnum) + writer doc reword.
   Minor (roll-up): test hardcodes record-interior offset +36 (could use offsetof(DbSymbolRecord, preset)); open() runs bounds sanity before header CRC (traced non-exploitable); DbPartitionRecord::flags write-0/never-read (future task).
+Task 3: complete (commits 5795c7a..e0391cc, review clean - Approved, opus; 0 Critical/Important)
+  Minor (roll-up): kSurfaceDbKeyMax doubles as symbol-canon truncation length in upsert/remove_symbol
+  (name says "partition-key chars"; alias kSurfaceDbSymbolMax would remove ambiguity); persist_locked
+  updated_ts_ns=0 "// now" semantics never asserted by a test; coverage gaps — empty-canonical-symbol
+  InvalidArgument, refresh() IoError/ParseError branches, partitions surviving symbol mutation with
+  non-empty partition set (last one blocked until Task 4 write_partition exists).
