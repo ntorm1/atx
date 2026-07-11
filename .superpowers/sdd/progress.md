@@ -497,7 +497,7 @@ Process notes:
 
 ## Tasks (MAG7 dispersion)
 
-- Task 1: Clock::from_surface_db (SurfaceDb-backed clock) — PENDING
+- Task 1: Clock::from_surface_db (SurfaceDb-backed clock) — COMPLETE
 - Task 2: CloseAtHorizon lifecycle + missing-name policy — PENDING
 - Task 3: make_dispersion_strangle_spec builder — PENDING
 - Task 4: run_report emitters — PENDING
@@ -511,3 +511,15 @@ Process notes:
 (none yet)
 
 ## Log (MAG7 dispersion)
+
+Baseline post-rebase onto 750a286: 99/99 targeted (Strategy|Backtest|Dispersion|SurfaceDb|SurfaceArchive|TearSheet) green at 6198a27.
+Reconfigured build with -DATX_BUILD_EXAMPLES=ON (needed for example targets in T5/T6/T8).
+
+Task 1: complete (commits 6198a27..5b53d1c, review clean — SPEC ✅ / Approved; 0 Critical/Important)
+  58/58 targeted (SurfaceDbBacktest|SurfaceDb|SurfaceArchive|Backtest) green; TDD RED→GREEN evidenced.
+  Deviation (accepted): brief snippet `p.key + kSurfaceDbPartitionExt` doesn't compile (string+string_view);
+  implementer used `p.key + std::string(kSurfaceDbPartitionExt)` — behaviorally identical.
+  Minor (roll-up): backtest.hpp:40-41 Clock class comment still describes only the corpus-manifest route;
+  mention from_surface_db.
+  NOTE: .superpowers/sdd/task-N-brief/report.md files are TRACKED with stale main-line content —
+  implementers overwrite per task; expect rewrite diffs, harmless.
