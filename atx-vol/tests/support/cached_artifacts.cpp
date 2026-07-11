@@ -1,10 +1,13 @@
 #include "cached_artifacts.hpp"
 
+#include "atx/vol/chain.hpp"
 #include "atx/vol/corpus.hpp"
+#include "atx/vol/pricer_fitter.hpp"
 #include "atx/vol/session.hpp"
 #include "atx/vol/surface_archive.hpp"
 #include "atx/vol/vol_curve.hpp"
 #include "opra_fixture.hpp"
+#include "spy_fit_fixture.hpp"
 
 #include <gtest/gtest.h>
 
@@ -121,6 +124,64 @@ fs::path cached_corpus(const char* key,
     fs::remove_all(tmp, ec);  // lost the publish race — the winner's dir is equivalent
   }
   return dir;
+}
+
+fs::path cached_hft_fit(const atx::vol::testkit::SpyFitFixture& fixture) {
+  const fs::path dir{"artifact-cache"};  // under the ctest CWD (build tree)
+  std::error_code ec;
+  fs::create_directories(dir, ec);
+
+  // Keyed on fixture.id (stable, unique per fixture) + kArchiveMajor, same
+  // invalidate-on-format-bump rationale as cached_spy_convex_dense.
+  const fs::path file = dir / ("hftfit_" + std::string(fixture.id) + "_v" +
+                               std::to_string(kArchiveMajor) + ".atxvsa");
+  if (fs::exists(file)) {
+    return file;
+  }
+
+  auto board = atx::vol::testkit::load_spy_fit_fixture(fixture);
+  if (!board.has_value()) {
+    return {};  // caller GTEST_SKIPs, same as today
+  }
+
+  // Verbatim fit recipe from SpyFitCorpus.HftColdStartPreserves98PctOnEveryAvailableSlice
+  // / SigmaInterpCorpus.RealBoard_WithinGates: Hft preset PricerFitter over the
+  // fixture's chain.
+  auto chain = OptionChain::from_frame(board->panel.frame, board->env());
+  if (!chain.has_value()) {
+    ADD_FAILURE() << chain.error().to_string();
+    return {};
+  }
+
+  PricerFitter fitter{PricerConfig{.preset = FitPreset::Hft}};
+  const Status fit = fitter.fit(*chain);
+  if (!fit.has_value()) {
+    ADD_FAILURE() << fit.error().to_string();
+    return {};
+  }
+
+  auto priced = fitter.surface()->session().to_priced_surface();
+  if (!priced.has_value()) {
+    ADD_FAILURE() << priced.error().to_string();
+    return {};
+  }
+
+  // Atomic publish, identical pattern to cached_spy_convex_dense.
+  std::mt19937_64 rng{std::random_device{}()};
+  const fs::path tmp =
+      dir / (file.filename().string() + "." + std::to_string(rng()) + ".tmp");
+  const std::array<SurfaceArchiveItem, 1> items{SurfaceArchiveItem{"SPY", &*priced}};
+  auto wrote = write_surface_archive_file(tmp.string(), items);
+  if (!wrote.has_value()) {
+    ADD_FAILURE() << wrote.error().to_string();
+    fs::remove(tmp, ec);
+    return {};
+  }
+  fs::rename(tmp, file, ec);
+  if (ec) {
+    fs::remove(tmp, ec);  // lost the race: someone else published — fine
+  }
+  return file;
 }
 
 }  // namespace atx::vol::test

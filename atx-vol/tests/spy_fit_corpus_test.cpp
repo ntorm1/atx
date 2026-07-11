@@ -16,12 +16,15 @@
 #include "atx/vol/calib.hpp"
 #include "atx/vol/chain.hpp"
 #include "atx/vol/pricer_fitter.hpp"
+#include "atx/vol/surface_archive.hpp"
 #include "atx/vol/universe.hpp"
+#include "support/cached_artifacts.hpp"
 #include "support/spy_fit_fixture.hpp"
 
 namespace {
 
 using namespace atx::vol;
+using atx::vol::test::cached_hft_fit;
 using atx::vol::testkit::kSpyFitFixtures;
 using atx::vol::testkit::load_spy_fit_fixture;
 using atx::vol::testkit::price_in_band;
@@ -66,28 +69,35 @@ TEST(SpyFitCorpus, HftColdStartPreserves98PctOnEveryAvailableSlice) {
 // Task 11 (P2.5) real-corpus accuracy gate: on each fitted SPY board, price every
 // (expiry, side) smile ladder through the σ-boundary interpolant and confirm it
 // stays within $0.001/share of the cold per-strike Andersen-Lake price. Reports
-// the ColdFallback rate. Uses the fitted model IV per strike (sess.iv) as the
+// the ColdFallback rate. Uses the fitted model IV per strike (surface.iv) as the
 // per-strike σ — the exact fitted-smile board the interpolant is designed for.
+//
+// Reloads each fixture's Hft-preset fit from the cached archive (see
+// cached_artifacts.hpp) instead of re-fitting live — HftColdStart... above
+// already fits these SAME ten boards live in the same suite run, and
+// spy_archive_roundtrip_test proves the reload reproduces the live session's
+// iv()/context() bit-for-bit. The cold per-strike Andersen-Lake parity sweep
+// below IS the assertion under test and stays fully live.
 TEST(SigmaInterpCorpus, RealBoard_WithinGates) {
   std::size_t loaded = 0, n_slices = 0, n_priced = 0, n_fallback = 0;
   double max_gap = 0.0;
   for (const auto &fixture : kSpyFitFixtures) {
     auto board = load_spy_fit_fixture(fixture);
-    if (!board.has_value()) {
+    const auto archive_path = cached_hft_fit(fixture);
+    if (!board.has_value() || archive_path.empty()) {
       continue;
     }
+    auto arch = SurfaceArchive::open_file(archive_path.string());
+    ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
+    auto recon = arch->map_symbol("SPY");
+    ASSERT_TRUE(recon.has_value()) << recon.error().to_string();
     ++loaded;
-    auto chain = OptionChain::from_frame(board->panel.frame, board->env());
-    ASSERT_TRUE(chain.has_value()) << chain.error().to_string();
-    PricerFitter fitter{PricerConfig{.preset = FitPreset::Hft}};
-    ASSERT_TRUE(fitter.fit(*chain).has_value());
-    const VolaSession &sess = fitter.surface()->session();
     const double S = board->spot();
     const double r = board->r;
     const Underlying &U = board->underlying();
     const CalibOpts copts;
 
-    for (const auto &c : sess.expiries()) {
+    for (const auto &c : recon->context()) {
       const double T = c.T;
       if (T < 0.019) {
         continue;
@@ -115,7 +125,7 @@ TEST(SigmaInterpCorpus, RealBoard_WithinGates) {
           if (o.side != side) {
             continue;
           }
-          const double miv = sess.iv(o.K, T);
+          const double miv = recon->iv(o.K, T);
           if (!std::isfinite(miv) || miv <= 0.0) {
             continue;
           }
