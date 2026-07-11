@@ -16,6 +16,7 @@ add_executable(atx-vol-tests
     correction_test.cpp
     support/oracle_pricer_pde.cpp
     support/oracle_pde_golden.cpp
+    support/cached_artifacts.cpp
     arb_test.cpp
     calib_test.cpp
     c8_test.cpp

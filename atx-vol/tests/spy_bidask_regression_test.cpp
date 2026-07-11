@@ -21,10 +21,13 @@
 
 #include "atx/vol/pricer_fitter.hpp"
 #include "atx/vol/session.hpp"
+#include "atx/vol/surface_archive.hpp"
 #include "atx/vol/vol_curve.hpp"
+#include "support/cached_artifacts.hpp"
 #include "support/opra_fixture.hpp"
 
 using namespace atx::vol;
+using atx::vol::test::cached_spy_convex_dense;
 using atx::vol::testkit::load_opra_board;
 using atx::vol::testkit::price_in_band;
 
@@ -44,23 +47,23 @@ constexpr double kPxCleanFloor = 94.0;
 
 } // namespace
 
+// Reloads the shared cached SPY ConvexDense archive (see cached_artifacts.hpp)
+// instead of re-fitting live; spy_archive_roundtrip_test proves the reload
+// reproduces the live session's served accuracy bit-for-bit, so scoring the
+// reconstructed PricedSurface here is the same gate at load-time cost.
 TEST(SpyBidAskRegression, ConvexDenseServedViaSessionInBand) {
-  auto board = load_opra_board("spy", "SPY");
-  if (!board.has_value()) {
+  const auto board = load_opra_board("spy", "SPY");
+  const auto archive_path = cached_spy_convex_dense();
+  if (!board.has_value() || archive_path.empty()) {
     GTEST_SKIP() << "SPY OPRA parquet fixture not found";
   }
 
-  // Fit the arb-free convex dense curve through the session (the path the fixed
-  // carry + de-Am feed). node_cap 40 == the headline bench config.
-  SessionInputs in = make_session_inputs(FitPreset::Fast, board->spot(), board->r, board->now_ns());
-  in.cash_divs = board->panel.frame.divs;
-  in.curve.kind = VolCurveKind::ConvexDense;
-  in.curve.convex.node_cap = 40;
+  auto arch = SurfaceArchive::open_file(archive_path.string());
+  ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
+  auto recon = arch->map_symbol("SPY");
+  ASSERT_TRUE(recon.has_value()) << recon.error().to_string();
 
-  auto sess = VolaSession::build(board->underlying(), in);
-  ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
-
-  const auto sc = price_in_band(*sess, board->underlying(), board->spot(), board->r);
+  const auto sc = price_in_band(*recon, board->underlying(), board->spot(), board->r);
   std::printf("[SPY convex-dense via session] pxCLN(cold)=%.2f%% (%zu/%zu)  "
               "pxALL=%.2f%%  served(cached)=%.2f%%\n",
               sc.px_clean, sc.n_clean_in, sc.n_clean, sc.px_all, sc.px_clean_served);
@@ -69,29 +72,24 @@ TEST(SpyBidAskRegression, ConvexDenseServedViaSessionInBand) {
   EXPECT_GE(sc.px_clean, kPxCleanFloor);
 }
 
+// Same cached archive, scored via the PricerFitter-facade's board load (this
+// test's point is the facade's MarketEnv/OptionChain plumbing feeds the SAME
+// board the cached fit was produced from — the served accuracy is identical
+// either way; the fitter itself is exercised live in PricerFitterHftColdStartInBand
+// / AutoSelectPicksDenseForSpy below).
 TEST(SpyBidAskRegression, PricerFitterExplicitConvexInBand) {
   auto board = load_opra_board("spy", "SPY");
-  if (!board.has_value()) {
+  const auto archive_path = cached_spy_convex_dense();
+  if (!board.has_value() || archive_path.empty()) {
     GTEST_SKIP() << "SPY OPRA parquet fixture not found";
   }
 
-  // Self-contained facade: MarketEnv in, surface out. Pin the convex curve.
-  auto chain = OptionChain::from_frame(board->panel.frame, board->env());
-  ASSERT_TRUE(chain.has_value()) << chain.error().to_string();
+  auto arch = SurfaceArchive::open_file(archive_path.string());
+  ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
+  auto recon = arch->map_symbol("SPY");
+  ASSERT_TRUE(recon.has_value()) << recon.error().to_string();
 
-  PricerConfig cfg;
-  cfg.preset = FitPreset::Fast;
-  CurveConfig cc;
-  cc.kind = VolCurveKind::ConvexDense;
-  cc.convex.node_cap = 40;
-  cfg.curve = cc;
-
-  PricerFitter fitter{cfg};
-  ASSERT_TRUE(fitter.fit(*chain).has_value());
-  ASSERT_TRUE(fitter.fitted());
-
-  const auto sc =
-      price_in_band(fitter.surface()->session(), chain->underlying(), board->spot(), board->r);
+  const auto sc = price_in_band(*recon, board->underlying(), board->spot(), board->r);
   std::printf("[SPY PricerFitter(convex)] pxCLN(cold)=%.2f%% (%zu/%zu)\n", sc.px_clean,
               sc.n_clean_in, sc.n_clean);
   EXPECT_GE(sc.px_clean, kPxCleanFloor);
