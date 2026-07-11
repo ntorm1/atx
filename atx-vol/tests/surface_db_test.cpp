@@ -49,29 +49,41 @@ SymbolFitConfig make_full_config() {
   c.curve.convex.node_cap = 56;
   c.curve.convex.max_iter = 123;
   c.curve.convex.loss = CalibLossKind::Interval;
-  auto& p = c.curve.parametric;
-  p.max_outer_iter = 5; p.max_inner_iter = 13;
-  p.tol_param = 2e-9; p.tol_residual = 3e-10;
+  auto &p = c.curve.parametric;
+  p.max_outer_iter = 5;
+  p.max_inner_iter = 13;
+  p.tol_param = 2e-9;
+  p.tol_residual = 3e-10;
   p.huber_k = 1.75;
-  p.min_vega_weight = 2e-6; p.max_spread_vol = 0.07; p.max_weight = 500.0;
-  p.max_obs_per_slice = 96; p.max_otm_shortcut_premium_spread_frac = 0.25;
+  p.min_vega_weight = 2e-6;
+  p.max_spread_vol = 0.07;
+  p.max_weight = 500.0;
+  p.max_obs_per_slice = 96;
+  p.max_otm_shortcut_premium_spread_frac = 0.25;
   p.prior_strength = 0.5;
   p.essvi_rho_mode = EssviRhoMode::Shared;
   p.optimization_level = OptimizationLevel::Risk;
-  p.essvi_fallback_rmse_threshold = 0.02; p.n_butterfly_grid = 128;
-  p.max_iter_quick_mark = 9; p.max_iter_trading = 36; p.max_iter_risk = 101;
-  p.max_iter_reference = 251; p.max_iter_cold_fast = 11;
+  p.essvi_fallback_rmse_threshold = 0.02;
+  p.n_butterfly_grid = 128;
+  p.max_iter_quick_mark = 9;
+  p.max_iter_trading = 36;
+  p.max_iter_risk = 101;
+  p.max_iter_reference = 251;
+  p.max_iter_cold_fast = 11;
   p.wing_floor_alpha = 0.05;
   p.lee_bound_project = false;
-  p.morozov_stop = true; p.morozov_tau = 1.3;
+  p.morozov_stop = true;
+  p.morozov_tau = 1.3;
   p.validate_no_arb = false;
   p.residual_disable = false;
   p.residual_basis_kind = ResidualBasisKind::C2Bspline;
-  p.residual_n_basis_terms = 8; p.residual_ridge_factor = 2e-3;
+  p.residual_n_basis_terms = 8;
+  p.residual_ridge_factor = 2e-3;
   p.loss_kind = CalibLossKind::Interval;
   p.anchor_kind = CalibAnchorKind::Ask;
   p.essvi_asymmetric_rho = true;
-  p.min_obs_per_slice = 6; p.max_post_fit_sigma = 3.0;
+  p.min_obs_per_slice = 6;
+  p.max_post_fit_sigma = 3.0;
   p.max_spread_to_mid_pct = 0.4;
   c.al_override = true;
   c.al = AlOpts{9, 20, 6, 1e-9};
@@ -81,10 +93,14 @@ SymbolFitConfig make_full_config() {
   c.score_parity = false;
   c.enforce_calendar_floor = false;
   c.use_deam_cache_for_fit = true;
+  c.surface_policy.quality_mode = FitQualityMode::Accuracy;
+  c.surface_policy.outputs = SurfaceOutputs::Risk;
+  c.surface_policy.risk_admission = RiskAdmission::Required;
+  c.surface_policy.fallback = SurfaceFallback::None;
   return c;
 }
 
-void expect_config_eq(const SymbolFitConfig& a, const SymbolFitConfig& b) {
+void expect_config_eq(const SymbolFitConfig &a, const SymbolFitConfig &b) {
   EXPECT_EQ(a.enabled, b.enabled);
   EXPECT_EQ(a.preset, b.preset);
   EXPECT_EQ(a.pin_curve, b.pin_curve);
@@ -94,7 +110,8 @@ void expect_config_eq(const SymbolFitConfig& a, const SymbolFitConfig& b) {
   EXPECT_EQ(a.curve.convex.node_cap, b.curve.convex.node_cap);
   EXPECT_EQ(a.curve.convex.max_iter, b.curve.convex.max_iter);
   EXPECT_EQ(a.curve.convex.loss, b.curve.convex.loss);
-  const auto& x = a.curve.parametric; const auto& y = b.curve.parametric;
+  const auto &x = a.curve.parametric;
+  const auto &y = b.curve.parametric;
   EXPECT_EQ(x.max_outer_iter, y.max_outer_iter);
   EXPECT_EQ(x.max_inner_iter, y.max_inner_iter);
   EXPECT_EQ(x.tol_param, y.tol_param);
@@ -141,7 +158,13 @@ void expect_config_eq(const SymbolFitConfig& a, const SymbolFitConfig& b) {
   EXPECT_EQ(a.score_parity, b.score_parity);
   EXPECT_EQ(a.enforce_calendar_floor, b.enforce_calendar_floor);
   EXPECT_EQ(a.use_deam_cache_for_fit, b.use_deam_cache_for_fit);
+  EXPECT_EQ(a.surface_policy.quality_mode, b.surface_policy.quality_mode);
+  EXPECT_EQ(a.surface_policy.outputs, b.surface_policy.outputs);
+  EXPECT_EQ(a.surface_policy.risk_admission, b.surface_policy.risk_admission);
+  EXPECT_EQ(a.surface_policy.fallback, b.surface_policy.fallback);
 }
+
+void restamp_crcs(std::vector<std::byte> &bytes);
 
 // Fresh per-test temp dir under the system temp root, self-cleaning at start
 // so a prior crashed run doesn't leak stale manifest/partition files into
@@ -254,7 +277,7 @@ constexpr double kArchR = 0.043;
       w[static_cast<std::size_t>(j)] = (0.20 * 0.20 + 0.01 * x + 0.02 * x * x) * T;
     }
     cs.push(std::make_unique<LinearVarianceCurve>(T, F, std::exp(-kArchR * T), std::move(k),
-                                                   std::move(w)));
+                                                  std::move(w)));
     ctx.push_back(SliceContext{T, F, 0.0, 0.02, static_cast<std::size_t>(nodes), 2});
   }
   auto ps = PricedSurface::create(std::move(cs), std::move(ctx), make_pricing(uid));
@@ -290,9 +313,16 @@ void expect_theo_bit_identical(const PricedSurface &a, const PricedSurface &b) {
 
 TEST(SurfaceDbManifest, RoundTrip_FullConfig_EveryFieldPreserved) {
   const auto cfg = make_full_config();
-  const std::vector<DbSymbolEntry> syms{{"aapl", cfg}, {"SPY", SymbolFitConfig{}}};
-  const std::vector<DbPartitionInfo> parts{
-      {"2026-07-10", 123, 456789, 1720569600000000000LL}};
+  SurfaceProvenance provenance;
+  provenance.purpose = SurfacePurpose::Risk;
+  provenance.quality_mode = FitQualityMode::Accuracy;
+  provenance.state = SurfaceState::Degraded;
+  provenance.validation.failures = ValidationFailure::Calendar;
+  provenance.validation.validation_id = 0xA11CE55u;
+  provenance.served_generation = 17;
+  const std::vector<DbSymbolEntry> syms{{"aapl", cfg, provenance},
+                                        {"SPY", SymbolFitConfig{}}};
+  const std::vector<DbPartitionInfo> parts{{"2026-07-10", 123, 456789, 1720569600000000000LL}};
   auto bytes = write_db_manifest(syms, parts, {.generation = 7});
   ASSERT_TRUE(bytes.has_value());
   auto m = DbManifest::open(std::move(*bytes));
@@ -301,13 +331,25 @@ TEST(SurfaceDbManifest, RoundTrip_FullConfig_EveryFieldPreserved) {
   ASSERT_EQ(m->symbols().size(), 2u);
   ASSERT_EQ(m->partitions().size(), 1u);
   // canonical sort: AAPL < SPY
-  auto got = m->find_symbol("AaPl");   // case-insensitive
+  auto got = m->find_symbol("AaPl"); // case-insensitive
   ASSERT_TRUE(got.has_value());
   expect_config_eq(*got, cfg);
+  auto got_provenance = m->find_symbol_provenance("aapl");
+  ASSERT_TRUE(got_provenance.has_value());
+  ASSERT_TRUE(got_provenance->has_value());
+  EXPECT_EQ((*got_provenance)->purpose, provenance.purpose);
+  EXPECT_EQ((*got_provenance)->quality_mode, provenance.quality_mode);
+  EXPECT_EQ((*got_provenance)->state, provenance.state);
+  EXPECT_EQ((*got_provenance)->validation.failures,
+            provenance.validation.failures);
+  EXPECT_EQ((*got_provenance)->validation.validation_id,
+            provenance.validation.validation_id);
+  EXPECT_EQ((*got_provenance)->served_generation,
+            provenance.served_generation);
   auto dflt = m->find_symbol("spy");
   ASSERT_TRUE(dflt.has_value());
   expect_config_eq(*dflt, SymbolFitConfig{});
-  const auto* p = m->find_partition("2026-07-10");
+  const auto *p = m->find_partition("2026-07-10");
   ASSERT_NE(p, nullptr);
   EXPECT_EQ(p->surface_count, 123u);
   EXPECT_EQ(p->file_size, 456789u);
@@ -326,6 +368,34 @@ TEST(SurfaceDbManifest, RoundTrip_Empty) {
   EXPECT_EQ(m->header().partition_count, 0u);
 }
 
+TEST(SurfaceDbManifest, LegacyV1ZeroReservedPolicyUsesSafeV2Defaults) {
+  SymbolFitConfig configured;
+  configured.surface_policy.quality_mode = FitQualityMode::Accuracy;
+  configured.surface_policy.outputs = SurfaceOutputs::Risk;
+  configured.surface_policy.fallback = SurfaceFallback::None;
+  auto bytes = write_db_manifest({{DbSymbolEntry{"SPY", configured}}}, {});
+  ASSERT_TRUE(bytes.has_value());
+
+  DbManifestHeader header{};
+  std::memcpy(&header, bytes->data(), sizeof header);
+  const std::size_t reserved_offset =
+      static_cast<std::size_t>(header.symbols_offset) + offsetof(DbSymbolRecord, reserved);
+  std::memset(bytes->data() + reserved_offset, 0, 32);
+  restamp_crcs(*bytes);
+
+  auto manifest = DbManifest::open(std::move(*bytes));
+  ASSERT_TRUE(manifest.has_value());
+  auto legacy = manifest->find_symbol("SPY");
+  ASSERT_TRUE(legacy.has_value());
+  EXPECT_EQ(legacy->surface_policy.quality_mode, FitQualityMode::Balanced);
+  EXPECT_EQ(legacy->surface_policy.outputs, SurfaceOutputs::MarketMarkAndRisk);
+  EXPECT_EQ(legacy->surface_policy.risk_admission, RiskAdmission::Required);
+  EXPECT_EQ(legacy->surface_policy.fallback, SurfaceFallback::LastKnownGood);
+  auto legacy_provenance = manifest->find_symbol_provenance("SPY");
+  ASSERT_TRUE(legacy_provenance.has_value());
+  EXPECT_FALSE(legacy_provenance->has_value());
+}
+
 TEST(SurfaceDbManifest, Write_RejectsDuplicateAndInvalid) {
   const std::vector<DbSymbolEntry> dup{{"AAPL", {}}, {"aapl", {}}};
   EXPECT_EQ(write_db_manifest(dup, {}).error().code(), ErrorCode::AlreadyExists);
@@ -335,25 +405,34 @@ TEST(SurfaceDbManifest, Write_RejectsDuplicateAndInvalid) {
   EXPECT_EQ(write_db_manifest({}, bad_key).error().code(), ErrorCode::InvalidArgument);
   const std::vector<DbPartitionInfo> dotdot{{"..", 0, 0, 0}};
   EXPECT_EQ(write_db_manifest({}, dotdot).error().code(), ErrorCode::InvalidArgument);
+  SymbolFitConfig unsafe_risk;
+  unsafe_risk.surface_policy.outputs = SurfaceOutputs::Risk;
+  unsafe_risk.surface_policy.risk_admission = RiskAdmission::NotApplicable;
+  EXPECT_EQ(write_db_manifest({{DbSymbolEntry{"SPY", unsafe_risk}}}, {}).error().code(),
+            ErrorCode::InvalidArgument);
 }
 
 TEST(SurfaceDbManifest, Open_RejectsCorruption) {
   auto bytes = write_db_manifest({{DbSymbolEntry{"AAPL", {}}}}, {});
   ASSERT_TRUE(bytes.has_value());
   {
-    auto bad = *bytes; bad[0] ^= std::byte{0xFF};  // magic
+    auto bad = *bytes;
+    bad[0] ^= std::byte{0xFF}; // magic
     EXPECT_EQ(DbManifest::open(std::move(bad)).error().code(), ErrorCode::ParseError);
   }
   {
-    auto bad = *bytes; bad[100] ^= std::byte{0x01};  // header reserved => header CRC
+    auto bad = *bytes;
+    bad[100] ^= std::byte{0x01}; // header reserved => header CRC
     EXPECT_EQ(DbManifest::open(std::move(bad)).error().code(), ErrorCode::ParseError);
   }
   {
-    auto bad = *bytes; bad[200] ^= std::byte{0x01};  // symbol record => payload CRC
+    auto bad = *bytes;
+    bad[200] ^= std::byte{0x01}; // symbol record => payload CRC
     EXPECT_EQ(DbManifest::open(std::move(bad)).error().code(), ErrorCode::ParseError);
   }
   {
-    auto bad = *bytes; bad.resize(bad.size() - 1);   // truncation
+    auto bad = *bytes;
+    bad.resize(bad.size() - 1); // truncation
     EXPECT_EQ(DbManifest::open(std::move(bad)).error().code(), ErrorCode::ParseError);
   }
 }
@@ -363,14 +442,13 @@ TEST(SurfaceDbManifest, Open_RejectsCorruption) {
 // must then be what rejects. Mirrors the writer's discipline: payload CRC over
 // [symbols_offset, end), then header CRC over the header with its own field
 // zeroed, computed last (so it covers the fresh payload_crc32c).
-void restamp_crcs(std::vector<std::byte>& bytes) {
+void restamp_crcs(std::vector<std::byte> &bytes) {
   DbManifestHeader h{};
   std::memcpy(&h, bytes.data(), sizeof h);
   const auto symbols_offset = static_cast<std::size_t>(h.symbols_offset);
   const std::uint32_t payload =
       detail::crc32c(bytes.data() + symbols_offset, bytes.size() - symbols_offset);
-  std::memcpy(bytes.data() + offsetof(DbManifestHeader, payload_crc32c), &payload,
-              sizeof payload);
+  std::memcpy(bytes.data() + offsetof(DbManifestHeader, payload_crc32c), &payload, sizeof payload);
   const std::uint32_t zero = 0;
   std::memcpy(bytes.data() + offsetof(DbManifestHeader, header_crc32c), &zero, sizeof zero);
   const std::uint32_t hcrc = detail::crc32c(bytes.data(), sizeof(DbManifestHeader));
@@ -396,7 +474,7 @@ TEST(SurfaceDbManifest, Open_RejectsOutOfRangeEnum) {
   const auto preset_off = static_cast<std::size_t>(h.symbols_offset) + 36;
   for (const std::size_t off : {preset_off, preset_off + 1}) {
     auto bad = *bytes;
-    bad[off] = std::byte{0xFF};  // outside every enum's wire range
+    bad[off] = std::byte{0xFF}; // outside every enum's wire range
     restamp_crcs(bad);
     EXPECT_EQ(DbManifest::open(std::move(bad)).error().code(), ErrorCode::ParseError)
         << "enum byte at offset " << off;
@@ -407,25 +485,37 @@ TEST(SurfaceDbManifest, Open_RejectsOutOfRangeEnum) {
 // refresh() ─────────────────────────────────────────────────────────────
 
 TEST(SurfaceDb, CreateOpenUpsertReopen_ConfigPersists) {
-  const auto root = test_root("create_open");     // helper: fresh temp dir
+  const auto root = test_root("create_open"); // helper: fresh temp dir
   auto db = SurfaceDb::create(root.string());
   ASSERT_TRUE(db.has_value());
   EXPECT_EQ(db->generation(), 1u);
   EXPECT_TRUE(db->symbols().empty());
 
   const auto cfg = make_full_config();
-  ASSERT_TRUE(db->upsert_symbol("aapl", cfg).has_value());
+  SurfaceProvenance provenance;
+  provenance.purpose = SurfacePurpose::Risk;
+  provenance.quality_mode = FitQualityMode::Accuracy;
+  provenance.state = SurfaceState::Degraded;
+  provenance.validation.failures = ValidationFailure::Calendar;
+  provenance.validation.validation_id = 71211;
+  provenance.served_generation = 6;
+  ASSERT_TRUE(db->upsert_symbol("aapl", cfg, provenance).has_value());
   EXPECT_EQ(db->generation(), 2u);
   ASSERT_TRUE(db->upsert_symbol("SPY", SymbolFitConfig{}).has_value());
   EXPECT_EQ(db->generation(), 3u);
 
-  auto db2 = SurfaceDb::open(root.string());      // fresh process simulation
+  auto db2 = SurfaceDb::open(root.string()); // fresh process simulation
   ASSERT_TRUE(db2.has_value());
   EXPECT_EQ(db2->generation(), 3u);
   EXPECT_EQ(db2->symbols(), (std::vector<std::string>{"AAPL", "SPY"}));
   auto got = db2->symbol_config("AAPL");
   ASSERT_TRUE(got.has_value());
   expect_config_eq(*got, cfg);
+  auto got_provenance = db2->surface_provenance("AAPL");
+  ASSERT_TRUE(got_provenance.has_value());
+  ASSERT_TRUE(got_provenance->has_value());
+  EXPECT_EQ((*got_provenance)->validation.validation_id, 71211u);
+  EXPECT_EQ((*got_provenance)->served_generation, 6u);
 
   ASSERT_TRUE(db2->remove_symbol("aapl").has_value());
   EXPECT_EQ(db2->symbol_config("AAPL").error().code(), ErrorCode::NotFound);
@@ -445,11 +535,11 @@ TEST(SurfaceDb, UpsertBadEnum_FailsCleanly_DbStillOpens) {
   EXPECT_EQ(db->generation(), 1u);
 
   SymbolFitConfig bad;
-  bad.preset = static_cast<FitPreset>(250);  // outside every enum's wire range
+  bad.preset = static_cast<FitPreset>(250); // outside every enum's wire range
   const auto result = db->upsert_symbol("AAPL", bad);
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
-  EXPECT_EQ(db->generation(), 1u);   // rejected mutation must not advance generation
+  EXPECT_EQ(db->generation(), 1u); // rejected mutation must not advance generation
   EXPECT_TRUE(db->symbols().empty());
 
   // A subsequent valid upsert on the same handle still succeeds:
@@ -512,11 +602,13 @@ TEST(SurfaceDb, ConcurrentReaders_DuringUpserts_AreSafe) {
     });
   }
   for (int i = 0; i < 50; ++i) {
-    SymbolFitConfig c; c.band_k = 1.0 + 0.01 * i;
+    SymbolFitConfig c;
+    c.band_k = 1.0 + 0.01 * i;
     ASSERT_TRUE(db->upsert_symbol("SPY", c).has_value());
   }
   stop.store(true);
-  for (auto& th : readers) th.join();
+  for (auto &th : readers)
+    th.join();
   auto final_cfg = db->symbol_config("SPY");
   ASSERT_TRUE(final_cfg.has_value());
   EXPECT_DOUBLE_EQ(final_cfg->band_k, 1.0 + 0.01 * 49);
@@ -566,8 +658,7 @@ TEST(SurfaceDbPartition, MixedKinds_ConvexDenseAndLinearVariance_RoundTripBitIde
   const auto sc = make_convex(/*uid=*/11, /*n_slices=*/2, /*n_nodes=*/40);
   const auto sl = make_linear(/*uid=*/12, /*n_slices=*/2, /*n_nodes=*/17);
   const auto se = make_essvi(/*uid=*/13, /*n_slices=*/2);
-  const std::vector<SurfaceArchiveItem> items{
-      {"CVX", &sc}, {"LIN", &sl}, {"ESS", &se}};
+  const std::vector<SurfaceArchiveItem> items{{"CVX", &sc}, {"LIN", &sl}, {"ESS", &se}};
   ASSERT_TRUE(db->write_partition("2026-07-10", items).has_value());
   auto db2 = SurfaceDb::open(root.string());
   ASSERT_TRUE(db2.has_value());
@@ -630,7 +721,7 @@ TEST(SurfaceDbPartition, RewriteReplaces_DropRemoves) {
   const std::vector<SurfaceArchiveItem> one{{"AAPL", &s1}};
   const std::vector<SurfaceArchiveItem> two{{"AAPL", &s1}, {"MSFT", &s2}};
   ASSERT_TRUE(db->write_partition("2026-07-10", one).has_value());
-  ASSERT_TRUE(db->write_partition("2026-07-10", two).has_value());  // rewrite
+  ASSERT_TRUE(db->write_partition("2026-07-10", two).has_value()); // rewrite
   EXPECT_EQ(db->partitions().size(), 1u);
   EXPECT_EQ(db->partitions()[0].surface_count, 2u);
 
@@ -639,8 +730,8 @@ TEST(SurfaceDbPartition, RewriteReplaces_DropRemoves) {
   EXPECT_EQ(db->open_partition("2026-07-10").error().code(), ErrorCode::NotFound);
   EXPECT_EQ(db->drop_partition("2026-07-10").error().code(), ErrorCode::NotFound);
   // file physically gone:
-  EXPECT_FALSE(std::filesystem::exists(
-      std::filesystem::path(root) / "partitions" / "2026-07-10.atxvsa"));
+  EXPECT_FALSE(
+      std::filesystem::exists(std::filesystem::path(root) / "partitions" / "2026-07-10.atxvsa"));
   std::filesystem::remove_all(root);
 }
 
@@ -650,7 +741,8 @@ TEST(SurfaceDbPartition, ManySymbols_ManyPartitions_SingleSurfaceLookup) {
   ASSERT_TRUE(db.has_value());
   std::vector<PricedSurface> pool;
   pool.reserve(64);
-  for (int i = 0; i < 64; ++i) pool.push_back(make_essvi(100 + i, 2));
+  for (int i = 0; i < 64; ++i)
+    pool.push_back(make_essvi(100 + i, 2));
   for (int p = 0; p < 4; ++p) {
     // NOTE: symbol strings must outlive the write_partition call --
     // SurfaceArchiveItem::symbol is a non-owning string_view, and a
@@ -683,10 +775,8 @@ TEST(SurfaceDbPartition, BadKey_Rejected) {
   ASSERT_TRUE(db.has_value());
   const auto s1 = make_essvi(1, 2);
   const std::vector<SurfaceArchiveItem> items{{"AAPL", &s1}};
-  for (const char* bad : {"", "a/b", "a\\b", "..", "x..y",
-                          "0123456789012345678901234567890123"}) {
-    EXPECT_EQ(db->write_partition(bad, items).error().code(),
-              ErrorCode::InvalidArgument) << bad;
+  for (const char *bad : {"", "a/b", "a\\b", "..", "x..y", "0123456789012345678901234567890123"}) {
+    EXPECT_EQ(db->write_partition(bad, items).error().code(), ErrorCode::InvalidArgument) << bad;
   }
   std::filesystem::remove_all(root);
 }
@@ -694,9 +784,11 @@ TEST(SurfaceDbPartition, BadKey_Rejected) {
 // ── Fitting-pipeline binding ─────────────────────────────────────────────────
 
 TEST(SurfaceDbApply, PinnedConfig_OverridesPreset) {
-  auto cfg = make_full_config();          // pin_curve=true, al_override=true, Hft
+  auto cfg = make_full_config(); // pin_curve=true, al_override=true, Hft
   SessionInputs in;
-  in.S = 100.0; in.r = 0.04; in.now_ts_ns = 42;   // market snapshot
+  in.S = 100.0;
+  in.r = 0.04;
+  in.now_ts_ns = 42; // market snapshot
   apply_symbol_config(cfg, in);
   // market snapshot untouched:
   EXPECT_DOUBLE_EQ(in.S, 100.0);
@@ -740,6 +832,14 @@ TEST(SurfaceDbApply, UnpinnedConfig_PresetCurveStands) {
   }
 }
 
+TEST(SurfaceDbApply, LegacyHftPresetMapsToMarketMarkNotRisk) {
+  const SymbolFitConfig cfg = symbol_config_from_preset(FitPreset::Hft);
+  EXPECT_EQ(cfg.surface_policy.quality_mode, FitQualityMode::Latency);
+  EXPECT_EQ(cfg.surface_policy.outputs, SurfaceOutputs::MarketMark);
+  EXPECT_EQ(cfg.surface_policy.risk_admission, RiskAdmission::NotApplicable);
+  EXPECT_EQ(cfg.surface_policy.fallback, SurfaceFallback::None);
+}
+
 TEST(SurfaceDbEndToEnd, ConfigureStoreReloadServe) {
   const auto root = test_root("e2e");
   // Session 1: operator configures the universe + pipeline stores fits.
@@ -759,7 +859,15 @@ TEST(SurfaceDbEndToEnd, ConfigureStoreReloadServe) {
     // variable-length-node kind end-to-end), AAPL as Essvi.
     const auto s1 = make_convex(1, 3, 40);
     const auto s2 = make_essvi(2, 3);
-    const std::vector<SurfaceArchiveItem> items{{"SPY", &s1}, {"AAPL", &s2}};
+    SurfaceProvenance spy_provenance;
+    spy_provenance.purpose = SurfacePurpose::Risk;
+    spy_provenance.quality_mode = FitQualityMode::Balanced;
+    spy_provenance.state = SurfaceState::Healthy;
+    spy_provenance.validation.validation_id = 20260711;
+    spy_provenance.source_generation = 9;
+    spy_provenance.served_generation = 9;
+    const std::vector<SurfaceArchiveItem> items{
+        {"SPY", &s1, spy_provenance}, {"AAPL", &s2}};
     ASSERT_TRUE(db->write_partition("2026-07-11", items).has_value());
   }
   // Session 2 (fresh open — the fitting pipeline at startup):
@@ -768,14 +876,24 @@ TEST(SurfaceDbEndToEnd, ConfigureStoreReloadServe) {
   auto spy_cfg = db->symbol_config("SPY");
   ASSERT_TRUE(spy_cfg.has_value());
   EXPECT_TRUE(spy_cfg->enabled);
+  auto manifest_provenance = db->surface_provenance("SPY");
+  ASSERT_TRUE(manifest_provenance.has_value());
+  ASSERT_TRUE(manifest_provenance->has_value());
+  EXPECT_EQ((*manifest_provenance)->validation.validation_id, 20260711u);
+  auto partition = db->open_partition("2026-07-11");
+  ASSERT_TRUE(partition.has_value());
+  auto archive_provenance = partition->provenance("SPY");
+  ASSERT_TRUE(archive_provenance.has_value());
+  EXPECT_EQ(archive_provenance->source_generation, 9u);
   SessionInputs in;
-  in.S = 500.0; in.r = 0.05;
+  in.S = 500.0;
+  in.r = 0.05;
   apply_symbol_config(*spy_cfg, in);
   EXPECT_EQ(in.curve.kind, VolCurveKind::ConvexDense);
   EXPECT_EQ(in.curve.convex.node_cap, 48);
   auto aapl_cfg = db->symbol_config("AAPL");
   ASSERT_TRUE(aapl_cfg.has_value());
-  EXPECT_FALSE(aapl_cfg->enabled);      // pipeline skips disabled names
+  EXPECT_FALSE(aapl_cfg->enabled); // pipeline skips disabled names
   // Real-time adjustment: another handle flips node_cap; pipeline refreshes.
   {
     auto ops = SurfaceDb::open(root.string());
@@ -786,10 +904,14 @@ TEST(SurfaceDbEndToEnd, ConfigureStoreReloadServe) {
   }
   ASSERT_TRUE(db->refresh().has_value());
   EXPECT_EQ(db->symbol_config("SPY")->curve.convex.node_cap, 64);
+  auto preserved_provenance = db->surface_provenance("SPY");
+  ASSERT_TRUE(preserved_provenance.has_value());
+  ASSERT_TRUE(preserved_provenance->has_value());
+  EXPECT_EQ((*preserved_provenance)->validation.validation_id, 20260711u);
   // Stored surfaces still serve:
   ASSERT_TRUE(db->load_surface("2026-07-11", "SPY").has_value());
   std::filesystem::remove_all(root);
 }
 
-}  // namespace
-}  // namespace atx::vol
+} // namespace
+} // namespace atx::vol
