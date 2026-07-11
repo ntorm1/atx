@@ -27,7 +27,7 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/american.hpp"         // al_fast_opts, AmericanMethod
+#include "atx/vol/american.hpp" // al_fast_opts, AmericanMethod
 #include "atx/vol/backtest.hpp"
 #include "atx/vol/corpus.hpp"           // CorpusManifest, CorpusEntry, CorpusFitStatus
 #include "atx/vol/portfolio_pricer.hpp" // OptionContract
@@ -56,7 +56,7 @@ constexpr std::uint32_t kUid = 7;
   return ba == bb;
 }
 
-[[nodiscard]] fs::path fresh_dir(const char* tag) {
+[[nodiscard]] fs::path fresh_dir(const char *tag) {
   const fs::path dir = fs::temp_directory_path() / (std::string("atx-backtest-") + tag);
   std::error_code ec;
   fs::remove_all(dir, ec);
@@ -100,8 +100,8 @@ constexpr std::uint32_t kUid = 7;
 }
 
 // Write one surface as this date's archive; return its path (creating `dir`).
-[[nodiscard]] std::string write_one(const fs::path& dir, const std::string& date,
-                                    const std::string& symbol, const PricedSurface& s) {
+[[nodiscard]] std::string write_one(const fs::path &dir, const std::string &date,
+                                    const std::string &symbol, const PricedSurface &s) {
   std::error_code ec;
   fs::create_directories(dir, ec);
   const std::string path = (dir / (date + ".atxvsa")).string();
@@ -113,10 +113,11 @@ constexpr std::uint32_t kUid = 7;
 }
 
 // Hand-build an Ok-only manifest over (date, archive_path) rows.
-[[nodiscard]] CorpusManifest make_manifest(
-    const std::vector<std::pair<std::string, std::string>>& date_paths, const std::string& symbol) {
+[[nodiscard]] CorpusManifest
+make_manifest(const std::vector<std::pair<std::string, std::string>> &date_paths,
+              const std::string &symbol) {
   CorpusManifest m;
-  for (const auto& [date, path] : date_paths) {
+  for (const auto &[date, path] : date_paths) {
     m.dates.push_back(date);
     CorpusEntry e;
     e.date = date;
@@ -129,7 +130,7 @@ constexpr std::uint32_t kUid = 7;
 }
 
 // An N-date corpus: spot drifts +0.4%/day, now advances 1 day, vol drifts up.
-[[nodiscard]] CorpusManifest make_evolving_corpus(const fs::path& dir, const std::string& symbol,
+[[nodiscard]] CorpusManifest make_evolving_corpus(const fs::path &dir, const std::string &symbol,
                                                   int n_dates) {
   std::vector<std::pair<std::string, std::string>> dp;
   for (int d = 0; d < n_dates; ++d) {
@@ -148,34 +149,45 @@ constexpr std::uint32_t kUid = 7;
 // A two-lot book (long call, short put) that survives past `expiry`.
 [[nodiscard]] PortfolioState survivor_book(std::int64_t expiry) {
   PortfolioState st;
-  st.lots.push_back(Lot{1, OptionContract{kUid, 100.0, 0.0, Side::Call}, +5.0, 100.0, expiry, 0, 0.0});
-  st.lots.push_back(Lot{2, OptionContract{kUid, 105.0, 0.0, Side::Put}, -3.0, 100.0, expiry, 0, 0.0});
+  st.lots.push_back(
+      Lot{1, OptionContract{kUid, 100.0, 0.0, Side::Call}, +5.0, 100.0, expiry, 0, 0.0});
+  st.lots.push_back(
+      Lot{2, OptionContract{kUid, 105.0, 0.0, Side::Put}, -3.0, 100.0, expiry, 0, 0.0});
   return st;
 }
 
-void expect_result_bit_identical(const BacktestResult& a, const BacktestResult& b) {
+void expect_result_bit_identical(const BacktestResult &a, const BacktestResult &b) {
   ASSERT_EQ(a.size(), b.size());
-  const std::vector<std::pair<const std::vector<double>*, const std::vector<double>*>> cols = {
-      {&a.pnl_total, &b.pnl_total},   {&a.pnl_delta, &b.pnl_delta},
-      {&a.pnl_gamma, &b.pnl_gamma},   {&a.pnl_vega, &b.pnl_vega},
-      {&a.pnl_vanna, &b.pnl_vanna},   {&a.pnl_volga, &b.pnl_volga},
-      {&a.pnl_theta, &b.pnl_theta},   {&a.pnl_rho, &b.pnl_rho},
-      {&a.pnl_charm, &b.pnl_charm},   {&a.pnl_unexplained, &b.pnl_unexplained},
-      {&a.pnl_settlement, &b.pnl_settlement}, {&a.nav, &b.nav},
-      {&a.gross_delta, &b.gross_delta}, {&a.gross_gamma, &b.gross_gamma},
-      {&a.gross_vega, &b.gross_vega}, {&a.gross_theta, &b.gross_theta},
-      {&a.n_open_lots, &b.n_open_lots}, {&a.n_unpriced_lots, &b.n_unpriced_lots},
+  const std::vector<std::pair<const std::vector<double> *, const std::vector<double> *>> cols = {
+      {&a.pnl_total, &b.pnl_total},
+      {&a.pnl_delta, &b.pnl_delta},
+      {&a.pnl_gamma, &b.pnl_gamma},
+      {&a.pnl_vega, &b.pnl_vega},
+      {&a.pnl_vanna, &b.pnl_vanna},
+      {&a.pnl_volga, &b.pnl_volga},
+      {&a.pnl_theta, &b.pnl_theta},
+      {&a.pnl_rho, &b.pnl_rho},
+      {&a.pnl_charm, &b.pnl_charm},
+      {&a.pnl_unexplained, &b.pnl_unexplained},
+      {&a.pnl_settlement, &b.pnl_settlement},
+      {&a.nav, &b.nav},
+      {&a.gross_delta, &b.gross_delta},
+      {&a.gross_gamma, &b.gross_gamma},
+      {&a.gross_vega, &b.gross_vega},
+      {&a.gross_theta, &b.gross_theta},
+      {&a.n_open_lots, &b.n_open_lots},
+      {&a.n_unpriced_lots, &b.n_unpriced_lots},
       {&a.n_unpriced_greeks, &b.n_unpriced_greeks}};
   for (std::size_t i = 0; i < a.size(); ++i) {
     EXPECT_EQ(a.date[i], b.date[i]) << i;
     EXPECT_EQ(a.ts_ns[i], b.ts_ns[i]) << i;
-    for (const auto& [va, vb] : cols) {
+    for (const auto &[va, vb] : cols) {
       EXPECT_TRUE(bits_equal((*va)[i], (*vb)[i])) << i;
     }
   }
 }
 
-}  // namespace
+} // namespace
 
 // ── 1. Load-once ────────────────────────────────────────────────────────────
 TEST(Backtest, LoadOnce) {
@@ -186,26 +198,45 @@ TEST(Backtest, LoadOnce) {
   ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
   ASSERT_EQ(clock->size(), static_cast<std::size_t>(n));
 
-  const std::int64_t expiry = kBaseNow + 120 * kDayNs;  // survives every date
+  const std::int64_t expiry = kBaseNow + 120 * kDayNs; // survives every date
   MarketSnapshot::reset_open_count();
   auto res = run_backtest(*clock, survivor_book(expiry));
   ASSERT_TRUE(res.has_value()) << res.error().to_string();
   EXPECT_EQ(MarketSnapshot::open_count(), static_cast<std::uint64_t>(n));
-  EXPECT_EQ(res->size(), static_cast<std::size_t>(n));  // inception + (n-1) steps
+  EXPECT_EQ(res->size(), static_cast<std::size_t>(n)); // inception + (n-1) steps
+}
+
+TEST(Backtest, SnapshotCacheCoalescesPrefetchAndLoads) {
+  const fs::path dir = fresh_dir("snapshot-cache");
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  const std::string path = write_one(dir, "2026-08-01", "SPX", surface);
+
+  MarketSnapshot::reset_open_count();
+  SnapshotCache cache;
+  cache.prefetch(path);
+  auto first = cache.load(path);
+  auto second = cache.load(path);
+  ASSERT_TRUE(first.has_value()) << first.error().to_string();
+  ASSERT_TRUE(second.has_value()) << second.error().to_string();
+  EXPECT_EQ(first->get(), second->get());
+  EXPECT_EQ(MarketSnapshot::open_count(), 1u);
+  const SnapshotCacheStats stats = cache.stats();
+  EXPECT_EQ(stats.loads, 1u);
+  EXPECT_EQ(stats.prefetches, 1u);
+  EXPECT_GE(stats.hits, 2u);
 }
 
 // ── 2a. Aging: spot-only step reconstructs to a tiny residual ───────────────
 TEST(Backtest, AgingSpotOnly) {
   const fs::path dir = fresh_dir("spot");
-  const std::int64_t now = kBaseNow;  // identical valuation time both dates
+  const std::int64_t now = kBaseNow; // identical valuation time both dates
   const double S0 = 100.0;
-  const double ratio = 1.004;  // bump spot AND forward by the same ratio
+  const double ratio = 1.004; // bump spot AND forward by the same ratio
   const PricedSurface d0 = make_surface(kUid, S0, S0, now);
   const PricedSurface d1 = make_surface(kUid, S0 * ratio, S0 * ratio, now);
   const std::string p0 = write_one(dir, "2026-08-01", "SPX", d0);
   const std::string p1 = write_one(dir, "2026-08-02", "SPX", d1);
-  auto clock = Clock::from_manifest(
-      make_manifest({{"2026-08-01", p0}, {"2026-08-02", p1}}, "SPX"));
+  auto clock = Clock::from_manifest(make_manifest({{"2026-08-01", p0}, {"2026-08-02", p1}}, "SPX"));
   ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
 
   const std::int64_t expiry = kBaseNow + 120 * kDayNs;
@@ -226,11 +257,10 @@ TEST(Backtest, AgingTimeOnly) {
   const fs::path dir = fresh_dir("time");
   const double S0 = 100.0;
   const PricedSurface d0 = make_surface(kUid, S0, S0, kBaseNow);
-  const PricedSurface d1 = make_surface(kUid, S0, S0, kBaseNow + kDayNs);  // +1 day only
+  const PricedSurface d1 = make_surface(kUid, S0, S0, kBaseNow + kDayNs); // +1 day only
   const std::string p0 = write_one(dir, "2026-08-01", "SPX", d0);
   const std::string p1 = write_one(dir, "2026-08-02", "SPX", d1);
-  auto clock = Clock::from_manifest(
-      make_manifest({{"2026-08-01", p0}, {"2026-08-02", p1}}, "SPX"));
+  auto clock = Clock::from_manifest(make_manifest({{"2026-08-01", p0}, {"2026-08-02", p1}}, "SPX"));
   ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
 
   const std::int64_t expiry = kBaseNow + 120 * kDayNs;
@@ -259,7 +289,7 @@ TEST(Backtest, AttributionCloses) {
   const std::int64_t expiry = kBaseNow + 120 * kDayNs;
   auto res = run_backtest(*clock, survivor_book(expiry));
   ASSERT_TRUE(res.has_value()) << res.error().to_string();
-  const BacktestResult& r = *res;
+  const BacktestResult &r = *res;
   ASSERT_GT(r.size(), 1u);
 
   for (std::size_t i = 0; i < r.size(); ++i) {
@@ -308,7 +338,7 @@ TEST(Backtest, Granularity) {
   auto rc = run_backtest(*clock, survivor_book(expiry), coarse);
   ASSERT_TRUE(rf.has_value()) << rf.error().to_string();
   ASSERT_TRUE(rc.has_value()) << rc.error().to_string();
-  EXPECT_LT(rc->size(), rf->size());  // coarse genuinely downsampled
+  EXPECT_LT(rc->size(), rf->size()); // coarse genuinely downsampled
 
   // Every coarse row matches the fine row at the same timestamp, bit-for-bit.
   for (std::size_t j = 0; j < rc->size(); ++j) {
@@ -333,15 +363,14 @@ TEST(Backtest, ExpirySettlement) {
   const fs::path dir = fresh_dir("expiry");
   const std::int64_t now0 = kBaseNow;
   const std::int64_t now1 = kBaseNow + 45 * kDayNs;
-  const std::int64_t exp_expiring = kBaseNow + 30 * kDayNs;   // between the two dates
-  const std::int64_t exp_survivor = kBaseNow + 200 * kDayNs;  // survives
+  const std::int64_t exp_expiring = kBaseNow + 30 * kDayNs;  // between the two dates
+  const std::int64_t exp_survivor = kBaseNow + 200 * kDayNs; // survives
 
   const PricedSurface d0 = make_surface(kUid, 100.0, 100.0, now0);
-  const PricedSurface d1 = make_surface(kUid, 103.0, 103.0, now1);  // spot up to 103
+  const PricedSurface d1 = make_surface(kUid, 103.0, 103.0, now1); // spot up to 103
   const std::string p0 = write_one(dir, "2026-08-01", "SPX", d0);
   const std::string p1 = write_one(dir, "2026-09-15", "SPX", d1);
-  auto clock = Clock::from_manifest(
-      make_manifest({{"2026-08-01", p0}, {"2026-09-15", p1}}, "SPX"));
+  auto clock = Clock::from_manifest(make_manifest({{"2026-08-01", p0}, {"2026-09-15", p1}}, "SPX"));
   ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
 
   PortfolioState st;
@@ -353,11 +382,12 @@ TEST(Backtest, ExpirySettlement) {
 
   auto res = run_backtest(*clock, std::move(st));
   ASSERT_TRUE(res.has_value()) << res.error().to_string();
-  const BacktestResult& r = *res;
+  const BacktestResult &r = *res;
   ASSERT_EQ(r.size(), 2u);
 
   // Hand-compute the settlement: intrinsic(S_shifted) - base_mark on d0.
-  const double T_base = (static_cast<double>(exp_expiring) - static_cast<double>(now0)) / kNsPerYear;
+  const double T_base =
+      (static_cast<double>(exp_expiring) - static_cast<double>(now0)) / kNsPerYear;
   auto mark = d0.fair_value(95.0, T_base, Side::Call);
   ASSERT_TRUE(mark.has_value()) << mark.error().to_string();
   const double intrinsic = std::max(0.0, 103.0 - 95.0);
@@ -365,8 +395,8 @@ TEST(Backtest, ExpirySettlement) {
 
   EXPECT_NE(r.pnl_settlement[1], 0.0);
   EXPECT_NEAR(r.pnl_settlement[1], expected_settle, 1e-6 * (std::fabs(expected_settle) + 1.0));
-  EXPECT_EQ(r.n_open_lots[0], 2.0);  // inception: both lots open
-  EXPECT_EQ(r.n_open_lots[1], 1.0);  // after settlement: survivor only
+  EXPECT_EQ(r.n_open_lots[0], 2.0); // inception: both lots open
+  EXPECT_EQ(r.n_open_lots[1], 1.0); // after settlement: survivor only
 
   std::printf("[backtest] settlement=%.4f (intrinsic=%.2f base_mark=%.4f) survivors=%.0f\n",
               r.pnl_settlement[1], intrinsic, *mark, r.n_open_lots[1]);
@@ -384,14 +414,14 @@ TEST(Backtest, DefaultPolicyIsBitIdenticalToBaseline) {
   const CorpusManifest man = make_evolving_corpus(dir, "SPX", 5);
   auto clock = Clock::from_manifest(man);
   ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
-  const std::int64_t expiry = kBaseNow + 120 * kDayNs;  // survives every date
-  auto res = run_backtest(*clock, survivor_book(expiry));  // default: ExcludeAndReport
+  const std::int64_t expiry = kBaseNow + 120 * kDayNs;    // survives every date
+  auto res = run_backtest(*clock, survivor_book(expiry)); // default: ExcludeAndReport
   ASSERT_TRUE(res.has_value()) << res.error().to_string();
   ASSERT_EQ(res->size(), 5u);
 
   ASSERT_EQ(res->n_unpriced_lots.size(), 5u);
   for (std::size_t i = 0; i < 5; ++i) {
-    EXPECT_EQ(res->n_unpriced_lots[i], 0.0) << "row " << i;  // nothing ever missing
+    EXPECT_EQ(res->n_unpriced_lots[i], 0.0) << "row " << i; // nothing ever missing
   }
 
   const double base_pnl[5] = {0.0, 189.71333426451054, 189.94298069959081, 190.1654866911926,

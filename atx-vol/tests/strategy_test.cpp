@@ -27,18 +27,19 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/american.hpp"          // al_fast_opts, AmericanMethod, AmericanGreeks
-#include "atx/vol/backtest.hpp"          // MarketSnapshot, Clock, run_backtest
-#include "atx/vol/corpus.hpp"            // CorpusManifest, CorpusEntry, CorpusFitStatus
-#include "atx/vol/dispersion.hpp"        // DispersionUniverse, dispersion_signal
-#include "atx/vol/portfolio_pricer.hpp"  // Portfolio, SurfaceSet, PortfolioPricer, Position
-#include "atx/vol/priced_surface.hpp"    // PricedSurface, PricingContext
-#include "atx/vol/strategy.hpp"          // the DSL + DeclarativeStrategy/DispersionStrategy
-#include "atx/vol/surface_archive.hpp"   // write_surface_archive_file, SurfaceArchiveItem
-#include "atx/vol/surface_parity.hpp"    // SliceContext
-#include "atx/vol/types.hpp"             // Side, Result, Status, ErrorCode
-#include "atx/vol/vol_curve.hpp"         // CurveSurface, EssviCurve
-#include "atx/vol/vol_surface.hpp"       // EssviParams
+#include "atx/vol/american.hpp"   // al_fast_opts, AmericanMethod, AmericanGreeks
+#include "atx/vol/backtest.hpp"   // MarketSnapshot, Clock, run_backtest
+#include "atx/vol/corpus.hpp"     // CorpusManifest, CorpusEntry, CorpusFitStatus
+#include "atx/vol/dispersion.hpp" // DispersionUniverse, dispersion_signal
+#include "atx/vol/dispersion_backtest.hpp"
+#include "atx/vol/portfolio_pricer.hpp" // Portfolio, SurfaceSet, PortfolioPricer, Position
+#include "atx/vol/priced_surface.hpp"   // PricedSurface, PricingContext
+#include "atx/vol/strategy.hpp"         // the DSL + DeclarativeStrategy/DispersionStrategy
+#include "atx/vol/surface_archive.hpp"  // write_surface_archive_file, SurfaceArchiveItem
+#include "atx/vol/surface_parity.hpp"   // SliceContext
+#include "atx/vol/types.hpp"            // Side, Result, Status, ErrorCode
+#include "atx/vol/vol_curve.hpp"        // CurveSurface, EssviCurve
+#include "atx/vol/vol_surface.hpp"      // EssviParams
 
 using namespace atx::vol;
 namespace fs = std::filesystem;
@@ -89,7 +90,7 @@ constexpr std::uint32_t kUid = 7;
   return std::move(*ps);
 }
 
-[[nodiscard]] fs::path fresh_dir(const char* tag) {
+[[nodiscard]] fs::path fresh_dir(const char *tag) {
   const fs::path dir = fs::temp_directory_path() / (std::string("atx-strategy-") + tag);
   std::error_code ec;
   fs::remove_all(dir, ec);
@@ -97,15 +98,15 @@ constexpr std::uint32_t kUid = 7;
 }
 
 // Write `items` (symbol -> surface) as one date's archive; return its path.
-[[nodiscard]] std::string write_archive(
-    const fs::path& dir, const std::string& date,
-    const std::vector<std::pair<std::string, const PricedSurface*>>& items) {
+[[nodiscard]] std::string
+write_archive(const fs::path &dir, const std::string &date,
+              const std::vector<std::pair<std::string, const PricedSurface *>> &items) {
   std::error_code ec;
   fs::create_directories(dir, ec);
   const std::string path = (dir / (date + ".atxvsa")).string();
   std::vector<SurfaceArchiveItem> its;
   its.reserve(items.size());
-  for (const auto& [sym, ps] : items) {
+  for (const auto &[sym, ps] : items) {
     its.push_back(SurfaceArchiveItem{sym, ps});
   }
   const Status st = write_surface_archive_file(path, its);
@@ -114,10 +115,10 @@ constexpr std::uint32_t kUid = 7;
 }
 
 // Hand-build an Ok-only manifest over (date, archive_path) rows (one entry/date).
-[[nodiscard]] CorpusManifest make_manifest(
-    const std::vector<std::pair<std::string, std::string>>& date_paths) {
+[[nodiscard]] CorpusManifest
+make_manifest(const std::vector<std::pair<std::string, std::string>> &date_paths) {
   CorpusManifest m;
-  for (const auto& [date, path] : date_paths) {
+  for (const auto &[date, path] : date_paths) {
     m.dates.push_back(date);
     CorpusEntry e;
     e.date = date;
@@ -129,7 +130,7 @@ constexpr std::uint32_t kUid = 7;
   return m;
 }
 
-}  // namespace
+} // namespace
 
 // ── 1. Strike-from-delta reprices to the target ─────────────────────────────
 TEST(Strategy, StrikeFromDelta) {
@@ -164,7 +165,7 @@ TEST(Strategy, StrikeFromDelta) {
   // a 0.90 call / 0.85 put resolve and reprice to the target. There is no interior
   // |delta| a well-behaved surface cannot bracket; the unreachable contract is the
   // (0,1) guard band below.
-  for (const auto& [side, tgt] :
+  for (const auto &[side, tgt] :
        std::vector<std::pair<Side, double>>{{Side::Call, 0.90}, {Side::Put, 0.85}}) {
     auto kk = resolve_strike_by_delta(s, 0.25, side, tgt);
     ASSERT_TRUE(kk.has_value()) << kk.error().to_string();
@@ -201,8 +202,8 @@ TEST(Strategy, Structures) {
   ASSERT_TRUE(legs.has_value()) << legs.error().to_string();
   ASSERT_EQ(legs->size(), 2u);
 
-  const ResolvedLeg& call = (*legs)[0];
-  const ResolvedLeg& put = (*legs)[1];
+  const ResolvedLeg &call = (*legs)[0];
+  const ResolvedLeg &put = (*legs)[1];
   const double F = snap->find(kUid)->forward_at(0.25);
 
   EXPECT_EQ(call.side, Side::Call);
@@ -230,7 +231,7 @@ TEST(Strategy, FlatVega) {
   auto snap = MarketSnapshot::load(p);
   ASSERT_TRUE(snap.has_value()) << snap.error().to_string();
 
-  const auto strangle = [](std::uint32_t uid, double T, double sign, const char* group) {
+  const auto strangle = [](std::uint32_t uid, double T, double sign, const char *group) {
     LegSpec leg;
     leg.uid = uid;
     leg.tenor.target_T = T;
@@ -244,8 +245,8 @@ TEST(Strategy, FlatVega) {
 
   StrategySpec spec;
   spec.name = "xom9m-vs-spy3m-40d-strangle-flat-vega";
-  spec.legs.push_back(strangle(kXom, 0.75, +1.0, "a"));  // long XOM 9m
-  spec.legs.push_back(strangle(kSpy, 0.25, -1.0, "b"));  // short SPY 3m
+  spec.legs.push_back(strangle(kXom, 0.75, +1.0, "a")); // long XOM 9m
+  spec.legs.push_back(strangle(kSpy, 0.25, -1.0, "b")); // short SPY 3m
   spec.constraint = CrossLegConstraint{CrossLegConstraint::Kind::FlatVega, "a", "b"};
 
   auto sized = resolve_spec(*snap, spec);
@@ -254,10 +255,9 @@ TEST(Strategy, FlatVega) {
 
   std::vector<Position> ps;
   for (std::size_t i = 0; i < sized->size(); ++i) {
-    const SizedLeg& sl = (*sized)[i];
-    ps.push_back(Position{i + 1,
-                          OptionContract{sl.leg.uid, sl.leg.K, sl.leg.T, sl.leg.side}, sl.qty,
-                          sl.multiplier});
+    const SizedLeg &sl = (*sized)[i];
+    ps.push_back(Position{i + 1, OptionContract{sl.leg.uid, sl.leg.K, sl.leg.T, sl.leg.side},
+                          sl.qty, sl.multiplier});
   }
   auto pf = Portfolio::create(ps);
   ASSERT_TRUE(pf.has_value());
@@ -281,7 +281,7 @@ TEST(Strategy, FlatVega) {
 // ── 4. Overlapping clips: a cohort per step, dropped as they expire ─────────
 TEST(Strategy, OverlappingClips) {
   const fs::path dir = fresh_dir("clips");
-  const std::vector<int> day_off = {0, 5, 10, 15, 20, 25, 125};  // final = big time-jump
+  const std::vector<int> day_off = {0, 5, 10, 15, 20, 25, 125}; // final = big time-jump
   std::vector<std::pair<std::string, std::string>> dp;
   for (std::size_t d = 0; d < day_off.size(); ++d) {
     const std::int64_t now = kBaseNow + static_cast<std::int64_t>(day_off[d]) * kDayNs;
@@ -299,7 +299,7 @@ TEST(Strategy, OverlappingClips) {
   spec.name = "spy-25d-put-daily-clip";
   LegSpec leg;
   leg.uid = kUid;
-  leg.tenor.target_T = 0.06;  // ~22 days: cohorts expire within the corpus
+  leg.tenor.target_T = 0.06; // ~22 days: cohorts expire within the corpus
   leg.structure.kind = StructureSpec::Kind::Single;
   leg.structure.single_side = Side::Put;
   // ATM-forward strike keeps pricing in the surface core (variance > 0) as each
@@ -313,7 +313,7 @@ TEST(Strategy, OverlappingClips) {
   DeclarativeStrategy strat{spec};
   auto res = run_backtest(*clock, strat);
   ASSERT_TRUE(res.has_value()) << res.error().to_string();
-  const BacktestResult& r = *res;
+  const BacktestResult &r = *res;
   ASSERT_EQ(r.size(), day_off.size());
 
   // Monotonic +1 growth while no cohort has yet crossed expiry (rows 0..4).
@@ -326,8 +326,8 @@ TEST(Strategy, OverlappingClips) {
     tot_settle += std::fabs(x);
   }
   EXPECT_GT(tot_settle, 0.0);
-  EXPECT_LT(r.n_open_lots.back(), r.n_open_lots[4]);  // final jump expires the backlog
-  EXPECT_EQ(r.n_open_lots.back(), 1.0);               // only the fresh clip remains
+  EXPECT_LT(r.n_open_lots.back(), r.n_open_lots[4]); // final jump expires the backlog
+  EXPECT_EQ(r.n_open_lots.back(), 1.0);              // only the fresh clip remains
 
   std::printf("[strategy] overlapping-clip n_open_lots ="
               " {%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f}\n",
@@ -357,15 +357,16 @@ TEST(Strategy, DispersionParity) {
   u.index = DispersionMember{"IDX", 1, 0.0};
   u.names.push_back(DispersionMember{"NM0", 2, 0.6});
   u.names.push_back(DispersionMember{"NM1", 3, 0.4});
-  const DispersionConfig cfg;  // 30d, 10000 target vega, short-index, mult 100
+  DispersionConfig cfg; // 30d, 10000 target vega, short-index, mult 100
+  cfg.record_diagnostics = true;
 
   DispersionStrategy strat{u, cfg};
   auto res = run_backtest(*clock, strat);
   ASSERT_TRUE(res.has_value()) << res.error().to_string();
 
   // The recorded implied_corr series exists and matches the closed-form signal.
-  const std::vector<double>* corr = nullptr;
-  for (const auto& sig_series : res->signals) {
+  const std::vector<double> *corr = nullptr;
+  for (const auto &sig_series : res->signals) {
     if (sig_series.first == "implied_corr") {
       corr = &sig_series.second;
     }
@@ -375,6 +376,11 @@ TEST(Strategy, DispersionParity) {
 
   auto base = MarketSnapshot::load(clock->refs()[0].archive_path);
   ASSERT_TRUE(base.has_value()) << base.error().to_string();
+  DispersionBacktestConfig fast_config;
+  fast_config.min_names = 2u;
+  auto fast_run = run_dispersion_backtest(*clock, u, fast_config);
+  ASSERT_TRUE(fast_run.has_value()) << fast_run.error().to_string();
+  EXPECT_TRUE(fast_run->signals.empty());
   auto sig = dispersion_signal(u, base->set(), cfg.target_T);
   ASSERT_TRUE(sig.has_value()) << sig.error().to_string();
   EXPECT_TRUE(close((*corr)[0], sig->implied_corr, 1e-9))
@@ -398,7 +404,7 @@ TEST(Strategy, DispersionParity) {
     }
   }
   EXPECT_TRUE(close(v_index, -v_names)) << v_index << " vs " << -v_names;
-  EXPECT_LT(v_index, 0.0);  // short index
+  EXPECT_LT(v_index, 0.0); // short index
 
   std::printf("[strategy] dispersion implied_corr=%.6f book_vega_idx=%.2f book_vega_names=%.2f\n",
               sig->implied_corr, v_index, v_names);

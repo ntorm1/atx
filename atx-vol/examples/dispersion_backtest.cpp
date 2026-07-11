@@ -7,28 +7,32 @@
 // writes the full series (including the signal column) to a TSV via
 // `write_backtest_tsv`. OFF by default (ATX_BUILD_EXAMPLES).
 
+#include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <cmath>
 #include <filesystem>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "atx/vol/american.hpp"         // al_fast_opts, AmericanMethod
-#include "atx/vol/backtest.hpp"         // Clock, run_backtest
-#include "atx/vol/corpus.hpp"           // CorpusManifest, CorpusEntry, CorpusFitStatus
-#include "atx/vol/dispersion.hpp"       // DispersionUniverse, DispersionConfig, DispersionMember
-#include "atx/vol/priced_surface.hpp"   // PricedSurface, PricingContext
-#include "atx/vol/strategy.hpp"         // DispersionStrategy
-#include "atx/vol/surface_archive.hpp"  // write_surface_archive_file, SurfaceArchiveItem
-#include "atx/vol/surface_parity.hpp"   // SliceContext
-#include "atx/vol/tearsheet.hpp"        // tearsheet, write_backtest_tsv
-#include "atx/vol/types.hpp"            // Side, Result, Status
-#include "atx/vol/vol_curve.hpp"        // CurveSurface, EssviCurve
-#include "atx/vol/vol_surface.hpp"      // EssviParams
+#include "atx/vol/american.hpp" // al_fast_opts, AmericanMethod
+#include "atx/vol/backtest.hpp" // Clock, run_backtest
+#include "atx/vol/corpus.hpp"   // CorpusManifest, CorpusEntry, CorpusFitStatus
+#include "atx/vol/counters.hpp"
+#include "atx/vol/dispersion.hpp" // DispersionUniverse, DispersionConfig, DispersionMember
+#include "atx/vol/dispersion_backtest.hpp"
+#include "atx/vol/phase_profile.hpp"
+#include "atx/vol/priced_surface.hpp"  // PricedSurface, PricingContext
+#include "atx/vol/strategy.hpp"        // DispersionStrategy
+#include "atx/vol/surface_archive.hpp" // write_surface_archive_file, SurfaceArchiveItem
+#include "atx/vol/surface_parity.hpp"  // SliceContext
+#include "atx/vol/tearsheet.hpp"       // tearsheet, write_backtest_tsv
+#include "atx/vol/types.hpp"           // Side, Result, Status
+#include "atx/vol/vol_curve.hpp"       // CurveSurface, EssviCurve
+#include "atx/vol/vol_surface.hpp"     // EssviParams
 
 using namespace atx::vol;
 namespace fs = std::filesystem;
@@ -75,15 +79,15 @@ constexpr std::int64_t kDayNs = 86400LL * 1000000000LL;
   return std::move(*ps);
 }
 
-[[nodiscard]] std::string write_archive(
-    const fs::path& dir, const std::string& date,
-    const std::vector<std::pair<std::string, const PricedSurface*>>& items) {
+[[nodiscard]] std::string
+write_archive(const fs::path &dir, const std::string &date,
+              const std::vector<std::pair<std::string, const PricedSurface *>> &items) {
   std::error_code ec;
   fs::create_directories(dir, ec);
   const std::string path = (dir / (date + ".atxvsa")).string();
   std::vector<SurfaceArchiveItem> its;
   its.reserve(items.size());
-  for (const auto& [sym, ps] : items) {
+  for (const auto &[sym, ps] : items) {
     its.push_back(SurfaceArchiveItem{sym, ps});
   }
   const Status st = write_surface_archive_file(path, its);
@@ -94,10 +98,10 @@ constexpr std::int64_t kDayNs = 86400LL * 1000000000LL;
   return path;
 }
 
-[[nodiscard]] CorpusManifest make_manifest(
-    const std::vector<std::pair<std::string, std::string>>& date_paths) {
+[[nodiscard]] CorpusManifest
+make_manifest(const std::vector<std::pair<std::string, std::string>> &date_paths) {
   CorpusManifest m;
-  for (const auto& [date, path] : date_paths) {
+  for (const auto &[date, path] : date_paths) {
     m.dates.push_back(date);
     CorpusEntry e;
     e.date = date;
@@ -109,7 +113,7 @@ constexpr std::int64_t kDayNs = 86400LL * 1000000000LL;
   return m;
 }
 
-}  // namespace
+} // namespace
 
 int main() {
   const fs::path dir = fs::temp_directory_path() / "atx-dispersion-backtest";
@@ -139,28 +143,60 @@ int main() {
   u.index = DispersionMember{"IDX", 1, 0.0};
   u.names.push_back(DispersionMember{"NM0", 2, 0.6});
   u.names.push_back(DispersionMember{"NM1", 3, 0.4});
-  const DispersionConfig cfg;  // 30d, target vega, short-index, mult 100
-  DispersionStrategy strat{u, cfg};
-
-  auto res = run_backtest(*clock, strat);
+  DispersionBacktestConfig config;
+  config.min_names = 2u;
+  config.record_diagnostics = true; // worked example opts into research output
+#if defined(ATX_VOL_PROFILE)
+  phase_profile::reset();
+#endif
+#if defined(ATX_VOL_COUNTERS)
+  counters::reset();
+#endif
+  const auto engine_start = std::chrono::steady_clock::now();
+  auto res = run_dispersion_backtest(*clock, u, config);
+  const double engine_ms =
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - engine_start)
+          .count();
   if (!res) {
     std::fprintf(stderr, "run: %s\n", res.error().to_string().c_str());
     return 1;
   }
-  const BacktestResult& r = *res;
+  const BacktestResult &r = *res;
   const TearSheet t = tearsheet(r);
 
-  std::printf(
-      "[dispersion] rows=%zu total_return=%.4f sharpe=%.4f max_dd=%.4f "
-      "avg_gross_vega=%.2f pnl_per_vega_traded=%.6f\n",
-      r.size(), t.total_return, t.sharpe, t.max_drawdown, t.avg_gross_vega,
-      t.pnl_per_vega_traded);
-  for (const auto& sig : r.signals) {
+  std::printf("[dispersion] rows=%zu engine_ms=%.3f total_return=%.4f sharpe=%.4f max_dd=%.4f "
+              "avg_gross_vega=%.2f pnl_per_vega_traded=%.6f\n",
+              r.size(), engine_ms, t.total_return, t.sharpe, t.max_drawdown, t.avg_gross_vega,
+              t.pnl_per_vega_traded);
+  for (const auto &sig : r.signals) {
     if (!sig.second.empty()) {
       std::printf("[dispersion] signal '%s': first=%.6f last=%.6f\n", sig.first.c_str(),
                   sig.second.front(), sig.second.back());
     }
   }
+#if defined(ATX_VOL_PROFILE)
+  {
+    const phase_profile::Snapshot profile = phase_profile::snapshot();
+    for (unsigned i = 0; i < phase_profile::kCount; ++i) {
+      if (profile.calls[i] != 0u) {
+        std::printf("[profile] %s calls=%llu total_ms=%.3f\n", phase_profile::kNames[i],
+                    static_cast<unsigned long long>(profile.calls[i]),
+                    static_cast<double>(profile.nanoseconds[i]) / 1.0e6);
+      }
+    }
+  }
+#endif
+#if defined(ATX_VOL_COUNTERS)
+  {
+    const counters::Snapshot measured = counters::snapshot();
+    for (unsigned i = 0; i < counters::kCount; ++i) {
+      if (measured.values[i] != 0u) {
+        std::printf("[counter] %s=%llu\n", counters::kNames[i],
+                    static_cast<unsigned long long>(measured.values[i]));
+      }
+    }
+  }
+#endif
 
   const std::string tsv = (dir / "dispersion.tsv").string();
   const Status st = write_backtest_tsv(r, tsv);

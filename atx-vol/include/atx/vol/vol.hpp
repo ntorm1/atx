@@ -174,6 +174,8 @@
 // Traditional listed-options dispersion workflow.
 #include "atx/vol/backtest.hpp"
 #include "atx/vol/dispersion.hpp"
+#include "atx/vol/dispersion_backtest.hpp"
+#include "atx/vol/dispersion_workflow.hpp"
 #include "atx/vol/listed_dispersion.hpp"
 #include "atx/vol/listed_dispersion_reconciliation.hpp"
 #include "atx/vol/listed_dispersion_schedule.hpp"

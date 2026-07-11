@@ -17,8 +17,8 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
-#include "atx/vol/backtest.hpp"         // MarketSnapshot, Lot, PortfolioState
-#include "atx/vol/dispersion.hpp"       // build_dispersion_book, dispersion_signal
+#include "atx/vol/backtest.hpp"   // MarketSnapshot, Lot, PortfolioState
+#include "atx/vol/dispersion.hpp" // build_dispersion_book, dispersion_signal
 #include "atx/vol/phase_profile.hpp"
 #include "atx/vol/portfolio_pricer.hpp" // OptionContract, kNsPerYear, Position
 #include "atx/vol/priced_surface.hpp"   // PricedSurface
@@ -86,15 +86,11 @@ Status DispersionStrategy::on_step(const MarketSnapshot &base, std::size_t step_
                                   : base.ts_ns() + std::llround(cfg_.target_T * kNsPerYear);
   {
     ATX_VOL_PROFILE_SCOPE(StrategyEntryMarks);
-    for (const Position &p : built->positions) {
-      const PricedSurface *surf = base.find(p.contract.uid);
-      if (surf == nullptr) {
-        return Err(ErrorCode::NotFound, "DispersionStrategy: no surface for position");
-      }
-      const Result<double> mark = surf->fair_value(p.contract.K, p.contract.T, p.contract.side);
-      if (!mark) {
-        return Err(mark.error());
-      }
+    if (built->entry_marks.size() != built->positions.size()) {
+      return Err(ErrorCode::Internal, "DispersionStrategy: entry mark count mismatch");
+    }
+    for (std::size_t i = 0; i < built->positions.size(); ++i) {
+      const Position &p = built->positions[i];
       Lot lot;
       lot.id = next_lot_id++;
       lot.contract = p.contract;
@@ -102,7 +98,7 @@ Status DispersionStrategy::on_step(const MarketSnapshot &base, std::size_t step_
       lot.multiplier = p.multiplier;
       lot.expiry_ts_ns = expiry;
       lot.cohort = cohort;
-      lot.entry_price = *mark; // fill at mid
+      lot.entry_price = built->entry_marks[i]; // mark reused from sizing
       book.lots.push_back(lot);
     }
   }
@@ -113,6 +109,9 @@ Status DispersionStrategy::on_step(const MarketSnapshot &base, std::size_t step_
 
 std::vector<std::pair<std::string, double>>
 DispersionStrategy::signals(const MarketSnapshot &base) const {
+  if (!cfg_.record_diagnostics) {
+    return {};
+  }
   const Result<ResolvedUniverse> ru = resolve_universe_uids(
       universe_, [&](std::string_view s) { return base.uid_of(s); }, cfg_.missing);
   if (!ru) {

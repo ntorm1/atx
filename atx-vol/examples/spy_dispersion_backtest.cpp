@@ -26,6 +26,8 @@
 #include "atx/vol/corpus.hpp"
 #include "atx/vol/counters.hpp"
 #include "atx/vol/dispersion.hpp"
+#include "atx/vol/dispersion_backtest.hpp"
+#include "atx/vol/dispersion_workflow.hpp"
 #include "atx/vol/historical_projection.hpp"
 #include "atx/vol/listed_dispersion.hpp"
 #include "atx/vol/listed_dispersion_reconciliation.hpp"
@@ -50,46 +52,9 @@ using atx::core::Err;
 using atx::core::ErrorCode;
 using atx::core::Ok;
 
-struct RunSpec {
-  std::string label{"SPY listed-options dispersion proxy"};
-  std::string date_lo{};
-  std::string date_hi{};
-  std::string snapshot_suffix{"T19:55:00Z"};
-  fs::path opra_root{};
-  std::string path_template{"{symbol}/{date}.parquet"};
-  fs::path universe_path{};
-  fs::path definitions_path{};
-  fs::path occ_ess_root{};
-  double flat_rate{0.0};
-  std::size_t min_names{10};
-  double min_weight_coverage{0.8};
-  double target_dte_days{30.0};
-  double min_dte_days{21.0};
-  double max_dte_days{60.0};
-  double roll_dte_days{7.0};
-  double gross_index_vega{10000.0};
-  double delta_band{0.0};
-  unsigned fit_workers{0};
-  bool core_mode{false};
-};
-
-struct UniverseRow {
-  std::string effective_date{};
-  std::string symbol{};
-  double raw_weight{0.0};
-  std::string source{};
-  std::string as_of{};
-};
-
 template <class T> bool parse_number(std::string_view text, T &value) {
   const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
   return error == std::errc{} && end == text.data() + text.size();
-}
-
-bool parse_double(std::string_view text, double &value) {
-  const auto [end, error] =
-      std::from_chars(text.data(), text.data() + text.size(), value, std::chars_format::general);
-  return error == std::errc{} && end == text.data() + text.size() && std::isfinite(value);
 }
 
 std::vector<std::string_view> split(std::string_view line, char delimiter) {
@@ -117,230 +82,6 @@ Result<std::string> read_text(const fs::path &path) {
     return Err(ErrorCode::IoError, "cannot read " + path.string());
   }
   return Ok(std::move(text));
-}
-
-fs::path resolve_path(const fs::path &base, std::string_view value) {
-  fs::path path{value};
-  return path.is_absolute() ? path.lexically_normal() : (base / path).lexically_normal();
-}
-
-Result<RunSpec> read_run_spec(const fs::path &path) {
-  ATX_TRY(std::string text, read_text(path));
-  std::map<std::string, std::string> values;
-  std::size_t start = 0;
-  while (start < text.size()) {
-    const std::size_t end = text.find('\n', start);
-    std::string_view line{text.data() + start,
-                          (end == std::string::npos ? text.size() : end) - start};
-    if (!line.empty() && line.back() == '\r') {
-      line.remove_suffix(1);
-    }
-    start = end == std::string::npos ? text.size() : end + 1;
-    if (line.empty() || line.starts_with('#')) {
-      continue;
-    }
-    const auto fields = split(line, '\t');
-    if (fields.size() != 2 || fields[0] == "key") {
-      if (fields.size() == 2 && fields[0] == "key") {
-        continue;
-      }
-      return Err(ErrorCode::ParseError, "run spec must contain key/value TSV rows");
-    }
-    if (!values.emplace(std::string(fields[0]), std::string(fields[1])).second) {
-      return Err(ErrorCode::AlreadyExists, "duplicate run spec key");
-    }
-  }
-  const auto required = [&](std::string_view key) -> Result<std::string> {
-    const auto found = values.find(std::string(key));
-    if (found == values.end() || found->second.empty()) {
-      return Err(ErrorCode::ParseError, "missing run spec key " + std::string(key));
-    }
-    return Ok(found->second);
-  };
-
-  RunSpec spec;
-  ATX_TRY(spec.date_lo, required("date_lo"));
-  ATX_TRY(spec.date_hi, required("date_hi"));
-  ATX_TRY(std::string opra, required("opra_root"));
-  ATX_TRY(std::string universe, required("universe_schedule"));
-  const fs::path base = path.parent_path();
-  spec.opra_root = resolve_path(base, opra);
-  spec.universe_path = resolve_path(base, universe);
-  const auto optional_text = [&](std::string_view key, std::string &value) {
-    const auto found = values.find(std::string(key));
-    if (found != values.end()) {
-      value = found->second;
-    }
-  };
-  optional_text("label", spec.label);
-  optional_text("snapshot_suffix", spec.snapshot_suffix);
-  optional_text("path_template", spec.path_template);
-  std::string definitions;
-  std::string occ_ess;
-  optional_text("definitions", definitions);
-  optional_text("occ_ess_root", occ_ess);
-  if (!definitions.empty())
-    spec.definitions_path = resolve_path(base, definitions);
-  if (!occ_ess.empty())
-    spec.occ_ess_root = resolve_path(base, occ_ess);
-  const auto number = [&](std::string_view key, auto &value) -> Status {
-    const auto found = values.find(std::string(key));
-    if (found == values.end()) {
-      return Ok();
-    }
-    using Value = std::remove_reference_t<decltype(value)>;
-    bool parsed = false;
-    if constexpr (std::is_same_v<Value, double>) {
-      parsed = parse_double(found->second, value);
-    } else {
-      parsed = parse_number(found->second, value);
-    }
-    return parsed ? Ok() : Err(ErrorCode::ParseError, "invalid run spec number");
-  };
-  ATX_TRY_VOID(number("flat_rate", spec.flat_rate));
-  ATX_TRY_VOID(number("min_names", spec.min_names));
-  ATX_TRY_VOID(number("min_weight_coverage", spec.min_weight_coverage));
-  ATX_TRY_VOID(number("target_dte_days", spec.target_dte_days));
-  ATX_TRY_VOID(number("min_dte_days", spec.min_dte_days));
-  ATX_TRY_VOID(number("max_dte_days", spec.max_dte_days));
-  ATX_TRY_VOID(number("roll_dte_days", spec.roll_dte_days));
-  ATX_TRY_VOID(number("gross_index_vega", spec.gross_index_vega));
-  ATX_TRY_VOID(number("delta_band", spec.delta_band));
-  ATX_TRY_VOID(number("fit_workers", spec.fit_workers));
-  unsigned core = 0;
-  ATX_TRY_VOID(number("core_mode", core));
-  spec.core_mode = core != 0;
-  if (spec.date_lo > spec.date_hi || spec.min_names == 0 || spec.min_weight_coverage <= 0.0 ||
-      spec.min_weight_coverage > 1.0 || spec.min_dte_days <= 0.0 ||
-      spec.target_dte_days < spec.min_dte_days || spec.max_dte_days < spec.target_dte_days ||
-      spec.roll_dte_days < 0.0 || spec.gross_index_vega <= 0.0 || spec.delta_band < 0.0) {
-    return Err(ErrorCode::InvalidArgument, "invalid run spec contract");
-  }
-  if (spec.core_mode && (spec.min_names < 40 || spec.min_weight_coverage < 0.8)) {
-    return Err(ErrorCode::InvalidArgument, "core mode requires >=40 names and >=80% weight");
-  }
-  return Ok(std::move(spec));
-}
-
-Status write_resolved_spec(const fs::path &path, const RunSpec &spec) {
-  std::ofstream out(path, std::ios::binary | std::ios::trunc);
-  if (!out) {
-    return Err(ErrorCode::IoError, "cannot write resolved run spec");
-  }
-  out << "key\tvalue\n"
-      << "label\t" << spec.label << '\n'
-      << "date_lo\t" << spec.date_lo << '\n'
-      << "date_hi\t" << spec.date_hi << '\n'
-      << "snapshot_suffix\t" << spec.snapshot_suffix << '\n'
-      << "opra_root\t" << spec.opra_root.string() << '\n'
-      << "path_template\t" << spec.path_template << '\n'
-      << "universe_schedule\t" << spec.universe_path.string() << '\n';
-  if (!spec.definitions_path.empty())
-    out << "definitions\t" << spec.definitions_path.string() << '\n';
-  if (!spec.occ_ess_root.empty())
-    out << "occ_ess_root\t" << spec.occ_ess_root.string() << '\n';
-  out
-      << "flat_rate\t" << spec.flat_rate << '\n'
-      << "min_names\t" << spec.min_names << '\n'
-      << "min_weight_coverage\t" << spec.min_weight_coverage << '\n'
-      << "target_dte_days\t" << spec.target_dte_days << '\n'
-      << "min_dte_days\t" << spec.min_dte_days << '\n'
-      << "max_dte_days\t" << spec.max_dte_days << '\n'
-      << "roll_dte_days\t" << spec.roll_dte_days << '\n'
-      << "gross_index_vega\t" << spec.gross_index_vega << '\n'
-      << "delta_band\t" << spec.delta_band << '\n'
-      << "fit_workers\t" << spec.fit_workers << '\n'
-      << "core_mode\t" << (spec.core_mode ? 1 : 0) << '\n';
-  return out ? Ok() : Err(ErrorCode::IoError, "cannot flush resolved run spec");
-}
-
-Result<std::vector<UniverseRow>> read_universe(const fs::path &path) {
-  ATX_TRY(std::string text, read_text(path));
-  const std::string_view header = "effective_date\tsymbol\traw_weight\tsource\tas_of";
-  const std::size_t first_end = text.find('\n');
-  if (first_end == std::string::npos ||
-      std::string_view(text.data(), first_end).substr(0, header.size()) != header) {
-    return Err(ErrorCode::ParseError, "bad universe schedule header");
-  }
-  std::vector<UniverseRow> rows;
-  std::size_t start = first_end + 1;
-  while (start < text.size()) {
-    const std::size_t end = text.find('\n', start);
-    std::string_view line{text.data() + start,
-                          (end == std::string::npos ? text.size() : end) - start};
-    start = end == std::string::npos ? text.size() : end + 1;
-    if (!line.empty() && line.back() == '\r') {
-      line.remove_suffix(1);
-    }
-    if (line.empty()) {
-      continue;
-    }
-    const auto fields = split(line, '\t');
-    UniverseRow row;
-    if (fields.size() != 5 || !parse_double(fields[2], row.raw_weight) || !(row.raw_weight > 0.0)) {
-      return Err(ErrorCode::ParseError, "bad universe schedule row");
-    }
-    row.effective_date = fields[0];
-    row.symbol = fields[1];
-    row.source = fields[3];
-    row.as_of = fields[4];
-    if (row.symbol.empty() || row.source.empty() || row.as_of > row.effective_date) {
-      return Err(ErrorCode::InvalidArgument, "invalid point-in-time universe row");
-    }
-    rows.push_back(std::move(row));
-  }
-  std::sort(rows.begin(), rows.end(), [](const auto &a, const auto &b) {
-    return std::tie(a.effective_date, a.symbol) < std::tie(b.effective_date, b.symbol);
-  });
-  if (rows.empty()) {
-    return Err(ErrorCode::InvalidArgument, "empty universe schedule");
-  }
-  return Ok(std::move(rows));
-}
-
-std::vector<std::string> all_symbols(std::span<const UniverseRow> rows) {
-  std::vector<std::string> symbols{"SPY"};
-  for (const UniverseRow &row : rows) {
-    if (std::find(symbols.begin(), symbols.end(), row.symbol) == symbols.end()) {
-      symbols.push_back(row.symbol);
-    }
-  }
-  std::sort(symbols.begin(), symbols.end());
-  return symbols;
-}
-
-Result<DispersionUniverse> universe_at(std::span<const UniverseRow> rows, std::string_view date) {
-  std::map<std::string, const UniverseRow *> active;
-  for (const UniverseRow &row : rows) {
-    if (row.effective_date <= date) {
-      active[row.symbol] = &row;
-    }
-  }
-  DispersionUniverse universe;
-  universe.index = DispersionMember{"SPY", 0u, 0.0};
-  for (const auto &[symbol, row] : active) {
-    if (symbol != "SPY") {
-      universe.names.push_back(DispersionMember{symbol, 0u, row->raw_weight});
-    }
-  }
-  if (universe.names.empty()) {
-    return Err(ErrorCode::Unavailable, "no effective constituent schedule for date");
-  }
-  return Ok(std::move(universe));
-}
-
-OpraBatchSpec batch_spec(const RunSpec &spec, std::span<const std::string> symbols,
-                         std::string_view date_lo, std::string_view date_hi) {
-  OpraBatchSpec batch;
-  batch.symbols.assign(symbols.begin(), symbols.end());
-  batch.date_lo = date_lo;
-  batch.date_hi = date_hi;
-  batch.root_dir = spec.opra_root.string();
-  batch.path_template = spec.path_template;
-  batch.snapshot_suffix = spec.snapshot_suffix;
-  batch.r = spec.flat_rate;
-  batch.provenance_mode = OpraProvenanceMode::Strict;
-  return batch;
 }
 
 std::uint64_t hash_text(std::string_view text) {
@@ -393,8 +134,7 @@ Status persist_occ_ess_evidence(const fs::path &run_dir, const RunSpec &spec,
   if (error) {
     return Err(ErrorCode::IoError, "cannot create OCC ESS evidence directory");
   }
-  std::ofstream inventory(run_dir / "occ_ess_inventory.tsv",
-                          std::ios::binary | std::ios::trunc);
+  std::ofstream inventory(run_dir / "occ_ess_inventory.tsv", std::ios::binary | std::ios::trunc);
   if (!inventory) {
     return Err(ErrorCode::IoError, "cannot write OCC ESS inventory");
   }
@@ -447,7 +187,8 @@ Status verify_occ_ess_evidence(const fs::path &run_dir, const Clock &clock) {
         !verified_dates.emplace(row[0]).second) {
       return Err(ErrorCode::ParseError, "malformed OCC ESS inventory row");
     }
-    const fs::path expected = (run_dir / "occ_ess" / (std::string(row[0]) + ".txt")).lexically_normal();
+    const fs::path expected =
+        (run_dir / "occ_ess" / (std::string(row[0]) + ".txt")).lexically_normal();
     if (fs::path(row[1]).lexically_normal() != expected) {
       return Err(ErrorCode::InvalidArgument, "OCC ESS inventory path escapes run envelope");
     }
@@ -702,9 +443,8 @@ Status verify_command(const fs::path &run_dir) {
   ATX_TRY_VOID(validate_listed_dispersion_schedule(schedule));
   for (const fs::path &required :
        {run_dir / "input_inventory.tsv", run_dir / "methodology_map.tsv", run_dir / "backtest.tsv",
-        run_dir / "occ_ess_inventory.tsv",
-         run_dir / "contract_marks.tsv", run_dir / "reconciliation.tsv",
-        run_dir / "reference_reconciliation.tsv"}) {
+        run_dir / "occ_ess_inventory.tsv", run_dir / "contract_marks.tsv",
+        run_dir / "reconciliation.tsv", run_dir / "reference_reconciliation.tsv"}) {
     std::error_code error;
     if (!fs::is_regular_file(required, error) || fs::file_size(required, error) == 0u) {
       return Err(ErrorCode::NotFound, "missing final artifact " + required.string());
@@ -741,6 +481,7 @@ Status run_backtest_command(const fs::path &run_dir) {
           ListedDispersionStrategy::create(schedule, spec.delta_band));
   RunConfig config;
   config.unpriced = UnpricedLotPolicy::Error;
+  config.snapshot_cache = std::make_shared<SnapshotCache>();
   ATX_TRY(BacktestResult backtest, run_backtest(clock, strategy, config));
   if (!strategy.all_rolls_consumed()) {
     return Err(ErrorCode::Unavailable, "backtest did not consume every scheduled roll");
@@ -748,13 +489,14 @@ Status run_backtest_command(const fs::path &run_dir) {
   ATX_TRY_VOID(write_backtest_tsv(backtest, (run_dir / "backtest.tsv").string()));
 
   const std::vector<std::string> symbols = all_symbols(universe_rows);
-  std::vector<std::unique_ptr<MarketSnapshot>> snapshot_owners;
+  std::vector<std::shared_ptr<const MarketSnapshot>> snapshot_owners;
   std::vector<std::vector<ListedOptionQuote>> quote_owners;
   snapshot_owners.reserve(clock.size());
   quote_owners.reserve(clock.size());
   for (const SnapshotRef &ref : clock.refs()) {
-    ATX_TRY(MarketSnapshot snapshot, MarketSnapshot::load(ref.archive_path));
-    snapshot_owners.push_back(std::make_unique<MarketSnapshot>(std::move(snapshot)));
+    ATX_TRY(std::shared_ptr<const MarketSnapshot> snapshot,
+            config.snapshot_cache->load(ref.archive_path));
+    snapshot_owners.push_back(std::move(snapshot));
     ATX_TRY(std::vector<ListedOptionQuote> quotes,
             load_listed_quotes(spec, definitions, symbols, ref.date));
     quote_owners.push_back(std::move(quotes));
@@ -788,35 +530,20 @@ Status run_surface_backtest_command(const fs::path &run_dir) {
   }
   ATX_TRY(DispersionUniverse universe, universe_at(universe_rows, clock.refs().front().date));
 
-  DispersionConfig dispersion;
-  dispersion.target_T = spec.target_dte_days / 365.25;
-  dispersion.target_vega = spec.gross_index_vega;
-  dispersion.side = DispersionSide::ShortIndexLongNames;
-  dispersion.multiplier = 100.0;
-  dispersion.missing = MissingNameSpec{MissingNamePolicy::DropRenormalize, spec.min_names};
-  dispersion.projected_maturity =
-      ProjectedMaturitySpec::days(static_cast<std::int32_t>(std::llround(spec.target_dte_days)));
-
-  LifecycleSpec lifecycle;
-  lifecycle.entry = LifecycleSpec::Entry::EveryNDays;
-  lifecycle.holding = LifecycleSpec::Holding::RollAtHorizon;
-  lifecycle.entry_every_n = 21u;
-  lifecycle.roll_at_T = spec.roll_dte_days / 365.25;
-  HedgeSpec hedge;
-  hedge.kind = HedgeSpec::Kind::DeltaToZero;
-  hedge.cadence = HedgeSpec::Cadence::Daily;
-  hedge.band = spec.delta_band;
-
-  DispersionStrategy strategy{std::move(universe), dispersion, lifecycle, hedge};
-  RunConfig config;
-  config.unpriced = UnpricedLotPolicy::Error;
+  DispersionBacktestConfig config;
+  config.target_dte_days = spec.target_dte_days;
+  config.roll_dte_days = spec.roll_dte_days;
+  config.gross_index_vega = spec.gross_index_vega;
+  config.delta_band = spec.delta_band;
+  config.min_names = spec.min_names;
+  config.run.unpriced = UnpricedLotPolicy::Error;
 #if defined(ATX_VOL_PROFILE)
   phase_profile::reset();
 #endif
 #if defined(ATX_VOL_COUNTERS)
   counters::reset();
 #endif
-  ATX_TRY(BacktestResult backtest, run_backtest(clock, strategy, config));
+  ATX_TRY(BacktestResult backtest, run_dispersion_backtest(clock, std::move(universe), config));
 #if defined(ATX_VOL_PROFILE)
   {
     const phase_profile::Snapshot measured = phase_profile::snapshot();
@@ -829,8 +556,8 @@ Status run_surface_backtest_command(const fs::path &run_dir) {
     for (unsigned i = 0; i < phase_profile::kCount; ++i) {
       const double ns = static_cast<double>(measured.nanoseconds[i]);
       const double calls = static_cast<double>(measured.calls[i]);
-      output << phase_profile::kNames[i] << '\t' << measured.calls[i] << '\t' << ns / 1.0e6
-             << '\t' << (total_ns > 0.0 ? 100.0 * ns / total_ns : 0.0) << '\t'
+      output << phase_profile::kNames[i] << '\t' << measured.calls[i] << '\t' << ns / 1.0e6 << '\t'
+             << (total_ns > 0.0 ? 100.0 * ns / total_ns : 0.0) << '\t'
              << (calls > 0.0 ? ns / calls : 0.0) << '\n';
     }
     if (!output)
@@ -858,10 +585,8 @@ Status run_surface_backtest_command(const fs::path &run_dir) {
 
 Status run_projected_var_command(const fs::path &run_dir) {
   ATX_TRY(RunSpec spec, read_run_spec(run_dir / "run_spec.tsv"));
-  ATX_TRY(std::vector<UniverseRow> universe_rows,
-          read_universe(run_dir / "universe_schedule.tsv"));
-  ATX_TRY(CorpusManifest manifest,
-          read_manifest_file((run_dir / "surface_manifest.tsv").string()));
+  ATX_TRY(std::vector<UniverseRow> universe_rows, read_universe(run_dir / "universe_schedule.tsv"));
+  ATX_TRY(CorpusManifest manifest, read_manifest_file((run_dir / "surface_manifest.tsv").string()));
   ATX_TRY(Clock clock, Clock::from_manifest(manifest));
   if (clock.size() == 0u)
     return Err(ErrorCode::Unavailable, "projected VaR: empty qualified clock");
@@ -876,24 +601,19 @@ Status run_projected_var_command(const fs::path &run_dir) {
     scenarios.push_back({snapshots.back()->ts_ns(), &snapshots.back()->set()});
   }
 
-  ATX_TRY(DispersionUniverse authored,
-          universe_at(universe_rows, clock.refs().front().date));
+  ATX_TRY(DispersionUniverse authored, universe_at(universe_rows, clock.refs().front().date));
   ATX_TRY(ResolvedUniverse resolved,
-          resolve_universe_uids(authored,
-                                [&](std::string_view symbol) {
-                                  return snapshots.front()->uid_of(symbol);
-                                },
-                                MissingNameSpec{MissingNamePolicy::DropRenormalize,
-                                                spec.min_names}));
+          resolve_universe_uids(
+              authored, [&](std::string_view symbol) { return snapshots.front()->uid_of(symbol); },
+              MissingNameSpec{MissingNamePolicy::DropRenormalize, spec.min_names}));
   DispersionConfig dispersion;
   dispersion.target_T = spec.target_dte_days / 365.25;
   dispersion.target_vega = spec.gross_index_vega;
   dispersion.side = DispersionSide::ShortIndexLongNames;
   dispersion.multiplier = 100.0;
-  dispersion.missing =
-      MissingNameSpec{MissingNamePolicy::DropRenormalize, spec.min_names};
-  dispersion.projected_maturity = ProjectedMaturitySpec::days(
-      static_cast<std::int32_t>(std::llround(spec.target_dte_days)));
+  dispersion.missing = MissingNameSpec{MissingNamePolicy::DropRenormalize, spec.min_names};
+  dispersion.projected_maturity =
+      ProjectedMaturitySpec::days(static_cast<std::int32_t>(std::llround(spec.target_dte_days)));
   ATX_TRY(DispersionBook initial,
           build_dispersion_book(resolved.universe, snapshots.front()->set(), dispersion));
 
@@ -921,8 +641,7 @@ Status run_projected_var_command(const fs::path &run_dir) {
 
   std::ofstream frame_out(run_dir / "projected_risk_scenarios.tsv",
                           std::ios::binary | std::ios::trunc);
-  std::ofstream leg_out(run_dir / "projected_risk_legs.tsv",
-                        std::ios::binary | std::ios::trunc);
+  std::ofstream leg_out(run_dir / "projected_risk_legs.tsv", std::ios::binary | std::ios::trunc);
   if (!frame_out || !leg_out)
     return Err(ErrorCode::IoError, "projected VaR: cannot open output");
   frame_out << std::setprecision(17)
@@ -942,12 +661,12 @@ Status run_projected_var_command(const fs::path &run_dir) {
       leg_out << clock.refs()[scenario].date << '\t' << leg << '\t'
               << projected.definition.contract.uid << '\t'
               << (projected.definition.contract.side == Side::Call ? "Call" : "Put") << '\t'
-              << projected.definition.expiry_ts_ns << '\t'
-              << projected.definition.contract.K << '\t' << relative_positions[leg].quantity
-              << '\t' << projected.definition.multiplier << '\t' << projected.model_mark << '\t'
-              << projected.greeks.delta << '\t' << projected.greeks.gamma << '\t'
-              << projected.greeks.vega << '\t' << projected.greeks.theta << '\t'
-              << projected.definition.fingerprint << '\t' << to_string(projected.status) << '\n';
+              << projected.definition.expiry_ts_ns << '\t' << projected.definition.contract.K
+              << '\t' << relative_positions[leg].quantity << '\t' << projected.definition.multiplier
+              << '\t' << projected.model_mark << '\t' << projected.greeks.delta << '\t'
+              << projected.greeks.gamma << '\t' << projected.greeks.vega << '\t'
+              << projected.greeks.theta << '\t' << projected.definition.fingerprint << '\t'
+              << to_string(projected.status) << '\n';
     }
   }
   frame_out.close();
@@ -968,8 +687,8 @@ Status run_projected_var_command(const fs::path &run_dir) {
   for (const double confidence : {0.95, 0.99}) {
     ATX_TRY(ProjectedHistoricalVar risk,
             projected_historical_var(frames, frames.back().value, confidence));
-    summary << risk.confidence << '\t' << risk.reference_value << '\t' << risk.value_at_risk
-            << '\t' << risk.expected_shortfall << '\t' << risk.n_scenarios << '\t'
+    summary << risk.confidence << '\t' << risk.reference_value << '\t' << risk.value_at_risk << '\t'
+            << risk.expected_shortfall << '\t' << risk.n_scenarios << '\t'
             << relative_positions.size() << '\t'
             << (static_cast<double>(legs.size()) / elapsed_seconds) << '\t'
             << prepared.fingerprint() << '\n';

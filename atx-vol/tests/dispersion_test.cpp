@@ -271,10 +271,8 @@ TEST(Dispersion, Book_IsVegaNeutral) {
   EXPECT_TRUE(close(std::fabs(v.index), cfg.target_vega)) << v.index;
   EXPECT_LT(v.index, 0.0); // short index
 
-  std::printf("[dispersion] rho_imp=%.6f sigma_idx=%.6f n_names=%zu "
-              "book_vega_idx=%.2f book_vega_names=%.2f\n",
-              book->signal.implied_corr, book->signal.sigma_index, book->name_legs.size(), v.index,
-              v.names);
+  std::printf("[dispersion] n_names=%zu book_vega_idx=%.2f book_vega_names=%.2f\n",
+              book->name_legs.size(), v.index, v.names);
 }
 
 TEST(Dispersion, ProjectedBookUsesOneConcreteCalendarExpiry) {
@@ -776,5 +774,5 @@ TEST(Dispersion, ErrorPolicyIsBitIdenticalToBaseline) {
   EXPECT_TRUE(book->dropped.empty());
   ASSERT_EQ(book->name_legs.size(), 2u);
   EXPECT_EQ(book->positions.size(), 2u * (1u + 2u));
-  EXPECT_EQ(book->signal.used_names.size(), 2u);
+  EXPECT_EQ(book->used_names.size(), 2u);
 }

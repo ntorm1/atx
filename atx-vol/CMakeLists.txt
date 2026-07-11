@@ -71,6 +71,8 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/portfolio_pricer.cpp
     src/corpus.cpp
     src/dispersion.cpp
+    src/dispersion_backtest.cpp
+    src/dispersion_workflow.cpp
     src/listed_dispersion.cpp
     src/listed_opra.cpp
     src/occ_ess.cpp
@@ -78,6 +80,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/listed_dispersion_reconciliation.cpp
     src/listed_dispersion_strategy.cpp
     src/backtest.cpp
+    src/snapshot_cache.cpp
     src/strategy.cpp
     src/dispersion_strategy.cpp
     src/tearsheet.cpp

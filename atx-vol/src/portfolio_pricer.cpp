@@ -75,10 +75,9 @@ Result<Portfolio> Portfolio::create(std::span<const Position> positions,
   // reinstate exactly the multi-million-bucket dedup table this option exists to
   // avoid, and a pathological value would throw length_error out of a factory
   // whose contract is to return a Result.
-  const std::size_t expected =
-      options.expected_unique_contracts > 0
-          ? std::min(options.expected_unique_contracts, positions.size())
-          : std::min(positions.size(), kAutoUniqueReserveCap);
+  const std::size_t expected = options.expected_unique_contracts > 0
+                                   ? std::min(options.expected_unique_contracts, positions.size())
+                                   : std::min(positions.size(), kAutoUniqueReserveCap);
   seen.reserve(expected);
   for (std::size_t i = 0; i < positions.size(); ++i) {
     const OptionContract &c = positions[i].contract;
@@ -99,6 +98,36 @@ Result<Portfolio> Portfolio::create(std::span<const Position> positions,
   pf.uids_.erase(std::unique(pf.uids_.begin(), pf.uids_.end()), pf.uids_.end());
 
   return pf;
+}
+
+Status Portfolio::retime(std::span<const double> position_T) {
+  if (position_T.size() != positions_.size()) {
+    return Err(ErrorCode::InvalidArgument, "Portfolio::retime: tenor count mismatch");
+  }
+  for (std::size_t contract_index = 0; contract_index < contracts_.size(); ++contract_index) {
+    bool found = false;
+    double tenor = 0.0;
+    for (std::size_t i = 0; i < positions_.size(); ++i) {
+      if (pos_contract_ix_[i] != contract_index) {
+        continue;
+      }
+      if (!found) {
+        tenor = position_T[i];
+        found = true;
+      } else if (std::bit_cast<std::uint64_t>(tenor) !=
+                 std::bit_cast<std::uint64_t>(position_T[i])) {
+        return Err(ErrorCode::InvalidArgument,
+                   "Portfolio::retime: deduplicated positions have different tenors");
+      }
+    }
+    if (found) {
+      contracts_[contract_index].T = tenor;
+    }
+  }
+  for (std::size_t i = 0; i < positions_.size(); ++i) {
+    positions_[i].contract.T = position_T[i];
+  }
+  return Status{};
 }
 
 // ── SurfaceSet ────────────────────────────────────────────────────────────
@@ -186,8 +215,8 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
                    std::vector<Status> &b_status) {
   const std::size_t n_unique = pp.n_unique();
   using EF = PricedSurface::EvalField;
-  const EF fields = want_greeks ? (EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder)
-                                : (EF::Iv | EF::Price);
+  const EF fields =
+      want_greeks ? (EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder) : (EF::Iv | EF::Price);
 
   px.resize(contracts.size());
   b_iv.resize(n_unique);
@@ -210,7 +239,7 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
       for (std::uint32_t p = s; p < e; ++p) {
         const std::uint32_t orig = oci[p];
         px[orig].status = degenerate(contracts[orig]) ? PriceStatus::InvalidContract
-                                                       : PriceStatus::ModelUnavailable;
+                                                      : PriceStatus::ModelUnavailable;
       }
       return;
     }
@@ -255,9 +284,9 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
   pricing_executor().run_ranges(n_unique, n_threads, [&](std::size_t lo, std::size_t hi) {
     const std::uint32_t lo32 = static_cast<std::uint32_t>(lo);
     const std::uint32_t hi32 = static_cast<std::uint32_t>(hi);
-    auto git = std::upper_bound(
-        groups.begin(), groups.end(), lo32,
-        [](std::uint32_t v, const ContractGroup &grp) { return v < grp.end; });
+    auto git =
+        std::upper_bound(groups.begin(), groups.end(), lo32,
+                         [](std::uint32_t v, const ContractGroup &grp) { return v < grp.end; });
     for (; git != groups.end() && git->begin < hi32; ++git) {
       const std::uint32_t s = std::max<std::uint32_t>(git->begin, lo32);
       const std::uint32_t e = std::min<std::uint32_t>(git->end, hi32);
@@ -407,20 +436,20 @@ void reduce_price_totals(std::span<const Position> positions, const Portfolio &p
 // ── PortfolioWorkspace (retained substrate + reusable scratch) ─────────────
 
 struct PortfolioWorkspace::Impl {
-  std::vector<ContractPx> px;            // per unique contract, ORIGINAL-index order
-  std::vector<double> b_iv;              // permuted-order batch-eval scratch (base surface)
+  std::vector<ContractPx> px; // per unique contract, ORIGINAL-index order
+  std::vector<double> b_iv;   // permuted-order batch-eval scratch (base surface)
   std::vector<double> b_price;
-  std::vector<AmericanGreeks> b_greeks;  // sized 0 under Marks
+  std::vector<AmericanGreeks> b_greeks; // sized 0 under Marks
   std::vector<Status> b_status;
   // P&L solve scratch (permuted order): the per-unique result plus the shifted-
   // surface batch buffers the grouped P&L solve fills (base batch reuses b_* above).
-  std::vector<ContractPnl> pnl;          // per unique contract, ORIGINAL-index order
-  std::vector<double> pnl_tt;            // shifted maturity column T_t = T_b - dt
-  std::vector<double> pnl_s_iv;          // shifted iv at the common base maturity (sig_t)
-  std::vector<double> pnl_s_price;       // shifted American mark at T_t (price_target)
-  std::vector<Status> pnl_s_status;      // shifted-price batch status
-  std::vector<double> pnl_junk;          // throwaway span for the batch's unused output
-  std::vector<Status> pnl_junk_status;   // throwaway status span
+  std::vector<ContractPnl> pnl;              // per unique contract, ORIGINAL-index order
+  std::vector<double> pnl_tt;                // shifted maturity column T_t = T_b - dt
+  std::vector<double> pnl_s_iv;              // shifted iv at the common base maturity (sig_t)
+  std::vector<double> pnl_s_price;           // shifted American mark at T_t (price_target)
+  std::vector<Status> pnl_s_status;          // shifted-price batch status
+  std::vector<double> pnl_junk;              // throwaway span for the batch's unused output
+  std::vector<Status> pnl_junk_status;       // throwaway status span
   std::optional<PreparedPortfolio> prepared; // retained across snapshots (built once)
   const Portfolio *prepared_book{nullptr};   // book identity the substrate is for
   std::uint64_t prepared_fingerprint{0};     // ABA guard: see book_fingerprint()
@@ -471,9 +500,9 @@ Status PortfolioPricer::price_into(const SurfaceSet &surfaces, PriceFieldMask fi
     return Err(ErrorCode::InvalidArgument, "price_into: marks span/size mismatch");
   }
   if (want_greeks) {
-    const bool greeks_ok = out.delta.size() == n && out.gamma.size() == n &&
-                           out.vega.size() == n && out.theta.size() == n && out.rho.size() == n &&
-                           out.vanna.size() == n && out.volga.size() == n && out.charm.size() == n;
+    const bool greeks_ok = out.delta.size() == n && out.gamma.size() == n && out.vega.size() == n &&
+                           out.theta.size() == n && out.rho.size() == n && out.vanna.size() == n &&
+                           out.volga.size() == n && out.charm.size() == n;
     if (!greeks_ok) {
       return Err(ErrorCode::InvalidArgument, "price_into: greek span/size mismatch");
     }
@@ -562,8 +591,8 @@ Result<PriceFrame> PortfolioPricer::price(const SurfaceSet &surfaces,
     f.charm.resize(n);
   }
 
-  PriceFrameView view{f.id,    f.uid,   f.pv,    f.price, f.iv,     f.delta,  f.gamma, f.vega,
-                      f.theta, f.rho,   f.vanna, f.volga, f.charm,  f.status, &f.total};
+  PriceFrameView view{f.id,    f.uid, f.pv,    f.price, f.iv,    f.delta,  f.gamma, f.vega,
+                      f.theta, f.rho, f.vanna, f.volga, f.charm, f.status, &f.total};
   PortfolioWorkspace ws; // one-shot local workspace (the wrapper accepts its alloc)
   if (Status s = price_into(surfaces, fields, view, ws, opts); !s.has_value()) {
     return Err(s.error());
@@ -650,10 +679,10 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
     }
 
     // Base surface at T_b: greeks + mark + iv (sig_b), analytic route as requested.
-    PricedSurface::EvaluationSoA base_soa{
-        std::span<double>(b_iv).subspan(s, gsz), std::span<double>(b_price).subspan(s, gsz),
-        std::span<AmericanGreeks>(b_greeks).subspan(s, gsz),
-        std::span<Status>(b_status).subspan(s, gsz)};
+    PricedSurface::EvaluationSoA base_soa{std::span<double>(b_iv).subspan(s, gsz),
+                                          std::span<double>(b_price).subspan(s, gsz),
+                                          std::span<AmericanGreeks>(b_greeks).subspan(s, gsz),
+                                          std::span<Status>(b_status).subspan(s, gsz)};
     (void)sb->evaluate_batch(kcol.subspan(s, gsz), tcol.subspan(s, gsz), scol.subspan(s, gsz),
                              EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder, analytic,
                              base_soa);
@@ -687,8 +716,8 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
         out.status = PriceStatus::NumericError;
         continue;
       }
-      const double sig_b = b_iv[p];   // == sb->iv(K,T_b), from the base resolve
-      const double sig_t = s_iv[p];   // == st->iv(K,T_b), common maturity
+      const double sig_b = b_iv[p]; // == sb->iv(K,T_b), from the base resolve
+      const double sig_t = s_iv[p]; // == st->iv(K,T_b), common maturity
       if (!(std::isfinite(sig_b) && std::isfinite(sig_t))) {
         out.status = PriceStatus::NumericError;
         continue;
@@ -711,9 +740,9 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
   pricing_executor().run_ranges(n_unique, n_threads, [&](std::size_t lo, std::size_t hi) {
     const std::uint32_t lo32 = static_cast<std::uint32_t>(lo);
     const std::uint32_t hi32 = static_cast<std::uint32_t>(hi);
-    auto git = std::upper_bound(
-        groups.begin(), groups.end(), lo32,
-        [](std::uint32_t v, const ContractGroup &grp) { return v < grp.end; });
+    auto git =
+        std::upper_bound(groups.begin(), groups.end(), lo32,
+                         [](std::uint32_t v, const ContractGroup &grp) { return v < grp.end; });
     for (; git != groups.end() && git->begin < hi32; ++git) {
       const std::uint32_t s = std::max<std::uint32_t>(git->begin, lo32);
       const std::uint32_t e = std::min<std::uint32_t>(git->end, hi32);
@@ -837,15 +866,14 @@ Status PortfolioPricer::pnl_explain_into(const SurfaceSet &base, const SurfaceSe
 
   // P&L has NO field mask — all 19 columns (and the totals sink) must be present and
   // sized to the position count.
-  const bool ok = out.id.size() == n && out.uid.size() == n && out.pv_base.size() == n &&
-                  out.pv_target.size() == n && out.pnl_total.size() == n &&
-                  out.pnl_delta.size() == n && out.pnl_gamma.size() == n &&
-                  out.pnl_vega.size() == n && out.pnl_volga.size() == n &&
-                  out.pnl_vanna.size() == n && out.pnl_theta.size() == n &&
-                  out.pnl_rho.size() == n && out.pnl_charm.size() == n &&
-                  out.pnl_unexplained.size() == n && out.d_spot.size() == n &&
-                  out.d_vol.size() == n && out.d_time.size() == n && out.d_rate.size() == n &&
-                  out.status.size() == n && out.total != nullptr;
+  const bool ok =
+      out.id.size() == n && out.uid.size() == n && out.pv_base.size() == n &&
+      out.pv_target.size() == n && out.pnl_total.size() == n && out.pnl_delta.size() == n &&
+      out.pnl_gamma.size() == n && out.pnl_vega.size() == n && out.pnl_volga.size() == n &&
+      out.pnl_vanna.size() == n && out.pnl_theta.size() == n && out.pnl_rho.size() == n &&
+      out.pnl_charm.size() == n && out.pnl_unexplained.size() == n && out.d_spot.size() == n &&
+      out.d_vol.size() == n && out.d_time.size() == n && out.d_rate.size() == n &&
+      out.status.size() == n && out.total != nullptr;
   if (!ok) {
     return Err(ErrorCode::InvalidArgument, "pnl_explain_into: span/size mismatch");
   }
@@ -927,10 +955,10 @@ Result<PnlFrame> PortfolioPricer::pnl_explain(const SurfaceSet &base, const Surf
   f.d_rate.resize(n);
   f.status.resize(n);
 
-  PnlFrameView view{f.id,          f.uid,       f.pv_base,   f.pv_target,       f.pnl_total,
-                    f.pnl_delta,   f.pnl_gamma, f.pnl_vega,  f.pnl_volga,       f.pnl_vanna,
-                    f.pnl_theta,   f.pnl_rho,   f.pnl_charm, f.pnl_unexplained, f.d_spot,
-                    f.d_vol,       f.d_time,    f.d_rate,    f.status,          &f.total};
+  PnlFrameView view{f.id,        f.uid,       f.pv_base,   f.pv_target,       f.pnl_total,
+                    f.pnl_delta, f.pnl_gamma, f.pnl_vega,  f.pnl_volga,       f.pnl_vanna,
+                    f.pnl_theta, f.pnl_rho,   f.pnl_charm, f.pnl_unexplained, f.d_spot,
+                    f.d_vol,     f.d_time,    f.d_rate,    f.status,          &f.total};
   PortfolioWorkspace ws; // one-shot local workspace (the wrapper accepts its alloc)
   if (Status s = pnl_explain_into(base, shifted, view, ws, opts); !s.has_value()) {
     return Err(s.error());

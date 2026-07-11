@@ -147,6 +147,11 @@ public:
   [[nodiscard]] std::span<const OptionContract> contracts() const noexcept { return contracts_; }
   [[nodiscard]] std::span<const std::uint32_t> uids() const noexcept { return uids_; }
 
+  // Update residual tenor by position while preserving the dedup/group mapping.
+  // Safe when time advances a fixed set of absolute-expiry lots: positions that
+  // shared a contract must receive bit-identical tenors.
+  [[nodiscard]] Status retime(std::span<const double> position_T);
+
   // The unique-contract index that position `i` references (i < n_positions()).
   [[nodiscard]] std::uint32_t contract_ix(std::size_t i) const noexcept {
     return pos_contract_ix_[i];
@@ -442,6 +447,7 @@ public:
   explicit PortfolioPricer(Portfolio pf) noexcept : pf_(std::move(pf)) {}
 
   [[nodiscard]] const Portfolio &portfolio() const noexcept { return pf_; }
+  [[nodiscard]] Status retime(std::span<const double> position_T) { return pf_.retime(position_T); }
 
   // Price the book against one surface per underlying. Positions whose uid has no
   // registered surface are ModelUnavailable; degenerate contracts are

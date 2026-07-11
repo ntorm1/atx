@@ -254,9 +254,9 @@ private:
 
 // An IStrategy over a dispersion universe. On entry it calls the existing
 // `build_dispersion_book` (authoritative P4-1 sizing — NOT reimplemented) and
-// converts the emitted `Position`s into `Lot`s; `signals` surfaces the
-// implied-correlation diagnostic plus an `n_names_dropped` count. Default
-// lifecycle: RollAtHorizon.
+// converts the emitted `Position`s into `Lot`s. Implied correlation and dropped
+// name series are recorded only when `cfg.record_diagnostics` is explicitly
+// enabled. Default lifecycle: RollAtHorizon.
 //
 // Missing-name handling rides in `cfg.missing` (S1-3). Under `DropRenormalize` a
 // member absent/unusable on a date is dropped and the basket renormalized rather
@@ -283,7 +283,7 @@ public:
   [[nodiscard]] Result<DispersionBook> build_book(const MarketSnapshot &base) const;
 
   // Diagnostic accessor: the names dropped on `base` under `cfg.missing` — both
-  // resolve-stage drops (symbol absent from the snapshot) and signal-stage drops
+  // resolve-stage drops (symbol absent from the snapshot) and IV-stage drops
   // (surface missing / ATM straddle unusable), in that order. Empty under Error.
   [[nodiscard]] std::vector<DroppedName> dropped_on(const MarketSnapshot &base) const;
   [[nodiscard]] HedgeSpec hedge_spec() const override { return hedge_; }

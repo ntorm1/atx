@@ -162,16 +162,12 @@ struct DispersionConfig {
   // index projection fixes the absolute expiry and every constituent is then
   // projected to that same timestamp. nullopt preserves the legacy target_T path.
   std::optional<ProjectedMaturitySpec> projected_maturity{};
+  bool record_diagnostics{false};
 };
 
-// The implied-correlation signal at one snapshot (cheap; no positions). Under
-// DropRenormalize a missing/unusable name is dropped: `used_names` holds the
-// surviving indices into `DispersionUniverse::names` (ascending) and `sigma_names`
-// is parallel to `used_names` (NOT to `DispersionUniverse::names`); `dropped`
-// records the removed names in input order. Under the default Error policy nothing
-// is dropped, so `used_names == {0..N-1}` and `dropped` is empty. Basket weights
-// are NORMALIZED over the SURVIVORS (w_hat_i = w_i / Σ_survivors w), so Σŵ = 1 and
-// the signal is scale-invariant; the sums below are over w_hat.
+// Opt-in implied-correlation diagnostic for one snapshot. It resolves forwards
+// and ATM IV only; no option mark or American Greek is evaluated. Under
+// DropRenormalize, used_names and sigma_names describe the surviving basket.
 struct DispersionSignal {
   double T_used{0.0};
   double sigma_index{0.0};
@@ -194,23 +190,24 @@ struct DispersionLeg {
   double sigma{0.0};
   double straddle_vega{0.0};
   double straddle_qty{0.0};
+  double call_mark{0.0};
+  double put_mark{0.0};
   ProjectedOptionDefinition call_definition{};
   ProjectedOptionDefinition put_definition{};
 };
 
-// A fully-sized dispersion book: the signal, the per-leg diagnostics, and the
-// flat position list (two positions — a Call then a Put at the same K/T/qty — per
-// straddle). Under DropRenormalize the book covers the SURVIVORS only, so
-// name_legs.size() == signal.used_names.size() and positions.size() ==
-// 2 * (1 + signal.used_names.size()); `dropped` mirrors `signal.dropped` so a
-// caller sees the removed names without recomputing. Ready for Portfolio::create /
-// PortfolioPricer.
+// A fully-sized dispersion book. Book construction does not compute implied
+// correlation. Each sizing leg is evaluated once, and entry_marks carries the
+// already-produced per-share marks in parallel with positions. Under
+// DropRenormalize, used_names contains survivor indices and dropped records
+// removed names.
 struct DispersionBook {
-  DispersionSignal signal;
   DispersionLeg index_leg;
   std::vector<DispersionLeg> name_legs;
+  std::vector<std::size_t> used_names;
   std::vector<Position> positions;
-  std::vector<DroppedName> dropped; // copy of signal.dropped (survivors' drops)
+  std::vector<double> entry_marks;
+  std::vector<DroppedName> dropped;
 };
 
 // Compute the implied-correlation signal at tenor `T` (year-fraction). Resolves
@@ -238,26 +235,13 @@ struct DispersionBook {
                                                          const SurfaceSet &surfaces, double T,
                                                          MissingNameSpec missing = {});
 
-// Build the full vega-neutral dispersion book (signal + sized straddle positions)
-// at `cfg.target_T`, scaled so the index leg carries `cfg.target_vega` of gross
-// vega and the weighted basket matches it.
+// Build the full vega-neutral dispersion book without evaluating the optional
+// implied-correlation diagnostic. Each surviving leg is resolved exactly once;
+// its vega sizes the position and its mark is retained for entry materialization.
+// Basket weights are normalized over used_names, preserving exact vega neutrality.
 //
-// Sizing (vega-neutral); basket weights normalized internally, w_hat_i = w_i / Σw:
-//   n_idx = ± target_vega / (straddle_vega_idx · multiplier)
-//   n_i   = ∓ w_hat_i · target_vega / (straddle_vega_i · multiplier)
-// with the sign set by `side` (ShortIndexLongNames => index short, names long).
-// The sign applies to BOTH legs of each straddle. Because Σ w_hat_i = 1, the basket
-// gross vega equals the index leg exactly for ANY positive-weight input.
-//
-// The missing-name policy rides in `cfg.missing`; the sizing consumes the SAME
-// survivor set the signal used (`signal.used_names`) and sums the basket weights
-// over survivors only, so the book and the signal never disagree about who is in
-// the basket. Σ ŵ = 1 over survivors keeps the basket gross vega == index leg
-// exactly. `book.dropped` copies the signal's drops.
-//
-// Errors: those of `dispersion_signal`, plus InvalidArgument if target_T,
-// target_vega, or multiplier is non-finite or <= 0, and Unavailable if any
-// member's ATM straddle vega is non-finite or <= 0 (message names the symbol).
+// Errors include invalid sizing configuration, an unavailable index, insufficient
+// surviving names, or a surviving basket with non-positive total weight.
 [[nodiscard]] Result<DispersionBook> build_dispersion_book(const DispersionUniverse &universe,
                                                            const SurfaceSet &surfaces,
                                                            const DispersionConfig &cfg);

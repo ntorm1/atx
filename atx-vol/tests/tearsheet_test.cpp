@@ -33,19 +33,19 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/american.hpp"          // al_fast_opts, AmericanMethod
-#include "atx/vol/backtest.hpp"          // Clock, run_backtest, RunConfig, BacktestResult
-#include "atx/vol/corpus.hpp"            // CorpusManifest, CorpusEntry, CorpusFitStatus
-#include "atx/vol/dispersion.hpp"        // DispersionUniverse, DispersionConfig, DispersionMember
-#include "atx/vol/portfolio_pricer.hpp"  // OptionContract, kNsPerYear
-#include "atx/vol/priced_surface.hpp"    // PricedSurface, PricingContext
-#include "atx/vol/strategy.hpp"          // DeclarativeStrategy, StrategySpec, DispersionStrategy
-#include "atx/vol/surface_archive.hpp"   // write_surface_archive_file, SurfaceArchiveItem
-#include "atx/vol/surface_parity.hpp"    // SliceContext
-#include "atx/vol/tearsheet.hpp"         // TearSheet, tearsheet, write_backtest_tsv
-#include "atx/vol/types.hpp"             // Side, Result, Status
-#include "atx/vol/vol_curve.hpp"         // CurveSurface, EssviCurve
-#include "atx/vol/vol_surface.hpp"       // EssviParams
+#include "atx/vol/american.hpp"         // al_fast_opts, AmericanMethod
+#include "atx/vol/backtest.hpp"         // Clock, run_backtest, RunConfig, BacktestResult
+#include "atx/vol/corpus.hpp"           // CorpusManifest, CorpusEntry, CorpusFitStatus
+#include "atx/vol/dispersion.hpp"       // DispersionUniverse, DispersionConfig, DispersionMember
+#include "atx/vol/portfolio_pricer.hpp" // OptionContract, kNsPerYear
+#include "atx/vol/priced_surface.hpp"   // PricedSurface, PricingContext
+#include "atx/vol/strategy.hpp"         // DeclarativeStrategy, StrategySpec, DispersionStrategy
+#include "atx/vol/surface_archive.hpp"  // write_surface_archive_file, SurfaceArchiveItem
+#include "atx/vol/surface_parity.hpp"   // SliceContext
+#include "atx/vol/tearsheet.hpp"        // TearSheet, tearsheet, write_backtest_tsv
+#include "atx/vol/types.hpp"            // Side, Result, Status
+#include "atx/vol/vol_curve.hpp"        // CurveSurface, EssviCurve
+#include "atx/vol/vol_surface.hpp"      // EssviParams
 
 using namespace atx::vol;
 namespace fs = std::filesystem;
@@ -102,7 +102,7 @@ constexpr std::uint32_t kSpy = 20;
   return std::move(*ps);
 }
 
-[[nodiscard]] fs::path fresh_dir(const char* tag) {
+[[nodiscard]] fs::path fresh_dir(const char *tag) {
   const fs::path dir = fs::temp_directory_path() / (std::string("atx-tearsheet-") + tag);
   std::error_code ec;
   fs::remove_all(dir, ec);
@@ -110,15 +110,15 @@ constexpr std::uint32_t kSpy = 20;
 }
 
 // Write `items` (symbol -> surface) as one date's archive; return its path.
-[[nodiscard]] std::string write_archive(
-    const fs::path& dir, const std::string& date,
-    const std::vector<std::pair<std::string, const PricedSurface*>>& items) {
+[[nodiscard]] std::string
+write_archive(const fs::path &dir, const std::string &date,
+              const std::vector<std::pair<std::string, const PricedSurface *>> &items) {
   std::error_code ec;
   fs::create_directories(dir, ec);
   const std::string path = (dir / (date + ".atxvsa")).string();
   std::vector<SurfaceArchiveItem> its;
   its.reserve(items.size());
-  for (const auto& [sym, ps] : items) {
+  for (const auto &[sym, ps] : items) {
     its.push_back(SurfaceArchiveItem{sym, ps});
   }
   const Status st = write_surface_archive_file(path, its);
@@ -127,11 +127,11 @@ constexpr std::uint32_t kSpy = 20;
 }
 
 // Hand-build an Ok-only manifest over (date, archive_path) rows (one entry/date).
-[[nodiscard]] CorpusManifest make_manifest(
-    const std::vector<std::pair<std::string, std::string>>& date_paths,
-    const std::string& symbol = "MKT") {
+[[nodiscard]] CorpusManifest
+make_manifest(const std::vector<std::pair<std::string, std::string>> &date_paths,
+              const std::string &symbol = "MKT") {
   CorpusManifest m;
-  for (const auto& [date, path] : date_paths) {
+  for (const auto &[date, path] : date_paths) {
     m.dates.push_back(date);
     CorpusEntry e;
     e.date = date;
@@ -145,11 +145,11 @@ constexpr std::uint32_t kSpy = 20;
 
 struct Corpus {
   CorpusManifest manifest;
-  std::vector<std::pair<std::string, std::string>> dp;  // (date, path), ascending
+  std::vector<std::pair<std::string, std::string>> dp; // (date, path), ascending
 };
 
 // A single-underlying evolving corpus: spot drifts, valuation advances one day.
-[[nodiscard]] Corpus make_corpus(const fs::path& dir, const std::string& symbol, int n_dates,
+[[nodiscard]] Corpus make_corpus(const fs::path &dir, const std::string &symbol, int n_dates,
                                  double s0 = 100.0, double drift = 0.004, double vdrift = 0.001) {
   std::vector<std::pair<std::string, std::string>> dp;
   for (int d = 0; d < n_dates; ++d) {
@@ -169,7 +169,7 @@ struct Corpus {
 }
 
 // A two-underlying corpus (XOM + SPY in each date's archive), distinct uids.
-[[nodiscard]] Corpus make_multi_corpus(const fs::path& dir, int n_dates) {
+[[nodiscard]] Corpus make_multi_corpus(const fs::path &dir, int n_dates) {
   std::vector<std::pair<std::string, std::string>> dp;
   for (int d = 0; d < n_dates; ++d) {
     const std::int64_t now = kBaseNow + static_cast<std::int64_t>(d) * kDayNs;
@@ -189,33 +189,45 @@ struct Corpus {
 }
 
 // The closure sum the design pins as a gate.
-[[nodiscard]] double closure_sum(const TearSheet& t) noexcept {
+[[nodiscard]] double closure_sum(const TearSheet &t) noexcept {
   return t.attr_delta + t.attr_gamma + t.attr_vega + t.attr_vanna + t.attr_volga + t.attr_theta +
          t.attr_rho + t.attr_charm + t.attr_unexplained + t.attr_settlement + t.attr_shares +
          t.attr_financing - t.attr_cost;
 }
 
 // Every numeric column of two BacktestResults is bit-identical (determinism).
-void expect_result_bit_identical(const BacktestResult& a, const BacktestResult& b) {
+void expect_result_bit_identical(const BacktestResult &a, const BacktestResult &b) {
   ASSERT_EQ(a.size(), b.size());
-  const std::vector<std::pair<const std::vector<double>*, const std::vector<double>*>> cols = {
-      {&a.pnl_total, &b.pnl_total},         {&a.pnl_delta, &b.pnl_delta},
-      {&a.pnl_gamma, &b.pnl_gamma},         {&a.pnl_vega, &b.pnl_vega},
-      {&a.pnl_vanna, &b.pnl_vanna},         {&a.pnl_volga, &b.pnl_volga},
-      {&a.pnl_theta, &b.pnl_theta},         {&a.pnl_rho, &b.pnl_rho},
-      {&a.pnl_charm, &b.pnl_charm},         {&a.pnl_unexplained, &b.pnl_unexplained},
-      {&a.pnl_settlement, &b.pnl_settlement}, {&a.pnl_shares, &b.pnl_shares},
-      {&a.financing, &b.financing},         {&a.cost, &b.cost},
-      {&a.nav, &b.nav},                     {&a.cash, &b.cash},
-      {&a.gross_delta, &b.gross_delta},     {&a.gross_gamma, &b.gross_gamma},
-      {&a.gross_vega, &b.gross_vega},       {&a.gross_theta, &b.gross_theta},
-      {&a.turnover_notional, &b.turnover_notional}, {&a.turnover_vega, &b.turnover_vega},
-      {&a.n_open_lots, &b.n_open_lots}, {&a.n_unpriced_lots, &b.n_unpriced_lots},
+  const std::vector<std::pair<const std::vector<double> *, const std::vector<double> *>> cols = {
+      {&a.pnl_total, &b.pnl_total},
+      {&a.pnl_delta, &b.pnl_delta},
+      {&a.pnl_gamma, &b.pnl_gamma},
+      {&a.pnl_vega, &b.pnl_vega},
+      {&a.pnl_vanna, &b.pnl_vanna},
+      {&a.pnl_volga, &b.pnl_volga},
+      {&a.pnl_theta, &b.pnl_theta},
+      {&a.pnl_rho, &b.pnl_rho},
+      {&a.pnl_charm, &b.pnl_charm},
+      {&a.pnl_unexplained, &b.pnl_unexplained},
+      {&a.pnl_settlement, &b.pnl_settlement},
+      {&a.pnl_shares, &b.pnl_shares},
+      {&a.financing, &b.financing},
+      {&a.cost, &b.cost},
+      {&a.nav, &b.nav},
+      {&a.cash, &b.cash},
+      {&a.gross_delta, &b.gross_delta},
+      {&a.gross_gamma, &b.gross_gamma},
+      {&a.gross_vega, &b.gross_vega},
+      {&a.gross_theta, &b.gross_theta},
+      {&a.turnover_notional, &b.turnover_notional},
+      {&a.turnover_vega, &b.turnover_vega},
+      {&a.n_open_lots, &b.n_open_lots},
+      {&a.n_unpriced_lots, &b.n_unpriced_lots},
       {&a.n_unpriced_greeks, &b.n_unpriced_greeks}};
   for (std::size_t i = 0; i < a.size(); ++i) {
     EXPECT_EQ(a.date[i], b.date[i]) << i;
     EXPECT_EQ(a.ts_ns[i], b.ts_ns[i]) << i;
-    for (const auto& [va, vb] : cols) {
+    for (const auto &[va, vb] : cols) {
       EXPECT_TRUE(bits_equal((*va)[i], (*vb)[i])) << i;
     }
   }
@@ -230,7 +242,7 @@ void expect_result_bit_identical(const BacktestResult& a, const BacktestResult& 
 }
 
 // A 40-delta strangle leg-template on one underlier (mirrors strategy_test).
-[[nodiscard]] LegSpec strangle_leg(std::uint32_t uid, double T, double sign, const char* group) {
+[[nodiscard]] LegSpec strangle_leg(std::uint32_t uid, double T, double sign, const char *group) {
   LegSpec leg;
   leg.uid = uid;
   leg.tenor.target_T = T;
@@ -242,7 +254,7 @@ void expect_result_bit_identical(const BacktestResult& a, const BacktestResult& 
   return leg;
 }
 
-}  // namespace
+} // namespace
 
 // ── 1. Tearsheet math on a hand-built series ────────────────────────────────
 TEST(TearSheet, Math) {
@@ -304,14 +316,14 @@ TEST(TearSheet, Math) {
   expect_close(t.ann_return, 630.0);
   expect_close(t.ann_vol, rsd * std::sqrt(ppy));
   expect_close(t.sharpe, (rmean * ppy) / (rsd * std::sqrt(ppy)));
-  expect_close(t.max_drawdown, 4.0);  // peak 12 at row 3, trough 10 at row 4 -> but 6->? see below
-  expect_close(t.hit_rate, 0.5);      // 2 of 4 returns > 0
+  expect_close(t.max_drawdown, 4.0); // peak 12 at row 3, trough 10 at row 4 -> but 6->? see below
+  expect_close(t.hit_rate, 0.5);     // 2 of 4 returns > 0
   expect_close(t.avg_turnover, 875.0);
   expect_close(t.total_cost, 1.75);
   expect_close(t.total_financing, 1.0);
 
   // Attribution totals (independent Σ).
-  const auto sum = [&](const std::vector<double>& v) {
+  const auto sum = [&](const std::vector<double> &v) {
     double s = 0.0;
     for (const double x : v) {
       s += x;
@@ -351,11 +363,10 @@ TEST(TearSheet, Math) {
   const double xsd = std::sqrt(xss / static_cast<double>(xs.size() - 1));
   expect_close(t.vega_adj_sharpe, (xmean / xsd) * std::sqrt(ppy));
 
-  std::printf(
-      "[tearsheet] math: sharpe=%.6f mdd=%.2f hit=%.3f avg_turnover=%.1f "
-      "ret_on_vega=%.6f vega_adj_sharpe=%.6f pnl_per_vega=%.6f\n",
-      t.sharpe, t.max_drawdown, t.hit_rate, t.avg_turnover, t.return_on_gross_vega,
-      t.vega_adj_sharpe, t.pnl_per_vega_traded);
+  std::printf("[tearsheet] math: sharpe=%.6f mdd=%.2f hit=%.3f avg_turnover=%.1f "
+              "ret_on_vega=%.6f vega_adj_sharpe=%.6f pnl_per_vega=%.6f\n",
+              t.sharpe, t.max_drawdown, t.hit_rate, t.avg_turnover, t.return_on_gross_vega,
+              t.vega_adj_sharpe, t.pnl_per_vega_traded);
 }
 
 // ── 2. Attribution closes on a real (frictions + financing ON) run ──────────
@@ -405,8 +416,9 @@ TEST(TearSheet, AttributionCloses) {
   EXPECT_LE(resid, 1e-6 * (std::fabs(t.total_return) + 1.0))
       << "total_return=" << t.total_return << " closure=" << sumc
       << " inception_cost=" << res->cost.front();
-  std::printf("[tearsheet] attribution-close residual = %.3e (total_return=%.4f inception_cost=%.4f)\n",
-              resid, t.total_return, res->cost.front());
+  std::printf(
+      "[tearsheet] attribution-close residual = %.3e (total_return=%.4f inception_cost=%.4f)\n",
+      resid, t.total_return, res->cost.front());
 }
 
 // ── 3. TSV round-trips bit-exactly (incl. signals + ts_ns) ──────────────────
@@ -432,12 +444,13 @@ TEST(TearSheet, TsvRoundTrip) {
   u.index = DispersionMember{"IDX", 1, 0.0};
   u.names.push_back(DispersionMember{"NM0", 2, 0.6});
   u.names.push_back(DispersionMember{"NM1", 3, 0.4});
-  const DispersionConfig dcfg;
+  DispersionConfig dcfg;
+  dcfg.record_diagnostics = true;
   DispersionStrategy strat{u, dcfg};
 
   auto res = run_backtest(*clock, strat);
   ASSERT_TRUE(res.has_value()) << res.error().to_string();
-  const BacktestResult& r = *res;
+  const BacktestResult &r = *res;
   ASSERT_GT(r.signals.size(), 0u) << "expected a signal column to exercise the signal TSV path";
 
   const std::string path = (dir / "run.tsv").string();
@@ -454,7 +467,7 @@ TEST(TearSheet, TsvRoundTrip) {
     while (start <= content.size()) {
       const std::size_t nl = content.find('\n', start);
       if (nl == std::string::npos) {
-        break;  // trailing content after the last '\n' (none expected)
+        break; // trailing content after the last '\n' (none expected)
       }
       const std::string line = content.substr(start, nl - start);
       std::vector<std::string> cells;
@@ -473,10 +486,10 @@ TEST(TearSheet, TsvRoundTrip) {
     }
   }
   ASSERT_GE(table.size(), 1u);
-  const std::vector<std::string>& header = table.front();
-  ASSERT_EQ(table.size(), r.size() + 1);  // header + one row per step
+  const std::vector<std::string> &header = table.front();
+  ASSERT_EQ(table.size(), r.size() + 1); // header + one row per step
 
-  const auto col_index = [&](const std::string& name) -> std::size_t {
+  const auto col_index = [&](const std::string &name) -> std::size_t {
     for (std::size_t i = 0; i < header.size(); ++i) {
       if (header[i] == name) {
         return i;
@@ -497,7 +510,7 @@ TEST(TearSheet, TsvRoundTrip) {
   }
 
   // Every double column bit-identical after strtod.
-  const std::vector<std::pair<std::string, const std::vector<double>*>> dcols = {
+  const std::vector<std::pair<std::string, const std::vector<double> *>> dcols = {
       {"pnl_total", &r.pnl_total},
       {"pnl_delta", &r.pnl_delta},
       {"pnl_gamma", &r.pnl_gamma},
@@ -525,7 +538,7 @@ TEST(TearSheet, TsvRoundTrip) {
       {"n_unpriced_greeks", &r.n_unpriced_greeks},
   };
   std::size_t checked = 0;
-  for (const auto& [name, col] : dcols) {
+  for (const auto &[name, col] : dcols) {
     const std::size_t ci = col_index(name);
     ASSERT_LT(ci, header.size()) << name;
     for (std::size_t i = 0; i < r.size(); ++i) {
@@ -536,7 +549,7 @@ TEST(TearSheet, TsvRoundTrip) {
   }
 
   // Signal columns bit-identical.
-  for (const auto& sig : r.signals) {
+  for (const auto &sig : r.signals) {
     const std::size_t ci = col_index(sig.first);
     ASSERT_LT(ci, header.size()) << sig.first;
     for (std::size_t i = 0; i < r.size(); ++i) {
@@ -590,10 +603,10 @@ TEST(TearSheet, WorkedExampleA) {
   EXPECT_LE(resid, 1e-6 * (std::fabs(t.total_return) + 1.0));
   expect_result_bit_identical(*r1, *r4);
 
-  std::printf(
-      "[tearsheet] Example A: total_return=%.4f sharpe=%.4f mdd=%.4f "
-      "avg_gross_vega=%.2f ret_on_vega=%.6f closure_resid=%.3e (det=OK)\n",
-      t.total_return, t.sharpe, t.max_drawdown, t.avg_gross_vega, t.return_on_gross_vega, resid);
+  std::printf("[tearsheet] Example A: total_return=%.4f sharpe=%.4f mdd=%.4f "
+              "avg_gross_vega=%.2f ret_on_vega=%.6f closure_resid=%.3e (det=OK)\n",
+              t.total_return, t.sharpe, t.max_drawdown, t.avg_gross_vega, t.return_on_gross_vega,
+              resid);
 }
 
 // ── 4b. Worked Example B: XOM 9m vs SPY 3m 40d strangle, flat vega, roll ─────
@@ -605,8 +618,8 @@ TEST(TearSheet, WorkedExampleB) {
 
   StrategySpec spec;
   spec.name = "xom9m-vs-spy3m-40d-strangle-flat-vega";
-  spec.legs.push_back(strangle_leg(kXom, 0.75, +1.0, "a"));  // long XOM 9m
-  spec.legs.push_back(strangle_leg(kSpy, 0.25, -1.0, "b"));  // short SPY 3m
+  spec.legs.push_back(strangle_leg(kXom, 0.75, +1.0, "a")); // long XOM 9m
+  spec.legs.push_back(strangle_leg(kSpy, 0.25, -1.0, "b")); // short SPY 3m
   spec.constraint = CrossLegConstraint{CrossLegConstraint::Kind::FlatVega, "a", "b"};
   spec.lifecycle.entry = LifecycleSpec::Entry::EveryNDays;
   spec.lifecycle.holding = LifecycleSpec::Holding::RollAtHorizon;
@@ -632,8 +645,7 @@ TEST(TearSheet, WorkedExampleB) {
   EXPECT_LE(resid, 1e-6 * (std::fabs(t.total_return) + 1.0));
   expect_result_bit_identical(*r1, *r4);
 
-  std::printf(
-      "[tearsheet] Example B: total_return=%.4f sharpe=%.4f avg_gross_vega=%.2f "
-      "pnl_per_vega_traded=%.6f closure_resid=%.3e (det=OK)\n",
-      t.total_return, t.sharpe, t.avg_gross_vega, t.pnl_per_vega_traded, resid);
+  std::printf("[tearsheet] Example B: total_return=%.4f sharpe=%.4f avg_gross_vega=%.2f "
+              "pnl_per_vega_traded=%.6f closure_resid=%.3e (det=OK)\n",
+              t.total_return, t.sharpe, t.avg_gross_vega, t.pnl_per_vega_traded, resid);
 }
