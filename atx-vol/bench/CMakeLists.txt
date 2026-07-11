@@ -45,3 +45,21 @@ target_link_libraries(atx-vol-portfolio-bench
         atx_warnings
         Threads::Threads
 )
+
+# SIMD/AVX2 vectorized-kernel throughput: scalar per-contract loop vs AVX2 SoA
+# batch. Proof harness for the vectorization work (fitting/pricing/greeks/pnl).
+# Any bench/simd_*bench.cpp auto-joins (subagents add per-kernel benches here).
+file(GLOB ATX_VOL_SIMD_BENCH CONFIGURE_DEPENDS
+    ${CMAKE_CURRENT_SOURCE_DIR}/simd_*bench.cpp)
+add_executable(atx-vol-simd-bench
+    bench_main.cpp
+    ${ATX_VOL_SIMD_BENCH}
+)
+target_link_libraries(atx-vol-simd-bench
+    PRIVATE
+        atx::vol
+        atx::core
+        benchmark::benchmark
+        atx_warnings
+        Threads::Threads
+)

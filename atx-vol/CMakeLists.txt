@@ -76,6 +76,23 @@ add_library(atx-vol ${ATX_LIB_TYPE}
 )
 add_library(atx::vol ALIAS atx-vol)
 
+# ---- SIMD/AVX2 vectorized batch kernels (fastpath) ---------------------------
+# All src/simd/*.cpp join the library; the *_avx2.cpp translation units emit
+# AVX2+FMA intrinsics and get the ISA enabled PER-FILE (NOT library-wide) so the
+# rest of atx-vol stays baseline x86-64 and the binary loads on any CPU. Runtime
+# dispatch (atx::vol::simd::have_avx2(), CPUID+XGETBV) calls the AVX2 kernels only
+# when the host supports them. Per-file -mavx2 also defines __AVX2__/__FMA__,
+# satisfying the compile-time guard in detail/vector_math.hpp and keeping clangd
+# green. CONFIGURE_DEPENDS re-globs on build so new kernels need no CMake edit.
+file(GLOB ATX_VOL_SIMD_SRC CONFIGURE_DEPENDS
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/simd/*.cpp)
+target_sources(atx-vol PRIVATE ${ATX_VOL_SIMD_SRC})
+
+file(GLOB ATX_VOL_SIMD_AVX2 CONFIGURE_DEPENDS
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/simd/*_avx2.cpp)
+set_source_files_properties(${ATX_VOL_SIMD_AVX2}
+    PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma")
+
 target_include_directories(atx-vol
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

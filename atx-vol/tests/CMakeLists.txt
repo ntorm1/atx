@@ -76,6 +76,12 @@ add_executable(atx-vol-tests
     spy_strangle_backtest_test.cpp
 )
 
+# SIMD/AVX2 batch-kernel parity gates: any tests/simd_*_test.cpp auto-joins the
+# test executable (subagents add per-kernel parity tests without editing here).
+file(GLOB ATX_VOL_SIMD_TESTS CONFIGURE_DEPENDS
+    ${CMAKE_CURRENT_SOURCE_DIR}/simd_*_test.cpp)
+target_sources(atx-vol-tests PRIVATE ${ATX_VOL_SIMD_TESTS})
+
 target_link_libraries(atx-vol-tests
     PRIVATE
         atx::vol
