@@ -446,3 +446,11 @@ Task 3: complete (commits 5795c7a..e0391cc, review clean - Approved, opus; 0 Cri
   updated_ts_ns=0 "// now" semantics never asserted by a test; coverage gaps — empty-canonical-symbol
   InvalidArgument, refresh() IoError/ParseError branches, partitions surviving symbol mutation with
   non-empty partition set (last one blocked until Task 4 write_partition exists).
+Task 4: complete (commits 3dbdf73..f695879, review clean - Approved, opus; 0 Critical/Important)
+  Kind coverage verified against binding oracle: ConvexDense node byte-equal + LinearVariance k/w memcmp
+  blocks pattern-identical to surface_archive_test.cpp; no kind switches in db path (delegates to archive).
+  Minor (roll-up): archive-write happens BEFORE writer lock (brief-mandated; safe only under documented
+  single-writer discipline — two same-key concurrent write_partition calls could pair one thread's manifest
+  record with the other's file); stat/persist failure after successful archive rewrite leaves stale
+  surface_count/file_size metadata for an existing key (opens fine; brief's ordering makes this inherent);
+  empty-items InvalidArgument delegation to archive writer not directly exercised by a test.
