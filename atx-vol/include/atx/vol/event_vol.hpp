@@ -60,12 +60,11 @@
 // out negative (a physically-impossible instantaneous move variance, given
 // otherwise well-formed inputs). This codebase's `atx::core::ErrorCode` has
 // no `FailedPrecondition` enumerator. Following the established precedent
-// elsewhere in atx-vol for exactly this distinction — "bad inputs" vs. "a
-// computed/solved quantity landed outside its valid domain" — see
-// `american_iv.cpp`'s `american_implied_vol`, which uses `InvalidArgument`
-// for malformed inputs and `OutOfRange` for a solved price/vol outside its
-// valid band — `implied_emove` reports the negative-`e²` case as
-// `ErrorCode::OutOfRange`, not a new enumerator.
+// elsewhere in atx-vol for the distinction between "bad inputs" vs. "a
+// computed/solved quantity landed outside its valid domain" — we map
+// non-finite inputs to `InvalidArgument` (following `andersen_lake`,
+// `american.cpp` 1262-1263) and a negative-`e²` to `OutOfRange` (by analogy
+// to `american_iv.cpp`'s out-of-band price check, 108-113).
 //
 // ## PORT NOTE — e² clamp window
 //
