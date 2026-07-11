@@ -3,14 +3,17 @@
 
 #include <algorithm>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -22,11 +25,13 @@
 #include "atx/vol/backtest.hpp"
 #include "atx/vol/corpus.hpp"
 #include "atx/vol/dispersion.hpp"
+#include "atx/vol/historical_projection.hpp"
 #include "atx/vol/listed_dispersion.hpp"
 #include "atx/vol/listed_dispersion_reconciliation.hpp"
 #include "atx/vol/listed_dispersion_schedule.hpp"
 #include "atx/vol/listed_dispersion_strategy.hpp"
 #include "atx/vol/listed_opra.hpp"
+#include "atx/vol/occ_ess.hpp"
 #include "atx/vol/opra_batch.hpp"
 #include "atx/vol/portfolio_pricer.hpp"
 #include "atx/vol/session.hpp"
@@ -52,6 +57,7 @@ struct RunSpec {
   std::string path_template{"{symbol}/{date}.parquet"};
   fs::path universe_path{};
   fs::path definitions_path{};
+  fs::path occ_ess_root{};
   double flat_rate{0.0};
   std::size_t min_names{10};
   double min_weight_coverage{0.8};
@@ -155,11 +161,9 @@ Result<RunSpec> read_run_spec(const fs::path &path) {
   ATX_TRY(spec.date_hi, required("date_hi"));
   ATX_TRY(std::string opra, required("opra_root"));
   ATX_TRY(std::string universe, required("universe_schedule"));
-  ATX_TRY(std::string definitions, required("definitions"));
   const fs::path base = path.parent_path();
   spec.opra_root = resolve_path(base, opra);
   spec.universe_path = resolve_path(base, universe);
-  spec.definitions_path = resolve_path(base, definitions);
   const auto optional_text = [&](std::string_view key, std::string &value) {
     const auto found = values.find(std::string(key));
     if (found != values.end()) {
@@ -169,6 +173,14 @@ Result<RunSpec> read_run_spec(const fs::path &path) {
   optional_text("label", spec.label);
   optional_text("snapshot_suffix", spec.snapshot_suffix);
   optional_text("path_template", spec.path_template);
+  std::string definitions;
+  std::string occ_ess;
+  optional_text("definitions", definitions);
+  optional_text("occ_ess_root", occ_ess);
+  if (!definitions.empty())
+    spec.definitions_path = resolve_path(base, definitions);
+  if (!occ_ess.empty())
+    spec.occ_ess_root = resolve_path(base, occ_ess);
   const auto number = [&](std::string_view key, auto &value) -> Status {
     const auto found = values.find(std::string(key));
     if (found == values.end()) {
@@ -220,8 +232,12 @@ Status write_resolved_spec(const fs::path &path, const RunSpec &spec) {
       << "snapshot_suffix\t" << spec.snapshot_suffix << '\n'
       << "opra_root\t" << spec.opra_root.string() << '\n'
       << "path_template\t" << spec.path_template << '\n'
-      << "universe_schedule\t" << spec.universe_path.string() << '\n'
-      << "definitions\t" << spec.definitions_path.string() << '\n'
+      << "universe_schedule\t" << spec.universe_path.string() << '\n';
+  if (!spec.definitions_path.empty())
+    out << "definitions\t" << spec.definitions_path.string() << '\n';
+  if (!spec.occ_ess_root.empty())
+    out << "occ_ess_root\t" << spec.occ_ess_root.string() << '\n';
+  out
       << "flat_rate\t" << spec.flat_rate << '\n'
       << "min_names\t" << spec.min_names << '\n'
       << "min_weight_coverage\t" << spec.min_weight_coverage << '\n'
@@ -357,6 +373,96 @@ Status write_input_inventory(const fs::path &path, const OpraBatchResult &batch)
   return out ? Ok() : Err(ErrorCode::IoError, "cannot flush input inventory");
 }
 
+Status persist_occ_ess_evidence(const fs::path &run_dir, const RunSpec &spec,
+                                const OpraBatchResult &batch) {
+  std::set<std::string> loaded_dates;
+  for (const OpraBatchEntry &entry : batch.entries) {
+    if (entry.panel) {
+      loaded_dates.insert(entry.date);
+    }
+  }
+  if (loaded_dates.empty()) {
+    return Err(ErrorCode::NotFound, "no loaded dates for OCC ESS evidence");
+  }
+
+  const fs::path evidence_dir = run_dir / "occ_ess";
+  std::error_code error;
+  fs::create_directories(evidence_dir, error);
+  if (error) {
+    return Err(ErrorCode::IoError, "cannot create OCC ESS evidence directory");
+  }
+  std::ofstream inventory(run_dir / "occ_ess_inventory.tsv",
+                          std::ios::binary | std::ios::trunc);
+  if (!inventory) {
+    return Err(ErrorCode::IoError, "cannot write OCC ESS inventory");
+  }
+  inventory << "date\tpath\tn_special_symbols\tsource_fingerprint\n";
+  for (const std::string &date : loaded_dates) {
+    const fs::path source = spec.occ_ess_root / (date + ".txt");
+    ATX_TRY(OccEssReport report, read_occ_ess_report_file(source.string()));
+    if (report.trade_date() != date) {
+      return Err(ErrorCode::InvalidArgument, "OCC ESS evidence date mismatch");
+    }
+    ATX_TRY(std::string bytes, read_text(source));
+    const fs::path target = evidence_dir / (date + ".txt");
+    const fs::path pending = target.string() + ".pending";
+    {
+      std::ofstream output(pending, std::ios::binary | std::ios::trunc);
+      if (!output || !output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()))) {
+        return Err(ErrorCode::IoError, "cannot write pending OCC ESS evidence");
+      }
+    }
+    fs::rename(pending, target, error);
+    if (error) {
+      return Err(ErrorCode::IoError, "cannot publish OCC ESS evidence");
+    }
+    inventory << date << '\t' << target.string() << '\t' << report.special_symbols().size() << '\t'
+              << report.source_fingerprint() << '\n';
+  }
+  return inventory ? Ok() : Err(ErrorCode::IoError, "cannot flush OCC ESS inventory");
+}
+
+Status verify_occ_ess_evidence(const fs::path &run_dir, const Clock &clock) {
+  ATX_TRY(std::string inventory, read_text(run_dir / "occ_ess_inventory.tsv"));
+  const std::vector<std::string_view> lines = split(inventory, '\n');
+  if (lines.empty() || lines[0] != "date\tpath\tn_special_symbols\tsource_fingerprint") {
+    return Err(ErrorCode::ParseError, "bad OCC ESS inventory header");
+  }
+  std::set<std::string> verified_dates;
+  for (std::size_t i = 1u; i < lines.size(); ++i) {
+    std::string_view line = lines[i];
+    if (!line.empty() && line.back() == '\r') {
+      line.remove_suffix(1u);
+    }
+    if (line.empty()) {
+      continue;
+    }
+    const std::vector<std::string_view> row = split(line, '\t');
+    std::size_t n_special = 0u;
+    std::uint64_t fingerprint = 0u;
+    if (row.size() != 4u || !parse_number(row[2], n_special) ||
+        !parse_number(row[3], fingerprint) || fingerprint == 0u ||
+        !verified_dates.emplace(row[0]).second) {
+      return Err(ErrorCode::ParseError, "malformed OCC ESS inventory row");
+    }
+    const fs::path expected = (run_dir / "occ_ess" / (std::string(row[0]) + ".txt")).lexically_normal();
+    if (fs::path(row[1]).lexically_normal() != expected) {
+      return Err(ErrorCode::InvalidArgument, "OCC ESS inventory path escapes run envelope");
+    }
+    ATX_TRY(OccEssReport report, read_occ_ess_report_file(expected.string()));
+    if (report.trade_date() != row[0] || report.special_symbols().size() != n_special ||
+        report.source_fingerprint() != fingerprint) {
+      return Err(ErrorCode::InvalidArgument, "OCC ESS inventory/report mismatch");
+    }
+  }
+  for (const SnapshotRef &ref : clock.refs()) {
+    if (!verified_dates.contains(ref.date)) {
+      return Err(ErrorCode::NotFound, "qualified date lacks OCC ESS authority");
+    }
+  }
+  return Ok();
+}
+
 Status write_methodology_map(const fs::path &path) {
   std::ofstream out(path, std::ios::binary | std::ios::trunc);
   if (!out) {
@@ -373,9 +479,9 @@ Status write_methodology_map(const fs::path &path) {
          "surfaces reloaded from ATXVSA\n"
       << "daily_hedge_monthly_roll\tBNP Paribas public dispersion implementation\tdaily close "
          "delta hedge and common listed monthly expiry\n"
-      << "standard_contract_rule\tOCC OSI adjustments and OIC contract-size guidance\texact "
-         "underlying roots use 100 shares; numeric-suffix adjusted roots are excluded when OPRA "
-         "deliverable fields are undefined\n"
+      << "standard_contract_rule\tOCC daily Equity Special Settlements and OIC contract-size "
+         "guidance\tvalidated non-special products use 100 shares when OPRA deliverable fields "
+         "are undefined\n"
       << "vega_flat\tdirect Greek identity\tcontinuous notional using served American vegas\n";
   return out ? Ok() : Err(ErrorCode::IoError, "cannot flush methodology map");
 }
@@ -396,6 +502,8 @@ Status build_corpus_command(const fs::path &source_spec_path, const fs::path &ru
     return Err(ErrorCode::IoError, "cannot create run directory");
   }
   ATX_TRY_VOID(write_input_inventory(run_dir / "input_inventory.tsv", batch));
+  if (!spec.occ_ess_root.empty())
+    ATX_TRY_VOID(persist_occ_ess_evidence(run_dir, spec, batch));
   ATX_TRY_VOID(write_methodology_map(run_dir / "methodology_map.tsv"));
   QualifiedCorpusConfig config;
   config.build.n_threads = spec.fit_workers;
@@ -450,15 +558,16 @@ Status build_corpus_command(const fs::path &source_spec_path, const fs::path &ru
   if (fs_error) {
     return Err(ErrorCode::IoError, "cannot copy universe schedule");
   }
-  fs_error.clear();
-  fs::copy_file(spec.definitions_path, run_dir / "definitions.tsv",
-                fs::copy_options::overwrite_existing, fs_error);
-  if (fs_error) {
-    return Err(ErrorCode::IoError, "cannot copy definitions");
-  }
   RunSpec persisted_spec = spec;
   persisted_spec.universe_path = "universe_schedule.tsv";
-  persisted_spec.definitions_path = "definitions.tsv";
+  if (!spec.definitions_path.empty()) {
+    fs_error.clear();
+    fs::copy_file(spec.definitions_path, run_dir / "definitions.tsv",
+                  fs::copy_options::overwrite_existing, fs_error);
+    if (fs_error)
+      return Err(ErrorCode::IoError, "cannot copy definitions");
+    persisted_spec.definitions_path = "definitions.tsv";
+  }
   ATX_TRY_VOID(write_resolved_spec(run_dir / "run_spec.tsv", persisted_spec));
   std::printf("built qualified corpus: admitted=%u quarantined=%u source_failed=%u\n",
               built.quality.n_admitted, built.quality.n_quarantined, built.quality.n_source_failed);
@@ -491,6 +600,7 @@ Status build_schedule_command(const fs::path &run_dir) {
           read_listed_definitions_file((run_dir / "definitions.tsv").string()));
   ATX_TRY(CorpusManifest manifest, read_manifest_file((run_dir / "surface_manifest.tsv").string()));
   ATX_TRY(Clock clock, Clock::from_manifest(manifest));
+  ATX_TRY_VOID(verify_occ_ess_evidence(run_dir, clock));
   if (spec.core_mode && clock.size() < 60u) {
     return Err(ErrorCode::Unavailable, "core mode requires at least 60 admitted dates");
   }
@@ -584,12 +694,14 @@ Status verify_command(const fs::path &run_dir) {
   ATX_TRY(CorpusQualityReport quality,
           read_quality_report_file((run_dir / "quality.tsv").string()));
   ATX_TRY(Clock clock, Clock::from_manifest(manifest));
+  ATX_TRY_VOID(verify_occ_ess_evidence(run_dir, clock));
   ATX_TRY(ListedDispersionSchedule schedule,
           read_listed_dispersion_schedule_file((run_dir / "trade_schedule.tsv").string()));
   ATX_TRY_VOID(validate_listed_dispersion_schedule(schedule));
   for (const fs::path &required :
        {run_dir / "input_inventory.tsv", run_dir / "methodology_map.tsv", run_dir / "backtest.tsv",
-        run_dir / "contract_marks.tsv", run_dir / "reconciliation.tsv",
+        run_dir / "occ_ess_inventory.tsv",
+         run_dir / "contract_marks.tsv", run_dir / "reconciliation.tsv",
         run_dir / "reference_reconciliation.tsv"}) {
     std::error_code error;
     if (!fs::is_regular_file(required, error) || fs::file_size(required, error) == 0u) {
@@ -703,12 +815,139 @@ Status run_surface_backtest_command(const fs::path &run_dir) {
   return Ok();
 }
 
+Status run_projected_var_command(const fs::path &run_dir) {
+  ATX_TRY(RunSpec spec, read_run_spec(run_dir / "run_spec.tsv"));
+  ATX_TRY(std::vector<UniverseRow> universe_rows,
+          read_universe(run_dir / "universe_schedule.tsv"));
+  ATX_TRY(CorpusManifest manifest,
+          read_manifest_file((run_dir / "surface_manifest.tsv").string()));
+  ATX_TRY(Clock clock, Clock::from_manifest(manifest));
+  if (clock.size() == 0u)
+    return Err(ErrorCode::Unavailable, "projected VaR: empty qualified clock");
+
+  std::vector<std::unique_ptr<MarketSnapshot>> snapshots;
+  std::vector<HistoricalProjectionScenario> scenarios;
+  snapshots.reserve(clock.size());
+  scenarios.reserve(clock.size());
+  for (const SnapshotRef &ref : clock.refs()) {
+    ATX_TRY(MarketSnapshot snapshot, MarketSnapshot::load(ref.archive_path));
+    snapshots.push_back(std::make_unique<MarketSnapshot>(std::move(snapshot)));
+    scenarios.push_back({snapshots.back()->ts_ns(), &snapshots.back()->set()});
+  }
+
+  ATX_TRY(DispersionUniverse authored,
+          universe_at(universe_rows, clock.refs().front().date));
+  ATX_TRY(ResolvedUniverse resolved,
+          resolve_universe_uids(authored,
+                                [&](std::string_view symbol) {
+                                  return snapshots.front()->uid_of(symbol);
+                                },
+                                MissingNameSpec{MissingNamePolicy::DropRenormalize,
+                                                spec.min_names}));
+  DispersionConfig dispersion;
+  dispersion.target_T = spec.target_dte_days / 365.25;
+  dispersion.target_vega = spec.gross_index_vega;
+  dispersion.side = DispersionSide::ShortIndexLongNames;
+  dispersion.multiplier = 100.0;
+  dispersion.missing =
+      MissingNameSpec{MissingNamePolicy::DropRenormalize, spec.min_names};
+  dispersion.projected_maturity = ProjectedMaturitySpec::days(
+      static_cast<std::int32_t>(std::llround(spec.target_dte_days)));
+  ATX_TRY(DispersionBook initial,
+          build_dispersion_book(resolved.universe, snapshots.front()->set(), dispersion));
+
+  std::vector<RelativeOptionPosition> relative_positions;
+  relative_positions.reserve(initial.positions.size());
+  for (const Position &position : initial.positions) {
+    OptionProjectionSpec option;
+    option.uid = position.contract.uid;
+    option.maturity = *dispersion.projected_maturity;
+    option.strike = ProjectedStrikeSpec::atm_forward();
+    option.side = position.contract.side;
+    option.multiplier = position.multiplier;
+    relative_positions.push_back({option, position.qty});
+  }
+  ATX_TRY(PreparedHistoricalProjection prepared,
+          PreparedHistoricalProjection::create(relative_positions));
+  std::vector<HistoricalProjectionFrame> frames(scenarios.size());
+  std::vector<ProjectedOption> legs(scenarios.size() * relative_positions.size());
+  HistoricalProjectionConfig config;
+  config.n_threads = spec.fit_workers;
+  const auto started = std::chrono::steady_clock::now();
+  ATX_TRY_VOID(prepared.evaluate_into(scenarios, frames, legs, config));
+  const double elapsed_seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+
+  std::ofstream frame_out(run_dir / "projected_risk_scenarios.tsv",
+                          std::ios::binary | std::ios::trunc);
+  std::ofstream leg_out(run_dir / "projected_risk_legs.tsv",
+                        std::ios::binary | std::ios::trunc);
+  if (!frame_out || !leg_out)
+    return Err(ErrorCode::IoError, "projected VaR: cannot open output");
+  frame_out << std::setprecision(17)
+            << "date\tts_ns\tvalue\tdelta\tgamma\tvega\ttheta\tn_ok\tn_failed\t"
+               "definition_fingerprint\n";
+  leg_out << std::setprecision(17)
+          << "date\tleg\tuid\tside\texpiry_ts_ns\tstrike\tquantity\tmultiplier\tmark\t"
+             "delta\tgamma\tvega\ttheta\tdefinition_fingerprint\tstatus\n";
+  for (std::size_t scenario = 0; scenario < frames.size(); ++scenario) {
+    const HistoricalProjectionFrame &frame = frames[scenario];
+    frame_out << clock.refs()[scenario].date << '\t' << frame.ts_ns << '\t' << frame.value << '\t'
+              << frame.delta << '\t' << frame.gamma << '\t' << frame.vega << '\t' << frame.theta
+              << '\t' << frame.n_ok << '\t' << frame.n_failed << '\t'
+              << frame.definition_fingerprint << '\n';
+    for (std::size_t leg = 0; leg < relative_positions.size(); ++leg) {
+      const ProjectedOption &projected = legs[scenario * relative_positions.size() + leg];
+      leg_out << clock.refs()[scenario].date << '\t' << leg << '\t'
+              << projected.definition.contract.uid << '\t'
+              << (projected.definition.contract.side == Side::Call ? "Call" : "Put") << '\t'
+              << projected.definition.expiry_ts_ns << '\t'
+              << projected.definition.contract.K << '\t' << relative_positions[leg].quantity
+              << '\t' << projected.definition.multiplier << '\t' << projected.model_mark << '\t'
+              << projected.greeks.delta << '\t' << projected.greeks.gamma << '\t'
+              << projected.greeks.vega << '\t' << projected.greeks.theta << '\t'
+              << projected.definition.fingerprint << '\t' << to_string(projected.status) << '\n';
+    }
+  }
+  frame_out.close();
+  leg_out.close();
+  if (!frame_out || !leg_out)
+    return Err(ErrorCode::IoError, "projected VaR: output write failed");
+  for (const HistoricalProjectionFrame &frame : frames) {
+    if (frame.n_failed != 0u)
+      return Err(ErrorCode::Unavailable, "projected VaR: incomplete scenario projection");
+  }
+
+  std::ofstream summary(run_dir / "projected_var.tsv", std::ios::binary | std::ios::trunc);
+  if (!summary)
+    return Err(ErrorCode::IoError, "projected VaR: cannot open summary");
+  summary << std::setprecision(17)
+          << "confidence\treference_value\tvalue_at_risk\texpected_shortfall\tn_scenarios\t"
+             "n_positions\tprojections_per_second\tprepared_fingerprint\n";
+  for (const double confidence : {0.95, 0.99}) {
+    ATX_TRY(ProjectedHistoricalVar risk,
+            projected_historical_var(frames, frames.back().value, confidence));
+    summary << risk.confidence << '\t' << risk.reference_value << '\t' << risk.value_at_risk
+            << '\t' << risk.expected_shortfall << '\t' << risk.n_scenarios << '\t'
+            << relative_positions.size() << '\t'
+            << (static_cast<double>(legs.size()) / elapsed_seconds) << '\t'
+            << prepared.fingerprint() << '\n';
+  }
+  if (!summary)
+    return Err(ErrorCode::IoError, "projected VaR: summary write failed");
+  std::printf("projected relative-template VaR complete: scenarios=%zu positions=%zu rate=%.1f/s\n",
+              frames.size(), relative_positions.size(),
+              static_cast<double>(legs.size()) / elapsed_seconds);
+  return Ok();
+}
+
 void usage() {
   std::fprintf(stderr, "usage:\n"
                        "  atxvol_spy_dispersion_backtest build-corpus --spec FILE --out DIR\n"
                        "  atxvol_spy_dispersion_backtest build-schedule --run DIR\n"
                        "  atxvol_spy_dispersion_backtest run-backtest --run DIR\n"
                        "  atxvol_spy_dispersion_backtest run-surface-backtest --run DIR\n"
+                       "  atxvol_spy_dispersion_backtest run-projected-var --run DIR\n"
                        "  atxvol_spy_dispersion_backtest verify --run DIR\n");
 }
 
@@ -746,6 +985,8 @@ int main(int argc, char **argv) {
     status = run_backtest_command(run);
   } else if (command == "run-surface-backtest" && !run.empty()) {
     status = run_surface_backtest_command(run);
+  } else if (command == "run-projected-var" && !run.empty()) {
+    status = run_projected_var_command(run);
   } else if (command == "verify" && !run.empty()) {
     status = verify_command(run);
   } else {

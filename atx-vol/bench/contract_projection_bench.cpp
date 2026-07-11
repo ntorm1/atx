@@ -11,6 +11,7 @@
 #include <benchmark/benchmark.h>
 
 #include "atx/vol/contract_projection.hpp"
+#include "atx/vol/historical_projection.hpp"
 
 #include "bench_util.hpp"
 #include "support/synth_book.hpp"
@@ -103,6 +104,49 @@ void run_prepared(benchmark::State &state, std::size_t count, unsigned threads,
   state.counters["threads"] = static_cast<double>(threads);
 }
 
+void run_historical(benchmark::State &state, std::size_t n_scenarios, unsigned threads) {
+  const std::vector<OptionProjectionSpec> specs = make_specs(102u);
+  std::vector<atx::vol::RelativeOptionPosition> positions;
+  positions.reserve(specs.size());
+  for (std::size_t i = 0; i < specs.size(); ++i)
+    positions.push_back({specs[i], (i & 1u) == 0u ? -1.0 : 1.0});
+  auto prepared = atx::vol::PreparedHistoricalProjection::create(positions).value();
+  std::vector<atx::vol::HistoricalProjectionScenario> scenarios;
+  scenarios.reserve(n_scenarios);
+  for (std::size_t i = 0; i < n_scenarios; ++i) {
+    scenarios.push_back({1'700'000'000'000'000'000LL + static_cast<std::int64_t>(i),
+                         &market().base_set()});
+  }
+  std::vector<atx::vol::HistoricalProjectionFrame> frames(n_scenarios);
+  std::vector<ProjectedOption> legs(n_scenarios * positions.size());
+  atx::vol::HistoricalProjectionConfig config;
+  config.n_threads = threads;
+  for (int warmup = 0; warmup < 10; ++warmup) {
+    const auto status = prepared.evaluate_into(scenarios, frames, legs, config);
+    if (!status) {
+      state.SkipWithError(status.error().to_string().c_str());
+      return;
+    }
+  }
+  for (auto _ : state) {
+    const auto status = prepared.evaluate_into(scenarios, frames, legs, config);
+    if (!status) {
+      state.SkipWithError(status.error().to_string().c_str());
+      break;
+    }
+    benchmark::DoNotOptimize(frames.data());
+    benchmark::ClobberMemory();
+  }
+  const double iterations = static_cast<double>(state.iterations());
+  state.counters["scenarios_per_s"] =
+      benchmark::Counter(iterations * static_cast<double>(n_scenarios),
+                         benchmark::Counter::kIsRate);
+  state.counters["projections_per_s"] =
+      benchmark::Counter(iterations * static_cast<double>(legs.size()),
+                         benchmark::Counter::kIsRate);
+  state.counters["threads"] = static_cast<double>(threads);
+}
+
 [[nodiscard]] const char *output_name(OptionProjectionOutput output) {
   switch (output) {
   case OptionProjectionOutput::DefinitionOnly:
@@ -136,6 +180,16 @@ void register_all() {
             ->UseRealTime();
       }
     }
+  }
+  for (const unsigned threads : {1u, 4u, 8u, 16u}) {
+    char name[128];
+    std::snprintf(name, sizeof name, "projection/historical/scenarios61/legs102/t%u", threads);
+    apply_common(benchmark::RegisterBenchmark(name, [threads](benchmark::State &state) {
+                   run_historical(state, 61u, threads);
+                 }))
+        ->MinTime(5.0)
+        ->Unit(benchmark::kMillisecond)
+        ->UseRealTime();
   }
 }
 

@@ -46,6 +46,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/calib_pool.cpp
     src/projection.cpp
     src/contract_projection.cpp
+    src/historical_projection.cpp
     src/portfolio_risk.cpp
     src/american_iv.cpp
     src/dividend.cpp
@@ -72,6 +73,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/dispersion.cpp
     src/listed_dispersion.cpp
     src/listed_opra.cpp
+    src/occ_ess.cpp
     src/listed_dispersion_schedule.cpp
     src/listed_dispersion_reconciliation.cpp
     src/listed_dispersion_strategy.cpp

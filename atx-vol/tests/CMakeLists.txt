@@ -34,6 +34,7 @@ add_executable(atx-vol-tests
     calib_pool_test.cpp
     projection_test.cpp
     contract_projection_test.cpp
+    historical_projection_test.cpp
     portfolio_risk_test.cpp
     american_iv_test.cpp
     dividend_test.cpp
@@ -70,6 +71,7 @@ add_executable(atx-vol-tests
     dispersion_test.cpp
     listed_dispersion_test.cpp
     listed_opra_test.cpp
+    occ_ess_test.cpp
     listed_dispersion_schedule_test.cpp
     listed_dispersion_reconciliation_test.cpp
     listed_dispersion_strategy_test.cpp
@@ -100,4 +102,14 @@ if(Python3_Interpreter_FOUND)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/reference_spy_dispersion_test.py
     )
     set_tests_properties(atx-vol-reference-spy-dispersion PROPERTIES LABELS atx_vol)
+    add_test(
+        NAME atx-vol-download-occ-ess
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/download_occ_ess_test.py
+    )
+    set_tests_properties(atx-vol-download-occ-ess PROPERTIES LABELS atx_vol)
+    add_test(
+        NAME atx-vol-build-spy-top50-universe
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/build_spy_top50_universe_test.py
+    )
+    set_tests_properties(atx-vol-build-spy-top50-universe PROPERTIES LABELS atx_vol)
 endif()

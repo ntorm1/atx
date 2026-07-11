@@ -44,22 +44,38 @@ names, 33/33 admitted surfaces, one exact February monthly cohort, 22 held optio
 legs, zero unpriced lots, full quote-mid coverage, and independent reconciliation.
 The verified final model NAV is `-302.60689681620647`; entry net-vega residual is
 `1.5347723092418164e-12` against the 10,000 target. Databento's OPRA definitions
-leave multiplier/deliverable fields undefined, so the development export uses a
-versioned public-series rule: exact underlying OSI roots are standard 100-share
-contracts and numeric-suffix adjusted roots are excluded. This deviation is
-explicit and must be replaced by authoritative OCC series data before the core
-acceptance artifact can claim source-native deliverables.
+leave multiplier/deliverable fields undefined. The exporter now requires the
+matching official OCC daily Equity Special Settlements report, rejects any
+non-standard product listed there, applies the public 100-share standard only to
+the remaining exact-root products, and binds both raw-source fingerprints into
+each definition. The run envelope copies every validated OCC report plus a
+deterministic inventory, closing the development artifact's deliverable-authority
+gap without a paid OCC DDS subscription.
 
-P5 still requires the 50-name/60-date/three-roll core artifact. P6's projection
-benchmark and checked-in comparator baseline are now present; the full workflow
-throughput baseline remains to be recorded on the core corpus. The workflow fails
-explicitly when exact daily identities are absent and never substitutes synthetic
-strikes, expiries, or marks.
+The relative-contract track is now independent of the listed-definition track.
+`PreparedHistoricalProjection` evaluates caller-owned scenario/leg buffers across
+serialized historical `SurfaceSet`s, emits exact theoretical strike/expiry/mark and
+full Greeks, and reduces successful scenarios to deterministic nearest-rank VaR and
+expected shortfall. `run-projected-var` exercises that path from archive reload to
+TSV artifacts. On the real three-date/11-symbol corpus it projected 22 legs per date
+with zero failures. The pinned 61-date x 102-leg Release benchmark has a committed
+eight-worker, logical-core-mask `0xFF` baseline. Its measured CV is 7.79%, so the
+dedicated corpus gate asserts regressions above 30% when a new run's CV is at most
+15%. The existing kernel projection comparator retains its stricter 10% regression
+and 5% CV thresholds.
+
+**Sequencing decision (2026-07-10):** bulk OPRA metadata preflight, security-definition
+egress, and OCC deliverable authority are not a hard gate for the surface-only work.
+The SEC top-50 universe, exact 61-session window, cost-gated puller, and OCC parser are
+preserved for the listed-contract follow-up. Do not spend current sprint capacity on
+that acquisition. This does not weaken the northstar or permit a surface-relative
+contract to be described as an observed listed contract.
 
 ## Core deliverable
 
 Ship one reproducible, end-to-end backtest of a traditional long-dispersion book
-using **real Databento OPRA data and actual listed contracts**:
+from **real Databento OPRA-fitted, serialized surfaces**, using relative vanilla
+option definitions that resolve to exact theoretical contracts on each surface:
 
 ```text
 short one listed ATM SPY straddle
@@ -70,10 +86,21 @@ per-underlier delta hedged daily
 held strikes, expiries, and quantities fixed between rolls
 ```
 
-The backtest must prove the full production path:
+The current hard path is:
 
 ```text
-OPRA quote files
+serialized qualified surfaces
+  -> relative 30-day ATM call/put definitions
+  -> exact absolute expiry, strike, theo, and Greeks per historical date
+  -> vega-flat SPY/basket sizing
+  -> American daily repricing and delta hedging
+  -> P&L, projected historical VaR, and asserted throughput evidence
+```
+
+The deferred listed-contract binding path remains:
+
+```text
+OPRA quote files + point-in-time definitions + OCC authority
   -> point-in-time market inputs
   -> diverse single-name fits
   -> qualification/quarantine
@@ -84,7 +111,7 @@ OPRA quote files
   -> American pricing and Greeks
   -> daily delta hedge and monthly rolls
   -> P&L plus independent reconciliation artifact
-  -> committed throughput/regression evidence
+  -> quote-mid reconciliation against the already-proven model path
 ```
 
 The sprint is not a signal-research sprint. It does not build DSPX, implied
@@ -538,14 +565,17 @@ P0 post-performance audit + freeze run specification
  |
  P4 fixed-contract strategy + delta hedge + model/raw P&L reconciliation
  |
- P5 core real run artifact + public-reference review
+ P5 surface-only core run + projected historical VaR
  |
  P6 end-to-end throughput baseline + asserted regression gate
+ |
+ D1 deferred listed-definition/OCC binding + quote-mid review
 ```
 
-The sprint is not complete after synthetic tests. P5's real artifact is the core
-deliverable. Paid data acquisition remains operator-approved and cost-capped, but
-absence of approval means the sprint is externally blocked rather than complete.
+The sprint is not complete after synthetic tests. P5 must use surfaces fitted from
+real OPRA data and must cross the archive process boundary. D1 is explicitly deferred:
+missing definition/OCC acquisition does not block P5/P6 and is not reported as a
+failure of the surface-only sprint.
 
 ---
 
@@ -790,36 +820,49 @@ full P&L closure.
 
 ---
 
-### P5 - Produce the real core artifact and public-reference review
+### P5 - Produce the surface-only core artifact and projected VaR
 
-**Goal:** run the full SPY plus 50-name, 60-date, three-roll backtest and make its
-correctness inspectable without reading C++.
+**Goal:** run the full SPY plus 50-name, 60-date, three-roll relative-contract
+backtest from real OPRA-fitted serialized surfaces and make its correctness
+inspectable without reading C++.
 
 **Steps:**
 
-1. Run `build-corpus`, `build-schedule`, `run-backtest`, and `verify` as separate
-   commands over the frozen real inventory.
+1. Run `build-corpus`, `run-surface-backtest`, `run-projected-var`, and `verify` as
+   separate commands over the frozen real surface inventory.
 2. Require strict source/market-input provenance and the qualified-corpus gate.
 3. Require at least 40 traded names and 80% requested basket-weight coverage at
    every roll.
-4. Run the independent reference calculator and fail on any arithmetic mismatch.
-5. Generate the complete artifact tree from section 3.
-6. In `run_summary.md`, report:
+4. Persist every projected leg's date, uid, side, absolute expiry, strike, quantity,
+   multiplier, theo, Greeks, status, and definition fingerprint.
+5. Calculate 95% and 99% relative-template historical VaR/expected shortfall using
+   the final scenario value as the reference and the documented nearest-rank rule.
+6. Generate the surface-only artifact tree from section 3.
+7. In `run_summary.md`, report:
    - exact window, universe source, and SPY/SPX adaptation;
    - requested/admitted/traded boards and weight coverage;
    - fit-quality distribution and every quarantine;
-   - selected expiries/strikes and roll dates;
+   - projected expiries/strikes and roll dates;
    - entry/roll vega residuals and daily delta bands;
-   - model-in-spread rate and model-vs-mid errors;
-   - model and quote-mid P&L/NAV reconciliation;
+   - model P&L/NAV and projected historical VaR/ES;
    - serialization and backtest performance; and
    - every known deviation from the public references.
-7. Review the artifact against the Cboe/BNP methodology map. Do not add a signal or
+8. Review the artifact against the Cboe/BNP methodology map. Do not add a signal or
    tune a rule based on backtest profitability.
 
-**Hard completion gate:** a real Databento OPRA artifact exists and passes. A cleanly
-skipped cached-real test is acceptable for CI portability, but is not sufficient to
-mark this sprint complete.
+**Hard completion gate:** a real Databento OPRA-fitted surface artifact exists and
+passes at >=60 dates and >=3 rolls. Point-in-time definition and OCC authority are
+not required for this gate; outputs must be labeled theoretical/relative and must
+not claim observed listed identities or quote-mid reconciliation.
+
+### D1 - Deferred listed-contract authority and quote reconciliation
+
+Return after P5/P6 to the preserved 50-name/61-session pull manifest. Run the exact
+free cost preflight, obtain explicit operator approval for nonzero spend, pull OPRA
+definitions and daily OCC ESS reports, then bind each projected target to an actual
+standard listed call/put pair. Re-run `build-schedule`, `run-backtest`, the independent
+calculator, and quote-mid reconciliation. D1 restores the original actual-listed
+acceptance matrix; it is intentionally not on the current critical path.
 
 **Commit:** `test(atx-vol): gate real SPY dispersion backtest`
 
@@ -837,8 +880,8 @@ OPRA boards loaded/s
 qualified fits/s and total fit wall time
 surface archive write MB/s
 surface archive open/map surfaces/s
-listed contract selection rows/s
-schedule pricing contracts/s
+relative contract definitions/s
+historical scenarios/s and full projections/s
 backtest steps/s and option contracts/s
 end-to-end wall time
 peak RSS
@@ -846,7 +889,7 @@ peak RSS
 
 **Implementation:**
 
-1. Add focused selector/schedule/backtest cases to the landed Google Benchmark
+1. Add focused projection/scenario/backtest cases to the landed Google Benchmark
    harness. Do not create another benchmark framework.
 2. Run the core workflow in Release and write `performance.json` with phase timings,
    counts, bytes, machine, compiler, route, and thread configuration.
@@ -854,15 +897,16 @@ peak RSS
    regression comparisons green.
 4. Measure the new orchestration baseline honestly, commit its benchmark JSON, and
    add it to the existing comparator at the established tolerance.
-5. Assert that selection/schedule/export overhead is no more than 10% of combined fit,
+5. Assert that projection/export overhead is no more than 10% of combined fit,
    serialization, reload, and pricing wall time on the pinned run. If it exceeds the
    budget, profile and fix the orchestration rather than weakening pricing gates.
 6. Verify the comparator with a deliberate local slowdown, then remove it.
 7. Run thread-count matrices and confirm deterministic non-timing artifacts.
 
-**Gate:** existing baselines pass; new baseline and phase budget pass; the full real
-run completes within the recorded resource envelope with no unbounded date/surface
-retention.
+**Gate:** existing 10% kernel baselines pass; the committed 61-scenario x 102-leg
+full-Greeks stable-worker baseline is comparator-enforced at 30% with a 15% noise
+ceiling; the full real run completes
+within the recorded resource envelope with no unbounded date/surface retention.
 
 **Commit:** `perf(atx-vol): gate SPY dispersion workflow throughput`
 
@@ -872,23 +916,27 @@ retention.
 
 | Area | Hard acceptance |
 |---|---|
-| Real data | Databento OPRA, SPY + 50 requested names, >=40 traded and >=80% weight coverage per roll, >=60 dates, >=3 rolls |
-| Contracts | every call/put has source identity, actual strike, exact expiry, quote |
+| Real data | Databento OPRA-fitted surfaces, SPY + 50 requested names, >=40 traded and >=80% weight coverage per roll, >=60 dates, >=3 rolls |
+| Contracts | every relative call/put resolves an exact theoretical strike, absolute expiry, mark, Greeks, and fingerprint |
 | Structure | short SPY ATM straddle, long weighted component ATM straddles |
-| Expiry | common listed monthly expiry, deterministic 30-day target selection |
-| ATM | nearest valid listed call/put strike to reloaded-surface forward |
+| Expiry | common exact 30-calendar-day projected expiry at each entry/roll |
+| ATM | exact reloaded-surface forward strike, identical for call and put |
 | Vega | index vs basket residual `<=1e-10` at entry and roll |
 | Delta | per-uid post-daily-hedge delta inside configured band |
 | Holding | strikes, expiries, quantities unchanged between rolls |
 | Fitting | every traded surface admitted; full failure/quarantine reasons |
-| Model marks | every held contract prices; selected-contract spread diagnostics |
+| Model marks | every held theoretical contract prices; no raw quote substitution |
 | Serialization | process B uses only persisted surfaces; round-trip fidelity passes |
-| P&L | model explain closes; independent quote-mid P&L and NAV agree |
+| P&L | model explain closes; projected scenario values and VaR/ES are reproducible |
 | Missing model | fatal via `UnpricedLotPolicy::Error` |
 | Determinism | all non-timing artifacts byte-identical across worker counts |
 | Performance | landed gates green; new workflow baseline and <=10% overhead budget |
 | Public review | methodology map complete; SPY/SPX deviations explicit |
 | Legacy | existing ATM/synthetic behavior and tests bit-identical by default |
+
+The deferred D1 acceptance restores source identities, actual listed strikes/monthly
+expiries, valid bid/ask quotes, model-in-spread diagnostics, and independent quote-mid
+P&L reconciliation.
 
 ---
 
@@ -897,6 +945,10 @@ retention.
 ### New
 
 - `include/atx/vol/listed_dispersion.hpp`
+- `include/atx/vol/contract_projection.hpp`
+- `include/atx/vol/historical_projection.hpp`
+- `src/contract_projection.cpp`
+- `src/historical_projection.cpp`
 - `src/listed_dispersion.cpp`
 - `include/atx/vol/listed_dispersion_schedule.hpp`
 - `src/listed_dispersion_schedule.cpp`
@@ -904,6 +956,8 @@ retention.
 - `examples/spy_dispersion_run_spec.tsv`
 - `tools/reference_spy_dispersion.py`
 - `tests/listed_dispersion_test.cpp`
+- `tests/contract_projection_test.cpp`
+- `tests/historical_projection_test.cpp`
 - `tests/spy_dispersion_pipeline_test.cpp`
 - cached-real SPY dispersion test following the existing skip convention
 - benchmark cases in the landed `atx-vol/bench` layout
@@ -938,7 +992,8 @@ The plan consumes those completed systems; it does not redesign them.
 2. Implied-correlation, dispersion, timing, or allocation signals.
 3. Native variance swaps, gamma swaps, or correlation swaps.
 4. Gamma-flat, theta-flat, or risk-profile switching.
-5. Weekly, quarterly, 0DTE, delta-relative, or constant-maturity option positions.
+5. Weekly, quarterly, or 0DTE listed-contract selection. Relative delta and
+   constant-maturity theoretical projection are in scope.
 6. Integer-lot optimization.
 7. Intraday hedge optimization or vega rebalancing between rolls.
 8. Calibrated spreads, commissions, impact, borrow, or funding.
@@ -952,19 +1007,19 @@ reload -> price -> risk -> backtest loop first.
 
 ## 10. Stop conditions and honest failures
 
-Stop and return to design review if:
+Stop the current surface-only path and return to design review if:
 
-- exact listed expiries or date-scoped identities cannot be recovered from the real
-  inputs;
-- schedule and surface source fingerprints cannot be joined;
-- a selected real contract cannot be reproduced after archive reload;
+- a relative maturity cannot resolve to an exact absolute expiry;
+- a relative strike cannot resolve to a reproducible strike and theo after archive reload;
+- projected definition fingerprints or non-timing outputs vary by worker count;
 - per-contract Greeks do not sum to schedule Greeks;
 - model P&L does not close through the existing explain identity; or
-- the independent calculator disagrees with exported primitive arithmetic.
+- projected historical VaR disagrees with exported primitive arithmetic.
 
-Do not widen fit bands, substitute synthetic strikes, carry stale quotes, or drop held
-P&L to force a run through. An honest failed real artifact with a root cause is useful
-engineering evidence; it is not sprint completion.
+Do not widen fit bands, carry stale surfaces, or drop held P&L to force a run through.
+Missing listed identities, definitions, or OCC authority are recorded under D1 and do
+not stop this track; they still prohibit any claim that the projected contracts were
+observed listed contracts.
 
 ---
 
@@ -978,6 +1033,7 @@ cmake --build build --target atx-vol-tests atxvol_spy_dispersion_backtest -j
 $env:ATX_VOL_FIT_WORKERS='1'
 ctest --test-dir build -L atx_vol -j16 --output-on-failure --timeout 900
 Remove-Item Env:ATX_VOL_FIT_WORKERS
+pwsh -File atx-vol/bench/run_historical_projection_gate.ps1 -BuildDir build-rel
 ```
 
 Focused tests:
@@ -1034,6 +1090,11 @@ separate operator-approved command after free cost preflight.
 7. Options Industry Council, *Options Overview for Investors*: a standard equity or
    ETF option typically covers 100 shares:
    <https://www.optionseducation.org/getattachment/8d382efb-64ba-431f-9b87-b7fc9b0916bf/OIC-Options-Overview-For-Investors-final.pdf>
+8. OCC Equity Special Settlements: official daily non-standard option-product
+   symbols and per-contract deliverable components, with a date-addressable batch
+   endpoint and published record layout:
+   <https://www.theocc.com/market-data/market-data-reports/other-market-data-info/batch-processing/equity-special-settlements-reports-batch-processing>
+   <https://www.theocc.com/getmedia/cc962914-67a8-481f-b35a-fdc0489551e6/ess-record-layout.pdf>
 
 ---
 

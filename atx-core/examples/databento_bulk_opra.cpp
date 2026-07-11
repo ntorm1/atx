@@ -37,6 +37,7 @@
 #define _CRT_SECURE_NO_WARNINGS 1
 #endif
 
+#include <atomic>
 #include <charconv>
 #include <chrono>
 #include <cstdint>
@@ -44,7 +45,11 @@
 #include <cstdlib> // getenv, strtod
 #include <exception>
 #include <filesystem>
+#include <fstream>
+#include <limits>
+#include <mutex>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -186,9 +191,11 @@ struct Config {
   std::vector<std::string> symbols;
   std::string start;
   std::string end;
+  std::string dates_file;
   std::string out = "data/opra";
   std::string layout = "{symbol}/{date}.parquet";
   double cap = 5.0;
+  unsigned workers = 1u;
   bool dry_run = false;
   bool help = false;
 };
@@ -206,9 +213,10 @@ struct Cell {
 
 void print_usage() {
   std::printf(
-      "Usage: databento_bulk_opra --symbols SYM[,SYM...] --start YYYY-MM-DD --end "
-      "YYYY-MM-DD\n"
-      "                           [--out DIR] [--cap USD] [--layout TMPL] [--dry-run] "
+      "Usage: databento_bulk_opra --symbols SYM[,SYM...] "
+      "(--start YYYY-MM-DD --end YYYY-MM-DD | --dates-file FILE)\n"
+      "                           [--out DIR] [--cap USD] [--workers N] "
+      "[--layout TMPL] [--dry-run] "
       "[-h]\n\n"
       "Bulk OPRA cbbo-1m puller: for every date in [--start,--end] and every --symbol,\n"
       "pull the 19:55Z pre-close full-chain NBBO snapshot into <out>/{symbol}/{date}.parquet.\n\n"
@@ -216,8 +224,10 @@ void print_usage() {
       "  --symbols SYM[,SYM...]  Underlyings; comma-separated and/or repeatable (required).\n"
       "  --start YYYY-MM-DD      Inclusive first date (required).\n"
       "  --end   YYYY-MM-DD      Inclusive last date (required).\n"
+      "  --dates-file FILE       Exact ordered YYYY-MM-DD sessions, one per line.\n"
       "  --out DIR               Output root (default: data/opra).\n"
       "  --cap USD               Hard cost cap; also the per-API-call cap (default: 5.00).\n"
+      "  --workers N             Concurrent zero-cost pulls (default: 1).\n"
       "  --layout TMPL           Path template under --out (default: "
       "\"{symbol}/{date}.parquet\").\n"
       "  --dry-run               Preflight + print the plan, then exit 0 without pulling.\n"
@@ -257,6 +267,11 @@ void print_usage() {
       if (!v)
         return false;
       cfg.end = v;
+    } else if (a == "--dates-file") {
+      const char *v = need_val(i);
+      if (!v)
+        return false;
+      cfg.dates_file = v;
     } else if (a == "--out") {
       const char *v = need_val(i);
       if (!v)
@@ -278,6 +293,16 @@ void print_usage() {
         return false;
       }
       cfg.cap = parsed;
+    } else if (a == "--workers") {
+      const char *v = need_val(i);
+      if (!v)
+        return false;
+      int parsed = 0;
+      if (!parse_uint(v, parsed) || parsed < 1 || parsed > 64) {
+        std::fprintf(stderr, "error: --workers must be in [1,64], got '%s'\n", v);
+        return false;
+      }
+      cfg.workers = static_cast<unsigned>(parsed);
     } else {
       std::fprintf(stderr, "error: unknown argument '%s'\n", argv[i]);
       return false;
@@ -287,8 +312,10 @@ void print_usage() {
     std::fprintf(stderr, "error: --symbols is required\n");
     return false;
   }
-  if (cfg.start.empty() || cfg.end.empty()) {
-    std::fprintf(stderr, "error: --start and --end are required\n");
+  const bool has_range = !cfg.start.empty() || !cfg.end.empty();
+  if ((has_range && (cfg.start.empty() || cfg.end.empty())) ||
+      (has_range == !cfg.dates_file.empty())) {
+    std::fprintf(stderr, "error: provide exactly one of --start/--end or --dates-file\n");
     return false;
   }
   return true;
@@ -297,6 +324,38 @@ void print_usage() {
 // Build the ordered [start,end] date list (inclusive) via the civil-date kernel. Returns
 // false on unparseable dates or an end-before-start range (caller exits 2).
 [[nodiscard]] bool build_dates(const Config &cfg, std::vector<std::string> &dates) {
+  if (!cfg.dates_file.empty()) {
+    std::ifstream input(cfg.dates_file);
+    if (!input) {
+      std::fprintf(stderr, "error: cannot open --dates-file '%s'\n", cfg.dates_file.c_str());
+      return false;
+    }
+    std::string line;
+    std::int64_t previous = std::numeric_limits<std::int64_t>::min();
+    while (std::getline(input, line)) {
+      if (!line.empty() && line.back() == '\r')
+        line.pop_back();
+      if (line.empty())
+        continue;
+      Civil date;
+      if (!parse_civil(line, date)) {
+        std::fprintf(stderr, "error: invalid date '%s' in --dates-file\n", line.c_str());
+        return false;
+      }
+      const std::int64_t serial = days_from_civil(date.y, date.m, date.d);
+      if (serial <= previous) {
+        std::fprintf(stderr, "error: --dates-file must be strictly increasing and unique\n");
+        return false;
+      }
+      previous = serial;
+      dates.push_back(line);
+    }
+    if (dates.empty()) {
+      std::fprintf(stderr, "error: --dates-file is empty\n");
+      return false;
+    }
+    return true;
+  }
   Civil lo;
   Civil hi;
   if (!parse_civil(cfg.start, lo)) {
@@ -320,6 +379,24 @@ void print_usage() {
     dates.push_back(format_civil(civil_from_days(s)));
   }
   return true;
+}
+
+template <class Fn> void parallel_for(std::size_t count, unsigned workers, Fn &&fn) {
+  std::atomic<std::size_t> next{0u};
+  std::vector<std::thread> threads;
+  threads.reserve(workers);
+  for (unsigned worker = 0; worker < workers; ++worker) {
+    threads.emplace_back([&] {
+      for (;;) {
+        const std::size_t index = next.fetch_add(1u, std::memory_order_relaxed);
+        if (index >= count)
+          break;
+        fn(index);
+      }
+    });
+  }
+  for (std::thread &thread : threads)
+    thread.join();
 }
 
 } // namespace
@@ -359,9 +436,10 @@ int main(int argc, char **argv) {
 
   std::printf("Bulk OPRA cbbo-1m  dataset=%s  window=%s..%s per day\n",
               databento::dataset::kOpraPillar, kSnapStart, kSnapEnd);
-  std::printf("symbols=%zu  dates=%s..%s (%zu)  files=%zu  out=%s  cap=$%.2f%s\n\n",
-              cfg.symbols.size(), cfg.start.c_str(), cfg.end.c_str(), dates.size(), cells.size(),
-              cfg.out.c_str(), cfg.cap, cfg.dry_run ? "  [DRY RUN]" : "");
+  std::printf("symbols=%zu  dates=%s..%s (%zu)  files=%zu  out=%s  cap=$%.2f workers=%u%s\n\n",
+              cfg.symbols.size(), dates.front().c_str(), dates.back().c_str(), dates.size(),
+              cells.size(), cfg.out.c_str(), cfg.cap, cfg.workers,
+              cfg.dry_run ? "  [DRY RUN]" : "");
 
   // ── No API key: degrade gracefully (do NOT crash) ─────────────────────────────────────
   const char *env_key = std::getenv("DATABENTO_API_KEY");
@@ -389,31 +467,59 @@ int main(int argc, char **argv) {
   std::uint64_t total_records = 0;
   std::uint64_t total_billable = 0;
   try {
-    auto client = databento::Historical::Builder().SetKey(api_key).Build();
-    for (Cell &c : cells) {
-      const databento::DateTimeRange<std::string> range{c.date + kSnapStart, c.date + kSnapEnd};
-      const std::vector<std::string> parent{c.parent};
-      // Cost is the authorization gate. OPRA parent record-count and billable-size
-      // metadata can time out independently of both cost and one-minute egress;
-      // leaving those diagnostics at zero must not block a capped pull.
-      std::printf("preflight %s %s...\n", c.symbol.c_str(), c.date.c_str());
-      std::fflush(stdout);
-      for (unsigned attempt = 1; attempt <= 3u; ++attempt) {
-        try {
-          c.cost = client.MetadataGetCost(databento::dataset::kOpraPillar, range, parent,
-                                          databento::Schema::Cbbo1M, databento::SType::Parent, 0);
-          break;
-        } catch (const std::exception &error) {
-          if (attempt == 3u) {
-            throw;
+    std::vector<std::string> parents;
+    parents.reserve(cfg.symbols.size());
+    for (const std::string &symbol : cfg.symbols)
+      parents.push_back(to_parent(symbol));
+    std::vector<double> date_costs(dates.size(), 0.0);
+    std::mutex preflight_mutex;
+    bool preflight_failed = false;
+    std::string preflight_error;
+    parallel_for(dates.size(), cfg.workers, [&](std::size_t date_index) {
+      const std::string &date = dates[date_index];
+      const databento::DateTimeRange<std::string> range{date + kSnapStart, date + kSnapEnd};
+      try {
+        auto client = databento::Historical::Builder().SetKey(api_key).Build();
+        for (unsigned attempt = 1; attempt <= 3u; ++attempt) {
+          try {
+            date_costs[date_index] = client.MetadataGetCost(
+                databento::dataset::kOpraPillar, range, parents, databento::Schema::Cbbo1M,
+                databento::SType::Parent, 0);
+            break;
+          } catch (const std::exception &error) {
+            if (attempt == 3u)
+              throw;
+            std::this_thread::sleep_for(std::chrono::seconds(attempt * 2u));
           }
-          std::fprintf(stderr, "  metadata retry %u/3 after: %s\n", attempt, error.what());
-          std::this_thread::sleep_for(std::chrono::seconds(attempt * 2u));
         }
+        std::lock_guard<std::mutex> lock(preflight_mutex);
+        std::printf("preflight %s (%zu parents) cost=$%.6f\n", date.c_str(), parents.size(),
+                    date_costs[date_index]);
+      } catch (const std::exception &error) {
+        std::lock_guard<std::mutex> lock(preflight_mutex);
+        preflight_failed = true;
+        if (preflight_error.empty())
+          preflight_error = date + ": " + error.what();
       }
-      total_cost += c.cost;
-      total_records += c.records;
-      total_billable += c.billable;
+    });
+    if (preflight_failed)
+      throw std::runtime_error(preflight_error);
+    for (std::size_t date_index = 0; date_index < dates.size(); ++date_index) {
+      total_cost += date_costs[date_index];
+      cells[date_index * cfg.symbols.size()].cost = date_costs[date_index];
+    }
+    if (total_cost > 0.0) {
+      auto client = databento::Historical::Builder().SetKey(api_key).Build();
+      total_cost = 0.0;
+      for (Cell &c : cells) {
+        const databento::DateTimeRange<std::string> range{c.date + kSnapStart,
+                                                          c.date + kSnapEnd};
+        const std::vector<std::string> parent{c.parent};
+        c.cost = client.MetadataGetCost(databento::dataset::kOpraPillar, range, parent,
+                                        databento::Schema::Cbbo1M,
+                                        databento::SType::Parent, 0);
+        total_cost += c.cost;
+      }
     }
   } catch (const std::exception &e) {
     std::fprintf(stderr, "preflight failed (Metadata query): %s\n", e.what());
@@ -469,21 +575,25 @@ int main(int argc, char **argv) {
   double running = 0.0;
   std::size_t pulled = 0;
   std::size_t skipped = 0;
-  for (const Cell &c : cells) {
+  bool failed = false;
+  std::mutex result_mutex;
+  const unsigned pull_workers = total_cost == 0.0 ? cfg.workers : 1u;
+  parallel_for(cells.size(), pull_workers, [&](std::size_t cell_index) {
+    const Cell &c = cells[cell_index];
     const fs::path target{c.path};
     std::error_code ec;
     if (fs::exists(target, ec) && !ec) {
+      std::lock_guard<std::mutex> lock(result_mutex);
       ++skipped;
-      std::printf("  SKIP (exists): %s\n", c.path.c_str());
-      continue;
+      return;
     }
-    // Running-total guard: never start a pull that would carry the total over the cap.
-    if (running + c.cost > cfg.cap) {
-      std::fprintf(stderr,
-                   "  STOP: pulling %s %s (est $%.6f) would bring the running total to "
-                   "$%.6f, over cap $%.2f. Halting before spend.\n",
-                   c.symbol.c_str(), c.date.c_str(), c.cost, running + c.cost, cfg.cap);
-      break;
+    {
+      std::lock_guard<std::mutex> lock(result_mutex);
+      if (failed || running + c.cost > cfg.cap) {
+        failed = true;
+        return;
+      }
+      running += c.cost;
     }
     if (target.has_parent_path()) {
       fs::create_directories(target.parent_path(), ec);
@@ -494,20 +604,20 @@ int main(int argc, char **argv) {
     auto res = dbx::pull_opra_cbbo_1m_to_parquet(
         api_key, one, {c.date + kSnapStart, c.date + kSnapEnd}, c.path, cfg.cap);
     if (!res.has_value()) {
+      std::lock_guard<std::mutex> lock(result_mutex);
       std::fprintf(stderr, "  pull failed for %s %s: %s\n", c.symbol.c_str(), c.date.c_str(),
                    res.error().to_string().c_str());
-      return 1;
+      failed = true;
+      return;
     }
     const dbx::PullStats &st = res.value();
-    running += st.cost_usd;
+    std::lock_guard<std::mutex> lock(result_mutex);
+    running += st.cost_usd - c.cost;
     ++pulled;
-    std::printf("  PULLED %-8s %s -> %s  records=%lld symbols=%lld api_calls=%lld cost=$%.6f  "
-                "running=$%.6f\n",
-                c.symbol.c_str(), c.date.c_str(), c.path.c_str(),
-                static_cast<long long>(st.records), static_cast<long long>(st.symbols),
-                static_cast<long long>(st.api_calls), st.cost_usd, running);
-  }
+    std::printf("  PULLED %-8s %s records=%lld cost=$%.6f\n", c.symbol.c_str(), c.date.c_str(),
+                static_cast<long long>(st.records), st.cost_usd);
+  });
   std::printf("\nDone. pulled=%zu  skipped=%zu  running_cost=$%.6f (cap $%.2f)\n", pulled, skipped,
               running, cfg.cap);
-  return 0;
+  return failed ? 1 : 0;
 }
