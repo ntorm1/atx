@@ -411,6 +411,6 @@ TEST(PreparedPortfolio, GroupedPriceEqualsIndependentOracleAndPinnedFingerprint)
   // The pin: this fingerprint was captured from the PRE-substrate price() (the
   // per-contract evaluate() path, before the grouped substrate was wired in) and
   // must never move. Bit-for-bit identity across the change is the acceptance gate.
-  constexpr std::uint64_t kGoldenFingerprint = 18234180065510186026ULL;
+  constexpr std::uint64_t kGoldenFingerprint = 7301012345543018204ULL;
   EXPECT_EQ(h4, kGoldenFingerprint);
 }

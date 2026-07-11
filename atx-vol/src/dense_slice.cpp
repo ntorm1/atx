@@ -12,7 +12,6 @@
 #include "atx/core/linalg/linalg.hpp"  // MatX, VecX
 #include "atx/core/linalg/solve.hpp"   // solve, solve_spd
 #include "atx/vol/black76.hpp"         // black76_price, black76_value_and_vega
-#include "atx/vol/implied_vol.hpp"     // implied_vol
 
 namespace atx::vol {
 
@@ -195,11 +194,47 @@ double ConvexSliceFit::iv(double k_log) const noexcept {
   }
   const double K = F * std::exp(k_log);
   const double c = call_price(K);
-  if (!std::isfinite(c) || !(c > 0.0)) {
+  if (!std::isfinite(c)) {
     return kNaN;
   }
-  const auto iv = implied_vol(c, F, K, T, df, Side::Call);
-  return iv.has_value() ? *iv : kNaN;
+  // Price-space convex wings legitimately approach intrinsic/zero so closely
+  // that a finite-vol root is lost to floating-point cancellation. Project the
+  // price into Black's open interval by taking the maximum with a parallel
+  // intrinsic+epsilon line (left) / epsilon floor (right). The maximum of these
+  // convex functions remains convex, so numerical invertibility does not trade
+  // away the very shape guarantee the dense fit provides.
+  const double lower = df * std::max(F - K, 0.0);
+  const double upper = df * F;
+  const double gap = upper - lower;
+  const double epsilon = std::min(1.0e-6 * std::max(1.0, upper), 0.25 * gap);
+  const double safe_price =
+      std::min(std::max(c, lower + epsilon), std::nextafter(upper, lower));
+  if (!(safe_price > lower) || !(safe_price < upper)) {
+    return kNaN;
+  }
+  // The generic IV helper stops at a price tolerance appropriate for market
+  // quotes. A risk curve is differentiated twice, so that residual can become
+  // visible as false negative density. Polish monotonically by bisection to a
+  // near-machine price bracket; this is deterministic and remains reliable
+  // when vega collapses in a wing.
+  // Do not inherit the quote-inversion 0.5% IV floor here: in a deep wing even
+  // a healthy convex price can imply a smaller numerical sigma. Flooring sigma
+  // would move the served price off the convex curve and create false density.
+  double lo = 1.0e-10;
+  double hi = kIvMax;
+  if (black76_price(F, K, T, hi, df, Side::Call) < safe_price) {
+    return kNaN;
+  }
+  for (int iter = 0; iter < 64; ++iter) {
+    const double mid = 0.5 * (lo + hi);
+    const double model = black76_price(F, K, T, mid, df, Side::Call);
+    if (model < safe_price) {
+      lo = mid;
+    } else {
+      hi = mid;
+    }
+  }
+  return 0.5 * (lo + hi);
 }
 
 Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs, double F,
@@ -427,17 +462,25 @@ Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs, double F,
   std::vector<double> hrows;
   rows.reserve(static_cast<std::size_t>(6 * N));
   hrows.reserve(static_cast<std::size_t>(6 * N));
+  // Keep fitted nodes numerically inside Black's open no-arbitrage interval.
+  // A value exactly on intrinsic has a mathematically valid zero-vol limit but
+  // cannot be inverted to a positive risk volatility, especially in deep ITM
+  // wings. One hundredth of a cent on a $100 forward is still economically
+  // negligible while remaining well above double/root-solver cancellation.
+  const double price_epsilon = 1.0e-6 * std::max(1.0, df * F);
   for (Eigen::Index i = 0; i < N; ++i) {  // g_i >= discounted intrinsic
     VecX rrow = VecX::Zero(N);
     rrow(i) = 1.0;
     rows.push_back(rrow);
-    hrows.push_back(df * std::max(F - un(i), 0.0));
+    const double intrinsic = df * std::max(F - un(i), 0.0);
+    hrows.push_back(std::min(intrinsic + price_epsilon,
+                             std::nextafter(df * F, 0.0)));
   }
   for (Eigen::Index i = 0; i < N; ++i) {  // g_i <= discounted forward
     VecX rrow = VecX::Zero(N);
     rrow(i) = -1.0;
     rows.push_back(rrow);
-    hrows.push_back(-df * F);
+    hrows.push_back(-(df * F - price_epsilon));
   }
   for (Eigen::Index i = 0; i + 1 < N; ++i) {  // g_i - g_{i+1} >= 0
     VecX rrow = VecX::Zero(N);
@@ -467,6 +510,20 @@ Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs, double F,
       rows.push_back(rrow);
       hrows.push_back(-df * (un(i + 1) - un(i)));
     }
+  }
+  if (N >= 2) {
+    // Convex extension through the left origin in PUT space. At K0 a convex
+    // put with P(0)=0 must have P'(K0) >= P(K0)/K0. Without this endpoint
+    // inequality, projecting the power-wing exponent to a>=1 can make the wing
+    // derivative exceed the first interior derivative, creating a density kink
+    // even though every interior divided difference is non-negative.
+    const double K0 = un(0);
+    const double delta = un(1) - K0;
+    VecX rrow = VecX::Zero(N);
+    rrow(0) = -(1.0 / delta + 1.0 / K0);
+    rrow(1) = 1.0 / delta;
+    rows.push_back(rrow);
+    hrows.push_back(-df * F / K0);
   }
   for (Eigen::Index j = 0; j < N; ++j) {  // calendar floor: g_j >= cfloor_j
     if (has_floor[static_cast<std::size_t>(j)]) {

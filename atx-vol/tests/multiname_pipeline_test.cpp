@@ -833,7 +833,7 @@ namespace {
 //
 // Same corpus S1-3a pinned as silently truncating (BBB held, board absent on the
 // middle date). Under the default policy (ExcludeAndReport) the run still returns
-// Ok and every pre-existing column is bit-identical to the pre-change (d54c191)
+// Ok and every pre-existing column is pinned to the V2 correctness-first
 // engine — but the excluded legs are now surfaced in `n_unpriced_lots`.
 //
 // NOTE — the S1-3b brief predicted n_unpriced_lots == {0,2,0}. The engine actually
@@ -867,8 +867,8 @@ TEST(MultinamePipeline, HeldLotWithoutSurfaceIsCountedNotHidden) {
   EXPECT_EQ(res->n_unpriced_lots[1], 2.0);
   EXPECT_EQ(res->n_unpriced_lots[2], 2.0);
 
-  // Every pre-existing column EXCEPT gross_theta is BIT-IDENTICAL to the pre-change
-  // (d54c191) run; the new column is purely additive. gross_theta is REPINNED for
+  // Every pre-existing column is pinned to the V2 default-risk run; the new count
+  // column is purely additive. gross_theta retains the earlier T9b repin for
   // T9b: the book's CALL legs (index + BBB straddle calls) now price through the
   // native analytic path (american_greeks_al, backtest analytic_greeks=ON), whose
   // theta is the continuation-region PDE instead of the old FD-truncated fallback.
@@ -882,21 +882,27 @@ TEST(MultinamePipeline, HeldLotWithoutSurfaceIsCountedNotHidden) {
 #if defined(NDEBUG)
   // The exact optimized-fit baseline differs from Debug because the surface and
   // finite-difference kernels are floating-point optimization sensitive.
-  const double base_pnl[3] = {0.0, -23.481526556694593, -81.067015972347463};
-  const double base_nav[3] = {0.0, -23.481526556694593, -104.54854252904205};
-  const double base_gvega[3] = {-7.9580786405131221e-13, -2942.9786807354153,
-                                -81.942673900813247};
-  const double base_gdelta[3] = {18.188082442649421, 12.352773156194246, 21.068239480075906};
-  const double base_ggamma[3] = {25.75849401023601, 11.800666536788199, 27.213470414058101};
-  const double base_gtheta[3] = {-15313.174656835799, -8882.4476283300683, -15894.640664668097};
+  const double base_pnl[3] = {0.0, -23.744716582360475, -24.202360552831159};
+  const double base_nav[3] = {0.0, -23.744716582360475, -47.947077135191634};
+  const double base_gvega[3] = {4.5474735088646412e-13, -2949.8114907762197,
+                                0.2656329087570839};
+  const double base_gdelta[3] = {15.146697780845908, 9.2260306540096977,
+                                 14.349744680261736};
+  const double base_ggamma[3] = {26.41128251135758, 12.475918614420866,
+                                 27.348456305928352};
+  const double base_gtheta[3] = {-15152.17270563155, -8707.6189957414917,
+                                 -15696.856655668636};
 #else
-  const double base_pnl[3] = {0.0, -23.481526548028217, -81.067015959714382};
-  const double base_nav[3] = {0.0, -23.481526548028217, -104.5485425077426};
-  const double base_gvega[3] = {-6.8212102632969618e-13, -2942.9786807243208,
-                                -81.942673890886567};
-  const double base_gdelta[3] = {18.188082442655293, 12.352773156198332, 21.068239480111913};
-  const double base_ggamma[3] = {25.758494010213717, 11.800666536901046, 27.213470414234781};
-  const double base_gtheta[3] = {-15313.174656734631, -8882.447628568847, -15894.640664874149};
+  const double base_pnl[3] = {0.0, -23.744716582360294, -24.202360552831102};
+  const double base_nav[3] = {0.0, -23.744716582360294, -47.947077135191392};
+  const double base_gvega[3] = {4.5474735088646412e-13, -2949.811490776257,
+                                0.26563290860065081};
+  const double base_gdelta[3] = {15.146697780845923, 9.2260306540096408,
+                                 14.34974468026175};
+  const double base_ggamma[3] = {26.411282511357911, 12.475918614421015,
+                                 27.348456305928316};
+  const double base_gtheta[3] = {-15152.172705632258, -8707.6189957418119,
+                                 -15696.856655668571};
 #endif
   for (std::size_t i = 0; i < dates.size(); ++i) {
     EXPECT_TRUE(bits_equal(res->pnl_total[i], base_pnl[i])) << "pnl_total row " << i;
@@ -956,7 +962,7 @@ TEST(MultinamePipeline, UnpricedLotPolicyErrorAborts) {
 // ── S1-3b gate 3: the default policy is bit-identical on a clean corpus ────────
 //
 // A full basket present on every date: nothing is ever unpriced, every column
-// equals the pre-change (d54c191) run, and Error policy also completes (no abort).
+// equals the V2 correctness-first run, and Error policy also completes (no abort).
 TEST(MultinamePipeline, DefaultPolicyFullBasketBitIdentical) {
   const std::vector<std::string> dates = {"2026-06-17", "2026-06-18", "2026-06-19"};
   const fs::path out =
@@ -981,15 +987,15 @@ TEST(MultinamePipeline, DefaultPolicyFullBasketBitIdentical) {
   }
 
 #if defined(NDEBUG)
-  const double base_pnl[3] = {0.0, -41.891113482667336, -99.786633644083935};
-  const double base_nav[3] = {0.0, -41.891113482667336, -141.67774712675129};
-  const double base_gvega[3] = {-7.9580786405131221e-13, 6.9200891621081837,
-                                -81.942673900813247};
+  const double base_pnl[3] = {0.0, -42.153969329712808, -42.921431468497737};
+  const double base_nav[3] = {0.0, -42.153969329712808, -85.075400798210552};
+  const double base_gvega[3] = {4.5474735088646412e-13, 0.088506107249031629,
+                                0.2656329087570839};
 #else
-  const double base_pnl[3] = {0.0, -41.891113474001244, -99.786633631448794};
-  const double base_nav[3] = {0.0, -41.891113474001244, -141.67774710545004};
-  const double base_gvega[3] = {-6.8212102632969618e-13, 6.9200891721370681,
-                                -81.942673890886567};
+  const double base_pnl[3] = {0.0, -42.153969329712623, -42.92143146849768};
+  const double base_nav[3] = {0.0, -42.153969329712623, -85.075400798210296};
+  const double base_gvega[3] = {4.5474735088646412e-13, 0.088506107177408921,
+                                0.26563290860065081};
 #endif
   for (std::size_t i = 0; i < dates.size(); ++i) {
     EXPECT_TRUE(bits_equal(res->pnl_total[i], base_pnl[i])) << "pnl_total row " << i;
@@ -1214,7 +1220,7 @@ TEST(MultinamePipeline, UnpricedGreeksPolicyErrorAborts) {
 // ── S1-3c gate 4: default policy stays bit-identical; both new columns are 0 ────
 //
 // A full basket present on every date: nothing is ever unpriced, every pre-existing
-// column equals the fed256e run (values pinned in DefaultPolicyFullBasketBitIdentical
+// column equals the V2 run (values pinned in DefaultPolicyFullBasketBitIdentical
 // above), and BOTH the S1-3b and S1-3c count columns are all zeros and round-trip.
 TEST(MultinamePipeline, DefaultPolicyStillBitIdentical) {
   const std::vector<std::string> dates = {"2026-06-17", "2026-06-18", "2026-06-19"};
@@ -1242,17 +1248,17 @@ TEST(MultinamePipeline, DefaultPolicyStillBitIdentical) {
     EXPECT_EQ(res->n_unpriced_greeks[i], 0.0) << "n_unpriced_greeks row " << i;
   }
 
-  // Pre-existing columns bit-identical to the fed256e full-basket capture.
+  // Pre-existing columns bit-identical to the V2 full-basket capture.
 #if defined(NDEBUG)
-  const double base_pnl[3] = {0.0, -41.891113482667336, -99.786633644083935};
-  const double base_nav[3] = {0.0, -41.891113482667336, -141.67774712675129};
-  const double base_gvega[3] = {-7.9580786405131221e-13, 6.9200891621081837,
-                                -81.942673900813247};
+  const double base_pnl[3] = {0.0, -42.153969329712808, -42.921431468497737};
+  const double base_nav[3] = {0.0, -42.153969329712808, -85.075400798210552};
+  const double base_gvega[3] = {4.5474735088646412e-13, 0.088506107249031629,
+                                0.2656329087570839};
 #else
-  const double base_pnl[3] = {0.0, -41.891113474001244, -99.786633631448794};
-  const double base_nav[3] = {0.0, -41.891113474001244, -141.67774710545004};
-  const double base_gvega[3] = {-6.8212102632969618e-13, 6.9200891721370681,
-                                -81.942673890886567};
+  const double base_pnl[3] = {0.0, -42.153969329712623, -42.92143146849768};
+  const double base_nav[3] = {0.0, -42.153969329712623, -85.075400798210296};
+  const double base_gvega[3] = {4.5474735088646412e-13, 0.088506107177408921,
+                                0.26563290860065081};
 #endif
   for (std::size_t i = 0; i < dates.size(); ++i) {
     EXPECT_TRUE(bits_equal(res->pnl_total[i], base_pnl[i])) << "pnl_total row " << i;

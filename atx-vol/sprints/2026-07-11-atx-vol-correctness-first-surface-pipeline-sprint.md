@@ -539,3 +539,66 @@ without prematurely rewriting mathematics. The first pull request should:
 That slice immediately prevents the current conceptual failure mode. SF2-SF6 then improve quality
 and latency behind a stable public contract instead of continuing to add special cases to presets.
 
+## 14. Implementation and qualification record (2026-07-11)
+
+The sprint was implemented end to end on `codex/correctness-first-surface-v2`. The shipped design
+uses separate immutable market-mark and risk leases, generation-stamped admission, explicit
+last-known-good state, independent served-value validation, and persisted policy/provenance.
+
+Key implementation outcomes:
+
+- `PricerConfig{}` is `Balanced`, requests mark and risk, requires risk admission, and retains the
+  last known-good risk generation by default.
+- LinearVariance is market-mark only. Automatic risk routing uses constrained dense or admitted
+  parametric curves and cannot silently disable parity/calendar gates.
+- Carry is a robust multi-pair estimate with dispersion, leave-one-out, effective-pair-count, and
+  confidence diagnostics. Price-to-IV proposals are repriced against the cold reference and either
+  accepted, accurately recomputed, or rejected.
+- Dense slices are fit in discounted call-price space with bounds, monotonicity, convexity, an
+  origin-slope constraint, spread-aware smoothing, and shared-log-moneyness calendar projection.
+- Both cold dual-output builds and local publications are copy-on-write. Mark and risk cold builds
+  run concurrently; one-expiry updates stage a cloned candidate, validate adjacent calendar pairs
+  and the independent oracle, and atomically replace the generation.
+- A certified observation cache reuses price-to-IV results only when fitted prices, flags, and the
+  carry-relevant price band are unchanged. Any price, eligibility, or carry-coordinate change falls
+  back to the full certified path. Uniform spread-only updates retain the mathematically unchanged
+  curve and still run independent admission.
+- The UI defaults to `Balanced`, exposes Latency/Balanced/Accuracy, separates the risk curve from
+  the market-mark overlay, and reports model, carry, inversion, butterfly, and calendar health.
+
+### Release benchmark evidence
+
+Command:
+
+```text
+atx-vol-surface-v2-bench.exe --samples 10 --warmup 3
+```
+
+The synthetic liquid-board fixture admitted every measured candidate: 30/30 cold and 30/30
+incremental, with no fallback samples included in a latency distribution.
+
+| Mode | Cold p50 | Cold p95 | One-expiry p50 | One-expiry p95 | Target result |
+|---|---:|---:|---:|---:|---|
+| `Latency` | 156.440 ms | 163.774 ms | 4.100 ms | 4.807 ms | p95/incremental pass; p50 misses aspirational 100 ms |
+| `Balanced` | 197.397 ms | 214.728 ms | 9.021 ms | 9.329 ms | pass |
+| `Accuracy` | 210.355 ms | 235.567 ms | 18.048 ms | 19.834 ms | pass |
+
+The local p95 phase breakdown was dominated by the independent validator
+(3.679/7.865/18.628 ms). Input certification stayed below 0.014 ms, copy-on-write cloning/refit
+below 1.57 ms, and publication below 0.053 ms. The sole missed aspirational gate is Latency cold
+p50: correctness-first cold de-Americanization plus dual mark/risk publication measured 156 ms
+against the initial 100 ms target; p95 and every incremental gate pass.
+
+### Qualification evidence
+
+- Strict clang-cl `/W4 /WX` Debug and Release builds completed for the library, tests, benchmark,
+  and UI.
+- V2 qualification, fallback, independent-validator, incremental rollback/publication, archive,
+  database, Black-76/IV, dense-shape, and UI-model suites pass.
+- A release headless SPY OPRA smoke admitted a healthy `Balanced` risk surface over 35 expiries and
+  13,586 contracts (`ATX_UI_SMOKE_OK`).
+- The complete Release executable ran 997 tests. The remaining bit-pin failures also reproduce in
+  the untouched local-main Release binary (`AndersenLakeRegime.PositiveRateGrid_BitIdenticalToPrechange`
+  and correction-cache `Pin.*`) and are compiler-sensitive baseline issues, not V2 regressions.
+  V2-driven multiname baselines were deliberately repinned because the production default surface
+  changed from the legacy fit to the correctness-first risk fit.

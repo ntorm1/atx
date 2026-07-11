@@ -217,10 +217,39 @@ TEST(SurfaceV2Fallback, InvalidRefreshKeepsLastAdmittedRiskGeneration) {
   EXPECT_EQ(after.risk_health.validation.validation_id, 0u);
   EXPECT_EQ(before.risk_health.validation.validation_id, validation_id);
   EXPECT_DOUBLE_EQ(after.risk->iv(chain->spot(), sample_T), sample_iv);
+  // SurfaceBundle owns immutable generation leases; retaining `before` across
+  // publication cannot dangle even after the fitter replaces other generations.
+  EXPECT_DOUBLE_EQ(before.risk->iv(chain->spot(), sample_T), sample_iv);
 
   ASSERT_NE(after.market_mark, nullptr);
   EXPECT_EQ(after.market_mark_health.state, SurfaceState::Stale);
   EXPECT_TRUE(after.market_mark_health.using_fallback());
+}
+
+TEST(SurfaceV2Fallback, DisabledFallbackMakesRejectedGenerationUnserviceable) {
+  auto chain = make_known_truth_chain();
+  ASSERT_TRUE(chain.has_value());
+  PricerConfig config = config_for(FitQualityMode::Balanced);
+  config.fallback = SurfaceFallback::None;
+  PricerFitter fitter{config};
+  ASSERT_TRUE(fitter.fit(*chain).has_value());
+  ASSERT_NE(fitter.risk_surface(), nullptr);
+
+  const std::vector<OptionId> ids = chain->ids();
+  std::vector<double> bids(ids.size(), 2.0);
+  std::vector<double> asks(ids.size(), 1.0);
+  ASSERT_TRUE(chain
+                  ->update_quotes(std::span<const OptionId>(ids),
+                                  std::span<const double>(bids),
+                                  std::span<const double>(asks))
+                  .has_value());
+
+  EXPECT_FALSE(fitter.fit(*chain).has_value());
+  const auto rejected = fitter.bundle();
+  EXPECT_EQ(rejected.risk, nullptr);
+  EXPECT_EQ(rejected.risk_health.state, SurfaceState::Rejected);
+  EXPECT_EQ(rejected.risk_health.served_generation, 0u);
+  EXPECT_FALSE(fitter.value_chain(*chain, OutputField::ModelIV, SurfacePurpose::Risk).has_value());
 }
 
 }  // namespace

@@ -141,6 +141,11 @@ public:
 
 private:
   ConvexSliceFit fit_;
+  // Finite total-variance anchors used only when price-to-IV inversion becomes
+  // ill-conditioned at a deep intrinsic/zero-price wing. They turn a numerical
+  // inversion boundary into a controlled Lee-slope wing, never a NaN.
+  std::vector<double> finite_k_;
+  std::vector<double> finite_w_;
 };
 
 // eSSVI backbone (3 DoF, or 4 with asymmetric rho). Owns an EssviParams slice.

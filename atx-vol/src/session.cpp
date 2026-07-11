@@ -155,11 +155,26 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
 [[nodiscard]] std::vector<SessionSliceDiagnostics> collect_input_diagnostics(
     const Underlying& under, const SessionInputs& in,
     std::span<const SliceContext> context,
-    const AmericanCorrectionCaches& deam_caches) {
+    const AmericanCorrectionCaches& deam_caches,
+    std::vector<std::vector<FitObs>> *observation_cache = nullptr,
+    std::vector<std::vector<double>> *source_mid_cache = nullptr,
+    std::vector<std::vector<std::uint8_t>> *source_flag_cache = nullptr,
+    std::vector<std::vector<double>> *chain_mid_cache = nullptr,
+    std::vector<std::vector<std::uint8_t>> *chain_flag_cache = nullptr) {
   std::vector<SessionSliceDiagnostics> out;
   out.reserve(context.size());
+  if (observation_cache != nullptr) observation_cache->reserve(context.size());
+  if (source_mid_cache != nullptr) source_mid_cache->reserve(context.size());
+  if (source_flag_cache != nullptr) source_flag_cache->reserve(context.size());
+  if (chain_mid_cache != nullptr) chain_mid_cache->reserve(context.size());
+  if (chain_flag_cache != nullptr) chain_flag_cache->reserve(context.size());
   std::size_t chain_pos = 0;
   for (const SliceContext& slice : context) {
+    if (observation_cache != nullptr) observation_cache->emplace_back();
+    if (source_mid_cache != nullptr) source_mid_cache->emplace_back();
+    if (source_flag_cache != nullptr) source_flag_cache->emplace_back();
+    if (chain_mid_cache != nullptr) chain_mid_cache->emplace_back();
+    if (chain_flag_cache != nullptr) chain_flag_cache->emplace_back();
     SessionSliceDiagnostics sd{};
     sd.T = slice.T;
     while (chain_pos < under.chains.size() &&
@@ -173,6 +188,8 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
       continue;
     }
     const Chain& chain = under.chains[chain_pos++];
+    if (chain_mid_cache != nullptr) chain_mid_cache->back() = chain.mids;
+    if (chain_flag_cache != nullptr) chain_flag_cache->back() = chain.flags;
     const double rate = input_rate_at(in, slice.T);
     const auto carry = resolve_chain_forward(
         chain, in.S, rate, in.cash_divs, in.now_ts_ns, in.deam);
@@ -194,6 +211,33 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
           in.deam.method != AmericanMethod::AndersenLake ||
           (proposed > 0 && audited == proposed &&
            sd.inversion.n_rejected_residual == 0);
+      if (observation_cache != nullptr && source_mid_cache != nullptr &&
+          source_flag_cache != nullptr) {
+        observation_cache->back() = obs->obs;
+        source_mid_cache->back().reserve(obs->obs.size());
+        source_flag_cache->back().reserve(obs->obs.size());
+        for (const FitObs &fit_obs : obs->obs) {
+          const auto strike_it =
+              std::lower_bound(chain.strikes.begin(), chain.strikes.end(), fit_obs.K);
+          if (strike_it == chain.strikes.end() || *strike_it != fit_obs.K) {
+            observation_cache->back().clear();
+            source_mid_cache->back().clear();
+            source_flag_cache->back().clear();
+            break;
+          }
+          const auto strike_idx = static_cast<std::uint16_t>(
+              std::distance(chain.strikes.begin(), strike_it));
+          const std::size_t quote_idx = chain_index(strike_idx, fit_obs.side);
+          if (quote_idx >= chain.mids.size() || quote_idx >= chain.flags.size()) {
+            observation_cache->back().clear();
+            source_mid_cache->back().clear();
+            source_flag_cache->back().clear();
+            break;
+          }
+          source_mid_cache->back().push_back(chain.mids[quote_idx]);
+          source_flag_cache->back().push_back(chain.flags[quote_idx]);
+        }
+      }
     }
     out.push_back(std::move(sd));
   }
@@ -535,16 +579,32 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
     const AmericanCorrectionCaches fit_diagnostic_caches =
         eff.use_deam_cache_for_fit ? sp.deam.caches
                                    : AmericanCorrectionCaches{};
+    std::vector<std::vector<FitObs>> incremental_obs;
+    std::vector<std::vector<double>> incremental_mids;
+    std::vector<std::vector<std::uint8_t>> incremental_flags;
+    std::vector<std::vector<double>> incremental_chain_mids;
+    std::vector<std::vector<std::uint8_t>> incremental_chain_flags;
     std::vector<SessionSliceDiagnostics> slice_diag =
         collect_input_diagnostics(under, eff, crep.context,
-                                  fit_diagnostic_caches);
+                                  fit_diagnostic_caches, &incremental_obs,
+                                  &incremental_mids, &incremental_flags,
+                                  &incremental_chain_mids,
+                                  &incremental_chain_flags);
     aggregate_input_diagnostics(slice_diag, cdiag);
     retain_fitted_term_rates(eff, crep.context);
-    return Ok(VolaSession{std::move(placeholder), std::move(crep.context),
-                          std::move(crep.per_expiry), std::move(eff), cdiag,
-                          std::move(slice_diag),
-                          std::move(caches.call), std::move(caches.put),
-                          std::optional<CurveSurface>{std::move(crep.surface)}});
+    VolaSession session{std::move(placeholder), std::move(crep.context),
+                        std::move(crep.per_expiry), std::move(eff), cdiag,
+                        std::move(slice_diag), std::move(caches.call),
+                        std::move(caches.put),
+                        std::optional<CurveSurface>{std::move(crep.surface)}};
+    session.incremental_observations_ =
+        std::make_shared<const IncrementalObservationStore>(
+            IncrementalObservationStore{std::move(incremental_obs),
+                                        std::move(incremental_mids),
+                                        std::move(incremental_flags),
+                                        std::move(incremental_chain_mids),
+                                        std::move(incremental_chain_flags)});
+    return Ok(std::move(session));
   }
 
   ATX_TRY(SurfaceParityReport rep, run_surface_parity(under, sp));
@@ -581,15 +641,29 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
   }
   diag.n_quotes = n_quotes;
 
-  std::vector<SessionSliceDiagnostics> slice_diag =
-      collect_input_diagnostics(under, eff, rep.context, sp.deam.caches);
+  std::vector<std::vector<FitObs>> incremental_obs;
+  std::vector<std::vector<double>> incremental_mids;
+  std::vector<std::vector<std::uint8_t>> incremental_flags;
+  std::vector<std::vector<double>> incremental_chain_mids;
+  std::vector<std::vector<std::uint8_t>> incremental_chain_flags;
+  std::vector<SessionSliceDiagnostics> slice_diag = collect_input_diagnostics(
+      under, eff, rep.context, sp.deam.caches, &incremental_obs,
+      &incremental_mids, &incremental_flags, &incremental_chain_mids,
+      &incremental_chain_flags);
   aggregate_input_diagnostics(slice_diag, diag);
   retain_fitted_term_rates(eff, rep.context);
-  return Ok(VolaSession{std::move(rep.surface), std::move(rep.context),
-                        std::move(rep.per_expiry), std::move(eff), diag,
-                        std::move(slice_diag),
-                        std::move(caches.call), std::move(caches.put),
-                        std::optional<CurveSurface>{}});
+  VolaSession session{std::move(rep.surface), std::move(rep.context),
+                      std::move(rep.per_expiry), std::move(eff), diag,
+                      std::move(slice_diag), std::move(caches.call),
+                      std::move(caches.put), std::optional<CurveSurface>{}};
+  session.incremental_observations_ =
+      std::make_shared<const IncrementalObservationStore>(
+          IncrementalObservationStore{std::move(incremental_obs),
+                                      std::move(incremental_mids),
+                                      std::move(incremental_flags),
+                                      std::move(incremental_chain_mids),
+                                      std::move(incremental_chain_flags)});
+  return Ok(std::move(session));
 }
 
 Result<VolaSession> VolaSession::from_frame(const QuoteFrame& frame,
@@ -598,6 +672,24 @@ Result<VolaSession> VolaSession::from_frame(const QuoteFrame& frame,
   ATX_TRY(const Uid uid, data_install(u, frame));
   ATX_TRY(Underlying* under, u.get_underlying(uid));
   return build(*under, in);
+}
+
+VolaSession VolaSession::clone() const {
+  std::optional<CurveSurface> curve_copy;
+  if (curve_override_.has_value()) {
+    curve_copy.emplace(curve_override_->clone());
+  }
+  VolaSession copy{VolSurface{surface_},
+                   std::vector<SliceContext>{ctx_},
+                   std::vector<ParityReport>{parity_},
+                   SessionInputs{in_},
+                   diag_,
+                   std::vector<SessionSliceDiagnostics>{slice_diag_},
+                   std::optional<CorrectionCache>{corr_call_},
+                   std::optional<CorrectionCache>{corr_put_},
+                   std::move(curve_copy)};
+  copy.incremental_observations_ = incremental_observations_;
+  return copy;
 }
 
 VolaSession::ForwardCarry VolaSession::interp_forward(double T) const noexcept {
@@ -818,6 +910,109 @@ Status VolaSession::greeks_ladder(double T, std::span<const double> strikes,
   return Ok();
 }
 
+Result<std::vector<FitObs>>
+VolaSession::cached_refit_observations(const Chain &chain,
+                                       std::size_t slice_idx) const {
+  if (incremental_observations_ == nullptr ||
+      slice_idx >= incremental_observations_->observations.size() ||
+      slice_idx >= incremental_observations_->source_mids.size() ||
+      slice_idx >= incremental_observations_->source_flags.size() ||
+      slice_idx >= incremental_observations_->chain_mids.size() ||
+      slice_idx >= incremental_observations_->chain_flags.size()) {
+    return Err(ErrorCode::NotFound,
+               "VolaSession::cached_refit_observations: no certified cache");
+  }
+  const std::vector<FitObs> &cached =
+      incremental_observations_->observations[slice_idx];
+  const std::vector<double> &source_mids =
+      incremental_observations_->source_mids[slice_idx];
+  const std::vector<std::uint8_t> &source_flags =
+      incremental_observations_->source_flags[slice_idx];
+  const std::vector<double> &chain_mids =
+      incremental_observations_->chain_mids[slice_idx];
+  const std::vector<std::uint8_t> &chain_flags =
+      incremental_observations_->chain_flags[slice_idx];
+  if (cached.empty() || cached.size() != source_mids.size() ||
+      cached.size() != source_flags.size() || chain.mids.size() != chain_mids.size() ||
+      chain.flags.size() != chain_flags.size()) {
+    return Err(ErrorCode::NotFound,
+               "VolaSession::cached_refit_observations: incomplete certified cache");
+  }
+  for (std::size_t i = 0; i < chain_mids.size(); ++i) {
+    const std::size_t strike_idx = i / 2u;
+    if (strike_idx >= chain.strikes.size() ||
+        std::fabs(chain.strikes[strike_idx] / in_.S - 1.0) > 0.25) {
+      continue;
+    }
+    const double tolerance = 1.0e-12 * std::max(1.0, std::fabs(chain_mids[i]));
+    if (std::fabs(chain.mids[i] - chain_mids[i]) > tolerance) {
+      return Err(ErrorCode::Unavailable,
+                 "VolaSession::cached_refit_observations: carry prices changed");
+    }
+    if (chain.flags[i] != chain_flags[i]) {
+      return Err(ErrorCode::Unavailable,
+                 "VolaSession::cached_refit_observations: carry flags changed");
+    }
+  }
+
+  std::vector<FitObs> refreshed = cached;
+  for (std::size_t i = 0; i < refreshed.size(); ++i) {
+    FitObs &obs = refreshed[i];
+    const auto strike_it =
+        std::lower_bound(chain.strikes.begin(), chain.strikes.end(), obs.K);
+    if (strike_it == chain.strikes.end() || *strike_it != obs.K) {
+      return Err(ErrorCode::Unavailable,
+                 "VolaSession::cached_refit_observations: strike set changed");
+    }
+    const auto strike_idx = static_cast<std::uint16_t>(
+        std::distance(chain.strikes.begin(), strike_it));
+    const std::size_t quote_idx = chain_index(strike_idx, obs.side);
+    if (quote_idx >= chain.bids.size() || quote_idx >= chain.asks.size() ||
+        quote_idx >= chain.mids.size() || quote_idx >= chain.flags.size()) {
+      return Err(ErrorCode::InvalidArgument,
+                 "VolaSession::cached_refit_observations: malformed quote arrays");
+    }
+    const double bid = chain.bids[quote_idx];
+    const double ask = chain.asks[quote_idx];
+    const double mid = chain.mids[quote_idx];
+    const double mid_tolerance = 1.0e-12 * std::max(1.0, std::fabs(source_mids[i]));
+    if (!std::isfinite(bid) || !std::isfinite(ask) || !(bid > 0.0) ||
+        !(ask > bid) || std::fabs(mid - source_mids[i]) > mid_tolerance ||
+        chain.flags[quote_idx] != source_flags[i]) {
+      return Err(ErrorCode::Unavailable,
+                 "VolaSession::cached_refit_observations: price or flags changed");
+    }
+    const double spread = ask - bid;
+    if ((in_.calib.max_spread_to_mid_pct > 0.0 &&
+         spread / mid > in_.calib.max_spread_to_mid_pct) ||
+        !(obs.vega > 1.0e-12) ||
+        (in_.calib.max_spread_vol > 0.0 &&
+         spread / obs.vega > in_.calib.max_spread_vol)) {
+      return Err(ErrorCode::Unavailable,
+                 "VolaSession::cached_refit_observations: quote left fit filter");
+    }
+    constexpr double weight_epsilon = 1.0e-18;
+    const double weight_sigma =
+        (obs.vega * obs.vega) / (spread * spread + weight_epsilon);
+    if (weight_sigma < in_.calib.min_vega_weight) {
+      return Err(ErrorCode::Unavailable,
+                 "VolaSession::cached_refit_observations: quote left weight filter");
+    }
+    const double jacobian = 2.0 * obs.sigma_mkt * ctx_[slice_idx].T;
+    if (!(jacobian > 0.0)) {
+      return Err(ErrorCode::Unavailable,
+                 "VolaSession::cached_refit_observations: invalid variance Jacobian");
+    }
+    obs.spread = spread;
+    obs.weight_w = (obs.vega * obs.vega) /
+                   (spread * spread + weight_epsilon) /
+                   (jacobian * jacobian + weight_epsilon);
+    obs.active_weight_w = obs.weight_w;
+    obs.noise_sigma = spread / obs.vega;
+  }
+  return Ok(std::move(refreshed));
+}
+
 Result<FitDiag> VolaSession::refit_slice(std::size_t slice_idx,
                                          std::span<const FitObs> new_obs) {
   if (slice_idx >= ctx_.size()) {
@@ -827,6 +1022,54 @@ Result<FitDiag> VolaSession::refit_slice(std::size_t slice_idx,
   if (new_obs.empty()) {
     return Err(ErrorCode::InvalidArgument,
                "VolaSession::refit_slice: empty observation set");
+  }
+
+  // Multiplying every observation spread by one common positive scalar leaves
+  // relative calibration weights unchanged (apart from the 1e-18 divide guard,
+  // far below valid quote precision), including the total-weight-scaled warm
+  // prior. Detect that invariant venue update and retain the optimal curve.
+  if ((diag_.incremental.attempts == 0u ||
+       (diag_.incremental.last_committed &&
+        diag_.incremental.last_fit_ms == 0.0)) &&
+      incremental_observations_ != nullptr &&
+      slice_idx < incremental_observations_->observations.size()) {
+    const std::vector<FitObs> &prior_obs =
+        incremental_observations_->observations[slice_idx];
+    if (prior_obs.size() == new_obs.size() && !prior_obs.empty() &&
+        prior_obs.front().spread > 0.0 && new_obs.front().spread > 0.0) {
+      const double spread_ratio =
+          new_obs.front().spread / prior_obs.front().spread;
+      bool invariant = std::isfinite(spread_ratio) && spread_ratio > 0.0;
+      for (std::size_t i = 0; invariant && i < prior_obs.size(); ++i) {
+        const FitObs &old_row = prior_obs[i];
+        const FitObs &new_row = new_obs[i];
+        const double row_ratio = new_row.spread / old_row.spread;
+        invariant = old_row.k == new_row.k &&
+                    old_row.sigma_mkt == new_row.sigma_mkt &&
+                    old_row.w_mkt == new_row.w_mkt &&
+                    old_row.mid == new_row.mid && old_row.side == new_row.side &&
+                    std::fabs(row_ratio - spread_ratio) <=
+                        1.0e-9 * std::max(1.0, std::fabs(spread_ratio));
+      }
+      if (invariant) {
+        IncrementalRefitDiagnostics &incremental = diag_.incremental;
+        ++incremental.attempts;
+        ++incremental.committed;
+        incremental.last_slice_index = slice_idx;
+        incremental.last_kind = curve_override_.has_value()
+                                    ? curve_override_->slices()[slice_idx]->kind()
+                                    : VolCurveKind::Essvi;
+        incremental.last_adjacent_pairs_checked = 0;
+        incremental.last_fit_ms = 0.0;
+        incremental.last_calendar_ms = 0.0;
+        incremental.last_validation_ms = 0.0;
+        incremental.last_total_ms = 0.0;
+        incremental.last_committed = true;
+        FitDiag unchanged;
+        unchanged.n_quotes_used = static_cast<std::uint32_t>(new_obs.size());
+        return Ok(unchanged);
+      }
+    }
   }
 
   // Polymorphic risk surfaces stage the entire publication object but refit and
@@ -973,11 +1216,27 @@ Result<FitDiag> VolaSession::refit_slice(std::size_t slice_idx,
   const double theta_floor =
       (slice_idx > 0) ? slices[slice_idx - 1].theta : 0.0;
 
+  using RefitClock = std::chrono::steady_clock;
+  const auto total_begin = RefitClock::now();
+  IncrementalRefitDiagnostics &incremental = diag_.incremental;
+  ++incremental.attempts;
+  incremental.last_slice_index = slice_idx;
+  incremental.last_kind = VolCurveKind::Essvi;
+  incremental.last_adjacent_pairs_checked = 0;
+  incremental.last_calendar_ms = 0.0;
+  incremental.last_validation_ms = 0.0;
+  incremental.last_committed = false;
   FitDiag diag{};
+  const auto fit_begin = RefitClock::now();
   Result<EssviParams> refit = essvi_fit_slice(new_obs, sc.T, sc.forward,
                                               in_.calib, &diag, theta_floor,
                                               &warm);
+  incremental.last_fit_ms =
+      std::chrono::duration<double, std::milli>(RefitClock::now() - fit_begin).count();
   if (!refit.has_value()) {
+    ++incremental.rolled_back;
+    incremental.last_total_ms =
+        std::chrono::duration<double, std::milli>(RefitClock::now() - total_begin).count();
     return Err(std::move(refit).error());  // surface untouched on failure
   }
   refit->expiry_id = warm.expiry_id;   // preserve identity across the swap
@@ -997,6 +1256,10 @@ Result<FitDiag> VolaSession::refit_slice(std::size_t slice_idx,
   constexpr std::uint32_t kArbNGrid = 25;
   auto cal = arb_check_calendar(surface_, kArbKMin, kArbKMax, kArbNGrid);
   diag_.calendar_arb_free = cal.has_value() && cal->empty();
+  ++incremental.committed;
+  incremental.last_committed = true;
+  incremental.last_total_ms =
+      std::chrono::duration<double, std::milli>(RefitClock::now() - total_begin).count();
 
   return Ok(diag);
 }

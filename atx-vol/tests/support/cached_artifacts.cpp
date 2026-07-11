@@ -28,7 +28,7 @@ fs::path cached_spy_convex_dense() {
   // surface_archive.hpp) so a format bump invalidates any stale cache built by
   // an older binary.
   const fs::path file =
-      dir / ("spy_convexdense_nc40_v" + std::to_string(kArchiveMajor) + ".atxvsa");
+      dir / ("spy_convexdense_nc40_shapev2_v" + std::to_string(kArchiveMajor) + ".atxvsa");
   if (fs::exists(file)) {
     return file;
   }

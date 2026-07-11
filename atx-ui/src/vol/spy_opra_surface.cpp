@@ -28,6 +28,18 @@ double milliseconds_since(Clock::time_point start) {
   return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
 }
 
+atx::vol::FitQualityMode to_engine_quality(UiFitQualityMode mode) {
+  switch (mode) {
+  case UiFitQualityMode::Latency:
+    return atx::vol::FitQualityMode::Latency;
+  case UiFitQualityMode::Accuracy:
+    return atx::vol::FitQualityMode::Accuracy;
+  case UiFitQualityMode::Balanced:
+  default:
+    return atx::vol::FitQualityMode::Balanced;
+  }
+}
+
 } // namespace
 
 struct OpraVolSurface::Impl {
@@ -82,8 +94,8 @@ bool OpraVolSurface::load(const OpraSourceConfig &config) {
   impl_->chain = std::make_unique<atx::vol::OptionChain>(std::move(*chain_result));
 
   atx::vol::PricerConfig fit_config;
-  fit_config.preset = atx::vol::FitPreset::Hft;
-  fit_config.curve = atx::vol::CurveConfig{.kind = atx::vol::VolCurveKind::LinearVariance};
+  fit_config.quality_mode = to_engine_quality(config.quality_mode);
+  fit_config.outputs = atx::vol::SurfaceOutputs::MarketMarkAndRisk;
   impl_->fitter = std::make_unique<atx::vol::PricerFitter>(std::move(fit_config));
   const Clock::time_point fit_start = Clock::now();
   const atx::vol::Status fit_status = impl_->fitter->fit(*impl_->chain);
@@ -93,9 +105,10 @@ bool OpraVolSurface::load(const OpraSourceConfig &config) {
     return false;
   }
 
-  const atx::vol::FittedSurface *fitted = impl_->fitter->surface();
+  const atx::vol::SurfaceBundle bundle = impl_->fitter->bundle();
+  const atx::vol::FittedSurface *fitted = bundle.risk.get();
   if (fitted == nullptr) {
-    impl_->error = "surface fit completed without a fitted surface";
+    impl_->error = "surface fit completed without an admitted risk surface";
     return false;
   }
   const atx::vol::SessionDiagnostics &diag = fitted->diagnostics();
@@ -107,6 +120,22 @@ bool OpraVolSurface::load(const OpraSourceConfig &config) {
       .fitted_quotes = diag.n_quotes,
       .calendar_violations = diag.n_calendar_viol_pre,
       .calendar_arb_free = diag.calendar_arb_free,
+      .risk_state = std::string(atx::vol::to_string(bundle.risk_health.state)),
+      .quality_mode = std::string(atx::vol::to_string(bundle.risk_health.quality_mode)),
+      .risk_model = atx::vol::to_string(fitted->session().inputs().curve.kind),
+      .mark_model = bundle.market_mark != nullptr
+                        ? atx::vol::to_string(bundle.market_mark->session().inputs().curve.kind)
+                        : "unavailable",
+      .candidate_generation = bundle.candidate_generation,
+      .served_generation = bundle.risk_health.served_generation,
+      .using_fallback = bundle.risk_health.using_fallback(),
+      .carry_confident = diag.carry_confident,
+      .inversion_certified = diag.inversion_certified,
+      .butterfly_violations = bundle.risk_health.validation.n_butterfly_violations,
+      .inversion_fallbacks = diag.n_iv_fallback,
+      .carry_dispersion = diag.max_carry_dispersion,
+      .carry_leave_one_out = diag.max_carry_leave_one_out,
+      .validation_milliseconds = bundle.timings.risk_validation_ms,
   };
 
   const atx::vol::Underlying &underlying = impl_->chain->underlying();
@@ -120,8 +149,19 @@ bool OpraVolSurface::load(const OpraSourceConfig &config) {
         .forward = forward,
         .atm_vol = session.iv(forward, chain.T),
         .carry = session.q_eff_at(chain.T),
+        .total_variance = session.iv(forward, chain.T) * session.iv(forward, chain.T) * chain.T,
         .strike_count = chain.n_strikes(),
     });
+  }
+  for (std::size_t i = 0; i < impl_->expiries.size(); ++i) {
+    ExpiryInfo &expiry = impl_->expiries[i];
+    if (i == 0) {
+      expiry.forward_variance = expiry.total_variance / expiry.years;
+    } else {
+      const ExpiryInfo &previous = impl_->expiries[i - 1];
+      expiry.forward_variance =
+          (expiry.total_variance - previous.total_variance) / (expiry.years - previous.years);
+    }
   }
   if (impl_->expiries.empty()) {
     impl_->error = "the fitted " + config.symbol + " board contains no expiries";
@@ -146,7 +186,13 @@ bool OpraVolSurface::select_expiry(std::size_t index) {
 
   const atx::vol::Underlying &underlying = impl_->chain->underlying();
   const atx::vol::Chain &chain = underlying.chains[index];
-  const atx::vol::VolaSession &session = impl_->fitter->surface()->session();
+  const atx::vol::FittedSurface *risk_surface = impl_->fitter->risk_surface();
+  const atx::vol::FittedSurface *mark_surface = impl_->fitter->market_mark_surface();
+  if (risk_surface == nullptr) {
+    impl_->error = "selected expiry has no admitted risk surface";
+    return false;
+  }
+  const atx::vol::VolaSession &session = risk_surface->session();
   const double spot = impl_->chain->spot();
   const double rate = impl_->chain->rate();
   const double years = chain.T;
@@ -179,7 +225,7 @@ bool OpraVolSurface::select_expiry(std::size_t index) {
   next.symbol = impl_->config.symbol;
   next.snapshot_iso = impl_->config.snapshot_iso;
   next.expiry_iso = impl_->expiries[index].iso_date;
-  next.model_name = "HFT LINEAR VARIANCE";
+  next.model_name = atx::vol::to_string(session.inputs().curve.kind);
   next.spot = spot;
   next.forward = forward;
   next.years = years;
@@ -195,6 +241,19 @@ bool OpraVolSurface::select_expiry(std::size_t index) {
     const double model_iv = session.iv(strike, years);
     if (std::isfinite(model_iv)) {
       next.curve.push_back(VolCurvePoint{z, strike, model_iv});
+    }
+  }
+  if (mark_surface != nullptr) {
+    const atx::vol::VolaSession &mark_session = mark_surface->session();
+    next.market_mark_curve.reserve(121);
+    for (int i = 0; i <= 120; ++i) {
+      const double z = -2.4 + 4.8 * static_cast<double>(i) / 120.0;
+      const double k_log = z * sigma_hat;
+      const double strike = forward * std::exp(k_log);
+      const double mark_iv = mark_session.iv(strike, years);
+      if (std::isfinite(mark_iv)) {
+        next.market_mark_curve.push_back(VolCurvePoint{z, strike, mark_iv});
+      }
     }
   }
 
@@ -291,6 +350,19 @@ std::size_t OpraVolSurface::dropped_count() const noexcept {
   return impl_->panel.has_value() ? impl_->panel->n_dropped : 0;
 }
 double OpraVolSurface::fit_milliseconds() const noexcept { return impl_->fit_ms; }
+UiFitQualityMode OpraVolSurface::quality_mode() const noexcept {
+  return impl_->config.quality_mode;
+}
+bool OpraVolSurface::set_quality_mode(UiFitQualityMode mode) {
+  if (mode == impl_->config.quality_mode) {
+    return ready();
+  }
+  OpraSourceConfig next = impl_->config;
+  next.quality_mode = mode;
+  if (!impl_->expiries.empty() && impl_->selected < impl_->expiries.size()) {
+    next.initial_expiry = impl_->expiries[impl_->selected].iso_date;
+  }
+  return load(next);
+}
 
 } // namespace atx::ui
-

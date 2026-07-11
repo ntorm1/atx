@@ -983,7 +983,7 @@ Status SurfaceDb::upsert_symbol(std::string_view symbol, const SymbolFitConfig &
     }
   }
   if (!replaced) {
-    entries.push_back(DbSymbolEntry{canon, cfg});
+    entries.push_back(DbSymbolEntry{canon, cfg, provenance});
   }
 
   return persist_locked(std::move(entries), decode_partitions(snap->partitions()));

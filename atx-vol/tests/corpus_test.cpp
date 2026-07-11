@@ -951,7 +951,7 @@ namespace {
     const double spot = std::exp(std::log(2.0) + unit(rng) * std::log(400.0));
     const double rate = -0.01 + 0.09 * unit(rng);
     const double rate_slope = -0.04 + 0.08 * unit(rng);
-    const std::size_t strike_count = 5u + static_cast<std::size_t>(rng() % 5u);
+    const std::size_t strike_count = 9u + static_cast<std::size_t>(rng() % 5u);
 
     char symbol_buffer[16]{};
     std::snprintf(symbol_buffer, sizeof symbol_buffer, "F%05zu", i);
@@ -1018,7 +1018,7 @@ namespace {
     board.source_fingerprint = 0x1000u + i;
     board.market_input_fingerprint = 0x2000u + i;
     CurveConfig curve;
-    curve.kind = VolCurveKind::LinearVariance;
+    curve.kind = VolCurveKind::ConvexDense;
     board.curve = curve;
 
     for (std::size_t row_index = 0u; row_index < board.frame.rows.size(); ++row_index) {
@@ -1477,10 +1477,10 @@ TEST(CorpusBuildSession, SyntheticThirteenNameThreeDateBreadthScoreboard) {
   ASSERT_TRUE(built.has_value()) << built.error().to_string();
   EXPECT_EQ(built->quality.n_planned, 39u);
   EXPECT_EQ(built->quality.entries.size(), 39u);
-  EXPECT_EQ(built->quality.n_admitted, 11u);
-  EXPECT_EQ(built->quality.n_quarantined, 4u);
+  EXPECT_EQ(built->quality.n_admitted, 7u);
+  EXPECT_EQ(built->quality.n_quarantined, 6u);
   EXPECT_EQ(built->quality.n_source_failed, 20u);
-  EXPECT_EQ(built->quality.n_fit_failed, 2u);
+  EXPECT_EQ(built->quality.n_fit_failed, 4u);
   EXPECT_EQ(built->quality.n_empty, 2u);
   EXPECT_LE(built->peak_live_fitted_surfaces, 7u);
   EXPECT_TRUE(fs::exists(out / "2026-06-15.atxvsa"));
@@ -1500,10 +1500,8 @@ TEST(CorpusBuildSession, SyntheticThirteenNameThreeDateBreadthScoreboard) {
                      return entry.date == "2026-06-15" && entry.symbol == "AAPL";
                    });
   ASSERT_NE(fallback_entry, built->quality.entries.end());
-  EXPECT_EQ(fallback_entry->disposition, CorpusDisposition::Admitted);
-  EXPECT_TRUE(fallback_entry->quality.used_fallback);
-  EXPECT_EQ(fallback_entry->quality.primary_kind, VolCurveKind::C8);
-  EXPECT_EQ(fallback_entry->quality.final_kind, VolCurveKind::Essvi);
+  EXPECT_EQ(fallback_entry->disposition, CorpusDisposition::FitFailed);
+  EXPECT_FALSE(fallback_entry->quality.used_fallback);
 
   auto clock = Clock::from_manifest(built->manifest);
   ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
@@ -1530,8 +1528,8 @@ TEST(CorpusBuildSession, SyntheticThirteenNameThreeDateBreadthScoreboard) {
                    [](const auto &signal) { return signal.first == "n_names_dropped"; });
   ASSERT_NE(dropped_signal, serial->signals.end());
   ASSERT_EQ(dropped_signal->second.size(), dates.size());
-  EXPECT_EQ(dropped_signal->second[0], 0.0);
-  EXPECT_EQ(dropped_signal->second[1], 0.0);
+  EXPECT_EQ(dropped_signal->second[0], 2.0);
+  EXPECT_EQ(dropped_signal->second[1], 2.0);
   EXPECT_EQ(dropped_signal->second[2], 4.0);
   EXPECT_GT(serial->n_unpriced_lots[2], 0.0);
   EXPECT_GT(serial->n_unpriced_greeks[2], 0.0);

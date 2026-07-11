@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$Symbol = "SPY",
+    [string]$DataPath = "",
     [switch]$NoLaunch
 )
 
@@ -10,7 +11,11 @@ Set-StrictMode -Version Latest
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $releaseBin = Join-Path $repoRoot "build-rel\bin"
 $sourceExe = Join-Path $releaseBin "atx-ui.exe"
-$sampleData = Join-Path $repoRoot "data\spy_opra_cbbo1m_2026-06-05T1955Z.parquet"
+$sampleData = if ([string]::IsNullOrWhiteSpace($DataPath)) {
+    Join-Path $repoRoot "data\spy_opra_cbbo1m_2026-06-05T1955Z.parquet"
+} else {
+    (Resolve-Path -LiteralPath $DataPath).Path
+}
 
 function Invoke-CMake {
     param([Parameter(Mandatory)][string[]]$Arguments)
@@ -24,7 +29,7 @@ function Invoke-CMake {
 Push-Location $repoRoot
 try {
     Write-Host "[release] Configuring Release preset..." -ForegroundColor Cyan
-    Invoke-CMake -Arguments @("--preset", "rel")
+    Invoke-CMake -Arguments @("--preset", "rel", "-DATX_BUILD_UI=ON")
 
     Write-Host "[release] Building atx-ui..." -ForegroundColor Cyan
     Invoke-CMake -Arguments @("--build", "--preset", "rel", "--target", "atx-ui")
@@ -73,4 +78,3 @@ if (-not $NoLaunch) {
     }
     Write-Host "[release] Running (PID $($process.Id))." -ForegroundColor Green
 }
-

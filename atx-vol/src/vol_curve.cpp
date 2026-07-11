@@ -65,16 +65,62 @@ double IVolCurve::iv(double k_log) const noexcept {
 // ── ConvexDenseCurve ────────────────────────────────────────────────────────
 
 ConvexDenseCurve::ConvexDenseCurve(ConvexSliceFit fit) noexcept
-    : IVolCurve(fit.T, fit.F, fit.df), fit_(std::move(fit)) {}
+    : IVolCurve(fit.T, fit.F, fit.df), fit_(std::move(fit)) {
+  finite_k_.reserve(fit_.u.size() * 2u);
+  finite_w_.reserve(fit_.u.size() * 2u);
+  const auto append_anchor = [&](double k) {
+    const double sigma = fit_.iv(k);
+    if (std::isfinite(sigma) && sigma > 0.0) {
+      finite_k_.push_back(k);
+      finite_w_.push_back(sigma * sigma * T_);
+    }
+  };
+  for (std::size_t i = 0; i < fit_.u.size(); ++i) {
+    append_anchor(std::log(fit_.u[i] / F_));
+    if (i + 1u < fit_.u.size()) {
+      append_anchor(std::log(std::sqrt(fit_.u[i] * fit_.u[i + 1u]) / F_));
+    }
+  }
+}
 
-double ConvexDenseCurve::iv(double k_log) const noexcept { return fit_.iv(k_log); }
+double ConvexDenseCurve::iv(double k_log) const noexcept {
+  const double wk = w(k_log);
+  return wk > 0.0 && T_ > 0.0 ? std::sqrt(wk / T_) : kNaN;
+}
 
 double ConvexDenseCurve::w(double k_log) const noexcept {
   const double s = fit_.iv(k_log);
-  if (!(s > 0.0) || !(T_ > 0.0)) {
+  if (s > 0.0 && std::isfinite(s) && T_ > 0.0) {
+    return s * s * T_;
+  }
+  if (finite_k_.empty()) {
     return kNaN;
   }
-  return s * s * T_;
+  if (finite_k_.size() == 1u) {
+    return finite_w_.front();
+  }
+  const auto it = std::lower_bound(finite_k_.begin(), finite_k_.end(), k_log);
+  std::size_t lo = 0u;
+  std::size_t hi = 1u;
+  if (it == finite_k_.begin()) {
+    lo = 0u;
+    hi = 1u;
+  } else if (it == finite_k_.end()) {
+    hi = finite_k_.size() - 1u;
+    lo = hi - 1u;
+  } else {
+    hi = static_cast<std::size_t>(it - finite_k_.begin());
+    lo = hi - 1u;
+  }
+  const double span = finite_k_[hi] - finite_k_[lo];
+  if (!(span > 0.0)) {
+    return finite_w_[lo];
+  }
+  // Roger Lee's moment bound is |dw/dk| <= 2. Stay just inside it so a
+  // numerical wing cannot manufacture an infinite-moment surface.
+  const double slope =
+      std::clamp((finite_w_[hi] - finite_w_[lo]) / span, -1.999, 1.999);
+  return std::max(1.0e-12, finite_w_[lo] + slope * (k_log - finite_k_[lo]));
 }
 
 // ── EssviCurve / SviCurve ───────────────────────────────────────────────────

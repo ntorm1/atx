@@ -115,6 +115,16 @@ struct ValidationDigest {
   double max_butterfly_slack{};
   double max_calendar_slack{};
   double max_wing_slope_excess{};
+  double first_non_finite_k{};
+  std::uint32_t first_non_finite_slice{};
+  double first_butterfly_k{};
+  std::uint32_t first_butterfly_slice{};
+  double first_calendar_k{};
+  std::uint32_t first_calendar_long_slice{};
+  double first_butterfly_slope_left{};
+  double first_butterfly_slope_right{};
+  double first_calendar_previous_w{};
+  double first_calendar_current_w{};
 
   [[nodiscard]] constexpr bool admitted() const noexcept {
     return failures == ValidationFailure::None;

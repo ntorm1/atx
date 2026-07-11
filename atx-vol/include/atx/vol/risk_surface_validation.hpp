@@ -16,6 +16,7 @@
 namespace atx::vol {
 
 class CurveSurface;
+class VolaSession;
 class VolSurface;
 
 struct RiskSurfaceView {
@@ -46,13 +47,16 @@ struct RiskSurfaceValidationConfig {
   double price_bound_tolerance{1.0e-10};
   double strike_monotonicity_tolerance{1.0e-10};
   double convexity_slope_tolerance{1.0e-8};
-  double calendar_total_variance_tolerance{1.0e-12};
+  // Total variance is recovered through price-to-IV bisection for dense price
+  // curves; 1e-8 absorbs only solver/projection roundoff (far below a vol tick).
+  double calendar_total_variance_tolerance{1.0e-8};
   // Roger Lee's finite-moment asymptotic total-variance slope ceiling.
   double max_abs_wing_total_variance_slope{2.0};
   double wing_slope_tolerance{1.0e-8};
 };
 
 [[nodiscard]] RiskSurfaceView make_risk_surface_view(const CurveSurface &surface) noexcept;
+[[nodiscard]] RiskSurfaceView make_risk_surface_view(const VolaSession &surface) noexcept;
 [[nodiscard]] RiskSurfaceView make_risk_surface_view(const VolSurface &surface) noexcept;
 
 // Invalid view/configuration is a caller error. A mathematically invalid
@@ -60,8 +64,18 @@ struct RiskSurfaceValidationConfig {
 [[nodiscard]] Result<ValidationDigest>
 validate_risk_surface(RiskSurfaceView surface, const RiskSurfaceValidationConfig &config = {});
 
+// Recompute the deterministic ID after an admission layer merges independent
+// carry, inversion, freshness, or timeout failures into the geometric digest.
+void finalize_validation_digest(ValidationDigest &digest,
+                                const RiskSurfaceValidationConfig &config = {}) noexcept;
+
 [[nodiscard]] inline Result<ValidationDigest>
 validate_risk_surface(const CurveSurface &surface, const RiskSurfaceValidationConfig &config = {}) {
+  return validate_risk_surface(make_risk_surface_view(surface), config);
+}
+
+[[nodiscard]] inline Result<ValidationDigest>
+validate_risk_surface(const VolaSession &surface, const RiskSurfaceValidationConfig &config = {}) {
   return validate_risk_surface(make_risk_surface_view(surface), config);
 }
 

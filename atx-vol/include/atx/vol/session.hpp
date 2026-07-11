@@ -43,6 +43,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
 #include <vector>
@@ -239,6 +240,11 @@ class VolaSession {
   [[nodiscard]] static Result<VolaSession> from_frame(const QuoteFrame& frame,
                                                       const SessionInputs& in);
 
+  // Deep copy for copy-on-write publication. The fitted polymorphic curves and
+  // correction caches are independently owned by the clone, so a local refit
+  // can mutate the candidate while readers retain an immutable prior generation.
+  [[nodiscard]] VolaSession clone() const;
+
   // ── Queries (const, no refit; see the forward-interpolation note above) ────
 
   // Interpolated European-equivalent implied vol at absolute strike K and
@@ -341,6 +347,13 @@ class VolaSession {
   //         (Unavailable on a degenerate slice) otherwise; else Ok(FitDiag).
   [[nodiscard]] Result<FitDiag> refit_slice(std::size_t slice_idx,
                                             std::span<const FitObs> new_obs);
+
+  // Fast path for quote updates that changed uncertainty but not price. The
+  // original, already-certified European IVs are reused exactly and only their
+  // spread-derived weights are refreshed. A price/flag/shape change returns an
+  // error so the caller can fall back to full de-Americanization.
+  [[nodiscard]] Result<std::vector<FitObs>>
+  cached_refit_observations(const Chain &chain, std::size_t slice_idx) const;
 
   // ── Serialization snapshot ─────────────────────────────────────────────────
   //
@@ -485,6 +498,16 @@ class VolaSession {
   // Polymorphic-surface override (ConvexDense / Svi). Empty => default eSSVI path
   // (queries read surface_). Move-only, like the session itself.
   std::optional<CurveSurface> curve_override_;
+  struct IncrementalObservationStore {
+    std::vector<std::vector<FitObs>> observations;
+    std::vector<std::vector<double>> source_mids;
+    std::vector<std::vector<std::uint8_t>> source_flags;
+    std::vector<std::vector<double>> chain_mids;
+    std::vector<std::vector<std::uint8_t>> chain_flags;
+  };
+  // Immutable and shared across copy-on-write generations. A spread-only refit
+  // never changes certified prices/IVs, so cloning this history is wasted work.
+  std::shared_ptr<const IncrementalObservationStore> incremental_observations_;
 };
 
 }  // namespace atx::vol

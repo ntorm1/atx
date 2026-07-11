@@ -1,10 +1,13 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
 namespace atx::ui {
+
+enum class UiFitQualityMode { Latency, Balanced, Accuracy };
 
 // Stable UI-facing view models. Feed adapters translate domain objects into
 // these types so panels do not depend on OPRA, a particular symbol, or the
@@ -23,6 +26,8 @@ struct ExpiryInfo {
   double forward{0.0};
   double atm_vol{0.0};
   double carry{0.0};
+  double total_variance{0.0};
+  double forward_variance{0.0};
   std::size_t strike_count{0};
 };
 
@@ -58,6 +63,20 @@ struct SurfaceDiagnostics {
   std::size_t fitted_quotes{0};
   std::size_t calendar_violations{0};
   bool calendar_arb_free{false};
+  std::string risk_state;
+  std::string quality_mode;
+  std::string risk_model;
+  std::string mark_model;
+  std::uint64_t candidate_generation{0};
+  std::uint64_t served_generation{0};
+  bool using_fallback{false};
+  bool carry_confident{false};
+  bool inversion_certified{false};
+  std::size_t butterfly_violations{0};
+  std::size_t inversion_fallbacks{0};
+  double carry_dispersion{0.0};
+  double carry_leave_one_out{0.0};
+  double validation_milliseconds{0.0};
 };
 
 struct VolCurveSlice {
@@ -76,6 +95,7 @@ struct VolCurveSlice {
   double max_abs_error{0.0};
   std::size_t observations{0};
   std::vector<VolCurvePoint> curve;
+  std::vector<VolCurvePoint> market_mark_curve;
   std::vector<VolQuotePoint> quotes;
 };
 
@@ -97,7 +117,8 @@ public:
   [[nodiscard]] virtual std::size_t contract_count() const noexcept = 0;
   [[nodiscard]] virtual std::size_t dropped_count() const noexcept = 0;
   [[nodiscard]] virtual double fit_milliseconds() const noexcept = 0;
+  [[nodiscard]] virtual UiFitQualityMode quality_mode() const noexcept = 0;
+  [[nodiscard]] virtual bool set_quality_mode(UiFitQualityMode mode) = 0;
 };
 
 } // namespace atx::ui
-

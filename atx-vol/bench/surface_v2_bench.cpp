@@ -68,6 +68,13 @@ struct ModeReport {
   Distribution mark_build;
   Distribution risk_build;
   Distribution validation;
+  Distribution quote_update;
+  Distribution local_refit;
+  Distribution local_optimizer;
+  Distribution local_input;
+  Distribution local_clone_refit;
+  Distribution local_validation;
+  Distribution local_publication;
   Distribution one_expiry_incremental;
 };
 
@@ -109,7 +116,7 @@ struct ModeReport {
 // candidate risk family so comparisons isolate quality-mode work budgets.
 [[nodiscard]] SynthPanelSpec make_liquid_fixture() {
   SynthPanelSpec spec;
-  spec.uid = "SYNTH_LIQUID_ETF";
+  spec.uid = "SYNTHETF";
   spec.snapshot_iso = "2026-06-19";
   spec.spot = 100.0;
   spec.r = 0.04;
@@ -153,7 +160,7 @@ struct ModeReport {
   // A benchmark must expose rejection, never hide it behind a prior generation.
   config.fallback = SurfaceFallback::None;
   CurveConfig risk_curve;
-  risk_curve.kind = VolCurveKind::Essvi;
+  risk_curve.kind = VolCurveKind::ConvexDense;
   config.curve = risk_curve;
   return config;
 }
@@ -206,31 +213,44 @@ void run_cold_samples(const OptionChain &chain, FitQualityMode mode, const CliOp
 }
 
 struct ExpiryUpdate {
+  std::size_t slice_idx{};
   std::vector<OptionId> ids;
   std::vector<double> mids;
   std::vector<double> half_spreads;
 };
 
-[[nodiscard]] std::optional<ExpiryUpdate> front_expiry_update(const OptionChain &chain) {
+[[nodiscard]] std::optional<ExpiryUpdate> front_expiry_update(const OptionChain &chain,
+                                                              const PricerFitter &fitter) {
   const std::vector<OptionId> all_ids = chain.ids();
-  if (all_ids.empty()) {
+  const FittedSurface *risk = fitter.risk_surface();
+  if (all_ids.empty() || risk == nullptr || risk->session().expiries().empty()) {
     return std::nullopt;
   }
-  std::int64_t front_expiry = std::numeric_limits<std::int64_t>::max();
-  for (const OptionId id : all_ids) {
-    const Result<OptionRef> option = chain.at(id);
-    if (option.has_value()) {
-      front_expiry = std::min(front_expiry, option->expiry_ns);
+  const double fitted_T = risk->session().expiries().front().T;
+  std::int64_t front_expiry = 0;
+  const Chain *front_chain = nullptr;
+  for (const Chain &candidate : chain.underlying().chains) {
+    if (std::fabs(candidate.T - fitted_T) <= 1.0e-10 * std::max(1.0, fitted_T)) {
+      front_expiry = candidate.expiry_ns;
+      front_chain = &candidate;
+      break;
     }
   }
-  if (front_expiry == std::numeric_limits<std::int64_t>::max()) {
+  if (front_expiry == 0 || front_chain == nullptr) {
     return std::nullopt;
   }
 
   ExpiryUpdate update;
+  update.slice_idx = 0u;
   for (const OptionId id : all_ids) {
     const Result<OptionRef> option = chain.at(id);
     if (!option.has_value() || option->expiry_ns != front_expiry) {
+      continue;
+    }
+    const std::size_t quote_idx =
+        chain_index(cid_strike_idx(id), cid_side(id));
+    if (quote_idx >= front_chain->flags.size() ||
+        front_chain->flags[quote_idx] != 0u) {
       continue;
     }
     update.ids.push_back(id);
@@ -248,7 +268,7 @@ void run_incremental_samples(OptionChain &chain, FitQualityMode mode, const CliO
     report.incremental_rejection_reasons |= reason_bits(fitter.bundle());
     return;
   }
-  const std::optional<ExpiryUpdate> update = front_expiry_update(chain);
+  const std::optional<ExpiryUpdate> update = front_expiry_update(chain, fitter);
   if (!update.has_value()) {
     report.incremental_rejected += options.samples;
     report.incremental_rejection_reasons |=
@@ -262,7 +282,7 @@ void run_incremental_samples(OptionChain &chain, FitQualityMode mode, const CliO
     // Change one expiry's quote uncertainty while preserving every midpoint and
     // therefore put/call parity. This is a real quote update without injecting a
     // synthetic calendar or carry violation.
-    const double spread_scale = (sample & 1u) == 0u ? 1.05 : 0.95;
+    const double spread_scale = (sample & 1u) == 0u ? 0.95 : 0.90;
     for (std::size_t i = 0; i < update->ids.size(); ++i) {
       const double half_spread = update->half_spreads[i] * spread_scale;
       bids[i] = std::max(0.0, update->mids[i] - half_spread);
@@ -273,11 +293,25 @@ void run_incremental_samples(OptionChain &chain, FitQualityMode mode, const CliO
     const Status updated =
         chain.update_quotes(std::span<const OptionId>(update->ids), std::span<const double>(bids),
                             std::span<const double>(asks));
-    const Status fitted = updated.has_value() ? fitter.fit(chain) : updated;
+    const auto refit_start = Clock::now();
+    const Result<FitDiag> fitted =
+        updated.has_value()
+            ? fitter.refit_risk_slice(chain, update->slice_idx)
+            : Result<FitDiag>{atx::core::Err(std::move(updated).error())};
     const double wall_ms = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
     const SurfaceBundle bundle = fitter.bundle();
     if (fitted.has_value() && freshly_admitted(bundle)) {
       ++report.incremental_admitted;
+      report.quote_update.add(
+          std::chrono::duration<double, std::milli>(refit_start - start).count());
+      report.local_refit.add(
+          std::chrono::duration<double, std::milli>(Clock::now() - refit_start).count());
+      report.local_optimizer.add(
+          bundle.risk->diagnostics().incremental.last_fit_ms);
+      report.local_input.add(bundle.timings.incremental_input_ms);
+      report.local_clone_refit.add(bundle.timings.incremental_refit_ms);
+      report.local_validation.add(bundle.timings.incremental_validation_ms);
+      report.local_publication.add(bundle.timings.incremental_publish_ms);
       report.one_expiry_incremental.add(wall_ms);
     } else {
       ++report.incremental_rejected;
@@ -333,6 +367,13 @@ void print_report(const ModeReport &report, bool trailing_comma) {
   print_distribution("market_mark_build", report.mark_build, true);
   print_distribution("risk_build", report.risk_build, true);
   print_distribution("risk_validation", report.validation, true);
+  print_distribution("quote_update", report.quote_update, true);
+  print_distribution("local_refit_to_admission", report.local_refit, true);
+  print_distribution("local_optimizer", report.local_optimizer, true);
+  print_distribution("local_input_certification", report.local_input, true);
+  print_distribution("local_clone_and_refit", report.local_clone_refit, true);
+  print_distribution("local_validation", report.local_validation, true);
+  print_distribution("local_publication", report.local_publication, true);
   print_distribution("one_expiry_update_to_admission", report.one_expiry_incremental, false);
   std::cout << "      }\n"
             << "    }" << (trailing_comma ? "," : "") << "\n";
@@ -395,7 +436,7 @@ int main(int argc, char **argv) {
             << "  \"timing_sample_policy\": "
                "\"freshly_admitted_candidates_only\",\n"
             << "  \"incremental_api\": "
-               "\"one_expiry_quote_update_then_current_fit_api\",\n"
+               "\"copy_on_write_local_slice_refit_then_atomic_admission\",\n"
             << "  \"requested_samples_per_mode\": " << options->samples << ",\n"
             << "  \"modes\": [\n";
   for (std::size_t i = 0; i < reports.size(); ++i) {

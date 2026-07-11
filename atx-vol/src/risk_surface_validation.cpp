@@ -9,6 +9,7 @@
 
 #include "atx/core/error.hpp"
 #include "atx/vol/black76.hpp"
+#include "atx/vol/session.hpp"
 #include "atx/vol/vol_curve.hpp"
 #include "atx/vol/vol_surface.hpp"
 
@@ -72,6 +73,16 @@ void stamp_validation_id(ValidationDigest &out, const RiskSurfaceValidationConfi
   hash_double(hash, out.max_butterfly_slack);
   hash_double(hash, out.max_calendar_slack);
   hash_double(hash, out.max_wing_slope_excess);
+  hash_double(hash, out.first_non_finite_k);
+  hash_u64(hash, out.first_non_finite_slice);
+  hash_double(hash, out.first_butterfly_k);
+  hash_u64(hash, out.first_butterfly_slice);
+  hash_double(hash, out.first_calendar_k);
+  hash_u64(hash, out.first_calendar_long_slice);
+  hash_double(hash, out.first_butterfly_slope_left);
+  hash_double(hash, out.first_butterfly_slope_right);
+  hash_double(hash, out.first_calendar_previous_w);
+  hash_double(hash, out.first_calendar_current_w);
   out.validation_id = hash;
 }
 
@@ -87,6 +98,27 @@ double curve_maturity(const void *ctx, std::size_t idx) noexcept {
 double curve_total_variance(const void *ctx, std::size_t idx, double k) noexcept {
   const auto slices = static_cast<const CurveSurface *>(ctx)->slices();
   return idx < slices.size() ? slices[idx]->w(k) : std::numeric_limits<double>::quiet_NaN();
+}
+
+std::size_t session_slice_count(const void *ctx) noexcept {
+  return static_cast<const VolaSession *>(ctx)->expiries().size();
+}
+
+double session_maturity(const void *ctx, std::size_t idx) noexcept {
+  const auto expiries = static_cast<const VolaSession *>(ctx)->expiries();
+  return idx < expiries.size() ? expiries[idx].T : std::numeric_limits<double>::quiet_NaN();
+}
+
+double session_total_variance(const void *ctx, std::size_t idx, double k) noexcept {
+  const auto &session = *static_cast<const VolaSession *>(ctx);
+  const auto expiries = session.expiries();
+  if (idx >= expiries.size()) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  const double maturity = expiries[idx].T;
+  const double forward = session.forward_at(maturity);
+  const double strike = forward * std::exp(k);
+  return session.total_variance(strike, maturity);
 }
 
 std::size_t vol_slice_count(const void *ctx) noexcept {
@@ -117,6 +149,10 @@ double vol_total_variance(const void *ctx, std::size_t idx, double k) noexcept {
 
 RiskSurfaceView make_risk_surface_view(const CurveSurface &surface) noexcept {
   return RiskSurfaceView{&surface, curve_slice_count, curve_maturity, curve_total_variance};
+}
+
+RiskSurfaceView make_risk_surface_view(const VolaSession &surface) noexcept {
+  return RiskSurfaceView{&surface, session_slice_count, session_maturity, session_total_variance};
 }
 
 RiskSurfaceView make_risk_surface_view(const VolSurface &surface) noexcept {
@@ -176,6 +212,10 @@ Result<ValidationDigest> validate_risk_surface(RiskSurfaceView surface,
       variances[point] = w;
       if (!std::isfinite(maturity) || !(maturity > 0.0) || !std::isfinite(strike) ||
           !std::isfinite(w) || !(w > 0.0)) {
+        if (out.n_non_finite == 0u) {
+          out.first_non_finite_k = k;
+          out.first_non_finite_slice = static_cast<std::uint32_t>(slice);
+        }
         ++out.n_non_finite;
         out.failures |= ValidationFailure::NonFinite;
         continue;
@@ -224,6 +264,12 @@ Result<ValidationDigest> validate_risk_surface(RiskSurfaceView surface,
           (prices[point + 1] - prices[point]) / (strikes[point + 1] - strikes[point]);
       const double slack = slope_left - slope_right;
       if (slack > config.convexity_slope_tolerance) {
+        if (out.n_butterfly_violations == 0u) {
+          out.first_butterfly_k = sample_k(point, config.strike_grid_points);
+          out.first_butterfly_slice = static_cast<std::uint32_t>(slice);
+          out.first_butterfly_slope_left = slope_left;
+          out.first_butterfly_slope_right = slope_right;
+        }
         ++out.n_butterfly_violations;
         out.failures |= ValidationFailure::Butterfly;
         out.max_butterfly_slack = std::max(out.max_butterfly_slack, slack);
@@ -262,6 +308,12 @@ Result<ValidationDigest> validate_risk_surface(RiskSurfaceView surface,
         }
         const double slack = previous - current;
         if (slack > config.calendar_total_variance_tolerance) {
+          if (out.n_calendar_violations == 0u) {
+            out.first_calendar_k = k;
+            out.first_calendar_long_slice = static_cast<std::uint32_t>(slice);
+            out.first_calendar_previous_w = previous;
+            out.first_calendar_current_w = current;
+          }
           ++out.n_calendar_violations;
           out.failures |= ValidationFailure::Calendar;
           out.max_calendar_slack = std::max(out.max_calendar_slack, slack);
@@ -273,6 +325,11 @@ Result<ValidationDigest> validate_risk_surface(RiskSurfaceView surface,
 
   stamp_validation_id(out, config);
   return out;
+}
+
+void finalize_validation_digest(ValidationDigest &digest,
+                                const RiskSurfaceValidationConfig &config) noexcept {
+  stamp_validation_id(digest, config);
 }
 
 } // namespace atx::vol

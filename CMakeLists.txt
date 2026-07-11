@@ -166,6 +166,11 @@ option(ATX_FAST_INFLATE "Use zlib-ng for zip inflate in ZipEntryReader" OFF)
 add_library(atx_warnings INTERFACE)
 if(MSVC)
     target_compile_options(atx_warnings INTERFACE /W4 /permissive-)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+        # Visual Studio emits one cl invocation with many translation units. /MP
+        # fans them out; clang-cl diagnoses this MSVC-only switch as unused.
+        target_compile_options(atx_warnings INTERFACE /MP)
+    endif()
     if(ATX_WERROR)
         target_compile_options(atx_warnings INTERFACE /WX)
     endif()
@@ -228,6 +233,7 @@ option(ATX_VOL_PROFILE "Instrument atx-vol phase wall times with compile-time op
 
 # Only configure tests / GoogleTest when this is the top-level project.
 option(ATX_BUILD_TESTS "Build ATX tests" ${PROJECT_IS_TOP_LEVEL})
+option(ATX_BUILD_UI "Build the ATX volatility desktop workspace" OFF)
 
 if(ATX_BUILD_TESTS)
     enable_testing()
@@ -245,3 +251,6 @@ add_subdirectory(atx-vol)
 add_subdirectory(atx-tsdb)
 add_subdirectory(atx-engine)
 add_subdirectory(atx-impl)
+if(ATX_BUILD_UI)
+    add_subdirectory(atx-ui)
+endif()

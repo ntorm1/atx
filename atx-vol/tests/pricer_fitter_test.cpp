@@ -125,6 +125,57 @@ TEST_F(PricerFitterTest, UpdateQuotesReplacesBidAsk) {
   EXPECT_DOUBLE_EQ(ref->mid, 0.5 * (nb + na));
 }
 
+TEST_F(PricerFitterTest, LocalRiskRefitPublishesCopyOnWriteGeneration) {
+  PricerConfig config;
+  config.quality_mode = atx::vol::FitQualityMode::Latency;
+  config.outputs = atx::vol::SurfaceOutputs::Risk;
+  config.fallback = atx::vol::SurfaceFallback::LastKnownGood;
+  atx::vol::CurveConfig curve;
+  curve.kind = atx::vol::VolCurveKind::Essvi;
+  config.curve = curve;
+  PricerFitter fitter{config};
+  ASSERT_TRUE(fitter.fit(*chain_).has_value());
+  const atx::vol::SurfaceBundle before = fitter.bundle();
+  ASSERT_NE(before.risk, nullptr);
+  ASSERT_FALSE(before.risk->session().expiries().empty());
+  const double target_T = before.risk->session().expiries().front().T;
+  const double probe_K = before.risk->session().expiries().front().forward;
+  const double old_iv = before.risk->session().iv(probe_K, target_T);
+
+  std::vector<OptionId> ids;
+  std::vector<double> bids;
+  std::vector<double> asks;
+  for (const OptionId id : chain_->ids()) {
+    const auto option = chain_->at(id);
+    ASSERT_TRUE(option.has_value());
+    if (std::fabs(option->T - target_T) > 1.0e-12) continue;
+    const std::size_t quote_idx =
+        atx::vol::chain_index(atx::vol::cid_strike_idx(id), atx::vol::cid_side(id));
+    if (chain_->underlying().chains.front().flags[quote_idx] != 0u) continue;
+    const double half_spread = 0.45 * (option->ask - option->bid);
+    ids.push_back(id);
+    bids.push_back(std::max(0.0, option->mid - half_spread));
+    asks.push_back(option->mid + half_spread);
+  }
+  ASSERT_FALSE(ids.empty());
+  ASSERT_TRUE(chain_->update_quotes(ids, bids, asks).has_value());
+  const auto cached =
+      before.risk->session().cached_refit_observations(
+          chain_->underlying().chains.front(), 0u);
+  ASSERT_TRUE(cached.has_value()) << cached.error().message();
+  ASSERT_TRUE(fitter.refit_risk_slice(*chain_, 0u).has_value());
+
+  const atx::vol::SurfaceBundle after = fitter.bundle();
+  ASSERT_NE(after.risk, nullptr);
+  EXPECT_NE(after.risk.get(), before.risk.get());
+  EXPECT_EQ(after.risk->generation(), before.risk->generation() + 1u);
+  EXPECT_EQ(after.risk_health.state, atx::vol::SurfaceState::Healthy);
+  EXPECT_TRUE(after.risk_health.validation.admitted());
+  EXPECT_DOUBLE_EQ(after.risk->session().iv(probe_K, target_T), old_iv);
+  // The retained lease remains valid and unchanged after publication.
+  EXPECT_DOUBLE_EQ(before.risk->session().iv(probe_K, target_T), old_iv);
+}
+
 TEST_F(PricerFitterTest, FitStoresSurfaceAndGatesValueChain) {
   PricerFitter fitter{PricerConfig{.preset = FitPreset::Fast, .n_threads = 1}};
   // value_chain before a fit is gated.

@@ -254,10 +254,36 @@ Commands used against the current worktree:
 
 A temporary review probe also compared HFT, accurate uncapped LinearVariance, and Robust sessions on the same loaded board; it was removed after collecting the figures so no diagnostic-only production target remains.
 
+## Post-implementation qualification (2026-07-11)
+
+The correctness-first V2 implementation addresses the review findings directly:
+
+- the old LinearVariance output is explicitly a market-mark surface and is never an implicit risk
+  surface;
+- the default risk curve is constrained in price space, projected on a shared log-moneyness grid,
+  and independently checked for finite values, price bounds, strike monotonicity, butterfly shape,
+  calendar ordering, and wing behavior before publication;
+- carry confidence and every price-to-IV proposal/fallback are part of admission and UI health;
+- failed candidates preserve an immutable last-known-good generation; and
+- the UI shows the admitted risk curve separately from the raw market-mark overlay, plus total and
+  forward variance term diagnostics.
+
+On the same SPY OPRA file used by the workspace, a Release headless run produced
+`ATX_UI_SMOKE_OK` with 13,586 contracts, 35 expiries, 161 selected quotes, a healthy `Balanced`
+risk state, and no admission fallback. The synthetic known-truth release gate admitted all 60
+measured candidates across the three modes. Its p95 cold times were 163.774 ms (`Latency`),
+214.728 ms (`Balanced`), and 235.567 ms (`Accuracy`); p95 one-expiry atomic publications were
+4.807 ms, 9.329 ms, and 19.834 ms respectively. All p95 and incremental targets pass. The
+Latency cold p50 was 156.440 ms, above the initial aspirational 100 ms target, because certified
+de-Americanization remains the dominant correctness cost.
+
+The unusual raw term jumps and short-expiry quote kinks may still be visible in the market-mark
+overlay because they are properties of the observed board. They no longer contaminate the default
+risk surface: the risk line is shape-safe, calendar-safe over its declared band, generation-stamped,
+and withheld whenever carry, inversion, or geometry cannot be certified.
+
 ## Bottom line
 
 The observed UI behavior is consistent with the implementation. The term line is exposing independently fit serial-expiry marks, and the short-smile kinks are the expected output of a high-degree piecewise-linear market interpolant applied to a noisy, locally non-convex board.
 
 The price-to-IV solver is fundamentally sound. Improvements should focus first on product separation, shape constraints, calendar construction, carry robustness, and honest surface-health diagnostics—not on replacing the root finder.
-
-
