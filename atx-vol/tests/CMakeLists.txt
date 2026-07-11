@@ -87,6 +87,7 @@ add_executable(atx-vol-tests
     spy_strangle_backtest_test.cpp
     surface_db_backtest_test.cpp
     surface_db_populate_test.cpp
+    mag7_dispersion_backtest_test.cpp
 )
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).

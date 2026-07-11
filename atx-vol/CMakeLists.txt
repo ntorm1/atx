@@ -269,4 +269,14 @@ if(ATX_BUILD_EXAMPLES)
     # (tests/surface_db_populate_test.cpp). See examples/mag7_surfdb_populate.cpp.
     add_executable(mag7_surfdb_populate examples/mag7_surfdb_populate.cpp)
     target_link_libraries(mag7_surfdb_populate PRIVATE atx::vol atx::core atx_warnings)
+
+    # Acceptance example: MAG7-vs-SPY dispersion-strangle backtest driven
+    # entirely by a SurfaceDb -- open db -> Clock::from_surface_db ->
+    # make_dispersion_strangle_spec -> DeclarativeStrategy -> run_backtest ->
+    # tearsheet -> the five pinned run_report output files a later Python
+    # renderer consumes. Gate test: Mag7DispersionBacktest
+    # (tests/mag7_dispersion_backtest_test.cpp). See
+    # examples/mag7_dispersion_backtest.cpp.
+    add_executable(mag7_dispersion_backtest examples/mag7_dispersion_backtest.cpp)
+    target_link_libraries(mag7_dispersion_backtest PRIVATE atx::vol atx::core atx_warnings)
 endif()
