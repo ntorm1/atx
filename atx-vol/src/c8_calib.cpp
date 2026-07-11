@@ -186,6 +186,28 @@ int fit_lm_inner(C8Params& s, std::span<const double> k,
                  std::span<const double> weights, int max_inner_iters,
                  double eps_floor) {
   const std::size_t n = k.size();
+  // De-saturate a (near-)degenerate v_min == v seed before packing. Two
+  // saturation mechanisms make such a seed un-fittable as-is:
+  //   1. c8_pack maps frac = v_min/v through inv_sigmoid, clamped at 1-1e-12,
+  //      so x4 ~ 27.6 and dv_min/dx4 = v*sig*(1-sig) ~ 1e-12*v — the x4
+  //      direction is gradient-dead and frac stays pinned at 1 forever;
+  //   2. v - v_min < 1e-12 keeps c8_jw_to_raw on its degenerate branch
+  //      (m := 0, sigma := sigma_floor), whose Jacobian m/sigma rows are
+  //      identically zero — v and psi become gradient-dead too, and the LM
+  //      can only fit a V-kink + bumps (observed to run away along the flat
+  //      log(c) direction until exp underflows c to exactly 0).
+  // Pulling v_min to at most v*(1 - kVminInteriorEps) revives both: the
+  // sigmoid derivative dv_min/dx4 becomes ~eps*v and v - v_min ~ eps*v sits
+  // on the generic conversion branch with live m/sigma/psi partials.
+  // eps = 1e-3 was measured necessary on the degenerate-seed repro
+  // (calib_robustness_test): at eps = 1e-6, dv_min/dx4 ~ 4e-8 is still
+  // effectively dead AND sigma = alpha*m ~ 3e-5 stays under the 1e-4 floor
+  // (sigma-row still zero), reproducing the runaway; at 1e-3 the same fit
+  // converges to w-RMSE ~ 0.0065 half-spreads with v_min traveling freely.
+  constexpr double kVminInteriorEps = 1e-3;
+  if (s.v > 0.0 && s.v_min > s.v * (1.0 - kVminInteriorEps)) {
+    s.v_min = s.v * (1.0 - kVminInteriorEps);
+  }
   std::array<double, 8> x = c8_pack(s);
   double lambda = 1e-3;
   // Hold the current point's normal equations across iterations. `s` only

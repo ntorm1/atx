@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <span>
 #include <vector>
 
@@ -16,6 +17,7 @@
 #include "atx/vol/essvi_calib.hpp"  // essvi_fit_slice, essvi_calib_surface_sequential
 #include "atx/vol/svi_calib.hpp"    // svi_calib_surface, svi_mm_calib_surface
 #include "atx/vol/universe.hpp"     // Underlying, Chain, chain_index
+#include "atx/vol/vol_curve.hpp"    // fit_slice_curve, CurveConfig, C8Curve
 #include "atx/vol/vol_surface.hpp"  // VolSurface, EssviParams, SviParams
 
 // Robustness-hardening regression coverage (sprint P0-3 / P0-4). Each test
@@ -23,18 +25,28 @@
 // post-fix invariant:
 //   P0-3a  eSSVI sequential theta-band collapse stays finite & positive;
 //   P0-3b  converged raw-SVI / SVI-MM slice has strictly positive variance;
-//   P0-3c  C8 slice fit with a rank-deficient (gradient-blind) seed is REJECTED
-//          instead of silently returning a garbage fit;
+//   P0-3c  C8 slice fit from a degenerate v_min == v seed FITS CLEANLY: the
+//          seed is de-saturated at the LM entry and the production accept path
+//          gates on parameter admissibility (historically: the central-FD
+//          Jacobian failed across the admissibility boundary there and the
+//          driver rejected the fit as rank-deficient — an FD implementation
+//          artifact, not an intended contract);
 //   P0-4   populated CorrectionCache eval is finite & deterministic (the bounded
 //          scratch init changes no result).
 
 namespace {
 
 using atx::vol::black76_price;
+using atx::vol::C8Curve;
 using atx::vol::C8Params;
 using atx::vol::c8_calib_slice;
 using atx::vol::c8_fit_slice_lm;
+using atx::vol::c8_residual_sse;
+using atx::vol::c8_seed_from_essvi;
 using atx::vol::c8_slice_w;
+using atx::vol::CurveConfig;
+using atx::vol::fit_slice_curve;
+using atx::vol::VolCurveKind;
 using atx::vol::calib_default_opts;
 using atx::vol::CalibOpts;
 using atx::vol::Chain;
@@ -305,7 +317,20 @@ TEST(CalibRobustness, SviMmSurface_DeepSkew_ConvergedVarianceStaysPositive) {
   return s;
 }
 
-TEST(CalibRobustness, C8FitSliceLm_GradientRankDeficientSeed_IsRejected) {
+// HISTORY: this test originally asserted REJECTION of a v_min == v seed. That
+// rejection was an artifact of the central-FD JW->raw Jacobian: the +h
+// perturbation of v_min stepped across the v_min <= v admissibility boundary,
+// c8_jw_to_raw failed there, and c8_slice_grad_w returned nullopt at EVERY
+// strike, leaving the 8x8 normal system all-zero (rank-deficient) so the
+// hardened driver refused the fit. The closed-form c8_jw_to_raw_jac evaluates
+// no perturbation, so the gradient is available at the boundary — but the seed
+// was still un-fittable there (saturated v_min/v sigmoid + the conversion's
+// degenerate branch left v/psi/m/sigma gradient-dead, and LM ran away along
+// the flat log(c) direction until c underflowed to 0). fit_lm_inner now
+// DE-SATURATES the seed (v_min <= v*(1 - 1e-3)) before packing, which restores
+// the full gradient; the contract is that the fit from a degenerate-v_min seed
+// SUCCEEDS with an admissible, genuinely converged slice.
+TEST(CalibRobustness, C8FitSliceLm_DegenerateVminSeed_FitsCleanly) {
   // Target variances from an admissible truth (so mid is finite / non-trivial).
   const C8Params truth =
       mk_slice(0.25, 0.045, -0.02, 0.45, 0.40, 0.030, 0.0, 0.0, 0.0);
@@ -320,14 +345,96 @@ TEST(CalibRobustness, C8FitSliceLm_GradientRankDeficientSeed_IsRejected) {
     spread[static_cast<std::size_t>(i)] = 0.0005;
   }
 
-  // Degenerate seed: v_min == v places every gradient FD step across the
-  // admissibility boundary -> all gradients fail.
+  // Degenerate seed: v_min == v sits exactly ON the admissibility boundary.
   C8Params seed = mk_slice(0.25, 0.04, -0.02, 0.45, 0.40, 0.04, 0.0, 0.0, 0.0);
+  const double sse_seed = c8_residual_sse(seed, k, mid, spread, 1e-6);
 
-  const auto rc = c8_fit_slice_lm(seed, k, mid, spread, 12, 1e-6);
-  EXPECT_FALSE(rc.has_value())
-      << "gradient-blind (rank-deficient) C8 fit must be rejected, not "
-         "returned as a silent success";
+  // 48 inner iterations: a boundary seed legitimately needs more LM steps than
+  // the healthy-seed case (12) — the first accepted steps only pull v_min off
+  // the de-saturated boundary.
+  const auto rc = c8_fit_slice_lm(seed, k, mid, spread, 48, 1e-6);
+  ASSERT_TRUE(rc.has_value())
+      << "degenerate-v_min seed must fit cleanly after de-saturation";
+
+  // Fitted slice is admissible (the c8_apply_quality_gate slice_ok set plus
+  // the JW-domain v_min range) — NEVER accepted-and-inadmissible.
+  EXPECT_TRUE(std::isfinite(seed.v) && seed.v > 0.0);
+  EXPECT_TRUE(std::isfinite(seed.psi));
+  EXPECT_TRUE(std::isfinite(seed.p) && seed.p > 0.0);
+  EXPECT_TRUE(std::isfinite(seed.c) && seed.c > 0.0);
+  EXPECT_TRUE(std::isfinite(seed.v_min));
+  EXPECT_GE(seed.v_min, 0.0);
+  EXPECT_LE(seed.v_min, seed.v + 1e-12);
+  EXPECT_TRUE(std::isfinite(seed.kappa));
+  EXPECT_TRUE(std::isfinite(seed.q_L));
+  EXPECT_TRUE(std::isfinite(seed.q_R));
+
+  const double sse_fit = c8_residual_sse(seed, k, mid, spread, 1e-6);
+  std::printf(
+      "[ degenerate-vmin C8 fit ] sse seed=%.6e fit=%.6e rmse=%.4f | v=%.6f "
+      "psi=%.4f p=%.4f c=%.4f v_min=%.6f kappa=%.2e qL=%.2e qR=%.2e\n",
+      sse_seed, sse_fit, std::sqrt(sse_fit / static_cast<double>(N)), seed.v,
+      seed.psi, seed.p, seed.c, seed.v_min, seed.kappa, seed.q_L, seed.q_R);
+  EXPECT_TRUE(std::isfinite(sse_fit));
+  EXPECT_LT(sse_fit, sse_seed);
+  // Genuinely converged: w-domain RMSE well inside one quoted half-spread
+  // (measured 0.0065 on this repro; 0.05 leaves cross-platform margin).
+  EXPECT_LT(std::sqrt(sse_fit / static_cast<double>(N)), 0.05);
+}
+
+// Production-path counterpart: fit_slice_curve's C8 arm with a SYMMETRIC smile.
+// c8_seed_from_essvi sets v_min = min over its sampled knots, and a symmetric
+// (rho ~ 0) eSSVI backbone is minimized at ATM — the C8 seed is then EXACTLY
+// v_min == v (verified below), the degenerate case above arising organically in
+// production. The served slice must be admissible: the SSE-only accept gate
+// would have served a c == 0 wing; the admissibility gate + seed de-saturation
+// must make that impossible.
+TEST(CalibRobustness, C8CurveFit_SymmetricSmileDegenerateSeed_ServesAdmissibleSlice) {
+  constexpr double F = 100.0;
+  constexpr double T = 0.25;
+  constexpr double df = 1.0;
+  std::vector<FitObs> obs =
+      make_essvi_obs(/*theta=*/0.04, /*phi=*/1.5, /*rho=*/0.0, T, F);
+  for (FitObs& o : obs) {
+    o.noise_sigma = 1e-3;  // realistic half-spread uncertainty in vol units
+    o.vega = 1.0;
+  }
+
+  CurveConfig cfg;
+  cfg.kind = VolCurveKind::C8;
+
+  // Premise check: the production seed for this smile IS degenerate.
+  const auto essvi =
+      essvi_fit_slice(obs, T, F, cfg.parametric, nullptr, 0.0, nullptr);
+  ASSERT_TRUE(essvi.has_value());
+  const auto seed = c8_seed_from_essvi(*essvi);
+  ASSERT_TRUE(seed.has_value());
+  ASSERT_GT(seed->v_min, seed->v * (1.0 - 1e-9))
+      << "symmetric smile no longer produces a degenerate C8 seed — test "
+         "premise broken";
+
+  const auto fitted = fit_slice_curve(cfg, obs, F, T, df);
+  ASSERT_TRUE(fitted.has_value()) << fitted.error().to_string();
+  ASSERT_EQ((*fitted)->kind(), VolCurveKind::C8);
+  const C8Params& sl = static_cast<const C8Curve*>(fitted->get())->slice();
+
+  EXPECT_TRUE(std::isfinite(sl.v) && sl.v > 0.0);
+  EXPECT_TRUE(std::isfinite(sl.psi));
+  EXPECT_TRUE(std::isfinite(sl.p) && sl.p > 0.0);
+  EXPECT_TRUE(std::isfinite(sl.c) && sl.c > 0.0);
+  EXPECT_TRUE(std::isfinite(sl.v_min));
+  EXPECT_GE(sl.v_min, 0.0);
+  EXPECT_LE(sl.v_min, sl.v + 1e-12);
+  EXPECT_TRUE(std::isfinite(sl.kappa));
+  EXPECT_TRUE(std::isfinite(sl.q_L));
+  EXPECT_TRUE(std::isfinite(sl.q_R));
+
+  // Served curve is finite and positive across the quoted band.
+  for (int i = 0; i <= 20; ++i) {
+    const double kq = -0.30 + 0.03 * static_cast<double>(i);
+    const double w = (*fitted)->w(kq);
+    EXPECT_TRUE(std::isfinite(w) && w > 0.0) << "k=" << kq;
+  }
 }
 
 TEST(CalibRobustness, C8FitSliceLm_HealthySeed_StillSucceeds) {
