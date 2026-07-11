@@ -43,6 +43,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <vector>
 
@@ -52,7 +53,9 @@
 #include "atx/vol/american_iv.hpp"   // american_implied_vol
 #include "atx/vol/calib.hpp"         // CalibOpts, FitObs, calib_default_opts, build_observations_european
 #include "atx/vol/chain.hpp"         // OptionChain
+#include "atx/vol/correction.hpp"    // CorrectionCache, AmericanCorrectionCaches
 #include "atx/vol/curve.hpp"         // CurveSet, ForwardPoint
+#include "atx/vol/deamer.hpp"        // DeAmOptions
 #include "atx/vol/data.hpp"          // iso_to_ns
 #include "atx/vol/dividend.hpp"      // hybrid_forward, HybridDivParams (real-board forward)
 #include "atx/vol/essvi_calib.hpp"   // essvi_fit_slice, essvi_calib_surface
@@ -248,6 +251,139 @@ void BM_SurfaceColdReal(benchmark::State &state) {
     benchmark::ClobberMemory();
   }
   state.SetItemsProcessed(state.iterations()); // items = surfaces
+}
+
+// ── fit/surface_deam_cold + fit/surface_deam_cached ───────────────────────
+//
+// The C2.3 evidence: the SAME whole-surface `essvi_calib_surface` fit on the
+// SAME synthetic SPY board as BM_SurfaceCold, but routed through the opt-in
+// de-Americanization path (`build_observations_european`) that strips the
+// American early-exercise premium before the fit. `_cold` inverts each strike
+// with a fresh Andersen-Lake solve (empty caches); `_cached` routes through the
+// per-side Black-76 + Chebyshev correction caches, which are built ONCE outside
+// the timed loop (their build cost — 2 sides x kNK*kNT*kNS cold AL grid solves,
+// ~1536/side — is a per-underlier surface-fit-cadence cost, not a per-fit one).
+// All three surface cases run at the same default worker count for a like-for-
+// like raw-vs-cold-vs-cached comparison.
+
+struct BoardCaches {
+  CorrectionCache call;
+  CorrectionCache put;
+};
+
+// Per-side American-minus-European correction caches covering the board, built
+// the way session.cpp's `build_session_caches` does (padded (k_log, T) box from
+// every strike/expiry with spot as the forward proxy, a representative carry
+// from the mid expiry's forward, a generous sigma box).
+[[nodiscard]] BoardCaches build_board_caches(const SpyBoard &board) {
+  const double S = board.spot;
+  double k_min = std::numeric_limits<double>::infinity();
+  double k_max = -std::numeric_limits<double>::infinity();
+  double T_lo = std::numeric_limits<double>::infinity();
+  double T_hi = -std::numeric_limits<double>::infinity();
+  for (const Chain &c : board.under.chains) {
+    if (!(c.T > 0.0)) {
+      continue;
+    }
+    T_lo = std::min(T_lo, c.T);
+    T_hi = std::max(T_hi, c.T);
+    for (const double K : c.strikes) {
+      const double k = std::log(K / S);
+      k_min = std::min(k_min, k);
+      k_max = std::max(k_max, k);
+    }
+  }
+  k_min -= 0.05;
+  k_max += 0.05;
+  const double T_min = 0.9 * T_lo;
+  const double T_max = (T_hi > T_lo) ? (1.1 * T_hi) : (1.5 * T_lo);
+  constexpr double kSigMin = 0.05;
+  constexpr double kSigMax = 1.5;
+
+  const Chain &mid = board.under.chains[board.under.chains.size() / 2];
+  const double F_mid = board.curves.forward.forward_at(mid.expiry_id);
+  double q_rep = board.r;
+  if (mid.T > 0.0 && F_mid > 0.0) {
+    q_rep = board.r - std::log(F_mid / S) / mid.T;
+  }
+
+  constexpr std::uint16_t kNK = 16;
+  constexpr std::uint16_t kNT = 8;
+  constexpr std::uint16_t kNS = 12;
+  BoardCaches bc;
+  if (auto cc = CorrectionCache::build(kNK, kNT, kNS, board.r, q_rep, k_min, k_max,
+                                       T_min, T_max, kSigMin, kSigMax, Side::Call)) {
+    bc.call = std::move(*cc);
+  }
+  if (auto pp = CorrectionCache::build(kNK, kNT, kNS, board.r, q_rep, k_min, k_max,
+                                       T_min, T_max, kSigMin, kSigMax, Side::Put)) {
+    bc.put = std::move(*pp);
+  }
+  return bc;
+}
+
+void BM_SurfaceDeAmCold(benchmark::State &state) {
+  const std::optional<SpyBoard> board = build_spy_board();
+  if (!board.has_value()) {
+    state.SkipWithError("SPY board build failed");
+    return;
+  }
+  auto surf_res =
+      VolSurface::create(1u, Parametrization::Essvi, board->under.chains.size());
+  if (!surf_res.has_value()) {
+    state.SkipWithError("VolSurface::create failed");
+    return;
+  }
+  VolSurface surface = *surf_res;
+  const CalibOpts opts = calib_default_opts();
+  const DeAmOptions deam{};  // empty caches => cold Andersen-Lake per strike
+
+  for (auto _ : state) {
+    const Status st = essvi_calib_surface(surface, board->under, board->curves, opts,
+                                          /*out_diag=*/nullptr, /*prior=*/nullptr,
+                                          /*n_workers=*/0u, &deam);
+    if (!st.has_value()) {
+      state.SkipWithError("essvi_calib_surface (deam cold) failed");
+      break;
+    }
+    benchmark::DoNotOptimize(surface.n_slices());
+    benchmark::ClobberMemory();
+  }
+  state.SetItemsProcessed(state.iterations());
+}
+
+void BM_SurfaceDeAmCached(benchmark::State &state) {
+  const std::optional<SpyBoard> board = build_spy_board();
+  if (!board.has_value()) {
+    state.SkipWithError("SPY board build failed");
+    return;
+  }
+  auto surf_res =
+      VolSurface::create(1u, Parametrization::Essvi, board->under.chains.size());
+  if (!surf_res.has_value()) {
+    state.SkipWithError("VolSurface::create failed");
+    return;
+  }
+  VolSurface surface = *surf_res;
+  const CalibOpts opts = calib_default_opts();
+
+  // Caches built ONCE, outside the timed loop (surface-fit-cadence cost).
+  const BoardCaches caches = build_board_caches(*board);
+  DeAmOptions deam{};
+  deam.caches = AmericanCorrectionCaches{&caches.call, &caches.put};
+
+  for (auto _ : state) {
+    const Status st = essvi_calib_surface(surface, board->under, board->curves, opts,
+                                          /*out_diag=*/nullptr, /*prior=*/nullptr,
+                                          /*n_workers=*/0u, &deam);
+    if (!st.has_value()) {
+      state.SkipWithError("essvi_calib_surface (deam cached) failed");
+      break;
+    }
+    benchmark::DoNotOptimize(surface.n_slices());
+    benchmark::ClobberMemory();
+  }
+  state.SetItemsProcessed(state.iterations());
 }
 
 // ── fit/slice_cold + fit/slice_warm_refit ─────────────────────────────────
@@ -454,6 +590,15 @@ const int kRegistered = [] {
         ->Unit(benchmark::kMicrosecond)
         ->MinTime(2.0);
   }
+  // C2.3 de-Am surface cases: same board + driver as fit/surface_cold, routed
+  // through the opt-in de-Americanization path (cold Andersen-Lake vs cached
+  // Black-76 + Chebyshev correction). Directly comparable to fit/surface_cold.
+  apply_common(
+      benchmark::RegisterBenchmark("fit/surface_deam_cold/spy_synth", BM_SurfaceDeAmCold))
+      ->Unit(benchmark::kMicrosecond);
+  apply_common(
+      benchmark::RegisterBenchmark("fit/surface_deam_cached/spy_synth", BM_SurfaceDeAmCached))
+      ->Unit(benchmark::kMicrosecond);
   apply_common(benchmark::RegisterBenchmark("fit/slice_cold/spy_synth", BM_SliceCold))
       ->Unit(benchmark::kMicrosecond);
   apply_common(

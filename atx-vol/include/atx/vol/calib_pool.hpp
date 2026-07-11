@@ -84,6 +84,11 @@
 
 namespace atx::vol {
 
+// De-Americanization options bundle (defined in deamer.hpp). Forward-declared
+// so the pool driver can take an opt-in `const DeAmOptions*` without pulling the
+// de-Am pipeline header into every consumer of this one.
+struct DeAmOptions;
+
 // ── Profile-cadence scheduler ────────────────────────────────────────────
 //
 // Steady-state refit primitive (ports `AtsVolCadenceQueue`). A binary min-heap
@@ -206,18 +211,27 @@ using CurveProvider = std::function<const CurveSet*(Uid)>;
 // @param opts       calibration options applied to every underlier.
 // @param n_threads  worker count; 0 => `std::thread::hardware_concurrency()`
 //                   (>= 1). Clamped to the underlier count.
+// @param deam  OPT-IN de-Americanization route, forwarded to the eSSVI
+//              calibrator ONLY (see `essvi_calib_surface`'s `deam`): null
+//              (default) is today's raw Black-76 path, byte-identical. When
+//              non-null, every eSSVI-parametrized name de-Americanizes its mids
+//              before fitting, fixing the silent American-IV bias. The SVI /
+//              SviMm calibrators do not yet honor it (follow-up); a name routed
+//              to them fits raw regardless of `deam`.
 // @return InvalidArgument if `curves_for` is empty; otherwise Ok(result). An
 //         empty universe yields Ok with a zeroed result.
 [[nodiscard]] Result<PoolResult> calibrate_pool(Universe& universe,
                                                 const CurveProvider& curves_for,
                                                 const CalibOpts& opts,
-                                                unsigned n_threads = 0u);
+                                                unsigned n_threads = 0u,
+                                                const DeAmOptions* deam = nullptr);
 
 // Convenience overload: price every underlier against one shared `CurveSet`
 // (its lifetime must enclose the call).
 [[nodiscard]] Result<PoolResult> calibrate_pool(Universe& universe,
                                                 const CurveSet& shared_curves,
                                                 const CalibOpts& opts,
-                                                unsigned n_threads = 0u);
+                                                unsigned n_threads = 0u,
+                                                const DeAmOptions* deam = nullptr);
 
 }  // namespace atx::vol

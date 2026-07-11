@@ -13,6 +13,7 @@
 #include "atx/core/linalg/linalg.hpp"  // MatX, VecX
 #include "atx/core/linalg/solve.hpp"   // solve_spd
 #include "atx/vol/arb.hpp"             // arb_project_calendar_essvi
+#include "atx/vol/deamer.hpp"          // DeAmOptions (opt-in de-Am route)
 #include "atx/vol/detail/calib_shared.hpp"  // detail::outer_cap + shared LM constants
 #include "atx/vol/detail/resid_basis.hpp"  // dense C2 residual basis (shared with hot-path eval)
 #include "atx/vol/detail/robust.hpp"   // huber_weights_strided
@@ -1000,7 +1001,8 @@ struct ChainFitResult {
                                            const CalibOpts& opts, bool sequential,
                                            double theta_floor,
                                            const VolSurface* prior,
-                                           FitScratch& scratch) {
+                                           FitScratch& scratch, double S,
+                                           const DeAmOptions* deam) {
   ChainFitResult res{};
   const double T = c.T;
   if (!(T > kTMinFit)) {
@@ -1012,7 +1014,20 @@ struct ChainFitResult {
   }
   const double df = curves.yield.disc(T);
 
-  const Result<ObsSet> obs_res = build_observations(c, F, T, df, opts);
+  // Observation build. `deam == nullptr` is the raw Black-76 inversion (today's
+  // path, byte-identical). Otherwise de-Americanize: strip each American mid to
+  // its European-equivalent vol via `build_observations_european`, deriving the
+  // per-chain carry (S from the underlier, r from the yield curve at this T; the
+  // European carry q_eff = r − ln(F/S)/T is formed inside the builder). The
+  // caches/al_opts/iv_tol/iv_max_iter knobs select the cold vs cached hot path.
+  // This runs inside the (possibly parallel) per-chain worker — see the thread-
+  // safety note on `calib_surface_impl` below.
+  const Result<ObsSet> obs_res =
+      (deam != nullptr)
+          ? build_observations_european(c, S, curves.yield.zero(T), F, T, df, opts,
+                                        deam->caches, deam->al_opts, deam->iv_tol,
+                                        deam->iv_max_iter)
+          : build_observations(c, F, T, df, opts);
   if (!obs_res.has_value()) {
     return res;  // too few survivors / malformed chain: skip this expiry
   }
@@ -1073,7 +1088,8 @@ struct ChainFitResult {
                                         const CalibOpts& opts,
                                         FitDiag* out_diag, bool sequential,
                                         const VolSurface* prior,
-                                        unsigned n_workers) {
+                                        unsigned n_workers,
+                                        const DeAmOptions* deam) {
   if (surface.param() != Parametrization::Essvi) {
     return Err(ErrorCode::InvalidArgument,
                "essvi_calib_surface: surface is not eSSVI-parametrized");
@@ -1081,6 +1097,11 @@ struct ChainFitResult {
   if (under.chains.empty()) {
     return Err(ErrorCode::NotFound, "essvi_calib_surface: no chains");
   }
+
+  // Spot for the opt-in de-Am route (unused on the raw path). Derived once from
+  // the underlier, mirroring `run_deam_prepass` (curve_fit.cpp): the per-chain
+  // r/df come from the yield curve at each chain's T inside `fit_one_chain`.
+  const double S = under.spot;
 
   std::uint32_t total_used = 0;
   std::uint32_t total_dropped = 0;
@@ -1148,7 +1169,8 @@ struct ChainFitResult {
         break;
       }
       const ChainFitResult res = fit_one_chain(
-          under.chains[i], curves, opts, sequential, theta_floor, prior, scratch);
+          under.chains[i], curves, opts, sequential, theta_floor, prior, scratch,
+          S, deam);
       const Status st = consume(res);
       if (!st.has_value()) {
         return st;
@@ -1169,7 +1191,7 @@ struct ChainFitResult {
       try {
         results[i] = fit_one_chain(under.chains[i], curves, opts,
                                    /*sequential=*/false, /*theta_floor=*/0.0,
-                                   prior, scratch[wid]);
+                                   prior, scratch[wid], S, deam);
       } catch (...) {
         results[i] = ChainFitResult{};  // failed slot (no obs, no slice)
       }
@@ -1251,20 +1273,21 @@ std::array<double, 3> essvi_w_cube_grad(const EssviParams& slice,
 Status essvi_calib_surface(VolSurface& surface, const Underlying& under,
                            const CurveSet& curves, const CalibOpts& opts,
                            FitDiag* out_diag, const VolSurface* prior,
-                           unsigned n_workers) {
+                           unsigned n_workers, const DeAmOptions* deam) {
   return calib_surface_impl(surface, under, curves, opts, out_diag,
-                            /*sequential=*/false, prior, n_workers);
+                            /*sequential=*/false, prior, n_workers, deam);
 }
 
 Status essvi_calib_surface_sequential(VolSurface& surface,
                                       const Underlying& under,
                                       const CurveSet& curves,
                                       const CalibOpts& opts, FitDiag* out_diag,
-                                      const VolSurface* prior) {
+                                      const VolSurface* prior,
+                                      const DeAmOptions* deam) {
   // Sequential driver: the theta-floor RAW loop-carry is inherently serial, so
   // it always takes the serial path (n_workers is inert here — pass 1).
   return calib_surface_impl(surface, under, curves, opts, out_diag,
-                            /*sequential=*/true, prior, /*n_workers=*/1u);
+                            /*sequential=*/true, prior, /*n_workers=*/1u, deam);
 }
 
 }  // namespace atx::vol

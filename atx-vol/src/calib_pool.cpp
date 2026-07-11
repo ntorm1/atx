@@ -11,6 +11,7 @@
 #include <thread>     // std::jthread, std::thread::hardware_concurrency
 #include <utility>    // std::move, std::swap
 
+#include "atx/vol/deamer.hpp"       // DeAmOptions (opt-in de-Am route)
 #include "atx/vol/essvi_calib.hpp"  // essvi_calib_surface
 #include "atx/vol/profile.hpp"      // classify_underlier, profile_lookup
 #include "atx/vol/svi_calib.hpp"    // svi_calib_surface, svi_mm_calib_surface
@@ -164,15 +165,19 @@ struct UidPlan {
 // Dispatch to the calibrator selected by the profile's base surface.
 [[nodiscard]] Status dispatch_calib(Parametrization param, VolSurface& surface,
                                     const Underlying& under, const CurveSet& curves,
-                                    const CalibOpts& opts, FitDiag* diag) {
+                                    const CalibOpts& opts, FitDiag* diag,
+                                    const DeAmOptions* deam) {
   switch (param) {
     case Parametrization::Essvi:
       // calib_pool already fans across names on its own jthread pool; force
       // n_workers=1 so the per-expiry chain loop stays serial and does not nest
-      // a second fan-out under it (documented oversubscription risk).
+      // a second fan-out under it (documented oversubscription risk). `deam` is
+      // the opt-in de-Americanization route (null = raw Black-76, byte-identical).
       return essvi_calib_surface(surface, under, curves, opts, diag,
-                                 /*prior=*/nullptr, /*n_workers=*/1u);
+                                 /*prior=*/nullptr, /*n_workers=*/1u, deam);
     case Parametrization::Svi:
+      // FOLLOW-UP: svi/svi_mm de-Am not yet plumbed — these fit raw regardless
+      // of `deam` (their calibrators lack the observation-build knob).
       return svi_calib_surface(surface, under, curves, opts, diag);
     case Parametrization::SviMm:
       return svi_mm_calib_surface(surface, under, curves, opts, diag);
@@ -189,7 +194,8 @@ struct UidPlan {
 // Fit one underlier. Pure w.r.t. shared state: reads `p` (const) + `opts`
 // (const), constructs its own `VolSurface`/`FitDiag`. Safe to run on any
 // worker thread concurrently with other calls on disjoint plans.
-[[nodiscard]] PoolEntry fit_one(const UidPlan& p, const CalibOpts& opts) {
+[[nodiscard]] PoolEntry fit_one(const UidPlan& p, const CalibOpts& opts,
+                                const DeAmOptions* deam) {
   PoolEntry e{};
   e.uid = p.uid;
   e.profile_kind = p.kind;
@@ -212,7 +218,8 @@ struct UidPlan {
 
   FitDiag diag{};
   try {
-    const Status st = dispatch_calib(p.param, surface, *p.under, *p.curves, opts, &diag);
+    const Status st =
+        dispatch_calib(p.param, surface, *p.under, *p.curves, opts, &diag, deam);
     if (st) {
       e.status = FitStatus::Ok;
       e.diag = diag;
@@ -234,7 +241,8 @@ struct UidPlan {
 }  // namespace
 
 Result<PoolResult> calibrate_pool(Universe& universe, const CurveProvider& curves_for,
-                                  const CalibOpts& opts, unsigned n_threads) {
+                                  const CalibOpts& opts, unsigned n_threads,
+                                  const DeAmOptions* deam) {
   if (!curves_for) {
     return Err(ErrorCode::InvalidArgument, "calibrate_pool: null curve provider");
   }
@@ -291,10 +299,10 @@ Result<PoolResult> calibrate_pool(Universe& universe, const CurveProvider& curve
   n_workers = std::min(n_workers, n);  // n >= 1 here
 
   std::vector<PoolEntry> slots(n);
-  const auto run_range = [&plans, &slots, &opts](std::size_t start,
-                                                 std::size_t end) {
+  const auto run_range = [&plans, &slots, &opts, deam](std::size_t start,
+                                                       std::size_t end) {
     for (std::size_t i = start; i < end; ++i) {
-      slots[i] = fit_one(plans[i], opts);
+      slots[i] = fit_one(plans[i], opts, deam);
     }
   };
 
@@ -342,11 +350,12 @@ Result<PoolResult> calibrate_pool(Universe& universe, const CurveProvider& curve
 }
 
 Result<PoolResult> calibrate_pool(Universe& universe, const CurveSet& shared_curves,
-                                  const CalibOpts& opts, unsigned n_threads) {
+                                  const CalibOpts& opts, unsigned n_threads,
+                                  const DeAmOptions* deam) {
   const CurveProvider provider = [&shared_curves](Uid) noexcept {
     return &shared_curves;
   };
-  return calibrate_pool(universe, provider, opts, n_threads);
+  return calibrate_pool(universe, provider, opts, n_threads, deam);
 }
 
 }  // namespace atx::vol

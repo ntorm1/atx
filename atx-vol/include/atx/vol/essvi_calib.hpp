@@ -58,6 +58,11 @@
 
 namespace atx::vol {
 
+// De-Americanization options bundle (defined in deamer.hpp). Forward-declared
+// here so the surface drivers can take an opt-in `const DeAmOptions*` without
+// pulling the whole de-Am pipeline header into every consumer of this one.
+struct DeAmOptions;
+
 // ── Per-slice cube-space Levenberg-Marquardt fit ─────────────────────────
 //
 // Fit one expiry's eSSVI slice to the observation set `obs` (survivors of the
@@ -155,6 +160,28 @@ namespace atx::vol {
 //              the serial path. Values above the chain count are clamped down.
 //              The calib_pool per-name fan-out passes 1 here to avoid nesting a
 //              second fan-out under it (oversubscription).
+// @param deam  OPT-IN de-Americanization route. Null (default) inverts each
+//              option mid with plain Black-76 (`build_observations`) — today's
+//              path, byte-identical. A non-null `deam` instead routes every
+//              chain's observation build through `build_observations_european`:
+//              each surviving American mid is stripped to its European-equivalent
+//              lognormal vol (S/r/df per chain derived here from `under`+`curves`,
+//              carry q_eff = r − ln(F/S)/T) before the fit. This FIXES the silent
+//              American-IV bias — the raw path treats American mids as European,
+//              leaving the (put-side) early-exercise premium in every fitted
+//              slice of an American name. `deam->caches` empty ⇒ cold Andersen-
+//              Lake per strike (correct but slower); populated (per-side
+//              `AmericanCorrectionCaches`, e.g. from `build_session_caches`) ⇒
+//              the cached Black-76+Chebyshev hot path. `al_opts`/`iv_tol`/
+//              `iv_max_iter` tune the cold inversion.
+//              INTENDED FUTURE DEFAULT: on for American (single-name equity)
+//              names once the data model carries an exercise-style flag — the
+//              served ConvexDense session path already de-Americanizes; this
+//              low-level driver does not, so American names fit here are biased
+//              until a caller opts in. The default flip is a deferred human
+//              decision (no exercise-style flag exists in the data model yet, and
+//              the synthetic-European CalibratePool fixtures would bias the other
+//              way), so it stays opt-in here.
 // @return InvalidArgument if `surface` is not eSSVI-parametrized; NotFound if
 //         the underlier has no chains or not a single slice fit; otherwise Ok.
 [[nodiscard]] Status essvi_calib_surface(VolSurface& surface,
@@ -163,7 +190,8 @@ namespace atx::vol {
                                          const CalibOpts& opts,
                                          FitDiag* out_diag = nullptr,
                                          const VolSurface* prior = nullptr,
-                                         unsigned n_workers = 0);
+                                         unsigned n_workers = 0,
+                                         const DeAmOptions* deam = nullptr);
 
 // Mingone sequential surface driver. Identical chain walk to
 // `essvi_calib_surface`, but each slice is fit with a theta floor equal to the
@@ -173,12 +201,15 @@ namespace atx::vol {
 // the (φ, ρ)-wing coupling the θ-floor alone does not remove.
 //
 // @param prior  same warm-start contract as `essvi_calib_surface`'s `prior`.
+// @param deam   same opt-in de-Americanization contract as `essvi_calib_surface`'s
+//               `deam` (null = today's raw Black-76 path, byte-identical).
 // @return same contract as `essvi_calib_surface`.
 [[nodiscard]] Status essvi_calib_surface_sequential(VolSurface& surface,
                                                     const Underlying& under,
                                                     const CurveSet& curves,
                                                     const CalibOpts& opts,
                                                     FitDiag* out_diag = nullptr,
-                                                    const VolSurface* prior = nullptr);
+                                                    const VolSurface* prior = nullptr,
+                                                    const DeAmOptions* deam = nullptr);
 
 }  // namespace atx::vol
