@@ -99,6 +99,13 @@
       "execution": { "jobs": 16, "scheduleRandom": false }
     },
     {
+      "name": "ninja-fast",
+      "configurePreset": "ninja",
+      "output": { "outputOnFailure": true },
+      "execution": { "jobs": 16, "scheduleRandom": false },
+      "filter": { "include": { "label": "atx_vol_fast" } }
+    },
+    {
       "name": "dev",
       "configurePreset": "dev",
       "output": { "outputOnFailure": true },

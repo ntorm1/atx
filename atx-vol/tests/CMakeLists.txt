@@ -111,7 +111,35 @@ if(ATX_USE_PCH)
 endif()
 
 include(GoogleTest)
-gtest_discover_tests(atx-vol-tests PROPERTIES LABELS atx_vol)
+
+# Suites measured >10s (serial debug, 2026-07-11). Everything here still runs
+# under `ctest -L atx_vol`; `-L atx_vol_fast` is the developer inner loop.
+# Re-derive from build/Testing/Temporary/LastTest.log when the shape changes.
+#
+# NOTE on labels: gtest_discover_tests's default POST_BUILD discovery mode
+# cannot carry a multi-value `PROPERTIES LABELS "a;b"` list through to the
+# generated set_tests_properties() call — the list is serialized through an
+# unquoted `-D TEST_PROPERTIES=...` command-line round-trip (see CMake's
+# GoogleTest.cmake) which irreversibly flattens the embedded ";" before the
+# final script text is written, regardless of escaping at this call site
+# (verified: `"atx_vol\;atx_vol_fast"` produces byte-identical, still-broken
+# output to the unescaped form). Each test therefore gets exactly ONE bare
+# label here (atx_vol_fast or atx_vol_slow). `ctest -L atx_vol` still selects
+# both buckets because ctest's `-L`/`--label-regex` is an unanchored regex
+# match, and "atx_vol" is a substring of both label names (verified with a
+# `^atx_vol$` anchored probe matching neither) — so `-L atx_vol` remains
+# equivalent to the pre-split behavior without needing a separate literal
+# "atx_vol" label. `ctest --print-labels` will list atx_vol_fast/atx_vol_slow
+# only, not a standalone "atx_vol" entry.
+set(ATX_VOL_SLOW_FILTER
+    "MultinamePipeline.*:Corpus.*:CorpusGeneratedProperty.*:CorpusBuildSession.*:QualifiedCorpus.*:OpraBreadthCorpus.*:SpyFitCorpus.*:SigmaInterpCorpus.*:CallGreeksAl.*:CallGreeksFd.*:AndersenLake.*:AndersenLakeRegime.*:ImplicitDiff.*:SigmaInterp.*:CurveFitParallel.*:CurveFitParity.*:CurveSurfaceNoArb.*:SpyBidAskRegression.*:SpyPortfolioPnl.*:PnlGreeksConsistency.*:SpyArchiveRoundTrip.*:SpyRealCalendarReporting.*:SpyRealOpra.*:BacktestReal.*:BreadthRegime.*:WarmAcrossTime.*:BoundaryHoist.*:Dispersion.*:CorrectionCache.*:PricerFitterTest.*:PreparedPortfolio.*:AmericanGreeks.*")
+
+gtest_discover_tests(atx-vol-tests
+    TEST_FILTER "-${ATX_VOL_SLOW_FILTER}"
+    PROPERTIES LABELS atx_vol_fast)
+gtest_discover_tests(atx-vol-tests
+    TEST_FILTER "${ATX_VOL_SLOW_FILTER}"
+    PROPERTIES LABELS atx_vol_slow)
 
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
