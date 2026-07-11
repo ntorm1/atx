@@ -24,6 +24,7 @@
 #include "atx/core/hash.hpp"
 #include "atx/vol/backtest.hpp"
 #include "atx/vol/corpus.hpp"
+#include "atx/vol/counters.hpp"
 #include "atx/vol/dispersion.hpp"
 #include "atx/vol/historical_projection.hpp"
 #include "atx/vol/listed_dispersion.hpp"
@@ -33,6 +34,7 @@
 #include "atx/vol/listed_opra.hpp"
 #include "atx/vol/occ_ess.hpp"
 #include "atx/vol/opra_batch.hpp"
+#include "atx/vol/phase_profile.hpp"
 #include "atx/vol/portfolio_pricer.hpp"
 #include "atx/vol/session.hpp"
 #include "atx/vol/strategy.hpp"
@@ -808,7 +810,46 @@ Status run_surface_backtest_command(const fs::path &run_dir) {
   DispersionStrategy strategy{std::move(universe), dispersion, lifecycle, hedge};
   RunConfig config;
   config.unpriced = UnpricedLotPolicy::Error;
+#if defined(ATX_VOL_PROFILE)
+  phase_profile::reset();
+#endif
+#if defined(ATX_VOL_COUNTERS)
+  counters::reset();
+#endif
   ATX_TRY(BacktestResult backtest, run_backtest(clock, strategy, config));
+#if defined(ATX_VOL_PROFILE)
+  {
+    const phase_profile::Snapshot measured = phase_profile::snapshot();
+    const double total_ns = static_cast<double>(
+        measured.nanoseconds[static_cast<unsigned>(phase_profile::Region::BacktestTotal)]);
+    std::ofstream output(run_dir / "backtest_profile.tsv", std::ios::binary | std::ios::trunc);
+    if (!output)
+      return Err(ErrorCode::IoError, "cannot write backtest profile");
+    output << "region\tcalls\ttotal_ms\tpct_backtest\tns_per_call\n" << std::setprecision(17);
+    for (unsigned i = 0; i < phase_profile::kCount; ++i) {
+      const double ns = static_cast<double>(measured.nanoseconds[i]);
+      const double calls = static_cast<double>(measured.calls[i]);
+      output << phase_profile::kNames[i] << '\t' << measured.calls[i] << '\t' << ns / 1.0e6
+             << '\t' << (total_ns > 0.0 ? 100.0 * ns / total_ns : 0.0) << '\t'
+             << (calls > 0.0 ? ns / calls : 0.0) << '\n';
+    }
+    if (!output)
+      return Err(ErrorCode::IoError, "cannot flush backtest profile");
+  }
+#endif
+#if defined(ATX_VOL_COUNTERS)
+  {
+    const counters::Snapshot measured = counters::snapshot();
+    std::ofstream output(run_dir / "backtest_counters.tsv", std::ios::binary | std::ios::trunc);
+    if (!output)
+      return Err(ErrorCode::IoError, "cannot write backtest counters");
+    output << "counter\tvalue\n";
+    for (unsigned i = 0; i < counters::kCount; ++i)
+      output << counters::kNames[i] << '\t' << measured.values[i] << '\n';
+    if (!output)
+      return Err(ErrorCode::IoError, "cannot flush backtest counters");
+  }
+#endif
   ATX_TRY_VOID(write_backtest_tsv(backtest, (run_dir / "surface_backtest.tsv").string()));
   std::printf("surface-only projected backtest complete: dates=%zu final_nav=%.10g\n",
               backtest.size(), backtest.nav.back());

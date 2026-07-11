@@ -19,6 +19,7 @@
 #include "atx/core/error.hpp"
 #include "atx/vol/backtest.hpp"         // MarketSnapshot, Lot, PortfolioState
 #include "atx/vol/dispersion.hpp"       // build_dispersion_book, dispersion_signal
+#include "atx/vol/phase_profile.hpp"
 #include "atx/vol/portfolio_pricer.hpp" // OptionContract, kNsPerYear, Position
 #include "atx/vol/priced_surface.hpp"   // PricedSurface
 #include "atx/vol/types.hpp"            // Result, Status
@@ -56,7 +57,10 @@ Status DispersionStrategy::on_step(const MarketSnapshot &base, std::size_t step_
     return Err(ru.error());
   }
 
-  Result<DispersionBook> built = build_dispersion_book(ru->universe, base.set(), cfg_);
+  Result<DispersionBook> built = [&]() {
+    ATX_VOL_PROFILE_SCOPE(StrategyBuildBook);
+    return build_dispersion_book(ru->universe, base.set(), cfg_);
+  }();
   if (!built) {
     // NO-TRADE CONTRACT: under DropRenormalize an Unavailable book means too few
     // names survived today => a flat / no-trade step. Open no lots, leave the
@@ -80,24 +84,27 @@ Status DispersionStrategy::on_step(const MarketSnapshot &base, std::size_t step_
   const std::int64_t expiry = projected_expiry != 0
                                   ? projected_expiry
                                   : base.ts_ns() + std::llround(cfg_.target_T * kNsPerYear);
-  for (const Position &p : built->positions) {
-    const PricedSurface *surf = base.find(p.contract.uid);
-    if (surf == nullptr) {
-      return Err(ErrorCode::NotFound, "DispersionStrategy: no surface for position");
+  {
+    ATX_VOL_PROFILE_SCOPE(StrategyEntryMarks);
+    for (const Position &p : built->positions) {
+      const PricedSurface *surf = base.find(p.contract.uid);
+      if (surf == nullptr) {
+        return Err(ErrorCode::NotFound, "DispersionStrategy: no surface for position");
+      }
+      const Result<double> mark = surf->fair_value(p.contract.K, p.contract.T, p.contract.side);
+      if (!mark) {
+        return Err(mark.error());
+      }
+      Lot lot;
+      lot.id = next_lot_id++;
+      lot.contract = p.contract;
+      lot.qty = p.qty;
+      lot.multiplier = p.multiplier;
+      lot.expiry_ts_ns = expiry;
+      lot.cohort = cohort;
+      lot.entry_price = *mark; // fill at mid
+      book.lots.push_back(lot);
     }
-    const Result<double> mark = surf->fair_value(p.contract.K, p.contract.T, p.contract.side);
-    if (!mark) {
-      return Err(mark.error());
-    }
-    Lot lot;
-    lot.id = next_lot_id++;
-    lot.contract = p.contract;
-    lot.qty = p.qty;
-    lot.multiplier = p.multiplier;
-    lot.expiry_ts_ns = expiry;
-    lot.cohort = cohort;
-    lot.entry_price = *mark; // fill at mid
-    book.lots.push_back(lot);
   }
   front_expiry_ = expiry;
   have_front_ = true;

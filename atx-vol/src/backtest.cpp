@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
+#include "atx/vol/phase_profile.hpp"
 #include "atx/vol/strategy.hpp"         // IStrategy
 #include "atx/vol/surface_archive.hpp"  // SurfaceArchive
 #include "atx/vol/universe.hpp"         // canonical_symbol
@@ -69,6 +70,7 @@ struct BookGreeks {
 [[nodiscard]] Result<BookGreeks> book_greeks(const MarketSnapshot& snap,
                                              const std::vector<Lot>& lots,
                                              const PriceOptions& opts) {
+  ATX_VOL_PROFILE_SCOPE(BookGreeks);
   const std::vector<Position> ps = positions_at(lots, snap.ts_ns());
   auto pf = Portfolio::create(ps);
   if (!pf) {
@@ -115,6 +117,7 @@ struct StepPnl {
 
 [[nodiscard]] Result<StepPnl> compute_step(const MarketSnapshot& base, const MarketSnapshot& shifted,
                                            const std::vector<Lot>& lots, const PriceOptions& opts) {
+  ATX_VOL_PROFILE_SCOPE(StepPnl);
   std::vector<Position> alive;
   alive.reserve(lots.size());
   double settlement = 0.0;
@@ -228,14 +231,21 @@ std::uint64_t MarketSnapshot::open_count() noexcept { return g_open_count.load()
 void MarketSnapshot::reset_open_count() noexcept { g_open_count.store(0); }
 
 Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path) {
-  auto arch = SurfaceArchive::open_file(archive_path);
+  ATX_VOL_PROFILE_SCOPE(SnapshotLoad);
+  auto arch = [&]() {
+    ATX_VOL_PROFILE_SCOPE(ArchiveOpen);
+    return SurfaceArchive::open_file(archive_path);
+  }();
   if (!arch) {
     return Err(arch.error());
   }
   // One archive-open event (the load-once gate asserts N loads => N opens).
   g_open_count.fetch_add(1, std::memory_order_relaxed);
 
-  auto mapped = arch->map_all();
+  auto mapped = [&]() {
+    ATX_VOL_PROFILE_SCOPE(ArchiveMap);
+    return arch->map_all();
+  }();
   if (!mapped) {
     return Err(mapped.error());
   }
@@ -294,6 +304,7 @@ std::optional<std::uint32_t> MarketSnapshot::uid_of(std::string_view symbol) con
 
 Result<BacktestResult> run_backtest(const Clock& clock, PortfolioState initial,
                                     const RunConfig& cfg) {
+  ATX_VOL_PROFILE_SCOPE(BacktestTotal);
   const std::span<const SnapshotRef> refs = clock.refs();
   if (refs.empty()) {
     return Err(ErrorCode::InvalidArgument, "run_backtest: empty clock");
@@ -425,6 +436,7 @@ struct ExecResult {
 };
 
 Result<BacktestResult> run_backtest(const Clock& clock, IStrategy& strat, const RunConfig& cfg) {
+  ATX_VOL_PROFILE_SCOPE(BacktestTotal);
   const std::span<const SnapshotRef> refs = clock.refs();
   if (refs.empty()) {
     return Err(ErrorCode::InvalidArgument, "run_backtest: empty clock");
@@ -516,6 +528,7 @@ Result<BacktestResult> run_backtest(const Clock& clock, IStrategy& strat, const 
   // recorded row per series (NaN when a name is absent that row).
   bool sig_init = false;
   const auto record_signals = [&out, &strat, &sig_init](const MarketSnapshot& snap) {
+    ATX_VOL_PROFILE_SCOPE(Signals);
     const std::vector<std::pair<std::string, double>> s = strat.signals(snap);
     if (!sig_init) {
       for (const auto& kv : s) {
@@ -541,6 +554,7 @@ Result<BacktestResult> run_backtest(const Clock& clock, IStrategy& strat, const 
   // ⇒ cost/turnover 0 and cash/shares untouched.
   const auto execute = [&](const MarketSnapshot& base_snap,
                            const std::vector<Lot>& before_lots) -> Result<ExecResult> {
+    ATX_VOL_PROFILE_SCOPE(Execution);
     ExecResult ex;
     bool entry_happened = false;
 
@@ -567,6 +581,7 @@ Result<BacktestResult> run_backtest(const Clock& clock, IStrategy& strat, const 
         continue;
       }
       entry_happened = true;
+      ATX_VOL_PROFILE_SCOPE(EntryRisk);
       const double T_res = residual_T(lot.expiry_ts_ns, base_snap.ts_ns());
       const PricedSurface* s = base_snap.find(lot.contract.uid);
       double vega = 0.0;
@@ -638,6 +653,7 @@ Result<BacktestResult> run_backtest(const Clock& clock, IStrategy& strat, const 
           add_uid(kv.first);
         }
         for (const std::uint32_t uid : uids) {
+          ATX_VOL_PROFILE_SCOPE(HedgeRisk);
           // Option net delta for this uid = PriceTotals.delta of its lots on base.
           double opt_delta = 0.0;
           std::vector<Position> ps;
@@ -690,7 +706,10 @@ Result<BacktestResult> run_backtest(const Clock& clock, IStrategy& strat, const 
   // Inception (row 0): open positions AS OF refs[0], book entry frictions + premium
   // + the opening hedge into cash; PnL columns are zero; record post-trade cash.
   {
-    Status st = strat.on_step(base, 0, book, next_id);
+    Status st = [&]() {
+      ATX_VOL_PROFILE_SCOPE(StrategyStep);
+      return strat.on_step(base, 0, book, next_id);
+    }();
     if (!st) {
       return Err(st.error());
     }
@@ -783,7 +802,10 @@ Result<BacktestResult> run_backtest(const Clock& clock, IStrategy& strat, const 
 
     // 4-5. Strategy entries/rolls + hedge overlay on the new base.
     const std::vector<Lot> before_lots = book.lots;  // survivors before on_step
-    Status st = strat.on_step(base, i, book, next_id);
+    Status st = [&]() {
+      ATX_VOL_PROFILE_SCOPE(StrategyStep);
+      return strat.on_step(base, i, book, next_id);
+    }();
     if (!st) {
       return Err(st.error());
     }

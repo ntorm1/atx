@@ -107,6 +107,9 @@ target_link_libraries(atx-vol
 if(ATX_VOL_COUNTERS)
     target_compile_definitions(atx-vol PUBLIC ATX_VOL_COUNTERS)
 endif()
+if(ATX_VOL_PROFILE)
+    target_compile_definitions(atx-vol PUBLIC ATX_VOL_PROFILE)
+endif()
 
 if(ATX_BUILD_TESTS)
     add_subdirectory(tests)

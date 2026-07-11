@@ -224,6 +224,7 @@ endif()
 # ATX_VOL_COUNT(...) expands to ((void)0) — zero runtime cost, zero ABI change.
 # The definition is attached to the atx-vol target in atx-vol/CMakeLists.txt.
 option(ATX_VOL_COUNTERS "Instrument atx-vol pricing hot paths with opt-in algorithm counters" OFF)
+option(ATX_VOL_PROFILE "Instrument atx-vol phase wall times with compile-time opt-in timers" OFF)
 
 # Only configure tests / GoogleTest when this is the top-level project.
 option(ATX_BUILD_TESTS "Build ATX tests" ${PROJECT_IS_TOP_LEVEL})
