@@ -375,6 +375,27 @@ struct GaussLegendre {
 
 [[nodiscard]] GaussLegendre gauss_legendre(unsigned n);
 
+// Test-only seam (P2.2 §3). Identical to `andersen_lake` but forces the GENERIC
+// runtime-trip-count boundary kernel even for a scheme that has a specialized
+// compile-time-trip-count instantiation. Used by BoundaryHoist_SpecializedMatches
+// Generic to prove the specialized fixed-scheme kernel is bit-identical to the
+// generic path. Not part of the production API.
+[[nodiscard]] Result<double> andersen_lake_generic_kernel(
+    double S, double K, double T, double sigma, double r, double q, Side side,
+    const std::optional<AlOpts>& opts = std::nullopt);
+
+// P2.2b spike seed for al_boundary_jn_sweeps_to_converge.
+enum class AlSeedMode : std::uint8_t { Baw = 0, QdPlus = 1, Oracle = 2 };
+
+// Test/measurement-only (P2.2b). Cold-solve the put boundary for (K,T,sigma,r,q)
+// with the requested seed, then count Jacobi-Newton sweeps until the boundary
+// residual (max |Δy|) first falls to <= tol, capped at max_sweeps. Returns the
+// sweep count, or -1 if the boundary collapses / a table is missing. Used by the
+// QD+ vs BAW seed-count spike; NOT a production entry point.
+[[nodiscard]] int al_boundary_jn_sweeps_to_converge(
+    double K, double T, double sigma, double r, double q,
+    const std::optional<AlOpts>& opts, AlSeedMode seed, double tol, int max_sweeps);
+
 } // namespace detail
 
 } // namespace atx::vol

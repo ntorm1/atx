@@ -1767,6 +1767,163 @@ TEST(AndersenLakeRegime, UnsupportedPutRegression_OldEuropeanWasWrong) {
 // Global Constraint 1: wherever the corpus lives (r>0 puts / q>0 or European
 // calls), the price is BIT-FOR-BIT what the pre-change code produced. Values were
 // captured from the pre-change binary and hard-coded here.
+// ── P2.2 boundary-geometry hoist + fixed-scheme specialization ────────────
+//
+// The hoist moves the sweep-invariant quadrature geometry (sqrt(u/T), sqrt(t_u),
+// exp(r·u), exp(q·u)) out of every JN+FP sweep into a per-solve precompute, and the
+// two production fixed schemes {7,16}/{12,24} run compile-time-trip-count kernels.
+// Both are PURE HOISTS: the specialized kernel must be BIT-IDENTICAL to the generic
+// runtime-trip-count kernel (which is the untouched scalar reference). This is the
+// same-build proof; the *_BitIdenticalToPrechange pins below fix the actual values.
+TEST(BoundaryHoist, SpecializedMatchesGeneric) {
+  using atx::vol::detail::andersen_lake_generic_kernel;
+  const AlOpts fast = al_fast_opts();                 // {7,16} specialized
+  const std::optional<AlOpts> accurate = std::nullopt;  // {12,24} specialized (nullopt)
+  const std::optional<AlOpts> fast_opt = fast;
+
+  const double S = 100.0;
+  int checked = 0;
+  for (const double m : {0.80, 0.95, 1.00, 1.05, 1.20}) {
+    for (const double T : {1.0 / 252.0, 1.0 / 12.0, 0.5, 2.0}) {
+      for (const double sigma : {0.10, 0.30, 0.75}) {
+        for (const double r : {0.01, 0.043, 0.08}) {
+          for (const double q : {0.0, 0.03, 0.06}) {
+            for (const Side side : {Side::Put, Side::Call}) {
+              const double K = m * S;
+              for (const std::optional<AlOpts>& opts : {fast_opt, accurate}) {
+                const auto spec = andersen_lake(S, K, T, sigma, r, q, side, opts);
+                const auto gen =
+                    andersen_lake_generic_kernel(S, K, T, sigma, r, q, side, opts);
+                ASSERT_EQ(spec.has_value(), gen.has_value());
+                if (spec.has_value()) {
+                  EXPECT_TRUE(bits_equal(*spec, *gen))
+                      << "m=" << m << " T=" << T << " s=" << sigma << " r=" << r
+                      << " q=" << q << " side="
+                      << (side == Side::Call ? "C" : "P")
+                      << " spec=" << *spec << " gen=" << *gen;
+                  ++checked;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  EXPECT_GT(checked, 200);  // the grid actually exercised the specialized kernels
+}
+
+// Cold andersen_lake price pins, fast {7,16} and accurate {12,24} schemes. The
+// literals are the PRE-CHANGE values (captured from the generic/un-hoisted kernel,
+// which is byte-for-byte the original inner loop); the hoisted specialized kernel
+// must reproduce them exactly.
+TEST(BoundaryHoist, PriceBitIdenticalToPrechange) {
+  struct Pin { double S, K, T, sigma, r, q; Side side; bool fast; double expected; };
+  const Pin pins[] = {
+      {100.0, 100.0, 0.5, 0.30, 0.043, 0.0, Side::Put, true, 7.5263639623979568},
+      {100.0, 90.0, 1.0, 0.25, 0.05, 0.0, Side::Put, true, 3.958974915128727},
+      {100.0, 110.0, 0.5, 0.30, 0.043, 0.06, Side::Call, true, 4.3941234997227658},
+      {100.0, 100.0, 0.5, 0.30, 0.043, 0.0, Side::Put, false, 7.5264880966018053},
+      {100.0, 110.0, 0.5, 0.30, 0.043, 0.06, Side::Call, false, 4.3941769486825875},
+  };
+  for (const Pin& p : pins) {
+    const std::optional<AlOpts> opts =
+        p.fast ? std::optional<AlOpts>(al_fast_opts()) : std::nullopt;
+    const double got =
+        value_or_fail(andersen_lake(p.S, p.K, p.T, p.sigma, p.r, p.q, p.side, opts));
+    EXPECT_TRUE(bits_equal(got, p.expected))
+        << (p.fast ? "fast" : "accurate") << " side="
+        << (p.side == Side::Call ? "C" : "P") << " got=" << got
+        << " expected=" << p.expected;
+  }
+}
+
+// ── P2.2b spike: QD+ vs BAW seed, median JN sweep-count to convergence ─────
+//
+// Ship-or-kill on the MEDIAN JN sweep count over the rate/yield/moneyness/maturity
+// grid. Oracle (the near-exact boundary as seed) is the theoretical floor — it
+// bounds the best any seed can do. If BAW already sits at the oracle floor, no
+// analytic seed (QD+ included) can reduce the sweep count, and BAW is kept. The
+// assertion encodes the SHIPPED outcome; the printout is the report evidence.
+namespace {
+int median_of(std::vector<int> v) {
+  if (v.empty()) return -1;
+  std::sort(v.begin(), v.end());
+  return v[v.size() / 2];
+}
+}  // namespace
+TEST(BoundaryHoist, SeedSpike_SweepCount) {
+  using atx::vol::detail::al_boundary_jn_sweeps_to_converge;
+  using atx::vol::detail::AlSeedMode;
+  const double S = 100.0;
+  const double tol = 1.0e-8;
+  const int kMax = 40;
+
+  struct Row { const char* name; std::optional<AlOpts> opts; };
+  const Row schemes[] = {{"fast{7,16}", al_fast_opts()}, {"accurate{12,24}", std::nullopt}};
+
+  for (const Row& row : schemes) {
+    std::vector<int> baw, qdp, oracle;
+    for (const double m : {0.80, 0.90, 1.00, 1.10, 1.20}) {
+      for (const double T : {1.0 / 252.0, 1.0 / 12.0, 0.25, 0.5, 1.0, 2.0}) {
+        for (const double sigma : {0.10, 0.20, 0.30, 0.50, 0.80}) {
+          for (const double r : {0.01, 0.03, 0.05, 0.08}) {
+            for (const double q : {0.0, 0.02, 0.05}) {
+              const double K = m * S;  // put boundary solved at strike K (spot-indep)
+              const int b = al_boundary_jn_sweeps_to_converge(
+                  K, T, sigma, r, q, row.opts, AlSeedMode::Baw, tol, kMax);
+              const int p = al_boundary_jn_sweeps_to_converge(
+                  K, T, sigma, r, q, row.opts, AlSeedMode::QdPlus, tol, kMax);
+              const int o = al_boundary_jn_sweeps_to_converge(
+                  K, T, sigma, r, q, row.opts, AlSeedMode::Oracle, tol, kMax);
+              if (b < 0 || p < 0 || o < 0) continue;  // collapsed corner
+              baw.push_back(b);
+              qdp.push_back(p);
+              oracle.push_back(o);
+            }
+          }
+        }
+      }
+    }
+    ASSERT_GT(baw.size(), 100u);
+    long sb = 0, sp = 0, so = 0;
+    int wins = 0, losses = 0;
+    for (size_t i = 0; i < baw.size(); ++i) {
+      sb += baw[i];
+      sp += qdp[i];
+      so += oracle[i];
+      if (qdp[i] < baw[i]) ++wins;
+      if (qdp[i] > baw[i]) ++losses;
+    }
+    const double n = static_cast<double>(baw.size());
+    const double mean_baw = static_cast<double>(sb) / n;
+    const double mean_qdp = static_cast<double>(sp) / n;
+    std::printf(
+        "SEEDSPIKE %-16s N=%zu  medianJN: BAW=%d QD+=%d oracle=%d | meanJN: "
+        "BAW=%.3f QD+=%.3f oracle=%.3f | QD+ wins=%d losses=%d\n",
+        row.name, baw.size(), median_of(baw), median_of(qdp), median_of(oracle),
+        mean_baw, mean_qdp, static_cast<double>(so) / n, wins, losses);
+
+    // SHIP RULE: adopt QD+ only if it MATERIALLY reduces the sweep count without a
+    // tail regression. Measured outcome (see report): QD+ trims the MEDIAN by exactly
+    // one sweep (fast 17->16, accurate 24->23) but does NOT reduce the MEAN (fast
+    // 15.31 vs 15.38; accurate REGRESSES, 21.80 vs 21.78) and takes MORE sweeps on a
+    // large minority of the grid (losses ~25-37%). Both seeds sit ~15-24 sweeps above
+    // the oracle floor (median 1), so the seed is not the binding constraint. And the
+    // production solve runs a FIXED sweep budget (american.cpp: n_iter_jn + n_iter_fp,
+    // never converges to tol at the fast {2 JN + 2 FP} count), so a different seed only
+    // shifts the fixed-budget boundary -> a whole price/greek/backtest repin for zero
+    // speed. KILL: keep BAW. Assert the measured kill evidence (no material aggregate
+    // win, seed far above the oracle floor).
+    EXPECT_LT(mean_baw - mean_qdp, 0.5)
+        << row.name << ": QD+ does not materially cut MEAN JN sweeps (kill evidence)";
+    EXPECT_GT(median_of(qdp), median_of(oracle) + 4)
+        << row.name << ": QD+ stays far above the oracle floor — seed not the bottleneck";
+    EXPECT_GE(median_of(baw), median_of(oracle))
+        << row.name << ": oracle is the floor";
+  }
+}
+
 TEST(AndersenLakeRegime, PositiveRateGrid_BitIdenticalToPrechange) {
   struct Pin { double S, K, T, sigma, r, q; Side side; double expected; };
   const Pin pins[] = {

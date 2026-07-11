@@ -201,6 +201,60 @@ inline constexpr unsigned kAlMaxQuad = detail::kMaxQuadNodes;  // 64
   return true;
 }
 
+// ── P2.2b SPIKE: QD+ critical-price seed (Li 2010) ────────────────────────
+//
+// The QD+ approximation refines the QD/Barone-Adesi-Whaley quadratic exponent with
+// the leading Li (2010) "+" correction c = (1−h)·M / (h·√disc), which vanishes as
+// τ→∞ (h→1, QD/BAW recovered) and grows near expiry (h→0) where the frozen-θ QD
+// approximation is worst. The corrected exponent q1⁺ = q1 + c drives the SAME
+// smooth-pasting root find (put_residual with q1⁺ in place of q1), so this reuses
+// newton_critical_put unchanged. This is a MEASUREMENT SPIKE: it is compared with
+// the BAW seed on median JN sweep-count-to-convergence to decide ship-or-kill; it is
+// NOT wired into any production solve path.
+[[nodiscard]] bool qdplus_critical_put(double K, double T, double sigma, double r,
+                                       double q, std::uint16_t max_iter, double tol,
+                                       double& Sx_out) noexcept {
+  if (!(K > 0.0 && T > 0.0 && sigma > 0.0)) {
+    return false;
+  }
+  if (!(r > 0.0)) {
+    Sx_out = K;
+    return true;
+  }
+  const double sigma2 = sigma * sigma;
+  const double M = 2.0 * r / sigma2;
+  const double N = 2.0 * (r - q) / sigma2;
+  const double h = 1.0 - std::exp(-r * T);
+  if (!(h > 0.0)) {
+    Sx_out = K;
+    return true;
+  }
+  const double disc = (N - 1.0) * (N - 1.0) + 4.0 * M / h;
+  if (!(disc >= 0.0)) {
+    Sx_out = K;
+    return true;
+  }
+  const double sqrt_disc = std::sqrt(disc);
+  const double q1 = 0.5 * (-(N - 1.0) - sqrt_disc);
+  // Li (2010) QD+ exponent correction (2·q1 + N − 1 == −sqrt_disc). Steepens the
+  // exponent near expiry (h→0), where the frozen-θ QD approximation lifts the
+  // boundary toward K.
+  const double c = (1.0 - h) * M / (h * sqrt_disc);
+  const double q1_plus = q1 - c;
+  if (!(q1_plus < 0.0)) {
+    Sx_out = K;
+    return true;
+  }
+  const double Sx = newton_critical_put(K, T, sigma, r, q, q1_plus,
+                                        max_iter ? max_iter : std::uint16_t{16},
+                                        tol > 0.0 ? tol : 1.0e-10);
+  if (!(Sx > 0.0 && Sx <= K)) {
+    return false;
+  }
+  Sx_out = Sx;
+  return true;
+}
+
 // ── Gauss-Legendre tables on [-1, 1] via Golub-Welsch ───────────────────
 
 // Implicit-QL (tqli) for a symmetric tridiagonal matrix, tracking only the
@@ -330,11 +384,26 @@ void sort_pairs(double* d, double* z, int n) noexcept {
   return tables;
 }
 [[nodiscard]] const detail::GaussLegendre* gl_find(unsigned n) {
+  // The six supported orders are static and scheme-fixed, so resolve directly to
+  // the cached table by a constant-time switch (no per-solve linear scan) — a hot
+  // loop of solves binds its Gauss-Legendre tables in O(1) each (P2.2 §2). Index
+  // order matches gl_tables()'s {8,16,24,32,48,64}.
   const std::array<detail::GaussLegendre, 6>& all = gl_tables();
-  for (const detail::GaussLegendre& t : all) {
-    if (t.n == n) {
-      return &t;
-    }
+  switch (n) {
+    case 8:
+      return &all[0];
+    case 16:
+      return &all[1];
+    case 24:
+      return &all[2];
+    case 32:
+      return &all[3];
+    case 48:
+      return &all[4];
+    case 64:
+      return &all[5];
+    default:
+      break;
   }
   return nullptr;
 }
@@ -361,8 +430,16 @@ void sort_pairs(double* d, double* z, int n) noexcept {
 // calls per evaluation out of the boundary hot loop — al_boundary_at is called
 // O(n_quad * n_boundary * n_sweeps) times per Andersen-Lake solve, so this is
 // the dominant cold-solve cost.
-[[nodiscard]] double al_cheb_eval(const double* z, const double* w,
-                                  const double* y, unsigned n, double zq) noexcept {
+//
+// Templated on NB (P2.2 §3): NB==0 uses the runtime node count `n_rt`; NB>0 (a
+// fixed production scheme) bakes the trip count in so clang unrolls the barycentric
+// sum. The body is a SINGLE source (same ops, same order) so the specialized and
+// generic instantiations are bit-identical.
+template <unsigned NB>
+[[nodiscard]] double al_cheb_eval_t(const double* z, const double* w,
+                                    const double* y, unsigned n_rt,
+                                    double zq) noexcept {
+  const unsigned n = (NB != 0) ? NB : n_rt;
   if (n == 0) {
     return 0.0;
   }
@@ -381,6 +458,10 @@ void sort_pairs(double* d, double* z, int n) noexcept {
     den += qq;
   }
   return num / den;
+}
+[[nodiscard]] double al_cheb_eval(const double* z, const double* w,
+                                  const double* y, unsigned n, double zq) noexcept {
+  return al_cheb_eval_t<0>(z, w, y, n, zq);
 }
 
 // ── AL boundary state + scheme ──────────────────────────────────────────
@@ -406,6 +487,26 @@ struct AlBoundary {
   double xmax = 0.0;  // asymptotic boundary B(∞)
 };
 
+// ── P2.2 sweep-invariant geometry precompute sizing ──────────────────────
+//
+// eqn_b_ND's inner fixed-point quadrature recomputes, every JN+FP sweep, a block
+// of quantities that depend only on (tau_j, quad-node xs_i, T, sigma, r, q) — all
+// fixed for a solve. Only the two PRODUCTION fixed schemes are specialized and use
+// the precompute: fast {n_boundary=7, n_quad_fp=16} and accurate/explicit-default
+// {12, 24}. The generic (arbitrary AlOpts) path stays the un-hoisted scalar
+// reference. So the per-solve geometry table needs only cover those (nb, nq); the
+// strides carry headroom above the largest specialized scheme.
+inline constexpr unsigned kGeoNodeMax = 16;    // >= max specialized n_boundary (12)
+inline constexpr unsigned kGeoQuadStride = 32;  // >= max specialized n_quad_fp (24)
+inline constexpr unsigned kGeoSize = kGeoNodeMax * kGeoQuadStride;  // 512 doubles
+
+// Is (nb, nq) a specialized fixed-point scheme (compile-time trip counts + geometry
+// hoist)? Kept in ONE place so the sweep dispatch, premium dispatch, and geometry
+// bind agree on exactly which schemes take the hoisted path.
+[[nodiscard]] constexpr bool al_fp_specialized(unsigned nb, unsigned nq) noexcept {
+  return (nb == 7 && nq == 16) || (nb == 12 && nq == 24);
+}
+
 struct AlWorkspace {
   const double* qx_fp = nullptr;
   const double* qw_fp = nullptr;
@@ -414,6 +515,19 @@ struct AlWorkspace {
   const double* qw_price = nullptr;
   unsigned n_quad_price = 0;
   std::array<double, kAlMaxNodes> next_y{};  // iteration scratch
+  // Force the generic (runtime trip-count) kernel even for a specialized scheme —
+  // the test seam behind detail::andersen_lake_generic_kernel. Default true so
+  // every production solve specializes.
+  bool specialize = true;
+  // Sweep-invariant geometry for eqn_b_ND, filled ONCE per solve by
+  // al_bind_geometry when the scheme is specialized, indexed [j*kGeoQuadStride + i]
+  // for collocation node j (1..n-1) and fixed-point quad node i. NOT zero-init'd
+  // (filled before read; only the active (j,i) are read) so the greeks paths that
+  // stack several workspaces do not pay a 512-double memset each.
+  std::array<double, kGeoSize> geo_zc;    // clamped Chebyshev argument z_ji
+  std::array<double, kGeoSize> geo_v;     // sigma * sqrt(t_u_ji)
+  std::array<double, kGeoSize> geo_weru;  // qw_fp[i] * exp(r * u_ji)
+  std::array<double, kGeoSize> geo_wequ;  // qw_fp[i] * exp(q * u_ji)
 };
 
 // ACCURATE preset when opts == nullopt; otherwise map the public knobs.
@@ -562,10 +676,91 @@ void al_seed_boundary(AlBoundary& b, double sigma, double r, double q) noexcept 
   }
 }
 
-// Equation B kernel: N(τ,b), D(τ,b).
-void eqn_b_ND(const AlBoundary& bnd, const AlWorkspace& ws, double tau,
-              double b_val, double sigma, double r, double q, double& N_out,
-              double& D_out) noexcept {
+// P2.2b spike: identical to al_seed_boundary but seeds each node from the QD+
+// critical price instead of BAW. Measurement-only (not on a production path).
+void al_seed_boundary_qdplus(AlBoundary& b, double sigma, double r, double q) noexcept {
+  b.y[0] = 0.0;
+  for (std::uint16_t i = 1; i < b.n; ++i) {
+    const double tau_i = b.tau[i];
+    if (tau_i <= 1.0e-14) {
+      b.y[i] = 0.0;
+      continue;
+    }
+    double Sx = 0.0;
+    const bool ok = qdplus_critical_put(b.K, tau_i, sigma, r, q, 16, 1.0e-10, Sx);
+    if (!ok || !(Sx > 0.0)) {
+      const double frac = std::sqrt(tau_i / b.T);
+      Sx = b.K * (1.0 - 0.3 * frac);
+    }
+    if (Sx > b.xmax) {
+      Sx = b.xmax;
+    }
+    if (!(Sx > 0.0)) {
+      Sx = 1.0e-6 * b.K;
+    }
+    b.y[i] = y_from_b(Sx, b.xmax);
+  }
+}
+
+// ── P2.2: per-solve precompute of the sweep-invariant quadrature geometry ──
+//
+// eqn_b_ND's inner loop, for each collocation node j and fixed-point quad node i,
+// forms u_ji = half_tau_j·(1+xs_i), t_u_ji = tau_j − u_ji, the al_boundary_at
+// argument transform z_ji = clamp(2·sqrt(u_ji/T) − 1, −1, 1), v_ji = sigma·sqrt(t_u),
+// and exp(r·u_ji)/exp(q·u_ji). Every one of these depends only on quantities fixed
+// for the whole solve (tau_j, xs_i, T, sigma, r, q) — but the loop recomputes them,
+// including 2 sqrt + 2 exp, on EVERY Jacobi-Newton and fixed-point sweep. Only the
+// Chebyshev value over the sweep-varying bnd.y[] and b_from_y actually change.
+//
+// This fills them ONCE (weights folded into geo_weru/geo_wequ so the sweep loop is a
+// bare multiply-accumulate). It is a PURE HOIST: each stored quantity is computed
+// with the identical expression the loop used, so the specialized sweep is
+// bit-identical to the generic reference (which still recomputes inline). Only the
+// specialized fixed schemes are hoisted; the generic path leaves geo untouched.
+void al_bind_geometry(const AlBoundary& bnd, AlWorkspace& ws, double sigma,
+                      double r, double q) noexcept {
+  if (!ws.specialize || !al_fp_specialized(bnd.n, ws.n_quad_fp)) {
+    return;  // generic path recomputes inline; no geometry needed
+  }
+  const double* xs = ws.qx_fp;
+  const double* wv = ws.qw_fp;
+  const unsigned nq = ws.n_quad_fp;
+  const double T = bnd.T;
+  for (std::uint16_t j = 1; j < bnd.n; ++j) {
+    const double tau = bnd.tau[j];
+    if (tau <= 1.0e-14) {
+      continue;  // sweeps skip this node entirely
+    }
+    const double half_tau = 0.5 * tau;
+    const unsigned gbase = static_cast<unsigned>(j) * kGeoQuadStride;
+    for (unsigned i = 0; i < nq; ++i) {
+      const double u = half_tau * (1.0 + xs[i]);
+      const double t_u = tau - u;
+      if (t_u <= 1.0e-14) {
+        continue;  // inactive node; the loop re-checks t_u and skips it
+      }
+      // al_boundary_at's z transform (u < T here, so u_eff == u — replicated so the
+      // stored zc is bit-identical to the inline computation).
+      const double u_eff = (u >= T) ? T : u;
+      const double zz = 2.0 * std::sqrt(u_eff / T) - 1.0;
+      ws.geo_zc[gbase + i] = atx::core::clamp(zz, -1.0, 1.0);
+      ws.geo_v[gbase + i] = sigma * std::sqrt(t_u);
+      ws.geo_weru[gbase + i] = wv[i] * std::exp(r * u);
+      ws.geo_wequ[gbase + i] = wv[i] * std::exp(q * u);
+      ATX_VOL_COUNT_N(ExpCalls, 2);  // exp(r·u), exp(q·u) — now paid ONCE per solve
+    }
+  }
+}
+
+// Equation B kernel: N(τ,b), D(τ,b). Templated on the fixed-scheme trip counts
+// <NB=n_boundary, NQ=n_quad_fp> (P2.2 §3); NB==0 && NQ==0 is the generic runtime
+// path AND the un-hoisted scalar reference (recomputes the geometry inline exactly
+// as before this task). NB>0 reads the al_bind_geometry precompute — a pure hoist,
+// so the two paths are bit-identical.
+template <unsigned NB, unsigned NQ>
+void eqn_b_ND_impl(const AlBoundary& bnd, const AlWorkspace& ws,
+                   unsigned node_idx, double tau, double b_val, double sigma,
+                   double r, double q, double& N_out, double& D_out) noexcept {
   const double K = bnd.K;
   if (tau <= 1.0e-14) {
     if (b_val < K) {
@@ -585,42 +780,73 @@ void eqn_b_ND(const AlBoundary& bnd, const AlWorkspace& ws, double tau,
   ATX_VOL_COUNT_N(NormCdfCalls, 2);  // tip_p, tip_m
 
   const double* xs = ws.qx_fp;
-  const double* wv = ws.qw_fp;
-  const unsigned nq = ws.n_quad_fp;
+  const unsigned nq = (NQ != 0) ? NQ : ws.n_quad_fp;
   double n_int = 0.0;
   double d_int = 0.0;
   const double half_tau = 0.5 * tau;
-  // Transcendental-bound inner loop (2×sqrt, log, 2×exp, 2×norm_cdf per point),
-  // run n_quad·n_boundary·n_sweeps times per solve — the dominant cold cost.
-  // Two AVX2 vectorizations were built and MEASURED here and both reverted:
-  //   * xsimd (portable): ~6.6x SLOWER — its polynomial exp/log/erfc are far
-  //     heavier than the SVML-backed scalar libm the loop already calls.
-  //   * Intel SVML intrinsics (_mm256_exp/log/cdfnorm_pd): compile only under
-  //     MSVC cl.exe, not the project's clang-cl toolchain, which exposes no SVML.
-  // A profitable vectorization would need clang `-fveclib=SVML` (adds a fragile
-  // Intel SVML runtime-DLL dependency to the whole library) or a batch-across-
-  // options SoA solver. Neither is warranted; the scalar loop is the keeper.
-  for (unsigned i = 0; i < nq; ++i) {
-    const double u = half_tau * (1.0 + xs[i]);
-    const double t_u = tau - u;
-    if (t_u <= 1.0e-14) {
-      continue;
+  if constexpr (NB != 0) {
+    // Specialized: read the sweep-invariant geometry; evaluate only the
+    // sweep-VARYING Chebyshev value + b_from_y in the loop.
+    const unsigned gbase = node_idx * kGeoQuadStride;
+    const double rq = r - q;
+    for (unsigned i = 0; i < nq; ++i) {
+      const double u = half_tau * (1.0 + xs[i]);
+      const double t_u = tau - u;
+      if (t_u <= 1.0e-14) {
+        continue;
+      }
+      const double y_val = al_cheb_eval_t<NB>(bnd.z.data(), bnd.wbary.data(),
+                                              bnd.y.data(), bnd.n,
+                                              ws.geo_zc[gbase + i]);
+      const double bu = b_from_y(y_val, bnd.xmax);
+      if (!(bu > 0.0)) {
+        continue;
+      }
+      const double z = b_val / bu;
+      const double v = ws.geo_v[gbase + i];
+      const double base = (std::log(z) + rq * t_u) / v;
+      const double dpv = base + 0.5 * v;
+      const double dmv = base - 0.5 * v;
+      n_int += ws.geo_weru[gbase + i] * norm_cdf(dmv);
+      d_int += ws.geo_wequ[gbase + i] * norm_cdf(dpv);
+      ATX_VOL_COUNT(LogCalls);
+      ATX_VOL_COUNT_N(NormCdfCalls, 2);
     }
-    const double bu = al_boundary_at(bnd, u);
-    if (!(bu > 0.0)) {
-      continue;
+  } else {
+    // Generic reference: recompute the geometry inline (the scalar cold path).
+    const double* wv = ws.qw_fp;
+    // Transcendental-bound inner loop (2×sqrt, log, 2×exp, 2×norm_cdf per point),
+    // run n_quad·n_boundary·n_sweeps times per solve — the dominant cold cost.
+    // Two AVX2 vectorizations were built and MEASURED here and both reverted:
+    //   * xsimd (portable): ~6.6x SLOWER — its polynomial exp/log/erfc are far
+    //     heavier than the SVML-backed scalar libm the loop already calls.
+    //   * Intel SVML intrinsics (_mm256_exp/log/cdfnorm_pd): compile only under
+    //     MSVC cl.exe, not the project's clang-cl toolchain, which exposes no SVML.
+    // A profitable vectorization would need clang `-fveclib=SVML` (adds a fragile
+    // Intel SVML runtime-DLL dependency to the whole library) or a batch-across-
+    // options SoA solver. Neither is warranted; the scalar loop is the keeper.
+    for (unsigned i = 0; i < nq; ++i) {
+      const double u = half_tau * (1.0 + xs[i]);
+      const double t_u = tau - u;
+      if (t_u <= 1.0e-14) {
+        continue;
+      }
+      const double bu = al_boundary_at(bnd, u);
+      if (!(bu > 0.0)) {
+        continue;
+      }
+      const double z = b_val / bu;
+      // d_minus == d_plus - v, so share the log(z) and sqrt(t_u) between them.
+      const double v = sigma * std::sqrt(t_u);
+      const double base = (std::log(z) + (r - q) * t_u) / v;
+      const double dpv = base + 0.5 * v;
+      const double dmv = base - 0.5 * v;
+      n_int += wv[i] * std::exp(r * u) * norm_cdf(dmv);
+      d_int += wv[i] * std::exp(q * u) * norm_cdf(dpv);
+      ATX_VOL_COUNT(LogCalls);
+      ATX_VOL_COUNT_N(ExpCalls, 2);
+      ATX_VOL_COUNT_N(NormCdfCalls, 2);
     }
-    const double z = b_val / bu;
-    // d_minus == d_plus - v, so share the log(z) and sqrt(t_u) between them.
-    const double v = sigma * std::sqrt(t_u);
-    const double base = (std::log(z) + (r - q) * t_u) / v;
-    const double dpv = base + 0.5 * v;
-    const double dmv = base - 0.5 * v;
-    n_int += wv[i] * std::exp(r * u) * norm_cdf(dmv);
-    d_int += wv[i] * std::exp(q * u) * norm_cdf(dpv);
-    ATX_VOL_COUNT(LogCalls);
-    ATX_VOL_COUNT_N(ExpCalls, 2);
-    ATX_VOL_COUNT_N(NormCdfCalls, 2);
   }
   n_int *= half_tau;
   d_int *= half_tau;
@@ -645,12 +871,13 @@ void eqn_b_NDd(const AlBoundary& bnd, double tau, double b_val, double sigma,
   Dd_out = norm_pdf(dpv) / (b_val * v);
 }
 
-[[nodiscard]] double al_jacobi_newton_sweep(AlBoundary& b, AlWorkspace& ws,
-                                            double sigma, double r, double q) noexcept {
-  ATX_VOL_COUNT(JacobiNewtonSweeps);
+template <unsigned NB, unsigned NQ>
+[[nodiscard]] double al_jn_sweep_impl(AlBoundary& b, AlWorkspace& ws,
+                                      double sigma, double r, double q) noexcept {
+  const unsigned n = (NB != 0) ? NB : b.n;
   double max_dy = 0.0;
   ws.next_y[0] = 0.0;
-  for (std::uint16_t i = 1; i < b.n; ++i) {
+  for (unsigned i = 1; i < n; ++i) {
     const double tau = b.tau[i];
     if (tau <= 1.0e-14) {
       ws.next_y[i] = 0.0;
@@ -659,7 +886,7 @@ void eqn_b_NDd(const AlBoundary& bnd, double tau, double b_val, double sigma,
     const double b_val = b_from_y(b.y[i], b.xmax);
     double Nv = 0.0;
     double Dv = 0.0;
-    eqn_b_ND(b, ws, tau, b_val, sigma, r, q, Nv, Dv);
+    eqn_b_ND_impl<NB, NQ>(b, ws, i, tau, b_val, sigma, r, q, Nv, Dv);
     if (!(Dv > 1.0e-300)) {
       ws.next_y[i] = b.y[i];
       continue;
@@ -687,18 +914,35 @@ void eqn_b_NDd(const AlBoundary& bnd, double tau, double b_val, double sigma,
     }
     ws.next_y[i] = y_new;
   }
-  for (std::uint16_t i = 0; i < b.n; ++i) {
+  for (unsigned i = 0; i < n; ++i) {
     b.y[i] = ws.next_y[i];
   }
   return max_dy;
 }
 
-[[nodiscard]] double al_fixed_point_sweep(AlBoundary& b, AlWorkspace& ws,
-                                          double sigma, double r, double q) noexcept {
-  ATX_VOL_COUNT(FixedPointSweeps);
+// Dispatch to a compile-time-trip-count instantiation for the production fixed
+// schemes; the generic <0,0> is both the arbitrary-AlOpts path and the reference.
+[[nodiscard]] double al_jacobi_newton_sweep(AlBoundary& b, AlWorkspace& ws,
+                                            double sigma, double r, double q) noexcept {
+  ATX_VOL_COUNT(JacobiNewtonSweeps);
+  if (ws.specialize) {
+    if (b.n == 7 && ws.n_quad_fp == 16) {
+      return al_jn_sweep_impl<7, 16>(b, ws, sigma, r, q);
+    }
+    if (b.n == 12 && ws.n_quad_fp == 24) {
+      return al_jn_sweep_impl<12, 24>(b, ws, sigma, r, q);
+    }
+  }
+  return al_jn_sweep_impl<0, 0>(b, ws, sigma, r, q);
+}
+
+template <unsigned NB, unsigned NQ>
+[[nodiscard]] double al_fp_sweep_impl(AlBoundary& b, AlWorkspace& ws,
+                                      double sigma, double r, double q) noexcept {
+  const unsigned n = (NB != 0) ? NB : b.n;
   double max_dy = 0.0;
   ws.next_y[0] = 0.0;
-  for (std::uint16_t i = 1; i < b.n; ++i) {
+  for (unsigned i = 1; i < n; ++i) {
     const double tau = b.tau[i];
     if (tau <= 1.0e-14) {
       ws.next_y[i] = 0.0;
@@ -707,7 +951,7 @@ void eqn_b_NDd(const AlBoundary& bnd, double tau, double b_val, double sigma,
     const double b_val = b_from_y(b.y[i], b.xmax);
     double Nv = 0.0;
     double Dv = 0.0;
-    eqn_b_ND(b, ws, tau, b_val, sigma, r, q, Nv, Dv);
+    eqn_b_ND_impl<NB, NQ>(b, ws, i, tau, b_val, sigma, r, q, Nv, Dv);
     if (!(Dv > 1.0e-300)) {
       ws.next_y[i] = b.y[i];
       continue;
@@ -727,10 +971,24 @@ void eqn_b_NDd(const AlBoundary& bnd, double tau, double b_val, double sigma,
     }
     ws.next_y[i] = y_new;
   }
-  for (std::uint16_t i = 0; i < b.n; ++i) {
+  for (unsigned i = 0; i < n; ++i) {
     b.y[i] = ws.next_y[i];
   }
   return max_dy;
+}
+
+[[nodiscard]] double al_fixed_point_sweep(AlBoundary& b, AlWorkspace& ws,
+                                          double sigma, double r, double q) noexcept {
+  ATX_VOL_COUNT(FixedPointSweeps);
+  if (ws.specialize) {
+    if (b.n == 7 && ws.n_quad_fp == 16) {
+      return al_fp_sweep_impl<7, 16>(b, ws, sigma, r, q);
+    }
+    if (b.n == 12 && ws.n_quad_fp == 24) {
+      return al_fp_sweep_impl<12, 24>(b, ws, sigma, r, q);
+    }
+  }
+  return al_fp_sweep_impl<0, 0>(b, ws, sigma, r, q);
 }
 
 [[nodiscard]] double premium_integrand_put(double z, const AlBoundary& b,
@@ -757,21 +1015,42 @@ void eqn_b_NDd(const AlBoundary& bnd, double tau, double b_val, double sigma,
          (r * b.K * dr * norm_cdf(-dp + v) - q * S * dq * norm_cdf(-dp));
 }
 
-[[nodiscard]] double al_put_premium(const AlBoundary& b, const AlWorkspace& ws,
-                                    double S, double sigma, double r,
-                                    double q) noexcept {
+// Premium quadrature, templated on the fixed premium trip count NP (P2.2 §3);
+// NP==0 is the generic runtime path. Single body, so bit-identical across NP.
+template <unsigned NP>
+[[nodiscard]] double al_put_premium_impl(const AlBoundary& b, const AlWorkspace& ws,
+                                         double S, double sigma, double r,
+                                         double q) noexcept {
   const double sqrtT = std::sqrt(b.T);
   const double half_sqrtT = 0.5 * sqrtT;
   double total = 0.0;
   const double* xs = ws.qx_price;
   const double* wv = ws.qw_price;
-  const unsigned nq = ws.n_quad_price;
+  const unsigned nq = (NP != 0) ? NP : ws.n_quad_price;
   for (unsigned i = 0; i < nq; ++i) {
     const double zi = half_sqrtT * (1.0 + xs[i]);
     total += wv[i] * premium_integrand_put(zi, b, S, sigma, r, q);
   }
   total *= half_sqrtT;
   return (total > 0.0) ? total : 0.0;
+}
+
+[[nodiscard]] double al_put_premium(const AlBoundary& b, const AlWorkspace& ws,
+                                    double S, double sigma, double r,
+                                    double q) noexcept {
+  if (ws.specialize) {
+    switch (ws.n_quad_price) {
+      case 16:
+        return al_put_premium_impl<16>(b, ws, S, sigma, r, q);
+      case 24:
+        return al_put_premium_impl<24>(b, ws, S, sigma, r, q);
+      case 48:
+        return al_put_premium_impl<48>(b, ws, S, sigma, r, q);
+      default:
+        break;
+    }
+  }
+  return al_put_premium_impl<0>(b, ws, S, sigma, r, q);
 }
 
 // ── Boundary solve / price split (S-independence seam) ───────────────────
@@ -789,7 +1068,8 @@ enum class AlSolveStatus { Ok, Collapsed, TableMissing };
                                                   double r, double q,
                                                   const AlScheme& sch,
                                                   AlBoundary& bnd,
-                                                  AlWorkspace& ws) noexcept {
+                                                  AlWorkspace& ws,
+                                                  bool specialize = true) noexcept {
   al_init_nodes(bnd, sch.n_boundary, T, K, r, q);
   if (!(bnd.xmax > 0.0)) {
     // Negative-rate/carry corner: AL cannot run. Flagged unsupported.
@@ -800,12 +1080,14 @@ enum class AlSolveStatus { Ok, Collapsed, TableMissing };
   if (!fp || !fp->ok || !pr || !pr->ok) {
     return AlSolveStatus::TableMissing;
   }
+  ws.specialize = specialize;
   ws.qx_fp = fp->nodes.data();
   ws.qw_fp = fp->weights.data();
   ws.n_quad_fp = sch.n_quad_fp;
   ws.qx_price = pr->nodes.data();
   ws.qw_price = pr->weights.data();
   ws.n_quad_price = sch.n_quad_price;
+  al_bind_geometry(bnd, ws, sigma, r, q);
 
   al_seed_boundary(bnd, sigma, r, q);
 
@@ -852,12 +1134,14 @@ enum class AlSolveStatus { Ok, Collapsed, TableMissing };
   if (!fp || !fp->ok || !pr || !pr->ok) {
     return AlSolveStatus::TableMissing;
   }
+  ws.specialize = true;
   ws.qx_fp = fp->nodes.data();
   ws.qw_fp = fp->weights.data();
   ws.n_quad_fp = sch.n_quad_fp;
   ws.qx_price = pr->nodes.data();
   ws.qw_price = pr->weights.data();
   ws.n_quad_price = sch.n_quad_price;
+  al_bind_geometry(bnd, ws, sigma, r, q);
 
   // Warm seed: base boundary evaluated at this grid's tau, clamped to this xmax.
   bnd.y[0] = 0.0;
@@ -931,10 +1215,14 @@ constexpr const char* kDoubleContinuationMsg =
     "single-boundary Andersen-Lake scheme cannot represent two exercise "
     "boundaries; see Andersen-Lake 2021 (double-boundary case)";
 
-// Put core — used directly for puts and via McDonald-Schroder for calls.
+// Put core — used directly for puts and via McDonald-Schroder for calls. The
+// `specialize` flag (default true) forces the generic runtime-trip-count kernel when
+// false — the seam behind detail::andersen_lake_generic_kernel that proves the
+// specialized fixed-scheme kernel is bit-identical to the generic path.
 [[nodiscard]] Result<double> al_solve_put(double S, double K, double T,
                                           double sigma, double r, double q,
-                                          const AlScheme& sch) {
+                                          const AlScheme& sch,
+                                          bool specialize = true) {
   switch (classify_regime(/*rate=*/r, /*yield=*/q)) {
     case ExerciseRegime::European: {
       const double euro = euro_put_sk(S, K, T, sigma, r, q);
@@ -950,7 +1238,7 @@ constexpr const char* kDoubleContinuationMsg =
 
   AlBoundary bnd;
   AlWorkspace ws;
-  switch (al_solve_put_boundary(K, T, sigma, r, q, sch, bnd, ws)) {
+  switch (al_solve_put_boundary(K, T, sigma, r, q, sch, bnd, ws, specialize)) {
     case AlSolveStatus::Collapsed:
       return Err(ErrorCode::NotImplemented,
                  "andersen_lake: asymptotic boundary collapsed (xmax <= 0)");
@@ -960,6 +1248,53 @@ constexpr const char* kDoubleContinuationMsg =
       break;
   }
   return Ok(al_put_price_from_boundary(bnd, ws, S, K, T, sigma, r, q));
+}
+
+// Shared core of the public andersen_lake entry point, parameterized on `specialize`
+// so detail::andersen_lake_generic_kernel can force the generic runtime-trip-count
+// kernel for the SAME scheme and prove the specialized path is bit-identical.
+[[nodiscard]] Result<double> andersen_lake_core(double S, double K, double T,
+                                                double sigma, double r, double q,
+                                                Side side,
+                                                const std::optional<AlOpts>& opts,
+                                                bool specialize) {
+  if (!(K > 0.0 && S > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "andersen_lake: S and K must be > 0");
+  }
+  if (!(T >= 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "andersen_lake: T must be >= 0");
+  }
+  if (!(sigma >= 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "andersen_lake: sigma must be >= 0");
+  }
+  if (!(std::isfinite(r) && std::isfinite(q))) {
+    return Err(ErrorCode::InvalidArgument, "andersen_lake: r and q must be finite");
+  }
+
+  // Degenerate: T ~ 0 or sigma ~ 0 collapses to intrinsic.
+  if (T <= 1.0e-12 || sigma <= 1.0e-8) {
+    const double intr = (side == Side::Call) ? (S - K) : (K - S);
+    return Ok(intr > 0.0 ? intr : 0.0);
+  }
+
+  const double rate = (side == Side::Put) ? r : q;
+  const double yield = (side == Side::Put) ? q : r;
+  switch (classify_regime(rate, yield)) {
+    case ExerciseRegime::European:
+      return Ok(black76_price(S * std::exp((r - q) * T), K, T, sigma,
+                              std::exp(-r * T), side));
+    case ExerciseRegime::Unsupported:
+      return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
+    case ExerciseRegime::American:
+      break;
+  }
+
+  const AlScheme sch = scheme_from_opts(opts);
+  if (side == Side::Put) {
+    return al_solve_put(S, K, T, sigma, r, q, sch, specialize);
+  }
+  // McDonald-Schroder symmetry: C(S,K,r,q) = P(K,S,q,r). Swap (S↔K), (r↔q).
+  return al_solve_put(K, S, T, sigma, q, r, sch, specialize);
 }
 
 // ── American Greeks (chain rule + FD on the correction gradient) ─────────
@@ -1156,6 +1491,11 @@ double AloPricer::price(double sigma) noexcept {
   if (cold) {
     al_seed_boundary(s.bnd, sigma, s.rp, s.qp);
   }
+  // Rebind the sweep-invariant geometry for this sigma (v_ji = sigma·sqrt(t_u); the
+  // zc/exp blocks are sigma-independent but r/q are fixed for the contract, so a
+  // single per-price bind covers them). This replaces the transcendentals the sweep
+  // would otherwise recompute, so warm solves stay at parity or better.
+  al_bind_geometry(s.bnd, s.ws, sigma, s.rp, s.qp);
   // Warm start skips ONLY the ~12-node Barone-Adesi-Whaley re-seed (the dominant
   // cold cost — 12 nested Newton root-finds), then runs the SAME sweep budget as a
   // cold solve (andersen_lake's n_iter_jn JN + n_iter_fp FP, early break at tol).
@@ -1203,49 +1543,7 @@ AlOpts al_fast_opts() noexcept { return AlOpts{7, 16, 4, 1.0e-8}; }
 Result<double> andersen_lake(double S, double K, double T, double sigma,
                              double r, double q, Side side,
                              const std::optional<AlOpts>& opts) {
-  if (!(K > 0.0 && S > 0.0)) {
-    return Err(ErrorCode::InvalidArgument, "andersen_lake: S and K must be > 0");
-  }
-  if (!(T >= 0.0)) {
-    return Err(ErrorCode::InvalidArgument, "andersen_lake: T must be >= 0");
-  }
-  if (!(sigma >= 0.0)) {
-    return Err(ErrorCode::InvalidArgument, "andersen_lake: sigma must be >= 0");
-  }
-  // A non-finite rate/yield would pass the regime classifier (NaN > 0 is false,
-  // so it reads as European/Unsupported) and leak a NaN price through an Ok
-  // result. Reject it up front. No-op for the finite r,q corpus.
-  if (!(std::isfinite(r) && std::isfinite(q))) {
-    return Err(ErrorCode::InvalidArgument, "andersen_lake: r and q must be finite");
-  }
-
-  // Degenerate: T ~ 0 or sigma ~ 0 collapses to intrinsic.
-  if (T <= 1.0e-12 || sigma <= 1.0e-8) {
-    const double intr = (side == Side::Call) ? (S - K) : (K - S);
-    return Ok(intr > 0.0 ? intr : 0.0);
-  }
-
-  // Regime classification in internal-put terms (a call delegates to al_solve_put
-  // with rate=q, yield=r). European short-circuits to the Black-76 European price;
-  // Unsupported is the double-continuation corner the ALO scheme cannot price.
-  const double rate = (side == Side::Put) ? r : q;
-  const double yield = (side == Side::Put) ? q : r;
-  switch (classify_regime(rate, yield)) {
-    case ExerciseRegime::European:
-      return Ok(black76_price(S * std::exp((r - q) * T), K, T, sigma,
-                              std::exp(-r * T), side));
-    case ExerciseRegime::Unsupported:
-      return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
-    case ExerciseRegime::American:
-      break;
-  }
-
-  const AlScheme sch = scheme_from_opts(opts);
-  if (side == Side::Put) {
-    return al_solve_put(S, K, T, sigma, r, q, sch);
-  }
-  // McDonald-Schroder symmetry: C(S,K,r,q) = P(K,S,q,r). Swap (S↔K), (r↔q).
-  return al_solve_put(K, S, T, sigma, q, r, sch);
+  return andersen_lake_core(S, K, T, sigma, r, q, side, opts, /*specialize=*/true);
 }
 
 Status andersen_lake_call_slice(double S, std::span<const double> strikes,
@@ -1332,6 +1630,7 @@ Status andersen_lake_call_slice(double S, std::span<const double> strikes,
   ws.qx_price = pr->nodes.data();
   ws.qw_price = pr->weights.data();
   ws.n_quad_price = sch.n_quad_price;
+  al_bind_geometry(bnd, ws, sigma, rp, qp);
 
   al_seed_boundary(bnd, sigma, rp, qp);
   double resid = 1.0;
@@ -2138,6 +2437,60 @@ namespace detail {
 GaussLegendre gauss_legendre(unsigned n) {
   const GaussLegendre* t = gl_find(n);
   return t ? *t : GaussLegendre{};
+}
+
+Result<double> andersen_lake_generic_kernel(double S, double K, double T,
+                                            double sigma, double r, double q,
+                                            Side side,
+                                            const std::optional<AlOpts>& opts) {
+  return andersen_lake_core(S, K, T, sigma, r, q, side, opts, /*specialize=*/false);
+}
+
+int al_boundary_jn_sweeps_to_converge(double K, double T, double sigma, double r,
+                                      double q, const std::optional<AlOpts>& opts,
+                                      AlSeedMode seed, double tol, int max_sweeps) {
+  const AlScheme sch = scheme_from_opts(opts);
+  AlBoundary bnd;
+  AlWorkspace ws;
+  al_init_nodes(bnd, sch.n_boundary, T, K, r, q);
+  if (!(bnd.xmax > 0.0)) {
+    return -1;
+  }
+  const GaussLegendre* fp = gl_find(sch.n_quad_fp);
+  const GaussLegendre* pr = gl_find(sch.n_quad_price);
+  if (!fp || !fp->ok || !pr || !pr->ok) {
+    return -1;
+  }
+  ws.specialize = true;
+  ws.qx_fp = fp->nodes.data();
+  ws.qw_fp = fp->weights.data();
+  ws.n_quad_fp = sch.n_quad_fp;
+  ws.qx_price = pr->nodes.data();
+  ws.qw_price = pr->weights.data();
+  ws.n_quad_price = sch.n_quad_price;
+  al_bind_geometry(bnd, ws, sigma, r, q);
+
+  if (seed == AlSeedMode::QdPlus) {
+    al_seed_boundary_qdplus(bnd, sigma, r, q);
+  } else if (seed == AlSeedMode::Oracle) {
+    // Converge to the near-exact fixed point, then measure from THAT state — the
+    // best any analytic seed could do (the lower bound on sweeps-to-converge).
+    al_seed_boundary(bnd, sigma, r, q);
+    for (int k = 0; k < 80; ++k) {
+      if (al_jacobi_newton_sweep(bnd, ws, sigma, r, q) <= 1.0e-15) {
+        break;
+      }
+    }
+  } else {
+    al_seed_boundary(bnd, sigma, r, q);
+  }
+
+  for (int k = 0; k < max_sweeps; ++k) {
+    if (al_jacobi_newton_sweep(bnd, ws, sigma, r, q) <= tol) {
+      return k + 1;
+    }
+  }
+  return max_sweeps;
 }
 
 }  // namespace detail
