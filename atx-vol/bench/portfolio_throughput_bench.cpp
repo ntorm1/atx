@@ -31,6 +31,7 @@
 // path to match here (that would be the eSSVI served-cache session path, a
 // different API). This is exactly the distinction the old example floor blurred.
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -45,6 +46,7 @@
 #include "atx/vol/american.hpp"
 #include "atx/vol/portfolio_pricer.hpp"
 #include "atx/vol/priced_surface.hpp"
+#include "atx/vol/scenario_grid.hpp"
 #include "atx/vol/types.hpp"
 
 #include "bench_util.hpp"
@@ -65,6 +67,8 @@ using atx::vol::PriceOptions;
 using atx::vol::PriceStatus;
 using atx::vol::PriceTotals;
 using atx::vol::PricedSurface;
+using atx::vol::scenario_grid;
+using atx::vol::ScenarioGridSpec;
 using atx::vol::Side;
 using atx::vol::SurfaceSet;
 using atx::vol::bench::apply_common;
@@ -511,6 +515,73 @@ void run_floor(benchmark::State& state, std::size_t n_unique, Floor kind) {
       n_uni * iters * 1e-9, benchmark::Counter::kIsRate | benchmark::Counter::kInvert);
 }
 
+// ── 6. scenario_grid (C3.1): full-book 11×11 spot×vol Taylor scenario matrix ──
+// One deduped Greek solve reconstructs all 121 cells analytically to 2nd order.
+// The acceptance is grid-cost ≈ one full-Greeks solve: this row reports cells/s
+// and the ratio of the whole grid-build time to one price_totals(FullGreeks) call
+// (the "one Greek solve" reference) on the SAME 2688-unique full book. The grid
+// pays a per-call Portfolio dedup + a price() scatter on top of the solve, so the
+// ratio is honestly measured, not asserted — a number just over 1.0 confirms the
+// cells amortize into the solve.
+void run_scenario_grid(benchmark::State& state, unsigned n_threads) {
+  const std::size_t n_unique = 2688;  // 64 uids × 6 slices × 7 strikes (full board)
+  const SurfaceSet& surfaces = market().base_set();
+  std::vector<Position> book =
+      atx::vol::bench::make_book(kUnderlyings, kSlices, n_unique, /*positions_per_unique=*/1);
+
+  ScenarioGridSpec spec;
+  spec.n_threads = n_threads;
+  for (int i = 0; i < 11; ++i) {
+    // Spot: −10%..+10% in 2% steps; vol: −5..+5 vol pts in 1-pt steps.
+    spec.spot_pct.push_back(-0.10 + 0.02 * static_cast<double>(i));
+    spec.vol_bump.push_back(-0.05 + 0.01 * static_cast<double>(i));
+  }
+  spec.dr = 5e-4;
+  spec.dt = 3.0 / 365.0;
+  const double cells = static_cast<double>(spec.spot_pct.size() * spec.vol_bump.size());
+
+  for (auto _ : state) {
+    auto g = scenario_grid(book, surfaces, spec);
+    benchmark::DoNotOptimize(g->pnl.data());
+    benchmark::ClobberMemory();
+  }
+
+  // Ratio reference: one warm price_totals(FullGreeks) — the single Greek solve the
+  // grid is built on. Timed manually (same n_threads) so the report can state
+  // grid-time / one-Greek-solve-time directly.
+  const PortfolioPricer& pr = pricer_for(n_unique, /*ratio=*/1);
+  PriceOptions popts;
+  popts.n_threads = n_threads;
+  PortfolioWorkspace ws;
+  ws.reserve(pr.portfolio().n_contracts(), pr.portfolio().n_positions());
+  (void)pr.price_totals(surfaces, PriceFieldMask::FullGreeks, ws, popts);  // warm
+
+  using clock = std::chrono::steady_clock;
+  constexpr int kReps = 20;
+  const auto t0 = clock::now();
+  for (int rep = 0; rep < kReps; ++rep) {
+    auto g = scenario_grid(book, surfaces, spec);
+    benchmark::DoNotOptimize(g->pnl.data());
+  }
+  const auto t1 = clock::now();
+  for (int rep = 0; rep < kReps; ++rep) {
+    auto t = pr.price_totals(surfaces, PriceFieldMask::FullGreeks, ws, popts);
+    benchmark::DoNotOptimize(t->pv);
+  }
+  const auto t2 = clock::now();
+  const double grid_ns = std::chrono::duration<double, std::nano>(t1 - t0).count() / kReps;
+  const double ref_ns = std::chrono::duration<double, std::nano>(t2 - t1).count() / kReps;
+
+  const double iters = static_cast<double>(state.iterations());
+  state.counters["cells_per_s"] = benchmark::Counter(iters * cells, benchmark::Counter::kIsRate);
+  state.counters["cells"] = cells;
+  state.counters["grid_us"] = grid_ns / 1e3;
+  state.counters["price_totals_greeks_us"] = ref_ns / 1e3;
+  state.counters["ratio_grid_over_solve"] = (ref_ns > 0.0) ? grid_ns / ref_ns : 0.0;
+  state.counters["threads"] = static_cast<double>(n_threads);
+  state.counters["n_unique"] = static_cast<double>(pr.portfolio().n_contracts());
+}
+
 // ── Registration (data-driven) ────────────────────────────────────────────
 void register_all() {
   // 1. Query throughput.
@@ -680,6 +751,17 @@ void register_all() {
                        buf, [nu, fr](benchmark::State& st) { run_floor(st, nu, fr.f); }))
           ->Unit(benchmark::kMicrosecond);
     }
+  }
+
+  // 6. scenario_grid: full-book 11×11 spot×vol Taylor matrix, t1 (clean ratio) and
+  // hw (throughput). Emits cells/s + the grid-time / one-Greek-solve ratio.
+  for (const unsigned nt : {1u, 0u}) {
+    char buf[128];
+    std::snprintf(buf, sizeof buf, "scenario/grid_11x11/synth_book/t%u", nt);
+    apply_common(benchmark::RegisterBenchmark(
+                     buf, [nt](benchmark::State& st) { run_scenario_grid(st, nt); }))
+        ->Unit(benchmark::kMicrosecond)
+        ->UseRealTime();
   }
 }
 
