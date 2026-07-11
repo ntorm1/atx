@@ -72,7 +72,9 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/prepared_portfolio.cpp
     src/pricing_executor.cpp
     src/portfolio_pricer.cpp
+    src/corpus_board_fit.cpp
     src/corpus.cpp
+    src/surface_db_populate.cpp
     src/dispersion.cpp
     src/dispersion_strangle.cpp
     src/dispersion_backtest.cpp
@@ -261,4 +263,10 @@ if(ATX_BUILD_EXAMPLES)
         examples/databento_spy_dispersion_definitions.cpp)
     target_link_libraries(databento_spy_dispersion_definitions
         PRIVATE atx::vol atx::core databento::databento atx_warnings)
+
+    # Fit a real OPRA hive (MAG7 + SPY) into a SurfaceDb via populate_surface_db,
+    # honoring per-symbol manifest configs. Gate test: SurfaceDbPopulate
+    # (tests/surface_db_populate_test.cpp). See examples/mag7_surfdb_populate.cpp.
+    add_executable(mag7_surfdb_populate examples/mag7_surfdb_populate.cpp)
+    target_link_libraries(mag7_surfdb_populate PRIVATE atx::vol atx::core atx_warnings)
 endif()

@@ -54,7 +54,8 @@ std::optional<std::size_t> ChainValuation::row_of(OptionId id) const {
   return std::nullopt;
 }
 
-Status PricerFitter::fit(const OptionChain &chain) {
+Status PricerFitter::fit(const OptionChain &chain,
+                         const std::function<void(SessionInputs &)> &session_overlay) {
   selection_.reset();
   decision_.reset();
 
@@ -160,6 +161,10 @@ Status PricerFitter::fit(const OptionChain &chain) {
       decision_->preset = effective_preset;
     }
     selection_ = std::move(chosen);
+  }
+
+  if (session_overlay) {
+    session_overlay(in);
   }
 
   Result<VolaSession> built = VolaSession::build(chain.underlying(), in);
