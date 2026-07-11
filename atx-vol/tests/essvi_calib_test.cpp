@@ -4,7 +4,9 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
+#include <string>
 #include <vector>
 
 #include "atx/vol/arb.hpp"           // arb_check_total_surface_all
@@ -12,6 +14,7 @@
 #include "atx/vol/calib.hpp"         // CalibOpts, FitObs, build_observations
 #include "atx/vol/curve.hpp"         // CurveSet, ForwardPoint
 #include "atx/vol/essvi_calib.hpp"   // the unit under test
+#include "atx/vol/parallel_for.hpp"  // atx_auto_worker_count (env-cap determinism)
 #include "atx/vol/universe.hpp"      // Underlying, Chain, chain_index
 #include "atx/vol/vol_surface.hpp"   // EssviParams, VolSurface, essvi_reparam_to_natural
 
@@ -520,6 +523,375 @@ TEST(EssviCalibSurfaceSequential, ProducesThetaMonotoneSurface) {
   const auto arb = arb_check_total_surface_all(surface, -0.5, 0.5, 64u);
   ASSERT_TRUE(arb.has_value());
   EXPECT_EQ(arb->n_calendar, 0u);
+}
+
+// ── Test 5: surface-level warm-start threading ───────────────────────────
+
+// A warm prior surface at the SAME tenors cuts the total LM work of a refit
+// on a slightly-perturbed re-generation of the same board, at the same
+// recovery quality — the surface-driver analogue of
+// EssviFitSlice.WarmStart_ReducesIterationsOnTick.
+TEST(EssviCalibSurface, WarmPrior_ReducesTotalIterations) {
+  const SurfaceFixture fx;
+  const Underlying under = fx.make_under();
+  const CurveSet curves = fx.make_curves(under);
+
+  // Pre-tick fit (the retained prior surface).
+  auto prior_surf_res =
+      VolSurface::create(1u, Parametrization::Essvi, under.chains.size());
+  ASSERT_TRUE(prior_surf_res.has_value());
+  VolSurface prior_surface = *prior_surf_res;
+  const auto prior_st = essvi_calib_surface(prior_surface, under, curves,
+                                            calib_default_opts());
+  ASSERT_TRUE(prior_st.has_value());
+
+  // A tick: every slice's ATM total variance nudges up 0.5 % (tenors
+  // unchanged, so every prior slice matches exactly).
+  SurfaceFixture fx_ticked = fx;
+  for (double& th : fx_ticked.thetas) {
+    th *= 1.005;
+  }
+  const Underlying under_ticked = fx_ticked.make_under();
+  const CurveSet curves_ticked = fx_ticked.make_curves(under_ticked);
+
+  auto cold_surf_res = VolSurface::create(1u, Parametrization::Essvi,
+                                          under_ticked.chains.size());
+  ASSERT_TRUE(cold_surf_res.has_value());
+  VolSurface cold_surface = *cold_surf_res;
+  FitDiag cold_diag{};
+  const auto cold_st = essvi_calib_surface(
+      cold_surface, under_ticked, curves_ticked, calib_default_opts(), &cold_diag);
+  ASSERT_TRUE(cold_st.has_value());
+
+  auto warm_surf_res = VolSurface::create(1u, Parametrization::Essvi,
+                                          under_ticked.chains.size());
+  ASSERT_TRUE(warm_surf_res.has_value());
+  VolSurface warm_surface = *warm_surf_res;
+  FitDiag warm_diag{};
+  const auto warm_st =
+      essvi_calib_surface(warm_surface, under_ticked, curves_ticked,
+                          calib_default_opts(), &warm_diag, &prior_surface);
+  ASSERT_TRUE(warm_st.has_value());
+
+  EXPECT_LT(warm_diag.inner_iters_total, cold_diag.inner_iters_total);
+
+  // Same recovery tolerance as RecoversSyntheticSurface_WithinTolerance.
+  double max_dv = 0.0;
+  for (std::size_t si = 0; si < warm_surface.n_slices(); ++si) {
+    const EssviParams tr = fx_ticked.truth(si);
+    for (int i = -12; i <= 12; ++i) {
+      const double k = 0.01 * static_cast<double>(i);
+      const double iv_true = slice_iv(tr, k, fx_ticked.ts[si]);
+      const double iv_fit =
+          warm_surface.iv_on_slice(static_cast<std::uint16_t>(si), k);
+      max_dv = std::max(max_dv, std::fabs(iv_fit - iv_true));
+    }
+  }
+  EXPECT_LT(max_dv, 2.0e-3);
+}
+
+// `prior == nullptr` (default or explicit) must take today's exact cold path:
+// two cold fits of the same board reproduce bit-for-bit identical params.
+TEST(EssviCalibSurface, WarmPrior_NullIsByteIdentical) {
+  const SurfaceFixture fx;
+  const Underlying under = fx.make_under();
+  const CurveSet curves = fx.make_curves(under);
+
+  auto surf_a_res =
+      VolSurface::create(1u, Parametrization::Essvi, under.chains.size());
+  ASSERT_TRUE(surf_a_res.has_value());
+  VolSurface surface_a = *surf_a_res;
+  const auto st_a =
+      essvi_calib_surface(surface_a, under, curves, calib_default_opts());
+  ASSERT_TRUE(st_a.has_value());
+
+  auto surf_b_res =
+      VolSurface::create(1u, Parametrization::Essvi, under.chains.size());
+  ASSERT_TRUE(surf_b_res.has_value());
+  VolSurface surface_b = *surf_b_res;
+  const auto st_b =
+      essvi_calib_surface(surface_b, under, curves, calib_default_opts(),
+                          /*out_diag=*/nullptr, /*prior=*/nullptr);
+  ASSERT_TRUE(st_b.has_value());
+
+  ASSERT_EQ(surface_a.n_slices(), surface_b.n_slices());
+  const auto slices_a = surface_a.essvi_slices();
+  const auto slices_b = surface_b.essvi_slices();
+  for (std::size_t i = 0; i < slices_a.size(); ++i) {
+    EXPECT_EQ(slices_a[i].theta, slices_b[i].theta);
+    EXPECT_EQ(slices_a[i].phi, slices_b[i].phi);
+    EXPECT_EQ(slices_a[i].rho, slices_b[i].rho);
+    EXPECT_EQ(slices_a[i].psi, slices_b[i].psi);
+    EXPECT_EQ(slices_a[i].p, slices_b[i].p);
+    EXPECT_EQ(slices_a[i].lambda, slices_b[i].lambda);
+  }
+}
+
+// A prior surface whose slices are all far outside the tenor-gap tolerance
+// (all maturities shifted by a year) must fall back to the cold seed exactly,
+// producing bit-identical results to a plain cold fit.
+TEST(EssviCalibSurface, WarmPrior_MismatchedTenorFallsBackCold) {
+  const SurfaceFixture fx;
+  const Underlying under = fx.make_under();
+  const CurveSet curves = fx.make_curves(under);
+
+  auto cold_surf_res =
+      VolSurface::create(1u, Parametrization::Essvi, under.chains.size());
+  ASSERT_TRUE(cold_surf_res.has_value());
+  VolSurface cold_surface = *cold_surf_res;
+  const auto cold_st =
+      essvi_calib_surface(cold_surface, under, curves, calib_default_opts());
+  ASSERT_TRUE(cold_st.has_value());
+
+  // A prior surface fit at wildly different tenors (+1 year each): every
+  // |T_prior - T| exceeds kWarmPriorMaxTenorGap (5/365), so no slice matches.
+  SurfaceFixture fx_far = fx;
+  for (double& t : fx_far.ts) {
+    t += 1.0;
+  }
+  const Underlying under_far = fx_far.make_under();
+  const CurveSet curves_far = fx_far.make_curves(under_far);
+  auto far_surf_res =
+      VolSurface::create(1u, Parametrization::Essvi, under_far.chains.size());
+  ASSERT_TRUE(far_surf_res.has_value());
+  VolSurface far_surface = *far_surf_res;
+  const auto far_st = essvi_calib_surface(far_surface, under_far, curves_far,
+                                          calib_default_opts());
+  ASSERT_TRUE(far_st.has_value());
+
+  auto mismatched_surf_res =
+      VolSurface::create(1u, Parametrization::Essvi, under.chains.size());
+  ASSERT_TRUE(mismatched_surf_res.has_value());
+  VolSurface mismatched_surface = *mismatched_surf_res;
+  const auto mismatched_st =
+      essvi_calib_surface(mismatched_surface, under, curves,
+                          calib_default_opts(), /*out_diag=*/nullptr,
+                          &far_surface);
+  ASSERT_TRUE(mismatched_st.has_value());
+
+  ASSERT_EQ(cold_surface.n_slices(), mismatched_surface.n_slices());
+  const auto slices_cold = cold_surface.essvi_slices();
+  const auto slices_mismatched = mismatched_surface.essvi_slices();
+  for (std::size_t i = 0; i < slices_cold.size(); ++i) {
+    EXPECT_EQ(slices_cold[i].theta, slices_mismatched[i].theta);
+    EXPECT_EQ(slices_cold[i].phi, slices_mismatched[i].phi);
+    EXPECT_EQ(slices_cold[i].rho, slices_mismatched[i].rho);
+    EXPECT_EQ(slices_cold[i].psi, slices_mismatched[i].psi);
+    EXPECT_EQ(slices_cold[i].p, slices_mismatched[i].p);
+    EXPECT_EQ(slices_cold[i].lambda, slices_mismatched[i].lambda);
+  }
+}
+
+// ── C2.1: intra-name expiry parallelism determinism ──────────────────────
+//
+// The `n_workers` knob on `essvi_calib_surface` fans the per-expiry chain loop
+// across a thread pool. It is a PERF-only knob: the fitted params, slice
+// order/count, and FitDiag must be bit-identical at every worker count and vs
+// the serial path. These three tests pin exactly that (mirror of
+// tests/curve_fit_parallel_test.cpp's parallel-fit determinism suite).
+
+// Portable ATX_VOL_FIT_WORKERS env set/unset + RAII guard (mirrors
+// tests/curve_fit_parallel_test.cpp): restores the prior value on scope exit
+// even if an ASSERT_* exits the test early, so env state never leaks between
+// tests sharing the process.
+#if defined(_MSC_VER)
+inline void set_fit_workers_env(const char* value) {
+  ::_putenv_s("ATX_VOL_FIT_WORKERS", value);
+}
+inline void unset_fit_workers_env() { ::_putenv_s("ATX_VOL_FIT_WORKERS", ""); }
+#else
+inline void set_fit_workers_env(const char* value) {
+  ::setenv("ATX_VOL_FIT_WORKERS", value, 1);
+}
+inline void unset_fit_workers_env() { ::unsetenv("ATX_VOL_FIT_WORKERS"); }
+#endif
+
+class FitWorkersEnvGuard {
+ public:
+  FitWorkersEnvGuard() {
+#if defined(_MSC_VER)
+    char* prev = nullptr;
+    std::size_t prev_n = 0;
+    had_prev_ =
+        (::_dupenv_s(&prev, &prev_n, "ATX_VOL_FIT_WORKERS") == 0) && (prev != nullptr);
+    if (prev != nullptr) {
+      prev_val_ = prev;
+      std::free(prev);
+    }
+#else
+    const char* prev = std::getenv("ATX_VOL_FIT_WORKERS");
+    had_prev_ = prev != nullptr;
+    if (prev != nullptr) {
+      prev_val_ = prev;
+    }
+#endif
+  }
+  FitWorkersEnvGuard(const FitWorkersEnvGuard&) = delete;
+  FitWorkersEnvGuard& operator=(const FitWorkersEnvGuard&) = delete;
+  ~FitWorkersEnvGuard() {
+    if (had_prev_) {
+      set_fit_workers_env(prev_val_.c_str());
+    } else {
+      unset_fit_workers_env();
+    }
+  }
+
+ private:
+  bool had_prev_ = false;
+  std::string prev_val_;
+};
+
+// An N-expiry calendar-arb-free fixture (shared phi/rho, strictly-increasing
+// theta so w is monotone in T at every k — the calendar projection is a no-op
+// and every chain recovers exactly). Wider than the 3-expiry SurfaceFixture so
+// an 8-worker fan-out actually gets distinct chains to steal.
+[[nodiscard]] SurfaceFixture make_wide_fixture(std::size_t n_expiries) {
+  SurfaceFixture fx;
+  fx.ts.clear();
+  fx.thetas.clear();
+  for (std::size_t i = 0; i < n_expiries; ++i) {
+    fx.ts.push_back(0.1 + 0.1 * static_cast<double>(i));
+    fx.thetas.push_back(0.02 + 0.012 * static_cast<double>(i));
+  }
+  return fx;
+}
+
+void expect_surface_bit_identical(const VolSurface& a, const VolSurface& b) {
+  ASSERT_EQ(a.n_slices(), b.n_slices());
+  const auto sa = a.essvi_slices();
+  const auto sb = b.essvi_slices();
+  for (std::size_t i = 0; i < sa.size(); ++i) {
+    EXPECT_EQ(sa[i].theta, sb[i].theta) << "theta @" << i;
+    EXPECT_EQ(sa[i].phi, sb[i].phi) << "phi @" << i;
+    EXPECT_EQ(sa[i].rho, sb[i].rho) << "rho @" << i;
+    EXPECT_EQ(sa[i].psi, sb[i].psi) << "psi @" << i;
+    EXPECT_EQ(sa[i].p, sb[i].p) << "p @" << i;
+    EXPECT_EQ(sa[i].lambda, sb[i].lambda) << "lambda @" << i;
+    EXPECT_EQ(sa[i].T, sb[i].T) << "T @" << i;
+  }
+}
+
+void expect_diag_bit_identical(const FitDiag& a, const FitDiag& b) {
+  EXPECT_EQ(a.rmse_vol_vega_weighted, b.rmse_vol_vega_weighted);
+  EXPECT_EQ(a.max_residual_vol, b.max_residual_vol);
+  EXPECT_EQ(a.outer_iters, b.outer_iters);
+  EXPECT_EQ(a.inner_iters_total, b.inner_iters_total);
+  EXPECT_EQ(a.n_quotes_used, b.n_quotes_used);
+}
+
+// The worker count changes only WHICH thread fits a chain — never the result.
+// Fit the same 8-expiry board with n_workers=1 (serial) and n_workers=8
+// (fanned) and assert every slice param + FitDiag field is bit-for-bit equal.
+TEST(EssviCalibSurface, BitIdenticalAcrossWorkers) {
+  const SurfaceFixture fx = make_wide_fixture(8);
+  const Underlying under = fx.make_under();
+  const CurveSet curves = fx.make_curves(under);
+
+  auto s1 = VolSurface::create(1u, Parametrization::Essvi, under.chains.size());
+  auto s8 = VolSurface::create(1u, Parametrization::Essvi, under.chains.size());
+  ASSERT_TRUE(s1.has_value());
+  ASSERT_TRUE(s8.has_value());
+  VolSurface surf1 = *s1;
+  VolSurface surf8 = *s8;
+
+  FitDiag d1{};
+  FitDiag d8{};
+  const auto st1 = essvi_calib_surface(surf1, under, curves, calib_default_opts(),
+                                       &d1, /*prior=*/nullptr, /*n_workers=*/1u);
+  const auto st8 = essvi_calib_surface(surf8, under, curves, calib_default_opts(),
+                                       &d8, /*prior=*/nullptr, /*n_workers=*/8u);
+  ASSERT_TRUE(st1.has_value());
+  ASSERT_TRUE(st8.has_value());
+  ASSERT_EQ(surf1.n_slices(), 8u);
+  expect_surface_bit_identical(surf1, surf8);
+  expect_diag_bit_identical(d1, d8);
+}
+
+// The ATX_VOL_FIT_WORKERS env cap only changes what the AUTO (n_workers=0) case
+// resolves to — never the fitted result. Fit twice with n_workers=0: once with
+// the env forcing serial (=1), once with it unset (hardware_concurrency), and
+// assert bit-identical output.
+TEST(EssviCalibSurface, EnvCapIsPerfOnly) {
+  FitWorkersEnvGuard env_guard;  // restores ATX_VOL_FIT_WORKERS on scope exit
+
+  const SurfaceFixture fx = make_wide_fixture(8);
+  const Underlying under = fx.make_under();
+  const CurveSet curves = fx.make_curves(under);
+
+  set_fit_workers_env("1");
+  ASSERT_EQ(atx::vol::atx_auto_worker_count(), 1u);
+  auto sc = VolSurface::create(1u, Parametrization::Essvi, under.chains.size());
+  ASSERT_TRUE(sc.has_value());
+  VolSurface surf_capped = *sc;
+  FitDiag d_capped{};
+  const auto st_c =
+      essvi_calib_surface(surf_capped, under, curves, calib_default_opts(),
+                          &d_capped, /*prior=*/nullptr, /*n_workers=*/0u);
+  ASSERT_TRUE(st_c.has_value());
+
+  unset_fit_workers_env();
+  auto sa = VolSurface::create(1u, Parametrization::Essvi, under.chains.size());
+  ASSERT_TRUE(sa.has_value());
+  VolSurface surf_auto = *sa;
+  FitDiag d_auto{};
+  const auto st_a =
+      essvi_calib_surface(surf_auto, under, curves, calib_default_opts(),
+                          &d_auto, /*prior=*/nullptr, /*n_workers=*/0u);
+  ASSERT_TRUE(st_a.has_value());
+
+  ASSERT_EQ(surf_capped.n_slices(), 8u);
+  expect_surface_bit_identical(surf_capped, surf_auto);
+  expect_diag_bit_identical(d_capped, d_auto);
+}
+
+// A MIDDLE expiry fails to build observations, so it consumes no slice slot:
+// the surviving chains must compact into contiguous ascending-T slots. Pins
+// the prefix-sum compaction logic — serial(1) and parallel(8) must produce the
+// identical compacted slice set + identical FitDiag drop/used counts.
+TEST(EssviCalibSurface, PartialFailureCompaction) {
+  const SurfaceFixture fx = make_wide_fixture(8);
+  Underlying under = fx.make_under();
+  const CurveSet curves = fx.make_curves(under);
+
+  // Knock out expiry index 3: wipe all its quotes so build_observations fails
+  // the min-obs floor and the chain is skipped (no slot, no calendar hole).
+  const std::size_t kBad = 3;
+  for (double& v : under.chains[kBad].bids) {
+    v = 0.0;
+  }
+  for (double& v : under.chains[kBad].asks) {
+    v = 0.0;
+  }
+  for (double& v : under.chains[kBad].mids) {
+    v = 0.0;
+  }
+
+  auto s1 = VolSurface::create(1u, Parametrization::Essvi, under.chains.size());
+  auto s8 = VolSurface::create(1u, Parametrization::Essvi, under.chains.size());
+  ASSERT_TRUE(s1.has_value());
+  ASSERT_TRUE(s8.has_value());
+  VolSurface surf1 = *s1;
+  VolSurface surf8 = *s8;
+
+  FitDiag d1{};
+  FitDiag d8{};
+  const auto st1 = essvi_calib_surface(surf1, under, curves, calib_default_opts(),
+                                       &d1, /*prior=*/nullptr, /*n_workers=*/1u);
+  const auto st8 = essvi_calib_surface(surf8, under, curves, calib_default_opts(),
+                                       &d8, /*prior=*/nullptr, /*n_workers=*/8u);
+  ASSERT_TRUE(st1.has_value());
+  ASSERT_TRUE(st8.has_value());
+
+  // One chain dropped → 7 compacted slices; the failed middle chain leaves no
+  // hole and the surface stays strictly ascending in T.
+  EXPECT_EQ(surf1.n_slices(), 7u);
+  expect_surface_bit_identical(surf1, surf8);
+  expect_diag_bit_identical(d1, d8);
+
+  const auto sl = surf1.essvi_slices();
+  for (std::size_t i = 1; i < sl.size(); ++i) {
+    EXPECT_GT(sl[i].T, sl[i - 1].T);
+  }
 }
 
 }  // namespace

@@ -317,7 +317,20 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
     const Status status = c8_fit_slice_lm(fitted, k, target_w, spread_w, max_inner, 1.0e-9);
     const double fit_sse = status ? c8_residual_sse(fitted, k, target_w, spread_w, 1.0e-9)
                                   : std::numeric_limits<double>::infinity();
-    if (!std::isfinite(fit_sse) || fit_sse > seed_sse * 1.05) {
+    // Admissibility gate (mirrors c8_apply_quality_gate's slice_ok plus the
+    // JW-domain v_min range): guards against degenerate fits the SSE-only gate
+    // would accept — e.g. an ill-conditioned LM run that improves SSE while
+    // collapsing a wing slope to exactly 0 (exposed when the FD Jacobian's
+    // accidental all-gradients-fail rejection of v_min == v seeds went away
+    // with the analytic JW->raw Jacobian).
+    const bool fit_admissible =
+        std::isfinite(fitted.v) && fitted.v > 0.0 && std::isfinite(fitted.psi) &&
+        std::isfinite(fitted.p) && fitted.p > 0.0 &&
+        std::isfinite(fitted.c) && fitted.c > 0.0 &&
+        std::isfinite(fitted.v_min) && fitted.v_min >= 0.0 &&
+        fitted.v_min <= fitted.v + 1.0e-12 && std::isfinite(fitted.kappa) &&
+        std::isfinite(fitted.q_L) && std::isfinite(fitted.q_R);
+    if (!fit_admissible || !std::isfinite(fit_sse) || fit_sse > seed_sse * 1.05) {
       fitted = seed;
       fitted.bumps_active = false;
     }

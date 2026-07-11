@@ -398,6 +398,29 @@ american_greeks_al(double S, double K, double T, double sigma, double r, double 
 [[nodiscard]] double american_vega(double S, double K, double T, double sigma, double r, double q,
                                    Side side, const CorrectionCache *correction) noexcept;
 
+// ─────────────────────────────────────────────────────────────────────────
+// C1.7 (additive-only; see FILE-OWNERSHIP RULE in the 07-09 sprint doc) — a
+// vega-ONLY entry point for `PricedSurface::vega`, bit-identical to
+// `american_greeks_al(...).vega` on every input where the AL bundle takes its
+// native analytic route (and to `american_greeks_fd(...).vega` on every input
+// where the bundle falls back to FD), at 0-2 boundary solves instead of the
+// bundle's 5 (see american_greeks_al's cost comment above). `american_vega`
+// (just above) is NOT reusable here: it is the Black-76-plus-correction-cache
+// hot-path vega built for the IV inverter's 0.0-sentinel contract, a
+// DIFFERENT numerical procedure (no AL boundary re-solve at all) from the
+// bundle's re-solved-boundary finite difference, and it returns a plain
+// double with a load-bearing 0-on-degenerate sentinel rather than a `Result`
+// with delta()'s InvalidArgument contract. See american.cpp for the
+// boundary-re-solve mirror of american_greeks_al's vega branch.
+//
+// @return InvalidArgument on non-positive S/K/T/sigma (delta()'s error
+//         contract, NOT american_vega's 0.0 sentinel); otherwise the vega,
+//         bit-identical to greeks_analytic(...).vega for the same inputs.
+[[nodiscard]] Result<double> american_vega_al(double S, double K, double T, double sigma, double r,
+                                              double q, Side side,
+                                              const std::optional<AlOpts> &opts = std::nullopt);
+// ─────────────────────────────────────────────────────────────────────────
+
 namespace detail {
 
 // ── Early-exercise regime classification (Healy 2021 §2.2) ───────────────

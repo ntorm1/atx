@@ -1,5 +1,6 @@
 #include "atx/vol/svi_calib.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -16,6 +17,7 @@
 #include "atx/vol/black76.hpp"         // black76_price, black76_value_and_vega
 #include "atx/vol/calib.hpp"           // CalibOpts, FitObs, FitDiag, build_observations
 #include "atx/vol/detail/calib_shared.hpp"  // detail::outer_cap + shared LM constants
+#include "atx/vol/simd/essvi_batch.hpp"      // svi_qe_basis_batch, svi_total_w_batch
 
 // Per-slice raw-SVI calibrators — implementation.
 //
@@ -117,20 +119,31 @@ constexpr double kMmSigmaFloor = 0.05;  // physical sigma floor (1 vol point ban
 
 // ── Inner: bounded linear least squares over (a, d_uv, c_uv) ─────────────
 
+// Reusable per-slice scratch for the quasi-explicit inner solve. `k` is the
+// gathered log-moneyness (CONSTANT across the whole fit); `u`/`v` hold the
+// rotated basis, recomputed ONCE per (m, sigma) evaluation (via
+// simd::svi_qe_basis_batch) and read by every active-set re-solve + SSE at that
+// same (m, sigma) — the ≤7 recomputations at a fixed (m, sigma) collapse to 1.
+// Sized once in svi_fit_slice so no NM evaluation allocates. `u[i]`/`v[i]`
+// correspond to obs[i] by index (both derived from the same `work` array).
+struct QeBasisScratch {
+  std::vector<double> k;
+  std::vector<double> u;
+  std::vector<double> v;
+};
+
 // Weighted SSE of the reduced linear model at coordinates `x = (a, d_uv, c_uv)`
 // (ports the SSE recompute blocks in svi_blls_inner / build_and_solve_normal).
-[[nodiscard]] double svi_qe_sse(std::span<const FitObs> obs, double m,
-                                double sigma,
+// Reads the PRE-COMPUTED basis (sc.u / sc.v) for the current (m, sigma) — the
+// per-strike loop stays in original order (values-only batching).
+[[nodiscard]] double svi_qe_sse(std::span<const FitObs> obs,
+                                const QeBasisScratch &sc,
                                 const std::array<double, 3> &x) noexcept {
   double sse = 0.0;
-  for (const FitObs &o : obs) {
-    const double yi = (o.k - m) / sigma;
-    const double zi = std::sqrt(yi * yi + 1.0);
-    const double ui = (yi + zi) * kInvSqrt2;
-    const double vi = (zi - yi) * kInvSqrt2;
-    const double w_pred = x[0] + x[1] * ui + x[2] * vi;
-    const double r = w_pred - o.w_mkt;
-    sse += o.active_weight_w * r * r;
+  for (std::size_t i = 0; i < obs.size(); ++i) {
+    const double w_pred = x[0] + x[1] * sc.u[i] + x[2] * sc.v[i];
+    const double r = w_pred - obs[i].w_mkt;
+    sse += obs[i].active_weight_w * r * r;
   }
   return sse;
 }
@@ -138,21 +151,20 @@ constexpr double kMmSigmaFloor = 0.05;  // physical sigma floor (1 vol point ban
 // Build the weighted normal equations A^T W A x = A^T W w for the free
 // variables (`free_mask[i]` == true) at fixed (m, sigma), solve, and write the
 // free entries of `x` (pinned entries are read for the reduced rhs). Returns
-// the SSE at the resulting x. Mirrors `build_and_solve_normal`.
-[[nodiscard]] double build_and_solve_normal(std::span<const FitObs> obs, double m,
-                                            double sigma,
+// the SSE at the resulting x. Mirrors `build_and_solve_normal`. The basis
+// `ai = {1, u_i, v_i}` is READ from the pre-computed `sc` (see QeBasisScratch);
+// the H/g accumulation below is UNCHANGED — a scalar loop over i in the original
+// order, so the fit's summation is bit-for-bit what it was (values-only rule).
+[[nodiscard]] double build_and_solve_normal(std::span<const FitObs> obs,
+                                            const QeBasisScratch &sc,
                                             const std::array<bool, 3> &free_mask,
                                             std::array<double, 3> &x) {
   std::array<double, 9> H{};
   std::array<double, 3> g{};
-  for (const FitObs &o : obs) {
-    const double yi = (o.k - m) / sigma;
-    const double zi = std::sqrt(yi * yi + 1.0);
-    const double ui = (yi + zi) * kInvSqrt2;
-    const double vi = (zi - yi) * kInvSqrt2;
-    const std::array<double, 3> ai{1.0, ui, vi};
-    const double w_i = o.active_weight_w;
-    const double t_i = o.w_mkt;
+  for (std::size_t i = 0; i < obs.size(); ++i) {
+    const std::array<double, 3> ai{1.0, sc.u[i], sc.v[i]};
+    const double w_i = obs[i].active_weight_w;
+    const double t_i = obs[i].w_mkt;
     for (int p = 0; p < 3; ++p) {
       g[static_cast<std::size_t>(p)] += w_i * ai[static_cast<std::size_t>(p)] * t_i;
       for (int q = 0; q <= p; ++q) {
@@ -220,21 +232,28 @@ constexpr double kMmSigmaFloor = 0.05;  // physical sigma floor (1 vol point ban
     }
   }
 
-  return svi_qe_sse(obs, m, sigma, x);
+  return svi_qe_sse(obs, sc, x);
 }
 
 // Active-set bounded LSQ for (a, d_uv, c_uv) at fixed (m, sigma). Box:
 // 0 <= a <= a_max, 0 <= d_uv, c_uv <= duvc_max. Returns SSE; writes `out`.
-// Mirrors `svi_blls_inner`.
+// Mirrors `svi_blls_inner`. The rotated basis (u, v) depends only on (m, sigma,
+// k) — LOOP-INVARIANT across the ≤7 active-set passes below (the active set
+// only pins x entries / flips free_mask; it never touches the basis) — so it is
+// computed ONCE here and reused by every build_and_solve_normal + the final SSE.
 [[nodiscard]] double svi_blls_inner(std::span<const FitObs> obs, double m,
                                     double sigma, double a_max, double duvc_max,
+                                    QeBasisScratch &sc,
                                     std::array<double, 3> &out) {
+  simd::svi_qe_basis_batch(m, sigma, sc.k.data(), sc.u.data(), sc.v.data(),
+                           obs.size());
+
   std::array<bool, 3> free_mask{true, true, true};
   std::array<double, 3> x{0.0, 0.0, 0.0};
   const std::array<double, 3> upper{a_max, duvc_max, duvc_max};
   const std::array<double, 3> lower{0.0, 0.0, 0.0};
 
-  double sse = build_and_solve_normal(obs, m, sigma, free_mask, x);
+  double sse = build_and_solve_normal(obs, sc, free_mask, x);
 
   for (int it = 0; it < 6; ++it) {
     int worst_idx = -1;
@@ -264,7 +283,7 @@ constexpr double kMmSigmaFloor = 0.05;  // physical sigma floor (1 vol point ban
     const auto uw = static_cast<std::size_t>(worst_idx);
     x[uw] = worst_at_upper ? upper[uw] : lower[uw];
     free_mask[uw] = false;
-    sse = build_and_solve_normal(obs, m, sigma, free_mask, x);
+    sse = build_and_solve_normal(obs, sc, free_mask, x);
   }
 
   // Final clamp + SSE recompute (the last solve may not have reached feasibility).
@@ -277,7 +296,7 @@ constexpr double kMmSigmaFloor = 0.05;  // physical sigma floor (1 vol point ban
       x[up] = upper[up];
     }
   }
-  sse = svi_qe_sse(obs, m, sigma, x);
+  sse = svi_qe_sse(obs, sc, x);
   out = x;
   return sse;
 }
@@ -295,7 +314,7 @@ struct NmCtx {
 };
 
 [[nodiscard]] double nm_eval(const NmCtx &c, double m, double sigma,
-                             std::array<double, 3> &linear) {
+                             QeBasisScratch &sc, std::array<double, 3> &linear) {
   if (sigma < c.sigma_min) {
     sigma = c.sigma_min;
   }
@@ -308,12 +327,12 @@ struct NmCtx {
   if (m > c.m_max) {
     m = c.m_max;
   }
-  return svi_blls_inner(c.obs, m, sigma, c.a_max, c.duvc_max, linear);
+  return svi_blls_inner(c.obs, m, sigma, c.a_max, c.duvc_max, sc, linear);
 }
 
 // Nelder-Mead simplex search over (m, sigma). Writes the best vertex back into
 // (*m, *sigma) and its inner linear optimum into `linear`. Mirrors `nm_search`.
-void nm_search(const NmCtx &c, double &m, double &sigma,
+void nm_search(const NmCtx &c, double &m, double &sigma, QeBasisScratch &sc,
                std::array<double, 3> &linear, std::uint16_t max_iter, double tol,
                std::uint16_t &out_iters_used) {
   std::array<std::array<double, 2>, 3> v{};
@@ -325,7 +344,7 @@ void nm_search(const NmCtx &c, double &m, double &sigma,
   v[2] = {m, sigma * 1.5};
   for (int i = 0; i < 3; ++i) {
     const auto ui = static_cast<std::size_t>(i);
-    f[ui] = nm_eval(c, v[ui][0], v[ui][1], lin[ui]);
+    f[ui] = nm_eval(c, v[ui][0], v[ui][1], sc, lin[ui]);
   }
 
   std::uint16_t iters_used = 0;
@@ -357,14 +376,14 @@ void nm_search(const NmCtx &c, double &m, double &sigma,
     const double rm = cm + (cm - v[2][0]);
     const double rs = cs + (cs - v[2][1]);
     std::array<double, 3> rlin{};
-    const double rf = nm_eval(c, rm, rs, rlin);
+    const double rf = nm_eval(c, rm, rs, sc, rlin);
 
     if (rf < f[0]) {
       // Expansion.
       const double em = cm + 2.0 * (cm - v[2][0]);
       const double es = cs + 2.0 * (cs - v[2][1]);
       std::array<double, 3> elin{};
-      const double ef = nm_eval(c, em, es, elin);
+      const double ef = nm_eval(c, em, es, sc, elin);
       if (ef < rf) {
         v[2] = {em, es};
         f[2] = ef;
@@ -383,7 +402,7 @@ void nm_search(const NmCtx &c, double &m, double &sigma,
       const double km = cm + 0.5 * (v[2][0] - cm);
       const double ks = cs + 0.5 * (v[2][1] - cs);
       std::array<double, 3> klin{};
-      const double kf = nm_eval(c, km, ks, klin);
+      const double kf = nm_eval(c, km, ks, sc, klin);
       if (kf < f[2]) {
         v[2] = {km, ks};
         f[2] = kf;
@@ -394,7 +413,7 @@ void nm_search(const NmCtx &c, double &m, double &sigma,
           const auto ui = static_cast<std::size_t>(i);
           v[ui][0] = v[0][0] + 0.5 * (v[ui][0] - v[0][0]);
           v[ui][1] = v[0][1] + 0.5 * (v[ui][1] - v[0][1]);
-          f[ui] = nm_eval(c, v[ui][0], v[ui][1], lin[ui]);
+          f[ui] = nm_eval(c, v[ui][0], v[ui][1], sc, lin[ui]);
         }
       }
     }
@@ -494,13 +513,37 @@ void svi_w_grad_at(double k, double b, double rho, double m, double sigma,
   g[4] = b * sigma * inv_r;             // d w / d sigma
 }
 
+// Per-observation LM workspace: base residuals + 5 Jacobian columns, plus the
+// batched-w_pred scratch. `k` is the gathered log-moneyness (CONSTANT across the
+// fit); `w_pred` receives one `simd::svi_total_w_batch` sweep per parameter
+// evaluation (values-only — the Black-76 price/vega + Jacobian chain stays a
+// scalar per-strike loop reading w_pred[i], so accumulation order is unchanged).
+struct LmWorkspaceMm {
+  std::vector<double> r0;
+  std::array<std::vector<double>, 5> jcol;
+  std::vector<double> k;
+  std::vector<double> w_pred;
+};
+
 // Weighted price-domain SSE (pure European Black-76 prediction — see the PORT
-// NOTE on the American-correction cache). Mirrors `svi_mm_sse`.
+// NOTE on the American-correction cache). Mirrors `svi_mm_sse`. The w_pred sweep
+// is one `simd::svi_total_w_batch` call into `ws.w_pred` (svi_total_w is
+// op-for-op svi_w_raw); the floor + Black-76 price loop stays scalar per strike.
 [[nodiscard]] double svi_mm_sse(std::span<const FitObs> obs, double T, double a,
-                                double b, double rho, double m, double sigma) {
+                                double b, double rho, double m, double sigma,
+                                LmWorkspaceMm &ws) {
+  SviParams sp{};
+  sp.a = a;
+  sp.b = b;
+  sp.rho = rho;
+  sp.m = m;
+  sp.sigma = sigma;
+  simd::svi_total_w_batch(sp, ws.k.data(), ws.w_pred.data(), obs.size());
+
   double s = 0.0;
-  for (const FitObs &o : obs) {
-    double w_pred = svi_w_raw(a, b, rho, m, sigma, o.k);
+  for (std::size_t i = 0; i < obs.size(); ++i) {
+    const FitObs &o = obs[i];
+    double w_pred = ws.w_pred[i];
     if (w_pred < 1.0e-12) {
       w_pred = 1.0e-12;
     }
@@ -515,20 +558,22 @@ void svi_w_grad_at(double k, double b, double rho, double m, double sigma,
   return s;
 }
 
-// Per-observation LM workspace: base residuals + 5 Jacobian columns.
-struct LmWorkspaceMm {
-  std::vector<double> r0;
-  std::array<std::vector<double>, 5> jcol;
-};
-
 // Residuals + analytic 5-column price Jacobian at (a, b, rho, m, sigma).
 // Mirrors `svi_mm_residuals_and_jac` with corr == NULL.
 void svi_mm_residuals_and_jac(std::span<const FitObs> obs, double T, double a,
                               double b, double rho, double m, double sigma,
                               LmWorkspaceMm &ws) {
+  SviParams sp{};
+  sp.a = a;
+  sp.b = b;
+  sp.rho = rho;
+  sp.m = m;
+  sp.sigma = sigma;
+  simd::svi_total_w_batch(sp, ws.k.data(), ws.w_pred.data(), obs.size());
+
   for (std::size_t i = 0; i < obs.size(); ++i) {
     const FitObs &o = obs[i];
-    double w_pred = svi_w_raw(a, b, rho, m, sigma, o.k);
+    double w_pred = ws.w_pred[i];
     if (w_pred < 1.0e-12) {
       w_pred = 1.0e-12;
     }
@@ -627,7 +672,7 @@ void build_normal_eqs_5(std::span<const FitObs> obs, const LmWorkspaceMm &ws,
 
       (void)mm_project_default(T, a_new, b_new, rho_new, sigma_new);
 
-      new_sse = svi_mm_sse(obs, T, a_new, b_new, rho_new, m_new, sigma_new);
+      new_sse = svi_mm_sse(obs, T, a_new, b_new, rho_new, m_new, sigma_new, ws);
       if (std::isfinite(new_sse) && new_sse < prev_sse) {
         accepted = true;
         break;
@@ -746,6 +791,17 @@ Result<SviParams> svi_fit_slice(std::span<const FitObs> obs, double T, double F,
   std::vector<double> resid_scratch(n, 0.0);
   double prev_sse = std::numeric_limits<double>::infinity();
 
+  // Quasi-explicit inner-solve scratch: gather k ONCE (it is constant across the
+  // whole fit); u/v are (re)computed once per (m, sigma) NM evaluation inside
+  // svi_blls_inner. Sized here so no NM/inner call allocates.
+  QeBasisScratch qe_scratch;
+  qe_scratch.k.resize(n);
+  qe_scratch.u.resize(n);
+  qe_scratch.v.resize(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    qe_scratch.k[i] = work[i].k;
+  }
+
   for (std::uint16_t outer = 0; outer < max_outer; ++outer) {
     // The (u, v) box scales with the current sigma; be generous (the real
     // butterfly bound is enforced post-hoc).
@@ -753,7 +809,8 @@ Result<SviParams> svi_fit_slice(std::span<const FitObs> obs, double T, double F,
     nm.duvc_max *= 4.0;
 
     std::uint16_t nm_iters_this_pass = 0;
-    nm_search(nm, m_cur, sigma_cur, linear, max_inner, tol, nm_iters_this_pass);
+    nm_search(nm, m_cur, sigma_cur, qe_scratch, linear, max_inner, tol,
+              nm_iters_this_pass);
     ++outer_total_iters;
     inner_total_iters =
         static_cast<std::uint16_t>(inner_total_iters + nm_iters_this_pass);
@@ -932,6 +989,13 @@ Result<SviParams> svi_mm_fit_slice(std::span<const FitObs> obs, double T,
   for (auto &col : ws.jcol) {
     col.assign(n, 0.0);
   }
+  // Batched-w_pred scratch: gather k ONCE (constant across the fit); w_pred is
+  // filled by simd::svi_total_w_batch on each residual/SSE pass.
+  ws.k.assign(n, 0.0);
+  ws.w_pred.assign(n, 0.0);
+  for (std::size_t i = 0; i < n; ++i) {
+    ws.k[i] = work[i].k;
+  }
 
   std::uint16_t outer_iters = 0;
   std::uint16_t inner_total = 0;
@@ -958,7 +1022,7 @@ Result<SviParams> svi_mm_fit_slice(std::span<const FitObs> obs, double T,
   std::vector<double> resid_scratch(n, 0.0);
 
   for (std::uint16_t outer = 0; outer < max_outer; ++outer) {
-    double sse = svi_mm_sse(wspan, T, a, b, rho, m, sigma);
+    double sse = svi_mm_sse(wspan, T, a, b, rho, m, sigma, ws);
     double lambda_lm = detail::kLambdaLmInit;
 
     for (std::uint16_t inner = 0; inner < max_inner; ++inner) {
@@ -1033,16 +1097,13 @@ Result<SviParams> svi_mm_fit_slice(std::span<const FitObs> obs, double T,
         if (q_idx >= n) {
           q_idx = n - 1;
         }
-        // Partial selection sort up to q_idx (bounded; n is per-slice small).
-        for (std::size_t i = 0; i <= q_idx && i < n; ++i) {
-          std::size_t mn = i;
-          for (std::size_t j = i + 1; j < n; ++j) {
-            if (rnorm[j] < rnorm[mn]) {
-              mn = j;
-            }
-          }
-          std::swap(rnorm[i], rnorm[mn]);
-        }
+        // q90 via nth_element: rnorm[q_idx] becomes exactly the element a full
+        // sort would place there — the SAME value the old O(n^2) partial
+        // selection sort returned (identical downstream Huber weights), in O(n).
+        // SviCalib.NthElementQ90MatchesSelectionSort pins this equivalence.
+        std::nth_element(rnorm.begin(),
+                         rnorm.begin() + static_cast<std::ptrdiff_t>(q_idx),
+                         rnorm.end());
         double huber_threshold = rnorm[q_idx];
         if (huber_threshold < 1.5) {
           huber_threshold = 1.5;

@@ -5,11 +5,13 @@
 # is a SYSTEM include (declared in the root CMakeLists FetchContent), so its
 # headers never trip atx-vol's /W4 /WX gate.
 #
-# Four targets, kept separate so a matrix change in one does not relink the others:
+# Targets, kept separate so a matrix change in one does not relink the others:
 #   atx-vol-american-bench   <- american_pricing_bench.cpp
 #   atx-vol-portfolio-bench  <- portfolio_throughput_bench.cpp
 #   atx-vol-projection-bench <- contract_projection_bench.cpp
 #   atx-vol-simd-bench       <- simd_*bench.cpp
+#   atx-vol-fitting-bench    <- fitting_throughput_bench.cpp + corpus_build_bench.cpp
+#                                (C0.3: calibration throughput as a first-class number)
 #
 # Shared, header-only helpers live beside them:
 #   bench_util.hpp           — common per-registration knobs (warm-up, repetitions,
@@ -82,13 +84,13 @@ target_link_libraries(atx-vol-simd-bench
 # not correctness, so they do not belong in the fast test gate). Each is a proper
 # Google Benchmark now:
 #   backtest_throughput_bench.cpp     <- tests/backtest_bench_test.cpp (whole file)
-#   corpus_build_bench.cpp            <- tests/corpus_test.cpp   :: Throughput_FitsUnderCeiling
 #   american_greeks_reuse_bench.cpp   <- tests/american_test.cpp :: DISABLED_FdBoundaryReuse_Speedup
 #   strangle_solver_bench.cpp         <- tests/spy_strangle_backtest_test.cpp :: DISABLED_SolverBreakdown
+# (corpus_build_bench.cpp moved to atx-vol-fitting-bench below — C0.3: it is a
+# fit-throughput case and belongs with the rest of the calibration gate.)
 add_executable(atx-vol-reloc-bench
     bench_main.cpp
     backtest_throughput_bench.cpp
-    corpus_build_bench.cpp
     american_greeks_reuse_bench.cpp
     strangle_solver_bench.cpp
 )
@@ -99,4 +101,33 @@ target_link_libraries(atx-vol-reloc-bench
         benchmark::benchmark
         atx_warnings
         Threads::Threads
+)
+
+# Fitting/calibration throughput (C0.3): calibrations/s as a first-class
+# number, directly comparable to the published 16.5k American-calibrations/s
+# anchor (fit/american_iv/*), plus whole-surface and single-slice eSSVI fit
+# cost (fit/surface_cold/*, fit/slice_*), plus the corpus build-throughput
+# case relocated from atx-vol-reloc-bench above.
+add_executable(atx-vol-fitting-bench
+    bench_main.cpp
+    fitting_throughput_bench.cpp
+    corpus_build_bench.cpp
+)
+target_link_libraries(atx-vol-fitting-bench
+    PRIVATE
+        atx::vol
+        atx::core
+        benchmark::benchmark
+        atx_warnings
+        Threads::Threads
+)
+# fitting_throughput_bench.cpp's real-OPRA case (C0.2) reaches the testkit
+# fixture loaders via `#include "support/spy_fit_fixture.hpp"` — the same
+# quoted path every tests/*.cpp uses, resolved there via same-directory
+# lookup (tests/support/ sits beside the including tests/*.cpp). bench/ has
+# no such sibling, so add ../tests as an extra quoted-include root, PRIVATE
+# so it does not leak into any other bench target.
+target_include_directories(atx-vol-fitting-bench
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../tests
 )

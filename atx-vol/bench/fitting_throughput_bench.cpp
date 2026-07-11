@@ -1,0 +1,646 @@
+// fitting_throughput_bench.cpp — first-class fitting/calibration throughput
+// (C0.3): calibrations/s directly comparable to the published 16.5k/s
+// American-calibration anchor, plus whole-surface eSSVI fit cost and the
+// warm-vs-cold single-slice refit ratio.
+//
+// All four cases build their fixtures (board, curves, observation set, IV
+// targets) ONCE, OUTSIDE the timed loop; only the fit call itself is timed,
+// cold every iteration (no state carried between iterations beyond what the
+// public API itself would carry for a from-scratch caller). The synthetic
+// SPY board comes from the same public fixture + recipe as
+// corpus_build_bench.cpp's `board_from_spec` (spy_fixture.hpp's
+// `make_spy_synthetic_spec` -> `make_synthetic_american_panel` ->
+// `MarketEnv::flat`), converted to the `Underlying`/`CurveSet` pair the
+// eSSVI surface driver (essvi_calib.hpp) consumes directly.
+//
+//   fit/surface_cold/spy_synth   — whole-surface eSSVI fit via the public
+//                                  `essvi_calib_surface` driver.
+//   fit/surface_cold/spy_real    — the SAME `essvi_calib_surface` driver, timed
+//                                  against ONE real Databento SPY OPRA slice
+//                                  (C0.2: the suite was 100% synthetic before
+//                                  this case). Pinned to `kSpyFitFixtures[0]`
+//                                  ("selloff-open", SPY_2026-02-12T1435Z) for a
+//                                  reproducible timing target; registered only
+//                                  when the fixture's parquet is found on this
+//                                  machine (spy_fit_fixture.hpp's filesystem
+//                                  probe over data/spy_fit_slices, mirrored so
+//                                  a source-only checkout skips cleanly instead
+//                                  of crashing).
+//   fit/slice_cold/spy_synth     — single-slice `essvi_fit_slice`, no seed.
+//   fit/slice_warm_refit/spy_synth — same slice, seeded with its own
+//                                  converged params (essvi_fit_slice DOES
+//                                  expose a public `warm` seam:
+//                                  essvi_calib.hpp:110 — no TODO needed).
+//   fit/american_iv/{cold,warm}  — `american_implied_vol` over a pre-priced
+//                                  strike-ladder x few-expiries batch (the
+//                                  16.5k-anchor-comparable case); warm passes
+//                                  each target's true vol * (1+1e-3) as the
+//                                  Newton seed (the realistic live-refresh
+//                                  case).
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <optional>
+#include <vector>
+
+#include <benchmark/benchmark.h>
+
+#include "atx/vol/american.hpp"      // AmericanMethod, american_price
+#include "atx/vol/american_iv.hpp"   // american_implied_vol
+#include "atx/vol/calib.hpp"         // CalibOpts, FitObs, calib_default_opts, build_observations_european
+#include "atx/vol/chain.hpp"         // OptionChain
+#include "atx/vol/correction.hpp"    // CorrectionCache, AmericanCorrectionCaches
+#include "atx/vol/curve.hpp"         // CurveSet, ForwardPoint
+#include "atx/vol/deamer.hpp"        // DeAmOptions
+#include "atx/vol/data.hpp"          // iso_to_ns
+#include "atx/vol/dividend.hpp"      // hybrid_forward, HybridDivParams (real-board forward)
+#include "atx/vol/essvi_calib.hpp"   // essvi_fit_slice, essvi_calib_surface
+#include "atx/vol/market_env.hpp"    // MarketEnv
+#include "atx/vol/panel.hpp"         // make_synthetic_american_panel, SynthPanelSpec
+#include "atx/vol/spy_fixture.hpp"   // make_spy_synthetic_spec
+#include "atx/vol/svi_calib.hpp"     // svi_fit_slice (quasi-explicit raw-SVI)
+#include "atx/vol/types.hpp"         // Side
+#include "atx/vol/universe.hpp"      // Underlying, Chain
+#include "atx/vol/vol_surface.hpp"   // VolSurface, EssviParams, Parametrization
+
+#include "bench_util.hpp"
+#include "support/spy_fit_fixture.hpp" // kSpyFitFixtures, find_spy_fit_parquet, load_spy_fit_fixture
+
+namespace atx::vol::bench {
+namespace {
+
+// ── Shared SPY board fixture (surface_cold + slice cases) ────────────────
+//
+// The recipe mirrors corpus_build_bench.cpp's `board_from_spec`: build the
+// synthetic panel, wrap it in a flat `MarketEnv`, and install it via
+// `OptionChain::from_frame`. The `Underlying` is copied out of the (move-only)
+// `OptionChain` so the fixture struct stays a plain, reusable value. The
+// `CurveSet` forward points are the panel's OWN known-truth forward per
+// expiry (`SynthPanel::truth_forward`), keyed onto the installed chains by
+// expiry_ns (both sides compute it via the same `iso_to_ns`); the yield curve
+// is the spec's flat rate.
+struct SpyBoard {
+  Underlying under;
+  CurveSet curves;
+  double spot{0.0};
+  double r{0.0};
+};
+
+[[nodiscard]] std::optional<SpyBoard> build_spy_board() {
+  const SynthPanelSpec spec = make_spy_synthetic_spec();
+  const auto panel = make_synthetic_american_panel(spec);
+  if (!panel.has_value()) {
+    return std::nullopt;
+  }
+
+  const MarketEnv env =
+      MarketEnv::flat(spec.spot, spec.r, iso_to_ns(spec.snapshot_iso), spec.cash_divs);
+  auto chain_res = OptionChain::from_frame(panel->frame, env);
+  if (!chain_res.has_value()) {
+    return std::nullopt;
+  }
+
+  SpyBoard board;
+  board.under = chain_res->underlying();
+  board.spot = spec.spot;
+  board.r = spec.r;
+
+  board.curves.spot = spec.spot;
+  const std::array<double, 2> pillar_t{1.0e-3, 50.0};
+  const std::array<double, 2> pillar_r{spec.r, spec.r};
+  if (!board.curves.set_yield(pillar_t, pillar_r).has_value()) {
+    return std::nullopt;
+  }
+
+  std::vector<ForwardPoint> fps;
+  fps.reserve(board.under.chains.size());
+  for (const Chain &c : board.under.chains) {
+    ForwardPoint fp{};
+    fp.expiry_ns = c.expiry_ns;
+    fp.T = c.T;
+    fp.F = spec.spot; // fallback; overwritten below on a truth match
+    for (std::size_t i = 0; i < spec.expiries.size(); ++i) {
+      if (iso_to_ns(spec.expiries[i].expiry_iso) == c.expiry_ns) {
+        fp.F = panel->truth_forward[i];
+        break;
+      }
+    }
+    fps.push_back(fp);
+  }
+  board.curves.forward.set(fps);
+  return board;
+}
+
+// ── fit/surface_cold/spy_synth ────────────────────────────────────────────
+
+void BM_SurfaceCold(benchmark::State &state) {
+  const std::optional<SpyBoard> board = build_spy_board();
+  if (!board.has_value()) {
+    state.SkipWithError("SPY board build failed");
+    return;
+  }
+  auto surf_res =
+      VolSurface::create(1u, Parametrization::Essvi, board->under.chains.size());
+  if (!surf_res.has_value()) {
+    state.SkipWithError("VolSurface::create failed");
+    return;
+  }
+  VolSurface surface = *surf_res;
+  const CalibOpts opts = calib_default_opts();
+
+  for (auto _ : state) {
+    const Status st = essvi_calib_surface(surface, board->under, board->curves, opts);
+    if (!st.has_value()) {
+      state.SkipWithError("essvi_calib_surface failed");
+      break;
+    }
+    benchmark::DoNotOptimize(surface.n_slices());
+    benchmark::ClobberMemory();
+  }
+  state.SetItemsProcessed(state.iterations()); // items = surfaces
+}
+
+// ── fit/surface_cold/spy_real ─────────────────────────────────────────────
+//
+// The real-OPRA counterpart to BM_SurfaceCold above (C0.2): identical timed
+// call (`essvi_calib_surface` on an `Underlying`/`CurveSet` pair built ONCE
+// outside the loop), but the board comes from one pinned real Databento SPY
+// slice instead of the synthetic panel. Pinned fixture: `kSpyFitFixtures[0]`
+// ("selloff-open", SPY_2026-02-12T1435Z.parquet) — chosen simply as the
+// first entry for a stable, reproducible timing target; the corpus's other
+// nine slices are exercised for ACCURACY (not throughput) by
+// spy_fit_corpus_test.cpp.
+//
+// The forward per expiry is the same hybrid dividend forward
+// (`hybrid_forward`, dividend.hpp) production code derives from a real
+// board's cash-dividend schedule — there is no "truth forward" for real
+// data the way the synthetic panel provides one.
+
+struct SpyBoardReal {
+  Underlying under;
+  CurveSet curves;
+  double spot{0.0};
+  double r{0.0};
+};
+
+[[nodiscard]] std::optional<SpyBoardReal> build_spy_board_real() {
+  const auto &fixture = atx::vol::testkit::kSpyFitFixtures[0];
+  const std::optional<atx::vol::testkit::OpraBoard> opra =
+      atx::vol::testkit::load_spy_fit_fixture(fixture);
+  if (!opra.has_value()) {
+    return std::nullopt;
+  }
+  auto chain_res = OptionChain::from_frame(opra->panel.frame, opra->env());
+  if (!chain_res.has_value()) {
+    return std::nullopt;
+  }
+
+  SpyBoardReal board;
+  board.under = chain_res->underlying();
+  board.spot = opra->spot();
+  board.r = opra->r;
+
+  board.curves.spot = board.spot;
+  const std::array<double, 2> pillar_t{1.0e-3, 50.0};
+  const std::array<double, 2> pillar_r{board.r, board.r};
+  if (!board.curves.set_yield(pillar_t, pillar_r).has_value()) {
+    return std::nullopt;
+  }
+
+  const HybridDivParams hyb{}; // pure escrowed-cash (blend = 0), matches session.cpp's q_rep recipe
+  std::vector<ForwardPoint> fps;
+  fps.reserve(board.under.chains.size());
+  for (const Chain &c : board.under.chains) {
+    ForwardPoint fp{};
+    fp.expiry_ns = c.expiry_ns;
+    fp.T = c.T;
+    const double F = hybrid_forward(board.spot, board.r, 0.0, c.T, opra->panel.frame.divs,
+                                    c.expiry_ns, opra->now_ns(), hyb);
+    fp.F = (std::isfinite(F) && F > 0.0) ? F : board.spot; // fallback mirrors build_spy_board()
+    fps.push_back(fp);
+  }
+  board.curves.forward.set(fps);
+  return board;
+}
+
+void BM_SurfaceColdReal(benchmark::State &state) {
+  const std::optional<SpyBoardReal> board = build_spy_board_real();
+  if (!board.has_value()) {
+    state.SkipWithError("real SPY board build failed");
+    return;
+  }
+  auto surf_res =
+      VolSurface::create(1u, Parametrization::Essvi, board->under.chains.size());
+  if (!surf_res.has_value()) {
+    state.SkipWithError("VolSurface::create failed");
+    return;
+  }
+  VolSurface surface = *surf_res;
+  const CalibOpts opts = calib_default_opts();
+
+  for (auto _ : state) {
+    const Status st = essvi_calib_surface(surface, board->under, board->curves, opts);
+    if (!st.has_value()) {
+      state.SkipWithError("essvi_calib_surface (real) failed");
+      break;
+    }
+    benchmark::DoNotOptimize(surface.n_slices());
+    benchmark::ClobberMemory();
+  }
+  state.SetItemsProcessed(state.iterations()); // items = surfaces
+}
+
+// ── fit/surface_deam_cold + fit/surface_deam_cached ───────────────────────
+//
+// The C2.3 evidence: the SAME whole-surface `essvi_calib_surface` fit on the
+// SAME synthetic SPY board as BM_SurfaceCold, but routed through the opt-in
+// de-Americanization path (`build_observations_european`) that strips the
+// American early-exercise premium before the fit. `_cold` inverts each strike
+// with a fresh Andersen-Lake solve (empty caches); `_cached` routes through the
+// per-side Black-76 + Chebyshev correction caches, which are built ONCE outside
+// the timed loop (their build cost — 2 sides x kNK*kNT*kNS cold AL grid solves,
+// ~1536/side — is a per-underlier surface-fit-cadence cost, not a per-fit one).
+// All three surface cases run at the same default worker count for a like-for-
+// like raw-vs-cold-vs-cached comparison.
+
+struct BoardCaches {
+  CorrectionCache call;
+  CorrectionCache put;
+};
+
+// Per-side American-minus-European correction caches covering the board, built
+// the way session.cpp's `build_session_caches` does (padded (k_log, T) box from
+// every strike/expiry with spot as the forward proxy, a representative carry
+// from the mid expiry's forward, a generous sigma box).
+[[nodiscard]] BoardCaches build_board_caches(const SpyBoard &board) {
+  const double S = board.spot;
+  double k_min = std::numeric_limits<double>::infinity();
+  double k_max = -std::numeric_limits<double>::infinity();
+  double T_lo = std::numeric_limits<double>::infinity();
+  double T_hi = -std::numeric_limits<double>::infinity();
+  for (const Chain &c : board.under.chains) {
+    if (!(c.T > 0.0)) {
+      continue;
+    }
+    T_lo = std::min(T_lo, c.T);
+    T_hi = std::max(T_hi, c.T);
+    for (const double K : c.strikes) {
+      const double k = std::log(K / S);
+      k_min = std::min(k_min, k);
+      k_max = std::max(k_max, k);
+    }
+  }
+  k_min -= 0.05;
+  k_max += 0.05;
+  const double T_min = 0.9 * T_lo;
+  const double T_max = (T_hi > T_lo) ? (1.1 * T_hi) : (1.5 * T_lo);
+  constexpr double kSigMin = 0.05;
+  constexpr double kSigMax = 1.5;
+
+  const Chain &mid = board.under.chains[board.under.chains.size() / 2];
+  const double F_mid = board.curves.forward.forward_at(mid.expiry_id);
+  double q_rep = board.r;
+  if (mid.T > 0.0 && F_mid > 0.0) {
+    q_rep = board.r - std::log(F_mid / S) / mid.T;
+  }
+
+  constexpr std::uint16_t kNK = 16;
+  constexpr std::uint16_t kNT = 8;
+  constexpr std::uint16_t kNS = 12;
+  BoardCaches bc;
+  if (auto cc = CorrectionCache::build(kNK, kNT, kNS, board.r, q_rep, k_min, k_max,
+                                       T_min, T_max, kSigMin, kSigMax, Side::Call)) {
+    bc.call = std::move(*cc);
+  }
+  if (auto pp = CorrectionCache::build(kNK, kNT, kNS, board.r, q_rep, k_min, k_max,
+                                       T_min, T_max, kSigMin, kSigMax, Side::Put)) {
+    bc.put = std::move(*pp);
+  }
+  return bc;
+}
+
+void BM_SurfaceDeAmCold(benchmark::State &state) {
+  const std::optional<SpyBoard> board = build_spy_board();
+  if (!board.has_value()) {
+    state.SkipWithError("SPY board build failed");
+    return;
+  }
+  auto surf_res =
+      VolSurface::create(1u, Parametrization::Essvi, board->under.chains.size());
+  if (!surf_res.has_value()) {
+    state.SkipWithError("VolSurface::create failed");
+    return;
+  }
+  VolSurface surface = *surf_res;
+  const CalibOpts opts = calib_default_opts();
+  const DeAmOptions deam{};  // empty caches => cold Andersen-Lake per strike
+
+  for (auto _ : state) {
+    const Status st = essvi_calib_surface(surface, board->under, board->curves, opts,
+                                          /*out_diag=*/nullptr, /*prior=*/nullptr,
+                                          /*n_workers=*/0u, &deam);
+    if (!st.has_value()) {
+      state.SkipWithError("essvi_calib_surface (deam cold) failed");
+      break;
+    }
+    benchmark::DoNotOptimize(surface.n_slices());
+    benchmark::ClobberMemory();
+  }
+  state.SetItemsProcessed(state.iterations());
+}
+
+void BM_SurfaceDeAmCached(benchmark::State &state) {
+  const std::optional<SpyBoard> board = build_spy_board();
+  if (!board.has_value()) {
+    state.SkipWithError("SPY board build failed");
+    return;
+  }
+  auto surf_res =
+      VolSurface::create(1u, Parametrization::Essvi, board->under.chains.size());
+  if (!surf_res.has_value()) {
+    state.SkipWithError("VolSurface::create failed");
+    return;
+  }
+  VolSurface surface = *surf_res;
+  const CalibOpts opts = calib_default_opts();
+
+  // Caches built ONCE, outside the timed loop (surface-fit-cadence cost).
+  const BoardCaches caches = build_board_caches(*board);
+  DeAmOptions deam{};
+  deam.caches = AmericanCorrectionCaches{&caches.call, &caches.put};
+
+  for (auto _ : state) {
+    const Status st = essvi_calib_surface(surface, board->under, board->curves, opts,
+                                          /*out_diag=*/nullptr, /*prior=*/nullptr,
+                                          /*n_workers=*/0u, &deam);
+    if (!st.has_value()) {
+      state.SkipWithError("essvi_calib_surface (deam cached) failed");
+      break;
+    }
+    benchmark::DoNotOptimize(surface.n_slices());
+    benchmark::ClobberMemory();
+  }
+  state.SetItemsProcessed(state.iterations());
+}
+
+// ── fit/slice_cold + fit/slice_warm_refit ─────────────────────────────────
+//
+// One slice's observation set, de-Americanized via the public
+// `build_observations_european` (the realistic single-slice tick-refresh
+// input), built ONCE. `essvi_fit_slice` (essvi_calib.hpp:107-110) exposes a
+// public `warm` seed parameter, so both a cold and a self-seeded warm refit
+// are registered here (no C1.6 TODO needed — the seam already exists).
+
+struct SliceFixture {
+  std::vector<FitObs> obs;
+  double T{0.0};
+  double F{0.0};
+  CalibOpts opts{};
+};
+
+[[nodiscard]] std::optional<SliceFixture> build_slice_fixture() {
+  const std::optional<SpyBoard> board = build_spy_board();
+  if (!board.has_value() || board->under.chains.empty()) {
+    return std::nullopt;
+  }
+  const std::vector<Chain> &chains = board->under.chains;
+  const std::size_t idx = std::min<std::size_t>(2u, chains.size() - 1u); // ~2m tenor
+  const Chain &c = chains[idx];
+
+  SliceFixture fx;
+  fx.T = c.T;
+  fx.F = board->curves.forward.forward_at(c.expiry_id);
+  const double df = board->curves.yield.disc(fx.T);
+  fx.opts = calib_default_opts();
+
+  auto obs_res =
+      build_observations_european(c, board->spot, board->r, fx.F, fx.T, df, fx.opts);
+  if (!obs_res.has_value() || obs_res->obs.size() < fx.opts.min_obs_per_slice) {
+    return std::nullopt;
+  }
+  fx.obs = std::move(obs_res->obs);
+  return fx;
+}
+
+void BM_SliceCold(benchmark::State &state) {
+  const std::optional<SliceFixture> fx = build_slice_fixture();
+  if (!fx.has_value()) {
+    state.SkipWithError("slice fixture build failed");
+    return;
+  }
+  for (auto _ : state) {
+    const auto fit = essvi_fit_slice(fx->obs, fx->T, fx->F, fx->opts);
+    if (!fit.has_value()) {
+      state.SkipWithError("essvi_fit_slice (cold) failed");
+      break;
+    }
+    double theta = fit->theta;
+    benchmark::DoNotOptimize(theta);
+    benchmark::ClobberMemory();
+  }
+  state.SetItemsProcessed(state.iterations()); // items = slice fits
+}
+
+void BM_SliceWarmRefit(benchmark::State &state) {
+  const std::optional<SliceFixture> fx = build_slice_fixture();
+  if (!fx.has_value()) {
+    state.SkipWithError("slice fixture build failed");
+    return;
+  }
+  const auto prior = essvi_fit_slice(fx->obs, fx->T, fx->F, fx->opts);
+  if (!prior.has_value()) {
+    state.SkipWithError("prior (seed) slice fit failed");
+    return;
+  }
+  const EssviParams warm_seed = *prior;
+
+  for (auto _ : state) {
+    const auto fit =
+        essvi_fit_slice(fx->obs, fx->T, fx->F, fx->opts, nullptr, 0.0, &warm_seed);
+    if (!fit.has_value()) {
+      state.SkipWithError("essvi_fit_slice (warm) failed");
+      break;
+    }
+    double theta = fit->theta;
+    benchmark::DoNotOptimize(theta);
+    benchmark::ClobberMemory();
+  }
+  state.SetItemsProcessed(state.iterations()); // items = slice fits
+}
+
+// ── fit/svi_slice_cold/spy_synth ──────────────────────────────────────────
+//
+// The quasi-explicit raw-SVI single-slice fit (C2.2), on the SAME de-Am'd
+// synthetic-SPY slice fixture BM_SliceCold uses, at Trading-level opts
+// (calib_default_opts()'s default optimization_level). Times `svi_fit_slice`
+// cold every iteration (the raw-SVI fitter had NO bench coverage before C2.2).
+// This is the fit-level evidence for the vectorized (u, v) basis kernel + the
+// cached inner solve.
+
+void BM_SviSliceCold(benchmark::State &state) {
+  const std::optional<SliceFixture> fx = build_slice_fixture();
+  if (!fx.has_value()) {
+    state.SkipWithError("slice fixture build failed");
+    return;
+  }
+  for (auto _ : state) {
+    const auto fit = svi_fit_slice(fx->obs, fx->T, fx->F, fx->opts);
+    if (!fit.has_value()) {
+      state.SkipWithError("svi_fit_slice (cold) failed");
+      break;
+    }
+    double b = fit->b;
+    benchmark::DoNotOptimize(b);
+    benchmark::ClobberMemory();
+  }
+  state.SetItemsProcessed(state.iterations()); // items = slice fits
+}
+
+// ── fit/american_iv/{cold,warm} ───────────────────────────────────────────
+//
+// The 16.5k-anchor-comparable case: a realistic strike-ladder x few-expiries
+// batch (25 strikes x 2 sides x 4 expiries = 200 inversions/iteration),
+// priced with a KNOWN vol so the inversion is exact-recoverable. Prices are
+// generated ONCE outside the loop with `american_price`; only
+// `american_implied_vol` is timed.
+
+struct IvTarget {
+  double S{0.0};
+  double K{0.0};
+  double T{0.0};
+  double r{0.0};
+  double q{0.0};
+  Side side{Side::Call};
+  double true_vol{0.0};
+  double price{0.0};
+};
+
+[[nodiscard]] std::vector<IvTarget> build_iv_targets() {
+  struct Expiry {
+    double T;
+    double vol;
+  };
+  // Tenors + ATM vols representative of the SPY synthetic fixture's front-end
+  // term structure (spy_fixture.hpp), independent of its exact calendar.
+  const Expiry expiries[] = {
+      {1.0 / 12.0, 0.108},
+      {2.0 / 12.0, 0.118},
+      {3.0 / 12.0, 0.128},
+      {6.0 / 12.0, 0.145},
+  };
+  constexpr double kSpot = 600.0;
+  constexpr double kRate = 0.043;
+  constexpr double kBorrow = 0.0;
+
+  std::vector<IvTarget> targets;
+  targets.reserve(4u * 25u * 2u);
+  for (const Expiry &e : expiries) {
+    for (double K = 540.0; K <= 660.0 + 1.0e-9; K += 5.0) {
+      for (const Side side : {Side::Call, Side::Put}) {
+        const auto price =
+            american_price(kSpot, K, e.T, e.vol, kRate, kBorrow, side);
+        if (!price.has_value()) {
+          continue; // skip an unpriceable corner rather than corrupt the batch
+        }
+        IvTarget t;
+        t.S = kSpot;
+        t.K = K;
+        t.T = e.T;
+        t.r = kRate;
+        t.q = kBorrow;
+        t.side = side;
+        t.true_vol = e.vol;
+        t.price = *price;
+        targets.push_back(t);
+      }
+    }
+  }
+  return targets;
+}
+
+void BM_AmericanIvCold(benchmark::State &state) {
+  const std::vector<IvTarget> targets = build_iv_targets();
+  if (targets.empty()) {
+    state.SkipWithError("IV target batch build failed");
+    return;
+  }
+  for (auto _ : state) {
+    double sink = 0.0;
+    for (const IvTarget &t : targets) {
+      const auto iv = american_implied_vol(t.price, t.S, t.K, t.T, t.r, t.q, t.side);
+      sink += iv.has_value() ? *iv : 0.0;
+    }
+    benchmark::DoNotOptimize(sink);
+    benchmark::ClobberMemory();
+  }
+  state.SetItemsProcessed(state.iterations() *
+                          static_cast<std::int64_t>(targets.size()));
+}
+
+void BM_AmericanIvWarm(benchmark::State &state) {
+  const std::vector<IvTarget> targets = build_iv_targets();
+  if (targets.empty()) {
+    state.SkipWithError("IV target batch build failed");
+    return;
+  }
+  for (auto _ : state) {
+    double sink = 0.0;
+    for (const IvTarget &t : targets) {
+      const double warm_start = t.true_vol * (1.0 + 1.0e-3); // realistic live-refresh seed
+      const auto iv = american_implied_vol(t.price, t.S, t.K, t.T, t.r, t.q, t.side,
+                                            AmericanMethod::AndersenLake, 1.0e-7, 64,
+                                            std::nullopt, nullptr, warm_start);
+      sink += iv.has_value() ? *iv : 0.0;
+    }
+    benchmark::DoNotOptimize(sink);
+    benchmark::ClobberMemory();
+  }
+  state.SetItemsProcessed(state.iterations() *
+                          static_cast<std::int64_t>(targets.size()));
+}
+
+const int kRegistered = [] {
+  apply_common(benchmark::RegisterBenchmark("fit/surface_cold/spy_synth", BM_SurfaceCold))
+      ->Unit(benchmark::kMicrosecond);
+  // Register the real-OPRA case only when the pinned fixture's parquet is
+  // actually present (source-only checkouts / CI without data/ skip cleanly
+  // rather than SkipWithError-ing a benchmark that was never meant to run).
+  // Each iteration is a whole cold surface fit on a real board (measured
+  // ~25-60ms in Release on this fixture — faster than a first estimate of
+  // ~0.3-0.5s, since kSpyFitFixtures[0]'s board is smaller than assumed) —
+  // MinTime(2s) so Repetitions(5) still lands dozens of iterations per
+  // repetition instead of just a handful.
+  if (!atx::vol::testkit::find_spy_fit_parquet(atx::vol::testkit::kSpyFitFixtures[0]).empty()) {
+    apply_common(benchmark::RegisterBenchmark("fit/surface_cold/spy_real", BM_SurfaceColdReal))
+        ->Unit(benchmark::kMicrosecond)
+        ->MinTime(2.0);
+  }
+  // C2.3 de-Am surface cases: same board + driver as fit/surface_cold, routed
+  // through the opt-in de-Americanization path (cold Andersen-Lake vs cached
+  // Black-76 + Chebyshev correction). Directly comparable to fit/surface_cold.
+  apply_common(
+      benchmark::RegisterBenchmark("fit/surface_deam_cold/spy_synth", BM_SurfaceDeAmCold))
+      ->Unit(benchmark::kMicrosecond);
+  apply_common(
+      benchmark::RegisterBenchmark("fit/surface_deam_cached/spy_synth", BM_SurfaceDeAmCached))
+      ->Unit(benchmark::kMicrosecond);
+  apply_common(benchmark::RegisterBenchmark("fit/slice_cold/spy_synth", BM_SliceCold))
+      ->Unit(benchmark::kMicrosecond);
+  apply_common(
+      benchmark::RegisterBenchmark("fit/slice_warm_refit/spy_synth", BM_SliceWarmRefit))
+      ->Unit(benchmark::kMicrosecond);
+  apply_common(benchmark::RegisterBenchmark("fit/svi_slice_cold/spy_synth", BM_SviSliceCold))
+      ->Unit(benchmark::kMicrosecond);
+  apply_common(benchmark::RegisterBenchmark("fit/american_iv/cold", BM_AmericanIvCold))
+      ->Unit(benchmark::kMicrosecond);
+  apply_common(benchmark::RegisterBenchmark("fit/american_iv/warm", BM_AmericanIvWarm))
+      ->Unit(benchmark::kMicrosecond);
+  return 0;
+}();
+
+} // namespace
+} // namespace atx::vol::bench

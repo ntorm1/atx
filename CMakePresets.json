@@ -63,6 +63,17 @@
       }
     },
     {
+      "name": "rel-avx2",
+      "inherits": "rel",
+      "displayName": "rel-avx2: Release + global /arch:AVX2 (ISA-fair perf preset, opt-in)",
+      "description": "ISA-fair perf preset: everything in `rel` (Release, clang-cl, sccache, shared deps) plus global /arch:AVX2 on C and C++ flags, so the compiler can vectorize scalar hot paths and published performance ratios are not understated by the SSE2 default. Opt-in only — the default `rel` preset stays SSE2/portable and is unaffected. Never add /fp:fast here (fast-math is banned repo-wide). Baselines produced under this preset must be named `...-avx2...`. MECHANISM — do not 'simplify' to cacheVariables: /arch:AVX2 is injected via the CFLAGS/CXXFLAGS environment variables, which CMake APPENDS to its platform default flags (/DWIN32 /D_WINDOWS /EHsc) on the first configure of a fresh build dir. Setting CMAKE_C_FLAGS/CMAKE_CXX_FLAGS as preset cacheVariables instead would REPLACE those defaults wholesale, silently dropping /EHsc (exceptions disabled -> spdlog and friends fail to compile).",
+      "binaryDir": "${sourceDir}/build-rel-avx2",
+      "environment": {
+        "CFLAGS": "/arch:AVX2",
+        "CXXFLAGS": "/arch:AVX2"
+      }
+    },
+    {
       "name": "hygiene",
       "inherits": "_base",
       "displayName": "Ninja + clang-cl, PCH OFF (include hygiene / CI nightly)",
@@ -88,6 +99,7 @@
     { "name": "dev", "configurePreset": "dev" },
     { "name": "dev-shared", "configurePreset": "dev-shared" },
     { "name": "rel", "configurePreset": "rel" },
+    { "name": "rel-avx2", "configurePreset": "rel-avx2" },
     { "name": "hygiene", "configurePreset": "hygiene" },
     { "name": "vs", "configurePreset": "vs", "configuration": "Debug" }
   ],

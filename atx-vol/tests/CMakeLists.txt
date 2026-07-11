@@ -23,6 +23,7 @@ add_executable(atx-vol-tests
     c8_test.cpp
     c8_calib_test.cpp
     essvi_calib_test.cpp
+    essvi_deam_test.cpp
     svi_calib_test.cpp
     calib_robustness_test.cpp
     cstar_test.cpp

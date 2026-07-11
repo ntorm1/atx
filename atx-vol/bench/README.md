@@ -5,7 +5,7 @@ throughput work. Nothing in the performance sprint ships without a measured
 before/after through these targets; every claimed speedup is a **ratio** against
 a checked-in baseline, verified by `compare_baseline.py`.
 
-Three targets, built only when `ATX_BUILD_BENCH=ON` (the shared, atx-wide option —
+Six targets, built only when `ATX_BUILD_BENCH=ON` (the shared, atx-wide option —
 Google Benchmark is **not** a hard atx-vol dependency):
 
 | target                    | source                          | what it measures |
@@ -13,6 +13,9 @@ Google Benchmark is **not** a hard atx-vol dependency):
 | `atx-vol-american-bench`  | `american_pricing_bench.cpp`    | route x side x API pricer matrix over a moneyness/maturity/vol grid, plus the call-slice batch path |
 | `atx-vol-portfolio-bench` | `portfolio_throughput_bench.cpp`| PricedSurface queries, `PortfolioPricer::price`/`pnl_explain`, position-scatter-only, kernel floor |
 | `atx-vol-projection-bench` | `contract_projection_bench.cpp` | scalar and prepared relative-contract projection, definition/mark/full-Greeks output, batch and thread-count scaling |
+| `atx-vol-simd-bench` | `simd_*bench.cpp` | scalar-loop vs AVX2 SoA-batch throughput for the b76 value/vega, greeks, IV-invert, eSSVI backbone, and pnl-explain kernels |
+| `atx-vol-reloc-bench` | `backtest_throughput_bench.cpp`, `american_greeks_reuse_bench.cpp`, `strangle_solver_bench.cpp` | multi-underlier backtest steps/s, FD-vs-analytic American Greeks, and the SPY strangle solver's per-eval cost breakdown (relocated out of the test suite — they measure timing, not correctness) |
+| `atx-vol-fitting-bench` | `fitting_throughput_bench.cpp`, `corpus_build_bench.cpp` | whole-surface and single-slice eSSVI calibration cost (synthetic AND one real-OPRA SPY board), the 16.5k-anchor-comparable American-IV inversion rate, and 20-board corpus build throughput |
 
 The old `examples/*.cpp` hand-timed demos are left untouched — they are human
 demos, not gates.
@@ -113,3 +116,83 @@ python bench/compare_baseline.py bench/baselines/i7-1260p-clang18-sse2-american.
 `i7-1260p-clang18-sse2`: 16 logical CPUs @ 2496 MHz, clang-cl 18 (VS 2022 LLVM),
 `library_build_type=release`, x64-default SSE2 (no AVX2 / fp:fast / LTO). The exact
 `context` block is embedded in each baseline JSON.
+
+An ISA-fair `rel-avx2` preset also exists (global `/arch:AVX2`, same clang-cl/
+sccache/shared-deps toolchain, `binaryDir=build-rel-avx2`) — see CMakePresets.json.
+Baselines produced under it are named `i7-1260p-clang18-avx2-<target>.json`
+(note `-avx2-` replacing `-sse2-`); none exist yet, and none were produced by
+this task — they become meaningful once the C1/C2 AVX2 wiring work lands.
+
+## Baselines (C0.2: reloc / simd / fitting gaps + real-OPRA fit case)
+
+`bench/baselines/i7-1260p-clang18-sse2-{reloc,simd,fitting}.json` — the three
+targets that had no baseline before C0.2 — plus a **real-OPRA** fitting case,
+`fit/surface_cold/spy_real` (pinned to `kSpyFitFixtures[0]`,
+`SPY_2026-02-12T1435Z.parquet`, registered only when the fixture parquet is
+found on disk), inside `i7-1260p-clang18-sse2-fitting.json`. Produced on the
+`i7-1260P` host above, Release, x64-default SSE2 (`rel` preset), same machine
+as the pre-existing american/portfolio/projection baselines.
+
+**CV policy**: every row checked in has CV <= 5% (single-core cases) or <= 10%
+(the one all-core case, `backtest/multiunderlier_straddle/steps`, which uses
+`->UseRealTime()` and fans out over all cores by design). `fit/surface_cold/
+spy_real` was run with `--benchmark_min_time=2s` (each cold surface fit is
+tens of ms, so the default budget under-samples it) — pass the same flag when
+regenerating.
+
+**Machine was NOT quiescent for most of this measurement session** — a
+concurrent Debug `atx-vol-tests.exe` run (and, briefly, another worktree's
+Release compile) from a different Claude Code agent shared the same physical
+box for long stretches, and even confirmed process-level quiescence
+(`ninja`/`cl`/`clang-cl`/test-exe all absent) did not guarantee a clean run:
+the i7-1260P's hybrid P/E-core scheduling and lack of frequency pinning meant
+consecutive "quiet" runs still swung by 2-4x in places. Each of the three exes
+was run repeatedly (4-6 full runs, plus a few `--benchmark_filter`-narrowed
+retries for the slow `spy_real` case) and **only the rows whose CV held <=5%
+on their best run, AND which did not produce a false REGRESS on a subsequent
+independent self-gate rerun, were kept.** Everything else was excluded
+(ungated) rather than checked in noisy — see the row lists below. Re-running
+`compare_baseline.py` for any of the three files against a fresh rerun on this
+machine should therefore be expected to print `NOISY` (never `REGRESS`) for
+every gated row; that is the honest state of this host during this session,
+not a defect in the rows themselves (each was independently confirmed
+REGRESS-free against two separate fresh reruns before being checked in).
+
+Rows checked in (gated, CV shown from the run that was kept):
+
+| baseline | run_name | CV |
+|---|---|---|
+| reloc | `backtest/multiunderlier_straddle/steps` (all-core) | 3.38% |
+| reloc | `strangle/eval/greeks` | 4.35% |
+| reloc | `american_greeks/fd_warm` | 2.92% |
+| simd | `simd/pnl_explain/avx2` | 2.40% |
+| fitting | `corpus/build_20boards` | 2.86% |
+| fitting | `fit/surface_cold/spy_synth` | 1.93% |
+| fitting | `fit/surface_cold/spy_real` | 3.17% |
+
+Rows excluded (ungated/noisy — CV never held <=5% [<=10% all-core] across
+repeated retries on this machine, or (simd `scalar_autovec`) produced a
+false REGRESS on a self-gate rerun despite a clean capture CV; re-measure on
+a quieter box before relying on these):
+
+- reloc: `american_greeks/fd_ref`, `american_greeks/fd_fast`,
+  `american_greeks/andersen_lake`, `strangle/eval/delta`,
+  `strangle/eval/resolve`, `strangle/eval/vega`
+- simd: `simd/pnl_explain/scalar_novec`, `simd/pnl_explain/scalar_autovec`,
+  `simd/b76_value_vega/{scalar,avx2}`, `simd/b76_greeks/{scalar,avx2}`,
+  `simd/essvi_backbone/{scalar,avx2}`, `simd/iv_invert/{scalar,avx2}`
+- fitting: `fit/slice_cold/spy_synth`, `fit/slice_warm_refit/spy_synth`,
+  `fit/american_iv/{cold,warm}`
+
+### QUARANTINE: `port/price/greeks/u2688/*` (portfolio baseline)
+
+`i7-1260p-clang18-sse2-portfolio.json` has had its `port/price/greeks/u2688/*`
+scaling-row family (16 run_names: `r{1,10,100,1000}/t{1,2,4,8}`) **removed**.
+Those rows measured median 23.1 s @ CV 40% for `r1/t1` alone — 11x the
+row's own kernel floor (`port/floor/greeks/u2688` = 2.03 s) — physically
+impossible, and `compare_baseline.py` refuses to gate CV>5% rows anyway, so
+the family was ungated in practice already. The `port/floor/*` rows and every
+other `u2688` family (`prices_only`, `analytic`, `pnl_explain`,
+`scatter_only`) are untouched. The re-take is owned by the 07-11 sprint's
+C0.1 task, after a backtest rewiring; until then `port/price/greeks/u2688/*`
+has no baseline claim.

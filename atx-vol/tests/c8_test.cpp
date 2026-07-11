@@ -3,6 +3,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 
 #include "atx/vol/c8.hpp"
 #include "atx/vol/vol_surface.hpp"  // EssviParams, essvi_backbone_w
@@ -24,6 +25,7 @@ using atx::vol::c8_basis_atm;
 using atx::vol::c8_basis_left;
 using atx::vol::c8_basis_right;
 using atx::vol::c8_jw_to_raw;
+using atx::vol::c8_jw_to_raw_jac;
 using atx::vol::c8_min_roper_g;
 using atx::vol::c8_raw_svi_w;
 using atx::vol::c8_raw_to_jw;
@@ -171,6 +173,103 @@ TEST(C8Jw, JwToRaw_MinimumAtAtm_UsesSigmaFloor) {
   ASSERT_TRUE(raw.has_value());
   EXPECT_NEAR(raw->m, 0.0, 1e-15);
   EXPECT_NEAR(raw->sigma, 1e-4, 1e-15);
+}
+
+// Analytic JW->raw Jacobian d(a,b,rho,m,sigma)/d(v,psi,p,c,v_min) vs central
+// finite differences of c8_jw_to_raw. Generic admissible points are built by
+// round-tripping moderate raw-SVI tuples through c8_raw_to_jw so the recovered
+// smile sits well away from every branch boundary (no active rho/beta/sigma
+// clamp, non-degenerate m, denom O(0.1+)). Mirrors
+// EssviCubeGrad.MatchesCentralFiniteDifference.
+TEST(C8JwToRawJac, MatchesCentralFiniteDifference) {
+  const double T = 0.25;
+  const double sf = 1e-4;
+
+  // Moderate raw tuples (a,b,rho,m,sigma): |alpha|=|sigma/m| ~ O(1) and varied
+  // rho keep denom away from 0 and v-v_min ~ O(1e-2), so central FD is clean.
+  const std::array<C8RawSvi, 5> raws{{
+      {0.02, 0.40, -0.30, -0.15, 0.15},
+      {0.03, 0.35, 0.25, 0.20, 0.16},
+      {0.05, 0.50, -0.40, 0.18, 0.12},
+      {0.04, 0.45, 0.35, -0.20, 0.22},
+      {0.06, 0.30, -0.50, 0.25, 0.10},
+  }};
+
+  double max_rel = 0.0;
+  for (const C8RawSvi& raw : raws) {
+    const auto jw = c8_raw_to_jw(raw, T);
+    ASSERT_TRUE(jw.has_value());
+    const auto jac = c8_jw_to_raw_jac(*jw, T, sf);
+    ASSERT_TRUE(jac.has_value());
+
+    C8Jw base = *jw;
+    double* col[5] = {&base.v, &base.psi, &base.p, &base.c, &base.v_min};
+    for (std::size_t j = 0; j < 5; ++j) {
+      const double saved = *col[j];
+      const double h = 1e-6 * (std::fabs(saved) + 1.0);
+      *col[j] = saved + h;
+      const auto rp = c8_jw_to_raw(base, T, sf);
+      *col[j] = saved - h;
+      const auto rm = c8_jw_to_raw(base, T, sf);
+      *col[j] = saved;
+      ASSERT_TRUE(rp.has_value());
+      ASSERT_TRUE(rm.has_value());
+      const double inv = 1.0 / (2.0 * h);
+      const std::array<double, 5> fd{
+          (rp->a - rm->a) * inv,     (rp->b - rm->b) * inv,
+          (rp->rho - rm->rho) * inv, (rp->m - rm->m) * inv,
+          (rp->sigma - rm->sigma) * inv};
+      for (std::size_t i = 0; i < 5; ++i) {
+        const double an = (*jac)[i][j];
+        const double scale = std::max(std::fabs(fd[i]), 1.0);
+        const double rel = std::fabs(an - fd[i]) / scale;
+        max_rel = std::max(max_rel, rel);
+        EXPECT_LT(rel, 1e-8) << "raw{" << raw.a << "} partial d raw[" << i
+                             << "]/d jw[" << j << "] analytic=" << an
+                             << " fd=" << fd[i];
+      }
+    }
+  }
+  std::printf("[ c8_jw_to_raw_jac ] worst FD-vs-analytic rel error = %.3e\n",
+              max_rel);
+  EXPECT_LT(max_rel, 1e-8);
+}
+
+// sigma-floor clamp ACTIVE (non-degenerate m): v-v_min tiny-but-nonzero drives
+// sigma = alpha*m below sigma_floor, pinning sigma to the constant floor. The
+// documented convention is a zero sigma-row (row 4). m stays a real DoF.
+TEST(C8JwToRawJac, SigmaFloorClamp_ZerosSigmaRow) {
+  const double T = 0.25;
+  const double sf = 1e-4;
+  // b=0.4, rho=0, beta=0.05 (non-degenerate); v-v_min=5e-8 (> 1e-12) so the
+  // non-degenerate branch runs, yet sigma = alpha*m ~ 1e-4- gets floored.
+  const C8Jw jw{0.04, -0.01, 0.4, 0.4, 0.04 - 5e-8};
+  const auto raw = c8_jw_to_raw(jw, T, sf);
+  ASSERT_TRUE(raw.has_value());
+  EXPECT_NEAR(raw->sigma, sf, 1e-18);  // clamp actually active
+  const auto jac = c8_jw_to_raw_jac(jw, T, sf);
+  ASSERT_TRUE(jac.has_value());
+  for (std::size_t j = 0; j < 5; ++j) {
+    EXPECT_EQ((*jac)[4][j], 0.0) << "sigma-row col " << j;
+  }
+}
+
+// Degenerate-m branch (v == v_min): m and sigma are both constants (0,
+// sigma_floor) -> rows 3 and 4 are identically zero.
+TEST(C8JwToRawJac, DegenerateM_ZerosMAndSigmaRows) {
+  const double T = 0.25;
+  const double sf = 1e-4;
+  const C8Jw jw{0.04, 0.0, 0.2, 0.2, 0.04};  // v == v_min
+  const auto raw = c8_jw_to_raw(jw, T, sf);
+  ASSERT_TRUE(raw.has_value());
+  EXPECT_EQ(raw->m, 0.0);
+  EXPECT_EQ(raw->sigma, sf);
+  const auto jac = c8_jw_to_raw_jac(jw, T, sf);
+  ASSERT_TRUE(jac.has_value());
+  for (std::size_t j = 0; j < 5; ++j) {
+    EXPECT_EQ((*jac)[3][j], 0.0) << "m-row col " << j;
+    EXPECT_EQ((*jac)[4][j], 0.0) << "sigma-row col " << j;
+  }
 }
 
 TEST(C8Jw, SeedFromEssvi_AtSampleKnots_MatchesEssvi) {

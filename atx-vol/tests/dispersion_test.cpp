@@ -65,6 +65,12 @@ constexpr double kW1 = 0.4;
   return ba == bb;
 }
 
+[[nodiscard]] std::uint64_t hexbits(double a) noexcept {
+  std::uint64_t b = 0;
+  std::memcpy(&b, &a, sizeof b);
+  return b;
+}
+
 // Relative-tolerance closeness (avoids fragile fp-associativity assumptions).
 [[nodiscard]] bool close(double a, double b, double rel = 1e-9) noexcept {
   return std::fabs(a - b) <= rel * (std::fabs(a) + std::fabs(b) + 1e-300);
@@ -273,6 +279,88 @@ TEST(Dispersion, Book_IsVegaNeutral) {
 
   std::printf("[dispersion] n_names=%zu book_vega_idx=%.2f book_vega_names=%.2f\n",
               book->name_legs.size(), v.index, v.names);
+}
+
+// Prints the exact-bit anchors of the Book_IsVegaNeutral fixture's leg fields so
+// C1.7's pinned bit-identity test (below) can be captured against the PRE-change
+// `resolve_leg` (two full greeks_analytic bundles). Always succeeds; the values
+// are read from stdout. See task-c1.7-report.md for the capture record.
+TEST(Dispersion, PrintBookHexAnchors_C1_7) {
+  const std::vector<PricedSurface> surfaces = build_surfaces();
+  auto set = SurfaceSet::create(as_ptrs(surfaces));
+  ASSERT_TRUE(set.has_value()) << set.error().to_string();
+  const DispersionUniverse u = make_universe();
+
+  DispersionConfig cfg;
+  auto book = build_dispersion_book(u, *set, cfg);
+  ASSERT_TRUE(book.has_value()) << book.error().to_string();
+  const BucketedVega v = price_bucketed_vega(*book, *set, u.index.uid);
+
+  const auto print_leg = [](const char *name, const DispersionLeg &leg) {
+    std::printf("[c1.7-anchor] %s K=%016llx T=%016llx sigma=%016llx vega=%016llx "
+                "qty=%016llx call=%016llx put=%016llx\n",
+                name, static_cast<unsigned long long>(hexbits(leg.K)),
+                static_cast<unsigned long long>(hexbits(leg.T)),
+                static_cast<unsigned long long>(hexbits(leg.sigma)),
+                static_cast<unsigned long long>(hexbits(leg.straddle_vega)),
+                static_cast<unsigned long long>(hexbits(leg.straddle_qty)),
+                static_cast<unsigned long long>(hexbits(leg.call_mark)),
+                static_cast<unsigned long long>(hexbits(leg.put_mark)));
+  };
+  print_leg("index", book->index_leg);
+  print_leg("name0", book->name_legs[0]);
+  print_leg("name1", book->name_legs[1]);
+  std::printf("[c1.7-anchor] totals book_vega_idx=%016llx book_vega_names=%016llx\n",
+              static_cast<unsigned long long>(hexbits(v.index)),
+              static_cast<unsigned long long>(hexbits(v.names)));
+  SUCCEED();
+}
+
+// C1.7: dispersion book build stops paying two full 8-Greek AmericanGreeks
+// bundles per leg (resolve_leg previously called greeks_analytic() for Call and
+// Put and read only .vega/.price) and instead resolves price + vega directly.
+// Every DispersionLeg field and the book's re-priced vega totals must be
+// EXACTLY the values the OLD (two-full-bundle) `resolve_leg` produced — these
+// hex literals were captured PRE-rewire via Dispersion.PrintBookHexAnchors_C1_7
+// on the unchanged source (see task-c1.7-report.md for the capture record).
+TEST(Dispersion, BookBitIdenticalAfterVegaOnlyResolve) {
+  const std::vector<PricedSurface> surfaces = build_surfaces();
+  auto set = SurfaceSet::create(as_ptrs(surfaces));
+  ASSERT_TRUE(set.has_value()) << set.error().to_string();
+  const DispersionUniverse u = make_universe();
+
+  DispersionConfig cfg;
+  auto book = build_dispersion_book(u, *set, cfg);
+  ASSERT_TRUE(book.has_value()) << book.error().to_string();
+  ASSERT_EQ(book->name_legs.size(), 2u);
+
+  const auto check_leg = [](const DispersionLeg &leg, std::uint64_t K, std::uint64_t T,
+                            std::uint64_t sigma, std::uint64_t vega, std::uint64_t qty,
+                            std::uint64_t call, std::uint64_t put) {
+    EXPECT_EQ(hexbits(leg.K), K);
+    EXPECT_EQ(hexbits(leg.T), T);
+    EXPECT_EQ(hexbits(leg.sigma), sigma);
+    EXPECT_EQ(hexbits(leg.straddle_vega), vega);
+    EXPECT_EQ(hexbits(leg.straddle_qty), qty);
+    EXPECT_EQ(hexbits(leg.call_mark), call);
+    EXPECT_EQ(hexbits(leg.put_mark), put);
+  };
+  check_leg(book->index_leg, 0x407f5c51d2bceddbULL, 0x3fb506d56bc305c8ULL, 0x3fd0e0e48137006aULL,
+            0x405c8853a88e8744ULL, 0xbfec09c5e6b91033ULL, 0x402e250ae5028bf2ULL,
+            0x402e67c5f0eb5355ULL);
+  check_leg(book->name_legs[0], 0x405916a7da5ba791ULL, 0x3fb506d56bc305c8ULL, 0x3fd227b3ae684566ULL,
+            0x4036d39f72a513d7ULL, 0x4005072e5c122dbaULL, 0x4009f057ca5f9ad2ULL,
+            0x400a24cb50b7d72fULL);
+  check_leg(book->name_legs[1], 0x405e1b2fcf6f17e7ULL, 0x3fb506d56bc305c8ULL, 0x3fd4b604b040fa82ULL,
+            0x403b641436888523ULL, 0x3ff75d8a93c028f1ULL, 0x4011c0c121292770ULL,
+            0x4011df4dd59b09bfULL);
+
+  // Book totals: re-price the emitted positions and bucket vega by uid (the
+  // SAME independent cross-check Book_IsVegaNeutral runs) — an end-to-end
+  // pin on top of the per-leg field pins above.
+  const BucketedVega v = price_bucketed_vega(*book, *set, u.index.uid);
+  EXPECT_EQ(hexbits(v.index), 0xc0c3880000000000ULL);
+  EXPECT_EQ(hexbits(v.names), 0x40c3880000000000ULL);
 }
 
 TEST(Dispersion, ProjectedBookUsesOneConcreteCalendarExpiry) {

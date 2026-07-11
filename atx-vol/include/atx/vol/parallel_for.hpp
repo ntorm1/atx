@@ -28,6 +28,7 @@
 #include <cstdlib>
 #include <system_error>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 namespace atx::vol {
@@ -146,6 +147,51 @@ template <class F> void parallel_for_dynamic(std::size_t n, unsigned n_threads, 
           break;
         }
         fn(i);
+      }
+    });
+  }
+}
+
+// Worker-id overload of the dynamic fan-out: `fn` is invoked as
+// `fn(index, worker_id)` with `worker_id` in [0, nt). This is ADDITIVE — the
+// single-argument overload above is unchanged; the constraint below (fn must be
+// invocable with a trailing worker id) is strictly more constrained, so a
+// one-argument callable still binds to the original and only a two-argument
+// callable selects this one (partial ordering picks the constrained template).
+//
+// The worker id is the seam for per-worker scratch: a caller that pre-sizes a
+// `scratch[nt]` array can index `scratch[worker_id]` race-free, because each
+// worker id is owned by exactly one std::jthread for the fan-out's lifetime.
+// Determinism is preserved exactly as in the single-argument overload — the id
+// changes only WHICH thread claims a slot, never the per-slot result, so long
+// as `fn` writes only slot `index` after pure reads of shared inputs.
+template <class F>
+  requires std::is_invocable_v<F&, std::size_t, unsigned>
+void parallel_for_dynamic(std::size_t n, unsigned n_threads, F&& fn) {
+  if (n == 0) {
+    return;
+  }
+  unsigned nt = n_threads == 0 ? atx_auto_worker_count() : n_threads;
+  if (nt > n) {
+    nt = static_cast<unsigned>(n);
+  }
+  if (nt <= 1u) {
+    for (std::size_t i = 0; i < n; ++i) {
+      fn(i, 0u);
+    }
+    return;
+  }
+  std::atomic<std::size_t> next{0};
+  std::vector<std::jthread> workers;
+  workers.reserve(nt);
+  for (unsigned t = 0; t < nt; ++t) {
+    workers.emplace_back([n, t, &next, &fn] {
+      for (;;) {
+        const std::size_t i = next.fetch_add(1, std::memory_order_relaxed);
+        if (i >= n) {
+          break;
+        }
+        fn(i, t);
       }
     });
   }
