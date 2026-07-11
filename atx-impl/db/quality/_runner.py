@@ -30,6 +30,7 @@ from ._types import (
     SEVERITY_RANK,
     Severity,
 )
+from .checks_survivorship import survivorship_dqc_results
 
 
 def summarize_quality_gate(dataset_id: str, results: Iterable[QualityResult]) -> GateResult:
@@ -206,6 +207,19 @@ def run_warehouse_quality_checks(
 
     schema_results.extend(
         signal_eval_dqc_results(
+            store,
+            registry=registry,
+            requested_checks=requested_checks,
+            requested_datasets=requested_datasets,
+            checked_at=checked_at,
+        )
+    )
+
+    # PF4-S4 S4-3: survivorship-drop critical check + DLSTCD-recon error check (registered as data
+    # in quality_check_registry by migration 0188). Same lazy existence-gated shape as the
+    # signal_eval hook above so the sweep can actually halt on a survivor-biased forward-return panel.
+    schema_results.extend(
+        survivorship_dqc_results(
             store,
             registry=registry,
             requested_checks=requested_checks,

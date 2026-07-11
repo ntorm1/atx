@@ -120,6 +120,42 @@ struct AlOpts {
                                               std::span<double> price_out,
                                               const std::optional<AlOpts> &opts = std::nullopt);
 
+// ── Cross-strike put-slice pricer (one boundary, many strikes) ───────────
+//
+// Price MANY American PUT strikes at a fixed (S, T, r, q, sigma) reusing a
+// SINGLE early-exercise boundary solve, via strike HOMOGENEITY. The American
+// put is homogeneous of degree one in (S, K): P(S,K,...) = K·P(S/K,1,...), and
+// its exercise boundary scales linearly with strike, b(τ;K) = K·b̃(τ). The
+// solver stores the boundary in the K-independent coordinate y = (log(b/xmax))²
+// with xmax = K·min(1,r/q), so a boundary solved at ONE reference strike is
+// reused for every K_i by rescaling only (K, xmax) and re-running the cheap
+// premium quadrature + European leg. One cold boundary solve serves the slice.
+//
+// UNLIKE the call slice (whose internal put has a FIXED strike Kp = S, so it is
+// BIT-IDENTICAL to per-strike andersen_lake), the put boundary is only
+// homogeneity-invariant in EXACT arithmetic: the sweep kernels carry b.K in
+// absolute (non-ratio) terms, so a reference-strike boundary reused at another
+// strike differs from a fresh per-strike solve by a few ULP (measured — see
+// american.cpp). price_out[i] therefore matches andersen_lake(S, strikes[i], T,
+// sigma, r, q, Side::Put, opts) to ~a few ULP (bit-identical AT the reference
+// strike), NOT bit-for-bit across the whole ladder. Regimes route identically
+// to andersen_lake (degenerate T~0/sigma~0 -> put intrinsic max(K_i-S,0);
+// European r<=0&&r<=q -> Black-76 put per strike; Unsupported -> NotImplemented).
+//
+// This is the batch throughput lever for anything that prices many put strikes
+// at one sigma (put portfolio ladders, the sigma-Chebyshev boundary primitive):
+// an n_strikes-fold cut in boundary solves.
+//
+// @return InvalidArgument — S <= 0, negative T/sigma, a non-positive strike, or a
+//                           span-length mismatch
+//         NotImplemented  — the double-continuation regime (q < r <= 0), or the
+//                           negative-carry corner where the asymptotic boundary
+//                           collapses (matches `andersen_lake`)
+[[nodiscard]] Status andersen_lake_put_slice(
+    double S, std::span<const double> strikes, double T, double sigma, double r,
+    double q, std::span<double> price_out,
+    const std::optional<AlOpts>& opts = std::nullopt);
+
 // Barone-Adesi-Whaley American approximation.
 //
 // @param max_iter critical-price root-find iteration cap (0 -> 16)
