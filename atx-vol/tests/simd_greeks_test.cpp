@@ -15,8 +15,10 @@
 #include "atx/vol/greeks.hpp"
 #include "atx/vol/simd/cpu.hpp"
 
+#include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -164,6 +166,169 @@ TEST(SimdBlack76GreeksBatch, ZeroLengthIsNoOp) {
                              nullptr, nullptr, &gsentinel, &psentinel, 0);
   EXPECT_EQ(gsentinel.delta, 42.0);
   EXPECT_EQ(psentinel, 7.0);
+}
+
+// ── P3.4 SoA output: pure layout, bit-identical to the AoS entry ──────────
+//
+// black76_greeks_batch_soa and black76_greeks_batch share ONE vector core, so the
+// SoA per-greek columns must equal the AoS Greeks[] field-for-field BIT-for-bit
+// (EXPECT_EQ, not a tolerance) — the whole point of the reshape. This straddles a
+// full SIMD group, the scalar tail, and the patched degenerate/deep-wing lanes.
+TEST(B76GreeksSoA, MatchesAoSBitIdentical) {
+  const Batch b = make_grid();
+  const std::size_t n = b.size();
+
+  std::vector<Greeks> aos(n);
+  std::vector<double> aos_px(n, 0.0);
+  simd::black76_greeks_batch(b.F.data(), b.K.data(), b.T.data(), b.sigma.data(),
+                             b.r.data(), b.df.data(), b.side.data(), aos.data(),
+                             aos_px.data(), n);
+
+  std::vector<double> dl(n), gm(n), vg(n), th(n), rh(n), vn(n), vl(n), cm(n),
+      px(n);
+  simd::GreeksBatchSoA soa{dl.data(), gm.data(), vg.data(), th.data(),
+                           rh.data(), vn.data(), vl.data(), cm.data(),
+                           px.data()};
+  simd::black76_greeks_batch_soa(b.F.data(), b.K.data(), b.T.data(),
+                                 b.sigma.data(), b.r.data(), b.df.data(),
+                                 b.side.data(), soa, n);
+
+  for (std::size_t i = 0; i < n; ++i) {
+    EXPECT_EQ(dl[i], aos[i].delta) << "i=" << i;
+    EXPECT_EQ(gm[i], aos[i].gamma) << "i=" << i;
+    EXPECT_EQ(vg[i], aos[i].vega) << "i=" << i;
+    EXPECT_EQ(th[i], aos[i].theta) << "i=" << i;
+    EXPECT_EQ(rh[i], aos[i].rho) << "i=" << i;
+    EXPECT_EQ(vn[i], aos[i].vanna) << "i=" << i;
+    EXPECT_EQ(vl[i], aos[i].volga) << "i=" << i;
+    EXPECT_EQ(cm[i], aos[i].charm) << "i=" << i;
+    EXPECT_EQ(px[i], aos_px[i]) << "i=" << i;
+  }
+}
+
+// A null column is skipped; the requested columns still match AoS exactly.
+TEST(B76GreeksSoA, NullColumnsSkipped) {
+  const Batch b = make_grid();
+  const std::size_t n = b.size();
+
+  std::vector<Greeks> aos(n);
+  std::vector<double> aos_px(n, 0.0);
+  simd::black76_greeks_batch(b.F.data(), b.K.data(), b.T.data(), b.sigma.data(),
+                             b.r.data(), b.df.data(), b.side.data(), aos.data(),
+                             aos_px.data(), n);
+
+  constexpr double kSentinel = -123456.0;
+  std::vector<double> dl(n, kSentinel), vg(n, kSentinel), px(n, kSentinel);
+  simd::GreeksBatchSoA soa; // all null
+  soa.delta = dl.data();
+  soa.vega = vg.data();
+  soa.price = px.data();
+  simd::black76_greeks_batch_soa(b.F.data(), b.K.data(), b.T.data(),
+                                 b.sigma.data(), b.r.data(), b.df.data(),
+                                 b.side.data(), soa, n);
+
+  for (std::size_t i = 0; i < n; ++i) {
+    EXPECT_EQ(dl[i], aos[i].delta) << "i=" << i;
+    EXPECT_EQ(vg[i], aos[i].vega) << "i=" << i;
+    EXPECT_EQ(px[i], aos_px[i]) << "i=" << i;
+  }
+}
+
+TEST(B76GreeksSoA, EveryTailResidueMatchesAoS) {
+  const Batch full = make_grid();
+  for (std::size_t n = 1; n <= 11; ++n) {
+    std::vector<Greeks> aos(n);
+    std::vector<double> aos_px(n, 0.0);
+    simd::black76_greeks_batch(full.F.data(), full.K.data(), full.T.data(),
+                               full.sigma.data(), full.r.data(), full.df.data(),
+                               full.side.data(), aos.data(), aos_px.data(), n);
+    std::vector<double> dl(n), gm(n), vg(n), th(n), rh(n), vn(n), vl(n), cm(n),
+        px(n);
+    simd::GreeksBatchSoA soa{dl.data(), gm.data(), vg.data(), th.data(),
+                             rh.data(), vn.data(), vl.data(), cm.data(),
+                             px.data()};
+    simd::black76_greeks_batch_soa(full.F.data(), full.K.data(), full.T.data(),
+                                   full.sigma.data(), full.r.data(),
+                                   full.df.data(), full.side.data(), soa, n);
+    for (std::size_t i = 0; i < n; ++i) {
+      EXPECT_EQ(dl[i], aos[i].delta) << "n=" << n << " i=" << i;
+      EXPECT_EQ(px[i], aos_px[i]) << "n=" << n << " i=" << i;
+    }
+  }
+}
+
+TEST(B76GreeksSoA, ZeroLengthIsNoOp) {
+  double sentinel = 42.0;
+  simd::GreeksBatchSoA soa;
+  soa.price = &sentinel;
+  simd::black76_greeks_batch_soa(nullptr, nullptr, nullptr, nullptr, nullptr,
+                                 nullptr, nullptr, soa, 0);
+  EXPECT_EQ(sentinel, 42.0);
+}
+
+// Homogeneous-batch speedup of the SoA vector path vs a scalar per-contract loop.
+// The ≥2.0× P3 gate is read from the build-rel run of this test; Debug records the
+// ratio and only sanity-checks parity.
+TEST(B76GreeksSoA, Speedup) {
+  if (!simd::have_avx2()) {
+    GTEST_SKIP() << "no AVX2 on this host";
+  }
+  constexpr std::size_t kN = 8192;
+  std::vector<double> F(kN), K(kN), T(kN), sigma(kN), r(kN), df(kN);
+  std::vector<Side> side(kN);
+  for (std::size_t i = 0; i < kN; ++i) {
+    const double m = 0.80 + 0.40 * static_cast<double>(i % 29) / 29.0;
+    const double v = 0.12 + 0.30 * static_cast<double>(i % 19) / 19.0;
+    F[i] = 100.0;
+    K[i] = 100.0 * m;
+    T[i] = 0.5 + static_cast<double>(i % 7) * 0.1;
+    sigma[i] = v;
+    r[i] = 0.03;
+    df[i] = std::exp(-0.03 * T[i]);
+    side[i] = (i & 1u) ? Side::Put : Side::Call;
+  }
+  std::vector<double> dl(kN), gm(kN), vg(kN), th(kN), rh(kN), vn(kN), vl(kN),
+      cm(kN), px(kN);
+  simd::GreeksBatchSoA soa{dl.data(), gm.data(), vg.data(), th.data(),
+                           rh.data(), vn.data(), vl.data(), cm.data(),
+                           px.data()};
+
+  auto time_soa = [&]() {
+    simd::black76_greeks_batch_soa(F.data(), K.data(), T.data(), sigma.data(),
+                                   r.data(), df.data(), side.data(), soa, kN);
+    constexpr int reps = 50;
+    const auto t0 = std::chrono::steady_clock::now();
+    for (int rr = 0; rr < reps; ++rr) {
+      simd::black76_greeks_batch_soa(F.data(), K.data(), T.data(), sigma.data(),
+                                     r.data(), df.data(), side.data(), soa, kN);
+    }
+    const auto t1 = std::chrono::steady_clock::now();
+    return std::chrono::duration<double>(t1 - t0).count() / reps;
+  };
+  auto time_scalar = [&]() {
+    constexpr int reps = 50;
+    volatile double sink = 0.0;
+    const auto t0 = std::chrono::steady_clock::now();
+    for (int rr = 0; rr < reps; ++rr) {
+      for (std::size_t i = 0; i < kN; ++i) {
+        const Black76Greeks g = black76_greeks(F[i], K[i], T[i], sigma[i], r[i],
+                                               df[i], side[i]);
+        sink += g.price + g.greeks.delta;
+      }
+    }
+    const auto t1 = std::chrono::steady_clock::now();
+    (void)sink;
+    return std::chrono::duration<double>(t1 - t0).count() / reps;
+  };
+
+  const double tv = time_soa();
+  const double ts = time_scalar();
+  const double speedup = ts / tv;
+  std::printf("[B76GreeksSoA] speedup=%.3fx  scalar=%.3f ms  soa=%.3f ms  "
+              "(n=%zu)\n",
+              speedup, ts * 1e3, tv * 1e3, kN);
+  RecordProperty("speedup_milli", static_cast<int>(speedup * 1000));
+  EXPECT_GT(speedup, 0.0);
 }
 
 } // namespace

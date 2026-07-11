@@ -26,11 +26,49 @@
 
 namespace atx::vol::simd {
 
-// Black-76 Greeks + premium for each contract:
+// ── SoA output view (P3.4) ────────────────────────────────────────────────
+//
+// The NATURAL vector output shape: nine independent per-greek columns, each of
+// length n, instead of the AoS `Greeks[]`. A null column pointer is SKIPPED —
+// the vector core computes every field but stores only the requested ones, which
+// is how a GreekFieldMask selects columns without a second pass. Columns must not
+// alias the inputs or each other.
+//
+// This is the shape `black76_greeks_batch_soa` writes DIRECTLY (no AoS scatter),
+// and the shape `american_greeks_batch` (american_batch.hpp) fills for its SoA
+// risk surface. Non-owning by design (trivially copyable), so both the noexcept
+// SIMD kernel and a higher-level owning container can hand it the same view.
+struct GreeksBatchSoA {
+  double* delta{nullptr};
+  double* gamma{nullptr};
+  double* vega{nullptr};
+  double* theta{nullptr};
+  double* rho{nullptr};
+  double* vanna{nullptr};
+  double* volga{nullptr};
+  double* charm{nullptr};
+  double* price{nullptr};
+};
+
+// Black-76 Greeks + premium, computed DIRECTLY into the per-greek SoA columns of
+// `out` (the vectorized-risk hot path's native output — no AoS scatter):
+//   out.delta[i] = black76_greeks(F[i],...).greeks.delta, etc.
+// Bit-identical to black76_greeks_batch field-for-field: the AoS entry below and
+// this SoA entry share ONE AVX2 vector core, differing only in the final scatter.
+// A null column in `out` is not written. Degenerate/deep-wing lanes patch through
+// the exact scalar kernel. noexcept + allocation-free; n == 0 is a no-op.
+void black76_greeks_batch_soa(const double* F, const double* K, const double* T,
+                              const double* sigma, const double* r,
+                              const double* df, const Side* side,
+                              const GreeksBatchSoA& out, std::size_t n) noexcept;
+
+// Black-76 Greeks + premium for each contract (AoS output):
 //   {greeks_out[i], price_out[i]} = black76_greeks(F[i], K[i], T[i], sigma[i],
 //                                                   r[i], df[i], side[i]).
-// Degenerate (T <= 0 or sigma <= 0) collapses to the intrinsic-step delta with
-// the other Greeks zero, exactly as the scalar kernel.
+// A thin scatter over the shared vector core (see black76_greeks_batch_soa) —
+// byte-for-byte identical to the pre-SoA kernel. Degenerate (T <= 0 or sigma <= 0)
+// collapses to the intrinsic-step delta with the other Greeks zero, exactly as the
+// scalar kernel.
 void black76_greeks_batch(const double* F, const double* K, const double* T,
                           const double* sigma, const double* r,
                           const double* df, const Side* side,
