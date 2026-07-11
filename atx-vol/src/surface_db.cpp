@@ -612,6 +612,21 @@ decode_partitions(std::span<const DbPartitionRecord> recs) {
   return out;
 }
 
+// Decode a manifest's symbol records back into writer-input form -- shared by
+// every partition mutation, which must round-trip the untouched symbol table
+// through persist_locked alongside the partition edit (partitions() and the
+// symbol table are orthogonal namespaces; see surface_db.hpp).
+[[nodiscard]] std::vector<DbSymbolEntry>
+decode_symbol_entries(std::span<const DbSymbolRecord> recs) {
+  std::vector<DbSymbolEntry> out;
+  out.reserve(recs.size());
+  for (const DbSymbolRecord &rec : recs) {
+    out.push_back(
+        DbSymbolEntry{std::string_view(rec.symbol, rec.symbol_len), decode_symbol_record(rec)});
+  }
+  return out;
+}
+
 } // namespace
 
 // ── SurfaceDb: create/open ──────────────────────────────────────────────
@@ -806,6 +821,114 @@ Status SurfaceDb::refresh() {
     return Err(parsed.error());
   }
   snapshot_ = std::make_shared<const DbManifest>(std::move(*parsed));
+  return Ok();
+}
+
+// ── SurfaceDb: partition IO ────────────────────────────────────────────────
+
+std::string SurfaceDb::partition_path(std::string_view canonical_key) const {
+  return (std::filesystem::path(root_) / std::string(kSurfaceDbPartitionDir) /
+          (std::string(canonical_key) + std::string(kSurfaceDbPartitionExt)))
+      .string();
+}
+
+Status SurfaceDb::write_partition(std::string_view key, std::span<const SurfaceArchiveItem> items,
+                                  const SurfaceArchiveWriteOpts &opts) {
+  auto canon = canonicalize_key(key);
+  if (!canon) {
+    return Err(canon.error());
+  }
+  const std::string path = partition_path(*canon);
+
+  // The archive write is itself atomic (tmp+rename, see write_surface_archive_file);
+  // do it BEFORE touching the manifest so a failed/interrupted archive write
+  // (e.g. empty `items` -> InvalidArgument) never advances the partition index.
+  auto wrote = write_surface_archive_file(path, items, opts);
+  if (!wrote) {
+    return Err(wrote.error());
+  }
+
+  std::error_code size_ec;
+  const std::uintmax_t file_size = std::filesystem::file_size(path, size_ec);
+  if (size_ec) {
+    return Err(ErrorCode::IoError, "SurfaceDb::write_partition: cannot stat partition file");
+  }
+
+  std::lock_guard<std::mutex> lock(*mu_);
+  const std::shared_ptr<const DbManifest> snap = snapshot_;
+
+  std::vector<DbPartitionInfo> parts = decode_partitions(snap->partitions());
+  const auto it = std::find_if(parts.begin(), parts.end(),
+                               [&](const DbPartitionInfo &p) { return p.key == *canon; });
+  DbPartitionInfo info{*canon, static_cast<std::uint32_t>(items.size()),
+                       static_cast<std::uint64_t>(file_size), wall_clock_ns()};
+  if (it != parts.end()) {
+    *it = info; // rewrite: overwriting an existing key is allowed.
+  } else {
+    parts.push_back(std::move(info));
+  }
+
+  return persist_locked(decode_symbol_entries(snap->symbols()), std::move(parts));
+}
+
+Result<SurfaceArchive> SurfaceDb::open_partition(std::string_view key) const {
+  auto canon = canonicalize_key(key);
+  if (!canon) {
+    return Err(canon.error());
+  }
+  const std::shared_ptr<const DbManifest> snap = manifest();
+  if (snap->find_partition(*canon) == nullptr) {
+    return Err(ErrorCode::NotFound, "SurfaceDb::open_partition: partition not present");
+  }
+  return SurfaceArchive::open_file(partition_path(*canon));
+}
+
+Result<PricedSurface> SurfaceDb::load_surface(std::string_view key, std::string_view symbol) const {
+  auto arch = open_partition(key);
+  if (!arch) {
+    return Err(arch.error());
+  }
+  return arch->map_symbol(symbol);
+}
+
+Status SurfaceDb::drop_partition(std::string_view key) {
+  auto canon = canonicalize_key(key);
+  if (!canon) {
+    return Err(canon.error());
+  }
+  const std::string path = partition_path(*canon);
+
+  {
+    std::lock_guard<std::mutex> lock(*mu_);
+    const std::shared_ptr<const DbManifest> snap = snapshot_;
+    if (snap->find_partition(*canon) == nullptr) {
+      return Err(ErrorCode::NotFound, "SurfaceDb::drop_partition: partition not present");
+    }
+
+    std::vector<DbPartitionInfo> parts = decode_partitions(snap->partitions());
+    parts.erase(std::remove_if(parts.begin(), parts.end(),
+                               [&](const DbPartitionInfo &p) { return p.key == *canon; }),
+               parts.end());
+
+    auto persisted = persist_locked(decode_symbol_entries(snap->symbols()), std::move(parts));
+    if (!persisted) {
+      return Err(persisted.error());
+    }
+  } // release the lock before touching the filesystem below.
+
+  // Manifest-first ordering is deliberate, not incidental: the index entry is
+  // already gone (and generation already bumped) by the time we get here, so
+  // a crash right at this line leaves only an orphaned .atxvsa file under
+  // partitions/ -- harmless garbage that a future write_partition for the
+  // same key silently overwrites, and that no reader ever sees (the manifest
+  // no longer lists it, so open_partition/load_surface correctly report
+  // NotFound). The reverse order -- unlink the file, then edit the manifest
+  // -- would risk a crash between the two steps that leaves a manifest entry
+  // pointing at a now-missing file: every later open_partition/load_surface
+  // for that key would then surface a confusing IoError/NotFound-on-open
+  // instead of a clean "no such partition."
+  std::error_code ec;
+  std::filesystem::remove(path, ec);
   return Ok();
 }
 

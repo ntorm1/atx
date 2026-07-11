@@ -1,17 +1,27 @@
 #include <gtest/gtest.h>
 
+#include <array>
 #include <atomic>
+#include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
+#include "atx/vol/black76.hpp"
 #include "atx/vol/calib.hpp"
+#include "atx/vol/dense_slice.hpp"
 #include "atx/vol/detail/archive_util.hpp" // crc32c (test-side CRC repair)
+#include "atx/vol/priced_surface.hpp"
 #include "atx/vol/surface_db.hpp"
+#include "atx/vol/vol_curve.hpp"
 
 // ATXVDB v1 manifest suite: on-disk record layout pinning, writer/parser
 // round-trip (every SymbolFitConfig field preserved bit-for-bit), duplicate /
@@ -136,6 +146,142 @@ std::filesystem::path test_root(std::string_view name) {
   auto p = std::filesystem::temp_directory_path() / ("atx_surface_db_" + std::string(name));
   std::filesystem::remove_all(p);
   return p;
+}
+
+// ── Partition-store test fixtures ──────────────────────────────────────────
+//
+// Copied from surface_archive_test.cpp (the binding bit-identity oracle for
+// this task): make_essvi/make_convex/make_linear build genuine PricedSurface
+// instances of each curve kind, bits_equal + expect_theo_bit_identical are
+// the exact assertion primitives used there. Kept self-contained here rather
+// than shared so this file has no test-only dependency on another test
+// binary's translation unit.
+
+constexpr double kArchS = 100.0;
+constexpr double kArchR = 0.043;
+
+[[nodiscard]] bool bits_equal(double a, double b) noexcept {
+  std::uint64_t ba = 0;
+  std::uint64_t bb = 0;
+  std::memcpy(&ba, &a, sizeof ba);
+  std::memcpy(&bb, &b, sizeof bb);
+  return ba == bb;
+}
+
+[[nodiscard]] PricingContext make_pricing(std::uint32_t uid) {
+  PricingContext pc;
+  pc.S = kArchS;
+  pc.r = kArchR;
+  pc.now_ts_ns = 1700000000000000000LL;
+  pc.method = AmericanMethod::AndersenLake;
+  pc.al_opts = AlOpts{}; // {12, 24, 8, 1e-10}
+  pc.uid = uid;
+  return pc;
+}
+
+// eSSVI priced surface, `n` ascending-T slices with a realistic mild smile.
+[[nodiscard]] PricedSurface make_essvi(std::uint32_t uid, int n) {
+  CurveSurface cs;
+  std::vector<SliceContext> ctx;
+  for (int i = 0; i < n; ++i) {
+    const double T = 0.05 + 0.10 * static_cast<double>(i);
+    const double F = kArchS;
+    EssviParams e{};
+    e.theta = 0.04 + 0.005 * static_cast<double>(i);
+    e.phi = 1.5 - 0.05 * static_cast<double>(i);
+    e.rho = -0.4 + 0.02 * static_cast<double>(i);
+    e.psi = 0.5;
+    e.p = 0.5;
+    e.lambda = 0.5;
+    e.T = T;
+    e.F = F;
+    e.expiry_id = static_cast<std::uint16_t>(i);
+    cs.push(std::make_unique<EssviCurve>(e, std::exp(-kArchR * T)));
+    ctx.push_back(SliceContext{T, F, 0.0, 0.02, 250, 7});
+  }
+  auto ps = PricedSurface::create(std::move(cs), std::move(ctx), make_pricing(uid));
+  EXPECT_TRUE(ps.has_value());
+  return std::move(*ps);
+}
+
+// Dense convex priced surface, `n` slices x `nodes` genuine arb-free convex
+// node prices (a flat-vol Black-76 call curve -> an invertible, finite smile).
+[[nodiscard]] PricedSurface make_convex(std::uint32_t uid, int n, int nodes) {
+  CurveSurface cs;
+  std::vector<SliceContext> ctx;
+  for (int i = 0; i < n; ++i) {
+    const double T = 0.05 + 0.10 * static_cast<double>(i);
+    const double F = kArchS;
+    const double df = std::exp(-kArchR * T);
+    const double sigma = 0.20 + 0.01 * static_cast<double>(i);
+    ConvexSliceFit fit;
+    fit.T = T;
+    fit.F = F;
+    fit.df = df;
+    fit.rmse_price = 0.25;
+    fit.n_obs = static_cast<std::size_t>(nodes);
+    fit.n_active = 3;
+    fit.u.resize(static_cast<std::size_t>(nodes));
+    fit.C.resize(static_cast<std::size_t>(nodes));
+    for (int j = 0; j < nodes; ++j) {
+      const double K = F * (0.7 + 0.6 * static_cast<double>(j) / static_cast<double>(nodes - 1));
+      fit.u[static_cast<std::size_t>(j)] = K;
+      fit.C[static_cast<std::size_t>(j)] = black76_price(F, K, T, sigma, df, Side::Call);
+    }
+    cs.push(std::make_unique<ConvexDenseCurve>(std::move(fit)));
+    ctx.push_back(SliceContext{T, F, 0.0, 0.02, static_cast<std::size_t>(nodes), 2});
+  }
+  auto ps = PricedSurface::create(std::move(cs), std::move(ctx), make_pricing(uid));
+  EXPECT_TRUE(ps.has_value());
+  return std::move(*ps);
+}
+
+[[nodiscard]] PricedSurface make_linear(std::uint32_t uid, int n, int nodes) {
+  CurveSurface cs;
+  std::vector<SliceContext> ctx;
+  for (int i = 0; i < n; ++i) {
+    const double T = 0.05 + 0.10 * static_cast<double>(i);
+    const double F = kArchS;
+    std::vector<double> k(static_cast<std::size_t>(nodes));
+    std::vector<double> w(static_cast<std::size_t>(nodes));
+    for (int j = 0; j < nodes; ++j) {
+      const double x = -0.4 + 0.8 * static_cast<double>(j) / static_cast<double>(nodes - 1);
+      k[static_cast<std::size_t>(j)] = x;
+      w[static_cast<std::size_t>(j)] = (0.20 * 0.20 + 0.01 * x + 0.02 * x * x) * T;
+    }
+    cs.push(std::make_unique<LinearVarianceCurve>(T, F, std::exp(-kArchR * T), std::move(k),
+                                                   std::move(w)));
+    ctx.push_back(SliceContext{T, F, 0.0, 0.02, static_cast<std::size_t>(nodes), 2});
+  }
+  auto ps = PricedSurface::create(std::move(cs), std::move(ctx), make_pricing(uid));
+  EXPECT_TRUE(ps.has_value());
+  return std::move(*ps);
+}
+
+// Assert a reconstructed surface serves BIT-IDENTICAL theo to the original
+// across a (K, T, side) grid: implied vol, total variance, and re-Americanized
+// fair value. Copied verbatim (pattern) from surface_archive_test.cpp -- the
+// binding bit-identity oracle for this task.
+void expect_theo_bit_identical(const PricedSurface &a, const PricedSurface &b) {
+  ASSERT_EQ(a.n_slices(), b.n_slices());
+  ASSERT_EQ(a.uid(), b.uid());
+  const std::array<double, 4> Ks{85.0, 100.0, 108.0, 120.0};
+  const std::array<double, 3> Ts{0.06, 0.18, 0.34};
+  for (const double K : Ks) {
+    for (const double T : Ts) {
+      EXPECT_TRUE(bits_equal(a.iv(K, T), b.iv(K, T))) << "iv K=" << K << " T=" << T;
+      EXPECT_TRUE(bits_equal(a.total_variance(K, T), b.total_variance(K, T)))
+          << "w K=" << K << " T=" << T;
+      for (const Side side : {Side::Call, Side::Put}) {
+        const auto fa = a.fair_value(K, T, side);
+        const auto fb = b.fair_value(K, T, side);
+        ASSERT_EQ(fa.has_value(), fb.has_value()) << "fv K=" << K << " T=" << T;
+        if (fa.has_value()) {
+          EXPECT_TRUE(bits_equal(*fa, *fb)) << "fv K=" << K << " T=" << T;
+        }
+      }
+    }
+  }
 }
 
 TEST(SurfaceDbManifest, RoundTrip_FullConfig_EveryFieldPreserved) {
@@ -338,6 +484,174 @@ TEST(SurfaceDb, ConcurrentReaders_DuringUpserts_AreSafe) {
   auto final_cfg = db->symbol_config("SPY");
   ASSERT_TRUE(final_cfg.has_value());
   EXPECT_DOUBLE_EQ(final_cfg->band_k, 1.0 + 0.01 * 49);
+  std::filesystem::remove_all(root);
+}
+
+// ── SurfaceDb: partition store (Task 4) ────────────────────────────────────
+
+TEST(SurfaceDbPartition, WriteOpenLoad_TheoBitIdentical) {
+  const auto root = test_root("part_roundtrip");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  const auto s1 = make_essvi(/*uid=*/1, /*n_slices=*/3);
+  const auto s2 = make_essvi(/*uid=*/2, /*n_slices=*/2);
+  const std::vector<SurfaceArchiveItem> items{{"AAPL", &s1}, {"MSFT", &s2}};
+  ASSERT_TRUE(db->write_partition("2026-07-10", items).has_value());
+  EXPECT_EQ(db->partitions().size(), 1u);
+  EXPECT_EQ(db->partitions()[0].key, "2026-07-10");
+  EXPECT_EQ(db->partitions()[0].surface_count, 2u);
+
+  auto loaded = db->load_surface("2026-07-10", "aapl");
+  ASSERT_TRUE(loaded.has_value());
+  // Bit-identity assertion block copied from surface_archive_test.cpp's
+  // RoundTrip_Essvi_TheoBitIdentical -- same probe points, same bits_equal
+  // oracle, no tolerance comparisons.
+  EXPECT_EQ(loaded->kind_at(0), VolCurveKind::Essvi);
+  expect_theo_bit_identical(s1, *loaded);
+
+  // reopen db cold and load through the fresh instance:
+  auto db2 = SurfaceDb::open(root.string());
+  ASSERT_TRUE(db2.has_value());
+  auto arch = db2->open_partition("2026-07-10");
+  ASSERT_TRUE(arch.has_value());
+  EXPECT_EQ(arch->count(), 2u);
+  ASSERT_TRUE(arch->map_symbol("MSFT").has_value());
+  std::filesystem::remove_all(root);
+}
+
+TEST(SurfaceDbPartition, MixedKinds_ConvexDenseAndLinearVariance_RoundTripBitIdentical) {
+  // Explicit requirement: ConvexDense + LinearVariance surfaces fully
+  // supported through the db's binary path. One partition holding all three
+  // kinds; each loads back with the SAME assertions the archive suite uses.
+  const auto root = test_root("part_mixed_kinds");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+  const auto sc = make_convex(/*uid=*/11, /*n_slices=*/2, /*n_nodes=*/40);
+  const auto sl = make_linear(/*uid=*/12, /*n_slices=*/2, /*n_nodes=*/17);
+  const auto se = make_essvi(/*uid=*/13, /*n_slices=*/2);
+  const std::vector<SurfaceArchiveItem> items{
+      {"CVX", &sc}, {"LIN", &sl}, {"ESS", &se}};
+  ASSERT_TRUE(db->write_partition("2026-07-10", items).has_value());
+  auto db2 = SurfaceDb::open(root.string());
+  ASSERT_TRUE(db2.has_value());
+
+  auto c = db2->load_surface("2026-07-10", "CVX");
+  ASSERT_TRUE(c.has_value());
+  // ConvexDense: theo bit-identical AND node arrays byte-equal, copied from
+  // RoundTrip_ConvexDense_TheoBitIdentical_AndNodesByteEqual.
+  EXPECT_EQ(c->kind_at(0), VolCurveKind::ConvexDense);
+  expect_theo_bit_identical(sc, *c);
+  for (std::size_t i = 0; i < sc.n_slices(); ++i) {
+    const auto *ca = static_cast<const ConvexDenseCurve *>(sc.surface().slices()[i].get());
+    const auto *cb = static_cast<const ConvexDenseCurve *>(c->surface().slices()[i].get());
+    ASSERT_EQ(ca->fit().u.size(), cb->fit().u.size());
+    ASSERT_EQ(ca->fit().C.size(), cb->fit().C.size());
+    EXPECT_EQ(
+        std::memcmp(ca->fit().u.data(), cb->fit().u.data(), ca->fit().u.size() * sizeof(double)),
+        0);
+    EXPECT_EQ(
+        std::memcmp(ca->fit().C.data(), cb->fit().C.data(), ca->fit().C.size() * sizeof(double)),
+        0);
+    EXPECT_TRUE(bits_equal(ca->fit().rmse_price, cb->fit().rmse_price));
+    EXPECT_EQ(ca->fit().n_obs, cb->fit().n_obs);
+    EXPECT_EQ(ca->fit().n_active, cb->fit().n_active);
+  }
+
+  auto l = db2->load_surface("2026-07-10", "LIN");
+  ASSERT_TRUE(l.has_value());
+  // LinearVariance: theo + nodes bit-identical, copied from
+  // RoundTrip_LinearVariance_TheoAndNodesBitIdentical.
+  EXPECT_EQ(l->kind_at(0), VolCurveKind::LinearVariance);
+  expect_theo_bit_identical(sl, *l);
+  for (std::size_t i = 0; i < sl.n_slices(); ++i) {
+    const auto *a = static_cast<const LinearVarianceCurve *>(sl.surface().slices()[i].get());
+    const auto *b = static_cast<const LinearVarianceCurve *>(l->surface().slices()[i].get());
+    ASSERT_EQ(a->k_nodes().size(), b->k_nodes().size());
+    EXPECT_EQ(
+        std::memcmp(a->k_nodes().data(), b->k_nodes().data(), a->k_nodes().size() * sizeof(double)),
+        0);
+    EXPECT_EQ(
+        std::memcmp(a->w_nodes().data(), b->w_nodes().data(), a->w_nodes().size() * sizeof(double)),
+        0);
+  }
+
+  auto e = db2->load_surface("2026-07-10", "ESS");
+  ASSERT_TRUE(e.has_value());
+  // Essvi: theo bit-identity.
+  EXPECT_EQ(e->kind_at(0), VolCurveKind::Essvi);
+  expect_theo_bit_identical(se, *e);
+
+  std::filesystem::remove_all(root);
+}
+
+TEST(SurfaceDbPartition, RewriteReplaces_DropRemoves) {
+  const auto root = test_root("part_lifecycle");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+  const auto s1 = make_essvi(1, 2);
+  const auto s2 = make_essvi(2, 2);
+  const std::vector<SurfaceArchiveItem> one{{"AAPL", &s1}};
+  const std::vector<SurfaceArchiveItem> two{{"AAPL", &s1}, {"MSFT", &s2}};
+  ASSERT_TRUE(db->write_partition("2026-07-10", one).has_value());
+  ASSERT_TRUE(db->write_partition("2026-07-10", two).has_value());  // rewrite
+  EXPECT_EQ(db->partitions().size(), 1u);
+  EXPECT_EQ(db->partitions()[0].surface_count, 2u);
+
+  ASSERT_TRUE(db->drop_partition("2026-07-10").has_value());
+  EXPECT_TRUE(db->partitions().empty());
+  EXPECT_EQ(db->open_partition("2026-07-10").error().code(), ErrorCode::NotFound);
+  EXPECT_EQ(db->drop_partition("2026-07-10").error().code(), ErrorCode::NotFound);
+  // file physically gone:
+  EXPECT_FALSE(std::filesystem::exists(
+      std::filesystem::path(root) / "partitions" / "2026-07-10.atxvsa"));
+  std::filesystem::remove_all(root);
+}
+
+TEST(SurfaceDbPartition, ManySymbols_ManyPartitions_SingleSurfaceLookup) {
+  const auto root = test_root("part_scale");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+  std::vector<PricedSurface> pool;
+  pool.reserve(64);
+  for (int i = 0; i < 64; ++i) pool.push_back(make_essvi(100 + i, 2));
+  for (int p = 0; p < 4; ++p) {
+    // NOTE: symbol strings must outlive the write_partition call --
+    // SurfaceArchiveItem::symbol is a non-owning string_view, and a
+    // temporary std::string built inline in the items initializer would
+    // dangle by the time the archive writer reads it. Build an owning
+    // std::vector<std::string> holder first, then string_views into it.
+    std::vector<std::string> names;
+    names.reserve(64);
+    for (int i = 0; i < 64; ++i) {
+      names.push_back(std::string("SYM") + std::to_string(i));
+    }
+    std::vector<SurfaceArchiveItem> items;
+    items.reserve(64);
+    for (int i = 0; i < 64; ++i) {
+      items.push_back({names[static_cast<std::size_t>(i)], &pool[static_cast<std::size_t>(i)]});
+    }
+    ASSERT_TRUE(db->write_partition("2026-07-1" + std::to_string(p), items).has_value());
+  }
+  EXPECT_EQ(db->partitions().size(), 4u);
+  auto s = db->load_surface("2026-07-12", "SYM42");
+  ASSERT_TRUE(s.has_value());
+  EXPECT_EQ(db->load_surface("2026-07-12", "NOPE").error().code(), ErrorCode::NotFound);
+  EXPECT_EQ(db->load_surface("2026-99-99", "SYM1").error().code(), ErrorCode::NotFound);
+  std::filesystem::remove_all(root);
+}
+
+TEST(SurfaceDbPartition, BadKey_Rejected) {
+  const auto root = test_root("part_badkey");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+  const auto s1 = make_essvi(1, 2);
+  const std::vector<SurfaceArchiveItem> items{{"AAPL", &s1}};
+  for (const char* bad : {"", "a/b", "a\\b", "..", "x..y",
+                          "0123456789012345678901234567890123"}) {
+    EXPECT_EQ(db->write_partition(bad, items).error().code(),
+              ErrorCode::InvalidArgument) << bad;
+  }
   std::filesystem::remove_all(root);
 }
 

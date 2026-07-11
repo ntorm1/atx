@@ -334,6 +334,16 @@ class SurfaceDb {
   [[nodiscard]] Status refresh();
 
   // ── Partition IO (Task 4) ──
+  //
+  // A partition's ATXVSA archive stores whatever symbols the caller passes to
+  // write_partition; those symbols need NOT appear in the manifest's symbol
+  // table above (upsert_symbol/symbols()/symbol_config()). The two are
+  // orthogonal namespaces: the symbol table configures HOW a symbol should be
+  // fit (SymbolFitConfig knobs), while a partition stores WHERE a fitted
+  // surface lives for a given key (e.g. a trading date). A symbol may be
+  // written into any number of partitions without ever being registered in
+  // the symbol table, and the symbol table may hold config for symbols that
+  // never appear in a partition.
   [[nodiscard]] Status write_partition(std::string_view key,
                                        std::span<const SurfaceArchiveItem> items,
                                        const SurfaceArchiveWriteOpts& opts = {});
