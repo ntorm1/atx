@@ -79,6 +79,7 @@ add_executable(atx-vol-tests
     listed_dispersion_strategy_test.cpp
     backtest_test.cpp
     strategy_test.cpp
+    dispersion_strangle_test.cpp
     backtest_exec_test.cpp
     tearsheet_test.cpp
     backtest_real_test.cpp

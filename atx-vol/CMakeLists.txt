@@ -74,6 +74,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/portfolio_pricer.cpp
     src/corpus.cpp
     src/dispersion.cpp
+    src/dispersion_strangle.cpp
     src/dispersion_backtest.cpp
     src/dispersion_workflow.cpp
     src/listed_dispersion.cpp
