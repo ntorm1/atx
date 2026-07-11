@@ -505,7 +505,7 @@ Process notes:
 - Task 6: mag7_dispersion_backtest example + gate test — COMPLETE
 - Task 7: tools/mag7_dispersion_report.py + python test — COMPLETE
 - Task 8: real-data pull/populate/run/report (operator-gated) — PENDING
-- Final whole-branch review — PENDING
+- Final whole-branch review — COMPLETE ("Ready to merge: Yes"; polish wave 892f797 re-verified "Yes")
 
 ## Minor findings roll-up (MAG7 dispersion, for final review triage)
 (none yet)
@@ -577,3 +577,20 @@ Task 7: complete (commits b592be9..a88cb05 + fix 55b9e5f, review Approved, 1 Imp
   id-collision fix real (294/294 unique ids). Fix wave: _fmt_value ±inf guard + 5 formatter unit tests.
   Minor (roll-up): (a) exact-1.0 fractions render bare "1" in tables; (b) fixture max_drawdown sign
   cosmetics; (c) matplotlib per-chart <style> universal selector scoping note (no current consequence).
+
+FINAL WHOLE-BRANCH REVIEW (fable, 6198a27..126aa35): "Ready to merge: Yes" — 0 Critical/Important.
+  Verified seams: T3→T2→engine (close-pass vs engine settlement ordering — CloseAtHorizon lot can never
+  reach settlement with close_dte>0), T5 overlay (no double-application; pricer_config subset + overlay
+  layering consistent incl. Hft pinned route), emitter↔example↔python contract lockstep, determinism
+  discipline. 6 new Minors; triage: NONE must-fix. Polish wave 892f797 (5 items: Clock comment, comparator
+  columns restored, min_names>=1, canonical index/dup-name guard via canonical_symbol, python unpriced-row
+  dedup) — re-verified by final reviewer: "Ready to merge — Yes". 8/8 targeted C++ + 8/8 python green.
+  Accepted post-merge follow-ups (from triage): T2-a/b/c, T3-b, T4-a/b/c/d, T5-a/b, T6-b/c/d/e, T7-a/b/c,
+  new #4 (db_root meta dup — benign, python last-wins), #5 goal-text narrowings (no arb-check column;
+  steps_per_s as timing summary — plan-sanctioned), #6 nv() flag-swallow CLI cosmetics.
+
+Task 8 (real data) IN PROGRESS: cost gate logged — MetadataGetCost estimate $0.000000 (account OPRA.PILLAR
+  access unmetered; well under $150 authorization; cap $10 guardrail on tool). First full-window attempt
+  failed on holiday date (2026-01-19 → 422 symbology; calendar-day iteration); fixed via --dates-file with
+  129 real sessions (SPY hive dates + 07-02..07-10). 16-worker run hit 504 gateway timeouts after 118
+  pulls; resumed with 4-worker retry loop (idempotent).
