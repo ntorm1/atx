@@ -478,3 +478,36 @@ FINAL WHOLE-BRANCH REVIEW (fable, 896a100..d9d852e): "With fixes" -> fix wave 3f
   OUTSTANDING BEFORE MERGE: full-module gate `& .\scripts\atx-build.ps1 -Ctest -L atx_vol` on 3f12b43 —
   DEFERRED TO OPERATOR by explicit instruction (targeted SurfaceDb|SurfaceArchive 34/34 is the evidence
   on record). Feature branch worktree-feat-atx-vol-surface-db is otherwise merge-ready.
+
+============================================================
+# SDD progress — MAG7 vs SPY dispersion-strangle backtest (2026-07-11)
+
+Goal doc: atx-vol/sprints/2026-07-11-atx-vol-mag7-dispersion-strangle-backtest-goal.md
+Plan: docs/superpowers/plans/2026-07-11-atx-vol-mag7-dispersion-backtest.md
+Worktree: C:/atx/.claude/worktrees/feat-atx-vol-mag7-dispersion (branch worktree-feat-atx-vol-mag7-dispersion, rebased onto main @ 750a286)
+
+Process notes:
+- Full `-L atx_vol` gate DEFERRED TO OPERATOR (standing instruction); targeted suites only.
+- `.superpowers/sdd/progress.md` is TRACKED on main-line history; this feature APPENDS its
+  section (append-only keeps the eventual merge clean). Ledger commits: `git add -f`, `chore(sdd): ...`.
+- Task 8 (real-data pull/run) is controller-led + operator-gated (paid Databento pulls, ~$150 cap).
+- Goal-doc stale point (recon-verified): bulk pull tool `databento_bulk_opra` already exists in
+  atx-core (produced the 123-day SPY hive data/spy_ytd/opra/SPY); Task 8 reuses it.
+- Baseline (post-rebase pending re-verify): pre-rebase worktree ran 81/81 targeted green at fb6e7c1.
+
+## Tasks (MAG7 dispersion)
+
+- Task 1: Clock::from_surface_db (SurfaceDb-backed clock) — PENDING
+- Task 2: CloseAtHorizon lifecycle + missing-name policy — PENDING
+- Task 3: make_dispersion_strangle_spec builder — PENDING
+- Task 4: run_report emitters — PENDING
+- Task 5: populate_surface_db + mag7_surfdb_populate example — PENDING
+- Task 6: mag7_dispersion_backtest example + gate test — PENDING
+- Task 7: tools/mag7_dispersion_report.py + python test — PENDING
+- Task 8: real-data pull/populate/run/report (operator-gated) — PENDING
+- Final whole-branch review — PENDING
+
+## Minor findings roll-up (MAG7 dispersion, for final review triage)
+(none yet)
+
+## Log (MAG7 dispersion)
