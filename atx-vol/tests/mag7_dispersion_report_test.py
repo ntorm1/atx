@@ -19,6 +19,10 @@ import sys
 import tempfile
 import unittest
 
+# Import the module to test _fmt_value directly
+sys.path.insert(0, str(pathlib.Path(__file__).parents[1]))
+from tools.mag7_dispersion_report import _fmt_value
+
 
 SCRIPT = pathlib.Path(__file__).parents[1] / "tools" / "mag7_dispersion_report.py"
 
@@ -230,6 +234,33 @@ class Mag7DispersionReportTest(unittest.TestCase):
             run_dir = pathlib.Path(directory)
             result = run_script(run_dir)
             self.assertNotEqual(result.returncode, 0)
+
+
+class FmtValueTest(unittest.TestCase):
+    """Unit tests for _fmt_value formatter, especially edge cases."""
+
+    def test_fmt_value_nan(self):
+        """NaN should format as 'nan'."""
+        self.assertEqual(_fmt_value(float("nan")), "nan")
+
+    def test_fmt_value_positive_infinity(self):
+        """Positive infinity should format as 'inf'."""
+        self.assertEqual(_fmt_value(float("inf")), "inf")
+
+    def test_fmt_value_negative_infinity(self):
+        """Negative infinity should format as '-inf'."""
+        self.assertEqual(_fmt_value(float("-inf")), "-inf")
+
+    def test_fmt_value_integers(self):
+        """Integers should format with thousands separators, no decimals."""
+        self.assertEqual(_fmt_value(42), "42")
+        self.assertEqual(_fmt_value(1000), "1,000")
+        self.assertEqual(_fmt_value(-1000), "-1,000")
+
+    def test_fmt_value_floats(self):
+        """Floats should format with 4 decimals and thousands separators."""
+        self.assertEqual(_fmt_value(3.14159), "3.1416")
+        self.assertEqual(_fmt_value(1234.5678), "1,234.5678")
 
 
 if __name__ == "__main__":

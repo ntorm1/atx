@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import html
 import io
+import math
 import re
 import sys
 from pathlib import Path
@@ -217,6 +218,8 @@ def _fmt_value(v) -> str:
         return str(v)
     if f != f:  # NaN
         return "nan"
+    if math.isinf(f):
+        return "inf" if f > 0 else "-inf"
     if f == int(f) and abs(f) < 1e15:
         return f"{int(f):,}"
     return f"{f:,.4f}"
