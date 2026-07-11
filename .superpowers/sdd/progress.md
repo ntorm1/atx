@@ -502,7 +502,7 @@ Process notes:
 - Task 3: make_dispersion_strangle_spec builder — COMPLETE
 - Task 4: run_report emitters — COMPLETE
 - Task 5: populate_surface_db + mag7_surfdb_populate example — COMPLETE
-- Task 6: mag7_dispersion_backtest example + gate test — PENDING
+- Task 6: mag7_dispersion_backtest example + gate test — COMPLETE
 - Task 7: tools/mag7_dispersion_report.py + python test — PENDING
 - Task 8: real-data pull/populate/run/report (operator-gated) — PENDING
 - Final whole-branch review — PENDING
@@ -559,3 +559,12 @@ Task 5: complete (commits 73c6996..05bc3eb + fix 1347d7d, review "Approved" opus
   aborts populate instead of skipping — membership check via partitions() would be resume-robust);
   (b) example upserts symbol_config_from_preset(parsed --preset) vs constraint's literal FitPreset::Fast
   (default matches; flag-honoring defensible).
+
+Task 6: complete (commits 3a415fc..b5c05f9, review clean — SPEC ✅ / Approved; 0 Critical/Important)
+  11/11 targeted green; example 306 lines; 18-key shared meta verified byte-for-byte across all emit calls;
+  live binary smoke (4 files + exit codes 2/2/1) reported by implementer.
+  Minor (roll-up): (a) expect_result_bit_identical trimmed to 7 columns vs spy pattern (drops
+  pnl_theta/gamma/vega; restore cheap); (b) example's literal 18-key MetaKv not regression-tested (gate
+  test uses its own 2-key meta); (c) populate_stats.csv copy branch untested (manual smoke only);
+  (d) spec-validation CLI errors exit 1 not 2 (judgment call, flagged); (e) console peak_lots recomputed
+  vs reusing result_summary_metrics.
