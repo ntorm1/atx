@@ -158,6 +158,45 @@ struct SessionDiagnostics {
   std::size_t n_calendar_viol_pre{0};     // calendar violations BEFORE any repair
   std::size_t n_slices{0};                // fitted slice count
   std::size_t n_quotes{0};                // sum of per-slice n_used
+  std::size_t n_carry_slices{0};          // slices with a resolved carry diagnostic
+  std::size_t n_carry_confident{0};       // carry slices clearing confidence gates
+  double min_carry_effective_pairs{0.0};
+  double max_carry_dispersion{0.0};
+  double max_carry_leave_one_out{0.0};
+  std::size_t n_inversion_slices{0};
+  std::size_t n_iv_proposed{0};
+  std::size_t n_iv_audited{0};
+  std::size_t n_iv_fallback{0};
+  std::size_t n_iv_rejected_residual{0};
+  double max_iv_proposal_residual_half_spreads{0.0};
+  bool carry_confident{false};             // true iff every fitted slice is confident
+  bool inversion_certified{false};         // true iff all AL proposals were audited/accepted
+};
+
+// Compact, persistence-friendly carry summary. Raw quotes and the individual
+// CarryPairDiagnostic vector are deliberately not retained by a session.
+struct SessionCarryDiagnostics {
+  std::size_t n_candidates{0};
+  std::size_t n_attempted{0};
+  std::size_t n_solved{0};
+  std::size_t n_retained{0};
+  double effective_pair_count{0.0};
+  double dispersion{0.0};
+  double max_leave_one_out_shift{0.0};
+  double confidence_half_width{0.0};
+  double max_pcp_residual{0.0};
+  bool available{false};
+  bool confident{false};
+};
+
+// Parallel to expiries(). DeAmAuditDiagnostics contains counts/quantiles only;
+// neither the source observations nor per-row IVs survive session construction.
+struct SessionSliceDiagnostics {
+  double T{0.0};
+  SessionCarryDiagnostics carry{};
+  DeAmAuditDiagnostics inversion{};
+  bool inversion_available{false};
+  bool inversion_certified{false};
 };
 
 // Stateful surface handle. Construct with `build` / `from_frame`; then query.
@@ -317,6 +356,11 @@ class VolaSession {
     return diag_;
   }
 
+  [[nodiscard]] std::span<const SessionSliceDiagnostics>
+  slice_diagnostics() const noexcept {
+    return slice_diag_;
+  }
+
   // Effective, fully-resolved fit inputs retained by the session. Quality
   // scoring uses these so a direct/fallback OOS refit sees the same preset,
   // quote filter, dividends, carry, and pricer policy as the shipped surface.
@@ -360,6 +404,7 @@ class VolaSession {
   VolaSession(VolSurface&& surface, std::vector<SliceContext>&& ctx,
               std::vector<ParityReport>&& parity, SessionInputs in,
               const SessionDiagnostics& diag,
+              std::vector<SessionSliceDiagnostics>&& slice_diag,
               std::optional<CorrectionCache>&& corr_call,
               std::optional<CorrectionCache>&& corr_put,
               std::optional<CurveSurface>&& curve_override);
@@ -411,6 +456,7 @@ class VolaSession {
   std::vector<ParityReport> parity_;   // ascending T (‖ ctx_)
   SessionInputs in_;
   SessionDiagnostics diag_;
+  std::vector<SessionSliceDiagnostics> slice_diag_;  // compact, ascending T
   std::optional<CorrectionCache> corr_call_;  // empty => cold path for calls
   std::optional<CorrectionCache> corr_put_;   // empty => cold path for puts
   // Polymorphic-surface override (ConvexDense / Svi). Empty => default eSSVI path

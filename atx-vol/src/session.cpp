@@ -111,11 +111,139 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
   in.expiry_rates = std::move(fitted_rates);
 }
 
+[[nodiscard]] SessionCarryDiagnostics compact_carry(
+    const CarryDiagnostics& carry) noexcept {
+  return SessionCarryDiagnostics{
+      carry.n_candidates,
+      carry.n_attempted,
+      carry.n_solved,
+      carry.n_retained,
+      carry.effective_pair_count,
+      carry.dispersion,
+      carry.max_leave_one_out_shift,
+      carry.confidence_half_width,
+      carry.max_pcp_residual,
+      true,
+      carry.confident};
+}
+
+[[nodiscard]] std::size_t route_proposed(
+    const DeAmAuditDiagnostics& d) noexcept {
+  return static_cast<std::size_t>(d.shortcut.n_proposed) + d.cache.n_proposed +
+         d.fast.n_proposed + d.accurate.n_proposed;
+}
+
+[[nodiscard]] std::size_t route_audited(
+    const DeAmAuditDiagnostics& d) noexcept {
+  return static_cast<std::size_t>(d.shortcut.n_audited) + d.cache.n_audited +
+         d.fast.n_audited + d.accurate.n_audited;
+}
+
+[[nodiscard]] double route_max_residual(
+    const DeAmAuditDiagnostics& d) noexcept {
+  return std::max({d.shortcut.max_residual_half_spreads,
+                   d.cache.max_residual_half_spreads,
+                   d.fast.max_residual_half_spreads,
+                   d.accurate.max_residual_half_spreads});
+}
+
+// Compatibility bridge until fit reports directly carry their compact input
+// certification. Re-run only the input-resolution layer, retain counts and
+// quantiles, and immediately release the temporary observations/pair details.
+[[nodiscard]] std::vector<SessionSliceDiagnostics> collect_input_diagnostics(
+    const Underlying& under, const SessionInputs& in,
+    std::span<const SliceContext> context,
+    const AmericanCorrectionCaches& deam_caches) {
+  std::vector<SessionSliceDiagnostics> out;
+  out.reserve(context.size());
+  std::size_t chain_pos = 0;
+  for (const SliceContext& slice : context) {
+    SessionSliceDiagnostics sd{};
+    sd.T = slice.T;
+    while (chain_pos < under.chains.size() &&
+           under.chains[chain_pos].T < slice.T - 1.0e-12) {
+      ++chain_pos;
+    }
+    if (chain_pos >= under.chains.size() ||
+        std::fabs(under.chains[chain_pos].T - slice.T) >
+            1.0e-10 * std::max(1.0, slice.T)) {
+      out.push_back(std::move(sd));
+      continue;
+    }
+    const Chain& chain = under.chains[chain_pos++];
+    const double rate = input_rate_at(in, slice.T);
+    const auto carry = resolve_chain_forward(
+        chain, in.S, rate, in.cash_divs, in.now_ts_ns, in.deam);
+    if (carry) {
+      sd.carry = compact_carry(carry->carry);
+    }
+
+    const double df = std::exp(-rate * slice.T);
+    const auto obs = build_observations_european(
+        chain, in.S, rate, slice.forward, slice.T, df, in.calib, deam_caches,
+        in.deam.al_opts, in.deam.iv_tol, in.deam.iv_max_iter,
+        in.deam.method);
+    if (obs) {
+      sd.inversion = obs->deam_audit;
+      sd.inversion_available = true;
+      const std::size_t proposed = route_proposed(sd.inversion);
+      const std::size_t audited = route_audited(sd.inversion);
+      sd.inversion_certified =
+          in.deam.method != AmericanMethod::AndersenLake ||
+          (proposed > 0 && audited == proposed &&
+           sd.inversion.n_rejected_residual == 0);
+    }
+    out.push_back(std::move(sd));
+  }
+  return out;
+}
+
+void aggregate_input_diagnostics(
+    std::span<const SessionSliceDiagnostics> slices,
+    SessionDiagnostics& diag) noexcept {
+  double min_effective = std::numeric_limits<double>::infinity();
+  bool all_inversion_certified = !slices.empty();
+  for (const SessionSliceDiagnostics& slice : slices) {
+    if (slice.carry.available) {
+      ++diag.n_carry_slices;
+      if (slice.carry.confident) ++diag.n_carry_confident;
+      min_effective = std::min(min_effective, slice.carry.effective_pair_count);
+      diag.max_carry_dispersion =
+          std::max(diag.max_carry_dispersion, slice.carry.dispersion);
+      diag.max_carry_leave_one_out =
+          std::max(diag.max_carry_leave_one_out,
+                   slice.carry.max_leave_one_out_shift);
+    }
+    if (slice.inversion_available) {
+      ++diag.n_inversion_slices;
+      diag.n_iv_proposed += route_proposed(slice.inversion);
+      diag.n_iv_audited += route_audited(slice.inversion);
+      diag.n_iv_fallback += slice.inversion.n_accurate_fallback;
+      diag.n_iv_rejected_residual += slice.inversion.n_rejected_residual;
+      diag.max_iv_proposal_residual_half_spreads =
+          std::max(diag.max_iv_proposal_residual_half_spreads,
+                   route_max_residual(slice.inversion));
+    }
+    all_inversion_certified =
+        all_inversion_certified && slice.inversion_available &&
+        slice.inversion_certified;
+  }
+  diag.min_carry_effective_pairs =
+      std::isfinite(min_effective) ? min_effective : 0.0;
+  diag.carry_confident = diag.n_slices > 0 &&
+                         diag.n_carry_slices == diag.n_slices &&
+                         diag.n_carry_confident == diag.n_slices;
+  diag.inversion_certified = diag.n_slices > 0 &&
+                             slices.size() == diag.n_slices &&
+                             all_inversion_certified;
+}
+
 }  // namespace
 
 VolaSession::VolaSession(VolSurface&& surface, std::vector<SliceContext>&& ctx,
                          std::vector<ParityReport>&& parity, SessionInputs in,
                          const SessionDiagnostics& diag,
+                         std::vector<SessionSliceDiagnostics>&& slice_diag,
                          std::optional<CorrectionCache>&& corr_call,
                          std::optional<CorrectionCache>&& corr_put,
                          std::optional<CurveSurface>&& curve_override)
@@ -124,6 +252,7 @@ VolaSession::VolaSession(VolSurface&& surface, std::vector<SliceContext>&& ctx,
       parity_{std::move(parity)},
       in_{std::move(in)},
       diag_{diag},
+      slice_diag_{std::move(slice_diag)},
       corr_call_{std::move(corr_call)},
       corr_put_{std::move(corr_put)},
       curve_override_{std::move(curve_override)} {}
@@ -401,9 +530,17 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
             VolSurface::create(under.uid, Parametrization::Essvi,
                                std::max<std::size_t>(std::size_t{1},
                                                      under.chains.size())));
+    const AmericanCorrectionCaches fit_diagnostic_caches =
+        eff.use_deam_cache_for_fit ? sp.deam.caches
+                                   : AmericanCorrectionCaches{};
+    std::vector<SessionSliceDiagnostics> slice_diag =
+        collect_input_diagnostics(under, eff, crep.context,
+                                  fit_diagnostic_caches);
+    aggregate_input_diagnostics(slice_diag, cdiag);
     retain_fitted_term_rates(eff, crep.context);
     return Ok(VolaSession{std::move(placeholder), std::move(crep.context),
                           std::move(crep.per_expiry), std::move(eff), cdiag,
+                          std::move(slice_diag),
                           std::move(caches.call), std::move(caches.put),
                           std::optional<CurveSurface>{std::move(crep.surface)}});
   }
@@ -442,9 +579,13 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
   }
   diag.n_quotes = n_quotes;
 
+  std::vector<SessionSliceDiagnostics> slice_diag =
+      collect_input_diagnostics(under, eff, rep.context, sp.deam.caches);
+  aggregate_input_diagnostics(slice_diag, diag);
   retain_fitted_term_rates(eff, rep.context);
   return Ok(VolaSession{std::move(rep.surface), std::move(rep.context),
                         std::move(rep.per_expiry), std::move(eff), diag,
+                        std::move(slice_diag),
                         std::move(caches.call), std::move(caches.put),
                         std::optional<CurveSurface>{}});
 }

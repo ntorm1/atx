@@ -134,6 +134,25 @@ TEST(VolaSession, Build_KnownTruthPanel_SucceedsWithFourArbFreeSlices) {
   EXPECT_TRUE(diag.calendar_arb_free);
   EXPECT_GE(diag.worst_frac_within_bidask, 0.90);
   EXPECT_GT(diag.n_quotes, std::size_t{0});
+  EXPECT_EQ(diag.n_carry_slices, diag.n_slices);
+  EXPECT_EQ(diag.n_carry_confident, diag.n_slices);
+  EXPECT_TRUE(diag.carry_confident);
+  EXPECT_EQ(diag.n_inversion_slices, diag.n_slices);
+  EXPECT_GT(diag.n_iv_proposed, std::size_t{0});
+  EXPECT_EQ(diag.n_iv_audited, diag.n_iv_proposed);
+  EXPECT_EQ(diag.n_iv_rejected_residual, std::size_t{0});
+  EXPECT_TRUE(diag.inversion_certified);
+
+  const auto input_diag = sess->slice_diagnostics();
+  ASSERT_EQ(input_diag.size(), sess->expiries().size());
+  for (std::size_t i = 0; i < input_diag.size(); ++i) {
+    EXPECT_DOUBLE_EQ(input_diag[i].T, sess->expiries()[i].T);
+    EXPECT_TRUE(input_diag[i].carry.available);
+    EXPECT_TRUE(input_diag[i].carry.confident);
+    EXPECT_GE(input_diag[i].carry.n_retained, std::size_t{3});
+    EXPECT_TRUE(input_diag[i].inversion_available);
+    EXPECT_TRUE(input_diag[i].inversion_certified);
+  }
 
   // Slice context is ascending in T.
   const auto exps = sess->expiries();
