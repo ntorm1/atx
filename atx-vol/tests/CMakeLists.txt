@@ -28,6 +28,7 @@ add_executable(atx-vol-tests
     fit_policy_test.cpp
     data_test.cpp
     surface_archive_test.cpp
+    surface_db_test.cpp
     batch_test.cpp
     portfolio_test.cpp
     bulk_test.cpp
