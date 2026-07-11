@@ -1672,6 +1672,15 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T,
   // boundary-collapse corner falls back to the scalar P() path (same error).
   const bool put_fast =
       (side == Side::Put) && (method == AmericanMethod::AndersenLake);
+  // Call fast path (P2.1): McDonald-Schroder prices a call via an internal put, and
+  // that internal-put boundary IS spot-dependent (its strike = the call spot the
+  // delta/gamma stencils bump) — but homogeneous of degree one in that strike, so
+  // one boundary per (sigma,r,T) state rescales across the spot stencils. Mirrors
+  // put_fast structurally; see Pcall. NOT bit-identical to the cold call greeks —
+  // the homogeneity rescale is exact in R, ~1e-13 in IEEE (far under the sprint's
+  // ~1e-7 budget); accepted as default per the controller policy ruling.
+  const bool call_fast =
+      (side == Side::Call) && (method == AmericanMethod::AndersenLake);
   const AlScheme sch = scheme_from_opts(opts);
   struct BndCache {
     double dsig{0.0}, dr{0.0}, dT{0.0};
@@ -1736,8 +1745,85 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T,
     }
     return al_put_price_from_boundary(c->bnd, c->ws, S2, K, T2, sig2, r2, q);
   };
+  // Call fast path evaluator. McDonald-Schroder: C(S,K,r,q) prices via an internal
+  // put with spot = K (the call strike, FIXED across every stencil), strike = the
+  // call SPOT S2 (bumped by the delta/gamma/vanna/charm stencils), internal rate =
+  // q (the call yield, FIXED), internal yield = r2 (the call rate, bumped). Unlike
+  // the put boundary, this boundary depends on its strike = the call spot, which the
+  // spot stencils move — so per (dsig,dr,dT) state we solve the boundary ONCE at the
+  // BASE internal-strike = S (the unbumped call spot) and rescale it to S2 per spot
+  // stencil by strike homogeneity (T8's put-slice engine: keep y[], reset K + xmax).
+  // The base spot stencil (S2 == S) rescales to itself, so p0 is bit-identical to
+  // andersen_lake(...,Call), as are the no-spot-bump greeks (vega/volga/rho/theta);
+  // only the spot-bumped greeks (delta/gamma/vanna/charm) carry the tiny shift.
+  auto Pcall = [&](double dS, double dsig, double dr, double dT) -> double {
+    if (failed) {
+      return std::numeric_limits<double>::quiet_NaN();
+    }
+    const double S2 = S + dS;
+    const double sig2 = sigma + dsig;
+    const double r2 = r + dr;
+    const double T2 = T + dT;
+    // andersen_lake guards, replicated so each stencil matches a full cold call.
+    if (T2 <= 1.0e-12 || sig2 <= 1.0e-8) {
+      const double intr = S2 - K;  // call intrinsic
+      return (intr > 0.0) ? intr : 0.0;
+    }
+    // Regime in the call's internal-put terms (rate = q, yield = r2 — the same
+    // order andersen_lake_call_slice uses). European short-circuits to the Black-76
+    // European CALL (matches andersen_lake exactly); the double-continuation corner
+    // (yield r2 < rate q <= 0) defers to the scalar P() path so andersen_lake's
+    // NotImplemented propagates through the bundle, never a silently-wrong European.
+    switch (classify_regime(/*rate=*/q, /*yield=*/r2)) {
+      case ExerciseRegime::European:
+        return black76_price(S2 * std::exp((r2 - q) * T2), K, T2, sig2,
+                             std::exp(-r2 * T2), Side::Call);
+      case ExerciseRegime::Unsupported:
+        return P(dS, dsig, dr, dT);
+      case ExerciseRegime::American:
+        break;
+    }
+    BndCache* c = nullptr;
+    for (std::size_t i = 0; i < n_memo; ++i) {
+      if (memo[i].dsig == dsig && memo[i].dr == dr && memo[i].dT == dT) {
+        c = &memo[i];
+        break;
+      }
+    }
+    if (c == nullptr) {
+      c = &memo[n_memo++];
+      c->dsig = dsig;
+      c->dr = dr;
+      c->dT = dT;
+      // Solve the internal-put boundary ONCE at the base internal-strike = S (the
+      // unbumped call spot), internal rate = q, internal yield = r2. Warm-start a
+      // bumped state from the converged base memo[0] (also at internal-strike = S),
+      // exactly as the put path; the base and all-cold path solve fresh.
+      const bool is_base = (dsig == 0.0 && dr == 0.0 && dT == 0.0);
+      const bool can_warm = warm_start && !is_base && n_memo > 1 && memo[0].ok &&
+                            memo[0].dsig == 0.0 && memo[0].dr == 0.0 &&
+                            memo[0].dT == 0.0;
+      const AlSolveStatus st =
+          can_warm ? al_solve_put_boundary_warm(/*K=*/S, T2, sig2, /*r=*/q, /*q=*/r2,
+                                                 sch, memo[0].bnd, c->bnd, c->ws)
+                   : al_solve_put_boundary(/*K=*/S, T2, sig2, /*r=*/q, /*q=*/r2, sch,
+                                           c->bnd, c->ws);
+      c->ok = (st == AlSolveStatus::Ok);
+    }
+    if (!c->ok) {
+      return P(dS, dsig, dr, dT);  // boundary collapsed: exact scalar fallback
+    }
+    // Homogeneity rescale of the base boundary to internal-strike = S2 (keep y[],
+    // reset the strike and asymptotic level), then price the internal put at spot =
+    // K (the fixed call strike), strike = S2 (the bumped call spot).
+    c->bnd.K = S2;
+    c->bnd.xmax = al_xmax_put(S2, /*r=*/q, /*q=*/r2);
+    return al_put_price_from_boundary(c->bnd, c->ws, /*spot=*/K, /*strike=*/S2, T2,
+                                      sig2, /*r=*/q, /*q=*/r2);
+  };
   auto EV = [&](double dS, double dsig, double dr, double dT) -> double {
-    return put_fast ? Pput(dS, dsig, dr, dT) : P(dS, dsig, dr, dT);
+    return call_fast ? Pcall(dS, dsig, dr, dT)
+                     : (put_fast ? Pput(dS, dsig, dr, dT) : P(dS, dsig, dr, dT));
   };
 
   // Base mark: EXACT unbumped args — bit-identical to fair_value()'s own call.
