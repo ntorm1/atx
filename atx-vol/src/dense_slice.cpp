@@ -143,14 +143,42 @@ struct Node {
 }  // namespace
 
 double ConvexSliceFit::call_price(double K) const noexcept {
-  if (u.empty()) {
+  if (u.empty() || C.size() != u.size() || !(K > 0.0) || !(F > 0.0) || !(df > 0.0)) {
     return kNaN;
   }
   if (K <= u.front()) {
-    return C.front();
+    if (u.size() < 2) {
+      return C.front();
+    }
+    // Left wing in PUT space. P(0)=0 and P=P0*(K/K0)^a is positive,
+    // increasing and convex for a>=1. Match the fitted edge derivative when
+    // feasible; the a>=1 projection is the no-arbitrage bound implied by a
+    // convex put through the origin. C = df(F-K)+P is therefore bounded,
+    // decreasing, convex and C1 at the splice.
+    const double K0 = u.front();
+    const double intrinsic0 = df * (F - K0);
+    const double P0 = std::max(C.front() - intrinsic0, 0.0);
+    if (!(P0 > 0.0)) {
+      return std::max(df * (F - K), 0.0);
+    }
+    const double slope = (C[1] - C[0]) / (u[1] - u[0]);
+    const double put_slope = std::clamp(slope + df, 0.0, df);
+    const double exponent = std::max(1.0, put_slope * K0 / P0);
+    const double put = P0 * std::pow(K / K0, exponent);
+    return df * (F - K) + put;
   }
   if (K >= u.back()) {
-    return C.back();
+    if (u.size() < 2 || !(C.back() > 0.0)) {
+      return std::max(C.back(), 0.0);
+    }
+    // Right wing in CALL space. A power tail matches the edge slope while
+    // remaining positive, decreasing and convex, and tends to zero instead of
+    // flat-clamping a non-zero option price indefinitely.
+    const std::size_t n = u.size();
+    const double Kn = u.back();
+    const double slope = (C[n - 1] - C[n - 2]) / (u[n - 1] - u[n - 2]);
+    const double exponent = std::max(0.0, -slope * Kn / C.back());
+    return C.back() * std::pow(K / Kn, -exponent);
   }
   // Bracket K and linearly interpolate (convexity-preserving: the piecewise-linear
   // interpolant of convex samples is itself convex, hence butterfly-arb-free).
@@ -177,7 +205,8 @@ double ConvexSliceFit::iv(double k_log) const noexcept {
 Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs, double F,
                                         double T, double df,
                                         const ConvexFitOpts& opts,
-                                        const std::function<double(double)>& w_prev) {
+                                        const std::function<double(double)>& w_prev,
+                                        const ConvexFitContext& context) {
   if (!(F > 0.0) || !(T > 0.0) || !(df > 0.0)) {
     return Err(ErrorCode::InvalidArgument,
                "fit_convex_slice: F/T/df must be positive");
@@ -243,16 +272,43 @@ Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs, double F,
   }
   const double w_mean = wsum / static_cast<double>(M);
 
+  // Robust quote uncertainty in volatility units. build_observations_european
+  // populates noise_sigma; direct/synthetic callers may omit it, in which case
+  // spread/vega is the identical first-order estimate. A deterministic median
+  // prevents one stale/wide wing from changing the whole slice's smoothness.
+  std::vector<double> sigma_errors;
+  sigma_errors.reserve(obs.size());
+  for (const FitObs& o : obs) {
+    double e = o.noise_sigma;
+    if (!(e > 0.0) || !std::isfinite(e)) {
+      e = (o.spread > 0.0 && o.vega > 1.0e-12) ? o.spread / o.vega : 0.0;
+    }
+    if (e > 0.0 && std::isfinite(e)) {
+      sigma_errors.push_back(e);
+    }
+  }
+  double noise_scale = 1.0;
+  if (context.noise_aware_regularization && !sigma_errors.empty()) {
+    const std::size_t mid = sigma_errors.size() / 2;
+    std::nth_element(sigma_errors.begin(), sigma_errors.begin() + mid,
+                     sigma_errors.end());
+    const double median = sigma_errors[mid];
+    // 0.01 is one absolute volatility point. This is a stable, explicit
+    // discrepancy rule: larger measurement error permits proportionally more
+    // curvature suppression, while very clean boards remain near-interpolating.
+    noise_scale = std::clamp(median / 0.01, 0.25, 16.0);
+  }
+
   // Node grid: at most node_cap QP variables. Small boards use the strikes
   // directly; wider boards use a uniform-in-log-moneyness grid spanning the strike
   // range. The design matrix B (linear-in-K interpolation, matching call_price)
   // maps node values to observation prices, so the fit near-interpolates the smile
   // with far fewer variables than strikes — the QP stays O(node_cap³) per step.
   const int cap = (opts.node_cap >= 4) ? opts.node_cap : 40;
-  const Eigen::Index N = std::min<Eigen::Index>(M, static_cast<Eigen::Index>(cap));
-  VecX un(N);
-  if (N == M) {
-    un = Ko;
+  const Eigen::Index Nbase = std::min<Eigen::Index>(M, static_cast<Eigen::Index>(cap));
+  VecX base(Nbase);
+  if (Nbase == M) {
+    base = Ko;
   } else {
     // Node grid CLUSTERED near the money (y = 0), where vega is largest and the
     // penny bid-ask band is tightest — so the fit resolves the ATM smile finely
@@ -261,13 +317,39 @@ Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs, double F,
     const double ylo = std::log(Ko(0) / F);
     const double yhi = std::log(Ko(M - 1) / F);
     constexpr double warp = 1.7;
-    for (Eigen::Index j = 0; j < N; ++j) {
+    for (Eigen::Index j = 0; j < Nbase; ++j) {
       const double t = -1.0 + 2.0 * static_cast<double>(j) /
-                                  static_cast<double>(N - 1);
+                                  static_cast<double>(Nbase - 1);
       const double wv = std::copysign(std::pow(std::fabs(t), warp), t);
       const double y = (wv < 0.0) ? (-wv) * ylo : wv * yhi;
-      un(j) = F * std::exp(y);
+      base(j) = F * std::exp(y);
     }
+  }
+
+  // Calendar/admission knots are exact QP nodes. They are additive to the
+  // market candidate cap by design: node_cap is a latency hint, never authority
+  // to drop a correctness constraint. Sorting and near-equality de-duplication
+  // make the result deterministic regardless of violation discovery order.
+  std::vector<double> node_strikes;
+  node_strikes.reserve(static_cast<std::size_t>(Nbase) + context.required_k.size());
+  for (Eigen::Index j = 0; j < Nbase; ++j) {
+    node_strikes.push_back(base(j));
+  }
+  for (const double k : context.required_k) {
+    if (std::isfinite(k) && std::fabs(k) <= 3.0) {
+      node_strikes.push_back(F * std::exp(k));
+    }
+  }
+  std::sort(node_strikes.begin(), node_strikes.end());
+  node_strikes.erase(
+      std::unique(node_strikes.begin(), node_strikes.end(), [](double a, double b) {
+        return std::fabs(a - b) <= 1.0e-11 * std::max({1.0, std::fabs(a), std::fabs(b)});
+      }),
+      node_strikes.end());
+  const Eigen::Index N = static_cast<Eigen::Index>(node_strikes.size());
+  VecX un(N);
+  for (Eigen::Index j = 0; j < N; ++j) {
+    un(j) = node_strikes[static_cast<std::size_t>(j)];
   }
 
   MatX B = MatX::Zero(M, N);
@@ -294,7 +376,8 @@ Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs, double F,
   // roughness (penalizes curvature CHANGES, so it never fights convexity).
   const MatX BtW = B.transpose() * wo.asDiagonal();  // N×M
   MatX H = 2.0 * (BtW * B);                           // N×N (symmetric)
-  const double lam = opts.lambda * w_mean;
+  const double effective_lambda = opts.lambda * noise_scale;
+  const double lam = effective_lambda * w_mean;
   for (Eigen::Index i = 0; i + 3 < N; ++i) {
     const double row[4] = {-1.0, 3.0, -3.0, 1.0};  // 3rd difference
     for (int a = 0; a < 4; ++a) {
@@ -333,21 +416,28 @@ Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs, double F,
     }
   }
 
-  // Constraints G g >= h on the node values: positivity (N), monotone
-  // non-increasing (N−1), convexity via divided second differences (N−2),
+  // Constraints G g >= h on the node values: discounted intrinsic/forward
+  // price bounds (2N), monotone non-increasing (N−1), convexity via divided
+  // second differences (N−2),
   // (optionally) the slope-below bound (N−1), and (optionally) the calendar
   // floor (<= N). `hrows` carries each row's RHS in parallel with `rows` — 0
   // for the homogeneous positivity/monotone/convexity rows, −df·Δ for the
   // slope-below rows, cfloor_j for the calendar-floor rows.
   std::vector<VecX> rows;
   std::vector<double> hrows;
-  rows.reserve(static_cast<std::size_t>(4 * N));
-  hrows.reserve(static_cast<std::size_t>(4 * N));
-  for (Eigen::Index i = 0; i < N; ++i) {  // g_i >= 0
+  rows.reserve(static_cast<std::size_t>(6 * N));
+  hrows.reserve(static_cast<std::size_t>(6 * N));
+  for (Eigen::Index i = 0; i < N; ++i) {  // g_i >= discounted intrinsic
     VecX rrow = VecX::Zero(N);
     rrow(i) = 1.0;
     rows.push_back(rrow);
-    hrows.push_back(0.0);
+    hrows.push_back(df * std::max(F - un(i), 0.0));
+  }
+  for (Eigen::Index i = 0; i < N; ++i) {  // g_i <= discounted forward
+    VecX rrow = VecX::Zero(N);
+    rrow(i) = -1.0;
+    rows.push_back(rrow);
+    hrows.push_back(-df * F);
   }
   for (Eigen::Index i = 0; i + 1 < N; ++i) {  // g_i - g_{i+1} >= 0
     VecX rrow = VecX::Zero(N);
@@ -394,21 +484,17 @@ Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs, double F,
     h(i) = hrows[static_cast<std::size_t>(i)];
   }
 
-  // Strictly feasible start: a quadratic decreasing from cmax to a small floor —
-  // strictly convex, decreasing, positive, so no constraint is active initially.
-  double cmax = 0.0;
-  for (Eigen::Index i = 0; i < M; ++i) {
-    cmax = std::max(cmax, co(i));
-  }
-  const double span = un(N - 1) - un(0);
-  const double floor = 1.0e-6 * (cmax + 1.0);
+  // Strictly feasible start: a high finite-vol Black curve satisfies both price
+  // bounds, both slope bounds, monotonicity and convexity. A calendar floor is
+  // lifted by a tiny margin without crossing the discounted-forward ceiling.
   VecX x0(N);
   for (Eigen::Index j = 0; j < N; ++j) {
-    const double t = (span > 0.0) ? (un(N - 1) - un(j)) / span : 0.0;
-    double v = floor + cmax * t * t;
+    double v = black76_price(F, un(j), T, 2.0, df, Side::Call);
     if (has_floor[static_cast<std::size_t>(j)]) {
-      // max with the (convex, decreasing, positive) floor curve + strict margin.
-      v = std::max(v, cfloor[static_cast<std::size_t>(j)] * (1.0 + 1.0e-6) + 1.0e-9);
+      const double upper = df * F;
+      const double lifted = cfloor[static_cast<std::size_t>(j)] +
+                            1.0e-9 * std::max(1.0, upper);
+      v = std::max(v, std::min(lifted, std::nextafter(upper, 0.0)));
     }
     x0(j) = v;
   }
@@ -439,7 +525,7 @@ Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs, double F,
     // the band slacks carry the data fit); each slack gets a 2·w_i diagonal so
     // its squared penalty is w_i·s².
     MatX Hz = MatX::Zero(Nz, Nz);
-    const double lam_iv = opts.lambda * w_mean;
+    const double lam_iv = effective_lambda * w_mean;
     for (Eigen::Index i = 0; i + 3 < N; ++i) {
       const double rrow[4] = {-1.0, 3.0, -3.0, 1.0};  // 3rd difference
       for (int a = 0; a < 4; ++a) {
@@ -542,6 +628,11 @@ Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs, double F,
     }
     fit.rmse_price = (wtot > 0.0) ? std::sqrt(wsse / wtot) : 0.0;
     fit.n_obs = static_cast<std::size_t>(M);
+    const VecX slack = Gz * z - hz;
+    fit.n_active = static_cast<std::size_t>(
+        (slack.array().abs() <= 1.0e-7).count());
+    fit.effective_lambda = effective_lambda;
+    fit.noise_scale = noise_scale;
     return Ok(std::move(fit));
   }
 
@@ -566,6 +657,11 @@ Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs, double F,
   }
   fit.rmse_price = (wtot > 0.0) ? std::sqrt(wsse / wtot) : 0.0;  // vega-wtd price RMSE
   fit.n_obs = static_cast<std::size_t>(M);
+  const VecX slack = G * gn - h;
+  fit.n_active = static_cast<std::size_t>(
+      (slack.array().abs() <= 1.0e-7).count());
+  fit.effective_lambda = effective_lambda;
+  fit.noise_scale = noise_scale;
   return Ok(std::move(fit));
 }
 

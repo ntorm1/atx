@@ -8,7 +8,9 @@
 #include "atx/vol/black76.hpp"      // black76_price, black76_value_and_vega
 #include "atx/vol/calib.hpp"        // FitObs
 #include "atx/vol/dense_slice.hpp"  // fit_convex_slice, ConvexSliceFit
+#include "atx/vol/arb.hpp"          // arb_check_calendar
 #include "atx/vol/types.hpp"        // Side
+#include "atx/vol/vol_curve.hpp"    // fit_slice_curve, CurveSurface
 
 // Phase 1 of the arbitrage-constrained dense surface: the per-slice convex
 // call-price QP. These tests pin the two properties the whole approach rests on:
@@ -50,7 +52,9 @@ void expect_arb_free(const atx::vol::ConvexSliceFit& fit) {
   const auto& C = fit.C;
   ASSERT_GE(u.size(), std::size_t{3});
   for (std::size_t i = 0; i < C.size(); ++i) {
-    EXPECT_GE(C[i], -1.0e-9) << "positivity at node " << i;
+    const double intrinsic = fit.df * std::max(fit.F - u[i], 0.0);
+    EXPECT_GE(C[i], intrinsic - 1.0e-8) << "intrinsic bound at node " << i;
+    EXPECT_LE(C[i], fit.df * fit.F + 1.0e-8) << "upper bound at node " << i;
   }
   for (std::size_t i = 0; i + 1 < C.size(); ++i) {
     EXPECT_LE(C[i + 1], C[i] + 1.0e-7) << "monotone (call falls with strike) at " << i;
@@ -357,4 +361,112 @@ TEST(ConvexSliceFit, IntervalDegenerateBandEqualsMid) {
   auto b = fit_convex_slice(obs, F, T, df, iv);
   ASSERT_TRUE(a && b);
   for (std::size_t j = 0; j < a->C.size(); ++j) EXPECT_NEAR(a->C[j], b->C[j], 1e-7);
+}
+
+TEST(ConvexSliceFit, NoiseAwareRegularizationUsesRobustErrorScale) {
+  using namespace atx::vol;
+  constexpr double F = 100.0, T = 0.25, df = 0.99;
+  auto clean = make_synthetic_slice_obs(F, T, df, 0.22);
+  auto noisy = clean;
+  for (FitObs& o : clean) o.noise_sigma = 0.0025;
+  for (FitObs& o : noisy) o.noise_sigma = 0.04;
+
+  ConvexFitContext context;
+  context.noise_aware_regularization = true;
+  const auto clean_fit = fit_convex_slice(clean, F, T, df, {}, {}, context);
+  const auto noisy_fit = fit_convex_slice(noisy, F, T, df, {}, {}, context);
+  ASSERT_TRUE(clean_fit && noisy_fit);
+  expect_arb_free(*clean_fit);
+  expect_arb_free(*noisy_fit);
+  EXPECT_NEAR(clean_fit->noise_scale, 0.25, 1.0e-12);
+  EXPECT_NEAR(noisy_fit->noise_scale, 4.0, 1.0e-12);
+  EXPECT_LT(clean_fit->effective_lambda, noisy_fit->effective_lambda);
+}
+
+TEST(ConvexSliceFit, RequiredCalendarKnotsAreExactConstrainedNodes) {
+  using namespace atx::vol;
+  constexpr double F = 100.0, T = 0.50, df = 0.98;
+  auto obs = make_synthetic_slice_obs(F, T, df, 0.16);
+  const std::vector<double> required = {-0.17, 0.11};
+  ConvexFitContext context;
+  context.required_k = std::span<const double>{required};
+  auto w_prev = [](double k) { return 0.035 + 0.004 * k * k; };
+  const auto fit = fit_convex_slice(obs, F, T, df, {}, w_prev, context);
+  ASSERT_TRUE(fit.has_value()) << fit.error().to_string();
+  expect_arb_free(*fit);
+  for (const double k : required) {
+    const double K = F * std::exp(k);
+    const auto it = std::lower_bound(fit->u.begin(), fit->u.end(), K);
+    ASSERT_NE(it, fit->u.end());
+    EXPECT_NEAR(*it, K, 1.0e-10);
+    const double sigma = fit->iv(k);
+    ASSERT_TRUE(std::isfinite(sigma));
+    EXPECT_GE(sigma * sigma * T, w_prev(k) - 1.0e-7);
+  }
+}
+
+TEST(ConvexSliceFit, PowerWingsRemainBoundedMonotoneAndConvex) {
+  using namespace atx::vol;
+  constexpr double F = 100.0, T = 0.5, df = 0.98;
+  std::vector<FitObs> obs;
+  for (const double K : strike_grid(F)) obs.push_back(mk_obs(F, T, df, K, 0.24));
+  const auto fit = fit_convex_slice(obs, F, T, df);
+  ASSERT_TRUE(fit.has_value()) << fit.error().to_string();
+
+  const std::vector<double> strikes = {10, 20, 40, 60, 70, 80, 100,
+                                       120, 130, 150, 200, 300, 500};
+  std::vector<double> calls;
+  for (const double K : strikes) {
+    const double c = fit->call_price(K);
+    ASSERT_TRUE(std::isfinite(c));
+    EXPECT_GE(c, df * std::max(F - K, 0.0) - 1.0e-8);
+    EXPECT_LE(c, df * F + 1.0e-8);
+    calls.push_back(c);
+  }
+  for (std::size_t i = 0; i + 1 < calls.size(); ++i) {
+    EXPECT_LE(calls[i + 1], calls[i] + 1.0e-9);
+  }
+  for (std::size_t i = 1; i + 1 < calls.size(); ++i) {
+    const double left = (calls[i] - calls[i - 1]) /
+                        (strikes[i] - strikes[i - 1]);
+    const double right = (calls[i + 1] - calls[i]) /
+                         (strikes[i + 1] - strikes[i]);
+    EXPECT_GE(right, left - 1.0e-8) << "wing convexity at K=" << strikes[i];
+  }
+  EXPECT_TRUE(std::isfinite(fit->iv(std::log(50.0 / F))));
+  EXPECT_TRUE(std::isfinite(fit->iv(std::log(200.0 / F))));
+}
+
+TEST(ConvexSliceFit, SharedKCalendarRefitPreservesSliceConvexity) {
+  using namespace atx::vol;
+  constexpr double F = 100.0, df = 0.99;
+  const double T0 = 0.25, T1 = 0.50;
+  std::vector<FitObs> front;
+  std::vector<FitObs> back;
+  for (const double K : strike_grid(F)) {
+    front.push_back(mk_obs(F, T0, df, K, 0.36));
+    // Lower back total variance creates a crossing at every shared-k point.
+    back.push_back(mk_obs(F, T1, df, K, 0.20));
+  }
+  CurveConfig cfg;
+  cfg.kind = VolCurveKind::ConvexDense;
+  cfg.convex.node_cap = 12; // force differing coarse nodes and off-node checks
+
+  auto front_curve = fit_slice_curve(cfg, front, F, T0, df);
+  ASSERT_TRUE(front_curve.has_value()) << front_curve.error().to_string();
+  const IVolCurve* prev = front_curve->get();
+  const std::function<double(double)> floor = [prev](double k) { return prev->w(k); };
+  auto back_curve = fit_slice_curve(cfg, back, F, T1, df, floor);
+  ASSERT_TRUE(back_curve.has_value()) << back_curve.error().to_string();
+
+  const auto* back_dense = dynamic_cast<const ConvexDenseCurve*>(back_curve->get());
+  ASSERT_NE(back_dense, nullptr);
+  expect_arb_free(back_dense->fit());
+
+  CurveSurface surface;
+  surface.push(std::move(*front_curve));
+  surface.push(std::move(*back_curve));
+  const auto violations = arb_check_calendar(surface, -0.25, 0.25, 64);
+  ASSERT_TRUE(violations.has_value()) << violations.error().to_string();
+  EXPECT_TRUE(violations->empty());
 }

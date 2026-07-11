@@ -198,11 +198,72 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
 
   switch (cfg.kind) {
   case VolCurveKind::ConvexDense: {
-    // `w_prev` (when set) becomes the per-node calendar floor: this slice's
-    // total variance cannot dip below the previous expiry's at the fit nodes.
-    ATX_TRY(ConvexSliceFit fit, fit_convex_slice(obs_eu, F, T, df, cfg.convex, w_prev));
-    std::unique_ptr<IVolCurve> curve = std::make_unique<ConvexDenseCurve>(std::move(fit));
-    return Ok(std::move(curve));
+    // The first pass is the noise-aware, constrained market fit. If a previous
+    // expiry exists, admission is evaluated on a SHARED k lattice. Any residual
+    // crossing is promoted to an exact QP node and the slice is re-fit against
+    // the same observations. This is an alternating projection onto the slice
+    // price-shape cone and the calendar cone: every iterate remains bounded,
+    // monotone and convex because calendar repair happens inside the QP, never
+    // by mutating total variance after the fit.
+    constexpr double kCalendarMin = -0.60;
+    constexpr double kCalendarMax = 0.60;
+    constexpr std::uint32_t kCalendarIntervals = 64;
+    constexpr double kCalendarTol = 1.0e-7;
+    constexpr int kMaxCalendarRefits = 4;
+
+    std::vector<double> required_k(calendar_floor_knots.begin(),
+                                   calendar_floor_knots.end());
+    ConvexFitOpts risk_opts = cfg.convex;
+    risk_opts.bound_slope_below = true;
+    for (int pass = 0; pass <= kMaxCalendarRefits; ++pass) {
+      ConvexFitContext context;
+      context.required_k = std::span<const double>{required_k};
+      context.noise_aware_regularization = true;
+      ATX_TRY(ConvexSliceFit fit,
+              fit_convex_slice(obs_eu, F, T, df, risk_opts, w_prev, context));
+
+      if (!w_prev) {
+        std::unique_ptr<IVolCurve> curve =
+            std::make_unique<ConvexDenseCurve>(std::move(fit));
+        return Ok(std::move(curve));
+      }
+
+      std::vector<double> violations;
+      violations.reserve(8);
+      const double dk = (kCalendarMax - kCalendarMin) /
+                        static_cast<double>(kCalendarIntervals);
+      for (std::uint32_t gi = 0; gi <= kCalendarIntervals; ++gi) {
+        const double k = kCalendarMin + dk * static_cast<double>(gi);
+        const double wp = w_prev(k);
+        const double wc = fit.iv(k);
+        const double w_curr = (std::isfinite(wc) && wc > 0.0) ? wc * wc * T : kNaN;
+        if (std::isfinite(wp) && std::isfinite(w_curr) &&
+            wp - w_curr > kCalendarTol) {
+          violations.push_back(k);
+        }
+      }
+      if (violations.empty()) {
+        std::unique_ptr<IVolCurve> curve =
+            std::make_unique<ConvexDenseCurve>(std::move(fit));
+        return Ok(std::move(curve));
+      }
+      if (pass == kMaxCalendarRefits) {
+        return Err(ErrorCode::Unavailable,
+                   "fit_slice_curve: shared-k calendar admission did not converge");
+      }
+
+      const std::size_t before = required_k.size();
+      required_k.insert(required_k.end(), violations.begin(), violations.end());
+      std::sort(required_k.begin(), required_k.end());
+      required_k.erase(std::unique(required_k.begin(), required_k.end()),
+                       required_k.end());
+      if (required_k.size() == before) {
+        return Err(ErrorCode::Unavailable,
+                   "fit_slice_curve: shared-k calendar projection stalled");
+      }
+    }
+    return Err(ErrorCode::Internal,
+               "fit_slice_curve: unreachable shared-k calendar state");
   }
   // Essvi/Svi IGNORE `w_prev`: their calendar handling is unchanged (eSSVI is
   // arb-free by construction through Mingone; raw-SVI relies on the post-fit

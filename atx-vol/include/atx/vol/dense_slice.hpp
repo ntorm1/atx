@@ -55,9 +55,13 @@ struct ConvexSliceFit {
   double rmse_price{0.0};    // vega/spread-weighted price RMSE in half-spread units
   std::size_t n_obs{0};      // observations fit
   std::size_t n_active{0};   // constraints active at the optimum (diagnostic)
+  double effective_lambda{0.0}; // dimensionless roughness used after noise scaling
+  double noise_scale{1.0};      // robust sigma-error scale relative to one vol point
 
   // European call price at strike K by convexity-preserving interpolation of the
-  // node prices; flat-extrapolated (clamped) outside [u.front(), u.back()].
+  // node prices. Outside the nodes, C1 power-law put/call tails preserve price
+  // bounds, monotonicity and convexity and approach the correct zero-strike /
+  // infinite-strike limits (rather than flat-clamping a non-zero option price).
   [[nodiscard]] double call_price(double K) const noexcept;
 
   // Black-76 implied vol at log-moneyness k = log(K / F). Inverts call_price(K).
@@ -93,6 +97,25 @@ struct ConvexFitOpts {
   CalibLossKind loss{CalibLossKind::Mid};
 };
 
+// Per-build controls which are deliberately not persisted as user tuning knobs.
+// The observation/candidate set owns these values, rather than ConvexFitOpts:
+// required_k is used by the shared-k calendar admission loop and noise-aware
+// regularization is the production risk-fit policy. Keeping them separate also
+// leaves the legacy direct fit API reproducible for archive/backtest comparisons.
+struct ConvexFitContext {
+  // Log-moneyness points that must be represented by exact QP nodes. Finite
+  // points in |k|<=3 may extend the observed strike range, allowing the declared
+  // risk band to be admitted even where a slice has sparse wings. These nodes
+  // are additive to node_cap: correctness/admission knots are never discarded
+  // to satisfy a performance hint.
+  std::span<const double> required_k{};
+
+  // Scale lambda by the robust median quote uncertainty in volatility units.
+  // A one-vol-point error bar is neutral; noisier slices are smoothed more and
+  // cleaner slices less. The scale is deterministically clamped to [0.25, 16].
+  bool noise_aware_regularization{false};
+};
+
 // Fit an arbitrage-free convex call-price smile to one expiry's filtered
 // observation set. `obs` are the `build_observations` survivors for the slice
 // (each carries its strike K, mid price, spread, side, and Black-76 vega at the
@@ -117,6 +140,7 @@ struct ConvexFitOpts {
 [[nodiscard]] Result<ConvexSliceFit> fit_convex_slice(
     std::span<const FitObs> obs, double F, double T, double df,
     const ConvexFitOpts& opts = {},
-    const std::function<double(double)>& w_prev = {});
+    const std::function<double(double)>& w_prev = {},
+    const ConvexFitContext& context = {});
 
 }  // namespace atx::vol
