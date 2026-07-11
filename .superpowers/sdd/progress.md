@@ -413,3 +413,20 @@ S0-4: pending (subset fit-asserting tests, preserve ~0.4y noarb baseline).
   repair-wmi-for-python-pip.{ps1,log} and the FrictionMonotonicity -j16 timing flake (concurrent session
   in the same tree). NOT unwound — history rewrite on a shared branch is the operator's call.
   Consequence: SDD review packages must use own-commit diffs (git show <sha>), not BASE..HEAD ranges.
+
+
+---
+
+# atx-vol surface_db — SDD Progress (2026-07-11)
+
+Controller session: surface_db feature
+Worktree: c:/atx/.claude/worktrees/feat-atx-vol-surface-db
+Branch: worktree-feat-atx-vol-surface-db
+Plan: docs/superpowers/plans/2026-07-11-atx-vol-surface-db.md
+Base commit at start: 4133e2d (plan commit; feature work starts after)
+
+## Task ledger
+(none complete yet)
+
+## Minor findings roll-up (for final review triage)
+(none yet)
