@@ -413,3 +413,68 @@ S0-4: pending (subset fit-asserting tests, preserve ~0.4y noarb baseline).
   repair-wmi-for-python-pip.{ps1,log} and the FrictionMonotonicity -j16 timing flake (concurrent session
   in the same tree). NOT unwound — history rewrite on a shared branch is the operator's call.
   Consequence: SDD review packages must use own-commit diffs (git show <sha>), not BASE..HEAD ranges.
+
+
+---
+
+# atx-vol surface_db — SDD Progress (2026-07-11)
+
+Controller session: surface_db feature
+Worktree: c:/atx/.claude/worktrees/feat-atx-vol-surface-db
+Branch: worktree-feat-atx-vol-surface-db
+Plan: docs/superpowers/plans/2026-07-11-atx-vol-surface-db.md
+Base commit at start: 4133e2d (plan commit; feature work starts after)
+
+## Task ledger
+(none complete yet)
+
+## Minor findings roll-up (for final review triage)
+(none yet)
+
+## Environment notes (worktree bring-up)
+- pwsh absent; use `& .\scriptstx-build.ps1 ...` from Windows PowerShell 5.1.
+- Fresh-worktree configure: MUST `git submodule update --init --recursive` first (databento-cpp), and pin `-DCMAKE_MT=C:/Program Files (x86)/Windows Kits/10/bin/10.0.22000.0/x64/mt.exe` on the `cmake --preset ninja` call (find_program(mt) fails under this shell chain even though mt.exe is on PATH).
+- Configure helper: scratchpad configure-worktree.cmd (vcvars64 -> Ninja PATH -> cmake preset ninja + CMAKE_MT pin).
+Task 1: complete (commits 36ceebd..d9449e3, review clean - Approved)
+  Minor (roll-up): CMakeLists src list placement of detail/archive_util.cpp not strictly alphabetical (list already unsorted; cosmetic).
+Task 2: complete (commits 0ea8757..3b9eaa9, review clean after 1 fix loop - Approved)
+  Fix loop: enum wire-range rejection test added (Open_RejectsOutOfRangeEnum) + writer doc reword.
+  Minor (roll-up): test hardcodes record-interior offset +36 (could use offsetof(DbSymbolRecord, preset)); open() runs bounds sanity before header CRC (traced non-exploitable); DbPartitionRecord::flags write-0/never-read (future task).
+Task 3: complete (commits 5795c7a..e0391cc, review clean - Approved, opus; 0 Critical/Important)
+  Minor (roll-up): kSurfaceDbKeyMax doubles as symbol-canon truncation length in upsert/remove_symbol
+  (name says "partition-key chars"; alias kSurfaceDbSymbolMax would remove ambiguity); persist_locked
+  updated_ts_ns=0 "// now" semantics never asserted by a test; coverage gaps — empty-canonical-symbol
+  InvalidArgument, refresh() IoError/ParseError branches, partitions surviving symbol mutation with
+  non-empty partition set (last one blocked until Task 4 write_partition exists).
+Task 4: complete (commits 3dbdf73..f695879, review clean - Approved, opus; 0 Critical/Important)
+  Kind coverage verified against binding oracle: ConvexDense node byte-equal + LinearVariance k/w memcmp
+  blocks pattern-identical to surface_archive_test.cpp; no kind switches in db path (delegates to archive).
+  Minor (roll-up): archive-write happens BEFORE writer lock (brief-mandated; safe only under documented
+  single-writer discipline — two same-key concurrent write_partition calls could pair one thread's manifest
+  record with the other's file); stat/persist failure after successful archive rewrite leaves stale
+  surface_count/file_size metadata for an existing key (opens fine; brief's ordering makes this inherent);
+  empty-items InvalidArgument delegation to archive writer not directly exercised by a test.
+Task 5: complete (commits 90608b5..8d99c49, review clean - Approved, opus; 0 Critical/Important)
+  PROCESS: implementer cancelled by operator mid-verification (full -L atx_vol gate killed on purpose;
+  operator runs full suite later). Controller ran targeted gate itself (SurfaceDb|SurfaceArchive 33/33 PASS),
+  committed, and wrote task-5-report.md. Reviewer verified the apply_fit_preset mirror faithfulness risk
+  clean (all carried fields captured; uncarried fields re-supplied via apply_fit_preset-first order).
+  FULL-MODULE GATE (-L atx_vol) DEFERRED TO OPERATOR — not evidence-backed in this worktree.
+  Minor (roll-up): PinnedConfig_OverridesPreset three flag assertions non-discriminating vs Hft defaults
+  (correction_cache/score_parity/calendar_floor already false); market-snapshot preservation asserted only
+  for S/r/now_ts_ns (expiry_rates/cash_divs by inspection); apply_symbol_config could be noexcept to match
+  apply_fit_preset.
+
+FINAL WHOLE-BRANCH REVIEW (fable, 896a100..d9d852e): "With fixes" -> fix wave 3f12b43 -> re-verified
+  "Ready to merge: Yes". Findings fixed: (Imp#1) writer-side enum wire-range validation in
+  write_db_manifest + persist_locked reordered to parse-validate BEFORE rename (bricking hazard closed;
+  new test SurfaceDb.UpsertBadEnum_FailsCleanly_DbStillOpens); (Imp#2) drop_partition unlink moved inside
+  lock + header thread-safety paragraph corrected (same-key partition mutations must not race in-process;
+  write_partition pre-lock archive write is plan-mandated residual window, documented); (Min#4) Task-N
+  scaffolding comment sweep across all three product files. Targeted suite 34/34 PASS, /WX clean.
+  Roll-up triage: all remaining Minors accepted as post-merge follow-ups (refresh magic peek,
+  find_partition canonicalize_key unification, enum-cap static_asserts, SymPlan/PartPlan scaffolding,
+  find_slot std::string alloc on >15-char symbols, Windows rename-while-open transient note).
+  OUTSTANDING BEFORE MERGE: full-module gate `& .\scripts\atx-build.ps1 -Ctest -L atx_vol` on 3f12b43 —
+  DEFERRED TO OPERATOR by explicit instruction (targeted SurfaceDb|SurfaceArchive 34/34 is the evidence
+  on record). Feature branch worktree-feat-atx-vol-surface-db is otherwise merge-ready.

@@ -39,7 +39,9 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/profile.cpp
     src/fit_policy.cpp
     src/data.cpp
+    src/detail/archive_util.cpp
     src/surface_archive.cpp
+    src/surface_db.cpp
     src/batch.cpp
     src/portfolio_price.cpp
     src/bulk.cpp

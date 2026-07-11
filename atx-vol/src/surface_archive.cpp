@@ -23,22 +23,22 @@
 #include "atx/core/hash.hpp"       // hash_bytes
 #include "atx/vol/american.hpp"    // AlOpts, AmericanMethod
 #include "atx/vol/dense_slice.hpp" // ConvexSliceFit
+#include "atx/vol/detail/archive_util.hpp" // crc32c, crc32c_update, align_up, canonicalize_symbol
 #include "atx/vol/priced_surface.hpp"
 #include "atx/vol/vol_curve.hpp"   // IVolCurve, Convex/Essvi/SviCurve, CurveSurface
 #include "atx/vol/vol_surface.hpp" // EssviParams, SviParams
-
-#if defined(_M_X64) || defined(__x86_64__) || defined(_M_IX86) || defined(__i386__)
-#define ATX_ARCH_X86 1
-#include <intrin.h>
-#else
-#define ATX_ARCH_X86 0
-#endif
 
 namespace atx::vol {
 
 using atx::core::Err;
 using atx::core::ErrorCode;
 using atx::core::Ok;
+
+// Shared with surface_db.hpp (ATXVDB) so both binary formats agree bit-for-bit
+// on CRC-32C and canonical-symbol bytes. See detail/archive_util.hpp.
+using detail::align_up;
+using detail::crc32c;
+using detail::crc32c_update;
 
 // The POD slice structs are serialized verbatim, so they must be trivially
 // copyable for the memcpy round-trip to be well-defined.
@@ -63,96 +63,13 @@ static_assert(sizeof(C8Params) == 176,
 
 namespace {
 
-// ── CRC-32C (Castagnoli, reflected poly 0x82F63B78) ──────────────────────
-//
-// Two implementations with bit-identical output: a table-driven fallback and a
-// hardware SSE4.2 `_mm_crc32` path (8 bytes/step), runtime-dispatched by CPUID.
-// The running-state semantics (no init/final XOR inside `_update`) match, so the
-// one-shot `crc32c` = update(0xFFFFFFFF) ^ 0xFFFFFFFF regardless of path.
-
-[[nodiscard]] constexpr std::array<std::uint32_t, 256> make_crc32c_table() noexcept {
-  std::array<std::uint32_t, 256> table{};
-  for (std::uint32_t n = 0; n < 256; ++n) {
-    std::uint32_t c = n;
-    for (int k = 0; k < 8; ++k) {
-      c = ((c & 1u) != 0u) ? (0x82F63B78u ^ (c >> 1)) : (c >> 1);
-    }
-    table[n] = c;
-  }
-  return table;
-}
-
-inline constexpr std::array<std::uint32_t, 256> kCrc32cTable = make_crc32c_table();
-
-[[nodiscard]] std::uint32_t crc32c_update_table(std::uint32_t crc, const std::byte *p,
-                                                std::size_t n) noexcept {
-  for (std::size_t i = 0; i < n; ++i) {
-    const auto b = static_cast<std::uint32_t>(std::to_integer<std::uint8_t>(p[i]));
-    crc = kCrc32cTable[(crc ^ b) & 0xFFu] ^ (crc >> 8);
-  }
-  return crc;
-}
-
-#if ATX_ARCH_X86
-[[nodiscard]] bool detect_sse42() noexcept {
-  int regs[4] = {0, 0, 0, 0};
-  __cpuid(regs, 1);
-  return (regs[2] & (1 << 20)) != 0; // ECX bit 20 = SSE4.2 (CRC32)
-}
-// Resolved once at load; the dispatch below is a predictable branch.
-const bool kHasSse42 = detect_sse42();
-
-// The SSE4.2 CRC32 intrinsics require the `crc32` target feature to be emitted.
-// The build compiles the TU without it (baseline x86-64), so mark just this
-// function with the target attribute; it is only ever *called* behind the runtime
-// CPUID gate (kHasSse42), so no unsupported instruction is executed on an old CPU.
-#if defined(__clang__)
-__attribute__((target("sse4.2")))
-#endif
-std::uint32_t
-crc32c_update_hw(std::uint32_t crc, const std::byte *p, std::size_t n) noexcept {
-  std::uint64_t c = crc;
-  while (n >= 8) {
-    std::uint64_t v = 0;
-    std::memcpy(&v, p, 8);
-    c = _mm_crc32_u64(c, v);
-    p += 8;
-    n -= 8;
-  }
-  auto c32 = static_cast<std::uint32_t>(c);
-  while (n != 0) {
-    c32 = _mm_crc32_u8(c32, std::to_integer<std::uint8_t>(*p));
-    ++p;
-    --n;
-  }
-  return c32;
-}
-#endif
-
-// Continue a CRC-32C over [p, p+n). `crc` is the running (un-finalized) state.
-[[nodiscard]] std::uint32_t crc32c_update(std::uint32_t crc, const std::byte *p,
-                                          std::size_t n) noexcept {
-#if ATX_ARCH_X86
-  if (kHasSse42) {
-    return crc32c_update_hw(crc, p, n);
-  }
-#endif
-  return crc32c_update_table(crc, p, n);
-}
-
-// One-shot CRC-32C with the standard init/final XOR applied.
-[[nodiscard]] std::uint32_t crc32c(const std::byte *p, std::size_t n) noexcept {
-  return crc32c_update(0xFFFFFFFFu, p, n) ^ 0xFFFFFFFFu;
-}
-
 // ── Small helpers ────────────────────────────────────────────────────────
+// CRC-32C, align_up, and symbol canonicalization live in
+// atx::vol::detail (detail/archive_util.hpp/.cpp) so surface_db.cpp can share
+// a bit-identical implementation; see the `using detail::...;` aliases above.
 
 constexpr char kArchiveMagic[8] = {'A', 'T', 'X', 'V', 'S', 'A', '0', '3'};
 constexpr char kBlobMagic[8] = {'A', 'T', 'X', 'V', 'S', 'B', '0', '3'};
-
-[[nodiscard]] constexpr std::uint64_t align_up(std::uint64_t v, std::uint64_t a) noexcept {
-  return (v + (a - 1u)) & ~(a - 1u);
-}
 
 [[nodiscard]] std::byte *buf_at(std::vector<std::byte> &b, std::uint64_t off) noexcept {
   return b.data() + static_cast<std::size_t>(off);
@@ -185,23 +102,6 @@ constexpr char kBlobMagic[8] = {'A', 'T', 'X', 'V', 'S', 'B', '0', '3'};
   std::array<std::byte, sizeof(ArchiveHeader)> bytes{};
   std::memcpy(bytes.data(), &h, sizeof h);
   return crc32c(bytes.data(), bytes.size());
-}
-
-// ASCII upper-case + truncate to kArchiveSymbolMax; zero-pads the tail.
-[[nodiscard]] std::uint16_t canonicalize(std::string_view src,
-                                         std::array<char, kArchiveSymbolMax> &dst) noexcept {
-  const std::size_t n = std::min(src.size(), kArchiveSymbolMax);
-  for (std::size_t i = 0; i < n; ++i) {
-    char c = src[i];
-    if (c >= 'a' && c <= 'z') {
-      c = static_cast<char>(c - 'a' + 'A');
-    }
-    dst[i] = c;
-  }
-  for (std::size_t i = n; i < kArchiveSymbolMax; ++i) {
-    dst[i] = char{0};
-  }
-  return static_cast<std::uint16_t>(n);
 }
 
 [[nodiscard]] std::int64_t wall_clock_ns() noexcept {
@@ -344,7 +244,12 @@ Result<std::vector<std::byte>> write_surface_archive(std::span<const SurfaceArch
 
     BlobPlan plan;
     plan.surf = &ps;
-    plan.symbol_len = canonicalize(it.symbol, plan.symbol);
+    // plan.symbol{} is zero-initialized (BlobPlan's default member init), so
+    // bytes past canon_sym.size() stay zero -- matching the old canonicalize()
+    // zero-pad tail without needing it explicitly here.
+    const std::string canon_sym = detail::canonicalize_symbol(it.symbol, kArchiveSymbolMax);
+    plan.symbol_len = static_cast<std::uint16_t>(canon_sym.size());
+    std::memcpy(plan.symbol.data(), canon_sym.data(), canon_sym.size());
     if (plan.symbol_len == 0) {
       return Err(ErrorCode::InvalidArgument, "write_surface_archive: empty canonical symbol");
     }
@@ -774,12 +679,12 @@ const ArchiveIndexSlot *SurfaceArchive::find_slot(std::string_view symbol) const
   if (lookup_.empty()) {
     return nullptr;
   }
-  std::array<char, kArchiveSymbolMax> canon{};
-  const std::uint16_t len = canonicalize(symbol, canon);
+  const std::string canon_sym = detail::canonicalize_symbol(symbol, kArchiveSymbolMax);
+  const auto len = static_cast<std::uint16_t>(canon_sym.size());
   if (len == 0) {
     return nullptr;
   }
-  const std::uint64_t h = atx::core::hash_bytes(canon.data(), len);
+  const std::uint64_t h = atx::core::hash_bytes(canon_sym.data(), len);
   const std::uint64_t mask = static_cast<std::uint64_t>(lookup_.size()) - 1ull;
   std::uint64_t i = h & mask;
   for (std::size_t step = 0; step < lookup_.size(); ++step) {
@@ -788,7 +693,7 @@ const ArchiveIndexSlot *SurfaceArchive::find_slot(std::string_view symbol) const
       return nullptr;
     }
     if (s.symbol_hash == h && s.symbol_len == len &&
-        std::memcmp(s.symbol, canon.data(), len) == 0) {
+        std::memcmp(s.symbol, canon_sym.data(), len) == 0) {
       return &s;
     }
     i = (i + 1ull) & mask;
