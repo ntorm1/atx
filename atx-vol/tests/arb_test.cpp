@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -25,6 +26,7 @@ namespace {
 using atx::vol::ArbViolation;
 using atx::vol::arb_check_all;
 using atx::vol::arb_check_butterfly;
+using atx::vol::arb_check_butterfly_slice;
 using atx::vol::arb_check_butterfly_svi_mm;
 using atx::vol::arb_check_butterfly_svi_mm_surface;
 using atx::vol::arb_check_calendar;
@@ -47,6 +49,7 @@ using atx::vol::prefit_filter_underlier;
 using atx::vol::QuoteBatch;
 using atx::vol::QuoteFlag;
 using atx::vol::Side;
+using atx::vol::svi_total_w;
 using atx::vol::SviParams;
 using atx::vol::Universe;
 using atx::vol::VolSurface;
@@ -208,6 +211,121 @@ TEST(ArbButterfly, KMaxNotAboveKMin_ReturnsInvalidArgument) {
   const auto res = arb_check_butterfly(surf, 0.5, -0.5, 64);
   ASSERT_FALSE(res.has_value());
   EXPECT_EQ(res.error().code(), ErrorCode::InvalidArgument);
+}
+
+// ── Per-slice butterfly check (arb_check_butterfly_slice) ──────────────────
+
+TEST(ArbButterflySlice, CleanSviSlicePasses) {
+  // An admissible raw-SVI slice (well inside the Mingone polytope): the
+  // closed-form MM tally AND the grid Durrleman g-check must both report zero.
+  SviParams s{};
+  s.a = 0.04;
+  s.b = 0.3;
+  s.rho = -0.4;
+  s.m = 0.0;
+  s.sigma = 0.25;
+  s.T = 1.0;
+  const auto grid = arb_check_butterfly_slice(
+      [&](double k) { return svi_total_w(s, k); }, s.T, -0.5, 0.5, 64);
+  ASSERT_TRUE(grid.has_value());
+  EXPECT_TRUE(grid.value().empty());
+  const auto mm = arb_check_butterfly_svi_mm(s, s.T);
+  EXPECT_EQ(mm.n_violations, 0u);  // closed-form and grid agree: admissible
+}
+
+TEST(ArbButterflySlice, LeeBoundViolationCaught) {
+  // b*(1+|rho|) = 5*1.4 = 7 > 4/T = 4: the closed-form Lee wing-slope bound
+  // fires (this is the closed-form gate used on served raw-SVI slices).
+  SviParams s{};
+  s.a = 0.04;
+  s.b = 5.0;
+  s.rho = -0.4;
+  s.m = 0.0;
+  s.sigma = 0.25;
+  s.T = 1.0;
+  const auto mm = arb_check_butterfly_svi_mm(s, s.T);
+  EXPECT_GE(mm.n_violations, 1u);
+  EXPECT_GT(mm.max_slack, 0.0);
+}
+
+TEST(ArbButterflySlice, GridCatchesConcaveBump) {
+  // A hand-built total-variance callable with a strong local concavity (w'' < 0
+  // everywhere): the Durrleman density g(k) goes negative, and the grid check
+  // records a butterfly violation with the right sign convention.
+  const auto w_of_k = [](double k) { return 0.10 - 5.0 * k * k; };
+  const auto res = arb_check_butterfly_slice(w_of_k, 1.0, -0.1, 0.1, 8);
+  ASSERT_TRUE(res.has_value());
+  const auto& v = res.value();
+  ASSERT_FALSE(v.empty());
+  for (const ArbViolation& viol : v) {
+    EXPECT_EQ(viol.kind, ArbViolation::Kind::Butterfly);
+    EXPECT_EQ(viol.T1, 1.0);
+    EXPECT_EQ(viol.T2, 1.0);
+    EXPECT_GT(viol.slack, 0.0);      // slack = -g(k) > 0
+    EXPECT_GT(viol.k_log, -0.1);     // located strictly inside the grid
+    EXPECT_LT(viol.k_log, 0.1);
+  }
+}
+
+TEST(ArbButterflySlice, KMaxNotAboveKMin_ReturnsInvalidArgument) {
+  const auto res = arb_check_butterfly_slice(
+      [](double k) { return 0.04 + 0.1 * k * k; }, 1.0, 0.5, -0.5, 64);
+  ASSERT_FALSE(res.has_value());
+  EXPECT_EQ(res.error().code(), ErrorCode::InvalidArgument);
+}
+
+TEST(ArbButterflySlice, SurfaceCheckUnchanged) {
+  // Pin: the surface-level arb_check_butterfly output must be bit-identical to
+  // an independent recomputation of the documented FD Durrleman formula on the
+  // SAME surface evaluator (surf.w). Written to hold BEFORE the shared-helper
+  // refactor and to keep holding after it — any arithmetic drift trips here.
+  const SviParams steep = steep_svi_slice();
+  const VolSurface surf = make_svi_1slice(steep);
+  constexpr double k_min = -0.5;
+  constexpr double k_max = 0.5;
+  constexpr std::uint32_t n_grid = 64;
+  const auto res = arb_check_butterfly(surf, k_min, k_max, n_grid);
+  ASSERT_TRUE(res.has_value());
+
+  // Golden: recompute violations from the documented g(k) formula via surf.w.
+  const double T = steep.T;
+  const double dk = (k_max - k_min) / static_cast<double>(n_grid);
+  const double inv_2dk = 0.5 / dk;
+  const double inv_dksq = 1.0 / (dk * dk);
+  std::vector<ArbViolation> expected;
+  for (std::uint32_t g = 1; g < n_grid; ++g) {
+    const double k = k_min + static_cast<double>(g) * dk;
+    const double w_lo = surf.w(k - dk, T);
+    const double w_mi = surf.w(k, T);
+    const double w_hi = surf.w(k + dk, T);
+    if (!(w_mi > 1.0e-12) || !std::isfinite(w_lo) || !std::isfinite(w_hi)) {
+      continue;
+    }
+    const double w_p = (w_hi - w_lo) * inv_2dk;
+    const double w_pp = (w_hi - 2.0 * w_mi + w_lo) * inv_dksq;
+    const double term1_inner = 1.0 - 0.5 * k * w_p / w_mi;
+    const double term1 = term1_inner * term1_inner;
+    const double term2 = 0.25 * w_p * w_p * (0.25 + 1.0 / w_mi);
+    const double term3 = 0.5 * w_pp;
+    const double g_density = term1 - term2 + term3;
+    if (g_density < -1.0e-9) {
+      ArbViolation v{};
+      v.k_log = k;
+      v.T1 = T;
+      v.T2 = T;
+      v.slack = -g_density;
+      v.kind = ArbViolation::Kind::Butterfly;
+      expected.push_back(v);
+    }
+  }
+
+  ASSERT_FALSE(expected.empty());
+  ASSERT_EQ(res.value().size(), expected.size());
+  for (std::size_t i = 0; i < expected.size(); ++i) {
+    EXPECT_DOUBLE_EQ(res.value()[i].k_log, expected[i].k_log);
+    EXPECT_DOUBLE_EQ(res.value()[i].slack, expected[i].slack);
+    EXPECT_EQ(res.value()[i].kind, expected[i].kind);
+  }
 }
 
 // ── Combined check ────────────────────────────────────────────────────────

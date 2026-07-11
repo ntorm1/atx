@@ -1,5 +1,6 @@
 #include "atx/vol/cstar_calib.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -12,6 +13,7 @@
 
 #include "atx/core/error.hpp"
 #include "atx/core/linalg/solve.hpp"  // solve_spd, MatX, VecX
+#include "atx/vol/arb.hpp"           // arb_check_butterfly_slice
 #include "atx/vol/black76.hpp"        // black76_price, black76_value_and_vega
 #include "atx/vol/detail/calib_shared.hpp"  // shared LM damping constants
 #include "atx/vol/detail/robust.hpp"  // huber_weights_strided
@@ -638,13 +640,38 @@ Result<CStarParams> cstar_calibrate_slice(const EssviParams& essvi_seed,
   const double cstar_rmse = slice_rmse_price(dst, obs);
   dst.rmse_price = cstar_rmse;
 
+  // Butterfly accept gate: a grid Durrleman g(k) >= 0 density check of the
+  // fitted CStar slice over the observed strikes padded by 0.5 in log-moneyness
+  // (accept-time only, one 64-point grid eval per slice). A violation folds
+  // into the same revert-to-seed path as the RMSE gate below.
+  double bf_k_lo = obs.front().k;
+  double bf_k_hi = obs.front().k;
+  for (const FitObs& o : obs) {
+    bf_k_lo = std::min(bf_k_lo, o.k);
+    bf_k_hi = std::max(bf_k_hi, o.k);
+  }
+  const auto fit_bf = arb_check_butterfly_slice(
+      [&dst](double kk) { return cstar_slice_w(dst, kk); }, dst.T, bf_k_lo - 0.5,
+      bf_k_hi + 0.5, 64u);
+  const bool fit_butterfly_ok = fit_bf.has_value() && fit_bf->empty();
+
   const bool slice_ok = std::isfinite(cstar_rmse) &&
                         std::isfinite(dst.theta) && dst.theta > 0.0 &&
                         std::isfinite(dst.C_left) && std::isfinite(dst.C_right);
-  if (!slice_ok || cstar_rmse > 1.05 * cstar_seed_rmse) {
+  if (!slice_ok || cstar_rmse > 1.05 * cstar_seed_rmse || !fit_butterfly_ok) {
     dst = seed_snapshot;
     dst.reverted_to_seed = true;
     dst.rmse_price = cstar_seed_rmse;
+    // Never serve an arbitrageable slice: if even the reverted seed trips the
+    // grid g-check, reject the calibration.
+    const auto seed_bf = arb_check_butterfly_slice(
+        [&dst](double kk) { return cstar_slice_w(dst, kk); }, dst.T,
+        bf_k_lo - 0.5, bf_k_hi + 0.5, 64u);
+    if (!(seed_bf.has_value() && seed_bf->empty())) {
+      return Err(ErrorCode::Unavailable,
+                 "cstar_calibrate_slice: slice butterfly-inadmissible after "
+                 "revert-to-seed");
+    }
   }
   return Ok(dst);
 }

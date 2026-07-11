@@ -1231,6 +1231,9 @@ struct ChainFitResult {
     out_diag->inner_iters_total =
         static_cast<std::uint16_t>(std::min<std::uint32_t>(agg_inner, 0xFFFFu));
     out_diag->n_quotes_used = total_used;
+    // eSSVI is butterfly-free by construction (essvi_phi_max ceiling + cube
+    // reparam clamp + lee_project), so the diagnostic tally is always zero.
+    out_diag->n_butterfly_viol = 0u;
   }
 
   if (n_fit_ok == 0) {
