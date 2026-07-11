@@ -1687,6 +1687,11 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T,
     AlBoundary bnd{};
     AlWorkspace ws{};
     bool ok{false};
+    // Canonical base scaling (internal-strike = S, the unbumped call spot) captured
+    // at solve time. Pcall rescales bnd.{K,xmax} per spot stencil when it prices, so
+    // these let it restore the boundary to its canonical state afterwards — keeping
+    // memo[0] an un-mutated warm seed. Unused by the put path (Pput never rescales).
+    double base_K{0.0}, base_xmax{0.0};
   };
   std::array<BndCache, 7> memo{};
   std::size_t n_memo = 0;
@@ -1809,6 +1814,10 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T,
                    : al_solve_put_boundary(/*K=*/S, T2, sig2, /*r=*/q, /*q=*/r2, sch,
                                            c->bnd, c->ws);
       c->ok = (st == AlSolveStatus::Ok);
+      // Capture the canonical base scaling (internal-strike = S) BEFORE any price
+      // rescales it, so bumped states can warm-seed from an un-mutated memo[0].
+      c->base_K = c->bnd.K;
+      c->base_xmax = c->bnd.xmax;
     }
     if (!c->ok) {
       return P(dS, dsig, dr, dT);  // boundary collapsed: exact scalar fallback
@@ -1818,8 +1827,16 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T,
     // K (the fixed call strike), strike = S2 (the bumped call spot).
     c->bnd.K = S2;
     c->bnd.xmax = al_xmax_put(S2, /*r=*/q, /*q=*/r2);
-    return al_put_price_from_boundary(c->bnd, c->ws, /*spot=*/K, /*strike=*/S2, T2,
-                                      sig2, /*r=*/q, /*q=*/r2);
+    const double price = al_put_price_from_boundary(
+        c->bnd, c->ws, /*spot=*/K, /*strike=*/S2, T2, sig2, /*r=*/q, /*q=*/r2);
+    // T9a-M1: restore the canonical base scaling so the in-place rescale above never
+    // leaves a ~0.1%-off xmax in the memoized boundary. Without this, a subsequent
+    // warm_start state seeds al_solve_put_boundary_warm from memo[0].bnd whose xmax
+    // was left at the last spot stencil's (S ± hS) scaling. Non-warm behavior is
+    // unaffected (every price re-sets K/xmax before use).
+    c->bnd.K = c->base_K;
+    c->bnd.xmax = c->base_xmax;
+    return price;
   };
   auto EV = [&](double dS, double dsig, double dr, double dT) -> double {
     return call_fast ? Pcall(dS, dsig, dr, dT)
@@ -1905,10 +1922,16 @@ Result<AmericanGreeks> american_greeks_al(double S, double K, double T,
     return Err(ErrorCode::InvalidArgument,
                "american_greeks_al: S, K, T, sigma must be > 0");
   }
-  // Puts with genuine early exercise only. Calls (McDonald-Schroder: spot drives
-  // the boundary), the degenerate corners, and the no-early-exercise put (r<=0,
-  // American == European) all fall back to the exact cold FD path.
-  if (side != Side::Put || r <= 0.0 || T <= 1.0e-12 || sigma <= 1.0e-8) {
+  // Native analytic route for genuine early exercise on BOTH sides. Under the
+  // McDonald-Schroder map C(S,K,r,q) = P(K,S,q,r) a call reduces to an internal put
+  // with (rate=q, yield=r); a put is the internal put itself, (rate=r, yield=q). So
+  // the early-exercise regime is governed by the internal-put SHORT RATE: r for a
+  // put, q for a call (classify_regime(rate, yield) -> American iff rate > 0). The
+  // degenerate corners (T~0 / sigma~0) and the no-early-exercise regime (rate <= 0,
+  // American == European) fall back to the exact cold FD path on either side.
+  const bool is_call = (side == Side::Call);
+  const double al_rate = is_call ? q : r;  // internal-put short rate
+  if (al_rate <= 0.0 || T <= 1.0e-12 || sigma <= 1.0e-8) {
     return american_greeks_fd(S, K, T, sigma, r, q, side,
                               AmericanMethod::AndersenLake, opts, /*warm_start=*/false);
   }
@@ -1926,25 +1949,56 @@ Result<AmericanGreeks> american_greeks_al(double S, double K, double T,
   double hv = 1.0e-3;
   if (sigma - hv <= 0.0) hv = 0.5 * sigma;
   const double hr = 1.0e-4;
-  if (r - hr <= 0.0) {  // r-bump would cross into the European regime — keep it simple
+  // Rate-bump regime guard. For a PUT the r-stencil bumps the internal-put SHORT
+  // RATE (= r); the down-bump r - hr <= 0 crosses out of the American regime, so the
+  // bundle falls back to the exact FD path (byte-for-byte the pre-change put guard).
+  // For a CALL the r-stencil bumps the internal YIELD (= r); the internal rate is
+  // q > 0 (gated above) and is NEVER bumped, so classify_regime(rate=q, yield=r±hr)
+  // stays American for every stencil — no regime crossing is possible and al_xmax_put
+  // (rate q > 0) stays > 0. The only bumped-boundary failure a call can hit is a
+  // numeric collapse, caught by the 5-solve `!= Ok` guard below.
+  if (!is_call && r - hr <= 0.0) {
     return american_greeks_fd(S, K, T, sigma, r, q, side,
                               AmericanMethod::AndersenLake, opts, /*warm_start=*/false);
   }
 
+  // Internal-put boundary solves. For a PUT the boundary is spot-independent (strike
+  // = K fixed, rate = r±, yield = q). For a CALL it is solved at the BASE internal-
+  // strike = S (the unbumped call spot) with rate = q fixed, yield = r± bumped, then
+  // rescaled per spot stencil by strike homogeneity in `px`.
+  const double Kb = is_call ? S : K;  // base internal-strike
+  const auto solve = [&](AlBoundary& b, AlWorkspace& w, double sig_s,
+                         double dr) -> AlSolveStatus {
+    const double rate = is_call ? q : (r + dr);
+    const double yield = is_call ? (r + dr) : q;
+    return al_solve_put_boundary(Kb, T, sig_s, rate, yield, sch, b, w);
+  };
   AlBoundary b0, bvp, bvm, brp, brm;
   AlWorkspace w0, wvp, wvm, wrp, wrm;
-  if (al_solve_put_boundary(K, T, sigma, r, q, sch, b0, w0) != AlSolveStatus::Ok ||
-      al_solve_put_boundary(K, T, sigma + hv, r, q, sch, bvp, wvp) != AlSolveStatus::Ok ||
-      al_solve_put_boundary(K, T, sigma - hv, r, q, sch, bvm, wvm) != AlSolveStatus::Ok ||
-      al_solve_put_boundary(K, T, sigma, r + hr, q, sch, brp, wrp) != AlSolveStatus::Ok ||
-      al_solve_put_boundary(K, T, sigma, r - hr, q, sch, brm, wrm) != AlSolveStatus::Ok) {
+  if (solve(b0, w0, sigma, 0.0) != AlSolveStatus::Ok ||
+      solve(bvp, wvp, sigma + hv, 0.0) != AlSolveStatus::Ok ||
+      solve(bvm, wvm, sigma - hv, 0.0) != AlSolveStatus::Ok ||
+      solve(brp, wrp, sigma, +hr) != AlSolveStatus::Ok ||
+      solve(brm, wrm, sigma, -hr) != AlSolveStatus::Ok) {
     return american_greeks_fd(S, K, T, sigma, r, q, side,
                               AmericanMethod::AndersenLake, opts, /*warm_start=*/false);
   }
 
-  // Price at spot S2 on a given solved boundary (its own sigma/r).
-  const auto px = [&](const AlBoundary& b, const AlWorkspace& w, double S2,
-                      double sig2, double r2) {
+  // Price at spot stencil S2 on a given solved boundary (its own sigma/r). The PUT
+  // boundary is spot-independent, so it prices directly (spot = S2, strike = K). The
+  // CALL boundary depends on its strike = the call spot, so `px` rescales it to
+  // internal-strike = S2 by strike homogeneity (keep y[], reset K + xmax) and prices
+  // the internal put at spot = K (the fixed call strike), strike = S2. The in-place
+  // rescale is safe: every px sets K + xmax before pricing, and no boundary is warm-
+  // reused here (all five are solved cold above), so there is no stale-seed hazard.
+  const auto px = [&](AlBoundary& b, const AlWorkspace& w, double S2, double sig2,
+                      double r2) -> double {
+    if (is_call) {
+      b.K = S2;
+      b.xmax = al_xmax_put(S2, /*r=*/q, /*q=*/r2);
+      return al_put_price_from_boundary(b, w, /*spot=*/K, /*strike=*/S2, T, sig2,
+                                        /*r=*/q, /*q=*/r2);
+    }
     return al_put_price_from_boundary(b, w, S2, K, T, sig2, r2, q);
   };
 
@@ -1972,9 +2026,11 @@ Result<AmericanGreeks> american_greeks_al(double S, double K, double T,
   out.vanna = (vSpVp - vSpVm - vSmVp + vSmVm) / (4.0 * hS * hv);
 
   // theta / charm from the continuation-region PDE. In the exercise region the
-  // frozen price is at intrinsic (delta -> -1, gamma -> 0); there the intrinsic
-  // K - S has no time value, so theta = charm = 0.
-  const double intr0 = K - S;
+  // frozen price is at intrinsic (put delta -> -1 / call delta -> +1, gamma -> 0);
+  // there the intrinsic (K - S for a put, S - K for a call) has no time value, so
+  // theta = charm = 0. The PDE relations below are in the ORIGINAL option's (S,r,q)
+  // and are side-agnostic given the correct V/delta/gamma/speed — no sign flip.
+  const double intr0 = is_call ? (S - K) : (K - S);
   const bool exercised = (v0 <= intr0 + 1.0e-9 * K) && (intr0 > 0.0);
   if (exercised) {
     out.theta = 0.0;

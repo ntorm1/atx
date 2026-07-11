@@ -853,8 +853,17 @@ TEST(MultinamePipeline, HeldLotWithoutSurfaceIsCountedNotHidden) {
   EXPECT_EQ(res->n_unpriced_lots[1], 2.0);
   EXPECT_EQ(res->n_unpriced_lots[2], 2.0);
 
-  // Every pre-existing column is BIT-IDENTICAL to the pre-change (d54c191) run —
-  // the new column is purely additive. Values pinned from the d54c191 capture.
+  // Every pre-existing column EXCEPT gross_theta is BIT-IDENTICAL to the pre-change
+  // (d54c191) run; the new column is purely additive. gross_theta is REPINNED for
+  // T9b: the book's CALL legs (index + BBB straddle calls) now price through the
+  // native analytic path (american_greeks_al, backtest analytic_greeks=ON), whose
+  // theta is the continuation-region PDE instead of the old FD-truncated fallback.
+  // The aggregate moved ~+0.29/+0.22/-0.04 on a ~15300 base (~2e-5 relative) — the
+  // sum of the per-leg FD->PDE theta refinements, each oracle-validated to §9.2 (see
+  // CallGreeksAl.MeetsPdeGreekGates / .ThetaCharm_MoreAccurateThanFd and the
+  // PricedSurface repin: analytic-call theta tracks the Crank-Nicolson oracle to
+  // ~3.7e-4/contract, daily contribution ~1e-6 << the $0.001 gate). All other
+  // columns (pnl/nav/gvega/gdelta/ggamma) are theta-independent and stay bit-exact.
   const double base_settle[3] = {0.0, 0.0, 0.0};
 #if defined(NDEBUG)
   // The exact optimized-fit baseline differs from Debug because the surface and
@@ -865,7 +874,7 @@ TEST(MultinamePipeline, HeldLotWithoutSurfaceIsCountedNotHidden) {
                                 -81.942673900813247};
   const double base_gdelta[3] = {18.188082442649421, 12.352773156194246, 21.068239480075906};
   const double base_ggamma[3] = {25.75849401023601, 11.800666536788199, 27.213470414058101};
-  const double base_gtheta[3] = {-15313.46217375967, -8882.6645783889762, -15894.598059857399};
+  const double base_gtheta[3] = {-15313.174656835799, -8882.4476283300683, -15894.640664668097};
 #else
   const double base_pnl[3] = {0.0, -23.481526548028217, -81.067015959714382};
   const double base_nav[3] = {0.0, -23.481526548028217, -104.5485425077426};
@@ -873,7 +882,7 @@ TEST(MultinamePipeline, HeldLotWithoutSurfaceIsCountedNotHidden) {
                                 -81.942673890886567};
   const double base_gdelta[3] = {18.188082442655293, 12.352773156198332, 21.068239480111913};
   const double base_ggamma[3] = {25.758494010213717, 11.800666536901046, 27.213470414234781};
-  const double base_gtheta[3] = {-15313.462173697242, -8882.6645785835717, -15894.598059770382};
+  const double base_gtheta[3] = {-15313.174656734631, -8882.447628568847, -15894.640664874149};
 #endif
   for (std::size_t i = 0; i < dates.size(); ++i) {
     EXPECT_TRUE(bits_equal(res->pnl_total[i], base_pnl[i])) << "pnl_total row " << i;

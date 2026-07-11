@@ -760,6 +760,233 @@ TEST(CallGreeksFd, SolveCount_7NotMemo17) {
   }
 }
 
+// ── Task 9b: native 5-solve analytic CALL greeks (american_greeks_al) ─────────
+//
+// After T9a the call FD route is a fast 7-solve bundle; american_greeks_al now gives
+// calls the NATIVE 5-solve analytic route (base + sigma± + r±, theta/charm from the
+// continuation-region PDE), matching the put path. The spot/vol/rate greeks reproduce
+// the exact cold scalar FD reference to §9.2 (price/vega/volga/rho carry no spot bump
+// => bit-identical; delta/gamma/vanna carry the ~1e-11 homogeneity rescale); theta and
+// charm move to the PDE — the accuracy claim, validated below against the independent
+// Crank-Nicolson oracle.
+TEST(CallGreeksAl, MeetsPdeGreekGates) {
+  const double K = 100.0;
+  struct Case {
+    double S, T, sigma, r, q;
+    const char* tag;
+  };
+  const Case cases[] = {
+      {100.0, 1.00, 0.25, 0.03, 0.06, "atm-dividend"},
+      {110.0, 0.75, 0.22, 0.03, 0.06, "otm-wing"},
+      {92.0, 0.60, 0.30, 0.04, 0.07, "itm-exercise-region"},
+      {100.0, 0.10, 0.30, 0.03, 0.06, "near-expiry"},
+      {130.0, 0.50, 0.20, 0.03, 0.08, "deep-itm"},
+  };
+  const atx::vol::test::OraclePdeOpts grid{};
+  double max_theta_gap = 0.0, max_delta_ext = 0.0;
+  for (const Case& c : cases) {
+    const auto a = american_greeks_al(c.S, K, c.T, c.sigma, c.r, c.q, Side::Call);
+    ASSERT_TRUE(a.has_value()) << c.tag;
+    const AmericanGreeks cold = greeks_fd_reference(c.S, K, c.T, c.sigma, c.r, c.q, Side::Call);
+    // §9.2 vs the INDEPENDENT cold scalar reference (17 american_price solves — not the
+    // new code). price/vega/volga/rho reuse their boundary un-rescaled => bit-identical.
+    EXPECT_TRUE(bits_equal(a->price, cold.price)) << c.tag << " price";
+    EXPECT_TRUE(bits_equal(a->vega, cold.vega)) << c.tag << " vega";
+    EXPECT_TRUE(bits_equal(a->volga, cold.volga)) << c.tag << " volga";
+    EXPECT_TRUE(bits_equal(a->rho, cold.rho)) << c.tag << " rho";
+    EXPECT_LT(std::fabs(a->delta - cold.delta), 2.0e-5) << c.tag << " delta";  // §9.2
+    const double dg = std::fabs(a->gamma - cold.gamma);
+    EXPECT_TRUE(dg < 2.0e-5 || dg < 2.0e-3 * std::fabs(cold.gamma)) << c.tag << " gamma";
+    EXPECT_LT(std::fabs(a->vanna - cold.vanna) * 0.01 * (0.01 * c.S), 1.0e-3) << c.tag << " vanna";
+    // theta/charm §9.2 contribution vs the cold FD reference: the continuation-PDE and
+    // the FD stencil agree to sub-percent, so the P&L contribution stays inside a tick.
+    EXPECT_LT(std::fabs(a->theta - cold.theta) / 365.0, 1.0e-3) << c.tag << " theta-contrib";
+    EXPECT_LT(std::fabs(a->charm - cold.charm) * (0.01 * c.S) / 365.0, 1.0e-3) << c.tag << " charm-contrib";
+    // External anchors from the Crank-Nicolson PDE oracle: price + a numeric calendar
+    // theta (central in T). Catches a wrong internal-put mapping or a flipped PDE sign
+    // (either would move theta O(1), not O(oracle-noise)).
+    const double v0 = oracle_pde_american(c.S, K, c.T, c.sigma, c.r, c.q, Side::Call, grid);
+    ASSERT_TRUE(std::isfinite(v0)) << c.tag;
+    EXPECT_LT(std::fabs(a->price - v0) / std::fmax(v0, 1.0e-6), 5.0e-3) << c.tag << " price-vs-pde";
+    const double hd = 0.01 * c.S;
+    const double vSp = oracle_pde_american(c.S + hd, K, c.T, c.sigma, c.r, c.q, Side::Call, grid);
+    const double vSm = oracle_pde_american(c.S - hd, K, c.T, c.sigma, c.r, c.q, Side::Call, grid);
+    ASSERT_TRUE(std::isfinite(vSp) && std::isfinite(vSm)) << c.tag;
+    const double delta_pde = (vSp - vSm) / (2.0 * hd);
+    max_delta_ext = std::max(max_delta_ext, std::fabs(a->delta - delta_pde));
+    EXPECT_LT(std::fabs(a->delta - delta_pde), 1.0e-2) << c.tag << " delta-vs-pde";
+    const double hT = 1.0e-2;
+    const double vTp = oracle_pde_american(c.S, K, c.T + hT, c.sigma, c.r, c.q, Side::Call, grid);
+    const double vTm = oracle_pde_american(c.S, K, c.T - hT, c.sigma, c.r, c.q, Side::Call, grid);
+    ASSERT_TRUE(std::isfinite(vTp) && std::isfinite(vTm)) << c.tag;
+    const double theta_pde = -(vTp - vTm) / (2.0 * hT);  // calendar theta = dV/dt
+    max_theta_gap = std::max(max_theta_gap, std::fabs(a->theta - theta_pde) / 365.0);
+    EXPECT_LT(std::fabs(a->theta - theta_pde) / 365.0, 2.0e-3)
+        << c.tag << " theta_al=" << a->theta << " theta_pde=" << theta_pde;
+  }
+  std::printf("[9b-al-call-vs-pde] max theta-contrib gap=%.3e  max delta gap=%.3e (oracle-noise)\n",
+              max_theta_gap, max_delta_ext);
+}
+
+// The accuracy claim: the analytic PDE theta/charm sit at least as close to the
+// independent (fine-grid) Crank-Nicolson oracle as the FD-route theta/charm, which
+// pay an O(hT^2) time-bump truncation. Aggregated over well-conditioned points and
+// quantified in the printout.
+TEST(CallGreeksAl, ThetaCharm_MoreAccurateThanFd) {
+  const double K = 100.0;
+  struct Case {
+    double S, T, sigma, r, q;
+    const char* tag;
+  };
+  const Case cases[] = {
+      {100.0, 1.00, 0.25, 0.03, 0.06, "atm"},
+      {105.0, 0.75, 0.22, 0.03, 0.06, "otm"},
+      {97.0, 0.80, 0.28, 0.04, 0.07, "itm"},
+      {100.0, 0.50, 0.30, 0.03, 0.06, "atm-shortT"},
+  };
+  atx::vol::test::OraclePdeOpts fine;
+  fine.n_t = 4000;
+  fine.n_x = 8000;
+  double sum_al = 0.0, sum_fd = 0.0;
+  double csum_al = 0.0, csum_fd = 0.0;
+  for (const Case& c : cases) {
+    const auto al = american_greeks_al(c.S, K, c.T, c.sigma, c.r, c.q, Side::Call);
+    const auto fd = american_greeks_fd(c.S, K, c.T, c.sigma, c.r, c.q, Side::Call);
+    ASSERT_TRUE(al.has_value() && fd.has_value()) << c.tag;
+    const double hT = 5.0e-3, hS = 0.01 * c.S;
+    const double vTp = oracle_pde_american(c.S, K, c.T + hT, c.sigma, c.r, c.q, Side::Call, fine);
+    const double vTm = oracle_pde_american(c.S, K, c.T - hT, c.sigma, c.r, c.q, Side::Call, fine);
+    // charm = d(theta)/dS: central difference of the numeric oracle theta in S.
+    const double vSpTp = oracle_pde_american(c.S + hS, K, c.T + hT, c.sigma, c.r, c.q, Side::Call, fine);
+    const double vSpTm = oracle_pde_american(c.S + hS, K, c.T - hT, c.sigma, c.r, c.q, Side::Call, fine);
+    const double vSmTp = oracle_pde_american(c.S - hS, K, c.T + hT, c.sigma, c.r, c.q, Side::Call, fine);
+    const double vSmTm = oracle_pde_american(c.S - hS, K, c.T - hT, c.sigma, c.r, c.q, Side::Call, fine);
+    ASSERT_TRUE(std::isfinite(vTp) && std::isfinite(vTm));
+    const double theta_ref = -(vTp - vTm) / (2.0 * hT);
+    const double charm_ref = -((vSpTp - vSpTm) - (vSmTp - vSmTm)) / (2.0 * hS * 2.0 * hT);
+    const double eal = std::fabs(al->theta - theta_ref), efd = std::fabs(fd->theta - theta_ref);
+    const double cal = std::fabs(al->charm - charm_ref), cfd = std::fabs(fd->charm - charm_ref);
+    sum_al += eal;
+    sum_fd += efd;
+    csum_al += cal;
+    csum_fd += cfd;
+    std::printf("[9b-theta-acc] %-9s theta ref=%.5f al=%.5f(%.2e) fd=%.5f(%.2e) | charm ref=%.5f al=%.5f(%.2e) fd=%.5f(%.2e)\n",
+                c.tag, theta_ref, al->theta, eal, fd->theta, efd, charm_ref, al->charm, cal, fd->charm, cfd);
+  }
+  std::printf("[9b-theta-acc] SUM|theta err| analytic=%.4e fd=%.4e | SUM|charm err| analytic=%.4e fd=%.4e\n",
+              sum_al, sum_fd, csum_al, csum_fd);
+  // Analytic PDE theta is at least as accurate as the FD theta against the oracle.
+  EXPECT_LE(sum_al, sum_fd);
+}
+
+// With ATX_VOL_COUNTERS=ON the native analytic call bundle solves exactly 5 unique
+// (base + sigma± + r±) internal-put boundaries — down from the FD-delegation's 7 (it
+// also paid the two T± solves). Skipped in the default counters-OFF build.
+TEST(CallGreeksAl, SolveCount_5) {
+  const double S = 100.0, K = 100.0, T = 1.0, sigma = 0.25, r = 0.03, q = 0.06;  // q>0 American call
+  if constexpr (!atx::vol::counters::counters_enabled()) {
+    const auto g = american_greeks_al(S, K, T, sigma, r, q, Side::Call);
+    ASSERT_TRUE(g.has_value());
+    GTEST_SKIP() << "ATX_VOL_COUNTERS off: rebuild with -DATX_VOL_COUNTERS=ON";
+  } else {
+    // FD-route reference: the fast call FD bundle solves 7 unique boundaries.
+    atx::vol::counters::reset();
+    const auto gf = american_greeks_fd(S, K, T, sigma, r, q, Side::Call,
+                                       AmericanMethod::AndersenLake, std::nullopt,
+                                       /*warm_start=*/false);
+    ASSERT_TRUE(gf.has_value());
+    EXPECT_EQ(atx::vol::counters::snapshot().get(atx::vol::counters::Counter::BoundarySolves), 7u);
+    // Native analytic route: 5 boundary solves, theta/charm from the PDE (no T± solves).
+    atx::vol::counters::reset();
+    const auto ga = american_greeks_al(S, K, T, sigma, r, q, Side::Call);
+    ASSERT_TRUE(ga.has_value());
+    EXPECT_EQ(atx::vol::counters::snapshot().get(atx::vol::counters::Counter::BoundarySolves), 5u);
+  }
+}
+
+// Non-American call corners route to the exact cold FD path, byte-for-byte: the
+// European (q<=0 && q<=r) and degenerate (T~0 / sigma~0) corners return the SAME
+// bundle american_greeks_fd would; the Unsupported (r<q<=0) corner surfaces the SAME
+// NotImplemented error.
+TEST(CallGreeksAl, NonAmericanCorners_FallBackToFd) {
+  const double K = 100.0, T = 0.75, sigma = 0.25;
+  // European call: q<=0 && q<=r => american_greeks_al delegates to american_greeks_fd.
+  {
+    const double S = 100.0, r = 0.04, q = 0.0;  // q<=r, no early exercise
+    const auto a = american_greeks_al(S, K, T, sigma, r, q, Side::Call);
+    const auto f = american_greeks_fd(S, K, T, sigma, r, q, Side::Call,
+                                      AmericanMethod::AndersenLake, std::nullopt, /*warm_start=*/false);
+    ASSERT_TRUE(a.has_value() && f.has_value());
+    EXPECT_TRUE(bits_equal(a->price, f->price));
+    EXPECT_TRUE(bits_equal(a->delta, f->delta));
+    EXPECT_TRUE(bits_equal(a->gamma, f->gamma));
+    EXPECT_TRUE(bits_equal(a->vega, f->vega));
+    EXPECT_TRUE(bits_equal(a->theta, f->theta));
+    EXPECT_TRUE(bits_equal(a->charm, f->charm));
+  }
+  // Degenerate near-expiry: T <= 1e-12 => intrinsic; both paths agree bit-for-bit.
+  {
+    const double S = 105.0, r = 0.03, q = 0.06, Ttiny = 1.0e-13;
+    const auto a = american_greeks_al(S, K, Ttiny, sigma, r, q, Side::Call);
+    const auto f = american_greeks_fd(S, K, Ttiny, sigma, r, q, Side::Call,
+                                      AmericanMethod::AndersenLake, std::nullopt, /*warm_start=*/false);
+    ASSERT_TRUE(a.has_value() && f.has_value());
+    EXPECT_TRUE(bits_equal(a->price, f->price));
+    EXPECT_TRUE(bits_equal(a->delta, f->delta));
+  }
+  // Unsupported call (r < q <= 0): both surface NotImplemented (no silent European).
+  {
+    const double S = 100.0, r = -0.05, q = -0.02;  // internal-put rate q=-0.02 > yield r=-0.05
+    const auto a = american_greeks_al(S, K, T, sigma, r, q, Side::Call);
+    const auto f = american_greeks_fd(S, K, T, sigma, r, q, Side::Call,
+                                      AmericanMethod::AndersenLake, std::nullopt, /*warm_start=*/false);
+    ASSERT_FALSE(a.has_value());
+    ASSERT_FALSE(f.has_value());
+    EXPECT_EQ(a.error().code(), f.error().code());
+    EXPECT_EQ(a.error().code(), atx::core::ErrorCode::NotImplemented);
+  }
+}
+
+// Throughput probe (perf, not correctness): the native analytic call bundle (5 solves,
+// PDE theta/charm) vs the fast FD call bundle (7 solves) over a dividend-call grid.
+// DISABLED — run: --gtest_also_run_disabled_tests --gtest_filter=*CallGreeksAl.DISABLED_AnalyticVsFd_Speedup*
+TEST(CallGreeksAl, DISABLED_AnalyticVsFd_Speedup) {
+  const double S = 100.0, r = 0.03, q = 0.06;  // q>0 American dividend call
+  struct Pt {
+    double K, T, sigma;
+  };
+  std::vector<Pt> grid;
+  for (const double K : {70.0, 85.0, 100.0, 115.0, 130.0}) {
+    for (const double T : {0.05, 0.25, 0.75, 1.5}) {
+      for (const double sigma : {0.15, 0.30}) {
+        grid.push_back({K, T, sigma});
+      }
+    }
+  }
+  const int reps = 400;
+  volatile double sink = 0.0;
+  auto t0 = std::chrono::steady_clock::now();
+  for (int rep = 0; rep < reps; ++rep)
+    for (const Pt& p : grid) {
+      const auto g = american_greeks_fd(S, p.K, p.T, p.sigma, r, q, Side::Call,
+                                        AmericanMethod::AndersenLake, std::nullopt, /*warm_start=*/false);
+      sink += g ? g->delta + g->vega + g->theta : 0.0;
+    }
+  auto t1 = std::chrono::steady_clock::now();
+  for (int rep = 0; rep < reps; ++rep)
+    for (const Pt& p : grid) {
+      const auto g = american_greeks_al(S, p.K, p.T, p.sigma, r, q, Side::Call);
+      sink += g ? g->delta + g->vega + g->theta : 0.0;
+    }
+  auto t2 = std::chrono::steady_clock::now();
+  const double fd_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+  const double al_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
+  const double calls = static_cast<double>(reps) * static_cast<double>(grid.size());
+  std::printf("[9b-call-throughput] fd(7-solve)=%.0f ns/call  al(5-solve)=%.0f ns/call  speedup=%.2fx\n",
+              fd_ms * 1e6 / calls, al_ms * 1e6 / calls, fd_ms / al_ms);
+  EXPECT_GT(sink, -1e18);
+}
+
 // Delta-only fast path: american_delta must reproduce american_greeks_fd's delta
 // BIT-IDENTICALLY on both sides (the put/AL lane shares the base boundary; the call
 // lane is the same two-price central difference), at ~1-2 boundary solves instead
@@ -848,6 +1075,71 @@ TEST(AmericanGreeks, WarmStart_MatchesCold_PutGrid) {
   // reference to within that budget's own convergence noise (~1% on the smallest
   // rate/time sensitivities) and far inside a PnL tick in absolute terms
   // (greek_err * per-step bump << $0.01). The mark (price) stays bit-identical.
+  EXPECT_LT(abs_vega, 5.0e-2);
+  EXPECT_LT(abs_theta, 5.0e-2);
+  EXPECT_LT(abs_rho, 5.0e-1);
+  EXPECT_LT(rel_vega, 1.5e-2);
+  EXPECT_LT(rel_theta, 1.5e-2);
+  EXPECT_LT(rel_rho, 1.5e-2);
+}
+
+// T9a-M1: the fast CALL FD path warm-seeds each bumped internal-put boundary from the
+// converged base memo[0]. Pcall rescales memo[0].bnd.{K,xmax} in place when it prices
+// the base spot stencils, so before the fix a bumped state seeded from a memo[0] whose
+// xmax was left ~0.1% off (the last S ± hS scaling). The fix restores the canonical
+// base scaling after each price, so the warm seed is canonical: a warm_start=true call
+// bundle now matches the warm_start=false bundle to ≤§9.2. price/delta/gamma reuse the
+// cold base boundary in both paths => bit-identical; the warm-solved sensitivities
+// reconverge to the cold FD reference within the shared 2 JN + 4 FP sweep budget.
+TEST(CallGreeksFd, WarmStart_MatchesCold) {
+  const double S = 100.0, r = 0.03, q = 0.05;  // q>r>0: early call exercise binds
+  double abs_price = 0.0, abs_delta = 0.0, abs_gamma = 0.0;
+  double abs_vega = 0.0, abs_theta = 0.0, abs_rho = 0.0;
+  double rel_vega = 0.0, rel_theta = 0.0, rel_rho = 0.0;
+  int checked = 0;
+  for (const double K : {70.0, 85.0, 100.0, 115.0, 130.0}) {
+    for (const double T : {0.05, 0.1, 0.5, 1.0, 2.0}) {
+      for (const double sigma : {0.12, 0.25, 0.45}) {
+        const auto cold = american_greeks_fd(S, K, T, sigma, r, q, Side::Call,
+                                             AmericanMethod::AndersenLake,
+                                             std::nullopt, /*warm_start=*/false);
+        const auto warm = american_greeks_fd(S, K, T, sigma, r, q, Side::Call,
+                                             AmericanMethod::AndersenLake,
+                                             std::nullopt, /*warm_start=*/true);
+        ASSERT_TRUE(cold.has_value() && warm.has_value())
+            << "K=" << K << " T=" << T << " sigma=" << sigma;
+        // price/delta/gamma reuse the cold base boundary in both paths => bit-identical.
+        EXPECT_TRUE(bits_equal(warm->price, cold->price))
+            << "K=" << K << " T=" << T << " sigma=" << sigma;
+        EXPECT_TRUE(bits_equal(warm->delta, cold->delta));
+        EXPECT_TRUE(bits_equal(warm->gamma, cold->gamma));
+        abs_price = std::max(abs_price, std::fabs(warm->price - cold->price));
+        abs_delta = std::max(abs_delta, std::fabs(warm->delta - cold->delta));
+        abs_gamma = std::max(abs_gamma, std::fabs(warm->gamma - cold->gamma));
+        abs_vega = std::max(abs_vega, std::fabs(warm->vega - cold->vega));
+        abs_theta = std::max(abs_theta, std::fabs(warm->theta - cold->theta));
+        abs_rho = std::max(abs_rho, std::fabs(warm->rho - cold->rho));
+        const auto rel_if = [](double a, double b, double floor) {
+          return std::fabs(b) > floor ? std::fabs(a - b) / std::fabs(b) : 0.0;
+        };
+        rel_vega = std::max(rel_vega, rel_if(warm->vega, cold->vega, 1.0));
+        rel_theta = std::max(rel_theta, rel_if(warm->theta, cold->theta, 1.0));
+        rel_rho = std::max(rel_rho, rel_if(warm->rho, cold->rho, 1.0));
+        ++checked;
+      }
+    }
+  }
+  std::printf(
+      "[9b-warm-vs-cold-call] pts=%d abs: price=%.2e delta=%.2e gamma=%.2e vega=%.2e "
+      "theta=%.2e rho=%.2e | rel(>1): vega=%.2e theta=%.2e rho=%.2e\n",
+      checked, abs_price, abs_delta, abs_gamma, abs_vega, abs_theta, abs_rho,
+      rel_vega, rel_theta, rel_rho);
+  EXPECT_EQ(checked, 75);
+  EXPECT_EQ(abs_price, 0.0);  // cold base boundary in both => bit-identical mark
+  EXPECT_EQ(abs_delta, 0.0);  // spot stencils rescale the SAME cold base boundary
+  EXPECT_EQ(abs_gamma, 0.0);
+  // Warm bumped boundaries reconverge from the CANONICAL base seed (the M1 fix) to the
+  // cold FD reference within the shared sweep budget — same envelope as the put path.
   EXPECT_LT(abs_vega, 5.0e-2);
   EXPECT_LT(abs_theta, 5.0e-2);
   EXPECT_LT(abs_rho, 5.0e-1);

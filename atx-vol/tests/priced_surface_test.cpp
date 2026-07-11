@@ -439,7 +439,14 @@ TEST(PricedSurface, PinnedPreChangeAnchors) {
   const auto ga = s.greeks_analytic(K, T, side);
   ASSERT_TRUE(ga.has_value());
   EXPECT_EQ(hexbits(ga->price), 0x401d9b28c191f3f5ULL);
-  EXPECT_EQ(hexbits(ga->theta), 0xc02f72f306f74e74ULL);
+  // T9b repin: greeks_analytic() now routes CALLS through the native 5-solve analytic
+  // path (american_greeks_al), whose theta comes from the continuation-region PDE
+  // rather than the old FD-truncated fallback. The value moved -15.7245104 ->
+  // -15.7244424 (a 6.8e-5 / 1.9e-7-per-day shift). Validated against the independent
+  // Crank-Nicolson oracle (fine 6000x9000 grid, hT=4e-3): oracle theta = -15.7248131,
+  // residual 3.7e-4 (daily contribution 1.0e-6 << the §9.2 $0.001 gate). price/delta
+  // (below) are unchanged (base boundary, no spot bump).
+  EXPECT_EQ(hexbits(ga->theta), 0xc02f72ea1df85bd8ULL);
   const auto d = s.delta(K, T, side);
   ASSERT_TRUE(d.has_value());
   EXPECT_EQ(hexbits(*d), 0x3fdea32238037610ULL);
