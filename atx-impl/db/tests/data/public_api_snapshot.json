@@ -184,7 +184,6 @@
     "adjustment_factors_asof",
     "alpha_research",
     "apply_pending_migrations",
-    "apply_terminal_return_policy",
     "archive_primary_document_url",
     "asof",
     "backfill",

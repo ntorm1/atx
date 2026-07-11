@@ -36,11 +36,18 @@ DELISTING_CODE_RECONCILIATION_CHECK_NAME = "delisting_code_reconciliation_unreso
 SURVIVORSHIP_DATASET_ID = "forward_returns_survivorship_safe"
 RECONCILIATION_DATASET_ID = "delisting_code_reconciliation"
 
-# Anti-join (S4-3 brief). The formation-date grid is derived security-INDEPENDENTLY -- a fully
-# dropped name has zero rows of its own in forward_returns_survivorship_safe, so the grid of
-# windows that were actually evaluated must come from the surviving names' rows. For each observed
-# /policy terminal return whose delist falls in such a window, the absence of a *stitched* row for
-# that same (security_id, as_of_date, horizon_days) is a survivorship drop.
+# Anti-join (S4-3 brief). CHECK == BUILD. The formation-window grid TUPLES are derived
+# security-INDEPENDENTLY -- a fully dropped name has zero rows of its own in
+# forward_returns_survivorship_safe, so the grid of windows that were actually evaluated (and the
+# build-consistent forward_end_date for each (as_of_date, horizon_days)) must come from the panel's
+# own rows. But the build (refresh_survivorship_safe_forward_returns -> the `formation` CTE) stitches
+# a delisting name ONLY at ITS OWN equity_daily_bars formation dates (close IS NOT NULL) crossed with
+# the horizons -- never at a formation date the name did not trade on. So the check demands a stitched
+# row for a (security, as_of, horizon) triple ONLY when the delisting name itself had a formation bar
+# on that as_of_date. The `JOIN equity_daily_bars b` below enforces exactly that build gate, which
+# eliminates the pre-delist-halt false positive (a name halted before delisting has no bar on a
+# surviving name's later formation as_of) while still catching genuine drops -- including fully-dropped
+# names, which have zero forward_returns_survivorship_safe rows but do have equity_daily_bars rows.
 _SURVIVORSHIP_SQL = """
 SELECT count(*)::DOUBLE
 FROM delisting_terminal_returns t
@@ -50,6 +57,10 @@ JOIN (
 ) panel
   ON t.delist_date >  panel.as_of_date
  AND t.delist_date <= panel.forward_end_date
+JOIN equity_daily_bars b        -- gate to the delisting name's OWN formation bars (== the build)
+  ON b.security_id = t.security_id
+ AND b.trade_date  = panel.as_of_date
+ AND b.close IS NOT NULL
 LEFT JOIN forward_returns_survivorship_safe f
   ON f.security_id  = t.security_id
  AND f.as_of_date   = panel.as_of_date
@@ -77,7 +88,11 @@ def _survivorship_spec() -> SqlQualityCheck:
         sql=_SURVIVORSHIP_SQL,
         threshold=0.0,
         comparator="le",
-        required_tables=("delisting_terminal_returns", "forward_returns_survivorship_safe"),
+        required_tables=(
+            "delisting_terminal_returns",
+            "forward_returns_survivorship_safe",
+            "equity_daily_bars",
+        ),
         warn_if_missing=True,
         failure_status="failed",
         severity="critical",

@@ -1306,6 +1306,11 @@ def test_survivorship_dqc_red_on_dropped_delisted_names_green_when_stitched(tmp_
         "INSERT INTO delisting_terminal_returns (terminal_return_id, source, security_id, delist_date, "
         "as_of_date, available_at, terminal_return, terminal_return_source) "
         "VALUES ('t1','ss','A', DATE '2024-01-10', DATE '2024-01-10', TIMESTAMP '2024-01-12 12:00', -0.5, 'observed')")
+    # A genuinely FORMED on the grid's formation date: it has its own equity_daily_bars bar on
+    # 2024-01-02, so the build WOULD have stitched it there -> the check must demand that row.
+    tmp_store.con.execute(
+        "INSERT INTO equity_daily_bars (source, security_id, symbol, trade_date, close, available_at) "
+        "VALUES ('test','A','A', DATE '2024-01-02', 10.0, TIMESTAMP '2024-01-02 22:00')")
     # ... and a survivorship-safe panel that DROPS it (only a surviving name, no stitched row for A)
     tmp_store.con.execute(
         "INSERT INTO forward_returns_survivorship_safe (forward_return_id, source, security_id, as_of_date, "
@@ -1321,6 +1326,36 @@ def test_survivorship_dqc_red_on_dropped_delisted_names_green_when_stitched(tmp_
         "true, true, DATE '2024-01-10', TIMESTAMP '2024-01-12 12:00')")
     green = survivorship_forward_return_check(tmp_store)
     assert green.status in ("passed", "skipped")
+
+
+def test_survivorship_dqc_green_on_pre_delist_halt_not_in_own_formation(tmp_store):
+    # PF4-S4 S4-3 (fix): the common pre-delist-halt pattern must NOT false-positive the critical gate.
+    # The build stitches a delisting name only at ITS OWN formation (bar) dates crossed with the
+    # horizons. A name halted before delisting has no formation bar on a SURVIVING name's later
+    # formation as_of, so the build correctly stitches nothing there -- the check must not demand it.
+    from db.quality.checks_survivorship import survivorship_forward_return_check
+    con = tmp_store.con
+    # Delisting name D: last traded 2024-01-03 (then halted); delists 2024-01-10.
+    con.executemany(
+        "INSERT INTO equity_daily_bars (source, security_id, symbol, trade_date, close, available_at) "
+        "VALUES ('test','D','D', ?, ?, ?)",
+        [(dt.date(2024, 1, 2), 50.0, dt.datetime(2024, 1, 2, 22, 0)),
+         (dt.date(2024, 1, 3), 45.0, dt.datetime(2024, 1, 3, 22, 0))],
+    )
+    con.execute(
+        "INSERT INTO delisting_terminal_returns (terminal_return_id, source, security_id, delist_date, "
+        "as_of_date, available_at, terminal_return, terminal_return_source) "
+        "VALUES ('t1','ss','D', DATE '2024-01-10', DATE '2024-01-10', TIMESTAMP '2024-01-12 12:00', -0.6, 'observed')")
+    # Surviving name Z forms at 2024-01-05 (AFTER D's last bar); its 21d window covers D's delist.
+    # D never traded on 2024-01-05, so this grid formation date must NOT apply to D.
+    con.execute(
+        "INSERT INTO forward_returns_survivorship_safe (forward_return_id, source, security_id, as_of_date, "
+        "horizon_days, forward_end_date, forward_return, is_delisted_in_horizon, is_stitched, available_at) "
+        "VALUES ('f1','ss','Z', DATE '2024-01-05', 21, DATE '2024-01-31', 0.03, false, false, TIMESTAMP '2024-02-01 22:00')")
+    result = survivorship_forward_return_check(tmp_store)
+    # GREEN: no stitched row is demanded at a formation date the delisting name never traded on.
+    # (Under the pre-fix security-independent grid this false-positives to failed/critical.)
+    assert result.status == "passed" and result.severity == "critical"
 
 
 def test_dlret_not_visible_before_delist_confirmation(tmp_store, tmp_path):
@@ -1375,6 +1410,10 @@ def test_survivorship_checks_wired_into_warehouse_quality_sweep(tmp_store):
         "INSERT INTO delisting_terminal_returns (terminal_return_id, source, security_id, delist_date, "
         "as_of_date, available_at, terminal_return, terminal_return_source) "
         "VALUES ('t1','ss','A', DATE '2024-01-10', DATE '2024-01-10', TIMESTAMP '2024-01-12 12:00', -0.5, 'observed')")
+    # A formed on the grid's formation date (own bar on 2024-01-02) -> a genuine survivorship drop.
+    tmp_store.con.execute(
+        "INSERT INTO equity_daily_bars (source, security_id, symbol, trade_date, close, available_at) "
+        "VALUES ('test','A','A', DATE '2024-01-02', 10.0, TIMESTAMP '2024-01-02 22:00')")
     tmp_store.con.execute(
         "INSERT INTO forward_returns_survivorship_safe (forward_return_id, source, security_id, as_of_date, "
         "horizon_days, forward_end_date, forward_return, is_delisted_in_horizon, is_stitched, available_at) "
