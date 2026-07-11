@@ -35,6 +35,7 @@ snapshot and call `refresh()` to pick up external writer updates cheaply.
 - Thread-safety contract: `SurfaceDb` const queries are safe from any thread; mutating calls are serialized internally by a mutex; cross-process coordination is single-writer / many-reader (document in the header).
 - All new tests are gtest cases named `SurfaceDb*` inside `atx-vol/tests/surface_db_test.cpp`, registered in `atx-vol/tests/CMakeLists.txt`.
 - The plan's test snippets write `Result` idioms as `has_value()` / `error().code()`; before writing test code, check how `surface_archive_test.cpp` interrogates `Result`/`Status` (value access, error access, void-Status success checks) and use THOSE exact idioms — the archive test file is the binding reference for the atx-core Result API, not this plan's pseudocode.
+- **Curve-kind coverage (explicit requirement):** ConvexDense and LinearVariance surfaces must be FULLY supported through the surface_db binary path, proven by tests: the Task 4 partition round-trip covers ConvexDense (node arrays byte-equal) and LinearVariance (nodes bit-identical) alongside Essvi, and the Task 5 end-to-end test stores/serves a ConvexDense surface. The archive layer already round-trips both kinds (surface_archive_test.cpp `RoundTrip_ConvexDense_TheoBitIdentical_AndNodesByteEqual`, `RoundTrip_LinearVariance_TheoAndNodesBitIdentical`) — surface_db must not narrow that support anywhere (no kind switches that omit LinearVariance/ConvexDense).
 - Build/test commands (run from worktree root; they self-enter the VS dev shell). NOTE: `pwsh` (PowerShell 7) is NOT installed — invoke the script directly from Windows PowerShell 5.1 as `& .\scripts\atx-build.ps1 ...`:
   - configure (once, already done by the controller): `& .\scripts\atx-build.ps1 configure`
   - build: `& .\scripts\atx-build.ps1 build atx-vol-tests`
@@ -805,7 +806,7 @@ Partitioned surface storage: each partition key maps to one ATXVSA archive file 
 
 **Steps:**
 
-- [ ] **Step 1: Write failing tests.** Synthesize `PricedSurface`s exactly the way surface_archive_test.cpp does — copy its `make_essvi(uid, n_slices)` helper (top of that file) into surface_db_test.cpp's anonymous namespace (or a tiny shared local helper; keep it self-contained).
+- [ ] **Step 1: Write failing tests.** Synthesize `PricedSurface`s exactly the way surface_archive_test.cpp does — copy its `make_essvi(uid, n_slices)`, `make_convex(uid, n_slices, n_nodes)`, and `make_linear(...)` helpers (top of that file) into surface_db_test.cpp's anonymous namespace (or a tiny shared local helper; keep it self-contained). **ConvexDense and LinearVariance are first-class citizens of this task's coverage — the mixed-kind test below is mandatory, not optional.**
 
 ```cpp
 TEST(SurfaceDbPartition, WriteOpenLoad_TheoBitIdentical) {
@@ -843,6 +844,39 @@ TEST(SurfaceDbPartition, WriteOpenLoad_TheoBitIdentical) {
 (The implementer copies the exact theo-probe + `bits_equal` assertions from `RoundTrip_Essvi_TheoBitIdentical` — the plan intentionally defers to that file as the bit-identity oracle rather than restating it; it is the binding pattern.)
 
 ```cpp
+TEST(SurfaceDbPartition, MixedKinds_ConvexDenseAndLinearVariance_RoundTripBitIdentical) {
+  // Explicit requirement: ConvexDense + LinearVariance surfaces fully
+  // supported through the db's binary path. One partition holding all three
+  // kinds; each loads back with the SAME assertions the archive suite uses:
+  //  - ConvexDense: theo bit-identical AND node arrays byte-equal (copy the
+  //    assertion block from RoundTrip_ConvexDense_TheoBitIdentical_
+  //    AndNodesByteEqual in surface_archive_test.cpp);
+  //  - LinearVariance: theo + nodes bit-identical (copy from RoundTrip_
+  //    LinearVariance_TheoAndNodesBitIdentical);
+  //  - Essvi: theo bit-identical.
+  const auto root = test_root("part_mixed_kinds");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+  const auto sc = make_convex(/*uid=*/11, /*n_slices=*/2, /*n_nodes=*/40);
+  const auto sl = make_linear(/*uid=*/12, /*n_slices=*/2);
+  const auto se = make_essvi(/*uid=*/13, /*n_slices=*/2);
+  const std::vector<SurfaceArchiveItem> items{
+      {"CVX", &sc}, {"LIN", &sl}, {"ESS", &se}};
+  ASSERT_TRUE(db->write_partition("2026-07-10", items).has_value());
+  auto db2 = SurfaceDb::open(root.string());
+  ASSERT_TRUE(db2.has_value());
+  auto c = db2->load_surface("2026-07-10", "CVX");
+  ASSERT_TRUE(c.has_value());
+  // <ConvexDense assertions here — theo bit-identity + byte-equal nodes>
+  auto l = db2->load_surface("2026-07-10", "LIN");
+  ASSERT_TRUE(l.has_value());
+  // <LinearVariance assertions here — theo + nodes bit-identical>
+  auto e = db2->load_surface("2026-07-10", "ESS");
+  ASSERT_TRUE(e.has_value());
+  // <Essvi theo bit-identity assertion here>
+  std::filesystem::remove_all(root);
+}
+
 TEST(SurfaceDbPartition, RewriteReplaces_DropRemoves) {
   const auto root = test_root("part_lifecycle");
   auto db = SurfaceDb::create(root.string());
@@ -1018,7 +1052,9 @@ TEST(SurfaceDbEndToEnd, ConfigureStoreReloadServe) {
     aapl.enabled = false;
     ASSERT_TRUE(db->upsert_symbol("AAPL", aapl).has_value());
 
-    const auto s1 = make_essvi(1, 3);
+    // SPY stored as ConvexDense (matches its pinned config; exercises the
+    // variable-length-node kind end-to-end), AAPL as Essvi.
+    const auto s1 = make_convex(1, 3, 40);
     const auto s2 = make_essvi(2, 3);
     const std::vector<SurfaceArchiveItem> items{{"SPY", &s1}, {"AAPL", &s2}};
     ASSERT_TRUE(db->write_partition("2026-07-11", items).has_value());
