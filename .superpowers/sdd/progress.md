@@ -454,3 +454,13 @@ Task 4: complete (commits 3dbdf73..f695879, review clean - Approved, opus; 0 Cri
   record with the other's file); stat/persist failure after successful archive rewrite leaves stale
   surface_count/file_size metadata for an existing key (opens fine; brief's ordering makes this inherent);
   empty-items InvalidArgument delegation to archive writer not directly exercised by a test.
+Task 5: complete (commits 90608b5..8d99c49, review clean - Approved, opus; 0 Critical/Important)
+  PROCESS: implementer cancelled by operator mid-verification (full -L atx_vol gate killed on purpose;
+  operator runs full suite later). Controller ran targeted gate itself (SurfaceDb|SurfaceArchive 33/33 PASS),
+  committed, and wrote task-5-report.md. Reviewer verified the apply_fit_preset mirror faithfulness risk
+  clean (all carried fields captured; uncarried fields re-supplied via apply_fit_preset-first order).
+  FULL-MODULE GATE (-L atx_vol) DEFERRED TO OPERATOR — not evidence-backed in this worktree.
+  Minor (roll-up): PinnedConfig_OverridesPreset three flag assertions non-discriminating vs Hft defaults
+  (correction_cache/score_parity/calendar_floor already false); market-snapshot preservation asserted only
+  for S/r/now_ts_ns (expiry_rates/cash_divs by inspection); apply_symbol_config could be noexcept to match
+  apply_fit_preset.
