@@ -100,3 +100,17 @@ target_link_libraries(atx-vol-reloc-bench
         atx_warnings
         Threads::Threads
 )
+
+# Correctness-first V2 pipeline release gate. This target owns its main() and
+# computes admitted-only p50/p95 distributions directly because rejected fits
+# must not enter Google Benchmark's iteration timing population.
+add_executable(atx-vol-surface-v2-bench
+    surface_v2_bench.cpp
+)
+target_link_libraries(atx-vol-surface-v2-bench
+    PRIVATE
+        atx::vol
+        atx::core
+        atx_warnings
+        Threads::Threads
+)
