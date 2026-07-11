@@ -251,8 +251,10 @@ struct SurfaceDbManifestWriteOpts {
 };
 
 // Serialize a manifest to bytes. Symbols/partitions are canonicalized and
-// sorted internally. Errors: InvalidArgument (empty/oversized symbol, bad
-// partition key); AlreadyExists (duplicate canonical symbol or key).
+// sorted internally; oversized symbols are truncated to kSurfaceDbKeyMax
+// (matching the archive's canonical keys), not rejected. Errors:
+// InvalidArgument (empty symbol, bad partition key); AlreadyExists
+// (duplicate canonical symbol or key).
 [[nodiscard]] Result<std::vector<std::byte>>
 write_db_manifest(std::span<const DbSymbolEntry> symbols,
                   std::span<const DbPartitionInfo> partitions,

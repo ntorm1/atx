@@ -1,14 +1,18 @@
 #include <gtest/gtest.h>
 
+#include <cstddef>
+#include <cstring>
 #include <vector>
 
 #include "atx/vol/calib.hpp"
+#include "atx/vol/detail/archive_util.hpp" // crc32c (test-side CRC repair)
 #include "atx/vol/surface_db.hpp"
 
 // ATXVDB v1 manifest suite: on-disk record layout pinning, writer/parser
 // round-trip (every SymbolFitConfig field preserved bit-for-bit), duplicate /
 // malformed-input rejection, and corruption detection (magic, header CRC,
-// payload CRC, truncation). Pure in-memory (no file IO — that's Task 3).
+// payload CRC, truncation, out-of-range enum wire values). Pure in-memory
+// (no file IO — that's Task 3).
 
 namespace atx::vol {
 namespace {
@@ -187,6 +191,51 @@ TEST(SurfaceDbManifest, Open_RejectsCorruption) {
   {
     auto bad = *bytes; bad.resize(bad.size() - 1);   // truncation
     EXPECT_EQ(DbManifest::open(std::move(bad)).error().code(), ErrorCode::ParseError);
+  }
+}
+
+// Re-stamp both CRCs after a deliberate payload mutation so DbManifest::open
+// gets PAST the checksum gates — the record-level (enum wire-range) validation
+// must then be what rejects. Mirrors the writer's discipline: payload CRC over
+// [symbols_offset, end), then header CRC over the header with its own field
+// zeroed, computed last (so it covers the fresh payload_crc32c).
+void restamp_crcs(std::vector<std::byte>& bytes) {
+  DbManifestHeader h{};
+  std::memcpy(&h, bytes.data(), sizeof h);
+  const auto symbols_offset = static_cast<std::size_t>(h.symbols_offset);
+  const std::uint32_t payload =
+      detail::crc32c(bytes.data() + symbols_offset, bytes.size() - symbols_offset);
+  std::memcpy(bytes.data() + offsetof(DbManifestHeader, payload_crc32c), &payload,
+              sizeof payload);
+  const std::uint32_t zero = 0;
+  std::memcpy(bytes.data() + offsetof(DbManifestHeader, header_crc32c), &zero, sizeof zero);
+  const std::uint32_t hcrc = detail::crc32c(bytes.data(), sizeof(DbManifestHeader));
+  std::memcpy(bytes.data() + offsetof(DbManifestHeader, header_crc32c), &hcrc, sizeof hcrc);
+}
+
+TEST(SurfaceDbManifest, Open_RejectsOutOfRangeEnum) {
+  auto bytes = write_db_manifest({{DbSymbolEntry{"AAPL", {}}}}, {});
+  ASSERT_TRUE(bytes.has_value());
+
+  // Sanity: a restamp with NO mutation must still open — proves the helper
+  // reproduces the writer's CRCs, so the rejections below are the enum check.
+  {
+    auto same = *bytes;
+    restamp_crcs(same);
+    EXPECT_TRUE(DbManifest::open(std::move(same)).has_value());
+  }
+
+  DbManifestHeader h{};
+  std::memcpy(&h, bytes->data(), sizeof h);
+  // DbSymbolRecord layout: symbol[32], symbol_len (u16 @32), flags (u16 @34),
+  // then the uint8 enum run — preset @ +36, curve_kind @ +37.
+  const auto preset_off = static_cast<std::size_t>(h.symbols_offset) + 36;
+  for (const std::size_t off : {preset_off, preset_off + 1}) {
+    auto bad = *bytes;
+    bad[off] = std::byte{0xFF};  // outside every enum's wire range
+    restamp_crcs(bad);
+    EXPECT_EQ(DbManifest::open(std::move(bad)).error().code(), ErrorCode::ParseError)
+        << "enum byte at offset " << off;
   }
 }
 
