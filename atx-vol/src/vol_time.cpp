@@ -91,14 +91,20 @@ struct CivilDate {
 // UTC instant (epoch ns) of a fractional ET wall-clock `hour_et` on ET
 // calendar day-number `z_et` (days-since-epoch, same numbering as
 // `days_from_civil`). `hour_et` need not be an integer (e.g. 9.5 = 09:30).
-[[nodiscard]] double et_local_to_utc_ns(std::int64_t z_et, double hour_et) noexcept {
+//
+// Pure integer math throughout (only the intermediate fractional-hour ->
+// ns-of-day conversion touches a double, rounded via llround): `z_et *
+// kNsPerDay` is ~1.7e18 ns for present-day dates, which exceeds double's
+// exact-integer range (2^53), so this stays in int64 rather than promoting to
+// double as an earlier draft did.
+[[nodiscard]] std::int64_t et_local_to_utc_ns(std::int64_t z_et, double hour_et) noexcept {
   const CivilDate cd = civil_from_days(z_et);
   const std::int64_t offset_ns = et_utc_offset_ns(cd.y, cd.m, cd.d);
-  const double local_ns_of_day = hour_et * 3600.0 * 1.0e9;
+  const std::int64_t local_ns_of_day =
+      static_cast<std::int64_t>(std::llround(hour_et * 3600.0 * 1.0e9));
   // UTC = ET_local - offset (offset is negative for the western hemisphere,
   // e.g. EDT: UTC = local + 4h).
-  return static_cast<double>(z_et) * static_cast<double>(kNsPerDay) + local_ns_of_day -
-         static_cast<double>(offset_ns);
+  return z_et * kNsPerDay + local_ns_of_day - offset_ns;
 }
 
 // Floor division by the (positive) day length, i.e. the day-since-epoch index
@@ -188,13 +194,17 @@ double trading_hours_between(std::int64_t start_ns, std::int64_t end_ns,
       continue;
     }
 
-    const double sess_open = et_local_to_utc_ns(z, open_hour);
-    const double sess_close = et_local_to_utc_ns(z, close_hour);
+    const std::int64_t sess_open = et_local_to_utc_ns(z, open_hour);
+    const std::int64_t sess_close = et_local_to_utc_ns(z, close_hour);
 
-    const double lo = std::max(static_cast<double>(start_ns), sess_open);
-    const double hi = std::min(static_cast<double>(end_ns), sess_close);
+    const std::int64_t lo = std::max(start_ns, sess_open);
+    const std::int64_t hi = std::min(end_ns, sess_close);
     if (hi > lo) {
-      trading_ns += (hi - lo);
+      // Each term is at most one session's worth of ns (~2.7e13), far below
+      // double's exact-integer range (2^53), so this widening is exact; the
+      // running sum stays exact too for any realistic (or even the
+      // kMaxLoopDays-guarded) accumulation span.
+      trading_ns += static_cast<double>(hi - lo);
     }
   }
   return trading_ns / (3600.0 * 1.0e9);

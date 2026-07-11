@@ -120,6 +120,43 @@ TEST(VolTime, WinterSessionUsesEstOffset) {
               1e-12);
 }
 
+TEST(VolTime, DstSpringForwardWeekSessionsAreExact) {
+  // 2026 spring-forward: 2nd Sunday of March == 2026-03-08. Fri 2026-03-06 is
+  // the last EST trading day, Mon 2026-03-09 the first EDT one. Both must
+  // still resolve to exactly one full 7.5h session -- day-granularity DST
+  // resolution is exact here because the transition instant itself falls on
+  // the intervening (non-trading) Sunday.
+  VolTimeParams p;
+  p.alpha = 1.0;
+  const auto& cal = VolTimeCalendar::us_default();
+  const auto fri_est = ns_utc(2026, 3, 6, 4, 0);  // 00:00 EST Fri (winter offset)
+  EXPECT_NEAR(trading_hours_between(fri_est, fri_est + kDayNs, p, cal), 7.5, 1e-9);
+  const auto mon_edt = ns_utc(2026, 3, 9, 4, 0);  // 00:00 EDT Mon (summer offset)
+  EXPECT_NEAR(trading_hours_between(mon_edt, mon_edt + kDayNs, p, cal), 7.5, 1e-9);
+}
+
+TEST(VolTime, DstFallBackWeekSessionsAreExact) {
+  // 2026 fall-back: 1st Sunday of November == 2026-11-01. Fri 2026-10-30 is
+  // the last EDT trading day, Mon 2026-11-02 the first EST one.
+  VolTimeParams p;
+  p.alpha = 1.0;
+  const auto& cal = VolTimeCalendar::us_default();
+  const auto fri_edt = ns_utc(2026, 10, 30, 4, 0);  // 00:00 EDT Fri (summer offset)
+  EXPECT_NEAR(trading_hours_between(fri_edt, fri_edt + kDayNs, p, cal), 7.5, 1e-9);
+  const auto mon_est = ns_utc(2026, 11, 2, 5, 0);  // 00:00 EST Mon (winter offset)
+  EXPECT_NEAR(trading_hours_between(mon_est, mon_est + kDayNs, p, cal), 7.5, 1e-9);
+}
+
+// ── expiry-before/at-now (degenerate interval) ────────────────────────────
+
+TEST(VolTime, VolTimeYearsIsZeroWhenExpiryNotAfterNow) {
+  VolTimeParams p;
+  const auto& cal = VolTimeCalendar::us_default();
+  const auto t0 = ns_utc(2026, 7, 8, 13, 30);  // mid-session Wed
+  EXPECT_EQ(vol_time_years(t0, t0, p, cal), 0.0);       // expiry == now
+  EXPECT_EQ(vol_time_years(t0, t0 - kHourNs, p, cal), 0.0);  // expiry before now
+}
+
 // ── trading_hours_between ─────────────────────────────────────────────────
 
 TEST(VolTime, TradingHoursBetweenIsZeroWhenEndNotAfterStart) {
