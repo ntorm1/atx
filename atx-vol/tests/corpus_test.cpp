@@ -1481,6 +1481,7 @@ TEST(CorpusBuildSession, SyntheticThirteenNameThreeDateBreadthScoreboard) {
   }
   DispersionConfig dispersion_cfg;
   dispersion_cfg.missing.policy = MissingNamePolicy::DropRenormalize;
+  dispersion_cfg.record_diagnostics = true;  // opt into n_names_dropped series (now off by default)
 
   RunConfig serial_cfg;
   serial_cfg.price.n_threads = 1u;

@@ -422,6 +422,7 @@ TEST(MultinamePipeline, CorpusWithMissingNameOnOneDateRunsToCompletion) {
   // GREEN: DropRenormalize drops CCC on the inception date and runs to completion.
   DispersionConfig cfg;
   cfg.missing.policy = MissingNamePolicy::DropRenormalize;
+  cfg.record_diagnostics = true;  // opt into implied_corr / n_names_dropped (now off by default)
   DispersionStrategy strat{u, cfg};
   auto res = run_backtest(*clock, strat);
   ASSERT_TRUE(res.has_value()) << res.error().to_string();
@@ -492,6 +493,7 @@ TEST(MultinamePipeline, AllNamesMissingIsNoTradeStepNotAbort) {
 
   DispersionConfig cfg;
   cfg.missing.policy = MissingNamePolicy::DropRenormalize;
+  cfg.record_diagnostics = true;  // opt into implied_corr / n_names_dropped (now off by default)
   DispersionStrategy strat{u, cfg};
   auto res = run_backtest(*clock, strat);
   ASSERT_TRUE(res.has_value()) << res.error().to_string();
@@ -662,6 +664,7 @@ TEST(MultinamePipeline, HeldNameGoesMissingMidRunAndRunCompletes) {
 
   DispersionConfig cfg;
   cfg.missing.policy = MissingNamePolicy::DropRenormalize;
+  cfg.record_diagnostics = true;  // opt into implied_corr / n_names_dropped (now off by default)
   DispersionStrategy strat{u, cfg};  // default lifecycle: RollAtHorizon
 
   // THE gate: the run completes with a full-length result (one row per date).
