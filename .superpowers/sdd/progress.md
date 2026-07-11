@@ -498,7 +498,7 @@ Process notes:
 ## Tasks (MAG7 dispersion)
 
 - Task 1: Clock::from_surface_db (SurfaceDb-backed clock) — COMPLETE
-- Task 2: CloseAtHorizon lifecycle + missing-name policy — PENDING
+- Task 2: CloseAtHorizon lifecycle + missing-name policy — COMPLETE
 - Task 3: make_dispersion_strangle_spec builder — PENDING
 - Task 4: run_report emitters — PENDING
 - Task 5: populate_surface_db + mag7_surfdb_populate example — PENDING
@@ -523,3 +523,12 @@ Task 1: complete (commits 6198a27..5b53d1c, review clean — SPEC ✅ / Approved
   mention from_surface_db.
   NOTE: .superpowers/sdd/task-N-brief/report.md files are TRACKED with stale main-line content —
   implementers overwrite per task; expect rewrite diffs, harmless.
+
+Task 2: complete (commits be6a7f5..f9f14df, review clean — SPEC ✅ / Approved; 0 Critical/Important)
+  67/67 targeted (Strategy|Backtest|Dispersion) green; resolve_spec refactored to shared resolve_spec_impl
+  (verified no duplication); no-trade contract mirrors DispersionStrategy; close pass before entry.
+  Interface note for later tasks: resolve_spec_with_policy min_names counts LegSpec (name) granularity.
+  Minor (roll-up): (a) no test for close-pass firing on a day whose entry no-trades with a non-empty book
+  (ordering correct by inspection; T6 gate test partially covers); (b) CloseAtHorizon+EveryNDays cadence
+  combination untested (shared code path with HoldToExpiry); (c) ResolveDrop.symbol empty for uid-only
+  legs (diagnostic-quality gap).

@@ -1,191 +1,171 @@
-### Task 3: `SurfaceDb` class — create/open, atomic manifest persistence, symbol CRUD, `refresh()`
+### Task 3: `make_dispersion_strangle_spec` — the strategy in one config struct
 
-The database object: a root directory, a manifest held as an immutable snapshot, serialized mutations with atomic rewrite + generation bump, and cheap re-sync for the real-time-adjustment story.
+The example must stay small, so the leg/constraint/lifecycle assembly lives in the library: a validated builder from a plain config to a `StrategySpec`. Tests pin the acceptance math: 40Δ strikes reprice, per-name theta equal, cohort net vega ≈ 0 at entry.
 
 **Files:**
-- Modify: `atx-vol/include/atx/vol/surface_db.hpp` (add `SurfaceDb`)
-- Modify: `atx-vol/src/surface_db.cpp`
-- Modify: `atx-vol/tests/surface_db_test.cpp` (add tests)
+- Create: `atx-vol/include/atx/vol/dispersion_strangle.hpp`
+- Create: `atx-vol/src/dispersion_strangle.cpp`
+- Create: `atx-vol/tests/dispersion_strangle_test.cpp`
+- Modify: `atx-vol/CMakeLists.txt` (add `src/dispersion_strangle.cpp` to the `add_library(atx-vol ...)` source list, near `src/dispersion.cpp`)
+- Modify: `atx-vol/tests/CMakeLists.txt` (add the test source)
 
 **Interfaces:**
-- Consumes: Task 2 manifest writer/parser.
-- Produces (used by Tasks 4-5):
+- Consumes: Task 2's `Holding::CloseAtHorizon`, `StrategySpec::missing`, plus existing `LegSpec`, `StructureSpec::Strangle`, `StrikeSelector::Delta`, `SizeSpec::{TargetTheta,TargetVega}`, `CrossLegConstraint::FlatVega`, `MissingNameSpec`.
+- Produces:
 
 ```cpp
-// Append inside namespace atx::vol in surface_db.hpp:
+// dispersion_strangle.hpp
+namespace atx::vol {
 
-struct SurfaceDbCreateOpts {
-  std::int64_t created_ts_ns{0};      // 0 => system clock
+// Long equal-theta single-name strangles vs a short vega-flat index strangle,
+// one cohort per entry tick, each cohort closed at close_dte_days to expiry.
+// Pricing is projection-path only (synthetic strikes/expiries off the fitted
+// surfaces); expiry = entry ts + tenor_days calendar days.
+struct DispersionStrangleConfig {
+  std::vector<std::string> names;              // long single names (>= 1)
+  std::string index_symbol{"SPY"};             // short hedge leg
+  double target_abs_delta{0.40};               // both strangle legs, in (0,1)
+  double tenor_days{90.0};                     // calendar days to synthetic expiry
+  double close_dte_days{10.0};                 // close cohort below this residual
+  unsigned entry_every_n_days{1};              // 1 = every trading day (EveryStep)
+  double theta_per_name_daily{10.0};           // $/calendar-day theta per name
+  double index_base_vega{10000.0};             // pre-constraint index sizing seed
+  MissingNameSpec missing{MissingNamePolicy::DropRenormalize, 4};
+  HedgeSpec hedge{};                           // default: no delta hedge
 };
 
-// An opened surface database. Const queries are thread-safe (they read an
-// immutable manifest snapshot swapped under a mutex); mutating calls are
-// serialized internally. Cross-process: single writer, many readers; every
-// mutation is an atomic manifest rewrite (tmp+rename) with generation++ so a
-// reader process picks it up via refresh().
-class SurfaceDb {
- public:
-  // Create <root>/ (and partitions/) and write an empty manifest
-  // (generation 1). Errors: AlreadyExists if a manifest already exists at
-  // root; IoError on filesystem failure.
-  [[nodiscard]] static Result<SurfaceDb> create(std::string_view root,
-                                                const SurfaceDbCreateOpts& opts = {});
+// Validated assembly into the declarative DSL:
+//  - one LegSpec per name: Strangle{Delta d call, Delta d put}, tenor
+//    tenor_days/365.25, SizeSpec{TargetTheta, theta_per_name_daily, +1},
+//    group "basket";
+//  - one index LegSpec: same structure/tenor, SizeSpec{TargetVega,
+//    index_base_vega, -1}, group "index";
+//  - constraint FlatVega{group_a="basket", group_b="index"} (scales the index
+//    leg so gross index vega == gross basket vega; opposite signs net ~0);
+//  - lifecycle: EveryStep when entry_every_n_days==1 else EveryNDays with
+//    entry_every_n, Holding::CloseAtHorizon, roll_at_T = close_dte_days/365.25;
+//  - spec.missing = cfg.missing, spec.hedge = cfg.hedge,
+//    spec.name = "mag7_dispersion_strangle" (or names.size()-agnostic label).
+// InvalidArgument when: names empty; index_symbol empty or contained in
+// names; target_abs_delta outside (0,1); tenor_days <= close_dte_days;
+// close_dte_days < 0; theta_per_name_daily <= 0; index_base_vega <= 0;
+// entry_every_n_days == 0; missing.min_names > names.size().
+[[nodiscard]] Result<StrategySpec>
+make_dispersion_strangle_spec(const DispersionStrangleConfig &cfg);
 
-  // Open an existing database. Errors: NotFound (no manifest), ParseError,
-  // IoError.
-  [[nodiscard]] static Result<SurfaceDb> open(std::string_view root);
-
-  [[nodiscard]] const std::string& root() const noexcept { return root_; }
-
-  // ── Manifest snapshot queries (thread-safe) ──
-  [[nodiscard]] std::shared_ptr<const DbManifest> manifest() const;
-  [[nodiscard]] std::uint64_t generation() const;
-  [[nodiscard]] std::vector<std::string> symbols() const;   // canonical, sorted
-  [[nodiscard]] Result<SymbolFitConfig> symbol_config(std::string_view symbol) const;
-  [[nodiscard]] std::vector<DbPartitionInfo> partitions() const;
-
-  // ── Manifest mutation (serialized; atomic rewrite; generation++) ──
-  [[nodiscard]] Status upsert_symbol(std::string_view symbol, const SymbolFitConfig& cfg);
-  [[nodiscard]] Status remove_symbol(std::string_view symbol);  // NotFound if absent
-
-  // Re-read the manifest from disk iff its generation advanced past the
-  // in-memory snapshot (external writer). Ok and no-op when current.
-  [[nodiscard]] Status refresh();
-
-  // ── Partition IO (Task 4) ──
-  [[nodiscard]] Status write_partition(std::string_view key,
-                                       std::span<const SurfaceArchiveItem> items,
-                                       const SurfaceArchiveWriteOpts& opts = {});
-  [[nodiscard]] Result<SurfaceArchive> open_partition(std::string_view key) const;
-  [[nodiscard]] Result<PricedSurface> load_surface(std::string_view key,
-                                                   std::string_view symbol) const;
-  [[nodiscard]] Status drop_partition(std::string_view key);
-
- private:
-  SurfaceDb() = default;
-  [[nodiscard]] Status persist_locked(std::vector<DbSymbolEntry> symbols,
-                                      std::vector<DbPartitionInfo> partitions);
-  [[nodiscard]] std::string manifest_path() const;
-  [[nodiscard]] std::string partition_path(std::string_view canonical_key) const;
-
-  std::string root_{};
-  mutable std::mutex mu_{};                       // guards snapshot_ swap + writes
-  std::shared_ptr<const DbManifest> snapshot_{};
-};
+}  // namespace atx::vol
 ```
 
-(`<mutex>` joins the header includes. `SurfaceDb` is movable, non-copyable — `std::mutex` member means: implement move ctor/assign manually by locking the source, or hold `mu_` in a `std::unique_ptr<std::mutex>`; the unique_ptr route is simpler and fine here.)
-
-**Steps:**
-
-- [ ] **Step 1: Write failing tests** (append to surface_db_test.cpp). Use a per-test temp dir: `std::filesystem::temp_directory_path() / "atx_surface_db_test" / <unique test-name suffix>`; `std::filesystem::remove_all` it at test start AND end (self-cleaning even after a prior crashed run).
+- [ ] **Step 1: Write the failing tests.** New `atx-vol/tests/dispersion_strangle_test.cpp`. Fixture: copy the `make_surface` analytic-eSSVI pattern from strategy_test.cpp; build ONE archive holding 4 surfaces — 3 "names" (`AAA` uid 1 vol_bump 0.00, `BBB` uid 2 bump 0.06, `CCC` uid 3 bump 0.12, spots 100/150/200) + index `SPX` (uid 9, spot 500, bump 0.02) — and `MarketSnapshot::load` it.
 
 ```cpp
-TEST(SurfaceDb, CreateOpenUpsertReopen_ConfigPersists) {
-  const auto root = test_root("create_open");     // helper: fresh temp dir
-  auto db = SurfaceDb::create(root.string());
-  ASSERT_TRUE(db.has_value());
-  EXPECT_EQ(db->generation(), 1u);
-  EXPECT_TRUE(db->symbols().empty());
-
-  const auto cfg = make_full_config();
-  ASSERT_TRUE(db->upsert_symbol("aapl", cfg).has_value());
-  EXPECT_EQ(db->generation(), 2u);
-  ASSERT_TRUE(db->upsert_symbol("SPY", SymbolFitConfig{}).has_value());
-  EXPECT_EQ(db->generation(), 3u);
-
-  auto db2 = SurfaceDb::open(root.string());      // fresh process simulation
-  ASSERT_TRUE(db2.has_value());
-  EXPECT_EQ(db2->generation(), 3u);
-  EXPECT_EQ(db2->symbols(), (std::vector<std::string>{"AAPL", "SPY"}));
-  auto got = db2->symbol_config("AAPL");
-  ASSERT_TRUE(got.has_value());
-  expect_config_eq(*got, cfg);
-
-  ASSERT_TRUE(db2->remove_symbol("aapl").has_value());
-  EXPECT_EQ(db2->symbol_config("AAPL").error().code(), ErrorCode::NotFound);
-  EXPECT_EQ(db2->remove_symbol("AAPL").error().code(), ErrorCode::NotFound);
-  std::filesystem::remove_all(root);
-}
-
-TEST(SurfaceDb, Create_RejectsExisting_Open_RejectsMissing) {
-  const auto root = test_root("create_guard");
-  ASSERT_TRUE(SurfaceDb::create(root.string()).has_value());
-  EXPECT_EQ(SurfaceDb::create(root.string()).error().code(), ErrorCode::AlreadyExists);
-  const auto missing = test_root("no_such_db");
-  EXPECT_EQ(SurfaceDb::open(missing.string()).error().code(), ErrorCode::NotFound);
-  std::filesystem::remove_all(root);
-}
-
-TEST(SurfaceDb, Refresh_SeesExternalWriterUpdate) {
-  const auto root = test_root("refresh");
-  auto writer = SurfaceDb::create(root.string());
-  ASSERT_TRUE(writer.has_value());
-  auto reader = SurfaceDb::open(root.string());
-  ASSERT_TRUE(reader.has_value());
-  EXPECT_EQ(reader->generation(), 1u);
-
-  ASSERT_TRUE(writer->upsert_symbol("QQQ", SymbolFitConfig{}).has_value());
-  // Reader still on its old snapshot until refresh:
-  EXPECT_EQ(reader->generation(), 1u);
-  ASSERT_TRUE(reader->refresh().has_value());
-  EXPECT_EQ(reader->generation(), 2u);
-  EXPECT_TRUE(reader->symbol_config("QQQ").has_value());
-  // Idempotent when current:
-  ASSERT_TRUE(reader->refresh().has_value());
-  EXPECT_EQ(reader->generation(), 2u);
-  std::filesystem::remove_all(root);
-}
-
-TEST(SurfaceDb, ConcurrentReaders_DuringUpserts_AreSafe) {
-  const auto root = test_root("concurrent");
-  auto db = SurfaceDb::create(root.string());
-  ASSERT_TRUE(db.has_value());
-  ASSERT_TRUE(db->upsert_symbol("SPY", SymbolFitConfig{}).has_value());
-  std::atomic<bool> stop{false};
-  std::vector<std::thread> readers;
-  for (int t = 0; t < 4; ++t) {
-    readers.emplace_back([&] {
-      while (!stop.load(std::memory_order_relaxed)) {
-        auto snap = db->manifest();
-        auto cfg = db->symbol_config("SPY");
-        ASSERT_TRUE(cfg.has_value());
-        (void)snap;
-      }
-    });
+TEST(DispersionStrangle, SpecShape) {
+  DispersionStrangleConfig cfg;
+  cfg.names = {"AAA", "BBB", "CCC"};
+  cfg.index_symbol = "SPX";
+  cfg.missing = {MissingNamePolicy::DropRenormalize, 2};
+  auto spec = make_dispersion_strangle_spec(cfg);
+  ASSERT_TRUE(spec.has_value());
+  ASSERT_EQ(spec->legs.size(), 4u);
+  for (int i = 0; i < 3; ++i) {
+    EXPECT_EQ(spec->legs[i].group, "basket");
+    EXPECT_EQ(spec->legs[i].size.kind, SizeSpec::Kind::TargetTheta);
+    EXPECT_DOUBLE_EQ(spec->legs[i].size.sign, +1.0);
+    EXPECT_EQ(spec->legs[i].structure.kind, StructureSpec::Kind::Strangle);
+    EXPECT_DOUBLE_EQ(spec->legs[i].tenor.target_T, 90.0 / 365.25);
   }
-  for (int i = 0; i < 50; ++i) {
-    SymbolFitConfig c; c.band_k = 1.0 + 0.01 * i;
-    ASSERT_TRUE(db->upsert_symbol("SPY", c).has_value());
+  EXPECT_EQ(spec->legs[3].symbol, "SPX");
+  EXPECT_EQ(spec->legs[3].group, "index");
+  EXPECT_DOUBLE_EQ(spec->legs[3].size.sign, -1.0);
+  EXPECT_EQ(spec->constraint.kind, CrossLegConstraint::Kind::FlatVega);
+  EXPECT_EQ(spec->constraint.group_a, "basket");
+  EXPECT_EQ(spec->constraint.group_b, "index");
+  EXPECT_EQ(spec->lifecycle.holding, LifecycleSpec::Holding::CloseAtHorizon);
+  EXPECT_DOUBLE_EQ(spec->lifecycle.roll_at_T, 10.0 / 365.25);
+  EXPECT_EQ(spec->lifecycle.entry, LifecycleSpec::Entry::EveryStep);
+}
+
+TEST(DispersionStrangle, RejectsBadConfig) {
+  DispersionStrangleConfig ok;
+  ok.names = {"AAA"};
+  ok.missing.min_names = 1;
+  ASSERT_TRUE(make_dispersion_strangle_spec(ok).has_value());
+  auto expect_reject = [&](auto mutate) {
+    DispersionStrangleConfig c = ok;
+    mutate(c);
+    auto r = make_dispersion_strangle_spec(c);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code(), ErrorCode::InvalidArgument);
+  };
+  expect_reject([](auto &c) { c.names.clear(); });
+  expect_reject([](auto &c) { c.index_symbol = "AAA"; });
+  expect_reject([](auto &c) { c.target_abs_delta = 1.0; });
+  expect_reject([](auto &c) { c.tenor_days = 10.0; c.close_dte_days = 10.0; });
+  expect_reject([](auto &c) { c.theta_per_name_daily = 0.0; });
+  expect_reject([](auto &c) { c.entry_every_n_days = 0; });
+  expect_reject([](auto &c) { c.missing.min_names = 5; });
+}
+
+TEST(DispersionStrangle, EntryMath_EqualTheta_VegaFlat_FortyDelta) {
+  auto snap = load_fixture_snapshot();   // the 4-surface archive above
+  DispersionStrangleConfig cfg;
+  cfg.names = {"AAA", "BBB", "CCC"};
+  cfg.index_symbol = "SPX";
+  cfg.tenor_days = 90.0;
+  cfg.theta_per_name_daily = 10.0;
+  cfg.missing = {MissingNamePolicy::DropRenormalize, 2};
+  auto spec = make_dispersion_strangle_spec(cfg);
+  ASSERT_TRUE(spec.has_value());
+  auto legs = resolve_spec_with_policy(*snap, *spec, nullptr);
+  ASSERT_TRUE(legs.has_value());
+  ASSERT_EQ(legs->size(), 8u);   // 4 symbols x {call, put}
+
+  // 40-delta strike correctness: every resolved leg reprices to |delta| ~ 0.40
+  // (mirror spy_strangle_backtest_test::FortyDeltaEntry: reprice via
+  // surf->delta(K, T, side), tolerance 1e-3; call K above forward, put below).
+  for (const auto &sl : *legs) {
+    const PricedSurface *surf = snap->find(sl.leg.uid);
+    ASSERT_NE(surf, nullptr);
+    auto d = surf->delta(sl.leg.K, sl.leg.T, sl.leg.side);
+    ASSERT_TRUE(d.has_value());
+    EXPECT_NEAR(std::abs(*d), 0.40, 1e-3);
+    const double F = surf->forward_at(sl.leg.T);
+    if (sl.leg.side == Side::Call) EXPECT_GT(sl.leg.K, F); else EXPECT_LT(sl.leg.K, F);
   }
-  stop.store(true);
-  for (auto& th : readers) th.join();
-  auto final_cfg = db->symbol_config("SPY");
-  ASSERT_TRUE(final_cfg.has_value());
-  EXPECT_DOUBLE_EQ(final_cfg->band_k, 1.0 + 0.01 * 49);
-  std::filesystem::remove_all(root);
+
+  // Equal theta: each name's |sum(qty*theta*mult)| == 10 $/day * 365.25, all
+  // names equal within 1e-6 relative.
+  const double want_theta = 10.0 * 365.25;
+  std::map<std::uint32_t, double> theta_by_uid;
+  double net_vega = 0.0, gross_vega = 0.0;
+  for (const auto &sl : *legs) {
+    if (sl.leg.group == "basket") theta_by_uid[sl.leg.uid] += sl.qty * sl.leg.theta * sl.multiplier;
+    net_vega += sl.qty * sl.leg.vega * sl.multiplier;
+    gross_vega += std::abs(sl.qty * sl.leg.vega * sl.multiplier);
+  }
+  ASSERT_EQ(theta_by_uid.size(), 3u);
+  for (const auto &[uid, th] : theta_by_uid) {
+    EXPECT_NEAR(std::abs(th), want_theta, 1e-6 * want_theta) << uid;
+  }
+  // Vega-flat at entry: net cohort vega ~ 0 (FlatVega scale is exact in fp).
+  EXPECT_LE(std::abs(net_vega), 1e-9 * gross_vega);
+  // Short index: negative qty on index legs.
+  for (const auto &sl : *legs) {
+    if (sl.leg.group == "index") EXPECT_LT(sl.qty, 0.0);
+  }
 }
 ```
 
-`test_root(name)` helper: `std::filesystem::temp_directory_path() / ("atx_surface_db_" + std::string(name))`, `remove_all` then return; add `<filesystem>`, `<thread>`, `<atomic>` includes.
+(If `ResolvedLeg` lacks a `group` member for the theta grouping, group by uid using the fixture's known uids — the assertions above stand.)
 
-- [ ] **Step 2: Build; verify the new tests fail** (missing SurfaceDb symbols): `& .\scripts\atx-build.ps1 build atx-vol-tests` — expect failure mentioning `SurfaceDb`.
-
-- [ ] **Step 3: Implement.** Notes:
-  - `create`: `std::filesystem::create_directories(root / "partitions")`; if `root/manifest.atxdb` exists → AlreadyExists; write empty manifest via `write_db_manifest({}, {}, {.generation = 1, .created_ts_ns = opts.created_ts_ns})` and the atomic file write helper below; then delegate to `open`.
-  - Atomic write helper (private, reuse for every manifest persist): serialize → `manifest_path() + ".tmp"` → `std::ofstream` binary write → `std::filesystem::rename` (copy the archive's `write_surface_archive_file` error handling, incl. tmp cleanup on failure).
-  - `open`: read file fully (NotFound if `!exists`, IoError otherwise on stream failure) → `DbManifest::open` → store `snapshot_ = make_shared<const DbManifest>(std::move(m))`.
-  - Mutations (`upsert_symbol`, `remove_symbol`, and Task 4's partition bookkeeping): lock `mu_`; rebuild `std::vector<DbSymbolEntry>` + `std::vector<DbPartitionInfo>` from the current snapshot (decode each record); apply the change (upsert = replace by canonical match or append; remove = erase or NotFound); call `persist_locked` which writes with `generation = old + 1`, `created_ts_ns` preserved from header, `updated_ts_ns = 0 (now)`, re-opens the bytes via `DbManifest::open` (cheap; guarantees the in-memory snapshot is exactly what a fresh reader parses), swaps `snapshot_`.
-  - `refresh()`: read the manifest file's first `sizeof(DbManifestHeader)` bytes; if `generation <= snapshot->generation()` → Ok no-op; else full re-read + parse + swap under lock. (Read the header via `std::ifstream` with `read()`; a short read → ParseError.)
-  - `manifest()` / queries: lock, copy `shared_ptr`, unlock, then operate on the snapshot.
-
-- [ ] **Step 4: Build + run.** `& .\scripts\atx-build.ps1 build atx-vol-tests && & .\scripts\atx-build.ps1 -Ctest -R SurfaceDb` — expect ALL SurfaceDb* PASS.
-
+- [ ] **Step 2: Build; verify failure** (missing header/symbols).
+- [ ] **Step 3: Implement** `make_dispersion_strangle_spec` exactly per the doc-comment contract (pure assembly + validation, no pricing).
+- [ ] **Step 4: Build + run.** `& .\scripts\atx-build.ps1 -Ctest -R "DispersionStrangle|Strategy|Dispersion"` — ALL PASS.
 - [ ] **Step 5: Commit.**
 
 ```bash
 git add -A
-git commit -m "feat(atx-vol): SurfaceDb - atomic manifest persistence, symbol CRUD, generation refresh"
+git commit -m "feat(atx-vol): dispersion-strangle strategy spec builder (equal-theta basket vs vega-flat index)"
 ```
 
 ---
