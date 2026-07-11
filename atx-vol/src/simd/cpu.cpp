@@ -1,5 +1,7 @@
 #include "atx/vol/simd/cpu.hpp"
 
+#include "atx/vol/simd/math_mode.hpp"
+
 #include <atomic>
 
 #if defined(_M_X64) || defined(__x86_64__)
@@ -75,6 +77,46 @@ bool use_avx2() noexcept {
             break;
     }
     return have_avx2();
+}
+
+// ── P3.3 math modes (a name over the existing ISA seam; no new dispatch) ──────
+
+const char* math_mode_name(MathMode m) noexcept {
+    switch (m) {
+        case MathMode::Reference:
+            return "Reference";
+        case MathMode::FastDeterministic:
+            return "FastDeterministic";
+    }
+    return "Reference";
+}
+
+SimdIsa isa_for_math_mode(MathMode m) noexcept {
+    switch (m) {
+        case MathMode::Reference:
+            return SimdIsa::ForceScalar;
+        case MathMode::FastDeterministic:
+            // The only vector ISA is AVX2; without it FastDeterministic degrades to
+            // the scalar libm ordering (still deterministic for this host).
+            return have_avx2() ? SimdIsa::ForceAvx2 : SimdIsa::ForceScalar;
+    }
+    return SimdIsa::ForceScalar;
+}
+
+void set_math_mode(MathMode m) noexcept {
+    set_simd_isa_override(isa_for_math_mode(m));
+}
+
+MathMode active_math_mode() noexcept {
+    switch (simd_isa_override()) {
+        case SimdIsa::ForceScalar:
+            return MathMode::Reference;
+        case SimdIsa::ForceAvx2:
+            return MathMode::FastDeterministic;
+        case SimdIsa::Auto:
+            break;
+    }
+    return have_avx2() ? MathMode::FastDeterministic : MathMode::Reference;
 }
 
 } // namespace atx::vol::simd
