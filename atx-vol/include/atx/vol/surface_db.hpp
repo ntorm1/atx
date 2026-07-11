@@ -57,6 +57,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <string>
 #include <string_view>
@@ -290,5 +291,67 @@ class DbManifest {
 // Decode one symbol record into the public config (exact inverse of the
 // writer's encoding; used by DbManifest::find_symbol and tests).
 [[nodiscard]] SymbolFitConfig decode_symbol_record(const DbSymbolRecord& rec);
+
+// ── SurfaceDb: create/open, atomic manifest persistence, symbol CRUD,
+// refresh() (Task 3); partition IO (Task 4) ───────────────────────────────
+
+struct SurfaceDbCreateOpts {
+  std::int64_t created_ts_ns{0};      // 0 => system clock
+};
+
+// An opened surface database. Const queries are thread-safe (they read an
+// immutable manifest snapshot swapped under a mutex); mutating calls are
+// serialized internally. Cross-process: single writer, many readers; every
+// mutation is an atomic manifest rewrite (tmp+rename) with generation++ so a
+// reader process picks it up via refresh().
+class SurfaceDb {
+ public:
+  // Create <root>/ (and partitions/) and write an empty manifest
+  // (generation 1). Errors: AlreadyExists if a manifest already exists at
+  // root; IoError on filesystem failure.
+  [[nodiscard]] static Result<SurfaceDb> create(std::string_view root,
+                                                const SurfaceDbCreateOpts& opts = {});
+
+  // Open an existing database. Errors: NotFound (no manifest), ParseError,
+  // IoError.
+  [[nodiscard]] static Result<SurfaceDb> open(std::string_view root);
+
+  [[nodiscard]] const std::string& root() const noexcept { return root_; }
+
+  // ── Manifest snapshot queries (thread-safe) ──
+  [[nodiscard]] std::shared_ptr<const DbManifest> manifest() const;
+  [[nodiscard]] std::uint64_t generation() const;
+  [[nodiscard]] std::vector<std::string> symbols() const;   // canonical, sorted
+  [[nodiscard]] Result<SymbolFitConfig> symbol_config(std::string_view symbol) const;
+  [[nodiscard]] std::vector<DbPartitionInfo> partitions() const;
+
+  // ── Manifest mutation (serialized; atomic rewrite; generation++) ──
+  [[nodiscard]] Status upsert_symbol(std::string_view symbol, const SymbolFitConfig& cfg);
+  [[nodiscard]] Status remove_symbol(std::string_view symbol);  // NotFound if absent
+
+  // Re-read the manifest from disk iff its generation advanced past the
+  // in-memory snapshot (external writer). Ok and no-op when current.
+  [[nodiscard]] Status refresh();
+
+  // ── Partition IO (Task 4) ──
+  [[nodiscard]] Status write_partition(std::string_view key,
+                                       std::span<const SurfaceArchiveItem> items,
+                                       const SurfaceArchiveWriteOpts& opts = {});
+  [[nodiscard]] Result<SurfaceArchive> open_partition(std::string_view key) const;
+  [[nodiscard]] Result<PricedSurface> load_surface(std::string_view key,
+                                                   std::string_view symbol) const;
+  [[nodiscard]] Status drop_partition(std::string_view key);
+
+ private:
+  SurfaceDb() = default;
+  [[nodiscard]] Status persist_locked(std::vector<DbSymbolEntry> symbols,
+                                      std::vector<DbPartitionInfo> partitions);
+  [[nodiscard]] std::string manifest_path() const;
+  [[nodiscard]] std::string partition_path(std::string_view canonical_key) const;
+
+  std::string root_{};
+  mutable std::unique_ptr<std::mutex> mu_{};      // guards snapshot_ swap + writes
+  std::shared_ptr<const DbManifest> snapshot_{};
+};
 
 }  // namespace atx::vol

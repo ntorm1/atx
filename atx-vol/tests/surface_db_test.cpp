@@ -1,7 +1,12 @@
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <cstddef>
 #include <cstring>
+#include <filesystem>
+#include <string>
+#include <string_view>
+#include <thread>
 #include <vector>
 
 #include "atx/vol/calib.hpp"
@@ -124,6 +129,15 @@ void expect_config_eq(const SymbolFitConfig& a, const SymbolFitConfig& b) {
   EXPECT_EQ(a.use_deam_cache_for_fit, b.use_deam_cache_for_fit);
 }
 
+// Fresh per-test temp dir under the system temp root, self-cleaning at start
+// so a prior crashed run doesn't leak stale manifest/partition files into
+// this run. Each SurfaceDb.* test also removes it again at the end.
+std::filesystem::path test_root(std::string_view name) {
+  auto p = std::filesystem::temp_directory_path() / ("atx_surface_db_" + std::string(name));
+  std::filesystem::remove_all(p);
+  return p;
+}
+
 TEST(SurfaceDbManifest, RoundTrip_FullConfig_EveryFieldPreserved) {
   const auto cfg = make_full_config();
   const std::vector<DbSymbolEntry> syms{{"aapl", cfg}, {"SPY", SymbolFitConfig{}}};
@@ -237,6 +251,94 @@ TEST(SurfaceDbManifest, Open_RejectsOutOfRangeEnum) {
     EXPECT_EQ(DbManifest::open(std::move(bad)).error().code(), ErrorCode::ParseError)
         << "enum byte at offset " << off;
   }
+}
+
+// ── SurfaceDb: create/open, atomic manifest persistence, symbol CRUD,
+// refresh() ─────────────────────────────────────────────────────────────
+
+TEST(SurfaceDb, CreateOpenUpsertReopen_ConfigPersists) {
+  const auto root = test_root("create_open");     // helper: fresh temp dir
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+  EXPECT_EQ(db->generation(), 1u);
+  EXPECT_TRUE(db->symbols().empty());
+
+  const auto cfg = make_full_config();
+  ASSERT_TRUE(db->upsert_symbol("aapl", cfg).has_value());
+  EXPECT_EQ(db->generation(), 2u);
+  ASSERT_TRUE(db->upsert_symbol("SPY", SymbolFitConfig{}).has_value());
+  EXPECT_EQ(db->generation(), 3u);
+
+  auto db2 = SurfaceDb::open(root.string());      // fresh process simulation
+  ASSERT_TRUE(db2.has_value());
+  EXPECT_EQ(db2->generation(), 3u);
+  EXPECT_EQ(db2->symbols(), (std::vector<std::string>{"AAPL", "SPY"}));
+  auto got = db2->symbol_config("AAPL");
+  ASSERT_TRUE(got.has_value());
+  expect_config_eq(*got, cfg);
+
+  ASSERT_TRUE(db2->remove_symbol("aapl").has_value());
+  EXPECT_EQ(db2->symbol_config("AAPL").error().code(), ErrorCode::NotFound);
+  EXPECT_EQ(db2->remove_symbol("AAPL").error().code(), ErrorCode::NotFound);
+  std::filesystem::remove_all(root);
+}
+
+TEST(SurfaceDb, Create_RejectsExisting_Open_RejectsMissing) {
+  const auto root = test_root("create_guard");
+  ASSERT_TRUE(SurfaceDb::create(root.string()).has_value());
+  EXPECT_EQ(SurfaceDb::create(root.string()).error().code(), ErrorCode::AlreadyExists);
+  const auto missing = test_root("no_such_db");
+  EXPECT_EQ(SurfaceDb::open(missing.string()).error().code(), ErrorCode::NotFound);
+  std::filesystem::remove_all(root);
+}
+
+TEST(SurfaceDb, Refresh_SeesExternalWriterUpdate) {
+  const auto root = test_root("refresh");
+  auto writer = SurfaceDb::create(root.string());
+  ASSERT_TRUE(writer.has_value());
+  auto reader = SurfaceDb::open(root.string());
+  ASSERT_TRUE(reader.has_value());
+  EXPECT_EQ(reader->generation(), 1u);
+
+  ASSERT_TRUE(writer->upsert_symbol("QQQ", SymbolFitConfig{}).has_value());
+  // Reader still on its old snapshot until refresh:
+  EXPECT_EQ(reader->generation(), 1u);
+  ASSERT_TRUE(reader->refresh().has_value());
+  EXPECT_EQ(reader->generation(), 2u);
+  EXPECT_TRUE(reader->symbol_config("QQQ").has_value());
+  // Idempotent when current:
+  ASSERT_TRUE(reader->refresh().has_value());
+  EXPECT_EQ(reader->generation(), 2u);
+  std::filesystem::remove_all(root);
+}
+
+TEST(SurfaceDb, ConcurrentReaders_DuringUpserts_AreSafe) {
+  const auto root = test_root("concurrent");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+  ASSERT_TRUE(db->upsert_symbol("SPY", SymbolFitConfig{}).has_value());
+  std::atomic<bool> stop{false};
+  std::vector<std::thread> readers;
+  for (int t = 0; t < 4; ++t) {
+    readers.emplace_back([&] {
+      while (!stop.load(std::memory_order_relaxed)) {
+        auto snap = db->manifest();
+        auto cfg = db->symbol_config("SPY");
+        EXPECT_TRUE(cfg.has_value());
+        (void)snap;
+      }
+    });
+  }
+  for (int i = 0; i < 50; ++i) {
+    SymbolFitConfig c; c.band_k = 1.0 + 0.01 * i;
+    ASSERT_TRUE(db->upsert_symbol("SPY", c).has_value());
+  }
+  stop.store(true);
+  for (auto& th : readers) th.join();
+  auto final_cfg = db->symbol_config("SPY");
+  ASSERT_TRUE(final_cfg.has_value());
+  EXPECT_DOUBLE_EQ(final_cfg->band_k, 1.0 + 0.01 * 49);
+  std::filesystem::remove_all(root);
 }
 
 }  // namespace

@@ -6,7 +6,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <memory>
+#include <mutex>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -528,6 +533,280 @@ const DbPartitionRecord *DbManifest::find_partition(std::string_view key) const 
     return &*it;
   }
   return nullptr;
+}
+
+// ── SurfaceDb: file IO helpers ─────────────────────────────────────────────
+
+namespace {
+
+// Atomic manifest write: serialize to `dst.tmp`, then rename over `dst`.
+// Mirrors write_surface_archive_file's discipline (surface_archive.cpp) --
+// including tmp cleanup on failure -- so both binary formats fail the same
+// way under a crash mid-write.
+[[nodiscard]] Status write_manifest_file_atomic(const std::filesystem::path &dst,
+                                                const std::vector<std::byte> &bytes) {
+  std::filesystem::path tmp = dst;
+  tmp += ".tmp";
+  {
+    std::ofstream os(tmp, std::ios::binary | std::ios::trunc);
+    if (!os) {
+      return Err(ErrorCode::IoError, "SurfaceDb: cannot open manifest temp file");
+    }
+    os.write(reinterpret_cast<const char *>(bytes.data()),
+             static_cast<std::streamsize>(bytes.size()));
+    if (!os) {
+      std::error_code ec;
+      std::filesystem::remove(tmp, ec);
+      return Err(ErrorCode::IoError, "SurfaceDb: manifest write failed");
+    }
+  }
+  std::error_code ec;
+  std::filesystem::rename(tmp, dst, ec);
+  if (ec) {
+    std::error_code ec2;
+    std::filesystem::remove(tmp, ec2);
+    return Err(ErrorCode::IoError, "SurfaceDb: manifest rename failed");
+  }
+  return Ok();
+}
+
+// Read a file fully into memory. NotFound if missing, IoError on any stream
+// failure (open/size/short read).
+[[nodiscard]] Result<std::vector<std::byte>> read_file_fully(const std::filesystem::path &p) {
+  std::error_code ec;
+  if (!std::filesystem::exists(p, ec) || ec) {
+    return Err(ErrorCode::NotFound, "SurfaceDb: manifest not found");
+  }
+  std::ifstream is(p, std::ios::binary | std::ios::ate);
+  if (!is) {
+    return Err(ErrorCode::IoError, "SurfaceDb: cannot open manifest file");
+  }
+  const std::streamsize size = is.tellg();
+  if (size < 0) {
+    return Err(ErrorCode::IoError, "SurfaceDb: cannot size manifest file");
+  }
+  std::vector<std::byte> bytes(static_cast<std::size_t>(size));
+  is.seekg(0);
+  is.read(reinterpret_cast<char *>(bytes.data()), size);
+  if (is.gcount() != size) {
+    return Err(ErrorCode::IoError, "SurfaceDb: short read of manifest file");
+  }
+  return Ok(std::move(bytes));
+}
+
+// Decode a manifest's partition records back into writer-input form -- shared
+// by the public partitions() query and every mutation (which must round-trip
+// the untouched partitions through persist_locked alongside the symbol edit).
+[[nodiscard]] std::vector<DbPartitionInfo>
+decode_partitions(std::span<const DbPartitionRecord> recs) {
+  std::vector<DbPartitionInfo> out;
+  out.reserve(recs.size());
+  for (const DbPartitionRecord &rec : recs) {
+    DbPartitionInfo info;
+    info.key.assign(rec.key, rec.key_len);
+    info.surface_count = rec.surface_count;
+    info.file_size = rec.file_size;
+    info.created_ts_ns = rec.created_ts_ns;
+    out.push_back(std::move(info));
+  }
+  return out;
+}
+
+} // namespace
+
+// ── SurfaceDb: create/open ──────────────────────────────────────────────
+
+std::string SurfaceDb::manifest_path() const {
+  return (std::filesystem::path(root_) / std::string(kSurfaceDbManifestName)).string();
+}
+
+Result<SurfaceDb> SurfaceDb::create(std::string_view root, const SurfaceDbCreateOpts &opts) {
+  const std::filesystem::path root_path{std::string(root)};
+  const std::filesystem::path manifest_file = root_path / std::string(kSurfaceDbManifestName);
+
+  std::error_code exists_ec;
+  const bool manifest_present = std::filesystem::exists(manifest_file, exists_ec);
+  if (exists_ec) {
+    return Err(ErrorCode::IoError, "SurfaceDb::create: failed to stat root");
+  }
+  if (manifest_present) {
+    return Err(ErrorCode::AlreadyExists, "SurfaceDb::create: manifest already exists at root");
+  }
+
+  std::error_code mkdir_ec;
+  std::filesystem::create_directories(root_path / std::string(kSurfaceDbPartitionDir), mkdir_ec);
+  if (mkdir_ec) {
+    return Err(ErrorCode::IoError, "SurfaceDb::create: failed to create partitions directory");
+  }
+
+  auto bytes =
+      write_db_manifest({}, {}, {.generation = 1, .created_ts_ns = opts.created_ts_ns});
+  if (!bytes) {
+    return Err(bytes.error());
+  }
+  auto wrote = write_manifest_file_atomic(manifest_file, *bytes);
+  if (!wrote) {
+    return Err(wrote.error());
+  }
+
+  return open(root);
+}
+
+Result<SurfaceDb> SurfaceDb::open(std::string_view root) {
+  SurfaceDb db;
+  db.root_ = std::string(root);
+  db.mu_ = std::make_unique<std::mutex>();
+
+  auto bytes = read_file_fully(db.manifest_path());
+  if (!bytes) {
+    return Err(bytes.error());
+  }
+  auto parsed = DbManifest::open(std::move(*bytes));
+  if (!parsed) {
+    return Err(parsed.error());
+  }
+  db.snapshot_ = std::make_shared<const DbManifest>(std::move(*parsed));
+  return Ok(std::move(db));
+}
+
+// ── SurfaceDb: manifest snapshot queries ──────────────────────────────────
+
+std::shared_ptr<const DbManifest> SurfaceDb::manifest() const {
+  std::lock_guard<std::mutex> lock(*mu_);
+  return snapshot_;
+}
+
+std::uint64_t SurfaceDb::generation() const { return manifest()->generation(); }
+
+std::vector<std::string> SurfaceDb::symbols() const {
+  const std::shared_ptr<const DbManifest> snap = manifest();
+  std::vector<std::string> out;
+  out.reserve(snap->symbols().size());
+  for (const DbSymbolRecord &rec : snap->symbols()) {
+    out.emplace_back(rec.symbol, rec.symbol_len);
+  }
+  return out;
+}
+
+Result<SymbolFitConfig> SurfaceDb::symbol_config(std::string_view symbol) const {
+  return manifest()->find_symbol(symbol);
+}
+
+std::vector<DbPartitionInfo> SurfaceDb::partitions() const {
+  return decode_partitions(manifest()->partitions());
+}
+
+// ── SurfaceDb: manifest mutation ──────────────────────────────────────────
+
+Status SurfaceDb::persist_locked(std::vector<DbSymbolEntry> symbols,
+                                 std::vector<DbPartitionInfo> partitions) {
+  SurfaceDbManifestWriteOpts write_opts;
+  write_opts.generation = snapshot_->generation() + 1;
+  write_opts.created_ts_ns = snapshot_->header().created_ts_ns;
+  write_opts.updated_ts_ns = 0; // now
+  write_opts.flags = snapshot_->header().flags;
+
+  auto bytes = write_db_manifest(symbols, partitions, write_opts);
+  if (!bytes) {
+    return Err(bytes.error());
+  }
+  auto wrote = write_manifest_file_atomic(manifest_path(), *bytes);
+  if (!wrote) {
+    return Err(wrote.error());
+  }
+  // Re-open the just-written bytes (cheap) so the in-memory snapshot is
+  // exactly what a fresh reader would parse from disk.
+  auto parsed = DbManifest::open(std::move(*bytes));
+  if (!parsed) {
+    return Err(parsed.error());
+  }
+  snapshot_ = std::make_shared<const DbManifest>(std::move(*parsed));
+  return Ok();
+}
+
+Status SurfaceDb::upsert_symbol(std::string_view symbol, const SymbolFitConfig &cfg) {
+  const std::string canon = detail::canonicalize_symbol(symbol, kSurfaceDbKeyMax);
+  if (canon.empty()) {
+    return Err(ErrorCode::InvalidArgument, "SurfaceDb::upsert_symbol: empty canonical symbol");
+  }
+
+  std::lock_guard<std::mutex> lock(*mu_);
+  const std::shared_ptr<const DbManifest> snap = snapshot_;
+
+  std::vector<DbSymbolEntry> entries;
+  entries.reserve(snap->symbols().size() + 1);
+  bool replaced = false;
+  for (const DbSymbolRecord &rec : snap->symbols()) {
+    const std::string_view rec_sym(rec.symbol, rec.symbol_len);
+    if (rec_sym == canon) {
+      entries.push_back(DbSymbolEntry{canon, cfg});
+      replaced = true;
+    } else {
+      entries.push_back(DbSymbolEntry{rec_sym, decode_symbol_record(rec)});
+    }
+  }
+  if (!replaced) {
+    entries.push_back(DbSymbolEntry{canon, cfg});
+  }
+
+  return persist_locked(std::move(entries), decode_partitions(snap->partitions()));
+}
+
+Status SurfaceDb::remove_symbol(std::string_view symbol) {
+  const std::string canon = detail::canonicalize_symbol(symbol, kSurfaceDbKeyMax);
+  if (canon.empty()) {
+    return Err(ErrorCode::InvalidArgument, "SurfaceDb::remove_symbol: empty canonical symbol");
+  }
+
+  std::lock_guard<std::mutex> lock(*mu_);
+  const std::shared_ptr<const DbManifest> snap = snapshot_;
+
+  std::vector<DbSymbolEntry> entries;
+  entries.reserve(snap->symbols().size());
+  bool found = false;
+  for (const DbSymbolRecord &rec : snap->symbols()) {
+    const std::string_view rec_sym(rec.symbol, rec.symbol_len);
+    if (rec_sym == canon) {
+      found = true;
+      continue;
+    }
+    entries.push_back(DbSymbolEntry{rec_sym, decode_symbol_record(rec)});
+  }
+  if (!found) {
+    return Err(ErrorCode::NotFound, "SurfaceDb::remove_symbol: symbol not present");
+  }
+
+  return persist_locked(std::move(entries), decode_partitions(snap->partitions()));
+}
+
+Status SurfaceDb::refresh() {
+  std::lock_guard<std::mutex> lock(*mu_);
+
+  const std::filesystem::path path = manifest_path();
+  std::ifstream is(path, std::ios::binary);
+  if (!is) {
+    return Err(ErrorCode::IoError, "SurfaceDb::refresh: cannot open manifest file");
+  }
+  DbManifestHeader hdr{};
+  is.read(reinterpret_cast<char *>(&hdr), sizeof hdr);
+  if (is.gcount() != static_cast<std::streamsize>(sizeof hdr)) {
+    return Err(ErrorCode::ParseError, "SurfaceDb::refresh: short read of manifest header");
+  }
+
+  if (hdr.generation <= snapshot_->generation()) {
+    return Ok();
+  }
+
+  auto bytes = read_file_fully(path);
+  if (!bytes) {
+    return Err(bytes.error());
+  }
+  auto parsed = DbManifest::open(std::move(*bytes));
+  if (!parsed) {
+    return Err(parsed.error());
+  }
+  snapshot_ = std::make_shared<const DbManifest>(std::move(*parsed));
+  return Ok();
 }
 
 } // namespace atx::vol
