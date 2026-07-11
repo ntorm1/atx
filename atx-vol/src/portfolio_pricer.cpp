@@ -11,12 +11,12 @@
 #include <limits>
 #include <memory>
 #include <optional>
-#include <thread>
 #include <unordered_map>
 
 #include "atx/vol/american.hpp"           // AmericanGreeks
 #include "atx/vol/counters.hpp"           // ATX_VOL_COUNT (opt-in P0.2; no-op when OFF)
 #include "atx/vol/prepared_portfolio.hpp" // PreparedPortfolio (grouped exec substrate)
+#include "atx/vol/pricing_executor.hpp"   // pricing_executor(): the persistent P1.4 pool
 
 namespace atx::vol {
 
@@ -29,87 +29,6 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 // (matches the legacy portfolio dollar convention).
 [[nodiscard]] double eff_multiplier(double m) noexcept {
   return (std::isfinite(m) && m > 0.0) ? m : 100.0;
-}
-
-// Run body(i) for i in [0, n), splitting [0, n) into `n_threads` disjoint
-// contiguous blocks across std::jthreads (block 0 on the calling thread). Each i
-// writes its own output slot, so there is no shared mutable state; the caller's
-// serial scatter after this call keeps the reduction order fixed. `n_threads==0`
-// selects hardware concurrency; the count is clamped to n.
-template <class F> void parallel_blocks(std::size_t n, unsigned n_threads, F &&body) {
-  if (n == 0) {
-    return;
-  }
-  unsigned nt = n_threads;
-  if (nt == 0) {
-    nt = std::max(1u, std::thread::hardware_concurrency());
-  }
-  nt = std::min<unsigned>(nt, static_cast<unsigned>(n));
-  if (nt <= 1) {
-    for (std::size_t i = 0; i < n; ++i) {
-      body(i);
-    }
-    return;
-  }
-  const std::size_t block = (n + nt - 1) / nt;
-  std::vector<std::jthread> workers;
-  workers.reserve(nt - 1);
-  ATX_VOL_COUNT_N(WorkerLaunches, nt - 1);  // helper threads (block 0 stays inline)
-  for (unsigned t = 1; t < nt; ++t) {
-    const std::size_t lo = std::min(n, static_cast<std::size_t>(t) * block);
-    const std::size_t hi = std::min(n, lo + block);
-    if (lo >= hi) {
-      break;
-    }
-    workers.emplace_back([lo, hi, &body] {
-      for (std::size_t i = lo; i < hi; ++i) {
-        body(i);
-      }
-    });
-  }
-  const std::size_t hi0 = std::min(n, block);
-  for (std::size_t i = 0; i < hi0; ++i) {
-    body(i);
-  }
-  // jthreads join on destruction.
-}
-
-// Split [0, n) into up to `n_threads` disjoint contiguous blocks and run
-// body(lo, hi) ONCE per block across std::jthreads (block 0 on the calling
-// thread). Identical clamp/scheduling to parallel_blocks, but each worker receives
-// its whole contiguous range so the body can amortize per-range setup (e.g. resolve
-// a group's surface once, evaluate_batch a sub-ladder) instead of paying it per
-// element. Blocks own disjoint index ranges; the body must write only slots derived
-// from its own [lo, hi), so there is no shared mutable state. `n_threads==0` selects
-// hardware concurrency; the count is clamped to n.
-template <class F> void parallel_ranges(std::size_t n, unsigned n_threads, F &&body) {
-  if (n == 0) {
-    return;
-  }
-  unsigned nt = n_threads;
-  if (nt == 0) {
-    nt = std::max(1u, std::thread::hardware_concurrency());
-  }
-  nt = std::min<unsigned>(nt, static_cast<unsigned>(n));
-  if (nt <= 1) {
-    body(std::size_t{0}, n);
-    return;
-  }
-  const std::size_t block = (n + nt - 1) / nt;
-  std::vector<std::jthread> workers;
-  workers.reserve(nt - 1);
-  ATX_VOL_COUNT_N(WorkerLaunches, nt - 1);  // helper threads (block 0 stays inline)
-  for (unsigned t = 1; t < nt; ++t) {
-    const std::size_t lo = std::min(n, static_cast<std::size_t>(t) * block);
-    const std::size_t hi = std::min(n, lo + block);
-    if (lo >= hi) {
-      break;
-    }
-    workers.emplace_back([lo, hi, &body] { body(lo, hi); });
-  }
-  const std::size_t hi0 = std::min(n, block);
-  body(std::size_t{0}, hi0);
-  // jthreads join on destruction.
 }
 
 // Bit-exact contract identity for dedup.
@@ -226,6 +145,22 @@ struct ContractPx {
   PriceStatus status{PriceStatus::ModelUnavailable};
 };
 
+// Per-unique-contract P&L solve result (indexed by the ORIGINAL Portfolio contract
+// index). `gb` are the base American (cold-FD) Greeks — the Taylor coefficients;
+// `price_base`/`price_target` are the base/shifted American marks; the `d*` are the
+// per-share state moves the decomposition is taken over. Defined here (above
+// PortfolioWorkspace::Impl) so the workspace can retain a per-unique vector of it.
+struct ContractPnl {
+  AmericanGreeks gb{};      // base American (cold-FD) Greeks (the Taylor coefficients)
+  double price_base{0.0};   // base American mark (fair_value)
+  double price_target{0.0}; // shifted American mark (fair_value)
+  double dS{0.0};
+  double dvol{0.0};
+  double dt{0.0};
+  double dr{0.0};
+  PriceStatus status{PriceStatus::ModelUnavailable};
+};
+
 [[nodiscard]] bool degenerate(const OptionContract &c) noexcept {
   return !(std::isfinite(c.K) && c.K > 0.0 && std::isfinite(c.T) && c.T > 0.0);
 }
@@ -317,7 +252,7 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
   // Fan out over the FLATTENED permuted unique-contract index [0, n_unique) so
   // the pool scales even on a single-uid book; each worker walks the group
   // boundaries its contiguous [lo,hi) overlaps (one find per touched group).
-  parallel_ranges(n_unique, n_threads, [&](std::size_t lo, std::size_t hi) {
+  pricing_executor().run_ranges(n_unique, n_threads, [&](std::size_t lo, std::size_t hi) {
     const std::uint32_t lo32 = static_cast<std::uint32_t>(lo);
     const std::uint32_t hi32 = static_cast<std::uint32_t>(hi);
     auto git = std::upper_bound(
@@ -339,7 +274,7 @@ void scatter_rows(std::span<const Position> positions, const Portfolio &pf,
                   std::span<const ContractPx> px, bool want_greeks, unsigned n_threads,
                   const PriceFrameView &out) {
   const std::size_t n = positions.size();
-  parallel_blocks(n, n_threads, [&](std::size_t i) {
+  pricing_executor().run_blocks(n, n_threads, [&](std::size_t i) {
     const Position &p = positions[i];
     const ContractPx &c = px[pf.contract_ix(i)];
     const double w = p.qty * eff_multiplier(p.multiplier);
@@ -473,10 +408,19 @@ void reduce_price_totals(std::span<const Position> positions, const Portfolio &p
 
 struct PortfolioWorkspace::Impl {
   std::vector<ContractPx> px;            // per unique contract, ORIGINAL-index order
-  std::vector<double> b_iv;              // permuted-order batch-eval scratch
+  std::vector<double> b_iv;              // permuted-order batch-eval scratch (base surface)
   std::vector<double> b_price;
   std::vector<AmericanGreeks> b_greeks;  // sized 0 under Marks
   std::vector<Status> b_status;
+  // P&L solve scratch (permuted order): the per-unique result plus the shifted-
+  // surface batch buffers the grouped P&L solve fills (base batch reuses b_* above).
+  std::vector<ContractPnl> pnl;          // per unique contract, ORIGINAL-index order
+  std::vector<double> pnl_tt;            // shifted maturity column T_t = T_b - dt
+  std::vector<double> pnl_s_iv;          // shifted iv at the common base maturity (sig_t)
+  std::vector<double> pnl_s_price;       // shifted American mark at T_t (price_target)
+  std::vector<Status> pnl_s_status;      // shifted-price batch status
+  std::vector<double> pnl_junk;          // throwaway span for the batch's unused output
+  std::vector<Status> pnl_junk_status;   // throwaway status span
   std::optional<PreparedPortfolio> prepared; // retained across snapshots (built once)
   const Portfolio *prepared_book{nullptr};   // book identity the substrate is for
   std::uint64_t prepared_fingerprint{0};     // ABA guard: see book_fingerprint()
@@ -497,6 +441,15 @@ void PortfolioWorkspace::reserve(std::size_t n_unique, std::size_t n_positions) 
   impl_->b_price.reserve(n_unique);
   impl_->b_greeks.reserve(n_unique);
   impl_->b_status.reserve(n_unique);
+  // P&L solve scratch (sized alongside the price scratch so pnl_explain_into /
+  // pnl_totals are allocation-free after this).
+  impl_->pnl.reserve(n_unique);
+  impl_->pnl_tt.reserve(n_unique);
+  impl_->pnl_s_iv.reserve(n_unique);
+  impl_->pnl_s_price.reserve(n_unique);
+  impl_->pnl_s_status.reserve(n_unique);
+  impl_->pnl_junk.reserve(n_unique);
+  impl_->pnl_junk_status.reserve(n_unique);
 }
 
 // ── Pricing entry points ───────────────────────────────────────────────────
@@ -622,82 +575,338 @@ Result<PriceFrame> PortfolioPricer::price(const SurfaceSet &surfaces,
 
 namespace {
 
-struct ContractPnl {
-  AmericanGreeks gb{};      // base American (cold-FD) Greeks (the Taylor coefficients)
-  double price_base{0.0};   // base American mark (fair_value)
-  double price_target{0.0}; // shifted American mark (fair_value)
-  double dS{0.0};
-  double dvol{0.0};
-  double dt{0.0};
-  double dr{0.0};
-  PriceStatus status{PriceStatus::ModelUnavailable};
-};
+// Solve every UNIQUE contract's P&L decomposition into `pnl` (indexed by the
+// ORIGINAL Portfolio contract index), routing the base/shifted resolves through
+// the grouped PreparedPortfolio substrate — the §4 hoist. Mirrors solve_uniques:
+// one base.find + one shifted.find per (uid,side) GROUP (vs. per contract), and
+// `evaluate_batch` reuses the T-bracket across each group's equal-T ladder.
+//
+// THE BIT-IDENTITY ARGUMENT (the acceptance gate): each unique result is written
+// into pnl[original_contract_index()[p]] — the SAME slot the ungrouped per-contract
+// loop used — so the downstream scatter/reduction are byte-unchanged. Per entry the
+// grouped path reproduces the ungrouped resolves EXACTLY:
+//   * base greeks/mark/iv  = sb->evaluate(K,T_b,side,Iv|Price|First|Second,analytic)
+//       via sb->evaluate_batch over the group at T_b — evaluate_batch is bit-identical
+//       to per-entry evaluate (T compared by raw bits, carry reused only within an
+//       equal-T run);
+//   * sig_t = st->iv(K,T_b)          via st->evaluate_batch(Iv) over the group at T_b;
+//   * price_target = st->fair_value(K,T_t,side) via st->evaluate_batch(Price) at T_t,
+//       where T_t = T_b - dt and dt is CONSTANT within a (uid,side) group, so a raw-
+//       bit-equal-T_b run maps to a raw-bit-equal-T_t run (same ladder reuse).
+// The status/precedence sequence (degenerate → surface-missing → rolled-past-expiry
+// → numeric → sigma-finite) matches the ungrouped path exactly. Splitting a group
+// across run_ranges workers cannot change any per-entry result (evaluate_batch is
+// per-entry bit-identical regardless of where a sub-call begins).
+void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
+                       const SurfaceSet &shifted, std::span<const OptionContract> contracts,
+                       bool analytic, unsigned n_threads, std::vector<ContractPnl> &pnl,
+                       std::vector<double> &b_iv, std::vector<double> &b_price,
+                       std::vector<AmericanGreeks> &b_greeks, std::vector<Status> &b_status,
+                       std::vector<double> &s_tt, std::vector<double> &s_iv,
+                       std::vector<double> &s_price, std::vector<Status> &s_status,
+                       std::vector<double> &s_junk, std::vector<Status> &s_junk_status) {
+  const std::size_t n_unique = pp.n_unique();
+  using EF = PricedSurface::EvalField;
+
+  pnl.resize(contracts.size());
+  b_iv.resize(n_unique);
+  b_price.resize(n_unique);
+  b_greeks.resize(n_unique);
+  b_status.resize(n_unique);
+  s_tt.resize(n_unique);
+  s_iv.resize(n_unique);
+  s_price.resize(n_unique);
+  s_status.resize(n_unique);
+  s_junk.resize(n_unique);
+  s_junk_status.resize(n_unique);
+
+  const std::span<const ContractGroup> groups = pp.groups();
+  const std::span<const std::uint32_t> oci = pp.original_contract_index();
+  const std::span<const double> kcol = pp.k();
+  const std::span<const double> tcol = pp.t();
+  const std::span<const Side> scol = pp.side();
+
+  const auto solve_span = [&](const ContractGroup &g, std::uint32_t s, std::uint32_t e) {
+    const std::size_t gsz = static_cast<std::size_t>(e - s);
+    const PricedSurface *sb = base.find(g.uid);    // one base find per group
+    const PricedSurface *st = shifted.find(g.uid); // one shifted find per group
+    if (sb == nullptr || st == nullptr) {
+      // Degenerate is checked FIRST (an invalid contract is InvalidContract even when
+      // its uid has no surface) — matching the ungrouped precedence.
+      for (std::uint32_t p = s; p < e; ++p) {
+        const std::uint32_t orig = oci[p];
+        pnl[orig].status = degenerate(contracts[orig]) ? PriceStatus::InvalidContract
+                                                       : PriceStatus::ModelUnavailable;
+      }
+      return;
+    }
+    // Per-group-constant state moves (the surfaces, hence dt/dS/dr, are per-uid).
+    const double dt =
+        static_cast<double>(st->pricing().now_ts_ns - sb->pricing().now_ts_ns) / kNsPerYear;
+    const double dS = st->pricing().S - sb->pricing().S;
+    const double dr = st->pricing().r - sb->pricing().r;
+    for (std::uint32_t p = s; p < e; ++p) {
+      s_tt[p] = tcol[p] - dt; // T_t = T_b - dt (bit-identical to the ungrouped subtraction)
+    }
+
+    // Base surface at T_b: greeks + mark + iv (sig_b), analytic route as requested.
+    PricedSurface::EvaluationSoA base_soa{
+        std::span<double>(b_iv).subspan(s, gsz), std::span<double>(b_price).subspan(s, gsz),
+        std::span<AmericanGreeks>(b_greeks).subspan(s, gsz),
+        std::span<Status>(b_status).subspan(s, gsz)};
+    (void)sb->evaluate_batch(kcol.subspan(s, gsz), tcol.subspan(s, gsz), scol.subspan(s, gsz),
+                             EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder, analytic,
+                             base_soa);
+    // Shifted surface at the COMMON base maturity T_b: iv only (sig_t).
+    PricedSurface::EvaluationSoA sig_soa{
+        std::span<double>(s_iv).subspan(s, gsz), std::span<double>(s_junk).subspan(s, gsz),
+        std::span<AmericanGreeks>{}, std::span<Status>(s_junk_status).subspan(s, gsz)};
+    (void)st->evaluate_batch(kcol.subspan(s, gsz), tcol.subspan(s, gsz), scol.subspan(s, gsz),
+                             EF::Iv, /*analytic=*/false, sig_soa);
+    // Shifted surface at the rolled maturity T_t: American mark only (price_target).
+    PricedSurface::EvaluationSoA px_soa{
+        std::span<double>(s_junk).subspan(s, gsz), std::span<double>(s_price).subspan(s, gsz),
+        std::span<AmericanGreeks>{}, std::span<Status>(s_status).subspan(s, gsz)};
+    (void)st->evaluate_batch(kcol.subspan(s, gsz), std::span<double>(s_tt).subspan(s, gsz),
+                             scol.subspan(s, gsz), EF::Price, /*analytic=*/false, px_soa);
+
+    for (std::uint32_t p = s; p < e; ++p) {
+      const std::uint32_t orig = oci[p];
+      ContractPnl &out = pnl[orig];
+      if (degenerate(contracts[orig])) {
+        out.status = PriceStatus::InvalidContract;
+        continue;
+      }
+      const double T_t = s_tt[p];
+      if (!(std::isfinite(T_t) && T_t > 0.0)) {
+        out.status = PriceStatus::InvalidContract; // rolled past expiry
+        continue;
+      }
+      if (!b_status[p].has_value() || !std::isfinite(b_greeks[p].price) ||
+          !s_status[p].has_value() || !std::isfinite(s_price[p])) {
+        out.status = PriceStatus::NumericError;
+        continue;
+      }
+      const double sig_b = b_iv[p];   // == sb->iv(K,T_b), from the base resolve
+      const double sig_t = s_iv[p];   // == st->iv(K,T_b), common maturity
+      if (!(std::isfinite(sig_b) && std::isfinite(sig_t))) {
+        out.status = PriceStatus::NumericError;
+        continue;
+      }
+      out.gb = b_greeks[p];
+      out.price_base = b_greeks[p].price; // greeks().price IS the American fair_value
+      out.price_target = s_price[p];
+      out.dS = dS;
+      out.dvol = sig_t - sig_b;
+      out.dt = dt;
+      out.dr = dr;
+      out.status = PriceStatus::Ok;
+    }
+  };
+
+  // Fan out over the FLATTENED permuted unique-contract index [0, n_unique); each
+  // worker walks the group boundaries its contiguous [lo,hi) overlaps (mirrors
+  // solve_uniques). Disjoint slot writes + per-entry-bit-identical batches ⇒
+  // bit-identical across worker counts.
+  pricing_executor().run_ranges(n_unique, n_threads, [&](std::size_t lo, std::size_t hi) {
+    const std::uint32_t lo32 = static_cast<std::uint32_t>(lo);
+    const std::uint32_t hi32 = static_cast<std::uint32_t>(hi);
+    auto git = std::upper_bound(
+        groups.begin(), groups.end(), lo32,
+        [](std::uint32_t v, const ContractGroup &grp) { return v < grp.end; });
+    for (; git != groups.end() && git->begin < hi32; ++git) {
+      const std::uint32_t s = std::max<std::uint32_t>(git->begin, lo32);
+      const std::uint32_t e = std::min<std::uint32_t>(git->end, hi32);
+      solve_span(*git, s, e);
+    }
+  });
+}
+
+// Cache-line-disjoint SoA scatter of the P&L decomposition into the caller's view.
+// Each `i` writes only its own row slots from pnl[pf.contract_ix(i)] (disjoint
+// writes, pure const reads → bit-identical for any worker count). The per-row math
+// is the ungrouped fused loop's, verbatim (no reassociation).
+void scatter_pnl_rows(std::span<const Position> positions, const Portfolio &pf,
+                      std::span<const ContractPnl> pnl, unsigned n_threads,
+                      const PnlFrameView &out) {
+  const std::size_t n = positions.size();
+  pricing_executor().run_blocks(n, n_threads, [&](std::size_t i) {
+    const Position &p = positions[i];
+    const ContractPnl &c = pnl[pf.contract_ix(i)];
+    const double w = p.qty * eff_multiplier(p.multiplier);
+    out.id[i] = p.id;
+    out.uid[i] = p.contract.uid;
+    out.status[i] = c.status;
+    if (c.status != PriceStatus::Ok) {
+      out.pv_base[i] = out.pv_target[i] = kNaN;
+      out.pnl_total[i] = out.pnl_delta[i] = out.pnl_gamma[i] = kNaN;
+      out.pnl_vega[i] = out.pnl_volga[i] = out.pnl_vanna[i] = kNaN;
+      out.pnl_theta[i] = out.pnl_rho[i] = out.pnl_charm[i] = kNaN;
+      out.pnl_unexplained[i] = kNaN;
+      out.d_spot[i] = out.d_vol[i] = out.d_time[i] = out.d_rate[i] = kNaN;
+      return;
+    }
+    const AmericanGreeks &g = c.gb;
+    // The full American PnL, decomposed by the base AMERICAN (cold-FD) Greeks. The
+    // coefficients carry the early-exercise premium (delta/gamma finite-differenced
+    // through american_price), so `unexpl` is the pure higher-order Taylor tail.
+    const double pnl_total_ps = c.price_target - c.price_base;
+    const double pd = g.delta * c.dS;
+    const double pg = 0.5 * g.gamma * c.dS * c.dS;
+    const double pv = g.vega * c.dvol;
+    const double pvol = 0.5 * g.volga * c.dvol * c.dvol;
+    const double pvanna = g.vanna * c.dS * c.dvol;
+    const double pth = g.theta * c.dt;
+    const double prho = g.rho * c.dr;
+    const double pcharm = g.charm * c.dS * c.dt;
+    const double explained = pd + pg + pv + pvol + pvanna + pth + prho + pcharm;
+    const double unexpl = pnl_total_ps - explained;
+
+    out.pv_base[i] = w * c.price_base;
+    out.pv_target[i] = w * c.price_target;
+    out.pnl_total[i] = w * pnl_total_ps;
+    out.pnl_delta[i] = w * pd;
+    out.pnl_gamma[i] = w * pg;
+    out.pnl_vega[i] = w * pv;
+    out.pnl_volga[i] = w * pvol;
+    out.pnl_vanna[i] = w * pvanna;
+    out.pnl_theta[i] = w * pth;
+    out.pnl_rho[i] = w * prho;
+    out.pnl_charm[i] = w * pcharm;
+    out.pnl_unexplained[i] = w * unexpl;
+    out.d_spot[i] = c.dS;
+    out.d_vol[i] = c.dvol;
+    out.d_time[i] = c.dt;
+    out.d_rate[i] = c.dr;
+  });
+}
+
+// Fixed-input-order totals reduction over the Ok lanes — the deterministic sum
+// (same order, same operand association) the ungrouped fused loop used, so totals
+// are bit-identical across thread counts AND across pnl_explain/pnl_explain_into/
+// pnl_totals. Recomputing `w * pd` etc. here yields the same bits the scatter stored
+// (IEEE double round-trips losslessly), so pnl_totals (no frame) reduces identically.
+// `t` must be zero-initialized by the caller. Keep `i` ascending: IEEE add is
+// association-order-sensitive.
+void reduce_pnl_totals(std::span<const Position> positions, const Portfolio &pf,
+                       std::span<const ContractPnl> pnl, PnlTotals &t) {
+  const std::size_t n = positions.size();
+  for (std::size_t i = 0; i < n; ++i) {
+    const Position &p = positions[i];
+    const ContractPnl &c = pnl[pf.contract_ix(i)];
+    if (c.status != PriceStatus::Ok) {
+      continue;
+    }
+    const double w = p.qty * eff_multiplier(p.multiplier);
+    const AmericanGreeks &g = c.gb;
+    const double pnl_total_ps = c.price_target - c.price_base;
+    const double pd = g.delta * c.dS;
+    const double pg = 0.5 * g.gamma * c.dS * c.dS;
+    const double pv = g.vega * c.dvol;
+    const double pvol = 0.5 * g.volga * c.dvol * c.dvol;
+    const double pvanna = g.vanna * c.dS * c.dvol;
+    const double pth = g.theta * c.dt;
+    const double prho = g.rho * c.dr;
+    const double pcharm = g.charm * c.dS * c.dt;
+    const double explained = pd + pg + pv + pvol + pvanna + pth + prho + pcharm;
+    const double unexpl = pnl_total_ps - explained;
+    t.pv_base += w * c.price_base;
+    t.pv_target += w * c.price_target;
+    t.pnl_total += w * pnl_total_ps;
+    t.pnl_delta += w * pd;
+    t.pnl_gamma += w * pg;
+    t.pnl_vega += w * pv;
+    t.pnl_volga += w * pvol;
+    t.pnl_vanna += w * pvanna;
+    t.pnl_theta += w * pth;
+    t.pnl_rho += w * prho;
+    t.pnl_charm += w * pcharm;
+    t.pnl_unexplained += w * unexpl;
+    ++t.n_ok;
+  }
+}
 
 } // namespace
 
-Result<PnlFrame> PortfolioPricer::pnl_explain(const SurfaceSet &base, const SurfaceSet &shifted,
+Status PortfolioPricer::pnl_explain_into(const SurfaceSet &base, const SurfaceSet &shifted,
+                                         PnlFrameView out, PortfolioWorkspace &ws,
+                                         const PriceOptions &opts) const {
+  const std::span<const OptionContract> contracts = pf_.contracts();
+  const std::span<const Position> positions = pf_.positions();
+  const std::size_t n = positions.size();
+
+  // P&L has NO field mask — all 19 columns (and the totals sink) must be present and
+  // sized to the position count.
+  const bool ok = out.id.size() == n && out.uid.size() == n && out.pv_base.size() == n &&
+                  out.pv_target.size() == n && out.pnl_total.size() == n &&
+                  out.pnl_delta.size() == n && out.pnl_gamma.size() == n &&
+                  out.pnl_vega.size() == n && out.pnl_volga.size() == n &&
+                  out.pnl_vanna.size() == n && out.pnl_theta.size() == n &&
+                  out.pnl_rho.size() == n && out.pnl_charm.size() == n &&
+                  out.pnl_unexplained.size() == n && out.d_spot.size() == n &&
+                  out.d_vol.size() == n && out.d_time.size() == n && out.d_rate.size() == n &&
+                  out.status.size() == n && out.total != nullptr;
+  if (!ok) {
+    return Err(ErrorCode::InvalidArgument, "pnl_explain_into: span/size mismatch");
+  }
+
+  PortfolioWorkspace::Impl &w = *ws.impl_;
+  // P&L always wants the full base Greek bundle; the retained substrate is byte-
+  // identical for Marks/FullGreeks (derived from (uid,side,T) only), so it is shared
+  // with the price path — a warm price_into build is reused here and vice versa.
+  if (Status s = ensure_prepared(pf_, /*want_greeks=*/true, opts.analytic_greeks, w.prepared,
+                                 w.prepared_book, w.prepared_fingerprint);
+      !s.has_value()) {
+    return Err(s.error());
+  }
+
+  solve_pnl_uniques(*w.prepared, base, shifted, contracts, opts.analytic_greeks, opts.n_threads,
+                    w.pnl, w.b_iv, w.b_price, w.b_greeks, w.b_status, w.pnl_tt, w.pnl_s_iv,
+                    w.pnl_s_price, w.pnl_s_status, w.pnl_junk, w.pnl_junk_status);
+
+  // 19 per-row columns = 141 bytes/position (8 + 4 + 16*8 + 1). No FrameAllocations:
+  // the output spans are caller-owned and the scratch was reserved.
+  ATX_VOL_COUNT_N(FrameBytes, n * 141);
+
+  scatter_pnl_rows(positions, pf_, w.pnl, opts.n_threads, out);
+  *out.total = PnlTotals{};
+  reduce_pnl_totals(positions, pf_, w.pnl, *out.total);
+  return atx::core::Ok();
+}
+
+Result<PnlTotals> PortfolioPricer::pnl_totals(const SurfaceSet &base, const SurfaceSet &shifted,
+                                              PortfolioWorkspace &ws,
                                               const PriceOptions &opts) const {
   const std::span<const OptionContract> contracts = pf_.contracts();
   const std::span<const Position> positions = pf_.positions();
 
-  // 1. Parallel: per unique contract, base Greeks + target reprice + state moves.
-  std::vector<ContractPnl> pnl(contracts.size());
-  parallel_blocks(contracts.size(), opts.n_threads, [&](std::size_t i) {
-    const OptionContract &c = contracts[i];
-    ContractPnl &out = pnl[i];
-    if (degenerate(c)) {
-      out.status = PriceStatus::InvalidContract;
-      return;
-    }
-    const PricedSurface *sb = base.find(c.uid);
-    const PricedSurface *st = shifted.find(c.uid);
-    if (sb == nullptr || st == nullptr) {
-      out.status = PriceStatus::ModelUnavailable;
-      return;
-    }
-    const double dt =
-        static_cast<double>(st->pricing().now_ts_ns - sb->pricing().now_ts_ns) / kNsPerYear;
-    const double T_b = c.T;
-    const double T_t = T_b - dt;
-    if (!(std::isfinite(T_t) && T_t > 0.0)) {
-      out.status = PriceStatus::InvalidContract; // rolled past expiry
-      return;
-    }
-    // One fused base resolution: base Greeks + base IV (sig_b) off a SINGLE sb
-    // resolve at (K,T_b), killing the old separate sb->iv() that re-resolved sb at
-    // the same (K,T_b) the base greeks already resolved.
-    using EF = PricedSurface::EvalField;
-    const PricedSurface::FusedResult fr_b =
-        sb->evaluate(c.K, T_b, c.side, EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder,
-                     opts.analytic_greeks); // base greeks + mark + iv
-    auto pt = st->fair_value(c.K, T_t, c.side); // shifted mark at the rolled maturity
-    if (!fr_b.status.has_value() || !std::isfinite(fr_b.greeks.price) || !pt.has_value() ||
-        !std::isfinite(*pt)) {
-      out.status = PriceStatus::NumericError;
-      return;
-    }
-    const double sig_b = fr_b.iv;          // == sb->iv(c.K,T_b), reused from the base resolve
-    const double sig_t = st->iv(c.K, T_b); // common maturity: term roll stays in theta
-    if (!(std::isfinite(sig_b) && std::isfinite(sig_t))) {
-      out.status = PriceStatus::NumericError;
-      return;
-    }
-    out.gb = fr_b.greeks;
-    out.price_base = fr_b.greeks.price; // == sb->fair_value(c.K,T_b,side), bit-identical, no dup solve
-    out.price_target = *pt;
-    out.dS = st->pricing().S - sb->pricing().S;
-    out.dvol = sig_t - sig_b;
-    out.dt = dt;
-    out.dr = st->pricing().r - sb->pricing().r;
-    out.status = PriceStatus::Ok;
-  });
+  PortfolioWorkspace::Impl &w = *ws.impl_;
+  if (Status s = ensure_prepared(pf_, /*want_greeks=*/true, opts.analytic_greeks, w.prepared,
+                                 w.prepared_book, w.prepared_fingerprint);
+      !s.has_value()) {
+    return Err(s.error());
+  }
 
-  // 2. Serial scatter (input order) + fixed-order total reduction.
+  solve_pnl_uniques(*w.prepared, base, shifted, contracts, opts.analytic_greeks, opts.n_threads,
+                    w.pnl, w.b_iv, w.b_price, w.b_greeks, w.b_status, w.pnl_tt, w.pnl_s_iv,
+                    w.pnl_s_price, w.pnl_s_status, w.pnl_junk, w.pnl_junk_status);
+
+  // No scatter, no per-row frame: reduce the weighted per-row decomposition over
+  // positions in fixed input order — bit-identical to pnl_explain(...).total.
+  PnlTotals t{};
+  reduce_pnl_totals(positions, pf_, w.pnl, t);
+  return t;
+}
+
+Result<PnlFrame> PortfolioPricer::pnl_explain(const SurfaceSet &base, const SurfaceSet &shifted,
+                                              const PriceOptions &opts) const {
+  const std::size_t n = pf_.positions().size();
+
+  // The returning API is a thin wrapper over pnl_explain_into over a locally-owned
+  // frame + workspace. FrameAllocations counts the ACTUAL 19 frame column
+  // allocations here (the in-place pnl_explain_into path emits none).
   PnlFrame f;
-  const std::size_t n = positions.size();
-  // 19 per-row columns = 141 bytes/position (8+4+8*16+1).
-  ATX_VOL_COUNT_N(FrameAllocations, 19);
-  ATX_VOL_COUNT_N(FrameBytes, n * 141);
+  ATX_VOL_COUNT_N(FrameAllocations, n > 0 ? 19u : 0u);
   f.id.resize(n);
   f.uid.resize(n);
   f.pv_base.resize(n);
@@ -718,70 +927,13 @@ Result<PnlFrame> PortfolioPricer::pnl_explain(const SurfaceSet &base, const Surf
   f.d_rate.resize(n);
   f.status.resize(n);
 
-  for (std::size_t i = 0; i < n; ++i) {
-    const Position &p = positions[i];
-    const ContractPnl &c = pnl[pf_.contract_ix(i)];
-    const double w = p.qty * eff_multiplier(p.multiplier);
-    f.id[i] = p.id;
-    f.uid[i] = p.contract.uid;
-    f.status[i] = c.status;
-    if (c.status != PriceStatus::Ok) {
-      f.pv_base[i] = f.pv_target[i] = kNaN;
-      f.pnl_total[i] = f.pnl_delta[i] = f.pnl_gamma[i] = kNaN;
-      f.pnl_vega[i] = f.pnl_volga[i] = f.pnl_vanna[i] = kNaN;
-      f.pnl_theta[i] = f.pnl_rho[i] = f.pnl_charm[i] = kNaN;
-      f.pnl_unexplained[i] = kNaN;
-      f.d_spot[i] = f.d_vol[i] = f.d_time[i] = f.d_rate[i] = kNaN;
-      continue;
-    }
-    const AmericanGreeks &g = c.gb;
-    // The full American PnL, decomposed by the base AMERICAN (cold-FD) Greeks. The
-    // coefficients now carry the early-exercise premium (delta/gamma finite-
-    // differenced through american_price), so `unexpl` is the pure higher-order
-    // Taylor tail — small for a small move — not the early-exercise gap the old
-    // European Black-76 Greeks left behind.
-    const double pnl_total_ps = c.price_target - c.price_base;
-    const double pd = g.delta * c.dS;
-    const double pg = 0.5 * g.gamma * c.dS * c.dS;
-    const double pv = g.vega * c.dvol;
-    const double pvol = 0.5 * g.volga * c.dvol * c.dvol;
-    const double pvanna = g.vanna * c.dS * c.dvol;
-    const double pth = g.theta * c.dt;
-    const double prho = g.rho * c.dr;
-    const double pcharm = g.charm * c.dS * c.dt;
-    const double explained = pd + pg + pv + pvol + pvanna + pth + prho + pcharm;
-    const double unexpl = pnl_total_ps - explained;
-
-    f.pv_base[i] = w * c.price_base;
-    f.pv_target[i] = w * c.price_target;
-    f.pnl_total[i] = w * pnl_total_ps;
-    f.pnl_delta[i] = w * pd;
-    f.pnl_gamma[i] = w * pg;
-    f.pnl_vega[i] = w * pv;
-    f.pnl_volga[i] = w * pvol;
-    f.pnl_vanna[i] = w * pvanna;
-    f.pnl_theta[i] = w * pth;
-    f.pnl_rho[i] = w * prho;
-    f.pnl_charm[i] = w * pcharm;
-    f.pnl_unexplained[i] = w * unexpl;
-    f.d_spot[i] = c.dS;
-    f.d_vol[i] = c.dvol;
-    f.d_time[i] = c.dt;
-    f.d_rate[i] = c.dr;
-
-    f.total.pv_base += f.pv_base[i];
-    f.total.pv_target += f.pv_target[i];
-    f.total.pnl_total += f.pnl_total[i];
-    f.total.pnl_delta += f.pnl_delta[i];
-    f.total.pnl_gamma += f.pnl_gamma[i];
-    f.total.pnl_vega += f.pnl_vega[i];
-    f.total.pnl_volga += f.pnl_volga[i];
-    f.total.pnl_vanna += f.pnl_vanna[i];
-    f.total.pnl_theta += f.pnl_theta[i];
-    f.total.pnl_rho += f.pnl_rho[i];
-    f.total.pnl_charm += f.pnl_charm[i];
-    f.total.pnl_unexplained += f.pnl_unexplained[i];
-    ++f.total.n_ok;
+  PnlFrameView view{f.id,          f.uid,       f.pv_base,   f.pv_target,       f.pnl_total,
+                    f.pnl_delta,   f.pnl_gamma, f.pnl_vega,  f.pnl_volga,       f.pnl_vanna,
+                    f.pnl_theta,   f.pnl_rho,   f.pnl_charm, f.pnl_unexplained, f.d_spot,
+                    f.d_vol,       f.d_time,    f.d_rate,    f.status,          &f.total};
+  PortfolioWorkspace ws; // one-shot local workspace (the wrapper accepts its alloc)
+  if (Status s = pnl_explain_into(base, shifted, view, ws, opts); !s.has_value()) {
+    return Err(s.error());
   }
   return f;
 }
