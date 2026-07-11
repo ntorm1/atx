@@ -23,11 +23,15 @@
 #include "atx/vol/surface_db.hpp"
 #include "atx/vol/vol_curve.hpp"
 
-// ATXVDB v1 manifest suite: on-disk record layout pinning, writer/parser
-// round-trip (every SymbolFitConfig field preserved bit-for-bit), duplicate /
-// malformed-input rejection, and corruption detection (magic, header CRC,
-// payload CRC, truncation, out-of-range enum wire values). Pure in-memory
-// (no file IO — that's Task 3).
+// ATXVDB v1 manifest suite. First: on-disk record layout pinning,
+// writer/parser round-trip (every SymbolFitConfig field preserved
+// bit-for-bit), duplicate/malformed-input rejection, and corruption
+// detection (magic, header CRC, payload CRC, truncation, out-of-range enum
+// wire values) — pure in-memory, no file IO. Then: SurfaceDb itself
+// (create/open/upsert/refresh, concurrent readers), the partition store
+// (write/open/load/drop), the apply_symbol_config pipeline binding, and an
+// end-to-end configure-store-reload-serve test against a real directory on
+// disk.
 
 namespace atx::vol {
 namespace {
@@ -429,6 +433,38 @@ TEST(SurfaceDb, CreateOpenUpsertReopen_ConfigPersists) {
   std::filesystem::remove_all(root);
 }
 
+TEST(SurfaceDb, UpsertBadEnum_FailsCleanly_DbStillOpens) {
+  // Regression for the writer/reader enum-validation asymmetry: a config
+  // carrying an out-of-range enum wire value must be rejected by the
+  // mutation itself (InvalidArgument), never reach disk, and leave the
+  // database fully usable afterward -- not brick every future
+  // SurfaceDb::open/refresh in every process.
+  const auto root = test_root("upsert_bad_enum");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+  EXPECT_EQ(db->generation(), 1u);
+
+  SymbolFitConfig bad;
+  bad.preset = static_cast<FitPreset>(250);  // outside every enum's wire range
+  const auto result = db->upsert_symbol("AAPL", bad);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_EQ(db->generation(), 1u);   // rejected mutation must not advance generation
+  EXPECT_TRUE(db->symbols().empty());
+
+  // A subsequent valid upsert on the same handle still succeeds:
+  ASSERT_TRUE(db->upsert_symbol("AAPL", SymbolFitConfig{}).has_value());
+  EXPECT_EQ(db->generation(), 2u);
+
+  // And the db still opens cleanly from disk -- the rejected mutation never
+  // touched the on-disk manifest.
+  auto reopened = SurfaceDb::open(root.string());
+  ASSERT_TRUE(reopened.has_value());
+  EXPECT_EQ(reopened->generation(), 2u);
+  EXPECT_EQ(reopened->symbols(), (std::vector<std::string>{"AAPL"}));
+  std::filesystem::remove_all(root);
+}
+
 TEST(SurfaceDb, Create_RejectsExisting_Open_RejectsMissing) {
   const auto root = test_root("create_guard");
   ASSERT_TRUE(SurfaceDb::create(root.string()).has_value());
@@ -487,7 +523,7 @@ TEST(SurfaceDb, ConcurrentReaders_DuringUpserts_AreSafe) {
   std::filesystem::remove_all(root);
 }
 
-// ── SurfaceDb: partition store (Task 4) ────────────────────────────────────
+// ── SurfaceDb: partition store ──────────────────────────────────────────────
 
 TEST(SurfaceDbPartition, WriteOpenLoad_TheoBitIdentical) {
   const auto root = test_root("part_roundtrip");
@@ -655,7 +691,7 @@ TEST(SurfaceDbPartition, BadKey_Rejected) {
   std::filesystem::remove_all(root);
 }
 
-// ── Fitting-pipeline binding (Task 5) ──────────────────────────────────────
+// ── Fitting-pipeline binding ─────────────────────────────────────────────────
 
 TEST(SurfaceDbApply, PinnedConfig_OverridesPreset) {
   auto cfg = make_full_config();          // pin_curve=true, al_override=true, Hft

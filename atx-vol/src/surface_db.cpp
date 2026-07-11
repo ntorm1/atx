@@ -327,6 +327,16 @@ Result<std::vector<std::byte>> write_db_manifest(std::span<const DbSymbolEntry> 
     }
     SymPlan p;
     p.rec = encode_symbol_record(canon, e.config);
+    // Validate wire-range BEFORE this record ever reaches disk: the exact
+    // same check DbManifest::open enforces on read (symbol_record_enums_valid),
+    // so a config carrying an out-of-range enum (e.g. an invalid
+    // static_cast<FitPreset>) is rejected here instead of round-tripping into
+    // a manifest the parser would go on to refuse -- see persist_locked's
+    // parse-before-rename ordering for the other half of this guard.
+    if (!symbol_record_enums_valid(p.rec)) {
+      return Err(ErrorCode::InvalidArgument,
+                 "write_db_manifest: symbol config has out-of-range enum value for " + canon);
+    }
     sym_plans.push_back(p);
   }
 
@@ -762,16 +772,26 @@ Status SurfaceDb::persist_locked(std::vector<DbSymbolEntry> symbols,
   if (!bytes) {
     return Err(bytes.error());
   }
+  // Parse-validate the freshly serialized bytes IN MEMORY before this
+  // mutation ever touches disk. `DbManifest::open` takes its argument by
+  // value, so this is a deliberate COPY of `*bytes` -- it leaves the
+  // original intact for the atomic write below and means the writer and the
+  // parser can never quietly disagree about wire validity: any future
+  // writer/reader asymmetry (e.g. an enum the writer forgot to range-check)
+  // fails the mutation cleanly right here with the original manifest file
+  // still on disk, instead of atomically renaming bytes the parser would go
+  // on to reject and permanently bricking every subsequent
+  // SurfaceDb::open/refresh in every process.
+  auto parsed = DbManifest::open(*bytes);
+  if (!parsed) {
+    return Err(parsed.error());
+  }
   auto wrote = write_manifest_file_atomic(manifest_path(), *bytes);
   if (!wrote) {
     return Err(wrote.error());
   }
-  // Re-open the just-written bytes (cheap) so the in-memory snapshot is
-  // exactly what a fresh reader would parse from disk.
-  auto parsed = DbManifest::open(std::move(*bytes));
-  if (!parsed) {
-    return Err(parsed.error());
-  }
+  // Swap in the already-parsed manifest -- exactly what a fresh reader would
+  // parse from the bytes just written, with no second parse needed.
   snapshot_ = std::make_shared<const DbManifest>(std::move(*parsed));
   return Ok();
 }
@@ -935,23 +955,21 @@ Status SurfaceDb::drop_partition(std::string_view key) {
   }
   const std::string path = partition_path(*canon);
 
-  {
-    std::lock_guard<std::mutex> lock(*mu_);
-    const std::shared_ptr<const DbManifest> snap = snapshot_;
-    if (snap->find_partition(*canon) == nullptr) {
-      return Err(ErrorCode::NotFound, "SurfaceDb::drop_partition: partition not present");
-    }
+  std::lock_guard<std::mutex> lock(*mu_);
+  const std::shared_ptr<const DbManifest> snap = snapshot_;
+  if (snap->find_partition(*canon) == nullptr) {
+    return Err(ErrorCode::NotFound, "SurfaceDb::drop_partition: partition not present");
+  }
 
-    std::vector<DbPartitionInfo> parts = decode_partitions(snap->partitions());
-    parts.erase(std::remove_if(parts.begin(), parts.end(),
-                               [&](const DbPartitionInfo &p) { return p.key == *canon; }),
-               parts.end());
+  std::vector<DbPartitionInfo> parts = decode_partitions(snap->partitions());
+  parts.erase(std::remove_if(parts.begin(), parts.end(),
+                             [&](const DbPartitionInfo &p) { return p.key == *canon; }),
+             parts.end());
 
-    auto persisted = persist_locked(decode_symbol_entries(snap->symbols()), std::move(parts));
-    if (!persisted) {
-      return Err(persisted.error());
-    }
-  } // release the lock before touching the filesystem below.
+  auto persisted = persist_locked(decode_symbol_entries(snap->symbols()), std::move(parts));
+  if (!persisted) {
+    return Err(persisted.error());
+  }
 
   // Manifest-first ordering is deliberate, not incidental: the index entry is
   // already gone (and generation already bumped) by the time we get here, so
@@ -963,7 +981,13 @@ Status SurfaceDb::drop_partition(std::string_view key) {
   // -- would risk a crash between the two steps that leaves a manifest entry
   // pointing at a now-missing file: every later open_partition/load_surface
   // for that key would then surface a confusing IoError/NotFound-on-open
-  // instead of a clean "no such partition."
+  // instead of a clean "no such partition." The unlink stays under `*mu_`
+  // (rather than after releasing it) so an in-process write_partition on the
+  // SAME key racing on another thread cannot land its archive write and
+  // manifest entry inside the gap between this manifest commit and the
+  // unlink; see surface_db.hpp's thread-safety note for the residual
+  // ordering this narrows but does not fully close (write_partition's own
+  // archive write still happens before it takes the lock).
   std::error_code ec;
   std::filesystem::remove(path, ec);
   return Ok();

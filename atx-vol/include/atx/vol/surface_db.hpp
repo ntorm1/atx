@@ -5,11 +5,13 @@
 // configuration a production pipeline needs to fit "this underlying, this
 // way" without hand-assembling `SessionInputs` at every call site.
 //
-// A `SurfaceDb` (Tasks 3-5) is a directory: one `manifest.atxdb` (this format)
-// indexing zero or more `.atxvsa` partition files under `partitions/`. This
-// header is the manifest's binary shape plus its in-memory writer/reader; file
-// IO and the `SurfaceDb` class land in Task 3, `apply_symbol_config` in a later
-// task.
+// A `SurfaceDb` is a directory: one `manifest.atxdb` (this format) indexing
+// zero or more `.atxvsa` partition files under `partitions/`. This header
+// covers the manifest's binary shape and in-memory writer/reader, the
+// `SurfaceDb` class itself (create/open, atomic manifest persistence, symbol
+// CRUD, partition IO, refresh()), and `apply_symbol_config` /
+// `symbol_config_from_preset` for binding a stored config onto
+// `SessionInputs`.
 //
 // ── On-disk shape ───────────────────────────────────────────────────────────
 //
@@ -311,17 +313,26 @@ class DbManifest {
 [[nodiscard]] SymbolFitConfig decode_symbol_record(const DbSymbolRecord& rec);
 
 // ── SurfaceDb: create/open, atomic manifest persistence, symbol CRUD,
-// refresh() (Task 3); partition IO (Task 4) ───────────────────────────────
+// refresh(), partition IO ─────────────────────────────────────────────────
 
 struct SurfaceDbCreateOpts {
   std::int64_t created_ts_ns{0};      // 0 => system clock
 };
 
 // An opened surface database. Const queries are thread-safe (they read an
-// immutable manifest snapshot swapped under a mutex); mutating calls are
-// serialized internally. Cross-process: single writer, many readers; every
-// mutation is an atomic manifest rewrite (tmp+rename) with generation++ so a
-// reader process picks it up via refresh().
+// immutable manifest snapshot swapped under a mutex). Manifest mutations
+// (upsert_symbol, remove_symbol, and the manifest half of write_partition /
+// drop_partition) are serialized internally by that same mutex. Partition
+// FILE operations are NOT fully covered by it, though: write_partition
+// writes the .atxvsa archive before taking the lock, and drop_partition's
+// unlink happens under the lock but after persist_locked's rename (see
+// surface_db.cpp for why that ordering is deliberate). Concurrent in-process
+// callers racing write_partition/drop_partition against the SAME key can
+// therefore still interleave a file op from one call with the other's
+// manifest update -- callers must serialize same-key partition mutations
+// themselves; distinct keys are unaffected. Cross-process: single writer,
+// many readers; every manifest mutation is an atomic rewrite (tmp+rename)
+// with generation++ so a reader process picks it up via refresh().
 class SurfaceDb {
  public:
   // Create <root>/ (and partitions/) and write an empty manifest
@@ -351,7 +362,7 @@ class SurfaceDb {
   // in-memory snapshot (external writer). Ok and no-op when current.
   [[nodiscard]] Status refresh();
 
-  // ── Partition IO (Task 4) ──
+  // ── Partition IO ──
   //
   // A partition's ATXVSA archive stores whatever symbols the caller passes to
   // write_partition; those symbols need NOT appear in the manifest's symbol
