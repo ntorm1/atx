@@ -16,6 +16,7 @@
 #include "atx/vol/american.hpp"
 #include "atx/vol/black76.hpp"
 #include "atx/vol/correction.hpp"
+#include "atx/vol/counters.hpp"
 #include "atx/vol/greeks.hpp"
 #include "support/oracle_pricer_pde.hpp"
 
@@ -568,6 +569,197 @@ TEST(AmericanGreeks, FdBoundaryReuse_BitIdentical_PutGrid) {
   EXPECT_EQ(checked, 75);
 }
 
+// ── Call fast path (P2.1): McDonald-Schroder + strike homogeneity ────────────
+//
+// The cold call greeks run 17 full american_price(...,Call) solves. The fast path
+// reuses 7 unique (sigma,r,T) internal-put boundaries, each solved once at the base
+// internal-strike = S and rescaled per spot stencil by strike homogeneity. That
+// rescale is exact in R but ~1e-7 in IEEE, so — unlike the spot-independent put
+// boundary — the SPOT-derived call greeks (delta, gamma, vanna, charm) are NOT bit-
+// identical to the cold path. The base mark p0 (spot un-bumped => rescale is a
+// no-op back to strike = S) and the greeks with NO spot bump (vega, volga, rho,
+// theta) reuse their boundary un-rescaled and stay bit-identical. The cold scalar
+// path (greeks_fd_reference, the 17 american_price solves) is the INDEPENDENT
+// validation anchor required by the sprint's §9.2 (a reference that is not the new
+// code). This test states the measured per-greek shift and gates it to §9.2.
+TEST(CallGreeksFd, Fast_MatchesColdWithinTol) {
+  const double S = 100.0, r = 0.03, q = 0.05;  // q > r: early call exercise binds
+  double max_price = 0, max_delta = 0, max_gamma = 0, max_gamma_rel = 0;
+  double max_vega = 0, max_volga = 0, max_rho = 0, max_theta = 0;
+  double max_vanna = 0, max_charm = 0;
+  int checked = 0;
+  for (const double K : {70.0, 85.0, 100.0, 115.0, 130.0}) {
+    for (const double T : {0.05, 0.1, 0.5, 1.0, 2.0}) {
+      for (const double sigma : {0.12, 0.25, 0.45}) {
+        const auto fast = american_greeks_fd(S, K, T, sigma, r, q, Side::Call);
+        ASSERT_TRUE(fast.has_value())
+            << "K=" << K << " T=" << T << " sigma=" << sigma;
+        const AmericanGreeks cold =
+            greeks_fd_reference(S, K, T, sigma, r, q, Side::Call);
+        const std::string at = "K=" + std::to_string(K) + " T=" +
+                               std::to_string(T) + " sigma=" + std::to_string(sigma);
+        // p0 and the non-spot greeks reuse their boundary un-rescaled => bit-identical.
+        EXPECT_TRUE(bits_equal(fast->price, cold.price)) << "price " << at;
+        EXPECT_TRUE(bits_equal(fast->vega, cold.vega)) << "vega " << at;
+        EXPECT_TRUE(bits_equal(fast->volga, cold.volga)) << "volga " << at;
+        EXPECT_TRUE(bits_equal(fast->rho, cold.rho)) << "rho " << at;
+        EXPECT_TRUE(bits_equal(fast->theta, cold.theta)) << "theta " << at;
+        max_price = std::max(max_price, std::fabs(fast->price - cold.price));
+        max_delta = std::max(max_delta, std::fabs(fast->delta - cold.delta));
+        max_gamma = std::max(max_gamma, std::fabs(fast->gamma - cold.gamma));
+        if (std::fabs(cold.gamma) > 1.0e-3) {
+          max_gamma_rel = std::max(
+              max_gamma_rel, std::fabs(fast->gamma - cold.gamma) / std::fabs(cold.gamma));
+        }
+        max_vega = std::max(max_vega, std::fabs(fast->vega - cold.vega));
+        max_volga = std::max(max_volga, std::fabs(fast->volga - cold.volga));
+        max_rho = std::max(max_rho, std::fabs(fast->rho - cold.rho));
+        max_theta = std::max(max_theta, std::fabs(fast->theta - cold.theta));
+        max_vanna = std::max(max_vanna, std::fabs(fast->vanna - cold.vanna));
+        max_charm = std::max(max_charm, std::fabs(fast->charm - cold.charm));
+        ++checked;
+      }
+    }
+  }
+  std::printf(
+      "[9a-fast-vs-cold-call] pts=%d delta=%.3e gamma=%.3e(rel %.3e) vanna=%.3e "
+      "charm=%.3e | bit-identical: price=%.3e vega=%.3e volga=%.3e rho=%.3e "
+      "theta=%.3e\n",
+      checked, max_delta, max_gamma, max_gamma_rel, max_vanna, max_charm, max_price,
+      max_vega, max_volga, max_rho, max_theta);
+  EXPECT_EQ(checked, 75);
+  // §9.2 Greek gates vs the independent cold scalar reference. MEASURED maxima on
+  // this grid (Debug gate): delta ~1.8e-14, gamma ~7e-13 (rel ~7e-11), vanna ~1.8e-11,
+  // charm ~3.1e-11 — the ±0.1% spot bump reuses a boundary whose dimensionless y[]
+  // equals the fresh-solve y[] to solver tol (1e-10), so the homogeneity shift lands
+  // FAR under the ~1e-7 the sprint budgeted, and the non-spot greeks stay bit-exact.
+  EXPECT_EQ(max_price, 0.0);  // base mark rescales to strike S => bit-identical
+  EXPECT_EQ(max_vega, 0.0);   // no spot bump => internal-put boundary un-rescaled
+  EXPECT_EQ(max_volga, 0.0);
+  EXPECT_EQ(max_rho, 0.0);
+  EXPECT_EQ(max_theta, 0.0);
+  EXPECT_LT(max_delta, 2.0e-5);                               // §9.2 delta abs
+  EXPECT_TRUE(max_gamma < 2.0e-5 || max_gamma_rel < 2.0e-3);  // §9.2 gamma
+  // vanna/volga/charm contribution ≤ $0.001/share under the canonical combined
+  // shocks (1-vol-pt = 0.01, 1% spot). volga is bit-identical; vanna/charm carry
+  // the homogeneity shift — their P&L contribution stays far inside a tick.
+  EXPECT_LT(max_vanna * 0.01 * (0.01 * S), 1.0e-3);   // vanna·dσ·dS
+  EXPECT_LT(max_charm * (0.01 * S) / 365.0, 1.0e-3);  // charm·dS·(1 day)
+}
+
+// Independent PDE anchor for the fast call greeks: the Crank-Nicolson oracle (which
+// prices calls, dividend early-exercise included) is differenced for a reference
+// delta/gamma, and the fast price is gated to §9.1 against it. The oracle's coarse-
+// grid FD noise is far above the ~1e-6 fast-vs-cold shift, so this test's job is to
+// (a) anchor the price to an external solver and (b) catch a wrong internal-put
+// mapping (which would move delta/gamma by O(1), not O(1e-3)). Corners: dividend
+// call (early exercise), no-dividend European corner (q<=0), near-expiry, deep-ITM.
+TEST(CallGreeksFd, Fast_MeetsPdeGreekGates) {
+  const double K = 100.0;
+  struct Case {
+    double S, T, sigma, r, q;
+    const char* tag;
+  };
+  const Case cases[] = {
+      {100.0, 1.00, 0.25, 0.03, 0.06, "atm-dividend"},
+      {120.0, 0.50, 0.20, 0.03, 0.06, "deep-itm-dividend"},
+      {100.0, 0.05, 0.30, 0.03, 0.06, "near-expiry-dividend"},
+  };
+  // Default oracle grid (2000x4000); the ~0.01*S central-difference bump spans
+  // several grid cells so its interpolation noise averages down to ~1e-3 on delta.
+  const atx::vol::test::OraclePdeOpts grid{};
+  double max_price_rel = 0, max_delta_gap = 0, max_gamma_gap = 0;
+  for (const Case& c : cases) {
+    const auto fast = american_greeks_fd(c.S, K, c.T, c.sigma, c.r, c.q, Side::Call);
+    ASSERT_TRUE(fast.has_value()) << c.tag;
+    // PDE price + central-difference delta/gamma from one triple of oracle solves.
+    const double h = 0.01 * c.S;
+    const double v0 = oracle_pde_american(c.S, K, c.T, c.sigma, c.r, c.q, Side::Call, grid);
+    const double vp = oracle_pde_american(c.S + h, K, c.T, c.sigma, c.r, c.q, Side::Call, grid);
+    const double vm = oracle_pde_american(c.S - h, K, c.T, c.sigma, c.r, c.q, Side::Call, grid);
+    ASSERT_TRUE(std::isfinite(v0) && std::isfinite(vp) && std::isfinite(vm)) << c.tag;
+    const double pde_delta = (vp - vm) / (2.0 * h);
+    const double pde_gamma = (vp - 2.0 * v0 + vm) / (h * h);
+    const double price_rel = std::fabs(fast->price - v0) / std::fmax(v0, 1.0e-6);
+    max_price_rel = std::max(max_price_rel, price_rel);
+    max_delta_gap = std::max(max_delta_gap, std::fabs(fast->delta - pde_delta));
+    max_gamma_gap = std::max(max_gamma_gap, std::fabs(fast->gamma - pde_gamma));
+    EXPECT_LT(price_rel, 5.0e-3) << c.tag << " fast=" << fast->price << " pde=" << v0;
+    // Mapping-bug catch: PDE FD noise on delta/gamma is O(1e-3); a swapped internal-
+    // put arg would move them O(1). Gate well inside the PDE-noise envelope.
+    EXPECT_LT(std::fabs(fast->delta - pde_delta), 1.0e-2) << c.tag;
+    EXPECT_LT(std::fabs(fast->gamma - pde_gamma), 1.0e-2) << c.tag;
+  }
+  std::printf("[9a-fast-vs-pde-call] price_rel=%.3e delta_gap=%.3e gamma_gap=%.3e\n",
+              max_price_rel, max_delta_gap, max_gamma_gap);
+
+  // No-dividend European corner (q <= 0 => American call == European): the fast
+  // greeks equal the closed-form Black-76 European call greeks the short-circuit
+  // returns, and match the cold scalar reference bit-for-bit.
+  {
+    const double S = 100.0, T = 0.75, sigma = 0.25, r = 0.04, q = 0.0;
+    const auto fast = american_greeks_fd(S, K, T, sigma, r, q, Side::Call);
+    ASSERT_TRUE(fast.has_value());
+    const AmericanGreeks cold = greeks_fd_reference(S, K, T, sigma, r, q, Side::Call);
+    EXPECT_TRUE(bits_equal(fast->price, cold.price));
+    EXPECT_TRUE(bits_equal(fast->delta, cold.delta));
+    EXPECT_TRUE(bits_equal(fast->gamma, cold.gamma));
+    EXPECT_TRUE(bits_equal(fast->vega, cold.vega));
+  }
+}
+
+// Fall-back-to-cold: a stencil whose regime the ALO scheme cannot price defers to
+// the scalar P() path so the SAME error the cold bundle would raise propagates —
+// never a silently-wrong fast Greeks set. The reachable fall-back corner is the
+// double-continuation (Unsupported) regime (rate q < yield r <= 0 in the call's
+// internal-put convention); a genuine boundary collapse (xmax <= 0) is unreachable
+// in the American regime because rate = q > 0 there forces al_xmax_put > 0, so the
+// defensive `!ok` collapse arm shares this exact P()-fallback path.
+TEST(CallGreeksFd, BoundaryCollapse_FallsBackToCold) {
+  const double S = 100.0, K = 100.0, T = 1.0, sigma = 0.25;
+  const double r = -0.05, q = -0.02;  // call internal-put: rate q=-0.02 > yield r=-0.05 => Unsupported
+  const auto fast = american_greeks_fd(S, K, T, sigma, r, q, Side::Call);
+  const auto cold = american_price(S, K, T, sigma, r, q, Side::Call,
+                                   AmericanMethod::AndersenLake, std::nullopt);
+  ASSERT_FALSE(cold.has_value());
+  ASSERT_FALSE(fast.has_value());
+  EXPECT_EQ(fast.error().code(), cold.error().code());
+  EXPECT_EQ(fast.error().code(), atx::core::ErrorCode::NotImplemented);
+}
+
+// The win, measured: with ATX_VOL_COUNTERS=ON the dividend-call greek bundle solves
+// exactly 7 unique (sigma,r,T) internal-put boundaries (one per memo slot), down
+// from the cold path's 17. In the default counters-OFF build the counter facility
+// is a no-op, so the assertion is skipped there (mirrors counters_test.cpp).
+TEST(CallGreeksFd, SolveCount_7NotMemo17) {
+  const double S = 100.0, K = 100.0, T = 1.0, sigma = 0.25, r = 0.03, q = 0.05;
+  if constexpr (!atx::vol::counters::counters_enabled()) {
+    const auto g = american_greeks_fd(S, K, T, sigma, r, q, Side::Call,
+                                      AmericanMethod::AndersenLake, std::nullopt,
+                                      /*warm_start=*/false);
+    ASSERT_TRUE(g.has_value());
+    GTEST_SKIP() << "ATX_VOL_COUNTERS off: rebuild with -DATX_VOL_COUNTERS=ON";
+  } else {
+    // Cold reference: the 17-stencil bundle runs 17 full american_price(...,Call)
+    // solves, each a single internal-put boundary solve => 17 BoundarySolves.
+    atx::vol::counters::reset();
+    const AmericanGreeks cold = greeks_fd_reference(S, K, T, sigma, r, q, Side::Call);
+    (void)cold;
+    const auto cold_snap = atx::vol::counters::snapshot();
+    EXPECT_TRUE(cold_snap.enabled);
+    EXPECT_EQ(cold_snap.get(atx::vol::counters::Counter::BoundarySolves), 17u);
+    // Fast path: 7 unique (sigma,r,T) internal-put boundaries, one per memo slot.
+    atx::vol::counters::reset();
+    const auto g = american_greeks_fd(S, K, T, sigma, r, q, Side::Call,
+                                      AmericanMethod::AndersenLake, std::nullopt,
+                                      /*warm_start=*/false);
+    ASSERT_TRUE(g.has_value());
+    const auto snap = atx::vol::counters::snapshot();
+    EXPECT_TRUE(snap.enabled);
+    EXPECT_EQ(snap.get(atx::vol::counters::Counter::BoundarySolves), 7u);
+  }
+}
+
 // Delta-only fast path: american_delta must reproduce american_greeks_fd's delta
 // BIT-IDENTICALLY on both sides (the put/AL lane shares the base boundary; the call
 // lane is the same two-price central difference), at ~1-2 boundary solves instead
@@ -727,6 +919,54 @@ TEST(AmericanGreeks, Analytic_VsFd_PutGrid) {
 }
 
 // Perf A/B relocated to bench/american_greeks_reuse_bench.cpp.
+
+// P2.1: the dividend-CALL greek-bundle worst path — 17 cold McDonald-Schroder
+// solves vs the new 7-boundary homogeneity reuse. Release-only timing (run with
+// --gtest_also_run_disabled_tests under build-rel). q > r so early call exercise
+// binds (the American boundary path, not the European short-circuit).
+TEST(CallGreeksFd, DISABLED_Reuse_Speedup) {
+  const double S = 100.0, r = 0.03, q = 0.05;
+  struct Pt { double K, T, sigma; };
+  std::vector<Pt> grid;
+  for (const double K : {70.0, 85.0, 100.0, 115.0, 130.0}) {
+    for (const double T : {0.05, 0.25, 0.75, 1.5}) {
+      for (const double sigma : {0.15, 0.30}) {
+        grid.push_back({K, T, sigma});
+      }
+    }
+  }
+  const int reps = 400;
+  volatile double sink = 0.0;
+
+  auto t0 = std::chrono::steady_clock::now();
+  for (int rep = 0; rep < reps; ++rep) {
+    for (const Pt& p : grid) {
+      const auto g = greeks_fd_reference(S, p.K, p.T, p.sigma, r, q, Side::Call);
+      sink += g.delta + g.vega + g.gamma;
+    }
+  }
+  auto t1 = std::chrono::steady_clock::now();
+  for (int rep = 0; rep < reps; ++rep) {
+    for (const Pt& p : grid) {
+      const auto g = american_greeks_fd(S, p.K, p.T, p.sigma, r, q, Side::Call,
+                                        AmericanMethod::AndersenLake, std::nullopt,
+                                        /*warm_start=*/false);
+      sink += g ? g->delta + g->vega + g->gamma : 0.0;
+    }
+  }
+  auto t2 = std::chrono::steady_clock::now();
+
+  const double ref_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+  const double fast_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
+  const long calls = static_cast<long>(reps) * static_cast<long>(grid.size());
+  const double per = static_cast<double>(calls);
+  std::printf(
+      "[call-greeks-speedup] calls=%ld ref(17cold)=%.1fms (%.1fus) "
+      "p2.1(7solve)=%.1fms (%.1fus, %.2fx) sink=%.3g\n",
+      calls, ref_ms, 1000.0 * ref_ms / per, fast_ms, 1000.0 * fast_ms / per,
+      ref_ms / fast_ms, static_cast<double>(sink));
+  EXPECT_GT(ref_ms, fast_ms);
+}
 
 // ── Warm-started AloPricer (the American-IV throughput lever) ─────────────
 
