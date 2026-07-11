@@ -867,36 +867,38 @@ TEST(MultinamePipeline, HeldLotWithoutSurfaceIsCountedNotHidden) {
   EXPECT_EQ(res->n_unpriced_lots[1], 2.0);
   EXPECT_EQ(res->n_unpriced_lots[2], 2.0);
 
-  // Every pre-existing column EXCEPT gross_theta is BIT-IDENTICAL to the pre-change
-  // (d54c191) run; the new column is purely additive. gross_theta is REPINNED for
-  // T9b: the book's CALL legs (index + BBB straddle calls) now price through the
-  // native analytic path (american_greeks_al, backtest analytic_greeks=ON), whose
-  // theta is the continuation-region PDE instead of the old FD-truncated fallback.
-  // The aggregate moved ~+0.29/+0.22/-0.04 on a ~15300 base (~2e-5 relative) — the
-  // sum of the per-leg FD->PDE theta refinements, each oracle-validated to §9.2 (see
-  // CallGreeksAl.MeetsPdeGreekGates / .ThetaCharm_MoreAccurateThanFd and the
-  // PricedSurface repin: analytic-call theta tracks the Crank-Nicolson oracle to
-  // ~3.7e-4/contract, daily contribution ~1e-6 << the $0.001 gate). All other
-  // columns (pnl/nav/gvega/gdelta/ggamma) are theta-independent and stay bit-exact.
+  // T16a REPIN: the book's PUT legs (BBB straddle puts) now price through the
+  // put-side correction cache built with andersen_lake_put_slice (one boundary per
+  // (T,sigma) row, reused across strikes by homogeneity) instead of the scalar
+  // per-node andersen_lake. The reused boundary is homogeneity-exact in ℝ but ~1e-7
+  // off a fresh per-strike solve in IEEE, so every put-priced aggregate column
+  // (pnl/nav/gvega/gdelta/ggamma/gtheta) shifts ~1e-10 relative (e.g. pnl row1
+  // -23.4815265480 -> -23.4815265566, rel ~4e-10; gtheta rel ~3e-11). Validated to
+  // the §9 gates by the correction-cache anchors that run on the SAME cache
+  // (CorrectionCache.PopulateEval_MatchesAndersenLake_PutGrid /
+  // .CachedPrice_MatchesColdAndersenLake vs cold andersen_lake, and
+  // AmericanGreeks.*_MatchesFd_*). gross_theta also carries the earlier T9b FD->PDE
+  // CALL-leg refinement (oracle-validated to §9.2); gvega row 0 is a ~1e-13 net-zero
+  // residual whose low bits are pure roundoff. n_unpriced_lots is the additive count.
   const double base_settle[3] = {0.0, 0.0, 0.0};
 #if defined(NDEBUG)
   // The exact optimized-fit baseline differs from Debug because the surface and
   // finite-difference kernels are floating-point optimization sensitive.
-  const double base_pnl[3] = {0.0, -23.481526556694593, -81.067015972347463};
-  const double base_nav[3] = {0.0, -23.481526556694593, -104.54854252904205};
-  const double base_gvega[3] = {-7.9580786405131221e-13, -2942.9786807354153,
-                                -81.942673900813247};
-  const double base_gdelta[3] = {18.188082442649421, 12.352773156194246, 21.068239480075906};
-  const double base_ggamma[3] = {25.75849401023601, 11.800666536788199, 27.213470414058101};
-  const double base_gtheta[3] = {-15313.174656835799, -8882.4476283300683, -15894.640664668097};
+  const double base_pnl[3] = {0.0, -23.481526556596396, -81.067015975215739};
+  const double base_nav[3] = {0.0, -23.481526556596396, -104.54854253181213};
+  const double base_gvega[3] = {-4.5474735088646412e-13, -2942.9786807274882,
+                                -81.942673890382025};
+  const double base_gdelta[3] = {18.188082442657855, 12.352773156181936, 21.06823948004595};
+  const double base_ggamma[3] = {25.758494009938968, 11.800666537023833, 27.213470413751484};
+  const double base_gtheta[3] = {-15313.174657000289, -8882.4476285014389, -15894.640664424136};
 #else
-  const double base_pnl[3] = {0.0, -23.481526548028217, -81.067015959714382};
-  const double base_nav[3] = {0.0, -23.481526548028217, -104.5485425077426};
-  const double base_gvega[3] = {-6.8212102632969618e-13, -2942.9786807243208,
-                                -81.942673890886567};
-  const double base_gdelta[3] = {18.188082442655293, 12.352773156198332, 21.068239480111913};
-  const double base_ggamma[3] = {25.758494010213717, 11.800666536901046, 27.213470414234781};
-  const double base_gtheta[3] = {-15313.174656734631, -8882.447628568847, -15894.640664874149};
+  const double base_pnl[3] = {0.0, -23.481526556596457, -81.067015975215597};
+  const double base_nav[3] = {0.0, -23.481526556596457, -104.54854253181205};
+  const double base_gvega[3] = {-4.5474735088646412e-13, -2942.9786807274345,
+                                -81.942673890247875};
+  const double base_gdelta[3] = {18.188082442657855, 12.352773156180952, 21.068239480046731};
+  const double base_ggamma[3] = {25.758494009941536, 11.800666537039927, 27.213470413717864};
+  const double base_gtheta[3] = {-15313.174657008825, -8882.4476285174987, -15894.640664403814};
 #endif
   for (std::size_t i = 0; i < dates.size(); ++i) {
     EXPECT_TRUE(bits_equal(res->pnl_total[i], base_pnl[i])) << "pnl_total row " << i;
@@ -980,16 +982,19 @@ TEST(MultinamePipeline, DefaultPolicyFullBasketBitIdentical) {
     EXPECT_EQ(res->n_unpriced_lots[i], 0.0) << "row " << i;
   }
 
+  // T16a REPIN: the put straddle legs price through the andersen_lake_put_slice
+  // correction cache (see HeldLot... for the full rationale); pnl/nav/gvega shift
+  // ~1e-10 relative, validated to §9 by the CorrectionCache/AmericanGreeks anchors.
 #if defined(NDEBUG)
-  const double base_pnl[3] = {0.0, -41.891113482667336, -99.786633644083935};
-  const double base_nav[3] = {0.0, -41.891113482667336, -141.67774712675129};
-  const double base_gvega[3] = {-7.9580786405131221e-13, 6.9200891621081837,
-                                -81.942673900813247};
+  const double base_pnl[3] = {0.0, -41.891113482598946, -99.786633646945887};
+  const double base_nav[3] = {0.0, -41.891113482598946, -141.67774712954483};
+  const double base_gvega[3] = {-4.5474735088646412e-13, 6.9200891689699802,
+                                -81.942673890382025};
 #else
-  const double base_pnl[3] = {0.0, -41.891113474001244, -99.786633631448794};
-  const double base_nav[3] = {0.0, -41.891113474001244, -141.67774710545004};
-  const double base_gvega[3] = {-6.8212102632969618e-13, 6.9200891721370681,
-                                -81.942673890886567};
+  const double base_pnl[3] = {0.0, -41.89111348259901, -99.786633646945745};
+  const double base_nav[3] = {0.0, -41.89111348259901, -141.67774712954474};
+  const double base_gvega[3] = {-4.5474735088646412e-13, 6.9200891690579738,
+                                -81.942673890247875};
 #endif
   for (std::size_t i = 0; i < dates.size(); ++i) {
     EXPECT_TRUE(bits_equal(res->pnl_total[i], base_pnl[i])) << "pnl_total row " << i;
@@ -1242,17 +1247,19 @@ TEST(MultinamePipeline, DefaultPolicyStillBitIdentical) {
     EXPECT_EQ(res->n_unpriced_greeks[i], 0.0) << "n_unpriced_greeks row " << i;
   }
 
-  // Pre-existing columns bit-identical to the fed256e full-basket capture.
+  // Pre-existing columns bit-identical to the fed256e full-basket capture, T16a-
+  // REPINNED for the put straddle legs' andersen_lake_put_slice cache (~1e-10 rel;
+  // validated to §9 by the CorrectionCache/AmericanGreeks anchors — see HeldLot...).
 #if defined(NDEBUG)
-  const double base_pnl[3] = {0.0, -41.891113482667336, -99.786633644083935};
-  const double base_nav[3] = {0.0, -41.891113482667336, -141.67774712675129};
-  const double base_gvega[3] = {-7.9580786405131221e-13, 6.9200891621081837,
-                                -81.942673900813247};
+  const double base_pnl[3] = {0.0, -41.891113482598946, -99.786633646945887};
+  const double base_nav[3] = {0.0, -41.891113482598946, -141.67774712954483};
+  const double base_gvega[3] = {-4.5474735088646412e-13, 6.9200891689699802,
+                                -81.942673890382025};
 #else
-  const double base_pnl[3] = {0.0, -41.891113474001244, -99.786633631448794};
-  const double base_nav[3] = {0.0, -41.891113474001244, -141.67774710545004};
-  const double base_gvega[3] = {-6.8212102632969618e-13, 6.9200891721370681,
-                                -81.942673890886567};
+  const double base_pnl[3] = {0.0, -41.89111348259901, -99.786633646945745};
+  const double base_nav[3] = {0.0, -41.89111348259901, -141.67774712954474};
+  const double base_gvega[3] = {-4.5474735088646412e-13, 6.9200891690579738,
+                                -81.942673890247875};
 #endif
   for (std::size_t i = 0; i < dates.size(); ++i) {
     EXPECT_TRUE(bits_equal(res->pnl_total[i], base_pnl[i])) << "pnl_total row " << i;

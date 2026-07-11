@@ -1724,8 +1724,9 @@ Status andersen_lake_put_slice(double S, std::span<const double> strikes,
   // …,Put), and every other strike matches to a few ULP: the sweep kernels carry b.K
   // in absolute (non-ratio) terms — alpha = K·e^{-(r-q)τ}, y_from_b(b, K·min(1,r/q)) —
   // so the reused y[] equals a fresh per-strike y[] only in EXACT arithmetic. The
-  // measured gap (see at-task-8-report.md) is why the correction cache's put row is
-  // NOT rerouted here — that stays on the scalar path so its bit-identity guards hold.
+  // measured gap (see at-task-8-report.md) is the ~1e-7 the correction cache's PUT
+  // row now accepts by routing here (T16a) — the put cache pins were repinned and
+  // revalidated to the §9 accuracy gates against cold andersen_lake for this shift.
   //
   // Formulation: SCALE-BOUNDARY (fix spot S, rescale the boundary to K_i) is chosen
   // over SCALE-SPOT (solve at K=1, price K_i·P(S/K_i,1)) because scale-boundary reuses

@@ -334,11 +334,17 @@ Result<CorrectionCache> CorrectionCache::build(
   }
 
   // Step 1: sample the correction at every (i, j, k) into the final layout. The
-  // innermost k_log axis at a fixed (T, sigma) is a set of call strikes
-  // K = e^{k_log} against a fixed S = e^{-(r-q)T}, so the CALL side prices the
-  // whole i-row with ONE early-exercise boundary solve (andersen_lake_call_slice)
-  // instead of n_k — bit-identical to per-node sample_correction. The put side
-  // (internal-put strike varies per strike) keeps the scalar per-node path.
+  // innermost k_log axis at a fixed (T, sigma) is a set of strikes K = e^{k_log}
+  // against a fixed S = e^{-(r-q)T}, so BOTH sides price the whole i-row with ONE
+  // early-exercise boundary solve instead of n_k. The CALL side uses
+  // andersen_lake_call_slice (internal-put strike Kp = S is fixed, so it is
+  // bit-identical to per-node sample_correction). The PUT side uses
+  // andersen_lake_put_slice (T16a): the reused boundary is homogeneity-exact in ℝ
+  // but ~a few ULP off a fresh per-strike andersen_lake in IEEE, so the sampled
+  // put row shifts ~1e-7 vs the scalar path — the accepted boundary-reuse policy
+  // (validated to the §9 accuracy gates against cold andersen_lake). Either side
+  // falls back to the scalar per-node sample_correction (the reference) for any
+  // (T, sigma) row the slice rejects (Unsupported / collapsed boundary).
   std::array<double, kChebMaxNodes> strike_buf{};
   std::array<double, kChebMaxNodes> px_buf{};
   for (std::uint16_t j = 0; j < n_T; ++j) {
@@ -349,16 +355,21 @@ Result<CorrectionCache> CorrectionCache::build(
       const double sig = sigma_grid[k];
       double* row = coefs + detail::cheb_idx(0, j, k, n_k, n_s);  // i-contiguous
       bool used_slice = false;
-      if (side == Side::Call) {
+      if (side == Side::Call || side == Side::Put) {
         for (std::uint16_t i = 0; i < n_k; ++i) {
           strike_buf[i] = std::exp(k_log_grid[i]);
         }
-        const Status st = andersen_lake_call_slice(
-            S_j, std::span<const double>(strike_buf.data(), n_k), Tj, sig, r, q,
-            std::span<double>(px_buf.data(), n_k), opts);
+        const Status st =
+            (side == Side::Call)
+                ? andersen_lake_call_slice(
+                      S_j, std::span<const double>(strike_buf.data(), n_k), Tj, sig, r, q,
+                      std::span<double>(px_buf.data(), n_k), opts)
+                : andersen_lake_put_slice(
+                      S_j, std::span<const double>(strike_buf.data(), n_k), Tj, sig, r, q,
+                      std::span<double>(px_buf.data(), n_k), opts);
         if (st) {
           for (std::uint16_t i = 0; i < n_k; ++i) {
-            const double euro = black76_price(1.0, strike_buf[i], Tj, sig, df_j, Side::Call);
+            const double euro = black76_price(1.0, strike_buf[i], Tj, sig, df_j, side);
             const double c = px_buf[i] - euro;
             row[i] = (c > 0.0) ? c : 0.0;
           }

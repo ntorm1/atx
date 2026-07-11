@@ -9,6 +9,7 @@
 #include "atx/vol/american.hpp"
 #include "atx/vol/black76.hpp"
 #include "atx/vol/correction.hpp"
+#include "atx/vol/counters.hpp"
 
 // American-correction cache coverage, ported from the C ats-vol tests
 // test_correction_cache.c and test_amer_clamp_policy.c:
@@ -390,6 +391,36 @@ TEST(CorrectionCache, CachedPrice_MatchesColdAndersenLake) {
   EXPECT_LT(std::fabs(hot - cold) / cold, 1.0e-3);
 }
 
+// T16a: the put-side cache builder collapses each (T, sigma) k_log row onto ONE
+// early-exercise boundary solve via andersen_lake_put_slice (strike homogeneity),
+// mirroring the call side. A valid American-put box (r>0, q=0, T/sigma away from
+// the degenerate guards) routes every (T, sigma) row through the American slice
+// branch => exactly n_T*n_s BoundarySolves for the whole build, NOT n_T*n_s*n_k
+// as the scalar per-node path costs. This is the measured win.
+TEST(CorrectionCache, PutRowCollapse_SolveCount) {
+  constexpr std::uint16_t n_k = 12, n_T = 6, n_s = 4;
+  if constexpr (!atx::vol::counters::counters_enabled()) {
+    auto built = CorrectionCache::build(n_k, n_T, n_s, 0.05, 0.0, -0.5, 0.5,
+                                        30.0 / 365.25, 2.0, 0.10, 0.80, Side::Put);
+    ASSERT_TRUE(built.has_value());
+    GTEST_SKIP() << "ATX_VOL_COUNTERS off: rebuild with -DATX_VOL_COUNTERS=ON";
+  } else {
+    atx::vol::counters::reset();
+    auto built = CorrectionCache::build(n_k, n_T, n_s, 0.05, 0.0, -0.5, 0.5,
+                                        30.0 / 365.25, 2.0, 0.10, 0.80, Side::Put);
+    ASSERT_TRUE(built.has_value());
+    const auto snap = atx::vol::counters::snapshot();
+    EXPECT_TRUE(snap.enabled);
+    // One cold boundary solve per (T, sigma) row — the put-row collapse.
+    EXPECT_EQ(snap.get(atx::vol::counters::Counter::BoundarySolves),
+              static_cast<std::uint64_t>(n_T) * static_cast<std::uint64_t>(n_s));
+    // Strictly below the scalar per-node cost (n_T*n_s*n_k) it replaces.
+    EXPECT_LT(snap.get(atx::vol::counters::Counter::BoundarySolves),
+              static_cast<std::uint64_t>(n_T) * static_cast<std::uint64_t>(n_s) *
+                  static_cast<std::uint64_t>(n_k));
+  }
+}
+
 // Fix-wave 1d: baking a cache at a fixed (r, q, side) that lands in the
 // double-continuation regime would sample only NotImplemented (floored to 0),
 // silently encoding a pure-European surface. Reject the build up front.
@@ -472,20 +503,33 @@ constexpr std::array<GPt, 3> kG = {{
 // Pre-change bit patterns (captured from the current Debug build; the Release
 // build agrees — SSE2, no fast-math). Columns: {eval, eval_grad_value, dk, dT,
 // dsigma}. Rows 3/4/5 pin the out-of-box clamp + zeroed partial on each axis.
+//
+// T16a repin: the Side::Put cache builder now collapses each k_log row onto ONE
+// andersen_lake_put_slice boundary solve (was the scalar per-node andersen_lake).
+// The reused boundary is homogeneity-exact in ℝ but ~a few ULP off a fresh
+// per-strike solve in IEEE, so the sampled put correction shifts ~1e-7 and these
+// pins moved by a few ULP each (e.g. row-0 eval …7c56 -> …7c52). Recaptured from
+// the slice-built cache and cross-validated to the §9 gates by the tolerance
+// anchors that ALSO run on this cache: PopulateEval_MatchesAndersenLake_PutGrid
+// and CachedPrice_MatchesColdAndersenLake (correction, vs cold andersen_lake),
+// and the AmericanGreeks.*_MatchesFd_* bundle-accuracy tests (american_test) —
+// all green with margin on the new cache.
 constexpr std::array<std::array<std::uint64_t, 5>, 6> kEvalPins = {{
-    {{0x3f53d821e0eb7c56, 0x3f53d821e0eb7c56, 0x3f8d4b35b7aa3c38, 0x3f77248f99846db4, 0xbf62bdf240536558}},
-    {{0x3f5ae5637f2e32b2, 0x3f5ae5637f2e32b2, 0x3f8026cccd3c2470, 0x3f69f66357484121, 0x3f7085ebc3eda166}},
-    {{0x3f86c328003cc833, 0x3f86c328003cc833, 0x3f7a56efd8898023, 0x3fb32d46c2331819, 0x3f5ffdd6731a9aba}},
-    {{0x3f94f6c1485f287c, 0x3f94f6c1485f287c, 0x0000000000000000, 0x3fb4b71771002125, 0xbf401eec38c24aa0}},
-    {{0x3f31deddf8f2b080, 0x3f31deddf8f2b080, 0x3f7841a8f90cc7d4, 0x0000000000000000, 0x3f674b203f88188c}},
-    {{0x3f50fa36d6f198a3, 0x3f50fa36d6f198a3, 0x3f74c8b974242669, 0x3f7597b918916db2, 0x0000000000000000}},
+    {{0x3f53d821e0eb7c52, 0x3f53d821e0eb7c52, 0x3f8d4b35b7aa3c34, 0x3f77248f99846d58, 0xbf62bdf240536700}},
+    {{0x3f5ae5637f2e32a9, 0x3f5ae5637f2e32a9, 0x3f8026cccd3c2462, 0x3f69f6635748411c, 0x3f7085ebc3eda166}},
+    {{0x3f86c328003cc841, 0x3f86c328003cc841, 0x3f7a56efd8898000, 0x3fb32d46c233181f, 0x3f5ffdd6731a9f52}},
+    {{0x3f94f6c1485f287d, 0x3f94f6c1485f287d, 0x0000000000000000, 0x3fb4b71771002121, 0xbf401eec38c25338}},
+    {{0x3f31deddf8f2afd8, 0x3f31deddf8f2afd8, 0x3f7841a8f90cc72c, 0x0000000000000000, 0x3f674b203f881a5c}},
+    {{0x3f50fa36d6f1989c, 0x3f50fa36d6f1989c, 0x3f74c8b97424267c, 0x3f7597b918916db8, 0x0000000000000000}},
 }};
 
-// Pre-change american_greeks bundle bits: {delta,gamma,vega,theta,rho,vanna,volga,charm,price}.
+// american_greeks bundle bits: {delta,gamma,vega,theta,rho,vanna,volga,charm,price}.
+// T16a-repinned (see kEvalPins note); validated against the AmericanGreeks.*_MatchesFd_*
+// accuracy tests, which recompute the bundle vs finite differences on this same cache.
 constexpr std::array<std::array<std::uint64_t, 9>, 3> kGreekPins = {{
-    {{0xbfdcc1435ba70a4f, 0x3f9bc19fa8b9f01f, 0x40338baa7f016d58, 0xc023a60cf9ad4fbc, 0xc029229e12ac2ed8, 0x3faa9866f415e97a, 0xbfeed34a5db9d4f4, 0x3f94d45e9eed1cab, 0x4015c8e2bbd78fd5}},
-    {{0xbfe15513b06efcdb, 0x3f8b8257a7c38b08, 0x403bbc10d4dc0675, 0xc023f8298c7d39c1, 0xc041ce3ecb7f9660, 0x3fd91d32f03b665b, 0x4022fbf470c613e7, 0xbfc3eea44a94656e, 0x403173bba4a7ef98}},
-    {{0xbfbd512b7c16460d, 0x3f94370020cc86fe, 0x401d22186848da2d, 0xc0164b736804f87b, 0xbffcce2aabf1f2b7, 0xbfea6505d7bc7584, 0x40451252fa86ef04, 0x3fe6966c66d6a379, 0x3fe1e55a0dcb12b0}},
+    {{0xbfdcc1435ba70a4e, 0x3f9bc19fa8b9f349, 0x40338baa7f016d54, 0xc023a60cf9ad4fb9, 0xc029229e12ac2ed7, 0x3faa9866f415ee56, 0xbfeed34a5db9f3dc, 0x3f94d45e9eede270, 0x4015c8e2bbd78fd5}},
+    {{0xbfe15513b06efcdc, 0x3f8b8257a7c397d9, 0x403bbc10d4dc0673, 0xc023f8298c7d39bf, 0xc041ce3ecb7f9661, 0x3fd91d32f03b6ddd, 0x4022fbf470c613e7, 0xbfc3eea44a94656e, 0x403173bba4a7ef99}},
+    {{0xbfbd512b7c16460e, 0x3f94370020cc8635, 0x401d22186848da37, 0xc0164b736804f874, 0xbffcce2aabf1f2b8, 0xbfea6505d7bc7734, 0x40451252fa86eec7, 0x3fe6966c66d6a066, 0x3fe1e55a0dcb12ae}},
 }};
 
 TEST(Pin, EvalAndEvalGradBitIdentical) {
