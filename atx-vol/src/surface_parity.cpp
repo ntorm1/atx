@@ -1,26 +1,26 @@
 #include "atx/vol/surface_parity.hpp"
 
 #include <algorithm>
-#include <chrono>    // ATX_VOL_PROFILE phase timing (temporary)
+#include <chrono> // ATX_VOL_PROFILE phase timing (temporary)
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>    // ATX_VOL_PROFILE stderr report (temporary)
-#include <cstdlib>   // getenv (ATX_VOL_PROFILE)
+#include <cstdio>  // ATX_VOL_PROFILE stderr report (temporary)
+#include <cstdlib> // getenv (ATX_VOL_PROFILE)
 #include <limits>
 #include <utility>
 #include <vector>
 
 #include "atx/core/error.hpp"
-#include "atx/vol/arb.hpp"          // arb_check_calendar, ArbViolation
-#include "atx/vol/black76.hpp"      // black76_value_and_vega
-#include "atx/vol/calib.hpp"        // FitObs, FitDiag, CalibOpts
-#include "atx/vol/deamer.hpp"       // de_americanize_chain, european_equiv_iv, otm_side
-#include "atx/vol/essvi_calib.hpp"  // essvi_fit_slice
-#include "atx/vol/parity.hpp"       // chain_parity, ParityInputs, ParityReport
+#include "atx/vol/arb.hpp"         // arb_check_calendar, ArbViolation
+#include "atx/vol/black76.hpp"     // black76_value_and_vega
+#include "atx/vol/calib.hpp"       // FitObs, FitDiag, CalibOpts
+#include "atx/vol/deamer.hpp"      // de_americanize_chain, european_equiv_iv, otm_side
+#include "atx/vol/essvi_calib.hpp" // essvi_fit_slice
+#include "atx/vol/parity.hpp"      // chain_parity, ParityInputs, ParityReport
 #include "atx/vol/types.hpp"
-#include "atx/vol/universe.hpp"     // Underlying, Chain, chain_index
-#include "atx/vol/vol_surface.hpp"  // VolSurface, EssviParams, Parametrization
+#include "atx/vol/universe.hpp"    // Underlying, Chain, chain_index
+#include "atx/vol/vol_surface.hpp" // VolSurface, EssviParams, Parametrization
 
 // PORT / PARITY NOTES
 // -------------------
@@ -65,16 +65,17 @@ constexpr double kMinSpread = 1.0e-8;
 constexpr double kArbKMin = -3.0;
 constexpr double kArbKMax = 3.0;
 constexpr std::uint32_t kArbNGrid = 25;
+constexpr double kMonotoneKMin = -0.7;
+constexpr double kMonotoneKMax = 0.7;
 
 // True iff the chosen leg's quote is invertible: strictly positive, non-crossed
 // bid/ask and a finite positive mid. `idx` is chain_index(strike_idx, side).
 // Identical predicate to de_americanize_chain's / vola_parity's leg_quote_valid.
-[[nodiscard]] bool leg_quote_valid(const Chain& chain, std::size_t idx) noexcept {
+[[nodiscard]] bool leg_quote_valid(const Chain &chain, std::size_t idx) noexcept {
   const double bid = chain.bids[idx];
   const double ask = chain.asks[idx];
   const double mid = chain.mids[idx];
-  return (bid > 0.0) && (ask > 0.0) && (ask >= bid) && std::isfinite(mid) &&
-         (mid > 0.0);
+  return (bid > 0.0) && (ask > 0.0) && (ask >= bid) && std::isfinite(mid) && (mid > 0.0);
 }
 
 // The aligned, self-contained observation set rebuilt from the chain on the
@@ -95,9 +96,8 @@ struct AlignedObs {
 // Rebuild the aligned observation set on forward `F` / carry `q_eff`. Any strike
 // whose OTM leg is unquotable or fails to invert is counted in `n_dropped`.
 // Mirrors vola_parity.cpp::build_aligned_obs.
-[[nodiscard]] AlignedObs build_aligned_obs(const Chain& chain, double S, double r,
-                                           double F, double q_eff,
-                                           const DeAmOptions& deam) {
+[[nodiscard]] AlignedObs build_aligned_obs(const Chain &chain, double S, double r, double F,
+                                           double q_eff, const DeAmOptions &deam) {
   const double T = chain.T;
   const double df = std::exp(-r * T);
   const std::size_t n = chain.n_strikes();
@@ -127,9 +127,8 @@ struct AlignedObs {
     }
 
     const Result<double> iv_res =
-        european_equiv_iv(chain.mids[idx], S, K, T, r, q_eff, side, deam.method,
-                          deam.al_opts, deam.caches.for_side(side), deam.iv_tol,
-                          deam.iv_max_iter);
+        european_equiv_iv(chain.mids[idx], S, K, T, r, q_eff, side, deam.method, deam.al_opts,
+                          deam.caches.for_side(side), deam.iv_tol, deam.iv_max_iter);
     if (!iv_res) {
       ++a.n_dropped;
       continue;
@@ -199,9 +198,10 @@ struct AlignedObs {
 // the floored refit: a heavy pseudo-obs must not be absorbed by (or distort) the
 // small additive wing residual. The returned slice keeps its residual from the
 // initial fit only if it never needed flooring.
-[[nodiscard]] Result<EssviParams> fit_slice_calendar_floored(
-    const AlignedObs& a, double T, double F, const CalibOpts& opts,
-    FitDiag* diag, const EssviParams* prev, double df) {
+[[nodiscard]] Result<EssviParams> fit_slice_calendar_floored(const AlignedObs &a, double T,
+                                                             double F, const CalibOpts &opts,
+                                                             FitDiag *diag, const EssviParams *prev,
+                                                             double df) {
   const double theta_floor = (prev != nullptr) ? prev->theta : 0.0;
   Result<EssviParams> res = essvi_fit_slice(a.obs, T, F, opts, diag, theta_floor);
   if (!res || prev == nullptr || a.k_log.empty()) {
@@ -226,8 +226,8 @@ struct AlignedObs {
   k_lo = std::min(k_lo - kMargin, -kNearMoneyK);
   k_hi = std::max(k_hi + kMargin, kNearMoneyK);
 
-  double w_base = 0.0;  // heaviest base weight → penalty scale
-  for (const FitObs& o : a.obs) {
+  double w_base = 0.0; // heaviest base weight → penalty scale
+  for (const FitObs &o : a.obs) {
     w_base = std::max(w_base, o.weight_w);
   }
   const double penalty = (w_base > 0.0 ? w_base : 1.0) * 300.0;
@@ -237,7 +237,7 @@ struct AlignedObs {
   const double dk = (k_hi - k_lo) / static_cast<double>(kNGrid);
 
   CalibOpts floored_opts = opts;
-  floored_opts.residual_disable = true;  // keep pseudo-obs out of the residual
+  floored_opts.residual_disable = true; // keep pseudo-obs out of the residual
 
   std::vector<FitObs> aug;
   aug.reserve(a.obs.size() + static_cast<std::size_t>(kNGrid) + 1);
@@ -264,30 +264,27 @@ struct AlignedObs {
       }
     }
     if (!violated) {
-      break;  // floor satisfied over the whole grid
+      break; // floor satisfied over the whole grid
     }
-    Result<EssviParams> r2 =
-        essvi_fit_slice(aug, T, F, floored_opts, diag, theta_floor);
+    Result<EssviParams> r2 = essvi_fit_slice(aug, T, F, floored_opts, diag, theta_floor);
     if (!r2) {
-      break;  // keep the last good fit rather than fail the whole surface
+      break; // keep the last good fit rather than fail the whole surface
     }
     res = std::move(r2);
   }
   return res;
 }
 
-}  // namespace
+} // namespace
 
-Result<SurfaceParityReport> run_surface_parity(const Underlying& under,
-                                               const SurfaceParityInputs& in) {
+Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
+                                               const SurfaceParityInputs &in) {
   if (!(in.S > 0.0) || !std::isfinite(in.r)) {
-    return Err(ErrorCode::InvalidArgument,
-               "run_surface_parity: non-positive S or non-finite r");
+    return Err(ErrorCode::InvalidArgument, "run_surface_parity: non-positive S or non-finite r");
   }
   const std::size_t n_chains = under.chains.size();
   if (n_chains == 0) {
-    return Err(ErrorCode::NotFound,
-               "run_surface_parity: underlying carries no chains");
+    return Err(ErrorCode::NotFound, "run_surface_parity: underlying carries no chains");
   }
   if (!((in.expiry_rates.empty() && in.expiry_rate_T.empty()) ||
         (in.expiry_rates.size() == n_chains && in.expiry_rate_T.size() == n_chains))) {
@@ -300,8 +297,7 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying& under,
     }
   }
 
-  ATX_TRY(VolSurface surface,
-          VolSurface::create(under.uid, Parametrization::Essvi, n_chains));
+  ATX_TRY(VolSurface surface, VolSurface::create(under.uid, Parametrization::Essvi, n_chains));
 
   std::vector<double> expiry_T;
   std::vector<ParityReport> per_expiry;
@@ -326,7 +322,7 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying& under,
   pending.reserve(n_chains);
 
   double worst = std::numeric_limits<double>::infinity();
-  std::size_t idx = 0;  // ascending write index / fitted-slice count
+  std::size_t idx = 0; // ascending write index / fitted-slice count
 
   // Calendar-monotone fit (CalendarRepair::MonotoneFit): carry the previous
   // fitted slice forward so the next slice can be fit with a calendar floor
@@ -340,8 +336,7 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying& under,
   std::size_t env_sz = 0;
   char env_buf[8] = {};
   const bool profile =
-      getenv_s(&env_sz, env_buf, sizeof(env_buf), "ATX_VOL_PROFILE") == 0 &&
-      env_sz > 0;
+      getenv_s(&env_sz, env_buf, sizeof(env_buf), "ATX_VOL_PROFILE") == 0 && env_sz > 0;
   const auto now_ns = []() noexcept {
     return std::chrono::duration<double, std::milli>(
                std::chrono::steady_clock::now().time_since_epoch())
@@ -356,7 +351,7 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying& under,
     const double T = chain.T;
     const double rate = in.expiry_rates.empty() ? in.r : in.expiry_rates[chain_index];
     if (!(T > 0.0)) {
-      continue;  // degenerate maturity: skip (not fatal)
+      continue; // degenerate maturity: skip (not fatal)
     }
 
     // 1. Resolve the term (forward, borrow) ONLY — the per-strike inversion
@@ -366,9 +361,10 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying& under,
     const double t_deam = profile ? now_ns() : 0.0;
     const auto d_res =
         resolve_chain_forward(chain, in.S, rate, in.cash_divs, in.now_ts_ns, in.deam);
-    if (profile) ms_deam += now_ns() - t_deam;
+    if (profile)
+      ms_deam += now_ns() - t_deam;
     if (!d_res) {
-      continue;  // an expiry we cannot de-Americanize contributes no slice
+      continue; // an expiry we cannot de-Americanize contributes no slice
     }
     const double F = d_res->forward;
     if (!(F > 0.0) || !std::isfinite(F)) {
@@ -380,9 +376,10 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying& under,
     // 2. Aligned, self-contained observation rebuild on (F, q_eff).
     const double t_align = profile ? now_ns() : 0.0;
     AlignedObs a = build_aligned_obs(chain, in.S, rate, F, q_eff, in.deam);
-    if (profile) ms_align += now_ns() - t_align;
+    if (profile)
+      ms_align += now_ns() - t_align;
     if (a.obs.size() < kMinUsableObs) {
-      continue;  // fewer than the minimum usable strikes: skip this slice
+      continue; // fewer than the minimum usable strikes: skip this slice
     }
 
     // 3. Fit the eSSVI slice (natural form, T/F stamped in). MonotoneFit adds a
@@ -395,11 +392,12 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying& under,
             ? fit_slice_calendar_floored(a, T, F, in.calib, &diag, has_prev ? &prev_slice : nullptr,
                                          std::exp(-rate * T))
             : essvi_fit_slice(a.obs, T, F, in.calib, &diag);
-    if (profile) ms_fit += now_ns() - t_fit;
+    if (profile)
+      ms_fit += now_ns() - t_fit;
     if (!slice_res) {
-      continue;  // a slice that fails to fit contributes no slice
+      continue; // a slice that fails to fit contributes no slice
     }
-    prev_slice = *slice_res;  // carry forward for the next slice's calendar floor
+    prev_slice = *slice_res; // carry forward for the next slice's calendar floor
     has_prev = true;
 
     // 4. Write the slice into the surface at the next ascending index.
@@ -409,16 +407,14 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying& under,
     // 5. Retain the per-slice re-pricing context for the composable facade, and
     //    stash the aligned obs so this slice can be SCORED after the surface is
     //    fully assembled and (optionally) calendar-repaired.
-    context.push_back(SliceContext{T, F, d_res->borrow, q_eff, a.obs.size(),
-                                   a.n_dropped});
+    context.push_back(SliceContext{T, F, d_res->borrow, q_eff, a.obs.size(), a.n_dropped});
     pending.push_back(PendingSlice{std::move(a), T, rate, q_eff, static_cast<std::uint16_t>(idx)});
 
     ++idx;
   }
 
   if (idx == 0) {
-    return Err(ErrorCode::NotFound,
-               "run_surface_parity: no expiry produced a usable eSSVI slice");
+    return Err(ErrorCode::NotFound, "run_surface_parity: no expiry produced a usable eSSVI slice");
   }
 
   // 6. Calendar no-arbitrage on the assembled surface. Count the raw crossings
@@ -440,14 +436,29 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying& under,
     const double t_rep = profile ? now_ns() : 0.0;
     ATX_TRY_VOID(arb_project_calendar_essvi(surface, kArbKMin, kArbKMax, kArbNGrid));
     ATX_TRY_VOID(arb_repair_calendar_residual(surface, kArbKMin, kArbKMax, kArbNGrid));
-    if (profile) ms_repair = now_ns() - t_rep;
+    if (profile)
+      ms_repair = now_ns() - t_rep;
+  } else if (in.repair == CalendarRepair::MonotoneFit) {
+    // The active-set fit uses penalty observations and can leave small
+    // between-node crossings. Close those residuals over MonotoneFit's
+    // documented near-money guarantee without projecting the extrapolated
+    // wings, where a global theta bump materially degrades held fit quality.
+    const double t_rep = profile ? now_ns() : 0.0;
+    ATX_TRY(const std::vector<ArbViolation> near_money_viols,
+            arb_check_calendar(surface, kMonotoneKMin, kMonotoneKMax, kArbNGrid));
+    if (!near_money_viols.empty()) {
+      ATX_TRY_VOID(arb_project_calendar_essvi(surface, kMonotoneKMin, kMonotoneKMax, kArbNGrid));
+      ATX_TRY_VOID(arb_repair_calendar_residual(surface, kMonotoneKMin, kMonotoneKMax, kArbNGrid));
+    }
+    if (profile)
+      ms_repair = now_ns() - t_rep;
   }
 
   // 7. Score per-expiry re-Am parity off the FINAL (possibly repaired) surface:
   //    the model IV is read back via iv_on_slice, so the number scored is the
   //    one the surface actually serves.
   const double t_parity = profile ? now_ns() : 0.0;
-  for (const PendingSlice& ps : pending) {
+  for (const PendingSlice &ps : pending) {
     std::vector<double> model_iv;
     model_iv.reserve(ps.a.k_log.size());
     for (const double k : ps.a.k_log) {
@@ -463,10 +474,9 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying& under,
     pin.al_opts = in.deam.al_opts;
     pin.band_k = in.band_k;
     pin.n_curve_params = 3;
-    pin.caches = in.deam.caches;  // re-Am through the same hot-path caches
-    ATX_TRY(const ParityReport parity,
-            chain_parity(ps.a.strike, ps.a.bid, ps.a.ask, ps.a.mid, ps.a.side,
-                         model_iv, ps.a.market_iv, pin));
+    pin.caches = in.deam.caches; // re-Am through the same hot-path caches
+    ATX_TRY(const ParityReport parity, chain_parity(ps.a.strike, ps.a.bid, ps.a.ask, ps.a.mid,
+                                                    ps.a.side, model_iv, ps.a.market_iv, pin));
     worst = std::min(worst, parity.frac_fv_within_bidask);
     per_expiry.push_back(parity);
   }
@@ -484,16 +494,20 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying& under,
                  "repair=%.1f parity=%.1f calendar=%.1f ms viol_pre=%zu "
                  "(deam=borrow+per-strike invert; align=OTM-leg invert; "
                  "parity=re-Am score)\n",
-                 idx, ms_deam, ms_align, ms_fit, ms_repair, ms_parity, ms_cal,
-                 n_calendar_viol_pre);
+                 idx, ms_deam, ms_align, ms_fit, ms_repair, ms_parity, ms_cal, n_calendar_viol_pre);
   }
 
   SurfaceParityReport out{
-      std::move(surface),   std::move(expiry_T), std::move(per_expiry),
-      std::move(context),   worst,               calendar_arb_free,
-      idx,                  n_calendar_viol_pre,
+      std::move(surface),
+      std::move(expiry_T),
+      std::move(per_expiry),
+      std::move(context),
+      worst,
+      calendar_arb_free,
+      idx,
+      n_calendar_viol_pre,
   };
   return Ok(std::move(out));
 }
 
-}  // namespace atx::vol
+} // namespace atx::vol

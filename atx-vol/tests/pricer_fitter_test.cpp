@@ -287,4 +287,33 @@ TEST(LinearVarianceCurve, InterpolatesTotalVarianceAndClampsWings) {
   EXPECT_DOUBLE_EQ(curve.iv(0.0), std::sqrt(0.04 / 0.5));
 }
 
+TEST(LinearVarianceCurve, CalendarFloorUsesPriorBreakpoints) {
+  using atx::vol::CurveConfig;
+  using atx::vol::FitObs;
+  using atx::vol::LinearVarianceCurve;
+  using atx::vol::VolCurveKind;
+
+  const LinearVarianceCurve prior(0.25, 100.0, 0.99, std::vector<double>{-0.5, 0.0, 0.5},
+                                  std::vector<double>{0.03, 0.08, 0.03});
+  std::vector<FitObs> obs(2);
+  obs[0].k = -0.5;
+  obs[0].w_mkt = 0.04;
+  obs[0].active_weight_w = 1.0;
+  obs[1].k = 0.5;
+  obs[1].w_mkt = 0.04;
+  obs[1].active_weight_w = 1.0;
+
+  CurveConfig cfg;
+  cfg.kind = VolCurveKind::LinearVariance;
+  auto fitted = atx::vol::fit_slice_curve(
+      cfg, obs, 100.0, 0.5, 0.98, [&](double k) { return prior.w(k); }, prior.k_nodes());
+  ASSERT_TRUE(fitted.has_value()) << fitted.error().to_string();
+
+  for (int i = 0; i <= 100; ++i) {
+    const double k = -0.5 + static_cast<double>(i) * 0.01;
+    EXPECT_GE((*fitted)->w(k) + 1.0e-15, prior.w(k));
+  }
+  EXPECT_DOUBLE_EQ((*fitted)->w(0.0), 0.08);
+}
+
 } // namespace

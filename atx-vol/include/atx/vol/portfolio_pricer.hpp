@@ -96,6 +96,8 @@ struct OptionContract {
   double K{0.0};
   double T{0.0};
   Side side{Side::Call};
+
+  [[nodiscard]] bool operator==(const OptionContract &) const = default;
 };
 
 // One held position. `id` is an opaque caller key echoed in every frame row.
@@ -188,8 +190,8 @@ private:
 // saving `PriceOptions::prices_only` now buys.
 enum class PriceFieldMask : std::uint32_t {
   None = 0,
-  Marks = 1u << 0,             // id, uid, pv, price, iv, status  (37 B/pos)
-  Greeks = 1u << 1,            // delta, gamma, vega, theta, rho, vanna, volga, charm
+  Marks = 1u << 0,                    // id, uid, pv, price, iv, status  (37 B/pos)
+  Greeks = 1u << 1,                   // delta, gamma, vega, theta, rho, vanna, volga, charm
   FullGreeks = (1u << 0) | (1u << 1), // Marks + Greeks (101 B/pos)
 };
 

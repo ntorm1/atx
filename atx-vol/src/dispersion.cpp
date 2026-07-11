@@ -12,11 +12,12 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/american.hpp"        // AmericanGreeks
-#include "atx/vol/priced_surface.hpp"  // PricedSurface, PricingContext
-#include "atx/vol/surface_parity.hpp"  // SliceContext
-#include "atx/vol/types.hpp"           // Result, Side
-#include "atx/vol/vol_curve.hpp"       // CurveSurface
+#include "atx/vol/american.hpp" // AmericanGreeks
+#include "atx/vol/contract_projection.hpp"
+#include "atx/vol/priced_surface.hpp" // PricedSurface, PricingContext
+#include "atx/vol/surface_parity.hpp" // SliceContext
+#include "atx/vol/types.hpp"          // Result, Side
+#include "atx/vol/vol_curve.hpp"      // CurveSurface
 
 namespace atx::vol {
 
@@ -31,9 +32,9 @@ namespace {
 // Resolves the member's surface by uid and validates every quantity, naming the
 // symbol on any failure (a member with no fittable ATM straddle sinks the book —
 // the signal needs every leg).
-[[nodiscard]] Result<DispersionLeg> resolve_leg(const SurfaceSet& surfaces,
-                                                const DispersionMember& m, double T) {
-  const PricedSurface* surf = surfaces.find(m.uid);
+[[nodiscard]] Result<DispersionLeg> resolve_leg(const SurfaceSet &surfaces,
+                                                const DispersionMember &m, double T) {
+  const PricedSurface *surf = surfaces.find(m.uid);
   if (surf == nullptr) {
     return Err(ErrorCode::NotFound,
                "dispersion: no surface registered for symbol '" + m.symbol + "'");
@@ -45,9 +46,8 @@ namespace {
   }
   const double sigma = surf->iv(K, T);
   if (!std::isfinite(sigma) || sigma <= 0.0) {
-    return Err(ErrorCode::Unavailable,
-               "dispersion: ATM vol unavailable for symbol '" + m.symbol +
-                   "' (tenor outside surface domain)");
+    return Err(ErrorCode::Unavailable, "dispersion: ATM vol unavailable for symbol '" + m.symbol +
+                                           "' (tenor outside surface domain)");
   }
 
   const Result<AmericanGreeks> call = surf->greeks(K, T, Side::Call);
@@ -71,28 +71,85 @@ namespace {
   leg.T = T;
   leg.sigma = sigma;
   leg.straddle_vega = straddle_vega;
-  leg.straddle_qty = 0.0;  // sized by the caller
+  leg.straddle_qty = 0.0; // sized by the caller
+  return Ok(std::move(leg));
+}
+
+// Exact surface-only projection path. `maturity` is absolute for constituent
+// legs, so a calendar convention is resolved once by the index and cannot drift
+// across surfaces.
+[[nodiscard]] Result<DispersionLeg> resolve_projected_leg(const SurfaceSet &surfaces,
+                                                          const DispersionMember &member,
+                                                          const ProjectedMaturitySpec &maturity,
+                                                          double multiplier) {
+  const PricedSurface *surface = surfaces.find(member.uid);
+  if (surface == nullptr) {
+    return Err(ErrorCode::NotFound,
+               "dispersion: no surface registered for symbol '" + member.symbol + "'");
+  }
+  OptionProjectionConfig config;
+  config.output = OptionProjectionOutput::FullGreeks;
+  config.analytic_greeks = true;
+  const auto project = [&](Side side) {
+    OptionProjectionSpec spec;
+    spec.uid = member.uid;
+    spec.maturity = maturity;
+    spec.strike = ProjectedStrikeSpec::atm_forward();
+    spec.side = side;
+    spec.multiplier = multiplier;
+    return project_option_contract(*surface, spec, config);
+  };
+  ATX_TRY(ProjectedOption call, project(Side::Call));
+
+  // Force the put onto the call's exact strike and expiry: a dispersion
+  // straddle is one concrete listed-style K/expiry pair, not two independently
+  // re-resolved ATM coordinates.
+  OptionProjectionSpec put_spec;
+  put_spec.uid = member.uid;
+  put_spec.maturity = ProjectedMaturitySpec::absolute(call.definition.expiry_ts_ns);
+  put_spec.strike = ProjectedStrikeSpec::absolute(call.definition.contract.K);
+  put_spec.side = Side::Put;
+  put_spec.multiplier = multiplier;
+  ATX_TRY(ProjectedOption put, project_option_contract(*surface, put_spec, config));
+
+  const double straddle_vega = call.greeks.vega + put.greeks.vega;
+  if (!std::isfinite(straddle_vega) || straddle_vega <= 0.0) {
+    return Err(ErrorCode::Unavailable,
+               "dispersion: degenerate projected straddle vega for symbol '" + member.symbol + "'");
+  }
+  DispersionLeg leg;
+  leg.symbol = member.symbol;
+  leg.uid = member.uid;
+  leg.K = call.definition.contract.K;
+  leg.T = call.definition.contract.T;
+  leg.sigma = call.implied_vol;
+  leg.straddle_vega = straddle_vega;
+  leg.call_definition = call.definition;
+  leg.put_definition = put.definition;
   return Ok(std::move(leg));
 }
 
 // Emit the two positions (Call then Put, same K/T/qty) of one sized straddle,
 // appending to `out` with monotonically increasing ids from `next_id`.
-void emit_straddle(const DispersionLeg& leg, double multiplier, std::uint64_t& next_id,
-                   std::vector<Position>& out) {
+void emit_straddle(const DispersionLeg &leg, double multiplier, std::uint64_t &next_id,
+                   std::vector<Position> &out) {
   for (const Side side : {Side::Call, Side::Put}) {
     Position p;
     p.id = next_id++;
-    p.contract = OptionContract{leg.uid, leg.K, leg.T, side};
+    const ProjectedOptionDefinition &definition =
+        side == Side::Call ? leg.call_definition : leg.put_definition;
+    p.contract = definition.fingerprint != 0u ? definition.contract
+                                              : OptionContract{leg.uid, leg.K, leg.T, side};
     p.qty = leg.straddle_qty;
     p.multiplier = multiplier;
     out.push_back(p);
   }
 }
 
-}  // namespace
+} // namespace
 
-Result<DispersionSignal> dispersion_signal(const DispersionUniverse& universe,
-                                           const SurfaceSet& surfaces, double T,
+Result<DispersionSignal> dispersion_signal(const DispersionUniverse &universe,
+                                           const SurfaceSet &surfaces, double T,
                                            MissingNameSpec missing) {
   // Under Error an authored basket with < 2 names is degenerate (pre-S1-3
   // InvalidArgument). Under DropRenormalize a small/empty basket is a no-trade
@@ -109,7 +166,7 @@ Result<DispersionSignal> dispersion_signal(const DispersionUniverse& universe,
 
   // A non-finite weight is ALWAYS an authoring bug — checked over EVERY name so a
   // NaN weight can never hide behind a drop.
-  for (const DispersionMember& n : universe.names) {
+  for (const DispersionMember &n : universe.names) {
     if (!std::isfinite(n.weight)) {
       return Err(ErrorCode::InvalidArgument,
                  "dispersion: non-finite weight for symbol '" + n.symbol + "'");
@@ -121,7 +178,7 @@ Result<DispersionSignal> dispersion_signal(const DispersionUniverse& universe,
   // DropRenormalize the positivity guard moves to the survivor sum after drops.
   if (missing.policy == MissingNamePolicy::Error) {
     double sum_all = 0.0;
-    for (const DispersionMember& n : universe.names) {
+    for (const DispersionMember &n : universe.names) {
       sum_all += n.weight;
     }
     if (!(sum_all > 0.0)) {
@@ -147,7 +204,7 @@ Result<DispersionSignal> dispersion_signal(const DispersionUniverse& universe,
   std::vector<double> surv_w;
   surv_w.reserve(universe.names.size());
   for (std::size_t i = 0; i < universe.names.size(); ++i) {
-    const DispersionMember& n = universe.names[i];
+    const DispersionMember &n = universe.names[i];
     const Result<DispersionLeg> leg = resolve_leg(surfaces, n, T);
     if (!leg) {
       // Under DropRenormalize a NotFound (surface not registered) / Unavailable
@@ -158,8 +215,8 @@ Result<DispersionSignal> dispersion_signal(const DispersionUniverse& universe,
           (ec == ErrorCode::NotFound || ec == ErrorCode::Unavailable)) {
         DroppedName d;
         d.symbol = n.symbol;
-        d.reason = (ec == ErrorCode::NotFound) ? DropReason::SurfaceNotFound
-                                               : DropReason::Unavailable;
+        d.reason =
+            (ec == ErrorCode::NotFound) ? DropReason::SurfaceNotFound : DropReason::Unavailable;
         d.detail = leg.error().message();
         sig.dropped.push_back(std::move(d));
         continue;
@@ -174,10 +231,10 @@ Result<DispersionSignal> dispersion_signal(const DispersionUniverse& universe,
   // Below the minimum surviving basket size the date has no tradeable book — the
   // "not tradeable today" contract the strategy keys off (Unavailable).
   if (sig.used_names.size() < missing.min_names) {
-    return Err(ErrorCode::Unavailable,
-               "dispersion: only " + std::to_string(sig.used_names.size()) + " of " +
-                   std::to_string(universe.names.size()) + " names survived (min " +
-                   std::to_string(missing.min_names) + ")");
+    return Err(ErrorCode::Unavailable, "dispersion: only " + std::to_string(sig.used_names.size()) +
+                                           " of " + std::to_string(universe.names.size()) +
+                                           " names survived (min " +
+                                           std::to_string(missing.min_names) + ")");
   }
 
   // Renormalize over the SURVIVORS: w_hat_i = w_i / Σ_survivors w  =>  Σŵ = 1, so
@@ -213,9 +270,9 @@ Result<DispersionSignal> dispersion_signal(const DispersionUniverse& universe,
   return Ok(std::move(sig));
 }
 
-Result<DispersionBook> build_dispersion_book(const DispersionUniverse& universe,
-                                             const SurfaceSet& surfaces,
-                                             const DispersionConfig& cfg) {
+Result<DispersionBook> build_dispersion_book(const DispersionUniverse &universe,
+                                             const SurfaceSet &surfaces,
+                                             const DispersionConfig &cfg) {
   if (!std::isfinite(cfg.target_T) || cfg.target_T <= 0.0) {
     return Err(ErrorCode::InvalidArgument, "dispersion: target_T must be finite and positive");
   }
@@ -226,7 +283,18 @@ Result<DispersionBook> build_dispersion_book(const DispersionUniverse& universe,
     return Err(ErrorCode::InvalidArgument, "dispersion: multiplier must be finite and positive");
   }
 
-  Result<DispersionSignal> sig = dispersion_signal(universe, surfaces, cfg.target_T, cfg.missing);
+  double effective_t = cfg.target_T;
+  std::optional<ProjectedMaturitySpec> common_maturity;
+  std::optional<DispersionLeg> projected_index;
+  if (cfg.projected_maturity.has_value()) {
+    ATX_TRY(DispersionLeg index, resolve_projected_leg(surfaces, universe.index,
+                                                       *cfg.projected_maturity, cfg.multiplier));
+    effective_t = index.T;
+    common_maturity = ProjectedMaturitySpec::absolute(index.call_definition.expiry_ts_ns);
+    projected_index = std::move(index);
+  }
+
+  Result<DispersionSignal> sig = dispersion_signal(universe, surfaces, effective_t, cfg.missing);
   if (!sig) {
     return Err(sig.error());
   }
@@ -245,14 +313,16 @@ Result<DispersionBook> build_dispersion_book(const DispersionUniverse& universe,
   const double name_sign = -idx_sign;
   const double mult = cfg.multiplier;
 
-  Result<DispersionLeg> index_leg = resolve_leg(surfaces, universe.index, cfg.target_T);
+  Result<DispersionLeg> index_leg = projected_index.has_value()
+                                        ? Ok(std::move(*projected_index))
+                                        : resolve_leg(surfaces, universe.index, cfg.target_T);
   if (!index_leg) {
     return Err(index_leg.error());
   }
   index_leg->straddle_qty = idx_sign * cfg.target_vega / (index_leg->straddle_vega * mult);
 
   DispersionBook book;
-  book.dropped = sig->dropped;  // copy before moving the signal
+  book.dropped = sig->dropped; // copy before moving the signal
   book.signal = std::move(*sig);
   book.index_leg = std::move(*index_leg);
   book.name_legs.reserve(book.signal.used_names.size());
@@ -262,8 +332,11 @@ Result<DispersionBook> build_dispersion_book(const DispersionUniverse& universe,
   emit_straddle(book.index_leg, mult, next_id, book.positions);
 
   for (const std::size_t idx : book.signal.used_names) {
-    const DispersionMember& n = universe.names[idx];
-    Result<DispersionLeg> leg = resolve_leg(surfaces, n, cfg.target_T);
+    const DispersionMember &n = universe.names[idx];
+    Result<DispersionLeg> leg =
+        common_maturity.has_value()
+            ? resolve_projected_leg(surfaces, n, *common_maturity, cfg.multiplier)
+            : resolve_leg(surfaces, n, cfg.target_T);
     if (!leg) {
       return Err(leg.error());
     }
@@ -278,8 +351,8 @@ Result<DispersionBook> build_dispersion_book(const DispersionUniverse& universe,
   return Ok(std::move(book));
 }
 
-Result<ResolvedUniverse> resolve_universe_uids(const DispersionUniverse& universe,
-                                               const SymbolUidLookup& lookup,
+Result<ResolvedUniverse> resolve_universe_uids(const DispersionUniverse &universe,
+                                               const SymbolUidLookup &lookup,
                                                MissingNameSpec missing) {
   // (symbol, resolved uid) already bound — small basket, so a linear scan for the
   // two "must fail loudly" duplicate checks is fine (never a hot path). `seen`
@@ -292,13 +365,13 @@ Result<ResolvedUniverse> resolve_universe_uids(const DispersionUniverse& univers
 
   // Bind one member. Returns Err on a hard failure (propagated), Ok(uid) when the
   // member resolves, or Ok(nullopt) when a NAME is droppable and absent.
-  const auto bind_member =
-      [&](const DispersionMember& m, bool is_index) -> Result<std::optional<std::uint32_t>> {
+  const auto bind_member = [&](const DispersionMember &m,
+                               bool is_index) -> Result<std::optional<std::uint32_t>> {
     if (m.symbol.empty()) {
       return Err(ErrorCode::InvalidArgument, "dispersion: universe member has an empty symbol");
     }
     // Reject a symbol listed twice (would double-count the leg) — authoring bug.
-    for (const std::string& s : seen) {
+    for (const std::string &s : seen) {
       if (s == m.symbol) {
         return Err(ErrorCode::InvalidArgument,
                    "dispersion: symbol '" + m.symbol + "' appears twice in the universe");
@@ -321,7 +394,7 @@ Result<ResolvedUniverse> resolve_universe_uids(const DispersionUniverse& univers
     }
     // Reject two distinct symbols that collapse to the same uid (would double-
     // count one surface as two legs) — authoring bug.
-    for (const auto& [sym, prev] : bound) {
+    for (const auto &[sym, prev] : bound) {
       if (prev == *uid) {
         return Err(ErrorCode::InvalidArgument, "dispersion: symbols '" + sym + "' and '" +
                                                    m.symbol + "' resolve to the same uid");
@@ -332,22 +405,22 @@ Result<ResolvedUniverse> resolve_universe_uids(const DispersionUniverse& univers
   };
 
   ResolvedUniverse out;
-  out.universe.index = universe.index;  // symbols + weights preserved; uid rebound below
+  out.universe.index = universe.index; // symbols + weights preserved; uid rebound below
   out.universe.names.reserve(universe.names.size());
 
   const Result<std::optional<std::uint32_t>> ix = bind_member(universe.index, /*is_index=*/true);
   if (!ix) {
     return Err(ix.error());
   }
-  out.universe.index.uid = **ix;  // index is never droppable => always resolves to a uid
+  out.universe.index.uid = **ix; // index is never droppable => always resolves to a uid
 
-  for (const DispersionMember& n : universe.names) {
+  for (const DispersionMember &n : universe.names) {
     Result<std::optional<std::uint32_t>> r = bind_member(n, /*is_index=*/false);
     if (!r) {
       return Err(r.error());
     }
     if (r->has_value()) {
-      DispersionMember bound_name = n;  // symbol + weight preserved; uid rebound
+      DispersionMember bound_name = n; // symbol + weight preserved; uid rebound
       bound_name.uid = **r;
       out.universe.names.push_back(std::move(bound_name));
     } else {
@@ -362,8 +435,8 @@ Result<ResolvedUniverse> resolve_universe_uids(const DispersionUniverse& univers
   return Ok(std::move(out));
 }
 
-Result<DispersionUniverse> resolve_universe_uids(const DispersionUniverse& universe,
-                                                 const SymbolUidLookup& lookup) {
+Result<DispersionUniverse> resolve_universe_uids(const DispersionUniverse &universe,
+                                                 const SymbolUidLookup &lookup) {
   // The 2-arg overload is the Error-policy resolve (S1-2 semantics): delegate to
   // the 3-arg one so the validation logic lives in exactly one place.
   Result<ResolvedUniverse> r = resolve_universe_uids(universe, lookup, MissingNameSpec{});
@@ -373,7 +446,7 @@ Result<DispersionUniverse> resolve_universe_uids(const DispersionUniverse& unive
   return Ok(std::move(r->universe));
 }
 
-Result<PricedSurface> with_uid(const PricedSurface& src, std::uint32_t uid) {
+Result<PricedSurface> with_uid(const PricedSurface &src, std::uint32_t uid) {
   CurveSurface curves = src.surface().clone();
   std::vector<SliceContext> ctx(src.context().begin(), src.context().end());
   PricingContext pc = src.pricing();
@@ -381,4 +454,4 @@ Result<PricedSurface> with_uid(const PricedSurface& src, std::uint32_t uid) {
   return PricedSurface::create(std::move(curves), std::move(ctx), pc);
 }
 
-}  // namespace atx::vol
+} // namespace atx::vol

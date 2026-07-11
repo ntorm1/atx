@@ -33,6 +33,7 @@ add_executable(atx-vol-tests
     bulk_test.cpp
     calib_pool_test.cpp
     projection_test.cpp
+    contract_projection_test.cpp
     portfolio_risk_test.cpp
     american_iv_test.cpp
     dividend_test.cpp

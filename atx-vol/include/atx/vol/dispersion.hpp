@@ -48,9 +48,10 @@
 #include <string_view>
 #include <vector>
 
-#include "atx/vol/portfolio_pricer.hpp"  // Position, SurfaceSet
-#include "atx/vol/priced_surface.hpp"    // PricedSurface
-#include "atx/vol/types.hpp"             // Result
+#include "atx/vol/contract_projection.hpp" // ProjectedMaturitySpec, definitions
+#include "atx/vol/portfolio_pricer.hpp"    // Position, SurfaceSet
+#include "atx/vol/priced_surface.hpp"      // PricedSurface
+#include "atx/vol/types.hpp"               // Result
 
 namespace atx::vol {
 
@@ -77,15 +78,15 @@ struct DispersionUniverse {
 // offending name, renormalize the surviving basket weights (Σŵ = 1 over
 // survivors) and continue (DropRenormalize). The INDEX leg is never droppable.
 enum class MissingNamePolicy : std::uint8_t {
-  Error = 0,            // any missing/unusable name is a hard Err (pre-S1-3 behaviour)
-  DropRenormalize = 1,  // drop it, renormalize over survivors, continue
+  Error = 0,           // any missing/unusable name is a hard Err (pre-S1-3 behaviour)
+  DropRenormalize = 1, // drop it, renormalize over survivors, continue
 };
 
 // Why a basket member was dropped (recorded verbatim — a drop is never silent).
 enum class DropReason : std::uint8_t {
-  NotInSnapshot = 0,    // symbol absent from the snapshot directory (resolve step)
-  SurfaceNotFound = 1,  // resolved uid not registered in the SurfaceSet
-  Unavailable = 2,      // no ATM forward / ATM vol NaN / degenerate straddle vega
+  NotInSnapshot = 0,   // symbol absent from the snapshot directory (resolve step)
+  SurfaceNotFound = 1, // resolved uid not registered in the SurfaceSet
+  Unavailable = 2,     // no ATM forward / ATM vol NaN / degenerate straddle vega
 };
 
 // One dropped member: the symbol, why it went, and the underlying error message
@@ -93,7 +94,7 @@ enum class DropReason : std::uint8_t {
 struct DroppedName {
   std::string symbol;
   DropReason reason{DropReason::NotInSnapshot};
-  std::string detail;  // the underlying error message, verbatim
+  std::string detail; // the underlying error message, verbatim
 };
 
 // Missing-name policy + the minimum SURVIVING basket size. Below `min_names`
@@ -121,15 +122,15 @@ using SymbolUidLookup = std::function<std::optional<std::uint32_t>(std::string_v
 //                     to the reserved uid 0.
 //   NotFound        — `lookup(symbol)` is nullopt for the index or any name.
 // The message names the offending symbol(s).
-[[nodiscard]] Result<DispersionUniverse> resolve_universe_uids(const DispersionUniverse& universe,
-                                                               const SymbolUidLookup& lookup);
+[[nodiscard]] Result<DispersionUniverse> resolve_universe_uids(const DispersionUniverse &universe,
+                                                               const SymbolUidLookup &lookup);
 
 // The result of a policy-aware resolve: the survivors (input order) plus the
 // names dropped because their symbol was absent from the snapshot directory
 // (reason == NotInSnapshot). Under the Error policy `dropped` is always empty.
 struct ResolvedUniverse {
-  DispersionUniverse universe;       // survivors only, in input order
-  std::vector<DroppedName> dropped;  // reason == NotInSnapshot
+  DispersionUniverse universe;      // survivors only, in input order
+  std::vector<DroppedName> dropped; // reason == NotInSnapshot
 };
 
 // Policy-aware resolve. Under `Error` this is the 2-arg overload's behaviour
@@ -140,23 +141,27 @@ struct ResolvedUniverse {
 // to the same uid, or a symbol resolving to the reserved uid 0 — stay hard
 // InvalidArgument under BOTH policies. The 2-arg overload delegates here with
 // `MissingNameSpec{Error, 2}`.
-[[nodiscard]] Result<ResolvedUniverse> resolve_universe_uids(const DispersionUniverse& universe,
-                                                             const SymbolUidLookup& lookup,
+[[nodiscard]] Result<ResolvedUniverse> resolve_universe_uids(const DispersionUniverse &universe,
+                                                             const SymbolUidLookup &lookup,
                                                              MissingNameSpec missing);
 
 // Which side of the dispersion the book takes. Signs the index vs. name legs.
 enum class DispersionSide : std::uint8_t {
-  ShortIndexLongNames = 0,  // classic long-dispersion: sell index vol, buy names
+  ShortIndexLongNames = 0, // classic long-dispersion: sell index vol, buy names
   LongIndexShortNames = 1,
 };
 
 // Sizing / construction policy for a dispersion book.
 struct DispersionConfig {
-  double target_T{30.0 / 365.25};  // straddle tenor (year-fraction), > 0
-  double target_vega{10000.0};     // index-leg gross vega the book scales to, > 0
+  double target_T{30.0 / 365.25}; // straddle tenor (year-fraction), > 0
+  double target_vega{10000.0};    // index-leg gross vega the book scales to, > 0
   DispersionSide side{DispersionSide::ShortIndexLongNames};
-  double multiplier{100.0};        // option contract multiplier, > 0
-  MissingNameSpec missing{};       // missing-name policy (default Error => pre-S1-3 book)
+  double multiplier{100.0};  // option contract multiplier, > 0
+  MissingNameSpec missing{}; // missing-name policy (default Error => pre-S1-3 book)
+  // When set, build the surface-only book from exact projected definitions. The
+  // index projection fixes the absolute expiry and every constituent is then
+  // projected to that same timestamp. nullopt preserves the legacy target_T path.
+  std::optional<ProjectedMaturitySpec> projected_maturity{};
 };
 
 // The implied-correlation signal at one snapshot (cheap; no positions). Under
@@ -170,12 +175,12 @@ struct DispersionConfig {
 struct DispersionSignal {
   double T_used{0.0};
   double sigma_index{0.0};
-  std::vector<double> sigma_names;      // parallel to `used_names`
-  double sum_w_sigma{0.0};              // Σ w_hat_i sigma_i   (normalized weights)
-  double sum_w2_sigma2{0.0};            // Σ w_hat_i^2 sigma_i^2
-  double implied_corr{0.0};             // rho_imp
-  std::vector<std::size_t> used_names;  // survivor indices into names (ascending)
-  std::vector<DroppedName> dropped;     // input order; empty under Error
+  std::vector<double> sigma_names;     // parallel to `used_names`
+  double sum_w_sigma{0.0};             // Σ w_hat_i sigma_i   (normalized weights)
+  double sum_w2_sigma2{0.0};           // Σ w_hat_i^2 sigma_i^2
+  double implied_corr{0.0};            // rho_imp
+  std::vector<std::size_t> used_names; // survivor indices into names (ascending)
+  std::vector<DroppedName> dropped;    // input order; empty under Error
 };
 
 // Per-leg sizing diagnostic. `straddle_vega` is the per-share ATM straddle vega
@@ -189,6 +194,8 @@ struct DispersionLeg {
   double sigma{0.0};
   double straddle_vega{0.0};
   double straddle_qty{0.0};
+  ProjectedOptionDefinition call_definition{};
+  ProjectedOptionDefinition put_definition{};
 };
 
 // A fully-sized dispersion book: the signal, the per-leg diagnostics, and the
@@ -203,7 +210,7 @@ struct DispersionBook {
   DispersionLeg index_leg;
   std::vector<DispersionLeg> name_legs;
   std::vector<Position> positions;
-  std::vector<DroppedName> dropped;  // copy of signal.dropped (survivors' drops)
+  std::vector<DroppedName> dropped; // copy of signal.dropped (survivors' drops)
 };
 
 // Compute the implied-correlation signal at tenor `T` (year-fraction). Resolves
@@ -227,8 +234,8 @@ struct DispersionBook {
 //   Unavailable     — a member's ATM straddle is unusable (Error), or fewer than
 //                     min_names names survived (DropRenormalize).
 // The message names the offending symbol on a per-member failure.
-[[nodiscard]] Result<DispersionSignal> dispersion_signal(const DispersionUniverse& universe,
-                                                         const SurfaceSet& surfaces, double T,
+[[nodiscard]] Result<DispersionSignal> dispersion_signal(const DispersionUniverse &universe,
+                                                         const SurfaceSet &surfaces, double T,
                                                          MissingNameSpec missing = {});
 
 // Build the full vega-neutral dispersion book (signal + sized straddle positions)
@@ -251,14 +258,14 @@ struct DispersionBook {
 // Errors: those of `dispersion_signal`, plus InvalidArgument if target_T,
 // target_vega, or multiplier is non-finite or <= 0, and Unavailable if any
 // member's ATM straddle vega is non-finite or <= 0 (message names the symbol).
-[[nodiscard]] Result<DispersionBook> build_dispersion_book(const DispersionUniverse& universe,
-                                                           const SurfaceSet& surfaces,
-                                                           const DispersionConfig& cfg);
+[[nodiscard]] Result<DispersionBook> build_dispersion_book(const DispersionUniverse &universe,
+                                                           const SurfaceSet &surfaces,
+                                                           const DispersionConfig &cfg);
 
 // Return a copy of `src` with only its `pricing().uid` replaced by `uid` (curves
 // and per-slice context deep-cloned; spot / rate / pricer / AL preset unchanged),
 // so it prices bit-identically to `src` but resolves under a distinct uid. The
 // remap tool the universe binding depends on.
-[[nodiscard]] Result<PricedSurface> with_uid(const PricedSurface& src, std::uint32_t uid);
+[[nodiscard]] Result<PricedSurface> with_uid(const PricedSurface &src, std::uint32_t uid);
 
-}  // namespace atx::vol
+} // namespace atx::vol

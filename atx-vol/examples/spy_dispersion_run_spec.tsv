@@ -6,7 +6,7 @@ snapshot_suffix	T19:55:00Z
 opra_root	C:/atx-data/spy-dispersion/opra
 path_template	{symbol}/{date}.parquet
 universe_schedule	spy_dispersion_universe.tsv
-definitions	spy_dispersion_definitions_template.tsv
+definitions	C:/atx-data/spy-dispersion/spy_dispersion_definitions.tsv
 flat_rate	0.043
 min_names	10
 min_weight_coverage	0.8

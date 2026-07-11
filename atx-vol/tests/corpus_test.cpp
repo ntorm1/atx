@@ -632,6 +632,11 @@ TEST(CorpusAdmission, InvalidRulesAndOutOfRangeMeasurementsAreQuarantined) {
   EXPECT_EQ(invalid.primary_reason, CorpusAdmissionReason::InvalidRule);
   EXPECT_TRUE(invalid.failed(CorpusAdmissionReason::InvalidRule));
 
+  invalid_rule = ordinary_liquid_rule();
+  invalid_rule.calendar_abs_k = 0.0;
+  const CorpusAdmissionDecision invalid_calendar = evaluate_corpus_admission(quality, invalid_rule);
+  EXPECT_EQ(invalid_calendar.primary_reason, CorpusAdmissionReason::InvalidRule);
+
   quality.fit_in_band = 1.01;
   const CorpusAdmissionDecision out_of_range =
       evaluate_corpus_admission(quality, ordinary_liquid_rule());

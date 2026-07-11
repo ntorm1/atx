@@ -7,6 +7,7 @@
 // that the databento client drags in transitively (record.hpp -> exceptions.hpp ->
 // httplib.h -> zlib.h). The two cannot coexist in one TU, so they are split here.
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -14,6 +15,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -40,17 +42,24 @@ namespace time = atx::core::time;
 namespace {
 
 [[nodiscard]] Result<::databento::Schema> schema_from_string(std::string_view s) {
-  if (s == "bbo-1m") return Ok(::databento::Schema::Bbo1M);
-  if (s == "cbbo-1m") return Ok(::databento::Schema::Cbbo1M);
-  if (s == "bbo-1s") return Ok(::databento::Schema::Bbo1S);
-  if (s == "cbbo-1s") return Ok(::databento::Schema::Cbbo1S);
+  if (s == "bbo-1m")
+    return Ok(::databento::Schema::Bbo1M);
+  if (s == "cbbo-1m")
+    return Ok(::databento::Schema::Cbbo1M);
+  if (s == "bbo-1s")
+    return Ok(::databento::Schema::Bbo1S);
+  if (s == "cbbo-1s")
+    return Ok(::databento::Schema::Cbbo1S);
   return Err(ErrorCode::InvalidArgument, std::string{"unsupported schema: "} + std::string{s});
 }
 
 [[nodiscard]] Result<::databento::SType> stype_from_string(std::string_view s) {
-  if (s == "raw_symbol") return Ok(::databento::SType::RawSymbol);
-  if (s == "parent") return Ok(::databento::SType::Parent);
-  if (s == "instrument_id") return Ok(::databento::SType::InstrumentId);
+  if (s == "raw_symbol")
+    return Ok(::databento::SType::RawSymbol);
+  if (s == "parent")
+    return Ok(::databento::SType::Parent);
+  if (s == "instrument_id")
+    return Ok(::databento::SType::InstrumentId);
   return Err(ErrorCode::InvalidArgument, std::string{"unsupported stype: "} + std::string{s});
 }
 
@@ -78,6 +87,20 @@ constexpr i64 kUnsetPx = std::numeric_limits<i64>::min();
   return ::databento::Historical::Builder().SetKey(std::string{api_key}).Build();
 }
 
+template <class Fn> [[nodiscard]] double metadata_cost_with_retry(Fn &&request) {
+  for (unsigned attempt = 1; attempt <= 3u; ++attempt) {
+    try {
+      return request();
+    } catch (const std::exception &) {
+      if (attempt == 3u) {
+        throw;
+      }
+      std::this_thread::sleep_for(std::chrono::seconds(attempt * 2u));
+    }
+  }
+  return 0.0;
+}
+
 // OSI root = leading capital letters of an option symbol,
 // e.g. "XOM   260605C00150000" -> "XOM".
 [[nodiscard]] std::string osi_root(std::string_view osi) {
@@ -91,7 +114,7 @@ constexpr i64 kUnsetPx = std::numeric_limits<i64>::min();
 } // namespace
 
 Result<double> estimate_cost(std::string_view api_key, std::string_view dataset,
-                             const std::pair<std::string, std::string>& range_utc,
+                             const std::pair<std::string, std::string> &range_utc,
                              std::span<const std::string> symbols, std::string_view schema,
                              std::string_view stype_in) {
   ATX_TRY(auto sch, schema_from_string(schema));
@@ -100,17 +123,19 @@ Result<double> estimate_cost(std::string_view api_key, std::string_view dataset,
     auto client = make_client(api_key);
     const ::databento::DateTimeRange<std::string> range{range_utc.first, range_utc.second};
     const std::vector<std::string> syms(symbols.begin(), symbols.end());
-    const double cost = client.MetadataGetCost(std::string{dataset}, range, syms, sch, sty, 0);
+    const double cost = metadata_cost_with_retry(
+        [&] { return client.MetadataGetCost(std::string{dataset}, range, syms, sch, sty, 0); });
     return Ok(cost);
-  } catch (const std::exception& e) {
+  } catch (const std::exception &e) {
     return Err(ErrorCode::Internal, std::string{"estimate_cost: "} + e.what());
   }
 }
 
-Result<PullStats> pull_equity_l1_1m_to_parquet(
-    std::string_view api_key, std::string_view dataset, std::span<const std::string> symbols,
-    const std::pair<std::string, std::string>& range_utc, std::string_view schema,
-    std::string_view out_path, double cap_usd) {
+Result<PullStats> pull_equity_l1_1m_to_parquet(std::string_view api_key, std::string_view dataset,
+                                               std::span<const std::string> symbols,
+                                               const std::pair<std::string, std::string> &range_utc,
+                                               std::string_view schema, std::string_view out_path,
+                                               double cap_usd) {
   ATX_TRY(auto sch, schema_from_string(schema));
   const auto sty = ::databento::SType::RawSymbol;
   PullStats stats;
@@ -121,19 +146,20 @@ Result<PullStats> pull_equity_l1_1m_to_parquet(
     const ::databento::DateTimeRange<std::string> range{range_utc.first, range_utc.second};
     auto est = [&](std::span<const std::string> b) -> double {
       const std::vector<std::string> v(b.begin(), b.end());
-      return client.MetadataGetCost(std::string{dataset}, range, v, sch, sty, 0);
+      return metadata_cost_with_retry(
+          [&] { return client.MetadataGetCost(std::string{dataset}, range, v, sch, sty, 0); });
     };
     const auto batches = split_under_cap(symbols, cap_usd, est);
-    for (const auto& batch : batches) {
+    for (const auto &batch : batches) {
       stats.cost_usd += est(std::span<const std::string>(batch));
       ::databento::TsSymbolMap tsmap;
       client.TimeseriesGetRange(
           std::string{dataset}, range, batch, sch, sty, ::databento::SType::InstrumentId, 0,
-          [&](::databento::Metadata&& m) { tsmap = m.CreateSymbolMap(); },
-          [&](const ::databento::Record& rec) {
+          [&](::databento::Metadata &&m) { tsmap = m.CreateSymbolMap(); },
+          [&](const ::databento::Record &rec) {
             if (rec.Holds<::databento::CbboMsg>()) {
-              const auto& q = rec.Get<::databento::CbboMsg>();
-              const auto& l = q.levels[0];
+              const auto &q = rec.Get<::databento::CbboMsg>();
+              const auto &l = q.levels[0];
               const auto it = tsmap.Find(q);
               const std::string sym =
                   it != tsmap.Map().end() ? *it->second : std::to_string(q.hd.instrument_id);
@@ -141,8 +167,8 @@ Result<PullStats> pull_equity_l1_1m_to_parquet(
               c.push(q.ts_recv.time_since_epoch().count(), sym, px_or_unset(l.bid_px),
                      px_or_unset(l.ask_px), l.bid_sz, l.ask_sz);
             } else if (rec.Holds<::databento::BboMsg>()) {
-              const auto& q = rec.Get<::databento::BboMsg>();
-              const auto& l = q.levels[0];
+              const auto &q = rec.Get<::databento::BboMsg>();
+              const auto &l = q.levels[0];
               const auto it = tsmap.Find(q);
               const std::string sym =
                   it != tsmap.Map().end() ? *it->second : std::to_string(q.hd.instrument_id);
@@ -154,7 +180,7 @@ Result<PullStats> pull_equity_l1_1m_to_parquet(
           });
       ++stats.api_calls;
     }
-  } catch (const std::exception& e) {
+  } catch (const std::exception &e) {
     return Err(ErrorCode::Internal, std::string{"pull_equity_l1: "} + e.what());
   }
   stats.records = static_cast<i64>(c.ts.size());
@@ -174,21 +200,23 @@ Result<PullStats> pull_equity_l1_1m_to_parquet(
   return Ok(stats);
 }
 
-Result<PullStats> pull_opra_cbbo_1m_to_parquet(
-    std::string_view api_key, std::span<const std::string> underlyings,
-    const std::pair<std::string, std::string>& range_utc, std::string_view out_path,
-    double cap_usd) {
+Result<PullStats> pull_opra_cbbo_1m_to_parquet(std::string_view api_key,
+                                               std::span<const std::string> underlyings,
+                                               const std::pair<std::string, std::string> &range_utc,
+                                               std::string_view out_path, double cap_usd) {
   const std::string dataset = "OPRA.PILLAR";
   const auto sch = ::databento::Schema::Cbbo1M;
   const auto sty = ::databento::SType::Parent;
 
   std::vector<std::string> parents;
   parents.reserve(underlyings.size());
-  for (const auto& u : underlyings) {
+  for (const auto &u : underlyings) {
     std::string root;
     root.reserve(u.size());
     for (const char ch : u) {
-      if (ch != '.') { root.push_back(ch); }   // BRK.B -> BRKB (OPRA root)
+      if (ch != '.') {
+        root.push_back(ch);
+      } // BRK.B -> BRKB (OPRA root)
     }
     parents.push_back(root + ".OPT");
   }
@@ -203,7 +231,8 @@ Result<PullStats> pull_opra_cbbo_1m_to_parquet(
     const ::databento::DateTimeRange<std::string> range{range_utc.first, range_utc.second};
     auto est = [&](std::span<const std::string> b) -> double {
       const std::vector<std::string> v(b.begin(), b.end());
-      return client.MetadataGetCost(dataset, range, v, sch, sty, 0);
+      return metadata_cost_with_retry(
+          [&] { return client.MetadataGetCost(dataset, range, v, sch, sty, 0); });
     };
     // OPRA full chains are large: one get_range over many underlyings times out
     // (504) even when the cost gate passes. Cap each query by underlying count
@@ -211,29 +240,27 @@ Result<PullStats> pull_opra_cbbo_1m_to_parquet(
     constexpr std::size_t kMaxParentsPerQuery = 10;
     std::vector<std::vector<std::string>> batches;
     for (std::size_t off = 0; off < parents.size(); off += kMaxParentsPerQuery) {
-      const std::size_t cnt = (parents.size() - off < kMaxParentsPerQuery)
-                                  ? (parents.size() - off)
-                                  : kMaxParentsPerQuery;
+      const std::size_t cnt = (parents.size() - off < kMaxParentsPerQuery) ? (parents.size() - off)
+                                                                           : kMaxParentsPerQuery;
       const std::span<const std::string> chunk(parents.data() + off, cnt);
       auto sub = split_under_cap(chunk, cap_usd, est);
-      for (auto& b : sub) {
+      for (auto &b : sub) {
         batches.push_back(std::move(b));
       }
     }
-    for (const auto& batch : batches) {
+    for (const auto &batch : batches) {
       stats.cost_usd += est(std::span<const std::string>(batch));
       ::databento::TsSymbolMap tsmap;
       client.TimeseriesGetRange(
           dataset, range, batch, sch, sty, ::databento::SType::InstrumentId, 0,
-          [&](::databento::Metadata&& m) { tsmap = m.CreateSymbolMap(); },
-          [&](const ::databento::Record& rec) {
+          [&](::databento::Metadata &&m) { tsmap = m.CreateSymbolMap(); },
+          [&](const ::databento::Record &rec) {
             if (rec.Holds<::databento::CbboMsg>()) {
-              const auto& q = rec.Get<::databento::CbboMsg>();
-              const auto& l = q.levels[0];
+              const auto &q = rec.Get<::databento::CbboMsg>();
+              const auto &l = q.levels[0];
               const auto it = tsmap.Find(q);
               const bool mapped = it != tsmap.Map().end();
-              const std::string sym =
-                  mapped ? *it->second : std::to_string(q.hd.instrument_id);
+              const std::string sym = mapped ? *it->second : std::to_string(q.hd.instrument_id);
               underlying_col.push_back(mapped ? osi_root(sym) : sym);
               instrument_id_col.push_back(static_cast<i64>(q.hd.instrument_id));
               seen.insert(sym);
@@ -244,7 +271,7 @@ Result<PullStats> pull_opra_cbbo_1m_to_parquet(
           });
       ++stats.api_calls;
     }
-  } catch (const std::exception& e) {
+  } catch (const std::exception &e) {
     return Err(ErrorCode::Internal, std::string{"pull_opra_cbbo: "} + e.what());
   }
   stats.records = static_cast<i64>(c.ts.size());

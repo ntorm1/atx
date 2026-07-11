@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cctype>
 #include <charconv>
 #include <cmath>
 #include <cstdint>
@@ -281,6 +282,14 @@ listed_quotes_from_opra(std::string_view trade_date, std::int64_t valuation_ts_n
     const ListedContractDefinition *definition =
         definitions.find(trade_date, instrument_id, identity->raw_symbol);
     if (definition == nullptr) {
+      // OCC numeric root suffixes identify adjusted/non-standard contracts.
+      // The strict exporter intentionally omits them because OPRA does not
+      // populate deliverable fields; they are ineligible for this workflow.
+      ATX_TRY(const OsiSymbol missing_osi, parse_osi_symbol(identity->raw_symbol));
+      if (std::any_of(missing_osi.root.begin(), missing_osi.root.end(),
+                      [](unsigned char ch) { return std::isdigit(ch) != 0; })) {
+        continue;
+      }
       return Err(ErrorCode::NotFound, "listed OPRA join: contract definition missing");
     }
     if (definition->definition_ts_ns > valuation_ts_ns ||

@@ -43,6 +43,7 @@ faithfully and mirror the upstream test tolerances.
 | Portfolio | `portfolio.hpp` | Leg/book/agg types, bulk pricer + select, portfolio pricing + 8-Greek aggregation by agg-mode |
 | Portfolio risk | `portfolio_risk.hpp` | Scenario/shock revaluation, plan/resolve/explain (PnL attribution) |
 | Projection | `projection.hpp` | Projection spine: forward-T interp, coord conversion, inserted-slice eval, delta-solve, project-compare |
+| Contract projection | `contract_projection.hpp` | Relative maturity/strike definitions to absolute-expiry American contracts, marks, and Greeks; prepared deterministic batch API |
 | Surface archive | `surface_archive.hpp` | ATSVSA binary format writer/reader, CRC-32C, schema-hash guard, symbol lookup, concurrent-read-safe |
 | Data ingestion | `data.hpp` | SpiderRock quote-frame model, install-into-universe path, ISO/year-fraction kernels |
 | Batch kernels | `batch.hpp` | Scalar-backed batch B76 price/vega/from-lnfk, IV, Greeks, eSSVI-w (batch == scalar, bit-exact) |

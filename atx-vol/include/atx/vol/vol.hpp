@@ -134,14 +134,15 @@
 #include "atx/vol/vola_parity.hpp"    // single-expiry parity harness
 
 // ── Surface queries / projection / derivatives ──────────────────────────────
-#include "atx/vol/curve.hpp"       // CurveSet, DividendEvent
-#include "atx/vol/derivatives.hpp" // vol-derivative analytics
-#include "atx/vol/projection.hpp"  // eval at non-listed T/K, delta anchors
+#include "atx/vol/contract_projection.hpp" // relative template -> concrete theo option
+#include "atx/vol/curve.hpp"               // CurveSet, DividendEvent
+#include "atx/vol/derivatives.hpp"         // vol-derivative analytics
+#include "atx/vol/projection.hpp"          // eval at non-listed T/K, delta anchors
 
 // ── Data model (universe, panels, real OPRA loader, archive) ─────────────────
 #include "atx/vol/data.hpp"            // QuoteFrame, data_install
-#include "atx/vol/opra_panel.hpp"      // real Databento OPRA cbbo loader
 #include "atx/vol/listed_opra.hpp"     // strict listed-contract definition join
+#include "atx/vol/opra_panel.hpp"      // real Databento OPRA cbbo loader
 #include "atx/vol/panel.hpp"           // synthetic + CSV panels
 #include "atx/vol/priced_surface.hpp"  // PricedSurface (serialization-ready priced surface)
 #include "atx/vol/spy_fixture.hpp"     // deterministic SPY index known-truth fixture

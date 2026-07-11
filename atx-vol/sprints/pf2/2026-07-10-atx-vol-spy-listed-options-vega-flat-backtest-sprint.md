@@ -38,13 +38,23 @@ independent calculator:   2/2 Python tests passed
 full atx_vol CTest label: 795 passed, 0 failed
 ```
 
-The sprint is not complete. P5 still requires a licensed real Databento artifact
-meeting the 50-name/60-date/three-roll gates. The local inventory audit found no
-such cached OPRA Parquet or definition export, and no paid pull was made. P6 also
-waits for the preceding American-throughput sprint's Google Benchmark/comparator
-layout to finish and land; local `main` does not yet contain that harness. The
-workflow fails explicitly when those inputs are absent and does not substitute
-synthetic contracts or marks.
+The sprint is not complete. A licensed Databento development artifact now proves
+the real process boundary on 2026-01-02, 2026-01-05, and 2026-01-06: SPY plus ten
+names, 33/33 admitted surfaces, one exact February monthly cohort, 22 held option
+legs, zero unpriced lots, full quote-mid coverage, and independent reconciliation.
+The verified final model NAV is `-302.60689681620647`; entry net-vega residual is
+`1.5347723092418164e-12` against the 10,000 target. Databento's OPRA definitions
+leave multiplier/deliverable fields undefined, so the development export uses a
+versioned public-series rule: exact underlying OSI roots are standard 100-share
+contracts and numeric-suffix adjusted roots are excluded. This deviation is
+explicit and must be replaced by authoritative OCC series data before the core
+acceptance artifact can claim source-native deliverables.
+
+P5 still requires the 50-name/60-date/three-roll core artifact. P6's projection
+benchmark and checked-in comparator baseline are now present; the full workflow
+throughput baseline remains to be recorded on the core corpus. The workflow fails
+explicitly when exact daily identities are absent and never substitutes synthetic
+strikes, expiries, or marks.
 
 ## Core deliverable
 
@@ -1016,7 +1026,14 @@ separate operator-approved command after free cost preflight.
 4. Databento standards: `instrument_id` is only guaranteed unique within a day:
    <https://databento.com/docs/standards-and-conventions>
 5. Databento schema documentation: instrument definitions are point-in-time data:
+   <https://databento.com/docs/knowledge-base>
    <https://databento.com/docs/schemas-and-data-formats/cbbo>
+6. OCC Infomemo 26853: a numeric OSI root suffix designates a non-standard adjusted
+   contract:
+   <https://infomemo.theocc.com/infomemos?number=26853>
+7. Options Industry Council, *Options Overview for Investors*: a standard equity or
+   ETF option typically covers 100 shares:
+   <https://www.optionseducation.org/getattachment/8d382efb-64ba-431f-9b87-b7fc9b0916bf/OIC-Options-Overview-For-Investors-final.pdf>
 
 ---
 

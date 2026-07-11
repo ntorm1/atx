@@ -5,7 +5,7 @@
 // emitted `Position`s into engine `Lot`s, and it surfaces the implied-correlation
 // diagnostic through the `signals` hook so a backtest records it per row.
 
-#include "atx/vol/strategy.hpp"  // DispersionStrategy, IStrategy, lifecycle_decide
+#include "atx/vol/strategy.hpp" // DispersionStrategy, IStrategy, lifecycle_decide
 
 #include <cmath>
 #include <cstddef>
@@ -17,11 +17,11 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
-#include "atx/vol/backtest.hpp"          // MarketSnapshot, Lot, PortfolioState
-#include "atx/vol/dispersion.hpp"        // build_dispersion_book, dispersion_signal
-#include "atx/vol/portfolio_pricer.hpp"  // OptionContract, kNsPerYear, Position
-#include "atx/vol/priced_surface.hpp"    // PricedSurface
-#include "atx/vol/types.hpp"             // Result, Status
+#include "atx/vol/backtest.hpp"         // MarketSnapshot, Lot, PortfolioState
+#include "atx/vol/dispersion.hpp"       // build_dispersion_book, dispersion_signal
+#include "atx/vol/portfolio_pricer.hpp" // OptionContract, kNsPerYear, Position
+#include "atx/vol/priced_surface.hpp"   // PricedSurface
+#include "atx/vol/types.hpp"            // Result, Status
 
 namespace atx::vol {
 
@@ -29,8 +29,8 @@ using atx::core::Err;
 using atx::core::ErrorCode;
 using atx::core::Ok;
 
-Status DispersionStrategy::on_step(const MarketSnapshot& base, std::size_t step_index,
-                                   PortfolioState& book, std::uint64_t& next_lot_id) {
+Status DispersionStrategy::on_step(const MarketSnapshot &base, std::size_t step_index,
+                                   PortfolioState &book, std::uint64_t &next_lot_id) {
   const LifecycleDecision d = lifecycle_decide(lifecycle_, step_index, book.lots.empty(),
                                                base.ts_ns(), front_expiry_, have_front_);
   if (!d.open) {
@@ -76,9 +76,12 @@ Status DispersionStrategy::on_step(const MarketSnapshot& base, std::size_t step_
     have_front_ = false;
   }
   const std::uint32_t cohort = cohort_counter_++;
-  const std::int64_t expiry = base.ts_ns() + std::llround(cfg_.target_T * kNsPerYear);
-  for (const Position& p : built->positions) {
-    const PricedSurface* surf = base.find(p.contract.uid);
+  const std::int64_t projected_expiry = built->index_leg.call_definition.expiry_ts_ns;
+  const std::int64_t expiry = projected_expiry != 0
+                                  ? projected_expiry
+                                  : base.ts_ns() + std::llround(cfg_.target_T * kNsPerYear);
+  for (const Position &p : built->positions) {
+    const PricedSurface *surf = base.find(p.contract.uid);
     if (surf == nullptr) {
       return Err(ErrorCode::NotFound, "DispersionStrategy: no surface for position");
     }
@@ -93,7 +96,7 @@ Status DispersionStrategy::on_step(const MarketSnapshot& base, std::size_t step_
     lot.multiplier = p.multiplier;
     lot.expiry_ts_ns = expiry;
     lot.cohort = cohort;
-    lot.entry_price = *mark;  // fill at mid
+    lot.entry_price = *mark; // fill at mid
     book.lots.push_back(lot);
   }
   front_expiry_ = expiry;
@@ -101,16 +104,16 @@ Status DispersionStrategy::on_step(const MarketSnapshot& base, std::size_t step_
   return Ok();
 }
 
-std::vector<std::pair<std::string, double>> DispersionStrategy::signals(
-    const MarketSnapshot& base) const {
+std::vector<std::pair<std::string, double>>
+DispersionStrategy::signals(const MarketSnapshot &base) const {
   const Result<ResolvedUniverse> ru = resolve_universe_uids(
       universe_, [&](std::string_view s) { return base.uid_of(s); }, cfg_.missing);
   if (!ru) {
-    return {};  // universe can't bind (index missing / authoring bug): no signal, as pre-S1-3
+    return {}; // universe can't bind (index missing / authoring bug): no signal, as pre-S1-3
   }
   const double n_resolve_dropped = static_cast<double>(ru->dropped.size());
-  const Result<DispersionSignal> sig = dispersion_signal(ru->universe, base.set(), cfg_.target_T,
-                                                         cfg_.missing);
+  const Result<DispersionSignal> sig =
+      dispersion_signal(ru->universe, base.set(), cfg_.target_T, cfg_.missing);
   if (!sig) {
     // No tradeable signal this snapshot (e.g. too few survivors => Unavailable):
     // emit implied_corr as NaN but still surface the drops we know about, so the
@@ -122,7 +125,7 @@ std::vector<std::pair<std::string, double>> DispersionStrategy::signals(
           {"n_names_dropped", n_resolve_dropped + static_cast<double>(sig->dropped.size())}};
 }
 
-Result<DispersionBook> DispersionStrategy::build_book(const MarketSnapshot& base) const {
+Result<DispersionBook> DispersionStrategy::build_book(const MarketSnapshot &base) const {
   const Result<ResolvedUniverse> ru = resolve_universe_uids(
       universe_, [&](std::string_view s) { return base.uid_of(s); }, cfg_.missing);
   if (!ru) {
@@ -131,22 +134,22 @@ Result<DispersionBook> DispersionStrategy::build_book(const MarketSnapshot& base
   return build_dispersion_book(ru->universe, base.set(), cfg_);
 }
 
-std::vector<DroppedName> DispersionStrategy::dropped_on(const MarketSnapshot& base) const {
+std::vector<DroppedName> DispersionStrategy::dropped_on(const MarketSnapshot &base) const {
   std::vector<DroppedName> out;
   const Result<ResolvedUniverse> ru = resolve_universe_uids(
       universe_, [&](std::string_view s) { return base.uid_of(s); }, cfg_.missing);
   if (!ru) {
-    return out;  // universe can't bind: no per-name drop list
+    return out; // universe can't bind: no per-name drop list
   }
-  out = ru->dropped;  // resolve-stage drops (symbol absent from the snapshot)
-  const Result<DispersionSignal> sig = dispersion_signal(ru->universe, base.set(), cfg_.target_T,
-                                                         cfg_.missing);
+  out = ru->dropped; // resolve-stage drops (symbol absent from the snapshot)
+  const Result<DispersionSignal> sig =
+      dispersion_signal(ru->universe, base.set(), cfg_.target_T, cfg_.missing);
   if (sig) {
-    for (const DroppedName& d : sig->dropped) {  // signal-stage drops (surface / unusable)
+    for (const DroppedName &d : sig->dropped) { // signal-stage drops (surface / unusable)
       out.push_back(d);
     }
   }
   return out;
 }
 
-}  // namespace atx::vol
+} // namespace atx::vol

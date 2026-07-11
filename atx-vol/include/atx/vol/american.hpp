@@ -44,10 +44,10 @@ class CorrectionCache;
 // QuantLib-style accuracy preset (boundary nodes, fixed-point / premium
 // quadrature orders, and sweep counts).
 struct AlOpts {
-  std::uint16_t n_collocation = 12;   // Chebyshev boundary nodes
-  std::uint16_t n_quadrature = 24;    // Gauss-Legendre fixed-point order
-  std::uint16_t max_newton_iter = 8;  // total Jacobi-Newton + fixed-point sweeps
-  double tol = 1.0e-10;               // convergence tol on the boundary residual
+  std::uint16_t n_collocation = 12;  // Chebyshev boundary nodes
+  std::uint16_t n_quadrature = 24;   // Gauss-Legendre fixed-point order
+  std::uint16_t max_newton_iter = 8; // total Jacobi-Newton + fixed-point sweeps
+  double tol = 1.0e-10;              // convergence tol on the boundary residual
 };
 
 // The C `ats_pricer_al_default_opts()`: {12, 24, 8, 1e-10}.
@@ -88,10 +88,9 @@ struct AlOpts {
 //                                  represent; also the negative-carry corner where
 //                                  the asymptotic boundary collapses (xmax <= 0)
 //                Internal        — quadrature-table construction failed
-[[nodiscard]] Result<double> andersen_lake(double S, double K, double T,
-                                           double sigma, double r, double q,
-                                           Side side,
-                                           const std::optional<AlOpts>& opts = std::nullopt);
+[[nodiscard]] Result<double> andersen_lake(double S, double K, double T, double sigma, double r,
+                                           double q, Side side,
+                                           const std::optional<AlOpts> &opts = std::nullopt);
 
 // ── Cross-strike call-slice pricer (one boundary, many strikes) ──────────
 //
@@ -116,10 +115,10 @@ struct AlOpts {
 //         NotImplemented  — the double-continuation regime (r < q <= 0), or the
 //                           negative-carry corner where the asymptotic boundary
 //                           collapses (matches `andersen_lake`)
-[[nodiscard]] Status andersen_lake_call_slice(
-    double S, std::span<const double> strikes, double T, double sigma, double r,
-    double q, std::span<double> price_out,
-    const std::optional<AlOpts>& opts = std::nullopt);
+[[nodiscard]] Status andersen_lake_call_slice(double S, std::span<const double> strikes, double T,
+                                              double sigma, double r, double q,
+                                              std::span<double> price_out,
+                                              const std::optional<AlOpts> &opts = std::nullopt);
 
 // Barone-Adesi-Whaley American approximation.
 //
@@ -128,9 +127,8 @@ struct AlOpts {
 // @return         the American premium, or an Error:
 //                   InvalidArgument — S/K <= 0, or negative T or sigma
 //                   Unavailable     — the critical-price root-find diverged
-[[nodiscard]] Result<double> baw_american(double S, double K, double T,
-                                          double sigma, double r, double q,
-                                          Side side, std::uint16_t max_iter = 16,
+[[nodiscard]] Result<double> baw_american(double S, double K, double T, double sigma, double r,
+                                          double q, Side side, std::uint16_t max_iter = 16,
                                           double tol = 1.0e-8);
 
 // ── Warm-started ALO pricer (fixed contract, sigma sweep) ────────────────
@@ -151,14 +149,14 @@ struct AlOpts {
 // Mutable warm state — NOT thread-safe; construct one per inversion. A large
 // sigma jump (or the first call) transparently falls back to a cold seed.
 class AloPricer {
- public:
+public:
   AloPricer(double S, double K, double T, double r, double q, Side side,
-            const std::optional<AlOpts>& opts = std::nullopt);
+            const std::optional<AlOpts> &opts = std::nullopt);
   ~AloPricer();
-  AloPricer(AloPricer&&) noexcept;
-  AloPricer& operator=(AloPricer&&) noexcept;
-  AloPricer(const AloPricer&) = delete;
-  AloPricer& operator=(const AloPricer&) = delete;
+  AloPricer(AloPricer &&) noexcept;
+  AloPricer &operator=(AloPricer &&) noexcept;
+  AloPricer(const AloPricer &) = delete;
+  AloPricer &operator=(const AloPricer &) = delete;
 
   // American price at this contract and `sigma` (>= 0). Warm-starts the boundary
   // from the previous call. Returns NaN on the negative-rate/carry corners where
@@ -167,7 +165,7 @@ class AloPricer {
   // A degenerate sigma ~ 0 or T ~ 0 returns intrinsic regardless of regime.
   [[nodiscard]] double price(double sigma) noexcept;
 
- private:
+private:
   struct State;
   std::unique_ptr<State> st_;
 };
@@ -179,21 +177,18 @@ enum class AmericanMethod : std::uint8_t {
 };
 
 // Unified cold pricer. `opts` is honoured only for the Andersen-Lake method.
-[[nodiscard]] Result<double> american_price(double S, double K, double T,
-                                            double sigma, double r, double q,
-                                            Side side,
+[[nodiscard]] Result<double> american_price(double S, double K, double T, double sigma, double r,
+                                            double q, Side side,
                                             AmericanMethod method = AmericanMethod::AndersenLake,
-                                            const std::optional<AlOpts>& opts = std::nullopt);
+                                            const std::optional<AlOpts> &opts = std::nullopt);
 
 // Hot-path cached American price: Black-76 + F·correction(k_log, T, sigma) with
 // F = S·e^{(r-q)T} and k_log = ln(K/F). A null (or unpopulated) correction falls
 // back to the cold Andersen-Lake path, returning NaN if that solver fails.
 //
 // Mirrors the C `ats_pricer_american_routed(..., correction, NULL, NULL)`.
-[[nodiscard]] double american_price_cached(double S, double K, double T,
-                                           double sigma, double r, double q,
-                                           Side side,
-                                           const CorrectionCache* correction);
+[[nodiscard]] double american_price_cached(double S, double K, double T, double sigma, double r,
+                                           double q, Side side, const CorrectionCache *correction);
 
 // ── American Greeks ─────────────────────────────────────────────────────
 //
@@ -214,6 +209,8 @@ struct AmericanGreeks {
   double volga = 0.0;
   double charm = 0.0;
   double price = 0.0;
+
+  [[nodiscard]] bool operator==(const AmericanGreeks &) const = default;
 };
 
 // American Greeks + price. A null `correction` degrades to the Black-76 leg
@@ -225,10 +222,9 @@ struct AmericanGreeks {
 // reports the error; `american_vega`'s 0 is a signal the IV inverter depends on.
 //
 // @return InvalidArgument if any of S, K, T, sigma is non-positive.
-[[nodiscard]] Result<AmericanGreeks> american_greeks(double S, double K, double T,
-                                                     double sigma, double r, double q,
-                                                     Side side,
-                                                     const CorrectionCache* correction);
+[[nodiscard]] Result<AmericanGreeks> american_greeks(double S, double K, double T, double sigma,
+                                                     double r, double q, Side side,
+                                                     const CorrectionCache *correction);
 
 // American Greeks via central finite differences on the cold `american_price`
 // (same method/opts the mark is priced with). Used on the null-correction-cache
@@ -243,10 +239,10 @@ struct AmericanGreeks {
 // same tol — same greeks to ~tol, several-fold faster. `warm_start = false` keeps
 // every boundary cold (the exact FD reference; greeks().price stays bit-identical
 // to fair_value()). Calls and the BAW method always take the cold 17-solve path.
-[[nodiscard]] Result<AmericanGreeks> american_greeks_fd(
-    double S, double K, double T, double sigma, double r, double q, Side side,
-    AmericanMethod method = AmericanMethod::AndersenLake,
-    const std::optional<AlOpts>& opts = std::nullopt, bool warm_start = false);
+[[nodiscard]] Result<AmericanGreeks>
+american_greeks_fd(double S, double K, double T, double sigma, double r, double q, Side side,
+                   AmericanMethod method = AmericanMethod::AndersenLake,
+                   const std::optional<AlOpts> &opts = std::nullopt, bool warm_start = false);
 
 // American Greeks in FIVE Andersen-Lake boundary solves instead of the FD path's
 // seven. The exercise boundary is spot-independent, so delta/gamma are exact finite
@@ -265,9 +261,9 @@ struct AmericanGreeks {
 // non-degenerate) only; calls, the r<=0 European put, the degenerate corners, and
 // any bumped-boundary collapse defer to american_greeks_fd. greeks().price ==
 // fair_value(). InvalidArgument on non-positive S/K/T/sigma.
-[[nodiscard]] Result<AmericanGreeks> american_greeks_al(
-    double S, double K, double T, double sigma, double r, double q, Side side,
-    const std::optional<AlOpts>& opts = std::nullopt);
+[[nodiscard]] Result<AmericanGreeks>
+american_greeks_al(double S, double K, double T, double sigma, double r, double q, Side side,
+                   const std::optional<AlOpts> &opts = std::nullopt);
 
 // American delta ONLY (∂price/∂S) — the single sensitivity the strike-from-delta
 // solver's bisection consumes, WITHOUT the full american_greeks_fd bundle's other
@@ -280,10 +276,10 @@ struct AmericanGreeks {
 // delta) that repriced full greeks per candidate now solves ~1-2 boundaries per
 // candidate at an unchanged strike. InvalidArgument on non-positive S/K/T/sigma;
 // propagates any american_price error.
-[[nodiscard]] Result<double> american_delta(double S, double K, double T, double sigma,
-                                            double r, double q, Side side,
+[[nodiscard]] Result<double> american_delta(double S, double K, double T, double sigma, double r,
+                                            double q, Side side,
                                             AmericanMethod method = AmericanMethod::AndersenLake,
-                                            const std::optional<AlOpts>& opts = std::nullopt);
+                                            const std::optional<AlOpts> &opts = std::nullopt);
 
 // American vega ONLY (∂price/∂sigma) — the single first-order sensitivity the IV
 // inverter's Newton step needs, WITHOUT the full `american_greeks` bundle's
@@ -294,9 +290,8 @@ struct AmericanGreeks {
 // (the inverter reads 0 as "force bisection"). This 0 sentinel is LOAD-BEARING
 // and is why this function differs from `american_greeks`, which surfaces
 // InvalidArgument on the same input rather than a sentinel.
-[[nodiscard]] double american_vega(double S, double K, double T, double sigma,
-                                   double r, double q, Side side,
-                                   const CorrectionCache* correction) noexcept;
+[[nodiscard]] double american_vega(double S, double K, double T, double sigma, double r, double q,
+                                   Side side, const CorrectionCache *correction) noexcept;
 
 namespace detail {
 
@@ -321,8 +316,7 @@ namespace detail {
 //   - American    : the standard single-boundary early-exercise regime (rate > 0).
 enum class ExerciseRegime : std::uint8_t { European, Unsupported, American };
 
-[[nodiscard]] inline ExerciseRegime classify_regime(double rate,
-                                                    double yield) noexcept {
+[[nodiscard]] inline ExerciseRegime classify_regime(double rate, double yield) noexcept {
   if (rate > 0.0) {
     return ExerciseRegime::American;
   }
@@ -345,6 +339,6 @@ struct GaussLegendre {
 
 [[nodiscard]] GaussLegendre gauss_legendre(unsigned n);
 
-}  // namespace detail
+} // namespace detail
 
-}  // namespace atx::vol
+} // namespace atx::vol

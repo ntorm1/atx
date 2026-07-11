@@ -45,6 +45,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/portfolio_greeks.cpp
     src/calib_pool.cpp
     src/projection.cpp
+    src/contract_projection.cpp
     src/portfolio_risk.cpp
     src/american_iv.cpp
     src/dividend.cpp
@@ -109,7 +110,7 @@ if(ATX_BUILD_TESTS)
 endif()
 
 # ---- Benchmarks (Google Benchmark; opt-in via the shared ATX_BUILD_BENCH) ----
-# Mirrors atx-core/bench and atx-engine/bench. Two targets:
+# Mirrors atx-core/bench and atx-engine/bench. Three targets:
 #   atx-vol-american-bench   — American pricer route/side/API/grid matrix
 #   atx-vol-portfolio-bench  — PricedSurface queries + PortfolioPricer throughput
 if(ATX_BUILD_BENCH)
@@ -222,4 +223,11 @@ if(ATX_BUILD_EXAMPLES)
 
     add_executable(atxvol_spy_dispersion_backtest examples/spy_dispersion_backtest.cpp)
     target_link_libraries(atxvol_spy_dispersion_backtest PRIVATE atx::vol atx::core atx_warnings)
+
+    # Point-in-time Databento OPRA definition export consumed by the strict
+    # listed-dispersion workflow. Network access and cost are explicitly gated.
+    add_executable(databento_spy_dispersion_definitions
+        examples/databento_spy_dispersion_definitions.cpp)
+    target_link_libraries(databento_spy_dispersion_definitions
+        PRIVATE atx::vol atx::core databento::databento atx_warnings)
 endif()

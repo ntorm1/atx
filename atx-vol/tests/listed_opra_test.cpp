@@ -122,6 +122,20 @@ TEST(ListedOpra, RejectsMissingLookAheadAndContradictoryDefinitions) {
       atx::vol::listed_quotes_from_opra(kDate, source.frame.snapshot_ts_ns, source, *wrong_table));
 }
 
+TEST(ListedOpra, MissingNumericRootAdjustmentsAreExcluded) {
+  OpraPanel source = panel();
+  source.source_identities = {
+      OpraInstrumentIdentity{101, "SPY1  260717C00600000"},
+      OpraInstrumentIdentity{102, "SPY1  260717P00600000"},
+  };
+  auto empty = ListedDefinitionTable::create({});
+  ASSERT_TRUE(empty);
+  auto quotes =
+      atx::vol::listed_quotes_from_opra(kDate, source.frame.snapshot_ts_ns, source, *empty);
+  ASSERT_TRUE(quotes) << (quotes ? std::string{} : quotes.error().to_string());
+  EXPECT_TRUE(quotes->empty());
+}
+
 TEST(ListedOpra, RejectsDailyIdentityAndAlignmentViolations) {
   auto table = ListedDefinitionTable::create(definitions());
   ASSERT_TRUE(table);

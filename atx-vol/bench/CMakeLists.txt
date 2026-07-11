@@ -5,10 +5,11 @@
 # is a SYSTEM include (declared in the root CMakeLists FetchContent), so its
 # headers never trip atx-vol's /W4 /WX gate.
 #
-# Two targets (one *_bench.cpp each, kept separate so a matrix change in one does
-# not relink the other):
+# Three targets (one *_bench.cpp each, kept separate so a matrix change in one does
+# not relink the others):
 #   atx-vol-american-bench   <- american_pricing_bench.cpp
 #   atx-vol-portfolio-bench  <- portfolio_throughput_bench.cpp
+#   atx-vol-projection-bench <- contract_projection_bench.cpp
 #
 # Shared, header-only helpers live beside them:
 #   bench_util.hpp           — common per-registration knobs (warm-up, repetitions,
@@ -16,7 +17,7 @@
 #   support/synth_book.hpp   — the data-free synthetic surfaces + 64-underlying book
 #
 # When ATX_VOL_COUNTERS=ON the atx-vol PUBLIC compile definition flows here, so
-# bench_util.hpp's counter dump lights up and both targets emit cnt_* columns.
+# bench_util.hpp's counter dump lights up and all targets emit cnt_* columns.
 
 find_package(Threads REQUIRED)
 
@@ -38,6 +39,19 @@ add_executable(atx-vol-portfolio-bench
     portfolio_throughput_bench.cpp
 )
 target_link_libraries(atx-vol-portfolio-bench
+    PRIVATE
+        atx::vol
+        atx::core
+        benchmark::benchmark
+        atx_warnings
+        Threads::Threads
+)
+
+add_executable(atx-vol-projection-bench
+    bench_main.cpp
+    contract_projection_bench.cpp
+)
+target_link_libraries(atx-vol-projection-bench
     PRIVATE
         atx::vol
         atx::core

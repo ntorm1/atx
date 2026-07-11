@@ -37,24 +37,26 @@
 #define _CRT_SECURE_NO_WARNINGS 1
 #endif
 
+#include <charconv>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>  // getenv, strtod
-#include <charconv>
+#include <cstdlib> // getenv, strtod
 #include <exception>
 #include <filesystem>
 #include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <vector>
 
-#include <databento/constants.hpp>   // dataset::kOpraPillar
-#include <databento/datetime.hpp>    // DateTimeRange
-#include <databento/enums.hpp>       // Schema, SType
-#include <databento/historical.hpp>  // Historical
+#include <databento/constants.hpp>  // dataset::kOpraPillar
+#include <databento/datetime.hpp>   // DateTimeRange
+#include <databento/enums.hpp>      // Schema, SType
+#include <databento/historical.hpp> // Historical
 
-#include "atx/external/databento.hpp"  // pull_opra_cbbo_1m_to_parquet, estimate_cost, PullStats
+#include "atx/external/databento.hpp" // pull_opra_cbbo_1m_to_parquet, estimate_cost, PullStats
 
 namespace {
 
@@ -64,8 +66,8 @@ namespace dbx = atx::external::databento;
 // OPRA cbbo-1m pre-close snapshot: the single minute [19:55:00, 19:56:00) UTC per date.
 // Matches the atx-vol OpraBatchSpec default snapshot (snapshot_suffix "T19:55:00Z"), so the
 // files this pulls line up 1:1 with what load_opra_daterange expects to read.
-constexpr const char* kSnapStart = "T19:55:00";
-constexpr const char* kSnapEnd = "T19:56:00";
+constexpr const char *kSnapStart = "T19:55:00";
+constexpr const char *kSnapEnd = "T19:56:00";
 
 // ── Civil-date kernel (Howard-Hinnant days-from-civil) — copied from
 // atx-vol/src/opra_batch.cpp so the date walk needs no external date library ──────────────
@@ -79,9 +81,9 @@ struct Civil {
 [[nodiscard]] std::int64_t days_from_civil(int y, unsigned m, unsigned d) noexcept {
   y -= (m <= 2);
   const std::int64_t era = (y >= 0 ? y : y - 399) / 400;
-  const unsigned yoe = static_cast<unsigned>(y - era * 400);              // [0, 399]
-  const unsigned doy = (153u * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1;  // [0, 365]
-  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;             // [0, 146096]
+  const unsigned yoe = static_cast<unsigned>(y - era * 400);             // [0, 399]
+  const unsigned doy = (153u * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1; // [0, 365]
+  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;            // [0, 146096]
   return era * 146097 + static_cast<std::int64_t>(doe) - 719468;
 }
 
@@ -92,22 +94,22 @@ struct Civil {
   const unsigned doe = static_cast<unsigned>(z - era * 146097);               // [0, 146096]
   const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
   const int y = static_cast<int>(yoe) + static_cast<int>(era) * 400;
-  const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);               // [0, 365]
-  const unsigned mp = (5 * doy + 2) / 153;                                    // [0, 11]
-  const unsigned d = doy - (153 * mp + 2) / 5 + 1;                            // [1, 31]
-  const unsigned m = mp < 10 ? mp + 3 : mp - 9;                               // [1, 12]
+  const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+  const unsigned mp = (5 * doy + 2) / 153;                      // [0, 11]
+  const unsigned d = doy - (153 * mp + 2) / 5 + 1;              // [1, 31]
+  const unsigned m = mp < 10 ? mp + 3 : mp - 9;                 // [1, 12]
   return Civil{y + static_cast<int>(m <= 2), m, d};
 }
 
-[[nodiscard]] bool parse_uint(std::string_view s, int& out) noexcept {
-  const char* first = s.data();
-  const char* last = s.data() + s.size();
+[[nodiscard]] bool parse_uint(std::string_view s, int &out) noexcept {
+  const char *first = s.data();
+  const char *last = s.data() + s.size();
   const std::from_chars_result res = std::from_chars(first, last, out);
   return res.ec == std::errc{} && res.ptr == last;
 }
 
 // Parse exactly "YYYY-MM-DD" with an in-range month/day.
-[[nodiscard]] bool parse_civil(std::string_view s, Civil& out) noexcept {
+[[nodiscard]] bool parse_civil(std::string_view s, Civil &out) noexcept {
   if (s.size() != 10 || s[4] != '-' || s[7] != '-') {
     return false;
   }
@@ -125,7 +127,7 @@ struct Civil {
   return true;
 }
 
-[[nodiscard]] std::string format_civil(const Civil& c) {
+[[nodiscard]] std::string format_civil(const Civil &c) {
   char buf[11];
   std::snprintf(buf, sizeof(buf), "%04d-%02u-%02u", c.y, c.m, c.d);
   return std::string(buf);
@@ -165,7 +167,7 @@ struct Civil {
   return root + ".OPT";
 }
 
-void split_csv_into(std::string_view csv, std::vector<std::string>& out) {
+void split_csv_into(std::string_view csv, std::vector<std::string> &out) {
   std::size_t start = 0;
   while (start <= csv.size()) {
     const std::size_t comma = csv.find(',', start);
@@ -195,10 +197,10 @@ struct Config {
 struct Cell {
   std::string symbol;
   std::string date;
-  std::string parent;  // e.g. "XOM.OPT"
-  std::string path;    // resolved <out>/{symbol}/{date}.parquet
+  std::string parent; // e.g. "XOM.OPT"
+  std::string path;   // resolved <out>/{symbol}/{date}.parquet
   std::uint64_t records = 0;
-  std::uint64_t billable = 0;  // bytes
+  std::uint64_t billable = 0; // bytes
   double cost = 0.0;
 };
 
@@ -216,7 +218,8 @@ void print_usage() {
       "  --end   YYYY-MM-DD      Inclusive last date (required).\n"
       "  --out DIR               Output root (default: data/opra).\n"
       "  --cap USD               Hard cost cap; also the per-API-call cap (default: 5.00).\n"
-      "  --layout TMPL           Path template under --out (default: \"{symbol}/{date}.parquet\").\n"
+      "  --layout TMPL           Path template under --out (default: "
+      "\"{symbol}/{date}.parquet\").\n"
       "  --dry-run               Preflight + print the plan, then exit 0 without pulling.\n"
       "  -h, --help              Show this help.\n\n"
       "A real pull and the network preflight require DATABENTO_API_KEY in the environment.\n"
@@ -224,8 +227,8 @@ void print_usage() {
 }
 
 // argv -> Config. Returns false (caller prints usage + exits 2) on any malformed input.
-[[nodiscard]] bool parse_args(int argc, char** argv, Config& cfg) {
-  const auto need_val = [&](int& i) -> const char* {
+[[nodiscard]] bool parse_args(int argc, char **argv, Config &cfg) {
+  const auto need_val = [&](int &i) -> const char * {
     if (i + 1 >= argc) {
       std::fprintf(stderr, "error: %s requires a value\n", argv[i]);
       return nullptr;
@@ -240,29 +243,35 @@ void print_usage() {
     } else if (a == "--dry-run") {
       cfg.dry_run = true;
     } else if (a == "--symbols") {
-      const char* v = need_val(i);
-      if (!v) return false;
+      const char *v = need_val(i);
+      if (!v)
+        return false;
       split_csv_into(v, cfg.symbols);
     } else if (a == "--start") {
-      const char* v = need_val(i);
-      if (!v) return false;
+      const char *v = need_val(i);
+      if (!v)
+        return false;
       cfg.start = v;
     } else if (a == "--end") {
-      const char* v = need_val(i);
-      if (!v) return false;
+      const char *v = need_val(i);
+      if (!v)
+        return false;
       cfg.end = v;
     } else if (a == "--out") {
-      const char* v = need_val(i);
-      if (!v) return false;
+      const char *v = need_val(i);
+      if (!v)
+        return false;
       cfg.out = v;
     } else if (a == "--layout") {
-      const char* v = need_val(i);
-      if (!v) return false;
+      const char *v = need_val(i);
+      if (!v)
+        return false;
       cfg.layout = v;
     } else if (a == "--cap") {
-      const char* v = need_val(i);
-      if (!v) return false;
-      char* endp = nullptr;
+      const char *v = need_val(i);
+      if (!v)
+        return false;
+      char *endp = nullptr;
       const double parsed = std::strtod(v, &endp);
       if (endp == v || *endp != '\0' || !(parsed > 0.0)) {
         std::fprintf(stderr, "error: --cap must be a positive number, got '%s'\n", v);
@@ -287,7 +296,7 @@ void print_usage() {
 
 // Build the ordered [start,end] date list (inclusive) via the civil-date kernel. Returns
 // false on unparseable dates or an end-before-start range (caller exits 2).
-[[nodiscard]] bool build_dates(const Config& cfg, std::vector<std::string>& dates) {
+[[nodiscard]] bool build_dates(const Config &cfg, std::vector<std::string> &dates) {
   Civil lo;
   Civil hi;
   if (!parse_civil(cfg.start, lo)) {
@@ -296,8 +305,7 @@ void print_usage() {
     return false;
   }
   if (!parse_civil(cfg.end, hi)) {
-    std::fprintf(stderr, "error: unparseable --end '%s' (expected YYYY-MM-DD)\n",
-                 cfg.end.c_str());
+    std::fprintf(stderr, "error: unparseable --end '%s' (expected YYYY-MM-DD)\n", cfg.end.c_str());
     return false;
   }
   const std::int64_t serial_lo = days_from_civil(lo.y, lo.m, lo.d);
@@ -314,9 +322,9 @@ void print_usage() {
   return true;
 }
 
-}  // namespace
+} // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char **argv) {
   Config cfg;
   if (!parse_args(argc, argv, cfg)) {
     print_usage();
@@ -336,8 +344,8 @@ int main(int argc, char** argv) {
   // Date-major then symbol-major, matching atx-vol load_opra_daterange ordering.
   std::vector<Cell> cells;
   cells.reserve(dates.size() * cfg.symbols.size());
-  for (const std::string& date : dates) {
-    for (const std::string& sym : cfg.symbols) {
+  for (const std::string &date : dates) {
+    for (const std::string &sym : cfg.symbols) {
       Cell c;
       c.symbol = sym;
       c.date = date;
@@ -349,22 +357,22 @@ int main(int argc, char** argv) {
     }
   }
 
-  std::printf("Bulk OPRA cbbo-1m  dataset=%s  window=%s..%s per day\n", databento::dataset::kOpraPillar,
-              kSnapStart, kSnapEnd);
+  std::printf("Bulk OPRA cbbo-1m  dataset=%s  window=%s..%s per day\n",
+              databento::dataset::kOpraPillar, kSnapStart, kSnapEnd);
   std::printf("symbols=%zu  dates=%s..%s (%zu)  files=%zu  out=%s  cap=$%.2f%s\n\n",
-              cfg.symbols.size(), cfg.start.c_str(), cfg.end.c_str(), dates.size(),
-              cells.size(), cfg.out.c_str(), cfg.cap, cfg.dry_run ? "  [DRY RUN]" : "");
+              cfg.symbols.size(), cfg.start.c_str(), cfg.end.c_str(), dates.size(), cells.size(),
+              cfg.out.c_str(), cfg.cap, cfg.dry_run ? "  [DRY RUN]" : "");
 
   // ── No API key: degrade gracefully (do NOT crash) ─────────────────────────────────────
-  const char* env_key = std::getenv("DATABENTO_API_KEY");
+  const char *env_key = std::getenv("DATABENTO_API_KEY");
   if (env_key == nullptr || env_key[0] == '\0') {
-    std::fprintf(stderr,
-                 "DATABENTO_API_KEY is not set. The FREE preflight queries Databento "
-                 "Metadata over the network, so an API key is required even for --dry-run "
-                 "cost estimation.\n");
+    std::fprintf(stderr, "DATABENTO_API_KEY is not set. The FREE preflight queries Databento "
+                         "Metadata over the network, so an API key is required even for --dry-run "
+                         "cost estimation.\n");
     if (cfg.dry_run) {
-      std::printf("\nLocal plan (network-free; per-file cost estimate UNAVAILABLE without a key):\n");
-      for (const Cell& c : cells) {
+      std::printf(
+          "\nLocal plan (network-free; per-file cost estimate UNAVAILABLE without a key):\n");
+      for (const Cell &c : cells) {
         std::printf("  %-8s %s -> %s\n", c.symbol.c_str(), c.date.c_str(), c.path.c_str());
       }
       std::printf("\n%zu file(s) planned. Set DATABENTO_API_KEY and re-run for cost figures.\n",
@@ -382,22 +390,32 @@ int main(int argc, char** argv) {
   std::uint64_t total_billable = 0;
   try {
     auto client = databento::Historical::Builder().SetKey(api_key).Build();
-    for (Cell& c : cells) {
+    for (Cell &c : cells) {
       const databento::DateTimeRange<std::string> range{c.date + kSnapStart, c.date + kSnapEnd};
       const std::vector<std::string> parent{c.parent};
-      c.records = static_cast<std::uint64_t>(client.MetadataGetRecordCount(
-          databento::dataset::kOpraPillar, range, parent, databento::Schema::Cbbo1M,
-          databento::SType::Parent, 0));
-      c.billable = static_cast<std::uint64_t>(client.MetadataGetBillableSize(
-          databento::dataset::kOpraPillar, range, parent, databento::Schema::Cbbo1M,
-          databento::SType::Parent, 0));
-      c.cost = client.MetadataGetCost(databento::dataset::kOpraPillar, range, parent,
-                                      databento::Schema::Cbbo1M, databento::SType::Parent, 0);
+      // Cost is the authorization gate. OPRA parent record-count and billable-size
+      // metadata can time out independently of both cost and one-minute egress;
+      // leaving those diagnostics at zero must not block a capped pull.
+      std::printf("preflight %s %s...\n", c.symbol.c_str(), c.date.c_str());
+      std::fflush(stdout);
+      for (unsigned attempt = 1; attempt <= 3u; ++attempt) {
+        try {
+          c.cost = client.MetadataGetCost(databento::dataset::kOpraPillar, range, parent,
+                                          databento::Schema::Cbbo1M, databento::SType::Parent, 0);
+          break;
+        } catch (const std::exception &error) {
+          if (attempt == 3u) {
+            throw;
+          }
+          std::fprintf(stderr, "  metadata retry %u/3 after: %s\n", attempt, error.what());
+          std::this_thread::sleep_for(std::chrono::seconds(attempt * 2u));
+        }
+      }
       total_cost += c.cost;
       total_records += c.records;
       total_billable += c.billable;
     }
-  } catch (const std::exception& e) {
+  } catch (const std::exception &e) {
     std::fprintf(stderr, "preflight failed (Metadata query): %s\n", e.what());
     return 1;
   }
@@ -406,11 +424,11 @@ int main(int argc, char** argv) {
   std::printf("Preflight (FREE — Metadata endpoints, no data egress):\n");
   std::printf("  %-8s %-10s %12s %14s %14s\n", "symbol", "parent", "records", "billable(MB)",
               "est($)");
-  for (const std::string& sym : cfg.symbols) {
+  for (const std::string &sym : cfg.symbols) {
     std::uint64_t rec = 0;
     std::uint64_t bytes = 0;
     double cost = 0.0;
-    for (const Cell& c : cells) {
+    for (const Cell &c : cells) {
       if (c.symbol == sym) {
         rec += c.records;
         bytes += c.billable;
@@ -437,7 +455,7 @@ int main(int argc, char** argv) {
   // ── --dry-run: print the plan and exit WITHOUT pulling (the free go/no-go path) ────────
   if (cfg.dry_run) {
     std::printf("\n--dry-run PLAN (nothing pulled):\n");
-    for (const Cell& c : cells) {
+    for (const Cell &c : cells) {
       std::printf("  %-8s %s -> %-40s est $%.6f\n", c.symbol.c_str(), c.date.c_str(),
                   c.path.c_str(), c.cost);
     }
@@ -451,7 +469,7 @@ int main(int argc, char** argv) {
   double running = 0.0;
   std::size_t pulled = 0;
   std::size_t skipped = 0;
-  for (const Cell& c : cells) {
+  for (const Cell &c : cells) {
     const fs::path target{c.path};
     std::error_code ec;
     if (fs::exists(target, ec) && !ec) {
@@ -480,17 +498,16 @@ int main(int argc, char** argv) {
                    res.error().to_string().c_str());
       return 1;
     }
-    const dbx::PullStats& st = res.value();
+    const dbx::PullStats &st = res.value();
     running += st.cost_usd;
     ++pulled;
-    std::printf(
-        "  PULLED %-8s %s -> %s  records=%lld symbols=%lld api_calls=%lld cost=$%.6f  "
-        "running=$%.6f\n",
-        c.symbol.c_str(), c.date.c_str(), c.path.c_str(), static_cast<long long>(st.records),
-        static_cast<long long>(st.symbols), static_cast<long long>(st.api_calls), st.cost_usd,
-        running);
+    std::printf("  PULLED %-8s %s -> %s  records=%lld symbols=%lld api_calls=%lld cost=$%.6f  "
+                "running=$%.6f\n",
+                c.symbol.c_str(), c.date.c_str(), c.path.c_str(),
+                static_cast<long long>(st.records), static_cast<long long>(st.symbols),
+                static_cast<long long>(st.api_calls), st.cost_usd, running);
   }
-  std::printf("\nDone. pulled=%zu  skipped=%zu  running_cost=$%.6f (cap $%.2f)\n", pulled,
-              skipped, running, cfg.cap);
+  std::printf("\nDone. pulled=%zu  skipped=%zu  running_cost=$%.6f (cap $%.2f)\n", pulled, skipped,
+              running, cfg.cap);
   return 0;
 }

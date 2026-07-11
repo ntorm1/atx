@@ -30,6 +30,7 @@
 #include "atx/vol/opra_batch.hpp"
 #include "atx/vol/portfolio_pricer.hpp"
 #include "atx/vol/session.hpp"
+#include "atx/vol/strategy.hpp"
 #include "atx/vol/tearsheet.hpp"
 #include "atx/vol/types.hpp"
 
@@ -372,6 +373,9 @@ Status write_methodology_map(const fs::path &path) {
          "surfaces reloaded from ATXVSA\n"
       << "daily_hedge_monthly_roll\tBNP Paribas public dispersion implementation\tdaily close "
          "delta hedge and common listed monthly expiry\n"
+      << "standard_contract_rule\tOCC OSI adjustments and OIC contract-size guidance\texact "
+         "underlying roots use 100 shares; numeric-suffix adjusted roots are excluded when OPRA "
+         "deliverable fields are undefined\n"
       << "vega_flat\tdirect Greek identity\tcontinuous notional using served American vegas\n";
   return out ? Ok() : Err(ErrorCode::IoError, "cannot flush methodology map");
 }
@@ -395,19 +399,25 @@ Status build_corpus_command(const fs::path &source_spec_path, const fs::path &ru
   ATX_TRY_VOID(write_methodology_map(run_dir / "methodology_map.tsv"));
   QualifiedCorpusConfig config;
   config.build.n_threads = spec.fit_workers;
-  config.build.fit_template.preset = FitPreset::Robust;
+  config.build.fit_template.preset = FitPreset::Hft;
+  CurveConfig direct_curve;
+  direct_curve.kind = VolCurveKind::LinearVariance;
+  config.build.fit_template.curve = direct_curve;
+  config.build.fit_template.enforce_calendar_floor = true;
   config.admission.enabled = true;
   CorpusAdmissionRule rule;
   rule.min_quotes = 20u;
   rule.min_slices = 2u;
   rule.require_calendar_arb_free = true;
+  rule.calendar_abs_k = 0.7;
   rule.require_source_provenance = true;
   for (CorpusAdmissionRule &profile_rule : config.admission.by_profile) {
     profile_rule = rule;
   }
   config.input_fingerprint =
       hash_text(spec.date_lo + "|" + spec.date_hi + "|" + std::to_string(symbols.size()));
-  config.policy_fingerprint = hash_text("spy-listed-dispersion-admission-v1");
+  config.policy_fingerprint =
+      hash_text("spy-listed-dispersion-admission-v4-pinned-linear-calendar-floor-k0.7");
   ATX_TRY(CorpusBuildSession session,
           CorpusBuildSession::create((run_dir / "archives").string(), config));
   std::size_t cursor = 0;
@@ -654,11 +664,51 @@ Status run_backtest_command(const fs::path &run_dir) {
   return Ok();
 }
 
+Status run_surface_backtest_command(const fs::path &run_dir) {
+  ATX_TRY(RunSpec spec, read_run_spec(run_dir / "run_spec.tsv"));
+  ATX_TRY(std::vector<UniverseRow> universe_rows, read_universe(run_dir / "universe_schedule.tsv"));
+  ATX_TRY(CorpusManifest manifest, read_manifest_file((run_dir / "surface_manifest.tsv").string()));
+  ATX_TRY(Clock clock, Clock::from_manifest(manifest));
+  if (clock.size() == 0u) {
+    return Err(ErrorCode::Unavailable, "surface backtest: empty qualified clock");
+  }
+  ATX_TRY(DispersionUniverse universe, universe_at(universe_rows, clock.refs().front().date));
+
+  DispersionConfig dispersion;
+  dispersion.target_T = spec.target_dte_days / 365.25;
+  dispersion.target_vega = spec.gross_index_vega;
+  dispersion.side = DispersionSide::ShortIndexLongNames;
+  dispersion.multiplier = 100.0;
+  dispersion.missing = MissingNameSpec{MissingNamePolicy::DropRenormalize, spec.min_names};
+  dispersion.projected_maturity =
+      ProjectedMaturitySpec::days(static_cast<std::int32_t>(std::llround(spec.target_dte_days)));
+
+  LifecycleSpec lifecycle;
+  lifecycle.entry = LifecycleSpec::Entry::EveryNDays;
+  lifecycle.holding = LifecycleSpec::Holding::RollAtHorizon;
+  lifecycle.entry_every_n = 21u;
+  lifecycle.roll_at_T = spec.roll_dte_days / 365.25;
+  HedgeSpec hedge;
+  hedge.kind = HedgeSpec::Kind::DeltaToZero;
+  hedge.cadence = HedgeSpec::Cadence::Daily;
+  hedge.band = spec.delta_band;
+
+  DispersionStrategy strategy{std::move(universe), dispersion, lifecycle, hedge};
+  RunConfig config;
+  config.unpriced = UnpricedLotPolicy::Error;
+  ATX_TRY(BacktestResult backtest, run_backtest(clock, strategy, config));
+  ATX_TRY_VOID(write_backtest_tsv(backtest, (run_dir / "surface_backtest.tsv").string()));
+  std::printf("surface-only projected backtest complete: dates=%zu final_nav=%.10g\n",
+              backtest.size(), backtest.nav.back());
+  return Ok();
+}
+
 void usage() {
   std::fprintf(stderr, "usage:\n"
                        "  atxvol_spy_dispersion_backtest build-corpus --spec FILE --out DIR\n"
                        "  atxvol_spy_dispersion_backtest build-schedule --run DIR\n"
                        "  atxvol_spy_dispersion_backtest run-backtest --run DIR\n"
+                       "  atxvol_spy_dispersion_backtest run-surface-backtest --run DIR\n"
                        "  atxvol_spy_dispersion_backtest verify --run DIR\n");
 }
 
@@ -694,6 +744,8 @@ int main(int argc, char **argv) {
     status = build_schedule_command(run);
   } else if (command == "run-backtest" && !run.empty()) {
     status = run_backtest_command(run);
+  } else if (command == "run-surface-backtest" && !run.empty()) {
+    status = run_surface_backtest_command(run);
   } else if (command == "verify" && !run.empty()) {
     status = verify_command(run);
   } else {
