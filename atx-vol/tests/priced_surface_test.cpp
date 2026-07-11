@@ -656,3 +656,56 @@ TEST(PricedSurface, EvaluateBatchValidatesSpans) {
                                 PricedSurface::EvaluationSoA{iv1, px, gk, st})
                    .has_value());
 }
+
+// ── C1.7: PricedSurface::vega — single-axis eval, no full Greek bundle ───────
+//
+// vega(K,T,side) must reproduce greeks_analytic(K,T,side).vega bit-for-bit on
+// the AndersenLake (AL) path: greeks_analytic() routes to the native 5-solve
+// american_greeks_al (price/delta/gamma/vega/rho/vanna/volga from re-solved
+// boundaries; theta/charm from the continuation PDE), and vega() must reach
+// the SAME sigma+/- boundary re-solve + centered difference the bundle's
+// `.vega` field comes from — an EXACT double compare (EXPECT_EQ on the raw
+// bits via hexbits), not a tolerance.
+TEST(PricedSurfaceVega, MatchesAnalyticBundleBitForBit) {
+  const PricedSurface surfs[] = {make_essvi_varycarry(1), make_essvi(2, 6), make_convex(3, 6, 40)};
+  // Grid incl. deep ITM/OTM and short expiry (method_grid()'s g.Ts[0] = 0.05 is
+  // already the shortest fitted tenor; add nextafter-style near-expiry probes
+  // is unnecessary — american_greeks_al's own degenerate guard (T <= 1e-12) is
+  // a separate, input-only branch exercised by the DegenerateInputErrorContract
+  // case below).
+  Grid g = method_grid();
+  g.Ks = {70.0, 80.0, 92.0, 100.0, 104.0, 115.0, 130.0}; // deep OTM .. deep ITM both sides
+  for (const PricedSurface& s : surfs) {
+    for (const double K : g.Ks) {
+      for (const double T : g.Ts) {
+        for (const Side side : g.sides) {
+          const auto ga = s.greeks_analytic(K, T, side);
+          const auto vg = s.vega(K, T, side);
+          ASSERT_EQ(ga.has_value(), vg.has_value())
+              << "K=" << K << " T=" << T << " side=" << static_cast<int>(side);
+          if (ga.has_value()) {
+            EXPECT_EQ(hexbits(*vg), hexbits(ga->vega))
+                << "K=" << K << " T=" << T << " side=" << static_cast<int>(side);
+          }
+        }
+      }
+    }
+  }
+}
+
+// Degenerate input (non-finite/non-positive K or T): vega() surfaces the
+// SAME Result/InvalidArgument error contract delta() uses — NOT the free
+// `american_vega`'s 0.0-sentinel contract (that sentinel is load-bearing for
+// the IV inverter's Newton step and must not leak into this Result-typed API).
+TEST(PricedSurfaceVega, DegenerateInputErrorContract) {
+  const PricedSurface s = make_essvi_varycarry(1);
+  for (const auto kt : {std::pair{-5.0, 0.2}, std::pair{100.0, -0.1}, std::pair{100.0, 0.0},
+                        std::pair{kNaN, 0.2}, std::pair{100.0, kNaN}}) {
+    const auto vg = s.vega(kt.first, kt.second, Side::Call);
+    ASSERT_FALSE(vg.has_value()) << "K=" << kt.first << " T=" << kt.second;
+    EXPECT_EQ(vg.error().code(), atx::core::ErrorCode::InvalidArgument);
+    const auto d = s.delta(kt.first, kt.second, Side::Call);
+    ASSERT_FALSE(d.has_value());
+    EXPECT_EQ(vg.error().code(), d.error().code());
+  }
+}

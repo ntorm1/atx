@@ -225,6 +225,31 @@ Result<double> PricedSurface::delta(double K, double T, Side side) const {
                         pricing_.method, std::optional<AlOpts>{pricing_.al_opts});
 }
 
+Result<double> PricedSurface::vega(double K, double T, Side side) const {
+  const ResolvedSurfacePoint p = resolve(K, T);
+  if (!p.valid) {
+    return Err(ErrorCode::InvalidArgument,
+               "PricedSurface::vega: non-finite or non-positive K/T");
+  }
+  // Vega-only fast path. Same routing greeks_analytic() uses: the AndersenLake
+  // method takes the native analytic route (american_vega_al, bit-identical to
+  // greeks_analytic(K,T,side).vega at ~0-2 boundary solves instead of 5); any
+  // other method falls back to the SAME american_greeks_fd call
+  // greeks_analytic() itself forwards on that branch, so the extracted .vega is
+  // bit-identical there too.
+  if (pricing_.method == AmericanMethod::AndersenLake) {
+    return american_vega_al(pricing_.S, K, T, p.sigma, p.rate, p.q_eff, side,
+                            std::optional<AlOpts>{pricing_.al_opts});
+  }
+  const Result<AmericanGreeks> g =
+      american_greeks_fd(pricing_.S, K, T, p.sigma, p.rate, p.q_eff, side,
+                         pricing_.method, std::optional<AlOpts>{pricing_.al_opts});
+  if (!g) {
+    return Err(g.error());
+  }
+  return Ok(g->vega);
+}
+
 PricedSurface::FusedResult PricedSurface::evaluate_resolved(const ResolvedSurfacePoint& p,
                                                             Side side, EvalField fields,
                                                             bool analytic) const {

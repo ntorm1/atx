@@ -125,6 +125,15 @@ class PricedSurface {
   // seventeen (bit-identical value; same S/sigma/carry plumbing as greeks()).
   [[nodiscard]] Result<double> delta(double K, double T, Side side) const;
 
+  // American vega ONLY at (K, T, side) — the single axis a vega-neutral sizing
+  // call (e.g. the dispersion book build) needs, WITHOUT greeks_analytic()'s full
+  // 5-solve AmericanGreeks bundle. Mirrors delta()'s structure exactly: same
+  // resolve(K,T) validation/error mapping, routed to the AndersenLake-native
+  // `american_vega_al` (bit-identical to greeks_analytic(K,T,side).vega on the
+  // AL path, ~0-2 boundary solves instead of 5) with the same non-AL-method FD
+  // fallback greeks_analytic() itself takes. (C1.7)
+  [[nodiscard]] Result<double> vega(double K, double T, Side side) const;
+
   // ── Fused resolution + single-point / batch evaluation (P1.1) ──────────────
   //
   // Every query method above independently re-does the SAME resolution: validate

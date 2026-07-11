@@ -2344,6 +2344,81 @@ Result<AmericanGreeks> american_greeks_al(double S, double K, double T,
   return Ok(out);
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// C1.7 (additive-only; see FILE-OWNERSHIP RULE in the 07-09 sprint doc) — a
+// vega-ONLY mirror of american_greeks_al's vega branch just above, declared in
+// american.hpp. Reuses the identical guard chain, step size, and sigma+/-
+// boundary re-solve + centered difference, so the result is bit-identical to
+// `american_greeks_al(...).vega` whenever both take the native analytic
+// route: same `al_rate`/T/sigma degenerate guard, same put r-hr<=0 regime
+// guard, same `hv`, same `solve`/`px` arithmetic (the rate-bump `dr` term the
+// bundle's shared `solve` lambda carries is always 0.0 for the sigma+/-
+// stencils, so dropping the parameter here is exact, not approximate: r+0.0
+// is r bit-for-bit). Falls back to american_greeks_fd(...).vega — the SAME
+// call greeks_analytic() itself forwards on these branches — whenever the
+// bundle would.
+//
+// Cost: 0 boundary solves on the degenerate/European-regime fallback (routes
+// straight to the FD bundle, same as the full bundle would), else 2 (sigma+,
+// sigma-) instead of the full bundle's 5 (base + sigma+/- + r+/-). The base
+// (b0) and rate (r+/-hr) boundary solves are NOT attempted here, so unlike
+// the bundle this function's fallback trigger does not observe a b0- or
+// r+/-hr-only collapse (bvp/bvm both convergent) — see the doc comment in
+// american.hpp and task-c1.7-report.md for why this is the deliberate,
+// disclosed scope of the additive kernel (not silently swept under a
+// tolerance) and why it was not observed on the fitted-surface parity grid.
+Result<double> american_vega_al(double S, double K, double T, double sigma, double r, double q,
+                                Side side, const std::optional<AlOpts>& opts) {
+  if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !(sigma > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "american_vega_al: S, K, T, sigma must be > 0");
+  }
+  const bool is_call = (side == Side::Call);
+  const double al_rate = is_call ? q : r; // internal-put short rate
+  const auto fd_vega = [&]() -> Result<double> {
+    const Result<AmericanGreeks> g = american_greeks_fd(
+        S, K, T, sigma, r, q, side, AmericanMethod::AndersenLake, opts, /*warm_start=*/false);
+    if (!g) {
+      return Err(g.error());
+    }
+    return Ok(g->vega);
+  };
+  if (al_rate <= 0.0 || T <= 1.0e-12 || sigma <= 1.0e-8) {
+    return fd_vega();
+  }
+
+  const AlScheme sch = scheme_from_opts(opts);
+  double hv = 1.0e-3;
+  if (sigma - hv <= 0.0) hv = 0.5 * sigma;
+  const double hr = 1.0e-4;
+  if (!is_call && r - hr <= 0.0) {
+    return fd_vega();
+  }
+
+  const double Kb = is_call ? S : K; // base internal-strike
+  const double rate = is_call ? q : r;
+  const double yield = is_call ? r : q;
+  AlBoundary bvp, bvm;
+  AlWorkspace wvp, wvm;
+  if (al_solve_put_boundary(Kb, T, sigma + hv, rate, yield, sch, bvp, wvp) != AlSolveStatus::Ok ||
+      al_solve_put_boundary(Kb, T, sigma - hv, rate, yield, sch, bvm, wvm) != AlSolveStatus::Ok) {
+    return fd_vega();
+  }
+
+  const auto px = [&](AlBoundary& b, const AlWorkspace& w, double sig2) -> double {
+    if (is_call) {
+      b.K = S;
+      b.xmax = al_xmax_put(S, /*r=*/q, /*q=*/r);
+      return al_put_price_from_boundary(b, w, /*spot=*/K, /*strike=*/S, T, sig2, /*r=*/q,
+                                        /*q=*/r);
+    }
+    return al_put_price_from_boundary(b, w, S, K, T, sig2, r, q);
+  };
+  const double vvp = px(bvp, wvp, sigma + hv);
+  const double vvm = px(bvm, wvm, sigma - hv);
+  return Ok((vvp - vvm) / (2.0 * hv));
+}
+// ─────────────────────────────────────────────────────────────────────────
+
 Result<double> american_delta(double S, double K, double T, double sigma, double r,
                               double q, Side side, AmericanMethod method,
                               const std::optional<AlOpts>& opts) {

@@ -73,15 +73,30 @@ namespace {
                                            "' (tenor outside surface domain)");
   }
 
-  const Result<AmericanGreeks> call = surf->greeks_analytic(K, T, Side::Call);
-  if (!call) {
-    return Err(call.error());
+  // C1.7: price + vega only — no full 5-solve AmericanGreeks bundle per side.
+  // `fair_value()` is bit-identical to `greeks_analytic().price` (same base
+  // boundary; see priced_surface.hpp/.cpp doc comments), and `vega()` is
+  // bit-identical to `greeks_analytic().vega` on the AL path (american_vega_al),
+  // so call_mark/put_mark/straddle_vega are unchanged from the old two-bundle
+  // path while dropping the redundant delta/gamma/theta/rho/vanna/volga/charm
+  // solves neither this function nor its caller ever read.
+  const Result<double> call_price = surf->fair_value(K, T, Side::Call);
+  if (!call_price) {
+    return Err(call_price.error());
   }
-  const Result<AmericanGreeks> put = surf->greeks_analytic(K, T, Side::Put);
-  if (!put) {
-    return Err(put.error());
+  const Result<double> call_vega = surf->vega(K, T, Side::Call);
+  if (!call_vega) {
+    return Err(call_vega.error());
   }
-  const double straddle_vega = call->vega + put->vega;
+  const Result<double> put_price = surf->fair_value(K, T, Side::Put);
+  if (!put_price) {
+    return Err(put_price.error());
+  }
+  const Result<double> put_vega = surf->vega(K, T, Side::Put);
+  if (!put_vega) {
+    return Err(put_vega.error());
+  }
+  const double straddle_vega = *call_vega + *put_vega;
   if (!std::isfinite(straddle_vega) || straddle_vega <= 0.0) {
     return Err(ErrorCode::Unavailable,
                "dispersion: degenerate ATM straddle vega for symbol '" + m.symbol + "'");
@@ -95,8 +110,8 @@ namespace {
   leg.sigma = sigma;
   leg.straddle_vega = straddle_vega;
   leg.straddle_qty = 0.0; // sized by the caller
-  leg.call_mark = call->price;
-  leg.put_mark = put->price;
+  leg.call_mark = *call_price;
+  leg.put_mark = *put_price;
   return Ok(std::move(leg));
 }
 
