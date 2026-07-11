@@ -15,6 +15,7 @@
 #include "atx/vol/vol_surface.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <string>
@@ -85,6 +86,63 @@ void BM_EssviBackbone_Avx2(benchmark::State& state) {
                  " max_abs_vs_scalar=" + std::to_string(max_abs));
 }
 
+// ── Fused w + natural gradient (the LM residual/Jacobian build) ────────────
+//
+// The residual+Jacobian pass needs w AND {∂w/∂θ, ∂w/∂φ, ∂w/∂ρ} at every quote
+// strike. The scalar case is the pre-vectorization hot path: essvi_backbone_w
+// THEN essvi_w_grad3 per strike (each rebuilding the shared backbone tree). The
+// AVX2 case is the fused kernel that shares that tree across w and all three
+// partials in one pass.
+
+void BM_EssviWGrad_Scalar(benchmark::State& state) {
+  const EssviParams s = make_slice();
+  const std::vector<double> k = make_k(kN);
+  std::vector<double> w(kN), dth(kN), dphi(kN), drho(kN);
+  for (auto _ : state) {
+    for (std::size_t i = 0; i < kN; ++i) {
+      w[i] = essvi_backbone_w(s, k[i]);
+      const std::array<double, 3> g = essvi_w_grad3(s, k[i]);
+      dth[i] = g[0];
+      dphi[i] = g[1];
+      drho[i] = g[2];
+    }
+    benchmark::DoNotOptimize(w.data());
+    benchmark::DoNotOptimize(dth.data());
+    benchmark::DoNotOptimize(dphi.data());
+    benchmark::DoNotOptimize(drho.data());
+    benchmark::ClobberMemory();
+  }
+  state.SetItemsProcessed(state.iterations() * static_cast<int64_t>(kN));
+}
+
+void BM_EssviWGrad_Avx2(benchmark::State& state) {
+  const EssviParams s = make_slice();
+  const std::vector<double> k = make_k(kN);
+  std::vector<double> w(kN), dth(kN), dphi(kN), drho(kN);
+  for (auto _ : state) {
+    simd::essvi_backbone_w_grad_batch(s, k.data(), w.data(), dth.data(),
+                                      dphi.data(), drho.data(), kN);
+    benchmark::DoNotOptimize(w.data());
+    benchmark::DoNotOptimize(dth.data());
+    benchmark::DoNotOptimize(dphi.data());
+    benchmark::DoNotOptimize(drho.data());
+    benchmark::ClobberMemory();
+  }
+  state.SetItemsProcessed(state.iterations() * static_cast<int64_t>(kN));
+
+  // One-shot parity cross-check (w + all three partials), surfaced as a label.
+  double max_abs = 0.0;
+  for (std::size_t i = 0; i < kN; ++i) {
+    max_abs = std::max(max_abs, std::abs(w[i] - essvi_backbone_w(s, k[i])));
+    const std::array<double, 3> g = essvi_w_grad3(s, k[i]);
+    max_abs = std::max(max_abs, std::abs(dth[i] - g[0]));
+    max_abs = std::max(max_abs, std::abs(dphi[i] - g[1]));
+    max_abs = std::max(max_abs, std::abs(drho[i] - g[2]));
+  }
+  state.SetLabel("avx2=" + std::to_string(simd::have_avx2() ? 1 : 0) +
+                 " max_abs_vs_scalar=" + std::to_string(max_abs));
+}
+
 // Register with the mandated common knobs (warm-up, 5 reps, p95 + CV).
 const int kRegistered = [] {
   apply_common(benchmark::RegisterBenchmark("simd/essvi_backbone/scalar",
@@ -92,6 +150,12 @@ const int kRegistered = [] {
       ->Unit(benchmark::kMicrosecond);
   apply_common(benchmark::RegisterBenchmark("simd/essvi_backbone/avx2",
                                             BM_EssviBackbone_Avx2))
+      ->Unit(benchmark::kMicrosecond);
+  apply_common(benchmark::RegisterBenchmark("simd/essvi_w_grad/scalar",
+                                            BM_EssviWGrad_Scalar))
+      ->Unit(benchmark::kMicrosecond);
+  apply_common(benchmark::RegisterBenchmark("simd/essvi_w_grad/avx2",
+                                            BM_EssviWGrad_Avx2))
       ->Unit(benchmark::kMicrosecond);
   return 0;
 }();

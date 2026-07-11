@@ -34,6 +34,27 @@ namespace atx::vol::simd {
 void essvi_backbone_w_batch(const EssviParams& slice, const double* k_log,
                             double* w_out, std::size_t n) noexcept;
 
+// eSSVI backbone total variance AND its natural-parameter gradient in ONE pass,
+// for each strike:
+//   w_out[i]     = essvi_backbone_w(slice, k_log[i])
+//   dw_dtheta[i] = ∂w/∂θ,  dw_dphi[i] = ∂w/∂φ,  dw_drho[i] = ∂w/∂ρ
+//                = essvi_w_grad3(slice, k_log[i])  == {[0], [1], [2]}
+// The LM residual/Jacobian build needs both w (for the residual) and the natural
+// gradient (mapped into cube coords by the caller) at every quote strike; this
+// kernel shares the backbone subexpressions (rho_eff / pk / inner / sqrt) between
+// w and the three partials — one evaluation tree, not the scalar path's two
+// (essvi_backbone_w THEN essvi_w_grad3, each recomputing the same tree). The
+// scalar fallback composes those exact two source-of-truth calls per element, so
+// a non-AVX2 host reproduces today's numbers bit-for-bit; the AVX2 path matches
+// them to ~1e-12 (combined abs+rel). The asymmetric-rho blend (rho_scale > 0 AND
+// rho_R != rho) falls the WHOLE batch back to the scalar kernels (no bit-exact
+// 4-lane tanh), exactly like essvi_backbone_w_batch. The four length-`n` outputs
+// must not alias each other or the input; n == 0 is a no-op.
+void essvi_backbone_w_grad_batch(const EssviParams& slice, const double* k_log,
+                                 double* w_out, double* dw_dtheta,
+                                 double* dw_dphi, double* dw_drho,
+                                 std::size_t n) noexcept;
+
 // Raw-SVI total variance for each strike:
 // w_out[i] = svi_total_w(slice, k_log[i]). Pure arithmetic, always vectorized.
 void svi_total_w_batch(const SviParams& slice, const double* k_log,

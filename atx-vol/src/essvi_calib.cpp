@@ -16,6 +16,7 @@
 #include "atx/vol/detail/calib_shared.hpp"  // detail::outer_cap + shared LM constants
 #include "atx/vol/detail/resid_basis.hpp"  // dense C2 residual basis (shared with hot-path eval)
 #include "atx/vol/detail/robust.hpp"   // huber_weights_strided
+#include "atx/vol/simd/essvi_batch.hpp"  // batched w + w-grad kernels (fit hot path)
 #include "atx/vol/vol_surface.hpp"     // essvi_backbone_w, essvi_w_grad3, essvi_phi_max
 
 // eSSVI per-slice cube-space Levenberg-Marquardt + surface drivers.
@@ -133,15 +134,23 @@ struct CubePrior {
   double strength{0.0};  // >0 enables; already weight-scaled
 };
 
+// `kbuf` is the hoisted contiguous obs-k array (built once per fit); `wbuf` is
+// reusable length-n scratch the batch kernel writes the model w into. One
+// `essvi_backbone_w_batch` call replaces the per-obs scalar backbone eval; the
+// band/prior/accumulation logic is unchanged.
 [[nodiscard]] double cube_sse(std::span<const FitObs> obs,
                               std::span<const double> weights,
                               const ThetaBand& band, double T, double psi,
                               double p, double lambda,
+                              std::span<const double> kbuf,
+                              std::span<double> wbuf,
                               const CubePrior* prior = nullptr) noexcept {
   const EssviParams s = slice_from_cube(psi, p, lambda, band, T);
+  const std::size_t n = obs.size();
+  simd::essvi_backbone_w_batch(s, kbuf.data(), wbuf.data(), n);
   double acc = 0.0;
-  for (std::size_t i = 0; i < obs.size(); ++i) {
-    const double r = essvi_backbone_w(s, obs[i].k) - obs[i].w_mkt;
+  for (std::size_t i = 0; i < n; ++i) {
+    const double r = wbuf[i] - obs[i].w_mkt;
     acc += weights[i] * r * r;
   }
   if (prior != nullptr && prior->strength > 0.0) {
@@ -210,10 +219,17 @@ struct CubeGradFactors {
 }
 
 // Residuals + analytic Jacobian columns at the current cube point, single pass.
+// The per-obs natural w + gradient come from ONE fused batch kernel call over
+// the hoisted `kbuf` (writing model w into `wbuf` and the three natural partials
+// into `dth`/`dphi`/`drho` scratch); the residual and the scalar cube-space
+// gradient map (`cube_grad_from`) are then formed per obs exactly as before.
 void residuals_and_jac(std::span<const FitObs> obs, const ThetaBand& band,
                        double T, double psi, double p, double lambda,
-                       std::span<double> r, std::span<double> jpsi,
-                       std::span<double> jp, std::span<double> jl) noexcept {
+                       std::span<const double> kbuf, std::span<double> wbuf,
+                       std::span<double> dth, std::span<double> dphi,
+                       std::span<double> drho, std::span<double> r,
+                       std::span<double> jpsi, std::span<double> jp,
+                       std::span<double> jl) noexcept {
   const EssviNatural nat = cube_to_natural(psi, p, lambda, band);
   EssviParams s{};
   s.theta = nat.theta;
@@ -221,10 +237,13 @@ void residuals_and_jac(std::span<const FitObs> obs, const ThetaBand& band,
   s.rho = nat.rho;
   s.T = T;
   const CubeGradFactors f = cube_grad_factors(nat.theta, nat.rho, p, band);
-  for (std::size_t i = 0; i < obs.size(); ++i) {
-    const double k = obs[i].k;
-    r[i] = essvi_backbone_w(s, k) - obs[i].w_mkt;
-    const std::array<double, 3> dw = cube_grad_from(essvi_w_grad3(s, k), f);
+  const std::size_t n = obs.size();
+  simd::essvi_backbone_w_grad_batch(s, kbuf.data(), wbuf.data(), dth.data(),
+                                    dphi.data(), drho.data(), n);
+  for (std::size_t i = 0; i < n; ++i) {
+    r[i] = wbuf[i] - obs[i].w_mkt;
+    const std::array<double, 3> dw =
+        cube_grad_from({dth[i], dphi[i], drho[i]}, f);
     jpsi[i] = dw[0];
     jp[i] = dw[1];
     jl[i] = dw[2];
@@ -241,11 +260,14 @@ void residuals_and_jac(std::span<const FitObs> obs, const ThetaBand& band,
                              std::span<const double> weights,
                              const ThetaBand& band, double T, double& psi,
                              double& p, double& lambda, double prev_sse,
-                             double& lambda_lm, std::span<double> r,
-                             std::span<double> jpsi, std::span<double> jp,
-                             std::span<double> jl,
+                             double& lambda_lm, std::span<const double> kbuf,
+                             std::span<double> wbuf, std::span<double> dth,
+                             std::span<double> dphi, std::span<double> drho,
+                             std::span<double> r, std::span<double> jpsi,
+                             std::span<double> jp, std::span<double> jl,
                              const CubePrior* prior = nullptr) {
-  residuals_and_jac(obs, band, T, psi, p, lambda, r, jpsi, jp, jl);
+  residuals_and_jac(obs, band, T, psi, p, lambda, kbuf, wbuf, dth, dphi, drho, r,
+                    jpsi, jp, jl);
 
   double h00 = 0.0, h01 = 0.0, h02 = 0.0, h11 = 0.0, h12 = 0.0, h22 = 0.0;
   double g0 = 0.0, g1 = 0.0, g2 = 0.0;
@@ -309,8 +331,8 @@ void residuals_and_jac(std::span<const FitObs> obs, const ThetaBand& band,
     double lambda_new = lambda + step(2);
     clamp_cube(psi_new, p_new, lambda_new);
 
-    const double new_sse =
-        cube_sse(obs, weights, band, T, psi_new, p_new, lambda_new, prior);
+    const double new_sse = cube_sse(obs, weights, band, T, psi_new, p_new,
+                                    lambda_new, kbuf, wbuf, prior);
     if (new_sse < prev_sse) {
       psi = psi_new;
       p = p_new;
@@ -735,6 +757,20 @@ void fit_wing_residual(std::span<const FitObs> obs, EssviParams& slice,
   const double tol_param =
       (opts.tol_param > 0.0) ? opts.tol_param : kTolParamDefault;
 
+  // Hoisted contiguous obs-k buffer: k never changes across LM iterations, so
+  // the batched w/w-grad kernels read it directly (built once here, where the
+  // obs span is fixed). Plus the reusable per-iteration batch-output scratch
+  // (model w + the three natural partials) — all allocated once per fit_core,
+  // never per LM iteration.
+  std::vector<double> kbuf(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    kbuf[i] = obs[i].k;
+  }
+  std::vector<double> wbuf(n);
+  std::vector<double> dth(n);
+  std::vector<double> dphi(n);
+  std::vector<double> drho(n);
+
   // LM scratch (residuals + 3 Jacobian columns).
   std::vector<double> r(n);
   std::vector<double> jpsi(n);
@@ -748,14 +784,15 @@ void fit_wing_residual(std::span<const FitObs> obs, EssviParams& slice,
   double prev_outer_sse = std::numeric_limits<double>::infinity();
 
   for (std::uint16_t outer = 0; outer < max_outer; ++outer) {
-    double sse = cube_sse(obs, active, band, T, psi, p, lambda, prior);
+    double sse = cube_sse(obs, active, band, T, psi, p, lambda, kbuf, wbuf, prior);
     double lambda_lm = kLambdaLmInit;
     for (std::uint16_t inner = 0; inner < max_inner; ++inner) {
       const double psi_old = psi;
       const double p_old = p;
       const double lambda_old = lambda;
-      const double new_sse = lm_step(obs, active, band, T, psi, p, lambda, sse,
-                                     lambda_lm, r, jpsi, jp, jl, prior);
+      const double new_sse =
+          lm_step(obs, active, band, T, psi, p, lambda, sse, lambda_lm, kbuf,
+                  wbuf, dth, dphi, drho, r, jpsi, jp, jl, prior);
       ++inner_total;
       if (new_sse < 0.0) {
         break;  // unrecoverable solve; keep the last good cube

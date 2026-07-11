@@ -32,6 +32,7 @@
 #include "atx/vol/vol_surface.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 #include <immintrin.h>
@@ -89,6 +90,73 @@ void essvi_backbone_w_batch_avx2(const EssviParams& slice, const double* k_log,
     }
     for (; i < n; ++i) {
         w_out[i] = essvi_backbone_w(slice, k_log[i]);
+    }
+}
+
+// Fused eSSVI backbone w + natural gradient {∂w/∂θ, ∂w/∂φ, ∂w/∂ρ}, sharing the
+// backbone subexpression tree (pk / a / inner / sqrt) between w and the three
+// partials — one evaluation, versus the scalar path's essvi_backbone_w THEN
+// essvi_w_grad3 each rebuilding the same tree. The partials are formed from the
+// SAME closed forms essvi_w_grad3 uses (vol_surface.cpp:120-132), op-for-op, so
+// the vector result matches the scalar reference to ~1e-12:
+//   w      = ½θ·(1 + rho·pk + r)          ∂w/∂θ = ½·(1 + rho·pk + r)   (shared term)
+//   ∂w/∂φ  = ½θ·(rho·k + (a·k)/r)
+//   ∂w/∂ρ  = ½θ·(pk + (a - rho)/r)        [a - rho formed explicitly, matching
+//                                          the scalar op — NOT reusing pk]
+// The w column is bit-identical to essvi_backbone_w_batch_avx2 (same helper ops).
+void essvi_backbone_w_grad_batch_avx2(const EssviParams& slice,
+                                      const double* k_log, double* w_out,
+                                      double* dw_dtheta, double* dw_dphi,
+                                      double* dw_drho, std::size_t n) noexcept {
+    if (blend_active(slice)) {
+        for (std::size_t i = 0; i < n; ++i) {
+            w_out[i] = essvi_backbone_w(slice, k_log[i]);
+            const std::array<double, 3> g = essvi_w_grad3(slice, k_log[i]);
+            dw_dtheta[i] = g[0];
+            dw_dphi[i] = g[1];
+            dw_drho[i] = g[2];
+        }
+        return;
+    }
+
+    const double rho = slice.rho;
+    const __m256d phi_v = _mm256_set1_pd(slice.phi);
+    const __m256d rho_v = _mm256_set1_pd(rho);
+    const __m256d c_v = _mm256_set1_pd(1.0 - rho * rho);
+    const __m256d halfTheta_v = _mm256_set1_pd(0.5 * slice.theta);
+    const __m256d half_v = _mm256_set1_pd(0.5);
+    const __m256d one = _mm256_set1_pd(1.0);
+
+    std::size_t i = 0;
+    for (; i + 4 <= n; i += 4) {
+        const __m256d kv = _mm256_loadu_pd(k_log + i);
+        const __m256d pk = _mm256_mul_pd(phi_v, kv);
+        const __m256d a = _mm256_add_pd(pk, rho_v);
+        const __m256d inner = _mm256_fmadd_pd(a, a, c_v); // a² + (1 - rho²)
+        const __m256d r = _mm256_sqrt_pd(inner);
+        // Shared term (1 + rho·pk + r): drives both w (·½θ) and ∂w/∂θ (·½).
+        const __m256d rho_pk = _mm256_mul_pd(rho_v, pk);
+        const __m256d term = _mm256_add_pd(_mm256_add_pd(one, rho_pk), r);
+        _mm256_storeu_pd(w_out + i, _mm256_mul_pd(halfTheta_v, term));
+        _mm256_storeu_pd(dw_dtheta + i, _mm256_mul_pd(half_v, term));
+        // ∂w/∂φ = ½θ·(rho·k + (a·k)/r).
+        const __m256d rho_k = _mm256_mul_pd(rho_v, kv);
+        const __m256d ak = _mm256_mul_pd(a, kv);
+        const __m256d ak_r = _mm256_div_pd(ak, r);
+        const __m256d in_phi = _mm256_add_pd(rho_k, ak_r);
+        _mm256_storeu_pd(dw_dphi + i, _mm256_mul_pd(halfTheta_v, in_phi));
+        // ∂w/∂ρ = ½θ·(pk + (a - rho)/r).
+        const __m256d amr = _mm256_sub_pd(a, rho_v);
+        const __m256d amr_r = _mm256_div_pd(amr, r);
+        const __m256d in_rho = _mm256_add_pd(pk, amr_r);
+        _mm256_storeu_pd(dw_drho + i, _mm256_mul_pd(halfTheta_v, in_rho));
+    }
+    for (; i < n; ++i) {
+        w_out[i] = essvi_backbone_w(slice, k_log[i]);
+        const std::array<double, 3> g = essvi_w_grad3(slice, k_log[i]);
+        dw_dtheta[i] = g[0];
+        dw_dphi[i] = g[1];
+        dw_drho[i] = g[2];
     }
 }
 

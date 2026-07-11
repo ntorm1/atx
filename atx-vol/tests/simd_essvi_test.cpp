@@ -17,6 +17,7 @@
 #include "atx/vol/vol_surface.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <vector>
@@ -151,6 +152,62 @@ TEST(SimdEssviBatch, ZeroLengthIsNoOp) {
   const double k = 0.0;
   simd::essvi_backbone_w_batch(s, &k, &sentinel, 0);
   EXPECT_EQ(sentinel, 42.0);
+}
+
+// ── Fused w + natural-gradient batch (essvi_backbone_w_grad_batch) ──────────
+//
+// One kernel produces w AND {∂w/∂θ, ∂w/∂φ, ∂w/∂ρ} sharing the backbone tree.
+// It must reproduce the scalar source-of-truth pair essvi_backbone_w /
+// essvi_w_grad3 to ~1e-12 on every slice class (symmetric vectorized + the
+// asymmetric whole-batch scalar fallback), for w and all three partials.
+TEST(SimdEssviBatch, GradBatchMatchesScalarAllSlices) {
+  const std::vector<double> k = make_k_grid();
+  const std::size_t n = k.size();
+  for (const EssviParams& s : make_essvi_slices()) {
+    std::vector<double> w(n, 0.0), dth(n, 0.0), dphi(n, 0.0), drho(n, 0.0);
+    simd::essvi_backbone_w_grad_batch(s, k.data(), w.data(), dth.data(),
+                                      dphi.data(), drho.data(), n);
+    for (std::size_t i = 0; i < n; ++i) {
+      expect_close(w[i], essvi_backbone_w(s, k[i]), "wgrad.w", i);
+      const std::array<double, 3> g = essvi_w_grad3(s, k[i]);
+      expect_close(dth[i], g[0], "wgrad.dtheta", i);
+      expect_close(dphi[i], g[1], "wgrad.dphi", i);
+      expect_close(drho[i], g[2], "wgrad.drho", i);
+    }
+  }
+}
+
+// Every n % 4 tail residue, on a symmetric (vectorized) and an asymmetric
+// (scalar-fallback) slice — w and all three partials.
+TEST(SimdEssviBatch, GradBatchHandlesEveryTailResidue) {
+  const std::vector<double> k = make_k_grid();
+  const std::vector<EssviParams> slices = make_essvi_slices();
+  for (const EssviParams& s : {slices.front(), slices.back()}) {
+    for (std::size_t n = 1; n <= 11; ++n) {
+      std::vector<double> w(n, 0.0), dth(n, 0.0), dphi(n, 0.0), drho(n, 0.0);
+      simd::essvi_backbone_w_grad_batch(s, k.data(), w.data(), dth.data(),
+                                        dphi.data(), drho.data(), n);
+      for (std::size_t i = 0; i < n; ++i) {
+        expect_close(w[i], essvi_backbone_w(s, k[i]), "wgrad.tail.w", i);
+        const std::array<double, 3> g = essvi_w_grad3(s, k[i]);
+        expect_close(dth[i], g[0], "wgrad.tail.dtheta", i);
+        expect_close(dphi[i], g[1], "wgrad.tail.dphi", i);
+        expect_close(drho[i], g[2], "wgrad.tail.drho", i);
+      }
+    }
+  }
+}
+
+TEST(SimdEssviBatch, GradBatchZeroLengthIsNoOp) {
+  EssviParams s;
+  s.theta = 0.04; s.phi = 1.2; s.rho = -0.3; s.T = 0.25;
+  double w = 1.0, dth = 2.0, dphi = 3.0, drho = 4.0;
+  const double k = 0.0;
+  simd::essvi_backbone_w_grad_batch(s, &k, &w, &dth, &dphi, &drho, 0);
+  EXPECT_EQ(w, 1.0);
+  EXPECT_EQ(dth, 2.0);
+  EXPECT_EQ(dphi, 3.0);
+  EXPECT_EQ(drho, 4.0);
 }
 
 } // namespace

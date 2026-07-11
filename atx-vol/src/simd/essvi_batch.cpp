@@ -1,6 +1,7 @@
 #include "atx/vol/simd/essvi_batch.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 #include "atx/vol/simd/cpu.hpp"
@@ -35,6 +36,22 @@ void essvi_backbone_sigma_batch_scalar(const EssviParams& slice,
     }
 }
 
+// Fused w + natural-gradient scalar fallback: the exact per-element source of
+// truth (essvi_backbone_w THEN essvi_w_grad3, in that order), so a non-AVX2 host
+// reproduces the historical fit bit-for-bit.
+void essvi_backbone_w_grad_batch_scalar(const EssviParams& slice,
+                                        const double* k_log, double* w_out,
+                                        double* dw_dtheta, double* dw_dphi,
+                                        double* dw_drho, std::size_t n) noexcept {
+    for (std::size_t i = 0; i < n; ++i) {
+        w_out[i] = essvi_backbone_w(slice, k_log[i]);
+        const std::array<double, 3> g = essvi_w_grad3(slice, k_log[i]);
+        dw_dtheta[i] = g[0];
+        dw_dphi[i] = g[1];
+        dw_drho[i] = g[2];
+    }
+}
+
 } // namespace
 
 void essvi_backbone_w_batch(const EssviParams& slice, const double* k_log,
@@ -43,6 +60,19 @@ void essvi_backbone_w_batch(const EssviParams& slice, const double* k_log,
         detail::essvi_backbone_w_batch_avx2(slice, k_log, w_out, n);
     } else {
         essvi_backbone_w_batch_scalar(slice, k_log, w_out, n);
+    }
+}
+
+void essvi_backbone_w_grad_batch(const EssviParams& slice, const double* k_log,
+                                 double* w_out, double* dw_dtheta,
+                                 double* dw_dphi, double* dw_drho,
+                                 std::size_t n) noexcept {
+    if (have_avx2()) {
+        detail::essvi_backbone_w_grad_batch_avx2(slice, k_log, w_out, dw_dtheta,
+                                                 dw_dphi, dw_drho, n);
+    } else {
+        essvi_backbone_w_grad_batch_scalar(slice, k_log, w_out, dw_dtheta,
+                                           dw_dphi, dw_drho, n);
     }
 }
 
