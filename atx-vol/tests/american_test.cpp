@@ -2471,4 +2471,233 @@ TEST(SigmaInterp, FlagOff_BitIdenticalToScalar) {
   }
 }
 
+// ══ Task 12 P2.3: warm-start ACROSS TIME (research spike, ship-or-kill) ════
+//
+// The mechanism: cache the last converged dimensionless boundary per contract and
+// warm-seed the next snapshot's solve from it. Ship rule (sprint §P2.3): cuts the
+// MEDIAN JN+FP sweeps >= 40% over a realistic temporal snapshot sequence -> wire in;
+// else leave off with the measured evidence. The two configs measured:
+//   * fixed  — the SHIPPED production sweep budget (n_iter_jn JN + n_iter_fp FP,
+//              early-exit at tol). This is what a deployed warm-start would run, so
+//              its sweep cut is the decision metric.
+//   * conv   — converge-to-tol (caps raised): reveals how much temporal coherence
+//              could cut sweeps IF the fixed budget were abandoned (it is not — see
+//              the report; that would make cold solves 3-4x slower and repin the
+//              whole corpus).
+namespace {
+using atx::vol::detail::al_temporal_warm_probe;
+
+struct TemporalBook {
+  std::vector<int> cold, warm;
+  int warm_hits = 0, cold_reseeds = 0;
+  double max_gap = 0.0;
+  int contracts = 0;
+};
+TemporalBook run_temporal_book(const std::optional<AlOpts>& opts, bool converge,
+                               double dsigma, double move_guard) {
+  TemporalBook b;
+  const double S = 100.0, q = 0.0;
+  const int n_snap = 12;
+  const double dT = 1.0 / 252.0;  // one trading day of decay per snapshot
+  const double dr = 1.0e-4;
+  for (double K : {80.0, 90.0, 100.0, 110.0, 120.0}) {
+    for (double T0 : {0.25, 0.5, 1.0, 2.0}) {
+      for (double sig0 : {0.15, 0.25, 0.40}) {
+        for (double r0 : {0.02, 0.04, 0.06}) {
+          const bool ok = al_temporal_warm_probe(
+              S, K, q, T0, sig0, r0, dT, dsigma, dr, n_snap, opts, converge, 40,
+              move_guard, b.cold, b.warm, b.warm_hits, b.cold_reseeds, b.max_gap);
+          if (ok) ++b.contracts;
+        }
+      }
+    }
+  }
+  return b;
+}
+double mean_of(const std::vector<int>& v) {
+  if (v.empty()) return -1.0;
+  long s = 0;
+  for (int x : v) s += x;
+  return static_cast<double>(s) / static_cast<double>(v.size());
+}
+}  // namespace
+
+// The correctness floor: a warm-seeded book equals the cold-seeded book. In
+// converge-to-tol mode both reach the boundary tol, so the prices agree to well
+// under the §9.1/§9.2 budget (a seed change converges to the same fixed point).
+TEST(WarmAcrossTime, ConvergesToCold) {
+  for (const std::optional<AlOpts>& opts :
+       {std::optional<AlOpts>{std::nullopt}, std::optional<AlOpts>{al_fast_opts()}}) {
+    const TemporalBook b = run_temporal_book(opts, /*converge=*/true, 0.002, 0.12);
+    ASSERT_GT(b.contracts, 100);
+    // Warm == cold to << §9.2 (price gap budget ~1e-4). Converged, both hit tol,
+    // so the two seeds land on the same fixed point to boundary-tol amplification.
+    EXPECT_LT(b.max_gap, 1.0e-6) << "warm-priced book must equal cold-priced book";
+  }
+}
+
+// SHIP GATE (sprint): median JN+FP sweep cut >= 40% on the SHIPPED fixed budget.
+// Measured outcome (see report): on the fixed production budget the cut is far below
+// 40% (warm and cold both run the full budget; the early-exit at tol=1e-10 rarely
+// fires for either at 2 JN + 4 FP). The converge-to-tol column shows the mechanism
+// DOES cut sweeps hard — but realizing it requires abandoning the fixed budget
+// (3-4x slower cold solves + a full validated repin) for the sprint's own ~1.04x
+// single-solve wall gap. KILL: leave warm-across-time OFF; pins stay byte-for-byte.
+TEST(WarmAcrossTime, SweepReduction) {
+  struct Row { const char* name; std::optional<AlOpts> opts; };
+  const Row schemes[] = {{"accurate{12,24}", std::nullopt}, {"fast{7,16}", al_fast_opts()}};
+  for (const Row& row : schemes) {
+    const TemporalBook fx = run_temporal_book(row.opts, /*converge=*/false, 0.002, 0.12);
+    const TemporalBook cv = run_temporal_book(row.opts, /*converge=*/true, 0.002, 0.12);
+    ASSERT_GT(fx.cold.size(), 100u);
+    const int mcf = median_of(fx.cold), mwf = median_of(fx.warm);
+    const int mcc = median_of(cv.cold), mwc = median_of(cv.warm);
+    const double cut_fixed = (mcf > 0) ? 100.0 * (mcf - mwf) / mcf : 0.0;
+    const double cut_conv = (mcc > 0) ? 100.0 * (mcc - mwc) / mcc : 0.0;
+    const double warm_hit_rate =
+        100.0 * fx.warm_hits / std::max<int>(1, fx.warm_hits + fx.cold_reseeds +
+                                                    (static_cast<int>(fx.warm.size()) -
+                                                     fx.warm_hits - fx.cold_reseeds));
+    std::printf(
+        "WARMTIME %-16s N=%zu | FIXED medianJN+FP cold=%d warm=%d cut=%.1f%% meanC=%.2f "
+        "meanW=%.2f | CONV cold=%d warm=%d cut=%.1f%% | warm_hit=%.0f%% reseeds=%d gapFX=%.2e\n",
+        row.name, fx.cold.size(), mcf, mwf, cut_fixed, mean_of(fx.cold), mean_of(fx.warm),
+        mcc, mwc, cut_conv, warm_hit_rate, fx.cold_reseeds, fx.max_gap);
+    // SHIPPED relationship: the FIXED-budget median cut does NOT reach the 40% gate.
+    EXPECT_LT(cut_fixed, 40.0)
+        << row.name << ": fixed-budget warm-start does not cut median sweeps >=40% (kill)";
+    // Evidence the mechanism is real (converge-to-tol cut is large) — reported, not a
+    // ship trigger (it needs the budget change the sprint deliberately avoids).
+    EXPECT_GT(cut_conv, 0.0) << row.name << ": temporal seed helps under converge-to-tol";
+  }
+}
+
+// A large σ/T jump makes the stored boundary a stale seed; the move guard forces a
+// cold reseed so the warm path never diverges — and the result still equals cold.
+TEST(WarmAcrossTime, MoveGuard_ColdReseeds) {
+  // dsigma per step = 0.05 exceeds the 0.12*σ guard for σ around 0.15-0.40 only at
+  // the low end; use a bigger jump to force it across the book.
+  const TemporalBook b = run_temporal_book(std::nullopt, /*converge=*/true,
+                                           /*dsigma=*/0.08, /*move_guard=*/0.12);
+  ASSERT_GT(b.contracts, 100);
+  EXPECT_GT(b.cold_reseeds, 0) << "a large per-step σ jump must trip the move guard";
+  // Even with reseeds, warm == cold (the guard falls back to the cold path).
+  EXPECT_LT(b.max_gap, 1.0e-7) << "guarded warm path still equals cold";
+}
+
+// ══ Task 12 P2.4: implicit boundary-differentiation greeks (spike) ════════
+//
+// vega/rho/theta (+ delta/gamma/vanna/charm/volga) from ONE converged boundary + a
+// dense LU on J=∂R/∂y, propagating y_θ through the premium quadrature — no bump
+// re-solve. Ship rule (sprint §P2.4): meets §9.2 on the corner grid AND costs
+// <= 1.8 boundary-equivalents -> promote; else keep experimental (the T9b 5-solve
+// route stays the shipped analytic path). See the report for the decision.
+namespace {
+using atx::vol::detail::al_implicit_diff_put_greeks;
+using atx::vol::detail::ImplicitDiffGreeks;
+}  // namespace
+
+// The implicit-diff linear system is correct: the sensitivity y_σ = −J⁻¹R_σ matches
+// a finite difference of the RE-SOLVED boundary (the ground-truth ∂y/∂σ), proving
+// the central-difference J and R_σ are accurate (the brief's "checked step").
+TEST(ImplicitDiff, JacobianAccurate) {
+  const double K = 100.0;
+  struct C { double S, T, sigma, r, q; const char* tag; };
+  const C cases[] = {
+      {100.0, 1.00, 0.25, 0.05, 0.0, "atm"},
+      {90.0, 0.50, 0.30, 0.05, 0.0, "itm"},
+      {110.0, 0.75, 0.20, 0.04, 0.02, "otm-div"},
+      {100.0, 0.30, 0.35, 0.06, 0.0, "short-T"},
+  };
+  double worst = 0.0;
+  for (const C& c : cases) {
+    double jerr = 0.0;  // max rel gap of y_σ vs the re-solved-boundary FD sensitivity
+    const ImplicitDiffGreeks g =
+        al_implicit_diff_put_greeks(c.S, K, c.T, c.sigma, c.r, c.q, std::nullopt,
+                                    /*validate=*/true, jerr);
+    ASSERT_TRUE(g.ok) << c.tag;
+    worst = std::max(worst, jerr);
+    EXPECT_LT(jerr, 2.0e-2) << c.tag << " y_sigma vs re-solved-boundary FD rel gap";
+  }
+  std::printf("[P2.4-J] max y_sigma-vs-FD-boundary rel gap = %.3e\n", worst);
+}
+
+TEST(ImplicitDiff, MeetsPdeGreekGates) {
+  const double K = 100.0;
+  struct C { double S, T, sigma, r, q; const char* tag; };
+  // Rate / yield / wing / near-expiry / exercise-region corner grid (§9.2).
+  const C cases[] = {
+      {100.0, 1.00, 0.25, 0.05, 0.00, "atm"},
+      {110.0, 0.75, 0.22, 0.05, 0.00, "otm-wing"},
+      {90.0, 0.60, 0.30, 0.06, 0.00, "itm-exercise"},
+      {100.0, 0.12, 0.30, 0.05, 0.00, "near-expiry"},
+      {100.0, 1.00, 0.25, 0.08, 0.02, "high-rate-div"},
+      {85.0, 0.50, 0.35, 0.06, 0.00, "deep-itm"},
+      {120.0, 1.50, 0.20, 0.04, 0.02, "deep-otm-long"},
+  };
+  const atx::vol::test::OraclePdeOpts grid{};
+  double max_vega = 0.0, max_rho = 0.0, max_theta = 0.0, max_delta = 0.0;
+  double max_vega_5s = 0.0, max_rho_5s = 0.0;
+  for (const C& c : cases) {
+    double jerr = 0.0;
+    const ImplicitDiffGreeks g =
+        al_implicit_diff_put_greeks(c.S, K, c.T, c.sigma, c.r, c.q, std::nullopt, false, jerr);
+    ASSERT_TRUE(g.ok) << c.tag;
+    const auto five = american_greeks_al(c.S, K, c.T, c.sigma, c.r, c.q, Side::Put);
+    ASSERT_TRUE(five.has_value()) << c.tag;
+    // PDE-oracle numeric greeks.
+    const double hv = 1.0e-2, hr = 1.0e-3, hT = 1.0e-2, hS = 0.01 * c.S;
+    auto pde = [&](double dS, double dsig, double dr, double dT) {
+      return oracle_pde_american(c.S + dS, K, c.T + dT, c.sigma + dsig, c.r + dr, c.q,
+                                 Side::Put, grid);
+    };
+    const double vega_pde = (pde(0, hv, 0, 0) - pde(0, -hv, 0, 0)) / (2.0 * hv);
+    const double rho_pde = (pde(0, 0, hr, 0) - pde(0, 0, -hr, 0)) / (2.0 * hr);
+    const double theta_pde = -(pde(0, 0, 0, hT) - pde(0, 0, 0, -hT)) / (2.0 * hT);
+    const double delta_pde = (pde(hS, 0, 0, 0) - pde(-hS, 0, 0, 0)) / (2.0 * hS);
+    max_vega = std::max(max_vega, std::fabs(g.vega - vega_pde));
+    max_rho = std::max(max_rho, std::fabs(g.rho - rho_pde));
+    max_theta = std::max(max_theta, std::fabs(g.theta - theta_pde) / 365.0);
+    max_delta = std::max(max_delta, std::fabs(g.delta - delta_pde));
+    max_vega_5s = std::max(max_vega_5s, std::fabs(g.vega - five->vega));
+    max_rho_5s = std::max(max_rho_5s, std::fabs(g.rho - five->rho));
+    std::printf(
+        "[P2.4-grid] %-14s vega id=%.4f pde=%.4f 5s=%.4f | rho id=%.4f pde=%.4f | "
+        "theta id=%.4f pde=%.4f | delta id=%.5f pde=%.5f\n",
+        c.tag, g.vega, vega_pde, five->vega, g.rho, rho_pde, g.theta, theta_pde,
+        g.delta, delta_pde);
+  }
+  std::printf(
+      "[P2.4-grid] MAX |Δ| vs PDE: vega=%.3e rho=%.3e theta/365=%.3e delta=%.3e | "
+      "vs 5-solve: vega=%.3e rho=%.3e\n",
+      max_vega, max_rho, max_theta, max_delta, max_vega_5s, max_rho_5s);
+  // Report-only bounds — the actual ship decision is in the report. These loose
+  // sanity gates just catch a gross mapping/sign error (an O(1) blow-up), not the
+  // §9.2 fine gate (which the printout quantifies for the decision).
+  EXPECT_LT(max_delta, 1.0e-2) << "delta vs PDE (spot-independent boundary, exact)";
+  EXPECT_LT(max_vega, 5.0) << "vega finite and PDE-consistent to oracle noise";
+}
+
+// Cost in boundary-equivalents: 1 base solve + (residual-equivalent passes)/(base
+// sweeps). The gate is <= 1.8. With central-difference J (2·(n-1) residual passes)
+// this is far over the gate — the measured kill-on-cost evidence.
+TEST(ImplicitDiff, Cost) {
+  const double S = 100.0, K = 100.0, T = 1.0, sigma = 0.25, r = 0.05, q = 0.0;
+  double jerr = 0.0;
+  const ImplicitDiffGreeks g =
+      al_implicit_diff_put_greeks(S, K, T, sigma, r, q, std::nullopt, false, jerr);
+  ASSERT_TRUE(g.ok);
+  ASSERT_GT(g.base_sweeps, 0);
+  const double cost_be = 1.0 + static_cast<double>(g.cost_passes) /
+                                   static_cast<double>(g.base_sweeps);
+  std::printf(
+      "[P2.4-cost] n=%d base_sweeps=%d extra_residual_passes=%d -> cost=%.2f "
+      "boundary-equivalents (gate<=1.8); 5-solve route = 5.0\n",
+      g.n_boundary, g.base_sweeps, g.cost_passes, cost_be);
+  // Central-diff J dominates the cost -> over the 1.8 gate (kill-on-cost). The
+  // number is the report evidence; a fully-analytic one-pass J/R_θ is the path to
+  // the gate (documented in the report), not implemented here.
+  EXPECT_GT(cost_be, 1.8) << "central-diff implicit-diff exceeds the 1.8 cost gate";
+}
+
 }  // namespace

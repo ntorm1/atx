@@ -4,6 +4,7 @@
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <vector>
 
 #include "atx/core/math.hpp"
 #include "atx/vol/black76.hpp"
@@ -2482,6 +2483,486 @@ int al_boundary_jn_sweeps_to_converge(double K, double T, double sigma, double r
     }
   }
   return max_sweeps;
+}
+
+// ── P2.3 temporal warm-start: counted two-stage boundary solve ────────────
+//
+// Bind quadrature + geometry, seed (cold BAW if `seed == nullptr`, else warm from
+// the supplied converged boundary remapped onto this grid), then run the production
+// two-stage sweep sequence (JN up to `jn_cap`, then FP up to `fp_cap`) with early
+// exit at `tol`. Returns the number of JN+FP sweeps actually executed (-1 on a
+// collapsed / table-missing corner); leaves `bnd`/`ws` holding the converged boundary
+// (ready for al_put_price_from_boundary or as the next snapshot's warm seed) and the
+// final residual in `resid_out`.
+[[nodiscard]] static int al_solve_put_counted(double K, double T, double sigma,
+                                              double r, double q, const AlScheme& sch,
+                                              const AlBoundary* seed, int jn_cap,
+                                              int fp_cap, AlBoundary& bnd,
+                                              AlWorkspace& ws,
+                                              double& resid_out) noexcept {
+  al_init_nodes(bnd, sch.n_boundary, T, K, r, q);
+  if (!(bnd.xmax > 0.0)) {
+    return -1;
+  }
+  const GaussLegendre* fp = gl_find(sch.n_quad_fp);
+  const GaussLegendre* pr = gl_find(sch.n_quad_price);
+  if (!fp || !fp->ok || !pr || !pr->ok) {
+    return -1;
+  }
+  ws.specialize = true;
+  ws.qx_fp = fp->nodes.data();
+  ws.qw_fp = fp->weights.data();
+  ws.n_quad_fp = sch.n_quad_fp;
+  ws.qx_price = pr->nodes.data();
+  ws.qw_price = pr->weights.data();
+  ws.n_quad_price = sch.n_quad_price;
+  al_bind_geometry(bnd, ws, sigma, r, q);
+
+  if (seed == nullptr) {
+    al_seed_boundary(bnd, sigma, r, q);
+  } else {
+    bnd.y[0] = 0.0;
+    for (std::uint16_t i = 1; i < bnd.n; ++i) {
+      const double tau_i = bnd.tau[i];
+      if (tau_i <= 1.0e-14) {
+        bnd.y[i] = 0.0;
+        continue;
+      }
+      double b_seed = al_boundary_at(*seed, tau_i);
+      if (b_seed > bnd.xmax) {
+        b_seed = bnd.xmax;
+      }
+      if (!(b_seed > 0.0)) {
+        b_seed = 1.0e-6 * K;
+      }
+      bnd.y[i] = y_from_b(b_seed, bnd.xmax);
+    }
+  }
+
+  int sweeps = 0;
+  double resid = 1.0;
+  for (int k = 0; k < jn_cap; ++k) {
+    resid = al_jacobi_newton_sweep(bnd, ws, sigma, r, q);
+    ++sweeps;
+    if (resid <= sch.tol) {
+      break;
+    }
+  }
+  if (resid > sch.tol) {
+    for (int k = 0; k < fp_cap; ++k) {
+      resid = al_fixed_point_sweep(bnd, ws, sigma, r, q);
+      ++sweeps;
+      if (resid <= sch.tol) {
+        break;
+      }
+    }
+  }
+  resid_out = resid;
+  return sweeps;
+}
+
+bool al_temporal_warm_probe(double S, double K, double q, double T0, double sigma0,
+                            double r0, double dT, double dsigma, double dr, int n_snap,
+                            const std::optional<AlOpts>& opts, bool converge_to_tol,
+                            int max_sweeps, double move_guard_frac,
+                            std::vector<int>& cold_sweeps, std::vector<int>& warm_sweeps,
+                            int& warm_hits, int& cold_reseeds,
+                            double& max_price_gap) noexcept {
+  const AlScheme sch = scheme_from_opts(opts);
+  // Genuine early-exercise put only (rate = r). The whole sequence must stay American.
+  if (!(r0 > 0.0) || !(K > 0.0) || !(S > 0.0)) {
+    return false;
+  }
+  const int jn_cap = converge_to_tol ? max_sweeps : static_cast<int>(sch.n_iter_jn);
+  const int fp_cap = converge_to_tol ? max_sweeps : static_cast<int>(sch.n_iter_fp);
+  // The stored converged WARM boundary (the temporal cache, one key = this contract).
+  AlBoundary store_bnd{};
+  AlWorkspace store_ws{};
+  bool have_store = false;
+  bool any = false;
+
+  for (int k = 0; k < n_snap; ++k) {
+    const double T = T0 - dT * static_cast<double>(k);
+    const double sigma = sigma0 + dsigma * static_cast<double>(k);
+    const double r = r0 + dr * static_cast<double>(k);
+    if (!(T > 1.0e-6) || !(sigma > 1.0e-6) || !(r > 0.0)) {
+      break;
+    }
+    // COLD reference: fresh BAW reseed, its own boundary/workspace.
+    AlBoundary cbnd{};
+    AlWorkspace cws{};
+    double cresid = 0.0;
+    const int cs = al_solve_put_counted(K, T, sigma, r, q, sch, nullptr, jn_cap,
+                                        fp_cap, cbnd, cws, cresid);
+    if (cs < 0) {
+      break;  // collapsed corner — end the sequence
+    }
+    const double cold_px = al_put_price_from_boundary(cbnd, cws, S, K, T, sigma, r, q);
+
+    // WARM: seed from the stored boundary unless the move guard fires.
+    const bool guard_fire =
+        have_store && (std::fabs(dsigma) > move_guard_frac * sigma ||
+                       std::fabs(dT) > move_guard_frac * T);
+    const bool can_warm = have_store && !guard_fire;
+    AlBoundary wbnd{};
+    AlWorkspace wws{};
+    double wresid = 0.0;
+    int ws_sweeps = 0;
+    bool reseeded = false;
+    if (can_warm) {
+      ws_sweeps = al_solve_put_counted(K, T, sigma, r, q, sch, &store_bnd, jn_cap,
+                                       fp_cap, wbnd, wws, wresid);
+      // Residual-trend safety net: a stale warm seed that leaves the boundary far
+      // from converged after its sweep budget falls back to a cold reseed so the
+      // warm path is never worse than cold (charging the wasted warm sweeps).
+      const double kTrend = 1.0e-3;
+      if (ws_sweeps < 0 || wresid > kTrend) {
+        const int wasted = (ws_sweeps > 0) ? ws_sweeps : 0;
+        const int rs = al_solve_put_counted(K, T, sigma, r, q, sch, nullptr, jn_cap,
+                                            fp_cap, wbnd, wws, wresid);
+        if (rs < 0) {
+          break;
+        }
+        ws_sweeps = wasted + rs;
+        reseeded = true;
+      }
+    } else {
+      ws_sweeps = al_solve_put_counted(K, T, sigma, r, q, sch, nullptr, jn_cap, fp_cap,
+                                       wbnd, wws, wresid);
+      if (ws_sweeps < 0) {
+        break;
+      }
+      reseeded = have_store;  // guard-forced cold reseed (not the first snapshot)
+    }
+    const double warm_px = al_put_price_from_boundary(wbnd, wws, S, K, T, sigma, r, q);
+
+    cold_sweeps.push_back(cs);
+    warm_sweeps.push_back(ws_sweeps);
+    if (can_warm && !reseeded) {
+      ++warm_hits;
+    }
+    if (reseeded) {
+      ++cold_reseeds;
+    }
+    const double gap = std::fabs(warm_px - cold_px);
+    if (gap > max_price_gap) {
+      max_price_gap = gap;
+    }
+    // Update the temporal cache with THIS snapshot's converged warm boundary.
+    store_bnd = wbnd;
+    store_ws = wws;
+    have_store = true;
+    any = true;
+  }
+  (void)store_ws;
+  return any;
+}
+
+// ── P2.4 implicit boundary differentiation ────────────────────────────────
+//
+// Dense pivoted LU solve of A·x = rhs for n <= kAlMaxNodes, stack-only. Overwrites
+// A and rhs; the solution is returned in rhs. Returns false on a (near-)singular
+// pivot.
+[[nodiscard]] static bool lu_solve_dense(double* A, double* rhs, int n) noexcept {
+  const int N = kAlMaxNodes;  // row stride
+  for (int col = 0; col < n; ++col) {
+    // Partial pivot.
+    int piv = col;
+    double best = std::fabs(A[col * N + col]);
+    for (int rr = col + 1; rr < n; ++rr) {
+      const double v = std::fabs(A[rr * N + col]);
+      if (v > best) {
+        best = v;
+        piv = rr;
+      }
+    }
+    if (!(best > 1.0e-300)) {
+      return false;
+    }
+    if (piv != col) {
+      for (int c = 0; c < n; ++c) {
+        std::swap(A[col * N + c], A[piv * N + c]);
+      }
+      std::swap(rhs[col], rhs[piv]);
+    }
+    const double diag = A[col * N + col];
+    for (int rr = col + 1; rr < n; ++rr) {
+      const double f = A[rr * N + col] / diag;
+      if (f == 0.0) {
+        continue;
+      }
+      for (int c = col; c < n; ++c) {
+        A[rr * N + c] -= f * A[col * N + c];
+      }
+      rhs[rr] -= f * rhs[col];
+    }
+  }
+  for (int rr = n - 1; rr >= 0; --rr) {
+    double s = rhs[rr];
+    for (int c = rr + 1; c < n; ++c) {
+      s -= A[rr * N + c] * rhs[c];
+    }
+    rhs[rr] = s / A[rr * N + rr];
+  }
+  return true;
+}
+
+ImplicitDiffGreeks al_implicit_diff_put_greeks(double S, double K, double T,
+                                               double sigma, double r, double q,
+                                               const std::optional<AlOpts>& opts,
+                                               bool validate,
+                                               double& j_max_rel_err) noexcept {
+  ImplicitDiffGreeks out;
+  j_max_rel_err = 0.0;
+  if (!(S > 0.0) || !(K > 0.0) || !(T > 1.0e-6) || !(sigma > 1.0e-6) || !(r > 0.0)) {
+    return out;  // genuine early-exercise put only
+  }
+  const AlScheme sch = scheme_from_opts(opts);
+
+  // Base boundary. Production path: the fixed two-stage budget (the honest "one
+  // converged solve" for the cost measurement). Validate path: converge tightly so
+  // the y_σ cross-check isolates the linear-algebra accuracy from base under-
+  // convergence.
+  AlBoundary base{};
+  AlWorkspace ws{};
+  double base_resid = 0.0;
+  const int base_jn = validate ? 60 : sch.n_iter_jn;
+  const int base_fp = validate ? 60 : sch.n_iter_fp;
+  const int base_sweeps =
+      al_solve_put_counted(K, T, sigma, r, q, sch, nullptr, base_jn, base_fp, base, ws,
+                           base_resid);
+  if (base_sweeps < 0) {
+    return out;
+  }
+  out.base_sweeps = base_sweeps;
+  const std::uint16_t n = base.n;
+  out.n_boundary = n;
+  const double xmax = base.xmax;
+  // Active interior nodes are 1..n-1 (node 0: tau=0, y fixed 0). Skip any degenerate
+  // tau<=0 node (only node 0 in practice).
+  const int m = static_cast<int>(n) - 1;  // implicit-diff system dimension
+  if (m < 1 || n > kAlMaxNodes) {
+    return out;
+  }
+
+  int cost_passes = 0;  // full-node residual-equivalent passes beyond the base solve
+
+  // Pure collocation residual R_i(y; σ, r) at a GIVEN y-vector (no sweep, no
+  // mutation of `base`): R_i = y_i − y_from_b(α_i·N_i/D_i, xmax), R_0 = 0. One call
+  // is ONE residual-equivalent pass.
+  AlBoundary scr = base;  // scratch: only .y varies
+  auto residual = [&](const double* yv, double sig, double rr, double* Rout) noexcept {
+    for (std::uint16_t i = 0; i < n; ++i) {
+      scr.y[i] = yv[i];
+    }
+    Rout[0] = 0.0;
+    for (std::uint16_t i = 1; i < n; ++i) {
+      const double tau = scr.tau[i];
+      if (tau <= 1.0e-14) {
+        Rout[i] = 0.0;
+        continue;
+      }
+      const double b_val = b_from_y(yv[i], xmax);
+      double N = 0.0, D = 0.0;
+      eqn_b_ND_impl<0, 0>(scr, ws, i, tau, b_val, sig, rr, q, N, D);
+      double R = 0.0;
+      if (D > 1.0e-300) {
+        const double alpha = K * std::exp(-(rr - q) * tau);
+        double b_new = alpha * N / D;
+        if (b_new > xmax) {
+          b_new = xmax;
+        }
+        if (!(b_new > 0.0)) {
+          b_new = 1.0e-6 * K;
+        }
+        R = yv[i] - y_from_b(b_new, xmax);
+      }
+      Rout[i] = R;
+    }
+    ++cost_passes;
+  };
+
+  std::array<double, kAlMaxNodes> y0{};
+  for (std::uint16_t i = 0; i < n; ++i) {
+    y0[i] = base.y[i];
+  }
+
+  // Jacobian J = ∂R/∂y over the interior nodes (row/col index 0..m-1 maps to node
+  // 1..m). Central differences of R w.r.t. each y_j (validated, per the brief);
+  // `jac_central == false` additionally cross-checks against the analytic diagonal
+  // ∂R_i/∂y_i (eqn_b_NDd) and reports the max relative gap.
+  std::array<double, kAlMaxNodes * kAlMaxNodes> J{};
+  std::array<double, kAlMaxNodes> Rp{};
+  std::array<double, kAlMaxNodes> Rm{};
+  std::array<double, kAlMaxNodes> ywork{};
+  for (std::uint16_t i = 0; i < n; ++i) {
+    ywork[i] = y0[i];
+  }
+  for (int jcol = 0; jcol < m; ++jcol) {
+    const std::uint16_t jnode = static_cast<std::uint16_t>(jcol + 1);
+    const double yj = y0[jnode];
+    const double h = 1.0e-6 * std::fmax(std::fabs(yj), 1.0e-3);
+    ywork[jnode] = yj + h;
+    residual(ywork.data(), sigma, r, Rp.data());
+    ywork[jnode] = yj - h;
+    residual(ywork.data(), sigma, r, Rm.data());
+    ywork[jnode] = yj;
+    for (int irow = 0; irow < m; ++irow) {
+      const std::uint16_t inode = static_cast<std::uint16_t>(irow + 1);
+      J[irow * kAlMaxNodes + jcol] = (Rp[inode] - Rm[inode]) / (2.0 * h);
+    }
+  }
+  // R_θ = ∂R/∂θ at fixed y, θ ∈ {σ, r} (central differences; captures both the
+  // explicit (σ,r) dependence of N,D and, for r, the α = K·e^{−(r−q)τ} prefactor).
+  std::array<double, kAlMaxNodes> Rsig{};
+  std::array<double, kAlMaxNodes> Rrho{};
+  {
+    const double hs = 1.0e-5 * std::fmax(sigma, 1.0e-3);
+    residual(y0.data(), sigma + hs, r, Rp.data());
+    residual(y0.data(), sigma - hs, r, Rm.data());
+    for (int i = 0; i < static_cast<int>(n); ++i) {
+      Rsig[i] = (Rp[i] - Rm[i]) / (2.0 * hs);
+    }
+    const double hr = 1.0e-6;
+    residual(y0.data(), sigma, r + hr, Rp.data());
+    residual(y0.data(), sigma, r - hr, Rm.data());
+    for (int i = 0; i < static_cast<int>(n); ++i) {
+      Rrho[i] = (Rp[i] - Rm[i]) / (2.0 * hr);
+    }
+  }
+
+  // Solve J·y_σ = −R_σ and J·y_r = −R_r (two RHS, one factorization would suffice;
+  // the small n makes a per-RHS solve negligible and keeps the code simple).
+  std::array<double, kAlMaxNodes * kAlMaxNodes> Jfac = J;
+  std::array<double, kAlMaxNodes> ysig{};
+  std::array<double, kAlMaxNodes> yrho{};
+  std::array<double, kAlMaxNodes> rhs_s{};
+  std::array<double, kAlMaxNodes> rhs_r{};
+  for (int i = 0; i < m; ++i) {
+    rhs_s[i] = -Rsig[i + 1];
+    rhs_r[i] = -Rrho[i + 1];
+  }
+  if (!lu_solve_dense(Jfac.data(), rhs_s.data(), m)) {
+    return out;
+  }
+  Jfac = J;
+  if (!lu_solve_dense(Jfac.data(), rhs_r.data(), m)) {
+    return out;
+  }
+  ysig[0] = 0.0;
+  yrho[0] = 0.0;
+  for (int i = 0; i < m; ++i) {
+    ysig[i + 1] = rhs_s[i];
+    yrho[i + 1] = rhs_r[i];
+  }
+
+  // Validation (not on the production/cost path): cross-check the implicit-diff
+  // sensitivity y_σ against a finite difference of the RE-SOLVED boundary (the
+  // ground-truth ∂y/∂σ). A small gap proves J and R_σ (hence the whole LU pipeline)
+  // are correct. The re-solves are excluded from cost_passes.
+  if (validate) {
+    const double hval = 1.0e-3;
+    AlBoundary bp{}, bm{};
+    AlWorkspace wp{}, wm{};
+    double rp0 = 0.0, rm0 = 0.0;
+    const int sp = al_solve_put_counted(K, T, sigma + hval, r, q, sch, nullptr, 60, 60,
+                                        bp, wp, rp0);
+    const int sm = al_solve_put_counted(K, T, sigma - hval, r, q, sch, nullptr, 60, 60,
+                                        bm, wm, rm0);
+    if (sp > 0 && sm > 0) {
+      for (int i = 0; i < m; ++i) {
+        const std::uint16_t inode = static_cast<std::uint16_t>(i + 1);
+        const double yfd = (bp.y[inode] - bm.y[inode]) / (2.0 * hval);
+        const double denom = std::fmax(std::fabs(yfd), 1.0e-3);
+        const double rel = std::fabs(ysig[inode] - yfd) / denom;
+        if (rel > j_max_rel_err) {
+          j_max_rel_err = rel;
+        }
+      }
+    }
+  }
+
+  // Price at spot `spot` from a MOVED boundary (y-vector) at (sig, rr): euro +
+  // premium with the same clamps as al_put_price_from_boundary. One premium pass.
+  auto price_moved_spot = [&](const double* yv, double sig, double rr,
+                              double spot) noexcept -> double {
+    for (std::uint16_t i = 0; i < n; ++i) {
+      scr.y[i] = yv[i];
+    }
+    return al_put_price_from_boundary(scr, ws, spot, K, T, sig, rr, q);
+  };
+  auto price_moved = [&](const double* yv, double sig, double rr) noexcept -> double {
+    return price_moved_spot(yv, sig, rr, S);
+  };
+
+  out.price = al_put_price_from_boundary(base, ws, S, K, T, sigma, r, q);
+
+  // vega / rho by moving-boundary central differences: bump the parameter AND move
+  // the boundary by its implicit-diff sensitivity (never frozen).
+  {
+    const double hs = 1.0e-3 * std::fmax(sigma, 1.0e-3);
+    std::array<double, kAlMaxNodes> yp{};
+    std::array<double, kAlMaxNodes> ym{};
+    for (std::uint16_t i = 0; i < n; ++i) {
+      yp[i] = y0[i] + hs * ysig[i];
+      ym[i] = y0[i] - hs * ysig[i];
+    }
+    const double pvp = price_moved(yp.data(), sigma + hs, r);
+    const double pvm = price_moved(ym.data(), sigma - hs, r);
+    out.vega = (pvp - pvm) / (2.0 * hs);
+    // volga (second-order; moving-boundary — first-order boundary motion only).
+    out.volga = (pvp - 2.0 * out.price + pvm) / (hs * hs);
+    // vanna = ∂delta/∂σ: delta on the σ-moved boundaries.
+    const double hSv = 1.0e-3 * S;
+    const double dvp = (price_moved_spot(yp.data(), sigma + hs, r, S + hSv) -
+                        price_moved_spot(yp.data(), sigma + hs, r, S - hSv)) /
+                       (2.0 * hSv);
+    const double dvm = (price_moved_spot(ym.data(), sigma - hs, r, S + hSv) -
+                        price_moved_spot(ym.data(), sigma - hs, r, S - hSv)) /
+                       (2.0 * hSv);
+    out.vanna = (dvp - dvm) / (2.0 * hs);
+    cost_passes += 1;  // premium-eval-equivalents for the σ propagation bundle
+  }
+  {
+    const double hr = 1.0e-4;
+    std::array<double, kAlMaxNodes> yp{};
+    std::array<double, kAlMaxNodes> ym{};
+    for (std::uint16_t i = 0; i < n; ++i) {
+      yp[i] = y0[i] + hr * yrho[i];
+      ym[i] = y0[i] - hr * yrho[i];
+    }
+    const double prp = price_moved(yp.data(), sigma, r + hr);
+    const double prm = price_moved(ym.data(), sigma, r - hr);
+    out.rho = (prp - prm) / (2.0 * hr);
+  }
+
+  // delta / gamma / speed — exact spot stencils on the spot-independent base boundary.
+  const double hS = 1.0e-3 * S;
+  const double v0 = out.price;
+  const double vSp = al_put_price_from_boundary(base, ws, S + hS, K, T, sigma, r, q);
+  const double vSm = al_put_price_from_boundary(base, ws, S - hS, K, T, sigma, r, q);
+  const double vS2p = al_put_price_from_boundary(base, ws, S + 2.0 * hS, K, T, sigma, r, q);
+  const double vS2m = al_put_price_from_boundary(base, ws, S - 2.0 * hS, K, T, sigma, r, q);
+  out.delta = (vSp - vSm) / (2.0 * hS);
+  out.gamma = (vSp - 2.0 * v0 + vSm) / (hS * hS);
+
+  // theta / charm from the continuation-region PDE (as american_greeks_al) — needs
+  // no time-bumped boundary solve.
+  const double intr0 = K - S;
+  const bool exercised = (v0 <= intr0 + 1.0e-9 * K) && (intr0 > 0.0);
+  if (exercised) {
+    out.theta = 0.0;
+    out.charm = 0.0;
+  } else {
+    const double speed = (vS2p - 2.0 * vSp + 2.0 * vSm - vS2m) / (2.0 * hS * hS * hS);
+    out.theta = r * v0 - (r - q) * S * out.delta - 0.5 * sigma * sigma * S * S * out.gamma;
+    out.charm = r * out.delta - (r - q) * (out.delta + S * out.gamma) -
+                0.5 * sigma * sigma * (2.0 * S * out.gamma + S * S * speed);
+  }
+
+  out.cost_passes = cost_passes;
+  out.ok = true;
+  return out;
 }
 
 }  // namespace detail
