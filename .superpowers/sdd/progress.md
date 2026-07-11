@@ -503,7 +503,7 @@ Process notes:
 - Task 4: run_report emitters — COMPLETE
 - Task 5: populate_surface_db + mag7_surfdb_populate example — COMPLETE
 - Task 6: mag7_dispersion_backtest example + gate test — COMPLETE
-- Task 7: tools/mag7_dispersion_report.py + python test — PENDING
+- Task 7: tools/mag7_dispersion_report.py + python test — COMPLETE
 - Task 8: real-data pull/populate/run/report (operator-gated) — PENDING
 - Final whole-branch review — PENDING
 
@@ -568,3 +568,12 @@ Task 6: complete (commits 3a415fc..b5c05f9, review clean — SPEC ✅ / Approved
   test uses its own 2-key meta); (c) populate_stats.csv copy branch untested (manual smoke only);
   (d) spec-validation CLI errors exit 1 not 2 (judgment call, flagged); (e) console peak_lots recomputed
   vs reusing result_summary_metrics.
+
+Task 7: complete (commits b592be9..a88cb05 + fix 55b9e5f, review Approved, 1 Important fixed →
+  re-verified "Spec ✅ / Approved"; 0 remaining Critical/Important)
+  8/8 python tests green; ctest registration verified by controller post-reconfigure
+  (Mag7DispersionReport Passed, TearSheet suite 6/6). Reviewer verified fixture format fidelity
+  byte-for-byte vs real emitters, SVG sanitization empirically (xmlns/RDF strip safe for HTML5 inline),
+  id-collision fix real (294/294 unique ids). Fix wave: _fmt_value ±inf guard + 5 formatter unit tests.
+  Minor (roll-up): (a) exact-1.0 fractions render bare "1" in tables; (b) fixture max_drawdown sign
+  cosmetics; (c) matplotlib per-chart <style> universal selector scoping note (no current consequence).
