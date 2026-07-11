@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <cstdlib>
 #include <optional>
 #include <span>
 #include <string>
@@ -28,6 +29,26 @@ using atx::vol::test::cached_hft_fit;
 using atx::vol::testkit::kSpyFitFixtures;
 using atx::vol::testkit::load_spy_fit_fixture;
 using atx::vol::testkit::price_in_band;
+
+// True when ATX_VOL_SCOREBOARDS is set non-empty and not "0" — the nightly
+// full-sweep preset (Task 7). Read with _dupenv_s under MSVC/clang-cl: plain
+// std::getenv trips /WX (-Wdeprecated-declarations); same pattern as
+// support/bench_gate.hpp.
+[[nodiscard]] bool scoreboards_enabled() noexcept {
+#if defined(_MSC_VER)
+  char *e = nullptr;
+  std::size_t n = 0;
+  if (::_dupenv_s(&e, &n, "ATX_VOL_SCOREBOARDS") != 0 || e == nullptr) {
+    return false;
+  }
+  const bool on = e[0] != '\0' && !(e[0] == '0' && e[1] == '\0');
+  std::free(e);
+  return on;
+#else
+  const char *e = std::getenv("ATX_VOL_SCOREBOARDS");
+  return e != nullptr && e[0] != '\0' && !(e[0] == '0' && e[1] == '\0');
+#endif
+}
 
 TEST(SpyFitCorpus, HftColdStartPreserves98PctOnEveryAvailableSlice) {
   std::size_t loaded = 0;
@@ -81,6 +102,12 @@ TEST(SpyFitCorpus, HftColdStartPreserves98PctOnEveryAvailableSlice) {
 TEST(SigmaInterpCorpus, RealBoard_WithinGates) {
   std::size_t loaded = 0, n_slices = 0, n_priced = 0, n_fallback = 0;
   double max_gap = 0.0;
+  // Every parity ladder is still built, interpolant-priced, and asserted; the
+  // default subsamples the cold-AL reference comparison to every 2nd strike
+  // (deterministic: indices 0, 2, 4, ...) for wall-time. The full-strike sweep
+  // (a strict superset, same tolerances) runs under ATX_VOL_SCOREBOARDS=1
+  // (nightly preset, Task 7).
+  const std::size_t stride = scoreboards_enabled() ? 1 : 2;
   for (const auto &fixture : kSpyFitFixtures) {
     auto board = load_spy_fit_fixture(fixture);
     const auto archive_path = cached_hft_fit(fixture);
@@ -151,7 +178,7 @@ TEST(SigmaInterpCorpus, RealBoard_WithinGates) {
         }
         ++n_slices;
         n_fallback += st.n_cold_fallback;
-        for (std::size_t i = 0; i < strikes.size(); ++i) {
+        for (std::size_t i = 0; i < strikes.size(); i += stride) {
           const auto cold =
               andersen_lake(S, strikes[i], T, sigmas[i], r, q_eff, side, std::nullopt);
           if (!cold.has_value()) {
