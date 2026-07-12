@@ -14,4 +14,6 @@ target_link_libraries(atx-impl-tests PRIVATE atx_miniz)
 target_compile_definitions(atx-impl-tests PRIVATE
     ATX_IMPL_TESTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 include(GoogleTest)
-gtest_discover_tests(atx-impl-tests)
+# PRE_TEST: enumerate at ctest time, not as a POST_BUILD step -- relinking no longer
+# pays a test-enumeration run (and a non-launchable exe no longer fails the *build*).
+gtest_discover_tests(atx-impl-tests DISCOVERY_MODE PRE_TEST)

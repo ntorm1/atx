@@ -132,5 +132,7 @@ foreach(grp IN LISTS _atx_groups)
         endif()
     endif()
 
-    gtest_discover_tests(${_tgt})
+    # PRE_TEST: enumerate at ctest time, not as a POST_BUILD step -- relinking no
+    # longer pays a per-group test-enumeration run at build time.
+    gtest_discover_tests(${_tgt} DISCOVERY_MODE PRE_TEST)
 endforeach()

@@ -91,4 +91,6 @@ add_custom_command(TARGET atx-core-tests POST_BUILD
     COMMAND_EXPAND_LISTS)
 
 include(GoogleTest)
-gtest_discover_tests(atx-core-tests)
+# PRE_TEST: enumerate at ctest time, not as a POST_BUILD step -- relinking no longer
+# pays a test-enumeration run (and a non-launchable exe no longer fails the *build*).
+gtest_discover_tests(atx-core-tests DISCOVERY_MODE PRE_TEST)
