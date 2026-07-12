@@ -45,9 +45,11 @@ if(ATX_USE_SCCACHE AND NOT CMAKE_CXX_COMPILER_LAUNCHER)
     endif()
 endif()
 
-# Strip the build-root prefix from __FILE__, debug info, and diagnostics so a TU
-# compiled in ANY worktree yields byte-identical output -> sccache cache HITS across
-# worktrees (and reproducible builds). clang/clang-cl accept -ffile-prefix-map.
+# Strip the build-root prefix from __FILE__, debug info, and diagnostics so cacheable
+# compiler calls are path-stable across worktrees (and builds are reproducible).
+# Current clang-cl PCH-dependent /Yu+/Fp calls remain non-cacheable in sccache 0.15;
+# this mapping does not promise that a fresh PCH build will hit. clang/clang-cl accept
+# -ffile-prefix-map.
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     # clang-cl (MSVC frontend) rejects the GNU-spelled flag as an unknown
     # argument, which /WX then promotes to a hard error; forward it through the

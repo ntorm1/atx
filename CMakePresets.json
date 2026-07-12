@@ -5,7 +5,7 @@
     {
       "name": "_base",
       "hidden": true,
-      "description": "Shared Ninja + clang-cl settings. Embedded debug info (/Z7 via CMP0141=NEW) keeps debug objects content-cacheable by sccache (separate /Zi PDBs are not). SCCACHE_BASEDIR=${sourceDir} + the root CMakeLists -ffile-prefix-map normalize each worktree's paths so the SAME source compiles to byte-identical objects in every worktree = cross-worktree sccache HITS. sccache itself is auto-detected by the root CMakeLists when on PATH.",
+      "description": "Shared Ninja + clang-cl settings. Embedded debug info (/Z7 via CMP0141=NEW), SCCACHE_BASEDIR=${sourceDir}, and -ffile-prefix-map normalize cacheable compiler calls across worktrees. Current clang-cl PCH-dependent /Yu+/Fp calls remain non-cacheable in sccache 0.15, so measure actual hits instead of assuming first-party reuse. sccache itself is auto-detected by the root CMakeLists when on PATH.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
@@ -28,13 +28,13 @@
       "name": "ninja",
       "inherits": "_base",
       "displayName": "Ninja + clang-cl (default, cached)",
-      "description": "Default build. PCH ON (heavy/stable headers parsed once), LLD linker, module-scan off, and sccache (auto-detected) — a self-contained static build. Run from a VS Developer shell or the VSCode CMake Tools extension so the MSVC environment is present."
+      "description": "Default build. PCH ON (heavy/stable headers parsed once), LLD linker, module-scan off, and sccache (auto-detected) — a self-contained static build. For command-line work use scripts/atx-build.ps1 so the MSVC environment and tools are resolved; VSCode CMake Tools is also supported."
     },
     {
       "name": "dev",
       "inherits": "_base",
       "displayName": "dev: sccache + shared deps + unity (fast iterate)",
-      "description": "Fast iterative preset for worktrees: explicit sccache launcher, a shared FetchContent clone/build cache via $env{ATX_DEPS_DIR} (deps cloned once, reused by every worktree), and unity test builds for fast cold compiles. Static libs (self-contained exes). Prereqs: VS Developer shell, sccache on PATH, ATX_DEPS_DIR set (scripts/dev-setup.ps1).",
+      "description": "Fast iterative preset for worktrees: explicit sccache launcher, a shared FetchContent clone/build cache via $env{ATX_DEPS_DIR} (deps cloned once, reused by every worktree), and unity test builds for fast cold compiles. Static libs (self-contained exes). Use scripts/atx-build.ps1 for command-line work; prerequisites are sccache on PATH and ATX_DEPS_DIR set (scripts/dev-setup.ps1).",
       "cacheVariables": {
         "CMAKE_C_COMPILER_LAUNCHER": "sccache",
         "CMAKE_CXX_COMPILER_LAUNCHER": "sccache",
@@ -132,6 +132,12 @@
     {
       "name": "rel",
       "configurePreset": "rel",
+      "output": { "outputOnFailure": true },
+      "execution": { "jobs": 16, "scheduleRandom": false }
+    },
+    {
+      "name": "rel-avx2",
+      "configurePreset": "rel-avx2",
       "output": { "outputOnFailure": true },
       "execution": { "jobs": 16, "scheduleRandom": false }
     },
