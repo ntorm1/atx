@@ -255,12 +255,11 @@ enum class GreekFieldMask : std::uint32_t {
                                            PricingKernel& kernel,
                                            PricingWorkspace& ws);
 
-// Price an exact resolved equal-T run into caller-owned output spans. BAW and an
-// engaged/custom Andersen-Lake preset use the scalar reference per lane because
-// the current low-level SIMD kernel is hard-wired to the null-options scheme;
-// silently substituting it would change served-surface prices. `isa` remains a
-// call-local request; `pack_dispatch` reports only whether a containing pack was
-// sent to AVX2, not the low-level kernel's opaque per-lane patch decision.
+// Price an exact resolved equal-T run into caller-owned output spans. BAW remains
+// scalar; Andersen-Lake passes the request's exact option engagement through the
+// configured boundary kernel and every scalar patch. `isa` remains a call-local
+// request; `pack_dispatch` reports only whether a containing pack was sent to
+// AVX2, not the low-level kernel's opaque per-lane patch decision.
 // Returns InvalidArgument for request span-shape errors or any overlap between
 // input/output spans or between nonempty output spans. Validation completes
 // before counters or writes. Model failures are retained independently in

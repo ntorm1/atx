@@ -183,10 +183,10 @@ Status american_price_batch_resolved(
     }
   };
 
-  // Exactness gate: the existing SIMD boundary kernel is specifically the
-  // null-options Andersen-Lake scheme. Resolved surfaces carry an engaged preset,
-  // and BAW is a different model, so both stay on their exact scalar references.
-  if (request.method != AmericanMethod::AndersenLake || request.al_opts.has_value() ||
+  // BAW is a different model and stays on its exact scalar reference. The AL
+  // kernel consumes the same optional unchanged, so null and engaged schemes
+  // share this route without changing their option semantics.
+  if (request.method != AmericanMethod::AndersenLake ||
       request.isa == simd::SimdIsa::ForceScalar) {
     for (std::size_t i = 0; i < n; ++i) {
       scalar_lane(i);
@@ -194,7 +194,6 @@ Status american_price_batch_resolved(
     return Ok();
   }
 
-  // The null-options AL route can use the existing exact-compatible kernel.
   // Compact only genuine single-boundary lanes into complete AVX-width packs;
   // irregular lanes and the tail retain their scalar Error and bit identity.
   std::array<double, 4> pack_S{}, pack_K{}, pack_T{}, pack_sigma{}, pack_r{}, pack_q{}, pack_price{};
@@ -228,7 +227,7 @@ Status american_price_batch_resolved(
 
     const simd::SimdRoute pack_route = simd::american_put_boundary_batch(
         pack_S.data(), pack_K.data(), pack_T.data(), pack_sigma.data(), pack_r.data(),
-        pack_q.data(), pack_price.data(), packed, request.isa);
+        pack_q.data(), pack_price.data(), packed, request.al_opts, request.isa);
     if (pack_route == simd::SimdRoute::Avx2) {
       ATX_VOL_COUNT(AmericanAvxPackDispatches);
     }

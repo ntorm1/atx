@@ -63,8 +63,9 @@ ATX_FORCE_INLINE __m256d sel(__m256d mask, __m256d t, __m256d f) noexcept {
 
 // Scalar cold reference for a single put lane (the patch target).
 [[nodiscard]] double scalar_put(double S, double K, double T, double sigma,
-                                double r, double q) noexcept {
-    const Result<double> res = andersen_lake(S, K, T, sigma, r, q, Side::Put);
+                                double r, double q,
+                                const std::optional<AlOpts>& opts) noexcept {
+    const Result<double> res = andersen_lake(S, K, T, sigma, r, q, Side::Put, opts);
     return res.has_value() ? *res : std::numeric_limits<double>::quiet_NaN();
 }
 
@@ -73,8 +74,9 @@ ATX_FORCE_INLINE __m256d sel(__m256d mask, __m256d t, __m256d f) noexcept {
 void american_put_boundary_batch_avx2(const double* S, const double* K,
                                       const double* T, const double* sigma,
                                       const double* r, const double* q,
-                                      double* price_out, std::size_t n) noexcept {
-    const amer::AlScheme sch = amer::scheme_from_opts(std::nullopt); // ACCURATE preset
+                                      double* price_out, std::size_t n,
+                                      const std::optional<AlOpts>& opts) noexcept {
+    const amer::AlScheme sch = amer::scheme_from_opts(opts);
     const double* coefs = atx::vol::detail::norm_cdf_cheb_coefs().data();
 
     // ── Broadcast constants ──────────────────────────────────────────────
@@ -130,7 +132,7 @@ void american_put_boundary_batch_avx2(const double* S, const double* K,
             for (int l = 0; l < 4; ++l) {
                 const std::size_t idx = i + static_cast<std::size_t>(l);
                 price_out[idx] =
-                    scalar_put(S[idx], K[idx], T[idx], sigma[idx], r[idx], q[idx]);
+                    scalar_put(S[idx], K[idx], T[idx], sigma[idx], r[idx], q[idx], opts);
             }
             continue;
         }
@@ -420,7 +422,7 @@ void american_put_boundary_batch_avx2(const double* S, const double* K,
             const bool patch = !eligible[l] || !std::isfinite(pr[l]);
             price_out[idx] =
                 patch ? scalar_put(S[idx], K[idx], T[idx], sigma[idx], r[idx],
-                                   q[idx])
+                                   q[idx], opts)
                       : pr[l];
         }
     }
@@ -428,7 +430,7 @@ void american_put_boundary_batch_avx2(const double* S, const double* K,
     // Scalar tail (n % 4): exact scalar path, matching the *_batch_avx2 idiom.
     for (; i < n; ++i) {
         price_out[i] =
-            scalar_put(S[i], K[i], T[i], sigma[i], r[i], q[i]);
+            scalar_put(S[i], K[i], T[i], sigma[i], r[i], q[i], opts);
     }
 }
 
