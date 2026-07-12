@@ -124,6 +124,11 @@ constexpr char kBlobMagic[8] = {'A', 'T', 'X', 'V', 'S', 'B', '0', '3'};
     return static_cast<std::uint32_t>(2ull * node_count * sizeof(double));
   case VolCurveKind::C8:
     return static_cast<std::uint32_t>(sizeof(C8Params));
+  case VolCurveKind::SplineVol:
+    // No archive serialization support yet (Task 3, v1) -- write_surface_archive
+    // rejects a SplineVol slice before this is ever reached (see below); this
+    // case exists only so -Wswitch stays exhaustive.
+    return 0;
   }
   return 0;
 }
@@ -276,6 +281,13 @@ Result<std::vector<std::byte>> write_surface_archive(std::span<const SurfaceArch
       sp.kind = c->kind();
       sp.curve = c;
       sp.ctx = ctx[i];
+      if (sp.kind == VolCurveKind::SplineVol) {
+        // SplineVol has no archive wire format yet (Task 3, v1) -- reject up
+        // front rather than writing a payload-less slice header that a future
+        // reconstruct would have no way to interpret.
+        return Err(ErrorCode::InvalidArgument,
+                   "write_surface_archive: SplineVol serialization not supported");
+      }
       if (sp.kind == VolCurveKind::ConvexDense) {
         const auto *cd = static_cast<const ConvexDenseCurve *>(c);
         // `node_count` is a uint32 field on disk. Guard the narrowing so an
@@ -443,6 +455,12 @@ Result<std::vector<std::byte>> write_surface_archive(std::span<const SurfaceArch
         std::memcpy(payload, &c8, sizeof c8);
         break;
       }
+      case VolCurveKind::SplineVol:
+        // Unreachable: the plan-building loop above rejects a SplineVol slice
+        // with InvalidArgument before it is ever added to `plan.slices`. Case
+        // kept explicit (not folded into a `default:`) so -Wswitch still
+        // catches a FUTURE kind that forgets to update this switch.
+        break;
       }
       std::memcpy(rec, &sh, sizeof sh); // header last (fields now complete)
       off += sp.rec_size;
@@ -853,6 +871,13 @@ Result<PricedSurface> SurfaceArchive::reconstruct(std::uint64_t offset, std::uin
       curve = std::make_unique<C8Curve>(c8, sh.df);
       break;
     }
+    case VolCurveKind::SplineVol:
+      // No archive wire format yet (Task 3, v1); write_surface_archive never
+      // emits this kind, so a byte value of 5 here can only be a manifest
+      // from a newer build -- routes through the same "unknown kind" path as
+      // any other value this reader doesn't understand.
+      return Err(ErrorCode::ParseError,
+                 "SurfaceArchive::reconstruct: SplineVol serialization not supported");
     default:
       return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: unknown curve kind");
     }
