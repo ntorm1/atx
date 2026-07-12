@@ -1,0 +1,49 @@
+#include "atx/vol/adjusted_greeks.hpp"
+
+#include <cmath>
+#include <limits>
+
+namespace atx::vol {
+
+namespace {
+constexpr double kFdStep = 1e-4;  // central FD half-step on k_log (brief-mandated)
+constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+}  // namespace
+
+double curve_skew_slope(const IVolCurve& c, double k_log) noexcept {
+  const double T = c.T();
+  const double wk = c.w(k_log);
+  const double sigma = std::sqrt(wk / T);
+  if (!(T > 0.0) || !(sigma > 0.0) || !std::isfinite(sigma)) {
+    return kNaN;
+  }
+
+  const double w_plus = c.w(k_log + kFdStep);
+  const double w_minus = c.w(k_log - kFdStep);
+  const double dw_dk = (w_plus - w_minus) / (2.0 * kFdStep);
+  if (!std::isfinite(dw_dk)) {
+    return kNaN;
+  }
+
+  return dw_dk / (2.0 * sigma * T);
+}
+
+double vega_slope_per_spot(const IVolCurve& c, double k_log, double S,
+                           const StickyParams& sp) noexcept {
+  if (!(S > 0.0)) {
+    return kNaN;
+  }
+  const double skew_slope = curve_skew_slope(c, k_log);
+  if (!std::isfinite(skew_slope)) {
+    return kNaN;
+  }
+  return (1.0 - sp.ref_uprc_weight) * (-skew_slope / S);
+}
+
+Greeks skew_adjusted(const Greeks& g, double vega_slope) noexcept {
+  Greeks out = g;
+  out.delta = g.delta + vega_slope * g.vega;
+  return out;
+}
+
+}  // namespace atx::vol

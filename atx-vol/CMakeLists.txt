@@ -56,6 +56,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/dividend.cpp
     src/s3.cpp
     src/fit_metrics.cpp
+    src/adjusted_greeks.cpp
     src/vol_time.cpp
     src/event_vol.cpp
     src/deamer.cpp

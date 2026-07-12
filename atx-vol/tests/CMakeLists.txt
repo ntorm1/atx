@@ -46,6 +46,7 @@ add_executable(atx-vol-tests
     dividend_test.cpp
     s3_test.cpp
     fit_metrics_test.cpp
+    adjusted_greeks_test.cpp
     vol_time_test.cpp
     event_vol_test.cpp
     deamer_test.cpp
