@@ -458,6 +458,11 @@ struct PriceOptions {
   // under this mode -- never 0.0. A zero would be indistinguishable from a book
   // that is genuinely delta/vega-flat.
   bool prices_only{false};
+  // Call-local route for resolved Marks batches. Auto preserves the measured
+  // scalar shipment gate; ForceAvx2 is capability-guarded and never reads or
+  // mutates the process-global ISA override. Full-Greek evaluation remains on
+  // its existing scalar/analytic routes.
+  simd::SimdIsa resolved_price_isa{simd::SimdIsa::Auto};
 };
 
 class PortfolioPricer {

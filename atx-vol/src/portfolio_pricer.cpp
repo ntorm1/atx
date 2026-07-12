@@ -283,7 +283,8 @@ struct ContractPnl {
 // across a raw-bit-equal-T ladder (bit-identical to per-contract evaluate).
 void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
                    std::span<const OptionContract> contracts, bool want_greeks, bool analytic,
-                   unsigned n_threads, std::vector<ContractPx> &px, std::vector<double> &b_iv,
+                   simd::SimdIsa resolved_price_isa, unsigned n_threads,
+                   std::vector<ContractPx> &px, std::vector<double> &b_iv,
                    std::vector<double> &b_price, std::vector<AmericanGreeks> &b_greeks,
                    std::vector<Status> &b_status) {
   const std::size_t n_unique = pp.n_unique();
@@ -298,14 +299,15 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
   b_status.resize(n_unique);
 
   const std::span<const ContractGroup> groups = pp.groups();
+  const std::span<const PreparedPriceTile> tiles = pp.price_tiles();
   const std::span<const std::uint32_t> oci = pp.original_contract_index();
   const std::span<const double> kcol = pp.k();
   const std::span<const double> tcol = pp.t();
   const std::span<const Side> scol = pp.side();
 
-  const auto solve_span = [&](const ContractGroup &g, std::uint32_t s, std::uint32_t e) {
+  const auto solve_span = [&](std::uint32_t uid, std::uint32_t s, std::uint32_t e) {
     const std::size_t gsz = static_cast<std::size_t>(e - s);
-    const PricedSurface *surf = surfaces.find(g.uid); // hoisted: one lower_bound / sub-span
+    const PricedSurface *surf = surfaces.find(uid);
     if (surf == nullptr) {
       // Degenerate is checked FIRST (an invalid contract is InvalidContract even
       // when its uid has no surface) — matching the ungrouped precedence.
@@ -321,8 +323,20 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
         want_greeks ? std::span<AmericanGreeks>(b_greeks).subspan(s, gsz)
                     : std::span<AmericanGreeks>{},
         std::span<Status>(b_status).subspan(s, gsz), {}, {}};
-    (void)surf->evaluate_batch(kcol.subspan(s, gsz), tcol.subspan(s, gsz), scol.subspan(s, gsz),
-                               fields, analytic, soa);
+    const Status batch_status =
+        surf->evaluate_batch(kcol.subspan(s, gsz), tcol.subspan(s, gsz),
+                             scol.subspan(s, gsz), fields, analytic, soa,
+                             resolved_price_isa);
+    if (!batch_status.has_value()) {
+      for (std::uint32_t p = s; p < e; ++p) {
+        b_iv[p] = kNaN;
+        b_price[p] = kNaN;
+        if (want_greeks) {
+          b_greeks[p].price = kNaN;
+        }
+        b_status[p] = Err(batch_status.error());
+      }
+    }
     for (std::uint32_t p = s; p < e; ++p) {
       const std::uint32_t orig = oci[p];
       ContractPx &out = px[orig];
@@ -351,9 +365,20 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
     }
   };
 
-  // Fan out over the FLATTENED permuted unique-contract index [0, n_unique) so
-  // the pool scales even on a single-uid book; each worker walks the group
-  // boundaries its contiguous [lo,hi) overlaps (one find per touched group).
+  if (!want_greeks && resolved_price_isa == simd::SimdIsa::ForceAvx2) {
+    // Only the explicit AVX2 Marks route needs invariant pack membership. Each
+    // immutable four-lane tile is one work unit; changing n_threads changes only
+    // tile ownership, never the pack or final tail.
+    pricing_executor().run_blocks(tiles.size(), n_threads, [&](std::size_t i) {
+      const PreparedPriceTile &tile = tiles[i];
+      solve_span(tile.uid, tile.begin, tile.end);
+    });
+    return;
+  }
+
+  // Preserve the established flattened-unique schedule for Auto/ForceScalar and
+  // every full-Greek route. This keeps default scalar scheduling and performance
+  // unchanged while still sharing the exact same solve body.
   pricing_executor().run_ranges(n_unique, n_threads, [&](std::size_t lo, std::size_t hi) {
     const std::uint32_t lo32 = static_cast<std::uint32_t>(lo);
     const std::uint32_t hi32 = static_cast<std::uint32_t>(hi);
@@ -363,7 +388,7 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
     for (; git != groups.end() && git->begin < hi32; ++git) {
       const std::uint32_t s = std::max<std::uint32_t>(git->begin, lo32);
       const std::uint32_t e = std::min<std::uint32_t>(git->end, hi32);
-      solve_span(*git, s, e);
+      solve_span(git->uid, s, e);
     }
   });
 }
@@ -451,13 +476,11 @@ void reduce_price_totals(std::span<const Position> positions, const Portfolio &p
 // revision detects every successful in-place retime with an O(1), allocation-
 // free comparison. The unique count is retained as a defensive invariant check.
 // The Greek route/mask does not gate a rebuild:
-// PreparedPortfolio's permutation, groups, oci, and aligned K/T/uid columns
-// derive purely from (uid,side,T), so the substrate is byte-identical for
-// Marks and FullGreeks -- only the `route` stamped on each ContractGroup
-// differs, and nothing reads it yet (T13's AVX2 packer will own route
-// correctness there). Emits PreparedBuilds on an actual build so the reuse is
-// observable under counters.
-[[nodiscard]] Status ensure_prepared(const Portfolio &pf, bool want_greeks, bool analytic,
+// PreparedPortfolio's permutation, groups, fixed raw-T tiles, reverse mapping,
+// and aligned columns derive purely from book metadata. Marks/Greeks, method,
+// preset, and ISA changes therefore reuse the same substrate. Emits
+// PreparedBuilds on an actual build so reuse is observable under counters.
+[[nodiscard]] Status ensure_prepared(const Portfolio &pf,
                                      std::optional<PreparedPortfolio> &prepared,
                                      std::uint64_t logical_id, std::uint64_t revision,
                                      std::uint64_t &prepared_logical_id,
@@ -466,10 +489,7 @@ void reduce_price_totals(std::span<const Position> positions, const Portfolio &p
       prepared->n_unique() == pf.n_contracts()) {
     return atx::core::Ok();
   }
-  PriceOptions build_opts;
-  build_opts.analytic_greeks = analytic;
-  build_opts.prices_only = !want_greeks;
-  Result<PreparedPortfolio> pp = PreparedPortfolio::create(pf, build_opts);
+  Result<PreparedPortfolio> pp = PreparedPortfolio::create(pf, PriceOptions{});
   if (!pp.has_value()) {
     return Err(pp.error());
   }
@@ -559,14 +579,15 @@ Status PortfolioPricer::price_into(const SurfaceSet &surfaces, PriceFieldMask fi
 
   PortfolioWorkspace::Impl &w = *ws.impl_;
   const bool analytic = want_greeks ? opts.analytic_greeks : false;
-  if (Status s = ensure_prepared(pf_, want_greeks, analytic, w.prepared, pf_.logical_id_,
-                                 pf_.revision_, w.prepared_logical_id, w.prepared_revision);
+  if (Status s = ensure_prepared(pf_, w.prepared, pf_.logical_id_, pf_.revision_,
+                                 w.prepared_logical_id, w.prepared_revision);
       !s.has_value()) {
     return Err(s.error());
   }
 
-  solve_uniques(*w.prepared, surfaces, contracts, want_greeks, analytic, opts.n_threads, w.px,
-                w.b_iv, w.b_price, w.b_greeks, w.b_status);
+  solve_uniques(*w.prepared, surfaces, contracts, want_greeks, analytic,
+                opts.resolved_price_isa, opts.n_threads, w.px, w.b_iv, w.b_price,
+                w.b_greeks, w.b_status);
 
   // FrameBytes reflects the mask (37 B/pos Marks, 101 B/pos FullGreeks). No
   // FrameAllocations: the output spans are caller-owned and the scratch was
@@ -589,14 +610,15 @@ Result<PriceTotals> PortfolioPricer::price_totals(const SurfaceSet &surfaces, Pr
 
   PortfolioWorkspace::Impl &w = *ws.impl_;
   const bool analytic = want_greeks ? opts.analytic_greeks : false;
-  if (Status s = ensure_prepared(pf_, want_greeks, analytic, w.prepared, pf_.logical_id_,
-                                 pf_.revision_, w.prepared_logical_id, w.prepared_revision);
+  if (Status s = ensure_prepared(pf_, w.prepared, pf_.logical_id_, pf_.revision_,
+                                 w.prepared_logical_id, w.prepared_revision);
       !s.has_value()) {
     return Err(s.error());
   }
 
-  solve_uniques(*w.prepared, surfaces, contracts, want_greeks, analytic, opts.n_threads, w.px,
-                w.b_iv, w.b_price, w.b_greeks, w.b_status);
+  solve_uniques(*w.prepared, surfaces, contracts, want_greeks, analytic,
+                opts.resolved_price_isa, opts.n_threads, w.px, w.b_iv, w.b_price,
+                w.b_greeks, w.b_status);
 
   // No scatter, no per-row frame: reduce weight*result over positions in fixed
   // input order straight off the unique-result SoA — bit-identical to
@@ -931,9 +953,8 @@ Status PortfolioPricer::pnl_explain_into(const SurfaceSet &base, const SurfaceSe
   // P&L always wants the full base Greek bundle; the retained substrate is byte-
   // identical for Marks/FullGreeks (derived from (uid,side,T) only), so it is shared
   // with the price path — a warm price_into build is reused here and vice versa.
-  if (Status s = ensure_prepared(pf_, /*want_greeks=*/true, opts.analytic_greeks, w.prepared,
-                                 pf_.logical_id_, pf_.revision_, w.prepared_logical_id,
-                                 w.prepared_revision);
+  if (Status s = ensure_prepared(pf_, w.prepared, pf_.logical_id_, pf_.revision_,
+                                 w.prepared_logical_id, w.prepared_revision);
       !s.has_value()) {
     return Err(s.error());
   }
@@ -959,9 +980,8 @@ Result<PnlTotals> PortfolioPricer::pnl_totals(const SurfaceSet &base, const Surf
   const std::span<const Position> positions = pf_.positions();
 
   PortfolioWorkspace::Impl &w = *ws.impl_;
-  if (Status s = ensure_prepared(pf_, /*want_greeks=*/true, opts.analytic_greeks, w.prepared,
-                                 pf_.logical_id_, pf_.revision_, w.prepared_logical_id,
-                                 w.prepared_revision);
+  if (Status s = ensure_prepared(pf_, w.prepared, pf_.logical_id_, pf_.revision_,
+                                 w.prepared_logical_id, w.prepared_revision);
       !s.has_value()) {
     return Err(s.error());
   }

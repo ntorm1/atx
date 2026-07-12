@@ -251,8 +251,8 @@ TEST(ProfileRegistry, ProfileLookup_SpyLike_HasExactTableValues) {
   EXPECT_DOUBLE_EQ(p->calib.min_vega_weight, 1.0e-8);
   EXPECT_FALSE(p->calib.residual_disable);
   EXPECT_EQ(static_cast<int>(p->calib.residual_basis_kind),
-            static_cast<int>(ResidualBasisKind::Fengler));
-  EXPECT_EQ(p->calib.residual_n_basis_terms, std::uint8_t{16});
+            static_cast<int>(ResidualBasisKind::HingeQuad));
+  EXPECT_EQ(p->calib.residual_n_basis_terms, std::uint8_t{5});
   EXPECT_EQ(static_cast<int>(p->calib.loss_kind),
             static_cast<int>(CalibLossKind::Mid));
   EXPECT_EQ(p->full_refit_ms, 250u);
@@ -284,7 +284,7 @@ TEST(ProfileRegistry, ProfileLookup_MegaCapEvent_LoosensSpyBase) {
   EXPECT_DOUBLE_EQ(p->calib.min_vega_weight, 1.0e-7);
   EXPECT_TRUE(p->calib.residual_disable);
   EXPECT_EQ(static_cast<int>(p->calib.residual_basis_kind),
-            static_cast<int>(ResidualBasisKind::WingBspline));
+            static_cast<int>(ResidualBasisKind::HingeQuad));
 }
 
 // ── Tier priority (ports test_universe_cadence.c) ─────────────────────────

@@ -65,8 +65,9 @@ namespace {
   p.calib.optimization_level = OptimizationLevel::Trading;
   p.calib.essvi_asymmetric_rho = false;                     // Sprint 28 K.2: deferred on SPY
   p.calib.residual_disable = false;                         // Sprint 11: deep-wing residual on
-  p.calib.residual_basis_kind = ResidualBasisKind::Fengler; // Sprint 29 M
-  p.calib.residual_n_basis_terms = 16;
+  // The executable residual has always been HingeQuad; name it truthfully.
+  p.calib.residual_basis_kind = ResidualBasisKind::HingeQuad;
+  p.calib.residual_n_basis_terms = 5;
   p.calib.loss_kind = CalibLossKind::Mid; // Sprint 25: INTERVAL reverted
   // PORT NOTE: the C also set tenor_buckets (5), residual_candidate_select,
   // fengler_n_basis/ridge/max_proj_iters, selector_loss_aware/safety_pp_weighted
@@ -169,8 +170,8 @@ namespace {
   Profile p = spy;
   p.kind = ProfileKind::MegaCapEvent;
   p.calib.essvi_asymmetric_rho = false; // Sprint 28: pin off for single names
-  p.calib.residual_basis_kind = ResidualBasisKind::WingBspline; // Sprint 29 L/M
-  p.calib.residual_n_basis_terms = 16;
+  p.calib.residual_basis_kind = ResidualBasisKind::HingeQuad;
+  p.calib.residual_n_basis_terms = 5;
   p.filter.wide_spread_pct = 1.20; // AAPL near-month spreads run wide
   p.calib.max_spread_vol = 0.20;   // Sprint 26: let the LM see event weeklies
   p.calib.min_vega_weight = 1.0e-7;
@@ -188,7 +189,7 @@ namespace {
   p.kind = ProfileKind::LiquidSingleName;
   p.filter.wide_spread_pct = 1.00;
   p.calib.essvi_asymmetric_rho = false;
-  p.calib.residual_basis_kind = ResidualBasisKind::WingBspline;
+  p.calib.residual_basis_kind = ResidualBasisKind::HingeQuad;
   // residual_disable stays false (residual layer on).
   // PORT NOTE: the C also zeroed tenor_buckets.n_buckets, fengler_* and
   // selector_* — fields the ported CalibOpts omits.

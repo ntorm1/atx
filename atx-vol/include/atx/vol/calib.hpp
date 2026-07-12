@@ -84,7 +84,7 @@ enum class OptimizationLevel : std::uint8_t {
 // price lands inside [bid, ask], quadratic penalty outside.
 enum class CalibLossKind : std::uint8_t {
   Mid = 0,
-  Interval = 1,
+  Interval = 1, // persisted vocabulary; parametric fit rejects until implemented
 };
 
 // Calibration price-target anchor (AtsVolCalibAnchorKind). The observation
@@ -143,7 +143,7 @@ struct CalibOpts {
   // Quote filtering (read by the observation builder / accept predicate).
   double min_vega_weight{1.0e-6}; // drop below this weight_sigma = (vega/spread)²
   double max_spread_vol{0.05};    // drop quotes with spread/vega above this
-  double max_weight{1.0e3};       // upper clip on vega-spread weights
+  double max_weight{1.0e3};       // finite positive upper clip on stored w-space weights
   // 0 = use every surviving observation. Positive = cap the per-slice
   // de-Americanized fit population before the expensive American-IV inversion,
   // selecting adaptive knots by normalized total-variance interpolation error.
@@ -163,8 +163,10 @@ struct CalibOpts {
   // eSSVI dispatch / fallback.
   EssviRhoMode essvi_rho_mode{EssviRhoMode::PerSlice};
   OptimizationLevel optimization_level{OptimizationLevel::Trading};
-  double essvi_fallback_rmse_threshold{0.01}; // vol pts; > this ⇒ fall back to SVI
-  std::uint32_t n_butterfly_grid{200};        // k-grid resolution for arb checks
+  // The defaults are compatibility sentinels. Non-default values are rejected
+  // until quality-driven fallback and configurable arb grids are implemented.
+  double essvi_fallback_rmse_threshold{0.01};
+  std::uint32_t n_butterfly_grid{200};
 
   // Per-level iteration caps. The active `optimization_level` selects one; the
   // legacy max_outer_iter / max_inner_iter apply when the per-level cap is 0.
@@ -216,6 +218,13 @@ struct CalibOpts {
 // default-constructed `CalibOpts`; provided for call-site symmetry with the
 // C API and with `filter_default_opts()`.
 [[nodiscard]] CalibOpts calib_default_opts() noexcept;
+
+// Validate public calibration policy before it reaches a fitting driver.
+// Persisted but unimplemented policies are rejected instead of being silently
+// ignored. `max_weight` must be finite and strictly positive.
+// @return InvalidArgument for malformed values/enums; NotImplemented for a
+//         recognized policy this build cannot execute truthfully.
+[[nodiscard]] Status validate_calib_options(const CalibOpts& opts) noexcept;
 
 // ── Per-slice fit observation ────────────────────────────────────────────
 

@@ -15,6 +15,7 @@ namespace {
 using atx::vol::CandidateScore;
 using atx::vol::FitAdmissionPolicy;
 using atx::vol::SurfaceAdmissionEvidence;
+using atx::vol::ParityDiagnosticState;
 using atx::vol::SurfaceAdmissionReason;
 
 TEST(CurveSelector, FullCommonKeyCoverageBeatsEasyPartialCandidate) {
@@ -126,6 +127,7 @@ TEST(FitAdmission, RejectsPartialAndUnhealthySurfaceWithStablePrimaryReason) {
   evidence.max_consecutive_expiry_gaps = 3u;
   evidence.calendar_arb_free = false;
   evidence.finite_diagnostics = true;
+  evidence.parity_state = ParityDiagnosticState::Valid;
   evidence.finite_iv_domain = true;
   evidence.european_price_bounds = true;
 
@@ -149,6 +151,7 @@ TEST(FitAdmission, ExplicitDegradedMarkPolicyCanAdmitPartialSurface) {
   evidence.max_consecutive_expiry_gaps = 1u;
   evidence.calendar_arb_free = false;
   evidence.finite_diagnostics = true;
+  evidence.parity_state = ParityDiagnosticState::Valid;
   evidence.finite_iv_domain = true;
   evidence.european_price_bounds = true;
 
@@ -173,6 +176,7 @@ TEST(FitAdmission, ConsumerSelectsInvariantGuaranteesMaterially) {
   evidence.fitted_quotes = 10u;
   evidence.front_expiry_fitted = true;
   evidence.finite_diagnostics = true;
+  evidence.parity_state = ParityDiagnosticState::Valid;
   evidence.finite_iv_domain = true;
   evidence.european_price_bounds = true;
   evidence.strike_monotone = false;
@@ -204,6 +208,7 @@ TEST(FitAdmission, RejectsImpossibleCountsBeforeThresholdChecks) {
   evidence.fitted_quotes = 3u;
   evidence.front_expiry_fitted = true;
   evidence.finite_diagnostics = true;
+  evidence.parity_state = ParityDiagnosticState::Valid;
   evidence.finite_iv_domain = true;
   evidence.european_price_bounds = true;
   evidence.strike_monotone = true;
@@ -224,6 +229,7 @@ TEST(FitAdmission, EmptyOrNarrowCommonDomainCannotPassMarkAdmission) {
   evidence.fitted_quotes = 10u;
   evidence.front_expiry_fitted = true;
   evidence.finite_diagnostics = true;
+  evidence.parity_state = ParityDiagnosticState::Valid;
   evidence.european_price_bounds = true;
   FitAdmissionPolicy policy;
   policy.consumer = atx::vol::SurfaceConsumer::Mark;
@@ -232,6 +238,41 @@ TEST(FitAdmission, EmptyOrNarrowCommonDomainCannotPassMarkAdmission) {
   const auto decision = atx::vol::evaluate_surface_admission(evidence, policy);
   EXPECT_FALSE(decision.admitted);
   EXPECT_EQ(decision.primary_reason, SurfaceAdmissionReason::FiniteIvDomain);
+}
+
+TEST(FitAdmission, DisabledParityIsAllowedOnlyForAnExplicitMarkConsumer) {
+  SurfaceAdmissionEvidence evidence;
+  evidence.attempted_expiries = 1u;
+  evidence.fitted_expiries = 1u;
+  evidence.attempted_quotes = 10u;
+  evidence.fitted_quotes = 10u;
+  evidence.front_expiry_fitted = true;
+  evidence.parity_state = ParityDiagnosticState::Disabled;
+  evidence.calendar_arb_free = true;
+  evidence.finite_iv_domain = true;
+  evidence.european_price_bounds = true;
+  evidence.strike_monotone = true;
+  evidence.strike_convex = true;
+  evidence.calendar_total_variance = true;
+  evidence.forward_variance_nonnegative = true;
+
+  FitAdmissionPolicy mark;
+  mark.consumer = atx::vol::SurfaceConsumer::Mark;
+  EXPECT_TRUE(atx::vol::evaluate_surface_admission(evidence, mark).admitted);
+
+  FitAdmissionPolicy quote = mark;
+  quote.consumer = atx::vol::SurfaceConsumer::Quote;
+  const auto quote_decision = atx::vol::evaluate_surface_admission(evidence, quote);
+  EXPECT_FALSE(quote_decision.admitted);
+  EXPECT_TRUE(atx::vol::has_admission_failure(
+      quote_decision, SurfaceAdmissionReason::DiagnosticsUnavailable));
+
+  FitAdmissionPolicy risk = mark;
+  risk.consumer = atx::vol::SurfaceConsumer::Risk;
+  const auto risk_decision = atx::vol::evaluate_surface_admission(evidence, risk);
+  EXPECT_FALSE(risk_decision.admitted);
+  EXPECT_TRUE(atx::vol::has_admission_failure(
+      risk_decision, SurfaceAdmissionReason::DiagnosticsUnavailable));
 }
 
 } // namespace

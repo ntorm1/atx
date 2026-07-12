@@ -126,7 +126,15 @@ SurfaceAdmissionDecision evaluate_surface_admission(const SurfaceAdmissionEviden
   if (evidence.duplicate_maturities) {
     fail(SurfaceAdmissionReason::DuplicateMaturity);
   }
-  if (!evidence.finite_diagnostics || !std::isfinite(evidence.worst_frac_within_bidask)) {
+  const bool diagnostics_valid = evidence.parity_state == ParityDiagnosticState::Valid;
+  const bool disabled_mark_diagnostics =
+      policy.consumer == SurfaceConsumer::Mark &&
+      evidence.parity_state == ParityDiagnosticState::Disabled;
+  if (!diagnostics_valid && !disabled_mark_diagnostics) {
+    fail(SurfaceAdmissionReason::DiagnosticsUnavailable);
+  }
+  if (diagnostics_valid &&
+      (!evidence.finite_diagnostics || !std::isfinite(evidence.worst_frac_within_bidask))) {
     fail(SurfaceAdmissionReason::NonFiniteDiagnostics);
   }
   if (policy.require_calendar_arb_free && !evidence.calendar_arb_free) {
@@ -134,7 +142,8 @@ SurfaceAdmissionDecision evaluate_surface_admission(const SurfaceAdmissionEviden
   }
   if (!std::isfinite(policy.min_worst_frac_within_bidask) ||
       policy.min_worst_frac_within_bidask < 0.0 || policy.min_worst_frac_within_bidask > 1.0 ||
-      evidence.worst_frac_within_bidask < policy.min_worst_frac_within_bidask) {
+      (diagnostics_valid &&
+       evidence.worst_frac_within_bidask < policy.min_worst_frac_within_bidask)) {
     fail(SurfaceAdmissionReason::QualityBelowFloor);
   }
   if (!evidence.finite_iv_domain) {

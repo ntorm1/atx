@@ -53,6 +53,7 @@
 #include <vector>
 
 #include "atx/vol/american.hpp" // AmericanGreeks, AmericanMethod, AlOpts, american_price/greeks
+#include "atx/vol/simd/cpu.hpp"       // SimdIsa (call-local resolved price route)
 #include "atx/vol/surface_parity.hpp" // SliceContext
 #include "atx/vol/types.hpp"          // Result, Status, Side
 #include "atx/vol/vol_curve.hpp"      // CurveSurface, VolCurveKind
@@ -221,13 +222,16 @@ public:
   // bit-identical to `evaluate` because the reused carry equals the per-entry
   // interpolation exactly (T compared by raw bits, never a tolerance). Writes
   // only into `out`'s caller-provided spans; the valid/hot path allocates nothing.
+  // `resolved_price_isa` is call-local and affects only the price-only resolved
+  // American batch; Auto preserves the measured scalar shipment gate.
   // @return InvalidArgument on a K/T/side length mismatch or an out-span sized
   //         neither 0 (where permitted) nor the query count, when any input span
   //         overlaps any output span, or when any nonempty output spans overlap
   //         each other. Overlap is rejected before any write.
   [[nodiscard]] Status evaluate_batch(std::span<const double> K, std::span<const double> T,
                                       std::span<const Side> side, EvalField fields, bool analytic,
-                                      EvaluationSoA out) const;
+                                      EvaluationSoA out,
+                                      simd::SimdIsa resolved_price_isa = simd::SimdIsa::Auto) const;
 
   // ── Term carry accessors (the query re-pricing forward / effective yield) ──
   //

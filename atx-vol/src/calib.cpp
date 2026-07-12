@@ -164,7 +164,7 @@ struct RowResult {
   //    weight_w = weight_sigma / (2σT)² is the value stored on the obs (built by
   //    the shared obs_weight_w helper — identical arithmetic to the de-Am path).
   const double weight_sigma = (vega * vega) / (spread * spread + kWeightEps);
-  const double weight_w = obs_weight_w(vega, spread, iv, T);
+  const double weight_w = std::min(obs_weight_w(vega, spread, iv, T), opts.max_weight);
   if (weight_sigma < opts.min_vega_weight) {
     r.rejection = ObsRejectionReason::LowVegaWeight;
     return r; // Rejected
@@ -318,6 +318,81 @@ void cap_observations_for_deam(ObsSet &set, std::uint32_t requested_cap) {
 
 CalibOpts calib_default_opts() noexcept { return CalibOpts{}; }
 
+Status validate_calib_options(const CalibOpts& opts) noexcept {
+  if (!std::isfinite(opts.max_weight) || !(opts.max_weight > 0.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               "validate_calib_options: max_weight must be finite and positive");
+  }
+
+  switch (opts.loss_kind) {
+  case CalibLossKind::Mid:
+    break;
+  case CalibLossKind::Interval:
+    return Err(ErrorCode::NotImplemented,
+               "validate_calib_options: parametric interval loss is not implemented");
+  default:
+    return Err(ErrorCode::InvalidArgument,
+               "validate_calib_options: invalid calibration loss kind");
+  }
+  switch (opts.essvi_rho_mode) {
+  case EssviRhoMode::PerSlice:
+    break;
+  case EssviRhoMode::Shared:
+  case EssviRhoMode::TermStructure:
+    return Err(ErrorCode::NotImplemented,
+               "validate_calib_options: requested eSSVI rho mode is not implemented");
+  default:
+    return Err(ErrorCode::InvalidArgument,
+               "validate_calib_options: invalid eSSVI rho mode");
+  }
+  if (opts.essvi_asymmetric_rho) {
+    return Err(ErrorCode::NotImplemented,
+               "validate_calib_options: asymmetric eSSVI rho is not implemented");
+  }
+
+  constexpr double kDefaultFallbackRmse = 0.01;
+  constexpr std::uint32_t kDefaultButterflyGrid = 200u;
+  if (opts.essvi_fallback_rmse_threshold != kDefaultFallbackRmse) {
+    return Err(ErrorCode::NotImplemented,
+               "validate_calib_options: configurable eSSVI fallback threshold is not implemented");
+  }
+  if (opts.n_butterfly_grid != kDefaultButterflyGrid) {
+    return Err(ErrorCode::NotImplemented,
+               "validate_calib_options: configurable butterfly grid is not implemented");
+  }
+
+  switch (opts.residual_basis_kind) {
+  case ResidualBasisKind::None:
+    if (opts.residual_n_basis_terms != 0u) {
+      return Err(ErrorCode::InvalidArgument,
+                 "validate_calib_options: None residual requires zero basis terms");
+    }
+    break;
+  case ResidualBasisKind::HingeQuad:
+    if (opts.residual_n_basis_terms != 0u && opts.residual_n_basis_terms != 5u) {
+      return Err(ErrorCode::InvalidArgument,
+                 "validate_calib_options: HingeQuad residual requires 0 or 5 basis terms");
+    }
+    break;
+  case ResidualBasisKind::C2Bspline:
+    if (opts.residual_n_basis_terms != 0u &&
+        (opts.residual_n_basis_terms < 5u || opts.residual_n_basis_terms > 16u)) {
+      return Err(ErrorCode::InvalidArgument,
+                 "validate_calib_options: C2 residual requires 0 or 5..16 basis terms");
+    }
+    break;
+  case ResidualBasisKind::Chebyshev:
+  case ResidualBasisKind::WingBspline:
+  case ResidualBasisKind::Fengler:
+    return Err(ErrorCode::NotImplemented,
+               "validate_calib_options: requested residual basis is not implemented");
+  default:
+    return Err(ErrorCode::InvalidArgument,
+               "validate_calib_options: invalid residual basis kind");
+  }
+  return Ok();
+}
+
 Result<ObsSet> build_observations(const Chain &chain, double F, double T, double df,
                                   const CalibOpts &opts) {
   if (!(F > 0.0) || !(T > 0.0)) {
@@ -326,6 +401,10 @@ Result<ObsSet> build_observations(const Chain &chain, double F, double T, double
   if (!chain_soa_well_formed(chain)) {
     return Err(ErrorCode::InvalidArgument,
                "build_observations: chain SoA arrays shorter than 2*n_strikes");
+  }
+  if (!std::isfinite(opts.max_weight) || !(opts.max_weight > 0.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               "build_observations: max_weight must be finite and positive");
   }
 
   const std::size_t n = chain.n_strikes();
@@ -474,7 +553,7 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
     o.w_mkt = sigma_eu * sigma_eu * T;
     o.mid = eu_px; // European-equivalent premium (what the convex fold expects)
     o.vega = vega;
-    o.weight_w = obs_weight_w(vega, o.spread, sigma_eu, T);
+    o.weight_w = std::min(obs_weight_w(vega, o.spread, sigma_eu, T), opts.max_weight);
     o.active_weight_w = o.weight_w;
     o.noise_sigma = (vega > kVegaFloor) ? (o.spread / vega) : 1.0;
     o.score_sigma_mkt = score_sigma;

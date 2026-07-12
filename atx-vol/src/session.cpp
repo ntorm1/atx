@@ -297,6 +297,8 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
   // the parity run, and is the copy stored for the const queries so the cold
   // fair_value/greeks fallback prices on the same scheme it was fit with.
   SessionInputs eff = in;
+  ATX_TRY_VOID(validate_calib_options(eff.calib));
+  ATX_TRY_VOID(validate_calib_options(eff.curve.parametric));
   if (!valid_term_rates(eff)) {
     return Err(ErrorCode::InvalidArgument, "VolaSession::build: invalid expiry rate vectors");
   }
@@ -390,6 +392,13 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
         cdiag.mean_chi2_reduced = sum_chi2 / dn;
         cdiag.mean_rmse_vol = sum_rmse / dn;
       }
+      if (!eff.score_parity) {
+        cdiag.parity_state = ParityDiagnosticState::Disabled;
+      } else if (np_scored == cdiag.n_slices && np_scored > 0u) {
+        cdiag.parity_state = ParityDiagnosticState::Valid;
+      } else {
+        cdiag.parity_state = ParityDiagnosticState::Failed;
+      }
       std::size_t nq = 0;
       for (const SliceContext& c : crep.context) {
         nq += c.n_used;
@@ -437,6 +446,11 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
     diag.mean_chi2_reduced = sum_chi2 / dnp;
     diag.mean_rmse_vol = sum_rmse / dnp;
   }
+  // The legacy eSSVI compatibility driver intentionally always scores parity,
+  // even when the generic-family opt-out is false. State records what actually
+  // happened, not the ignored compatibility flag.
+  diag.parity_state = (np == diag.n_slices && np > 0u) ? ParityDiagnosticState::Valid
+                                                       : ParityDiagnosticState::Failed;
 
   std::size_t n_quotes = 0;
   for (const SliceContext& c : rep.context) {

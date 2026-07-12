@@ -150,8 +150,16 @@ void apply_fit_preset(SessionInputs& in, FitPreset preset) noexcept;
                                                 double r,
                                                 std::int64_t now_ts_ns = 0);
 
+enum class ParityDiagnosticState : std::uint8_t {
+  NotScored = 0,
+  Disabled = 1,
+  Failed = 2,
+  Valid = 3,
+};
+
 // Aggregate surface-quality summary, distilled from the per-expiry parity
-// reports and the per-slice context at build time.
+// reports and the per-slice context at build time. `parity_state` distinguishes
+// a genuine zero score from an opt-out or a scoring failure.
 struct SessionDiagnostics {
   double worst_frac_within_bidask{0.0};   // min over expiries of frac in bid-ask
   double mean_frac_within_bidask{0.0};    // mean over expiries
@@ -161,6 +169,7 @@ struct SessionDiagnostics {
   std::size_t n_calendar_viol_pre{0};     // calendar violations BEFORE any repair
   std::size_t n_slices{0};                // fitted slice count
   std::size_t n_quotes{0};                // sum of per-slice n_used
+  ParityDiagnosticState parity_state{ParityDiagnosticState::NotScored};
 };
 
 // Stateful surface handle. Construct with `build` / `from_frame`; then query.

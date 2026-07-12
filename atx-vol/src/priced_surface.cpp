@@ -379,7 +379,8 @@ PricedSurface::FusedResult PricedSurface::evaluate(double K, double T, Side side
 
 Status PricedSurface::evaluate_batch(std::span<const double> K, std::span<const double> T,
                                      std::span<const Side> side, EvalField fields, bool analytic,
-                                     EvaluationSoA out) const {
+                                     EvaluationSoA out,
+                                     simd::SimdIsa resolved_price_isa) const {
   const std::size_t n = K.size();
   if (T.size() != n || side.size() != n) {
     return Err(ErrorCode::InvalidArgument,
@@ -475,7 +476,7 @@ Status PricedSurface::evaluate_batch(std::span<const double> K, std::span<const 
             .side = side.subspan(begin, run_size),
             .method = pricing_.method,
             .al_opts = std::optional<AlOpts>{pricing_.al_opts},
-            .isa = simd::SimdIsa::Auto,
+            .isa = resolved_price_isa,
             .price = out.price.subspan(begin, run_size),
             .status = out.status.subspan(begin, run_size),
             .pack_dispatch = {},

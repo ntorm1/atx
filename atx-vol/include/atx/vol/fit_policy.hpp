@@ -100,6 +100,7 @@ enum class SurfaceAdmissionReason : std::uint8_t {
   CalendarTotalVariance = 16,
   ForwardVariance = 17,
   RequiredTenorBucket = 18,
+  DiagnosticsUnavailable = 19,
 };
 
 struct FitAdmissionPolicy {
@@ -144,6 +145,7 @@ struct SurfaceAdmissionEvidence {
   std::optional<double> first_failure_maturity{};
   std::optional<double> first_failure_log_moneyness{};
   std::optional<double> first_failure_value{};
+  ParityDiagnosticState parity_state{ParityDiagnosticState::NotScored};
 };
 
 struct SurfaceAdmissionDecision {

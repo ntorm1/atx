@@ -291,12 +291,15 @@ duplicate_maturity_report(const Underlying &under, const CurveConfig &curve) {
   attempt.build_succeeded = true;
   attempt.stage = SurfaceBuildStage::Admission;
   const SessionDiagnostics &diagnostics = session.diagnostics();
+  attempt.evidence.parity_state = diagnostics.parity_state;
   attempt.evidence.calendar_arb_free = diagnostics.calendar_arb_free;
   attempt.evidence.worst_frac_within_bidask = diagnostics.worst_frac_within_bidask;
-  attempt.evidence.finite_diagnostics = std::isfinite(diagnostics.worst_frac_within_bidask) &&
-                                        std::isfinite(diagnostics.mean_frac_within_bidask) &&
-                                        std::isfinite(diagnostics.mean_chi2_reduced) &&
-                                        std::isfinite(diagnostics.mean_rmse_vol);
+  attempt.evidence.finite_diagnostics =
+      diagnostics.parity_state == ParityDiagnosticState::Valid &&
+      std::isfinite(diagnostics.worst_frac_within_bidask) &&
+      std::isfinite(diagnostics.mean_frac_within_bidask) &&
+      std::isfinite(diagnostics.mean_chi2_reduced) &&
+      std::isfinite(diagnostics.mean_rmse_vol);
 
   const std::span<const SliceContext> fitted = session.expiries();
   std::vector<bool> consumed(fitted.size(), false);

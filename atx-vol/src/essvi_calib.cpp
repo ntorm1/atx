@@ -913,7 +913,7 @@ struct FitScratch {
   if (!opts.residual_disable) {
     if (opts.residual_basis_kind == ResidualBasisKind::C2Bspline) {
       fit_dense_residual(obs, slice, opts);
-    } else {
+    } else if (opts.residual_basis_kind == ResidualBasisKind::HingeQuad) {
       fit_wing_residual(obs, slice, opts);
     }
   }
@@ -1090,6 +1090,7 @@ struct ChainFitResult {
                                         const VolSurface* prior,
                                         unsigned n_workers,
                                         const DeAmOptions* deam) {
+  ATX_TRY_VOID(validate_calib_options(opts));
   if (surface.param() != Parametrization::Essvi) {
     return Err(ErrorCode::InvalidArgument,
                "essvi_calib_surface: surface is not eSSVI-parametrized");
@@ -1247,6 +1248,10 @@ Result<EssviParams> essvi_fit_slice(std::span<const FitObs> obs, double T,
                                     double F, const CalibOpts& opts,
                                     FitDiag* out_diag, double theta_floor,
                                     const EssviParams* warm) {
+  const Status option_status = validate_calib_options(opts);
+  if (!option_status.has_value()) {
+    return Err(option_status.error());
+  }
   ThetaBand band = default_band(T);
   // Raise the cube's theta_lo to the floor (calendar-monotone seam), exactly as
   // calib_surface_impl does for the sequential driver. 0 / <= band.lo is a no-op.

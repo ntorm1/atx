@@ -177,6 +177,21 @@ constexpr std::int64_t kNow = 1700000000000000000LL;
   };
 }
 
+// Two 70-strike, one-expiry side runs. Each run becomes one full 64-lane
+// prepared price tile plus one six-lane tile (one AVX pack + a two-lane tail).
+[[nodiscard]] std::vector<Position> tiled_marks_book() {
+  std::vector<Position> book;
+  book.reserve(140);
+  std::uint64_t id = 0;
+  for (Side side : {Side::Call, Side::Put}) {
+    for (int i = 0; i < 70; ++i) {
+      const double K = 65.0 + 0.5 * static_cast<double>(i);
+      book.push_back({id++, {1, K, 0.25, side}, (side == Side::Call) ? 2.0 : -1.5, 100.0});
+    }
+  }
+  return book;
+}
+
 // Caller-owned backing storage for a PriceFrameView, sized to `n`. The eight
 // Greek columns are allocated only under `want_greeks` — mirroring how a
 // marks-only caller sizes its buffers and leaves the greek spans empty.
@@ -1283,6 +1298,54 @@ TEST(PortfolioPricer, PriceInto_ThreadCounts_TotalsBitIdentical) {
   }
 }
 
+TEST(PortfolioPricer, MarksResolvedRoutesAreThreadDeterministicAndScalarCompatible) {
+  const PricedSurface surface = make_essvi(1, 5);
+  const SurfaceSet surfaces = set_of({&surface});
+  auto pf = Portfolio::create(tiled_marks_book());
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+  const std::size_t n = pricer.portfolio().n_positions();
+  PortfolioWorkspace ws;
+  ws.reserve(pricer.portfolio().n_contracts(), n);
+  FrameStore scalar_ref(n, /*want_greeks=*/false);
+  FrameStore avx_ref(n, /*want_greeks=*/false);
+  const unsigned thread_counts[] = {1, 2, 4, 8};
+  const simd::SimdIsa routes[] = {simd::SimdIsa::ForceScalar,
+                                  simd::SimdIsa::ForceAvx2};
+
+  for (std::size_t route_ix = 0; route_ix < 2; ++route_ix) {
+    FrameStore& route_ref = (route_ix == 0) ? scalar_ref : avx_ref;
+    for (std::size_t thread_ix = 0; thread_ix < 4; ++thread_ix) {
+      FrameStore actual(n, /*want_greeks=*/false);
+      const PriceOptions opts{.n_threads = thread_counts[thread_ix],
+                              .resolved_price_isa = routes[route_ix]};
+      ASSERT_TRUE(pricer.price_into(surfaces, PriceFieldMask::Marks, actual.view(), ws, opts)
+                      .has_value());
+      auto totals = pricer.price_totals(surfaces, PriceFieldMask::Marks, ws, opts);
+      ASSERT_TRUE(totals.has_value());
+      expect_totals_bit_identical(*totals, actual.total);
+      if (thread_ix == 0) {
+        route_ref = std::move(actual);
+      } else {
+        expect_frame_bit_identical(actual, route_ref);
+      }
+    }
+  }
+
+  double total_gate = 0.0;
+  const auto positions = pricer.portfolio().positions();
+  for (std::size_t i = 0; i < n; ++i) {
+    EXPECT_EQ(avx_ref.status[i], scalar_ref.status[i]) << i;
+    EXPECT_TRUE(bits_equal(avx_ref.iv[i], scalar_ref.iv[i])) << i;
+    ASSERT_EQ(scalar_ref.status[i], PriceStatus::Ok) << i;
+    EXPECT_LE(std::abs(avx_ref.price[i] - scalar_ref.price[i]), 1.0e-6) << i;
+    const double weight = std::abs(positions[i].qty * positions[i].multiplier);
+    EXPECT_LE(std::abs(avx_ref.pv[i] - scalar_ref.pv[i]), weight * 1.0e-6) << i;
+    total_gate += weight * 1.0e-6;
+  }
+  EXPECT_LE(std::abs(avx_ref.total.pv - scalar_ref.total.pv), total_gate);
+}
+
 // Zero-allocation proof + retained-substrate reuse. The assertions are only
 // meaningful under -DATX_VOL_COUNTERS=ON; the OFF build compiles it as a
 // disabled-sentinel check so the default suite still exercises the in-place path.
@@ -1434,21 +1497,29 @@ TEST(PortfolioPricer, PriceInto_AlternatingMasks_NoRebuild) {
   FrameStore fm(n, /*want_greeks=*/false);
   PriceFrameView vg = fg.view();
   PriceFrameView vm = fm.view();
+  const PriceOptions greek_opts{.n_threads = 4,
+                                .resolved_price_isa = simd::SimdIsa::ForceScalar};
+  const PriceOptions mark_opts{.n_threads = 4,
+                               .resolved_price_isa = simd::SimdIsa::ForceAvx2};
 
   // Warm-up build (the mask does not affect the substrate it builds).
-  ASSERT_TRUE(pricer.price_into(surfaces, PriceFieldMask::FullGreeks, vg, ws).has_value());
+  ASSERT_TRUE(
+      pricer.price_into(surfaces, PriceFieldMask::FullGreeks, vg, ws, greek_opts).has_value());
 
   if constexpr (counters_enabled()) {
     atx::vol::counters::reset();
-    ASSERT_TRUE(pricer.price_into(surfaces, PriceFieldMask::Marks, vm, ws).has_value());
-    ASSERT_TRUE(pricer.price_into(surfaces, PriceFieldMask::FullGreeks, vg, ws).has_value());
-    ASSERT_TRUE(pricer.price_into(surfaces, PriceFieldMask::Marks, vm, ws).has_value());
-    ASSERT_TRUE(pricer.price_into(surfaces, PriceFieldMask::FullGreeks, vg, ws).has_value());
+  }
+  ASSERT_TRUE(pricer.price_into(surfaces, PriceFieldMask::Marks, vm, ws, mark_opts).has_value());
+  ASSERT_TRUE(
+      pricer.price_into(surfaces, PriceFieldMask::FullGreeks, vg, ws, greek_opts).has_value());
+  ASSERT_TRUE(pricer.price_into(surfaces, PriceFieldMask::Marks, vm, ws, mark_opts).has_value());
+  ASSERT_TRUE(
+      pricer.price_into(surfaces, PriceFieldMask::FullGreeks, vg, ws, greek_opts).has_value());
+  if constexpr (counters_enabled()) {
     const auto snap = atx::vol::counters::snapshot();
-    EXPECT_EQ(snap.get(Counter::PreparedBuilds), 0u); // reused across every mask flip
+    EXPECT_EQ(snap.get(Counter::PreparedBuilds), 0u); // reused across every mask/ISA flip
   } else {
     EXPECT_FALSE(atx::vol::counters::snapshot().enabled);
-    SUCCEED();
   }
 }
 

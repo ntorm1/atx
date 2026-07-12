@@ -407,11 +407,75 @@ TEST_F(PricerFitterTest, FitStoresSurfaceAndGatesValueChain) {
   EXPECT_GT(fitter.surface()->diagnostics().n_slices, 0u);
 }
 
+TEST_F(PricerFitterTest, SessionBoundaryRejectsUnsupportedPersistedCalibrationPolicies) {
+  std::vector<atx::vol::CalibOpts> unsupported;
+  atx::vol::CalibOpts interval;
+  interval.loss_kind = atx::vol::CalibLossKind::Interval;
+  unsupported.push_back(interval);
+  atx::vol::CalibOpts shared_rho;
+  shared_rho.essvi_rho_mode = atx::vol::EssviRhoMode::Shared;
+  unsupported.push_back(shared_rho);
+  atx::vol::CalibOpts asymmetric;
+  asymmetric.essvi_asymmetric_rho = true;
+  unsupported.push_back(asymmetric);
+  atx::vol::CalibOpts fallback;
+  fallback.essvi_fallback_rmse_threshold = 0.02;
+  unsupported.push_back(fallback);
+  atx::vol::CalibOpts grid;
+  grid.n_butterfly_grid = 128u;
+  unsupported.push_back(grid);
+  atx::vol::CalibOpts residual;
+  residual.residual_basis_kind = atx::vol::ResidualBasisKind::Fengler;
+  unsupported.push_back(residual);
+
+  for (const atx::vol::CalibOpts& opts : unsupported) {
+    atx::vol::SessionInputs inputs =
+        atx::vol::make_session_inputs(FitPreset::Fast, spot_, r_, chain_->now_ns());
+    inputs.calib = opts;
+    const auto result = VolaSession::build(chain_->underlying(), inputs);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code(), atx::core::ErrorCode::NotImplemented);
+  }
+
+  atx::vol::SessionInputs curve_inputs =
+      atx::vol::make_session_inputs(FitPreset::Fast, spot_, r_, chain_->now_ns());
+  curve_inputs.curve.kind = atx::vol::VolCurveKind::Svi;
+  curve_inputs.curve.parametric.loss_kind = atx::vol::CalibLossKind::Interval;
+  const auto curve_result = VolaSession::build(chain_->underlying(), curve_inputs);
+  ASSERT_FALSE(curve_result.has_value());
+  EXPECT_EQ(curve_result.error().code(), atx::core::ErrorCode::NotImplemented);
+}
+
+TEST_F(PricerFitterTest, GenericParityOptOutCannotPublishRiskButCanPublishMark) {
+  PricerConfig risk_config;
+  risk_config.preset = FitPreset::Hft;
+  PricerFitter risk_fitter{risk_config};
+  const auto risk_status = risk_fitter.fit(*chain_);
+  ASSERT_FALSE(risk_status.has_value());
+  ASSERT_TRUE(risk_fitter.last_attempt_report().has_value());
+  ASSERT_FALSE(risk_fitter.last_attempt_report()->attempts.empty());
+  const auto& risk_attempt = risk_fitter.last_attempt_report()->attempts.front();
+  EXPECT_EQ(risk_attempt.evidence.parity_state, atx::vol::ParityDiagnosticState::Disabled);
+  EXPECT_TRUE(atx::vol::has_admission_failure(
+      risk_attempt.admission, atx::vol::SurfaceAdmissionReason::DiagnosticsUnavailable));
+
+  PricerConfig mark_config = risk_config;
+  mark_config.admission.consumer = atx::vol::SurfaceConsumer::Mark;
+  mark_config.admission.require_calendar_arb_free = false;
+  PricerFitter mark_fitter{mark_config};
+  ASSERT_TRUE(mark_fitter.fit(*chain_).has_value());
+  ASSERT_NE(mark_fitter.surface(), nullptr);
+  EXPECT_EQ(mark_fitter.surface()->diagnostics().parity_state,
+            atx::vol::ParityDiagnosticState::Disabled);
+}
+
 TEST_F(PricerFitterTest, PinnedEssviStillScoresParityWhenGenericScoreFlagIsFalse) {
   PricerConfig config = essvi_config();
   config.score_parity = false;
   PricerFitter fitter{config};
   ASSERT_TRUE(fitter.fit(*chain_).has_value());
+  EXPECT_EQ(fitter.surface()->diagnostics().parity_state,
+            atx::vol::ParityDiagnosticState::Valid);
   const std::span<const atx::vol::ParityReport> parity = fitter.surface()->session().parity();
   ASSERT_FALSE(parity.empty());
   for (const atx::vol::ParityReport &report : parity) {
