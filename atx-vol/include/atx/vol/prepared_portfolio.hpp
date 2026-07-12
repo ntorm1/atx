@@ -135,9 +135,12 @@ struct ContractGroup {
 
 // Fixed execution tile for price/Greek evaluation. Every tile is homogeneous in
 // `(uid, side, raw T bits)` and tile boundaries are prepared once from the book,
-// never from a requested worker count. The width is a multiple of the four-lane
-// AVX2 kernel so worker partitioning cannot change pack/tail membership.
-inline constexpr std::uint32_t kPreparedPriceTileLanes = 4;
+// never from a requested worker count. A tile spans up to `kPreparedPriceTileLanes`
+// lanes of a raw-T run; the width is a multiple of the four-lane AVX2 kernel so the
+// consumer packs whole four-lane groups WITHIN a tile (group-level packing, not one
+// pack per tile — the wider tile amortizes evaluate_batch and lifts AVX2
+// utilization) and worker partitioning cannot change pack/tail membership.
+inline constexpr std::uint32_t kPreparedPriceTileLanes = 64;
 
 struct PreparedPriceTile {
   std::uint32_t uid;

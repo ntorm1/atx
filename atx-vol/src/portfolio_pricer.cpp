@@ -367,8 +367,10 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
 
   if (!want_greeks && resolved_price_isa == simd::SimdIsa::ForceAvx2) {
     // Only the explicit AVX2 Marks route needs invariant pack membership. Each
-    // immutable four-lane tile is one work unit; changing n_threads changes only
-    // tile ownership, never the pack or final tail.
+    // immutable tile (up to kPreparedPriceTileLanes, a multiple of the four-lane
+    // pack) is one work unit; evaluate_batch packs whole four-lane groups within
+    // it, so changing n_threads changes only tile ownership, never the packs or
+    // final tail.
     pricing_executor().run_blocks(tiles.size(), n_threads, [&](std::size_t i) {
       const PreparedPriceTile &tile = tiles[i];
       solve_span(tile.uid, tile.begin, tile.end);
