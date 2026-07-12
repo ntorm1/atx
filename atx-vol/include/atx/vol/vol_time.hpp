@@ -137,8 +137,10 @@ class VolTimeCalendar {
 
 // ── Production T convention ─────────────────────────────────────────────────
 
-// Calendar-365 year length in nanoseconds (365.25 * 86400s) — the SOLE copy of
-// this constant in atx-vol. `data.cpp`'s `year_fraction` delegates to
+// Calendar-365 year length in nanoseconds (365.25 * 86400s) — the CANONICAL
+// copy of this constant in atx-vol (`portfolio_pricer.hpp`'s `kNsPerYear` and
+// a literal in curve.cpp mirror the same value; they are not aliased to this
+// one, out of scope here). `data.cpp`'s `year_fraction` delegates to
 // `time_to_expiry_years` (default `TimeSpec`) rather than re-deriving it, so
 // `Calendar365` and the legacy ISO-string `year_fraction` can never drift
 // apart.

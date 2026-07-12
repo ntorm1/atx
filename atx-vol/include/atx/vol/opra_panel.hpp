@@ -148,6 +148,9 @@ struct OpraPanel {
   std::size_t n_expiries = 0;  // distinct expiries kept
   std::size_t n_dropped = 0;   // rows skipped (bad symbol / unset px / crossed)
   std::uint32_t source_schema_version{1}; // 1=legacy, 2=instrument_id
+  // Content hash of the source rows/identities only; intentionally
+  // TimeSpec-independent (see opra_panel.cpp's `source_fingerprint`) -- two
+  // panels loaded from the same rows under different T conventions share it.
   std::uint64_t source_fingerprint{0};
   bool provenance_complete{false};
   std::vector<std::uint32_t> source_instrument_ids;      // aligned with frame.rows

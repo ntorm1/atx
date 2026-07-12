@@ -309,3 +309,35 @@ TEST(CurveSelector, SplineCandidateFlagAddsCandidate) {
          "bumpy board's held-out sample";
   EXPECT_EQ(out_on->chosen.kind, VolCurveKind::SplineVol);
 }
+
+// Task I6 review fix: the appended SplineVol candidate must fit through the
+// REQUESTER's own SplineFitOpts (grid/lambda/mult_floor/min_obs), not a
+// silently-defaulted `SplineFitOpts{}` -- a caller who set
+// `spline_candidate=true` alongside a tuned `spline` field would otherwise
+// have those knobs dropped on the floor. Prove opts actually carry by
+// setting `min_obs` on the requesting config to a count the bumpy fixture's
+// even-strike fit split can never reach: with the opts wired through, the
+// appended SplineVol candidate fails to produce ANY scorable slice (n_slices
+// == 0, unscored); with the (pre-fix) defaulted opts, `min_obs` reverts to
+// its default 6 and the SAME fixture fits and wins outright, as
+// SplineCandidateFlagAddsCandidate demonstrates just above.
+TEST(CurveSelector, SplineCandidateCarriesRequesterFitOpts) {
+  const Underlying under = make_bumpy_underlying();
+  const SurfaceParityInputs in = bumpy_inputs();
+
+  CurveConfig essvi;
+  essvi.kind = VolCurveKind::Essvi;
+  essvi.spline_candidate = true;
+  essvi.spline.min_obs = 1000;  // unreachable by the fixture's held-in split
+  SelectorConfig sel_on;
+  sel_on.candidates = {essvi};
+  auto out_on = select_curve(under, in, sel_on);
+  ASSERT_TRUE(out_on.has_value()) << out_on.error().to_string();
+  ASSERT_EQ(out_on->scores.size(), 2u);
+  EXPECT_EQ(out_on->scores[1].kind, VolCurveKind::SplineVol);
+  EXPECT_EQ(out_on->scores[1].n_slices, 0u)
+      << "requester's min_obs=1000 must have reached the appended candidate's "
+         "fit -- if it fell back to the default min_obs=6 the fixture fits "
+         "cleanly (see SplineCandidateFlagAddsCandidate) and n_slices > 0";
+  EXPECT_NE(out_on->chosen.kind, VolCurveKind::SplineVol);
+}

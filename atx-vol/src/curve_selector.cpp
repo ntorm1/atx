@@ -138,16 +138,27 @@ Result<SelectorResult> select_curve(const Underlying &under, const SurfaceParity
   // `CurveConfig::spline_candidate`. `default_selector_candidates()` itself
   // never sets the flag, so a caller passing an empty (default) candidate
   // list is completely unaffected -- bit-identical selection to pre-task.
+  // The appended candidate's `SplineFitOpts` are copied from the FIRST
+  // candidate that set the flag (not left default-constructed), so a
+  // caller's tuned spline knobs (grid/lambda/mult_floor/min_obs) actually
+  // reach the fit it asked for.
   {
     bool want_spline = false;
     bool has_spline = false;
+    const CurveConfig *spline_source = nullptr;
     for (const CurveConfig &c : candidates) {
+      if (c.spline_candidate && spline_source == nullptr) {
+        spline_source = &c;
+      }
       want_spline = want_spline || c.spline_candidate;
       has_spline = has_spline || (c.kind == VolCurveKind::SplineVol);
     }
     if (want_spline && !has_spline) {
       CurveConfig spline_cfg;
       spline_cfg.kind = VolCurveKind::SplineVol;
+      if (spline_source != nullptr) {
+        spline_cfg.spline = spline_source->spline;
+      }
       candidates.push_back(spline_cfg);
     }
   }

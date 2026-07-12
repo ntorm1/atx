@@ -82,6 +82,13 @@ void append_source_text(std::string &out, std::string_view value) {
   out.push_back('|');
 }
 
+// Content hash over the frame's SOURCE rows/identities only (schema version,
+// snapshot stamp, uid, every row's quote fields, and the instrument-identity
+// map) -- it intentionally does NOT fold in `frame.time`/`spec.time`
+// (TimeSpec), so two panels loaded from byte-identical source rows under
+// DIFFERENT T conventions (e.g. Calendar365 vs VolTime) share the same
+// fingerprint; it identifies the market-data rows, not the fitting
+// convention applied to them.
 [[nodiscard]] std::uint64_t
 source_fingerprint(const QuoteFrame &frame, std::span<const std::uint32_t> instrument_ids,
                    const std::map<std::uint32_t, std::string> &identities,

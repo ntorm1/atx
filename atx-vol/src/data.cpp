@@ -446,7 +446,7 @@ Result<Uid> data_install(Universe &u, const QuoteFrame &frame) {
     Chain &chain = under->chains[expiry_id];
     std::int64_t snapshot_ns = 0;
     if (!parse_iso_ns(frame.snapshot_iso, snapshot_ns)) {
-      return Err(ErrorCode::InvalidArgument, "data_install: bad year-fraction");
+      return Err(ErrorCode::InvalidArgument, "data_install: bad snapshot timestamp");
     }
     const double T = time_to_expiry_years(snapshot_ns, expiry_ns, frame.time);
     if (!std::isfinite(T)) {

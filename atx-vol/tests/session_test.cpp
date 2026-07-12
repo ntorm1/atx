@@ -593,6 +593,12 @@ TEST(Session, InterpModeReachesEval) {
   // Default is bit-identical to a session built before this task: the
   // PiecewiseTotalVariance branch of the query path is untouched code
   // (same surface_.iv() call it always was), so this golden pin -- captured
-  // once off the fixture above -- must hold exactly going forward.
-  EXPECT_EQ(iv_default, 0.35727349437368516);
+  // once off the fixture above -- must hold going forward. EXPECT_NEAR (not
+  // EXPECT_EQ) because this pins a full eSSVI Levenberg-Marquardt fit
+  // output, which is susceptible to cross-machine ULP drift in the LM's
+  // transcendental/linear-algebra steps (same fragility class as the
+  // quarantined MultinamePipeline bit-exact pins); the bit-identity of the
+  // untouched default code path is proven structurally by the argument
+  // above, not by this literal's exactness.
+  EXPECT_NEAR(iv_default, 0.35727349437368516, 1e-12);
 }

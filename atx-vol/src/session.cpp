@@ -539,8 +539,24 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
   // once, post-fit, off the surface's OWN fitted eSSVI slices; NaN on any
   // failure (see solve_implied_emove's doc) so a bad/absent schedule never
   // silently changes what gets served.
-  diag.implied_emove = solve_implied_emove(eff.events.get(), eff.now_ts_ns,
-                                           rep.surface.essvi_slices());
+  //
+  // Calendar365-only restriction (same shape as the polymorphic-override
+  // restriction just above, in the ConvexDense/Svi branch): `solve_
+  // implied_emove` synthesizes each fitted slice's absolute expiry instant
+  // from its own T via `ns_from_year_fraction`, the Calendar365 INVERSE of
+  // `time_to_expiry_years`. Under `eff.time.convention == VolTime` a fitted
+  // T is vol-time-shaped, not a plain calendar year-fraction, so that
+  // synthesized instant would not be the real listed expiry and could
+  // mis-bucket a nearby event by days -- silently, with no error, since the
+  // arithmetic is otherwise well-defined. So skip the solve entirely under
+  // any non-Calendar365 convention; `implied_emove` stays at its NaN
+  // default, which `event_aware_active()` (session.hpp) already treats as
+  // "serve exactly as if events were null" -- no separate gate needed on the
+  // serve side. Root-cause fix (stamping `expiry_ns` directly onto fitted
+  // eSSVI slices instead of synthesizing it from T) is a follow-up task.
+  diag.implied_emove = (eff.time.convention == TimeConvention::Calendar365)
+      ? solve_implied_emove(eff.events.get(), eff.now_ts_ns, rep.surface.essvi_slices())
+      : kNaN;
 
   retain_fitted_term_rates(eff, rep.context);
   return Ok(VolaSession{std::move(rep.surface), std::move(rep.context),

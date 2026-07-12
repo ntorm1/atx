@@ -251,6 +251,7 @@ using atx::vol::S3Params;
 using atx::vol::SessionInputs;
 using atx::vol::SynthExpiry;
 using atx::vol::SynthPanelSpec;
+using atx::vol::TimeConvention;
 using atx::vol::Underlying;
 using atx::vol::Universe;
 using atx::vol::VolaSession;
@@ -399,6 +400,47 @@ TEST(Session, NoBracketingExpiriesLeavesEmoveNaN) {
   // a failed solve must fall back exactly, never propagate NaN or a
   // fabricated event contribution into an otherwise-normal query.
   const auto exps = sess->expiries();
+  const double T_mid = 0.5 * (exps[0].T + exps[1].T);
+  EXPECT_EQ(sess->iv(100.0, T_mid), sess_plain->iv(100.0, T_mid));
+  EXPECT_EQ(sess->total_variance(100.0, T_mid), sess_plain->total_variance(100.0, T_mid));
+}
+
+TEST(Session, VolTimeConventionDisablesEmoveSolve) {
+  // eMove policy v1 is Calendar365-only (see SessionInputs::time / ::events
+  // docs). `solve_implied_emove` synthesizes each fitted slice's absolute
+  // expiry instant from its own T via `ns_from_year_fraction` -- the
+  // Calendar365 INVERSE of time_to_expiry_years. Under VolTime a fitted T is
+  // vol-time-shaped, so that synthesized instant is not the real listed
+  // expiry and could mis-bucket a nearby event by days with no error. Reuse
+  // the EXACT bracketing fixture from ImpliedEmoveSolvedAndServed (which
+  // solves a finite eMove under the default Calendar365) to prove the
+  // VolTime guard -- not some other fixture difference -- is what disables
+  // the solve here.
+  const EventPanelFixture fx = make_event_panel("2026-09-01");  // between the two expiries
+  Universe u;
+  const Underlying* under = install_event_panel(fx.spec, u);
+  ASSERT_NE(under, nullptr);
+  ASSERT_EQ(under->chains.size(), std::size_t{2});
+
+  SessionInputs in_events = make_event_inputs(fx);
+  in_events.events =
+      std::make_shared<EventSchedule>(std::vector<std::int64_t>{fx.event_ns});
+  in_events.time.convention = TimeConvention::VolTime;
+  const auto sess = VolaSession::build(*under, in_events);
+  ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
+  EXPECT_TRUE(std::isnan(sess->diagnostics().implied_emove))
+      << "got=" << sess->diagnostics().implied_emove;
+
+  // A NaN emove must make serving inert, bit-identical to events == nullptr
+  // (event_aware_active() gates on isfinite(implied_emove)) -- same
+  // no-fabricated-fallback contract as NoBracketingExpiriesLeavesEmoveNaN.
+  SessionInputs in_plain = make_event_inputs(fx);
+  in_plain.time.convention = TimeConvention::VolTime;
+  const auto sess_plain = VolaSession::build(*under, in_plain);
+  ASSERT_TRUE(sess_plain.has_value()) << sess_plain.error().to_string();
+
+  const auto exps = sess->expiries();
+  ASSERT_EQ(exps.size(), std::size_t{2});
   const double T_mid = 0.5 * (exps[0].T + exps[1].T);
   EXPECT_EQ(sess->iv(100.0, T_mid), sess_plain->iv(100.0, T_mid));
   EXPECT_EQ(sess->total_variance(100.0, T_mid), sess_plain->total_variance(100.0, T_mid));

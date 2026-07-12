@@ -139,7 +139,11 @@ struct SessionInputs {
   // event contribution. Restricted to the default eSSVI path, same as
   // ShapeBlend above: a session built with a polymorphic curve override
   // (ConvexDense / Svi) leaves `implied_emove` at its NaN default and never
-  // consults `events`.
+  // consults `events`. ALSO restricted to `time.convention == Calendar365`
+  // (v1): the solve derives each fitted slice's absolute expiry instant from
+  // its T, which is only a real calendar instant under Calendar365 -- see
+  // `time`'s doc below. Under VolTime, `build` skips the solve and falls
+  // back to the plain (non-event) blend, same NaN convention.
   std::shared_ptr<const EventSchedule> events{};
   // The session's retained copy of the T convention its chains were built
   // under (see vol_time.hpp `TimeSpec`; default Calendar365 is BIT-IDENTICAL
@@ -152,7 +156,15 @@ struct SessionInputs {
   // than build a mixed-convention session (copy the frame's TimeSpec, e.g.
   // `OpraPanel::time`, into this field). `build(under, in)` installs nothing
   // itself (`under` is pre-installed), so there the match with whatever frame
-  // produced `under` remains a documented caller contract.
+  // produced `under` remains a documented caller contract. NOTE: events-
+  // censoring (`events` above) requires this to be Calendar365 in v1 -- the
+  // eMove solve synthesizes a fitted slice's absolute expiry instant from its
+  // T (`ns_from_year_fraction`, the Calendar365 inverse of
+  // `time_to_expiry_years`), which is only correct when T itself is a plain
+  // calendar year-fraction. Under VolTime, `build` skips the solve and
+  // `SessionDiagnostics::implied_emove` stays NaN (plain-blend fallback); the
+  // root-cause fix -- stamping `expiry_ns` directly onto fitted eSSVI slices
+  // instead of synthesizing it from T -- is a follow-up task.
   TimeSpec time{};
 };
 

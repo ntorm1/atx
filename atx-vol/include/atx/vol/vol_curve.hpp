@@ -324,10 +324,13 @@ struct CurveConfig {
 
   // Selector gate (Task I5), NOT a per-slice fit knob: when `true` on ANY
   // config in a `SelectorConfig::candidates` list passed to `select_curve`,
-  // the selector appends a `VolCurveKind::SplineVol` candidate (default
-  // `SplineFitOpts`) to that call's working ladder if one is not already
-  // present. `default_selector_candidates()` itself is untouched (every entry
-  // it returns defaults this to `false`), so a caller who supplies no
+  // the selector appends a `VolCurveKind::SplineVol` candidate to that call's
+  // working ladder if one is not already present, carrying the `spline`
+  // field FROM THE FIRST config in that list that set this flag (so a
+  // caller's own SplineFitOpts knobs actually take effect, not a defaulted
+  // `SplineFitOpts{}`). `default_selector_candidates()` itself is untouched
+  // (every entry it returns defaults this to `false`), so a caller who
+  // supplies no
   // candidates -- the common case, `SelectorConfig::candidates.empty()` --
   // sees NO behavior change: SplineVol is not yet OOS-proven as a default
   // family (07-11/07-12 sprint evidence pending), so this is an explicit,
