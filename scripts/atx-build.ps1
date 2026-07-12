@@ -36,6 +36,16 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 if (-not (Test-Path $VcVars))   { throw "vcvars64.bat not found at $VcVars" }
 if (-not (Test-Path $NinjaDir)) { throw "Ninja dir not found at $NinjaDir" }
 
+# vcvars64 can fail silently in shells with a huge/odd PATH (its vswhere lookup
+# breaks), leaving mt.exe (Windows SDK manifest tool) unresolved -> CMake's
+# compiler check dies with "MT: command CMAKE_MT-NOTFOUND ... failed" in every
+# FRESH build dir (cached CMAKE_MT hides it in existing ones). clang-cl and
+# lld-link self-locate MSVC/SDK, so pinning the newest SDK bin dir onto PATH is
+# the only extra piece a fresh worktree needs.
+$MtDir = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\10.*\x64\mt.exe" -ErrorAction SilentlyContinue |
+  Sort-Object { [version]($_.Directory.Parent.Name) } | Select-Object -Last 1 | ForEach-Object { $_.DirectoryName }
+if (-not $MtDir) { Write-Warning "mt.exe not found under Windows Kits; relying on vcvars64 PATH" }
+
 # Build the inner command. Everything runs inside one cmd.exe session so the env
 # vcvars64 sets (INCLUDE/LIB/PATH) is live for the cmake/ctest invocation.
 $verb = if ($Args.Count -gt 0) { $Args[0] } else { "" }
@@ -51,7 +61,10 @@ if ($Ctest) {
   exit $LASTEXITCODE
 }
 elseif ($verb -eq "configure") {
-  $cfg = "cmake --preset ninja"
+  # `dev` is the canonical iterate preset (same binaryDir build/ as `ninja`).
+  # Using it here keeps configure consistent with scripts\new-worktree.ps1 —
+  # previously this line said `ninja`, silently dropping the shared-deps setup.
+  $cfg = "cmake --preset dev"
   if ($Groups) { $cfg += " -DATX_TEST_GROUPS=$Groups" }
   if ($Bench)  { $cfg += " -DATX_BUILD_BENCH=ON" }
   $inner = $cfg
@@ -64,7 +77,14 @@ else {
   $inner = "cmake " + ($Args -join " ")
 }
 
-$full = "`"$VcVars`" >nul 2>&1 && set `"PATH=$NinjaDir;%PATH%`" && cd /d `"$RepoRoot`" && $inner"
+$PathPrefix = if ($MtDir) { "$NinjaDir;$MtDir" } else { $NinjaDir }
+# CCACHE_BASEDIR is the one per-worktree ccache key (relativizes this tree's paths in
+# the hash -> cross-worktree cache hits). The preset `environment` block only applies
+# to `cmake --preset`/`cmake --build --preset` invocations, and the build verb below
+# calls `cmake --build <dir>` directly - so export it here. The worktree-invariant
+# keys (hash_dir/sloppiness/ignore_options) live in the global ccache config
+# (scripts/dev-setup.ps1).
+$full = "`"$VcVars`" >nul 2>&1 && set `"PATH=$PathPrefix;%PATH%`" && set `"CCACHE_BASEDIR=$RepoRoot`" && cd /d `"$RepoRoot`" && $inner"
 Write-Host "[atx-build] $inner" -ForegroundColor Cyan
 & cmd.exe /c $full
 exit $LASTEXITCODE
