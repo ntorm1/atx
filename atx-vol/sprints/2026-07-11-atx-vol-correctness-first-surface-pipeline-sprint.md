@@ -602,3 +602,89 @@ against the initial 100 ms target; p95 and every incremental gate pass.
   and correction-cache `Pin.*`) and are compiler-sensitive baseline issues, not V2 regressions.
   V2-driven multiname baselines were deliberately repinned because the production default surface
   changed from the legacy fit to the correctness-first risk fit.
+
+## 15. Independent review-fix pass record (2026-07-12)
+
+A multi-agent review of the sprint implementation (correctness, performance, feature gaps,
+unwired code) produced 12 Critical / 54 Important findings; a subagent-driven fix pass landed
+five reviewed task waves on this branch before merge to main. Per-task detail, review verdicts,
+and full reports live in `.superpowers/sdd/` (`progress.md` ledger, `rfx-task-N-{brief,report}.md`,
+`findings/*.md`).
+
+### Landed (each independently reviewed; fix loops closed)
+
+- **Task 1 (`c83c9fe`) — policy/serving safety.** Fail-closed `value_chain` default purpose;
+  removed the `al_opts` clobber in `VolaSession::build` that silently substituted the fast de-Am
+  preset for all risk modes (per-mode carry budgets 3/8/12 now real); Hft+LV pin mapping; unified
+  legacy-preset translation on `map_legacy_fit_preset`; honest fallback provenance.
+- **Task 2 (`174bee2` + `bf8d5a0`) — certification holes.** Audited eSSVI fallback rung
+  (`DeAmOptions::audit_fit_inversions`); non-vacuous certification (Baw uncertified); drop-cap
+  semantics (default 0.10 of usable de-Am rows) instead of one-bad-quote generation rejection;
+  new `ValidationFailure::CarryGap` (1u<<11) surfacing carry-skipped expiries as Degraded, with
+  persistence masks widened to bits 0-11 and round-trip tests; carry-aware certified-cache
+  invalidation (spreads/timestamps + selection band).
+- **Task 3 (`b118439` + `7e0264e`) — admission-oracle hardening.** Calendar-grid non-finite
+  samples now set NonFinite (no silent skip); slice-fit sub-intrinsic clamps surface as
+  PriceBounds through the independent-failure merge seam (`merge_session_failure_context`, now
+  public API); active-set QP verifies start feasibility and fails closed on iteration-cap exit
+  (Err(Internal), all row families checked); validation grid unions each slice's node
+  log-moneyness locations (dedup, deterministic, capped); adapter/Wing/PriceBounds/InvalidDomain
+  rejection tests added.
+- **Task 4 (`e5e2a8a`) — persistence wiring.** Stored `SymbolFitConfig::surface_policy` now
+  surfaced by a 3-arg `apply_symbol_config` overload (stored-wins precedence); the production
+  corpus archive writer populates `SurfaceArchiveItem::provenance` from the fitter's real
+  health/digest (legacy archives still load; no format bump needed).
+- **Task 5 (`b6fc043` + `88fff30`) — de-Am dedup (perf C1).** `VolaSession` certification folded
+  into the parallel de-Am prepass; duplicate serial `resolve_chain_forward` +
+  `build_observations_european` pass eliminated. Cold `PricerFitter::fit` on the SPY-synthetic
+  datum: ~1810 ms → ~400-560 ms (~4.5x). Bit-identity of certification diagnostics and admission
+  outcomes proven per-slice against a serial reference and across worker counts (new determinism
+  tests, both curve-driver and eSSVI branches). Post-convergence `deam_pcp_step` (perf C4a)
+  investigated and proven load-bearing — left unchanged.
+
+### §14 evidence corrections
+
+- The §14 latency table above predates Tasks 1+5 and is stale in both directions: Task 1 made
+  risk modes genuinely pay multi-pair accurate carry (breadth fits got slower), then Task 5
+  removed the duplicate serial pass (cold fit ~4.5x faster on the measured datum). Re-run the
+  bench for current numbers before quoting any figure.
+- Test-suite state at merge: 1038 ran / 1025 passed / 4 skipped / 9 failed. The 9 = 4
+  pre-existing compiler-sensitive bit-pins (reproduce on untouched main) + 5 artifact-cache-state
+  baselines (`SpyBidAskRegression.ConvexDenseServedViaSessionInBand`,
+  `SpyArchiveRoundTrip.ConvexDense_Serialize_Reload_ReproducesTheoAndAccuracy`, 3
+  `MultinamePipeline` pins) that flip with artifact-cache freshness — a re-capture decision is
+  owed (below), not a rebaseline-in-passing.
+
+### Remaining items (documented, not landed)
+
+Reviewed-but-unfinished:
+- **Task 6 — perf micro batch (uncommitted WIP at merge time).** `ConvexSliceFit::iv` safeguarded
+  Newton replacing the fixed 64-iteration bisection; validator direct slice eval; exact-T bracket
+  short-circuit; calendar-check row reuse; clone-cost cuts. Implementation existed with targeted
+  tests passing when the pass was halted; needs full-suite verification, commit, and review.
+  Brief: `.superpowers/sdd/rfx-task-6-brief.md`.
+- **Task 7 — bench honesty + UI label (brief staged, not started).** Incremental bench samples
+  all take the spread-invariance shortcut (never a true refit) — perturb mids on alternate
+  samples and report shortcut/refit counts separately; UI header hardcodes "HFT / LIN VAR"
+  (atx-ui/src/vol/vol_workspace.cpp:88) instead of deriving from the served config. Brief:
+  `.superpowers/sdd/rfx-task-7-brief.md`.
+- **Final whole-branch review** was not run (per-task reviews only).
+
+Accepted deferrals from the original review (unchanged scope):
+- Timeout budget / TimedOut failure bit; replay metadata (config_hash/build_version/seed);
+  Greek perturbation gate; event/serial expiry metadata; shadow mode +
+  `ATX_SURFACE_PIPELINE_V2` flag; scoped incremental validation (perf I3); diagnostics-consumer
+  tail; `ATX_BUILD_UI` stays opt-in.
+- Perf follow-ups not taken: accurate-route audit dedup (perf I1), per-mode `kBorrowFpTol` +
+  carry warm-start (perf C4b/c), shared_ptr-slice surface clones (perf I4 item 1), bench
+  board-scale fixture (perf I7).
+
+Operational debts:
+- Artifact-cache-dependent baselines (5 tests above): decide re-capture vs pinning policy.
+- Pre-existing repo-wide Release build break outside atx-vol:
+  `atx-engine/tests/core/phase4_integration_test.cpp:335` `-Wunused-parameter` under NDEBUG
+  (`ATX_ASSERT` compiled out) — trips `/WX` when building the full graph.
+- Minor review findings logged per task in `.superpowers/sdd/progress.md` (I-2 fitter-level
+  health test for audit-starved case; provenance byte-determinism test across worker counts;
+  MarketMark arm of corpus provenance ternary untested; `sp.deam.caches` single-mutation-site
+  invariant documented but not structurally enforced; validator grid-cap prefix truncation).

@@ -520,3 +520,34 @@ Task 1: complete (commits 0eb62b7..c83c9fe, review clean — SPEC ✅ / Approved
   Minor roll-up: 1e selector-route re-stamp lacks deterministic e2e test (disclosed); 50% in-band mark datum on
   soun-close board worth tracking.
 
+
+Task 2: complete (commits c83c9fe..bf8d5a0 — 174bee2 original + bf8d5a0 fix wave; re-review clean: C-1/I-1/I-2 all CLOSED, spec ✅, quality Approved)
+  Minor findings for final-review triage:
+  - I-2 covering test asserts diagnostics counter only (session_test.cpp:747), not fitter-level health outcome for audit-starved case specifically; health guarantee rests on shared merge path proven by sibling carry-skip tests (pricer_fitter_test.cpp:409-450).
+  - I-1 fix carries pre-existing carry_confident/inversion_certified merges onto refit path via shared merge_session_failure_context (pricer_fitter.cpp:65-82,713) — broader than minimum ask, verified strictly fail-closed (OR-only).
+  Note: stale-cache baselines (SpyBidAskRegression + 3 MultinamePipeline) flipped green→red between full runs on identical code — confirms artifact-cache-state flakiness; final-verify must decide re-capture.
+
+Task 3: complete (commits b118439 + 7e0264e fix; review clean after fix loop: 3a-3e all MET, spec ✅, quality Approved)
+  Minor findings for final-review triage:
+  - session.cpp diagnostic-population assignments (:566-570 build, :1313-1317 refit commit) verified by inspection + arb unit tests only — fail-closed QP makes natural end-to-end clamp fixture unconstructible (disclosed, accepted).
+  - merge_session_failure_context now public API (pricer_fitter.hpp:116) — deliberate; flag if detail:: home preferred.
+  - dense_slice.cpp:613 ceiling clamp theoretical convexity break → caught fail-closed by start-feasibility check (spurious-rejection risk only, unreachable for |k|<=3).
+  - risk_surface_validation.cpp:89-91 grid-cap truncation keeps ascending prefix (drops near k_max) — defensive/unreachable today.
+  Notes: SpyArchiveRoundTrip.ConvexDense_Serialize_Reload_ReproducesTheoAndAccuracy joins stale-cache-flaky bucket (bit-identical failure on stashed baseline binary). CorpusGeneratedProperty.FixedSeedGeneratedPropertyGate flaked once under sharding, passes isolated + full. %TEMP%\wt-build.log shared across concurrent sessions — implementers should use dedicated logs.
+
+Task 4: complete (commit e5e2a8a; review clean: 4a/4b MET, spec check-pass, quality Approved)
+  4a via additive 3-arg apply_symbol_config overload (SurfacePolicy out-param, stored-wins precedence); no production caller of SurfaceDb exists anywhere (verified) — pre-existing architectural gap, not scope-dodge. 4b populates SurfaceArchiveItem::provenance (not WriteOpts — finding label corrected) from fitter bundle health; no kArchiveMajor bump needed (v3 reserved-region record pre-existed).
+  Minor findings for final-review triage:
+  - Determinism of new provenance bytes across worker counts unverified by test (Deterministic_AcrossThreadCounts never reads provenance()); credible by inspection. Suggested follow-up: field-by-field provenance equality across thread counts.
+  - New corpus test exercises only Risk branch of purpose ternary (corpus.cpp:611-613); MarketMark arm untested.
+  - Pre-existing fragility: MarketMark Stale/Rejected paths (pricer_fitter.cpp:210-231) set .reasons but leave .validation default — provenance_from_health would lose reason if ever invoked there (currently unreachable).
+  - CarryGap corpus end-to-end untestable without fixture engineering; wire-level round-trip covered (accepted).
+
+Task 5: complete (commits b6fc043 + 88fff30 fix; re-review clean: 5a MET after fix loop, 5b sound refutation (deam_pcp_step load-bearing, left unchanged), 5c MET; spec check-pass, quality Approved)
+  Timing: cold PricerFitter::fit ~1810ms -> ~400-560ms auto-worker (~4.5x); forced-serial ~2860 -> ~1390ms.
+  Fix loop closed: Critical slice_idx bug (all eSSVI slices read slice 0 carry — mutation-tested covering test added), Important .caches divergence (deam_cert_caches pointer-equality gate + re-resolve fallback; bit-identity argued all 4 cases).
+  Minor findings for final-review triage:
+  - curve_fit.cpp:279-297 certification-carry runs for usable-but-unfittable chains (wasted resolve, correctness-neutral).
+  - Reuse gate relies on invariant "session.cpp:562 is only sp.deam.caches mutation site" — documented, not structurally enforced. Hardening candidate.
+  - Serial-reference test exercises fast AL preset only (preset-agnostic plumbing, accepted).
+  Notes: bench binary unavailable in rel preset (ATX_BUILD_BENCH off) — 5c used sanctioned fallback datum. Shared C:\atx-cache\deps race with concurrent Debug session caused one transient lld failure (not code).
