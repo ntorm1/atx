@@ -81,6 +81,80 @@ inline constexpr double kProjExactTTol = 1.0 / (252.0 * 6.5 * 60.0);
   return kQuietNaN;
 }
 
+// SpiderRock FLEXVolInterpolation-style "vol-multiple" blend (see
+// InterpMode::ShapeBlend for the full contract). `handle.alpha_T` doubles as
+// wwHi; wwLo = 1 - wwHi. Falls back to the PiecewiseTotalVariance formula
+// (linear-in-w at fixed k) when either parent's ATM total variance is
+// non-finite / non-positive, or the blended ATM total variance / vol comes
+// out non-finite / non-positive — this is a documented degeneracy fallback,
+// not an error.
+[[nodiscard]] double shape_blend_w(const VolSurface& s,
+                                   const InsertedSliceHandle& h,
+                                   double k_log) noexcept {
+  const auto lo = static_cast<std::uint16_t>(h.parent_lo_idx);
+  const auto hi = static_cast<std::uint16_t>(h.parent_hi_idx);
+  const double ww_hi = h.alpha_T;
+  const double ww_lo = 1.0 - ww_hi;
+
+  auto linear_w_fallback = [&]() noexcept {
+    const double w_lo = slice_w(s, lo, k_log);
+    const double w_hi = slice_w(s, hi, k_log);
+    return w_lo + ww_hi * (w_hi - w_lo);
+  };
+
+  const double T_lo = slice_T(s, lo);
+  const double T_hi = slice_T(s, hi);
+  const double T_q = h.T_clock;
+  if (!(T_lo > 0.0) || !(T_hi > 0.0) || !(T_q > 0.0)) {
+    return linear_w_fallback();
+  }
+
+  // ATM total variance of each parent (k = 0), and the SpiderRock ATM blend
+  // atm(T_q)^2 * T_q = wwLo*T_lo*atm_lo^2 + wwHi*T_hi*atm_hi^2
+  //                  = wwLo*w_lo(0) + wwHi*w_hi(0)
+  // — identical to the PiecewiseTotalVariance blend evaluated at k = 0, so
+  // ATM matches it exactly by construction.
+  const double w_lo0 = slice_w(s, lo, 0.0);
+  const double w_hi0 = slice_w(s, hi, 0.0);
+  if (!(std::isfinite(w_lo0) && w_lo0 > 0.0) ||
+      !(std::isfinite(w_hi0) && w_hi0 > 0.0)) {
+    return linear_w_fallback();
+  }
+  const double atm_lo = std::sqrt(w_lo0 / T_lo);
+  const double atm_hi = std::sqrt(w_hi0 / T_hi);
+
+  const double w_atm_q = ww_lo * w_lo0 + ww_hi * w_hi0;
+  if (!(std::isfinite(w_atm_q) && w_atm_q > 0.0)) {
+    return linear_w_fallback();
+  }
+  const double atm_q = std::sqrt(w_atm_q / T_q);
+  if (!(std::isfinite(atm_q) && atm_q > 0.0)) {
+    return linear_w_fallback();
+  }
+
+  // Common standardized moneyness z, mapped into each parent's own
+  // coordinates: k_x = z * atm_x * sqrt(T_x).
+  const double z = k_log / (atm_q * std::sqrt(T_q));
+  const double k_lo = z * atm_lo * std::sqrt(T_lo);
+  const double k_hi = z * atm_hi * std::sqrt(T_hi);
+
+  const double w_lo_k = slice_w(s, lo, k_lo);
+  const double w_hi_k = slice_w(s, hi, k_hi);
+  if (!(std::isfinite(w_lo_k) && w_lo_k >= 0.0) ||
+      !(std::isfinite(w_hi_k) && w_hi_k >= 0.0)) {
+    return linear_w_fallback();
+  }
+
+  // Vol multiples m_x(z) = sigma_x(k_x) / atm_x, blended and re-scaled by
+  // atm(T_q) into the query's own vol, then back to total variance so the
+  // caller-facing contract (w_on_inserted_slice returns total variance)
+  // stays uniform across both interp modes.
+  const double m_lo = std::sqrt(w_lo_k / T_lo) / atm_lo;
+  const double m_hi = std::sqrt(w_hi_k / T_hi) / atm_hi;
+  const double sigma_q = atm_q * (ww_lo * m_lo + ww_hi * m_hi);
+  return sigma_q * sigma_q * T_q;
+}
+
 }  // namespace
 
 // ── Defaults ─────────────────────────────────────────────────────────────
@@ -220,7 +294,8 @@ Result<InsertedSliceHandle> surface_insert_vol_slice(
     out.flags |= kFlagInvalid;
     return Err(ErrorCode::NotFound, "surface has no slices");
   }
-  if (interp != InterpMode::PiecewiseTotalVariance) {
+  if (interp != InterpMode::PiecewiseTotalVariance &&
+      interp != InterpMode::ShapeBlend) {
     out.flags |= kFlagInvalid;
     return Err(ErrorCode::NotImplemented, "reserved interp mode");
   }
@@ -278,6 +353,12 @@ Result<InsertedSliceHandle> surface_insert_vol_slice(
       out.alpha_T = (T_clock - T_lo) / (T_hi - T_lo);
       out.flags |= kFlagInterpolatedT;
       out.flags |= kFlagInsertedSlice;
+      if (interp == InterpMode::ShapeBlend) {
+        // Genuine two-slice blend: ATM still matches PiecewiseTotalVariance
+        // by construction, but non-ATM calendar-arbitrage safety is not
+        // guaranteed (InterpMode::ShapeBlend doc).
+        out.flags |= kFlagShapeBlendCalendarUnsafe;
+      }
     }
   }
 
@@ -305,6 +386,9 @@ double w_on_inserted_slice(const VolSurface& surface,
   if (handle.exact_slice_idx >= 0) {
     return slice_w(surface, static_cast<std::uint16_t>(handle.exact_slice_idx),
                    k_log);
+  }
+  if (handle.interp_mode == InterpMode::ShapeBlend) {
+    return shape_blend_w(surface, handle, k_log);
   }
   const double w_lo =
       slice_w(surface, static_cast<std::uint16_t>(handle.parent_lo_idx), k_log);
@@ -446,6 +530,10 @@ Result<EvalResult> surface_eval_ex(const VolSurface& surface,
   if (request.pricing_route_policy == RoutePolicy::AlCorrection) {
     return Err(ErrorCode::NotImplemented, "AL correction route deferred");
   }
+  if (request.interp_mode != InterpMode::PiecewiseTotalVariance &&
+      request.interp_mode != InterpMode::ShapeBlend) {
+    return Err(ErrorCode::NotImplemented, "reserved interp mode");
+  }
 
   CoordConvertRequest creq;
   creq.T_clock = request.T_clock;
@@ -476,7 +564,24 @@ Result<EvalResult> surface_eval_ex(const VolSurface& surface,
     out.quote_delta = cr->quote_delta;
   }
 
-  const double w = surface.w(cr->k_log, cr->tau_vol);
+  double w = kQuietNaN;
+  if (request.interp_mode == InterpMode::ShapeBlend) {
+    // ShapeBlend routes through the inserted-slice path so it can see both
+    // bracketing slices; PiecewiseTotalVariance (default, below) stays on
+    // the original direct VolSurface::w() call for bit-identical behavior.
+    auto handle = surface_insert_vol_slice(surface, &curves, tm,
+                                           request.T_clock,
+                                           InterpMode::ShapeBlend,
+                                           request.extrap_policy);
+    if (!handle) {
+      out.flags |= kFlagInvalid;
+      return Err(std::move(handle).error());
+    }
+    out.flags |= handle->flags;
+    w = w_on_inserted_slice(surface, *handle, cr->k_log);
+  } else {
+    w = surface.w(cr->k_log, cr->tau_vol);
+  }
   if (!(std::isfinite(w) && w > 0.0)) {
     out.flags |= kFlagInvalid;
     return Err(ErrorCode::OutOfRange, "non-positive total variance");
