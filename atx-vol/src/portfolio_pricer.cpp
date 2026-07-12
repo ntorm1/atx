@@ -167,10 +167,21 @@ namespace {
 // Per-unique-contract price result. `fair_value` is the American Andersen-Lake
 // mark (the accurate served theo); `g` are the American Greeks (cold finite
 // differences on american_price, so g.price == fair_value bit-identical).
+// `vega_slope` is the (already omega-blended) SpiderRock VegaSlope from
+// `priced_surface_skew_slope` + `vega_slope_from_skew_slope`, computed once
+// per unique contract in `solve_span` (where the served surface + this
+// contract's (K, T) are both in scope) and carried alongside so `scatter_rows`
+// / `reduce_price_totals` -- which do NOT hold a SurfaceSet -- can each apply
+// `delta + vega_slope * vega` independently under `PriceOptions::skew_adjusted_delta`,
+// matching this file's existing pattern of two independent, bit-identical
+// per-position reductions off one shared per-unique solve. Left at its 0.0
+// default (a no-op multiplier) whenever the flag is off or the lane never
+// reaches Ok status.
 struct ContractPx {
   double fair_value{0.0};
   AmericanGreeks g{};
   double iv{0.0};
+  double vega_slope{0.0};
   PriceStatus status{PriceStatus::ModelUnavailable};
 };
 
@@ -194,6 +205,45 @@ struct ContractPnl {
   return !(std::isfinite(c.K) && c.K > 0.0 && std::isfinite(c.T) && c.T > 0.0);
 }
 
+// dSigma/dk at k_log = ln(K / F(T)) off a served `PricedSurface`, central FD
+// (h = 1e-4) -- the same scheme adjusted_greeks.hpp's `surface_skew_slope`
+// applies to a `VolSurface`. Adapted here because `PricedSurface` is
+// K-parameterized (`total_variance(K, T)`, absolute strike) rather than
+// k_log-parameterized like `VolSurface::w`: bump k_log by +/- h and convert
+// back to an absolute strike through the surface's OWN forward, so
+// `total_variance`'s internal `k_log = ln(K / F(T))` re-derivation lands
+// exactly on `k_log +/- h` (mod the log/exp round-trip's ~1 ULP noise,
+// negligible next to the FD's own 1e-4 step) -- not exposed on
+// adjusted_greeks.hpp's public surface because that header's `surface_skew_slope`
+// is scoped to `VolSurface` only (see the I6 task report for why a second
+// public PricedSurface overload was not added). NaN under the same
+// conditions `surface_skew_slope` documents: T <= 0, non-positive/non-finite
+// sigma at k_log, a non-finite FD stencil point, or (the PricedSurface-
+// specific addition) a non-positive/non-finite forward at T.
+[[nodiscard]] double priced_surface_skew_slope(const PricedSurface &surf, double K,
+                                               double T) noexcept {
+  constexpr double kFdStep = 1e-4;
+  const double F = surf.forward_at(T);
+  if (!(F > 0.0) || !std::isfinite(F)) {
+    return kNaN;
+  }
+  const double k_log = std::log(K / F);
+  const double w0 = surf.total_variance(K, T);
+  const double sigma = std::sqrt(w0 / T);
+  if (!(T > 0.0) || !(sigma > 0.0) || !std::isfinite(sigma)) {
+    return kNaN;
+  }
+  const double K_plus = F * std::exp(k_log + kFdStep);
+  const double K_minus = F * std::exp(k_log - kFdStep);
+  const double w_plus = surf.total_variance(K_plus, T);
+  const double w_minus = surf.total_variance(K_minus, T);
+  const double dw_dk = (w_plus - w_minus) / (2.0 * kFdStep);
+  if (!std::isfinite(dw_dk)) {
+    return kNaN;
+  }
+  return dw_dk / (2.0 * sigma * T);
+}
+
 // Solve every UNIQUE contract into `px` (indexed by the ORIGINAL Portfolio
 // contract index), reusing the caller's batch-eval SoA scratch (`b_*`). This is
 // the T5 grouped, permuted, evaluate_batch fan-out factored verbatim so that
@@ -210,7 +260,8 @@ struct ContractPnl {
 // across a raw-bit-equal-T ladder (bit-identical to per-contract evaluate).
 void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
                    std::span<const OptionContract> contracts, bool want_greeks, bool analytic,
-                   unsigned n_threads, std::vector<ContractPx> &px, std::vector<double> &b_iv,
+                   bool skew_adjusted_delta, const StickyParams &sticky, unsigned n_threads,
+                   std::vector<ContractPx> &px, std::vector<double> &b_iv,
                    std::vector<double> &b_price, std::vector<AmericanGreeks> &b_greeks,
                    std::vector<Status> &b_status) {
   const std::size_t n_unique = pp.n_unique();
@@ -275,6 +326,10 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
       out.fair_value = b_greeks[p].price;
       out.g = b_greeks[p];
       out.status = PriceStatus::Ok;
+      if (skew_adjusted_delta) {
+        const double slope = priced_surface_skew_slope(*surf, kcol[p], tcol[p]);
+        out.vega_slope = vega_slope_from_skew_slope(slope, surf->pricing().S, sticky);
+      }
     }
   };
 
@@ -300,8 +355,8 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
 // touched (the 64 B/pos saving). Bit-identical to price()'s scatter for the
 // columns it writes.
 void scatter_rows(std::span<const Position> positions, const Portfolio &pf,
-                  std::span<const ContractPx> px, bool want_greeks, unsigned n_threads,
-                  const PriceFrameView &out) {
+                  std::span<const ContractPx> px, bool want_greeks, bool skew_adjusted_delta,
+                  unsigned n_threads, const PriceFrameView &out) {
   const std::size_t n = positions.size();
   pricing_executor().run_blocks(n, n_threads, [&](std::size_t i) {
     const Position &p = positions[i];
@@ -324,7 +379,11 @@ void scatter_rows(std::span<const Position> positions, const Portfolio &pf,
     out.price[i] = c.fair_value; // American per-share mark
     out.pv[i] = w * c.fair_value;
     if (want_greeks) {
-      out.delta[i] = w * g.delta;
+      // Skew-adjusted (SpiderRock) delta: delta + VegaSlope * vega, VegaSlope
+      // precomputed per unique contract in solve_span (c.vega_slope). Off by
+      // default -> delta_ps == g.delta, bit-identical to the pre-I6 path.
+      const double delta_ps = skew_adjusted_delta ? (g.delta + c.vega_slope * g.vega) : g.delta;
+      out.delta[i] = w * delta_ps;
       out.gamma[i] = w * g.gamma;
       out.vega[i] = w * g.vega;
       out.theta[i] = w * g.theta;
@@ -344,7 +403,8 @@ void scatter_rows(std::span<const Position> positions, const Portfolio &pf,
 // Greek sums stay NaN (a clean 0.0 would read as a genuinely vega-flat book).
 // `t` must be zero-initialized by the caller.
 void reduce_price_totals(std::span<const Position> positions, const Portfolio &pf,
-                         std::span<const ContractPx> px, bool want_greeks, PriceTotals &t) {
+                         std::span<const ContractPx> px, bool want_greeks,
+                         bool skew_adjusted_delta, PriceTotals &t) {
   if (!want_greeks) {
     t.delta = t.gamma = t.vega = t.theta = t.rho = kNaN;
     t.vanna = t.volga = t.charm = kNaN;
@@ -360,7 +420,11 @@ void reduce_price_totals(std::span<const Position> positions, const Portfolio &p
     t.pv += w * c.fair_value;
     if (want_greeks) {
       const AmericanGreeks &g = c.g;
-      t.delta += w * g.delta;
+      // Same skew adjustment as scatter_rows, applied independently (this
+      // reduction never reads the scattered frame) so both stay bit-identical
+      // to each other and to the pre-I6 path when the flag is off.
+      const double delta_ps = skew_adjusted_delta ? (g.delta + c.vega_slope * g.vega) : g.delta;
+      t.delta += w * delta_ps;
       t.gamma += w * g.gamma;
       t.vega += w * g.vega;
       t.theta += w * g.theta;
@@ -516,8 +580,8 @@ Status PortfolioPricer::price_into(const SurfaceSet &surfaces, PriceFieldMask fi
     return Err(s.error());
   }
 
-  solve_uniques(*w.prepared, surfaces, contracts, want_greeks, analytic, opts.n_threads, w.px,
-                w.b_iv, w.b_price, w.b_greeks, w.b_status);
+  solve_uniques(*w.prepared, surfaces, contracts, want_greeks, analytic, opts.skew_adjusted_delta,
+                opts.sticky, opts.n_threads, w.px, w.b_iv, w.b_price, w.b_greeks, w.b_status);
 
   // FrameBytes reflects the mask (37 B/pos Marks, 101 B/pos FullGreeks). No
   // FrameAllocations: the output spans are caller-owned and the scratch was
@@ -525,9 +589,9 @@ Status PortfolioPricer::price_into(const SurfaceSet &surfaces, PriceFieldMask fi
   // allocates a worker-thread vector; see PortfolioWorkspace).
   ATX_VOL_COUNT_N(FrameBytes, n * bytes_per_position(fields));
 
-  scatter_rows(positions, pf_, w.px, want_greeks, opts.n_threads, out);
+  scatter_rows(positions, pf_, w.px, want_greeks, opts.skew_adjusted_delta, opts.n_threads, out);
   *out.total = PriceTotals{};
-  reduce_price_totals(positions, pf_, w.px, want_greeks, *out.total);
+  reduce_price_totals(positions, pf_, w.px, want_greeks, opts.skew_adjusted_delta, *out.total);
   return atx::core::Ok();
 }
 
@@ -546,14 +610,14 @@ Result<PriceTotals> PortfolioPricer::price_totals(const SurfaceSet &surfaces, Pr
     return Err(s.error());
   }
 
-  solve_uniques(*w.prepared, surfaces, contracts, want_greeks, analytic, opts.n_threads, w.px,
-                w.b_iv, w.b_price, w.b_greeks, w.b_status);
+  solve_uniques(*w.prepared, surfaces, contracts, want_greeks, analytic, opts.skew_adjusted_delta,
+                opts.sticky, opts.n_threads, w.px, w.b_iv, w.b_price, w.b_greeks, w.b_status);
 
   // No scatter, no per-row frame: reduce weight*result over positions in fixed
   // input order straight off the unique-result SoA — bit-identical to
   // price(...).total.
   PriceTotals t{};
-  reduce_price_totals(positions, pf_, w.px, want_greeks, t);
+  reduce_price_totals(positions, pf_, w.px, want_greeks, opts.skew_adjusted_delta, t);
   return t;
 }
 

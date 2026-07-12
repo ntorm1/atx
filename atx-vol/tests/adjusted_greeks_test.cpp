@@ -26,12 +26,16 @@ using atx::vol::curve_skew_slope;
 using atx::vol::Greeks;
 using atx::vol::IVolCurve;
 using atx::vol::LinearVarianceCurve;
+using atx::vol::Parametrization;
 using atx::vol::skew_adjusted;
 using atx::vol::StickyParams;
+using atx::vol::surface_skew_slope;
 using atx::vol::svi_total_w;
 using atx::vol::SviCurve;
 using atx::vol::SviParams;
+using atx::vol::vega_slope_from_skew_slope;
 using atx::vol::vega_slope_per_spot;
+using atx::vol::VolSurface;
 
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
@@ -58,6 +62,44 @@ TEST(AdjustedGreeks, FlatSmileLeavesDeltaUnchanged) {
   EXPECT_DOUBLE_EQ(adj.vanna, g.vanna);
   EXPECT_DOUBLE_EQ(adj.volga, g.volga);
   EXPECT_DOUBLE_EQ(adj.charm, g.charm);
+}
+
+TEST(AdjustedGreeks, SurfaceSlopeMatchesCurveSlopeOnSingleSlice) {
+  // A VolSurface built from ONE raw-SVI slice evaluates w(k_log, T0) via the
+  // exact same `svi_total_w` an equivalent `SviCurve` uses (VolSurface::w's
+  // T <= T0 branch on a single-slice surface hits eval_slice_w(0, k_log) ==
+  // svi_total_w(slice, k_log) directly, no time-interpolation) — so
+  // `surface_skew_slope`'s central FD over VolSurface::w and
+  // `curve_skew_slope`'s central FD over IVolCurve::w read bit-identical
+  // inputs and must agree well inside the brief's 1e-8 bound.
+  const SviParams p{0.02, 0.15, -0.4, 0.05, 0.2, 0.5, 100.0};
+  const SviCurve curve(p, 0.99);
+
+  auto created = VolSurface::create(/*uid=*/1, Parametrization::Svi, /*cap_slices=*/1);
+  ASSERT_TRUE(created.has_value());
+  VolSurface surf = std::move(created).value();
+  ASSERT_TRUE(surf.set_slice_svi(0, p).has_value());
+
+  for (const double k_log : {-0.3, -0.1, 0.0, 0.1, 0.3}) {
+    EXPECT_NEAR(surface_skew_slope(surf, k_log, p.T), curve_skew_slope(curve, k_log), 1e-8)
+        << "k_log=" << k_log;
+  }
+}
+
+TEST(AdjustedGreeks, SurfaceSlopeSlopeInputVariantMatchesCurveWrapper) {
+  // `vega_slope_from_skew_slope` is the shared arithmetic both
+  // `vega_slope_per_spot` (curve-convenience) and the surface-holding greeks
+  // seams call directly with an already-computed slope; confirm the two
+  // routes agree bit-for-bit for a slope sourced off `surface_skew_slope`.
+  const LinearVarianceCurve curve(0.5, 100.0, 0.99, std::vector<double>{-1.0, 0.0, 1.0},
+                                  std::vector<double>{0.30, 0.16, 0.04});
+  const double k_log = 0.25;
+  const double S = 100.0;
+  const StickyParams sp{0.0};
+
+  const double via_wrapper = vega_slope_per_spot(curve, k_log, S, sp);
+  const double via_slope_input = vega_slope_from_skew_slope(curve_skew_slope(curve, k_log), S, sp);
+  EXPECT_DOUBLE_EQ(via_wrapper, via_slope_input);
 }
 
 TEST(AdjustedGreeks, SviSlopeMatchesAnalytic) {

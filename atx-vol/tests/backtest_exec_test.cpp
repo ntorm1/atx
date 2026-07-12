@@ -37,6 +37,7 @@
 #include "atx/vol/corpus.hpp"            // CorpusManifest, CorpusEntry, CorpusFitStatus
 #include "atx/vol/portfolio_pricer.hpp"  // OptionContract, kNsPerYear
 #include "atx/vol/priced_surface.hpp"    // PricedSurface, PricingContext
+#include "atx/vol/adjusted_greeks.hpp"   // StickyParams
 #include "atx/vol/strategy.hpp"          // DeclarativeStrategy, StrategySpec, HedgeSpec
 #include "atx/vol/surface_archive.hpp"   // write_surface_archive_file, SurfaceArchiveItem
 #include "atx/vol/surface_parity.hpp"    // SliceContext
@@ -170,6 +171,30 @@ struct Corpus {
   const auto gr = surf.greeks(K, T, side);
   EXPECT_TRUE(gr.has_value()) << (gr.has_value() ? std::string{} : gr.error().to_string());
   return qty * mult * gr->delta;
+}
+
+// Independent oracle for the skew-adjusted delta: delta + VegaSlope * vega,
+// VegaSlope = (1 - omega) * (-dSigma/dk) / F(T), dSigma/dk a central FD
+// (h = 1e-4) on `PricedSurface::total_variance` in log-moneyness space —
+// mirrors (does NOT call) portfolio_pricer.cpp's local
+// `priced_surface_skew_slope` helper, so this test proves the production
+// seam against a from-scratch re-derivation rather than the implementation
+// under test.
+[[nodiscard]] double adjusted_call_delta(const PricedSurface& surf, double K, double T, Side side,
+                                         double omega) {
+  const auto gr = surf.greeks(K, T, side);
+  EXPECT_TRUE(gr.has_value()) << (gr.has_value() ? std::string{} : gr.error().to_string());
+  const double F = surf.forward_at(T);
+  const double k_log = std::log(K / F);
+  constexpr double h = 1e-4;
+  const double w0 = surf.total_variance(K, T);
+  const double sigma = std::sqrt(w0 / T);
+  const double Kp = F * std::exp(k_log + h);
+  const double Km = F * std::exp(k_log - h);
+  const double dw_dk = (surf.total_variance(Kp, T) - surf.total_variance(Km, T)) / (2.0 * h);
+  const double slope = dw_dk / (2.0 * sigma * T);
+  const double vega_slope = (1.0 - omega) * (-slope / F);
+  return gr->delta + vega_slope * gr->vega;
 }
 
 // A do-nothing strategy (empty book every step) — the flat-book financing seam.
@@ -451,6 +476,116 @@ TEST(BacktestExec, HedgeOverlay) {
   EXPECT_NEAR(sum_shares + sum_delta, 0.0, 1e-6 * (std::fabs(sum_delta) + 1.0));
   std::printf("[btexec] hedge: worst |net delta|=%.3e  Σpnl_shares=%.4f  Σpnl_delta=%.4f\n",
               worst_net, sum_shares, sum_delta);
+}
+
+// ── 4b. Skew-adjusted delta: hedger inherits it via PriceFrame, zero hedger
+//        code change (I6) ─────────────────────────────────────────────────
+TEST(Backtest, HedgeTradesOnAdjustedDelta) {
+  // Deterministic 2-day synthetic backtest, hedge band ~0, on the file's
+  // standard put-skewed eSSVI corpus (make_surface's rho = -0.4 + 0.02*i is
+  // negative for the near-dated slices AtmForward resolves against). A long
+  // ATM-forward call, hedged daily to a ~0 band, held across the one step.
+  const fs::path dir = fresh_dir("skewdelta");
+  const Corpus c = make_corpus(dir, "SPX", 2);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const double band = 1e-6;
+  const double target_T = 0.25;
+  const StrategySpec spec =
+      single_clip(kUid, target_T, Side::Call, StrikeSelector{StrikeSelector::Kind::AtmForward, 0.0},
+                  HedgeSpec{HedgeSpec::Kind::DeltaToZero, HedgeSpec::Cadence::Daily, band});
+
+  // Off (default) vs on (omega = 0, sticky-delta) vs off-explicit (the
+  // full-frame off-flag pin: default-constructed PriceOptions must be
+  // bit-identical to an explicitly-zeroed one, matching ZeroFrictionIdentity's
+  // pattern one level down the config tree).
+  DeclarativeStrategy strat_off{spec};
+  auto res_off = run_backtest(*clock, strat_off);
+  ASSERT_TRUE(res_off.has_value()) << res_off.error().to_string();
+
+  DeclarativeStrategy strat_off_explicit{spec};
+  RunConfig cfg_off_explicit;
+  cfg_off_explicit.price.skew_adjusted_delta = false;
+  cfg_off_explicit.price.sticky = StickyParams{0.0};
+  auto res_off_explicit = run_backtest(*clock, strat_off_explicit, cfg_off_explicit);
+  ASSERT_TRUE(res_off_explicit.has_value()) << res_off_explicit.error().to_string();
+
+  DeclarativeStrategy strat_on{spec};
+  RunConfig cfg_on;
+  cfg_on.price.skew_adjusted_delta = true;
+  cfg_on.price.sticky = StickyParams{0.0};
+  auto res_on = run_backtest(*clock, strat_on, cfg_on);
+  ASSERT_TRUE(res_on.has_value()) << res_on.error().to_string();
+
+  const BacktestResult& roff = *res_off;
+  const BacktestResult& rpin = *res_off_explicit;
+  const BacktestResult& ron = *res_on;
+  ASSERT_EQ(roff.size(), 2u);
+  ASSERT_EQ(ron.size(), roff.size());
+  ASSERT_EQ(rpin.size(), roff.size());
+
+  // Full-frame off-flag pin: EVERY BacktestResult numeric column, bit-for-bit.
+  const std::vector<std::pair<const std::vector<double>*, const std::vector<double>*>> cols = {
+      {&roff.pnl_total, &rpin.pnl_total},         {&roff.pnl_delta, &rpin.pnl_delta},
+      {&roff.pnl_gamma, &rpin.pnl_gamma},         {&roff.pnl_vega, &rpin.pnl_vega},
+      {&roff.pnl_vanna, &rpin.pnl_vanna},         {&roff.pnl_volga, &rpin.pnl_volga},
+      {&roff.pnl_theta, &rpin.pnl_theta},         {&roff.pnl_rho, &rpin.pnl_rho},
+      {&roff.pnl_charm, &rpin.pnl_charm},         {&roff.pnl_unexplained, &rpin.pnl_unexplained},
+      {&roff.pnl_settlement, &rpin.pnl_settlement}, {&roff.pnl_shares, &rpin.pnl_shares},
+      {&roff.financing, &rpin.financing},         {&roff.cost, &rpin.cost},
+      {&roff.nav, &rpin.nav},                     {&roff.cash, &rpin.cash},
+      {&roff.gross_delta, &rpin.gross_delta},     {&roff.gross_gamma, &rpin.gross_gamma},
+      {&roff.gross_vega, &rpin.gross_vega},       {&roff.gross_theta, &rpin.gross_theta},
+      {&roff.turnover_notional, &rpin.turnover_notional},
+      {&roff.turnover_vega, &rpin.turnover_vega}, {&roff.n_open_lots, &rpin.n_open_lots},
+      {&roff.n_unpriced_lots, &rpin.n_unpriced_lots},
+      {&roff.n_unpriced_greeks, &rpin.n_unpriced_greeks}};
+  for (std::size_t i = 0; i < roff.size(); ++i) {
+    for (const auto& [va, vb] : cols) {
+      ASSERT_EQ(va->size(), vb->size());
+      EXPECT_TRUE(bits_equal((*va)[i], (*vb)[i])) << "col mismatch at row " << i;
+    }
+  }
+
+  // Sign law: reconstruct the hedge SHARE position at each row from the
+  // reported net book delta (gross_delta) minus the option delta the run's
+  // own convention drove the hedge to (raw for the off runs; the independent
+  // adjusted-delta oracle for the on run) -- gross_delta bands to ~0 against
+  // WHICHEVER convention was active, so subtracting the WRONG convention's
+  // delta would silently cancel the very difference this test exists to
+  // detect. Put skew (dSigma/dk < 0) + omega = 0 raises the adjusted call
+  // delta above raw (the 07-11 sprint's sign law), so the "on" run must hold
+  // a LARGER short-share hedge (more negative) than "off" every row.
+  auto snap0 = MarketSnapshot::load(c.dp[0].second);
+  ASSERT_TRUE(snap0.has_value()) << snap0.error().to_string();
+  const double K = snap0->find(kUid)->forward_at(target_T);
+  const std::int64_t expiry = snap0->ts_ns() + std::llround(target_T * kNsPerYear);
+
+  double worst_gap = 0.0;
+  for (std::size_t i = 0; i < roff.size(); ++i) {
+    auto snap = MarketSnapshot::load(c.dp[i].second);
+    ASSERT_TRUE(snap.has_value()) << snap.error().to_string();
+    const PricedSurface* s = snap->find(kUid);
+    ASSERT_NE(s, nullptr);
+    const double T = res_T(expiry, snap->ts_ns());
+
+    const double raw_delta_ps = lot_delta(*s, K, T, Side::Call, 1.0, 100.0);
+    const double adj_delta_ps = 100.0 * adjusted_call_delta(*s, K, T, Side::Call, /*omega=*/0.0);
+    ASSERT_GT(adj_delta_ps, raw_delta_ps) << "row " << i << ": adjusted call delta must exceed raw "
+                                             "under put skew (sign-law precondition)";
+
+    const double shares_off = roff.gross_delta[i] - raw_delta_ps;
+    const double shares_on = ron.gross_delta[i] - adj_delta_ps;
+    EXPECT_LT(shares_off, 0.0) << "row " << i << ": hedging a long call should hold short shares";
+    EXPECT_LT(shares_on, shares_off) << "row " << i
+                                     << ": put skew must drive a LARGER short-share hedge "
+                                        "when skew_adjusted_delta is on";
+    worst_gap = std::max(worst_gap, shares_off - shares_on);
+  }
+  EXPECT_GT(worst_gap, 0.0);
+  std::printf("[btexec] skew-adjusted hedge: worst (shares_off - shares_on) gap = %.4f shares\n",
+              worst_gap);
 }
 
 // ── 5. Friction monotonicity: more spread ⇒ lower nav, higher cost ──────────

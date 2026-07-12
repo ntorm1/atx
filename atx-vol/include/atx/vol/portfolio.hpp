@@ -67,6 +67,7 @@
 #include <utility>
 #include <vector>
 
+#include "atx/vol/adjusted_greeks.hpp"
 #include "atx/vol/correction.hpp"
 #include "atx/vol/curve.hpp"
 #include "atx/vol/greeks.hpp"
@@ -238,10 +239,23 @@ struct GreeksAggregate {
 // bucketed by `agg_mode`. Stock/cash legs are skipped (no option Greeks).
 // Mirrors the C `ats_greeks_portfolio` (raw-qty weighting, European B76).
 //
+// `skew_adjusted_delta` (off by default => bit-identical to every pre-I6
+// caller) applies SpiderRock's skew-adjusted delta (adjusted_greeks.hpp) to
+// each option leg BEFORE the qty-weighted accumulate: delta + VegaSlope *
+// vega, VegaSlope sourced from `surface_skew_slope` on the leg's resolved
+// surface at (k_log, T) and blended by `sticky.ref_uprc_weight`. Black-76
+// legs are FORWARD-quoted (`black76_greeks`'s delta = dP/dF, per
+// greeks.hpp), and `detail::ExpiryContext` carries no separate spot -- so the
+// VegaSlope's "S" is the leg's forward `ctx.F` (the natural sticky-delta
+// slide variable for an F-quoted leg: k = ln(K/F) slides bodily with F, not
+// with any spot this context does not have). A degenerate slope (e.g. off
+// the surface's no-extrapolation domain) propagates a non-finite delta for
+// that leg's contribution, exactly as `skew_adjusted` documents.
+//
 // @return InvalidArgument if `binding.universe` is null.
 [[nodiscard]] Result<std::vector<GreeksAggregate>> aggregate_greeks(
-    std::span<const PortfolioLeg> book, const MarketBinding& binding,
-    AggMode agg_mode);
+    std::span<const PortfolioLeg> book, const MarketBinding& binding, AggMode agg_mode,
+    bool skew_adjusted_delta = false, const StickyParams& sticky = {});
 
 // ── Bulk chain pricer + select (ports ats_vol_bulk_*) ────────────────────
 

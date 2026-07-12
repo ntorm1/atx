@@ -20,8 +20,8 @@
 namespace atx::vol {
 
 Result<std::vector<GreeksAggregate>> aggregate_greeks(
-    std::span<const PortfolioLeg> book, const MarketBinding& binding,
-    AggMode agg_mode) {
+    std::span<const PortfolioLeg> book, const MarketBinding& binding, AggMode agg_mode,
+    bool skew_adjusted_delta, const StickyParams& sticky) {
   if (binding.universe == nullptr) {
     return Err(ErrorCode::InvalidArgument, "null universe");
   }
@@ -70,7 +70,8 @@ Result<std::vector<GreeksAggregate>> aggregate_greeks(
     const double k_log = std::log(K / ctx.F);
 
     double sigma = 0.20;  // C's flat fallback when no surface is fitted
-    if (ctx.surface != nullptr && ctx.surface->n_slices() > 0) {
+    const bool has_surface = ctx.surface != nullptr && ctx.surface->n_slices() > 0;
+    if (has_surface) {
       sigma = (ctx.slice_idx != kNoSliceMatch)
                   ? ctx.surface->iv_on_slice(ctx.slice_idx, k_log)
                   : ctx.surface->iv(k_log, ctx.T);
@@ -79,8 +80,18 @@ Result<std::vector<GreeksAggregate>> aggregate_greeks(
       }
     }
 
-    const Greeks g =
-        black76_greeks(ctx.F, K, ctx.T, sigma, ctx.r, ctx.df, side).greeks;
+    Greeks g = black76_greeks(ctx.F, K, ctx.T, sigma, ctx.r, ctx.df, side).greeks;
+    // Skew-adjusted delta (off by default => bit-identical raw path). Only
+    // meaningful off a REAL fitted surface (has_surface); the flat-fallback
+    // sigma=0.20 leg has no curve to read a skew slope from, so it is left
+    // raw. This leg is F-quoted (black76_greeks' delta = dP/dF), and
+    // `detail::ExpiryContext` carries no separate spot -- see the header doc
+    // on `aggregate_greeks` for why `ctx.F` is the correct VegaSlope "S" here.
+    if (skew_adjusted_delta && has_surface) {
+      const double slope = surface_skew_slope(*ctx.surface, k_log, ctx.T);
+      const double vega_slope = vega_slope_from_skew_slope(slope, ctx.F, sticky);
+      g = skew_adjusted(g, vega_slope);
+    }
 
     GreeksAggregate& a = bucket(leg);
     const double qty = leg.qty;

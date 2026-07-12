@@ -28,19 +28,39 @@ double curve_skew_slope(const IVolCurve& c, double k_log) noexcept {
   return dw_dk / (2.0 * sigma * T);
 }
 
-double vega_slope_per_spot(const IVolCurve& c, double k_log, double S,
-                           const StickyParams& sp) noexcept {
+double surface_skew_slope(const VolSurface& s, double k_log, double T) noexcept {
+  const double wk = s.w(k_log, T);
+  const double sigma = std::sqrt(wk / T);
+  if (!(T > 0.0) || !(sigma > 0.0) || !std::isfinite(sigma)) {
+    return kNaN;
+  }
+
+  const double w_plus = s.w(k_log + kFdStep, T);
+  const double w_minus = s.w(k_log - kFdStep, T);
+  const double dw_dk = (w_plus - w_minus) / (2.0 * kFdStep);
+  if (!std::isfinite(dw_dk)) {
+    return kNaN;
+  }
+
+  return dw_dk / (2.0 * sigma * T);
+}
+
+double vega_slope_from_skew_slope(double skew_slope, double S, const StickyParams& sp) noexcept {
   // Reject non-finite S explicitly: !(S > 0.0) alone catches NaN / <= 0 but
   // would wave S = +inf through (the division then yields 0, not the NaN the
   // header promises for a non-finite spot).
   if (!std::isfinite(S) || !(S > 0.0)) {
     return kNaN;
   }
-  const double skew_slope = curve_skew_slope(c, k_log);
   if (!std::isfinite(skew_slope)) {
     return kNaN;
   }
   return (1.0 - sp.ref_uprc_weight) * (-skew_slope / S);
+}
+
+double vega_slope_per_spot(const IVolCurve& c, double k_log, double S,
+                           const StickyParams& sp) noexcept {
+  return vega_slope_from_skew_slope(curve_skew_slope(c, k_log), S, sp);
 }
 
 Greeks skew_adjusted(const Greeks& g, double vega_slope) noexcept {

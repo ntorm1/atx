@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "atx/vol/adjusted_greeks.hpp"
 #include "atx/vol/black76.hpp"
 #include "atx/vol/greeks.hpp"
 #include "atx/vol/portfolio.hpp"
@@ -40,6 +41,7 @@ using atx::vol::PortfolioLeg;
 using atx::vol::PortfolioRiskMode;
 using atx::vol::price_portfolio;
 using atx::vol::Side;
+using atx::vol::StickyParams;
 using atx::vol::Uid;
 using atx::vol::Underlying;
 using atx::vol::UnderlyingMarket;
@@ -429,6 +431,65 @@ TEST(Portfolio, AggregateGreeksTotalMatchesNaiveSum) {
   EXPECT_NEAR(agg.greeks.volga, naive.volga, 1.0e-9);
   EXPECT_NEAR(agg.greeks.charm, naive.charm, 1.0e-9);
   EXPECT_DOUBLE_EQ(agg.net_qty, naive_qty);
+}
+
+// ── aggregate_greeks skew-adjusted delta (I6) ─────────────────────────────
+
+TEST(PortfolioGreeks, SkewAdjustedDeltaRaisesCallDeltaOnPutSkew) {
+  // One OTM call (K = 1.15F) on a strongly put-skewed eSSVI surface (rho <
+  // 0, so dSigma/dk < 0 across the tested strike range -- the 07-11 sprint's
+  // GlobalPutSkewRaisesAdjustedDelta sign law, now proved through the
+  // aggregate_greeks production seam rather than the bare curve/Greeks pair).
+  Universe u;
+  const double T = 0.5;
+  const double r = 0.0;
+  const auto strikes = scaled_strikes(100.0);
+  ExpiryId eid = 0;
+  const Uid uid = add_underlying(u, "AAA", 100.0, strikes, T, eid);
+  const double F = 100.0;  // r == 0 => F == spot, so kRelStrikes reads as k = ln(rel)
+  CurveSet cs = make_curves(100.0, r, T);
+  VolSurface surf = make_surface(uid, T, F, eid, 0.20 * 0.20 * T, 0.6, -0.6);
+
+  MarketBinding b;
+  b.universe = &u;
+  b.set_market(uid, UnderlyingMarket{&surf, &cs, nullptr, nullptr});
+
+  const std::vector<PortfolioLeg> book{PortfolioLeg{
+      LegKind::Option, uid, make_contract_id(uid, eid, 4, Side::Call), 1.0, 100.0, 0.0, 0u}};
+
+  // Flag off (both the 3-arg default call and an explicit skew_adjusted_delta =
+  // false) must be bit-identical to each other on EVERY Greek -- the off-flag
+  // pin this seam's acceptance bar requires.
+  auto raw = aggregate_greeks(book, b, AggMode::Total);
+  ASSERT_TRUE(raw.has_value());
+  ASSERT_EQ(raw.value().size(), 1u);
+  auto raw_pinned = aggregate_greeks(book, b, AggMode::Total, /*skew_adjusted_delta=*/false);
+  ASSERT_TRUE(raw_pinned.has_value());
+  const atx::vol::Greeks& r0 = raw.value()[0].greeks;
+  const atx::vol::Greeks& rp = raw_pinned.value()[0].greeks;
+  EXPECT_EQ(rp.delta, r0.delta);
+  EXPECT_EQ(rp.gamma, r0.gamma);
+  EXPECT_EQ(rp.vega, r0.vega);
+  EXPECT_EQ(rp.theta, r0.theta);
+  EXPECT_EQ(rp.rho, r0.rho);
+  EXPECT_EQ(rp.vanna, r0.vanna);
+  EXPECT_EQ(rp.volga, r0.volga);
+  EXPECT_EQ(rp.charm, r0.charm);
+
+  // omega = 0 (sticky-delta): enabled delta strictly exceeds raw.
+  auto enabled0 =
+      aggregate_greeks(book, b, AggMode::Total, /*skew_adjusted_delta=*/true, StickyParams{0.0});
+  ASSERT_TRUE(enabled0.has_value());
+  EXPECT_GT(enabled0.value()[0].greeks.delta, r0.delta);
+  // The adjustment touches delta only; every other Greek passes through.
+  EXPECT_EQ(enabled0.value()[0].greeks.vega, r0.vega);
+  EXPECT_EQ(enabled0.value()[0].greeks.gamma, r0.gamma);
+
+  // omega = 1 (sticky-strike): VegaSlope collapses to 0 => exactly raw.
+  auto enabled1 =
+      aggregate_greeks(book, b, AggMode::Total, /*skew_adjusted_delta=*/true, StickyParams{1.0});
+  ASSERT_TRUE(enabled1.has_value());
+  EXPECT_DOUBLE_EQ(enabled1.value()[0].greeks.delta, r0.delta);
 }
 
 // ── aggregate_greeks BY_UID splits two underlyings by net qty ────────────

@@ -76,8 +76,9 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/priced_surface.hpp" // PricedSurface, PricingContext
-#include "atx/vol/types.hpp"          // Result, Status, Side
+#include "atx/vol/adjusted_greeks.hpp" // StickyParams
+#include "atx/vol/priced_surface.hpp"  // PricedSurface, PricingContext
+#include "atx/vol/types.hpp"           // Result, Status, Side
 
 namespace atx::vol {
 
@@ -438,6 +439,21 @@ struct PriceOptions {
   // under this mode -- never 0.0. A zero would be indistinguishable from a book
   // that is genuinely delta/vega-flat.
   bool prices_only{false};
+  // Skew-adjusted (SpiderRock) delta: delta + VegaSlope * vega, with
+  // sticky.ref_uprc_weight omega in [0, 1] (0 = sticky-delta: the smile
+  // slides bodily with the underlying; 1 = sticky-strike: VegaSlope forced
+  // to 0, i.e. exactly the raw analytic delta). Off by default -- every
+  // pre-I6 price()/price_into()/price_totals() result is bit-identical.
+  // Applied ONLY to the FullGreeks delta column (PriceFrame::delta /
+  // PriceTotals::delta); `pnl_explain`'s Taylor coefficients are always the
+  // raw American Greeks (the decomposition's coefficients must stay raw, or
+  // the P&L attribution no longer sums to the true price change) and never
+  // read this flag. RunConfig::price (backtest.hpp) is exactly this struct,
+  // so a backtest run that sets this flag has its delta-hedge overlay
+  // (backtest.cpp, unmodified) trade on the adjusted delta automatically --
+  // the hedger consumes PriceFrame::delta, not PriceOptions, directly.
+  bool skew_adjusted_delta{false};
+  StickyParams sticky{};
 };
 
 class PortfolioPricer {

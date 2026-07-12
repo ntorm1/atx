@@ -34,6 +34,7 @@
 
 #include "atx/vol/greeks.hpp"
 #include "atx/vol/vol_curve.hpp"
+#include "atx/vol/vol_surface.hpp"
 
 namespace atx::vol {
 
@@ -60,9 +61,35 @@ struct StickyParams {
 // interior segment's slope.
 [[nodiscard]] double curve_skew_slope(const IVolCurve& c, double k_log) noexcept;
 
+// dSigma/dk at (k_log, T) off a SERVED `VolSurface` (rather than a single
+// `IVolCurve` slice) — the production greeks-serving seams (portfolio_greeks,
+// portfolio_pricer) hold a surface, not a bare curve, so this is the overload
+// they call. Identical FD scheme to `curve_skew_slope` (central, h = 1e-4),
+// applied to `VolSurface::w` instead of `IVolCurve::w`:
+//
+//   sigma = sqrt(w(k_log, T) / T),   dSigma/dk = w'(k_log, T) / (2 * sigma * T)
+//
+// NaN under the same conditions `curve_skew_slope` documents (T <= 0,
+// non-positive/non-finite sigma at k_log, or a non-finite FD stencil point —
+// e.g. off the surface's no-extrapolation domain).
+[[nodiscard]] double surface_skew_slope(const VolSurface& s, double k_log, double T) noexcept;
+
+// VegaSlope = (1 - omega) * (-skew_slope / S), the sticky-delta/sticky-strike
+// blend applied to an ALREADY-COMPUTED dSigma/dk (from `curve_skew_slope`,
+// `surface_skew_slope`, or an equivalent slope a caller derived some other
+// way — e.g. off a `PricedSurface`, which is K-parameterized rather than
+// k_log-parameterized and so cannot construct an `IVolCurve`/`VolSurface` to
+// call the slope overloads above directly). `vega_slope_per_spot` below is
+// the curve-convenience wrapper over this; this is the shared arithmetic so a
+// caller that already has a slope value never re-derives the formula. NaN if
+// S <= 0 / non-finite, or if `skew_slope` is NaN.
+[[nodiscard]] double vega_slope_from_skew_slope(double skew_slope, double S,
+                                                const StickyParams& sp = {}) noexcept;
+
 // VegaSlope = (1 - omega) * (-skew_slope / S), the sticky-delta/sticky-strike
 // blended dSigma/dS at a fixed strike (k = ln(K/F), F proportional to S).
-// NaN if S <= 0 / non-finite, or if `curve_skew_slope` is NaN.
+// NaN if S <= 0 / non-finite, or if `curve_skew_slope` is NaN. Thin wrapper:
+// `vega_slope_from_skew_slope(curve_skew_slope(c, k_log), S, sp)`.
 [[nodiscard]] double vega_slope_per_spot(const IVolCurve& c, double k_log, double S,
                                          const StickyParams& sp = {}) noexcept;
 

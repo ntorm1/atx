@@ -31,6 +31,7 @@
 #include <span>
 #include <vector>
 
+#include "atx/vol/adjusted_greeks.hpp" // StickyParams
 #include "atx/vol/american.hpp"       // AmericanGreeks
 #include "atx/vol/chain.hpp"          // OptionChain, OptionId
 #include "atx/vol/curve.hpp"          // DividendEvent
@@ -143,6 +144,23 @@ struct PricerConfig {
   // empty — the chain's `MarketEnv` supplies the dividend schedule; a non-empty
   // value here overrides the env's divs.
   std::vector<DividendEvent> cash_divs{};
+  // Skew-adjusted (SpiderRock) delta: delta + VegaSlope * vega, with
+  // sticky.ref_uprc_weight omega in [0, 1] (0 = sticky-delta, the smile slides
+  // bodily with the underlying; 1 = sticky-strike, VegaSlope forced to 0, i.e.
+  // exactly the raw analytic delta). Off by default (bit-identical to every
+  // pre-I6 fit/value_chain result). Mirrors `PriceOptions::skew_adjusted_delta`
+  // (portfolio_pricer.hpp) and `aggregate_greeks`'s same-named parameter
+  // (portfolio.hpp) -- the two production greeks-serving seams this knob's
+  // *value* is meant to travel to. NOTE: this PricerConfig copy is declared
+  // for the sprint's config-struct convention (a caller reading `PricerConfig`
+  // should see the knob exists) but is NOT read by `PricerFitter::fit` or
+  // `value_chain` in this task -- both are session/VolaSession-driven and sit
+  // outside I6's two named seams (portfolio_greeks.cpp's aggregate_greeks and
+  // portfolio_pricer.cpp's FullGreeks fill). A caller wiring adjusted greeks
+  // through the `PricerFitter` facade must currently forward these two fields
+  // into a `PriceOptions`/`aggregate_greeks` call itself.
+  bool skew_adjusted_delta{false};
+  StickyParams sticky{};
 };
 
 // ── Fitted surface handle (the owned fit output) ────────────────────────────
