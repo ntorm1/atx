@@ -11,6 +11,7 @@
 
 #include "atx/core/error.hpp"
 #include "atx/vol/black76.hpp"
+#include "atx/vol/surface_parity.hpp"
 
 namespace atx::vol {
 
@@ -282,7 +283,7 @@ Result<PreparedSlice> PreparedSliceBuilder::prepare_legacy(const Chain &chain,
     }
     out.observations_.push_back(observation);
   }
-  if (out.fit_rows_.size() < 5u) {
+  if (out.fit_rows_.size() < kMinPreparedFitRows) {
     return Err(ErrorCode::NotFound,
                "PreparedSlice::create: fewer than 5 legacy eSSVI rows survived");
   }
@@ -322,6 +323,82 @@ Result<PreparedBoard> PreparedBoard::create(std::vector<PreparedSlice> slices) {
   PreparedBoard board;
   board.slices_ = std::move(slices);
   return Ok(std::move(board));
+}
+
+Result<CanonicalPreparedExpiry> prepare_expiry(const Chain &chain,
+                                               std::uint32_t expiry_index,
+                                               const SurfaceParityInputs &inputs,
+                                               PreparedObservationPolicy policy) {
+  if (!(inputs.S > 0.0) || !std::isfinite(inputs.S) || !std::isfinite(inputs.r) ||
+      !(chain.T > 0.0) || !std::isfinite(chain.T)) {
+    return Err(ErrorCode::InvalidArgument, "prepare_expiry: invalid spot, rate, or maturity");
+  }
+
+  double rate = inputs.r;
+  if (!inputs.expiry_rate_T.empty() || !inputs.expiry_rates.empty()) {
+    if (inputs.expiry_rate_T.size() != inputs.expiry_rates.size()) {
+      return Err(ErrorCode::InvalidArgument, "prepare_expiry: invalid term-rate vectors");
+    }
+    std::size_t rate_index = inputs.expiry_rate_T.size();
+    if (expiry_index < inputs.expiry_rate_T.size() &&
+        inputs.expiry_rate_T[expiry_index] == chain.T) {
+      rate_index = expiry_index;
+    } else {
+      const auto term =
+          std::find(inputs.expiry_rate_T.begin(), inputs.expiry_rate_T.end(), chain.T);
+      if (term != inputs.expiry_rate_T.end()) {
+        rate_index = static_cast<std::size_t>(term - inputs.expiry_rate_T.begin());
+      }
+    }
+    if (rate_index == inputs.expiry_rate_T.size()) {
+      return Err(ErrorCode::NotFound, "prepare_expiry: maturity absent from term-rate snapshot");
+    }
+    rate = inputs.expiry_rates[rate_index];
+  }
+  if (!std::isfinite(rate)) {
+    return Err(ErrorCode::InvalidArgument, "prepare_expiry: non-finite expiry rate");
+  }
+
+  ATX_TRY(const ChainForward carry,
+          resolve_chain_forward(chain, inputs.S, rate, inputs.cash_divs, inputs.now_ts_ns,
+                                inputs.deam));
+  if (!(carry.forward > 0.0) || !std::isfinite(carry.forward)) {
+    return Err(ErrorCode::Unavailable, "prepare_expiry: forward resolution was non-positive");
+  }
+
+  const double q_eff = rate - std::log(carry.forward / inputs.S) / chain.T;
+  const double df = std::exp(-rate * chain.T);
+  // The compatibility path historically consumed the supplied correction
+  // caches unconditionally. Configured preparation owns the explicit opt-in.
+  const AmericanCorrectionCaches fit_caches =
+      policy == PreparedObservationPolicy::LegacyEssviCompatibility
+          ? inputs.deam.caches
+          : (inputs.use_deam_cache_for_fit ? inputs.deam.caches
+                                           : AmericanCorrectionCaches{});
+  PreparedSliceInputs prepare_inputs;
+  prepare_inputs.expiry_index = expiry_index;
+  prepare_inputs.S = inputs.S;
+  prepare_inputs.r = rate;
+  prepare_inputs.F = carry.forward;
+  prepare_inputs.q_eff = q_eff;
+  prepare_inputs.df = df;
+  prepare_inputs.calib = inputs.calib;
+  prepare_inputs.caches = fit_caches;
+  prepare_inputs.al_opts = inputs.deam.al_opts;
+  prepare_inputs.iv_tolerance = inputs.deam.iv_tol;
+  prepare_inputs.iv_max_iterations = inputs.deam.iv_max_iter;
+  prepare_inputs.method = inputs.deam.method;
+  prepare_inputs.policy = policy;
+  // Legacy eSSVI always scored parity in the cold driver. The generic flag is
+  // an optimization only for Configured preparation and must not erase the
+  // historical eSSVI scoring population.
+  prepare_inputs.prepare_scoring =
+      policy == PreparedObservationPolicy::LegacyEssviCompatibility || inputs.score_parity;
+  ATX_TRY(PreparedSlice prepared, PreparedSlice::create(chain, prepare_inputs));
+  if (prepared.fit_observations().size() < kMinPreparedFitRows) {
+    return Err(ErrorCode::NotFound, "prepare_expiry: fewer than five usable rows");
+  }
+  return Ok(CanonicalPreparedExpiry{std::move(prepared), rate, carry.borrow, q_eff, df});
 }
 
 } // namespace atx::vol

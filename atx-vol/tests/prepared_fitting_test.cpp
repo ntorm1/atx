@@ -7,8 +7,10 @@
 #include <limits>
 #include <vector>
 
+#include "atx/core/error.hpp"
 #include "atx/vol/arb.hpp"
 #include "atx/vol/black76.hpp"
+#include "atx/vol/correction.hpp"
 #include "atx/vol/curve_fit.hpp"
 #include "atx/vol/essvi_calib.hpp"
 #include "atx/vol/prepared_fitting.hpp"
@@ -168,6 +170,99 @@ TEST(PreparedFitting, LegacyCompatibilityPreservesHistoricalPermissiveRowsAndWei
   const double expected_weight = (vega * vega) / (spread * spread * two_sigma_t * two_sigma_t);
   EXPECT_DOUBLE_EQ(row.weight_w, expected_weight);
   EXPECT_DOUBLE_EQ(row.active_weight_w, expected_weight);
+}
+
+TEST(PreparedFitting, SharedExpiryPreparationPreservesPolicySpecificCacheRouting) {
+  const Chain chain = make_chain();
+  atx::vol::CorrectionCache call_cache;
+  atx::vol::CorrectionCache put_cache;
+  SurfaceParityInputs inputs;
+  inputs.S = kS;
+  inputs.r = kR;
+  inputs.deam.imply_borrow = false;
+  inputs.deam.borrow_fixed = kR;
+  inputs.deam.caches = atx::vol::AmericanCorrectionCaches{&call_cache, &put_cache};
+  inputs.use_deam_cache_for_fit = false;
+
+  const auto legacy = atx::vol::prepare_expiry(
+      chain, 3u, inputs, PreparedObservationPolicy::LegacyEssviCompatibility);
+  ASSERT_TRUE(legacy.has_value()) << legacy.error().to_string();
+  EXPECT_TRUE(legacy->slice.provenance().call_cache);
+  EXPECT_TRUE(legacy->slice.provenance().put_cache);
+
+  const auto configured_without_cache =
+      atx::vol::prepare_expiry(chain, 3u, inputs, PreparedObservationPolicy::Configured);
+  ASSERT_TRUE(configured_without_cache.has_value())
+      << configured_without_cache.error().to_string();
+  EXPECT_FALSE(configured_without_cache->slice.provenance().call_cache);
+  EXPECT_FALSE(configured_without_cache->slice.provenance().put_cache);
+
+  inputs.use_deam_cache_for_fit = true;
+  const auto configured_with_cache =
+      atx::vol::prepare_expiry(chain, 3u, inputs, PreparedObservationPolicy::Configured);
+  ASSERT_TRUE(configured_with_cache.has_value()) << configured_with_cache.error().to_string();
+  EXPECT_TRUE(configured_with_cache->slice.provenance().call_cache);
+  EXPECT_TRUE(configured_with_cache->slice.provenance().put_cache);
+}
+
+TEST(PreparedFitting, SharedExpiryPreparationUsesAlignedRateBeforeMaturityFallback) {
+  const Chain chain = make_chain();
+  SurfaceParityInputs inputs;
+  inputs.S = kS;
+  inputs.r = kR;
+  inputs.expiry_rate_T = {kT, kT};
+  inputs.expiry_rates = {0.01, 0.07};
+  inputs.deam.imply_borrow = false;
+  inputs.deam.borrow_fixed = 0.07;
+
+  const auto aligned =
+      atx::vol::prepare_expiry(chain, 1u, inputs, PreparedObservationPolicy::Configured);
+  ASSERT_TRUE(aligned.has_value()) << aligned.error().to_string();
+  EXPECT_DOUBLE_EQ(aligned->rate, 0.07);
+  EXPECT_DOUBLE_EQ(aligned->slice.provenance().r, 0.07);
+
+  // A retained/refit term vector can be shorter than the source expiry index;
+  // in that shape the exact maturity fallback remains intentional.
+  inputs.expiry_rate_T = {kT};
+  inputs.expiry_rates = {0.01};
+  inputs.deam.borrow_fixed = 0.01;
+  const auto retained =
+      atx::vol::prepare_expiry(chain, 9u, inputs, PreparedObservationPolicy::Configured);
+  ASSERT_TRUE(retained.has_value()) << retained.error().to_string();
+  EXPECT_DOUBLE_EQ(retained->rate, 0.01);
+}
+
+TEST(PreparedFitting, SharedExpiryPreparationRejectsThinLegacySliceBeforeFit) {
+  Chain chain = make_chain();
+  chain.strikes.resize(4u);
+  const std::size_t quote_count = 2u * chain.strikes.size();
+  chain.bids.resize(quote_count);
+  chain.asks.resize(quote_count);
+  chain.mids.resize(quote_count);
+  chain.ivs.resize(quote_count);
+  chain.bid_sizes.resize(quote_count);
+  chain.ask_sizes.resize(quote_count);
+  chain.ts_ns.resize(quote_count);
+  chain.flags.resize(quote_count);
+
+  SurfaceParityInputs inputs;
+  inputs.S = kS;
+  inputs.r = kR;
+  inputs.deam.imply_borrow = false;
+  inputs.deam.borrow_fixed = kR;
+  const auto prepared = atx::vol::prepare_expiry(
+      chain, 3u, inputs, PreparedObservationPolicy::LegacyEssviCompatibility);
+  ASSERT_FALSE(prepared.has_value());
+  EXPECT_EQ(prepared.error().code(), atx::core::ErrorCode::NotFound);
+
+  Underlying underlying;
+  underlying.uid = chain.uid;
+  underlying.ticker = "THIN_LEGACY";
+  underlying.spot = kS;
+  underlying.chains.push_back(std::move(chain));
+  const auto surface = atx::vol::run_surface_parity(underlying, inputs);
+  ASSERT_FALSE(surface.has_value());
+  EXPECT_EQ(surface.error().code(), atx::core::ErrorCode::NotFound);
 }
 
 TEST(PreparedFitting, ConfiguredCapAppliesIdenticallyToFitKeysAndScoringRows) {

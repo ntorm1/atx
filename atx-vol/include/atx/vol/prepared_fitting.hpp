@@ -28,6 +28,8 @@
 
 namespace atx::vol {
 
+struct SurfaceParityInputs;
+
 namespace detail {
 struct PreparedSliceBuilder;
 }
@@ -48,6 +50,8 @@ enum class PreparedObservationPolicy : std::uint8_t {
   Configured = 0,
   LegacyEssviCompatibility,
 };
+
+inline constexpr std::size_t kMinPreparedFitRows = 5u;
 
 struct ObservationRejection {
   ObservationKey key{};
@@ -168,5 +172,20 @@ public:
 private:
   std::vector<PreparedSlice> slices_{};
 };
+
+// Fully resolved, owned preparation for one expiry. This is the canonical seam
+// shared by cold drivers and facade-owned incremental refit: callers never
+// construct American fit rows or recompute carry independently.
+struct CanonicalPreparedExpiry {
+  PreparedSlice slice{};
+  double rate{0.0};
+  double borrow{0.0};
+  double q_eff{0.0};
+  double df{0.0};
+};
+
+[[nodiscard]] Result<CanonicalPreparedExpiry>
+prepare_expiry(const Chain &chain, std::uint32_t expiry_index,
+               const SurfaceParityInputs &inputs, PreparedObservationPolicy policy);
 
 } // namespace atx::vol

@@ -32,8 +32,6 @@ using atx::core::Ok;
 namespace {
 
 // Minimum usable strikes to attempt a slice fit (mirrors run_surface_parity).
-constexpr std::size_t kMinUsableObs = 5;
-
 using ProfileClock = std::chrono::steady_clock;
 
 [[nodiscard]] bool profile_enabled() noexcept {
@@ -58,7 +56,8 @@ using ProfileClock = std::chrono::steady_clock;
 
 // Per-chain output slot for the parallel de-Am pre-pass (phase 1). `usable`
 // mirrors EXACTLY the set of `continue` gates the old sequential loop applied
-// (T<=0, forward resolve failed, F non-finite/non-positive, obs < kMinUsableObs)
+// (T<=0, forward resolve failed, F non-finite/non-positive, obs below the
+// shared kMinPreparedFitRows contract)
 // so phase 2 skips precisely the chains the pre-S0-1 code skipped. Written by
 // AT MOST one worker (its own chain index) and read only after every worker has
 // joined (parallel_for's scope-exit barrier) — no cross-thread reduction, pure
@@ -159,7 +158,7 @@ struct ChainPrepass {
     if (profile) {
       slot.ms_obs_eu = elapsed_ms(t_obs0, ProfileClock::now());
     }
-    if (!prepared || prepared->fit_observations().size() < kMinUsableObs) {
+    if (!prepared || prepared->fit_observations().size() < kMinPreparedFitRows) {
       return;
     }
 

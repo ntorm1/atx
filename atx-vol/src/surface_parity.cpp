@@ -50,11 +50,6 @@ using atx::core::Ok;
 
 namespace {
 
-// Minimum strikes that must survive to attempt a fit (mirrors vola_parity /
-// the C build_observations "< 5 rows" floor; keeps the 3-parameter SSVI
-// backbone over-determined).
-constexpr std::size_t kMinUsableObs = 5;
-
 // Calendar no-arb sampling grid (spec: +/-3 over ~25 steps).
 constexpr double kArbKMin = -3.0;
 constexpr double kArbKMax = 3.0;
@@ -232,57 +227,28 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
   for (std::size_t chain_index = 0u; chain_index < under.chains.size(); ++chain_index) {
     const Chain &chain = under.chains[chain_index];
     const double T = chain.T;
-    const double rate = in.expiry_rates.empty() ? in.r : in.expiry_rates[chain_index];
     if (!(T > 0.0)) {
       continue; // degenerate maturity: skip (not fatal)
     }
 
-    // 1. Resolve the term (forward, borrow) ONLY — the per-strike inversion
-    //    below rebuilds the prepared fit observations itself, so
-    //    calling the full de_americanize_chain here would invert every strike a
-    //    second, wasted time. resolve_chain_forward is its borrow-only front half.
+    // 1-2. One shared carry + observation seam. Compatibility preparation
+    // consumes in.deam.caches unconditionally, preserving this cold eSSVI
+    // driver's historical cache behavior.
     const double t_deam = profile ? now_ns() : 0.0;
-    const auto d_res =
-        resolve_chain_forward(chain, in.S, rate, in.cash_divs, in.now_ts_ns, in.deam);
+    Result<CanonicalPreparedExpiry> prepared_result =
+        prepare_expiry(chain, static_cast<std::uint32_t>(chain_index), in,
+                       PreparedObservationPolicy::LegacyEssviCompatibility);
     if (profile)
       ms_deam += now_ns() - t_deam;
-    if (!d_res) {
-      continue; // an expiry we cannot de-Americanize contributes no slice
-    }
-    const double F = d_res->forward;
-    if (!(F > 0.0) || !std::isfinite(F)) {
-      continue;
-    }
-    // q_eff bridge: S*e^{(r-q_eff)T} == F exactly.
-    const double q_eff = rate - std::log(F / in.S) / T;
-
-    // 2. Keyed, self-contained observation rebuild on (F, q_eff). The explicit
-    //    compatibility policy preserves the historical eSSVI numerical contract
-    //    while making the migration seam visible; Configured is canonical for
-    //    all new family-neutral preparation.
-    const double t_align = profile ? now_ns() : 0.0;
-    PreparedSliceInputs prepare_inputs;
-    prepare_inputs.expiry_index = static_cast<std::uint32_t>(chain_index);
-    prepare_inputs.S = in.S;
-    prepare_inputs.r = rate;
-    prepare_inputs.F = F;
-    prepare_inputs.q_eff = q_eff;
-    prepare_inputs.df = std::exp(-rate * T);
-    prepare_inputs.calib = in.calib;
-    prepare_inputs.caches = in.deam.caches;
-    prepare_inputs.al_opts = in.deam.al_opts;
-    prepare_inputs.iv_tolerance = in.deam.iv_tol;
-    prepare_inputs.iv_max_iterations = in.deam.iv_max_iter;
-    prepare_inputs.method = in.deam.method;
-    prepare_inputs.policy = PreparedObservationPolicy::LegacyEssviCompatibility;
-    Result<PreparedSlice> prepared_result = PreparedSlice::create(chain, prepare_inputs);
-    if (profile)
-      ms_align += now_ns() - t_align;
-    if (!prepared_result.has_value() ||
-        prepared_result->fit_observations().size() < kMinUsableObs) {
+    if (!prepared_result.has_value()) {
       continue; // fewer than the minimum usable strikes: skip this slice
     }
-    PreparedSlice prepared = std::move(*prepared_result);
+    const double rate = prepared_result->rate;
+    const double F = prepared_result->slice.forward();
+    const double q_eff = prepared_result->q_eff;
+    const double borrow = prepared_result->borrow;
+    const double df = prepared_result->df;
+    PreparedSlice prepared = std::move(prepared_result->slice);
 
     // 3. Fit the eSSVI slice (natural form, T/F stamped in). MonotoneFit adds a
     //    calendar floor vs. the previous fitted slice (theta floor + active-set
@@ -292,7 +258,7 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
     Result<EssviParams> slice_res =
         (in.repair == CalendarRepair::MonotoneFit)
             ? fit_slice_calendar_floored(prepared, T, F, in.calib, &diag,
-                                         has_prev ? &prev_slice : nullptr, std::exp(-rate * T))
+                                         has_prev ? &prev_slice : nullptr, df)
             : essvi_fit_slice(prepared.fit_observations(), T, F, in.calib, &diag);
     if (profile)
       ms_fit += now_ns() - t_fit;
@@ -309,7 +275,7 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
     // 5. Retain the per-slice re-pricing context for the composable facade, and
     //    stash the aligned obs so this slice can be SCORED after the surface is
     //    fully assembled and (optionally) calendar-repaired.
-    context.push_back(SliceContext{T, F, d_res->borrow, q_eff, prepared.fit_observations().size(),
+    context.push_back(SliceContext{T, F, borrow, q_eff, prepared.fit_observations().size(),
                                    prepared.n_dropped()});
     pending.push_back(
         PendingSlice{std::move(prepared), T, rate, q_eff, static_cast<std::uint16_t>(idx)});

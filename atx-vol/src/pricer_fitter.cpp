@@ -12,6 +12,7 @@
 #include "atx/vol/black76.hpp"      // black76_price (independent publication oracle)
 #include "atx/vol/correction.hpp"   // AmericanCorrectionCaches (cached inversion hot path)
 #include "atx/vol/parallel_for.hpp" // parallel_for (shared block-partition fan-out)
+#include "atx/vol/prepared_fitting.hpp" // prepare_expiry (canonical refit preparation)
 
 namespace atx::vol {
 
@@ -56,7 +57,7 @@ std::optional<std::size_t> ChainValuation::row_of(OptionId id) const {
   return std::nullopt;
 }
 
-namespace {
+namespace detail {
 
 [[nodiscard]] SurfaceBuildAttemptReport
 failed_attempt_report(const Underlying &under, const CurveConfig &curve,
@@ -334,7 +335,34 @@ duplicate_maturity_report(const Underlying &under, const CurveConfig &curve) {
   return attempt;
 }
 
-} // namespace
+[[nodiscard]] SurfaceParityInputs refit_preparation_inputs(const VolaSession &session) {
+  const SessionInputs &stored = session.inputs();
+  SurfaceParityInputs inputs;
+  inputs.S = stored.S;
+  inputs.r = stored.r;
+  inputs.expiry_rate_T = stored.expiry_rate_T;
+  inputs.expiry_rates = stored.expiry_rates;
+  inputs.cash_divs = stored.cash_divs;
+  inputs.now_ts_ns = stored.now_ts_ns;
+  inputs.deam = stored.deam;
+  inputs.deam.caches = session.correction_caches();
+  inputs.calib = stored.calib;
+  inputs.band_k = stored.band_k;
+  inputs.repair = stored.calendar_repair;
+  // The legacy eSSVI cold driver always scores parity, even when the generic
+  // score_parity optimization is disabled.
+  inputs.score_parity = true;
+  inputs.enforce_calendar_floor = stored.enforce_calendar_floor;
+  inputs.use_deam_cache_for_fit = stored.use_deam_cache_for_fit;
+  return inputs;
+}
+
+} // namespace detail
+
+using detail::completed_attempt_report;
+using detail::duplicate_maturity_report;
+using detail::failed_attempt_report;
+using detail::refit_preparation_inputs;
 
 Status PricerFitter::fit(const OptionChain &chain,
                          const std::function<void(SessionInputs &)> &session_overlay) {
@@ -544,6 +572,13 @@ Status PricerFitter::fit(const OptionChain &chain,
   std::unique_ptr<FittedSurface> next_surface(new FittedSurface(std::move(sess)));
   std::optional<SurfaceBuildReport> next_published{report};
   std::optional<SurfaceBuildReport> next_attempt{std::move(report)};
+  FitSnapshotProvenance provenance;
+  provenance.chain_instance_id = chain.instance_id();
+  provenance.board_revision = chain.quote_revision();
+  provenance.uid = chain.uid();
+  provenance.expiry_revisions.assign(chain.expiry_quote_revisions().begin(),
+                                     chain.expiry_quote_revisions().end());
+  std::optional<FitSnapshotProvenance> next_provenance{std::move(provenance)};
 
   // Transaction boundary: admitted state and its provenance become current
   // together. Every earlier failure leaves the last-known-good publication.
@@ -552,7 +587,154 @@ Status PricerFitter::fit(const OptionChain &chain,
   decision_ = std::move(next_decision);
   published_report_ = std::move(next_published);
   last_attempt_report_ = std::move(next_attempt);
+  published_provenance_ = std::move(next_provenance);
   return Ok();
+}
+
+Result<ExpiryRefitDiagnostics> PricerFitter::refit_expiry(const OptionChain &chain,
+                                                          ExpiryId expiry_id) {
+  CurveConfig published_curve{};
+  if (surface_ != nullptr) {
+    published_curve = surface_->session().inputs().curve;
+  }
+  const auto fail = [&](atx::core::Error error,
+                        SurfaceBuildStage stage = SurfaceBuildStage::Build)
+      -> Result<ExpiryRefitDiagnostics> {
+    SurfaceBuildReport report;
+    report.primary_curve = published_curve;
+    report.refit_expiry = expiry_id;
+    report.source_quote_revision = chain.quote_revision();
+    report.retained_last_known_good = surface_ != nullptr;
+    report.attempts.push_back(
+        failed_attempt_report(chain.underlying(), published_curve, error, stage));
+    last_attempt_report_ = std::move(report);
+    return Err(std::move(error));
+  };
+
+  if (surface_ == nullptr || !published_provenance_.has_value()) {
+    return fail(atx::core::Error{ErrorCode::Unavailable,
+                                 "PricerFitter::refit_expiry: no published surface"});
+  }
+  const FitSnapshotProvenance &published = *published_provenance_;
+  if (chain.instance_id() != published.chain_instance_id || chain.uid() != published.uid) {
+    return fail(atx::core::Error{ErrorCode::InvalidArgument,
+                                 "PricerFitter::refit_expiry: chain instance differs from fit"},
+                SurfaceBuildStage::InputValidation);
+  }
+  const Underlying &under = chain.underlying();
+  if (expiry_id >= under.chains.size() || under.chains[expiry_id].expiry_id != expiry_id) {
+    return fail(atx::core::Error{ErrorCode::NotFound,
+                                 "PricerFitter::refit_expiry: expiry id not found"},
+                SurfaceBuildStage::InputValidation);
+  }
+  const std::span<const std::uint64_t> current_revisions = chain.expiry_quote_revisions();
+  if (current_revisions.size() != published.expiry_revisions.size()) {
+    return fail(atx::core::Error{ErrorCode::InvalidArgument,
+                                 "PricerFitter::refit_expiry: expiry topology changed"},
+                SurfaceBuildStage::InputValidation);
+  }
+  for (std::size_t index = 0u; index < current_revisions.size(); ++index) {
+    if (index != expiry_id && current_revisions[index] != published.expiry_revisions[index]) {
+      return fail(atx::core::Error{
+                      ErrorCode::InvalidArgument,
+                      "PricerFitter::refit_expiry: a non-target expiry has newer quotes"},
+                  SurfaceBuildStage::InputValidation);
+    }
+  }
+  if (published_curve.kind != VolCurveKind::Essvi) {
+    return fail(atx::core::Error{ErrorCode::NotImplemented,
+                                 "PricerFitter::refit_expiry: only eSSVI is supported"},
+                SurfaceBuildStage::InputValidation);
+  }
+  switch (surface_->session().inputs().calendar_repair) {
+  case CalendarRepair::None:
+    break;
+  case CalendarRepair::MonotoneFit:
+  case CalendarRepair::Project:
+    return fail(atx::core::Error{
+                    ErrorCode::NotImplemented,
+                    "PricerFitter::refit_expiry: configured calendar repair is unsupported"},
+                SurfaceBuildStage::InputValidation);
+  }
+
+  const Chain &target_chain = under.chains[expiry_id];
+  const std::span<const SliceContext> fitted_expiries = surface_->session().expiries();
+  std::optional<std::size_t> fitted_index;
+  for (std::size_t index = 0u; index < fitted_expiries.size(); ++index) {
+    if (fitted_expiries[index].T != target_chain.T) {
+      continue;
+    }
+    if (fitted_index.has_value()) {
+      return fail(atx::core::Error{ErrorCode::InvalidArgument,
+                                   "PricerFitter::refit_expiry: maturity is ambiguous"},
+                  SurfaceBuildStage::InputValidation);
+    }
+    fitted_index = index;
+  }
+  if (!fitted_index.has_value()) {
+    return fail(atx::core::Error{ErrorCode::NotFound,
+                                 "PricerFitter::refit_expiry: expiry was not fitted"},
+                SurfaceBuildStage::InputValidation);
+  }
+
+  Result<CanonicalPreparedExpiry> prepared =
+      prepare_expiry(target_chain, static_cast<std::uint32_t>(expiry_id),
+                     refit_preparation_inputs(surface_->session()),
+                     PreparedObservationPolicy::LegacyEssviCompatibility);
+  if (!prepared.has_value()) {
+    return fail(prepared.error());
+  }
+
+  VolaSession candidate = surface_->session().clone_for_refit();
+  Result<FitDiag> fit_diag = candidate.apply_prepared_essvi_refit(*fitted_index, *prepared);
+  if (!fit_diag.has_value()) {
+    return fail(fit_diag.error());
+  }
+
+  SurfaceBuildAttemptReport attempt =
+      completed_attempt_report(under, published_curve, candidate, cfg_.admission);
+  SurfaceBuildReport report;
+  report.primary_curve = published_curve;
+  report.published_curve = published_curve;
+  report.refit_expiry = expiry_id;
+  report.source_quote_revision = chain.quote_revision();
+  report.warm_started = true;
+  const SurfaceAdmissionDecision admission = attempt.admission;
+  if (!admission.admitted) {
+    report.retained_last_known_good = true;
+    report.attempts.push_back(std::move(attempt));
+    last_attempt_report_ = std::move(report);
+    return Err(ErrorCode::Unavailable,
+               "PricerFitter::refit_expiry: candidate failed surface admission");
+  }
+
+  attempt.stage = SurfaceBuildStage::Publication;
+  report.attempts.push_back(std::move(attempt));
+  report.published = true;
+  const SliceContext refreshed_context = candidate.expiries()[*fitted_index];
+  std::unique_ptr<FittedSurface> next_surface(new FittedSurface(std::move(candidate)));
+  std::optional<SurfaceBuildReport> next_published{report};
+  std::optional<SurfaceBuildReport> next_attempt{std::move(report)};
+  FitSnapshotProvenance provenance;
+  provenance.chain_instance_id = chain.instance_id();
+  provenance.board_revision = chain.quote_revision();
+  provenance.uid = chain.uid();
+  provenance.expiry_revisions.assign(current_revisions.begin(), current_revisions.end());
+  std::optional<FitSnapshotProvenance> next_provenance{std::move(provenance)};
+
+  surface_ = std::move(next_surface);
+  published_report_ = std::move(next_published);
+  last_attempt_report_ = std::move(next_attempt);
+  published_provenance_ = std::move(next_provenance);
+
+  return Ok(ExpiryRefitDiagnostics{expiry_id,
+                                   chain.quote_revision(),
+                                   published_curve.kind,
+                                   true,
+                                   refreshed_context.n_used,
+                                   refreshed_context.n_dropped,
+                                   std::optional<FitDiag>{*fit_diag},
+                                   admission});
 }
 
 Result<ChainValuation> PricerFitter::value_chain(const OptionChain &chain, OutputField fields,

@@ -63,6 +63,9 @@
 
 namespace atx::vol {
 
+struct CanonicalPreparedExpiry;
+class PricerFitter;
+
 // Market/pricing snapshot a session is built from. Maps 1:1 onto
 // `SurfaceParityInputs` when driving `run_surface_parity`; the same fields are
 // retained so the const queries can re-price off the fitted surface.
@@ -245,6 +248,12 @@ class VolaSession {
 
   // ── Incremental update (tick-to-quote) ─────────────────────────────────────
   //
+  // COMPATIBILITY-ONLY UNSAFE PRIMITIVE. This entry predates facade-owned
+  // transactionality. It accepts caller-constructed rows, performs no canonical
+  // preparation/provenance check, does not run surface admission, and mutates
+  // this session directly. New code must use PricerFitter::refit_expiry. The
+  // declaration remains temporarily for source compatibility only.
+  //
   // Warm-start refit of ONE already-fitted expiry from a fresh observation set —
   // the market-maker's re-quote path. When a chain re-prints, the desk does not
   // want a whole-surface rebuild; it wants that one expiry's eSSVI slice nudged
@@ -345,6 +354,13 @@ class VolaSession {
   }
 
  private:
+  friend class PricerFitter;
+
+  [[nodiscard]] VolaSession clone_for_refit() const;
+  [[nodiscard]] Result<FitDiag> apply_prepared_essvi_refit(
+      std::size_t slice_idx, const CanonicalPreparedExpiry &prepared);
+  [[nodiscard]] Status refresh_refit_diagnostics();
+
   // The interpolated term forward and effective carry at a queried T.
   struct ForwardCarry {
     double forward{0.0};

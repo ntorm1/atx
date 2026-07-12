@@ -2,11 +2,13 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <span>
 #include <string>
 #include <vector>
 
+#include "atx/core/error.hpp"
 #include "atx/vol/chain.hpp"
 #include "atx/vol/panel.hpp"
 #include "atx/vol/pricer_fitter.hpp"
@@ -25,6 +27,7 @@ namespace {
 
 using atx::vol::ChainValuation;
 using atx::vol::FitPreset;
+using atx::vol::FittedSurface;
 using atx::vol::make_spy_synthetic_spec;
 using atx::vol::make_synthetic_american_panel;
 using atx::vol::OptionChain;
@@ -35,6 +38,40 @@ using atx::vol::PricerFitter;
 using atx::vol::Side;
 using atx::vol::SynthPanelSpec;
 using atx::vol::VolaSession;
+
+PricerConfig essvi_config() {
+  PricerConfig config;
+  config.preset = FitPreset::Fast;
+  config.curve = atx::vol::CurveConfig{atx::vol::VolCurveKind::Essvi};
+  return config;
+}
+
+void replace_expiry_quotes(OptionChain &destination, const OptionChain &source,
+                           atx::vol::ExpiryId expiry_id) {
+  std::vector<OptionId> ids;
+  std::vector<double> bids;
+  std::vector<double> asks;
+  for (const OptionId id : destination.ids()) {
+    if (atx::vol::cid_expiry(id) != expiry_id) {
+      continue;
+    }
+    const auto quote = source.at(id);
+    ASSERT_TRUE(quote.has_value()) << quote.error().to_string();
+    ids.push_back(id);
+    bids.push_back(quote->bid);
+    asks.push_back(quote->ask);
+  }
+  ASSERT_FALSE(ids.empty());
+  ASSERT_TRUE(destination.update_quotes(ids, bids, asks).has_value());
+}
+
+atx::vol::Result<OptionChain> make_chain_from_spec(const SynthPanelSpec &spec) {
+  auto panel = make_synthetic_american_panel(spec);
+  if (!panel.has_value()) {
+    return atx::core::Err(panel.error());
+  }
+  return OptionChain::from_frame(panel->frame, spec.r, spec.spot);
+}
 
 // NaN-aware equality: two failed/absent cells (both NaN) compare equal, so the
 // determinism check does not trip on the (deterministic) NaN slots.
@@ -125,6 +162,239 @@ TEST_F(PricerFitterTest, UpdateQuotesReplacesBidAsk) {
   EXPECT_DOUBLE_EQ(ref->mid, 0.5 * (nb + na));
 }
 
+TEST_F(PricerFitterTest, QuoteRevisionsAdvanceOnlyForValidTouchedExpiries) {
+  OptionChain &chain = *chain_;
+  ASSERT_NE(chain.instance_id(), 0u);
+  ASSERT_FALSE(chain.expiry_quote_revisions().empty());
+  EXPECT_EQ(chain.quote_revision(), 0u);
+
+  const OptionId first = chain.ids().front();
+  const auto quote = chain.at(first);
+  ASSERT_TRUE(quote.has_value());
+  ASSERT_TRUE(chain.update_quotes(std::span<const OptionId>{&first, 1u},
+                                  std::span<const double>{&quote->bid, 1u},
+                                  std::span<const double>{&quote->ask, 1u})
+                  .has_value());
+  EXPECT_EQ(chain.quote_revision(), 1u);
+  const atx::vol::ExpiryId touched = atx::vol::cid_expiry(first);
+  for (std::size_t index = 0u; index < chain.expiry_quote_revisions().size(); ++index) {
+    EXPECT_EQ(chain.expiry_quote_revisions()[index], index == touched ? 1u : 0u);
+  }
+
+  const OptionId invalid{0u};
+  const double bid = 1.0;
+  const double ask = 1.1;
+  ASSERT_TRUE(chain.update_quotes(std::span<const OptionId>{&invalid, 1u},
+                                  std::span<const double>{&bid, 1u},
+                                  std::span<const double>{&ask, 1u})
+                  .has_value());
+  EXPECT_EQ(chain.quote_revision(), 1u);
+}
+
+TEST_F(PricerFitterTest, QuoteUpdateChangesModelIvOnlyAfterAdmittedExpiryRefit) {
+  SynthPanelSpec changed_spec = make_spy_synthetic_spec();
+  changed_spec.expiries.back().truth.sigma0 *= 1.01;
+  auto changed_chain = make_chain_from_spec(changed_spec);
+  ASSERT_TRUE(changed_chain.has_value()) << changed_chain.error().to_string();
+
+  PricerFitter fitter{essvi_config()};
+  ASSERT_TRUE(fitter.fit(*chain_).has_value());
+  const atx::vol::ExpiryId target =
+      static_cast<atx::vol::ExpiryId>(chain_->underlying().chains.size() - 1u);
+  const double maturity = chain_->underlying().chains[target].T;
+  const double before = fitter.surface()->iv(spot_, maturity);
+  replace_expiry_quotes(*chain_, *changed_chain, target);
+  EXPECT_DOUBLE_EQ(fitter.surface()->iv(spot_, maturity), before);
+
+  const auto refitted = fitter.refit_expiry(*chain_, target);
+  ASSERT_TRUE(refitted.has_value()) << refitted.error().to_string();
+  EXPECT_TRUE(refitted->warm_started);
+  EXPECT_TRUE(refitted->admission.admitted);
+  EXPECT_NE(fitter.surface()->iv(spot_, maturity), before);
+  ASSERT_TRUE(fitter.published_provenance().has_value());
+  EXPECT_EQ(fitter.published_provenance()->board_revision, chain_->quote_revision());
+}
+
+TEST_F(PricerFitterTest, IncrementalEssviAgreesWithColdFitOnUpdatedBoard) {
+  SynthPanelSpec changed_spec = make_spy_synthetic_spec();
+  changed_spec.expiries.back().truth.sigma0 *= 1.01;
+  auto changed_chain = make_chain_from_spec(changed_spec);
+  ASSERT_TRUE(changed_chain.has_value()) << changed_chain.error().to_string();
+
+  PricerFitter incremental{essvi_config()};
+  ASSERT_TRUE(incremental.fit(*chain_).has_value());
+  EXPECT_FALSE(incremental.surface()->session().inputs().use_deam_cache_for_fit);
+  EXPECT_NE(incremental.surface()->session().correction_caches().call, nullptr);
+  EXPECT_NE(incremental.surface()->session().correction_caches().put, nullptr);
+  const atx::vol::ExpiryId target =
+      static_cast<atx::vol::ExpiryId>(chain_->underlying().chains.size() - 1u);
+  replace_expiry_quotes(*chain_, *changed_chain, target);
+  ASSERT_TRUE(incremental.refit_expiry(*chain_, target).has_value());
+
+  PricerFitter cold{essvi_config()};
+  ASSERT_TRUE(cold.fit(*changed_chain).has_value());
+  const double maturity = changed_spec.expiries.back().T;
+  for (const double strike : changed_spec.strikes) {
+    EXPECT_NEAR(incremental.surface()->iv(strike, maturity), cold.surface()->iv(strike, maturity),
+                2.0e-3);
+  }
+}
+
+TEST_F(PricerFitterTest, RefitExplicitlyRejectsConfiguredCalendarRepairModes) {
+  const auto verify_repair = [&](atx::vol::CalendarRepair repair) {
+    SCOPED_TRACE(static_cast<int>(repair));
+    PricerConfig config = essvi_config();
+    config.admission.consumer = atx::vol::SurfaceConsumer::Mark;
+    config.admission.require_calendar_arb_free = false;
+    PricerFitter fitter{config};
+    ASSERT_TRUE(fitter
+                    .fit(*chain_, [repair](atx::vol::SessionInputs &inputs) {
+                      inputs.calendar_repair = repair;
+                    })
+                    .has_value());
+    const FittedSurface *const published_surface = fitter.surface();
+    ASSERT_TRUE(fitter.published_report().has_value());
+    const std::size_t published_attempts = fitter.published_report()->attempts.size();
+    ASSERT_TRUE(fitter.published_provenance().has_value());
+    const atx::vol::FitSnapshotProvenance published_provenance =
+        *fitter.published_provenance();
+
+    const auto rejected = fitter.refit_expiry(*chain_, 0u);
+    ASSERT_FALSE(rejected.has_value());
+    EXPECT_EQ(rejected.error().code(), atx::core::ErrorCode::NotImplemented);
+    EXPECT_EQ(fitter.surface(), published_surface);
+    ASSERT_TRUE(fitter.published_report().has_value());
+    EXPECT_TRUE(fitter.published_report()->published);
+    EXPECT_EQ(fitter.published_report()->attempts.size(), published_attempts);
+    ASSERT_TRUE(fitter.published_provenance().has_value());
+    EXPECT_EQ(fitter.published_provenance()->chain_instance_id,
+              published_provenance.chain_instance_id);
+    EXPECT_EQ(fitter.published_provenance()->board_revision,
+              published_provenance.board_revision);
+    EXPECT_EQ(fitter.published_provenance()->expiry_revisions,
+              published_provenance.expiry_revisions);
+    ASSERT_TRUE(fitter.last_attempt_report().has_value());
+    EXPECT_FALSE(fitter.last_attempt_report()->published);
+    EXPECT_EQ(fitter.last_attempt_report()->attempts.front().stage,
+              atx::vol::SurfaceBuildStage::InputValidation);
+  };
+
+  verify_repair(atx::vol::CalendarRepair::MonotoneFit);
+  verify_repair(atx::vol::CalendarRepair::Project);
+}
+
+TEST_F(PricerFitterTest, CrossingMiddleExpiryRefitIsRejectedAndPreservesPublication) {
+  PricerFitter fitter{essvi_config()};
+  ASSERT_TRUE(fitter.fit(*chain_).has_value());
+  const FittedSurface *const published = fitter.surface();
+  const atx::vol::SessionDiagnostics diagnostics = published->diagnostics();
+  ASSERT_TRUE(fitter.published_report().has_value());
+  const std::size_t published_attempts = fitter.published_report()->attempts.size();
+
+  SynthPanelSpec stressed_spec = make_spy_synthetic_spec();
+  constexpr std::size_t kMiddle = 2u;
+  stressed_spec.expiries[kMiddle].truth.sigma0 = 0.28;
+  auto stressed_chain = make_chain_from_spec(stressed_spec);
+  ASSERT_TRUE(stressed_chain.has_value()) << stressed_chain.error().to_string();
+  replace_expiry_quotes(*chain_, *stressed_chain, static_cast<atx::vol::ExpiryId>(kMiddle));
+
+  const auto rejected =
+      fitter.refit_expiry(*chain_, static_cast<atx::vol::ExpiryId>(kMiddle));
+  ASSERT_FALSE(rejected.has_value());
+  EXPECT_EQ(fitter.surface(), published);
+  EXPECT_DOUBLE_EQ(fitter.surface()->diagnostics().worst_frac_within_bidask,
+                   diagnostics.worst_frac_within_bidask);
+  EXPECT_DOUBLE_EQ(fitter.surface()->diagnostics().mean_rmse_vol, diagnostics.mean_rmse_vol);
+  EXPECT_EQ(fitter.surface()->diagnostics().n_quotes, diagnostics.n_quotes);
+  ASSERT_TRUE(fitter.published_report().has_value());
+  EXPECT_EQ(fitter.published_report()->attempts.size(), published_attempts);
+  ASSERT_TRUE(fitter.last_attempt_report().has_value());
+  EXPECT_TRUE(fitter.last_attempt_report()->refit_expiry.has_value());
+  ASSERT_FALSE(fitter.last_attempt_report()->attempts.empty());
+  const auto &admission = fitter.last_attempt_report()->attempts.back().admission;
+  EXPECT_TRUE(atx::vol::has_admission_failure(
+                  admission, atx::vol::SurfaceAdmissionReason::CalendarTotalVariance) ||
+              atx::vol::has_admission_failure(
+                  admission, atx::vol::SurfaceAdmissionReason::ForwardVariance) ||
+              atx::vol::has_admission_failure(
+                  admission, atx::vol::SurfaceAdmissionReason::CalendarArbitrage));
+}
+
+TEST_F(PricerFitterTest, RefitRejectsDirtyNonTargetExpiryTransactionally) {
+  PricerFitter fitter{essvi_config()};
+  ASSERT_TRUE(fitter.fit(*chain_).has_value());
+  const FittedSurface *const published = fitter.surface();
+
+  SynthPanelSpec changed_spec = make_spy_synthetic_spec();
+  changed_spec.expiries[0].truth.sigma0 *= 1.01;
+  changed_spec.expiries[1].truth.sigma0 *= 1.01;
+  auto changed_chain = make_chain_from_spec(changed_spec);
+  ASSERT_TRUE(changed_chain.has_value()) << changed_chain.error().to_string();
+  replace_expiry_quotes(*chain_, *changed_chain, 0u);
+  replace_expiry_quotes(*chain_, *changed_chain, 1u);
+
+  const auto rejected = fitter.refit_expiry(*chain_, 0u);
+  ASSERT_FALSE(rejected.has_value());
+  EXPECT_EQ(rejected.error().code(), atx::core::ErrorCode::InvalidArgument);
+  EXPECT_EQ(fitter.surface(), published);
+  EXPECT_TRUE(fitter.published_report()->published);
+  EXPECT_FALSE(fitter.last_attempt_report()->published);
+}
+
+TEST_F(PricerFitterTest, RefitRejectsDifferentChainInstanceTransactionally) {
+  PricerFitter fitter{essvi_config()};
+  ASSERT_TRUE(fitter.fit(*chain_).has_value());
+  const FittedSurface *const published = fitter.surface();
+  auto other = make_chain_from_spec(make_spy_synthetic_spec());
+  ASSERT_TRUE(other.has_value()) << other.error().to_string();
+  ASSERT_NE(other->instance_id(), chain_->instance_id());
+
+  const auto rejected = fitter.refit_expiry(*other, 0u);
+  ASSERT_FALSE(rejected.has_value());
+  EXPECT_EQ(rejected.error().code(), atx::core::ErrorCode::InvalidArgument);
+  EXPECT_EQ(fitter.surface(), published);
+}
+
+TEST_F(PricerFitterTest, RefitConsumesResolvedOverlayInputs) {
+  SynthPanelSpec changed_spec = make_spy_synthetic_spec();
+  changed_spec.expiries.back().truth.sigma0 *= 1.005;
+  auto changed_chain = make_chain_from_spec(changed_spec);
+  ASSERT_TRUE(changed_chain.has_value()) << changed_chain.error().to_string();
+
+  PricerFitter fitter{essvi_config()};
+  ASSERT_TRUE(fitter
+                  .fit(*chain_, [](atx::vol::SessionInputs &inputs) {
+                    inputs.band_k = 1.75;
+                    inputs.deam.iv_tol = 2.0e-6;
+                    inputs.use_correction_cache = false;
+                  })
+                  .has_value());
+  const atx::vol::ExpiryId target =
+      static_cast<atx::vol::ExpiryId>(chain_->underlying().chains.size() - 1u);
+  replace_expiry_quotes(*chain_, *changed_chain, target);
+  ASSERT_TRUE(fitter.refit_expiry(*chain_, target).has_value());
+  EXPECT_DOUBLE_EQ(fitter.surface()->session().inputs().band_k, 1.75);
+  EXPECT_DOUBLE_EQ(fitter.surface()->session().inputs().deam.iv_tol, 2.0e-6);
+  EXPECT_FALSE(fitter.surface()->session().inputs().use_correction_cache);
+}
+
+TEST_F(PricerFitterTest, UnsupportedFamilyRefitIsExplicitAndTransactional) {
+  PricerConfig config;
+  config.preset = FitPreset::Hft;
+  config.admission.consumer = atx::vol::SurfaceConsumer::Mark;
+  config.admission.require_calendar_arb_free = false;
+  PricerFitter fitter{config};
+  ASSERT_TRUE(fitter.fit(*chain_).has_value());
+  const FittedSurface *const published = fitter.surface();
+  const auto rejected = fitter.refit_expiry(*chain_, 0u);
+  ASSERT_FALSE(rejected.has_value());
+  EXPECT_EQ(rejected.error().code(), atx::core::ErrorCode::NotImplemented);
+  EXPECT_EQ(fitter.surface(), published);
+  ASSERT_TRUE(fitter.last_attempt_report().has_value());
+  EXPECT_EQ(fitter.last_attempt_report()->attempts.front().stage,
+            atx::vol::SurfaceBuildStage::InputValidation);
+}
+
 TEST_F(PricerFitterTest, FitStoresSurfaceAndGatesValueChain) {
   PricerFitter fitter{PricerConfig{.preset = FitPreset::Fast, .n_threads = 1}};
   // value_chain before a fit is gated.
@@ -135,6 +405,18 @@ TEST_F(PricerFitterTest, FitStoresSurfaceAndGatesValueChain) {
   EXPECT_TRUE(fitter.fitted());
   ASSERT_NE(fitter.surface(), nullptr);
   EXPECT_GT(fitter.surface()->diagnostics().n_slices, 0u);
+}
+
+TEST_F(PricerFitterTest, PinnedEssviStillScoresParityWhenGenericScoreFlagIsFalse) {
+  PricerConfig config = essvi_config();
+  config.score_parity = false;
+  PricerFitter fitter{config};
+  ASSERT_TRUE(fitter.fit(*chain_).has_value());
+  const std::span<const atx::vol::ParityReport> parity = fitter.surface()->session().parity();
+  ASSERT_FALSE(parity.empty());
+  for (const atx::vol::ParityReport &report : parity) {
+    EXPECT_GT(report.n, 0u);
+  }
 }
 
 TEST_F(PricerFitterTest, ValueChainFieldsMatchSessionScalarQueries) {

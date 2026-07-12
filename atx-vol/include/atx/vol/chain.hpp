@@ -98,6 +98,14 @@ public:
   [[nodiscard]] std::int64_t now_ns() const noexcept { return env_.now_ns; }
   [[nodiscard]] const MarketEnv &env() const noexcept { return env_; }
   [[nodiscard]] Uid uid() const noexcept { return uid_; }
+  // Process-unique logical identity plus monotonically increasing quote
+  // revisions. Revisions are provenance only; callers must still obey the
+  // chain's many-readers-or-one-writer synchronization contract.
+  [[nodiscard]] std::uint64_t instance_id() const noexcept { return instance_id_; }
+  [[nodiscard]] std::uint64_t quote_revision() const noexcept { return quote_revision_; }
+  [[nodiscard]] std::span<const std::uint64_t> expiry_quote_revisions() const noexcept {
+    return expiry_quote_revisions_;
+  }
 
   // ── Enumeration / decode ───────────────────────────────────────────────────
 
@@ -139,6 +147,9 @@ private:
   Uid uid_{kInvalidUid};
   MarketEnv env_{};    // spot / rate-curve / divs / valuation time
   double r_repr_{0.0}; // representative pipeline rate (env_.rate_at(front T))
+  std::uint64_t instance_id_{0u};
+  std::uint64_t quote_revision_{0u};
+  std::vector<std::uint64_t> expiry_quote_revisions_{};
 };
 
 } // namespace atx::vol

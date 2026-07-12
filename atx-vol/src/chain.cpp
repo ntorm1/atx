@@ -1,7 +1,9 @@
 #include "atx/vol/chain.hpp"
 
+#include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 
 #include "atx/core/error.hpp"
 
@@ -11,6 +13,22 @@ using atx::core::Err;
 using atx::core::ErrorCode;
 using atx::core::Ok;
 
+namespace {
+
+std::atomic<std::uint64_t> g_next_chain_instance_id{1u};
+
+[[nodiscard]] std::uint64_t next_chain_instance_id() noexcept {
+  std::uint64_t current = g_next_chain_instance_id.load();
+  while (current != std::numeric_limits<std::uint64_t>::max()) {
+    if (g_next_chain_instance_id.compare_exchange_weak(current, current + 1u)) {
+      return current;
+    }
+  }
+  return 0u;
+}
+
+} // namespace
+
 Result<OptionChain> OptionChain::from_frame(const QuoteFrame &frame, MarketEnv env) {
   OptionChain chain;
   ATX_TRY(const Uid uid, data_install(chain.u_, frame));
@@ -19,7 +37,12 @@ Result<OptionChain> OptionChain::from_frame(const QuoteFrame &frame, MarketEnv e
   if (under == nullptr) {
     return Err(ErrorCode::NotFound, "OptionChain::from_frame: no underlying installed");
   }
+  chain.instance_id_ = next_chain_instance_id();
+  if (chain.instance_id_ == 0u) {
+    return Err(ErrorCode::OutOfRange, "OptionChain::from_frame: chain instance id exhausted");
+  }
   chain.uid_ = uid;
+  chain.expiry_quote_revisions_.assign(under->chains.size(), 0u);
   chain.env_ = std::move(env);
   if (!(chain.env_.spot > 0.0)) {
     chain.env_.spot = frame.spot; // fall back to the frame's spot
@@ -154,6 +177,36 @@ Status OptionChain::update_quotes(std::span<const OptionId> ids, std::span<const
                "OptionChain::update_quotes: ids / bids / asks length mismatch");
   }
   const std::size_t n = ids.size();
+  const Underlying &under = underlying();
+  std::vector<bool> touched_expiry(under.chains.size(), false);
+  bool any_valid = false;
+  for (const OptionId id : ids) {
+    if (cid_uid(id) != uid_) {
+      continue;
+    }
+    const ExpiryId expiry = cid_expiry(id);
+    if (expiry >= under.chains.size()) {
+      continue;
+    }
+    const Chain &expiry_chain = under.chains[expiry];
+    if (cid_strike_idx(id) >= expiry_chain.n_strikes()) {
+      continue;
+    }
+    touched_expiry[expiry] = true;
+    any_valid = true;
+  }
+  if (any_valid) {
+    if (quote_revision_ == std::numeric_limits<std::uint64_t>::max()) {
+      return Err(ErrorCode::OutOfRange, "OptionChain::update_quotes: board revision exhausted");
+    }
+    for (std::size_t expiry = 0u; expiry < touched_expiry.size(); ++expiry) {
+      if (touched_expiry[expiry] &&
+          expiry_quote_revisions_[expiry] == std::numeric_limits<std::uint64_t>::max()) {
+        return Err(ErrorCode::OutOfRange,
+                   "OptionChain::update_quotes: expiry revision exhausted");
+      }
+    }
+  }
   std::vector<std::int32_t> sizes(n, 1);
   std::vector<std::int64_t> ts(n, env_.now_ns);
   std::vector<std::uint8_t> flags(n, 0u);
@@ -175,7 +228,18 @@ Status OptionChain::update_quotes(std::span<const OptionId> ids, std::span<const
       .ts_ns = std::span<const std::int64_t>(ts),
       .flags = std::span<const std::uint8_t>(flags),
   };
-  return u_.apply_quotes(batch);
+  if (Status applied = u_.apply_quotes(batch); !applied.has_value()) {
+    return applied;
+  }
+  if (any_valid) {
+    ++quote_revision_;
+    for (std::size_t expiry = 0u; expiry < touched_expiry.size(); ++expiry) {
+      if (touched_expiry[expiry]) {
+        ++expiry_quote_revisions_[expiry];
+      }
+    }
+  }
+  return Ok();
 }
 
 } // namespace atx::vol
