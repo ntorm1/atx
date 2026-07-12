@@ -127,11 +127,14 @@ struct OpraLoadSpec {
   // spot-implication forward T, the 0DTE/expired-contract drop filter, and
   // (when yc_pillar_t/_r are supplied) the per-row rate_source term-curve
   // query T. Default Calendar365 is BIT-IDENTICAL to the historical
-  // `year_fraction`-derived behavior (see vol_time.hpp). A caller threading
-  // `TimeConvention::VolTime` here should install the RETURNED `OpraPanel`'s
-  // mirrored `time` field into `data_install`'s `spec` (and `SessionInputs::
-  // time`, if building a session off it) so the SAME convention governs the
-  // installed `Chain::T` too -- see vol_time.hpp's production-T-convention doc.
+  // `year_fraction`-derived behavior (see vol_time.hpp). The loader stamps this
+  // onto the returned frame (`QuoteFrame::time`), which `data_install` reads
+  // for `Chain::T` — so the plain `data_install(u, panel.frame)` call every
+  // production consumer already makes yields chains under THIS convention
+  // automatically; there is nothing to thread and nothing to get wrong. A
+  // session-building caller must additionally set `SessionInputs::time` (the
+  // session's retained copy); `VolaSession::from_frame` fails loudly
+  // (InvalidArgument) if it mismatches the frame's.
   TimeSpec time{};
 };
 
@@ -151,10 +154,11 @@ struct OpraPanel {
   std::vector<OpraInstrumentIdentity> source_identities; // id ascending
   FitContext fit_context{};
   OpraMarketInputProvenance market_input_provenance{};
-  // Mirrors `OpraLoadSpec::time` -- the T convention this panel's rows/spot
-  // were actually computed under. Pass this (not a fresh default) into
-  // `data_install` / `SessionInputs::time` downstream so the installed
-  // `Chain::T` stays on the SAME convention as this panel's own T math.
+  // Convenience mirror of `OpraLoadSpec::time` (== `frame.time`, the
+  // authoritative copy `data_install` reads). Read it when building a session
+  // off this panel: set `SessionInputs::time` from it so `VolaSession::
+  // from_frame`'s mixed-convention guard passes. `data_install(u, frame)`
+  // itself needs nothing from here — the frame already carries the convention.
   TimeSpec time{};
 };
 

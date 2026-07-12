@@ -191,6 +191,18 @@ struct QuoteFrame {
 
   std::vector<DividendEvent> divs;   // discrete cash-dividend schedule
   std::vector<ExpiryInputs> expiry_inputs;
+
+  // The T convention this frame was BUILT under — the frame's single source of
+  // truth for every year-fraction derived from it. A loader that computes any
+  // T-dependent quantity while assembling the frame (e.g.
+  // `load_opra_cbbo_parquet`: PCP spot implication, 0DTE drop filter, term-rate
+  // stamping) must stamp the governing `TimeSpec` here; `data_install` then
+  // reads THIS field for `Chain::T`, so the installed chains can never disagree
+  // with the loader's own T math — a mixed-convention universe is impossible by
+  // construction, with no caller threading required. Default Calendar365 keeps
+  // every hand-built frame bit-identical to the historical
+  // `year_fraction`-derived behavior.
+  TimeSpec time{};
 };
 
 // ── ISO-8601 / civil date kernels ───────────────────────────────────────────
@@ -205,8 +217,8 @@ struct QuoteFrame {
 // Delegates to `time_to_expiry_years` with a default `TimeSpec` (Calendar365)
 // for the actual arithmetic (vol_time.hpp `kCalendarYearNs`) — this function
 // stays the legacy Calendar365-only, ISO-string entry point; production T
-// callers that need the opt-in VolTime convention go through
-// `time_to_expiry_years`/`data_install`'s `TimeSpec` parameter instead.
+// callers that need the opt-in VolTime convention set `QuoteFrame::time` (or
+// call `time_to_expiry_years` directly) instead.
 [[nodiscard]] double year_fraction(std::string_view from_iso,
                                    std::string_view to_iso) noexcept;
 
@@ -243,20 +255,18 @@ void build_expiry_inputs(QuoteFrame &frame);
 // Install a quote frame into `u` (`ats_vol_data_install`). Interns each row's
 // ticker, grows expiries/strikes, writes the quote plane
 // (bids/asks/sizes/mids/ts/flags), tracks spot/spot-ts per underlier, sets each
-// chain's `T` from `time_to_expiry_years(snapshot_ns, expiry_ns, spec)` (parsed
-// from `frame.snapshot_iso` / `row.expiry_iso`), sorts each touched underlier's
-// chains ascending in `T` (re-issuing `expiry_id` to the new positions), and
-// stamps `Chain::source_atm_vol` from the frame's expiry-input table where
-// present.
+// chain's `T` from `time_to_expiry_years(snapshot_ns, expiry_ns, frame.time)`
+// (instants parsed from `frame.snapshot_iso` / `row.expiry_iso`), sorts each
+// touched underlier's chains ascending in `T` (re-issuing `expiry_id` to the
+// new positions), and stamps `Chain::source_atm_vol` from the frame's
+// expiry-input table where present.
 //
-// @param spec  governing T convention for every chain this call installs.
-//              Default `TimeSpec{}` (Calendar365) is BIT-IDENTICAL to the
-//              historical `year_fraction`-derived `T` — every existing caller
-//              that omits it is unaffected. Threading a non-default `spec`
-//              (e.g. from `SessionInputs::time` / `OpraLoadSpec::time`) is the
-//              caller's responsibility to keep consistent with whatever
-//              convention governed any OTHER T computed for the same panel
-//              (see vol_time.hpp's production-T-convention doc).
+// The T convention comes from `frame.time` — the frame carries the convention
+// it was built under (see `QuoteFrame::time`), so this install can never
+// disagree with the loader's own T math and callers need no extra argument.
+// A default-constructed `frame.time` (Calendar365) is BIT-IDENTICAL to the
+// historical `year_fraction`-derived `T`.
+//
 // @return the first/default uid on success.
 // @return InvalidArgument if the frame has no yield-curve pillars (the C's
 //         ATS_VOL_ERR_NO_YIELD_CURVE gate; message names the yield curve), if
@@ -264,8 +274,7 @@ void build_expiry_inputs(QuoteFrame &frame);
 //         (non-finite/non-positive strike, negative/non-finite bid or ask,
 //         negative sizes, an empty/over-long row uid, or an unparseable
 //         expiry).
-[[nodiscard]] Result<Uid> data_install(Universe &u, const QuoteFrame &frame,
-                                       const TimeSpec &spec = TimeSpec{});
+[[nodiscard]] Result<Uid> data_install(Universe &u, const QuoteFrame &frame);
 
 // ── SpiderRock Parquet loader (DEFERRED) ────────────────────────────────────
 

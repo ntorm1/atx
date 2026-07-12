@@ -26,7 +26,9 @@
 namespace {
 
 using atx::vol::data_install;
+using atx::vol::ErrorCode;
 using atx::vol::iso_to_ns;
+using atx::vol::QuoteFrame;
 using atx::vol::make_synthetic_american_panel;
 using atx::vol::S3Params;
 using atx::vol::SessionInputs;
@@ -293,22 +295,20 @@ TEST(VolTime, SessionFitUnderVolTimeServesConsistentGreeks) {
   ASSERT_TRUE(panel.has_value()) << panel.error().to_string();
   const std::int64_t now_ns = iso_to_ns(spec.snapshot_iso);
 
-  // ── VolTime-fit session ───────────────────────────────────────────────
+  // ── VolTime-fit session (through from_frame: the production one-step
+  // install+build path, whose guard requires in.time == frame.time) ───────
   TimeSpec vol_time_spec;
   vol_time_spec.convention = TimeConvention::VolTime;
 
-  Universe u_vol;
-  const auto uid_vol = data_install(u_vol, panel->frame, vol_time_spec);
-  ASSERT_TRUE(uid_vol.has_value()) << uid_vol.error().to_string();
-  const auto under_vol = u_vol.get_underlying(*uid_vol);
-  ASSERT_TRUE(under_vol.has_value());
+  QuoteFrame frame_vol = panel->frame;
+  frame_vol.time = vol_time_spec;  // the frame carries its own T convention
 
   SessionInputs in_vol;
   in_vol.S = spec.spot;
   in_vol.r = spec.r;
   in_vol.now_ts_ns = now_ns;
-  in_vol.time = vol_time_spec;
-  const auto sess_vol = VolaSession::build(**under_vol, in_vol);
+  in_vol.time = vol_time_spec;  // must match frame_vol.time (from_frame guard)
+  const auto sess_vol = VolaSession::from_frame(frame_vol, in_vol);
   ASSERT_TRUE(sess_vol.has_value()) << sess_vol.error().to_string();  // (a) fit converges
 
   ASSERT_FALSE(sess_vol->expiries().empty());
@@ -324,17 +324,20 @@ TEST(VolTime, SessionFitUnderVolTimeServesConsistentGreeks) {
   EXPECT_LT(greeks_vol->theta, 0.0);  // (c) theta sign sane (time decay, long call)
 
   // ── (d) default TimeSpec bit-identical to a pinned pre-task value ──────
-  // The pin IS the historical 2-arg `data_install(u, frame)` call -- every
-  // OTHER caller in the codebase still uses exactly this signature, so it is
-  // by definition what pre-I3 code produced and still produces today.
+  // The pin IS the historical `data_install(u, frame)` call over an untouched
+  // frame -- every OTHER caller in the codebase still uses exactly this
+  // pattern (frame.time default-constructed), so it is by definition what
+  // pre-I3 code produced and still produces today.
   Universe u_pin;
-  const auto uid_pin = data_install(u_pin, panel->frame);  // 2-arg: the pin
+  const auto uid_pin = data_install(u_pin, panel->frame);  // untouched frame: the pin
   ASSERT_TRUE(uid_pin.has_value()) << uid_pin.error().to_string();
   const auto under_pin = u_pin.get_underlying(*uid_pin);
   ASSERT_TRUE(under_pin.has_value());
 
+  QuoteFrame frame_default = panel->frame;
+  frame_default.time = TimeSpec{};  // explicitly-set default == untouched default
   Universe u_default;
-  const auto uid_default = data_install(u_default, panel->frame, TimeSpec{});
+  const auto uid_default = data_install(u_default, frame_default);
   ASSERT_TRUE(uid_default.has_value()) << uid_default.error().to_string();
   const auto under_default = u_default.get_underlying(*uid_default);
   ASSERT_TRUE(under_default.has_value());
@@ -375,6 +378,43 @@ TEST(VolTime, SessionFitUnderVolTimeServesConsistentGreeks) {
   // Sanity: VolTime materially compresses the front-expiry T relative to
   // Calendar365 for this multi-month span with several intervening weekends.
   EXPECT_LT(atm_T_vol, atm_T_default);
+}
+
+// The mixed-convention guard: from_frame must REFUSE to build when the
+// session's TimeSpec disagrees with the frame's own -- in either direction.
+// (A silent mismatch would fit chains under one clock while the session
+// records the other; the brief requires this to be impossible.)
+TEST(VolTime, FromFrameRejectsMixedConventionSession) {
+  const SynthPanelSpec spec = flat_smile_spec();
+  const auto panel = make_synthetic_american_panel(spec);
+  ASSERT_TRUE(panel.has_value()) << panel.error().to_string();
+
+  SessionInputs in;
+  in.S = spec.spot;
+  in.r = spec.r;
+  in.now_ts_ns = iso_to_ns(spec.snapshot_iso);
+
+  // (1) VolTime frame + default (Calendar365) SessionInputs::time -> rejected.
+  QuoteFrame frame_vol = panel->frame;
+  frame_vol.time.convention = TimeConvention::VolTime;
+  const auto mixed_a = VolaSession::from_frame(frame_vol, in);
+  ASSERT_FALSE(mixed_a.has_value());
+  EXPECT_EQ(mixed_a.error().code(), ErrorCode::InvalidArgument);
+
+  // (2) Default frame + VolTime SessionInputs::time -> rejected.
+  SessionInputs in_vol = in;
+  in_vol.time.convention = TimeConvention::VolTime;
+  const auto mixed_b = VolaSession::from_frame(panel->frame, in_vol);
+  ASSERT_FALSE(mixed_b.has_value());
+  EXPECT_EQ(mixed_b.error().code(), ErrorCode::InvalidArgument);
+
+  // (3) Matching specs (both directions) build fine.
+  const auto ok_default = VolaSession::from_frame(panel->frame, in);
+  EXPECT_TRUE(ok_default.has_value())
+      << (ok_default.has_value() ? "" : ok_default.error().to_string());
+  const auto ok_vol = VolaSession::from_frame(frame_vol, in_vol);
+  EXPECT_TRUE(ok_vol.has_value())
+      << (ok_vol.has_value() ? "" : ok_vol.error().to_string());
 }
 
 }  // namespace

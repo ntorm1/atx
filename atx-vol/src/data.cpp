@@ -378,7 +378,7 @@ const ExpiryInputs *find_expiry_inputs(const QuoteFrame &frame, std::string_view
 
 // ── Install ─────────────────────────────────────────────────────────────────
 
-Result<Uid> data_install(Universe &u, const QuoteFrame &frame, const TimeSpec &spec) {
+Result<Uid> data_install(Universe &u, const QuoteFrame &frame) {
   // Fail loud when the data plane delivered no yield curve; the calibrator
   // silently degenerates without one (the C's ATS_VOL_ERR_NO_YIELD_CURVE gate).
   if (frame.yc_pillar_t.empty()) {
@@ -442,12 +442,13 @@ Result<Uid> data_install(Universe &u, const QuoteFrame &frame, const TimeSpec &s
     ATX_TRY(const ExpiryId expiry_id, u.add_expiry(uid, expiry_ns));
 
     // `under` is stable across add_expiry (deque element); index the chain now.
+    // The T convention is the frame's own (`frame.time`) — see QuoteFrame::time.
     Chain &chain = under->chains[expiry_id];
     std::int64_t snapshot_ns = 0;
     if (!parse_iso_ns(frame.snapshot_iso, snapshot_ns)) {
       return Err(ErrorCode::InvalidArgument, "data_install: bad year-fraction");
     }
-    const double T = time_to_expiry_years(snapshot_ns, expiry_ns, spec);
+    const double T = time_to_expiry_years(snapshot_ns, expiry_ns, frame.time);
     if (!std::isfinite(T)) {
       return Err(ErrorCode::InvalidArgument, "data_install: bad year-fraction");
     }

@@ -466,12 +466,19 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
 
 Result<VolaSession> VolaSession::from_frame(const QuoteFrame& frame,
                                             const SessionInputs& in) {
+  // Mixed-convention guard: the frame carries the T convention it was built
+  // under (`QuoteFrame::time`, read by `data_install` for Chain::T) and the
+  // session retains its own copy (`SessionInputs::time`, see its doc). If they
+  // disagree the session would fit chains under one clock while recording the
+  // other — fail loudly instead of building a mixed-convention session.
+  if (!(in.time == frame.time)) {
+    return Err(ErrorCode::InvalidArgument,
+               "VolaSession::from_frame: SessionInputs::time does not match frame.time "
+               "(mixed-convention session); copy the frame's TimeSpec (e.g. OpraPanel::time) "
+               "into SessionInputs::time");
+  }
   Universe u;
-  // Thread this session's OWN T convention into the install it drives -- the
-  // consistency guard: fit-time T (Chain::T, installed here) and `in.time`
-  // (retained on the built session, see SessionInputs::time) always agree by
-  // construction on this path.
-  ATX_TRY(const Uid uid, data_install(u, frame, in.time));
+  ATX_TRY(const Uid uid, data_install(u, frame));
   ATX_TRY(Underlying* under, u.get_underlying(uid));
   return build(*under, in);
 }

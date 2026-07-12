@@ -478,6 +478,11 @@ Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
   frame.snapshot_iso = snapshot_iso;
   frame.snapshot_ts_ns = snapshot_ts_ns;
   frame.spot_ts_ns = snapshot_ts_ns;
+  // Stamp the governing T convention onto the frame itself (QuoteFrame::time):
+  // `data_install` reads it for Chain::T, so the installed chains automatically
+  // share the convention every T computed below (PCP spot, 0DTE filter, term
+  // rates) was derived under — no caller threading required.
+  frame.time = spec.time;
   if (spec.yc_pillar_t.empty()) {
     frame.yc_pillar_t = {1.0};
     frame.yc_pillar_r = {spec.r};

@@ -39,7 +39,6 @@ using atx::vol::SynthExpiry;
 using atx::vol::SynthPanel;
 using atx::vol::SynthPanelSpec;
 using atx::vol::TimeConvention;
-using atx::vol::TimeSpec;
 using atx::vol::Universe;
 using atx::vol::vol_time_years;
 using atx::vol::VolTimeCalendar;
@@ -260,7 +259,7 @@ TEST(Panel, Csv_MissingFile_ReturnsIoError) {
   EXPECT_EQ(res.error().code(), ErrorCode::IoError);
 }
 
-// ── data_install's TimeSpec threading (I3: production T convention) ────────
+// ── QuoteFrame::time -> data_install (I3: production T convention) ─────────
 
 // Friday 16:00 ET anchor (2026-07-10 20:00 UTC, EDT) -> Monday 10:00 ET expiry
 // (2026-07-13 14:00 UTC): the intervening weekend is pure non-trading time, so
@@ -274,6 +273,9 @@ TEST(Panel, ChainCarriesVolTimeT) {
   f.spot_ts_ns = f.snapshot_ts_ns;
   f.yc_pillar_t = {1.0};
   f.yc_pillar_r = {0.03};
+  // The frame carries its own T convention; data_install reads it directly (no
+  // separate argument to thread, so install and frame cannot disagree).
+  f.time.convention = TimeConvention::VolTime;
 
   QuoteRow row;
   row.uid = "WKEND";
@@ -284,11 +286,8 @@ TEST(Panel, ChainCarriesVolTimeT) {
   row.ask = 1.2;
   f.rows.push_back(row);
 
-  TimeSpec spec;
-  spec.convention = TimeConvention::VolTime;
-
   Universe u;
-  const auto uid = atx::vol::data_install(u, f, spec);
+  const auto uid = atx::vol::data_install(u, f);
   ASSERT_TRUE(uid.has_value()) << uid.error().to_string();
 
   const auto under = u.get_underlying(*uid);
@@ -307,9 +306,9 @@ TEST(Panel, ChainCarriesVolTimeT) {
   EXPECT_LT(c.T, calendar_T);
 }
 
-// Same (frame, expiry) pair, default TimeSpec: chain.T must be bit-identical
+// Same (frame, expiry) pair, default frame.time: chain.T must be bit-identical
 // to the pre-I3 Calendar365 `year_fraction` result -- default-off, no
-// behavior change for every caller that omits the TimeSpec argument.
+// behavior change for every frame that leaves `QuoteFrame::time` untouched.
 TEST(Panel, ChainDefaultTimeSpecMatchesYearFraction) {
   QuoteFrame f;
   f.uid = "WKEND2";
@@ -330,7 +329,7 @@ TEST(Panel, ChainDefaultTimeSpecMatchesYearFraction) {
   f.rows.push_back(row);
 
   Universe u;
-  const auto uid = atx::vol::data_install(u, f); // no TimeSpec: default Calendar365
+  const auto uid = atx::vol::data_install(u, f); // f.time untouched: Calendar365
   ASSERT_TRUE(uid.has_value()) << uid.error().to_string();
 
   const auto under = u.get_underlying(*uid);

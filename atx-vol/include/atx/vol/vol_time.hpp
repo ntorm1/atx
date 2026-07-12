@@ -83,6 +83,8 @@ struct VolTimeParams {
   double nontrading_hours_per_year{6870.0};
   double session_open_hour_et{9.5};     // 09:30 ET
   double session_span_hours{7.5};       // 09:30-17:00 ET (RTH + 1h post-close)
+
+  [[nodiscard]] bool operator==(const VolTimeParams&) const = default;
 };
 
 // Immutable named-holiday calendar: a sorted set of full-closure civil dates,
@@ -151,12 +153,17 @@ enum class TimeConvention : std::uint8_t {
 // Carrier threaded from production config (panel-builder options /
 // `SessionInputs`) down to chain construction. Default-constructed = the
 // historical Calendar365 behavior, bit-identical to `year_fraction`.
+// Equality-comparable so seams that receive a TimeSpec from two directions
+// (e.g. `VolaSession::from_frame`: `SessionInputs::time` vs the frame's own
+// `QuoteFrame::time`) can fail loudly on a mixed-convention handoff.
 struct TimeSpec {
   TimeConvention convention{TimeConvention::Calendar365};
   VolTimeParams vol_time{};  // used only when convention == VolTime
   // Calendar: VolTimeCalendar::us_default() in v1; a field reserved for a
   // caller-supplied table is a follow-up (VolTimeCalendar is move-only-free
   // but not trivially copyable into a value member without extra plumbing).
+
+  [[nodiscard]] bool operator==(const TimeSpec&) const = default;
 };
 
 // Single conversion entry point for a maturity's year-fraction — replaces

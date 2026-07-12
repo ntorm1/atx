@@ -119,20 +119,18 @@ struct SessionInputs {
   // specific to VolSurface's inserted-slice mechanism (see
   // InterpMode::ShapeBlend).
   InterpMode interp{InterpMode::PiecewiseTotalVariance};
-  // T convention governing chain construction when this session installs its
-  // OWN frame (`from_frame`: `data_install(u, frame, in.time)`). Default
-  // Calendar365 is BIT-IDENTICAL to the historical `year_fraction`-derived
-  // `Chain::T` (see vol_time.hpp). `build(under, in)` installs nothing itself
-  // (`under` is pre-installed by the caller), so it cannot enforce this
-  // consistency guard directly; it is instead satisfied by construction here:
-  // `in.time` is retained verbatim on the built session (`inputs().time`) as
-  // the single stored source of truth for whatever T-derivation the session
-  // (or a caller reading `inputs()`) performs afterward -- a caller driving
-  // the two-step `data_install(u, frame, spec)` + `build(under, in)` path is
-  // responsible for setting `in.time == spec` so fit-time T and any
-  // later-computed T never disagree on convention (see vol_time.hpp's
-  // production-T-convention doc; `OpraPanel::time` mirrors this field for
-  // exactly this handoff).
+  // The session's retained copy of the T convention its chains were built
+  // under (see vol_time.hpp `TimeSpec`; default Calendar365 is BIT-IDENTICAL
+  // to the historical `year_fraction`-derived `Chain::T`). Chain::T itself
+  // always comes from the FRAME's own convention (`QuoteFrame::time`, read by
+  // `data_install`); this field is the session-side mirror, kept verbatim on
+  // the built session (`inputs().time`) as the single stored source of truth
+  // for any T-derivation performed after the fit. `from_frame` ENFORCES the
+  // two agree — it returns InvalidArgument on `in.time != frame.time` rather
+  // than build a mixed-convention session (copy the frame's TimeSpec, e.g.
+  // `OpraPanel::time`, into this field). `build(under, in)` installs nothing
+  // itself (`under` is pre-installed), so there the match with whatever frame
+  // produced `under` remains a documented caller contract.
   TimeSpec time{};
 };
 

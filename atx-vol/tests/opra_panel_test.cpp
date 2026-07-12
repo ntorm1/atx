@@ -687,4 +687,51 @@ TEST(OpraPanel, VolTimeConvention_ChangesPcpSpotAndTermRateStamping) {
   EXPECT_NE(vol->implied_spot, cal->implied_spot);
 }
 
+// The misuse the frame-carried TimeSpec makes impossible: a VolTime panel
+// handed to the PLAIN `data_install(u, panel.frame)` call every production
+// consumer already makes (no extra threading) must install Chain::T under
+// VolTime -- the loader stamped the convention onto the frame itself, so the
+// install cannot silently fall back to Calendar365 and produce a
+// mixed-convention universe.
+TEST(OpraPanel, VolTimePanelInstallsConsistentChainT_NoThreadingRequired) {
+  const std::string snap = "2026-05-01";
+  const std::string path = write_slice("voltime_handoff.parquet", xom_two_expiry_rows());
+
+  OpraLoadSpec vol_spec;
+  vol_spec.path = path;
+  vol_spec.underlying = "XOM";
+  vol_spec.snapshot_iso = snap;
+  vol_spec.r = 0.04;
+  vol_spec.time.convention = TimeConvention::VolTime;
+
+  const auto panel = load_opra_cbbo_parquet(vol_spec);
+  ASSERT_TRUE(panel.has_value()) << panel.error().to_string();
+
+  // The loader stamped the convention onto the frame (authoritative) and the
+  // panel mirror.
+  EXPECT_TRUE(panel->frame.time == vol_spec.time);
+  EXPECT_TRUE(panel->time == vol_spec.time);
+
+  // Plain 2-arg install -- the exact call pattern spy_diag / spy_oos_check /
+  // opra_parity_bench et al. use, with NO TimeSpec threading anywhere.
+  atx::vol::Universe u;
+  const auto uid = atx::vol::data_install(u, panel->frame);
+  ASSERT_TRUE(uid.has_value()) << uid.error().to_string();
+  const auto under = u.get_underlying(*uid);
+  ASSERT_TRUE(under.has_value());
+  ASSERT_EQ((*under)->chains.size(), std::size_t{2});
+
+  // Every installed Chain::T equals the independently-computed vol-time T for
+  // its expiry -- the same convention the loader's own PCP/rate math used.
+  const std::int64_t now_ns = iso_to_ns(snap);
+  const auto& us_cal = VolTimeCalendar::us_default();
+  const char* expiries[] = {"2026-08-01", "2027-11-01"};
+  for (std::size_t i = 0; i < 2; ++i) {
+    const double expected_T =
+        vol_time_years(now_ns, iso_to_ns(expiries[i]), VolTimeParams{}, us_cal);
+    EXPECT_DOUBLE_EQ((*under)->chains[i].T, expected_T) << expiries[i];
+    EXPECT_NE((*under)->chains[i].T, year_fraction(snap, expiries[i])) << expiries[i];
+  }
+}
+
 } // namespace
