@@ -339,8 +339,29 @@ struct FitSlot {
   ErrorCode error_code{ErrorCode::Unknown};
   CorpusQualityMetrics quality{};
   CorpusAdmissionDecision admission{CorpusDisposition::Admitted, CorpusAdmissionReason::None, 0u};
-  std::optional<PricedSurface> surface{}; // present iff status == Ok
+  std::optional<PricedSurface> surface{};       // present iff status == Ok
+  std::optional<SurfaceProvenance> provenance{}; // the fitter's own health for `surface`
 };
+
+// SurfaceHealth -> SurfaceProvenance for the ONE health record matching the
+// surface `fitter.surface()` actually served (fail-closed: risk_health when
+// the config requested/admitted risk, market_mark_health for a mark-only
+// request — see PricerFitter::surface()). Preserves the independently
+// admitted state/digest so it can reach the archive instead of being dropped
+// (unwired C-2): every produced record satisfies the writer's
+// healthy-implies-clean-digest invariant because decide_risk_surface_admission
+// / the market-mark build path already only mark Healthy with a clean digest.
+[[nodiscard]] SurfaceProvenance provenance_from_health(const SurfaceHealth &health) noexcept {
+  SurfaceProvenance provenance;
+  provenance.purpose = health.purpose;
+  provenance.quality_mode = health.quality_mode;
+  provenance.state = health.state;
+  provenance.validation = health.validation;
+  provenance.source_generation = health.candidate_generation;
+  provenance.served_generation = health.served_generation;
+  provenance.legacy_format = false;
+  return provenance;
+}
 
 [[nodiscard]] std::uint32_t saturated_u32(std::size_t value) noexcept {
   return value > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())
@@ -581,6 +602,15 @@ collect_quality(const CorpusBoard &board, const OptionChain &chain, const Pricer
         }
       }
     }
+    // Capture the fitter's own admitted provenance for the served surface
+    // BEFORE it goes out of scope — `fitter` is a stack-local per board, so
+    // this is the one seam where the health computed inside PricerFitter::fit
+    // can reach the archive write later in build_corpus_core (unwired C-2).
+    // fitted->purpose() names which of bundle()'s two healths matches `ps`.
+    const SurfaceBundle bundle = fitter.bundle();
+    slot.provenance = provenance_from_health(fitted->purpose() == SurfacePurpose::Risk
+                                                 ? bundle.risk_health
+                                                 : bundle.market_mark_health);
     slot.surface = std::move(*ps);
     slot.status = CorpusFitStatus::Ok;
     return slot;
@@ -968,7 +998,8 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
             return Err(stamped.error());
           }
           restamped.push_back(std::move(*stamped));
-          items.push_back(SurfaceArchiveItem{boards[idx].symbol, &restamped.back()});
+          items.push_back(SurfaceArchiveItem{boards[idx].symbol, &restamped.back(),
+                                             slots[idx].provenance});
         }
       }
       const Status w = write_surface_archive_file(apath, items, cfg.write_opts);

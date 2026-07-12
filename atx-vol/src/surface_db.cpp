@@ -398,6 +398,15 @@ void apply_symbol_config(const SymbolFitConfig &cfg, SessionInputs &in) {
   in.use_deam_cache_for_fit = cfg.use_deam_cache_for_fit;
 }
 
+void apply_symbol_config(const SymbolFitConfig &cfg, SessionInputs &in, SurfacePolicy &policy) {
+  apply_symbol_config(cfg, in);
+  // Unconditional, like every other SymbolFitConfig field this function binds
+  // (band_k, calendar_repair, ...): the stored surface_policy is always the
+  // final word — see the header comment for why it has no preset-deferring
+  // gate the way pin_curve/al_override do.
+  policy = cfg.surface_policy;
+}
+
 SymbolFitConfig symbol_config_from_preset(FitPreset preset) {
   SessionInputs tmp;
   apply_fit_preset(tmp, preset);

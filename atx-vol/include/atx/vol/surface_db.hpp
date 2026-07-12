@@ -140,6 +140,17 @@ struct SymbolFitConfig {
 //   / in.enforce_calendar_floor / in.use_deam_cache_for_fit = cfg.<same>.
 void apply_symbol_config(const SymbolFitConfig &cfg, SessionInputs &in);
 
+// Same binding as above, plus copy `cfg.surface_policy` — the product-level
+// quality_mode/outputs/risk_admission/fallback fields (SurfacePolicy) — into
+// `policy`, unconditionally. SurfacePolicy has no preset-implicit "unset"
+// state to defer to (unlike pin_curve/al_override): `symbol_config_from_preset`
+// already seeds `surface_policy` from `map_legacy_fit_preset` at capture time,
+// so any persisted value is a deliberate stored choice and is always the final
+// word, exactly like `band_k`/`calendar_repair`/the other unconditional fields
+// above. `in` receives the same fit-policy binding as the two-argument
+// overload; `policy` is untouched by that half of the mapping.
+void apply_symbol_config(const SymbolFitConfig &cfg, SessionInputs &in, SurfacePolicy &policy);
+
 // Capture `preset`'s effective policy into a SymbolFitConfig whose explicit
 // fields equal what apply_fit_preset(in, preset) would produce — the identity
 // starting point for per-symbol tuning (adjust one knob, store, done).

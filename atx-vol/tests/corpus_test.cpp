@@ -186,6 +186,27 @@ namespace {
   return std::move(*ps);
 }
 
+// Fit a board through the SAME blessed path as fit_reference, but return the
+// served surface's admitted SurfaceHealth (mirrors the purpose-selection
+// build_corpus's fit_board now performs for archive provenance: risk_health
+// when the served surface is the risk surface, market_mark_health otherwise).
+[[nodiscard]] SurfaceHealth health_reference(const CorpusBoard &board) {
+  auto chain = OptionChain::from_frame(board.frame, board.env);
+  EXPECT_TRUE(chain.has_value());
+  PricerConfig cfg; // Robust default
+  cfg.n_threads = 1;
+  if (board.curve.has_value()) {
+    cfg.curve = *board.curve;
+  }
+  PricerFitter fitter{cfg};
+  const Status st = fitter.fit(*chain);
+  EXPECT_TRUE(st.has_value());
+  const FittedSurface *fitted = fitter.surface();
+  EXPECT_NE(fitted, nullptr);
+  const SurfaceBundle bundle = fitter.bundle();
+  return fitted->purpose() == SurfacePurpose::Risk ? bundle.risk_health : bundle.market_mark_health;
+}
+
 // Assert two PricedSurfaces are bit-identical over a (K, T, side) grid straddling
 // each slice forward. Accumulates the number of priced grid points into `n_fv`
 // (void return so the ASSERT_* fatal guards are legal here).
@@ -326,6 +347,53 @@ TEST(Corpus, RoundTrip_ReloadedSurfaceReproducesFreshFitBitIdentical) {
   }
   EXPECT_EQ(n_checked, 2u);
   EXPECT_GT(n_points, 20u) << "too few priced points to be a meaningful gate";
+}
+
+// Unwired C-2: the one production archive writer (build_corpus -> fit_board's
+// write path) must plumb the fitter's OWN admitted health/validation digest
+// into the archive instead of leaving every entry to decode as
+// legacy_surface_provenance() on reload. Build a real corpus, reload each Ok
+// entry's provenance, and check it against a fresh fit's own bundle() health
+// for the SAME board (health_reference) — not merely "non-default", the exact
+// admitted state/digest the fitter computed for that board.
+TEST(Corpus, ArchivedProvenanceReflectsFitterHealthNotLegacyDefault) {
+  const fs::path out = fresh_out_dir("provenance");
+  const std::vector<CorpusBoard> boards = make_mixed_boards({"2026-06-17"});
+
+  auto man_res = build_corpus(boards, out.string());
+  ASSERT_TRUE(man_res.has_value()) << man_res.error().to_string();
+  const CorpusManifest &man = *man_res;
+
+  std::size_t n_checked = 0;
+  for (const CorpusEntry &e : man.entries) {
+    if (e.status != CorpusFitStatus::Ok) {
+      continue;
+    }
+    auto arch = SurfaceArchive::open_file(e.archive_path);
+    ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
+    auto provenance = arch->provenance(e.symbol);
+    ASSERT_TRUE(provenance.has_value()) << provenance.error().to_string();
+    EXPECT_FALSE(provenance->legacy_format) << e.symbol;
+
+    const CorpusBoard *board = nullptr;
+    for (const CorpusBoard &b : boards) {
+      if (b.date == e.date && b.symbol == e.symbol) {
+        board = &b;
+        break;
+      }
+    }
+    ASSERT_NE(board, nullptr);
+    const SurfaceHealth expected = health_reference(*board);
+    EXPECT_EQ(provenance->purpose, expected.purpose) << e.symbol;
+    EXPECT_EQ(provenance->quality_mode, expected.quality_mode) << e.symbol;
+    EXPECT_EQ(provenance->state, expected.state) << e.symbol;
+    EXPECT_EQ(provenance->validation.failures, expected.validation.failures) << e.symbol;
+    EXPECT_EQ(provenance->validation.validation_id, expected.validation.validation_id) << e.symbol;
+    EXPECT_EQ(provenance->source_generation, expected.candidate_generation) << e.symbol;
+    EXPECT_EQ(provenance->served_generation, expected.served_generation) << e.symbol;
+    ++n_checked;
+  }
+  EXPECT_EQ(n_checked, 2u);
 }
 
 // ── 4. Manifest round-trips ─────────────────────────────────────────────────

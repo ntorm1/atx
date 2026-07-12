@@ -866,6 +866,43 @@ TEST(SurfaceDbApply, LegacyHftPresetMapsToMarketMarkNotRisk) {
   EXPECT_EQ(cfg.surface_policy.fallback, SurfaceFallback::None);
 }
 
+// Unwired C-1: apply_symbol_config previously ignored cfg.surface_policy
+// entirely, so a persisted per-symbol policy could never reach a live
+// PricerConfig/session pipeline. Store a config whose policy deliberately
+// diverges from what its own preset would produce (Robust's
+// map_legacy_fit_preset default is Balanced + Risk-required), round-trip it
+// through a real SurfaceDb, and confirm apply_symbol_config's three-argument
+// overload surfaces the STORED policy, not the preset-derived one.
+TEST(SurfaceDbApply, StoredPolicyAppliedOverPresetDefault) {
+  const auto root = test_root("apply_policy");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+  SymbolFitConfig cfg = symbol_config_from_preset(FitPreset::Robust);
+  ASSERT_EQ(cfg.surface_policy.quality_mode, FitQualityMode::Balanced);
+  ASSERT_EQ(cfg.surface_policy.outputs, SurfaceOutputs::Risk);
+  // Accuracy + mark-only: differs from the Robust preset default on every
+  // SurfacePolicy field.
+  cfg.surface_policy.quality_mode = FitQualityMode::Accuracy;
+  cfg.surface_policy.outputs = SurfaceOutputs::MarketMark;
+  cfg.surface_policy.risk_admission = RiskAdmission::NotApplicable;
+  cfg.surface_policy.fallback = SurfaceFallback::None;
+  ASSERT_TRUE(db->upsert_symbol("SPY", cfg).has_value());
+
+  auto db2 = SurfaceDb::open(root.string()); // fresh handle: pipeline startup
+  ASSERT_TRUE(db2.has_value());
+  auto stored = db2->symbol_config("SPY");
+  ASSERT_TRUE(stored.has_value());
+
+  SessionInputs in;
+  SurfacePolicy policy;
+  apply_symbol_config(*stored, in, policy);
+  EXPECT_EQ(policy.quality_mode, FitQualityMode::Accuracy);
+  EXPECT_EQ(policy.outputs, SurfaceOutputs::MarketMark);
+  EXPECT_EQ(policy.risk_admission, RiskAdmission::NotApplicable);
+  EXPECT_EQ(policy.fallback, SurfaceFallback::None);
+  std::filesystem::remove_all(root);
+}
+
 TEST(SurfaceDbEndToEnd, ConfigureStoreReloadServe) {
   const auto root = test_root("e2e");
   // Session 1: operator configures the universe + pipeline stores fits.
