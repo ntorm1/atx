@@ -7,11 +7,13 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <functional>
 #include <limits>
 #include <memory>
 #include <numeric>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -206,7 +208,19 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
   // of band. Correctness over speed here — cold Andersen-Lake per strike, just
   // run concurrently across chains.
   const auto t_pre0 = ProfileClock::now();
-  const std::vector<ChainPrepass> prepass = run_deam_prepass(under, in, in.fit_workers, profile);
+  // The prepass fans out over jthreads; parallel_for_dynamic now rethrows the
+  // first worker exception on this thread (e.g. std::bad_alloc from an
+  // allocating de-Am body). Convert it to an Err so this Result-returning API
+  // stays exception-transparent to its callers rather than unwinding past them.
+  std::vector<ChainPrepass> prepass;
+  try {
+    prepass = run_deam_prepass(under, in, in.fit_workers, profile);
+  } catch (const std::exception &e) {
+    return Err(ErrorCode::Internal,
+               std::string("fit_curve_surface: de-Am prepass failed: ") + e.what());
+  } catch (...) {
+    return Err(ErrorCode::Internal, "fit_curve_surface: de-Am prepass failed (unknown exception)");
+  }
   const double ms_prepass = profile ? elapsed_ms(t_pre0, ProfileClock::now()) : 0.0;
 
   // Phase 2 (SEQUENTIAL): the fit is order-dependent — each fitted slice's w(k)

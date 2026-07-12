@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <cstdlib>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -84,4 +86,46 @@ TEST(ParallelFor, DynamicSchedulerVisitsEverySlotExactlyOnce) {
   for (std::size_t i = 0; i < kN; ++i) {
     EXPECT_EQ(got[i], i * i);
   }
+}
+
+// WP7: a worker body that throws must NOT std::terminate the process. The
+// dynamic fan-out captures the first exception, joins every worker, and
+// rethrows on the calling thread so the caller's normal error handling applies.
+// nt >= 2 forces the multithreaded jthread path (the bug's blast radius); the
+// dynamic scheduler visits every slot exactly once, so index 17 is always
+// processed and the throw is deterministic.
+TEST(ParallelFor, DynamicWorkerExceptionPropagatesToCaller) {
+  constexpr std::size_t kN = 64;
+  bool threw = false;
+  try {
+    atx::vol::parallel_for_dynamic(kN, 4, [](std::size_t i) {
+      if (i == 17) {
+        throw std::runtime_error("worker boom");
+      }
+    });
+  } catch (const std::runtime_error& e) {
+    threw = true;
+    EXPECT_STREQ(e.what(), "worker boom");
+  }
+  EXPECT_TRUE(threw) << "a throwing worker must propagate, not terminate";
+}
+
+// Same contract for the worker-id overload (fn(index, worker_id)).
+TEST(ParallelFor, DynamicWorkerIdExceptionPropagatesToCaller) {
+  constexpr std::size_t kN = 64;
+  std::atomic<int> ran{0};
+  bool threw = false;
+  try {
+    atx::vol::parallel_for_dynamic(kN, 4, [&](std::size_t i, unsigned worker_id) {
+      (void)worker_id;
+      ran.fetch_add(1, std::memory_order_relaxed);
+      if (i == 42) {
+        throw std::runtime_error("worker-id boom");
+      }
+    });
+  } catch (const std::runtime_error& e) {
+    threw = true;
+    EXPECT_STREQ(e.what(), "worker-id boom");
+  }
+  EXPECT_TRUE(threw) << "a throwing worker-id worker must propagate, not terminate";
 }
