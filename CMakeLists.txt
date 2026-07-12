@@ -30,24 +30,41 @@ set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 # Skip linking/recompiling deps a target does not actually reference (3.19+).
 set(CMAKE_OPTIMIZE_DEPENDENCIES ON)
 
-# ---- Compiler cache (sccache) ----------------------------------------------
-# Auto-wire sccache as the compiler launcher whenever it is on PATH and a preset
-# has not already set one (the `dev` preset sets it explicitly). No-op when sccache
-# is absent so a bare `cmake` still configures. Cross-worktree object reuse also
-# needs SCCACHE_BASEDIR=<this worktree root> (set per-preset) + the prefix-map below.
-option(ATX_USE_SCCACHE "Use the sccache compiler launcher when available" ON)
-if(ATX_USE_SCCACHE AND NOT CMAKE_CXX_COMPILER_LAUNCHER)
-    find_program(ATX_SCCACHE_EXE sccache)
-    if(ATX_SCCACHE_EXE)
-        set(CMAKE_C_COMPILER_LAUNCHER   "${ATX_SCCACHE_EXE}" CACHE STRING "" FORCE)
-        set(CMAKE_CXX_COMPILER_LAUNCHER "${ATX_SCCACHE_EXE}" CACHE STRING "" FORCE)
-        message(STATUS "atx: sccache compiler cache enabled (${ATX_SCCACHE_EXE})")
+# ---- Compiler cache (ccache preferred, sccache fallback) --------------------
+# ccache (>=4.13) caches clang-cl including MSVC-style PCH TUs (/Yc /Yu /Fp),
+# which sccache refuses (447 "non-cacheable /Fp" calls in the 2026-07-12 stats).
+# Cross-worktree object reuse needs the CCACHE_* env keys set by the presets
+# (BASEDIR/NOHASHDIR/SLOPPINESS/IGNOREOPTIONS) + the -ffile-prefix-map below;
+# see scripts/dev-setup.md "Verified cache mechanics". No-op when neither tool
+# is installed, so a bare `cmake` still configures.
+set(ATX_COMPILER_CACHE "AUTO" CACHE STRING
+    "Compiler cache launcher: AUTO (ccache then sccache), ccache, sccache, or OFF")
+if(NOT ATX_COMPILER_CACHE STREQUAL "OFF" AND NOT CMAKE_CXX_COMPILER_LAUNCHER)
+    set(_atx_cache_candidates ccache sccache)
+    if(NOT ATX_COMPILER_CACHE STREQUAL "AUTO")
+        set(_atx_cache_candidates ${ATX_COMPILER_CACHE})
+    endif()
+    find_program(ATX_CACHE_EXE NAMES ${_atx_cache_candidates})
+    if(ATX_CACHE_EXE)
+        set(CMAKE_C_COMPILER_LAUNCHER   "${ATX_CACHE_EXE}" CACHE STRING "" FORCE)
+        set(CMAKE_CXX_COMPILER_LAUNCHER "${ATX_CACHE_EXE}" CACHE STRING "" FORCE)
+        message(STATUS "atx: compiler cache enabled (${ATX_CACHE_EXE})")
     endif()
 endif()
 
+# Deprecated alias (pre-2026-07 presets/scripts): ATX_USE_SCCACHE=OFF disables caching.
+option(ATX_USE_SCCACHE "DEPRECATED: use ATX_COMPILER_CACHE=OFF" ON)
+if(NOT ATX_USE_SCCACHE)
+    set(CMAKE_C_COMPILER_LAUNCHER "" CACHE STRING "" FORCE)
+    set(CMAKE_CXX_COMPILER_LAUNCHER "" CACHE STRING "" FORCE)
+endif()
+
 # Strip the build-root prefix from __FILE__, debug info, and diagnostics so a TU
-# compiled in ANY worktree yields byte-identical output -> sccache cache HITS across
+# compiled in ANY worktree yields byte-identical output -> compiler-cache HITS across
 # worktrees (and reproducible builds). clang/clang-cl accept -ffile-prefix-map.
+# NOTE: the flag's VALUE embeds this worktree's path, so ccache must be told to
+# ignore it when hashing (CCACHE_IGNOREOPTIONS in the presets) or every worktree
+# would hash differently and never share objects.
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     # clang-cl (MSVC frontend) rejects the GNU-spelled flag as an unknown
     # argument, which /WX then promotes to a hard error; forward it through the
@@ -97,6 +114,13 @@ else()
 endif()
 
 # ---- Dependencies ----
+# Shared FetchContent clone/build cache: every preset (not just `dev`) reuses
+# $env{ATX_DEPS_DIR} (C:\atx-cache\deps) when it is set, so a fresh worktree
+# never re-clones spdlog/eigen/xsimd/... Falls back to the standard per-build
+# _deps dir when the env var is absent (CI, bare cmake).
+if(DEFINED ENV{ATX_DEPS_DIR} AND NOT FETCHCONTENT_BASE_DIR)
+    set(FETCHCONTENT_BASE_DIR "$ENV{ATX_DEPS_DIR}" CACHE PATH "shared FetchContent dir")
+endif()
 include(FetchContent)
 
 # spdlog: logging backend (bundles fmt).
