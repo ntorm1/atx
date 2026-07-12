@@ -213,6 +213,67 @@ struct FrameStore {
   }
 };
 
+void expect_totals_bit_identical(const PriceTotals &actual, const PriceTotals &expected) {
+  EXPECT_TRUE(bits_equal(actual.pv, expected.pv));
+  EXPECT_TRUE(bits_equal(actual.delta, expected.delta));
+  EXPECT_TRUE(bits_equal(actual.gamma, expected.gamma));
+  EXPECT_TRUE(bits_equal(actual.vega, expected.vega));
+  EXPECT_TRUE(bits_equal(actual.theta, expected.theta));
+  EXPECT_TRUE(bits_equal(actual.rho, expected.rho));
+  EXPECT_TRUE(bits_equal(actual.vanna, expected.vanna));
+  EXPECT_TRUE(bits_equal(actual.volga, expected.volga));
+  EXPECT_TRUE(bits_equal(actual.charm, expected.charm));
+  EXPECT_EQ(actual.n_ok, expected.n_ok);
+}
+
+void expect_frame_bit_identical(const PriceFrame &actual, const PriceFrame &expected) {
+  ASSERT_EQ(actual.size(), expected.size());
+  ASSERT_EQ(actual.greeks_materialized(), expected.greeks_materialized());
+  for (std::size_t i = 0; i < actual.size(); ++i) {
+    EXPECT_EQ(actual.id[i], expected.id[i]) << i;
+    EXPECT_EQ(actual.uid[i], expected.uid[i]) << i;
+    EXPECT_EQ(actual.status[i], expected.status[i]) << i;
+    EXPECT_TRUE(bits_equal(actual.pv[i], expected.pv[i])) << i;
+    EXPECT_TRUE(bits_equal(actual.price[i], expected.price[i])) << i;
+    EXPECT_TRUE(bits_equal(actual.iv[i], expected.iv[i])) << i;
+    if (actual.greeks_materialized()) {
+      EXPECT_TRUE(bits_equal(actual.delta[i], expected.delta[i])) << i;
+      EXPECT_TRUE(bits_equal(actual.gamma[i], expected.gamma[i])) << i;
+      EXPECT_TRUE(bits_equal(actual.vega[i], expected.vega[i])) << i;
+      EXPECT_TRUE(bits_equal(actual.theta[i], expected.theta[i])) << i;
+      EXPECT_TRUE(bits_equal(actual.rho[i], expected.rho[i])) << i;
+      EXPECT_TRUE(bits_equal(actual.vanna[i], expected.vanna[i])) << i;
+      EXPECT_TRUE(bits_equal(actual.volga[i], expected.volga[i])) << i;
+      EXPECT_TRUE(bits_equal(actual.charm[i], expected.charm[i])) << i;
+    }
+  }
+  expect_totals_bit_identical(actual.total, expected.total);
+}
+
+void expect_frame_bit_identical(const FrameStore &actual, const FrameStore &expected) {
+  ASSERT_EQ(actual.id.size(), expected.id.size());
+  ASSERT_EQ(actual.delta.empty(), expected.delta.empty());
+  for (std::size_t i = 0; i < actual.id.size(); ++i) {
+    EXPECT_EQ(actual.id[i], expected.id[i]) << i;
+    EXPECT_EQ(actual.uid[i], expected.uid[i]) << i;
+    EXPECT_EQ(actual.status[i], expected.status[i]) << i;
+    EXPECT_TRUE(bits_equal(actual.pv[i], expected.pv[i])) << i;
+    EXPECT_TRUE(bits_equal(actual.price[i], expected.price[i])) << i;
+    EXPECT_TRUE(bits_equal(actual.iv[i], expected.iv[i])) << i;
+    if (!actual.delta.empty()) {
+      EXPECT_TRUE(bits_equal(actual.delta[i], expected.delta[i])) << i;
+      EXPECT_TRUE(bits_equal(actual.gamma[i], expected.gamma[i])) << i;
+      EXPECT_TRUE(bits_equal(actual.vega[i], expected.vega[i])) << i;
+      EXPECT_TRUE(bits_equal(actual.theta[i], expected.theta[i])) << i;
+      EXPECT_TRUE(bits_equal(actual.rho[i], expected.rho[i])) << i;
+      EXPECT_TRUE(bits_equal(actual.vanna[i], expected.vanna[i])) << i;
+      EXPECT_TRUE(bits_equal(actual.volga[i], expected.volga[i])) << i;
+      EXPECT_TRUE(bits_equal(actual.charm[i], expected.charm[i])) << i;
+    }
+  }
+  expect_totals_bit_identical(actual.total, expected.total);
+}
+
 // Caller-owned backing storage for a PnlFrameView, sized to `n`. P&L has no field
 // mask, so all 19 columns always materialize.
 struct PnlFrameStore {
@@ -242,6 +303,48 @@ struct PnlFrameStore {
                         d_vol,     d_time,    d_rate,    status,          &total};
   }
 };
+
+void expect_pnl_totals_bit_identical(const PnlTotals &actual, const PnlTotals &expected) {
+  EXPECT_TRUE(bits_equal(actual.pv_base, expected.pv_base));
+  EXPECT_TRUE(bits_equal(actual.pv_target, expected.pv_target));
+  EXPECT_TRUE(bits_equal(actual.pnl_total, expected.pnl_total));
+  EXPECT_TRUE(bits_equal(actual.pnl_delta, expected.pnl_delta));
+  EXPECT_TRUE(bits_equal(actual.pnl_gamma, expected.pnl_gamma));
+  EXPECT_TRUE(bits_equal(actual.pnl_vega, expected.pnl_vega));
+  EXPECT_TRUE(bits_equal(actual.pnl_volga, expected.pnl_volga));
+  EXPECT_TRUE(bits_equal(actual.pnl_vanna, expected.pnl_vanna));
+  EXPECT_TRUE(bits_equal(actual.pnl_theta, expected.pnl_theta));
+  EXPECT_TRUE(bits_equal(actual.pnl_rho, expected.pnl_rho));
+  EXPECT_TRUE(bits_equal(actual.pnl_charm, expected.pnl_charm));
+  EXPECT_TRUE(bits_equal(actual.pnl_unexplained, expected.pnl_unexplained));
+  EXPECT_EQ(actual.n_ok, expected.n_ok);
+}
+
+void expect_pnl_frame_bit_identical(const PnlFrameStore &actual, const PnlFrameStore &expected) {
+  ASSERT_EQ(actual.id.size(), expected.id.size());
+  for (std::size_t i = 0; i < actual.id.size(); ++i) {
+    EXPECT_EQ(actual.id[i], expected.id[i]) << i;
+    EXPECT_EQ(actual.uid[i], expected.uid[i]) << i;
+    EXPECT_EQ(actual.status[i], expected.status[i]) << i;
+    EXPECT_TRUE(bits_equal(actual.pv_base[i], expected.pv_base[i])) << i;
+    EXPECT_TRUE(bits_equal(actual.pv_target[i], expected.pv_target[i])) << i;
+    EXPECT_TRUE(bits_equal(actual.pnl_total[i], expected.pnl_total[i])) << i;
+    EXPECT_TRUE(bits_equal(actual.pnl_delta[i], expected.pnl_delta[i])) << i;
+    EXPECT_TRUE(bits_equal(actual.pnl_gamma[i], expected.pnl_gamma[i])) << i;
+    EXPECT_TRUE(bits_equal(actual.pnl_vega[i], expected.pnl_vega[i])) << i;
+    EXPECT_TRUE(bits_equal(actual.pnl_volga[i], expected.pnl_volga[i])) << i;
+    EXPECT_TRUE(bits_equal(actual.pnl_vanna[i], expected.pnl_vanna[i])) << i;
+    EXPECT_TRUE(bits_equal(actual.pnl_theta[i], expected.pnl_theta[i])) << i;
+    EXPECT_TRUE(bits_equal(actual.pnl_rho[i], expected.pnl_rho[i])) << i;
+    EXPECT_TRUE(bits_equal(actual.pnl_charm[i], expected.pnl_charm[i])) << i;
+    EXPECT_TRUE(bits_equal(actual.pnl_unexplained[i], expected.pnl_unexplained[i])) << i;
+    EXPECT_TRUE(bits_equal(actual.d_spot[i], expected.d_spot[i])) << i;
+    EXPECT_TRUE(bits_equal(actual.d_vol[i], expected.d_vol[i])) << i;
+    EXPECT_TRUE(bits_equal(actual.d_time[i], expected.d_time[i])) << i;
+    EXPECT_TRUE(bits_equal(actual.d_rate[i], expected.d_rate[i])) << i;
+  }
+  expect_pnl_totals_bit_identical(actual.total, expected.total);
+}
 
 // A multi-underlying (uids 1/2/3 essvi + a no-surface uid 99), multi-expiry,
 // mixed-side book with a dedup pair — exercises the grouped P&L substrate's
@@ -285,7 +388,279 @@ TEST(PortfolioPricer, RetimePreservesDedupAndRejectsDivergentTenors) {
   EXPECT_EQ(status.error().code(), ErrorCode::InvalidArgument);
 }
 
+TEST(PortfolioPricer, BitIdenticalRetimePreservesWarmedPreparedSubstrate) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+  const PricedSurface surface = make_essvi(1, 5);
+  const SurfaceSet surfaces = set_of({&surface});
+  const std::vector<Position> positions{
+      {1u, {1u, 90.0, 0.15, Side::Call}, +1.0, 100.0},
+      {2u, {1u, 100.0, 0.25, Side::Put}, +2.0, 100.0},
+  };
+  auto portfolio = Portfolio::create(positions);
+  ASSERT_TRUE(portfolio.has_value()) << portfolio.error().to_string();
+  PortfolioPricer pricer(std::move(*portfolio));
+  PortfolioWorkspace workspace;
+  FrameStore warmup(positions.size(), /*want_greeks=*/false);
+  ASSERT_TRUE(pricer
+                  .price_into(surfaces, PriceFieldMask::Marks, warmup.view(), workspace)
+                  .has_value());
+
+  if constexpr (counters_enabled()) {
+    atx::vol::counters::reset();
+  }
+  const std::array<double, 2> same_t{0.15, 0.25};
+  ASSERT_TRUE(pricer.retime(same_t).has_value());
+  FrameStore result(positions.size(), /*want_greeks=*/false);
+  ASSERT_TRUE(pricer
+                  .price_into(surfaces, PriceFieldMask::Marks, result.view(), workspace)
+                  .has_value());
+  if constexpr (counters_enabled()) {
+    EXPECT_EQ(atx::vol::counters::snapshot().get(Counter::PreparedBuilds), 0u);
+  }
+}
+
+TEST(PortfolioPricer, Retime_LaterDedupMismatch_LeavesPortfolioAndPricingUnchanged) {
+  const PricedSurface surface = make_essvi(1, 5);
+  const SurfaceSet surfaces = set_of({&surface});
+  const std::vector<Position> positions{
+      {1u, {1u, 90.0, 0.15, Side::Call}, +1.0, 100.0},
+      {2u, {1u, 100.0, 0.25, Side::Put}, +2.0, 100.0},
+      {3u, {1u, 100.0, 0.25, Side::Put}, -3.0, 100.0},
+      {4u, {1u, 110.0, 0.35, Side::Call}, +4.0, 100.0},
+  };
+  auto portfolio = Portfolio::create(positions);
+  ASSERT_TRUE(portfolio.has_value()) << portfolio.error().to_string();
+  PortfolioPricer pricer(std::move(*portfolio));
+
+  const std::vector<Position> positions_before(pricer.portfolio().positions().begin(),
+                                               pricer.portfolio().positions().end());
+  const std::vector<OptionContract> contracts_before(pricer.portfolio().contracts().begin(),
+                                                     pricer.portfolio().contracts().end());
+  const std::vector<std::uint32_t> uids_before(pricer.portfolio().uids().begin(),
+                                               pricer.portfolio().uids().end());
+  std::vector<std::uint32_t> contract_ix_before;
+  contract_ix_before.reserve(pricer.portfolio().n_positions());
+  for (std::size_t i = 0; i < pricer.portfolio().n_positions(); ++i) {
+    contract_ix_before.push_back(pricer.portfolio().contract_ix(i));
+  }
+  auto price_before = pricer.price(surfaces, PriceOptions{.n_threads = 1});
+  ASSERT_TRUE(price_before.has_value()) << price_before.error().to_string();
+
+  // Contract 0 is valid and appears to retime successfully. The mismatch is in
+  // contract 1's deduplicated positions, so an implementation that commits while
+  // validating exposes a partially-retimed unique-contract table on this error.
+  const std::array<double, 4> inconsistent{0.12, 0.20, 0.19, 0.30};
+  const Status status = pricer.retime(inconsistent);
+  ASSERT_FALSE(status.has_value());
+  EXPECT_EQ(status.error().code(), ErrorCode::InvalidArgument);
+
+  const Portfolio &after = pricer.portfolio();
+  ASSERT_EQ(after.n_positions(), positions_before.size());
+  ASSERT_EQ(after.n_contracts(), contracts_before.size());
+  ASSERT_EQ(after.n_underlyings(), uids_before.size());
+  for (std::size_t i = 0; i < positions_before.size(); ++i) {
+    const Position &actual = after.positions()[i];
+    const Position &expected = positions_before[i];
+    EXPECT_EQ(actual.id, expected.id) << i;
+    EXPECT_EQ(actual.contract.uid, expected.contract.uid) << i;
+    EXPECT_TRUE(bits_equal(actual.contract.K, expected.contract.K)) << i;
+    EXPECT_TRUE(bits_equal(actual.contract.T, expected.contract.T)) << i;
+    EXPECT_EQ(actual.contract.side, expected.contract.side) << i;
+    EXPECT_TRUE(bits_equal(actual.qty, expected.qty)) << i;
+    EXPECT_TRUE(bits_equal(actual.multiplier, expected.multiplier)) << i;
+    EXPECT_EQ(after.contract_ix(i), contract_ix_before[i]) << i;
+  }
+  for (std::size_t i = 0; i < contracts_before.size(); ++i) {
+    const OptionContract &actual = after.contracts()[i];
+    const OptionContract &expected = contracts_before[i];
+    EXPECT_EQ(actual.uid, expected.uid) << i;
+    EXPECT_TRUE(bits_equal(actual.K, expected.K)) << i;
+    EXPECT_TRUE(bits_equal(actual.T, expected.T)) << i;
+    EXPECT_EQ(actual.side, expected.side) << i;
+  }
+  for (std::size_t i = 0; i < uids_before.size(); ++i) {
+    EXPECT_EQ(after.uids()[i], uids_before[i]) << i;
+  }
+
+  auto price_after = pricer.price(surfaces, PriceOptions{.n_threads = 1});
+  ASSERT_TRUE(price_after.has_value()) << price_after.error().to_string();
+  expect_frame_bit_identical(*price_after, *price_before);
+}
+
+TEST(PortfolioPricer, Retime_NonFirstMaturitiesChange_WarmedWorkspaceMatchesFreshWorkspace) {
+  const PricedSurface surface = make_essvi(1, 5);
+  const PricedSurface shifted_surface =
+      make_essvi(1, 5, 0.002, kS + 1.0, kR + 0.001, kNow + 86'400'000'000'000LL);
+  const SurfaceSet surfaces = set_of({&surface});
+  const SurfaceSet shifted_surfaces = set_of({&shifted_surface});
+  const std::vector<Position> positions{
+      {10u, {1u, 90.0, 0.10, Side::Call}, +1.0, 100.0},
+      {11u, {1u, 95.0, 0.20, Side::Call}, +2.0, 100.0},
+      {12u, {1u, 105.0, 0.30, Side::Call}, -1.0, 100.0},
+      {13u, {1u, 110.0, 0.30, Side::Call}, +3.0, 100.0},
+      {14u, {1u, 110.0, 0.30, Side::Call}, -0.5, 100.0},
+  };
+  auto portfolio = Portfolio::create(positions);
+  ASSERT_TRUE(portfolio.has_value()) << portfolio.error().to_string();
+  PortfolioPricer pricer(std::move(*portfolio));
+  ASSERT_EQ(pricer.portfolio().n_contracts(), 4u);
+
+  const std::size_t n = pricer.portfolio().n_positions();
+  const PriceOptions opts{.n_threads = 1};
+  PortfolioWorkspace warmed_workspace;
+  warmed_workspace.reserve(pricer.portfolio().n_contracts(), n);
+  FrameStore warmup(n, /*want_greeks=*/true);
+  ASSERT_TRUE(
+      pricer.price_into(surfaces, PriceFieldMask::FullGreeks, warmup.view(), warmed_workspace, opts)
+          .has_value());
+  PortfolioWorkspace warmed_pnl_workspace;
+  warmed_pnl_workspace.reserve(pricer.portfolio().n_contracts(), n);
+  PnlFrameStore pnl_warmup(n);
+  ASSERT_TRUE(pricer
+                  .pnl_explain_into(surfaces, shifted_surfaces, pnl_warmup.view(),
+                                    warmed_pnl_workspace, opts)
+                  .has_value());
+
+  // Keep unique contract 0 unchanged (so a first-contract-only fingerprint is
+  // unchanged), move contract 1 behind contracts 2/3, and form a raw-bit-equal
+  // T=0.20 run whose deterministic order is original contract indices 2 then 3.
+  // The duplicate positions for contract 3 receive identical tenors.
+  const std::array<double, 5> next_t{0.10, 0.35, 0.20, 0.20, 0.20};
+  ASSERT_TRUE(pricer.retime(next_t).has_value());
+  EXPECT_TRUE(bits_equal(pricer.portfolio().contracts()[0].T, 0.10));
+  EXPECT_TRUE(bits_equal(pricer.portfolio().contracts()[1].T, 0.35));
+  EXPECT_TRUE(bits_equal(pricer.portfolio().contracts()[2].T, 0.20));
+  EXPECT_TRUE(bits_equal(pricer.portfolio().contracts()[3].T, 0.20));
+
+  FrameStore warmed_result(n, /*want_greeks=*/true);
+  ASSERT_TRUE(pricer
+                  .price_into(surfaces, PriceFieldMask::FullGreeks, warmed_result.view(),
+                              warmed_workspace, opts)
+                  .has_value());
+
+  PortfolioWorkspace fresh_into_workspace;
+  FrameStore fresh_result(n, /*want_greeks=*/true);
+  ASSERT_TRUE(pricer
+                  .price_into(surfaces, PriceFieldMask::FullGreeks, fresh_result.view(),
+                              fresh_into_workspace, opts)
+                  .has_value());
+  expect_frame_bit_identical(warmed_result, fresh_result);
+
+  auto warmed_totals =
+      pricer.price_totals(surfaces, PriceFieldMask::FullGreeks, warmed_workspace, opts);
+  ASSERT_TRUE(warmed_totals.has_value()) << warmed_totals.error().to_string();
+  PortfolioWorkspace fresh_totals_workspace;
+  auto fresh_totals =
+      pricer.price_totals(surfaces, PriceFieldMask::FullGreeks, fresh_totals_workspace, opts);
+  ASSERT_TRUE(fresh_totals.has_value()) << fresh_totals.error().to_string();
+  expect_totals_bit_identical(*warmed_totals, *fresh_totals);
+
+  PnlFrameStore warmed_pnl(n);
+  ASSERT_TRUE(pricer
+                  .pnl_explain_into(surfaces, shifted_surfaces, warmed_pnl.view(),
+                                    warmed_pnl_workspace, opts)
+                  .has_value());
+  PortfolioWorkspace fresh_pnl_workspace;
+  PnlFrameStore fresh_pnl(n);
+  ASSERT_TRUE(
+      pricer
+          .pnl_explain_into(surfaces, shifted_surfaces, fresh_pnl.view(), fresh_pnl_workspace, opts)
+          .has_value());
+  expect_pnl_frame_bit_identical(warmed_pnl, fresh_pnl);
+
+  auto warmed_pnl_totals =
+      pricer.pnl_totals(surfaces, shifted_surfaces, warmed_pnl_workspace, opts);
+  ASSERT_TRUE(warmed_pnl_totals.has_value()) << warmed_pnl_totals.error().to_string();
+  PortfolioWorkspace fresh_pnl_totals_workspace;
+  auto fresh_pnl_totals =
+      pricer.pnl_totals(surfaces, shifted_surfaces, fresh_pnl_totals_workspace, opts);
+  ASSERT_TRUE(fresh_pnl_totals.has_value()) << fresh_pnl_totals.error().to_string();
+  expect_pnl_totals_bit_identical(*warmed_pnl_totals, *fresh_pnl_totals);
+}
+
 // ── Pricing: multi-kind, multi-underlying, dedup, missing uid ────────────────
+
+TEST(PortfolioPricer, Copy_RestartsRevisionWithDistinctWorkspaceIdentity) {
+  const PricedSurface surface = make_essvi(1, 5);
+  const SurfaceSet surfaces = set_of({&surface});
+  const std::vector<Position> positions{
+      {10u, {1u, 90.0, 0.10, Side::Call}, +1.0, 100.0},
+      {11u, {1u, 95.0, 0.20, Side::Call}, +2.0, 100.0},
+      {12u, {1u, 105.0, 0.30, Side::Call}, -1.0, 100.0},
+      {13u, {1u, 110.0, 0.30, Side::Call}, +3.0, 100.0},
+      {14u, {1u, 110.0, 0.30, Side::Call}, -0.5, 100.0},
+  };
+  auto created = Portfolio::create(positions);
+  ASSERT_TRUE(created.has_value()) << created.error().to_string();
+  Portfolio source(std::move(*created));
+
+  // Source reaches revision 1. Its copy starts at revision 0; after one different
+  // retime both logical books are at revision 1, so identity must distinguish them.
+  const std::array<double, 5> source_t{0.10, 0.25, 0.30, 0.30, 0.30};
+  ASSERT_TRUE(source.retime(source_t).has_value());
+  Portfolio copied(source);
+  PortfolioPricer pricer(std::move(source));
+
+  const std::size_t n = pricer.portfolio().n_positions();
+  PortfolioWorkspace workspace;
+  FrameStore source_frame(n, /*want_greeks=*/true);
+  ASSERT_TRUE(
+      pricer.price_into(surfaces, PriceFieldMask::FullGreeks, source_frame.view(), workspace)
+          .has_value());
+
+  const std::array<double, 5> copy_t{0.10, 0.35, 0.20, 0.20, 0.20};
+  ASSERT_TRUE(copied.retime(copy_t).has_value());
+  pricer = PortfolioPricer(std::move(copied));
+
+  FrameStore reused(n, /*want_greeks=*/true);
+  ASSERT_TRUE(pricer.price_into(surfaces, PriceFieldMask::FullGreeks, reused.view(), workspace)
+                  .has_value());
+  PortfolioWorkspace fresh_workspace;
+  FrameStore fresh(n, /*want_greeks=*/true);
+  ASSERT_TRUE(pricer.price_into(surfaces, PriceFieldMask::FullGreeks, fresh.view(), fresh_workspace)
+                  .has_value());
+  expect_frame_bit_identical(reused, fresh);
+}
+
+TEST(PortfolioPricer, Move_TransfersWorkspaceIdentityAndLeavesSourceValid) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+  const PricedSurface surface = make_essvi(1, 5);
+  const SurfaceSet surfaces = set_of({&surface});
+  auto portfolio = Portfolio::create(pnl_book());
+  ASSERT_TRUE(portfolio.has_value()) << portfolio.error().to_string();
+  PortfolioPricer source(std::move(*portfolio));
+
+  const std::size_t n = source.portfolio().n_positions();
+  PortfolioWorkspace workspace;
+  FrameStore warmup(n, /*want_greeks=*/true);
+  ASSERT_TRUE(source.price_into(surfaces, PriceFieldMask::FullGreeks, warmup.view(), workspace)
+                  .has_value());
+
+  PortfolioPricer moved(std::move(source));
+  if constexpr (counters_enabled()) {
+    atx::vol::counters::reset();
+  }
+  FrameStore reused(n, /*want_greeks=*/true);
+  ASSERT_TRUE(
+      moved.price_into(surfaces, PriceFieldMask::FullGreeks, reused.view(), workspace).has_value());
+  if constexpr (counters_enabled()) {
+    EXPECT_EQ(atx::vol::counters::snapshot().get(Counter::PreparedBuilds), 0u);
+  }
+
+  PortfolioWorkspace fresh_workspace;
+  FrameStore fresh(n, /*want_greeks=*/true);
+  ASSERT_TRUE(moved.price_into(surfaces, PriceFieldMask::FullGreeks, fresh.view(), fresh_workspace)
+                  .has_value());
+  expect_frame_bit_identical(reused, fresh);
+
+  // The moved-from pricer owns a fresh empty logical book and remains callable.
+  ASSERT_TRUE(source.retime(std::span<const double>{}).has_value());
+  auto empty = source.price(surfaces);
+  ASSERT_TRUE(empty.has_value()) << empty.error().to_string();
+  EXPECT_EQ(empty->size(), 0u);
+}
 
 TEST(PortfolioPricer, Price_MultiKind_MultiUnderlying_BitIdenticalToGreeks) {
   const PricedSurface s1 = make_convex(1, 4, 32);
@@ -957,27 +1332,17 @@ TEST(PortfolioPricer, PriceInto_ZeroAllocation_And_PreparedReuse) {
   }
 }
 
-// Regression for the workspace-cache ABA hazard: a single PortfolioWorkspace
-// reused across two DIFFERENT books (different unique-contract counts) held,
-// one after another, by the SAME PortfolioPricer variable (its address is
-// fixed for its whole lifetime; reassigning it mirrors the reviewer's
-// `PortfolioPricer pr(build(book));` reconstructed-at-the-same-address loop).
-// Before the ensure_prepared fix, `prepared_book == &pf` alone would consider
-// the first (larger) book's substrate still valid for the second (smaller)
-// book, so solve_uniques() would index oci[p] up to the STALE larger
-// n_unique while px had only been resized to the new, smaller book's contract
-// count -- a heap out-of-bounds write (or, had the stale count been <= the new
-// count, a silent mis-price). The fix additionally requires
-// prepared->n_unique() == pf.n_contracts() and a content fingerprint match, so
-// the substrate is correctly rebuilt for the new book and the result below
-// must be bit-identical to a fresh-workspace price of the same book.
+// Exact same-address ABA regression: both books have the same unique-contract
+// count and bit-identical first contract, so address/count/first-contract gates
+// all collide while the middle of the books differs. The logical-book identity
+// must force a rebuild and produce the same result as a fresh workspace.
 TEST(PortfolioPricer, PriceInto_WorkspaceReuseAcrossDifferentBooksAtSamePricerAddress) {
   const PricedSurface s1 = make_convex(1, 4, 32);
   const PricedSurface s2 = make_essvi(2, 5);
   const PricedSurface s3 = make_svi(3, 4);
   const SurfaceSet surfaces = set_of({&s1, &s2, &s3});
 
-  // Book A: 6 unique contracts -- LARGER unique count.
+  // Book A: 6 unique contracts.
   std::vector<Position> book_a;
   std::uint64_t id_a = 0;
   for (double K : {90.0, 95.0, 100.0, 105.0, 110.0, 115.0}) {
@@ -987,14 +1352,18 @@ TEST(PortfolioPricer, PriceInto_WorkspaceReuseAcrossDifferentBooksAtSamePricerAd
   ASSERT_TRUE(pf_a.has_value());
   ASSERT_EQ(pf_a->n_contracts(), 6u);
 
-  // Book B: 2 unique contracts -- SMALLER unique count, different uids.
+  // Book B: same count and first contract, different remaining content.
   const std::vector<Position> book_b{
-      {100, {2, 105.0, 0.25, Side::Call}, 3.0, 100.0},
-      {101, {3, 98.0, 0.15, Side::Put}, 7.0, 100.0},
+      {100, {1, 90.0, 0.18, Side::Call}, 3.0, 100.0},
+      {101, {2, 105.0, 0.25, Side::Call}, 7.0, 100.0},
+      {102, {3, 98.0, 0.15, Side::Put}, -2.0, 100.0},
+      {103, {1, 102.0, 0.28, Side::Put}, 4.0, 100.0},
+      {104, {2, 110.0, 0.35, Side::Put}, -1.0, 100.0},
+      {105, {3, 105.0, 0.25, Side::Call}, 5.0, 100.0},
   };
   auto pf_b = Portfolio::create(book_b);
   ASSERT_TRUE(pf_b.has_value());
-  ASSERT_EQ(pf_b->n_contracts(), 2u);
+  ASSERT_EQ(pf_b->n_contracts(), 6u);
 
   PortfolioWorkspace ws;
   PortfolioPricer pr(std::move(*pf_a));
@@ -1006,7 +1375,7 @@ TEST(PortfolioPricer, PriceInto_WorkspaceReuseAcrossDifferentBooksAtSamePricerAd
     ASSERT_TRUE(pr.price_into(surfaces, PriceFieldMask::FullGreeks, fa.view(), ws).has_value());
   }
 
-  // Reassign the SAME variable to a DIFFERENT, SMALLER book. `pr` occupies one
+  // Reassign the SAME variable to a different same-sized book. `pr` occupies one
   // stack slot for its whole lifetime, so its (and its `pf_` member's) address
   // is unchanged by the reassignment.
   pr = PortfolioPricer(std::move(*pf_b));

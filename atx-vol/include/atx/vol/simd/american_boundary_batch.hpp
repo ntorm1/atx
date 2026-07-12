@@ -29,16 +29,29 @@
 
 #include <cstddef>
 
+#include "atx/vol/simd/cpu.hpp"
+
 namespace atx::vol::simd {
 
 // Which path a call actually executed — exposed so a bench/test can assert the
 // dispatch (the P3.1 "expose the selected ISA" requirement).
 enum class SimdRoute { Scalar, Avx2 };
 
-// Price a homogeneous span of American puts. Returns the route taken (Avx2 when
-// use_avx2() is true, else Scalar). The scalar route calls andersen_lake per
-// contract and is the numerical source of truth; the AVX2 route reproduces it to
-// the accuracy gate with edge lanes patched through the same scalar kernel.
+// Price a homogeneous span of American puts using the call-local ISA selection.
+// Auto preserves the measured ship gate; ForceAvx2 uses AVX2 when the host
+// supports it and safely falls back to scalar otherwise. This overload does not
+// read or mutate the process-global ISA override and is safe to call concurrently
+// with a different `isa` in another thread.
+SimdRoute american_put_boundary_batch(const double* S, const double* K,
+                                      const double* T, const double* sigma,
+                                      const double* r, const double* q,
+                                      double* price_out, std::size_t n,
+                                      SimdIsa isa) noexcept;
+
+// Legacy coarse-control overload. Resolves the current process-global override
+// once, then delegates to the call-local overload above. The scalar route calls
+// andersen_lake per contract and is the numerical source of truth; the AVX2 route
+// reproduces it to the accuracy gate with edge lanes patched through scalar.
 SimdRoute american_put_boundary_batch(const double* S, const double* K,
                                       const double* T, const double* sigma,
                                       const double* r, const double* q,

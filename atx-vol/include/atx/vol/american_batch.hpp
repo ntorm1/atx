@@ -24,9 +24,9 @@
 //     There is NO vectorized American Greek STENCIL — greek-stencil vectorization
 //     beyond the price boundary is future work. Every Greek lane's route is Scalar.
 //
-// Not thread-safe against a concurrent change of the process-global SIMD ISA
-// override: PricingKernel::isa is applied via that override for the duration of a
-// call (the coarse T13 seam), then restored.
+// PricingKernel::isa is a call-local dispatch choice. Concurrent batch calls may
+// select different ISAs without reading or mutating the legacy process-global
+// override used by the coarse SIMD boundary API.
 
 #include <cstddef>
 #include <cstdint>
@@ -108,11 +108,12 @@ struct PriceBatchOutput {
 
 // ── Pricing kernel handle (wraps the T13 ISA seam) ────────────────────────
 //
-// Minimal by design: the ISA/route selection plus an optional executor for
+// Minimal by design: the call-local ISA selection plus an optional executor for
 // cross-lane parallelism of the scalar Greek routes.
 struct PricingKernel {
-  // Applied via the process-global SIMD ISA override for the call's duration.
-  // Auto inherits the T13 ship gate (scalar today); ForceAvx2/ForceScalar force.
+  // Passed directly to the boundary kernel for this call. Auto inherits the T13
+  // ship gate (scalar today); ForceScalar forces scalar, while ForceAvx2 uses AVX2
+  // when supported and safely falls back to scalar on other hosts.
   simd::SimdIsa isa{simd::SimdIsa::Auto};
 
   // american_greeks_batch route: false -> american_greeks_fd (FD reference),

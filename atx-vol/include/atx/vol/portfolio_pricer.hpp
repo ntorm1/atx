@@ -64,10 +64,12 @@
 //
 // ## Thread-safety
 //
-// A `PortfolioPricer` is immutable after construction; `price` / `pnl_explain`
-// are const, and the `PricedSurface` inputs are concurrent-const-safe, so one
-// pricer may be queried from many threads. Each call's internal fan-out owns its
-// own worker locals.
+// Except for `retime`, a `PortfolioPricer` is immutable after construction;
+// `price` / `pnl_explain` are const, and the `PricedSurface` inputs are
+// concurrent-const-safe, so one pricer may be queried from many threads. Every
+// concurrent in-place call must use a distinct PortfolioWorkspace and output
+// view. `retime` requires exclusive access to the pricer and every workspace
+// that has priced it; a later call rebuilds each workspace's retained substrate.
 
 #include <cstddef>
 #include <cstdint>
@@ -129,10 +131,18 @@ enum class PriceStatus : std::uint8_t {
 
 // A book of positions. Contracts are deduped on the exact bits of
 // (uid,K,T,side) so each unique contract is priced once; each position carries a
-// weight (qty*multiplier) and an index into the unique-contract table. Move-only
-// is unnecessary (Rule of Zero, all-value); copyable.
+// weight (qty*multiplier) and an index into the unique-contract table. Copying
+// creates a distinct logical-book identity at revision zero; moving transfers
+// the identity and revision so a retained PortfolioWorkspace follows the logical
+// book rather than its address.
 class Portfolio {
 public:
+  Portfolio(const Portfolio &other);
+  Portfolio &operator=(const Portfolio &other);
+  Portfolio(Portfolio &&other) noexcept;
+  Portfolio &operator=(Portfolio &&other) noexcept;
+  ~Portfolio() = default;
+
   // Build from positions (any order). An empty book is valid (yields empty
   // frames). @return InvalidArgument only on a structurally impossible input
   // (currently none — reserved for future validation).
@@ -149,7 +159,14 @@ public:
 
   // Update residual tenor by position while preserving the dedup/group mapping.
   // Safe when time advances a fixed set of absolute-expiry lots: positions that
-  // shared a contract must receive bit-identical tenors.
+  // shared a contract must receive bit-identical tenors. Validation is completed
+  // before any write; on InvalidArgument (or the practically unreachable Internal
+  // revision-exhaustion error), every portfolio field and pricing result remains
+  // unchanged. A successful changed commit advances the logical-book revision
+  // exactly once, invalidating every retained workspace substrate on its next
+  // use; a bit-identical no-op preserves the revision and warmed substrate. The
+  // retained inverse mapping keeps validation plus commit O(n_positions +
+  // n_contracts) and allocation-free.
   [[nodiscard]] Status retime(std::span<const double> position_T);
 
   // The unique-contract index that position `i` references (i < n_positions()).
@@ -158,12 +175,17 @@ public:
   }
 
 private:
-  Portfolio() = default;
+  friend class PortfolioPricer;
+
+  Portfolio() noexcept;
 
   std::vector<Position> positions_;            // input order preserved
   std::vector<OptionContract> contracts_;      // unique (uid,K,T,side)
   std::vector<std::uint32_t> pos_contract_ix_; // position -> unique-contract idx
+  std::vector<std::size_t> first_position_ix_; // unique-contract idx -> first position
   std::vector<std::uint32_t> uids_;            // sorted unique uids
+  std::uint64_t logical_id_{0};                // process-unique; moves with this logical book
+  std::uint64_t revision_{0};                  // advances after each successful retime commit
 };
 
 // ── SurfaceSet (uid -> PricedSurface, non-owning) ────────────────────────
@@ -300,21 +322,19 @@ struct PriceFrameView {
 // Move-only (owns scratch); the implementation is pimpl'd so the header stays
 // free of the aligned-substrate and per-contract-result types.
 //
-// ## CONTRACT: one workspace per LIVE book
+// ## CONTRACT: one workspace per concurrent call
 //
-// The retained-substrate cache invalidates on (a) the ADDRESS of the owning
-// `PortfolioPricer::pf_`, (b) the current unique-contract count
-// (`pf.n_contracts()`), and (c) a cheap O(1) fingerprint of the book's first
-// unique contract's exact bits — all allocation-free, pointer/integer-only
-// checks, but NOT a full content hash. A `Portfolio`/`PortfolioPricer`
-// destroyed and reconstructed at the SAME address (e.g. a loop that rebuilds a
-// local `PortfolioPricer` per iteration) can still slip past this guard if the
-// new book happens to match the old one's unique-contract count AND
-// first-contract fingerprint while differing only in the middle of the book —
-// a residual ABA hazard. Given that, treat a `PortfolioWorkspace` as bound to
-// ONE logical book for its lifetime: build a fresh workspace per book (or keep
-// a keyed pool) rather than looping a single reused workspace across a
-// sequence of distinct books built at a recurring address.
+// The retained-substrate cache invalidates on an exact O(1) version key: the
+// Portfolio's process-unique logical-book identity plus its retime revision.
+// Construction and copying create a fresh identity, moving transfers it, and a
+// successful retime advances the revision only after its no-throw commit. This
+// closes same-address reconstruction ABA and detects changes to every contract,
+// without hashing the book or allocating on a steady-state price call.
+//
+// PortfolioWorkspace owns mutable scratch and is not internally synchronized:
+// never share one workspace between overlapping calls. Sequential reuse across
+// snapshots, successful retimes, or entirely different books is supported and
+// rebuilds the retained substrate exactly when the version key changes.
 class PortfolioWorkspace {
 public:
   PortfolioWorkspace();

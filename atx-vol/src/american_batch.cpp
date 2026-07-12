@@ -17,20 +17,6 @@ namespace {
 
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
-// RAII: apply a SIMD ISA override for the scope, restore on exit. This is how a
-// PricingKernel "wraps the T13 seam": simd::american_put_boundary_batch consults
-// the process-global override, so we set it around the pack dispatch.
-struct IsaScope {
-  simd::SimdIsa saved;
-  explicit IsaScope(simd::SimdIsa want) noexcept
-      : saved(simd::simd_isa_override()) {
-    simd::set_simd_isa_override(want);
-  }
-  ~IsaScope() { simd::set_simd_isa_override(saved); }
-  IsaScope(const IsaScope&) = delete;
-  IsaScope& operator=(const IsaScope&) = delete;
-};
-
 // Mirror andersen_lake_core's degenerate + regime classification EXACTLY so the
 // batch's "kernel vs scalar-patch" split is bit-consistent with a per-contract
 // solve. Returns true iff this lane is a genuine single-boundary American solve
@@ -79,9 +65,6 @@ Status american_price_batch(const AmericanBatchInput& in, PriceBatchOutput& out,
     return Ok();
   }
 
-  // Apply the requested ISA for the boundary-kernel dispatch (restored on exit).
-  const IsaScope isa(kernel.isa);
-
   ws.reserve_lanes(n);
 
   // Pass 1: classify + compact. Genuine American lanes -> internal-put pack;
@@ -122,7 +105,7 @@ Status american_price_batch(const AmericanBatchInput& in, PriceBatchOutput& out,
   if (m > 0) {
     const simd::SimdRoute pack_route = simd::american_put_boundary_batch(
         ws.ps_S.data(), ws.ps_K.data(), ws.ps_T.data(), ws.ps_sigma.data(),
-        ws.ps_r.data(), ws.ps_q.data(), ws.ps_price.data(), m);
+        ws.ps_r.data(), ws.ps_q.data(), ws.ps_price.data(), m, kernel.isa);
     for (std::size_t j = 0; j < m; ++j) {
       const std::uint32_t i = ws.perm[j];
       const double v = ws.ps_price[j];

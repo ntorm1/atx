@@ -57,14 +57,15 @@ inline constexpr bool kShipAvx2Boundary = false;
 SimdRoute american_put_boundary_batch(const double* S, const double* K,
                                       const double* T, const double* sigma,
                                       const double* r, const double* q,
-                                      double* price_out, std::size_t n) noexcept {
-    bool avx2;
-    switch (simd_isa_override()) {
+                                      double* price_out, std::size_t n,
+                                      SimdIsa isa) noexcept {
+    bool avx2 = false;
+    switch (isa) {
         case SimdIsa::ForceScalar:
             avx2 = false;
             break;
         case SimdIsa::ForceAvx2:
-            avx2 = true; // explicit test/bench force; caller guards have_avx2()
+            avx2 = have_avx2();
             break;
         case SimdIsa::Auto:
         default:
@@ -78,6 +79,14 @@ SimdRoute american_put_boundary_batch(const double* S, const double* K,
     }
     put_batch_scalar(S, K, T, sigma, r, q, price_out, n);
     return SimdRoute::Scalar;
+}
+
+SimdRoute american_put_boundary_batch(const double* S, const double* K,
+                                      const double* T, const double* sigma,
+                                      const double* r, const double* q,
+                                      double* price_out, std::size_t n) noexcept {
+    return american_put_boundary_batch(S, K, T, sigma, r, q, price_out, n,
+                                       simd_isa_override());
 }
 
 } // namespace atx::vol::simd

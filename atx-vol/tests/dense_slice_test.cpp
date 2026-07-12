@@ -2,13 +2,14 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <utility>
 #include <vector>
 
-#include "atx/vol/black76.hpp"      // black76_price, black76_value_and_vega
-#include "atx/vol/calib.hpp"        // FitObs
-#include "atx/vol/dense_slice.hpp"  // fit_convex_slice, ConvexSliceFit
-#include "atx/vol/types.hpp"        // Side
+#include "atx/vol/black76.hpp"     // black76_price, black76_value_and_vega
+#include "atx/vol/calib.hpp"       // FitObs
+#include "atx/vol/dense_slice.hpp" // fit_convex_slice, ConvexSliceFit
+#include "atx/vol/types.hpp"       // Side
 
 // Phase 1 of the arbitrage-constrained dense surface: the per-slice convex
 // call-price QP. These tests pin the two properties the whole approach rests on:
@@ -23,13 +24,13 @@ namespace {
 using atx::vol::black76_price;
 using atx::vol::black76_value_and_vega;
 using atx::vol::ConvexFitOpts;
-using atx::vol::FitObs;
+using atx::vol::ErrorCode;
 using atx::vol::fit_convex_slice;
+using atx::vol::FitObs;
 using atx::vol::Side;
 
 // One OTM observation at strike K under a given vol, with a Black-76 vega weight.
-FitObs mk_obs(double F, double T, double df, double K, double vol,
-              double spread = 0.02) {
+FitObs mk_obs(double F, double T, double df, double K, double vol, double spread = 0.02) {
   const Side side = (K >= F) ? Side::Call : Side::Put;
   FitObs o{};
   o.K = K;
@@ -45,9 +46,9 @@ FitObs mk_obs(double F, double T, double df, double K, double vol,
 }
 
 // The fitted call curve must be convex, non-increasing, and non-negative.
-void expect_arb_free(const atx::vol::ConvexSliceFit& fit) {
-  const auto& u = fit.u;
-  const auto& C = fit.C;
+void expect_arb_free(const atx::vol::ConvexSliceFit &fit) {
+  const auto &u = fit.u;
+  const auto &C = fit.C;
   ASSERT_GE(u.size(), std::size_t{3});
   for (std::size_t i = 0; i < C.size(); ++i) {
     EXPECT_GE(C[i], -1.0e-9) << "positivity at node " << i;
@@ -60,6 +61,22 @@ void expect_arb_free(const atx::vol::ConvexSliceFit& fit) {
     const double right = (C[i + 1] - C[i]) / (u[i + 1] - u[i]);
     EXPECT_GE(right - left, -1.0e-7) << "convexity (butterfly) at node " << i;
   }
+}
+
+void expect_converged_qp_diagnostics(const atx::vol::ConvexSliceFit &fit) {
+  EXPECT_GT(fit.qp_iterations, std::size_t{0});
+  EXPECT_TRUE(std::isfinite(fit.qp_stationarity));
+  EXPECT_TRUE(std::isfinite(fit.qp_primal_violation));
+  EXPECT_TRUE(std::isfinite(fit.qp_complementarity));
+  EXPECT_TRUE(std::isfinite(fit.qp_dual_violation));
+  EXPECT_GE(fit.qp_stationarity, 0.0);
+  EXPECT_GE(fit.qp_primal_violation, 0.0);
+  EXPECT_GE(fit.qp_complementarity, 0.0);
+  EXPECT_GE(fit.qp_dual_violation, 0.0);
+  EXPECT_LE(fit.qp_stationarity, 1.0e-8);
+  EXPECT_LE(fit.qp_primal_violation, 1.0e-8);
+  EXPECT_LE(fit.qp_complementarity, 1.0e-8);
+  EXPECT_LE(fit.qp_dual_violation, 1.0e-8);
 }
 
 std::vector<double> strike_grid(double F) {
@@ -76,18 +93,17 @@ std::vector<double> strike_grid(double F) {
 // monotonicity enforced (no slope-below bound), the near-interpolating fit can
 // produce a segment whose slope dips below -df around this print — that is the
 // case `bound_slope_below` is meant to rule out.
-std::vector<FitObs> make_synthetic_slice_obs(double F, double T, double df,
-                                              double sigma) {
+std::vector<FitObs> make_synthetic_slice_obs(double F, double T, double df, double sigma) {
   const std::vector<double> strikes = {40, 55, 65, 72, 78, 84, 90, 96, 104, 115, 130};
   std::vector<FitObs> obs;
   obs.reserve(strikes.size());
   for (const double K : strikes) {
     obs.push_back(mk_obs(F, T, df, K, sigma));
   }
-  for (FitObs& o : obs) {
+  for (FitObs &o : obs) {
     if (std::fabs(o.K - 65.0) < 1.0e-9) {
-      o.mid *= 0.5;             // artificially cheap deep-ITM print
-      o.spread = 1.0e-4;        // tight spread => near-interpolated by the fit
+      o.mid *= 0.5;      // artificially cheap deep-ITM print
+      o.spread = 1.0e-4; // tight spread => near-interpolated by the fit
       o.vega = std::max(o.vega, 1.0);
     }
   }
@@ -117,28 +133,29 @@ std::vector<FitObs> make_synthetic_slice_obs(double F, double T, double df,
 // the LOSS's doing, not an interpolation artifact. All strikes are OTM calls (K≥F),
 // keeping mids positive; NOT used by the A3/A4 tests; `sigma` only sets a realistic
 // per-obs vega weight via mk_obs.
-std::vector<FitObs> make_synthetic_slice_obs_wideband(double F, double T, double df,
-                                                      double sigma) {
-  const std::vector<double> strikes = {100, 105, 110, 115, 120, 125,
-                                       130, 135, 140, 145, 150};
+std::vector<FitObs> make_synthetic_slice_obs_wideband(double F, double T, double df, double sigma) {
+  const std::vector<double> strikes = {100, 105, 110, 115, 120, 125, 130, 135, 140, 145, 150};
   const double kmax = 170.0;
   const auto g_true = [&](double K) { return 0.004 * (kmax - K) * (kmax - K); };
   std::vector<FitObs> obs;
   obs.reserve(strikes.size());
   for (const double K : strikes) {
-    FitObs o = mk_obs(F, T, df, K, sigma);          // realistic side / vega weight
-    double bump = 0.0;                               // localized concave hump…
-    if (K == 120.0) bump = 1.5;
-    if (K == 125.0) bump = 3.0;                      // …peak of the concavity
-    if (K == 130.0) bump = 1.5;
-    o.mid = g_true(K) + bump;                        // convex base + concave bump
-    o.spread = (K == 125.0) ? 2.0 : 6.0;             // moderate peak band, wide else
+    FitObs o = mk_obs(F, T, df, K, sigma); // realistic side / vega weight
+    double bump = 0.0;                     // localized concave hump…
+    if (K == 120.0)
+      bump = 1.5;
+    if (K == 125.0)
+      bump = 3.0; // …peak of the concavity
+    if (K == 130.0)
+      bump = 1.5;
+    o.mid = g_true(K) + bump;            // convex base + concave bump
+    o.spread = (K == 125.0) ? 2.0 : 6.0; // moderate peak band, wide else
     obs.push_back(o);
   }
   return obs;
 }
 
-}  // namespace
+} // namespace
 
 TEST(DenseSlice, FlatVolIsRecoveredAndArbFree) {
   constexpr double F = 100.0, T = 0.25, r = 0.03, vol = 0.22;
@@ -149,7 +166,7 @@ TEST(DenseSlice, FlatVolIsRecoveredAndArbFree) {
   }
 
   ConvexFitOpts opts;
-  opts.lambda = 1.0e-4;  // near-interpolation
+  opts.lambda = 1.0e-4; // near-interpolation
   const auto fit = fit_convex_slice(obs, F, T, df, opts);
   ASSERT_TRUE(fit.has_value()) << fit.error().to_string();
   expect_arb_free(*fit);
@@ -158,7 +175,8 @@ TEST(DenseSlice, FlatVolIsRecoveredAndArbFree) {
   // fit recovers the generating vol at every interior strike to a few bp.
   int checked = 0;
   for (const double K : strike_grid(F)) {
-    if (K < 0.80 * F || K > 1.20 * F) continue;  // interior, high-vega
+    if (K < 0.80 * F || K > 1.20 * F)
+      continue; // interior, high-vega
     const double iv = fit->iv(std::log(K / F));
     ASSERT_TRUE(std::isfinite(iv));
     EXPECT_NEAR(iv, vol, 0.01) << "K=" << K;
@@ -202,7 +220,7 @@ TEST(DenseSlice, NonConvexNoiseIsProjectedToArbFree) {
   }
   const auto fit = fit_convex_slice(obs, F, T, df, {});
   ASSERT_TRUE(fit.has_value()) << fit.error().to_string();
-  expect_arb_free(*fit);  // the whole point: arb-free despite arb-violating input
+  expect_arb_free(*fit); // the whole point: arb-free despite arb-violating input
 }
 
 TEST(DenseSlice, WideBoardUsesClusteredNodesAndStaysArbFree) {
@@ -212,14 +230,14 @@ TEST(DenseSlice, WideBoardUsesClusteredNodesAndStaysArbFree) {
   const double df = std::exp(-r * T);
   auto vol_of = [](double k) { return 0.20 - 0.08 * k + 0.25 * k * k; };
   std::vector<FitObs> obs;
-  for (double K = 0.55 * F; K <= 1.45 * F + 1e-9; K += 0.01 * F) {  // ~90 strikes
+  for (double K = 0.55 * F; K <= 1.45 * F + 1e-9; K += 0.01 * F) { // ~90 strikes
     obs.push_back(mk_obs(F, T, df, K, vol_of(std::log(K / F))));
   }
   ConvexFitOpts opts;
   opts.node_cap = 40;
   const auto fit = fit_convex_slice(obs, F, T, df, opts);
   ASSERT_TRUE(fit.has_value()) << fit.error().to_string();
-  EXPECT_LE(fit->u.size(), std::size_t{40});  // capped node count
+  EXPECT_LE(fit->u.size(), std::size_t{40}); // capped node count
   EXPECT_GE(fit->u.size(), std::size_t{20});
   expect_arb_free(*fit);
   for (const double K : {560.0, 600.0, 640.0}) {
@@ -232,9 +250,147 @@ TEST(DenseSlice, WideBoardUsesClusteredNodesAndStaysArbFree) {
 TEST(DenseSlice, RejectsTooFewStrikes) {
   constexpr double F = 100.0, T = 0.25;
   const double df = std::exp(-0.03 * T);
-  std::vector<FitObs> obs = {mk_obs(F, T, df, 95.0, 0.2),
-                             mk_obs(F, T, df, 105.0, 0.2)};
+  std::vector<FitObs> obs = {mk_obs(F, T, df, 95.0, 0.2), mk_obs(F, T, df, 105.0, 0.2)};
   EXPECT_FALSE(fit_convex_slice(obs, F, T, df, {}).has_value());
+}
+
+TEST(DenseSlice, RejectsNonFiniteInputsOptionsAndObservations) {
+  constexpr double F = 100.0, T = 0.25, vol = 0.22;
+  const double df = std::exp(-0.03 * T);
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+  std::vector<FitObs> obs;
+  for (const double K : strike_grid(F)) {
+    obs.push_back(mk_obs(F, T, df, K, vol));
+  }
+
+  const auto expect_invalid = [](const auto &result) {
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+  };
+  expect_invalid(fit_convex_slice(obs, inf, T, df, {}));
+  expect_invalid(fit_convex_slice(obs, F, nan, df, {}));
+  expect_invalid(fit_convex_slice(obs, F, T, inf, {}));
+
+  ConvexFitOpts bad_opts;
+  bad_opts.lambda = nan;
+  expect_invalid(fit_convex_slice(obs, F, T, df, bad_opts));
+
+  std::vector<FitObs> bad_obs = obs;
+  bad_obs[3].vega = inf;
+  expect_invalid(fit_convex_slice(bad_obs, F, T, df, {}));
+  bad_obs = obs;
+  bad_obs[3].K = inf;
+  expect_invalid(fit_convex_slice(bad_obs, F, T, df, {}));
+  bad_obs = obs;
+  bad_obs[3].mid = nan;
+  expect_invalid(fit_convex_slice(bad_obs, F, T, df, {}));
+}
+
+TEST(DenseSlice, ZeroIterationBudgetReportsNonConvergence) {
+  constexpr double F = 100.0, T = 0.25, vol = 0.22;
+  const double df = std::exp(-0.03 * T);
+  std::vector<FitObs> obs;
+  for (const double K : strike_grid(F)) {
+    obs.push_back(mk_obs(F, T, df, K, vol));
+  }
+
+  ConvexFitOpts opts;
+  opts.max_iter = 0;
+  const auto fit = fit_convex_slice(obs, F, T, df, opts);
+
+  ASSERT_FALSE(fit.has_value());
+  EXPECT_EQ(fit.error().code(), ErrorCode::Internal);
+}
+
+TEST(DenseSlice, BindingConstraintsAreReportedInDiagnostics) {
+  constexpr double F = 100.0, T = 0.25, vol = 0.22;
+  const double df = std::exp(-0.03 * T);
+  std::vector<FitObs> obs;
+  int index = 0;
+  for (const double K : strike_grid(F)) {
+    FitObs o = mk_obs(F, T, df, K, vol);
+    o.mid *= (index % 2 == 0) ? 1.06 : 0.94;
+    obs.push_back(o);
+    ++index;
+  }
+
+  const auto fit = fit_convex_slice(obs, F, T, df, {});
+
+  ASSERT_TRUE(fit.has_value()) << fit.error().to_string();
+  expect_converged_qp_diagnostics(*fit);
+  EXPECT_GT(fit->n_active, std::size_t{0});
+}
+
+TEST(DenseSlice, ExtremeUnrelatedCoordinateCannotMaskNegativeNode) {
+  constexpr double F = 1.0e9, T = 0.25, df = 0.99, vol = 0.22;
+  std::vector<FitObs> obs;
+  for (const double K : {0.50 * F, 0.75 * F, F, 1.50 * F, 3.00 * F}) {
+    obs.push_back(mk_obs(F, T, df, K, vol, 1.0e-6));
+  }
+  // Apply a small O(1) calendar floor only to the far wing while unrelated ITM
+  // nodes remain O(1e8). A global ||x|| scale can incorrectly certify a material
+  // violation of this sparse local row.
+  const auto far_wing_floor = [](double k) {
+    return k > 1.0 ? 0.04 : std::numeric_limits<double>::quiet_NaN();
+  };
+  const double required_floor = black76_price(F, 3.0 * F, T, std::sqrt(0.04 / T), df, Side::Call);
+  ASSERT_GT(required_floor, 0.1);
+
+  ConvexFitOpts opts;
+  opts.lambda = 0.0;
+  const auto fit = fit_convex_slice(obs, F, T, df, opts, far_wing_floor);
+
+  ASSERT_TRUE(fit.has_value()) << fit.error().to_string();
+  expect_converged_qp_diagnostics(*fit);
+  ASSERT_FALSE(fit->C.empty());
+  EXPECT_GE(fit->C.back(), required_floor - 1.0e-8);
+}
+
+TEST(DenseSlice, PositiveIterationCapExhaustionIsNotPublishedForEitherLoss) {
+  constexpr double F = 100.0, T = 0.25, vol = 0.22;
+  const double df = std::exp(-0.03 * T);
+  std::vector<FitObs> obs;
+  int index = 0;
+  for (const double K : strike_grid(F)) {
+    FitObs o = mk_obs(F, T, df, K, vol);
+    o.mid *= (index % 2 == 0) ? 1.06 : 0.94;
+    obs.push_back(o);
+    ++index;
+  }
+
+  ConvexFitOpts mid_opts;
+  mid_opts.max_iter = 1;
+  const auto mid = fit_convex_slice(obs, F, T, df, mid_opts);
+  ASSERT_FALSE(mid.has_value());
+  EXPECT_EQ(mid.error().code(), ErrorCode::Internal);
+
+  ConvexFitOpts interval_opts;
+  interval_opts.loss = atx::vol::CalibLossKind::Interval;
+  interval_opts.max_iter = 1;
+  const auto interval = fit_convex_slice(obs, F, T, df, interval_opts);
+  ASSERT_FALSE(interval.has_value());
+  EXPECT_EQ(interval.error().code(), ErrorCode::Internal);
+}
+
+TEST(DenseSlice, HostileSlopeBoundStartIsRepairedBeforeCertifiedFit) {
+  constexpr double F = 100.0, T = 0.25, df = 0.98;
+  std::vector<FitObs> obs;
+  for (const double K : {100.0, 101.0, 102.0, 103.0, 104.0}) {
+    obs.push_back(mk_obs(F, T, df, K, 0.22));
+  }
+  obs.front().mid = 20.0;
+
+  ConvexFitOpts opts;
+  opts.bound_slope_below = true;
+  const auto fit = fit_convex_slice(obs, F, T, df, opts);
+
+  ASSERT_TRUE(fit.has_value()) << fit.error().to_string();
+  expect_converged_qp_diagnostics(*fit);
+  for (std::size_t i = 0; i + 1 < fit->u.size(); ++i) {
+    const double slope = (fit->C[i + 1] - fit->C[i]) / (fit->u[i + 1] - fit->u[i]);
+    EXPECT_GE(slope, -df - 1.0e-8);
+  }
 }
 
 TEST(ConvexSliceFit, SlopeBelowBoundHonored) {
@@ -243,7 +399,8 @@ TEST(ConvexSliceFit, SlopeBelowBoundHonored) {
   // dip below -df; enable the bound and assert it holds at every node pair.
   std::vector<FitObs> obs = make_synthetic_slice_obs(/*F=*/100.0, /*T=*/0.5,
                                                      /*df=*/0.98, /*sigma=*/0.2);
-  ConvexFitOpts opts; opts.bound_slope_below = true;
+  ConvexFitOpts opts;
+  opts.bound_slope_below = true;
   auto fit = fit_convex_slice(obs, 100.0, 0.5, 0.98, opts);
   ASSERT_TRUE(fit.has_value());
   const double df = 0.98;
@@ -261,10 +418,10 @@ TEST(ConvexSliceFit, CalendarFloorLiftsLowVarianceSlice) {
   std::vector<FitObs> obs = make_synthetic_slice_obs(F, T, df, 0.15);
   auto w_prev = [&](double /*k*/) {
     const double sig = 0.25;
-    return sig * sig * T;   // flat prev total variance
+    return sig * sig * T; // flat prev total variance
   };
   auto free_fit = fit_convex_slice(obs, F, T, df, {});
-  auto floored  = fit_convex_slice(obs, F, T, df, {}, w_prev);
+  auto floored = fit_convex_slice(obs, F, T, df, {}, w_prev);
   ASSERT_TRUE(free_fit && floored);
   // At the money, floored total variance >= prev (minus tol), and >= free fit.
   const double w_floor = 0.25 * 0.25 * T;
@@ -286,13 +443,13 @@ TEST(ConvexSliceFit, CalendarFloorSlackIsBitIdentical) {
   for (const double K : strike_grid(F)) {
     obs.push_back(mk_obs(F, T, df, K, 0.30));
   }
-  auto w_prev = [&](double) { return 0.10 * 0.10 * T; };  // prev far BELOW → slack
+  auto w_prev = [&](double) { return 0.10 * 0.10 * T; }; // prev far BELOW → slack
   auto free_fit = fit_convex_slice(obs, F, T, df, {});
-  auto floored  = fit_convex_slice(obs, F, T, df, {}, w_prev);
+  auto floored = fit_convex_slice(obs, F, T, df, {}, w_prev);
   ASSERT_TRUE(free_fit && floored);
   ASSERT_EQ(free_fit->C.size(), floored->C.size());
   for (std::size_t j = 0; j < free_fit->C.size(); ++j) {
-    EXPECT_NEAR(free_fit->C[j], floored->C[j], 1e-12);  // slack ⇒ identical
+    EXPECT_NEAR(free_fit->C[j], floored->C[j], 1e-12); // slack ⇒ identical
   }
 }
 
@@ -306,10 +463,9 @@ TEST(ConvexSliceFit, IntervalLossPutsPriceInsideBand) {
   // Call-folded per-obs band [c_bid, c_ask], matching the production composition
   // (half-spread invariant under put-call parity): c_ask = co + s/2,
   // c_bid = max(0, co − s/2), co the call-folded price of the obs.
-  const auto band = [&](const FitObs& o) {
+  const auto band = [&](const FitObs &o) {
     const double co = (o.side == Side::Call) ? o.mid : o.mid + df * (F - o.K);
-    return std::pair<double, double>{std::max(0.0, co - o.spread / 2),
-                                     co + o.spread / 2};
+    return std::pair<double, double>{std::max(0.0, co - o.spread / 2), co + o.spread / 2};
   };
 
   // (1) LIVENESS GUARD — a default Mid fit MUST push at least one price OUTSIDE
@@ -321,7 +477,7 @@ TEST(ConvexSliceFit, IntervalLossPutsPriceInsideBand) {
   ASSERT_TRUE(mid_fit.has_value()) << mid_fit.error().to_string();
   int mid_violations = 0;
   double worst_out = 0.0;
-  for (const auto& o : obs) {
+  for (const auto &o : obs) {
     const auto [lo, hi] = band(o);
     const double c = mid_fit->call_price(o.K);
     if (c < lo - 1e-6 || c > hi + 1e-6) {
@@ -332,14 +488,16 @@ TEST(ConvexSliceFit, IntervalLossPutsPriceInsideBand) {
   ASSERT_GT(mid_violations, 0)
       << "board is not discriminating: the default Mid fit stays in every band, so "
          "the interval assertion below would pass even if interval loss regressed to "
-         "Mid (worst overshoot " << worst_out << ")";
+         "Mid (worst overshoot "
+      << worst_out << ")";
 
   // (2) The Interval fit must put EVERY fitted call price INSIDE its band.
   ConvexFitOpts opts;
   opts.loss = CalibLossKind::Interval;
   auto fit = fit_convex_slice(obs, F, T, df, opts);
   ASSERT_TRUE(fit.has_value()) << fit.error().to_string();
-  for (const auto& o : obs) {
+  expect_converged_qp_diagnostics(*fit);
+  for (const auto &o : obs) {
     const auto [lo, hi] = band(o);
     const double c = fit->call_price(o.K);
     EXPECT_GE(c, lo - 1e-6) << "interval fit below band at K=" << o.K;
@@ -351,10 +509,14 @@ TEST(ConvexSliceFit, IntervalDegenerateBandEqualsMid) {
   using namespace atx::vol;
   const double F = 100.0, T = 0.5, df = 0.98;
   auto obs = make_synthetic_slice_obs(F, T, df, 0.20);
-  for (auto& o : obs) o.spread = 0.0;             // zero-width band == mid target
-  ConvexFitOpts mid; auto a = fit_convex_slice(obs, F, T, df, mid);
-  ConvexFitOpts iv; iv.loss = CalibLossKind::Interval;
+  for (auto &o : obs)
+    o.spread = 0.0; // zero-width band == mid target
+  ConvexFitOpts mid;
+  auto a = fit_convex_slice(obs, F, T, df, mid);
+  ConvexFitOpts iv;
+  iv.loss = CalibLossKind::Interval;
   auto b = fit_convex_slice(obs, F, T, df, iv);
   ASSERT_TRUE(a && b);
-  for (std::size_t j = 0; j < a->C.size(); ++j) EXPECT_NEAR(a->C[j], b->C[j], 1e-7);
+  for (std::size_t j = 0; j < a->C.size(); ++j)
+    EXPECT_NEAR(a->C[j], b->C[j], 1e-7);
 }

@@ -20,9 +20,12 @@
 #include "atx/vol/american.hpp"
 #include "atx/vol/simd/cpu.hpp"
 
+#include <atomic>
+#include <barrier>
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -86,6 +89,131 @@ struct IsaGuard {
   ~IsaGuard() { simd::set_simd_isa_override(simd::SimdIsa::Auto); }
 };
 
+// The explicit-ISA overload is the concurrency-safe boundary between a public
+// PricingKernel and the SIMD implementation. Unlike the legacy overload, it must
+// select its route from the call argument without touching the startup/CI knob.
+TEST(AmericanBoundaryBatch, PerCallIsaDoesNotMutateProcessOverride) {
+  if (!simd::have_avx2()) {
+    GTEST_SKIP() << "no AVX2 on this host";
+  }
+  IsaGuard g;
+  simd::set_simd_isa_override(simd::SimdIsa::Auto);
+  const Book b = make_book();
+  constexpr std::size_t n = 30; // the leading lanes are genuine American puts
+  ASSERT_GE(b.size(), n);
+  std::vector<double> scalar_price(n);
+  std::vector<double> avx2_price(n);
+
+  const simd::SimdRoute scalar_route = simd::american_put_boundary_batch(
+      b.S.data(), b.K.data(), b.T.data(), b.sigma.data(), b.r.data(), b.q.data(),
+      scalar_price.data(), n, simd::SimdIsa::ForceScalar);
+  EXPECT_EQ(scalar_route, simd::SimdRoute::Scalar);
+  EXPECT_EQ(simd::simd_isa_override(), simd::SimdIsa::Auto);
+
+  const simd::SimdRoute avx2_route = simd::american_put_boundary_batch(
+      b.S.data(), b.K.data(), b.T.data(), b.sigma.data(), b.r.data(), b.q.data(), avx2_price.data(),
+      n, simd::SimdIsa::ForceAvx2);
+  EXPECT_EQ(avx2_route, simd::SimdRoute::Avx2);
+  EXPECT_EQ(simd::simd_isa_override(), simd::SimdIsa::Auto);
+}
+
+TEST(AmericanBoundaryBatch, PerCallAutoUsesShipGateWithoutMutatingGlobalOverride) {
+  IsaGuard g;
+  simd::set_simd_isa_override(simd::SimdIsa::ForceAvx2);
+  const Book b = make_book();
+  constexpr std::size_t n = 1;
+  ASSERT_GE(b.size(), n);
+  std::vector<double> price(n);
+
+  const simd::SimdRoute route = simd::american_put_boundary_batch(
+      b.S.data(), b.K.data(), b.T.data(), b.sigma.data(), b.r.data(), b.q.data(), price.data(), n,
+      simd::SimdIsa::Auto);
+
+  EXPECT_EQ(route, simd::SimdRoute::Scalar);
+  EXPECT_EQ(simd::simd_isa_override(), simd::SimdIsa::ForceAvx2);
+}
+
+TEST(AmericanBoundaryBatch, ForceAvx2IsCapabilityGuarded) {
+  const Book b = make_book();
+  constexpr std::size_t n = 1;
+  std::vector<double> price(n);
+
+  const simd::SimdRoute route = simd::american_put_boundary_batch(
+      b.S.data(), b.K.data(), b.T.data(), b.sigma.data(), b.r.data(), b.q.data(), price.data(), n,
+      simd::SimdIsa::ForceAvx2);
+
+  EXPECT_EQ(route, simd::have_avx2() ? simd::SimdRoute::Avx2 : simd::SimdRoute::Scalar);
+}
+
+TEST(AmericanBoundaryBatch, LegacyOverloadStillUsesProcessOverride) {
+  if (!simd::have_avx2()) {
+    GTEST_SKIP() << "no AVX2 on this host";
+  }
+  IsaGuard g;
+  const Book b = make_book();
+  constexpr std::size_t n = 30;
+  ASSERT_GE(b.size(), n);
+  std::vector<double> price(n);
+
+  simd::set_simd_isa_override(simd::SimdIsa::ForceScalar);
+  EXPECT_EQ(simd::american_put_boundary_batch(b.S.data(), b.K.data(), b.T.data(), b.sigma.data(),
+                                              b.r.data(), b.q.data(), price.data(), n),
+            simd::SimdRoute::Scalar);
+
+  simd::set_simd_isa_override(simd::SimdIsa::ForceAvx2);
+  EXPECT_EQ(simd::american_put_boundary_batch(b.S.data(), b.K.data(), b.T.data(), b.sigma.data(),
+                                              b.r.data(), b.q.data(), price.data(), n),
+            simd::SimdRoute::Avx2);
+}
+
+TEST(AmericanBoundaryBatch, ConcurrentPerCallIsaSelectionsRetainOwnRoutes) {
+  if (!simd::have_avx2()) {
+    GTEST_SKIP() << "no AVX2 on this host";
+  }
+  IsaGuard g;
+  simd::set_simd_isa_override(simd::SimdIsa::Auto);
+  const Book b = make_book();
+  constexpr std::size_t n = 30;
+  constexpr std::size_t kIterations = 64;
+  ASSERT_GE(b.size(), n);
+  std::vector<double> scalar_price(n);
+  std::vector<double> avx2_price(n);
+  std::barrier<> rendezvous{2};
+  std::atomic<bool> scalar_wrong_route{false};
+  std::atomic<bool> avx2_wrong_route{false};
+
+  {
+    std::jthread scalar_thread([&] {
+      for (std::size_t iteration = 0; iteration < kIterations; ++iteration) {
+        rendezvous.arrive_and_wait();
+        const simd::SimdRoute route = simd::american_put_boundary_batch(
+            b.S.data(), b.K.data(), b.T.data(), b.sigma.data(), b.r.data(), b.q.data(),
+            scalar_price.data(), n, simd::SimdIsa::ForceScalar);
+        if (route != simd::SimdRoute::Scalar) {
+          scalar_wrong_route.store(true);
+        }
+        rendezvous.arrive_and_wait();
+      }
+    });
+    std::jthread avx2_thread([&] {
+      for (std::size_t iteration = 0; iteration < kIterations; ++iteration) {
+        rendezvous.arrive_and_wait();
+        const simd::SimdRoute route = simd::american_put_boundary_batch(
+            b.S.data(), b.K.data(), b.T.data(), b.sigma.data(), b.r.data(), b.q.data(),
+            avx2_price.data(), n, simd::SimdIsa::ForceAvx2);
+        if (route != simd::SimdRoute::Avx2) {
+          avx2_wrong_route.store(true);
+        }
+        rendezvous.arrive_and_wait();
+      }
+    });
+  }
+
+  EXPECT_FALSE(scalar_wrong_route.load());
+  EXPECT_FALSE(avx2_wrong_route.load());
+  EXPECT_EQ(simd::simd_isa_override(), simd::SimdIsa::Auto);
+}
+
 // ── ForceScalar: bit-identical to per-contract andersen_lake ──────────────
 TEST(AmericanPriceBatch, MatchesScalarBitIdentical) {
   IsaGuard g;
@@ -112,6 +240,24 @@ TEST(AmericanPriceBatch, MatchesScalarBitIdentical) {
   }
   // Every lane ran scalar -> the batch inherits T13's scalar default.
   EXPECT_EQ(out.scalar_fallback_rate(), 1.0);
+}
+
+TEST(AmericanPriceBatch, DefaultKernelReportsZeroAvx2Lanes) {
+  IsaGuard g;
+  simd::set_simd_isa_override(simd::SimdIsa::ForceAvx2);
+  const Book b = make_book();
+  PricingKernel kernel;
+  ASSERT_EQ(kernel.isa, simd::SimdIsa::Auto);
+  PricingWorkspace ws;
+  PriceBatchOutput out;
+
+  ASSERT_TRUE(american_price_batch(b.view(), out, kernel, ws).has_value());
+  ASSERT_EQ(out.size(), b.size());
+  for (std::size_t i = 0; i < out.size(); ++i) {
+    EXPECT_EQ(out.route[i], simd::SimdRoute::Scalar) << "i=" << i;
+  }
+  EXPECT_EQ(out.scalar_fallback_rate(), 1.0);
+  EXPECT_EQ(simd::simd_isa_override(), simd::SimdIsa::ForceAvx2);
 }
 
 // ── ForceAvx2: Scalar lanes bit-exact, Avx2 lanes within T13's stress gate ─

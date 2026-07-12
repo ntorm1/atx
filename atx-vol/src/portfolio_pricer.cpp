@@ -4,9 +4,11 @@
 #include "atx/vol/portfolio_pricer.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <exception>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -58,9 +60,62 @@ struct ContractKeyHash {
                      static_cast<std::uint8_t>(c.side)};
 }
 
+// A never-reused process-local identity for exact O(1) workspace invalidation.
+// The compare/exchange refuses to wrap: exhausting 2^64-1 logical books is a
+// process-fatal invariant breach, never an excuse to reintroduce an ABA window.
+[[nodiscard]] std::uint64_t allocate_logical_book_id() noexcept {
+  static std::atomic<std::uint64_t> next{1};
+  std::uint64_t candidate = next.load();
+  for (;;) {
+    if (candidate == std::numeric_limits<std::uint64_t>::max()) {
+      std::terminate();
+    }
+    if (next.compare_exchange_weak(candidate, candidate + 1)) {
+      return candidate;
+    }
+  }
+}
+
 } // namespace
 
 // ── Portfolio ─────────────────────────────────────────────────────────────
+
+Portfolio::Portfolio() noexcept : logical_id_(allocate_logical_book_id()) {}
+
+Portfolio::Portfolio(const Portfolio &other)
+    : positions_(other.positions_), contracts_(other.contracts_),
+      pos_contract_ix_(other.pos_contract_ix_), first_position_ix_(other.first_position_ix_),
+      uids_(other.uids_), logical_id_(allocate_logical_book_id()), revision_(0) {}
+
+Portfolio::Portfolio(Portfolio &&other) noexcept
+    : positions_(std::move(other.positions_)), contracts_(std::move(other.contracts_)),
+      pos_contract_ix_(std::move(other.pos_contract_ix_)),
+      first_position_ix_(std::move(other.first_position_ix_)), uids_(std::move(other.uids_)),
+      logical_id_(std::exchange(other.logical_id_, allocate_logical_book_id())),
+      revision_(std::exchange(other.revision_, 0)) {}
+
+Portfolio &Portfolio::operator=(const Portfolio &other) {
+  if (this == &other) {
+    return *this;
+  }
+  Portfolio copy(other);
+  *this = std::move(copy);
+  return *this;
+}
+
+Portfolio &Portfolio::operator=(Portfolio &&other) noexcept {
+  if (this == &other) {
+    return *this;
+  }
+  positions_ = std::move(other.positions_);
+  contracts_ = std::move(other.contracts_);
+  pos_contract_ix_ = std::move(other.pos_contract_ix_);
+  first_position_ix_ = std::move(other.first_position_ix_);
+  uids_ = std::move(other.uids_);
+  logical_id_ = std::exchange(other.logical_id_, allocate_logical_book_id());
+  revision_ = std::exchange(other.revision_, 0);
+  return *this;
+}
 
 Result<Portfolio> Portfolio::create(std::span<const Position> positions,
                                     const PortfolioBuildOptions &options) {
@@ -85,6 +140,7 @@ Result<Portfolio> Portfolio::create(std::span<const Position> positions,
     auto [it, inserted] = seen.try_emplace(key, static_cast<std::uint32_t>(pf.contracts_.size()));
     if (inserted) {
       pf.contracts_.push_back(c);
+      pf.first_position_ix_.push_back(i);
     }
     pf.pos_contract_ix_[i] = it->second;
   }
@@ -104,29 +160,46 @@ Status Portfolio::retime(std::span<const double> position_T) {
   if (position_T.size() != positions_.size()) {
     return Err(ErrorCode::InvalidArgument, "Portfolio::retime: tenor count mismatch");
   }
+
+  // Phase 1: validate every position against its contract's retained first
+  // position, without touching portfolio state or allocating scratch.
+  for (std::size_t i = 0; i < positions_.size(); ++i) {
+    const std::size_t contract_index = pos_contract_ix_[i];
+    const std::size_t first_position = first_position_ix_[contract_index];
+    if (std::bit_cast<std::uint64_t>(position_T[first_position]) !=
+        std::bit_cast<std::uint64_t>(position_T[i])) {
+      return Err(ErrorCode::InvalidArgument,
+                 "Portfolio::retime: deduplicated positions have different tenors");
+    }
+  }
+
+  bool changed = false;
   for (std::size_t contract_index = 0; contract_index < contracts_.size(); ++contract_index) {
-    bool found = false;
-    double tenor = 0.0;
-    for (std::size_t i = 0; i < positions_.size(); ++i) {
-      if (pos_contract_ix_[i] != contract_index) {
-        continue;
-      }
-      if (!found) {
-        tenor = position_T[i];
-        found = true;
-      } else if (std::bit_cast<std::uint64_t>(tenor) !=
-                 std::bit_cast<std::uint64_t>(position_T[i])) {
-        return Err(ErrorCode::InvalidArgument,
-                   "Portfolio::retime: deduplicated positions have different tenors");
-      }
+    const double next_tenor = position_T[first_position_ix_[contract_index]];
+    if (std::bit_cast<std::uint64_t>(contracts_[contract_index].T) !=
+        std::bit_cast<std::uint64_t>(next_tenor)) {
+      changed = true;
+      break;
     }
-    if (found) {
-      contracts_[contract_index].T = tenor;
-    }
+  }
+  if (!changed) {
+    return Status{};
+  }
+
+  if (revision_ == std::numeric_limits<std::uint64_t>::max()) {
+    return Err(ErrorCode::Internal, "Portfolio::retime: logical-book revision exhausted");
+  }
+
+  // Phase 2: commit. Assigning doubles cannot fail, so after all validation and
+  // revision-capacity checks above, every write and the final revision bump are
+  // one strong-guarantee transaction from the caller's perspective.
+  for (std::size_t contract_index = 0; contract_index < contracts_.size(); ++contract_index) {
+    contracts_[contract_index].T = position_T[first_position_ix_[contract_index]];
   }
   for (std::size_t i = 0; i < positions_.size(); ++i) {
     positions_[i].contract.T = position_T[i];
   }
+  ++revision_;
   return Status{};
 }
 
@@ -373,35 +446,11 @@ void reduce_price_totals(std::span<const Position> positions, const Portfolio &p
   }
 }
 
-// A cheap, allocation-free O(1) fingerprint of a book's first unique
-// contract's exact bits (uid, K, T, side) -- one input to the
-// PortfolioWorkspace ABA guard (see the contract doc on PortfolioWorkspace in
-// the header). This is NOT a full content hash: it narrows, but does not
-// close, the "same address, same unique-contract count, different
-// middle-of-book content" reuse window. The real contract remains one
-// PortfolioWorkspace per live book.
-[[nodiscard]] std::uint64_t book_fingerprint(const Portfolio &pf) noexcept {
-  const std::span<const OptionContract> contracts = pf.contracts();
-  if (contracts.empty()) {
-    return 0;
-  }
-  const OptionContract &c = contracts.front();
-  std::uint64_t h = static_cast<std::uint64_t>(c.uid);
-  h = h * 1099511628211ULL ^ std::bit_cast<std::uint64_t>(c.K);
-  h = h * 1099511628211ULL ^ std::bit_cast<std::uint64_t>(c.T);
-  h = h * 1099511628211ULL ^ static_cast<std::uint64_t>(c.side);
-  return h;
-}
-
-// (Re)build the retained PreparedPortfolio only when the book identity
-// changes: the owning Portfolio's address, its unique-contract count
-// (pf.n_contracts()), AND the first-unique-contract fingerprint above must all
-// match what the cache already holds -- closing the pointer-identity-only ABA
-// hazard where a PortfolioPricer reconstructed at the same address as a prior
-// one (e.g. a loop rebuilding a local PortfolioPricer per book) could
-// otherwise reuse a stale, wrongly-sized substrate and drive solve_uniques()
-// out of bounds (or silently mis-price if the stale unique count happened to
-// be <= the new book's). The Greek route/mask no longer gates a rebuild:
+// (Re)build the retained PreparedPortfolio only when the exact logical-book
+// version changes. The process-unique identity closes same-address ABA; the
+// revision detects every successful in-place retime with an O(1), allocation-
+// free comparison. The unique count is retained as a defensive invariant check.
+// The Greek route/mask does not gate a rebuild:
 // PreparedPortfolio's permutation, groups, oci, and aligned K/T/uid columns
 // derive purely from (uid,side,T), so the substrate is byte-identical for
 // Marks and FullGreeks -- only the `route` stamped on each ContractGroup
@@ -410,11 +459,11 @@ void reduce_price_totals(std::span<const Position> positions, const Portfolio &p
 // observable under counters.
 [[nodiscard]] Status ensure_prepared(const Portfolio &pf, bool want_greeks, bool analytic,
                                      std::optional<PreparedPortfolio> &prepared,
-                                     const Portfolio *&prepared_book,
-                                     std::uint64_t &prepared_fingerprint) {
-  const std::uint64_t fp = book_fingerprint(pf);
-  if (prepared.has_value() && prepared_book == &pf && prepared->n_unique() == pf.n_contracts() &&
-      prepared_fingerprint == fp) {
+                                     std::uint64_t logical_id, std::uint64_t revision,
+                                     std::uint64_t &prepared_logical_id,
+                                     std::uint64_t &prepared_revision) {
+  if (prepared.has_value() && prepared_logical_id == logical_id && prepared_revision == revision &&
+      prepared->n_unique() == pf.n_contracts()) {
     return atx::core::Ok();
   }
   PriceOptions build_opts;
@@ -426,8 +475,8 @@ void reduce_price_totals(std::span<const Position> positions, const Portfolio &p
   }
   ATX_VOL_COUNT(PreparedBuilds);
   prepared.emplace(std::move(*pp));
-  prepared_book = &pf;
-  prepared_fingerprint = fp;
+  prepared_logical_id = logical_id;
+  prepared_revision = revision;
   return atx::core::Ok();
 }
 
@@ -451,8 +500,8 @@ struct PortfolioWorkspace::Impl {
   std::vector<double> pnl_junk;              // throwaway span for the batch's unused output
   std::vector<Status> pnl_junk_status;       // throwaway status span
   std::optional<PreparedPortfolio> prepared; // retained across snapshots (built once)
-  const Portfolio *prepared_book{nullptr};   // book identity the substrate is for
-  std::uint64_t prepared_fingerprint{0};     // ABA guard: see book_fingerprint()
+  std::uint64_t prepared_logical_id{0};      // exact book identity the substrate is for
+  std::uint64_t prepared_revision{0};        // exact retime revision the substrate is for
 };
 
 PortfolioWorkspace::PortfolioWorkspace() : impl_(std::make_unique<Impl>()) {}
@@ -510,8 +559,8 @@ Status PortfolioPricer::price_into(const SurfaceSet &surfaces, PriceFieldMask fi
 
   PortfolioWorkspace::Impl &w = *ws.impl_;
   const bool analytic = want_greeks ? opts.analytic_greeks : false;
-  if (Status s = ensure_prepared(pf_, want_greeks, analytic, w.prepared, w.prepared_book,
-                                 w.prepared_fingerprint);
+  if (Status s = ensure_prepared(pf_, want_greeks, analytic, w.prepared, pf_.logical_id_,
+                                 pf_.revision_, w.prepared_logical_id, w.prepared_revision);
       !s.has_value()) {
     return Err(s.error());
   }
@@ -540,8 +589,8 @@ Result<PriceTotals> PortfolioPricer::price_totals(const SurfaceSet &surfaces, Pr
 
   PortfolioWorkspace::Impl &w = *ws.impl_;
   const bool analytic = want_greeks ? opts.analytic_greeks : false;
-  if (Status s = ensure_prepared(pf_, want_greeks, analytic, w.prepared, w.prepared_book,
-                                 w.prepared_fingerprint);
+  if (Status s = ensure_prepared(pf_, want_greeks, analytic, w.prepared, pf_.logical_id_,
+                                 pf_.revision_, w.prepared_logical_id, w.prepared_revision);
       !s.has_value()) {
     return Err(s.error());
   }
@@ -883,7 +932,8 @@ Status PortfolioPricer::pnl_explain_into(const SurfaceSet &base, const SurfaceSe
   // identical for Marks/FullGreeks (derived from (uid,side,T) only), so it is shared
   // with the price path — a warm price_into build is reused here and vice versa.
   if (Status s = ensure_prepared(pf_, /*want_greeks=*/true, opts.analytic_greeks, w.prepared,
-                                 w.prepared_book, w.prepared_fingerprint);
+                                 pf_.logical_id_, pf_.revision_, w.prepared_logical_id,
+                                 w.prepared_revision);
       !s.has_value()) {
     return Err(s.error());
   }
@@ -910,7 +960,8 @@ Result<PnlTotals> PortfolioPricer::pnl_totals(const SurfaceSet &base, const Surf
 
   PortfolioWorkspace::Impl &w = *ws.impl_;
   if (Status s = ensure_prepared(pf_, /*want_greeks=*/true, opts.analytic_greeks, w.prepared,
-                                 w.prepared_book, w.prepared_fingerprint);
+                                 pf_.logical_id_, pf_.revision_, w.prepared_logical_id,
+                                 w.prepared_revision);
       !s.has_value()) {
     return Err(s.error());
   }
