@@ -481,7 +481,21 @@ Status PricedSurface::evaluate_batch(std::span<const double> K, std::span<const 
             .status = out.status.subspan(begin, run_size),
             .pack_dispatch = {},
         };
-        return american_price_batch_resolved(request);
+        const Status batch = american_price_batch_resolved(request);
+        if (!batch.has_value()) {
+          return batch;
+        }
+        // Mirror the scalar reference path (evaluate_resolved): an american_price
+        // failure poisons iv = NaN. The batch pre-filled out.iv[e] = p.sigma for
+        // every valid resolution; on lanes the pricer rejected (status Err, price
+        // NaN) the scalar route overwrites iv with NaN, so poison here to keep the
+        // iv column bit-identical to the per-contract evaluate.
+        for (std::size_t e = begin; e < end; ++e) {
+          if (!out.status[e].has_value()) {
+            out.iv[e] = kNaN;
+          }
+        }
+        return Ok();
       };
 
       std::size_t valid_begin = i;

@@ -667,6 +667,44 @@ TEST(PricedSurface, PriceOnlyResolvedBatchPreservesMethodPresetAndLaneErrors) {
   }
 }
 
+// Regression (C-I1): in the price-only resolved batch a lane whose resolution
+// SUCCEEDS (iv pre-filled = sigma) but whose american_price FAILS must poison
+// iv = NaN, exactly as the scalar evaluate does. A negative-carry Put is the
+// q < r <= 0 double-continuation regime american_price rejects (NotImplemented),
+// so its resolution is valid yet unpriceable. Before the fix the batch left the
+// iv column at the pre-filled sigma while the scalar reference wrote NaN.
+TEST(PricedSurface, PriceOnlyResolvedBatchPoisonsIvWhenValidResolutionFailsToPrice) {
+  const PricedSurface s =
+      make_essvi(2, 6, AmericanMethod::AndersenLake, al_fast_opts(), -0.01, -0.05);
+  // K in {96,100,104} Put are valid resolutions the pricer rejects; they share a
+  // bit-identical T so they ride one dispatch run. The trailing K=-3 is a
+  // resolution failure handled by the scalar patch. Every iv/price/status column
+  // must be bit-identical to the per-contract evaluate.
+  const std::vector<double> Ks{96.0, 100.0, 104.0, -3.0};
+  const std::vector<double> Ts(Ks.size(), 0.29);
+  const std::vector<Side> sides(Ks.size(), Side::Put);
+  std::vector<double> iv(Ks.size()), price(Ks.size());
+  std::vector<Status> status(Ks.size());
+  ASSERT_TRUE(s.evaluate_batch(Ks, Ts, sides, EF::Iv | EF::Price, false,
+                               PricedSurface::EvaluationSoA{iv, price, {}, status, {}, {}})
+                  .has_value());
+  bool saw_valid_resolution_price_failure = false;
+  for (std::size_t i = 0; i < Ks.size(); ++i) {
+    const auto expected = s.evaluate(Ks[i], Ts[i], sides[i], EF::Iv | EF::Price, false);
+    EXPECT_EQ(status[i].has_value(), expected.status.has_value()) << i;
+    EXPECT_TRUE(bits_equal(iv[i], expected.iv)) << i;      // includes the NaN poison
+    EXPECT_TRUE(bits_equal(price[i], expected.price)) << i;
+    if (!expected.status.has_value()) {
+      EXPECT_EQ(status[i].error().code(), expected.status.error().code()) << i;
+      if (status[i].error().code() == ErrorCode::NotImplemented) {
+        saw_valid_resolution_price_failure = true;
+      }
+    }
+  }
+  // Prove the poisoned-iv path (valid resolution, pricer rejects) was exercised.
+  EXPECT_TRUE(saw_valid_resolution_price_failure);
+}
+
 TEST(PricedSurface, EvaluateDedicatedDeltaAndVegaMatchScalarReferencesExactly) {
   const PricedSurface surfs[] = {make_essvi_varycarry(1), make_convex(3, 6, 40),
                                   make_essvi(4, 6, AmericanMethod::Baw)};
