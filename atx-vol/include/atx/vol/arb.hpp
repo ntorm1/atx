@@ -142,8 +142,9 @@ arb_check_butterfly(const IVolCurve &curve, double k_min, double k_max,
 // each ConvexDense slice's OWN call_price(K) directly (most commonly
 // exercised by the wing extrapolation on a one-sided, all-ITM or all-OTM,
 // board — oracle finding M-7) and records a violation wherever it sits
-// outside [discounted intrinsic, discounted forward] by more than a
-// tolerance well above the fitting QP's own node-level price_epsilon margin.
+// outside [discounted intrinsic, discounted forward] by more than a bare
+// FP-roundoff tolerance (far below the fitting QP's node-level price_epsilon
+// margin, which honest fits clear by orders of magnitude).
 // Non-ConvexDense slices contribute nothing (their w-space checks above are
 // sufficient). No-op (empty) for an empty surface, n_grid == 0, or
 // k_max <= k_min.

@@ -219,10 +219,12 @@ Result<std::vector<ArbViolation>> arb_check_price_bounds(const CurveSurface &s,
   if (slices.empty() || n_grid == 0 || !(k_max > k_min)) {
     return Ok(std::move(out));
   }
-  // Well above the fitting QP's own node-level price_epsilon margin
-  // (1e-6*max(1,df*F), dense_slice.cpp) so this flags a GENUINE bound
-  // breach (e.g. the wing power-tail undershoot of M-7), not routine
-  // QP/root-solver roundoff at the boundary.
+  // Far BELOW the fitting QP's node-level price_epsilon margin
+  // (1e-6*max(1,df*F) ~ 1e-4 at F=100, dense_slice.cpp): a fit whose nodes
+  // honor that margin clears this tolerance by orders of magnitude, so any
+  // trip is a GENUINE breach past the bound itself (e.g. the wing power-tail
+  // undershoot of M-7) — while 1e-9 still absorbs bare FP roundoff exactly
+  // on the boundary.
   constexpr double kPriceBoundSelfCheckTol = 1.0e-9;
   const double dk = (k_max - k_min) / static_cast<double>(n_grid);
   for (const auto &slice_ptr : slices) {

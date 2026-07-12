@@ -1,7 +1,9 @@
 #include "atx/vol/pricer_fitter.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <future>
 #include <limits>
 #include <span>
@@ -54,17 +56,16 @@ std::span<const VolCurveKind> fallback_curve_rungs(VolCurveKind primary) noexcep
 [[nodiscard]] RiskSurfaceValidationConfig
 risk_validation_config(FitQualityMode quality_mode) noexcept;
 
-namespace {
-
 // Non-geometric failure context carried by the session diagnostics: carry
 // confidence, inversion certification, and expiry-coverage gaps (carry-gate
 // skips + audit-starved slices). Merged into the oracle digest by BOTH fit()'s
 // candidate validation and refit_risk_slice, so a successful incremental
 // publish cannot launder a fit-time Degraded reason into clean Healthy while
-// the expiry is still missing from the served surface (§5.2).
-void merge_session_failure_context(const VolaSession &candidate,
+// the expiry is still missing from the served surface (§5.2). Namespace-scope
+// (declared in pricer_fitter.hpp) so the seam → admission contract is
+// directly testable; strictly OR-only / additive-only either way.
+void merge_session_failure_context(const SessionDiagnostics &diagnostics,
                                    ValidationDigest &digest) noexcept {
-  const SessionDiagnostics &diagnostics = candidate.diagnostics();
   if (!diagnostics.carry_confident) {
     digest.failures |= ValidationFailure::InsufficientData;
   }
@@ -85,13 +86,18 @@ void merge_session_failure_context(const VolaSession &candidate,
     // a served ConvexDense call_price() the fit clamped into range before
     // forming w. This self-report (arb_check_price_bounds over the session's
     // own served surface) is the one exception, exactly like CarryGap: it
-    // may only ADD PriceBounds, never clear a failure the geometric oracle
-    // already found.
+    // may only ADD PriceBounds — and ADD the clamp count into the digest's
+    // violation tally (saturating; never decremented) so a clamp-triggered
+    // rejection reports how many samples breached, not a bare bit — never
+    // clear anything the geometric oracle already found.
     digest.failures |= ValidationFailure::PriceBounds;
+    const std::uint64_t merged =
+        static_cast<std::uint64_t>(digest.n_price_bound_violations) +
+        static_cast<std::uint64_t>(diagnostics.n_price_bound_violations);
+    digest.n_price_bound_violations = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+        merged, std::numeric_limits<std::uint32_t>::max()));
   }
 }
-
-} // namespace
 
 std::optional<std::size_t> ChainValuation::row_of(OptionId id) const {
   for (std::size_t i = 0; i < ids.size(); ++i) {
@@ -458,7 +464,7 @@ Status PricerFitter::fit(const OptionChain &chain) {
     } else {
       result.failures = ValidationFailure::InvalidDomain;
     }
-    merge_session_failure_context(candidate, result);
+    merge_session_failure_context(candidate.diagnostics(), result);
     finalize_validation_digest(result, validation_config);
     return result;
   };
@@ -720,7 +726,7 @@ Result<FitDiag> PricerFitter::refit_risk_slice(const OptionChain &chain,
   // the candidate's non-geometric failure context (identical seam to fit()) so
   // a still-gapped surface re-admits as Degraded+CarryGap, never as a clean
   // Healthy with the expiry silently missing (§5.2).
-  merge_session_failure_context(candidate, digest);
+  merge_session_failure_context(candidate.diagnostics(), digest);
   finalize_validation_digest(digest, validation_config);
   const AdmissionDecision admission = decide_risk_surface_admission(
       digest, quality_mode, candidate_generation_, prior_generation,

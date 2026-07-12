@@ -100,6 +100,22 @@ struct ChainValuation {
 // inspectable, not just observable after a failure.
 [[nodiscard]] std::span<const VolCurveKind> fallback_curve_rungs(VolCurveKind primary) noexcept;
 
+// ── Independent-failure merge seam ──────────────────────────────────────────
+//
+// Merge a candidate session's non-geometric failure context — carry
+// confidence, inversion certification, expiry-coverage gaps (CarryGap), and
+// the ConvexDense served-price bound self-check (PriceBounds, oracle I-2) —
+// into the independent oracle's geometric digest. Strictly fail-closed:
+// OR-only on the failure bits and additive-only on the counts; it can never
+// clear a failure the geometric validator already found. Used by BOTH
+// PricerFitter::fit()'s candidate validation and refit_risk_slice, so a
+// successful incremental publish cannot launder a fit-time Degraded reason
+// into clean Healthy (§5.2). Exposed so the seam → admission contract is
+// directly testable without engineering a board that defeats the fail-closed
+// QP (call `finalize_validation_digest` afterwards to re-stamp the id).
+void merge_session_failure_context(const SessionDiagnostics &diagnostics,
+                                   ValidationDigest &digest) noexcept;
+
 // ── Fit policy ──────────────────────────────────────────────────────────────
 //
 // Thin bundle over the session's fit knobs plus the evaluation thread count.

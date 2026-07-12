@@ -10,6 +10,7 @@
 #include "atx/vol/chain.hpp"
 #include "atx/vol/panel.hpp"
 #include "atx/vol/pricer_fitter.hpp"
+#include "atx/vol/risk_surface_validation.hpp"
 #include "atx/vol/session.hpp"
 #include "atx/vol/spy_fixture.hpp"
 #include "atx/vol/types.hpp"
@@ -447,6 +448,72 @@ TEST_F(PricerFitterTest, RefitKeepsCarryGapDegradedWhileExpiryStillMissing) {
   EXPECT_TRUE(after.risk_health.serving_candidate());
   EXPECT_EQ(after.risk->session().diagnostics().n_carry_skipped_expiries,
             std::size_t{1});
+}
+
+// rfx Task 3 review follow-up (oracle I-2): the ConvexDense served-price
+// bound self-check must actually reach admission — a session whose
+// diagnostics carry n_price_bound_violations > 0 is rejected with
+// PriceBounds through the SAME merge seam as CarryGap. Drives the exported
+// seam (merge_session_failure_context) with directly-constructed
+// diagnostics because the 3c fail-closed QP makes a real board that FITS a
+// sub-intrinsic node unconstructible — which is exactly why the seam is the
+// production path for this failure class (the clamp count is computed by
+// arb_check_price_bounds over the served surface at build/refit time).
+TEST(RiskSurfaceAdmission, PriceBoundClampCountRejectsCandidateWithPriceBounds) {
+  using atx::vol::AdmissionDecision;
+  using atx::vol::decide_risk_surface_admission;
+  using atx::vol::finalize_validation_digest;
+  using atx::vol::FitQualityMode;
+  using atx::vol::has_validation_failure;
+  using atx::vol::merge_session_failure_context;
+  using atx::vol::SessionDiagnostics;
+  using atx::vol::SurfaceFallback;
+  using atx::vol::SurfaceState;
+  using atx::vol::ValidationDigest;
+  using atx::vol::ValidationFailure;
+
+  // A candidate the geometric oracle found clean, from a session whose only
+  // defect is two served-price clamp events.
+  SessionDiagnostics diagnostics;
+  diagnostics.carry_confident = true;      // isolate the price-bound path:
+  diagnostics.inversion_certified = true;  // no other non-geometric failure
+  diagnostics.n_price_bound_violations = 2;
+
+  ValidationDigest digest;  // geometrically clean (failures == None)
+  ASSERT_TRUE(digest.admitted());
+  merge_session_failure_context(diagnostics, digest);
+  finalize_validation_digest(digest);
+
+  EXPECT_TRUE(has_validation_failure(digest.failures, ValidationFailure::PriceBounds));
+  // Review finding 3: the merge reports the clamp COUNT, not a bare bit.
+  EXPECT_EQ(digest.n_price_bound_violations, 2u);
+
+  const AdmissionDecision decision = decide_risk_surface_admission(
+      digest, FitQualityMode::Balanced, 42, 41, SurfaceFallback::LastKnownGood);
+  EXPECT_FALSE(decision.publish_candidate);
+  EXPECT_TRUE(has_validation_failure(decision.health.reasons,
+                                     ValidationFailure::PriceBounds));
+  EXPECT_TRUE(decision.health.using_fallback());
+  EXPECT_EQ(decision.health.state, SurfaceState::Degraded);
+
+  // OR-only / additive-only: merging over a digest that already carries a
+  // geometric failure and a non-zero count must clear neither.
+  ValidationDigest dirty;
+  dirty.failures = ValidationFailure::Butterfly;
+  dirty.n_price_bound_violations = 3;
+  merge_session_failure_context(diagnostics, dirty);
+  EXPECT_TRUE(has_validation_failure(dirty.failures, ValidationFailure::Butterfly));
+  EXPECT_TRUE(has_validation_failure(dirty.failures, ValidationFailure::PriceBounds));
+  EXPECT_EQ(dirty.n_price_bound_violations, 5u);
+
+  // A clean session leaves a clean digest untouched (no false positive).
+  SessionDiagnostics clean;
+  clean.carry_confident = true;
+  clean.inversion_certified = true;
+  ValidationDigest untouched;
+  merge_session_failure_context(clean, untouched);
+  EXPECT_TRUE(untouched.admitted());
+  EXPECT_EQ(untouched.n_price_bound_violations, 0u);
 }
 
 TEST(LinearVarianceCurve, InterpolatesTotalVarianceAndClampsWings) {
