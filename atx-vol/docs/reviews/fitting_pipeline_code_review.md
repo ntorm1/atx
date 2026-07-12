@@ -88,7 +88,7 @@ Confidence is **High** when the behavior follows directly from reachable code or
 
 ## Findings
 
-### F-01 — P1 — Canonical eSSVI bypasses the shared observation policy and parallel prepass
+### F-01  P1  Canonical eSSVI bypasses the shared observation policy and parallel prepass
 
 **Type:** confirmed configuration/correctness inconsistency and performance defect  
 **Confidence:** High
@@ -103,7 +103,7 @@ The eSSVI path instead calls private `build_aligned_obs`, which checks only a po
 
 **Tests:** parameterized all-family test proving the same accepted `(expiry,K,side)` keys under identical `CalibOpts`; inject each kill flag and filter boundary; prove `max_obs_per_slice`, anchor, method, and shortcut behavior for eSSVI; bit-identity across `fit_workers`; parity-off must not alter the surface for eSSVI.
 
-### F-02 — P1 — Partial fits are admitted as success and prevent the fallback ladder
+### F-02  P1  Partial fits are admitted as success and prevent the fallback ladder
 
 **Type:** confirmed admission defect  
 **Confidence:** High
@@ -116,7 +116,7 @@ Both surface drivers silently `continue` on forward, observation, or per-slice f
 
 **Tests:** force selected expiries to fail de-Am and optimization; verify primary rejection, fallback activation, and reason codes; verify one-slice success is rejected for a multi-expiry board; test required front/30d/90d buckets.
 
-### F-03 — P1 — OOS curve selection is not population-comparable and ignores configured de-Am policy
+### F-03  P1  OOS curve selection is not population-comparable and ignores configured de-Am policy
 
 **Type:** confirmed algorithm/configuration defect  
 **Confidence:** High
@@ -131,7 +131,7 @@ Candidates that fail a slice simply skip it. `CandidateScore` records `n_slices/
 
 **Tests:** candidate A fits one expiry while B fits all; B must win or A must be inadmissible. Verify selection changes neither prepared rows nor chosen family when the same configured BAW/AL method is passed through. Add missing standalone selector tests (current selector coverage is mostly real-SPY integration).
 
-### F-04 — P1 — Dense active-set QP silently returns a non-optimal iterate on iteration exhaustion
+### F-04  P1  Dense active-set QP silently returns a non-optimal iterate on iteration exhaustion
 
 **Type:** confirmed optimizer contract defect  
 **Confidence:** High
@@ -144,7 +144,7 @@ Candidates that fail a slice simply skip it. `CandidateScore` records `n_slices/
 
 **Tests:** `max_iter=0/1` must fail unless convergence is proven; construct a known constrained QP and assert KKT tolerances; assert `n_active > 0` on a binding fixture; fuzz extreme weights/spreads and compare to a trusted convex-QP oracle.
 
-### F-05 — P1 — Incremental refit is stranded and can corrupt American/calendar consistency
+### F-05  P1  Incremental refit is stranded and can corrupt American/calendar consistency
 
 **Type:** confirmed unwired feature plus correctness defect  
 **Confidence:** High
@@ -157,39 +157,9 @@ For direct `VolaSession` users, the docs tell callers to build `new_obs` using `
 
 **Remediation:** add `PricerFitter::refit_expiry(const OptionChain&, expiry/id)` that internally rebuilds canonical configured European observations, warm-starts the family-specific state, repairs/validates both adjacent calendar relationships, re-scores affected diagnostics, and commits transactionally only after admission. Generalize beyond eSSVI or clearly restrict by curve kind. Keep a last-known-good surface.
 
-**Tests:** American known-truth cold-full-fit versus incremental-refit equivalence; upward middle-slice move must not cross the next expiry; failure leaves surface and all diagnostics bit-identical; `PricerFitter` quote update changes model IV after refit; parity and quote counters refresh.
+**Tests:** American known-truth cold-full-fit versus incremental-refit equivalence; upward middle-slice move must not cross the next expiry; failure leaves surface and all diagnostics bit-identical; `PricerFitter` quote update changes model IV after refit; parity and quote counters ref1195 tokens truncatedtly mark-only or pass the requested risk band; generic SVI/C8 with a constructed crossing must repair or reject; dense extrapolation must respect intrinsic/upper bounds and remain invertible.
 
-### F-06 — P1 — Corpus fit parallelism is accidentally nested; worker exceptions can terminate
-
-**Type:** confirmed performance/reliability defect  
-**Confidence:** High
-
-Corpus construction says each board fits single-threaded and sets `cfg.n_threads = 1` ([`src/corpus.cpp:527`](../../src/corpus.cpp#L527)). `PricerConfig::n_threads` controls only `value_chain`, not fitting ([`include/atx/vol/pricer_fitter.hpp:138`](../../include/atx/vol/pricer_fitter.hpp#L138)); `PricerFitter::fit` never maps it to `SurfaceParityInputs::fit_workers`. Generic fits therefore use `fit_workers=0` and fan each board across all auto workers while the corpus simultaneously fans across boards.
-
-The generic prepass uses `parallel_for_dynamic` ([`src/curve_fit.cpp:151`](../../src/curve_fit.cpp#L151)). Its thread body does not catch exceptions ([`include/atx/vol/parallel_for.hpp:125`](../../include/atx/vol/parallel_for.hpp#L125)); an allocation exception from observation vectors escaping a `std::jthread` invokes `std::terminate`, bypassing the corpus-level `try/catch` ([`src/corpus.cpp:517`](../../src/corpus.cpp#L517), [`src/corpus.cpp:587`](../../src/corpus.cpp#L587)). The alternate eSSVI calibrator already catches worker exceptions, demonstrating the intended pattern ([`src/essvi_calib.cpp:1188`](../../src/essvi_calib.cpp#L1188)).
-
-**Impact:** CPU oversubscription, tail-latency instability, and excess memory on multi-board builds; rare allocation failures become process death rather than a failed fit.
-
-**Remediation:** add an explicit `fit_workers` to `PricerConfig` and propagate it. Use a shared executor/budget so board-level and expiry-level parallelism cannot multiply. Make `parallel_for*` capture worker exceptions and rethrow/report on the caller thread, or require `noexcept` lambdas that record slot errors. Corpus should choose one parallel dimension from board count and expiry cost.
-
-**Tests:** instrument maximum concurrent tasks for 20 boards and assert it never exceeds the budget; force an exception in a worker and verify a returned error; benchmark board/expiry hybrid scheduling with p50/p95 and peak memory.
-
-### F-07 — P1 — “No-arb” and Robust guarantees are not uniform across served curve families
-
-**Type:** confirmed contract gap; market impact is configuration-dependent  
-**Confidence:** High mechanism / Medium occurrence
-
-For generic fits, the previous-slice callback is applied only to ConvexDense and LinearVariance. eSSVI/SVI explicitly ignore it in `fit_slice_curve`; C8 also has no calendar floor ([`src/vol_curve.cpp:199`](../../src/vol_curve.cpp#L199), [`src/vol_curve.cpp:207`](../../src/vol_curve.cpp#L207), [`src/vol_curve.cpp:282`](../../src/vol_curve.cpp#L282)). `fit_curve_surface` does not apply `CalendarRepair`; it only passes the local previous-slice callback ([`src/curve_fit.cpp:282`](../../src/curve_fit.cpp#L282)). Thus a generic SVI/C8 surface selected under a repair-oriented configuration is checked but not repaired. `VolaSession` merely records the calendar result ([`src/session.cpp:357`](../../src/session.cpp#L357)).
-
-LinearVariance is direct interpolation of total variance with flat wings ([`src/vol_curve.cpp:81`](../../src/vol_curve.cpp#L81)); it imposes no strike convexity. The Hft preset disables calendar floor and repair ([`src/session.cpp:240`](../../src/session.cpp#L240)). Dense QP enforces positivity/monotonicity/convexity of node call prices, but the lower slope bound is optional and off by default, and its wing extrapolation clamps call price flat ([`include/atx/vol/dense_slice.hpp:69`](../../include/atx/vol/dense_slice.hpp#L69), [`src/dense_slice.cpp:145`](../../src/dense_slice.cpp#L145)). That is butterfly-convex on the node domain, not a full global call-price boundary guarantee.
-
-**Impact:** `calendar_arb_free=false` is possible on a successfully served “Robust”/Hft surface; arbitrary-strike risk queries can return NaN outside the fitted dense domain; Hft marks are unsuitable as a risk surface without separate admission. Existing real-SPY dense test deliberately accepts two residual calendar crossings ([`tests/curve_noarb_test.cpp:60`](../../tests/curve_noarb_test.cpp#L60)).
-
-**Remediation:** define consumer-specific surface contracts: mark, quote, and risk. Enforce price bounds, monotone slopes, convexity, calendar monotonicity, finite-domain coverage, and forward-variance bounds over an independent common grid before publishing a risk surface. Add a family-agnostic joint calendar projection or reject/fallback SVI/C8/LinearVariance when the risk contract fails. Add principled wing boundary nodes/asymptotics to ConvexDense.
-
-**Tests:** all families through the same independent invariant oracle; Hft must be explicitly mark-only or pass the requested risk band; generic SVI/C8 with a constructed crossing must repair or reject; dense extrapolation must respect intrinsic/upper bounds and remain invertible.
-
-### F-08 — P2 — Profile and calibration configuration contains material inert or misrepresented fields
+### F-08  P2  Profile and calibration configuration contains material inert or misrepresented fields
 
 **Type:** confirmed dormant configuration  
 **Confidence:** High
@@ -206,20 +176,20 @@ Several `CalibOpts` are serialized/configurable but have no fitter read in curre
 
 **Tests:** toggle every public/persisted field and assert an observable plan/result change or an explicit `NotImplemented/InvalidArgument`; integration test DB config through corpus fit; profile filter rejection counts by reason.
 
-### F-09 — P2 — Failure diagnostics are lossy and sometimes internally misleading
+### F-09  P2  Failure diagnostics are lossy and sometimes internally misleading
 
 **Type:** confirmed diagnostics gap  
 **Confidence:** High
 
 Per-slice errors are discarded by `continue` in both drivers (F-02). Generic parity failures become zero reports, and when parity is disabled the same zero sentinel is used ([`src/curve_fit.cpp:313`](../../src/curve_fit.cpp#L313)). Generic dense parity hardcodes `n_curve_params=3`, even for 5-, 8-, or many-node curves ([`src/curve_fit.cpp:336`](../../src/curve_fit.cpp#L336)); reduced chi-square is therefore not comparable across families. The session diagnostic averages only scored reports, but exposes no scored-slice count or rejection breakdown ([`src/session.cpp:370`](../../src/session.cpp#L370)). C8 can silently return its eSSVI seed with `bumps_active=false` while the selected kind remains C8 ([`src/vol_curve.cpp:315`](../../src/vol_curve.cpp#L315)). Correction-cache build failures also silently fall back, although that is primarily in the pricing review.
 
-**Impact:** operators cannot distinguish “diagnostic intentionally off,” “parity failed,” “slice failed,” “C8 reverted,” and a genuine zero metric. Cross-family chi-square can guide the wrong decision.
+**Impact:** operators cannot distinguish diagnostic intentionally off, parity failed, slice failed, C8 reverted, and a genuine zero metric. Cross-family chi-square can guide the wrong decision.
 
 **Remediation:** use explicit status enums/optionals, actual `slice->dof()`, per-stage counts/timings/reasons, and surface health/admission state. Record primary and fallback per-slice outcomes and whether shortcuts/caches/seeds were used.
 
 **Tests:** parity failure versus disabled status; correct DoF for all families; C8 seed-revert flag; serialized diagnostics round-trip.
 
-### F-10 — P2 — The fitting benchmark baseline is stale and does not benchmark the canonical facade
+### F-10  P2  The fitting benchmark baseline is stale and does not benchmark the canonical facade
 
 **Type:** confirmed performance-gating gap  
 **Confidence:** High
@@ -232,20 +202,20 @@ The current benchmark registers surface de-Am cold/cached, slice cold/warm, SVI 
 
 **Tests/gates:** baseline manifest equals registered benchmark names (allow explicit ungated annotation); clean-tree benchmark provenance includes commit/config/ISA; accuracy/admission gate must pass before a latency row is accepted.
 
-### F-11 — P2 — Dense Interval loss has an unbounded dense-matrix complexity cliff
+### F-11  P2  Dense Interval loss has an unbounded dense-matrix complexity cliff
 
 **Type:** confirmed data-structure/algorithm risk  
 **Confidence:** High mechanism / Medium operational reach
 
 Mid loss keeps the QP at `N <= node_cap`, but Interval loss expands the variable count to `N + 2M` and materializes dense Hessian/constraint matrices ([`src/dense_slice.cpp:416`](../../src/dense_slice.cpp#L416), [`src/dense_slice.cpp:434`](../../src/dense_slice.cpp#L434), [`src/dense_slice.cpp:479`](../../src/dense_slice.cpp#L479)). Active-set iterations then build and solve dense KKT systems ([`src/dense_slice.cpp:65`](../../src/dense_slice.cpp#L65)). `M` is the surviving observation count and can be large when `max_obs_per_slice=0`.
 
-**Impact:** enabling Interval on a dense index can change memory from node-cap bounded to O(M²) and repeated solve work toward O(M³), creating latency and allocation cliffs. This option is public even though parametric `CalibOpts::loss_kind` is inert and dense uses a separate field.
+**Impact:** enabling Interval on a dense index can change memory from node-cap bounded to O(M) and repeated solve work toward O(M), creating latency and allocation cliffs. This option is public even though parametric `CalibOpts::loss_kind` is inert and dense uses a separate field.
 
 **Remediation:** formulate interval loss with a bound-constrained/separable hinge objective evaluated without 2M explicit slack variables, or use a sparse QP solver and a hard observation budget. Reuse a per-worker QP workspace and exploit banded interpolation/third-difference structure. Make complexity limits part of config validation.
 
 **Tests/benchmarks:** 50/500/5,000-row scaling, peak resident memory, interval-vs-reference solution parity, and explicit rejection above configured workspace capacity.
 
-### F-12 — P3 — Several hot loops and containers can be made cheaper after correctness unification
+### F-12  P3  Several hot loops and containers can be made cheaper after correctness unification
 
 **Type:** improvement ideas  
 **Confidence:** Medium
@@ -342,3 +312,4 @@ This table supersedes stale statements in planning documents; status is based on
 ## Bottom line
 
 Current HEAD has moved several previously planned C0/C1/C2 items into real code: eSSVI SIMD, surface warm priors in the low-level driver, expiry parallelism, generic de-Am acceleration, direct LinearVariance, C8 serving, and a first-class fitting benchmark target all exist. The key remaining problem is integration quality. Features land in different drivers, while the public facade suggests one coherent policy. The next sprint should not add another curve or optimizer first; it should unify preparation, admission, incremental state, scheduling, and telemetry so every family is selected, fit, validated, and published under the same explicit contract.
+

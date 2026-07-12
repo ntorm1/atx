@@ -50,47 +50,78 @@ namespace atx::vol::counters {
 // counters append before Count_ so existing indices are stable.
 enum class Counter : unsigned {
   // Andersen-Lake boundary kernel
-  BoundarySolves = 0,     // cold boundary seeds (al_seed_boundary from a fresh solve)
-  JacobiNewtonSweeps,     // damped Jacobi-Newton boundary sweeps
-  FixedPointSweeps,       // naive fixed-point boundary sweeps
-  EarlyResidualExits,     // sweeps short-circuited by the residual < tol test
-  PremiumQuadEvals,       // early-exercise premium quadrature node evaluations
-  NormCdfCalls,           // norm_cdf calls inside the boundary/premium kernel
-  LogCalls,               // std::log calls inside the boundary/premium kernel
-  ExpCalls,               // std::exp calls inside the boundary/premium kernel
-  ScalarFallbackLanes,    // scalar (non-SIMD) fallback lanes (0 today; P3 will fill)
+  BoundarySolves = 0,  // cold boundary seeds (al_seed_boundary from a fresh solve)
+  JacobiNewtonSweeps,  // damped Jacobi-Newton boundary sweeps
+  FixedPointSweeps,    // naive fixed-point boundary sweeps
+  EarlyResidualExits,  // sweeps short-circuited by the residual < tol test
+  PremiumQuadEvals,    // early-exercise premium quadrature node evaluations
+  NormCdfCalls,        // norm_cdf calls inside the boundary/premium kernel
+  LogCalls,            // std::log calls inside the boundary/premium kernel
+  ExpCalls,            // std::exp calls inside the boundary/premium kernel
+  ScalarFallbackLanes, // scalar (non-SIMD) fallback lanes (0 today; P3 will fill)
   // Correction cache (hot-path American price)
-  CacheHits,              // american_price_cached served from a populated cache
-  CacheOutOfBoxClamps,    // cache query clamped to a box edge
-  CacheColdFallbacks,     // cached path fell back to the cold ALO solve
+  CacheHits,           // american_price_cached served from a populated cache
+  CacheOutOfBoxClamps, // cache query clamped to a box edge
+  CacheColdFallbacks,  // cached path fell back to the cold ALO solve
   // Portfolio pricer
-  FrameAllocations,       // output-frame column vector allocations
-  FrameBytes,             // output-frame bytes touched
-  WorkerLaunches,         // pricing-pool worker threads ACTUALLY CREATED (P1.4: once,
-                          // at the pool's first use; 0 on every steady-state reprice —
-                          // repurposed from the old per-call nt-1 jthread launch count)
+  FrameAllocations, // output-frame column vector allocations
+  FrameBytes,       // output-frame bytes touched
+  WorkerLaunches,   // pricing-pool worker threads ACTUALLY CREATED (P1.4: once,
+                    // at the pool's first use; 0 on every steady-state reprice —
+                    // repurposed from the old per-call nt-1 jthread launch count)
   // Correction cache 3D Chebyshev kernel (appended last so all prior indices are
   // stable, per the "append before Count_" rule above)
-  ClenshawSweeps,         // 3D Clenshaw sweeps (one per cheb_clenshaw3d[_partial] call)
+  ClenshawSweeps, // 3D Clenshaw sweeps (one per cheb_clenshaw3d[_partial] call)
   // Portfolio pricer — retained-substrate accounting
-  PreparedBuilds,         // PreparedPortfolio::create calls from the pricer (0 on a warm reuse)
+  PreparedBuilds, // PreparedPortfolio::create calls from the pricer (0 on a warm reuse)
   // Pricing executor (P1.4) — persistent pool dispatch accounting
-  PoolDispatches,         // times run_blocks/run_ranges woke the pool (0 on the inline path)
+  PoolDispatches,            // times run_blocks/run_ranges woke the pool (0 on the inline path)
+  ResolvedPriceWrapperCalls, // exact wrapper entries reached from PricedSurface
+  ResolvedPriceWrapperLanes, // lanes submitted to those wrapper entries
+  AmericanAvxPackDispatches, // complete packs actually dispatched to AVX2
+  // Lower bound within this wrapper only: excludes opaque AVX internal patches
+  // and scalar American calls made elsewhere in the library.
+  AmericanWrapperKnownScalarLanes,
+  // Actual PricedSurface routes after full-bundle dominance, not mask requests.
+  SurfaceScalarPriceRoutes, // evaluate_resolved only; resolved batch counted separately
+  SurfaceDeltaRoutes,
+  SurfaceVegaRoutes,
+  SurfaceFullGreekRoutes,
   // Correction cache derivative-coefficient transform (T16b)
-  ChebDiffCoefs,          // cheb_diff_coefs calls (build-time C_k precompute + query-time T/sigma partials)
+  ChebDiffCoefs, // cheb_diff_coefs calls (build-time C_k precompute + query-time T/sigma partials)
   Count_
 };
 
 inline constexpr unsigned kCount = static_cast<unsigned>(Counter::Count_);
 
 // Stable machine-readable names (used as the benchmark JSON counter keys).
-inline constexpr const char* kNames[kCount] = {
-    "cnt_boundary_solves",     "cnt_jacobi_newton_sweeps", "cnt_fixed_point_sweeps",
-    "cnt_early_residual_exits", "cnt_premium_quad_evals",   "cnt_norm_cdf_calls",
-    "cnt_log_calls",           "cnt_exp_calls",            "cnt_scalar_fallback_lanes",
-    "cnt_cache_hits",          "cnt_cache_oob_clamps",     "cnt_cache_cold_fallbacks",
-    "cnt_frame_allocations",   "cnt_frame_bytes",          "cnt_worker_launches",
-    "cnt_clenshaw_sweeps",     "cnt_prepared_builds",      "cnt_pool_dispatches",
+inline constexpr const char *kNames[kCount] = {
+    "cnt_boundary_solves",
+    "cnt_jacobi_newton_sweeps",
+    "cnt_fixed_point_sweeps",
+    "cnt_early_residual_exits",
+    "cnt_premium_quad_evals",
+    "cnt_norm_cdf_calls",
+    "cnt_log_calls",
+    "cnt_exp_calls",
+    "cnt_scalar_fallback_lanes",
+    "cnt_cache_hits",
+    "cnt_cache_oob_clamps",
+    "cnt_cache_cold_fallbacks",
+    "cnt_frame_allocations",
+    "cnt_frame_bytes",
+    "cnt_worker_launches",
+    "cnt_clenshaw_sweeps",
+    "cnt_prepared_builds",
+    "cnt_pool_dispatches",
+    "cnt_resolved_price_wrapper_calls",
+    "cnt_resolved_price_wrapper_lanes",
+    "cnt_american_avx_pack_dispatches",
+    "cnt_american_wrapper_known_scalar_lanes",
+    "cnt_surface_scalar_price_routes",
+    "cnt_surface_delta_routes",
+    "cnt_surface_vega_routes",
+    "cnt_surface_full_greek_routes",
     "cnt_cheb_diff_coefs",
 };
 
@@ -121,7 +152,7 @@ namespace detail {
 // one shared instance across all TUs. Relaxed atomics — the counts are a diagnostic
 // aggregate, not an ordering primitive.
 inline std::array<std::atomic<std::uint64_t>, kCount> g_counters{};
-}  // namespace detail
+} // namespace detail
 
 inline void add(Counter c, std::uint64_t n = 1) noexcept {
   detail::g_counters[static_cast<unsigned>(c)].fetch_add(n, std::memory_order_relaxed);
@@ -143,13 +174,11 @@ inline void reset() noexcept {
 }
 
 // += 1 / += n. Non-empty statements so `if (x) ATX_VOL_COUNT(y);` parses.
-#define ATX_VOL_COUNT(counter) \
-  ::atx::vol::counters::add(::atx::vol::counters::Counter::counter)
-#define ATX_VOL_COUNT_N(counter, n) \
-  ::atx::vol::counters::add(::atx::vol::counters::Counter::counter, \
-                            static_cast<std::uint64_t>(n))
+#define ATX_VOL_COUNT(counter) ::atx::vol::counters::add(::atx::vol::counters::Counter::counter)
+#define ATX_VOL_COUNT_N(counter, n)                                                                \
+  ::atx::vol::counters::add(::atx::vol::counters::Counter::counter, static_cast<std::uint64_t>(n))
 
-#else  // !ATX_VOL_COUNTERS — the default. Zero footprint.
+#else // !ATX_VOL_COUNTERS — the default. Zero footprint.
 
 // Disabled sentinel: enabled == false, all zero. No global state referenced.
 [[nodiscard]] inline Snapshot snapshot() noexcept { return Snapshot{}; }
@@ -164,6 +193,6 @@ inline void reset() noexcept {}
 #define ATX_VOL_COUNT(counter) ((void)0)
 #define ATX_VOL_COUNT_N(counter, n) ((void)0)
 
-#endif  // ATX_VOL_COUNTERS
+#endif // ATX_VOL_COUNTERS
 
-}  // namespace atx::vol::counters
+} // namespace atx::vol::counters

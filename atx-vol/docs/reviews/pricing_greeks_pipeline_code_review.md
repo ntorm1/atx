@@ -8,7 +8,7 @@
 
 The numerical core is unusually well tested and explicit about conventions. Black-76 formulas, American exercise-regime routing, cold-vs-analytic Greek parity, deterministic portfolio reductions, prepared-book grouping, persistent worker execution, and caller-owned output views are all substantive strengths.
 
-The principal issue is that the end-to-end portfolio hot path stops short of the new batch kernels. `PreparedPortfolio` and `PricedSurface::evaluate_batch` are live, but the latter still loops over contracts and calls scalar `american_price` or scalar `american_greeks_fd`/`american_greeks_al`. The standalone `american_price_batch`, `american_greeks_batch`, Black-76 AVX2 SoA kernels, sigma-slice boundary interpolation, and implicit-differentiation Greeks are not used by `PortfolioPricer`. Moreover, the American boundary AVX2 route deliberately defaults to scalar. This makes several “SoA/SIMD” structures staging infrastructure rather than a vectorized production hot path.
+The principal issue is that the end-to-end portfolio hot path stops short of the new batch kernels. `PreparedPortfolio` and `PricedSurface::evaluate_batch` are live, but the latter still loops over contracts and calls scalar `american_price` or scalar `american_greeks_fd`/`american_greeks_al`. The standalone `american_price_batch`, `american_greeks_batch`, Black-76 AVX2 SoA kernels, sigma-slice boundary interpolation, and implicit-differentiation Greeks are not used by `PortfolioPricer`. Moreover, the American boundary AVX2 route deliberately defaults to scalar. This makes several SoA/SIMD structures staging infrastructure rather than a vectorized production hot path.
 
 Two correctness defects should be fixed before further throughput work:
 
@@ -71,7 +71,7 @@ Evidence: [`src/portfolio_pricer.cpp:211`](../../src/portfolio_pricer.cpp#L211),
 
 ## Findings
 
-### P1 — Confirmed defect — warmed portfolio workspaces can silently price stale maturities after `retime`
+### P1  Confirmed defect  warmed portfolio workspaces can silently price stale maturities after `retime`
 
 **Confidence:** High  
 **Area:** Correctness, lifecycle, data structures
@@ -82,11 +82,11 @@ The source documents the residual ABA hazard, but it is not merely a destruction
 
 **Impact:** Silent wrong PV and Greeks after a partial tenor roll; group order and equal-T carry reuse may also be wrong. This affects all reusable-workspace APIs.
 
-**Remediation:** Give `Portfolio` a monotonically increasing structural/version counter, increment it only after a successful mutation, store the version in `PortfolioWorkspace`, and rebuild on mismatch. A full exact content hash is also acceptable but costs O(U) each call; an explicit version is O(1) and exact. If `Portfolio` is intended immutable while a workspace exists, remove public mutation or make `PortfolioPricer::retime` explicitly invalidate all registered workspaces—which is harder with caller-owned workspaces.
+**Remediation:** Give `Portfolio` a monotonically increasing structural/version counter, increment it only after a successful mutation, store the version in `PortfolioWorkspace`, and rebuild on mismatch. A full exact content hash is also acceptable but costs O(U) each call; an explicit version is O(1) and exact. If `Portfolio` is intended immutable while a workspace exists, remove public mutation or make `PortfolioPricer::retime` explicitly invalidate all registered workspaceswhich is harder with caller-owned workspaces.
 
 **Tests:** Warm a workspace on a three-contract book; retime only contracts 2/3 while contract 1 is bit-identical; compare every price/Greek/status and totals field against a fresh workspace. Repeat for `price_into`, `price_totals`, `pnl_explain_into`, and changed T ordering that moves a contract between equal-T runs.
 
-### P1 — Confirmed defect — `Portfolio::retime` can partially mutate before returning an error
+### P1  Confirmed defect  `Portfolio::retime` can partially mutate before returning an error
 
 **Confidence:** High  
 **Area:** Correctness, error handling
@@ -99,7 +99,7 @@ The source documents the residual ABA hazard, but it is not merely a destruction
 
 **Tests:** Use at least two deduplicated contracts. Supply consistent tenors for the first and inconsistent tenors for duplicate positions of the second. Assert the error and byte-identical portfolio state before/after.
 
-### P1 — Confirmed concurrency defect — American batch per-call ISA selection races through process-global state
+### P1  Confirmed concurrency defect  American batch per-call ISA selection races through process-global state
 
 **Confidence:** High  
 **Area:** Correctness, concurrency
@@ -112,33 +112,33 @@ The source documents the residual ABA hazard, but it is not merely a destruction
 
 **Tests:** A barrier-controlled two-thread test repeatedly overlaps ForceScalar and ForceAvx2 calls and asserts each returned route. Run the scalar side under a non-AVX2 CI configuration. A TSAN test alone will not catch this logical race.
 
-### P1 — Confirmed integration/performance gap — prepared SoA does not reach a batch American solver
+### P1  Confirmed integration/performance gap  prepared SoA does not reach a batch American solver
 
 **Confidence:** High  
 **Area:** Performance, hot-path wiring
 
 `solve_uniques` calls `PricedSurface::evaluate_batch`, but that function only hoists carry resolution for equal-T runs. Its inner loop invokes `evaluate_resolved` once per lane, and that invokes scalar American price/Greek functions. No production call site connects `PortfolioPricer` to `american_price_batch`, `american_greeks_batch`, or `simd::black76_greeks_batch_soa`. Searches found those APIs used by their tests (and Python uses the older scalar span wrapper), not by the portfolio engine. Evidence: [`src/portfolio_pricer.cpp:246`](../../src/portfolio_pricer.cpp#L246), [`src/priced_surface.cpp:325`](../../src/priced_surface.cpp#L325), [`src/priced_surface.cpp:346`](../../src/priced_surface.cpp#L346), [`src/priced_surface.cpp:269`](../../src/priced_surface.cpp#L269), [`src/simd/greeks_batch.cpp:48`](../../src/simd/greeks_batch.cpp#L48).
 
-Even the standalone American price batch defaults to scalar because `kShipAvx2Boundary` is false after measuring only ~1.6–1.7x for the isolated boundary kernel. Evidence: [`src/simd/american_boundary_batch.cpp:30`](../../src/simd/american_boundary_batch.cpp#L30), [`src/simd/american_boundary_batch.cpp:53`](../../src/simd/american_boundary_batch.cpp#L53), [`include/atx/vol/american_batch.hpp:113`](../../include/atx/vol/american_batch.hpp#L113).
+Even the standalone American price batch defaults to scalar because `kShipAvx2Boundary` is false after measuring only ~1.61.7x for the isolated boundary kernel. Evidence: [`src/simd/american_boundary_batch.cpp:30`](../../src/simd/american_boundary_batch.cpp#L30), [`src/simd/american_boundary_batch.cpp:53`](../../src/simd/american_boundary_batch.cpp#L53), [`include/atx/vol/american_batch.hpp:113`](../../include/atx/vol/american_batch.hpp#L113).
 
 **Impact:** The live portfolio price-only path still performs one cold scalar American solve per unique contract. Full Greeks default to seven boundary states per unique contract through finite differences. Aligned columns and groups currently yield bracket/carry reuse and parallel scheduling, but not lane-vectorized price or Greek computation.
 
-**Remediation:** Do not directly splice the existing batch API into the hot path yet: it lacks per-surface `AmericanMethod` and resolved `AlOpts`. First define a non-owning resolved batch request carrying exact `S,K,T,sigma,r,q,side,method,opts`, plus per-lane `Status`. Integrate it at the equal-T-run level of `evaluate_batch`, preserve reverse-permutation writes, and gate on full-frame parity and end-to-end throughput—not isolated kernel speed.
+**Remediation:** Do not directly splice the existing batch API into the hot path yet: it lacks per-surface `AmericanMethod` and resolved `AlOpts`. First define a non-owning resolved batch request carrying exact `S,K,T,sigma,r,q,side,method,opts`, plus per-lane `Status`. Integrate it at the equal-T-run level of `evaluate_batch`, preserve reverse-permutation writes, and gate on full-frame parity and end-to-end throughputnot isolated kernel speed.
 
 **Tests/benchmarks:** Compare batch vs current scalar `evaluate_resolved` across methods, AL presets, exercise regimes, surface kinds, calls/puts, invalid lanes, and thread counts. Add portfolio benchmark rows that report route counts and measure the same warmed `price_into`/`price_totals` workloads before/after.
 
-### P2 — Confirmed API mismatch — standalone American batches cannot reproduce `PricedSurface`
+### P2  Confirmed API mismatch  standalone American batches cannot reproduce `PricedSurface`
 
 **Confidence:** High  
 **Area:** Correctness risk, feature wiring
 
-`PricedSurface` forwards its resolved `AmericanMethod` and `AlOpts` to scalar pricing and Greeks. `PricingKernel` contains only ISA, analytic-Greek selection, and an optional executor. `american_price_batch` calls `andersen_lake` with default options and has no BAW route; `american_greeks_batch` likewise calls default-option FD/analytic functions. Thus wiring it naïvely would change prices for archived/live surfaces configured with a non-default AL preset or BAW. Evidence: [`src/priced_surface.cpp:174`](../../src/priced_surface.cpp#L174), [`src/priced_surface.cpp:270`](../../src/priced_surface.cpp#L270), [`include/atx/vol/american_batch.hpp:109`](../../include/atx/vol/american_batch.hpp#L109), [`src/american_batch.cpp:113`](../../src/american_batch.cpp#L113), [`src/american_batch.cpp:160`](../../src/american_batch.cpp#L160).
+`PricedSurface` forwards its resolved `AmericanMethod` and `AlOpts` to scalar pricing and Greeks. `PricingKernel` contains only ISA, analytic-Greek selection, and an optional executor. `american_price_batch` calls `andersen_lake` with default options and has no BAW route; `american_greeks_batch` likewise calls default-option FD/analytic functions. Thus wiring it navely would change prices for archived/live surfaces configured with a non-default AL preset or BAW. Evidence: [`src/priced_surface.cpp:174`](../../src/priced_surface.cpp#L174), [`src/priced_surface.cpp:270`](../../src/priced_surface.cpp#L270), [`include/atx/vol/american_batch.hpp:109`](../../include/atx/vol/american_batch.hpp#L109), [`src/american_batch.cpp:113`](../../src/american_batch.cpp#L113), [`src/american_batch.cpp:160`](../../src/american_batch.cpp#L160).
 
 **Impact:** This is likely why the attractive-looking batch API remains dormant. Treat it as a standalone experimental interface, not a drop-in production replacement.
 
 **Remediation/tests:** Fold this into the resolved-batch request above. Add explicit tests with fast/default/custom `AlOpts` and BAW showing scalar/batch equality.
 
-### P2 — Confirmed performance issue — full-Greek portfolio output is still AoS internally and computes all fields
+### P2  Confirmed performance issue  full-Greek portfolio output is still AoS internally and computes all fields
 
 **Confidence:** High  
 **Area:** Data structures, performance
@@ -151,7 +151,7 @@ Even the standalone American price batch defaults to scalar because `kShipAvx2Bo
 
 **Tests:** Poison unrequested output spans and assert they are untouched; verify selected fields bit-match the corresponding full bundle; benchmark delta-only, vega-only, first-order, and full second-order books.
 
-### P2 — Confirmed algorithmic issue — legacy `aggregate_greeks` bucket construction is O(number of legs × number of buckets)
+### P2  Confirmed algorithmic issue  legacy `aggregate_greeks` bucket construction is O(number of legs  number of buckets)
 
 **Confidence:** High  
 **Area:** Data structures and algorithms
@@ -164,7 +164,7 @@ The legacy portfolio Greeks API linearly scans the growing output vector for eve
 
 **Tests:** Adversarial many-bucket scaling benchmark; parity for every `AggMode`; explicit convention tests contrasting raw qty vs dollar multiplier and European vs American results.
 
-### P2 — Confirmed observability gap — per-lane model failures are collapsed into coarse status values
+### P2  Confirmed observability gap  per-lane model failures are collapsed into coarse status values
 
 **Confidence:** High  
 **Area:** Error handling, features
@@ -175,7 +175,7 @@ American batch has only `Ok` and `Unsupported`, intentionally combining invalid 
 
 **Remediation:** Carry a compact per-lane error enum/code through batch and portfolio results, with `PriceStatus` as the coarse compatibility projection. Add counters by route and error code.
 
-### P2 — Feature gap — double-continuation American regimes are explicitly unimplemented
+### P2  Feature gap  double-continuation American regimes are explicitly unimplemented
 
 **Confidence:** High  
 **Area:** Correctness coverage / missing feature
@@ -186,7 +186,7 @@ The single-boundary Andersen-Lake and BAW implementations return `NotImplemented
 
 **Next step:** Implement a two-boundary solver or an approved PDE/tree fallback, then add price/Greek oracle grids around regime transitions. Until then, expose the unsupported reason distinctly.
 
-### P3 — Improvement — fixed finite-difference steps need conditioning policy and error estimates
+### P3  Improvement  fixed finite-difference steps need conditioning policy and error estimates
 
 **Confidence:** Medium  
 **Area:** Numerical accuracy, algorithms
@@ -197,7 +197,7 @@ Default American Greeks use `hS=1e-3*S`, `hv=1e-3` absolute volatility, `hr=1e-4
 
 **Remediation:** Add scale-aware steps, Richardson checks on selected stress lanes, and a per-Greek quality/route diagnostic. Do not silently change pinned production numbers; introduce and gate a versioned scheme.
 
-### P3 — Improvement — `noexcept` SIMD IV fallback can terminate on error-message allocation failure
+### P3  Improvement  `noexcept` SIMD IV fallback can terminate on error-message allocation failure
 
 **Confidence:** Medium  
 **Area:** Error/lifetime robustness
@@ -287,3 +287,4 @@ At review time the relevant dirty files were `atx-vol/CMakeLists.txt`, `include/
 - Route counters prove the production portfolio workload actually reaches the intended batch kernel.
 - End-to-end warmed `price_into(Marks)` and `price_totals(Marks)` improve materially on representative single-name and multi-name books; isolated microkernel gains alone do not satisfy the gate.
 - Partial Greek requests avoid unrequested solves/stores and bit-match the full bundle for requested fields.
+

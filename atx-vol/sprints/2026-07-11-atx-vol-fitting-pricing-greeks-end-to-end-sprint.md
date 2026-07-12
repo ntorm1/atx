@@ -536,3 +536,4 @@ The first mergeable slice should be deliberately narrow and high confidence:
 
 This slice removes three silent-state/concurrency failure modes without changing fit selection or pricing numerics. It creates the safe base for the larger WP4 and WP8 integration branches.
 
+

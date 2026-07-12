@@ -20,6 +20,7 @@ add_executable(atx-vol-tests
     support/cached_artifacts.cpp
     arb_test.cpp
     calib_test.cpp
+    prepared_fitting_test.cpp
     c8_test.cpp
     c8_calib_test.cpp
     essvi_calib_test.cpp
@@ -31,6 +32,7 @@ add_executable(atx-vol-tests
     dense_slice_test.cpp
     profile_test.cpp
     fit_policy_test.cpp
+    curve_selector_test.cpp
     data_test.cpp
     surface_archive_test.cpp
     surface_db_test.cpp

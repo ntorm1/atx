@@ -20,13 +20,14 @@
 // out). Safe to call concurrently on distinct underlyings.
 
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
-#include "atx/vol/parity.hpp"          // ParityReport
-#include "atx/vol/surface_parity.hpp"  // SliceContext, SurfaceParityInputs
-#include "atx/vol/types.hpp"           // Result
-#include "atx/vol/universe.hpp"        // Underlying
-#include "atx/vol/vol_curve.hpp"       // CurveSurface, CurveConfig
+#include "atx/vol/parity.hpp"         // ParityReport
+#include "atx/vol/surface_parity.hpp" // SliceContext, SurfaceParityInputs
+#include "atx/vol/types.hpp"          // Result
+#include "atx/vol/universe.hpp"       // Underlying
+#include "atx/vol/vol_curve.hpp"      // CurveSurface, CurveConfig
 
 namespace atx::vol {
 
@@ -35,10 +36,11 @@ namespace atx::vol {
 // `SurfaceParityReport` so `VolaSession` consumes either interchangeably.
 struct CurveSurfaceReport {
   CurveSurface surface;
-  std::vector<SliceContext> context;     // per fitted slice, ascending T
-  std::vector<ParityReport> per_expiry;  // re-Americanized metrics (‖ context)
+  std::vector<SliceContext> context;    // per fitted slice, ascending T
+  std::vector<ParityReport> per_expiry; // re-Americanized metrics (‖ context)
   double worst_frac_within_bidask{0.0};
   std::size_t n_slices{0};
+  std::uint32_t n_score_inversions{0};
 };
 
 // De-Americanize + fit each expiry chain of `under` into a `CurveSurface` of the
@@ -53,7 +55,7 @@ struct CurveSurfaceReport {
 //
 // @return InvalidArgument if S <= 0 or r non-finite; NotFound if `under` has no
 //         chains or not a single slice fit; any fitter/pricer error propagated.
-[[nodiscard]] Result<CurveSurfaceReport> fit_curve_surface(
-    const Underlying& under, const SurfaceParityInputs& in, const CurveConfig& cfg);
+[[nodiscard]] Result<CurveSurfaceReport>
+fit_curve_surface(const Underlying &under, const SurfaceParityInputs &in, const CurveConfig &cfg);
 
-}  // namespace atx::vol
+} // namespace atx::vol

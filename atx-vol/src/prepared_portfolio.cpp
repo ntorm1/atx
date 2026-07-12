@@ -31,6 +31,7 @@ namespace {
 }  // namespace
 
 Result<PreparedPortfolio> PreparedPortfolio::create(const Portfolio& pf, const PriceOptions& opts) {
+  (void)opts; // Route/method/ISA are call or surface state, never persisted book state.
   const std::span<const OptionContract> contracts = pf.contracts();
   const std::size_t n = contracts.size();
 
@@ -96,7 +97,6 @@ Result<PreparedPortfolio> PreparedPortfolio::create(const Portfolio& pf, const P
   // 3. Partition the permuted order into maximal (uid, side) runs. Contiguous by
   //    construction (step 1 sorted (uid, side) adjacent), so the groups tile
   //    [0, n_unique) with no gap or overlap.
-  const GroupRoute route{opts.analytic_greeks, opts.prices_only};
   std::size_t p = 0;
   while (p < n) {
     const std::uint32_t u = pp.uid_.data()[p];
@@ -106,7 +106,30 @@ Result<PreparedPortfolio> PreparedPortfolio::create(const Portfolio& pf, const P
       ++q;
     }
     pp.groups_.push_back(ContractGroup{u, s, static_cast<std::uint32_t>(p),
-                                       static_cast<std::uint32_t>(q), route});
+                                       static_cast<std::uint32_t>(q), GroupRoute{}});
+
+    // Subdivide each raw-bit-identical expiry run into fixed, AVX-width-aligned
+    // tiles. The immutable book alone determines these boundaries, so changing
+    // worker count cannot move a lane between a complete pack and scalar tail.
+    std::size_t run_begin = p;
+    while (run_begin < q) {
+      const std::uint64_t t_bits = std::bit_cast<std::uint64_t>(pp.t_.data()[run_begin]);
+      std::size_t run_end = run_begin + 1;
+      while (run_end < q &&
+             std::bit_cast<std::uint64_t>(pp.t_.data()[run_end]) == t_bits) {
+        ++run_end;
+      }
+      std::size_t tile_begin = run_begin;
+      while (tile_begin < run_end) {
+        const std::size_t tile_end =
+            std::min(tile_begin + static_cast<std::size_t>(kPreparedPriceTileLanes), run_end);
+        pp.price_tiles_.push_back(
+            PreparedPriceTile{u, s, t_bits, static_cast<std::uint32_t>(tile_begin),
+                              static_cast<std::uint32_t>(tile_end)});
+        tile_begin = tile_end;
+      }
+      run_begin = run_end;
+    }
     p = q;
   }
 

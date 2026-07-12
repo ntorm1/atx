@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -40,6 +41,7 @@ using atx::vol::QuoteFlag;
 using atx::vol::ResidualBasisKind;
 using atx::vol::Side;
 using atx::vol::to_u8;
+using atx::vol::validate_calib_options;
 
 // ── Synthetic-chain fixture ─────────────────────────────────────────────
 
@@ -125,9 +127,36 @@ TEST(BuildObservations, PricedChain_AcceptsPreferredSideWithCorrectFields) {
     // weight_w reproduces the ported w-space formula exactly.
     const double denom_w = 2.0 * o.sigma_mkt * kT;
     const double weight_sigma = (o.vega * o.vega) / (o.spread * o.spread + 1e-18);
-    const double weight_w = weight_sigma / (denom_w * denom_w + 1e-18);
+    const double weight_w =
+        std::min(weight_sigma / (denom_w * denom_w + 1e-18), calib_default_opts().max_weight);
     EXPECT_NEAR(o.weight_w, weight_w, std::fabs(weight_w) * 1e-9 + 1e-9);
     EXPECT_DOUBLE_EQ(o.active_weight_w, o.weight_w);  // seeded equal for IRLS
+  }
+}
+
+TEST(BuildObservations, MaxWeightClipsStoredAndActiveWeights) {
+  const Chain c = make_priced_chain({90.0, 95.0, 100.0, 105.0, 110.0});
+  CalibOpts opts = calib_default_opts();
+  opts.max_weight = 0.25;
+
+  const auto result = build_observations(c, kF, kT, kDf, opts);
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  ASSERT_FALSE(result->obs.empty());
+  for (const FitObs& observation : result->obs) {
+    EXPECT_DOUBLE_EQ(observation.weight_w, opts.max_weight);
+    EXPECT_DOUBLE_EQ(observation.active_weight_w, observation.weight_w);
+  }
+}
+
+TEST(BuildObservations, RejectsNonPositiveOrNonFiniteMaxWeight) {
+  const Chain c = make_priced_chain({90.0, 95.0, 100.0, 105.0, 110.0});
+  for (const double invalid : {0.0, -1.0, std::numeric_limits<double>::infinity(),
+                               std::numeric_limits<double>::quiet_NaN()}) {
+    CalibOpts opts = calib_default_opts();
+    opts.max_weight = invalid;
+    const auto result = build_observations(c, kF, kT, kDf, opts);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
   }
 }
 
@@ -329,6 +358,70 @@ TEST(CalibOpts, DefaultOpts_MatchCLibraryValues) {
   EXPECT_EQ(o.min_obs_per_slice, 4u);
   EXPECT_DOUBLE_EQ(o.max_post_fit_sigma, 2.0);
   EXPECT_DOUBLE_EQ(o.max_spread_to_mid_pct, 0.60);  // impl = 0.60 (comment's "0.40" is stale)
+}
+
+TEST(CalibOpts, ValidationRejectsPersistedPoliciesThatAreNotImplemented) {
+  std::vector<CalibOpts> unsupported;
+
+  CalibOpts interval = calib_default_opts();
+  interval.loss_kind = CalibLossKind::Interval;
+  unsupported.push_back(interval);
+  CalibOpts shared_rho = calib_default_opts();
+  shared_rho.essvi_rho_mode = EssviRhoMode::Shared;
+  unsupported.push_back(shared_rho);
+  CalibOpts asymmetric = calib_default_opts();
+  asymmetric.essvi_asymmetric_rho = true;
+  unsupported.push_back(asymmetric);
+  CalibOpts fallback = calib_default_opts();
+  fallback.essvi_fallback_rmse_threshold = 0.02;
+  unsupported.push_back(fallback);
+  CalibOpts butterfly = calib_default_opts();
+  butterfly.n_butterfly_grid = 128u;
+  unsupported.push_back(butterfly);
+  for (const ResidualBasisKind basis : {ResidualBasisKind::Chebyshev,
+                                        ResidualBasisKind::WingBspline,
+                                        ResidualBasisKind::Fengler}) {
+    CalibOpts residual = calib_default_opts();
+    residual.residual_basis_kind = basis;
+    unsupported.push_back(residual);
+  }
+
+  ASSERT_TRUE(validate_calib_options(calib_default_opts()).has_value());
+  for (const CalibOpts& opts : unsupported) {
+    const auto status = validate_calib_options(opts);
+    ASSERT_FALSE(status.has_value());
+    EXPECT_EQ(status.error().code(), ErrorCode::NotImplemented);
+  }
+}
+
+TEST(CalibOpts, ValidationAcceptsEveryImplementedResidualIdentity) {
+  // None is the disabled-layer identity: valid while the residual layer is off
+  // (the default). Enabling it with a None basis is a no-op, tested separately.
+  {
+    CalibOpts opts = calib_default_opts(); // residual_disable == true, None basis
+    EXPECT_TRUE(validate_calib_options(opts).has_value());
+  }
+  // HingeQuad and C2Bspline are the implemented enabled bases.
+  for (const ResidualBasisKind basis :
+       {ResidualBasisKind::HingeQuad, ResidualBasisKind::C2Bspline}) {
+    CalibOpts opts = calib_default_opts();
+    opts.residual_disable = false;
+    opts.residual_basis_kind = basis;
+    EXPECT_TRUE(validate_calib_options(opts).has_value());
+  }
+}
+
+TEST(CalibOpts, ValidationRejectsEnabledResidualWithNoneBasis) {
+  // "No persisted no-op": a config that enables the residual layer yet leaves the
+  // basis None fits nothing and must be rejected as a contradiction. The disabled
+  // default (also None basis) stays valid — the guard keys on residual_disable.
+  CalibOpts noop = calib_default_opts();
+  noop.residual_disable = false; // basis stays None
+  const auto status = validate_calib_options(noop);
+  ASSERT_FALSE(status.has_value());
+  EXPECT_EQ(status.error().code(), ErrorCode::InvalidArgument);
+
+  EXPECT_TRUE(validate_calib_options(calib_default_opts()).has_value());
 }
 
 }  // namespace

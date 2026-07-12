@@ -1,11 +1,14 @@
 #include "atx/vol/american_batch.hpp"
 
 #include "atx/vol/american.hpp"          // andersen_lake, american_greeks_fd/al, classify_regime
+#include "atx/vol/counters.hpp"          // exact resolved-route diagnostics
 #include "atx/vol/pricing_executor.hpp"  // PricingExecutor
 #include "atx/vol/simd/american_boundary_batch.hpp"
 #include "atx/vol/simd/cpu.hpp"
 
+#include <array>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 
 namespace atx::vol {
@@ -17,19 +20,24 @@ namespace {
 
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
-// RAII: apply a SIMD ISA override for the scope, restore on exit. This is how a
-// PricingKernel "wraps the T13 seam": simd::american_put_boundary_batch consults
-// the process-global override, so we set it around the pack dispatch.
-struct IsaScope {
-  simd::SimdIsa saved;
-  explicit IsaScope(simd::SimdIsa want) noexcept
-      : saved(simd::simd_isa_override()) {
-    simd::set_simd_isa_override(want);
+template <class Input, class Output>
+[[nodiscard]] bool spans_overlap(std::span<Input> input,
+                                 std::span<Output> output) noexcept {
+  if (input.empty() || output.empty()) {
+    return false;
   }
-  ~IsaScope() { simd::set_simd_isa_override(saved); }
-  IsaScope(const IsaScope&) = delete;
-  IsaScope& operator=(const IsaScope&) = delete;
-};
+  // SAFETY: repository toolchains preserve object addresses in uintptr_t.
+  // Integer interval comparison avoids undefined relational comparison between
+  // pointers into unrelated arrays.
+  const std::uintptr_t input_begin =
+      reinterpret_cast<std::uintptr_t>(input.data());
+  const std::uintptr_t output_begin =
+      reinterpret_cast<std::uintptr_t>(output.data());
+  if (input_begin <= output_begin) {
+    return (output_begin - input_begin) < input.size_bytes();
+  }
+  return (input_begin - output_begin) < output.size_bytes();
+}
 
 // Mirror andersen_lake_core's degenerate + regime classification EXACTLY so the
 // batch's "kernel vs scalar-patch" split is bit-consistent with a per-contract
@@ -79,9 +87,6 @@ Status american_price_batch(const AmericanBatchInput& in, PriceBatchOutput& out,
     return Ok();
   }
 
-  // Apply the requested ISA for the boundary-kernel dispatch (restored on exit).
-  const IsaScope isa(kernel.isa);
-
   ws.reserve_lanes(n);
 
   // Pass 1: classify + compact. Genuine American lanes -> internal-put pack;
@@ -122,7 +127,7 @@ Status american_price_batch(const AmericanBatchInput& in, PriceBatchOutput& out,
   if (m > 0) {
     const simd::SimdRoute pack_route = simd::american_put_boundary_batch(
         ws.ps_S.data(), ws.ps_K.data(), ws.ps_T.data(), ws.ps_sigma.data(),
-        ws.ps_r.data(), ws.ps_q.data(), ws.ps_price.data(), m);
+        ws.ps_r.data(), ws.ps_q.data(), ws.ps_price.data(), m, kernel.isa);
     for (std::size_t j = 0; j < m; ++j) {
       const std::uint32_t i = ws.perm[j];
       const double v = ws.ps_price[j];
@@ -133,6 +138,119 @@ Status american_price_batch(const AmericanBatchInput& in, PriceBatchOutput& out,
     }
   }
 
+  return Ok();
+}
+
+Status american_price_batch_resolved(
+    const ResolvedAmericanPriceBatchRequest& request) {
+  if (!request.consistent()) {
+    return Err(ErrorCode::InvalidArgument,
+               "american_price_batch_resolved: input/output span length mismatch");
+  }
+  const auto overlaps_input = [&](const auto output) noexcept {
+    return spans_overlap(request.K, output) ||
+           spans_overlap(request.sigma, output) ||
+           spans_overlap(request.side, output);
+  };
+  const bool outputs_overlap =
+      spans_overlap(request.price, request.status) ||
+      spans_overlap(request.price, request.pack_dispatch) ||
+      spans_overlap(request.status, request.pack_dispatch);
+  if (overlaps_input(request.price) || overlaps_input(request.status) ||
+      overlaps_input(request.pack_dispatch) || outputs_overlap) {
+    return Err(ErrorCode::InvalidArgument,
+               "american_price_batch_resolved: input/output spans overlap");
+  }
+
+  const std::size_t n = request.size();
+  ATX_VOL_COUNT(ResolvedPriceWrapperCalls);
+  ATX_VOL_COUNT_N(ResolvedPriceWrapperLanes, n);
+
+  const auto scalar_lane = [&](std::size_t i) {
+    ATX_VOL_COUNT(AmericanWrapperKnownScalarLanes);
+    const Result<double> result =
+        american_price(request.S, request.K[i], request.T, request.sigma[i], request.r, request.q,
+                       request.side[i], request.method, request.al_opts);
+    if (result.has_value()) {
+      request.price[i] = *result;
+      request.status[i] = Ok();
+    } else {
+      request.price[i] = kNaN;
+      request.status[i] = Err(result.error());
+    }
+    if (!request.pack_dispatch.empty()) {
+      request.pack_dispatch[i] = simd::SimdRoute::Scalar;
+    }
+  };
+
+  // BAW is a different model and stays on its exact scalar reference. The AL
+  // kernel consumes the same optional unchanged, so null and engaged schemes
+  // share this route without changing their option semantics.
+  if (request.method != AmericanMethod::AndersenLake ||
+      request.isa == simd::SimdIsa::ForceScalar) {
+    for (std::size_t i = 0; i < n; ++i) {
+      scalar_lane(i);
+    }
+    return Ok();
+  }
+
+  // Compact only genuine single-boundary lanes into complete AVX-width packs;
+  // irregular lanes and the tail retain their scalar Error and bit identity.
+  std::array<double, 4> pack_S{}, pack_K{}, pack_T{}, pack_sigma{}, pack_r{}, pack_q{}, pack_price{};
+  std::array<std::size_t, 4> pack_index{};
+  std::size_t packed = 0;
+  for (std::size_t i = 0; i < n; ++i) {
+    const Side side = request.side[i];
+    if (!is_kernel_lane(request.S, request.K[i], request.T, request.sigma[i], request.r, request.q,
+                        side)) {
+      scalar_lane(i);
+      continue;
+    }
+    if (side == Side::Put) {
+      pack_S[packed] = request.S;
+      pack_K[packed] = request.K[i];
+      pack_r[packed] = request.r;
+      pack_q[packed] = request.q;
+    } else {
+      pack_S[packed] = request.K[i];
+      pack_K[packed] = request.S;
+      pack_r[packed] = request.q;
+      pack_q[packed] = request.r;
+    }
+    pack_T[packed] = request.T;
+    pack_sigma[packed] = request.sigma[i];
+    pack_index[packed] = i;
+    ++packed;
+    if (packed != pack_S.size()) {
+      continue;
+    }
+
+    const simd::SimdRoute pack_route = simd::american_put_boundary_batch(
+        pack_S.data(), pack_K.data(), pack_T.data(), pack_sigma.data(), pack_r.data(),
+        pack_q.data(), pack_price.data(), packed, request.al_opts, request.isa);
+    if (pack_route == simd::SimdRoute::Avx2) {
+      ATX_VOL_COUNT(AmericanAvxPackDispatches);
+    }
+    for (std::size_t j = 0; j < packed; ++j) {
+      const std::size_t original = pack_index[j];
+      if (!std::isfinite(pack_price[j])) {
+        scalar_lane(original);
+        continue;
+      }
+      if (pack_route == simd::SimdRoute::Scalar) {
+        ATX_VOL_COUNT(AmericanWrapperKnownScalarLanes);
+      }
+      request.price[original] = pack_price[j];
+      request.status[original] = Ok();
+      if (!request.pack_dispatch.empty()) {
+        request.pack_dispatch[original] = pack_route;
+      }
+    }
+    packed = 0;
+  }
+  for (std::size_t j = 0; j < packed; ++j) {
+    scalar_lane(pack_index[j]);
+  }
   return Ok();
 }
 

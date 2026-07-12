@@ -30,6 +30,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/correction.cpp
     src/arb.cpp
     src/calib.cpp
+    src/prepared_fitting.cpp
     src/c8.cpp
     src/c8_calib.cpp
     src/essvi_calib.cpp
@@ -77,6 +78,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/prepared_portfolio.cpp
     src/pricing_executor.cpp
     src/portfolio_pricer.cpp
+    src/fit_scheduler.cpp
     src/corpus_board_fit.cpp
     src/scenario_grid.cpp
     src/pnl_attribution.cpp

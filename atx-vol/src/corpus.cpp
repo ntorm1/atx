@@ -16,16 +16,16 @@
 #include <string>
 #include <string_view>
 #include <system_error> // std::error_code
-#include <thread>       // std::jthread, std::thread::hardware_concurrency
 #include <utility>      // std::move
 #include <vector>
 
 #include "atx/core/hash.hpp"
-#include "atx/vol/dispersion.hpp"     // with_uid
-#include "atx/vol/priced_surface.hpp" // PricedSurface
-#include "atx/vol/session.hpp"        // VolaSession::to_priced_surface
-#include "atx/vol/universe.hpp"       // uid_for_symbol
-#include "corpus_board_fit.hpp"       // FitSlot, fit_board (T5-extracted shared fit path)
+#include "atx/vol/detail/fit_scheduler.hpp" // run_bounded_fit_tasks
+#include "atx/vol/dispersion.hpp"           // with_uid
+#include "atx/vol/priced_surface.hpp"       // PricedSurface
+#include "atx/vol/session.hpp"              // VolaSession::to_priced_surface
+#include "atx/vol/universe.hpp"             // uid_for_symbol
+#include "corpus_board_fit.hpp"             // FitSlot, fit_board (T5-extracted shared fit path)
 
 namespace atx::vol {
 
@@ -544,34 +544,14 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
 
   // ── Fan out board fits; each worker writes its own disjoint slot ───────────
   std::vector<FitSlot> slots(n);
-  const auto run_range = [&boards, &slots, &cfg, admission](std::size_t start, std::size_t end) {
-    for (std::size_t i = start; i < end; ++i) {
-      slots[i] = fit_board(boards[i], cfg.fit_template, admission);
-    }
-  };
+  const Status schedule_status = detail::run_bounded_fit_tasks(
+      n, cfg.n_threads, [&boards, &slots, &cfg, admission](std::size_t index) -> Status {
+        slots[index] = fit_board(boards[index], cfg.fit_template, admission);
+        return Ok();
+      });
 
-  std::size_t n_workers = (cfg.n_threads != 0u)
-                              ? static_cast<std::size_t>(cfg.n_threads)
-                              : std::max<std::size_t>(1u, std::thread::hardware_concurrency());
-  n_workers = std::min(n_workers, n); // n >= 1 here
-  {
-    std::vector<std::jthread> workers;
-    workers.reserve(n_workers - 1u);
-    const std::size_t base = n / n_workers;
-    const std::size_t rem = n % n_workers;
-    std::size_t pos = 0u;
-    for (std::size_t w = 0u; w < n_workers; ++w) {
-      const std::size_t sz = base + (w < rem ? std::size_t{1u} : std::size_t{0u});
-      const std::size_t start = pos;
-      const std::size_t end = pos + sz;
-      pos = end;
-      if (w + 1u < n_workers) {
-        workers.emplace_back([&run_range, start, end] { run_range(start, end); });
-      } else {
-        run_range(start, end); // last chunk on the calling thread
-      }
-    }
-    // workers join here (jthread RAII) before we read `slots`.
+  if (!schedule_status) {
+    return Err(schedule_status.error());
   }
 
   const std::size_t live_surfaces = static_cast<std::size_t>(std::count_if(
