@@ -123,6 +123,22 @@ struct PreparedSliceInputs {
   AmericanMethod method{AmericanMethod::AndersenLake};
   PreparedObservationPolicy policy{PreparedObservationPolicy::Configured};
   bool prepare_scoring{true};
+  // Correctness-first serving (charter §8.1): under `audit_fit_inversions` the
+  // LegacyEssviCompatibility builder reprices every fitted IV proposal against
+  // the cold Andersen-Lake reference; a failed proposal is recomputed
+  // accurately and re-audited, and a row that still misses the half-spread
+  // budget is DROPPED, never fitted. Default false keeps the historical fit
+  // bit-identical. Configured preparation is always audited inside
+  // build_observations_european and ignores these two knobs.
+  bool audit_fit_inversions{false};
+  double max_iv_residual_half_spreads{0.25};
+  // OUT (optional): legacy-path preparation tallies, written just before the
+  // usable-row floor check so a caller can distinguish an audit-starved thin
+  // slice (rows + audit drops would have met the floor) from a genuinely
+  // sparse one even when create() fails the floor. Configured preparation
+  // leaves them untouched (its audit ledger lives in `deam_audit()`).
+  std::uint32_t *out_legacy_fit_rows{nullptr};
+  std::uint32_t *out_legacy_audit_dropped{nullptr};
 };
 
 class PreparedSlice {
@@ -150,6 +166,11 @@ public:
   [[nodiscard]] const PreparedScoreColumns &score_columns() const noexcept {
     return score_columns_;
   }
+  // Row-level de-Americanization audit for the Configured policy (route
+  // counters, residual quantiles, accepted/dropped ledger) — the certification
+  // layer's `deam_inversion_certified` input. Default (never certifies) under
+  // LegacyEssviCompatibility, which has no audited inversion route.
+  [[nodiscard]] const DeAmAuditDiagnostics &deam_audit() const noexcept { return deam_audit_; }
 
 private:
   friend struct detail::PreparedSliceBuilder;
@@ -164,6 +185,7 @@ private:
   std::vector<FitObs> fit_rows_{};
   std::vector<ObservationKey> score_keys_{};
   PreparedScoreColumns score_columns_{};
+  DeAmAuditDiagnostics deam_audit_{};
 };
 
 class PreparedBoard {
@@ -189,8 +211,26 @@ struct CanonicalPreparedExpiry {
   double df{0.0};
 };
 
+// Optional preparation-outcome diagnostics for prepare_expiry: filled on both
+// success and failure so a caller can SURFACE why an expiry produced no slice
+// (§5.2: carry-dropped and audit-starved expiries are counted, never hidden)
+// and reuse the fit resolve's carry diagnostics without a second
+// resolve_chain_forward call.
+struct PrepareExpiryDiagnostics {
+  // Carry resolution failed (resolve error or degenerate forward): the expiry
+  // was dropped by carry, not by observation counts.
+  bool carry_failed{false};
+  bool carry_available{false}; // `carry` below is meaningful
+  CarryDiagnostics carry{};    // the fit resolve's carry diagnostics
+  // Legacy-path tallies (see PreparedSliceInputs out-params). Zero under
+  // Configured preparation.
+  std::uint32_t n_fit_rows{0};
+  std::uint32_t n_audit_dropped{0};
+};
+
 [[nodiscard]] Result<CanonicalPreparedExpiry>
 prepare_expiry(const Chain &chain, std::uint32_t expiry_index,
-               const SurfaceParityInputs &inputs, PreparedObservationPolicy policy);
+               const SurfaceParityInputs &inputs, PreparedObservationPolicy policy,
+               PrepareExpiryDiagnostics *diag = nullptr);
 
 } // namespace atx::vol

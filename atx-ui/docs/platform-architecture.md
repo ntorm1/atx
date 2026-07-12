@@ -78,3 +78,4 @@ must use the same read contract.
 - A new panel should be composable into another workspace without copying its
   state or renderer.
 
+

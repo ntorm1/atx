@@ -20,3 +20,4 @@ void key_value(std::string_view key, std::string_view value, const ImVec4 *value
 void vertical_gap(float pixels = 3.0f);
 
 } // namespace atx::ui
+

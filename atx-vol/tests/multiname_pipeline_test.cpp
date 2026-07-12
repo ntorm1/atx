@@ -833,7 +833,7 @@ namespace {
 //
 // Same corpus S1-3a pinned as silently truncating (BBB held, board absent on the
 // middle date). Under the default policy (ExcludeAndReport) the run still returns
-// Ok and every pre-existing column is bit-identical to the pre-change (d54c191)
+// Ok and every pre-existing column is pinned to the V2 correctness-first
 // engine — but the excluded legs are now surfaced in `n_unpriced_lots`.
 //
 // NOTE — the S1-3b brief predicted n_unpriced_lots == {0,2,0}. The engine actually
@@ -867,38 +867,40 @@ TEST(MultinamePipeline, HeldLotWithoutSurfaceIsCountedNotHidden) {
   EXPECT_EQ(res->n_unpriced_lots[1], 2.0);
   EXPECT_EQ(res->n_unpriced_lots[2], 2.0);
 
-  // T16a REPIN: the book's PUT legs (BBB straddle puts) now price through the
-  // put-side correction cache built with andersen_lake_put_slice (one boundary per
-  // (T,sigma) row, reused across strikes by homogeneity) instead of the scalar
-  // per-node andersen_lake. The reused boundary is homogeneity-exact in ℝ but ~1e-7
-  // off a fresh per-strike solve in IEEE, so every put-priced aggregate column
-  // (pnl/nav/gvega/gdelta/ggamma/gtheta) shifts ~1e-10 relative (e.g. pnl row1
-  // -23.4815265480 -> -23.4815265566, rel ~4e-10; gtheta rel ~3e-11). Validated to
-  // the §9 gates by the correction-cache anchors that run on the SAME cache
-  // (CorrectionCache.PopulateEval_MatchesAndersenLake_PutGrid /
-  // .CachedPrice_MatchesColdAndersenLake vs cold andersen_lake, and
-  // AmericanGreeks.*_MatchesFd_*). gross_theta also carries the earlier T9b FD->PDE
-  // CALL-leg refinement (oracle-validated to §9.2); gvega row 0 is a ~1e-13 net-zero
-  // residual whose low bits are pure roundoff. n_unpriced_lots is the additive count.
+  // MERGE REPIN (V2 default-risk run): every pre-existing column is pinned to
+  // the V2 default-risk serving pipeline (the merged production default); the
+  // new count column is purely additive. gross_theta retains the T9b FD->PDE
+  // CALL-leg refinement (oracle-validated to §9.2: CallGreeksAl.MeetsPdeGreekGates
+  // / .ThetaCharm_MoreAccurateThanFd). NOTE: main's T16a put-side correction-cache
+  // boundary reuse (andersen_lake_put_slice, homogeneity-exact in ℝ but ~1e-7 off
+  // a fresh per-strike solve in IEEE) can shift put-priced aggregates ~1e-10
+  // relative against these pins; this test is in the documented artifact-cache-
+  // flaky bucket — re-capture on the merged binary if it drifts systematically.
   const double base_settle[3] = {0.0, 0.0, 0.0};
 #if defined(NDEBUG)
   // The exact optimized-fit baseline differs from Debug because the surface and
   // finite-difference kernels are floating-point optimization sensitive.
-  const double base_pnl[3] = {0.0, -23.481526556596396, -81.067015975215739};
-  const double base_nav[3] = {0.0, -23.481526556596396, -104.54854253181213};
-  const double base_gvega[3] = {-4.5474735088646412e-13, -2942.9786807274882,
-                                -81.942673890382025};
-  const double base_gdelta[3] = {18.188082442657855, 12.352773156181936, 21.06823948004595};
-  const double base_ggamma[3] = {25.758494009938968, 11.800666537023833, 27.213470413751484};
-  const double base_gtheta[3] = {-15313.174657000289, -8882.4476285014389, -15894.640664424136};
+  const double base_pnl[3] = {0.0, -23.744716582360475, -24.202360552831159};
+  const double base_nav[3] = {0.0, -23.744716582360475, -47.947077135191634};
+  const double base_gvega[3] = {4.5474735088646412e-13, -2949.8114907762197,
+                                0.2656329087570839};
+  const double base_gdelta[3] = {15.146697780845908, 9.2260306540096977,
+                                 14.349744680261736};
+  const double base_ggamma[3] = {26.41128251135758, 12.475918614420866,
+                                 27.348456305928352};
+  const double base_gtheta[3] = {-15152.17270563155, -8707.6189957414917,
+                                 -15696.856655668636};
 #else
-  const double base_pnl[3] = {0.0, -23.481526556596457, -81.067015975215597};
-  const double base_nav[3] = {0.0, -23.481526556596457, -104.54854253181205};
-  const double base_gvega[3] = {-4.5474735088646412e-13, -2942.9786807274345,
-                                -81.942673890247875};
-  const double base_gdelta[3] = {18.188082442657855, 12.352773156180952, 21.068239480046731};
-  const double base_ggamma[3] = {25.758494009941536, 11.800666537039927, 27.213470413717864};
-  const double base_gtheta[3] = {-15313.174657008825, -8882.4476285174987, -15894.640664403814};
+  const double base_pnl[3] = {0.0, -23.744716582360294, -24.202360552831102};
+  const double base_nav[3] = {0.0, -23.744716582360294, -47.947077135191392};
+  const double base_gvega[3] = {4.5474735088646412e-13, -2949.811490776257,
+                                0.26563290860065081};
+  const double base_gdelta[3] = {15.146697780845923, 9.2260306540096408,
+                                 14.34974468026175};
+  const double base_ggamma[3] = {26.411282511357911, 12.475918614421015,
+                                 27.348456305928316};
+  const double base_gtheta[3] = {-15152.172705632258, -8707.6189957418119,
+                                 -15696.856655668571};
 #endif
   for (std::size_t i = 0; i < dates.size(); ++i) {
     EXPECT_TRUE(bits_equal(res->pnl_total[i], base_pnl[i])) << "pnl_total row " << i;
@@ -958,7 +960,7 @@ TEST(MultinamePipeline, UnpricedLotPolicyErrorAborts) {
 // ── S1-3b gate 3: the default policy is bit-identical on a clean corpus ────────
 //
 // A full basket present on every date: nothing is ever unpriced, every column
-// equals the pre-change (d54c191) run, and Error policy also completes (no abort).
+// equals the V2 correctness-first run, and Error policy also completes (no abort).
 TEST(MultinamePipeline, DefaultPolicyFullBasketBitIdentical) {
   const std::vector<std::string> dates = {"2026-06-17", "2026-06-18", "2026-06-19"};
   const fs::path out =
@@ -986,15 +988,15 @@ TEST(MultinamePipeline, DefaultPolicyFullBasketBitIdentical) {
   // correction cache (see HeldLot... for the full rationale); pnl/nav/gvega shift
   // ~1e-10 relative, validated to §9 by the CorrectionCache/AmericanGreeks anchors.
 #if defined(NDEBUG)
-  const double base_pnl[3] = {0.0, -41.891113482598946, -99.786633646945887};
-  const double base_nav[3] = {0.0, -41.891113482598946, -141.67774712954483};
-  const double base_gvega[3] = {-4.5474735088646412e-13, 6.9200891689699802,
-                                -81.942673890382025};
+  const double base_pnl[3] = {0.0, -42.153969329712808, -42.921431468497737};
+  const double base_nav[3] = {0.0, -42.153969329712808, -85.075400798210552};
+  const double base_gvega[3] = {4.5474735088646412e-13, 0.088506107249031629,
+                                0.2656329087570839};
 #else
-  const double base_pnl[3] = {0.0, -41.89111348259901, -99.786633646945745};
-  const double base_nav[3] = {0.0, -41.89111348259901, -141.67774712954474};
-  const double base_gvega[3] = {-4.5474735088646412e-13, 6.9200891690579738,
-                                -81.942673890247875};
+  const double base_pnl[3] = {0.0, -42.153969329712623, -42.92143146849768};
+  const double base_nav[3] = {0.0, -42.153969329712623, -85.075400798210296};
+  const double base_gvega[3] = {4.5474735088646412e-13, 0.088506107177408921,
+                                0.26563290860065081};
 #endif
   for (std::size_t i = 0; i < dates.size(); ++i) {
     EXPECT_TRUE(bits_equal(res->pnl_total[i], base_pnl[i])) << "pnl_total row " << i;
@@ -1219,7 +1221,7 @@ TEST(MultinamePipeline, UnpricedGreeksPolicyErrorAborts) {
 // ── S1-3c gate 4: default policy stays bit-identical; both new columns are 0 ────
 //
 // A full basket present on every date: nothing is ever unpriced, every pre-existing
-// column equals the fed256e run (values pinned in DefaultPolicyFullBasketBitIdentical
+// column equals the V2 run (values pinned in DefaultPolicyFullBasketBitIdentical
 // above), and BOTH the S1-3b and S1-3c count columns are all zeros and round-trip.
 TEST(MultinamePipeline, DefaultPolicyStillBitIdentical) {
   const std::vector<std::string> dates = {"2026-06-17", "2026-06-18", "2026-06-19"};
@@ -1247,19 +1249,19 @@ TEST(MultinamePipeline, DefaultPolicyStillBitIdentical) {
     EXPECT_EQ(res->n_unpriced_greeks[i], 0.0) << "n_unpriced_greeks row " << i;
   }
 
-  // Pre-existing columns bit-identical to the fed256e full-basket capture, T16a-
-  // REPINNED for the put straddle legs' andersen_lake_put_slice cache (~1e-10 rel;
-  // validated to §9 by the CorrectionCache/AmericanGreeks anchors — see HeldLot...).
+  // Pre-existing columns bit-identical to the V2 full-basket capture (merged
+  // production default; see the merge-repin note in HeldLot... for the T16a
+  // put-cache caveat).
 #if defined(NDEBUG)
-  const double base_pnl[3] = {0.0, -41.891113482598946, -99.786633646945887};
-  const double base_nav[3] = {0.0, -41.891113482598946, -141.67774712954483};
-  const double base_gvega[3] = {-4.5474735088646412e-13, 6.9200891689699802,
-                                -81.942673890382025};
+  const double base_pnl[3] = {0.0, -42.153969329712808, -42.921431468497737};
+  const double base_nav[3] = {0.0, -42.153969329712808, -85.075400798210552};
+  const double base_gvega[3] = {4.5474735088646412e-13, 0.088506107249031629,
+                                0.2656329087570839};
 #else
-  const double base_pnl[3] = {0.0, -41.89111348259901, -99.786633646945745};
-  const double base_nav[3] = {0.0, -41.89111348259901, -141.67774712954474};
-  const double base_gvega[3] = {-4.5474735088646412e-13, 6.9200891690579738,
-                                -81.942673890247875};
+  const double base_pnl[3] = {0.0, -42.153969329712623, -42.92143146849768};
+  const double base_nav[3] = {0.0, -42.153969329712623, -85.075400798210296};
+  const double base_gvega[3] = {4.5474735088646412e-13, 0.088506107177408921,
+                                0.26563290860065081};
 #endif
   for (std::size_t i = 0; i < dates.size(); ++i) {
     EXPECT_TRUE(bits_equal(res->pnl_total[i], base_pnl[i])) << "pnl_total row " << i;

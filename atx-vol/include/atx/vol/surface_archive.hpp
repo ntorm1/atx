@@ -64,7 +64,8 @@
 #include <type_traits>
 #include <vector>
 
-#include "atx/vol/priced_surface.hpp"  // PricedSurface, PricingContext
+#include "atx/vol/priced_surface.hpp" // PricedSurface, PricingContext
+#include "atx/vol/surface_policy.hpp" // purpose, quality, health, validation
 #include "atx/vol/types.hpp"
 
 namespace atx::vol {
@@ -95,22 +96,22 @@ inline constexpr std::uint16_t kArchiveSlotOccupied = 1;
 // File header. Lives at offset 0. `header_crc32c` covers the whole header with
 // that field zeroed; `metadata_crc32c` covers the lookup ‖ directory span.
 struct ArchiveHeader {
-  char magic[8]{};                          // "ATXVSA03", no NUL
-  std::uint16_t major{};                    // kArchiveMajor
+  char magic[8]{};       // "ATXVSA03", no NUL
+  std::uint16_t major{}; // kArchiveMajor
   std::uint16_t minor{};
-  std::uint16_t header_size{};              // sizeof(ArchiveHeader)
-  std::uint16_t endian{};                   // 1 = little
-  std::uint16_t pointer_bits{};             // 64
-  std::uint16_t alignment_log2{};           // 12 -> 4096 blob alignment
+  std::uint16_t header_size{};    // sizeof(ArchiveHeader)
+  std::uint16_t endian{};         // 1 = little
+  std::uint16_t pointer_bits{};   // 64
+  std::uint16_t alignment_log2{}; // 12 -> 4096 blob alignment
   std::uint32_t flags{};
 
   std::uint64_t file_size{};
   std::uint64_t created_ts_ns{};
-  std::uint64_t schema_hash{};              // sizeof-based layout fingerprint
-  std::uint64_t writer_version_hash{};      // informational; 0 if unset
+  std::uint64_t schema_hash{};         // sizeof-based layout fingerprint
+  std::uint64_t writer_version_hash{}; // informational; 0 if unset
 
   std::uint32_t surface_count{};
-  std::uint32_t lookup_slot_count{};        // power of two
+  std::uint32_t lookup_slot_count{}; // power of two
   std::uint64_t lookup_offset{};
   std::uint64_t directory_offset{};
   std::uint64_t data_offset{};
@@ -120,10 +121,10 @@ struct ArchiveHeader {
   std::uint32_t surface_blob_header_size{}; // sizeof(SurfaceBlobHeader)
   std::uint32_t slice_header_size{};        // sizeof(ArchiveSliceHeader)
 
-  std::uint32_t header_crc32c{};            // over header bytes, this field = 0
-  std::uint32_t metadata_crc32c{};          // over (lookup ‖ directory) bytes
+  std::uint32_t header_crc32c{};   // over header bytes, this field = 0
+  std::uint32_t metadata_crc32c{}; // over (lookup ‖ directory) bytes
 
-  std::uint8_t reserved[352]{};             // pad tail; covered by header_crc
+  std::uint8_t reserved[352]{}; // pad tail; covered by header_crc
 };
 static_assert(sizeof(ArchiveHeader) == 464, "ArchiveHeader layout drift");
 static_assert(std::is_trivially_copyable_v<ArchiveHeader>);
@@ -135,11 +136,11 @@ struct ArchiveIndexSlot {
   std::uint64_t symbol_hash{};
   std::uint64_t surface_offset{};
   std::uint64_t surface_size{};
-  std::uint32_t surface_crc32c{};           // CRC-32C over the whole blob
+  std::uint32_t surface_crc32c{}; // CRC-32C over the whole blob
   std::uint32_t uid{};
   std::uint16_t symbol_len{};
-  std::uint16_t flags{};                    // kArchiveSlot*
-  char symbol[32]{};                        // canonical, not NUL-terminated
+  std::uint16_t flags{}; // kArchiveSlot*
+  char symbol[32]{};     // canonical, not NUL-terminated
   std::uint8_t reserved[60]{};
 };
 static_assert(sizeof(ArchiveIndexSlot) == 128, "ArchiveIndexSlot layout drift");
@@ -154,7 +155,7 @@ struct ArchiveDirEntry {
   std::uint32_t uid{};
   std::uint32_t reserved0{};
   std::uint16_t symbol_len{};
-  std::uint16_t kind_bits{};                 // OR of (1u << VolCurveKind) present
+  std::uint16_t kind_bits{}; // OR of (1u << VolCurveKind) present
   std::uint16_t n_slices{};
   std::uint16_t flags{};
   char symbol[32]{};
@@ -169,20 +170,20 @@ static_assert(std::is_standard_layout_v<ArchiveDirEntry>);
 // `payload_crc32c` covers [blob_header_size, blob_size); the owning slot's
 // `surface_crc32c` covers the whole blob.
 struct SurfaceBlobHeader {
-  char magic[8]{};                          // "ATXVSB03"
+  char magic[8]{}; // "ATXVSB03"
   std::uint16_t major{};
   std::uint16_t minor{};
   std::uint16_t flags{};
   std::uint16_t n_slices{};
   std::uint32_t uid{};
-  std::uint32_t blob_header_size{};         // sizeof(SurfaceBlobHeader)
+  std::uint32_t blob_header_size{}; // sizeof(SurfaceBlobHeader)
   std::uint64_t blob_size{};
   std::uint64_t symbol_offset{};
   std::uint64_t symbol_size{};
-  std::uint64_t pricing_offset{};           // ArchivePricingRecord
+  std::uint64_t pricing_offset{}; // ArchivePricingRecord
   std::uint64_t pricing_size{};
-  std::uint64_t slices_offset{};            // start of the sequential slice records
-  std::uint64_t slices_size{};              // total bytes across all slice records
+  std::uint64_t slices_offset{}; // start of the sequential slice records
+  std::uint64_t slices_size{};   // total bytes across all slice records
   std::uint32_t payload_crc32c{};
   std::uint32_t reserved0{};
   std::uint8_t reserved[40]{};
@@ -191,6 +192,46 @@ static_assert(sizeof(SurfaceBlobHeader) == 128, "SurfaceBlobHeader layout drift"
 static_assert(std::is_trivially_copyable_v<SurfaceBlobHeader>);
 static_assert(std::is_standard_layout_v<SurfaceBlobHeader>);
 
+// Versioned payload stored inside SurfaceBlobHeader::reserved. Keeping this
+// record exactly 40 bytes preserves the complete ATXVSA v3 framing and schema
+// hash. A zero marker is a legacy v3 blob written before provenance existed.
+struct ArchiveSurfaceProvenanceRecord {
+  std::uint32_t marker{};      // kArchiveProvenanceMarker, or 0 legacy
+  std::uint8_t purpose{};      // SurfacePurpose
+  std::uint8_t quality_mode{}; // FitQualityMode
+  std::uint8_t state{};        // SurfaceState
+  std::uint8_t reserved0{};
+  std::uint32_t validation_failures{}; // ValidationFailure bitmask
+  std::uint32_t reserved1{};           // explicit alignment / future flags
+  std::uint64_t validation_id{};
+  std::uint64_t source_generation{};
+  std::uint64_t served_generation{};
+};
+static_assert(sizeof(ArchiveSurfaceProvenanceRecord) == 40,
+              "archive provenance must fit the v3 reserved blob-header bytes");
+static_assert(std::is_trivially_copyable_v<ArchiveSurfaceProvenanceRecord>);
+static_assert(std::is_standard_layout_v<ArchiveSurfaceProvenanceRecord>);
+
+inline constexpr std::uint32_t kArchiveProvenanceMarker = 0x31565053u; // "SPV1"
+
+// Public metadata paired with an archived surface. ValidationDigest's identity
+// and failure mask are persisted; detailed per-gate counts remain in the
+// machine-readable validation report keyed by validation_id.
+struct SurfaceProvenance {
+  SurfacePurpose purpose{SurfacePurpose::Risk};
+  FitQualityMode quality_mode{FitQualityMode::Balanced};
+  SurfaceState state{SurfaceState::Healthy};
+  ValidationDigest validation{};
+  std::uint64_t source_generation{};
+  std::uint64_t served_generation{};
+  bool legacy_format{false};
+};
+
+// Safe interpretation for a v3 archive whose reserved provenance bytes are all
+// zero. Legacy surfaces were never independently admitted, so they are exposed
+// as degraded market marks rather than silently promoted to risk.
+[[nodiscard]] SurfaceProvenance legacy_surface_provenance() noexcept;
+
 // Blob-level pricing scalars (one per surface) — the cold re-pricing context.
 // Mirrors `PricingContext` + the `AlOpts` fields, laid out fixed-width.
 struct ArchivePricingRecord {
@@ -198,7 +239,7 @@ struct ArchivePricingRecord {
   double r{};
   std::int64_t now_ts_ns{};
   std::uint32_t uid{};
-  std::uint8_t method{};                    // AmericanMethod
+  std::uint8_t method{}; // AmericanMethod
   std::uint8_t reserved0[3]{};
   std::uint16_t al_n_collocation{};
   std::uint16_t al_n_quadrature{};
@@ -217,23 +258,23 @@ static_assert(std::is_standard_layout_v<ArchivePricingRecord>);
 // (header + payload + pad), so the reader walks slices with a single running
 // offset. `payload_size` is the pre-pad payload bytes.
 struct ArchiveSliceHeader {
-  std::uint8_t kind{};                      // VolCurveKind
+  std::uint8_t kind{}; // VolCurveKind
   std::uint8_t reserved0[3]{};
-  std::uint32_t rec_size{};                 // total padded record bytes
-  std::uint32_t node_count{};               // ConvexDense node count; 0 otherwise
-  std::uint32_t payload_size{};             // payload bytes following the header
+  std::uint32_t rec_size{};     // total padded record bytes
+  std::uint32_t node_count{};   // ConvexDense node count; 0 otherwise
+  std::uint32_t payload_size{}; // payload bytes following the header
 
-  double T{};                               // year-fraction to expiry
-  double forward{};                         // term forward F
-  double borrow{};                          // implied/fixed per-term borrow
-  double q_eff{};                           // effective carry r - ln(F/S)/T
-  double df{};                              // discount factor exp(-rT)
-  std::uint64_t n_used{};                   // strikes that survived to the fit
-  std::uint64_t n_dropped{};                // strikes skipped
+  double T{};                // year-fraction to expiry
+  double forward{};          // term forward F
+  double borrow{};           // implied/fixed per-term borrow
+  double q_eff{};            // effective carry r - ln(F/S)/T
+  double df{};               // discount factor exp(-rT)
+  std::uint64_t n_used{};    // strikes that survived to the fit
+  std::uint64_t n_dropped{}; // strikes skipped
 
-  double conv_rmse_price{};                 // ConvexDense: vega/spread-weighted RMSE
-  std::uint64_t conv_n_obs{};               // ConvexDense: observations fit
-  std::uint64_t conv_n_active{};            // ConvexDense: active constraints
+  double conv_rmse_price{};      // ConvexDense: vega/spread-weighted RMSE
+  std::uint64_t conv_n_obs{};    // ConvexDense: observations fit
+  std::uint64_t conv_n_active{}; // ConvexDense: active constraints
 };
 static_assert(sizeof(ArchiveSliceHeader) == 96, "ArchiveSliceHeader layout drift");
 static_assert(std::is_trivially_copyable_v<ArchiveSliceHeader>);
@@ -255,7 +296,10 @@ struct SurfaceArchiveWriteOpts {
 // write call, and `symbol` need only be valid for its duration.
 struct SurfaceArchiveItem {
   std::string_view symbol{};
-  const PricedSurface* surface{nullptr};
+  const PricedSurface *surface{nullptr};
+  // nullopt preserves the byte-compatible legacy-v3 representation. New V2
+  // writers should always supply explicit provenance.
+  std::optional<SurfaceProvenance> provenance{};
 };
 
 // ── Writer ───────────────────────────────────────────────────────────────
@@ -268,21 +312,20 @@ struct SurfaceArchiveItem {
 // factor); AlreadyExists (duplicate canonical symbol).
 [[nodiscard]] Result<std::vector<std::byte>>
 write_surface_archive(std::span<const SurfaceArchiveItem> items,
-                      const SurfaceArchiveWriteOpts& opts = {});
+                      const SurfaceArchiveWriteOpts &opts = {});
 
 // As above, persisted to `path` (written to `path` + ".tmp" then renamed for
 // atomic replacement). Adds IoError on any filesystem failure.
-[[nodiscard]] Status
-write_surface_archive_file(std::string_view path,
-                           std::span<const SurfaceArchiveItem> items,
-                           const SurfaceArchiveWriteOpts& opts = {});
+[[nodiscard]] Status write_surface_archive_file(std::string_view path,
+                                                std::span<const SurfaceArchiveItem> items,
+                                                const SurfaceArchiveWriteOpts &opts = {});
 
 // ── Reader ───────────────────────────────────────────────────────────────
 
 // An opened, validated archive. Owns its bytes; all query methods are `const` and
 // thread-safe to call concurrently. Rule of Zero: movable, trivially destructible.
 class SurfaceArchive {
- public:
+public:
   // Take ownership of `bytes` and validate the full framing (magic, version,
   // endian, sizes, schema hash, header CRC, metadata CRC, directory bounds).
   // Errors: ParseError on any framing / checksum / bounds failure.
@@ -292,14 +335,17 @@ class SurfaceArchive {
   [[nodiscard]] static Result<SurfaceArchive> open_file(std::string_view path);
 
   [[nodiscard]] std::uint32_t count() const noexcept { return header_.surface_count; }
-  [[nodiscard]] const ArchiveHeader& header() const noexcept { return header_; }
-  [[nodiscard]] std::span<const ArchiveDirEntry> directory() const noexcept {
-    return directory_;
-  }
+  [[nodiscard]] const ArchiveHeader &header() const noexcept { return header_; }
+  [[nodiscard]] std::span<const ArchiveDirEntry> directory() const noexcept { return directory_; }
 
   // Resolve `symbol` (case-insensitive) to its directory entry fabricated from the
   // lookup slot. NotFound if absent.
   [[nodiscard]] Result<ArchiveDirEntry> find(std::string_view symbol) const;
+
+  // Read the versioned metadata from a symbol's blob. Legacy zero-filled v3
+  // records return legacy_surface_provenance(); malformed tagged metadata is a
+  // ParseError. The blob CRC is verified before metadata is returned.
+  [[nodiscard]] Result<SurfaceProvenance> provenance(std::string_view symbol) const;
 
   // Resolve `symbol` and reconstruct its `PricedSurface` (an owned copy). NotFound
   // if absent; ParseError on a bad blob (magic / bounds / CRC / kind).
@@ -310,16 +356,16 @@ class SurfaceArchive {
 
   // Reconstruct every surface into caller storage, in directory order. Returns the
   // number written. OutOfRange if `out.size() < count()`; ParseError on a bad blob.
-  [[nodiscard]] Result<std::size_t>
-  map_all_into(std::span<std::optional<PricedSurface>> out) const;
+  [[nodiscard]] Result<std::size_t> map_all_into(std::span<std::optional<PricedSurface>> out) const;
 
- private:
+private:
   SurfaceArchive() = default;
 
-  [[nodiscard]] const ArchiveIndexSlot* find_slot(std::string_view symbol) const noexcept;
-  [[nodiscard]] Result<PricedSurface> reconstruct(std::uint64_t offset,
-                                                  std::uint64_t size,
+  [[nodiscard]] const ArchiveIndexSlot *find_slot(std::string_view symbol) const noexcept;
+  [[nodiscard]] Result<PricedSurface> reconstruct(std::uint64_t offset, std::uint64_t size,
                                                   std::uint32_t expected_crc) const;
+  [[nodiscard]] Result<SurfaceProvenance> read_provenance(std::uint64_t offset, std::uint64_t size,
+                                                          std::uint32_t expected_crc) const;
 
   std::vector<std::byte> buffer_{};        // owns the raw archive bytes
   ArchiveHeader header_{};                 // parsed copy
@@ -327,4 +373,4 @@ class SurfaceArchive {
   std::vector<ArchiveDirEntry> directory_{};
 };
 
-}  // namespace atx::vol
+} // namespace atx::vol

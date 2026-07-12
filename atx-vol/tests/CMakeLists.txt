@@ -19,6 +19,8 @@ add_executable(atx-vol-tests
     support/oracle_pde_golden.cpp
     support/cached_artifacts.cpp
     arb_test.cpp
+    risk_surface_validation_test.cpp
+    surface_v2_qualification_test.cpp
     calib_test.cpp
     prepared_fitting_test.cpp
     c8_test.cpp
@@ -63,7 +65,6 @@ add_executable(atx-vol-tests
     spy_real_test.cpp
     curve_noarb_test.cpp
     vol_curve_test.cpp
-    curve_selector_test.cpp
     curve_fit_parallel_test.cpp
     parallel_for_test.cpp
     pricer_fitter_test.cpp
@@ -152,7 +153,7 @@ include(GoogleTest)
 # "atx_vol" label. `ctest --print-labels` will list atx_vol_fast/atx_vol_slow
 # only, not a standalone "atx_vol" entry.
 set(ATX_VOL_SLOW_FILTER
-    "MultinamePipeline.*:Corpus.*:CorpusGeneratedProperty.*:CorpusBuildSession.*:QualifiedCorpus.*:OpraBreadthCorpus.*:SpyFitCorpus.*:SigmaInterpCorpus.*:CallGreeksAl.*:CallGreeksFd.*:AndersenLake.*:AndersenLakeRegime.*:ImplicitDiff.*:SigmaInterp.*:CurveFitParallel.*:CurveFitParity.*:CurveSurfaceNoArb.*:SpyBidAskRegression.*:SpyPortfolioPnl.*:PnlGreeksConsistency.*:SpyArchiveRoundTrip.*:SpyRealCalendarReporting.*:SpyRealOpra.*:BacktestReal.*:BreadthRegime.*:WarmAcrossTime.*:BoundaryHoist.*:Dispersion.*:CorrectionCache.*:PricerFitterTest.*:PreparedPortfolio.*:AmericanGreeks.*")
+    "MultinamePipeline.*:Corpus.*:CorpusGeneratedProperty.*:CorpusBuildSession.*:QualifiedCorpus.*:OpraBreadthCorpus.*:SpyFitCorpus.*:SigmaInterpCorpus.*:CallGreeksAl.*:CallGreeksFd.*:AndersenLake.*:AndersenLakeRegime.*:ImplicitDiff.*:SigmaInterp.*:CurveFitParallel.*:CurveFitParity.*:CurveSurfaceNoArb.*:SpyBidAskRegression.*:SpyPortfolioPnl.*:PnlGreeksConsistency.*:SpyArchiveRoundTrip.*:SpyRealCalendarReporting.*:SpyRealOpra.*:BacktestReal.*:BreadthRegime.*:WarmAcrossTime.*:BoundaryHoist.*:Dispersion.*:CorrectionCache.*:PricerFitterTest.*:PreparedPortfolio.*:AmericanGreeks.*:*SurfaceV2Qualification*:*SurfaceV2Fallback*")
 
 # PRE_TEST: enumerate at ctest time, not as a POST_BUILD step -- relinking no longer
 # pays TWO test-enumeration runs of this ~2600-test binary (one per call below), and a

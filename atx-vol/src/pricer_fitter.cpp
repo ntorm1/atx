@@ -2,18 +2,25 @@
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <future>
 #include <limits>
 #include <span>
+#include <string>
 #include <utility>
 #include <vector>
 
 #include "atx/core/error.hpp"
 #include "atx/vol/american_iv.hpp"  // american_implied_vol
 #include "atx/vol/black76.hpp"      // black76_price (independent publication oracle)
+#include "atx/vol/calib.hpp"        // build_observations_european
 #include "atx/vol/correction.hpp"   // AmericanCorrectionCaches (cached inversion hot path)
+#include "atx/vol/deamer.hpp"       // resolve_chain_forward
 #include "atx/vol/parallel_for.hpp" // parallel_for (shared block-partition fan-out)
 #include "atx/vol/prepared_fitting.hpp" // prepare_expiry (canonical refit preparation)
+#include "atx/vol/risk_surface_validation.hpp"
 
 namespace atx::vol {
 
@@ -31,8 +38,8 @@ using atx::core::Ok;
 std::span<const VolCurveKind> fallback_curve_rungs(VolCurveKind primary) noexcept {
   static constexpr VolCurveKind kFromC8[]{VolCurveKind::Essvi, VolCurveKind::LinearVariance};
   static constexpr VolCurveKind kFromEssvi[]{VolCurveKind::Svi, VolCurveKind::LinearVariance};
-  static constexpr VolCurveKind kFromSvi[]{VolCurveKind::LinearVariance};
-  static constexpr VolCurveKind kFromConvex[]{VolCurveKind::LinearVariance};
+  static constexpr VolCurveKind kFromSvi[]{VolCurveKind::Essvi};
+  static constexpr VolCurveKind kFromConvex[]{VolCurveKind::Svi, VolCurveKind::Essvi};
   static constexpr VolCurveKind kFromLinear[]{VolCurveKind::Essvi};
   // SplineVol is not in default_selector_candidates() v1 (task-3 constraint),
   // so this rung is not exercised by the auto-routed path today; it still
@@ -53,6 +60,52 @@ std::span<const VolCurveKind> fallback_curve_rungs(VolCurveKind primary) noexcep
     return kFromSpline;
   }
   return {};
+}
+
+[[nodiscard]] RiskSurfaceValidationConfig
+risk_validation_config(FitQualityMode quality_mode) noexcept;
+
+// Non-geometric failure context carried by the session diagnostics: carry
+// confidence, inversion certification, and expiry-coverage gaps (carry-gate
+// skips + audit-starved slices). Merged into the oracle digest by BOTH fit()'s
+// candidate validation and refit_risk_slice, so a successful incremental
+// publish cannot launder a fit-time Degraded reason into clean Healthy while
+// the expiry is still missing from the served surface (§5.2). Namespace-scope
+// (declared in pricer_fitter.hpp) so the seam → admission contract is
+// directly testable; strictly OR-only / additive-only either way.
+void merge_session_failure_context(const SessionDiagnostics &diagnostics,
+                                   ValidationDigest &digest) noexcept {
+  if (!diagnostics.carry_confident) {
+    digest.failures |= ValidationFailure::InsufficientData;
+  }
+  if (!diagnostics.inversion_certified) {
+    digest.failures |= ValidationFailure::InversionResidual;
+  }
+  if (diagnostics.n_carry_skipped_expiries > 0 ||
+      diagnostics.n_audit_starved_expiries > 0) {
+    // §5.2: expiries dropped by the carry gate or starved by the fit audit
+    // must be surfaced. CarryGap is the one publish-with-Degraded reason
+    // (decide_risk_surface_admission); combined with any other failure it
+    // still rejects.
+    digest.failures |= ValidationFailure::CarryGap;
+  }
+  if (diagnostics.n_price_bound_violations > 0) {
+    // Oracle finding I-2: the geometric oracle only reconstructs prices from
+    // w via Black, which is always in-bounds by construction and cannot see
+    // a served ConvexDense call_price() the fit clamped into range before
+    // forming w. This self-report (arb_check_price_bounds over the session's
+    // own served surface) is the one exception, exactly like CarryGap: it
+    // may only ADD PriceBounds — and ADD the clamp count into the digest's
+    // violation tally (saturating; never decremented) so a clamp-triggered
+    // rejection reports how many samples breached, not a bare bit — never
+    // clear anything the geometric oracle already found.
+    digest.failures |= ValidationFailure::PriceBounds;
+    const std::uint64_t merged =
+        static_cast<std::uint64_t>(digest.n_price_bound_violations) +
+        static_cast<std::uint64_t>(diagnostics.n_price_bound_violations);
+    digest.n_price_bound_violations = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+        merged, std::numeric_limits<std::uint32_t>::max()));
+  }
 }
 
 std::optional<std::size_t> ChainValuation::row_of(OptionId id) const {
@@ -391,9 +444,20 @@ using detail::refit_preparation_inputs;
 
 Status PricerFitter::fit(const OptionChain &chain,
                          const std::function<void(SessionInputs &)> &session_overlay) {
-  std::optional<SelectorResult> next_selection;
-  std::optional<FitDecision> next_decision;
+  using Clock = std::chrono::steady_clock;
+  struct MarkBuildResult {
+    Result<VolaSession> built;
+    double elapsed_ms{};
+  };
+  const auto fit_start = Clock::now();
+  const auto elapsed_ms = [](Clock::time_point start) noexcept {
+    return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+  };
 
+  // Fail-closed input validation BEFORE any served state mutates: a board with
+  // duplicate maturities cannot produce a coherent term structure for either
+  // purpose. The failure is recorded transactionally (last_attempt_report_
+  // only); every published artifact is left untouched.
   const CurveConfig validation_curve = cfg_.curve.value_or(CurveConfig{});
   if (std::optional<SurfaceBuildAttemptReport> duplicate =
           duplicate_maturity_report(chain.underlying(), validation_curve);
@@ -401,12 +465,30 @@ Status PricerFitter::fit(const OptionChain &chain,
     const atx::core::Error failure = *duplicate->failure;
     SurfaceBuildReport report;
     report.primary_curve = validation_curve;
-    report.retained_last_known_good = surface_ != nullptr;
+    report.retained_last_known_good = surface() != nullptr;
     report.attempts.push_back(std::move(*duplicate));
     last_attempt_report_ = std::move(report);
     return Err(failure);
   }
 
+  // A session overlay is a main-transactional-API argument (per-symbol input
+  // layering with post-overlay decision/report re-stamping); force main's
+  // single-surface world when one is supplied, even for an otherwise v2-shaped
+  // config.
+  if (!is_v2_request() || static_cast<bool>(session_overlay)) {
+  // ── Legacy / main single-surface transactional fit (default v2 fields) ──
+  // The caller did not opt into the v2 dual mark/risk API, so serve ONE
+  // surface admitted by FitAdmissionPolicy (mark consumer by default; the
+  // strict risk consumer via risk_admission_policy()). No forced Project
+  // repair -- the preset owns calendar policy -- so refit_expiry can consume
+  // it. Published into the market_mark slot; effective_request() resolves
+  // reads there for a legacy request.
+  timings_ = {};
+  if (candidate_generation_ == std::numeric_limits<std::uint64_t>::max()) {
+    return Err(ErrorCode::OutOfRange, "surface generation counter exhausted");
+  }
+  std::optional<SelectorResult> next_selection;
+  std::optional<FitDecision> next_decision;
   FitPreset effective_preset = cfg_.preset;
   const bool pinned_hft = !cfg_.curve.has_value() && cfg_.preset == FitPreset::Hft;
   if (!cfg_.curve.has_value() && !pinned_hft) {
@@ -502,7 +584,7 @@ Status PricerFitter::fit(const OptionChain &chain,
     if (!selected.has_value()) {
       SurfaceBuildReport report;
       report.primary_curve = in.curve;
-      report.retained_last_known_good = surface_ != nullptr;
+      report.retained_last_known_good = market_mark_surface_ != nullptr;
       report.attempts.push_back(failed_attempt_report(
           chain.underlying(), in.curve, selected.error(), SurfaceBuildStage::Selection));
       last_attempt_report_ = std::move(report);
@@ -581,7 +663,7 @@ Status PricerFitter::fit(const OptionChain &chain,
     }
   }
   if (!admitted_session.has_value()) {
-    report.retained_last_known_good = surface_ != nullptr;
+    report.retained_last_known_good = market_mark_surface_ != nullptr;
     last_attempt_report_ = std::move(report);
     if (primary_failure.has_value()) {
       return Err(std::move(*primary_failure));
@@ -594,7 +676,13 @@ Status PricerFitter::fit(const OptionChain &chain,
   VolaSession sess = std::move(*admitted_session);
   // FittedSurface's ctor is private (friend PricerFitter), so make_unique cannot
   // reach it — construct explicitly.
-  std::unique_ptr<FittedSurface> next_surface(new FittedSurface(std::move(sess)));
+  const std::uint64_t legacy_generation = ++candidate_generation_;
+  const SurfacePurpose legacy_purpose =
+      cfg_.admission.consumer == SurfaceConsumer::Risk ? SurfacePurpose::Risk
+                                                       : SurfacePurpose::MarketMark;
+  const FitQualityMode legacy_quality = map_legacy_fit_preset(cfg_.preset).quality_mode;
+  std::shared_ptr<const FittedSurface> next_surface(
+      new FittedSurface(std::move(sess), legacy_purpose, legacy_quality, legacy_generation));
   std::optional<SurfaceBuildReport> next_published{report};
   std::optional<SurfaceBuildReport> next_attempt{std::move(report)};
   FitSnapshotProvenance provenance;
@@ -607,20 +695,692 @@ Status PricerFitter::fit(const OptionChain &chain,
 
   // Transaction boundary: admitted state and its provenance become current
   // together. Every earlier failure leaves the last-known-good publication.
-  surface_ = std::move(next_surface);
+  market_mark_surface_ = std::move(next_surface);
+  market_mark_health_ = SurfaceHealth{
+      .purpose = legacy_purpose,
+      .quality_mode = legacy_quality,
+      .state = SurfaceState::Healthy,
+      .reasons = ValidationFailure::None,
+      .candidate_generation = legacy_generation,
+      .served_generation = legacy_generation,
+  };
   selection_ = std::move(next_selection);
+  served_selection_ = selection_;
   decision_ = std::move(next_decision);
+  served_decision_ = decision_;
   published_report_ = std::move(next_published);
   last_attempt_report_ = std::move(next_attempt);
   published_provenance_ = std::move(next_provenance);
+  timings_.total_ms = elapsed_ms(fit_start);
   return Ok();
+  }
+
+  timings_ = {};
+  selection_.reset();
+  decision_.reset();
+  if (candidate_generation_ == std::numeric_limits<std::uint64_t>::max()) {
+    return Err(ErrorCode::OutOfRange, "surface generation counter exhausted");
+  }
+  ++candidate_generation_;
+
+  // One-release compatibility: legacy presets route through the single §9
+  // mapping table (`map_legacy_fit_preset`, via effective_request()) so this
+  // seam cannot drift from the documented product policy. An otherwise-default
+  // HFT request — implicit or with the documented explicit LinearVariance pin —
+  // remains the legacy mark-only surface. New callers express a low-latency
+  // dual request with quality_mode=Latency and explicit outputs.
+  const EffectiveRequest request = effective_request();
+  const SurfaceOutputs requested_outputs = request.outputs;
+  const FitQualityMode quality_mode = request.quality_mode;
+
+  const auto configure_common = [&](SessionInputs &in) {
+    if (chain.env().yield.size() > 0u) {
+      in.expiry_rate_T.clear();
+      in.expiry_rates.clear();
+      in.expiry_rate_T.reserve(chain.underlying().chains.size());
+      in.expiry_rates.reserve(chain.underlying().chains.size());
+      for (const Chain &expiry : chain.underlying().chains) {
+        in.expiry_rate_T.push_back(expiry.T);
+        in.expiry_rates.push_back(chain.env().rate_at(expiry.T));
+      }
+    }
+    in.cash_divs = cfg_.cash_divs.empty() ? chain.env().cash_divs : cfg_.cash_divs;
+    if (cfg_.use_correction_cache.has_value()) {
+      in.use_correction_cache = *cfg_.use_correction_cache;
+    }
+    if (cfg_.use_deam_cache_for_fit.has_value()) {
+      in.use_deam_cache_for_fit = *cfg_.use_deam_cache_for_fit;
+    }
+    if (cfg_.max_obs_per_slice.has_value()) {
+      in.calib.max_obs_per_slice = *cfg_.max_obs_per_slice;
+    }
+    if (cfg_.max_otm_shortcut_premium_spread_frac.has_value()) {
+      in.calib.max_otm_shortcut_premium_spread_frac =
+          *cfg_.max_otm_shortcut_premium_spread_frac;
+    }
+    if (!in.expiry_rates.empty()) {
+      in.use_correction_cache = false;
+      in.use_deam_cache_for_fit = false;
+    }
+  };
+
+  // Snapshot provenance is stamped at the transaction boundary of whichever
+  // purpose publishes (mark-only or risk); every earlier failure leaves the
+  // last-known-good publication and its provenance untouched.
+  const auto snapshot_provenance = [&]() {
+    FitSnapshotProvenance provenance;
+    provenance.chain_instance_id = chain.instance_id();
+    provenance.board_revision = chain.quote_revision();
+    provenance.uid = chain.uid();
+    provenance.expiry_revisions.assign(chain.expiry_quote_revisions().begin(),
+                                       chain.expiry_quote_revisions().end());
+    return provenance;
+  };
+
+  // ── Mark-only request (legacy HFT mapping or explicit outputs) ────────────
+  //
+  // Synchronous, admission-gated, transactional publish: the mark serves under
+  // the family-neutral FitAdmissionPolicy (default = the WP12 Mark-serving
+  // contract, which admits healthy real-world marks; the strict risk policy is
+  // an explicit opt-in). Risk-purpose admission below additionally requires the
+  // independent risk oracle — a mark gate can never substitute for it.
+  if (!has_output(requested_outputs, SurfacePurpose::Risk)) {
+    SessionInputs mark_in =
+        make_session_inputs(FitPreset::Hft, chain.spot(), chain.rate(), chain.now_ns());
+    configure_common(mark_in);
+    mark_in.curve.kind = VolCurveKind::LinearVariance;
+    if (session_overlay) {
+      session_overlay(mark_in);
+    }
+    const Underlying &under = chain.underlying();
+    SurfaceBuildReport report;
+    report.primary_curve = mark_in.curve;
+    const auto mark_start = Clock::now();
+    Result<VolaSession> built = VolaSession::build(under, mark_in);
+    timings_.market_mark_build_ms = elapsed_ms(mark_start);
+    const auto retain_or_reject = [&](ValidationFailure reason) -> bool {
+      // true => last-known-good mark retained (health Stale); false => nothing
+      // is served (health Rejected; fallback None drops the stale surface).
+      if (market_mark_surface_ != nullptr && cfg_.fallback == SurfaceFallback::LastKnownGood) {
+        market_mark_health_ = SurfaceHealth{
+            .purpose = SurfacePurpose::MarketMark,
+            .quality_mode = quality_mode,
+            .state = SurfaceState::Stale,
+            .reasons = reason,
+            .candidate_generation = candidate_generation_,
+            .served_generation = market_mark_surface_->generation(),
+            .fallback_generation = market_mark_surface_->generation(),
+        };
+        return true;
+      }
+      if (cfg_.fallback == SurfaceFallback::None) {
+        market_mark_surface_.reset();
+      }
+      market_mark_health_ = SurfaceHealth{
+          .purpose = SurfacePurpose::MarketMark,
+          .quality_mode = quality_mode,
+          .state = SurfaceState::Rejected,
+          .reasons = reason,
+          .candidate_generation = candidate_generation_,
+      };
+      return false;
+    };
+    if (!built.has_value()) {
+      report.retained_last_known_good = market_mark_surface_ != nullptr;
+      report.attempts.push_back(failed_attempt_report(under, mark_in.curve, built.error()));
+      last_attempt_report_ = std::move(report);
+      const bool retained = retain_or_reject(ValidationFailure::InsufficientData);
+      timings_.total_ms = elapsed_ms(fit_start);
+      if (retained) {
+        return Ok();
+      }
+      return Err(std::move(built).error());
+    }
+    SurfaceBuildAttemptReport attempt =
+        completed_attempt_report(under, mark_in.curve, *built, cfg_.admission);
+    const bool mark_admitted = attempt.admission.admitted;
+    report.attempts.push_back(std::move(attempt));
+    if (!mark_admitted) {
+      report.retained_last_known_good = market_mark_surface_ != nullptr;
+      last_attempt_report_ = std::move(report);
+      (void)retain_or_reject(ValidationFailure::InvalidDomain);
+      timings_.total_ms = elapsed_ms(fit_start);
+      return Err(ErrorCode::Unavailable,
+                 "PricerFitter::fit: mark candidate failed surface admission");
+    }
+    report.published = true;
+    report.published_curve = mark_in.curve;
+    report.attempts.back().stage = SurfaceBuildStage::Publication;
+    market_mark_surface_.reset(new FittedSurface(std::move(*built), SurfacePurpose::MarketMark,
+                                                 quality_mode, candidate_generation_));
+    market_mark_health_ = SurfaceHealth{
+        .purpose = SurfacePurpose::MarketMark,
+        .quality_mode = quality_mode,
+        .state = SurfaceState::Healthy,
+        .reasons = ValidationFailure::None,
+        .candidate_generation = candidate_generation_,
+        .served_generation = candidate_generation_,
+    };
+    std::optional<SurfaceBuildReport> next_published{report};
+    std::optional<SurfaceBuildReport> next_attempt{std::move(report)};
+    published_report_ = std::move(next_published);
+    last_attempt_report_ = std::move(next_attempt);
+    published_provenance_ = snapshot_provenance();
+    timings_.total_ms = elapsed_ms(fit_start);
+    return Ok();
+  }
+
+  // ── Dual request: the mark builds concurrently with the risk pipeline ─────
+  std::optional<std::future<MarkBuildResult>> mark_future;
+  if (has_output(requested_outputs, SurfacePurpose::MarketMark)) {
+    SessionInputs mark_in =
+        make_session_inputs(FitPreset::Hft, chain.spot(), chain.rate(), chain.now_ns());
+    configure_common(mark_in);
+    mark_in.curve.kind = VolCurveKind::LinearVariance;
+    if (session_overlay) {
+      session_overlay(mark_in);
+    }
+    const Underlying &underlying = chain.underlying();
+    mark_future.emplace(std::async(
+        std::launch::async,
+        [&underlying, mark_in = std::move(mark_in)]() mutable -> MarkBuildResult {
+          const auto mark_start = Clock::now();
+          Result<VolaSession> built = VolaSession::build(underlying, mark_in);
+          const double duration =
+              std::chrono::duration<double, std::milli>(Clock::now() - mark_start).count();
+          return MarkBuildResult{std::move(built), duration};
+        }));
+  }
+
+  const auto finalize_mark = [&]() -> Status {
+    if (!mark_future.has_value()) {
+      return Ok();
+    }
+    MarkBuildResult result = mark_future->get();
+    mark_future.reset();
+    timings_.market_mark_build_ms = result.elapsed_ms;
+    if (result.built.has_value()) {
+      market_mark_surface_.reset(new FittedSurface(std::move(*result.built),
+                                                   SurfacePurpose::MarketMark, quality_mode,
+                                                   candidate_generation_));
+      market_mark_health_ = SurfaceHealth{
+          .purpose = SurfacePurpose::MarketMark,
+          .quality_mode = quality_mode,
+          .state = SurfaceState::Healthy,
+          .reasons = ValidationFailure::None,
+          .candidate_generation = candidate_generation_,
+          .served_generation = candidate_generation_,
+      };
+      return Ok();
+    }
+    if (market_mark_surface_ != nullptr && cfg_.fallback == SurfaceFallback::LastKnownGood) {
+      market_mark_health_ = SurfaceHealth{
+          .purpose = SurfacePurpose::MarketMark,
+          .quality_mode = quality_mode,
+          .state = SurfaceState::Stale,
+          .reasons = ValidationFailure::InsufficientData,
+          .candidate_generation = candidate_generation_,
+          .served_generation = market_mark_surface_->generation(),
+          .fallback_generation = market_mark_surface_->generation(),
+      };
+      return Ok();
+    }
+    if (cfg_.fallback == SurfaceFallback::None) {
+      market_mark_surface_.reset();
+    }
+    market_mark_health_ = SurfaceHealth{
+        .purpose = SurfacePurpose::MarketMark,
+        .quality_mode = quality_mode,
+        .state = SurfaceState::Rejected,
+        .reasons = ValidationFailure::InsufficientData,
+        .candidate_generation = candidate_generation_,
+    };
+    return Err(std::move(result.built).error());
+  };
+
+  if (cfg_.risk_admission != RiskAdmission::Required ||
+      (cfg_.enforce_calendar_floor.has_value() && !*cfg_.enforce_calendar_floor) ||
+      (cfg_.score_parity.has_value() && !*cfg_.score_parity) ||
+      (cfg_.curve.has_value() && cfg_.curve->kind == VolCurveKind::LinearVariance)) {
+    ValidationDigest rejected;
+    rejected.failures = ValidationFailure::InvalidDomain;
+    const std::uint64_t prior = risk_surface_ != nullptr ? risk_surface_->generation() : 0u;
+    risk_health_ = decide_risk_surface_admission(rejected, quality_mode, candidate_generation_,
+                                                 prior, cfg_.fallback)
+                       .health;
+    if (cfg_.fallback == SurfaceFallback::None) {
+      risk_surface_.reset();
+      served_decision_.reset();
+      served_selection_.reset();
+    }
+    atx::core::Error policy_error{ErrorCode::InvalidArgument,
+                                  "invalid correctness policy for requested risk surface"};
+    SurfaceBuildReport report;
+    report.primary_curve = validation_curve;
+    report.retained_last_known_good = risk_surface_ != nullptr;
+    report.attempts.push_back(failed_attempt_report(chain.underlying(), validation_curve,
+                                                    policy_error,
+                                                    SurfaceBuildStage::InputValidation));
+    last_attempt_report_ = std::move(report);
+    // §5.6: the requested mark is still built and published on its own
+    // contract; only the risk output is refused. The caller must still learn
+    // the risk config was invalid, so the policy error outranks mark status.
+    (void)finalize_mark();
+    timings_.total_ms = elapsed_ms(fit_start);
+    return Err(std::move(policy_error));
+  }
+
+  const FitPreset risk_preset = quality_mode == FitQualityMode::Latency
+                                    ? FitPreset::Fast
+                                    : quality_mode == FitQualityMode::Accuracy
+                                          ? FitPreset::Accurate
+                                          : FitPreset::Robust;
+  const auto risk_start = Clock::now();
+  SessionInputs in = make_session_inputs(risk_preset, chain.spot(), chain.rate(), chain.now_ns());
+  configure_common(in);
+
+  const auto apply_risk_policy = [&] {
+    in.score_parity = true;
+    in.enforce_calendar_floor = true;
+    in.calendar_repair = CalendarRepair::Project;
+    in.deam.require_carry_confidence = true;
+    // §8.1: every served risk fit must run audited inversions — including the
+    // eSSVI fallback rung, whose aligned-obs fit path audits only under this
+    // flag (the curve-driver primaries audit unconditionally). Without it the
+    // rung's certificate would describe a diagnostic re-run, not the fit.
+    in.deam.audit_fit_inversions = true;
+    // Curve-override risk sessions deliberately serve the accurate cold pricer;
+    // building a scalar-carry correction cache here adds hundreds of ms and is
+    // then never used by the served path. Fast/cache IV proposals remain
+    // separately audited in calibration, so skipping this dead cache is both
+    // faster and semantically cleaner.
+    in.use_correction_cache = false;
+    // Every risk mode pins the ACCURATE Andersen-Lake reference preset
+    // EXPLICITLY. An unset al_opts is the legacy-compat signal that lets
+    // VolaSession::build substitute the fast preset, a loosened iv_tol, and a
+    // single-pair carry floor — which would silently undo every per-mode carry
+    // and inversion budget set below.
+    if (quality_mode == FitQualityMode::Accuracy) {
+      in.deam.al_opts = al_default_opts();
+      in.use_correction_cache = false;
+      in.use_deam_cache_for_fit = false;
+    }
+    switch (quality_mode) {
+    case FitQualityMode::Latency:
+      // A fast proposal plus mandatory cold audit costs more than solving the
+      // smaller Latency node set accurately once. Latency comes from bounded
+      // work and narrower validation, never from publishing an unaudited IV.
+      in.deam.al_opts = al_default_opts();
+      in.deam.n_atm = 3;
+      in.deam.max_borrow_pairs = 6;
+      in.calib.max_obs_per_slice = cfg_.max_obs_per_slice.value_or(40u);
+      in.calib.max_otm_shortcut_premium_spread_frac =
+          cfg_.max_otm_shortcut_premium_spread_frac.value_or(0.50);
+      break;
+    case FitQualityMode::Balanced:
+      in.deam.n_atm = 8;
+      in.deam.max_borrow_pairs = 12;
+      // Certified fast proposals frequently require a cold fallback on dense
+      // boards, paying for both paths. The direct accurate reference is faster
+      // in that regime and is the correctness-first Balanced default.
+      in.deam.al_opts = al_default_opts();
+      in.calib.max_obs_per_slice = cfg_.max_obs_per_slice.value_or(60u);
+      in.calib.max_otm_shortcut_premium_spread_frac =
+          cfg_.max_otm_shortcut_premium_spread_frac.value_or(0.0);
+      break;
+    case FitQualityMode::Accuracy:
+      in.deam.n_atm = 12;
+      in.deam.max_borrow_pairs = 12;
+      in.calib.max_obs_per_slice = cfg_.max_obs_per_slice.value_or(80u);
+      in.calib.max_otm_shortcut_premium_spread_frac =
+          cfg_.max_otm_shortcut_premium_spread_frac.value_or(0.0);
+      break;
+    }
+  };
+  apply_risk_policy();
+
+  if (!cfg_.curve.has_value()) {
+    FitDecision d =
+        select_fit_policy(chain.underlying(), chain.underlying().ticker, cfg_.context, cfg_.policy);
+    d.preset = risk_preset;
+    if (d.curve.kind == VolCurveKind::LinearVariance) {
+      d.curve.kind = VolCurveKind::ConvexDense;
+      d.primary_curve = d.curve;
+    }
+    decision_ = std::move(d);
+  }
+
+  if (decision_.has_value()) {
+    const auto profile = profile_lookup(decision_->profile.kind);
+    if (profile.has_value()) {
+      in.calib = profile.value()->calib;
+      apply_fit_preset(in, risk_preset);
+      configure_common(in);
+      apply_risk_policy();
+    }
+  }
+
+  if (cfg_.curve.has_value()) {
+    in.curve = *cfg_.curve;
+  } else if (decision_.has_value() && !decision_->needs_cross_validation) {
+    decision_->curve.parametric = in.calib;
+    if (decision_->curve.kind == VolCurveKind::ConvexDense) {
+      decision_->curve.convex.node_cap = in.calib.max_obs_per_slice;
+    }
+    in.curve = decision_->curve;
+  } else {
+    SurfaceParityInputs sp;
+    sp.S = in.S;
+    sp.r = in.r;
+    sp.expiry_rate_T = in.expiry_rate_T;
+    sp.expiry_rates = in.expiry_rates;
+    sp.cash_divs = in.cash_divs;
+    sp.now_ts_ns = in.now_ts_ns;
+    sp.deam = in.deam;
+    sp.calib = in.calib;
+    sp.band_k = in.band_k;
+    sp.repair = in.calendar_repair;
+    sp.score_parity = in.score_parity;
+    sp.enforce_calendar_floor = in.enforce_calendar_floor;
+    sp.use_deam_cache_for_fit = in.use_deam_cache_for_fit;
+    Result<SelectorResult> selected = select_curve(chain.underlying(), sp, cfg_.selector);
+    if (selected.has_value()) {
+      SelectorResult chosen = std::move(*selected);
+      chosen.chosen.parametric = in.calib;
+      if (chosen.chosen.kind == VolCurveKind::LinearVariance) {
+        chosen.chosen.kind = VolCurveKind::ConvexDense;
+        chosen.chosen.convex.node_cap = in.calib.max_obs_per_slice;
+      }
+      in.curve = chosen.chosen;
+      if (decision_.has_value()) {
+        decision_->curve = chosen.chosen;
+        decision_->preset = risk_preset;
+      }
+      selection_ = std::move(chosen);
+    } else if (decision_.has_value()) {
+      // Cross-validation is advisory among already admissible families. If its
+      // held-out sample is too thin, use the profile's safe primary rather than
+      // returning through an un-stamped early-exit path.
+      in.curve = decision_->curve;
+      in.curve.parametric = in.calib;
+      if (in.curve.kind == VolCurveKind::LinearVariance) {
+        in.curve.kind = VolCurveKind::ConvexDense;
+      }
+    }
+  }
+
+  // Transactional attempt history for the risk pipeline (primary + every
+  // ladder rung); moves to published_report_ atomically with the admitted
+  // surface, or to last_attempt_report_ alone on failure.
+  const Underlying &under = chain.underlying();
+  SurfaceBuildReport report;
+  report.primary_curve = in.curve;
+
+  // `session_overlay` layers per-symbol config onto the EXACT inputs this fit
+  // uses, once, immediately before the first build; a fallback-ladder retry
+  // does not re-invoke it (main contract).
+  //
+  // MERGE: main's overlay seam and the branch's risk pipeline met here for the
+  // first time, and the overlay ran LAST — so a per-symbol config
+  // (apply_symbol_config -> apply_fit_preset) silently overwrote the resolved
+  // risk family and every mandatory risk budget: calendar_repair Project->None,
+  // score_parity / enforce_calendar_floor, the pinned accurate Andersen-Lake
+  // reference, require_carry_confidence and the per-mode carry/observation
+  // floors. Observed effect: every populate board's risk build collapsed to
+  // InsufficientData. It is also a fail-OPEN hole — the config-level equivalents
+  // (score_parity=false, enforce_calendar_floor=false) are hard-rejected as an
+  // "invalid correctness policy for requested risk surface" above, so the
+  // overlay must not be able to smuggle them in. The overlay's own knobs
+  // (band_k, al_override, caches, a pinned curve via cfg_.curve) still reach the
+  // fit; the mandatory risk contract is re-asserted on top of them.
+  if (session_overlay) {
+    const CurveConfig resolved_curve = in.curve;
+    session_overlay(in);
+    apply_risk_policy();
+    in.curve = resolved_curve;
+  }
+
+  Result<VolaSession> built = VolaSession::build(under, in);
+  const bool auto_routed = decision_.has_value() && !cfg_.curve.has_value();
+  if (!built.has_value()) {
+    report.attempts.push_back(failed_attempt_report(under, in.curve, built.error()));
+  }
+  if (!built.has_value() && auto_routed) {
+    const CurveConfig primary_curve = in.curve;
+    for (const VolCurveKind rung : fallback_curve_rungs(primary_curve.kind)) {
+      if (rung == VolCurveKind::LinearVariance) {
+        continue;
+      }
+      in.curve.kind = rung;
+      Result<VolaSession> retry = VolaSession::build(under, in);
+      if (!retry.has_value()) {
+        report.attempts.push_back(failed_attempt_report(under, in.curve, retry.error()));
+        continue;
+      }
+      decision_->primary_curve = primary_curve;
+      decision_->curve = in.curve;
+      decision_->used_fallback = true;
+      if (selection_.has_value()) {
+        // The selector's candidate could not be built; re-stamp the served
+        // choice so provenance names the family actually fit (the scores stay
+        // as the selector's audit trail).
+        selection_->chosen = in.curve;
+      }
+      built = std::move(retry);
+      break;
+    }
+  }
+  timings_.risk_build_ms = elapsed_ms(risk_start);
+  if (!built.has_value()) {
+    ValidationDigest failed;
+    failed.failures = ValidationFailure::InsufficientData;
+    const std::uint64_t prior = risk_surface_ != nullptr ? risk_surface_->generation() : 0u;
+    risk_health_ = decide_risk_surface_admission(failed, quality_mode, candidate_generation_, prior,
+                                                 cfg_.fallback)
+                       .health;
+    report.retained_last_known_good = risk_surface_ != nullptr;
+    last_attempt_report_ = std::move(report);
+    (void)finalize_mark();
+    timings_.total_ms = elapsed_ms(fit_start);
+    if (risk_surface_ != nullptr && risk_health_.using_fallback()) {
+      return Ok();
+    }
+    if (cfg_.fallback == SurfaceFallback::None) {
+      risk_surface_.reset();
+      served_decision_.reset();
+      served_selection_.reset();
+    }
+    return Err(std::move(built).error());
+  }
+
+  VolaSession sess = std::move(*built);
+  const RiskSurfaceValidationConfig validation_config =
+      risk_validation_config(quality_mode);
+  const auto validate_candidate = [&](const VolaSession &candidate) {
+    const auto validation_start = Clock::now();
+    Result<ValidationDigest> checked =
+        validate_risk_surface(candidate, validation_config);
+    timings_.risk_validation_ms += elapsed_ms(validation_start);
+    ValidationDigest result;
+    if (checked.has_value()) {
+      result = *checked;
+    } else {
+      result.failures = ValidationFailure::InvalidDomain;
+    }
+    merge_session_failure_context(candidate.diagnostics(), result);
+    return result;
+  };
+  // Candidate admission requires BOTH gates, fail-closed: the independent risk
+  // oracle (geometry + certification, decide_risk_surface_admission) AND the
+  // family-neutral FitAdmissionPolicy publication gate (`cfg_.admission`;
+  // default = the WP12 Mark-serving numerical floor, strict risk policy is the
+  // caller's opt-in). The policy verdict is folded into the digest BEFORE the
+  // oracle decision so served health can never disagree with publication.
+  const auto admission_attempt = [&](const VolaSession &candidate,
+                                     ValidationDigest &digest) {
+    SurfaceBuildAttemptReport attempt =
+        completed_attempt_report(under, in.curve, candidate, cfg_.admission);
+    if (!attempt.admission.admitted) {
+      digest.failures |= ValidationFailure::InvalidDomain;
+    }
+    finalize_validation_digest(digest, validation_config);
+    return attempt;
+  };
+
+  ValidationDigest digest = validate_candidate(sess);
+  SurfaceBuildAttemptReport attempt = admission_attempt(sess, digest);
+  const std::uint64_t prior = risk_surface_ != nullptr ? risk_surface_->generation() : 0u;
+  AdmissionDecision admission = decide_risk_surface_admission(
+      digest, quality_mode, candidate_generation_, prior, cfg_.fallback);
+  report.attempts.push_back(std::move(attempt));
+
+  // A policy curve is only a prior. Validation rejection walks the same safe
+  // model ladder as a construction failure; each rung must independently pass
+  // the complete admission contract before it can replace the candidate.
+  if (!admission.publish_candidate && auto_routed) {
+    const CurveConfig rejected_curve = in.curve;
+    for (const VolCurveKind rung : fallback_curve_rungs(rejected_curve.kind)) {
+      if (rung == VolCurveKind::LinearVariance) continue;
+      SessionInputs retry_inputs = in;
+      retry_inputs.curve.kind = rung;
+      const auto retry_start = Clock::now();
+      Result<VolaSession> retry =
+          VolaSession::build(chain.underlying(), retry_inputs);
+      timings_.risk_build_ms += elapsed_ms(retry_start);
+      if (!retry.has_value()) {
+        report.attempts.push_back(
+            failed_attempt_report(under, retry_inputs.curve, retry.error()));
+        continue;
+      }
+      in = std::move(retry_inputs);
+      ValidationDigest retry_digest = validate_candidate(*retry);
+      SurfaceBuildAttemptReport retry_attempt = admission_attempt(*retry, retry_digest);
+      AdmissionDecision retry_admission = decide_risk_surface_admission(
+          retry_digest, quality_mode, candidate_generation_, prior, cfg_.fallback);
+      report.attempts.push_back(std::move(retry_attempt));
+      if (!retry_admission.publish_candidate) continue;
+      sess = std::move(*retry);
+      digest = retry_digest;
+      admission = retry_admission;
+      if (decision_.has_value()) {
+        // Served provenance must name the admitted family: the policy curve
+        // was rejected by independent admission and a fallback rung is being
+        // published — the same record the construction-failure ladder keeps.
+        // The first rejected primary of this fit stays authoritative if both
+        // ladders fired.
+        if (!decision_->used_fallback) {
+          decision_->primary_curve = rejected_curve;
+        }
+        decision_->used_fallback = true;
+        decision_->curve = in.curve;
+      }
+      if (selection_.has_value()) {
+        // The selector's chosen candidate did not survive admission; re-stamp
+        // the served choice so persisted provenance names the served model.
+        selection_->chosen = in.curve;
+      }
+      break;
+    }
+  }
+  risk_health_ = admission.health;
+  if (!admission.publish_candidate) {
+    report.retained_last_known_good = risk_surface_ != nullptr;
+    last_attempt_report_ = std::move(report);
+    (void)finalize_mark();
+    timings_.total_ms = elapsed_ms(fit_start);
+    if (risk_surface_ != nullptr && risk_health_.using_fallback()) {
+      return Ok();
+    }
+    if (cfg_.fallback == SurfaceFallback::None) {
+      risk_surface_.reset();
+      served_decision_.reset();
+      served_selection_.reset();
+    }
+    const SessionDiagnostics &session_diagnostics = sess.diagnostics();
+    return Err(ErrorCode::Unavailable,
+               "risk surface rejected: model=" + std::string(to_string(sess.inputs().curve.kind)) +
+                   " mask=" +
+                   std::to_string(static_cast<std::uint32_t>(digest.failures)) +
+                   " butterfly=" + std::to_string(digest.n_butterfly_violations) +
+                   " butterfly_slack=" + std::to_string(digest.max_butterfly_slack) +
+                   " butterfly_k=" + std::to_string(digest.first_butterfly_k) +
+                   " butterfly_slice=" + std::to_string(digest.first_butterfly_slice) +
+                   " slopes=" + std::to_string(digest.first_butterfly_slope_left) + "/" +
+                   std::to_string(digest.first_butterfly_slope_right) +
+                   " calendar=" + std::to_string(digest.n_calendar_violations) +
+                   " calendar_slack=" + std::to_string(digest.max_calendar_slack) +
+                   " calendar_k=" + std::to_string(digest.first_calendar_k) +
+                   " calendar_slice=" + std::to_string(digest.first_calendar_long_slice) +
+                   " calendar_w=" + std::to_string(digest.first_calendar_previous_w) + "/" +
+                   std::to_string(digest.first_calendar_current_w) +
+                   " finite=" + std::to_string(digest.n_non_finite) +
+                   " first_k=" + std::to_string(digest.first_non_finite_k) +
+                   " first_slice=" + std::to_string(digest.first_non_finite_slice) +
+                   " carry=" + (session_diagnostics.carry_confident ? "ok" : "failed") +
+                   " inversion=" +
+                   (session_diagnostics.inversion_certified ? "ok" : "failed"));
+  }
+
+  // Transaction boundary: the admitted risk surface, its provenance records,
+  // and the served decision/selection become current together.
+  report.published = true;
+  report.published_curve = in.curve;
+  report.attempts.back().stage = SurfaceBuildStage::Publication;
+  risk_surface_.reset(new FittedSurface(std::move(sess), SurfacePurpose::Risk, quality_mode,
+                                        candidate_generation_));
+  served_decision_ = decision_;
+  served_selection_ = selection_;
+  std::optional<SurfaceBuildReport> next_published{report};
+  std::optional<SurfaceBuildReport> next_attempt{std::move(report)};
+  published_report_ = std::move(next_published);
+  last_attempt_report_ = std::move(next_attempt);
+  published_provenance_ = snapshot_provenance();
+  (void)finalize_mark();
+  timings_.total_ms = elapsed_ms(fit_start);
+  return Ok();
+}
+
+[[nodiscard]] RiskSurfaceValidationConfig
+risk_validation_config(FitQualityMode quality_mode) noexcept {
+  RiskSurfaceValidationConfig config;
+  switch (quality_mode) {
+  case FitQualityMode::Latency:
+    config.k_min = -0.35;
+    config.k_max = 0.35;
+    config.strike_grid_points = 65;
+    config.calendar_grid_points = 33;
+    break;
+  case FitQualityMode::Balanced:
+    config.k_min = -0.50;
+    config.k_max = 0.50;
+    config.strike_grid_points = 97;
+    config.calendar_grid_points = 65;
+    break;
+  case FitQualityMode::Accuracy:
+    // Calendar projection is certified over the common production risk band.
+    // Accuracy spends more samples/tighter fit work inside that contract; it
+    // does not claim unprojected far-wing calendar safety.
+    config.k_min = -0.60;
+    config.k_max = 0.60;
+    config.strike_grid_points = 257;
+    config.calendar_grid_points = 129;
+    break;
+  }
+  return config;
 }
 
 Result<ExpiryRefitDiagnostics> PricerFitter::refit_expiry(const OptionChain &chain,
                                                           ExpiryId expiry_id) {
+  // The transactional expiry refit operates on the config's default-purpose
+  // surface (the one published_provenance_ describes). When that surface is
+  // the RISK surface, publication additionally requires the independent risk
+  // oracle below — the mark-grade FitAdmissionPolicy alone can never republish
+  // a risk surface (fail-closed, §5.2).
+  const bool risk_purpose = has_output(effective_request().outputs, SurfacePurpose::Risk);
+  const FittedSurface *served = surface();
   CurveConfig published_curve{};
-  if (surface_ != nullptr) {
-    published_curve = surface_->session().inputs().curve;
+  if (served != nullptr) {
+    published_curve = served->session().inputs().curve;
   }
   const auto fail = [&](atx::core::Error error,
                         SurfaceBuildStage stage = SurfaceBuildStage::Build)
@@ -629,14 +1389,14 @@ Result<ExpiryRefitDiagnostics> PricerFitter::refit_expiry(const OptionChain &cha
     report.primary_curve = published_curve;
     report.refit_expiry = expiry_id;
     report.source_quote_revision = chain.quote_revision();
-    report.retained_last_known_good = surface_ != nullptr;
+    report.retained_last_known_good = served != nullptr;
     report.attempts.push_back(
         failed_attempt_report(chain.underlying(), published_curve, error, stage));
     last_attempt_report_ = std::move(report);
     return Err(std::move(error));
   };
 
-  if (surface_ == nullptr || !published_provenance_.has_value()) {
+  if (served == nullptr || !published_provenance_.has_value()) {
     return fail(atx::core::Error{ErrorCode::Unavailable,
                                  "PricerFitter::refit_expiry: no published surface"});
   }
@@ -671,7 +1431,7 @@ Result<ExpiryRefitDiagnostics> PricerFitter::refit_expiry(const OptionChain &cha
                                  "PricerFitter::refit_expiry: only eSSVI is supported"},
                 SurfaceBuildStage::InputValidation);
   }
-  switch (surface_->session().inputs().calendar_repair) {
+  switch (served->session().inputs().calendar_repair) {
   case CalendarRepair::None:
     break;
   case CalendarRepair::MonotoneFit:
@@ -681,9 +1441,14 @@ Result<ExpiryRefitDiagnostics> PricerFitter::refit_expiry(const OptionChain &cha
                     "PricerFitter::refit_expiry: configured calendar repair is unsupported"},
                 SurfaceBuildStage::InputValidation);
   }
+  if (candidate_generation_ == std::numeric_limits<std::uint64_t>::max()) {
+    return fail(atx::core::Error{ErrorCode::OutOfRange,
+                                 "surface generation counter exhausted"},
+                SurfaceBuildStage::InputValidation);
+  }
 
   const Chain &target_chain = under.chains[expiry_id];
-  const std::span<const SliceContext> fitted_expiries = surface_->session().expiries();
+  const std::span<const SliceContext> fitted_expiries = served->session().expiries();
   std::optional<std::size_t> fitted_index;
   for (std::size_t index = 0u; index < fitted_expiries.size(); ++index) {
     if (fitted_expiries[index].T != target_chain.T) {
@@ -704,13 +1469,13 @@ Result<ExpiryRefitDiagnostics> PricerFitter::refit_expiry(const OptionChain &cha
 
   Result<CanonicalPreparedExpiry> prepared =
       prepare_expiry(target_chain, static_cast<std::uint32_t>(expiry_id),
-                     refit_preparation_inputs(surface_->session()),
+                     refit_preparation_inputs(served->session()),
                      PreparedObservationPolicy::LegacyEssviCompatibility);
   if (!prepared.has_value()) {
     return fail(prepared.error());
   }
 
-  VolaSession candidate = surface_->session().clone_for_refit();
+  VolaSession candidate = served->session().clone_for_refit();
   Result<FitDiag> fit_diag = candidate.apply_prepared_essvi_refit(*fitted_index, *prepared);
   if (!fit_diag.has_value()) {
     return fail(fit_diag.error());
@@ -732,12 +1497,43 @@ Result<ExpiryRefitDiagnostics> PricerFitter::refit_expiry(const OptionChain &cha
     return Err(ErrorCode::Unavailable,
                "PricerFitter::refit_expiry: candidate failed surface admission");
   }
+  ++candidate_generation_;
+  if (risk_purpose) {
+    // Rule: a risk surface is NEVER republished on the mark-grade policy gate
+    // alone — the candidate must independently clear the same oracle contract
+    // fit() enforces (geometry + certification + §5.2 coverage merge).
+    const FitQualityMode quality_mode = served->quality_mode();
+    const RiskSurfaceValidationConfig validation_config = risk_validation_config(quality_mode);
+    Result<ValidationDigest> checked = validate_risk_surface(candidate, validation_config);
+    ValidationDigest digest;
+    if (checked.has_value()) {
+      digest = *checked;
+    } else {
+      digest.failures = ValidationFailure::InvalidDomain;
+    }
+    merge_session_failure_context(candidate.diagnostics(), digest);
+    finalize_validation_digest(digest, validation_config);
+    const AdmissionDecision risk_admission = decide_risk_surface_admission(
+        digest, quality_mode, candidate_generation_, served->generation(),
+        SurfaceFallback::LastKnownGood);
+    risk_health_ = risk_admission.health;
+    if (!risk_admission.publish_candidate) {
+      report.retained_last_known_good = true;
+      report.attempts.push_back(std::move(attempt));
+      last_attempt_report_ = std::move(report);
+      return Err(ErrorCode::Unavailable,
+                 "PricerFitter::refit_expiry: candidate failed independent risk admission");
+    }
+  }
 
   attempt.stage = SurfaceBuildStage::Publication;
   report.attempts.push_back(std::move(attempt));
   report.published = true;
   const SliceContext refreshed_context = candidate.expiries()[*fitted_index];
-  std::unique_ptr<FittedSurface> next_surface(new FittedSurface(std::move(candidate)));
+  const FitQualityMode published_quality = served->quality_mode();
+  std::unique_ptr<FittedSurface> next_surface(
+      new FittedSurface(std::move(candidate), served->purpose(), published_quality,
+                        candidate_generation_));
   std::optional<SurfaceBuildReport> next_published{report};
   std::optional<SurfaceBuildReport> next_attempt{std::move(report)};
   FitSnapshotProvenance provenance;
@@ -747,7 +1543,15 @@ Result<ExpiryRefitDiagnostics> PricerFitter::refit_expiry(const OptionChain &cha
   provenance.expiry_revisions.assign(current_revisions.begin(), current_revisions.end());
   std::optional<FitSnapshotProvenance> next_provenance{std::move(provenance)};
 
-  surface_ = std::move(next_surface);
+  if (risk_purpose) {
+    risk_surface_ = std::shared_ptr<const FittedSurface>(std::move(next_surface));
+  } else {
+    market_mark_surface_ = std::shared_ptr<const FittedSurface>(std::move(next_surface));
+    market_mark_health_.state = SurfaceState::Healthy;
+    market_mark_health_.reasons = ValidationFailure::None;
+    market_mark_health_.candidate_generation = candidate_generation_;
+    market_mark_health_.served_generation = candidate_generation_;
+  }
   published_report_ = std::move(next_published);
   last_attempt_report_ = std::move(next_attempt);
   published_provenance_ = std::move(next_provenance);
@@ -762,13 +1566,249 @@ Result<ExpiryRefitDiagnostics> PricerFitter::refit_expiry(const OptionChain &cha
                                    admission});
 }
 
+Result<FitDiag> PricerFitter::refit_risk_slice(const OptionChain &chain,
+                                               std::size_t slice_idx) {
+  using Clock = std::chrono::steady_clock;
+  const auto incremental_start = Clock::now();
+  const auto elapsed_ms = [](Clock::time_point start) {
+    return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+  };
+  timings_.incremental_input_ms = 0.0;
+  timings_.incremental_refit_ms = 0.0;
+  timings_.incremental_validation_ms = 0.0;
+  timings_.incremental_publish_ms = 0.0;
+  timings_.incremental_total_ms = 0.0;
+  if (risk_surface_ == nullptr) {
+    return Err(ErrorCode::Unavailable,
+               "PricerFitter::refit_risk_slice: no admitted risk surface");
+  }
+  if (candidate_generation_ == std::numeric_limits<std::uint64_t>::max()) {
+    return Err(ErrorCode::OutOfRange, "surface generation counter exhausted");
+  }
+  ++candidate_generation_;
+
+  const FittedSurface &served = *risk_surface_;
+  const VolaSession &live_session = served.session();
+  const std::span<const SliceContext> contexts = live_session.expiries();
+  if (slice_idx >= contexts.size()) {
+    return Err(ErrorCode::InvalidArgument,
+               "PricerFitter::refit_risk_slice: slice_idx out of range");
+  }
+
+  const FitQualityMode quality_mode = served.quality_mode();
+  const std::uint64_t prior_generation = served.generation();
+  const auto retain_prior = [&](ValidationFailure failure) {
+    ValidationDigest digest;
+    digest.failures = failure;
+    const RiskSurfaceValidationConfig validation_config =
+        risk_validation_config(quality_mode);
+    finalize_validation_digest(digest, validation_config);
+    risk_health_ = decide_risk_surface_admission(
+                       digest, quality_mode, candidate_generation_, prior_generation,
+                       SurfaceFallback::LastKnownGood)
+                       .health;
+  };
+
+  const SliceContext &context = contexts[slice_idx];
+  const Chain *updated_chain = nullptr;
+  for (const Chain &candidate_chain : chain.underlying().chains) {
+    if (std::fabs(candidate_chain.T - context.T) <=
+        1.0e-10 * std::max(1.0, context.T)) {
+      updated_chain = &candidate_chain;
+      break;
+    }
+  }
+  if (updated_chain == nullptr) {
+    retain_prior(ValidationFailure::StaleInput);
+    return Err(ErrorCode::NotFound,
+               "PricerFitter::refit_risk_slice: fitted expiry is absent from updated chain");
+  }
+
+  const SessionInputs &inputs = live_session.inputs();
+  const double rate = live_session.rate_at(context.T);
+  Result<std::vector<FitObs>> observation_rows =
+      live_session.cached_refit_observations(*updated_chain, slice_idx);
+  if (!observation_rows.has_value()) {
+    Result<ChainForward> carry = resolve_chain_forward(
+        *updated_chain, inputs.S, rate, inputs.cash_divs, inputs.now_ts_ns,
+        inputs.deam);
+    if (!carry.has_value() || !carry->carry.confident) {
+      retain_prior(ValidationFailure::InsufficientData);
+      if (!carry.has_value()) {
+        return Err(std::move(carry).error());
+      }
+      return Err(ErrorCode::Unavailable,
+                 "PricerFitter::refit_risk_slice: updated carry is not certified");
+    }
+
+    // A local curve owns its original forward coordinate. Moving that
+    // coordinate without rebuilding the whole term structure would silently
+    // change every k, so promote the update to the cold fit path.
+    const double forward_shift =
+        std::fabs(std::log(carry->forward / context.forward));
+    if (!std::isfinite(forward_shift) || forward_shift > 1.0e-8) {
+      retain_prior(ValidationFailure::StaleInput);
+      return Err(ErrorCode::Unavailable,
+                 "PricerFitter::refit_risk_slice: carry moved; full surface fit required");
+    }
+
+    const double df = std::exp(-rate * context.T);
+    const AmericanCorrectionCaches deam_caches =
+        inputs.use_deam_cache_for_fit ? live_session.correction_caches()
+                                     : AmericanCorrectionCaches{};
+    Result<ObsSet> observations = build_observations_european(
+        *updated_chain, inputs.S, rate, context.forward, context.T, df,
+        inputs.calib, deam_caches, inputs.deam.al_opts, inputs.deam.iv_tol,
+        inputs.deam.iv_max_iter, inputs.deam.method);
+    if (!observations.has_value()) {
+      retain_prior(ValidationFailure::InsufficientData);
+      return Err(std::move(observations).error());
+    }
+    // Fail-closed for EVERY method: a non-AndersenLake method has no audit and
+    // can never certify (deam_inversion_certified). Node drops within the
+    // configured cap are tolerated; beyond it the refit is refused.
+    if (!deam_inversion_certified(
+            observations->deam_audit,
+            inputs.calib.max_certified_deam_drop_fraction)) {
+      retain_prior(ValidationFailure::InversionResidual);
+      return Err(ErrorCode::Unavailable,
+                 "PricerFitter::refit_risk_slice: price-to-IV inversion audit failed");
+    }
+    observation_rows = Ok(std::move(observations->obs));
+  }
+  timings_.incremental_input_ms = elapsed_ms(incremental_start);
+
+  const auto refit_start = Clock::now();
+  VolaSession candidate = live_session.clone();
+  Result<FitDiag> refit = candidate.refit_slice(slice_idx, *observation_rows);
+  timings_.incremental_refit_ms = elapsed_ms(refit_start);
+  if (!refit.has_value()) {
+    retain_prior(ValidationFailure::InsufficientData);
+    return refit;
+  }
+
+  const RiskSurfaceValidationConfig validation_config =
+      risk_validation_config(quality_mode);
+  const auto validation_start = Clock::now();
+  Result<ValidationDigest> checked = validate_risk_surface(candidate, validation_config);
+  timings_.incremental_validation_ms = elapsed_ms(validation_start);
+  if (!checked.has_value()) {
+    retain_prior(ValidationFailure::InvalidDomain);
+    return Err(std::move(checked).error());
+  }
+  ValidationDigest digest = *checked;
+  // Review I-1: the geometric oracle knows nothing about carry coverage. Merge
+  // the candidate's non-geometric failure context (identical seam to fit()) so
+  // a still-gapped surface re-admits as Degraded+CarryGap, never as a clean
+  // Healthy with the expiry silently missing (§5.2).
+  merge_session_failure_context(candidate.diagnostics(), digest);
+  finalize_validation_digest(digest, validation_config);
+  const AdmissionDecision admission = decide_risk_surface_admission(
+      digest, quality_mode, candidate_generation_, prior_generation,
+      SurfaceFallback::LastKnownGood);
+  risk_health_ = admission.health;
+  if (!admission.publish_candidate) {
+    return Err(ErrorCode::Unavailable,
+               "PricerFitter::refit_risk_slice: candidate failed independent admission");
+  }
+
+  const auto publish_start = Clock::now();
+  risk_surface_.reset(new FittedSurface(std::move(candidate), SurfacePurpose::Risk,
+                                        quality_mode, candidate_generation_));
+  timings_.incremental_publish_ms = elapsed_ms(publish_start);
+  timings_.incremental_total_ms = elapsed_ms(incremental_start);
+  return refit;
+}
+
+bool PricerFitter::is_v2_request() const noexcept {
+  // Route between two coexisting fit contracts:
+  //   * BRANCH dual mark/risk pipeline (independent risk oracle, refit_risk_slice)
+  //   * MAIN single-surface transactional fit (FitAdmissionPolicy, refit_expiry)
+  //
+  // MERGE routing call. The two APIs collided on the *value* {Balanced,
+  // MarketMarkAndRisk}: it was both the v2 default AND the shape of every legacy
+  // PricerConfig, so a legacy `preset` (Fast/Robust/Accurate -> purpose Risk in
+  // map_legacy_fit_preset) silently promoted main's mark-grade consumers
+  // (corpus/populate/dispersion) into fail-closed RISK requests. That inverts
+  // da718f7 (WP12), whose contract is explicit: the default serves a MARK and
+  // strict risk admission is the opt-in.
+  //
+  // Resolution: the v2 request is opt-in *by naming it*. `quality_mode` and
+  // `outputs` are optional; engaging either is the v2 signal. A legacy preset
+  // never implicitly requests Risk — it supplies the work budget of whichever
+  // field the v2 caller left unnamed (effective_request, below). A config that
+  // names neither is main's single-surface world: preset-budgeted, selector-
+  // routed, admitted by cfg_.admission (strict only via risk_admission_policy()),
+  // served + incrementally refit through refit_expiry.
+  //
+  // The fail-closed risk contract is untouched: any request that DOES resolve to
+  // a Risk output is still served only through the independent oracle, and still
+  // refuses to substitute the market mark (surface() / value_chain, below).
+  return cfg_.quality_mode.has_value() || cfg_.outputs.has_value();
+}
+
+PricerFitter::EffectiveRequest PricerFitter::effective_request() const noexcept {
+  const LegacyPresetMapping legacy = map_legacy_fit_preset(cfg_.preset);
+  // Legacy (v2-unnamed) request: ONE surface, published into the market_mark
+  // slot and admitted by FitAdmissionPolicy — so reads (surface()/value_chain)
+  // resolve there regardless of the mark-vs-risk admission consumer. The preset
+  // keeps its §9 work budget.
+  if (!is_v2_request()) {
+    return EffectiveRequest{SurfaceOutputs::MarketMark, legacy.quality_mode};
+  }
+  // v2 request. An unnamed field falls back to the legacy preset's §9 mapping:
+  // Hft is a market-mark request (never an implicit risk request), every other
+  // preset's dual bundle carries that preset's quality budget.
+  const SurfaceOutputs outputs = cfg_.outputs.value_or(
+      legacy.purpose == SurfacePurpose::MarketMark ? SurfaceOutputs::MarketMark
+                                                   : SurfaceOutputs::MarketMarkAndRisk);
+  return EffectiveRequest{outputs, cfg_.quality_mode.value_or(legacy.quality_mode)};
+}
+
+bool PricerFitter::fitted() const noexcept { return surface() != nullptr; }
+
+const FittedSurface *PricerFitter::surface() const noexcept {
+  // Fail-closed default-purpose serving (§3, §5.6): a config that requested a
+  // Risk output is answered by the admitted risk surface or not at all — the
+  // unconstrained LinearVariance market mark is never silently substituted.
+  // Mark-only requests keep serving their market surface.
+  if (has_output(effective_request().outputs, SurfacePurpose::Risk)) {
+    return risk_surface_.get();
+  }
+  return market_mark_surface_.get();
+}
+
 Result<ChainValuation> PricerFitter::value_chain(const OptionChain &chain, OutputField fields,
                                                  unsigned n_threads) const {
-  if (surface_ == nullptr) {
+  // Fail-closed purpose default: mirrors surface(). A caller that wants the
+  // mark interpolant while risk is requested/unserved states so explicitly via
+  // the SurfacePurpose::MarketMark overload.
+  const SurfacePurpose purpose =
+      has_output(effective_request().outputs, SurfacePurpose::Risk)
+          ? SurfacePurpose::Risk
+          : SurfacePurpose::MarketMark;
+  return value_chain(chain, fields, purpose, n_threads);
+}
+
+Result<ChainValuation> PricerFitter::value_chain(const OptionChain &chain, OutputField fields,
+                                                 SurfacePurpose purpose,
+                                                 unsigned n_threads) const {
+  const FittedSurface *served = purpose == SurfacePurpose::Risk ? risk_surface_.get()
+                                                                : market_mark_surface_.get();
+  if (served == nullptr) {
+    if (purpose == SurfacePurpose::Risk) {
+      // Name the risk rejection so a tick-loop caller cannot mistake this for
+      // a transient "not fitted yet" and quietly re-route to the mark.
+      return Err(ErrorCode::Unavailable,
+                 "PricerFitter::value_chain: risk surface unserved (state=" +
+                     std::string(to_string(risk_health_.state)) + " reasons=" +
+                     std::to_string(static_cast<std::uint32_t>(risk_health_.reasons)) +
+                     "); pass SurfacePurpose::MarketMark to price the mark explicitly");
+    }
     return Err(ErrorCode::Unavailable,
-               "PricerFitter::value_chain: no fitted surface; call fit() first");
+               "PricerFitter::value_chain: requested surface purpose is unavailable");
   }
-  const VolaSession &sess = surface_->session();
+  const VolaSession &sess = served->session();
   const double S = chain.spot();
   const double nan = std::numeric_limits<double>::quiet_NaN();
 

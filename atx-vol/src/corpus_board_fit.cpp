@@ -50,6 +50,26 @@ admission_reason_mask(CorpusAdmissionReason reason) noexcept {
   return CorpusAdmissionDecision{disposition, reason, admission_reason_mask(reason)};
 }
 
+// SurfaceHealth -> SurfaceProvenance for the ONE health record matching the
+// surface `fitter.surface()` actually served (fail-closed: risk_health when
+// the config requested/admitted risk, market_mark_health for a mark-only
+// request — see PricerFitter::surface()). Preserves the independently
+// admitted state/digest so it can reach the archive instead of being dropped
+// (unwired C-2): every produced record satisfies the writer's
+// healthy-implies-clean-digest invariant because decide_risk_surface_admission
+// / the market-mark build path already only mark Healthy with a clean digest.
+[[nodiscard]] SurfaceProvenance provenance_from_health(const SurfaceHealth &health) noexcept {
+  SurfaceProvenance provenance;
+  provenance.purpose = health.purpose;
+  provenance.quality_mode = health.quality_mode;
+  provenance.state = health.state;
+  provenance.validation = health.validation;
+  provenance.source_generation = health.candidate_generation;
+  provenance.served_generation = health.served_generation;
+  provenance.legacy_format = false;
+  return provenance;
+}
+
 [[nodiscard]] CorpusQualityMetrics
 collect_quality(const CorpusBoard &board, const OptionChain &chain, const PricerConfig &cfg,
                 const PricerFitter &fitter, const PricedSurface &surface,
@@ -264,6 +284,15 @@ FitSlot fit_board(const CorpusBoard &board, const PricerConfig &tmpl,
         }
       }
     }
+    // Capture the fitter's own admitted provenance for the served surface
+    // BEFORE it goes out of scope — `fitter` is a stack-local per board, so
+    // this is the one seam where the health computed inside PricerFitter::fit
+    // can reach the archive write later in build_corpus_core (unwired C-2).
+    // fitted->purpose() names which of bundle()'s two healths matches `ps`.
+    const SurfaceBundle bundle = fitter.bundle();
+    slot.provenance = provenance_from_health(fitted->purpose() == SurfacePurpose::Risk
+                                                 ? bundle.risk_health
+                                                 : bundle.market_mark_health);
     slot.surface = std::move(*ps);
     slot.status = CorpusFitStatus::Ok;
     return slot;

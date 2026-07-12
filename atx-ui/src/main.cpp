@@ -24,7 +24,8 @@ struct Options {
 
 void print_usage() {
   std::cout << "atx-ui [--symbol SYMBOL] [--data PATH] [--snapshot ISO] "
-               "[--expiry YYYY-MM-DD] [--rate RATE] [--headless] [--frames N]\n";
+               "[--expiry YYYY-MM-DD] [--rate RATE] [--quality latency|balanced|accuracy] "
+               "[--headless] [--frames N]\n";
 }
 
 bool parse_options(int argc, char **argv, Options &options) {
@@ -47,6 +48,17 @@ bool parse_options(int argc, char **argv, Options &options) {
         options.source.initial_expiry = next();
       } else if (arg == "--rate") {
         options.source.rate = std::stod(next());
+      } else if (arg == "--quality") {
+        const std::string quality = next();
+        if (quality == "latency") {
+          options.source.quality_mode = atx::ui::UiFitQualityMode::Latency;
+        } else if (quality == "balanced") {
+          options.source.quality_mode = atx::ui::UiFitQualityMode::Balanced;
+        } else if (quality == "accuracy") {
+          options.source.quality_mode = atx::ui::UiFitQualityMode::Accuracy;
+        } else {
+          throw std::runtime_error("invalid quality mode: " + quality);
+        }
       } else if (arg == "--frames") {
         options.frame_limit = static_cast<std::size_t>(std::stoull(next()));
       } else if (arg == "--headless") {
@@ -98,6 +110,8 @@ int main(int argc, char **argv) {
               << " expiries=" << source.expiries().size() << " quotes=" << slice.quotes.size()
               << " curve_points=" << slice.curve.size() << " spot=" << slice.spot
               << " forward=" << slice.forward << " atm_vol=" << slice.atm_vol
+              << " risk_state=" << source.diagnostics().risk_state
+              << " quality=" << source.diagnostics().quality_mode
               << " fit_ms=" << source.fit_milliseconds() << '\n';
     return 0;
   }
@@ -110,7 +124,8 @@ int main(int argc, char **argv) {
   app_config.layout_id = "vol-surface-v2";
   app_config.frame_limit = options.frame_limit;
   atx::ui::Application app{std::move(app_config)};
-  app.set_status_text(loaded ? options.source.symbol + " / HFT SURFACE READY" : "DATA ERROR");
+  app.set_status_text(loaded ? options.source.symbol + " / ADMITTED RISK + MARKET MARK READY"
+                             : "DATA ERROR");
   app.add_panel(atx::ui::PanelSpec{
       .id = "market_strip",
       .title = options.source.symbol + " SYMBOL VIEWER",

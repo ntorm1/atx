@@ -33,6 +33,98 @@ namespace {
 // ── Small helpers ────────────────────────────────────────────────────────
 
 constexpr char kDbMagic[8] = {'A', 'T', 'X', 'V', 'D', 'B', '0', '1'};
+constexpr std::uint32_t kDbSurfacePolicyMarker = 0x31504C56u; // "VLP1"
+
+// Versioned payload embedded in DbSymbolRecord::reserved. Its size exactly
+// matches the existing reserved region, so ATXVDB v1 framing remains unchanged.
+struct DbSurfacePolicyRecord {
+  std::uint32_t marker{};
+  std::uint8_t quality_mode{};
+  std::uint8_t outputs{};
+  std::uint8_t risk_admission{};
+  std::uint8_t fallback{};
+  std::uint8_t has_provenance{};
+  std::uint8_t purpose{};
+  std::uint8_t state{};
+  std::uint8_t provenance_quality_mode{};
+  std::uint32_t validation_failures{};
+  std::uint64_t validation_id{};
+  std::uint64_t served_generation{};
+};
+static_assert(sizeof(DbSurfacePolicyRecord) == 32);
+
+[[nodiscard]] DbSurfacePolicyRecord
+encode_surface_policy(const SurfacePolicy &policy,
+                      const std::optional<SurfaceProvenance> &provenance) noexcept {
+  DbSurfacePolicyRecord record{};
+  record.marker = kDbSurfacePolicyMarker;
+  record.quality_mode = static_cast<std::uint8_t>(policy.quality_mode);
+  record.outputs = static_cast<std::uint8_t>(policy.outputs);
+  record.risk_admission = static_cast<std::uint8_t>(policy.risk_admission);
+  record.fallback = static_cast<std::uint8_t>(policy.fallback);
+  if (provenance.has_value()) {
+    record.has_provenance = 1u;
+    record.purpose = static_cast<std::uint8_t>(provenance->purpose);
+    record.state = static_cast<std::uint8_t>(provenance->state);
+    record.provenance_quality_mode =
+        static_cast<std::uint8_t>(provenance->quality_mode);
+    record.validation_failures =
+        static_cast<std::uint32_t>(provenance->validation.failures);
+    record.validation_id = provenance->validation.validation_id;
+    record.served_generation = provenance->served_generation;
+  }
+  return record;
+}
+
+[[nodiscard]] bool surface_policy_record_valid(const DbSurfacePolicyRecord &record) noexcept {
+  // All-zero is the legacy ATXVDB v1 representation and maps to SurfacePolicy{}.
+  if (record.marker == 0u) {
+    const auto *bytes = reinterpret_cast<const std::uint8_t *>(&record);
+    return std::all_of(bytes, bytes + sizeof record,
+                       [](std::uint8_t value) { return value == 0u; });
+  }
+  const bool fields_valid = record.marker == kDbSurfacePolicyMarker && record.quality_mode <= 2u &&
+                            record.outputs >= 1u && record.outputs <= 3u &&
+                            record.risk_admission <= 1u && record.fallback <= 1u;
+  const bool requests_risk =
+      (record.outputs & static_cast<std::uint8_t>(SurfaceOutputs::Risk)) != 0u;
+  const bool mandatory_risk_admission =
+      !requests_risk || record.risk_admission == static_cast<std::uint8_t>(RiskAdmission::Required);
+  // Bits 0..11 — includes ValidationFailure::CarryGap (1u << 11), the
+  // publish-with-Degraded reason: a Degraded+CarryGap provenance is a
+  // routinely SERVED state and must round-trip the db record.
+  constexpr std::uint32_t kKnownFailures = (1u << 12) - 1u;
+  const bool provenance_valid =
+      record.has_provenance <= 1u &&
+      (record.has_provenance == 0u ||
+       (record.purpose <= 1u && record.state <= 3u &&
+        record.provenance_quality_mode <= 2u &&
+        (record.validation_failures & ~kKnownFailures) == 0u &&
+        (record.state != static_cast<std::uint8_t>(SurfaceState::Healthy) ||
+         record.validation_failures == 0u)));
+  return fields_valid && mandatory_risk_admission && provenance_valid;
+}
+
+[[nodiscard]] SurfacePolicy decode_surface_policy(const DbSymbolRecord &record) noexcept {
+  DbSurfacePolicyRecord wire{};
+  std::memcpy(&wire, record.reserved, sizeof wire);
+  if (wire.marker == 0u) {
+    return SurfacePolicy{};
+  }
+  SurfacePolicy policy;
+  policy.quality_mode = static_cast<FitQualityMode>(wire.quality_mode);
+  policy.outputs = static_cast<SurfaceOutputs>(wire.outputs);
+  policy.risk_admission = static_cast<RiskAdmission>(wire.risk_admission);
+  policy.fallback = static_cast<SurfaceFallback>(wire.fallback);
+  return policy;
+}
+
+[[nodiscard]] DbSurfacePolicyRecord
+decode_surface_policy_record(const DbSymbolRecord &record) noexcept {
+  DbSurfacePolicyRecord wire{};
+  std::memcpy(&wire, record.reserved, sizeof wire);
+  return wire;
+}
 
 [[nodiscard]] std::byte *buf_at(std::vector<std::byte> &b, std::uint64_t off) noexcept {
   return b.data() + static_cast<std::size_t>(off);
@@ -89,8 +181,7 @@ constexpr char kDbMagic[8] = {'A', 'T', 'X', 'V', 'D', 'B', '0', '1'};
 [[nodiscard]] Result<std::string> canonicalize_key(std::string_view k) {
   if (k.empty() || k.size() > kSurfaceDbKeyMax) {
     return Err(ErrorCode::InvalidArgument,
-               "surface_db: partition key length must be 1.." +
-                   std::to_string(kSurfaceDbKeyMax));
+               "surface_db: partition key length must be 1.." + std::to_string(kSurfaceDbKeyMax));
   }
   std::string out(k.size(), '\0');
   for (std::size_t i = 0; i < k.size(); ++i) {
@@ -114,26 +205,41 @@ constexpr char kDbMagic[8] = {'A', 'T', 'X', 'V', 'D', 'B', '0', '1'};
 // Field-for-field mirror of SymbolFitConfig -> DbSymbolRecord (writer side).
 // Exact inverse of decode_symbol_record.
 [[nodiscard]] DbSymbolRecord encode_symbol_record(std::string_view canon,
-                                                   const SymbolFitConfig &cfg) noexcept {
+                                                  const SymbolFitConfig &cfg,
+                                                  const std::optional<SurfaceProvenance>
+                                                      &provenance) noexcept {
   DbSymbolRecord rec{};
   const auto len = static_cast<std::uint16_t>(std::min(canon.size(), kSurfaceDbKeyMax));
   std::memcpy(rec.symbol, canon.data(), len);
   rec.symbol_len = len;
 
   std::uint16_t flags = 0;
-  if (cfg.enabled) flags |= kDbSymEnabled;
-  if (cfg.pin_curve) flags |= kDbSymPinCurve;
-  if (cfg.al_override) flags |= kDbSymAlOverride;
-  if (cfg.use_correction_cache) flags |= kDbSymUseCorrectionCache;
-  if (cfg.score_parity) flags |= kDbSymScoreParity;
-  if (cfg.enforce_calendar_floor) flags |= kDbSymEnforceCalendarFloor;
-  if (cfg.use_deam_cache_for_fit) flags |= kDbSymUseDeamCacheForFit;
-  if (cfg.curve.convex.bound_slope_below) flags |= kDbSymConvexBoundSlopeBelow;
-  if (cfg.curve.parametric.lee_bound_project) flags |= kDbSymLeeBoundProject;
-  if (cfg.curve.parametric.morozov_stop) flags |= kDbSymMorozovStop;
-  if (cfg.curve.parametric.validate_no_arb) flags |= kDbSymValidateNoArb;
-  if (cfg.curve.parametric.residual_disable) flags |= kDbSymResidualDisable;
-  if (cfg.curve.parametric.essvi_asymmetric_rho) flags |= kDbSymEssviAsymmetricRho;
+  if (cfg.enabled)
+    flags |= kDbSymEnabled;
+  if (cfg.pin_curve)
+    flags |= kDbSymPinCurve;
+  if (cfg.al_override)
+    flags |= kDbSymAlOverride;
+  if (cfg.use_correction_cache)
+    flags |= kDbSymUseCorrectionCache;
+  if (cfg.score_parity)
+    flags |= kDbSymScoreParity;
+  if (cfg.enforce_calendar_floor)
+    flags |= kDbSymEnforceCalendarFloor;
+  if (cfg.use_deam_cache_for_fit)
+    flags |= kDbSymUseDeamCacheForFit;
+  if (cfg.curve.convex.bound_slope_below)
+    flags |= kDbSymConvexBoundSlopeBelow;
+  if (cfg.curve.parametric.lee_bound_project)
+    flags |= kDbSymLeeBoundProject;
+  if (cfg.curve.parametric.morozov_stop)
+    flags |= kDbSymMorozovStop;
+  if (cfg.curve.parametric.validate_no_arb)
+    flags |= kDbSymValidateNoArb;
+  if (cfg.curve.parametric.residual_disable)
+    flags |= kDbSymResidualDisable;
+  if (cfg.curve.parametric.essvi_asymmetric_rho)
+    flags |= kDbSymEssviAsymmetricRho;
   rec.flags = flags;
 
   rec.preset = static_cast<std::uint8_t>(cfg.preset);
@@ -183,6 +289,10 @@ constexpr char kDbMagic[8] = {'A', 'T', 'X', 'V', 'D', 'B', '0', '1'};
   rec.al_tol = cfg.al.tol;
   rec.band_k = cfg.band_k;
 
+  const DbSurfacePolicyRecord surface_policy =
+      encode_surface_policy(cfg.surface_policy, provenance);
+  std::memcpy(rec.reserved, &surface_policy, sizeof surface_policy);
+
   return rec;
 }
 
@@ -197,9 +307,12 @@ constexpr char kDbMagic[8] = {'A', 'T', 'X', 'V', 'D', 'B', '0', '1'};
 // reconstruct. Raise this cap only alongside a new wire version that defines
 // SplineVol's on-disk payload.
 [[nodiscard]] bool symbol_record_enums_valid(const DbSymbolRecord &rec) noexcept {
+  DbSurfacePolicyRecord surface_policy{};
+  std::memcpy(&surface_policy, rec.reserved, sizeof surface_policy);
   return rec.preset <= 3 && rec.curve_kind <= 4 && rec.calendar_repair <= 2 &&
          rec.convex_loss <= 1 && rec.essvi_rho_mode <= 2 && rec.optimization_level <= 4 &&
-         rec.residual_basis_kind <= 5 && rec.loss_kind <= 1 && rec.anchor_kind <= 2;
+         rec.residual_basis_kind <= 5 && rec.loss_kind <= 1 && rec.anchor_kind <= 2 &&
+         surface_policy_record_valid(surface_policy);
 }
 
 } // namespace
@@ -268,6 +381,7 @@ SymbolFitConfig decode_symbol_record(const DbSymbolRecord &rec) {
   cfg.al.max_newton_iter = rec.al_max_newton_iter;
   cfg.al.tol = rec.al_tol;
   cfg.band_k = rec.band_k;
+  cfg.surface_policy = decode_surface_policy(rec);
 
   return cfg;
 }
@@ -291,6 +405,15 @@ void apply_symbol_config(const SymbolFitConfig &cfg, SessionInputs &in) {
   in.use_deam_cache_for_fit = cfg.use_deam_cache_for_fit;
 }
 
+void apply_symbol_config(const SymbolFitConfig &cfg, SessionInputs &in, SurfacePolicy &policy) {
+  apply_symbol_config(cfg, in);
+  // Unconditional, like every other SymbolFitConfig field this function binds
+  // (band_k, calendar_repair, ...): the stored surface_policy is always the
+  // final word — see the header comment for why it has no preset-deferring
+  // gate the way pin_curve/al_override do.
+  policy = cfg.surface_policy;
+}
+
 SymbolFitConfig symbol_config_from_preset(FitPreset preset) {
   SessionInputs tmp;
   apply_fit_preset(tmp, preset);
@@ -306,14 +429,44 @@ SymbolFitConfig symbol_config_from_preset(FitPreset preset) {
   cfg.score_parity = tmp.score_parity;
   cfg.enforce_calendar_floor = tmp.enforce_calendar_floor;
   cfg.use_deam_cache_for_fit = tmp.use_deam_cache_for_fit;
+  const LegacyPresetMapping legacy = map_legacy_fit_preset(preset);
+  cfg.surface_policy.quality_mode = legacy.quality_mode;
+  cfg.surface_policy.outputs = legacy.purpose == SurfacePurpose::MarketMark
+                                   ? SurfaceOutputs::MarketMark
+                                   : SurfaceOutputs::Risk;
+  cfg.surface_policy.risk_admission = legacy.purpose == SurfacePurpose::Risk
+                                          ? RiskAdmission::Required
+                                          : RiskAdmission::NotApplicable;
+  cfg.surface_policy.fallback = legacy.purpose == SurfacePurpose::Risk
+                                    ? SurfaceFallback::LastKnownGood
+                                    : SurfaceFallback::None;
   return cfg;
+}
+
+std::optional<SurfaceProvenance>
+decode_symbol_provenance(const DbSymbolRecord &rec) noexcept {
+  const DbSurfacePolicyRecord wire = decode_surface_policy_record(rec);
+  if (wire.marker == 0u || wire.has_provenance == 0u) {
+    return std::nullopt;
+  }
+  SurfaceProvenance provenance;
+  provenance.purpose = static_cast<SurfacePurpose>(wire.purpose);
+  provenance.quality_mode =
+      static_cast<FitQualityMode>(wire.provenance_quality_mode);
+  provenance.state = static_cast<SurfaceState>(wire.state);
+  provenance.validation.failures =
+      static_cast<ValidationFailure>(wire.validation_failures);
+  provenance.validation.validation_id = wire.validation_id;
+  provenance.served_generation = wire.served_generation;
+  provenance.legacy_format = false;
+  return provenance;
 }
 
 // ── Writer ───────────────────────────────────────────────────────────────
 
 Result<std::vector<std::byte>> write_db_manifest(std::span<const DbSymbolEntry> symbols,
-                                                  std::span<const DbPartitionInfo> partitions,
-                                                  const SurfaceDbManifestWriteOpts &opts) {
+                                                 std::span<const DbPartitionInfo> partitions,
+                                                 const SurfaceDbManifestWriteOpts &opts) {
   if (symbols.size() > 0xFFFFFFFFull) {
     return Err(ErrorCode::InvalidArgument, "write_db_manifest: too many symbols");
   }
@@ -333,7 +486,7 @@ Result<std::vector<std::byte>> write_db_manifest(std::span<const DbSymbolEntry> 
       return Err(ErrorCode::InvalidArgument, "write_db_manifest: empty canonical symbol");
     }
     SymPlan p;
-    p.rec = encode_symbol_record(canon, e.config);
+    p.rec = encode_symbol_record(canon, e.config, e.provenance);
     // Validate wire-range BEFORE this record ever reaches disk: the exact
     // same check DbManifest::open enforces on read (symbol_record_enums_valid),
     // so a config carrying an out-of-range enum (e.g. an invalid
@@ -352,8 +505,8 @@ Result<std::vector<std::byte>> write_db_manifest(std::span<const DbSymbolEntry> 
     return cmp_key(a.rec.symbol, a.rec.symbol_len, b.rec.symbol, b.rec.symbol_len) < 0;
   });
   for (std::size_t i = 1; i < sym_plans.size(); ++i) {
-    if (cmp_key(sym_plans[i - 1].rec.symbol, sym_plans[i - 1].rec.symbol_len, sym_plans[i].rec.symbol,
-                sym_plans[i].rec.symbol_len) == 0) {
+    if (cmp_key(sym_plans[i - 1].rec.symbol, sym_plans[i - 1].rec.symbol_len,
+                sym_plans[i].rec.symbol, sym_plans[i].rec.symbol_len) == 0) {
       return Err(ErrorCode::AlreadyExists, "write_db_manifest: duplicate canonical symbol");
     }
   }
@@ -393,8 +546,7 @@ Result<std::vector<std::byte>> write_db_manifest(std::span<const DbSymbolEntry> 
 
   // 5. Layout: header @ 0, symbols @ align_up(header, 64), partitions @
   // align_up(symbols_end, 64).
-  const std::uint64_t symbols_offset =
-      align_up(sizeof(DbManifestHeader), kSurfaceDbSectionAlign);
+  const std::uint64_t symbols_offset = align_up(sizeof(DbManifestHeader), kSurfaceDbSectionAlign);
   const std::uint64_t symbols_bytes =
       static_cast<std::uint64_t>(sym_plans.size()) * sizeof(DbSymbolRecord);
   const std::uint64_t partitions_offset =
@@ -468,8 +620,7 @@ Result<DbManifest> DbManifest::open(std::vector<std::byte> bytes) {
   if (h.pointer_bits != 64) {
     return Err(ErrorCode::ParseError, "DbManifest::open: unsupported pointer width");
   }
-  if (h.header_size != sizeof(DbManifestHeader) ||
-      h.symbol_record_size != sizeof(DbSymbolRecord) ||
+  if (h.header_size != sizeof(DbManifestHeader) || h.symbol_record_size != sizeof(DbSymbolRecord) ||
       h.partition_record_size != sizeof(DbPartitionRecord)) {
     return Err(ErrorCode::ParseError, "DbManifest::open: record size mismatch");
   }
@@ -529,9 +680,8 @@ Result<DbManifest> DbManifest::open(std::vector<std::byte> bytes) {
       return Err(ErrorCode::ParseError, "DbManifest::open: invalid symbol_len");
     }
     if (!symbol_record_enums_valid(rec)) {
-      return Err(ErrorCode::ParseError,
-                 "DbManifest::open: bad enum wire value for symbol " +
-                     std::string(rec.symbol, rec.symbol_len));
+      return Err(ErrorCode::ParseError, "DbManifest::open: bad enum wire value for symbol " +
+                                            std::string(rec.symbol, rec.symbol_len));
     }
   }
   for (std::size_t i = 1; i < m.symbols_.size(); ++i) {
@@ -572,17 +722,35 @@ Result<SymbolFitConfig> DbManifest::find_symbol(std::string_view symbol) const {
   return Err(ErrorCode::NotFound, "DbManifest::find_symbol: symbol not present");
 }
 
+Result<std::optional<SurfaceProvenance>>
+DbManifest::find_symbol_provenance(std::string_view symbol) const {
+  const std::string canon = detail::canonicalize_symbol(symbol, kSurfaceDbKeyMax);
+  if (!canon.empty()) {
+    const auto len = static_cast<std::uint16_t>(canon.size());
+    const auto it =
+        std::lower_bound(symbols_.begin(), symbols_.end(), canon,
+                         [len](const DbSymbolRecord &rec, const std::string &key) {
+                           return cmp_key(rec.symbol, rec.symbol_len, key.data(), len) < 0;
+                         });
+    if (it != symbols_.end() &&
+        cmp_key(it->symbol, it->symbol_len, canon.data(), len) == 0) {
+      return Ok(decode_symbol_provenance(*it));
+    }
+  }
+  return Err(ErrorCode::NotFound,
+             "DbManifest::find_symbol_provenance: symbol not present");
+}
+
 const DbPartitionRecord *DbManifest::find_partition(std::string_view key) const noexcept {
   const std::string canon = detail::canonicalize_symbol(key, kSurfaceDbKeyMax);
   if (canon.empty()) {
     return nullptr;
   }
   const auto len = static_cast<std::uint16_t>(canon.size());
-  const auto it =
-      std::lower_bound(partitions_.begin(), partitions_.end(), canon,
-                       [len](const DbPartitionRecord &rec, const std::string &key2) {
-                         return cmp_key(rec.key, rec.key_len, key2.data(), len) < 0;
-                       });
+  const auto it = std::lower_bound(partitions_.begin(), partitions_.end(), canon,
+                                   [len](const DbPartitionRecord &rec, const std::string &key2) {
+                                     return cmp_key(rec.key, rec.key_len, key2.data(), len) < 0;
+                                   });
   if (it != partitions_.end() && cmp_key(it->key, it->key_len, canon.data(), len) == 0) {
     return &*it;
   }
@@ -675,8 +843,9 @@ decode_symbol_entries(std::span<const DbSymbolRecord> recs) {
   std::vector<DbSymbolEntry> out;
   out.reserve(recs.size());
   for (const DbSymbolRecord &rec : recs) {
-    out.push_back(
-        DbSymbolEntry{std::string_view(rec.symbol, rec.symbol_len), decode_symbol_record(rec)});
+    out.push_back(DbSymbolEntry{std::string_view(rec.symbol, rec.symbol_len),
+                                decode_symbol_record(rec),
+                                decode_symbol_provenance(rec)});
   }
   return out;
 }
@@ -708,8 +877,7 @@ Result<SurfaceDb> SurfaceDb::create(std::string_view root, const SurfaceDbCreate
     return Err(ErrorCode::IoError, "SurfaceDb::create: failed to create partitions directory");
   }
 
-  auto bytes =
-      write_db_manifest({}, {}, {.generation = 1, .created_ts_ns = opts.created_ts_ns});
+  auto bytes = write_db_manifest({}, {}, {.generation = 1, .created_ts_ns = opts.created_ts_ns});
   if (!bytes) {
     return Err(bytes.error());
   }
@@ -761,6 +929,11 @@ Result<SymbolFitConfig> SurfaceDb::symbol_config(std::string_view symbol) const 
   return manifest()->find_symbol(symbol);
 }
 
+Result<std::optional<SurfaceProvenance>>
+SurfaceDb::surface_provenance(std::string_view symbol) const {
+  return manifest()->find_symbol_provenance(symbol);
+}
+
 std::vector<DbPartitionInfo> SurfaceDb::partitions() const {
   return decode_partitions(manifest()->partitions());
 }
@@ -803,7 +976,8 @@ Status SurfaceDb::persist_locked(std::vector<DbSymbolEntry> symbols,
   return Ok();
 }
 
-Status SurfaceDb::upsert_symbol(std::string_view symbol, const SymbolFitConfig &cfg) {
+Status SurfaceDb::upsert_symbol(std::string_view symbol, const SymbolFitConfig &cfg,
+                                std::optional<SurfaceProvenance> provenance) {
   const std::string canon = detail::canonicalize_symbol(symbol, kSurfaceDbKeyMax);
   if (canon.empty()) {
     return Err(ErrorCode::InvalidArgument, "SurfaceDb::upsert_symbol: empty canonical symbol");
@@ -818,14 +992,17 @@ Status SurfaceDb::upsert_symbol(std::string_view symbol, const SymbolFitConfig &
   for (const DbSymbolRecord &rec : snap->symbols()) {
     const std::string_view rec_sym(rec.symbol, rec.symbol_len);
     if (rec_sym == canon) {
-      entries.push_back(DbSymbolEntry{canon, cfg});
+      entries.push_back(DbSymbolEntry{
+          canon, cfg, provenance.has_value() ? provenance
+                                             : decode_symbol_provenance(rec)});
       replaced = true;
     } else {
-      entries.push_back(DbSymbolEntry{rec_sym, decode_symbol_record(rec)});
+      entries.push_back(DbSymbolEntry{rec_sym, decode_symbol_record(rec),
+                                      decode_symbol_provenance(rec)});
     }
   }
   if (!replaced) {
-    entries.push_back(DbSymbolEntry{canon, cfg});
+    entries.push_back(DbSymbolEntry{canon, cfg, provenance});
   }
 
   return persist_locked(std::move(entries), decode_partitions(snap->partitions()));
@@ -849,7 +1026,8 @@ Status SurfaceDb::remove_symbol(std::string_view symbol) {
       found = true;
       continue;
     }
-    entries.push_back(DbSymbolEntry{rec_sym, decode_symbol_record(rec)});
+    entries.push_back(DbSymbolEntry{rec_sym, decode_symbol_record(rec),
+                                    decode_symbol_provenance(rec)});
   }
   if (!found) {
     return Err(ErrorCode::NotFound, "SurfaceDb::remove_symbol: symbol not present");
@@ -932,7 +1110,22 @@ Status SurfaceDb::write_partition(std::string_view key, std::span<const SurfaceA
     parts.push_back(std::move(info));
   }
 
-  return persist_locked(decode_symbol_entries(snap->symbols()), std::move(parts));
+  std::vector<DbSymbolEntry> symbol_entries = decode_symbol_entries(snap->symbols());
+  for (const SurfaceArchiveItem &item : items) {
+    if (!item.provenance.has_value()) {
+      continue;
+    }
+    const std::string symbol =
+        detail::canonicalize_symbol(item.symbol, kSurfaceDbKeyMax);
+    for (DbSymbolEntry &entry : symbol_entries) {
+      if (entry.symbol == symbol) {
+        entry.provenance = item.provenance;
+        break;
+      }
+    }
+  }
+
+  return persist_locked(std::move(symbol_entries), std::move(parts));
 }
 
 Result<SurfaceArchive> SurfaceDb::open_partition(std::string_view key) const {
@@ -971,7 +1164,7 @@ Status SurfaceDb::drop_partition(std::string_view key) {
   std::vector<DbPartitionInfo> parts = decode_partitions(snap->partitions());
   parts.erase(std::remove_if(parts.begin(), parts.end(),
                              [&](const DbPartitionInfo &p) { return p.key == *canon; }),
-             parts.end());
+              parts.end());
 
   auto persisted = persist_locked(decode_symbol_entries(snap->symbols()), std::move(parts));
   if (!persisted) {

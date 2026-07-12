@@ -174,6 +174,13 @@ qp_active_set(const MatX &H, const VecX &q, const MatX &G, const VecX &h, VecX x
 
   const Eigen::Index n = H.rows();
   const Eigen::Index nc = G.rows();
+  // Oracle finding I-4 note: a realistic 0DTE deep-ITM node can put the
+  // caller's x0 BELOW its intrinsic/price-bound row, breaking the ratio test's
+  // "gix >= 0" invariant — an active-set method never restores feasibility of
+  // an initially violated constraint. The scaled start-feasibility check above
+  // fails closed immediately, and the KKT certificate below (qp_result) refuses
+  // to certify any exit whose primal violation exceeds the certificate budget,
+  // so a still-violated point can never be returned as Ok.
   std::vector<char> in_w(static_cast<std::size_t>(nc), 0); // working-set membership
   std::vector<Eigen::Index> wset;                          // active row indices
 
@@ -258,6 +265,10 @@ qp_active_set(const MatX &H, const VecX &q, const MatX &G, const VecX &h, VecX x
       wset.push_back(block);
     }
   }
+  // Hit the iteration cap: report with algorithm_converged=false. qp_result's
+  // certificate marks the result non-converged, and every caller treats a
+  // non-converged solve as Internal — a still-violated point (I-4) can never
+  // be served as the "best feasible point".
   return Ok(qp_result(H, q, G, h, std::move(x), {}, VecX{}, max_iter, false));
 }
 
@@ -273,14 +284,42 @@ struct Node {
 } // namespace
 
 double ConvexSliceFit::call_price(double K) const noexcept {
-  if (u.empty()) {
+  if (u.empty() || C.size() != u.size() || !(K > 0.0) || !(F > 0.0) || !(df > 0.0)) {
     return kNaN;
   }
   if (K <= u.front()) {
-    return C.front();
+    if (u.size() < 2) {
+      return C.front();
+    }
+    // Left wing in PUT space. P(0)=0 and P=P0*(K/K0)^a is positive,
+    // increasing and convex for a>=1. Match the fitted edge derivative when
+    // feasible; the a>=1 projection is the no-arbitrage bound implied by a
+    // convex put through the origin. C = df(F-K)+P is therefore bounded,
+    // decreasing, convex and C1 at the splice.
+    const double K0 = u.front();
+    const double intrinsic0 = df * (F - K0);
+    const double P0 = std::max(C.front() - intrinsic0, 0.0);
+    if (!(P0 > 0.0)) {
+      return std::max(df * (F - K), 0.0);
+    }
+    const double slope = (C[1] - C[0]) / (u[1] - u[0]);
+    const double put_slope = std::clamp(slope + df, 0.0, df);
+    const double exponent = std::max(1.0, put_slope * K0 / P0);
+    const double put = P0 * std::pow(K / K0, exponent);
+    return df * (F - K) + put;
   }
   if (K >= u.back()) {
-    return C.back();
+    if (u.size() < 2 || !(C.back() > 0.0)) {
+      return std::max(C.back(), 0.0);
+    }
+    // Right wing in CALL space. A power tail matches the edge slope while
+    // remaining positive, decreasing and convex, and tends to zero instead of
+    // flat-clamping a non-zero option price indefinitely.
+    const std::size_t n = u.size();
+    const double Kn = u.back();
+    const double slope = (C[n - 1] - C[n - 2]) / (u[n - 1] - u[n - 2]);
+    const double exponent = std::max(0.0, -slope * Kn / C.back());
+    return C.back() * std::pow(K / Kn, -exponent);
   }
   // Bracket K and linearly interpolate (convexity-preserving: the piecewise-linear
   // interpolant of convex samples is itself convex, hence butterfly-arb-free).
@@ -297,16 +336,53 @@ double ConvexSliceFit::iv(double k_log) const noexcept {
   }
   const double K = F * std::exp(k_log);
   const double c = call_price(K);
-  if (!std::isfinite(c) || !(c > 0.0)) {
+  if (!std::isfinite(c)) {
     return kNaN;
   }
-  const auto iv = implied_vol(c, F, K, T, df, Side::Call);
-  return iv.has_value() ? *iv : kNaN;
+  // Price-space convex wings legitimately approach intrinsic/zero so closely
+  // that a finite-vol root is lost to floating-point cancellation. Project the
+  // price into Black's open interval by taking the maximum with a parallel
+  // intrinsic+epsilon line (left) / epsilon floor (right). The maximum of these
+  // convex functions remains convex, so numerical invertibility does not trade
+  // away the very shape guarantee the dense fit provides.
+  const double lower = df * std::max(F - K, 0.0);
+  const double upper = df * F;
+  const double gap = upper - lower;
+  const double epsilon = std::min(1.0e-6 * std::max(1.0, upper), 0.25 * gap);
+  const double safe_price =
+      std::min(std::max(c, lower + epsilon), std::nextafter(upper, lower));
+  if (!(safe_price > lower) || !(safe_price < upper)) {
+    return kNaN;
+  }
+  // The generic IV helper stops at a price tolerance appropriate for market
+  // quotes. A risk curve is differentiated twice, so that residual can become
+  // visible as false negative density. Polish monotonically by bisection to a
+  // near-machine price bracket; this is deterministic and remains reliable
+  // when vega collapses in a wing.
+  // Do not inherit the quote-inversion 0.5% IV floor here: in a deep wing even
+  // a healthy convex price can imply a smaller numerical sigma. Flooring sigma
+  // would move the served price off the convex curve and create false density.
+  double lo = 1.0e-10;
+  double hi = kIvMax;
+  if (black76_price(F, K, T, hi, df, Side::Call) < safe_price) {
+    return kNaN;
+  }
+  for (int iter = 0; iter < 64; ++iter) {
+    const double mid = 0.5 * (lo + hi);
+    const double model = black76_price(F, K, T, mid, df, Side::Call);
+    if (model < safe_price) {
+      lo = mid;
+    } else {
+      hi = mid;
+    }
+  }
+  return 0.5 * (lo + hi);
 }
 
 Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs, double F, double T, double df,
                                         const ConvexFitOpts &opts,
-                                        const std::function<double(double)> &w_prev) {
+                                        const std::function<double(double)> &w_prev,
+                                        const ConvexFitContext &context) {
   if (!std::isfinite(F) || !std::isfinite(T) || !std::isfinite(df) || !(F > 0.0) || !(T > 0.0) ||
       !(df > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "fit_convex_slice: F/T/df must be finite and positive");
@@ -384,16 +460,43 @@ Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs, double F, d
     return Err(ErrorCode::InvalidArgument, "fit_convex_slice: non-finite merged observations");
   }
 
+  // Robust quote uncertainty in volatility units. build_observations_european
+  // populates noise_sigma; direct/synthetic callers may omit it, in which case
+  // spread/vega is the identical first-order estimate. A deterministic median
+  // prevents one stale/wide wing from changing the whole slice's smoothness.
+  std::vector<double> sigma_errors;
+  sigma_errors.reserve(obs.size());
+  for (const FitObs& o : obs) {
+    double e = o.noise_sigma;
+    if (!(e > 0.0) || !std::isfinite(e)) {
+      e = (o.spread > 0.0 && o.vega > 1.0e-12) ? o.spread / o.vega : 0.0;
+    }
+    if (e > 0.0 && std::isfinite(e)) {
+      sigma_errors.push_back(e);
+    }
+  }
+  double noise_scale = 1.0;
+  if (context.noise_aware_regularization && !sigma_errors.empty()) {
+    const std::size_t mid = sigma_errors.size() / 2;
+    std::nth_element(sigma_errors.begin(), sigma_errors.begin() + mid,
+                     sigma_errors.end());
+    const double median = sigma_errors[mid];
+    // 0.01 is one absolute volatility point. This is a stable, explicit
+    // discrepancy rule: larger measurement error permits proportionally more
+    // curvature suppression, while very clean boards remain near-interpolating.
+    noise_scale = std::clamp(median / 0.01, 0.25, 16.0);
+  }
+
   // Node grid: at most node_cap QP variables. Small boards use the strikes
   // directly; wider boards use a uniform-in-log-moneyness grid spanning the strike
   // range. The design matrix B (linear-in-K interpolation, matching call_price)
   // maps node values to observation prices, so the fit near-interpolates the smile
   // with far fewer variables than strikes — the QP stays O(node_cap³) per step.
   const int cap = (opts.node_cap >= 4) ? opts.node_cap : 40;
-  const Eigen::Index N = std::min<Eigen::Index>(M, static_cast<Eigen::Index>(cap));
-  VecX un(N);
-  if (N == M) {
-    un = Ko;
+  const Eigen::Index Nbase = std::min<Eigen::Index>(M, static_cast<Eigen::Index>(cap));
+  VecX base(Nbase);
+  if (Nbase == M) {
+    base = Ko;
   } else {
     // Node grid CLUSTERED near the money (y = 0), where vega is largest and the
     // penny bid-ask band is tightest — so the fit resolves the ATM smile finely
@@ -402,12 +505,39 @@ Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs, double F, d
     const double ylo = std::log(Ko(0) / F);
     const double yhi = std::log(Ko(M - 1) / F);
     constexpr double warp = 1.7;
-    for (Eigen::Index j = 0; j < N; ++j) {
-      const double t = -1.0 + 2.0 * static_cast<double>(j) / static_cast<double>(N - 1);
+    for (Eigen::Index j = 0; j < Nbase; ++j) {
+      const double t = -1.0 + 2.0 * static_cast<double>(j) /
+                                  static_cast<double>(Nbase - 1);
       const double wv = std::copysign(std::pow(std::fabs(t), warp), t);
       const double y = (wv < 0.0) ? (-wv) * ylo : wv * yhi;
-      un(j) = F * std::exp(y);
+      base(j) = F * std::exp(y);
     }
+  }
+
+  // Calendar/admission knots are exact QP nodes. They are additive to the
+  // market candidate cap by design: node_cap is a latency hint, never authority
+  // to drop a correctness constraint. Sorting and near-equality de-duplication
+  // make the result deterministic regardless of violation discovery order.
+  std::vector<double> node_strikes;
+  node_strikes.reserve(static_cast<std::size_t>(Nbase) + context.required_k.size());
+  for (Eigen::Index j = 0; j < Nbase; ++j) {
+    node_strikes.push_back(base(j));
+  }
+  for (const double k : context.required_k) {
+    if (std::isfinite(k) && std::fabs(k) <= 3.0) {
+      node_strikes.push_back(F * std::exp(k));
+    }
+  }
+  std::sort(node_strikes.begin(), node_strikes.end());
+  node_strikes.erase(
+      std::unique(node_strikes.begin(), node_strikes.end(), [](double a, double b) {
+        return std::fabs(a - b) <= 1.0e-11 * std::max({1.0, std::fabs(a), std::fabs(b)});
+      }),
+      node_strikes.end());
+  const Eigen::Index N = static_cast<Eigen::Index>(node_strikes.size());
+  VecX un(N);
+  for (Eigen::Index j = 0; j < N; ++j) {
+    un(j) = node_strikes[static_cast<std::size_t>(j)];
   }
 
   MatX B = MatX::Zero(M, N);
@@ -434,7 +564,8 @@ Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs, double F, d
   // roughness (penalizes curvature CHANGES, so it never fights convexity).
   const MatX BtW = B.transpose() * wo.asDiagonal(); // N×M
   MatX H = 2.0 * (BtW * B);                         // N×N (symmetric)
-  const double lam = opts.lambda * w_mean;
+  const double effective_lambda = opts.lambda * noise_scale;
+  const double lam = effective_lambda * w_mean;
   for (Eigen::Index i = 0; i + 3 < N; ++i) {
     const double row[4] = {-1.0, 3.0, -3.0, 1.0}; // 3rd difference
     for (int a = 0; a < 4; ++a) {
@@ -473,21 +604,36 @@ Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs, double F, d
     }
   }
 
-  // Constraints G g >= h on the node values: positivity (N), monotone
-  // non-increasing (N−1), convexity via divided second differences (N−2),
+  // Constraints G g >= h on the node values: discounted intrinsic/forward
+  // price bounds (2N), monotone non-increasing (N−1), convexity via divided
+  // second differences (N−2),
   // (optionally) the slope-below bound (N−1), and (optionally) the calendar
   // floor (<= N). `hrows` carries each row's RHS in parallel with `rows` — 0
   // for the homogeneous positivity/monotone/convexity rows, −df·Δ for the
   // slope-below rows, cfloor_j for the calendar-floor rows.
   std::vector<VecX> rows;
   std::vector<double> hrows;
-  rows.reserve(static_cast<std::size_t>(4 * N));
-  hrows.reserve(static_cast<std::size_t>(4 * N));
-  for (Eigen::Index i = 0; i < N; ++i) { // g_i >= 0
+  rows.reserve(static_cast<std::size_t>(6 * N));
+  hrows.reserve(static_cast<std::size_t>(6 * N));
+  // Keep fitted nodes numerically inside Black's open no-arbitrage interval.
+  // A value exactly on intrinsic has a mathematically valid zero-vol limit but
+  // cannot be inverted to a positive risk volatility, especially in deep ITM
+  // wings. One hundredth of a cent on a $100 forward is still economically
+  // negligible while remaining well above double/root-solver cancellation.
+  const double price_epsilon = 1.0e-6 * std::max(1.0, df * F);
+  for (Eigen::Index i = 0; i < N; ++i) {  // g_i >= discounted intrinsic
     VecX rrow = VecX::Zero(N);
     rrow(i) = 1.0;
     rows.push_back(rrow);
-    hrows.push_back(0.0);
+    const double intrinsic = df * std::max(F - un(i), 0.0);
+    hrows.push_back(std::min(intrinsic + price_epsilon,
+                             std::nextafter(df * F, 0.0)));
+  }
+  for (Eigen::Index i = 0; i < N; ++i) {  // g_i <= discounted forward
+    VecX rrow = VecX::Zero(N);
+    rrow(i) = -1.0;
+    rows.push_back(rrow);
+    hrows.push_back(-(df * F - price_epsilon));
   }
   for (Eigen::Index i = 0; i + 1 < N; ++i) { // g_i - g_{i+1} >= 0
     VecX rrow = VecX::Zero(N);
@@ -518,7 +664,21 @@ Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs, double F, d
       hrows.push_back(-df * (un(i + 1) - un(i)));
     }
   }
-  for (Eigen::Index j = 0; j < N; ++j) { // calendar floor: g_j >= cfloor_j
+  if (N >= 2) {
+    // Convex extension through the left origin in PUT space. At K0 a convex
+    // put with P(0)=0 must have P'(K0) >= P(K0)/K0. Without this endpoint
+    // inequality, projecting the power-wing exponent to a>=1 can make the wing
+    // derivative exceed the first interior derivative, creating a density kink
+    // even though every interior divided difference is non-negative.
+    const double K0 = un(0);
+    const double delta = un(1) - K0;
+    VecX rrow = VecX::Zero(N);
+    rrow(0) = -(1.0 / delta + 1.0 / K0);
+    rrow(1) = 1.0 / delta;
+    rows.push_back(rrow);
+    hrows.push_back(-df * F / K0);
+  }
+  for (Eigen::Index j = 0; j < N; ++j) {  // calendar floor: g_j >= cfloor_j
     if (has_floor[static_cast<std::size_t>(j)]) {
       VecX rrow = VecX::Zero(N);
       rrow(j) = 1.0;
@@ -534,23 +694,49 @@ Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs, double F, d
     h(i) = hrows[static_cast<std::size_t>(i)];
   }
 
-  // Strictly feasible start: a quadratic decreasing from cmax to a small floor —
-  // strictly convex, decreasing, positive, so no constraint is active initially.
+  // Strictly feasible start: a high finite-vol Black curve satisfies both price
+  // bounds, both slope bounds, monotonicity and convexity. A calendar floor is
+  // lifted by a tiny margin without crossing the discounted-forward ceiling.
+  //
+  // Oracle finding I-4: for a short-dated slice with a deep-ITM node (0DTE,
+  // required_k calendar knot near k ~ -0.5), Black's time value at sigma=2
+  // can underflow in double precision to EXACTLY the discounted intrinsic
+  // value, landing v below the `g_j >= intrinsic + price_epsilon` row —
+  // silently starting the active-set QP already infeasible. Box-clamp every
+  // node into [intrinsic+price_epsilon, forward-price_epsilon] (the EXACT
+  // bounds the two price rows below encode) before the calendar-floor lift,
+  // then restore monotonicity right-to-left: `hi` is the SAME constant for
+  // every node and `lo` is non-increasing in strike, so a running max of two
+  // already-in-range values can never leave the box, and this guarantees
+  // g_j >= g_{j+1} (the monotone row) even where the box clamp raised an
+  // underflowed node above an unclamped neighbor. (Convexity / slope-below /
+  // origin-slope are not separately re-proven here — qp_active_set now
+  // verifies full feasibility of x0 before iterating and fails closed
+  // instead of silently certifying a violated point.)
+  // Level/scale references for the fallback start below: the largest folded
+  // call target and the node-strike span.
   double cmax = 0.0;
   for (Eigen::Index i = 0; i < M; ++i) {
     cmax = std::max(cmax, co(i));
   }
   const double span = un(N - 1) - un(0);
-  const double floor = 1.0e-6 * (cmax + 1.0);
   VecX x0(N);
   for (Eigen::Index j = 0; j < N; ++j) {
-    const double t = (span > 0.0) ? (un(N - 1) - un(j)) / span : 0.0;
-    double v = floor + cmax * t * t;
+    const double intrinsic = df * std::max(F - un(j), 0.0);
+    const double lo = std::min(intrinsic + price_epsilon, std::nextafter(df * F, 0.0));
+    const double hi = df * F - price_epsilon;
+    double v = black76_price(F, un(j), T, 2.0, df, Side::Call);
+    v = std::max(v, lo);
     if (has_floor[static_cast<std::size_t>(j)]) {
-      // max with the (convex, decreasing, positive) floor curve + strict margin.
-      v = std::max(v, cfloor[static_cast<std::size_t>(j)] * (1.0 + 1.0e-6) + 1.0e-9);
+      const double upper = df * F;
+      const double lifted = cfloor[static_cast<std::size_t>(j)] +
+                            1.0e-9 * std::max(1.0, upper);
+      v = std::max(v, std::min(lifted, std::nextafter(upper, 0.0)));
     }
-    x0(j) = v;
+    x0(j) = std::min(v, hi);
+  }
+  for (Eigen::Index j = N - 2; j >= 0; --j) {
+    x0(j) = std::max(x0(j), x0(j + 1));
   }
 
   // The historical start is retained bit-for-bit whenever it is feasible. A
@@ -615,7 +801,7 @@ Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs, double F, d
     // the band slacks carry the data fit); each slack gets a 2·w_i diagonal so
     // its squared penalty is w_i·s².
     MatX Hz = MatX::Zero(Nz, Nz);
-    const double lam_iv = opts.lambda * w_mean;
+    const double lam_iv = effective_lambda * w_mean;
     for (Eigen::Index i = 0; i + 3 < N; ++i) {
       const double rrow[4] = {-1.0, 3.0, -3.0, 1.0}; // 3rd difference
       for (int a = 0; a < 4; ++a) {
@@ -732,6 +918,8 @@ Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs, double F, d
     fit.qp_primal_violation = solved.primal_violation;
     fit.qp_complementarity = solved.complementarity;
     fit.qp_dual_violation = solved.dual_violation;
+    fit.effective_lambda = effective_lambda;
+    fit.noise_scale = noise_scale;
     return Ok(std::move(fit));
   }
 
@@ -768,6 +956,8 @@ Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs, double F, d
   fit.qp_primal_violation = solved.primal_violation;
   fit.qp_complementarity = solved.complementarity;
   fit.qp_dual_violation = solved.dual_violation;
+  fit.effective_lambda = effective_lambda;
+  fit.noise_scale = noise_scale;
   return Ok(std::move(fit));
 }
 

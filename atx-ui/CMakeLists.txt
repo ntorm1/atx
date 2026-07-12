@@ -90,3 +90,4 @@ target_compile_features(atx-ui PRIVATE cxx_std_20)
 if(ATX_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
+

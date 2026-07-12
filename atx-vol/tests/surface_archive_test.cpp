@@ -41,6 +41,7 @@ using atx::vol::CurveSurface;
 using atx::vol::ErrorCode;
 using atx::vol::EssviCurve;
 using atx::vol::EssviParams;
+using atx::vol::FitQualityMode;
 using atx::vol::LinearVarianceCurve;
 using atx::vol::PricedSurface;
 using atx::vol::PricingContext;
@@ -49,8 +50,12 @@ using atx::vol::SliceContext;
 using atx::vol::SurfaceArchive;
 using atx::vol::SurfaceArchiveItem;
 using atx::vol::SurfaceArchiveWriteOpts;
+using atx::vol::SurfaceProvenance;
+using atx::vol::SurfacePurpose;
+using atx::vol::SurfaceState;
 using atx::vol::SviCurve;
 using atx::vol::SviParams;
+using atx::vol::ValidationFailure;
 using atx::vol::VolCurveKind;
 using atx::vol::write_surface_archive;
 
@@ -357,6 +362,98 @@ TEST(SurfaceArchive, RoundTrip_SliceContext_Preserved) {
   EXPECT_TRUE(bits_equal(orig.pricing().r, got->pricing().r));
   EXPECT_EQ(orig.pricing().al_opts.n_collocation, got->pricing().al_opts.n_collocation);
   EXPECT_TRUE(bits_equal(orig.pricing().al_opts.tol, got->pricing().al_opts.tol));
+}
+
+TEST(SurfaceArchive, RoundTrip_SurfaceProvenancePreserved) {
+  const PricedSurface orig = make_essvi(91, 3);
+  SurfaceProvenance provenance;
+  provenance.purpose = SurfacePurpose::Risk;
+  provenance.quality_mode = FitQualityMode::Accuracy;
+  provenance.state = SurfaceState::Stale;
+  provenance.validation.failures = ValidationFailure::Calendar | ValidationFailure::StaleInput;
+  provenance.validation.validation_id = 0x1234'5678'90AB'CDEFull;
+  provenance.source_generation = 81;
+  provenance.served_generation = 80;
+
+  const std::array<SurfaceArchiveItem, 1> items{SurfaceArchiveItem{"SPY", &orig, provenance}};
+  auto bytes = write_surface_archive(items);
+  ASSERT_TRUE(bytes.has_value());
+  auto archive = SurfaceArchive::open(std::move(*bytes));
+  ASSERT_TRUE(archive.has_value());
+  auto got = archive->provenance("spy");
+  ASSERT_TRUE(got.has_value());
+  EXPECT_FALSE(got->legacy_format);
+  EXPECT_EQ(got->purpose, provenance.purpose);
+  EXPECT_EQ(got->quality_mode, provenance.quality_mode);
+  EXPECT_EQ(got->state, provenance.state);
+  EXPECT_EQ(got->validation.failures, provenance.validation.failures);
+  EXPECT_EQ(got->validation.validation_id, provenance.validation.validation_id);
+  EXPECT_EQ(got->source_generation, provenance.source_generation);
+  EXPECT_EQ(got->served_generation, provenance.served_generation);
+}
+
+// Review C-1: Degraded+CarryGap is a routinely SERVED admission state (the
+// one publish-with-Degraded reason, produced for carry-gapped boards); it must
+// round-trip the archive rather than be refused as an unknown failure bit by
+// the known-failures allowlist mask.
+TEST(SurfaceArchive, RoundTrip_DegradedCarryGapProvenancePreserved) {
+  const PricedSurface orig = make_essvi(94, 3);
+  SurfaceProvenance provenance;
+  provenance.purpose = SurfacePurpose::Risk;
+  provenance.quality_mode = FitQualityMode::Balanced;
+  provenance.state = SurfaceState::Degraded;
+  provenance.validation.failures = ValidationFailure::CarryGap;
+  provenance.validation.validation_id = 0x0FED'CBA9'8765'4321ull;
+  provenance.source_generation = 7;
+  provenance.served_generation = 7;
+
+  const std::array<SurfaceArchiveItem, 1> items{SurfaceArchiveItem{"SPY", &orig, provenance}};
+  auto bytes = write_surface_archive(items);
+  ASSERT_TRUE(bytes.has_value()) << bytes.error().to_string();
+  auto archive = SurfaceArchive::open(std::move(*bytes));
+  ASSERT_TRUE(archive.has_value());
+  auto got = archive->provenance("SPY");
+  ASSERT_TRUE(got.has_value());
+  EXPECT_FALSE(got->legacy_format);
+  EXPECT_EQ(got->state, SurfaceState::Degraded);
+  EXPECT_EQ(got->validation.failures, ValidationFailure::CarryGap);
+  EXPECT_EQ(got->validation.validation_id, provenance.validation.validation_id);
+  EXPECT_EQ(got->served_generation, provenance.served_generation);
+}
+
+TEST(SurfaceArchive, LegacyV3ZeroReservedBytesDecodeAsUnadmittedMarketMark) {
+  const PricedSurface orig = make_linear(92, 3, 9);
+  // Two-field aggregate is the pre-provenance writer API and deliberately
+  // leaves SurfaceBlobHeader::reserved zero-filled.
+  const std::array<SurfaceArchiveItem, 1> items{SurfaceArchiveItem{"SPY", &orig}};
+  auto bytes = write_surface_archive(items);
+  ASSERT_TRUE(bytes.has_value());
+  auto archive = SurfaceArchive::open(std::move(*bytes));
+  ASSERT_TRUE(archive.has_value());
+  auto got = archive->provenance("SPY");
+  ASSERT_TRUE(got.has_value());
+  EXPECT_TRUE(got->legacy_format);
+  EXPECT_EQ(got->purpose, SurfacePurpose::MarketMark);
+  EXPECT_EQ(got->quality_mode, FitQualityMode::Balanced);
+  EXPECT_EQ(got->state, SurfaceState::Degraded);
+  EXPECT_TRUE(atx::vol::has_validation_failure(got->validation.failures,
+                                               ValidationFailure::InsufficientData));
+  // Legacy metadata interpretation must not affect price reconstruction.
+  auto surface = archive->map_symbol("SPY");
+  ASSERT_TRUE(surface.has_value());
+  expect_theo_bit_identical(orig, *surface);
+}
+
+TEST(SurfaceArchive, WriteRejectsHealthyProvenanceWithValidationFailures) {
+  const PricedSurface orig = make_essvi(93, 2);
+  SurfaceProvenance inconsistent;
+  inconsistent.state = SurfaceState::Healthy;
+  inconsistent.validation.failures = ValidationFailure::Butterfly;
+  const std::array<SurfaceArchiveItem, 1> items{
+      SurfaceArchiveItem{"SPY", &orig, inconsistent}};
+  auto result = write_surface_archive(items);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
 }
 
 // ── Lookup ─────────────────────────────────────────────────────────────────

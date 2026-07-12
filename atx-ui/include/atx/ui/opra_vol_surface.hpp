@@ -20,6 +20,7 @@ struct OpraSourceConfig {
   std::string snapshot_iso{"2026-06-05T19:55:00Z"};
   std::string initial_expiry;
   double rate{0.043};
+  UiFitQualityMode quality_mode{UiFitQualityMode::Balanced};
 };
 
 // Databento OPRA adapter for the generic VolSurfaceSource contract. Despite
@@ -48,6 +49,8 @@ public:
   [[nodiscard]] std::size_t contract_count() const noexcept override;
   [[nodiscard]] std::size_t dropped_count() const noexcept override;
   [[nodiscard]] double fit_milliseconds() const noexcept override;
+  [[nodiscard]] UiFitQualityMode quality_mode() const noexcept override;
+  [[nodiscard]] bool set_quality_mode(UiFitQualityMode mode) override;
 
 private:
   struct Impl;

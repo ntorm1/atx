@@ -7,7 +7,7 @@
 #include <utility>
 
 #include "atx/core/error.hpp"
-#include "atx/vol/arb.hpp"         // arb_check_butterfly_svi_mm, arb_check_butterfly_slice
+#include "atx/vol/arb.hpp" // butterfly gates + shared-k pair projection + independent shape check
 #include "atx/vol/c8_calib.hpp"    // c8_fit_slice_lm
 #include "atx/vol/essvi_calib.hpp" // essvi_fit_slice
 #include "atx/vol/svi_calib.hpp"   // svi_fit_slice, svi_project_mm
@@ -20,6 +20,21 @@ using atx::core::Ok;
 
 namespace {
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+constexpr double kRiskCalendarMin = -0.60;
+constexpr double kRiskCalendarMax = 0.60;
+constexpr std::uint32_t kRiskCalendarIntervals = 64;
+constexpr std::uint32_t kRiskShapeIntervals = 256;
+
+[[nodiscard]] Status validate_parametric_risk_shape(const IVolCurve &curve) {
+  ATX_TRY(const std::vector<ArbViolation> violations,
+          arb_check_butterfly(curve, kRiskCalendarMin, kRiskCalendarMax,
+                              kRiskShapeIntervals));
+  if (!violations.empty()) {
+    return Err(ErrorCode::Unavailable,
+               "fit_slice_curve: post-calendar strike-shape admission failed");
+  }
+  return Ok();
+}
 } // namespace
 
 const char *to_string(VolCurveKind kind) noexcept {
@@ -53,16 +68,62 @@ double IVolCurve::iv(double k_log) const noexcept {
 // ── ConvexDenseCurve ────────────────────────────────────────────────────────
 
 ConvexDenseCurve::ConvexDenseCurve(ConvexSliceFit fit) noexcept
-    : IVolCurve(fit.T, fit.F, fit.df), fit_(std::move(fit)) {}
+    : IVolCurve(fit.T, fit.F, fit.df), fit_(std::move(fit)) {
+  finite_k_.reserve(fit_.u.size() * 2u);
+  finite_w_.reserve(fit_.u.size() * 2u);
+  const auto append_anchor = [&](double k) {
+    const double sigma = fit_.iv(k);
+    if (std::isfinite(sigma) && sigma > 0.0) {
+      finite_k_.push_back(k);
+      finite_w_.push_back(sigma * sigma * T_);
+    }
+  };
+  for (std::size_t i = 0; i < fit_.u.size(); ++i) {
+    append_anchor(std::log(fit_.u[i] / F_));
+    if (i + 1u < fit_.u.size()) {
+      append_anchor(std::log(std::sqrt(fit_.u[i] * fit_.u[i + 1u]) / F_));
+    }
+  }
+}
 
-double ConvexDenseCurve::iv(double k_log) const noexcept { return fit_.iv(k_log); }
+double ConvexDenseCurve::iv(double k_log) const noexcept {
+  const double wk = w(k_log);
+  return wk > 0.0 && T_ > 0.0 ? std::sqrt(wk / T_) : kNaN;
+}
 
 double ConvexDenseCurve::w(double k_log) const noexcept {
   const double s = fit_.iv(k_log);
-  if (!(s > 0.0) || !(T_ > 0.0)) {
+  if (s > 0.0 && std::isfinite(s) && T_ > 0.0) {
+    return s * s * T_;
+  }
+  if (finite_k_.empty()) {
     return kNaN;
   }
-  return s * s * T_;
+  if (finite_k_.size() == 1u) {
+    return finite_w_.front();
+  }
+  const auto it = std::lower_bound(finite_k_.begin(), finite_k_.end(), k_log);
+  std::size_t lo = 0u;
+  std::size_t hi = 1u;
+  if (it == finite_k_.begin()) {
+    lo = 0u;
+    hi = 1u;
+  } else if (it == finite_k_.end()) {
+    hi = finite_k_.size() - 1u;
+    lo = hi - 1u;
+  } else {
+    hi = static_cast<std::size_t>(it - finite_k_.begin());
+    lo = hi - 1u;
+  }
+  const double span = finite_k_[hi] - finite_k_[lo];
+  if (!(span > 0.0)) {
+    return finite_w_[lo];
+  }
+  // Roger Lee's moment bound is |dw/dk| <= 2. Stay just inside it so a
+  // numerical wing cannot manufacture an infinite-moment surface.
+  const double slope =
+      std::clamp((finite_w_[hi] - finite_w_[lo]) / span, -1.999, 1.999);
+  return std::max(1.0e-12, finite_w_[lo] + slope * (k_log - finite_k_[lo]));
 }
 
 // ── EssviCurve / SviCurve ───────────────────────────────────────────────────
@@ -109,6 +170,24 @@ void CurveSurface::push(std::unique_ptr<IVolCurve> slice) {
   if (slice != nullptr) {
     slices_.push_back(std::move(slice));
   }
+}
+
+Status CurveSurface::replace(std::size_t index,
+                             std::unique_ptr<IVolCurve> slice) {
+  if (index >= slices_.size() || slice == nullptr) {
+    return Err(ErrorCode::InvalidArgument,
+               "CurveSurface::replace: invalid index or null slice");
+  }
+  const double lower_T = index > 0 ? slices_[index - 1]->T() : 0.0;
+  const double upper_T = index + 1 < slices_.size()
+                             ? slices_[index + 1]->T()
+                             : std::numeric_limits<double>::infinity();
+  if (!(slice->T() > lower_T) || !(slice->T() < upper_T)) {
+    return Err(ErrorCode::InvalidArgument,
+               "CurveSurface::replace: replacement breaks maturity order");
+  }
+  slices_[index] = std::move(slice);
+  return Ok();
 }
 
 CurveSurface CurveSurface::clone() const {
@@ -206,18 +285,84 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
 
   switch (cfg.kind) {
   case VolCurveKind::ConvexDense: {
-    // `w_prev` (when set) becomes the per-node calendar floor: this slice's
-    // total variance cannot dip below the previous expiry's at the fit nodes.
-    ATX_TRY(ConvexSliceFit fit, fit_convex_slice(obs_eu, F, T, df, cfg.convex, w_prev));
-    std::unique_ptr<IVolCurve> curve = std::make_unique<ConvexDenseCurve>(std::move(fit));
-    return Ok(std::move(curve));
+    // The first pass is the noise-aware, constrained market fit. If a previous
+    // expiry exists, admission is evaluated on a SHARED k lattice. Any residual
+    // crossing is promoted to an exact QP node and the slice is re-fit against
+    // the same observations. This is an alternating projection onto the slice
+    // price-shape cone and the calendar cone: every iterate remains bounded,
+    // monotone and convex because calendar repair happens inside the QP, never
+    // by mutating total variance after the fit.
+    constexpr double kCalendarTol = 1.0e-7;
+    constexpr int kMaxCalendarRefits = 4;
+
+    std::vector<double> required_k(calendar_floor_knots.begin(),
+                                   calendar_floor_knots.end());
+    ConvexFitOpts risk_opts = cfg.convex;
+    risk_opts.bound_slope_below = true;
+    for (int pass = 0; pass <= kMaxCalendarRefits; ++pass) {
+      ConvexFitContext context;
+      context.required_k = std::span<const double>{required_k};
+      context.noise_aware_regularization = true;
+      ATX_TRY(ConvexSliceFit fit,
+              fit_convex_slice(obs_eu, F, T, df, risk_opts, w_prev, context));
+
+      if (!w_prev) {
+        std::unique_ptr<IVolCurve> curve =
+            std::make_unique<ConvexDenseCurve>(std::move(fit));
+        return Ok(std::move(curve));
+      }
+
+      std::vector<double> violations;
+      violations.reserve(8);
+      const double dk = (kRiskCalendarMax - kRiskCalendarMin) /
+                        static_cast<double>(kRiskCalendarIntervals);
+      for (std::uint32_t gi = 0; gi <= kRiskCalendarIntervals; ++gi) {
+        const double k = kRiskCalendarMin + dk * static_cast<double>(gi);
+        const double wp = w_prev(k);
+        const double wc = fit.iv(k);
+        const double w_curr = (std::isfinite(wc) && wc > 0.0) ? wc * wc * T : kNaN;
+        if (std::isfinite(wp) && std::isfinite(w_curr) &&
+            wp - w_curr > kCalendarTol) {
+          violations.push_back(k);
+        }
+      }
+      if (violations.empty()) {
+        std::unique_ptr<IVolCurve> curve =
+            std::make_unique<ConvexDenseCurve>(std::move(fit));
+        return Ok(std::move(curve));
+      }
+      if (pass == kMaxCalendarRefits) {
+        return Err(ErrorCode::Unavailable,
+                   "fit_slice_curve: shared-k calendar admission did not converge");
+      }
+
+      const std::size_t before = required_k.size();
+      required_k.insert(required_k.end(), violations.begin(), violations.end());
+      std::sort(required_k.begin(), required_k.end());
+      required_k.erase(std::unique(required_k.begin(), required_k.end()),
+                       required_k.end());
+      if (required_k.size() == before) {
+        return Err(ErrorCode::Unavailable,
+                   "fit_slice_curve: shared-k calendar projection stalled");
+      }
+    }
+    return Err(ErrorCode::Internal,
+               "fit_slice_curve: unreachable shared-k calendar state");
   }
-  // Essvi/Svi IGNORE `w_prev`: their calendar handling is unchanged (eSSVI is
-  // arb-free by construction through Mingone; raw-SVI relies on the post-fit
-  // `arb_project_calendar_svi` repair, not a per-slice floor).
+  // Parametric candidates use their native shape-preserving level projection
+  // on the same shared-k lattice, then pass an independent served-value Roper
+  // check. A model's own successful projection never certifies itself.
   case VolCurveKind::Essvi: {
     ATX_TRY(EssviParams slice, essvi_fit_slice(obs_eu, T, F, cfg.parametric));
+    if (w_prev) {
+      ATX_TRY(const CalendarPairProjection projection,
+              arb_project_calendar_essvi_pair(
+                  slice, w_prev, kRiskCalendarMin, kRiskCalendarMax,
+                  kRiskCalendarIntervals));
+      (void)projection;
+    }
     std::unique_ptr<IVolCurve> curve = std::make_unique<EssviCurve>(slice, df);
+    ATX_TRY_VOID(validate_parametric_risk_shape(*curve));
     return Ok(std::move(curve));
   }
   case VolCurveKind::Svi: {
@@ -237,7 +382,15 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
                        std::to_string(adm.max_slack) + ")");
       }
     }
+    if (w_prev) {
+      ATX_TRY(const CalendarPairProjection projection,
+              arb_project_calendar_svi_pair(
+                  slice, w_prev, kRiskCalendarMin, kRiskCalendarMax,
+                  kRiskCalendarIntervals));
+      (void)projection;
+    }
     std::unique_ptr<IVolCurve> curve = std::make_unique<SviCurve>(slice, df);
+    ATX_TRY_VOID(validate_parametric_risk_shape(*curve));
     return Ok(std::move(curve));
   }
   case VolCurveKind::LinearVariance: {
@@ -378,7 +531,15 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
                    "fit_slice_curve: C8 seed slice butterfly-inadmissible");
       }
     }
+    if (w_prev) {
+      ATX_TRY(const CalendarPairProjection projection,
+              arb_project_calendar_c8_pair(
+                  fitted, w_prev, kRiskCalendarMin, kRiskCalendarMax,
+                  kRiskCalendarIntervals));
+      (void)projection;
+    }
     std::unique_ptr<IVolCurve> curve = std::make_unique<C8Curve>(fitted, df);
+    ATX_TRY_VOID(validate_parametric_risk_shape(*curve));
     return Ok(std::move(curve));
   }
   case VolCurveKind::SplineVol: {
@@ -389,6 +550,149 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
   }
   }
   return Err(ErrorCode::InvalidArgument, "fit_slice_curve: unknown curve kind");
+}
+
+Result<std::unique_ptr<IVolCurve>> refit_slice_curve(
+    const CurveConfig &cfg, const IVolCurve &current,
+    std::span<const FitObs> obs_eu, double F, double T, double df,
+    const std::function<double(double)> &w_prev, FitDiag *diag) {
+  if (current.kind() != cfg.kind || obs_eu.empty() || !(F > 0.0) ||
+      !(T > 0.0) || !(df > 0.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               "refit_slice_curve: incompatible curve or invalid inputs");
+  }
+  if (diag != nullptr) {
+    *diag = FitDiag{};
+  }
+
+  switch (cfg.kind) {
+  case VolCurveKind::ConvexDense: {
+    const auto *warm = dynamic_cast<const ConvexDenseCurve *>(&current);
+    if (warm == nullptr) {
+      return Err(ErrorCode::InvalidArgument,
+                 "refit_slice_curve: missing ConvexDense warm state");
+    }
+    std::vector<double> warm_k;
+    warm_k.reserve(warm->fit().u.size());
+    for (const double K : warm->fit().u) {
+      if (K > 0.0) {
+        warm_k.push_back(std::log(K / F));
+      }
+    }
+    ATX_TRY(std::unique_ptr<IVolCurve> curve,
+            fit_slice_curve(cfg, obs_eu, F, T, df, w_prev, warm_k));
+    if (diag != nullptr) {
+      diag->n_quotes_used = static_cast<std::uint32_t>(obs_eu.size());
+    }
+    return Ok(std::move(curve));
+  }
+  case VolCurveKind::Essvi: {
+    const auto *warm = dynamic_cast<const EssviCurve *>(&current);
+    if (warm == nullptr) {
+      return Err(ErrorCode::InvalidArgument,
+                 "refit_slice_curve: missing eSSVI warm state");
+    }
+    ATX_TRY(EssviParams slice,
+            essvi_fit_slice(obs_eu, T, F, cfg.parametric, diag, 0.0,
+                            &warm->slice()));
+    slice.expiry_id = warm->slice().expiry_id;
+    slice.expiry_ns = warm->slice().expiry_ns;
+    if (w_prev) {
+      ATX_TRY(const CalendarPairProjection projection,
+              arb_project_calendar_essvi_pair(
+                  slice, w_prev, kRiskCalendarMin, kRiskCalendarMax,
+                  kRiskCalendarIntervals));
+      (void)projection;
+    }
+    std::unique_ptr<IVolCurve> curve = std::make_unique<EssviCurve>(slice, df);
+    ATX_TRY_VOID(validate_parametric_risk_shape(*curve));
+    return Ok(std::move(curve));
+  }
+  case VolCurveKind::Svi: {
+    ATX_TRY(SviParams slice,
+            svi_fit_slice(obs_eu, T, F, cfg.parametric, diag));
+    if (w_prev) {
+      ATX_TRY(const CalendarPairProjection projection,
+              arb_project_calendar_svi_pair(
+                  slice, w_prev, kRiskCalendarMin, kRiskCalendarMax,
+                  kRiskCalendarIntervals));
+      (void)projection;
+    }
+    std::unique_ptr<IVolCurve> curve = std::make_unique<SviCurve>(slice, df);
+    ATX_TRY_VOID(validate_parametric_risk_shape(*curve));
+    return Ok(std::move(curve));
+  }
+  case VolCurveKind::C8: {
+    const auto *warm = dynamic_cast<const C8Curve *>(&current);
+    if (warm == nullptr) {
+      return Err(ErrorCode::InvalidArgument,
+                 "refit_slice_curve: missing C8 warm state");
+    }
+    C8Params fitted = warm->slice();
+    std::vector<double> k;
+    std::vector<double> target_w;
+    std::vector<double> spread_w;
+    k.reserve(obs_eu.size());
+    target_w.reserve(obs_eu.size());
+    spread_w.reserve(obs_eu.size());
+    for (const FitObs &o : obs_eu) {
+      if (!std::isfinite(o.k) || !(o.w_mkt > 0.0)) {
+        continue;
+      }
+      k.push_back(o.k);
+      target_w.push_back(o.w_mkt);
+      const double dw_dsigma = 2.0 * std::max(o.sigma_mkt, 0.005) * T;
+      spread_w.push_back(
+          std::max(dw_dsigma * std::max(o.noise_sigma, 1.0e-7), 1.0e-9));
+    }
+    if (k.size() < 8) {
+      return Err(ErrorCode::Unavailable,
+                 "refit_slice_curve: fewer than 8 observations for C8");
+    }
+    const double warm_sse =
+        c8_residual_sse(fitted, k, target_w, spread_w, 1.0e-9);
+    const int max_inner = std::max<int>(4, cfg.parametric.max_inner_iter);
+    ATX_TRY_VOID(c8_fit_slice_lm(fitted, k, target_w, spread_w, max_inner,
+                                 1.0e-9));
+    const double fit_sse =
+        c8_residual_sse(fitted, k, target_w, spread_w, 1.0e-9);
+    const double quality_ceiling =
+        std::max(warm_sse * 1.05, warm_sse + 1.0e-10);
+    if (!std::isfinite(fit_sse) || fit_sse > quality_ceiling) {
+      return Err(ErrorCode::Unavailable,
+                 "refit_slice_curve: C8 warm update failed quality gate");
+    }
+    fitted.expiry_id = warm->slice().expiry_id;
+    fitted.expiry_ns = warm->slice().expiry_ns;
+    c8_arb_project(fitted);
+    if (w_prev) {
+      ATX_TRY(const CalendarPairProjection projection,
+              arb_project_calendar_c8_pair(
+                  fitted, w_prev, kRiskCalendarMin, kRiskCalendarMax,
+                  kRiskCalendarIntervals));
+      (void)projection;
+    }
+    std::unique_ptr<IVolCurve> curve = std::make_unique<C8Curve>(fitted, df);
+    ATX_TRY_VOID(validate_parametric_risk_shape(*curve));
+    if (diag != nullptr) {
+      diag->n_quotes_used = static_cast<std::uint32_t>(k.size());
+      diag->inner_iters_total = static_cast<std::uint16_t>(
+          std::clamp(fitted.n_lm_iters, 0, 65535));
+    }
+    return Ok(std::move(curve));
+  }
+  case VolCurveKind::LinearVariance:
+    return Err(ErrorCode::InvalidArgument,
+               "refit_slice_curve: LinearVariance is not an admitted risk curve");
+  case VolCurveKind::SplineVol:
+    // SplineVol has no local warm-refit path in v1 (no calendar projection /
+    // shared-k admission support either — see fit_slice_curve). Fail closed
+    // rather than serve an unvalidated local update.
+    return Err(ErrorCode::NotImplemented,
+               "refit_slice_curve: SplineVol local refit is not implemented");
+  }
+  return Err(ErrorCode::InvalidArgument,
+             "refit_slice_curve: unknown curve kind");
 }
 
 } // namespace atx::vol

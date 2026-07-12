@@ -38,6 +38,7 @@
 #include "atx/vol/curve_selector.hpp" // SelectorConfig, SelectorResult
 #include "atx/vol/fit_policy.hpp"     // FitContext, FitPolicyConfig, FitDecision
 #include "atx/vol/session.hpp"        // VolaSession, FitPreset, SessionDiagnostics
+#include "atx/vol/surface_policy.hpp" // explicit mark/risk purpose and quality policy
 #include "atx/vol/types.hpp"          // Result, Status, Side
 #include "atx/vol/vol_curve.hpp"      // CurveConfig, VolCurveKind
 
@@ -101,6 +102,22 @@ struct ChainValuation {
 // inspectable, not just observable after a failure.
 [[nodiscard]] std::span<const VolCurveKind> fallback_curve_rungs(VolCurveKind primary) noexcept;
 
+// ── Independent-failure merge seam ──────────────────────────────────────────
+//
+// Merge a candidate session's non-geometric failure context — carry
+// confidence, inversion certification, expiry-coverage gaps (CarryGap), and
+// the ConvexDense served-price bound self-check (PriceBounds, oracle I-2) —
+// into the independent oracle's geometric digest. Strictly fail-closed:
+// OR-only on the failure bits and additive-only on the counts; it can never
+// clear a failure the geometric validator already found. Used by BOTH
+// PricerFitter::fit()'s candidate validation and refit_risk_slice, so a
+// successful incremental publish cannot launder a fit-time Degraded reason
+// into clean Healthy (§5.2). Exposed so the seam → admission contract is
+// directly testable without engineering a board that defeats the fail-closed
+// QP (call `finalize_validation_digest` afterwards to re-stamp the id).
+void merge_session_failure_context(const SessionDiagnostics &diagnostics,
+                                   ValidationDigest &digest) noexcept;
+
 // ── Fit policy ──────────────────────────────────────────────────────────────
 //
 // Thin bundle over the session's fit knobs plus the evaluation thread count.
@@ -151,6 +168,24 @@ struct PricerConfig {
   // empty — the chain's `MarketEnv` supplies the dividend schedule; a non-empty
   // value here overrides the env's divs.
   std::vector<DividendEvent> cash_divs{};
+  // V2 product policy — an EXPLICIT opt-in (MERGE, §9 routing seam). Naming
+  // either field requests the v2 dual pipeline: a market-following mark plus an
+  // independently admitted risk surface (`SurfaceOutputs::MarketMarkAndRisk`,
+  // `FitQualityMode::Balanced` when only the other field is named; a legacy
+  // `preset` still supplies the unnamed one through `map_legacy_fit_preset`).
+  // Quality changes the work budget, never the mandatory admission floor.
+  //
+  // Leaving BOTH unset is the legacy request: ONE surface, `preset`-budgeted,
+  // selector-routed and admitted by `admission` — the WP12 contract that the
+  // default serves a MARK and that strict risk admission is the explicit opt-in
+  // (`risk_admission_policy()`, or a v2 request naming a Risk output). A legacy
+  // preset therefore never IMPLICITLY promotes a caller to a risk request.
+  std::optional<FitQualityMode> quality_mode{};
+  std::optional<SurfaceOutputs> outputs{};
+  // Only consulted by a v2 request (above); a legacy request has no risk output
+  // to admit or fall back from.
+  RiskAdmission risk_admission{RiskAdmission::Required};
+  SurfaceFallback fallback{SurfaceFallback::LastKnownGood};
 };
 
 enum class ExpiryBuildOutcome : std::uint8_t {
@@ -239,11 +274,48 @@ public:
   [[nodiscard]] const SessionDiagnostics &diagnostics() const noexcept {
     return sess_.diagnostics();
   }
+  [[nodiscard]] SurfacePurpose purpose() const noexcept { return purpose_; }
+  [[nodiscard]] FitQualityMode quality_mode() const noexcept { return quality_mode_; }
+  [[nodiscard]] std::uint64_t generation() const noexcept { return generation_; }
 
 private:
   friend class PricerFitter;
-  explicit FittedSurface(VolaSession &&sess) : sess_(std::move(sess)) {}
+  explicit FittedSurface(VolaSession &&sess, SurfacePurpose purpose,
+                         FitQualityMode quality_mode, std::uint64_t generation)
+      : sess_(std::move(sess)), purpose_(purpose), quality_mode_(quality_mode),
+        generation_(generation) {}
   VolaSession sess_;
+  SurfacePurpose purpose_{SurfacePurpose::Risk};
+  FitQualityMode quality_mode_{FitQualityMode::Balanced};
+  std::uint64_t generation_{};
+};
+
+// One immutable publication snapshot. Shared const generation leases keep both
+// surfaces alive across subsequent fitter publications, so a retained bundle
+// can never dangle while readers finish pricing the old generation.
+struct FitPhaseTimings {
+  double market_mark_build_ms{};
+  double risk_build_ms{};
+  double risk_validation_ms{};
+  double total_ms{};
+  double incremental_input_ms{};
+  double incremental_refit_ms{};
+  double incremental_validation_ms{};
+  double incremental_publish_ms{};
+  double incremental_total_ms{};
+};
+
+struct SurfaceBundle {
+  std::shared_ptr<const FittedSurface> market_mark{};
+  std::shared_ptr<const FittedSurface> risk{};
+  SurfaceHealth market_mark_health{.purpose = SurfacePurpose::MarketMark};
+  SurfaceHealth risk_health{};
+  FitPhaseTimings timings{};
+  std::uint64_t candidate_generation{};
+
+  [[nodiscard]] bool has(SurfacePurpose purpose) const noexcept {
+    return purpose == SurfacePurpose::MarketMark ? market_mark != nullptr : risk != nullptr;
+  }
 };
 
 // ── PricerFitter ────────────────────────────────────────────────────────────
@@ -274,8 +346,33 @@ public:
   [[nodiscard]] Result<ExpiryRefitDiagnostics> refit_expiry(const OptionChain &chain,
                                                             ExpiryId expiry_id);
 
-  [[nodiscard]] bool fitted() const noexcept { return surface_ != nullptr; }
-  [[nodiscard]] const FittedSurface *surface() const noexcept { return surface_.get(); }
+  // Copy-on-write update of one fitted risk expiry. The updated chain is used
+  // to rebuild and certify that expiry's European observations. A carry move
+  // requires a full fit; otherwise only the local slice and its adjacent
+  // calendar pairs are refit before an independently validated generation is
+  // atomically published. The prior generation remains served on every error.
+  [[nodiscard]] Result<FitDiag> refit_risk_slice(const OptionChain &chain,
+                                                 std::size_t slice_idx);
+
+  // True iff the config's default-purpose surface is served (see surface()).
+  [[nodiscard]] bool fitted() const noexcept;
+  // Compatibility accessor, fail-closed on purpose: when the active config
+  // requests a Risk output, only the admitted risk surface answers (nullptr
+  // while risk is rejected/unserved — the LinearVariance market mark is never
+  // silently substituted for it). A mark-only request (explicit outputs or the
+  // legacy HFT mapping) receives its market surface. Purpose-specific state is
+  // always available via risk_surface() / market_mark_surface().
+  [[nodiscard]] const FittedSurface *surface() const noexcept;
+  [[nodiscard]] const FittedSurface *risk_surface() const noexcept {
+    return risk_surface_.get();
+  }
+  [[nodiscard]] const FittedSurface *market_mark_surface() const noexcept {
+    return market_mark_surface_.get();
+  }
+  [[nodiscard]] SurfaceBundle bundle() const noexcept {
+    return SurfaceBundle{market_mark_surface_, risk_surface_, market_mark_health_,
+                         risk_health_, timings_, candidate_generation_};
+  }
 
   [[nodiscard]] const PricerConfig &config() const noexcept { return cfg_; }
   void set_threads(unsigned n) noexcept { cfg_.n_threads = n; }
@@ -285,12 +382,20 @@ public:
   // Lets a caller see WHICH curve the library chose for this board (and the
   // per-candidate out-of-sample scores).
   [[nodiscard]] const std::optional<SelectorResult> &selection() const noexcept {
+    return served_selection_;
+  }
+  [[nodiscard]] const std::optional<SelectorResult> &candidate_selection() const noexcept {
     return selection_;
   }
 
   // Profile/features/effective preset+curve decision from the most recent auto
   // fit. Unlike selection(), this is populated for the O(N) direct routes too.
-  [[nodiscard]] const std::optional<FitDecision> &decision() const noexcept { return decision_; }
+  [[nodiscard]] const std::optional<FitDecision> &decision() const noexcept {
+    return served_decision_;
+  }
+  [[nodiscard]] const std::optional<FitDecision> &candidate_decision() const noexcept {
+    return decision_;
+  }
 
   [[nodiscard]] const std::optional<SurfaceBuildReport> &published_report() const noexcept {
     return published_report_;
@@ -309,18 +414,48 @@ public:
   // 1 => serial). DETERMINISTIC: the result is bit-identical for any thread
   // count (disjoint output slots, pure const reads).
   //
-  // @return Unavailable if no surface is fitted; otherwise Ok(valuation).
+  // The purpose-less overload prices the config's default purpose FAIL-CLOSED:
+  // a config that requested a Risk output is answered by the admitted risk
+  // surface or with Unavailable — never by the market mark. Pass
+  // SurfacePurpose::MarketMark explicitly to price the mark interpolant.
+  //
+  // @return Unavailable if the requested surface is unserved; otherwise
+  //         Ok(valuation).
   [[nodiscard]] Result<ChainValuation> value_chain(const OptionChain &chain, OutputField fields,
+                                                   unsigned n_threads = 0) const;
+  [[nodiscard]] Result<ChainValuation> value_chain(const OptionChain &chain, OutputField fields,
+                                                   SurfacePurpose purpose,
                                                    unsigned n_threads = 0) const;
 
 private:
+  // Effective §9 request after the one-release legacy-preset mapping. Computed
+  // in one place so fit(), the default-purpose accessors, and value_chain can
+  // never disagree about whether the config requested a risk output.
+  struct EffectiveRequest {
+    SurfaceOutputs outputs{SurfaceOutputs::MarketMarkAndRisk};
+    FitQualityMode quality_mode{FitQualityMode::Balanced};
+  };
+  [[nodiscard]] EffectiveRequest effective_request() const noexcept;
+  // True iff the caller explicitly opted into the v2 dual mark/risk API (a
+  // non-default quality_mode or outputs). A legacy request (default v2 fields)
+  // runs main's single-surface transactional fit; a v2 request runs the branch
+  // dual pipeline. Used by fit(), effective_request(), and refit_expiry().
+  [[nodiscard]] bool is_v2_request() const noexcept;
+
   PricerConfig cfg_;
-  std::unique_ptr<FittedSurface> surface_;
+  std::shared_ptr<const FittedSurface> market_mark_surface_;
+  std::shared_ptr<const FittedSurface> risk_surface_;
+  SurfaceHealth market_mark_health_{.purpose = SurfacePurpose::MarketMark};
+  SurfaceHealth risk_health_{};
+  FitPhaseTimings timings_{};
+  std::uint64_t candidate_generation_{};
   std::optional<SelectorResult> selection_; // last auto-select outcome (if any)
+  std::optional<SelectorResult> served_selection_; // selector that produced served risk
   std::optional<FitDecision> decision_;     // last unified policy outcome
   std::optional<SurfaceBuildReport> published_report_;
   std::optional<SurfaceBuildReport> last_attempt_report_;
   std::optional<FitSnapshotProvenance> published_provenance_;
+  std::optional<FitDecision> served_decision_; // policy that produced served risk generation
 };
 
 } // namespace atx::vol

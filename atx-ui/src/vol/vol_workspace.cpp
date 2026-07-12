@@ -177,9 +177,31 @@ void VolWorkspace::render_market_panel() {
 
   vertical_gap(5.0f);
   section_header("THEORETICAL");
-  ImGui::Checkbox("HFT linear variance", &state_.show_model);
+  ImGui::Checkbox("Admitted risk surface", &state_.show_model);
   ImGui::SameLine();
-  badge("SERVED", Palette::Lime);
+  badge("RISK", Palette::Lime);
+  ImGui::Checkbox("Market mark overlay", &state_.show_market_mark);
+
+  vertical_gap(5.0f);
+  section_header("FIT QUALITY", source_.diagnostics().quality_mode);
+  const auto quality_button = [&](const char *label, UiFitQualityMode mode) {
+    const bool selected = source_.quality_mode() == mode;
+    if (selected) {
+      ImGui::BeginDisabled();
+    }
+    const bool clicked = ImGui::SmallButton(label);
+    if (selected) {
+      ImGui::EndDisabled();
+    }
+    if (clicked && source_.set_quality_mode(mode)) {
+      state_.request_plot_fit();
+    }
+  };
+  quality_button("LATENCY", UiFitQualityMode::Latency);
+  ImGui::SameLine();
+  quality_button("BALANCED", UiFitQualityMode::Balanced);
+  ImGui::SameLine();
+  quality_button("ACCURACY", UiFitQualityMode::Accuracy);
 
   vertical_gap(5.0f);
   section_header("X AXIS");
@@ -233,7 +255,7 @@ void VolWorkspace::render_curve_panel() {
   ImGui::Text("%s  /  %s", slice.symbol.c_str(), slice.expiry_iso.c_str());
   ImGui::PopStyleColor();
   ImGui::SameLine();
-  badge("HFT LINEAR VARIANCE", Palette::Cyan);
+  badge(slice.model_name, Palette::Lime);
   ImGui::SameLine();
   ImGui::TextDisabled("F %.2f   T %.0fD   ATM %.2f%%", slice.forward, slice.years * 365.25,
                       slice.atm_vol * 100.0);
@@ -246,6 +268,14 @@ void VolWorkspace::render_curve_panel() {
   for (const VolCurvePoint &point : slice.curve) {
     model_x.push_back(state_.plot_x(point.z, point.strike));
     model_y.push_back(state_.plot_y(point.model_iv, slice.years));
+  }
+  std::vector<double> mark_x;
+  std::vector<double> mark_y;
+  mark_x.reserve(slice.market_mark_curve.size());
+  mark_y.reserve(slice.market_mark_curve.size());
+  for (const VolCurvePoint &point : slice.market_mark_curve) {
+    mark_x.push_back(state_.plot_x(point.z, point.strike));
+    mark_y.push_back(state_.plot_y(point.model_iv, slice.years));
   }
 
   struct QuoteSeries {
@@ -338,8 +368,15 @@ void VolWorkspace::render_curve_panel() {
       ImPlotSpec model_spec;
       model_spec.LineColor = Palette::Text;
       model_spec.LineWeight = 2.0f;
-      ImPlot::PlotLine("HFT LIN VAR", model_x.data(), model_y.data(),
+      ImPlot::PlotLine("RISK", model_x.data(), model_y.data(),
                        static_cast<int>(model_x.size()), model_spec);
+    }
+    if (state_.show_market_mark && !mark_x.empty()) {
+      ImPlotSpec mark_spec;
+      mark_spec.LineColor = Palette::Amber;
+      mark_spec.LineWeight = 1.0f;
+      ImPlot::PlotLine("MARK", mark_x.data(), mark_y.data(), static_cast<int>(mark_x.size()),
+                       mark_spec);
     }
 
     const double atm = state_.x_axis == VolXAxisMode::NormalizedStrike ? 0.0 : slice.forward;
@@ -379,16 +416,27 @@ void VolWorkspace::render_fit_panel() {
   const VolCurveSlice &slice = source_.slice();
   const SurfaceDiagnostics &diag = source_.diagnostics();
 
-  section_header("SERVED MODEL", slice.symbol);
-  badge("HFT", Palette::Lime);
+  section_header("SURFACE BUNDLE", slice.symbol);
+  badge(diag.risk_state, diag.using_fallback ? Palette::Amber : Palette::Lime);
   ImGui::SameLine();
-  badge("LINEAR VARIANCE", Palette::Cyan);
+  badge(diag.quality_mode, Palette::Cyan);
   vertical_gap(7.0f);
   key_value("COLD FIT", number(source_.fit_milliseconds(), 1) + " ms");
+  key_value("VALIDATION", number(diag.validation_milliseconds, 2) + " ms");
+  key_value("RISK MODEL", diag.risk_model);
+  key_value("MARK MODEL", diag.mark_model);
+  key_value("GENERATION", count(diag.served_generation));
   key_value("SURFACE SLICES", count(diag.fitted_slices));
   key_value("FIT QUOTES", count(diag.fitted_quotes));
-  key_value("CALENDAR FLOOR", "OFF / HFT");
-  key_value("PARITY SCORING", "BYPASSED");
+  key_value("CALENDAR", diag.calendar_arb_free ? "ADMITTED" : "FAILED",
+            diag.calendar_arb_free ? &Palette::Lime : &Palette::Coral);
+  key_value("BUTTERFLY VIOLATIONS", count(diag.butterfly_violations),
+            diag.butterfly_violations == 0 ? &Palette::Lime : &Palette::Coral);
+  key_value("CARRY", diag.carry_confident ? "CONFIDENT" : "DEGRADED",
+            diag.carry_confident ? &Palette::Lime : &Palette::Amber);
+  key_value("IV INVERSION", diag.inversion_certified ? "CERTIFIED" : "DEGRADED",
+            diag.inversion_certified ? &Palette::Lime : &Palette::Amber);
+  key_value("IV FALLBACKS", count(diag.inversion_fallbacks));
 
   vertical_gap(9.0f);
   section_header("SELECTED SLICE", slice.expiry_iso);
@@ -425,14 +473,17 @@ void VolWorkspace::render_term_panel() {
 
   std::vector<double> days;
   std::vector<double> atm_vols;
-  std::vector<double> forwards;
+  std::vector<double> total_variances;
+  std::vector<double> forward_variances;
   days.reserve(expiries.size());
   atm_vols.reserve(expiries.size());
-  forwards.reserve(expiries.size());
+  total_variances.reserve(expiries.size());
+  forward_variances.reserve(expiries.size());
   for (const ExpiryInfo &expiry : expiries) {
     days.push_back(expiry.years * 365.25);
     atm_vols.push_back(expiry.atm_vol * 100.0);
-    forwards.push_back(expiry.forward);
+    total_variances.push_back(expiry.total_variance);
+    forward_variances.push_back(expiry.forward_variance);
   }
 
   const ExpiryInfo &selected = expiries[source_.selected_expiry()];
@@ -448,10 +499,11 @@ void VolWorkspace::render_term_panel() {
   }
   ImPlot::SetupAxis(ImAxis_X1, "DAYS TO EXPIRY", ImPlotAxisFlags_NoHighlight);
   ImPlot::SetupAxis(ImAxis_Y1, "ATM IMPLIED VOL", ImPlotAxisFlags_NoHighlight);
-  ImPlot::SetupAxis(ImAxis_Y2, "FORWARD", ImPlotAxisFlags_AuxDefault | ImPlotAxisFlags_NoHighlight);
+  ImPlot::SetupAxis(ImAxis_Y2, "TOTAL / FORWARD VARIANCE",
+                    ImPlotAxisFlags_AuxDefault | ImPlotAxisFlags_NoHighlight);
   ImPlot::SetupAxisFormat(ImAxis_X1, "%.0fD");
   ImPlot::SetupAxisFormat(ImAxis_Y1, "%.1f%%");
-  ImPlot::SetupAxisFormat(ImAxis_Y2, "%.1f");
+  ImPlot::SetupAxisFormat(ImAxis_Y2, "%.4f");
   ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_Horizontal);
 
   ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
@@ -464,11 +516,16 @@ void VolWorkspace::render_term_panel() {
                    vol_spec);
 
   ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
-  ImPlotSpec forward_spec;
-  forward_spec.LineColor = Palette::Amber;
-  forward_spec.LineWeight = 1.5f;
-  ImPlot::PlotLine("FORWARD", days.data(), forwards.data(), static_cast<int>(days.size()),
-                   forward_spec);
+  ImPlotSpec total_var_spec;
+  total_var_spec.LineColor = Palette::Amber;
+  total_var_spec.LineWeight = 1.5f;
+  ImPlot::PlotLine("TOTAL VAR", days.data(), total_variances.data(),
+                   static_cast<int>(days.size()), total_var_spec);
+  ImPlotSpec forward_var_spec;
+  forward_var_spec.LineColor = Palette::Coral;
+  forward_var_spec.LineWeight = 1.0f;
+  ImPlot::PlotLine("FORWARD VAR", days.data(), forward_variances.data(),
+                   static_cast<int>(days.size()), forward_var_spec);
 
   ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
   const double selected_day = selected.years * 365.25;
@@ -488,6 +545,8 @@ void VolWorkspace::render_term_panel() {
       ImGui::Separator();
       ImGui::TextColored(Palette::Cyan, "ATM VOL  %.2f%%", nearest.atm_vol * 100.0);
       ImGui::TextColored(Palette::Amber, "FORWARD  %.3f", nearest.forward);
+      ImGui::Text("TOTAL VAR %.6f", nearest.total_variance);
+      ImGui::TextColored(Palette::Coral, "FWD VAR   %.6f", nearest.forward_variance);
       ImGui::Text("CARRY    %.3f%%", nearest.carry * 100.0);
       ImGui::Text("STRIKES  %zu", nearest.strike_count);
       ImGui::TextDisabled("Double-click to select");

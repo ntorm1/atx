@@ -14,6 +14,7 @@ struct VolWorkspaceState {
   VolXAxisMode x_axis{VolXAxisMode::NormalizedStrike};
   VolYAxisMode y_axis{VolYAxisMode::ImpliedVol};
   bool show_model{true};
+  bool show_market_mark{true};
   bool show_market_band{true};
   bool show_market_mid{true};
   bool show_calls{true};

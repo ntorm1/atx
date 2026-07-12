@@ -124,3 +124,4 @@ void apply_atx_plot_theme() {
 }
 
 } // namespace atx::ui
+

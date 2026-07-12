@@ -55,3 +55,4 @@ TEST(VolWorkspaceModel, ComputesPriceAndVolEdges) {
 }
 
 } // namespace
+

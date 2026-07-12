@@ -60,6 +60,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -70,15 +71,16 @@
 #include "atx/vol/session.hpp"         // FitPreset, SessionInputs
 #include "atx/vol/surface_archive.hpp" // SurfaceArchive, SurfaceArchiveItem
 #include "atx/vol/surface_parity.hpp"  // CalendarRepair
+#include "atx/vol/surface_policy.hpp"  // SurfacePolicy
 #include "atx/vol/types.hpp"
-#include "atx/vol/vol_curve.hpp"       // CurveConfig, VolCurveKind
+#include "atx/vol/vol_curve.hpp" // CurveConfig, VolCurveKind
 
 namespace atx::vol {
 
 // ── On-wire constants ─────────────────────────────────────────────────────
 inline constexpr std::uint16_t kSurfaceDbMajor = 1;
 inline constexpr std::uint16_t kSurfaceDbMinor = 0;
-inline constexpr std::size_t kSurfaceDbKeyMax = 32;   // partition-key chars
+inline constexpr std::size_t kSurfaceDbKeyMax = 32; // partition-key chars
 inline constexpr std::string_view kSurfaceDbManifestName = "manifest.atxdb";
 inline constexpr std::string_view kSurfaceDbPartitionDir = "partitions";
 inline constexpr std::string_view kSurfaceDbPartitionExt = ".atxvsa";
@@ -107,12 +109,12 @@ inline constexpr std::uint16_t kDbSymEssviAsymmetricRho = 1u << 12;
 // then every explicit field here overwrites the preset's choice, so the
 // stored values are always the final word on the fields this struct carries.
 struct SymbolFitConfig {
-  bool enabled{true};                 // pipeline may skip disabled symbols
+  bool enabled{true}; // pipeline may skip disabled symbols
   FitPreset preset{FitPreset::Robust};
-  bool pin_curve{false};              // false => preset/selector decides family
-  CurveConfig curve{};                // used when pin_curve; parametric knobs
-                                      // also mirror into SessionInputs::calib
-  bool al_override{false};            // true => deam.al_opts = al
+  bool pin_curve{false};   // false => preset/selector decides family
+  CurveConfig curve{};     // used when pin_curve; parametric knobs
+                           // also mirror into SessionInputs::calib
+  bool al_override{false}; // true => deam.al_opts = al
   AlOpts al{};
   double band_k{1.0};
   CalendarRepair calendar_repair{CalendarRepair::None};
@@ -120,6 +122,9 @@ struct SymbolFitConfig {
   bool score_parity{true};
   bool enforce_calendar_floor{true};
   bool use_deam_cache_for_fit{false};
+  // Product-level intent persisted independently from the legacy numerical
+  // preset. Quality adjusts work; requesting Risk always implies admission.
+  SurfacePolicy surface_policy{};
 };
 
 // ── Fitting-pipeline binding ───────────────────────────────────────────────
@@ -133,7 +138,18 @@ struct SymbolFitConfig {
 //   in.deam.al_opts = cfg.al (when al_override),
 //   in.band_k / in.calendar_repair / in.use_correction_cache / in.score_parity
 //   / in.enforce_calendar_floor / in.use_deam_cache_for_fit = cfg.<same>.
-void apply_symbol_config(const SymbolFitConfig& cfg, SessionInputs& in);
+void apply_symbol_config(const SymbolFitConfig &cfg, SessionInputs &in);
+
+// Same binding as above, plus copy `cfg.surface_policy` — the product-level
+// quality_mode/outputs/risk_admission/fallback fields (SurfacePolicy) — into
+// `policy`, unconditionally. SurfacePolicy has no preset-implicit "unset"
+// state to defer to (unlike pin_curve/al_override): `symbol_config_from_preset`
+// already seeds `surface_policy` from `map_legacy_fit_preset` at capture time,
+// so any persisted value is a deliberate stored choice and is always the final
+// word, exactly like `band_k`/`calendar_repair`/the other unconditional fields
+// above. `in` receives the same fit-policy binding as the two-argument
+// overload; `policy` is untouched by that half of the mapping.
+void apply_symbol_config(const SymbolFitConfig &cfg, SessionInputs &in, SurfacePolicy &policy);
 
 // Capture `preset`'s effective policy into a SymbolFitConfig whose explicit
 // fields equal what apply_fit_preset(in, preset) would produce — the identity
@@ -145,19 +161,19 @@ void apply_symbol_config(const SymbolFitConfig& cfg, SessionInputs& in);
 // Manifest file header, at offset 0. `header_crc32c` covers the header with
 // that field zeroed; `payload_crc32c` covers the symbols ‖ partitions span.
 struct DbManifestHeader {
-  char magic[8]{};                    // "ATXVDB01", no NUL
-  std::uint16_t major{};              // kSurfaceDbMajor
+  char magic[8]{};       // "ATXVDB01", no NUL
+  std::uint16_t major{}; // kSurfaceDbMajor
   std::uint16_t minor{};
-  std::uint16_t header_size{};        // sizeof(DbManifestHeader)
-  std::uint16_t endian{};             // 1 = little
-  std::uint16_t pointer_bits{};       // 64
+  std::uint16_t header_size{};  // sizeof(DbManifestHeader)
+  std::uint16_t endian{};       // 1 = little
+  std::uint16_t pointer_bits{}; // 64
   std::uint16_t reserved0{};
   std::uint32_t flags{};
   std::uint64_t file_size{};
   std::int64_t created_ts_ns{};
   std::int64_t updated_ts_ns{};
-  std::uint64_t generation{};         // ++ on every manifest rewrite
-  std::uint64_t schema_hash{};        // sizeof-based layout fingerprint
+  std::uint64_t generation{};  // ++ on every manifest rewrite
+  std::uint64_t schema_hash{}; // sizeof-based layout fingerprint
   std::uint32_t symbol_count{};
   std::uint32_t partition_count{};
   std::uint64_t symbols_offset{};
@@ -177,9 +193,9 @@ static_assert(std::is_standard_layout_v<DbManifestHeader>);
 // `flags`, enums as uint8, CurveConfig/CalibOpts/ConvexFitOpts/AlOpts fields
 // laid out flat).
 struct DbSymbolRecord {
-  char symbol[32]{};                  // canonical, not NUL-terminated
+  char symbol[32]{}; // canonical, not NUL-terminated
   std::uint16_t symbol_len{};
-  std::uint16_t flags{};              // kDbSym* bits
+  std::uint16_t flags{}; // kDbSym* bits
   // enums (uint8 wire width)
   std::uint8_t preset{};              // FitPreset
   std::uint8_t curve_kind{};          // VolCurveKind (meaningful when PinCurve)
@@ -189,8 +205,8 @@ struct DbSymbolRecord {
   std::uint8_t optimization_level{};  // OptimizationLevel
   std::uint8_t residual_basis_kind{}; // ResidualBasisKind
   std::uint8_t residual_n_basis_terms{};
-  std::uint8_t loss_kind{};           // CalibLossKind (calib loss)
-  std::uint8_t anchor_kind{};         // CalibAnchorKind
+  std::uint8_t loss_kind{};   // CalibLossKind (calib loss)
+  std::uint8_t anchor_kind{}; // CalibAnchorKind
   std::uint8_t reserved1[2]{};
   // 16-bit knobs
   std::uint16_t max_outer_iter{};
@@ -237,11 +253,11 @@ static_assert(std::is_standard_layout_v<DbSymbolRecord>);
 // partition file itself is the archive's job (layered CRCs inside .atxvsa);
 // the manifest tracks identity + bookkeeping.
 struct DbPartitionRecord {
-  char key[32]{};                     // canonical, not NUL-terminated
+  char key[32]{}; // canonical, not NUL-terminated
   std::uint16_t key_len{};
   std::uint16_t flags{};
   std::uint32_t surface_count{};
-  std::uint64_t file_size{};          // partition file bytes at write time
+  std::uint64_t file_size{}; // partition file bytes at write time
   std::int64_t created_ts_ns{};
   std::uint64_t reserved0{};
   std::uint8_t reserved[64]{};
@@ -253,12 +269,13 @@ static_assert(std::is_standard_layout_v<DbPartitionRecord>);
 // ── Manifest writer inputs ────────────────────────────────────────────────
 
 struct DbSymbolEntry {
-  std::string_view symbol{};          // canonicalized before storage
+  std::string_view symbol{}; // canonicalized before storage
   SymbolFitConfig config{};
+  std::optional<SurfaceProvenance> provenance{};
 };
 
 struct DbPartitionInfo {
-  std::string key{};                  // canonical
+  std::string key{}; // canonical
   std::uint32_t surface_count{};
   std::uint64_t file_size{};
   std::int64_t created_ts_ns{};
@@ -266,8 +283,8 @@ struct DbPartitionInfo {
 
 struct SurfaceDbManifestWriteOpts {
   std::uint64_t generation{1};
-  std::int64_t created_ts_ns{0};      // 0 => system clock
-  std::int64_t updated_ts_ns{0};      // 0 => system clock
+  std::int64_t created_ts_ns{0}; // 0 => system clock
+  std::int64_t updated_ts_ns{0}; // 0 => system clock
   std::uint32_t flags{0};
 };
 
@@ -279,7 +296,7 @@ struct SurfaceDbManifestWriteOpts {
 [[nodiscard]] Result<std::vector<std::byte>>
 write_db_manifest(std::span<const DbSymbolEntry> symbols,
                   std::span<const DbPartitionInfo> partitions,
-                  const SurfaceDbManifestWriteOpts& opts = {});
+                  const SurfaceDbManifestWriteOpts &opts = {});
 
 // ── Parsed manifest (immutable) ───────────────────────────────────────────
 
@@ -287,10 +304,10 @@ write_db_manifest(std::span<const DbSymbolEntry> symbols,
 // hash, header CRC, payload CRC, bounds, sort order). All queries const +
 // thread-safe.
 class DbManifest {
- public:
+public:
   [[nodiscard]] static Result<DbManifest> open(std::vector<std::byte> bytes);
 
-  [[nodiscard]] const DbManifestHeader& header() const noexcept { return header_; }
+  [[nodiscard]] const DbManifestHeader &header() const noexcept { return header_; }
   [[nodiscard]] std::uint64_t generation() const noexcept { return header_.generation; }
   [[nodiscard]] std::span<const DbSymbolRecord> symbols() const noexcept { return symbols_; }
   [[nodiscard]] std::span<const DbPartitionRecord> partitions() const noexcept {
@@ -299,24 +316,28 @@ class DbManifest {
 
   // Case-insensitive (canonicalized) binary search. NotFound if absent.
   [[nodiscard]] Result<SymbolFitConfig> find_symbol(std::string_view symbol) const;
-  [[nodiscard]] const DbPartitionRecord* find_partition(std::string_view key) const noexcept;
+  [[nodiscard]] Result<std::optional<SurfaceProvenance>>
+  find_symbol_provenance(std::string_view symbol) const;
+  [[nodiscard]] const DbPartitionRecord *find_partition(std::string_view key) const noexcept;
 
- private:
+private:
   DbManifest() = default;
   DbManifestHeader header_{};
-  std::vector<DbSymbolRecord> symbols_{};      // sorted by canonical symbol
+  std::vector<DbSymbolRecord> symbols_{};       // sorted by canonical symbol
   std::vector<DbPartitionRecord> partitions_{}; // sorted by canonical key
 };
 
 // Decode one symbol record into the public config (exact inverse of the
 // writer's encoding; used by DbManifest::find_symbol and tests).
-[[nodiscard]] SymbolFitConfig decode_symbol_record(const DbSymbolRecord& rec);
+[[nodiscard]] SymbolFitConfig decode_symbol_record(const DbSymbolRecord &rec);
+[[nodiscard]] std::optional<SurfaceProvenance>
+decode_symbol_provenance(const DbSymbolRecord &rec) noexcept;
 
 // ── SurfaceDb: create/open, atomic manifest persistence, symbol CRUD,
 // refresh(), partition IO ─────────────────────────────────────────────────
 
 struct SurfaceDbCreateOpts {
-  std::int64_t created_ts_ns{0};      // 0 => system clock
+  std::int64_t created_ts_ns{0}; // 0 => system clock
 };
 
 // An opened surface database. Const queries are thread-safe (they read an
@@ -334,29 +355,33 @@ struct SurfaceDbCreateOpts {
 // many readers; every manifest mutation is an atomic rewrite (tmp+rename)
 // with generation++ so a reader process picks it up via refresh().
 class SurfaceDb {
- public:
+public:
   // Create <root>/ (and partitions/) and write an empty manifest
   // (generation 1). Errors: AlreadyExists if a manifest already exists at
   // root; IoError on filesystem failure.
   [[nodiscard]] static Result<SurfaceDb> create(std::string_view root,
-                                                const SurfaceDbCreateOpts& opts = {});
+                                                const SurfaceDbCreateOpts &opts = {});
 
   // Open an existing database. Errors: NotFound (no manifest), ParseError,
   // IoError.
   [[nodiscard]] static Result<SurfaceDb> open(std::string_view root);
 
-  [[nodiscard]] const std::string& root() const noexcept { return root_; }
+  [[nodiscard]] const std::string &root() const noexcept { return root_; }
 
   // ── Manifest snapshot queries (thread-safe) ──
   [[nodiscard]] std::shared_ptr<const DbManifest> manifest() const;
   [[nodiscard]] std::uint64_t generation() const;
-  [[nodiscard]] std::vector<std::string> symbols() const;   // canonical, sorted
+  [[nodiscard]] std::vector<std::string> symbols() const; // canonical, sorted
   [[nodiscard]] Result<SymbolFitConfig> symbol_config(std::string_view symbol) const;
+  [[nodiscard]] Result<std::optional<SurfaceProvenance>>
+  surface_provenance(std::string_view symbol) const;
   [[nodiscard]] std::vector<DbPartitionInfo> partitions() const;
 
   // ── Manifest mutation (serialized; atomic rewrite; generation++) ──
-  [[nodiscard]] Status upsert_symbol(std::string_view symbol, const SymbolFitConfig& cfg);
-  [[nodiscard]] Status remove_symbol(std::string_view symbol);  // NotFound if absent
+  [[nodiscard]] Status upsert_symbol(
+      std::string_view symbol, const SymbolFitConfig &cfg,
+      std::optional<SurfaceProvenance> provenance = std::nullopt);
+  [[nodiscard]] Status remove_symbol(std::string_view symbol); // NotFound if absent
 
   // Re-read the manifest from disk iff its generation advanced past the
   // in-memory snapshot (external writer). Ok and no-op when current.
@@ -375,13 +400,13 @@ class SurfaceDb {
   // never appear in a partition.
   [[nodiscard]] Status write_partition(std::string_view key,
                                        std::span<const SurfaceArchiveItem> items,
-                                       const SurfaceArchiveWriteOpts& opts = {});
+                                       const SurfaceArchiveWriteOpts &opts = {});
   [[nodiscard]] Result<SurfaceArchive> open_partition(std::string_view key) const;
   [[nodiscard]] Result<PricedSurface> load_surface(std::string_view key,
                                                    std::string_view symbol) const;
   [[nodiscard]] Status drop_partition(std::string_view key);
 
- private:
+private:
   SurfaceDb() = default;
   [[nodiscard]] Status persist_locked(std::vector<DbSymbolEntry> symbols,
                                       std::vector<DbPartitionInfo> partitions);
@@ -389,8 +414,8 @@ class SurfaceDb {
   [[nodiscard]] std::string partition_path(std::string_view canonical_key) const;
 
   std::string root_{};
-  mutable std::unique_ptr<std::mutex> mu_{};      // guards snapshot_ swap + writes
+  mutable std::unique_ptr<std::mutex> mu_{}; // guards snapshot_ swap + writes
   std::shared_ptr<const DbManifest> snapshot_{};
 };
 
-}  // namespace atx::vol
+} // namespace atx::vol

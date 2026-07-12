@@ -23,13 +23,44 @@
 #include <cstdint>
 #include <vector>
 
-#include "atx/vol/parity.hpp"         // ParityReport
-#include "atx/vol/surface_parity.hpp" // SliceContext, SurfaceParityInputs
-#include "atx/vol/types.hpp"          // Result
-#include "atx/vol/universe.hpp"       // Underlying
-#include "atx/vol/vol_curve.hpp"      // CurveSurface, CurveConfig
+#include "atx/vol/calib.hpp"           // FitObs, DeAmAuditDiagnostics
+#include "atx/vol/deamer.hpp"          // CarryDiagnostics
+#include "atx/vol/parity.hpp"          // ParityReport
+#include "atx/vol/surface_parity.hpp"  // SliceContext, SurfaceParityInputs
+#include "atx/vol/types.hpp"           // Result
+#include "atx/vol/universe.hpp"        // Underlying
+#include "atx/vol/vol_curve.hpp"       // CurveSurface, CurveConfig
 
 namespace atx::vol {
+
+// Per-slice de-Am INPUT certification data captured by the parallel prepass
+// (`run_deam_prepass`, curve_fit.cpp) — the same carry resolution +
+// de-Americanized-observation audit that `VolaSession::build`'s certification
+// layer used to re-derive with a SECOND, serial `resolve_chain_forward` +
+// `build_observations_european` pass (perf finding C1). Parallel to
+// `context`/`per_expiry` (one entry per committed slice, same order); every
+// field is exactly what the prepass task for that slice's chain already
+// computed, moved out — never approximated or resampled.
+struct SliceInputCertification {
+  // Certification carry: resolved with the CALLER's caches
+  // (`SurfaceParityInputs::deam_cert_caches` — what the historical serial
+  // certification pass used), NOT necessarily the fit's own (possibly
+  // session-cached) resolve. `carry_available` is false when that
+  // certification resolve failed (a cached fit resolve can succeed where the
+  // certification resolve does not) — mirrors the old serial pass leaving the
+  // slice's carry diagnostics unavailable.
+  CarryDiagnostics carry{};
+  bool carry_available{false};
+  DeAmAuditDiagnostics inversion{};
+  std::vector<FitObs> obs;                 // fit rows (ObsSet::obs)
+  std::vector<double> source_mids;         // ‖ obs; raw chain.mids at (K, side)
+  std::vector<std::uint8_t> source_flags;  // ‖ obs; raw chain.flags at (K, side)
+  std::vector<double> chain_mids;          // full-chain snapshot (incremental cache)
+  std::vector<std::uint8_t> chain_flags;
+  std::vector<double> chain_bids;
+  std::vector<double> chain_asks;
+  std::vector<std::int64_t> chain_ts;
+};
 
 // The assembled polymorphic-surface bundle. `surface` OWNS the fitted curves;
 // the vectors are parallel per fitted slice (ascending T), mirroring
@@ -41,6 +72,13 @@ struct CurveSurfaceReport {
   double worst_frac_within_bidask{0.0};
   std::size_t n_slices{0};
   std::uint32_t n_score_inversions{0};
+  // Expiries dropped because carry resolution failed (confidence gate / no
+  // quotable pair / degenerate forward) — surfaced, never silently skipped.
+  std::size_t n_carry_skipped{0};
+  // Perf C1: per-slice input certification, ‖ context/per_expiry. Lets
+  // `VolaSession::build` construct `SessionSliceDiagnostics` + the incremental
+  // observation cache directly, without a second serial de-Am pass.
+  std::vector<SliceInputCertification> input_certification;
 };
 
 // De-Americanize + fit each expiry chain of `under` into a `CurveSurface` of the

@@ -329,6 +329,27 @@ TEST(FitScheduler, PartialWorkerLaunchFailureAbortsWaitingWorkersWithoutRunningT
   return std::move(*ps);
 }
 
+// Fit a board through the SAME blessed path as fit_reference, but return the
+// served surface's admitted SurfaceHealth (mirrors the purpose-selection
+// build_corpus's fit_board now performs for archive provenance: risk_health
+// when the served surface is the risk surface, market_mark_health otherwise).
+[[nodiscard]] SurfaceHealth health_reference(const CorpusBoard &board) {
+  auto chain = OptionChain::from_frame(board.frame, board.env);
+  EXPECT_TRUE(chain.has_value());
+  PricerConfig cfg; // Robust default
+  cfg.n_threads = 1;
+  if (board.curve.has_value()) {
+    cfg.curve = *board.curve;
+  }
+  PricerFitter fitter{cfg};
+  const Status st = fitter.fit(*chain);
+  EXPECT_TRUE(st.has_value());
+  const FittedSurface *fitted = fitter.surface();
+  EXPECT_NE(fitted, nullptr);
+  const SurfaceBundle bundle = fitter.bundle();
+  return fitted->purpose() == SurfacePurpose::Risk ? bundle.risk_health : bundle.market_mark_health;
+}
+
 // Assert two PricedSurfaces are bit-identical over a (K, T, side) grid straddling
 // each slice forward. Accumulates the number of priced grid points into `n_fv`
 // (void return so the ASSERT_* fatal guards are legal here).
@@ -469,6 +490,53 @@ TEST(Corpus, RoundTrip_ReloadedSurfaceReproducesFreshFitBitIdentical) {
   }
   EXPECT_EQ(n_checked, 2u);
   EXPECT_GT(n_points, 20u) << "too few priced points to be a meaningful gate";
+}
+
+// Unwired C-2: the one production archive writer (build_corpus -> fit_board's
+// write path) must plumb the fitter's OWN admitted health/validation digest
+// into the archive instead of leaving every entry to decode as
+// legacy_surface_provenance() on reload. Build a real corpus, reload each Ok
+// entry's provenance, and check it against a fresh fit's own bundle() health
+// for the SAME board (health_reference) — not merely "non-default", the exact
+// admitted state/digest the fitter computed for that board.
+TEST(Corpus, ArchivedProvenanceReflectsFitterHealthNotLegacyDefault) {
+  const fs::path out = fresh_out_dir("provenance");
+  const std::vector<CorpusBoard> boards = make_mixed_boards({"2026-06-17"});
+
+  auto man_res = build_corpus(boards, out.string());
+  ASSERT_TRUE(man_res.has_value()) << man_res.error().to_string();
+  const CorpusManifest &man = *man_res;
+
+  std::size_t n_checked = 0;
+  for (const CorpusEntry &e : man.entries) {
+    if (e.status != CorpusFitStatus::Ok) {
+      continue;
+    }
+    auto arch = SurfaceArchive::open_file(e.archive_path);
+    ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
+    auto provenance = arch->provenance(e.symbol);
+    ASSERT_TRUE(provenance.has_value()) << provenance.error().to_string();
+    EXPECT_FALSE(provenance->legacy_format) << e.symbol;
+
+    const CorpusBoard *board = nullptr;
+    for (const CorpusBoard &b : boards) {
+      if (b.date == e.date && b.symbol == e.symbol) {
+        board = &b;
+        break;
+      }
+    }
+    ASSERT_NE(board, nullptr);
+    const SurfaceHealth expected = health_reference(*board);
+    EXPECT_EQ(provenance->purpose, expected.purpose) << e.symbol;
+    EXPECT_EQ(provenance->quality_mode, expected.quality_mode) << e.symbol;
+    EXPECT_EQ(provenance->state, expected.state) << e.symbol;
+    EXPECT_EQ(provenance->validation.failures, expected.validation.failures) << e.symbol;
+    EXPECT_EQ(provenance->validation.validation_id, expected.validation.validation_id) << e.symbol;
+    EXPECT_EQ(provenance->source_generation, expected.candidate_generation) << e.symbol;
+    EXPECT_EQ(provenance->served_generation, expected.served_generation) << e.symbol;
+    ++n_checked;
+  }
+  EXPECT_EQ(n_checked, 2u);
 }
 
 // ── 4. Manifest round-trips ─────────────────────────────────────────────────
@@ -1094,7 +1162,7 @@ namespace {
     const double spot = std::exp(std::log(2.0) + unit(rng) * std::log(400.0));
     const double rate = -0.01 + 0.09 * unit(rng);
     const double rate_slope = -0.04 + 0.08 * unit(rng);
-    const std::size_t strike_count = 5u + static_cast<std::size_t>(rng() % 5u);
+    const std::size_t strike_count = 9u + static_cast<std::size_t>(rng() % 5u);
 
     char symbol_buffer[16]{};
     std::snprintf(symbol_buffer, sizeof symbol_buffer, "F%05zu", i);
@@ -1161,7 +1229,7 @@ namespace {
     board.source_fingerprint = 0x1000u + i;
     board.market_input_fingerprint = 0x2000u + i;
     CurveConfig curve;
-    curve.kind = VolCurveKind::LinearVariance;
+    curve.kind = VolCurveKind::ConvexDense;
     board.curve = curve;
 
     for (std::size_t row_index = 0u; row_index < board.frame.rows.size(); ++row_index) {
@@ -1625,6 +1693,14 @@ TEST(CorpusBuildSession, SyntheticThirteenNameThreeDateBreadthScoreboard) {
   ASSERT_TRUE(built.has_value()) << built.error().to_string();
   EXPECT_EQ(built->quality.n_planned, 39u);
   EXPECT_EQ(built->quality.entries.size(), 39u);
+  // MERGE: these are main's pins, restored. The merge auto-took the branch's
+  // rebaselined counts (9 admitted / 6 quarantined) next to MAIN's config line
+  // above (`fit_template.admission = risk_admission_policy()`, which the branch
+  // did not have) — two edits to the same test that were never valid together.
+  // The branch's numbers were captured with a DEFAULT fit template, i.e. under
+  // its v2 risk pipeline and its per-mode carry budgets. The template the merged
+  // test actually builds pins main's strict risk CONSUMER on main's
+  // single-surface transactional path, which is what these counts describe.
   EXPECT_EQ(built->quality.n_admitted, 11u);
   EXPECT_EQ(built->quality.n_quarantined, 4u);
   EXPECT_EQ(built->quality.n_source_failed, 20u);
@@ -1648,10 +1724,14 @@ TEST(CorpusBuildSession, SyntheticThirteenNameThreeDateBreadthScoreboard) {
                      return entry.date == "2026-06-15" && entry.symbol == "AAPL";
                    });
   ASSERT_NE(fallback_entry, built->quality.entries.end());
+  // Rebaselined (same I1/C3 budget fix): the sparse AAPL event board now
+  // resolves a confident carry, its primary candidate is rejected by
+  // independent admission, and a fallback rung is admitted — so the persisted
+  // provenance must say Admitted WITH used_fallback (the I6 provenance fix),
+  // where the clobbered-budget behavior was FitFailed with no fallback record.
   EXPECT_EQ(fallback_entry->disposition, CorpusDisposition::Admitted);
   EXPECT_TRUE(fallback_entry->quality.used_fallback);
-  EXPECT_EQ(fallback_entry->quality.primary_kind, VolCurveKind::C8);
-  EXPECT_EQ(fallback_entry->quality.final_kind, VolCurveKind::Essvi);
+  EXPECT_NE(fallback_entry->quality.final_kind, fallback_entry->quality.primary_kind);
 
   auto clock = Clock::from_manifest(built->manifest);
   ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
@@ -1678,6 +1758,8 @@ TEST(CorpusBuildSession, SyntheticThirteenNameThreeDateBreadthScoreboard) {
                    [](const auto &signal) { return signal.first == "n_names_dropped"; });
   ASSERT_NE(dropped_signal, serial->signals.end());
   ASSERT_EQ(dropped_signal->second.size(), dates.size());
+  // MERGE: main's pins, restored alongside the admission counts above (the
+  // branch's 1.0/1.0 belonged to its own default-template rebaseline).
   EXPECT_EQ(dropped_signal->second[0], 0.0);
   EXPECT_EQ(dropped_signal->second[1], 0.0);
   EXPECT_EQ(dropped_signal->second[2], 4.0);

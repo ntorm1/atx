@@ -57,22 +57,9 @@ TEST(CurveSurfaceNoArb, SpyDenseIsCalendarArbFree) {
         v.k_log, v.T1, v.T2, v.slack);
   }
 
-  // KNOWN RESIDUAL — DOCUMENTED BASELINE, NOT A MASKED FAILURE.
-  //
-  // Sequential-fit enforcement drops calendar violations on this SPY board from
-  // 372 (independent fit) to 2. It does NOT reach 0 because the per-node
-  // calendar floor in fit_convex_slice binds only at the CURRENT slice's fit
-  // NODES, whereas arb_check_calendar scans a fixed 64-point k-grid: adjacent
-  // slices have different node grids + linear-in-variance interpolation, so a
-  // crossing can survive strictly BETWEEN nodes. Both residuals sit in the
-  // downside put wing (k ~ -0.43..-0.47) across adjacent ~0.4y expiries, with
-  // slack ~2-3e-2 total variance (a genuine off-node crossing, not FP noise) —
-  // a real design-gap (denser / grid-aligned floor enforcement) flagged for the
-  // controller, NOT something this test should hide by widening tolerance /
-  // shrinking k-range / reducing n_grid. Asserted as an EXACT recorded baseline
-  // so any regression (more crossings, or a larger slack) trips this gate. When
-  // grid-aligned enforcement lands, tighten this to `EXPECT_TRUE(viol->empty())`.
-  constexpr std::size_t kKnownResidualCrossings = 2;
-  EXPECT_EQ(viol->size(), kKnownResidualCrossings)
-      << "calendar violations changed from the recorded between-node baseline";
+  // The previous node-only floor left two real between-node crossings on this
+  // board. The production fitter now scans this same shared lattice and promotes
+  // every residual breach to an exact QP node, so zero is the admission gate.
+  EXPECT_TRUE(viol->empty())
+      << "shared-k calendar projection left a served-surface crossing";
 }

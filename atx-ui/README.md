@@ -81,3 +81,4 @@ ctest --test-dir build -L atx_ui --output-on-failure
 
 See [docs/platform-architecture.md](docs/platform-architecture.md) for the
 module boundaries and the remaining institutional-workspace roadmap.
+

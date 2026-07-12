@@ -146,6 +146,11 @@ public:
 
 private:
   ConvexSliceFit fit_;
+  // Finite total-variance anchors used only when price-to-IV inversion becomes
+  // ill-conditioned at a deep intrinsic/zero-price wing. They turn a numerical
+  // inversion boundary into a controlled Lee-slope wing, never a NaN.
+  std::vector<double> finite_k_;
+  std::vector<double> finite_w_;
 };
 
 // eSSVI backbone (3 DoF, or 4 with asymmetric rho). Owns an EssviParams slice.
@@ -276,6 +281,12 @@ public:
   // Append a slice; precondition (documented, not verified): non-decreasing T.
   void push(std::unique_ptr<IVolCurve> slice);
 
+  // Replace one pillar without exposing a partially-mutated surface. The caller
+  // normally applies this to a staged clone and publishes the clone only after
+  // adjacent calendar and independent strike-shape admission pass.
+  [[nodiscard]] Status replace(std::size_t index,
+                               std::unique_ptr<IVolCurve> slice);
+
   // Deep copy — every slice cloned into a fresh independently-owned surface. Lets
   // a caller duplicate this move-only container (e.g. snapshot a live session's
   // fitted surface for archiving without disturbing the session).
@@ -336,10 +347,15 @@ struct CurveConfig {
 //         otherwise the fitted polymorphic slice.
 //
 // `w_prev` (optional): the immediately-shorter expiry's total-variance curve
-// w(k) as a log-moneyness callback. For ConvexDense it becomes a per-node
-// calendar floor. LinearVariance additionally accepts the previous curve's
-// breakpoints in `calendar_floor_knots`; fitting on the union of both node sets
-// makes the piecewise-linear calendar floor hold between nodes as well.
+// w(k) as a log-moneyness callback. ConvexDense first applies it at candidate
+// nodes, then checks a shared 64-interval k lattice and promotes every residual
+// breach to an exact constrained QP node until admitted. This preserves the
+// per-slice price cone while closing between-node calendar crossings.
+// eSSVI, SVI, and C8 use their native shape-preserving parameter projection on
+// the same lattice and then undergo an independent served-value butterfly check.
+// LinearVariance additionally accepts the previous curve's breakpoints in
+// `calendar_floor_knots`; fitting on the union of both node sets makes its
+// piecewise-linear calendar floor hold between nodes as well.
 // SplineVol IGNORES `w_prev` (and `calendar_floor_knots`) in v1: no per-slice
 // calendar floor is applied — its calendar behaviour is unchanged from a
 // standalone per-expiry fit.
@@ -347,5 +363,15 @@ struct CurveConfig {
 fit_slice_curve(const CurveConfig &cfg, std::span<const FitObs> obs_eu, double F, double T,
                 double df, const std::function<double(double)> &w_prev = {},
                 std::span<const double> calendar_floor_knots = {});
+
+// Local/warm analogue of fit_slice_curve. Reuses the current curve's state where
+// the family supports it: eSSVI/C8 parameters seed LM directly and ConvexDense
+// retains its active knot lattice; SVI remains a local one-slice solve. The
+// result has already passed the same previous-expiry calendar projection and
+// independent strike-shape admission as a cold build. It is not published.
+[[nodiscard]] Result<std::unique_ptr<IVolCurve>> refit_slice_curve(
+    const CurveConfig &cfg, const IVolCurve &current,
+    std::span<const FitObs> obs_eu, double F, double T, double df,
+    const std::function<double(double)> &w_prev = {}, FitDiag *diag = nullptr);
 
 } // namespace atx::vol
