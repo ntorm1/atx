@@ -277,6 +277,12 @@ if(ATX_BUILD_EXAMPLES)
     add_executable(mag7_surfdb_populate examples/mag7_surfdb_populate.cpp)
     target_link_libraries(mag7_surfdb_populate PRIVATE atx::vol atx::core atx_warnings)
 
+    # Whole-universe auto-select fit stress harness: one OPRA snapshot minute,
+    # N thousand underliers, PricerConfig::curve unset (unified policy +
+    # CurveSelector routing per board), per-symbol outcome CSV + summary.
+    add_executable(universe_autofit examples/universe_autofit.cpp)
+    target_link_libraries(universe_autofit PRIVATE atx::vol atx::core atx_warnings)
+
     # Acceptance example: MAG7-vs-SPY dispersion-strangle backtest driven
     # entirely by a SurfaceDb -- open db -> Clock::from_surface_db ->
     # make_dispersion_strangle_spec -> DeclarativeStrategy -> run_backtest ->

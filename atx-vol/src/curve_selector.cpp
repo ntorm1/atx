@@ -76,7 +76,8 @@ struct Accum {
   case VolCurveKind::ConvexDense:
   case VolCurveKind::Essvi:
   case VolCurveKind::LinearVariance:
-    return 0u;  // by-construction arb-free (LinearVariance g-check out of scope)
+  case VolCurveKind::SplineVol:
+    return 0u;  // by-construction arb-free / out-of-scope for selection-time checks
   }
   return 0u;
 }
