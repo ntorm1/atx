@@ -189,6 +189,13 @@ constexpr char kDbMagic[8] = {'A', 'T', 'X', 'V', 'D', 'B', '0', '1'};
 // Wire-range validation for every enum stored as uint8. A manifest written by
 // a future writer (wider enum) must be rejected here, not aliased into a
 // different-but-valid-looking enumerator.
+//
+// curve_kind <= 4 deliberately excludes VolCurveKind::SplineVol (= 5):
+// SplineVol has no ATXVDB v1 wire format (mirrors surface_archive.cpp's
+// "SplineVol serialization not supported" rejection), so a config pinning it
+// must fail upsert cleanly rather than persist a record no reader can
+// reconstruct. Raise this cap only alongside a new wire version that defines
+// SplineVol's on-disk payload.
 [[nodiscard]] bool symbol_record_enums_valid(const DbSymbolRecord &rec) noexcept {
   return rec.preset <= 3 && rec.curve_kind <= 4 && rec.calendar_repair <= 2 &&
          rec.convex_loss <= 1 && rec.essvi_rho_mode <= 2 && rec.optimization_level <= 4 &&

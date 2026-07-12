@@ -166,23 +166,26 @@ struct BandViolationStats {
 // bid-ask band and tally misses, the single worst premium violation (and its
 // input index), and the mean signed error vs mid.
 //
-// A quote is scored only when ask_price >= bid_price; a crossed quote
-// (ask_price < bid_price) is SKIPPED — excluded from `n` and every other
-// field, since it defines no band to violate. A non-finite (NaN/+-Inf)
-// model_price is treated the same way: skipped rather than scored, so a
-// failed inversion cannot poison max_prc_err / avg_signed_err with a
-// NaN/Inf contaminant. (Deliberate choice: this mirrors the crossed-quote
-// skip; a caller that needs failed model prices surfaced should check
-// upstream de-Americanization / IV-inversion status separately — this is a
-// pure band-scoring function, not a fit-health gate.)
+// A quote is scored only when bid_price and ask_price are both finite AND
+// ask_price >= bid_price; a crossed quote (ask_price < bid_price) OR a
+// non-finite (NaN/+-Inf) bid/ask side is SKIPPED — excluded from `n` and
+// every other field, since neither case defines a valid band to violate (a
+// non-finite bound would otherwise poison max_prc_err / avg_signed_err with
+// a NaN/Inf contaminant). A non-finite model_price is treated the same way:
+// skipped rather than scored, so a failed inversion cannot poison the stats
+// either. (Deliberate choice: this mirrors the crossed-quote skip; a caller
+// that needs bad quotes or failed model prices surfaced should check
+// upstream data quality / de-Americanization / IV-inversion status
+// separately — this is a pure band-scoring function, not a fit-health gate.)
 //
 // `max_err_idx` is the INPUT index (into the three spans) of the scored
 // quote with the largest max(bid-p, p-ask, 0); ties keep the first index
 // reached.
 //
 // @param model_price  per-quote model price (premium units)
-// @param bid_price    per-quote quote bid (premium units)
-// @param ask_price    per-quote quote ask (premium units); ask < bid => skipped
+// @param bid_price    per-quote quote bid (premium units); non-finite => skipped
+// @param ask_price    per-quote quote ask (premium units); ask < bid or
+//                     either side non-finite => skipped
 // @return  InvalidArgument if the three spans differ in length; otherwise Ok.
 //          An empty input (or one where every quote is skipped) is Ok with
 //          n == 0 and max_err_idx == size_t(-1).

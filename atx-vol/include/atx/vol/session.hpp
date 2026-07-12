@@ -155,7 +155,10 @@ struct SessionDiagnostics {
   double mean_chi2_reduced{0.0};          // mean reduced chi-square (vol space)
   double mean_rmse_vol{0.0};              // mean RMSE(model vol - mkt vol)
   bool   calendar_arb_free{false};        // surface calendar no-arb check
-  std::size_t n_calendar_viol_pre{0};     // calendar violations BEFORE any repair
+  std::size_t n_calendar_viol_pre{0};     // calendar violations BEFORE any repair;
+                                           // on a FAILED check, stamped with sentinel
+                                           // 1 (calendar_arb_free=false) — nonzero
+                                           // means "found violations OR check failed"
   std::size_t n_slices{0};                // fitted slice count
   std::size_t n_quotes{0};                // sum of per-slice n_used
 };

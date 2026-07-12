@@ -150,8 +150,11 @@ Result<BandViolationStats> band_violation_stats(
   for (std::size_t i = 0; i < n_in; ++i) {
     const double bid = bid_price[i];
     const double ask = ask_price[i];
-    if (ask < bid) {
-      continue;  // crossed quote: no band to violate — skip (not scored)
+    if (!(std::isfinite(bid) && std::isfinite(ask) && ask >= bid)) {
+      // Crossed quote (ask < bid) or a non-finite bid/ask: neither defines a
+      // valid band to violate, and a NaN/Inf bound would otherwise poison
+      // max_prc_err / avg_signed_err below — skip either way (not scored).
+      continue;
     }
     const double p = model_price[i];
     if (!std::isfinite(p)) {
