@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <limits>
 #include <memory>
 #include <numeric>
 #include <optional>
@@ -11,8 +13,10 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
-#include "atx/vol/american.hpp"
-#include "atx/vol/deamer.hpp"
+#include "atx/vol/american.hpp"    // american_price
+#include "atx/vol/arb.hpp"         // arb_check_butterfly_svi_mm, arb_check_butterfly_slice
+#include "atx/vol/deamer.hpp"      // resolve_chain_forward
+#include "atx/vol/fit_metrics.hpp" // slice_fit_metrics, SliceFitMetrics
 #include "atx/vol/prepared_fitting.hpp"
 #include "atx/vol/universe.hpp"
 
@@ -51,7 +55,37 @@ struct Accum {
   double win{0.0};
   std::size_t dof_sum{0u};
   std::size_t n_slices{0u};
+  // Task C2.5 — held-out fit-metric collection + butterfly disqualification.
+  std::vector<double> iv_model, iv_mkt, bid, ask, vega;
+  std::uint32_t n_butterfly_viol{0u};
+  bool disqualified{false};
 };
+
+// Per-kind butterfly violation count for a fitted slice (the selection-time
+// mapping): closed-form Martini-Mingone for raw-SVI, grid Durrleman g-check for
+// C8, and 0 for the by-construction / out-of-scope kinds (ConvexDense, eSSVI,
+// LinearVariance). `k_lo`/`k_hi` bound the C8 grid (padded by the caller).
+[[nodiscard]] std::uint32_t slice_butterfly_violations(const IVolCurve &cv,
+                                                       double T, double k_lo,
+                                                       double k_hi) noexcept {
+  switch (cv.kind()) {
+  case VolCurveKind::Svi: {
+    const auto &sp = static_cast<const SviCurve &>(cv).slice();
+    return arb_check_butterfly_svi_mm(sp, T).n_violations;
+  }
+  case VolCurveKind::C8: {
+    const auto bf = arb_check_butterfly_slice(
+        [&cv](double kk) { return cv.w(kk); }, T, k_lo, k_hi, 64u);
+    return bf.has_value() ? static_cast<std::uint32_t>(bf->size()) : 0u;
+  }
+  case VolCurveKind::ConvexDense:
+  case VolCurveKind::Essvi:
+  case VolCurveKind::LinearVariance:
+  case VolCurveKind::SplineVol:
+    return 0u;  // by-construction arb-free / out-of-scope for selection-time checks
+  }
+  return 0u;
+}
 
 struct PreparedExpiry {
   std::size_t chain_index{0u};
@@ -190,6 +224,15 @@ prepare_expiry(const Underlying &under, const SurfaceParityInputs &in, std::size
              : 1.0e18;
 }
 
+// Distance of the reduced chi-square from the ideal 1.0; candidates without a
+// valid reduced chi-square do not compete on this axis (treated as +inf).
+[[nodiscard]] double chi2_distance(const CandidateScore &score) noexcept {
+  return score.metrics_valid ? std::fabs(score.chi2_reduced - 1.0)
+                             : std::numeric_limits<double>::infinity();
+}
+
+constexpr double kChi2Tol = 1.0e-9; // fall through to DoF when chi2 ~equal
+
 } // namespace
 
 Result<std::size_t> select_candidate_index(std::span<const CandidateScore> scores,
@@ -202,7 +245,8 @@ Result<std::size_t> select_candidate_index(std::span<const CandidateScore> score
   double quality_leader = -1.0;
   for (std::size_t i = 0u; i < scores.size(); ++i) {
     const CandidateScore &candidate = scores[i];
-    if (!candidate.admitted || !std::isfinite(candidate.expiry_coverage) ||
+    if (!candidate.admitted || candidate.disqualified ||
+        !std::isfinite(candidate.expiry_coverage) ||
         !std::isfinite(candidate.holdout_coverage) || !std::isfinite(candidate.oos_vw) ||
         candidate.expiry_coverage < 0.0 || candidate.expiry_coverage > 1.0 ||
         candidate.holdout_coverage < 0.0 || candidate.holdout_coverage > 1.0 ||
@@ -225,15 +269,31 @@ Result<std::size_t> select_candidate_index(std::span<const CandidateScore> score
   std::optional<std::size_t> best;
   for (std::size_t i = 0u; i < scores.size(); ++i) {
     const CandidateScore &candidate = scores[i];
-    if (!candidate.admitted || !std::isfinite(candidate.oos_vw) ||
+    if (!candidate.admitted || candidate.disqualified || !std::isfinite(candidate.oos_vw) ||
         candidate.expiry_coverage != max_expiry_coverage ||
         candidate.holdout_coverage != max_holdout_coverage ||
         candidate.oos_vw < quality_leader - parsimony_margin) {
       continue;
     }
-    if (!best.has_value() || average_dof(candidate) < average_dof(scores[*best]) ||
-        (average_dof(candidate) == average_dof(scores[*best]) &&
-         candidate.oos_vw > scores[*best].oos_vw)) {
+    if (!best.has_value()) {
+      best = i;
+      continue;
+    }
+    // Task C2.5 tie-break inside the parsimony band: reduced chi-square closest
+    // to 1 first, then fewer average DoF, then higher oos_vw.
+    const CandidateScore &incumbent = scores[*best];
+    const double dc = chi2_distance(candidate);
+    const double di = chi2_distance(incumbent);
+    if (dc < di - kChi2Tol) {
+      best = i;
+      continue;
+    }
+    if (dc > di + kChi2Tol) {
+      continue;
+    }
+    if (average_dof(candidate) < average_dof(incumbent) ||
+        (average_dof(candidate) == average_dof(incumbent) &&
+         candidate.oos_vw > incumbent.oos_vw)) {
       best = i;
     }
   }
@@ -241,6 +301,56 @@ Result<std::size_t> select_candidate_index(std::span<const CandidateScore> score
     return Err(ErrorCode::NotFound, "select_candidate_index: no candidate met admission");
   }
   return Ok(*best);
+}
+
+std::size_t select_best_candidate(const std::vector<CandidateScore> &scores,
+                                  double parsimony_margin) noexcept {
+  double best_vw = -1.0;
+  for (const CandidateScore &s : scores) {
+    if (s.n_holdout > 0 && !s.disqualified) {
+      best_vw = std::max(best_vw, s.oos_vw);
+    }
+  }
+  if (best_vw < 0.0) {
+    return 0; // caller gates on scorability; nothing selectable
+  }
+
+  std::size_t best_i = 0;
+  bool have = false;
+  for (std::size_t i = 0; i < scores.size(); ++i) {
+    const CandidateScore &s = scores[i];
+    if (s.disqualified || s.n_holdout == 0 || s.oos_vw < best_vw - parsimony_margin) {
+      continue; // failed / disqualified / outside the tie band of the leader
+    }
+    if (!have) {
+      best_i = i;
+      have = true;
+      continue;
+    }
+    const CandidateScore &b = scores[best_i];
+    const double ds = chi2_distance(s);
+    const double db = chi2_distance(b);
+    if (ds < db - kChi2Tol) {
+      best_i = i;
+      continue;
+    }
+    if (ds > db + kChi2Tol) {
+      continue;
+    }
+    const double as = average_dof(s);
+    const double ab = average_dof(b);
+    if (as < ab) {
+      best_i = i;
+      continue;
+    }
+    if (as > ab) {
+      continue;
+    }
+    if (s.oos_vw > b.oos_vw) {
+      best_i = i;
+    }
+  }
+  return best_i;
 }
 
 Result<SelectorResult> select_curve(const Underlying &under, const SurfaceParityInputs &in,
@@ -305,6 +415,24 @@ Result<SelectorResult> select_curve(const Underlying &under, const SurfaceParity
       const IVolCurve &curve = **fitted;
       accum.dof_sum += curve.dof();
       ++accum.n_slices;
+
+      // Butterfly disqualification (Task C2.5 fit-metrics selection signal): a
+      // family with any butterfly-violating fitted slice scores as a
+      // fit-failure. Grid bounds for the C8 check are the fitted strikes padded
+      // by 0.5 in log-moneyness (matches the fit_slice_curve gate).
+      double fit_k_lo = fit_rows.front().k;
+      double fit_k_hi = fit_rows.front().k;
+      for (const FitObs &o : fit_rows) {
+        fit_k_lo = std::min(fit_k_lo, o.k);
+        fit_k_hi = std::max(fit_k_hi, o.k);
+      }
+      const std::uint32_t nv = slice_butterfly_violations(
+          curve, expiry.slice.maturity(), fit_k_lo - 0.5, fit_k_hi + 0.5);
+      accum.n_butterfly_viol += nv;
+      if (nv > 0u) {
+        accum.disqualified = true;
+      }
+
       const PreparedScoreColumns &score = expiry.slice.score_columns();
       for (std::size_t p = 1u; p < expiry.strike_order.size(); p += 2u) {
         const std::size_t row_index = expiry.strike_order[p];
@@ -331,6 +459,19 @@ Result<SelectorResult> select_curve(const Underlying &under, const SurfaceParity
         if (in_band) {
           accum.win += weight;
         }
+        // Held-out fit metrics (vol space, self-consistent European bid/ask/vega
+        // from the de-Americanized obs). Feeds slice_fit_metrics -> chi2_reduced.
+        const double eu_half = 0.5 * observation.spread;
+        const double eu_bid = observation.mid - eu_half;
+        const double eu_ask = observation.mid + eu_half;
+        if (std::isfinite(observation.sigma_mkt) && observation.sigma_mkt > 0.0 &&
+            observation.vega > 0.0 && eu_bid > 0.0 && eu_ask > eu_bid) {
+          accum.iv_model.push_back(model_iv);
+          accum.iv_mkt.push_back(observation.sigma_mkt);
+          accum.bid.push_back(eu_bid);
+          accum.ask.push_back(eu_ask);
+          accum.vega.push_back(observation.vega);
+        }
       }
     }
 
@@ -353,6 +494,22 @@ Result<SelectorResult> select_curve(const Underlying &under, const SurfaceParity
         static_cast<double>(accum.n) / static_cast<double>(score.n_required_holdout);
     score.admitted = accum.n > 0u && score.expiry_coverage >= sel.min_expiry_coverage &&
                      score.holdout_coverage >= sel.min_holdout_coverage;
+    score.n_butterfly_viol = accum.n_butterfly_viol;
+    score.disqualified = accum.disqualified;
+    // Reduced chi-square (and companion metrics) over the held-out sample. Needs
+    // N > dof for a positive denominator; otherwise the metrics stay invalid and
+    // chi2_reduced does not participate in the tie-break.
+    if (accum.iv_model.size() > accum.dof_sum) {
+      const auto m_fit = slice_fit_metrics(accum.iv_model, accum.iv_mkt, accum.bid, accum.ask,
+                                           accum.vega, accum.dof_sum);
+      if (m_fit.has_value()) {
+        score.chi2_reduced = m_fit->chi2_reduced;
+        score.rmse_vol = m_fit->rmse_vol;
+        score.avE5_vol = m_fit->avE5_vol;
+        score.n_within_band = m_fit->n_within_band;
+        score.metrics_valid = true;
+      }
+    }
     out.scores.push_back(score);
   }
 

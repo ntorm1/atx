@@ -48,6 +48,9 @@ add_executable(atx-vol-tests
     dividend_test.cpp
     s3_test.cpp
     fit_metrics_test.cpp
+    adjusted_greeks_test.cpp
+    vol_time_test.cpp
+    event_vol_test.cpp
     deamer_test.cpp
     parity_test.cpp
     panel_test.cpp
@@ -59,9 +62,12 @@ add_executable(atx-vol-tests
     vol_umbrella_test.cpp
     spy_real_test.cpp
     curve_noarb_test.cpp
+    vol_curve_test.cpp
+    curve_selector_test.cpp
     curve_fit_parallel_test.cpp
     parallel_for_test.cpp
     pricer_fitter_test.cpp
+    spline_curve_test.cpp
     spy_bidask_regression_test.cpp
     spy_fit_corpus_test.cpp
     breadth_regime_test.cpp
@@ -73,6 +79,8 @@ add_executable(atx-vol-tests
     priced_surface_test.cpp
     spy_portfolio_pnl_test.cpp
     pnl_greeks_consistency_test.cpp
+    scenario_grid_test.cpp
+    pnl_attribution_test.cpp
     lifecycle_integration_test.cpp
     corpus_test.cpp
     multiname_pipeline_test.cpp
@@ -146,12 +154,17 @@ include(GoogleTest)
 set(ATX_VOL_SLOW_FILTER
     "MultinamePipeline.*:Corpus.*:CorpusGeneratedProperty.*:CorpusBuildSession.*:QualifiedCorpus.*:OpraBreadthCorpus.*:SpyFitCorpus.*:SigmaInterpCorpus.*:CallGreeksAl.*:CallGreeksFd.*:AndersenLake.*:AndersenLakeRegime.*:ImplicitDiff.*:SigmaInterp.*:CurveFitParallel.*:CurveFitParity.*:CurveSurfaceNoArb.*:SpyBidAskRegression.*:SpyPortfolioPnl.*:PnlGreeksConsistency.*:SpyArchiveRoundTrip.*:SpyRealCalendarReporting.*:SpyRealOpra.*:BacktestReal.*:BreadthRegime.*:WarmAcrossTime.*:BoundaryHoist.*:Dispersion.*:CorrectionCache.*:PricerFitterTest.*:PreparedPortfolio.*:AmericanGreeks.*")
 
+# PRE_TEST: enumerate at ctest time, not as a POST_BUILD step -- relinking no longer
+# pays TWO test-enumeration runs of this ~2600-test binary (one per call below), and a
+# non-launchable exe no longer fails the *build*.
 gtest_discover_tests(atx-vol-tests
     TEST_FILTER "-${ATX_VOL_SLOW_FILTER}"
-    PROPERTIES LABELS atx_vol_fast)
+    PROPERTIES LABELS atx_vol_fast
+    DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(atx-vol-tests
     TEST_FILTER "${ATX_VOL_SLOW_FILTER}"
-    PROPERTIES LABELS atx_vol_slow)
+    PROPERTIES LABELS atx_vol_slow
+    DISCOVERY_MODE PRE_TEST)
 
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)

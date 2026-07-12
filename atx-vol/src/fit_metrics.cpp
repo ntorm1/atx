@@ -1,5 +1,6 @@
 #include "atx/vol/fit_metrics.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <span>
@@ -126,6 +127,58 @@ Result<SliceFitMetrics> slice_fit_metrics(std::span<const double> iv_model,
   out.avE5_vol = (sum_abs / dn) * 1.0e5;
   out.n = n;
   out.n_within_band = n_within;
+  return Ok(out);
+}
+
+Result<BandViolationStats> band_violation_stats(
+    std::span<const double> model_price, std::span<const double> bid_price,
+    std::span<const double> ask_price) noexcept {
+  const std::size_t n_in = model_price.size();
+  if (bid_price.size() != n_in || ask_price.size() != n_in) {
+    return Err(ErrorCode::InvalidArgument,
+               "band_violation_stats: input length mismatch");
+  }
+
+  BandViolationStats out{};
+  out.max_err_idx = static_cast<std::size_t>(-1);
+  // Any real (scored) violation is >= 0, so this sentinel always loses to the
+  // first scored quote, letting `viol > best_viol` alone drive first-index
+  // tie-breaking without a separate "have we scored anything yet" flag.
+  double best_viol = -1.0;
+  double sum_signed = 0.0;
+
+  for (std::size_t i = 0; i < n_in; ++i) {
+    const double bid = bid_price[i];
+    const double ask = ask_price[i];
+    if (!(std::isfinite(bid) && std::isfinite(ask) && ask >= bid)) {
+      // Crossed quote (ask < bid) or a non-finite bid/ask: neither defines a
+      // valid band to violate, and a NaN/Inf bound would otherwise poison
+      // max_prc_err / avg_signed_err below — skip either way (not scored).
+      continue;
+    }
+    const double p = model_price[i];
+    if (!std::isfinite(p)) {
+      continue;  // undefined model price: skip rather than contaminate stats
+    }
+
+    const double bid_viol = bid - p;  // > 0 iff model_price < bid
+    const double ask_viol = p - ask;  // > 0 iff model_price > ask
+    if (bid_viol > 0.0) ++out.n_bid_miss;
+    if (ask_viol > 0.0) ++out.n_ask_miss;
+
+    const double viol = std::max({bid_viol, ask_viol, 0.0});
+    if (viol > best_viol) {
+      best_viol = viol;
+      out.max_err_idx = i;
+    }
+
+    sum_signed += p - 0.5 * (bid + ask);
+    ++out.n;
+  }
+
+  out.max_prc_err = (out.n > 0) ? best_viol : 0.0;
+  out.avg_signed_err =
+      (out.n > 0) ? sum_signed / static_cast<double>(out.n) : 0.0;
   return Ok(out);
 }
 

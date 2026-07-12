@@ -31,9 +31,11 @@
 // path to match here (that would be the eSSVI served-cache session path, a
 // different API). This is exactly the distinction the old example floor blurred.
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <memory>
 #include <span>
 #include <string>
@@ -43,8 +45,10 @@
 #include <benchmark/benchmark.h>
 
 #include "atx/vol/american.hpp"
+#include "atx/vol/pnl_attribution.hpp"
 #include "atx/vol/portfolio_pricer.hpp"
 #include "atx/vol/priced_surface.hpp"
+#include "atx/vol/scenario_grid.hpp"
 #include "atx/vol/types.hpp"
 
 #include "bench_util.hpp"
@@ -61,10 +65,14 @@ using atx::vol::PortfolioWorkspace;
 using atx::vol::Position;
 using atx::vol::PriceFieldMask;
 using atx::vol::PriceFrameView;
+using atx::vol::AttributionOptions;
+using atx::vol::pnl_attribution;
 using atx::vol::PriceOptions;
 using atx::vol::PriceStatus;
 using atx::vol::PriceTotals;
 using atx::vol::PricedSurface;
+using atx::vol::scenario_grid;
+using atx::vol::ScenarioGridSpec;
 using atx::vol::Side;
 using atx::vol::SurfaceSet;
 using atx::vol::bench::apply_common;
@@ -403,6 +411,62 @@ void run_pnl(benchmark::State& state, std::size_t n_unique, std::size_t ratio,
   });
 }
 
+// ── 3b. pnl_attribution: base->shifted P&L attribution (C3.3) ─────────────
+// The attribution layer runs ONE pnl_explain solve (the dominant cost) plus a cheap
+// pivot-sampling + vega-partition pass. This case reports its OVERHEAD vs plain
+// pnl_explain: both the attribution and the reference rebuild the Portfolio from the
+// same book and run the same solve, so `ratio_attr_over_pnl` isolates the pivot+split
+// cost (expect ~1.0 — the Andersen-Lake solve dominates).
+void run_attribution(benchmark::State& state, std::size_t n_unique, std::size_t ratio,
+                     unsigned n_threads) {
+  const SurfaceSet& base = market().base_set();
+  const SurfaceSet& shifted = market().shifted_set();
+  const std::vector<Position> book =
+      atx::vol::bench::make_book(kUnderlyings, kSlices, n_unique, ratio);
+  AttributionOptions opts;
+  opts.n_threads = n_threads;
+
+  for (auto _ : state) {
+    auto ar = pnl_attribution(book, base, shifted, opts);
+    benchmark::DoNotOptimize(ar->total.pnl_total);
+    benchmark::ClobberMemory();
+  }
+
+  // Overhead reference: Portfolio::create + pnl_explain over the SAME book/threads
+  // (the attribution's own solve path, minus the pivot+split). Timed manually so the
+  // report can state attribution-time / pnl_explain-time directly.
+  PriceOptions popts;
+  popts.n_threads = n_threads;
+  using clock = std::chrono::steady_clock;
+  constexpr int kReps = 20;
+  const auto t0 = clock::now();
+  for (int rep = 0; rep < kReps; ++rep) {
+    auto ar = pnl_attribution(book, base, shifted, opts);
+    benchmark::DoNotOptimize(ar->total.pnl_total);
+  }
+  const auto t1 = clock::now();
+  for (int rep = 0; rep < kReps; ++rep) {
+    auto pf = Portfolio::create(book);
+    const PortfolioPricer pr(std::move(pf.value()));
+    auto er = pr.pnl_explain(base, shifted, popts);
+    benchmark::DoNotOptimize(er->total.pnl_total);
+  }
+  const auto t2 = clock::now();
+  const double attr_ns = std::chrono::duration<double, std::nano>(t1 - t0).count() / kReps;
+  const double pnl_ns = std::chrono::duration<double, std::nano>(t2 - t1).count() / kReps;
+
+  const double n_pos = static_cast<double>(book.size());
+  const double iters = static_cast<double>(state.iterations());
+  state.counters["positions_per_s"] =
+      benchmark::Counter(n_pos * iters, benchmark::Counter::kIsRate);
+  state.counters["attr_us"] = attr_ns / 1e3;
+  state.counters["pnl_explain_us"] = pnl_ns / 1e3;
+  state.counters["ratio_attr_over_pnl"] = (pnl_ns > 0.0) ? attr_ns / pnl_ns : 0.0;
+  state.counters["n_unique"] = static_cast<double>(n_unique);
+  state.counters["n_positions"] = n_pos;
+  state.counters["threads"] = static_cast<double>(n_threads);
+}
+
 // ── 4. Position-scatter-only ──────────────────────────────────────────────
 // Uniques priced ONCE outside the timed region; the loop only scales each unique
 // result by qty*multiplier and stores it into the (pre-allocated) output columns.
@@ -510,6 +574,88 @@ void run_floor(benchmark::State& state, std::size_t n_unique, Floor kind) {
       benchmark::Counter(n_uni * iters, benchmark::Counter::kIsRate);
   state.counters["ns_per_unique"] = benchmark::Counter(
       n_uni * iters * 1e-9, benchmark::Counter::kIsRate | benchmark::Counter::kInvert);
+}
+
+// ── 6. scenario_grid: full-book 11×11 spot×vol scenario matrix (C3.1 + C3.2) ──
+// The Taylor variant (radii=inf) reconstructs all 121 cells from ONE deduped Greek
+// solve — grid-cost ≈ one full-Greeks solve. The Exact variant (radii=0) re-solves
+// EVERY cell per unique — grid-cost ≈ 121 solve waves. The Mixed variant (default
+// radii) routes inner cells Taylor / outer cells Exact. Each row reports cells/s and
+// ratio_grid_over_solve = grid-build time / one price_totals(FullGreeks) call (the
+// "one Greek solve" reference) on the SAME 2688-unique full board — honestly measured
+// (~1.0 confirms Taylor amortizes into the solve; ~cell-count confirms all-exact).
+void run_scenario_grid(benchmark::State& state, unsigned n_threads, double rad_spot,
+                       double rad_vol) {
+  const std::size_t n_unique = 2688;  // 64 uids × 6 slices × 7 strikes (full board)
+  const SurfaceSet& surfaces = market().base_set();
+  std::vector<Position> book =
+      atx::vol::bench::make_book(kUnderlyings, kSlices, n_unique, /*positions_per_unique=*/1);
+
+  ScenarioGridSpec spec;
+  spec.n_threads = n_threads;
+  for (int i = 0; i < 11; ++i) {
+    // Spot: −10%..+10% in 2% steps; vol: −5..+5 vol pts in 1-pt steps.
+    spec.spot_pct.push_back(-0.10 + 0.02 * static_cast<double>(i));
+    spec.vol_bump.push_back(-0.05 + 0.01 * static_cast<double>(i));
+  }
+  spec.dr = 5e-4;
+  spec.dt = 3.0 / 365.0;
+  spec.taylor_radius_spot = rad_spot;
+  spec.taylor_radius_vol = rad_vol;
+  const double cells = static_cast<double>(spec.spot_pct.size() * spec.vol_bump.size());
+
+  for (auto _ : state) {
+    auto g = scenario_grid(book, surfaces, spec);
+    benchmark::DoNotOptimize(g->pnl.data());
+    benchmark::ClobberMemory();
+  }
+
+  // Ratio reference: one warm price_totals(FullGreeks) — the single Greek solve the
+  // grid is built on. Timed manually (same n_threads) so the report can state
+  // grid-time / one-Greek-solve-time directly.
+  const PortfolioPricer& pr = pricer_for(n_unique, /*ratio=*/1);
+  PriceOptions popts;
+  popts.n_threads = n_threads;
+  PortfolioWorkspace ws;
+  ws.reserve(pr.portfolio().n_contracts(), pr.portfolio().n_positions());
+  (void)pr.price_totals(surfaces, PriceFieldMask::FullGreeks, ws, popts);  // warm
+
+  using clock = std::chrono::steady_clock;
+  constexpr int kReps = 20;
+  const auto t0 = clock::now();
+  for (int rep = 0; rep < kReps; ++rep) {
+    auto g = scenario_grid(book, surfaces, spec);
+    benchmark::DoNotOptimize(g->pnl.data());
+  }
+  const auto t1 = clock::now();
+  for (int rep = 0; rep < kReps; ++rep) {
+    auto t = pr.price_totals(surfaces, PriceFieldMask::FullGreeks, ws, popts);
+    benchmark::DoNotOptimize(t->pv);
+  }
+  const auto t2 = clock::now();
+  const double grid_ns = std::chrono::duration<double, std::nano>(t1 - t0).count() / kReps;
+  const double ref_ns = std::chrono::duration<double, std::nano>(t2 - t1).count() / kReps;
+
+  const double iters = static_cast<double>(state.iterations());
+  state.counters["cells_per_s"] = benchmark::Counter(iters * cells, benchmark::Counter::kIsRate);
+  state.counters["cells"] = cells;
+  state.counters["grid_us"] = grid_ns / 1e3;
+  state.counters["price_totals_greeks_us"] = ref_ns / 1e3;
+  state.counters["ratio_grid_over_solve"] = (ref_ns > 0.0) ? grid_ns / ref_ns : 0.0;
+  state.counters["threads"] = static_cast<double>(n_threads);
+  state.counters["n_unique"] = static_cast<double>(pr.portfolio().n_contracts());
+
+  // Route mix + fallback count (one untimed build) so the report can read how many of
+  // the 121 cells re-solved and whether any lane fell back.
+  auto gg = scenario_grid(book, surfaces, spec);
+  double n_exact = 0.0;
+  if (gg.has_value()) {
+    for (const std::uint8_t rv : gg->route) {
+      n_exact += (rv == static_cast<std::uint8_t>(atx::vol::ScenarioRoute::Exact)) ? 1.0 : 0.0;
+    }
+    state.counters["exact_cells"] = n_exact;
+    state.counters["fallback_lanes"] = static_cast<double>(gg->n_exact_fallback_lanes);
+  }
 }
 
 // ── Registration (data-driven) ────────────────────────────────────────────
@@ -661,6 +807,14 @@ void register_all() {
     }
   }
 
+  // 3b. pnl_attribution (C3.3): one case on the synth book, hw threads. Reports the
+  // pivot+split overhead vs plain pnl_explain (ratio_attr_over_pnl ~ 1.0).
+  apply_common(benchmark::RegisterBenchmark(
+                   "attr/book_attribution/synth_book",
+                   [](benchmark::State& st) { run_attribution(st, 2688, /*ratio=*/1, /*t=*/0u); }))
+      ->Unit(benchmark::kMicrosecond)
+      ->UseRealTime();
+
   // 4. Position-scatter-only.
   for (const std::size_t ratio : {std::size_t{100}, std::size_t{1000}}) {
     char buf[128];
@@ -680,6 +834,31 @@ void register_all() {
       apply_common(benchmark::RegisterBenchmark(
                        buf, [nu, fr](benchmark::State& st) { run_floor(st, nu, fr.f); }))
           ->Unit(benchmark::kMicrosecond);
+    }
+  }
+
+  // 6. scenario_grid: full-book 11×11 spot×vol matrix at t1 (clean ratio) and hw
+  // (throughput). Three routing variants: taylor (radii=inf, C3.1 reference), mixed
+  // (default radii, C3.2 product), exact (radii=0, all-cell re-solve). Each emits
+  // cells/s + the grid-time / one-Greek-solve ratio.
+  struct GReg {
+    const char* tag;
+    double rs;
+    double rv;
+  };
+  const double kInfR = std::numeric_limits<double>::infinity();
+  for (const GReg& g :
+       {GReg{"taylor", kInfR, kInfR},
+        GReg{"mixed", atx::vol::kDefaultTaylorRadiusSpot, atx::vol::kDefaultTaylorRadiusVol},
+        GReg{"exact", 0.0, 0.0}}) {
+    for (const unsigned nt : {1u, 0u}) {
+      char buf[128];
+      std::snprintf(buf, sizeof buf, "scenario/grid_11x11_%s/synth_book/t%u", g.tag, nt);
+      apply_common(benchmark::RegisterBenchmark(buf, [nt, g](benchmark::State& st) {
+                     run_scenario_grid(st, nt, g.rs, g.rv);
+                   }))
+          ->Unit(benchmark::kMicrosecond)
+          ->UseRealTime();
     }
   }
 }

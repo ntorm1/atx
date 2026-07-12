@@ -4,16 +4,15 @@
 # FetchContent deps), and leaves it ready for clangd (the committed .clangd reads each
 # worktree's own build/compile_commands.json, so no symlink is needed).
 #
-# Cross-worktree speed comes from two SHARED caches, not from copying build trees:
-#   * sccache       -> global cache for cacheable compiler calls; clang-cl PCH
-#                      dependent calls currently remain non-cacheable (/Fp)
+# Cross-worktree speed comes from three SHARED caches, not from copying build trees:
+#   * ccache        -> global object cache (C:\atx-cache\ccache); the preset env keys
+#                      make the SAME source hash identically in every worktree
 #   * ATX_DEPS_DIR  -> shared FetchContent clone/build dir (deps fetched once)
-# Shared dependencies are the reliable win; inspect sccache stats rather than
-# assuming a fresh first-party build will be mostly hits.
+#   * VCPKG_INSTALLED_DIR (preset) -> one shared vcpkg payload instead of 1.1 GB per worktree
+# The first worktree primes the caches; every later worktree is mostly cache hits.
 #
-# Prereqs: sccache on PATH, VCPKG_ROOT set, and ATX_DEPS_DIR set. The worktree's
-# atx-build helper sources the MSVC environment and resolves Ninja + mt.exe.
-# Run scripts\dev-setup.ps1 once first.
+# Prereqs: run from a Visual Studio Developer PowerShell (MSVC env), with ccache on PATH,
+# VCPKG_ROOT set, and ATX_DEPS_DIR set. Run scripts\dev-setup.ps1 once first.
 #
 # Example: scripts\new-worktree.ps1 -Name s8 -Branch feat/s8 -Base main
 
@@ -26,25 +25,19 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
-$commonGitDir = (git rev-parse --path-format=absolute --git-common-dir).Trim()
-if (-not $commonGitDir) { throw 'Unable to resolve the shared git directory' }
-$mainRoot = Split-Path $commonGitDir -Parent
-$wtRoot = Join-Path (Split-Path $mainRoot -Parent) 'atx-wt'
+$root = (git rev-parse --show-toplevel).Trim()
+$wtRoot = Join-Path (Split-Path $root -Parent) 'atx-wt'
 $wt = Join-Path $wtRoot $Name
 New-Item -ItemType Directory -Force $wtRoot | Out-Null
 if (Test-Path $wt) { throw ('Worktree path already exists: ' + $wt) }
 
 Write-Host ('git worktree add ' + $wt + '  (' + $Branch + ' from ' + $Base + ')') -ForegroundColor Cyan
 git worktree add $wt -b $Branch $Base
-if ($LASTEXITCODE -ne 0) { throw 'git worktree add failed' }
 
+# git worktree add does NOT populate submodules; without this the configure dies at
+# atx-core/third-party/databento-cpp ("does not contain a CMakeLists.txt").
 Push-Location $wt
-try {
-  Write-Host 'initializing required submodules' -ForegroundColor Cyan
-  git submodule update --init --recursive atx-core/third-party/databento-cpp
-  if ($LASTEXITCODE -ne 0) { throw 'git submodule update failed' }
-}
-finally { Pop-Location }
+try { git submodule update --init --recursive } finally { Pop-Location }
 
 if (-not $env:ATX_DEPS_DIR) {
   Write-Warning 'ATX_DEPS_DIR is not set in this shell - the dev preset falls back to a per-worktree _deps. Run scripts\dev-setup.ps1 and open a new shell.'
@@ -53,24 +46,23 @@ if (-not $env:ATX_DEPS_DIR) {
 $preset = if ($Shared) { 'dev-shared' } else { 'dev' }
 
 if ($NoConfigure) {
-  Write-Host ('skipped configure (-NoConfigure). Run: cd ' + $wt + '; scripts\atx-build.ps1 -Preset ' + $preset + ' configure') -ForegroundColor Yellow
+  Write-Host ('skipped configure (-NoConfigure). Run: cd ' + $wt + '; cmake --preset ' + $preset) -ForegroundColor Yellow
   return
 }
 
 Push-Location $wt
 try {
   $note = if ($Shared) { 'sccache + shared deps + atx DLLs' } else { 'sccache + shared deps' }
-  Write-Host ('scripts\atx-build.ps1 -Preset ' + $preset + ' configure  (' + $note + ')') -ForegroundColor Cyan
-  & .\scripts\atx-build.ps1 -Preset $preset configure
-  if ($LASTEXITCODE -ne 0) { throw ('configure failed for preset ' + $preset) }
+  Write-Host ('cmake --preset ' + $preset + '  (' + $note + ')') -ForegroundColor Cyan
+  cmake --preset $preset
   Write-Host ''
   Write-Host ('ready: ' + $wt) -ForegroundColor Green
-  Write-Host ('  build : scripts\atx-build.ps1 -Preset ' + $preset + ' build atx-engine-<group>-tests   (groups: alpha risk data factory parallel learn eval library combine fund book core regime store)')
-  Write-Host ('  vol   : scripts\atx-build.ps1 -Preset ' + $preset + ' build atx-vol-tests')
-  Write-Host ('  partial suite: scripts\atx-build.ps1 -Preset ' + $preset + ' configure -Groups "risk;data"')
-  Write-Host ('  test  : scripts\atx-build.ps1 -Preset ' + $preset + ' -Ctest -R <Suite>')
+  Write-Host ('  build : cmake --build --preset ' + $preset + ' --target atx-engine-<group>-tests   (groups: alpha risk data factory parallel learn eval library combine fund book core regime store)')
+  Write-Host ('  partial suite (faster worktree builds): reconfigure with  cmake --preset ' + $preset + ' -DATX_TEST_GROUPS="risk;data"  to drop the groups you are not touching')
+  Write-Host ('  test  : ctest --preset ' + $preset + ' -R <Suite>')
   Write-Host '  clangd: auto-loads build/compile_commands.json (no setup)'
-  if (-not $Shared) { Write-Host '  smaller artifacts / faster relinks: scripts\atx-build.ps1 -Preset dev-shared configure' }
-  if (Get-Command sccache -ErrorAction SilentlyContinue) { sccache --show-stats | Select-Object -First 12 }
+  if (-not $Shared) { Write-Host '  smaller artifacts / faster relinks: re-run with -Shared (or cmake --preset dev-shared) to build atx libs as DLLs' }
+  if (Get-Command ccache -ErrorAction SilentlyContinue) { ccache -s | Select-Object -First 10 }
+  elseif (Get-Command sccache -ErrorAction SilentlyContinue) { sccache --show-stats | Select-Object -First 12 }
 }
 finally { Pop-Location }

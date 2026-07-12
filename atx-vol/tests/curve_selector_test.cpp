@@ -9,6 +9,7 @@
 #include "atx/vol/fit_policy.hpp"
 #include "atx/vol/panel.hpp"
 #include "atx/vol/spy_fixture.hpp"
+#include "atx/vol/vol_curve.hpp"
 
 namespace {
 
@@ -17,6 +18,8 @@ using atx::vol::FitAdmissionPolicy;
 using atx::vol::SurfaceAdmissionEvidence;
 using atx::vol::ParityDiagnosticState;
 using atx::vol::SurfaceAdmissionReason;
+using atx::vol::select_best_candidate;
+using atx::vol::VolCurveKind;
 
 TEST(CurveSelector, FullCommonKeyCoverageBeatsEasyPartialCandidate) {
   CandidateScore easy;
@@ -81,6 +84,55 @@ TEST(CurveSelector, ParsimonyMarginIsAnchoredToGlobalQualityLeader) {
   EXPECT_EQ(*selected, 1u);
 }
 
+TEST(CurveSelector, ButterflyDisqualifiedCandidateIsNotAdmissible) {
+  // A butterfly-disqualified family must not survive select_candidate_index
+  // even when its coverage and oos_vw dominate every rival.
+  CandidateScore disq;
+  disq.admitted = true;
+  disq.disqualified = true;
+  disq.oos_vw = 1.0;
+  disq.expiry_coverage = 1.0;
+  disq.holdout_coverage = 1.0;
+  disq.n_holdout = 30u;
+  disq.n_slices = 3u;
+  disq.dof_sum = 15u;
+
+  CandidateScore clean = disq;
+  clean.disqualified = false;
+  clean.oos_vw = 0.7;
+
+  const std::vector<CandidateScore> scores{disq, clean};
+  const auto selected = atx::vol::select_candidate_index(scores, 0.004);
+  ASSERT_TRUE(selected.has_value()) << selected.error().to_string();
+  EXPECT_EQ(*selected, 1u);
+}
+
+TEST(CurveSelector, ChiSquareBreaksTieInsideParsimonyBand) {
+  // Within the parsimony band and at equal coverage, the candidate whose
+  // reduced chi-square is closest to 1 wins even at higher DoF (Task C2.5
+  // ordering: oos_vw band -> chi2 -> DoF -> oos_vw).
+  CandidateScore far_chi2;
+  far_chi2.admitted = true;
+  far_chi2.oos_vw = 0.900;
+  far_chi2.expiry_coverage = 1.0;
+  far_chi2.holdout_coverage = 1.0;
+  far_chi2.n_holdout = 100u;
+  far_chi2.n_slices = 4u;
+  far_chi2.dof_sum = 20u; // avg dof 5
+  far_chi2.chi2_reduced = 2.5;
+  far_chi2.metrics_valid = true;
+
+  CandidateScore near_chi2 = far_chi2;
+  near_chi2.oos_vw = 0.899;
+  near_chi2.dof_sum = 32u; // avg dof 8
+  near_chi2.chi2_reduced = 1.1;
+
+  const std::vector<CandidateScore> scores{far_chi2, near_chi2};
+  const auto selected = atx::vol::select_candidate_index(scores, 0.004);
+  ASSERT_TRUE(selected.has_value()) << selected.error().to_string();
+  EXPECT_EQ(*selected, 1u);
+}
+
 TEST(CurveSelector, SamplesLiquidityWithinDeterministicTenorStrataOnCommonKeys) {
   const atx::vol::SynthPanelSpec spec = atx::vol::make_spy_synthetic_spec();
   const auto panel = atx::vol::make_synthetic_american_panel(spec);
@@ -115,6 +167,79 @@ TEST(CurveSelector, SamplesLiquidityWithinDeterministicTenorStrataOnCommonKeys) 
     EXPECT_LE(score.n_successful_holdout, score.n_holdout);
   }
   EXPECT_DOUBLE_EQ(first->scores[0].vega_weight_total, first->scores[1].vega_weight_total);
+}
+
+// ── Task C2.5: unit coverage for the fit-metrics selection policy ──
+// (select_best_candidate). The winner ordering is oos_vw (within
+// parsimony_margin) -> reduced-chi-square closest to 1 -> parsimony DoF ->
+// higher oos_vw, with butterfly-disqualified families excluded entirely.
+// Scores are constructed directly so the policy is tested in isolation from the
+// (expensive, fixture-bound) held-out fit machinery.
+
+// A scorable candidate with the fields the policy reads. `dof_sum`/`n_slices`
+// give avg DoF = dof_sum/n_slices.
+[[nodiscard]] CandidateScore mk(VolCurveKind kind, double oos_vw, double chi2,
+                                bool metrics_valid, std::size_t dof_sum,
+                                std::size_t n_slices, bool disqualified = false) {
+  CandidateScore s;
+  s.kind = kind;
+  s.oos_vw = oos_vw;
+  s.chi2_reduced = chi2;
+  s.metrics_valid = metrics_valid;
+  s.dof_sum = dof_sum;
+  s.n_slices = n_slices;
+  s.n_holdout = 100;  // scorable
+  s.disqualified = disqualified;
+  return s;
+}
+
+constexpr double kMargin = 0.004;
+
+TEST(CurveSelector, TieBreaksOnChiSquareClosestToOne) {
+  // A leads on oos_vw but its reduced chi^2 is far from 1; B is within the
+  // parsimony tie band and has chi^2 much closer to 1 (even at higher DoF).
+  // The chi^2 tie-break runs BEFORE parsimony, so B wins.
+  std::vector<CandidateScore> scores;
+  scores.push_back(mk(VolCurveKind::Essvi, 0.900, 2.5, true, 20, 4));  // dof 5
+  scores.push_back(mk(VolCurveKind::C8, 0.899, 1.1, true, 32, 4));     // dof 8
+  EXPECT_EQ(select_best_candidate(scores, kMargin), 1u);
+}
+
+TEST(CurveSelector, ButterflyDisqualifiedFamilyExcluded) {
+  // A has the best oos_vw but is butterfly-disqualified; it must be dropped and
+  // the next scorable family (B) chosen even at a lower oos_vw.
+  std::vector<CandidateScore> scores;
+  scores.push_back(mk(VolCurveKind::Svi, 0.950, 1.0, true, 20, 4,
+                      /*disqualified=*/true));
+  scores.push_back(mk(VolCurveKind::Essvi, 0.800, 3.0, true, 12, 4));
+  EXPECT_EQ(select_best_candidate(scores, kMargin), 1u);
+}
+
+TEST(CurveSelector, ParsimonyBreaksTieWhenChiSquareUnavailable) {
+  // Equal oos_vw, neither has valid metrics (chi^2 does not participate): the
+  // tie falls through to fewer average DoF — the parsimonious family wins.
+  std::vector<CandidateScore> scores;
+  scores.push_back(mk(VolCurveKind::C8, 0.900, 0.0, false, 32, 4));      // dof 8
+  scores.push_back(mk(VolCurveKind::Essvi, 0.900, 0.0, false, 12, 4));   // dof 3
+  EXPECT_EQ(select_best_candidate(scores, kMargin), 1u);
+}
+
+TEST(CurveSelector, UniqueBestOosVwWinsOutright) {
+  // When one family is strictly best on oos_vw beyond the tie band, it wins
+  // regardless of chi^2 / DoF.
+  std::vector<CandidateScore> scores;
+  scores.push_back(mk(VolCurveKind::ConvexDense, 0.990, 5.0, true, 160, 4));
+  scores.push_back(mk(VolCurveKind::Essvi, 0.700, 1.0, true, 12, 4));
+  EXPECT_EQ(select_best_candidate(scores, kMargin), 0u);
+}
+
+TEST(CurveSelector, NoScorableCandidateReturnsZero) {
+  // All families failed to fit (n_holdout == 0): the policy returns 0 and the
+  // caller reports NotFound.
+  std::vector<CandidateScore> scores(2);
+  scores[0].n_holdout = 0;
+  scores[1].n_holdout = 0;
+  EXPECT_EQ(select_best_candidate(scores, kMargin), 0u);
 }
 
 TEST(FitAdmission, RejectsPartialAndUnhealthySurfaceWithStablePrimaryReason) {

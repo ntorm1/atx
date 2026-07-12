@@ -1,172 +1,87 @@
-### Task 3: `make_dispersion_strangle_spec` — the strategy in one config struct
-
-The example must stay small, so the leg/constraint/lifecycle assembly lives in the library: a validated builder from a plain config to a `StrategySpec`. Tests pin the acceptance math: 40Δ strikes reprice, per-name theta equal, cohort net vega ≈ 0 at entry.
+### Task 3: Vol-multiple cubic-spline curve (`SplineVol`) + fitter
 
 **Files:**
-- Create: `atx-vol/include/atx/vol/dispersion_strangle.hpp`
-- Create: `atx-vol/src/dispersion_strangle.cpp`
-- Create: `atx-vol/tests/dispersion_strangle_test.cpp`
-- Modify: `atx-vol/CMakeLists.txt` (add `src/dispersion_strangle.cpp` to the `add_library(atx-vol ...)` source list, near `src/dispersion.cpp`)
-- Modify: `atx-vol/tests/CMakeLists.txt` (add the test source)
+- Create: `atx-vol/include/atx/vol/spline_curve.hpp`, `atx-vol/src/spline_curve.cpp`
+- Modify: `atx-vol/include/atx/vol/vol_curve.hpp` (enum + adapter decl or include), `atx-vol/src/curve.cpp`/wherever `to_string(VolCurveKind)` + `fit_slice_curve` dispatch live (locate: `atx-vol/src/curve_fit.cpp` / `vol_curve` impl — grep `to_string(VolCurveKind`).
+- Test: `atx-vol/tests/spline_curve_test.cpp`
+- Modify: both CMakeLists.
 
-**Interfaces:**
-- Consumes: Task 2's `Holding::CloseAtHorizon`, `StrategySpec::missing`, plus existing `LegSpec`, `StructureSpec::Strangle`, `StrikeSelector::Delta`, `SizeSpec::{TargetTheta,TargetVega}`, `CrossLegConstraint::FlatVega`, `MissingNameSpec`.
-- Produces:
+**Model (SpiderRock LiveVolSurfaces):** curve = cubic spline over standardized moneyness with volatility *multiples* `m = σ_K/σ_ATM` on a fixed grid; moneyness `z = ln(K/F)/(σ_ATM·√T)` (LogStd); wings flat beyond the outermost knot; serve `σ(k) = σ_ATM · m(z)`.
 
+**Interfaces (Produces):**
 ```cpp
-// dispersion_strangle.hpp
+// spline_curve.hpp
 namespace atx::vol {
 
-// Long equal-theta single-name strangles vs a short vega-flat index strangle,
-// one cohort per entry tick, each cohort closed at close_dte_days to expiry.
-// Pricing is projection-path only (synthetic strikes/expiries off the fitted
-// surfaces); expiry = entry ts + tenor_days calendar days.
-struct DispersionStrangleConfig {
-  std::vector<std::string> names;              // long single names (>= 1)
-  std::string index_symbol{"SPY"};             // short hedge leg
-  double target_abs_delta{0.40};               // both strangle legs, in (0,1)
-  double tenor_days{90.0};                     // calendar days to synthetic expiry
-  double close_dte_days{10.0};                 // close cohort below this residual
-  unsigned entry_every_n_days{1};              // 1 = every trading day (EveryStep)
-  double theta_per_name_daily{10.0};           // $/calendar-day theta per name
-  double index_base_vega{10000.0};             // pre-constraint index sizing seed
-  MissingNameSpec missing{MissingNamePolicy::DropRenormalize, 4};
-  HedgeSpec hedge{};                           // default: no delta hedge
+inline constexpr std::array<double, 29> kSrMoneynessGrid = {
+    -25, -14, -11, -8.5, -6.5, -5, -3.75, -2.75, -2, -1.5, -1, -0.75, -0.5,
+    -0.25, 0, 0.25, 0.5, 0.75, 1, 1.5, 2, 2.75, 3.75, 5, 6.5, 8.5, 11, 14, 25};
+
+struct SplineVolParams {
+  double atm_vol{0.0};                       // σ_ATM > 0
+  std::vector<double> z;                     // knot grid, strictly increasing
+  std::vector<double> mult;                  // ‖z‖ vol multiples, > 0
+  double z_lo_valid{0.0}, z_hi_valid{0.0};   // observed-moneyness range; flat outside
 };
 
-// Validated assembly into the declarative DSL:
-//  - one LegSpec per name: Strangle{Delta d call, Delta d put}, tenor
-//    tenor_days/365.25, SizeSpec{TargetTheta, theta_per_name_daily, +1},
-//    group "basket";
-//  - one index LegSpec: same structure/tenor, SizeSpec{TargetVega,
-//    index_base_vega, -1}, group "index";
-//  - constraint FlatVega{group_a="basket", group_b="index"} (scales the index
-//    leg so gross index vega == gross basket vega; opposite signs net ~0);
-//  - lifecycle: EveryStep when entry_every_n_days==1 else EveryNDays with
-//    entry_every_n, Holding::CloseAtHorizon, roll_at_T = close_dte_days/365.25;
-//  - spec.missing = cfg.missing, spec.hedge = cfg.hedge,
-//    spec.name = "mag7_dispersion_strangle" (or names.size()-agnostic label).
-// InvalidArgument when: names empty; index_symbol empty or contained in
-// names; target_abs_delta outside (0,1); tenor_days <= close_dte_days;
-// close_dte_days < 0; theta_per_name_daily <= 0; index_base_vega <= 0;
-// entry_every_n_days == 0; missing.min_names > names.size().
-[[nodiscard]] Result<StrategySpec>
-make_dispersion_strangle_spec(const DispersionStrangleConfig &cfg);
+struct SplineFitOpts {
+  std::span<const double> grid{kSrMoneynessGrid};  // knot z-grid
+  double lambda{1e-3};       // 2nd-difference roughness penalty on multiples
+  double mult_floor{0.05};   // post-solve clamp
+  std::size_t min_obs{6};    // below this: InvalidArgument
+};
 
-}  // namespace atx::vol
+class SplineVolCurve final : public IVolCurve {
+ public:
+  SplineVolCurve(SplineVolParams p, double T, double F, double df);
+  [[nodiscard]] double w(double k_log) const noexcept override;   // (atm·m(z))²·T
+  [[nodiscard]] VolCurveKind kind() const noexcept override;      // SplineVol
+  [[nodiscard]] std::size_t dof() const noexcept override;        // active knots
+  [[nodiscard]] std::unique_ptr<IVolCurve> clone() const override;
+  [[nodiscard]] const SplineVolParams& params() const noexcept;
+};
+
+// Penalized WLS fit of knot multiples from de-Americanized European obs.
+[[nodiscard]] Result<std::unique_ptr<IVolCurve>>
+fit_spline_vol_slice(std::span<const FitObs> obs_eu, double F, double T, double df,
+                     const SplineFitOpts& opts = {});
+}
+// vol_curve.hpp: enum gains `SplineVol = 5`; CurveConfig gains `SplineFitOpts spline{};`
+// fit_slice_curve dispatch gains a SplineVol case (no w_prev support v1 — document).
 ```
 
-- [ ] **Step 1: Write the failing tests.** New `atx-vol/tests/dispersion_strangle_test.cpp`. Fixture: copy the `make_surface` analytic-eSSVI pattern from strategy_test.cpp; build ONE archive holding 4 surfaces — 3 "names" (`AAA` uid 1 vol_bump 0.00, `BBB` uid 2 bump 0.06, `CCC` uid 3 bump 0.12, spots 100/150/200) + index `SPX` (uid 9, spot 500, bump 0.02) — and `MarketSnapshot::load` it.
+**Fitting algorithm:**
+1. σ_ATM seed: vega-weight-weighted mean of obs IVs with |k| ≤ 0.5·σ_guess·√T (fallback: global vega-weighted mean; σ_guess = global mean IV). Then one refinement pass: σ_ATM = spline-interpolated fit at z=0 after solve, re-standardize once (two-pass total, deterministic).
+2. Standardize each obs: `z_i = k_i/(σ_ATM√T)`, target `y_i = iv_i/σ_ATM`, weight `wt_i = FitObs.weight_w`.
+3. Restrict to active knots: knots inside `[min z_i − 1, max z_i + 1]` (never fewer than 4); outer knots excluded from DoF and pinned by the natural-spline flat extension.
+4. Cardinal natural-cubic-spline basis: for each active knot j solve the tridiagonal natural-spline system for the unit vector e_j once (O(K²) total, K ≤ 29); basis matrix `B[i][j] = basis_j(z_i)`.
+5. Solve `(BᵀWB + λ·DᵀD)·m = BᵀWy` where D = second-difference matrix over knots, via `atx::core::linalg::solve_spd` (same helper the C8 LM uses). Clamp `m` to `[mult_floor, ∞)`.
+6. Diagnostics: post-fit Roper `g(k) ≥ 0` scan on a 128-pt k-grid within the valid range; count violations (do NOT project v1 — record count; callers can reject). Store in fit report the same way existing fitters expose diag (return curve; violations logged via counter or accessible via params — expose `n_butterfly_viol` on `SplineVolParams`).
+7. Eval: binary-search knot interval, cubic Hermite/natural-spline eval; `z` clamped to `[z.front(), z.back()]` (flat wings); w NaN if T/F/df invalid.
 
+**Test cases (write first):**
 ```cpp
-TEST(DispersionStrangle, SpecShape) {
-  DispersionStrangleConfig cfg;
-  cfg.names = {"AAA", "BBB", "CCC"};
-  cfg.index_symbol = "SPX";
-  cfg.missing = {MissingNamePolicy::DropRenormalize, 2};
-  auto spec = make_dispersion_strangle_spec(cfg);
-  ASSERT_TRUE(spec.has_value());
-  ASSERT_EQ(spec->legs.size(), 4u);
-  for (int i = 0; i < 3; ++i) {
-    EXPECT_EQ(spec->legs[i].group, "basket");
-    EXPECT_EQ(spec->legs[i].size.kind, SizeSpec::Kind::TargetTheta);
-    EXPECT_DOUBLE_EQ(spec->legs[i].size.sign, +1.0);
-    EXPECT_EQ(spec->legs[i].structure.kind, StructureSpec::Kind::Strangle);
-    EXPECT_DOUBLE_EQ(spec->legs[i].tenor.target_T, 90.0 / 365.25);
-  }
-  EXPECT_EQ(spec->legs[3].symbol, "SPX");
-  EXPECT_EQ(spec->legs[3].group, "index");
-  EXPECT_DOUBLE_EQ(spec->legs[3].size.sign, -1.0);
-  EXPECT_EQ(spec->constraint.kind, CrossLegConstraint::Kind::FlatVega);
-  EXPECT_EQ(spec->constraint.group_a, "basket");
-  EXPECT_EQ(spec->constraint.group_b, "index");
-  EXPECT_EQ(spec->lifecycle.holding, LifecycleSpec::Holding::CloseAtHorizon);
-  EXPECT_DOUBLE_EQ(spec->lifecycle.roll_at_T, 10.0 / 365.25);
-  EXPECT_EQ(spec->lifecycle.entry, LifecycleSpec::Entry::EveryStep);
+TEST(SplineVol, FlatSmileRoundTrip) {
+  // obs from flat 20% smile, 15 strikes: fit → every mult ≈ 1, atm ≈ 0.20, iv(k)=0.20
 }
-
-TEST(DispersionStrangle, RejectsBadConfig) {
-  DispersionStrangleConfig ok;
-  ok.names = {"AAA"};
-  ok.missing.min_names = 1;
-  ASSERT_TRUE(make_dispersion_strangle_spec(ok).has_value());
-  auto expect_reject = [&](auto mutate) {
-    DispersionStrangleConfig c = ok;
-    mutate(c);
-    auto r = make_dispersion_strangle_spec(c);
-    ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code(), ErrorCode::InvalidArgument);
-  };
-  expect_reject([](auto &c) { c.names.clear(); });
-  expect_reject([](auto &c) { c.index_symbol = "AAA"; });
-  expect_reject([](auto &c) { c.target_abs_delta = 1.0; });
-  expect_reject([](auto &c) { c.tenor_days = 10.0; c.close_dte_days = 10.0; });
-  expect_reject([](auto &c) { c.theta_per_name_daily = 0.0; });
-  expect_reject([](auto &c) { c.entry_every_n_days = 0; });
-  expect_reject([](auto &c) { c.missing.min_names = 5; });
+TEST(SplineVol, RecoversSviSmile) {
+  // Generate obs from a raw-SVI slice (a=.02,b=.4,rho=-.3,m=0,sigma=.4,T=.25,F=100);
+  // 25 strikes, tight uniform weights. RMSE(iv) < 2e-3 inside observed range.
 }
-
-TEST(DispersionStrangle, EntryMath_EqualTheta_VegaFlat_FortyDelta) {
-  auto snap = load_fixture_snapshot();   // the 4-surface archive above
-  DispersionStrangleConfig cfg;
-  cfg.names = {"AAA", "BBB", "CCC"};
-  cfg.index_symbol = "SPX";
-  cfg.tenor_days = 90.0;
-  cfg.theta_per_name_daily = 10.0;
-  cfg.missing = {MissingNamePolicy::DropRenormalize, 2};
-  auto spec = make_dispersion_strangle_spec(cfg);
-  ASSERT_TRUE(spec.has_value());
-  auto legs = resolve_spec_with_policy(*snap, *spec, nullptr);
-  ASSERT_TRUE(legs.has_value());
-  ASSERT_EQ(legs->size(), 8u);   // 4 symbols x {call, put}
-
-  // 40-delta strike correctness: every resolved leg reprices to |delta| ~ 0.40
-  // (mirror spy_strangle_backtest_test::FortyDeltaEntry: reprice via
-  // surf->delta(K, T, side), tolerance 1e-3; call K above forward, put below).
-  for (const auto &sl : *legs) {
-    const PricedSurface *surf = snap->find(sl.leg.uid);
-    ASSERT_NE(surf, nullptr);
-    auto d = surf->delta(sl.leg.K, sl.leg.T, sl.leg.side);
-    ASSERT_TRUE(d.has_value());
-    EXPECT_NEAR(std::abs(*d), 0.40, 1e-3);
-    const double F = surf->forward_at(sl.leg.T);
-    if (sl.leg.side == Side::Call) EXPECT_GT(sl.leg.K, F); else EXPECT_LT(sl.leg.K, F);
-  }
-
-  // Equal theta: each name's |sum(qty*theta*mult)| == 10 $/day * 365.25, all
-  // names equal within 1e-6 relative.
-  const double want_theta = 10.0 * 365.25;
-  std::map<std::uint32_t, double> theta_by_uid;
-  double net_vega = 0.0, gross_vega = 0.0;
-  for (const auto &sl : *legs) {
-    if (sl.leg.group == "basket") theta_by_uid[sl.leg.uid] += sl.qty * sl.leg.theta * sl.multiplier;
-    net_vega += sl.qty * sl.leg.vega * sl.multiplier;
-    gross_vega += std::abs(sl.qty * sl.leg.vega * sl.multiplier);
-  }
-  ASSERT_EQ(theta_by_uid.size(), 3u);
-  for (const auto &[uid, th] : theta_by_uid) {
-    EXPECT_NEAR(std::abs(th), want_theta, 1e-6 * want_theta) << uid;
-  }
-  // Vega-flat at entry: net cohort vega ~ 0 (FlatVega scale is exact in fp).
-  EXPECT_LE(std::abs(net_vega), 1e-9 * gross_vega);
-  // Short index: negative qty on index legs.
-  for (const auto &sl : *legs) {
-    if (sl.leg.group == "index") EXPECT_LT(sl.qty, 0.0);
-  }
+TEST(SplineVol, WingsAreFlat) { /* iv at z=40 == iv at z clamp boundary */ }
+TEST(SplineVol, DofCountsActiveKnots) { /* narrow board -> dof < 29 */ }
+TEST(SplineVol, CloneIsDeepAndIdentical) { /* clone then compare w() on grid */ }
+TEST(SplineVol, DispatchThroughFitSliceCurve) {
+  // CurveConfig{kind=SplineVol} through fit_slice_curve returns kind()==SplineVol
+  // and serves through CurveSurface (push + w/iv query).
 }
+TEST(SplineVol, RejectsDegenerateInputs) { /* <min_obs, F<=0, T<=0 */ }
+TEST(SplineVol, ButterflyViolationCounterOnConvexData) { /* clean synthetic -> 0 */ }
 ```
 
-(If `ResolvedLeg` lacks a `group` member for the theta grouping, group by uid using the fixture's known uids — the assertions above stand.)
+**Steps:** tests → fail → implement (spline_curve.* first, then enum/dispatch wiring) → pass → full gate (existing golden tests must be untouched: SplineVol is NOT added to `default_selector_candidates()` v1) → commit `feat(atx-vol): SplineVol vol-multiple cubic-spline curve family (SpiderRock SRCubic-style)`.
 
-- [ ] **Step 2: Build; verify failure** (missing header/symbols).
-- [ ] **Step 3: Implement** `make_dispersion_strangle_spec` exactly per the doc-comment contract (pure assembly + validation, no pricing).
-- [ ] **Step 4: Build + run.** `& .\scripts\atx-build.ps1 -Ctest -R "DispersionStrangle|Strategy|Dispersion"` — ALL PASS.
-- [ ] **Step 5: Commit.**
-
-```bash
-git add -A
-git commit -m "feat(atx-vol): dispersion-strangle strategy spec builder (equal-theta basket vs vega-flat index)"
-```
+**Acceptance:** new tests pass; gate green; `default_selector_candidates()` unchanged.
 
 ---
 

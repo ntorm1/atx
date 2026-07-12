@@ -465,6 +465,39 @@ TEST(SurfaceDb, UpsertBadEnum_FailsCleanly_DbStillOpens) {
   std::filesystem::remove_all(root);
 }
 
+TEST(SurfaceDb, Upsert_SplineVolKind_RejectedCleanly) {
+  // SplineVol (= 5) sits above symbol_record_enums_valid's curve_kind <= 4
+  // cap by design: it has no ATXVDB v1 wire format (see surface_db.cpp's
+  // comment on the cap, mirroring surface_archive.cpp's SplineVol
+  // rejection). A config pinning it must fail upsert cleanly -- same
+  // InvalidArgument path as UpsertBadEnum_FailsCleanly_DbStillOpens -- and
+  // leave the database fully usable afterward.
+  const auto root = test_root("upsert_splinevol");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+  EXPECT_EQ(db->generation(), 1u);
+
+  SymbolFitConfig bad;
+  bad.curve.kind = VolCurveKind::SplineVol;
+  const auto result = db->upsert_symbol("AAPL", bad);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_EQ(db->generation(), 1u);   // rejected mutation must not advance generation
+  EXPECT_TRUE(db->symbols().empty());
+
+  // A subsequent valid upsert on the same handle still succeeds:
+  ASSERT_TRUE(db->upsert_symbol("AAPL", SymbolFitConfig{}).has_value());
+  EXPECT_EQ(db->generation(), 2u);
+
+  // And the db still opens cleanly from disk -- the rejected mutation never
+  // touched the on-disk manifest.
+  auto reopened = SurfaceDb::open(root.string());
+  ASSERT_TRUE(reopened.has_value());
+  EXPECT_EQ(reopened->generation(), 2u);
+  EXPECT_EQ(reopened->symbols(), (std::vector<std::string>{"AAPL"}));
+  std::filesystem::remove_all(root);
+}
+
 TEST(SurfaceDb, Create_RejectsExisting_Open_RejectsMissing) {
   const auto root = test_root("create_guard");
   ASSERT_TRUE(SurfaceDb::create(root.string()).has_value());

@@ -5,7 +5,7 @@
     {
       "name": "_base",
       "hidden": true,
-      "description": "Shared Ninja + clang-cl settings. Embedded debug info (/Z7 via CMP0141=NEW), SCCACHE_BASEDIR=${sourceDir}, and -ffile-prefix-map normalize cacheable compiler calls across worktrees. Current clang-cl PCH-dependent /Yu+/Fp calls remain non-cacheable in sccache 0.15, so measure actual hits instead of assuming first-party reuse. sccache itself is auto-detected by the root CMakeLists when on PATH.",
+      "description": "Shared Ninja + clang-cl settings. Embedded debug info (/Z7 via CMP0141=NEW) keeps debug objects content-cacheable (separate /Zi PDBs are not). Cross-worktree object reuse (verified 2026-07-12, byte-identical objects): CCACHE_BASEDIR relativizes worktree paths in the hash, CCACHE_NOHASHDIR drops the build cwd, CCACHE_IGNOREOPTIONS drops the per-worktree -ffile-prefix-map VALUE (the flag itself still scrubs paths from the object), CCACHE_SLOPPINESS makes PCH TUs cacheable. VCPKG_INSTALLED_DIR shares one vcpkg payload (was 1.1 GB copied per worktree). The launcher (ccache, sccache fallback) is auto-detected by the root CMakeLists.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
@@ -15,12 +15,17 @@
         "CMAKE_CXX_COMPILER": "clang-cl",
         "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
         "VCPKG_TARGET_TRIPLET": "x64-windows",
+        "VCPKG_INSTALLED_DIR": "C:/atx-cache/vcpkg_installed",
         "ATX_USE_PCH": "ON",
         "ATX_SHARED_LIBS": "OFF",
         "CMAKE_POLICY_DEFAULT_CMP0141": "NEW",
         "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT": "Embedded"
       },
       "environment": {
+        "CCACHE_BASEDIR": "${sourceDir}",
+        "CCACHE_NOHASHDIR": "1",
+        "CCACHE_SLOPPINESS": "pch_defines,time_macros",
+        "CCACHE_IGNOREOPTIONS": "-ffile-prefix-map=* /clang:-ffile-prefix-map=*",
         "SCCACHE_BASEDIR": "${sourceDir}"
       }
     },
@@ -28,18 +33,15 @@
       "name": "ninja",
       "inherits": "_base",
       "displayName": "Ninja + clang-cl (default, cached)",
-      "description": "Default build. PCH ON (heavy/stable headers parsed once), LLD linker, module-scan off, and sccache (auto-detected) — a self-contained static build. For command-line work use scripts/atx-build.ps1 so the MSVC environment and tools are resolved; VSCode CMake Tools is also supported."
+      "description": "Default build. Identical to `dev` (both inherit everything from _base, incl. shared deps via ATX_DEPS_DIR and the ccache keys); kept as a separate name for muscle memory. Run from a VS Developer shell or the VSCode CMake Tools extension so the MSVC environment is present."
     },
     {
       "name": "dev",
       "inherits": "_base",
-      "displayName": "dev: sccache + shared deps + unity (fast iterate)",
-      "description": "Fast iterative preset for worktrees: explicit sccache launcher, a shared FetchContent clone/build cache via $env{ATX_DEPS_DIR} (deps cloned once, reused by every worktree), and unity test builds for fast cold compiles. Static libs (self-contained exes). Use scripts/atx-build.ps1 for command-line work; prerequisites are sccache on PATH and ATX_DEPS_DIR set (scripts/dev-setup.ps1).",
+      "displayName": "dev: canonical fast-iterate preset (ccache + shared deps + PCH)",
+      "description": "The one preset agents and worktrees use (scripts/new-worktree.ps1 and scripts/atx-build.ps1 both target it). Compiler cache + shared FetchContent deps + shared vcpkg dir all come from _base/CMakeLists auto-detection. Unity stays OFF: stable per-TU objects are what the ccache cross-worktree cache keys on, and unity batches (16 test files merged per TU) were the slowest TUs in the ninja log. Opt back in with -DATX_UNITY_BUILD=ON for cache-less cold builds (CI).",
       "cacheVariables": {
-        "CMAKE_C_COMPILER_LAUNCHER": "sccache",
-        "CMAKE_CXX_COMPILER_LAUNCHER": "sccache",
-        "FETCHCONTENT_BASE_DIR": "$env{ATX_DEPS_DIR}",
-        "ATX_UNITY_BUILD": "ON"
+        "ATX_UNITY_BUILD": "OFF"
       }
     },
     {
@@ -56,7 +58,7 @@
       "name": "rel",
       "inherits": "dev",
       "displayName": "rel: Release (canonical acceptance / benchmarks)",
-      "description": "Optimized Release build in build-rel/ for throughput benchmarks and canonical acceptance numbers, on the dev toolchain (clang-cl + sccache + shared deps). Never the debug-checked test gate — use `dev` for that.",
+      "description": "Optimized Release build in build-rel/ for throughput benchmarks and canonical acceptance numbers, on the dev toolchain (clang-cl + compiler cache + shared deps). Never the debug-checked test gate — use `dev` for that.",
       "binaryDir": "${sourceDir}/build-rel",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
@@ -132,12 +134,6 @@
     {
       "name": "rel",
       "configurePreset": "rel",
-      "output": { "outputOnFailure": true },
-      "execution": { "jobs": 16, "scheduleRandom": false }
-    },
-    {
-      "name": "rel-avx2",
-      "configurePreset": "rel-avx2",
       "output": { "outputOnFailure": true },
       "execution": { "jobs": 16, "scheduleRandom": false }
     },

@@ -33,6 +33,10 @@ std::span<const VolCurveKind> fallback_curve_rungs(VolCurveKind primary) noexcep
   static constexpr VolCurveKind kFromSvi[]{VolCurveKind::LinearVariance};
   static constexpr VolCurveKind kFromConvex[]{VolCurveKind::LinearVariance};
   static constexpr VolCurveKind kFromLinear[]{VolCurveKind::Essvi};
+  // SplineVol is not in default_selector_candidates() v1 (task-3 constraint),
+  // so this rung is not exercised by the auto-routed path today; it still
+  // needs a progressing ladder for any caller that pins SplineVol explicitly.
+  static constexpr VolCurveKind kFromSpline[]{VolCurveKind::LinearVariance};
   switch (primary) {
   case VolCurveKind::C8:
     return kFromC8;
@@ -44,6 +48,8 @@ std::span<const VolCurveKind> fallback_curve_rungs(VolCurveKind primary) noexcep
     return kFromConvex;
   case VolCurveKind::LinearVariance:
     return kFromLinear;
+  case VolCurveKind::SplineVol:
+    return kFromSpline;
   }
   return {};
 }

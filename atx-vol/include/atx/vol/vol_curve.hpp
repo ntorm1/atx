@@ -50,9 +50,10 @@
 #include <span>
 #include <vector>
 
-#include "atx/vol/c8.hpp"          // C8Params
-#include "atx/vol/calib.hpp"       // CalibOpts, FitObs
-#include "atx/vol/dense_slice.hpp" // ConvexSliceFit, ConvexFitOpts
+#include "atx/vol/c8.hpp"           // C8Params
+#include "atx/vol/calib.hpp"        // CalibOpts, FitObs
+#include "atx/vol/dense_slice.hpp"  // ConvexSliceFit, ConvexFitOpts
+#include "atx/vol/spline_curve.hpp" // SplineVolParams, SplineFitOpts, kSrMoneynessGrid
 #include "atx/vol/types.hpp"       // Result
 #include "atx/vol/vol_surface.hpp" // EssviParams, SviParams, essvi_total_w, svi_total_w
 
@@ -75,6 +76,10 @@ enum class VolCurveKind : std::uint8_t {
   // Unlike SVI/eSSVI this admits the negative ATM curvature seen around
   // earnings and scheduled announcements while remaining only eight DoF.
   C8 = 4,
+  // SpiderRock SRCubic-style: a cubic natural spline over standardized
+  // moneyness of the vol MULTIPLE sigma(K)/sigma_ATM, on a fixed 29-point
+  // grid (see spline_curve.hpp). Not in `default_selector_candidates()` v1.
+  SplineVol = 5,
 };
 
 // Human-readable tag (for diagnostics / bench output). Never nullptr.
@@ -225,6 +230,33 @@ private:
   C8Params slice_;
 };
 
+// SpiderRock SRCubic-style vol-multiple cubic spline (active-knot count DoF).
+// Owns a SplineVolParams slice; see spline_curve.hpp for the fit algorithm and
+// the file-top comment on WHY this class lives here rather than in
+// spline_curve.hpp itself (breaks a header cycle: SplineVolParams/SplineFitOpts
+// have no IVolCurve dependency and are consumed by CurveConfig below).
+class SplineVolCurve final : public IVolCurve {
+public:
+  SplineVolCurve(SplineVolParams p, double T, double F, double df) noexcept;
+
+  [[nodiscard]] double w(double k_log) const noexcept override;
+  [[nodiscard]] VolCurveKind kind() const noexcept override { return VolCurveKind::SplineVol; }
+  [[nodiscard]] std::size_t dof() const noexcept override { return p_.z.size(); }
+  [[nodiscard]] std::unique_ptr<IVolCurve> clone() const override {
+    return std::make_unique<SplineVolCurve>(p_, T_, F_, df_);
+  }
+
+  [[nodiscard]] const SplineVolParams &params() const noexcept { return p_; }
+
+private:
+  SplineVolParams p_;
+  // Natural-spline 2nd derivatives at (p_.z, p_.mult), cached once at
+  // construction so `w()` stays a pure O(log K) lookup + eval (no per-query
+  // solve) — the "no virtual on the arithmetic hot path" house rule extends to
+  // "no per-query linear solve" for this family too.
+  std::vector<double> m2nd_;
+};
+
 // ── Unified surface container ───────────────────────────────────────────────
 //
 // An ascending-T stack of polymorphic slices with ONE linear-in-total-variance
@@ -286,8 +318,9 @@ private:
 // new vocabulary. A default `CurveConfig` is a Convex-QP dense fit at node_cap 40.
 struct CurveConfig {
   VolCurveKind kind{VolCurveKind::ConvexDense};
-  ConvexFitOpts convex{}; // ConvexDense knobs (lambda, node_cap, ...)
-  CalibOpts parametric{}; // Essvi / Svi knobs (shared LM/IRLS/filter policy)
+  ConvexFitOpts convex{};  // ConvexDense knobs (lambda, node_cap, ...)
+  CalibOpts parametric{};  // Essvi / Svi knobs (shared LM/IRLS/filter policy)
+  SplineFitOpts spline{};  // SplineVol knobs (grid, lambda, mult_floor, min_obs)
 };
 
 // ── Per-slice fit dispatch ──────────────────────────────────────────────────
@@ -307,6 +340,9 @@ struct CurveConfig {
 // calendar floor. LinearVariance additionally accepts the previous curve's
 // breakpoints in `calendar_floor_knots`; fitting on the union of both node sets
 // makes the piecewise-linear calendar floor hold between nodes as well.
+// SplineVol IGNORES `w_prev` (and `calendar_floor_knots`) in v1: no per-slice
+// calendar floor is applied — its calendar behaviour is unchanged from a
+// standalone per-expiry fit.
 [[nodiscard]] Result<std::unique_ptr<IVolCurve>>
 fit_slice_curve(const CurveConfig &cfg, std::span<const FitObs> obs_eu, double F, double T,
                 double df, const std::function<double(double)> &w_prev = {},

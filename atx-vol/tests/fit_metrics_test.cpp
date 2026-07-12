@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <vector>
 
 #include "atx/vol/fit_metrics.hpp"
@@ -14,6 +15,8 @@
 namespace {
 
 using atx::vol::avg_abs_error_e5;
+using atx::vol::band_violation_stats;
+using atx::vol::BandViolationStats;
 using atx::vol::ChiSquareResult;
 using atx::vol::EdgeResult;
 using atx::vol::ErrorCode;
@@ -239,6 +242,127 @@ TEST(FitMetrics, SliceFitMetrics_NLeqDof_ReturnsErr) {
   const auto res = slice_fit_metrics(model, mkt, bid, ask, vega, /*dof=*/3);
   ASSERT_FALSE(res.has_value());
   EXPECT_EQ(res.error().code(), ErrorCode::InvalidArgument);
+}
+
+// ── band_violation_stats ─────────────────────────────────────────────────
+
+TEST(FitMetrics, BandViolationStats_InBand_AllZero) {
+  // Every model price sits strictly inside [bid, ask] => no misses, zero
+  // max premium violation. Ties at 0 violation keep the first index (0).
+  const std::vector<double> model{10.05, 10.10, 10.15};
+  const std::vector<double> bid{10.00, 10.00, 10.00};
+  const std::vector<double> ask{10.20, 10.20, 10.20};
+  const auto res = band_violation_stats(model, bid, ask);
+  ASSERT_TRUE(res.has_value());
+  EXPECT_EQ(res->n, std::size_t{3});
+  EXPECT_EQ(res->n_bid_miss, std::size_t{0});
+  EXPECT_EQ(res->n_ask_miss, std::size_t{0});
+  EXPECT_DOUBLE_EQ(res->max_prc_err, 0.0);
+  EXPECT_EQ(res->max_err_idx, std::size_t{0});
+  // mean(10.05-10.10, 10.10-10.10, 10.15-10.10) = mean(-0.05, 0, 0.05) = 0.
+  EXPECT_NEAR(res->avg_signed_err, 0.0, 1e-12);
+}
+
+TEST(FitMetrics, BandViolationStats_OneBidOneAskMiss_MaxAndIdxCorrect) {
+  // i0: in-band.  i1: model below bid by 0.10 (bid miss).
+  // i2: model above ask by 0.15 (ask miss, the WORST violation).  i3: in-band.
+  const std::vector<double> model{10.05, 9.90, 10.35, 10.10};
+  const std::vector<double> bid{10.00, 10.00, 10.00, 10.00};
+  const std::vector<double> ask{10.20, 10.20, 10.20, 10.20};
+  const auto res = band_violation_stats(model, bid, ask);
+  ASSERT_TRUE(res.has_value());
+  EXPECT_EQ(res->n, std::size_t{4});
+  EXPECT_EQ(res->n_bid_miss, std::size_t{1});
+  EXPECT_EQ(res->n_ask_miss, std::size_t{1});
+  EXPECT_NEAR(res->max_prc_err, 0.15, 1e-12);
+  EXPECT_EQ(res->max_err_idx, std::size_t{2});
+  // signed err = p - mid: -0.05, -0.20, +0.25, 0.00 => mean = 0.0.
+  EXPECT_NEAR(res->avg_signed_err, 0.0, 1e-12);
+}
+
+TEST(FitMetrics, BandViolationStats_CrossedQuote_Skipped) {
+  // i0 is crossed (ask < bid) with a model price that would otherwise be a
+  // huge violation; it must be excluded entirely (not in n, not in either
+  // miss count, and must not win max_err_idx/max_prc_err).
+  const std::vector<double> model{50.0, 10.35};
+  const std::vector<double> bid{10.00, 10.00};
+  const std::vector<double> ask{9.90, 10.20};  // i0 crossed: ask(9.90) < bid(10.00)
+  const auto res = band_violation_stats(model, bid, ask);
+  ASSERT_TRUE(res.has_value());
+  EXPECT_EQ(res->n, std::size_t{1});
+  EXPECT_EQ(res->n_bid_miss, std::size_t{0});
+  EXPECT_EQ(res->n_ask_miss, std::size_t{1});
+  EXPECT_NEAR(res->max_prc_err, 0.15, 1e-12);
+  EXPECT_EQ(res->max_err_idx, std::size_t{1});  // original input index, not 0
+}
+
+TEST(FitMetrics, BandViolationStats_NonFiniteModelPrice_Excluded) {
+  // A NaN model price (e.g. a failed inversion) is treated like a crossed
+  // quote: skipped rather than counted, so it cannot poison max_prc_err /
+  // avg_signed_err with a NaN contaminant. See the header doc for the
+  // rationale (this is a deliberate, documented choice).
+  const std::vector<double> model{std::numeric_limits<double>::quiet_NaN(),
+                                  10.35};
+  const std::vector<double> bid{10.00, 10.00};
+  const std::vector<double> ask{10.20, 10.20};
+  const auto res = band_violation_stats(model, bid, ask);
+  ASSERT_TRUE(res.has_value());
+  EXPECT_EQ(res->n, std::size_t{1});
+  EXPECT_EQ(res->n_bid_miss, std::size_t{0});
+  EXPECT_EQ(res->n_ask_miss, std::size_t{1});
+  EXPECT_NEAR(res->max_prc_err, 0.15, 1e-12);
+  EXPECT_EQ(res->max_err_idx, std::size_t{1});
+  EXPECT_TRUE(std::isfinite(res->avg_signed_err));
+}
+
+TEST(FitMetrics, BandViolationStats_NonFiniteQuoteSides_Skipped) {
+  // i0..i3: same normal quotes as OneBidOneAskMiss above (in-band, bid miss,
+  // ask miss (worst), in-band). i4 has a NaN bid — under the OLD `ask < bid`
+  // skip test this compares false (any comparison with NaN is false), so it
+  // would have passed through and scored: bid_viol = NaN - p = NaN, and
+  // sum_signed += p - 0.5*(NaN + ask) = NaN, poisoning avg_signed_err. i5 has
+  // bid == ask == +Inf — `ask < bid` is also false (equal, not less), so it
+  // too would have passed through: bid_viol = +Inf - p = +Inf, which would
+  // wrongly become the new `max_prc_err` (beating i2's real 0.15 violation).
+  // Both must be excluded entirely: n stays 4, and every stat is computed
+  // from i0..i3 only (identical to OneBidOneAskMiss's expected values).
+  const std::vector<double> model{10.05, 9.90, 10.35, 10.10, 50.0, 12.0};
+  const std::vector<double> bid{10.00, 10.00, 10.00, 10.00,
+                                 std::numeric_limits<double>::quiet_NaN(),
+                                 std::numeric_limits<double>::infinity()};
+  const std::vector<double> ask{10.20, 10.20, 10.20, 10.20, 10.20,
+                                 std::numeric_limits<double>::infinity()};
+  const auto res = band_violation_stats(model, bid, ask);
+  ASSERT_TRUE(res.has_value());
+  EXPECT_EQ(res->n, std::size_t{4});
+  EXPECT_EQ(res->n_bid_miss, std::size_t{1});
+  EXPECT_EQ(res->n_ask_miss, std::size_t{1});
+  EXPECT_NEAR(res->max_prc_err, 0.15, 1e-12);
+  EXPECT_EQ(res->max_err_idx, std::size_t{2});
+  // signed err = p - mid over i0..i3: -0.05, -0.20, +0.25, 0.00 => mean = 0.0.
+  EXPECT_TRUE(std::isfinite(res->avg_signed_err));
+  EXPECT_NEAR(res->avg_signed_err, 0.0, 1e-12);
+}
+
+TEST(FitMetrics, BandViolationStats_LengthMismatch_ReturnsErr) {
+  const std::vector<double> model{10.05, 10.10, 10.15};
+  const std::vector<double> bid{10.00, 10.00};       // shorter
+  const std::vector<double> ask{10.20, 10.20, 10.20};
+  const auto res = band_violation_stats(model, bid, ask);
+  ASSERT_FALSE(res.has_value());
+  EXPECT_EQ(res.error().code(), ErrorCode::InvalidArgument);
+}
+
+TEST(FitMetrics, BandViolationStats_Empty_Ok) {
+  const std::vector<double> empty{};
+  const auto res = band_violation_stats(empty, empty, empty);
+  ASSERT_TRUE(res.has_value());
+  EXPECT_EQ(res->n, std::size_t{0});
+  EXPECT_EQ(res->n_bid_miss, std::size_t{0});
+  EXPECT_EQ(res->n_ask_miss, std::size_t{0});
+  EXPECT_DOUBLE_EQ(res->max_prc_err, 0.0);
+  EXPECT_EQ(res->max_err_idx, static_cast<std::size_t>(-1));
+  EXPECT_DOUBLE_EQ(res->avg_signed_err, 0.0);
 }
 
 }  // namespace

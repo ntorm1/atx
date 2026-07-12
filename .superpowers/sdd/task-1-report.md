@@ -1,88 +1,144 @@
-# Task 1 Report: `Clock::from_surface_db` — SurfaceDb-backed backtest clock
+# Task 1 Report: Volatility-time clock (`vol_time`)
 
-## What I implemented
+## Summary
 
-- `atx-vol/include/atx/vol/backtest.hpp`:
-  - Forward-declared `class SurfaceDb;` in the `atx::vol` namespace (next to the existing `class IStrategy;` forward declaration), so the header need not include `surface_db.hpp`.
-  - Added `[[nodiscard]] static Result<Clock> from_surface_db(const SurfaceDb &db);` to `class Clock`, next to `from_manifest`, with a doc comment matching the brief's spec verbatim (ordering, ref.date/archive_path semantics, InvalidArgument-on-empty, MarketSnapshot/SnapshotCache compatibility).
-- `atx-vol/src/backtest.cpp`:
-  - Added `#include "atx/vol/surface_db.hpp"` (the one place the header's type is fleshed out) and `#include <filesystem>` (needed to build `<root>/partitions/<KEY>.atxvsa`, not previously included in this TU).
-  - Implemented `Clock::from_surface_db` immediately after `Clock::from_manifest`: reads `db.partitions()`, rejects empty with `Err(ErrorCode::InvalidArgument, ...)`, sorts by ascending `key`, and builds one `SnapshotRef{p.key, path}` per partition using `db.root()` / `kSurfaceDbPartitionDir` / `kSurfaceDbPartitionExt`. Uses the same private-ctor/member-access mechanics as `from_manifest` (default-construct `Clock`, push into `refs_`, `Ok(std::move(clock))`) — no new public mutators added.
-  - One deliberate micro-adjustment from the brief's literal implementation snippet: `p.key + kSurfaceDbPartitionExt` does not compile as written (`std::string + std::string_view` has no `operator+` overload — the `string_view`→`string` conversion is explicit), so I wrote `p.key + std::string(kSurfaceDbPartitionExt)`. Behaviorally identical output path.
-- `atx-vol/tests/surface_db_backtest_test.cpp` (new): the 3 tests from the brief, copied essentially verbatim, with:
-  - A `make_surface(double S, std::int64_t now_ts, double vol_bump, std::uint32_t uid)` helper matching the exact call-site signature used by the brief's test bodies (`make_surface(500.0, day_ts[d], 0.0, /*uid=*/1)` etc.). This is the `strategy_test.cpp` / `spy_strangle_backtest_test.cpp` `make_surface` pattern (7 eSSVI slices, `T∈{0.05,...,1.00}`, `PricingContext{S, r=0.043, now_ts, AndersenLake, al_fast_opts(), uid}`) reshaped to the brief's 4-arg call convention — flat forward `F = S` (no separate `fwd` parameter, since none of the three tests need spot/forward divergence).
-  - `test_root` copied verbatim from `surface_db_test.cpp:150-153`.
-- `atx-vol/tests/CMakeLists.txt`: added `surface_db_backtest_test.cpp` to the `add_executable(atx-vol-tests ...)` source list, immediately after `spy_strangle_backtest_test.cpp` and before the closing paren.
-
-## TDD Evidence
-
-### RED
-
-Command:
-```
-& .\scripts\atx-build.ps1 build atx-vol-tests
-```
-
-Failing output (test file written, CMakeLists.txt updated, but `backtest.hpp`/`backtest.cpp` NOT yet touched):
-```
-C:\atx\...\atx-vol\tests\surface_db_backtest_test.cpp(108,23): error: no member named 'from_surface_db' in 'atx::vol::Clock'
-  108 |   auto clock = Clock::from_surface_db(*db);
-C:\atx\...\atx-vol\tests\surface_db_backtest_test.cpp(128,23): error: no member named 'from_surface_db' in 'atx::vol::Clock'
-  128 |   auto clock = Clock::from_surface_db(*db);
-C:\atx\...\atx-vol\tests\surface_db_backtest_test.cpp(149,23): error: no member named 'from_surface_db' in 'atx::vol::Clock'
-  149 |   auto clock = Clock::from_surface_db(*db);
-3 errors generated.
-```
-
-Why expected: this is exactly the missing-symbol compile failure the brief predicts (Step 2) — the ONLY errors are the three `Clock::from_surface_db` call sites, confirming the rest of the test file (the `make_surface` fixture, `SurfaceArchiveItem` aggregate-init, `SurfaceDb::create`/`write_partition`, `StrategySpec`/`LegSpec`/`DeclarativeStrategy` usage) already compiles cleanly against the current headers.
-
-### GREEN
-
-Build:
-```
-& .\scripts\atx-build.ps1 build atx-vol-tests
-```
-→ clean build, no compiler errors or warnings from the changed files (warnings-as-errors `/WX` in effect).
-
-Test run:
-```
-& .\scripts\atx-build.ps1 -Ctest -R "SurfaceDbBacktest|SurfaceDb|SurfaceArchive|Backtest"
-```
-```
-100% tests passed, 0 tests failed out of 58
-
-Label Time Summary:
-atx_vol    =  14.22 sec*proc (58 tests)
-Total Test time (real) =  14.89 sec
-```
-Includes, among the 58:
-```
-56/58 Test #919: SurfaceDbBacktest.ClockFromDb_OrderedRefsAndPathsLoad ..... Passed  0.16 sec
-57/58 Test #920: SurfaceDbBacktest.ClockFromDb_EmptyDbRejected ............. Passed  0.13 sec
-58/58 Test #921: SurfaceDbBacktest.DbDrivesRunBacktestEndToEnd ............. Passed  0.28 sec
-```
-
-Note: the brief's stated baseline ("99/99 targeted tests green") doesn't match the 58 tests this exact `-R` regex selects (55 pre-existing + 3 new). I ran the command exactly as specified in the brief; the regex-matched set is internally consistent (100% pass, no regressions vs. the pre-existing 55). The "99" figure in the operator's baseline note likely refers to a different scope/point in time and isn't something I could reconcile without guessing, so I did not chase it further — it doesn't indicate any missing coverage or regression in what I touched.
+Implemented the SpiderRock-style hybrid volatility-time clock as a pure,
+additive module. No existing file's runtime behavior changed.
 
 ## Files changed
 
-- `atx-vol/include/atx/vol/backtest.hpp` (+10/-0)
-- `atx-vol/src/backtest.cpp` (+19/-0)
-- `atx-vol/tests/CMakeLists.txt` (+1/-0)
-- `atx-vol/tests/surface_db_backtest_test.cpp` (new, 185 lines)
+- `atx-vol/include/atx/vol/vol_time.hpp` (new) — `VolTimeParams`,
+  `VolTimeCalendar`, `trading_hours_between`, `vol_time_years`.
+- `atx-vol/src/vol_time.cpp` (new) — implementation: anonymous-namespace
+  Hinnant `days_from_civil`/`civil_from_days`, US 2007+ DST rule (resolved at
+  calendar-day granularity), ET session-window -> UTC conversion, the NYSE
+  2024-2028 holiday table, and the two public pure functions.
+- `atx-vol/tests/vol_time_test.cpp` (new) — 15 tests (gtest).
+- `atx-vol/CMakeLists.txt` — registered `src/vol_time.cpp` in the library
+  source list.
+- `atx-vol/tests/CMakeLists.txt` — registered `vol_time_test.cpp` in the test
+  source list.
 
-Commit: `5b53d1c feat(atx-vol): Clock::from_surface_db - SurfaceDb-backed backtest clock`
+## Design notes
 
-## Self-review
+- Followed the brief's implementation note literally: the Hinnant civil-date
+  math and DST rule are implemented locally in `vol_time.cpp`'s anonymous
+  namespace, independent of `atx-core::time` (which already has an equivalent
+  `Calendar`/`Date` implementation) — this keeps the new module self-contained
+  per the brief, at the cost of ~30 lines of duplicated (but well-understood)
+  Hinnant arithmetic. The *test file* does reuse
+  `atx::core::time::timestamp_from_utc` for its `ns_utc(...)` UTC-fixture
+  helper, since that's just test scaffolding, not part of vol_time's
+  production logic, and reusing already-validated code there avoids a third
+  hand-rolled copy of the same algorithm.
+- `trading_hours_between` loops over ET calendar-day indices padded by one day
+  on either side of `[start_ns, end_ns)` (covers the <=5h ET/UTC offset
+  unambiguously; out-of-range days contribute exactly 0 once intersected), with
+  a `kMaxLoopDays` (~20y) defensive bound per JPL Rule 2 / bounded-loop
+  convention used elsewhere in atx-vol (e.g. `kIvMaxIter`).
+- `vol_time_years`/`trading_hours_between` both return `0.0` for
+  `end <= start`, per the brief.
 
-- **Completeness**: every brief requirement covered — forward declaration, exact factory signature, sort-by-key ordering, `InvalidArgument` on empty db, path construction matching `<root>/partitions/<KEY>.atxvsa`, all 3 tests from the brief present and passing, CMakeLists.txt registration in the specified location.
-- **Quality**: names/comments mirror existing `from_manifest` style; doc comment on the header declaration follows the brief's own wording (kept consistent with how `from_manifest`'s neighboring comments read). Error message prefixed with `Clock::from_surface_db:` for consistency with `from_manifest`'s `Clock::from_manifest:` prefix (the brief's inline snippet omitted the prefix — I added it to match the sibling function's convention; error code/behavior unaffected).
-- **Discipline (YAGNI)**: no new public mutators, no extra helper methods, no scope creep beyond the one factory function and its test file. `surface_db.hpp` is included only in the `.cpp`, never the `.hpp`, per the brief.
-- **Testing**: all 3 tests exercise real behavior — out-of-order partition writes sorted correctly, cross-symbol resolvability (including case-insensitive `"aapl"` lookup) through the loaded `MarketSnapshot`, empty-db rejection with the correct `ErrorCode`, and a full `run_backtest` acceptance run through `DeclarativeStrategy` producing 6 non-degenerate rows with 2 open lots each. Output is pristine (no stray printf noise); temp dirs are cleaned up at the end of each test via `std::filesystem::remove_all`.
-- **No regressions**: all 55 pre-existing tests in the targeted regex (`SurfaceArchive.*`, `SurfaceDb*.*`, `Backtest.*`, `BacktestExec.*`, `BacktestReal.*`, `SpyStrangleBacktest.*`, `ListedDispersionReconciliation.ExactModelPnlClosesToCanonicalBacktest`) still pass.
-- **Scope**: staged and committed only the 4 files this task touches (explicit paths, not `-A`); verified via `git status` before commit that an unrelated pre-existing unstaged modification to `.superpowers/sdd/task-1-brief.md` (made by some other process, not me) was left untouched and out of the commit.
+## TDD evidence
+
+**RED** — registered `vol_time_test.cpp` in `tests/CMakeLists.txt` only (the
+header/impl already existed from drafting but the library source list did not
+yet include `vol_time.cpp`), then built:
+
+```
+> powershell -File scripts/atx-build.ps1 build atx-vol-tests
+...
+FAILED: bin/atx-vol-tests.exe ...
+lld-link: error: undefined symbol: public: static class atx::vol::VolTimeCalendar const & __cdecl atx::vol::VolTimeCalendar::us_default(void)
+>>> referenced by \atx-vol\tests\vol_time_test.cpp:44
+...
+lld-link: error: undefined symbol: double __cdecl atx::vol::vol_time_years(...)
+lld-link: error: undefined symbol: double __cdecl atx::vol::trading_hours_between(...)
+lld-link: error: undefined symbol: public: bool __cdecl atx::vol::VolTimeCalendar::is_holiday(int) const
+lld-link: error: undefined symbol: public: __cdecl atx::vol::VolTimeCalendar::VolTimeCalendar(class std::vector<int,...>)
+ninja: build stopped: subcommand failed.
+```
+
+**GREEN** — registered `src/vol_time.cpp` in `atx-vol/CMakeLists.txt`, rebuilt,
+ran the focused suite:
+
+```
+> powershell -File scripts/atx-build.ps1 -Ctest -R VolTime
+...
+100% tests passed, 0 tests failed out of 12
+```
+
+(Grew to 15 tests after the self-review pass added 3 more cases — see below;
+final focused run is 15/15 passed.)
+
+## Full-gate result
+
+`ctest --test-dir build -L atx_vol -j16 --timeout 900` (via the VsDevCmd
+wrapper), run twice (before and after the self-review fix):
+
+- Before fix: **99% tests passed, 3 tests failed out of 1001** (12 new VolTime
+  tests included, all passed).
+- After fix + 3 additional tests: **99% tests passed, 3 tests failed out of
+  1004** (15 new VolTime tests included, all passed).
+
+Both runs' 3 failures are exactly the pre-existing quarantined set, unchanged:
+
+```
+MultinamePipeline.HeldLotWithoutSurfaceIsCountedNotHidden (Failed)
+MultinamePipeline.DefaultPolicyFullBasketBitIdentical (Failed)
+MultinamePipeline.DefaultPolicyStillBitIdentical (Failed)
+```
+
+No new regressions.
+
+## Self-review findings
+
+1. **Precision bug (fixed)**: `et_local_to_utc_ns`'s first draft computed
+   `z_et * kNsPerDay` in `double` (product ~1.7e18 ns for present-day dates),
+   which exceeds double's exact-integer range (2^53 ~ 9e15) — a genuine
+   precision loss, though at a magnitude (~100s of ns) far below the 1e-12
+   test tolerances actually exercised, so it did not manifest as a test
+   failure. Fixed by keeping `et_local_to_utc_ns` and the
+   session-open/session-close intersection entirely in `int64_t`; only the
+   fractional-hour-of-day term touches a `double`, rounded via `llround`. This
+   also better matches the brief's explicit "pure integer math" instruction
+   for the civil-date conversion layer. Rebuilt and re-ran both the focused
+   suite and the full gate after the fix — unchanged pass/fail counts.
+
+2. **DST transition weeks**: added `DstSpringForwardWeekSessionsAreExact` and
+   `DstFallBackWeekSessionsAreExact`, each checking the Friday-before /
+   Monday-after a real 2026 DST transition both resolve to exactly one full
+   7.5h session. Confirmed correct: since both transition instants fall on the
+   intervening Sunday (a non-trading day), resolving the DST offset at
+   calendar-day granularity is exact for every session boundary the module
+   computes — verified this holds for both the spring-forward (2026-03-08) and
+   fall-back (2026-11-01) transitions.
+
+3. **Half-open interval semantics**: `trading_hours_between` documents
+   `[start_ns, end_ns)`; the per-day session intersection uses strict `hi >
+   lo`, so a zero-width overlap (e.g. `end_ns` landing exactly on a session
+   boundary) contributes 0, consistent with continuous-measure semantics
+   regardless of open/closed convention (a single instant has zero measure).
+   No change needed.
+
+4. **Expiry before/at now**: `vol_time_years` already returned 0 per the
+   brief; added `VolTimeYearsIsZeroWhenExpiryNotAfterNow` to lock in both the
+   `expiry == now` and `expiry < now` cases explicitly (previously only
+   `trading_hours_between`'s equivalent guard was directly tested).
+
+No other gaps found: the NYSE holiday table was double-checked field-by-field
+against the brief's exact table (including the two irregular cases: 2027
+Independence Day observed Monday 07-05, and 2028's unobserved New Year's Day,
+which is deliberately absent from the table and covered by
+`CalendarUnobservedNewYear2028IsNotAHoliday`).
 
 ## Concerns
 
-- Minor: the brief's literal implementation snippet (`p.key + kSurfaceDbPartitionExt`) does not compile as-is against `std::string`/`std::string_view` overload resolution; I used `p.key + std::string(kSurfaceDbPartitionExt)` instead, which produces an identical path string. Flagging in case downstream tasks copy that exact snippet from the brief rather than from the committed source.
-- The "99/99" baseline figure in the task instructions doesn't match what the specified `-Ctest -R` regex actually selects (58 total, both before my 3 additions at 55 and after at 58) — noted above, not something I could resolve without more context, and it does not indicate any regression (100% pass rate either way).
+None outstanding. The module is additive only — `projection.hpp`'s
+`TimeMode`/`TimeModel` were not touched (that wiring is explicitly deferred to
+Task 4 per the sprint plan).
+
+## Commits
+
+- `a284fb3` feat(atx-vol): SpiderRock-style hybrid volatility-time clock (vol_time)
+- `80dc2aa` fix(atx-vol): vol_time session-boundary math in pure int64, add DST-week + degenerate-interval tests

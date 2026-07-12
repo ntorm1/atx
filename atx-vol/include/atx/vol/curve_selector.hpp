@@ -21,6 +21,7 @@
 // Stateless / pure: safe to call concurrently on distinct underlyings.
 
 #include <cstddef>
+#include <cstdint>
 #include <span>
 #include <vector>
 
@@ -48,6 +49,24 @@ struct CandidateScore {
   double expiry_coverage{0.0};
   double holdout_coverage{0.0};
   bool admitted{false};
+
+  // ── Task C2.5: fit-metrics selection signal ──
+  // Held-out slice metrics (Vola-style; see fit_metrics.hpp), aggregated over
+  // every scored held-out observation for this family. `chi2_reduced` is the
+  // secondary tie-break (after oos_vw, before parsimony DoF). `metrics_valid`
+  // is false when the held-out sample was too thin for a reduced chi-square
+  // (N <= dof), in which case chi2_reduced does not participate in the tie-break.
+  double chi2_reduced{0.0};          // reduced chi^2 over held-out obs
+  double rmse_vol{0.0};              // held-out vol RMSE
+  double avE5_vol{0.0};              // held-out mean|resid|*1e5
+  std::size_t n_within_band{0};      // held-out obs inside their 1σ error bar
+  bool metrics_valid{false};         // slice_fit_metrics succeeded
+  // Butterfly no-arb disqualification: a family whose fitted slice fails its
+  // butterfly check (closed-form MM for raw-SVI, grid g-check for C8;
+  // by-construction kinds are skipped) is DISQUALIFIED and scores as a
+  // fit-failure — excluded from the winner search.
+  std::uint32_t n_butterfly_viol{0};
+  bool disqualified{false};
 };
 
 // The selection outcome. `chosen` is ready to drop into
@@ -84,6 +103,18 @@ struct SelectorConfig {
 // raw SVI, and event-capable C8. High-confidence boards bypass this expensive
 // validation; it is the ambiguity fallback and explicit research mode.
 [[nodiscard]] std::vector<CurveConfig> default_selector_candidates();
+
+// Pure winner-selection policy over already-scored candidates (Task C2.5). The
+// ordering is: (1) best out-of-sample vega-weighted in-band `oos_vw`; within
+// the `parsimony_margin` tie band, (2) reduced chi-square closest to 1 — i.e.
+// smallest |chi2_reduced − 1| — among candidates whose metrics are valid; then
+// (3) fewer average degrees of freedom (parsimony); then (4) higher `oos_vw`.
+// Candidates that failed to fit (`n_holdout == 0`) or were butterfly-
+// DISQUALIFIED are excluded. Returns the winning index into `scores` (0 when no
+// candidate is scorable — callers gate on that upstream). Deterministic; pure.
+[[nodiscard]] std::size_t
+select_best_candidate(const std::vector<CandidateScore> &scores,
+                      double parsimony_margin) noexcept;
 
 // Choose the best curve config for `under` under `in` (market/carry policy).
 //

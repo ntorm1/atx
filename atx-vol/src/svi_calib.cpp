@@ -1277,6 +1277,12 @@ Result<SviParams> svi_jw_to_raw(const SviJwParams &jw) {
   return Ok(out);
 }
 
+bool svi_project_mm(SviParams &slice, double T) noexcept {
+  // Reuse the production Mingone projector (edge pads + Lee wing-slope + w_min
+  // floor) — the same repair applied to every LM iterate in svi_mm_fit_slice.
+  return mm_project_default(T, slice.a, slice.b, slice.rho, slice.sigma);
+}
+
 // ── Surface drivers ──────────────────────────────────────────────────────
 
 namespace {
@@ -1291,6 +1297,7 @@ struct SurfaceAccum {
   std::uint32_t agg_outer{0};
   std::uint32_t agg_inner{0};
   std::uint16_t n_fit_ok{0};
+  std::uint32_t n_butterfly_viol{0};  // summed closed-form MM violations (diag)
 };
 
 void stamp_surface(VolSurface &surface, const SurfaceAccum &acc, FitDiag *diag) {
@@ -1311,6 +1318,7 @@ void stamp_surface(VolSurface &surface, const SurfaceAccum &acc, FitDiag *diag) 
     diag->inner_iters_total = static_cast<std::uint16_t>(
         (acc.agg_inner > 0xFFFFu) ? 0xFFFFu : acc.agg_inner);
     diag->n_quotes_used = acc.total_used;
+    diag->n_butterfly_viol = acc.n_butterfly_viol;
   }
 }
 
@@ -1406,6 +1414,9 @@ Status svi_calib_surface(VolSurface &surface, const Underlying &under,
     }
     acc.agg_outer += sd.outer_iters;
     acc.agg_inner += sd.inner_iters_total;
+    // Diagnostic: closed-form Martini-Mingone butterfly tally on the served
+    // slice (no rejection here — the serving-seam gate does that).
+    acc.n_butterfly_viol += arb_check_butterfly_svi_mm(slice, T).n_violations;
     ++acc.n_fit_ok;
   }
 
@@ -1485,6 +1496,9 @@ Status svi_mm_calib_surface(VolSurface &surface, const Underlying &under,
     }
     acc.agg_outer += sd.outer_iters;
     acc.agg_inner += sd.inner_iters_total;
+    // Diagnostic: closed-form Martini-Mingone butterfly tally on the served
+    // slice (no rejection here — the serving-seam gate does that).
+    acc.n_butterfly_viol += arb_check_butterfly_svi_mm(slice, T).n_violations;
     ++acc.n_fit_ok;
   }
 
