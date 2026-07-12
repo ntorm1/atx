@@ -35,6 +35,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <memory>
 #include <span>
 #include <string>
@@ -515,15 +516,16 @@ void run_floor(benchmark::State& state, std::size_t n_unique, Floor kind) {
       n_uni * iters * 1e-9, benchmark::Counter::kIsRate | benchmark::Counter::kInvert);
 }
 
-// ── 6. scenario_grid (C3.1): full-book 11×11 spot×vol Taylor scenario matrix ──
-// One deduped Greek solve reconstructs all 121 cells analytically to 2nd order.
-// The acceptance is grid-cost ≈ one full-Greeks solve: this row reports cells/s
-// and the ratio of the whole grid-build time to one price_totals(FullGreeks) call
-// (the "one Greek solve" reference) on the SAME 2688-unique full book. The grid
-// pays a per-call Portfolio dedup + a price() scatter on top of the solve, so the
-// ratio is honestly measured, not asserted — a number just over 1.0 confirms the
-// cells amortize into the solve.
-void run_scenario_grid(benchmark::State& state, unsigned n_threads) {
+// ── 6. scenario_grid: full-book 11×11 spot×vol scenario matrix (C3.1 + C3.2) ──
+// The Taylor variant (radii=inf) reconstructs all 121 cells from ONE deduped Greek
+// solve — grid-cost ≈ one full-Greeks solve. The Exact variant (radii=0) re-solves
+// EVERY cell per unique — grid-cost ≈ 121 solve waves. The Mixed variant (default
+// radii) routes inner cells Taylor / outer cells Exact. Each row reports cells/s and
+// ratio_grid_over_solve = grid-build time / one price_totals(FullGreeks) call (the
+// "one Greek solve" reference) on the SAME 2688-unique full board — honestly measured
+// (~1.0 confirms Taylor amortizes into the solve; ~cell-count confirms all-exact).
+void run_scenario_grid(benchmark::State& state, unsigned n_threads, double rad_spot,
+                       double rad_vol) {
   const std::size_t n_unique = 2688;  // 64 uids × 6 slices × 7 strikes (full board)
   const SurfaceSet& surfaces = market().base_set();
   std::vector<Position> book =
@@ -538,6 +540,8 @@ void run_scenario_grid(benchmark::State& state, unsigned n_threads) {
   }
   spec.dr = 5e-4;
   spec.dt = 3.0 / 365.0;
+  spec.taylor_radius_spot = rad_spot;
+  spec.taylor_radius_vol = rad_vol;
   const double cells = static_cast<double>(spec.spot_pct.size() * spec.vol_bump.size());
 
   for (auto _ : state) {
@@ -580,6 +584,18 @@ void run_scenario_grid(benchmark::State& state, unsigned n_threads) {
   state.counters["ratio_grid_over_solve"] = (ref_ns > 0.0) ? grid_ns / ref_ns : 0.0;
   state.counters["threads"] = static_cast<double>(n_threads);
   state.counters["n_unique"] = static_cast<double>(pr.portfolio().n_contracts());
+
+  // Route mix + fallback count (one untimed build) so the report can read how many of
+  // the 121 cells re-solved and whether any lane fell back.
+  auto gg = scenario_grid(book, surfaces, spec);
+  double n_exact = 0.0;
+  if (gg.has_value()) {
+    for (const std::uint8_t rv : gg->route) {
+      n_exact += (rv == static_cast<std::uint8_t>(atx::vol::ScenarioRoute::Exact)) ? 1.0 : 0.0;
+    }
+    state.counters["exact_cells"] = n_exact;
+    state.counters["fallback_lanes"] = static_cast<double>(gg->n_exact_fallback_lanes);
+  }
 }
 
 // ── Registration (data-driven) ────────────────────────────────────────────
@@ -753,15 +769,29 @@ void register_all() {
     }
   }
 
-  // 6. scenario_grid: full-book 11×11 spot×vol Taylor matrix, t1 (clean ratio) and
-  // hw (throughput). Emits cells/s + the grid-time / one-Greek-solve ratio.
-  for (const unsigned nt : {1u, 0u}) {
-    char buf[128];
-    std::snprintf(buf, sizeof buf, "scenario/grid_11x11/synth_book/t%u", nt);
-    apply_common(benchmark::RegisterBenchmark(
-                     buf, [nt](benchmark::State& st) { run_scenario_grid(st, nt); }))
-        ->Unit(benchmark::kMicrosecond)
-        ->UseRealTime();
+  // 6. scenario_grid: full-book 11×11 spot×vol matrix at t1 (clean ratio) and hw
+  // (throughput). Three routing variants: taylor (radii=inf, C3.1 reference), mixed
+  // (default radii, C3.2 product), exact (radii=0, all-cell re-solve). Each emits
+  // cells/s + the grid-time / one-Greek-solve ratio.
+  struct GReg {
+    const char* tag;
+    double rs;
+    double rv;
+  };
+  const double kInfR = std::numeric_limits<double>::infinity();
+  for (const GReg& g :
+       {GReg{"taylor", kInfR, kInfR},
+        GReg{"mixed", atx::vol::kDefaultTaylorRadiusSpot, atx::vol::kDefaultTaylorRadiusVol},
+        GReg{"exact", 0.0, 0.0}}) {
+    for (const unsigned nt : {1u, 0u}) {
+      char buf[128];
+      std::snprintf(buf, sizeof buf, "scenario/grid_11x11_%s/synth_book/t%u", g.tag, nt);
+      apply_common(benchmark::RegisterBenchmark(buf, [nt, g](benchmark::State& st) {
+                     run_scenario_grid(st, nt, g.rs, g.rv);
+                   }))
+          ->Unit(benchmark::kMicrosecond)
+          ->UseRealTime();
+    }
   }
 }
 

@@ -59,6 +59,59 @@
 
 namespace atx::vol {
 
+// ── Taylor↔Exact routing (C3.2) ──────────────────────────────────────────────
+//
+// A cell whose shock magnitude exceeds a MEASURED Taylor-valid radius is re-solved
+// EXACTLY (a no-refit, sticky-strike vol-bump reprice) instead of reconstructed from
+// the single second-order Taylor bundle. A cell routes Exact when
+//
+//     |spot_pct[i]| > taylor_radius_spot  ||  |vol_bump[j]| > taylor_radius_vol
+//
+// `dr` / `dt` are small scalars applied uniformly to every cell and do NOT
+// participate in routing (documented deviation from a full radius test — they shift
+// the whole surface, not a per-cell axis magnitude).
+//
+// The defaults below are the MEASURED PER-AXIS radii: the largest PURE-spot (resp.
+// PURE-vol) bump at which the worst-case per-share Taylor residual over the synthetic
+// eSSVI board stays <= $0.005 (both land at 3% / 3 vol-pts; the residual jumps past
+// the band at the next step — see task-c3.2-report.md req 4). They are pinned by
+// ScenarioGrid.DefaultRadiiPinned so a silent change fails a test. NOTE: the bound is
+// per-axis — a Taylor cell at the DOUBLE CORNER (|spot| and |vol| both at the radius)
+// combines both residuals plus the vanna cross-term and can reach ~$0.009 (the pinned
+// §9.3 gate tolerance). Setting a radius to `std::numeric_limits<double>::infinity()`
+// DISABLES routing on that axis: `|x| > inf` is always false, so an inf/inf spec
+// reproduces the C3.1 all-Taylor grid BYTE-for-byte (pinned by
+// ScenarioGrid.InfiniteRadiusIsByteIdenticalToTaylorOnly).
+//
+// ## Exact cell semantics — sticky-strike, NO smile roll
+//
+// Per unique contract, the BASE surface is resolved ONCE (rp = surface.resolve(K,T))
+// and the base price is P0 = american_price(S, K, T, rp.sigma, rp.rate, rp.q_eff,
+// side, ...) with (S, method, al_opts) from surface.pricing() — bit-identical to
+// surface.fair_value(K,T,side). The shocked reprice HOLDS the base-resolved sigma and
+// bumps only the pricer inputs:
+//
+//     S'     = S * (1 + spot_pct[i])
+//     sigma' = max(rp.sigma + vol_bump[j], kSigmaFloor)   // floor documented in .cpp
+//     r'     = rp.rate + dr
+//     T'     = max(T - dt, kMinT)                          // clamp documented in .cpp
+//     q'     = rp.q_eff                                    // carry held (sticky strike)
+//     P'     = american_price(S', K, T', sigma', r', q', side, ...)
+//
+// This is a STICKY-STRIKE vol bump: the surface is NOT re-fit and the smile is NOT
+// rolled to the new spot — the cell answers "reprice THIS contract at base-resolved
+// sigma + bump under the shocked market inputs", the honest scenario counterpart of
+// the Taylor bundle. Cell P&L is the SAME position-scaled, fixed-input-order sum as
+// the Taylor path, with the per-position leg replaced by (P' - P0) * qty *
+// eff_multiplier (P' shared across all positions on one unique; P0 amortized).
+//
+// A unique whose shocked solve Errs / returns non-finite (e.g. a negative-carry
+// corner surfaced by dr, or a boundary collapse) FALLS BACK to its Taylor leg for
+// that cell — the cell's route STAYS Exact — and is counted once in
+// ScenarioGridResult::n_exact_fallback_lanes. No NaN ever enters a cell total.
+inline constexpr double kDefaultTaylorRadiusSpot = 0.03; // fraction of spot (MEASURED, req 4)
+inline constexpr double kDefaultTaylorRadiusVol = 0.03;  // absolute vol points (MEASURED, req 4)
+
 // The scenario shocks. `spot_pct` / `vol_bump` are the two grid axes; `dr` / `dt`
 // are scalars applied to every cell (see the header conventions).
 struct ScenarioGridSpec {
@@ -68,10 +121,17 @@ struct ScenarioGridSpec {
   double dt{0.0};               // time roll (years), applied to every cell
   unsigned n_threads{1};        // fan-out for the Greek solve AND the cell fill
   bool analytic_greeks{false};  // route the Greek solve through the AL analytic path
+  // Exact re-solve routing radii (C3.2). A cell whose |spot_pct| exceeds
+  // `taylor_radius_spot` OR whose |vol_bump| exceeds `taylor_radius_vol` is re-solved
+  // exactly. Default = the measured radii (routing ON). Set either to infinity() to
+  // disable routing on that axis (reproduces C3.1's all-Taylor grid byte-identically).
+  double taylor_radius_spot{kDefaultTaylorRadiusSpot};
+  double taylor_radius_vol{kDefaultTaylorRadiusVol};
 };
 
-// Per-cell route tag (stored as std::uint8_t in the result). Only `Taylor` ships
-// in C3.1; `Exact` is reserved for C3.2's large-bump full re-solve.
+// Per-cell route tag (stored as std::uint8_t in the result). `Taylor` cells are
+// reconstructed analytically from the one Greek bundle; `Exact` cells (C3.2, large
+// bumps) are re-solved per unique via `american_price` (see the routing comment).
 enum class ScenarioRoute : std::uint8_t {
   Taylor = 0,
   Exact = 1,
@@ -82,9 +142,13 @@ struct ScenarioGridResult {
   std::size_t n_spot{0};
   std::size_t n_vol{0};
   std::vector<double> pnl;         // book-total P&L per cell (position-scaled)
-  std::vector<std::uint8_t> route; // ScenarioRoute per cell (all Taylor on this path)
+  std::vector<std::uint8_t> route; // ScenarioRoute per cell
   std::size_t n_ok{0};             // UNIQUE contracts whose Greek solve succeeded
   std::size_t n_failed{0};         // UNIQUE contracts excluded from every cell
+  // (cell × unique) exact re-solves that Erred / went non-finite and fell back to the
+  // unique's Taylor leg for that cell (the cell's route stays Exact). Counted once per
+  // failing unique per Exact cell; 0 whenever routing is disabled or every solve holds.
+  std::size_t n_exact_fallback_lanes{0};
 
   [[nodiscard]] std::size_t n_cells() const noexcept { return pnl.size(); }
 };
