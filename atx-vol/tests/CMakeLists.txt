@@ -57,6 +57,8 @@ add_executable(atx-vol-tests
     vol_umbrella_test.cpp
     spy_real_test.cpp
     curve_noarb_test.cpp
+    vol_curve_test.cpp
+    curve_selector_test.cpp
     curve_fit_parallel_test.cpp
     parallel_for_test.cpp
     pricer_fitter_test.cpp
@@ -71,6 +73,8 @@ add_executable(atx-vol-tests
     priced_surface_test.cpp
     spy_portfolio_pnl_test.cpp
     pnl_greeks_consistency_test.cpp
+    scenario_grid_test.cpp
+    pnl_attribution_test.cpp
     lifecycle_integration_test.cpp
     corpus_test.cpp
     multiname_pipeline_test.cpp
