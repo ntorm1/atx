@@ -77,11 +77,14 @@ namespace atx::vol {
 // the band at the next step — see task-c3.2-report.md req 4). They are pinned by
 // ScenarioGrid.DefaultRadiiPinned so a silent change fails a test. NOTE: the bound is
 // per-axis — a Taylor cell at the DOUBLE CORNER (|spot| and |vol| both at the radius)
-// combines both residuals plus the vanna cross-term and can reach ~$0.009 (the pinned
-// §9.3 gate tolerance). Setting a radius to `std::numeric_limits<double>::infinity()`
-// DISABLES routing on that axis: `|x| > inf` is always false, so an inf/inf spec
-// reproduces the C3.1 all-Taylor grid BYTE-for-byte (pinned by
-// ScenarioGrid.InfiniteRadiusIsByteIdenticalToTaylorOnly).
+// combines both residuals plus the vanna cross-term and, measured over the FULL eSSVI
+// board (wing strikes 80/120, tenor extremes 0.05/0.45 — the same board
+// MeasureTaylorRadius uses), can reach ~$0.0111. $0.0125 (worst + ~13% headroom,
+// rounded) is the pinned §9.3 gate tolerance (ScenarioGrid.TaylorExactAgreeInsideRadius
+// — see task-c3.2-report.md, "Fix: M1 gate board widening"). Setting a radius to
+// `std::numeric_limits<double>::infinity()` DISABLES routing on that axis: `|x| > inf`
+// is always false, so an inf/inf spec reproduces the C3.1 all-Taylor grid BYTE-for-byte
+// (pinned by ScenarioGrid.InfiniteRadiusIsByteIdenticalToTaylorOnly).
 //
 // ## Exact cell semantics — sticky-strike, NO smile roll
 //

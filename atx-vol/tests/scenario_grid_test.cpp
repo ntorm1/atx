@@ -475,8 +475,11 @@ TEST(ScenarioGrid, TaylorExactAgreeInsideRadius) {
   const std::vector<double> vol = {-kDefaultTaylorRadiusVol, -0.01, 0.0, 0.01,
                                    kDefaultTaylorRadiusVol};
   double worst = 0.0;
-  for (double K : {90.0, 95.0, 100.0, 105.0, 110.0}) {
-    for (double T : {0.15, 0.25, 0.35}) {
+  // Same board as ScenarioGrid.MeasureTaylorRadius (test:649-650) — wing strikes and
+  // tenor extremes are where the Taylor residual peaks, so the agreement gate must be
+  // measured on the SAME board the radii were derived from, not a friendlier one.
+  for (double K : {80.0, 90.0, 95.0, 100.0, 105.0, 110.0, 120.0}) {
+    for (double T : {0.05, 0.15, 0.25, 0.35, 0.45}) {
       for (Side side : {Side::Call, Side::Put}) {
         const std::vector<Position> book = {{0, {1, K, T, side}, 1.0, 1.0}}; // per-share
         ScenarioGridSpec st;
@@ -502,9 +505,13 @@ TEST(ScenarioGrid, TaylorExactAgreeInsideRadius) {
   // The MEASURED (req 4) $0.005 band is a PER-AXIS bound (pure-spot / pure-vol sweeps).
   // With OR routing, the worst Taylor cell inside the radii is the DOUBLE CORNER
   // (|spot|=rad AND |vol|=rad simultaneously), whose combined higher-order + vanna
-  // cross-term residual reaches ~$0.0091 — above the per-axis band. That measured
-  // corner value is the declared §9.3 agreement tolerance, pinned here.
-  EXPECT_LE(worst, 1.0e-2);
+  // cross-term residual reaches ~$0.0091 on the friendlier {90..110}/{0.15..0.35} board
+  // — above the per-axis band. On the FULL board (wing strikes 80/120, tenor extremes
+  // 0.05/0.45 — same board as MeasureTaylorRadius) the double-corner residual is worse,
+  // measuring $0.011063 (reviewer finding M1). $0.0125 (worst + ~13% headroom, rounded)
+  // is the declared §9.3 agreement tolerance, pinned here — see task-c3.2-report.md,
+  // "Fix: M1 gate board widening".
+  EXPECT_LE(worst, 1.25e-2);
 }
 
 // ── C3.2-6. Second-order convergence: residual scales ~1/8 as h -> h/2. ──────
