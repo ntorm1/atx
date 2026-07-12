@@ -24,15 +24,17 @@
 //     There is NO vectorized American Greek STENCIL — greek-stencil vectorization
 //     beyond the price boundary is future work. Every Greek lane's route is Scalar.
 //
-// Not thread-safe against a concurrent change of the process-global SIMD ISA
-// override: PricingKernel::isa is applied via that override for the duration of a
-// call (the coarse T13 seam), then restored.
+// PricingKernel::isa is a call-local dispatch choice. Concurrent batch calls may
+// select different ISAs without reading or mutating the legacy process-global
+// override used by the coarse SIMD boundary API.
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <vector>
 
+#include "atx/vol/american.hpp"                    // AlOpts, AmericanMethod
 #include "atx/vol/simd/american_boundary_batch.hpp" // SimdRoute
 #include "atx/vol/simd/cpu.hpp"                      // SimdIsa
 #include "atx/vol/simd/greeks_batch.hpp"             // GreeksBatchSoA
@@ -76,11 +78,50 @@ struct AmericanBatchInput {
   }
 };
 
+// Non-owning price-only request for an already-resolved equal-expiry surface
+// run. S/T/r/q are broadcast scalars because PricedSurface resolves one carry
+// for each raw-bit-identical T run; K/sigma/side remain lane columns. The exact
+// method and option engagement are part of the request: an engaged AlOpts must
+// never be replaced by the low-level kernel's null-options scheme.
+//
+// `price` and `status` must contain one entry per lane. `pack_dispatch` is
+// optional; when supplied it must have the same length. An Avx2 value means the
+// lane belonged to a pack sent to the AVX2 kernel; it does NOT claim that the
+// kernel avoided its internal scalar patch for that lane. Status retains the
+// scalar pricer's full ErrorCode/message per lane. All spans are borrowed for the
+// duration of the call and may not alias input storage. The valid path allocates
+// nothing.
+struct ResolvedAmericanPriceBatchRequest {
+  double S{0.0};
+  double T{0.0};
+  double r{0.0};
+  double q{0.0};
+  std::span<const double> K;
+  std::span<const double> sigma;
+  std::span<const Side> side;
+  AmericanMethod method{AmericanMethod::AndersenLake};
+  std::optional<AlOpts> al_opts{std::nullopt};
+  simd::SimdIsa isa{simd::SimdIsa::Auto};
+  std::span<double> price;
+  std::span<Status> status;
+  std::span<simd::SimdRoute> pack_dispatch;
+
+  [[nodiscard]] std::size_t size() const noexcept { return K.size(); }
+  [[nodiscard]] bool consistent() const noexcept {
+    const std::size_t n = size();
+    return sigma.size() == n && side.size() == n && price.size() == n &&
+           status.size() == n &&
+           (pack_dispatch.empty() || pack_dispatch.size() == n);
+  }
+};
+
 // ── Price batch output (owning; sized once, reused across snapshots) ───────
 struct PriceBatchOutput {
   std::vector<double> price;             // per-lane American mark (NaN if Unsupported)
   std::vector<LaneStatus> status;        // per-lane outcome
-  std::vector<simd::SimdRoute> route;    // per-lane numerical route (Scalar/Avx2)
+  // Dispatch of the containing pack. Avx2 does not prove that the opaque AVX2
+  // kernel avoided its internal scalar patch for this specific lane.
+  std::vector<simd::SimdRoute> route;
 
   void resize(std::size_t n) {
     price.assign(n, 0.0);
@@ -89,10 +130,9 @@ struct PriceBatchOutput {
   }
   [[nodiscard]] std::size_t size() const noexcept { return price.size(); }
 
-  // Fraction of lanes that did NOT execute the vector boundary kernel (route ==
-  // Scalar): the scalar-fallback rate. 100% under the T13 scalar default; the
-  // genuine-degenerate/European fraction under ForceAvx2 on an AVX2 host.
-  [[nodiscard]] double scalar_fallback_rate() const noexcept {
+  // Fraction of lanes that were not submitted in an AVX2-dispatched pack. This
+  // is a dispatch statistic, not a count of low-level per-lane scalar patches.
+  [[nodiscard]] double scalar_dispatch_rate() const noexcept {
     if (route.empty()) {
       return 0.0;
     }
@@ -104,15 +144,22 @@ struct PriceBatchOutput {
     }
     return static_cast<double>(nscalar) / static_cast<double>(route.size());
   }
+
+  // Compatibility spelling retained for callers of the original API. The
+  // semantics are `scalar_dispatch_rate()`, not exact scalar execution share.
+  [[nodiscard]] double scalar_fallback_rate() const noexcept {
+    return scalar_dispatch_rate();
+  }
 };
 
 // ── Pricing kernel handle (wraps the T13 ISA seam) ────────────────────────
 //
-// Minimal by design: the ISA/route selection plus an optional executor for
+// Minimal by design: the call-local ISA selection plus an optional executor for
 // cross-lane parallelism of the scalar Greek routes.
 struct PricingKernel {
-  // Applied via the process-global SIMD ISA override for the call's duration.
-  // Auto inherits the T13 ship gate (scalar today); ForceAvx2/ForceScalar force.
+  // Passed directly to the boundary kernel for this call. Auto inherits the T13
+  // ship gate (scalar today); ForceScalar forces scalar, while ForceAvx2 uses AVX2
+  // when supported and safely falls back to scalar on other hosts.
   simd::SimdIsa isa{simd::SimdIsa::Auto};
 
   // american_greeks_batch route: false -> american_greeks_fd (FD reference),
@@ -207,6 +254,18 @@ enum class GreekFieldMask : std::uint32_t {
                                            PriceBatchOutput& out,
                                            PricingKernel& kernel,
                                            PricingWorkspace& ws);
+
+// Price an exact resolved equal-T run into caller-owned output spans. BAW remains
+// scalar; Andersen-Lake passes the request's exact option engagement through the
+// configured boundary kernel and every scalar patch. `isa` remains a call-local
+// request; `pack_dispatch` reports only whether a containing pack was sent to
+// AVX2, not the low-level kernel's opaque per-lane patch decision.
+// Returns InvalidArgument for request span-shape errors or any overlap between
+// input/output spans or between nonempty output spans. Validation completes
+// before counters or writes. Model failures are retained independently in
+// `status[i]` with price[i] = NaN.
+[[nodiscard]] Status american_price_batch_resolved(
+    const ResolvedAmericanPriceBatchRequest& request);
 
 // American Greeks for a book into the SoA columns of `greeks` (only the fields in
 // `fields` — and only non-null columns — are written). Each lane's Greeks come

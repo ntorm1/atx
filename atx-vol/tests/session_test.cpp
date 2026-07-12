@@ -523,7 +523,20 @@ TEST(Session, DiagnosticsAggregateBandStats) {
 // the second of the two aggregation loops in session.cpp that the 07-11
 // sprint's session-guard-fix history shows drift when only one is edited.
 TEST(Session, DiagnosticsAggregateBandStats_CurveSurfacePath) {
-  // Same tight-band rationale as DiagnosticsAggregateBandStats above.
+  // Same tight-band rationale as DiagnosticsAggregateBandStats above, but this
+  // one exercises the SEPARATE CurveSurface-path rollup (session.cpp: the
+  // `crep.per_expiry` aggregation loop, distinct from the legacy eSSVI loop the
+  // sibling test covers). The curve family must be one the non-Essvi
+  // CurveSurface driver actually serves AND one whose fit leaves real residual
+  // slop against the noiseless known-truth panel, or the rollup has no signal
+  // to aggregate. The original LinearVariance choice no longer qualifies: the
+  // adaptive-knot linear-total-variance family is near-interpolating and, after
+  // the fitting-pipeline sprint tightened it, fits each smooth s3 slice to well
+  // inside a 1 bp band (zero violations at any band width -- verified). Raw SVI
+  // is parsimonious (5 params) and structurally cannot reproduce the s3
+  // hyperbola smile exactly, so it crosses the tight band on ~40 held quotes --
+  // giving the CurveSurface-path aggregation loop genuine non-zero band stats
+  // to roll up.
   SynthPanelSpec spec = make_spec();
   spec.half_spread_frac = 0.0001;
   spec.min_half_spread = 0.0001;
@@ -532,7 +545,7 @@ TEST(Session, DiagnosticsAggregateBandStats_CurveSurfacePath) {
   ASSERT_NE(under, nullptr);
 
   SessionInputs in = make_inputs(spec);
-  in.curve.kind = atx::vol::VolCurveKind::LinearVariance;
+  in.curve.kind = atx::vol::VolCurveKind::Svi;
 
   const auto sess = VolaSession::build(*under, in);
   ASSERT_TRUE(sess.has_value()) << sess.error().to_string();

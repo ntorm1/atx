@@ -1,5 +1,8 @@
 #include "atx/vol/priced_surface.hpp"
 
+#include "atx/vol/american_batch.hpp" // exact resolved price-only batch
+#include "atx/vol/counters.hpp"
+
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -23,11 +26,32 @@ namespace {
 
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
+void poison(AmericanGreeks &greeks) noexcept {
+  greeks.delta = greeks.gamma = greeks.vega = greeks.theta = greeks.rho = greeks.vanna =
+      greeks.volga = greeks.charm = greeks.price = kNaN;
+}
+
 [[nodiscard]] bool valid_query(double K, double T) noexcept {
   return std::isfinite(K) && (K > 0.0) && std::isfinite(T) && (T > 0.0);
 }
 
-}  // namespace
+template <class Input, class Output>
+[[nodiscard]] bool spans_overlap(std::span<Input> input, std::span<Output> output) noexcept {
+  if (input.empty() || output.empty()) {
+    return false;
+  }
+  // SAFETY: converting valid object pointers to uintptr_t is implementation-
+  // defined but supported by both repository toolchains. Integer comparison
+  // avoids undefined relational comparison between unrelated object pointers.
+  const std::uintptr_t input_begin = reinterpret_cast<std::uintptr_t>(input.data());
+  const std::uintptr_t output_begin = reinterpret_cast<std::uintptr_t>(output.data());
+  if (input_begin <= output_begin) {
+    return (output_begin - input_begin) < input.size_bytes();
+  }
+  return (input_begin - output_begin) < output.size_bytes();
+}
+
+} // namespace
 
 PricedSurface::PricedSurface(CurveSurface &&surface, std::vector<SliceContext> &&ctx,
                              const PricingContext &pricing) noexcept
@@ -40,15 +64,14 @@ PricedSurface::PricedSurface(CurveSurface &&surface, std::vector<SliceContext> &
   }
 }
 
-Result<PricedSurface> PricedSurface::create(CurveSurface&& surface,
+Result<PricedSurface> PricedSurface::create(CurveSurface &&surface,
                                             std::vector<SliceContext> context,
-                                            const PricingContext& pricing) {
+                                            const PricingContext &pricing) {
   if (surface.empty()) {
     return Err(ErrorCode::InvalidArgument, "PricedSurface::create: empty surface");
   }
   if (context.size() != surface.n_slices()) {
-    return Err(ErrorCode::InvalidArgument,
-               "PricedSurface::create: context length != slice count");
+    return Err(ErrorCode::InvalidArgument, "PricedSurface::create: context length != slice count");
   }
   if (!(pricing.S > 0.0) || !std::isfinite(pricing.r)) {
     return Err(ErrorCode::InvalidArgument,
@@ -66,8 +89,8 @@ Result<PricedSurface> PricedSurface::create(CurveSurface&& surface,
 PricedSurface::ForwardCarry PricedSurface::interp_forward(double T) const noexcept {
   // Precondition: ctx_ non-empty and ascending in T (create guarantees it). This
   // is byte-identical to VolaSession::interp_forward so the served theo matches.
-  const SliceContext& first = ctx_.front();
-  const SliceContext& last = ctx_.back();
+  const SliceContext &first = ctx_.front();
+  const SliceContext &last = ctx_.back();
   const auto slice_rate = [this](std::size_t index) noexcept {
     if (!term_rates_) {
       return pricing_.r;
@@ -89,13 +112,13 @@ PricedSurface::ForwardCarry PricedSurface::interp_forward(double T) const noexce
   // upper_bound (first element strictly greater than T) lands on j+1 identically,
   // so lo=j, alpha=0 — the same off-by-one. ctx_ is strictly ascending, so this
   // is bit-for-bit the same (lo, hi) bracket the scan selected.
-  const auto it = std::upper_bound(
-      ctx_.begin(), ctx_.end(), T,
-      [](double t, const SliceContext& s) noexcept { return t < s.T; });
+  const auto it =
+      std::upper_bound(ctx_.begin(), ctx_.end(), T,
+                       [](double t, const SliceContext &s) noexcept { return t < s.T; });
   const std::size_t hi = static_cast<std::size_t>(it - ctx_.begin());
   const std::size_t lo = hi - 1;
-  const SliceContext& a = ctx_[lo];
-  const SliceContext& b = ctx_[hi];
+  const SliceContext &a = ctx_[lo];
+  const SliceContext &b = ctx_[hi];
   const double span = b.T - a.T;
   const double alpha = (span > 0.0) ? (T - a.T) / span : 0.0;
   const double rate_lo = slice_rate(lo);
@@ -135,8 +158,8 @@ PricedSurface::ResolvedSurfacePoint PricedSurface::resolve(double K, double T) c
   return resolve_with_carry(K, T, interp_forward(T));
 }
 
-PricedSurface::ResolvedSurfacePoint PricedSurface::resolve_with_carry(
-    double K, double T, ForwardCarry fc) const noexcept {
+PricedSurface::ResolvedSurfacePoint
+PricedSurface::resolve_with_carry(double K, double T, ForwardCarry fc) const noexcept {
   // Precondition: T is a valid query T (finite, > 0) so `fc` == interp_forward(T);
   // only K's validity is re-checked here so a strike ladder can reuse one carry.
   ResolvedSurfacePoint p;
@@ -175,15 +198,14 @@ Result<double> PricedSurface::fair_value(double K, double T, Side side) const {
   // resolved preset as an engaged optional reproduces the session's own call
   // `american_price(..., in_.deam.al_opts)` exactly (in_ carries the resolved AL
   // opts post-build).
-  return american_price(pricing_.S, K, T, p.sigma, p.rate, p.q_eff, side,
-                        pricing_.method, std::optional<AlOpts>{pricing_.al_opts});
+  return american_price(pricing_.S, K, T, p.sigma, p.rate, p.q_eff, side, pricing_.method,
+                        std::optional<AlOpts>{pricing_.al_opts});
 }
 
 Result<AmericanGreeks> PricedSurface::greeks(double K, double T, Side side) const {
   const ResolvedSurfacePoint p = resolve(K, T);
   if (!p.valid) {
-    return Err(ErrorCode::InvalidArgument,
-               "PricedSurface::greeks: non-finite or non-positive K/T");
+    return Err(ErrorCode::InvalidArgument, "PricedSurface::greeks: non-finite or non-positive K/T");
   }
   // American Greeks via finite differences on the SAME cold american_price (method
   // + resolved AL preset) fair_value() prices with, so greeks().price == fair_value()
@@ -191,8 +213,8 @@ Result<AmericanGreeks> PricedSurface::greeks(double K, double T, Side side) cons
   // Cold (warm_start=false) keeps greeks bit-reproducible across a surface archive
   // round-trip (the LifecycleIntegration contract); the warm hot path lives in the
   // backtest engine (cross-step reuse), not this bit-stable reprice primitive.
-  return american_greeks_fd(pricing_.S, K, T, p.sigma, p.rate, p.q_eff, side,
-                            pricing_.method, std::optional<AlOpts>{pricing_.al_opts});
+  return american_greeks_fd(pricing_.S, K, T, p.sigma, p.rate, p.q_eff, side, pricing_.method,
+                            std::optional<AlOpts>{pricing_.al_opts});
 }
 
 Result<AmericanGreeks> PricedSurface::greeks_analytic(double K, double T, Side side) const {
@@ -208,28 +230,26 @@ Result<AmericanGreeks> PricedSurface::greeks_analytic(double K, double T, Side s
     return american_greeks_al(pricing_.S, K, T, p.sigma, p.rate, p.q_eff, side,
                               std::optional<AlOpts>{pricing_.al_opts});
   }
-  return american_greeks_fd(pricing_.S, K, T, p.sigma, p.rate, p.q_eff, side,
-                            pricing_.method, std::optional<AlOpts>{pricing_.al_opts});
+  return american_greeks_fd(pricing_.S, K, T, p.sigma, p.rate, p.q_eff, side, pricing_.method,
+                            std::optional<AlOpts>{pricing_.al_opts});
 }
 
 Result<double> PricedSurface::delta(double K, double T, Side side) const {
   const ResolvedSurfacePoint p = resolve(K, T);
   if (!p.valid) {
-    return Err(ErrorCode::InvalidArgument,
-               "PricedSurface::delta: non-finite or non-positive K/T");
+    return Err(ErrorCode::InvalidArgument, "PricedSurface::delta: non-finite or non-positive K/T");
   }
   // Delta-only fast path — same (S, sigma, r, q_eff, method, al_opts) plumbing as
   // greeks(), so this returns greeks().delta bit-identically at ~1-2 boundary solves
   // instead of seventeen (see american_delta).
-  return american_delta(pricing_.S, K, T, p.sigma, p.rate, p.q_eff, side,
-                        pricing_.method, std::optional<AlOpts>{pricing_.al_opts});
+  return american_delta(pricing_.S, K, T, p.sigma, p.rate, p.q_eff, side, pricing_.method,
+                        std::optional<AlOpts>{pricing_.al_opts});
 }
 
 Result<double> PricedSurface::vega(double K, double T, Side side) const {
   const ResolvedSurfacePoint p = resolve(K, T);
   if (!p.valid) {
-    return Err(ErrorCode::InvalidArgument,
-               "PricedSurface::vega: non-finite or non-positive K/T");
+    return Err(ErrorCode::InvalidArgument, "PricedSurface::vega: non-finite or non-positive K/T");
   }
   // Vega-only fast path. Same routing greeks_analytic() uses: the AndersenLake
   // method takes the native analytic route (american_vega_al, bit-identical to
@@ -242,33 +262,43 @@ Result<double> PricedSurface::vega(double K, double T, Side side) const {
                             std::optional<AlOpts>{pricing_.al_opts});
   }
   const Result<AmericanGreeks> g =
-      american_greeks_fd(pricing_.S, K, T, p.sigma, p.rate, p.q_eff, side,
-                         pricing_.method, std::optional<AlOpts>{pricing_.al_opts});
+      american_greeks_fd(pricing_.S, K, T, p.sigma, p.rate, p.q_eff, side, pricing_.method,
+                         std::optional<AlOpts>{pricing_.al_opts});
   if (!g) {
     return Err(g.error());
   }
   return Ok(g->vega);
 }
 
-PricedSurface::FusedResult PricedSurface::evaluate_resolved(const ResolvedSurfacePoint& p,
+PricedSurface::FusedResult PricedSurface::evaluate_resolved(const ResolvedSurfacePoint &p,
                                                             Side side, EvalField fields,
                                                             bool analytic) const {
   FusedResult r;
   if (!p.valid) {
     r.iv = kNaN;
     r.price = kNaN;
-    r.status = Err(ErrorCode::InvalidArgument,
-                   "PricedSurface::evaluate: non-finite or non-positive K/T");
+    poison(r.greeks);
+    r.status =
+        Err(ErrorCode::InvalidArgument, "PricedSurface::evaluate: non-finite or non-positive K/T");
     return r;
   }
   // IV is free from the single resolution — always populated when valid.
   r.iv = p.sigma;
+  // Poison selective outputs up front so an earlier requested-route failure
+  // cannot leave a requested axis looking like a valid zero.
+  if (has_field(fields, EvalField::Delta)) {
+    r.greeks.delta = kNaN;
+  }
+  if (has_field(fields, EvalField::Vega)) {
+    r.greeks.vega = kNaN;
+  }
 
   const bool want_greeks =
       has_field(fields, EvalField::FirstOrder) || has_field(fields, EvalField::SecondOrder);
   if (want_greeks) {
     // Route exactly as greeks() / greeks_analytic() do; american_greeks_*().price
     // IS the fair value (bit-identical), so Greeks yield the mark for free.
+    ATX_VOL_COUNT(SurfaceFullGreekRoutes);
     Result<AmericanGreeks> g =
         (analytic && pricing_.method == AmericanMethod::AndersenLake)
             ? american_greeks_al(pricing_.S, p.K, p.T, p.sigma, p.rate, p.q_eff, side,
@@ -276,7 +306,9 @@ PricedSurface::FusedResult PricedSurface::evaluate_resolved(const ResolvedSurfac
             : american_greeks_fd(pricing_.S, p.K, p.T, p.sigma, p.rate, p.q_eff, side,
                                  pricing_.method, std::optional<AlOpts>{pricing_.al_opts});
     if (!g.has_value()) {
+      r.iv = kNaN;
       r.price = kNaN;
+      poison(r.greeks);
       r.status = Err(g.error());
       return r;
     }
@@ -285,14 +317,56 @@ PricedSurface::FusedResult PricedSurface::evaluate_resolved(const ResolvedSurfac
     return r;
   }
   if (has_field(fields, EvalField::Price)) {
+    ATX_VOL_COUNT(SurfaceScalarPriceRoutes);
     Result<double> fv = american_price(pricing_.S, p.K, p.T, p.sigma, p.rate, p.q_eff, side,
                                        pricing_.method, std::optional<AlOpts>{pricing_.al_opts});
     if (!fv.has_value()) {
+      r.iv = kNaN;
       r.price = kNaN;
+      poison(r.greeks);
       r.status = Err(fv.error());
       return r;
     }
     r.price = *fv;
+  }
+  if (has_field(fields, EvalField::Delta)) {
+    ATX_VOL_COUNT(SurfaceDeltaRoutes);
+    const Result<double> delta =
+        american_delta(pricing_.S, p.K, p.T, p.sigma, p.rate, p.q_eff, side, pricing_.method,
+                       std::optional<AlOpts>{pricing_.al_opts});
+    if (!delta.has_value()) {
+      r.iv = kNaN;
+      r.price = kNaN;
+      poison(r.greeks);
+      r.status = Err(delta.error());
+      return r;
+    }
+    r.greeks.delta = *delta;
+  }
+  if (has_field(fields, EvalField::Vega)) {
+    ATX_VOL_COUNT(SurfaceVegaRoutes);
+    Result<double> vega_result;
+    if (pricing_.method == AmericanMethod::AndersenLake) {
+      vega_result = american_vega_al(pricing_.S, p.K, p.T, p.sigma, p.rate, p.q_eff, side,
+                                     std::optional<AlOpts>{pricing_.al_opts});
+    } else {
+      const Result<AmericanGreeks> greeks =
+          american_greeks_fd(pricing_.S, p.K, p.T, p.sigma, p.rate, p.q_eff, side, pricing_.method,
+                             std::optional<AlOpts>{pricing_.al_opts});
+      if (!greeks.has_value()) {
+        vega_result = Err(greeks.error());
+      } else {
+        vega_result = Ok(greeks->vega);
+      }
+    }
+    if (!vega_result.has_value()) {
+      r.iv = kNaN;
+      r.price = kNaN;
+      poison(r.greeks);
+      r.status = Err(vega_result.error());
+      return r;
+    }
+    r.greeks.vega = *vega_result;
   }
   // Iv-only (or None): one resolution, no pricer solve.
   return r;
@@ -305,21 +379,60 @@ PricedSurface::FusedResult PricedSurface::evaluate(double K, double T, Side side
 
 Status PricedSurface::evaluate_batch(std::span<const double> K, std::span<const double> T,
                                      std::span<const Side> side, EvalField fields, bool analytic,
-                                     EvaluationSoA out) const {
+                                     EvaluationSoA out,
+                                     simd::SimdIsa resolved_price_isa) const {
   const std::size_t n = K.size();
   if (T.size() != n || side.size() != n) {
     return Err(ErrorCode::InvalidArgument,
                "PricedSurface::evaluate_batch: K/T/side length mismatch");
   }
-  if (out.iv.size() != n || out.price.size() != n || out.status.size() != n) {
+  const bool want_greeks =
+      has_field(fields, EvalField::FirstOrder) || has_field(fields, EvalField::SecondOrder);
+  const bool want_price = has_field(fields, EvalField::Price);
+  const bool want_iv = has_field(fields, EvalField::Iv);
+  const bool want_delta = has_field(fields, EvalField::Delta);
+  const bool want_vega = has_field(fields, EvalField::Vega);
+  const bool selective_only = !want_greeks && (want_delta || want_vega);
+  const auto optional_size_ok = [n](const auto output) noexcept {
+    return output.empty() || output.size() == n;
+  };
+  if (!selective_only && (out.iv.size() != n || out.price.size() != n || out.status.size() != n)) {
     return Err(ErrorCode::InvalidArgument,
                "PricedSurface::evaluate_batch: iv/price/status out-span size != query count");
   }
-  const bool want_greeks =
-      has_field(fields, EvalField::FirstOrder) || has_field(fields, EvalField::SecondOrder);
+  if (!optional_size_ok(out.delta) || !optional_size_ok(out.vega) ||
+      (want_delta && out.delta.size() != n) || (want_vega && out.vega.size() != n)) {
+    return Err(ErrorCode::InvalidArgument,
+               "PricedSurface::evaluate_batch: dedicated axis out-span size invalid");
+  }
+  if (selective_only &&
+      (out.status.size() != n || !optional_size_ok(out.iv) || !optional_size_ok(out.price) ||
+       !optional_size_ok(out.greeks) || (want_iv && out.iv.size() != n) ||
+       (want_price && out.price.size() != n))) {
+    return Err(ErrorCode::InvalidArgument,
+               "PricedSurface::evaluate_batch: selective out-span size invalid");
+  }
   if (want_greeks && out.greeks.size() != n) {
     return Err(ErrorCode::InvalidArgument,
                "PricedSurface::evaluate_batch: greeks out-span size != query count");
+  }
+  const auto overlaps_input = [&](const auto output) noexcept {
+    return spans_overlap(K, output) || spans_overlap(T, output) || spans_overlap(side, output);
+  };
+  const bool outputs_overlap =
+      spans_overlap(out.iv, out.price) || spans_overlap(out.iv, out.greeks) ||
+      spans_overlap(out.iv, out.delta) || spans_overlap(out.iv, out.vega) ||
+      spans_overlap(out.iv, out.status) || spans_overlap(out.price, out.greeks) ||
+      spans_overlap(out.price, out.delta) || spans_overlap(out.price, out.vega) ||
+      spans_overlap(out.price, out.status) || spans_overlap(out.greeks, out.delta) ||
+      spans_overlap(out.greeks, out.vega) || spans_overlap(out.greeks, out.status) ||
+      spans_overlap(out.delta, out.vega) || spans_overlap(out.delta, out.status) ||
+      spans_overlap(out.vega, out.status);
+  if (overlaps_input(out.iv) || overlaps_input(out.price) || overlaps_input(out.greeks) ||
+      overlaps_input(out.status) || overlaps_input(out.delta) || overlaps_input(out.vega) ||
+      outputs_overlap) {
+    return Err(ErrorCode::InvalidArgument,
+               "PricedSurface::evaluate_batch: query/output spans overlap");
   }
 
   std::size_t i = 0;
@@ -333,6 +446,82 @@ Status PricedSurface::evaluate_batch(std::span<const double> K, std::span<const 
     }
     const bool t_valid = std::isfinite(t) && (t > 0.0);
     const ForwardCarry fc = t_valid ? interp_forward(t) : ForwardCarry{};
+    if (want_price && !want_greeks && !selective_only) {
+      if (!t_valid) {
+        for (std::size_t e = i; e < j; ++e) {
+          ResolvedSurfacePoint p;
+          p.K = K[e];
+          p.T = t;
+          const FusedResult fr = evaluate_resolved(p, side[e], fields, analytic);
+          out.iv[e] = fr.iv;
+          out.price[e] = fr.price;
+          out.status[e] = fr.status;
+        }
+        i = j;
+        continue;
+      }
+
+      const auto dispatch_valid = [&](std::size_t begin, std::size_t end) -> Status {
+        if (begin == end) {
+          return Ok();
+        }
+        const std::size_t run_size = end - begin;
+        const ResolvedAmericanPriceBatchRequest request{
+            .S = pricing_.S,
+            .T = t,
+            .r = fc.rate,
+            .q = fc.q_eff,
+            .K = K.subspan(begin, run_size),
+            .sigma = out.iv.subspan(begin, run_size),
+            .side = side.subspan(begin, run_size),
+            .method = pricing_.method,
+            .al_opts = std::optional<AlOpts>{pricing_.al_opts},
+            .isa = resolved_price_isa,
+            .price = out.price.subspan(begin, run_size),
+            .status = out.status.subspan(begin, run_size),
+            .pack_dispatch = {},
+        };
+        const Status batch = american_price_batch_resolved(request);
+        if (!batch.has_value()) {
+          return batch;
+        }
+        // Mirror the scalar reference path (evaluate_resolved): an american_price
+        // failure poisons iv = NaN. The batch pre-filled out.iv[e] = p.sigma for
+        // every valid resolution; on lanes the pricer rejected (status Err, price
+        // NaN) the scalar route overwrites iv with NaN, so poison here to keep the
+        // iv column bit-identical to the per-contract evaluate.
+        for (std::size_t e = begin; e < end; ++e) {
+          if (!out.status[e].has_value()) {
+            out.iv[e] = kNaN;
+          }
+        }
+        return Ok();
+      };
+
+      std::size_t valid_begin = i;
+      for (std::size_t e = i; e < j; ++e) {
+        const ResolvedSurfacePoint p = resolve_with_carry(K[e], t, fc);
+        if (p.valid) {
+          out.iv[e] = p.sigma;
+          continue;
+        }
+        const Status batch_status = dispatch_valid(valid_begin, e);
+        if (!batch_status.has_value()) {
+          return batch_status;
+        }
+        const FusedResult fr = evaluate_resolved(p, side[e], fields, analytic);
+        out.iv[e] = fr.iv;
+        out.price[e] = fr.price;
+        out.status[e] = fr.status;
+        valid_begin = e + 1;
+      }
+      const Status batch_status = dispatch_valid(valid_begin, j);
+      if (!batch_status.has_value()) {
+        return batch_status;
+      }
+      i = j;
+      continue;
+    }
     for (std::size_t e = i; e < j; ++e) {
       // Bit-identical to evaluate(K[e], t, ...): resolve_with_carry(K,t,interp_forward(t))
       // == resolve(K,t), and evaluate_resolved is the shared routing.
@@ -344,10 +533,20 @@ Status PricedSurface::evaluate_batch(std::span<const double> K, std::span<const 
         p.T = t; // valid == false
       }
       const FusedResult fr = evaluate_resolved(p, side[e], fields, analytic);
-      out.iv[e] = fr.iv;
-      out.price[e] = fr.price;
+      if (!selective_only || want_iv) {
+        out.iv[e] = fr.iv;
+      }
+      if (!selective_only || want_price) {
+        out.price[e] = fr.price;
+      }
       if (want_greeks) {
         out.greeks[e] = fr.greeks;
+      }
+      if (want_delta) {
+        out.delta[e] = fr.greeks.delta;
+      }
+      if (want_vega) {
+        out.vega[e] = fr.greeks.vega;
       }
       out.status[e] = fr.status;
     }
@@ -360,4 +559,4 @@ VolCurveKind PricedSurface::kind_at(std::size_t i) const noexcept {
   return surface_.slices()[i]->kind();
 }
 
-}  // namespace atx::vol
+} // namespace atx::vol

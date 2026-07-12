@@ -37,8 +37,10 @@
 //      streaming pass (the AVX2 batch kernels are deferred).
 //   4. `price_portfolio` — price a book leg-by-leg, aggregate dollar value
 //      (and first-order Greeks) by `AggMode` into groups.
-//   5. `aggregate_greeks` — the `ats_greeks_portfolio` flavour: qty-weighted
-//      sum of the eight analytic Black-76 Greeks per bucket.
+//   5. `aggregate_european_b76_greeks_raw_qty` — the
+//      `ats_greeks_portfolio` flavour: raw-qty-weighted sum of the eight
+//      analytic European Black-76 Greeks per bucket. `aggregate_greeks` is the
+//      source-compatible legacy name.
 //
 // ## Numeric conventions (matched to the C)
 //
@@ -97,12 +99,12 @@ enum class LegKind : std::uint8_t {
 // One book position. All members value-initialized (aggregate type).
 struct PortfolioLeg {
   LegKind kind{LegKind::Option};
-  Uid uid{kInvalidUid};           // OPTION + STOCK; ignored for CASH
-  ContractId contract_id{0};      // OPTION only
-  double qty{0.0};                // signed: + long / - short
-  double multiplier{100.0};       // OPTION deliverable (default 100); STOCK/CASH 1
-  double cash_value{0.0};         // CASH only — dollar value per unit qty
-  std::uint32_t group_id{0};      // opaque caller key; surfaced by ByGroupId agg
+  Uid uid{kInvalidUid};      // OPTION + STOCK; ignored for CASH
+  ContractId contract_id{0}; // OPTION only
+  double qty{0.0};           // signed: + long / - short
+  double multiplier{100.0};  // OPTION deliverable (default 100); STOCK/CASH 1
+  double cash_value{0.0};    // CASH only — dollar value per unit qty
+  std::uint32_t group_id{0}; // opaque caller key; surfaced by ByGroupId agg
 };
 
 // ── Aggregation model (ports AtsVolPortfolioAggMode) ─────────────────────
@@ -121,8 +123,7 @@ enum class AggMode : std::uint8_t {
 //   ByUid       -> uid
 //   ByUidExpiry -> (uid << 16) | (option ? cid_expiry : 0xFFFF)
 //   ByGroupId   -> group_id
-[[nodiscard]] std::uint64_t group_key_for_leg(const PortfolioLeg& leg,
-                                              AggMode mode) noexcept;
+[[nodiscard]] std::uint64_t group_key_for_leg(const PortfolioLeg &leg, AggMode mode) noexcept;
 
 // ── Pricing route + lane status (port of the C diagnostics) ──────────────
 
@@ -148,26 +149,26 @@ enum class LaneStatus : std::uint8_t {
 // for option pricing; the correction caches are optional (present => American
 // cache route for that side).
 struct UnderlyingMarket {
-  const VolSurface* surface{nullptr};             // IV source
-  const CurveSet* curves{nullptr};                // F / df per expiry
-  const CorrectionCache* correction_call{nullptr};
-  const CorrectionCache* correction_put{nullptr};
+  const VolSurface *surface{nullptr}; // IV source
+  const CurveSet *curves{nullptr};    // F / df per expiry
+  const CorrectionCache *correction_call{nullptr};
+  const CorrectionCache *correction_put{nullptr};
 };
 
 // Binds a book / bulk request to live market state. The `Universe` supplies the
 // chain/strike layout and per-uid spot; `set_market` registers the surface /
 // curves / correction views per uid. Non-owning throughout (Rule of Zero).
 class MarketBinding {
- public:
-  const Universe* universe{nullptr};
+public:
+  const Universe *universe{nullptr};
 
   // Register (or replace) the market view for `uid`.
-  void set_market(Uid uid, const UnderlyingMarket& market);
+  void set_market(Uid uid, const UnderlyingMarket &market);
 
   // Look up the market view for `uid`, or nullptr if none was registered.
-  [[nodiscard]] const UnderlyingMarket* market_for(Uid uid) const noexcept;
+  [[nodiscard]] const UnderlyingMarket *market_for(Uid uid) const noexcept;
 
- private:
+private:
   std::vector<std::pair<Uid, UnderlyingMarket>> markets_;
 };
 
@@ -175,7 +176,7 @@ class MarketBinding {
 
 enum class PortfolioRiskMode : std::uint8_t {
   PriceOnly = 0,
-  FirstOrder = 1,  // delta / vega / theta / rho on option legs
+  FirstOrder = 1, // delta / vega / theta / rho on option legs
 };
 
 // Per-leg output (ports the AtsVolPortfolioOutput SoA, as an AoS row). For an
@@ -183,8 +184,8 @@ enum class PortfolioRiskMode : std::uint8_t {
 // spot * multiplier; for a cash lane it is cash_value * multiplier.
 struct LegValue {
   double price{kPortNaN};
-  double iv{kPortNaN};      // option legs only
-  double delta{kPortNaN};   // option: spot delta; stock: multiplier; cash: 0
+  double iv{kPortNaN};    // option legs only
+  double delta{kPortNaN}; // option: spot delta; stock: multiplier; cash: 0
   double gamma{kPortNaN};
   double vega{kPortNaN};
   double theta{kPortNaN};
@@ -217,9 +218,10 @@ struct PortfolioValuation {
 // request.
 //
 // @return InvalidArgument if `binding.universe` is null.
-[[nodiscard]] Result<PortfolioValuation> price_portfolio(
-    std::span<const PortfolioLeg> book, const MarketBinding& binding,
-    PortfolioRiskMode risk_mode, AggMode agg_mode);
+[[nodiscard]] Result<PortfolioValuation> price_portfolio(std::span<const PortfolioLeg> book,
+                                                         const MarketBinding &binding,
+                                                         PortfolioRiskMode risk_mode,
+                                                         AggMode agg_mode);
 
 // ── Portfolio Greeks (ports ats_greeks_portfolio) ────────────────────────
 
@@ -235,9 +237,14 @@ struct GreeksAggregate {
   double net_qty{0.0};
 };
 
-// Qty-weighted eight-Greek Black-76 aggregation over the OPTION legs of `book`,
-// bucketed by `agg_mode`. Stock/cash legs are skipped (no option Greeks).
-// Mirrors the C `ats_greeks_portfolio` (raw-qty weighting, European B76).
+// Raw-qty-weighted eight-Greek European Black-76 aggregation over the OPTION
+// legs of `book`, bucketed by `agg_mode`. Stock/cash legs are skipped and
+// `PortfolioLeg::multiplier` is deliberately ignored. Buckets are returned in
+// first-seen input order; legs within each bucket accumulate in input order.
+// Mirrors the C `ats_greeks_portfolio` convention.
+// Expected complexity is O(book.size()) with O(bucket-count) output/index
+// storage. The function does not mutate `book` or the bound market state, so
+// allocation failure preserves all caller-owned state.
 //
 // `skew_adjusted_delta` (off by default => bit-identical to every pre-I6
 // caller) applies SpiderRock's skew-adjusted delta (adjusted_greeks.hpp) to
@@ -253,9 +260,23 @@ struct GreeksAggregate {
 // that leg's contribution, exactly as `skew_adjusted` documents.
 //
 // @return InvalidArgument if `binding.universe` is null.
-[[nodiscard]] Result<std::vector<GreeksAggregate>> aggregate_greeks(
-    std::span<const PortfolioLeg> book, const MarketBinding& binding, AggMode agg_mode,
-    bool skew_adjusted_delta = false, const StickyParams& sticky = {});
+// @throws std::bad_alloc if result or index allocation fails.
+[[nodiscard]] Result<std::vector<GreeksAggregate>>
+aggregate_european_b76_greeks_raw_qty(std::span<const PortfolioLeg> book,
+                                      const MarketBinding &binding, AggMode agg_mode,
+                                      bool skew_adjusted_delta = false,
+                                      const StickyParams &sticky = {});
+
+// Source-compatible legacy name for
+// `aggregate_european_b76_greeks_raw_qty`. New callers should use the explicit
+// name so European-model and raw-quantity semantics are visible at the call
+// site. The trailing `skew_adjusted_delta`/`sticky` parameters (off by default
+// => bit-identical to every pre-I6 caller) forward straight through to the
+// canonical entry above.
+[[nodiscard]] Result<std::vector<GreeksAggregate>>
+aggregate_greeks(std::span<const PortfolioLeg> book, const MarketBinding &binding,
+                 AggMode agg_mode, bool skew_adjusted_delta = false,
+                 const StickyParams &sticky = {});
 
 // ── Bulk chain pricer + select (ports ats_vol_bulk_*) ────────────────────
 
@@ -276,8 +297,8 @@ enum class BulkRiskMode : std::uint8_t {
 struct BulkRequest {
   BulkSelectKind select_kind{BulkSelectKind::ContractList};
   Uid uid{kInvalidUid};
-  std::span<const ContractId> contract_ids;  // ContractList input
-  std::span<const std::int64_t> qty;         // optional agg weights (default +1)
+  std::span<const ContractId> contract_ids; // ContractList input
+  std::span<const std::int64_t> qty;        // optional agg weights (default +1)
   double moneyness_pct{0.0};
   double strike_lo{0.0};
   double strike_hi{0.0};
@@ -315,8 +336,7 @@ struct BulkResult {
 //         bad selector parameters, or a required uid missing);
 //         NotImplemented for AggMode::ByGroupId (the bulk path has no per-leg
 //         group_id — use price_portfolio for group aggregation).
-[[nodiscard]] Result<BulkResult> bulk_price(const BulkRequest& req,
-                                            const MarketBinding& binding,
+[[nodiscard]] Result<BulkResult> bulk_price(const BulkRequest &req, const MarketBinding &binding,
                                             AggMode agg_mode);
 
 // ── Shared expiry-context resolution (internal, used across the .cpp files) ─
@@ -325,11 +345,11 @@ namespace detail {
 // Per-(uid, expiry) pricing context, derived once and reused across the lanes
 // that share it. Ports PortExpiryCtx / AtsVolBulkExpiryCtx.
 struct ExpiryContext {
-  const Underlying* under{nullptr};
-  const Chain* chain{nullptr};
-  const VolSurface* surface{nullptr};
-  const CorrectionCache* correction_call{nullptr};
-  const CorrectionCache* correction_put{nullptr};
+  const Underlying *under{nullptr};
+  const Chain *chain{nullptr};
+  const VolSurface *surface{nullptr};
+  const CorrectionCache *correction_call{nullptr};
+  const CorrectionCache *correction_put{nullptr};
   double T{0.0};
   double F{0.0};
   double r{0.0};
@@ -337,15 +357,15 @@ struct ExpiryContext {
   double df{1.0};
   double sqrt_t{0.0};
   double log_f{0.0};
-  std::uint16_t slice_idx{kNoSliceMatch};  // exact-slice index, 0xFFFF if none
+  std::uint16_t slice_idx{kNoSliceMatch}; // exact-slice index, 0xFFFF if none
 };
 
 // Resolve the pricing context for (uid, expiry_id) against the binding.
 // @return NotFound if the uid/expiry is unknown; InvalidArgument if T or the
 //         forward is degenerate.
-[[nodiscard]] Result<ExpiryContext> resolve_expiry_context(
-    const MarketBinding& binding, Uid uid, ExpiryId expiry_id);
+[[nodiscard]] Result<ExpiryContext> resolve_expiry_context(const MarketBinding &binding, Uid uid,
+                                                           ExpiryId expiry_id);
 
-}  // namespace detail
+} // namespace detail
 
-}  // namespace atx::vol
+} // namespace atx::vol

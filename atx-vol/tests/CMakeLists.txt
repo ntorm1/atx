@@ -20,6 +20,7 @@ add_executable(atx-vol-tests
     support/cached_artifacts.cpp
     arb_test.cpp
     calib_test.cpp
+    prepared_fitting_test.cpp
     c8_test.cpp
     c8_calib_test.cpp
     essvi_calib_test.cpp
@@ -31,6 +32,7 @@ add_executable(atx-vol-tests
     dense_slice_test.cpp
     profile_test.cpp
     fit_policy_test.cpp
+    curve_selector_test.cpp
     data_test.cpp
     surface_archive_test.cpp
     surface_db_test.cpp
@@ -152,12 +154,17 @@ include(GoogleTest)
 set(ATX_VOL_SLOW_FILTER
     "MultinamePipeline.*:Corpus.*:CorpusGeneratedProperty.*:CorpusBuildSession.*:QualifiedCorpus.*:OpraBreadthCorpus.*:SpyFitCorpus.*:SigmaInterpCorpus.*:CallGreeksAl.*:CallGreeksFd.*:AndersenLake.*:AndersenLakeRegime.*:ImplicitDiff.*:SigmaInterp.*:CurveFitParallel.*:CurveFitParity.*:CurveSurfaceNoArb.*:SpyBidAskRegression.*:SpyPortfolioPnl.*:PnlGreeksConsistency.*:SpyArchiveRoundTrip.*:SpyRealCalendarReporting.*:SpyRealOpra.*:BacktestReal.*:BreadthRegime.*:WarmAcrossTime.*:BoundaryHoist.*:Dispersion.*:CorrectionCache.*:PricerFitterTest.*:PreparedPortfolio.*:AmericanGreeks.*")
 
+# PRE_TEST: enumerate at ctest time, not as a POST_BUILD step -- relinking no longer
+# pays TWO test-enumeration runs of this ~2600-test binary (one per call below), and a
+# non-launchable exe no longer fails the *build*.
 gtest_discover_tests(atx-vol-tests
     TEST_FILTER "-${ATX_VOL_SLOW_FILTER}"
-    PROPERTIES LABELS atx_vol_fast)
+    PROPERTIES LABELS atx_vol_fast
+    DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(atx-vol-tests
     TEST_FILTER "${ATX_VOL_SLOW_FILTER}"
-    PROPERTIES LABELS atx_vol_slow)
+    PROPERTIES LABELS atx_vol_slow
+    DISCOVERY_MODE PRE_TEST)
 
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)

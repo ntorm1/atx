@@ -30,6 +30,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/correction.cpp
     src/arb.cpp
     src/calib.cpp
+    src/prepared_fitting.cpp
     src/c8.cpp
     src/c8_calib.cpp
     src/essvi_calib.cpp
@@ -77,6 +78,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/prepared_portfolio.cpp
     src/pricing_executor.cpp
     src/portfolio_pricer.cpp
+    src/fit_scheduler.cpp
     src/corpus_board_fit.cpp
     src/scenario_grid.cpp
     src/pnl_attribution.cpp
@@ -276,6 +278,12 @@ if(ATX_BUILD_EXAMPLES)
     # (tests/surface_db_populate_test.cpp). See examples/mag7_surfdb_populate.cpp.
     add_executable(mag7_surfdb_populate examples/mag7_surfdb_populate.cpp)
     target_link_libraries(mag7_surfdb_populate PRIVATE atx::vol atx::core atx_warnings)
+
+    # Whole-universe auto-select fit stress harness: one OPRA snapshot minute,
+    # N thousand underliers, PricerConfig::curve unset (unified policy +
+    # CurveSelector routing per board), per-symbol outcome CSV + summary.
+    add_executable(universe_autofit examples/universe_autofit.cpp)
+    target_link_libraries(universe_autofit PRIVATE atx::vol atx::core atx_warnings)
 
     # Acceptance example: MAG7-vs-SPY dispersion-strangle backtest driven
     # entirely by a SurfaceDb -- open db -> Clock::from_surface_db ->

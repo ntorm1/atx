@@ -18,10 +18,11 @@ namespace {
 // American puts through the batch.
 void put_batch_scalar(const double* S, const double* K, const double* T,
                       const double* sigma, const double* r, const double* q,
-                      double* price_out, std::size_t n) noexcept {
+                      double* price_out, std::size_t n,
+                      const std::optional<AlOpts>& opts) noexcept {
     for (std::size_t i = 0; i < n; ++i) {
         const Result<double> res =
-            andersen_lake(S[i], K[i], T[i], sigma[i], r[i], q[i], Side::Put);
+            andersen_lake(S[i], K[i], T[i], sigma[i], r[i], q[i], Side::Put, opts);
         price_out[i] =
             res.has_value() ? *res : std::numeric_limits<double>::quiet_NaN();
     }
@@ -57,14 +58,25 @@ inline constexpr bool kShipAvx2Boundary = false;
 SimdRoute american_put_boundary_batch(const double* S, const double* K,
                                       const double* T, const double* sigma,
                                       const double* r, const double* q,
-                                      double* price_out, std::size_t n) noexcept {
-    bool avx2;
-    switch (simd_isa_override()) {
+                                      double* price_out, std::size_t n,
+                                      SimdIsa isa) noexcept {
+    return american_put_boundary_batch(S, K, T, sigma, r, q, price_out, n,
+                                       std::nullopt, isa);
+}
+
+SimdRoute american_put_boundary_batch(const double* S, const double* K,
+                                      const double* T, const double* sigma,
+                                      const double* r, const double* q,
+                                      double* price_out, std::size_t n,
+                                      const std::optional<AlOpts>& opts,
+                                      SimdIsa isa) noexcept {
+    bool avx2 = false;
+    switch (isa) {
         case SimdIsa::ForceScalar:
             avx2 = false;
             break;
         case SimdIsa::ForceAvx2:
-            avx2 = true; // explicit test/bench force; caller guards have_avx2()
+            avx2 = have_avx2();
             break;
         case SimdIsa::Auto:
         default:
@@ -73,11 +85,19 @@ SimdRoute american_put_boundary_batch(const double* S, const double* K,
     }
     if (avx2) {
         detail::american_put_boundary_batch_avx2(S, K, T, sigma, r, q, price_out,
-                                                 n);
+                                                 n, opts);
         return SimdRoute::Avx2;
     }
-    put_batch_scalar(S, K, T, sigma, r, q, price_out, n);
+    put_batch_scalar(S, K, T, sigma, r, q, price_out, n, opts);
     return SimdRoute::Scalar;
+}
+
+SimdRoute american_put_boundary_batch(const double* S, const double* K,
+                                      const double* T, const double* sigma,
+                                      const double* r, const double* q,
+                                      double* price_out, std::size_t n) noexcept {
+    return american_put_boundary_batch(S, K, T, sigma, r, q, price_out, n,
+                                       simd_isa_override());
 }
 
 } // namespace atx::vol::simd

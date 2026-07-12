@@ -111,16 +111,13 @@ class AlignedColumn {
 
 }  // namespace detail
 
-// The scheme/route identity a group prices under — what makes its members
-// homogeneous for a later AVX2 pack (T13). At prepare time no surface is resolved,
-// so the concrete `AlOpts`/`AmericanMethod` are not yet known; the route a group
-// WILL price under is pinned by (a) its shared `uid` — one `PricedSurface`, hence
-// one method/AlOpts — and (b) the book-wide `PriceOptions` Greek scheme. This POD
-// records the latter so a packer can assert lane homogeneity without re-deriving
-// it. Small + trivially copyable by design.
+// Deprecated compatibility metadata. Retained in its original layout and
+// position inside ContractGroup so existing source continues to compile. The
+// prepared substrate always stores the stable default; pricing must derive its
+// live field/analytic route from the current call and never consume this value.
 struct GroupRoute {
-  bool analytic_greeks{false};  // american_greeks_al vs american_greeks_fd Greek route
-  bool prices_only{false};      // price-only (Iv + mark, no Greeks) route
+  bool analytic_greeks{false};  // compatibility only; never consumed
+  bool prices_only{false};      // compatibility only; never consumed
 };
 
 // A maximal contiguous run of the permuted unique-contract order that shares a
@@ -133,16 +130,34 @@ struct ContractGroup {
   Side side;
   std::uint32_t begin;  // [begin, end) into the PERMUTED unique-contract order
   std::uint32_t end;
-  GroupRoute route;
+  GroupRoute route; // deprecated compatibility member; always GroupRoute{}
+};
+
+// Fixed execution tile for price/Greek evaluation. Every tile is homogeneous in
+// `(uid, side, raw T bits)` and tile boundaries are prepared once from the book,
+// never from a requested worker count. A tile spans up to `kPreparedPriceTileLanes`
+// lanes of a raw-T run; the width is a multiple of the four-lane AVX2 kernel so the
+// consumer packs whole four-lane groups WITHIN a tile (group-level packing, not one
+// pack per tile — the wider tile amortizes evaluate_batch and lifts AVX2
+// utilization) and worker partitioning cannot change pack/tail membership.
+inline constexpr std::uint32_t kPreparedPriceTileLanes = 64;
+
+struct PreparedPriceTile {
+  std::uint32_t uid;
+  Side side;
+  std::uint64_t t_bits;
+  std::uint32_t begin;
+  std::uint32_t end;
 };
 
 class PreparedPortfolio {
  public:
   // Build the grouped, aligned substrate from a Portfolio's already-deduped unique
   // contracts. Consumes `pf.contracts()` verbatim — never re-dedups or re-hashes.
-  // `opts` supplies only the book-wide route (Greek scheme) stamped onto each
-  // group; it does not affect the permutation. @return Internal only if an aligned
-  // column allocation fails (never on a well-formed book).
+  // `opts` is retained for source compatibility but does not affect immutable
+  // book structure; method, preset, field mask, and ISA are call/surface state
+  // and are never persisted here. @return Internal only if an aligned column
+  // allocation fails (never on a well-formed book).
   [[nodiscard]] static Result<PreparedPortfolio> create(const Portfolio& pf,
                                                         const PriceOptions& opts);
 
@@ -166,6 +181,9 @@ class PreparedPortfolio {
   }
 
   [[nodiscard]] std::span<const ContractGroup> groups() const noexcept { return groups_; }
+  [[nodiscard]] std::span<const PreparedPriceTile> price_tiles() const noexcept {
+    return price_tiles_;
+  }
   [[nodiscard]] std::size_t n_unique() const noexcept { return n_; }
 
  private:
@@ -178,6 +196,7 @@ class PreparedPortfolio {
   std::vector<Side> side_;                  // contiguous (not over-aligned)
   std::vector<std::uint32_t> oci_;          // permuted slot -> original contract index
   std::vector<ContractGroup> groups_;       // partition of [0, n_unique)
+  std::vector<PreparedPriceTile> price_tiles_; // fixed raw-T execution partition
 };
 
 }  // namespace atx::vol

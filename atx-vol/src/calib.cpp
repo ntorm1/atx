@@ -4,15 +4,17 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
+#include <tuple>
 #include <utility>
 #include <vector>
 
 #include "atx/core/error.hpp"
-#include "atx/vol/american_iv.hpp"  // american_implied_vol (de-Americanization)
-#include "atx/vol/arb.hpp"          // QuoteFlag, has_flag (kill-mask filter step)
-#include "atx/vol/black76.hpp"      // black76_value_and_vega, black76_price
-#include "atx/vol/implied_vol.hpp"  // implied_vol (IV inversion)
+#include "atx/vol/american_iv.hpp" // american_implied_vol (de-Americanization)
+#include "atx/vol/arb.hpp"         // QuoteFlag, has_flag (kill-mask filter step)
+#include "atx/vol/black76.hpp"     // black76_value_and_vega, black76_price
+#include "atx/vol/implied_vol.hpp" // implied_vol (IV inversion)
 
 // Shared calibration infrastructure — implementation.
 //
@@ -45,16 +47,22 @@ inline constexpr double kWeightEps = 1.0e-18;
 // The C returns ERR_NO_DATA (→ NotFound) unless at least this many rows survive.
 inline constexpr std::size_t kMinObs = 5;
 
+// Sentinel written into a fit row's independent score column when anchor-
+// independent scoring is requested but its raw-mid inversion failed or landed
+// out of band. It is deliberately non-finite so every score consumer (all guard
+// on `std::isfinite`) skips the row, and — critically — an unscorable score
+// never removes the row from the FIT population. Fit survival is decided solely
+// by the fit inversion (or the OTM shortcut).
+inline constexpr double kUnscoredIv = std::numeric_limits<double>::quiet_NaN();
+
 // w-space observation weight: vega² / (spread² + eps) / ((2σT)² + eps). Shared
 // by the American builder (`build_observations`) and the de-Americanized
 // builder (`build_observations_european`) so the two can never drift. The
 // operand order is exactly what both sites evaluated inline, so the returned
 // weight is bit-identical to the historical per-site arithmetic.
-[[nodiscard]] double obs_weight_w(double vega, double spread, double sigma,
-                                  double T) noexcept {
+[[nodiscard]] double obs_weight_w(double vega, double spread, double sigma, double T) noexcept {
   const double denom_w = 2.0 * sigma * T;
-  return (vega * vega) / (spread * spread + kWeightEps) /
-         (denom_w * denom_w + kWeightEps);
+  return (vega * vega) / (spread * spread + kWeightEps) / (denom_w * denom_w + kWeightEps);
 }
 
 // Per-row filter outcome. `Skipped` is the non-preferred leg that passed the
@@ -64,6 +72,7 @@ enum class RowOutcome : std::uint8_t { Accepted, Rejected, Skipped };
 
 struct RowResult {
   RowOutcome outcome{RowOutcome::Rejected};
+  ObsRejectionReason rejection{ObsRejectionReason::InvalidStrike};
   FitObs obs{};
 };
 
@@ -71,31 +80,31 @@ struct RowResult {
 // exactly one iteration of the C `ats_vol_svi_build_observations` inner loop
 // (tenor buckets omitted → scalar max_spread_vol / min_vega_weight). The caller
 // has already validated F/T/df and the chain SoA sizing.
-[[nodiscard]] RowResult evaluate_row(const Chain &chain, std::uint16_t strike_idx,
-                                     Side side, double F, double T, double df,
-                                     const CalibOpts &opts) {
+[[nodiscard]] RowResult evaluate_row(const Chain &chain, std::uint16_t strike_idx, Side side,
+                                     double F, double T, double df, const CalibOpts &opts) {
   RowResult r{};
   const double K = chain.strikes[strike_idx];
   if (!(K > 0.0)) {
-    return r;  // Rejected (defensive; the strike loop already guards K > 0)
+    return r; // Rejected (defensive; the strike loop already guards K > 0)
   }
   const std::size_t idx = chain_index(strike_idx, side);
 
   // 1. Kill-mask flags (Locked/Crossed/Stale/Halted/WideSpread/Penny/LowVega).
-  constexpr QuoteFlag kill_mask = QuoteFlag::Locked | QuoteFlag::Crossed |
-                                  QuoteFlag::Stale | QuoteFlag::Halted |
-                                  QuoteFlag::WideSpread | QuoteFlag::Penny |
+  constexpr QuoteFlag kill_mask = QuoteFlag::Locked | QuoteFlag::Crossed | QuoteFlag::Stale |
+                                  QuoteFlag::Halted | QuoteFlag::WideSpread | QuoteFlag::Penny |
                                   QuoteFlag::LowVega;
   const auto flag = static_cast<QuoteFlag>(chain.flags[idx]);
   if (has_flag(flag, kill_mask)) {
-    return r;  // Rejected
+    r.rejection = ObsRejectionReason::QuoteFlag;
+    return r; // Rejected
   }
 
   // 2. Two-sided, positive, non-crossed quote.
   const double bid = chain.bids[idx];
   const double ask = chain.asks[idx];
   if (!(bid > 0.0 && ask > bid)) {
-    return r;  // Rejected
+    r.rejection = ObsRejectionReason::InvalidBidAsk;
+    return r; // Rejected
   }
 
   // Prefer-call heuristic: keep the call leg for K ≥ F, the put leg otherwise.
@@ -105,20 +114,23 @@ struct RowResult {
   const bool prefer_call = (K >= F);
   if (prefer_call != (side == Side::Call)) {
     r.outcome = RowOutcome::Skipped;
+    r.rejection = ObsRejectionReason::None;
     return r;
   }
 
   // 3. Positive mid.
   const double mid = chain.mids[idx];
   if (!(mid > 0.0)) {
-    return r;  // Rejected
+    r.rejection = ObsRejectionReason::InvalidMid;
+    return r; // Rejected
   }
 
   // 4. Wide-spread-to-mid filter (Sprint 24 Phase D); disabled when the cap ≤ 0.
   if (opts.max_spread_to_mid_pct > 0.0) {
     const double spread_pct = (ask - bid) / mid;
     if (spread_pct > opts.max_spread_to_mid_pct) {
-      return r;  // Rejected
+      r.rejection = ObsRejectionReason::SpreadToMid;
+      return r; // Rejected
     }
   }
 
@@ -134,11 +146,13 @@ struct RowResult {
   // 5. Invert IV from the raw mid; reject on failure or out-of-band.
   const Result<double> iv_res = implied_vol(mid, F, K, T, df, side);
   if (!iv_res.has_value()) {
-    return r;  // Rejected
+    r.rejection = ObsRejectionReason::RawIvFailure;
+    return r; // Rejected
   }
   const double iv = *iv_res;
   if (!(iv > kObsIvMin && iv < kObsIvMax)) {
-    return r;  // Rejected
+    r.rejection = ObsRejectionReason::RawIvOutOfBand;
+    return r; // Rejected
   }
 
   // Vega = F·df·φ(d1)·√T (identical to the C's hand-rolled pdf(d1) form).
@@ -149,7 +163,8 @@ struct RowResult {
   if (vega > kVegaFloor) {
     const double spread_vol = spread / vega;
     if (spread_vol > opts.max_spread_vol) {
-      return r;  // Rejected
+      r.rejection = ObsRejectionReason::SpreadVol;
+      return r; // Rejected
     }
   }
 
@@ -157,9 +172,10 @@ struct RowResult {
   //    weight_w = weight_sigma / (2σT)² is the value stored on the obs (built by
   //    the shared obs_weight_w helper — identical arithmetic to the de-Am path).
   const double weight_sigma = (vega * vega) / (spread * spread + kWeightEps);
-  const double weight_w = obs_weight_w(vega, spread, iv, T);
+  const double weight_w = std::min(obs_weight_w(vega, spread, iv, T), opts.max_weight);
   if (weight_sigma < opts.min_vega_weight) {
-    return r;  // Rejected
+    r.rejection = ObsRejectionReason::LowVegaWeight;
+    return r; // Rejected
   }
 
   // Accepted — fill the observation.
@@ -177,15 +193,18 @@ struct RowResult {
   o.vega = vega;
   o.noise_sigma = (vega > kVegaFloor) ? (spread / vega) : 1.0;
   o.side = side;
+  o.source_strike_index = strike_idx;
+  o.score_sigma_mkt = iv;
   r.outcome = RowOutcome::Accepted;
+  r.rejection = ObsRejectionReason::None;
   return r;
 }
 
 // True if `chain` carries the full 2·n_strikes SoA columns the cascade reads.
 [[nodiscard]] bool chain_soa_well_formed(const Chain &chain) noexcept {
   const std::size_t need = 2u * chain.n_strikes();
-  return chain.bids.size() >= need && chain.asks.size() >= need &&
-         chain.mids.size() >= need && chain.flags.size() >= need;
+  return chain.bids.size() >= need && chain.asks.size() >= need && chain.mids.size() >= need &&
+         chain.flags.size() >= need;
 }
 
 // Cap a very dense per-slice population before the American de-Am inversion.
@@ -205,8 +224,9 @@ void cap_observations_for_deam(ObsSet &set, std::uint32_t requested_cap) {
   }
 
   std::vector<FitObs> sorted = std::move(set.obs);
-  std::sort(sorted.begin(), sorted.end(),
-            [](const FitObs &a, const FitObs &b) { return a.k < b.k; });
+  std::sort(sorted.begin(), sorted.end(), [](const FitObs &a, const FitObs &b) {
+    return std::tie(a.k, a.source_strike_index) < std::tie(b.k, b.source_strike_index);
+  });
 
   const std::size_t m = sorted.size();
   std::vector<char> selected(m, 0);
@@ -247,7 +267,18 @@ void cap_observations_for_deam(ObsSet &set, std::uint32_t requested_cap) {
       lo = hi;
     }
     if (best == m) {
-      break;
+      // Degenerate duplicate-strike segments have zero k-span everywhere.
+      // Fill the requested minimum deterministically by the sorted
+      // (k, source-index) order instead of returning only the two endpoints.
+      for (std::size_t i = 0; i < m; ++i) {
+        if (selected[i] == 0) {
+          best = i;
+          break;
+        }
+      }
+      if (best == m) {
+        break;
+      }
     }
     selected[best] = 1;
     ++n_selected;
@@ -258,6 +289,11 @@ void cap_observations_for_deam(ObsSet &set, std::uint32_t requested_cap) {
   for (std::size_t i = 0; i < m; ++i) {
     if (selected[i] != 0) {
       kept.push_back(sorted[i]);
+    } else {
+      const std::size_t source_index = sorted[i].source_strike_index;
+      if (source_index < set.provenance.size()) {
+        set.provenance[source_index].rejection = ObsRejectionReason::ObservationCap;
+      }
     }
   }
   set.n_dropped += static_cast<std::uint32_t>(m - kept.size());
@@ -286,33 +322,126 @@ void cap_observations_for_deam(ObsSet &set, std::uint32_t requested_cap) {
   return premium >= -0.05 * o.spread && premium <= tol;
 }
 
-}  // namespace
+} // namespace
 
 CalibOpts calib_default_opts() noexcept { return CalibOpts{}; }
 
-Result<ObsSet> build_observations(const Chain &chain, double F, double T,
-                                  double df, const CalibOpts &opts) {
-  if (!(F > 0.0) || !(T > 0.0)) {
+Status validate_calib_options(const CalibOpts& opts) noexcept {
+  if (!std::isfinite(opts.max_weight) || !(opts.max_weight > 0.0)) {
     return Err(ErrorCode::InvalidArgument,
-               "build_observations: F and T must be positive");
+               "validate_calib_options: max_weight must be finite and positive");
+  }
+
+  switch (opts.loss_kind) {
+  case CalibLossKind::Mid:
+    break;
+  case CalibLossKind::Interval:
+    return Err(ErrorCode::NotImplemented,
+               "validate_calib_options: parametric interval loss is not implemented");
+  default:
+    return Err(ErrorCode::InvalidArgument,
+               "validate_calib_options: invalid calibration loss kind");
+  }
+  switch (opts.essvi_rho_mode) {
+  case EssviRhoMode::PerSlice:
+    break;
+  case EssviRhoMode::Shared:
+  case EssviRhoMode::TermStructure:
+    return Err(ErrorCode::NotImplemented,
+               "validate_calib_options: requested eSSVI rho mode is not implemented");
+  default:
+    return Err(ErrorCode::InvalidArgument,
+               "validate_calib_options: invalid eSSVI rho mode");
+  }
+  if (opts.essvi_asymmetric_rho) {
+    return Err(ErrorCode::NotImplemented,
+               "validate_calib_options: asymmetric eSSVI rho is not implemented");
+  }
+
+  if (opts.essvi_fallback_rmse_threshold != kDefaultEssviFallbackRmse) {
+    return Err(ErrorCode::NotImplemented,
+               "validate_calib_options: configurable eSSVI fallback threshold is not implemented");
+  }
+  if (opts.n_butterfly_grid != kDefaultButterflyGrid) {
+    return Err(ErrorCode::NotImplemented,
+               "validate_calib_options: configurable butterfly grid is not implemented");
+  }
+
+  switch (opts.residual_basis_kind) {
+  case ResidualBasisKind::None:
+    // A persisted config must carry no no-ops: an explicitly ENABLED residual
+    // layer with a None basis fits nothing. The default config leaves the layer
+    // disabled (residual_disable == true), so this rejects only the contradiction.
+    if (!opts.residual_disable) {
+      return Err(ErrorCode::InvalidArgument,
+                 "validate_calib_options: residual layer enabled with a None basis is a no-op");
+    }
+    if (opts.residual_n_basis_terms != 0u) {
+      return Err(ErrorCode::InvalidArgument,
+                 "validate_calib_options: None residual requires zero basis terms");
+    }
+    break;
+  case ResidualBasisKind::HingeQuad:
+    if (opts.residual_n_basis_terms != 0u && opts.residual_n_basis_terms != 5u) {
+      return Err(ErrorCode::InvalidArgument,
+                 "validate_calib_options: HingeQuad residual requires 0 or 5 basis terms");
+    }
+    break;
+  case ResidualBasisKind::C2Bspline:
+    if (opts.residual_n_basis_terms != 0u &&
+        (opts.residual_n_basis_terms < 5u || opts.residual_n_basis_terms > 16u)) {
+      return Err(ErrorCode::InvalidArgument,
+                 "validate_calib_options: C2 residual requires 0 or 5..16 basis terms");
+    }
+    break;
+  case ResidualBasisKind::Chebyshev:
+  case ResidualBasisKind::WingBspline:
+  case ResidualBasisKind::Fengler:
+    return Err(ErrorCode::NotImplemented,
+               "validate_calib_options: requested residual basis is not implemented");
+  default:
+    return Err(ErrorCode::InvalidArgument,
+               "validate_calib_options: invalid residual basis kind");
+  }
+  return Ok();
+}
+
+Result<ObsSet> build_observations(const Chain &chain, double F, double T, double df,
+                                  const CalibOpts &opts) {
+  if (!(F > 0.0) || !(T > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "build_observations: F and T must be positive");
   }
   if (!chain_soa_well_formed(chain)) {
     return Err(ErrorCode::InvalidArgument,
                "build_observations: chain SoA arrays shorter than 2*n_strikes");
   }
+  if (!std::isfinite(opts.max_weight) || !(opts.max_weight > 0.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               "build_observations: max_weight must be finite and positive");
+  }
 
   const std::size_t n = chain.n_strikes();
+  constexpr std::size_t kMaxIndexedStrikes =
+      static_cast<std::size_t>(std::numeric_limits<std::uint16_t>::max()) + 1u;
+  if (n > kMaxIndexedStrikes) {
+    return Err(ErrorCode::InvalidArgument,
+               "build_observations: more strikes than the source key can represent");
+  }
   ObsSet out;
-  out.obs.reserve(n);  // at most one accepted (preferred) leg per strike
+  out.obs.reserve(n); // at most one accepted (preferred) leg per strike
+  out.provenance.reserve(n);
   std::uint32_t n_drop = 0;
 
   for (std::size_t s = 0; s < n; ++s) {
     const double K = chain.strikes[s];
     if (!(K > 0.0)) {
-      ++n_drop;  // matches the C strike-level drop (counted once per strike)
+      ++n_drop; // matches the C strike-level drop (counted once per strike)
+      out.provenance.push_back(ObsProvenance{static_cast<std::uint32_t>(s), Side::Put,
+                                             ObsRejectionReason::InvalidStrike});
       continue;
     }
     const auto sidx = static_cast<std::uint16_t>(s);
+    const Side preferred = (K >= F) ? Side::Call : Side::Put;
     for (int side_i = 0; side_i < 2; ++side_i) {
       const Side side = static_cast<Side>(static_cast<std::uint8_t>(side_i));
       const RowResult rr = evaluate_row(chain, sidx, side, F, T, df, opts);
@@ -321,14 +450,19 @@ Result<ObsSet> build_observations(const Chain &chain, double F, double T,
       } else if (rr.outcome == RowOutcome::Rejected) {
         ++n_drop;
       }
+      if (side == preferred) {
+        out.provenance.push_back(ObsProvenance{static_cast<std::uint32_t>(s), side, rr.rejection});
+      }
       // Skipped: the non-preferred leg — not counted (C bare `continue`).
     }
   }
 
   out.n_dropped = n_drop;
+  if (out.provenance.size() != n) {
+    return Err(ErrorCode::Internal, "build_observations: preferred-row provenance is incomplete");
+  }
   if (out.obs.size() < kMinObs) {
-    return Err(ErrorCode::NotFound,
-               "build_observations: fewer than 5 observations survived");
+    return Err(ErrorCode::NotFound, "build_observations: fewer than 5 observations survived");
   }
   return Ok(std::move(out));
 }
@@ -337,7 +471,8 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
                                            double T, double df, const CalibOpts &opts,
                                            const AmericanCorrectionCaches &caches,
                                            const std::optional<AlOpts> &al_opts, double iv_tol,
-                                           std::uint16_t iv_max_iter, AmericanMethod method) {
+                                           std::uint16_t iv_max_iter, AmericanMethod method,
+                                           bool prepare_scoring) {
   if (!(S > 0.0) || !(F > 0.0) || !(T > 0.0) || !(df > 0.0) || !std::isfinite(r)) {
     return Err(ErrorCode::InvalidArgument,
                "build_observations_european: S, F, T, df must be positive");
@@ -345,7 +480,7 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
   // Run the shared American filter cascade, then strip each surviving leg.
   auto am = build_observations(chain, F, T, df, opts);
   if (!am.has_value()) {
-    return am;  // propagate NotFound / InvalidArgument unchanged
+    return am; // propagate NotFound / InvalidArgument unchanged
   }
   cap_observations_for_deam(*am, opts.max_obs_per_slice);
   // q_eff bridge: S·e^{(r−q_eff)T} == F exactly (matches the fit/de-Am carry).
@@ -353,25 +488,57 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
 
   ObsSet out;
   out.obs.reserve(am->obs.size());
+  out.provenance = std::move(am->provenance);
   out.n_dropped = am->n_dropped;
   // Warm-starting changes the last few bits of a tolerance-terminated IV solve.
   // Keep the historical/default full-board path cold so its fitted surface stays
   // bit-identical; the accelerated path opts in through either of its explicit
   // observation shortcuts.
-  const bool warm_start_deam = opts.max_obs_per_slice > 0 ||
-                                opts.max_otm_shortcut_premium_spread_frac > 0.0;
+  const bool warm_start_deam =
+      opts.max_obs_per_slice > 0 || opts.max_otm_shortcut_premium_spread_frac > 0.0;
   double warm_call = 0.0;
   double warm_put = 0.0;
   for (FitObs o : am->obs) {
+    const std::size_t source_index = o.source_strike_index;
+    if (source_index >= chain.n_strikes() || source_index >= out.provenance.size()) {
+      return Err(ErrorCode::Internal,
+                 "build_observations_european: source strike key out of range");
+    }
+    const auto reject = [&](ObsRejectionReason reason) {
+      ++out.n_dropped;
+      out.provenance[source_index].rejection = reason;
+    };
+    const bool shortcut = use_otm_shortcut_deam(o, S, T, r, q_eff, opts, method);
+    const bool independent_score = prepare_scoring && (shortcut || warm_start_deam ||
+                                                       opts.anchor_kind != CalibAnchorKind::Mid);
+    // Anchor-independent score. Inverted COLD off the raw symmetric mid so the
+    // scored IV is anchor-agnostic (the fit inversion below may target a bid/ask
+    // anchor). A failed or out-of-band scoring inversion leaves the row UNSCORED
+    // (`kUnscoredIv`) — it must NOT drop the row: the row's presence in the fit
+    // population is decided only by the fit inversion or the OTM shortcut.
+    double score_sigma = kUnscoredIv;
+    if (independent_score) {
+      ++out.n_score_inversions;
+      const std::size_t quote_index = chain_index(static_cast<std::uint16_t>(source_index), o.side);
+      const Result<double> score =
+          american_implied_vol(chain.mids[quote_index], S, o.K, T, r, q_eff, o.side, method, iv_tol,
+                               iv_max_iter, al_opts, caches.for_side(o.side));
+      if (score.has_value() && *score > kObsIvMin && *score < kObsIvMax) {
+        score_sigma = *score;
+      }
+    }
     // `o.mid` is the anchor premium (the raw American mid under the default Mid
     // anchor). Recover the European-equivalent lognormal vol, then restate the
     // observation entirely in European terms.
-    if (use_otm_shortcut_deam(o, S, T, r, q_eff, opts, method)) {
+    if (shortcut) {
       if (o.side == Side::Call) {
         warm_call = o.sigma_mkt;
       } else {
         warm_put = o.sigma_mkt;
       }
+      // The shortcut keeps the raw sigma as the European-equivalent vol; when
+      // independent scoring is off, that same sigma is the row's score.
+      o.score_sigma_mkt = independent_score ? score_sigma : o.sigma_mkt;
       out.obs.push_back(o);
       continue;
     }
@@ -380,10 +547,13 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
         american_implied_vol(o.mid, S, o.K, T, r, q_eff, o.side, method, iv_tol, iv_max_iter,
                              al_opts, caches.for_side(o.side), warm);
     if (!sig.has_value() || !(*sig > kObsIvMin && *sig < kObsIvMax)) {
-      ++out.n_dropped;
+      reject(ObsRejectionReason::Deamericanization);
       continue;
     }
     const double sigma_eu = *sig;
+    if (!independent_score) {
+      score_sigma = sigma_eu;
+    }
     if (warm_start_deam) {
       if (o.side == Side::Call) {
         warm_call = sigma_eu;
@@ -393,18 +563,24 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
     }
     const double eu_px = black76_price(F, o.K, T, sigma_eu, df, o.side);
     if (!(eu_px > 0.0) || !std::isfinite(eu_px)) {
-      ++out.n_dropped;
+      reject(ObsRejectionReason::EuropeanPrice);
       continue;
     }
-    const double vega =
-        black76_value_and_vega(F, o.K, T, sigma_eu, df, o.side).vega;
+    const double vega = black76_value_and_vega(F, o.K, T, sigma_eu, df, o.side).vega;
     o.sigma_mkt = sigma_eu;
     o.w_mkt = sigma_eu * sigma_eu * T;
-    o.mid = eu_px;  // European-equivalent premium (what the convex fold expects)
+    o.mid = eu_px; // European-equivalent premium (what the convex fold expects)
     o.vega = vega;
+    // Full vega weighting is preserved on the de-Am path. `opts.max_weight` is an
+    // upper clip meaningful for the raw builder's stored American-mid weights; the
+    // de-Am builder RE-DERIVES weights from European vega, whose natural w-space
+    // scale (vega²/(2σT)²) is many orders above the default clip, so applying it
+    // here would collapse every observation to the ceiling and erase the vega
+    // weighting the surface fit and its cold/cached parity are calibrated against.
     o.weight_w = obs_weight_w(vega, o.spread, sigma_eu, T);
     o.active_weight_w = o.weight_w;
     o.noise_sigma = (vega > kVegaFloor) ? (o.spread / vega) : 1.0;
+    o.score_sigma_mkt = score_sigma;
     out.obs.push_back(o);
   }
   if (out.obs.size() < kMinObs) {
@@ -414,15 +590,13 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
   return Ok(std::move(out));
 }
 
-Result<double> obs_accepted(const Chain &chain, std::uint16_t strike_idx,
-                            Side side, double F, double T, double df,
-                            const CalibOpts &opts) {
+Result<double> obs_accepted(const Chain &chain, std::uint16_t strike_idx, Side side, double F,
+                            double T, double df, const CalibOpts &opts) {
   if (strike_idx >= chain.n_strikes()) {
     return Err(ErrorCode::InvalidArgument, "obs_accepted: strike_idx out of range");
   }
   if (!(F > 0.0) || !(T > 0.0) || !(df > 0.0)) {
-    return Err(ErrorCode::InvalidArgument,
-               "obs_accepted: F, T and df must be positive");
+    return Err(ErrorCode::InvalidArgument, "obs_accepted: F, T and df must be positive");
   }
   if (!chain_soa_well_formed(chain)) {
     return Err(ErrorCode::InvalidArgument,
@@ -433,8 +607,7 @@ Result<double> obs_accepted(const Chain &chain, std::uint16_t strike_idx,
   if (rr.outcome == RowOutcome::Accepted) {
     return Ok(rr.obs.sigma_mkt);
   }
-  return Err(ErrorCode::NotFound,
-             "obs_accepted: quote rejected by the filter cascade");
+  return Err(ErrorCode::NotFound, "obs_accepted: quote rejected by the filter cascade");
 }
 
-}  // namespace atx::vol
+} // namespace atx::vol

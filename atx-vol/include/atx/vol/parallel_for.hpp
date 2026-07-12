@@ -26,6 +26,7 @@
 #include <charconv>
 #include <cstddef>
 #include <cstdlib>
+#include <exception>
 #include <system_error>
 #include <thread>
 #include <type_traits>
@@ -137,18 +138,39 @@ template <class F> void parallel_for_dynamic(std::size_t n, unsigned n_threads, 
     return;
   }
   std::atomic<std::size_t> next{0};
-  std::vector<std::jthread> workers;
-  workers.reserve(nt);
-  for (unsigned t = 0; t < nt; ++t) {
-    workers.emplace_back([n, &next, &fn] {
-      for (;;) {
-        const std::size_t i = next.fetch_add(1, std::memory_order_relaxed);
-        if (i >= n) {
-          break;
+  // A worker body may throw (e.g. std::bad_alloc from an allocating `fn`). An
+  // exception escaping a std::jthread body calls std::terminate, so catch it,
+  // record the FIRST one, and rethrow on the calling thread after every worker
+  // has joined — callers then handle it through their normal error path exactly
+  // as the nt<=1 serial path above already propagates. The happy path is
+  // unchanged: `fn(i)` runs identically, the catch is never taken, and no
+  // exception_ptr is set, so results stay bit-identical for any worker count.
+  std::exception_ptr worker_exc;
+  std::atomic_flag exc_captured{};
+  {
+    std::vector<std::jthread> workers;
+    workers.reserve(nt);
+    for (unsigned t = 0; t < nt; ++t) {
+      workers.emplace_back([n, &next, &fn, &worker_exc, &exc_captured] {
+        for (;;) {
+          const std::size_t i = next.fetch_add(1, std::memory_order_relaxed);
+          if (i >= n) {
+            break;
+          }
+          try {
+            fn(i);
+          } catch (...) {
+            if (!exc_captured.test_and_set(std::memory_order_acq_rel)) {
+              worker_exc = std::current_exception();
+            }
+            return;
+          }
         }
-        fn(i);
-      }
-    });
+      });
+    }
+  } // std::jthread join here is the barrier + the happens-before for worker_exc.
+  if (worker_exc) {
+    std::rethrow_exception(worker_exc);
   }
 }
 
@@ -182,18 +204,35 @@ void parallel_for_dynamic(std::size_t n, unsigned n_threads, F&& fn) {
     return;
   }
   std::atomic<std::size_t> next{0};
-  std::vector<std::jthread> workers;
-  workers.reserve(nt);
-  for (unsigned t = 0; t < nt; ++t) {
-    workers.emplace_back([n, t, &next, &fn] {
-      for (;;) {
-        const std::size_t i = next.fetch_add(1, std::memory_order_relaxed);
-        if (i >= n) {
-          break;
+  // See the single-argument overload: a throwing worker body must not
+  // std::terminate. Capture the first exception and rethrow after join; the
+  // no-exception path is byte-identical.
+  std::exception_ptr worker_exc;
+  std::atomic_flag exc_captured{};
+  {
+    std::vector<std::jthread> workers;
+    workers.reserve(nt);
+    for (unsigned t = 0; t < nt; ++t) {
+      workers.emplace_back([n, t, &next, &fn, &worker_exc, &exc_captured] {
+        for (;;) {
+          const std::size_t i = next.fetch_add(1, std::memory_order_relaxed);
+          if (i >= n) {
+            break;
+          }
+          try {
+            fn(i, t);
+          } catch (...) {
+            if (!exc_captured.test_and_set(std::memory_order_acq_rel)) {
+              worker_exc = std::current_exception();
+            }
+            return;
+          }
         }
-        fn(i, t);
-      }
-    });
+      });
+    }
+  } // std::jthread join here is the barrier + the happens-before for worker_exc.
+  if (worker_exc) {
+    std::rethrow_exception(worker_exc);
   }
 }
 

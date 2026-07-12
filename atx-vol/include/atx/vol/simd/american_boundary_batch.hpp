@@ -12,7 +12,7 @@
 // per-lane (it is the reference seed, bit-identical to the cold solver); only the
 // transcendental-bound sweep + premium quadrature are vectorized.
 //
-// Scope (T13): American PUTS only, one homogeneous ACCURATE scheme per call.
+// Scope (T13): American PUTS only, one homogeneous Andersen-Lake scheme per call.
 // Calls (McDonald-Schroder put map) and the full public american_*_batch API +
 // PreparedPortfolio integration are T15. Each lane is priced as an American put:
 //     price_out[i] ≈ andersen_lake(S[i],K[i],T[i],sigma[i],r[i],q[i], Side::Put)
@@ -28,6 +28,10 @@
 // is stack std::array); safe to call concurrently.
 
 #include <cstddef>
+#include <optional>
+
+#include "atx/vol/american.hpp"
+#include "atx/vol/simd/cpu.hpp"
 
 namespace atx::vol::simd {
 
@@ -35,10 +39,32 @@ namespace atx::vol::simd {
 // dispatch (the P3.1 "expose the selected ISA" requirement).
 enum class SimdRoute { Scalar, Avx2 };
 
-// Price a homogeneous span of American puts. Returns the route taken (Avx2 when
-// use_avx2() is true, else Scalar). The scalar route calls andersen_lake per
-// contract and is the numerical source of truth; the AVX2 route reproduces it to
-// the accuracy gate with edge lanes patched through the same scalar kernel.
+// Price a homogeneous span of American puts using the call-local ISA selection.
+// Auto preserves the measured ship gate; ForceAvx2 uses AVX2 when the host
+// supports it and safely falls back to scalar otherwise. This overload does not
+// read or mutate the process-global ISA override and is safe to call concurrently
+// with a different `isa` in another thread.
+SimdRoute american_put_boundary_batch(const double* S, const double* K,
+                                      const double* T, const double* sigma,
+                                      const double* r, const double* q,
+                                      double* price_out, std::size_t n,
+                                      SimdIsa isa) noexcept;
+
+// Option-aware call-local route. `opts` has exactly the same engagement and
+// scheme-mapping semantics as andersen_lake: null selects the ACCURATE scheme;
+// an engaged value selects the corresponding configured scheme. Every scalar
+// patch receives the same optional unchanged.
+SimdRoute american_put_boundary_batch(const double* S, const double* K,
+                                      const double* T, const double* sigma,
+                                      const double* r, const double* q,
+                                      double* price_out, std::size_t n,
+                                      const std::optional<AlOpts>& opts,
+                                      SimdIsa isa) noexcept;
+
+// Legacy coarse-control overload. Resolves the current process-global override
+// once, then delegates to the call-local overload above. The scalar route calls
+// andersen_lake per contract and is the numerical source of truth; the AVX2 route
+// reproduces it to the accuracy gate with edge lanes patched through scalar.
 SimdRoute american_put_boundary_batch(const double* S, const double* K,
                                       const double* T, const double* sigma,
                                       const double* r, const double* q,

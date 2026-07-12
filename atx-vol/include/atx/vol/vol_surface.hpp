@@ -77,10 +77,10 @@ enum class Parametrization : std::uint8_t {
 
 // ── Wing-residual basis kind ─────────────────────────────────────────────
 //
-// Selects the basis used by the additive wing residual. Only `None` and
-// `HingeQuad` are evaluated at runtime by this port; the B-spline / Chebyshev
-// / Fengler bases are calibration-side fitters (out of scope) and fall back
-// to the HINGE_QUAD evaluation so hot-path eval always stays finite.
+// Selects the basis used by the additive wing residual. `None`, `HingeQuad`,
+// and `C2Bspline` are supported exactly by both fit and evaluation. The other
+// values remain persisted vocabulary for archive compatibility; calibration
+// validation rejects them until their matching fitter/evaluator is implemented.
 enum class ResidualBasisKind : std::uint8_t {
   None = 0,
   HingeQuad = 1,

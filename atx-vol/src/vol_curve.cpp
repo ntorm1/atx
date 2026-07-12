@@ -199,6 +199,10 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
   if (obs_eu.empty()) {
     return Err(ErrorCode::InvalidArgument, "fit_slice_curve: empty observations");
   }
+  const Status option_status = validate_calib_options(cfg.parametric);
+  if (!option_status.has_value()) {
+    return Err(option_status.error());
+  }
 
   switch (cfg.kind) {
   case VolCurveKind::ConvexDense: {

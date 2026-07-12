@@ -149,21 +149,29 @@ call (per-expiry context resolved once; per-strike NaN isolation), bit-identical
 the scalar path — an ergonomics/robustness primitive, not a speedup (the per-strike
 cached pricer dominates: measured ~1× vs the loop, ≈6.2 µs/option).
 
-**Tick-to-quote incremental refit.** When one chain reprints, a market maker does
-not rebuild the whole surface — `VolaSession::refit_slice(slice_idx, new_obs)`
-re-fits just that expiry's eSSVI slice from the fresh quotes and swaps it in
-(calendar-floored at its neighbour, expiry identity preserved, calendar-arb flag
-refreshed; queries then reflect it with no further refit). The fit warm-starts from
-the slice's current params via `essvi_fit_slice`'s optional `warm` seed — the whole
-Mingone cube seeds from the prior optimum (null = byte-identical cold fit), and
+**Tick-to-quote incremental refit.** Update the addressable board first, then ask
+the owning facade to prepare, fit, admit, and publish one expiry transactionally:
+
+```cpp
+ATX_TRY_VOID(chain.update_quotes(ids, bids, asks));
+ATX_TRY(const auto refit, fitter.refit_expiry(chain, expiry_id));
+ATX_TRY(const auto values, fitter.value_chain(chain, OutputField::Bands));
+```
+
+The first safe tranche supports eSSVI with `CalendarRepair::None`. It warm-starts
+from the published slice, rebuilds canonical carry/de-Americanized observations,
+refreshes parity and aggregate diagnostics, validates the entire candidate with
+the normal admission oracle, and atomically retains last-known-good state on any
+failure. `MonotoneFit`, `Project`, other curve families, a different chain
+instance, or dirty non-target expiries return an explicit error rather than
+silently changing semantics. `VolaSession::refit_slice` remains compatibility-only
+and unsafe: it accepts caller-built rows and has no transaction, admission, or
+snapshot-provenance contract. The safe fit uses `essvi_fit_slice`'s optional
+`warm` seed — the whole Mingone cube seeds from the prior optimum — and
 `CalibOpts::prior_strength` adds a Tikhonov pull toward the prior to stabilise thin
-ticks. **Measured (XOM):** the win is structural — a single-slice refit is **~4250×
-cheaper than the 18-slice whole-surface rebuild** (≈126 µs vs ≈534 ms), because the
-17 unchanged expiries are untouched. The warm-vs-cold *seed* is only ~1.2× on a
-liquid slice (identical iteration counts — the cold ATM seed is already near the
-optimum; the seed's iteration cut shows on far-from-neutral/thin slices), so warm's
-durable value on liquid data is prior-anchored stability, not raw iterations —
-documented honestly, not oversold.
+ticks. Safe-facade performance claims must include preparation, validation, and
+publication; the older optimizer-only `refit_slice` measurements do not describe
+this API.
 
 **Unified library layer** (`chain.hpp`, `pricer_fitter.hpp`; `examples/chain_pricer_bench`).
 The Vola-Dynamics-style lifecycle in one object graph: an `OptionChain` is a

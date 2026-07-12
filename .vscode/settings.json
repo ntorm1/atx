@@ -16,7 +16,9 @@
     "--background-index",
     "--completion-style=detailed",
     "--header-insertion=iwyu",
-    "--pch-storage=memory",
+    // Keep precompiled preambles on disk. This workspace has 500+ translation
+    // units, so in-memory storage grows clangd's private footprint by gigabytes.
+    "--pch-storage=disk",
     // Let clangd query clang-cl for the MSVC/Windows-SDK system include paths.
     "--query-driver=C:/Program Files/Microsoft Visual Studio/**/clang-cl.exe"
   ],

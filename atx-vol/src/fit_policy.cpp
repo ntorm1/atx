@@ -1,6 +1,7 @@
 #include "atx/vol/fit_policy.hpp"
 
 #include <algorithm>
+#include <cmath>
 
 namespace atx::vol {
 
@@ -69,14 +70,112 @@ void configure_direct_route(FitDecision &out, const FitContext &context,
   // In the first minutes, boards are often incomplete and unstable; keep the
   // low-dimensional family even when a mega-cap event prior exists. Only the
   // MegaCapEvent route ever reaches C8, so no profile test is needed here.
-  if (context.session_phase == MarketSessionPhase::Opening &&
-      out.curve.kind == VolCurveKind::C8 &&
+  if (context.session_phase == MarketSessionPhase::Opening && out.curve.kind == VolCurveKind::C8 &&
       (out.features.n_live_quotes < 500u || out.features.median_spread_pct > 0.25)) {
     out.curve.kind = VolCurveKind::Essvi;
   }
 }
 
 } // namespace
+
+SurfaceAdmissionDecision evaluate_surface_admission(const SurfaceAdmissionEvidence &evidence,
+                                                    const FitAdmissionPolicy &policy) noexcept {
+  SurfaceAdmissionDecision out;
+  if (!policy.enabled) {
+    out.admitted = true;
+    return out;
+  }
+
+  const auto fail = [&out](SurfaceAdmissionReason reason) {
+    out.failed_checks |= surface_admission_reason_mask(reason);
+    if (out.primary_reason == SurfaceAdmissionReason::None) {
+      out.primary_reason = reason;
+    }
+  };
+  const double expiry_coverage = evidence.attempted_expiries > 0u
+                                     ? static_cast<double>(evidence.fitted_expiries) /
+                                           static_cast<double>(evidence.attempted_expiries)
+                                     : 0.0;
+  const double quote_coverage = evidence.attempted_quotes > 0u
+                                    ? static_cast<double>(evidence.fitted_quotes) /
+                                          static_cast<double>(evidence.attempted_quotes)
+                                    : 0.0;
+
+  if (evidence.fitted_expiries > evidence.attempted_expiries ||
+      evidence.fitted_quotes > evidence.attempted_quotes) {
+    fail(SurfaceAdmissionReason::ImpossibleEvidence);
+  }
+
+  if (evidence.fitted_expiries < policy.min_fitted_expiries) {
+    fail(SurfaceAdmissionReason::InsufficientFittedExpiries);
+  }
+  if (!std::isfinite(policy.min_expiry_coverage) || policy.min_expiry_coverage < 0.0 ||
+      policy.min_expiry_coverage > 1.0 || expiry_coverage < policy.min_expiry_coverage) {
+    fail(SurfaceAdmissionReason::InsufficientExpiryCoverage);
+  }
+  if (!std::isfinite(policy.min_quote_coverage) || policy.min_quote_coverage < 0.0 ||
+      policy.min_quote_coverage > 1.0 || quote_coverage < policy.min_quote_coverage) {
+    fail(SurfaceAdmissionReason::InsufficientQuoteCoverage);
+  }
+  if (policy.require_front_expiry && !evidence.front_expiry_fitted) {
+    fail(SurfaceAdmissionReason::FrontExpiryMissing);
+  }
+  if (evidence.max_consecutive_expiry_gaps > policy.max_consecutive_expiry_gaps) {
+    fail(SurfaceAdmissionReason::ConsecutiveExpiryGap);
+  }
+  if (evidence.duplicate_maturities) {
+    fail(SurfaceAdmissionReason::DuplicateMaturity);
+  }
+  const bool diagnostics_valid = evidence.parity_state == ParityDiagnosticState::Valid;
+  const bool disabled_mark_diagnostics =
+      policy.consumer == SurfaceConsumer::Mark &&
+      evidence.parity_state == ParityDiagnosticState::Disabled;
+  if (!diagnostics_valid && !disabled_mark_diagnostics) {
+    fail(SurfaceAdmissionReason::DiagnosticsUnavailable);
+  }
+  if (diagnostics_valid &&
+      (!evidence.finite_diagnostics || !std::isfinite(evidence.worst_frac_within_bidask))) {
+    fail(SurfaceAdmissionReason::NonFiniteDiagnostics);
+  }
+  if (policy.require_calendar_arb_free && !evidence.calendar_arb_free) {
+    fail(SurfaceAdmissionReason::CalendarArbitrage);
+  }
+  if (!std::isfinite(policy.min_worst_frac_within_bidask) ||
+      policy.min_worst_frac_within_bidask < 0.0 || policy.min_worst_frac_within_bidask > 1.0 ||
+      (diagnostics_valid &&
+       evidence.worst_frac_within_bidask < policy.min_worst_frac_within_bidask)) {
+    fail(SurfaceAdmissionReason::QualityBelowFloor);
+  }
+  if (!evidence.finite_iv_domain) {
+    fail(SurfaceAdmissionReason::FiniteIvDomain);
+  }
+  if (!evidence.european_price_bounds) {
+    fail(SurfaceAdmissionReason::EuropeanPriceBounds);
+  }
+  if (policy.consumer == SurfaceConsumer::Quote || policy.consumer == SurfaceConsumer::Risk) {
+    if (!evidence.strike_monotone) {
+      fail(SurfaceAdmissionReason::StrikeMonotonicity);
+    }
+    if (!evidence.strike_convex) {
+      fail(SurfaceAdmissionReason::StrikeConvexity);
+    }
+  }
+  if (policy.consumer == SurfaceConsumer::Risk) {
+    if (!evidence.calendar_total_variance) {
+      fail(SurfaceAdmissionReason::CalendarTotalVariance);
+    }
+    if (!evidence.forward_variance_nonnegative) {
+      fail(SurfaceAdmissionReason::ForwardVariance);
+    }
+  }
+  if ((policy.require_short_tenor && !evidence.has_short_tenor) ||
+      (policy.require_medium_tenor && !evidence.has_medium_tenor) ||
+      (policy.require_long_tenor && !evidence.has_long_tenor)) {
+    fail(SurfaceAdmissionReason::RequiredTenorBucket);
+  }
+  out.admitted = out.failed_checks == 0u;
+  return out;
+}
 
 FitDecision select_fit_policy(const Underlying &under, std::string_view ticker,
                               const FitContext &context, const FitPolicyConfig &config) noexcept {

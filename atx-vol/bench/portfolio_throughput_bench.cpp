@@ -255,7 +255,8 @@ void run_ladder(benchmark::State& state, LadderMode mode, PricedSurface::EvalFie
   for (auto _ : state) {
     if (mode == LadderMode::Batch) {
       auto rc = surf.evaluate_batch(Ks, Ts, sides, fields, /*analytic=*/false,
-                                    PricedSurface::EvaluationSoA{out_iv, out_px, gk_span, out_st});
+                                    PricedSurface::EvaluationSoA{out_iv, out_px, gk_span, out_st,
+                                                                {}, {}});
       benchmark::DoNotOptimize(rc);
     } else {
       for (std::size_t i = 0; i < n; ++i) {

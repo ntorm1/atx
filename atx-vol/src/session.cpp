@@ -20,6 +20,8 @@
 #include "atx/vol/dividend.hpp"        // hybrid_forward (representative carry)
 #include "atx/vol/essvi_calib.hpp"     // essvi_fit_slice (warm-start refit)
 #include "atx/vol/event_vol.hpp"       // EventSchedule, count_events_at, implied_emove
+#include "atx/vol/parity.hpp"          // chain_parity (incremental diagnostic refresh)
+#include "atx/vol/prepared_fitting.hpp" // CanonicalPreparedExpiry
 #include "atx/vol/projection.hpp"      // InterpMode, surface_insert_vol_slice, w_on_inserted_slice
 #include "atx/vol/surface_parity.hpp"  // run_surface_parity, SurfaceParityInputs/Report
 #include "atx/vol/universe.hpp"        // Universe, Underlying, Uid, Chain
@@ -370,6 +372,8 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
   // the parity run, and is the copy stored for the const queries so the cold
   // fair_value/greeks fallback prices on the same scheme it was fit with.
   SessionInputs eff = in;
+  ATX_TRY_VOID(validate_calib_options(eff.calib));
+  ATX_TRY_VOID(validate_calib_options(eff.curve.parametric));
   if (!valid_term_rates(eff)) {
     return Err(ErrorCode::InvalidArgument, "VolaSession::build: invalid expiry rate vectors");
   }
@@ -478,6 +482,13 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
         cdiag.mean_chi2_reduced = sum_chi2 / dn;
         cdiag.mean_rmse_vol = sum_rmse / dn;
       }
+      if (!eff.score_parity) {
+        cdiag.parity_state = ParityDiagnosticState::Disabled;
+      } else if (np_scored == cdiag.n_slices && np_scored > 0u) {
+        cdiag.parity_state = ParityDiagnosticState::Valid;
+      } else {
+        cdiag.parity_state = ParityDiagnosticState::Failed;
+      }
       std::size_t nq = 0;
       for (const SliceContext& c : crep.context) {
         nq += c.n_used;
@@ -528,6 +539,11 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
     diag.mean_chi2_reduced = sum_chi2 / dnp;
     diag.mean_rmse_vol = sum_rmse / dnp;
   }
+  // The legacy eSSVI compatibility driver intentionally always scores parity,
+  // even when the generic-family opt-out is false. State records what actually
+  // happened, not the ignored compatibility flag.
+  diag.parity_state = (np == diag.n_slices && np > 0u) ? ParityDiagnosticState::Valid
+                                                       : ParityDiagnosticState::Failed;
 
   std::size_t n_quotes = 0;
   for (const SliceContext& c : rep.context) {
@@ -868,6 +884,142 @@ Status VolaSession::greeks_ladder(double T, std::span<const double> strikes,
       out[i].price = kNaN;
     }
   }
+  return Ok();
+}
+
+VolaSession VolaSession::clone_for_refit() const {
+  std::optional<CurveSurface> curve_override;
+  if (curve_override_.has_value()) {
+    curve_override.emplace(curve_override_->clone());
+  }
+  auto call_cache = corr_call_;
+  auto put_cache = corr_put_;
+  return VolaSession{VolSurface{surface_}, std::vector<SliceContext>{ctx_},
+                     std::vector<ParityReport>{parity_}, SessionInputs{in_}, diag_,
+                     std::move(call_cache), std::move(put_cache), std::move(curve_override)};
+}
+
+Result<FitDiag> VolaSession::apply_prepared_essvi_refit(
+    std::size_t slice_idx, const CanonicalPreparedExpiry &prepared) {
+  if (slice_idx >= ctx_.size() || slice_idx > std::numeric_limits<std::uint16_t>::max()) {
+    return Err(ErrorCode::InvalidArgument,
+               "VolaSession::apply_prepared_essvi_refit: slice index out of range");
+  }
+  if (prepared.slice.fit_observations().empty() ||
+      prepared.slice.maturity() != ctx_[slice_idx].T) {
+    return Err(ErrorCode::InvalidArgument,
+               "VolaSession::apply_prepared_essvi_refit: incompatible prepared expiry");
+  }
+  const std::span<const EssviParams> slices = surface_.essvi_slices();
+  if (curve_override_.has_value() || slice_idx >= slices.size()) {
+    return Err(ErrorCode::InvalidArgument,
+               "VolaSession::apply_prepared_essvi_refit: target is not an eSSVI slice");
+  }
+
+  const EssviParams warm = slices[slice_idx];
+  // Facade refit currently admits CalendarRepair::None only. A previous-theta
+  // floor would silently change that configured fitting policy into a partial
+  // MonotoneFit, so the exact None path has no optimizer floor. The independent
+  // publication oracle validates both neighbours after fitting.
+  constexpr double theta_floor = 0.0;
+  FitDiag fit_diag{};
+  ATX_TRY(EssviParams refitted,
+          essvi_fit_slice(prepared.slice.fit_observations(), ctx_[slice_idx].T,
+                          prepared.slice.forward(), in_.calib, &fit_diag, theta_floor, &warm));
+  refitted.expiry_id = warm.expiry_id;
+  refitted.expiry_ns = warm.expiry_ns;
+  ATX_TRY_VOID(surface_.set_slice_essvi(slice_idx, refitted));
+
+  SliceContext &context = ctx_[slice_idx];
+  context.forward = prepared.slice.forward();
+  context.borrow = prepared.borrow;
+  context.q_eff = prepared.q_eff;
+  context.n_used = prepared.slice.fit_observations().size();
+  context.n_dropped = prepared.slice.n_dropped();
+
+  const PreparedScoreColumns &score = prepared.slice.score_columns();
+  std::vector<double> model_iv;
+  model_iv.reserve(score.k_log.size());
+  for (const double k_log : score.k_log) {
+    model_iv.push_back(
+        surface_.iv_on_slice(static_cast<std::uint16_t>(slice_idx), k_log));
+  }
+  ParityInputs parity_inputs{};
+  parity_inputs.S = in_.S;
+  parity_inputs.r = prepared.rate;
+  parity_inputs.q_eff = prepared.q_eff;
+  parity_inputs.T = context.T;
+  parity_inputs.method = in_.deam.method;
+  parity_inputs.al_opts = in_.deam.al_opts;
+  parity_inputs.band_k = in_.band_k;
+  parity_inputs.n_curve_params = 3u;
+  parity_inputs.caches = query_caches();
+  ATX_TRY(const ParityReport refreshed,
+          chain_parity(score.strike, score.bid, score.ask, score.mid, score.side, model_iv,
+                       score.market_iv, parity_inputs));
+  parity_[slice_idx] = refreshed;
+  ATX_TRY_VOID(refresh_refit_diagnostics());
+  return Ok(fit_diag);
+}
+
+Status VolaSession::refresh_refit_diagnostics() {
+  constexpr double kArbKMin = -3.0;
+  constexpr double kArbKMax = 3.0;
+  constexpr std::uint32_t kArbNGrid = 25u;
+  ATX_TRY(const std::vector<ArbViolation> violations,
+          arb_check_calendar(surface_, kArbKMin, kArbKMax, kArbNGrid));
+  diag_.calendar_arb_free = violations.empty();
+  // Only CalendarRepair::None reaches facade refit. With no repair phase, the
+  // candidate's current violation count is also its semantically pre-repair
+  // count; do not reuse this assignment for Project/MonotoneFit.
+  diag_.n_calendar_viol_pre = violations.size();
+  diag_.n_slices = ctx_.size();
+  diag_.n_quotes = 0u;
+  for (const SliceContext &context : ctx_) {
+    diag_.n_quotes += context.n_used;
+  }
+
+  double worst = std::numeric_limits<double>::infinity();
+  double sum_frac = 0.0;
+  double sum_chi2 = 0.0;
+  double sum_rmse = 0.0;
+  std::size_t scored = 0u;
+  for (const ParityReport &report : parity_) {
+    if (report.n == 0u) {
+      continue;
+    }
+    worst = std::min(worst, report.frac_fv_within_bidask);
+    sum_frac += report.frac_fv_within_bidask;
+    sum_chi2 += report.chi2_reduced;
+    sum_rmse += report.rmse_mid_vol;
+    ++scored;
+  }
+  // Recompute parity_state from THIS refit's actual scoring; never inherit the
+  // cold build's value (B-I1). The legacy eSSVI refit always re-scores its
+  // target slice, so a healthy refit resolves Valid; a partial score resolves
+  // Failed, and a fully-unscored refit resolves Failed too (B-M1) so it cannot
+  // admit via "0 looks fine". Disabled is honored only for a session that opted
+  // out of scoring AND produced no scored slice — matching the cold eSSVI path,
+  // which reports Valid/Failed (never Disabled) whenever any slice scored.
+  if (scored == diag_.n_slices && scored > 0u) {
+    diag_.parity_state = ParityDiagnosticState::Valid;
+  } else if (scored == 0u && !in_.score_parity) {
+    diag_.parity_state = ParityDiagnosticState::Disabled;
+  } else {
+    diag_.parity_state = ParityDiagnosticState::Failed;
+  }
+  if (scored == 0u) {
+    diag_.worst_frac_within_bidask = 0.0;
+    diag_.mean_frac_within_bidask = 0.0;
+    diag_.mean_chi2_reduced = 0.0;
+    diag_.mean_rmse_vol = 0.0;
+    return Ok();
+  }
+  const double denominator = static_cast<double>(scored);
+  diag_.worst_frac_within_bidask = worst;
+  diag_.mean_frac_within_bidask = sum_frac / denominator;
+  diag_.mean_chi2_reduced = sum_chi2 / denominator;
+  diag_.mean_rmse_vol = sum_rmse / denominator;
   return Ok();
 }
 

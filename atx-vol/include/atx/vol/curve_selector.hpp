@@ -22,6 +22,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <vector>
 
 #include "atx/vol/surface_parity.hpp" // SurfaceParityInputs
@@ -52,10 +53,16 @@ struct CandidateScore {
   double oos_vw{0.0};      // held-out vega^2-weighted in-band fraction (0..1)
   double vega_weight_in_band{0.0};
   double vega_weight_total{0.0};
-  std::size_t dof_sum{0};   // summed effective DoF over scored slices (parsimony)
-  std::size_t n_holdout{0}; // held-out strikes scored
-  std::size_t n_in_band{0}; // held-out strikes priced inside their bid/ask
-  std::size_t n_slices{0};  // expiries that produced a scorable fit
+  std::size_t dof_sum{0};              // summed effective DoF over scored slices (parsimony)
+  std::size_t n_holdout{0};            // required held-out strikes (fixed denominator)
+  std::size_t n_successful_holdout{0}; // keys successfully model-priced
+  std::size_t n_in_band{0};            // held-out strikes priced inside their bid/ask
+  std::size_t n_slices{0};             // expiries that produced a scorable fit
+  std::size_t n_required_slices{0};
+  std::size_t n_required_holdout{0};
+  double expiry_coverage{0.0};
+  double holdout_coverage{0.0};
+  bool admitted{false};
 
   // ── Task C2.5: fit-metrics selection signal ──
   // Held-out slice metrics (Vola-style; see fit_metrics.hpp), aggregated over
@@ -82,6 +89,7 @@ struct SelectorResult {
   CurveConfig chosen{};
   std::size_t chosen_index{0};        // index into the candidate list
   std::vector<CandidateScore> scores; // per candidate (‖ candidate list)
+  std::vector<std::size_t> sampled_expiry_indices;
 };
 
 // Search policy.
@@ -93,7 +101,17 @@ struct SelectorConfig {
   unsigned oos_max_expiries{8};
   // Out-of-sample ties within this vega-weighted margin break toward fewer DoF.
   double parsimony_margin{0.004};
+  // Common-key coverage floors. Missing candidate outputs remain missing; they
+  // are never removed from the denominator to make the candidate look better.
+  double min_expiry_coverage{1.0};
+  double min_holdout_coverage{1.0};
 };
+
+// Deterministic lexicographic rank used by `select_curve`: admission, expiry
+// coverage, held-out-key coverage, OOS quality, then complexity within the
+// parsimony margin.
+[[nodiscard]] Result<std::size_t> select_candidate_index(std::span<const CandidateScore> scores,
+                                                         double parsimony_margin);
 
 // Default family ladder: convex dense, cache-friendly linear variance, eSSVI,
 // raw SVI, and event-capable C8. High-confidence boards bypass this expensive
