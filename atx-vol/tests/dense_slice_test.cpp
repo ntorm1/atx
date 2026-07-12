@@ -470,3 +470,96 @@ TEST(ConvexSliceFit, SharedKCalendarRefitPreservesSliceConvexity) {
   ASSERT_TRUE(violations.has_value()) << violations.error().to_string();
   EXPECT_TRUE(violations->empty());
 }
+
+// Oracle I-4: the active-set QP assumed a strictly feasible start it never
+// verified. A short-dated slice with a deep-ITM `required_k` calendar knot
+// (0DTE-style: T so small that Black's sigma=2 seed's time value underflows
+// in double precision to EXACTLY the discounted intrinsic value) used to put
+// x0 below the `g_j >= intrinsic + price_epsilon` row, freezing that row
+// violated once a negative-alpha ratio-test step forced it into the working
+// set, and the iteration-cap exit returned the point as Ok with no check at
+// all. The fix must either converge to a genuinely feasible fit or return
+// the documented Internal error — never Ok with a violated node.
+TEST(ConvexSliceFit, DeepItmZeroDteRequiredKNeverReturnsOkWithViolation) {
+  using namespace atx::vol;
+  constexpr double F = 100.0, T = 1.0e-6, df = 1.0;  // ~0DTE: seconds to expiry
+  std::vector<FitObs> obs;
+  for (const double K : {90.0, 95.0, 100.0, 105.0, 110.0}) {
+    obs.push_back(mk_obs(F, T, df, K, 0.5));
+  }
+  // Deep-ITM calendar knots (k=-0.5 => K~60.65): at T=1e-6, Black's d1/d2 for
+  // these strikes saturate the normal CDF to exactly 1.0 in double precision,
+  // so the OLD x0 = black76_price(F,K,T,2.0,df,Call) landed exactly on
+  // intrinsic — precisely the I-4 scenario.
+  const std::vector<double> required = {-0.5, -0.3, -0.1};
+  ConvexFitContext context;
+  context.required_k = std::span<const double>{required};
+
+  const auto fit = fit_convex_slice(obs, F, T, df, {}, {}, context);
+  if (fit.has_value()) {
+    for (std::size_t i = 0; i < fit->u.size(); ++i) {
+      const double intrinsic = fit->df * std::max(fit->F - fit->u[i], 0.0);
+      EXPECT_GE(fit->C[i], intrinsic - 1.0e-7)
+          << "node " << i << " (K=" << fit->u[i] << ") sub-intrinsic despite Ok status";
+      EXPECT_LE(fit->C[i], fit->df * fit->F + 1.0e-7)
+          << "node " << i << " (K=" << fit->u[i] << ") above the forward despite Ok status";
+    }
+  } else {
+    EXPECT_EQ(fit.error().code(), ErrorCode::Internal)
+        << "fail-closed rejection must be the documented Internal error, not a "
+           "mis-tagged input-validation error: "
+        << fit.error().to_string();
+  }
+}
+
+// Same deep-ITM 0DTE board, but with the iteration cap forced to 1 — far too
+// few iterations to work the deep-ITM rows into the active set through the
+// normal ratio-test path even if the start were feasible. Must still never
+// silently certify a violated point as Ok.
+TEST(ConvexSliceFit, InfeasibleStartWithTinyIterationCapNeverReturnsOkWithViolation) {
+  using namespace atx::vol;
+  constexpr double F = 100.0, T = 1.0e-6, df = 1.0;
+  std::vector<FitObs> obs;
+  for (const double K : {90.0, 95.0, 100.0, 105.0, 110.0}) {
+    obs.push_back(mk_obs(F, T, df, K, 0.5));
+  }
+  const std::vector<double> required = {-0.5, -0.3, -0.1};
+  ConvexFitContext context;
+  context.required_k = std::span<const double>{required};
+  ConvexFitOpts opts;
+  opts.max_iter = 1;
+
+  const auto fit = fit_convex_slice(obs, F, T, df, opts, {}, context);
+  if (fit.has_value()) {
+    for (std::size_t i = 0; i < fit->u.size(); ++i) {
+      const double intrinsic = fit->df * std::max(fit->F - fit->u[i], 0.0);
+      EXPECT_GE(fit->C[i], intrinsic - 1.0e-7);
+      EXPECT_LE(fit->C[i], fit->df * fit->F + 1.0e-7);
+    }
+  } else {
+    EXPECT_EQ(fit.error().code(), ErrorCode::Internal);
+  }
+}
+
+// Regression guard on the fix's OTHER direction: an ordinary, comfortably
+// feasible-start board must NOT be rejected merely because the iteration cap
+// is tiny. Active-set feasibility is maintained at every iterate once x0 is
+// feasible, so a capped-but-feasible board is a legitimate (if suboptimal)
+// Ok, not an error.
+TEST(ConvexSliceFit, FeasibleStartWithTinyIterationCapStillSucceeds) {
+  using namespace atx::vol;
+  constexpr double F = 100.0, T = 0.25, df = 0.98;
+  std::vector<FitObs> obs;
+  for (const double K : strike_grid(F)) {
+    obs.push_back(mk_obs(F, T, df, K, 0.22));
+  }
+  ConvexFitOpts opts;
+  opts.max_iter = 1;
+  const auto fit = fit_convex_slice(obs, F, T, df, opts);
+  ASSERT_TRUE(fit.has_value()) << fit.error().to_string();
+  for (std::size_t i = 0; i < fit->u.size(); ++i) {
+    const double intrinsic = fit->df * std::max(fit->F - fit->u[i], 0.0);
+    EXPECT_GE(fit->C[i], intrinsic - 1.0e-7);
+    EXPECT_LE(fit->C[i], fit->df * fit->F + 1.0e-7);
+  }
+}

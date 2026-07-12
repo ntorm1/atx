@@ -9,6 +9,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 
 #include "atx/vol/surface_policy.hpp"
 #include "atx/vol/types.hpp"
@@ -23,11 +24,23 @@ struct RiskSurfaceView {
   using SliceCountFn = std::size_t (*)(const void *) noexcept;
   using MaturityFn = double (*)(const void *, std::size_t) noexcept;
   using TotalVarianceFn = double (*)(const void *, std::size_t, double) noexcept;
+  // Writes up to out.size() of `slice`'s own node log-moneyness locations
+  // (any order) into `out`; returns the number written. 0 (out untouched) for
+  // an adapter/curve family with no discrete node grid (e.g. a parametric
+  // eSSVI/SVI/C8 slice) — the validator then samples that slice on the
+  // uniform grid alone. Lets the independent validator densify its sampling
+  // to the SERVED fit's own knot spacing (oracle finding I-3: the dense
+  // fit's ATM-clustered nodes can sit 5-20x closer than the uniform grid,
+  // letting a node-level kink alias between samples) without becoming
+  // curve-family-aware itself: this is a location HINT the validator still
+  // independently evaluates total_variance/price at, never a value it trusts.
+  using NodeKsFn = std::size_t (*)(const void *, std::size_t, std::span<double>) noexcept;
 
   const void *context{};
   SliceCountFn slice_count{};
   MaturityFn maturity{};
   TotalVarianceFn total_variance{};
+  NodeKsFn node_ks{};
 
   [[nodiscard]] constexpr bool valid() const noexcept {
     return context != nullptr && slice_count != nullptr && maturity != nullptr &&

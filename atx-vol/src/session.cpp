@@ -562,6 +562,11 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
       const std::size_t n_viol = cal ? cal->size() : 0;
       cdiag.calendar_arb_free = (n_viol == 0);
       cdiag.n_calendar_viol_pre = n_viol;
+      // I-2: independent self-check of each ConvexDense slice's OWN served
+      // call_price(), which the w-space oracle cannot see (0 for a non-
+      // ConvexDense session; see SessionDiagnostics::n_price_bound_violations).
+      const auto price_bounds = arb_check_price_bounds(crep.surface, -kBand, kBand, kGrid);
+      cdiag.n_price_bound_violations = price_bounds ? price_bounds->size() : 0;
     }
     {
       double worst = std::numeric_limits<double>::infinity();
@@ -1300,6 +1305,16 @@ Result<FitDiag> VolaSession::refit_slice(std::size_t slice_idx,
                          ? diag_.n_quotes - old_n_used + new_obs.size()
                          : new_obs.size();
     diag_.calendar_arb_free = true;
+    // I-2: refresh the full-surface price-bound self-check (not just the
+    // touched pillar) so a still-violating slice elsewhere in the surface is
+    // never silently dropped from the diagnostic by a narrow, successful
+    // refit — mirrors the OR-only, never-clear discipline of the
+    // ValidationFailure merge itself.
+    {
+      const auto price_bounds =
+          arb_check_price_bounds(*curve_override_, -0.60, 0.60, 64);
+      diag_.n_price_bound_violations = price_bounds ? price_bounds->size() : 0;
+    }
     ++incremental.committed;
     incremental.last_committed = true;
     incremental.last_total_ms =

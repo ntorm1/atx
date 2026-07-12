@@ -29,6 +29,7 @@ using atx::vol::arb_check_butterfly;
 using atx::vol::arb_check_butterfly_svi_mm;
 using atx::vol::arb_check_butterfly_svi_mm_surface;
 using atx::vol::arb_check_calendar;
+using atx::vol::arb_check_price_bounds;
 using atx::vol::arb_check_total_surface_all;
 using atx::vol::arb_filter_quotes_ex;
 using atx::vol::arb_project_calendar_essvi;
@@ -189,6 +190,59 @@ TEST(ArbCheckCalendarCurveSurface, CleanStackNoViolation) {
   const auto v = arb_check_calendar(surf, -0.2, 0.2, 21);
   ASSERT_TRUE(v.has_value());
   EXPECT_TRUE(v->empty());
+}
+
+// Oracle I-2/M-7: dense_slice.cpp's iv() clamps a sub-intrinsic served price
+// into Black's valid interval before total variance is formed, laundering
+// the violation into a near-zero vol that is invisible to every w-space
+// check (arb_check_calendar / arb_check_butterfly / the w-reconstructed
+// PriceBounds gate in risk_surface_validation.cpp all reconstruct FROM w).
+// This hand-built fit stands in for a served node ending up below discounted
+// intrinsic (e.g. a regression that slips past the fail-closed QP
+// feasibility check added for oracle I-4) — arb_check_price_bounds must
+// catch it directly in price space, which is exactly what makes it
+// independent of how the violation arose.
+TEST(ArbCheckPriceBoundsCurveSurface, FlagsSubIntrinsicConvexDenseNode) {
+  ConvexSliceFit fit;
+  fit.T = 0.10;
+  fit.F = 100.0;
+  fit.df = 0.98;
+  fit.u = {60.0, 80.0, 95.0};
+  fit.C = {41.0, 21.0, 2.0};  // C(95)=2 < intrinsic(95)=0.98*5=4.9
+
+  CurveSurface surface;
+  surface.push(std::make_unique<ConvexDenseCurve>(fit));
+
+  const auto violations = arb_check_price_bounds(surface, -0.60, 0.60, 64);
+  ASSERT_TRUE(violations.has_value());
+  EXPECT_FALSE(violations->empty());
+  for (const ArbViolation &v : *violations) {
+    EXPECT_EQ(v.kind, ArbViolation::Kind::PriceBounds);
+    EXPECT_GT(v.slack, 0.0);
+  }
+
+  // The w-space calendar/butterfly checks find nothing to complain about on
+  // this exact fixture (one slice; no w-space signal of the price violation)
+  // — the whole point of I-2.
+  const auto calendar = arb_check_calendar(surface, -0.60, 0.60, 64);
+  ASSERT_TRUE(calendar.has_value());
+  EXPECT_TRUE(calendar->empty());
+}
+
+TEST(ArbCheckPriceBoundsCurveSurface, CleanConvexDenseSliceHasNoViolations) {
+  CurveSurface surface;
+  surface.push(std::make_unique<ConvexDenseCurve>(flat_slice(0.25, 100.0, 0.99, 0.22)));
+  const auto violations = arb_check_price_bounds(surface, -0.60, 0.60, 64);
+  ASSERT_TRUE(violations.has_value());
+  EXPECT_TRUE(violations->empty());
+}
+
+TEST(ArbCheckPriceBoundsCurveSurface, NonConvexDenseSliceContributesNothing) {
+  CurveSurface surface;
+  surface.push(std::make_unique<SviCurve>(steep_svi_slice(), 1.0));
+  const auto violations = arb_check_price_bounds(surface, -0.60, 0.60, 64);
+  ASSERT_TRUE(violations.has_value());
+  EXPECT_TRUE(violations->empty());
 }
 
 TEST(ArbButterflyCurve, IndependentCheckerFlagsServedSviShape) {

@@ -43,6 +43,35 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
                                                     VecX x, int max_iter) {
   const Eigen::Index n = H.rows();
   const Eigen::Index nc = G.rows();
+
+  // Worst (most negative) row residual G x - h over EVERY row; <= 0 always,
+  // 0 (up to tol) means feasible. The ratio test below derives alpha from
+  // "ai = -gix/gip >= 0 since gix >= 0" (dense_slice.cpp comment above) — an
+  // invariant that assumes x is feasible for every inactive row at the
+  // START of each iterate. Oracle finding I-4: a realistic 0DTE deep-ITM
+  // node can put the caller's x0 BELOW its intrinsic/price-bound row (Black's
+  // time value underflows to exactly the intrinsic bound at short T), making
+  // gix < 0 for that row from the first iterate. The invariant then breaks:
+  // ai goes negative, x steps AWAY from feasibility, and once that row
+  // enters the working set the KKT equality step freezes it at its violated
+  // value for the rest of the solve — an active-set method never restores
+  // feasibility of an initially violated constraint. The iteration-cap exit
+  // used to return that point as Ok with no check at all. Verify feasibility
+  // both at the start (fail closed immediately rather than iterate on a
+  // broken invariant) and again on cap-exit (a slow-but-feasible problem is
+  // fine; a still-violated one must not be certified Ok).
+  const auto worst_residual = [&](const VecX& point) noexcept {
+    double worst = 0.0;
+    for (Eigen::Index i = 0; i < nc; ++i) {
+      worst = std::min(worst, G.row(i).dot(point) - h(i));
+    }
+    return worst;  // <= 0; 0 (within tol) == feasible
+  };
+  const double feas_tol = 1.0e-9 * std::max(1.0, h.lpNorm<Eigen::Infinity>());
+  if (worst_residual(x) < -feas_tol) {
+    return Err(ErrorCode::Internal, "qp_active_set: starting point infeasible");
+  }
+
   std::vector<char> in_w(static_cast<std::size_t>(nc), 0);  // working-set membership
   std::vector<Eigen::Index> wset;                            // active row indices
 
@@ -127,7 +156,15 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
       wset.push_back(block);
     }
   }
-  return Ok(std::move(x));  // hit the iteration cap: return best feasible point
+  // Hit the iteration cap. The documented contract (dense_slice.hpp:
+  // "Internal if the QP solver fails to converge") is otherwise unreachable —
+  // certify the point only if it is actually feasible; a still-violated row
+  // (I-4) must error, not return silently as the "best feasible point".
+  if (worst_residual(x) < -feas_tol) {
+    return Err(ErrorCode::Internal,
+               "qp_active_set: iteration cap reached at an infeasible point");
+  }
+  return Ok(std::move(x));
 }
 
 // One (strike, target call price, weight) fit row, after PCP-folding puts to calls
@@ -544,16 +581,39 @@ Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs, double F,
   // Strictly feasible start: a high finite-vol Black curve satisfies both price
   // bounds, both slope bounds, monotonicity and convexity. A calendar floor is
   // lifted by a tiny margin without crossing the discounted-forward ceiling.
+  //
+  // Oracle finding I-4: for a short-dated slice with a deep-ITM node (0DTE,
+  // required_k calendar knot near k ~ -0.5), Black's time value at sigma=2
+  // can underflow in double precision to EXACTLY the discounted intrinsic
+  // value, landing v below the `g_j >= intrinsic + price_epsilon` row —
+  // silently starting the active-set QP already infeasible. Box-clamp every
+  // node into [intrinsic+price_epsilon, forward-price_epsilon] (the EXACT
+  // bounds the two price rows below encode) before the calendar-floor lift,
+  // then restore monotonicity right-to-left: `hi` is the SAME constant for
+  // every node and `lo` is non-increasing in strike, so a running max of two
+  // already-in-range values can never leave the box, and this guarantees
+  // g_j >= g_{j+1} (the monotone row) even where the box clamp raised an
+  // underflowed node above an unclamped neighbor. (Convexity / slope-below /
+  // origin-slope are not separately re-proven here — qp_active_set now
+  // verifies full feasibility of x0 before iterating and fails closed
+  // instead of silently certifying a violated point.)
   VecX x0(N);
   for (Eigen::Index j = 0; j < N; ++j) {
+    const double intrinsic = df * std::max(F - un(j), 0.0);
+    const double lo = std::min(intrinsic + price_epsilon, std::nextafter(df * F, 0.0));
+    const double hi = df * F - price_epsilon;
     double v = black76_price(F, un(j), T, 2.0, df, Side::Call);
+    v = std::max(v, lo);
     if (has_floor[static_cast<std::size_t>(j)]) {
       const double upper = df * F;
       const double lifted = cfloor[static_cast<std::size_t>(j)] +
                             1.0e-9 * std::max(1.0, upper);
       v = std::max(v, std::min(lifted, std::nextafter(upper, 0.0)));
     }
-    x0(j) = v;
+    x0(j) = std::min(v, hi);
+  }
+  for (Eigen::Index j = N - 2; j >= 0; --j) {
+    x0(j) = std::max(x0(j), x0(j + 1));
   }
 
   // ── Optional interval (band) loss ─────────────────────────────────────────

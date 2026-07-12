@@ -211,6 +211,47 @@ Result<std::vector<ArbViolation>> arb_check_calendar(const CurveSurface &s,
   return Ok(std::move(out));
 }
 
+Result<std::vector<ArbViolation>> arb_check_price_bounds(const CurveSurface &s,
+                                                         double k_min, double k_max,
+                                                         std::uint32_t n_grid) {
+  std::vector<ArbViolation> out;
+  const auto slices = s.slices();
+  if (slices.empty() || n_grid == 0 || !(k_max > k_min)) {
+    return Ok(std::move(out));
+  }
+  // Well above the fitting QP's own node-level price_epsilon margin
+  // (1e-6*max(1,df*F), dense_slice.cpp) so this flags a GENUINE bound
+  // breach (e.g. the wing power-tail undershoot of M-7), not routine
+  // QP/root-solver roundoff at the boundary.
+  constexpr double kPriceBoundSelfCheckTol = 1.0e-9;
+  const double dk = (k_max - k_min) / static_cast<double>(n_grid);
+  for (const auto &slice_ptr : slices) {
+    const auto *dense = dynamic_cast<const ConvexDenseCurve *>(slice_ptr.get());
+    if (dense == nullptr) {
+      continue;  // only the convex dense fit clamps a served price; see I-2
+    }
+    const ConvexSliceFit &fit = dense->fit();
+    if (!(fit.F > 0.0) || !(fit.df > 0.0)) {
+      continue;
+    }
+    for (std::uint32_t g = 0; g <= n_grid; ++g) {
+      const double k = k_min + dk * static_cast<double>(g);
+      const double K = fit.F * std::exp(k);
+      const double price = fit.call_price(K);
+      if (!std::isfinite(price)) {
+        continue;  // NonFinite is already covered by the w-space checks
+      }
+      const double lower = fit.df * std::max(fit.F - K, 0.0);
+      const double upper = fit.df * fit.F;
+      const double slack = std::max(lower - price, price - upper);
+      if (slack > kPriceBoundSelfCheckTol) {
+        out.push_back(ArbViolation{k, fit.T, fit.T, slack, ArbViolation::Kind::PriceBounds});
+      }
+    }
+  }
+  return Ok(std::move(out));
+}
+
 Result<std::vector<ArbViolation>> arb_check_butterfly(
     const IVolCurve &curve, double k_min, double k_max,
     std::uint32_t n_grid) {

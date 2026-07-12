@@ -100,10 +100,10 @@ constexpr QuoteFlag &operator|=(QuoteFlag &a, QuoteFlag b) noexcept {
 // a recorded violation: w_prev - w for calendar, -g(k) for butterfly).
 struct ArbViolation {
   double k_log{};  // log-moneyness where the violation occurs
-  double T1{};     // shorter maturity (calendar) / slice T (butterfly)
-  double T2{};     // longer maturity (calendar) / slice T (butterfly)
+  double T1{};     // shorter maturity (calendar) / slice T (butterfly / price bounds)
+  double T2{};     // longer maturity (calendar) / slice T (butterfly / price bounds)
   double slack{};  // signed breach magnitude
-  enum class Kind : std::uint8_t { Calendar = 0, Butterfly = 1 };
+  enum class Kind : std::uint8_t { Calendar = 0, Butterfly = 1, PriceBounds = 2 };
   Kind kind{Kind::Calendar};
 };
 
@@ -132,6 +132,24 @@ arb_check_calendar(const CurveSurface &s, double k_min, double k_max,
 [[nodiscard]] Result<std::vector<ArbViolation>>
 arb_check_butterfly(const IVolCurve &curve, double k_min, double k_max,
                     std::uint32_t n_grid);
+
+// Self-check confined to the served CALL-PRICE representation of each
+// ConvexDense slice in `s` (oracle finding I-2). Every other arb_check_*
+// entry samples total variance w(k, T) alone, which the convex dense fit's
+// iv() clamps into Black's no-arb interval BEFORE forming (dense_slice.cpp),
+// laundering a sub-intrinsic / super-forward fitted price into a merely
+// near-zero or near-max vol — invisible to any w-space check. This samples
+// each ConvexDense slice's OWN call_price(K) directly (most commonly
+// exercised by the wing extrapolation on a one-sided, all-ITM or all-OTM,
+// board — oracle finding M-7) and records a violation wherever it sits
+// outside [discounted intrinsic, discounted forward] by more than a
+// tolerance well above the fitting QP's own node-level price_epsilon margin.
+// Non-ConvexDense slices contribute nothing (their w-space checks above are
+// sufficient). No-op (empty) for an empty surface, n_grid == 0, or
+// k_max <= k_min.
+[[nodiscard]] Result<std::vector<ArbViolation>>
+arb_check_price_bounds(const CurveSurface &s, double k_min, double k_max,
+                       std::uint32_t n_grid);
 
 // Per-slice Lee/Roper density positivity via finite-difference w'/w'' on the
 // total surface variance. Empty result means "no butterfly arbitrage". No-op

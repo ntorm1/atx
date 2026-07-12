@@ -4,11 +4,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
+#include <span>
 #include <vector>
 
 #include "atx/vol/pricer_fitter.hpp"
 #include "atx/vol/risk_surface_validation.hpp"
 #include "atx/vol/surface_policy.hpp"
+#include "atx/vol/vol_curve.hpp"
 
 namespace atx::vol {
 namespace {
@@ -18,11 +21,20 @@ enum class Shape : std::uint8_t {
   CalendarCrossing,
   AtmSpike,
   NonFinite,
+  // Task 3 additions (rfx-task-3-brief 3a/3d/3e): a NaN only at one declared
+  // calendar-only k (I-1); a wing slope exceeding the Roger-Lee ceiling
+  // (I-5 gate coverage); a bump narrow enough to vanish at its two uniform
+  // grid neighbors but visible once its own location is densified in (I-3).
+  CalendarOnlyNaN,
+  SteepWing,
+  LocalKink,
 };
 
 struct SyntheticSurface {
   std::vector<double> maturities;
   Shape shape{Shape::FlatVol};
+  double calendar_only_k{0.0};  // CalendarOnlyNaN: the one k that is NaN
+  double kink_k{0.0};           // LocalKink: the bump center (a "node")
 };
 
 std::size_t synthetic_count(const void *ctx) noexcept {
@@ -50,12 +62,42 @@ double synthetic_w(const void *ctx, std::size_t slice, double k) noexcept {
     return 0.04 * T + 0.20 * std::exp(-500.0 * k * k);
   case Shape::NonFinite:
     return std::abs(k) < 1.0e-12 ? std::numeric_limits<double>::quiet_NaN() : 0.04 * T;
+  case Shape::CalendarOnlyNaN:
+    return k == surface.calendar_only_k ? std::numeric_limits<double>::quiet_NaN() : 0.04 * T;
+  case Shape::SteepWing:
+    return 1.0 + 5.0 * std::abs(k);  // |dw/dk| = 5 > default ceiling of 2
+  case Shape::LocalKink: {
+    // Width << the default 97-pt Balanced grid spacing (~0.0104): negligible
+    // at the two uniform samples straddling kink_k, full amplitude only at
+    // kink_k itself.
+    const double d = (k - surface.kink_k) / 5.0e-4;
+    return 0.04 * T + 0.20 * std::exp(-d * d);
+  }
   }
   return std::numeric_limits<double>::quiet_NaN();
 }
 
+// LocalKink's declared "node" location: only kink_k, so the densified grid
+// gains exactly one extra sample (plus its within-tolerance duplicates are
+// deduped away by build_slice_grid).
+std::size_t synthetic_node_ks(const void *ctx, std::size_t /*slice*/,
+                              std::span<double> out) noexcept {
+  const auto &surface = *static_cast<const SyntheticSurface *>(ctx);
+  if (surface.shape != Shape::LocalKink || out.empty()) {
+    return 0;
+  }
+  out[0] = surface.kink_k;
+  return 1;
+}
+
 RiskSurfaceView view_of(const SyntheticSurface &surface) noexcept {
   return RiskSurfaceView{&surface, synthetic_count, synthetic_maturity, synthetic_w};
+}
+
+// Same callbacks, but with the node-k hint wired — the I-3 fix path.
+RiskSurfaceView densified_view_of(const SyntheticSurface &surface) noexcept {
+  return RiskSurfaceView{&surface, synthetic_count, synthetic_maturity, synthetic_w,
+                         synthetic_node_ks};
 }
 
 TEST(SurfacePolicy, PricerConfigDefaultsToBalancedDualOutputWithMandatoryAdmission) {
@@ -131,6 +173,129 @@ TEST(RiskSurfaceValidation, NonFiniteNodeIsAnAdmissionFailureNotACallError) {
   EXPECT_FALSE(result->admitted());
   EXPECT_TRUE(has_validation_failure(result->failures, ValidationFailure::NonFinite));
   EXPECT_GT(result->n_non_finite, 0u);
+}
+
+// Oracle I-1: Balanced's own grid mismatch is 97 strike points / 65 calendar
+// points over the same [-0.5,0.5] band; 64 does not divide 96, so not every
+// calendar-grid k also lands on the strike grid. Find one that does not (by
+// construction, not by luck), make it the ONLY non-finite sample (everywhere
+// else, including the whole strike grid, is finite flat vol), and confirm the
+// calendar loop sets NonFinite itself instead of silently skipping it on the
+// (pre-fix, false-for-Balanced) assumption "already reported on the strike
+// grid".
+TEST(RiskSurfaceValidation, CalendarOnlyNonFiniteSampleIsRejectedWithNonFinite) {
+  RiskSurfaceValidationConfig config;
+  config.strike_grid_points = 97;
+  config.calendar_grid_points = 65;
+  const auto grid_k = [&](std::uint32_t point, std::uint32_t n) {
+    return config.k_min +
+           (static_cast<double>(point) / static_cast<double>(n - 1)) *
+               (config.k_max - config.k_min);
+  };
+  double k_star = std::numeric_limits<double>::quiet_NaN();
+  for (std::uint32_t ci = 0; ci < config.calendar_grid_points; ++ci) {
+    const double kc = grid_k(ci, config.calendar_grid_points);
+    bool on_strike_grid = false;
+    for (std::uint32_t si = 0; si < config.strike_grid_points; ++si) {
+      if (std::fabs(grid_k(si, config.strike_grid_points) - kc) < 1.0e-9) {
+        on_strike_grid = true;
+        break;
+      }
+    }
+    if (!on_strike_grid) {
+      k_star = kc;
+      break;
+    }
+  }
+  ASSERT_TRUE(std::isfinite(k_star))
+      << "test assumption broken: every Balanced calendar k also lands on the strike grid";
+
+  SyntheticSurface surface{{0.10, 0.50}, Shape::CalendarOnlyNaN};
+  surface.calendar_only_k = k_star;
+  const auto result = validate_risk_surface(view_of(surface), config);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_FALSE(result->admitted());
+  EXPECT_TRUE(has_validation_failure(result->failures, ValidationFailure::NonFinite));
+  EXPECT_GT(result->n_non_finite, 0u);
+}
+
+// Oracle I-5: the Wing gate (Roger-Lee total-variance slope ceiling) had no
+// direct test anywhere.
+TEST(RiskSurfaceValidation, ExcessiveWingSlopeTriggersWingFailure) {
+  const SyntheticSurface surface{{0.25}, Shape::SteepWing};
+  const auto result = validate_risk_surface(view_of(surface));
+  ASSERT_TRUE(result.has_value());
+  EXPECT_FALSE(result->admitted());
+  EXPECT_TRUE(has_validation_failure(result->failures, ValidationFailure::Wing));
+  EXPECT_GT(result->n_wing_violations, 0u);
+  EXPECT_GT(result->max_wing_slope_excess, 0.0);
+}
+
+// Oracle I-5: InvalidDomain via non-ascending maturities had no direct test.
+TEST(RiskSurfaceValidation, NonAscendingMaturitiesTriggerInvalidDomain) {
+  const SyntheticSurface surface{{0.25, 0.10}, Shape::FlatVol};
+  const auto result = validate_risk_surface(view_of(surface));
+  ASSERT_TRUE(result.has_value());
+  EXPECT_FALSE(result->admitted());
+  EXPECT_TRUE(has_validation_failure(result->failures, ValidationFailure::InvalidDomain));
+}
+
+// Oracle I-3: the uniform 97-pt Balanced strike grid (Delta k ~ 0.0104) is far
+// coarser than the dense fit's own ATM-clustered node spacing, so a concave
+// kink can sit entirely BETWEEN two uniform samples and average away. This
+// documents the pre-fix hole LIVE (the undensified view admits despite the
+// kink) and proves the fix (node-k densification via `densified_view_of`,
+// which is what the real CurveSurface/VolaSession adapters now wire) rejects
+// it once the kink's own location is unioned into the sampling grid.
+TEST(RiskSurfaceValidation, NodeDensificationCatchesKinkTheUniformGridMisses) {
+  RiskSurfaceValidationConfig config;  // Balanced: 97 strike pts, [-0.5,0.5]
+  config.strike_grid_points = 97;
+  const auto grid_k = [&](std::uint32_t point, std::uint32_t n) {
+    return config.k_min +
+           (static_cast<double>(point) / static_cast<double>(n - 1)) *
+               (config.k_max - config.k_min);
+  };
+  // Midpoint between two arbitrary interior uniform samples: never coincides
+  // with a uniform grid point (uniform points are at integer indices; this
+  // is a half-integer index).
+  const double kink_k = 0.5 * (grid_k(60, config.strike_grid_points) +
+                               grid_k(61, config.strike_grid_points));
+
+  SyntheticSurface surface{{0.25}, Shape::LocalKink};
+  surface.kink_k = kink_k;
+
+  const auto coarse = validate_risk_surface(view_of(surface), config);
+  ASSERT_TRUE(coarse.has_value());
+  EXPECT_TRUE(coarse->admitted())
+      << "pre-fix hole did not reproduce: the uniform grid alone already sees the kink";
+
+  const auto densified = validate_risk_surface(densified_view_of(surface), config);
+  ASSERT_TRUE(densified.has_value());
+  EXPECT_FALSE(densified->admitted());
+  EXPECT_TRUE(has_validation_failure(densified->failures, ValidationFailure::Butterfly));
+  EXPECT_GT(densified->n_butterfly_violations, 0u);
+}
+
+// Oracle I-5: every existing rejection test drives the hand-rolled
+// SyntheticSurface callback view; the real make_risk_surface_view(CurveSurface)
+// adapter — the one production risk serving actually uses for ConvexDense/SVI
+// — had zero rejection tests. A two-slice CurveSurface with a deliberate
+// calendar crossing must be rejected through the REAL adapter.
+TEST(RiskSurfaceValidation, RealCurveSurfaceAdapterRejectsCalendarCrossing) {
+  CurveSurface surface;
+  const std::vector<double> k_nodes{-0.5, 0.0, 0.5};
+  surface.push(std::make_unique<LinearVarianceCurve>(
+      0.10, 100.0, 0.99, k_nodes, std::vector<double>{0.05, 0.04, 0.05}));
+  // Longer-dated slice with LOWER total variance than the shorter one above:
+  // a direct calendar-arbitrage crossing.
+  surface.push(std::make_unique<LinearVarianceCurve>(
+      0.50, 100.0, 0.97, k_nodes, std::vector<double>{0.02, 0.02, 0.02}));
+
+  const auto result = validate_risk_surface(make_risk_surface_view(surface));
+  ASSERT_TRUE(result.has_value());
+  EXPECT_FALSE(result->admitted());
+  EXPECT_TRUE(has_validation_failure(result->failures, ValidationFailure::Calendar));
+  EXPECT_GT(result->n_calendar_violations, 0u);
 }
 
 TEST(RiskSurfaceValidation, InvalidContractReturnsInvalidArgument) {

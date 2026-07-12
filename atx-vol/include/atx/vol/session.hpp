@@ -187,6 +187,16 @@ struct SessionDiagnostics {
   // deam.audit_fit_inversions). The audit-created analogue of a carry skip;
   // risk admission surfaces it through the same CarryGap reason.
   std::size_t n_audit_starved_expiries{0};
+  // ConvexDense-served call-price bound self-check violations (oracle finding
+  // I-2): the independent risk-surface oracle only reconstructs prices from
+  // w=sigma^2*T via Black, which is always in-bounds by construction and
+  // cannot see a served call_price() the fit clamped into range before
+  // forming w. This is `arb_check_price_bounds` run over the session's own
+  // served CurveSurface (0 for a non-ConvexDense session). Like a carry gap,
+  // this is the one fitter self-report the geometric oracle trusts, and only
+  // to ADD a ValidationFailure::PriceBounds failure — never to clear one
+  // (merge_session_failure_context, pricer_fitter.cpp).
+  std::size_t n_price_bound_violations{0};
   double min_carry_effective_pairs{0.0};
   double max_carry_dispersion{0.0};
   double max_carry_leave_one_out{0.0};
@@ -392,6 +402,17 @@ class VolaSession {
   // ── Introspection ──────────────────────────────────────────────────────────
 
   [[nodiscard]] const VolSurface& surface() const noexcept { return surface_; }
+
+  // The optional polymorphic-surface override (ConvexDense / Svi / C8):
+  // nullptr on the default eSSVI path (queries read surface()), non-null when
+  // this session was built with a non-Essvi curve family. Read-only escape
+  // hatch for a curve-family-aware caller that must inspect the SERVED
+  // slices' own fit structure (e.g. the independent risk-surface validator's
+  // node-k grid densification, oracle finding I-3) without the session
+  // itself becoming curve-family-aware anywhere else.
+  [[nodiscard]] const CurveSurface* curve_override() const noexcept {
+    return curve_override_.has_value() ? &*curve_override_ : nullptr;
+  }
 
   // Per fitted slice, ascending T. Parallel to `parity()`.
   [[nodiscard]] std::span<const SliceContext> expiries() const noexcept {

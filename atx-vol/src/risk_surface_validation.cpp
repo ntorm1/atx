@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <span>
 #include <vector>
 
 #include "atx/core/error.hpp"
@@ -32,6 +33,63 @@ void hash_double(std::uint64_t &hash, double value) noexcept {
 
 [[nodiscard]] bool finite_nonnegative(double value) noexcept {
   return std::isfinite(value) && value >= 0.0;
+}
+
+[[nodiscard]] double sample_k(const RiskSurfaceValidationConfig &config, std::uint32_t point,
+                              std::uint32_t n_points) noexcept {
+  const double fraction = static_cast<double>(point) / static_cast<double>(n_points - 1u);
+  return config.k_min + fraction * (config.k_max - config.k_min);
+}
+
+// Defensive caps on the per-slice grid densification (oracle finding I-3):
+// at most this many of the slice's own node k's are read from the adapter,
+// and the deduplicated uniform-grid + node-k union is truncated to at most
+// this many total samples. Both are generous multiples of the largest
+// configured strike_grid_points (257, Accuracy) and node_cap (40, plus a
+// handful of required_k calendar knots), so neither bound is expected to
+// bind in practice — they exist only to keep a pathological adapter from
+// making validation cost unbounded.
+constexpr std::size_t kMaxNodeKsPerSlice = 1024;
+constexpr std::size_t kMaxGridPointsPerSlice = 4096;
+
+// Build slice `slice`'s validation k-grid: config.strike_grid_points uniform
+// points across [k_min,k_max], UNIONED with that slice's own served node
+// log-moneyness locations (when the adapter exposes them), ascending and
+// deduplicated at a tight relative tolerance. Deterministic regardless of
+// worker/thread scheduling: the uniform component is config-derived and the
+// node component is read once, in the adapter's own (already deterministic)
+// order, then sorted.
+[[nodiscard]] std::vector<double> build_slice_grid(const RiskSurfaceView &surface,
+                                                    std::size_t slice,
+                                                    const RiskSurfaceValidationConfig &config) {
+  std::vector<double> ks;
+  ks.reserve(static_cast<std::size_t>(config.strike_grid_points) + 8u);
+  for (std::uint32_t point = 0; point < config.strike_grid_points; ++point) {
+    ks.push_back(sample_k(config, point, config.strike_grid_points));
+  }
+  if (surface.node_ks != nullptr) {
+    std::vector<double> node_buf(kMaxNodeKsPerSlice);
+    const std::size_t n_written =
+        surface.node_ks(surface.context, slice, std::span<double>(node_buf));
+    const std::size_t n = std::min(n_written, node_buf.size());
+    for (std::size_t i = 0; i < n; ++i) {
+      const double k = node_buf[i];
+      if (std::isfinite(k) && k >= config.k_min && k <= config.k_max) {
+        ks.push_back(k);
+      }
+    }
+  }
+  std::sort(ks.begin(), ks.end());
+  ks.erase(std::unique(ks.begin(), ks.end(),
+                       [](double a, double b) noexcept {
+                         return std::fabs(a - b) <=
+                                1.0e-9 * std::max({1.0, std::fabs(a), std::fabs(b)});
+                       }),
+           ks.end());
+  if (ks.size() > kMaxGridPointsPerSlice) {
+    ks.resize(kMaxGridPointsPerSlice);  // deterministic ascending-prefix truncation
+  }
+  return ks;
 }
 
 [[nodiscard]] bool valid_config(const RiskSurfaceValidationConfig &cfg) noexcept {
@@ -100,6 +158,31 @@ double curve_total_variance(const void *ctx, std::size_t idx, double k) noexcept
   return idx < slices.size() ? slices[idx]->w(k) : std::numeric_limits<double>::quiet_NaN();
 }
 
+// Node log-moneyness locations for one IVolCurve slice. Only the dense convex
+// fit has a discrete node grid finer than the uniform validation grid (oracle
+// I-3); every other curve family (a smooth parametric backbone) returns 0, so
+// the validator falls back to the uniform grid alone for that slice.
+std::size_t convex_node_ks(const IVolCurve &curve, std::span<double> out) noexcept {
+  const auto *dense = dynamic_cast<const ConvexDenseCurve *>(&curve);
+  if (dense == nullptr) {
+    return 0;
+  }
+  const ConvexSliceFit &fit = dense->fit();
+  if (!(fit.F > 0.0)) {
+    return 0;
+  }
+  const std::size_t n = std::min(fit.u.size(), out.size());
+  for (std::size_t i = 0; i < n; ++i) {
+    out[i] = std::log(fit.u[i] / fit.F);
+  }
+  return n;
+}
+
+std::size_t curve_node_ks(const void *ctx, std::size_t idx, std::span<double> out) noexcept {
+  const auto slices = static_cast<const CurveSurface *>(ctx)->slices();
+  return idx < slices.size() ? convex_node_ks(*slices[idx], out) : 0;
+}
+
 std::size_t session_slice_count(const void *ctx) noexcept {
   return static_cast<const VolaSession *>(ctx)->expiries().size();
 }
@@ -119,6 +202,16 @@ double session_total_variance(const void *ctx, std::size_t idx, double k) noexce
   const double forward = session.forward_at(maturity);
   const double strike = forward * std::exp(k);
   return session.total_variance(strike, maturity);
+}
+
+std::size_t session_node_ks(const void *ctx, std::size_t idx, std::span<double> out) noexcept {
+  const auto &session = *static_cast<const VolaSession *>(ctx);
+  const CurveSurface *curve = session.curve_override();
+  if (curve == nullptr) {
+    return 0;
+  }
+  const auto slices = curve->slices();
+  return idx < slices.size() ? convex_node_ks(*slices[idx], out) : 0;
 }
 
 std::size_t vol_slice_count(const void *ctx) noexcept {
@@ -148,11 +241,13 @@ double vol_total_variance(const void *ctx, std::size_t idx, double k) noexcept {
 } // namespace
 
 RiskSurfaceView make_risk_surface_view(const CurveSurface &surface) noexcept {
-  return RiskSurfaceView{&surface, curve_slice_count, curve_maturity, curve_total_variance};
+  return RiskSurfaceView{&surface, curve_slice_count, curve_maturity, curve_total_variance,
+                         curve_node_ks};
 }
 
 RiskSurfaceView make_risk_surface_view(const VolaSession &surface) noexcept {
-  return RiskSurfaceView{&surface, session_slice_count, session_maturity, session_total_variance};
+  return RiskSurfaceView{&surface, session_slice_count, session_maturity, session_total_variance,
+                         session_node_ks};
 }
 
 RiskSurfaceView make_risk_surface_view(const VolSurface &surface) noexcept {
@@ -189,22 +284,25 @@ Result<ValidationDigest> validate_risk_surface(RiskSurfaceView surface,
     }
   }
 
-  const auto sample_k = [&](std::uint32_t point, std::uint32_t n_points) noexcept {
-    const double fraction = static_cast<double>(point) / static_cast<double>(n_points - 1u);
-    return config.k_min + fraction * (config.k_max - config.k_min);
-  };
-
-  std::vector<double> prices(config.strike_grid_points);
-  std::vector<double> strikes(config.strike_grid_points);
-  std::vector<double> variances(config.strike_grid_points);
-  std::vector<bool> valid(config.strike_grid_points);
+  std::vector<double> prices;
+  std::vector<double> strikes;
+  std::vector<double> variances;
+  std::vector<bool> valid;
 
   for (std::size_t slice = 0; slice < n_slices; ++slice) {
     const double maturity = maturities[slice];
-    std::fill(valid.begin(), valid.end(), false);
+    // I-3: union the uniform grid with this slice's own served node k's (when
+    // the adapter exposes them) so a node-level kink cannot alias between two
+    // uniform samples on the optimization grid's own admission pass.
+    const std::vector<double> grid_k = build_slice_grid(surface, slice, config);
+    const std::size_t n_points = grid_k.size();
+    prices.assign(n_points, 0.0);
+    strikes.assign(n_points, 0.0);
+    variances.assign(n_points, 0.0);
+    valid.assign(n_points, false);
 
-    for (std::uint32_t point = 0; point < config.strike_grid_points; ++point) {
-      const double k = sample_k(point, config.strike_grid_points);
+    for (std::size_t point = 0; point < n_points; ++point) {
+      const double k = grid_k[point];
       const double strike = std::exp(k); // K/F; normalized forward is one.
       const double w = surface.total_variance(surface.context, slice, k);
       ++out.n_strike_samples;
@@ -242,7 +340,7 @@ Result<ValidationDigest> validate_risk_surface(RiskSurfaceView surface,
       }
     }
 
-    for (std::uint32_t point = 1; point < config.strike_grid_points; ++point) {
+    for (std::size_t point = 1; point < n_points; ++point) {
       if (!valid[point - 1] || !valid[point]) {
         continue;
       }
@@ -254,7 +352,7 @@ Result<ValidationDigest> validate_risk_surface(RiskSurfaceView surface,
       }
     }
 
-    for (std::uint32_t point = 1; point + 1 < config.strike_grid_points; ++point) {
+    for (std::size_t point = 1; point + 1 < n_points; ++point) {
       if (!valid[point - 1] || !valid[point] || !valid[point + 1]) {
         continue;
       }
@@ -265,7 +363,7 @@ Result<ValidationDigest> validate_risk_surface(RiskSurfaceView surface,
       const double slack = slope_left - slope_right;
       if (slack > config.convexity_slope_tolerance) {
         if (out.n_butterfly_violations == 0u) {
-          out.first_butterfly_k = sample_k(point, config.strike_grid_points);
+          out.first_butterfly_k = grid_k[point];
           out.first_butterfly_slice = static_cast<std::uint32_t>(slice);
           out.first_butterfly_slope_left = slope_left;
           out.first_butterfly_slope_right = slope_right;
@@ -276,12 +374,12 @@ Result<ValidationDigest> validate_risk_surface(RiskSurfaceView surface,
       }
     }
 
-    const auto check_wing = [&](std::uint32_t left, std::uint32_t right) {
+    const auto check_wing = [&](std::size_t left, std::size_t right) {
       if (!valid[left] || !valid[right]) {
         return;
       }
-      const double k_left = sample_k(left, config.strike_grid_points);
-      const double k_right = sample_k(right, config.strike_grid_points);
+      const double k_left = grid_k[left];
+      const double k_right = grid_k[right];
       const double slope = (variances[right] - variances[left]) / (k_right - k_left);
       const double excess = std::abs(slope) - config.max_abs_wing_total_variance_slope;
       if (excess > config.wing_slope_tolerance) {
@@ -291,34 +389,52 @@ Result<ValidationDigest> validate_risk_surface(RiskSurfaceView surface,
       }
     };
     check_wing(0, 1);
-    check_wing(config.strike_grid_points - 2u, config.strike_grid_points - 1u);
+    check_wing(n_points - 2u, n_points - 1u);
   }
 
   if (n_slices > 1) {
     for (std::uint32_t point = 0; point < config.calendar_grid_points; ++point) {
-      const double k = sample_k(point, config.calendar_grid_points);
+      const double k = sample_k(config, point, config.calendar_grid_points);
+      // I-1: check EVERY calendar-grid sample for finiteness/positivity here,
+      // not just pairwise deltas. The calendar grid is not guaranteed to be a
+      // subset of the strike grid (e.g. Balanced: 65 calendar pts vs 97
+      // strike pts), so a NaN/zero sliver at a calendar-only k must set
+      // NonFinite itself instead of being silently skipped on the (false)
+      // assumption it was "already reported on the strike grid".
+      const auto check_calendar_sample = [&](std::size_t slice, double w) noexcept {
+        if (std::isfinite(w) && w > 0.0) {
+          return true;
+        }
+        if (out.n_non_finite == 0u) {
+          out.first_non_finite_k = k;
+          out.first_non_finite_slice = static_cast<std::uint32_t>(slice);
+        }
+        ++out.n_non_finite;
+        out.failures |= ValidationFailure::NonFinite;
+        return false;
+      };
       double previous = surface.total_variance(surface.context, 0, k);
+      bool previous_valid = check_calendar_sample(0, previous);
       for (std::size_t slice = 1; slice < n_slices; ++slice) {
         const double current = surface.total_variance(surface.context, slice, k);
         ++out.n_calendar_samples;
-        if (!std::isfinite(previous) || !(previous > 0.0) || !std::isfinite(current) ||
-            !(current > 0.0)) {
-          previous = current;
-          continue; // already reported on the strike grid
-        }
-        const double slack = previous - current;
-        if (slack > config.calendar_total_variance_tolerance) {
-          if (out.n_calendar_violations == 0u) {
-            out.first_calendar_k = k;
-            out.first_calendar_long_slice = static_cast<std::uint32_t>(slice);
-            out.first_calendar_previous_w = previous;
-            out.first_calendar_current_w = current;
+        const bool current_valid = check_calendar_sample(slice, current);
+        if (previous_valid && current_valid) {
+          const double slack = previous - current;
+          if (slack > config.calendar_total_variance_tolerance) {
+            if (out.n_calendar_violations == 0u) {
+              out.first_calendar_k = k;
+              out.first_calendar_long_slice = static_cast<std::uint32_t>(slice);
+              out.first_calendar_previous_w = previous;
+              out.first_calendar_current_w = current;
+            }
+            ++out.n_calendar_violations;
+            out.failures |= ValidationFailure::Calendar;
+            out.max_calendar_slack = std::max(out.max_calendar_slack, slack);
           }
-          ++out.n_calendar_violations;
-          out.failures |= ValidationFailure::Calendar;
-          out.max_calendar_slack = std::max(out.max_calendar_slack, slack);
         }
         previous = current;
+        previous_valid = current_valid;
       }
     }
   }

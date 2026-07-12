@@ -79,6 +79,16 @@ void merge_session_failure_context(const VolaSession &candidate,
     // still rejects.
     digest.failures |= ValidationFailure::CarryGap;
   }
+  if (diagnostics.n_price_bound_violations > 0) {
+    // Oracle finding I-2: the geometric oracle only reconstructs prices from
+    // w via Black, which is always in-bounds by construction and cannot see
+    // a served ConvexDense call_price() the fit clamped into range before
+    // forming w. This self-report (arb_check_price_bounds over the session's
+    // own served surface) is the one exception, exactly like CarryGap: it
+    // may only ADD PriceBounds, never clear a failure the geometric oracle
+    // already found.
+    digest.failures |= ValidationFailure::PriceBounds;
+  }
 }
 
 } // namespace
