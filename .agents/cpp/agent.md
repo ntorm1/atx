@@ -1,6 +1,6 @@
 # C++ Coding Agent — atx
 
-Profile for an agent writing/reviewing C++ in this repo. Target: **safety-critical-grade quality** without sacrificing modern C++ ergonomics. Standard: **C++20**. Toolchains: MSVC 19.4x, Clang. Build: CMake. Test: GoogleTest.
+Profile for an agent writing/reviewing C++ in this repo. Target: **safety-critical-grade quality** without sacrificing modern C++ ergonomics. Standard: **C++20**. Toolchain: **clang-cl 18 (VS 2022 LLVM) + CMake presets + Ninja + LLD**, ccache compiler cache. Test: GoogleTest (vcpkg).
 
 Authoritative sources, in precedence order when they conflict:
 1. This document.
@@ -15,49 +15,45 @@ Authoritative sources, in precedence order when they conflict:
 
 Monorepo, layered: `atx-core` (vocab + IO) → `atx-tsdb` (shm store) → `atx-engine` (alpha / factory / learn / risk) → `atx-impl` (pipeline binary). Toolchain: **clang-cl + Ninja + CMake presets**; deps via vcpkg manifest + pinned FetchContent.
 
-**Run builds from a VS Developer PowerShell** (MSVC env present) or the **VSCode CMake Tools** extension. Ninja ships inside the VS install, not on PATH — for a plain shell use `scripts/atx-build.ps1` (sources vcvars + Ninja, then forwards to cmake/ctest).
+**Compiler: clang-cl 18 (VS 2022 LLVM), Debug `/Od /RTC1 -MDd /Z7` (embedded debug info — keeps objects cacheable), LLD linker, `/W4 /permissive- /WX`.** Ninja ships inside the VS install, not on PATH — use `scripts/atx-build.ps1` from any shell (sources vcvars, pins Ninja + SDK `mt.exe`, exports `CCACHE_BASEDIR`, forwards to cmake/ctest):
+
+```powershell
+powershell scripts\atx-build.ps1 configure                  # cmake --preset dev into build/
+powershell scripts\atx-build.ps1 build atx-vol-tests        # any target(s)
+powershell scripts\atx-build.ps1 -Ctest -L atx_vol_fast     # ctest passthrough
+cmake --preset dev -DATX_TEST_GROUPS="risk;data"            # compile only engine groups you touch
+```
 
 | Preset | Use |
 |---|---|
-| `ninja` | default; PCH + LLD + sccache (auto-detected), static libs, self-contained exes |
-| `dev` | iterate in a worktree: + explicit sccache, shared deps (`$ATX_DEPS_DIR`), unity test builds |
-| `dev-shared` | `dev` + atx libs as **DLLs** — smallest per-worktree artifacts, fastest relinks (experimental: validate one full build) |
+| `dev` | **the** iterate preset (scripts target it): ccache + shared deps/vcpkg + PCH, unity OFF, static libs |
+| `ninja` | alias of the same `_base` behavior; same `build/` dir |
+| `dev-shared` | `dev` + atx libs as **DLLs** — smallest artifacts, fastest relinks (experimental) |
+| `rel` / `rel-avx2` | Release benchmarks (`build-rel*/`); `rel-avx2` adds global `/arch:AVX2`, never `/fp:fast` |
 | `hygiene` | PCH **OFF** — strict per-TU includes; the include-clean gate (CI/nightly), own `build-hygiene/` |
 | `vs` | Visual Studio MSBuild generator (IDE escape hatch) |
 
-```powershell
-cmake --preset dev && cmake --build --preset dev          # configure + build all
-
-cmake --build --preset dev --target atx-engine-risk-tests # one subsystem group (relinks only it)
-ctest  --preset dev -R Risk                                # run that suite
-
-cmake --preset dev -DATX_TEST_GROUPS="risk;data"           # compile only the groups you touch
-```
-
-**Worktrees** — isolated branch + shared caches (a fresh worktree is mostly cache *hits*, not cold compiles):
+**Worktrees are cheap (2026-07-12 overhaul): fresh worktree → built `atx-vol-tests` in ~98 s.**
 
 ```powershell
-scripts/dev-setup.ps1                                            # one-time: sccache + ATX_DEPS_DIR (then open a NEW shell)
-scripts/new-worktree.ps1 -Name s8 -Branch feat/s8 -Base main    # add -Shared for the DLL preset
+scripts\dev-setup.ps1                                          # one-time per machine: ccache + caches (then NEW shell)
+scripts\new-worktree.ps1 -Name s8 -Branch feat/s8 -Base main   # worktree + submodules + configure; -Shared for DLLs
 ```
 
-No build tree is copied; two caches do the work:
-- **sccache** object cache — `SCCACHE_BASEDIR=${sourceDir}` + `-ffile-prefix-map` (root `CMakeLists.txt`) normalize paths so the *same* TU compiled in **any** worktree is a cache **hit**.
-- **shared FetchContent** (`$ATX_DEPS_DIR`) + **vcpkg binary cache** — heavy deps built once, reused by every worktree.
+No build tree is copied; three shared caches do the work (full mechanics + caveats: `scripts/dev-setup.md`):
+- **ccache** (`C:\atx-cache\ccache`) — `CCACHE_BASEDIR` + `hash_dir=false` + prefix-map `ignore_options` make the same TU hash identically in every worktree → cross-worktree cache **hits** (objects byte-identical). PCH-consumer test TUs are the exception: they recompile once per worktree at PCH speed. Check health with `ccache -s` — `Uncacheable` should stay ~0.
+- **shared vcpkg** (`VCPKG_INSTALLED_DIR=C:\atx-cache\vcpkg_installed`) — one Arrow/Parquet/gtest payload, configure says "already installed" in seconds. Branch with a *different* `vcpkg.json`? Override per-worktree: `-DVCPKG_INSTALLED_DIR=build/vcpkg_installed`.
+- **shared FetchContent** (`$ATX_DEPS_DIR` = `C:\atx-cache\deps`, all presets) — spdlog/Eigen/xsimd fetched once.
 
-clangd works immediately (committed `.clangd` reads each worktree's own `build/compile_commands.json`). Per-worktree `build/` too big or links slow → reconfigure that worktree `cmake --preset dev-shared`. Full detail: `scripts/dev-setup.md`.
+clangd works immediately (committed `.clangd` reads each worktree's own `build/compile_commands.json`).
 
-**First-build gotchas (verified the hard way — a fresh worktree is not configure-clean out of the box):**
+**Gotchas that still bite:**
 
-1. **Submodules are NOT checked out by `git worktree add`.** `atx-core/third-party/databento-cpp` lands empty, so configure dies at `add_subdirectory(... databento-cpp)` → *"does not contain a CMakeLists.txt"* + *get_target_property() called with non-existent target "databento"*. Fix once per worktree:
-   `git submodule update --init --recursive atx-core/third-party/databento-cpp`
-2. **`scripts/atx-build.ps1` can break clang-cl in a plain shell.** It prepends the VS Ninja dir to PATH, but `vcvars64.bat` *already* puts that Ninja on PATH — the redundant prepend was observed to drop the Windows SDK `mt.exe` from resolution, giving `CMAKE_MT-NOTFOUND` → *"clang-cl … is not able to compile a simple test program"* (the manifest-tool link step fails). Workaround: source vcvars and call cmake directly, no prepend:
-   `cmd /c '"…\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1 && cd /d <worktree> && cmake --preset dev …'`
-   (Proper fix = drop the NinjaDir prepend in atx-build.ps1.) `ctest` needs neither vcvars nor Ninja (static-lib exes are self-contained) — run it directly.
-3. **`dev` preset unity build collides on the `factory` test group.** Several factory test files each define the same free helpers (`noisy_close`, `fixture_panel`, `make_panel`); unity-concatenating them into one TU → *redefinition* / *call … is ambiguous*. Until the helpers are namespaced/uniquified, build that group with `-DATX_UNITY_BUILD=OFF` (or use the non-unity `ninja` preset).
-4. **ProcessExecutor tests need `atx-shm-worker` built beside the test exe.** Building only `atx-engine-<group>-tests` omits the worker binary the multi-process executor spawns; the seq==parallel suites then fault `gather_mine_scores: mine shard reported a fault` (worker NotFound, surfaces as SEH `0xc000001d` / a CHECK trap). Always also build `atx-shm-worker` when running any `*SeqParallel` / ProcessExecutor test:
-   `cmake --build build --target atx-engine-<group>-tests atx-shm-worker`
-5. **`pwsh` is not always installed** — fall back to `powershell` (Windows PowerShell 5.1) for the `*.ps1` helpers.
+1. **Manual `git worktree add` skips submodules** — `atx-core/third-party/databento-cpp` arrives empty and configure dies. `new-worktree.ps1` handles it; otherwise run `git submodule update --init --recursive`.
+2. **Don't build with raw `cmake --build`/ninja outside `atx-build.ps1` or `--preset`** — preset `environment` (the `CCACHE_*` keys) doesn't apply to raw invocations; the global ccache config covers most of it, but `CCACHE_BASEDIR` only comes from the preset or the script.
+3. **`-DATX_UNITY_BUILD=ON` (opt-in, cold CI builds only) collides on some test groups** — identically-named file-local helpers merge into one TU (`factory`, `parallel` groups). Unity is OFF in `dev`; leave it off for iteration — per-TU objects are what the cache keys on.
+4. **ProcessExecutor tests need `atx-shm-worker` built beside the test exe** — building only `atx-engine-<group>-tests` omits the worker the multi-process executor spawns; `*SeqParallel` suites then fault (SEH `0xc000001d`). Build both: `... build atx-engine-<group>-tests atx-shm-worker`.
+5. **`pwsh` is not always installed** — use `powershell` (5.1) for the `*.ps1` helpers.
 
 ---
 
@@ -160,7 +156,7 @@ clangd works immediately (committed `.clangd` reads each worktree's own `build/c
 - **Sanitizers in CI:** ASan + UBSan on every test run; TSan for threaded code. A sanitizer hit fails the build.
 - **clang-tidy is disabled in this repo.** Do not run it or treat it as a gate unless the user explicitly re-enables it. The root `.clang-tidy` intentionally sets `Checks: '-*'` because the broad profile is prohibitively slow on umbrella-header translation units. **clang-format** remains enforced; formatting is not a review topic.
 - Static analysis (clang-analyzer / cppcheck) in CI. Treat findings as defects.
-- **Build presets** (full table + worktree workflow in the Quick start above): `ninja` (default — PCH + LLD + sccache) / `dev` (worktrees — +explicit sccache + shared deps + unity) / `dev-shared` (`dev` + atx libs as DLLs) / `hygiene` (PCH OFF — strict per-TU include build). PCH parses Eigen+gtest once but **hides missing/unused includes** — so include hygiene is gated by the `hygiene` preset, not the default build. Run `cmake --preset hygiene && cmake --build --preset hygiene` before claiming include-clean. Don't add volatile (frequently-edited) headers to `pch.hpp` — it invalidates the shared PCH and forces a full rebuild.
+- **Build presets** (full table + worktree workflow in the Quick start above): `dev` is the canonical iterate preset (ccache + shared deps + PCH + LLD); `hygiene` (PCH OFF — strict per-TU include build) is the include-clean gate. PCH parses Eigen+gtest once but **hides missing/unused includes** — run `cmake --preset hygiene && cmake --build --preset hygiene` before claiming include-clean. Don't add volatile (frequently-edited) headers to `pch.hpp` — it invalidates the shared PCH and forces a full rebuild.
 - Reproducible builds; dependencies are pinned via the **vcpkg manifest** (`vcpkg.json` + `builtin-baseline`), incl. GoogleTest — restored from the vcpkg binary cache, not rebuilt per build dir. Header-only deps (Eigen, spdlog, xsimd) come via pinned `FetchContent` tags. No build-time network beyond those pinned fetches.
 
 ---
