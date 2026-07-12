@@ -156,10 +156,19 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
 // audited inversion route (curve-driver path: always; eSSVI path: only under
 // deam.audit_fit_inversions) — a certificate computed off this diagnostic
 // re-run must never vouch for fit rows that skipped the audit (§5.3/§8.1).
+//
+// `precomputed_carry` (perf C1): the eSSVI path (`run_surface_parity`) already
+// ran `resolve_chain_forward` once per chain to fit the surface; when its
+// per-slice `CarryDiagnostics` are handed in here (‖ `context`, same size),
+// the carry re-derivation below is skipped — it would recompute the IDENTICAL
+// function on the IDENTICAL arguments. Empty (the default) recomputes, the
+// fallback for any caller that genuinely reaches certification without an
+// already-resolved carry.
 [[nodiscard]] std::vector<SessionSliceDiagnostics> collect_input_diagnostics(
     const Underlying& under, const SessionInputs& in,
     std::span<const SliceContext> context,
     const AmericanCorrectionCaches& deam_caches, bool fit_rows_audited,
+    std::span<const CarryDiagnostics> precomputed_carry = {},
     std::vector<std::vector<FitObs>> *observation_cache = nullptr,
     std::vector<std::vector<double>> *source_mid_cache = nullptr,
     std::vector<std::vector<std::uint8_t>> *source_flag_cache = nullptr,
@@ -178,7 +187,9 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
   if (chain_bid_cache != nullptr) chain_bid_cache->reserve(context.size());
   if (chain_ask_cache != nullptr) chain_ask_cache->reserve(context.size());
   if (chain_ts_cache != nullptr) chain_ts_cache->reserve(context.size());
+  const bool use_precomputed_carry = precomputed_carry.size() == context.size();
   std::size_t chain_pos = 0;
+  std::size_t slice_idx = 0;
   for (const SliceContext& slice : context) {
     if (observation_cache != nullptr) observation_cache->emplace_back();
     if (source_mid_cache != nullptr) source_mid_cache->emplace_back();
@@ -198,6 +209,7 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
         std::fabs(under.chains[chain_pos].T - slice.T) >
             1.0e-10 * std::max(1.0, slice.T)) {
       out.push_back(std::move(sd));
+      ++slice_idx;
       continue;
     }
     const Chain& chain = under.chains[chain_pos++];
@@ -207,10 +219,14 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
     if (chain_ask_cache != nullptr) chain_ask_cache->back() = chain.asks;
     if (chain_ts_cache != nullptr) chain_ts_cache->back() = chain.ts_ns;
     const double rate = input_rate_at(in, slice.T);
-    const auto carry = resolve_chain_forward(
-        chain, in.S, rate, in.cash_divs, in.now_ts_ns, in.deam);
-    if (carry) {
-      sd.carry = compact_carry(carry->carry);
+    if (use_precomputed_carry) {
+      sd.carry = compact_carry(precomputed_carry[slice_idx]);
+    } else {
+      const auto carry = resolve_chain_forward(
+          chain, in.S, rate, in.cash_divs, in.now_ts_ns, in.deam);
+      if (carry) {
+        sd.carry = compact_carry(carry->carry);
+      }
     }
 
     const double df = std::exp(-rate * slice.T);
@@ -602,9 +618,6 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
             VolSurface::create(under.uid, Parametrization::Essvi,
                                std::max<std::size_t>(std::size_t{1},
                                                      under.chains.size())));
-    const AmericanCorrectionCaches fit_diagnostic_caches =
-        eff.use_deam_cache_for_fit ? sp.deam.caches
-                                   : AmericanCorrectionCaches{};
     std::vector<std::vector<FitObs>> incremental_obs;
     std::vector<std::vector<double>> incremental_mids;
     std::vector<std::vector<std::uint8_t>> incremental_flags;
@@ -613,19 +626,36 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
     std::vector<std::vector<double>> incremental_chain_bids;
     std::vector<std::vector<double>> incremental_chain_asks;
     std::vector<std::vector<std::int64_t>> incremental_chain_ts;
-    // The curve driver fits from build_observations_european, whose
-    // AndersenLake inversions are all audited in-line: fit rows ran the
-    // audited route by construction.
-    std::vector<SessionSliceDiagnostics> slice_diag =
-        collect_input_diagnostics(under, eff, crep.context,
-                                  fit_diagnostic_caches,
-                                  /*fit_rows_audited=*/true, &incremental_obs,
-                                  &incremental_mids, &incremental_flags,
-                                  &incremental_chain_mids,
-                                  &incremental_chain_flags,
-                                  &incremental_chain_bids,
-                                  &incremental_chain_asks,
-                                  &incremental_chain_ts);
+    // Perf C1: the curve driver's parallel prepass (run_deam_prepass,
+    // curve_fit.cpp) already ran resolve_chain_forward + build_observations_
+    // european for every chain -- with the EXACT same (S, rate, forward, T,
+    // df, calib, deam caches/opts) collect_input_diagnostics used to
+    // re-derive here a second time, serially. Consume `crep.input_certification`
+    // directly instead: it is ‖ `crep.context`/`crep.per_expiry` (same commit
+    // loop, same order), so this is a straight move, not a re-run. Fit rows on
+    // this path are all audited in-line by construction (unconditional true,
+    // matching the removed call's `fit_rows_audited=true`).
+    std::vector<SessionSliceDiagnostics> slice_diag;
+    slice_diag.reserve(crep.context.size());
+    for (std::size_t i = 0; i < crep.context.size(); ++i) {
+      SliceInputCertification& cert = crep.input_certification[i];
+      SessionSliceDiagnostics sd{};
+      sd.T = crep.context[i].T;
+      sd.carry = compact_carry(cert.carry);
+      sd.inversion = cert.inversion;
+      sd.inversion_available = true;
+      sd.inversion_certified = deam_inversion_certified(
+          sd.inversion, eff.calib.max_certified_deam_drop_fraction);
+      slice_diag.push_back(sd);
+      incremental_obs.push_back(std::move(cert.obs));
+      incremental_mids.push_back(std::move(cert.source_mids));
+      incremental_flags.push_back(std::move(cert.source_flags));
+      incremental_chain_mids.push_back(std::move(cert.chain_mids));
+      incremental_chain_flags.push_back(std::move(cert.chain_flags));
+      incremental_chain_bids.push_back(std::move(cert.chain_bids));
+      incremental_chain_asks.push_back(std::move(cert.chain_asks));
+      incremental_chain_ts.push_back(std::move(cert.chain_ts));
+    }
     aggregate_input_diagnostics(slice_diag, cdiag);
     cdiag.n_carry_skipped_expiries = crep.n_carry_skipped;
     retain_fitted_term_rates(eff, crep.context);
@@ -692,13 +722,18 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
   // The eSSVI path fits from build_aligned_obs: its inversions run the audited
   // route only when deam.audit_fit_inversions is set (the risk serving
   // policy); otherwise the certificate must stay false — the diagnostic
-  // builder's audits describe rows the fit never used (carry C1).
+  // builder's audits describe rows the fit never used (carry C1). The obs/
+  // audit recompute below is therefore genuinely independent of the fit (no
+  // prepass to reuse), but the CARRY resolution IS a literal duplicate of what
+  // `run_surface_parity` already computed per chain — pass `rep.carry` (perf
+  // C1) so collect_input_diagnostics skips that one redundant
+  // resolve_chain_forward call per chain.
   std::vector<SessionSliceDiagnostics> slice_diag = collect_input_diagnostics(
       under, eff, rep.context, sp.deam.caches,
-      /*fit_rows_audited=*/eff.deam.audit_fit_inversions, &incremental_obs,
-      &incremental_mids, &incremental_flags, &incremental_chain_mids,
-      &incremental_chain_flags, &incremental_chain_bids,
-      &incremental_chain_asks, &incremental_chain_ts);
+      /*fit_rows_audited=*/eff.deam.audit_fit_inversions, rep.carry,
+      &incremental_obs, &incremental_mids, &incremental_flags,
+      &incremental_chain_mids, &incremental_chain_flags,
+      &incremental_chain_bids, &incremental_chain_asks, &incremental_chain_ts);
   aggregate_input_diagnostics(slice_diag, diag);
   diag.n_carry_skipped_expiries = rep.n_carry_skipped;
   diag.n_audit_starved_expiries = rep.n_audit_starved;

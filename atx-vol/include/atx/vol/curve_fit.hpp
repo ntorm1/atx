@@ -20,8 +20,11 @@
 // out). Safe to call concurrently on distinct underlyings.
 
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
+#include "atx/vol/calib.hpp"           // FitObs, DeAmAuditDiagnostics
+#include "atx/vol/deamer.hpp"          // CarryDiagnostics
 #include "atx/vol/parity.hpp"          // ParityReport
 #include "atx/vol/surface_parity.hpp"  // SliceContext, SurfaceParityInputs
 #include "atx/vol/types.hpp"           // Result
@@ -29,6 +32,27 @@
 #include "atx/vol/vol_curve.hpp"       // CurveSurface, CurveConfig
 
 namespace atx::vol {
+
+// Per-slice de-Am INPUT certification data captured by the parallel prepass
+// (`run_deam_prepass`, curve_fit.cpp) — the same carry resolution +
+// de-Americanized-observation audit that `VolaSession::build`'s certification
+// layer used to re-derive with a SECOND, serial `resolve_chain_forward` +
+// `build_observations_european` pass (perf finding C1). Parallel to
+// `context`/`per_expiry` (one entry per committed slice, same order); every
+// field is exactly what the prepass task for that slice's chain already
+// computed, moved out — never approximated or resampled.
+struct SliceInputCertification {
+  CarryDiagnostics carry{};
+  DeAmAuditDiagnostics inversion{};
+  std::vector<FitObs> obs;                 // fit rows (ObsSet::obs)
+  std::vector<double> source_mids;         // ‖ obs; raw chain.mids at (K, side)
+  std::vector<std::uint8_t> source_flags;  // ‖ obs; raw chain.flags at (K, side)
+  std::vector<double> chain_mids;          // full-chain snapshot (incremental cache)
+  std::vector<std::uint8_t> chain_flags;
+  std::vector<double> chain_bids;
+  std::vector<double> chain_asks;
+  std::vector<std::int64_t> chain_ts;
+};
 
 // The assembled polymorphic-surface bundle. `surface` OWNS the fitted curves;
 // the vectors are parallel per fitted slice (ascending T), mirroring
@@ -42,6 +66,10 @@ struct CurveSurfaceReport {
   // Expiries dropped because carry resolution failed (confidence gate / no
   // quotable pair / degenerate forward) — surfaced, never silently skipped.
   std::size_t n_carry_skipped{0};
+  // Perf C1: per-slice input certification, ‖ context/per_expiry. Lets
+  // `VolaSession::build` construct `SessionSliceDiagnostics` + the incremental
+  // observation cache directly, without a second serial de-Am pass.
+  std::vector<SliceInputCertification> input_certification;
 };
 
 // De-Americanize + fit each expiry chain of `under` into a `CurveSurface` of the

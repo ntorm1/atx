@@ -337,9 +337,11 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
   std::vector<double> expiry_T;
   std::vector<ParityReport> per_expiry;
   std::vector<SliceContext> context;
+  std::vector<CarryDiagnostics> carry_diag;
   expiry_T.reserve(n_chains);
   per_expiry.reserve(n_chains);
   context.reserve(n_chains);
+  carry_diag.reserve(n_chains);
 
   // Everything a slice needs to be SCORED after the surface is fully assembled
   // (and possibly calendar-repaired). We defer scoring out of the fit loop so
@@ -463,6 +465,11 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
     //    stash the aligned obs so this slice can be SCORED after the surface is
     //    fully assembled and (optionally) calendar-repaired.
     context.push_back(SliceContext{T, F, d_res->borrow, q_eff, a.obs.size(), a.n_dropped});
+    // Perf C1: retain the carry diagnostics `resolve_chain_forward` already
+    // produced for this chain (step 1 above), ‖ context, so
+    // `VolaSession::build`'s certification layer can reuse it instead of a
+    // second, identical `resolve_chain_forward` call.
+    carry_diag.push_back(d_res->carry);
     pending.push_back(PendingSlice{std::move(a), T, rate, q_eff, static_cast<std::uint16_t>(idx)});
 
     ++idx;
@@ -557,6 +564,7 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
       std::move(expiry_T),
       std::move(per_expiry),
       std::move(context),
+      std::move(carry_diag),
       worst,
       calendar_arb_free,
       idx,

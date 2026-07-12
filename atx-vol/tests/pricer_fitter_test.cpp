@@ -1,7 +1,10 @@
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
+#include <cstdlib>
 #include <optional>
 #include <span>
 #include <string>
@@ -9,6 +12,7 @@
 
 #include "atx/vol/chain.hpp"
 #include "atx/vol/panel.hpp"
+#include "atx/vol/parallel_for.hpp"  // atx_auto_worker_count (ATX_VOL_FIT_WORKERS gate)
 #include "atx/vol/pricer_fitter.hpp"
 #include "atx/vol/risk_surface_validation.hpp"
 #include "atx/vol/session.hpp"
@@ -44,6 +48,143 @@ bool same(double a, double b) {
     return true;
   }
   return a == b;
+}
+
+// rfx task 5a (perf C1 dedup): portable ATX_VOL_FIT_WORKERS env set/unset, the
+// same mechanism curve_fit_parallel_test.cpp's S0-4' gate uses to force the
+// de-Am prepass worker count without a session-level knob (VolaSession::build
+// always drives fit_curve_surface with fit_workers=0 / auto).
+#if defined(_MSC_VER)
+void set_fit_workers_env(const char* value) { ::_putenv_s("ATX_VOL_FIT_WORKERS", value); }
+void unset_fit_workers_env() { ::_putenv_s("ATX_VOL_FIT_WORKERS", ""); }
+#else
+void set_fit_workers_env(const char* value) { ::setenv("ATX_VOL_FIT_WORKERS", value, 1); }
+void unset_fit_workers_env() { ::unsetenv("ATX_VOL_FIT_WORKERS"); }
+#endif
+
+// RAII guard: restores the prior ATX_VOL_FIT_WORKERS value on scope exit, even
+// if an ASSERT_* below exits the test early.
+class FitWorkersEnvGuard {
+ public:
+  FitWorkersEnvGuard() {
+#if defined(_MSC_VER)
+    char* prev = nullptr;
+    std::size_t prev_n = 0;
+    had_prev_ = (::_dupenv_s(&prev, &prev_n, "ATX_VOL_FIT_WORKERS") == 0) && (prev != nullptr);
+    if (prev != nullptr) {
+      prev_val_ = prev;
+      std::free(prev);
+    }
+#else
+    const char* prev = std::getenv("ATX_VOL_FIT_WORKERS");
+    had_prev_ = prev != nullptr;
+    if (prev != nullptr) {
+      prev_val_ = prev;
+    }
+#endif
+  }
+  FitWorkersEnvGuard(const FitWorkersEnvGuard&) = delete;
+  FitWorkersEnvGuard& operator=(const FitWorkersEnvGuard&) = delete;
+  ~FitWorkersEnvGuard() {
+    if (had_prev_) {
+      set_fit_workers_env(prev_val_.c_str());
+    } else {
+      unset_fit_workers_env();
+    }
+  }
+
+ private:
+  bool had_prev_ = false;
+  std::string prev_val_;
+};
+
+// rfx task 5a: field-wise bit-identical checks for the certification
+// diagnostics the perf-C1 dedup consumes from the parallel de-Am prepass
+// instead of a serial re-derivation. Mirrors curve_fit_parallel_test.cpp's
+// expect_per_expiry_bit_identical (EXPECT_EQ throughout -- bit-exact, not a
+// tolerance check).
+void expect_route_bit_identical(const atx::vol::InversionRouteDiagnostics& a,
+                                const atx::vol::InversionRouteDiagnostics& b,
+                                const char* label) {
+  EXPECT_EQ(a.n_proposed, b.n_proposed) << label;
+  EXPECT_EQ(a.n_audited, b.n_audited) << label;
+  EXPECT_EQ(a.n_accepted, b.n_accepted) << label;
+  EXPECT_EQ(a.n_fallback, b.n_fallback) << label;
+  EXPECT_EQ(a.p50_residual_half_spreads, b.p50_residual_half_spreads) << label;
+  EXPECT_EQ(a.p95_residual_half_spreads, b.p95_residual_half_spreads) << label;
+  EXPECT_EQ(a.max_residual_half_spreads, b.max_residual_half_spreads) << label;
+}
+
+void expect_inversion_bit_identical(const atx::vol::DeAmAuditDiagnostics& a,
+                                    const atx::vol::DeAmAuditDiagnostics& b) {
+  expect_route_bit_identical(a.shortcut, b.shortcut, "shortcut");
+  expect_route_bit_identical(a.cache, b.cache, "cache");
+  expect_route_bit_identical(a.fast, b.fast, "fast");
+  expect_route_bit_identical(a.accurate, b.accurate, "accurate");
+  EXPECT_EQ(a.n_forced_short_tenor, b.n_forced_short_tenor);
+  EXPECT_EQ(a.n_forced_low_vega, b.n_forced_low_vega);
+  EXPECT_EQ(a.n_forced_far_wing, b.n_forced_far_wing);
+  EXPECT_EQ(a.n_accurate_fallback, b.n_accurate_fallback);
+  EXPECT_EQ(a.n_rejected_residual, b.n_rejected_residual);
+  EXPECT_EQ(a.n_deam_rows, b.n_deam_rows);
+  EXPECT_EQ(a.n_deam_accepted, b.n_deam_accepted);
+}
+
+void expect_carry_bit_identical(const atx::vol::SessionCarryDiagnostics& a,
+                                const atx::vol::SessionCarryDiagnostics& b) {
+  EXPECT_EQ(a.n_candidates, b.n_candidates);
+  EXPECT_EQ(a.n_attempted, b.n_attempted);
+  EXPECT_EQ(a.n_solved, b.n_solved);
+  EXPECT_EQ(a.n_retained, b.n_retained);
+  EXPECT_EQ(a.effective_pair_count, b.effective_pair_count);
+  EXPECT_EQ(a.dispersion, b.dispersion);
+  EXPECT_EQ(a.max_leave_one_out_shift, b.max_leave_one_out_shift);
+  EXPECT_EQ(a.confidence_half_width, b.confidence_half_width);
+  EXPECT_EQ(a.max_pcp_residual, b.max_pcp_residual);
+  EXPECT_EQ(a.available, b.available);
+  EXPECT_EQ(a.confident, b.confident);
+}
+
+void expect_slice_diagnostics_bit_identical(
+    std::span<const atx::vol::SessionSliceDiagnostics> a,
+    std::span<const atx::vol::SessionSliceDiagnostics> b) {
+  ASSERT_EQ(a.size(), b.size());
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    SCOPED_TRACE("slice " + std::to_string(i));
+    EXPECT_EQ(a[i].T, b[i].T);
+    expect_carry_bit_identical(a[i].carry, b[i].carry);
+    expect_inversion_bit_identical(a[i].inversion, b[i].inversion);
+    EXPECT_EQ(a[i].inversion_available, b[i].inversion_available);
+    EXPECT_EQ(a[i].inversion_certified, b[i].inversion_certified);
+  }
+}
+
+void expect_session_diagnostics_bit_identical(const atx::vol::SessionDiagnostics& a,
+                                              const atx::vol::SessionDiagnostics& b) {
+  EXPECT_EQ(a.worst_frac_within_bidask, b.worst_frac_within_bidask);
+  EXPECT_EQ(a.mean_frac_within_bidask, b.mean_frac_within_bidask);
+  EXPECT_EQ(a.mean_chi2_reduced, b.mean_chi2_reduced);
+  EXPECT_EQ(a.mean_rmse_vol, b.mean_rmse_vol);
+  EXPECT_EQ(a.calendar_arb_free, b.calendar_arb_free);
+  EXPECT_EQ(a.n_calendar_viol_pre, b.n_calendar_viol_pre);
+  EXPECT_EQ(a.n_slices, b.n_slices);
+  EXPECT_EQ(a.n_quotes, b.n_quotes);
+  EXPECT_EQ(a.n_carry_slices, b.n_carry_slices);
+  EXPECT_EQ(a.n_carry_confident, b.n_carry_confident);
+  EXPECT_EQ(a.n_carry_skipped_expiries, b.n_carry_skipped_expiries);
+  EXPECT_EQ(a.n_audit_starved_expiries, b.n_audit_starved_expiries);
+  EXPECT_EQ(a.n_price_bound_violations, b.n_price_bound_violations);
+  EXPECT_EQ(a.min_carry_effective_pairs, b.min_carry_effective_pairs);
+  EXPECT_EQ(a.max_carry_dispersion, b.max_carry_dispersion);
+  EXPECT_EQ(a.max_carry_leave_one_out, b.max_carry_leave_one_out);
+  EXPECT_EQ(a.n_inversion_slices, b.n_inversion_slices);
+  EXPECT_EQ(a.n_iv_proposed, b.n_iv_proposed);
+  EXPECT_EQ(a.n_iv_audited, b.n_iv_audited);
+  EXPECT_EQ(a.n_iv_fallback, b.n_iv_fallback);
+  EXPECT_EQ(a.n_iv_rejected_residual, b.n_iv_rejected_residual);
+  EXPECT_EQ(a.max_iv_proposal_residual_half_spreads, b.max_iv_proposal_residual_half_spreads);
+  EXPECT_EQ(a.carry_confident, b.carry_confident);
+  EXPECT_EQ(a.inversion_certified, b.inversion_certified);
 }
 
 class PricerFitterTest : public ::testing::Test {
@@ -311,6 +452,81 @@ TEST(PricerFitterPolicy, HealthyAutoFitReportsNoFallback) {
   ASSERT_TRUE(fitter.decision().has_value());
   EXPECT_FALSE(fitter.decision()->used_fallback);
   EXPECT_EQ(fitter.decision()->primary_curve.kind, fitter.decision()->curve.kind);
+}
+
+// rfx task 5a (perf C1): `VolaSession::build`'s certification layer now
+// consumes the parallel de-Am prepass's already-computed per-slice carry +
+// inversion-audit diagnostics instead of a second, serial re-derivation. Prove
+// that dedup is behavior-preserving: fit the SAME SPY-dense board twice --
+// once with the de-Am prepass forced serial (ATX_VOL_FIT_WORKERS=1), once
+// auto (hardware_concurrency) -- and assert the certification diagnostics AND
+// the admission outcome are bit-identical, per the S0-3
+// expect_per_expiry_bit_identical precedent. The default auto-routed policy
+// on this dense board serves BOTH a LinearVariance market mark and a
+// ConvexDense risk surface (see perf finding C1's profile), so this exercises
+// both curve-driver call sites the dedup touched.
+TEST(PricerFitterPolicy, CertificationAndAdmissionBitIdenticalAcrossFitWorkerCounts) {
+  FitWorkersEnvGuard env_guard;  // restores ATX_VOL_FIT_WORKERS on scope exit
+
+  SynthPanelSpec spec = make_spy_synthetic_spec();
+  auto panel = make_synthetic_american_panel(spec);
+  ASSERT_TRUE(panel.has_value()) << panel.error().message();
+  auto chain = OptionChain::from_frame(panel->frame, spec.r, spec.spot);
+  ASSERT_TRUE(chain.has_value()) << chain.error().message();
+
+  set_fit_workers_env("1");
+  ASSERT_EQ(atx::vol::atx_auto_worker_count(), 1u);
+  PricerFitter serial{PricerConfig{}};
+  const auto t0 = std::chrono::steady_clock::now();
+  ASSERT_TRUE(serial.fit(*chain).has_value());
+  const auto t1 = std::chrono::steady_clock::now();
+  const atx::vol::SurfaceBundle serial_bundle = serial.bundle();
+
+  unset_fit_workers_env();
+  PricerFitter parallel{PricerConfig{}};
+  const auto t2 = std::chrono::steady_clock::now();
+  ASSERT_TRUE(parallel.fit(*chain).has_value());
+  const auto t3 = std::chrono::steady_clock::now();
+  const atx::vol::SurfaceBundle parallel_bundle = parallel.bundle();
+
+  // Informational only -- NOT a hard timing assert (flaky under shared CI
+  // load; mirrors curve_fit_parallel_test.cpp's SPY prints). rfx task 5c
+  // ledger datum: PricerFitter::fit cold wall time (both market-mark +
+  // risk builds) with the de-Am prepass forced serial vs auto-parallel.
+  const double ms_serial = std::chrono::duration<double, std::milli>(t1 - t0).count();
+  const double ms_parallel = std::chrono::duration<double, std::milli>(t3 - t2).count();
+  std::printf(
+      "[PricerFitterPolicy SPY] fit_workers=1 %.1fms, fit_workers=0(auto) %.1fms, "
+      "speedup=%.2fx\n",
+      ms_serial, ms_parallel, (ms_parallel > 0.0) ? (ms_serial / ms_parallel) : 0.0);
+
+  // Admission outcome: same health state + failure reasons for both surfaces.
+  EXPECT_EQ(serial_bundle.market_mark_health.state, parallel_bundle.market_mark_health.state);
+  EXPECT_EQ(serial_bundle.market_mark_health.reasons, parallel_bundle.market_mark_health.reasons);
+  EXPECT_EQ(serial_bundle.risk_health.state, parallel_bundle.risk_health.state);
+  EXPECT_EQ(serial_bundle.risk_health.reasons, parallel_bundle.risk_health.reasons);
+  ASSERT_EQ(serial_bundle.risk_health.state, atx::vol::SurfaceState::Healthy);
+
+  ASSERT_NE(serial_bundle.market_mark, nullptr);
+  ASSERT_NE(parallel_bundle.market_mark, nullptr);
+  ASSERT_NE(serial_bundle.risk, nullptr);
+  ASSERT_NE(parallel_bundle.risk, nullptr);
+
+  {
+    SCOPED_TRACE("market_mark");
+    expect_session_diagnostics_bit_identical(serial_bundle.market_mark->diagnostics(),
+                                             parallel_bundle.market_mark->diagnostics());
+    expect_slice_diagnostics_bit_identical(
+        serial_bundle.market_mark->session().slice_diagnostics(),
+        parallel_bundle.market_mark->session().slice_diagnostics());
+  }
+  {
+    SCOPED_TRACE("risk");
+    expect_session_diagnostics_bit_identical(serial_bundle.risk->diagnostics(),
+                                             parallel_bundle.risk->diagnostics());
+    expect_slice_diagnostics_bit_identical(serial_bundle.risk->session().slice_diagnostics(),
+                                           parallel_bundle.risk->session().slice_diagnostics());
+  }
 }
 
 TEST(PricerFitterPolicy, EventContextBuildsAndServesC8Surface) {

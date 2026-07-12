@@ -166,6 +166,10 @@ struct SurfaceParityReport {
   std::vector<double> expiry_T;           // per fitted slice, strictly ascending
   std::vector<ParityReport> per_expiry;   // re-Americanized metrics per expiry
   std::vector<SliceContext> context;      // per-slice re-pricing context (‖ expiry_T)
+  // Perf C1: the carry diagnostics `resolve_chain_forward` already produced
+  // for this slice (‖ context) -- lets `VolaSession::build`'s certification
+  // layer skip a second, identical `resolve_chain_forward` call per chain.
+  std::vector<CarryDiagnostics> carry;
   double worst_frac_within_bidask{0.0};   // min over expiries of frac in bid-ask
   bool calendar_arb_free{false};          // arb.hpp calendar check on the surface
   std::size_t n_slices{0};                // fitted slice count (== expiry_T.size())

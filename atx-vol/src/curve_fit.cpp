@@ -129,7 +129,55 @@ struct ChainPrepass {
   double ms_forward_borrow = 0.0;
   double ms_obs_eu = 0.0;
   double ms_parity_data = 0.0;
+  // Perf C1: the certification-layer's derived data, captured HERE (same
+  // per-chain task) instead of a second serial pass in VolaSession::build's
+  // (now-removed, for this driver) collect_input_diagnostics. Meaningful only
+  // when `usable`.
+  CarryDiagnostics carry;
+  std::vector<double> source_mids;         // ‖ obs.obs; raw chain.mids at (K, side)
+  std::vector<std::uint8_t> source_flags;  // ‖ obs.obs; raw chain.flags at (K, side)
+  std::vector<double> chain_mids;          // full-chain snapshot
+  std::vector<std::uint8_t> chain_flags;
+  std::vector<double> chain_bids;
+  std::vector<double> chain_asks;
+  std::vector<std::int64_t> chain_ts;
 };
+
+// Recover each fit observation's SOURCE chain quote (raw American mid + kill-
+// mask flags) by strike, so the incremental-cache certification data is
+// captured in the SAME parallel per-chain task that built `obs` instead of a
+// second serial pass over the fitted rows (perf finding C1). Mirrors the
+// lookup `VolaSession::build`'s (session.cpp) `collect_input_diagnostics`
+// used to perform after the fact: binary search `chain.strikes` for
+// `fit_obs.K`, then read `chain.mids`/`chain.flags` at
+// `chain_index(strike_idx, fit_obs.side)`. Clears BOTH outputs (defensive) if
+// any row fails to map back onto the chain.
+void source_quote_lookup(const Chain &chain, const std::vector<FitObs> &obs,
+                         std::vector<double> &out_mids,
+                         std::vector<std::uint8_t> &out_flags) {
+  out_mids.clear();
+  out_flags.clear();
+  out_mids.reserve(obs.size());
+  out_flags.reserve(obs.size());
+  for (const FitObs &fit_obs : obs) {
+    const auto strike_it = std::lower_bound(chain.strikes.begin(), chain.strikes.end(), fit_obs.K);
+    if (strike_it == chain.strikes.end() || *strike_it != fit_obs.K) {
+      out_mids.clear();
+      out_flags.clear();
+      return;
+    }
+    const auto strike_idx =
+        static_cast<std::uint16_t>(std::distance(chain.strikes.begin(), strike_it));
+    const std::size_t quote_idx = chain_index(strike_idx, fit_obs.side);
+    if (quote_idx >= chain.mids.size() || quote_idx >= chain.flags.size()) {
+      out_mids.clear();
+      out_flags.clear();
+      return;
+    }
+    out_mids.push_back(chain.mids[quote_idx]);
+    out_flags.push_back(chain.flags[quote_idx]);
+  }
+}
 
 [[nodiscard]] bool valid_expiry_rates(const SurfaceParityInputs &in,
                                       const Underlying &under) noexcept {
@@ -212,7 +260,18 @@ struct ChainPrepass {
     slot.borrow = d_res->borrow;
     slot.q_eff = q_eff;
     slot.df = df;
+    slot.carry = d_res->carry;
+    // Perf C1: capture the certification layer's derived inputs HERE (same
+    // task, same `chain`) instead of a second serial pass in
+    // VolaSession::build. Source-quote lookup reads `slot.obs.obs`, so it must
+    // run after the move below settles `obs`'s rows into the slot.
+    slot.chain_mids = chain.mids;
+    slot.chain_flags = chain.flags;
+    slot.chain_bids = chain.bids;
+    slot.chain_asks = chain.asks;
+    slot.chain_ts = chain.ts_ns;
     slot.obs = std::move(*obs);
+    source_quote_lookup(chain, slot.obs.obs, slot.source_mids, slot.source_flags);
     // S0-3: fan the SECOND cold de-Am (the re-Americanized parity diagnostic's
     // market-side board re-inversion) out into this same per-chain task. Pure
     // per-chain work into this task's own disjoint `slot` -- concurrent reads
@@ -249,6 +308,7 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
   CurveSurfaceReport out;
   out.context.reserve(under.chains.size());
   out.per_expiry.reserve(under.chains.size());
+  out.input_certification.reserve(under.chains.size());
   double worst = std::numeric_limits<double>::infinity();
   const bool profile = profile_enabled();
   const auto t_fit0 = ProfileClock::now();
@@ -264,7 +324,9 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
   // of band. Correctness over speed here — cold Andersen-Lake per strike, just
   // run concurrently across chains.
   const auto t_pre0 = ProfileClock::now();
-  const std::vector<ChainPrepass> prepass = run_deam_prepass(under, in, in.fit_workers, profile);
+  // Non-const: phase 2 below MOVES the larger per-chain certification vectors
+  // (perf C1) out of each committed slot instead of copying them again.
+  std::vector<ChainPrepass> prepass = run_deam_prepass(under, in, in.fit_workers, profile);
   const double ms_prepass = profile ? elapsed_ms(t_pre0, ProfileClock::now()) : 0.0;
   for (const ChainPrepass &pre : prepass) {
     if (pre.carry_failed) {
@@ -280,7 +342,7 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
   double ms_fit_slice = 0.0;
   double ms_chain_parity = 0.0;
   for (std::size_t ci = 0; ci < under.chains.size(); ++ci) {
-    const ChainPrepass &pre = prepass[ci];
+    ChainPrepass &pre = prepass[ci];
     if (!pre.usable) {
       continue;
     }
@@ -372,6 +434,28 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
     if (parity.n > 0) {
       worst = std::min(worst, parity.frac_fv_within_bidask);
     }
+
+    // Perf C1: carry the prepass's already-computed input certification data
+    // straight into the report -- VolaSession::build's certification layer
+    // consumes this instead of a second serial resolve_chain_forward +
+    // build_observations_european pass. `obs`/`inversion` are COPIED (not
+    // moved) so the end-of-function ATX_VOL_PROFILE summary below -- which
+    // still reads `prepass[*].obs.obs.size()` for every usable chain,
+    // including fit failures never pushed here -- stays intact; the larger
+    // per-chain snapshot vectors are moved (nothing downstream reads them
+    // again).
+    SliceInputCertification cert;
+    cert.carry = pre.carry;
+    cert.inversion = pre.obs.deam_audit;
+    cert.obs = pre.obs.obs;
+    cert.source_mids = std::move(pre.source_mids);
+    cert.source_flags = std::move(pre.source_flags);
+    cert.chain_mids = std::move(pre.chain_mids);
+    cert.chain_flags = std::move(pre.chain_flags);
+    cert.chain_bids = std::move(pre.chain_bids);
+    cert.chain_asks = std::move(pre.chain_asks);
+    cert.chain_ts = std::move(pre.chain_ts);
+    out.input_certification.push_back(std::move(cert));
   }
 
   if (out.surface.empty()) {
