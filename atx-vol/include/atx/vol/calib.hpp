@@ -45,11 +45,11 @@
 #include <optional>
 #include <vector>
 
-#include "atx/vol/american.hpp"     // AlOpts (de-Am Andersen-Lake accuracy preset)
-#include "atx/vol/correction.hpp"   // AmericanCorrectionCaches (optional de-Am hot path)
-#include "atx/vol/types.hpp"        // Side, Result
-#include "atx/vol/universe.hpp"     // Chain (SoA quote layout)
-#include "atx/vol/vol_surface.hpp"  // ResidualBasisKind (reused, not redefined)
+#include "atx/vol/american.hpp"    // AlOpts (de-Am Andersen-Lake accuracy preset)
+#include "atx/vol/correction.hpp"  // AmericanCorrectionCaches (optional de-Am hot path)
+#include "atx/vol/types.hpp"       // Side, Result
+#include "atx/vol/universe.hpp"    // Chain (SoA quote layout)
+#include "atx/vol/vol_surface.hpp" // ResidualBasisKind (reused, not redefined)
 
 namespace atx::vol {
 
@@ -58,9 +58,9 @@ namespace atx::vol {
 // eSSVI ρ-handling mode (AtsVolEssviRhoMode). PerSlice is the shipping
 // default; Shared / TermStructure are reserved for later work.
 enum class EssviRhoMode : std::uint8_t {
-  PerSlice = 0,       // one ρ per expiry (default)
-  Shared = 1,         // one ρ for the whole surface
-  TermStructure = 2,  // ρ(T) piecewise (future)
+  PerSlice = 0,      // one ρ per expiry (default)
+  Shared = 1,        // one ρ for the whole surface
+  TermStructure = 2, // ρ(T) piecewise (future)
 };
 
 // Optimization level, sized to economic precision (AtsVolOptimizationLevel).
@@ -91,9 +91,9 @@ enum class CalibLossKind : std::uint8_t {
 // builder writes the chosen target into `FitObs::mid`; the loss + Jacobian
 // consume that field unchanged.
 enum class CalibAnchorKind : std::uint8_t {
-  Mid = 0,  // target = ½·(bid + ask) (default)
-  Bid = 1,  // target = bid
-  Ask = 2,  // target = ask
+  Mid = 0, // target = ½·(bid + ask) (default)
+  Bid = 1, // target = bid
+  Ask = 2, // target = ask
 };
 
 // ── Calibration options ──────────────────────────────────────────────────
@@ -132,18 +132,18 @@ enum class CalibAnchorKind : std::uint8_t {
 // said 1/on), max_spread_to_mid_pct = 0.60 (comment said 0.40).
 struct CalibOpts {
   // IRLS / Newton.
-  std::uint16_t max_outer_iter{4};   // IRLS reweighting passes
-  std::uint16_t max_inner_iter{12};  // Newton steps per pass
-  double tol_param{1.0e-9};          // convergence on parameter norm
-  double tol_residual{1.0e-10};      // convergence on residual change
+  std::uint16_t max_outer_iter{4};  // IRLS reweighting passes
+  std::uint16_t max_inner_iter{12}; // Newton steps per pass
+  double tol_param{1.0e-9};         // convergence on parameter norm
+  double tol_residual{1.0e-10};     // convergence on residual change
 
   // Robust loss.
-  double huber_k{1.5};  // Huber threshold in vega-weighted residual std-devs
+  double huber_k{1.5}; // Huber threshold in vega-weighted residual std-devs
 
   // Quote filtering (read by the observation builder / accept predicate).
-  double min_vega_weight{1.0e-6};  // drop below this weight_sigma = (vega/spread)²
-  double max_spread_vol{0.05};     // drop quotes with spread/vega above this
-  double max_weight{1.0e3};        // upper clip on vega-spread weights
+  double min_vega_weight{1.0e-6}; // drop below this weight_sigma = (vega/spread)²
+  double max_spread_vol{0.05};    // drop quotes with spread/vega above this
+  double max_weight{1.0e3};       // upper clip on vega-spread weights
   // 0 = use every surviving observation. Positive = cap the per-slice
   // de-Americanized fit population before the expensive American-IV inversion,
   // selecting adaptive knots by normalized total-variance interpolation error.
@@ -158,13 +158,13 @@ struct CalibOpts {
   double max_otm_shortcut_premium_spread_frac{0.0};
 
   // Warm-start regularization.
-  double prior_strength{0.0};  // shrinkage toward θ_prev (0 = none, 1 = strong)
+  double prior_strength{0.0}; // shrinkage toward θ_prev (0 = none, 1 = strong)
 
   // eSSVI dispatch / fallback.
   EssviRhoMode essvi_rho_mode{EssviRhoMode::PerSlice};
   OptimizationLevel optimization_level{OptimizationLevel::Trading};
-  double essvi_fallback_rmse_threshold{0.01};  // vol pts; > this ⇒ fall back to SVI
-  std::uint32_t n_butterfly_grid{200};         // k-grid resolution for arb checks
+  double essvi_fallback_rmse_threshold{0.01}; // vol pts; > this ⇒ fall back to SVI
+  std::uint32_t n_butterfly_grid{200};        // k-grid resolution for arb checks
 
   // Per-level iteration caps. The active `optimization_level` selects one; the
   // legacy max_outer_iter / max_inner_iter apply when the per-level cap is 0.
@@ -185,7 +185,7 @@ struct CalibOpts {
   // Morozov discrepancy stop (B6): halt the LM once the weighted residual norm
   // falls below τ · noise_estimate.
   bool morozov_stop{false};
-  double morozov_tau{1.1};  // τ multiplier for the Morozov stop
+  double morozov_tau{1.1}; // τ multiplier for the Morozov stop
 
   // Run the static-arb validators at the end and bail on a violation.
   bool validate_no_arb{true};
@@ -193,9 +193,9 @@ struct CalibOpts {
   // Wing-residual layer (Sprint 11). Disabled by default; a strict superset of
   // backbone-only when enabled.
   bool residual_disable{true};
-  ResidualBasisKind residual_basis_kind{ResidualBasisKind::None};  // C default 0
-  std::uint8_t residual_n_basis_terms{0};  // 5..16 for C2Bspline; 0 ⇒ fitter default
-  double residual_ridge_factor{0.0};       // 0 ⇒ fitter default (1e-3)
+  ResidualBasisKind residual_basis_kind{ResidualBasisKind::None}; // C default 0
+  std::uint8_t residual_n_basis_terms{0}; // 5..16 for C2Bspline; 0 ⇒ fitter default
+  double residual_ridge_factor{0.0};      // 0 ⇒ fitter default (1e-3)
 
   // Loss function + price-target anchor (2026-05-02 SPY volar-parity review).
   CalibLossKind loss_kind{CalibLossKind::Mid};
@@ -223,19 +223,46 @@ struct CalibOpts {
 // meaningful fields of `AtsVolSviObs`; the C's IRLS `_scratch_resid_sigma` and
 // `_pad07` are dropped — the fitters keep their own scratch).
 struct FitObs {
-  double k{0.0};                // log-moneyness log(K/F)
-  double sigma_mkt{0.0};        // observed IV (annualized lognormal)
-  double w_mkt{0.0};            // total variance sigma_mkt² · T
-  double weight_w{0.0};         // w-space weight: vega² / spread² / (2σT)²
-  double active_weight_w{0.0};  // IRLS-mutable copy of weight_w (seeded equal)
-  double K{0.0};                // strike (raw)
-  double F{0.0};                // forward at this slice
-  double df{0.0};               // discount factor for T
-  double mid{0.0};              // anchor-aware target price (bid / mid / ask)
-  double spread{0.0};           // ask − bid (price units)
-  double vega{0.0};             // B76 vega at sigma_mkt
-  double noise_sigma{0.0};      // spread / vega — σ-equivalent of the half-spread
+  double k{0.0};               // log-moneyness log(K/F)
+  double sigma_mkt{0.0};       // observed IV (annualized lognormal)
+  double w_mkt{0.0};           // total variance sigma_mkt² · T
+  double weight_w{0.0};        // w-space weight: vega² / spread² / (2σT)²
+  double active_weight_w{0.0}; // IRLS-mutable copy of weight_w (seeded equal)
+  double K{0.0};               // strike (raw)
+  double F{0.0};               // forward at this slice
+  double df{0.0};              // discount factor for T
+  double mid{0.0};             // anchor-aware target price (bid / mid / ask)
+  double spread{0.0};          // ask − bid (price units)
+  double vega{0.0};            // B76 vega at sigma_mkt
+  double noise_sigma{0.0};     // spread / vega — σ-equivalent of the half-spread
   Side side{Side::Call};
+  // Stable source identity survives sorting, observation caps, and de-Am.
+  std::uint32_t source_strike_index{0};
+  // European-equivalent IV recovered from the raw symmetric midpoint. This is
+  // the parity-scoring market IV even when `mid` is anchored to bid or ask.
+  double score_sigma_mkt{0.0};
+};
+
+enum class ObsRejectionReason : std::uint8_t {
+  None = 0,
+  InvalidStrike,
+  QuoteFlag,
+  InvalidBidAsk,
+  InvalidMid,
+  SpreadToMid,
+  RawIvFailure,
+  RawIvOutOfBand,
+  SpreadVol,
+  LowVegaWeight,
+  ObservationCap,
+  Deamericanization,
+  EuropeanPrice,
+};
+
+struct ObsProvenance {
+  std::uint32_t source_strike_index{0};
+  Side side{Side::Call};
+  ObsRejectionReason rejection{ObsRejectionReason::None};
 };
 
 // Diagnostics returned by a per-slice fit (ports `AtsVolSviFitDiag`).
@@ -251,7 +278,12 @@ struct FitDiag {
 // quotes rejected by the filter cascade (`out_n_dropped` in the C).
 struct ObsSet {
   std::vector<FitObs> obs;
+  // One preferred-leg record per source strike, in source strike order.
+  std::vector<ObsProvenance> provenance;
   std::uint32_t n_dropped{0};
+  // Independent raw-mid American-IV inversions performed only for parity
+  // scoring semantics (anchor, cap warm-start, or OTM shortcut).
+  std::uint32_t n_score_inversions{0};
 };
 
 // ── Observation builder + accept predicate ───────────────────────────────
@@ -279,8 +311,7 @@ struct ObsSet {
 //         arrays are shorter than 2·n_strikes (malformed chain);
 //         NotFound (maps the C ERR_NO_DATA) if fewer than 5 rows survive;
 //         otherwise Ok with the surviving observations and the drop count.
-[[nodiscard]] Result<ObsSet> build_observations(const Chain &chain, double F,
-                                                double T, double df,
+[[nodiscard]] Result<ObsSet> build_observations(const Chain &chain, double F, double T, double df,
                                                 const CalibOpts &opts);
 
 // De-Americanized ("European-equivalent") observation builder. Runs the SAME
@@ -317,7 +348,8 @@ build_observations_european(const Chain &chain, double S, double r, double F, do
                             const CalibOpts &opts, const AmericanCorrectionCaches &caches = {},
                             const std::optional<AlOpts> &al_opts = std::nullopt,
                             double iv_tol = 1.0e-7, std::uint16_t iv_max_iter = 64,
-                            AmericanMethod method = AmericanMethod::AndersenLake);
+                            AmericanMethod method = AmericanMethod::AndersenLake,
+                            bool prepare_scoring = true);
 
 // O(1) calibrator-population predicate (ports `ats_vol_calib_obs_accepted`):
 // would the (strike_idx, side) tuple survive the same cascade as one row of
@@ -328,9 +360,7 @@ build_observations_european(const Chain &chain, double S, double r, double F, do
 // @return Ok(iv) — the inverted IV the calibrator would anchor to — when the
 //         tuple is accepted; NotFound when it is rejected; InvalidArgument if
 //         `strike_idx` is out of range or F/T/df ≤ 0.
-[[nodiscard]] Result<double> obs_accepted(const Chain &chain,
-                                          std::uint16_t strike_idx, Side side,
-                                          double F, double T, double df,
-                                          const CalibOpts &opts);
+[[nodiscard]] Result<double> obs_accepted(const Chain &chain, std::uint16_t strike_idx, Side side,
+                                          double F, double T, double df, const CalibOpts &opts);
 
-}  // namespace atx::vol
+} // namespace atx::vol

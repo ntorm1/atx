@@ -20,6 +20,7 @@ add_executable(atx-vol-tests
     support/cached_artifacts.cpp
     arb_test.cpp
     calib_test.cpp
+    prepared_fitting_test.cpp
     c8_test.cpp
     c8_calib_test.cpp
     essvi_calib_test.cpp

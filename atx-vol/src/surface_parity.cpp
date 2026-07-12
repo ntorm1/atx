@@ -12,24 +12,22 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
-#include "atx/vol/arb.hpp"         // arb_check_calendar, ArbViolation
-#include "atx/vol/black76.hpp"     // black76_value_and_vega
-#include "atx/vol/calib.hpp"       // FitObs, FitDiag, CalibOpts
-#include "atx/vol/deamer.hpp"      // de_americanize_chain, european_equiv_iv, otm_side
-#include "atx/vol/essvi_calib.hpp" // essvi_fit_slice
-#include "atx/vol/parity.hpp"      // chain_parity, ParityInputs, ParityReport
+#include "atx/vol/arb.hpp"              // arb_check_calendar, ArbViolation
+#include "atx/vol/calib.hpp"            // FitObs, FitDiag, CalibOpts
+#include "atx/vol/deamer.hpp"           // de_americanize_chain, european_equiv_iv, otm_side
+#include "atx/vol/essvi_calib.hpp"      // essvi_fit_slice
+#include "atx/vol/parity.hpp"           // chain_parity, ParityInputs, ParityReport
+#include "atx/vol/prepared_fitting.hpp" // PreparedSlice legacy compatibility seam
 #include "atx/vol/types.hpp"
 #include "atx/vol/universe.hpp"    // Underlying, Chain, chain_index
 #include "atx/vol/vol_surface.hpp" // VolSurface, EssviParams, Parametrization
 
 // PORT / PARITY NOTES
 // -------------------
-// * Per-expiry pattern reuse. The de-Americanize -> aligned-obs -> eSSVI-fit
-//   path is a faithful copy of `vola_parity.cpp` (leg_quote_valid /
-//   build_aligned_obs / the q_eff bridge). vola_parity returns only metrics, so
-//   we re-derive the fitted `EssviParams` slice here to WRITE it into the
-//   surface. Because both harnesses invert with the same `european_equiv_iv` at
-//   the same q_eff, the recovered market IVs are identical to the de-Am strip.
+// * Per-expiry pattern reuse. The de-Americanize -> prepared-slice -> eSSVI-fit
+//   path uses PreparedObservationPolicy::LegacyEssviCompatibility to preserve
+//   the historical `vola_parity.cpp` row population and arithmetic. The policy
+//   is explicit and isolated; new family-neutral consumers use Configured.
 //
 // * Model-IV read-back. Per-slice re-Am parity reads the model IV from the
 //   ASSEMBLED surface via `VolSurface::iv_on_slice(idx, k)` (= sqrt(w_slice/
@@ -57,129 +55,12 @@ namespace {
 // backbone over-determined).
 constexpr std::size_t kMinUsableObs = 5;
 
-// Floor on the bid/ask spread in the w-space weight so a locked (bid == ask)
-// but otherwise valid quote cannot divide by zero (matches deamer's floor).
-constexpr double kMinSpread = 1.0e-8;
-
 // Calendar no-arb sampling grid (spec: +/-3 over ~25 steps).
 constexpr double kArbKMin = -3.0;
 constexpr double kArbKMax = 3.0;
 constexpr std::uint32_t kArbNGrid = 25;
 constexpr double kMonotoneKMin = -0.7;
 constexpr double kMonotoneKMax = 0.7;
-
-// True iff the chosen leg's quote is invertible: strictly positive, non-crossed
-// bid/ask and a finite positive mid. `idx` is chain_index(strike_idx, side).
-// Identical predicate to de_americanize_chain's / vola_parity's leg_quote_valid.
-[[nodiscard]] bool leg_quote_valid(const Chain &chain, std::size_t idx) noexcept {
-  const double bid = chain.bids[idx];
-  const double ask = chain.asks[idx];
-  const double mid = chain.mids[idx];
-  return (bid > 0.0) && (ask > 0.0) && (ask >= bid) && std::isfinite(mid) && (mid > 0.0);
-}
-
-// The aligned, self-contained observation set rebuilt from the chain on the
-// de-Am forward. Every vector is the same length (obs.size()); `obs` feeds the
-// curve fitter, the rest feed chain_parity.
-struct AlignedObs {
-  std::vector<FitObs> obs;
-  std::vector<double> strike;
-  std::vector<double> bid;
-  std::vector<double> ask;
-  std::vector<double> mid;
-  std::vector<Side> side;
-  std::vector<double> k_log;
-  std::vector<double> market_iv;
-  std::size_t n_dropped{0};
-};
-
-// Rebuild the aligned observation set on forward `F` / carry `q_eff`. Any strike
-// whose OTM leg is unquotable or fails to invert is counted in `n_dropped`.
-// Mirrors vola_parity.cpp::build_aligned_obs.
-[[nodiscard]] AlignedObs build_aligned_obs(const Chain &chain, double S, double r, double F,
-                                           double q_eff, const DeAmOptions &deam) {
-  const double T = chain.T;
-  const double df = std::exp(-r * T);
-  const std::size_t n = chain.n_strikes();
-
-  AlignedObs a;
-  a.obs.reserve(n);
-  a.strike.reserve(n);
-  a.bid.reserve(n);
-  a.ask.reserve(n);
-  a.mid.reserve(n);
-  a.side.reserve(n);
-  a.k_log.reserve(n);
-  a.market_iv.reserve(n);
-
-  for (std::size_t i = 0; i < n; ++i) {
-    const double K = chain.strikes[i];
-    if (!(K > 0.0)) {
-      ++a.n_dropped;
-      continue;
-    }
-    const double k = std::log(K / F);
-    const Side side = otm_side(k);
-    const std::size_t idx = chain_index(static_cast<std::uint16_t>(i), side);
-    if (!leg_quote_valid(chain, idx)) {
-      ++a.n_dropped;
-      continue;
-    }
-
-    const Result<double> iv_res =
-        european_equiv_iv(chain.mids[idx], S, K, T, r, q_eff, side, deam.method, deam.al_opts,
-                          deam.caches.for_side(side), deam.iv_tol, deam.iv_max_iter);
-    if (!iv_res) {
-      ++a.n_dropped;
-      continue;
-    }
-    const double iv = *iv_res;
-
-    const double bid = chain.bids[idx];
-    const double ask = chain.asks[idx];
-    const double mid = chain.mids[idx];
-    const double spread = ask - bid;
-    const double vega = black76_value_and_vega(F, K, T, iv, df, side).vega;
-
-    // w-space weight = vega^2 / spread^2 / (2*sigma*T)^2 (calib.hpp FitObs
-    // convention). Guarded against a vanishing vega / spread; a degenerate
-    // result falls back to unit weight so the row still constrains the fit.
-    const double sp = std::fmax(spread, kMinSpread);
-    const double two_sig_t = 2.0 * iv * T;
-    double weight_w = 0.0;
-    if (vega > 0.0 && std::isfinite(vega) && two_sig_t > 0.0) {
-      weight_w = (vega * vega) / (sp * sp * two_sig_t * two_sig_t);
-    }
-    if (!std::isfinite(weight_w) || !(weight_w > 0.0)) {
-      weight_w = 1.0;
-    }
-
-    FitObs fo{};
-    fo.k = k;
-    fo.sigma_mkt = iv;
-    fo.w_mkt = iv * iv * T;
-    fo.weight_w = weight_w;
-    fo.active_weight_w = weight_w;
-    fo.K = K;
-    fo.F = F;
-    fo.df = df;
-    fo.mid = mid;
-    fo.spread = spread;
-    fo.vega = vega;
-    fo.noise_sigma = (vega > 0.0) ? (spread / vega) : 0.0;
-    fo.side = side;
-    a.obs.push_back(fo);
-
-    a.strike.push_back(K);
-    a.bid.push_back(bid);
-    a.ask.push_back(ask);
-    a.mid.push_back(mid);
-    a.side.push_back(side);
-    a.k_log.push_back(k);
-    a.market_iv.push_back(iv);
-  }
-  return a;
-}
 
 // ── Calendar-floor-constrained slice fit (active-set) ────────────────────
 //
@@ -198,24 +79,26 @@ struct AlignedObs {
 // the floored refit: a heavy pseudo-obs must not be absorbed by (or distort) the
 // small additive wing residual. The returned slice keeps its residual from the
 // initial fit only if it never needed flooring.
-[[nodiscard]] Result<EssviParams> fit_slice_calendar_floored(const AlignedObs &a, double T,
-                                                             double F, const CalibOpts &opts,
-                                                             FitDiag *diag, const EssviParams *prev,
-                                                             double df) {
+[[nodiscard]] Result<EssviParams> fit_slice_calendar_floored(const PreparedSlice &prepared,
+                                                             double T, double F,
+                                                             const CalibOpts &opts, FitDiag *diag,
+                                                             const EssviParams *prev, double df) {
+  const std::span<const FitObs> observations = prepared.fit_observations();
+  const std::vector<double> &score_k = prepared.score_columns().k_log;
   const double theta_floor = (prev != nullptr) ? prev->theta : 0.0;
-  Result<EssviParams> res = essvi_fit_slice(a.obs, T, F, opts, diag, theta_floor);
-  if (!res || prev == nullptr || a.k_log.empty()) {
+  Result<EssviParams> res = essvi_fit_slice(observations, T, F, opts, diag, theta_floor);
+  if (!res || prev == nullptr || score_k.empty()) {
     return res;
   }
 
   // Enforce the floor only over this slice's own quoted k-range (+ a small
   // margin) — the region where the calendar cross is economically real. Outside
   // it, the wing extrapolation is left free.
-  double k_lo = a.k_log.front();
-  double k_hi = a.k_log.front();
-  for (const double k : a.k_log) {
-    k_lo = std::min(k_lo, k);
-    k_hi = std::max(k_hi, k);
+  double k_lo = score_k.front();
+  double k_hi = score_k.front();
+  for (const double k_log : score_k) {
+    k_lo = std::min(k_lo, k_log);
+    k_hi = std::max(k_hi, k_log);
   }
   constexpr double kMargin = 0.10;
   // Enforce over the slice's own quoted range PLUS a near-money band, so a
@@ -227,7 +110,7 @@ struct AlignedObs {
   k_hi = std::max(k_hi + kMargin, kNearMoneyK);
 
   double w_base = 0.0; // heaviest base weight → penalty scale
-  for (const FitObs &o : a.obs) {
+  for (const FitObs &o : observations) {
     w_base = std::max(w_base, o.weight_w);
   }
   const double penalty = (w_base > 0.0 ? w_base : 1.0) * 300.0;
@@ -240,9 +123,9 @@ struct AlignedObs {
   floored_opts.residual_disable = true; // keep pseudo-obs out of the residual
 
   std::vector<FitObs> aug;
-  aug.reserve(a.obs.size() + static_cast<std::size_t>(kNGrid) + 1);
+  aug.reserve(observations.size() + static_cast<std::size_t>(kNGrid) + 1);
   for (int pass = 0; pass < kMaxPass; ++pass) {
-    aug.assign(a.obs.begin(), a.obs.end());
+    aug.assign(observations.begin(), observations.end());
     bool violated = false;
     for (int gi = 0; gi <= kNGrid; ++gi) {
       const double k = k_lo + static_cast<double>(gi) * dk;
@@ -312,7 +195,7 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
   // pass moves a slice, the parity number reflects the moved slice, not a stale
   // pre-repair read.
   struct PendingSlice {
-    AlignedObs a;               // aligned obs (strike/bid/ask/mid/side/k/mkt-iv)
+    PreparedSlice prepared;     // keyed fit rows + raw scoring population
     double T{0.0};              // slice maturity
     double rate{0.0};           // expiry-specific continuously-compounded rate
     double q_eff{0.0};          // effective carry for the re-Am scoring
@@ -355,7 +238,7 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
     }
 
     // 1. Resolve the term (forward, borrow) ONLY — the per-strike inversion
-    //    below (build_aligned_obs) rebuilds the fit observations itself, so
+    //    below rebuilds the prepared fit observations itself, so
     //    calling the full de_americanize_chain here would invert every strike a
     //    second, wasted time. resolve_chain_forward is its borrow-only front half.
     const double t_deam = profile ? now_ns() : 0.0;
@@ -373,14 +256,33 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
     // q_eff bridge: S*e^{(r-q_eff)T} == F exactly.
     const double q_eff = rate - std::log(F / in.S) / T;
 
-    // 2. Aligned, self-contained observation rebuild on (F, q_eff).
+    // 2. Keyed, self-contained observation rebuild on (F, q_eff). The explicit
+    //    compatibility policy preserves the historical eSSVI numerical contract
+    //    while making the migration seam visible; Configured is canonical for
+    //    all new family-neutral preparation.
     const double t_align = profile ? now_ns() : 0.0;
-    AlignedObs a = build_aligned_obs(chain, in.S, rate, F, q_eff, in.deam);
+    PreparedSliceInputs prepare_inputs;
+    prepare_inputs.expiry_index = static_cast<std::uint32_t>(chain_index);
+    prepare_inputs.S = in.S;
+    prepare_inputs.r = rate;
+    prepare_inputs.F = F;
+    prepare_inputs.q_eff = q_eff;
+    prepare_inputs.df = std::exp(-rate * T);
+    prepare_inputs.calib = in.calib;
+    prepare_inputs.caches = in.deam.caches;
+    prepare_inputs.al_opts = in.deam.al_opts;
+    prepare_inputs.iv_tolerance = in.deam.iv_tol;
+    prepare_inputs.iv_max_iterations = in.deam.iv_max_iter;
+    prepare_inputs.method = in.deam.method;
+    prepare_inputs.policy = PreparedObservationPolicy::LegacyEssviCompatibility;
+    Result<PreparedSlice> prepared_result = PreparedSlice::create(chain, prepare_inputs);
     if (profile)
       ms_align += now_ns() - t_align;
-    if (a.obs.size() < kMinUsableObs) {
+    if (!prepared_result.has_value() ||
+        prepared_result->fit_observations().size() < kMinUsableObs) {
       continue; // fewer than the minimum usable strikes: skip this slice
     }
+    PreparedSlice prepared = std::move(*prepared_result);
 
     // 3. Fit the eSSVI slice (natural form, T/F stamped in). MonotoneFit adds a
     //    calendar floor vs. the previous fitted slice (theta floor + active-set
@@ -389,9 +291,9 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
     FitDiag diag{};
     Result<EssviParams> slice_res =
         (in.repair == CalendarRepair::MonotoneFit)
-            ? fit_slice_calendar_floored(a, T, F, in.calib, &diag, has_prev ? &prev_slice : nullptr,
-                                         std::exp(-rate * T))
-            : essvi_fit_slice(a.obs, T, F, in.calib, &diag);
+            ? fit_slice_calendar_floored(prepared, T, F, in.calib, &diag,
+                                         has_prev ? &prev_slice : nullptr, std::exp(-rate * T))
+            : essvi_fit_slice(prepared.fit_observations(), T, F, in.calib, &diag);
     if (profile)
       ms_fit += now_ns() - t_fit;
     if (!slice_res) {
@@ -407,8 +309,10 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
     // 5. Retain the per-slice re-pricing context for the composable facade, and
     //    stash the aligned obs so this slice can be SCORED after the surface is
     //    fully assembled and (optionally) calendar-repaired.
-    context.push_back(SliceContext{T, F, d_res->borrow, q_eff, a.obs.size(), a.n_dropped});
-    pending.push_back(PendingSlice{std::move(a), T, rate, q_eff, static_cast<std::uint16_t>(idx)});
+    context.push_back(SliceContext{T, F, d_res->borrow, q_eff, prepared.fit_observations().size(),
+                                   prepared.n_dropped()});
+    pending.push_back(
+        PendingSlice{std::move(prepared), T, rate, q_eff, static_cast<std::uint16_t>(idx)});
 
     ++idx;
   }
@@ -459,10 +363,11 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
   //    one the surface actually serves.
   const double t_parity = profile ? now_ns() : 0.0;
   for (const PendingSlice &ps : pending) {
+    const PreparedScoreColumns &score = ps.prepared.score_columns();
     std::vector<double> model_iv;
-    model_iv.reserve(ps.a.k_log.size());
-    for (const double k : ps.a.k_log) {
-      model_iv.push_back(surface.iv_on_slice(ps.slice_idx, k));
+    model_iv.reserve(score.k_log.size());
+    for (const double k_log : score.k_log) {
+      model_iv.push_back(surface.iv_on_slice(ps.slice_idx, k_log));
     }
 
     ParityInputs pin{};
@@ -475,8 +380,8 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
     pin.band_k = in.band_k;
     pin.n_curve_params = 3;
     pin.caches = in.deam.caches; // re-Am through the same hot-path caches
-    ATX_TRY(const ParityReport parity, chain_parity(ps.a.strike, ps.a.bid, ps.a.ask, ps.a.mid,
-                                                    ps.a.side, model_iv, ps.a.market_iv, pin));
+    ATX_TRY(const ParityReport parity, chain_parity(score.strike, score.bid, score.ask, score.mid,
+                                                    score.side, model_iv, score.market_iv, pin));
     worst = std::min(worst, parity.frac_fv_within_bidask);
     per_expiry.push_back(parity);
   }

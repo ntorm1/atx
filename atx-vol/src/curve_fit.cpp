@@ -11,15 +11,17 @@
 #include <limits>
 #include <memory>
 #include <numeric>
+#include <optional>
 #include <utility>
 #include <vector>
 
 #include "atx/core/error.hpp"
 #include "atx/vol/calib.hpp"  // build_observations_european, ObsSet, FitObs
 #include "atx/vol/deamer.hpp" // resolve_chain_forward, european_equiv_iv, otm_side, DeAmOptions
-#include "atx/vol/parallel_for.hpp" // parallel_for (block-partition fan-out)
-#include "atx/vol/parity.hpp"       // chain_parity, ParityInputs, ParityReport
-#include "atx/vol/universe.hpp"     // Chain, chain_index
+#include "atx/vol/parallel_for.hpp"     // parallel_for (block-partition fan-out)
+#include "atx/vol/parity.hpp"           // chain_parity, ParityInputs, ParityReport
+#include "atx/vol/prepared_fitting.hpp" // canonical configured preparation
+#include "atx/vol/universe.hpp"         // Chain, chain_index
 
 namespace atx::vol {
 
@@ -54,57 +56,6 @@ using ProfileClock = std::chrono::steady_clock;
   return std::chrono::duration<double, std::milli>(t1 - t0).count();
 }
 
-// A leg's quote is invertible: strictly positive, non-crossed bid/ask, finite
-// positive mid. Identical predicate to surface_parity / de_americanize_chain.
-[[nodiscard]] bool leg_quote_valid(const Chain &chain, std::size_t idx) noexcept {
-  const double bid = chain.bids[idx];
-  const double ask = chain.asks[idx];
-  const double mid = chain.mids[idx];
-  return (bid > 0.0) && (ask > 0.0) && (ask >= bid) && std::isfinite(mid) && (mid > 0.0);
-}
-
-// Raw American NBBO bands + de-Americanized market IV per surviving OTM leg —
-// the data `chain_parity` scores the re-Americanized model against. Mirrors the
-// band/market-iv half of surface_parity's build_aligned_obs (the fit obs itself
-// come from build_observations_european, so this only gathers the scoring side).
-struct ParityData {
-  std::vector<double> strike, bid, ask, mid, k_log, market_iv;
-  std::vector<Side> side;
-};
-
-[[nodiscard]] ParityData build_parity_data(const Chain &chain, double S, double r, double F,
-                                           double q_eff, const DeAmOptions &deam) {
-  const double T = chain.T;
-  const std::size_t n = chain.n_strikes();
-  ParityData p;
-  for (std::size_t i = 0; i < n; ++i) {
-    const double K = chain.strikes[i];
-    if (!(K > 0.0)) {
-      continue;
-    }
-    const double k = std::log(K / F);
-    const Side side = otm_side(k);
-    const std::size_t idx = chain_index(static_cast<std::uint16_t>(i), side);
-    if (!leg_quote_valid(chain, idx)) {
-      continue;
-    }
-    const Result<double> iv_res =
-        european_equiv_iv(chain.mids[idx], S, K, T, r, q_eff, side, deam.method, deam.al_opts,
-                          deam.caches.for_side(side), deam.iv_tol, deam.iv_max_iter);
-    if (!iv_res) {
-      continue;
-    }
-    p.strike.push_back(K);
-    p.bid.push_back(chain.bids[idx]);
-    p.ask.push_back(chain.asks[idx]);
-    p.mid.push_back(chain.mids[idx]);
-    p.side.push_back(side);
-    p.k_log.push_back(k);
-    p.market_iv.push_back(*iv_res);
-  }
-  return p;
-}
-
 // Per-chain output slot for the parallel de-Am pre-pass (phase 1). `usable`
 // mirrors EXACTLY the set of `continue` gates the old sequential loop applied
 // (T<=0, forward resolve failed, F non-finite/non-positive, obs < kMinUsableObs)
@@ -121,11 +72,9 @@ struct ChainPrepass {
   double borrow = 0.0;
   double q_eff = 0.0;
   double df = 0.0;
-  ObsSet obs;        // meaningful only when `usable`
-  ParityData parity; // meaningful only when `usable && in.score_parity` (S0-3)
+  std::optional<PreparedSlice> prepared; // meaningful only when `usable`
   double ms_forward_borrow = 0.0;
   double ms_obs_eu = 0.0;
-  double ms_parity_data = 0.0;
 };
 
 [[nodiscard]] bool valid_expiry_rates(const SurfaceParityInputs &in,
@@ -190,14 +139,27 @@ struct ChainPrepass {
     // fit/parity walk below — this pre-pass must stay cold for the same reason.
     const AmericanCorrectionCaches fit_caches =
         in.use_deam_cache_for_fit ? in.deam.caches : AmericanCorrectionCaches{};
+    PreparedSliceInputs prepare_inputs;
+    prepare_inputs.expiry_index = static_cast<std::uint32_t>(i);
+    prepare_inputs.S = in.S;
+    prepare_inputs.r = rate;
+    prepare_inputs.F = F;
+    prepare_inputs.q_eff = q_eff;
+    prepare_inputs.df = df;
+    prepare_inputs.calib = in.calib;
+    prepare_inputs.caches = fit_caches;
+    prepare_inputs.al_opts = in.deam.al_opts;
+    prepare_inputs.iv_tolerance = in.deam.iv_tol;
+    prepare_inputs.iv_max_iterations = in.deam.iv_max_iter;
+    prepare_inputs.method = in.deam.method;
+    prepare_inputs.policy = PreparedObservationPolicy::Configured;
+    prepare_inputs.prepare_scoring = in.score_parity;
     const auto t_obs0 = ProfileClock::now();
-    auto obs = build_observations_european(chain, in.S, rate, F, T, df, in.calib, fit_caches,
-                                           in.deam.al_opts, in.deam.iv_tol, in.deam.iv_max_iter,
-                                           in.deam.method);
+    Result<PreparedSlice> prepared = PreparedSlice::create(chain, prepare_inputs);
     if (profile) {
       slot.ms_obs_eu = elapsed_ms(t_obs0, ProfileClock::now());
     }
-    if (!obs || obs->obs.size() < kMinUsableObs) {
+    if (!prepared || prepared->fit_observations().size() < kMinUsableObs) {
       return;
     }
 
@@ -207,21 +169,7 @@ struct ChainPrepass {
     slot.borrow = d_res->borrow;
     slot.q_eff = q_eff;
     slot.df = df;
-    slot.obs = std::move(*obs);
-    // S0-3: fan the SECOND cold de-Am (the re-Americanized parity diagnostic's
-    // market-side board re-inversion) out into this same per-chain task. Pure
-    // per-chain work into this task's own disjoint `slot` -- concurrent reads
-    // through a populated AmericanCorrectionCaches are already proven race-free
-    // (S0-1 review; `value_chain` fans out `american_implied_vol` against a
-    // populated cache with this identical parallel_for helper). Phase 2 below
-    // just reads `pre.parity`; `build_parity_data` itself is unchanged.
-    if (in.score_parity) {
-      const auto t_parity0 = ProfileClock::now();
-      slot.parity = build_parity_data(chain, in.S, rate, F, q_eff, in.deam);
-      if (profile) {
-        slot.ms_parity_data = elapsed_ms(t_parity0, ProfileClock::now());
-      }
-    }
+    slot.prepared.emplace(std::move(*prepared));
     slot.usable = true;
   });
   return prepass;
@@ -278,6 +226,8 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
     const double F = pre.F;
     const double q_eff = pre.q_eff;
     const double df = pre.df;
+    const PreparedSlice &prepared = *pre.prepared;
+    out.n_score_inversions += prepared.provenance().n_score_inversions;
 
     // 3. Fit the configured curve kind from the European obs.
     //    Calendar floor: previous fitted slice's total variance (ascending T).
@@ -301,7 +251,8 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
     // calendar structure this trades some price-in-band tightness for no-arb — an
     // explicit product choice (see spy_bidask_regression_test's rebaselined floor).
     const auto t_slice0 = ProfileClock::now();
-    auto slice_res = fit_slice_curve(cfg, pre.obs.obs, F, T, df, w_prev, calendar_floor_knots);
+    auto slice_res =
+        fit_slice_curve(cfg, prepared.fit_observations(), F, T, df, w_prev, calendar_floor_knots);
     if (profile) {
       ms_fit_slice += elapsed_ms(t_slice0, ProfileClock::now());
     }
@@ -312,26 +263,22 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
 
     // 4. Score re-Americanized parity off the fitted slice's own iv(k). A parity
     //    (diagnostic) failure is non-fatal: keep the slice, push a zeroed report.
-    //    `in.score_parity` (S0-2) opts OUT of this block entirely: it is the
-    //    SECOND cold de-Am pass over the chain -- a caller that only needs the
-    //    fitted surface skips it. `parity` stays the default-constructed zeroed
+    //    `in.score_parity` opts OUT of this block entirely. The prepared score
+    //    rows are the same keyed population as the fit rows, so scoring cannot
+    //    silently reintroduce a quote rejected by filtering or the cap.
+    //    `parity` stays the default-constructed zeroed
     //    ParityReport{} (n == 0), so `worst` below never advances past its
     //    `infinity` init and `worst_frac_within_bidask` resolves to 0.0 -- the
     //    intended "no diagnostic" sentinel.
-    //    S0-3: the market-side de-Am (`build_parity_data`) already ran in phase
-    //    1's parallel prepass (under the same `in.score_parity` guard); this
-    //    block only reads the precomputed slot and does the cheap fitted-model
-    //    scoring (`slice->iv(k)` + `chain_parity`) that genuinely needs the
-    //    fitted slice.
     ParityReport parity{};
     if (in.score_parity) {
       const auto t_parity0 = ProfileClock::now();
-      const ParityData &pd = pre.parity;
-      if (pd.strike.size() >= 4) {
+      const PreparedScoreColumns &score = prepared.score_columns();
+      if (score.k_log.size() >= 4u) {
         std::vector<double> model_iv;
-        model_iv.reserve(pd.k_log.size());
-        for (const double k : pd.k_log) {
-          model_iv.push_back(slice->iv(k));
+        model_iv.reserve(score.k_log.size());
+        for (const double k_log : score.k_log) {
+          model_iv.push_back(slice->iv(k_log));
         }
         ParityInputs pin{};
         pin.S = in.S;
@@ -342,9 +289,12 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
         pin.al_opts = in.deam.al_opts;
         pin.band_k = in.band_k;
         pin.n_curve_params = 3; // nominal chi2 dof (informational for dense fits)
-        pin.caches = in.deam.caches;
-        auto pr =
-            chain_parity(pd.strike, pd.bid, pd.ask, pd.mid, pd.side, model_iv, pd.market_iv, pin);
+        // Re-Americanize through the same cache policy that produced the one
+        // canonical European row. A cold fit must not score against a cached
+        // inverse map (or vice versa).
+        pin.caches = in.use_deam_cache_for_fit ? in.deam.caches : AmericanCorrectionCaches{};
+        auto pr = chain_parity(score.strike, score.bid, score.ask, score.mid, score.side, model_iv,
+                               score.market_iv, pin);
         if (pr) {
           parity = *pr;
         }
@@ -356,8 +306,8 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
 
     // 5. Commit the slice + its context (ascending T by construction).
     out.surface.push(std::move(*slice_res));
-    out.context.push_back(SliceContext{T, F, pre.borrow, q_eff, pre.obs.obs.size(),
-                                       static_cast<std::size_t>(pre.obs.n_dropped)});
+    out.context.push_back(SliceContext{T, F, pre.borrow, q_eff, prepared.fit_observations().size(),
+                                       static_cast<std::size_t>(prepared.n_dropped())});
     out.per_expiry.push_back(parity);
     if (parity.n > 0) {
       worst = std::min(worst, parity.frac_fv_within_bidask);
@@ -372,26 +322,23 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
   if (profile) {
     double ms_forward_borrow = 0.0;
     double ms_obs_eu = 0.0;
-    double ms_parity_data = 0.0;
     std::size_t n_usable = 0;
     std::size_t n_quotes = 0;
     for (const ChainPrepass &pre : prepass) {
       ms_forward_borrow += pre.ms_forward_borrow;
       ms_obs_eu += pre.ms_obs_eu;
-      ms_parity_data += pre.ms_parity_data;
       if (pre.usable) {
         ++n_usable;
-        n_quotes += pre.obs.obs.size();
+        n_quotes += pre.prepared->fit_observations().size();
       }
     }
     std::fprintf(stderr,
                  "[ATX_VOL_PROFILE] curve_fit_total=%.3fms prepass_wall=%.3fms "
                  "forward_borrow_sum=%.3fms obs_eu_sum=%.3fms fit_slice_sum=%.3fms "
-                 "parity_data_sum=%.3fms chain_parity_sum=%.3fms usable=%zu "
+                 "chain_parity_sum=%.3fms usable=%zu "
                  "slices=%zu quotes=%zu workers=%u\n",
                  elapsed_ms(t_fit0, ProfileClock::now()), ms_prepass, ms_forward_borrow, ms_obs_eu,
-                 ms_fit_slice, ms_parity_data, ms_chain_parity, n_usable, out.n_slices, n_quotes,
-                 in.fit_workers);
+                 ms_fit_slice, ms_chain_parity, n_usable, out.n_slices, n_quotes, in.fit_workers);
   }
   return Ok(std::move(out));
 }

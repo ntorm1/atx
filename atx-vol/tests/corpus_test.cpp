@@ -27,7 +27,9 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -37,32 +39,173 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <random>
+#include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
-#include "atx/vol/american.hpp"        // AmericanGreeks
-#include "atx/vol/backtest.hpp"        // Clock, MarketSnapshot, run_backtest
-#include "atx/vol/chain.hpp"           // OptionChain
-#include "atx/vol/corpus.hpp"          // build_corpus, CorpusManifest, ...
-#include "atx/vol/data.hpp"            // iso_to_ns, year_fraction
-#include "atx/vol/dispersion.hpp"      // DispersionUniverse, DroppedName
-#include "atx/vol/market_env.hpp"      // MarketEnv
-#include "atx/vol/panel.hpp"           // make_synthetic_american_panel, SynthPanelSpec
-#include "atx/vol/priced_surface.hpp"  // PricedSurface
-#include "atx/vol/pricer_fitter.hpp"   // PricerFitter, PricerConfig
-#include "atx/vol/session.hpp"         // VolaSession::to_priced_surface
-#include "atx/vol/spy_fixture.hpp"     // make_spy_synthetic_spec
-#include "atx/vol/strategy.hpp"        // DispersionStrategy
-#include "atx/vol/surface_archive.hpp" // SurfaceArchive
-#include "atx/vol/types.hpp"           // Side
-#include "atx/vol/vol_curve.hpp"       // CurveConfig, VolCurveKind, to_string
+#include "atx/vol/american.hpp"             // AmericanGreeks
+#include "atx/vol/backtest.hpp"             // Clock, MarketSnapshot, run_backtest
+#include "atx/vol/chain.hpp"                // OptionChain
+#include "atx/vol/corpus.hpp"               // build_corpus, CorpusManifest, ...
+#include "atx/vol/data.hpp"                 // iso_to_ns, year_fraction
+#include "atx/vol/detail/fit_scheduler.hpp" // run_bounded_fit_tasks
+#include "atx/vol/dispersion.hpp"           // DispersionUniverse, DroppedName
+#include "atx/vol/market_env.hpp"           // MarketEnv
+#include "atx/vol/panel.hpp"                // make_synthetic_american_panel, SynthPanelSpec
+#include "atx/vol/priced_surface.hpp"       // PricedSurface
+#include "atx/vol/pricer_fitter.hpp"        // PricerFitter, PricerConfig
+#include "atx/vol/session.hpp"              // VolaSession::to_priced_surface
+#include "atx/vol/spy_fixture.hpp"          // make_spy_synthetic_spec
+#include "atx/vol/strategy.hpp"             // DispersionStrategy
+#include "atx/vol/surface_archive.hpp"      // SurfaceArchive
+#include "atx/vol/types.hpp"                // Side
+#include "atx/vol/vol_curve.hpp"            // CurveConfig, VolCurveKind, to_string
 
 using namespace atx::vol;
 namespace fs = std::filesystem;
 
 namespace {
+
+class BoundedRendezvous {
+public:
+  explicit BoundedRendezvous(unsigned target) : target_{target} {}
+
+  [[nodiscard]] bool arrive_and_wait() {
+    constexpr unsigned kMaxAttempts = 1'000'000u;
+    const unsigned arrived = arrived_.fetch_add(1u) + 1u;
+    if (arrived >= target_) {
+      return true;
+    }
+    for (unsigned attempt = 0u; attempt < kMaxAttempts; ++attempt) {
+      if (arrived_.load() >= target_) {
+        return true;
+      }
+      std::this_thread::yield();
+    }
+    return false;
+  }
+
+private:
+  unsigned target_{};
+  std::atomic_uint arrived_{0u};
+};
+
+TEST(FitScheduler, PeakConcurrentTasksNeverExceedsExplicitBudget) {
+  constexpr std::size_t kTaskCount = 6u;
+  constexpr unsigned kBudget = 3u;
+  std::array<std::atomic_uint, kTaskCount> visits{};
+  std::atomic_uint active{0u};
+  unsigned peak = 0u;
+  std::mutex peak_mutex;
+  BoundedRendezvous rendezvous{kBudget};
+
+  const Status status =
+      detail::run_bounded_fit_tasks(kTaskCount, kBudget, [&](std::size_t index) -> Status {
+        visits[index].fetch_add(1u);
+        const unsigned now = active.fetch_add(1u) + 1u;
+        {
+          const std::lock_guard lock{peak_mutex};
+          peak = std::max(peak, now);
+        }
+        if (!rendezvous.arrive_and_wait()) {
+          active.fetch_sub(1u);
+          return atx::core::Err(ErrorCode::Internal, "scheduler underprovisioned");
+        }
+        active.fetch_sub(1u);
+        return atx::core::Ok();
+      });
+
+  ASSERT_TRUE(status) << status.error().to_string();
+  EXPECT_EQ(peak, kBudget);
+  EXPECT_EQ(active.load(), 0u);
+  for (const std::atomic_uint &visit : visits) {
+    EXPECT_EQ(visit.load(), 1u);
+  }
+}
+
+TEST(FitScheduler, WorkerExceptionReturnsInternalAfterJoiningAllWork) {
+  constexpr std::size_t kTaskCount = 8u;
+  constexpr unsigned kBudget = 4u;
+  std::array<std::atomic_uint, kTaskCount> visits{};
+  BoundedRendezvous rendezvous{kBudget};
+  const std::thread::id caller_id = std::this_thread::get_id();
+  std::atomic_bool injected{false};
+
+  const Status status =
+      detail::run_bounded_fit_tasks(kTaskCount, kBudget, [&](std::size_t index) -> Status {
+        visits[index].fetch_add(1u);
+        if (!rendezvous.arrive_and_wait()) {
+          return atx::core::Err(ErrorCode::Internal, "scheduler underprovisioned");
+        }
+        if (std::this_thread::get_id() != caller_id && !injected.exchange(true)) {
+          throw std::runtime_error{"forced worker failure"};
+        }
+        return atx::core::Ok();
+      });
+
+  ASSERT_FALSE(status);
+  EXPECT_EQ(status.error().code(), ErrorCode::Internal);
+  EXPECT_TRUE(injected.load());
+  for (const std::atomic_uint &visit : visits) {
+    EXPECT_EQ(visit.load(), 1u);
+  }
+}
+
+TEST(FitScheduler, IndexedOutputAndLowestFailureAreDeterministicAcrossBudgets) {
+  constexpr std::size_t kTaskCount = 7u;
+  std::array<std::size_t, kTaskCount> serial_output{};
+  std::array<std::size_t, kTaskCount> parallel_output{};
+  const auto run = [](unsigned budget, std::array<std::size_t, kTaskCount> &output) -> Status {
+    return detail::run_bounded_fit_tasks(
+        kTaskCount, budget, [&output](std::size_t index) -> Status {
+          output[index] = (index + 1u) * 17u;
+          if (index == 1u) {
+            return atx::core::Err(ErrorCode::NotFound, "first indexed failure");
+          }
+          if (index == 5u) {
+            return atx::core::Err(ErrorCode::InvalidArgument, "later indexed failure");
+          }
+          return atx::core::Ok();
+        });
+  };
+
+  const Status serial = run(1u, serial_output);
+  const Status parallel = run(4u, parallel_output);
+
+  ASSERT_FALSE(serial);
+  ASSERT_FALSE(parallel);
+  EXPECT_EQ(serial.error().code(), ErrorCode::NotFound);
+  EXPECT_EQ(parallel.error().code(), ErrorCode::NotFound);
+  EXPECT_EQ(serial.error().message(), "first indexed failure");
+  EXPECT_EQ(parallel.error().message(), "first indexed failure");
+  EXPECT_EQ(parallel_output, serial_output);
+}
+
+TEST(FitScheduler, PartialWorkerLaunchFailureAbortsWaitingWorkersWithoutRunningTasks) {
+  std::atomic_uint visits{0u};
+  detail::FitSchedulerTestHooks hooks;
+  hooks.before_worker_launch = [](std::size_t ordinal) {
+    if (ordinal == 1u) {
+      throw std::runtime_error{"forced jthread construction failure"};
+    }
+  };
+
+  const Status status = detail::run_bounded_fit_tasks(
+      8u, 4u,
+      [&visits](std::size_t) -> Status {
+        visits.fetch_add(1u);
+        return atx::core::Ok();
+      },
+      &hooks);
+
+  ASSERT_FALSE(status);
+  EXPECT_EQ(status.error().code(), ErrorCode::Internal);
+  EXPECT_EQ(visits.load(), 0u);
+}
 
 // Bit-for-bit double equality via the raw uint64 pattern (the round-trip gate is
 // BIT-identical, not merely close).
@@ -1516,7 +1659,7 @@ TEST(CorpusBuildSession, SyntheticThirteenNameThreeDateBreadthScoreboard) {
   }
   DispersionConfig dispersion_cfg;
   dispersion_cfg.missing.policy = MissingNamePolicy::DropRenormalize;
-  dispersion_cfg.record_diagnostics = true;  // opt into n_names_dropped series (now off by default)
+  dispersion_cfg.record_diagnostics = true; // opt into n_names_dropped series (now off by default)
 
   RunConfig serial_cfg;
   serial_cfg.price.n_threads = 1u;
