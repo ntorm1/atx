@@ -30,7 +30,10 @@ double curve_skew_slope(const IVolCurve& c, double k_log) noexcept {
 
 double vega_slope_per_spot(const IVolCurve& c, double k_log, double S,
                            const StickyParams& sp) noexcept {
-  if (!(S > 0.0)) {
+  // Reject non-finite S explicitly: !(S > 0.0) alone catches NaN / <= 0 but
+  // would wave S = +inf through (the division then yields 0, not the NaN the
+  // header promises for a non-finite spot).
+  if (!std::isfinite(S) || !(S > 0.0)) {
     return kNaN;
   }
   const double skew_slope = curve_skew_slope(c, k_log);

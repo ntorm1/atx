@@ -13,9 +13,11 @@
 // Coverage for SpiderRock's skew-adjusted delta: Adjusted Delta = Delta +
 // VegaSlope * Vega, VegaSlope = (1 - omega) * (-dSigma/dk) / S. Test 2
 // hand-derives the raw-SVI analytic dw/dk and cross-checks it against
-// `curve_skew_slope`'s central-FD path; the rest exercise the sticky-delta /
-// sticky-strike blend, the sign of the adjustment for a downward-into-puts
-// smile, and documented edge behavior (S <= 0, NaN propagation, FD stencil
+// `curve_skew_slope`'s central-FD path; two sign tests pin BOTH directions
+// of the sticky-delta adjustment (a locally POSITIVE skew slope lowers the
+// adjusted delta; the typical index put skew's globally NEGATIVE slope
+// RAISES it); the rest exercise the sticky-delta / sticky-strike blend and
+// documented edge behavior (S <= 0 / non-finite, NaN propagation, FD stencil
 // straddling a LinearVarianceCurve wing clamp).
 
 namespace {
@@ -92,12 +94,16 @@ TEST(AdjustedGreeks, StickyStrikeOmegaOneIsRaw) {
   EXPECT_DOUBLE_EQ(vega_slope_strike, 0.0);
 }
 
-TEST(AdjustedGreeks, PutSkewLowersCallAdjustedDelta) {
-  // Overall put-skewed smile (put wing 0.30/0.10 well above the call wing
-  // 0.06/0.12), but the segment straddling k_log=0.25 (an OTM call) still
-  // curls upward locally (0.04 -> 0.06), a positive local skew slope there
-  // -- exactly the SVI-style "smile past the minimum" shape a real
-  // put-skewed board exhibits on its call wing.
+TEST(AdjustedGreeks, LocallyPositiveSkewSlopeLowersAdjustedDelta) {
+  // Sign direction 1: where the smile's LOCAL slope is positive (dSigma/dk
+  // > 0), sticky-delta gives VegaSlope = -dSigma/dk / S < 0, so the adjusted
+  // delta drops below raw. The evaluated k=0.25 sits past the smile minimum
+  // on the call wing where variance curls back up (0.04 -> 0.06 over
+  // [0, 0.5]) — the SVI-style shape a real board's call wing exhibits. NOTE:
+  // the curve's overall put skew (0.30 put wing vs 0.12 call wing, kept for
+  // realism) is NOT what drives the sign here; a typical put-skewed strike
+  // whose local slope is negative moves the OTHER way — see the companion
+  // GlobalPutSkewRaisesAdjustedDelta test.
   const LinearVarianceCurve curve(
       0.5, 100.0, 0.99, std::vector<double>{-1.0, -0.3, 0.0, 0.5, 1.0},
       std::vector<double>{0.30, 0.10, 0.04, 0.06, 0.12});
@@ -116,6 +122,44 @@ TEST(AdjustedGreeks, PutSkewLowersCallAdjustedDelta) {
   EXPECT_LT(adj.delta, call_g.delta);
 }
 
+TEST(AdjustedGreeks, GlobalPutSkewRaisesAdjustedDelta) {
+  // Sign direction 2 — the REAL common case (typical index put skew):
+  // total variance falls monotonically with k, so dSigma/dk < 0 everywhere,
+  // VegaSlope = -dSigma/dk / S > 0 under omega=0 sticky-delta, and the
+  // adjusted call delta RISES above raw (as spot rallies, the sliding smile
+  // re-marks a fixed strike to a HIGHER vol, adding positive spot exposure
+  // through vega). Hand-derived expected values (curve is piecewise-linear
+  // and k=0.25 is interior, so the central FD is exact, not approximate):
+  //   dw/dk        = (0.04 - 0.16) / (1.0 - 0.0)        = -0.12
+  //   w(0.25)      = 0.16 + 0.25*(-0.12)                =  0.13
+  //   sigma        = sqrt(0.13 / 0.5)  = sqrt(0.26)     ~  0.509902
+  //   dSigma/dk    = -0.12 / (2 * 0.509902 * 0.5)       ~ -0.235339
+  //   vega_slope   = -(-0.235339) / 100                 ~ +0.00235339
+  //   adj delta    = 0.4 + 0.00235339 * 15              ~  0.435301
+  const double T = 0.5;
+  const LinearVarianceCurve curve(T, 100.0, 0.99, std::vector<double>{-1.0, 0.0, 1.0},
+                                  std::vector<double>{0.30, 0.16, 0.04});
+  const double k_log = 0.25;
+  const double S = 100.0;
+
+  const double w_at_k = 0.16 + 0.25 * (0.04 - 0.16);
+  const double sigma = std::sqrt(w_at_k / T);
+  const double expected_skew_slope = -0.12 / (2.0 * sigma * T);
+  ASSERT_LT(expected_skew_slope, 0.0);
+  EXPECT_NEAR(curve_skew_slope(curve, k_log), expected_skew_slope, 1e-9);
+
+  const double vega_slope = vega_slope_per_spot(curve, k_log, S, StickyParams{0.0});
+  const double expected_vega_slope = -expected_skew_slope / S;
+  ASSERT_GT(vega_slope, 0.0);
+  EXPECT_NEAR(vega_slope, expected_vega_slope, 1e-12);
+
+  const Greeks call_g{0.4, 0.02, 15.0, -3.0, 2.0, 0.05, 0.1, 0.02};
+  const Greeks adj = skew_adjusted(call_g, vega_slope);
+
+  EXPECT_GT(adj.delta, call_g.delta);
+  EXPECT_NEAR(adj.delta, call_g.delta + expected_vega_slope * call_g.vega, 1e-10);
+}
+
 TEST(AdjustedGreeks, NonPositiveOrNonFiniteSpotYieldsNaN) {
   const SviParams p{0.02, 0.15, -0.4, 0.05, 0.2, 0.5, 100.0};
   const SviCurve curve(p, 0.99);
@@ -124,6 +168,8 @@ TEST(AdjustedGreeks, NonPositiveOrNonFiniteSpotYieldsNaN) {
   EXPECT_TRUE(std::isnan(vega_slope_per_spot(curve, k_log, 0.0)));
   EXPECT_TRUE(std::isnan(vega_slope_per_spot(curve, k_log, -50.0)));
   EXPECT_TRUE(std::isnan(vega_slope_per_spot(curve, k_log, kNaN)));
+  EXPECT_TRUE(std::isnan(
+      vega_slope_per_spot(curve, k_log, std::numeric_limits<double>::infinity())));
 }
 
 TEST(AdjustedGreeks, NaNVegaSlopePropagatesToAdjustedDeltaOnly) {
