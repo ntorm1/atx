@@ -237,14 +237,15 @@ public:
   [[nodiscard]] Result<FitDiag> refit_risk_slice(const OptionChain &chain,
                                                  std::size_t slice_idx);
 
-  [[nodiscard]] bool fitted() const noexcept {
-    return risk_surface_ != nullptr || market_mark_surface_ != nullptr;
-  }
-  // Compatibility accessor: risk is authoritative when present; a legacy
-  // mark-only HFT request receives its market surface.
-  [[nodiscard]] const FittedSurface *surface() const noexcept {
-    return risk_surface_ != nullptr ? risk_surface_.get() : market_mark_surface_.get();
-  }
+  // True iff the config's default-purpose surface is served (see surface()).
+  [[nodiscard]] bool fitted() const noexcept;
+  // Compatibility accessor, fail-closed on purpose: when the active config
+  // requests a Risk output, only the admitted risk surface answers (nullptr
+  // while risk is rejected/unserved — the LinearVariance market mark is never
+  // silently substituted for it). A mark-only request (explicit outputs or the
+  // legacy HFT mapping) receives its market surface. Purpose-specific state is
+  // always available via risk_surface() / market_mark_surface().
+  [[nodiscard]] const FittedSurface *surface() const noexcept;
   [[nodiscard]] const FittedSurface *risk_surface() const noexcept {
     return risk_surface_.get();
   }
@@ -284,7 +285,13 @@ public:
   // 1 => serial). DETERMINISTIC: the result is bit-identical for any thread
   // count (disjoint output slots, pure const reads).
   //
-  // @return Unavailable if no surface is fitted; otherwise Ok(valuation).
+  // The purpose-less overload prices the config's default purpose FAIL-CLOSED:
+  // a config that requested a Risk output is answered by the admitted risk
+  // surface or with Unavailable — never by the market mark. Pass
+  // SurfacePurpose::MarketMark explicitly to price the mark interpolant.
+  //
+  // @return Unavailable if the requested surface is unserved; otherwise
+  //         Ok(valuation).
   [[nodiscard]] Result<ChainValuation> value_chain(const OptionChain &chain, OutputField fields,
                                                    unsigned n_threads = 0) const;
   [[nodiscard]] Result<ChainValuation> value_chain(const OptionChain &chain, OutputField fields,
@@ -292,6 +299,15 @@ public:
                                                    unsigned n_threads = 0) const;
 
 private:
+  // Effective §9 request after the one-release legacy-preset mapping. Computed
+  // in one place so fit(), the default-purpose accessors, and value_chain can
+  // never disagree about whether the config requested a risk output.
+  struct EffectiveRequest {
+    SurfaceOutputs outputs{SurfaceOutputs::MarketMarkAndRisk};
+    FitQualityMode quality_mode{FitQualityMode::Balanced};
+  };
+  [[nodiscard]] EffectiveRequest effective_request() const noexcept;
+
   PricerConfig cfg_;
   std::shared_ptr<const FittedSurface> market_mark_surface_;
   std::shared_ptr<const FittedSurface> risk_surface_;

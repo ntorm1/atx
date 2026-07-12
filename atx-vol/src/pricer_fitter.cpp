@@ -83,25 +83,15 @@ Status PricerFitter::fit(const OptionChain &chain) {
   }
   ++candidate_generation_;
 
-  // One-release compatibility: an otherwise-default HFT request remains the
-  // legacy mark-only surface. New callers express a low-latency dual request
-  // with quality_mode=Latency and explicit outputs.
-  const bool legacy_hft_mark_only =
-      cfg_.preset == FitPreset::Hft && cfg_.quality_mode == FitQualityMode::Balanced &&
-      cfg_.outputs == SurfaceOutputs::MarketMarkAndRisk && !cfg_.curve.has_value();
-  const SurfaceOutputs requested_outputs =
-      legacy_hft_mark_only ? SurfaceOutputs::MarketMark : cfg_.outputs;
-  const bool legacy_fast_risk =
-      cfg_.preset == FitPreset::Fast && cfg_.quality_mode == FitQualityMode::Balanced &&
-      cfg_.outputs == SurfaceOutputs::MarketMarkAndRisk;
-  const bool legacy_accurate_risk =
-      cfg_.preset == FitPreset::Accurate &&
-      cfg_.quality_mode == FitQualityMode::Balanced &&
-      cfg_.outputs == SurfaceOutputs::MarketMarkAndRisk;
-  const FitQualityMode quality_mode =
-      legacy_hft_mark_only || legacy_fast_risk
-          ? FitQualityMode::Latency
-          : legacy_accurate_risk ? FitQualityMode::Accuracy : cfg_.quality_mode;
+  // One-release compatibility: legacy presets route through the single §9
+  // mapping table (`map_legacy_fit_preset`, via effective_request()) so this
+  // seam cannot drift from the documented product policy. An otherwise-default
+  // HFT request — implicit or with the documented explicit LinearVariance pin —
+  // remains the legacy mark-only surface. New callers express a low-latency
+  // dual request with quality_mode=Latency and explicit outputs.
+  const EffectiveRequest request = effective_request();
+  const SurfaceOutputs requested_outputs = request.outputs;
+  const FitQualityMode quality_mode = request.quality_mode;
 
   const auto configure_common = [&](SessionInputs &in) {
     if (chain.env().yield.size() > 0u) {
@@ -133,26 +123,6 @@ Status PricerFitter::fit(const OptionChain &chain) {
       in.use_deam_cache_for_fit = false;
     }
   };
-
-  if (has_output(requested_outputs, SurfacePurpose::Risk) &&
-      (cfg_.risk_admission != RiskAdmission::Required ||
-       (cfg_.enforce_calendar_floor.has_value() && !*cfg_.enforce_calendar_floor) ||
-       (cfg_.score_parity.has_value() && !*cfg_.score_parity) ||
-       (cfg_.curve.has_value() && cfg_.curve->kind == VolCurveKind::LinearVariance))) {
-    ValidationDigest rejected;
-    rejected.failures = ValidationFailure::InvalidDomain;
-    const std::uint64_t prior = risk_surface_ != nullptr ? risk_surface_->generation() : 0u;
-    risk_health_ = decide_risk_surface_admission(rejected, quality_mode, candidate_generation_,
-                                                 prior, cfg_.fallback)
-                       .health;
-    if (cfg_.fallback == SurfaceFallback::None) {
-      risk_surface_.reset();
-      served_decision_.reset();
-      served_selection_.reset();
-    }
-    timings_.total_ms = elapsed_ms(fit_start);
-    return Err(ErrorCode::InvalidArgument, "invalid correctness policy for requested risk surface");
-  }
 
   std::optional<std::future<MarkBuildResult>> mark_future;
   if (has_output(requested_outputs, SurfacePurpose::MarketMark)) {
@@ -218,6 +188,30 @@ Status PricerFitter::fit(const OptionChain &chain) {
     return Err(std::move(result.built).error());
   };
 
+  if (has_output(requested_outputs, SurfacePurpose::Risk) &&
+      (cfg_.risk_admission != RiskAdmission::Required ||
+       (cfg_.enforce_calendar_floor.has_value() && !*cfg_.enforce_calendar_floor) ||
+       (cfg_.score_parity.has_value() && !*cfg_.score_parity) ||
+       (cfg_.curve.has_value() && cfg_.curve->kind == VolCurveKind::LinearVariance))) {
+    ValidationDigest rejected;
+    rejected.failures = ValidationFailure::InvalidDomain;
+    const std::uint64_t prior = risk_surface_ != nullptr ? risk_surface_->generation() : 0u;
+    risk_health_ = decide_risk_surface_admission(rejected, quality_mode, candidate_generation_,
+                                                 prior, cfg_.fallback)
+                       .health;
+    if (cfg_.fallback == SurfaceFallback::None) {
+      risk_surface_.reset();
+      served_decision_.reset();
+      served_selection_.reset();
+    }
+    // §5.6: the requested mark is still built and published on its own
+    // contract; only the risk output is refused. The caller must still learn
+    // the risk config was invalid, so the policy error outranks mark status.
+    (void)finalize_mark();
+    timings_.total_ms = elapsed_ms(fit_start);
+    return Err(ErrorCode::InvalidArgument, "invalid correctness policy for requested risk surface");
+  }
+
   if (!has_output(requested_outputs, SurfacePurpose::Risk)) {
     Status mark_status = finalize_mark();
     timings_.total_ms = elapsed_ms(fit_start);
@@ -246,8 +240,13 @@ Status PricerFitter::fit(const OptionChain &chain) {
     // separately audited in calibration, so skipping this dead cache is both
     // faster and semantically cleaner.
     in.use_correction_cache = false;
+    // Every risk mode pins the ACCURATE Andersen-Lake reference preset
+    // EXPLICITLY. An unset al_opts is the legacy-compat signal that lets
+    // VolaSession::build substitute the fast preset, a loosened iv_tol, and a
+    // single-pair carry floor — which would silently undo every per-mode carry
+    // and inversion budget set below.
     if (quality_mode == FitQualityMode::Accuracy) {
-      in.deam.al_opts = std::nullopt;
+      in.deam.al_opts = al_default_opts();
       in.use_correction_cache = false;
       in.use_deam_cache_for_fit = false;
     }
@@ -256,7 +255,7 @@ Status PricerFitter::fit(const OptionChain &chain) {
       // A fast proposal plus mandatory cold audit costs more than solving the
       // smaller Latency node set accurately once. Latency comes from bounded
       // work and narrower validation, never from publishing an unaudited IV.
-      in.deam.al_opts = std::nullopt;
+      in.deam.al_opts = al_default_opts();
       in.deam.n_atm = 3;
       in.deam.max_borrow_pairs = 6;
       in.calib.max_obs_per_slice = cfg_.max_obs_per_slice.value_or(40u);
@@ -267,9 +266,9 @@ Status PricerFitter::fit(const OptionChain &chain) {
       in.deam.n_atm = 8;
       in.deam.max_borrow_pairs = 12;
       // Certified fast proposals frequently require a cold fallback on dense
-      // boards, paying for both paths. The direct cold reference is faster in
-      // that regime and is the correctness-first Balanced default.
-      in.deam.al_opts = std::nullopt;
+      // boards, paying for both paths. The direct accurate reference is faster
+      // in that regime and is the correctness-first Balanced default.
+      in.deam.al_opts = al_default_opts();
       in.calib.max_obs_per_slice = cfg_.max_obs_per_slice.value_or(60u);
       in.calib.max_otm_shortcut_premium_spread_frac =
           cfg_.max_otm_shortcut_premium_spread_frac.value_or(0.0);
@@ -371,6 +370,12 @@ Status PricerFitter::fit(const OptionChain &chain) {
       decision_->primary_curve = primary_curve;
       decision_->curve = in.curve;
       decision_->used_fallback = true;
+      if (selection_.has_value()) {
+        // The selector's candidate could not be built; re-stamp the served
+        // choice so provenance names the family actually fit (the scores stay
+        // as the selector's audit trail).
+        selection_->chosen = in.curve;
+      }
       built = std::move(retry);
       break;
     }
@@ -448,7 +453,23 @@ Status PricerFitter::fit(const OptionChain &chain) {
       sess = std::move(*retry);
       digest = retry_digest;
       admission = retry_admission;
-      if (decision_.has_value()) decision_->curve = in.curve;
+      if (decision_.has_value()) {
+        // Served provenance must name the admitted family: the policy curve
+        // was rejected by independent admission and a fallback rung is being
+        // published — the same record the construction-failure ladder keeps.
+        // The first rejected primary of this fit stays authoritative if both
+        // ladders fired.
+        if (!decision_->used_fallback) {
+          decision_->primary_curve = rejected_curve;
+        }
+        decision_->used_fallback = true;
+        decision_->curve = in.curve;
+      }
+      if (selection_.has_value()) {
+        // The selector's chosen candidate did not survive admission; re-stamp
+        // the served choice so persisted provenance names the served model.
+        selection_->chosen = in.curve;
+      }
       break;
     }
   }
@@ -687,10 +708,53 @@ Result<FitDiag> PricerFitter::refit_risk_slice(const OptionChain &chain,
   return refit;
 }
 
+PricerFitter::EffectiveRequest PricerFitter::effective_request() const noexcept {
+  // One-release compatibility seam (§9): legacy presets route through the
+  // single map_legacy_fit_preset table while the v2 policy fields sit at their
+  // defaults, so the preset->mode/purpose mapping has one source of truth. Hft
+  // is a market-mark request, never an implicit risk request — for both the
+  // implicit spelling (no pinned curve) and the documented explicit pin of the
+  // legacy LinearVariance mark curve. Explicitly-configured requests
+  // (non-default quality/outputs, or a pinned non-mark curve) pass through.
+  const LegacyPresetMapping legacy = map_legacy_fit_preset(cfg_.preset);
+  const bool default_request = cfg_.quality_mode == FitQualityMode::Balanced &&
+                               cfg_.outputs == SurfaceOutputs::MarketMarkAndRisk;
+  if (!default_request) {
+    return EffectiveRequest{cfg_.outputs, cfg_.quality_mode};
+  }
+  if (legacy.purpose == SurfacePurpose::MarketMark) {
+    if (!cfg_.curve.has_value() || cfg_.curve->kind == VolCurveKind::LinearVariance) {
+      return EffectiveRequest{SurfaceOutputs::MarketMark, legacy.quality_mode};
+    }
+    // Hft with a pinned non-mark curve is an explicit dual request; the v2
+    // policy fields (Balanced, MarkAndRisk) stand.
+    return EffectiveRequest{cfg_.outputs, cfg_.quality_mode};
+  }
+  return EffectiveRequest{cfg_.outputs, legacy.quality_mode};
+}
+
+bool PricerFitter::fitted() const noexcept { return surface() != nullptr; }
+
+const FittedSurface *PricerFitter::surface() const noexcept {
+  // Fail-closed default-purpose serving (§3, §5.6): a config that requested a
+  // Risk output is answered by the admitted risk surface or not at all — the
+  // unconstrained LinearVariance market mark is never silently substituted.
+  // Mark-only requests keep serving their market surface.
+  if (has_output(effective_request().outputs, SurfacePurpose::Risk)) {
+    return risk_surface_.get();
+  }
+  return market_mark_surface_.get();
+}
+
 Result<ChainValuation> PricerFitter::value_chain(const OptionChain &chain, OutputField fields,
                                                  unsigned n_threads) const {
-  const SurfacePurpose purpose = risk_surface_ != nullptr ? SurfacePurpose::Risk
-                                                          : SurfacePurpose::MarketMark;
+  // Fail-closed purpose default: mirrors surface(). A caller that wants the
+  // mark interpolant while risk is requested/unserved states so explicitly via
+  // the SurfacePurpose::MarketMark overload.
+  const SurfacePurpose purpose =
+      has_output(effective_request().outputs, SurfacePurpose::Risk)
+          ? SurfacePurpose::Risk
+          : SurfacePurpose::MarketMark;
   return value_chain(chain, fields, purpose, n_threads);
 }
 
@@ -700,6 +764,15 @@ Result<ChainValuation> PricerFitter::value_chain(const OptionChain &chain, Outpu
   const FittedSurface *served = purpose == SurfacePurpose::Risk ? risk_surface_.get()
                                                                 : market_mark_surface_.get();
   if (served == nullptr) {
+    if (purpose == SurfacePurpose::Risk) {
+      // Name the risk rejection so a tick-loop caller cannot mistake this for
+      // a transient "not fitted yet" and quietly re-route to the mark.
+      return Err(ErrorCode::Unavailable,
+                 "PricerFitter::value_chain: risk surface unserved (state=" +
+                     std::string(to_string(risk_health_.state)) + " reasons=" +
+                     std::to_string(static_cast<std::uint32_t>(risk_health_.reasons)) +
+                     "); pass SurfacePurpose::MarketMark to price the mark explicitly");
+    }
     return Err(ErrorCode::Unavailable,
                "PricerFitter::value_chain: requested surface purpose is unavailable");
   }

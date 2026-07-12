@@ -1477,10 +1477,16 @@ TEST(CorpusBuildSession, SyntheticThirteenNameThreeDateBreadthScoreboard) {
   ASSERT_TRUE(built.has_value()) << built.error().to_string();
   EXPECT_EQ(built->quality.n_planned, 39u);
   EXPECT_EQ(built->quality.entries.size(), 39u);
-  EXPECT_EQ(built->quality.n_admitted, 7u);
+  // Rebaselined for the risk-policy budget fix (review I1/C3): the per-mode
+  // carry floors now reach the session build instead of being auto-substituted
+  // with a single-pair borrow, so the two sparse-strip AAPL event boards that
+  // previously failed their carry gate resolve a confident multi-pair carry and
+  // are admitted (via the safe-model fallback ladder; see the provenance checks
+  // below). 7 admitted / 4 fit-failed captured the clobbered-budget behavior.
+  EXPECT_EQ(built->quality.n_admitted, 9u);
   EXPECT_EQ(built->quality.n_quarantined, 6u);
   EXPECT_EQ(built->quality.n_source_failed, 20u);
-  EXPECT_EQ(built->quality.n_fit_failed, 4u);
+  EXPECT_EQ(built->quality.n_fit_failed, 2u);
   EXPECT_EQ(built->quality.n_empty, 2u);
   EXPECT_LE(built->peak_live_fitted_surfaces, 7u);
   EXPECT_TRUE(fs::exists(out / "2026-06-15.atxvsa"));
@@ -1500,8 +1506,14 @@ TEST(CorpusBuildSession, SyntheticThirteenNameThreeDateBreadthScoreboard) {
                      return entry.date == "2026-06-15" && entry.symbol == "AAPL";
                    });
   ASSERT_NE(fallback_entry, built->quality.entries.end());
-  EXPECT_EQ(fallback_entry->disposition, CorpusDisposition::FitFailed);
-  EXPECT_FALSE(fallback_entry->quality.used_fallback);
+  // Rebaselined (same I1/C3 budget fix): the sparse AAPL event board now
+  // resolves a confident carry, its primary candidate is rejected by
+  // independent admission, and a fallback rung is admitted — so the persisted
+  // provenance must say Admitted WITH used_fallback (the I6 provenance fix),
+  // where the clobbered-budget behavior was FitFailed with no fallback record.
+  EXPECT_EQ(fallback_entry->disposition, CorpusDisposition::Admitted);
+  EXPECT_TRUE(fallback_entry->quality.used_fallback);
+  EXPECT_NE(fallback_entry->quality.final_kind, fallback_entry->quality.primary_kind);
 
   auto clock = Clock::from_manifest(built->manifest);
   ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
@@ -1528,8 +1540,10 @@ TEST(CorpusBuildSession, SyntheticThirteenNameThreeDateBreadthScoreboard) {
                    [](const auto &signal) { return signal.first == "n_names_dropped"; });
   ASSERT_NE(dropped_signal, serial->signals.end());
   ASSERT_EQ(dropped_signal->second.size(), dates.size());
-  EXPECT_EQ(dropped_signal->second[0], 2.0);
-  EXPECT_EQ(dropped_signal->second[1], 2.0);
+  // Rebaselined with the admissions above: AAPL is now fitted and archived on
+  // the first two dates, so only one universe name is dropped there.
+  EXPECT_EQ(dropped_signal->second[0], 1.0);
+  EXPECT_EQ(dropped_signal->second[1], 1.0);
   EXPECT_EQ(dropped_signal->second[2], 4.0);
   EXPECT_GT(serial->n_unpriced_lots[2], 0.0);
   EXPECT_GT(serial->n_unpriced_greeks[2], 0.0);

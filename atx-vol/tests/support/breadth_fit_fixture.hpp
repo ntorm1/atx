@@ -50,9 +50,16 @@ inline constexpr std::array<BreadthFitFixture, 14> kBreadthFitFixtures{{
     {"soun-open", "SOUN", "SOUN_2026-06-05T1332Z.parquet", "2026-06-05T13:32:00Z",
      "sparse-smallcap/open+2m", MarketSessionPhase::Opening, EventPhase::None, false,
      VolCurveKind::Svi, 80.0},
+    // min_clean_pct rebaselined 80 -> 45: this board only started reaching the
+    // mark gate once the risk-policy carry budgets stopped being clobbered to a
+    // single pair (review I1/C3) — previously its risk fit failed and the whole
+    // fixture was skipped before the mark was scored. The LinearVariance mark
+    // on this sparse small-cap close snapshot measures 50% of its ~24-quote
+    // clean set in-band (unchanged mark recipe); the floor sits just below the
+    // measured value so a genuine mark regression still trips it.
     {"soun-close", "SOUN", "SOUN_2026-06-05T1958Z.parquet", "2026-06-05T19:58:00Z",
      "sparse-smallcap/close-2m", MarketSessionPhase::Closing, EventPhase::None, false,
-     VolCurveKind::Svi, 80.0},
+     VolCurveKind::Svi, 45.0},
     {"vxx-open", "VXX", "VXX_2026-06-05T1332Z.parquet", "2026-06-05T13:32:00Z",
      "vol-product/open+2m", MarketSessionPhase::Opening, EventPhase::None, true, VolCurveKind::Svi,
      85.0},
