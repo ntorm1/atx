@@ -44,6 +44,7 @@
 // fences them against any concurrent reader.
 
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <vector>
 
@@ -133,6 +134,18 @@ arb_check_calendar(const CurveSurface &s, double k_min, double k_max,
 arb_check_butterfly(const VolSurface &s, double k_min, double k_max,
                     std::uint32_t n_grid);
 
+// Grid Durrleman g(k) >= 0 density-positivity check for ONE slice given a
+// total-variance callable `w_of_k`. Uses the SAME finite-difference scheme as
+// the surface-level `arb_check_butterfly` (which delegates to the shared
+// file-local helper this front-ends), so the two agree pointwise on a slice.
+// `T` labels the violation records only (`T1 == T2 == T`); the density math is
+// scale-free in T. Empty result means "no butterfly arbitrage". No-op (empty)
+// when `n_grid < 4`.
+// @return InvalidArgument if `k_max <= k_min`.
+[[nodiscard]] Result<std::vector<ArbViolation>>
+arb_check_butterfly_slice(const std::function<double(double)> &w_of_k, double T,
+                          double k_min, double k_max, std::uint32_t n_grid);
+
 // Convenience: run the calendar check then the butterfly check and
 // concatenate their violations (calendar entries first). Propagates a
 // butterfly InvalidArgument (k_max <= k_min) as the overall error, matching
@@ -183,9 +196,18 @@ struct SviMmAdmissibility {
 arb_check_butterfly_svi_mm(const SviParams &slice, double T) noexcept;
 
 // Surface-level walker: accumulate per-slice admissibility over an SVI-MM
-// surface. Ok with a zeroed tally for surfaces that are not SVI-MM (legacy SVI
-// does not promise the Mingone polytope; the eSSVI cube enforces a different,
-// tighter set by construction) — mirrors the C no-op.
+// surface. Ok with a zeroed tally for surfaces that are not SVI-MM (this walker
+// only enforces the polytope for the SVI-MM tag; the eSSVI cube enforces a
+// different, tighter set by construction) — mirrors the C no-op.
+//
+// NOTE (Task C2.5): raw-SVI slices are NOT admissible-by-construction at the
+// parametrization level, but every raw-SVI slice SERVED through
+// `fit_slice_curve(VolCurveKind::Svi)` is now validated at the serving seam —
+// `arb_check_butterfly_svi_mm` is run on the fitted slice, which is projected
+// onto the Mingone polytope (`svi_project_mm`) and rejected if it still
+// violates. So a served raw-SVI slice carries the closed-form admissibility
+// guarantee even though this pure-parametrization walker still no-ops on the
+// plain `Svi` tag.
 [[nodiscard]] Result<SviMmAdmissibility>
 arb_check_butterfly_svi_mm_surface(const VolSurface &s);
 

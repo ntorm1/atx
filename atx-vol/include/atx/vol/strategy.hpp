@@ -17,6 +17,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -104,13 +105,24 @@ struct CrossLegConstraint {
 // LIFECYCLE: when to enter, how long to hold.
 struct LifecycleSpec {
   enum class Entry : std::uint8_t { EveryStep = 0, EveryNDays = 1 };
-  enum class Holding : std::uint8_t { HoldToExpiry = 0, RollAtHorizon = 1 };
+  enum class Holding : std::uint8_t {
+    HoldToExpiry = 0,
+    RollAtHorizon = 1,
+    // Overlapping cohorts (one per entry tick, like HoldToExpiry), but each lot
+    // is closed by the strategy when its residual maturity falls below
+    // roll_at_T: close when (lot.expiry_ts_ns - base_ts) < roll_at_T * kNsPerYear.
+    // The engine books the close at current marks (roll-close diff), never
+    // settlement. lifecycle_decide never returns clear=true in this mode.
+    CloseAtHorizon = 2,
+  };
   Entry entry{Entry::EveryNDays};
   Holding holding{Holding::RollAtHorizon};
   unsigned entry_every_n{21}; // EveryNDays cadence (trading steps)
   // HoldToExpiry => overlapping clips (a new cohort each entry, each aged to its
   // own expiry, auto-closed at T<=0). RollAtHorizon => single book, closed+reopened
-  // when the front cohort's residual T falls below `roll_at_T`.
+  // when the front cohort's residual T falls below `roll_at_T`. CloseAtHorizon =>
+  // overlapping clips like HoldToExpiry, but each cohort is independently closed
+  // (by the strategy, at marks) once ITS OWN residual T falls below `roll_at_T`.
   double roll_at_T{7.0 / 365.25};
 };
 
@@ -130,6 +142,10 @@ struct StrategySpec {
   CrossLegConstraint constraint{};
   LifecycleSpec lifecycle{};
   HedgeSpec hedge{};
+  // Missing-name policy for leg resolution (S1-3, extended to the declarative DSL).
+  // Default {Error, min_names=2} preserves resolve_spec's pre-existing hard-fail
+  // behavior exactly: `resolve_spec` ignores this field entirely (always Error).
+  MissingNameSpec missing{};
 };
 
 // ── Resolution primitives ───────────────────────────────────────────────────
@@ -181,8 +197,37 @@ struct SizedLeg {
 // per-leg base sizing (FixedContracts/TargetVega/Weight, multiplier 100), then the
 // `CrossLegConstraint` (FlatVega / VegaNeutralBasket scale one group's gross vega
 // onto another's). Deterministic; emits legs in spec order (call before put).
+// EXACTLY resolve_spec_with_policy under policy Error (any leg failure is fatal,
+// `spec.missing` is ignored).
 [[nodiscard]] Result<std::vector<SizedLeg>> resolve_spec(const MarketSnapshot &snap,
                                                          const StrategySpec &spec);
+
+// One leg dropped by `resolve_spec_with_policy` under `DropRenormalize`: the
+// leg's symbol and the underlying resolve/sizing error, verbatim (a drop is
+// never silent).
+struct ResolveDrop {
+  std::string symbol;
+  std::string detail;
+};
+
+// Policy-aware `resolve_spec`. Under `spec.missing.policy == Error` this is
+// EXACTLY `resolve_spec` (identical errors; `dropped` untouched by policy — see
+// below). Under `DropRenormalize`:
+//  - a leg whose expansion or sizing fails is DROPPED and recorded in `*dropped`
+//    (symbol + error detail), UNLESS the leg's group equals `spec.constraint.group_b`
+//    (the scaled hedge group) — a missing hedge leg makes the whole entry
+//    unbuildable: returns Err(Unavailable, ...).
+//  - if the count of surviving legs whose group == `spec.constraint.group_a`
+//    (all legs when `constraint.kind == None`) is < `spec.missing.min_names`,
+//    returns Err(Unavailable, ...).
+//  - sizing + the cross-leg constraint then run on the survivors only, so
+//    FlatVega's scale = gross_a/gross_b is computed from surviving legs' actual
+//    vegas and the hedge renormalizes automatically.
+// `dropped`, if non-null, is cleared then populated on every call (even one that
+// ultimately errors out, e.g. via the hedge-leg or min_names guard above).
+[[nodiscard]] Result<std::vector<SizedLeg>>
+resolve_spec_with_policy(const MarketSnapshot &snap, const StrategySpec &spec,
+                         std::vector<ResolveDrop> *dropped = nullptr);
 
 // ── Lifecycle helper (shared by strategies) ─────────────────────────────────
 
@@ -240,6 +285,15 @@ public:
 
   [[nodiscard]] const StrategySpec &spec() const noexcept { return spec_; }
 
+  // The per-name drops (`ResolveDrop`) from the most recent entry attempt (an
+  // `on_step` that ran `open_cohort`) under `spec.missing.policy ==
+  // DropRenormalize` — the "document per-name failures" hook. Cleared then
+  // repopulated at each entry attempt; empty under policy Error or before the
+  // first entry.
+  [[nodiscard]] std::span<const ResolveDrop> dropped_on_last_entry() const noexcept {
+    return last_dropped_;
+  }
+
 private:
   // Resolve the spec against `base` and append a fresh cohort of lots.
   Status open_cohort(const MarketSnapshot &base, PortfolioState &book, std::uint64_t &next_lot_id);
@@ -248,6 +302,7 @@ private:
   std::uint32_t cohort_counter_{0};
   std::int64_t front_expiry_{0};
   bool have_front_{false};
+  std::vector<ResolveDrop> last_dropped_;
 };
 
 // ── DispersionStrategy (adapter over build_dispersion_book) ──────────────────

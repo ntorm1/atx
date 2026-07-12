@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <limits>
 #include <optional>
 #include <span>
@@ -19,6 +20,7 @@
 #include "atx/vol/phase_profile.hpp"
 #include "atx/vol/strategy.hpp"        // IStrategy
 #include "atx/vol/surface_archive.hpp" // SurfaceArchive
+#include "atx/vol/surface_db.hpp"      // SurfaceDb, DbPartitionInfo, kSurfaceDbPartitionDir/Ext
 #include "atx/vol/universe.hpp"        // canonical_symbol
 
 namespace atx::vol {
@@ -304,6 +306,23 @@ Result<Clock> Clock::from_manifest(const CorpusManifest &manifest) {
   }
   if (clock.refs_.empty()) {
     return Err(ErrorCode::InvalidArgument, "Clock::from_manifest: no Ok snapshots in manifest");
+  }
+  return Ok(std::move(clock));
+}
+
+Result<Clock> Clock::from_surface_db(const SurfaceDb &db) {
+  auto parts = db.partitions();
+  if (parts.empty()) {
+    return Err(ErrorCode::InvalidArgument, "Clock::from_surface_db: surface db has no partitions");
+  }
+  std::sort(parts.begin(), parts.end(),
+            [](const DbPartitionInfo &a, const DbPartitionInfo &b) { return a.key < b.key; });
+  Clock clock;
+  clock.refs_.reserve(parts.size());
+  const std::filesystem::path dir = std::filesystem::path(db.root()) / kSurfaceDbPartitionDir;
+  for (const auto &p : parts) {
+    clock.refs_.push_back(
+        SnapshotRef{p.key, (dir / (p.key + std::string(kSurfaceDbPartitionExt))).string()});
   }
   return Ok(std::move(clock));
 }

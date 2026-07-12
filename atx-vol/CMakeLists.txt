@@ -77,8 +77,13 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/prepared_portfolio.cpp
     src/pricing_executor.cpp
     src/portfolio_pricer.cpp
+    src/corpus_board_fit.cpp
+    src/scenario_grid.cpp
+    src/pnl_attribution.cpp
     src/corpus.cpp
+    src/surface_db_populate.cpp
     src/dispersion.cpp
+    src/dispersion_strangle.cpp
     src/dispersion_backtest.cpp
     src/dispersion_workflow.cpp
     src/listed_dispersion.cpp
@@ -92,6 +97,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/strategy.cpp
     src/dispersion_strategy.cpp
     src/tearsheet.cpp
+    src/run_report.cpp
 )
 add_library(atx::vol ALIAS atx-vol)
 
@@ -264,4 +270,20 @@ if(ATX_BUILD_EXAMPLES)
         examples/databento_spy_dispersion_definitions.cpp)
     target_link_libraries(databento_spy_dispersion_definitions
         PRIVATE atx::vol atx::core databento::databento atx_warnings)
+
+    # Fit a real OPRA hive (MAG7 + SPY) into a SurfaceDb via populate_surface_db,
+    # honoring per-symbol manifest configs. Gate test: SurfaceDbPopulate
+    # (tests/surface_db_populate_test.cpp). See examples/mag7_surfdb_populate.cpp.
+    add_executable(mag7_surfdb_populate examples/mag7_surfdb_populate.cpp)
+    target_link_libraries(mag7_surfdb_populate PRIVATE atx::vol atx::core atx_warnings)
+
+    # Acceptance example: MAG7-vs-SPY dispersion-strangle backtest driven
+    # entirely by a SurfaceDb -- open db -> Clock::from_surface_db ->
+    # make_dispersion_strangle_spec -> DeclarativeStrategy -> run_backtest ->
+    # tearsheet -> the five pinned run_report output files a later Python
+    # renderer consumes. Gate test: Mag7DispersionBacktest
+    # (tests/mag7_dispersion_backtest_test.cpp). See
+    # examples/mag7_dispersion_backtest.cpp.
+    add_executable(mag7_dispersion_backtest examples/mag7_dispersion_backtest.cpp)
+    target_link_libraries(mag7_dispersion_backtest PRIVATE atx::vol atx::core atx_warnings)
 endif()

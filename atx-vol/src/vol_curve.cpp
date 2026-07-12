@@ -3,12 +3,14 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <string>
 #include <utility>
 
 #include "atx/core/error.hpp"
+#include "atx/vol/arb.hpp"         // arb_check_butterfly_svi_mm, arb_check_butterfly_slice
 #include "atx/vol/c8_calib.hpp"    // c8_fit_slice_lm
 #include "atx/vol/essvi_calib.hpp" // essvi_fit_slice
-#include "atx/vol/svi_calib.hpp"   // svi_fit_slice
+#include "atx/vol/svi_calib.hpp"   // svi_fit_slice, svi_project_mm
 
 namespace atx::vol {
 
@@ -216,6 +218,21 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
   }
   case VolCurveKind::Svi: {
     ATX_TRY(SviParams slice, svi_fit_slice(obs_eu, T, F, cfg.parametric));
+    // Butterfly serving gate: the quasi-explicit raw-SVI fit does NOT promise
+    // the Mingone polytope, so validate the fitted slice with the closed-form
+    // Martini-Mingone admissibility tally. On a violation, project onto the
+    // polytope (the same repair svi_mm_fit_slice applies to every iterate) and
+    // re-check; if it STILL violates, refuse to serve an arbitrageable slice.
+    if (arb_check_butterfly_svi_mm(slice, T).n_violations > 0) {
+      (void)svi_project_mm(slice, T);
+      const auto adm = arb_check_butterfly_svi_mm(slice, T);
+      if (adm.n_violations > 0) {
+        return Err(ErrorCode::Unavailable,
+                   "fit_slice_curve: raw-SVI slice butterfly-inadmissible after "
+                   "Mingone projection (worst slack " +
+                       std::to_string(adm.max_slack) + ")");
+      }
+    }
     std::unique_ptr<IVolCurve> curve = std::make_unique<SviCurve>(slice, df);
     return Ok(std::move(curve));
   }
@@ -332,9 +349,30 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
         std::isfinite(fitted.v_min) && fitted.v_min >= 0.0 &&
         fitted.v_min <= fitted.v + 1.0e-12 && std::isfinite(fitted.kappa) &&
         std::isfinite(fitted.q_L) && std::isfinite(fitted.q_R);
-    if (!fit_admissible || !std::isfinite(fit_sse) || fit_sse > seed_sse * 1.05) {
+    // Butterfly accept gate: a grid Durrleman g(k) >= 0 density check of the
+    // fitted slice — accept-time only (one 64-point grid eval per served slice,
+    // NOT inside the LM loop). Grid spans the observed strikes padded by 0.5 in
+    // log-moneyness. A violation folds into the existing revert-to-seed path.
+    const auto k_range = std::minmax_element(k.begin(), k.end());
+    const double bf_k_min = *k_range.first - 0.5;
+    const double bf_k_max = *k_range.second + 0.5;
+    const auto fit_bf = arb_check_butterfly_slice(
+        [&fitted](double kk) { return c8_slice_w(fitted, kk); }, T, bf_k_min,
+        bf_k_max, 64u);
+    const bool fit_butterfly_ok = fit_bf.has_value() && fit_bf->empty();
+    if (!fit_admissible || !std::isfinite(fit_sse) || fit_sse > seed_sse * 1.05 ||
+        !fit_butterfly_ok) {
       fitted = seed;
       fitted.bumps_active = false;
+      // The reverted seed is the backbone-only SVI-JW smile; if even it trips
+      // the grid g-check, refuse to serve an arbitrageable C8 slice.
+      const auto seed_bf = arb_check_butterfly_slice(
+          [&fitted](double kk) { return c8_slice_w(fitted, kk); }, T, bf_k_min,
+          bf_k_max, 64u);
+      if (!(seed_bf.has_value() && seed_bf->empty())) {
+        return Err(ErrorCode::Unavailable,
+                   "fit_slice_curve: C8 seed slice butterfly-inadmissible");
+      }
     }
     std::unique_ptr<IVolCurve> curve = std::make_unique<C8Curve>(fitted, df);
     return Ok(std::move(curve));

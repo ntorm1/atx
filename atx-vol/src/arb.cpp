@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <span>
 #include <vector>
@@ -102,6 +103,49 @@ constexpr std::int64_t kNsPerSecond = 1'000'000'000;
   return max_def;
 }
 
+// Shared per-slice Durrleman g(k) finite-difference scan. Appends one Butterfly
+// `ArbViolation` per interior grid point where the Lee/Roper density
+//   g(k) = (1 - k*w'/(2w))^2 - (w'/2)^2*(1/4 + 1/w) + w''/2
+// dips below -1e-9. This is the SINGLE implementation of the butterfly FD
+// scheme: both the surface-level `arb_check_butterfly` (per slice) and the
+// per-slice `arb_check_butterfly_slice` delegate here, so their outputs are
+// pointwise identical and the legacy surface pins hold bit-for-bit. The caller
+// guarantees `k_max > k_min` and `n_grid >= 4`.
+void butterfly_scan_slice(const std::function<double(double)> &w_of_k, double T,
+                          double k_min, double k_max, std::uint32_t n_grid,
+                          std::vector<ArbViolation> &out) {
+  const double dk = (k_max - k_min) / static_cast<double>(n_grid);
+  const double inv_2dk = 0.5 / dk;
+  const double inv_dksq = 1.0 / (dk * dk);
+  for (std::uint32_t g = 1; g < n_grid; ++g) {
+    const double k = k_min + static_cast<double>(g) * dk;
+    const double w_lo = w_of_k(k - dk);
+    const double w_mi = w_of_k(k);
+    const double w_hi = w_of_k(k + dk);
+    if (!(w_mi > 1.0e-12) || !std::isfinite(w_lo) || !std::isfinite(w_hi)) {
+      continue;
+    }
+    const double w_p = (w_hi - w_lo) * inv_2dk;                 // w'(k)
+    const double w_pp = (w_hi - 2.0 * w_mi + w_lo) * inv_dksq;  // w''(k)
+
+    const double term1_inner = 1.0 - 0.5 * k * w_p / w_mi;
+    const double term1 = term1_inner * term1_inner;
+    const double term2 = 0.25 * w_p * w_p * (0.25 + 1.0 / w_mi);
+    const double term3 = 0.5 * w_pp;
+    const double g_density = term1 - term2 + term3;
+
+    if (g_density < -1.0e-9) {
+      ArbViolation v{};
+      v.k_log = k;
+      v.T1 = T;
+      v.T2 = T;
+      v.slack = -g_density;
+      v.kind = ArbViolation::Kind::Butterfly;
+      out.push_back(v);
+    }
+  }
+}
+
 }  // namespace
 
 // ── Calendar / butterfly checks ──────────────────────────────────────────
@@ -183,43 +227,31 @@ Result<std::vector<ArbViolation>> arb_check_butterfly(const VolSurface &s,
                "arb_check_butterfly: require k_max > k_min");
   }
 
-  const double dk = (k_max - k_min) / static_cast<double>(n_grid);
-  const double inv_2dk = 0.5 / dk;
-  const double inv_dksq = 1.0 / (dk * dk);
-
   for (std::size_t i = 0; i < n; ++i) {
     const double T = slice_T_at(s, i);
     if (!(T > 0.0)) {
       continue;
     }
-    for (std::uint32_t g = 1; g < n_grid; ++g) {
-      const double k = k_min + static_cast<double>(g) * dk;
-      const double w_lo = s.w(k - dk, T);
-      const double w_mi = s.w(k, T);
-      const double w_hi = s.w(k + dk, T);
-      if (!(w_mi > 1.0e-12) || !std::isfinite(w_lo) || !std::isfinite(w_hi)) {
-        continue;
-      }
-      const double w_p = (w_hi - w_lo) * inv_2dk;                 // w'(k)
-      const double w_pp = (w_hi - 2.0 * w_mi + w_lo) * inv_dksq;  // w''(k)
-
-      const double term1_inner = 1.0 - 0.5 * k * w_p / w_mi;
-      const double term1 = term1_inner * term1_inner;
-      const double term2 = 0.25 * w_p * w_p * (0.25 + 1.0 / w_mi);
-      const double term3 = 0.5 * w_pp;
-      const double g_density = term1 - term2 + term3;
-
-      if (g_density < -1.0e-9) {
-        ArbViolation v{};
-        v.k_log = k;
-        v.T1 = T;
-        v.T2 = T;
-        v.slack = -g_density;
-        v.kind = ArbViolation::Kind::Butterfly;
-        out.push_back(v);
-      }
-    }
+    // Delegate to the shared FD scan; the per-slice evaluator samples the
+    // total surface variance at this slice's maturity (unchanged arithmetic).
+    butterfly_scan_slice([&s, T](double k) { return s.w(k, T); }, T, k_min,
+                         k_max, n_grid, out);
   }
+  return Ok(std::move(out));
+}
+
+Result<std::vector<ArbViolation>>
+arb_check_butterfly_slice(const std::function<double(double)> &w_of_k, double T,
+                          double k_min, double k_max, std::uint32_t n_grid) {
+  std::vector<ArbViolation> out;
+  if (n_grid < 4) {
+    return Ok(std::move(out));
+  }
+  if (!(k_max > k_min)) {
+    return Err(ErrorCode::InvalidArgument,
+               "arb_check_butterfly_slice: require k_max > k_min");
+  }
+  butterfly_scan_slice(w_of_k, T, k_min, k_max, n_grid, out);
   return Ok(std::move(out));
 }
 

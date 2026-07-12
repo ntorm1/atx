@@ -245,6 +245,12 @@ struct FitDiag {
   std::uint16_t outer_iters{0};
   std::uint16_t inner_iters_total{0};
   std::uint32_t n_quotes_used{0};
+  // Butterfly no-arb diagnostic (Task C2.5): summed per-slice butterfly
+  // violations observed on the research/surface-driver path. Closed-form
+  // Martini-Mingone tally for raw-SVI slices; 0 by construction for eSSVI. This
+  // is a DIAGNOSTIC COUNT ONLY — the surface drivers do not reject on it (the
+  // per-slice serving gates in `fit_slice_curve` do the rejecting).
+  std::uint32_t n_butterfly_viol{0};
 };
 
 // The output of `build_observations`: the surviving rows plus the count of

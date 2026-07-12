@@ -111,6 +111,17 @@ struct SviJwParams {
                                                  const CalibOpts &opts,
                                                  FitDiag *diag = nullptr);
 
+// Project a raw-SVI slice (a, b, rho, sigma) onto the Martini-Mingone admissible
+// polytope with the production edge pads (the same projection `svi_mm_fit_slice`
+// applies to its seed and every LM iterate). `m` carries no Mingone constraint
+// and is untouched. Used at the raw-SVI serving seam
+// (`fit_slice_curve(VolCurveKind::Svi)`) to repair a fitted slice that trips
+// `arb_check_butterfly_svi_mm` before it can be served.
+//
+// @return true if any coordinate moved (the slice was inadmissible); false if it
+//         was already admissible (or `T <= 0`, in which case it is left as-is).
+[[nodiscard]] bool svi_project_mm(SviParams &slice, double T) noexcept;
+
 // ── Surface drivers ──────────────────────────────────────────────────────
 
 // Fit one raw-SVI slice per chain of `under`, in ascending-T order, then run
