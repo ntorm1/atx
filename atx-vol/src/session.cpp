@@ -19,10 +19,12 @@
 #include "atx/vol/data.hpp"           // data_install
 #include "atx/vol/dividend.hpp"        // hybrid_forward (representative carry)
 #include "atx/vol/essvi_calib.hpp"     // essvi_fit_slice (warm-start refit)
+#include "atx/vol/event_vol.hpp"       // EventSchedule, implied_emove (SessionInputs::events)
 #include "atx/vol/projection.hpp"      // InterpMode, surface_insert_vol_slice, w_on_inserted_slice
 #include "atx/vol/surface_parity.hpp"  // run_surface_parity, SurfaceParityInputs/Report
 #include "atx/vol/universe.hpp"        // Universe, Underlying, Uid, Chain
 #include "atx/vol/vol_surface.hpp"     // VolSurface
+#include "atx/vol/vol_time.hpp"        // ns_from_year_fraction (eMove solve)
 
 // DESIGN / PARITY NOTES
 // ---------------------
@@ -110,6 +112,71 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
   }
   in.expiry_rate_T = std::move(fitted_T);
   in.expiry_rates = std::move(fitted_rates);
+}
+
+// Solve eMove from the two fitted eSSVI expiries bracketing the FIRST
+// scheduled event strictly after `now_ts_ns` and at/before the LAST fitted
+// expiry. `slices` is the surface's own fitted eSSVI slices, ascending T
+// (== `essvi_slices()`).
+//
+// `run_surface_parity`'s eSSVI fit loop (surface_parity.cpp) does NOT stamp
+// `expiry_id`/`expiry_ns` onto the slices it produces (only a DIFFERENT,
+// unused-by-this-path helper in essvi_calib.cpp does) -- verified empirically
+// (both fields read back 0 on a freshly built session). So, exactly like the
+// projection-layer SERVE path in `w_on_inserted_slice` (which has no real
+// listed expiry for an arbitrary interpolated query T to begin with), each
+// slice's absolute instant is SYNTHESIZED from its own `T` via
+// `ns_from_year_fraction` (vol_time.hpp, the Calendar365 inverse of
+// `time_to_expiry_years`) rather than read from `expiry_ns` -- this also
+// keeps the solve step and the serve step internally consistent (both derive
+// instants the SAME way).
+//
+// Returns NaN (never 0, matching the conservative calendar-guard convention
+// a few lines above this function's call sites -- see the ArbCheckCalendar
+// comment) on ANY failure: no schedule, fewer than two fitted slices, no
+// event in that window, no fitted expiry strictly BEFORE the event to
+// bracket against, or `implied_emove`'s own solve failure (no
+// identification, or a negative-beyond-tolerance e^2).
+[[nodiscard]] double solve_implied_emove(const EventSchedule* events,
+                                         std::int64_t now_ts_ns,
+                                         std::span<const EssviParams> slices) {
+  if (events == nullptr || slices.size() < 2) {
+    return kNaN;
+  }
+  const auto all = events->events();
+  const auto it = std::upper_bound(all.begin(), all.end(), now_ts_ns);
+  if (it == all.end()) {
+    return kNaN;  // no event strictly after "now"
+  }
+  const std::int64_t event_ns = *it;
+  const std::int64_t last_ns = ns_from_year_fraction(now_ts_ns, slices.back().T);
+  if (event_ns > last_ns) {
+    return kNaN;  // event falls after the last fitted expiry -- nothing to bracket
+  }
+
+  // "hi": first fitted slice at/after the event; "lo": the one just before
+  // it. hi is guaranteed to be found (< slices.size()) by the check above.
+  std::size_t hi = 0;
+  while (hi < slices.size() &&
+        ns_from_year_fraction(now_ts_ns, slices[hi].T) < event_ns) {
+    ++hi;
+  }
+  if (hi == 0 || hi >= slices.size()) {
+    return kNaN;  // event at/before the first fitted expiry -- no low bracket
+  }
+  const std::size_t lo = hi - 1;
+
+  const EssviParams& s_lo = slices[lo];
+  const EssviParams& s_hi = slices[hi];
+  const double w1 = essvi_total_w(s_lo, 0.0);
+  const double w2 = essvi_total_w(s_hi, 0.0);
+  const std::size_t n1 = events->count_between(
+      now_ts_ns, ns_from_year_fraction(now_ts_ns, s_lo.T));
+  const std::size_t n2 = events->count_between(
+      now_ts_ns, ns_from_year_fraction(now_ts_ns, s_hi.T));
+
+  auto e = implied_emove(w1, s_lo.T, n1, w2, s_hi.T, n2);
+  return e.has_value() ? *e : kNaN;
 }
 
 }  // namespace
@@ -357,6 +424,10 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
 
     SessionDiagnostics cdiag{};
     cdiag.n_slices = crep.n_slices;
+    // `cdiag.implied_emove` intentionally stays at its NaN default here:
+    // SessionInputs::events / the event-aware blend is eSSVI-default only
+    // (same restriction as ShapeBlend -- see SessionInputs::events), and a
+    // polymorphic-override surface has no eSSVI slices to solve it from.
     // Calendar no-arb across slices, measured on the served CurveSurface. Each
     // convex slice is butterfly-arb-free by construction; this is the missing
     // half. k-range spans a wide moneyness band around the money.
@@ -456,6 +527,13 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
     n_quotes += c.n_used;
   }
   diag.n_quotes = n_quotes;
+
+  // eMove policy v1 (SessionInputs::events, eSSVI-default path only): solve
+  // once, post-fit, off the surface's OWN fitted eSSVI slices; NaN on any
+  // failure (see solve_implied_emove's doc) so a bad/absent schedule never
+  // silently changes what gets served.
+  diag.implied_emove = solve_implied_emove(eff.events.get(), eff.now_ts_ns,
+                                           rep.surface.essvi_slices());
 
   retain_fitted_term_rates(eff, rep.context);
   return Ok(VolaSession{std::move(rep.surface), std::move(rep.context),
@@ -581,9 +659,29 @@ double VolaSession::shape_blend_total_variance(double k_log, double T) const noe
   return w_on_inserted_slice(surface_, *handle, k_log);
 }
 
+double VolaSession::event_aware_total_variance(double k_log, double T) const noexcept {
+  // Same inserted-slice mechanism as shape_blend_total_variance above
+  // (ClampForReporting mirrors interp_forward's own out-of-range policy;
+  // curves == nullptr since forward/carry come from ctx_, not a CurveSet),
+  // but `in_.interp` (not hardcoded ShapeBlend) selects the underlying
+  // blend, and the event-aware overload of w_on_inserted_slice does the
+  // censor/interpolate/re-add work.
+  auto handle = surface_insert_vol_slice(surface_, /*curves=*/nullptr, TimeModel{},
+                                         T, in_.interp,
+                                         ProjExtrapPolicy::ClampForReporting);
+  if (!handle) {
+    return kNaN;
+  }
+  return w_on_inserted_slice(surface_, *handle, k_log, in_.events.get(),
+                             diag_.implied_emove, in_.now_ts_ns);
+}
+
 double VolaSession::model_w(double k_log, double T) const noexcept {
   if (curve_override_) {
     return curve_override_->w(k_log, T);
+  }
+  if (event_aware_active()) {
+    return event_aware_total_variance(k_log, T);
   }
   if (in_.interp == InterpMode::ShapeBlend) {
     return shape_blend_total_variance(k_log, T);
@@ -594,6 +692,13 @@ double VolaSession::model_w(double k_log, double T) const noexcept {
 double VolaSession::model_iv(double k_log, double T) const noexcept {
   if (curve_override_) {
     return curve_override_->iv(k_log, T);
+  }
+  if (event_aware_active()) {
+    const double w = event_aware_total_variance(k_log, T);
+    if (!(std::isfinite(w) && w > 0.0) || !(T > 0.0)) {
+      return kNaN;
+    }
+    return std::sqrt(w / T);
   }
   if (in_.interp == InterpMode::ShapeBlend) {
     const double w = shape_blend_total_variance(k_log, T);

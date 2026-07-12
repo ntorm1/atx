@@ -238,4 +238,8 @@ double time_to_expiry_years(std::int64_t from_ns, std::int64_t to_ns,
   return static_cast<double>(to_ns - from_ns) / kCalendarYearNs;
 }
 
+std::int64_t ns_from_year_fraction(std::int64_t from_ns, double years) noexcept {
+  return from_ns + static_cast<std::int64_t>(std::llround(years * kCalendarYearNs));
+}
+
 }  // namespace atx::vol

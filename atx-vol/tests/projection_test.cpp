@@ -8,6 +8,7 @@
 
 #include "atx/core/math.hpp"
 #include "atx/vol/curve.hpp"
+#include "atx/vol/event_vol.hpp"
 #include "atx/vol/projection.hpp"
 #include "atx/vol/vol_surface.hpp"
 
@@ -24,6 +25,7 @@ using atx::vol::CurveSet;
 using atx::vol::DeltaConvention;
 using atx::vol::EssviParams;
 using atx::vol::EvalRequest;
+using atx::vol::EventSchedule;
 using atx::vol::ForwardPoint;
 using atx::vol::InsertedSliceHandle;
 using atx::vol::InterpMode;
@@ -657,6 +659,124 @@ TEST(VolProjection, EvalEx_ReservedInterpMode_ReturnsNotImplemented) {
   auto res = atx::vol::surface_eval_ex(sf, cs, nullptr, tm, req);
   ASSERT_FALSE(res.has_value());
   EXPECT_EQ(res.error().code(), atx::vol::ErrorCode::NotImplemented);
+}
+
+// ── Event-aware cross-expiry interpolation (event_vol.hpp) ──────────────
+
+TEST(Projection, EventAwareBlendJumpsAcrossEventDay) {
+  // Two flat (no-skew: phi=0, rho=0 => w(k) == theta for every k) eSSVI
+  // slices at T_lo=0.10 (n=0 events yet) / T_hi=0.30 (n=1 event by then),
+  // built so their OWN total variance matches the exact synthetic from
+  // event_vol_test.cpp's EventAwareInterpJumpAcrossEvent: censored vol flat
+  // 20% (w = 0.04*T), emove 5% (e^2 = 0.0025), one event landing exactly at
+  // T=0.20 from `now`. Querying just below (T=0.19, event not yet counted)
+  // vs just above (T=0.21, event counted) the event day must match the
+  // closed-form censored interpolation to 1e-12, and the jump between them
+  // is ~emove^2 in w (0.0109 - 0.0076 = 0.0033 ~= 2*emove^2, since the
+  // interpolation weight also shifts slightly across the two query points).
+  constexpr double kEmove = 0.05;
+  constexpr double kE2 = kEmove * kEmove;              // 0.0025
+  constexpr double kTLo = 0.10, kTHi = 0.30;
+  constexpr double kWLo = 0.04 * kTLo;                 // 0.004  (n_lo = 0)
+  constexpr double kWHi = 0.04 * kTHi + kE2;            // 0.0145 (n_hi = 1)
+  constexpr std::int64_t kNowNs = 1'700'000'000'000'000'000LL;
+  const std::int64_t event_ns =
+      kNowNs + static_cast<std::int64_t>(0.20 * 365.25 * 86400.0 * 1.0e9);
+  const EventSchedule sched(std::vector<std::int64_t>{event_ns});
+
+  VolSurface sf = VolSurface::create(1u, Parametrization::Essvi, 2).value();
+  EssviParams sl_lo{};
+  sl_lo.theta = kWLo;
+  sl_lo.phi = 0.0;
+  sl_lo.rho = 0.0;
+  sl_lo.T = kTLo;
+  (void)sf.set_slice_essvi(0, sl_lo);
+  EssviParams sl_hi{};
+  sl_hi.theta = kWHi;
+  sl_hi.phi = 0.0;
+  sl_hi.rho = 0.0;
+  sl_hi.T = kTHi;
+  (void)sf.set_slice_essvi(1, sl_hi);
+
+  CurveSet cs;
+  cs.spot = 100.0;
+  const std::array<double, 2> t{kTLo, kTHi};
+  const std::array<double, 2> r{0.0, 0.0};
+  (void)cs.set_yield(t, r);
+  std::array<ForwardPoint, 2> pts{};
+  pts[0].T = kTLo;
+  pts[0].F = 100.0;
+  pts[1].T = kTHi;
+  pts[1].F = 100.0;
+  cs.forward.set(pts);
+  const auto tm = atx::vol::time_model_clock();
+
+  auto eval_at = [&](double T_query, InterpMode mode) -> double {
+    EvalRequest req = atx::vol::eval_request_default();
+    req.T_clock = T_query;
+    req.coord_kind = CoordKind::LogMoneyness;
+    req.x = 0.0;  // ATM: both InterpMode paths reduce to the same formula.
+    req.side = Side::Call;
+    req.interp_mode = mode;
+    req.events = &sched;
+    req.emove = kEmove;
+    req.now_ns = kNowNs;
+    auto res = atx::vol::surface_eval_ex(sf, cs, nullptr, tm, req);
+    EXPECT_TRUE(res.has_value()) << "T=" << T_query;
+    return res.has_value() ? res->total_variance : std::numeric_limits<double>::quiet_NaN();
+  };
+
+  for (InterpMode mode : {InterpMode::PiecewiseTotalVariance, InterpMode::ShapeBlend}) {
+    const double w_before = eval_at(0.19, mode);
+    const double w_after = eval_at(0.21, mode);
+    // Closed form (hand-derived, matches event_aware_w's own formula):
+    // weight_hi = (T_query - T_lo)/(T_hi - T_lo); w_cen_query =
+    // w_cen_lo + weight_hi*(w_cen_hi - w_cen_lo); + n_query*emove^2.
+    EXPECT_NEAR(w_before, 0.04 * 0.19, 1e-12) << "mode=" << static_cast<int>(mode);
+    EXPECT_NEAR(w_after, 0.04 * 0.21 + kE2, 1e-12) << "mode=" << static_cast<int>(mode);
+    EXPECT_GT(w_after - w_before, 0.002) << "mode=" << static_cast<int>(mode);
+  }
+}
+
+TEST(Projection, NullScheduleBitIdentical) {
+  // events == nullptr (the default): eval on a 16-pt (T, k) grid must be
+  // BIT-IDENTICAL (`==`, not NEAR) to the untouched ground-truth path for
+  // BOTH InterpMode values -- PiecewiseTotalVariance against `VolSurface::
+  // w()`/`iv()` directly (the exact call `surface_eval_ex` still makes when
+  // `events` is null), and ShapeBlend against the legacy 3-arg
+  // `w_on_inserted_slice`/`iv_on_inserted_slice` call (default `events`
+  // param) -- proving the new EvalRequest fields defaulting off perturbs
+  // NEITHER path by so much as one bit.
+  CurveSet cs = make_cs();
+  VolSurface sf = make_surface();
+  const auto tm = atx::vol::time_model_clock();
+  constexpr std::array<double, 4> kQueryT{0.15, 0.30, 0.60, 0.85};
+  constexpr std::array<double, 4> kQueryK{-0.15, -0.05, 0.02, 0.10};
+
+  for (double T : kQueryT) {
+    for (double k : kQueryK) {
+      EvalRequest req = atx::vol::eval_request_default();
+      req.T_clock = T;
+      req.coord_kind = CoordKind::LogMoneyness;
+      req.x = k;
+      req.side = Side::Call;
+
+      req.interp_mode = InterpMode::PiecewiseTotalVariance;
+      auto res_lin = atx::vol::surface_eval_ex(sf, cs, nullptr, tm, req);
+      ASSERT_TRUE(res_lin.has_value()) << "T=" << T << " k=" << k;
+      EXPECT_EQ(res_lin->iv, sf.iv(k, T)) << "T=" << T << " k=" << k;
+      EXPECT_EQ(res_lin->total_variance, sf.w(k, T)) << "T=" << T << " k=" << k;
+
+      req.interp_mode = InterpMode::ShapeBlend;
+      auto res_shape = atx::vol::surface_eval_ex(sf, cs, nullptr, tm, req);
+      ASSERT_TRUE(res_shape.has_value()) << "T=" << T << " k=" << k;
+      auto handle = atx::vol::surface_insert_vol_slice(
+          sf, &cs, tm, T, InterpMode::ShapeBlend, ProjExtrapPolicy::Forbid);
+      ASSERT_TRUE(handle.has_value());
+      const double expected_iv = atx::vol::iv_on_inserted_slice(sf, *handle, k);
+      EXPECT_EQ(res_shape->iv, expected_iv) << "T=" << T << " k=" << k;
+    }
+  }
 }
 
 // ── project_compare ──────────────────────────────────────────────────────

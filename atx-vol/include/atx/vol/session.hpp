@@ -41,8 +41,11 @@
 // session from any number of threads (matching the underlying `VolSurface` and
 // stateless-pricer contracts).
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <vector>
@@ -53,6 +56,7 @@
 #include "atx/vol/curve.hpp"           // DividendEvent
 #include "atx/vol/data.hpp"            // QuoteFrame (from_frame input)
 #include "atx/vol/deamer.hpp"          // DeAmOptions
+#include "atx/vol/event_vol.hpp"       // EventSchedule (SessionInputs::events), implied_emove
 #include "atx/vol/parity.hpp"          // ParityReport
 #include "atx/vol/priced_surface.hpp"  // PricedSurface, PricingContext (to_priced_surface)
 #include "atx/vol/projection.hpp"      // InterpMode (SessionInputs::interp, ShapeBlend eval)
@@ -119,6 +123,24 @@ struct SessionInputs {
   // specific to VolSurface's inserted-slice mechanism (see
   // InterpMode::ShapeBlend).
   InterpMode interp{InterpMode::PiecewiseTotalVariance};
+  // Symbol earnings-event schedule (nullable; default null => bit-identical
+  // serving, exactly like `interp` above). When non-null, `build` solves an
+  // implied eMove from the two fitted expiries bracketing the next
+  // scheduled event (SpiderRock event_vol.hpp `implied_emove`; see
+  // `SessionDiagnostics::implied_emove` for the exact bracketing rule and
+  // its NaN-on-failure convention) and, ONLY on a successful solve, threads
+  // (events, the solved eMove) through every query's model_w/model_iv so
+  // cross-expiry interpolation censors/re-adds the earnings-variance term
+  // (`event_vol.hpp` `event_aware_w`, via `w_on_inserted_slice`'s
+  // event-aware overload) instead of the plain blend. Applies under EITHER
+  // `interp` value (see `w_on_inserted_slice`'s doc for what gets
+  // event-censored in each mode). A failed solve (`implied_emove` left NaN)
+  // serves EXACTLY as if `events` were null -- no error, no fabricated
+  // event contribution. Restricted to the default eSSVI path, same as
+  // ShapeBlend above: a session built with a polymorphic curve override
+  // (ConvexDense / Svi) leaves `implied_emove` at its NaN default and never
+  // consults `events`.
+  std::shared_ptr<const EventSchedule> events{};
   // The session's retained copy of the T convention its chains were built
   // under (see vol_time.hpp `TimeSpec`; default Calendar365 is BIT-IDENTICAL
   // to the historical `year_fraction`-derived `Chain::T`). Chain::T itself
@@ -191,6 +213,20 @@ struct SessionDiagnostics {
   std::size_t n_bid_miss{};   // sum over slices
   std::size_t n_ask_miss{};   // sum over slices
   double max_prc_err{};       // max over slices (premium units)
+  // eMove implied from the two fitted expiries bracketing the first
+  // scheduled event in `(now_ts_ns, last fitted expiry]` (SessionInputs::
+  // events), via `implied_emove` on those two expiries' own ATM total
+  // variances (event_vol.hpp). NaN (never a fabricated 0 -- mirrors the
+  // conservative calendar-guard convention just above, `n_calendar_viol_pre`)
+  // when: `events` is null; the session used a polymorphic curve override
+  // (ConvexDense / Svi -- events is eSSVI-default only, see
+  // SessionInputs::events); there are fewer than two fitted expiries; no
+  // scheduled event falls in that window; the event has no fitted expiry
+  // strictly before it to bracket against; or `implied_emove`'s own solve
+  // failed (no identification, or a negative-beyond-tolerance e^2). A
+  // finite value here is the ONLY condition under which queries route
+  // through the event-aware blend (see SessionInputs::events).
+  double implied_emove{std::numeric_limits<double>::quiet_NaN()};
 };
 
 // Stateful surface handle. Construct with `build` / `from_frame`; then query.
@@ -429,6 +465,24 @@ class VolaSession {
   // bracket is needed here. NaN if the inserted-slice handle fails to build
   // (never for a successfully built session's own surface_).
   [[nodiscard]] double shape_blend_total_variance(double k_log,
+                                                  double T) const noexcept;
+
+  // True iff a query should route through the event-aware blend: `events`
+  // is set AND the post-fit solve landed on a finite eMove (see
+  // SessionDiagnostics::implied_emove -- NaN means "serve exactly as if
+  // events were null", never a fabricated fallback value).
+  [[nodiscard]] bool event_aware_active() const noexcept {
+    return (in_.events != nullptr) && std::isfinite(diag_.implied_emove);
+  }
+
+  // Event-aware total variance at (k_log, T) off `surface_`, via the SAME
+  // projection-layer inserted-slice path `shape_blend_total_variance` uses
+  // (see there), but through `w_on_inserted_slice`'s event-aware overload
+  // (events + the solved emove + `in_.now_ts_ns`) instead of the 3-arg
+  // legacy call. `in_.interp` still selects which blend gets event-censored
+  // (PiecewiseTotalVariance vs ShapeBlend -- see w_on_inserted_slice's doc).
+  // Only called when `event_aware_active()` is true.
+  [[nodiscard]] double event_aware_total_variance(double k_log,
                                                   double T) const noexcept;
 
   // Correction cache to serve a query through, or nullptr for the cold (accurate)

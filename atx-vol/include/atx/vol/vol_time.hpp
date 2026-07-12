@@ -185,4 +185,26 @@ struct TimeSpec {
 [[nodiscard]] double time_to_expiry_years(std::int64_t from_ns, std::int64_t to_ns,
                                           const TimeSpec& spec) noexcept;
 
+// Inverse of `time_to_expiry_years` under the DEFAULT Calendar365 convention
+// only: reconstructs an absolute instant `from_ns + round(years *
+// kCalendarYearNs)`. For a caller that only has a year-fraction (T,
+// Calendar365) and needs an absolute epoch instant to compare against an
+// absolute-timestamp source it has no other link to (e.g. an earnings-event
+// schedule keyed on real listed-expiry timestamps that the T itself was
+// computed from, but did not retain) -- see atx/vol/event_vol.hpp's
+// `EventSchedule::count_between`, used by both `w_on_inserted_slice`
+// (projection.hpp, an arbitrary interpolated query T has no real listed
+// expiry to read one from) and `VolaSession::build`'s eMove solve
+// (session.cpp, whose fitted eSSVI slices do not currently retain their own
+// `expiry_ns` -- see EssviParams::expiry_ns). Round-trips a real listed
+// expiry's own `time_to_expiry_years` output to within double-precision
+// rounding (sub-nanosecond -- immaterial at any realistic event-schedule
+// granularity).
+//
+// @param from_ns  valuation instant, epoch nanoseconds (UTC)
+// @param years    Calendar365 year-fraction from `from_ns`
+// @return         `from_ns + round(years * kCalendarYearNs)`
+[[nodiscard]] std::int64_t ns_from_year_fraction(std::int64_t from_ns,
+                                                 double years) noexcept;
+
 }  // namespace atx::vol

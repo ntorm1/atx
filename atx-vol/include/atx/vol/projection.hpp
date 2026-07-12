@@ -56,6 +56,12 @@
 
 namespace atx::vol {
 
+// Forward declaration only: `EvalRequest`/`w_on_inserted_slice` carry a
+// non-owning `const EventSchedule*` (nullable). No member of `EventSchedule`
+// is called from this header, so a full include is not needed here;
+// projection.cpp includes event_vol.hpp for the definition.
+class EventSchedule;
+
 // ── Provenance / resolver flag bits (mirror the C ATS_VOL_FLAG_* space) ──
 //
 // Bits 0..15 are owned by the Stage I evaluators; bits 16..20 are the Stage II
@@ -171,12 +177,17 @@ enum class ForwardBasis : std::uint8_t {
 // ── Time model ───────────────────────────────────────────────────────────
 
 // v1 leaves the reserved variance-integration knobs zero; carried now so the
-// API is stable when calibrated trading time lands.
+// API is stable when calibrated trading time lands. `event_variance_add`
+// below is a DIFFERENT, still-reserved knob (a flat, non-earnings-specific
+// variance bump for a future calibrated trading-time model) from
+// `EvalRequest::events`/`emove` (event_vol.hpp's SpiderRock earnings-event
+// model, wired into the cross-expiry blend in `w_on_inserted_slice`) — the
+// two both mention "event" but are unrelated mechanisms; do not conflate.
 struct TimeModel {
   TimeMode mode{TimeMode::Clock};
   double overnight_weight{0.0};
   double weekend_weight{0.0};
-  double event_variance_add{0.0};
+  double event_variance_add{0.0};  // reserved; NOT the earnings-event model
 };
 
 // {mode = Clock, all reserved = 0}.
@@ -267,9 +278,30 @@ struct InsertedSliceHandle {
 // total variance is non-finite / non-positive). Both reduce to the single
 // parent slice's own w when the handle already resolved to one slice
 // (`exact_slice_idx >= 0`).
+//
+// `events` (nullable, default off => BIT-IDENTICAL to the pre-event-vol
+// behavior) wraps whichever blend `handle.interp_mode` selects with
+// SpiderRock's earnings event-variance model (event_vol.hpp
+// `event_aware_w`): PiecewiseTotalVariance's raw-w blend runs at the query's
+// own `k_log` (the whole formula generalizes uncensored -- there is no
+// separate smile/level split in that mode); ShapeBlend's blend only has a
+// genuine two-point raw-total-variance step at the ATM anchor (`w_atm_q`,
+// see InterpMode::ShapeBlend), so only THAT anchor is event-censored --
+// the vol-multiple shape blending around it is unchanged. Fallback semantics
+// for `emove <= 0` / an all-zero event count live INSIDE `event_aware_w`
+// (never duplicated here). `now_ns` plus each bracketing slice's own
+// `tau_vol`-space T (there is no real listed expiry for an arbitrary
+// interpolated query T) are converted to absolute instants for
+// `EventSchedule::count_between` via the Calendar365 identity
+// `now_ns + round(T * kCalendarYearNs)` (vol_time.hpp) -- ignored when
+// `events` is null. An exact-pillar hit (`exact_slice_idx >= 0`) never
+// blends, so `events` has nothing to wrap there either way.
 [[nodiscard]] double w_on_inserted_slice(const VolSurface& surface,
                                          const InsertedSliceHandle& handle,
-                                         double k_log) noexcept;
+                                         double k_log,
+                                         const EventSchedule* events = nullptr,
+                                         double emove = 0.0,
+                                         std::int64_t now_ns = 0) noexcept;
 
 // Implied vol sqrt(w / tau_vol) against an inserted slice. NaN if w or tau_vol
 // is non-positive.
@@ -337,6 +369,19 @@ struct EvalRequest {
   DeltaConvention delta_convention{DeltaConvention::Forward};
   TimeMode time_mode{TimeMode::Clock};
   RoutePolicy pricing_route_policy{RoutePolicy::B76Only};
+  // Earnings/event awareness for cross-expiry interpolation (nullable,
+  // default off => BIT-IDENTICAL to the shipped v1 path: a null `events` is
+  // the ONLY way to guarantee the exact pre-existing code path runs, so this
+  // is the one field on this struct where "leave it defaulted" is a hard
+  // behavioral guarantee, not just a convenience default). When `events` is
+  // non-null, `surface_eval_ex` routes BOTH interp modes through the
+  // inserted-slice mechanism and its event-aware `w_on_inserted_slice`
+  // overload (see there for exactly what gets censored/re-added) instead of
+  // the plain blend. `now_ns` is the valuation instant `EventSchedule::
+  // count_between` needs; ignored when `events` is null.
+  const EventSchedule* events{nullptr};
+  double emove{0.0};
+  std::int64_t now_ns{0};
 };
 
 struct EvalResult {

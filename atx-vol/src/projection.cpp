@@ -14,6 +14,8 @@
 #include "atx/core/math.hpp"    // norm_cdf
 #include "atx/vol/american.hpp" // american_price_cached
 #include "atx/vol/black76.hpp"  // black76_price
+#include "atx/vol/event_vol.hpp" // EventSchedule, event_aware_w
+#include "atx/vol/vol_time.hpp"  // kCalendarYearNs
 
 namespace atx::vol {
 
@@ -90,7 +92,8 @@ inline constexpr double kProjExactTTol = 1.0 / (252.0 * 6.5 * 60.0);
 // not an error.
 [[nodiscard]] double shape_blend_w(const VolSurface& s,
                                    const InsertedSliceHandle& h,
-                                   double k_log) noexcept {
+                                   double k_log, const EventSchedule* events,
+                                   double emove, std::int64_t now_ns) noexcept {
   const auto lo = static_cast<std::uint16_t>(h.parent_lo_idx);
   const auto hi = static_cast<std::uint16_t>(h.parent_hi_idx);
   const double ww_hi = h.alpha_T;
@@ -123,7 +126,25 @@ inline constexpr double kProjExactTTol = 1.0 / (252.0 * 6.5 * 60.0);
   const double atm_lo = std::sqrt(w_lo0 / T_lo);
   const double atm_hi = std::sqrt(w_hi0 / T_hi);
 
-  const double w_atm_q = ww_lo * w_lo0 + ww_hi * w_hi0;
+  // ATM anchor: the ONE genuine two-point raw-total-variance blend step in
+  // this mode (see the module doc on InterpMode::ShapeBlend -- it is
+  // literally the same formula PiecewiseTotalVariance uses at k = 0). This
+  // is the step `events` wraps with SpiderRock's earnings event-variance
+  // model when active; the vol-multiple shape blending below it (m_lo/m_hi)
+  // is unchanged either way -- the event contribution shifts the ATM level
+  // the smile shape then reconstructs around, it does not reshape the smile.
+  double w_atm_q;
+  if (events != nullptr) {
+    const std::size_t n_lo =
+        events->count_between(now_ns, ns_from_year_fraction(now_ns, T_lo));
+    const std::size_t n_hi =
+        events->count_between(now_ns, ns_from_year_fraction(now_ns, T_hi));
+    const std::size_t n_q =
+        events->count_between(now_ns, ns_from_year_fraction(now_ns, T_q));
+    w_atm_q = event_aware_w(w_lo0, T_lo, n_lo, w_hi0, T_hi, n_hi, T_q, n_q, emove);
+  } else {
+    w_atm_q = ww_lo * w_lo0 + ww_hi * w_hi0;
+  }
   if (!(std::isfinite(w_atm_q) && w_atm_q > 0.0)) {
     return linear_w_fallback();
   }
@@ -409,19 +430,33 @@ Result<InsertedSliceHandle> surface_insert_vol_slice(
 
 double w_on_inserted_slice(const VolSurface& surface,
                            const InsertedSliceHandle& handle,
-                           double k_log) noexcept {
+                           double k_log, const EventSchedule* events,
+                           double emove, std::int64_t now_ns) noexcept {
   if (handle.exact_slice_idx >= 0) {
     return slice_w(surface, static_cast<std::uint16_t>(handle.exact_slice_idx),
                    k_log);
   }
   if (handle.interp_mode == InterpMode::ShapeBlend) {
-    return shape_blend_w(surface, handle, k_log);
+    return shape_blend_w(surface, handle, k_log, events, emove, now_ns);
   }
-  const double w_lo =
-      slice_w(surface, static_cast<std::uint16_t>(handle.parent_lo_idx), k_log);
-  const double w_hi =
-      slice_w(surface, static_cast<std::uint16_t>(handle.parent_hi_idx), k_log);
-  return w_lo + handle.alpha_T * (w_hi - w_lo);
+  const auto lo = static_cast<std::uint16_t>(handle.parent_lo_idx);
+  const auto hi = static_cast<std::uint16_t>(handle.parent_hi_idx);
+  const double w_lo = slice_w(surface, lo, k_log);
+  const double w_hi = slice_w(surface, hi, k_log);
+  if (events == nullptr) {
+    return w_lo + handle.alpha_T * (w_hi - w_lo);
+  }
+  // PiecewiseTotalVariance has no separate ATM/shape split -- the SAME raw-w
+  // blend formula runs at every k_log, so the event-aware wrap runs at the
+  // query's own k_log directly (contrast ShapeBlend's ATM-anchor-only wrap
+  // above).
+  const double T_lo = slice_T(surface, lo);
+  const double T_hi = slice_T(surface, hi);
+  const double T_q = handle.T_clock;
+  const std::size_t n_lo = events->count_between(now_ns, ns_from_year_fraction(now_ns, T_lo));
+  const std::size_t n_hi = events->count_between(now_ns, ns_from_year_fraction(now_ns, T_hi));
+  const std::size_t n_q = events->count_between(now_ns, ns_from_year_fraction(now_ns, T_q));
+  return event_aware_w(w_lo, T_lo, n_lo, w_hi, T_hi, n_hi, T_q, n_q, emove);
 }
 
 double iv_on_inserted_slice(const VolSurface& surface,
@@ -592,10 +627,18 @@ Result<EvalResult> surface_eval_ex(const VolSurface& surface,
   }
 
   double w = kQuietNaN;
-  if (request.interp_mode == InterpMode::ShapeBlend) {
-    // ShapeBlend routes through the inserted-slice path so it can see both
-    // bracketing slices; PiecewiseTotalVariance (default, below) stays on
-    // the original direct VolSurface::w() call for bit-identical behavior.
+  if (request.interp_mode == InterpMode::ShapeBlend || request.events != nullptr) {
+    // Route through the inserted-slice path so the blend can see both
+    // bracketing slices individually: ShapeBlend always needs this (to
+    // reconstruct the vol-multiple shape); the event-aware wrap needs it
+    // too, for EITHER interp mode, since `w_on_inserted_slice`'s event-aware
+    // overload is what actually calls `event_aware_w` (see its doc) --
+    // `VolSurface::w()` (the plain-PiecewiseTotalVariance fast path below)
+    // has no way to see the two parent slices separately. A null `events`
+    // with PiecewiseTotalVariance never reaches this branch, so that path
+    // (the default) stays on the untouched `surface.w()` call below --
+    // bit-identical to the pre-event-vol behavior.
+    //
     // `convert_coord` above already ran `curve_forward_T` for this exact
     // (curves, T_clock, extrap_policy) to produce `cr`; reuse it (`cr->F` /
     // `df` / `r` / `q_eff` are copied straight from that lookup) instead of
@@ -613,14 +656,15 @@ Result<EvalResult> surface_eval_ex(const VolSurface& surface,
     pre_fwd.flags = cr->flags & (kFlagExtrapolatedT | kFlagForwardInterp);
 
     auto handle = build_inserted_slice(surface, &curves, tm, request.T_clock,
-                                       InterpMode::ShapeBlend,
+                                       request.interp_mode,
                                        request.extrap_policy, &pre_fwd);
     if (!handle) {
       out.flags |= kFlagInvalid;
       return Err(std::move(handle).error());
     }
     out.flags |= handle->flags;
-    w = w_on_inserted_slice(surface, *handle, cr->k_log);
+    w = w_on_inserted_slice(surface, *handle, cr->k_log, request.events,
+                            request.emove, request.now_ns);
   } else {
     w = surface.w(cr->k_log, cr->tau_vol);
   }

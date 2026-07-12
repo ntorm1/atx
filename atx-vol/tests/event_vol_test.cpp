@@ -4,9 +4,16 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
+#include <string>
 #include <vector>
 
+#include "atx/vol/data.hpp"      // data_install, iso_to_ns, year_fraction
 #include "atx/vol/event_vol.hpp"
+#include "atx/vol/panel.hpp"     // SynthPanelSpec, make_synthetic_american_panel
+#include "atx/vol/session.hpp"   // VolaSession, SessionInputs (production seam)
+#include "atx/vol/universe.hpp"  // Universe, Underlying
+#include "atx/vol/vol_time.hpp"  // kCalendarYearNs
 
 // Coverage for the SpiderRock-style earnings event-variance model: censored
 // total variance, FLEX recombination, implied per-event move (eMove), and
@@ -232,6 +239,169 @@ TEST(EventVol, AllEventCountsZeroIsPlainLinearW_EvenWithPositiveEmove) {
   const double weight_hi = (T_query - T_lo) / (T_hi - T_lo);  // 0.1/0.3
   const double expect = w_lo + weight_hi * (w_hi - w_lo);
   EXPECT_NEAR(w, expect, 1e-12);
+}
+
+// ── Session e2e (production-seam acceptance: event_vol.hpp through
+//    VolaSession's build/serve path, not just the module's own header) ────
+
+using atx::vol::data_install;
+using atx::vol::iso_to_ns;
+using atx::vol::make_synthetic_american_panel;
+using atx::vol::S3Params;
+using atx::vol::SessionInputs;
+using atx::vol::SynthExpiry;
+using atx::vol::SynthPanelSpec;
+using atx::vol::Underlying;
+using atx::vol::Universe;
+using atx::vol::VolaSession;
+using atx::vol::year_fraction;
+
+// A 2-expiry, FLAT-smile (s2 = c2 = 0, so the true ATM vol IS the whole
+// smile) synthetic panel, with expiry2's ATM vol constructed so its total
+// variance embeds exactly ONE earnings event of a KNOWN eMove on top of a
+// shared censored vol level -- the exact w_total(T) = sigma_C^2*T + n*eMove^2
+// relation this module's header models (see the RoundTripKnownEmove /
+// EventAwareInterpJumpAcrossEvent tests above for the same identity in
+// isolation). `event_iso` places the schedule's one event relative to the
+// two fitted expiries (2026-07-19 / 2026-12-19); the caller picks it to
+// either bracket cleanly or fall outside the fitted range.
+struct EventPanelFixture {
+  SynthPanelSpec spec;
+  std::int64_t now_ns = 0;
+  std::int64_t event_ns = 0;
+  double sigma_c = 0.20;
+  double emove = 0.05;
+};
+
+[[nodiscard]] EventPanelFixture make_event_panel(const std::string& event_iso) {
+  EventPanelFixture fx;
+  const std::string snapshot = "2026-06-19";
+  const std::vector<std::string> isos = {"2026-07-19", "2026-12-19"};  // ~0.10y, ~0.50y
+
+  fx.spec.uid = "SYNTHEV";
+  fx.spec.snapshot_iso = snapshot;
+  fx.spec.spot = 100.0;
+  fx.spec.r = 0.03;
+  fx.spec.borrow = 0.0;
+
+  const double T1 = year_fraction(snapshot, isos[0]);
+  const double T2 = year_fraction(snapshot, isos[1]);
+  // n1 = 0 (no event before expiry1), n2 = 1 (the schedule's one event
+  // falls between expiry1 and expiry2 in the bracketing test) -- built
+  // straight into the true ATM vols: sigma1 = sigma_c;
+  // sigma2 = sqrt(sigma_c^2 + emove^2/T2).
+  const double sigma2 =
+      std::sqrt(fx.sigma_c * fx.sigma_c + (fx.emove * fx.emove) / T2);
+  fx.spec.expiries.push_back(SynthExpiry{isos[0], T1, S3Params{fx.sigma_c, 0.0, 0.0}});
+  fx.spec.expiries.push_back(SynthExpiry{isos[1], T2, S3Params{sigma2, 0.0, 0.0}});
+
+  for (double K = 60.0; K <= 140.0 + 1e-9; K += 5.0) {
+    fx.spec.strikes.push_back(K);
+  }
+  fx.spec.half_spread_frac = 0.02;
+
+  fx.now_ns = iso_to_ns(snapshot);
+  fx.event_ns = iso_to_ns(event_iso);
+  return fx;
+}
+
+[[nodiscard]] const Underlying* install_event_panel(const SynthPanelSpec& spec, Universe& u) {
+  const auto panel = make_synthetic_american_panel(spec);
+  EXPECT_TRUE(panel.has_value());
+  if (!panel) return nullptr;
+  const auto uid = data_install(u, panel->frame);
+  EXPECT_TRUE(uid.has_value());
+  if (!uid) return nullptr;
+  const auto under = u.get_underlying(*uid);
+  EXPECT_TRUE(under.has_value());
+  return under ? *under : nullptr;
+}
+
+[[nodiscard]] SessionInputs make_event_inputs(const EventPanelFixture& fx) {
+  SessionInputs in;
+  in.S = fx.spec.spot;
+  in.r = fx.spec.r;
+  in.now_ts_ns = fx.now_ns;
+  in.deam.n_atm = 3;
+  return in;
+}
+
+TEST(Session, ImpliedEmoveSolvedAndServed) {
+  const EventPanelFixture fx = make_event_panel("2026-09-01");  // between the two expiries
+  Universe u;
+  const Underlying* under = install_event_panel(fx.spec, u);
+  ASSERT_NE(under, nullptr);
+  ASSERT_EQ(under->chains.size(), std::size_t{2});
+
+  SessionInputs in_events = make_event_inputs(fx);
+  in_events.events =
+      std::make_shared<EventSchedule>(std::vector<std::int64_t>{fx.event_ns});
+  const auto sess = VolaSession::build(*under, in_events);
+  ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
+
+  const double got_emove = sess->diagnostics().implied_emove;
+  ASSERT_TRUE(std::isfinite(got_emove)) << "implied_emove was NaN";
+  // Tol from de-Am + eSSVI LM fit noise (S3-truth ATM vols are only
+  // approximately recovered by the fit, not exact recombination -- see the
+  // module's own RoundTripKnownEmove test for the noiseless closed form).
+  // Empirically the flat (no-skew) fixture recovers eMove to well under 1%
+  // (nothing else competes for the ATM level), so 10% is a real regression
+  // check, not a rubber stamp.
+  EXPECT_NEAR(got_emove, fx.emove, fx.emove * 0.10) << "got=" << got_emove;
+
+  // Plain (no-event) session off the SAME underlying for comparison. Note
+  // `events` plays no part in the fit itself (SurfaceParityInputs has no
+  // such field) -- only in post-fit diagnostics + serving -- so the two
+  // sessions' fitted surfaces are otherwise identical.
+  SessionInputs in_plain = make_event_inputs(fx);
+  const auto sess_plain = VolaSession::build(*under, in_plain);
+  ASSERT_TRUE(sess_plain.has_value()) << sess_plain.error().to_string();
+
+  // A query strictly between expiry1 and the event date: event-aware
+  // censoring must DEFER (not smoothly leak) expiry2's extra event variance
+  // across the whole T1->T2 span the way a plain linear-in-w blend does, so
+  // it reports LESS total variance here than the plain blend.
+  const auto exps = sess->expiries();
+  ASSERT_EQ(exps.size(), std::size_t{2});
+  const double T1 = exps[0].T;
+  const double T_event =
+      static_cast<double>(fx.event_ns - fx.now_ns) / atx::vol::kCalendarYearNs;
+  const double T_mid = T1 + 0.3 * (T_event - T1);
+  ASSERT_GT(T_mid, T1);
+  ASSERT_LT(T_mid, T_event);
+
+  const double w_events = sess->total_variance(100.0, T_mid);
+  const double w_plain = sess_plain->total_variance(100.0, T_mid);
+  ASSERT_TRUE(std::isfinite(w_events));
+  ASSERT_TRUE(std::isfinite(w_plain));
+  EXPECT_LT(w_events, w_plain) << "w_events=" << w_events << " w_plain=" << w_plain;
+}
+
+TEST(Session, NoBracketingExpiriesLeavesEmoveNaN) {
+  // Event scheduled AFTER the last fitted expiry: nothing to bracket.
+  const EventPanelFixture fx = make_event_panel("2027-03-01");
+  Universe u;
+  const Underlying* under = install_event_panel(fx.spec, u);
+  ASSERT_NE(under, nullptr);
+
+  SessionInputs in_events = make_event_inputs(fx);
+  in_events.events =
+      std::make_shared<EventSchedule>(std::vector<std::int64_t>{fx.event_ns});
+  const auto sess = VolaSession::build(*under, in_events);
+  ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
+  EXPECT_TRUE(std::isnan(sess->diagnostics().implied_emove));
+
+  SessionInputs in_plain = make_event_inputs(fx);
+  const auto sess_plain = VolaSession::build(*under, in_plain);
+  ASSERT_TRUE(sess_plain.has_value()) << sess_plain.error().to_string();
+
+  // No error, and serving is BIT-IDENTICAL to the plain (non-event) session:
+  // a failed solve must fall back exactly, never propagate NaN or a
+  // fabricated event contribution into an otherwise-normal query.
+  const auto exps = sess->expiries();
+  const double T_mid = 0.5 * (exps[0].T + exps[1].T);
+  EXPECT_EQ(sess->iv(100.0, T_mid), sess_plain->iv(100.0, T_mid));
+  EXPECT_EQ(sess->total_variance(100.0, T_mid), sess_plain->total_variance(100.0, T_mid));
 }
 
 }  // namespace
