@@ -3,12 +3,13 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <string>
 #include <utility>
 #include <vector>
 
 #include "atx/vol/black76.hpp"     // black76_price, black76_value_and_vega
 #include "atx/vol/calib.hpp"       // FitObs
-#include "atx/vol/dense_slice.hpp" // fit_convex_slice, ConvexSliceFit
+#include "atx/vol/dense_slice.hpp" // fit_convex_slice, ConvexSliceFit, kMaxIntervalSlackRows
 #include "atx/vol/types.hpp"       // Side
 
 // Phase 1 of the arbitrage-constrained dense surface: the per-slice convex
@@ -371,6 +372,41 @@ TEST(DenseSlice, PositiveIterationCapExhaustionIsNotPublishedForEitherLoss) {
   const auto interval = fit_convex_slice(obs, F, T, df, interval_opts);
   ASSERT_FALSE(interval.has_value());
   EXPECT_EQ(interval.error().code(), ErrorCode::Internal);
+}
+
+// WP10: the Interval loss materializes dense (N+2M)x(N+2M) system matrices,
+// O(M^2) in the distinct-strike count M. A pathologically wide board must fail
+// LOUD and BOUNDED (InvalidArgument) before that allocation, not die in an
+// unbounded alloc. node_cap bounds N at 40, so ~1100 distinct strikes drive
+// N + 2M = 40 + 2200 = 2240 past kMaxIntervalSlackRows (2048). The obs carry
+// only trivial finite values -- the guard fires before any heavy solve work.
+TEST(DenseSlice, IntervalLossRejectsOversizedSlackSystemBeforeAllocation) {
+  constexpr double F = 100.0, T = 0.25, df = 0.98;
+  constexpr int kStrikes = 1100; // 2*1100 + 40 = 2240 > kMaxIntervalSlackRows
+  static_assert(2 * kStrikes + 40 > atx::vol::kMaxIntervalSlackRows,
+                "test must exceed the interval slack cap");
+  std::vector<FitObs> obs;
+  obs.reserve(kStrikes);
+  for (int i = 0; i < kStrikes; ++i) {
+    FitObs o{};
+    o.K = 10.0 + 0.1 * static_cast<double>(i); // distinct, positive, ascending
+    o.F = F;
+    o.df = df;
+    o.k = std::log(o.K / F);
+    o.side = Side::Call;
+    o.mid = 1.0; // trivial finite non-negative call price
+    o.spread = 0.02;
+    o.vega = 1.0;
+    o.sigma_mkt = 0.2;
+    obs.push_back(o);
+  }
+  ConvexFitOpts opts;
+  opts.loss = atx::vol::CalibLossKind::Interval;
+  const auto fit = fit_convex_slice(obs, F, T, df, opts);
+  ASSERT_FALSE(fit.has_value());
+  EXPECT_EQ(fit.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(fit.error().message().find("too large"), std::string::npos)
+      << "guard message: " << fit.error().message();
 }
 
 TEST(DenseSlice, HostileSlopeBoundStartIsRepairedBeforeCertifiedFit) {

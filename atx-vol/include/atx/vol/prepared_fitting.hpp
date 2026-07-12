@@ -50,6 +50,11 @@ enum class PreparedObservationPolicy : std::uint8_t {
   Configured = 0,
   LegacyEssviCompatibility,
 };
+// DEFERRED (invariant #4.9 — explicit, not silent): the served eSSVI path
+// deliberately prepares under LegacyEssviCompatibility for byte-compatibility
+// with the historical cold driver, even though the family selector scores
+// candidates under Configured. Unifying the two so the served path also runs
+// Configured (identical bits) is a planned follow-up (WP4 residual).
 
 inline constexpr std::size_t kMinPreparedFitRows = 5u;
 

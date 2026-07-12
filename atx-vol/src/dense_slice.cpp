@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <functional>
 #include <limits>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -600,6 +601,14 @@ Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs, double F, d
   // and A4 calendar-floor constraints. The Mid branch below is untouched.
   if (opts.loss == CalibLossKind::Interval) {
     const Eigen::Index Nz = N + 2 * M;
+    // Guard the O(M²) dense slack system BEFORE any Nz×Nz allocation: cap the
+    // widened variable count so a pathologically wide board fails loud and
+    // bounded here instead of dying in an unbounded allocation. See
+    // kMaxIntervalSlackRows next to ConvexFitOpts::loss.
+    if (Nz > static_cast<Eigen::Index>(kMaxIntervalSlackRows)) {
+      return Err(ErrorCode::InvalidArgument,
+                 "fit_convex_slice: interval loss slack system too large: " + std::to_string(Nz));
+    }
 
     // Objective ½zᵀHz z (qz = 0): the g sub-block carries the SAME third-
     // difference roughness + conditioning ridge as the Mid path (NO data term —

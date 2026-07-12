@@ -99,6 +99,16 @@ struct ConvexFitOpts {
   CalibLossKind loss{CalibLossKind::Mid};
 };
 
+// Capacity guard for the Interval (band) loss. That path widens the QP variable
+// vector to N + 2M (N spline nodes bounded by node_cap, plus M+M band slacks)
+// and materializes DENSE (N+2M)x(N+2M) system matrices — O(M^2) in the
+// distinct-strike count M, an unbounded memory cliff for a pathologically wide
+// board. fit_convex_slice rejects a slack system larger than this many rows with
+// InvalidArgument BEFORE allocating, so the cliff surfaces as a loud, bounded
+// error rather than an allocation death. Interval is opt-in (loss defaults to
+// Mid); 2048 rows comfortably covers any real board a node_cap-bounded fit sees.
+inline constexpr int kMaxIntervalSlackRows = 2048;
+
 // Fit an arbitrage-free convex call-price smile to one expiry's filtered
 // observation set. `obs` are the `build_observations` survivors for the slice
 // (each carries its strike K, mid price, spread, side, and Black-76 vega at the

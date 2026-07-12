@@ -157,6 +157,11 @@ public:
     Delta = 1u << 4,       // dedicated american_delta route
     Vega = 1u << 5,        // dedicated american_vega_al/reference route
   };
+  // DEFERRED (invariant #4.9 — explicit, not silent): the Delta/Vega selective
+  // bits above and the matching EvaluationSoA delta/vega columns are complete
+  // PricedSurface-LAYER primitives. Wiring portfolio-level callers to request
+  // only these axes selectively is deferred to WP9 staging (sprint §6); until
+  // then the primitives are exercised by the batch tests, not a portfolio path.
 
   // The point resolved once: validate + T-bracket + forward/carry + ln(K/F) +
   // surface IV. Everything downstream consumes this; nothing re-resolves. `valid`
