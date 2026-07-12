@@ -56,6 +56,9 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/dividend.cpp
     src/s3.cpp
     src/fit_metrics.cpp
+    src/adjusted_greeks.cpp
+    src/vol_time.cpp
+    src/event_vol.cpp
     src/deamer.cpp
     src/parity.cpp
     src/panel.cpp
@@ -67,6 +70,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/chain.cpp
     src/pricer_fitter.cpp
     src/vol_curve.cpp
+    src/spline_curve.cpp
     src/curve_fit.cpp
     src/curve_selector.cpp
     src/priced_surface.cpp

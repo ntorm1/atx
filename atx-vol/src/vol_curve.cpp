@@ -34,6 +34,8 @@ const char *to_string(VolCurveKind kind) noexcept {
     return "linear-variance";
   case VolCurveKind::C8:
     return "c8-event";
+  case VolCurveKind::SplineVol:
+    return "spline-vol";
   }
   return "unknown";
 }
@@ -374,6 +376,12 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
     }
     std::unique_ptr<IVolCurve> curve = std::make_unique<C8Curve>(fitted, df);
     return Ok(std::move(curve));
+  }
+  case VolCurveKind::SplineVol: {
+    // No w_prev / calendar_floor_knots support in v1 (see the fit_slice_curve
+    // doc comment) -- both are silently ignored, matching Essvi/Svi's existing
+    // "unchanged calendar handling" precedent above.
+    return fit_spline_vol_slice(obs_eu, F, T, df, cfg.spline);
   }
   }
   return Err(ErrorCode::InvalidArgument, "fit_slice_curve: unknown curve kind");

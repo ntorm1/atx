@@ -1377,6 +1377,13 @@ void append_optional_u32(std::string &out, const std::optional<std::uint32_t> &v
   case VolCurveKind::C8:
     out = kind;
     return true;
+  case VolCurveKind::SplineVol:
+    // No corpus manifest / archive round-trip support yet (Task 3, v1):
+    // SplineVol is not in default_selector_candidates(), so the writer never
+    // emits this value today. Explicit case (not folded into the kinds
+    // above) so -Wswitch still catches a future kind; falls through to the
+    // same "unknown kind" rejection below.
+    break;
   }
   return false; // unknown kind: manifest written by a newer build
 }

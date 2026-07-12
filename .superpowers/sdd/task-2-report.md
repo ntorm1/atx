@@ -1,172 +1,196 @@
-# Task 2 Report: Lifecycle `CloseAtHorizon` + missing-name policy for `DeclarativeStrategy`
+# Task 2 Report: Earnings event-variance model (`event_vol`)
 
 ## Status: DONE
 
-## What I implemented
+Commit: `ec43778` — `feat(atx-vol): earnings event-variance model (censored vol, implied eMove, event-aware interpolation)`
 
-### 1. `LifecycleSpec::Holding::CloseAtHorizon` (value `2`)
-Added as a third `Holding` enumerator in `atx-vol/include/atx/vol/strategy.hpp`, per the
-brief's exact spec (doc comment included verbatim). `lifecycle_decide` (strategy.cpp) now
-groups `HoldToExpiry` and `CloseAtHorizon` under the same open-tick rule (`EveryStep` /
-`step_index % entry_every_n == 0`), never `clear`. `DeclarativeStrategy::on_step` gained a
-close pass that runs **before** the lifecycle-decide/entry logic when
-`holding == CloseAtHorizon`: it erases every lot from `book.lots` whose
-`(lot.expiry_ts_ns - base.ts_ns()) < roll_at_T * kNsPerYear` (computed as an `int64`
-subtraction then cast to `double`, exactly as specified — not two independent-cast
-subtractions, which would lose precision on raw epoch-ns timestamps). The engine's
-before/after `book.lots` diff (`execute` in `backtest.cpp`) books these as roll-closes at
-current marks; the engine's own expiry-settlement pass runs earlier in its loop (before
-`on_step`), so a lot closed here can never also settle.
+## What was implemented
 
-### 2. Missing-name policy for `DeclarativeStrategy`
-- `StrategySpec` gained `MissingNameSpec missing{}` (default `{Error, min_names=2}`).
-- New `ResolveDrop{symbol, detail}` + `resolve_spec_with_policy(snap, spec, dropped=nullptr)`
-  declared next to `resolve_spec` in strategy.hpp.
-- Refactored `resolve_spec`'s body into a shared anonymous-namespace `resolve_spec_impl`
-  (strategy.cpp) taking an explicit `MissingNameSpec` parameter (not read from `spec.missing`
-  directly, so no `StrategySpec` copy is needed). `resolve_spec` now calls
-  `resolve_spec_impl(snap, spec, MissingNameSpec{Error, 2}, nullptr)` — it **ignores**
-  `spec.missing` entirely, so it stays bit-identical regardless of what a caller happens to
-  set there. `resolve_spec_with_policy` calls the same impl with `spec.missing`.
-- Per-leg expand+size logic was further factored into `expand_and_size_leg` (unchanged
-  logic/messages, just extracted so both entry points share one body).
-- `resolve_spec_impl` semantics under `DropRenormalize`:
-  - A leg whose `expand_and_size_leg` fails is dropped (`*dropped` gets
-    `{ls.symbol, error.message()}`) **unless** `constraint.kind != None && ls.group ==
-    group_b` (the scaled hedge group) — that case returns `Err(Unavailable, ...)` immediately
-    (fatal — a missing hedge leg makes the whole entry unbuildable).
-  - After the leg loop, if `drop_policy && group_a_survivors < missing.min_names` (where
-    `group_a_survivors` counts successful legs with `group == group_a`, or **all** successful
-    legs when `constraint.kind == None`), returns `Err(Unavailable, ...)`.
-  - The existing cross-leg constraint block (FlatVega/VegaNeutralBasket scaling) is untouched
-    — it already only sees `sized`, which now only contains survivors, so the scale ratio
-    renormalizes automatically.
-  - Under `Error` policy, the leg loop's `min_names`/hedge-protection branches are dead code
-    (first failure returns immediately with the *original* error, same code+message as the
-    pre-refactor inline form).
+New, pure-additive module implementing the SpiderRock LiveVolSurfaces /
+FLEXVolInterpolation earnings event-variance model:
 
-### 3. `DeclarativeStrategy::open_cohort` + `dropped_on_last_entry()`
-- `open_cohort` now calls `resolve_spec_with_policy(base, spec_, &last_dropped_)`. On error,
-  if `spec_.missing.policy == DropRenormalize && error.code() == Unavailable`, it returns
-  `Ok()` (no-trade: book left untouched) — mirroring `DispersionStrategy`'s documented
-  no-trade contract in `dispersion_strategy.cpp`. Any other error propagates.
-- New accessor `std::span<const ResolveDrop> dropped_on_last_entry() const noexcept` returns
-  `last_dropped_`, a new `DeclarativeStrategy` member. It's cleared+repopulated inside
-  `resolve_spec_with_policy` (which clears `*dropped` unconditionally at the top) every time
-  `open_cohort` runs — i.e. every entry attempt, whether it ultimately succeeds, no-trades, or
-  hard-fails.
+- **`EventSchedule`** — immutable, sorted (not de-duplicated) set of
+  earnings-announcement instants (epoch ns). `count_between(now_ns,
+  expiry_ns)` counts events in `(now_ns, expiry_ns]` via two
+  `std::upper_bound` scans (event exactly at `now` excluded, exactly at
+  `expiry` included; returns 0 if `expiry_ns < now_ns`).
+- **`censored_total_variance(w_total, n_events, emove)`** —
+  `w_total − n·emove²`, floored at `kWCenFloor = 1e-10`. NaN propagates
+  naturally: the flooring comparison is false for NaN, so the NaN falls
+  through unmodified — no explicit `isnan` branch needed.
+- **`event_recombined_vol(atm_cen, T, n_events, emove)`** — FLEX
+  recombination `sqrt(atm_cen² + n·emove²/T)`; `T <= 0` or non-finite `T`
+  returns NaN via `!(T > 0.0)` (catches both cases in one comparison).
+- **`implied_emove(w1, T1, n1, w2, T2, n2)`** — solves
+  `e² = (w1·T2 − w2·T1)/(n1·T2 − n2·T1)` from the shared-censored-variance
+  assumption. Returns `Result<double>` (`atx::core::Result`, `tl::expected`).
+- **`event_aware_w(...)`** — censors both bracketing slices, linearly
+  interpolates the censored variance in T, re-adds `n_query·emove²`; falls
+  back to plain linear-in-w when `emove <= 0` or all three `n`'s are 0.
 
-## Tests added (`atx-vol/tests/strategy_test.cpp`)
+Files:
+- `atx-vol/include/atx/vol/event_vol.hpp` (new)
+- `atx-vol/src/event_vol.cpp` (new)
+- `atx-vol/tests/event_vol_test.cpp` (new, 23 tests)
+- `atx-vol/CMakeLists.txt` (+1 line: `src/event_vol.cpp`)
+- `atx-vol/tests/CMakeLists.txt` (+1 line: `event_vol_test.cpp`)
 
-Added helpers `Corpus`/`make_corpus(n_dates, tag)` (a ready-to-clock daily "SPY"-only
-manifest, generalizing the `OverlappingClips` day-loop pattern) and
-`snapshot_of(items, tag)` (single-date `write_archive` + `MarketSnapshot::load`), reusing the
-file's existing `make_surface`/`write_archive`/`make_manifest`/`fresh_dir`. Adapted the
-brief's pseudocode to the file's real signatures (e.g. `make_surface(uid, S, fwd, now_ts,
-vol_bump)`, not the brief's placeholder arg order).
+## Ambiguity resolved without blocking (not NEEDS_CONTEXT)
 
-1. **`Strategy.CloseAtHorizonOverlappingCohorts`** — 10-day corpus, 6-day tenor strangle,
-   `roll_at_T = 2.5/365.25`, `EveryStep`. Verifies the ramp-then-plateau `n_open_lots` series
-   `{2,4,6,8,8,8,8,8,8,8}` and `pnl_settlement[i] == 0.0` for all `i` (closes are roll-closes,
-   never engine settlement).
-2. **`Strategy.MissingNameDropRenormalize`** — exercises `resolve_spec_with_policy` directly:
-   one droppable non-hedge name (`FAKE`, dropped + recorded), the `min_names` floor
-   (`Unavailable`), the hedge-leg-never-droppable guard (`Unavailable`), and the `Error`
-   policy hard fail (`NotFound`, unchanged).
-3. **`Strategy.CloseAtHorizonNoTradeOnMissingEntry`** — 4-day corpus with only `SPY`
-   archived; the hedge leg (`MISSING_INDEX`) is absent from every date under
-   `DropRenormalize`. Asserts the run completes (`Ok`) with `n_open_lots[i] == 0` throughout,
-   and that `dropped_on_last_entry()` stays empty (the hedge-fatal path never reaches the drop
-   bookkeeping — it's a distinct outcome from a "drop").
-4. **`Strategy.DeclarativeDroppedOnLastEntryAccessor`** (added beyond the brief's three,
-   to close a self-review gap — none of the brief's three given tests actually call
-   `dropped_on_last_entry()` on a non-empty result) — drives `DeclarativeStrategy::on_step`
-   directly (not via `run_backtest`) with a droppable non-hedge name and asserts the accessor
-   reflects it after a successful entry, and is empty before the first entry.
+The brief (and the sprint plan doc it was drawn from) specifies:
 
-## TDD Evidence
+> `InvalidArgument` if T1,T2 <= 0, T1 == T2, n1·T2 == n2·T1 ...; `FailedPrecondition` if the solved e² < 0
 
-**RED**: `git stash push --keep-index -- atx-vol/include/atx/vol/strategy.hpp
-atx-vol/src/strategy.cpp` (kept the new tests staged, reverted only the implementation to
-base commit `be6a7f5`), then `.\scripts\atx-build.ps1 build atx-vol-tests`:
+`atx::core::ErrorCode` has **no `FailedPrecondition` enumerator**
+(`Unknown, InvalidArgument, OutOfRange, NotFound, AlreadyExists,
+PermissionDenied, Unavailable, Internal, NotImplemented, IoError,
+ParseError`). I searched for precedent rather than asking: `american_iv.cpp`
+(`american_implied_vol`) draws exactly this "bad input" vs. "solved value
+outside its valid domain" distinction using `InvalidArgument` for the
+former and `ErrorCode::OutOfRange` for the latter (e.g. "price above
+max-vol price"). None of the brief's given test cases assert the specific
+error code for the negative-e² case (only `.ok()`/`.has_value()` is
+checked), so this was a safe, precedent-following judgment call, documented
+as a PORT NOTE in the header. `implied_emove` reports negative-e² (beyond
+the clamp window) as `ErrorCode::OutOfRange`.
+
+The brief also didn't name the `eps` in "e² in [−eps,0] clamps to 0"; I
+defined `kEmoveSqClampEps = 1e-9` (documented rationale in the header:
+~9 orders of magnitude below a typical e², absorbs FP cancellation noise
+without masking a real inconsistency) and exercised both sides of the
+window with dedicated tests (exact boundary construction, see below).
+
+## TDD evidence
+
+**RED** (test file + header written first, `src/event_vol.cpp` left as an
+empty stub): `cmake --build build --target atx-vol-tests` failed at the
+link step with undefined-symbol errors for every new symbol, e.g.:
 
 ```
-strategy_test.cpp(467,52): error: no member named 'CloseAtHorizon' in 'atx::vol::LifecycleSpec::Holding'; did you mean 'RollAtHorizon'?
-strategy_test.cpp(519,8): error: no member named 'missing' in 'atx::vol::StrategySpec'
-strategy_test.cpp(521,15): error: use of undeclared identifier 'ResolveDrop'
-strategy_test.cpp(538,18): error: use of undeclared identifier 'resolve_spec_with_policy'
-strategy_test.cpp(598,21): error: no member named 'dropped_on_last_entry' in 'atx::vol::DeclarativeStrategy'
-... (15 errors total)
+lld-link: error: undefined symbol: public: __cdecl atx::vol::EventSchedule::EventSchedule(class std::vector<__int64,...>)
+lld-link: error: undefined symbol: double __cdecl atx::vol::censored_total_variance(double, unsigned __int64, double)
+lld-link: error: undefined symbol: class tl::expected<double, class atx::core::Error> __cdecl atx::vol::implied_emove(...)
+lld-link: error: undefined symbol: double __cdecl atx::vol::event_aware_w(...)
+ninja: build stopped: subcommand failed.
 ```
-Failed for exactly the expected reason (every new symbol from the brief's interface, nothing
-else). `git stash pop` restored the implementation.
 
-**GREEN**: `.\scripts\atx-build.ps1 build atx-vol-tests` — clean build, 0 warnings (repo
-builds `/WX`). `.\scripts\atx-build.ps1 -Ctest -R "Strategy|Backtest|Dispersion"`:
+**GREEN** (after implementing `event_vol.cpp`): build succeeded; `ctest
+--test-dir build -R EventVol` — 23/23 passed, e.g.:
 
 ```
-100% tests passed, 0 tests failed out of 67
+Test #625: EventVol.RoundTripKnownEmove ............... Passed
+Test #626: EventVol.NoIdentificationWhenProportional ... Passed
+Test #630: EventVol.ImpliedEmove_NegativeESquaredBeyondEps_ReturnsOutOfRange ... Passed
+Test #632: EventVol.ImpliedEmove_ESquaredWithinEpsWindow_ClampsToZero ......... Passed
+Test #635: EventVol.EventAwareInterpJumpAcrossEvent .... Passed
+100% tests passed, 0 tests failed out of 23
 ```
-Includes all 5 pre-existing `Strategy.*` tests (`StrikeFromDelta`, `Structures`, `FlatVega`,
-`OverlappingClips`, `DispersionParity`) unmodified and green, plus the 4 new `Strategy.*`
-tests, plus every `Backtest.*`/`BacktestExec.*`/`BacktestReal.*`/`Dispersion.*`/
-`ListedDispersion*.*`/`SpyStrangleBacktest.*`/`SurfaceDbBacktest.*` test in the label filter.
 
-Also ran `.\scripts\atx-build.ps1 build atx-vol` (the full library target, all consuming
-TUs) — clean, 0 warnings/errors, confirming no other `atx-vol` source file broke against the
-widened `Holding` enum or the new `StrategySpec::missing` field (grepped for `switch` on
-`.holding` and positional `StrategySpec{...}`/`LifecycleSpec{...}` aggregate-inits elsewhere
-in the tree — none found, so the additive changes are safe by construction).
+All 6 brief-sketched test cases were fleshed out with hand-derived
+expected values in comments (verified in this report's derivation, e.g.
+`RoundTripKnownEmove`: denom = 1·0.25−2·0.10 = 0.05, numer =
+0.0065·0.25−0.015·0.10 = 0.000125, e² = 0.0025, e = 0.05 ✓), plus 17
+additional tests covering: schedule sort/boundary/empty/reversed-interval,
+NaN propagation for censored/recombined, non-positive-T errors, T1==T2,
+non-finite inputs, the exact-zero and epsilon-window e² clamp cases
+(constructed algebraically to land at precisely `e² = -kEmoveSqClampEps/2`),
+interp-exact-at-both-slices, and the all-n-zero-with-positive-emove
+fallback variant.
 
-## Files changed
+## Full-gate result
 
-- `C:\atx\.claude\worktrees\feat-atx-vol-mag7-dispersion\atx-vol\include\atx\vol\strategy.hpp`
-  (+59/-2): `Holding::CloseAtHorizon`, `StrategySpec::missing`, `ResolveDrop`,
-  `resolve_spec_with_policy` declaration, `DeclarativeStrategy::dropped_on_last_entry()` +
-  `last_dropped_` member, `#include <span>`.
-- `C:\atx\.claude\worktrees\feat-atx-vol-mag7-dispersion\atx-vol\src\strategy.cpp`
-  (+165/-69): `lifecycle_decide` CloseAtHorizon branch; `resolve_spec`/`resolve_spec_impl`/
-  `resolve_spec_with_policy`/`expand_and_size_leg` refactor; `DeclarativeStrategy::open_cohort`
-  no-trade contract; `DeclarativeStrategy::on_step` close pass.
-- `C:\atx\.claude\worktrees\feat-atx-vol-mag7-dispersion\atx-vol\tests\strategy_test.cpp`
-  (+234): `Corpus`/`make_corpus`/`snapshot_of` helpers + 4 new `TEST(Strategy, ...)` cases.
+`ctest --test-dir build -L atx_vol -j16 --timeout 900` (via
+`scripts/atx-build.ps1 -Ctest`):
 
-## Self-review
+```
+99% tests passed, 3 tests failed out of 1027
+```
 
-- **Completeness against the brief's contract**: `CloseAtHorizon = 2` done (value preserved,
-  existing values untouched). `StrategySpec::missing` done. `resolve_spec_with_policy`
-  semantics: group_b-never-droppable done (tested, both in isolation and via the
-  CloseAtHorizon no-trade path), min_names floor done (tested at the boundary — 1 passes, 2
-  fails with the same survivor set), close-pass-before-entry ordering done (verified by the
-  exact `n_open_lots` ramp/plateau sequence, which only works if the close erase happens
-  before the day's open), no-trade contract done (tested end-to-end through `run_backtest`,
-  not just the free function), `dropped_on_last_entry` accessor done (tested both
-  empty-before-first-entry and the positive populated case, which the brief's own three tests
-  didn't cover — I added a fourth test for this).
-- **Bit-identical existing behavior**: `resolve_spec` forces `MissingNameSpec{Error, 2}`
-  through the shared impl regardless of `spec.missing`, so a spec that happens to set
-  `.missing` and gets passed to the *old* `resolve_spec` entry point still hard-fails exactly
-  as before — the field is genuinely inert unless the caller opts into
-  `resolve_spec_with_policy`. All 5 pre-existing `Strategy.*` tests pass unmodified.
-- **YAGNI**: Did not restrict droppable-error-codes to `NotFound`/`Unavailable` the way
-  `dispersion.cpp`'s `DroppedName` machinery does (which needs the narrower set to populate a
-  `DropReason` enum) — the brief's contract for `ResolveDrop`/`resolve_spec_with_policy` has
-  no reason-code field and literally says "a leg whose expansion or sizing fails is DROPPED",
-  so I implemented that literally rather than importing an unrequested distinction.
-- **Numerical detail worth flagging**: the close-pass residual test computes
-  `lot.expiry_ts_ns - base_ts` as an `int64` difference *before* casting to `double`
-  (matching the brief's literal formula), which is more precise than `lifecycle_decide`'s
-  pre-existing `RollAtHorizon` branch (which casts each raw epoch-ns timestamp to `double`
-  independently before subtracting — losing sub-microsecond precision on raw ~1.7e18 values,
-  though immaterial at day-scale comparisons). I did not "fix" the pre-existing
-  `RollAtHorizon` arithmetic since the brief scopes changes to `CloseAtHorizon` and existing
-  behavior must stay byte-identical.
+The 3 failures are exactly the pre-quarantined `MultinamePipeline.*`
+bit-identity tests (`HeldLotWithoutSurfaceIsCountedNotHidden`,
+`DefaultPolicyFullBasketBitIdentical`, `DefaultPolicyStillBitIdentical`) —
+**no new failures**. All 23 `EventVol.*` tests present and clean in the
+full run (grep over the full log matched 46 `EventVol` lines — 23 `Start`
++ 23 `Passed`; no `Fail` matches).
+
+## Self-review findings (documented in the header, not code defects)
+
+1. **e² clamp window** — `[-kEmoveSqClampEps, 0)` clamps to `0.0`;
+   more negative reports `OutOfRange`. Absolute (not relative) epsilon —
+   a defensible simplicity tradeoff matching the brief and existing
+   codebase constants (e.g. `kIvTol`), called out as a limitation for
+   extreme-scale inputs (very large w).
+2. **NaN propagation** — `censored_total_variance`/`event_recombined_vol`
+   rely on IEEE-754 "any comparison with NaN is false" so domain-floor
+   checks fall through to NaN rather than substituting a floor. Verified
+   by dedicated tests (`CensoredNaNInNaNOut`, `RecombinedVolNonPositiveTIsNaN`).
+3. **`event_aware_w` NaN-emove edge case** — the fallback guard uses
+   `emove <= 0.0` (not `!(emove > 0.0)`), so a NaN `emove` does *not*
+   trigger the plain-linear-w fallback when real events are present;
+   it flows through the censored path and propagates to NaN, consistent
+   with the module's NaN-in/NaN-out convention. (It still gets the
+   fallback if `n_lo==n_hi==n_query==0`, since the event math is inert
+   regardless of `emove`'s value in that case.)
+4. **`n_query` vs. `n_lo`/`n_hi`** — no cross-consistency check;
+   `event_aware_w` has no `Result` return (matches the brief's `noexcept`
+   signature) and trusts the caller. Documented as `EventSchedule`'s
+   responsibility, not this function's.
+5. **`T_query` outside `[T_lo, T_hi]`** — extrapolates the linear formula
+   rather than clamping or rejecting (undocumented in the brief; chose
+   the least-surprising behavior consistent with a "linear interpolation"
+   formula with no stated clamp).
+6. **`T_lo == T_hi`** — undefined/not special-cased; produces NaN (0/0) or
+   ±inf (x/0), which then propagates. Documented; callers must pass
+   distinct bracketing expiries.
+7. **`EventSchedule` sort vs. de-dup** — sorts but does not de-duplicate
+   (unlike the Task-1 `VolTimeCalendar`, which de-dupes); a repeated
+   timestamp is treated as a caller data-quality issue since
+   `count_between`'s `upper_bound` scan still counts correctly either way.
+
+No code changes resulted from self-review — all findings were pre-empted
+by design choices already documented in the header's PORT NOTE / self-review
+sections before the review pass, and re-verified against the passing test
+suite.
 
 ## Concerns
 
-None blocking. One minor note for whoever builds Task 3's spec-builder: `resolve_spec_impl`'s
-`group_a_survivors` count is at **LegSpec granularity** (one count per authored leg/name), not
-per expanded option — a dropped Strangle leg costs one survivor slot, not two, which matches
-the `MissingNameDropRenormalize` test's `min_names` semantics (basket *names*, not option
-count) but is worth knowing when composing specs with mixed `Single`/`Strangle` legs in the
-same constraint group.
+None blocking. The only noteworthy item is the FailedPrecondition→OutOfRange
+mapping and the unspecified epsilon value above — both resolved with clear
+codebase precedent and documented rationale rather than guessed silently.
+
+## Note on this report path
+
+This file previously held an unrelated report (a "Task 2" for
+`surface_db.hpp`/`SymbolFitConfig`/manifest write-parse, from a different
+SDD track). Per this task's explicit instruction to overwrite
+`task-2-report.md`, that stale content has been replaced above with this
+`event_vol` report. Flagging in case the surface_db work still needs a
+home for its own report elsewhere.
+
+---
+
+## Fix report — PORT NOTE citation
+
+**Commit:** `40bcebf` — `docs(atx-vol): correct event_vol PORT NOTE error-code precedent citation`
+
+**What changed:**
+The PORT NOTE in `atx-vol/include/atx/vol/event_vol.hpp` (lines 55–68) incorrectly cited
+`american_iv.cpp`'s `american_implied_vol` as the precedent for both `InvalidArgument`
+(non-finite inputs) and `OutOfRange` (solved value outside valid domain). In reality:
+- `american_iv.cpp:96–98` maps non-finite to `OutOfRange` (wrong for InvalidArgument precedent)
+- `andersen_lake` in `american.cpp:1262–1263` maps non-finite to `InvalidArgument` (correct precedent)
+- `american_iv.cpp:108–113` uses `OutOfRange` for out-of-band price checks (correct analogy for negative e²)
+
+**Rewritten PORT NOTE:** Now correctly points non-finite→`InvalidArgument` to `andersen_lake` 
+(american.cpp 1262–1263) and justifies negative-e²→`OutOfRange` by analogy to american_iv.cpp's 
+out-of-band price check (108–113). Comment-only change; no behavior modification.
+
+**Test command run:**
+```
+cmake --build build -j16 --target atx-vol-tests
+ctest --test-dir build -R EventVol --output-on-failure
+```
+
+**Result:**
+- Build: successful (1 file recompiled: `event_vol_test.cpp`)
+- Tests: `100% tests passed, 0 tests failed out of 23` (all EventVol suite tests green)

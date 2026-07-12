@@ -363,9 +363,17 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
       constexpr double kBand = 0.60;   // log-moneyness half-width to sample
       constexpr std::uint32_t kGrid = 64;
       const auto cal = arb_check_calendar(crep.surface, -kBand, kBand, kGrid);
-      const std::size_t n_viol = cal ? cal->size() : 0;
-      cdiag.calendar_arb_free = (n_viol == 0);
-      cdiag.n_calendar_viol_pre = n_viol;
+      // A failed check must not read as "verified arb-free" (the prior bug:
+      // `cal ? cal->size() : 0` treated a failed check as zero violations,
+      // i.e. clean). Match the conservative sibling in
+      // VolaSession::refit_slice below: a failed check reports NOT verified
+      // (calendar_arb_free = false), never a false "clean" via a zero count.
+      // n_calendar_viol_pre must still satisfy the
+      // calendar_arb_free == (n_calendar_viol_pre == 0) invariant relied on
+      // by spy_real_test.cpp, so an unverified check is stamped with a
+      // nonzero sentinel (1) rather than a real (unknowable) count.
+      cdiag.calendar_arb_free = cal.has_value() && cal->empty();
+      cdiag.n_calendar_viol_pre = cal.has_value() ? cal->size() : std::size_t{1};
     }
     {
       double worst = std::numeric_limits<double>::infinity();

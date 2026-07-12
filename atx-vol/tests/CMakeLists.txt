@@ -46,6 +46,9 @@ add_executable(atx-vol-tests
     dividend_test.cpp
     s3_test.cpp
     fit_metrics_test.cpp
+    adjusted_greeks_test.cpp
+    vol_time_test.cpp
+    event_vol_test.cpp
     deamer_test.cpp
     parity_test.cpp
     panel_test.cpp
@@ -62,6 +65,7 @@ add_executable(atx-vol-tests
     curve_fit_parallel_test.cpp
     parallel_for_test.cpp
     pricer_fitter_test.cpp
+    spline_curve_test.cpp
     spy_bidask_regression_test.cpp
     spy_fit_corpus_test.cpp
     breadth_regime_test.cpp

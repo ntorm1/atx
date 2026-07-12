@@ -19,8 +19,12 @@
 // ── Port scope / adaptations ─────────────────────────────────────────────
 //
 //   - v1 ships CLOCK time only (tau_vol == T_clock), PIECEWISE_TOTAL_VARIANCE
-//     interpolation, and FORWARD delta convention — exactly as the C. Reserved
-//     enum values are rejected with NotImplemented.
+//     interpolation as the DEFAULT and bit-identical maturity-interp mode,
+//     and FORWARD delta convention — exactly as the C. Reserved enum values
+//     are rejected with NotImplemented. `InterpMode::ShapeBlend` (SpiderRock
+//     FLEX-style vol-multiple blend) is a later opt-in addition layered on
+//     top of the inserted-slice path; see its doc comment for the exact
+//     contract and the non-ATM calendar-safety caveat.
 //   - The C's negative-integer `AtsVolStatus` channel becomes `Result<T>`:
 //     ERR_INVALID -> InvalidArgument, ERR_NO_DATA -> NotFound, ERR_DOMAIN ->
 //     OutOfRange, ERR_NO_CONVERGE -> Unavailable, ERR_UNSUPPORTED ->
@@ -70,6 +74,12 @@ inline constexpr std::uint32_t kFlagVolTimeConverted = 1u << 9;
 inline constexpr std::uint32_t kFlagInsertedSlice = 1u << 10;  // went through an inserted slice
 inline constexpr std::uint32_t kFlagRouteAmerican = 1u << 11;
 inline constexpr std::uint32_t kFlagRouteB76Only = 1u << 12;
+// A ShapeBlend query genuinely blended two parent slices (i.e. not an exact
+// pillar / single-bracket hit): ATM total variance still matches
+// PiecewiseTotalVariance by construction, but non-ATM calendar-arbitrage
+// safety is NOT guaranteed under the vol-multiple blend. See
+// InterpMode::ShapeBlend.
+inline constexpr std::uint32_t kFlagShapeBlendCalendarUnsafe = 1u << 13;
 inline constexpr std::uint32_t kFlagInvalid = 1u << 15;         // result not usable
 
 inline constexpr std::uint32_t kResolverInsertedSliceReused = 1u << 16;
@@ -93,9 +103,40 @@ enum class DeltaConvention : std::uint8_t {
   Forward = 0,
 };
 
-// Maturity interpolation mode. v1 ships piecewise total variance only.
+// Maturity interpolation mode for the INSERTED-SLICE path
+// (`surface_insert_vol_slice` / `w_on_inserted_slice` / `iv_on_inserted_slice`
+// / `surface_eval_ex`). Any value other than the two below is rejected with
+// NotImplemented.
 enum class InterpMode : std::uint8_t {
+  // Default, bit-identical to the shipped v1 behavior: linear-in-total-
+  // variance at fixed k across the two bracketing slices, matching
+  // VolSurface::w() exactly. w(k) = w_lo(k) + alpha_T * (w_hi(k) - w_lo(k)).
   PiecewiseTotalVariance = 0,
+
+  // Opt-in SpiderRock FLEXVolInterpolation-style "vol-multiple" blend.
+  // Weights wwHi = (T_q - T_lo)/(T_hi - T_lo), wwLo = 1 - wwHi (identical to
+  // PiecewiseTotalVariance's alpha_T / 1-alpha_T). ATM total variance
+  // interpolates linearly exactly as PiecewiseTotalVariance does at k = 0:
+  //   atm(T_q)^2 * T_q = wwLo * atm_lo^2 * T_lo + wwHi * atm_hi^2 * T_hi
+  // (so ATM matches PiecewiseTotalVariance to machine precision by
+  // construction — the ATM total-variance blend is the SAME formula either
+  // way). Away from ATM, each parent slice is evaluated at the SAME
+  // standardized moneyness z = k / (atm(T_q) * sqrt(T_q)), mapped into that
+  // slice's own coordinates k_x = z * atm_x * sqrt(T_x), and the resulting
+  // vol MULTIPLES m_x(z) = sigma_x(k_x) / atm_x are blended:
+  //   sigma(k, T_q) = atm(T_q) * (wwLo * m_lo(z) + wwHi * m_hi(z))
+  // This preserves each parent's SKEW SHAPE (in standardized-moneyness
+  // space) far better than blending raw total variance at a fixed absolute
+  // k, at the cost of a documented trade-off: non-ATM calendar-arbitrage
+  // safety is NOT guaranteed (two calendar-clean parents can blend to a
+  // non-monotone total-variance curve off ATM). Queries falling on a single
+  // bracketing slice (exact pillar, or a clamped out-of-range extrapolation)
+  // get weight 1.0 on that slice regardless of mode — no blend, no
+  // calendar-safety concern. Degenerate ATM inputs (either parent's ATM
+  // total variance non-finite / non-positive) fall back to the
+  // PiecewiseTotalVariance formula for that query rather than propagating a
+  // NaN or dividing by zero.
+  ShapeBlend = 1,
 };
 
 // Out-of-bracket policy for the projection layer. Named `Proj*` to avoid a
@@ -185,6 +226,9 @@ struct ForwardLookup {
 // A derived view over a `VolSurface` that exposes it as if a fitted slice
 // existed at `T_clock`. Never mutates the underlying surface. For
 // PIECEWISE_TOTAL_VARIANCE: w(k) = w_lo(k) + alpha_T * (w_hi(k) - w_lo(k)).
+// For SHAPE_BLEND see InterpMode::ShapeBlend; `alpha_T` doubles as wwHi
+// either way (same weight formula), and `interp_mode` selects the formula
+// `w_on_inserted_slice` / `iv_on_inserted_slice` apply.
 struct InsertedSliceHandle {
   Uid uid{kInvalidUid};
   double T_clock{kQuietNaN};
@@ -217,6 +261,12 @@ struct InsertedSliceHandle {
     bool with_no_arb_check = false);
 
 // Total variance w(k) against an inserted slice. NaN on a degenerate handle.
+// Dispatches on `handle.interp_mode`: PiecewiseTotalVariance blends raw w at
+// fixed k; ShapeBlend blends vol multiples at common standardized moneyness
+// (falls back to the PiecewiseTotalVariance formula if either parent's ATM
+// total variance is non-finite / non-positive). Both reduce to the single
+// parent slice's own w when the handle already resolved to one slice
+// (`exact_slice_idx >= 0`).
 [[nodiscard]] double w_on_inserted_slice(const VolSurface& surface,
                                          const InsertedSliceHandle& handle,
                                          double k_log) noexcept;
@@ -278,6 +328,10 @@ struct EvalRequest {
   double x{kQuietNaN};
   CoordKind coord_kind{CoordKind::LogMoneyness};
   Side side{Side::Call};
+  // PiecewiseTotalVariance (default) evaluates directly off
+  // `VolSurface::w()` — bit-identical to the shipped v1 path. ShapeBlend
+  // routes through `surface_insert_vol_slice` / `w_on_inserted_slice`
+  // instead; see InterpMode::ShapeBlend.
   InterpMode interp_mode{InterpMode::PiecewiseTotalVariance};
   ProjExtrapPolicy extrap_policy{ProjExtrapPolicy::Forbid};
   DeltaConvention delta_convention{DeltaConvention::Forward};
@@ -309,6 +363,10 @@ struct EvalResult {
 // Extended scalar evaluation: coordinates, IV, total variance, routed price,
 // forward data, route, and provenance in one struct. `correction` may be null
 // when the request is B76Only.
+//
+// @return NotImplemented for a reserved `interp_mode` (anything other than
+//         PiecewiseTotalVariance / ShapeBlend), in addition to the reserved-
+//         route case documented on RoutePolicy::AlCorrection.
 [[nodiscard]] Result<EvalResult> surface_eval_ex(
     const VolSurface& surface, const CurveSet& curves,
     const CorrectionCache* correction, const TimeModel& tm,
