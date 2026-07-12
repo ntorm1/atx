@@ -357,6 +357,32 @@ TEST(SurfaceDbManifest, RoundTrip_FullConfig_EveryFieldPreserved) {
   EXPECT_EQ(m->find_symbol("MSFT").error().code(), ErrorCode::NotFound);
 }
 
+// Review C-1: the db record's known-failures allowlist must accept the
+// CarryGap bit — a Degraded+CarryGap provenance is a routinely SERVED state
+// and has to survive a manifest round-trip (record_valid on load).
+TEST(SurfaceDbManifest, RoundTrip_DegradedCarryGapProvenancePreserved) {
+  SurfaceProvenance provenance;
+  provenance.purpose = SurfacePurpose::Risk;
+  provenance.quality_mode = FitQualityMode::Balanced;
+  provenance.state = SurfaceState::Degraded;
+  provenance.validation.failures = ValidationFailure::CarryGap;
+  provenance.validation.validation_id = 0xCA44'76A9u;
+  provenance.served_generation = 9;
+  const std::vector<DbSymbolEntry> syms{{"spy", SymbolFitConfig{}, provenance}};
+  auto bytes = write_db_manifest(syms, {});
+  ASSERT_TRUE(bytes.has_value()) << bytes.error().to_string();
+  auto m = DbManifest::open(std::move(*bytes));
+  ASSERT_TRUE(m.has_value());
+  auto got_provenance = m->find_symbol_provenance("SPY");
+  ASSERT_TRUE(got_provenance.has_value());
+  ASSERT_TRUE(got_provenance->has_value());
+  EXPECT_EQ((*got_provenance)->state, SurfaceState::Degraded);
+  EXPECT_EQ((*got_provenance)->validation.failures, ValidationFailure::CarryGap);
+  EXPECT_EQ((*got_provenance)->validation.validation_id,
+            provenance.validation.validation_id);
+  EXPECT_EQ((*got_provenance)->served_generation, provenance.served_generation);
+}
+
 TEST(SurfaceDbManifest, RoundTrip_Empty) {
   auto bytes = write_db_manifest({}, {});
   ASSERT_TRUE(bytes.has_value());

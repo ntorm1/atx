@@ -392,6 +392,35 @@ TEST(SurfaceArchive, RoundTrip_SurfaceProvenancePreserved) {
   EXPECT_EQ(got->served_generation, provenance.served_generation);
 }
 
+// Review C-1: Degraded+CarryGap is a routinely SERVED admission state (the
+// one publish-with-Degraded reason, produced for carry-gapped boards); it must
+// round-trip the archive rather than be refused as an unknown failure bit by
+// the known-failures allowlist mask.
+TEST(SurfaceArchive, RoundTrip_DegradedCarryGapProvenancePreserved) {
+  const PricedSurface orig = make_essvi(94, 3);
+  SurfaceProvenance provenance;
+  provenance.purpose = SurfacePurpose::Risk;
+  provenance.quality_mode = FitQualityMode::Balanced;
+  provenance.state = SurfaceState::Degraded;
+  provenance.validation.failures = ValidationFailure::CarryGap;
+  provenance.validation.validation_id = 0x0FED'CBA9'8765'4321ull;
+  provenance.source_generation = 7;
+  provenance.served_generation = 7;
+
+  const std::array<SurfaceArchiveItem, 1> items{SurfaceArchiveItem{"SPY", &orig, provenance}};
+  auto bytes = write_surface_archive(items);
+  ASSERT_TRUE(bytes.has_value()) << bytes.error().to_string();
+  auto archive = SurfaceArchive::open(std::move(*bytes));
+  ASSERT_TRUE(archive.has_value());
+  auto got = archive->provenance("SPY");
+  ASSERT_TRUE(got.has_value());
+  EXPECT_FALSE(got->legacy_format);
+  EXPECT_EQ(got->state, SurfaceState::Degraded);
+  EXPECT_EQ(got->validation.failures, ValidationFailure::CarryGap);
+  EXPECT_EQ(got->validation.validation_id, provenance.validation.validation_id);
+  EXPECT_EQ(got->served_generation, provenance.served_generation);
+}
+
 TEST(SurfaceArchive, LegacyV3ZeroReservedBytesDecodeAsUnadmittedMarketMark) {
   const PricedSurface orig = make_linear(92, 3, 9);
   // Two-field aggregate is the pre-provenance writer API and deliberately

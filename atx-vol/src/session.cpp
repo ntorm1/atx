@@ -696,6 +696,7 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
       &incremental_chain_asks, &incremental_chain_ts);
   aggregate_input_diagnostics(slice_diag, diag);
   diag.n_carry_skipped_expiries = rep.n_carry_skipped;
+  diag.n_audit_starved_expiries = rep.n_audit_starved;
   retain_fitted_term_rates(eff, rep.context);
   VolaSession session{std::move(rep.surface), std::move(rep.context),
                       std::move(rep.per_expiry), std::move(eff), diag,

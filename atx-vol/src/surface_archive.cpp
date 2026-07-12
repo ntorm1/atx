@@ -201,7 +201,10 @@ struct BlobPlan {
   return pc;
 }
 
-constexpr std::uint32_t kKnownValidationFailures = (1u << 11) - 1u;
+// Bits 0..11 — includes ValidationFailure::CarryGap (1u << 11), the
+// publish-with-Degraded reason: a Degraded+CarryGap provenance is a routinely
+// SERVED state and must round-trip the archive, not be refused as unknown.
+constexpr std::uint32_t kKnownValidationFailures = (1u << 12) - 1u;
 
 [[nodiscard]] bool provenance_record_valid(const ArchiveSurfaceProvenanceRecord &record) noexcept {
   const bool fields_valid = record.marker == kArchiveProvenanceMarker && record.purpose <= 1u &&

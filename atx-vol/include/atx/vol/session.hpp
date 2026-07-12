@@ -182,6 +182,11 @@ struct SessionDiagnostics {
   // must surface the gap (§5.2); risk admission maps a non-zero count to a
   // Degraded health state with a CarryGap reason.
   std::size_t n_carry_skipped_expiries{0};
+  // Expiries the fit DROPPED because the fit-inversion audit starved the
+  // slice below the usable-observation floor (eSSVI aligned-obs path under
+  // deam.audit_fit_inversions). The audit-created analogue of a carry skip;
+  // risk admission surfaces it through the same CarryGap reason.
+  std::size_t n_audit_starved_expiries{0};
   double min_carry_effective_pairs{0.0};
   double max_carry_dispersion{0.0};
   double max_carry_leave_one_out{0.0};

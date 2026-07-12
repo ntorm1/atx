@@ -400,6 +400,55 @@ TEST_F(PricerFitterTest, CarryFailedExpiryPublishesDegradedWithCarryGap) {
             std::size_t{1});
 }
 
+// Task 2d follow-up (review I-1): a Degraded+CarryGap surface must STAY
+// Degraded with the reason retained through a successful local refit — the
+// gap (a still-missing expiry) is a property of the served surface, not of
+// the one slice that was refit. Without carrying the non-geometric failure
+// context into the refit admission, one quote tick would relabel the gapped
+// surface clean Healthy (§5.2's hidden-gap state again).
+TEST_F(PricerFitterTest, RefitKeepsCarryGapDegradedWhileExpiryStillMissing) {
+  PricerConfig config;
+  config.quality_mode = atx::vol::FitQualityMode::Balanced;
+  config.outputs = atx::vol::SurfaceOutputs::Risk;
+  PricerFitter fitter{config};
+
+  const double bad_T = chain_->underlying().chains[1].T;
+  std::vector<OptionId> ids;
+  std::vector<double> bids;
+  std::vector<double> asks;
+  for (const OptionId id : chain_->ids()) {
+    const auto option = chain_->at(id);
+    ASSERT_TRUE(option.has_value());
+    if (std::fabs(option->T - bad_T) > 1.0e-12) continue;
+    ids.push_back(id);
+    bids.push_back(2.0);
+    asks.push_back(1.0);  // crossed: carry fails for this expiry
+  }
+  ASSERT_FALSE(ids.empty());
+  ASSERT_TRUE(chain_->update_quotes(ids, bids, asks).has_value());
+
+  ASSERT_TRUE(fitter.fit(*chain_).has_value());
+  const atx::vol::SurfaceBundle gapped = fitter.bundle();
+  ASSERT_NE(gapped.risk, nullptr);
+  ASSERT_EQ(gapped.risk_health.state, atx::vol::SurfaceState::Degraded);
+  ASSERT_TRUE(atx::vol::has_validation_failure(
+      gapped.risk_health.reasons, atx::vol::ValidationFailure::CarryGap));
+
+  // Local refit of a FITTED slice (index 0, untouched expiry) succeeds and
+  // publishes a new generation — but the surface still misses the crossed
+  // expiry, so health must remain Degraded with CarryGap retained.
+  ASSERT_TRUE(fitter.refit_risk_slice(*chain_, 0u).has_value());
+  const atx::vol::SurfaceBundle after = fitter.bundle();
+  ASSERT_NE(after.risk, nullptr);
+  EXPECT_EQ(after.risk->generation(), gapped.risk->generation() + 1u);
+  EXPECT_EQ(after.risk_health.state, atx::vol::SurfaceState::Degraded);
+  EXPECT_TRUE(atx::vol::has_validation_failure(
+      after.risk_health.reasons, atx::vol::ValidationFailure::CarryGap));
+  EXPECT_TRUE(after.risk_health.serving_candidate());
+  EXPECT_EQ(after.risk->session().diagnostics().n_carry_skipped_expiries,
+            std::size_t{1});
+}
+
 TEST(LinearVarianceCurve, InterpolatesTotalVarianceAndClampsWings) {
   atx::vol::LinearVarianceCurve curve(0.5, 100.0, 0.98, std::vector<double>{-0.2, 0.0, 0.3},
                                       std::vector<double>{0.03, 0.04, 0.10});

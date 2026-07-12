@@ -736,3 +736,40 @@ TEST(VolaSession, CarryFailedExpiryIsCountedInDiagnostics) {
   EXPECT_EQ(sess->diagnostics().n_slices, std::size_t{3});
   EXPECT_EQ(sess->diagnostics().n_carry_skipped_expiries, std::size_t{1});
 }
+
+// 2d follow-up (review I-2): under the risk policy's fit audit, an expiry
+// whose rows are all AUDIT-dropped (here: locked quotes — the audit cannot
+// evaluate a zero-spread budget, and the accurate fallback re-audit fails the
+// same way) falls below the usable-observation floor and is dropped from the
+// surface. That audit-created gap must be COUNTED, not silently absorbed —
+// the same §5.2 surfacing as a carry skip. Without the audit flag those rows
+// would have been fitted, so this gap is new-reachable and must not hide.
+TEST(VolaSession, AuditStarvedExpiryIsCountedInDiagnostics) {
+  const SynthPanelSpec spec = make_spec();
+  Universe u;
+  const auto panel = make_synthetic_american_panel(spec);
+  ASSERT_TRUE(panel.has_value());
+  const auto uid = data_install(u, panel->frame);
+  ASSERT_TRUE(uid.has_value());
+  auto under_res = u.get_underlying(*uid);
+  ASSERT_TRUE(under_res.has_value());
+  Underlying* under = *under_res;
+  ASSERT_EQ(under->chains.size(), std::size_t{4});
+
+  // Lock every quote of the third expiry (bid == ask == mid, flags clear):
+  // the legs stay carry-valid (ask >= bid), so carry resolves — but every fit
+  // row fails the zero-spread audit and is dropped by the audit protocol.
+  atx::vol::Chain& locked = under->chains[2];
+  for (std::size_t i = 0; i < locked.mids.size(); ++i) {
+    locked.bids[i] = locked.mids[i];
+    locked.asks[i] = locked.mids[i];
+  }
+
+  SessionInputs in = make_inputs(spec);
+  in.deam.audit_fit_inversions = true;
+  const auto sess = VolaSession::build(*under, in);
+  ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
+  EXPECT_EQ(sess->diagnostics().n_slices, std::size_t{3});
+  EXPECT_EQ(sess->diagnostics().n_carry_skipped_expiries, std::size_t{0});
+  EXPECT_EQ(sess->diagnostics().n_audit_starved_expiries, std::size_t{1});
+}

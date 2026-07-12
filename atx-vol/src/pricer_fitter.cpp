@@ -54,6 +54,35 @@ std::span<const VolCurveKind> fallback_curve_rungs(VolCurveKind primary) noexcep
 [[nodiscard]] RiskSurfaceValidationConfig
 risk_validation_config(FitQualityMode quality_mode) noexcept;
 
+namespace {
+
+// Non-geometric failure context carried by the session diagnostics: carry
+// confidence, inversion certification, and expiry-coverage gaps (carry-gate
+// skips + audit-starved slices). Merged into the oracle digest by BOTH fit()'s
+// candidate validation and refit_risk_slice, so a successful incremental
+// publish cannot launder a fit-time Degraded reason into clean Healthy while
+// the expiry is still missing from the served surface (§5.2).
+void merge_session_failure_context(const VolaSession &candidate,
+                                   ValidationDigest &digest) noexcept {
+  const SessionDiagnostics &diagnostics = candidate.diagnostics();
+  if (!diagnostics.carry_confident) {
+    digest.failures |= ValidationFailure::InsufficientData;
+  }
+  if (!diagnostics.inversion_certified) {
+    digest.failures |= ValidationFailure::InversionResidual;
+  }
+  if (diagnostics.n_carry_skipped_expiries > 0 ||
+      diagnostics.n_audit_starved_expiries > 0) {
+    // §5.2: expiries dropped by the carry gate or starved by the fit audit
+    // must be surfaced. CarryGap is the one publish-with-Degraded reason
+    // (decide_risk_surface_admission); combined with any other failure it
+    // still rejects.
+    digest.failures |= ValidationFailure::CarryGap;
+  }
+}
+
+} // namespace
+
 std::optional<std::size_t> ChainValuation::row_of(OptionId id) const {
   for (std::size_t i = 0; i < ids.size(); ++i) {
     if (ids[i] == id) {
@@ -419,19 +448,7 @@ Status PricerFitter::fit(const OptionChain &chain) {
     } else {
       result.failures = ValidationFailure::InvalidDomain;
     }
-    const SessionDiagnostics &diagnostics = candidate.diagnostics();
-    if (!diagnostics.carry_confident) {
-      result.failures |= ValidationFailure::InsufficientData;
-    }
-    if (!diagnostics.inversion_certified) {
-      result.failures |= ValidationFailure::InversionResidual;
-    }
-    if (diagnostics.n_carry_skipped_expiries > 0) {
-      // §5.2: expiries dropped by the carry gate must be surfaced. CarryGap is
-      // the one publish-with-Degraded reason (decide_risk_surface_admission);
-      // combined with any other failure it still rejects.
-      result.failures |= ValidationFailure::CarryGap;
-    }
+    merge_session_failure_context(candidate, result);
     finalize_validation_digest(result, validation_config);
     return result;
   };
@@ -689,6 +706,11 @@ Result<FitDiag> PricerFitter::refit_risk_slice(const OptionChain &chain,
     return Err(std::move(checked).error());
   }
   ValidationDigest digest = *checked;
+  // Review I-1: the geometric oracle knows nothing about carry coverage. Merge
+  // the candidate's non-geometric failure context (identical seam to fit()) so
+  // a still-gapped surface re-admits as Degraded+CarryGap, never as a clean
+  // Healthy with the expiry silently missing (§5.2).
+  merge_session_failure_context(candidate, digest);
   finalize_validation_digest(digest, validation_config);
   const AdmissionDecision admission = decide_risk_surface_admission(
       digest, quality_mode, candidate_generation_, prior_generation,

@@ -92,6 +92,11 @@ struct AlignedObs {
   std::vector<double> k_log;
   std::vector<double> market_iv;
   std::size_t n_dropped{0};
+  // Subset of n_dropped removed by the fit-inversion AUDIT protocol (failed
+  // accurate re-inversion or a second over-budget audit). Lets the caller
+  // distinguish an audit-starved slice (one that would have met the usable
+  // floor but for audit drops) from a genuinely sparse one.
+  std::size_t n_audit_dropped{0};
 };
 
 // Rebuild the aligned observation set on forward `F` / carry `q_eff`. Any strike
@@ -155,6 +160,7 @@ struct AlignedObs {
             mid, S, K, T, r, q_eff, side, AmericanMethod::AndersenLake, std::nullopt, nullptr);
         if (!accurate) {
           ++a.n_dropped;
+          ++a.n_audit_dropped;
           continue;
         }
         iv = *accurate;
@@ -162,6 +168,7 @@ struct AlignedObs {
                                         deam.max_iv_residual_half_spreads);
         if (!audit || !audit->passed) {
           ++a.n_dropped;
+          ++a.n_audit_dropped;
           continue;
         }
       }
@@ -356,6 +363,12 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
   // risk surface missing an expiry never reports clean health with no trace
   // (§5.2: "uncertain carry is surfaced, not hidden").
   std::size_t n_carry_skipped = 0;
+  // Expiries dropped because the fit-inversion AUDIT starved the slice below
+  // the usable-observation floor: it would have fit but for audit drops. The
+  // same silent-gap pattern as a carry skip, reached through §8.1's audit —
+  // counted and surfaced identically. Genuinely sparse slices (too few valid
+  // quotes regardless of the audit) keep the historical silent-skip shape.
+  std::size_t n_audit_starved = 0;
 
   // Calendar-monotone fit (CalendarRepair::MonotoneFit): carry the previous
   // fitted slice forward so the next slice can be fit with a calendar floor
@@ -414,7 +427,14 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
     if (profile)
       ms_align += now_ns() - t_align;
     if (a.obs.size() < kMinUsableObs) {
-      continue; // fewer than the minimum usable strikes: skip this slice
+      // Fewer than the minimum usable strikes: skip this slice. If the slice
+      // would have reached the floor but for rows the fit-inversion audit
+      // dropped, the gap was CREATED by the audit — count it so admission can
+      // surface it instead of serving a silently thinner surface.
+      if (a.obs.size() + a.n_audit_dropped >= kMinUsableObs) {
+        ++n_audit_starved;
+      }
+      continue;
     }
 
     // 3. Fit the eSSVI slice (natural form, T/F stamped in). MonotoneFit adds a
@@ -542,6 +562,7 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
       idx,
       n_calendar_viol_pre,
       n_carry_skipped,
+      n_audit_starved,
   };
   return Ok(std::move(out));
 }

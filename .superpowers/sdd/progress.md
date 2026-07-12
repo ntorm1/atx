@@ -478,3 +478,45 @@ FINAL WHOLE-BRANCH REVIEW (fable, 896a100..d9d852e): "With fixes" -> fix wave 3f
   OUTSTANDING BEFORE MERGE: full-module gate `& .\scripts\atx-build.ps1 -Ctest -L atx_vol` on 3f12b43 —
   DEFERRED TO OPERATOR by explicit instruction (targeted SurfaceDb|SurfaceArchive 34/34 is the evidence
   on record). Feature branch worktree-feat-atx-vol-surface-db is otherwise merge-ready.
+
+---
+
+# Review-fix pass on codex/correctness-first-surface-v2 — SDD Progress (2026-07-11)
+
+Controller: Claude Fable 5. Worktree: C:\atx-wt\atx-vol-correctness-first-v2, branch codex/correctness-first-surface-v2, HEAD 0eb62b7.
+Mission: review codex sprint implementation (correctness/perf/gaps/unwired), fix on worktree, merge to local main.
+Review fan-out complete (6 agents): findings in .superpowers/sdd/findings/{oracle,carry,orchestration,performance,gaps,unwired}.md
+Baseline: build-rel green (build via scratchpad build-wt.bat = VsDevCmd + cmake preset rel); atx-vol-tests 989 pass / 4 pre-existing
+bit-pin fails (AndersenLakeRegime.PositiveRateGrid_BitIdenticalToPrechange, Pin.EvalAndEvalGradBitIdentical,
+Pin.AmericanGreeksBundleBitIdentical, Pin.EvalPartialsMatchesEvalGrad) — reproduce on untouched main per charter §14.
+Merge note: main moved ahead of merge-base 726222a (13 commits incl. C8 v_min fix b80a1eb); overlap files:
+atx-vol/bench/CMakeLists.txt, src/vol_curve.cpp, tests/CMakeLists.txt, tests/multiname_pipeline_test.cpp.
+
+## Fix tasks
+- Task 1: policy/serving safety (pricer_fitter, session) — al_opts clobber (triple-confirmed), silent mark-for-risk default serving, Hft+LV pin mapping, preset-map unification, fallback provenance (orch C1,I1,I3,I6; carry I3; perf C3; unwired preset-map dup)
+- Task 2: certification holes (session, surface_parity, calib, deamer) — carry C1, I1, I2, I4, I5, I6
+- Task 3: oracle hardening (risk_surface_validation, dense_slice) — oracle I-1..I-5
+- Task 4: persistence wiring (surface_db apply_symbol_config policy; corpus provenance write) — unwired crit #1,#2
+- Task 5: perf: duplicate serial de-Am pass in collect_input_diagnostics (perf C1) + redundant deam_pcp_step (perf C4 part)
+- Task 6: perf micro — dense_slice iv early-exit/Newton, vol_curve exact-T bracket, validator adapter direct eval, calendar row cache, clone costs (perf C2, I2, I4, I5)
+- Task 7: bench honesty (mid-perturbing incremental samples, perf I6) + UI hardcoded "HFT / LIN VAR" label (gaps C6)
+- Task 8: docs — sprint §14 review record + accepted deferrals (controller-self)
+
+Deferred, documented not implemented: timeout budget/TimedOut, replay metadata, Greek perturbation gate,
+event/serial expiry metadata, shadow mode + ATX_SURFACE_PIPELINE_V2 flag, scoped incremental validation (perf I3),
+diagnostic-consumer tail (FitPhaseTimings consumers etc.), UI-tests-default-off (ATX_BUILD_UI stays opt-in).
+
+## Task ledger
+(append: Task N: complete (commits base..head, review clean))
+
+Task 1: complete (commits 0eb62b7..c83c9fe, review clean — SPEC ✅ / Approved, 0 Critical).
+  al_opts clobber fixed (explicit al_default_opts; legacy auto-substitution preserved); fail-closed default serving
+  (fitted/surface/value_chain); Hft+LV pin → Latency+MarketMark; preset mapping unified on map_legacy_fit_preset;
+  fallback provenance stamped only after publish_candidate. 992 pass; 2 justified rebaselines (mode floors now real).
+  OPEN (controller, final wave): 4 tests (SpyBidAskRegression.ConvexDenseServedViaSessionInBand + 3 MultinamePipeline
+  bit-pins) fail on UNFIXED branch under fresh artifact-cache rebuild — codex-sprint baselines depend on stale
+  worktree-root cache; re-capture decision needed. Also: risk-fit latency intentionally up (real multi-pair carry;
+  aapl-pre breadth fit 1.7s→16s) — Task 5 perf work now critical; §14 latency table stale.
+  Minor roll-up: 1e selector-route re-stamp lacks deterministic e2e test (disclosed); 50% in-band mark datum on
+  soun-close board worth tracking.
+

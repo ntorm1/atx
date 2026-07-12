@@ -173,6 +173,10 @@ struct SurfaceParityReport {
   // Expiries dropped because carry resolution failed (confidence gate / no
   // quotable pair / degenerate forward) — surfaced, never silently skipped.
   std::size_t n_carry_skipped{0};
+  // Expiries dropped because the fit-inversion audit starved the slice below
+  // the usable-observation floor (it would have fit but for audit drops) —
+  // the audit-created analogue of a carry skip, surfaced the same way.
+  std::size_t n_audit_starved{0};
 };
 
 // De-Americanize + fit each expiry chain of `under`, assemble an ascending-T
