@@ -47,6 +47,14 @@ inline constexpr double kWeightEps = 1.0e-18;
 // The C returns ERR_NO_DATA (→ NotFound) unless at least this many rows survive.
 inline constexpr std::size_t kMinObs = 5;
 
+// Sentinel written into a fit row's independent score column when anchor-
+// independent scoring is requested but its raw-mid inversion failed or landed
+// out of band. It is deliberately non-finite so every score consumer (all guard
+// on `std::isfinite`) skips the row, and — critically — an unscorable score
+// never removes the row from the FIT population. Fit survival is decided solely
+// by the fit inversion (or the OTM shortcut).
+inline constexpr double kUnscoredIv = std::numeric_limits<double>::quiet_NaN();
+
 // w-space observation weight: vega² / (spread² + eps) / ((2σT)² + eps). Shared
 // by the American builder (`build_observations`) and the de-Americanized
 // builder (`build_observations_european`) so the two can never drift. The
@@ -350,9 +358,7 @@ Status validate_calib_options(const CalibOpts& opts) noexcept {
                "validate_calib_options: asymmetric eSSVI rho is not implemented");
   }
 
-  constexpr double kDefaultFallbackRmse = 0.01;
-  constexpr std::uint32_t kDefaultButterflyGrid = 200u;
-  if (opts.essvi_fallback_rmse_threshold != kDefaultFallbackRmse) {
+  if (opts.essvi_fallback_rmse_threshold != kDefaultEssviFallbackRmse) {
     return Err(ErrorCode::NotImplemented,
                "validate_calib_options: configurable eSSVI fallback threshold is not implemented");
   }
@@ -363,6 +369,13 @@ Status validate_calib_options(const CalibOpts& opts) noexcept {
 
   switch (opts.residual_basis_kind) {
   case ResidualBasisKind::None:
+    // A persisted config must carry no no-ops: an explicitly ENABLED residual
+    // layer with a None basis fits nothing. The default config leaves the layer
+    // disabled (residual_disable == true), so this rejects only the contradiction.
+    if (!opts.residual_disable) {
+      return Err(ErrorCode::InvalidArgument,
+                 "validate_calib_options: residual layer enabled with a None basis is a no-op");
+    }
     if (opts.residual_n_basis_terms != 0u) {
       return Err(ErrorCode::InvalidArgument,
                  "validate_calib_options: None residual requires zero basis terms");
@@ -498,18 +511,21 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
     const bool shortcut = use_otm_shortcut_deam(o, S, T, r, q_eff, opts, method);
     const bool independent_score = prepare_scoring && (shortcut || warm_start_deam ||
                                                        opts.anchor_kind != CalibAnchorKind::Mid);
-    double score_sigma = 0.0;
+    // Anchor-independent score. Inverted COLD off the raw symmetric mid so the
+    // scored IV is anchor-agnostic (the fit inversion below may target a bid/ask
+    // anchor). A failed or out-of-band scoring inversion leaves the row UNSCORED
+    // (`kUnscoredIv`) — it must NOT drop the row: the row's presence in the fit
+    // population is decided only by the fit inversion or the OTM shortcut.
+    double score_sigma = kUnscoredIv;
     if (independent_score) {
       ++out.n_score_inversions;
       const std::size_t quote_index = chain_index(static_cast<std::uint16_t>(source_index), o.side);
       const Result<double> score =
           american_implied_vol(chain.mids[quote_index], S, o.K, T, r, q_eff, o.side, method, iv_tol,
                                iv_max_iter, al_opts, caches.for_side(o.side));
-      if (!score.has_value() || !(*score > kObsIvMin && *score < kObsIvMax)) {
-        reject(ObsRejectionReason::Deamericanization);
-        continue;
+      if (score.has_value() && *score > kObsIvMin && *score < kObsIvMax) {
+        score_sigma = *score;
       }
-      score_sigma = *score;
     }
     // `o.mid` is the anchor premium (the raw American mid under the default Mid
     // anchor). Recover the European-equivalent lognormal vol, then restate the
@@ -520,7 +536,9 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
       } else {
         warm_put = o.sigma_mkt;
       }
-      o.score_sigma_mkt = score_sigma;
+      // The shortcut keeps the raw sigma as the European-equivalent vol; when
+      // independent scoring is off, that same sigma is the row's score.
+      o.score_sigma_mkt = independent_score ? score_sigma : o.sigma_mkt;
       out.obs.push_back(o);
       continue;
     }
@@ -553,7 +571,13 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
     o.w_mkt = sigma_eu * sigma_eu * T;
     o.mid = eu_px; // European-equivalent premium (what the convex fold expects)
     o.vega = vega;
-    o.weight_w = std::min(obs_weight_w(vega, o.spread, sigma_eu, T), opts.max_weight);
+    // Full vega weighting is preserved on the de-Am path. `opts.max_weight` is an
+    // upper clip meaningful for the raw builder's stored American-mid weights; the
+    // de-Am builder RE-DERIVES weights from European vega, whose natural w-space
+    // scale (vega²/(2σT)²) is many orders above the default clip, so applying it
+    // here would collapse every observation to the ceiling and erase the vega
+    // weighting the surface fit and its cold/cached parity are calibrated against.
+    o.weight_w = obs_weight_w(vega, o.spread, sigma_eu, T);
     o.active_weight_w = o.weight_w;
     o.noise_sigma = (vega > kVegaFloor) ? (o.spread / vega) : 1.0;
     o.score_sigma_mkt = score_sigma;

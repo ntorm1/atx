@@ -395,14 +395,33 @@ TEST(CalibOpts, ValidationRejectsPersistedPoliciesThatAreNotImplemented) {
 }
 
 TEST(CalibOpts, ValidationAcceptsEveryImplementedResidualIdentity) {
-  for (const ResidualBasisKind basis : {ResidualBasisKind::None,
-                                        ResidualBasisKind::HingeQuad,
-                                        ResidualBasisKind::C2Bspline}) {
+  // None is the disabled-layer identity: valid while the residual layer is off
+  // (the default). Enabling it with a None basis is a no-op, tested separately.
+  {
+    CalibOpts opts = calib_default_opts(); // residual_disable == true, None basis
+    EXPECT_TRUE(validate_calib_options(opts).has_value());
+  }
+  // HingeQuad and C2Bspline are the implemented enabled bases.
+  for (const ResidualBasisKind basis :
+       {ResidualBasisKind::HingeQuad, ResidualBasisKind::C2Bspline}) {
     CalibOpts opts = calib_default_opts();
     opts.residual_disable = false;
     opts.residual_basis_kind = basis;
     EXPECT_TRUE(validate_calib_options(opts).has_value());
   }
+}
+
+TEST(CalibOpts, ValidationRejectsEnabledResidualWithNoneBasis) {
+  // "No persisted no-op": a config that enables the residual layer yet leaves the
+  // basis None fits nothing and must be rejected as a contradiction. The disabled
+  // default (also None basis) stays valid — the guard keys on residual_disable.
+  CalibOpts noop = calib_default_opts();
+  noop.residual_disable = false; // basis stays None
+  const auto status = validate_calib_options(noop);
+  ASSERT_FALSE(status.has_value());
+  EXPECT_EQ(status.error().code(), ErrorCode::InvalidArgument);
+
+  EXPECT_TRUE(validate_calib_options(calib_default_opts()).has_value());
 }
 
 }  // namespace

@@ -390,6 +390,65 @@ TEST(PreparedFitting, ScoringOptOutSkipsIndependentRawMidInversions) {
   EXPECT_EQ(prepared->provenance().n_score_inversions, prepared->fit_observations().size());
 }
 
+TEST(PreparedFitting, ScoringDoesNotChangeFitObservationsOnAcceleratedPaths) {
+  const Chain chain = make_chain();
+
+  // Every fit-relevant field must match; only the score column may differ, so it
+  // is deliberately excluded from the comparison.
+  const auto expect_fit_rows_identical = [](const PreparedSlice &off, const PreparedSlice &on) {
+    const auto a = off.fit_observations();
+    const auto b = on.fit_observations();
+    ASSERT_EQ(a.size(), b.size());
+    for (std::size_t i = 0; i < a.size(); ++i) {
+      EXPECT_EQ(a[i].source_strike_index, b[i].source_strike_index);
+      EXPECT_EQ(a[i].side, b[i].side);
+      EXPECT_DOUBLE_EQ(a[i].K, b[i].K);
+      EXPECT_DOUBLE_EQ(a[i].k, b[i].k);
+      EXPECT_DOUBLE_EQ(a[i].sigma_mkt, b[i].sigma_mkt);
+      EXPECT_DOUBLE_EQ(a[i].w_mkt, b[i].w_mkt);
+      EXPECT_DOUBLE_EQ(a[i].weight_w, b[i].weight_w);
+      EXPECT_DOUBLE_EQ(a[i].active_weight_w, b[i].active_weight_w);
+      EXPECT_DOUBLE_EQ(a[i].mid, b[i].mid);
+      EXPECT_DOUBLE_EQ(a[i].vega, b[i].vega);
+    }
+  };
+
+  // Each preset flips `independent_score` on: the observation-cap path (Mid and
+  // Bid anchors) and the OTM premium shortcut. Turning scoring on must not add,
+  // drop, reorder, or reweight any fit row — its raw-mid inversion is scoring
+  // only and can never gate a row's presence in the fit population.
+  std::vector<PreparedSliceInputs> presets;
+  {
+    PreparedSliceInputs in = configured_inputs();
+    in.calib.max_obs_per_slice = 6u; // cap path: warm-start + independent scoring
+    presets.push_back(in);
+  }
+  {
+    PreparedSliceInputs in = configured_inputs();
+    in.calib.max_obs_per_slice = 6u;
+    in.calib.anchor_kind = atx::vol::CalibAnchorKind::Bid; // fit inverts bid, score inverts mid
+    presets.push_back(in);
+  }
+  {
+    PreparedSliceInputs in = configured_inputs();
+    in.calib.max_otm_shortcut_premium_spread_frac = 5.0; // OTM shortcut path
+    presets.push_back(in);
+  }
+
+  for (PreparedSliceInputs preset : presets) {
+    preset.prepare_scoring = false;
+    const auto off = PreparedSlice::create(chain, preset);
+    ASSERT_TRUE(off.has_value()) << off.error().to_string();
+    preset.prepare_scoring = true;
+    const auto on = PreparedSlice::create(chain, preset);
+    ASSERT_TRUE(on.has_value()) << on.error().to_string();
+    EXPECT_GT(on->provenance().n_score_inversions, 0u)
+        << "preset expected to exercise the independent scoring inversion";
+    EXPECT_EQ(off->provenance().n_score_inversions, 0u);
+    expect_fit_rows_identical(*off, *on);
+  }
+}
+
 TEST(PreparedFitting, CurveFitParityOptOutReportsZeroScoreInversions) {
   Underlying underlying;
   underlying.uid = 17u;

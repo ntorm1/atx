@@ -130,6 +130,14 @@ enum class CalibAnchorKind : std::uint8_t {
 // src/ats_calibrate.c): max_iter_cold_fast = 10 (comment said 5),
 // wing_floor_alpha = 0.0 (comment said 0.05), morozov_stop = false (comment
 // said 1/on), max_spread_to_mid_pct = 0.60 (comment said 0.40).
+
+// Compatibility-sentinel defaults for the two options that are validated as
+// "unchanged until the feature ships". Defined once here so the CalibOpts member
+// initializers and validate_calib_options share a single source of truth and
+// cannot silently drift apart.
+inline constexpr double kDefaultEssviFallbackRmse = 0.01;
+inline constexpr std::uint32_t kDefaultButterflyGrid = 200u;
+
 struct CalibOpts {
   // IRLS / Newton.
   std::uint16_t max_outer_iter{4};  // IRLS reweighting passes
@@ -165,8 +173,8 @@ struct CalibOpts {
   OptimizationLevel optimization_level{OptimizationLevel::Trading};
   // The defaults are compatibility sentinels. Non-default values are rejected
   // until quality-driven fallback and configurable arb grids are implemented.
-  double essvi_fallback_rmse_threshold{0.01};
-  std::uint32_t n_butterfly_grid{200};
+  double essvi_fallback_rmse_threshold{kDefaultEssviFallbackRmse};
+  std::uint32_t n_butterfly_grid{kDefaultButterflyGrid};
 
   // Per-level iteration caps. The active `optimization_level` selects one; the
   // legacy max_outer_iter / max_inner_iter apply when the per-level cap is 0.

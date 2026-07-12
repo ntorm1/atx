@@ -461,13 +461,16 @@ Result<SelectorResult> select_curve(const Underlying &under, const SurfaceParity
         }
         // Held-out fit metrics (vol space, self-consistent European bid/ask/vega
         // from the de-Americanized obs). Feeds slice_fit_metrics -> chi2_reduced.
+        // Market IV is the anchor-independent European scoring vol (score column),
+        // not `observation.sigma_mkt`, which carries the fit anchor's bias off Mid.
+        const double iv_mkt = score.market_iv[row_index];
         const double eu_half = 0.5 * observation.spread;
         const double eu_bid = observation.mid - eu_half;
         const double eu_ask = observation.mid + eu_half;
-        if (std::isfinite(observation.sigma_mkt) && observation.sigma_mkt > 0.0 &&
-            observation.vega > 0.0 && eu_bid > 0.0 && eu_ask > eu_bid) {
+        if (std::isfinite(iv_mkt) && iv_mkt > 0.0 && observation.vega > 0.0 && eu_bid > 0.0 &&
+            eu_ask > eu_bid) {
           accum.iv_model.push_back(model_iv);
-          accum.iv_mkt.push_back(observation.sigma_mkt);
+          accum.iv_mkt.push_back(iv_mkt);
           accum.bid.push_back(eu_bid);
           accum.ask.push_back(eu_ask);
           accum.vega.push_back(observation.vega);
