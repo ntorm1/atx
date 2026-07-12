@@ -55,6 +55,7 @@
 #include "atx/vol/deamer.hpp"          // DeAmOptions
 #include "atx/vol/parity.hpp"          // ParityReport
 #include "atx/vol/priced_surface.hpp"  // PricedSurface, PricingContext (to_priced_surface)
+#include "atx/vol/projection.hpp"      // InterpMode (SessionInputs::interp, ShapeBlend eval)
 #include "atx/vol/surface_parity.hpp"  // SliceContext, run_surface_parity
 #include "atx/vol/types.hpp"           // Result, Side
 #include "atx/vol/universe.hpp"        // Underlying (build input)
@@ -107,6 +108,16 @@ struct SessionInputs {
   // slice whose wing crosses, with the per-expiry parity then scored off the
   // repaired surface so the reported quality is what the surface serves.
   CalendarRepair calendar_repair{CalendarRepair::None};
+  // Cross-expiry interpolation mode for arbitrary-T queries served off this
+  // session's surface. PiecewiseTotalVariance (default) is bit-identical to
+  // current behavior; ShapeBlend is the FLEX-style vol-multiple blend. Only
+  // applies to the default eSSVI surface (`curve` == Essvi, the shipped
+  // inserted-slice path); a session built with a polymorphic curve override
+  // (ConvexDense / Svi) always serves PiecewiseTotalVariance-equivalent
+  // cross-expiry interpolation regardless of this field, since ShapeBlend is
+  // specific to VolSurface's inserted-slice mechanism (see
+  // InterpMode::ShapeBlend).
+  InterpMode interp{InterpMode::PiecewiseTotalVariance};
 };
 
 // ── Named calibration presets ─────────────────────────────────────────────
@@ -384,13 +395,22 @@ class VolaSession {
   // Model-vol source, dispatching to the polymorphic override when present and to
   // the eSSVI VolSurface otherwise. Every query (iv / fair_value / greeks /
   // ladders) reads the model IV through here, so the convex/SVI surface flows
-  // everywhere the eSSVI surface did with no other change.
-  [[nodiscard]] double model_iv(double k_log, double T) const noexcept {
-    return curve_override_ ? curve_override_->iv(k_log, T) : surface_.iv(k_log, T);
-  }
-  [[nodiscard]] double model_w(double k_log, double T) const noexcept {
-    return curve_override_ ? curve_override_->w(k_log, T) : surface_.w(k_log, T);
-  }
+  // everywhere the eSSVI surface did with no other change. When there is no
+  // polymorphic override and `in_.interp == ShapeBlend`, cross-expiry queries
+  // route through `shape_blend_total_variance` instead of `surface_`'s own
+  // linear-in-total-variance interpolation; PiecewiseTotalVariance (the
+  // default) is unchanged and stays bit-identical to `surface_.iv`/`w`.
+  [[nodiscard]] double model_iv(double k_log, double T) const noexcept;
+  [[nodiscard]] double model_w(double k_log, double T) const noexcept;
+
+  // ShapeBlend total variance at (k_log, T) off `surface_`, via the
+  // projection-layer inserted-slice path (see InterpMode::ShapeBlend). The
+  // session has no CurveSet of its own (forward/carry come from ctx_ via
+  // interp_forward), so the handle skips the forward cache; only the slice
+  // bracket is needed here. NaN if the inserted-slice handle fails to build
+  // (never for a successfully built session's own surface_).
+  [[nodiscard]] double shape_blend_total_variance(double k_log,
+                                                  double T) const noexcept;
 
   // Correction cache to serve a query through, or nullptr for the cold (accurate)
   // Andersen-Lake path. The single-carry cache is a self-consistent DE-AM round-

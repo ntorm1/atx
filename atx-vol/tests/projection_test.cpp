@@ -598,6 +598,53 @@ TEST(VolProjection, EvalEx_ShapeBlend_MatchesInsertedSliceHotPath) {
   EXPECT_NE(res->flags & atx::vol::kFlagShapeBlendCalendarUnsafe, 0u);
 }
 
+TEST(VolProjection, ShapeBlendEvalBitIdenticalAfterForwardReuse) {
+  // Golden pin captured from current main BEFORE the I1.2 dedup refactor: the
+  // ShapeBlend branch of surface_eval_ex redoes curve_forward_T inside
+  // surface_insert_vol_slice even though convert_coord already resolved the
+  // identical forward for this (curves, T_clock, extrap). This test pins the
+  // served iv + provenance flags across a 16-point (T, k) grid EXACTLY (`==`,
+  // not NEAR) so the dedup cannot silently change a single bit of output.
+  CurveSet cs = make_cs();
+  VolSurface sf = make_surface();
+  const auto tm = atx::vol::time_model_clock();
+  constexpr std::array<double, 4> kQueryT{0.15, 0.30, 0.60, 0.85};
+  constexpr std::array<double, 4> kQueryK{-0.15, -0.05, 0.02, 0.10};
+
+  // Row-major in (kQueryT, kQueryK): index = t_idx * 4 + k_idx.
+  constexpr std::array<double, 16> kPinIv{
+      0.56746815099768499, 0.56070652332771009, 0.55668899942780092,
+      0.55288234682731896, 0.46992986795806668, 0.46431612095530628,
+      0.46097949083160683, 0.45781598823244429, 0.38069095581943896,
+      0.3761404261487043,  0.37343551854423257,  0.37087056646436128,
+      0.33834659610650619, 0.33430283604750755,  0.33189921759195179,
+      0.32962005134916711,
+  };
+  // Same union of flags at every grid point: interpolated-T + forward-interp
+  // + inserted-slice + ShapeBlend-calendar-unsafe + routed B76Only.
+  constexpr std::array<std::uint32_t, 16> kPinFlags{
+      13345u, 13345u, 13345u, 13345u, 13345u, 13345u, 13345u, 13345u,
+      13345u, 13345u, 13345u, 13345u, 13345u, 13345u, 13345u, 13345u,
+  };
+
+  std::size_t i = 0;
+  for (double T : kQueryT) {
+    for (double k : kQueryK) {
+      EvalRequest req = atx::vol::eval_request_default();
+      req.T_clock = T;
+      req.coord_kind = CoordKind::LogMoneyness;
+      req.x = k;
+      req.side = Side::Call;
+      req.interp_mode = InterpMode::ShapeBlend;
+      auto res = atx::vol::surface_eval_ex(sf, cs, nullptr, tm, req);
+      ASSERT_TRUE(res.has_value()) << "T=" << T << " k=" << k;
+      EXPECT_EQ(res->iv, kPinIv[i]) << "T=" << T << " k=" << k << " i=" << i;
+      EXPECT_EQ(res->flags, kPinFlags[i]) << "T=" << T << " k=" << k << " i=" << i;
+      ++i;
+    }
+  }
+}
+
 TEST(VolProjection, EvalEx_ReservedInterpMode_ReturnsNotImplemented) {
   CurveSet cs = make_cs();
   VolSurface sf = make_surface();

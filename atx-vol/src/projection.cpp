@@ -278,12 +278,18 @@ Result<ForwardLookup> curve_forward_T(const CurveSet& curves, double T,
 
 // ── Inserted-slice helpers ───────────────────────────────────────────────
 
-Result<InsertedSliceHandle> surface_insert_vol_slice(
+namespace {
+
+// Builds the inserted-slice handle. `pre`, when non-null, is an ALREADY-
+// RESOLVED forward lookup for this exact (curves, T_clock, extrap) — used by
+// `surface_eval_ex`'s ShapeBlend branch, which has already run
+// `curve_forward_T` once inside `convert_coord` for the very same query and
+// would otherwise redo it here. `surface_insert_vol_slice` (the public entry)
+// always passes `pre = nullptr` and resolves the forward itself, unchanged.
+[[nodiscard]] Result<InsertedSliceHandle> build_inserted_slice(
     const VolSurface& surface, const CurveSet* curves, const TimeModel& tm,
     double T_clock, InterpMode interp, ProjExtrapPolicy extrap,
-    bool with_no_arb_check) {
-  (void)with_no_arb_check;  // PORT NOTE: dense no-arb sweep deferred.
-
+    const ForwardLookup* pre) {
   InsertedSliceHandle out;
   out.uid = surface.uid();
   out.T_clock = T_clock;
@@ -362,8 +368,18 @@ Result<InsertedSliceHandle> surface_insert_vol_slice(
     }
   }
 
-  // Forward / discount cache (optional).
-  if (curves != nullptr) {
+  // Forward / discount cache (optional). A pre-resolved lookup (`pre`) is
+  // used as-is -- no second `curve_forward_T` call; otherwise resolve it here
+  // exactly as before.
+  if (pre != nullptr) {
+    out.F = pre->F;
+    out.df = pre->df;
+    out.r = pre->r;
+    out.q_eff = pre->q_eff;
+    out.logF = (pre->F > 0.0) ? std::log(pre->F) : kQuietNaN;
+    out.sqrtT = (T_clock > 0.0) ? std::sqrt(T_clock) : kQuietNaN;
+    out.flags |= pre->flags;
+  } else if (curves != nullptr) {
     auto fl = curve_forward_T(*curves, T_clock, extrap);
     if (fl) {
       out.F = fl->F;
@@ -378,6 +394,17 @@ Result<InsertedSliceHandle> surface_insert_vol_slice(
     // IV-only callers still get a usable handle.
   }
   return out;
+}
+
+}  // namespace
+
+Result<InsertedSliceHandle> surface_insert_vol_slice(
+    const VolSurface& surface, const CurveSet* curves, const TimeModel& tm,
+    double T_clock, InterpMode interp, ProjExtrapPolicy extrap,
+    bool with_no_arb_check) {
+  (void)with_no_arb_check;  // PORT NOTE: dense no-arb sweep deferred.
+  return build_inserted_slice(surface, curves, tm, T_clock, interp, extrap,
+                              /*pre=*/nullptr);
 }
 
 double w_on_inserted_slice(const VolSurface& surface,
@@ -569,10 +596,25 @@ Result<EvalResult> surface_eval_ex(const VolSurface& surface,
     // ShapeBlend routes through the inserted-slice path so it can see both
     // bracketing slices; PiecewiseTotalVariance (default, below) stays on
     // the original direct VolSurface::w() call for bit-identical behavior.
-    auto handle = surface_insert_vol_slice(surface, &curves, tm,
-                                           request.T_clock,
-                                           InterpMode::ShapeBlend,
-                                           request.extrap_policy);
+    // `convert_coord` above already ran `curve_forward_T` for this exact
+    // (curves, T_clock, extrap_policy) to produce `cr`; reuse it (`cr->F` /
+    // `df` / `r` / `q_eff` are copied straight from that lookup) instead of
+    // resolving the forward a second time inside the inserted-slice builder.
+    // Masked to the bits `curve_forward_T` itself can set on success (not
+    // `cr->flags` wholesale) so a flag some OTHER branch of `convert_coord`
+    // adds for an unrelated reason (e.g. the Delta coordinate-solve path)
+    // can never leak into the handle's provenance.
+    ForwardLookup pre_fwd;
+    pre_fwd.T = request.T_clock;
+    pre_fwd.F = cr->F;
+    pre_fwd.df = cr->df;
+    pre_fwd.r = cr->r;
+    pre_fwd.q_eff = cr->q_eff;
+    pre_fwd.flags = cr->flags & (kFlagExtrapolatedT | kFlagForwardInterp);
+
+    auto handle = build_inserted_slice(surface, &curves, tm, request.T_clock,
+                                       InterpMode::ShapeBlend,
+                                       request.extrap_policy, &pre_fwd);
     if (!handle) {
       out.flags |= kFlagInvalid;
       return Err(std::move(handle).error());

@@ -33,6 +33,7 @@ using atx::vol::chain_index;
 using atx::vol::data_install;
 using atx::vol::FitDiag;
 using atx::vol::DividendEvent;
+using atx::vol::InterpMode;
 using atx::vol::iso_to_ns;
 using atx::vol::make_synthetic_american_panel;
 using atx::vol::S3Params;
@@ -96,6 +97,40 @@ using atx::vol::year_fraction;
   in.deam.imply_borrow = true;
   in.deam.n_atm = 3;
   return in;
+}
+
+// A 2-expiry panel with DELIBERATELY contrasting smile shapes: the near
+// expiry is strongly put-skewed, the far expiry is flat. Used to prove
+// SessionInputs::interp actually reaches the eval seam -- ShapeBlend and
+// PiecewiseTotalVariance must disagree at an arbitrary-T query strictly
+// between two slices whose SHAPES (not just level) differ this much.
+[[nodiscard]] SynthPanelSpec make_shape_contrast_spec() {
+  const std::string snapshot = "2026-06-19";
+  const std::vector<std::string> isos = {
+      "2026-07-19",  // ~0.10y, skewed lo
+      "2026-12-19",  // ~0.50y, flat hi
+  };
+  const std::vector<S3Params> truths = {
+      S3Params{0.35, -1.20, 1.20},  // strong put skew
+      S3Params{0.22, 0.0, 0.30},    // flat
+  };
+
+  SynthPanelSpec spec;
+  spec.uid = "SYNTH2";
+  spec.snapshot_iso = snapshot;
+  spec.spot = 100.0;
+  spec.r = 0.03;
+  spec.borrow = 0.0;
+
+  for (std::size_t i = 0; i < isos.size(); ++i) {
+    const double T = year_fraction(snapshot, isos[i]);
+    spec.expiries.push_back(SynthExpiry{isos[i], T, truths[i]});
+  }
+  for (double K = 60.0; K <= 140.0 + 1e-9; K += 5.0) {
+    spec.strikes.push_back(K);
+  }
+  spec.half_spread_frac = 0.02;
+  return spec;
 }
 
 // Install the spec's panel into `u` and return the resolved underlying pointer.
@@ -444,4 +479,48 @@ TEST(VolaSession, RefitSlice_WarmUpdatesOneExpiryAndGuardsArgs) {
   EXPECT_FALSE(sess->refit_slice(99, obs->obs).has_value());
   const std::vector<atx::vol::FitObs> empty;
   EXPECT_FALSE(sess->refit_slice(idx, empty).has_value());
+}
+
+TEST(Session, InterpModeReachesEval) {
+  // Two synthetic slices with deliberately different shapes (skewed lo, flat
+  // hi -- see make_shape_contrast_spec). A production SessionInputs::interp
+  // = ShapeBlend must reach the eval seam: an arbitrary-T query strictly
+  // between the two fitted slices, at a strike away from ATM (where the
+  // skew shapes diverge), must differ from the PiecewiseTotalVariance
+  // default -- proving ShapeBlend is actually served, not dead config.
+  const SynthPanelSpec spec = make_shape_contrast_spec();
+  Universe u;
+  const Underlying* under = install(spec, u);
+  ASSERT_NE(under, nullptr);
+  ASSERT_EQ(under->chains.size(), std::size_t{2});
+
+  SessionInputs in_default = make_inputs(spec);
+  ASSERT_EQ(in_default.interp, InterpMode::PiecewiseTotalVariance);  // default
+  const auto sess_default = VolaSession::build(*under, in_default);
+  ASSERT_TRUE(sess_default.has_value()) << sess_default.error().to_string();
+
+  SessionInputs in_shape = make_inputs(spec);
+  in_shape.interp = InterpMode::ShapeBlend;
+  const auto sess_shape = VolaSession::build(*under, in_shape);
+  ASSERT_TRUE(sess_shape.has_value()) << sess_shape.error().to_string();
+
+  // Strictly between the two fitted slices; a strike well off ATM so the
+  // skew-shape divergence between the parents shows up in the blend.
+  const auto exps = sess_default->expiries();
+  ASSERT_EQ(exps.size(), std::size_t{2});
+  const double T_mid = 0.5 * (exps[0].T + exps[1].T);
+  constexpr double kSkewedStrike = 80.0;
+
+  const double iv_default = sess_default->iv(kSkewedStrike, T_mid);
+  const double iv_shape = sess_shape->iv(kSkewedStrike, T_mid);
+  ASSERT_TRUE(std::isfinite(iv_default));
+  ASSERT_TRUE(std::isfinite(iv_shape));
+  EXPECT_GT(std::fabs(iv_shape - iv_default), 1e-4)
+      << "iv_default=" << iv_default << " iv_shape=" << iv_shape;
+
+  // Default is bit-identical to a session built before this task: the
+  // PiecewiseTotalVariance branch of the query path is untouched code
+  // (same surface_.iv() call it always was), so this golden pin -- captured
+  // once off the fixture above -- must hold exactly going forward.
+  EXPECT_EQ(iv_default, 0.35727349437368516);
 }

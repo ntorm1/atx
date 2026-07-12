@@ -19,6 +19,7 @@
 #include "atx/vol/data.hpp"           // data_install
 #include "atx/vol/dividend.hpp"        // hybrid_forward (representative carry)
 #include "atx/vol/essvi_calib.hpp"     // essvi_fit_slice (warm-start refit)
+#include "atx/vol/projection.hpp"      // InterpMode, surface_insert_vol_slice, w_on_inserted_slice
 #include "atx/vol/surface_parity.hpp"  // run_surface_parity, SurfaceParityInputs/Report
 #include "atx/vol/universe.hpp"        // Universe, Underlying, Uid, Chain
 #include "atx/vol/vol_surface.hpp"     // VolSurface
@@ -543,6 +544,48 @@ Result<PricedSurface> VolaSession::to_priced_surface() const {
 
   std::vector<SliceContext> ctx_copy(ctx_.begin(), ctx_.end());
   return PricedSurface::create(std::move(cs), std::move(ctx_copy), pc);
+}
+
+double VolaSession::shape_blend_total_variance(double k_log, double T) const noexcept {
+  // ShapeBlend queries route through the projection-layer inserted-slice path
+  // (see InterpMode::ShapeBlend) so both bracketing slices' own shapes are
+  // blended, rather than surface_.w()'s linear-in-total-variance-at-fixed-k
+  // blend. `curves == nullptr` skips the handle's forward cache (this session
+  // sources forward/carry from ctx_ via interp_forward, not a CurveSet).
+  // ClampForReporting mirrors interp_forward's own out-of-range policy: a
+  // query outside the fitted range serves the nearest endpoint slice rather
+  // than being rejected.
+  auto handle = surface_insert_vol_slice(surface_, /*curves=*/nullptr, TimeModel{},
+                                         T, InterpMode::ShapeBlend,
+                                         ProjExtrapPolicy::ClampForReporting);
+  if (!handle) {
+    return kNaN;
+  }
+  return w_on_inserted_slice(surface_, *handle, k_log);
+}
+
+double VolaSession::model_w(double k_log, double T) const noexcept {
+  if (curve_override_) {
+    return curve_override_->w(k_log, T);
+  }
+  if (in_.interp == InterpMode::ShapeBlend) {
+    return shape_blend_total_variance(k_log, T);
+  }
+  return surface_.w(k_log, T);
+}
+
+double VolaSession::model_iv(double k_log, double T) const noexcept {
+  if (curve_override_) {
+    return curve_override_->iv(k_log, T);
+  }
+  if (in_.interp == InterpMode::ShapeBlend) {
+    const double w = shape_blend_total_variance(k_log, T);
+    if (!(std::isfinite(w) && w > 0.0) || !(T > 0.0)) {
+      return kNaN;
+    }
+    return std::sqrt(w / T);
+  }
+  return surface_.iv(k_log, T);
 }
 
 double VolaSession::iv(double K, double T) const {
