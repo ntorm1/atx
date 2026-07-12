@@ -93,6 +93,16 @@ Result<ParityReport> chain_parity(std::span<const double> strike,
   resid_vol.reserve(n);
   err_bar.reserve(n);
 
+  // SpiderRock-style band-violation scoring (model price vs bid/ask), scored
+  // over the SAME population as the rest of this report. Parallel spans fed
+  // to `band_violation_stats` below.
+  std::vector<double> band_price;
+  std::vector<double> band_bid;
+  std::vector<double> band_ask;
+  band_price.reserve(n);
+  band_bid.reserve(n);
+  band_ask.reserve(n);
+
   double sum_sq_price = 0.0;  // Σ (fair_value − mid)²
   double sum_sq_vol = 0.0;    // Σ (model_iv − market_iv)²
   double sum_edge = 0.0;      // Σ signed edge (model − market)
@@ -150,6 +160,9 @@ Result<ParityReport> chain_parity(std::span<const double> strike,
 
     resid_vol.push_back(resid_v);
     err_bar.push_back(err);
+    band_price.push_back(fair_value);
+    band_bid.push_back(bid[i]);
+    band_ask.push_back(ask[i]);
     ++n_scored;
   }
 
@@ -162,6 +175,11 @@ Result<ParityReport> chain_parity(std::span<const double> strike,
   ATX_TRY(const auto chi,
           reduced_chi_square(resid_vol, err_bar, in.n_curve_params));
 
+  // SpiderRock-style band-violation stats over the same scored population.
+  // The three spans are built in lockstep above, so a length mismatch here
+  // is impossible by construction; propagate the error anyway per convention.
+  ATX_TRY(const auto band, band_violation_stats(band_price, band_bid, band_ask));
+
   const double dn = static_cast<double>(n_scored);
   ParityReport out{};
   out.frac_fv_within_bidask = static_cast<double>(n_within) / dn;
@@ -172,6 +190,7 @@ Result<ParityReport> chain_parity(std::span<const double> strike,
   out.mean_edge_vol = sum_edge / dn;
   out.n = n_scored;
   out.n_within = n_within;
+  out.band = band;
   return Ok(out);
 }
 

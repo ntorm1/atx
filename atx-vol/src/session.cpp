@@ -388,6 +388,9 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
         sum_frac += p.frac_fv_within_bidask;
         sum_chi2 += p.chi2_reduced;
         sum_rmse += p.rmse_mid_vol;
+        cdiag.n_bid_miss += p.band.n_bid_miss;
+        cdiag.n_ask_miss += p.band.n_ask_miss;
+        cdiag.max_prc_err = std::max(cdiag.max_prc_err, p.band.max_prc_err);
         ++np_scored;
       }
       if (np_scored > 0) {
@@ -435,6 +438,9 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
     sum_frac += p.frac_fv_within_bidask;
     sum_chi2 += p.chi2_reduced;
     sum_rmse += p.rmse_mid_vol;
+    diag.n_bid_miss += p.band.n_bid_miss;
+    diag.n_ask_miss += p.band.n_ask_miss;
+    diag.max_prc_err = std::max(diag.max_prc_err, p.band.max_prc_err);
   }
   const std::size_t np = rep.per_expiry.size();
   if (np > 0) {

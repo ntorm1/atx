@@ -481,6 +481,78 @@ TEST(VolaSession, RefitSlice_WarmUpdatesOneExpiryAndGuardsArgs) {
   EXPECT_FALSE(sess->refit_slice(idx, empty).has_value());
 }
 
+// Band-violation stats (SpiderRock-style, record-only): SessionDiagnostics
+// rolls up ParityReport::band across every fitted expiry. Verifies the
+// default eSSVI aggregation loop (session.cpp) against a direct sum/max over
+// the session's own per-expiry parity reports.
+TEST(Session, DiagnosticsAggregateBandStats) {
+  // A near-zero bid-ask band: the known-truth panel fits the wide (2%)
+  // default spread essentially perfectly (zero violations), which would make
+  // this check vacuous. Shrinking the band forces the LM fit's real residual
+  // slop to cross it on at least some quotes, so the rollup has real signal.
+  SynthPanelSpec spec = make_spec();
+  spec.half_spread_frac = 0.0001;
+  spec.min_half_spread = 0.0001;
+  Universe u;
+  const Underlying* under = install(spec, u);
+  ASSERT_NE(under, nullptr);
+
+  const auto sess = VolaSession::build(*under, make_inputs(spec));
+  ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
+
+  std::size_t want_bid_miss = 0;
+  std::size_t want_ask_miss = 0;
+  double want_max_prc_err = 0.0;
+  for (const auto& p : sess->parity()) {
+    want_bid_miss += p.band.n_bid_miss;
+    want_ask_miss += p.band.n_ask_miss;
+    want_max_prc_err = std::max(want_max_prc_err, p.band.max_prc_err);
+  }
+  // Guard against a vacuous pass: the known-truth panel is not a perfect
+  // fit (worst_frac_within_bidask floors at 0.90 elsewhere in this file), so
+  // some band violations must exist for this check to be meaningful.
+  ASSERT_GT(want_bid_miss + want_ask_miss, std::size_t{0});
+
+  const auto& diag = sess->diagnostics();
+  EXPECT_EQ(diag.n_bid_miss, want_bid_miss);
+  EXPECT_EQ(diag.n_ask_miss, want_ask_miss);
+  EXPECT_DOUBLE_EQ(diag.max_prc_err, want_max_prc_err);
+}
+
+// Same rollup, exercised through the CurveSurface (non-Essvi) build path --
+// the second of the two aggregation loops in session.cpp that the 07-11
+// sprint's session-guard-fix history shows drift when only one is edited.
+TEST(Session, DiagnosticsAggregateBandStats_CurveSurfacePath) {
+  // Same tight-band rationale as DiagnosticsAggregateBandStats above.
+  SynthPanelSpec spec = make_spec();
+  spec.half_spread_frac = 0.0001;
+  spec.min_half_spread = 0.0001;
+  Universe u;
+  const Underlying* under = install(spec, u);
+  ASSERT_NE(under, nullptr);
+
+  SessionInputs in = make_inputs(spec);
+  in.curve.kind = atx::vol::VolCurveKind::LinearVariance;
+
+  const auto sess = VolaSession::build(*under, in);
+  ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
+
+  std::size_t want_bid_miss = 0;
+  std::size_t want_ask_miss = 0;
+  double want_max_prc_err = 0.0;
+  for (const auto& p : sess->parity()) {
+    want_bid_miss += p.band.n_bid_miss;
+    want_ask_miss += p.band.n_ask_miss;
+    want_max_prc_err = std::max(want_max_prc_err, p.band.max_prc_err);
+  }
+  ASSERT_GT(want_bid_miss + want_ask_miss, std::size_t{0});
+
+  const auto& diag = sess->diagnostics();
+  EXPECT_EQ(diag.n_bid_miss, want_bid_miss);
+  EXPECT_EQ(diag.n_ask_miss, want_ask_miss);
+  EXPECT_DOUBLE_EQ(diag.max_prc_err, want_max_prc_err);
+}
+
 TEST(Session, InterpModeReachesEval) {
   // Two synthetic slices with deliberately different shapes (skewed lo, flat
   // hi -- see make_shape_contrast_spec). A production SessionInputs::interp

@@ -50,6 +50,7 @@
 
 #include "atx/vol/american.hpp"    // AmericanMethod, AlOpts
 #include "atx/vol/correction.hpp"  // AmericanCorrectionCaches (hot-path re-pricing)
+#include "atx/vol/fit_metrics.hpp" // BandViolationStats
 #include "atx/vol/types.hpp"       // Result, Side
 
 namespace atx::vol {
@@ -80,6 +81,9 @@ struct ParityReport {
     double mean_edge_vol;           // mean signed edge in vol pts
     std::size_t n;                  // quotes scored
     std::size_t n_within;           // count within bid-ask
+    // SpiderRock-style surface/quote band-violation stats for this expiry
+    // (model price vs bid/ask): miss counts, worst premium violation, signed bias.
+    BandViolationStats band{};
 };
 
 // Score a chain of American quotes against a fitted surface.

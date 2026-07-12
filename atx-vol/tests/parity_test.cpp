@@ -162,6 +162,53 @@ TEST(Parity, SurfaceCallableOverload_FlatVol_MatchesGeneratingVol) {
   EXPECT_DOUBLE_EQ(r.rmse_mid_vol, 0.0);
 }
 
+// ── Band-violation stats (SpiderRock-style, record-only) ─────────────────────
+
+TEST(Parity, BandStatsInBandQuotesAreZero) {
+  // Perfect model: re-Americanized fair value == mid, strictly inside a wide
+  // bid-ask band, so nothing crosses.
+  SyntheticChain c;
+  build_chain(kSigmaGen, /*spread_frac=*/0.02, c);
+  const auto model = flat_vol(c.strike.size(), kSigmaGen);
+  const auto market = flat_vol(c.strike.size(), kSigmaGen);
+  const ParityInputs in{kSpot, kRate, kQeff, kT};
+
+  const auto res = chain_parity(c.strike, c.bid, c.ask, c.mid, c.side, model,
+                                market, in);
+  ASSERT_TRUE(res.has_value());
+  const ParityReport& r = *res;
+  EXPECT_EQ(r.band.n, r.n);
+  EXPECT_EQ(r.band.n_bid_miss, std::size_t{0});
+  EXPECT_EQ(r.band.n_ask_miss, std::size_t{0});
+  EXPECT_DOUBLE_EQ(r.band.max_prc_err, 0.0);
+}
+
+TEST(Parity, BandStatsCountsCrossings) {
+  // Perfect model (fair value == mid), then directly force two quotes' bands
+  // to cross by known amounts: index 0 crosses the bid by 0.07, index 1
+  // crosses the ask by 0.03. The wider miss (0.07) must be the reported worst.
+  SyntheticChain c;
+  build_chain(kSigmaGen, /*spread_frac=*/0.10, c);
+  const auto model = flat_vol(c.strike.size(), kSigmaGen);
+  const auto market = flat_vol(c.strike.size(), kSigmaGen);
+
+  c.bid[0] = c.mid[0] + 0.07;  // fair value (== mid) now BELOW bid by 0.07
+  c.ask[0] = c.bid[0] + 0.05;
+  c.ask[1] = c.mid[1] - 0.03;  // fair value (== mid) now ABOVE ask by 0.03
+  c.bid[1] = c.ask[1] - 0.05;
+  ASSERT_GT(c.bid[1], 0.0) << "fixture strike too cheap for this offset";
+
+  const ParityInputs in{kSpot, kRate, kQeff, kT};
+  const auto res = chain_parity(c.strike, c.bid, c.ask, c.mid, c.side, model,
+                                market, in);
+  ASSERT_TRUE(res.has_value());
+  const ParityReport& r = *res;
+  EXPECT_EQ(r.band.n_bid_miss, std::size_t{1});
+  EXPECT_EQ(r.band.n_ask_miss, std::size_t{1});
+  EXPECT_NEAR(r.band.max_prc_err, 0.07, 1e-6);
+  EXPECT_EQ(r.band.max_err_idx, std::size_t{0});
+}
+
 // ── Guards ───────────────────────────────────────────────────────────────────
 
 TEST(Parity, LengthMismatch_ReturnsErr) {

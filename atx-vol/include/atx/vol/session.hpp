@@ -172,6 +172,11 @@ struct SessionDiagnostics {
                                            // means "found violations OR check failed"
   std::size_t n_slices{0};                // fitted slice count
   std::size_t n_quotes{0};                // sum of per-slice n_used
+  // SpiderRock-style band-violation stats, rolled up from each expiry's
+  // ParityReport::band (record-only; not used to gate slice selection).
+  std::size_t n_bid_miss{};   // sum over slices
+  std::size_t n_ask_miss{};   // sum over slices
+  double max_prc_err{};       // max over slices (premium units)
 };
 
 // Stateful surface handle. Construct with `build` / `from_frame`; then query.
