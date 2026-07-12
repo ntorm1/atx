@@ -467,7 +467,11 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
 Result<VolaSession> VolaSession::from_frame(const QuoteFrame& frame,
                                             const SessionInputs& in) {
   Universe u;
-  ATX_TRY(const Uid uid, data_install(u, frame));
+  // Thread this session's OWN T convention into the install it drives -- the
+  // consistency guard: fit-time T (Chain::T, installed here) and `in.time`
+  // (retained on the built session, see SessionInputs::time) always agree by
+  // construction on this path.
+  ATX_TRY(const Uid uid, data_install(u, frame, in.time));
   ATX_TRY(Underlying* under, u.get_underlying(uid));
   return build(*under, in);
 }

@@ -14,6 +14,7 @@
 #include "atx/vol/panel.hpp"
 #include "atx/vol/s3.hpp"
 #include "atx/vol/universe.hpp"
+#include "atx/vol/vol_time.hpp"
 
 // Option-chain PANEL fixture coverage: the deterministic known-truth synthetic
 // American-equity generator and the self-contained CSV chain loader. Together
@@ -37,7 +38,14 @@ using atx::vol::Side;
 using atx::vol::SynthExpiry;
 using atx::vol::SynthPanel;
 using atx::vol::SynthPanelSpec;
+using atx::vol::TimeConvention;
+using atx::vol::TimeSpec;
 using atx::vol::Universe;
+using atx::vol::vol_time_years;
+using atx::vol::VolTimeCalendar;
+using atx::vol::VolTimeParams;
+using atx::vol::year_fraction;
+using atx::vol::QuoteRow;
 
 // Canonical two-expiry, five-strike spec (2 x 5 x 2 = 20 rows).
 SynthPanelSpec make_spec() {
@@ -250,6 +258,86 @@ TEST(Panel, Csv_MissingFile_ReturnsIoError) {
   const auto res = load_chain_csv(spec);
   ASSERT_FALSE(res.has_value());
   EXPECT_EQ(res.error().code(), ErrorCode::IoError);
+}
+
+// ── data_install's TimeSpec threading (I3: production T convention) ────────
+
+// Friday 16:00 ET anchor (2026-07-10 20:00 UTC, EDT) -> Monday 10:00 ET expiry
+// (2026-07-13 14:00 UTC): the intervening weekend is pure non-trading time, so
+// the VolTime clock compresses T well below the plain Calendar365 fraction.
+TEST(Panel, ChainCarriesVolTimeT) {
+  QuoteFrame f;
+  f.uid = "WKEND";
+  f.snapshot_iso = "2026-07-10 20:00:00";
+  f.snapshot_ts_ns = iso_to_ns(f.snapshot_iso);
+  f.spot = 100.0;
+  f.spot_ts_ns = f.snapshot_ts_ns;
+  f.yc_pillar_t = {1.0};
+  f.yc_pillar_r = {0.03};
+
+  QuoteRow row;
+  row.uid = "WKEND";
+  row.expiry_iso = "2026-07-13 14:00:00";
+  row.strike = 100.0;
+  row.side = Side::Call;
+  row.bid = 1.0;
+  row.ask = 1.2;
+  f.rows.push_back(row);
+
+  TimeSpec spec;
+  spec.convention = TimeConvention::VolTime;
+
+  Universe u;
+  const auto uid = atx::vol::data_install(u, f, spec);
+  ASSERT_TRUE(uid.has_value()) << uid.error().to_string();
+
+  const auto under = u.get_underlying(*uid);
+  ASSERT_TRUE(under.has_value());
+  ASSERT_EQ((*under)->chains.size(), std::size_t{1});
+  const Chain& c = (*under)->chains.front();
+
+  const std::int64_t now_ns = iso_to_ns(f.snapshot_iso);
+  const std::int64_t expiry_ns = iso_to_ns(row.expiry_iso);
+  const double expected_vol_T =
+      vol_time_years(now_ns, expiry_ns, VolTimeParams{}, VolTimeCalendar::us_default());
+  EXPECT_GT(expected_vol_T, 0.0);
+  EXPECT_DOUBLE_EQ(c.T, expected_vol_T);
+
+  const double calendar_T = year_fraction(f.snapshot_iso, row.expiry_iso);
+  EXPECT_LT(c.T, calendar_T);
+}
+
+// Same (frame, expiry) pair, default TimeSpec: chain.T must be bit-identical
+// to the pre-I3 Calendar365 `year_fraction` result -- default-off, no
+// behavior change for every caller that omits the TimeSpec argument.
+TEST(Panel, ChainDefaultTimeSpecMatchesYearFraction) {
+  QuoteFrame f;
+  f.uid = "WKEND2";
+  f.snapshot_iso = "2026-07-10 20:00:00";
+  f.snapshot_ts_ns = iso_to_ns(f.snapshot_iso);
+  f.spot = 100.0;
+  f.spot_ts_ns = f.snapshot_ts_ns;
+  f.yc_pillar_t = {1.0};
+  f.yc_pillar_r = {0.03};
+
+  QuoteRow row;
+  row.uid = "WKEND2";
+  row.expiry_iso = "2026-07-13 14:00:00";
+  row.strike = 100.0;
+  row.side = Side::Call;
+  row.bid = 1.0;
+  row.ask = 1.2;
+  f.rows.push_back(row);
+
+  Universe u;
+  const auto uid = atx::vol::data_install(u, f); // no TimeSpec: default Calendar365
+  ASSERT_TRUE(uid.has_value()) << uid.error().to_string();
+
+  const auto under = u.get_underlying(*uid);
+  ASSERT_TRUE(under.has_value());
+  const Chain& c = (*under)->chains.front();
+
+  EXPECT_EQ(c.T, year_fraction(f.snapshot_iso, row.expiry_iso));
 }
 
 } // namespace

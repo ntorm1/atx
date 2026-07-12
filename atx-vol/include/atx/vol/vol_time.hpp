@@ -11,6 +11,20 @@
 // `TimeMode` (still `Clock`-only in v1); wiring it in as a new `TimeMode` is a
 // follow-up task.
 //
+// ## Production T convention (`TimeConvention` / `TimeSpec`)
+//
+// `TimeSpec` is the opt-in carrier threaded down the chain/fit/serve path:
+// `TimeConvention::Calendar365` (the default) reproduces `data.cpp`'s
+// `year_fraction` exactly; `TimeConvention::VolTime` routes the SAME (from,
+// to) instant pair through `vol_time_years` above (with `VolTimeCalendar::
+// us_default()` — v1 does not support a custom calendar). `time_to_expiry_years`
+// is the single conversion entry point production code calls instead of
+// `year_fraction`/hand-rolled ns math, so a caller need not branch on the
+// convention itself. Its default-`TimeSpec` path is BIT-IDENTICAL to
+// `year_fraction`'s calendar-365 formula (both share `kCalendarYearNs` below —
+// `year_fraction` itself delegates to `time_to_expiry_years` internally, so
+// there is exactly one copy of the constant/expression in the codebase).
+//
 // ## Model (SpiderRock VolTimeCalc, verbatim)
 //
 //   Annual trading hours   = 1890  (252 trading days x 7.5h: the 09:30-16:00 ET
@@ -118,5 +132,50 @@ class VolTimeCalendar {
 [[nodiscard]] double vol_time_years(std::int64_t now_ns, std::int64_t expiry_ns,
                                     const VolTimeParams& p,
                                     const VolTimeCalendar& cal) noexcept;
+
+// ── Production T convention ─────────────────────────────────────────────────
+
+// Calendar-365 year length in nanoseconds (365.25 * 86400s) — the SOLE copy of
+// this constant in atx-vol. `data.cpp`'s `year_fraction` delegates to
+// `time_to_expiry_years` (default `TimeSpec`) rather than re-deriving it, so
+// `Calendar365` and the legacy ISO-string `year_fraction` can never drift
+// apart.
+inline constexpr double kCalendarYearNs = 365.25 * 86400.0 * 1.0e9;
+
+// Which clock governs a maturity's year-fraction.
+enum class TimeConvention : std::uint8_t {
+  Calendar365 = 0, // (to - from) / 365.25y — current behavior, DEFAULT.
+  VolTime = 1,     // SpiderRock hybrid clock: vol_time_years(from, to, params, cal).
+};
+
+// Carrier threaded from production config (panel-builder options /
+// `SessionInputs`) down to chain construction. Default-constructed = the
+// historical Calendar365 behavior, bit-identical to `year_fraction`.
+struct TimeSpec {
+  TimeConvention convention{TimeConvention::Calendar365};
+  VolTimeParams vol_time{};  // used only when convention == VolTime
+  // Calendar: VolTimeCalendar::us_default() in v1; a field reserved for a
+  // caller-supplied table is a follow-up (VolTimeCalendar is move-only-free
+  // but not trivially copyable into a value member without extra plumbing).
+};
+
+// Single conversion entry point for a maturity's year-fraction — replaces
+// direct `year_fraction`/hand-rolled ns-math call sites on the production
+// fit/serve path so a caller need not branch on `spec.convention` itself.
+//
+// `spec.convention == Calendar365` (the default): returns
+// `(to_ns - from_ns) / kCalendarYearNs`, BIT-IDENTICAL to `year_fraction`'s
+// result for the same instant pair (same expression, same constant).
+// `spec.convention == VolTime`: returns `vol_time_years(from_ns, to_ns,
+// spec.vol_time, VolTimeCalendar::us_default())`.
+//
+// @param from_ns  evaluation instant, epoch nanoseconds (UTC)
+// @param to_ns    maturity instant, epoch nanoseconds (UTC)
+// @param spec     governing time convention
+// @return         year-fraction (Calendar365: may be negative for to_ns <
+//                 from_ns, matching `year_fraction`; VolTime: >= 0, 0 for
+//                 to_ns <= from_ns, matching `vol_time_years`)
+[[nodiscard]] double time_to_expiry_years(std::int64_t from_ns, std::int64_t to_ns,
+                                          const TimeSpec& spec) noexcept;
 
 }  // namespace atx::vol

@@ -18,8 +18,9 @@
 #include "atx/core/error.hpp"          // Ok, Err, ErrorCode, ATX_TRY
 #include "atx/core/hash.hpp"           // hash_bytes
 #include "atx/core/io/parquet.hpp"     // read_parquet, ParquetTable, DType
-#include "atx/vol/data.hpp"            // QuoteFrame/Row, build_uid_list, year_fraction
+#include "atx/vol/data.hpp"            // QuoteFrame/Row, build_uid_list, iso_to_ns
 #include "atx/vol/dividend.hpp"        // imply_forward_atm_pcp, CoTermQuote
+#include "atx/vol/vol_time.hpp"        // TimeSpec, time_to_expiry_years
 
 namespace atx::vol {
 
@@ -140,8 +141,12 @@ source_fingerprint(const QuoteFrame &frame, std::span<const std::uint32_t> instr
 // carries at least one co-terminal call/put pair with both mids > 0. `rate_at`
 // yields the continuously-compounded rate at a maturity T (a flat scalar, or a
 // term YieldCurve query); the front expiry is discounted at its OWN r(T_front).
+// `time` governs every year-fraction below (default Calendar365 is
+// BIT-IDENTICAL to the historical `year_fraction`-derived T).
 template <typename RateFn>
-[[nodiscard]] Result<double> imply_spot_from_pcp(const QuoteFrame& frame, RateFn rate_at) {
+[[nodiscard]] Result<double> imply_spot_from_pcp(const QuoteFrame& frame, RateFn rate_at,
+                                                 const TimeSpec& time) {
+  const std::int64_t snapshot_ns = iso_to_ns(frame.snapshot_iso);
   struct MidPair {
     double call_mid = -1.0;
     double put_mid = -1.0;
@@ -178,7 +183,7 @@ template <typename RateFn>
     if (quotes.empty()) {
       continue;
     }
-    const double t_front = year_fraction(frame.snapshot_iso, expiry);
+    const double t_front = time_to_expiry_years(snapshot_ns, iso_to_ns(expiry), time);
     if (!(t_front > kMinSpotT)) {
       continue;  // 0DTE / same-week: too ill-conditioned for a PCP spot back-out
     }
@@ -367,6 +372,7 @@ Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
   if (snapshot_iso.empty()) {
     snapshot_iso = ns_to_iso_date(snapshot_ts_ns);
   }
+  const std::int64_t snapshot_iso_ns = iso_to_ns(snapshot_iso);
 
   std::vector<QuoteRow> rows;
   rows.reserve(n_rows);
@@ -396,7 +402,7 @@ Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
     // midnight-UTC expiry parse, an expiry on/before the snapshot date yields a
     // non-positive year-fraction. A T <= 0 point is not a tradeable forward node —
     // it would poison sqrt(T) IV/greeks and any slice fit that admits it.
-    if (!(year_fraction(snapshot_iso, osi->expiry_iso) > 0.0)) {
+    if (!(time_to_expiry_years(snapshot_iso_ns, iso_to_ns(osi->expiry_iso), spec.time) > 0.0)) {
       ++n_dropped;
       continue;
     }
@@ -489,7 +495,7 @@ Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
   // absent) so that path's frame is byte-for-byte the historical one.
   if (!spec.yc_pillar_t.empty()) {
     for (QuoteRow& row : frame.rows) {
-      const double T = year_fraction(frame.snapshot_iso, row.expiry_iso);
+      const double T = time_to_expiry_years(snapshot_iso_ns, iso_to_ns(row.expiry_iso), spec.time);
       if (std::isfinite(T) && T > 0.0) {
         row.rate_source = rate_at(T);
       }
@@ -514,7 +520,7 @@ Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
   if (spec.spot_override > 0.0) {
     implied_spot = spec.spot_override;
   } else {
-    ATX_TRY(const double s, imply_spot_from_pcp(frame, rate_at));
+    ATX_TRY(const double s, imply_spot_from_pcp(frame, rate_at, spec.time));
     implied_spot = s;
   }
   frame.spot = implied_spot;
@@ -537,6 +543,7 @@ Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
   }
   panel.fit_context = spec.fit_context;
   panel.market_input_provenance = spec.market_input_provenance;
+  panel.time = spec.time;
   return Ok(std::move(panel));
 }
 

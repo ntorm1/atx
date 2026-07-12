@@ -224,4 +224,18 @@ double vol_time_years(std::int64_t now_ns, std::int64_t expiry_ns, const VolTime
          nontrading_h * ((1.0 - p.alpha) / p.nontrading_hours_per_year);
 }
 
+double time_to_expiry_years(std::int64_t from_ns, std::int64_t to_ns,
+                            const TimeSpec& spec) noexcept {
+  switch (spec.convention) {
+    case TimeConvention::Calendar365:
+      return static_cast<double>(to_ns - from_ns) / kCalendarYearNs;
+    case TimeConvention::VolTime:
+      return vol_time_years(from_ns, to_ns, spec.vol_time, VolTimeCalendar::us_default());
+  }
+  // Unreachable (switch is exhaustive over TimeConvention's two enumerators;
+  // -Wswitch enforces it stays that way). A trailing return keeps this a
+  // well-formed function for compilers that cannot prove switch exhaustiveness.
+  return static_cast<double>(to_ns - from_ns) / kCalendarYearNs;
+}
+
 }  // namespace atx::vol

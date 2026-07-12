@@ -61,6 +61,7 @@
 #include "atx/vol/universe.hpp"        // Underlying (build input)
 #include "atx/vol/vol_curve.hpp"       // CurveConfig, CurveSurface, VolCurveKind
 #include "atx/vol/vol_surface.hpp"     // VolSurface
+#include "atx/vol/vol_time.hpp"        // TimeSpec (SessionInputs::time)
 
 namespace atx::vol {
 
@@ -118,6 +119,21 @@ struct SessionInputs {
   // specific to VolSurface's inserted-slice mechanism (see
   // InterpMode::ShapeBlend).
   InterpMode interp{InterpMode::PiecewiseTotalVariance};
+  // T convention governing chain construction when this session installs its
+  // OWN frame (`from_frame`: `data_install(u, frame, in.time)`). Default
+  // Calendar365 is BIT-IDENTICAL to the historical `year_fraction`-derived
+  // `Chain::T` (see vol_time.hpp). `build(under, in)` installs nothing itself
+  // (`under` is pre-installed by the caller), so it cannot enforce this
+  // consistency guard directly; it is instead satisfied by construction here:
+  // `in.time` is retained verbatim on the built session (`inputs().time`) as
+  // the single stored source of truth for whatever T-derivation the session
+  // (or a caller reading `inputs()`) performs afterward -- a caller driving
+  // the two-step `data_install(u, frame, spec)` + `build(under, in)` path is
+  // responsible for setting `in.time == spec` so fit-time T and any
+  // later-computed T never disagree on convention (see vol_time.hpp's
+  // production-T-convention doc; `OpraPanel::time` mirrors this field for
+  // exactly this handoff).
+  TimeSpec time{};
 };
 
 // ── Named calibration presets ─────────────────────────────────────────────

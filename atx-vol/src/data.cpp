@@ -250,8 +250,10 @@ double year_fraction(std::string_view from_iso, std::string_view to_iso) noexcep
   if (!parse_iso_ns(from_iso, from_ns) || !parse_iso_ns(to_iso, to_ns)) {
     return kNaN;
   }
-  const double year_ns = 365.25 * 86400.0 * 1000000000.0;
-  return static_cast<double>(to_ns - from_ns) / year_ns;
+  // Delegates the actual arithmetic to time_to_expiry_years' default (Calendar365)
+  // path so there is exactly one copy of the calendar-year constant/expression in
+  // the codebase (vol_time.hpp kCalendarYearNs) -- see that header's doc.
+  return time_to_expiry_years(from_ns, to_ns, TimeSpec{});
 }
 
 std::string ns_to_iso_date(std::int64_t ns) {
@@ -376,7 +378,7 @@ const ExpiryInputs *find_expiry_inputs(const QuoteFrame &frame, std::string_view
 
 // ── Install ─────────────────────────────────────────────────────────────────
 
-Result<Uid> data_install(Universe &u, const QuoteFrame &frame) {
+Result<Uid> data_install(Universe &u, const QuoteFrame &frame, const TimeSpec &spec) {
   // Fail loud when the data plane delivered no yield curve; the calibrator
   // silently degenerates without one (the C's ATS_VOL_ERR_NO_YIELD_CURVE gate).
   if (frame.yc_pillar_t.empty()) {
@@ -441,7 +443,11 @@ Result<Uid> data_install(Universe &u, const QuoteFrame &frame) {
 
     // `under` is stable across add_expiry (deque element); index the chain now.
     Chain &chain = under->chains[expiry_id];
-    const double T = year_fraction(frame.snapshot_iso, row.expiry_iso);
+    std::int64_t snapshot_ns = 0;
+    if (!parse_iso_ns(frame.snapshot_iso, snapshot_ns)) {
+      return Err(ErrorCode::InvalidArgument, "data_install: bad year-fraction");
+    }
+    const double T = time_to_expiry_years(snapshot_ns, expiry_ns, spec);
     if (!std::isfinite(T)) {
       return Err(ErrorCode::InvalidArgument, "data_install: bad year-fraction");
     }

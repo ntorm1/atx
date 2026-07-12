@@ -38,6 +38,7 @@
 #include "atx/vol/data.hpp"  // QuoteFrame
 #include "atx/vol/fit_policy.hpp" // FitContext
 #include "atx/vol/types.hpp" // Result, Side
+#include "atx/vol/vol_time.hpp" // TimeSpec
 
 namespace atx::vol {
 
@@ -122,6 +123,16 @@ struct OpraLoadSpec {
   OpraProvenanceMode provenance_mode{OpraProvenanceMode::Compatibility};
   FitContext fit_context{};
   OpraMarketInputProvenance market_input_provenance{};
+  // T convention governing every year-fraction this loader computes: the PCP
+  // spot-implication forward T, the 0DTE/expired-contract drop filter, and
+  // (when yc_pillar_t/_r are supplied) the per-row rate_source term-curve
+  // query T. Default Calendar365 is BIT-IDENTICAL to the historical
+  // `year_fraction`-derived behavior (see vol_time.hpp). A caller threading
+  // `TimeConvention::VolTime` here should install the RETURNED `OpraPanel`'s
+  // mirrored `time` field into `data_install`'s `spec` (and `SessionInputs::
+  // time`, if building a session off it) so the SAME convention governs the
+  // installed `Chain::T` too -- see vol_time.hpp's production-T-convention doc.
+  TimeSpec time{};
 };
 
 // Result of loading one OPRA cbbo-1m slice.
@@ -140,6 +151,11 @@ struct OpraPanel {
   std::vector<OpraInstrumentIdentity> source_identities; // id ascending
   FitContext fit_context{};
   OpraMarketInputProvenance market_input_provenance{};
+  // Mirrors `OpraLoadSpec::time` -- the T convention this panel's rows/spot
+  // were actually computed under. Pass this (not a fresh default) into
+  // `data_install` / `SessionInputs::time` downstream so the installed
+  // `Chain::T` stays on the SAME convention as this panel's own T math.
+  TimeSpec time{};
 };
 
 // Load an OPRA cbbo-1m Parquet slice into a QuoteFrame.

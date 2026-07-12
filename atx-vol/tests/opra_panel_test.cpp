@@ -12,8 +12,9 @@
 #include <gtest/gtest.h>
 
 #include "atx/core/io/parquet_writer.hpp"
-#include "atx/vol/curve.hpp" // YieldCurve
-#include "atx/vol/data.hpp"  // year_fraction, find_expiry_inputs, ExpiryInputs
+#include "atx/vol/curve.hpp"     // YieldCurve
+#include "atx/vol/data.hpp"      // year_fraction, find_expiry_inputs, ExpiryInputs
+#include "atx/vol/vol_time.hpp"  // TimeSpec, TimeConvention, vol_time_years
 
 // Loader/parser coverage for the OPRA cbbo-1m (NBBO) Parquet ingestion path.
 //
@@ -25,10 +26,16 @@ namespace {
 namespace io = atx::core::io;
 namespace fs = std::filesystem;
 using atx::i64;
+using atx::vol::iso_to_ns;
 using atx::vol::load_opra_cbbo_parquet;
 using atx::vol::OpraLoadSpec;
 using atx::vol::parse_osi_symbol;
 using atx::vol::Side;
+using atx::vol::TimeConvention;
+using atx::vol::TimeSpec;
+using atx::vol::vol_time_years;
+using atx::vol::VolTimeCalendar;
+using atx::vol::VolTimeParams;
 using atx::vol::year_fraction;
 using atx::vol::YieldCurve;
 
@@ -616,6 +623,68 @@ TEST(OpraPanel, SinglePillar_EqualsFlatRate_BitIdentical) {
   const auto* cell_a = atx::vol::find_expiry_inputs(a->frame, "XOM", "2026-09-18");
   ASSERT_NE(cell_a, nullptr);
   EXPECT_FALSE(atx::vol::has_flag(cell_a->completeness, atx::vol::ExpiryInputField::Rate));
+}
+
+// ── OpraLoadSpec::time (I3: opt-in VolTime T convention) ──────────────────
+
+// spec.time reaches all three opra_panel.cpp T computations: the PCP
+// spot-implication forward T (line 181), the 0DTE drop filter (line 399, not
+// independently asserted here -- it shares the identical
+// time_to_expiry_years(.., spec.time) expression as the other two), and the
+// per-expiry rate_source stamping against the term curve (line 492).
+TEST(OpraPanel, VolTimeConvention_ChangesPcpSpotAndTermRateStamping) {
+  const std::string snap = "2026-05-01";
+  const std::string path = write_slice("term_curve_voltime.parquet", xom_two_expiry_rows());
+  const std::vector<double> pt = {0.1, 2.0};
+  const std::vector<double> pr = {0.02, 0.06};
+
+  OpraLoadSpec cal_spec;
+  cal_spec.path = path;
+  cal_spec.underlying = "XOM";
+  cal_spec.snapshot_iso = snap;
+  cal_spec.yc_pillar_t = pt;
+  cal_spec.yc_pillar_r = pr;
+  // cal_spec.time left at its default: TimeConvention::Calendar365.
+
+  OpraLoadSpec vol_spec = cal_spec;
+  vol_spec.time.convention = TimeConvention::VolTime;
+
+  const auto cal = load_opra_cbbo_parquet(cal_spec);
+  const auto vol = load_opra_cbbo_parquet(vol_spec);
+  ASSERT_TRUE(cal.has_value()) << cal.error().to_string();
+  ASSERT_TRUE(vol.has_value()) << vol.error().to_string();
+
+  // (1) Per-expiry rate stamping (line 492): independently re-derive the
+  // VolTime-routed rate and check it matches bit-for-bit, AND differs from the
+  // Calendar365 run -- proving spec.time actually reaches this call site
+  // rather than being silently ignored.
+  const auto yc = YieldCurve::create(std::span<const double>(pt), std::span<const double>(pr));
+  ASSERT_TRUE(yc.has_value()) << yc.error().to_string();
+  const std::int64_t now_ns = iso_to_ns(snap);
+  const std::int64_t short_ns = iso_to_ns("2026-08-01");
+  const std::int64_t long_ns = iso_to_ns("2027-11-01");
+  const auto& us_cal = VolTimeCalendar::us_default();
+  const double vt_short = vol_time_years(now_ns, short_ns, VolTimeParams{}, us_cal);
+  const double vt_long = vol_time_years(now_ns, long_ns, VolTimeParams{}, us_cal);
+
+  const auto* vol_short = atx::vol::find_expiry_inputs(vol->frame, "XOM", "2026-08-01");
+  const auto* vol_long = atx::vol::find_expiry_inputs(vol->frame, "XOM", "2027-11-01");
+  const auto* cal_short = atx::vol::find_expiry_inputs(cal->frame, "XOM", "2026-08-01");
+  const auto* cal_long = atx::vol::find_expiry_inputs(cal->frame, "XOM", "2027-11-01");
+  ASSERT_NE(vol_short, nullptr);
+  ASSERT_NE(vol_long, nullptr);
+  ASSERT_NE(cal_short, nullptr);
+  ASSERT_NE(cal_long, nullptr);
+
+  EXPECT_DOUBLE_EQ(vol_short->rate, yc->zero(vt_short));
+  EXPECT_DOUBLE_EQ(vol_long->rate, yc->zero(vt_long));
+  EXPECT_NE(vol_short->rate, cal_short->rate);
+  EXPECT_NE(vol_long->rate, cal_long->rate);
+
+  // (2) PCP spot implication (line 181): the front-expiry query T differs
+  // between conventions, so the implied spot (which discounts/back-solves off
+  // that T and its own rate_at(T)) differs too.
+  EXPECT_NE(vol->implied_spot, cal->implied_spot);
 }
 
 } // namespace

@@ -61,6 +61,7 @@
 #include "atx/vol/curve.hpp"     // DividendEvent
 #include "atx/vol/types.hpp"     // Result, Status, Side
 #include "atx/vol/universe.hpp"  // Universe, Uid, Chain
+#include "atx/vol/vol_time.hpp"  // TimeSpec (data_install's T convention)
 
 namespace atx::vol {
 
@@ -201,6 +202,11 @@ struct QuoteFrame {
 
 // Year-fraction between two ISO instants on a 365.25-day year (matching
 // `ats_vol_data_year_fraction`). Returns NaN if either input fails to parse.
+// Delegates to `time_to_expiry_years` with a default `TimeSpec` (Calendar365)
+// for the actual arithmetic (vol_time.hpp `kCalendarYearNs`) — this function
+// stays the legacy Calendar365-only, ISO-string entry point; production T
+// callers that need the opt-in VolTime convention go through
+// `time_to_expiry_years`/`data_install`'s `TimeSpec` parameter instead.
 [[nodiscard]] double year_fraction(std::string_view from_iso,
                                    std::string_view to_iso) noexcept;
 
@@ -237,11 +243,20 @@ void build_expiry_inputs(QuoteFrame &frame);
 // Install a quote frame into `u` (`ats_vol_data_install`). Interns each row's
 // ticker, grows expiries/strikes, writes the quote plane
 // (bids/asks/sizes/mids/ts/flags), tracks spot/spot-ts per underlier, sets each
-// chain's `T` from `year_fraction(frame.snapshot_iso, row.expiry_iso)`, sorts
-// each touched underlier's chains ascending in `T` (re-issuing `expiry_id` to
-// the new positions), and stamps `Chain::source_atm_vol` from the frame's
-// expiry-input table where present.
+// chain's `T` from `time_to_expiry_years(snapshot_ns, expiry_ns, spec)` (parsed
+// from `frame.snapshot_iso` / `row.expiry_iso`), sorts each touched underlier's
+// chains ascending in `T` (re-issuing `expiry_id` to the new positions), and
+// stamps `Chain::source_atm_vol` from the frame's expiry-input table where
+// present.
 //
+// @param spec  governing T convention for every chain this call installs.
+//              Default `TimeSpec{}` (Calendar365) is BIT-IDENTICAL to the
+//              historical `year_fraction`-derived `T` — every existing caller
+//              that omits it is unaffected. Threading a non-default `spec`
+//              (e.g. from `SessionInputs::time` / `OpraLoadSpec::time`) is the
+//              caller's responsibility to keep consistent with whatever
+//              convention governed any OTHER T computed for the same panel
+//              (see vol_time.hpp's production-T-convention doc).
 // @return the first/default uid on success.
 // @return InvalidArgument if the frame has no yield-curve pillars (the C's
 //         ATS_VOL_ERR_NO_YIELD_CURVE gate; message names the yield curve), if
@@ -249,7 +264,8 @@ void build_expiry_inputs(QuoteFrame &frame);
 //         (non-finite/non-positive strike, negative/non-finite bid or ask,
 //         negative sizes, an empty/over-long row uid, or an unparseable
 //         expiry).
-[[nodiscard]] Result<Uid> data_install(Universe &u, const QuoteFrame &frame);
+[[nodiscard]] Result<Uid> data_install(Universe &u, const QuoteFrame &frame,
+                                       const TimeSpec &spec = TimeSpec{});
 
 // ── SpiderRock Parquet loader (DEFERRED) ────────────────────────────────────
 

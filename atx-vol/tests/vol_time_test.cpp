@@ -3,8 +3,16 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <cstdio>
+#include <random>
+#include <string>
 
 #include "atx/core/datetime.hpp"
+#include "atx/vol/data.hpp"
+#include "atx/vol/panel.hpp"
+#include "atx/vol/s3.hpp"
+#include "atx/vol/session.hpp"
+#include "atx/vol/universe.hpp"
 
 // Coverage for the SpiderRock-style hybrid volatility-time clock: the ET
 // civil-date/DST conversion (exercised indirectly through the public API),
@@ -17,10 +25,25 @@
 
 namespace {
 
+using atx::vol::data_install;
+using atx::vol::iso_to_ns;
+using atx::vol::make_synthetic_american_panel;
+using atx::vol::S3Params;
+using atx::vol::SessionInputs;
+using atx::vol::Side;
+using atx::vol::SynthExpiry;
+using atx::vol::SynthPanelSpec;
+using atx::vol::time_to_expiry_years;
+using atx::vol::TimeConvention;
+using atx::vol::TimeSpec;
 using atx::vol::trading_hours_between;
+using atx::vol::Underlying;
+using atx::vol::Universe;
+using atx::vol::VolaSession;
 using atx::vol::VolTimeCalendar;
 using atx::vol::VolTimeParams;
 using atx::vol::vol_time_years;
+using atx::vol::year_fraction;
 
 constexpr std::int64_t kHourNs = 3600LL * 1'000'000'000LL;
 constexpr std::int64_t kDayNs = 24LL * kHourNs;
@@ -202,6 +225,156 @@ TEST(VolTime, CalendarConstructorSortsAndDedupes) {
   EXPECT_TRUE(cal.is_holiday(d2));
   const std::int32_t other = static_cast<std::int32_t>(ns_utc(2026, 7, 8, 0, 0) / kDayNs);
   EXPECT_FALSE(cal.is_holiday(other));
+}
+
+// ── time_to_expiry_years / TimeSpec (production T convention, I3) ─────────
+
+// "YYYY-MM-DD HH:MM:SS", uniform over a wide civil-date range (day capped at
+// 28 to sidestep month-length edge cases -- irrelevant to what this test
+// checks: the Calendar365 arithmetic, not the ISO parser).
+std::string random_iso_datetime(std::mt19937_64& rng) {
+  std::uniform_int_distribution<int> year_d(2015, 2035);
+  std::uniform_int_distribution<int> month_d(1, 12);
+  std::uniform_int_distribution<int> day_d(1, 28);
+  std::uniform_int_distribution<int> hour_d(0, 23);
+  std::uniform_int_distribution<int> minute_d(0, 59);
+  std::uniform_int_distribution<int> second_d(0, 59);
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d", year_d(rng), month_d(rng),
+               day_d(rng), hour_d(rng), minute_d(rng), second_d(rng));
+  return std::string(buf);
+}
+
+TEST(VolTime, TimeToExpiryDefaultBitIdenticalToYearFraction) {
+  // 20 random (from, to) instant pairs, round-tripped through the SAME ISO
+  // parse (`iso_to_ns`) both `year_fraction` and `time_to_expiry_years` sit
+  // on top of: the default-`TimeSpec` path must reproduce `year_fraction`'s
+  // result EXACTLY (they now share one expression/constant -- see
+  // vol_time.hpp's kCalendarYearNs doc), not just to within a tolerance.
+  std::mt19937_64 rng(20260712ULL); // fixed seed: deterministic, reproducible
+  for (int i = 0; i < 20; ++i) {
+    const std::string from_iso = random_iso_datetime(rng);
+    const std::string to_iso = random_iso_datetime(rng);
+    const std::int64_t from_ns = iso_to_ns(from_iso);
+    const std::int64_t to_ns = iso_to_ns(to_iso);
+    ASSERT_NE(from_ns, std::int64_t{0}) << "bad fixture ISO: " << from_iso;
+    ASSERT_NE(to_ns, std::int64_t{0}) << "bad fixture ISO: " << to_iso;
+
+    const double expected = year_fraction(from_iso, to_iso);
+    const double actual = time_to_expiry_years(from_ns, to_ns, TimeSpec{});
+    EXPECT_EQ(actual, expected) << "from=" << from_iso << " to=" << to_iso;
+  }
+}
+
+// ── SessionInputs::time e2e (production fit/serve path, I3) ───────────────
+
+// Flat-20%-smile, two-expiry synthetic board spanning several weekends.
+[[nodiscard]] SynthPanelSpec flat_smile_spec() {
+  SynthPanelSpec spec;
+  spec.uid = "FLATVOL";
+  spec.snapshot_iso = "2026-06-19";
+  spec.spot = 100.0;
+  spec.r = 0.03;
+  const std::vector<std::string> isos = {"2026-09-18", "2027-03-19"};
+  for (const std::string& iso : isos) {
+    const double T = year_fraction(spec.snapshot_iso, iso);
+    spec.expiries.push_back(SynthExpiry{iso, T, S3Params{0.20, 0.0, 0.0}});
+  }
+  for (double K = 70.0; K <= 130.0 + 1e-9; K += 5.0) {
+    spec.strikes.push_back(K);
+  }
+  spec.half_spread_frac = 0.02;
+  return spec;
+}
+
+TEST(VolTime, SessionFitUnderVolTimeServesConsistentGreeks) {
+  const SynthPanelSpec spec = flat_smile_spec();
+  const auto panel = make_synthetic_american_panel(spec);
+  ASSERT_TRUE(panel.has_value()) << panel.error().to_string();
+  const std::int64_t now_ns = iso_to_ns(spec.snapshot_iso);
+
+  // ── VolTime-fit session ───────────────────────────────────────────────
+  TimeSpec vol_time_spec;
+  vol_time_spec.convention = TimeConvention::VolTime;
+
+  Universe u_vol;
+  const auto uid_vol = data_install(u_vol, panel->frame, vol_time_spec);
+  ASSERT_TRUE(uid_vol.has_value()) << uid_vol.error().to_string();
+  const auto under_vol = u_vol.get_underlying(*uid_vol);
+  ASSERT_TRUE(under_vol.has_value());
+
+  SessionInputs in_vol;
+  in_vol.S = spec.spot;
+  in_vol.r = spec.r;
+  in_vol.now_ts_ns = now_ns;
+  in_vol.time = vol_time_spec;
+  const auto sess_vol = VolaSession::build(**under_vol, in_vol);
+  ASSERT_TRUE(sess_vol.has_value()) << sess_vol.error().to_string();  // (a) fit converges
+
+  ASSERT_FALSE(sess_vol->expiries().empty());
+  const double atm_T_vol = sess_vol->expiries().front().T;
+  const double atm_F_vol = sess_vol->forward_at(atm_T_vol);
+  ASSERT_GT(atm_F_vol, 0.0);
+
+  const double iv_vol = sess_vol->iv(atm_F_vol, atm_T_vol);
+  EXPECT_NEAR(iv_vol, 0.20, 0.01);  // (b) served ATM iv ~ 20%
+
+  const auto greeks_vol = sess_vol->greeks(atm_F_vol, atm_T_vol, Side::Call);
+  ASSERT_TRUE(greeks_vol.has_value()) << greeks_vol.error().to_string();
+  EXPECT_LT(greeks_vol->theta, 0.0);  // (c) theta sign sane (time decay, long call)
+
+  // ── (d) default TimeSpec bit-identical to a pinned pre-task value ──────
+  // The pin IS the historical 2-arg `data_install(u, frame)` call -- every
+  // OTHER caller in the codebase still uses exactly this signature, so it is
+  // by definition what pre-I3 code produced and still produces today.
+  Universe u_pin;
+  const auto uid_pin = data_install(u_pin, panel->frame);  // 2-arg: the pin
+  ASSERT_TRUE(uid_pin.has_value()) << uid_pin.error().to_string();
+  const auto under_pin = u_pin.get_underlying(*uid_pin);
+  ASSERT_TRUE(under_pin.has_value());
+
+  Universe u_default;
+  const auto uid_default = data_install(u_default, panel->frame, TimeSpec{});
+  ASSERT_TRUE(uid_default.has_value()) << uid_default.error().to_string();
+  const auto under_default = u_default.get_underlying(*uid_default);
+  ASSERT_TRUE(under_default.has_value());
+
+  ASSERT_EQ((*under_pin)->chains.size(), (*under_default)->chains.size());
+  for (std::size_t i = 0; i < (*under_pin)->chains.size(); ++i) {
+    EXPECT_EQ((*under_pin)->chains[i].T, (*under_default)->chains[i].T);
+  }
+
+  SessionInputs in_default;
+  in_default.S = spec.spot;
+  in_default.r = spec.r;
+  in_default.now_ts_ns = now_ns;
+  // in_default.time left default-constructed: TimeConvention::Calendar365.
+
+  const auto sess_pin = VolaSession::build(**under_pin, in_default);
+  const auto sess_default = VolaSession::build(**under_default, in_default);
+  ASSERT_TRUE(sess_pin.has_value()) << sess_pin.error().to_string();
+  ASSERT_TRUE(sess_default.has_value()) << sess_default.error().to_string();
+
+  ASSERT_FALSE(sess_pin->expiries().empty());
+  ASSERT_FALSE(sess_default->expiries().empty());
+  const double atm_T_pin = sess_pin->expiries().front().T;
+  const double atm_T_default = sess_default->expiries().front().T;
+  EXPECT_EQ(atm_T_pin, atm_T_default);
+
+  const double atm_F_pin = sess_pin->forward_at(atm_T_pin);
+  const double atm_F_default = sess_default->forward_at(atm_T_default);
+  EXPECT_EQ(atm_F_pin, atm_F_default);
+  EXPECT_EQ(sess_pin->iv(atm_F_pin, atm_T_pin), sess_default->iv(atm_F_default, atm_T_default));
+
+  const auto greeks_pin = sess_pin->greeks(atm_F_pin, atm_T_pin, Side::Call);
+  const auto greeks_default = sess_default->greeks(atm_F_default, atm_T_default, Side::Call);
+  ASSERT_TRUE(greeks_pin.has_value()) << greeks_pin.error().to_string();
+  ASSERT_TRUE(greeks_default.has_value()) << greeks_default.error().to_string();
+  EXPECT_EQ(*greeks_pin, *greeks_default);  // bit-identical AmericanGreeks bundle
+
+  // Sanity: VolTime materially compresses the front-expiry T relative to
+  // Calendar365 for this multi-month span with several intervening weekends.
+  EXPECT_LT(atm_T_vol, atm_T_default);
 }
 
 }  // namespace
