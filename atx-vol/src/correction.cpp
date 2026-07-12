@@ -95,6 +95,7 @@ double cheb_clenshaw1d(const double* coefs, std::uint16_t n, double x) noexcept 
 
 void cheb_diff_coefs(const double* c, double* d, std::uint16_t n,
                      double scale) noexcept {
+  ATX_VOL_COUNT(ChebDiffCoefs);  // one derivative-coef transform (opt-in P0.2; no-op when OFF)
   if (n == 0u) {
     return;
   }
@@ -426,6 +427,37 @@ Result<CorrectionCache> CorrectionCache::build(
     }
   }
 
+  // Step 3 (T16b): precompute the k_log-axis derivative-coefficient tensor C_k.
+  // The k_log partial (cheb_clenshaw3d_partial diff_axis==0) differentiates each
+  // innermost, contiguous i-row BEFORE any Clenshaw collapse, so the differentiated
+  // rows are a fixed function of the build-time coefficient tensor. Run
+  // cheb_diff_coefs over every i-row ONCE here — with the box axis scale
+  // scale_k = 2/(k_log_max - k_log_min) folded in, exactly as the live partial
+  // passed it — so eval_partials can read dC/dk_log as a PLAIN value Clenshaw over
+  // C_k, eliminating the per-query n_T*n_s differentiation that dominated the
+  // partial sweep. Because the differentiation is the innermost op (no earlier-axis
+  // collapse to reorder the summation against), diff-at-build then Clenshaw is
+  // BIT-IDENTICAL to the in-pass diff-then-Clenshaw (locked by
+  // Chebyshev.DerivTensors_EvalPartialsBitIdenticalToLive and the eval_partials
+  // dk_log pins). The T and sigma partials differentiate a Clenshaw-COLLAPSED,
+  // query-dependent vector, so their diff cannot be hoisted without shifting bits;
+  // they stay on the reference cheb_clenshaw3d_partial path.
+  cache.dk_coefs_.assign(cache.coefs_.size(), 0.0);
+  {
+    const double scale_k = 2.0 / (k_log_max - k_log_min);
+    std::array<double, kChebMaxNodes> drow{};
+    for (std::uint16_t j = 0; j < n_T; ++j) {
+      for (std::uint16_t k = 0; k < n_s; ++k) {
+        const double* row = coefs + detail::cheb_idx(0, j, k, n_k, n_s);
+        detail::cheb_diff_coefs(row, drow.data(), n_k, scale_k);
+        double* drow_dst = cache.dk_coefs_.data() + detail::cheb_idx(0, j, k, n_k, n_s);
+        for (std::uint16_t i = 0; i < n_k; ++i) {
+          drow_dst[i] = drow[i];
+        }
+      }
+    }
+  }
+
   cache.populated_ = true;
   return Ok(std::move(cache));
 }
@@ -495,20 +527,26 @@ void CorrectionCache::eval_partials(double k_log, double T, double sigma,
   const double xj = detail::cheb_to_unit(T, T_min_, T_max_);
   const double xk = detail::cheb_to_unit(sigma, sigma_min_, sigma_max_);
 
-  const double scale_k = 2.0 / (k_log_max_ - k_log_min_);
+  // T16b: the k_log axis scale is baked into dk_coefs_ at build time; only the T
+  // and sigma partials still differentiate a query-dependent (Clenshaw-collapsed)
+  // vector, so only their axis scales are needed here.
   const double scale_T = 2.0 / (T_max_ - T_min_);
   const double scale_s = 2.0 / (sigma_max_ - sigma_min_);
 
   // Bounded live-span init (see eval): the n_T_*n_s_ prefix is written before it
-  // is read by cheb_clenshaw3d_partial; zero just that prefix.
+  // is read by cheb_clenshaw3d / cheb_clenshaw3d_partial; zero just that prefix.
   std::array<double, kTmpSize> tmp_jk;
   std::fill(tmp_jk.data(),
             tmp_jk.data() + static_cast<std::size_t>(n_T_) * n_s_, 0.0);
   if (out_dk_log) {
+    // dC/dk_log: PLAIN value Clenshaw over the precomputed k_log-derivative tensor
+    // (T16b). Bit-identical to the pre-change cheb_clenshaw3d_partial(diff_axis==0)
+    // because the differentiated rows were produced by the same cheb_diff_coefs on
+    // the same coefficients at build, and the innermost-first collapse order is
+    // unchanged — no per-query differentiation.
     *out_dk_log = oob_k ? 0.0
-                        : detail::cheb_clenshaw3d_partial(coefs_.data(), n_k_, n_T_,
-                                                          n_s_, xi, xj, xk, 0,
-                                                          scale_k, tmp_jk.data());
+                        : detail::cheb_clenshaw3d(dk_coefs_.data(), n_k_, n_T_,
+                                                  n_s_, xi, xj, xk, tmp_jk.data());
   }
   if (out_dT) {
     *out_dT = oob_T ? 0.0

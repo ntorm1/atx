@@ -184,6 +184,91 @@ TEST(Chebyshev, Clenshaw3dPartial_MatchesAnalytic) {
             1.0e-8);
 }
 
+// ── T16b: precomputed k_log-axis derivative tensor (C_k) bit-identity ─────
+//
+// T16b hoists the k_log partial's per-query row differentiation to BUILD time:
+// each innermost i-row (contiguous k_log fiber) is run through cheb_diff_coefs
+// ONCE at build, and eval_partials reads dC/dk_log as a PLAIN value Clenshaw
+// (cheb_clenshaw3d) over that precomputed tensor instead of re-differentiating
+// every query via cheb_clenshaw3d_partial(diff_axis==0).
+//
+// Because the k_log differentiation is the INNERMOST operation — applied to the
+// raw coefficient rows before any Clenshaw collapse — diff-at-build then Clenshaw
+// is BIT-IDENTICAL to the in-pass diff-then-Clenshaw. This test locks that: over a
+// grid, cheb_clenshaw3d(C_k) must equal cheb_clenshaw3d_partial(coefs, axis 0)
+// bit-for-bit. (The T and sigma partials differentiate a Clenshaw-COLLAPSED,
+// query-dependent vector; moving their diff to build reorders the summation and
+// shifts bits by hundreds of ULP, so those axes are deliberately NOT hoisted and
+// stay on the reference cheb_clenshaw3d_partial path.)
+TEST(Chebyshev, DerivTensors_EvalPartialsBitIdenticalToLive) {
+  constexpr std::uint16_t n_k = 16, n_T = 8, n_s = 12;
+  std::array<double, n_k * n_T * n_s> coefs{};
+  // A generic (non-symmetric) coefficient tensor, built through the same DCT-II
+  // path the cache uses, so C_k has the exact coefficient structure eval sees.
+  for (std::uint16_t j = 0; j < n_T; ++j)
+    for (std::uint16_t k = 0; k < n_s; ++k)
+      for (std::uint16_t i = 0; i < n_k; ++i) {
+        const double xi = detail::cheb_node(i, n_k);
+        const double xj = detail::cheb_node(j, n_T);
+        const double xk = detail::cheb_node(k, n_s);
+        coefs[detail::cheb_idx(i, j, k, n_k, n_s)] =
+            std::exp(0.4 * xi) * (1.0 + 0.3 * xj) * std::cos(0.7 * xk) + 0.11 * xi * xk;
+      }
+  std::array<double, 16> in_buf{}, out_buf{};
+  for (std::uint16_t j = 0; j < n_T; ++j)
+    for (std::uint16_t k = 0; k < n_s; ++k) {
+      for (std::uint16_t i = 0; i < n_k; ++i)
+        in_buf[i] = coefs[detail::cheb_idx(i, j, k, n_k, n_s)];
+      detail::cheb_dct2(in_buf.data(), out_buf.data(), n_k);
+      for (std::uint16_t i = 0; i < n_k; ++i)
+        coefs[detail::cheb_idx(i, j, k, n_k, n_s)] = out_buf[i];
+    }
+  for (std::uint16_t i = 0; i < n_k; ++i)
+    for (std::uint16_t k = 0; k < n_s; ++k) {
+      for (std::uint16_t j = 0; j < n_T; ++j)
+        in_buf[j] = coefs[detail::cheb_idx(i, j, k, n_k, n_s)];
+      detail::cheb_dct2(in_buf.data(), out_buf.data(), n_T);
+      for (std::uint16_t j = 0; j < n_T; ++j)
+        coefs[detail::cheb_idx(i, j, k, n_k, n_s)] = out_buf[j];
+    }
+  for (std::uint16_t i = 0; i < n_k; ++i)
+    for (std::uint16_t j = 0; j < n_T; ++j) {
+      for (std::uint16_t k = 0; k < n_s; ++k)
+        in_buf[k] = coefs[detail::cheb_idx(i, j, k, n_k, n_s)];
+      detail::cheb_dct2(in_buf.data(), out_buf.data(), n_s);
+      for (std::uint16_t k = 0; k < n_s; ++k)
+        coefs[detail::cheb_idx(i, j, k, n_k, n_s)] = out_buf[k];
+    }
+
+  // Build C_k EXACTLY as CorrectionCache::build does: diff each contiguous i-row
+  // over the k_log axis, with the box axis scale folded in.
+  const double scale_k = 2.0 / (0.5 - (-0.5));
+  std::array<double, n_k * n_T * n_s> Ck{};
+  std::array<double, detail::kChebMaxNodes> drow{};
+  for (std::uint16_t j = 0; j < n_T; ++j)
+    for (std::uint16_t k = 0; k < n_s; ++k) {
+      const double* row = coefs.data() + detail::cheb_idx(0, j, k, n_k, n_s);
+      detail::cheb_diff_coefs(row, drow.data(), n_k, scale_k);
+      double* orow = Ck.data() + detail::cheb_idx(0, j, k, n_k, n_s);
+      for (std::uint16_t i = 0; i < n_k; ++i) orow[i] = drow[i];
+    }
+
+  std::array<double, 64 * 64> tmp{};
+  for (int a = -5; a <= 5; ++a)
+    for (int b = -5; b <= 5; ++b)
+      for (int c = -5; c <= 5; ++c) {
+        const double xi = 0.2 * static_cast<double>(a);
+        const double xj = 0.2 * static_cast<double>(b);
+        const double xk = 0.2 * static_cast<double>(c);
+        const double live = detail::cheb_clenshaw3d_partial(
+            coefs.data(), n_k, n_T, n_s, xi, xj, xk, 0, scale_k, tmp.data());
+        const double pre =
+            detail::cheb_clenshaw3d(Ck.data(), n_k, n_T, n_s, xi, xj, xk, tmp.data());
+        EXPECT_EQ(std::bit_cast<std::uint64_t>(pre), std::bit_cast<std::uint64_t>(live))
+            << "k_log partial precompute vs live @(" << xi << "," << xj << "," << xk << ")";
+      }
+}
+
 // ── Cache build / eval ──────────────────────────────────────────────────
 
 TEST(CorrectionCache, PopulateEval_MatchesAndersenLake_PutGrid) {
@@ -418,6 +503,48 @@ TEST(CorrectionCache, PutRowCollapse_SolveCount) {
     EXPECT_LT(snap.get(atx::vol::counters::Counter::BoundarySolves),
               static_cast<std::uint64_t>(n_T) * static_cast<std::uint64_t>(n_s) *
                   static_cast<std::uint64_t>(n_k));
+  }
+}
+
+// T16b: the k_log partial's per-query row differentiation is hoisted to build
+// time (precomputed C_k tensor), so requesting ONLY dk_log now runs a plain value
+// Clenshaw with ZERO cheb_diff_coefs calls — the whole n_T*n_s per-query diff cost
+// the k_log partial used to pay is gone. The T and sigma partials differentiate a
+// query-dependent, Clenshaw-collapsed vector (n_s + 1 diffs) and stay at query
+// time (hoisting them would reorder the summation and break the frozen bit pins),
+// so a full three-partial eval keeps exactly n_s + 1 diffs — strictly below the
+// pre-hoist n_T*n_s + n_s + 1.
+TEST(CorrectionCache, DerivTensors_KLogPartial_NoPerQueryDiffCoefs) {
+  constexpr std::uint16_t n_k = 12, n_T = 6, n_s = 8;
+  auto built = CorrectionCache::build(n_k, n_T, n_s, 0.05, 0.0, -0.5, 0.5,
+                                      30.0 / 365.25, 2.0, 0.10, 0.80, Side::Put);
+  ASSERT_TRUE(built.has_value());
+  const CorrectionCache tbl = std::move(*built);
+
+  if constexpr (!atx::vol::counters::counters_enabled()) {
+    double dk = 0.0;
+    tbl.eval_partials(0.0, 0.5, 0.3, &dk, nullptr, nullptr);
+    GTEST_SKIP() << "ATX_VOL_COUNTERS off: rebuild with -DATX_VOL_COUNTERS=ON";
+  } else {
+    using atx::vol::counters::Counter;
+    // Requesting only dk_log: the precomputed C_k tensor is read via a plain value
+    // Clenshaw — zero per-query differentiation.
+    atx::vol::counters::reset();
+    double dk = 0.0;
+    tbl.eval_partials(0.0, 0.5, 0.3, &dk, nullptr, nullptr);
+    EXPECT_EQ(atx::vol::counters::snapshot().get(Counter::ChebDiffCoefs),
+              static_cast<std::uint64_t>(0));
+
+    // A full three-partial eval differentiates only the (non-hoistable) T and
+    // sigma axes: n_s (per-sigma-column T diff) + 1 (single sigma diff).
+    atx::vol::counters::reset();
+    double gk = 0.0, gT = 0.0, gs = 0.0;
+    tbl.eval_partials(0.0, 0.5, 0.3, &gk, &gT, &gs);
+    const std::uint64_t full = atx::vol::counters::snapshot().get(Counter::ChebDiffCoefs);
+    EXPECT_EQ(full, static_cast<std::uint64_t>(n_s) + 1u);
+    // Strictly below the pre-hoist per-query cost (k_log added n_T*n_s more).
+    EXPECT_LT(full, static_cast<std::uint64_t>(n_T) * static_cast<std::uint64_t>(n_s) +
+                        static_cast<std::uint64_t>(n_s) + 1u);
   }
 }
 

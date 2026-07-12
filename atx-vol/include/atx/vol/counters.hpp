@@ -76,6 +76,8 @@ enum class Counter : unsigned {
   PreparedBuilds,         // PreparedPortfolio::create calls from the pricer (0 on a warm reuse)
   // Pricing executor (P1.4) — persistent pool dispatch accounting
   PoolDispatches,         // times run_blocks/run_ranges woke the pool (0 on the inline path)
+  // Correction cache derivative-coefficient transform (T16b)
+  ChebDiffCoefs,          // cheb_diff_coefs calls (build-time C_k precompute + query-time T/sigma partials)
   Count_
 };
 
@@ -89,6 +91,7 @@ inline constexpr const char* kNames[kCount] = {
     "cnt_cache_hits",          "cnt_cache_oob_clamps",     "cnt_cache_cold_fallbacks",
     "cnt_frame_allocations",   "cnt_frame_bytes",          "cnt_worker_launches",
     "cnt_clenshaw_sweeps",     "cnt_prepared_builds",      "cnt_pool_dispatches",
+    "cnt_cheb_diff_coefs",
 };
 
 // A point-in-time copy of every counter. `enabled == false` is the sentinel a

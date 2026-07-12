@@ -152,6 +152,14 @@ class CorrectionCache {
   bool populated_ = false;
   ExtrapPolicy extrap_policy_ = ExtrapPolicy::Clamp;
   std::vector<double> coefs_;  // n_k * n_T * n_s Chebyshev coefficients
+  // T16b: k_log-axis derivative-coefficient tensor (C_k), precomputed once in
+  // build() by running cheb_diff_coefs over each contiguous i-row of coefs_ (box
+  // axis scale folded in). Same n_k * n_T * n_s shape / cheb_idx layout as coefs_.
+  // eval_partials reads dC/dk_log as a plain value Clenshaw over this tensor,
+  // hoisting the k_log partial's per-query row differentiation to build time.
+  // Bit-identical to the in-pass diff because the k_log diff is the innermost op
+  // (no prior collapse to reorder against). Empty on a default-constructed cache.
+  std::vector<double> dk_coefs_;
 };
 
 // ── Optional per-side hot-path caches (de-Americanization / parity) ──────
