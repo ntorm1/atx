@@ -32,6 +32,7 @@ add_executable(atx-vol-tests
     dense_slice_test.cpp
     profile_test.cpp
     fit_policy_test.cpp
+    curve_selector_test.cpp
     data_test.cpp
     surface_archive_test.cpp
     surface_db_test.cpp

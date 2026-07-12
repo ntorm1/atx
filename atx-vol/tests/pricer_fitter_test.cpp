@@ -240,9 +240,7 @@ TEST(PricerFitterPolicy, EveryCurveKindDeclaresAProgressingFallbackLadder) {
   }
 }
 
-// A healthy auto-routed board reports no fallback, so `used_fallback` is a real
-// signal rather than a field that is always false.
-TEST(PricerFitterPolicy, HealthyAutoFitReportsNoFallback) {
+TEST(PricerFitterPolicy, RiskAutoFitFallsBackWhenPrimaryFailsIndependentOracle) {
   SynthPanelSpec spec = make_spy_synthetic_spec();
   auto panel = make_synthetic_american_panel(spec);
   ASSERT_TRUE(panel.has_value()) << panel.error().message();
@@ -252,8 +250,188 @@ TEST(PricerFitterPolicy, HealthyAutoFitReportsNoFallback) {
   PricerFitter fitter{PricerConfig{}};
   ASSERT_TRUE(fitter.fit(*chain).has_value());
   ASSERT_TRUE(fitter.decision().has_value());
-  EXPECT_FALSE(fitter.decision()->used_fallback);
-  EXPECT_EQ(fitter.decision()->primary_curve.kind, fitter.decision()->curve.kind);
+  EXPECT_TRUE(fitter.decision()->used_fallback);
+  EXPECT_EQ(fitter.decision()->primary_curve.kind, atx::vol::VolCurveKind::LinearVariance);
+  EXPECT_EQ(fitter.decision()->curve.kind, atx::vol::VolCurveKind::Essvi);
+  ASSERT_TRUE(fitter.published_report().has_value());
+  ASSERT_GT(fitter.published_report()->attempts.size(), 1u);
+  const auto &primary = fitter.published_report()->attempts.front();
+  EXPECT_FALSE(primary.admission.admitted);
+  EXPECT_TRUE(atx::vol::has_admission_failure(primary.admission,
+                                              atx::vol::SurfaceAdmissionReason::StrikeConvexity));
+  EXPECT_EQ(primary.evidence.first_invariant_failure,
+            atx::vol::SurfaceAdmissionReason::StrikeConvexity);
+  EXPECT_TRUE(primary.evidence.first_failure_maturity.has_value());
+  EXPECT_TRUE(primary.evidence.first_failure_log_moneyness.has_value());
+  EXPECT_TRUE(fitter.published_report()->attempts.back().admission.admitted);
+}
+
+TEST(PricerFitterPolicy, AdmissionFailureRetainsPublishedSurfaceAndDecisionTransactionally) {
+  SynthPanelSpec good_spec = make_spy_synthetic_spec();
+  auto good_panel = make_synthetic_american_panel(good_spec);
+  ASSERT_TRUE(good_panel.has_value()) << good_panel.error().message();
+  auto good_chain = OptionChain::from_frame(good_panel->frame, good_spec.r, good_spec.spot);
+  ASSERT_TRUE(good_chain.has_value()) << good_chain.error().message();
+
+  PricerConfig config;
+  config.admission.min_fitted_expiries = 2u;
+  config.admission.require_calendar_arb_free = false;
+  PricerFitter fitter{config};
+  ASSERT_TRUE(fitter.fit(*good_chain).has_value());
+  const auto *const published_surface = fitter.surface();
+  ASSERT_NE(published_surface, nullptr);
+  ASSERT_TRUE(fitter.decision().has_value());
+  const auto published_kind = fitter.decision()->curve.kind;
+  ASSERT_TRUE(fitter.published_report().has_value());
+  const std::size_t published_attempts = fitter.published_report()->attempts.size();
+  const auto &published_evidence = fitter.published_report()->attempts.back().evidence;
+  EXPECT_TRUE(published_evidence.finite_iv_domain);
+  EXPECT_TRUE(published_evidence.european_price_bounds);
+  EXPECT_TRUE(published_evidence.strike_monotone);
+  EXPECT_TRUE(published_evidence.strike_convex);
+  EXPECT_TRUE(published_evidence.calendar_total_variance);
+  EXPECT_TRUE(published_evidence.forward_variance_nonnegative);
+
+  SynthPanelSpec partial_spec = good_spec;
+  partial_spec.expiries.resize(1u);
+  auto partial_panel = make_synthetic_american_panel(partial_spec);
+  ASSERT_TRUE(partial_panel.has_value()) << partial_panel.error().message();
+  auto partial_chain =
+      OptionChain::from_frame(partial_panel->frame, partial_spec.r, partial_spec.spot);
+  ASSERT_TRUE(partial_chain.has_value()) << partial_chain.error().message();
+
+  const auto rejected = fitter.fit(*partial_chain);
+  ASSERT_FALSE(rejected.has_value());
+  EXPECT_EQ(fitter.surface(), published_surface);
+  ASSERT_TRUE(fitter.decision().has_value());
+  EXPECT_EQ(fitter.decision()->curve.kind, published_kind);
+  ASSERT_TRUE(fitter.published_report().has_value());
+  EXPECT_TRUE(fitter.published_report()->published);
+  EXPECT_EQ(fitter.published_report()->attempts.size(), published_attempts);
+  ASSERT_TRUE(fitter.last_attempt_report().has_value());
+  EXPECT_FALSE(fitter.last_attempt_report()->published);
+  ASSERT_GT(fitter.last_attempt_report()->attempts.size(), 1u);
+  EXPECT_EQ(fitter.last_attempt_report()->attempts.front().admission.primary_reason,
+            atx::vol::SurfaceAdmissionReason::InsufficientFittedExpiries);
+  for (const auto &attempt : fitter.last_attempt_report()->attempts) {
+    EXPECT_FALSE(attempt.admission.admitted);
+  }
+}
+
+TEST(PricerFitterPolicy, DuplicateMaturityIsRejectedAndReportedWithoutDoubleCounting) {
+  SynthPanelSpec spec = make_spy_synthetic_spec();
+  auto panel = make_synthetic_american_panel(spec);
+  ASSERT_TRUE(panel.has_value()) << panel.error().message();
+  auto chain = OptionChain::from_frame(panel->frame, spec.r, spec.spot);
+  ASSERT_TRUE(chain.has_value()) << chain.error().message();
+  auto &under = const_cast<atx::vol::Underlying &>(chain->underlying());
+  ASSERT_GE(under.chains.size(), 2u);
+  under.chains[1].T = under.chains[0].T;
+
+  PricerConfig config;
+  config.curve = atx::vol::CurveConfig{};
+  PricerFitter fitter{config};
+  const auto rejected = fitter.fit(*chain);
+  ASSERT_FALSE(rejected.has_value());
+  ASSERT_TRUE(fitter.last_attempt_report().has_value());
+  ASSERT_EQ(fitter.last_attempt_report()->attempts.size(), 1u);
+  const auto &attempt = fitter.last_attempt_report()->attempts.front();
+  EXPECT_EQ(attempt.stage, atx::vol::SurfaceBuildStage::InputValidation);
+  EXPECT_EQ(attempt.admission.primary_reason, atx::vol::SurfaceAdmissionReason::DuplicateMaturity);
+  EXPECT_LE(attempt.evidence.fitted_expiries, attempt.evidence.attempted_expiries);
+}
+
+TEST(PricerFitterPolicy, SelectorFailureUpdatesAttemptOnlyAndPreservesPublishedState) {
+  SynthPanelSpec good_spec = make_spy_synthetic_spec();
+  auto good_panel = make_synthetic_american_panel(good_spec);
+  ASSERT_TRUE(good_panel.has_value()) << good_panel.error().message();
+  auto good_chain = OptionChain::from_frame(good_panel->frame, good_spec.r, good_spec.spot);
+  ASSERT_TRUE(good_chain.has_value()) << good_chain.error().message();
+
+  PricerConfig config;
+  config.policy.mode = atx::vol::FitSelectionMode::CrossValidated;
+  atx::vol::CurveConfig linear;
+  linear.kind = atx::vol::VolCurveKind::LinearVariance;
+  config.selector.candidates = {linear};
+  config.admission.require_calendar_arb_free = false;
+  PricerFitter fitter{config};
+  ASSERT_TRUE(fitter.fit(*good_chain).has_value());
+  const auto *const published = fitter.surface();
+  const auto published_kind = fitter.decision()->curve.kind;
+
+  SynthPanelSpec too_short = good_spec;
+  too_short.expiries.resize(1u);
+  auto short_panel = make_synthetic_american_panel(too_short);
+  ASSERT_TRUE(short_panel.has_value()) << short_panel.error().message();
+  auto short_chain = OptionChain::from_frame(short_panel->frame, too_short.r, too_short.spot);
+  ASSERT_TRUE(short_chain.has_value()) << short_chain.error().message();
+  auto &short_under = const_cast<atx::vol::Underlying &>(short_chain->underlying());
+  ASSERT_EQ(short_under.chains.size(), 1u);
+  short_under.chains.front().T = 0.01;
+  ASSERT_FALSE(fitter.fit(*short_chain).has_value());
+
+  EXPECT_EQ(fitter.surface(), published);
+  EXPECT_EQ(fitter.decision()->curve.kind, published_kind);
+  EXPECT_TRUE(fitter.published_report()->published);
+  ASSERT_TRUE(fitter.last_attempt_report().has_value());
+  EXPECT_FALSE(fitter.last_attempt_report()->published);
+  ASSERT_EQ(fitter.last_attempt_report()->attempts.size(), 1u);
+  EXPECT_EQ(fitter.last_attempt_report()->attempts.front().stage,
+            atx::vol::SurfaceBuildStage::Selection);
+}
+
+TEST(PricerFitterPolicy, SessionOverlayCurveIsThePublishedDecisionAndReportCurve) {
+  SynthPanelSpec spec = make_spy_synthetic_spec();
+  auto panel = make_synthetic_american_panel(spec);
+  ASSERT_TRUE(panel.has_value()) << panel.error().message();
+  auto chain = OptionChain::from_frame(panel->frame, spec.r, spec.spot);
+  ASSERT_TRUE(chain.has_value()) << chain.error().message();
+
+  PricerConfig config;
+  config.admission.consumer = atx::vol::SurfaceConsumer::Mark;
+  config.admission.require_calendar_arb_free = false;
+  PricerFitter fitter{config};
+  const auto fitted = fitter.fit(*chain, [](atx::vol::SessionInputs &inputs) {
+    inputs.curve.kind = atx::vol::VolCurveKind::LinearVariance;
+  });
+  ASSERT_TRUE(fitted.has_value()) << fitted.error().to_string();
+  ASSERT_TRUE(fitter.decision().has_value());
+  ASSERT_TRUE(fitter.published_report().has_value());
+  EXPECT_EQ(fitter.decision()->curve.kind, atx::vol::VolCurveKind::LinearVariance);
+  EXPECT_EQ(fitter.published_report()->primary_curve.kind, atx::vol::VolCurveKind::LinearVariance);
+  EXPECT_EQ(fitter.published_report()->published_curve.kind,
+            atx::vol::VolCurveKind::LinearVariance);
+  const auto &evidence = fitter.published_report()->attempts.front().evidence;
+  EXPECT_TRUE(evidence.finite_iv_domain);
+  EXPECT_TRUE(evidence.european_price_bounds);
+}
+
+TEST(PricerFitterPolicy, KnownTruthConvexRiskSurfaceReportsIndependentInvariantEvidence) {
+  SynthPanelSpec spec = make_spy_synthetic_spec();
+  auto panel = make_synthetic_american_panel(spec);
+  ASSERT_TRUE(panel.has_value()) << panel.error().message();
+  auto chain = OptionChain::from_frame(panel->frame, spec.r, spec.spot);
+  ASSERT_TRUE(chain.has_value()) << chain.error().message();
+  PricerConfig config;
+  config.preset = FitPreset::Fast;
+  config.curve = atx::vol::CurveConfig{};
+  config.curve->kind = atx::vol::VolCurveKind::ConvexDense;
+  config.curve->convex.node_cap = 40u;
+  PricerFitter fitter{config};
+
+  const auto fitted = fitter.fit(*chain);
+  if (!fitted.has_value()) {
+    ASSERT_TRUE(fitter.last_attempt_report().has_value());
+    ASSERT_FALSE(fitter.last_attempt_report()->attempts.empty());
+    const auto &evidence = fitter.last_attempt_report()->attempts.front().evidence;
+    EXPECT_TRUE(evidence.finite_iv_domain);
+    EXPECT_TRUE(evidence.european_price_bounds);
+    EXPECT_TRUE(evidence.strike_monotone);
+    EXPECT_TRUE(evidence.strike_convex);
+    EXPECT_TRUE(evidence.calendar_total_variance);
+    EXPECT_TRUE(evidence.forward_variance_nonnegative);
+  }
+  EXPECT_TRUE(fitted.has_value()) << fitted.error().to_string();
 }
 
 TEST(PricerFitterPolicy, EventContextBuildsAndServesC8Surface) {

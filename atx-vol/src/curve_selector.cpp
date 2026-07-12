@@ -3,14 +3,18 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <memory>
 #include <numeric>
+#include <optional>
+#include <span>
+#include <utility>
 #include <vector>
 
 #include "atx/core/error.hpp"
-#include "atx/vol/american.hpp" // american_price
-#include "atx/vol/calib.hpp"    // build_observations, build_observations_european, FitObs
-#include "atx/vol/deamer.hpp"   // resolve_chain_forward
-#include "atx/vol/universe.hpp" // Chain, Underlying
+#include "atx/vol/american.hpp"
+#include "atx/vol/deamer.hpp"
+#include "atx/vol/prepared_fitting.hpp"
+#include "atx/vol/universe.hpp"
 
 namespace atx::vol {
 
@@ -19,7 +23,7 @@ using atx::core::ErrorCode;
 using atx::core::Ok;
 
 std::vector<CurveConfig> default_selector_candidates() {
-  std::vector<CurveConfig> v;
+  std::vector<CurveConfig> candidates;
   CurveConfig convex;
   convex.kind = VolCurveKind::ConvexDense;
   convex.convex.node_cap = 40;
@@ -31,21 +35,32 @@ std::vector<CurveConfig> default_selector_candidates() {
   svi.kind = VolCurveKind::Svi;
   CurveConfig c8;
   c8.kind = VolCurveKind::C8;
-  v.push_back(convex);
-  v.push_back(linear);
-  v.push_back(essvi);
-  v.push_back(svi);
-  v.push_back(c8);
-  return v;
+  candidates.push_back(convex);
+  candidates.push_back(linear);
+  candidates.push_back(essvi);
+  candidates.push_back(svi);
+  candidates.push_back(c8);
+  return candidates;
 }
 
 namespace {
 
-// Running out-of-sample accumulator for one candidate across expiries.
 struct Accum {
-  std::size_t n = 0, in_band = 0;
-  double wsum = 0.0, win = 0.0;
-  std::size_t dof_sum = 0, n_slices = 0;
+  std::size_t n{0u};
+  std::size_t in_band{0u};
+  double win{0.0};
+  std::size_t dof_sum{0u};
+  std::size_t n_slices{0u};
+};
+
+struct PreparedExpiry {
+  std::size_t chain_index{0u};
+  double rate{0.0};
+  double q_eff{0.0};
+  double df{0.0};
+  PreparedSlice slice{};
+  std::vector<std::size_t> strike_order{};
+  std::size_t n_required_holdout{0u};
 };
 
 [[nodiscard]] bool valid_expiry_rates(const SurfaceParityInputs &in,
@@ -70,15 +85,173 @@ struct Accum {
   return in.expiry_rates.empty() ? in.r : in.expiry_rates[index];
 }
 
+// Split the maturity axis into equal-count tenor strata, then take the most
+// liquid chain (strike count) from each stratum. Ties prefer the longer tenor,
+// which prevents an ascending-prefix bias while remaining fully deterministic.
+[[nodiscard]] std::vector<std::size_t> sample_expiry_indices(const Underlying &under,
+                                                             unsigned max_expiries) {
+  std::vector<std::size_t> eligible;
+  eligible.reserve(under.chains.size());
+  for (std::size_t i = 0; i < under.chains.size(); ++i) {
+    const double T = under.chains[i].T;
+    if (std::isfinite(T) && T > 0.019) {
+      eligible.push_back(i);
+    }
+  }
+  std::stable_sort(eligible.begin(), eligible.end(), [&](std::size_t left, std::size_t right) {
+    return under.chains[left].T < under.chains[right].T;
+  });
+  if (max_expiries == 0u || eligible.size() <= max_expiries) {
+    return eligible;
+  }
+
+  const std::size_t count = static_cast<std::size_t>(max_expiries);
+  std::vector<std::size_t> sampled;
+  sampled.reserve(count);
+  for (std::size_t stratum = 0u; stratum < count; ++stratum) {
+    const std::size_t begin = stratum * eligible.size() / count;
+    const std::size_t end = (stratum + 1u) * eligible.size() / count;
+    std::size_t best = eligible[begin];
+    for (std::size_t p = begin + 1u; p < end; ++p) {
+      const std::size_t candidate = eligible[p];
+      const std::size_t candidate_liquidity = under.chains[candidate].n_strikes();
+      const std::size_t best_liquidity = under.chains[best].n_strikes();
+      if (candidate_liquidity > best_liquidity ||
+          (candidate_liquidity == best_liquidity &&
+           under.chains[candidate].T > under.chains[best].T)) {
+        best = candidate;
+      }
+    }
+    sampled.push_back(best);
+  }
+  std::sort(sampled.begin(), sampled.end(), [&](std::size_t left, std::size_t right) {
+    return under.chains[left].T < under.chains[right].T;
+  });
+  return sampled;
+}
+
+[[nodiscard]] std::optional<PreparedExpiry>
+prepare_expiry(const Underlying &under, const SurfaceParityInputs &in, std::size_t chain_index) {
+  const Chain &chain = under.chains[chain_index];
+  const double rate = expiry_rate(in, chain_index);
+  const auto resolved =
+      resolve_chain_forward(chain, in.S, rate, in.cash_divs, in.now_ts_ns, in.deam);
+  if (!resolved || !(resolved->forward > 0.0) || !std::isfinite(resolved->forward)) {
+    return std::nullopt;
+  }
+  const double q_eff = rate - std::log(resolved->forward / in.S) / chain.T;
+  const double df = std::exp(-rate * chain.T);
+
+  PreparedSliceInputs inputs;
+  inputs.expiry_index = static_cast<std::uint32_t>(chain_index);
+  inputs.S = in.S;
+  inputs.r = rate;
+  inputs.F = resolved->forward;
+  inputs.q_eff = q_eff;
+  inputs.df = df;
+  inputs.calib = in.calib;
+  inputs.caches = in.use_deam_cache_for_fit ? in.deam.caches : AmericanCorrectionCaches{};
+  inputs.al_opts = in.deam.al_opts;
+  inputs.iv_tolerance = in.deam.iv_tol;
+  inputs.iv_max_iterations = in.deam.iv_max_iter;
+  inputs.method = in.deam.method;
+  inputs.policy = PreparedObservationPolicy::Configured;
+  inputs.prepare_scoring = true;
+  Result<PreparedSlice> prepared = PreparedSlice::create(chain, inputs);
+  if (!prepared || prepared->fit_observations().size() < 8u) {
+    return std::nullopt;
+  }
+
+  PreparedExpiry out;
+  out.chain_index = chain_index;
+  out.rate = rate;
+  out.q_eff = q_eff;
+  out.df = df;
+  out.slice = std::move(*prepared);
+  const std::span<const FitObs> rows = out.slice.fit_observations();
+  out.strike_order.resize(rows.size());
+  std::iota(out.strike_order.begin(), out.strike_order.end(), std::size_t{0u});
+  std::stable_sort(
+      out.strike_order.begin(), out.strike_order.end(),
+      [rows](std::size_t left, std::size_t right) { return rows[left].K < rows[right].K; });
+  const PreparedScoreColumns &score = out.slice.score_columns();
+  for (std::size_t p = 1u; p < out.strike_order.size(); p += 2u) {
+    const std::size_t row = out.strike_order[p];
+    if (score.bid[row] > 0.0 && score.ask[row] > score.bid[row]) {
+      ++out.n_required_holdout;
+    }
+  }
+  return out;
+}
+
+[[nodiscard]] double average_dof(const CandidateScore &score) noexcept {
+  return score.n_slices > 0u
+             ? static_cast<double>(score.dof_sum) / static_cast<double>(score.n_slices)
+             : 1.0e18;
+}
+
 } // namespace
+
+Result<std::size_t> select_candidate_index(std::span<const CandidateScore> scores,
+                                           double parsimony_margin) {
+  if (scores.empty() || !std::isfinite(parsimony_margin) || parsimony_margin < 0.0) {
+    return Err(ErrorCode::InvalidArgument, "select_candidate_index: invalid score set or margin");
+  }
+  double max_expiry_coverage = -1.0;
+  double max_holdout_coverage = -1.0;
+  double quality_leader = -1.0;
+  for (std::size_t i = 0u; i < scores.size(); ++i) {
+    const CandidateScore &candidate = scores[i];
+    if (!candidate.admitted || !std::isfinite(candidate.expiry_coverage) ||
+        !std::isfinite(candidate.holdout_coverage) || !std::isfinite(candidate.oos_vw) ||
+        candidate.expiry_coverage < 0.0 || candidate.expiry_coverage > 1.0 ||
+        candidate.holdout_coverage < 0.0 || candidate.holdout_coverage > 1.0 ||
+        candidate.oos_vw < 0.0 || candidate.oos_vw > 1.0) {
+      continue;
+    }
+    if (candidate.expiry_coverage > max_expiry_coverage) {
+      max_expiry_coverage = candidate.expiry_coverage;
+      max_holdout_coverage = candidate.holdout_coverage;
+      quality_leader = candidate.oos_vw;
+    } else if (candidate.expiry_coverage == max_expiry_coverage) {
+      if (candidate.holdout_coverage > max_holdout_coverage) {
+        max_holdout_coverage = candidate.holdout_coverage;
+        quality_leader = candidate.oos_vw;
+      } else if (candidate.holdout_coverage == max_holdout_coverage) {
+        quality_leader = std::max(quality_leader, candidate.oos_vw);
+      }
+    }
+  }
+  std::optional<std::size_t> best;
+  for (std::size_t i = 0u; i < scores.size(); ++i) {
+    const CandidateScore &candidate = scores[i];
+    if (!candidate.admitted || !std::isfinite(candidate.oos_vw) ||
+        candidate.expiry_coverage != max_expiry_coverage ||
+        candidate.holdout_coverage != max_holdout_coverage ||
+        candidate.oos_vw < quality_leader - parsimony_margin) {
+      continue;
+    }
+    if (!best.has_value() || average_dof(candidate) < average_dof(scores[*best]) ||
+        (average_dof(candidate) == average_dof(scores[*best]) &&
+         candidate.oos_vw > scores[*best].oos_vw)) {
+      best = i;
+    }
+  }
+  if (!best.has_value()) {
+    return Err(ErrorCode::NotFound, "select_candidate_index: no candidate met admission");
+  }
+  return Ok(*best);
+}
 
 Result<SelectorResult> select_curve(const Underlying &under, const SurfaceParityInputs &in,
                                     const SelectorConfig &sel) {
-  if (!(in.S > 0.0) || !std::isfinite(in.r)) {
-    return Err(ErrorCode::InvalidArgument, "select_curve: non-positive S or non-finite r");
+  if (!(in.S > 0.0) || !std::isfinite(in.r) || !valid_expiry_rates(in, under)) {
+    return Err(ErrorCode::InvalidArgument, "select_curve: invalid spot, rate, or term rates");
   }
-  if (!valid_expiry_rates(in, under)) {
-    return Err(ErrorCode::InvalidArgument, "select_curve: invalid expiry rate vectors");
+  if (!std::isfinite(sel.min_expiry_coverage) || sel.min_expiry_coverage < 0.0 ||
+      sel.min_expiry_coverage > 1.0 || !std::isfinite(sel.min_holdout_coverage) ||
+      sel.min_holdout_coverage < 0.0 || sel.min_holdout_coverage > 1.0) {
+    return Err(ErrorCode::InvalidArgument, "select_curve: invalid coverage floor");
   }
   const std::vector<CurveConfig> candidates =
       sel.candidates.empty() ? default_selector_candidates() : sel.candidates;
@@ -86,157 +259,106 @@ Result<SelectorResult> select_curve(const Underlying &under, const SurfaceParity
     return Err(ErrorCode::InvalidArgument, "select_curve: no candidates");
   }
 
-  // Score every candidate against a SHARED per-expiry split: the expensive cold
-  // de-Americanization (build_observations_european) and the even/odd strike
-  // split are computed ONCE per expiry and reused across all candidates — only
-  // the per-slice fit + held-out re-pricing is per-candidate. Mirrors
-  // spy_oos_check: fit the EVEN strikes, score the HELD-OUT odd strikes by
-  // re-Americanizing the model IV against the raw NBBO.
-  // build_observations_european applies `max_obs_per_slice` internally, while the
-  // raw American population below does not; a configured cap would therefore make
-  // the two sizes disagree and the alignment guard would silently skip EVERY dense
-  // expiry, failing the whole selection with NotFound. The cap is a cold-fit
-  // latency knob, not a modelling choice, so score the family on the full board
-  // and leave the cap to the production fit that follows.
-  CalibOpts sel_calib = in.calib;
-  sel_calib.max_obs_per_slice = 0;
-
-  std::vector<Accum> acc(candidates.size());
-  unsigned scored_expiries = 0;
-  for (std::size_t chain_index = 0u; chain_index < under.chains.size(); ++chain_index) {
-    const Chain &chain = under.chains[chain_index];
-    const double rate = expiry_rate(in, chain_index);
-    const double T = chain.T;
-    if (!(T > 0.019)) {
+  SelectorResult out;
+  out.sampled_expiry_indices = sample_expiry_indices(under, sel.oos_max_expiries);
+  std::vector<PreparedExpiry> prepared;
+  prepared.reserve(out.sampled_expiry_indices.size());
+  std::size_t required_holdout = 0u;
+  double required_vega_weight = 0.0;
+  for (const std::size_t chain_index : out.sampled_expiry_indices) {
+    std::optional<PreparedExpiry> expiry = prepare_expiry(under, in, chain_index);
+    if (!expiry.has_value()) {
       continue;
     }
-    if (sel.oos_max_expiries > 0 && scored_expiries >= sel.oos_max_expiries) {
-      break;
-    }
-    const auto d = resolve_chain_forward(chain, in.S, rate, in.cash_divs, in.now_ts_ns, in.deam);
-    if (!d) {
-      continue;
-    }
-    const double F = d->forward;
-    if (!(F > 0.0) || !std::isfinite(F)) {
-      continue;
-    }
-    const double q_eff = rate - std::log(F / in.S) / T;
-    const double df = std::exp(-rate * T);
-
-    const auto am = build_observations(chain, F, T, df, sel_calib);
-    const auto eu = build_observations_european(chain, in.S, rate, F, T, df, sel_calib);
-    if (!am || !eu) {
-      continue;
-    }
-    if (am->obs.size() != eu->obs.size() || eu->obs.size() < 8) {
-      continue; // misaligned or too thin to split
-    }
-    const std::size_t m = eu->obs.size();
-    std::vector<std::size_t> ord(m);
-    std::iota(ord.begin(), ord.end(), std::size_t{0});
-    std::sort(ord.begin(), ord.end(),
-              [&](std::size_t a, std::size_t b) { return eu->obs[a].K < eu->obs[b].K; });
-
-    std::vector<FitObs> fit_obs;
-    fit_obs.reserve(m / 2 + 1);
-    for (std::size_t p = 0; p < m; p += 2) {
-      fit_obs.push_back(eu->obs[ord[p]]);
-    }
-    if (fit_obs.size() < 3) {
-      continue;
-    }
-    ++scored_expiries;
-
-    for (std::size_t ci = 0; ci < candidates.size(); ++ci) {
-      auto slice = fit_slice_curve(candidates[ci], fit_obs, F, T, df);
-      if (!slice) {
+    required_holdout += expiry->n_required_holdout;
+    const std::span<const FitObs> rows = expiry->slice.fit_observations();
+    const PreparedScoreColumns &score = expiry->slice.score_columns();
+    for (std::size_t p = 1u; p < expiry->strike_order.size(); p += 2u) {
+      const std::size_t row_index = expiry->strike_order[p];
+      if (!(score.bid[row_index] > 0.0) || !(score.ask[row_index] > score.bid[row_index])) {
         continue;
       }
-      const IVolCurve *const cv = slice->get();
-      acc[ci].dof_sum += cv->dof();
-      ++acc[ci].n_slices;
-      for (std::size_t p = 1; p < m; p += 2) { // held-out = odd strikes
-        const FitObs &oe = eu->obs[ord[p]];
-        const FitObs &oa = am->obs[ord[p]];
-        const double half = 0.5 * oa.spread;
-        const double bid = oa.mid - half, ask = oa.mid + half;
+      const double vega = rows[row_index].vega;
+      required_vega_weight += vega > 0.0 ? vega * vega : 0.0;
+    }
+    prepared.push_back(std::move(*expiry));
+  }
+  if (prepared.empty() || required_holdout == 0u) {
+    return Err(ErrorCode::NotFound, "select_curve: no common prepared holdout keys");
+  }
+
+  out.scores.reserve(candidates.size());
+  for (const CurveConfig &candidate : candidates) {
+    Accum accum;
+    for (const PreparedExpiry &expiry : prepared) {
+      const std::span<const FitObs> rows = expiry.slice.fit_observations();
+      std::vector<FitObs> fit_rows;
+      fit_rows.reserve((rows.size() + 1u) / 2u);
+      for (std::size_t p = 0u; p < expiry.strike_order.size(); p += 2u) {
+        fit_rows.push_back(rows[expiry.strike_order[p]]);
+      }
+      Result<std::unique_ptr<IVolCurve>> fitted = fit_slice_curve(
+          candidate, fit_rows, expiry.slice.forward(), expiry.slice.maturity(), expiry.df);
+      if (!fitted) {
+        continue;
+      }
+      const IVolCurve &curve = **fitted;
+      accum.dof_sum += curve.dof();
+      ++accum.n_slices;
+      const PreparedScoreColumns &score = expiry.slice.score_columns();
+      for (std::size_t p = 1u; p < expiry.strike_order.size(); p += 2u) {
+        const std::size_t row_index = expiry.strike_order[p];
+        const double bid = score.bid[row_index];
+        const double ask = score.ask[row_index];
         if (!(bid > 0.0) || !(ask > bid)) {
           continue;
         }
-        const double miv = cv->iv(oe.k);
-        if (!std::isfinite(miv)) {
+        const FitObs &observation = rows[row_index];
+        const double model_iv = curve.iv(observation.k);
+        if (!std::isfinite(model_iv)) {
           continue;
         }
-        const auto fv = american_price(in.S, oa.K, T, miv, rate, q_eff, oa.side, in.deam.method,
-                                       in.deam.al_opts);
-        if (!fv) {
+        const auto fair_value =
+            american_price(in.S, observation.K, expiry.slice.maturity(), model_iv, expiry.rate,
+                           expiry.q_eff, observation.side, in.deam.method, in.deam.al_opts);
+        if (!fair_value) {
           continue;
         }
-        const bool inb = (*fv >= bid && *fv <= ask);
-        ++acc[ci].n;
-        if (inb) {
-          ++acc[ci].in_band;
-        }
-        const double w = (oe.vega > 0.0) ? oe.vega * oe.vega : 0.0;
-        acc[ci].wsum += w;
-        if (inb) {
-          acc[ci].win += w;
+        const bool in_band = *fair_value >= bid && *fair_value <= ask;
+        ++accum.n;
+        accum.in_band += in_band ? 1u : 0u;
+        const double weight = observation.vega > 0.0 ? observation.vega * observation.vega : 0.0;
+        if (in_band) {
+          accum.win += weight;
         }
       }
     }
+
+    CandidateScore score;
+    score.kind = candidate.kind;
+    score.dof_sum = accum.dof_sum;
+    score.n_slices = accum.n_slices;
+    score.n_required_slices = prepared.size();
+    score.n_holdout = required_holdout;
+    score.n_successful_holdout = accum.n;
+    score.n_required_holdout = required_holdout;
+    score.n_in_band = accum.in_band;
+    score.vega_weight_in_band = accum.win;
+    score.vega_weight_total = required_vega_weight;
+    score.oos_in_band = static_cast<double>(accum.in_band) / static_cast<double>(required_holdout);
+    score.oos_vw = required_vega_weight > 0.0 ? accum.win / required_vega_weight : 0.0;
+    score.expiry_coverage =
+        static_cast<double>(accum.n_slices) / static_cast<double>(score.n_required_slices);
+    score.holdout_coverage =
+        static_cast<double>(accum.n) / static_cast<double>(score.n_required_holdout);
+    score.admitted = accum.n > 0u && score.expiry_coverage >= sel.min_expiry_coverage &&
+                     score.holdout_coverage >= sel.min_holdout_coverage;
+    out.scores.push_back(score);
   }
 
-  SelectorResult out;
-  out.scores.reserve(candidates.size());
-  for (std::size_t ci = 0; ci < candidates.size(); ++ci) {
-    const Accum &a = acc[ci];
-    CandidateScore cs;
-    cs.kind = candidates[ci].kind;
-    cs.dof_sum = a.dof_sum;
-    cs.n_slices = a.n_slices;
-    cs.n_holdout = a.n;
-    cs.n_in_band = a.in_band;
-    cs.vega_weight_in_band = a.win;
-    cs.vega_weight_total = a.wsum;
-    cs.oos_in_band = (a.n > 0) ? static_cast<double>(a.in_band) / static_cast<double>(a.n) : 0.0;
-    cs.oos_vw = (a.wsum > 0.0) ? a.win / a.wsum : 0.0;
-    out.scores.push_back(cs);
-  }
-
-  // Best out-of-sample vega-weighted in-band; ties (within parsimony_margin)
-  // break toward the smaller per-slice DoF (a dense curve wins only when its
-  // extra flexibility pays off out of sample).
-  double best_vw = -1.0;
-  for (const CandidateScore &s : out.scores) {
-    if (s.n_holdout > 0) {
-      best_vw = std::max(best_vw, s.oos_vw);
-    }
-  }
-  if (best_vw < 0.0) {
-    return Err(ErrorCode::NotFound, "select_curve: no candidate produced a scorable fit");
-  }
-
-  auto avg_dof = [](const CandidateScore &s) {
-    return s.n_slices > 0 ? static_cast<double>(s.dof_sum) / static_cast<double>(s.n_slices)
-                          : 1.0e18;
-  };
-  std::size_t best_i = 0;
-  bool have = false;
-  for (std::size_t i = 0; i < out.scores.size(); ++i) {
-    const CandidateScore &s = out.scores[i];
-    if (s.n_holdout == 0 || s.oos_vw < best_vw - sel.parsimony_margin) {
-      continue; // not within the tie band of the leader
-    }
-    if (!have || avg_dof(s) < avg_dof(out.scores[best_i]) ||
-        (avg_dof(s) == avg_dof(out.scores[best_i]) && s.oos_vw > out.scores[best_i].oos_vw)) {
-      best_i = i;
-      have = true;
-    }
-  }
-
-  out.chosen = candidates[best_i];
-  out.chosen_index = best_i;
+  ATX_TRY(const std::size_t chosen, select_candidate_index(out.scores, sel.parsimony_margin));
+  out.chosen_index = chosen;
+  out.chosen = candidates[chosen];
   return Ok(std::move(out));
 }
 

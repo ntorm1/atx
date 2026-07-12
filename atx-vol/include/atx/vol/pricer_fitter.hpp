@@ -31,6 +31,7 @@
 #include <span>
 #include <vector>
 
+#include "atx/core/error.hpp"         // Error
 #include "atx/vol/american.hpp"       // AmericanGreeks
 #include "atx/vol/chain.hpp"          // OptionChain, OptionId
 #include "atx/vol/curve.hpp"          // DividendEvent
@@ -122,6 +123,10 @@ struct PricerConfig {
   // Unified profile/session/event auto-selection policy and per-snapshot hints.
   FitPolicyConfig policy{};
   FitContext context{};
+  // Family-neutral publication gate. Default is an exact risk-surface
+  // contract: complete expiry coverage, front expiry present, and no calendar
+  // arbitrage. Weaker mark-only behavior must be requested explicitly.
+  FitAdmissionPolicy admission{};
   // Optional overrides for the preset's cold-fit diagnostic/quality-speed knobs.
   // nullopt => use the preset default. false for `score_parity` skips the second
   // de-Am diagnostic pass; false for `enforce_calendar_floor` maximizes raw
@@ -143,6 +148,49 @@ struct PricerConfig {
   // empty — the chain's `MarketEnv` supplies the dividend schedule; a non-empty
   // value here overrides the env's divs.
   std::vector<DividendEvent> cash_divs{};
+};
+
+enum class ExpiryBuildOutcome : std::uint8_t {
+  Missing = 0,
+  Fitted = 1,
+  DuplicateMaturity = 2,
+};
+
+enum class SurfaceBuildStage : std::uint8_t {
+  Selection = 0,
+  InputValidation = 1,
+  Build = 2,
+  Admission = 3,
+  Publication = 4,
+};
+
+struct ExpiryBuildReport {
+  std::size_t expiry_index{0u};
+  double maturity{0.0};
+  ExpiryBuildOutcome outcome{ExpiryBuildOutcome::Missing};
+  std::size_t n_used{0u};
+};
+
+struct SurfaceBuildAttemptReport {
+  CurveConfig curve{};
+  SurfaceBuildStage stage{SurfaceBuildStage::Build};
+  bool build_succeeded{false};
+  SurfaceAdmissionEvidence evidence{};
+  SurfaceAdmissionDecision admission{};
+  std::vector<ExpiryBuildReport> expiries{};
+  std::optional<atx::core::Error> failure{};
+};
+
+// Complete primary + fallback history for one `fit` call. A report moves to
+// `published_report()` atomically with the admitted surface. Failed calls are
+// visible only through `last_attempt_report()` and cannot mutate published state.
+struct SurfaceBuildReport {
+  std::vector<SurfaceBuildAttemptReport> attempts{};
+  CurveConfig primary_curve{};
+  CurveConfig published_curve{};
+  bool used_fallback{false};
+  bool published{false};
+  bool retained_last_known_good{false};
 };
 
 // ── Fitted surface handle (the owned fit output) ────────────────────────────
@@ -213,6 +261,14 @@ public:
   // fit. Unlike selection(), this is populated for the O(N) direct routes too.
   [[nodiscard]] const std::optional<FitDecision> &decision() const noexcept { return decision_; }
 
+  [[nodiscard]] const std::optional<SurfaceBuildReport> &published_report() const noexcept {
+    return published_report_;
+  }
+
+  [[nodiscard]] const std::optional<SurfaceBuildReport> &last_attempt_report() const noexcept {
+    return last_attempt_report_;
+  }
+
   // Price the chain's options for the requested `fields`, fanned out across
   // `n_threads` workers (0 => cfg.n_threads; final 0 => hardware_concurrency,
   // 1 => serial). DETERMINISTIC: the result is bit-identical for any thread
@@ -227,6 +283,8 @@ private:
   std::unique_ptr<FittedSurface> surface_;
   std::optional<SelectorResult> selection_; // last auto-select outcome (if any)
   std::optional<FitDecision> decision_;     // last unified policy outcome
+  std::optional<SurfaceBuildReport> published_report_;
+  std::optional<SurfaceBuildReport> last_attempt_report_;
 };
 
 } // namespace atx::vol
