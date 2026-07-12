@@ -1,243 +1,196 @@
-# Task 2 Report — surface_db.hpp on-disk records, SymbolFitConfig, manifest write/parse
+# Task 2 Report: Earnings event-variance model (`event_vol`)
 
-## Summary
+## Status: DONE
 
-Implemented the ATXVDB v1 manifest binary format: fixed-layout on-disk records
-(`DbManifestHeader`, `DbSymbolRecord`, `DbPartitionRecord`), the public
-`SymbolFitConfig` (full `CurveConfig` + `AlOpts` override + session policy
-scalars), an in-memory `write_db_manifest` writer, and a validated `DbManifest`
-reader with O(log n) canonical symbol/partition lookup. Pure in-memory per the
-brief — file IO and the `SurfaceDb` class are Task 3.
+Commit: `ec43778` — `feat(atx-vol): earnings event-variance model (censored vol, implied eMove, event-aware interpolation)`
 
-## Files changed
+## What was implemented
 
-- Created `atx-vol/include/atx/vol/surface_db.hpp` — header matches the
-  brief's code block verbatim (names/types/constants/static_asserts), with a
-  house-style top-of-file doc comment (on-disk shape / integrity / schema-hash
-  / thread-safety sections, mirroring `surface_archive.hpp`).
-- Created `atx-vol/src/surface_db.cpp` — writer, reader, `encode_symbol_record`
-  (internal), `decode_symbol_record` (public), `canonicalize_key`, `cmp_key`,
-  `db_schema_hash`, `header_crc`.
-- Created `atx-vol/tests/surface_db_test.cpp` — the brief's 3 tests
-  (`RoundTrip_FullConfig_EveryFieldPreserved`, `Write_RejectsDuplicateAndInvalid`,
-  `Open_RejectsCorruption`) plus the requested `RoundTrip_Empty` test (0
-  symbols / 0 partitions is a valid manifest).
-- Modified `atx-vol/CMakeLists.txt` — added `src/surface_db.cpp` to the
-  `atx-vol` library sources (next to `src/surface_archive.cpp`).
-- Modified `atx-vol/tests/CMakeLists.txt` — added `surface_db_test.cpp` to
-  `atx-vol-tests` (next to `surface_archive_test.cpp`).
+New, pure-additive module implementing the SpiderRock LiveVolSurfaces /
+FLEXVolInterpolation earnings event-variance model:
 
-## Design notes / how the brief's requirements were satisfied
+- **`EventSchedule`** — immutable, sorted (not de-duplicated) set of
+  earnings-announcement instants (epoch ns). `count_between(now_ns,
+  expiry_ns)` counts events in `(now_ns, expiry_ns]` via two
+  `std::upper_bound` scans (event exactly at `now` excluded, exactly at
+  `expiry` included; returns 0 if `expiry_ns < now_ns`).
+- **`censored_total_variance(w_total, n_events, emove)`** —
+  `w_total − n·emove²`, floored at `kWCenFloor = 1e-10`. NaN propagates
+  naturally: the flooring comparison is false for NaN, so the NaN falls
+  through unmodified — no explicit `isnan` branch needed.
+- **`event_recombined_vol(atm_cen, T, n_events, emove)`** — FLEX
+  recombination `sqrt(atm_cen² + n·emove²/T)`; `T <= 0` or non-finite `T`
+  returns NaN via `!(T > 0.0)` (catches both cases in one comparison).
+- **`implied_emove(w1, T1, n1, w2, T2, n2)`** — solves
+  `e² = (w1·T2 − w2·T1)/(n1·T2 − n2·T1)` from the shared-censored-variance
+  assumption. Returns `Result<double>` (`atx::core::Result`, `tl::expected`).
+- **`event_aware_w(...)`** — censors both bracketing slices, linearly
+  interpolates the censored variance in T, re-adds `n_query·emove²`; falls
+  back to plain linear-in-w when `emove <= 0` or all three `n`'s are 0.
 
-- **Record sizes**: hand-traced byte offsets for all three records before
-  writing any code (7-bit-alignment bookkeeping for the 16/32/64-bit knob
-  runs in `DbSymbolRecord`). All three landed exactly on 192/256/128 bytes
-  with the brief's field order and reserved-tail sizes unchanged — no
-  reordering was needed to satisfy the static_asserts, and the RED build
-  confirmed this (header compiled clean on the first attempt with no
-  static_assert failures).
-- **`SymbolFitConfig` <-> `DbSymbolRecord` mapping**: verified every field
-  against the real headers before coding (`CalibOpts` @ calib.hpp:133,
-  `ConvexFitOpts` @ dense_slice.hpp:70, `CurveConfig` @ vol_curve.hpp:287,
-  `AlOpts` @ american.hpp:46, `FitPreset` @ session.hpp:120, `CalendarRepair`
-  @ surface_parity.hpp:87). The 13 `kDbSym*` flag bits exactly cover the 13
-  boolean fields across `SymbolFitConfig`/`ConvexFitOpts`/`CalibOpts` — no
-  bit left unassigned, no boolean field left unmapped.
-- **Enum wire-range validation** (`symbol_record_enums_valid`, called once per
-  record inside `DbManifest::open`): `preset<=3` (FitPreset: Fast/Accurate/
-  Robust/Hft), `curve_kind<=4` (VolCurveKind through C8), `calendar_repair<=2`,
-  `convex_loss`/`loss_kind<=1` (CalibLossKind: Mid/Interval),
-  `essvi_rho_mode<=2`, `optimization_level<=4`, `residual_basis_kind<=5`,
-  `anchor_kind<=2` — matches the brief's Step 4 bounds exactly, cross-checked
-  against each enum's live definition.
-- **Partition key rule**: `canonicalize_key` rejects length 0 or >32,
-  non-`[A-Za-z0-9._-]` characters, and any `".."` substring (checked after
-  uppercasing, so casing doesn't evade the check); valid keys are
-  upper-cased. `find_partition` uses the shared `detail::canonicalize_symbol`
-  (uppercase only, no charset check) since a non-matching lookup key simply
-  fails the binary search — no separate validation needed on the read path.
-- **CRC discipline**: `payload_crc32c` is computed over the contiguous
-  `[symbols_offset, partitions_offset + partitions_bytes)` span (inter-section
-  alignment padding is zero-initialized by `std::vector`'s value-init and
-  never overwritten, so it's deterministic and CRC'd); `header_crc32c` is
-  computed last, over the header bytes with only that field zeroed —
-  `payload_crc32c` is already filled in by the time `header_crc` runs, so it
-  is itself covered by the header CRC (this is what makes the `bad[100]`
-  corruption test — which flips a byte inside the `payload_crc32c` field —
-  trip the *header* CRC check, not the payload check; the test's inline
-  comment says "header reserved" but the actual mechanism is "header CRC
-  covers payload_crc32c value," and either way the observable contract —
-  `ErrorCode::ParseError` — holds).
-- **Empty manifest**: `write_db_manifest({}, {})` is valid (`symbol_count=0`,
-  `partition_count=0`, `file_size=192`); `crc32c(ptr, 0)` degenerates cleanly
-  to `0` (the update loop just doesn't execute). Covered by the added
-  `RoundTrip_Empty` test.
-- **`decode_symbol_record`**: the header declares it as a plain
-  `SymbolFitConfig` return (no `Result`), so it performs no validation itself
-  — it's the *exact inverse* of `encode_symbol_record`, trusted to be called
-  only on records `DbManifest::open` already validated. The enum-range checks
-  live in a separate, non-public `symbol_record_enums_valid` helper invoked
-  once per record at `open` time, so `find_symbol` stays a cheap decode with
-  no re-validation per the brief's "validates eagerly... so find_symbol
-  stays cheap" requirement.
+Files:
+- `atx-vol/include/atx/vol/event_vol.hpp` (new)
+- `atx-vol/src/event_vol.cpp` (new)
+- `atx-vol/tests/event_vol_test.cpp` (new, 23 tests)
+- `atx-vol/CMakeLists.txt` (+1 line: `src/event_vol.cpp`)
+- `atx-vol/tests/CMakeLists.txt` (+1 line: `event_vol_test.cpp`)
+
+## Ambiguity resolved without blocking (not NEEDS_CONTEXT)
+
+The brief (and the sprint plan doc it was drawn from) specifies:
+
+> `InvalidArgument` if T1,T2 <= 0, T1 == T2, n1·T2 == n2·T1 ...; `FailedPrecondition` if the solved e² < 0
+
+`atx::core::ErrorCode` has **no `FailedPrecondition` enumerator**
+(`Unknown, InvalidArgument, OutOfRange, NotFound, AlreadyExists,
+PermissionDenied, Unavailable, Internal, NotImplemented, IoError,
+ParseError`). I searched for precedent rather than asking: `american_iv.cpp`
+(`american_implied_vol`) draws exactly this "bad input" vs. "solved value
+outside its valid domain" distinction using `InvalidArgument` for the
+former and `ErrorCode::OutOfRange` for the latter (e.g. "price above
+max-vol price"). None of the brief's given test cases assert the specific
+error code for the negative-e² case (only `.ok()`/`.has_value()` is
+checked), so this was a safe, precedent-following judgment call, documented
+as a PORT NOTE in the header. `implied_emove` reports negative-e² (beyond
+the clamp window) as `ErrorCode::OutOfRange`.
+
+The brief also didn't name the `eps` in "e² in [−eps,0] clamps to 0"; I
+defined `kEmoveSqClampEps = 1e-9` (documented rationale in the header:
+~9 orders of magnitude below a typical e², absorbs FP cancellation noise
+without masking a real inconsistency) and exercised both sides of the
+window with dedicated tests (exact boundary construction, see below).
 
 ## TDD evidence
 
-### RED
-
-Command:
-```
-& .\scripts\atx-build.ps1 build atx-vol-tests
-```
-With the header + tests + a stub `surface_db.cpp` (includes only) wired into
-both CMakeLists, the build compiled every translation unit successfully
-(confirming the header's static_asserts on record sizes were already correct)
-and failed at **link** time — the expected RED state for a compiled language:
+**RED** (test file + header written first, `src/event_vol.cpp` left as an
+empty stub): `cmake --build build --target atx-vol-tests` failed at the
+link step with undefined-symbol errors for every new symbol, e.g.:
 
 ```
-lld-link: error: undefined symbol: ... atx::vol::write_db_manifest(...)
-lld-link: error: undefined symbol: ... atx::vol::DbManifest::open(...)
-lld-link: error: undefined symbol: ... atx::vol::DbManifest::find_symbol(...) const
-lld-link: error: undefined symbol: ... atx::vol::DbManifest::find_partition(...) const
-```
-All four symbols the tests call were undefined, as expected before
-implementation existed.
-
-### GREEN
-
-Command:
-```
-& .\scripts\atx-build.ps1 build atx-vol-tests
-& .\scripts\atx-build.ps1 -Ctest -R SurfaceDbManifest
-```
-Output:
-```
-[1/4] Building CXX object atx-vol\CMakeFiles\atx-vol.dir\src\surface_db.cpp.obj
-[2/4] Linking CXX static library lib\atx-vol.lib
-[3/4] Linking CXX executable bin\atx-vol-tests.exe
-
-    Start 447: SurfaceDbManifest.RoundTrip_FullConfig_EveryFieldPreserved
-1/4 Test #447: SurfaceDbManifest.RoundTrip_FullConfig_EveryFieldPreserved ...   Passed    0.16 sec
-    Start 448: SurfaceDbManifest.RoundTrip_Empty
-2/4 Test #448: SurfaceDbManifest.RoundTrip_Empty ............................   Passed    0.20 sec
-    Start 449: SurfaceDbManifest.Write_RejectsDuplicateAndInvalid
-3/4 Test #449: SurfaceDbManifest.Write_RejectsDuplicateAndInvalid ...........   Passed    0.07 sec
-    Start 450: SurfaceDbManifest.Open_RejectsCorruption
-4/4 Test #450: SurfaceDbManifest.Open_RejectsCorruption .....................   Passed    0.06 sec
-
-100% tests passed, 0 tests failed out of 4
+lld-link: error: undefined symbol: public: __cdecl atx::vol::EventSchedule::EventSchedule(class std::vector<__int64,...>)
+lld-link: error: undefined symbol: double __cdecl atx::vol::censored_total_variance(double, unsigned __int64, double)
+lld-link: error: undefined symbol: class tl::expected<double, class atx::core::Error> __cdecl atx::vol::implied_emove(...)
+lld-link: error: undefined symbol: double __cdecl atx::vol::event_aware_w(...)
+ninja: build stopped: subcommand failed.
 ```
 
-(One intermediate build failure between RED and GREEN: `-Werror,-Wunused-function`
-on an unused `const` overload of the local `buf_at` helper — removed, since
-`DbManifest::open` takes its byte buffer by value/non-const and never needed
-the const overload. Re-verified GREEN after the fix.)
-
-## Test results
-
-Both required ctest filters, final run:
+**GREEN** (after implementing `event_vol.cpp`): build succeeded; `ctest
+--test-dir build -R EventVol` — 23/23 passed, e.g.:
 
 ```
-& .\scripts\atx-build.ps1 -Ctest -R "SurfaceDbManifest|SurfaceArchive"
-...
-17/20 Test #447: SurfaceDbManifest.RoundTrip_FullConfig_EveryFieldPreserved ................   Passed    0.08 sec
-18/20 Test #448: SurfaceDbManifest.RoundTrip_Empty .........................................   Passed    0.08 sec
-19/20 Test #449: SurfaceDbManifest.Write_RejectsDuplicateAndInvalid ........................   Passed    0.08 sec
-20/20 Test #450: SurfaceDbManifest.Open_RejectsCorruption ..................................   Passed    0.07 sec
-
-100% tests passed, 0 tests failed out of 20
+Test #625: EventVol.RoundTripKnownEmove ............... Passed
+Test #626: EventVol.NoIdentificationWhenProportional ... Passed
+Test #630: EventVol.ImpliedEmove_NegativeESquaredBeyondEps_ReturnsOutOfRange ... Passed
+Test #632: EventVol.ImpliedEmove_ESquaredWithinEpsWindow_ClampsToZero ......... Passed
+Test #635: EventVol.EventAwareInterpJumpAcrossEvent .... Passed
+100% tests passed, 0 tests failed out of 23
 ```
 
-- `SurfaceDbManifest`: 4/4 passed (new).
-- `SurfaceArchive`: 16/16 passed (regression, unchanged — confirms Task 1's
-  shared `detail::` helpers were reused, not duplicated, and no cross-damage).
+All 6 brief-sketched test cases were fleshed out with hand-derived
+expected values in comments (verified in this report's derivation, e.g.
+`RoundTripKnownEmove`: denom = 1·0.25−2·0.10 = 0.05, numer =
+0.0065·0.25−0.015·0.10 = 0.000125, e² = 0.0025, e = 0.05 ✓), plus 17
+additional tests covering: schedule sort/boundary/empty/reversed-interval,
+NaN propagation for censored/recombined, non-positive-T errors, T1==T2,
+non-finite inputs, the exact-zero and epsilon-window e² clamp cases
+(constructed algebraically to land at precisely `e² = -kEmoveSqClampEps/2`),
+interp-exact-at-both-slices, and the all-n-zero-with-positive-emove
+fallback variant.
 
-## Self-review findings
+## Full-gate result
 
-- Fixed one build-time issue myself before reporting: an unused `const`
-  overload of `buf_at` tripped `-Wunused-function` under `/W4 /WX`; removed
-  it (only the non-const overload is ever called, since `DbManifest::open`
-  takes bytes by value).
-- Removed an unused `<type_traits>` include from `surface_db.cpp` (the
-  header's static_asserts already cover trivial-copyability/standard-layout;
-  the `.cpp` itself doesn't add its own).
-- Verified by hand-tracing byte offsets that no field reordering was needed
-  to hit the pinned 192/256/128 sizes — the brief's declared field order
-  already lands exactly on target for the natural (no `#pragma pack`)
-  compiler layout used here.
-- Verified the 13 `kDbSym*` bits map 1:1 onto the 13 boolean fields spanning
-  `SymbolFitConfig`, `ConvexFitOpts`, and `CalibOpts` — no bit unused, no bool
-  unmapped.
-- Confirmed the `bad[100]` corruption-test byte lands inside the
-  `payload_crc32c` field of the header (not literally "header reserved" as
-  the brief's inline test comment says), but the resulting failure mode is
-  still the header CRC check (since `payload_crc32c`'s value is itself
-  covered by `header_crc32c`), so the test's asserted `ErrorCode::ParseError`
-  holds regardless — no code change needed, just noting the discrepancy
-  between the comment and the actual field for anyone debugging this later.
-- No `TODO`/stub paths remain; `write_db_manifest`, `DbManifest::open`,
-  `find_symbol`, `find_partition`, and `decode_symbol_record` are all fully
-  implemented per the brief's Step 4 notes.
+`ctest --test-dir build -L atx_vol -j16 --timeout 900` (via
+`scripts/atx-build.ps1 -Ctest`):
+
+```
+99% tests passed, 3 tests failed out of 1027
+```
+
+The 3 failures are exactly the pre-quarantined `MultinamePipeline.*`
+bit-identity tests (`HeldLotWithoutSurfaceIsCountedNotHidden`,
+`DefaultPolicyFullBasketBitIdentical`, `DefaultPolicyStillBitIdentical`) —
+**no new failures**. All 23 `EventVol.*` tests present and clean in the
+full run (grep over the full log matched 46 `EventVol` lines — 23 `Start`
++ 23 `Passed`; no `Fail` matches).
+
+## Self-review findings (documented in the header, not code defects)
+
+1. **e² clamp window** — `[-kEmoveSqClampEps, 0)` clamps to `0.0`;
+   more negative reports `OutOfRange`. Absolute (not relative) epsilon —
+   a defensible simplicity tradeoff matching the brief and existing
+   codebase constants (e.g. `kIvTol`), called out as a limitation for
+   extreme-scale inputs (very large w).
+2. **NaN propagation** — `censored_total_variance`/`event_recombined_vol`
+   rely on IEEE-754 "any comparison with NaN is false" so domain-floor
+   checks fall through to NaN rather than substituting a floor. Verified
+   by dedicated tests (`CensoredNaNInNaNOut`, `RecombinedVolNonPositiveTIsNaN`).
+3. **`event_aware_w` NaN-emove edge case** — the fallback guard uses
+   `emove <= 0.0` (not `!(emove > 0.0)`), so a NaN `emove` does *not*
+   trigger the plain-linear-w fallback when real events are present;
+   it flows through the censored path and propagates to NaN, consistent
+   with the module's NaN-in/NaN-out convention. (It still gets the
+   fallback if `n_lo==n_hi==n_query==0`, since the event math is inert
+   regardless of `emove`'s value in that case.)
+4. **`n_query` vs. `n_lo`/`n_hi`** — no cross-consistency check;
+   `event_aware_w` has no `Result` return (matches the brief's `noexcept`
+   signature) and trusts the caller. Documented as `EventSchedule`'s
+   responsibility, not this function's.
+5. **`T_query` outside `[T_lo, T_hi]`** — extrapolates the linear formula
+   rather than clamping or rejecting (undocumented in the brief; chose
+   the least-surprising behavior consistent with a "linear interpolation"
+   formula with no stated clamp).
+6. **`T_lo == T_hi`** — undefined/not special-cased; produces NaN (0/0) or
+   ±inf (x/0), which then propagates. Documented; callers must pass
+   distinct bracketing expiries.
+7. **`EventSchedule` sort vs. de-dup** — sorts but does not de-duplicate
+   (unlike the Task-1 `VolTimeCalendar`, which de-dupes); a repeated
+   timestamp is treated as a caller data-quality issue since
+   `count_between`'s `upper_bound` scan still counts correctly either way.
+
+No code changes resulted from self-review — all findings were pre-empted
+by design choices already documented in the header's PORT NOTE / self-review
+sections before the review pass, and re-verified against the passing test
+suite.
 
 ## Concerns
 
-None blocking. Two documentation-level notes for Task 3+ implementers:
+None blocking. The only noteworthy item is the FailedPrecondition→OutOfRange
+mapping and the unspecified epsilon value above — both resolved with clear
+codebase precedent and documented rationale rather than guessed silently.
 
-1. The public `write_db_manifest` doc comment (verbatim from the brief) says
-   "InvalidArgument (empty/**oversized** symbol...)" but the implementation —
-   matching the "symbols canonicalized via detail::canonicalize_symbol
-   (identical to archive keys)" requirement — *truncates* an oversized symbol
-   to 32 chars rather than rejecting it (identical to
-   `write_surface_archive`'s behavior). Only an empty *canonical* symbol is
-   rejected. This mirrors the archive exactly and no test in the brief
-   exercises an oversized-but-truncatable symbol, so this was a deliberate
-   choice to match "identical to archive keys" over the doc comment's literal
-   wording.
-2. `DbPartitionRecord::flags` exists on the wire (per the brief's exact
-   layout) but no `kDbPartition*` bit constants are defined yet and the field
-   is always written as 0 / never validated on read — consistent with the
-   brief (only `kDbSym*` bits are specified for Task 2); a future task should
-   define partition flag bits if/when needed.
+## Note on this report path
 
-## Review-fix addendum (post-review, same day)
+This file previously held an unrelated report (a "Task 2" for
+`surface_db.hpp`/`SymbolFitConfig`/manifest write-parse, from a different
+SDD track). Per this task's explicit instruction to overwrite
+`task-2-report.md`, that stale content has been replaced above with this
+`event_vol` report. Flagging in case the surface_db work still needs a
+home for its own report elsewhere.
 
-Review verdict: Approved except one Important finding (no executable coverage
-of the enum wire-range rejection path) + one Minor (doc-comment wording).
-Both fixed:
+---
 
-1. **Important — enum-rejection coverage.** Added
-   `SurfaceDbManifest.Open_RejectsOutOfRangeEnum` to
-   `atx-vol/tests/surface_db_test.cpp`:
-   - Writes a valid single-symbol manifest via `write_db_manifest`.
-   - A `restamp_crcs` helper recomputes `payload_crc32c` over
-     `[symbols_offset, end)` with `atx::vol::detail::crc32c` and then
-     `header_crc32c` (field zeroed first, computed last), writing both via
-     `offsetof(DbManifestHeader, ...)` — no magic offsets into the header.
-   - Sanity leg: restamp with NO mutation still opens (proves the helper
-     reproduces the writer's CRCs, so the rejections are the enum check, not
-     a broken restamp).
-   - Loops two enum bytes — `preset` (symbols_offset+36: after symbol[32] +
-     symbol_len u16 + flags u16) and `curve_kind` (+37) — sets each to 0xFF,
-     restamps, and asserts `DbManifest::open` returns
-     `ErrorCode::ParseError`. This executes `symbol_record_enums_valid` and
-     its ParseError branch (the error message naming the symbol).
+## Fix report — PORT NOTE citation
 
-2. **Minor — doc comment.** `write_db_manifest` comment in
-   `atx-vol/include/atx/vol/surface_db.hpp` reworded: oversized symbols are
-   truncated to `kSurfaceDbKeyMax` (matching the archive's canonical keys),
-   not rejected; InvalidArgument is "(empty symbol, bad partition key)".
+**Commit:** `40bcebf` — `docs(atx-vol): correct event_vol PORT NOTE error-code precedent citation`
 
-Verification:
+**What changed:**
+The PORT NOTE in `atx-vol/include/atx/vol/event_vol.hpp` (lines 55–68) incorrectly cited
+`american_iv.cpp`'s `american_implied_vol` as the precedent for both `InvalidArgument`
+(non-finite inputs) and `OutOfRange` (solved value outside valid domain). In reality:
+- `american_iv.cpp:96–98` maps non-finite to `OutOfRange` (wrong for InvalidArgument precedent)
+- `andersen_lake` in `american.cpp:1262–1263` maps non-finite to `InvalidArgument` (correct precedent)
+- `american_iv.cpp:108–113` uses `OutOfRange` for out-of-band price checks (correct analogy for negative e²)
+
+**Rewritten PORT NOTE:** Now correctly points non-finite→`InvalidArgument` to `andersen_lake` 
+(american.cpp 1262–1263) and justifies negative-e²→`OutOfRange` by analogy to american_iv.cpp's 
+out-of-band price check (108–113). Comment-only change; no behavior modification.
+
+**Test command run:**
 ```
-& .\scripts\atx-build.ps1 build atx-vol-tests    # clean build
-& .\scripts\atx-build.ps1 -Ctest -R SurfaceDbManifest
-1/5 ... RoundTrip_FullConfig_EveryFieldPreserved   Passed
-2/5 ... RoundTrip_Empty                            Passed
-3/5 ... Write_RejectsDuplicateAndInvalid           Passed
-4/5 ... Open_RejectsCorruption                     Passed
-5/5 ... Open_RejectsOutOfRangeEnum                 Passed
-100% tests passed, 0 tests failed out of 5
-
-& .\scripts\atx-build.ps1 -Ctest -R SurfaceArchive
-100% tests passed, 0 tests failed out of 16
+cmake --build build -j16 --target atx-vol-tests
+ctest --test-dir build -R EventVol --output-on-failure
 ```
+
+**Result:**
+- Build: successful (1 file recompiled: `event_vol_test.cpp`)
+- Tests: `100% tests passed, 0 tests failed out of 23` (all EventVol suite tests green)

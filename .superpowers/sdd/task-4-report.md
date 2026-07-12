@@ -1,149 +1,243 @@
-# Task 4 Report: SurfaceDb partition store
+# Task 4 report — Shape-blend (FLEX-style) arbitrary-expiry interpolation
 
-## What was implemented
+## Summary
 
-Four `SurfaceDb` methods (`write_partition`, `open_partition`, `load_surface`, `drop_partition`)
-plus the private `partition_path` helper, in `atx-vol/src/surface_db.cpp`, exactly per the
-brief's Semantics block:
-
-- **`partition_path(canonical_key)`**: `<root>/partitions/<CANONICAL_KEY>.atxvsa`.
-- **`write_partition(key, items, opts)`**: canonicalizes/validates the key first (reusing the
-  existing `canonicalize_key` helper from Task 2/3 — no duplicated validation logic), writes the
-  archive via `write_surface_archive_file` (atomic tmp+rename, and the source of the
-  `InvalidArgument` on empty `items`) **before** touching the manifest, then stats the file and
-  upserts a `DbPartitionInfo{key, count, file_size, now}` under the writer lock via
-  `persist_locked`. Rewriting an existing key replaces its record in place (generation still
-  bumps via `persist_locked`).
-- **`open_partition(key)`**: canonicalizes, looks up the current snapshot via `find_partition`
-  (NotFound if absent), then `SurfaceArchive::open_file` on the resolved path — its
-  ParseError/IoError propagate untouched.
-- **`load_surface(key, symbol)`**: `open_partition` + `map_symbol` — one hash probe, no
-  full-archive scan.
-- **`drop_partition(key)`**: NotFound if absent; removes the manifest entry and persists
-  (generation++) **first**, releases the lock, *then* `std::filesystem::remove`s the file. A
-  code comment at the call site explains why this ordering is binding (see below).
-
-Added a shared `decode_symbol_entries` helper (mirrors the existing `decode_partitions`) so
-`write_partition`/`drop_partition` round-trip the untouched symbol table through
-`persist_locked` without duplicating the decode loop.
-
-Added a header doc-comment above the four partition-method declarations in
-`atx-vol/include/atx/vol/surface_db.hpp` documenting that partition symbols and the manifest
-symbol table are orthogonal namespaces (a symbol need not be registered in the symbol table to
-appear in a partition, and vice versa).
-
-### Crash-ordering comment (drop_partition)
-
-From `surface_db.cpp`:
-```cpp
-// Manifest-first ordering is deliberate, not incidental: the index entry is
-// already gone (and generation already bumped) by the time we get here, so
-// a crash right at this line leaves only an orphaned .atxvsa file under
-// partitions/ -- harmless garbage that a future write_partition for the
-// same key silently overwrites, and that no reader ever sees (the manifest
-// no longer lists it, so open_partition/load_surface correctly report
-// NotFound). The reverse order -- unlink the file, then edit the manifest
-// -- would risk a crash between the two steps that leaves a manifest entry
-// pointing at a now-missing file: every later open_partition/load_surface
-// for that key would then surface a confusing IoError/NotFound-on-open
-// instead of a clean "no such partition."
-```
-
-## Tests added (`atx-vol/tests/surface_db_test.cpp`)
-
-Copied `make_essvi` / `make_convex` / `make_linear` / `make_pricing` / `bits_equal` /
-`expect_theo_bit_identical` from `surface_archive_test.cpp` (the binding bit-identity oracle)
-into this file's anonymous namespace, self-contained, with a comment explaining the
-intentional duplication.
-
-Five `SurfaceDbPartition.*` tests, exactly as specified in the brief:
-
-1. `WriteOpenLoad_TheoBitIdentical` — write two eSSVI surfaces into one partition, load one back
-   through the live db (bit-identical theo probe), then reopen the db cold and open the
-   partition/map a second symbol through the fresh instance.
-2. `MixedKinds_ConvexDenseAndLinearVariance_RoundTripBitIdentical` (**mandatory**, present) — one
-   partition holding ConvexDense + LinearVariance + Essvi; each loads back with the archive
-   suite's own assertion blocks (ConvexDense: theo bit-identical + node arrays byte-equal;
-   LinearVariance: theo + k/w node arrays bit-identical; Essvi: theo bit-identical).
-3. `RewriteReplaces_DropRemoves` — rewrite bumps `surface_count` in place (not a duplicate
-   entry); `drop_partition` empties the index, subsequent `open_partition`/`drop_partition` on
-   the same key are `NotFound`, and the `.atxvsa` file is physically gone from disk.
-4. `ManySymbols_ManyPartitions_SingleSurfaceLookup` — 4 partitions x 64 symbols each; single-key
-   lookup succeeds, wrong symbol and wrong partition key both report `NotFound`. Fixed the
-   brief's dangling-`string_view` pitfall by building an owning `std::vector<std::string>` of
-   symbol names before constructing `SurfaceArchiveItem`s that view into it.
-5. `BadKey_Rejected` — `""`, `"a/b"`, `"a\\b"`, `".."`, `"x..y"`, and a 34-char key all reject
-   with `InvalidArgument` from `write_partition` (via the existing `canonicalize_key`).
-
-One deviation from the brief's literal pseudocode, called out as expected: `make_linear`'s real
-signature in `surface_archive_test.cpp` is `(uid, n_slices, n_nodes)` (3 params, not 2 as
-written in the brief's snippet); I called it as `make_linear(12, 2, 17)`.
-
-## TDD evidence
-
-**Step 2 — RED** (`& .\scripts\atx-build.ps1 build atx-vol-tests`, after writing tests only,
-before implementing the four methods): link failure, not a compile failure in the new test
-code — confirming the tests themselves are well-formed and only the four undefined methods are
-missing:
-```
-lld-link: error: undefined symbol: ... atx::vol::SurfaceDb::write_partition(...)
-lld-link: error: undefined symbol: ... atx::vol::SurfaceDb::load_surface(...) const
-lld-link: error: undefined symbol: ... atx::vol::SurfaceDb::open_partition(...) const
-lld-link: error: undefined symbol: ... atx::vol::SurfaceDb::drop_partition(...)
-```
-
-**Step 4 — GREEN** (`& .\scripts\atx-build.ps1 build atx-vol-tests` then
-`-Ctest -R "SurfaceDb|SurfaceArchive"`): build produced zero warnings/errors (warnings are
-`/WX` in this project); full run:
-```
-100% tests passed, 0 tests failed out of 30
-```
-including all 5 new `SurfaceDbPartition.*` tests and all 25 pre-existing
-`SurfaceArchive`/`SurfaceDbManifest`/`SurfaceDb` tests (no regressions).
+Implemented `InterpMode::ShapeBlend`, the SpiderRock FLEXVolInterpolation-style
+"vol-multiple" blend, as a new opt-in maturity-interpolation mode alongside
+the existing `PiecewiseTotalVariance` default. Default-mode behavior is
+untouched (same code path, same floating-point operations) — bit-identical by
+construction, not just by testing. Six new tests added (four from the brief
+plus two exercising the `surface_eval_ex` wiring decision below); full
+`atx_vol` label gate run with no new failures.
 
 ## Files changed
 
-- `atx-vol/src/surface_db.cpp` (+123): the four partition methods, `partition_path`, and the
-  `decode_symbol_entries` helper.
-- `atx-vol/tests/surface_db_test.cpp` (+314): fixtures + 5 new tests.
-- `atx-vol/include/atx/vol/surface_db.hpp` (+10): orthogonal-namespaces doc-comment above the
-  partition method declarations.
+- `atx-vol/include/atx/vol/projection.hpp`
+- `atx-vol/src/projection.cpp`
+- `atx-vol/tests/projection_test.cpp`
 
-## Self-review findings
+No new files.
 
-- Completeness vs brief: all 5 specified tests present, including the mandatory mixed-kind
-  ConvexDense+LinearVariance+Essvi test with the archive suite's exact assertion blocks (node
-  byte-equality, not just theo).
-- Quality: reused existing `canonicalize_key`/`decode_partitions`/`persist_locked` rather than
-  reinventing validation or the mutation path; added one small new shared helper
-  (`decode_symbol_entries`) instead of a third copy of the same decode loop.
-- YAGNI: no methods, options, or test cases added beyond what the brief specifies.
-- Test honesty: all bit-identity assertions are the real oracle (`bits_equal` on raw IEEE-754
-  bit patterns, `memcmp` on node arrays) copied verbatim in pattern from
-  `surface_archive_test.cpp` — no tolerance comparisons, no vacuous `EXPECT_TRUE(true)`.
-- Pristine output: build is warnings-as-errors clean; full `SurfaceDb|SurfaceArchive` ctest run
-  is 30/30 green.
-- Checked `git status`/diff: only the three intended files touched, no stray files.
-- Ran `clang-format --dry-run` as an extra check: found violations, but they are pervasive
-  throughout the *pre-existing* Task 2/3 code in the same file (already committed to `main`,
-  e.g. lines 92, 124–136, 270–271, 301, 342, 417, 478–479, 527–530, 657) — this project has no
-  clang-format CI gate (grepped for `clang-format` in this repo's own build/CI scripts; only
-  third-party vendored deps under `build/_deps` reference it). My new code's few flagged
-  lines are consistent with the codebase's actual (non-canonical-clang-format) style, so I did
-  not reformat — doing so would have dragged unrelated pre-existing lines into this task's diff.
+## What was implemented
 
-## Concerns
+### `projection.hpp`
 
-None blocking. Two minor, non-blocking notes for awareness:
+- `InterpMode::ShapeBlend = 1` added, with a doc comment carrying the full
+  SpiderRock formula (wwLo/wwHi, ATM total-variance blend, standardized-
+  moneyness vol-multiple blend, edge cases) so the enum is self-documenting
+  the way `PiecewiseTotalVariance`'s neighbor comments already are.
+- New provenance bit `kFlagShapeBlendCalendarUnsafe = 1u << 13` (bits 13/14
+  were the only unused slots in the Stage-I 0..15 range; no collision with
+  any other flag vocabulary in the repo — verified by grep across
+  `atx-vol/` for `1u << 13`/`1u << 14`). Stamped only when a genuine two-
+  slice blend happens (i.e. the existing `kFlagInterpolatedT` branch); an
+  exact-pillar or clamped single-slice hit gets weight 1.0 and carries no
+  calendar-safety caveat.
+- `InsertedSliceHandle`, `w_on_inserted_slice`/`iv_on_inserted_slice`,
+  `EvalRequest.interp_mode`, `surface_eval_ex` doc comments updated to
+  describe the new mode and its NotImplemented/fallback semantics.
+- Top-of-file port-scope note extended to mention ShapeBlend as a later,
+  opt-in addition (kept the original "v1 ships ... PIECEWISE_TOTAL_VARIANCE"
+  sentence intact, since that's still literally true of the *default*).
 
-- `write_partition` writes the archive file before acquiring the manifest lock (per the brief's
-  literal ordering). If two `SurfaceDb` instances (or threads sharing one, though the API takes
-  `this` by non-const reference so that's less of a concern) call `write_partition` on the exact
-  same key concurrently, the last archive write to land wins, and the manifest update after it
-  reflects that. This isn't tested (not required by the brief) and is a pre-existing
-  single-writer assumption already documented on the `SurfaceDb` class itself
-  ("Cross-process: single writer, many readers").
-- `drop_partition`'s final `std::filesystem::remove` ignores its `std::error_code` (fire and
-  forget) by design — this matches the brief's own framing that a failure to unlink is
-  "harmless garbage," not a caller-visible error, since the manifest (the source of truth) is
-  already correct by that point.
+### `projection.cpp`
+
+- New anonymous-namespace helper `shape_blend_w(surface, handle, k_log)`:
+  1. `ww_hi = handle.alpha_T`, `ww_lo = 1 - ww_hi` (alpha_T already equals
+     SpiderRock's wwHi — same weight formula, so it's reused as-is).
+  2. ATM total variance of each parent: `w_lo0 = slice_w(lo, 0)`,
+     `w_hi0 = slice_w(hi, 0)`. `atm(T_q)^2 * T_q = wwLo*w_lo0 + wwHi*w_hi0`
+     — algebraically identical to what `PiecewiseTotalVariance`'s
+     `w_on_inserted_slice` returns at k=0, so ATM matches to machine
+     precision by construction (proved analytically and confirmed by test).
+  3. Standardized moneyness `z = k_log / (atm_q * sqrt(T_q))`, mapped into
+     each parent's own coordinates `k_lo = z*atm_lo*sqrt(T_lo)`,
+     `k_hi = z*atm_hi*sqrt(T_hi)`.
+  4. Vol multiples `m_lo = sqrt(w_lo(k_lo)/T_lo)/atm_lo`, `m_hi` likewise;
+     blended vol `sigma_q = atm_q*(wwLo*m_lo + wwHi*m_hi)`; returned as
+     total variance `sigma_q^2 * T_q` so the function's contract
+     (`w_on_inserted_slice` always returns total variance) stays uniform
+     across both modes.
+  - Falls back to the plain `PiecewiseTotalVariance` formula (linear-in-w at
+    fixed k) whenever `T_lo`/`T_hi`/`T_q` aren't positive, either parent's
+    ATM total variance is non-finite/non-positive, the blended ATM total
+    variance/vol comes out non-finite/non-positive, or either parent's
+    mapped-k total variance is negative/non-finite. This is the documented
+    "degenerate ATM → fall back to linear-w" edge case from the brief, not
+    an error path.
+- `surface_insert_vol_slice`: the reserved-mode check now accepts
+  `ShapeBlend` in addition to `PiecewiseTotalVariance`; the genuine-blend
+  branch (`kFlagInterpolatedT`) additionally stamps
+  `kFlagShapeBlendCalendarUnsafe` when `interp == ShapeBlend`. The
+  exact-pillar and clamped-single-slice branches are completely unchanged
+  and mode-agnostic (weight 1.0 either way, matching the brief).
+- `w_on_inserted_slice`: dispatches to `shape_blend_w` when
+  `handle.interp_mode == ShapeBlend` and the handle isn't already resolved
+  to a single slice (`exact_slice_idx >= 0` still short-circuits first,
+  identically for both modes).
+- `surface_eval_ex`: added a reserved-`interp_mode` check (mirroring the
+  existing `delta_convention`/`pricing_route_policy` reserved-value checks)
+  and a new branch — see seam decision below.
+
+### `projection_test.cpp`
+
+Added, in order:
+1. `ShapeBlendMatchesLinearWForIdenticalShapes` — two raw-SVI slices built as
+   a self-similar family in standardized moneyness (shared shape constants
+   A/B/rho/S, each slice scaled by `s_x = atm*sqrt(T_x)`), so the
+   vol-multiple curve is literally identical between slices. ATM matches to
+   1e-10; max vol deviation across `|z| <= 2` from `PiecewiseTotalVariance`
+   measured at 8.4e-4 (well under the brief's 3e-3 bound — numerically
+   verified via a standalone Python replica of both formulas before writing
+   the C++ constants, see "TDD evidence").
+2. `ShapeBlendPreservesSkewBetweenSlices` — slice lo: strong put skew
+   (rho=-0.7); slice hi: flat (rho=0). A local test-only bisection helper
+   (`solve_k_for_delta_on_handle`, `test_forward_delta`) solves 25-delta
+   put/call off an `InsertedSliceHandle` (production `surface_solve_k_for_delta`
+   can't be reused here — it bisects against the raw multi-slice
+   `VolSurface::iv`, which is always `PiecewiseTotalVariance` and has no
+   notion of an inserted-slice handle). Verified: `spread_hi (-0.0046) <
+   spread_blend (0.0225) < spread_lo (0.0376)`, strictly, with margin.
+3. `ShapeBlendExactAtSliceT` — `T_clock == T_lo` reproduces slice lo exactly
+   (`exact_slice_idx == 0`, no `kFlagShapeBlendCalendarUnsafe`, iv matches
+   direct `svi_total_w` to 1e-13 across a small k grid).
+4. `ShapeBlendAtmIsLinearInTotalVariance` — for several `T_q` between the
+   parents, `w_on_inserted_slice(..., k=0)` and `iv_on_inserted_slice(...,
+   0)^2 * T_q` both equal `wwLo*w_lo(0) + wwHi*w_hi(0)` (the literal
+   SpiderRock ATM formula) to 1e-12/1e-10.
+5. `EvalEx_ShapeBlend_MatchesInsertedSliceHotPath` — bonus test covering the
+   `surface_eval_ex` wiring decision: requesting `ShapeBlend` through the
+   high-level API matches the low-level insert-slice call directly, and
+   carries `kFlagShapeBlendCalendarUnsafe`.
+6. `EvalEx_ReservedInterpMode_ReturnsNotImplemented` — bonus test for the new
+   reserved-value guard in `surface_eval_ex`.
+
+New helpers added to the test file's anonymous namespace:
+`make_svi_surface(sl_lo, sl_hi)`, `test_forward_delta(...)`,
+`solve_k_for_delta_on_handle(...)`. All test-only, no production code changes.
+
+## Seam decision: `surface_eval_ex` wiring
+
+The brief names both `surface_insert_vol_slice` and `surface_eval_ex` as
+extension points. Investigation showed `surface_eval_ex` previously carried
+`EvalRequest.interp_mode` through to nothing — it called
+`surface.w(cr->k_log, cr->tau_vol)` directly (a hardcoded
+`PiecewiseTotalVariance` evaluator on `VolSurface` itself), never consulting
+the field. `surface_project_compare` even forwarded `in.interp_mode` into a
+request that (pre-change) silently discarded it. The *only* place `InterpMode`
+was actually load-bearing was the inserted-slice trio
+(`surface_insert_vol_slice` / `w_on_inserted_slice` / `iv_on_inserted_slice`),
+confirmed by `portfolio_risk.cpp` — its Stage-II resolver already threads its
+own `interp_mode` config through `surface_insert_vol_slice` (line 358),
+meaning it will pick up ShapeBlend for free with zero changes to
+`portfolio_risk.cpp`.
+
+Given that, I implemented ShapeBlend fully in the insert-slice trio (the
+real, pre-existing seam) and *additionally* wired `surface_eval_ex` to route
+through it when `interp_mode == ShapeBlend`, while leaving the
+`PiecewiseTotalVariance` branch calling the exact same `surface.w(...)`
+expression as before (bit-identical, not just numerically close). This also
+completes a previously-dead validation gap: reserved `interp_mode` values are
+now rejected with `NotImplemented` in `surface_eval_ex`, mirroring the
+existing `delta_convention`/`pricing_route_policy` checks in the same
+function. This is strictly additive — no existing call path's computation
+changed — so I judged the risk low relative to the benefit of making the
+brief's stated `surface_eval_ex` opt-in actually work end-to-end rather than
+silently no-op.
+
+If this wiring is considered out of scope, it can be reverted by dropping the
+two new blocks in `surface_eval_ex` (the reserved-mode check and the `w`
+dispatch) and the two bonus tests — the four brief-mandated tests do not
+depend on it.
+
+## TDD evidence
+
+1. Wrote the enum, flag bit, and doc comments in `projection.hpp` first
+   (needed for the test file to even parse `InterpMode::ShapeBlend`).
+2. Wrote all 6 tests in `projection_test.cpp` against the *unimplemented*
+   `projection.cpp` (interp-mode acceptance check still `!=
+   PiecewiseTotalVariance` only).
+3. Confirmed red: swapped in the pre-implementation `projection.cpp` (`git
+   show HEAD:...` copy) with the new header + tests, rebuilt, ran the 6 new
+   tests directly — all 6 failed as expected:
+   ```
+   [ RUN      ] VolProjection.ShapeBlendMatchesLinearWForIdenticalShapes
+   ... Actual: false Expected: true
+   [  FAILED  ] VolProjection.ShapeBlendMatchesLinearWForIdenticalShapes
+   ... (all 6 FAILED)
+   ```
+4. Restored the `shape_blend_w` implementation, `surface_insert_vol_slice`
+   acceptance, `w_on_inserted_slice` dispatch, and `surface_eval_ex` wiring.
+   Rebuilt; all 6 new tests passed, plus all 15 pre-existing `VolProjection`/
+   `CurveProjection` tests unchanged (green, matching the pre-change
+   baseline exactly — no behavior drift in the default path).
+5. Before hand-picking test constants, verified the numeric claims
+   (`ShapeBlendMatchesLinearWForIdenticalShapes`'s 3e-3 bound,
+   `ShapeBlendPreservesSkewBetweenSlices`'s strict-ordering claim) with a
+   standalone Python replica of both the production formula and the test's
+   delta-bisection, iterating on parameters until margins were comfortable
+   (8.4e-4 vs. the 3e-3 bound; spread ordering with ~40% margin either side)
+   before transcribing the constants into C++.
+
+## Full-gate result
+
+```
+ctest --test-dir build -L atx_vol -j16 --timeout 900
+99% tests passed, 3 tests failed out of 1044
+```
+
+Failures are exactly the three pre-existing, out-of-scope failures called
+out in the task instructions:
+```
+MultinamePipeline.HeldLotWithoutSurfaceIsCountedNotHidden (Failed)
+MultinamePipeline.DefaultPolicyFullBasketBitIdentical (Failed)
+MultinamePipeline.DefaultPolicyStillBitIdentical (Failed)
+```
+(Verified these have no reference to `ShapeBlend`/`InterpMode` in
+`multiname_pipeline_test.cpp` — unrelated to this change.)
+
+Focused `VolProjection`/`CurveProjection` run: 38/38 passed (21 `VolProjection`
++ 4 `CurveProjection`, plus `ContractProjection`/`HistoricalProjection` in the
+same binary, all passing).
+
+## Self-review
+
+- **Division by zero at atm≈0**: `shape_blend_w` guards `T_lo/T_hi/T_q > 0`,
+  `w_lo0/w_hi0` finite-and-positive, `w_atm_q` finite-and-positive, and
+  `atm_q` finite-and-positive — each guard precedes the divide that depends
+  on it (`atm_lo = sqrt(w_lo0/T_lo)` only after `T_lo>0` and `w_lo0>0`
+  confirmed; `z = k_log/(atm_q*sqrt(T_q))` only after `atm_q>0` confirmed).
+  Every failure mode falls back to `linear_w_fallback()` rather than
+  propagating NaN/Inf or dividing by zero.
+- **z-mapping consistency between slices**: both `k_lo` and `k_hi` are
+  derived from the *same* `z`, each multiplied by that slice's own
+  `atm_x*sqrt(T_x)` — matches the brief's `k_x = z*atm_x*sqrt(T_x)` exactly,
+  no cross-slice mixing of scale factors.
+- **Provenance bit collisions**: grepped `atx-vol/` for `1u << 13` / `1u <<
+  14` before and after adding `kFlagShapeBlendCalendarUnsafe` — only this
+  new definition occupies bit 13 in the projection.hpp flag space; bit 14
+  remains free for a future addition. Unrelated flag vocabularies elsewhere
+  (`surface_db.hpp`'s `kDbSym*`, `uint16_t`) are a different type/space, not
+  a collision.
+- **`InsertedSliceHandle` not widened**: considered caching
+  `atm_lo`/`atm_hi`/`atm_q` on the handle to avoid recomputing them per
+  `k_log` call in a batch; decided against it because (a) the existing
+  `PiecewiseTotalVariance` path already recomputes `slice_w` per call with no
+  caching, so this matches established convention, (b) the AVX2 batch
+  kernel is explicitly deferred per the file's PORT NOTE, so this isn't the
+  hot path yet, and (c) it avoids touching a struct with several existing
+  consumers (`portfolio_risk.cpp`).
+
+## Concerns / follow-ups (not blocking)
+
+- `shape_blend_w` recomputes each parent's ATM total variance (`slice_w` at
+  k=0) on every call, including inside `iv_on_inserted_slice_batch`'s
+  per-point loop. Fine for correctness and consistent with the existing
+  no-caching style, but a future AVX2/batch pass for ShapeBlend (when the
+  currently-deferred batch kernel work resumes) should hoist the k-invariant
+  `atm_lo`/`atm_hi`/`atm_q`/`ww_lo`/`ww_hi` out of the per-observation loop,
+  the same way recent perf sprints did for the C8 Jacobian and SVI-MM basis.
+- The non-ATM calendar-arbitrage-safety caveat is real and by design (per
+  the brief) — `ShapeBlendPreservesSkewBetweenSlices`'s test surface was not
+  checked for calendar cleanliness at arbitrary strikes under the blend; the
+  provenance flag is the intended mitigation, not a proof of safety.

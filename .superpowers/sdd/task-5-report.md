@@ -1,148 +1,208 @@
-# Task 5 Report — apply_symbol_config pipeline binding + end-to-end test
+# Task 5 Report: Skew-adjusted delta / VegaSlope (`adjusted_greeks`)
 
-NOTE (controller-authored): the implementer subagent was cancelled by the operator mid-verification
-(while waiting on the full `-L atx_vol` gate) and never wrote this report. This report is the
-controller's factual reconstruction from the implementer's interim messages plus the controller's
-own verification run. Treat unattributed claims below as controller-verified.
+## Summary
 
-## What was implemented (commit 8d99c49)
+Implemented the SpiderRock LiveVolSurfaces/ClientVolatilitySurfaces
+skew-adjusted delta model as a new, pure-additive module: `Adjusted Delta =
+Delta + VegaSlope * Vega`, with a sticky-delta/sticky-strike blend control
+(`StickyParams::ref_uprc_weight`, ω in [0, 1]).
 
-- `apply_symbol_config(const SymbolFitConfig&, SessionInputs&)` — free function in
-  `atx-vol/include/atx/vol/surface_db.hpp` / `atx-vol/src/surface_db.cpp`. Order per brief:
-  `apply_fit_preset(in, cfg.preset)` first, then `pin_curve` → `in.curve` + `in.calib`,
-  then `al_override` → `in.deam.al_opts`, then the six scalars/flags unconditionally.
-  Market-snapshot fields (S, r, expiry rates, cash_divs, now_ts_ns) untouched.
-- `symbol_config_from_preset(FitPreset)` — captures `apply_fit_preset`'s effective policy into
-  a `SymbolFitConfig` (pin_curve=false identity starting point).
-- Tests appended to `atx-vol/tests/surface_db_test.cpp`:
-  `SurfaceDbApply.PinnedConfig_OverridesPreset`, `SurfaceDbApply.UnpinnedConfig_PresetCurveStands`,
-  `SurfaceDbEndToEnd.ConfigureStoreReloadServe` (two-session create/configure/store → reopen/serve
-  → external-writer refresh flow, ConvexDense surface through the partition path).
+## Files
 
-## Test evidence
+- `atx-vol/include/atx/vol/adjusted_greeks.hpp` (new) — `StickyParams`,
+  `curve_skew_slope`, `vega_slope_per_spot`, `skew_adjusted` declarations,
+  house-style header comment (what/why/thread-safety), matches `fit_metrics.hpp`
+  conventions.
+- `atx-vol/src/adjusted_greeks.cpp` (new) — implementation.
+- `atx-vol/tests/adjusted_greeks_test.cpp` (new) — 7 tests.
+- `atx-vol/CMakeLists.txt` (modified) — registered `src/adjusted_greeks.cpp`
+  in the `atx-vol` target's source list (next to `fit_metrics.cpp`).
+- `atx-vol/tests/CMakeLists.txt` (modified) — registered
+  `adjusted_greeks_test.cpp` in `atx-vol-tests` (next to `fit_metrics_test.cpp`).
 
-- TDD RED: implementer reported the expected failure (missing `apply_symbol_config` /
-  `symbol_config_from_preset` symbols) before implementing. RED output lives in the implementer's
-  transcript; not re-extracted here.
-- GREEN (controller-run, post-cancellation, before commit):
-  `ctest --test-dir build -R "SurfaceDb|SurfaceArchive" --output-on-failure`
-  → **100% tests passed, 0 tests failed out of 33** (includes all 3 new Task 5 tests, all prior
-  SurfaceDb*/SurfaceDbManifest*/SurfaceDbPartition* tests, and the SurfaceArchive regression suite).
-  Total time 2.26 s.
+## Implementation
 
-## Deviations / process notes
+```cpp
+struct StickyParams { double ref_uprc_weight{0.0}; };
 
-- **Full-module gate (`-L atx_vol`) deliberately skipped per operator instruction** — the operator
-  killed the in-flight gate run and will run the full suite themselves later. Brief Step 4's
-  whole-module sanity run is therefore DEFERRED TO THE OPERATOR, not evidence-backed here.
-- Implementer's baseline full-gate run (pre-task) was in flight when cancelled; no pass-count
-  comparison exists.
-- Files changed: exactly the three task files (+155 lines, no deletions elsewhere).
+double curve_skew_slope(const IVolCurve& c, double k_log) noexcept;
+double vega_slope_per_spot(const IVolCurve& c, double k_log, double S,
+                           const StickyParams& sp = {}) noexcept;
+Greeks skew_adjusted(const Greeks& g, double vega_slope) noexcept;
+```
+
+- `curve_skew_slope`: `sigma = sqrt(w(k_log)/T)`; `w'(k_log)` via central FD
+  (h = 1e-4) on `IVolCurve::w`; returns `w'(k_log) / (2*sigma*T)`. NaN if
+  `T <= 0`, if `sigma` is non-positive/non-finite, or if the FD stencil hits a
+  point where `w` is NaN (propagates naturally — no special-case branch
+  needed since NaN arithmetic already yields NaN).
+- `vega_slope_per_spot`: `(1 - omega) * (-skew_slope / S)`. `S <= 0` (or NaN,
+  since `!(S > 0.0)` catches both) returns NaN before even calling
+  `curve_skew_slope`.
+- `skew_adjusted`: copies `g`, replaces only `delta` with
+  `delta + vega_slope*vega`; all seven other fields pass through by value
+  (verified in tests, including under a NaN `vega_slope`).
+
+## TDD evidence
+
+Wrote `adjusted_greeks_test.cpp` alongside the two new source files (none of
+the three brief-mandated files existed beforehand, so there was no separate
+"stub header, watch tests fail to compile" step distinct from the normal
+first-build); verified correctness immediately by building and running the
+focused suite, then iterated self-review against it. 7 tests, all passing:
+
+- `FlatSmileLeavesDeltaUnchanged` — `LinearVarianceCurve` with constant total
+  variance ⇒ `curve_skew_slope == 0.0` exactly ⇒ delta passes through bit-for-
+  bit (all 8 `Greeks` fields checked).
+- `SviSlopeMatchesAnalytic` — hand-derives raw-SVI `dw/dk = b*(rho +
+  (k-m)/sqrt((k-m)^2+sigma^2))` and `dSigma/dk` directly from `SviParams` in
+  the test body (independent of `curve_skew_slope`'s FD implementation),
+  compares to `curve_skew_slope(SviCurve(...), k_log)`, tol 1e-6 (actual
+  agreement is far tighter — FD truncation on a smooth SVI curve at h=1e-4 is
+  ~1e-8).
+- `StickyStrikeOmegaOneIsRaw` — same SVI curve; ω=0 gives a nonzero
+  VegaSlope (sanity check, so the ω=1 assertion isn't vacuous), ω=1 gives
+  exactly 0.0.
+- `PutSkewLowersCallAdjustedDelta` — a `LinearVarianceCurve` whose put wing
+  (k=-1.0 → w=0.30) sits well above its call wing (k=1.0 → w=0.12), evaluated
+  at k=0.25, a segment where the curve still curls upward locally (0.04 →
+  0.06 over [0, 0.5]) — the realistic "smile past its minimum" shape a
+  put-skewed board's call wing actually has (see Self-review below for why
+  this is the correct construction, not a sign error). Confirms
+  `curve_skew_slope > 0` there, `vega_slope_per_spot < 0`, and the resulting
+  adjusted call delta is strictly below the raw delta.
+- `NonPositiveOrNonFiniteSpotYieldsNaN` — S = 0, -50, NaN all yield NaN.
+- `NaNVegaSlopePropagatesToAdjustedDeltaOnly` — NaN `vega_slope` makes
+  `delta` NaN while the other 7 `Greeks` fields stay exactly equal to the
+  input.
+- `FdStencilAtWingClampGivesHalfSegmentSlope` — evaluated exactly at
+  `LinearVarianceCurve`'s left node: the central-FD minus-side sample is
+  flat-clamped (curve's flat wing extrapolation) while the plus-side sample
+  is interior, so the FD slope lands at exactly half the interior segment's
+  true slope (average of a 0 flat-side slope and the sloped interior side) —
+  derived and verified analytically in-test (piecewise-linear ⇒ FD is exact
+  here, not merely approximate), tol 1e-9. Documents the wing/clamp boundary
+  behavior called out in the task.
+
+Focused run:
+```
+ctest --test-dir build -R AdjustedGreeks --output-on-failure
+100% tests passed, 0 tests failed out of 7
+```
+
+## Full-gate result
+
+```
+ctest --test-dir build -L atx_vol -j16 --timeout 900
+99% tests passed, 3 tests failed out of 1051
+```
+The only failures are the 3 pre-existing, known `MultinamePipeline.*` tests
+called out in the task as expected/ignorable
+(`MultinamePipeline.HeldLotWithoutSurfaceIsCountedNotHidden`,
+`MultinamePipeline.DefaultPolicyFullBasketBitIdentical`,
+`MultinamePipeline.DefaultPolicyStillBitIdentical`) — no new failures
+introduced by this change. (CMake auto-reconfigured once, triggered by the
+CMakeLists.txt source-list edits via Ninja's `CONFIGURE_DEPENDS`/target file
+re-check; the build tree itself was not manually reconfigured.)
 
 ## Self-review
 
-Not performed by the implementer (cancelled). Covered instead by the task review gate.
+- Verified the sign algebra by hand for the sticky-delta chain rule:
+  `k = ln(K/F)`, `F ∝ S` at fixed `K` ⇒ `dk/dS = -1/S` ⇒
+  `dSigma/dS|slide = (dSigma/dk)*(dk/dS) = -(dSigma/dk)/S`, matching the
+  brief's formula exactly (cross-checked against the equivalent `m = K/S`
+  moneyness-derivative form to rule out a chain-rule sign slip — same
+  result both ways).
+- Confirmed that for a globally downward-sloping ("negative-skew") smile the
+  formula in fact makes VegaSlope *positive* at any point of constant
+  negative slope (raising, not lowering, a fixed strike's implied vol as
+  spot rises under sticky-delta) — a known, textbook-documented (Derman)
+  consequence of the sticky-delta assumption applied at a fixed strike, not
+  a bug in this port. This is why `PutSkewLowersCallAdjustedDelta`'s curve is
+  built so the call's own LOCAL slope at the evaluated k is positive (past
+  the smile's minimum, a standard SVI-style wing curl-back) even though the
+  curve is put-skewed overall — the test's title describes the curve's
+  global asymmetry (put wing >> call wing), not the local FD sign at the one
+  evaluated strike, and the two are independently controllable (verified
+  numerically before writing the test).
+- `S <= 0` check (`!(S > 0.0)`) also transparently catches `S = NaN` (NaN
+  comparisons are false); `S = +inf` is NOT rejected by this check (division
+  by +inf yields 0, not NaN) — not explicitly tested since the brief only
+  specifies `S <= 0`; left as documented, unforced behavior rather than
+  adding an unrequested clamp.
+- No exceptions, no allocations, `[[nodiscard]]`/`noexcept` throughout,
+  matching `fit_metrics.*` house style. `curve_skew_slope` makes exactly 3
+  `IVolCurve::w` vcalls (base + 2 FD points) per call — consistent with the
+  "virtual only at the slice-query layer" house rule noted in
+  `vol_curve.hpp`.
+- Verified `Greeks` and `SviParams` are true aggregates (no user-declared
+  constructors) so the tests' positional-brace-init literals are valid and
+  match declaration order exactly (checked against `greeks.hpp` and
+  `vol_surface.hpp` directly before writing them).
 
-## Final-review fix report
+## Concerns
 
-Fixes for the three final whole-branch review findings on the surface_db feature.
+- None blocking. One soft note for future callers: `curve_skew_slope`'s
+  behavior exactly AT a `LinearVarianceCurve` wing node (half-segment slope,
+  from a central FD straddling the flat clamp) is intentional and documented
+  in the header + pinned by a dedicated test, but a caller expecting the pure
+  interior one-sided slope at exactly the boundary node would need to know
+  about this halving; it only affects evaluation points landing exactly on a
+  node, not the open interior or the flat exterior.
 
-### Finding 1 — mutation path could permanently brick the database
+## Fix report — sign test + inf guard (commit `aa63322`)
 
-- `atx-vol/src/surface_db.cpp:116-198` (`write_db_manifest`, symbol-encode loop, around
-  former line 139/187): after `encode_symbol_record`, added a call to
-  `symbol_record_enums_valid(p.rec)` — the same wire-range check `DbManifest::open` already
-  ran on read — and return `Err(ErrorCode::InvalidArgument, ...)` when it fails. Closes the
-  writer-side half of the asymmetry: an out-of-range enum (e.g.
-  `static_cast<FitPreset>(250)`) is now rejected before a record is ever assembled into a
-  manifest buffer.
-- `atx-vol/src/surface_db.cpp` (`SurfaceDb::persist_locked`, former lines 753-776): reordered
-  to serialize → `DbManifest::open(*bytes)` (parse-validate a COPY of the bytes in memory,
-  keeping the original for the write) → only on success, `write_manifest_file_atomic` (the
-  tmp+rename) → swap `snapshot_` from the already-parsed manifest (no second parse). A
-  mutation that would produce parser-rejected bytes now fails cleanly (returns the parser's
-  error) with the on-disk manifest and `snapshot_` both untouched, instead of renaming bad
-  bytes over `manifest.atxdb` and bricking every future `SurfaceDb::open`/`refresh`.
-- New test: `atx-vol/tests/surface_db_test.cpp`, `SurfaceDb.UpsertBadEnum_FailsCleanly_DbStillOpens`
-  (inserted just above `SurfaceDb.Create_RejectsExisting_Open_RejectsMissing`). Creates a db,
-  upserts `SymbolFitConfig{.preset = static_cast<FitPreset>(250)}`, asserts
-  `ErrorCode::InvalidArgument`, generation unchanged (still 1), `symbols()` still empty, a
-  subsequent valid `upsert_symbol` succeeds (generation → 2), and `SurfaceDb::open(root)` on a
-  fresh handle still opens and sees generation 2 / symbol AAPL.
+Review verdict applied (controller confirmed the sign diagnosis was correct:
+the brief's test-4 prose was wrong — under sticky-delta, a negative skew
+slope RAISES the adjusted call delta). Three fixes:
 
-### Finding 2 — thread-safety contract stronger than delivered
+1. **Test rename for honesty** (`atx-vol/tests/adjusted_greeks_test.cpp`):
+   `PutSkewLowersCallAdjustedDelta` →
+   `AdjustedGreeks.LocallyPositiveSkewSlopeLowersAdjustedDelta`. The comment
+   now states explicitly that the delta drop is driven by the LOCAL positive
+   slope past the smile minimum (0.04 → 0.06 over [0, 0.5] at k=0.25), that
+   the curve's global put skew is decorative realism and NOT the driver, and
+   cross-references the companion test for the typical-put-skew direction.
+   Curve/assertions unchanged (they were already correct).
 
-- `atx-vol/include/atx/vol/surface_db.hpp` (`SurfaceDb` class doc, former lines 320-324):
-  reworded to state precisely what's serialized — manifest mutations (`upsert_symbol`,
-  `remove_symbol`, and the manifest half of `write_partition`/`drop_partition`) are serialized
-  by the internal mutex, but partition FILE operations are not fully covered
-  (`write_partition` writes its archive before taking the lock; `drop_partition`'s unlink now
-  happens under the lock but after the manifest rename). States explicitly that concurrent
-  in-process callers must serialize same-key `write_partition`/`drop_partition` calls
-  themselves, and that cross-process remains single-writer/many-reader.
-- `atx-vol/src/surface_db.cpp` (`SurfaceDb::drop_partition`, former lines 931-970): moved
-  `std::filesystem::remove(path, ec)` from after the lock-guard's scope-close to inside it —
-  the `std::lock_guard` now spans the whole function body (manifest check → persist_locked →
-  unlink), so the unlink is the last statement executed while still holding `*mu_`. Kept the
-  manifest-first ordering and the existing crash-ordering comment (extended it by one sentence
-  explaining the in-process-locking rationale for the move); kept the noexcept
-  `std::filesystem::remove(path, ec)` overload. `write_partition`'s pre-lock archive write was
-  NOT touched (plan-mandated ordering).
+2. **Companion regression test for the real common case**
+   (`AdjustedGreeks.GlobalPutSkewRaisesAdjustedDelta`, new): monotonically
+   falling total variance (typical index put skew, nodes {-1,0,1} → w
+   {0.30, 0.16, 0.04}, T=0.5) ⇒ dSigma/dk < 0 everywhere ⇒
+   `vega_slope_per_spot > 0` under ω=0 ⇒ adjusted call delta RISES vs raw.
+   Asserts the sign of both the skew slope and the vega slope AND
+   tight-tolerance hand-derived values (all derived in comments in-test):
+   dw/dk = -0.12 exactly (piecewise-linear interior ⇒ central FD is exact),
+   sigma = sqrt(0.26) ≈ 0.509902, dSigma/dk ≈ -0.235339, vega_slope ≈
+   +0.00235339, adjusted delta ≈ 0.435301 > 0.4 raw. This is the regression
+   net for the formula's sign convention.
 
-### Finding 3 — stale "Task N" scaffolding comments
+3. **Non-finite spot guard** (`atx-vol/src/adjusted_greeks.cpp`,
+   `vega_slope_per_spot`): guard tightened from `!(S > 0.0)` to
+   `!std::isfinite(S) || !(S > 0.0)` — S=+inf previously slipped through and
+   returned 0 (division by +inf) instead of the NaN the header already
+   promised ("S <= 0 / non-finite ⇒ NaN"; header text unchanged, as
+   preferred). One-line +inf case added to
+   `AdjustedGreeks.NonPositiveOrNonFiniteSpotYieldsNaN`.
 
-- `atx-vol/include/atx/vol/surface_db.hpp:8-13` — removed the "(Tasks 3-5)" / "land in Task 3,
-  `apply_symbol_config` in a later task" phrasing; the file-header paragraph now describes what
-  the header actually contains (manifest format + `SurfaceDb` class + pipeline binding, no
-  process references).
-- `atx-vol/include/atx/vol/surface_db.hpp:314` (was "refresh() (Task 3); partition IO (Task 4)")
-  and `:354` (was "── Partition IO (Task 4) ──") — task markers removed.
-- `atx-vol/tests/surface_db_test.cpp:26-33` (file-header comment) — rewrote the false "Pure
-  in-memory (no file IO — that's Task 3)" claim (the file plainly contains `SurfaceDb`
-  file-IO tests) into an accurate two-part description: the in-memory `DbManifest`
-  writer/parser suite, then the on-disk `SurfaceDb`/partition-store/pipeline-binding/e2e suite.
-- `atx-vol/tests/surface_db_test.cpp:490` ("── SurfaceDb: partition store (Task 4) ──") and
-  `:658` ("── Fitting-pipeline binding (Task 5) ──") — task markers removed.
-- Swept all three files for any other "Task "/"task" occurrence (`grep -in task`). Two
-  remaining hits in the test file (`surface_db_test.cpp`, "the binding bit-identity oracle for
-  this task" at the partition-fixtures comment and at `expect_theo_bit_identical`) use "task"
-  generically to mean "this test file's job," not a numbered sprint-task reference — left
-  unchanged as out of scope for the "Task N" scaffolding sweep. `surface_db.cpp` had no
-  "Task"/"task" occurrences to begin with. Did not touch any `.superpowers/` ledger files.
+### Test evidence
 
-### Verification
-
-Build:
+Focused (post-fix):
 ```
-powershell -NoProfile -ExecutionPolicy Bypass -Command "& .\scripts\atx-build.ps1 build atx-vol-tests"
+ctest --test-dir build -R AdjustedGreeks --output-on-failure
+100% tests passed, 0 tests failed out of 8
 ```
-→ clean rebuild of `surface_db.cpp` + `surface_db_test.cpp`, link succeeded, no warnings
-(`/WX`-clean).
+(7 prior + GlobalPutSkewRaisesAdjustedDelta; the renamed test runs as
+LocallyPositiveSkewSlopeLowersAdjustedDelta.)
 
-Tests:
+Full gate (post-fix):
 ```
-ctest --test-dir build -R "SurfaceDb|SurfaceArchive" --output-on-failure
+ctest --test-dir build -L atx_vol -j16 --timeout 900
+3 tests failed out of 1052
 ```
-Tail of output:
-```
-33/34 Test #461: SurfaceDbPartition.BadKey_Rejected .................................................   Passed    0.10 sec
-      Start 462: SurfaceDbApply.PinnedConfig_OverridesPreset
-32/34 Test #462: SurfaceDbApply.PinnedConfig_OverridesPreset ........................................   Passed    0.18 sec
-      Start 463: SurfaceDbApply.UnpinnedConfig_PresetCurveStands
-33/34 Test #463: SurfaceDbApply.UnpinnedConfig_PresetCurveStands ....................................   Passed    0.09 sec
-      Start 464: SurfaceDbEndToEnd.ConfigureStoreReloadServe
-34/34 Test #464: SurfaceDbEndToEnd.ConfigureStoreReloadServe ........................................   Passed    0.16 sec
+Only the same 3 pre-existing `MultinamePipeline.*` failures — no new
+failures; fast-label count went 896 → 897 (the one added test).
 
-100% tests passed, 0 tests failed out of 34
-
-Label Time Summary:
-atx_vol    =   4.96 sec*proc (34 tests)
-
-Total Test time (real) =   5.76 sec
-```
-34/34 passed (33 pre-existing + `SurfaceDb.UpsertBadEnum_FailsCleanly_DbStillOpens`), including
-`SurfaceDb.UpsertBadEnum_FailsCleanly_DbStillOpens` (#453) and
-`SurfaceDbPartition.RewriteReplaces_DropRemoves` (#459, exercises the moved-inside-lock
-`drop_partition` unlink) both passing individually.
-
-Full `-L atx_vol` gate NOT run (operator runs it separately per dispatch instructions).
+Commit: `aa63322` — `fix(atx-vol): adjusted-greeks sign-test honesty +
+non-finite spot guard` (explicit paths: `atx-vol/src/adjusted_greeks.cpp`,
+`atx-vol/tests/adjusted_greeks_test.cpp`; standard trailer).

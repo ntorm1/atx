@@ -478,3 +478,20 @@ FINAL WHOLE-BRANCH REVIEW (fable, 896a100..d9d852e): "With fixes" -> fix wave 3f
   OUTSTANDING BEFORE MERGE: full-module gate `& .\scripts\atx-build.ps1 -Ctest -L atx_vol` on 3f12b43 —
   DEFERRED TO OPERATOR by explicit instruction (targeted SurfaceDb|SurfaceArchive 34/34 is the evidence
   on record). Feature branch worktree-feat-atx-vol-surface-db is otherwise merge-ready.
+
+
+---
+
+# SPRINT: SpiderRock-guided analytics (2026-07-11, branch feat/atx-vol-spiderrock, base 01d88b8)
+Plan: docs/superpowers/plans/2026-07-11-atx-vol-spiderrock-analytics.md
+Tasks: 1 vol_time | 2 event_vol | 3 SplineVol curve | 4 ShapeBlend interp | 5 adjusted delta | 6 calendar floor R3 | 7 band stats+session guard
+Baseline (01d88b8, dev preset, Debug): 986/989 atx_vol pass. Pre-existing failures (quarantined, not ours): MultinamePipeline.{HeldLotWithoutSurfaceIsCountedNotHidden, DefaultPolicyFullBasketBitIdentical, DefaultPolicyStillBitIdentical} — hardcoded bit-identity pins drift ULPs on this box. Gate for all tasks: no NEW failures vs this set.
+Task 1: complete (commits a284fb3..80dc2aa, review clean; Minor: vol_time.cpp:203 comment overclaims exactness; DST tests could use one spanning-window assertion)
+Task 2: complete (commits ec43778 + 40bcebf fix, review Approved; Minor: clamp-boundary test gap, dup-timestamp schedule untested, extrapolation-below-floor consequence undocumented in self-review)
+Task 3: complete (commits 102d15e+f8699d9, review Approved; Minor: unweighted D vs non-uniform knot gaps, single vega-weighted ATM quantity undisclosed interpretation, clone test weak, duplicate M solve, unsorted-custom-grid unvalidated)
+Task 4: complete (commit 36278d4, review Approved; Minor: linear_w_fallback duplicates default blend expr, ShapeBlend surface_eval_ex redoes forward/bracket lookup (hot-path perf), report test-count slip 38 vs 34)
+Task 5: complete (commits 372ace5 + aa63322 fix, re-review Approved; plan test-4 sign prose was inverted — corrected in plan; Minor: NaN-mid-domain FD path untested)
+Task 6: BLOCKED-ACCEPTED (no commit). Finding: R3 residual-2 is wing-boundary coupling (flat-clamped node edge), not interior gap; union-grid floor rows cascade to up-to-34 violations. Reclassified: fold R3 into Sprint E (Lee wings + wing-aware calendar). Evidence: .superpowers/sdd/task-6-report.md. Tree verified reverted; gate green at baseline.
+Task 7: complete (commit 8bedc63, review Approved; Minor: sentinel-1 readability at session.cpp:376, session.hpp:158 field doc not updated, all-crossed 0/0 shape untested)
+Final whole-branch review (fable): Ready to merge = YES after fix commit eabae15 (finite-quote guard, SplineVol persistence rejection documented+tested, session diag doc). Residual accepted-debt Minors recorded in review output. Full gate: 1060 tests, only 3 pre-existing quarantined MultinamePipeline failures (fail on clean main too).
+Sprint complete: 6 features shipped (vol_time, event_vol, SplineVol, ShapeBlend, adjusted_greeks, band stats+guard), 1 investigation (R3->Sprint E). 11 commits a284fb3..eabae15.

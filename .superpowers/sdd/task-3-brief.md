@@ -1,192 +1,87 @@
-### Task 3: `SurfaceDb` class — create/open, atomic manifest persistence, symbol CRUD, `refresh()`
-
-The database object: a root directory, a manifest held as an immutable snapshot, serialized mutations with atomic rewrite + generation bump, and cheap re-sync for the real-time-adjustment story.
+### Task 3: Vol-multiple cubic-spline curve (`SplineVol`) + fitter
 
 **Files:**
-- Modify: `atx-vol/include/atx/vol/surface_db.hpp` (add `SurfaceDb`)
-- Modify: `atx-vol/src/surface_db.cpp`
-- Modify: `atx-vol/tests/surface_db_test.cpp` (add tests)
+- Create: `atx-vol/include/atx/vol/spline_curve.hpp`, `atx-vol/src/spline_curve.cpp`
+- Modify: `atx-vol/include/atx/vol/vol_curve.hpp` (enum + adapter decl or include), `atx-vol/src/curve.cpp`/wherever `to_string(VolCurveKind)` + `fit_slice_curve` dispatch live (locate: `atx-vol/src/curve_fit.cpp` / `vol_curve` impl — grep `to_string(VolCurveKind`).
+- Test: `atx-vol/tests/spline_curve_test.cpp`
+- Modify: both CMakeLists.
 
-**Interfaces:**
-- Consumes: Task 2 manifest writer/parser.
-- Produces (used by Tasks 4-5):
+**Model (SpiderRock LiveVolSurfaces):** curve = cubic spline over standardized moneyness with volatility *multiples* `m = σ_K/σ_ATM` on a fixed grid; moneyness `z = ln(K/F)/(σ_ATM·√T)` (LogStd); wings flat beyond the outermost knot; serve `σ(k) = σ_ATM · m(z)`.
 
+**Interfaces (Produces):**
 ```cpp
-// Append inside namespace atx::vol in surface_db.hpp:
+// spline_curve.hpp
+namespace atx::vol {
 
-struct SurfaceDbCreateOpts {
-  std::int64_t created_ts_ns{0};      // 0 => system clock
+inline constexpr std::array<double, 29> kSrMoneynessGrid = {
+    -25, -14, -11, -8.5, -6.5, -5, -3.75, -2.75, -2, -1.5, -1, -0.75, -0.5,
+    -0.25, 0, 0.25, 0.5, 0.75, 1, 1.5, 2, 2.75, 3.75, 5, 6.5, 8.5, 11, 14, 25};
+
+struct SplineVolParams {
+  double atm_vol{0.0};                       // σ_ATM > 0
+  std::vector<double> z;                     // knot grid, strictly increasing
+  std::vector<double> mult;                  // ‖z‖ vol multiples, > 0
+  double z_lo_valid{0.0}, z_hi_valid{0.0};   // observed-moneyness range; flat outside
 };
 
-// An opened surface database. Const queries are thread-safe (they read an
-// immutable manifest snapshot swapped under a mutex); mutating calls are
-// serialized internally. Cross-process: single writer, many readers; every
-// mutation is an atomic manifest rewrite (tmp+rename) with generation++ so a
-// reader process picks it up via refresh().
-class SurfaceDb {
+struct SplineFitOpts {
+  std::span<const double> grid{kSrMoneynessGrid};  // knot z-grid
+  double lambda{1e-3};       // 2nd-difference roughness penalty on multiples
+  double mult_floor{0.05};   // post-solve clamp
+  std::size_t min_obs{6};    // below this: InvalidArgument
+};
+
+class SplineVolCurve final : public IVolCurve {
  public:
-  // Create <root>/ (and partitions/) and write an empty manifest
-  // (generation 1). Errors: AlreadyExists if a manifest already exists at
-  // root; IoError on filesystem failure.
-  [[nodiscard]] static Result<SurfaceDb> create(std::string_view root,
-                                                const SurfaceDbCreateOpts& opts = {});
-
-  // Open an existing database. Errors: NotFound (no manifest), ParseError,
-  // IoError.
-  [[nodiscard]] static Result<SurfaceDb> open(std::string_view root);
-
-  [[nodiscard]] const std::string& root() const noexcept { return root_; }
-
-  // ── Manifest snapshot queries (thread-safe) ──
-  [[nodiscard]] std::shared_ptr<const DbManifest> manifest() const;
-  [[nodiscard]] std::uint64_t generation() const;
-  [[nodiscard]] std::vector<std::string> symbols() const;   // canonical, sorted
-  [[nodiscard]] Result<SymbolFitConfig> symbol_config(std::string_view symbol) const;
-  [[nodiscard]] std::vector<DbPartitionInfo> partitions() const;
-
-  // ── Manifest mutation (serialized; atomic rewrite; generation++) ──
-  [[nodiscard]] Status upsert_symbol(std::string_view symbol, const SymbolFitConfig& cfg);
-  [[nodiscard]] Status remove_symbol(std::string_view symbol);  // NotFound if absent
-
-  // Re-read the manifest from disk iff its generation advanced past the
-  // in-memory snapshot (external writer). Ok and no-op when current.
-  [[nodiscard]] Status refresh();
-
-  // ── Partition IO (Task 4) ──
-  [[nodiscard]] Status write_partition(std::string_view key,
-                                       std::span<const SurfaceArchiveItem> items,
-                                       const SurfaceArchiveWriteOpts& opts = {});
-  [[nodiscard]] Result<SurfaceArchive> open_partition(std::string_view key) const;
-  [[nodiscard]] Result<PricedSurface> load_surface(std::string_view key,
-                                                   std::string_view symbol) const;
-  [[nodiscard]] Status drop_partition(std::string_view key);
-
- private:
-  SurfaceDb() = default;
-  [[nodiscard]] Status persist_locked(std::vector<DbSymbolEntry> symbols,
-                                      std::vector<DbPartitionInfo> partitions);
-  [[nodiscard]] std::string manifest_path() const;
-  [[nodiscard]] std::string partition_path(std::string_view canonical_key) const;
-
-  std::string root_{};
-  mutable std::mutex mu_{};                       // guards snapshot_ swap + writes
-  std::shared_ptr<const DbManifest> snapshot_{};
+  SplineVolCurve(SplineVolParams p, double T, double F, double df);
+  [[nodiscard]] double w(double k_log) const noexcept override;   // (atm·m(z))²·T
+  [[nodiscard]] VolCurveKind kind() const noexcept override;      // SplineVol
+  [[nodiscard]] std::size_t dof() const noexcept override;        // active knots
+  [[nodiscard]] std::unique_ptr<IVolCurve> clone() const override;
+  [[nodiscard]] const SplineVolParams& params() const noexcept;
 };
+
+// Penalized WLS fit of knot multiples from de-Americanized European obs.
+[[nodiscard]] Result<std::unique_ptr<IVolCurve>>
+fit_spline_vol_slice(std::span<const FitObs> obs_eu, double F, double T, double df,
+                     const SplineFitOpts& opts = {});
+}
+// vol_curve.hpp: enum gains `SplineVol = 5`; CurveConfig gains `SplineFitOpts spline{};`
+// fit_slice_curve dispatch gains a SplineVol case (no w_prev support v1 — document).
 ```
 
-(`<mutex>` joins the header includes. `SurfaceDb` is movable, non-copyable — `std::mutex` member means: implement move ctor/assign manually by locking the source, or hold `mu_` in a `std::unique_ptr<std::mutex>`; the unique_ptr route is simpler and fine here.)
+**Fitting algorithm:**
+1. σ_ATM seed: vega-weight-weighted mean of obs IVs with |k| ≤ 0.5·σ_guess·√T (fallback: global vega-weighted mean; σ_guess = global mean IV). Then one refinement pass: σ_ATM = spline-interpolated fit at z=0 after solve, re-standardize once (two-pass total, deterministic).
+2. Standardize each obs: `z_i = k_i/(σ_ATM√T)`, target `y_i = iv_i/σ_ATM`, weight `wt_i = FitObs.weight_w`.
+3. Restrict to active knots: knots inside `[min z_i − 1, max z_i + 1]` (never fewer than 4); outer knots excluded from DoF and pinned by the natural-spline flat extension.
+4. Cardinal natural-cubic-spline basis: for each active knot j solve the tridiagonal natural-spline system for the unit vector e_j once (O(K²) total, K ≤ 29); basis matrix `B[i][j] = basis_j(z_i)`.
+5. Solve `(BᵀWB + λ·DᵀD)·m = BᵀWy` where D = second-difference matrix over knots, via `atx::core::linalg::solve_spd` (same helper the C8 LM uses). Clamp `m` to `[mult_floor, ∞)`.
+6. Diagnostics: post-fit Roper `g(k) ≥ 0` scan on a 128-pt k-grid within the valid range; count violations (do NOT project v1 — record count; callers can reject). Store in fit report the same way existing fitters expose diag (return curve; violations logged via counter or accessible via params — expose `n_butterfly_viol` on `SplineVolParams`).
+7. Eval: binary-search knot interval, cubic Hermite/natural-spline eval; `z` clamped to `[z.front(), z.back()]` (flat wings); w NaN if T/F/df invalid.
 
-**Steps:**
-
-- [ ] **Step 1: Write failing tests** (append to surface_db_test.cpp). Use a per-test temp dir: `std::filesystem::temp_directory_path() / "atx_surface_db_test" / <unique test-name suffix>`; `std::filesystem::remove_all` it at test start AND end (self-cleaning even after a prior crashed run).
-
+**Test cases (write first):**
 ```cpp
-TEST(SurfaceDb, CreateOpenUpsertReopen_ConfigPersists) {
-  const auto root = test_root("create_open");     // helper: fresh temp dir
-  auto db = SurfaceDb::create(root.string());
-  ASSERT_TRUE(db.has_value());
-  EXPECT_EQ(db->generation(), 1u);
-  EXPECT_TRUE(db->symbols().empty());
-
-  const auto cfg = make_full_config();
-  ASSERT_TRUE(db->upsert_symbol("aapl", cfg).has_value());
-  EXPECT_EQ(db->generation(), 2u);
-  ASSERT_TRUE(db->upsert_symbol("SPY", SymbolFitConfig{}).has_value());
-  EXPECT_EQ(db->generation(), 3u);
-
-  auto db2 = SurfaceDb::open(root.string());      // fresh process simulation
-  ASSERT_TRUE(db2.has_value());
-  EXPECT_EQ(db2->generation(), 3u);
-  EXPECT_EQ(db2->symbols(), (std::vector<std::string>{"AAPL", "SPY"}));
-  auto got = db2->symbol_config("AAPL");
-  ASSERT_TRUE(got.has_value());
-  expect_config_eq(*got, cfg);
-
-  ASSERT_TRUE(db2->remove_symbol("aapl").has_value());
-  EXPECT_EQ(db2->symbol_config("AAPL").error().code(), ErrorCode::NotFound);
-  EXPECT_EQ(db2->remove_symbol("AAPL").error().code(), ErrorCode::NotFound);
-  std::filesystem::remove_all(root);
+TEST(SplineVol, FlatSmileRoundTrip) {
+  // obs from flat 20% smile, 15 strikes: fit → every mult ≈ 1, atm ≈ 0.20, iv(k)=0.20
 }
-
-TEST(SurfaceDb, Create_RejectsExisting_Open_RejectsMissing) {
-  const auto root = test_root("create_guard");
-  ASSERT_TRUE(SurfaceDb::create(root.string()).has_value());
-  EXPECT_EQ(SurfaceDb::create(root.string()).error().code(), ErrorCode::AlreadyExists);
-  const auto missing = test_root("no_such_db");
-  EXPECT_EQ(SurfaceDb::open(missing.string()).error().code(), ErrorCode::NotFound);
-  std::filesystem::remove_all(root);
+TEST(SplineVol, RecoversSviSmile) {
+  // Generate obs from a raw-SVI slice (a=.02,b=.4,rho=-.3,m=0,sigma=.4,T=.25,F=100);
+  // 25 strikes, tight uniform weights. RMSE(iv) < 2e-3 inside observed range.
 }
-
-TEST(SurfaceDb, Refresh_SeesExternalWriterUpdate) {
-  const auto root = test_root("refresh");
-  auto writer = SurfaceDb::create(root.string());
-  ASSERT_TRUE(writer.has_value());
-  auto reader = SurfaceDb::open(root.string());
-  ASSERT_TRUE(reader.has_value());
-  EXPECT_EQ(reader->generation(), 1u);
-
-  ASSERT_TRUE(writer->upsert_symbol("QQQ", SymbolFitConfig{}).has_value());
-  // Reader still on its old snapshot until refresh:
-  EXPECT_EQ(reader->generation(), 1u);
-  ASSERT_TRUE(reader->refresh().has_value());
-  EXPECT_EQ(reader->generation(), 2u);
-  EXPECT_TRUE(reader->symbol_config("QQQ").has_value());
-  // Idempotent when current:
-  ASSERT_TRUE(reader->refresh().has_value());
-  EXPECT_EQ(reader->generation(), 2u);
-  std::filesystem::remove_all(root);
+TEST(SplineVol, WingsAreFlat) { /* iv at z=40 == iv at z clamp boundary */ }
+TEST(SplineVol, DofCountsActiveKnots) { /* narrow board -> dof < 29 */ }
+TEST(SplineVol, CloneIsDeepAndIdentical) { /* clone then compare w() on grid */ }
+TEST(SplineVol, DispatchThroughFitSliceCurve) {
+  // CurveConfig{kind=SplineVol} through fit_slice_curve returns kind()==SplineVol
+  // and serves through CurveSurface (push + w/iv query).
 }
-
-TEST(SurfaceDb, ConcurrentReaders_DuringUpserts_AreSafe) {
-  const auto root = test_root("concurrent");
-  auto db = SurfaceDb::create(root.string());
-  ASSERT_TRUE(db.has_value());
-  ASSERT_TRUE(db->upsert_symbol("SPY", SymbolFitConfig{}).has_value());
-  std::atomic<bool> stop{false};
-  std::vector<std::thread> readers;
-  for (int t = 0; t < 4; ++t) {
-    readers.emplace_back([&] {
-      while (!stop.load(std::memory_order_relaxed)) {
-        auto snap = db->manifest();
-        auto cfg = db->symbol_config("SPY");
-        ASSERT_TRUE(cfg.has_value());
-        (void)snap;
-      }
-    });
-  }
-  for (int i = 0; i < 50; ++i) {
-    SymbolFitConfig c; c.band_k = 1.0 + 0.01 * i;
-    ASSERT_TRUE(db->upsert_symbol("SPY", c).has_value());
-  }
-  stop.store(true);
-  for (auto& th : readers) th.join();
-  auto final_cfg = db->symbol_config("SPY");
-  ASSERT_TRUE(final_cfg.has_value());
-  EXPECT_DOUBLE_EQ(final_cfg->band_k, 1.0 + 0.01 * 49);
-  std::filesystem::remove_all(root);
-}
+TEST(SplineVol, RejectsDegenerateInputs) { /* <min_obs, F<=0, T<=0 */ }
+TEST(SplineVol, ButterflyViolationCounterOnConvexData) { /* clean synthetic -> 0 */ }
 ```
 
-`test_root(name)` helper: `std::filesystem::temp_directory_path() / ("atx_surface_db_" + std::string(name))`, `remove_all` then return; add `<filesystem>`, `<thread>`, `<atomic>` includes.
+**Steps:** tests → fail → implement (spline_curve.* first, then enum/dispatch wiring) → pass → full gate (existing golden tests must be untouched: SplineVol is NOT added to `default_selector_candidates()` v1) → commit `feat(atx-vol): SplineVol vol-multiple cubic-spline curve family (SpiderRock SRCubic-style)`.
 
-- [ ] **Step 2: Build; verify the new tests fail** (missing SurfaceDb symbols): `& .\scripts\atx-build.ps1 build atx-vol-tests` — expect failure mentioning `SurfaceDb`.
-
-- [ ] **Step 3: Implement.** Notes:
-  - `create`: `std::filesystem::create_directories(root / "partitions")`; if `root/manifest.atxdb` exists → AlreadyExists; write empty manifest via `write_db_manifest({}, {}, {.generation = 1, .created_ts_ns = opts.created_ts_ns})` and the atomic file write helper below; then delegate to `open`.
-  - Atomic write helper (private, reuse for every manifest persist): serialize → `manifest_path() + ".tmp"` → `std::ofstream` binary write → `std::filesystem::rename` (copy the archive's `write_surface_archive_file` error handling, incl. tmp cleanup on failure).
-  - `open`: read file fully (NotFound if `!exists`, IoError otherwise on stream failure) → `DbManifest::open` → store `snapshot_ = make_shared<const DbManifest>(std::move(m))`.
-  - Mutations (`upsert_symbol`, `remove_symbol`, and Task 4's partition bookkeeping): lock `mu_`; rebuild `std::vector<DbSymbolEntry>` + `std::vector<DbPartitionInfo>` from the current snapshot (decode each record); apply the change (upsert = replace by canonical match or append; remove = erase or NotFound); call `persist_locked` which writes with `generation = old + 1`, `created_ts_ns` preserved from header, `updated_ts_ns = 0 (now)`, re-opens the bytes via `DbManifest::open` (cheap; guarantees the in-memory snapshot is exactly what a fresh reader parses), swaps `snapshot_`.
-  - `refresh()`: read the manifest file's first `sizeof(DbManifestHeader)` bytes; if `generation <= snapshot->generation()` → Ok no-op; else full re-read + parse + swap under lock. (Read the header via `std::ifstream` with `read()`; a short read → ParseError.)
-  - `manifest()` / queries: lock, copy `shared_ptr`, unlock, then operate on the snapshot.
-
-- [ ] **Step 4: Build + run.** `& .\scripts\atx-build.ps1 build atx-vol-tests && & .\scripts\atx-build.ps1 -Ctest -R SurfaceDb` — expect ALL SurfaceDb* PASS.
-
-- [ ] **Step 5: Commit.**
-
-```bash
-git add -A
-git commit -m "feat(atx-vol): SurfaceDb - atomic manifest persistence, symbol CRUD, generation refresh"
-```
+**Acceptance:** new tests pass; gate green; `default_selector_candidates()` unchanged.
 
 ---
 
