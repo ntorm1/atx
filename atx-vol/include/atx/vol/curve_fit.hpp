@@ -42,7 +42,15 @@ namespace atx::vol {
 // field is exactly what the prepass task for that slice's chain already
 // computed, moved out — never approximated or resampled.
 struct SliceInputCertification {
+  // Certification carry: resolved with the CALLER's caches
+  // (`SurfaceParityInputs::deam_cert_caches` — what the historical serial
+  // certification pass used), NOT necessarily the fit's own (possibly
+  // session-cached) resolve. `carry_available` is false when that
+  // certification resolve failed (a cached fit resolve can succeed where the
+  // certification resolve does not) — mirrors the old serial pass leaving the
+  // slice's carry diagnostics unavailable.
   CarryDiagnostics carry{};
+  bool carry_available{false};
   DeAmAuditDiagnostics inversion{};
   std::vector<FitObs> obs;                 // fit rows (ObsSet::obs)
   std::vector<double> source_mids;         // ‖ obs; raw chain.mids at (K, side)

@@ -529,6 +529,72 @@ TEST(PricerFitterPolicy, CertificationAndAdmissionBitIdenticalAcrossFitWorkerCou
   }
 }
 
+// rfx task 5 review fix (item 3): sibling of the test above for the eSSVI
+// (default-surface) branch, where the Critical indexing fix lives —
+// VolaSession::build's eSSVI path consumes run_surface_parity's per-slice
+// carry through collect_input_diagnostics' precomputed span.
+// run_surface_parity itself never reads fit_workers (it is fully serial), so
+// the env toggle here pins the seam's determinism CONTRACT; the per-slice
+// VALUE correctness against a serially recomputed reference is pinned by
+// session_test's CarryCertificationMatchesSerialReferencePerSlice. The
+// distinctness assertion at the end is the in-suite regression tripwire for
+// the indexing bug (every slice reporting slice 0's carry).
+TEST(PricerFitterPolicy, EssviCertificationAndAdmissionBitIdenticalAcrossFitWorkerCounts) {
+  FitWorkersEnvGuard env_guard;  // restores ATX_VOL_FIT_WORKERS on scope exit
+
+  SynthPanelSpec spec = make_spy_synthetic_spec();
+  auto panel = make_synthetic_american_panel(spec);
+  ASSERT_TRUE(panel.has_value()) << panel.error().message();
+  auto chain = OptionChain::from_frame(panel->frame, spec.r, spec.spot);
+  ASSERT_TRUE(chain.has_value()) << chain.error().message();
+
+  // The served eSSVI risk rung (the standard fallback family / explicit pin),
+  // as in RiskEssviRungServesOnlyAuditedInversions above.
+  PricerConfig config;
+  config.quality_mode = atx::vol::FitQualityMode::Balanced;
+  config.outputs = atx::vol::SurfaceOutputs::Risk;
+  atx::vol::CurveConfig curve;
+  curve.kind = atx::vol::VolCurveKind::Essvi;
+  config.curve = curve;
+
+  set_fit_workers_env("1");
+  ASSERT_EQ(atx::vol::atx_auto_worker_count(), 1u);
+  PricerFitter serial{config};
+  ASSERT_TRUE(serial.fit(*chain).has_value());
+  const atx::vol::SurfaceBundle serial_bundle = serial.bundle();
+
+  unset_fit_workers_env();
+  PricerFitter parallel{config};
+  ASSERT_TRUE(parallel.fit(*chain).has_value());
+  const atx::vol::SurfaceBundle parallel_bundle = parallel.bundle();
+
+  EXPECT_EQ(serial_bundle.risk_health.state, parallel_bundle.risk_health.state);
+  EXPECT_EQ(serial_bundle.risk_health.reasons, parallel_bundle.risk_health.reasons);
+  ASSERT_EQ(serial_bundle.risk_health.state, atx::vol::SurfaceState::Healthy);
+  ASSERT_NE(serial_bundle.risk, nullptr);
+  ASSERT_NE(parallel_bundle.risk, nullptr);
+  expect_session_diagnostics_bit_identical(serial_bundle.risk->diagnostics(),
+                                           parallel_bundle.risk->diagnostics());
+  expect_slice_diagnostics_bit_identical(
+      serial_bundle.risk->session().slice_diagnostics(),
+      parallel_bundle.risk->session().slice_diagnostics());
+
+  // Regression tripwire for the review's Critical finding: with the indexing
+  // bug every slice reported slice 0's carry — require at least two slices to
+  // differ in some carry field.
+  const auto slices = serial_bundle.risk->session().slice_diagnostics();
+  ASSERT_GE(slices.size(), std::size_t{2});
+  bool any_distinct = false;
+  for (std::size_t i = 1; i < slices.size(); ++i) {
+    if (slices[i].carry.dispersion != slices[0].carry.dispersion ||
+        slices[i].carry.max_pcp_residual != slices[0].carry.max_pcp_residual ||
+        slices[i].carry.confidence_half_width != slices[0].carry.confidence_half_width) {
+      any_distinct = true;
+    }
+  }
+  EXPECT_TRUE(any_distinct);
+}
+
 TEST(PricerFitterPolicy, EventContextBuildsAndServesC8Surface) {
   SynthPanelSpec spec = make_spy_synthetic_spec();
   spec.uid = "AAPL";

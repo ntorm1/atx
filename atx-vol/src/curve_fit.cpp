@@ -132,8 +132,14 @@ struct ChainPrepass {
   // Perf C1: the certification-layer's derived data, captured HERE (same
   // per-chain task) instead of a second serial pass in VolaSession::build's
   // (now-removed, for this driver) collect_input_diagnostics. Meaningful only
-  // when `usable`.
+  // when `usable`. `carry` is the CERTIFICATION resolve — re-run with
+  // `in.deam_cert_caches` substituted when those differ from the fit's own
+  // caches (review fix; see run_deam_prepass) — and `carry_available` false
+  // means that certification resolve failed (the historical serial pass's
+  // carry-unavailable case; a cached fit resolve can succeed where the
+  // certification resolve does not).
   CarryDiagnostics carry;
+  bool carry_available = false;
   std::vector<double> source_mids;         // ‖ obs.obs; raw chain.mids at (K, side)
   std::vector<std::uint8_t> source_flags;  // ‖ obs.obs; raw chain.flags at (K, side)
   std::vector<double> chain_mids;          // full-chain snapshot
@@ -260,7 +266,35 @@ void source_quote_lookup(const Chain &chain, const std::vector<FitObs> &obs,
     slot.borrow = d_res->borrow;
     slot.q_eff = q_eff;
     slot.df = df;
-    slot.carry = d_res->carry;
+    // Perf C1 + review fix: the CERTIFICATION carry must be bit-identical to
+    // what the historical serial certification pass produced — a resolve with
+    // the CALLER's caches (in.deam_cert_caches), never the session-built
+    // hot-path caches this prepass's own resolve may have consulted. When the
+    // two cache sets are the same pointers, this resolve IS that resolve
+    // (pure function of identical arguments): reuse it. When they differ,
+    // re-resolve with the certification caches substituted — same per-chain
+    // parallel task, so the work the old pass did serially is fanned out, and
+    // a certification-resolve failure only marks this slice's carry
+    // unavailable (the old pass's behavior), never drops the chain.
+    const AmericanCorrectionCaches cert_caches =
+        in.deam_cert_caches.has_value() ? *in.deam_cert_caches : in.deam.caches;
+    if (cert_caches.call == in.deam.caches.call && cert_caches.put == in.deam.caches.put) {
+      slot.carry = d_res->carry;
+      slot.carry_available = true;
+    } else {
+      DeAmOptions cert_deam = in.deam;
+      cert_deam.caches = cert_caches;
+      const auto t_cert0 = ProfileClock::now();
+      const auto cert_res =
+          resolve_chain_forward(chain, in.S, rate, in.cash_divs, in.now_ts_ns, cert_deam);
+      if (profile) {
+        slot.ms_forward_borrow += elapsed_ms(t_cert0, ProfileClock::now());
+      }
+      if (cert_res) {
+        slot.carry = cert_res->carry;
+        slot.carry_available = true;
+      }
+    }
     // Perf C1: capture the certification layer's derived inputs HERE (same
     // task, same `chain`) instead of a second serial pass in
     // VolaSession::build. Source-quote lookup reads `slot.obs.obs`, so it must
@@ -446,6 +480,7 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
     // again).
     SliceInputCertification cert;
     cert.carry = pre.carry;
+    cert.carry_available = pre.carry_available;
     cert.inversion = pre.obs.deam_audit;
     cert.obs = pre.obs.obs;
     cert.source_mids = std::move(pre.source_mids);

@@ -773,3 +773,90 @@ TEST(VolaSession, AuditStarvedExpiryIsCountedInDiagnostics) {
   EXPECT_EQ(sess->diagnostics().n_carry_skipped_expiries, std::size_t{0});
   EXPECT_EQ(sess->diagnostics().n_audit_starved_expiries, std::size_t{1});
 }
+
+// rfx task 5 review fixes (perf C1 dedup): the per-slice carry certification a
+// session reports must be bit-identical to the SERIAL REFERENCE the
+// pre-task-5 certification pass computed — resolve_chain_forward on the
+// session's own deam options, whose caches are the CALLER's (this test's:
+// empty), never the session-built hot-path caches. Covers, per slice and with
+// exact EXPECT_EQ:
+//  * finding 1 (Critical): the precomputed-carry indexing bug served slice
+//    0's carry to EVERY slice — the i>=1 reference comparisons here fail
+//    under that bug (the distinctness assertion at the end documents that the
+//    fixture actually gives slices different carry, so the check has power);
+//  * finding 2 (Important): with use_correction_cache=true the FIT resolves
+//    carry through the session-built caches, but certification must still
+//    report the cache-free reference numbers (curve-driver branch: the
+//    prepass re-resolves with the caller's caches; eSSVI branch: the reuse
+//    gate falls back to the serial recompute).
+TEST(VolaSession, CarryCertificationMatchesSerialReferencePerSlice) {
+  const SynthPanelSpec spec = make_spec();
+  Universe u;
+  const Underlying* under = install(spec, u);
+  ASSERT_NE(under, nullptr);
+
+  for (const bool use_cache : {false, true}) {
+    for (const VolCurveKind kind : {VolCurveKind::Essvi, VolCurveKind::ConvexDense}) {
+      SCOPED_TRACE("use_correction_cache=" + std::to_string(use_cache) +
+                   " kind=" + std::to_string(static_cast<int>(kind)));
+      SessionInputs in = make_inputs(spec);
+      in.curve.kind = kind;
+      in.use_correction_cache = use_cache;
+      // Pin the Andersen-Lake preset so build() does not substitute its own
+      // (al_fast/1e-5/n_atm=1) defaults: the in-test serial reference below
+      // must run the EXACT effective deam options the build used.
+      in.deam.al_opts = atx::vol::al_fast_opts();
+      in.deam.iv_tol = 1.0e-5;
+
+      const auto sess = VolaSession::build(*under, in);
+      ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
+      const auto slices = sess->slice_diagnostics();
+      ASSERT_EQ(slices.size(), sess->expiries().size());
+      ASSERT_GE(slices.size(), std::size_t{2});
+
+      bool any_distinct_from_first = false;
+      for (std::size_t i = 0; i < slices.size(); ++i) {
+        SCOPED_TRACE("slice " + std::to_string(i));
+        const double T = sess->expiries()[i].T;
+        const atx::vol::Chain* chain = nullptr;
+        for (const auto& c : under->chains) {
+          if (c.T == T) {
+            chain = &c;
+            break;
+          }
+        }
+        ASSERT_NE(chain, nullptr);
+        // The serial reference: what the pre-task-5 certification pass ran —
+        // resolve_chain_forward with the session's deam options (in.deam ==
+        // the build's effective deam here, al_opts pinned above; caches are
+        // the caller's, i.e. empty).
+        const auto ref = atx::vol::resolve_chain_forward(
+            *chain, in.S, in.r, in.cash_divs, in.now_ts_ns, in.deam);
+        ASSERT_TRUE(ref.has_value()) << ref.error().to_string();
+        const atx::vol::CarryDiagnostics& rc = ref->carry;
+        const atx::vol::SessionCarryDiagnostics& sc = slices[i].carry;
+        EXPECT_TRUE(sc.available);
+        EXPECT_EQ(sc.n_candidates, rc.n_candidates);
+        EXPECT_EQ(sc.n_attempted, rc.n_attempted);
+        EXPECT_EQ(sc.n_solved, rc.n_solved);
+        EXPECT_EQ(sc.n_retained, rc.n_retained);
+        EXPECT_EQ(sc.effective_pair_count, rc.effective_pair_count);
+        EXPECT_EQ(sc.dispersion, rc.dispersion);
+        EXPECT_EQ(sc.max_leave_one_out_shift, rc.max_leave_one_out_shift);
+        EXPECT_EQ(sc.confidence_half_width, rc.confidence_half_width);
+        EXPECT_EQ(sc.max_pcp_residual, rc.max_pcp_residual);
+        EXPECT_EQ(sc.confident, rc.confident);
+        if (i > 0 && (sc.dispersion != slices[0].carry.dispersion ||
+                      sc.max_pcp_residual != slices[0].carry.max_pcp_residual ||
+                      sc.confidence_half_width !=
+                          slices[0].carry.confidence_half_width)) {
+          any_distinct_from_first = true;
+        }
+      }
+      // Fixture power guard: the slices must carry DISTINCT diagnostics, or
+      // the indexing regression (every slice reads slice 0) would be
+      // invisible to the reference comparison above.
+      EXPECT_TRUE(any_distinct_from_first);
+    }
+  }
+}

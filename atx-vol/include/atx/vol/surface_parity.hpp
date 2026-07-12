@@ -35,9 +35,11 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 #include "atx/vol/calib.hpp"        // CalibOpts
+#include "atx/vol/correction.hpp"   // AmericanCorrectionCaches (cert-carry resolve)
 #include "atx/vol/curve.hpp"        // DividendEvent
 #include "atx/vol/deamer.hpp"       // DeAmOptions
 #include "atx/vol/parity.hpp"       // ParityReport
@@ -143,6 +145,19 @@ struct SurfaceParityInputs {
   // caches instead of cold Andersen-Lake. Default false preserves the reference
   // dense fit; HFT can opt in after measuring the penny-tight SPY quality trade.
   bool use_deam_cache_for_fit{false};
+
+  // Correction caches for the CERTIFICATION-carry resolve exported through
+  // `CurveSurfaceReport::input_certification` (perf C1 review fix). The
+  // certification layer historically resolved carry with the CALLER's
+  // `SessionInputs::deam` — whose caches the session never populates — while
+  // `deam.caches` here may carry the session-built hot-path caches. nullopt
+  // (default) => the fit's own carry resolve already ran with exactly the
+  // certification caches; reuse it. Set => when it differs from `deam.caches`,
+  // the prepass re-resolves the certification carry with these caches
+  // substituted (same per-chain parallel task), reproducing the historical
+  // serial certification pass bit-for-bit. Only consulted by
+  // `fit_curve_surface`; `run_surface_parity` does not read this field.
+  std::optional<AmericanCorrectionCaches> deam_cert_caches{};
 };
 
 // Per-fitted-slice pricing context: everything the composable facade
@@ -166,9 +181,13 @@ struct SurfaceParityReport {
   std::vector<double> expiry_T;           // per fitted slice, strictly ascending
   std::vector<ParityReport> per_expiry;   // re-Americanized metrics per expiry
   std::vector<SliceContext> context;      // per-slice re-pricing context (‖ expiry_T)
-  // Perf C1: the carry diagnostics `resolve_chain_forward` already produced
-  // for this slice (‖ context) -- lets `VolaSession::build`'s certification
-  // layer skip a second, identical `resolve_chain_forward` call per chain.
+  // Perf C1: the carry diagnostics the FIT's `resolve_chain_forward` produced
+  // for this slice (‖ context), resolved with `in.deam` — including whatever
+  // caches it carried. `VolaSession::build`'s certification layer reuses these
+  // ONLY when the fit's caches equal the certification caches (the caller's
+  // `SessionInputs::deam.caches`); otherwise it falls back to its own
+  // cache-free recompute so certification stays bit-identical to the
+  // historical serial pass (perf C1 review fix).
   std::vector<CarryDiagnostics> carry;
   double worst_frac_within_bidask{0.0};   // min over expiries of frac in bid-ask
   bool calendar_arb_free{false};          // arb.hpp calendar check on the surface

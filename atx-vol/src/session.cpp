@@ -161,9 +161,12 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
 // ran `resolve_chain_forward` once per chain to fit the surface; when its
 // per-slice `CarryDiagnostics` are handed in here (‖ `context`, same size),
 // the carry re-derivation below is skipped — it would recompute the IDENTICAL
-// function on the IDENTICAL arguments. Empty (the default) recomputes, the
-// fallback for any caller that genuinely reaches certification without an
-// already-resolved carry.
+// function on the IDENTICAL arguments. The caller must therefore only pass a
+// carry that WAS resolved with `in.deam`-equivalent options — in particular
+// the same caches (review fix: the fit may resolve through session-built
+// hot-path caches that `in.deam` never carries; such a carry is NOT valid
+// here). Empty (the default) recomputes, the fallback for any caller that
+// genuinely reaches certification without a certification-grade carry.
 [[nodiscard]] std::vector<SessionSliceDiagnostics> collect_input_diagnostics(
     const Underlying& under, const SessionInputs& in,
     std::span<const SliceContext> context,
@@ -189,8 +192,12 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
   if (chain_ts_cache != nullptr) chain_ts_cache->reserve(context.size());
   const bool use_precomputed_carry = precomputed_carry.size() == context.size();
   std::size_t chain_pos = 0;
-  std::size_t slice_idx = 0;
-  for (const SliceContext& slice : context) {
+  // Indexed loop: `slice_idx` is the ‖-vector ordinal into both `context` and
+  // `precomputed_carry`, advanced unconditionally per iteration (review fix:
+  // a manually-incremented counter missed the chain-found path and served
+  // slice 0's carry to every slice).
+  for (std::size_t slice_idx = 0; slice_idx < context.size(); ++slice_idx) {
+    const SliceContext& slice = context[slice_idx];
     if (observation_cache != nullptr) observation_cache->emplace_back();
     if (source_mid_cache != nullptr) source_mid_cache->emplace_back();
     if (source_flag_cache != nullptr) source_flag_cache->emplace_back();
@@ -209,7 +216,6 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
         std::fabs(under.chains[chain_pos].T - slice.T) >
             1.0e-10 * std::max(1.0, slice.T)) {
       out.push_back(std::move(sd));
-      ++slice_idx;
       continue;
     }
     const Chain& chain = under.chains[chain_pos++];
@@ -556,6 +562,12 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
     sp.deam.caches = AmericanCorrectionCaches{
         caches.call ? &*caches.call : nullptr,
         caches.put ? &*caches.put : nullptr};
+    // Review fix (perf C1): the certification layer historically resolved
+    // carry with the CALLER's deam options (eff.deam — whose caches this
+    // session never populates), not the session-built hot-path caches now on
+    // sp.deam. Hand the prepass the caller's caches so the certification
+    // carry it exports reproduces that serial pass bit-for-bit.
+    sp.deam_cert_caches = eff.deam.caches;
   }
 
   // ── Curve-family dispatch ──────────────────────────────────────────────────
@@ -641,7 +653,12 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
       SliceInputCertification& cert = crep.input_certification[i];
       SessionSliceDiagnostics sd{};
       sd.T = crep.context[i].T;
-      sd.carry = compact_carry(cert.carry);
+      // carry_available=false == the certification resolve failed: leave the
+      // default (unavailable) carry, exactly as the removed serial pass did
+      // when ITS resolve_chain_forward call failed.
+      if (cert.carry_available) {
+        sd.carry = compact_carry(cert.carry);
+      }
       sd.inversion = cert.inversion;
       sd.inversion_available = true;
       sd.inversion_certified = deam_inversion_certified(
@@ -727,10 +744,21 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
   // prepass to reuse), but the CARRY resolution IS a literal duplicate of what
   // `run_surface_parity` already computed per chain — pass `rep.carry` (perf
   // C1) so collect_input_diagnostics skips that one redundant
-  // resolve_chain_forward call per chain.
+  // resolve_chain_forward call per chain. Review fix: the reuse is only valid
+  // when the fit resolved carry with EXACTLY the caches the certification
+  // layer uses (eff.deam's — the caller's, never the session-built hot-path
+  // caches on sp.deam). When they differ, pass an empty span so the fallback
+  // recompute runs — the historical serial path, bit-for-bit.
+  const bool fit_carry_matches_certification =
+      sp.deam.caches.call == eff.deam.caches.call &&
+      sp.deam.caches.put == eff.deam.caches.put;
+  const std::span<const CarryDiagnostics> certification_carry =
+      fit_carry_matches_certification
+          ? std::span<const CarryDiagnostics>(rep.carry)
+          : std::span<const CarryDiagnostics>{};
   std::vector<SessionSliceDiagnostics> slice_diag = collect_input_diagnostics(
       under, eff, rep.context, sp.deam.caches,
-      /*fit_rows_audited=*/eff.deam.audit_fit_inversions, rep.carry,
+      /*fit_rows_audited=*/eff.deam.audit_fit_inversions, certification_carry,
       &incremental_obs, &incremental_mids, &incremental_flags,
       &incremental_chain_mids, &incremental_chain_flags,
       &incremental_chain_bids, &incremental_chain_asks, &incremental_chain_ts);
