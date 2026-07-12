@@ -46,11 +46,16 @@ using atx::vol::PricedSurface;
 using atx::vol::PricingContext;
 using atx::vol::Side;
 using atx::vol::SliceContext;
+using atx::vol::FitObs;
+using atx::vol::fit_spline_vol_slice;
+using atx::vol::SplineVolCurve;
+using atx::vol::SplineVolParams;
 using atx::vol::SurfaceArchive;
 using atx::vol::SurfaceArchiveItem;
 using atx::vol::SurfaceArchiveWriteOpts;
 using atx::vol::SviCurve;
 using atx::vol::SviParams;
+using atx::vol::svi_total_w;
 using atx::vol::VolCurveKind;
 using atx::vol::write_surface_archive;
 
@@ -210,6 +215,52 @@ constexpr double kR = 0.043;
   return std::move(*ps);
 }
 
+// Raw-SVI-generated observations (copied from spline_curve_test.cpp's
+// svi_smile_obs): iv_i = sqrt(svi_total_w(params, k_i) / T), uniform tight
+// weights -- deterministic, hand-checkable smile data for the SplineVol fitter.
+[[nodiscard]] std::vector<FitObs> svi_smile_obs(const SviParams &p, double T, int n,
+                                                double k_half_width) {
+  std::vector<FitObs> obs(static_cast<std::size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    const double t = (n > 1) ? static_cast<double>(i) / static_cast<double>(n - 1) : 0.5;
+    const double k = -k_half_width + t * (2.0 * k_half_width);
+    const double w = svi_total_w(p, k);
+    FitObs o;
+    o.k = k;
+    o.sigma_mkt = std::sqrt(w / T);
+    o.weight_w = 1.0;
+    obs[static_cast<std::size_t>(i)] = o;
+  }
+  return obs;
+}
+
+// SplineVol priced surface, `n` ascending-T slices, each fit_spline_vol_slice'd
+// from an SVI-generated smile (the exact fixture spline_curve_test.cpp uses for
+// SplineVol, RecoversSviSmile) -- genuine fitted params, not hand-rolled.
+[[nodiscard]] PricedSurface make_spline(std::uint32_t uid, int n) {
+  CurveSurface cs;
+  std::vector<SliceContext> ctx;
+  for (int i = 0; i < n; ++i) {
+    const double T = 0.05 + 0.10 * static_cast<double>(i);
+    const double F = kS;
+    const double df = std::exp(-kR * T);
+    SviParams svi{};
+    svi.a = 0.02 + 0.001 * static_cast<double>(i);
+    svi.b = 0.4;
+    svi.rho = -0.3;
+    svi.m = 0.0;
+    svi.sigma = 0.4;
+    const std::vector<FitObs> obs = svi_smile_obs(svi, T, 25, 0.6);
+    auto fitted = fit_spline_vol_slice(obs, F, T, df);
+    EXPECT_TRUE(fitted.has_value()) << (fitted.has_value() ? "" : fitted.error().to_string());
+    cs.push(std::move(*fitted));
+    ctx.push_back(SliceContext{T, F, 0.0, 0.02, 25, 0});
+  }
+  auto ps = PricedSurface::create(std::move(cs), std::move(ctx), make_pricing(uid));
+  EXPECT_TRUE(ps.has_value());
+  return std::move(*ps);
+}
+
 // Assert a reconstructed surface serves BIT-IDENTICAL theo to the original across
 // a (K, T, side) grid: implied vol, total variance, and re-Americanized fair value.
 void expect_theo_bit_identical(const PricedSurface &a, const PricedSurface &b) {
@@ -333,6 +384,44 @@ TEST(SurfaceArchive, RoundTrip_C8_TheoAndParamsBitIdentical) {
     const auto *a = static_cast<const C8Curve *>(orig.surface().slices()[i].get());
     const auto *b = static_cast<const C8Curve *>(got->surface().slices()[i].get());
     EXPECT_EQ(std::memcmp(&a->slice(), &b->slice(), sizeof(C8Params)), 0);
+  }
+}
+
+TEST(SurfaceArchive, SplineVolRoundTripBitExact) {
+  const PricedSurface orig = make_spline(21, 4);
+  auto got = round_trip(orig, "SPLN", "spln");
+  ASSERT_TRUE(got.has_value());
+  EXPECT_EQ(got->kind_at(0), VolCurveKind::SplineVol);
+  expect_theo_bit_identical(orig, *got);
+
+  for (std::size_t i = 0; i < orig.n_slices(); ++i) {
+    const auto *a = static_cast<const SplineVolCurve *>(orig.surface().slices()[i].get());
+    const auto *b = static_cast<const SplineVolCurve *>(got->surface().slices()[i].get());
+    const SplineVolParams &pa = a->params();
+    const SplineVolParams &pb = b->params();
+    // Byte-equality of the re-serialized payload: every scalar + array field
+    // that write_surface_archive packs into the ATXVSA payload compares
+    // byte-for-byte (memcmp on the arrays, bit-exact on the scalars) --
+    // mirrors RoundTrip_LinearVariance_TheoAndNodesBitIdentical's node-array
+    // memcmp and RoundTrip_C8_TheoAndParamsBitIdentical's whole-struct memcmp.
+    EXPECT_TRUE(bits_equal(pa.atm_vol, pb.atm_vol));
+    EXPECT_TRUE(bits_equal(pa.z_lo_valid, pb.z_lo_valid));
+    EXPECT_TRUE(bits_equal(pa.z_hi_valid, pb.z_hi_valid));
+    ASSERT_EQ(pa.z.size(), pb.z.size());
+    ASSERT_EQ(pa.mult.size(), pb.mult.size());
+    EXPECT_EQ(std::memcmp(pa.z.data(), pb.z.data(), pa.z.size() * sizeof(double)), 0);
+    EXPECT_EQ(std::memcmp(pa.mult.data(), pb.mult.data(), pa.mult.size() * sizeof(double)), 0);
+    EXPECT_EQ(pa.n_butterfly_viol, pb.n_butterfly_viol);
+  }
+
+  // w() equality on a 64-pt k-grid, bit-exact (==, not NEAR).
+  for (std::size_t i = 0; i < orig.n_slices(); ++i) {
+    const auto *a = orig.surface().slices()[i].get();
+    const auto *b = got->surface().slices()[i].get();
+    for (int g = -32; g <= 31; ++g) {
+      const double k = 0.01 * static_cast<double>(g);
+      EXPECT_TRUE(bits_equal(a->w(k), b->w(k))) << "slice " << i << " k=" << k;
+    }
   }
 }
 

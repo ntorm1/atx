@@ -262,6 +262,51 @@ constexpr double kArchR = 0.043;
   return std::move(*ps);
 }
 
+// Raw-SVI-generated observations (copied from spline_curve_test.cpp's
+// svi_smile_obs, via surface_archive_test.cpp's copy for Task I5): deterministic,
+// hand-checkable smile data for the SplineVol fitter.
+[[nodiscard]] std::vector<FitObs> svi_smile_obs(const SviParams &p, double T, int n,
+                                                double k_half_width) {
+  std::vector<FitObs> obs(static_cast<std::size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    const double t = (n > 1) ? static_cast<double>(i) / static_cast<double>(n - 1) : 0.5;
+    const double k = -k_half_width + t * (2.0 * k_half_width);
+    const double w = svi_total_w(p, k);
+    FitObs o;
+    o.k = k;
+    o.sigma_mkt = std::sqrt(w / T);
+    o.weight_w = 1.0;
+    obs[static_cast<std::size_t>(i)] = o;
+  }
+  return obs;
+}
+
+// SplineVol priced surface, `n` ascending-T slices, each fit_spline_vol_slice'd
+// from an SVI-generated smile -- genuine fitted params (Task I5).
+[[nodiscard]] PricedSurface make_spline(std::uint32_t uid, int n) {
+  CurveSurface cs;
+  std::vector<SliceContext> ctx;
+  for (int i = 0; i < n; ++i) {
+    const double T = 0.05 + 0.10 * static_cast<double>(i);
+    const double F = kArchS;
+    const double df = std::exp(-kArchR * T);
+    SviParams svi{};
+    svi.a = 0.02 + 0.001 * static_cast<double>(i);
+    svi.b = 0.4;
+    svi.rho = -0.3;
+    svi.m = 0.0;
+    svi.sigma = 0.4;
+    const std::vector<FitObs> obs = svi_smile_obs(svi, T, 25, 0.6);
+    auto fitted = fit_spline_vol_slice(obs, F, T, df);
+    EXPECT_TRUE(fitted.has_value());
+    cs.push(std::move(*fitted));
+    ctx.push_back(SliceContext{T, F, 0.0, 0.02, 25, 0});
+  }
+  auto ps = PricedSurface::create(std::move(cs), std::move(ctx), make_pricing(uid));
+  EXPECT_TRUE(ps.has_value());
+  return std::move(*ps);
+}
+
 // Assert a reconstructed surface serves BIT-IDENTICAL theo to the original
 // across a (K, T, side) grid: implied vol, total variance, and re-Americanized
 // fair value. Copied verbatim (pattern) from surface_archive_test.cpp -- the
@@ -586,6 +631,50 @@ TEST(SurfaceDbPartition, WriteOpenLoad_TheoBitIdentical) {
   ASSERT_TRUE(arch.has_value());
   EXPECT_EQ(arch->count(), 2u);
   ASSERT_TRUE(arch->map_symbol("MSFT").has_value());
+  std::filesystem::remove_all(root);
+}
+
+TEST(SurfaceDb, SplineVolPartitionRoundTrip) {
+  // Task I5.2: write_partition/load_surface delegate straight to
+  // write_surface_archive_file / SurfaceArchive::open_file (no per-kind
+  // switch in the db path -- see write_partition/open_partition in
+  // surface_db.cpp), so this is a REGRESSION PIN on that delegation, not new
+  // db-path code: it started passing as soon as I5.1's archive payload
+  // landed. Mirrors WriteOpenLoad_TheoBitIdentical's assertion shape.
+  const auto root = test_root("part_splinevol");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  const auto s1 = make_spline(/*uid=*/1, /*n_slices=*/4);
+  const std::vector<SurfaceArchiveItem> items{{"AAPL", &s1}};
+  ASSERT_TRUE(db->write_partition("2026-07-10", items).has_value());
+  EXPECT_EQ(db->partitions().size(), 1u);
+  EXPECT_EQ(db->partitions()[0].surface_count, 1u);
+
+  auto loaded = db->load_surface("2026-07-10", "aapl");
+  ASSERT_TRUE(loaded.has_value());
+  EXPECT_EQ(loaded->kind_at(0), VolCurveKind::SplineVol);
+  expect_theo_bit_identical(s1, *loaded);
+  for (std::size_t i = 0; i < s1.n_slices(); ++i) {
+    const auto *a = static_cast<const SplineVolCurve *>(s1.surface().slices()[i].get());
+    const auto *b = static_cast<const SplineVolCurve *>(loaded->surface().slices()[i].get());
+    const SplineVolParams &pa = a->params();
+    const SplineVolParams &pb = b->params();
+    EXPECT_TRUE(bits_equal(pa.atm_vol, pb.atm_vol));
+    ASSERT_EQ(pa.z.size(), pb.z.size());
+    ASSERT_EQ(pa.mult.size(), pb.mult.size());
+    EXPECT_EQ(std::memcmp(pa.z.data(), pb.z.data(), pa.z.size() * sizeof(double)), 0);
+    EXPECT_EQ(std::memcmp(pa.mult.data(), pb.mult.data(), pa.mult.size() * sizeof(double)), 0);
+    EXPECT_EQ(pa.n_butterfly_viol, pb.n_butterfly_viol);
+  }
+
+  // reopen db cold and load through the fresh instance:
+  auto db2 = SurfaceDb::open(root.string());
+  ASSERT_TRUE(db2.has_value());
+  auto arch = db2->open_partition("2026-07-10");
+  ASSERT_TRUE(arch.has_value());
+  EXPECT_EQ(arch->count(), 1u);
+  ASSERT_TRUE(arch->map_symbol("AAPL").has_value());
   std::filesystem::remove_all(root);
 }
 

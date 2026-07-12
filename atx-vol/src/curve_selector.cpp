@@ -43,23 +43,15 @@ std::vector<CurveConfig> default_selector_candidates() {
   return v;
 }
 
-namespace {
-
-// Running out-of-sample accumulator for one candidate across expiries.
-struct Accum {
-  std::size_t n = 0, in_band = 0;
-  double wsum = 0.0, win = 0.0;
-  std::size_t dof_sum = 0, n_slices = 0;
-  // Task C2.5 — held-out fit-metric collection + butterfly disqualification.
-  std::vector<double> iv_model, iv_mkt, bid, ask, vega;
-  std::uint32_t n_butterfly_viol = 0;
-  bool disqualified = false;
-};
+namespace detail {
 
 // Per-kind butterfly violation count for a fitted slice (the selection-time
 // mapping): closed-form Martini-Mingone for raw-SVI, grid Durrleman g-check for
-// C8, and 0 for the by-construction / out-of-scope kinds (ConvexDense, eSSVI,
-// LinearVariance). `k_lo`/`k_hi` bound the C8 grid (padded by the caller).
+// C8, the fitted post-fit Lee/Roper diagnostic count carried on the params for
+// SplineVol (see spline_curve.hpp's file-top comment, step 6 -- NOT projected,
+// just reported), and 0 for the by-construction / out-of-scope kinds
+// (ConvexDense, eSSVI, LinearVariance). `k_lo`/`k_hi` bound the C8 grid (padded
+// by the caller).
 [[nodiscard]] std::uint32_t slice_butterfly_violations(const IVolCurve &cv,
                                                        double T, double k_lo,
                                                        double k_hi) noexcept {
@@ -77,12 +69,31 @@ struct Accum {
   case VolCurveKind::Essvi:
   case VolCurveKind::LinearVariance:
     return 0u;  // by-construction arb-free (LinearVariance g-check out of scope)
-  case VolCurveKind::SplineVol:
-    return 0u;  // not yet a selector candidate; carried n_butterfly_viol wired
-                // up when candidacy lands (matches prior fall-through)
+  case VolCurveKind::SplineVol: {
+    const auto &sv = static_cast<const SplineVolCurve &>(cv);
+    const std::size_t n = sv.params().n_butterfly_viol;
+    return n > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())
+               ? std::numeric_limits<std::uint32_t>::max()
+               : static_cast<std::uint32_t>(n);
+  }
   }
   return 0u;
 }
+
+}  // namespace detail
+
+namespace {
+
+// Running out-of-sample accumulator for one candidate across expiries.
+struct Accum {
+  std::size_t n = 0, in_band = 0;
+  double wsum = 0.0, win = 0.0;
+  std::size_t dof_sum = 0, n_slices = 0;
+  // Task C2.5 — held-out fit-metric collection + butterfly disqualification.
+  std::vector<double> iv_model, iv_mkt, bid, ask, vega;
+  std::uint32_t n_butterfly_viol = 0;
+  bool disqualified = false;
+};
 
 [[nodiscard]] bool valid_expiry_rates(const SurfaceParityInputs &in,
                                       const Underlying &under) noexcept {
@@ -116,10 +127,29 @@ Result<SelectorResult> select_curve(const Underlying &under, const SurfaceParity
   if (!valid_expiry_rates(in, under)) {
     return Err(ErrorCode::InvalidArgument, "select_curve: invalid expiry rate vectors");
   }
-  const std::vector<CurveConfig> candidates =
+  std::vector<CurveConfig> candidates =
       sel.candidates.empty() ? default_selector_candidates() : sel.candidates;
   if (candidates.empty()) {
     return Err(ErrorCode::InvalidArgument, "select_curve: no candidates");
+  }
+
+  // Gated SplineVol candidacy (Task I5): append a SplineVol candidate to the
+  // working ladder when ANY supplied candidate opts in via
+  // `CurveConfig::spline_candidate`. `default_selector_candidates()` itself
+  // never sets the flag, so a caller passing an empty (default) candidate
+  // list is completely unaffected -- bit-identical selection to pre-task.
+  {
+    bool want_spline = false;
+    bool has_spline = false;
+    for (const CurveConfig &c : candidates) {
+      want_spline = want_spline || c.spline_candidate;
+      has_spline = has_spline || (c.kind == VolCurveKind::SplineVol);
+    }
+    if (want_spline && !has_spline) {
+      CurveConfig spline_cfg;
+      spline_cfg.kind = VolCurveKind::SplineVol;
+      candidates.push_back(spline_cfg);
+    }
   }
 
   // Score every candidate against a SHARED per-expiry split: the expensive cold
@@ -204,7 +234,7 @@ Result<SelectorResult> select_curve(const Underlying &under, const SurfaceParity
       // Butterfly disqualification (fit-metrics selection signal): a family with
       // any butterfly-violating fitted slice scores as a fit-failure.
       const std::uint32_t nv =
-          slice_butterfly_violations(*cv, T, fit_k_lo - 0.5, fit_k_hi + 0.5);
+          detail::slice_butterfly_violations(*cv, T, fit_k_lo - 0.5, fit_k_hi + 0.5);
       acc[ci].n_butterfly_viol += nv;
       if (nv > 0) {
         acc[ci].disqualified = true;

@@ -125,10 +125,19 @@ constexpr char kBlobMagic[8] = {'A', 'T', 'X', 'V', 'S', 'B', '0', '3'};
   case VolCurveKind::C8:
     return static_cast<std::uint32_t>(sizeof(C8Params));
   case VolCurveKind::SplineVol:
-    // No archive serialization support yet (Task 3, v1) -- write_surface_archive
-    // rejects a SplineVol slice before this is ever reached (see below); this
-    // case exists only so -Wswitch stays exhaustive.
-    return 0;
+    // Additive ATXVSA payload (Task I5): atm_vol / z_lo_valid / z_hi_valid
+    // (f64 x3, 24 bytes) + active-knot count `n` (u32, 4 bytes -- mirrors AND
+    // cross-checks the header's `node_count`) + z[n] / mult[n] (f64 arrays,
+    // 16 bytes/knot) + n_butterfly_viol (u32, 4 bytes) = 32 fixed bytes +
+    // 16*n. No fixed POD struct is memcpy'd here (SplineVolParams owns
+    // std::vector members, the same shape as LinearVarianceCurve's k_/w_), so
+    // this join does NOT touch schema_hash -- it mirrors the C8Params
+    // precedent noted above: a new *kind byte value*, not a changed layout of
+    // an existing serialized kind. An old reader built before this task hits
+    // the `default:` "unknown curve kind" ParseError on kind byte 5 instead
+    // of misreading it; an old archive (which cannot contain kind 5, by
+    // construction of the prior reject) parses identically under this build.
+    return static_cast<std::uint32_t>(32ull + 16ull * node_count);
   }
   return 0;
 }
@@ -281,13 +290,6 @@ Result<std::vector<std::byte>> write_surface_archive(std::span<const SurfaceArch
       sp.kind = c->kind();
       sp.curve = c;
       sp.ctx = ctx[i];
-      if (sp.kind == VolCurveKind::SplineVol) {
-        // SplineVol has no archive wire format yet (Task 3, v1) -- reject up
-        // front rather than writing a payload-less slice header that a future
-        // reconstruct would have no way to interpret.
-        return Err(ErrorCode::InvalidArgument,
-                   "write_surface_archive: SplineVol serialization not supported");
-      }
       if (sp.kind == VolCurveKind::ConvexDense) {
         const auto *cd = static_cast<const ConvexDenseCurve *>(c);
         // `node_count` is a uint32 field on disk. Guard the narrowing so an
@@ -307,6 +309,19 @@ Result<std::vector<std::byte>> write_surface_archive(std::span<const SurfaceArch
         if (node_count > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())) {
           return Err(ErrorCode::InvalidArgument,
                      "write_surface_archive: slice node count exceeds uint32");
+        }
+        sp.node_count = static_cast<std::uint32_t>(node_count);
+      } else if (sp.kind == VolCurveKind::SplineVol) {
+        const auto *sv = static_cast<const SplineVolCurve *>(c);
+        const std::size_t node_count = sv->params().z.size();
+        if (node_count > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())) {
+          return Err(ErrorCode::InvalidArgument,
+                     "write_surface_archive: slice node count exceeds uint32");
+        }
+        if (sv->params().n_butterfly_viol >
+            static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())) {
+          return Err(ErrorCode::InvalidArgument,
+                     "write_surface_archive: butterfly violation count exceeds uint32");
         }
         sp.node_count = static_cast<std::uint32_t>(node_count);
       }
@@ -455,12 +470,32 @@ Result<std::vector<std::byte>> write_surface_archive(std::span<const SurfaceArch
         std::memcpy(payload, &c8, sizeof c8);
         break;
       }
-      case VolCurveKind::SplineVol:
-        // Unreachable: the plan-building loop above rejects a SplineVol slice
-        // with InvalidArgument before it is ever added to `plan.slices`. Case
-        // kept explicit (not folded into a `default:`) so -Wswitch still
-        // catches a FUTURE kind that forgets to update this switch.
+      case VolCurveKind::SplineVol: {
+        // Payload layout (see slice_payload_size's SplineVol case for the
+        // full versioning rationale): atm_vol, z_lo_valid, z_hi_valid (f64 x3,
+        // offsets 0/8/16), n (u32, offset 24), z[n] (offset 28), mult[n]
+        // (offset 28 + 8n), n_butterfly_viol (u32, offset 28 + 16n).
+        const auto *sv = static_cast<const SplineVolCurve *>(sp.curve);
+        const SplineVolParams &p = sv->params();
+        std::size_t poff = 0;
+        std::memcpy(payload + poff, &p.atm_vol, sizeof(double));
+        poff += sizeof(double);
+        std::memcpy(payload + poff, &p.z_lo_valid, sizeof(double));
+        poff += sizeof(double);
+        std::memcpy(payload + poff, &p.z_hi_valid, sizeof(double));
+        poff += sizeof(double);
+        const auto n32 = static_cast<std::uint32_t>(p.z.size());
+        std::memcpy(payload + poff, &n32, sizeof(std::uint32_t));
+        poff += sizeof(std::uint32_t);
+        const std::size_t nb = p.z.size() * sizeof(double);
+        std::memcpy(payload + poff, p.z.data(), nb);
+        poff += nb;
+        std::memcpy(payload + poff, p.mult.data(), nb);
+        poff += nb;
+        const auto viol32 = static_cast<std::uint32_t>(p.n_butterfly_viol);
+        std::memcpy(payload + poff, &viol32, sizeof(std::uint32_t));
         break;
+      }
       }
       std::memcpy(rec, &sh, sizeof sh); // header last (fields now complete)
       off += sp.rec_size;
@@ -871,13 +906,36 @@ Result<PricedSurface> SurfaceArchive::reconstruct(std::uint64_t offset, std::uin
       curve = std::make_unique<C8Curve>(c8, sh.df);
       break;
     }
-    case VolCurveKind::SplineVol:
-      // No archive wire format yet (Task 3, v1); write_surface_archive never
-      // emits this kind, so a byte value of 5 here can only be a manifest
-      // from a newer build -- routes through the same "unknown kind" path as
-      // any other value this reader doesn't understand.
-      return Err(ErrorCode::ParseError,
-                 "SurfaceArchive::reconstruct: SplineVol serialization not supported");
+    case VolCurveKind::SplineVol: {
+      // Additive ATXVSA payload (Task I5) -- see slice_payload_size's
+      // SplineVol case (surface_archive.cpp) for the full wire-format
+      // description + versioning rationale.
+      constexpr std::uint64_t kFixedBytes = 32; // atm_vol+z_lo+z_hi+n+n_butterfly_viol
+      if (sh.payload_size < kFixedBytes) {
+        return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: spline payload too small");
+      }
+      std::uint32_t n = 0;
+      std::memcpy(&n, payload + 24, sizeof n);
+      const std::uint64_t need = kFixedBytes + 16ull * static_cast<std::uint64_t>(n);
+      if (n != sh.node_count || need != sh.payload_size) {
+        return Err(ErrorCode::ParseError,
+                   "SurfaceArchive::reconstruct: spline node payload size mismatch");
+      }
+      SplineVolParams p;
+      std::memcpy(&p.atm_vol, payload + 0, sizeof(double));
+      std::memcpy(&p.z_lo_valid, payload + 8, sizeof(double));
+      std::memcpy(&p.z_hi_valid, payload + 16, sizeof(double));
+      p.z.resize(n);
+      p.mult.resize(n);
+      const std::size_t nb = static_cast<std::size_t>(n) * sizeof(double);
+      std::memcpy(p.z.data(), payload + 28, nb);
+      std::memcpy(p.mult.data(), payload + 28 + nb, nb);
+      std::uint32_t viol = 0;
+      std::memcpy(&viol, payload + 28 + 2 * nb, sizeof viol);
+      p.n_butterfly_viol = viol;
+      curve = std::make_unique<SplineVolCurve>(std::move(p), sh.T, sh.forward, sh.df);
+      break;
+    }
     default:
       return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: unknown curve kind");
     }
