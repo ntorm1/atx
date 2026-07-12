@@ -74,6 +74,7 @@ add_executable(atx-vol-tests
     spy_portfolio_pnl_test.cpp
     pnl_greeks_consistency_test.cpp
     scenario_grid_test.cpp
+    pnl_attribution_test.cpp
     lifecycle_integration_test.cpp
     corpus_test.cpp
     multiname_pipeline_test.cpp

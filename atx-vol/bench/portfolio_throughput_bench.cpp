@@ -45,6 +45,7 @@
 #include <benchmark/benchmark.h>
 
 #include "atx/vol/american.hpp"
+#include "atx/vol/pnl_attribution.hpp"
 #include "atx/vol/portfolio_pricer.hpp"
 #include "atx/vol/priced_surface.hpp"
 #include "atx/vol/scenario_grid.hpp"
@@ -64,6 +65,8 @@ using atx::vol::PortfolioWorkspace;
 using atx::vol::Position;
 using atx::vol::PriceFieldMask;
 using atx::vol::PriceFrameView;
+using atx::vol::AttributionOptions;
+using atx::vol::pnl_attribution;
 using atx::vol::PriceOptions;
 using atx::vol::PriceStatus;
 using atx::vol::PriceTotals;
@@ -407,6 +410,62 @@ void run_pnl(benchmark::State& state, std::size_t n_unique, std::size_t ratio,
   });
 }
 
+// ── 3b. pnl_attribution: base->shifted P&L attribution (C3.3) ─────────────
+// The attribution layer runs ONE pnl_explain solve (the dominant cost) plus a cheap
+// pivot-sampling + vega-partition pass. This case reports its OVERHEAD vs plain
+// pnl_explain: both the attribution and the reference rebuild the Portfolio from the
+// same book and run the same solve, so `ratio_attr_over_pnl` isolates the pivot+split
+// cost (expect ~1.0 — the Andersen-Lake solve dominates).
+void run_attribution(benchmark::State& state, std::size_t n_unique, std::size_t ratio,
+                     unsigned n_threads) {
+  const SurfaceSet& base = market().base_set();
+  const SurfaceSet& shifted = market().shifted_set();
+  const std::vector<Position> book =
+      atx::vol::bench::make_book(kUnderlyings, kSlices, n_unique, ratio);
+  AttributionOptions opts;
+  opts.n_threads = n_threads;
+
+  for (auto _ : state) {
+    auto ar = pnl_attribution(book, base, shifted, opts);
+    benchmark::DoNotOptimize(ar->total.pnl_total);
+    benchmark::ClobberMemory();
+  }
+
+  // Overhead reference: Portfolio::create + pnl_explain over the SAME book/threads
+  // (the attribution's own solve path, minus the pivot+split). Timed manually so the
+  // report can state attribution-time / pnl_explain-time directly.
+  PriceOptions popts;
+  popts.n_threads = n_threads;
+  using clock = std::chrono::steady_clock;
+  constexpr int kReps = 20;
+  const auto t0 = clock::now();
+  for (int rep = 0; rep < kReps; ++rep) {
+    auto ar = pnl_attribution(book, base, shifted, opts);
+    benchmark::DoNotOptimize(ar->total.pnl_total);
+  }
+  const auto t1 = clock::now();
+  for (int rep = 0; rep < kReps; ++rep) {
+    auto pf = Portfolio::create(book);
+    const PortfolioPricer pr(std::move(pf.value()));
+    auto er = pr.pnl_explain(base, shifted, popts);
+    benchmark::DoNotOptimize(er->total.pnl_total);
+  }
+  const auto t2 = clock::now();
+  const double attr_ns = std::chrono::duration<double, std::nano>(t1 - t0).count() / kReps;
+  const double pnl_ns = std::chrono::duration<double, std::nano>(t2 - t1).count() / kReps;
+
+  const double n_pos = static_cast<double>(book.size());
+  const double iters = static_cast<double>(state.iterations());
+  state.counters["positions_per_s"] =
+      benchmark::Counter(n_pos * iters, benchmark::Counter::kIsRate);
+  state.counters["attr_us"] = attr_ns / 1e3;
+  state.counters["pnl_explain_us"] = pnl_ns / 1e3;
+  state.counters["ratio_attr_over_pnl"] = (pnl_ns > 0.0) ? attr_ns / pnl_ns : 0.0;
+  state.counters["n_unique"] = static_cast<double>(n_unique);
+  state.counters["n_positions"] = n_pos;
+  state.counters["threads"] = static_cast<double>(n_threads);
+}
+
 // ── 4. Position-scatter-only ──────────────────────────────────────────────
 // Uniques priced ONCE outside the timed region; the loop only scales each unique
 // result by qty*multiplier and stores it into the (pre-allocated) output columns.
@@ -746,6 +805,14 @@ void register_all() {
           ->UseRealTime();
     }
   }
+
+  // 3b. pnl_attribution (C3.3): one case on the synth book, hw threads. Reports the
+  // pivot+split overhead vs plain pnl_explain (ratio_attr_over_pnl ~ 1.0).
+  apply_common(benchmark::RegisterBenchmark(
+                   "attr/book_attribution/synth_book",
+                   [](benchmark::State& st) { run_attribution(st, 2688, /*ratio=*/1, /*t=*/0u); }))
+      ->Unit(benchmark::kMicrosecond)
+      ->UseRealTime();
 
   // 4. Position-scatter-only.
   for (const std::size_t ratio : {std::size_t{100}, std::size_t{1000}}) {

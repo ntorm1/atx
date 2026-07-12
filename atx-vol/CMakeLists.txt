@@ -74,6 +74,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/pricing_executor.cpp
     src/portfolio_pricer.cpp
     src/scenario_grid.cpp
+    src/pnl_attribution.cpp
     src/corpus.cpp
     src/dispersion.cpp
     src/dispersion_backtest.cpp
