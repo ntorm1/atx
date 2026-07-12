@@ -69,6 +69,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/chain.cpp
     src/pricer_fitter.cpp
     src/vol_curve.cpp
+    src/spline_curve.cpp
     src/curve_fit.cpp
     src/curve_selector.cpp
     src/priced_surface.cpp
