@@ -320,7 +320,7 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
         std::span<double>(b_iv).subspan(s, gsz), std::span<double>(b_price).subspan(s, gsz),
         want_greeks ? std::span<AmericanGreeks>(b_greeks).subspan(s, gsz)
                     : std::span<AmericanGreeks>{},
-        std::span<Status>(b_status).subspan(s, gsz)};
+        std::span<Status>(b_status).subspan(s, gsz), {}, {}};
     (void)surf->evaluate_batch(kcol.subspan(s, gsz), tcol.subspan(s, gsz), scol.subspan(s, gsz),
                                fields, analytic, soa);
     for (std::uint32_t p = s; p < e; ++p) {
@@ -731,20 +731,20 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
     PricedSurface::EvaluationSoA base_soa{std::span<double>(b_iv).subspan(s, gsz),
                                           std::span<double>(b_price).subspan(s, gsz),
                                           std::span<AmericanGreeks>(b_greeks).subspan(s, gsz),
-                                          std::span<Status>(b_status).subspan(s, gsz)};
+                                          std::span<Status>(b_status).subspan(s, gsz), {}, {}};
     (void)sb->evaluate_batch(kcol.subspan(s, gsz), tcol.subspan(s, gsz), scol.subspan(s, gsz),
                              EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder, analytic,
                              base_soa);
     // Shifted surface at the COMMON base maturity T_b: iv only (sig_t).
     PricedSurface::EvaluationSoA sig_soa{
         std::span<double>(s_iv).subspan(s, gsz), std::span<double>(s_junk).subspan(s, gsz),
-        std::span<AmericanGreeks>{}, std::span<Status>(s_junk_status).subspan(s, gsz)};
+        std::span<AmericanGreeks>{}, std::span<Status>(s_junk_status).subspan(s, gsz), {}, {}};
     (void)st->evaluate_batch(kcol.subspan(s, gsz), tcol.subspan(s, gsz), scol.subspan(s, gsz),
                              EF::Iv, /*analytic=*/false, sig_soa);
     // Shifted surface at the rolled maturity T_t: American mark only (price_target).
     PricedSurface::EvaluationSoA px_soa{
         std::span<double>(s_junk).subspan(s, gsz), std::span<double>(s_price).subspan(s, gsz),
-        std::span<AmericanGreeks>{}, std::span<Status>(s_status).subspan(s, gsz)};
+        std::span<AmericanGreeks>{}, std::span<Status>(s_status).subspan(s, gsz), {}, {}};
     (void)st->evaluate_batch(kcol.subspan(s, gsz), std::span<double>(s_tt).subspan(s, gsz),
                              scol.subspan(s, gsz), EF::Price, /*analytic=*/false, px_soa);
 

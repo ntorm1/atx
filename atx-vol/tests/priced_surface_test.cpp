@@ -17,6 +17,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -26,11 +27,13 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <thread>
 #include <utility>
 #include <vector>
 
 #include "atx/vol/american.hpp"
 #include "atx/vol/black76.hpp"
+#include "atx/vol/counters.hpp"
 #include "atx/vol/priced_surface.hpp"
 #include "atx/vol/surface_parity.hpp"
 #include "atx/vol/vol_curve.hpp"
@@ -69,10 +72,10 @@ struct RefCarry {
   double q_eff{0.0};
 };
 
-[[nodiscard]] RefCarry ref_interp_forward(const PricedSurface& s, double T) {
+[[nodiscard]] RefCarry ref_interp_forward(const PricedSurface &s, double T) {
   const std::span<const SliceContext> ctx = s.context();
-  const SliceContext& first = ctx.front();
-  const SliceContext& last = ctx.back();
+  const SliceContext &first = ctx.front();
+  const SliceContext &last = ctx.back();
   if (T <= first.T) {
     return RefCarry{first.forward, first.q_eff};
   }
@@ -84,22 +87,22 @@ struct RefCarry {
     ++hi;
   }
   const std::size_t lo = hi - 1;
-  const SliceContext& a = ctx[lo];
-  const SliceContext& b = ctx[hi];
+  const SliceContext &a = ctx[lo];
+  const SliceContext &b = ctx[hi];
   const double span = b.T - a.T;
   const double alpha = (span > 0.0) ? (T - a.T) / span : 0.0;
   return RefCarry{a.forward + alpha * (b.forward - a.forward),
                   a.q_eff + alpha * (b.q_eff - a.q_eff)};
 }
 
-[[nodiscard]] double ref_forward_at(const PricedSurface& s, double T) {
+[[nodiscard]] double ref_forward_at(const PricedSurface &s, double T) {
   if (!(T > 0.0) || s.context().empty()) {
     return 0.0;
   }
   return ref_interp_forward(s, T).forward;
 }
 
-[[nodiscard]] double ref_q_eff_at(const PricedSurface& s, double T) {
+[[nodiscard]] double ref_q_eff_at(const PricedSurface &s, double T) {
   if (!(T > 0.0) || s.context().empty()) {
     return 0.0;
   }
@@ -107,7 +110,7 @@ struct RefCarry {
 }
 
 // ── Reference: the PRE-change query methods, re-derived from public state ─────
-[[nodiscard]] double ref_iv(const PricedSurface& s, double K, double T) {
+[[nodiscard]] double ref_iv(const PricedSurface &s, double K, double T) {
   if (!ref_valid_query(K, T)) {
     return kNaN;
   }
@@ -116,7 +119,7 @@ struct RefCarry {
   return s.surface().iv(k, T);
 }
 
-[[nodiscard]] double ref_total_variance(const PricedSurface& s, double K, double T) {
+[[nodiscard]] double ref_total_variance(const PricedSurface &s, double K, double T) {
   if (!ref_valid_query(K, T)) {
     return kNaN;
   }
@@ -125,7 +128,7 @@ struct RefCarry {
   return s.surface().w(k, T);
 }
 
-[[nodiscard]] Result<double> ref_fair_value(const PricedSurface& s, double K, double T, Side side) {
+[[nodiscard]] Result<double> ref_fair_value(const PricedSurface &s, double K, double T, Side side) {
   if (!ref_valid_query(K, T)) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "ref invalid");
   }
@@ -136,7 +139,7 @@ struct RefCarry {
                         s.pricing().method, std::optional<AlOpts>{s.pricing().al_opts});
 }
 
-[[nodiscard]] Result<AmericanGreeks> ref_greeks(const PricedSurface& s, double K, double T,
+[[nodiscard]] Result<AmericanGreeks> ref_greeks(const PricedSurface &s, double K, double T,
                                                 Side side) {
   if (!ref_valid_query(K, T)) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "ref invalid");
@@ -148,7 +151,7 @@ struct RefCarry {
                             s.pricing().method, std::optional<AlOpts>{s.pricing().al_opts});
 }
 
-[[nodiscard]] Result<AmericanGreeks> ref_greeks_analytic(const PricedSurface& s, double K, double T,
+[[nodiscard]] Result<AmericanGreeks> ref_greeks_analytic(const PricedSurface &s, double K, double T,
                                                          Side side) {
   if (!ref_valid_query(K, T)) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "ref invalid");
@@ -164,7 +167,7 @@ struct RefCarry {
                             s.pricing().method, std::optional<AlOpts>{s.pricing().al_opts});
 }
 
-[[nodiscard]] Result<double> ref_delta(const PricedSurface& s, double K, double T, Side side) {
+[[nodiscard]] Result<double> ref_delta(const PricedSurface &s, double K, double T, Side side) {
   if (!ref_valid_query(K, T)) {
     return atx::core::Err(atx::core::ErrorCode::InvalidArgument, "ref invalid");
   }
@@ -222,7 +225,8 @@ struct RefCarry {
 // portfolio/backtest fixtures use.
 [[nodiscard]] PricedSurface make_essvi(std::uint32_t uid, int n,
                                        AmericanMethod method = AmericanMethod::AndersenLake,
-                                       AlOpts al_opts = al_fast_opts()) {
+                                       AlOpts al_opts = al_fast_opts(), double rate = kR,
+                                       double q_eff = 0.02) {
   CurveSurface cs;
   std::vector<SliceContext> ctx;
   for (int i = 0; i < n; ++i) {
@@ -237,10 +241,10 @@ struct RefCarry {
     e.T = T;
     e.F = kS;
     e.expiry_id = static_cast<std::uint16_t>(i);
-    cs.push(std::make_unique<EssviCurve>(e, std::exp(-kR * T)));
-    ctx.push_back(SliceContext{T, kS, 0.0, 0.02, 200, 5});
+    cs.push(std::make_unique<EssviCurve>(e, std::exp(-rate * T)));
+    ctx.push_back(SliceContext{T, kS, 0.0, q_eff, 200, 5});
   }
-  PricingContext pricing = make_pricing(uid);
+  PricingContext pricing = make_pricing(uid, kS, rate);
   pricing.method = method;
   pricing.al_opts = al_opts;
   auto ps = PricedSurface::create(std::move(cs), std::move(ctx), pricing);
@@ -288,12 +292,12 @@ struct Grid {
 [[nodiscard]] Grid method_grid() {
   Grid g;
   g.Ks = {80.0, 92.0, 100.0, 104.0, 115.0};
-  g.Ts = {0.05, 0.17, 0.29, 0.53};  // interior + on/near nodes of make_essvi/make_convex
+  g.Ts = {0.05, 0.17, 0.29, 0.53}; // interior + on/near nodes of make_essvi/make_convex
   g.sides = {Side::Call, Side::Put};
   return g;
 }
 
-}  // namespace
+} // namespace
 
 // ── interp_forward equivalence: linear scan vs (post-change) binary search ────
 //
@@ -327,8 +331,7 @@ TEST(PricedSurface, InterpForwardEquivalenceSweep) {
   }
 
   for (const double T : probes) {
-    EXPECT_TRUE(bits_equal(s.forward_at(T), ref_forward_at(s, T)))
-        << "forward_at T=" << T;
+    EXPECT_TRUE(bits_equal(s.forward_at(T), ref_forward_at(s, T))) << "forward_at T=" << T;
     EXPECT_TRUE(bits_equal(s.q_eff_at(T), ref_q_eff_at(s, T))) << "q_eff_at T=" << T;
   }
   // Non-positive / non-finite T -> 0.0 on both.
@@ -342,7 +345,7 @@ TEST(PricedSurface, InterpForwardEquivalenceSweep) {
 TEST(PricedSurface, QueryMethodsBitIdenticalToReference) {
   const PricedSurface surfs[] = {make_essvi_varycarry(1), make_essvi(2, 6), make_convex(3, 6, 40)};
   const Grid g = method_grid();
-  for (const PricedSurface& s : surfs) {
+  for (const PricedSurface &s : surfs) {
     for (const double K : g.Ks) {
       for (const double T : g.Ts) {
         EXPECT_TRUE(bits_equal(s.iv(K, T), ref_iv(s, K, T))) << "iv K=" << K << " T=" << T;
@@ -461,7 +464,7 @@ TEST(PricedSurface, PinnedPreChangeAnchors) {
 TEST(PricedSurface, ResolveReproducesQueryFields) {
   const PricedSurface surfs[] = {make_essvi_varycarry(1), make_convex(3, 6, 40)};
   const Grid g = method_grid();
-  for (const PricedSurface& s : surfs) {
+  for (const PricedSurface &s : surfs) {
     for (const double K : g.Ks) {
       for (const double T : g.Ts) {
         const PricedSurface::ResolvedSurfacePoint p = s.resolve(K, T);
@@ -476,7 +479,7 @@ TEST(PricedSurface, ResolveReproducesQueryFields) {
     }
   }
   // Degenerate resolves are invalid (no numeric fabrication).
-  const PricedSurface& s = surfs[0];
+  const PricedSurface &s = surfs[0];
   for (const auto kt : {std::pair{-5.0, 0.2}, std::pair{100.0, -0.1}, std::pair{100.0, 0.0}}) {
     const auto p = s.resolve(kt.first, kt.second);
     EXPECT_FALSE(p.valid);
@@ -489,7 +492,7 @@ using EF = PricedSurface::EvalField;
 TEST(PricedSurface, EvaluateFieldCombinationsBitIdentical) {
   const PricedSurface surfs[] = {make_essvi_varycarry(1), make_convex(3, 6, 40)};
   const Grid g = method_grid();
-  for (const PricedSurface& s : surfs) {
+  for (const PricedSurface &s : surfs) {
     for (const double K : g.Ks) {
       for (const double T : g.Ts) {
         for (const Side side : g.sides) {
@@ -580,9 +583,9 @@ TEST(PricedSurface, EvaluateBatchLadderBitIdenticalToPerEntry) {
   std::vector<double> out_iv(n), out_px(n);
   std::vector<AmericanGreeks> out_gk(n);
   std::vector<Status> out_st(n);
-  const Status rc =
-      s.evaluate_batch(Ks, Ts, sides, fields, /*analytic=*/false,
-                       PricedSurface::EvaluationSoA{out_iv, out_px, out_gk, out_st});
+  const Status rc = s.evaluate_batch(Ks, Ts, sides, fields, /*analytic=*/false,
+                                     PricedSurface::EvaluationSoA{out_iv, out_px, out_gk, out_st,
+                                                                 {}, {}});
   ASSERT_TRUE(rc.has_value());
 
   for (std::size_t i = 0; i < n; ++i) {
@@ -620,9 +623,9 @@ TEST(PricedSurface, EvaluateBatchMixedTBitIdenticalToPerEntry) {
   std::vector<double> out_iv(n), out_px(n);
   std::vector<AmericanGreeks> out_gk(n);
   std::vector<Status> out_st(n);
-  const Status rc =
-      s.evaluate_batch(Ks, Ts, sides, fields, /*analytic=*/true,
-                       PricedSurface::EvaluationSoA{out_iv, out_px, out_gk, out_st});
+  const Status rc = s.evaluate_batch(Ks, Ts, sides, fields, /*analytic=*/true,
+                                     PricedSurface::EvaluationSoA{out_iv, out_px, out_gk, out_st,
+                                                                 {}, {}});
   ASSERT_TRUE(rc.has_value());
   for (std::size_t i = 0; i < n; ++i) {
     const auto e = s.evaluate(Ks[i], Ts[i], sides[i], fields, /*analytic=*/true);
@@ -649,7 +652,7 @@ TEST(PricedSurface, PriceOnlyResolvedBatchPreservesMethodPresetAndLaneErrors) {
     std::vector<double> iv(Ks.size()), price(Ks.size());
     std::vector<Status> status(Ks.size());
     ASSERT_TRUE(s.evaluate_batch(Ks, Ts, sides, EF::Iv | EF::Price, false,
-                                 PricedSurface::EvaluationSoA{iv, price, {}, status})
+                                 PricedSurface::EvaluationSoA{iv, price, {}, status, {}, {}})
                     .has_value());
     for (std::size_t i = 0; i < Ks.size(); ++i) {
       const auto expected = s.evaluate(Ks[i], Ts[i], sides[i], EF::Iv | EF::Price, false);
@@ -664,6 +667,265 @@ TEST(PricedSurface, PriceOnlyResolvedBatchPreservesMethodPresetAndLaneErrors) {
   }
 }
 
+TEST(PricedSurface, EvaluateDedicatedDeltaAndVegaMatchScalarReferencesExactly) {
+  const PricedSurface surfs[] = {make_essvi_varycarry(1), make_convex(3, 6, 40),
+                                  make_essvi(4, 6, AmericanMethod::Baw)};
+  const Grid g = method_grid();
+  for (const PricedSurface &s : surfs) {
+    for (const double K : g.Ks) {
+      for (const double T : g.Ts) {
+        for (const Side side : g.sides) {
+          const auto delta_ref = s.delta(K, T, side);
+          const auto vega_ref = s.vega(K, T, side);
+          ASSERT_TRUE(delta_ref.has_value());
+          ASSERT_TRUE(vega_ref.has_value());
+
+          const auto delta = s.evaluate(K, T, side, EF::Delta, false);
+          const auto vega = s.evaluate(K, T, side, EF::Vega, false);
+          ASSERT_TRUE(delta.status.has_value());
+          ASSERT_TRUE(vega.status.has_value());
+          EXPECT_TRUE(bits_equal(delta.greeks.delta, *delta_ref));
+          EXPECT_TRUE(bits_equal(vega.greeks.vega, *vega_ref));
+          EXPECT_TRUE(bits_equal(delta.price, 0.0));
+          EXPECT_TRUE(bits_equal(vega.price, 0.0));
+          EXPECT_TRUE(bits_equal(delta.greeks.vega, 0.0));
+          EXPECT_TRUE(bits_equal(vega.greeks.delta, 0.0));
+        }
+      }
+    }
+  }
+}
+
+TEST(PricedSurface, EvaluateBatchSelectiveSoAWritesOnlyRequestedColumns) {
+  const PricedSurface s = make_essvi_varycarry(1);
+  const std::vector<double> strikes{88.0, 96.0, 104.0, 116.0};
+  const std::vector<double> tenors(strikes.size(), 0.29);
+  const std::vector<Side> sides{Side::Put, Side::Put, Side::Call, Side::Call};
+  constexpr double kPoison = -4.321987654321e6;
+  std::vector<double> price(strikes.size(), kPoison);
+  std::vector<double> delta(strikes.size(), kPoison);
+  std::vector<double> vega(strikes.size(), kPoison);
+  std::vector<Status> status(strikes.size());
+
+  PricedSurface::EvaluationSoA out{{}, price, {}, status, {}, {}};
+  out.delta = delta;
+  out.vega = vega; // supplied but unrequested: it must remain poisoned
+  ASSERT_TRUE(
+      s.evaluate_batch(strikes, tenors, sides, EF::Price | EF::Delta, false, out).has_value());
+  for (std::size_t i = 0; i < strikes.size(); ++i) {
+    const auto expected_price = s.fair_value(strikes[i], tenors[i], sides[i]);
+    const auto expected_delta = s.delta(strikes[i], tenors[i], sides[i]);
+    ASSERT_TRUE(expected_price.has_value() && expected_delta.has_value());
+    EXPECT_TRUE(status[i].has_value());
+    EXPECT_TRUE(bits_equal(price[i], *expected_price));
+    EXPECT_TRUE(bits_equal(delta[i], *expected_delta));
+    EXPECT_TRUE(bits_equal(vega[i], kPoison));
+  }
+
+  std::fill(price.begin(), price.end(), kPoison);
+  std::fill(delta.begin(), delta.end(), kPoison);
+  std::fill(vega.begin(), vega.end(), kPoison);
+  ASSERT_TRUE(
+      s.evaluate_batch(strikes, tenors, sides, EF::Price | EF::Vega, true, out).has_value());
+  for (std::size_t i = 0; i < strikes.size(); ++i) {
+    const auto expected_price = s.fair_value(strikes[i], tenors[i], sides[i]);
+    const auto expected_vega = s.vega(strikes[i], tenors[i], sides[i]);
+    ASSERT_TRUE(expected_price.has_value() && expected_vega.has_value());
+    EXPECT_TRUE(bits_equal(price[i], *expected_price));
+    EXPECT_TRUE(bits_equal(vega[i], *expected_vega));
+    EXPECT_TRUE(bits_equal(delta[i], kPoison));
+  }
+}
+
+TEST(PricedSurface, EvaluateBatchSelectiveFailuresWriteNaNToEveryRequestedColumn) {
+  const PricedSurface valid = make_essvi_varycarry(1);
+  const std::vector<double> invalid_strike{-1.0};
+  const std::vector<double> tenor{0.29};
+  const std::vector<Side> side{Side::Put};
+  constexpr double kPoison = -8.7654321e5;
+  std::vector<double> price(1, kPoison), delta(1, kPoison), vega(1, kPoison);
+  std::vector<Status> status(1);
+  PricedSurface::EvaluationSoA out{{}, price, {}, status, {}, {}};
+  out.delta = delta;
+  out.vega = vega;
+  ASSERT_TRUE(
+      valid
+          .evaluate_batch(invalid_strike, tenor, side, EF::Price | EF::Delta | EF::Vega, false, out)
+          .has_value());
+  ASSERT_FALSE(status[0].has_value());
+  EXPECT_EQ(status[0].error().code(), ErrorCode::InvalidArgument);
+  EXPECT_TRUE(std::isnan(price[0]));
+  EXPECT_TRUE(std::isnan(delta[0]));
+  EXPECT_TRUE(std::isnan(vega[0]));
+
+  // Put double-continuation: q < r <= 0. Price fails before either dedicated
+  // axis runs, so both requested axes must retain the explicit NaN poison.
+  const PricedSurface unsupported =
+      make_essvi(2, 6, AmericanMethod::AndersenLake, al_fast_opts(), -0.01, -0.05);
+  const std::vector<double> strike{100.0};
+  std::fill(price.begin(), price.end(), kPoison);
+  std::fill(delta.begin(), delta.end(), kPoison);
+  std::fill(vega.begin(), vega.end(), kPoison);
+  ASSERT_TRUE(
+      unsupported.evaluate_batch(strike, tenor, side, EF::Price | EF::Delta | EF::Vega, false, out)
+          .has_value());
+  ASSERT_FALSE(status[0].has_value());
+  EXPECT_EQ(status[0].error().code(), ErrorCode::NotImplemented);
+  EXPECT_TRUE(std::isnan(price[0]));
+  EXPECT_TRUE(std::isnan(delta[0]));
+  EXPECT_TRUE(std::isnan(vega[0]));
+}
+
+TEST(PricedSurface, EvaluateBatchCombinedMaskPreservesFullBundleAndMirrorsRequestedAxes) {
+  const PricedSurface s = make_essvi_varycarry(1);
+  const std::vector<double> strikes{92.0, 104.0};
+  const std::vector<double> tenors(strikes.size(), 0.29);
+  const std::vector<Side> sides{Side::Put, Side::Call};
+  std::vector<double> iv(strikes.size()), price(strikes.size());
+  std::vector<AmericanGreeks> greeks(strikes.size());
+  std::vector<double> delta(strikes.size()), vega(strikes.size());
+  std::vector<Status> status(strikes.size());
+  const EF fields =
+      EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder | EF::Delta | EF::Vega;
+
+  ASSERT_TRUE(s.evaluate_batch(strikes, tenors, sides, fields, true,
+                               PricedSurface::EvaluationSoA{iv, price, greeks, status, delta, vega})
+                  .has_value());
+  for (std::size_t i = 0; i < strikes.size(); ++i) {
+    const auto legacy = s.evaluate(strikes[i], tenors[i], sides[i],
+                                   EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder, true);
+    ASSERT_TRUE(legacy.status.has_value());
+    ASSERT_TRUE(status[i].has_value());
+    EXPECT_TRUE(bits_equal(iv[i], legacy.iv));
+    EXPECT_TRUE(bits_equal(price[i], legacy.price));
+    EXPECT_EQ(greeks[i], legacy.greeks);
+    EXPECT_TRUE(bits_equal(delta[i], legacy.greeks.delta));
+    EXPECT_TRUE(bits_equal(vega[i], legacy.greeks.vega));
+  }
+}
+
+TEST(PricedSurface, FullBundleErrorPoisonsEveryNumericField) {
+  const PricedSurface unsupported =
+      make_essvi(2, 6, AmericanMethod::AndersenLake, al_fast_opts(), -0.01, -0.05);
+  const auto result = unsupported.evaluate(100.0, 0.29, Side::Put,
+                                           EF::Iv | EF::Price | EF::FirstOrder |
+                                               EF::SecondOrder | EF::Delta | EF::Vega,
+                                           true);
+  ASSERT_FALSE(result.status.has_value());
+  EXPECT_TRUE(std::isnan(result.iv));
+  EXPECT_TRUE(std::isnan(result.price));
+  const double numeric[] = {result.greeks.delta, result.greeks.gamma, result.greeks.vega,
+                            result.greeks.theta, result.greeks.rho,   result.greeks.vanna,
+                            result.greeks.volga, result.greeks.charm, result.greeks.price};
+  for (const double value : numeric) {
+    EXPECT_TRUE(std::isnan(value));
+  }
+}
+
+TEST(PricedSurface, EvaluateBatchSelectiveRoutesAreThreadDeterministic) {
+  const PricedSurface s = make_essvi_varycarry(1);
+  const std::vector<double> strikes{88.0, -1.0, 104.0, 116.0};
+  const std::vector<double> tenors(strikes.size(), 0.29);
+  const std::vector<Side> sides{Side::Put, Side::Put, Side::Call, Side::Call};
+  constexpr std::size_t kWorkers = 4;
+  std::array<std::vector<double>, kWorkers> prices;
+  std::array<std::vector<double>, kWorkers> deltas;
+  std::array<std::vector<double>, kWorkers> vegas;
+  std::array<std::vector<Status>, kWorkers> statuses;
+  std::array<Status, kWorkers> calls;
+  std::array<std::jthread, kWorkers> workers;
+  for (std::size_t worker = 0; worker < kWorkers; ++worker) {
+    prices[worker].resize(strikes.size());
+    deltas[worker].resize(strikes.size());
+    vegas[worker].resize(strikes.size());
+    statuses[worker].resize(strikes.size());
+    workers[worker] = std::jthread([&, worker] {
+      PricedSurface::EvaluationSoA out{{}, prices[worker], {}, statuses[worker], {}, {}};
+      out.delta = deltas[worker];
+      out.vega = vegas[worker];
+      calls[worker] =
+          s.evaluate_batch(strikes, tenors, sides, EF::Price | EF::Delta | EF::Vega, true, out);
+    });
+  }
+  for (std::jthread &worker : workers) {
+    worker.join();
+  }
+  for (std::size_t worker = 0; worker < kWorkers; ++worker) {
+    ASSERT_TRUE(calls[worker].has_value());
+    for (std::size_t i = 0; i < strikes.size(); ++i) {
+      EXPECT_TRUE(bits_equal(prices[worker][i], prices[0][i]));
+      EXPECT_TRUE(bits_equal(deltas[worker][i], deltas[0][i]));
+      EXPECT_TRUE(bits_equal(vegas[worker][i], vegas[0][i]));
+      EXPECT_EQ(statuses[worker][i].has_value(), statuses[0][i].has_value());
+      const auto scalar = s.evaluate(strikes[i], tenors[i], sides[i],
+                                     EF::Price | EF::Delta | EF::Vega, true);
+      EXPECT_EQ(statuses[worker][i].has_value(), scalar.status.has_value());
+      if (!scalar.status.has_value()) {
+        ASSERT_FALSE(statuses[worker][i].has_value());
+        EXPECT_EQ(statuses[worker][i].error().code(), scalar.status.error().code());
+        EXPECT_EQ(statuses[worker][i].error().message(), scalar.status.error().message());
+      }
+      EXPECT_TRUE(bits_equal(prices[worker][i], scalar.price));
+      EXPECT_TRUE(bits_equal(deltas[worker][i], scalar.greeks.delta));
+      EXPECT_TRUE(bits_equal(vegas[worker][i], scalar.greeks.vega));
+    }
+  }
+}
+
+TEST(PricedSurface, SelectiveRouteCountersProveFullBundleIsNotCalled) {
+  if constexpr (!counters::counters_enabled()) {
+    EXPECT_FALSE(counters::snapshot().enabled);
+    GTEST_SKIP() << "ATX_VOL_COUNTERS off: rebuild with -DATX_VOL_COUNTERS=ON";
+  } else {
+    const PricedSurface s = make_essvi_varycarry(1);
+    counters::reset();
+    const auto delta = s.evaluate(95.0, 0.29, Side::Put, EF::Delta, false);
+    ASSERT_TRUE(delta.status.has_value());
+    auto snapshot = counters::snapshot();
+    EXPECT_EQ(snapshot.get(counters::Counter::SurfaceDeltaRoutes), 1u);
+    EXPECT_EQ(snapshot.get(counters::Counter::SurfaceVegaRoutes), 0u);
+    EXPECT_EQ(snapshot.get(counters::Counter::SurfaceFullGreekRoutes), 0u);
+    EXPECT_EQ(snapshot.get(counters::Counter::BoundarySolves), 1u);
+
+    counters::reset();
+    const auto vega = s.evaluate(95.0, 0.29, Side::Put, EF::Vega, true);
+    ASSERT_TRUE(vega.status.has_value());
+    snapshot = counters::snapshot();
+    EXPECT_EQ(snapshot.get(counters::Counter::SurfaceDeltaRoutes), 0u);
+    EXPECT_EQ(snapshot.get(counters::Counter::SurfaceVegaRoutes), 1u);
+    EXPECT_EQ(snapshot.get(counters::Counter::SurfaceFullGreekRoutes), 0u);
+    EXPECT_EQ(snapshot.get(counters::Counter::BoundarySolves), 2u);
+
+    counters::reset();
+    const auto full = s.evaluate(95.0, 0.29, Side::Put, EF::FirstOrder, true);
+    ASSERT_TRUE(full.status.has_value());
+    snapshot = counters::snapshot();
+    EXPECT_EQ(snapshot.get(counters::Counter::SurfaceDeltaRoutes), 0u);
+    EXPECT_EQ(snapshot.get(counters::Counter::SurfaceVegaRoutes), 0u);
+    EXPECT_EQ(snapshot.get(counters::Counter::SurfaceFullGreekRoutes), 1u);
+    EXPECT_EQ(snapshot.get(counters::Counter::BoundarySolves), 5u);
+
+    counters::reset();
+    const std::vector<double> strikes{95.0};
+    const std::vector<double> tenors{0.29};
+    const std::vector<Side> sides{Side::Put};
+    std::vector<double> iv(1), price(1), delta_out(1), vega_out(1);
+    std::vector<AmericanGreeks> greeks(1);
+    std::vector<Status> statuses(1);
+    ASSERT_TRUE(s.evaluate_batch(
+                     strikes, tenors, sides,
+                     EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder | EF::Delta | EF::Vega,
+                     true, PricedSurface::EvaluationSoA{iv, price, greeks, statuses, delta_out,
+                                                        vega_out})
+                    .has_value());
+    snapshot = counters::snapshot();
+    EXPECT_EQ(snapshot.get(counters::Counter::SurfaceDeltaRoutes), 0u);
+    EXPECT_EQ(snapshot.get(counters::Counter::SurfaceVegaRoutes), 0u);
+    EXPECT_EQ(snapshot.get(counters::Counter::SurfaceFullGreekRoutes), 1u);
+    EXPECT_EQ(snapshot.get(counters::Counter::BoundarySolves), 5u);
+  }
+}
+
 TEST(PricedSurface, EvaluateBatchRejectsExactInputOutputAliasBeforeWriting) {
   const PricedSurface s = make_essvi(2, 6);
   std::vector<double> strike_and_iv{95.0, 105.0};
@@ -673,9 +935,9 @@ TEST(PricedSurface, EvaluateBatchRejectsExactInputOutputAliasBeforeWriting) {
   std::vector<double> price(2, 123.0);
   std::vector<Status> status(2);
 
-  const Status result = s.evaluate_batch(
-      strike_and_iv, Ts, sides, EF::Iv | EF::Price, false,
-      PricedSurface::EvaluationSoA{strike_and_iv, price, {}, status});
+  const Status result =
+      s.evaluate_batch(strike_and_iv, Ts, sides, EF::Iv | EF::Price, false,
+                       PricedSurface::EvaluationSoA{strike_and_iv, price, {}, status, {}, {}});
 
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
@@ -694,9 +956,9 @@ TEST(PricedSurface, EvaluateBatchRejectsShiftedInputOutputAliasBeforeWriting) {
   std::vector<double> price(2, 456.0);
   std::vector<Status> status(2);
 
-  const Status result = s.evaluate_batch(
-      strikes, Ts, sides, EF::Iv | EF::Price, false,
-      PricedSurface::EvaluationSoA{shifted_iv, price, {}, status});
+  const Status result =
+      s.evaluate_batch(strikes, Ts, sides, EF::Iv | EF::Price, false,
+                       PricedSurface::EvaluationSoA{shifted_iv, price, {}, status, {}, {}});
 
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
@@ -713,9 +975,9 @@ TEST(PricedSurface, EvaluateBatchRejectsExactOutputAliasBeforeWriting) {
   const std::vector<double> before = iv_and_price;
   std::vector<Status> status(2);
 
-  const Status result = s.evaluate_batch(
-      Ks, Ts, sides, EF::Iv | EF::Price, false,
-      PricedSurface::EvaluationSoA{iv_and_price, iv_and_price, {}, status});
+  const Status result =
+      s.evaluate_batch(Ks, Ts, sides, EF::Iv | EF::Price, false,
+                       PricedSurface::EvaluationSoA{iv_and_price, iv_and_price, {}, status, {}, {}});
 
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
@@ -733,9 +995,9 @@ TEST(PricedSurface, EvaluateBatchRejectsShiftedOutputAliasBeforeWriting) {
   const std::span<double> shifted_price{shared.data() + 1, 2};
   std::vector<Status> status(2);
 
-  const Status result = s.evaluate_batch(
-      Ks, Ts, sides, EF::Iv | EF::Price, false,
-      PricedSurface::EvaluationSoA{iv, shifted_price, {}, status});
+  const Status result =
+      s.evaluate_batch(Ks, Ts, sides, EF::Iv | EF::Price, false,
+                       PricedSurface::EvaluationSoA{iv, shifted_price, {}, status, {}, {}});
 
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
@@ -751,7 +1013,7 @@ TEST(PricedSurface, PriceOnlyBatchInvalidStrikeAndTenorMatchScalarErrorExactly) 
   std::vector<Status> status(2);
 
   ASSERT_TRUE(s.evaluate_batch(Ks, Ts, sides, EF::Iv | EF::Price, false,
-                               PricedSurface::EvaluationSoA{iv, price, {}, status})
+                               PricedSurface::EvaluationSoA{iv, price, {}, status, {}, {}})
                   .has_value());
   for (std::size_t i = 0; i < Ks.size(); ++i) {
     const auto expected = s.evaluate(Ks[i], Ts[i], sides[i], EF::Iv | EF::Price, false);
@@ -776,23 +1038,26 @@ TEST(PricedSurface, EvaluateBatchValidatesSpans) {
   // K/T length mismatch.
   const std::vector<double> Ts1{0.30};
   EXPECT_FALSE(
-      s.evaluate_batch(Ks, Ts1, sides, EF::Iv, false, PricedSurface::EvaluationSoA{iv, px, gk, st})
+      s.evaluate_batch(Ks, Ts1, sides, EF::Iv, false,
+                       PricedSurface::EvaluationSoA{iv, px, gk, st, {}, {}})
           .has_value());
   // Greeks requested but greeks out-span empty.
   EXPECT_FALSE(s.evaluate_batch(Ks, Ts, sides, EF::FirstOrder, false,
-                                PricedSurface::EvaluationSoA{iv, px, {}, st})
+                                PricedSurface::EvaluationSoA{iv, px, {}, st, {}, {}})
                    .has_value());
   // Undersized iv out-span.
   std::vector<double> iv1(1);
-  EXPECT_FALSE(s.evaluate_batch(Ks, Ts, sides, EF::Iv, false,
-                                PricedSurface::EvaluationSoA{iv1, px, gk, st})
-                   .has_value());
+  EXPECT_FALSE(
+      s.evaluate_batch(Ks, Ts, sides, EF::Iv, false,
+                       PricedSurface::EvaluationSoA{iv1, px, gk, st, {}, {}})
+          .has_value());
 }
 
 // ── C1.7: PricedSurface::vega — single-axis eval, no full Greek bundle ───────
 //
-// vega(K,T,side) must reproduce greeks_analytic(K,T,side).vega bit-for-bit on
-// the AndersenLake (AL) path: greeks_analytic() routes to the native 5-solve
+// On the native-route grid below, vega(K,T,side) reproduces
+// greeks_analytic(K,T,side).vega bit-for-bit on the AndersenLake (AL) path:
+// greeks_analytic() routes to the native 5-solve
 // american_greeks_al (price/delta/gamma/vega/rho/vanna/volga from re-solved
 // boundaries; theta/charm from the continuation PDE), and vega() must reach
 // the SAME sigma+/- boundary re-solve + centered difference the bundle's
@@ -807,7 +1072,7 @@ TEST(PricedSurfaceVega, MatchesAnalyticBundleBitForBit) {
   // case below).
   Grid g = method_grid();
   g.Ks = {70.0, 80.0, 92.0, 100.0, 104.0, 115.0, 130.0}; // deep OTM .. deep ITM both sides
-  for (const PricedSurface& s : surfs) {
+  for (const PricedSurface &s : surfs) {
     for (const double K : g.Ks) {
       for (const double T : g.Ts) {
         for (const Side side : g.sides) {

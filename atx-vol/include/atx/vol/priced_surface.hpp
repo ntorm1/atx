@@ -52,10 +52,10 @@
 #include <span>
 #include <vector>
 
-#include "atx/vol/american.hpp"        // AmericanGreeks, AmericanMethod, AlOpts, american_price/greeks
-#include "atx/vol/surface_parity.hpp"  // SliceContext
-#include "atx/vol/types.hpp"           // Result, Status, Side
-#include "atx/vol/vol_curve.hpp"       // CurveSurface, VolCurveKind
+#include "atx/vol/american.hpp" // AmericanGreeks, AmericanMethod, AlOpts, american_price/greeks
+#include "atx/vol/surface_parity.hpp" // SliceContext
+#include "atx/vol/types.hpp"          // Result, Status, Side
+#include "atx/vol/vol_curve.hpp"      // CurveSurface, VolCurveKind
 
 namespace atx::vol {
 
@@ -77,11 +77,11 @@ struct PricingContext {
 // `CurveSurface`). Construct via `create` (validating) or receive one from
 // `VolaSession::to_priced_surface` / `SurfaceArchive::map_symbol`.
 class PricedSurface {
- public:
-  PricedSurface(PricedSurface&&) noexcept = default;
-  PricedSurface& operator=(PricedSurface&&) noexcept = default;
-  PricedSurface(const PricedSurface&) = delete;
-  PricedSurface& operator=(const PricedSurface&) = delete;
+public:
+  PricedSurface(PricedSurface &&) noexcept = default;
+  PricedSurface &operator=(PricedSurface &&) noexcept = default;
+  PricedSurface(const PricedSurface &) = delete;
+  PricedSurface &operator=(const PricedSurface &) = delete;
 
   // Assemble from a fitted `CurveSurface` (moved in), its per-slice context, and
   // the pricing scalars.
@@ -89,9 +89,8 @@ class PricedSurface {
   // Errors: InvalidArgument if the surface is empty, `context` length != slice
   // count, S <= 0, r non-finite, or the slice T's are not strictly ascending
   // (the forward interpolation and no-extrapolation guards assume ascending T).
-  [[nodiscard]] static Result<PricedSurface> create(CurveSurface&& surface,
-                                                    std::vector<SliceContext> context,
-                                                    const PricingContext& pricing);
+  [[nodiscard]] static Result<PricedSurface>
+  create(CurveSurface &&surface, std::vector<SliceContext> context, const PricingContext &pricing);
 
   // ── Queries (const; reproduce the session's cold served path) ──────────────
 
@@ -129,9 +128,10 @@ class PricedSurface {
   // call (e.g. the dispersion book build) needs, WITHOUT greeks_analytic()'s full
   // 5-solve AmericanGreeks bundle. Mirrors delta()'s structure exactly: same
   // resolve(K,T) validation/error mapping, routed to the AndersenLake-native
-  // `american_vega_al` (bit-identical to greeks_analytic(K,T,side).vega on the
-  // AL path, ~0-2 boundary solves instead of 5) with the same non-AL-method FD
-  // fallback greeks_analytic() itself takes. (C1.7)
+  // `american_vega_al` on the AL path (~0-2 boundary solves instead of 5), with
+  // the existing non-AL-method FD fallback. The API contract is exact equality
+  // to this dedicated reference; equality to a full analytic bundle is not a
+  // general cross-method guarantee. (C1.7)
   [[nodiscard]] Result<double> vega(double K, double T, Side side) const;
 
   // ── Fused resolution + single-point / batch evaluation (P1.1) ──────────────
@@ -144,15 +144,17 @@ class PricedSurface {
   // exactly one resolution code path (no six copies).
 
   // Which outputs a fused evaluation should populate. Bitmask; combine with `|`.
-  // FirstOrder/SecondOrder both request the FULL American Greeks bundle (the FD /
-  // AL kernels compute delta..charm together — there is no cheaper per-axis split
-  // at the bundle level); the split names document caller INTENT.
+  // FirstOrder/SecondOrder retain their original FULL American Greeks bundle.
+  // Delta and Vega use the dedicated scalar references; a bundle bit dominates
+  // either dedicated bit when combined, so no duplicate axis solve is run.
   enum class EvalField : std::uint32_t {
     None = 0,
     Iv = 1u << 0,          // European-equivalent implied vol (always free once resolved)
     Price = 1u << 1,       // American mark (fair_value)
     FirstOrder = 1u << 2,  // delta, gamma, vega, theta, rho
     SecondOrder = 1u << 3, // vanna, volga, charm
+    Delta = 1u << 4,       // dedicated american_delta route
+    Vega = 1u << 5,        // dedicated american_vega_al/reference route
   };
 
   // The point resolved once: validate + T-bracket + forward/carry + ln(K/F) +
@@ -197,13 +199,20 @@ class PricedSurface {
                                      bool analytic) const;
 
   // Caller-provided, one-entry-per-query output spans for `evaluate_batch`.
-  // `greeks` may be empty when no Greeks are requested; `iv`, `price` and
-  // `status` must each be sized to the query count.
+  // On the legacy path (no Delta/Vega bit), the original iv/price/status sizing
+  // contract is unchanged and `greeks` may be empty when no bundle is requested.
+  // On a dedicated-only selective path (Delta and/or Vega, with neither the
+  // FirstOrder nor SecondOrder bundle), status and each requested numeric column
+  // must be query-sized; unrequested numeric spans may be empty or query-sized
+  // and stay untouched. Combined bundle/selective masks retain the legacy
+  // iv/price sizing contract and additionally mirror requested axes.
   struct EvaluationSoA {
-    std::span<double> iv;
-    std::span<double> price;
-    std::span<AmericanGreeks> greeks; // empty if Greeks not requested
-    std::span<Status> status;
+    std::span<double> iv{};
+    std::span<double> price{};
+    std::span<AmericanGreeks> greeks{}; // empty if Greeks not requested
+    std::span<Status> status{};
+    std::span<double> delta{}; // nullable; written only when Delta requested
+    std::span<double> vega{};  // nullable; written only when Vega requested
   };
 
   // Fused batch/ladder evaluation of a (K, T, side) vector. When consecutive
@@ -234,18 +243,18 @@ class PricedSurface {
 
   // ── Introspection ──────────────────────────────────────────────────────────
 
-  [[nodiscard]] const CurveSurface& surface() const noexcept { return surface_; }
+  [[nodiscard]] const CurveSurface &surface() const noexcept { return surface_; }
   [[nodiscard]] std::span<const SliceContext> context() const noexcept { return ctx_; }
-  [[nodiscard]] const PricingContext& pricing() const noexcept { return pricing_; }
+  [[nodiscard]] const PricingContext &pricing() const noexcept { return pricing_; }
   [[nodiscard]] std::size_t n_slices() const noexcept { return surface_.n_slices(); }
   [[nodiscard]] std::uint32_t uid() const noexcept { return pricing_.uid; }
 
   // The curve kind of slice `i` (ascending T). Precondition: i < n_slices().
   [[nodiscard]] VolCurveKind kind_at(std::size_t i) const noexcept;
 
- private:
-  PricedSurface(CurveSurface&& surface, std::vector<SliceContext>&& ctx,
-                const PricingContext& pricing) noexcept;
+private:
+  PricedSurface(CurveSurface &&surface, std::vector<SliceContext> &&ctx,
+                const PricingContext &pricing) noexcept;
 
   // The interpolated (forward, q_eff) at T — the session's exact clamp-outside /
   // linear-between mechanic. Precondition: ctx_ non-empty, ascending T.
@@ -263,13 +272,13 @@ class PricedSurface {
 
   // Shared price/Greek routing for `evaluate` / `evaluate_batch` off one resolved
   // point — the single place the field bitmask drives the pricer calls.
-  [[nodiscard]] FusedResult evaluate_resolved(const ResolvedSurfacePoint& p, Side side,
+  [[nodiscard]] FusedResult evaluate_resolved(const ResolvedSurfacePoint &p, Side side,
                                               EvalField fields, bool analytic) const;
 
-  CurveSurface surface_;              // fitted curves (any kind), ascending T
-  std::vector<SliceContext> ctx_;     // per-slice carry (‖ surface_ slices)
-  PricingContext pricing_;            // cold re-pricing scalars
-  bool term_rates_{false};            // any slice df differs from scalar-r df
+  CurveSurface surface_;          // fitted curves (any kind), ascending T
+  std::vector<SliceContext> ctx_; // per-slice carry (‖ surface_ slices)
+  PricingContext pricing_;        // cold re-pricing scalars
+  bool term_rates_{false};        // any slice df differs from scalar-r df
 };
 
 // ── EvalField bitmask operators ──────────────────────────────────────────────
@@ -293,12 +302,12 @@ class PricedSurface {
 [[nodiscard]] constexpr PricedSurface::EvalField operator~(PricedSurface::EvalField a) noexcept {
   return static_cast<PricedSurface::EvalField>(~static_cast<std::uint32_t>(a));
 }
-constexpr PricedSurface::EvalField& operator|=(PricedSurface::EvalField& a,
+constexpr PricedSurface::EvalField &operator|=(PricedSurface::EvalField &a,
                                                PricedSurface::EvalField b) noexcept {
   a = a | b;
   return a;
 }
-constexpr PricedSurface::EvalField& operator&=(PricedSurface::EvalField& a,
+constexpr PricedSurface::EvalField &operator&=(PricedSurface::EvalField &a,
                                                PricedSurface::EvalField b) noexcept {
   a = a & b;
   return a;
@@ -308,4 +317,4 @@ constexpr PricedSurface::EvalField& operator&=(PricedSurface::EvalField& a,
   return (static_cast<std::uint32_t>(set) & static_cast<std::uint32_t>(bit)) != 0u;
 }
 
-}  // namespace atx::vol
+} // namespace atx::vol
