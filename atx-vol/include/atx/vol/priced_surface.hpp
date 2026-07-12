@@ -213,7 +213,9 @@ class PricedSurface {
   // interpolation exactly (T compared by raw bits, never a tolerance). Writes
   // only into `out`'s caller-provided spans; the valid/hot path allocates nothing.
   // @return InvalidArgument on a K/T/side length mismatch or an out-span sized
-  //         neither 0 (where permitted) nor the query count.
+  //         neither 0 (where permitted) nor the query count, when any input span
+  //         overlaps any output span, or when any nonempty output spans overlap
+  //         each other. Overlap is rejected before any write.
   [[nodiscard]] Status evaluate_batch(std::span<const double> K, std::span<const double> T,
                                       std::span<const Side> side, EvalField fields, bool analytic,
                                       EvaluationSoA out) const;

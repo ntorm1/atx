@@ -1,5 +1,7 @@
 #include "atx/vol/priced_surface.hpp"
 
+#include "atx/vol/american_batch.hpp"  // exact resolved price-only batch
+
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -25,6 +27,25 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
 [[nodiscard]] bool valid_query(double K, double T) noexcept {
   return std::isfinite(K) && (K > 0.0) && std::isfinite(T) && (T > 0.0);
+}
+
+template <class Input, class Output>
+[[nodiscard]] bool spans_overlap(std::span<Input> input,
+                                 std::span<Output> output) noexcept {
+  if (input.empty() || output.empty()) {
+    return false;
+  }
+  // SAFETY: converting valid object pointers to uintptr_t is implementation-
+  // defined but supported by both repository toolchains. Integer comparison
+  // avoids undefined relational comparison between unrelated object pointers.
+  const std::uintptr_t input_begin =
+      reinterpret_cast<std::uintptr_t>(input.data());
+  const std::uintptr_t output_begin =
+      reinterpret_cast<std::uintptr_t>(output.data());
+  if (input_begin <= output_begin) {
+    return (output_begin - input_begin) < input.size_bytes();
+  }
+  return (input_begin - output_begin) < output.size_bytes();
 }
 
 }  // namespace
@@ -317,9 +338,26 @@ Status PricedSurface::evaluate_batch(std::span<const double> K, std::span<const 
   }
   const bool want_greeks =
       has_field(fields, EvalField::FirstOrder) || has_field(fields, EvalField::SecondOrder);
+  const bool want_price = has_field(fields, EvalField::Price);
   if (want_greeks && out.greeks.size() != n) {
     return Err(ErrorCode::InvalidArgument,
                "PricedSurface::evaluate_batch: greeks out-span size != query count");
+  }
+  const auto overlaps_input = [&](const auto output) noexcept {
+    return spans_overlap(K, output) || spans_overlap(T, output) ||
+           spans_overlap(side, output);
+  };
+  const bool outputs_overlap =
+      spans_overlap(out.iv, out.price) || spans_overlap(out.iv, out.greeks) ||
+      spans_overlap(out.iv, out.status) ||
+      spans_overlap(out.price, out.greeks) ||
+      spans_overlap(out.price, out.status) ||
+      spans_overlap(out.greeks, out.status);
+  if (overlaps_input(out.iv) || overlaps_input(out.price) ||
+      overlaps_input(out.greeks) || overlaps_input(out.status) ||
+      outputs_overlap) {
+    return Err(ErrorCode::InvalidArgument,
+               "PricedSurface::evaluate_batch: query/output spans overlap");
   }
 
   std::size_t i = 0;
@@ -333,6 +371,69 @@ Status PricedSurface::evaluate_batch(std::span<const double> K, std::span<const 
     }
     const bool t_valid = std::isfinite(t) && (t > 0.0);
     const ForwardCarry fc = t_valid ? interp_forward(t) : ForwardCarry{};
+    if (want_price && !want_greeks) {
+      if (!t_valid) {
+        for (std::size_t e = i; e < j; ++e) {
+          ResolvedSurfacePoint p;
+          p.K = K[e];
+          p.T = t;
+          const FusedResult fr = evaluate_resolved(p, side[e], fields, analytic);
+          out.iv[e] = fr.iv;
+          out.price[e] = fr.price;
+          out.status[e] = fr.status;
+        }
+        i = j;
+        continue;
+      }
+
+      const auto dispatch_valid = [&](std::size_t begin,
+                                      std::size_t end) -> Status {
+        if (begin == end) {
+          return Ok();
+        }
+        const std::size_t run_size = end - begin;
+        const ResolvedAmericanPriceBatchRequest request{
+            .S = pricing_.S,
+            .T = t,
+            .r = fc.rate,
+            .q = fc.q_eff,
+            .K = K.subspan(begin, run_size),
+            .sigma = out.iv.subspan(begin, run_size),
+            .side = side.subspan(begin, run_size),
+            .method = pricing_.method,
+            .al_opts = std::optional<AlOpts>{pricing_.al_opts},
+            .isa = simd::SimdIsa::Auto,
+            .price = out.price.subspan(begin, run_size),
+            .status = out.status.subspan(begin, run_size),
+            .pack_dispatch = {},
+        };
+        return american_price_batch_resolved(request);
+      };
+
+      std::size_t valid_begin = i;
+      for (std::size_t e = i; e < j; ++e) {
+        const ResolvedSurfacePoint p = resolve_with_carry(K[e], t, fc);
+        if (p.valid) {
+          out.iv[e] = p.sigma;
+          continue;
+        }
+        const Status batch_status = dispatch_valid(valid_begin, e);
+        if (!batch_status.has_value()) {
+          return batch_status;
+        }
+        const FusedResult fr = evaluate_resolved(p, side[e], fields, analytic);
+        out.iv[e] = fr.iv;
+        out.price[e] = fr.price;
+        out.status[e] = fr.status;
+        valid_begin = e + 1;
+      }
+      const Status batch_status = dispatch_valid(valid_begin, j);
+      if (!batch_status.has_value()) {
+        return batch_status;
+      }
+      i = j;
+      continue;
+    }
     for (std::size_t e = i; e < j; ++e) {
       // Bit-identical to evaluate(K[e], t, ...): resolve_with_carry(K,t,interp_forward(t))
       // == resolve(K,t), and evaluate_resolved is the shared routing.

@@ -220,7 +220,9 @@ struct RefCarry {
 
 // A constant-forward eSSVI surface (F == spot on every slice), the shape the
 // portfolio/backtest fixtures use.
-[[nodiscard]] PricedSurface make_essvi(std::uint32_t uid, int n) {
+[[nodiscard]] PricedSurface make_essvi(std::uint32_t uid, int n,
+                                       AmericanMethod method = AmericanMethod::AndersenLake,
+                                       AlOpts al_opts = al_fast_opts()) {
   CurveSurface cs;
   std::vector<SliceContext> ctx;
   for (int i = 0; i < n; ++i) {
@@ -238,7 +240,10 @@ struct RefCarry {
     cs.push(std::make_unique<EssviCurve>(e, std::exp(-kR * T)));
     ctx.push_back(SliceContext{T, kS, 0.0, 0.02, 200, 5});
   }
-  auto ps = PricedSurface::create(std::move(cs), std::move(ctx), make_pricing(uid));
+  PricingContext pricing = make_pricing(uid);
+  pricing.method = method;
+  pricing.al_opts = al_opts;
+  auto ps = PricedSurface::create(std::move(cs), std::move(ctx), pricing);
   EXPECT_TRUE(ps.has_value());
   return std::move(*ps);
 }
@@ -630,6 +635,133 @@ TEST(PricedSurface, EvaluateBatchMixedTBitIdenticalToPerEntry) {
   // The degenerate last entry is a per-entry error, not a crash / fabricated number.
   EXPECT_FALSE(out_st[n - 1].has_value());
   EXPECT_TRUE(std::isnan(out_px[n - 1]));
+}
+
+TEST(PricedSurface, PriceOnlyResolvedBatchPreservesMethodPresetAndLaneErrors) {
+  const AlOpts custom{/*n_collocation=*/9, /*n_quadrature=*/32,
+                      /*max_newton_iter=*/6, /*tol=*/3.0e-9};
+  const std::array<AmericanMethod, 2> methods{AmericanMethod::AndersenLake, AmericanMethod::Baw};
+  for (const AmericanMethod method : methods) {
+    const PricedSurface s = make_essvi(2, 6, method, custom);
+    const std::vector<double> Ks{85.0, 95.0, 100.0, 108.0, -2.0};
+    const std::vector<double> Ts(Ks.size(), 0.29);
+    const std::vector<Side> sides{Side::Put, Side::Call, Side::Put, Side::Call, Side::Put};
+    std::vector<double> iv(Ks.size()), price(Ks.size());
+    std::vector<Status> status(Ks.size());
+    ASSERT_TRUE(s.evaluate_batch(Ks, Ts, sides, EF::Iv | EF::Price, false,
+                                 PricedSurface::EvaluationSoA{iv, price, {}, status})
+                    .has_value());
+    for (std::size_t i = 0; i < Ks.size(); ++i) {
+      const auto expected = s.evaluate(Ks[i], Ts[i], sides[i], EF::Iv | EF::Price, false);
+      EXPECT_EQ(status[i].has_value(), expected.status.has_value()) << i;
+      EXPECT_TRUE(bits_equal(iv[i], expected.iv)) << i;
+      EXPECT_TRUE(bits_equal(price[i], expected.price)) << i;
+      if (!expected.status.has_value()) {
+        EXPECT_EQ(status[i].error().code(), expected.status.error().code()) << i;
+        EXPECT_EQ(status[i].error().message(), expected.status.error().message()) << i;
+      }
+    }
+  }
+}
+
+TEST(PricedSurface, EvaluateBatchRejectsExactInputOutputAliasBeforeWriting) {
+  const PricedSurface s = make_essvi(2, 6);
+  std::vector<double> strike_and_iv{95.0, 105.0};
+  const std::vector<double> before = strike_and_iv;
+  const std::vector<double> Ts(2, 0.29);
+  const std::vector<Side> sides{Side::Put, Side::Call};
+  std::vector<double> price(2, 123.0);
+  std::vector<Status> status(2);
+
+  const Status result = s.evaluate_batch(
+      strike_and_iv, Ts, sides, EF::Iv | EF::Price, false,
+      PricedSurface::EvaluationSoA{strike_and_iv, price, {}, status});
+
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_EQ(strike_and_iv, before);
+  EXPECT_EQ(price, std::vector<double>({123.0, 123.0}));
+}
+
+TEST(PricedSurface, EvaluateBatchRejectsShiftedInputOutputAliasBeforeWriting) {
+  const PricedSurface s = make_essvi(2, 6);
+  std::vector<double> shared{95.0, 105.0, 115.0};
+  const std::vector<double> before = shared;
+  const std::span<const double> strikes{shared.data(), 2};
+  const std::span<double> shifted_iv{shared.data() + 1, 2};
+  const std::vector<double> Ts(2, 0.29);
+  const std::vector<Side> sides{Side::Put, Side::Call};
+  std::vector<double> price(2, 456.0);
+  std::vector<Status> status(2);
+
+  const Status result = s.evaluate_batch(
+      strikes, Ts, sides, EF::Iv | EF::Price, false,
+      PricedSurface::EvaluationSoA{shifted_iv, price, {}, status});
+
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_EQ(shared, before);
+  EXPECT_EQ(price, std::vector<double>({456.0, 456.0}));
+}
+
+TEST(PricedSurface, EvaluateBatchRejectsExactOutputAliasBeforeWriting) {
+  const PricedSurface s = make_essvi(2, 6);
+  const std::vector<double> Ks{95.0, 105.0};
+  const std::vector<double> Ts(2, 0.29);
+  const std::vector<Side> sides{Side::Put, Side::Call};
+  std::vector<double> iv_and_price(2, 789.0);
+  const std::vector<double> before = iv_and_price;
+  std::vector<Status> status(2);
+
+  const Status result = s.evaluate_batch(
+      Ks, Ts, sides, EF::Iv | EF::Price, false,
+      PricedSurface::EvaluationSoA{iv_and_price, iv_and_price, {}, status});
+
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_EQ(iv_and_price, before);
+}
+
+TEST(PricedSurface, EvaluateBatchRejectsShiftedOutputAliasBeforeWriting) {
+  const PricedSurface s = make_essvi(2, 6);
+  const std::vector<double> Ks{95.0, 105.0};
+  const std::vector<double> Ts(2, 0.29);
+  const std::vector<Side> sides{Side::Put, Side::Call};
+  std::vector<double> shared{321.0, 654.0, 987.0};
+  const std::vector<double> before = shared;
+  const std::span<double> iv{shared.data(), 2};
+  const std::span<double> shifted_price{shared.data() + 1, 2};
+  std::vector<Status> status(2);
+
+  const Status result = s.evaluate_batch(
+      Ks, Ts, sides, EF::Iv | EF::Price, false,
+      PricedSurface::EvaluationSoA{iv, shifted_price, {}, status});
+
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_EQ(shared, before);
+}
+
+TEST(PricedSurface, PriceOnlyBatchInvalidStrikeAndTenorMatchScalarErrorExactly) {
+  const PricedSurface s = make_essvi(2, 6);
+  const std::vector<double> Ks{-2.0, 100.0};
+  const std::vector<double> Ts{0.29, std::numeric_limits<double>::quiet_NaN()};
+  const std::vector<Side> sides{Side::Put, Side::Call};
+  std::vector<double> iv(2), price(2);
+  std::vector<Status> status(2);
+
+  ASSERT_TRUE(s.evaluate_batch(Ks, Ts, sides, EF::Iv | EF::Price, false,
+                               PricedSurface::EvaluationSoA{iv, price, {}, status})
+                  .has_value());
+  for (std::size_t i = 0; i < Ks.size(); ++i) {
+    const auto expected = s.evaluate(Ks[i], Ts[i], sides[i], EF::Iv | EF::Price, false);
+    ASSERT_FALSE(expected.status.has_value()) << i;
+    ASSERT_FALSE(status[i].has_value()) << i;
+    EXPECT_EQ(status[i].error().code(), expected.status.error().code()) << i;
+    EXPECT_EQ(status[i].error().message(), expected.status.error().message()) << i;
+    EXPECT_TRUE(bits_equal(iv[i], expected.iv)) << i;
+    EXPECT_TRUE(bits_equal(price[i], expected.price)) << i;
+  }
 }
 
 // Length-mismatch and out-span-size guards.

@@ -18,6 +18,7 @@
 #include "atx/vol/american_batch.hpp"
 
 #include "atx/vol/american.hpp"
+#include "atx/vol/counters.hpp"
 #include "atx/vol/simd/cpu.hpp"
 
 #include <atomic>
@@ -25,6 +26,7 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <optional>
 #include <thread>
 #include <vector>
 
@@ -347,6 +349,350 @@ TEST(AmericanPriceBatch, InconsistentSpansRejected) {
   PricingWorkspace ws;
   PriceBatchOutput out;
   EXPECT_FALSE(american_price_batch(in, out, kernel, ws).has_value());
+}
+
+TEST(ResolvedAmericanPriceBatch, ExactMethodsOptionsMixedSidesAndLaneErrors) {
+  const std::vector<double> strikes{80.0, 95.0, 100.0, 110.0, -1.0};
+  const std::vector<double> sigma{0.18, 0.24, 0.31, 0.42, 0.20};
+  const std::vector<Side> sides{Side::Put, Side::Call, Side::Put, Side::Call, Side::Put};
+  std::vector<double> prices(strikes.size());
+  std::vector<Status> status(strikes.size());
+  std::vector<simd::SimdRoute> route(strikes.size());
+
+  struct Case {
+    AmericanMethod method;
+    std::optional<AlOpts> opts;
+  };
+  const std::vector<Case> cases{
+      {AmericanMethod::AndersenLake, std::optional<AlOpts>{al_fast_opts()}},
+      {AmericanMethod::AndersenLake,
+       std::optional<AlOpts>{AlOpts{/*n_collocation=*/9, /*n_quadrature=*/32,
+                                    /*max_newton_iter=*/6, /*tol=*/3.0e-9}}},
+      {AmericanMethod::Baw, std::optional<AlOpts>{al_fast_opts()}},
+  };
+
+  for (const Case& c : cases) {
+    const ResolvedAmericanPriceBatchRequest request{
+        .S = 100.0,
+        .T = 0.73,
+        .r = 0.04,
+        .q = 0.06,
+        .K = strikes,
+        .sigma = sigma,
+        .side = sides,
+        .method = c.method,
+        .al_opts = c.opts,
+        .isa = simd::SimdIsa::ForceScalar,
+        .price = prices,
+        .status = status,
+        .pack_dispatch = route,
+    };
+    ASSERT_TRUE(american_price_batch_resolved(request).has_value());
+    for (std::size_t i = 0; i < strikes.size(); ++i) {
+      const Result<double> expected =
+          american_price(100.0, strikes[i], 0.73, sigma[i], 0.04, 0.06, sides[i], c.method, c.opts);
+      EXPECT_EQ(status[i].has_value(), expected.has_value()) << i;
+      EXPECT_EQ(route[i], simd::SimdRoute::Scalar) << i;
+      if (expected.has_value()) {
+        EXPECT_EQ(prices[i], *expected) << i;
+      } else {
+        EXPECT_TRUE(std::isnan(prices[i])) << i;
+        EXPECT_EQ(status[i].error().code(), expected.error().code()) << i;
+        EXPECT_EQ(status[i].error().message(), expected.error().message()) << i;
+      }
+    }
+  }
+}
+
+TEST(ResolvedAmericanPriceBatch, ValidatesEveryNonOwningSpan) {
+  const std::vector<double> strikes{90.0, 100.0};
+  const std::vector<double> one_sigma{0.2};
+  const std::vector<Side> sides{Side::Put, Side::Call};
+  std::vector<double> prices(2);
+  std::vector<Status> status(2);
+  const ResolvedAmericanPriceBatchRequest request{
+      .S = 100.0,
+      .T = 0.5,
+      .r = 0.04,
+      .q = 0.01,
+      .K = strikes,
+      .sigma = one_sigma,
+      .side = sides,
+      .method = AmericanMethod::AndersenLake,
+      .al_opts = std::optional<AlOpts>{al_fast_opts()},
+      .isa = simd::SimdIsa::Auto,
+      .price = prices,
+      .status = status,
+      .pack_dispatch = {},
+  };
+  const Status result = american_price_batch_resolved(request);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+}
+
+TEST(ResolvedAmericanPriceBatch, RejectsShiftedSigmaPriceOverlapBeforeWritesOrCounters) {
+  const std::vector<double> strikes{90.0, 110.0};
+  std::vector<double> sigma_and_price{0.20, 0.30, 777.0};
+  const std::vector<double> before = sigma_and_price;
+  const std::span<const double> sigma{sigma_and_price.data(), 2};
+  const std::span<double> shifted_price{sigma_and_price.data() + 1, 2};
+  const std::vector<Side> sides{Side::Put, Side::Call};
+  std::vector<Status> status(2);
+  std::vector<simd::SimdRoute> dispatch(2, simd::SimdRoute::Avx2);
+  const ResolvedAmericanPriceBatchRequest request{
+      .S = 100.0,
+      .T = 0.73,
+      .r = 0.04,
+      .q = 0.06,
+      .K = strikes,
+      .sigma = sigma,
+      .side = sides,
+      .method = AmericanMethod::AndersenLake,
+      .al_opts = std::optional<AlOpts>{al_fast_opts()},
+      .isa = simd::SimdIsa::Auto,
+      .price = shifted_price,
+      .status = status,
+      .pack_dispatch = dispatch,
+  };
+
+  if constexpr (counters::counters_enabled()) {
+    counters::reset();
+  }
+  const Status result = american_price_batch_resolved(request);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_EQ(sigma_and_price, before);
+  EXPECT_TRUE(status[0].has_value());
+  EXPECT_TRUE(status[1].has_value());
+  EXPECT_EQ(dispatch[0], simd::SimdRoute::Avx2);
+  EXPECT_EQ(dispatch[1], simd::SimdRoute::Avx2);
+  if constexpr (counters::counters_enabled()) {
+    const counters::Snapshot snapshot = counters::snapshot();
+    EXPECT_EQ(snapshot.get(counters::Counter::ResolvedPriceWrapperCalls), 0u);
+    EXPECT_EQ(snapshot.get(counters::Counter::ResolvedPriceWrapperLanes), 0u);
+  }
+}
+
+TEST(ResolvedAmericanPriceBatch, PreservesDistinctUnsupportedAndInvalidErrors) {
+  IsaGuard guard;
+  simd::set_simd_isa_override(simd::SimdIsa::ForceScalar);
+  const std::vector<double> strikes{100.0, -1.0};
+  const std::vector<double> sigma{0.25, 0.25};
+  const std::vector<Side> sides(2, Side::Put);
+  std::vector<double> prices(2);
+  std::vector<Status> status(2);
+  std::vector<simd::SimdRoute> route(2);
+  const ResolvedAmericanPriceBatchRequest request{
+      .S = 100.0,
+      .T = 1.0,
+      .r = -0.01,
+      .q = -0.05,
+      .K = strikes,
+      .sigma = sigma,
+      .side = sides,
+      .method = AmericanMethod::AndersenLake,
+      .al_opts = std::optional<AlOpts>{al_fast_opts()},
+      .isa = simd::SimdIsa::ForceAvx2,
+      .price = prices,
+      .status = status,
+      .pack_dispatch = route,
+  };
+
+  ASSERT_TRUE(american_price_batch_resolved(request).has_value());
+  ASSERT_FALSE(status[0].has_value());
+  ASSERT_FALSE(status[1].has_value());
+  EXPECT_EQ(status[0].error().code(), ErrorCode::NotImplemented);
+  EXPECT_EQ(status[1].error().code(), ErrorCode::InvalidArgument);
+  const Result<double> unsupported = american_price(
+      100.0, strikes[0], 1.0, sigma[0], -0.01, -0.05, Side::Put,
+      AmericanMethod::AndersenLake, std::optional<AlOpts>{al_fast_opts()});
+  const Result<double> invalid = american_price(
+      100.0, strikes[1], 1.0, sigma[1], -0.01, -0.05, Side::Put,
+      AmericanMethod::AndersenLake, std::optional<AlOpts>{al_fast_opts()});
+  ASSERT_FALSE(unsupported.has_value());
+  ASSERT_FALSE(invalid.has_value());
+  EXPECT_EQ(status[0].error().message(), unsupported.error().message());
+  EXPECT_EQ(status[1].error().message(), invalid.error().message());
+  EXPECT_TRUE(std::isnan(prices[0]));
+  EXPECT_TRUE(std::isnan(prices[1]));
+  EXPECT_EQ(route[0], simd::SimdRoute::Scalar);
+  EXPECT_EQ(route[1], simd::SimdRoute::Scalar);
+  EXPECT_EQ(simd::simd_isa_override(), simd::SimdIsa::ForceScalar);
+}
+
+TEST(ResolvedAmericanPriceBatch, NullOptionsHonorsLocalAvx2WithoutGlobalMutation) {
+  IsaGuard guard;
+  simd::set_simd_isa_override(simd::SimdIsa::ForceScalar);
+  const std::vector<double> strikes{82.0, 94.0, 106.0, 118.0};
+  const std::vector<double> sigma{0.18, 0.24, 0.31, 0.42};
+  const std::vector<Side> sides(4, Side::Put);
+  std::vector<double> prices(4);
+  std::vector<Status> status(4);
+  std::vector<simd::SimdRoute> route(4);
+  const ResolvedAmericanPriceBatchRequest request{
+      .S = 100.0,
+      .T = 0.73,
+      .r = 0.05,
+      .q = 0.01,
+      .K = strikes,
+      .sigma = sigma,
+      .side = sides,
+      .method = AmericanMethod::AndersenLake,
+      .al_opts = std::nullopt,
+      .isa = simd::SimdIsa::ForceAvx2,
+      .price = prices,
+      .status = status,
+      .pack_dispatch = route,
+  };
+
+  if constexpr (counters::counters_enabled()) {
+    counters::reset();
+  }
+  ASSERT_TRUE(american_price_batch_resolved(request).has_value());
+  for (std::size_t i = 0; i < strikes.size(); ++i) {
+    const Result<double> expected = american_price(100.0, strikes[i], 0.73, sigma[i], 0.05, 0.01,
+                                                   Side::Put, AmericanMethod::AndersenLake,
+                                                   std::nullopt);
+    ASSERT_TRUE(expected.has_value()) << i;
+    EXPECT_TRUE(status[i].has_value()) << i;
+    const simd::SimdRoute expected_dispatch =
+        simd::have_avx2() ? simd::SimdRoute::Avx2
+                          : simd::SimdRoute::Scalar;
+    EXPECT_EQ(route[i], expected_dispatch) << i;
+    if (expected_dispatch == simd::SimdRoute::Avx2) {
+      EXPECT_LE(std::abs(prices[i] - *expected), 1.0e-3) << i;
+    } else {
+      EXPECT_EQ(prices[i], *expected) << i;
+    }
+  }
+  EXPECT_EQ(simd::simd_isa_override(), simd::SimdIsa::ForceScalar);
+  if constexpr (counters::counters_enabled()) {
+    const counters::Snapshot snapshot = counters::snapshot();
+    EXPECT_EQ(snapshot.get(counters::Counter::ResolvedPriceWrapperCalls), 1u);
+    EXPECT_EQ(snapshot.get(counters::Counter::ResolvedPriceWrapperLanes), 4u);
+    EXPECT_EQ(snapshot.get(counters::Counter::AmericanAvxPackDispatches),
+              simd::have_avx2() ? 1u : 0u);
+    EXPECT_EQ(snapshot.get(counters::Counter::AmericanWrapperKnownScalarLanes),
+              simd::have_avx2() ? 0u : 4u);
+  }
+}
+
+TEST(ResolvedAmericanPriceBatch, EmptyRequestIsNoOp) {
+  const ResolvedAmericanPriceBatchRequest request{};
+  EXPECT_TRUE(american_price_batch_resolved(request).has_value());
+}
+
+TEST(ResolvedAmericanPriceBatch, EligibleTailLaneRemainsExactScalar) {
+  const std::vector<double> strikes{82.0, 94.0, 106.0, 118.0, 125.0};
+  const std::vector<double> sigma(5, 0.25);
+  const std::vector<Side> sides(5, Side::Put);
+  std::vector<double> prices(5);
+  std::vector<Status> status(5);
+  std::vector<simd::SimdRoute> dispatch(5);
+  const ResolvedAmericanPriceBatchRequest request{
+      .S = 100.0,
+      .T = 0.73,
+      .r = 0.05,
+      .q = 0.01,
+      .K = strikes,
+      .sigma = sigma,
+      .side = sides,
+      .method = AmericanMethod::AndersenLake,
+      .al_opts = std::nullopt,
+      .isa = simd::SimdIsa::ForceAvx2,
+      .price = prices,
+      .status = status,
+      .pack_dispatch = dispatch,
+  };
+
+  ASSERT_TRUE(american_price_batch_resolved(request).has_value());
+  const Result<double> expected = american_price(
+      100.0, strikes.back(), 0.73, sigma.back(), 0.05, 0.01, Side::Put,
+      AmericanMethod::AndersenLake, std::nullopt);
+  ASSERT_TRUE(expected.has_value());
+  EXPECT_TRUE(status.back().has_value());
+  EXPECT_EQ(dispatch.back(), simd::SimdRoute::Scalar);
+  EXPECT_EQ(prices.back(), *expected);
+}
+
+TEST(ResolvedAmericanPriceBatch, DegenerateLaneIsExactScalar) {
+  const std::vector<double> strikes{105.0};
+  const std::vector<double> sigma{0.0};
+  const std::vector<Side> sides{Side::Put};
+  std::vector<double> prices(1);
+  std::vector<Status> status(1);
+  std::vector<simd::SimdRoute> dispatch(1);
+  const ResolvedAmericanPriceBatchRequest request{
+      .S = 100.0,
+      .T = 0.73,
+      .r = 0.05,
+      .q = 0.01,
+      .K = strikes,
+      .sigma = sigma,
+      .side = sides,
+      .method = AmericanMethod::AndersenLake,
+      .al_opts = std::nullopt,
+      .isa = simd::SimdIsa::ForceAvx2,
+      .price = prices,
+      .status = status,
+      .pack_dispatch = dispatch,
+  };
+
+  ASSERT_TRUE(american_price_batch_resolved(request).has_value());
+  const Result<double> expected = american_price(
+      100.0, strikes[0], 0.73, sigma[0], 0.05, 0.01, Side::Put,
+      AmericanMethod::AndersenLake, std::nullopt);
+  ASSERT_TRUE(expected.has_value());
+  EXPECT_TRUE(status[0].has_value());
+  EXPECT_EQ(dispatch[0], simd::SimdRoute::Scalar);
+  EXPECT_EQ(prices[0], *expected);
+}
+
+TEST(ResolvedAmericanPriceBatch, AutoWithEngagedOptionsIsExactScalar) {
+  IsaGuard guard;
+  simd::set_simd_isa_override(simd::SimdIsa::ForceAvx2);
+  const std::vector<double> strikes{90.0, 110.0};
+  const std::vector<double> sigma{0.20, 0.30};
+  const std::vector<Side> sides{Side::Put, Side::Call};
+  std::vector<double> prices(2);
+  std::vector<Status> status(2);
+  std::vector<simd::SimdRoute> dispatch(2);
+  const ResolvedAmericanPriceBatchRequest request{
+      .S = 100.0,
+      .T = 0.73,
+      .r = 0.04,
+      .q = 0.06,
+      .K = strikes,
+      .sigma = sigma,
+      .side = sides,
+      .method = AmericanMethod::AndersenLake,
+      .al_opts = std::optional<AlOpts>{al_fast_opts()},
+      .isa = simd::SimdIsa::Auto,
+      .price = prices,
+      .status = status,
+      .pack_dispatch = dispatch,
+  };
+
+  if constexpr (counters::counters_enabled()) {
+    counters::reset();
+  }
+  ASSERT_TRUE(american_price_batch_resolved(request).has_value());
+  for (std::size_t i = 0; i < strikes.size(); ++i) {
+    const Result<double> expected = american_price(
+        100.0, strikes[i], 0.73, sigma[i], 0.04, 0.06, sides[i],
+        AmericanMethod::AndersenLake, std::optional<AlOpts>{al_fast_opts()});
+    ASSERT_TRUE(expected.has_value()) << i;
+    EXPECT_EQ(dispatch[i], simd::SimdRoute::Scalar) << i;
+    EXPECT_EQ(prices[i], *expected) << i;
+  }
+  EXPECT_EQ(simd::simd_isa_override(), simd::SimdIsa::ForceAvx2);
+  if constexpr (counters::counters_enabled()) {
+    const counters::Snapshot snapshot = counters::snapshot();
+    EXPECT_EQ(snapshot.get(counters::Counter::ResolvedPriceWrapperCalls), 1u);
+    EXPECT_EQ(snapshot.get(counters::Counter::ResolvedPriceWrapperLanes), 2u);
+    EXPECT_EQ(snapshot.get(counters::Counter::AmericanAvxPackDispatches), 0u);
+    EXPECT_EQ(snapshot.get(counters::Counter::AmericanWrapperKnownScalarLanes), 2u);
+  }
 }
 
 // ── Greeks batch: bit-identical to per-contract american_greeks_fd ────────

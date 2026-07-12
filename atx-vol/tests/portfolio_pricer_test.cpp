@@ -1326,6 +1326,10 @@ TEST(PortfolioPricer, PriceInto_ZeroAllocation_And_PreparedReuse) {
     EXPECT_EQ(sm.get(Counter::FrameAllocations), 0u);
     EXPECT_EQ(sm.get(Counter::FrameBytes), std::uint64_t{37} * n);
     EXPECT_EQ(sm.get(Counter::PreparedBuilds), 0u);
+    EXPECT_GT(sm.get(Counter::ResolvedPriceWrapperCalls), 0u);
+    EXPECT_GE(sm.get(Counter::ResolvedPriceWrapperLanes), nu);
+    EXPECT_EQ(sm.get(Counter::AmericanAvxPackDispatches), 0u);
+    EXPECT_GE(sm.get(Counter::AmericanWrapperKnownScalarLanes), nu);
   } else {
     EXPECT_FALSE(atx::vol::counters::snapshot().enabled);
     SUCCEED();

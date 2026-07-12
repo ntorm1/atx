@@ -76,6 +76,12 @@ enum class Counter : unsigned {
   PreparedBuilds,         // PreparedPortfolio::create calls from the pricer (0 on a warm reuse)
   // Pricing executor (P1.4) — persistent pool dispatch accounting
   PoolDispatches,         // times run_blocks/run_ranges woke the pool (0 on the inline path)
+  ResolvedPriceWrapperCalls,      // exact wrapper entries reached from PricedSurface
+  ResolvedPriceWrapperLanes,      // lanes submitted to those wrapper entries
+  AmericanAvxPackDispatches,      // complete packs actually dispatched to AVX2
+  // Lower bound within this wrapper only: excludes opaque AVX internal patches
+  // and scalar American calls made elsewhere in the library.
+  AmericanWrapperKnownScalarLanes,
   Count_
 };
 
@@ -89,6 +95,8 @@ inline constexpr const char* kNames[kCount] = {
     "cnt_cache_hits",          "cnt_cache_oob_clamps",     "cnt_cache_cold_fallbacks",
     "cnt_frame_allocations",   "cnt_frame_bytes",          "cnt_worker_launches",
     "cnt_clenshaw_sweeps",     "cnt_prepared_builds",      "cnt_pool_dispatches",
+    "cnt_resolved_price_wrapper_calls", "cnt_resolved_price_wrapper_lanes",
+    "cnt_american_avx_pack_dispatches", "cnt_american_wrapper_known_scalar_lanes",
 };
 
 // A point-in-time copy of every counter. `enabled == false` is the sentinel a
