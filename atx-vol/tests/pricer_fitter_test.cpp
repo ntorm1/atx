@@ -159,10 +159,15 @@ TEST_F(PricerFitterTest, LocalRiskRefitPublishesCopyOnWriteGeneration) {
   }
   ASSERT_FALSE(ids.empty());
   ASSERT_TRUE(chain_->update_quotes(ids, bids, asks).has_value());
+  // Task 2e (carry I1): this update rescales every spread — including the
+  // near-ATM carry pairs' — and carry weights are functions of the spread, so
+  // the certified observation cache must REFUSE reuse and route the refit
+  // through the full recompute path (which re-resolves carry and re-audits).
   const auto cached =
       before.risk->session().cached_refit_observations(
           chain_->underlying().chains.front(), 0u);
-  ASSERT_TRUE(cached.has_value()) << cached.error().message();
+  ASSERT_FALSE(cached.has_value())
+      << "carry-pair spread change must invalidate the certified cache";
   ASSERT_TRUE(fitter.refit_risk_slice(*chain_, 0u).has_value());
 
   const atx::vol::SurfaceBundle after = fitter.bundle();
@@ -327,6 +332,72 @@ TEST(PricerFitterPolicy, EventContextBuildsAndServesC8Surface) {
   ASSERT_GT(priced->n_slices(), 0u);
   EXPECT_EQ(priced->kind_at(0), atx::vol::VolCurveKind::C8);
   EXPECT_TRUE(std::isfinite(priced->iv(spec.spot, spec.expiries.front().T)));
+}
+
+// Task 2a (carry C1): the eSSVI rung is a reachable served risk family (the
+// standard fallback after a ConvexDense rejection, or an explicit pin). Under
+// the risk policy its FIT inversions must run the cold-reference audit, and
+// the certificate must describe those audited fit rows — a shortcut result
+// must never reach the served path without the §8.1 audit.
+TEST_F(PricerFitterTest, RiskEssviRungServesOnlyAuditedInversions) {
+  PricerConfig config;
+  config.quality_mode = atx::vol::FitQualityMode::Balanced;
+  config.outputs = atx::vol::SurfaceOutputs::Risk;
+  atx::vol::CurveConfig curve;
+  curve.kind = atx::vol::VolCurveKind::Essvi;
+  config.curve = curve;
+  PricerFitter fitter{config};
+  ASSERT_TRUE(fitter.fit(*chain_).has_value());
+  const atx::vol::SurfaceBundle bundle = fitter.bundle();
+  ASSERT_NE(bundle.risk, nullptr);
+  EXPECT_EQ(bundle.risk_health.state, atx::vol::SurfaceState::Healthy);
+
+  const auto& session = bundle.risk->session();
+  EXPECT_TRUE(session.inputs().deam.audit_fit_inversions);
+  const auto& diag = session.diagnostics();
+  EXPECT_GT(diag.n_iv_proposed, std::size_t{0});
+  EXPECT_EQ(diag.n_iv_audited, diag.n_iv_proposed);
+  EXPECT_TRUE(diag.inversion_certified);
+}
+
+// Task 2d (carry I5): an expiry whose quotes are all crossed fails the carry
+// gate and drops out of the fitted risk surface. The surviving surface is
+// still served, but the gap is surfaced: Degraded state + CarryGap reason +
+// the skip counted in diagnostics — never a clean Healthy with the expiry
+// silently missing.
+TEST_F(PricerFitterTest, CarryFailedExpiryPublishesDegradedWithCarryGap) {
+  PricerConfig config;
+  config.quality_mode = atx::vol::FitQualityMode::Balanced;
+  config.outputs = atx::vol::SurfaceOutputs::Risk;
+  PricerFitter fitter{config};
+
+  // Cross every quote of the second-shortest expiry (bid > ask stamps the
+  // Locked|Crossed flags), so no co-terminal pair survives leg validity.
+  const double bad_T = chain_->underlying().chains[1].T;
+  std::vector<OptionId> ids;
+  std::vector<double> bids;
+  std::vector<double> asks;
+  for (const OptionId id : chain_->ids()) {
+    const auto option = chain_->at(id);
+    ASSERT_TRUE(option.has_value());
+    if (std::fabs(option->T - bad_T) > 1.0e-12) continue;
+    ids.push_back(id);
+    bids.push_back(2.0);
+    asks.push_back(1.0);
+  }
+  ASSERT_FALSE(ids.empty());
+  ASSERT_TRUE(chain_->update_quotes(ids, bids, asks).has_value());
+
+  ASSERT_TRUE(fitter.fit(*chain_).has_value());
+  const atx::vol::SurfaceBundle bundle = fitter.bundle();
+  ASSERT_NE(bundle.risk, nullptr);
+  EXPECT_EQ(bundle.risk_health.state, atx::vol::SurfaceState::Degraded);
+  EXPECT_TRUE(atx::vol::has_validation_failure(
+      bundle.risk_health.reasons, atx::vol::ValidationFailure::CarryGap));
+  EXPECT_TRUE(bundle.risk_health.serving_candidate());
+  EXPECT_FALSE(bundle.risk_health.using_fallback());
+  EXPECT_EQ(bundle.risk->session().diagnostics().n_carry_skipped_expiries,
+            std::size_t{1});
 }
 
 TEST(LinearVarianceCurve, InterpolatesTotalVarianceAndClampsWings) {

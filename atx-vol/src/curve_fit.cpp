@@ -115,6 +115,9 @@ struct ParityData {
 // any worker count (the value_chain / calibrate_pool determinism pattern).
 struct ChainPrepass {
   bool usable = false;
+  // Carry resolution failed (or produced a degenerate forward): the chain is
+  // unusable AND the skip must be surfaced in the report, never hidden (§5.2).
+  bool carry_failed = false;
   double T = 0.0;
   double rate = 0.0;
   double F = 0.0;
@@ -176,10 +179,12 @@ struct ChainPrepass {
       slot.ms_forward_borrow = elapsed_ms(t_forward0, ProfileClock::now());
     }
     if (!d_res) {
+      slot.carry_failed = true;
       return;
     }
     const double F = d_res->forward;
     if (!(F > 0.0) || !std::isfinite(F)) {
+      slot.carry_failed = true;
       return;
     }
     const double q_eff = rate - std::log(F / in.S) / T;
@@ -261,6 +266,11 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
   const auto t_pre0 = ProfileClock::now();
   const std::vector<ChainPrepass> prepass = run_deam_prepass(under, in, in.fit_workers, profile);
   const double ms_prepass = profile ? elapsed_ms(t_pre0, ProfileClock::now()) : 0.0;
+  for (const ChainPrepass &pre : prepass) {
+    if (pre.carry_failed) {
+      ++out.n_carry_skipped; // §5.2: carry-dropped expiries are surfaced
+    }
+  }
 
   // Phase 2 (SEQUENTIAL): the fit is order-dependent — each fitted slice's w(k)
   // becomes the calendar floor for the next (ascending-T) slice — so this walk

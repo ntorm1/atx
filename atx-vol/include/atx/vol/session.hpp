@@ -177,6 +177,11 @@ struct SessionDiagnostics {
   std::size_t n_quotes{0};                // sum of per-slice n_used
   std::size_t n_carry_slices{0};          // slices with a resolved carry diagnostic
   std::size_t n_carry_confident{0};       // carry slices clearing confidence gates
+  // Expiries the fit DROPPED because carry could not be resolved (confidence
+  // gate / no quotable pair / degenerate forward). A surface missing expiries
+  // must surface the gap (§5.2); risk admission maps a non-zero count to a
+  // Degraded health state with a CarryGap reason.
+  std::size_t n_carry_skipped_expiries{0};
   double min_carry_effective_pairs{0.0};
   double max_carry_dispersion{0.0};
   double max_carry_leave_one_out{0.0};
@@ -187,7 +192,12 @@ struct SessionDiagnostics {
   std::size_t n_iv_rejected_residual{0};
   double max_iv_proposal_residual_half_spreads{0.0};
   bool carry_confident{false};             // true iff every fitted slice is confident
-  bool inversion_certified{false};         // true iff all AL proposals were audited/accepted
+  // True iff every fitted slice's inversions ran the AUDITED route (the fit
+  // rows themselves, not just a diagnostic re-run), every accepted node passed
+  // the cold-reference residual budget, and tolerated node drops stayed under
+  // calib.max_certified_deam_drop_fraction. Non-AndersenLake methods have no
+  // audit and are never certified (see deam_inversion_certified).
+  bool inversion_certified{false};
   IncrementalRefitDiagnostics incremental{};
 };
 
@@ -504,6 +514,13 @@ class VolaSession {
     std::vector<std::vector<std::uint8_t>> source_flags;
     std::vector<std::vector<double>> chain_mids;
     std::vector<std::vector<std::uint8_t>> chain_flags;
+    // Full-chain bid/ask/timestamp snapshots: the robust carry weights consume
+    // spreads (quality) and quote ages (freshness), and pair ELIGIBILITY
+    // consumes bids/asks/mids/flags — so certified reuse must be able to prove
+    // every carry coordinate unchanged, not just mids and flags (§14).
+    std::vector<std::vector<double>> chain_bids;
+    std::vector<std::vector<double>> chain_asks;
+    std::vector<std::vector<std::int64_t>> chain_ts;
   };
   // Immutable and shared across copy-on-write generations. A spread-only refit
   // never changes certified prices/IVs, so cloning this history is wasted work.

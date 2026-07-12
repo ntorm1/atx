@@ -46,6 +46,8 @@ using atx::vol::Side;
 using atx::vol::to_u8;
 using atx::vol::american_price;
 using atx::vol::AmericanMethod;
+using atx::vol::deam_inversion_certified;
+using atx::vol::DeAmAuditDiagnostics;
 
 // ── Synthetic-chain fixture ─────────────────────────────────────────────
 
@@ -420,6 +422,143 @@ TEST(CalibOpts, DefaultOpts_MatchCLibraryValues) {
   EXPECT_EQ(o.min_obs_per_slice, 4u);
   EXPECT_DOUBLE_EQ(o.max_post_fit_sigma, 2.0);
   EXPECT_DOUBLE_EQ(o.max_spread_to_mid_pct, 0.60);  // impl = 0.60 (comment's "0.40" is stale)
+}
+
+// ── Inversion certification: drop-cap semantics (task 2c / carry I6) ─────
+//
+// The de-Am stage DROPS a node whose inversion fails or whose accurate reprice
+// exceeds the half-spread budget (deamer.hpp's documented semantics). The
+// certificate must tolerate such drops up to a capped fraction of usable
+// nodes — one bad quote must not reject an entire risk generation — and must
+// refuse certification beyond the cap, or whenever any route accepted
+// proposals it never audited (a non-Andersen-Lake method).
+
+[[nodiscard]] std::uint32_t route_propose_total(const DeAmAuditDiagnostics& a) {
+  return a.shortcut.n_proposed + a.cache.n_proposed + a.fast.n_proposed +
+         a.accurate.n_proposed;
+}
+[[nodiscard]] std::uint32_t route_audit_total(const DeAmAuditDiagnostics& a) {
+  return a.shortcut.n_audited + a.cache.n_audited + a.fast.n_audited +
+         a.accurate.n_audited;
+}
+
+// Chain whose mids are genuine American prices at `sigma` on carry q, except
+// the strikes in `poison` (all must satisfy F < K < S): those get the RAW
+// EUROPEAN price at `sigma`, which sits BELOW the American intrinsic floor
+// S - K, so the American inversion has no attainable sigma and the row drops.
+Chain make_poisoned_american_chain(const std::vector<double>& strikes,
+                                   const std::vector<double>& poison, double T,
+                                   double r, double q, double sigma) {
+  Chain c = make_american_chain(strikes, T, r, q, sigma);
+  const double F = 100.0 * std::exp((r - q) * T);
+  const double df = std::exp(-r * T);
+  for (std::size_t i = 0; i < strikes.size(); ++i) {
+    for (const double bad : poison) {
+      if (std::fabs(strikes[i] - bad) > 1e-9) continue;
+      const std::size_t idx = chain_index(static_cast<std::uint16_t>(i), Side::Call);
+      const double eu = black76_price(F, strikes[i], T, sigma, df, Side::Call);
+      EXPECT_LT(eu, 100.0 - strikes[i]) << "poison mid must undercut intrinsic";
+      const double half = std::fmin(0.002, 0.10 * eu);
+      c.mids[idx] = eu;
+      c.bids[idx] = eu - half;
+      c.asks[idx] = eu + half;
+    }
+  }
+  return c;
+}
+
+TEST(DeamCertification, SingleUnattainableQuoteIsDroppedAndStillCertified) {
+  constexpr double T = 1.0;
+  constexpr double r = 0.05;
+  constexpr double q = 0.20;  // heavy carry: F ~ 86 < S, so F < K < S exists
+  constexpr double sigma = 0.22;
+  const double F = 100.0 * std::exp((r - q) * T);
+  const double df = std::exp(-r * T);
+  // Exactly ONE call strike sits in the ill-conditioned F < K < S zone (where
+  // an American call pins near intrinsic): the poisoned one. Every other row
+  // is a well-conditioned OTM leg that must survive.
+  const std::vector<double> strikes{60.0, 64.0, 68.0, 72.0, 76.0, 80.0, 84.0,
+                                    92.0, 100.0, 104.0, 108.0, 112.0, 116.0};
+  const Chain chain =
+      make_poisoned_american_chain(strikes, {92.0}, T, r, q, sigma);
+  CalibOpts opts = calib_default_opts();
+  opts.max_spread_vol = 1.0;
+
+  const auto result = build_observations_european(
+      chain, 100.0, r, F, T, df, opts, {}, std::nullopt, 1.0e-7, 64,
+      AmericanMethod::AndersenLake);
+  ASSERT_TRUE(result.has_value())
+      << (result ? std::string{} : result.error().to_string());
+  const DeAmAuditDiagnostics& audit = result->deam_audit;
+
+  // The poisoned node was dropped from the fit set and counted, never fitted.
+  ASSERT_GT(audit.n_deam_rows, 0u);
+  EXPECT_EQ(audit.n_deam_rows - audit.n_deam_accepted, 1u);
+  for (const FitObs& o : result->obs) {
+    EXPECT_GT(std::fabs(o.K - 92.0), 1e-9) << "poisoned node must not be fitted";
+  }
+
+  // One tolerated drop in 14 usable rows certifies under the default cap —
+  // the old audited==proposed rule would have rejected the whole generation.
+  EXPECT_LT(route_audit_total(audit), route_propose_total(audit));
+  EXPECT_TRUE(deam_inversion_certified(audit, 0.10));
+}
+
+TEST(DeamCertification, DropsBeyondCapRefuseCertification) {
+  constexpr double T = 1.0;
+  constexpr double r = 0.05;
+  constexpr double q = 0.20;
+  constexpr double sigma = 0.22;
+  const double F = 100.0 * std::exp((r - q) * T);
+  const double df = std::exp(-r * T);
+  const std::vector<double> strikes{60.0, 64.0, 68.0, 72.0, 76.0, 80.0, 84.0,
+                                    88.0, 92.0, 95.0, 100.0, 104.0, 108.0, 112.0};
+  const Chain chain =
+      make_poisoned_american_chain(strikes, {88.0, 92.0, 95.0}, T, r, q, sigma);
+  CalibOpts opts = calib_default_opts();
+  opts.max_spread_vol = 1.0;
+
+  const auto result = build_observations_european(
+      chain, 100.0, r, F, T, df, opts, {}, std::nullopt, 1.0e-7, 64,
+      AmericanMethod::AndersenLake);
+  ASSERT_TRUE(result.has_value())
+      << (result ? std::string{} : result.error().to_string());
+  const DeAmAuditDiagnostics& audit = result->deam_audit;
+  EXPECT_EQ(audit.n_deam_rows - audit.n_deam_accepted, 3u);
+  // 3 of 14 usable nodes (~21%) exceeds the 10% cap: fail-closed AT the cap.
+  EXPECT_FALSE(deam_inversion_certified(audit, 0.10));
+}
+
+TEST(DeamCertification, PredicateCapsDropsAndRefusesUnauditedAcceptance) {
+  DeAmAuditDiagnostics clean{};
+  clean.accurate.n_proposed = 20;
+  clean.accurate.n_audited = 20;
+  clean.accurate.n_accepted = 20;
+  clean.n_deam_rows = 20;
+  clean.n_deam_accepted = 20;
+  EXPECT_TRUE(deam_inversion_certified(clean, 0.10));
+
+  DeAmAuditDiagnostics one_drop = clean;
+  one_drop.n_deam_accepted = 19;
+  one_drop.accurate.n_accepted = 19;
+  EXPECT_TRUE(deam_inversion_certified(one_drop, 0.10));  // 5% <= 10%
+
+  DeAmAuditDiagnostics over_cap = clean;
+  over_cap.n_deam_accepted = 15;
+  over_cap.accurate.n_accepted = 15;
+  EXPECT_FALSE(deam_inversion_certified(over_cap, 0.10));  // 25% > 10%
+
+  // A route that accepted more than it audited (the vacuous-certification
+  // shape of AmericanMethod::Baw, task 2b / carry I4) can never certify.
+  DeAmAuditDiagnostics unaudited = clean;
+  unaudited.accurate.n_audited = 0;
+  EXPECT_FALSE(deam_inversion_certified(unaudited, 0.10));
+
+  // Degenerate ledgers and bad budgets fail closed.
+  EXPECT_FALSE(deam_inversion_certified(DeAmAuditDiagnostics{}, 0.10));
+  EXPECT_FALSE(deam_inversion_certified(clean, -0.10));
+  EXPECT_FALSE(deam_inversion_certified(
+      clean, std::numeric_limits<double>::quiet_NaN()));
 }
 
 }  // namespace

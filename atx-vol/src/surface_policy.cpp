@@ -22,6 +22,24 @@ AdmissionDecision decide_risk_surface_admission(const ValidationDigest &validati
     return out;
   }
 
+  // Degraded-but-served: a candidate whose ONLY defect is a carry-coverage
+  // gap (expiries dropped by the carry confidence gate) is published with the
+  // gap surfaced — Degraded state, CarryGap reason retained — never silently
+  // as Healthy and never rejected outright: the surviving slices passed the
+  // full geometric/certification contract (§5.2). Any other failure bit still
+  // rejects below.
+  {
+    constexpr auto kDegradedOnly =
+        static_cast<std::uint32_t>(ValidationFailure::CarryGap);
+    const auto raw = static_cast<std::uint32_t>(validation.failures);
+    if (candidate_generation != 0 && raw != 0u && (raw & ~kDegradedOnly) == 0u) {
+      out.publish_candidate = true;
+      out.health.state = SurfaceState::Degraded;
+      out.health.served_generation = candidate_generation;
+      return out;
+    }
+  }
+
   if (candidate_generation == 0) {
     out.health.reasons |= ValidationFailure::InvalidDomain;
   }

@@ -170,6 +170,9 @@ struct SurfaceParityReport {
   bool calendar_arb_free{false};          // arb.hpp calendar check on the surface
   std::size_t n_slices{0};                // fitted slice count (== expiry_T.size())
   std::size_t n_calendar_viol_pre{0};     // calendar violations BEFORE any repair
+  // Expiries dropped because carry resolution failed (confidence gate / no
+  // quotable pair / degenerate forward) — surfaced, never silently skipped.
+  std::size_t n_carry_skipped{0};
 };
 
 // De-Americanize + fit each expiry chain of `under`, assemble an ascending-T

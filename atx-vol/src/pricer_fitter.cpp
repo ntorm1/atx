@@ -53,7 +53,6 @@ std::span<const VolCurveKind> fallback_curve_rungs(VolCurveKind primary) noexcep
 
 [[nodiscard]] RiskSurfaceValidationConfig
 risk_validation_config(FitQualityMode quality_mode) noexcept;
-[[nodiscard]] bool inversion_certified(const DeAmAuditDiagnostics &audit) noexcept;
 
 std::optional<std::size_t> ChainValuation::row_of(OptionId id) const {
   for (std::size_t i = 0; i < ids.size(); ++i) {
@@ -234,6 +233,11 @@ Status PricerFitter::fit(const OptionChain &chain) {
     in.enforce_calendar_floor = true;
     in.calendar_repair = CalendarRepair::Project;
     in.deam.require_carry_confidence = true;
+    // §8.1: every served risk fit must run audited inversions — including the
+    // eSSVI fallback rung, whose aligned-obs fit path audits only under this
+    // flag (the curve-driver primaries audit unconditionally). Without it the
+    // rung's certificate would describe a diagnostic re-run, not the fit.
+    in.deam.audit_fit_inversions = true;
     // Curve-override risk sessions deliberately serve the accurate cold pricer;
     // building a scalar-carry correction cache here adds hundreds of ms and is
     // then never used by the served path. Fast/cache IV proposals remain
@@ -422,6 +426,12 @@ Status PricerFitter::fit(const OptionChain &chain) {
     if (!diagnostics.inversion_certified) {
       result.failures |= ValidationFailure::InversionResidual;
     }
+    if (diagnostics.n_carry_skipped_expiries > 0) {
+      // §5.2: expiries dropped by the carry gate must be surfaced. CarryGap is
+      // the one publish-with-Degraded reason (decide_risk_surface_admission);
+      // combined with any other failure it still rejects.
+      result.failures |= ValidationFailure::CarryGap;
+    }
     finalize_validation_digest(result, validation_config);
     return result;
   };
@@ -548,21 +558,6 @@ risk_validation_config(FitQualityMode quality_mode) noexcept {
   return config;
 }
 
-[[nodiscard]] bool inversion_certified(const DeAmAuditDiagnostics &audit) noexcept {
-  const auto count = [](const InversionRouteDiagnostics &route) {
-    return std::pair{route.n_proposed, route.n_audited};
-  };
-  const auto shortcut = count(audit.shortcut);
-  const auto cache = count(audit.cache);
-  const auto fast = count(audit.fast);
-  const auto accurate = count(audit.accurate);
-  const std::uint32_t proposed =
-      shortcut.first + cache.first + fast.first + accurate.first;
-  const std::uint32_t audited =
-      shortcut.second + cache.second + fast.second + accurate.second;
-  return proposed > 0u && audited == proposed && audit.n_rejected_residual == 0u;
-}
-
 Result<FitDiag> PricerFitter::refit_risk_slice(const OptionChain &chain,
                                                std::size_t slice_idx) {
   using Clock = std::chrono::steady_clock;
@@ -661,8 +656,12 @@ Result<FitDiag> PricerFitter::refit_risk_slice(const OptionChain &chain,
       retain_prior(ValidationFailure::InsufficientData);
       return Err(std::move(observations).error());
     }
-    if (inputs.deam.method == AmericanMethod::AndersenLake &&
-        !inversion_certified(observations->deam_audit)) {
+    // Fail-closed for EVERY method: a non-AndersenLake method has no audit and
+    // can never certify (deam_inversion_certified). Node drops within the
+    // configured cap are tolerated; beyond it the refit is refused.
+    if (!deam_inversion_certified(
+            observations->deam_audit,
+            inputs.calib.max_certified_deam_drop_fraction)) {
       retain_prior(ValidationFailure::InversionResidual);
       return Err(ErrorCode::Unavailable,
                  "PricerFitter::refit_risk_slice: price-to-IV inversion audit failed");

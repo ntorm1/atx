@@ -307,6 +307,58 @@ namespace {
              : 0.0;
 }
 
+// The carry-pair candidate set and selection cut. `both_valid` holds every
+// strike with BOTH legs quotable; its first `k` entries are the selected
+// pairs, ordered by ascending |K - S| (spot is a fine ATM proxy since the
+// forward sits near spot for equities). Shared verbatim between the carry
+// solve and the public `carry_pair_strikes` accessor so the certified-cache
+// invalidation can never drift from the selection the solve actually makes.
+struct CarryPairSelection {
+  std::vector<std::size_t> both_valid;
+  std::size_t k{0};
+};
+
+[[nodiscard]] CarryPairSelection select_carry_pairs(const Chain& chain, double S,
+                                                    const DeAmOptions& opts) {
+  CarryPairSelection sel;
+  const std::size_t n = chain.n_strikes();
+  sel.both_valid.reserve(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    const std::size_t ci = chain_index(static_cast<std::uint16_t>(i), Side::Call);
+    const std::size_t pi = chain_index(static_cast<std::uint16_t>(i), Side::Put);
+    if (leg_quote_valid(chain, ci) && leg_quote_valid(chain, pi)) {
+      sel.both_valid.push_back(i);
+    }
+  }
+  if (sel.both_valid.empty()) {
+    return sel;
+  }
+
+  // Use EVERY near-ATM co-terminal pair inside the ±carry_atm_band moneyness
+  // band, falling back to the opts.n_atm nearest when too few sit inside it.
+  std::size_t band = 0;
+  for (std::size_t j = 0; j < sel.both_valid.size(); ++j) {
+    if (std::fabs(chain.strikes[sel.both_valid[j]] / S - 1.0) <= opts.carry_atm_band) ++band;
+  }
+  // Cap the solve at the max_borrow_pairs nearest pairs: a dozen near-money
+  // pairs already pin the forward to sub-tick accuracy, and the cold per-pair
+  // de-Am is the cost driver, so an unbounded band (80+ pairs on a $1-strike
+  // near-dated chain) would bloat the fit for no accuracy gain.
+  const std::size_t max_carry_pairs =
+      opts.max_borrow_pairs == 0 ? std::size_t{1} : opts.max_borrow_pairs;
+  const std::size_t k_min = (opts.n_atm == 0 ? std::size_t{1} : opts.n_atm);
+  sel.k = std::min(std::min(std::max(k_min, band), max_carry_pairs),
+                   sel.both_valid.size());
+  std::partial_sort(sel.both_valid.begin(),
+                    sel.both_valid.begin() + static_cast<std::ptrdiff_t>(sel.k),
+                    sel.both_valid.end(),
+                    [&](std::size_t a, std::size_t b) noexcept {
+                      return std::fabs(chain.strikes[a] - S) <
+                             std::fabs(chain.strikes[b] - S);
+                    });
+  return sel;
+}
+
 // Resolve carry from a scored near-ATM strip. The robust center is a
 // deterministic weighted Huber location, while dispersion and leave-one-out
 // movement are retained for the independent admission layer.
@@ -326,29 +378,13 @@ resolve_chain_carry(const Chain& chain, double S, double r,
     return Ok(ChainForward{F, opts.borrow_fixed, std::move(fixed)});
   }
 
-  const std::size_t n = chain.n_strikes();
   const double T = chain.T;
 
-  // Indices of strikes with both legs quotable, ranked by |K − S| (spot is a
-  // fine ATM proxy since the forward sits near spot for equities).
-  std::vector<std::size_t> both_valid;
-  both_valid.reserve(n);
-  for (std::size_t i = 0; i < n; ++i) {
-    const std::size_t ci = chain_index(static_cast<std::uint16_t>(i), Side::Call);
-    const std::size_t pi = chain_index(static_cast<std::uint16_t>(i), Side::Put);
-    if (leg_quote_valid(chain, ci) && leg_quote_valid(chain, pi)) {
-      both_valid.push_back(i);
-    }
-  }
-  if (both_valid.empty()) {
-    return Err(ErrorCode::Unavailable,
-               "de_americanize_chain: no near-ATM co-terminal pair for borrow");
-  }
-
-  // Robust multi-strike carry solve. Use EVERY near-ATM co-terminal pair inside a
-  // ±6% moneyness band (falling back to the opts.n_atm nearest when too few), and
-  // average their implied borrows. Two deliberate departures from a single-pair
-  // solve, both required to hit the sub-tick forward accuracy dense boards need:
+  // Robust multi-strike carry solve over `select_carry_pairs`' cut (every
+  // near-ATM co-terminal pair inside the band, falling back to the opts.n_atm
+  // nearest when too few), averaging their implied borrows. Two deliberate
+  // departures from a single-pair solve, both required to hit the sub-tick
+  // forward accuracy dense boards need:
   //   (1) the COLD Andersen-Lake de-Am is used for the carry solve (empty caches),
   //       NOT the query correction cache — the cache's small American→European
   //       Chebyshev bias, fed through the put-call parity solve, shifts the implied
@@ -357,27 +393,14 @@ resolve_chain_carry(const Chain& chain, double S, double r,
   //       cold path is affordable.
   //   (2) many pairs, not one: a single ATM pair is quote-noise-fragile; the band
   //       average is the robust, put-call-IV-agreement-consistent forward.
-  const AmericanCorrectionCaches cold_caches{};
-  std::size_t band = 0;
-  for (std::size_t j = 0; j < both_valid.size(); ++j) {
-    if (std::fabs(chain.strikes[both_valid[j]] / S - 1.0) <= opts.carry_atm_band) ++band;
+  const CarryPairSelection selection = select_carry_pairs(chain, S, opts);
+  const std::vector<std::size_t>& both_valid = selection.both_valid;
+  const std::size_t k = selection.k;
+  if (both_valid.empty()) {
+    return Err(ErrorCode::Unavailable,
+               "de_americanize_chain: no near-ATM co-terminal pair for borrow");
   }
-  // Cap the solve at the 12 nearest pairs: a dozen near-money pairs already pin
-  // the forward to sub-tick accuracy, and the cold per-pair de-Am is the cost
-  // driver, so an unbounded ±6% band (80+ pairs on a $1-strike near-dated chain)
-  // would bloat the fit for no accuracy gain.
-  const std::size_t max_carry_pairs =
-      opts.max_borrow_pairs == 0 ? std::size_t{1} : opts.max_borrow_pairs;
-  const std::size_t k_min = (opts.n_atm == 0 ? std::size_t{1} : opts.n_atm);
-  const std::size_t k =
-      std::min(std::min(std::max(k_min, band), max_carry_pairs), both_valid.size());
-  std::partial_sort(both_valid.begin(),
-                    both_valid.begin() + static_cast<std::ptrdiff_t>(k),
-                    both_valid.end(),
-                    [&](std::size_t a, std::size_t b) noexcept {
-                      return std::fabs(chain.strikes[a] - S) <
-                             std::fabs(chain.strikes[b] - S);
-                    });
+  const AmericanCorrectionCaches cold_caches{};
 
   CarryDiagnostics diag{};
   diag.n_candidates = both_valid.size();
@@ -493,6 +516,21 @@ Result<ChainForward> resolve_chain_forward(
                "resolve_chain_forward: non-finite/non-positive input or empty chain");
   }
   return resolve_chain_carry(chain, S, r, cash_divs, now_ts_ns, opts);
+}
+
+std::vector<std::uint16_t> carry_pair_strikes(const Chain& chain, double S,
+                                              const DeAmOptions& opts) {
+  if (!(S > 0.0) || !(chain.T > 0.0) || chain.n_strikes() == 0 ||
+      !opts.imply_borrow) {
+    return {};
+  }
+  const CarryPairSelection selection = select_carry_pairs(chain, S, opts);
+  std::vector<std::uint16_t> out;
+  out.reserve(selection.k);
+  for (std::size_t j = 0; j < selection.k; ++j) {
+    out.push_back(static_cast<std::uint16_t>(selection.both_valid[j]));
+  }
+  return out;
 }
 
 Result<DeAmResult> de_americanize_chain(const Chain& chain, double S, double r,

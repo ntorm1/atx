@@ -39,6 +39,9 @@ struct CurveSurfaceReport {
   std::vector<ParityReport> per_expiry;  // re-Americanized metrics (‖ context)
   double worst_frac_within_bidask{0.0};
   std::size_t n_slices{0};
+  // Expiries dropped because carry resolution failed (confidence gate / no
+  // quotable pair / degenerate forward) — surfaced, never silently skipped.
+  std::size_t n_carry_skipped{0};
 };
 
 // De-Americanize + fit each expiry chain of `under` into a `CurveSurface` of the

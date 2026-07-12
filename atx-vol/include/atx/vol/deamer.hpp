@@ -218,6 +218,17 @@ struct ChainForward {
     std::span<const DividendEvent> cash_divs, std::int64_t now_ts_ns,
     const DeAmOptions& opts) noexcept;
 
+// Strike indices of the co-terminal pairs ELIGIBLE for the robust carry solve
+// — exactly the selection `resolve_chain_forward` makes (both legs quotable,
+// the k nearest to spot with k = min(max(n_atm, in-band count),
+// max_borrow_pairs, n_valid)). Ordered by ascending |K − S|. Empty when carry
+// is fixed (imply_borrow == false), the chain is degenerate, or no pair is
+// quotable. Exposed so the certified observation cache can invalidate on ANY
+// change to a carry-relevant quote (price, spread, timestamp, or eligibility),
+// including pairs the nearest-pair fallback selects outside the ATM band.
+[[nodiscard]] std::vector<std::uint16_t> carry_pair_strikes(
+    const Chain& chain, double S, const DeAmOptions& opts);
+
 struct DeAmOptions {
   HybridDivParams hyb{};
   AmericanMethod method = AmericanMethod::AndersenLake;
@@ -241,6 +252,16 @@ struct DeAmOptions {
   // Andersen-Lake forward map.  A failed proposal is recomputed accurately;
   // a node is dropped if even the fallback exceeds this half-spread budget.
   double max_iv_residual_half_spreads = 0.25;
+  // Audit the FIT-observation inversions of the aligned-obs (eSSVI) surface
+  // path against the cold Andersen-Lake reference (charter §8.1: every
+  // shortcut/cache route needs a cold-reference audit before its output may be
+  // certified): a failed proposal is recomputed accurately and re-audited, and
+  // a row that still misses `max_iv_residual_half_spreads` is DROPPED, never
+  // fitted. Default false keeps the historical fit bit-identical; the risk
+  // serving policy enables it so no served surface carries an unaudited
+  // inversion. AndersenLake only — other methods have no audit and can never
+  // be certified.
+  bool audit_fit_inversions = false;
   // Optional per-side hot-path caches. Default-empty => cold Andersen-Lake path
   // (pre-cache behavior). When populated, every American inversion in the chain
   // driver + borrow fixed-point routes through `american_price_cached`.

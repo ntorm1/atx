@@ -170,6 +170,31 @@ TEST(RiskSurfaceAdmission, ValidCandidatePublishesAndReplacesPriorGeneration) {
   EXPECT_FALSE(decision.health.using_fallback());
 }
 
+// Task 2d (carry I5): CarryGap is the one publish-with-Degraded reason — a
+// candidate whose only defect is expiries dropped by the carry gate is served
+// with the gap surfaced. Combined with any other failure it still rejects.
+TEST(RiskSurfaceAdmission, CarryGapOnlyPublishesDegradedWithReasonRetained) {
+  ValidationDigest gapped;
+  gapped.failures = ValidationFailure::CarryGap;
+  const AdmissionDecision decision = decide_risk_surface_admission(
+      gapped, FitQualityMode::Balanced, 7, 6, SurfaceFallback::LastKnownGood);
+  EXPECT_TRUE(decision.publish_candidate);
+  EXPECT_EQ(decision.health.state, SurfaceState::Degraded);
+  EXPECT_EQ(decision.health.reasons, ValidationFailure::CarryGap);
+  EXPECT_EQ(decision.health.served_generation, 7u);
+  EXPECT_TRUE(decision.health.serving_candidate());
+  EXPECT_FALSE(decision.health.using_fallback());
+
+  ValidationDigest gapped_and_broken;
+  gapped_and_broken.failures =
+      ValidationFailure::CarryGap | ValidationFailure::Calendar;
+  const AdmissionDecision rejected = decide_risk_surface_admission(
+      gapped_and_broken, FitQualityMode::Balanced, 7, 6,
+      SurfaceFallback::LastKnownGood);
+  EXPECT_FALSE(rejected.publish_candidate);
+  EXPECT_TRUE(rejected.health.using_fallback());
+}
+
 TEST(RiskSurfaceAdmission, RejectedFirstGenerationLeavesRiskUnavailable) {
   ValidationDigest rejected;
   rejected.failures = ValidationFailure::NonFinite;

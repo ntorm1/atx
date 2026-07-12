@@ -411,6 +411,7 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
     // `o.mid` is the anchor premium (the raw American mid under the default Mid
     // anchor). Recover the European-equivalent lognormal vol, then restate the
     // observation entirely in European terms.
+    ++out.deam_audit.n_deam_rows;
     const bool shortcut =
         use_otm_shortcut_deam(o, S, T, r, q_eff, opts, method,
                               &out.deam_audit);
@@ -511,6 +512,7 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
     o.weight_w = obs_weight_w(vega, o.spread, sigma_eu, T);
     o.active_weight_w = o.weight_w;
     o.noise_sigma = (vega > kVegaFloor) ? (o.spread / vega) : 1.0;
+    ++out.deam_audit.n_deam_accepted;
     out.obs.push_back(o);
   }
   finalize_route_diag(out.deam_audit.shortcut,
@@ -524,6 +526,33 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
                "build_observations_european: fewer than 5 European obs survived");
   }
   return Ok(std::move(out));
+}
+
+bool deam_inversion_certified(const DeAmAuditDiagnostics &audit,
+                              double max_drop_fraction) noexcept {
+  // 1. Every ACCEPTED proposal must have been audited. A route that accepts
+  //    more than it audits carries un-audited nodes into the fit set — the
+  //    shape of a method (e.g. Baw) with no cold-reference audit at all.
+  const auto route_audited = [](const InversionRouteDiagnostics &route) noexcept {
+    return route.n_accepted <= route.n_audited;
+  };
+  if (!route_audited(audit.shortcut) || !route_audited(audit.cache) ||
+      !route_audited(audit.fast) || !route_audited(audit.accurate)) {
+    return false;
+  }
+  // 2. The stage must have run and produced at least one accepted node.
+  if (audit.n_deam_rows == 0u || audit.n_deam_accepted == 0u ||
+      audit.n_deam_accepted > audit.n_deam_rows) {
+    return false;
+  }
+  // 3. Tolerated node drops stay under the cap; fail-closed on a bad budget.
+  if (!std::isfinite(max_drop_fraction) || max_drop_fraction < 0.0) {
+    return false;
+  }
+  const std::uint32_t dropped = audit.n_deam_rows - audit.n_deam_accepted;
+  const double drop_fraction = static_cast<double>(dropped) /
+                               static_cast<double>(audit.n_deam_rows);
+  return drop_fraction <= max_drop_fraction;
 }
 
 Result<double> obs_accepted(const Chain &chain, std::uint16_t strike_idx,

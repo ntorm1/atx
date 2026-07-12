@@ -8,6 +8,7 @@
 #include <cstdio>  // ATX_VOL_PROFILE stderr report (temporary)
 #include <cstdlib> // getenv (ATX_VOL_PROFILE)
 #include <limits>
+#include <optional> // std::nullopt (cold accurate re-inversion on audit failure)
 #include <utility>
 #include <vector>
 
@@ -133,12 +134,39 @@ struct AlignedObs {
       ++a.n_dropped;
       continue;
     }
-    const double iv = *iv_res;
+    double iv = *iv_res;
 
     const double bid = chain.bids[idx];
     const double ask = chain.asks[idx];
     const double mid = chain.mids[idx];
     const double spread = ask - bid;
+
+    // Correctness-first serving (§8.1): under `audit_fit_inversions` every
+    // fitted proposal is repriced against the cold Andersen-Lake reference. A
+    // failed proposal is recomputed accurately and re-audited; a row that
+    // still misses the half-spread budget is DROPPED, never fitted — the same
+    // protocol build_observations_european enforces on the curve-driver path.
+    // Default-off keeps the historical (unaudited-fit) path bit-identical.
+    if (deam.audit_fit_inversions && deam.method == AmericanMethod::AndersenLake) {
+      Result<IvRepricingAudit> audit = audit_european_equiv_iv(
+          mid, spread, iv, S, K, T, r, q_eff, side, deam.max_iv_residual_half_spreads);
+      if (!audit || !audit->passed) {
+        const Result<double> accurate = european_equiv_iv(
+            mid, S, K, T, r, q_eff, side, AmericanMethod::AndersenLake, std::nullopt, nullptr);
+        if (!accurate) {
+          ++a.n_dropped;
+          continue;
+        }
+        iv = *accurate;
+        audit = audit_european_equiv_iv(mid, spread, iv, S, K, T, r, q_eff, side,
+                                        deam.max_iv_residual_half_spreads);
+        if (!audit || !audit->passed) {
+          ++a.n_dropped;
+          continue;
+        }
+      }
+    }
+
     const double vega = black76_value_and_vega(F, K, T, iv, df, side).vega;
 
     // w-space weight = vega^2 / spread^2 / (2*sigma*T)^2 (calib.hpp FitObs
@@ -323,6 +351,11 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
 
   double worst = std::numeric_limits<double>::infinity();
   std::size_t idx = 0; // ascending write index / fitted-slice count
+  // Expiries dropped because carry could not be resolved (confidence gate /
+  // no quotable pair / degenerate forward). Surfaced through the report so a
+  // risk surface missing an expiry never reports clean health with no trace
+  // (§5.2: "uncertain carry is surfaced, not hidden").
+  std::size_t n_carry_skipped = 0;
 
   // Calendar-monotone fit (CalendarRepair::MonotoneFit): carry the previous
   // fitted slice forward so the next slice can be fit with a calendar floor
@@ -364,10 +397,12 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
     if (profile)
       ms_deam += now_ns() - t_deam;
     if (!d_res) {
-      continue; // an expiry we cannot de-Americanize contributes no slice
+      ++n_carry_skipped; // no slice, but the skip is counted, not hidden
+      continue;
     }
     const double F = d_res->forward;
     if (!(F > 0.0) || !std::isfinite(F)) {
+      ++n_carry_skipped;
       continue;
     }
     // q_eff bridge: S*e^{(r-q_eff)T} == F exactly.
@@ -506,6 +541,7 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
       calendar_arb_free,
       idx,
       n_calendar_viol_pre,
+      n_carry_skipped,
   };
   return Ok(std::move(out));
 }

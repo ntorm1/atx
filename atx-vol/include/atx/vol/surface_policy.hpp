@@ -76,6 +76,14 @@ enum class ValidationFailure : std::uint32_t {
   TimedOut = 1u << 8,
   StaleInput = 1u << 9,
   InsufficientData = 1u << 10,
+  // One or more expiries were dropped from the fitted surface because their
+  // carry failed its confidence gate (§5.2: uncertain carry is surfaced, not
+  // hidden). Unlike every other bit, admission PUBLISHES a candidate whose
+  // only defect is this gap — as Degraded, with this reason retained — because
+  // the remaining slices passed the full contract and refusing them would
+  // serve nothing. New bit value: persisted digests written before it never
+  // carry it, so archives remain forward-compatible.
+  CarryGap = 1u << 11,
 };
 
 [[nodiscard]] constexpr ValidationFailure operator|(ValidationFailure lhs,

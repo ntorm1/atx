@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "atx/vol/american.hpp"
+#include "atx/vol/arb.hpp"  // QuoteFlag (carry-skip diagnostics test)
 #include "atx/vol/calib.hpp"
 #include "atx/vol/curve.hpp"
 #include "atx/vol/data.hpp"
@@ -143,7 +144,13 @@ TEST(VolaSession, Build_KnownTruthPanel_SucceedsWithFourArbFreeSlices) {
   EXPECT_GT(diag.n_iv_proposed, std::size_t{0});
   EXPECT_EQ(diag.n_iv_audited, diag.n_iv_proposed);
   EXPECT_EQ(diag.n_iv_rejected_residual, std::size_t{0});
-  EXPECT_TRUE(diag.inversion_certified);
+  // Honest certificate (task 2a / carry C1): this build does NOT set
+  // deam.audit_fit_inversions, so the eSSVI FIT rows never ran the audited
+  // route — only the diagnostic re-run above did. A certificate may not vouch
+  // for rows the fit never used, so it must stay false here (the audited
+  // variant is covered by AuditedEssviFitCertifiesInversions below).
+  EXPECT_FALSE(diag.inversion_certified);
+  EXPECT_EQ(diag.n_carry_skipped_expiries, std::size_t{0});
 
   const auto input_diag = sess->slice_diagnostics();
   ASSERT_EQ(input_diag.size(), sess->expiries().size());
@@ -153,7 +160,7 @@ TEST(VolaSession, Build_KnownTruthPanel_SucceedsWithFourArbFreeSlices) {
     EXPECT_TRUE(input_diag[i].carry.confident);
     EXPECT_GE(input_diag[i].carry.n_retained, std::size_t{3});
     EXPECT_TRUE(input_diag[i].inversion_available);
-    EXPECT_TRUE(input_diag[i].inversion_certified);
+    EXPECT_FALSE(input_diag[i].inversion_certified);  // unaudited fit rows
   }
 
   // Slice context is ascending in T.
@@ -564,4 +571,168 @@ TEST(VolaSession, OverrideRefitCalendarFailureRollsBackAtomically) {
   EXPECT_EQ(diag.rolled_back, 1u);
   EXPECT_FALSE(diag.last_committed);
   EXPECT_EQ(diag.last_adjacent_pairs_checked, 2u);
+}
+
+// ── Certification-hole regressions (correctness-first sprint, task 2) ───────
+
+// 2b (carry I4): a non-Andersen-Lake de-Am method (Baw) has no cold-reference
+// audit anywhere in the pipeline, so its output must never be reported as
+// inversion-certified. The old certificate was vacuously true for non-AL.
+TEST(VolaSession, BawMethodIsNeverInversionCertified) {
+  const SynthPanelSpec spec = make_spec();
+  Universe u;
+  const Underlying* under = install(spec, u);
+  ASSERT_NE(under, nullptr);
+
+  SessionInputs in = make_inputs(spec);
+  in.deam.method = atx::vol::AmericanMethod::Baw;
+  const auto sess = VolaSession::build(*under, in);
+  ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
+  EXPECT_FALSE(sess->diagnostics().inversion_certified);
+  for (const auto& sd : sess->slice_diagnostics()) {
+    EXPECT_FALSE(sd.inversion_certified);
+  }
+}
+
+// 2e (carry I1): the robust carry weights are functions of the bid/ask SPREAD
+// (quality weight ~ 1/(0.0025 + rel_spread)^2), so a spread-only update on a
+// selected carry pair moves the admitted forward. The certified observation
+// cache must fall back to the full recompute path, not serve the stale forward
+// as certified (§14: "any price, eligibility, or carry-coordinate change falls
+// back to the full certified path").
+TEST(VolaSession, CachedRefitRejectsSpreadOnlyChangeOnCarryPair) {
+  const SynthPanelSpec spec = make_spec();
+  Universe u;
+  const Underlying* under = install(spec, u);
+  ASSERT_NE(under, nullptr);
+
+  const auto sess = VolaSession::build(*under, make_inputs(spec));
+  ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
+
+  // Unchanged chain: the certified cache is reusable.
+  ASSERT_TRUE(sess->cached_refit_observations(under->chains[0], 0u).has_value());
+
+  // Widen both legs of the at-spot pair symmetrically: mids and flags are
+  // bit-identical, but the carry quality weight is not.
+  atx::vol::Chain widened = under->chains[0];
+  std::size_t atm = 0;
+  for (std::size_t j = 1; j < widened.strikes.size(); ++j) {
+    if (std::fabs(widened.strikes[j] - spec.spot) <
+        std::fabs(widened.strikes[atm] - spec.spot)) {
+      atm = j;
+    }
+  }
+  for (const Side side : {Side::Call, Side::Put}) {
+    const std::size_t idx = chain_index(static_cast<std::uint16_t>(atm), side);
+    const double mid = widened.mids[idx];
+    const double half = 1.5 * 0.5 * (widened.asks[idx] - widened.bids[idx]);
+    ASSERT_GT(mid - half, 0.0);
+    widened.bids[idx] = mid - half;
+    widened.asks[idx] = mid + half;
+  }
+  const auto reused = sess->cached_refit_observations(widened, 0u);
+  EXPECT_FALSE(reused.has_value())
+      << "spread-only change on a carry pair must invalidate the certified cache";
+}
+
+// 2e (carry I2): when too few pairs sit inside the ±6% ATM band, the carry
+// solve falls back to the nearest co-terminal pairs at ANY moneyness — a carry
+// input can therefore live outside the legacy hardcoded ±25% invalidation
+// band. A mid change on such a pair must still invalidate the certified cache.
+TEST(VolaSession, CachedRefitInvalidatesCarryPairOutsideLegacyBand) {
+  SynthPanelSpec spec;
+  spec.uid = "WING";
+  spec.snapshot_iso = "2026-06-19";
+  spec.spot = 100.0;
+  spec.r = 0.05;
+  const std::string expiry_iso = "2027-06-19";  // ~1.0y
+  const double T = year_fraction(spec.snapshot_iso, expiry_iso);
+  spec.expiries.push_back(SynthExpiry{expiry_iso, T, S3Params{0.30, -0.50, 0.80}});
+  // Every strike sits beyond |K/S - 1| = 0.25: the nearest two-sided carry
+  // pairs are all OUTSIDE the legacy certification band.
+  spec.strikes = {56.0, 60.0, 64.0, 68.0, 72.0, 128.0, 132.0, 136.0, 140.0, 144.0};
+  spec.half_spread_frac = 0.01;
+
+  Universe u;
+  const Underlying* under = install(spec, u);
+  ASSERT_NE(under, nullptr);
+
+  SessionInputs in = make_inputs(spec);
+  // Pin the Andersen-Lake preset so build() keeps n_atm = 3: the carry solve
+  // then selects the three nearest pairs (72, 128, plus a tie) — all > 25%.
+  in.deam.al_opts = atx::vol::al_fast_opts();
+  in.deam.iv_tol = 1.0e-5;
+  ASSERT_EQ(in.deam.n_atm, 3u);
+
+  const auto sess = VolaSession::build(*under, in);
+  ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
+  ASSERT_TRUE(sess->cached_refit_observations(under->chains[0], 0u).has_value());
+
+  // Move the PUT mid at K = 128: a leg of a selected carry pair, but NOT a fit
+  // row (the OTM/preferred leg at K > F is the call), and |K/S - 1| = 0.28
+  // escapes the legacy ±25% check entirely.
+  atx::vol::Chain moved = under->chains[0];
+  std::size_t k128 = moved.strikes.size();
+  for (std::size_t j = 0; j < moved.strikes.size(); ++j) {
+    if (std::fabs(moved.strikes[j] - 128.0) < 1e-9) k128 = j;
+  }
+  ASSERT_LT(k128, moved.strikes.size());
+  const std::size_t idx = chain_index(static_cast<std::uint16_t>(k128), Side::Put);
+  moved.bids[idx] *= 1.10;
+  moved.asks[idx] *= 1.10;
+  moved.mids[idx] *= 1.10;
+  const auto reused = sess->cached_refit_observations(moved, 0u);
+  EXPECT_FALSE(reused.has_value())
+      << "a mid change on a selected carry pair outside the legacy band must invalidate";
+}
+
+// 2a (carry C1) positive: with deam.audit_fit_inversions (the risk serving
+// policy) the eSSVI FIT rows themselves run the cold-reference audit, so the
+// certificate is honestly earned — and the fallback rung stays usable.
+TEST(VolaSession, AuditedEssviFitCertifiesInversions) {
+  const SynthPanelSpec spec = make_spec();
+  Universe u;
+  const Underlying* under = install(spec, u);
+  ASSERT_NE(under, nullptr);
+
+  SessionInputs in = make_inputs(spec);
+  in.deam.audit_fit_inversions = true;
+  const auto sess = VolaSession::build(*under, in);
+  ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
+
+  const auto& diag = sess->diagnostics();
+  EXPECT_EQ(diag.n_slices, std::size_t{4});
+  EXPECT_GT(diag.n_iv_proposed, std::size_t{0});
+  EXPECT_EQ(diag.n_iv_audited, diag.n_iv_proposed);
+  EXPECT_TRUE(diag.inversion_certified);
+  for (const auto& sd : sess->slice_diagnostics()) {
+    EXPECT_TRUE(sd.inversion_certified);
+  }
+}
+
+// 2d (carry I5): an expiry whose carry pairs are all kill-flagged fails the
+// carry resolve and is dropped from the fitted surface — but the skip must be
+// COUNTED in the session diagnostics, never silently absorbed (§5.2).
+TEST(VolaSession, CarryFailedExpiryIsCountedInDiagnostics) {
+  const SynthPanelSpec spec = make_spec();
+  Universe u;
+  const auto panel = make_synthetic_american_panel(spec);
+  ASSERT_TRUE(panel.has_value());
+  const auto uid = data_install(u, panel->frame);
+  ASSERT_TRUE(uid.has_value());
+  auto under_res = u.get_underlying(*uid);
+  ASSERT_TRUE(under_res.has_value());
+  Underlying* under = *under_res;
+  ASSERT_EQ(under->chains.size(), std::size_t{4});
+
+  // Cross-flag every quote of the second expiry: no co-terminal pair survives
+  // leg validity, so carry resolution fails for that chain.
+  for (std::uint8_t& flag : under->chains[1].flags) {
+    flag |= static_cast<std::uint8_t>(atx::vol::QuoteFlag::Crossed);
+  }
+
+  const auto sess = VolaSession::build(*under, make_inputs(spec));
+  ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
+  EXPECT_EQ(sess->diagnostics().n_slices, std::size_t{3});
+  EXPECT_EQ(sess->diagnostics().n_carry_skipped_expiries, std::size_t{1});
 }

@@ -152,15 +152,22 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
 // Compatibility bridge until fit reports directly carry their compact input
 // certification. Re-run only the input-resolution layer, retain counts and
 // quantiles, and immediately release the temporary observations/pair details.
+// `fit_rows_audited` states whether the FIT observations themselves ran the
+// audited inversion route (curve-driver path: always; eSSVI path: only under
+// deam.audit_fit_inversions) — a certificate computed off this diagnostic
+// re-run must never vouch for fit rows that skipped the audit (§5.3/§8.1).
 [[nodiscard]] std::vector<SessionSliceDiagnostics> collect_input_diagnostics(
     const Underlying& under, const SessionInputs& in,
     std::span<const SliceContext> context,
-    const AmericanCorrectionCaches& deam_caches,
+    const AmericanCorrectionCaches& deam_caches, bool fit_rows_audited,
     std::vector<std::vector<FitObs>> *observation_cache = nullptr,
     std::vector<std::vector<double>> *source_mid_cache = nullptr,
     std::vector<std::vector<std::uint8_t>> *source_flag_cache = nullptr,
     std::vector<std::vector<double>> *chain_mid_cache = nullptr,
-    std::vector<std::vector<std::uint8_t>> *chain_flag_cache = nullptr) {
+    std::vector<std::vector<std::uint8_t>> *chain_flag_cache = nullptr,
+    std::vector<std::vector<double>> *chain_bid_cache = nullptr,
+    std::vector<std::vector<double>> *chain_ask_cache = nullptr,
+    std::vector<std::vector<std::int64_t>> *chain_ts_cache = nullptr) {
   std::vector<SessionSliceDiagnostics> out;
   out.reserve(context.size());
   if (observation_cache != nullptr) observation_cache->reserve(context.size());
@@ -168,6 +175,9 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
   if (source_flag_cache != nullptr) source_flag_cache->reserve(context.size());
   if (chain_mid_cache != nullptr) chain_mid_cache->reserve(context.size());
   if (chain_flag_cache != nullptr) chain_flag_cache->reserve(context.size());
+  if (chain_bid_cache != nullptr) chain_bid_cache->reserve(context.size());
+  if (chain_ask_cache != nullptr) chain_ask_cache->reserve(context.size());
+  if (chain_ts_cache != nullptr) chain_ts_cache->reserve(context.size());
   std::size_t chain_pos = 0;
   for (const SliceContext& slice : context) {
     if (observation_cache != nullptr) observation_cache->emplace_back();
@@ -175,6 +185,9 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
     if (source_flag_cache != nullptr) source_flag_cache->emplace_back();
     if (chain_mid_cache != nullptr) chain_mid_cache->emplace_back();
     if (chain_flag_cache != nullptr) chain_flag_cache->emplace_back();
+    if (chain_bid_cache != nullptr) chain_bid_cache->emplace_back();
+    if (chain_ask_cache != nullptr) chain_ask_cache->emplace_back();
+    if (chain_ts_cache != nullptr) chain_ts_cache->emplace_back();
     SessionSliceDiagnostics sd{};
     sd.T = slice.T;
     while (chain_pos < under.chains.size() &&
@@ -190,6 +203,9 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
     const Chain& chain = under.chains[chain_pos++];
     if (chain_mid_cache != nullptr) chain_mid_cache->back() = chain.mids;
     if (chain_flag_cache != nullptr) chain_flag_cache->back() = chain.flags;
+    if (chain_bid_cache != nullptr) chain_bid_cache->back() = chain.bids;
+    if (chain_ask_cache != nullptr) chain_ask_cache->back() = chain.asks;
+    if (chain_ts_cache != nullptr) chain_ts_cache->back() = chain.ts_ns;
     const double rate = input_rate_at(in, slice.T);
     const auto carry = resolve_chain_forward(
         chain, in.S, rate, in.cash_divs, in.now_ts_ns, in.deam);
@@ -205,12 +221,17 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
     if (obs) {
       sd.inversion = obs->deam_audit;
       sd.inversion_available = true;
-      const std::size_t proposed = route_proposed(sd.inversion);
-      const std::size_t audited = route_audited(sd.inversion);
+      // Honest certificate (§5.3/§8.1): the FIT rows themselves must have run
+      // the audited route, every accepted node must have passed the cold-
+      // reference budget, and tolerated node drops (failed inversion or an
+      // over-budget residual — excluded from the fit, counted in diagnostics)
+      // must stay under the configured cap. Fail-closed at the cap, not at the
+      // first bad quote; non-AndersenLake methods have no audit and never
+      // certify (deam_inversion_certified enforces both).
       sd.inversion_certified =
-          in.deam.method != AmericanMethod::AndersenLake ||
-          (proposed > 0 && audited == proposed &&
-           sd.inversion.n_rejected_residual == 0);
+          fit_rows_audited &&
+          deam_inversion_certified(sd.inversion,
+                                   in.calib.max_certified_deam_drop_fraction);
       if (observation_cache != nullptr && source_mid_cache != nullptr &&
           source_flag_cache != nullptr) {
         observation_cache->back() = obs->obs;
@@ -584,13 +605,24 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
     std::vector<std::vector<std::uint8_t>> incremental_flags;
     std::vector<std::vector<double>> incremental_chain_mids;
     std::vector<std::vector<std::uint8_t>> incremental_chain_flags;
+    std::vector<std::vector<double>> incremental_chain_bids;
+    std::vector<std::vector<double>> incremental_chain_asks;
+    std::vector<std::vector<std::int64_t>> incremental_chain_ts;
+    // The curve driver fits from build_observations_european, whose
+    // AndersenLake inversions are all audited in-line: fit rows ran the
+    // audited route by construction.
     std::vector<SessionSliceDiagnostics> slice_diag =
         collect_input_diagnostics(under, eff, crep.context,
-                                  fit_diagnostic_caches, &incremental_obs,
+                                  fit_diagnostic_caches,
+                                  /*fit_rows_audited=*/true, &incremental_obs,
                                   &incremental_mids, &incremental_flags,
                                   &incremental_chain_mids,
-                                  &incremental_chain_flags);
+                                  &incremental_chain_flags,
+                                  &incremental_chain_bids,
+                                  &incremental_chain_asks,
+                                  &incremental_chain_ts);
     aggregate_input_diagnostics(slice_diag, cdiag);
+    cdiag.n_carry_skipped_expiries = crep.n_carry_skipped;
     retain_fitted_term_rates(eff, crep.context);
     VolaSession session{std::move(placeholder), std::move(crep.context),
                         std::move(crep.per_expiry), std::move(eff), cdiag,
@@ -603,7 +635,10 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
                                         std::move(incremental_mids),
                                         std::move(incremental_flags),
                                         std::move(incremental_chain_mids),
-                                        std::move(incremental_chain_flags)});
+                                        std::move(incremental_chain_flags),
+                                        std::move(incremental_chain_bids),
+                                        std::move(incremental_chain_asks),
+                                        std::move(incremental_chain_ts)});
     return Ok(std::move(session));
   }
 
@@ -646,11 +681,21 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
   std::vector<std::vector<std::uint8_t>> incremental_flags;
   std::vector<std::vector<double>> incremental_chain_mids;
   std::vector<std::vector<std::uint8_t>> incremental_chain_flags;
+  std::vector<std::vector<double>> incremental_chain_bids;
+  std::vector<std::vector<double>> incremental_chain_asks;
+  std::vector<std::vector<std::int64_t>> incremental_chain_ts;
+  // The eSSVI path fits from build_aligned_obs: its inversions run the audited
+  // route only when deam.audit_fit_inversions is set (the risk serving
+  // policy); otherwise the certificate must stay false — the diagnostic
+  // builder's audits describe rows the fit never used (carry C1).
   std::vector<SessionSliceDiagnostics> slice_diag = collect_input_diagnostics(
-      under, eff, rep.context, sp.deam.caches, &incremental_obs,
+      under, eff, rep.context, sp.deam.caches,
+      /*fit_rows_audited=*/eff.deam.audit_fit_inversions, &incremental_obs,
       &incremental_mids, &incremental_flags, &incremental_chain_mids,
-      &incremental_chain_flags);
+      &incremental_chain_flags, &incremental_chain_bids,
+      &incremental_chain_asks, &incremental_chain_ts);
   aggregate_input_diagnostics(slice_diag, diag);
+  diag.n_carry_skipped_expiries = rep.n_carry_skipped;
   retain_fitted_term_rates(eff, rep.context);
   VolaSession session{std::move(rep.surface), std::move(rep.context),
                       std::move(rep.per_expiry), std::move(eff), diag,
@@ -662,7 +707,10 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
                                       std::move(incremental_mids),
                                       std::move(incremental_flags),
                                       std::move(incremental_chain_mids),
-                                      std::move(incremental_chain_flags)});
+                                      std::move(incremental_chain_flags),
+                                      std::move(incremental_chain_bids),
+                                      std::move(incremental_chain_asks),
+                                      std::move(incremental_chain_ts)});
   return Ok(std::move(session));
 }
 
@@ -918,7 +966,10 @@ VolaSession::cached_refit_observations(const Chain &chain,
       slice_idx >= incremental_observations_->source_mids.size() ||
       slice_idx >= incremental_observations_->source_flags.size() ||
       slice_idx >= incremental_observations_->chain_mids.size() ||
-      slice_idx >= incremental_observations_->chain_flags.size()) {
+      slice_idx >= incremental_observations_->chain_flags.size() ||
+      slice_idx >= incremental_observations_->chain_bids.size() ||
+      slice_idx >= incremental_observations_->chain_asks.size() ||
+      slice_idx >= incremental_observations_->chain_ts.size()) {
     return Err(ErrorCode::NotFound,
                "VolaSession::cached_refit_observations: no certified cache");
   }
@@ -932,9 +983,18 @@ VolaSession::cached_refit_observations(const Chain &chain,
       incremental_observations_->chain_mids[slice_idx];
   const std::vector<std::uint8_t> &chain_flags =
       incremental_observations_->chain_flags[slice_idx];
+  const std::vector<double> &chain_bids =
+      incremental_observations_->chain_bids[slice_idx];
+  const std::vector<double> &chain_asks =
+      incremental_observations_->chain_asks[slice_idx];
+  const std::vector<std::int64_t> &chain_ts =
+      incremental_observations_->chain_ts[slice_idx];
   if (cached.empty() || cached.size() != source_mids.size() ||
       cached.size() != source_flags.size() || chain.mids.size() != chain_mids.size() ||
-      chain.flags.size() != chain_flags.size()) {
+      chain.flags.size() != chain_flags.size() ||
+      chain.bids.size() != chain_bids.size() ||
+      chain.asks.size() != chain_asks.size() ||
+      chain.ts_ns.size() != chain_ts.size()) {
     return Err(ErrorCode::NotFound,
                "VolaSession::cached_refit_observations: incomplete certified cache");
   }
@@ -952,6 +1012,52 @@ VolaSession::cached_refit_observations(const Chain &chain,
     if (chain.flags[i] != chain_flags[i]) {
       return Err(ErrorCode::Unavailable,
                  "VolaSession::cached_refit_observations: carry flags changed");
+    }
+  }
+
+  // Carry-coordinate invalidation (§14: "any price, eligibility, or
+  // carry-coordinate change falls back to the full certified path"). The
+  // robust carry consumes, for its SELECTED pairs, the mids (borrow solve),
+  // bid/ask spreads (quality weight), and quote timestamps (freshness weight)
+  // — and the selection itself is a function of every quote's eligibility. So
+  // certified reuse must prove (a) the pair selection is unchanged (replayed
+  // on the snapshot vs the live chain through the same carry_pair_strikes the
+  // solve uses) and (b) every field of every selected leg is unchanged. This
+  // covers pairs the nearest-pair fallback picks OUTSIDE the ±25% band above;
+  // the band check stays as the (strictly weaker) legacy fit-quote guard.
+  if (in_.deam.imply_borrow) {
+    Chain snapshot = chain;
+    snapshot.bids = chain_bids;
+    snapshot.asks = chain_asks;
+    snapshot.mids = chain_mids;
+    snapshot.flags = chain_flags;
+    snapshot.ts_ns = chain_ts;
+    const std::vector<std::uint16_t> prior_pairs =
+        carry_pair_strikes(snapshot, in_.S, in_.deam);
+    const std::vector<std::uint16_t> current_pairs =
+        carry_pair_strikes(chain, in_.S, in_.deam);
+    if (prior_pairs != current_pairs) {
+      return Err(ErrorCode::Unavailable,
+                 "VolaSession::cached_refit_observations: carry pair eligibility changed");
+    }
+    for (const std::uint16_t pair_strike : current_pairs) {
+      for (const Side side : {Side::Call, Side::Put}) {
+        const std::size_t quote_idx = chain_index(pair_strike, side);
+        if (quote_idx >= chain.mids.size() || quote_idx >= chain.bids.size() ||
+            quote_idx >= chain.asks.size() || quote_idx >= chain.flags.size()) {
+          return Err(ErrorCode::InvalidArgument,
+                     "VolaSession::cached_refit_observations: malformed carry pair index");
+        }
+        const bool ts_known = quote_idx < chain.ts_ns.size();
+        if (chain.bids[quote_idx] != chain_bids[quote_idx] ||
+            chain.asks[quote_idx] != chain_asks[quote_idx] ||
+            chain.mids[quote_idx] != chain_mids[quote_idx] ||
+            chain.flags[quote_idx] != chain_flags[quote_idx] ||
+            (ts_known && chain.ts_ns[quote_idx] != chain_ts[quote_idx])) {
+          return Err(ErrorCode::Unavailable,
+                     "VolaSession::cached_refit_observations: carry inputs changed");
+        }
+      }
     }
   }
 
