@@ -19,7 +19,7 @@
 #include "atx/vol/data.hpp"           // data_install
 #include "atx/vol/dividend.hpp"        // hybrid_forward (representative carry)
 #include "atx/vol/essvi_calib.hpp"     // essvi_fit_slice (warm-start refit)
-#include "atx/vol/event_vol.hpp"       // EventSchedule, implied_emove (SessionInputs::events)
+#include "atx/vol/event_vol.hpp"       // EventSchedule, count_events_at, implied_emove
 #include "atx/vol/projection.hpp"      // InterpMode, surface_insert_vol_slice, w_on_inserted_slice
 #include "atx/vol/surface_parity.hpp"  // run_surface_parity, SurfaceParityInputs/Report
 #include "atx/vol/universe.hpp"        // Universe, Underlying, Uid, Chain
@@ -137,9 +137,18 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
 // event in that window, no fitted expiry strictly BEFORE the event to
 // bracket against, or `implied_emove`'s own solve failure (no
 // identification, or a negative-beyond-tolerance e^2).
-[[nodiscard]] double solve_implied_emove(const EventSchedule* events,
-                                         std::int64_t now_ts_ns,
-                                         std::span<const EssviParams> slices) {
+//
+// noexcept: every callee is itself noexcept (`events()`, `upper_bound` on
+// int64s, `ns_from_year_fraction`, `count_events_at`, `essvi_total_w`)
+// except `implied_emove`, whose only non-trivial operation is constructing
+// an `Err` message string on a failure path -- the same
+// treat-error-string-allocation-as-nonthrowing convention the pre-existing
+// noexcept serve path already relies on (`shape_blend_total_variance` /
+// `model_w` call `surface_insert_vol_slice`, which builds `Err` strings the
+// same way).
+[[nodiscard]] double solve_implied_emove(
+    const EventSchedule* events, std::int64_t now_ts_ns,
+    std::span<const EssviParams> slices) noexcept {
   if (events == nullptr || slices.size() < 2) {
     return kNaN;
   }
@@ -170,10 +179,8 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
   const EssviParams& s_hi = slices[hi];
   const double w1 = essvi_total_w(s_lo, 0.0);
   const double w2 = essvi_total_w(s_hi, 0.0);
-  const std::size_t n1 = events->count_between(
-      now_ts_ns, ns_from_year_fraction(now_ts_ns, s_lo.T));
-  const std::size_t n2 = events->count_between(
-      now_ts_ns, ns_from_year_fraction(now_ts_ns, s_hi.T));
+  const std::size_t n1 = count_events_at(*events, now_ts_ns, s_lo.T);
+  const std::size_t n2 = count_events_at(*events, now_ts_ns, s_hi.T);
 
   auto e = implied_emove(w1, s_lo.T, n1, w2, s_hi.T, n2);
   return e.has_value() ? *e : kNaN;

@@ -289,13 +289,14 @@ struct InsertedSliceHandle {
 // see InterpMode::ShapeBlend), so only THAT anchor is event-censored --
 // the vol-multiple shape blending around it is unchanged. Fallback semantics
 // for `emove <= 0` / an all-zero event count live INSIDE `event_aware_w`
-// (never duplicated here). `now_ns` plus each bracketing slice's own
-// `tau_vol`-space T (there is no real listed expiry for an arbitrary
-// interpolated query T) are converted to absolute instants for
-// `EventSchedule::count_between` via the Calendar365 identity
-// `now_ns + round(T * kCalendarYearNs)` (vol_time.hpp) -- ignored when
-// `events` is null. An exact-pillar hit (`exact_slice_idx >= 0`) never
-// blends, so `events` has nothing to wrap there either way.
+// (never duplicated here). Event counts come from `count_events_at`
+// (event_vol.hpp -- THE single composition of `EventSchedule::count_between`
+// with the Calendar365 T-to-instant synthesis, shared with the session's
+// eMove solve; an arbitrary interpolated query T has no real listed expiry
+// to read an instant from). `now_ns` is the valuation instant that
+// synthesis anchors on -- ignored when `events` is null. An exact-pillar
+// hit (`exact_slice_idx >= 0`) never blends, so `events` has nothing to
+// wrap there either way.
 [[nodiscard]] double w_on_inserted_slice(const VolSurface& surface,
                                          const InsertedSliceHandle& handle,
                                          double k_log,

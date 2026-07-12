@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
+#include "atx/vol/vol_time.hpp"  // ns_from_year_fraction (count_events_at)
 
 namespace atx::vol {
 
@@ -38,6 +39,13 @@ std::size_t EventSchedule::count_between(std::int64_t now_ns,
 
 std::span<const std::int64_t> EventSchedule::events() const noexcept {
   return events_;
+}
+
+// ── count_events_at ──────────────────────────────────────────────────────
+
+std::size_t count_events_at(const EventSchedule& events, std::int64_t now_ns,
+                            double T) noexcept {
+  return events.count_between(now_ns, ns_from_year_fraction(now_ns, T));
 }
 
 // ── censored_total_variance ──────────────────────────────────────────────

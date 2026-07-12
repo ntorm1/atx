@@ -14,8 +14,7 @@
 #include "atx/core/math.hpp"    // norm_cdf
 #include "atx/vol/american.hpp" // american_price_cached
 #include "atx/vol/black76.hpp"  // black76_price
-#include "atx/vol/event_vol.hpp" // EventSchedule, event_aware_w
-#include "atx/vol/vol_time.hpp"  // kCalendarYearNs
+#include "atx/vol/event_vol.hpp" // EventSchedule, count_events_at, event_aware_w
 
 namespace atx::vol {
 
@@ -135,12 +134,9 @@ inline constexpr double kProjExactTTol = 1.0 / (252.0 * 6.5 * 60.0);
   // the smile shape then reconstructs around, it does not reshape the smile.
   double w_atm_q;
   if (events != nullptr) {
-    const std::size_t n_lo =
-        events->count_between(now_ns, ns_from_year_fraction(now_ns, T_lo));
-    const std::size_t n_hi =
-        events->count_between(now_ns, ns_from_year_fraction(now_ns, T_hi));
-    const std::size_t n_q =
-        events->count_between(now_ns, ns_from_year_fraction(now_ns, T_q));
+    const std::size_t n_lo = count_events_at(*events, now_ns, T_lo);
+    const std::size_t n_hi = count_events_at(*events, now_ns, T_hi);
+    const std::size_t n_q = count_events_at(*events, now_ns, T_q);
     w_atm_q = event_aware_w(w_lo0, T_lo, n_lo, w_hi0, T_hi, n_hi, T_q, n_q, emove);
   } else {
     w_atm_q = ww_lo * w_lo0 + ww_hi * w_hi0;
@@ -453,9 +449,9 @@ double w_on_inserted_slice(const VolSurface& surface,
   const double T_lo = slice_T(surface, lo);
   const double T_hi = slice_T(surface, hi);
   const double T_q = handle.T_clock;
-  const std::size_t n_lo = events->count_between(now_ns, ns_from_year_fraction(now_ns, T_lo));
-  const std::size_t n_hi = events->count_between(now_ns, ns_from_year_fraction(now_ns, T_hi));
-  const std::size_t n_q = events->count_between(now_ns, ns_from_year_fraction(now_ns, T_q));
+  const std::size_t n_lo = count_events_at(*events, now_ns, T_lo);
+  const std::size_t n_hi = count_events_at(*events, now_ns, T_hi);
+  const std::size_t n_q = count_events_at(*events, now_ns, T_q);
   return event_aware_w(w_lo, T_lo, n_lo, w_hi, T_hi, n_hi, T_q, n_q, emove);
 }
 

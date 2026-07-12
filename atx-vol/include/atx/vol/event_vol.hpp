@@ -182,6 +182,27 @@ class EventSchedule {
 [[nodiscard]] Result<double> implied_emove(double w1, double T1, std::size_t n1,
                                            double w2, double T2, std::size_t n2);
 
+// Events counted between `now_ns` and the maturity a Calendar365
+// year-fraction `T` from now — THE single definition of the "how many
+// scheduled events before this maturity" question every event-vol consumer
+// asks. Composes `EventSchedule::count_between` (the `(now, expiry]`
+// boundary semantics above) with `ns_from_year_fraction` (vol_time.hpp, the
+// Calendar365 inverse of `time_to_expiry_years`): callers on the fit/serve
+// path hold year-fraction T's, not absolute expiry instants (an arbitrary
+// interpolated query T never had one, and the fitted eSSVI slices do not
+// retain theirs — see the callers' own docs), so the maturity instant is
+// synthesized as `now_ns + round(T * kCalendarYearNs)`. Used by
+// `w_on_inserted_slice`'s event-aware blend (projection.cpp) and
+// `VolaSession::build`'s implied-eMove solve (session.cpp).
+//
+// @param events  the schedule to count against
+// @param now_ns  valuation instant, epoch nanoseconds (UTC)
+// @param T       Calendar365 year-fraction from `now_ns` to the maturity
+// @return        events in `(now_ns, now_ns + round(T·year)]`
+[[nodiscard]] std::size_t count_events_at(const EventSchedule& events,
+                                          std::int64_t now_ns,
+                                          double T) noexcept;
+
 // Event-aware total variance at T_query: censors both bracketing slices,
 // linearly interpolates the censored variance in T, then re-adds
 // n_query·emove² for the query expiry's own event count. Falls back to

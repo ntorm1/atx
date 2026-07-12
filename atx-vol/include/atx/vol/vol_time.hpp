@@ -198,8 +198,10 @@ struct TimeSpec {
 // (session.cpp, whose fitted eSSVI slices do not currently retain their own
 // `expiry_ns` -- see EssviParams::expiry_ns). Round-trips a real listed
 // expiry's own `time_to_expiry_years` output to within double-precision
-// rounding (sub-nanosecond -- immaterial at any realistic event-schedule
-// granularity).
+// rounding: the intermediate values sit at ~6e16 magnitude (ULP ~8ns), so
+// the few roundings involved land within tens of nanoseconds for
+// multi-year horizons -- well under a microsecond, immaterial at any
+// realistic event-schedule granularity (events land on day boundaries).
 //
 // @param from_ns  valuation instant, epoch nanoseconds (UTC)
 // @param years    Calendar365 year-fraction from `from_ns`
