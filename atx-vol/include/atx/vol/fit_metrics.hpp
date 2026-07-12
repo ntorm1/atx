@@ -147,4 +147,48 @@ slice_fit_metrics(std::span<const double> iv_model,
                   std::span<const double> ask_price,
                   std::span<const double> vega, std::size_t dof) noexcept;
 
+// SpiderRock-style band-violation counts for a scored quote set: how many
+// quotes the model price crosses OUTSIDE the bid-ask band, and by how much
+// (premium units). Mirrors LiveVolSurfaces' fit-quality fields
+// cBidMiss/cAskMiss/pBidMiss/pAskMiss (surface crossing counts) and
+// fitMaxPrcErr (largest bid-ask violation in premium; SpiderRock reports 0
+// for ~90% of live fits — a clean fit into the channel is the common case).
+struct BandViolationStats {
+  std::size_t n{};            // quotes scored (crossed/non-finite excluded)
+  std::size_t n_bid_miss{};   // count with model_price < bid  (crosses bid)
+  std::size_t n_ask_miss{};   // count with model_price > ask  (crosses ask)
+  double max_prc_err{};       // max over scored quotes of max(bid-p,p-ask,0)
+  std::size_t max_err_idx{};  // input index of the worst quote; size_t(-1) if n==0
+  double avg_signed_err{};    // mean(model_price - mid) over scored quotes
+};
+
+// Band-violation fit stats: score each quote's model price against its
+// bid-ask band and tally misses, the single worst premium violation (and its
+// input index), and the mean signed error vs mid.
+//
+// A quote is scored only when ask_price >= bid_price; a crossed quote
+// (ask_price < bid_price) is SKIPPED — excluded from `n` and every other
+// field, since it defines no band to violate. A non-finite (NaN/+-Inf)
+// model_price is treated the same way: skipped rather than scored, so a
+// failed inversion cannot poison max_prc_err / avg_signed_err with a
+// NaN/Inf contaminant. (Deliberate choice: this mirrors the crossed-quote
+// skip; a caller that needs failed model prices surfaced should check
+// upstream de-Americanization / IV-inversion status separately — this is a
+// pure band-scoring function, not a fit-health gate.)
+//
+// `max_err_idx` is the INPUT index (into the three spans) of the scored
+// quote with the largest max(bid-p, p-ask, 0); ties keep the first index
+// reached.
+//
+// @param model_price  per-quote model price (premium units)
+// @param bid_price    per-quote quote bid (premium units)
+// @param ask_price    per-quote quote ask (premium units); ask < bid => skipped
+// @return  InvalidArgument if the three spans differ in length; otherwise Ok.
+//          An empty input (or one where every quote is skipped) is Ok with
+//          n == 0 and max_err_idx == size_t(-1).
+[[nodiscard]] atx::core::Result<BandViolationStats>
+band_violation_stats(std::span<const double> model_price,
+                     std::span<const double> bid_price,
+                     std::span<const double> ask_price) noexcept;
+
 }  // namespace atx::vol
