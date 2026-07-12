@@ -32,12 +32,12 @@
 #include <vector>
 
 #include "atx/core/error.hpp"            // atx::core::Ok
+#include "atx/vol/adjusted_greeks.hpp"   // StickyParams
 #include "atx/vol/american.hpp"          // al_fast_opts, AmericanMethod, AmericanGreeks
 #include "atx/vol/backtest.hpp"          // Clock, run_backtest, RunConfig, FrictionModel, ...
 #include "atx/vol/corpus.hpp"            // CorpusManifest, CorpusEntry, CorpusFitStatus
 #include "atx/vol/portfolio_pricer.hpp"  // OptionContract, kNsPerYear
 #include "atx/vol/priced_surface.hpp"    // PricedSurface, PricingContext
-#include "atx/vol/adjusted_greeks.hpp"   // StickyParams
 #include "atx/vol/strategy.hpp"          // DeclarativeStrategy, StrategySpec, HedgeSpec
 #include "atx/vol/surface_archive.hpp"   // write_surface_archive_file, SurfaceArchiveItem
 #include "atx/vol/surface_parity.hpp"    // SliceContext

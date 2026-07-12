@@ -222,6 +222,11 @@ struct ContractPnl {
 // specific addition) a non-positive/non-finite forward at T.
 [[nodiscard]] double priced_surface_skew_slope(const PricedSurface &surf, double K,
                                                double T) noexcept {
+  // Source of truth: adjusted_greeks.cpp's TU-local kFdStep -- the h = 1e-4
+  // documented on curve_skew_slope/surface_skew_slope in adjusted_greeks.hpp.
+  // Kept as a local mirror (not exposed in that header) because the value is
+  // part of those functions' documented CONTRACT; a drift here would be caught
+  // by Backtest.HedgeTradesOnAdjustedDelta's independent h=1e-4 oracle.
   constexpr double kFdStep = 1e-4;
   const double F = surf.forward_at(T);
   if (!(F > 0.0) || !std::isfinite(F)) {
