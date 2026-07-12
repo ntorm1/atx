@@ -478,3 +478,137 @@ FINAL WHOLE-BRANCH REVIEW (fable, 896a100..d9d852e): "With fixes" -> fix wave 3f
   OUTSTANDING BEFORE MERGE: full-module gate `& .\scripts\atx-build.ps1 -Ctest -L atx_vol` on 3f12b43 —
   DEFERRED TO OPERATOR by explicit instruction (targeted SurfaceDb|SurfaceArchive 34/34 is the evidence
   on record). Feature branch worktree-feat-atx-vol-surface-db is otherwise merge-ready.
+
+============================================================
+# SDD progress — MAG7 vs SPY dispersion-strangle backtest (2026-07-11)
+
+Goal doc: atx-vol/sprints/2026-07-11-atx-vol-mag7-dispersion-strangle-backtest-goal.md
+Plan: docs/superpowers/plans/2026-07-11-atx-vol-mag7-dispersion-backtest.md
+Worktree: C:/atx/.claude/worktrees/feat-atx-vol-mag7-dispersion (branch worktree-feat-atx-vol-mag7-dispersion, rebased onto main @ 750a286)
+
+Process notes:
+- Full `-L atx_vol` gate DEFERRED TO OPERATOR (standing instruction); targeted suites only.
+- `.superpowers/sdd/progress.md` is TRACKED on main-line history; this feature APPENDS its
+  section (append-only keeps the eventual merge clean). Ledger commits: `git add -f`, `chore(sdd): ...`.
+- Task 8 (real-data pull/run) is controller-led + operator-gated (paid Databento pulls, ~$150 cap).
+- Goal-doc stale point (recon-verified): bulk pull tool `databento_bulk_opra` already exists in
+  atx-core (produced the 123-day SPY hive data/spy_ytd/opra/SPY); Task 8 reuses it.
+- Baseline (post-rebase pending re-verify): pre-rebase worktree ran 81/81 targeted green at fb6e7c1.
+
+## Tasks (MAG7 dispersion)
+
+- Task 1: Clock::from_surface_db (SurfaceDb-backed clock) — COMPLETE
+- Task 2: CloseAtHorizon lifecycle + missing-name policy — COMPLETE
+- Task 3: make_dispersion_strangle_spec builder — COMPLETE
+- Task 4: run_report emitters — COMPLETE
+- Task 5: populate_surface_db + mag7_surfdb_populate example — COMPLETE
+- Task 6: mag7_dispersion_backtest example + gate test — COMPLETE
+- Task 7: tools/mag7_dispersion_report.py + python test — COMPLETE
+- Task 8: real-data pull/populate/run/report (operator-gated) — COMPLETE (5-day fit scope per operator; full YTD hive cached)
+- Final whole-branch review — COMPLETE ("Ready to merge: Yes"; polish wave 892f797 re-verified "Yes")
+
+## Minor findings roll-up (MAG7 dispersion, for final review triage)
+(none yet)
+
+## Log (MAG7 dispersion)
+
+Baseline post-rebase onto 750a286: 99/99 targeted (Strategy|Backtest|Dispersion|SurfaceDb|SurfaceArchive|TearSheet) green at 6198a27.
+Reconfigured build with -DATX_BUILD_EXAMPLES=ON (needed for example targets in T5/T6/T8).
+
+Task 1: complete (commits 6198a27..5b53d1c, review clean — SPEC ✅ / Approved; 0 Critical/Important)
+  58/58 targeted (SurfaceDbBacktest|SurfaceDb|SurfaceArchive|Backtest) green; TDD RED→GREEN evidenced.
+  Deviation (accepted): brief snippet `p.key + kSurfaceDbPartitionExt` doesn't compile (string+string_view);
+  implementer used `p.key + std::string(kSurfaceDbPartitionExt)` — behaviorally identical.
+  Minor (roll-up): backtest.hpp:40-41 Clock class comment still describes only the corpus-manifest route;
+  mention from_surface_db.
+  NOTE: .superpowers/sdd/task-N-brief/report.md files are TRACKED with stale main-line content —
+  implementers overwrite per task; expect rewrite diffs, harmless.
+
+Task 2: complete (commits be6a7f5..f9f14df, review clean — SPEC ✅ / Approved; 0 Critical/Important)
+  67/67 targeted (Strategy|Backtest|Dispersion) green; resolve_spec refactored to shared resolve_spec_impl
+  (verified no duplication); no-trade contract mirrors DispersionStrategy; close pass before entry.
+  Interface note for later tasks: resolve_spec_with_policy min_names counts LegSpec (name) granularity.
+  Minor (roll-up): (a) no test for close-pass firing on a day whose entry no-trades with a non-empty book
+  (ordering correct by inspection; T6 gate test partially covers); (b) CloseAtHorizon+EveryNDays cadence
+  combination untested (shared code path with HoldToExpiry); (c) ResolveDrop.symbol empty for uid-only
+  legs (diagnostic-quality gap).
+
+Task 3: complete (commits 766f7bf..922a6ad, review clean — SPEC ✅ / Approved; 0 Critical/Important)
+  47/47 targeted (DispersionStrangle|Strategy|Dispersion) green; all 9 validation rules implemented+tested;
+  acceptance math verified through real resolve_spec_with_policy (40Δ reprice, equal theta, net vega flat).
+  Minor (roll-up): (a) no duplicate-name guard in cfg.names (dup name silently double-sizes theta);
+  (b) spec.name hardcoded "mag7_dispersion_strangle" regardless of basket contents (cosmetic).
+
+Task 4: complete (commits f48c3d9..a70bf10, review clean — SPEC ✅ / Approved; 0 Critical/Important)
+  11/11 targeted (RunReport|TearSheet) green; pinned 27-column series header + all metric key sets verified
+  byte-for-byte; single shared write_meta_body; all divide-by-zero guards traced.
+  Minor (roll-up): (a) no CSV escaping (matches tearsheet.cpp convention; note for Python consumer);
+  (b) db-stats appended meta can duplicate a colliding caller key (spec-literal, self-flagged);
+  (c) fmt10/fmt_i64/fmt_u64 could be one template (style); (d) redundant defensive sort of partitions().
+
+Task 5: complete (commits 73c6996..05bc3eb + fix 1347d7d, review "Approved" opus, 1 Important fixed →
+  re-verified "Spec ✅ / Approved"; 0 remaining Critical/Important)
+  8/8 SurfaceDbPopulate + 57/57 db/corpus + 67/67 fit-path regression sweep green.
+  ACCEPTED DEVIATION (reviewer-judged justified-extra): fit_board extracted verbatim from corpus.cpp into
+  private src/corpus_board_fit.{hpp,cpp} (pure move, verified vs pre-image); NEW additive `session_overlay`
+  hook on PricerFitter::fit (default-empty, verified inert at ALL existing call sites) — needed because
+  apply_symbol_config sets SessionInputs fields PricerConfig can't carry (band_k, al_opts, calendar_repair,
+  pinned calib). Fix wave added SurfaceDbPopulate.SymbolConfigOverlayReachesFit (al_override oracle,
+  neuter-RED/restore-GREEN evidenced).
+  Minor (roll-up): (a) skip_existing uses open_partition (opens+CRC-validates; corrupt existing partition
+  aborts populate instead of skipping — membership check via partitions() would be resume-robust);
+  (b) example upserts symbol_config_from_preset(parsed --preset) vs constraint's literal FitPreset::Fast
+  (default matches; flag-honoring defensible).
+
+Task 6: complete (commits 3a415fc..b5c05f9, review clean — SPEC ✅ / Approved; 0 Critical/Important)
+  11/11 targeted green; example 306 lines; 18-key shared meta verified byte-for-byte across all emit calls;
+  live binary smoke (4 files + exit codes 2/2/1) reported by implementer.
+  Minor (roll-up): (a) expect_result_bit_identical trimmed to 7 columns vs spy pattern (drops
+  pnl_theta/gamma/vega; restore cheap); (b) example's literal 18-key MetaKv not regression-tested (gate
+  test uses its own 2-key meta); (c) populate_stats.csv copy branch untested (manual smoke only);
+  (d) spec-validation CLI errors exit 1 not 2 (judgment call, flagged); (e) console peak_lots recomputed
+  vs reusing result_summary_metrics.
+
+Task 7: complete (commits b592be9..a88cb05 + fix 55b9e5f, review Approved, 1 Important fixed →
+  re-verified "Spec ✅ / Approved"; 0 remaining Critical/Important)
+  8/8 python tests green; ctest registration verified by controller post-reconfigure
+  (Mag7DispersionReport Passed, TearSheet suite 6/6). Reviewer verified fixture format fidelity
+  byte-for-byte vs real emitters, SVG sanitization empirically (xmlns/RDF strip safe for HTML5 inline),
+  id-collision fix real (294/294 unique ids). Fix wave: _fmt_value ±inf guard + 5 formatter unit tests.
+  Minor (roll-up): (a) exact-1.0 fractions render bare "1" in tables; (b) fixture max_drawdown sign
+  cosmetics; (c) matplotlib per-chart <style> universal selector scoping note (no current consequence).
+
+FINAL WHOLE-BRANCH REVIEW (fable, 6198a27..126aa35): "Ready to merge: Yes" — 0 Critical/Important.
+  Verified seams: T3→T2→engine (close-pass vs engine settlement ordering — CloseAtHorizon lot can never
+  reach settlement with close_dte>0), T5 overlay (no double-application; pricer_config subset + overlay
+  layering consistent incl. Hft pinned route), emitter↔example↔python contract lockstep, determinism
+  discipline. 6 new Minors; triage: NONE must-fix. Polish wave 892f797 (5 items: Clock comment, comparator
+  columns restored, min_names>=1, canonical index/dup-name guard via canonical_symbol, python unpriced-row
+  dedup) — re-verified by final reviewer: "Ready to merge — Yes". 8/8 targeted C++ + 8/8 python green.
+  Accepted post-merge follow-ups (from triage): T2-a/b/c, T3-b, T4-a/b/c/d, T5-a/b, T6-b/c/d/e, T7-a/b/c,
+  new #4 (db_root meta dup — benign, python last-wins), #5 goal-text narrowings (no arb-check column;
+  steps_per_s as timing summary — plan-sanctioned), #6 nv() flag-swallow CLI cosmetics.
+
+Task 8 (real data) IN PROGRESS: cost gate logged — MetadataGetCost estimate $0.000000 (account OPRA.PILLAR
+  access unmetered; well under $150 authorization; cap $10 guardrail on tool). First full-window attempt
+  failed on holiday date (2026-01-19 → 422 symbology; calendar-day iteration); fixed via --dates-file with
+  129 real sessions (SPY hive dates + 07-02..07-10). 16-worker run hit 504 gateway timeouts after 118
+  pulls; resumed with 4-worker retry loop (idempotent).
+
+Task 8: COMPLETE (operator-directed 5-day fit scope).
+  PULL: 1032/1032 files (8 symbols x 129 sessions 2026-01-02..2026-07-10) cached at
+  C:/atx/data/mag7_ytd/opra; TOTAL SPEND $0.00 (account OPRA.PILLAR unmetered; est logged $0, cap $10).
+  Databento gateway 504s required ~10 idempotent retry attempts at 4 workers.
+  FIT: full-YTD populate (data/surfdb/mag7_ytd) killed by operator mid-run ("taking a lot longer than
+  expected. Kill it and run a smaller 5 day fit backfill"); 5-day backfill run instead:
+  data/surfdb/mag7_5d, sessions 2026-07-06..2026-07-10, 40/40 boards fit OK (populate_stats: all 8
+  symbols success_rate 1), 5 partitions, exit 0. Full-YTD populate is RESUMABLE later:
+  mag7_surfdb_populate --opra-root C:/atx/data/mag7_ytd/opra --db C:/atx/data/surfdb/mag7_ytd
+  --symbols AAPL,...,SPY --start 2026-01-02 --end 2026-07-10 (skip_existing resumes; partial db kept).
+  RUN: mag7_dispersion_backtest --db mag7_5d -> 5 steps, 365.5 ms (13.7 steps/s), peak 80 lots,
+  all 5 output files written (incl. populate_stats copy).
+  REPORT: tools/mag7_dispersion_report.py -> C:/atx/atx-vol/tools/mag7_dispersion_report.html (85.3K,
+  2 SVGs, 3 required tables, self-contained verified: zero http/https/src=; defaults in header).
+  Artifact untracked per spy_strangle_real_tearsheet.png precedent.
+  NOTE: 5-day window < 10-DTE close horizon, so no cohort closes occur in this run (entries + marks only);
+  full-YTD run after resumed populate exercises closes on real data.

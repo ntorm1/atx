@@ -130,6 +130,38 @@ make_manifest(const std::vector<std::pair<std::string, std::string>> &date_paths
   return m;
 }
 
+// A ready-to-clock manifest over `n_dates` consecutive DAILY snapshots, one
+// symbol "SPY" (uid `kUid`) per date, for the CloseAtHorizon lifecycle tests
+// (which need a real multi-date corpus, unlike the single-snapshot DSL tests
+// above). `tag` picks the fresh_dir so distinct call sites never collide.
+struct Corpus {
+  CorpusManifest manifest;
+};
+
+[[nodiscard]] Corpus make_corpus(int n_dates, const char *tag) {
+  const fs::path dir = fresh_dir(tag);
+  std::vector<std::pair<std::string, std::string>> dp;
+  for (int d = 0; d < n_dates; ++d) {
+    const std::int64_t now = kBaseNow + static_cast<std::int64_t>(d) * kDayNs;
+    const PricedSurface s = make_surface(kUid, 100.0, 100.0, now);
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "2026-11-%02d", d + 1);
+    const std::string date = buf;
+    dp.emplace_back(date, write_archive(dir, date, {{"SPY", &s}}));
+  }
+  return Corpus{make_manifest(dp)};
+}
+
+// A single-date MarketSnapshot over `items` (symbol -> surface) via
+// write_archive + MarketSnapshot::load, for tests that only need one snapshot
+// resolved by symbol (not a full clocked corpus).
+[[nodiscard]] Result<MarketSnapshot>
+snapshot_of(const std::vector<std::pair<std::string, const PricedSurface *>> &items, const char *tag) {
+  const fs::path dir = fresh_dir(tag);
+  const std::string path = write_archive(dir, "2026-12-01", items);
+  return MarketSnapshot::load(path);
+}
+
 } // namespace
 
 // ── 1. Strike-from-delta reprices to the target ─────────────────────────────
@@ -408,4 +440,206 @@ TEST(Strategy, DispersionParity) {
 
   std::printf("[strategy] dispersion implied_corr=%.6f book_vega_idx=%.2f book_vega_names=%.2f\n",
               sig->implied_corr, v_index, v_names);
+}
+
+// ── 6. CloseAtHorizon: overlapping cohorts, each closed at ITS OWN DTE ───────
+TEST(Strategy, CloseAtHorizonOverlappingCohorts) {
+  // 10 consecutive daily snapshots. Tenor 6 calendar days, close below 2.5
+  // days residual (half-day margin keeps the comparison off exact-boundary
+  // floating point). A cohort opened on day d has expiry d+6; residual at age
+  // 3 is 3d (alive), at age 4 is 2d (< 2.5 -> close), so each cohort lives
+  // ages 0..3 = 4 days. Steady state: 4 live cohorts x 2 strangle lots = 8.
+  auto corpus = make_corpus(/*n_dates=*/10, "close-horizon");
+  auto clock = Clock::from_manifest(corpus.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  StrategySpec spec;
+  spec.name = "close-at-horizon";
+  LegSpec leg;
+  leg.uid = kUid;
+  leg.tenor.target_T = 6.0 / 365.25;
+  leg.structure.kind = StructureSpec::Kind::Strangle;
+  leg.structure.call_leg = {StrikeSelector::Kind::Delta, 0.40};
+  leg.structure.put_leg = {StrikeSelector::Kind::Delta, 0.40};
+  leg.size = {SizeSpec::Kind::FixedContracts, 1.0, +1.0};
+  spec.legs.push_back(leg);
+  spec.lifecycle.entry = LifecycleSpec::Entry::EveryStep;
+  spec.lifecycle.holding = LifecycleSpec::Holding::CloseAtHorizon;
+  spec.lifecycle.roll_at_T = 2.5 / 365.25;
+
+  DeclarativeStrategy strat(spec);
+  auto r = run_backtest(*clock, strat, RunConfig{});
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+  ASSERT_EQ(r->size(), 10u);
+  // Ramp 2,4,6,8 then plateau at 8 (close of oldest exactly offsets the new entry).
+  const unsigned expect[] = {2, 4, 6, 8, 8, 8, 8, 8, 8, 8};
+  for (std::size_t i = 0; i < 10; ++i) {
+    EXPECT_EQ(r->n_open_lots[i], static_cast<double>(expect[i])) << i;
+  }
+  // Closes are roll-closes at marks, never engine settlement.
+  for (std::size_t i = 0; i < 10; ++i) {
+    EXPECT_EQ(r->pnl_settlement[i], 0.0) << i;
+  }
+
+  std::printf("[strategy] close-at-horizon n_open_lots ="
+              " {%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f}\n",
+              r->n_open_lots[0], r->n_open_lots[1], r->n_open_lots[2], r->n_open_lots[3],
+              r->n_open_lots[4], r->n_open_lots[5], r->n_open_lots[6], r->n_open_lots[7],
+              r->n_open_lots[8], r->n_open_lots[9]);
+}
+
+// ── 7. Missing-name policy: DropRenormalize survives, floors, protects the
+//        hedge leg, and Error preserves the pre-S1-3/T2 hard fail ───────────
+TEST(Strategy, MissingNameDropRenormalize) {
+  // Snapshot holds SPY + XOM only; spec asks for SPY-index vs {XOM, FAKE} basket.
+  const PricedSurface spy = make_surface(/*uid=*/1, 500.0, 500.0, kBaseNow, 0.00);
+  const PricedSurface xom = make_surface(/*uid=*/2, 110.0, 110.0, kBaseNow, 0.05);
+  auto snap = snapshot_of({{"SPY", &spy}, {"XOM", &xom}}, "missing-name");
+  ASSERT_TRUE(snap.has_value()) << snap.error().to_string();
+
+  StrategySpec spec;
+  const auto name_leg = [](std::string sym) {
+    LegSpec l;
+    l.symbol = std::move(sym);
+    l.tenor.target_T = 0.25;
+    l.structure.kind = StructureSpec::Kind::Strangle;
+    l.structure.call_leg = {StrikeSelector::Kind::Delta, 0.40};
+    l.structure.put_leg = {StrikeSelector::Kind::Delta, 0.40};
+    l.size = {SizeSpec::Kind::TargetTheta, 10.0, +1.0};
+    l.group = "basket";
+    return l;
+  };
+  spec.legs.push_back(name_leg("XOM"));
+  spec.legs.push_back(name_leg("FAKE"));
+  LegSpec idx = name_leg("SPY");
+  idx.size = {SizeSpec::Kind::TargetVega, 10000.0, -1.0};
+  idx.group = "index";
+  spec.legs.push_back(idx);
+  spec.constraint = {CrossLegConstraint::Kind::FlatVega, "basket", "index"};
+  spec.missing = {MissingNamePolicy::DropRenormalize, /*min_names=*/1};
+
+  std::vector<ResolveDrop> dropped;
+  auto legs = resolve_spec_with_policy(*snap, spec, &dropped);
+  ASSERT_TRUE(legs.has_value()) << legs.error().to_string();
+  ASSERT_EQ(dropped.size(), 1u);
+  EXPECT_EQ(dropped[0].symbol, "FAKE");
+  // Survivors: XOM strangle (2) + SPY strangle (2); constraint held on survivors.
+  ASSERT_EQ(legs->size(), 4u);
+  double net_vega = 0.0;
+  double gross_vega = 0.0;
+  for (const auto &sl : *legs) {
+    net_vega += sl.qty * sl.leg.vega * sl.multiplier;
+    gross_vega += std::fabs(sl.qty * sl.leg.vega * sl.multiplier);
+  }
+  EXPECT_LE(std::fabs(net_vega), 1e-9 * gross_vega);
+
+  // min_names floor: requiring 2 surviving basket names -> Unavailable.
+  spec.missing.min_names = 2;
+  auto floored = resolve_spec_with_policy(*snap, spec, nullptr);
+  ASSERT_FALSE(floored.has_value());
+  EXPECT_EQ(floored.error().code(), ErrorCode::Unavailable);
+
+  // Missing HEDGE leg (group_b) is never droppable.
+  spec.missing.min_names = 1;
+  spec.legs[2].symbol = "NOPE";
+  auto no_hedge = resolve_spec_with_policy(*snap, spec, nullptr);
+  ASSERT_FALSE(no_hedge.has_value());
+  EXPECT_EQ(no_hedge.error().code(), ErrorCode::Unavailable);
+
+  // Error policy preserves today's hard fail.
+  spec.legs[2].symbol = "SPY";
+  spec.missing = {MissingNamePolicy::Error, 2};
+  auto hard = resolve_spec_with_policy(*snap, spec, nullptr);
+  ASSERT_FALSE(hard.has_value());
+  EXPECT_EQ(hard.error().code(), ErrorCode::NotFound);
+}
+
+// ── 8. CloseAtHorizon + an unbuildable entry (missing hedge every date) is a
+//        no-trade step, never a hard error ──────────────────────────────────
+TEST(Strategy, CloseAtHorizonNoTradeOnMissingEntry) {
+  // Under DropRenormalize with an unbuildable entry (hedge symbol absent from
+  // EVERY snapshot), DeclarativeStrategy no-trades instead of erroring, and
+  // the run completes with an empty book throughout.
+  auto corpus = make_corpus(/*n_dates=*/4, "close-horizon-notrade"); // archives contain SPY only
+  auto clock = Clock::from_manifest(corpus.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  StrategySpec spec;
+  LegSpec l;
+  l.symbol = "SPY";
+  l.tenor.target_T = 0.25;
+  l.structure.kind = StructureSpec::Kind::Strangle;
+  l.structure.call_leg = {StrikeSelector::Kind::Delta, 0.40};
+  l.structure.put_leg = {StrikeSelector::Kind::Delta, 0.40};
+  l.size = {SizeSpec::Kind::TargetTheta, 10.0, +1.0};
+  l.group = "basket";
+  spec.legs.push_back(l);
+  LegSpec idx = l;
+  idx.symbol = "MISSING_INDEX";
+  idx.group = "index";
+  idx.size = {SizeSpec::Kind::TargetVega, 10000.0, -1.0};
+  spec.legs.push_back(idx);
+  spec.constraint = {CrossLegConstraint::Kind::FlatVega, "basket", "index"};
+  spec.missing = {MissingNamePolicy::DropRenormalize, 1};
+  spec.lifecycle.entry = LifecycleSpec::Entry::EveryStep;
+  spec.lifecycle.holding = LifecycleSpec::Holding::CloseAtHorizon;
+  spec.lifecycle.roll_at_T = 2.0 / 365.25;
+
+  DeclarativeStrategy strat(spec);
+  auto r = run_backtest(*clock, strat, RunConfig{});
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+  for (std::size_t i = 0; i < r->size(); ++i) {
+    EXPECT_EQ(r->n_open_lots[i], 0.0) << i;
+  }
+  // The DeclarativeStrategy accessor documents WHY: the index leg never
+  // resolved (it's not a "drop" -- it's the hedge leg, which is fatal-to-build
+  // and never reaches the drop bookkeeping), so dropped_on_last_entry() stays
+  // empty while the run silently no-trades every step.
+  EXPECT_TRUE(strat.dropped_on_last_entry().empty());
+}
+
+// ── 9. dropped_on_last_entry(): the per-name-failure hook, positive path ────
+TEST(Strategy, DeclarativeDroppedOnLastEntryAccessor) {
+  // DropRenormalize with one droppable (non-hedge) name: DeclarativeStrategy
+  // opens the survivor book and documents the drop via dropped_on_last_entry().
+  const PricedSurface spy = make_surface(/*uid=*/1, 500.0, 500.0, kBaseNow, 0.00);
+  const PricedSurface xom = make_surface(/*uid=*/2, 110.0, 110.0, kBaseNow, 0.05);
+  auto snap = snapshot_of({{"SPY", &spy}, {"XOM", &xom}}, "dropped-accessor");
+  ASSERT_TRUE(snap.has_value()) << snap.error().to_string();
+
+  StrategySpec spec;
+  const auto name_leg = [](std::string sym) {
+    LegSpec l;
+    l.symbol = std::move(sym);
+    l.tenor.target_T = 0.25;
+    l.structure.kind = StructureSpec::Kind::Strangle;
+    l.structure.call_leg = {StrikeSelector::Kind::Delta, 0.40};
+    l.structure.put_leg = {StrikeSelector::Kind::Delta, 0.40};
+    l.size = {SizeSpec::Kind::TargetTheta, 10.0, +1.0};
+    l.group = "basket";
+    return l;
+  };
+  spec.legs.push_back(name_leg("XOM"));
+  spec.legs.push_back(name_leg("FAKE"));
+  LegSpec idx = name_leg("SPY");
+  idx.size = {SizeSpec::Kind::TargetVega, 10000.0, -1.0};
+  idx.group = "index";
+  spec.legs.push_back(idx);
+  spec.constraint = {CrossLegConstraint::Kind::FlatVega, "basket", "index"};
+  spec.missing = {MissingNamePolicy::DropRenormalize, /*min_names=*/1};
+  spec.lifecycle.entry = LifecycleSpec::Entry::EveryStep;
+  spec.lifecycle.holding = LifecycleSpec::Holding::HoldToExpiry;
+
+  DeclarativeStrategy strat(spec);
+  EXPECT_TRUE(strat.dropped_on_last_entry().empty()); // nothing attempted yet
+
+  PortfolioState book;
+  std::uint64_t next_id = 1;
+  const Status st = strat.on_step(*snap, 0, book, next_id);
+  ASSERT_TRUE(st.has_value()) << st.error().to_string();
+  ASSERT_EQ(book.lots.size(), 4u); // XOM strangle + SPY strangle survivors
+
+  const auto dropped = strat.dropped_on_last_entry();
+  ASSERT_EQ(dropped.size(), 1u);
+  EXPECT_EQ(dropped[0].symbol, "FAKE");
 }

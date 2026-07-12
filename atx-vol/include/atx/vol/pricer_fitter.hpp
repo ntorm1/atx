@@ -25,6 +25,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -182,7 +183,17 @@ public:
   // replacing any prior fit. Maps the config onto SessionInputs and drives
   // `VolaSession::build`. Propagates the build error (the prior surface is left
   // intact on failure).
-  [[nodiscard]] Status fit(const OptionChain &chain);
+  //
+  // `session_overlay`, when set, is invoked on the fully-resolved
+  // `SessionInputs` immediately before the (first) build call — e.g. a caller
+  // layering a per-symbol override (`apply_symbol_config`) onto the EXACT
+  // inputs this fit uses, without duplicating the preset/curve/profile
+  // resolution above. Applied once; a fallback-ladder retry (triggered only
+  // for an auto-routed, unpinned curve) does not re-invoke it. A caller that
+  // wants its overlaid curve pin immune to the fallback ladder must also set
+  // `PricerConfig::curve` so the ladder's own auto-routed guard sees it.
+  [[nodiscard]] Status fit(const OptionChain &chain,
+                           const std::function<void(SessionInputs &)> &session_overlay = {});
 
   [[nodiscard]] bool fitted() const noexcept { return surface_ != nullptr; }
   [[nodiscard]] const FittedSurface *surface() const noexcept { return surface_.get(); }

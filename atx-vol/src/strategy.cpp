@@ -287,84 +287,141 @@ namespace {
   return g;
 }
 
-}  // namespace
-
-Result<std::vector<SizedLeg>> resolve_spec(const MarketSnapshot& snap, const StrategySpec& spec) {
+// Expand + per-leg base sizing for ONE `LegSpec` (FixedContracts/TargetVega/
+// Weight/TargetTheta/TargetGamma, multiplier 100). The exact per-leg body
+// `resolve_spec` used inline pre-S1-3/T2, factored out so both `resolve_spec`
+// and `resolve_spec_with_policy` share one implementation (errors — code AND
+// message — are bit-identical to the pre-refactor inline form).
+[[nodiscard]] Result<std::vector<SizedLeg>> expand_and_size_leg(const MarketSnapshot& snap,
+                                                                 const LegSpec& ls) {
   constexpr double kMult = 100.0;
 
-  std::vector<SizedLeg> sized;
-  for (const LegSpec& ls : spec.legs) {
-    Result<std::vector<ResolvedLeg>> exp = expand_leg(snap, ls);
-    if (!exp) {
-      return Err(exp.error());
-    }
-    const std::vector<ResolvedLeg>& opts = *exp;
+  Result<std::vector<ResolvedLeg>> exp = expand_leg(snap, ls);
+  if (!exp) {
+    return Err(exp.error());
+  }
+  const std::vector<ResolvedLeg>& opts = *exp;
 
-    // Per-leg base sizing: one signed qty applied to every option of the structure.
-    double qty = 0.0;
-    switch (ls.size.kind) {
-      case SizeSpec::Kind::FixedContracts:
-      case SizeSpec::Kind::Weight:
-        qty = ls.size.sign * ls.size.value;  // Weight: unitless, pre-constraint
-        break;
-      case SizeSpec::Kind::TargetVega:
-      case SizeSpec::Kind::TargetTheta:
-      case SizeSpec::Kind::TargetGamma: {
-        // Size to a book GREEK: qty = sign * target / (|Σ leg greek| * mult), so
-        // `value` is the target |book greek| and `sign` picks long/short. |Σ| makes
-        // the target axis-agnostic (theta < 0 for a long option), so a short strangle
-        // sized TargetTheta holds +value book theta. TargetVega is bit-identical to
-        // the old form (structure vega is already > 0, so |.| is a no-op).
-        //
-        // THETA CONVENTION: the American greek theta is dP/dt with t in YEARS (per
-        // kNsPerYear), so it is an ANNUALIZED $ theta. TargetTheta's `value` is a
-        // per-CALENDAR-DAY theta (how traders quote it), converted to the annualized
-        // book theta the greek carries by * 365.25 (the kNsPerYear day count).
-        constexpr double kCalendarDaysPerYear = 365.25;  // matches kNsPerYear
-        const auto pick = [&](const ResolvedLeg& o) -> double {
-          switch (ls.size.kind) {
-            case SizeSpec::Kind::TargetTheta:
-              return o.theta;
-            case SizeSpec::Kind::TargetGamma:
-              return o.gamma;
-            default:
-              return o.vega;
-          }
-        };
-        double structure_greek = 0.0;
-        for (const ResolvedLeg& o : opts) {
-          structure_greek += pick(o);
+  // Per-leg base sizing: one signed qty applied to every option of the structure.
+  double qty = 0.0;
+  switch (ls.size.kind) {
+    case SizeSpec::Kind::FixedContracts:
+    case SizeSpec::Kind::Weight:
+      qty = ls.size.sign * ls.size.value;  // Weight: unitless, pre-constraint
+      break;
+    case SizeSpec::Kind::TargetVega:
+    case SizeSpec::Kind::TargetTheta:
+    case SizeSpec::Kind::TargetGamma: {
+      // Size to a book GREEK: qty = sign * target / (|Σ leg greek| * mult), so
+      // `value` is the target |book greek| and `sign` picks long/short. |Σ| makes
+      // the target axis-agnostic (theta < 0 for a long option), so a short strangle
+      // sized TargetTheta holds +value book theta. TargetVega is bit-identical to
+      // the old form (structure vega is already > 0, so |.| is a no-op).
+      //
+      // THETA CONVENTION: the American greek theta is dP/dt with t in YEARS (per
+      // kNsPerYear), so it is an ANNUALIZED $ theta. TargetTheta's `value` is a
+      // per-CALENDAR-DAY theta (how traders quote it), converted to the annualized
+      // book theta the greek carries by * 365.25 (the kNsPerYear day count).
+      constexpr double kCalendarDaysPerYear = 365.25;  // matches kNsPerYear
+      const auto pick = [&](const ResolvedLeg& o) -> double {
+        switch (ls.size.kind) {
+          case SizeSpec::Kind::TargetTheta:
+            return o.theta;
+          case SizeSpec::Kind::TargetGamma:
+            return o.gamma;
+          default:
+            return o.vega;
         }
-        if (!(std::isfinite(structure_greek) && std::fabs(structure_greek) > 0.0)) {
-          return Err(ErrorCode::Unavailable,
-                     "resolve_spec: degenerate structure greek for target sizing");
-        }
-        const double target = (ls.size.kind == SizeSpec::Kind::TargetTheta)
-                                  ? ls.size.value * kCalendarDaysPerYear  // $/day -> $/yr
-                                  : ls.size.value;
-        qty = ls.size.sign * target / (std::fabs(structure_greek) * kMult);
-        break;
+      };
+      double structure_greek = 0.0;
+      for (const ResolvedLeg& o : opts) {
+        structure_greek += pick(o);
       }
+      if (!(std::isfinite(structure_greek) && std::fabs(structure_greek) > 0.0)) {
+        return Err(ErrorCode::Unavailable,
+                   "resolve_spec: degenerate structure greek for target sizing");
+      }
+      const double target = (ls.size.kind == SizeSpec::Kind::TargetTheta)
+                                ? ls.size.value * kCalendarDaysPerYear  // $/day -> $/yr
+                                : ls.size.value;
+      qty = ls.size.sign * target / (std::fabs(structure_greek) * kMult);
+      break;
     }
-    for (const ResolvedLeg& o : opts) {
-      sized.push_back(SizedLeg{o, qty, kMult});
+  }
+  std::vector<SizedLeg> out;
+  out.reserve(opts.size());
+  for (const ResolvedLeg& o : opts) {
+    out.push_back(SizedLeg{o, qty, kMult});
+  }
+  return Ok(std::move(out));
+}
+
+// Shared resolution body for `resolve_spec` / `resolve_spec_with_policy`. Under
+// `missing.policy == Error` this reproduces `resolve_spec`'s pre-S1-3/T2 inline
+// behavior exactly (first leg failure propagates unchanged; no drop bookkeeping,
+// no min_names floor). Under `DropRenormalize`, see `resolve_spec_with_policy`'s
+// doc comment (strategy.hpp) for the full contract.
+[[nodiscard]] Result<std::vector<SizedLeg>>
+resolve_spec_impl(const MarketSnapshot& snap, const StrategySpec& spec, const MissingNameSpec& missing,
+                  std::vector<ResolveDrop>* dropped) {
+  if (dropped != nullptr) {
+    dropped->clear();
+  }
+  const bool drop_policy = missing.policy == MissingNamePolicy::DropRenormalize;
+
+  const CrossLegConstraint& c = spec.constraint;
+  std::string ga = c.group_a;
+  std::string gb = c.group_b;
+  if (c.kind == CrossLegConstraint::Kind::VegaNeutralBasket) {
+    if (ga.empty()) {
+      ga = "index";
+    }
+    if (gb.empty()) {
+      gb = "basket";
+    }
+  }
+  const bool has_constraint = c.kind != CrossLegConstraint::Kind::None;
+
+  std::vector<SizedLeg> sized;
+  std::size_t group_a_survivors = 0;
+  for (const LegSpec& ls : spec.legs) {
+    Result<std::vector<SizedLeg>> leg_sized = expand_and_size_leg(snap, ls);
+    if (!leg_sized) {
+      if (!drop_policy) {
+        return Err(leg_sized.error());  // Error policy: hard fail, unchanged
+      }
+      if (has_constraint && ls.group == gb) {
+        // The scaled hedge group is never droppable: without it the entry can't
+        // be built at all.
+        return Err(ErrorCode::Unavailable, "resolve_spec_with_policy: hedge leg '" + ls.symbol +
+                                               "' (group '" + gb +
+                                               "') unavailable: " + leg_sized.error().message());
+      }
+      if (dropped != nullptr) {
+        dropped->push_back(ResolveDrop{ls.symbol, leg_sized.error().message()});
+      }
+      continue;
+    }
+    const bool counts_toward_a = !has_constraint || ls.group == ga;
+    if (counts_toward_a) {
+      ++group_a_survivors;
+    }
+    for (SizedLeg& sl : *leg_sized) {
+      sized.push_back(std::move(sl));
     }
   }
 
-  // Cross-leg constraint: scale one group's gross vega onto another's.
-  const CrossLegConstraint& c = spec.constraint;
+  if (drop_policy && group_a_survivors < missing.min_names) {
+    return Err(ErrorCode::Unavailable,
+               "resolve_spec_with_policy: only " + std::to_string(group_a_survivors) +
+                   " surviving name(s), need >= " + std::to_string(missing.min_names));
+  }
+
+  // Cross-leg constraint: scale one group's gross vega onto another's, over the
+  // SURVIVORS only — a dropped leg was never added to `sized`, so FlatVega's
+  // ratio renormalizes automatically.
   if (c.kind == CrossLegConstraint::Kind::FlatVega ||
       c.kind == CrossLegConstraint::Kind::VegaNeutralBasket) {
-    std::string ga = c.group_a;
-    std::string gb = c.group_b;
-    if (c.kind == CrossLegConstraint::Kind::VegaNeutralBasket) {
-      if (ga.empty()) {
-        ga = "index";
-      }
-      if (gb.empty()) {
-        gb = "basket";
-      }
-    }
     const double gross_a = group_gross_vega(sized, ga);
     const double gross_b = group_gross_vega(sized, gb);
     if (!(gross_b > 0.0)) {
@@ -381,12 +438,28 @@ Result<std::vector<SizedLeg>> resolve_spec(const MarketSnapshot& snap, const Str
   return Ok(std::move(sized));
 }
 
+}  // namespace
+
+Result<std::vector<SizedLeg>> resolve_spec(const MarketSnapshot& snap, const StrategySpec& spec) {
+  return resolve_spec_impl(snap, spec, MissingNameSpec{MissingNamePolicy::Error, 2}, nullptr);
+}
+
+Result<std::vector<SizedLeg>> resolve_spec_with_policy(const MarketSnapshot& snap,
+                                                       const StrategySpec& spec,
+                                                       std::vector<ResolveDrop>* dropped) {
+  return resolve_spec_impl(snap, spec, spec.missing, dropped);
+}
+
 // ── Lifecycle decision ──────────────────────────────────────────────────────
 
 LifecycleDecision lifecycle_decide(const LifecycleSpec& lifecycle, std::size_t step_index,
                                    bool book_empty, std::int64_t base_ts, std::int64_t front_expiry,
                                    bool have_front) {
-  if (lifecycle.holding == LifecycleSpec::Holding::HoldToExpiry) {
+  if (lifecycle.holding == LifecycleSpec::Holding::HoldToExpiry ||
+      lifecycle.holding == LifecycleSpec::Holding::CloseAtHorizon) {
+    // Same entry-tick rule for both: overlapping cohorts, never clear (each
+    // cohort is closed independently — HoldToExpiry via engine settlement at
+    // T<=0, CloseAtHorizon via the strategy's own close pass in on_step).
     bool tick = true;
     if (lifecycle.entry == LifecycleSpec::Entry::EveryNDays) {
       const unsigned n = (lifecycle.entry_every_n == 0) ? 1u : lifecycle.entry_every_n;
@@ -411,8 +484,16 @@ LifecycleDecision lifecycle_decide(const LifecycleSpec& lifecycle, std::size_t s
 
 Status DeclarativeStrategy::open_cohort(const MarketSnapshot& base, PortfolioState& book,
                                         std::uint64_t& next_lot_id) {
-  Result<std::vector<SizedLeg>> sized = resolve_spec(base, spec_);
+  Result<std::vector<SizedLeg>> sized = resolve_spec_with_policy(base, spec_, &last_dropped_);
   if (!sized) {
+    // NO-TRADE CONTRACT (mirrors DispersionStrategy, dispersion_strategy.cpp):
+    // under DropRenormalize, Unavailable means the entry can't be built today
+    // (too few surviving names, or the hedge leg is missing) — a flat / no-trade
+    // step. Leave the book untouched and continue; any other error is fatal.
+    if (spec_.missing.policy == MissingNamePolicy::DropRenormalize &&
+        sized.error().code() == ErrorCode::Unavailable) {
+      return Ok();
+    }
     return Err(sized.error());
   }
   const std::uint32_t cohort = cohort_counter_++;
@@ -452,6 +533,21 @@ Status DeclarativeStrategy::open_cohort(const MarketSnapshot& base, PortfolioSta
 
 Status DeclarativeStrategy::on_step(const MarketSnapshot& base, std::size_t step_index,
                                     PortfolioState& book, std::uint64_t& next_lot_id) {
+  if (spec_.lifecycle.holding == LifecycleSpec::Holding::CloseAtHorizon) {
+    // Close pass FIRST, before any entry this step: erase every lot whose
+    // residual maturity has fallen below roll_at_T. The engine's before/after
+    // `book.lots` diff (src/backtest.cpp `execute`) books these as roll-closes
+    // at today's marks — never settlement (the engine's own expiry settle runs
+    // earlier in its loop, strictly before on_step, so a lot closed here never
+    // reaches that path).
+    const std::int64_t base_ts = base.ts_ns();
+    const double roll_at_T = spec_.lifecycle.roll_at_T;
+    std::erase_if(book.lots, [base_ts, roll_at_T](const Lot& lot) {
+      const double residual_ns = static_cast<double>(lot.expiry_ts_ns - base_ts);
+      return residual_ns < roll_at_T * kNsPerYear;
+    });
+  }
+
   const LifecycleDecision d = lifecycle_decide(spec_.lifecycle, step_index, book.lots.empty(),
                                                base.ts_ns(), front_expiry_, have_front_);
   if (!d.open) {

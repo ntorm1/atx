@@ -1,243 +1,172 @@
-# Task 2 Report — surface_db.hpp on-disk records, SymbolFitConfig, manifest write/parse
+# Task 2 Report: Lifecycle `CloseAtHorizon` + missing-name policy for `DeclarativeStrategy`
 
-## Summary
+## Status: DONE
 
-Implemented the ATXVDB v1 manifest binary format: fixed-layout on-disk records
-(`DbManifestHeader`, `DbSymbolRecord`, `DbPartitionRecord`), the public
-`SymbolFitConfig` (full `CurveConfig` + `AlOpts` override + session policy
-scalars), an in-memory `write_db_manifest` writer, and a validated `DbManifest`
-reader with O(log n) canonical symbol/partition lookup. Pure in-memory per the
-brief — file IO and the `SurfaceDb` class are Task 3.
+## What I implemented
+
+### 1. `LifecycleSpec::Holding::CloseAtHorizon` (value `2`)
+Added as a third `Holding` enumerator in `atx-vol/include/atx/vol/strategy.hpp`, per the
+brief's exact spec (doc comment included verbatim). `lifecycle_decide` (strategy.cpp) now
+groups `HoldToExpiry` and `CloseAtHorizon` under the same open-tick rule (`EveryStep` /
+`step_index % entry_every_n == 0`), never `clear`. `DeclarativeStrategy::on_step` gained a
+close pass that runs **before** the lifecycle-decide/entry logic when
+`holding == CloseAtHorizon`: it erases every lot from `book.lots` whose
+`(lot.expiry_ts_ns - base.ts_ns()) < roll_at_T * kNsPerYear` (computed as an `int64`
+subtraction then cast to `double`, exactly as specified — not two independent-cast
+subtractions, which would lose precision on raw epoch-ns timestamps). The engine's
+before/after `book.lots` diff (`execute` in `backtest.cpp`) books these as roll-closes at
+current marks; the engine's own expiry-settlement pass runs earlier in its loop (before
+`on_step`), so a lot closed here can never also settle.
+
+### 2. Missing-name policy for `DeclarativeStrategy`
+- `StrategySpec` gained `MissingNameSpec missing{}` (default `{Error, min_names=2}`).
+- New `ResolveDrop{symbol, detail}` + `resolve_spec_with_policy(snap, spec, dropped=nullptr)`
+  declared next to `resolve_spec` in strategy.hpp.
+- Refactored `resolve_spec`'s body into a shared anonymous-namespace `resolve_spec_impl`
+  (strategy.cpp) taking an explicit `MissingNameSpec` parameter (not read from `spec.missing`
+  directly, so no `StrategySpec` copy is needed). `resolve_spec` now calls
+  `resolve_spec_impl(snap, spec, MissingNameSpec{Error, 2}, nullptr)` — it **ignores**
+  `spec.missing` entirely, so it stays bit-identical regardless of what a caller happens to
+  set there. `resolve_spec_with_policy` calls the same impl with `spec.missing`.
+- Per-leg expand+size logic was further factored into `expand_and_size_leg` (unchanged
+  logic/messages, just extracted so both entry points share one body).
+- `resolve_spec_impl` semantics under `DropRenormalize`:
+  - A leg whose `expand_and_size_leg` fails is dropped (`*dropped` gets
+    `{ls.symbol, error.message()}`) **unless** `constraint.kind != None && ls.group ==
+    group_b` (the scaled hedge group) — that case returns `Err(Unavailable, ...)` immediately
+    (fatal — a missing hedge leg makes the whole entry unbuildable).
+  - After the leg loop, if `drop_policy && group_a_survivors < missing.min_names` (where
+    `group_a_survivors` counts successful legs with `group == group_a`, or **all** successful
+    legs when `constraint.kind == None`), returns `Err(Unavailable, ...)`.
+  - The existing cross-leg constraint block (FlatVega/VegaNeutralBasket scaling) is untouched
+    — it already only sees `sized`, which now only contains survivors, so the scale ratio
+    renormalizes automatically.
+  - Under `Error` policy, the leg loop's `min_names`/hedge-protection branches are dead code
+    (first failure returns immediately with the *original* error, same code+message as the
+    pre-refactor inline form).
+
+### 3. `DeclarativeStrategy::open_cohort` + `dropped_on_last_entry()`
+- `open_cohort` now calls `resolve_spec_with_policy(base, spec_, &last_dropped_)`. On error,
+  if `spec_.missing.policy == DropRenormalize && error.code() == Unavailable`, it returns
+  `Ok()` (no-trade: book left untouched) — mirroring `DispersionStrategy`'s documented
+  no-trade contract in `dispersion_strategy.cpp`. Any other error propagates.
+- New accessor `std::span<const ResolveDrop> dropped_on_last_entry() const noexcept` returns
+  `last_dropped_`, a new `DeclarativeStrategy` member. It's cleared+repopulated inside
+  `resolve_spec_with_policy` (which clears `*dropped` unconditionally at the top) every time
+  `open_cohort` runs — i.e. every entry attempt, whether it ultimately succeeds, no-trades, or
+  hard-fails.
+
+## Tests added (`atx-vol/tests/strategy_test.cpp`)
+
+Added helpers `Corpus`/`make_corpus(n_dates, tag)` (a ready-to-clock daily "SPY"-only
+manifest, generalizing the `OverlappingClips` day-loop pattern) and
+`snapshot_of(items, tag)` (single-date `write_archive` + `MarketSnapshot::load`), reusing the
+file's existing `make_surface`/`write_archive`/`make_manifest`/`fresh_dir`. Adapted the
+brief's pseudocode to the file's real signatures (e.g. `make_surface(uid, S, fwd, now_ts,
+vol_bump)`, not the brief's placeholder arg order).
+
+1. **`Strategy.CloseAtHorizonOverlappingCohorts`** — 10-day corpus, 6-day tenor strangle,
+   `roll_at_T = 2.5/365.25`, `EveryStep`. Verifies the ramp-then-plateau `n_open_lots` series
+   `{2,4,6,8,8,8,8,8,8,8}` and `pnl_settlement[i] == 0.0` for all `i` (closes are roll-closes,
+   never engine settlement).
+2. **`Strategy.MissingNameDropRenormalize`** — exercises `resolve_spec_with_policy` directly:
+   one droppable non-hedge name (`FAKE`, dropped + recorded), the `min_names` floor
+   (`Unavailable`), the hedge-leg-never-droppable guard (`Unavailable`), and the `Error`
+   policy hard fail (`NotFound`, unchanged).
+3. **`Strategy.CloseAtHorizonNoTradeOnMissingEntry`** — 4-day corpus with only `SPY`
+   archived; the hedge leg (`MISSING_INDEX`) is absent from every date under
+   `DropRenormalize`. Asserts the run completes (`Ok`) with `n_open_lots[i] == 0` throughout,
+   and that `dropped_on_last_entry()` stays empty (the hedge-fatal path never reaches the drop
+   bookkeeping — it's a distinct outcome from a "drop").
+4. **`Strategy.DeclarativeDroppedOnLastEntryAccessor`** (added beyond the brief's three,
+   to close a self-review gap — none of the brief's three given tests actually call
+   `dropped_on_last_entry()` on a non-empty result) — drives `DeclarativeStrategy::on_step`
+   directly (not via `run_backtest`) with a droppable non-hedge name and asserts the accessor
+   reflects it after a successful entry, and is empty before the first entry.
+
+## TDD Evidence
+
+**RED**: `git stash push --keep-index -- atx-vol/include/atx/vol/strategy.hpp
+atx-vol/src/strategy.cpp` (kept the new tests staged, reverted only the implementation to
+base commit `be6a7f5`), then `.\scripts\atx-build.ps1 build atx-vol-tests`:
+
+```
+strategy_test.cpp(467,52): error: no member named 'CloseAtHorizon' in 'atx::vol::LifecycleSpec::Holding'; did you mean 'RollAtHorizon'?
+strategy_test.cpp(519,8): error: no member named 'missing' in 'atx::vol::StrategySpec'
+strategy_test.cpp(521,15): error: use of undeclared identifier 'ResolveDrop'
+strategy_test.cpp(538,18): error: use of undeclared identifier 'resolve_spec_with_policy'
+strategy_test.cpp(598,21): error: no member named 'dropped_on_last_entry' in 'atx::vol::DeclarativeStrategy'
+... (15 errors total)
+```
+Failed for exactly the expected reason (every new symbol from the brief's interface, nothing
+else). `git stash pop` restored the implementation.
+
+**GREEN**: `.\scripts\atx-build.ps1 build atx-vol-tests` — clean build, 0 warnings (repo
+builds `/WX`). `.\scripts\atx-build.ps1 -Ctest -R "Strategy|Backtest|Dispersion"`:
+
+```
+100% tests passed, 0 tests failed out of 67
+```
+Includes all 5 pre-existing `Strategy.*` tests (`StrikeFromDelta`, `Structures`, `FlatVega`,
+`OverlappingClips`, `DispersionParity`) unmodified and green, plus the 4 new `Strategy.*`
+tests, plus every `Backtest.*`/`BacktestExec.*`/`BacktestReal.*`/`Dispersion.*`/
+`ListedDispersion*.*`/`SpyStrangleBacktest.*`/`SurfaceDbBacktest.*` test in the label filter.
+
+Also ran `.\scripts\atx-build.ps1 build atx-vol` (the full library target, all consuming
+TUs) — clean, 0 warnings/errors, confirming no other `atx-vol` source file broke against the
+widened `Holding` enum or the new `StrategySpec::missing` field (grepped for `switch` on
+`.holding` and positional `StrategySpec{...}`/`LifecycleSpec{...}` aggregate-inits elsewhere
+in the tree — none found, so the additive changes are safe by construction).
 
 ## Files changed
 
-- Created `atx-vol/include/atx/vol/surface_db.hpp` — header matches the
-  brief's code block verbatim (names/types/constants/static_asserts), with a
-  house-style top-of-file doc comment (on-disk shape / integrity / schema-hash
-  / thread-safety sections, mirroring `surface_archive.hpp`).
-- Created `atx-vol/src/surface_db.cpp` — writer, reader, `encode_symbol_record`
-  (internal), `decode_symbol_record` (public), `canonicalize_key`, `cmp_key`,
-  `db_schema_hash`, `header_crc`.
-- Created `atx-vol/tests/surface_db_test.cpp` — the brief's 3 tests
-  (`RoundTrip_FullConfig_EveryFieldPreserved`, `Write_RejectsDuplicateAndInvalid`,
-  `Open_RejectsCorruption`) plus the requested `RoundTrip_Empty` test (0
-  symbols / 0 partitions is a valid manifest).
-- Modified `atx-vol/CMakeLists.txt` — added `src/surface_db.cpp` to the
-  `atx-vol` library sources (next to `src/surface_archive.cpp`).
-- Modified `atx-vol/tests/CMakeLists.txt` — added `surface_db_test.cpp` to
-  `atx-vol-tests` (next to `surface_archive_test.cpp`).
+- `C:\atx\.claude\worktrees\feat-atx-vol-mag7-dispersion\atx-vol\include\atx\vol\strategy.hpp`
+  (+59/-2): `Holding::CloseAtHorizon`, `StrategySpec::missing`, `ResolveDrop`,
+  `resolve_spec_with_policy` declaration, `DeclarativeStrategy::dropped_on_last_entry()` +
+  `last_dropped_` member, `#include <span>`.
+- `C:\atx\.claude\worktrees\feat-atx-vol-mag7-dispersion\atx-vol\src\strategy.cpp`
+  (+165/-69): `lifecycle_decide` CloseAtHorizon branch; `resolve_spec`/`resolve_spec_impl`/
+  `resolve_spec_with_policy`/`expand_and_size_leg` refactor; `DeclarativeStrategy::open_cohort`
+  no-trade contract; `DeclarativeStrategy::on_step` close pass.
+- `C:\atx\.claude\worktrees\feat-atx-vol-mag7-dispersion\atx-vol\tests\strategy_test.cpp`
+  (+234): `Corpus`/`make_corpus`/`snapshot_of` helpers + 4 new `TEST(Strategy, ...)` cases.
 
-## Design notes / how the brief's requirements were satisfied
+## Self-review
 
-- **Record sizes**: hand-traced byte offsets for all three records before
-  writing any code (7-bit-alignment bookkeeping for the 16/32/64-bit knob
-  runs in `DbSymbolRecord`). All three landed exactly on 192/256/128 bytes
-  with the brief's field order and reserved-tail sizes unchanged — no
-  reordering was needed to satisfy the static_asserts, and the RED build
-  confirmed this (header compiled clean on the first attempt with no
-  static_assert failures).
-- **`SymbolFitConfig` <-> `DbSymbolRecord` mapping**: verified every field
-  against the real headers before coding (`CalibOpts` @ calib.hpp:133,
-  `ConvexFitOpts` @ dense_slice.hpp:70, `CurveConfig` @ vol_curve.hpp:287,
-  `AlOpts` @ american.hpp:46, `FitPreset` @ session.hpp:120, `CalendarRepair`
-  @ surface_parity.hpp:87). The 13 `kDbSym*` flag bits exactly cover the 13
-  boolean fields across `SymbolFitConfig`/`ConvexFitOpts`/`CalibOpts` — no
-  bit left unassigned, no boolean field left unmapped.
-- **Enum wire-range validation** (`symbol_record_enums_valid`, called once per
-  record inside `DbManifest::open`): `preset<=3` (FitPreset: Fast/Accurate/
-  Robust/Hft), `curve_kind<=4` (VolCurveKind through C8), `calendar_repair<=2`,
-  `convex_loss`/`loss_kind<=1` (CalibLossKind: Mid/Interval),
-  `essvi_rho_mode<=2`, `optimization_level<=4`, `residual_basis_kind<=5`,
-  `anchor_kind<=2` — matches the brief's Step 4 bounds exactly, cross-checked
-  against each enum's live definition.
-- **Partition key rule**: `canonicalize_key` rejects length 0 or >32,
-  non-`[A-Za-z0-9._-]` characters, and any `".."` substring (checked after
-  uppercasing, so casing doesn't evade the check); valid keys are
-  upper-cased. `find_partition` uses the shared `detail::canonicalize_symbol`
-  (uppercase only, no charset check) since a non-matching lookup key simply
-  fails the binary search — no separate validation needed on the read path.
-- **CRC discipline**: `payload_crc32c` is computed over the contiguous
-  `[symbols_offset, partitions_offset + partitions_bytes)` span (inter-section
-  alignment padding is zero-initialized by `std::vector`'s value-init and
-  never overwritten, so it's deterministic and CRC'd); `header_crc32c` is
-  computed last, over the header bytes with only that field zeroed —
-  `payload_crc32c` is already filled in by the time `header_crc` runs, so it
-  is itself covered by the header CRC (this is what makes the `bad[100]`
-  corruption test — which flips a byte inside the `payload_crc32c` field —
-  trip the *header* CRC check, not the payload check; the test's inline
-  comment says "header reserved" but the actual mechanism is "header CRC
-  covers payload_crc32c value," and either way the observable contract —
-  `ErrorCode::ParseError` — holds).
-- **Empty manifest**: `write_db_manifest({}, {})` is valid (`symbol_count=0`,
-  `partition_count=0`, `file_size=192`); `crc32c(ptr, 0)` degenerates cleanly
-  to `0` (the update loop just doesn't execute). Covered by the added
-  `RoundTrip_Empty` test.
-- **`decode_symbol_record`**: the header declares it as a plain
-  `SymbolFitConfig` return (no `Result`), so it performs no validation itself
-  — it's the *exact inverse* of `encode_symbol_record`, trusted to be called
-  only on records `DbManifest::open` already validated. The enum-range checks
-  live in a separate, non-public `symbol_record_enums_valid` helper invoked
-  once per record at `open` time, so `find_symbol` stays a cheap decode with
-  no re-validation per the brief's "validates eagerly... so find_symbol
-  stays cheap" requirement.
-
-## TDD evidence
-
-### RED
-
-Command:
-```
-& .\scripts\atx-build.ps1 build atx-vol-tests
-```
-With the header + tests + a stub `surface_db.cpp` (includes only) wired into
-both CMakeLists, the build compiled every translation unit successfully
-(confirming the header's static_asserts on record sizes were already correct)
-and failed at **link** time — the expected RED state for a compiled language:
-
-```
-lld-link: error: undefined symbol: ... atx::vol::write_db_manifest(...)
-lld-link: error: undefined symbol: ... atx::vol::DbManifest::open(...)
-lld-link: error: undefined symbol: ... atx::vol::DbManifest::find_symbol(...) const
-lld-link: error: undefined symbol: ... atx::vol::DbManifest::find_partition(...) const
-```
-All four symbols the tests call were undefined, as expected before
-implementation existed.
-
-### GREEN
-
-Command:
-```
-& .\scripts\atx-build.ps1 build atx-vol-tests
-& .\scripts\atx-build.ps1 -Ctest -R SurfaceDbManifest
-```
-Output:
-```
-[1/4] Building CXX object atx-vol\CMakeFiles\atx-vol.dir\src\surface_db.cpp.obj
-[2/4] Linking CXX static library lib\atx-vol.lib
-[3/4] Linking CXX executable bin\atx-vol-tests.exe
-
-    Start 447: SurfaceDbManifest.RoundTrip_FullConfig_EveryFieldPreserved
-1/4 Test #447: SurfaceDbManifest.RoundTrip_FullConfig_EveryFieldPreserved ...   Passed    0.16 sec
-    Start 448: SurfaceDbManifest.RoundTrip_Empty
-2/4 Test #448: SurfaceDbManifest.RoundTrip_Empty ............................   Passed    0.20 sec
-    Start 449: SurfaceDbManifest.Write_RejectsDuplicateAndInvalid
-3/4 Test #449: SurfaceDbManifest.Write_RejectsDuplicateAndInvalid ...........   Passed    0.07 sec
-    Start 450: SurfaceDbManifest.Open_RejectsCorruption
-4/4 Test #450: SurfaceDbManifest.Open_RejectsCorruption .....................   Passed    0.06 sec
-
-100% tests passed, 0 tests failed out of 4
-```
-
-(One intermediate build failure between RED and GREEN: `-Werror,-Wunused-function`
-on an unused `const` overload of the local `buf_at` helper — removed, since
-`DbManifest::open` takes its byte buffer by value/non-const and never needed
-the const overload. Re-verified GREEN after the fix.)
-
-## Test results
-
-Both required ctest filters, final run:
-
-```
-& .\scripts\atx-build.ps1 -Ctest -R "SurfaceDbManifest|SurfaceArchive"
-...
-17/20 Test #447: SurfaceDbManifest.RoundTrip_FullConfig_EveryFieldPreserved ................   Passed    0.08 sec
-18/20 Test #448: SurfaceDbManifest.RoundTrip_Empty .........................................   Passed    0.08 sec
-19/20 Test #449: SurfaceDbManifest.Write_RejectsDuplicateAndInvalid ........................   Passed    0.08 sec
-20/20 Test #450: SurfaceDbManifest.Open_RejectsCorruption ..................................   Passed    0.07 sec
-
-100% tests passed, 0 tests failed out of 20
-```
-
-- `SurfaceDbManifest`: 4/4 passed (new).
-- `SurfaceArchive`: 16/16 passed (regression, unchanged — confirms Task 1's
-  shared `detail::` helpers were reused, not duplicated, and no cross-damage).
-
-## Self-review findings
-
-- Fixed one build-time issue myself before reporting: an unused `const`
-  overload of `buf_at` tripped `-Wunused-function` under `/W4 /WX`; removed
-  it (only the non-const overload is ever called, since `DbManifest::open`
-  takes bytes by value).
-- Removed an unused `<type_traits>` include from `surface_db.cpp` (the
-  header's static_asserts already cover trivial-copyability/standard-layout;
-  the `.cpp` itself doesn't add its own).
-- Verified by hand-tracing byte offsets that no field reordering was needed
-  to hit the pinned 192/256/128 sizes — the brief's declared field order
-  already lands exactly on target for the natural (no `#pragma pack`)
-  compiler layout used here.
-- Verified the 13 `kDbSym*` bits map 1:1 onto the 13 boolean fields spanning
-  `SymbolFitConfig`, `ConvexFitOpts`, and `CalibOpts` — no bit unused, no bool
-  unmapped.
-- Confirmed the `bad[100]` corruption-test byte lands inside the
-  `payload_crc32c` field of the header (not literally "header reserved" as
-  the brief's inline test comment says), but the resulting failure mode is
-  still the header CRC check (since `payload_crc32c`'s value is itself
-  covered by `header_crc32c`), so the test's asserted `ErrorCode::ParseError`
-  holds regardless — no code change needed, just noting the discrepancy
-  between the comment and the actual field for anyone debugging this later.
-- No `TODO`/stub paths remain; `write_db_manifest`, `DbManifest::open`,
-  `find_symbol`, `find_partition`, and `decode_symbol_record` are all fully
-  implemented per the brief's Step 4 notes.
+- **Completeness against the brief's contract**: `CloseAtHorizon = 2` done (value preserved,
+  existing values untouched). `StrategySpec::missing` done. `resolve_spec_with_policy`
+  semantics: group_b-never-droppable done (tested, both in isolation and via the
+  CloseAtHorizon no-trade path), min_names floor done (tested at the boundary — 1 passes, 2
+  fails with the same survivor set), close-pass-before-entry ordering done (verified by the
+  exact `n_open_lots` ramp/plateau sequence, which only works if the close erase happens
+  before the day's open), no-trade contract done (tested end-to-end through `run_backtest`,
+  not just the free function), `dropped_on_last_entry` accessor done (tested both
+  empty-before-first-entry and the positive populated case, which the brief's own three tests
+  didn't cover — I added a fourth test for this).
+- **Bit-identical existing behavior**: `resolve_spec` forces `MissingNameSpec{Error, 2}`
+  through the shared impl regardless of `spec.missing`, so a spec that happens to set
+  `.missing` and gets passed to the *old* `resolve_spec` entry point still hard-fails exactly
+  as before — the field is genuinely inert unless the caller opts into
+  `resolve_spec_with_policy`. All 5 pre-existing `Strategy.*` tests pass unmodified.
+- **YAGNI**: Did not restrict droppable-error-codes to `NotFound`/`Unavailable` the way
+  `dispersion.cpp`'s `DroppedName` machinery does (which needs the narrower set to populate a
+  `DropReason` enum) — the brief's contract for `ResolveDrop`/`resolve_spec_with_policy` has
+  no reason-code field and literally says "a leg whose expansion or sizing fails is DROPPED",
+  so I implemented that literally rather than importing an unrequested distinction.
+- **Numerical detail worth flagging**: the close-pass residual test computes
+  `lot.expiry_ts_ns - base_ts` as an `int64` difference *before* casting to `double`
+  (matching the brief's literal formula), which is more precise than `lifecycle_decide`'s
+  pre-existing `RollAtHorizon` branch (which casts each raw epoch-ns timestamp to `double`
+  independently before subtracting — losing sub-microsecond precision on raw ~1.7e18 values,
+  though immaterial at day-scale comparisons). I did not "fix" the pre-existing
+  `RollAtHorizon` arithmetic since the brief scopes changes to `CloseAtHorizon` and existing
+  behavior must stay byte-identical.
 
 ## Concerns
 
-None blocking. Two documentation-level notes for Task 3+ implementers:
-
-1. The public `write_db_manifest` doc comment (verbatim from the brief) says
-   "InvalidArgument (empty/**oversized** symbol...)" but the implementation —
-   matching the "symbols canonicalized via detail::canonicalize_symbol
-   (identical to archive keys)" requirement — *truncates* an oversized symbol
-   to 32 chars rather than rejecting it (identical to
-   `write_surface_archive`'s behavior). Only an empty *canonical* symbol is
-   rejected. This mirrors the archive exactly and no test in the brief
-   exercises an oversized-but-truncatable symbol, so this was a deliberate
-   choice to match "identical to archive keys" over the doc comment's literal
-   wording.
-2. `DbPartitionRecord::flags` exists on the wire (per the brief's exact
-   layout) but no `kDbPartition*` bit constants are defined yet and the field
-   is always written as 0 / never validated on read — consistent with the
-   brief (only `kDbSym*` bits are specified for Task 2); a future task should
-   define partition flag bits if/when needed.
-
-## Review-fix addendum (post-review, same day)
-
-Review verdict: Approved except one Important finding (no executable coverage
-of the enum wire-range rejection path) + one Minor (doc-comment wording).
-Both fixed:
-
-1. **Important — enum-rejection coverage.** Added
-   `SurfaceDbManifest.Open_RejectsOutOfRangeEnum` to
-   `atx-vol/tests/surface_db_test.cpp`:
-   - Writes a valid single-symbol manifest via `write_db_manifest`.
-   - A `restamp_crcs` helper recomputes `payload_crc32c` over
-     `[symbols_offset, end)` with `atx::vol::detail::crc32c` and then
-     `header_crc32c` (field zeroed first, computed last), writing both via
-     `offsetof(DbManifestHeader, ...)` — no magic offsets into the header.
-   - Sanity leg: restamp with NO mutation still opens (proves the helper
-     reproduces the writer's CRCs, so the rejections are the enum check, not
-     a broken restamp).
-   - Loops two enum bytes — `preset` (symbols_offset+36: after symbol[32] +
-     symbol_len u16 + flags u16) and `curve_kind` (+37) — sets each to 0xFF,
-     restamps, and asserts `DbManifest::open` returns
-     `ErrorCode::ParseError`. This executes `symbol_record_enums_valid` and
-     its ParseError branch (the error message naming the symbol).
-
-2. **Minor — doc comment.** `write_db_manifest` comment in
-   `atx-vol/include/atx/vol/surface_db.hpp` reworded: oversized symbols are
-   truncated to `kSurfaceDbKeyMax` (matching the archive's canonical keys),
-   not rejected; InvalidArgument is "(empty symbol, bad partition key)".
-
-Verification:
-```
-& .\scripts\atx-build.ps1 build atx-vol-tests    # clean build
-& .\scripts\atx-build.ps1 -Ctest -R SurfaceDbManifest
-1/5 ... RoundTrip_FullConfig_EveryFieldPreserved   Passed
-2/5 ... RoundTrip_Empty                            Passed
-3/5 ... Write_RejectsDuplicateAndInvalid           Passed
-4/5 ... Open_RejectsCorruption                     Passed
-5/5 ... Open_RejectsOutOfRangeEnum                 Passed
-100% tests passed, 0 tests failed out of 5
-
-& .\scripts\atx-build.ps1 -Ctest -R SurfaceArchive
-100% tests passed, 0 tests failed out of 16
-```
+None blocking. One minor note for whoever builds Task 3's spec-builder: `resolve_spec_impl`'s
+`group_a_survivors` count is at **LegSpec granularity** (one count per authored leg/name), not
+per expanded option — a dropped Strangle leg costs one survivor slot, not two, which matches
+the `MissingNameDropRenormalize` test's `min_names` semantics (basket *names*, not option
+count) but is worth knowing when composing specs with mixed `Single`/`Strangle` legs in the
+same constraint group.

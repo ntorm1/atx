@@ -83,10 +83,15 @@ add_executable(atx-vol-tests
     listed_dispersion_strategy_test.cpp
     backtest_test.cpp
     strategy_test.cpp
+    dispersion_strangle_test.cpp
     backtest_exec_test.cpp
     tearsheet_test.cpp
+    run_report_test.cpp
     backtest_real_test.cpp
     spy_strangle_backtest_test.cpp
+    surface_db_backtest_test.cpp
+    surface_db_populate_test.cpp
+    mag7_dispersion_backtest_test.cpp
 )
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).
@@ -163,4 +168,9 @@ if(Python3_Interpreter_FOUND)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/build_spy_top50_universe_test.py
     )
     set_tests_properties(atx-vol-build-spy-top50-universe PROPERTIES LABELS atx_vol)
+    add_test(
+        NAME Mag7DispersionReport
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/mag7_dispersion_report_test.py
+    )
+    set_tests_properties(Mag7DispersionReport PROPERTIES LABELS atx_vol)
 endif()
