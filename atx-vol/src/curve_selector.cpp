@@ -77,6 +77,9 @@ struct Accum {
   case VolCurveKind::Essvi:
   case VolCurveKind::LinearVariance:
     return 0u;  // by-construction arb-free (LinearVariance g-check out of scope)
+  case VolCurveKind::SplineVol:
+    return 0u;  // not yet a selector candidate; carried n_butterfly_viol wired
+                // up when candidacy lands (matches prior fall-through)
   }
   return 0u;
 }
