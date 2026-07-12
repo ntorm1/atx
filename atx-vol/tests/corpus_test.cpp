@@ -1502,6 +1502,11 @@ TEST(CorpusBuildSession, SyntheticThirteenNameThreeDateBreadthScoreboard) {
   }
   cfg.admission.by_profile[static_cast<std::size_t>(ProfileKind::MegaCapEvent)].min_quotes = 20u;
   cfg.build.fit_template.policy.sparse_validation_floor = 20u;
+  // This scoreboard exercises the risk-contract surface-admission fallback (the
+  // event board's C8 primary is rejected and republished as eSSVI). Pin the
+  // strict risk contract explicitly; the default fit template now serves marks,
+  // which would admit the C8 primary directly and never fall back.
+  cfg.build.fit_template.admission = risk_admission_policy();
   cfg.build.write_opts.created_ts_ns = 1;
   auto session = CorpusBuildSession::create(out.string(), cfg);
   ASSERT_TRUE(session.has_value()) << session.error().to_string();

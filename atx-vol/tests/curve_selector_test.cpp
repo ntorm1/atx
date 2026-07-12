@@ -256,7 +256,11 @@ TEST(FitAdmission, RejectsPartialAndUnhealthySurfaceWithStablePrimaryReason) {
   evidence.finite_iv_domain = true;
   evidence.european_price_bounds = true;
 
-  const auto decision = atx::vol::evaluate_surface_admission(evidence, FitAdmissionPolicy{});
+  // The strict risk contract is what rejects a partial/unhealthy surface on these
+  // structural grounds; the default now serves marks and would admit this
+  // evidence, so request the risk policy explicitly.
+  const auto decision =
+      atx::vol::evaluate_surface_admission(evidence, atx::vol::risk_admission_policy());
   EXPECT_FALSE(decision.admitted);
   EXPECT_EQ(decision.primary_reason, SurfaceAdmissionReason::InsufficientExpiryCoverage);
   EXPECT_TRUE(atx::vol::has_admission_failure(decision,

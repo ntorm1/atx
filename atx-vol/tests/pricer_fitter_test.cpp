@@ -284,7 +284,12 @@ TEST_F(PricerFitterTest, RefitExplicitlyRejectsConfiguredCalendarRepairModes) {
 }
 
 TEST_F(PricerFitterTest, CrossingMiddleExpiryRefitIsRejectedAndPreservesPublication) {
-  PricerFitter fitter{essvi_config()};
+  // A calendar-crossing refit is rejected by the risk shape invariants, so this
+  // test requests the strict risk contract explicitly (the default now serves
+  // marks, which do not gate on calendar structure).
+  PricerConfig config = essvi_config();
+  config.admission = atx::vol::risk_admission_policy();
+  PricerFitter fitter{config};
   ASSERT_TRUE(fitter.fit(*chain_).has_value());
   const FittedSurface *const published = fitter.surface();
   const atx::vol::SessionDiagnostics diagnostics = published->diagnostics();
@@ -449,6 +454,7 @@ TEST_F(PricerFitterTest, SessionBoundaryRejectsUnsupportedPersistedCalibrationPo
 TEST_F(PricerFitterTest, GenericParityOptOutCannotPublishRiskButCanPublishMark) {
   PricerConfig risk_config;
   risk_config.preset = FitPreset::Hft;
+  risk_config.admission = atx::vol::risk_admission_policy();
   PricerFitter risk_fitter{risk_config};
   const auto risk_status = risk_fitter.fit(*chain_);
   ASSERT_FALSE(risk_status.has_value());
@@ -593,7 +599,13 @@ TEST(PricerFitterPolicy, RiskAutoFitFallsBackWhenPrimaryFailsIndependentOracle) 
   auto chain = OptionChain::from_frame(panel->frame, spec.r, spec.spot);
   ASSERT_TRUE(chain.has_value()) << chain.error().message();
 
-  PricerFitter fitter{PricerConfig{}};
+  // The primary LinearVariance route fails the risk strike-convexity invariant on
+  // this board; that rejection is what drives the fallback ladder. Request the
+  // strict risk contract explicitly (the default serves marks, which admit the
+  // non-convex primary directly and would never fall back).
+  PricerConfig config;
+  config.admission = atx::vol::risk_admission_policy();
+  PricerFitter fitter{config};
   ASSERT_TRUE(fitter.fit(*chain).has_value());
   ASSERT_TRUE(fitter.decision().has_value());
   EXPECT_TRUE(fitter.decision()->used_fallback);
@@ -619,7 +631,13 @@ TEST(PricerFitterPolicy, AdmissionFailureRetainsPublishedSurfaceAndDecisionTrans
   auto good_chain = OptionChain::from_frame(good_panel->frame, good_spec.r, good_spec.spot);
   ASSERT_TRUE(good_chain.has_value()) << good_chain.error().message();
 
+  // Publishing the risk-clean fallback (eSSVI) rather than the non-convex primary
+  // is a risk-contract behavior, so start from the strict risk policy and keep the
+  // two overrides this test exercises (min fitted expiries and the calendar-arb
+  // relaxation). Under the default mark contract the primary would publish
+  // directly and its evidence would not be invariant-clean.
   PricerConfig config;
+  config.admission = atx::vol::risk_admission_policy();
   config.admission.min_fitted_expiries = 2u;
   config.admission.require_calendar_arb_free = false;
   PricerFitter fitter{config};

@@ -8,6 +8,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string_view>
 
@@ -103,20 +104,48 @@ enum class SurfaceAdmissionReason : std::uint8_t {
   DiagnosticsUnavailable = 19,
 };
 
+// Default is the Mark-serving contract (WP12 staging): it admits the healthy
+// real-world surfaces a mark consumer serves -- dense ETF/index and event boards
+// whose LinearVariance route carries genuine (non-arb-free) calendar structure,
+// and breadth boards that drop thin expiries -- while STILL rejecting garbage.
+// The numerical-sanity gates are consumer-independent and stay on: finite IV
+// domain, European price bounds, impossible/self-contradictory evidence, duplicate
+// maturities, and non-finite diagnostics. A mark surface serves whatever slices
+// fit, so the structural gates (full expiry coverage, front-expiry present, no
+// consecutive gaps, calendar no-arbitrage, and the strike/calendar shape
+// invariants) are the mark-vs-risk difference and are relaxed here. Strict risk
+// admission -- the pre-WP12 contract -- is available verbatim via
+// `risk_admission_policy()` and must be requested explicitly.
 struct FitAdmissionPolicy {
   bool enabled{true};
-  SurfaceConsumer consumer{SurfaceConsumer::Risk};
+  SurfaceConsumer consumer{SurfaceConsumer::Mark};
   std::size_t min_fitted_expiries{1u};
-  double min_expiry_coverage{1.0};
+  double min_expiry_coverage{0.0};
   double min_quote_coverage{0.0};
-  bool require_front_expiry{true};
-  std::size_t max_consecutive_expiry_gaps{0u};
-  bool require_calendar_arb_free{true};
+  bool require_front_expiry{false};
+  std::size_t max_consecutive_expiry_gaps{std::numeric_limits<std::size_t>::max()};
+  bool require_calendar_arb_free{false};
   double min_worst_frac_within_bidask{0.0};
   bool require_short_tenor{false};
   bool require_medium_tenor{false};
   bool require_long_tenor{false};
 };
+
+// The strict risk-serving contract: every attempted expiry fitted, the front
+// expiry present, no consecutive expiry gaps, calendar no-arbitrage, and the full
+// Risk-consumer strike/calendar shape invariants (via consumer=Risk in
+// evaluate_surface_admission). This is the pre-WP12 default, kept intact for
+// callers that need a risk-grade surface; opt in explicitly by assigning it to
+// `PricerConfig::admission`.
+[[nodiscard]] constexpr FitAdmissionPolicy risk_admission_policy() noexcept {
+  FitAdmissionPolicy policy;
+  policy.consumer = SurfaceConsumer::Risk;
+  policy.min_expiry_coverage = 1.0;
+  policy.require_front_expiry = true;
+  policy.max_consecutive_expiry_gaps = 0u;
+  policy.require_calendar_arb_free = true;
+  return policy;
+}
 
 struct SurfaceAdmissionEvidence {
   std::size_t attempted_expiries{0u};

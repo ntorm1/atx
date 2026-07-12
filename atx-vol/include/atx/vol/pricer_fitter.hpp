@@ -123,9 +123,12 @@ struct PricerConfig {
   // Unified profile/session/event auto-selection policy and per-snapshot hints.
   FitPolicyConfig policy{};
   FitContext context{};
-  // Family-neutral publication gate. Default is an exact risk-surface
-  // contract: complete expiry coverage, front expiry present, and no calendar
-  // arbitrage. Weaker mark-only behavior must be requested explicitly.
+  // Family-neutral publication gate. Default is the Mark-serving contract: it
+  // admits the healthy real-world surfaces a mark consumer serves (relaxing full
+  // expiry coverage, front-expiry, consecutive-gap, calendar-arb, and the
+  // strike/calendar shape invariants) while still rejecting garbage via the
+  // consumer-independent numerical-sanity gates. Strict risk admission is the
+  // explicit opt-in -- assign `risk_admission_policy()` -- per WP12 staging.
   FitAdmissionPolicy admission{};
   // Optional overrides for the preset's cold-fit diagnostic/quality-speed knobs.
   // nullopt => use the preset default. false for `score_parity` skips the second
