@@ -1,8 +1,10 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -213,6 +215,48 @@ TEST_F(PricerFitterTest, QuoteUpdateChangesModelIvOnlyAfterAdmittedExpiryRefit) 
   EXPECT_NE(fitter.surface()->iv(spot_, maturity), before);
   ASSERT_TRUE(fitter.published_provenance().has_value());
   EXPECT_EQ(fitter.published_provenance()->board_revision, chain_->quote_revision());
+}
+
+// B-I1/B-M1: after an admitted eSSVI expiry refit, the surface's parity_state
+// must be RECOMPUTED by refresh_refit_diagnostics, not carried stale from the
+// cold build across clone_for_refit. A healthy refit re-scores its target slice
+// while every other slice stays scored, so the recomputed state is Valid and
+// stays consistent with the reports/aggregates it was derived from; admission
+// (which requires Valid for the default Quote consumer) then succeeds. The
+// Failed/Disabled branches are defensive: a successful apply_prepared_essvi_refit
+// always re-scores its slice (chain_parity errors on an unscored slice), so
+// scored == n_slices for any healthy eSSVI refit.
+TEST_F(PricerFitterTest, RefitRecomputesParityStateConsistentWithReports) {
+  SynthPanelSpec changed_spec = make_spy_synthetic_spec();
+  changed_spec.expiries.back().truth.sigma0 *= 1.01;
+  auto changed_chain = make_chain_from_spec(changed_spec);
+  ASSERT_TRUE(changed_chain.has_value()) << changed_chain.error().to_string();
+
+  PricerFitter fitter{essvi_config()};
+  ASSERT_TRUE(fitter.fit(*chain_).has_value());
+  ASSERT_EQ(fitter.surface()->diagnostics().parity_state, atx::vol::ParityDiagnosticState::Valid);
+
+  const atx::vol::ExpiryId target =
+      static_cast<atx::vol::ExpiryId>(chain_->underlying().chains.size() - 1u);
+  replace_expiry_quotes(*chain_, *changed_chain, target);
+  const auto refitted = fitter.refit_expiry(*chain_, target);
+  ASSERT_TRUE(refitted.has_value()) << refitted.error().to_string();
+  ASSERT_TRUE(refitted->admission.admitted);
+
+  // Recomputed to Valid, consistent with the reports it was derived from: every
+  // slice scored (n > 0) and worst_frac is the min over exactly those reports.
+  EXPECT_EQ(fitter.surface()->diagnostics().parity_state, atx::vol::ParityDiagnosticState::Valid);
+  double worst = std::numeric_limits<double>::infinity();
+  std::size_t scored = 0;
+  for (const atx::vol::ParityReport& p : fitter.surface()->session().parity()) {
+    EXPECT_GT(p.n, 0u);
+    if (p.n > 0u) {
+      worst = std::min(worst, p.frac_fv_within_bidask);
+      ++scored;
+    }
+  }
+  EXPECT_EQ(scored, fitter.surface()->diagnostics().n_slices);
+  EXPECT_DOUBLE_EQ(fitter.surface()->diagnostics().worst_frac_within_bidask, worst);
 }
 
 TEST_F(PricerFitterTest, IncrementalEssviAgreesWithColdFitOnUpdatedBoard) {

@@ -806,6 +806,20 @@ Status VolaSession::refresh_refit_diagnostics() {
     sum_rmse += report.rmse_mid_vol;
     ++scored;
   }
+  // Recompute parity_state from THIS refit's actual scoring; never inherit the
+  // cold build's value (B-I1). The legacy eSSVI refit always re-scores its
+  // target slice, so a healthy refit resolves Valid; a partial score resolves
+  // Failed, and a fully-unscored refit resolves Failed too (B-M1) so it cannot
+  // admit via "0 looks fine". Disabled is honored only for a session that opted
+  // out of scoring AND produced no scored slice — matching the cold eSSVI path,
+  // which reports Valid/Failed (never Disabled) whenever any slice scored.
+  if (scored == diag_.n_slices && scored > 0u) {
+    diag_.parity_state = ParityDiagnosticState::Valid;
+  } else if (scored == 0u && !in_.score_parity) {
+    diag_.parity_state = ParityDiagnosticState::Disabled;
+  } else {
+    diag_.parity_state = ParityDiagnosticState::Failed;
+  }
   if (scored == 0u) {
     diag_.worst_frac_within_bidask = 0.0;
     diag_.mean_frac_within_bidask = 0.0;

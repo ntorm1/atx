@@ -1,6 +1,7 @@
 #include "atx/vol/pricer_fitter.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <limits>
 #include <span>
@@ -316,6 +317,13 @@ duplicate_maturity_report(const Underlying &under, const CurveConfig &curve) {
       continue;
     }
     ++attempt.evidence.attempted_expiries;
+    // UNIT ASSUMPTION (paired with the fitted_quotes += below): attempted is
+    // counted in STRIKES, fitted in fit OBSERVATIONS. quote_coverage and the
+    // ImpossibleEvidence (fitted <= attempted) check in evaluate_surface_admission
+    // are only meaningful because the OTM-one-per-strike preparation yields at
+    // most one observation per strike, so observations <= strikes. A future
+    // family that keeps BOTH legs per strike would break this equivalence; the
+    // debug assert before finalization guards the invariant loudly.
     attempt.evidence.attempted_quotes += chain.n_strikes();
     const auto context = std::find_if(fitted.begin(), fitted.end(), [&](const SliceContext &slice) {
       const std::size_t index = static_cast<std::size_t>(&slice - fitted.data());
@@ -335,10 +343,18 @@ duplicate_maturity_report(const Underlying &under, const CurveConfig &curve) {
     const std::size_t context_index = static_cast<std::size_t>(context - fitted.begin());
     consumed[context_index] = true;
     ++attempt.evidence.fitted_expiries;
+    // Counted in fit OBSERVATIONS (see the attempted_quotes UNIT ASSUMPTION
+    // above): <= attempted_quotes only under OTM-one-per-strike preparation.
     attempt.evidence.fitted_quotes += context->n_used;
     attempt.expiries.push_back(
         ExpiryBuildReport{i, chain.T, ExpiryBuildOutcome::Fitted, context->n_used});
   }
+  // Fail loud in debug if the strike/observation unit assumption above is ever
+  // violated: fitted (observations) must not exceed attempted (strikes). In
+  // release this is the ImpossibleEvidence admission check's job (fail safe).
+  assert(attempt.evidence.fitted_quotes <= attempt.evidence.attempted_quotes &&
+         "completed_attempt_report: fitted observations exceeded attempted strikes -- the "
+         "OTM-one-per-strike unit assumption no longer holds");
   evaluate_independent_invariants(session, attempt.evidence);
   attempt.admission = evaluate_surface_admission(attempt.evidence, policy);
   return attempt;
