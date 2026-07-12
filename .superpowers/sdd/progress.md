@@ -504,7 +504,7 @@ Process notes:
 - Task 5: populate_surface_db + mag7_surfdb_populate example — COMPLETE
 - Task 6: mag7_dispersion_backtest example + gate test — COMPLETE
 - Task 7: tools/mag7_dispersion_report.py + python test — COMPLETE
-- Task 8: real-data pull/populate/run/report (operator-gated) — PENDING
+- Task 8: real-data pull/populate/run/report (operator-gated) — COMPLETE (5-day fit scope per operator; full YTD hive cached)
 - Final whole-branch review — COMPLETE ("Ready to merge: Yes"; polish wave 892f797 re-verified "Yes")
 
 ## Minor findings roll-up (MAG7 dispersion, for final review triage)
@@ -594,3 +594,21 @@ Task 8 (real data) IN PROGRESS: cost gate logged — MetadataGetCost estimate $0
   failed on holiday date (2026-01-19 → 422 symbology; calendar-day iteration); fixed via --dates-file with
   129 real sessions (SPY hive dates + 07-02..07-10). 16-worker run hit 504 gateway timeouts after 118
   pulls; resumed with 4-worker retry loop (idempotent).
+
+Task 8: COMPLETE (operator-directed 5-day fit scope).
+  PULL: 1032/1032 files (8 symbols x 129 sessions 2026-01-02..2026-07-10) cached at
+  C:/atx/data/mag7_ytd/opra; TOTAL SPEND $0.00 (account OPRA.PILLAR unmetered; est logged $0, cap $10).
+  Databento gateway 504s required ~10 idempotent retry attempts at 4 workers.
+  FIT: full-YTD populate (data/surfdb/mag7_ytd) killed by operator mid-run ("taking a lot longer than
+  expected. Kill it and run a smaller 5 day fit backfill"); 5-day backfill run instead:
+  data/surfdb/mag7_5d, sessions 2026-07-06..2026-07-10, 40/40 boards fit OK (populate_stats: all 8
+  symbols success_rate 1), 5 partitions, exit 0. Full-YTD populate is RESUMABLE later:
+  mag7_surfdb_populate --opra-root C:/atx/data/mag7_ytd/opra --db C:/atx/data/surfdb/mag7_ytd
+  --symbols AAPL,...,SPY --start 2026-01-02 --end 2026-07-10 (skip_existing resumes; partial db kept).
+  RUN: mag7_dispersion_backtest --db mag7_5d -> 5 steps, 365.5 ms (13.7 steps/s), peak 80 lots,
+  all 5 output files written (incl. populate_stats copy).
+  REPORT: tools/mag7_dispersion_report.py -> C:/atx/atx-vol/tools/mag7_dispersion_report.html (85.3K,
+  2 SVGs, 3 required tables, self-contained verified: zero http/https/src=; defaults in header).
+  Artifact untracked per spy_strangle_real_tearsheet.png precedent.
+  NOTE: 5-day window < 10-DTE close horizon, so no cohort closes occur in this run (entries + marks only);
+  full-YTD run after resumed populate exercises closes on real data.
