@@ -21,9 +21,10 @@ preset, in the worktree `C:\atx\.claude\worktrees\build-worktree-speed`.
 | Scenario | Wall time | Cache behavior |
 |---|---|---|
 | Cold populate build of `atx-vol-tests` (empty ccache, post-clean) | 698 s first pass / 230 s clean-rebuild pass | 98.85% of calls cacheable (was ~59%); only 3 "preprocessing failed" outliers |
-| **Clean → full rebuild, warm cache (the fresh-worktree equivalent for lib TUs)** | **25 s** | **258/258 hits (100.0%)** |
+| **Clean → full rebuild, warm cache (same worktree)** | **25 s** | **258/258 hits (100.0%)** |
 | Configure, shared vcpkg dir already populated | vcpkg step "already installed" in ~15 s | one shared 1.1 GB payload instead of per-worktree copies |
 | `ctest -L atx_vol_fast` under PRE_TEST discovery | 58.6 s | 973/973 pass; no build-time enumeration runs |
+| **ACCEPTANCE GATE: brand-new worktree end-to-end** (`new-worktree.ps1 -NoConfigure` incl. submodule init 5 s → `atx-build.ps1 configure` 26 s → `build atx-vol-tests` 67 s) | **98 s total** | 152/258 hits (every atx-core/atx-vol-lib/dep TU); 106 misses = this worktree's PCH + PCH-consumer test TUs, compiled once at PCH speed and cached for the worktree's lifetime |
 
 Cross-worktree object identity was proven directly during diagnosis: the same TU
 compiled in two different worktree roots produces **byte-identical objects** and the
