@@ -9,6 +9,7 @@
 #include "atx/core/error.hpp"
 #include "atx/core/linalg/linalg.hpp"  // MatX, VecX
 #include "atx/core/linalg/solve.hpp"   // solve_spd
+#include "atx/vol/arb.hpp"             // CalendarPairProjection (calendar cone)
 #include "atx/vol/vol_curve.hpp"       // IVolCurve, SplineVolCurve (full class)
 
 namespace atx::vol {
@@ -237,6 +238,176 @@ double SplineVolCurve::w(double k_log) const noexcept {
   }
   const double sigma = p_.atm_vol * m;
   return sigma * sigma * T_;
+}
+
+// ── SplineVolCurve::project_calendar ────────────────────────────────────────
+//
+// Per-knot, ATM-preserving calendar lift onto the cone above `w_prev` — the
+// SplineVol analogue of arb_project_calendar_{svi,c8}_pair (arb.cpp). See the
+// method contract in vol_curve.hpp. Each pass only RAISES a knot multiple, so
+// served total variance is non-decreasing across passes: the projection is a
+// bounded monotone map onto the calendar cone and therefore terminates (same
+// argument as the C8/SVI `v`/`a` shift).
+Result<CalendarPairProjection>
+SplineVolCurve::project_calendar(const std::function<double(double)> &w_prev,
+                                 double k_min, double k_max,
+                                 std::uint32_t n_grid) {
+  // Mirror validate_pair_projection_inputs (arb.cpp), plus the SplineVol-specific
+  // degeneracy guards so we never divide by a non-positive ATM vol or T.
+  if (!w_prev || n_grid == 0 || !(k_max > k_min)) {
+    return Err(ErrorCode::InvalidArgument,
+               "spline calendar pair projection: require previous curve and valid grid");
+  }
+  if (!(p_.atm_vol > 0.0) || !std::isfinite(p_.atm_vol) || !(T_ > 0.0) ||
+      p_.z.empty() || p_.z.size() != p_.mult.size()) {
+    return Err(ErrorCode::Unavailable,
+               "spline calendar pair projection: degenerate slice");
+  }
+
+  // Matches arb.cpp's file-local kCalendarPairTol (1e-7) used by every sibling
+  // pair projection. Replicated (it is not exported) so the spline agrees on the
+  // same convergence bar.
+  constexpr double kCalendarPairTol = 1.0e-7;
+  constexpr std::uint32_t kMaxPasses = 8;
+  constexpr double kLiftEps = 1.0e-9;  // strict-clearance inflation (siblings' +1e-9)
+
+  const double atm = p_.atm_vol;
+  const double sqrtT = std::sqrt(T_);
+  const double axis = atm * sqrtT;  // standardized moneyness z = k / axis
+  const std::size_t K = p_.z.size();
+  const double z_front = p_.z.front();
+  const double z_back = p_.z.back();
+  const double dk = (k_max - k_min) / static_cast<double>(n_grid);
+
+  // Served total variance at log-moneyness k under the CURRENT knot multiples
+  // and cached second derivatives (recomputed each pass by the rebuild below).
+  const auto served_w = [&](double k) noexcept -> double {
+    const double z = k / axis;
+    const double m = spline_eval(p_.z, p_.mult, m2nd_, z);
+    const double sigma = atm * m;
+    return sigma * sigma * T_;
+  };
+
+  // Shared-grid gap of w_prev over the served curve (shared_grid_gap semantics):
+  // {max positive deficit, all-samples-finite}.
+  const auto grid_gap = [&]() noexcept -> std::pair<double, bool> {
+    double max_deficit = 0.0;
+    bool finite = true;
+    for (std::uint32_t gi = 0; gi <= n_grid; ++gi) {
+      const double k = k_min + dk * static_cast<double>(gi);
+      const double wp = w_prev(k);
+      const double wc = served_w(k);
+      if (!std::isfinite(wp) || !std::isfinite(wc) || !(wc > 0.0)) {
+        finite = false;
+        continue;
+      }
+      max_deficit = std::max(max_deficit, wp - wc);
+    }
+    return {max_deficit, finite};
+  };
+
+  // Knot multiple that makes served w exactly reach a target total variance:
+  // sigma = sqrt(w_target / T), mult = sigma / atm, inflated by kLiftEps so the
+  // deficit clears strictly (guards FP round-off).
+  const auto mult_for = [&](double w_target) noexcept -> double {
+    const double sigma = std::sqrt(w_target / T_);
+    return (sigma / atm) * (1.0 + kLiftEps);
+  };
+
+  CalendarPairProjection out;
+  const std::pair<double, bool> before = grid_gap();
+  if (!before.second) {
+    return Err(ErrorCode::Unavailable,
+               "spline calendar pair projection: non-finite candidate");
+  }
+  out.max_deficit_before = before.first;
+
+  for (std::uint32_t pass = 0; pass < kMaxPasses; ++pass) {
+    const std::pair<double, bool> gap = grid_gap();
+    if (gap.second && gap.first <= kCalendarPairTol) {
+      return Ok(out);
+    }
+    if (!gap.second || !(gap.first > 0.0) || !std::isfinite(gap.first)) {
+      return Err(ErrorCode::Unavailable,
+                 "spline calendar pair projection: invalid level shift");
+    }
+
+    // (2) Interior active knots. The spline interpolates each knot EXACTLY at
+    // its own z, so served w at k_j == (atm * mult[j])^2 * T; lifting mult[j] to
+    // sqrt(w_prev(k_j)/T)/atm clears the deficit at k_j precisely. Knots outside
+    // [k_min, k_max] (typically the far knots) are left to the wing sweep. A
+    // knot with no deficit is untouched — in particular the z = 0 (ATM) knot,
+    // which pins served ATM vol.
+    for (std::size_t j = 0; j < K; ++j) {
+      const double k_j = p_.z[j] * axis;
+      if (!(k_j >= k_min) || !(k_j <= k_max)) {
+        continue;
+      }
+      const double wp_j = w_prev(k_j);
+      if (!std::isfinite(wp_j)) {
+        continue;
+      }
+      const double wc_j = served_w(k_j);
+      if (wp_j - wc_j > kCalendarPairTol) {
+        const double target = mult_for(wp_j);
+        if (std::isfinite(target) && target > 0.0) {
+          p_.mult[j] = std::max(p_.mult[j], target);
+        }
+      }
+    }
+
+    // (3) Flat-wing grid points. A grid point with z <= z.front() (resp.
+    // z >= z.back()) is clamped to the outer knot and served at the outer knot
+    // value, so its deficit is cleared by lifting mult.front() (resp.
+    // mult.back()) to dominate the WORST w_prev on that side of the wing.
+    double worst_left = -std::numeric_limits<double>::infinity();
+    double worst_right = -std::numeric_limits<double>::infinity();
+    for (std::uint32_t gi = 0; gi <= n_grid; ++gi) {
+      const double k = k_min + dk * static_cast<double>(gi);
+      const double z = k / axis;
+      const double wp = w_prev(k);
+      if (!std::isfinite(wp) || !(wp > 0.0)) {
+        continue;
+      }
+      if (z <= z_front) {
+        worst_left = std::max(worst_left, wp);
+      } else if (z >= z_back) {
+        worst_right = std::max(worst_right, wp);
+      }
+    }
+    if (std::isfinite(worst_left)) {
+      const double sig_front = atm * p_.mult.front();
+      const double wc_left = sig_front * sig_front * T_;
+      if (worst_left - wc_left > kCalendarPairTol) {
+        const double target = mult_for(worst_left);
+        if (std::isfinite(target) && target > 0.0) {
+          p_.mult.front() = std::max(p_.mult.front(), target);
+        }
+      }
+    }
+    if (std::isfinite(worst_right)) {
+      const double sig_back = atm * p_.mult.back();
+      const double wc_right = sig_back * sig_back * T_;
+      if (worst_right - wc_right > kCalendarPairTol) {
+        const double target = mult_for(worst_right);
+        if (std::isfinite(target) && target > 0.0) {
+          p_.mult.back() = std::max(p_.mult.back(), target);
+        }
+      }
+    }
+
+    // (4) Rebuild the cached natural-spline second derivatives so serving
+    // reflects the lifted knots on the next gap evaluation.
+    m2nd_ = natural_spline_m(p_.z, p_.mult);
+    ++out.passes;
+  }
+
+  const std::pair<double, bool> final_gap = grid_gap();
+  if (!final_gap.second || final_gap.first > kCalendarPairTol) {
+    return Err(ErrorCode::Unavailable,
+               "spline calendar pair projection did not converge");
+  }
+  return Ok(out);
 }
 
 // ── fit_spline_vol_slice ─────────────────────────────────────────────────────

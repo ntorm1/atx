@@ -59,6 +59,12 @@
 
 namespace atx::vol {
 
+// Calendar pair-projection diagnostics, defined in arb.hpp. Forward-declared
+// here (not included: arb.hpp already includes THIS header) so SplineVolCurve
+// can return it from `project_calendar` below — the type is only completed at
+// the projection's definition site (spline_curve.cpp includes arb.hpp).
+struct CalendarPairProjection;
+
 // ── Curve family tag ────────────────────────────────────────────────────────
 //
 // The selectable curve types. ConvexDense is the penny-dense arb-free fit (SPY);
@@ -253,6 +259,23 @@ public:
 
   [[nodiscard]] const SplineVolParams &params() const noexcept { return p_; }
 
+  // Project this served slice onto the calendar cone above a previously admitted
+  // total-variance curve `w_prev`, the SplineVol analogue of the
+  // Essvi/Svi/C8 `arb_project_calendar_*_pair` calls in fit_slice_curve. It is a
+  // per-knot, ATM-PRESERVING monotone lift: each pass only RAISES active-knot
+  // multiples to clear the shared-grid deficit (never lowers), so served total
+  // variance is non-decreasing across passes and the map onto the cone is a
+  // bounded monotone one (it terminates). A knot with no deficit is untouched —
+  // in particular the z = 0 (ATM) knot, whose value the spline serves exactly,
+  // so served ATM vol is unchanged unless there is a genuine ATM crossing.
+  // Mutates the knot multiples and rebuilds the cached second derivatives in
+  // place. Returns Unavailable (matching the siblings) if the gap does not close
+  // within the pass budget — rare; the caller treats it as a slice failure.
+  // Defined in spline_curve.cpp, beside the natural-spline core it reuses.
+  [[nodiscard]] Result<CalendarPairProjection>
+  project_calendar(const std::function<double(double)> &w_prev, double k_min,
+                   double k_max, std::uint32_t n_grid);
+
 private:
   SplineVolParams p_;
   // Natural-spline 2nd derivatives at (p_.z, p_.mult), cached once at
@@ -372,9 +395,10 @@ struct CurveConfig {
 // LinearVariance additionally accepts the previous curve's breakpoints in
 // `calendar_floor_knots`; fitting on the union of both node sets makes its
 // piecewise-linear calendar floor hold between nodes as well.
-// SplineVol IGNORES `w_prev` (and `calendar_floor_knots`) in v1: no per-slice
-// calendar floor is applied — its calendar behaviour is unchanged from a
-// standalone per-expiry fit.
+// SplineVol projects the fitted slice onto the calendar cone above `w_prev`
+// (per-knot, ATM-preserving lift — see SplineVolCurve::project_calendar),
+// matching the Essvi/Svi/C8 branches; the front slice (null `w_prev`) is
+// unchanged. `calendar_floor_knots` is still ignored by the v1 spline.
 [[nodiscard]] Result<std::unique_ptr<IVolCurve>>
 fit_slice_curve(const CurveConfig &cfg, std::span<const FitObs> obs_eu, double F, double T,
                 double df, const std::function<double(double)> &w_prev = {},

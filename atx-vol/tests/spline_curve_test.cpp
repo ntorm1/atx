@@ -3,11 +3,14 @@
 
 #include "atx/vol/spline_curve.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include "atx/vol/arb.hpp"  // CalendarPairProjection (project_calendar result)
 #include "atx/vol/calib.hpp"
 #include "atx/vol/vol_curve.hpp"
 #include "atx/vol/vol_surface.hpp"
@@ -264,6 +267,66 @@ TEST(SplineVol, ZeroWeightObsAreFilteredAndRejected) {
   auto fitted = fit_spline_vol_slice(obs, 100.0, 0.5, 0.99);
   ASSERT_FALSE(fitted.has_value());
   EXPECT_EQ(fitted.error().code(), ErrorCode::InvalidArgument);
+}
+
+TEST(SplineVol, CalendarProjectionLiftsWingsPreservingAtm) {
+  // Short-dated slice with a steep smile: sigma rises from 0.20 at the money to
+  // ~0.82 at |k| = 0.5, so its wing total variance (sigma_wing^2 * T_short)
+  // sits ABOVE a flatter long-dated slice's variance out in the wings — exactly
+  // the calendar crossing an independent per-expiry spline fit produces.
+  const double F = 100.0;
+
+  const double T_short = 0.10;
+  std::vector<FitObs> short_obs;
+  for (int i = -10; i <= 10; ++i) {
+    const double k = 0.05 * static_cast<double>(i);  // k in [-0.5, 0.5]
+    FitObs o;
+    o.k = k;
+    o.sigma_mkt = 0.20 + 2.5 * k * k;  // 0.20 ATM -> ~0.825 at |k| = 0.5
+    o.weight_w = 1.0;
+    short_obs.push_back(o);
+  }
+  auto short_fit = fit_spline_vol_slice(short_obs, F, T_short, 0.99);
+  ASSERT_TRUE(short_fit.has_value()) << short_fit.error().to_string();
+  const IVolCurve &short_curve = **short_fit;
+
+  // Long-dated, flat, higher-base-vol but NARROW-board slice: its outer active
+  // knot sits at |k| ~ 0.32, so the +/-0.60 grid's outer portion is the long
+  // slice's FLAT WING (served at the outer-knot value). The crossing therefore
+  // lands entirely in that flat wing — the dominant real-world case, cleared by
+  // lifting the outer knot. Fitted independently (no calendar floor applied).
+  const double T_long = 0.5;
+  const std::vector<FitObs> long_obs = flat_smile_obs(0.30, 15, 0.15);
+  auto long_fit = fit_spline_vol_slice(long_obs, F, T_long, 0.98);
+  ASSERT_TRUE(long_fit.has_value()) << long_fit.error().to_string();
+  auto &long_curve = static_cast<SplineVolCurve &>(**long_fit);
+
+  const auto w_prev = [&](double k) { return short_curve.w(k); };
+
+  const double k_min = -0.60, k_max = 0.60;
+  const std::uint32_t n_grid = 64;
+  const double atm_before = long_curve.iv(0.0);
+
+  auto proj = long_curve.project_calendar(w_prev, k_min, k_max, n_grid);
+  ASSERT_TRUE(proj.has_value()) << proj.error().to_string();
+  // The scenario must exhibit a real pre-projection crossing (else the test
+  // proves nothing).
+  EXPECT_GT(proj->max_deficit_before, 1.0e-4);
+
+  // Post-projection: the long-slice total variance DOMINATES w_prev across the
+  // whole +/-0.60 grid, within the shared calendar tolerance.
+  const double dk = (k_max - k_min) / static_cast<double>(n_grid);
+  double max_deficit = 0.0;
+  for (std::uint32_t g = 0; g <= n_grid; ++g) {
+    const double k = k_min + dk * static_cast<double>(g);
+    max_deficit = std::max(max_deficit, w_prev(k) - long_curve.w(k));
+  }
+  EXPECT_LE(max_deficit, 1.0e-6) << "residual calendar deficit after projection";
+
+  // There is no ATM crossing (short ATM w = 0.20^2*0.10 = 0.004 << long ATM w =
+  // 0.30^2*0.5 = 0.045), so the z = 0 knot is never lifted and served ATM vol is
+  // untouched — the spline serves that knot's value exactly.
+  EXPECT_NEAR(long_curve.iv(0.0), atm_before, 1.0e-12);
 }
 
 TEST(SplineVol, LambdaZeroStillSolvesOnWellPosedData) {
