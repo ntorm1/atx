@@ -345,22 +345,38 @@ TEST(Dispersion, BookBitIdenticalAfterVegaOnlyResolve) {
     EXPECT_EQ(hexbits(leg.call_mark), call);
     EXPECT_EQ(hexbits(leg.put_mark), put);
   };
-  check_leg(book->index_leg, 0x407f5c51d2bceddbULL, 0x3fb506d56bc305c8ULL, 0x3fd0e0e48137006aULL,
-            0x405c8853a88e8744ULL, 0xbfec09c5e6b91033ULL, 0x402e250ae5028bf2ULL,
-            0x402e67c5f0eb5355ULL);
-  check_leg(book->name_legs[0], 0x405916a7da5ba791ULL, 0x3fb506d56bc305c8ULL, 0x3fd227b3ae684566ULL,
-            0x4036d39f72a513d7ULL, 0x4005072e5c122dbaULL, 0x4009f057ca5f9ad2ULL,
-            0x400a24cb50b7d72fULL);
-  check_leg(book->name_legs[1], 0x405e1b2fcf6f17e7ULL, 0x3fb506d56bc305c8ULL, 0x3fd4b604b040fa82ULL,
-            0x403b641436888523ULL, 0x3ff75d8a93c028f1ULL, 0x4011c0c121292770ULL,
-            0x4011df4dd59b09bfULL);
+  // MERGE (codex/correctness-first-surface-v2): re-captured via
+  // Dispersion.PrintBookHexAnchors_C1_7 on the merged binary. The C1.7 contract
+  // under test — vega-only `resolve_leg` reproduces the two-full-bundle
+  // `resolve_leg` EXACTLY — is unchanged and still what these anchors pin; only
+  // the fit feeding it moved. The board is fit through a bare PricerConfig,
+  // i.e. main's single-surface mark path both before and after the merge (the
+  // routing call: a legacy config never implicitly becomes a risk request), so
+  // this is not a serving change. It is the branch's shared fitting-core
+  // corrections, which main's path consumes too: `build_observations_european`
+  // now flows OTM-shortcut proposals through the same cold-reference inversion
+  // audit as every other row instead of retaining the raw American mid
+  // (certification-hole closure), and `qp_active_set`/`fit_convex_slice` gained
+  // the feasible-x0 clamp, noise-aware lambda and left-origin convexity row.
+  // Both shift fitted sigma at ~1e-8 relative — every field below moves in the
+  // low ~30 bits, T is bit-identical, and the book's semantic invariant still
+  // holds exactly (totals below: index is bit-exactly -10000, names 1 ULP off).
+  check_leg(book->index_leg, 0x407f5c51d0614808ULL, 0x3fb506d56bc305c8ULL, 0x3fd0e0e487e266f3ULL,
+            0x405c8853a7bf0282ULL, 0xbfec09c5e784fc86ULL, 0x402e250ad81dc910ULL,
+            0x402e67c60593e2ffULL);
+  check_leg(book->name_legs[0], 0x405916a7d83cdd93ULL, 0x3fb506d56bc305c8ULL, 0x3fd227b3af9cc656ULL,
+            0x4036d39f71b3bfd0ULL, 0x4005072e5cf07ddeULL, 0x4009f057b0cb68b2ULL,
+            0x400a24cb5e274f21ULL);
+  check_leg(book->name_legs[1], 0x405e1b2fcd86d84aULL, 0x3fb506d56bc305c8ULL, 0x3fd4b604b269da05ULL,
+            0x403b6414356a70cfULL, 0x3ff75d8a94b43203ULL, 0x4011c0c1176dc828ULL,
+            0x4011df4ddc0f6f70ULL);
 
   // Book totals: re-price the emitted positions and bucket vega by uid (the
   // SAME independent cross-check Book_IsVegaNeutral runs) — an end-to-end
   // pin on top of the per-leg field pins above.
   const BucketedVega v = price_bucketed_vega(*book, *set, u.index.uid);
   EXPECT_EQ(hexbits(v.index), 0xc0c3880000000000ULL);
-  EXPECT_EQ(hexbits(v.names), 0x40c3880000000000ULL);
+  EXPECT_EQ(hexbits(v.names), 0x40c387ffffffffffULL);
 }
 
 TEST(Dispersion, ProjectedBookUsesOneConcreteCalendarExpiry) {

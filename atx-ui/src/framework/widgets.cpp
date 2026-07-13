@@ -76,3 +76,4 @@ void key_value(std::string_view key, std::string_view value, const ImVec4 *value
 void vertical_gap(float pixels) { ImGui::Dummy(ImVec2(0.0f, pixels)); }
 
 } // namespace atx::ui
+

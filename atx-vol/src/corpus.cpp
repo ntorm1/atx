@@ -684,7 +684,8 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
             return Err(stamped.error());
           }
           restamped.push_back(std::move(*stamped));
-          items.push_back(SurfaceArchiveItem{boards[idx].symbol, &restamped.back()});
+          items.push_back(SurfaceArchiveItem{boards[idx].symbol, &restamped.back(),
+                                             slots[idx].provenance});
         }
       }
       const Status w = write_surface_archive_file(apath, items, cfg.write_opts);

@@ -17,12 +17,13 @@
 #include <functional>
 #include <optional>
 
-#include "atx/vol/corpus.hpp"         // CorpusBoard, CorpusFitStatus, CorpusAdmissionPolicy, ...
-#include "atx/vol/priced_surface.hpp" // PricedSurface
-#include "atx/vol/pricer_fitter.hpp"  // PricerConfig
-#include "atx/vol/session.hpp"        // SessionInputs
-#include "atx/vol/types.hpp"          // ErrorCode
-#include "atx/vol/vol_curve.hpp"      // VolCurveKind
+#include "atx/vol/corpus.hpp"          // CorpusBoard, CorpusFitStatus, CorpusAdmissionPolicy, ...
+#include "atx/vol/priced_surface.hpp"  // PricedSurface
+#include "atx/vol/pricer_fitter.hpp"   // PricerConfig
+#include "atx/vol/session.hpp"         // SessionInputs
+#include "atx/vol/surface_archive.hpp" // SurfaceProvenance
+#include "atx/vol/types.hpp"           // ErrorCode
+#include "atx/vol/vol_curve.hpp"       // VolCurveKind
 
 namespace atx::vol {
 
@@ -40,7 +41,8 @@ struct FitSlot {
   ErrorCode error_code{ErrorCode::Unknown};
   CorpusQualityMetrics quality{};
   CorpusAdmissionDecision admission{CorpusDisposition::Admitted, CorpusAdmissionReason::None, 0u};
-  std::optional<PricedSurface> surface{}; // present iff status == Ok
+  std::optional<PricedSurface> surface{};        // present iff status == Ok
+  std::optional<SurfaceProvenance> provenance{}; // the fitter's own health for `surface`
 };
 
 [[nodiscard]] std::uint32_t saturated_u32(std::size_t value) noexcept;

@@ -216,6 +216,22 @@ enum class ParityDiagnosticState : std::uint8_t {
   Valid = 3,
 };
 
+// Timing and outcome counters for the local one-expiry update path. Durations
+// are wall-clock milliseconds from the most recent attempt.
+struct IncrementalRefitDiagnostics {
+  std::size_t attempts{0};
+  std::size_t committed{0};
+  std::size_t rolled_back{0};
+  std::size_t last_slice_index{0};
+  VolCurveKind last_kind{VolCurveKind::Essvi};
+  std::size_t last_adjacent_pairs_checked{0};
+  double last_fit_ms{0.0};
+  double last_calendar_ms{0.0};
+  double last_validation_ms{0.0};
+  double last_total_ms{0.0};
+  bool last_committed{false};
+};
+
 // Aggregate surface-quality summary, distilled from the per-expiry parity
 // reports and the per-slice context at build time. `parity_state` distinguishes
 // a genuine zero score from an opt-out or a scoring failure.
@@ -251,6 +267,71 @@ struct SessionDiagnostics {
   // finite value here is the ONLY condition under which queries route
   // through the event-aware blend (see SessionInputs::events).
   double implied_emove{std::numeric_limits<double>::quiet_NaN()};
+  std::size_t n_carry_slices{0};          // slices with a resolved carry diagnostic
+  std::size_t n_carry_confident{0};       // carry slices clearing confidence gates
+  // Expiries the fit DROPPED because carry could not be resolved (confidence
+  // gate / no quotable pair / degenerate forward). A surface missing expiries
+  // must surface the gap (§5.2); risk admission maps a non-zero count to a
+  // Degraded health state with a CarryGap reason.
+  std::size_t n_carry_skipped_expiries{0};
+  // Expiries the fit DROPPED because the fit-inversion audit starved the
+  // slice below the usable-observation floor (eSSVI aligned-obs path under
+  // deam.audit_fit_inversions). The audit-created analogue of a carry skip;
+  // risk admission surfaces it through the same CarryGap reason.
+  std::size_t n_audit_starved_expiries{0};
+  // ConvexDense-served call-price bound self-check violations (oracle finding
+  // I-2): the independent risk-surface oracle only reconstructs prices from
+  // w=sigma^2*T via Black, which is always in-bounds by construction and
+  // cannot see a served call_price() the fit clamped into range before
+  // forming w. This is `arb_check_price_bounds` run over the session's own
+  // served CurveSurface (0 for a non-ConvexDense session). Like a carry gap,
+  // this is the one fitter self-report the geometric oracle trusts, and only
+  // to ADD a ValidationFailure::PriceBounds failure — never to clear one
+  // (merge_session_failure_context, pricer_fitter.cpp).
+  std::size_t n_price_bound_violations{0};
+  double min_carry_effective_pairs{0.0};
+  double max_carry_dispersion{0.0};
+  double max_carry_leave_one_out{0.0};
+  std::size_t n_inversion_slices{0};
+  std::size_t n_iv_proposed{0};
+  std::size_t n_iv_audited{0};
+  std::size_t n_iv_fallback{0};
+  std::size_t n_iv_rejected_residual{0};
+  double max_iv_proposal_residual_half_spreads{0.0};
+  bool carry_confident{false};             // true iff every fitted slice is confident
+  // True iff every fitted slice's inversions ran the AUDITED route (the fit
+  // rows themselves, not just a diagnostic re-run), every accepted node passed
+  // the cold-reference residual budget, and tolerated node drops stayed under
+  // calib.max_certified_deam_drop_fraction. Non-AndersenLake methods have no
+  // audit and are never certified (see deam_inversion_certified).
+  bool inversion_certified{false};
+  IncrementalRefitDiagnostics incremental{};
+};
+
+// Compact, persistence-friendly carry summary. Raw quotes and the individual
+// CarryPairDiagnostic vector are deliberately not retained by a session.
+struct SessionCarryDiagnostics {
+  std::size_t n_candidates{0};
+  std::size_t n_attempted{0};
+  std::size_t n_solved{0};
+  std::size_t n_retained{0};
+  double effective_pair_count{0.0};
+  double dispersion{0.0};
+  double max_leave_one_out_shift{0.0};
+  double confidence_half_width{0.0};
+  double max_pcp_residual{0.0};
+  bool available{false};
+  bool confident{false};
+};
+
+// Parallel to expiries(). DeAmAuditDiagnostics contains counts/quantiles only;
+// neither the source observations nor per-row IVs survive session construction.
+struct SessionSliceDiagnostics {
+  double T{0.0};
+  SessionCarryDiagnostics carry{};
+  DeAmAuditDiagnostics inversion{};
+  bool inversion_available{false};
+  bool inversion_certified{false};
 };
 
 // Stateful surface handle. Construct with `build` / `from_frame`; then query.
@@ -275,6 +356,11 @@ class VolaSession {
   // `build`. Propagates any install / build error.
   [[nodiscard]] static Result<VolaSession> from_frame(const QuoteFrame& frame,
                                                       const SessionInputs& in);
+
+  // Deep copy for copy-on-write publication. The fitted polymorphic curves and
+  // correction caches are independently owned by the clone, so a local refit
+  // can mutate the candidate while readers retain an immutable prior generation.
+  [[nodiscard]] VolaSession clone() const;
 
   // ── Queries (const, no refit; see the forward-interpolation note above) ────
 
@@ -373,11 +459,24 @@ class VolaSession {
   // fit quality is in the returned diag. On a fit failure the surface is left
   // untouched and the fit error is propagated.
   //
+  // For ConvexDense/SVI/C8, the replacement is fit on a staged local candidate,
+  // checked only against its previous/next shared-k calendar pairs, independently
+  // shape-validated, and atomically published. A failed fit or admission leaves
+  // every served value unchanged; timing/outcome counters are in
+  // `diagnostics().incremental`.
+  //
   // @return InvalidArgument for an out-of-range `slice_idx`, empty `new_obs`, or
   //         a surface with no eSSVI slice at that index; the fit's own error
   //         (Unavailable on a degenerate slice) otherwise; else Ok(FitDiag).
   [[nodiscard]] Result<FitDiag> refit_slice(std::size_t slice_idx,
                                             std::span<const FitObs> new_obs);
+
+  // Fast path for quote updates that changed uncertainty but not price. The
+  // original, already-certified European IVs are reused exactly and only their
+  // spread-derived weights are refreshed. A price/flag/shape change returns an
+  // error so the caller can fall back to full de-Americanization.
+  [[nodiscard]] Result<std::vector<FitObs>>
+  cached_refit_observations(const Chain &chain, std::size_t slice_idx) const;
 
   // ── Serialization snapshot ─────────────────────────────────────────────────
   //
@@ -402,6 +501,17 @@ class VolaSession {
 
   [[nodiscard]] const VolSurface& surface() const noexcept { return surface_; }
 
+  // The optional polymorphic-surface override (ConvexDense / Svi / C8):
+  // nullptr on the default eSSVI path (queries read surface()), non-null when
+  // this session was built with a non-Essvi curve family. Read-only escape
+  // hatch for a curve-family-aware caller that must inspect the SERVED
+  // slices' own fit structure (e.g. the independent risk-surface validator's
+  // node-k grid densification, oracle finding I-3) without the session
+  // itself becoming curve-family-aware anywhere else.
+  [[nodiscard]] const CurveSurface* curve_override() const noexcept {
+    return curve_override_.has_value() ? &*curve_override_ : nullptr;
+  }
+
   // Per fitted slice, ascending T. Parallel to `parity()`.
   [[nodiscard]] std::span<const SliceContext> expiries() const noexcept {
     return ctx_;
@@ -414,6 +524,11 @@ class VolaSession {
 
   [[nodiscard]] const SessionDiagnostics& diagnostics() const noexcept {
     return diag_;
+  }
+
+  [[nodiscard]] std::span<const SessionSliceDiagnostics>
+  slice_diagnostics() const noexcept {
+    return slice_diag_;
   }
 
   // Effective, fully-resolved fit inputs retained by the session. Quality
@@ -466,6 +581,7 @@ class VolaSession {
   VolaSession(VolSurface&& surface, std::vector<SliceContext>&& ctx,
               std::vector<ParityReport>&& parity, SessionInputs in,
               const SessionDiagnostics& diag,
+              std::vector<SessionSliceDiagnostics>&& slice_diag,
               std::optional<CorrectionCache>&& corr_call,
               std::optional<CorrectionCache>&& corr_put,
               std::optional<CurveSurface>&& curve_override);
@@ -544,11 +660,29 @@ class VolaSession {
   std::vector<ParityReport> parity_;   // ascending T (‖ ctx_)
   SessionInputs in_;
   SessionDiagnostics diag_;
+  std::vector<SessionSliceDiagnostics> slice_diag_;  // compact, ascending T
   std::optional<CorrectionCache> corr_call_;  // empty => cold path for calls
   std::optional<CorrectionCache> corr_put_;   // empty => cold path for puts
   // Polymorphic-surface override (ConvexDense / Svi). Empty => default eSSVI path
   // (queries read surface_). Move-only, like the session itself.
   std::optional<CurveSurface> curve_override_;
+  struct IncrementalObservationStore {
+    std::vector<std::vector<FitObs>> observations;
+    std::vector<std::vector<double>> source_mids;
+    std::vector<std::vector<std::uint8_t>> source_flags;
+    std::vector<std::vector<double>> chain_mids;
+    std::vector<std::vector<std::uint8_t>> chain_flags;
+    // Full-chain bid/ask/timestamp snapshots: the robust carry weights consume
+    // spreads (quality) and quote ages (freshness), and pair ELIGIBILITY
+    // consumes bids/asks/mids/flags — so certified reuse must be able to prove
+    // every carry coordinate unchanged, not just mids and flags (§14).
+    std::vector<std::vector<double>> chain_bids;
+    std::vector<std::vector<double>> chain_asks;
+    std::vector<std::vector<std::int64_t>> chain_ts;
+  };
+  // Immutable and shared across copy-on-write generations. A spread-only refit
+  // never changes certified prices/IVs, so cloning this history is wasted work.
+  std::shared_ptr<const IncrementalObservationStore> incremental_observations_;
 };
 
 }  // namespace atx::vol

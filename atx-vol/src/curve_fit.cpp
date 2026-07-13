@@ -13,6 +13,7 @@
 #include <memory>
 #include <numeric>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -67,6 +68,9 @@ using ProfileClock = std::chrono::steady_clock;
 // any worker count (the value_chain / calibrate_pool determinism pattern).
 struct ChainPrepass {
   bool usable = false;
+  // Carry resolution failed (or produced a degenerate forward): the chain is
+  // unusable AND the skip must be surfaced in the report, never hidden (§5.2).
+  bool carry_failed = false;
   double T = 0.0;
   double rate = 0.0;
   double F = 0.0;
@@ -76,7 +80,61 @@ struct ChainPrepass {
   std::optional<PreparedSlice> prepared; // meaningful only when `usable`
   double ms_forward_borrow = 0.0;
   double ms_obs_eu = 0.0;
+  // Perf C1: the certification-layer's derived data, captured HERE (same
+  // per-chain task) instead of a second serial pass in VolaSession::build's
+  // (now-removed, for this driver) collect_input_diagnostics. Meaningful only
+  // when `usable`. `carry` is the CERTIFICATION resolve — re-run with
+  // `in.deam_cert_caches` substituted when those differ from the fit's own
+  // caches (review fix; see run_deam_prepass) — and `carry_available` false
+  // means that certification resolve failed (the historical serial pass's
+  // carry-unavailable case; a cached fit resolve can succeed where the
+  // certification resolve does not).
+  CarryDiagnostics carry;
+  bool carry_available = false;
+  std::vector<double> source_mids;         // ‖ prepared fit rows; raw chain.mids at (K, side)
+  std::vector<std::uint8_t> source_flags;  // ‖ prepared fit rows; raw chain.flags at (K, side)
+  std::vector<double> chain_mids;          // full-chain snapshot
+  std::vector<std::uint8_t> chain_flags;
+  std::vector<double> chain_bids;
+  std::vector<double> chain_asks;
+  std::vector<std::int64_t> chain_ts;
 };
+
+// Recover each fit observation's SOURCE chain quote (raw American mid + kill-
+// mask flags) by strike, so the incremental-cache certification data is
+// captured in the SAME parallel per-chain task that built `obs` instead of a
+// second serial pass over the fitted rows (perf finding C1). Mirrors the
+// lookup `VolaSession::build`'s (session.cpp) `collect_input_diagnostics`
+// used to perform after the fact: binary search `chain.strikes` for
+// `fit_obs.K`, then read `chain.mids`/`chain.flags` at
+// `chain_index(strike_idx, fit_obs.side)`. Clears BOTH outputs (defensive) if
+// any row fails to map back onto the chain.
+void source_quote_lookup(const Chain &chain, std::span<const FitObs> obs,
+                         std::vector<double> &out_mids,
+                         std::vector<std::uint8_t> &out_flags) {
+  out_mids.clear();
+  out_flags.clear();
+  out_mids.reserve(obs.size());
+  out_flags.reserve(obs.size());
+  for (const FitObs &fit_obs : obs) {
+    const auto strike_it = std::lower_bound(chain.strikes.begin(), chain.strikes.end(), fit_obs.K);
+    if (strike_it == chain.strikes.end() || *strike_it != fit_obs.K) {
+      out_mids.clear();
+      out_flags.clear();
+      return;
+    }
+    const auto strike_idx =
+        static_cast<std::uint16_t>(std::distance(chain.strikes.begin(), strike_it));
+    const std::size_t quote_idx = chain_index(strike_idx, fit_obs.side);
+    if (quote_idx >= chain.mids.size() || quote_idx >= chain.flags.size()) {
+      out_mids.clear();
+      out_flags.clear();
+      return;
+    }
+    out_mids.push_back(chain.mids[quote_idx]);
+    out_flags.push_back(chain.flags[quote_idx]);
+  }
+}
 
 [[nodiscard]] bool valid_expiry_rates(const SurfaceParityInputs &in,
                                       const Underlying &under) noexcept {
@@ -126,10 +184,12 @@ struct ChainPrepass {
       slot.ms_forward_borrow = elapsed_ms(t_forward0, ProfileClock::now());
     }
     if (!d_res) {
+      slot.carry_failed = true;
       return;
     }
     const double F = d_res->forward;
     if (!(F > 0.0) || !std::isfinite(F)) {
+      slot.carry_failed = true;
       return;
     }
     const double q_eff = rate - std::log(F / in.S) / T;
@@ -171,6 +231,49 @@ struct ChainPrepass {
     slot.q_eff = q_eff;
     slot.df = df;
     slot.prepared.emplace(std::move(*prepared));
+    // Perf C1 + review fix: the CERTIFICATION carry must be bit-identical to
+    // what the historical serial certification pass produced — a resolve with
+    // the CALLER's caches (in.deam_cert_caches), never the session-built
+    // hot-path caches this prepass's own resolve may have consulted. When the
+    // two cache sets are the same pointers, this resolve IS that resolve
+    // (pure function of identical arguments): reuse it. When they differ,
+    // re-resolve with the certification caches substituted — same per-chain
+    // parallel task, so the work the old pass did serially is fanned out, and
+    // a certification-resolve failure only marks this slice's carry
+    // unavailable (the old pass's behavior), never drops the chain.
+    const AmericanCorrectionCaches cert_caches =
+        in.deam_cert_caches.has_value() ? *in.deam_cert_caches : in.deam.caches;
+    if (cert_caches.call == in.deam.caches.call && cert_caches.put == in.deam.caches.put) {
+      slot.carry = d_res->carry;
+      slot.carry_available = true;
+    } else {
+      DeAmOptions cert_deam = in.deam;
+      cert_deam.caches = cert_caches;
+      const auto t_cert0 = ProfileClock::now();
+      const auto cert_res =
+          resolve_chain_forward(chain, in.S, rate, in.cash_divs, in.now_ts_ns, cert_deam);
+      if (profile) {
+        slot.ms_forward_borrow += elapsed_ms(t_cert0, ProfileClock::now());
+      }
+      if (cert_res) {
+        slot.carry = cert_res->carry;
+        slot.carry_available = true;
+      }
+    }
+    // Perf C1: capture the certification layer's derived inputs HERE (same
+    // task, same `chain`) instead of a second serial pass in
+    // VolaSession::build. Source-quote lookup reads the prepared fit rows, so
+    // it must run after the emplace above settles the rows into the slot.
+    // (The old S0-3 second cold de-Am — `build_parity_data` — is superseded by
+    // the PreparedSlice score columns, which score the SAME keyed population
+    // as the fit rows; no separate market-side board re-inversion remains.)
+    slot.chain_mids = chain.mids;
+    slot.chain_flags = chain.flags;
+    slot.chain_bids = chain.bids;
+    slot.chain_asks = chain.asks;
+    slot.chain_ts = chain.ts_ns;
+    source_quote_lookup(chain, slot.prepared->fit_observations(), slot.source_mids,
+                        slot.source_flags);
     slot.usable = true;
   });
   return prepass;
@@ -193,6 +296,7 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
   CurveSurfaceReport out;
   out.context.reserve(under.chains.size());
   out.per_expiry.reserve(under.chains.size());
+  out.input_certification.reserve(under.chains.size());
   double worst = std::numeric_limits<double>::infinity();
   const bool profile = profile_enabled();
   const auto t_fit0 = ProfileClock::now();
@@ -212,6 +316,8 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
   // first worker exception on this thread (e.g. std::bad_alloc from an
   // allocating de-Am body). Convert it to an Err so this Result-returning API
   // stays exception-transparent to its callers rather than unwinding past them.
+  // Non-const: phase 2 below MOVES the larger per-chain certification vectors
+  // (perf C1) out of each committed slot instead of copying them again.
   std::vector<ChainPrepass> prepass;
   try {
     prepass = run_deam_prepass(under, in, in.fit_workers, profile);
@@ -222,6 +328,11 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
     return Err(ErrorCode::Internal, "fit_curve_surface: de-Am prepass failed (unknown exception)");
   }
   const double ms_prepass = profile ? elapsed_ms(t_pre0, ProfileClock::now()) : 0.0;
+  for (const ChainPrepass &pre : prepass) {
+    if (pre.carry_failed) {
+      ++out.n_carry_skipped; // §5.2: carry-dropped expiries are surfaced
+    }
+  }
 
   // Phase 2 (SEQUENTIAL): the fit is order-dependent — each fitted slice's w(k)
   // becomes the calendar floor for the next (ascending-T) slice — so this walk
@@ -231,7 +342,7 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
   double ms_fit_slice = 0.0;
   double ms_chain_parity = 0.0;
   for (std::size_t ci = 0; ci < under.chains.size(); ++ci) {
-    const ChainPrepass &pre = prepass[ci];
+    ChainPrepass &pre = prepass[ci];
     if (!pre.usable) {
       continue;
     }
@@ -325,6 +436,29 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
     if (parity.n > 0) {
       worst = std::min(worst, parity.frac_fv_within_bidask);
     }
+
+    // Perf C1: carry the prepass's already-computed input certification data
+    // straight into the report -- VolaSession::build's certification layer
+    // consumes this instead of a second serial resolve_chain_forward +
+    // build_observations_european pass. `obs`/`inversion` are COPIED (not
+    // moved) so the end-of-function ATX_VOL_PROFILE summary below -- which
+    // still reads `prepass[*].prepared->fit_observations().size()` for every
+    // usable chain, including fit failures never pushed here -- stays intact;
+    // the larger per-chain snapshot vectors are moved (nothing downstream
+    // reads them again).
+    SliceInputCertification cert;
+    cert.carry = pre.carry;
+    cert.carry_available = pre.carry_available;
+    cert.inversion = prepared.deam_audit();
+    cert.obs.assign(prepared.fit_observations().begin(), prepared.fit_observations().end());
+    cert.source_mids = std::move(pre.source_mids);
+    cert.source_flags = std::move(pre.source_flags);
+    cert.chain_mids = std::move(pre.chain_mids);
+    cert.chain_flags = std::move(pre.chain_flags);
+    cert.chain_bids = std::move(pre.chain_bids);
+    cert.chain_asks = std::move(pre.chain_asks);
+    cert.chain_ts = std::move(pre.chain_ts);
+    out.input_certification.push_back(std::move(cert));
   }
 
   if (out.surface.empty()) {

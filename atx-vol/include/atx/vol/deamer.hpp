@@ -133,6 +133,21 @@ struct TermBorrow {
   double rmse_pcp = 0.0;  // |European PCP residual| at the solution (diagnostic)
 };
 
+// Independent cold-reference audit of an implied-vol proposal.  Approximate
+// pricers and correction caches may propose a sigma, but only the accurate
+// Andersen-Lake forward map certifies it for risk calibration.
+struct IvRepricingAudit {
+  double accurate_price{0.0};
+  double abs_residual{0.0};
+  double residual_half_spreads{0.0};
+  bool passed{false};
+};
+
+[[nodiscard]] atx::core::Result<IvRepricingAudit> audit_european_equiv_iv(
+    double american_mid, double bid_ask_spread, double sigma, double S,
+    double K, double T, double r, double q_eff, Side side,
+    double max_residual_half_spreads = 0.25) noexcept;
+
 // @param call_mid,put_mid co-terminal American call/put mids at (K, T)
 // @param S,K,T            spot, strike, year-fraction (all > 0)
 // @param r                continuously-compounded rate (finite)
@@ -163,15 +178,56 @@ struct DeAmOptions;  // forward decl for resolve_chain_forward
 // A surface build that rebuilds its own per-strike observations (run_surface_
 // parity) needs only (forward, borrow) from this step; calling the full
 // de_americanize_chain there would invert every strike a second, wasted time.
+struct CarryPairDiagnostic {
+  std::uint16_t strike_index{0};
+  double strike{0.0};
+  double borrow{0.0};
+  double forward{0.0};
+  double pcp_residual{0.0};
+  double relative_spread{0.0};
+  double age_seconds{0.0};
+  double base_weight{0.0};
+  double robust_weight{0.0};
+  bool retained{false};
+};
+
+// Carry is a measured input, not an invisible scalar.  These diagnostics make
+// the robustness and single-pair sensitivity available to the admission layer.
+struct CarryDiagnostics {
+  std::vector<CarryPairDiagnostic> pairs;
+  std::size_t n_candidates{0};
+  std::size_t n_attempted{0};
+  std::size_t n_solved{0};
+  std::size_t n_retained{0};
+  double effective_pair_count{0.0};
+  double dispersion{0.0};
+  double max_leave_one_out_shift{0.0};
+  double confidence_half_width{0.0};
+  double max_pcp_residual{0.0};
+  bool confident{false};
+};
+
 struct ChainForward {
   double forward = 0.0;  // hybrid_forward at the resolved borrow
   double borrow = 0.0;   // implied (or fixed) per-term borrow
+  CarryDiagnostics carry{};
 };
 
 [[nodiscard]] atx::core::Result<ChainForward> resolve_chain_forward(
     const Chain& chain, double S, double r,
     std::span<const DividendEvent> cash_divs, std::int64_t now_ts_ns,
     const DeAmOptions& opts) noexcept;
+
+// Strike indices of the co-terminal pairs ELIGIBLE for the robust carry solve
+// — exactly the selection `resolve_chain_forward` makes (both legs quotable,
+// the k nearest to spot with k = min(max(n_atm, in-band count),
+// max_borrow_pairs, n_valid)). Ordered by ascending |K − S|. Empty when carry
+// is fixed (imply_borrow == false), the chain is degenerate, or no pair is
+// quotable. Exposed so the certified observation cache can invalidate on ANY
+// change to a carry-relevant quote (price, spread, timestamp, or eligibility),
+// including pairs the nearest-pair fallback selects outside the ATM band.
+[[nodiscard]] std::vector<std::uint16_t> carry_pair_strikes(
+    const Chain& chain, double S, const DeAmOptions& opts);
 
 struct DeAmOptions {
   HybridDivParams hyb{};
@@ -181,12 +237,31 @@ struct DeAmOptions {
   double borrow_fixed = 0.0;   // borrow used when imply_borrow == false
   std::size_t n_atm = 3;       // near-ATM co-terminal pairs used for the borrow
   std::size_t max_borrow_pairs = 12; // cap robust band expansion; 1 = fastest
+  std::size_t min_confident_borrow_pairs = 3;
+  double carry_atm_band = 0.06;              // |K/S - 1| adaptive band
+  double max_carry_dispersion = 0.02;        // annualized borrow-rate units
+  double max_carry_leave_one_out = 0.005;    // annualized borrow-rate units
+  bool require_carry_confidence = false;     // compatibility seam; admission may require it
   // American-IV inversion Newton controls for the per-strike de-Am solve. The
   // default (1e-7 / 64) matches american_implied_vol and keeps the cold path
   // bit-identical; the fast-preset session loosens `iv_tol` to the fast pricer's
   // accuracy floor so the inversion converges by Newton, not bisection stall.
   double iv_tol = 1.0e-7;
   std::uint16_t iv_max_iter = 64;
+  // Every cache/fast-pricer IV is audited against the cold accurate
+  // Andersen-Lake forward map.  A failed proposal is recomputed accurately;
+  // a node is dropped if even the fallback exceeds this half-spread budget.
+  double max_iv_residual_half_spreads = 0.25;
+  // Audit the FIT-observation inversions of the aligned-obs (eSSVI) surface
+  // path against the cold Andersen-Lake reference (charter §8.1: every
+  // shortcut/cache route needs a cold-reference audit before its output may be
+  // certified): a failed proposal is recomputed accurately and re-audited, and
+  // a row that still misses `max_iv_residual_half_spreads` is DROPPED, never
+  // fitted. Default false keeps the historical fit bit-identical; the risk
+  // serving policy enables it so no served surface carries an unaudited
+  // inversion. AndersenLake only — other methods have no audit and can never
+  // be certified.
+  bool audit_fit_inversions = false;
   // Optional per-side hot-path caches. Default-empty => cold Andersen-Lake path
   // (pre-cache behavior). When populated, every American inversion in the chain
   // driver + borrow fixed-point routes through `american_price_cached`.
@@ -201,6 +276,10 @@ struct DeAmResult {
   std::vector<double> weight;      // vega/spread weight hint (parallel to iv)
   std::size_t n_used = 0;          // surviving strikes inverted
   std::size_t n_dropped = 0;       // strikes skipped (bad quote / failed invert)
+  std::size_t n_iv_audited = 0;    // cache/fast proposals cold-reference checked
+  std::size_t n_iv_fallback = 0;   // failed proposals recomputed accurately
+  double max_iv_residual_half_spreads = 0.0;
+  CarryDiagnostics carry{};
 };
 
 // De-Americanize one expiry's Chain into a European-equivalent IV strip.

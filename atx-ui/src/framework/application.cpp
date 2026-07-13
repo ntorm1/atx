@@ -282,3 +282,4 @@ void Application::build_default_layout(unsigned int dockspace_id) {
 }
 
 } // namespace atx::ui
+

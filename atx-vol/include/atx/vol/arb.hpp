@@ -49,6 +49,7 @@
 #include <vector>
 
 #include "atx/vol/curve.hpp"
+#include "atx/vol/c8.hpp"
 #include "atx/vol/types.hpp"
 #include "atx/vol/universe.hpp"
 #include "atx/vol/vol_curve.hpp"
@@ -99,10 +100,10 @@ constexpr QuoteFlag &operator|=(QuoteFlag &a, QuoteFlag b) noexcept {
 // a recorded violation: w_prev - w for calendar, -g(k) for butterfly).
 struct ArbViolation {
   double k_log{};  // log-moneyness where the violation occurs
-  double T1{};     // shorter maturity (calendar) / slice T (butterfly)
-  double T2{};     // longer maturity (calendar) / slice T (butterfly)
+  double T1{};     // shorter maturity (calendar) / slice T (butterfly / price bounds)
+  double T2{};     // longer maturity (calendar) / slice T (butterfly / price bounds)
   double slack{};  // signed breach magnitude
-  enum class Kind : std::uint8_t { Calendar = 0, Butterfly = 1 };
+  enum class Kind : std::uint8_t { Calendar = 0, Butterfly = 1, PriceBounds = 2 };
   Kind kind{Kind::Calendar};
 };
 
@@ -124,6 +125,32 @@ arb_check_calendar(const VolSurface &s, double k_min, double k_max,
 [[nodiscard]] Result<std::vector<ArbViolation>>
 arb_check_calendar(const CurveSurface &s, double k_min, double k_max,
                    std::uint32_t n_grid);
+
+// Independent per-curve Lee/Roper density check used after parameter-space
+// calendar projection. Unlike a model's own admissibility predicate, this
+// samples the final IVolCurve values that downstream consumers receive.
+[[nodiscard]] Result<std::vector<ArbViolation>>
+arb_check_butterfly(const IVolCurve &curve, double k_min, double k_max,
+                    std::uint32_t n_grid);
+
+// Self-check confined to the served CALL-PRICE representation of each
+// ConvexDense slice in `s` (oracle finding I-2). Every other arb_check_*
+// entry samples total variance w(k, T) alone, which the convex dense fit's
+// iv() clamps into Black's no-arb interval BEFORE forming (dense_slice.cpp),
+// laundering a sub-intrinsic / super-forward fitted price into a merely
+// near-zero or near-max vol — invisible to any w-space check. This samples
+// each ConvexDense slice's OWN call_price(K) directly (most commonly
+// exercised by the wing extrapolation on a one-sided, all-ITM or all-OTM,
+// board — oracle finding M-7) and records a violation wherever it sits
+// outside [discounted intrinsic, discounted forward] by more than a bare
+// FP-roundoff tolerance (far below the fitting QP's node-level price_epsilon
+// margin, which honest fits clear by orders of magnitude).
+// Non-ConvexDense slices contribute nothing (their w-space checks above are
+// sufficient). No-op (empty) for an empty surface, n_grid == 0, or
+// k_max <= k_min.
+[[nodiscard]] Result<std::vector<ArbViolation>>
+arb_check_price_bounds(const CurveSurface &s, double k_min, double k_max,
+                       std::uint32_t n_grid);
 
 // Per-slice Lee/Roper density positivity via finite-difference w'/w'' on the
 // total surface variance. Empty result means "no butterfly arbitrage". No-op
@@ -210,6 +237,30 @@ arb_check_butterfly_svi_mm(const SviParams &slice, double T) noexcept;
 // plain `Svi` tag.
 [[nodiscard]] Result<SviMmAdmissibility>
 arb_check_butterfly_svi_mm_surface(const VolSurface &s);
+
+// Diagnostics from a shared-k pair projection. `scale` is the cumulative
+// multiplicative level change (SVI's additive a-shift is reported as 1), and
+// `max_deficit_before` is in total-variance units.
+struct CalendarPairProjection {
+  std::uint32_t passes{};
+  double scale{1.0};
+  double max_deficit_before{};
+};
+
+// Project one longer-dated parametric candidate above an arbitrary previously
+// admitted w(k) curve on a shared lattice. Each projection stays in the model's
+// shape-safe parameterization; callers must then run the independent butterfly
+// checker above before publication. Failure to close the calendar gap returns
+// Unavailable rather than an unchecked candidate.
+[[nodiscard]] Result<CalendarPairProjection> arb_project_calendar_essvi_pair(
+    EssviParams &current, const std::function<double(double)> &w_prev,
+    double k_min, double k_max, std::uint32_t n_grid);
+[[nodiscard]] Result<CalendarPairProjection> arb_project_calendar_svi_pair(
+    SviParams &current, const std::function<double(double)> &w_prev,
+    double k_min, double k_max, std::uint32_t n_grid);
+[[nodiscard]] Result<CalendarPairProjection> arb_project_calendar_c8_pair(
+    C8Params &current, const std::function<double(double)> &w_prev,
+    double k_min, double k_max, std::uint32_t n_grid);
 
 // ── Calendar-spread arb projection / repair (post-fit, mutating) ─────────
 

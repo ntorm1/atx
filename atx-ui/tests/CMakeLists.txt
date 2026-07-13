@@ -6,3 +6,4 @@ target_compile_features(atx-ui-model-tests PRIVATE cxx_std_20)
 include(GoogleTest)
 gtest_discover_tests(atx-ui-model-tests PROPERTIES LABELS atx_ui)
 
+

@@ -8,6 +8,7 @@
 #include <cstdio>  // ATX_VOL_PROFILE stderr report (temporary)
 #include <cstdlib> // getenv (ATX_VOL_PROFILE)
 #include <limits>
+#include <optional> // std::nullopt (cold accurate re-inversion on audit failure)
 #include <utility>
 #include <vector>
 
@@ -180,9 +181,11 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
   std::vector<double> expiry_T;
   std::vector<ParityReport> per_expiry;
   std::vector<SliceContext> context;
+  std::vector<CarryDiagnostics> carry_diag;
   expiry_T.reserve(n_chains);
   per_expiry.reserve(n_chains);
   context.reserve(n_chains);
+  carry_diag.reserve(n_chains);
 
   // Everything a slice needs to be SCORED after the surface is fully assembled
   // (and possibly calendar-repaired). We defer scoring out of the fit loop so
@@ -201,6 +204,17 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
 
   double worst = std::numeric_limits<double>::infinity();
   std::size_t idx = 0; // ascending write index / fitted-slice count
+  // Expiries dropped because carry could not be resolved (confidence gate /
+  // no quotable pair / degenerate forward). Surfaced through the report so a
+  // risk surface missing an expiry never reports clean health with no trace
+  // (§5.2: "uncertain carry is surfaced, not hidden").
+  std::size_t n_carry_skipped = 0;
+  // Expiries dropped because the fit-inversion AUDIT starved the slice below
+  // the usable-observation floor: it would have fit but for audit drops. The
+  // same silent-gap pattern as a carry skip, reached through §8.1's audit —
+  // counted and surfaced identically. Genuinely sparse slices (too few valid
+  // quotes regardless of the audit) keep the historical silent-skip shape.
+  std::size_t n_audit_starved = 0;
 
   // Calendar-monotone fit (CalendarRepair::MonotoneFit): carry the previous
   // fitted slice forward so the next slice can be fit with a calendar floor
@@ -235,13 +249,25 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
     // consumes in.deam.caches unconditionally, preserving this cold eSSVI
     // driver's historical cache behavior.
     const double t_deam = profile ? now_ns() : 0.0;
+    PrepareExpiryDiagnostics prep_diag{};
     Result<CanonicalPreparedExpiry> prepared_result =
         prepare_expiry(chain, static_cast<std::uint32_t>(chain_index), in,
-                       PreparedObservationPolicy::LegacyEssviCompatibility);
+                       PreparedObservationPolicy::LegacyEssviCompatibility, &prep_diag);
     if (profile)
       ms_deam += now_ns() - t_deam;
     if (!prepared_result.has_value()) {
-      continue; // fewer than the minimum usable strikes: skip this slice
+      if (prep_diag.carry_failed) {
+        // No slice, but the skip is counted, not hidden (§5.2).
+        ++n_carry_skipped;
+      } else if (prep_diag.n_fit_rows + prep_diag.n_audit_dropped >= kMinPreparedFitRows) {
+        // Fewer than the minimum usable strikes survived, but the slice would
+        // have reached the floor but for rows the fit-inversion audit dropped
+        // — the gap was CREATED by the audit; count it so admission can
+        // surface it instead of serving a silently thinner surface. Genuinely
+        // sparse slices keep the historical silent-skip shape.
+        ++n_audit_starved;
+      }
+      continue;
     }
     const double rate = prepared_result->rate;
     const double F = prepared_result->slice.forward();
@@ -277,6 +303,11 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
     //    fully assembled and (optionally) calendar-repaired.
     context.push_back(SliceContext{T, F, borrow, q_eff, prepared.fit_observations().size(),
                                    prepared.n_dropped()});
+    // Perf C1: retain the carry diagnostics the preparation's
+    // `resolve_chain_forward` already produced for this chain, ‖ context, so
+    // `VolaSession::build`'s certification layer can reuse it instead of a
+    // second, identical `resolve_chain_forward` call.
+    carry_diag.push_back(prep_diag.carry);
     pending.push_back(
         PendingSlice{std::move(prepared), T, rate, q_eff, static_cast<std::uint16_t>(idx)});
 
@@ -373,10 +404,13 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
       std::move(expiry_T),
       std::move(per_expiry),
       std::move(context),
+      std::move(carry_diag),
       worst,
       calendar_arb_free,
       idx,
       n_calendar_viol_pre,
+      n_carry_skipped,
+      n_audit_starved,
   };
   return Ok(std::move(out));
 }

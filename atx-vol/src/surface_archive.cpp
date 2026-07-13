@@ -20,9 +20,9 @@
 
 #include "atx/core/bit.hpp" // next_pow2, is_pow2
 #include "atx/core/error.hpp"
-#include "atx/core/hash.hpp"       // hash_bytes
-#include "atx/vol/american.hpp"    // AlOpts, AmericanMethod
-#include "atx/vol/dense_slice.hpp" // ConvexSliceFit
+#include "atx/core/hash.hpp"               // hash_bytes
+#include "atx/vol/american.hpp"            // AlOpts, AmericanMethod
+#include "atx/vol/dense_slice.hpp"         // ConvexSliceFit
 #include "atx/vol/detail/archive_util.hpp" // crc32c, crc32c_update, align_up, canonicalize_symbol
 #include "atx/vol/priced_surface.hpp"
 #include "atx/vol/vol_curve.hpp"   // IVolCurve, Convex/Essvi/SviCurve, CurveSurface
@@ -161,6 +161,7 @@ struct BlobPlan {
   std::uint16_t kind_bits{};
   std::uint32_t uid{};
   const PricedSurface *surf{nullptr};
+  std::optional<SurfaceProvenance> provenance{};
   std::uint64_t symbol_offset{};
   std::uint64_t symbol_size{};
   std::uint64_t pricing_offset{};
@@ -214,7 +215,71 @@ struct BlobPlan {
   return pc;
 }
 
+// Bits 0..11 — includes ValidationFailure::CarryGap (1u << 11), the
+// publish-with-Degraded reason: a Degraded+CarryGap provenance is a routinely
+// SERVED state and must round-trip the archive, not be refused as unknown.
+constexpr std::uint32_t kKnownValidationFailures = (1u << 12) - 1u;
+
+[[nodiscard]] bool provenance_record_valid(const ArchiveSurfaceProvenanceRecord &record) noexcept {
+  const bool fields_valid = record.marker == kArchiveProvenanceMarker && record.purpose <= 1u &&
+                            record.quality_mode <= 2u && record.state <= 3u &&
+                            (record.validation_failures & ~kKnownValidationFailures) == 0u;
+  const bool healthy_is_clean = record.state != static_cast<std::uint8_t>(SurfaceState::Healthy) ||
+                                record.validation_failures == 0u;
+  return fields_valid && healthy_is_clean;
+}
+
+[[nodiscard]] ArchiveSurfaceProvenanceRecord
+to_provenance_record(const SurfaceProvenance &provenance) noexcept {
+  ArchiveSurfaceProvenanceRecord record{};
+  record.marker = kArchiveProvenanceMarker;
+  record.purpose = static_cast<std::uint8_t>(provenance.purpose);
+  record.quality_mode = static_cast<std::uint8_t>(provenance.quality_mode);
+  record.state = static_cast<std::uint8_t>(provenance.state);
+  record.validation_failures = static_cast<std::uint32_t>(provenance.validation.failures);
+  record.validation_id = provenance.validation.validation_id;
+  record.source_generation = provenance.source_generation;
+  record.served_generation = provenance.served_generation;
+  return record;
+}
+
+[[nodiscard]] Result<SurfaceProvenance>
+from_provenance_record(const ArchiveSurfaceProvenanceRecord &record) {
+  if (record.marker == 0u) {
+    const auto *bytes = reinterpret_cast<const std::uint8_t *>(&record);
+    if (!std::all_of(bytes, bytes + sizeof record,
+                     [](std::uint8_t value) { return value == 0u; })) {
+      return Err(ErrorCode::ParseError,
+                 "surface archive: malformed legacy provenance bytes");
+    }
+    return Ok(legacy_surface_provenance());
+  }
+  if (!provenance_record_valid(record)) {
+    return Err(ErrorCode::ParseError, "surface archive: invalid surface provenance record");
+  }
+  SurfaceProvenance provenance;
+  provenance.purpose = static_cast<SurfacePurpose>(record.purpose);
+  provenance.quality_mode = static_cast<FitQualityMode>(record.quality_mode);
+  provenance.state = static_cast<SurfaceState>(record.state);
+  provenance.validation.failures = static_cast<ValidationFailure>(record.validation_failures);
+  provenance.validation.validation_id = record.validation_id;
+  provenance.source_generation = record.source_generation;
+  provenance.served_generation = record.served_generation;
+  provenance.legacy_format = false;
+  return Ok(provenance);
+}
+
 } // namespace
+
+SurfaceProvenance legacy_surface_provenance() noexcept {
+  SurfaceProvenance provenance;
+  provenance.purpose = SurfacePurpose::MarketMark;
+  provenance.quality_mode = FitQualityMode::Balanced;
+  provenance.state = SurfaceState::Degraded;
+  provenance.validation.failures = ValidationFailure::InsufficientData;
+  provenance.legacy_format = true;
+  return provenance;
+}
 
 // ── Writer ───────────────────────────────────────────────────────────────
 
@@ -258,6 +323,13 @@ Result<std::vector<std::byte>> write_surface_archive(std::span<const SurfaceArch
 
     BlobPlan plan;
     plan.surf = &ps;
+    plan.provenance = it.provenance;
+    if (plan.provenance.has_value()) {
+      const ArchiveSurfaceProvenanceRecord record = to_provenance_record(*plan.provenance);
+      if (!provenance_record_valid(record)) {
+        return Err(ErrorCode::InvalidArgument, "write_surface_archive: invalid surface provenance");
+      }
+    }
     // plan.symbol{} is zero-initialized (BlobPlan's default member init), so
     // bytes past canon_sym.size() stay zero -- matching the old canonicalize()
     // zero-pad tail without needing it explicitly here.
@@ -519,6 +591,10 @@ Result<std::vector<std::byte>> write_surface_archive(std::span<const SurfaceArch
     bh.payload_crc32c =
         crc32c(base + sizeof(SurfaceBlobHeader),
                static_cast<std::size_t>(plan.blob_size - sizeof(SurfaceBlobHeader)));
+    if (plan.provenance.has_value()) {
+      const ArchiveSurfaceProvenanceRecord record = to_provenance_record(*plan.provenance);
+      std::memcpy(bh.reserved, &record, sizeof record);
+    }
     std::memcpy(base, &bh, sizeof bh);
 
     // Whole-blob CRC into the owning lookup slot.
@@ -769,6 +845,35 @@ Result<ArchiveDirEntry> SurfaceArchive::find(std::string_view symbol) const {
   return de;
 }
 
+Result<SurfaceProvenance> SurfaceArchive::read_provenance(std::uint64_t offset, std::uint64_t size,
+                                                          std::uint32_t expected_crc) const {
+  if (size < sizeof(SurfaceBlobHeader) || offset > buffer_.size() ||
+      size > buffer_.size() - offset) {
+    return Err(ErrorCode::ParseError, "SurfaceArchive::provenance: blob out of bounds");
+  }
+  const std::byte *base = buf_at(buffer_, offset);
+  if (crc32c(base, static_cast<std::size_t>(size)) != expected_crc) {
+    return Err(ErrorCode::ParseError, "SurfaceArchive::provenance: blob checksum mismatch");
+  }
+  SurfaceBlobHeader header{};
+  std::memcpy(&header, base, sizeof header);
+  if (std::memcmp(header.magic, kBlobMagic, 8) != 0 || header.major != kArchiveMajor ||
+      header.blob_size != size || header.blob_header_size != sizeof(SurfaceBlobHeader)) {
+    return Err(ErrorCode::ParseError, "SurfaceArchive::provenance: invalid blob header");
+  }
+  ArchiveSurfaceProvenanceRecord record{};
+  std::memcpy(&record, header.reserved, sizeof record);
+  return from_provenance_record(record);
+}
+
+Result<SurfaceProvenance> SurfaceArchive::provenance(std::string_view symbol) const {
+  const ArchiveIndexSlot *slot = find_slot(symbol);
+  if (slot == nullptr) {
+    return Err(ErrorCode::NotFound, "SurfaceArchive::provenance: symbol not present");
+  }
+  return read_provenance(slot->surface_offset, slot->surface_size, slot->surface_crc32c);
+}
+
 Result<PricedSurface> SurfaceArchive::reconstruct(std::uint64_t offset, std::uint64_t size,
                                                   std::uint32_t expected_crc) const {
   if (size < sizeof(SurfaceBlobHeader)) {
@@ -793,6 +898,11 @@ Result<PricedSurface> SurfaceArchive::reconstruct(std::uint64_t offset, std::uin
   }
   if (bh.blob_size != size || bh.blob_header_size != sizeof(SurfaceBlobHeader)) {
     return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: blob size mismatch");
+  }
+  ArchiveSurfaceProvenanceRecord provenance_record{};
+  std::memcpy(&provenance_record, bh.reserved, sizeof provenance_record);
+  if (!from_provenance_record(provenance_record).has_value()) {
+    return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: invalid surface provenance");
   }
   // NOTE: the whole-blob `surface_crc32c` verified above STRICTLY SUBSUMES the
   // payload CRC (payload bytes are a subspan of the blob), so the hot path does NOT

@@ -30,17 +30,26 @@ using atx::vol::arb_check_butterfly_slice;
 using atx::vol::arb_check_butterfly_svi_mm;
 using atx::vol::arb_check_butterfly_svi_mm_surface;
 using atx::vol::arb_check_calendar;
+using atx::vol::arb_check_price_bounds;
 using atx::vol::arb_check_total_surface_all;
 using atx::vol::arb_filter_quotes_ex;
 using atx::vol::arb_project_calendar_essvi;
+using atx::vol::arb_project_calendar_essvi_pair;
 using atx::vol::arb_project_calendar_svi;
+using atx::vol::arb_project_calendar_svi_pair;
+using atx::vol::arb_project_calendar_c8_pair;
 using atx::vol::black76_price;
+using atx::vol::c8_slice_w;
+using atx::vol::C8Curve;
+using atx::vol::C8Params;
 using atx::vol::ConvexDenseCurve;
 using atx::vol::ConvexSliceFit;
 using atx::vol::CurveSet;
 using atx::vol::CurveSurface;
 using atx::vol::ErrorCode;
 using atx::vol::EssviParams;
+using atx::vol::EssviCurve;
+using atx::vol::essvi_total_w;
 using atx::vol::filter_default_opts;
 using atx::vol::FilterOpts;
 using atx::vol::has_flag;
@@ -51,6 +60,8 @@ using atx::vol::QuoteFlag;
 using atx::vol::Side;
 using atx::vol::svi_total_w;
 using atx::vol::SviParams;
+using atx::vol::SviCurve;
+using atx::vol::svi_total_w;
 using atx::vol::Universe;
 using atx::vol::VolSurface;
 
@@ -181,6 +192,66 @@ TEST(ArbCheckCalendarCurveSurface, CleanStackNoViolation) {
   const auto v = arb_check_calendar(surf, -0.2, 0.2, 21);
   ASSERT_TRUE(v.has_value());
   EXPECT_TRUE(v->empty());
+}
+
+// Oracle I-2/M-7: dense_slice.cpp's iv() clamps a sub-intrinsic served price
+// into Black's valid interval before total variance is formed, laundering
+// the violation into a near-zero vol that is invisible to every w-space
+// check (arb_check_calendar / arb_check_butterfly / the w-reconstructed
+// PriceBounds gate in risk_surface_validation.cpp all reconstruct FROM w).
+// This hand-built fit stands in for a served node ending up below discounted
+// intrinsic (e.g. a regression that slips past the fail-closed QP
+// feasibility check added for oracle I-4) — arb_check_price_bounds must
+// catch it directly in price space, which is exactly what makes it
+// independent of how the violation arose.
+TEST(ArbCheckPriceBoundsCurveSurface, FlagsSubIntrinsicConvexDenseNode) {
+  ConvexSliceFit fit;
+  fit.T = 0.10;
+  fit.F = 100.0;
+  fit.df = 0.98;
+  fit.u = {60.0, 80.0, 95.0};
+  fit.C = {41.0, 21.0, 2.0};  // C(95)=2 < intrinsic(95)=0.98*5=4.9
+
+  CurveSurface surface;
+  surface.push(std::make_unique<ConvexDenseCurve>(fit));
+
+  const auto violations = arb_check_price_bounds(surface, -0.60, 0.60, 64);
+  ASSERT_TRUE(violations.has_value());
+  EXPECT_FALSE(violations->empty());
+  for (const ArbViolation &v : *violations) {
+    EXPECT_EQ(v.kind, ArbViolation::Kind::PriceBounds);
+    EXPECT_GT(v.slack, 0.0);
+  }
+
+  // The w-space calendar/butterfly checks find nothing to complain about on
+  // this exact fixture (one slice; no w-space signal of the price violation)
+  // — the whole point of I-2.
+  const auto calendar = arb_check_calendar(surface, -0.60, 0.60, 64);
+  ASSERT_TRUE(calendar.has_value());
+  EXPECT_TRUE(calendar->empty());
+}
+
+TEST(ArbCheckPriceBoundsCurveSurface, CleanConvexDenseSliceHasNoViolations) {
+  CurveSurface surface;
+  surface.push(std::make_unique<ConvexDenseCurve>(flat_slice(0.25, 100.0, 0.99, 0.22)));
+  const auto violations = arb_check_price_bounds(surface, -0.60, 0.60, 64);
+  ASSERT_TRUE(violations.has_value());
+  EXPECT_TRUE(violations->empty());
+}
+
+TEST(ArbCheckPriceBoundsCurveSurface, NonConvexDenseSliceContributesNothing) {
+  CurveSurface surface;
+  surface.push(std::make_unique<SviCurve>(steep_svi_slice(), 1.0));
+  const auto violations = arb_check_price_bounds(surface, -0.60, 0.60, 64);
+  ASSERT_TRUE(violations.has_value());
+  EXPECT_TRUE(violations->empty());
+}
+
+TEST(ArbButterflyCurve, IndependentCheckerFlagsServedSviShape) {
+  const SviCurve curve(steep_svi_slice(), 1.0);
+  const auto violations = arb_check_butterfly(curve, -0.5, 0.5, 128);
+  ASSERT_TRUE(violations.has_value());
+  EXPECT_FALSE(violations->empty());
 }
 
 // ── Butterfly check ───────────────────────────────────────────────────────
@@ -535,6 +606,90 @@ TEST(ArbProjectCalendarEssvi, IdempotentOnAlreadyMonotone) {
   const double theta_before = surf.essvi_slices()[1].theta;
   ASSERT_TRUE(arb_project_calendar_essvi(surf, -0.3, 0.3, 32).has_value());
   EXPECT_NEAR(surf.essvi_slices()[1].theta, theta_before, 1.0e-15);
+}
+
+TEST(ArbProjectCalendarPair, EssviClosesSharedGridAndPreservesButterfly) {
+  EssviParams previous{};
+  previous.theta = 0.09;
+  previous.phi = 0.8;
+  previous.rho = -0.3;
+  previous.T = 0.25;
+  previous.F = 100.0;
+  EssviParams current = previous;
+  current.theta = 0.025;
+  current.T = 0.50;
+  const std::function<double(double)> floor =
+      [previous](double k) { return essvi_total_w(previous, k); };
+
+  const auto projection =
+      arb_project_calendar_essvi_pair(current, floor, -0.6, 0.6, 64);
+  ASSERT_TRUE(projection.has_value()) << projection.error().to_string();
+  EXPECT_GT(projection->passes, 0u);
+  for (int i = 0; i <= 64; ++i) {
+    const double k = -0.6 + 1.2 * static_cast<double>(i) / 64.0;
+    EXPECT_GE(essvi_total_w(current, k), floor(k) - 1.0e-7);
+  }
+  const EssviCurve served(current, 1.0);
+  const auto shape = arb_check_butterfly(served, -0.6, 0.6, 256);
+  ASSERT_TRUE(shape.has_value());
+  EXPECT_TRUE(shape->empty());
+}
+
+TEST(ArbProjectCalendarPair, SviUsesShapePreservingLevelShift) {
+  SviParams previous{};
+  previous.a = 0.08;
+  previous.b = 0.10;
+  previous.rho = -0.25;
+  previous.m = 0.0;
+  previous.sigma = 0.20;
+  previous.T = 0.25;
+  SviParams current = previous;
+  current.a = 0.01;
+  current.T = 0.50;
+  const double b_before = current.b;
+  const std::function<double(double)> floor =
+      [previous](double k) { return svi_total_w(previous, k); };
+
+  const auto projection =
+      arb_project_calendar_svi_pair(current, floor, -0.6, 0.6, 64);
+  ASSERT_TRUE(projection.has_value()) << projection.error().to_string();
+  EXPECT_EQ(projection->passes, 1u);
+  EXPECT_DOUBLE_EQ(current.b, b_before);
+  for (int i = 0; i <= 64; ++i) {
+    const double k = -0.6 + 1.2 * static_cast<double>(i) / 64.0;
+    EXPECT_GE(svi_total_w(current, k), floor(k) - 1.0e-7);
+  }
+  const SviCurve served(current, 1.0);
+  const auto shape = arb_check_butterfly(served, -0.6, 0.6, 256);
+  ASSERT_TRUE(shape.has_value());
+  EXPECT_TRUE(shape->empty());
+}
+
+TEST(ArbProjectCalendarPair, C8LevelShiftThenRevalidatesBumps) {
+  C8Params current{};
+  current.T = 0.50;
+  current.F = 100.0;
+  current.v = 0.025;
+  current.v_min = 0.022;
+  current.psi = -0.004;
+  current.p = 0.20;
+  current.c = 0.18;
+  current.kappa = -0.001;
+  const std::function<double(double)> floor =
+      [](double) { return 0.06; };
+
+  const auto projection =
+      arb_project_calendar_c8_pair(current, floor, -0.6, 0.6, 64);
+  ASSERT_TRUE(projection.has_value()) << projection.error().to_string();
+  EXPECT_GT(projection->passes, 0u);
+  for (int i = 0; i <= 64; ++i) {
+    const double k = -0.6 + 1.2 * static_cast<double>(i) / 64.0;
+    EXPECT_GE(c8_slice_w(current, k), floor(k) - 1.0e-7);
+  }
+  const C8Curve served(current, 1.0);
+  const auto shape = arb_check_butterfly(served, -0.6, 0.6, 256);
+  ASSERT_TRUE(shape.has_value());
+  EXPECT_TRUE(shape->empty());
 }
 
 // ── Quote pre-fit filters (mirrors test_prefit_filter.c) ──────────────────

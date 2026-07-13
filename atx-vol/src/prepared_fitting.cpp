@@ -133,6 +133,7 @@ Result<PreparedSlice> PreparedSliceBuilder::prepare_configured(const Chain &chai
                                                inputs.caches.put != nullptr,
                                                fit_set.n_score_inversions};
   out.fit_rows_ = std::move(fit_set.obs);
+  out.deam_audit_ = fit_set.deam_audit;
   if (inputs.prepare_scoring) {
     reserve_score_rows(out, out.fit_rows_.size());
   }
@@ -214,6 +215,7 @@ Result<PreparedSlice> PreparedSliceBuilder::prepare_legacy(const Chain &chain,
   if (inputs.prepare_scoring) {
     reserve_score_rows(out, chain.n_strikes());
   }
+  std::uint32_t n_audit_dropped = 0;
 
   for (std::size_t index = 0; index < chain.n_strikes(); ++index) {
     const double strike = chain.strikes[index];
@@ -232,10 +234,44 @@ Result<PreparedSlice> PreparedSliceBuilder::prepare_legacy(const Chain &chain,
     } else if (!quote_valid(chain, quote_index)) {
       observation.rejection = ObservationRejectionReason::InvalidBidAsk;
     } else {
-      const Result<double> market_iv = european_equiv_iv(
+      Result<double> market_iv = european_equiv_iv(
           chain.mids[quote_index], inputs.S, strike, chain.T, inputs.r, inputs.q_eff, side,
           inputs.method, inputs.al_opts, inputs.caches.for_side(side), inputs.iv_tolerance,
           inputs.iv_max_iterations);
+      // Correctness-first serving (§8.1): under `audit_fit_inversions` every
+      // fitted proposal is repriced against the cold Andersen-Lake reference. A
+      // failed proposal is recomputed accurately and re-audited; a row that
+      // still misses the half-spread budget is DROPPED, never fitted — the same
+      // protocol build_observations_european enforces on the curve-driver path.
+      // Default-off keeps the historical (unaudited-fit) path bit-identical.
+      if (market_iv.has_value() && inputs.audit_fit_inversions &&
+          inputs.method == AmericanMethod::AndersenLake) {
+        const double audit_spread = chain.asks[quote_index] - chain.bids[quote_index];
+        Result<IvRepricingAudit> audit = audit_european_equiv_iv(
+            chain.mids[quote_index], audit_spread, *market_iv, inputs.S, strike, chain.T, inputs.r,
+            inputs.q_eff, side, inputs.max_iv_residual_half_spreads);
+        if (!audit || !audit->passed) {
+          const Result<double> accurate =
+              european_equiv_iv(chain.mids[quote_index], inputs.S, strike, chain.T, inputs.r,
+                                inputs.q_eff, side, AmericanMethod::AndersenLake, std::nullopt,
+                                nullptr);
+          bool dropped = true;
+          if (accurate.has_value()) {
+            audit = audit_european_equiv_iv(chain.mids[quote_index], audit_spread, *accurate,
+                                            inputs.S, strike, chain.T, inputs.r, inputs.q_eff,
+                                            side, inputs.max_iv_residual_half_spreads);
+            if (audit && audit->passed) {
+              market_iv = accurate;
+              dropped = false;
+            }
+          }
+          if (dropped) {
+            market_iv = Err(ErrorCode::Unavailable,
+                            "prepare_legacy: fit-inversion audit rejected the row");
+            ++n_audit_dropped;
+          }
+        }
+      }
       if (!market_iv.has_value()) {
         observation.rejection = ObservationRejectionReason::Deamericanization;
       } else {
@@ -283,6 +319,14 @@ Result<PreparedSlice> PreparedSliceBuilder::prepare_legacy(const Chain &chain,
     }
     out.observations_.push_back(observation);
   }
+  // Written BEFORE the floor check so a caller can distinguish an
+  // audit-starved thin slice from a genuinely sparse one even on failure.
+  if (inputs.out_legacy_fit_rows != nullptr) {
+    *inputs.out_legacy_fit_rows = static_cast<std::uint32_t>(out.fit_rows_.size());
+  }
+  if (inputs.out_legacy_audit_dropped != nullptr) {
+    *inputs.out_legacy_audit_dropped = n_audit_dropped;
+  }
   if (out.fit_rows_.size() < kMinPreparedFitRows) {
     return Err(ErrorCode::NotFound,
                "PreparedSlice::create: fewer than 5 legacy eSSVI rows survived");
@@ -328,7 +372,8 @@ Result<PreparedBoard> PreparedBoard::create(std::vector<PreparedSlice> slices) {
 Result<CanonicalPreparedExpiry> prepare_expiry(const Chain &chain,
                                                std::uint32_t expiry_index,
                                                const SurfaceParityInputs &inputs,
-                                               PreparedObservationPolicy policy) {
+                                               PreparedObservationPolicy policy,
+                                               PrepareExpiryDiagnostics *diag) {
   if (!(inputs.S > 0.0) || !std::isfinite(inputs.S) || !std::isfinite(inputs.r) ||
       !(chain.T > 0.0) || !std::isfinite(chain.T)) {
     return Err(ErrorCode::InvalidArgument, "prepare_expiry: invalid spot, rate, or maturity");
@@ -359,11 +404,24 @@ Result<CanonicalPreparedExpiry> prepare_expiry(const Chain &chain,
     return Err(ErrorCode::InvalidArgument, "prepare_expiry: non-finite expiry rate");
   }
 
-  ATX_TRY(const ChainForward carry,
-          resolve_chain_forward(chain, inputs.S, rate, inputs.cash_divs, inputs.now_ts_ns,
-                                inputs.deam));
+  Result<ChainForward> carry_res =
+      resolve_chain_forward(chain, inputs.S, rate, inputs.cash_divs, inputs.now_ts_ns, inputs.deam);
+  if (!carry_res.has_value()) {
+    if (diag != nullptr) {
+      diag->carry_failed = true; // §5.2: the caller surfaces the carry skip
+    }
+    return ::tl::unexpected<::atx::core::Error>(std::move(carry_res).error());
+  }
+  const ChainForward carry = *std::move(carry_res);
   if (!(carry.forward > 0.0) || !std::isfinite(carry.forward)) {
+    if (diag != nullptr) {
+      diag->carry_failed = true;
+    }
     return Err(ErrorCode::Unavailable, "prepare_expiry: forward resolution was non-positive");
+  }
+  if (diag != nullptr) {
+    diag->carry_available = true;
+    diag->carry = carry.carry;
   }
 
   const double q_eff = rate - std::log(carry.forward / inputs.S) / chain.T;
@@ -394,6 +452,12 @@ Result<CanonicalPreparedExpiry> prepare_expiry(const Chain &chain,
   // historical eSSVI scoring population.
   prepare_inputs.prepare_scoring =
       policy == PreparedObservationPolicy::LegacyEssviCompatibility || inputs.score_parity;
+  prepare_inputs.audit_fit_inversions = inputs.deam.audit_fit_inversions;
+  prepare_inputs.max_iv_residual_half_spreads = inputs.deam.max_iv_residual_half_spreads;
+  if (diag != nullptr) {
+    prepare_inputs.out_legacy_fit_rows = &diag->n_fit_rows;
+    prepare_inputs.out_legacy_audit_dropped = &diag->n_audit_dropped;
+  }
   ATX_TRY(PreparedSlice prepared, PreparedSlice::create(chain, prepare_inputs));
   if (prepared.fit_observations().size() < kMinPreparedFitRows) {
     return Err(ErrorCode::NotFound, "prepare_expiry: fewer than five usable rows");

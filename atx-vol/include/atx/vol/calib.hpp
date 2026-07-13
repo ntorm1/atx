@@ -164,6 +164,24 @@ struct CalibOpts {
   // the bid/ask spread; those rows reuse the raw European IV and avoid the cold
   // Andersen-Lake inversion. The default preserves the historical full solve.
   double max_otm_shortcut_premium_spread_frac{0.0};
+  // A shortcut, correction-cache result, or fast Andersen-Lake result is only
+  // a proposal.  Reprice it with the cold accurate Andersen-Lake map and accept
+  // it only inside this fraction of one half-spread; otherwise fall back to an
+  // accurate inversion.  This is a hard residual ceiling, not a speed knob.
+  double max_inversion_residual_half_spreads{0.25};
+  // Proposal guards. Ultra-short, very low-vega and far-wing observations
+  // bypass the raw-European OTM shortcut and go directly to inversion.
+  double min_otm_shortcut_T{7.0 / 365.25};
+  double min_otm_shortcut_vega{1.0e-4};
+  double max_otm_shortcut_abs_k{0.50};
+  // Inversion certification tolerates DROPPED nodes (failed inversion or an
+  // over-budget residual — both excluded from the fit set and counted in
+  // diagnostics) up to this fraction of the rows entering the de-Am stage.
+  // Beyond it the slice's certificate is refused: fail-closed at the cap, not
+  // at the first bad quote (a lone crossed-into-intrinsic deep quote must not
+  // reject an entire risk generation; see deamer.hpp's documented node-drop
+  // semantics). Conservative default: one bad node in ten usable ones.
+  double max_certified_deam_drop_fraction{0.10};
 
   // Warm-start regularization.
   double prior_strength{0.0}; // shrinkage toward θ_prev (0 = none, 1 = strong)
@@ -297,6 +315,39 @@ struct FitDiag {
   std::uint32_t n_butterfly_viol{0};
 };
 
+struct InversionRouteDiagnostics {
+  std::uint32_t n_proposed{0};
+  std::uint32_t n_audited{0};
+  std::uint32_t n_accepted{0};
+  std::uint32_t n_fallback{0};
+  double p50_residual_half_spreads{0.0};
+  double p95_residual_half_spreads{0.0};
+  double max_residual_half_spreads{0.0};
+};
+
+// Per-observation de-Americanization audit summary.  The route buckets are
+// mutually exclusive for the initial proposal; accurate fallbacks are counted
+// on the originating route and in n_accurate_fallback.
+struct DeAmAuditDiagnostics {
+  InversionRouteDiagnostics shortcut{};
+  InversionRouteDiagnostics cache{};
+  InversionRouteDiagnostics fast{};
+  InversionRouteDiagnostics accurate{};
+  std::uint32_t n_forced_short_tenor{0};
+  std::uint32_t n_forced_low_vega{0};
+  std::uint32_t n_forced_far_wing{0};
+  std::uint32_t n_accurate_fallback{0};
+  std::uint32_t n_rejected_residual{0};
+  // Row-level ledger for the de-Am inversion stage (route counters can double
+  // count a fallback row across two routes; these never do). `n_deam_rows`
+  // counts fit rows entering the inversion stage; `n_deam_accepted` counts
+  // rows surviving into the European observation set. The difference is the
+  // tolerated node drops (failed inversion / over-budget residual /
+  // non-finite restatement) that certification caps by fraction.
+  std::uint32_t n_deam_rows{0};
+  std::uint32_t n_deam_accepted{0};
+};
+
 // The output of `build_observations`: the surviving rows plus the count of
 // quotes rejected by the filter cascade (`out_n_dropped` in the C).
 struct ObsSet {
@@ -307,6 +358,7 @@ struct ObsSet {
   // Independent raw-mid American-IV inversions performed only for parity
   // scoring semantics (anchor, cap warm-start, or OTM shortcut).
   std::uint32_t n_score_inversions{0};
+  DeAmAuditDiagnostics deam_audit{};
 };
 
 // ── Observation builder + accept predicate ───────────────────────────────
@@ -373,6 +425,18 @@ build_observations_european(const Chain &chain, double S, double r, double F, do
                             double iv_tol = 1.0e-7, std::uint16_t iv_max_iter = 64,
                             AmericanMethod method = AmericanMethod::AndersenLake,
                             bool prepare_scoring = true);
+
+// Inversion certificate over one slice's de-Americanization audit (charter
+// §5.3/§8.1: "a cache or shortcut may propose an answer; it may not certify
+// its own answer"; residual budgets bind on ACCEPTED nodes). True iff
+//   1. every route accepted no more proposals than it audited — a method with
+//      no cold-reference audit (e.g. AmericanMethod::Baw) can never certify;
+//   2. at least one row entered the de-Am stage and at least one survived; and
+//   3. the dropped-row fraction (failed inversion / over-budget residual —
+//      dropped nodes never reach the fit set) is within `max_drop_fraction`.
+// Fail-closed on a non-finite or negative budget.
+[[nodiscard]] bool deam_inversion_certified(const DeAmAuditDiagnostics &audit,
+                                            double max_drop_fraction) noexcept;
 
 // O(1) calibrator-population predicate (ports `ats_vol_calib_obs_accepted`):
 // would the (strike_idx, side) tuple survive the same cascade as one row of

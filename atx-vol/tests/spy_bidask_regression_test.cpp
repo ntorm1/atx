@@ -89,20 +89,26 @@ TEST(SpyBidAskRegression, PricerFitterExplicitConvexInBand) {
 
   PricerConfig cfg;
   cfg.preset = FitPreset::Fast;
+  cfg.quality_mode = FitQualityMode::Accuracy;
   CurveConfig cc;
   cc.kind = VolCurveKind::ConvexDense;
   cc.convex.node_cap = 40;
   cfg.curve = cc;
 
   PricerFitter fitter{cfg};
-  ASSERT_TRUE(fitter.fit(*chain).has_value());
+  const Status fit = fitter.fit(*chain);
+  ASSERT_TRUE(fit.has_value()) << fit.error().to_string();
   ASSERT_TRUE(fitter.fitted());
 
   const auto sc =
       price_in_band(fitter.surface()->session(), chain->underlying(), board->spot(), board->r);
   std::printf("[SPY PricerFitter(convex)] pxCLN(cold)=%.2f%% (%zu/%zu)\n", sc.px_clean,
               sc.n_clean_in, sc.n_clean);
-  EXPECT_GE(sc.px_clean, kPxCleanFloor);
+  EXPECT_GE(sc.px_clean, 70.0)
+      << "risk is shape-safe; the separate market-mark surface owns quote fidelity";
+  const auto mark_sc = price_in_band(fitter.market_mark_surface()->session(),
+                                     chain->underlying(), board->spot(), board->r);
+  EXPECT_GE(mark_sc.px_clean, 98.0);
 }
 
 TEST(SpyBidAskRegression, PricerFitterHftColdStartInBand) {
@@ -139,26 +145,31 @@ TEST(SpyBidAskRegression, AutoSelectPicksDenseForSpy) {
   }
 
   // No curve config => the unified policy recognizes the penny-dense ETF board
-  // and takes the O(N) HFT route without paying for held-out candidate fits.
+  // and takes the bounded Latency risk route without publishing LinearVariance.
   auto chain = OptionChain::from_frame(board->panel.frame, board->env());
   ASSERT_TRUE(chain.has_value()) << chain.error().to_string();
 
   PricerConfig cfg;
   cfg.preset = FitPreset::Fast; // cfg.curve left unset => auto-select
   PricerFitter fitter{cfg};
-  ASSERT_TRUE(fitter.fit(*chain).has_value());
+  const Status fit = fitter.fit(*chain);
+  ASSERT_TRUE(fit.has_value()) << fit.error().to_string();
 
   ASSERT_TRUE(fitter.decision().has_value());
   const auto &decision = *fitter.decision();
   std::printf("[SPY auto-policy] chose %s\n", to_string(decision.curve.kind));
   EXPECT_EQ(decision.profile.kind, atx::vol::ProfileKind::IndexEtfUltraLiquid);
-  EXPECT_EQ(decision.preset, FitPreset::Hft);
-  EXPECT_EQ(decision.curve.kind, VolCurveKind::LinearVariance);
+  EXPECT_EQ(decision.preset, FitPreset::Fast);
+  EXPECT_EQ(decision.curve.kind, VolCurveKind::ConvexDense);
   EXPECT_FALSE(fitter.selection().has_value());
 
   // And the served surface holds the headline.
   const auto sc =
       price_in_band(fitter.surface()->session(), chain->underlying(), board->spot(), board->r);
   std::printf("[SPY auto-select] pxCLN(cold)=%.2f%%\n", sc.px_clean);
-  EXPECT_GE(sc.px_clean, kPxCleanFloor);
+  EXPECT_GE(sc.px_clean, 50.0)
+      << "Latency risk trades mark fidelity for bounded certified work";
+  const auto mark_sc = price_in_band(fitter.market_mark_surface()->session(),
+                                     chain->underlying(), board->spot(), board->r);
+  EXPECT_GE(mark_sc.px_clean, 98.0);
 }
