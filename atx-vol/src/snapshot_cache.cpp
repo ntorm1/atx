@@ -18,10 +18,47 @@ namespace atx::vol {
 using SnapshotPtr = std::shared_ptr<const MarketSnapshot>;
 using SnapshotResult = Result<SnapshotPtr>;
 
+namespace {
+
+struct SnapshotCacheKey {
+  std::string path;
+  QueryPricingTier query_pricing_tier{QueryPricingTier::LegacyCompatible};
+
+  [[nodiscard]] bool operator==(const SnapshotCacheKey &) const noexcept = default;
+};
+
+struct SnapshotCacheKeyHash {
+  [[nodiscard]] std::size_t operator()(const SnapshotCacheKey &key) const noexcept {
+    const std::size_t path_hash = std::hash<std::string>{}(key.path);
+    const std::size_t tier_hash = static_cast<std::size_t>(key.query_pricing_tier);
+    return path_hash ^ (tier_hash << 1u);
+  }
+};
+
+[[nodiscard]] SnapshotCacheKey cache_key(std::string_view path,
+                                         QueryPricingTier query_pricing_tier) {
+  return SnapshotCacheKey{std::filesystem::path{path}.lexically_normal().string(),
+                          query_pricing_tier};
+}
+
+[[nodiscard]] SnapshotResult load_snapshot(std::string path, QueryPricingTier query_pricing_tier) {
+  ATX_TRY(MarketSnapshot snapshot, MarketSnapshot::load(path, query_pricing_tier));
+  return std::make_shared<const MarketSnapshot>(std::move(snapshot));
+}
+
+[[nodiscard]] std::shared_future<SnapshotResult> start_load(const std::string &path,
+                                                            QueryPricingTier query_pricing_tier) {
+  return std::async(std::launch::async,
+                    [path, query_pricing_tier] { return load_snapshot(path, query_pricing_tier); })
+      .share();
+}
+
+} // namespace
+
 struct SnapshotCache::Impl {
   struct Entry {
     std::shared_future<SnapshotResult> future;
-    std::list<std::string>::iterator recency;
+    std::list<SnapshotCacheKey>::iterator recency;
     std::size_t active_loads{0u};
     std::uint64_t generation{0u};
   };
@@ -29,14 +66,16 @@ struct SnapshotCache::Impl {
   explicit Impl(std::optional<std::size_t> max_entries_in = std::nullopt)
       : max_entries{max_entries_in} {}
 
-  void touch(std::unordered_map<std::string, Entry>::iterator entry) {
+  using EntryMap = std::unordered_map<SnapshotCacheKey, Entry, SnapshotCacheKeyHash>;
+
+  void touch(EntryMap::iterator entry) {
     recency.splice(recency.end(), recency, entry->second.recency);
   }
 
   // Must be called with mutex held. A shared_future copied by a load caller owns
   // its shared state independently, but we additionally retain every in-flight
   // entry in the map so later duplicate requests continue to coalesce.
-  void trim(std::string_view protected_key) {
+  void trim(const SnapshotCacheKey &protected_key) {
     if (!max_entries.has_value()) {
       return;
     }
@@ -65,8 +104,8 @@ struct SnapshotCache::Impl {
   }
 
   std::mutex mutex;
-  std::unordered_map<std::string, Entry> entries;
-  std::list<std::string> recency; // least-recently-used at front
+  EntryMap entries;
+  std::list<SnapshotCacheKey> recency; // least-recently-used at front
   std::optional<std::size_t> max_entries;
   std::uint64_t next_generation{1u};
   std::atomic<std::uint64_t> loads{0};
@@ -76,52 +115,35 @@ struct SnapshotCache::Impl {
   std::atomic<std::uint64_t> evictions{0};
 };
 
-namespace {
-
-[[nodiscard]] std::string cache_key(std::string_view path) {
-  return std::filesystem::path{path}.lexically_normal().string();
-}
-
-[[nodiscard]] SnapshotResult load_snapshot(std::string path) {
-  ATX_TRY(MarketSnapshot snapshot, MarketSnapshot::load(path));
-  return std::make_shared<const MarketSnapshot>(std::move(snapshot));
-}
-
-[[nodiscard]] std::shared_future<SnapshotResult> start_load(const std::string &path) {
-  return std::async(std::launch::async, [path] { return load_snapshot(path); }).share();
-}
-
-} // namespace
-
 SnapshotCache::SnapshotCache() : impl_{std::make_shared<Impl>()} {}
 SnapshotCache::SnapshotCache(std::size_t max_retained_entries)
     : impl_{std::make_shared<Impl>(std::max<std::size_t>(1u, max_retained_entries))} {}
 SnapshotCache::~SnapshotCache() = default;
 
-void SnapshotCache::prefetch(std::string archive_path) {
-  archive_path = cache_key(archive_path);
+void SnapshotCache::prefetch(std::string archive_path, QueryPricingTier query_pricing_tier) {
+  const SnapshotCacheKey key = cache_key(archive_path, query_pricing_tier);
   std::lock_guard lock{impl_->mutex};
-  const auto found = impl_->entries.find(archive_path);
+  const auto found = impl_->entries.find(key);
   if (found != impl_->entries.end()) {
     impl_->hits.fetch_add(1u, std::memory_order_relaxed);
     impl_->touch(found);
-    impl_->trim(archive_path);
+    impl_->trim(key);
     return;
   }
   impl_->prefetches.fetch_add(1u, std::memory_order_relaxed);
   impl_->loads.fetch_add(1u, std::memory_order_relaxed);
-  impl_->recency.push_back(archive_path);
+  impl_->recency.push_back(key);
   const auto recency = std::prev(impl_->recency.end());
-  impl_->entries.emplace(
-      archive_path,
-      Impl::Entry{start_load(archive_path), recency, 0u, impl_->next_generation++});
+  impl_->entries.emplace(key, Impl::Entry{start_load(key.path, key.query_pricing_tier), recency, 0u,
+                                          impl_->next_generation++});
   impl_->retained_entries.store(static_cast<std::uint64_t>(impl_->entries.size()),
                                 std::memory_order_relaxed);
-  impl_->trim(archive_path);
+  impl_->trim(key);
 }
 
-Result<SnapshotPtr> SnapshotCache::load(std::string_view archive_path) {
-  const std::string key = cache_key(archive_path);
+Result<SnapshotPtr> SnapshotCache::load(std::string_view archive_path,
+                                        QueryPricingTier query_pricing_tier) {
+  const SnapshotCacheKey key = cache_key(archive_path, query_pricing_tier);
   std::shared_future<SnapshotResult> future;
   std::uint64_t generation = 0u;
   {
@@ -135,7 +157,7 @@ Result<SnapshotPtr> SnapshotCache::load(std::string_view archive_path) {
       impl_->touch(found);
     } else {
       impl_->loads.fetch_add(1u, std::memory_order_relaxed);
-      future = start_load(key);
+      future = start_load(key.path, key.query_pricing_tier);
       impl_->recency.push_back(key);
       const auto recency = std::prev(impl_->recency.end());
       generation = impl_->next_generation++;

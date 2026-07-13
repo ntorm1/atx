@@ -16,6 +16,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -228,6 +229,93 @@ TEST(Backtest, SnapshotCacheCoalescesPrefetchAndLoads) {
   EXPECT_GE(stats.hits, 2u);
 }
 
+TEST(Backtest, ArchivedSnapshotDefaultsColdAndPreparesEverySurfaceForRequestedTier) {
+  const fs::path dir = fresh_dir("snapshot-query-tier");
+  const PricedSurface first_surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  const PricedSurface second_surface = make_surface(kUid + 1u, 25.0, 25.0, kBaseNow);
+  std::error_code ec;
+  fs::create_directories(dir, ec);
+  const std::string path = (dir / "2026-08-01.atxvsa").string();
+  const std::array<SurfaceArchiveItem, 2> items{
+      {{"SPX", &first_surface}, {"VIX", &second_surface}}};
+  const Status write_status = write_surface_archive_file(path, items);
+  ASSERT_TRUE(write_status.has_value()) << write_status.error().to_string();
+
+  auto legacy = MarketSnapshot::load(path);
+  ASSERT_TRUE(legacy.has_value()) << legacy.error().to_string();
+  ASSERT_EQ(legacy->surfaces().size(), items.size());
+  for (const PricedSurface &surface : legacy->surfaces()) {
+    EXPECT_EQ(surface.query_pricing_tier(), QueryPricingTier::LegacyCompatible);
+    EXPECT_EQ(surface.query_pricing_route(100.0, 0.25, Side::Put),
+              QueryPricingRoute::ColdReference);
+  }
+
+  auto fast = MarketSnapshot::load(path, QueryPricingTier::RepresentativeFast);
+  ASSERT_TRUE(fast.has_value()) << fast.error().to_string();
+  ASSERT_EQ(fast->surfaces().size(), items.size());
+  for (const PricedSurface &surface : fast->surfaces()) {
+    EXPECT_EQ(surface.query_pricing_tier(), QueryPricingTier::RepresentativeFast);
+  }
+}
+
+TEST(Backtest, SnapshotCacheIdentityIncludesNormalizedPathAndQueryTier) {
+  const fs::path dir = fresh_dir("snapshot-cache-tier-identity");
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  const std::string path = write_one(dir, "2026-08-01", "SPX", surface);
+  const std::string alias =
+      (fs::path{path}.parent_path() / "." / fs::path{path}.filename()).string();
+
+  MarketSnapshot::reset_open_count();
+  SnapshotCache cache;
+  auto legacy = cache.load(path);
+  auto same_legacy = cache.load(alias);
+  auto cold = cache.load(path, QueryPricingTier::ColdReference);
+  auto fast = cache.load(path, QueryPricingTier::RepresentativeFast);
+  ASSERT_TRUE(legacy.has_value()) << legacy.error().to_string();
+  ASSERT_TRUE(same_legacy.has_value()) << same_legacy.error().to_string();
+  ASSERT_TRUE(cold.has_value()) << cold.error().to_string();
+  ASSERT_TRUE(fast.has_value()) << fast.error().to_string();
+  EXPECT_EQ(legacy->get(), same_legacy->get());
+  EXPECT_NE(legacy->get(), cold->get());
+  EXPECT_NE(cold->get(), fast->get());
+  EXPECT_EQ((*legacy)->surfaces().front().query_pricing_tier(), QueryPricingTier::LegacyCompatible);
+  EXPECT_EQ((*cold)->surfaces().front().query_pricing_tier(), QueryPricingTier::ColdReference);
+  EXPECT_EQ((*fast)->surfaces().front().query_pricing_tier(), QueryPricingTier::RepresentativeFast);
+  EXPECT_EQ(MarketSnapshot::open_count(), 3u);
+  const SnapshotCacheStats stats = cache.stats();
+  EXPECT_EQ(stats.loads, 3u);
+  EXPECT_GE(stats.hits, 1u);
+  EXPECT_EQ(stats.retained_entries, 3u);
+}
+
+TEST(Backtest, RunConfigPropagatesQueryTierThroughPrefetchAndLoad) {
+  const fs::path dir = fresh_dir("run-query-tier");
+  const CorpusManifest manifest = make_evolving_corpus(dir, "SPX", 3);
+  auto clock = Clock::from_manifest(manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  RunConfig config;
+  config.query_pricing_tier = QueryPricingTier::RepresentativeFast;
+  config.snapshot_cache = std::make_shared<SnapshotCache>();
+  auto result = run_backtest(*clock, PortfolioState{}, config);
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+
+  const SnapshotCacheStats after_run = config.snapshot_cache->stats();
+  ASSERT_EQ(after_run.loads, static_cast<std::uint64_t>(clock->size()));
+  for (const SnapshotRef &ref : clock->refs()) {
+    auto snapshot = config.snapshot_cache->load(ref.archive_path, config.query_pricing_tier);
+    ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+    EXPECT_EQ((*snapshot)->surfaces().front().query_pricing_tier(),
+              QueryPricingTier::RepresentativeFast);
+  }
+  EXPECT_EQ(config.snapshot_cache->stats().loads, after_run.loads);
+
+  auto legacy = config.snapshot_cache->load(clock->refs().front().archive_path);
+  ASSERT_TRUE(legacy.has_value()) << legacy.error().to_string();
+  EXPECT_EQ((*legacy)->surfaces().front().query_pricing_tier(), QueryPricingTier::LegacyCompatible);
+  EXPECT_EQ(config.snapshot_cache->stats().loads, after_run.loads + 1u);
+}
+
 TEST(Backtest, BoundedSnapshotCacheCoalescesAndRetainsOnlyWorkingSet) {
   constexpr int kDates = 12;
   constexpr std::size_t kCapacity = 3u;
@@ -244,9 +332,8 @@ TEST(Backtest, BoundedSnapshotCacheCoalescesAndRetainsOnlyWorkingSet) {
   cache.prefetch(refs[0].archive_path);
   std::vector<std::future<Result<std::shared_ptr<const MarketSnapshot>>>> duplicate_loads;
   for (int i = 0; i < 8; ++i) {
-    duplicate_loads.push_back(std::async(std::launch::async, [&cache, path = refs[0].archive_path] {
-      return cache.load(path);
-    }));
+    duplicate_loads.push_back(std::async(
+        std::launch::async, [&cache, path = refs[0].archive_path] { return cache.load(path); }));
   }
   const MarketSnapshot *first = nullptr;
   for (auto &pending : duplicate_loads) {
@@ -477,8 +564,7 @@ TEST(Backtest, MissingExactExpiryObservationFailsClosed) {
   const PricedSurface d1 = make_surface(kUid, 103.0, 103.0, now1);
   const std::string p0 = write_one(dir, "2026-08-01", "SPX", d0);
   const std::string p1 = write_one(dir, "2026-09-15", "SPX", d1);
-  auto clock = Clock::from_manifest(make_manifest({{"2026-08-01", p0}, {"2026-09-15", p1}},
-                                                  "SPX"));
+  auto clock = Clock::from_manifest(make_manifest({{"2026-08-01", p0}, {"2026-09-15", p1}}, "SPX"));
   ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
 
   PortfolioState st;

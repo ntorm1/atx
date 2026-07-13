@@ -495,7 +495,7 @@ Status run_backtest_command(const fs::path &run_dir) {
   quote_owners.reserve(clock.size());
   for (const SnapshotRef &ref : clock.refs()) {
     ATX_TRY(std::shared_ptr<const MarketSnapshot> snapshot,
-            config.snapshot_cache->load(ref.archive_path));
+            config.snapshot_cache->load(ref.archive_path, config.query_pricing_tier));
     snapshot_owners.push_back(std::move(snapshot));
     ATX_TRY(std::vector<ListedOptionQuote> quotes,
             load_listed_quotes(spec, definitions, symbols, ref.date));

@@ -16,21 +16,22 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
-#include "atx/vol/american.hpp"        // american_price, american_price_cached, american_greeks
-#include "atx/vol/arb.hpp"             // arb_check_calendar (post-refit recheck)
-#include "atx/vol/correction.hpp"      // CorrectionCache, AmericanCorrectionCaches
-#include "atx/vol/curve_fit.hpp"       // fit_curve_surface (curve-agnostic driver)
-#include "atx/vol/data.hpp"           // data_install
-#include "atx/vol/dividend.hpp"        // hybrid_forward (representative carry)
-#include "atx/vol/essvi_calib.hpp"     // essvi_fit_slice (warm-start refit)
-#include "atx/vol/event_vol.hpp"       // EventSchedule, count_events_at, implied_emove
-#include "atx/vol/parity.hpp"          // chain_parity (incremental diagnostic refresh)
+#include "atx/vol/american.hpp"         // american_price, american_price_cached, american_greeks
+#include "atx/vol/arb.hpp"              // arb_check_calendar (post-refit recheck)
+#include "atx/vol/correction.hpp"       // CorrectionCache, AmericanCorrectionCaches
+#include "atx/vol/curve_fit.hpp"        // fit_curve_surface (curve-agnostic driver)
+#include "atx/vol/data.hpp"             // data_install
+#include "atx/vol/dividend.hpp"         // hybrid_forward (representative carry)
+#include "atx/vol/essvi_calib.hpp"      // essvi_fit_slice (warm-start refit)
+#include "atx/vol/event_vol.hpp"        // EventSchedule, count_events_at, implied_emove
+#include "atx/vol/parallel_for.hpp"     // bounded post-fit cache-bank fan-out
+#include "atx/vol/parity.hpp"           // chain_parity (incremental diagnostic refresh)
 #include "atx/vol/prepared_fitting.hpp" // CanonicalPreparedExpiry
-#include "atx/vol/projection.hpp"      // InterpMode, surface_insert_vol_slice, w_on_inserted_slice
-#include "atx/vol/surface_parity.hpp"  // run_surface_parity, SurfaceParityInputs/Report
-#include "atx/vol/universe.hpp"        // Universe, Underlying, Uid, Chain
-#include "atx/vol/vol_surface.hpp"     // VolSurface
-#include "atx/vol/vol_time.hpp"        // ns_from_year_fraction (eMove solve)
+#include "atx/vol/projection.hpp"       // InterpMode, surface_insert_vol_slice, w_on_inserted_slice
+#include "atx/vol/surface_parity.hpp"   // run_surface_parity, SurfaceParityInputs/Report
+#include "atx/vol/universe.hpp"         // Universe, Underlying, Uid, Chain
+#include "atx/vol/vol_surface.hpp"      // VolSurface
+#include "atx/vol/vol_time.hpp"         // ns_from_year_fraction (eMove solve)
 
 // DESIGN / PARITY NOTES
 // ---------------------
@@ -105,8 +106,7 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 }
 
 [[nodiscard]] double query_rate_at(const SessionInputs &in, double T) noexcept {
-  if (in.expiry_rates.empty() || T <= in.expiry_rate_T.front() ||
-      T >= in.expiry_rate_T.back()) {
+  if (in.expiry_rates.empty() || T <= in.expiry_rate_T.front() || T >= in.expiry_rate_T.back()) {
     return input_rate_at(in, T);
   }
   const auto it = std::upper_bound(in.expiry_rate_T.begin(), in.expiry_rate_T.end(), T);
@@ -115,8 +115,7 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
   if (T == in.expiry_rate_T[lo]) {
     return in.expiry_rates[lo];
   }
-  const double alpha = (T - in.expiry_rate_T[lo]) /
-                       (in.expiry_rate_T[hi] - in.expiry_rate_T[lo]);
+  const double alpha = (T - in.expiry_rate_T[lo]) / (in.expiry_rate_T[hi] - in.expiry_rate_T[lo]);
   const double log_df_lo = -in.expiry_rates[lo] * in.expiry_rate_T[lo];
   const double log_df_hi = -in.expiry_rates[hi] * in.expiry_rate_T[hi];
   return -(log_df_lo + alpha * (log_df_hi - log_df_lo)) / T;
@@ -170,37 +169,35 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
 // noexcept serve path already relies on (`shape_blend_total_variance` /
 // `model_w` call `surface_insert_vol_slice`, which builds `Err` strings the
 // same way).
-[[nodiscard]] double solve_implied_emove(
-    const EventSchedule* events, std::int64_t now_ts_ns,
-    std::span<const EssviParams> slices) noexcept {
+[[nodiscard]] double solve_implied_emove(const EventSchedule *events, std::int64_t now_ts_ns,
+                                         std::span<const EssviParams> slices) noexcept {
   if (events == nullptr || slices.size() < 2) {
     return kNaN;
   }
   const auto all = events->events();
   const auto it = std::upper_bound(all.begin(), all.end(), now_ts_ns);
   if (it == all.end()) {
-    return kNaN;  // no event strictly after "now"
+    return kNaN; // no event strictly after "now"
   }
   const std::int64_t event_ns = *it;
   const std::int64_t last_ns = ns_from_year_fraction(now_ts_ns, slices.back().T);
   if (event_ns > last_ns) {
-    return kNaN;  // event falls after the last fitted expiry -- nothing to bracket
+    return kNaN; // event falls after the last fitted expiry -- nothing to bracket
   }
 
   // "hi": first fitted slice at/after the event; "lo": the one just before
   // it. hi is guaranteed to be found (< slices.size()) by the check above.
   std::size_t hi = 0;
-  while (hi < slices.size() &&
-        ns_from_year_fraction(now_ts_ns, slices[hi].T) < event_ns) {
+  while (hi < slices.size() && ns_from_year_fraction(now_ts_ns, slices[hi].T) < event_ns) {
     ++hi;
   }
   if (hi == 0 || hi >= slices.size()) {
-    return kNaN;  // event at/before the first fitted expiry -- no low bracket
+    return kNaN; // event at/before the first fitted expiry -- no low bracket
   }
   const std::size_t lo = hi - 1;
 
-  const EssviParams& s_lo = slices[lo];
-  const EssviParams& s_hi = slices[hi];
+  const EssviParams &s_lo = slices[lo];
+  const EssviParams &s_hi = slices[hi];
   const double w1 = essvi_total_w(s_lo, 0.0);
   const double w2 = essvi_total_w(s_hi, 0.0);
   const std::size_t n1 = count_events_at(*events, now_ts_ns, s_lo.T);
@@ -210,40 +207,33 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
   return e.has_value() ? *e : kNaN;
 }
 
-[[nodiscard]] SessionCarryDiagnostics compact_carry(
-    const CarryDiagnostics& carry) noexcept {
-  return SessionCarryDiagnostics{
-      carry.n_candidates,
-      carry.n_attempted,
-      carry.n_solved,
-      carry.n_retained,
-      carry.effective_pair_count,
-      carry.dispersion,
-      carry.max_leave_one_out_shift,
-      carry.confidence_half_width,
-      carry.max_pcp_residual,
-      true,
-      carry.confident};
+[[nodiscard]] SessionCarryDiagnostics compact_carry(const CarryDiagnostics &carry) noexcept {
+  return SessionCarryDiagnostics{carry.n_candidates,
+                                 carry.n_attempted,
+                                 carry.n_solved,
+                                 carry.n_retained,
+                                 carry.effective_pair_count,
+                                 carry.dispersion,
+                                 carry.max_leave_one_out_shift,
+                                 carry.confidence_half_width,
+                                 carry.max_pcp_residual,
+                                 true,
+                                 carry.confident};
 }
 
-[[nodiscard]] std::size_t route_proposed(
-    const DeAmAuditDiagnostics& d) noexcept {
-  return static_cast<std::size_t>(d.shortcut.n_proposed) + d.cache.n_proposed +
-         d.fast.n_proposed + d.accurate.n_proposed;
+[[nodiscard]] std::size_t route_proposed(const DeAmAuditDiagnostics &d) noexcept {
+  return static_cast<std::size_t>(d.shortcut.n_proposed) + d.cache.n_proposed + d.fast.n_proposed +
+         d.accurate.n_proposed;
 }
 
-[[nodiscard]] std::size_t route_audited(
-    const DeAmAuditDiagnostics& d) noexcept {
-  return static_cast<std::size_t>(d.shortcut.n_audited) + d.cache.n_audited +
-         d.fast.n_audited + d.accurate.n_audited;
+[[nodiscard]] std::size_t route_audited(const DeAmAuditDiagnostics &d) noexcept {
+  return static_cast<std::size_t>(d.shortcut.n_audited) + d.cache.n_audited + d.fast.n_audited +
+         d.accurate.n_audited;
 }
 
-[[nodiscard]] double route_max_residual(
-    const DeAmAuditDiagnostics& d) noexcept {
-  return std::max({d.shortcut.max_residual_half_spreads,
-                   d.cache.max_residual_half_spreads,
-                   d.fast.max_residual_half_spreads,
-                   d.accurate.max_residual_half_spreads});
+[[nodiscard]] double route_max_residual(const DeAmAuditDiagnostics &d) noexcept {
+  return std::max({d.shortcut.max_residual_half_spreads, d.cache.max_residual_half_spreads,
+                   d.fast.max_residual_half_spreads, d.accurate.max_residual_half_spreads});
 }
 
 // Compatibility bridge until fit reports directly carry their compact input
@@ -264,29 +254,37 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
 // hot-path caches that `in.deam` never carries; such a carry is NOT valid
 // here). Empty (the default) recomputes, the fallback for any caller that
 // genuinely reaches certification without a certification-grade carry.
-[[nodiscard]] std::vector<SessionSliceDiagnostics> collect_input_diagnostics(
-    const Underlying& under, const SessionInputs& in,
-    std::span<const SliceContext> context,
-    const AmericanCorrectionCaches& deam_caches, bool fit_rows_audited,
-    std::span<const CarryDiagnostics> precomputed_carry = {},
-    std::vector<std::vector<FitObs>> *observation_cache = nullptr,
-    std::vector<std::vector<double>> *source_mid_cache = nullptr,
-    std::vector<std::vector<std::uint8_t>> *source_flag_cache = nullptr,
-    std::vector<std::vector<double>> *chain_mid_cache = nullptr,
-    std::vector<std::vector<std::uint8_t>> *chain_flag_cache = nullptr,
-    std::vector<std::vector<double>> *chain_bid_cache = nullptr,
-    std::vector<std::vector<double>> *chain_ask_cache = nullptr,
-    std::vector<std::vector<std::int64_t>> *chain_ts_cache = nullptr) {
+[[nodiscard]] std::vector<SessionSliceDiagnostics>
+collect_input_diagnostics(const Underlying &under, const SessionInputs &in,
+                          std::span<const SliceContext> context,
+                          const AmericanCorrectionCaches &deam_caches, bool fit_rows_audited,
+                          std::span<const CarryDiagnostics> precomputed_carry = {},
+                          std::vector<std::vector<FitObs>> *observation_cache = nullptr,
+                          std::vector<std::vector<double>> *source_mid_cache = nullptr,
+                          std::vector<std::vector<std::uint8_t>> *source_flag_cache = nullptr,
+                          std::vector<std::vector<double>> *chain_mid_cache = nullptr,
+                          std::vector<std::vector<std::uint8_t>> *chain_flag_cache = nullptr,
+                          std::vector<std::vector<double>> *chain_bid_cache = nullptr,
+                          std::vector<std::vector<double>> *chain_ask_cache = nullptr,
+                          std::vector<std::vector<std::int64_t>> *chain_ts_cache = nullptr) {
   std::vector<SessionSliceDiagnostics> out;
   out.reserve(context.size());
-  if (observation_cache != nullptr) observation_cache->reserve(context.size());
-  if (source_mid_cache != nullptr) source_mid_cache->reserve(context.size());
-  if (source_flag_cache != nullptr) source_flag_cache->reserve(context.size());
-  if (chain_mid_cache != nullptr) chain_mid_cache->reserve(context.size());
-  if (chain_flag_cache != nullptr) chain_flag_cache->reserve(context.size());
-  if (chain_bid_cache != nullptr) chain_bid_cache->reserve(context.size());
-  if (chain_ask_cache != nullptr) chain_ask_cache->reserve(context.size());
-  if (chain_ts_cache != nullptr) chain_ts_cache->reserve(context.size());
+  if (observation_cache != nullptr)
+    observation_cache->reserve(context.size());
+  if (source_mid_cache != nullptr)
+    source_mid_cache->reserve(context.size());
+  if (source_flag_cache != nullptr)
+    source_flag_cache->reserve(context.size());
+  if (chain_mid_cache != nullptr)
+    chain_mid_cache->reserve(context.size());
+  if (chain_flag_cache != nullptr)
+    chain_flag_cache->reserve(context.size());
+  if (chain_bid_cache != nullptr)
+    chain_bid_cache->reserve(context.size());
+  if (chain_ask_cache != nullptr)
+    chain_ask_cache->reserve(context.size());
+  if (chain_ts_cache != nullptr)
+    chain_ts_cache->reserve(context.size());
   const bool use_precomputed_carry = precomputed_carry.size() == context.size();
   std::size_t chain_pos = 0;
   // Indexed loop: `slice_idx` is the ‖-vector ordinal into both `context` and
@@ -294,39 +292,50 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
   // a manually-incremented counter missed the chain-found path and served
   // slice 0's carry to every slice).
   for (std::size_t slice_idx = 0; slice_idx < context.size(); ++slice_idx) {
-    const SliceContext& slice = context[slice_idx];
-    if (observation_cache != nullptr) observation_cache->emplace_back();
-    if (source_mid_cache != nullptr) source_mid_cache->emplace_back();
-    if (source_flag_cache != nullptr) source_flag_cache->emplace_back();
-    if (chain_mid_cache != nullptr) chain_mid_cache->emplace_back();
-    if (chain_flag_cache != nullptr) chain_flag_cache->emplace_back();
-    if (chain_bid_cache != nullptr) chain_bid_cache->emplace_back();
-    if (chain_ask_cache != nullptr) chain_ask_cache->emplace_back();
-    if (chain_ts_cache != nullptr) chain_ts_cache->emplace_back();
+    const SliceContext &slice = context[slice_idx];
+    if (observation_cache != nullptr)
+      observation_cache->emplace_back();
+    if (source_mid_cache != nullptr)
+      source_mid_cache->emplace_back();
+    if (source_flag_cache != nullptr)
+      source_flag_cache->emplace_back();
+    if (chain_mid_cache != nullptr)
+      chain_mid_cache->emplace_back();
+    if (chain_flag_cache != nullptr)
+      chain_flag_cache->emplace_back();
+    if (chain_bid_cache != nullptr)
+      chain_bid_cache->emplace_back();
+    if (chain_ask_cache != nullptr)
+      chain_ask_cache->emplace_back();
+    if (chain_ts_cache != nullptr)
+      chain_ts_cache->emplace_back();
     SessionSliceDiagnostics sd{};
     sd.T = slice.T;
-    while (chain_pos < under.chains.size() &&
-           under.chains[chain_pos].T < slice.T - 1.0e-12) {
+    while (chain_pos < under.chains.size() && under.chains[chain_pos].T < slice.T - 1.0e-12) {
       ++chain_pos;
     }
     if (chain_pos >= under.chains.size() ||
-        std::fabs(under.chains[chain_pos].T - slice.T) >
-            1.0e-10 * std::max(1.0, slice.T)) {
+        std::fabs(under.chains[chain_pos].T - slice.T) > 1.0e-10 * std::max(1.0, slice.T)) {
       out.push_back(std::move(sd));
       continue;
     }
-    const Chain& chain = under.chains[chain_pos++];
-    if (chain_mid_cache != nullptr) chain_mid_cache->back() = chain.mids;
-    if (chain_flag_cache != nullptr) chain_flag_cache->back() = chain.flags;
-    if (chain_bid_cache != nullptr) chain_bid_cache->back() = chain.bids;
-    if (chain_ask_cache != nullptr) chain_ask_cache->back() = chain.asks;
-    if (chain_ts_cache != nullptr) chain_ts_cache->back() = chain.ts_ns;
+    const Chain &chain = under.chains[chain_pos++];
+    if (chain_mid_cache != nullptr)
+      chain_mid_cache->back() = chain.mids;
+    if (chain_flag_cache != nullptr)
+      chain_flag_cache->back() = chain.flags;
+    if (chain_bid_cache != nullptr)
+      chain_bid_cache->back() = chain.bids;
+    if (chain_ask_cache != nullptr)
+      chain_ask_cache->back() = chain.asks;
+    if (chain_ts_cache != nullptr)
+      chain_ts_cache->back() = chain.ts_ns;
     const double rate = input_rate_at(in, slice.T);
     if (use_precomputed_carry) {
       sd.carry = compact_carry(precomputed_carry[slice_idx]);
     } else {
-      const auto carry = resolve_chain_forward(
-          chain, in.S, rate, in.cash_divs, in.now_ts_ns, in.deam);
+      const auto carry =
+          resolve_chain_forward(chain, in.S, rate, in.cash_divs, in.now_ts_ns, in.deam);
       if (carry) {
         sd.carry = compact_carry(carry->carry);
       }
@@ -334,9 +343,8 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
 
     const double df = std::exp(-rate * slice.T);
     const auto obs = build_observations_european(
-        chain, in.S, rate, slice.forward, slice.T, df, in.calib, deam_caches,
-        in.deam.al_opts, in.deam.iv_tol, in.deam.iv_max_iter,
-        in.deam.method);
+        chain, in.S, rate, slice.forward, slice.T, df, in.calib, deam_caches, in.deam.al_opts,
+        in.deam.iv_tol, in.deam.iv_max_iter, in.deam.method);
     if (obs) {
       sd.inversion = obs->deam_audit;
       sd.inversion_available = true;
@@ -349,8 +357,7 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
       // certify (deam_inversion_certified enforces both).
       sd.inversion_certified =
           fit_rows_audited &&
-          deam_inversion_certified(sd.inversion,
-                                   in.calib.max_certified_deam_drop_fraction);
+          deam_inversion_certified(sd.inversion, in.calib.max_certified_deam_drop_fraction);
       if (observation_cache != nullptr && source_mid_cache != nullptr &&
           source_flag_cache != nullptr) {
         observation_cache->back() = obs->obs;
@@ -365,8 +372,8 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
             source_flag_cache->back().clear();
             break;
           }
-          const auto strike_idx = static_cast<std::uint16_t>(
-              std::distance(chain.strikes.begin(), strike_it));
+          const auto strike_idx =
+              static_cast<std::uint16_t>(std::distance(chain.strikes.begin(), strike_it));
           const std::size_t quote_idx = chain_index(strike_idx, fit_obs.side);
           if (quote_idx >= chain.mids.size() || quote_idx >= chain.flags.size()) {
             observation_cache->back().clear();
@@ -384,21 +391,19 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
   return out;
 }
 
-void aggregate_input_diagnostics(
-    std::span<const SessionSliceDiagnostics> slices,
-    SessionDiagnostics& diag) noexcept {
+void aggregate_input_diagnostics(std::span<const SessionSliceDiagnostics> slices,
+                                 SessionDiagnostics &diag) noexcept {
   double min_effective = std::numeric_limits<double>::infinity();
   bool all_inversion_certified = !slices.empty();
-  for (const SessionSliceDiagnostics& slice : slices) {
+  for (const SessionSliceDiagnostics &slice : slices) {
     if (slice.carry.available) {
       ++diag.n_carry_slices;
-      if (slice.carry.confident) ++diag.n_carry_confident;
+      if (slice.carry.confident)
+        ++diag.n_carry_confident;
       min_effective = std::min(min_effective, slice.carry.effective_pair_count);
-      diag.max_carry_dispersion =
-          std::max(diag.max_carry_dispersion, slice.carry.dispersion);
+      diag.max_carry_dispersion = std::max(diag.max_carry_dispersion, slice.carry.dispersion);
       diag.max_carry_leave_one_out =
-          std::max(diag.max_carry_leave_one_out,
-                   slice.carry.max_leave_one_out_shift);
+          std::max(diag.max_carry_leave_one_out, slice.carry.max_leave_one_out_shift);
     }
     if (slice.inversion_available) {
       ++diag.n_inversion_slices;
@@ -407,40 +412,30 @@ void aggregate_input_diagnostics(
       diag.n_iv_fallback += slice.inversion.n_accurate_fallback;
       diag.n_iv_rejected_residual += slice.inversion.n_rejected_residual;
       diag.max_iv_proposal_residual_half_spreads =
-          std::max(diag.max_iv_proposal_residual_half_spreads,
-                   route_max_residual(slice.inversion));
+          std::max(diag.max_iv_proposal_residual_half_spreads, route_max_residual(slice.inversion));
     }
     all_inversion_certified =
-        all_inversion_certified && slice.inversion_available &&
-        slice.inversion_certified;
+        all_inversion_certified && slice.inversion_available && slice.inversion_certified;
   }
-  diag.min_carry_effective_pairs =
-      std::isfinite(min_effective) ? min_effective : 0.0;
-  diag.carry_confident = diag.n_slices > 0 &&
-                         diag.n_carry_slices == diag.n_slices &&
+  diag.min_carry_effective_pairs = std::isfinite(min_effective) ? min_effective : 0.0;
+  diag.carry_confident = diag.n_slices > 0 && diag.n_carry_slices == diag.n_slices &&
                          diag.n_carry_confident == diag.n_slices;
-  diag.inversion_certified = diag.n_slices > 0 &&
-                             slices.size() == diag.n_slices &&
-                             all_inversion_certified;
+  diag.inversion_certified =
+      diag.n_slices > 0 && slices.size() == diag.n_slices && all_inversion_certified;
 }
 
-}  // namespace
+} // namespace
 
-VolaSession::VolaSession(VolSurface&& surface, std::vector<SliceContext>&& ctx,
-                         std::vector<ParityReport>&& parity, SessionInputs in,
-                         const SessionDiagnostics& diag,
-                         std::vector<SessionSliceDiagnostics>&& slice_diag,
-                         std::optional<CorrectionCache>&& corr_call,
-                         std::optional<CorrectionCache>&& corr_put,
-                         std::optional<CurveSurface>&& curve_override)
-    : surface_{std::move(surface)},
-      ctx_{std::move(ctx)},
-      parity_{std::move(parity)},
-      in_{std::move(in)},
-      diag_{diag},
-      slice_diag_{std::move(slice_diag)},
-      corr_call_{std::move(corr_call)},
-      corr_put_{std::move(corr_put)},
+VolaSession::VolaSession(VolSurface &&surface, std::vector<SliceContext> &&ctx,
+                         std::vector<ParityReport> &&parity, SessionInputs in,
+                         const SessionDiagnostics &diag,
+                         std::vector<SessionSliceDiagnostics> &&slice_diag,
+                         std::optional<CorrectionCache> &&corr_call,
+                         std::optional<CorrectionCache> &&corr_put,
+                         std::optional<CurveSurface> &&curve_override)
+    : surface_{std::move(surface)}, ctx_{std::move(ctx)}, parity_{std::move(parity)},
+      in_{std::move(in)}, diag_{diag}, slice_diag_{std::move(slice_diag)},
+      corr_call_{std::move(corr_call)}, corr_put_{std::move(corr_put)},
       curve_override_{std::move(curve_override)} {}
 
 namespace {
@@ -451,11 +446,16 @@ struct BuiltCaches {
   std::optional<CorrectionCache> put;
 };
 
+struct FixedCacheCarry {
+  double rate{0.0};
+  double q_eff{0.0};
+};
+
 // Build both per-side Chebyshev correction caches over the underlying's
 // (k_log, T, sigma) box. A side whose build fails is left empty, so the pipeline
 // transparently falls back to the cold Andersen-Lake path for that side.
-[[nodiscard]] BuiltCaches build_session_caches(const Underlying& under,
-                                               const SessionInputs& in) {
+[[nodiscard]] BuiltCaches build_session_caches(const Underlying &under, const SessionInputs &in,
+                                               std::optional<FixedCacheCarry> fixed_carry = {}) {
   BuiltCaches out;
   if (under.chains.empty() || !(in.S > 0.0)) {
     return out;
@@ -467,7 +467,7 @@ struct BuiltCaches {
   double k_max = -std::numeric_limits<double>::infinity();
   double T_lo = std::numeric_limits<double>::infinity();
   double T_hi = -std::numeric_limits<double>::infinity();
-  for (const Chain& c : under.chains) {
+  for (const Chain &c : under.chains) {
     if (!(c.T > 0.0)) {
       continue;
     }
@@ -482,9 +482,9 @@ struct BuiltCaches {
       k_max = std::max(k_max, k);
     }
   }
-  if (!std::isfinite(k_min) || !std::isfinite(k_max) || !(k_max > k_min) ||
-      !std::isfinite(T_lo) || !(T_lo > 0.0)) {
-    return out;  // degenerate box -> cold path everywhere
+  if (!std::isfinite(k_min) || !std::isfinite(k_max) || !(k_max > k_min) || !std::isfinite(T_lo) ||
+      !(T_lo > 0.0)) {
+    return out; // degenerate box -> cold path everywhere
   }
 
   // Pad the box and keep T strictly ordered even for a single expiry.
@@ -499,11 +499,12 @@ struct BuiltCaches {
   // (F = S*e^{(r-q)T}). The correction is baked at this single carry; the
   // Black-76 leg always uses the real per-quote q_eff, and the small carry
   // mismatch cancels in the self-consistent invert/re-price round-trip.
-  const Chain& mid = under.chains[under.chains.size() / 2];
-  double q_rep = in.r;
-  if (mid.T > 0.0) {
-    const double F_rep = hybrid_forward(S, in.r, 0.0, mid.T, in.cash_divs,
-                                        mid.expiry_ns, in.now_ts_ns, in.deam.hyb);
+  const Chain &mid = under.chains[under.chains.size() / 2];
+  const double cache_rate = fixed_carry.has_value() ? fixed_carry->rate : in.r;
+  double q_rep = fixed_carry.has_value() ? fixed_carry->q_eff : in.r;
+  if (!fixed_carry.has_value() && mid.T > 0.0) {
+    const double F_rep =
+        hybrid_forward(S, in.r, 0.0, mid.T, in.cash_divs, mid.expiry_ns, in.now_ts_ns, in.deam.hyb);
     if (F_rep > 0.0 && std::isfinite(F_rep)) {
       q_rep = in.r - std::log(F_rep / S) / mid.T;
     }
@@ -513,23 +514,104 @@ struct BuiltCaches {
   constexpr std::uint16_t kNT = 8;
   constexpr std::uint16_t kNS = 12;
   Result<CorrectionCache> cc =
-      CorrectionCache::build(kNK, kNT, kNS, in.r, q_rep, k_min, k_max, T_min,
-                             T_max, kSigMin, kSigMax, Side::Call, in.deam.al_opts);
+      CorrectionCache::build(kNK, kNT, kNS, cache_rate, q_rep, k_min, k_max, T_min, T_max, kSigMin,
+                             kSigMax, Side::Call, in.deam.al_opts);
   if (cc) {
     out.call = std::move(*cc);
   }
   Result<CorrectionCache> pp =
-      CorrectionCache::build(kNK, kNT, kNS, in.r, q_rep, k_min, k_max, T_min,
-                             T_max, kSigMin, kSigMax, Side::Put, in.deam.al_opts);
+      CorrectionCache::build(kNK, kNT, kNS, cache_rate, q_rep, k_min, k_max, T_min, T_max, kSigMin,
+                             kSigMax, Side::Put, in.deam.al_opts);
   if (pp) {
     out.put = std::move(*pp);
   }
   return out;
 }
 
-}  // namespace
+} // namespace
 
-void apply_fit_preset(SessionInputs& in, FitPreset preset) noexcept {
+void VolaSession::build_fast_query_cache_bank(const Underlying &under) {
+  query_cache_bank_.clear();
+  if (in_.query_pricing_tier != QueryPricingTier::CarryBank || !in_.use_correction_cache ||
+      ctx_.empty()) {
+    return;
+  }
+
+  constexpr std::size_t kMaxCarryCenters = 16u;
+  struct CarryCandidate {
+    double T{0.0};
+    double rate{0.0};
+    double q_eff{0.0};
+  };
+  std::vector<CarryCandidate> candidates;
+  candidates.reserve(ctx_.size());
+  for (const SliceContext &context : ctx_) {
+    candidates.push_back(CarryCandidate{context.T, query_rate_at(in_, context.T), context.q_eff});
+  }
+
+  // Deterministic farthest-point selection in the same L1 carry metric used at
+  // query time. It minimizes the worst uncovered (r,q) regime much better than
+  // sampling uniformly in expiry when dividends create localized q jumps.
+  std::vector<std::size_t> selected{0u};
+  selected.reserve(std::min(kMaxCarryCenters, candidates.size()));
+  while (selected.size() < std::min(kMaxCarryCenters, candidates.size())) {
+    std::size_t farthest = candidates.size();
+    double farthest_distance = 0.0;
+    for (std::size_t candidate = 0u; candidate < candidates.size(); ++candidate) {
+      if (std::find(selected.begin(), selected.end(), candidate) != selected.end()) {
+        continue;
+      }
+      double nearest = std::numeric_limits<double>::infinity();
+      for (const std::size_t chosen : selected) {
+        nearest = std::min(nearest,
+                           std::fabs(candidates[candidate].rate - candidates[chosen].rate) +
+                               std::fabs(candidates[candidate].q_eff - candidates[chosen].q_eff));
+      }
+      if (nearest > farthest_distance) {
+        farthest = candidate;
+        farthest_distance = nearest;
+      }
+    }
+    if (farthest == candidates.size() || !(farthest_distance > 0.0)) {
+      break;
+    }
+    selected.push_back(farthest);
+  }
+  std::sort(selected.begin(), selected.end());
+
+  // Cache-pair construction is independent by carry center and is reached only
+  // after the surface-fit fan-out has joined. Reuse the fit worker budget here
+  // so an outer board scheduler can still force serial work with fit_workers=1.
+  // Each worker publishes to its own pre-sized slot; the serial compaction below
+  // therefore preserves selected/T order independent of task scheduling.
+  std::vector<BuiltCaches> built_by_center(selected.size());
+  parallel_for_dynamic(selected.size(), in_.fit_workers, [&](std::size_t slot) {
+    const std::size_t index = selected[slot];
+    built_by_center[slot] = build_session_caches(
+        under, in_, FixedCacheCarry{candidates[index].rate, candidates[index].q_eff});
+  });
+
+  query_cache_bank_.reserve(selected.size());
+  for (std::size_t slot = 0u; slot < selected.size(); ++slot) {
+    const std::size_t index = selected[slot];
+    const SliceContext &context = ctx_[index];
+    const double rate = candidates[index].rate;
+    const double q_eff = candidates[index].q_eff;
+    BuiltCaches &built = built_by_center[slot];
+    if (!built.call.has_value() && !built.put.has_value()) {
+      continue;
+    }
+    QueryCacheBankEntry entry;
+    entry.T = context.T;
+    entry.rate = rate;
+    entry.q_eff = q_eff;
+    entry.call = std::move(built.call);
+    entry.put = std::move(built.put);
+    query_cache_bank_.push_back(std::move(entry));
+  }
+}
+
+void apply_fit_preset(SessionInputs &in, FitPreset preset) noexcept {
   // Shared across every preset: route the American inversions / re-pricing
   // through the correction-cache hot path.
   in.use_correction_cache = true;
@@ -541,59 +623,57 @@ void apply_fit_preset(SessionInputs& in, FitPreset preset) noexcept {
   in.deam.method = AmericanMethod::AndersenLake;
   in.deam.max_borrow_pairs = 12;
   switch (preset) {
-    case FitPreset::Fast:
-      // Fast surface-fit path: the fast Andersen-Lake preset with the inversion
-      // tol matched to its ~1e-4 accuracy floor (a tighter tol collapses
-      // safeguarded Newton into bisection and slows the fit), and a single ATM
-      // borrow pair (the term borrow the smile then absorbs into log-moneyness).
-      in.deam.al_opts = al_fast_opts();
-      in.deam.iv_tol = 1.0e-5;
-      in.deam.n_atm = 1;
-      // Fast leaves the raw eSSVI surface and still scores parity diagnostics.
-      in.use_deam_cache_for_fit = true;
-      in.calendar_repair = CalendarRepair::None;
-      break;
-    case FitPreset::Hft:
-      in.deam.al_opts = al_fast_opts();
-      in.deam.iv_tol = 1.0e-5;
-      in.deam.n_atm = 1;
-      in.deam.max_borrow_pairs = 1;
-      in.curve.kind = VolCurveKind::LinearVariance;
-      in.calib.max_obs_per_slice = 48;
-      in.calib.max_otm_shortcut_premium_spread_frac = 0.50;
-      in.use_correction_cache = false;
-      in.score_parity = false;
-      in.enforce_calendar_floor = false;
-      in.use_deam_cache_for_fit = false;
-      in.calendar_repair = CalendarRepair::None;
-      break;
-    case FitPreset::Accurate:
-    case FitPreset::Robust:
-      // Reference fidelity: the ACCURATE Andersen-Lake preset (pinned explicitly
-      // so build() does not substitute the fast preset), a tight inversion tol,
-      // and three ATM borrow pairs.
-      in.deam.al_opts = al_default_opts();
-      in.deam.iv_tol = 1.0e-7;
-      in.deam.n_atm = 3;
-      // NOTE on the wing-residual layer: measured OFF here deliberately. On real
-      // SPY OPRA the eSSVI backbone alone already fits the tradeable smile to
-      // ~1.0 vol pt vega-weighted; enabling the additive HingeQuad residual moves
-      // that headline by ~0 (it only reshapes the low-vega deep wings, which the
-      // vega weighting discounts) and OVER-FITS sparse event wings (a lone deep
-      // put can swing ~50 vol pts) — matching the existing profile.cpp finding.
-      // So it stays at its default (disabled); accuracy comes from the backbone.
-      // Robust makes the surface calendar-arb-free near-money at held quality;
-      // Accurate reports the raw calendar status without altering the fit.
-      in.use_deam_cache_for_fit = (preset == FitPreset::Robust);
-      in.calendar_repair =
-          (preset == FitPreset::Robust) ? CalendarRepair::MonotoneFit
-                                        : CalendarRepair::None;
-      break;
+  case FitPreset::Fast:
+    // Fast surface-fit path: the fast Andersen-Lake preset with the inversion
+    // tol matched to its ~1e-4 accuracy floor (a tighter tol collapses
+    // safeguarded Newton into bisection and slows the fit), and a single ATM
+    // borrow pair (the term borrow the smile then absorbs into log-moneyness).
+    in.deam.al_opts = al_fast_opts();
+    in.deam.iv_tol = 1.0e-5;
+    in.deam.n_atm = 1;
+    // Fast leaves the raw eSSVI surface and still scores parity diagnostics.
+    in.use_deam_cache_for_fit = true;
+    in.calendar_repair = CalendarRepair::None;
+    break;
+  case FitPreset::Hft:
+    in.deam.al_opts = al_fast_opts();
+    in.deam.iv_tol = 1.0e-5;
+    in.deam.n_atm = 1;
+    in.deam.max_borrow_pairs = 1;
+    in.curve.kind = VolCurveKind::LinearVariance;
+    in.calib.max_obs_per_slice = 48;
+    in.calib.max_otm_shortcut_premium_spread_frac = 0.50;
+    in.use_correction_cache = false;
+    in.score_parity = false;
+    in.enforce_calendar_floor = false;
+    in.use_deam_cache_for_fit = false;
+    in.calendar_repair = CalendarRepair::None;
+    break;
+  case FitPreset::Accurate:
+  case FitPreset::Robust:
+    // Reference fidelity: the ACCURATE Andersen-Lake preset (pinned explicitly
+    // so build() does not substitute the fast preset), a tight inversion tol,
+    // and three ATM borrow pairs.
+    in.deam.al_opts = al_default_opts();
+    in.deam.iv_tol = 1.0e-7;
+    in.deam.n_atm = 3;
+    // NOTE on the wing-residual layer: measured OFF here deliberately. On real
+    // SPY OPRA the eSSVI backbone alone already fits the tradeable smile to
+    // ~1.0 vol pt vega-weighted; enabling the additive HingeQuad residual moves
+    // that headline by ~0 (it only reshapes the low-vega deep wings, which the
+    // vega weighting discounts) and OVER-FITS sparse event wings (a lone deep
+    // put can swing ~50 vol pts) — matching the existing profile.cpp finding.
+    // So it stays at its default (disabled); accuracy comes from the backbone.
+    // Robust makes the surface calendar-arb-free near-money at held quality;
+    // Accurate reports the raw calendar status without altering the fit.
+    in.use_deam_cache_for_fit = (preset == FitPreset::Robust);
+    in.calendar_repair =
+        (preset == FitPreset::Robust) ? CalendarRepair::MonotoneFit : CalendarRepair::None;
+    break;
   }
 }
 
-SessionInputs make_session_inputs(FitPreset preset, double S, double r,
-                                  std::int64_t now_ts_ns) {
+SessionInputs make_session_inputs(FitPreset preset, double S, double r, std::int64_t now_ts_ns) {
   SessionInputs in;
   in.S = S;
   in.r = r;
@@ -602,8 +682,7 @@ SessionInputs make_session_inputs(FitPreset preset, double S, double r,
   return in;
 }
 
-Result<VolaSession> VolaSession::build(const Underlying& under,
-                                       const SessionInputs& in) {
+Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInputs &in) {
   // The session is the fast production fit path: de-Americanize and sample the
   // correction cache with the fast ALO preset unless the caller pinned an
   // explicit accuracy. IV inversion / cache sampling only need ~1e-4 price
@@ -618,7 +697,10 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
     return Err(ErrorCode::InvalidArgument, "VolaSession::build: invalid expiry rate vectors");
   }
   if (!eff.expiry_rates.empty()) {
-    eff.use_correction_cache = false;
+    if (eff.query_pricing_tier == QueryPricingTier::LegacyCompatible ||
+        eff.query_pricing_tier == QueryPricingTier::ColdReference) {
+      eff.use_correction_cache = false;
+    }
     eff.use_deam_cache_for_fit = false;
   }
   if (!eff.deam.al_opts) {
@@ -661,9 +743,14 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
   BuiltCaches caches;
   if (eff.use_correction_cache) {
     caches = build_session_caches(under, eff);
-    sp.deam.caches = AmericanCorrectionCaches{
-        caches.call ? &*caches.call : nullptr,
-        caches.put ? &*caches.put : nullptr};
+    // RepresentativeFast/CarryBank may serve cached corrections, but never use
+    // a representative-rate cache to de-Americanize a term-rate fit. The fitted
+    // curve therefore remains on the cold reference even when its query tier is
+    // one of the faster surrogates.
+    if (eff.expiry_rates.empty()) {
+      sp.deam.caches = AmericanCorrectionCaches{caches.call ? &*caches.call : nullptr,
+                                                caches.put ? &*caches.put : nullptr};
+    }
     // Review fix (perf C1): the certification layer historically resolved
     // carry with the CALLER's deam options (eff.deam — whose caches this
     // session never populates), not the session-built hot-path caches now on
@@ -690,7 +777,7 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
     // convex slice is butterfly-arb-free by construction; this is the missing
     // half. k-range spans a wide moneyness band around the money.
     {
-      constexpr double kBand = 0.60;   // log-moneyness half-width to sample
+      constexpr double kBand = 0.60; // log-moneyness half-width to sample
       constexpr std::uint32_t kGrid = 64;
       const auto cal = arb_check_calendar(crep.surface, -kBand, kBand, kGrid);
       // A failed check must not read as "verified arb-free" (the prior bug:
@@ -714,7 +801,7 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
       double worst = std::numeric_limits<double>::infinity();
       double sum_frac = 0.0, sum_chi2 = 0.0, sum_rmse = 0.0;
       std::size_t np_scored = 0;
-      for (const ParityReport& p : crep.per_expiry) {
+      for (const ParityReport &p : crep.per_expiry) {
         if (p.n == 0) {
           continue;
         }
@@ -742,7 +829,7 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
         cdiag.parity_state = ParityDiagnosticState::Failed;
       }
       std::size_t nq = 0;
-      for (const SliceContext& c : crep.context) {
+      for (const SliceContext &c : crep.context) {
         nq += c.n_used;
       }
       cdiag.n_quotes = nq;
@@ -752,8 +839,7 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
     // unused, but VolaSession holds one by value. Cap >= 1 for create().
     ATX_TRY(VolSurface placeholder,
             VolSurface::create(under.uid, Parametrization::Essvi,
-                               std::max<std::size_t>(std::size_t{1},
-                                                     under.chains.size())));
+                               std::max<std::size_t>(std::size_t{1}, under.chains.size())));
     std::vector<std::vector<FitObs>> incremental_obs;
     std::vector<std::vector<double>> incremental_mids;
     std::vector<std::vector<std::uint8_t>> incremental_flags;
@@ -774,7 +860,7 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
     std::vector<SessionSliceDiagnostics> slice_diag;
     slice_diag.reserve(crep.context.size());
     for (std::size_t i = 0; i < crep.context.size(); ++i) {
-      SliceInputCertification& cert = crep.input_certification[i];
+      SliceInputCertification &cert = crep.input_certification[i];
       SessionSliceDiagnostics sd{};
       sd.T = crep.context[i].T;
       // carry_available=false == the certification resolve failed: leave the
@@ -785,8 +871,8 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
       }
       sd.inversion = cert.inversion;
       sd.inversion_available = true;
-      sd.inversion_certified = deam_inversion_certified(
-          sd.inversion, eff.calib.max_certified_deam_drop_fraction);
+      sd.inversion_certified =
+          deam_inversion_certified(sd.inversion, eff.calib.max_certified_deam_drop_fraction);
       slice_diag.push_back(sd);
       incremental_obs.push_back(std::move(cert.obs));
       incremental_mids.push_back(std::move(cert.source_mids));
@@ -800,21 +886,22 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
     aggregate_input_diagnostics(slice_diag, cdiag);
     cdiag.n_carry_skipped_expiries = crep.n_carry_skipped;
     retain_fitted_term_rates(eff, crep.context);
-    VolaSession session{std::move(placeholder), std::move(crep.context),
-                        std::move(crep.per_expiry), std::move(eff), cdiag,
-                        std::move(slice_diag), std::move(caches.call),
+    VolaSession session{std::move(placeholder),
+                        std::move(crep.context),
+                        std::move(crep.per_expiry),
+                        std::move(eff),
+                        cdiag,
+                        std::move(slice_diag),
+                        std::move(caches.call),
                         std::move(caches.put),
                         std::optional<CurveSurface>{std::move(crep.surface)}};
     session.incremental_observations_ =
-        std::make_shared<const IncrementalObservationStore>(
-            IncrementalObservationStore{std::move(incremental_obs),
-                                        std::move(incremental_mids),
-                                        std::move(incremental_flags),
-                                        std::move(incremental_chain_mids),
-                                        std::move(incremental_chain_flags),
-                                        std::move(incremental_chain_bids),
-                                        std::move(incremental_chain_asks),
-                                        std::move(incremental_chain_ts)});
+        std::make_shared<const IncrementalObservationStore>(IncrementalObservationStore{
+            std::move(incremental_obs), std::move(incremental_mids), std::move(incremental_flags),
+            std::move(incremental_chain_mids), std::move(incremental_chain_flags),
+            std::move(incremental_chain_bids), std::move(incremental_chain_asks),
+            std::move(incremental_chain_ts)});
+    session.build_fast_query_cache_bank(under);
     return Ok(std::move(session));
   }
 
@@ -831,7 +918,7 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
   double sum_frac = 0.0;
   double sum_chi2 = 0.0;
   double sum_rmse = 0.0;
-  for (const ParityReport& p : rep.per_expiry) {
+  for (const ParityReport &p : rep.per_expiry) {
     worst = std::min(worst, p.frac_fv_within_bidask);
     sum_frac += p.frac_fv_within_bidask;
     sum_chi2 += p.chi2_reduced;
@@ -855,7 +942,7 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
                                                        : ParityDiagnosticState::Failed;
 
   std::size_t n_quotes = 0;
-  for (const SliceContext& c : rep.context) {
+  for (const SliceContext &c : rep.context) {
     n_quotes += c.n_used;
   }
   diag.n_quotes = n_quotes;
@@ -879,9 +966,10 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
   // "serve exactly as if events were null" -- no separate gate needed on the
   // serve side. Root-cause fix (stamping `expiry_ns` directly onto fitted
   // eSSVI slices instead of synthesizing it from T) is a follow-up task.
-  diag.implied_emove = (eff.time.convention == TimeConvention::Calendar365)
-      ? solve_implied_emove(eff.events.get(), eff.now_ts_ns, rep.surface.essvi_slices())
-      : kNaN;
+  diag.implied_emove =
+      (eff.time.convention == TimeConvention::Calendar365)
+          ? solve_implied_emove(eff.events.get(), eff.now_ts_ns, rep.surface.essvi_slices())
+          : kNaN;
 
   std::vector<std::vector<FitObs>> incremental_obs;
   std::vector<std::vector<double>> incremental_mids;
@@ -905,42 +993,40 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
   // caches on sp.deam). When they differ, pass an empty span so the fallback
   // recompute runs — the historical serial path, bit-for-bit.
   const bool fit_carry_matches_certification =
-      sp.deam.caches.call == eff.deam.caches.call &&
-      sp.deam.caches.put == eff.deam.caches.put;
+      sp.deam.caches.call == eff.deam.caches.call && sp.deam.caches.put == eff.deam.caches.put;
   const std::span<const CarryDiagnostics> certification_carry =
-      fit_carry_matches_certification
-          ? std::span<const CarryDiagnostics>(rep.carry)
-          : std::span<const CarryDiagnostics>{};
+      fit_carry_matches_certification ? std::span<const CarryDiagnostics>(rep.carry)
+                                      : std::span<const CarryDiagnostics>{};
   std::vector<SessionSliceDiagnostics> slice_diag = collect_input_diagnostics(
       under, eff, rep.context, sp.deam.caches,
-      /*fit_rows_audited=*/eff.deam.audit_fit_inversions, certification_carry,
-      &incremental_obs, &incremental_mids, &incremental_flags,
-      &incremental_chain_mids, &incremental_chain_flags,
+      /*fit_rows_audited=*/eff.deam.audit_fit_inversions, certification_carry, &incremental_obs,
+      &incremental_mids, &incremental_flags, &incremental_chain_mids, &incremental_chain_flags,
       &incremental_chain_bids, &incremental_chain_asks, &incremental_chain_ts);
   aggregate_input_diagnostics(slice_diag, diag);
   diag.n_carry_skipped_expiries = rep.n_carry_skipped;
   diag.n_audit_starved_expiries = rep.n_audit_starved;
 
   retain_fitted_term_rates(eff, rep.context);
-  VolaSession session{std::move(rep.surface), std::move(rep.context),
-                      std::move(rep.per_expiry), std::move(eff), diag,
-                      std::move(slice_diag), std::move(caches.call),
-                      std::move(caches.put), std::optional<CurveSurface>{}};
+  VolaSession session{std::move(rep.surface),
+                      std::move(rep.context),
+                      std::move(rep.per_expiry),
+                      std::move(eff),
+                      diag,
+                      std::move(slice_diag),
+                      std::move(caches.call),
+                      std::move(caches.put),
+                      std::optional<CurveSurface>{}};
   session.incremental_observations_ =
-      std::make_shared<const IncrementalObservationStore>(
-          IncrementalObservationStore{std::move(incremental_obs),
-                                      std::move(incremental_mids),
-                                      std::move(incremental_flags),
-                                      std::move(incremental_chain_mids),
-                                      std::move(incremental_chain_flags),
-                                      std::move(incremental_chain_bids),
-                                      std::move(incremental_chain_asks),
-                                      std::move(incremental_chain_ts)});
+      std::make_shared<const IncrementalObservationStore>(IncrementalObservationStore{
+          std::move(incremental_obs), std::move(incremental_mids), std::move(incremental_flags),
+          std::move(incremental_chain_mids), std::move(incremental_chain_flags),
+          std::move(incremental_chain_bids), std::move(incremental_chain_asks),
+          std::move(incremental_chain_ts)});
+  session.build_fast_query_cache_bank(under);
   return Ok(std::move(session));
 }
 
-Result<VolaSession> VolaSession::from_frame(const QuoteFrame& frame,
-                                            const SessionInputs& in) {
+Result<VolaSession> VolaSession::from_frame(const QuoteFrame &frame, const SessionInputs &in) {
   // Mixed-convention guard: the frame carries the T convention it was built
   // under (`QuoteFrame::time`, read by `data_install` for Chain::T) and the
   // session retains its own copy (`SessionInputs::time`, see its doc). If they
@@ -954,7 +1040,7 @@ Result<VolaSession> VolaSession::from_frame(const QuoteFrame& frame,
   }
   Universe u;
   ATX_TRY(const Uid uid, data_install(u, frame));
-  ATX_TRY(Underlying* under, u.get_underlying(uid));
+  ATX_TRY(Underlying * under, u.get_underlying(uid));
   return build(*under, in);
 }
 
@@ -973,13 +1059,14 @@ VolaSession VolaSession::clone() const {
                    std::optional<CorrectionCache>{corr_put_},
                    std::move(curve_copy)};
   copy.incremental_observations_ = incremental_observations_;
+  copy.query_cache_bank_ = query_cache_bank_;
   return copy;
 }
 
 VolaSession::ForwardCarry VolaSession::interp_forward(double T) const noexcept {
   // Precondition: ctx_ is non-empty and ascending in T (build guarantees it).
-  const SliceContext& first = ctx_.front();
-  const SliceContext& last = ctx_.back();
+  const SliceContext &first = ctx_.front();
+  const SliceContext &last = ctx_.back();
   if (T <= first.T) {
     const double rate = query_rate_at(in_, T);
     if (T == first.T) {
@@ -1005,8 +1092,8 @@ VolaSession::ForwardCarry VolaSession::interp_forward(double T) const noexcept {
     ++hi;
   }
   const std::size_t lo = hi - 1;
-  const SliceContext& a = ctx_[lo];
-  const SliceContext& b = ctx_[hi];
+  const SliceContext &a = ctx_[lo];
+  const SliceContext &b = ctx_[hi];
   if (T == a.T) {
     return ForwardCarry{a.forward, a.q_eff, query_rate_at(in_, T)};
   }
@@ -1039,6 +1126,83 @@ double VolaSession::rate_at(double T) const noexcept {
   return query_rate_at(in_, T);
 }
 
+AmericanCorrectionCaches VolaSession::correction_caches_at(double T) const noexcept {
+  if (in_.query_pricing_tier == QueryPricingTier::ColdReference) {
+    return {};
+  }
+  if (query_cache_bank_.empty() || !(T > 0.0) || !std::isfinite(T)) {
+    return query_caches();
+  }
+  const ForwardCarry carry = interp_forward(T);
+  const QueryCacheBankEntry *best = nullptr;
+  double best_distance = std::numeric_limits<double>::infinity();
+  for (const QueryCacheBankEntry &entry : query_cache_bank_) {
+    const double distance =
+        std::fabs(carry.rate - entry.rate) + std::fabs(carry.q_eff - entry.q_eff);
+    if (distance < best_distance) {
+      best = &entry;
+      best_distance = distance;
+    }
+  }
+  if (best == nullptr) {
+    return query_caches();
+  }
+  return AmericanCorrectionCaches{best->call.has_value() ? &*best->call : nullptr,
+                                  best->put.has_value() ? &*best->put : nullptr};
+}
+
+CorrectionBlend VolaSession::correction_blend_at(double T, Side side) const noexcept {
+  if (in_.query_pricing_tier != QueryPricingTier::CarryBank || query_cache_bank_.empty() ||
+      !(T > 0.0) || !std::isfinite(T)) {
+    return CorrectionBlend::single(served_cache(T, side));
+  }
+
+  const auto cache_for_side = [side](const QueryCacheBankEntry &entry) noexcept {
+    return side == Side::Call ? (entry.call.has_value() ? &*entry.call : nullptr)
+                              : (entry.put.has_value() ? &*entry.put : nullptr);
+  };
+  const auto upper = std::lower_bound(query_cache_bank_.begin(), query_cache_bank_.end(), T,
+                                      [](const QueryCacheBankEntry &entry,
+                                         double maturity) noexcept { return entry.T < maturity; });
+  if (upper == query_cache_bank_.begin()) {
+    return CorrectionBlend::single(cache_for_side(*upper));
+  }
+  if (upper == query_cache_bank_.end()) {
+    return CorrectionBlend::single(cache_for_side(query_cache_bank_.back()));
+  }
+  if (upper->T == T) {
+    return CorrectionBlend::single(cache_for_side(*upper));
+  }
+
+  const QueryCacheBankEntry &hi = *upper;
+  const QueryCacheBankEntry &lo = *(upper - 1);
+  const CorrectionCache *lo_cache = cache_for_side(lo);
+  const CorrectionCache *hi_cache = cache_for_side(hi);
+  if (lo_cache == nullptr) {
+    return CorrectionBlend::single(hi_cache);
+  }
+  if (hi_cache == nullptr) {
+    return CorrectionBlend::single(lo_cache);
+  }
+
+  const ForwardCarry carry = interp_forward(T);
+  const double dr = hi.rate - lo.rate;
+  const double dq = hi.q_eff - lo.q_eff;
+  const double norm2 = dr * dr + dq * dq;
+  if (!(norm2 > 0.0) || !std::isfinite(norm2)) {
+    return CorrectionBlend::single(lo_cache);
+  }
+  const double projection = ((carry.rate - lo.rate) * dr + (carry.q_eff - lo.q_eff) * dq) / norm2;
+  const double upper_weight = std::clamp(projection, 0.0, 1.0);
+  if (upper_weight == 0.0) {
+    return CorrectionBlend::single(lo_cache);
+  }
+  if (upper_weight == 1.0) {
+    return CorrectionBlend::single(hi_cache);
+  }
+  return CorrectionBlend{lo_cache, hi_cache, upper_weight};
+}
+
 Result<PricedSurface> VolaSession::to_priced_surface() const {
   // Resolved cold-repricing scalars. `in_` carries the effective (post-build)
   // pricer method + Andersen-Lake preset; build() always engages al_opts (either
@@ -1061,7 +1225,7 @@ Result<PricedSurface> VolaSession::to_priced_surface() const {
     // Rebuild them into a uniform CurveSurface (df_i = exp(-r*T_i), ascending T,
     // parallel to ctx_) so the snapshot serves through the SAME polymorphic path.
     const std::span<const EssviParams> sl = surface_.essvi_slices();
-    for (const EssviParams& e : sl) {
+    for (const EssviParams &e : sl) {
       const double df = std::exp(-input_rate_at(in_, e.T) * e.T);
       cs.push(std::make_unique<EssviCurve>(e, df));
     }
@@ -1080,9 +1244,9 @@ double VolaSession::shape_blend_total_variance(double k_log, double T) const noe
   // ClampForReporting mirrors interp_forward's own out-of-range policy: a
   // query outside the fitted range serves the nearest endpoint slice rather
   // than being rejected.
-  auto handle = surface_insert_vol_slice(surface_, /*curves=*/nullptr, TimeModel{},
-                                         T, InterpMode::ShapeBlend,
-                                         ProjExtrapPolicy::ClampForReporting);
+  auto handle =
+      surface_insert_vol_slice(surface_, /*curves=*/nullptr, TimeModel{}, T, InterpMode::ShapeBlend,
+                               ProjExtrapPolicy::ClampForReporting);
   if (!handle) {
     return kNaN;
   }
@@ -1096,14 +1260,13 @@ double VolaSession::event_aware_total_variance(double k_log, double T) const noe
   // but `in_.interp` (not hardcoded ShapeBlend) selects the underlying
   // blend, and the event-aware overload of w_on_inserted_slice does the
   // censor/interpolate/re-add work.
-  auto handle = surface_insert_vol_slice(surface_, /*curves=*/nullptr, TimeModel{},
-                                         T, in_.interp,
+  auto handle = surface_insert_vol_slice(surface_, /*curves=*/nullptr, TimeModel{}, T, in_.interp,
                                          ProjExtrapPolicy::ClampForReporting);
   if (!handle) {
     return kNaN;
   }
-  return w_on_inserted_slice(surface_, *handle, k_log, in_.events.get(),
-                             diag_.implied_emove, in_.now_ts_ns);
+  return w_on_inserted_slice(surface_, *handle, k_log, in_.events.get(), diag_.implied_emove,
+                             in_.now_ts_ns);
 }
 
 double VolaSession::model_w(double k_log, double T) const noexcept {
@@ -1167,11 +1330,12 @@ Result<double> VolaSession::fair_value(double K, double T, Side side) const {
   const double k = std::log(K / fc.forward);
   const double sigma = model_iv(k, T);
 
-  // Cached hot path for the eSSVI default; cold (accurate) Andersen-Lake for the
-  // high-accuracy override surface (see served_cache).
-  const CorrectionCache* const cc = served_cache(side);
-  if (cc != nullptr) {
-    const double fv = american_price_cached(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, cc);
+  // Resolve the explicit query tier: cached/blended correction for a fast tier,
+  // or cold Andersen-Lake when the tier/session policy requires it.
+  const CorrectionBlend correction = correction_blend_at(T, side);
+  if (correction.usable(side)) {
+    const double fv =
+        american_price_cached(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, correction);
     if (!std::isfinite(fv)) {
       return Err(ErrorCode::Internal,
                  "VolaSession::fair_value: cached pricer produced a non-finite price");
@@ -1184,8 +1348,7 @@ Result<double> VolaSession::fair_value(double K, double T, Side side) const {
 
 Result<AmericanGreeks> VolaSession::greeks(double K, double T, Side side) const {
   if (!valid_query(K, T)) {
-    return Err(ErrorCode::InvalidArgument,
-               "VolaSession::greeks: non-finite or non-positive K/T");
+    return Err(ErrorCode::InvalidArgument, "VolaSession::greeks: non-finite or non-positive K/T");
   }
   const ForwardCarry fc = interp_forward(T);
   const double k = std::log(K / fc.forward);
@@ -1195,17 +1358,16 @@ Result<AmericanGreeks> VolaSession::greeks(double K, double T, Side side) const 
   // cache (override surface, or a side on the cold path) uses American finite
   // differences on the SAME cold american_price the fair_value branch prices with,
   // so greeks().price == fair_value() bit-identical (American, not Black-76).
-  const CorrectionCache* const use = served_cache(side);
-  if (use != nullptr) {
-    return american_greeks(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, use);
+  const CorrectionBlend correction = correction_blend_at(T, side);
+  if (correction.usable(side)) {
+    return american_greeks(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, correction);
   }
   return american_greeks_fd(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, in_.deam.method,
                             in_.deam.al_opts);
 }
 
 Status VolaSession::fair_value_ladder(double T, std::span<const double> strikes,
-                                      std::span<const Side> sides,
-                                      std::span<double> out) const {
+                                      std::span<const Side> sides, std::span<double> out) const {
   if (!std::isfinite(T) || !(T > 0.0)) {
     return Err(ErrorCode::InvalidArgument,
                "VolaSession::fair_value_ladder: non-finite or non-positive T");
@@ -1218,18 +1380,20 @@ Status VolaSession::fair_value_ladder(double T, std::span<const double> strikes,
   // the T-bracket forward/carry interpolation and this session's per-side cache
   // pointers do not vary with strike.
   const ForwardCarry fc = interp_forward(T);
+  const CorrectionBlend call_correction = correction_blend_at(T, Side::Call);
+  const CorrectionBlend put_correction = correction_blend_at(T, Side::Put);
   for (std::size_t i = 0; i < strikes.size(); ++i) {
     const double K = strikes[i];
     if (!std::isfinite(K) || !(K > 0.0)) {
-      out[i] = kNaN;  // a bad strike must not sink the rest of the reprice
+      out[i] = kNaN; // a bad strike must not sink the rest of the reprice
       continue;
     }
     const Side side = sides[i];
     const double k = std::log(K / fc.forward);
     const double sigma = model_iv(k, T);
-    const CorrectionCache* const cc = served_cache(side);
-    if (cc != nullptr) {
-      out[i] = american_price_cached(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, cc);
+    const CorrectionBlend &correction = side == Side::Call ? call_correction : put_correction;
+    if (correction.usable(side)) {
+      out[i] = american_price_cached(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, correction);
     } else {
       const auto p = american_price(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, in_.deam.method,
                                     in_.deam.al_opts);
@@ -1251,6 +1415,8 @@ Status VolaSession::greeks_ladder(double T, std::span<const double> strikes,
                "VolaSession::greeks_ladder: strikes/sides/out length mismatch");
   }
   const ForwardCarry fc = interp_forward(T);
+  const CorrectionBlend call_correction = correction_blend_at(T, Side::Call);
+  const CorrectionBlend put_correction = correction_blend_at(T, Side::Put);
   for (std::size_t i = 0; i < strikes.size(); ++i) {
     const double K = strikes[i];
     if (!std::isfinite(K) || !(K > 0.0)) {
@@ -1261,11 +1427,11 @@ Status VolaSession::greeks_ladder(double T, std::span<const double> strikes,
     const Side side = sides[i];
     const double k = std::log(K / fc.forward);
     const double sigma = model_iv(k, T);
-    const CorrectionCache* const use = served_cache(side);
+    const CorrectionBlend &correction = side == Side::Call ? call_correction : put_correction;
     // Cached hot path differentiates the cached graph; the null-cache cold path
     // finite-differences american_price so greeks.price == the cold fair_value.
-    const auto g = (use != nullptr)
-                       ? american_greeks(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, use)
+    const auto g = correction.usable(side)
+                       ? american_greeks(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, correction)
                        : american_greeks_fd(in_.S, K, T, sigma, fc.rate, fc.q_eff, side,
                                             in_.deam.method, in_.deam.al_opts);
     if (g.has_value()) {
@@ -1273,6 +1439,85 @@ Status VolaSession::greeks_ladder(double T, std::span<const double> strikes,
     } else {
       out[i] = AmericanGreeks{};
       out[i].price = kNaN;
+    }
+  }
+  return Ok();
+}
+
+Status VolaSession::evaluate_ladder(double T, std::span<const double> strikes,
+                                    std::span<const Side> sides, std::span<double> iv_out,
+                                    std::span<double> price_out,
+                                    std::span<AmericanGreeks> greeks_out) const {
+  if (!std::isfinite(T) || !(T > 0.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               "VolaSession::evaluate_ladder: non-finite or non-positive T");
+  }
+  const std::size_t n = strikes.size();
+  const auto valid_output_size = [n](const auto out) noexcept {
+    return out.empty() || out.size() == n;
+  };
+  if (sides.size() != n || !valid_output_size(iv_out) || !valid_output_size(price_out) ||
+      !valid_output_size(greeks_out)) {
+    return Err(ErrorCode::InvalidArgument,
+               "VolaSession::evaluate_ladder: input/output length mismatch");
+  }
+
+  const ForwardCarry fc = interp_forward(T);
+  const CorrectionBlend call_correction = correction_blend_at(T, Side::Call);
+  const CorrectionBlend put_correction = correction_blend_at(T, Side::Put);
+  for (std::size_t i = 0; i < n; ++i) {
+    const double K = strikes[i];
+    if (!std::isfinite(K) || !(K > 0.0)) {
+      if (!iv_out.empty()) {
+        iv_out[i] = kNaN;
+      }
+      if (!price_out.empty()) {
+        price_out[i] = kNaN;
+      }
+      if (!greeks_out.empty()) {
+        greeks_out[i] = AmericanGreeks{};
+        greeks_out[i].price = kNaN;
+      }
+      continue;
+    }
+
+    const Side side = sides[i];
+    const double k = std::log(K / fc.forward);
+    const double sigma = model_iv(k, T);
+    if (!iv_out.empty()) {
+      iv_out[i] = sigma;
+    }
+    const CorrectionBlend &correction = side == Side::Call ? call_correction : put_correction;
+    if (!greeks_out.empty()) {
+      const auto result =
+          correction.usable(side)
+              ? american_greeks(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, correction)
+              : american_greeks_fd(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, in_.deam.method,
+                                   in_.deam.al_opts);
+      if (result.has_value()) {
+        greeks_out[i] = *result;
+        if (!price_out.empty()) {
+          price_out[i] = result->price;
+        }
+      } else {
+        greeks_out[i] = AmericanGreeks{};
+        greeks_out[i].price = kNaN;
+        if (!price_out.empty()) {
+          price_out[i] = kNaN;
+        }
+      }
+      continue;
+    }
+    if (price_out.empty()) {
+      continue;
+    }
+
+    if (correction.usable(side)) {
+      price_out[i] = american_price_cached(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, correction);
+    } else {
+      const auto result = american_price(in_.S, K, T, sigma, fc.rate, fc.q_eff, side,
+                                         in_.deam.method, in_.deam.al_opts);
+      price_out[i] = result.has_value() ? *result : kNaN;
     }
   }
   return Ok();
@@ -1295,17 +1540,17 @@ VolaSession VolaSession::clone_for_refit() const {
                    std::move(put_cache),
                    std::move(curve_override)};
   copy.incremental_observations_ = incremental_observations_;
+  copy.query_cache_bank_ = query_cache_bank_;
   return copy;
 }
 
-Result<FitDiag> VolaSession::apply_prepared_essvi_refit(
-    std::size_t slice_idx, const CanonicalPreparedExpiry &prepared) {
+Result<FitDiag> VolaSession::apply_prepared_essvi_refit(std::size_t slice_idx,
+                                                        const CanonicalPreparedExpiry &prepared) {
   if (slice_idx >= ctx_.size() || slice_idx > std::numeric_limits<std::uint16_t>::max()) {
     return Err(ErrorCode::InvalidArgument,
                "VolaSession::apply_prepared_essvi_refit: slice index out of range");
   }
-  if (prepared.slice.fit_observations().empty() ||
-      prepared.slice.maturity() != ctx_[slice_idx].T) {
+  if (prepared.slice.fit_observations().empty() || prepared.slice.maturity() != ctx_[slice_idx].T) {
     return Err(ErrorCode::InvalidArgument,
                "VolaSession::apply_prepared_essvi_refit: incompatible prepared expiry");
   }
@@ -1340,8 +1585,7 @@ Result<FitDiag> VolaSession::apply_prepared_essvi_refit(
   std::vector<double> model_iv;
   model_iv.reserve(score.k_log.size());
   for (const double k_log : score.k_log) {
-    model_iv.push_back(
-        surface_.iv_on_slice(static_cast<std::uint16_t>(slice_idx), k_log));
+    model_iv.push_back(surface_.iv_on_slice(static_cast<std::uint16_t>(slice_idx), k_log));
   }
   ParityInputs parity_inputs{};
   parity_inputs.S = in_.S;
@@ -1352,7 +1596,7 @@ Result<FitDiag> VolaSession::apply_prepared_essvi_refit(
   parity_inputs.al_opts = in_.deam.al_opts;
   parity_inputs.band_k = in_.band_k;
   parity_inputs.n_curve_params = 3u;
-  parity_inputs.caches = query_caches();
+  parity_inputs.caches = correction_caches_at(context.T);
   ATX_TRY(const ParityReport refreshed,
           chain_parity(score.strike, score.bid, score.ask, score.mid, score.side, model_iv,
                        score.market_iv, parity_inputs));
@@ -1422,9 +1666,8 @@ Status VolaSession::refresh_refit_diagnostics() {
   return Ok();
 }
 
-Result<std::vector<FitObs>>
-VolaSession::cached_refit_observations(const Chain &chain,
-                                       std::size_t slice_idx) const {
+Result<std::vector<FitObs>> VolaSession::cached_refit_observations(const Chain &chain,
+                                                                   std::size_t slice_idx) const {
   if (incremental_observations_ == nullptr ||
       slice_idx >= incremental_observations_->observations.size() ||
       slice_idx >= incremental_observations_->source_mids.size() ||
@@ -1434,31 +1677,21 @@ VolaSession::cached_refit_observations(const Chain &chain,
       slice_idx >= incremental_observations_->chain_bids.size() ||
       slice_idx >= incremental_observations_->chain_asks.size() ||
       slice_idx >= incremental_observations_->chain_ts.size()) {
-    return Err(ErrorCode::NotFound,
-               "VolaSession::cached_refit_observations: no certified cache");
+    return Err(ErrorCode::NotFound, "VolaSession::cached_refit_observations: no certified cache");
   }
-  const std::vector<FitObs> &cached =
-      incremental_observations_->observations[slice_idx];
-  const std::vector<double> &source_mids =
-      incremental_observations_->source_mids[slice_idx];
+  const std::vector<FitObs> &cached = incremental_observations_->observations[slice_idx];
+  const std::vector<double> &source_mids = incremental_observations_->source_mids[slice_idx];
   const std::vector<std::uint8_t> &source_flags =
       incremental_observations_->source_flags[slice_idx];
-  const std::vector<double> &chain_mids =
-      incremental_observations_->chain_mids[slice_idx];
-  const std::vector<std::uint8_t> &chain_flags =
-      incremental_observations_->chain_flags[slice_idx];
-  const std::vector<double> &chain_bids =
-      incremental_observations_->chain_bids[slice_idx];
-  const std::vector<double> &chain_asks =
-      incremental_observations_->chain_asks[slice_idx];
-  const std::vector<std::int64_t> &chain_ts =
-      incremental_observations_->chain_ts[slice_idx];
+  const std::vector<double> &chain_mids = incremental_observations_->chain_mids[slice_idx];
+  const std::vector<std::uint8_t> &chain_flags = incremental_observations_->chain_flags[slice_idx];
+  const std::vector<double> &chain_bids = incremental_observations_->chain_bids[slice_idx];
+  const std::vector<double> &chain_asks = incremental_observations_->chain_asks[slice_idx];
+  const std::vector<std::int64_t> &chain_ts = incremental_observations_->chain_ts[slice_idx];
   if (cached.empty() || cached.size() != source_mids.size() ||
       cached.size() != source_flags.size() || chain.mids.size() != chain_mids.size() ||
-      chain.flags.size() != chain_flags.size() ||
-      chain.bids.size() != chain_bids.size() ||
-      chain.asks.size() != chain_asks.size() ||
-      chain.ts_ns.size() != chain_ts.size()) {
+      chain.flags.size() != chain_flags.size() || chain.bids.size() != chain_bids.size() ||
+      chain.asks.size() != chain_asks.size() || chain.ts_ns.size() != chain_ts.size()) {
     return Err(ErrorCode::NotFound,
                "VolaSession::cached_refit_observations: incomplete certified cache");
   }
@@ -1496,10 +1729,8 @@ VolaSession::cached_refit_observations(const Chain &chain,
     snapshot.mids = chain_mids;
     snapshot.flags = chain_flags;
     snapshot.ts_ns = chain_ts;
-    const std::vector<std::uint16_t> prior_pairs =
-        carry_pair_strikes(snapshot, in_.S, in_.deam);
-    const std::vector<std::uint16_t> current_pairs =
-        carry_pair_strikes(chain, in_.S, in_.deam);
+    const std::vector<std::uint16_t> prior_pairs = carry_pair_strikes(snapshot, in_.S, in_.deam);
+    const std::vector<std::uint16_t> current_pairs = carry_pair_strikes(chain, in_.S, in_.deam);
     if (prior_pairs != current_pairs) {
       return Err(ErrorCode::Unavailable,
                  "VolaSession::cached_refit_observations: carry pair eligibility changed");
@@ -1515,15 +1746,13 @@ VolaSession::cached_refit_observations(const Chain &chain,
                      "VolaSession::cached_refit_observations: malformed carry pair index");
         }
         const bool ts_known = quote_idx < chain.ts_ns.size();
-        carry_coordinate_inputs_changed =
-            carry_coordinate_inputs_changed ||
-            chain.mids[quote_idx] != chain_mids[quote_idx] ||
-            chain.flags[quote_idx] != chain_flags[quote_idx];
-        carry_weight_inputs_changed =
-            carry_weight_inputs_changed ||
-            chain.bids[quote_idx] != chain_bids[quote_idx] ||
-            chain.asks[quote_idx] != chain_asks[quote_idx] ||
-            (ts_known && chain.ts_ns[quote_idx] != chain_ts[quote_idx]);
+        carry_coordinate_inputs_changed = carry_coordinate_inputs_changed ||
+                                          chain.mids[quote_idx] != chain_mids[quote_idx] ||
+                                          chain.flags[quote_idx] != chain_flags[quote_idx];
+        carry_weight_inputs_changed = carry_weight_inputs_changed ||
+                                      chain.bids[quote_idx] != chain_bids[quote_idx] ||
+                                      chain.asks[quote_idx] != chain_asks[quote_idx] ||
+                                      (ts_known && chain.ts_ns[quote_idx] != chain_ts[quote_idx]);
       }
     }
     // Mid/eligibility changes alter the carry observations themselves and are
@@ -1535,8 +1764,8 @@ VolaSession::cached_refit_observations(const Chain &chain,
     }
     if (carry_weight_inputs_changed) {
       const double rate = input_rate_at(in_, chain.T);
-      const Result<ChainForward> refreshed_carry = resolve_chain_forward(
-          chain, in_.S, rate, in_.cash_divs, in_.now_ts_ns, in_.deam);
+      const Result<ChainForward> refreshed_carry =
+          resolve_chain_forward(chain, in_.S, rate, in_.cash_divs, in_.now_ts_ns, in_.deam);
       if (!refreshed_carry.has_value()) {
         return Err(std::move(refreshed_carry).error());
       }
@@ -1557,14 +1786,13 @@ VolaSession::cached_refit_observations(const Chain &chain,
   std::vector<FitObs> refreshed = cached;
   for (std::size_t i = 0; i < refreshed.size(); ++i) {
     FitObs &obs = refreshed[i];
-    const auto strike_it =
-        std::lower_bound(chain.strikes.begin(), chain.strikes.end(), obs.K);
+    const auto strike_it = std::lower_bound(chain.strikes.begin(), chain.strikes.end(), obs.K);
     if (strike_it == chain.strikes.end() || *strike_it != obs.K) {
       return Err(ErrorCode::Unavailable,
                  "VolaSession::cached_refit_observations: strike set changed");
     }
-    const auto strike_idx = static_cast<std::uint16_t>(
-        std::distance(chain.strikes.begin(), strike_it));
+    const auto strike_idx =
+        static_cast<std::uint16_t>(std::distance(chain.strikes.begin(), strike_it));
     const std::size_t quote_idx = chain_index(strike_idx, obs.side);
     if (quote_idx >= chain.bids.size() || quote_idx >= chain.asks.size() ||
         quote_idx >= chain.mids.size() || quote_idx >= chain.flags.size()) {
@@ -1575,24 +1803,21 @@ VolaSession::cached_refit_observations(const Chain &chain,
     const double ask = chain.asks[quote_idx];
     const double mid = chain.mids[quote_idx];
     const double mid_tolerance = 1.0e-12 * std::max(1.0, std::fabs(source_mids[i]));
-    if (!std::isfinite(bid) || !std::isfinite(ask) || !(bid > 0.0) ||
-        !(ask > bid) || std::fabs(mid - source_mids[i]) > mid_tolerance ||
+    if (!std::isfinite(bid) || !std::isfinite(ask) || !(bid > 0.0) || !(ask > bid) ||
+        std::fabs(mid - source_mids[i]) > mid_tolerance ||
         chain.flags[quote_idx] != source_flags[i]) {
       return Err(ErrorCode::Unavailable,
                  "VolaSession::cached_refit_observations: price or flags changed");
     }
     const double spread = ask - bid;
-    if ((in_.calib.max_spread_to_mid_pct > 0.0 &&
-         spread / mid > in_.calib.max_spread_to_mid_pct) ||
+    if ((in_.calib.max_spread_to_mid_pct > 0.0 && spread / mid > in_.calib.max_spread_to_mid_pct) ||
         !(obs.vega > 1.0e-12) ||
-        (in_.calib.max_spread_vol > 0.0 &&
-         spread / obs.vega > in_.calib.max_spread_vol)) {
+        (in_.calib.max_spread_vol > 0.0 && spread / obs.vega > in_.calib.max_spread_vol)) {
       return Err(ErrorCode::Unavailable,
                  "VolaSession::cached_refit_observations: quote left fit filter");
     }
     constexpr double weight_epsilon = 1.0e-18;
-    const double weight_sigma =
-        (obs.vega * obs.vega) / (spread * spread + weight_epsilon);
+    const double weight_sigma = (obs.vega * obs.vega) / (spread * spread + weight_epsilon);
     if (weight_sigma < in_.calib.min_vega_weight) {
       return Err(ErrorCode::Unavailable,
                  "VolaSession::cached_refit_observations: quote left weight filter");
@@ -1603,8 +1828,7 @@ VolaSession::cached_refit_observations(const Chain &chain,
                  "VolaSession::cached_refit_observations: invalid variance Jacobian");
     }
     obs.spread = spread;
-    obs.weight_w = (obs.vega * obs.vega) /
-                   (spread * spread + weight_epsilon) /
+    obs.weight_w = (obs.vega * obs.vega) / (spread * spread + weight_epsilon) /
                    (jacobian * jacobian + weight_epsilon);
     obs.active_weight_w = obs.weight_w;
     obs.noise_sigma = spread / obs.vega;
@@ -1612,15 +1836,12 @@ VolaSession::cached_refit_observations(const Chain &chain,
   return Ok(std::move(refreshed));
 }
 
-Result<FitDiag> VolaSession::refit_slice(std::size_t slice_idx,
-                                         std::span<const FitObs> new_obs) {
+Result<FitDiag> VolaSession::refit_slice(std::size_t slice_idx, std::span<const FitObs> new_obs) {
   if (slice_idx >= ctx_.size()) {
-    return Err(ErrorCode::InvalidArgument,
-               "VolaSession::refit_slice: slice_idx out of range");
+    return Err(ErrorCode::InvalidArgument, "VolaSession::refit_slice: slice_idx out of range");
   }
   if (new_obs.empty()) {
-    return Err(ErrorCode::InvalidArgument,
-               "VolaSession::refit_slice: empty observation set");
+    return Err(ErrorCode::InvalidArgument, "VolaSession::refit_slice: empty observation set");
   }
 
   // Multiplying every observation spread by one common positive scalar leaves
@@ -1628,27 +1849,23 @@ Result<FitDiag> VolaSession::refit_slice(std::size_t slice_idx,
   // far below valid quote precision), including the total-weight-scaled warm
   // prior. Detect that invariant venue update and retain the optimal curve.
   if ((diag_.incremental.attempts == 0u ||
-       (diag_.incremental.last_committed &&
-        diag_.incremental.last_fit_ms == 0.0)) &&
+       (diag_.incremental.last_committed && diag_.incremental.last_fit_ms == 0.0)) &&
       incremental_observations_ != nullptr &&
       slice_idx < incremental_observations_->observations.size()) {
-    const std::vector<FitObs> &prior_obs =
-        incremental_observations_->observations[slice_idx];
+    const std::vector<FitObs> &prior_obs = incremental_observations_->observations[slice_idx];
     if (prior_obs.size() == new_obs.size() && !prior_obs.empty() &&
         prior_obs.front().spread > 0.0 && new_obs.front().spread > 0.0) {
-      const double spread_ratio =
-          new_obs.front().spread / prior_obs.front().spread;
+      const double spread_ratio = new_obs.front().spread / prior_obs.front().spread;
       bool invariant = std::isfinite(spread_ratio) && spread_ratio > 0.0;
       for (std::size_t i = 0; invariant && i < prior_obs.size(); ++i) {
         const FitObs &old_row = prior_obs[i];
         const FitObs &new_row = new_obs[i];
         const double row_ratio = new_row.spread / old_row.spread;
-        invariant = old_row.k == new_row.k &&
-                    old_row.sigma_mkt == new_row.sigma_mkt &&
-                    old_row.w_mkt == new_row.w_mkt &&
-                    old_row.mid == new_row.mid && old_row.side == new_row.side &&
-                    std::fabs(row_ratio - spread_ratio) <=
-                        1.0e-9 * std::max(1.0, std::fabs(spread_ratio));
+        invariant =
+            old_row.k == new_row.k && old_row.sigma_mkt == new_row.sigma_mkt &&
+            old_row.w_mkt == new_row.w_mkt && old_row.mid == new_row.mid &&
+            old_row.side == new_row.side &&
+            std::fabs(row_ratio - spread_ratio) <= 1.0e-9 * std::max(1.0, std::fabs(spread_ratio));
       }
       if (invariant) {
         IncrementalRefitDiagnostics &incremental = diag_.incremental;
@@ -1681,16 +1898,14 @@ Result<FitDiag> VolaSession::refit_slice(std::size_t slice_idx,
                  "VolaSession::refit_slice: no override slice at that index");
     }
     const IVolCurve &current = *live_slices[slice_idx];
-    if (current.kind() != VolCurveKind::ConvexDense &&
-        current.kind() != VolCurveKind::Svi &&
+    if (current.kind() != VolCurveKind::ConvexDense && current.kind() != VolCurveKind::Svi &&
         current.kind() != VolCurveKind::C8) {
       return Err(ErrorCode::InvalidArgument,
                  "VolaSession::refit_slice: override kind is not locally admitted");
     }
 
     using RefitClock = std::chrono::steady_clock;
-    const auto elapsed_ms = [](RefitClock::time_point begin,
-                               RefitClock::time_point end) noexcept {
+    const auto elapsed_ms = [](RefitClock::time_point begin, RefitClock::time_point end) noexcept {
       return std::chrono::duration<double, std::milli>(end - begin).count();
     };
     IncrementalRefitDiagnostics &incremental = diag_.incremental;
@@ -1706,8 +1921,7 @@ Result<FitDiag> VolaSession::refit_slice(std::size_t slice_idx,
     const auto total_begin = RefitClock::now();
     const auto reject = [&]() noexcept {
       ++incremental.rolled_back;
-      incremental.last_total_ms =
-          elapsed_ms(total_begin, RefitClock::now());
+      incremental.last_total_ms = elapsed_ms(total_begin, RefitClock::now());
     };
 
     std::function<double(double)> w_prev;
@@ -1718,10 +1932,9 @@ Result<FitDiag> VolaSession::refit_slice(std::size_t slice_idx,
     const SliceContext &sc = ctx_[slice_idx];
     const auto fit_begin = RefitClock::now();
     FitDiag fit_diag{};
-    auto fitted = refit_slice_curve(in_.curve, current, new_obs, sc.forward,
-                                    sc.T, current.df(), w_prev, &fit_diag);
-    incremental.last_fit_ms =
-        elapsed_ms(fit_begin, RefitClock::now());
+    auto fitted = refit_slice_curve(in_.curve, current, new_obs, sc.forward, sc.T, current.df(),
+                                    w_prev, &fit_diag);
+    incremental.last_fit_ms = elapsed_ms(fit_begin, RefitClock::now());
     if (!fitted.has_value()) {
       reject();
       return Err(std::move(fitted).error());
@@ -1735,21 +1948,18 @@ Result<FitDiag> VolaSession::refit_slice(std::size_t slice_idx,
     if ((*fitted)->kind() != VolCurveKind::ConvexDense) {
       auto shape = arb_check_butterfly(**fitted, -0.60, 0.60, 256);
       if (!shape.has_value()) {
-        incremental.last_validation_ms =
-            elapsed_ms(validation_begin, RefitClock::now());
+        incremental.last_validation_ms = elapsed_ms(validation_begin, RefitClock::now());
         reject();
         return Err(std::move(shape).error());
       }
       if (!shape->empty()) {
-        incremental.last_validation_ms =
-            elapsed_ms(validation_begin, RefitClock::now());
+        incremental.last_validation_ms = elapsed_ms(validation_begin, RefitClock::now());
         reject();
         return Err(ErrorCode::Unavailable,
                    "VolaSession::refit_slice: strike-shape admission failed");
       }
     }
-    incremental.last_validation_ms =
-        elapsed_ms(validation_begin, RefitClock::now());
+    incremental.last_validation_ms = elapsed_ms(validation_begin, RefitClock::now());
 
     // Build an adjacent-only surface [previous?, candidate, next?]. The fitter
     // already projected candidate above previous; this independent check also
@@ -1767,8 +1977,7 @@ Result<FitDiag> VolaSession::refit_slice(std::size_t slice_idx,
       ++incremental.last_adjacent_pairs_checked;
     }
     auto calendar = arb_check_calendar(adjacent, -0.60, 0.60, 64);
-    incremental.last_calendar_ms =
-        elapsed_ms(calendar_begin, RefitClock::now());
+    incremental.last_calendar_ms = elapsed_ms(calendar_begin, RefitClock::now());
     if (!calendar.has_value()) {
       reject();
       return Err(std::move(calendar).error());
@@ -1780,17 +1989,15 @@ Result<FitDiag> VolaSession::refit_slice(std::size_t slice_idx,
     }
 
     CurveSurface staged = curve_override_->clone();
-    if (Status replace = staged.replace(slice_idx, std::move(*fitted));
-        !replace.has_value()) {
+    if (Status replace = staged.replace(slice_idx, std::move(*fitted)); !replace.has_value()) {
       reject();
       return Err(std::move(replace).error());
     }
     curve_override_ = std::move(staged);
     const std::size_t old_n_used = ctx_[slice_idx].n_used;
     ctx_[slice_idx].n_used = new_obs.size();
-    diag_.n_quotes = diag_.n_quotes >= old_n_used
-                         ? diag_.n_quotes - old_n_used + new_obs.size()
-                         : new_obs.size();
+    diag_.n_quotes = diag_.n_quotes >= old_n_used ? diag_.n_quotes - old_n_used + new_obs.size()
+                                                  : new_obs.size();
     diag_.calendar_arb_free = true;
     // I-2: refresh the full-surface price-bound self-check (not just the
     // touched pillar) so a still-violating slice elsewhere in the surface is
@@ -1798,14 +2005,12 @@ Result<FitDiag> VolaSession::refit_slice(std::size_t slice_idx,
     // refit — mirrors the OR-only, never-clear discipline of the
     // ValidationFailure merge itself.
     {
-      const auto price_bounds =
-          arb_check_price_bounds(*curve_override_, -0.60, 0.60, 64);
+      const auto price_bounds = arb_check_price_bounds(*curve_override_, -0.60, 0.60, 64);
       diag_.n_price_bound_violations = price_bounds ? price_bounds->size() : 0;
     }
     ++incremental.committed;
     incremental.last_committed = true;
-    incremental.last_total_ms =
-        elapsed_ms(total_begin, RefitClock::now());
+    incremental.last_total_ms = elapsed_ms(total_begin, RefitClock::now());
     return Ok(fit_diag);
   }
 
@@ -1817,13 +2022,12 @@ Result<FitDiag> VolaSession::refit_slice(std::size_t slice_idx,
   // Copy the current slice: it is BOTH the warm-start seed and the source of the
   // expiry identity we must preserve across the swap.
   const EssviParams warm = slices[slice_idx];
-  const SliceContext& sc = ctx_[slice_idx];
+  const SliceContext &sc = ctx_[slice_idx];
 
   // Keep the term structure calendar-monotone through the update by flooring the
   // ATM level at the previous slice's theta (a no-op for the first slice, and
   // only binds where the refit would otherwise invert against its neighbour).
-  const double theta_floor =
-      (slice_idx > 0) ? slices[slice_idx - 1].theta : 0.0;
+  const double theta_floor = (slice_idx > 0) ? slices[slice_idx - 1].theta : 0.0;
 
   using RefitClock = std::chrono::steady_clock;
   const auto total_begin = RefitClock::now();
@@ -1837,18 +2041,17 @@ Result<FitDiag> VolaSession::refit_slice(std::size_t slice_idx,
   incremental.last_committed = false;
   FitDiag diag{};
   const auto fit_begin = RefitClock::now();
-  Result<EssviParams> refit = essvi_fit_slice(new_obs, sc.T, sc.forward,
-                                              in_.calib, &diag, theta_floor,
-                                              &warm);
+  Result<EssviParams> refit =
+      essvi_fit_slice(new_obs, sc.T, sc.forward, in_.calib, &diag, theta_floor, &warm);
   incremental.last_fit_ms =
       std::chrono::duration<double, std::milli>(RefitClock::now() - fit_begin).count();
   if (!refit.has_value()) {
     ++incremental.rolled_back;
     incremental.last_total_ms =
         std::chrono::duration<double, std::milli>(RefitClock::now() - total_begin).count();
-    return Err(std::move(refit).error());  // surface untouched on failure
+    return Err(std::move(refit).error()); // surface untouched on failure
   }
-  refit->expiry_id = warm.expiry_id;   // preserve identity across the swap
+  refit->expiry_id = warm.expiry_id; // preserve identity across the swap
   refit->expiry_ns = warm.expiry_ns;
 
   if (Status st = surface_.set_slice_essvi(slice_idx, *refit); !st.has_value()) {
@@ -1873,4 +2076,4 @@ Result<FitDiag> VolaSession::refit_slice(std::size_t slice_idx,
   return Ok(diag);
 }
 
-}  // namespace atx::vol
+} // namespace atx::vol

@@ -39,6 +39,7 @@ namespace atx::vol {
 
 // Defined in correction.hpp — observed (non-owning) by the cached pricer/Greeks.
 class CorrectionCache;
+struct CorrectionBlend;
 
 // ── Andersen-Lake tuning knobs ──────────────────────────────────────────
 //
@@ -153,10 +154,10 @@ struct AlOpts {
 //         NotImplemented  — the double-continuation regime (q < r <= 0), or the
 //                           negative-carry corner where the asymptotic boundary
 //                           collapses (matches `andersen_lake`)
-[[nodiscard]] Status andersen_lake_put_slice(
-    double S, std::span<const double> strikes, double T, double sigma, double r,
-    double q, std::span<double> price_out,
-    const std::optional<AlOpts>& opts = std::nullopt);
+[[nodiscard]] Status andersen_lake_put_slice(double S, std::span<const double> strikes, double T,
+                                             double sigma, double r, double q,
+                                             std::span<double> price_out,
+                                             const std::optional<AlOpts> &opts = std::nullopt);
 
 // ── σ-axis Chebyshev boundary interpolation (fitted-smile board, P2.5) ───
 //
@@ -186,23 +187,23 @@ struct SigmaInterpOptions {
   // 0% ColdFallback). OFF forces the cold per-strike solve for every strike —
   // BIT-IDENTICAL to andersen_lake(S, K_i, T, σ_i, r, q, side) — the reference.
   bool use_sigma_boundary_interp = true;
-  std::uint16_t n_sigma = 8;               // σ Chebyshev-Lobatto nodes (cold solves)
-  double sigma_lo = 0.0;    // σ box lower bound; <= 0 => auto = min over in-guard σ
-  double sigma_hi = 0.0;    // σ box upper bound; <= 0 => auto = max over in-guard σ
-  double min_tau = 3.0 / 365.0;  // near-expiry guard: whole slice cold below this τ
-  double min_sigma = 0.01;       // small-σ guard: that strike cold below this σ
+  std::uint16_t n_sigma = 8;    // σ Chebyshev-Lobatto nodes (cold solves)
+  double sigma_lo = 0.0;        // σ box lower bound; <= 0 => auto = min over in-guard σ
+  double sigma_hi = 0.0;        // σ box upper bound; <= 0 => auto = max over in-guard σ
+  double min_tau = 3.0 / 365.0; // near-expiry guard: whole slice cold below this τ
+  double min_sigma = 0.01;      // small-σ guard: that strike cold below this σ
 };
 
 // Diagnostics from a *_slice_sigma call (optional out-param).
 struct SigmaSliceStats {
   std::size_t n_strikes = 0;
-  std::size_t n_boundary_solves = 0;  // n_σ build solves (+ one per ColdFallback)
-  std::size_t n_cold_fallback = 0;    // strikes routed to the cold solve
-  std::size_t n_interp = 0;           // strikes priced through the interpolant
-  std::uint16_t n_sigma = 0;          // σ-nodes actually used (0 when not built)
+  std::size_t n_boundary_solves = 0; // n_σ build solves (+ one per ColdFallback)
+  std::size_t n_cold_fallback = 0;   // strikes routed to the cold solve
+  std::size_t n_interp = 0;          // strikes priced through the interpolant
+  std::uint16_t n_sigma = 0;         // σ-nodes actually used (0 when not built)
   double sigma_lo = 0.0;
   double sigma_hi = 0.0;
-  bool used_interp = false;           // the interpolant was built for this slice
+  bool used_interp = false; // the interpolant was built for this slice
 };
 
 // Price MANY American PUT strikes, each at its OWN σ_i, at a fixed (S, T, r, q).
@@ -213,17 +214,19 @@ struct SigmaSliceStats {
 // @return InvalidArgument — S <= 0, negative T, a non-positive strike, a negative
 //                           σ, a span-length mismatch, or non-finite r/q
 //         NotImplemented  — the double-continuation corner, or a boundary collapse
-[[nodiscard]] Status andersen_lake_put_slice_sigma(
-    double S, std::span<const double> strikes, std::span<const double> sigmas, double T,
-    double r, double q, std::span<double> price_out, const SigmaInterpOptions& sopts = {},
-    const std::optional<AlOpts>& opts = std::nullopt, SigmaSliceStats* stats = nullptr);
+[[nodiscard]] Status andersen_lake_put_slice_sigma(double S, std::span<const double> strikes,
+                                                   std::span<const double> sigmas, double T,
+                                                   double r, double q, std::span<double> price_out,
+                                                   const SigmaInterpOptions &sopts = {},
+                                                   const std::optional<AlOpts> &opts = std::nullopt,
+                                                   SigmaSliceStats *stats = nullptr);
 
 // Price MANY American CALL strikes, each at its OWN σ_i, via the McDonald-Schroder
 // internal-put map. See andersen_lake_put_slice_sigma / SigmaInterpOptions.
 [[nodiscard]] Status andersen_lake_call_slice_sigma(
-    double S, std::span<const double> strikes, std::span<const double> sigmas, double T,
-    double r, double q, std::span<double> price_out, const SigmaInterpOptions& sopts = {},
-    const std::optional<AlOpts>& opts = std::nullopt, SigmaSliceStats* stats = nullptr);
+    double S, std::span<const double> strikes, std::span<const double> sigmas, double T, double r,
+    double q, std::span<double> price_out, const SigmaInterpOptions &sopts = {},
+    const std::optional<AlOpts> &opts = std::nullopt, SigmaSliceStats *stats = nullptr);
 
 // Barone-Adesi-Whaley American approximation.
 //
@@ -288,20 +291,26 @@ enum class AmericanMethod : std::uint8_t {
                                             const std::optional<AlOpts> &opts = std::nullopt);
 
 // Hot-path cached American price: Black-76 + F·correction(k_log, T, sigma) with
-// F = S·e^{(r-q)T} and k_log = ln(K/F). A null (or unpopulated) correction falls
-// back to the cold Andersen-Lake path, returning NaN if that solver fails.
+// F = S·e^{(r-q)T} and k_log = ln(K/F). A null, unpopulated, or opposite-side
+// correction falls back to the cold Andersen-Lake path, returning NaN if that
+// solver fails.
 //
 // Mirrors the C `ats_pricer_american_routed(..., correction, NULL, NULL)`.
 [[nodiscard]] double american_price_cached(double S, double K, double T, double sigma, double r,
                                            double q, Side side, const CorrectionCache *correction);
 
+// Same cached graph with an explicit call-constant blend of two fixed-carry
+// correction caches. Invalid blends degrade to the cold Andersen-Lake route;
+// exact weights 0/1 evaluate only the selected endpoint cache.
+[[nodiscard]] double american_price_cached(double S, double K, double T, double sigma, double r,
+                                           double q, Side side, const CorrectionBlend &correction);
+
 // ── American Greeks ─────────────────────────────────────────────────────
 //
 // First-order (delta, vega, rho, theta) are exact chain-rule on the Black-76
-// closed forms plus the analytic first-order correction partials. Second-order
-// (gamma, vanna, volga, charm) use central finite differences on the analytic
-// first-order correction gradient — the "FD wins" fallback the C library flags,
-// validated to ~1e-6 absolute against full FD.
+// closed forms plus analytic correction partials. Second-order
+// (gamma, vanna, volga, charm) differentiate the correction interpolant in the
+// same fused Clenshaw traversal, with no off-point finite-difference stencil.
 //
 // theta uses the calendar-time convention: ∂P/∂t = -∂P/∂T.
 struct AmericanGreeks {
@@ -318,8 +327,8 @@ struct AmericanGreeks {
   [[nodiscard]] bool operator==(const AmericanGreeks &) const = default;
 };
 
-// American Greeks + price. A null `correction` degrades to the Black-76 leg
-// (American -> European), exactly like the underlying cached pricer.
+// American Greeks + price. A null, unpopulated, or opposite-side `correction`
+// degrades to the Black-76 leg (American -> European).
 //
 // Degenerate-input policy: this SURFACES an error, deliberately asymmetric with
 // `american_vega`, which returns a 0.0 sentinel on the same input. The
@@ -330,6 +339,12 @@ struct AmericanGreeks {
 [[nodiscard]] Result<AmericanGreeks> american_greeks(double S, double K, double T, double sigma,
                                                      double r, double q, Side side,
                                                      const CorrectionCache *correction);
+
+// Blended fixed-carry cache route. `correction.upper_weight` remains constant
+// through every derivative so theta/charm do not absorb carry-curve slope.
+[[nodiscard]] Result<AmericanGreeks> american_greeks(double S, double K, double T, double sigma,
+                                                     double r, double q, Side side,
+                                                     const CorrectionBlend &correction);
 
 // American Greeks via central finite differences on the cold `american_price`
 // (same method/opts the mark is priced with). Used on the null-correction-cache
@@ -386,17 +401,28 @@ american_greeks_al(double S, double K, double T, double sigma, double r, double 
                                             AmericanMethod method = AmericanMethod::AndersenLake,
                                             const std::optional<AlOpts> &opts = std::nullopt);
 
+// Cached delta-only route: Black-76 forward delta plus the correction's value
+// and k_log derivative. It avoids constructing the full second-order Greek jet
+// consumed by american_greeks and keeps blend weights call-constant.
+[[nodiscard]] Result<double> american_delta(double S, double K, double T, double sigma, double r,
+                                            double q, Side side, const CorrectionBlend &correction);
+
 // American vega ONLY (∂price/∂sigma) — the single first-order sensitivity the IV
 // inverter's Newton step needs, WITHOUT the full `american_greeks` bundle's
-// second-order finite-difference correction partials (gamma/vanna/volga/charm,
-// which cost ~6 extra cache evaluations). It is the Black-76 vega plus
-// F·∂correction/∂sigma (one cache `eval_grad`). A null `correction` gives the
-// Black-76 (European-leg) vega. Returns 0 on a degenerate / non-positive input
+// second-order correction jet (gamma/vanna/volga/charm). It is the Black-76
+// vega plus F·∂correction/∂sigma (one cache `eval_grad`).
+// Null, unpopulated, and opposite-side caches give the Black-76 (European-leg)
+// vega. Returns 0 on a degenerate / non-positive input
 // (the inverter reads 0 as "force bisection"). This 0 sentinel is LOAD-BEARING
 // and is why this function differs from `american_greeks`, which surfaces
 // InvalidArgument on the same input rather than a sentinel.
 [[nodiscard]] double american_vega(double S, double K, double T, double sigma, double r, double q,
                                    Side side, const CorrectionCache *correction) noexcept;
+
+// Call-constant two-cache blend variant. Uses only each endpoint's sigma
+// partial; exact endpoints preserve the single-cache path.
+[[nodiscard]] double american_vega(double S, double K, double T, double sigma, double r, double q,
+                                   Side side, const CorrectionBlend &correction) noexcept;
 
 // ─────────────────────────────────────────────────────────────────────────
 // C1.7 (additive-only; see FILE-OWNERSHIP RULE in the 07-09 sprint doc) — a
@@ -472,9 +498,9 @@ struct GaussLegendre {
 // compile-time-trip-count instantiation. Used by BoundaryHoist_SpecializedMatches
 // Generic to prove the specialized fixed-scheme kernel is bit-identical to the
 // generic path. Not part of the production API.
-[[nodiscard]] Result<double> andersen_lake_generic_kernel(
-    double S, double K, double T, double sigma, double r, double q, Side side,
-    const std::optional<AlOpts>& opts = std::nullopt);
+[[nodiscard]] Result<double>
+andersen_lake_generic_kernel(double S, double K, double T, double sigma, double r, double q,
+                             Side side, const std::optional<AlOpts> &opts = std::nullopt);
 
 // P2.2b spike seed for al_boundary_jn_sweeps_to_converge.
 enum class AlSeedMode : std::uint8_t { Baw = 0, QdPlus = 1, Oracle = 2 };
@@ -484,9 +510,9 @@ enum class AlSeedMode : std::uint8_t { Baw = 0, QdPlus = 1, Oracle = 2 };
 // residual (max |Δy|) first falls to <= tol, capped at max_sweeps. Returns the
 // sweep count, or -1 if the boundary collapses / a table is missing. Used by the
 // QD+ vs BAW seed-count spike; NOT a production entry point.
-[[nodiscard]] int al_boundary_jn_sweeps_to_converge(
-    double K, double T, double sigma, double r, double q,
-    const std::optional<AlOpts>& opts, AlSeedMode seed, double tol, int max_sweeps);
+[[nodiscard]] int al_boundary_jn_sweeps_to_converge(double K, double T, double sigma, double r,
+                                                    double q, const std::optional<AlOpts> &opts,
+                                                    AlSeedMode seed, double tol, int max_sweeps);
 
 // ── P2.3 (research spike): warm-start the boundary ACROSS TIME ────────────
 //
@@ -507,12 +533,13 @@ enum class AlSeedMode : std::uint8_t { Baw = 0, QdPlus = 1, Oracle = 2 };
 // counts are appended to `cold_sweeps` / `warm_sweeps`; `warm_hits` / `cold_reseeds`
 // accumulate; `max_price_gap` tracks max |warm_price − cold_price| over the sequence.
 // Returns false (nothing appended) for a collapsed / European / degenerate corner.
-[[nodiscard]] bool al_temporal_warm_probe(
-    double S, double K, double q, double T0, double sigma0, double r0, double dT,
-    double dsigma, double dr, int n_snap, const std::optional<AlOpts>& opts,
-    bool converge_to_tol, int max_sweeps, double move_guard_frac,
-    std::vector<int>& cold_sweeps, std::vector<int>& warm_sweeps, int& warm_hits,
-    int& cold_reseeds, double& max_price_gap) noexcept;
+[[nodiscard]] bool al_temporal_warm_probe(double S, double K, double q, double T0, double sigma0,
+                                          double r0, double dT, double dsigma, double dr,
+                                          int n_snap, const std::optional<AlOpts> &opts,
+                                          bool converge_to_tol, int max_sweeps,
+                                          double move_guard_frac, std::vector<int> &cold_sweeps,
+                                          std::vector<int> &warm_sweeps, int &warm_hits,
+                                          int &cold_reseeds, double &max_price_gap) noexcept;
 
 // ── P2.4 (research spike): implicit boundary-differentiation greeks ───────
 //
@@ -545,14 +572,16 @@ struct ImplicitDiffGreeks {
   double vanna = 0.0;
   double charm = 0.0;
   double volga = 0.0;
-  int cost_passes = 0;   // residual-equivalent passes beyond the base solve
-  int base_sweeps = 0;   // base solve executed JN+FP sweeps
-  int n_boundary = 0;    // collocation nodes (LU dimension)
+  int cost_passes = 0; // residual-equivalent passes beyond the base solve
+  int base_sweeps = 0; // base solve executed JN+FP sweeps
+  int n_boundary = 0;  // collocation nodes (LU dimension)
   bool ok = false;
 };
-[[nodiscard]] ImplicitDiffGreeks al_implicit_diff_put_greeks(
-    double S, double K, double T, double sigma, double r, double q,
-    const std::optional<AlOpts>& opts, bool validate, double& j_max_rel_err) noexcept;
+[[nodiscard]] ImplicitDiffGreeks al_implicit_diff_put_greeks(double S, double K, double T,
+                                                             double sigma, double r, double q,
+                                                             const std::optional<AlOpts> &opts,
+                                                             bool validate,
+                                                             double &j_max_rel_err) noexcept;
 
 } // namespace detail
 

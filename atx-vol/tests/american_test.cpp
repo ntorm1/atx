@@ -34,47 +34,45 @@
 
 namespace {
 
+using atx::vol::al_fast_opts;
 using atx::vol::AloPricer;
 using atx::vol::AlOpts;
-using atx::vol::american_greeks;
 using atx::vol::american_delta;
+using atx::vol::american_greeks;
 using atx::vol::american_greeks_al;
 using atx::vol::american_greeks_fd;
 using atx::vol::american_price;
+using atx::vol::american_price_cached;
+using atx::vol::american_vega;
 using atx::vol::AmericanGreeks;
 using atx::vol::AmericanMethod;
-using atx::vol::american_vega;
-using atx::vol::al_fast_opts;
-using atx::vol::american_price_cached;
 using atx::vol::andersen_lake;
 using atx::vol::andersen_lake_call_slice;
 using atx::vol::andersen_lake_call_slice_sigma;
 using atx::vol::andersen_lake_put_slice;
 using atx::vol::andersen_lake_put_slice_sigma;
-using atx::vol::SigmaInterpOptions;
-using atx::vol::SigmaSliceStats;
 using atx::vol::baw_american;
 using atx::vol::black76_greeks;
 using atx::vol::black76_price;
+using atx::vol::CorrectionBlend;
 using atx::vol::CorrectionCache;
 using atx::vol::Side;
+using atx::vol::SigmaInterpOptions;
+using atx::vol::SigmaSliceStats;
 using atx::vol::test::oracle_pde_american;
 using atx::vol::test::oracle_pde_golden;
 
 // Unwrap a Result<double> in a test, failing loudly on an unexpected error.
-double value_or_fail(const atx::core::Result<double>& r) {
-  EXPECT_TRUE(r.has_value())
-      << (r ? std::string{} : r.error().to_string());
+double value_or_fail(const atx::core::Result<double> &r) {
+  EXPECT_TRUE(r.has_value()) << (r ? std::string{} : r.error().to_string());
   return r ? *r : std::nan("");
 }
 
 double euro_put(double S, double K, double T, double sigma, double r, double q) {
-  return black76_price(S * std::exp((r - q) * T), K, T, sigma, std::exp(-r * T),
-                       Side::Put);
+  return black76_price(S * std::exp((r - q) * T), K, T, sigma, std::exp(-r * T), Side::Put);
 }
 double euro_call(double S, double K, double T, double sigma, double r, double q) {
-  return black76_price(S * std::exp((r - q) * T), K, T, sigma, std::exp(-r * T),
-                       Side::Call);
+  return black76_price(S * std::exp((r - q) * T), K, T, sigma, std::exp(-r * T), Side::Call);
 }
 
 // Exact IEEE-754 bit comparison (see backtest_test.cpp): the r>0 corpus must stay
@@ -106,8 +104,8 @@ double euro_call(double S, double K, double T, double sigma, double r, double q)
 // ALO scheme cannot price.
 enum class Regime { European, Unsupported, American };
 [[nodiscard]] Regime classify_spec(double r, double q, Side side) {
-  const double rate = (side == Side::Put) ? r : q;   // internal-put short rate
-  const double yield = (side == Side::Put) ? q : r;  // internal-put yield
+  const double rate = (side == Side::Put) ? r : q;  // internal-put short rate
+  const double yield = (side == Side::Put) ? q : r; // internal-put yield
   if (rate > 0.0) {
     return Regime::American;
   }
@@ -153,17 +151,14 @@ TEST(AndersenLake, DeepItmPut_AboveIntrinsic) {
 }
 
 TEST(AndersenLake, ZeroTime_ReturnsIntrinsic) {
-  const double c = value_or_fail(
-      andersen_lake(110.0, 100.0, 0.0, 0.25, 0.05, 0.0, Side::Call));
+  const double c = value_or_fail(andersen_lake(110.0, 100.0, 0.0, 0.25, 0.05, 0.0, Side::Call));
   EXPECT_LT(std::fabs(c - 10.0), 1.0e-12);
-  const double p =
-      value_or_fail(andersen_lake(90.0, 100.0, 0.0, 0.25, 0.05, 0.0, Side::Put));
+  const double p = value_or_fail(andersen_lake(90.0, 100.0, 0.0, 0.25, 0.05, 0.0, Side::Put));
   EXPECT_LT(std::fabs(p - 10.0), 1.0e-12);
 }
 
 TEST(AndersenLake, ZeroSigma_ReturnsFiniteNonNegative) {
-  const double p =
-      value_or_fail(andersen_lake(100.0, 100.0, 0.5, 0.0, 0.05, 0.0, Side::Put));
+  const double p = value_or_fail(andersen_lake(100.0, 100.0, 0.5, 0.0, 0.05, 0.0, Side::Put));
   EXPECT_TRUE(std::isfinite(p));
   EXPECT_GE(p, 0.0);
 }
@@ -224,8 +219,7 @@ TEST(AndersenLake, CanonicalAtmZeroCarry_PremiumMatchesReference) {
 
   const AlOpts opts{/*n_collocation=*/32, /*n_quadrature=*/64,
                     /*max_newton_iter=*/16, /*tol=*/1.0e-13};
-  const double p =
-      value_or_fail(andersen_lake(S, K, T, sigma, r, q, Side::Put, opts));
+  const double p = value_or_fail(andersen_lake(S, K, T, sigma, r, q, Side::Put, opts));
   const double euro = euro_put(S, K, T, sigma, r, q);
   EXPECT_LT(std::fabs((p - euro) - expected_premium), 1.0e-7);
 }
@@ -238,9 +232,9 @@ TEST(AndersenLake, CanonicalAtmZeroCarry_PremiumMatchesReference) {
 // solve is ~0.7 s, so the corner grid keeps the ITM/ATM/OTM x short/long coverage
 // at a fraction of the wall (the interior nodes add no distinct accuracy claim).
 TEST(AndersenLake, VsPdeOracle_PutGrid) {
-  const double Ss[] = {80.0, 100.0, 120.0};    // deep-ITM / ATM / deep-OTM
-  const double sigmas[] = {0.20, 0.40};        // low / high vol
-  const double Ts[] = {0.25, 1.00};            // short / long
+  const double Ss[] = {80.0, 100.0, 120.0}; // deep-ITM / ATM / deep-OTM
+  const double sigmas[] = {0.20, 0.40};     // low / high vol
+  const double Ts[] = {0.25, 1.00};         // short / long
   const double K = 100.0, r = 0.05, q = 0.02;
 
   double max_rel = 0.0;
@@ -248,8 +242,7 @@ TEST(AndersenLake, VsPdeOracle_PutGrid) {
   for (double S : Ss)
     for (double sigma : sigmas)
       for (double T : Ts) {
-        const double p_al =
-            value_or_fail(andersen_lake(S, K, T, sigma, r, q, Side::Put));
+        const double p_al = value_or_fail(andersen_lake(S, K, T, sigma, r, q, Side::Put));
         const double p_pde = oracle_pde_golden(S, K, T, sigma, r, q, Side::Put);
         ASSERT_TRUE(std::isfinite(p_pde));
         if (p_pde > 0.05) {
@@ -262,20 +255,18 @@ TEST(AndersenLake, VsPdeOracle_PutGrid) {
 }
 
 TEST(AndersenLake, VsPdeOracle_CallGrid) {
-  const double Ss[] = {80.0, 100.0, 120.0};    // deep-ITM / ATM / deep-OTM
-  const double sigmas[] = {0.20, 0.40};        // low / high vol
-  const double Ts[] = {0.25, 1.00};            // short / long
-  const double K = 100.0, r = 0.03, q = 0.05;  // q > r admits early call exercise
+  const double Ss[] = {80.0, 100.0, 120.0};   // deep-ITM / ATM / deep-OTM
+  const double sigmas[] = {0.20, 0.40};       // low / high vol
+  const double Ts[] = {0.25, 1.00};           // short / long
+  const double K = 100.0, r = 0.03, q = 0.05; // q > r admits early call exercise
 
   double max_rel = 0.0;
   int n_compared = 0;
   for (double S : Ss)
     for (double sigma : sigmas)
       for (double T : Ts) {
-        const double p_al =
-            value_or_fail(andersen_lake(S, K, T, sigma, r, q, Side::Call));
-        const double p_pde =
-            oracle_pde_golden(S, K, T, sigma, r, q, Side::Call);
+        const double p_al = value_or_fail(andersen_lake(S, K, T, sigma, r, q, Side::Call));
+        const double p_pde = oracle_pde_golden(S, K, T, sigma, r, q, Side::Call);
         ASSERT_TRUE(std::isfinite(p_pde));
         if (p_pde > 0.05) {
           max_rel = std::fmax(max_rel, std::fabs(p_al - p_pde) / p_pde);
@@ -333,7 +324,7 @@ TEST(GaussLegendre, IntegratesExp_MatchesClosedForm) {
   for (unsigned i = 0; i < gl.n; ++i) {
     integral += gl.weights[i] * std::exp(gl.nodes[i]);
   }
-  EXPECT_LT(std::fabs(integral - 2.35040238728760), 1.0e-12);  // e - 1/e
+  EXPECT_LT(std::fabs(integral - 2.35040238728760), 1.0e-12); // e - 1/e
 }
 
 TEST(GaussLegendre, UnsupportedOrder_ReportsNotOk) {
@@ -348,8 +339,7 @@ CorrectionCache make_correction(Side side, double r, double q) {
   auto built = CorrectionCache::build(/*n_k=*/16, /*n_T=*/12, /*n_s=*/8, r, q,
                                       /*k_log_min=*/-0.4, /*k_log_max=*/0.4,
                                       /*T_min=*/0.05, /*T_max=*/1.0,
-                                      /*sigma_min=*/0.10, /*sigma_max=*/0.60,
-                                      side, opts);
+                                      /*sigma_min=*/0.10, /*sigma_max=*/0.60, side, opts);
   EXPECT_TRUE(built.has_value());
   return built ? std::move(*built) : CorrectionCache{};
 }
@@ -419,7 +409,7 @@ TEST(AmericanGreeks, Gamma_MatchesFd_Put) {
   const auto g = american_greeks(S, K, T, sigma, r, q, Side::Put, &tbl);
   ASSERT_TRUE(g.has_value());
 
-  const double h = 0.05;  // coarse step matches the cache's noise floor
+  const double h = 0.05; // coarse step matches the cache's noise floor
   const double mid = american_price_cached(S, K, T, sigma, r, q, Side::Put, &tbl);
   const double up = american_price_cached(S + h, K, T, sigma, r, q, Side::Put, &tbl);
   const double dn = american_price_cached(S - h, K, T, sigma, r, q, Side::Put, &tbl);
@@ -475,6 +465,130 @@ TEST(AmericanGreeks, Charm_FiniteAndBounded_Put) {
   EXPECT_LT(std::fabs(g->charm), 5.0 * (std::fabs(gB.charm) + 1.0e-3));
 }
 
+TEST(AmericanGreeks, Charm_MatchesCachedPriceCrossFdAtNonzeroCarry) {
+  constexpr double r = 0.07;
+  constexpr double q = 0.01;
+  const CorrectionCache tbl = make_correction(Side::Put, r, q);
+  constexpr double S = 100.0;
+  constexpr double K = 100.0;
+  constexpr double T = 0.5;
+  constexpr double sigma = 0.25;
+  const auto greeks = american_greeks(S, K, T, sigma, r, q, Side::Put, &tbl);
+  ASSERT_TRUE(greeks.has_value());
+
+  constexpr double hS = 0.02;
+  constexpr double hT = 1.0e-4;
+  const double pp = american_price_cached(S + hS, K, T + hT, sigma, r, q, Side::Put, &tbl);
+  const double pm = american_price_cached(S + hS, K, T - hT, sigma, r, q, Side::Put, &tbl);
+  const double mp = american_price_cached(S - hS, K, T + hT, sigma, r, q, Side::Put, &tbl);
+  const double mm = american_price_cached(S - hS, K, T - hT, sigma, r, q, Side::Put, &tbl);
+  const double charm_fd = -(pp - pm - mp + mm) / (4.0 * hS * hT);
+  EXPECT_NEAR(greeks->charm, charm_fd, 2.0e-3);
+}
+
+TEST(AmericanCorrectionBlend, EndpointFastPathsMatchSingleCacheExactly) {
+  const CorrectionCache lower = make_correction(Side::Put, 0.04, 0.00);
+  const CorrectionCache upper = make_correction(Side::Put, 0.06, 0.03);
+  constexpr double S = 100.0;
+  constexpr double K = 102.0;
+  constexpr double T = 0.5;
+  constexpr double sigma = 0.25;
+  constexpr double r = 0.04;
+  constexpr double q = 0.00;
+
+  const CorrectionBlend lower_endpoint = CorrectionBlend::single(&lower);
+  EXPECT_EQ(american_price_cached(S, K, T, sigma, r, q, Side::Put, lower_endpoint),
+            american_price_cached(S, K, T, sigma, r, q, Side::Put, &lower));
+  const auto lower_blended = american_greeks(S, K, T, sigma, r, q, Side::Put, lower_endpoint);
+  const auto lower_single = american_greeks(S, K, T, sigma, r, q, Side::Put, &lower);
+  ASSERT_TRUE(lower_blended.has_value());
+  ASSERT_TRUE(lower_single.has_value());
+  EXPECT_EQ(*lower_blended, *lower_single);
+  EXPECT_EQ(american_vega(S, K, T, sigma, r, q, Side::Put, lower_endpoint),
+            american_vega(S, K, T, sigma, r, q, Side::Put, &lower));
+
+  const CorrectionBlend upper_endpoint{&lower, &upper, 1.0};
+  EXPECT_EQ(american_price_cached(S, K, T, sigma, 0.06, 0.03, Side::Put, upper_endpoint),
+            american_price_cached(S, K, T, sigma, 0.06, 0.03, Side::Put, &upper));
+}
+
+TEST(AmericanCorrectionBlend, ConstantWeightGreeksMatchBlendedPriceFd) {
+  const CorrectionCache lower = make_correction(Side::Put, 0.04, 0.00);
+  const CorrectionCache upper = make_correction(Side::Put, 0.06, 0.03);
+  const CorrectionBlend blend{&lower, &upper, 0.4};
+  constexpr double S = 100.0;
+  constexpr double K = 102.0;
+  constexpr double T = 0.5;
+  constexpr double sigma = 0.25;
+  constexpr double r = 0.048;
+  constexpr double q = 0.012;
+  const auto greeks = american_greeks(S, K, T, sigma, r, q, Side::Put, blend);
+  const auto delta_only = american_delta(S, K, T, sigma, r, q, Side::Put, blend);
+  ASSERT_TRUE(greeks.has_value());
+  ASSERT_TRUE(delta_only.has_value());
+  EXPECT_NEAR(*delta_only, greeks->delta, 1.0e-12);
+
+  constexpr double hS = 1.0e-3;
+  const double spot_up = american_price_cached(S + hS, K, T, sigma, r, q, Side::Put, blend);
+  const double spot_down = american_price_cached(S - hS, K, T, sigma, r, q, Side::Put, blend);
+  EXPECT_NEAR(greeks->delta, (spot_up - spot_down) / (2.0 * hS), 1.0e-5);
+
+  constexpr double hSigma = 1.0e-5;
+  const double sigma_up = american_price_cached(S, K, T, sigma + hSigma, r, q, Side::Put, blend);
+  const double sigma_down = american_price_cached(S, K, T, sigma - hSigma, r, q, Side::Put, blend);
+  EXPECT_NEAR(american_vega(S, K, T, sigma, r, q, Side::Put, blend),
+              (sigma_up - sigma_down) / (2.0 * hSigma), 1.0e-4);
+
+  constexpr double hT = 1.0e-5;
+  const double time_up = american_price_cached(S, K, T + hT, sigma, r, q, Side::Put, blend);
+  const double time_down = american_price_cached(S, K, T - hT, sigma, r, q, Side::Put, blend);
+  const double theta_fd = -(time_up - time_down) / (2.0 * hT);
+  EXPECT_LT(std::fabs(greeks->theta - theta_fd) / (std::fabs(theta_fd) + 1.0e-3), 1.0e-3);
+
+  constexpr double charm_hS = 0.02;
+  constexpr double charm_hT = 1.0e-4;
+  const double charm_pp =
+      american_price_cached(S + charm_hS, K, T + charm_hT, sigma, r, q, Side::Put, blend);
+  const double charm_pm =
+      american_price_cached(S + charm_hS, K, T - charm_hT, sigma, r, q, Side::Put, blend);
+  const double charm_mp =
+      american_price_cached(S - charm_hS, K, T + charm_hT, sigma, r, q, Side::Put, blend);
+  const double charm_mm =
+      american_price_cached(S - charm_hS, K, T - charm_hT, sigma, r, q, Side::Put, blend);
+  const double charm_fd =
+      -(charm_pp - charm_pm - charm_mp + charm_mm) / (4.0 * charm_hS * charm_hT);
+  EXPECT_NEAR(greeks->charm, charm_fd, 2.0e-3);
+}
+
+TEST(AmericanCorrectionCache, OppositeSideCacheUsesDocumentedFallbacks) {
+  const CorrectionCache put_cache = make_correction(Side::Put, /*r=*/0.05, /*q=*/0.02);
+  constexpr double S = 100.0;
+  constexpr double K = 102.0;
+  constexpr double T = 0.5;
+  constexpr double sigma = 0.25;
+  constexpr double r = 0.05;
+  constexpr double q = 0.02;
+  const auto *const no_cache = static_cast<const CorrectionCache *>(nullptr);
+
+  EXPECT_EQ(american_price_cached(S, K, T, sigma, r, q, Side::Call, &put_cache),
+            american_price_cached(S, K, T, sigma, r, q, Side::Call, no_cache));
+
+  const auto wrong_greeks = american_greeks(S, K, T, sigma, r, q, Side::Call, &put_cache);
+  const auto no_cache_greeks = american_greeks(S, K, T, sigma, r, q, Side::Call, no_cache);
+  ASSERT_TRUE(wrong_greeks.has_value());
+  ASSERT_TRUE(no_cache_greeks.has_value());
+  EXPECT_EQ(*wrong_greeks, *no_cache_greeks);
+
+  EXPECT_EQ(american_vega(S, K, T, sigma, r, q, Side::Call, &put_cache),
+            american_vega(S, K, T, sigma, r, q, Side::Call, no_cache));
+
+  const CorrectionBlend wrong_blend = CorrectionBlend::single(&put_cache);
+  EXPECT_EQ(american_price_cached(S, K, T, sigma, r, q, Side::Call, wrong_blend),
+            american_price_cached(S, K, T, sigma, r, q, Side::Call, no_cache));
+  EXPECT_EQ(american_vega(S, K, T, sigma, r, q, Side::Call, wrong_blend),
+            american_vega(S, K, T, sigma, r, q, Side::Call, no_cache));
+}
+
 TEST(AmericanGreeks, NoCorrection_FallsBackToBlack76) {
   const double S = 100.0, K = 100.0, T = 0.5, sigma = 0.25, r = 0.04, q = 0.0;
   const auto g = american_greeks(S, K, T, sigma, r, q, Side::Put, nullptr);
@@ -491,6 +605,39 @@ TEST(AmericanGreeks, NoCorrection_FallsBackToBlack76) {
   EXPECT_LT(std::fabs(g->vega - gB.vega), 1.0e-12);
 }
 
+TEST(AmericanGreeks, NoCorrection_SpotSecondOrdersMatchPriceFdAtNonzeroCarry) {
+  constexpr double S = 100.0;
+  constexpr double K = 100.0;
+  constexpr double T = 0.5;
+  constexpr double sigma = 0.25;
+  constexpr double r = 0.07;
+  constexpr double q = 0.02;
+  const auto greeks = american_greeks(S, K, T, sigma, r, q, Side::Put, nullptr);
+  ASSERT_TRUE(greeks.has_value());
+  const auto price = [](double spot, double time, double vol) {
+    const double forward = spot * std::exp((r - q) * time);
+    return black76_price(forward, K, time, vol, std::exp(-r * time), Side::Put);
+  };
+
+  constexpr double hS = 0.02;
+  const double p0 = price(S, T, sigma);
+  const double pS_up = price(S + hS, T, sigma);
+  const double pS_down = price(S - hS, T, sigma);
+  EXPECT_NEAR(greeks->gamma, (pS_up - 2.0 * p0 + pS_down) / (hS * hS), 1.0e-7);
+
+  constexpr double hSigma = 1.0e-4;
+  const double vanna_fd = (price(S + hS, T, sigma + hSigma) - price(S + hS, T, sigma - hSigma) -
+                           price(S - hS, T, sigma + hSigma) + price(S - hS, T, sigma - hSigma)) /
+                          (4.0 * hS * hSigma);
+  EXPECT_NEAR(greeks->vanna, vanna_fd, 1.0e-6);
+
+  constexpr double hT = 1.0e-4;
+  const double charm_fd = -(price(S + hS, T + hT, sigma) - price(S + hS, T - hT, sigma) -
+                            price(S - hS, T + hT, sigma) + price(S - hS, T - hT, sigma)) /
+                          (4.0 * hS * hT);
+  EXPECT_NEAR(greeks->charm, charm_fd, 1.0e-6);
+}
+
 // ── FD boundary-reuse (P1a): fast greeks == 17-solve reference, bit-identical ──
 
 // The pre-P1a algorithm: every one of the 17 stencils a full cold american_price.
@@ -498,8 +645,8 @@ TEST(AmericanGreeks, NoCorrection_FallsBackToBlack76) {
 // boundaries once and re-prices the spot stencils against it; because the boundary
 // is S-independent and the solve/eval split is the same code al_solve_put runs,
 // the result must reproduce this reference to the last bit.
-AmericanGreeks greeks_fd_reference(double S, double K, double T, double sigma,
-                                   double r, double q, Side side) {
+AmericanGreeks greeks_fd_reference(double S, double K, double T, double sigma, double r, double q,
+                                   Side side) {
   const double hS = 1.0e-3 * S;
   double hv = 1.0e-3;
   if (sigma - hv <= 0.0) {
@@ -509,9 +656,8 @@ AmericanGreeks greeks_fd_reference(double S, double K, double T, double sigma,
   const double hT = 1.0e-3;
   const bool near_expiry = (T - hT <= 1.0e-8);
   auto P = [&](double dS, double dsig, double dr, double dT) {
-    return value_or_fail(american_price(S + dS, K, T + dT, sigma + dsig, r + dr, q,
-                                        side, AmericanMethod::AndersenLake,
-                                        std::nullopt));
+    return value_or_fail(american_price(S + dS, K, T + dT, sigma + dsig, r + dr, q, side,
+                                        AmericanMethod::AndersenLake, std::nullopt));
   };
   const double p0 = P(0, 0, 0, 0);
   const double p_Sp = P(+hS, 0, 0, 0);
@@ -553,12 +699,10 @@ TEST(AmericanGreeks, FdBoundaryReuse_BitIdentical_PutGrid) {
     for (const double T : {0.02, 0.1, 0.5, 1.0, 2.0}) {
       for (const double sigma : {0.12, 0.25, 0.45}) {
         const auto fast = american_greeks_fd(S, K, T, sigma, r, q, Side::Put);
-        ASSERT_TRUE(fast.has_value())
-            << "K=" << K << " T=" << T << " sigma=" << sigma;
+        ASSERT_TRUE(fast.has_value()) << "K=" << K << " T=" << T << " sigma=" << sigma;
         const AmericanGreeks ref = greeks_fd_reference(S, K, T, sigma, r, q, Side::Put);
-        const std::string at =
-            "K=" + std::to_string(K) + " T=" + std::to_string(T) +
-            " sigma=" + std::to_string(sigma);
+        const std::string at = "K=" + std::to_string(K) + " T=" + std::to_string(T) +
+                               " sigma=" + std::to_string(sigma);
         EXPECT_EQ(fast->price, ref.price) << at;
         EXPECT_EQ(fast->delta, ref.delta) << at;
         EXPECT_EQ(fast->gamma, ref.gamma) << at;
@@ -589,7 +733,7 @@ TEST(AmericanGreeks, FdBoundaryReuse_BitIdentical_PutGrid) {
 // validation anchor required by the sprint's §9.2 (a reference that is not the new
 // code). This test states the measured per-greek shift and gates it to §9.2.
 TEST(CallGreeksFd, Fast_MatchesColdWithinTol) {
-  const double S = 100.0, r = 0.03, q = 0.05;  // q > r: early call exercise binds
+  const double S = 100.0, r = 0.03, q = 0.05; // q > r: early call exercise binds
   double max_price = 0, max_delta = 0, max_gamma = 0, max_gamma_rel = 0;
   double max_vega = 0, max_volga = 0, max_rho = 0, max_theta = 0;
   double max_vanna = 0, max_charm = 0;
@@ -598,12 +742,10 @@ TEST(CallGreeksFd, Fast_MatchesColdWithinTol) {
     for (const double T : {0.05, 0.1, 0.5, 1.0, 2.0}) {
       for (const double sigma : {0.12, 0.25, 0.45}) {
         const auto fast = american_greeks_fd(S, K, T, sigma, r, q, Side::Call);
-        ASSERT_TRUE(fast.has_value())
-            << "K=" << K << " T=" << T << " sigma=" << sigma;
-        const AmericanGreeks cold =
-            greeks_fd_reference(S, K, T, sigma, r, q, Side::Call);
-        const std::string at = "K=" + std::to_string(K) + " T=" +
-                               std::to_string(T) + " sigma=" + std::to_string(sigma);
+        ASSERT_TRUE(fast.has_value()) << "K=" << K << " T=" << T << " sigma=" << sigma;
+        const AmericanGreeks cold = greeks_fd_reference(S, K, T, sigma, r, q, Side::Call);
+        const std::string at = "K=" + std::to_string(K) + " T=" + std::to_string(T) +
+                               " sigma=" + std::to_string(sigma);
         // p0 and the non-spot greeks reuse their boundary un-rescaled => bit-identical.
         EXPECT_TRUE(bits_equal(fast->price, cold.price)) << "price " << at;
         EXPECT_TRUE(bits_equal(fast->vega, cold.vega)) << "vega " << at;
@@ -614,8 +756,8 @@ TEST(CallGreeksFd, Fast_MatchesColdWithinTol) {
         max_delta = std::max(max_delta, std::fabs(fast->delta - cold.delta));
         max_gamma = std::max(max_gamma, std::fabs(fast->gamma - cold.gamma));
         if (std::fabs(cold.gamma) > 1.0e-3) {
-          max_gamma_rel = std::max(
-              max_gamma_rel, std::fabs(fast->gamma - cold.gamma) / std::fabs(cold.gamma));
+          max_gamma_rel =
+              std::max(max_gamma_rel, std::fabs(fast->gamma - cold.gamma) / std::fabs(cold.gamma));
         }
         max_vega = std::max(max_vega, std::fabs(fast->vega - cold.vega));
         max_volga = std::max(max_volga, std::fabs(fast->volga - cold.volga));
@@ -627,30 +769,29 @@ TEST(CallGreeksFd, Fast_MatchesColdWithinTol) {
       }
     }
   }
-  std::printf(
-      "[9a-fast-vs-cold-call] pts=%d delta=%.3e gamma=%.3e(rel %.3e) vanna=%.3e "
-      "charm=%.3e | bit-identical: price=%.3e vega=%.3e volga=%.3e rho=%.3e "
-      "theta=%.3e\n",
-      checked, max_delta, max_gamma, max_gamma_rel, max_vanna, max_charm, max_price,
-      max_vega, max_volga, max_rho, max_theta);
+  std::printf("[9a-fast-vs-cold-call] pts=%d delta=%.3e gamma=%.3e(rel %.3e) vanna=%.3e "
+              "charm=%.3e | bit-identical: price=%.3e vega=%.3e volga=%.3e rho=%.3e "
+              "theta=%.3e\n",
+              checked, max_delta, max_gamma, max_gamma_rel, max_vanna, max_charm, max_price,
+              max_vega, max_volga, max_rho, max_theta);
   EXPECT_EQ(checked, 75);
   // §9.2 Greek gates vs the independent cold scalar reference. MEASURED maxima on
   // this grid (Debug gate): delta ~1.8e-14, gamma ~7e-13 (rel ~7e-11), vanna ~1.8e-11,
   // charm ~3.1e-11 — the ±0.1% spot bump reuses a boundary whose dimensionless y[]
   // equals the fresh-solve y[] to solver tol (1e-10), so the homogeneity shift lands
   // FAR under the ~1e-7 the sprint budgeted, and the non-spot greeks stay bit-exact.
-  EXPECT_EQ(max_price, 0.0);  // base mark rescales to strike S => bit-identical
-  EXPECT_EQ(max_vega, 0.0);   // no spot bump => internal-put boundary un-rescaled
+  EXPECT_EQ(max_price, 0.0); // base mark rescales to strike S => bit-identical
+  EXPECT_EQ(max_vega, 0.0);  // no spot bump => internal-put boundary un-rescaled
   EXPECT_EQ(max_volga, 0.0);
   EXPECT_EQ(max_rho, 0.0);
   EXPECT_EQ(max_theta, 0.0);
-  EXPECT_LT(max_delta, 2.0e-5);                               // §9.2 delta abs
-  EXPECT_TRUE(max_gamma < 2.0e-5 || max_gamma_rel < 2.0e-3);  // §9.2 gamma
+  EXPECT_LT(max_delta, 2.0e-5);                              // §9.2 delta abs
+  EXPECT_TRUE(max_gamma < 2.0e-5 || max_gamma_rel < 2.0e-3); // §9.2 gamma
   // vanna/volga/charm contribution ≤ $0.001/share under the canonical combined
   // shocks (1-vol-pt = 0.01, 1% spot). volga is bit-identical; vanna/charm carry
   // the homogeneity shift — their P&L contribution stays far inside a tick.
-  EXPECT_LT(max_vanna * 0.01 * (0.01 * S), 1.0e-3);   // vanna·dσ·dS
-  EXPECT_LT(max_charm * (0.01 * S) / 365.0, 1.0e-3);  // charm·dS·(1 day)
+  EXPECT_LT(max_vanna * 0.01 * (0.01 * S), 1.0e-3);  // vanna·dσ·dS
+  EXPECT_LT(max_charm * (0.01 * S) / 365.0, 1.0e-3); // charm·dS·(1 day)
 }
 
 // Independent PDE anchor for the fast call greeks: the Crank-Nicolson oracle (which
@@ -664,7 +805,7 @@ TEST(CallGreeksFd, Fast_MeetsPdeGreekGates) {
   const double K = 100.0;
   struct Case {
     double S, T, sigma, r, q;
-    const char* tag;
+    const char *tag;
   };
   const Case cases[] = {
       {100.0, 1.00, 0.25, 0.03, 0.06, "atm-dividend"},
@@ -675,7 +816,7 @@ TEST(CallGreeksFd, Fast_MeetsPdeGreekGates) {
   // several grid cells so its interpolation noise averages down to ~1e-3 on delta.
   const atx::vol::test::OraclePdeOpts grid{};
   double max_price_rel = 0, max_delta_gap = 0, max_gamma_gap = 0;
-  for (const Case& c : cases) {
+  for (const Case &c : cases) {
     const auto fast = american_greeks_fd(c.S, K, c.T, c.sigma, c.r, c.q, Side::Call);
     ASSERT_TRUE(fast.has_value()) << c.tag;
     // PDE price + central-difference delta/gamma from one triple of oracle solves.
@@ -696,8 +837,8 @@ TEST(CallGreeksFd, Fast_MeetsPdeGreekGates) {
     EXPECT_LT(std::fabs(fast->delta - pde_delta), 1.0e-2) << c.tag;
     EXPECT_LT(std::fabs(fast->gamma - pde_gamma), 1.0e-2) << c.tag;
   }
-  std::printf("[9a-fast-vs-pde-call] price_rel=%.3e delta_gap=%.3e gamma_gap=%.3e\n",
-              max_price_rel, max_delta_gap, max_gamma_gap);
+  std::printf("[9a-fast-vs-pde-call] price_rel=%.3e delta_gap=%.3e gamma_gap=%.3e\n", max_price_rel,
+              max_delta_gap, max_gamma_gap);
 
   // No-dividend European corner (q <= 0 => American call == European): the fast
   // greeks equal the closed-form Black-76 European call greeks the short-circuit
@@ -723,10 +864,11 @@ TEST(CallGreeksFd, Fast_MeetsPdeGreekGates) {
 // defensive `!ok` collapse arm shares this exact P()-fallback path.
 TEST(CallGreeksFd, BoundaryCollapse_FallsBackToCold) {
   const double S = 100.0, K = 100.0, T = 1.0, sigma = 0.25;
-  const double r = -0.05, q = -0.02;  // call internal-put: rate q=-0.02 > yield r=-0.05 => Unsupported
+  const double r = -0.05,
+               q = -0.02; // call internal-put: rate q=-0.02 > yield r=-0.05 => Unsupported
   const auto fast = american_greeks_fd(S, K, T, sigma, r, q, Side::Call);
-  const auto cold = american_price(S, K, T, sigma, r, q, Side::Call,
-                                   AmericanMethod::AndersenLake, std::nullopt);
+  const auto cold =
+      american_price(S, K, T, sigma, r, q, Side::Call, AmericanMethod::AndersenLake, std::nullopt);
   ASSERT_FALSE(cold.has_value());
   ASSERT_FALSE(fast.has_value());
   EXPECT_EQ(fast.error().code(), cold.error().code());
@@ -779,7 +921,7 @@ TEST(CallGreeksAl, MeetsPdeGreekGates) {
   const double K = 100.0;
   struct Case {
     double S, T, sigma, r, q;
-    const char* tag;
+    const char *tag;
   };
   const Case cases[] = {
       {100.0, 1.00, 0.25, 0.03, 0.06, "atm-dividend"},
@@ -790,7 +932,7 @@ TEST(CallGreeksAl, MeetsPdeGreekGates) {
   };
   const atx::vol::test::OraclePdeOpts grid{};
   double max_theta_gap = 0.0, max_delta_ext = 0.0;
-  for (const Case& c : cases) {
+  for (const Case &c : cases) {
     const auto a = american_greeks_al(c.S, K, c.T, c.sigma, c.r, c.q, Side::Call);
     ASSERT_TRUE(a.has_value()) << c.tag;
     const AmericanGreeks cold = greeks_fd_reference(c.S, K, c.T, c.sigma, c.r, c.q, Side::Call);
@@ -800,14 +942,15 @@ TEST(CallGreeksAl, MeetsPdeGreekGates) {
     EXPECT_TRUE(bits_equal(a->vega, cold.vega)) << c.tag << " vega";
     EXPECT_TRUE(bits_equal(a->volga, cold.volga)) << c.tag << " volga";
     EXPECT_TRUE(bits_equal(a->rho, cold.rho)) << c.tag << " rho";
-    EXPECT_LT(std::fabs(a->delta - cold.delta), 2.0e-5) << c.tag << " delta";  // §9.2
+    EXPECT_LT(std::fabs(a->delta - cold.delta), 2.0e-5) << c.tag << " delta"; // §9.2
     const double dg = std::fabs(a->gamma - cold.gamma);
     EXPECT_TRUE(dg < 2.0e-5 || dg < 2.0e-3 * std::fabs(cold.gamma)) << c.tag << " gamma";
     EXPECT_LT(std::fabs(a->vanna - cold.vanna) * 0.01 * (0.01 * c.S), 1.0e-3) << c.tag << " vanna";
     // theta/charm §9.2 contribution vs the cold FD reference: the continuation-PDE and
     // the FD stencil agree to sub-percent, so the P&L contribution stays inside a tick.
     EXPECT_LT(std::fabs(a->theta - cold.theta) / 365.0, 1.0e-3) << c.tag << " theta-contrib";
-    EXPECT_LT(std::fabs(a->charm - cold.charm) * (0.01 * c.S) / 365.0, 1.0e-3) << c.tag << " charm-contrib";
+    EXPECT_LT(std::fabs(a->charm - cold.charm) * (0.01 * c.S) / 365.0, 1.0e-3)
+        << c.tag << " charm-contrib";
     // External anchors from the Crank-Nicolson PDE oracle: price + a numeric calendar
     // theta (central in T). Catches a wrong internal-put mapping or a flipped PDE sign
     // (either would move theta O(1), not O(oracle-noise)).
@@ -825,7 +968,7 @@ TEST(CallGreeksAl, MeetsPdeGreekGates) {
     const double vTp = oracle_pde_golden(c.S, K, c.T + hT, c.sigma, c.r, c.q, Side::Call, grid);
     const double vTm = oracle_pde_golden(c.S, K, c.T - hT, c.sigma, c.r, c.q, Side::Call, grid);
     ASSERT_TRUE(std::isfinite(vTp) && std::isfinite(vTm)) << c.tag;
-    const double theta_pde = -(vTp - vTm) / (2.0 * hT);  // calendar theta = dV/dt
+    const double theta_pde = -(vTp - vTm) / (2.0 * hT); // calendar theta = dV/dt
     max_theta_gap = std::max(max_theta_gap, std::fabs(a->theta - theta_pde) / 365.0);
     EXPECT_LT(std::fabs(a->theta - theta_pde) / 365.0, 2.0e-3)
         << c.tag << " theta_al=" << a->theta << " theta_pde=" << theta_pde;
@@ -842,7 +985,7 @@ TEST(CallGreeksAl, ThetaCharm_MoreAccurateThanFd) {
   const double K = 100.0;
   struct Case {
     double S, T, sigma, r, q;
-    const char* tag;
+    const char *tag;
   };
   const Case cases[] = {
       {100.0, 1.00, 0.25, 0.03, 0.06, "atm"},
@@ -855,7 +998,7 @@ TEST(CallGreeksAl, ThetaCharm_MoreAccurateThanFd) {
   fine.n_x = 8000;
   double sum_al = 0.0, sum_fd = 0.0;
   double csum_al = 0.0, csum_fd = 0.0;
-  for (const Case& c : cases) {
+  for (const Case &c : cases) {
     const auto al = american_greeks_al(c.S, K, c.T, c.sigma, c.r, c.q, Side::Call);
     const auto fd = american_greeks_fd(c.S, K, c.T, c.sigma, c.r, c.q, Side::Call);
     ASSERT_TRUE(al.has_value() && fd.has_value()) << c.tag;
@@ -863,10 +1006,14 @@ TEST(CallGreeksAl, ThetaCharm_MoreAccurateThanFd) {
     const double vTp = oracle_pde_golden(c.S, K, c.T + hT, c.sigma, c.r, c.q, Side::Call, fine);
     const double vTm = oracle_pde_golden(c.S, K, c.T - hT, c.sigma, c.r, c.q, Side::Call, fine);
     // charm = d(theta)/dS: central difference of the numeric oracle theta in S.
-    const double vSpTp = oracle_pde_golden(c.S + hS, K, c.T + hT, c.sigma, c.r, c.q, Side::Call, fine);
-    const double vSpTm = oracle_pde_golden(c.S + hS, K, c.T - hT, c.sigma, c.r, c.q, Side::Call, fine);
-    const double vSmTp = oracle_pde_golden(c.S - hS, K, c.T + hT, c.sigma, c.r, c.q, Side::Call, fine);
-    const double vSmTm = oracle_pde_golden(c.S - hS, K, c.T - hT, c.sigma, c.r, c.q, Side::Call, fine);
+    const double vSpTp =
+        oracle_pde_golden(c.S + hS, K, c.T + hT, c.sigma, c.r, c.q, Side::Call, fine);
+    const double vSpTm =
+        oracle_pde_golden(c.S + hS, K, c.T - hT, c.sigma, c.r, c.q, Side::Call, fine);
+    const double vSmTp =
+        oracle_pde_golden(c.S - hS, K, c.T + hT, c.sigma, c.r, c.q, Side::Call, fine);
+    const double vSmTm =
+        oracle_pde_golden(c.S - hS, K, c.T - hT, c.sigma, c.r, c.q, Side::Call, fine);
     ASSERT_TRUE(std::isfinite(vTp) && std::isfinite(vTm));
     const double theta_ref = -(vTp - vTm) / (2.0 * hT);
     const double charm_ref = -((vSpTp - vSpTm) - (vSmTp - vSmTm)) / (2.0 * hS * 2.0 * hT);
@@ -876,10 +1023,13 @@ TEST(CallGreeksAl, ThetaCharm_MoreAccurateThanFd) {
     sum_fd += efd;
     csum_al += cal;
     csum_fd += cfd;
-    std::printf("[9b-theta-acc] %-9s theta ref=%.5f al=%.5f(%.2e) fd=%.5f(%.2e) | charm ref=%.5f al=%.5f(%.2e) fd=%.5f(%.2e)\n",
-                c.tag, theta_ref, al->theta, eal, fd->theta, efd, charm_ref, al->charm, cal, fd->charm, cfd);
+    std::printf("[9b-theta-acc] %-9s theta ref=%.5f al=%.5f(%.2e) fd=%.5f(%.2e) | charm ref=%.5f "
+                "al=%.5f(%.2e) fd=%.5f(%.2e)\n",
+                c.tag, theta_ref, al->theta, eal, fd->theta, efd, charm_ref, al->charm, cal,
+                fd->charm, cfd);
   }
-  std::printf("[9b-theta-acc] SUM|theta err| analytic=%.4e fd=%.4e | SUM|charm err| analytic=%.4e fd=%.4e\n",
+  std::printf("[9b-theta-acc] SUM|theta err| analytic=%.4e fd=%.4e | SUM|charm err| analytic=%.4e "
+              "fd=%.4e\n",
               sum_al, sum_fd, csum_al, csum_fd);
   // Analytic PDE theta is at least as accurate as the FD theta against the oracle.
   EXPECT_LE(sum_al, sum_fd);
@@ -889,7 +1039,7 @@ TEST(CallGreeksAl, ThetaCharm_MoreAccurateThanFd) {
 // (base + sigma± + r±) internal-put boundaries — down from the FD-delegation's 7 (it
 // also paid the two T± solves). Skipped in the default counters-OFF build.
 TEST(CallGreeksAl, SolveCount_5) {
-  const double S = 100.0, K = 100.0, T = 1.0, sigma = 0.25, r = 0.03, q = 0.06;  // q>0 American call
+  const double S = 100.0, K = 100.0, T = 1.0, sigma = 0.25, r = 0.03, q = 0.06; // q>0 American call
   if constexpr (!atx::vol::counters::counters_enabled()) {
     const auto g = american_greeks_al(S, K, T, sigma, r, q, Side::Call);
     ASSERT_TRUE(g.has_value());
@@ -918,10 +1068,11 @@ TEST(CallGreeksAl, NonAmericanCorners_FallBackToFd) {
   const double K = 100.0, T = 0.75, sigma = 0.25;
   // European call: q<=0 && q<=r => american_greeks_al delegates to american_greeks_fd.
   {
-    const double S = 100.0, r = 0.04, q = 0.0;  // q<=r, no early exercise
+    const double S = 100.0, r = 0.04, q = 0.0; // q<=r, no early exercise
     const auto a = american_greeks_al(S, K, T, sigma, r, q, Side::Call);
-    const auto f = american_greeks_fd(S, K, T, sigma, r, q, Side::Call,
-                                      AmericanMethod::AndersenLake, std::nullopt, /*warm_start=*/false);
+    const auto f =
+        american_greeks_fd(S, K, T, sigma, r, q, Side::Call, AmericanMethod::AndersenLake,
+                           std::nullopt, /*warm_start=*/false);
     ASSERT_TRUE(a.has_value() && f.has_value());
     EXPECT_TRUE(bits_equal(a->price, f->price));
     EXPECT_TRUE(bits_equal(a->delta, f->delta));
@@ -934,18 +1085,20 @@ TEST(CallGreeksAl, NonAmericanCorners_FallBackToFd) {
   {
     const double S = 105.0, r = 0.03, q = 0.06, Ttiny = 1.0e-13;
     const auto a = american_greeks_al(S, K, Ttiny, sigma, r, q, Side::Call);
-    const auto f = american_greeks_fd(S, K, Ttiny, sigma, r, q, Side::Call,
-                                      AmericanMethod::AndersenLake, std::nullopt, /*warm_start=*/false);
+    const auto f =
+        american_greeks_fd(S, K, Ttiny, sigma, r, q, Side::Call, AmericanMethod::AndersenLake,
+                           std::nullopt, /*warm_start=*/false);
     ASSERT_TRUE(a.has_value() && f.has_value());
     EXPECT_TRUE(bits_equal(a->price, f->price));
     EXPECT_TRUE(bits_equal(a->delta, f->delta));
   }
   // Unsupported call (r < q <= 0): both surface NotImplemented (no silent European).
   {
-    const double S = 100.0, r = -0.05, q = -0.02;  // internal-put rate q=-0.02 > yield r=-0.05
+    const double S = 100.0, r = -0.05, q = -0.02; // internal-put rate q=-0.02 > yield r=-0.05
     const auto a = american_greeks_al(S, K, T, sigma, r, q, Side::Call);
-    const auto f = american_greeks_fd(S, K, T, sigma, r, q, Side::Call,
-                                      AmericanMethod::AndersenLake, std::nullopt, /*warm_start=*/false);
+    const auto f =
+        american_greeks_fd(S, K, T, sigma, r, q, Side::Call, AmericanMethod::AndersenLake,
+                           std::nullopt, /*warm_start=*/false);
     ASSERT_FALSE(a.has_value());
     ASSERT_FALSE(f.has_value());
     EXPECT_EQ(a.error().code(), f.error().code());
@@ -957,7 +1110,7 @@ TEST(CallGreeksAl, NonAmericanCorners_FallBackToFd) {
 // PDE theta/charm) vs the fast FD call bundle (7 solves) over a dividend-call grid.
 // DISABLED — run: --gtest_also_run_disabled_tests --gtest_filter=*CallGreeksAl.DISABLED_AnalyticVsFd_Speedup*
 TEST(CallGreeksAl, DISABLED_AnalyticVsFd_Speedup) {
-  const double S = 100.0, r = 0.03, q = 0.06;  // q>0 American dividend call
+  const double S = 100.0, r = 0.03, q = 0.06; // q>0 American dividend call
   struct Pt {
     double K, T, sigma;
   };
@@ -973,14 +1126,15 @@ TEST(CallGreeksAl, DISABLED_AnalyticVsFd_Speedup) {
   volatile double sink = 0.0;
   auto t0 = std::chrono::steady_clock::now();
   for (int rep = 0; rep < reps; ++rep)
-    for (const Pt& p : grid) {
-      const auto g = american_greeks_fd(S, p.K, p.T, p.sigma, r, q, Side::Call,
-                                        AmericanMethod::AndersenLake, std::nullopt, /*warm_start=*/false);
+    for (const Pt &p : grid) {
+      const auto g =
+          american_greeks_fd(S, p.K, p.T, p.sigma, r, q, Side::Call, AmericanMethod::AndersenLake,
+                             std::nullopt, /*warm_start=*/false);
       sink += g ? g->delta + g->vega + g->theta : 0.0;
     }
   auto t1 = std::chrono::steady_clock::now();
   for (int rep = 0; rep < reps; ++rep)
-    for (const Pt& p : grid) {
+    for (const Pt &p : grid) {
       const auto g = american_greeks_al(S, p.K, p.T, p.sigma, r, q, Side::Call);
       sink += g ? g->delta + g->vega + g->theta : 0.0;
     }
@@ -988,8 +1142,9 @@ TEST(CallGreeksAl, DISABLED_AnalyticVsFd_Speedup) {
   const double fd_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
   const double al_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
   const double calls = static_cast<double>(reps) * static_cast<double>(grid.size());
-  std::printf("[9b-call-throughput] fd(7-solve)=%.0f ns/call  al(5-solve)=%.0f ns/call  speedup=%.2fx\n",
-              fd_ms * 1e6 / calls, al_ms * 1e6 / calls, fd_ms / al_ms);
+  std::printf(
+      "[9b-call-throughput] fd(7-solve)=%.0f ns/call  al(5-solve)=%.0f ns/call  speedup=%.2fx\n",
+      fd_ms * 1e6 / calls, al_ms * 1e6 / calls, fd_ms / al_ms);
   EXPECT_GT(sink, -1e18);
 }
 
@@ -1012,9 +1167,8 @@ TEST(AmericanDelta, MatchesFd_PutCallGrid) {
           ASSERT_TRUE(d.has_value() && g.has_value())
               << (side == Side::Put ? "put" : "call") << " K=" << K << " T=" << T
               << " sigma=" << sigma;
-          EXPECT_EQ(*d, g->delta)
-              << (side == Side::Put ? "put" : "call") << " K=" << K << " T=" << T
-              << " sigma=" << sigma;
+          EXPECT_EQ(*d, g->delta) << (side == Side::Put ? "put" : "call") << " K=" << K
+                                  << " T=" << T << " sigma=" << sigma;
           ++checked;
         }
       }
@@ -1040,17 +1194,16 @@ TEST(AmericanGreeks, WarmStart_MatchesCold_PutGrid) {
   for (const double K : {70.0, 85.0, 100.0, 115.0, 130.0}) {
     for (const double T : {0.02, 0.1, 0.5, 1.0, 2.0}) {
       for (const double sigma : {0.12, 0.25, 0.45}) {
-        const auto cold = american_greeks_fd(S, K, T, sigma, r, q, Side::Put,
-                                             AmericanMethod::AndersenLake,
-                                             std::nullopt, /*warm_start=*/false);
-        const auto warm = american_greeks_fd(S, K, T, sigma, r, q, Side::Put,
-                                             AmericanMethod::AndersenLake,
-                                             std::nullopt, /*warm_start=*/true);
+        const auto cold =
+            american_greeks_fd(S, K, T, sigma, r, q, Side::Put, AmericanMethod::AndersenLake,
+                               std::nullopt, /*warm_start=*/false);
+        const auto warm =
+            american_greeks_fd(S, K, T, sigma, r, q, Side::Put, AmericanMethod::AndersenLake,
+                               std::nullopt, /*warm_start=*/true);
         ASSERT_TRUE(cold.has_value());
         ASSERT_TRUE(warm.has_value());
         // Price is the cold base boundary in both paths: bit-identical.
-        EXPECT_EQ(warm->price, cold->price)
-            << "K=" << K << " T=" << T << " sigma=" << sigma;
+        EXPECT_EQ(warm->price, cold->price) << "K=" << K << " T=" << T << " sigma=" << sigma;
         abs_price = std::max(abs_price, std::fabs(warm->price - cold->price));
         abs_delta = std::max(abs_delta, std::fabs(warm->delta - cold->delta));
         abs_gamma = std::max(abs_gamma, std::fabs(warm->gamma - cold->gamma));
@@ -1067,14 +1220,13 @@ TEST(AmericanGreeks, WarmStart_MatchesCold_PutGrid) {
       }
     }
   }
-  std::printf(
-      "[p1b-warm-vs-cold] pts=%d abs: price=%.2e delta=%.2e gamma=%.2e vega=%.2e "
-      "theta=%.2e rho=%.2e | rel(>1): vega=%.2e theta=%.2e rho=%.2e\n",
-      checked, abs_price, abs_delta, abs_gamma, abs_vega, abs_theta, abs_rho,
-      rel_vega, rel_theta, rel_rho);
+  std::printf("[p1b-warm-vs-cold] pts=%d abs: price=%.2e delta=%.2e gamma=%.2e vega=%.2e "
+              "theta=%.2e rho=%.2e | rel(>1): vega=%.2e theta=%.2e rho=%.2e\n",
+              checked, abs_price, abs_delta, abs_gamma, abs_vega, abs_theta, abs_rho, rel_vega,
+              rel_theta, rel_rho);
   EXPECT_EQ(checked, 75);
-  EXPECT_EQ(abs_price, 0.0);  // base boundary is cold in both => bit-identical
-  EXPECT_EQ(abs_delta, 0.0);  // spot stencils reuse the cold base boundary
+  EXPECT_EQ(abs_price, 0.0); // base boundary is cold in both => bit-identical
+  EXPECT_EQ(abs_delta, 0.0); // spot stencils reuse the cold base boundary
   EXPECT_EQ(abs_gamma, 0.0);
   // Warm bumped boundaries reconverge from the base seed to the same budget the
   // cold path uses (2 JN + 4 FP sweeps), so the sensitivities match the cold FD
@@ -1098,7 +1250,7 @@ TEST(AmericanGreeks, WarmStart_MatchesCold_PutGrid) {
 // cold base boundary in both paths => bit-identical; the warm-solved sensitivities
 // reconverge to the cold FD reference within the shared 2 JN + 4 FP sweep budget.
 TEST(CallGreeksFd, WarmStart_MatchesCold) {
-  const double S = 100.0, r = 0.03, q = 0.05;  // q>r>0: early call exercise binds
+  const double S = 100.0, r = 0.03, q = 0.05; // q>r>0: early call exercise binds
   double abs_price = 0.0, abs_delta = 0.0, abs_gamma = 0.0;
   double abs_vega = 0.0, abs_theta = 0.0, abs_rho = 0.0;
   double rel_vega = 0.0, rel_theta = 0.0, rel_rho = 0.0;
@@ -1106,12 +1258,12 @@ TEST(CallGreeksFd, WarmStart_MatchesCold) {
   for (const double K : {70.0, 85.0, 100.0, 115.0, 130.0}) {
     for (const double T : {0.05, 0.1, 0.5, 1.0, 2.0}) {
       for (const double sigma : {0.12, 0.25, 0.45}) {
-        const auto cold = american_greeks_fd(S, K, T, sigma, r, q, Side::Call,
-                                             AmericanMethod::AndersenLake,
-                                             std::nullopt, /*warm_start=*/false);
-        const auto warm = american_greeks_fd(S, K, T, sigma, r, q, Side::Call,
-                                             AmericanMethod::AndersenLake,
-                                             std::nullopt, /*warm_start=*/true);
+        const auto cold =
+            american_greeks_fd(S, K, T, sigma, r, q, Side::Call, AmericanMethod::AndersenLake,
+                               std::nullopt, /*warm_start=*/false);
+        const auto warm =
+            american_greeks_fd(S, K, T, sigma, r, q, Side::Call, AmericanMethod::AndersenLake,
+                               std::nullopt, /*warm_start=*/true);
         ASSERT_TRUE(cold.has_value() && warm.has_value())
             << "K=" << K << " T=" << T << " sigma=" << sigma;
         // price/delta/gamma reuse the cold base boundary in both paths => bit-identical.
@@ -1135,14 +1287,13 @@ TEST(CallGreeksFd, WarmStart_MatchesCold) {
       }
     }
   }
-  std::printf(
-      "[9b-warm-vs-cold-call] pts=%d abs: price=%.2e delta=%.2e gamma=%.2e vega=%.2e "
-      "theta=%.2e rho=%.2e | rel(>1): vega=%.2e theta=%.2e rho=%.2e\n",
-      checked, abs_price, abs_delta, abs_gamma, abs_vega, abs_theta, abs_rho,
-      rel_vega, rel_theta, rel_rho);
+  std::printf("[9b-warm-vs-cold-call] pts=%d abs: price=%.2e delta=%.2e gamma=%.2e vega=%.2e "
+              "theta=%.2e rho=%.2e | rel(>1): vega=%.2e theta=%.2e rho=%.2e\n",
+              checked, abs_price, abs_delta, abs_gamma, abs_vega, abs_theta, abs_rho, rel_vega,
+              rel_theta, rel_rho);
   EXPECT_EQ(checked, 75);
-  EXPECT_EQ(abs_price, 0.0);  // cold base boundary in both => bit-identical mark
-  EXPECT_EQ(abs_delta, 0.0);  // spot stencils rescale the SAME cold base boundary
+  EXPECT_EQ(abs_price, 0.0); // cold base boundary in both => bit-identical mark
+  EXPECT_EQ(abs_delta, 0.0); // spot stencils rescale the SAME cold base boundary
   EXPECT_EQ(abs_gamma, 0.0);
   // Warm bumped boundaries reconverge from the CANONICAL base seed (the M1 fix) to the
   // cold FD reference within the shared sweep budget — same envelope as the put path.
@@ -1165,7 +1316,8 @@ TEST(AmericanGreeks, Analytic_VsFd_PutGrid) {
     double abs = 0.0, rel = 0.0;
     void add(double a, double b, double floor) {
       abs = std::max(abs, std::fabs(a - b));
-      if (std::fabs(b) > floor) rel = std::max(rel, std::fabs(a - b) / std::fabs(b));
+      if (std::fabs(b) > floor)
+        rel = std::max(rel, std::fabs(a - b) / std::fabs(b));
     }
   };
   Acc price, delta, gamma, vega, volga, rho, vanna, theta, charm;
@@ -1192,14 +1344,13 @@ TEST(AmericanGreeks, Analytic_VsFd_PutGrid) {
       }
     }
   }
-  std::printf(
-      "[p2-analytic-vs-fd] pts=%d abs_price=%.2e\n"
-      "  delta abs=%.2e rel=%.2e | gamma abs=%.2e rel=%.2e | vega abs=%.2e rel=%.2e\n"
-      "  rho   abs=%.2e rel=%.2e | volga abs=%.2e rel=%.2e | vanna abs=%.2e rel=%.2e\n"
-      "  theta abs=%.2e rel=%.2e | charm abs=%.2e rel=%.2e\n",
-      checked, abs_price, delta.abs, delta.rel, gamma.abs, gamma.rel, vega.abs,
-      vega.rel, rho.abs, rho.rel, volga.abs, volga.rel, vanna.abs, vanna.rel,
-      theta.abs, theta.rel, charm.abs, charm.rel);
+  std::printf("[p2-analytic-vs-fd] pts=%d abs_price=%.2e\n"
+              "  delta abs=%.2e rel=%.2e | gamma abs=%.2e rel=%.2e | vega abs=%.2e rel=%.2e\n"
+              "  rho   abs=%.2e rel=%.2e | volga abs=%.2e rel=%.2e | vanna abs=%.2e rel=%.2e\n"
+              "  theta abs=%.2e rel=%.2e | charm abs=%.2e rel=%.2e\n",
+              checked, abs_price, delta.abs, delta.rel, gamma.abs, gamma.rel, vega.abs, vega.rel,
+              rho.abs, rho.rel, volga.abs, volga.rel, vanna.abs, vanna.rel, theta.abs, theta.rel,
+              charm.abs, charm.rel);
   EXPECT_EQ(checked, 75);
   // Same base + sigma+/- + r+/- boundaries => price and the six spot/vol/rate greeks
   // are bit-identical to the FD path.
@@ -1224,7 +1375,9 @@ TEST(AmericanGreeks, Analytic_VsFd_PutGrid) {
 // binds (the American boundary path, not the European short-circuit).
 TEST(CallGreeksFd, DISABLED_Reuse_Speedup) {
   const double S = 100.0, r = 0.03, q = 0.05;
-  struct Pt { double K, T, sigma; };
+  struct Pt {
+    double K, T, sigma;
+  };
   std::vector<Pt> grid;
   for (const double K : {70.0, 85.0, 100.0, 115.0, 130.0}) {
     for (const double T : {0.05, 0.25, 0.75, 1.5}) {
@@ -1238,14 +1391,14 @@ TEST(CallGreeksFd, DISABLED_Reuse_Speedup) {
 
   auto t0 = std::chrono::steady_clock::now();
   for (int rep = 0; rep < reps; ++rep) {
-    for (const Pt& p : grid) {
+    for (const Pt &p : grid) {
       const auto g = greeks_fd_reference(S, p.K, p.T, p.sigma, r, q, Side::Call);
       sink += g.delta + g.vega + g.gamma;
     }
   }
   auto t1 = std::chrono::steady_clock::now();
   for (int rep = 0; rep < reps; ++rep) {
-    for (const Pt& p : grid) {
+    for (const Pt &p : grid) {
       const auto g = american_greeks_fd(S, p.K, p.T, p.sigma, r, q, Side::Call,
                                         AmericanMethod::AndersenLake, std::nullopt,
                                         /*warm_start=*/false);
@@ -1258,11 +1411,10 @@ TEST(CallGreeksFd, DISABLED_Reuse_Speedup) {
   const double fast_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
   const long calls = static_cast<long>(reps) * static_cast<long>(grid.size());
   const double per = static_cast<double>(calls);
-  std::printf(
-      "[call-greeks-speedup] calls=%ld ref(17cold)=%.1fms (%.1fus) "
-      "p2.1(7solve)=%.1fms (%.1fus, %.2fx) sink=%.3g\n",
-      calls, ref_ms, 1000.0 * ref_ms / per, fast_ms, 1000.0 * fast_ms / per,
-      ref_ms / fast_ms, static_cast<double>(sink));
+  std::printf("[call-greeks-speedup] calls=%ld ref(17cold)=%.1fms (%.1fus) "
+              "p2.1(7solve)=%.1fms (%.1fus, %.2fx) sink=%.3g\n",
+              calls, ref_ms, 1000.0 * ref_ms / per, fast_ms, 1000.0 * fast_ms / per,
+              ref_ms / fast_ms, static_cast<double>(sink));
   EXPECT_GT(ref_ms, fast_ms);
 }
 
@@ -1279,8 +1431,7 @@ TEST(AloPricer, ColdFirstCall_MatchesAndersenLake) {
           for (Side side : {Side::Call, Side::Put}) {
             AloPricer pr(S, K, T, r, q, side);
             const double warm = pr.price(sigma);
-            const double cold =
-                value_or_fail(andersen_lake(S, K, T, sigma, r, q, side));
+            const double cold = value_or_fail(andersen_lake(S, K, T, sigma, r, q, side));
             ASSERT_TRUE(std::isfinite(warm)) << "K=" << K << " T=" << T;
             EXPECT_NEAR(warm, cold, 1.0e-9 * std::fmax(1.0, cold))
                 << "K=" << K << " T=" << T << " sig=" << sigma << " q=" << q;
@@ -1302,9 +1453,8 @@ TEST(AloPricer, WarmSweep_TracksColdWithinSchemeNoise) {
       for (Side side : {Side::Call, Side::Put}) {
         AloPricer pr(S, K, T, r, q, side);
         for (double sigma = 0.12; sigma <= 0.45 + 1e-9; sigma += 0.01) {
-          const double warm = pr.price(sigma);  // warm after the first
-          const double cold =
-              value_or_fail(andersen_lake(S, K, T, sigma, r, q, side));
+          const double warm = pr.price(sigma); // warm after the first
+          const double cold = value_or_fail(andersen_lake(S, K, T, sigma, r, q, side));
           ASSERT_TRUE(std::isfinite(warm));
           EXPECT_NEAR(warm, cold, 3.0e-3 * std::fmax(1.0, cold) + 1.0e-6)
               << "K=" << K << " T=" << T << " sig=" << sigma;
@@ -1319,11 +1469,11 @@ TEST(AloPricer, WarmSweep_TracksColdWithinSchemeNoise) {
 TEST(AloPricer, DegenerateAndEuropeanBranches) {
   {
     AloPricer pr(100.0, 110.0, 1.0, 0.05, 0.0, Side::Put);
-    EXPECT_NEAR(pr.price(1.0e-12), 10.0, 1.0e-9);  // intrinsic K - S
+    EXPECT_NEAR(pr.price(1.0e-12), 10.0, 1.0e-9); // intrinsic K - S
   }
   {
     AloPricer pr(100.0, 90.0, 1.0, 0.05, 0.0, Side::Call);
-    EXPECT_NEAR(pr.price(1.0e-12), 10.0, 1.0e-9);  // intrinsic S - K
+    EXPECT_NEAR(pr.price(1.0e-12), 10.0, 1.0e-9); // intrinsic S - K
   }
   {
     // Put with r < 0: no early exercise -> European put.
@@ -1343,12 +1493,11 @@ TEST(AndersenLakeCallSlice, MatchesPerStrikeAndersenLakeBitIdentical) {
   }
   std::vector<double> px(strikes.size(), 0.0);
   const atx::vol::Status st = andersen_lake_call_slice(
-      S, std::span<const double>(strikes), T, sigma, r, q,
-      std::span<double>(px), std::nullopt);
+      S, std::span<const double>(strikes), T, sigma, r, q, std::span<double>(px), std::nullopt);
   ASSERT_TRUE(st.has_value()) << (st ? std::string{} : st.error().to_string());
   for (std::size_t i = 0; i < strikes.size(); ++i) {
-    const double ref = value_or_fail(
-        andersen_lake(S, strikes[i], T, sigma, r, q, Side::Call, std::nullopt));
+    const double ref =
+        value_or_fail(andersen_lake(S, strikes[i], T, sigma, r, q, Side::Call, std::nullopt));
     // One shared boundary solve must reproduce each per-strike cold solve to the
     // bit (the whole point — surface numbers must not move).
     EXPECT_EQ(px[i], ref) << "strike " << strikes[i];
@@ -1362,36 +1511,34 @@ TEST(AndersenLakeCallSlice, FastPresetDegenerateEuroAndValidation) {
 
   // Fast preset routes bit-identically too.
   const AlOpts fast = al_fast_opts();
-  ASSERT_TRUE(andersen_lake_call_slice(S, std::span<const double>(strikes), T, 0.2,
-                                       r, q, std::span<double>(px), fast)
+  ASSERT_TRUE(andersen_lake_call_slice(S, std::span<const double>(strikes), T, 0.2, r, q,
+                                       std::span<double>(px), fast)
                   .has_value());
   for (std::size_t i = 0; i < 3; ++i) {
-    EXPECT_EQ(px[i], value_or_fail(andersen_lake(S, strikes[i], T, 0.2, r, q,
-                                                 Side::Call, fast)));
+    EXPECT_EQ(px[i], value_or_fail(andersen_lake(S, strikes[i], T, 0.2, r, q, Side::Call, fast)));
   }
 
   // Degenerate sigma -> intrinsic per strike.
-  ASSERT_TRUE(andersen_lake_call_slice(S, std::span<const double>(strikes), T, 0.0,
-                                       r, q, std::span<double>(px), std::nullopt)
+  ASSERT_TRUE(andersen_lake_call_slice(S, std::span<const double>(strikes), T, 0.0, r, q,
+                                       std::span<double>(px), std::nullopt)
                   .has_value());
-  EXPECT_DOUBLE_EQ(px[0], 60.0);  // 600 - 540
-  EXPECT_DOUBLE_EQ(px[1], 0.0);   // 600 - 600
-  EXPECT_DOUBLE_EQ(px[2], 0.0);   // max(600 - 660, 0)
+  EXPECT_DOUBLE_EQ(px[0], 60.0); // 600 - 540
+  EXPECT_DOUBLE_EQ(px[1], 0.0);  // 600 - 600
+  EXPECT_DOUBLE_EQ(px[2], 0.0);  // max(600 - 660, 0)
 
   // q <= 0: European call per strike (matches the andersen_lake short-circuit).
-  ASSERT_TRUE(andersen_lake_call_slice(S, std::span<const double>(strikes), T, 0.2,
-                                       r, 0.0, std::span<double>(px), std::nullopt)
+  ASSERT_TRUE(andersen_lake_call_slice(S, std::span<const double>(strikes), T, 0.2, r, 0.0,
+                                       std::span<double>(px), std::nullopt)
                   .has_value());
   for (std::size_t i = 0; i < 3; ++i) {
-    EXPECT_EQ(px[i], value_or_fail(andersen_lake(S, strikes[i], T, 0.2, r, 0.0,
-                                                 Side::Call, std::nullopt)));
+    EXPECT_EQ(px[i], value_or_fail(
+                         andersen_lake(S, strikes[i], T, 0.2, r, 0.0, Side::Call, std::nullopt)));
   }
 
   // Length mismatch is rejected.
   std::vector<double> short_out(2, 0.0);
-  EXPECT_FALSE(andersen_lake_call_slice(S, std::span<const double>(strikes), T, 0.2,
-                                        r, q, std::span<double>(short_out),
-                                        std::nullopt)
+  EXPECT_FALSE(andersen_lake_call_slice(S, std::span<const double>(strikes), T, 0.2, r, q,
+                                        std::span<double>(short_out), std::nullopt)
                    .has_value());
 }
 
@@ -1424,10 +1571,10 @@ TEST(AndersenLakePutSlice, StepOneReusedBoundaryUlpSpike) {
   // absolute gap everywhere AND relative gap above this floor.
   constexpr double kPriceFloor = 1.0e-3;
 
-  std::uint64_t max_ulp = 0;                 // over all points
-  std::uint64_t max_ulp_meaningful = 0;      // prices >= floor
-  double max_abs = 0.0;                       // over all points
-  double max_rel_meaningful = 0.0;            // prices >= floor
+  std::uint64_t max_ulp = 0;            // over all points
+  std::uint64_t max_ulp_meaningful = 0; // prices >= floor
+  double max_abs = 0.0;                 // over all points
+  double max_rel_meaningful = 0.0;      // prices >= floor
   std::uint64_t n_pts = 0;
   std::uint64_t n_bit_identical = 0;
   std::uint64_t ref_strike_pts = 0;
@@ -1443,55 +1590,61 @@ TEST(AndersenLakePutSlice, StepOneReusedBoundaryUlpSpike) {
       for (double T : Ts)
         for (double sigma : sigmas) {
           const double S = std::exp(-(r - q) * T);
-          const auto st = andersen_lake_put_slice(
-              S, std::span<const double>(strikes), T, sigma, r, q,
-              std::span<double>(px), std::nullopt);
-          ASSERT_TRUE(st.has_value())
-              << "r=" << r << " q=" << q << " T=" << T << " sigma=" << sigma
-              << " : " << st.error().to_string();
+          const auto st = andersen_lake_put_slice(S, std::span<const double>(strikes), T, sigma, r,
+                                                  q, std::span<double>(px), std::nullopt);
+          ASSERT_TRUE(st.has_value()) << "r=" << r << " q=" << q << " T=" << T << " sigma=" << sigma
+                                      << " : " << st.error().to_string();
           for (std::size_t i = 0; i < strikes.size(); ++i) {
-            const double ref = value_or_fail(andersen_lake(
-                S, strikes[i], T, sigma, r, q, Side::Put, std::nullopt));
+            const double ref = value_or_fail(
+                andersen_lake(S, strikes[i], T, sigma, r, q, Side::Put, std::nullopt));
             const std::uint64_t u = ulp_distance_nonneg(px[i], ref);
             const double a = std::fabs(px[i] - ref);
-            if (u > max_ulp) max_ulp = u;
+            if (u > max_ulp)
+              max_ulp = u;
             if (a > max_abs) {
               max_abs = a;
-              worst_r = r; worst_q = q; worst_T = T; worst_s = sigma;
-              worst_K = strikes[i]; worst_slice = px[i]; worst_ref = ref;
+              worst_r = r;
+              worst_q = q;
+              worst_T = T;
+              worst_s = sigma;
+              worst_K = strikes[i];
+              worst_slice = px[i];
+              worst_ref = ref;
             }
             if (ref >= kPriceFloor) {
-              if (u > max_ulp_meaningful) max_ulp_meaningful = u;
+              if (u > max_ulp_meaningful)
+                max_ulp_meaningful = u;
               const double rel = a / ref;
-              if (rel > max_rel_meaningful) max_rel_meaningful = rel;
+              if (rel > max_rel_meaningful)
+                max_rel_meaningful = rel;
             }
             ++n_pts;
-            if (u == 0) ++n_bit_identical;
-            if (i == 0) {  // strikes[0] is the reference strike => must be exact
+            if (u == 0)
+              ++n_bit_identical;
+            if (i == 0) { // strikes[0] is the reference strike => must be exact
               ++ref_strike_pts;
-              if (u == 0) ++ref_strike_bit_identical;
-              EXPECT_TRUE(bits_equal(px[i], ref))
-                  << "reference strike not bit-identical: r=" << r << " q=" << q
-                  << " T=" << T << " sigma=" << sigma;
+              if (u == 0)
+                ++ref_strike_bit_identical;
+              EXPECT_TRUE(bits_equal(px[i], ref)) << "reference strike not bit-identical: r=" << r
+                                                  << " q=" << q << " T=" << T << " sigma=" << sigma;
             }
           }
         }
 
-  std::printf(
-      "[put-slice spike] points=%llu  bit-identical=%llu (%.1f%%)  "
-      "max_ulp(all)=%llu  max_abs(all)=%.3e\n"
-      "                  meaningful(price>=%.0e): max_ulp=%llu  max_rel=%.3e\n"
-      "                  worst-abs @ r=%.3f q=%.3f T=%.3f sigma=%.3f K=%.3f "
-      "slice=%.12e ref=%.12e\n"
-      "                  ref-strike bit-identical=%llu/%llu\n",
-      static_cast<unsigned long long>(n_pts),
-      static_cast<unsigned long long>(n_bit_identical),
-      100.0 * static_cast<double>(n_bit_identical) / static_cast<double>(n_pts),
-      static_cast<unsigned long long>(max_ulp), max_abs, kPriceFloor,
-      static_cast<unsigned long long>(max_ulp_meaningful), max_rel_meaningful,
-      worst_r, worst_q, worst_T, worst_s, worst_K, worst_slice, worst_ref,
-      static_cast<unsigned long long>(ref_strike_bit_identical),
-      static_cast<unsigned long long>(ref_strike_pts));
+  std::printf("[put-slice spike] points=%llu  bit-identical=%llu (%.1f%%)  "
+              "max_ulp(all)=%llu  max_abs(all)=%.3e\n"
+              "                  meaningful(price>=%.0e): max_ulp=%llu  max_rel=%.3e\n"
+              "                  worst-abs @ r=%.3f q=%.3f T=%.3f sigma=%.3f K=%.3f "
+              "slice=%.12e ref=%.12e\n"
+              "                  ref-strike bit-identical=%llu/%llu\n",
+              static_cast<unsigned long long>(n_pts),
+              static_cast<unsigned long long>(n_bit_identical),
+              100.0 * static_cast<double>(n_bit_identical) / static_cast<double>(n_pts),
+              static_cast<unsigned long long>(max_ulp), max_abs, kPriceFloor,
+              static_cast<unsigned long long>(max_ulp_meaningful), max_rel_meaningful, worst_r,
+              worst_q, worst_T, worst_s, worst_K, worst_slice, worst_ref,
+              static_cast<unsigned long long>(ref_strike_bit_identical),
+              static_cast<unsigned long long>(ref_strike_pts));
 
   // The reference strike (strikes[0]) is ALWAYS bit-identical: same solve, same
   // clamp path as al_solve_put. This is the ONE strike whose price does not move.
@@ -1518,25 +1671,25 @@ TEST(AndersenLakePutSlice, StepOneReusedBoundaryUlpSpike) {
 // tolerance 1e-6·max(1,ref) covers both large ITM and tiny OTM prices.
 TEST(AndersenLakePutSlice, MatchesPerStrikeAndersenLake) {
   const double S = 100.0, T = 0.4, sigma = 0.28;
-  struct RQ { double r, q; };
+  struct RQ {
+    double r, q;
+  };
   const RQ corners[] = {{0.05, 0.0}, {0.05, 0.02}, {0.03, 0.05}, {0.08, 0.07}, {0.02, 0.01}};
   std::vector<double> strikes;
   for (double K = 60.0; K <= 160.0 + 1e-9; K += 5.0) {
     strikes.push_back(K);
   }
   std::vector<double> px(strikes.size(), 0.0);
-  for (const RQ& c : corners) {
-    const auto st = andersen_lake_put_slice(
-        S, std::span<const double>(strikes), T, sigma, c.r, c.q,
-        std::span<double>(px), std::nullopt);
-    ASSERT_TRUE(st.has_value())
-        << "r=" << c.r << " q=" << c.q << " : " << st.error().to_string();
+  for (const RQ &c : corners) {
+    const auto st = andersen_lake_put_slice(S, std::span<const double>(strikes), T, sigma, c.r, c.q,
+                                            std::span<double>(px), std::nullopt);
+    ASSERT_TRUE(st.has_value()) << "r=" << c.r << " q=" << c.q << " : " << st.error().to_string();
     for (std::size_t i = 0; i < strikes.size(); ++i) {
-      const double ref = value_or_fail(andersen_lake(
-          S, strikes[i], T, sigma, c.r, c.q, Side::Put, std::nullopt));
+      const double ref =
+          value_or_fail(andersen_lake(S, strikes[i], T, sigma, c.r, c.q, Side::Put, std::nullopt));
       EXPECT_LT(std::fabs(px[i] - ref), 1.0e-6 * std::fmax(1.0, ref))
-          << "K=" << strikes[i] << " r=" << c.r << " q=" << c.q
-          << " slice=" << px[i] << " scalar=" << ref;
+          << "K=" << strikes[i] << " r=" << c.r << " q=" << c.q << " slice=" << px[i]
+          << " scalar=" << ref;
     }
   }
 }
@@ -1549,12 +1702,10 @@ TEST(AndersenLakePutSlice, SingleStrike_EqualsAndersenLake) {
   for (double K : Ks) {
     const double strike[] = {K};
     double out = 0.0;
-    const auto st = andersen_lake_put_slice(
-        S, std::span<const double>(strike), T, sigma, r, q,
-        std::span<double>(&out, 1), std::nullopt);
+    const auto st = andersen_lake_put_slice(S, std::span<const double>(strike), T, sigma, r, q,
+                                            std::span<double>(&out, 1), std::nullopt);
     ASSERT_TRUE(st.has_value()) << st.error().to_string();
-    const double ref =
-        value_or_fail(andersen_lake(S, K, T, sigma, r, q, Side::Put, std::nullopt));
+    const double ref = value_or_fail(andersen_lake(S, K, T, sigma, r, q, Side::Put, std::nullopt));
     EXPECT_TRUE(bits_equal(out, ref)) << "K=" << K << " slice=" << out << " scalar=" << ref;
   }
 }
@@ -1565,12 +1716,11 @@ TEST(AndersenLakePutSlice, FastPresetMatchesPerStrike) {
   const double strikes[] = {75.0, 90.0, 100.0, 110.0, 130.0};
   std::vector<double> px(std::size(strikes), 0.0);
   const AlOpts fast = al_fast_opts();
-  ASSERT_TRUE(andersen_lake_put_slice(S, std::span<const double>(strikes), T, sigma,
-                                      r, q, std::span<double>(px), fast)
+  ASSERT_TRUE(andersen_lake_put_slice(S, std::span<const double>(strikes), T, sigma, r, q,
+                                      std::span<double>(px), fast)
                   .has_value());
   for (std::size_t i = 0; i < std::size(strikes); ++i) {
-    const double ref = value_or_fail(
-        andersen_lake(S, strikes[i], T, sigma, r, q, Side::Put, fast));
+    const double ref = value_or_fail(andersen_lake(S, strikes[i], T, sigma, r, q, Side::Put, fast));
     // Fast preset (tol=1e-8, fewer sweeps): looser boundary-reuse gap than ACCURATE.
     EXPECT_LT(std::fabs(px[i] - ref), 1.0e-4 * std::fmax(1.0, ref)) << "K=" << strikes[i];
   }
@@ -1581,15 +1731,15 @@ TEST(AndersenLakePutSlice, Degenerate_Intrinsic) {
   const double S = 100.0, T = 0.5, r = 0.03, q = 0.02;
   const double strikes[] = {80.0, 100.0, 130.0};
   std::vector<double> px(3, 0.0);
-  ASSERT_TRUE(andersen_lake_put_slice(S, std::span<const double>(strikes), T, 0.0,
-                                      r, q, std::span<double>(px), std::nullopt)
+  ASSERT_TRUE(andersen_lake_put_slice(S, std::span<const double>(strikes), T, 0.0, r, q,
+                                      std::span<double>(px), std::nullopt)
                   .has_value());
-  EXPECT_DOUBLE_EQ(px[0], 0.0);   // max(80 - 100, 0)
-  EXPECT_DOUBLE_EQ(px[1], 0.0);   // max(100 - 100, 0)
-  EXPECT_DOUBLE_EQ(px[2], 30.0);  // 130 - 100
+  EXPECT_DOUBLE_EQ(px[0], 0.0);  // max(80 - 100, 0)
+  EXPECT_DOUBLE_EQ(px[1], 0.0);  // max(100 - 100, 0)
+  EXPECT_DOUBLE_EQ(px[2], 30.0); // 130 - 100
   // Degenerate T likewise.
-  ASSERT_TRUE(andersen_lake_put_slice(S, std::span<const double>(strikes), 0.0, 0.3,
-                                      r, q, std::span<double>(px), std::nullopt)
+  ASSERT_TRUE(andersen_lake_put_slice(S, std::span<const double>(strikes), 0.0, 0.3, r, q,
+                                      std::span<double>(px), std::nullopt)
                   .has_value());
   EXPECT_DOUBLE_EQ(px[2], 30.0);
 }
@@ -1601,12 +1751,12 @@ TEST(AndersenLakePutSlice, European_Black76) {
   ASSERT_EQ(classify_spec(r, q, Side::Put), Regime::European);
   const double strikes[] = {80.0, 100.0, 120.0};
   std::vector<double> px(3, 0.0);
-  ASSERT_TRUE(andersen_lake_put_slice(S, std::span<const double>(strikes), T, sigma,
-                                      r, q, std::span<double>(px), std::nullopt)
+  ASSERT_TRUE(andersen_lake_put_slice(S, std::span<const double>(strikes), T, sigma, r, q,
+                                      std::span<double>(px), std::nullopt)
                   .has_value());
   for (std::size_t i = 0; i < 3; ++i) {
-    const double ref = value_or_fail(
-        andersen_lake(S, strikes[i], T, sigma, r, q, Side::Put, std::nullopt));
+    const double ref =
+        value_or_fail(andersen_lake(S, strikes[i], T, sigma, r, q, Side::Put, std::nullopt));
     EXPECT_TRUE(bits_equal(px[i], ref)) << "K=" << strikes[i];
     EXPECT_TRUE(bits_equal(px[i], euro_put(S, strikes[i], T, sigma, r, q)));
   }
@@ -1619,9 +1769,8 @@ TEST(AndersenLakePutSlice, Unsupported_NotImplemented) {
   ASSERT_EQ(classify_spec(r, q, Side::Put), Regime::Unsupported);
   const double strikes[] = {80.0, 100.0, 120.0};
   std::vector<double> px(3, 0.0);
-  const auto st = andersen_lake_put_slice(S, std::span<const double>(strikes), T,
-                                          sigma, r, q, std::span<double>(px),
-                                          std::nullopt);
+  const auto st = andersen_lake_put_slice(S, std::span<const double>(strikes), T, sigma, r, q,
+                                          std::span<double>(px), std::nullopt);
   ASSERT_FALSE(st.has_value());
   EXPECT_EQ(st.error().code(), atx::core::ErrorCode::NotImplemented);
   for (double K : strikes) {
@@ -1636,30 +1785,30 @@ TEST(AndersenLakePutSlice, InputValidation) {
   const double strikes[] = {90.0, 100.0, 110.0};
   std::vector<double> px(3, 0.0);
   // S <= 0
-  EXPECT_FALSE(andersen_lake_put_slice(0.0, std::span<const double>(strikes), 0.5,
-                                       0.2, 0.03, 0.0, std::span<double>(px))
+  EXPECT_FALSE(andersen_lake_put_slice(0.0, std::span<const double>(strikes), 0.5, 0.2, 0.03, 0.0,
+                                       std::span<double>(px))
                    .has_value());
   // negative T
-  EXPECT_FALSE(andersen_lake_put_slice(100.0, std::span<const double>(strikes), -0.1,
-                                       0.2, 0.03, 0.0, std::span<double>(px))
+  EXPECT_FALSE(andersen_lake_put_slice(100.0, std::span<const double>(strikes), -0.1, 0.2, 0.03,
+                                       0.0, std::span<double>(px))
                    .has_value());
   // negative sigma
-  EXPECT_FALSE(andersen_lake_put_slice(100.0, std::span<const double>(strikes), 0.5,
-                                       -0.2, 0.03, 0.0, std::span<double>(px))
+  EXPECT_FALSE(andersen_lake_put_slice(100.0, std::span<const double>(strikes), 0.5, -0.2, 0.03,
+                                       0.0, std::span<double>(px))
                    .has_value());
   // non-positive strike
   const double bad_strikes[] = {90.0, 0.0, 110.0};
-  EXPECT_FALSE(andersen_lake_put_slice(100.0, std::span<const double>(bad_strikes),
-                                       0.5, 0.2, 0.03, 0.0, std::span<double>(px))
+  EXPECT_FALSE(andersen_lake_put_slice(100.0, std::span<const double>(bad_strikes), 0.5, 0.2, 0.03,
+                                       0.0, std::span<double>(px))
                    .has_value());
   // non-finite r
-  EXPECT_FALSE(andersen_lake_put_slice(100.0, std::span<const double>(strikes), 0.5,
-                                       0.2, std::nan(""), 0.0, std::span<double>(px))
+  EXPECT_FALSE(andersen_lake_put_slice(100.0, std::span<const double>(strikes), 0.5, 0.2,
+                                       std::nan(""), 0.0, std::span<double>(px))
                    .has_value());
   // length mismatch
   std::vector<double> short_out(2, 0.0);
-  EXPECT_FALSE(andersen_lake_put_slice(100.0, std::span<const double>(strikes), 0.5,
-                                       0.2, 0.03, 0.0, std::span<double>(short_out))
+  EXPECT_FALSE(andersen_lake_put_slice(100.0, std::span<const double>(strikes), 0.5, 0.2, 0.03, 0.0,
+                                       std::span<double>(short_out))
                    .has_value());
 }
 
@@ -1677,7 +1826,9 @@ TEST(AndersenLakePutSlice, InputValidation) {
 // the full 5x5 x 2 sides x 3 (S/K,T,sigma) points.
 TEST(AndersenLakeRegime, RateYieldCornerGrid_Classification) {
   const double rq[] = {-0.02, -0.005, 0.0, 0.005, 0.05};
-  struct Pt { double sk, T, sigma; };
+  struct Pt {
+    double sk, T, sigma;
+  };
   const Pt pts[] = {{1.0, 1.0, 0.20}, {0.8, 1.0, 0.20}, {1.25, 0.25, 0.50}};
   const Side sides[] = {Side::Call, Side::Put};
   const double K = 100.0;
@@ -1685,19 +1836,17 @@ TEST(AndersenLakeRegime, RateYieldCornerGrid_Classification) {
   for (double r : rq)
     for (double q : rq)
       for (Side side : sides)
-        for (const Pt& pt : pts) {
+        for (const Pt &pt : pts) {
           const double S = pt.sk * K;
           const auto res = andersen_lake(S, K, pt.T, pt.sigma, r, q, side);
           const Regime reg = classify_spec(r, q, side);
-          const std::string where = "r=" + std::to_string(r) + " q=" +
-                                     std::to_string(q) + " S=" +
-                                     std::to_string(S) + " side=" +
-                                     (side == Side::Call ? "C" : "P");
+          const std::string where = "r=" + std::to_string(r) + " q=" + std::to_string(q) +
+                                    " S=" + std::to_string(S) +
+                                    " side=" + (side == Side::Call ? "C" : "P");
           if (reg == Regime::European) {
             ASSERT_TRUE(res.has_value()) << where << " : " << res.error().to_string();
-            const double euro = (side == Side::Call)
-                                    ? euro_call(S, K, pt.T, pt.sigma, r, q)
-                                    : euro_put(S, K, pt.T, pt.sigma, r, q);
+            const double euro = (side == Side::Call) ? euro_call(S, K, pt.T, pt.sigma, r, q)
+                                                     : euro_put(S, K, pt.T, pt.sigma, r, q);
             EXPECT_LT(std::fabs(*res - euro), 1.0e-12) << where;
             ++n_euro;
           } else if (reg == Regime::Unsupported) {
@@ -1723,23 +1872,31 @@ TEST(AndersenLakeRegime, RateYieldCornerGrid_Classification) {
 // optimal); in the American regime AL must track the PDE to the existing
 // AL-vs-PDE tolerance. Oracle calls are kept to a couple dozen (each ~a PDE solve).
 TEST(AndersenLakeRegime, CornerGrid_VsPdeOracle) {
-  struct Cell { double S, r, q; Side side; };
+  struct Cell {
+    double S, r, q;
+    Side side;
+  };
   const Cell cells[] = {
       // European (r<=0 && r<=q  put / q<=0 && q<=r call): American == European.
-      {80.0, -0.02, 0.05, Side::Put},   {85.0, -0.005, 0.0, Side::Put},
-      {90.0, 0.0, 0.05, Side::Put},     {120.0, 0.05, -0.02, Side::Call},
-      {115.0, 0.0, -0.005, Side::Call}, {110.0, 0.05, 0.0, Side::Call},
+      {80.0, -0.02, 0.05, Side::Put},
+      {85.0, -0.005, 0.0, Side::Put},
+      {90.0, 0.0, 0.05, Side::Put},
+      {120.0, 0.05, -0.02, Side::Call},
+      {115.0, 0.0, -0.005, Side::Call},
+      {110.0, 0.05, 0.0, Side::Call},
       // American (r>0 put / q>0 call), including negative opposite-carry corners.
-      {90.0, 0.05, -0.02, Side::Put},   {95.0, 0.05, 0.02, Side::Put},
-      {100.0, 0.05, 0.05, Side::Put},   {105.0, -0.02, 0.05, Side::Call},
-      {105.0, 0.02, 0.05, Side::Call},  {100.0, 0.05, 0.05, Side::Call},
+      {90.0, 0.05, -0.02, Side::Put},
+      {95.0, 0.05, 0.02, Side::Put},
+      {100.0, 0.05, 0.05, Side::Put},
+      {105.0, -0.02, 0.05, Side::Call},
+      {105.0, 0.02, 0.05, Side::Call},
+      {100.0, 0.05, 0.05, Side::Call},
   };
   const double K = 100.0, T = 1.0, sigma = 0.25;
   double max_rel = 0.0;
   int n_compared = 0;
-  for (const Cell& c : cells) {
-    const double p_al =
-        value_or_fail(andersen_lake(c.S, K, T, sigma, c.r, c.q, c.side));
+  for (const Cell &c : cells) {
+    const double p_al = value_or_fail(andersen_lake(c.S, K, T, sigma, c.r, c.q, c.side));
     const double p_pde = oracle_pde_golden(c.S, K, T, sigma, c.r, c.q, c.side);
     ASSERT_TRUE(std::isfinite(p_pde));
     if (p_pde > 0.05) {
@@ -1766,8 +1923,8 @@ TEST(AndersenLakeRegime, UnsupportedPutRegression_OldEuropeanWasWrong) {
   const double euro = euro_put(S, K, T, sigma, r, q);
   const double pde = oracle_pde_golden(S, K, T, sigma, r, q, Side::Put);
   ASSERT_TRUE(std::isfinite(pde));
-  EXPECT_GT(std::fabs(euro - pde), 0.005);  // the silent European answer was wrong
-  EXPECT_GT(pde, euro);                     // early exercise has genuine value here
+  EXPECT_GT(std::fabs(euro - pde), 0.005); // the silent European answer was wrong
+  EXPECT_GT(pde, euro);                    // early exercise has genuine value here
 }
 
 // Global Constraint 1: wherever the corpus lives (r>0 puts / q>0 or European
@@ -1783,8 +1940,8 @@ TEST(AndersenLakeRegime, UnsupportedPutRegression_OldEuropeanWasWrong) {
 // same-build proof; the *_BitIdenticalToPrechange pins below fix the actual values.
 TEST(BoundaryHoist, SpecializedMatchesGeneric) {
   using atx::vol::detail::andersen_lake_generic_kernel;
-  const AlOpts fast = al_fast_opts();                 // {7,16} specialized
-  const std::optional<AlOpts> accurate = std::nullopt;  // {12,24} specialized (nullopt)
+  const AlOpts fast = al_fast_opts();                  // {7,16} specialized
+  const std::optional<AlOpts> accurate = std::nullopt; // {12,24} specialized (nullopt)
   const std::optional<AlOpts> fast_opt = fast;
 
   const double S = 100.0;
@@ -1796,17 +1953,15 @@ TEST(BoundaryHoist, SpecializedMatchesGeneric) {
           for (const double q : {0.0, 0.03, 0.06}) {
             for (const Side side : {Side::Put, Side::Call}) {
               const double K = m * S;
-              for (const std::optional<AlOpts>& opts : {fast_opt, accurate}) {
+              for (const std::optional<AlOpts> &opts : {fast_opt, accurate}) {
                 const auto spec = andersen_lake(S, K, T, sigma, r, q, side, opts);
-                const auto gen =
-                    andersen_lake_generic_kernel(S, K, T, sigma, r, q, side, opts);
+                const auto gen = andersen_lake_generic_kernel(S, K, T, sigma, r, q, side, opts);
                 ASSERT_EQ(spec.has_value(), gen.has_value());
                 if (spec.has_value()) {
                   EXPECT_TRUE(bits_equal(*spec, *gen))
-                      << "m=" << m << " T=" << T << " s=" << sigma << " r=" << r
-                      << " q=" << q << " side="
-                      << (side == Side::Call ? "C" : "P")
-                      << " spec=" << *spec << " gen=" << *gen;
+                      << "m=" << m << " T=" << T << " s=" << sigma << " r=" << r << " q=" << q
+                      << " side=" << (side == Side::Call ? "C" : "P") << " spec=" << *spec
+                      << " gen=" << *gen;
                   ++checked;
                 }
               }
@@ -1816,7 +1971,7 @@ TEST(BoundaryHoist, SpecializedMatchesGeneric) {
       }
     }
   }
-  EXPECT_GT(checked, 200);  // the grid actually exercised the specialized kernels
+  EXPECT_GT(checked, 200); // the grid actually exercised the specialized kernels
 }
 
 // Cold andersen_lake price pins, fast {7,16} and accurate {12,24} schemes. The
@@ -1824,7 +1979,12 @@ TEST(BoundaryHoist, SpecializedMatchesGeneric) {
 // which is byte-for-byte the original inner loop); the hoisted specialized kernel
 // must reproduce them exactly.
 TEST(BoundaryHoist, PriceBitIdenticalToPrechange) {
-  struct Pin { double S, K, T, sigma, r, q; Side side; bool fast; double expected; };
+  struct Pin {
+    double S, K, T, sigma, r, q;
+    Side side;
+    bool fast;
+    double expected;
+  };
   const Pin pins[] = {
       {100.0, 100.0, 0.5, 0.30, 0.043, 0.0, Side::Put, true, 7.5263639623979568},
       {100.0, 90.0, 1.0, 0.25, 0.05, 0.0, Side::Put, true, 3.958974915128727},
@@ -1832,15 +1992,13 @@ TEST(BoundaryHoist, PriceBitIdenticalToPrechange) {
       {100.0, 100.0, 0.5, 0.30, 0.043, 0.0, Side::Put, false, 7.5264880966018053},
       {100.0, 110.0, 0.5, 0.30, 0.043, 0.06, Side::Call, false, 4.3941769486825875},
   };
-  for (const Pin& p : pins) {
+  for (const Pin &p : pins) {
     const std::optional<AlOpts> opts =
         p.fast ? std::optional<AlOpts>(al_fast_opts()) : std::nullopt;
-    const double got =
-        value_or_fail(andersen_lake(p.S, p.K, p.T, p.sigma, p.r, p.q, p.side, opts));
+    const double got = value_or_fail(andersen_lake(p.S, p.K, p.T, p.sigma, p.r, p.q, p.side, opts));
     EXPECT_TRUE(bits_equal(got, p.expected))
-        << (p.fast ? "fast" : "accurate") << " side="
-        << (p.side == Side::Call ? "C" : "P") << " got=" << got
-        << " expected=" << p.expected;
+        << (p.fast ? "fast" : "accurate") << " side=" << (p.side == Side::Call ? "C" : "P")
+        << " got=" << got << " expected=" << p.expected;
   }
 }
 
@@ -1853,11 +2011,12 @@ TEST(BoundaryHoist, PriceBitIdenticalToPrechange) {
 // assertion encodes the SHIPPED outcome; the printout is the report evidence.
 namespace {
 int median_of(std::vector<int> v) {
-  if (v.empty()) return -1;
+  if (v.empty())
+    return -1;
   std::sort(v.begin(), v.end());
   return v[v.size() / 2];
 }
-}  // namespace
+} // namespace
 TEST(BoundaryHoist, SeedSpike_SweepCount) {
   using atx::vol::detail::al_boundary_jn_sweeps_to_converge;
   using atx::vol::detail::AlSeedMode;
@@ -1865,24 +2024,28 @@ TEST(BoundaryHoist, SeedSpike_SweepCount) {
   const double tol = 1.0e-8;
   const int kMax = 40;
 
-  struct Row { const char* name; std::optional<AlOpts> opts; };
+  struct Row {
+    const char *name;
+    std::optional<AlOpts> opts;
+  };
   const Row schemes[] = {{"fast{7,16}", al_fast_opts()}, {"accurate{12,24}", std::nullopt}};
 
-  for (const Row& row : schemes) {
+  for (const Row &row : schemes) {
     std::vector<int> baw, qdp, oracle;
     for (const double m : {0.80, 0.90, 1.00, 1.10, 1.20}) {
       for (const double T : {1.0 / 252.0, 1.0 / 12.0, 0.25, 0.5, 1.0, 2.0}) {
         for (const double sigma : {0.10, 0.20, 0.30, 0.50, 0.80}) {
           for (const double r : {0.01, 0.03, 0.05, 0.08}) {
             for (const double q : {0.0, 0.02, 0.05}) {
-              const double K = m * S;  // put boundary solved at strike K (spot-indep)
-              const int b = al_boundary_jn_sweeps_to_converge(
-                  K, T, sigma, r, q, row.opts, AlSeedMode::Baw, tol, kMax);
-              const int p = al_boundary_jn_sweeps_to_converge(
-                  K, T, sigma, r, q, row.opts, AlSeedMode::QdPlus, tol, kMax);
-              const int o = al_boundary_jn_sweeps_to_converge(
-                  K, T, sigma, r, q, row.opts, AlSeedMode::Oracle, tol, kMax);
-              if (b < 0 || p < 0 || o < 0) continue;  // collapsed corner
+              const double K = m * S; // put boundary solved at strike K (spot-indep)
+              const int b = al_boundary_jn_sweeps_to_converge(K, T, sigma, r, q, row.opts,
+                                                              AlSeedMode::Baw, tol, kMax);
+              const int p = al_boundary_jn_sweeps_to_converge(K, T, sigma, r, q, row.opts,
+                                                              AlSeedMode::QdPlus, tol, kMax);
+              const int o = al_boundary_jn_sweeps_to_converge(K, T, sigma, r, q, row.opts,
+                                                              AlSeedMode::Oracle, tol, kMax);
+              if (b < 0 || p < 0 || o < 0)
+                continue; // collapsed corner
               baw.push_back(b);
               qdp.push_back(p);
               oracle.push_back(o);
@@ -1898,17 +2061,18 @@ TEST(BoundaryHoist, SeedSpike_SweepCount) {
       sb += baw[i];
       sp += qdp[i];
       so += oracle[i];
-      if (qdp[i] < baw[i]) ++wins;
-      if (qdp[i] > baw[i]) ++losses;
+      if (qdp[i] < baw[i])
+        ++wins;
+      if (qdp[i] > baw[i])
+        ++losses;
     }
     const double n = static_cast<double>(baw.size());
     const double mean_baw = static_cast<double>(sb) / n;
     const double mean_qdp = static_cast<double>(sp) / n;
-    std::printf(
-        "SEEDSPIKE %-16s N=%zu  medianJN: BAW=%d QD+=%d oracle=%d | meanJN: "
-        "BAW=%.3f QD+=%.3f oracle=%.3f | QD+ wins=%d losses=%d\n",
-        row.name, baw.size(), median_of(baw), median_of(qdp), median_of(oracle),
-        mean_baw, mean_qdp, static_cast<double>(so) / n, wins, losses);
+    std::printf("SEEDSPIKE %-16s N=%zu  medianJN: BAW=%d QD+=%d oracle=%d | meanJN: "
+                "BAW=%.3f QD+=%.3f oracle=%.3f | QD+ wins=%d losses=%d\n",
+                row.name, baw.size(), median_of(baw), median_of(qdp), median_of(oracle), mean_baw,
+                mean_qdp, static_cast<double>(so) / n, wins, losses);
 
     // SHIP RULE: adopt QD+ only if it MATERIALLY reduces the sweep count without a
     // tail regression. Measured outcome (see report): QD+ trims the MEDIAN by exactly
@@ -1925,13 +2089,16 @@ TEST(BoundaryHoist, SeedSpike_SweepCount) {
         << row.name << ": QD+ does not materially cut MEAN JN sweeps (kill evidence)";
     EXPECT_GT(median_of(qdp), median_of(oracle) + 4)
         << row.name << ": QD+ stays far above the oracle floor — seed not the bottleneck";
-    EXPECT_GE(median_of(baw), median_of(oracle))
-        << row.name << ": oracle is the floor";
+    EXPECT_GE(median_of(baw), median_of(oracle)) << row.name << ": oracle is the floor";
   }
 }
 
 TEST(AndersenLakeRegime, PositiveRateGrid_BitIdenticalToPrechange) {
-  struct Pin { double S, K, T, sigma, r, q; Side side; double expected; };
+  struct Pin {
+    double S, K, T, sigma, r, q;
+    Side side;
+    double expected;
+  };
   const Pin pins[] = {
       {100.0, 100.0, 1.0, 0.25, 0.03, -0.01, Side::Put, 8.3642096679194555},
       {100.0, 100.0, 1.0, 0.25, 0.03, 0.00, Side::Put, 8.67484861703951},
@@ -1946,13 +2113,11 @@ TEST(AndersenLakeRegime, PositiveRateGrid_BitIdenticalToPrechange) {
       {100.0, 100.0, 1.0, 0.25, 0.06, 0.02, Side::Call, 11.602657346692153},
       {120.0, 100.0, 1.0, 0.25, 0.03, 0.02, Side::Call, 23.973643280589464},
   };
-  for (const Pin& p : pins) {
-    const double got =
-        value_or_fail(andersen_lake(p.S, p.K, p.T, p.sigma, p.r, p.q, p.side));
+  for (const Pin &p : pins) {
+    const double got = value_or_fail(andersen_lake(p.S, p.K, p.T, p.sigma, p.r, p.q, p.side));
     EXPECT_TRUE(bits_equal(got, p.expected))
-        << "r=" << p.r << " q=" << p.q << " side="
-        << (p.side == Side::Call ? "C" : "P") << " got=" << got
-        << " expected=" << p.expected;
+        << "r=" << p.r << " q=" << p.q << " side=" << (p.side == Side::Call ? "C" : "P")
+        << " got=" << got << " expected=" << p.expected;
   }
 }
 
@@ -1966,9 +2131,8 @@ TEST(AndersenLakeCallSlice, MatchesScalarPerStrike_AllRegimes) {
   std::vector<double> out(std::size(strikes), 0.0);
   for (double r : rq)
     for (double q : rq) {
-      const auto st = andersen_lake_call_slice(
-          S, std::span<const double>(strikes), T, sigma, r, q,
-          std::span<double>(out));
+      const auto st = andersen_lake_call_slice(S, std::span<const double>(strikes), T, sigma, r, q,
+                                               std::span<double>(out));
       const Regime reg = classify_spec(r, q, Side::Call);
       const std::string where = "r=" + std::to_string(r) + " q=" + std::to_string(q);
       if (reg == Regime::Unsupported) {
@@ -1982,11 +2146,9 @@ TEST(AndersenLakeCallSlice, MatchesScalarPerStrike_AllRegimes) {
       } else {
         ASSERT_TRUE(st.has_value()) << where << " : " << st.error().to_string();
         for (std::size_t i = 0; i < std::size(strikes); ++i) {
-          const double sc = value_or_fail(
-              andersen_lake(S, strikes[i], T, sigma, r, q, Side::Call));
+          const double sc = value_or_fail(andersen_lake(S, strikes[i], T, sigma, r, q, Side::Call));
           EXPECT_TRUE(bits_equal(out[i], sc))
-              << where << " K=" << strikes[i] << " slice=" << out[i]
-              << " scalar=" << sc;
+              << where << " K=" << strikes[i] << " slice=" << out[i] << " scalar=" << sc;
         }
       }
     }
@@ -2023,14 +2185,14 @@ TEST(AmericanGreeksRegime, UnsupportedRegime_PropagatesNotImplemented) {
   ASSERT_FALSE(ga.has_value());
   EXPECT_EQ(ga.error().code(), atx::core::ErrorCode::NotImplemented);
 
-  const auto gf = american_greeks_fd(S, K, T, sigma, r, q, Side::Put,
-                                     AmericanMethod::AndersenLake, std::nullopt,
+  const auto gf = american_greeks_fd(S, K, T, sigma, r, q, Side::Put, AmericanMethod::AndersenLake,
+                                     std::nullopt,
                                      /*warm_start=*/false);
   ASSERT_FALSE(gf.has_value());
   EXPECT_EQ(gf.error().code(), atx::core::ErrorCode::NotImplemented);
 
-  const auto d = american_delta(S, K, T, sigma, r, q, Side::Put,
-                                AmericanMethod::AndersenLake, std::nullopt);
+  const auto d =
+      american_delta(S, K, T, sigma, r, q, Side::Put, AmericanMethod::AndersenLake, std::nullopt);
   ASSERT_FALSE(d.has_value());
   EXPECT_EQ(d.error().code(), atx::core::ErrorCode::NotImplemented);
 
@@ -2049,7 +2211,7 @@ TEST(AmericanGreeksRegime, UnsupportedRegime_PropagatesNotImplemented) {
 // bundle built on a wrong European price.
 TEST(AmericanGreeksRegime, CachedRoute_UnsupportedNotImplemented) {
   const double S = 70.0, K = 100.0, T = 1.0, sigma = 0.30, r = -0.005, q = -0.02;
-  ASSERT_EQ(classify_spec(r, q, Side::Put), Regime::Unsupported);  // q < r <= 0
+  ASSERT_EQ(classify_spec(r, q, Side::Put), Regime::Unsupported); // q < r <= 0
   const auto g = american_greeks(S, K, T, sigma, r, q, Side::Put, nullptr);
   ASSERT_FALSE(g.has_value());
   EXPECT_EQ(g.error().code(), atx::core::ErrorCode::NotImplemented);
@@ -2064,8 +2226,7 @@ TEST(AmericanGreeksRegime, CachedRoute_UnsupportedNotImplemented) {
 TEST(AmericanPriceCached, UnsupportedRegime_ReturnsNaN) {
   const double S = 70.0, K = 100.0, T = 1.0, sigma = 0.30, r = -0.005, q = -0.02;
   ASSERT_EQ(classify_spec(r, q, Side::Put), Regime::Unsupported);
-  EXPECT_TRUE(std::isnan(
-      american_price_cached(S, K, T, sigma, r, q, Side::Put, nullptr)));
+  EXPECT_TRUE(std::isnan(american_price_cached(S, K, T, sigma, r, q, Side::Put, nullptr)));
 }
 
 // Fix-wave 1a: the warm-started ALO pricer must surface NaN in the
@@ -2093,7 +2254,7 @@ TEST(AloPricer, UnsupportedRegime_ReturnsNaN) {
 // andersen_lake in the double-continuation regime (previously untested).
 TEST(Baw, UnsupportedRegime_NotImplemented) {
   const double S = 70.0, K = 100.0, T = 1.0, sigma = 0.30, r = -0.005, q = -0.02;
-  ASSERT_EQ(classify_spec(r, q, Side::Put), Regime::Unsupported);  // r <= 0 && r > q
+  ASSERT_EQ(classify_spec(r, q, Side::Put), Regime::Unsupported); // r <= 0 && r > q
   const auto res = baw_american(S, K, T, sigma, r, q, Side::Put);
   ASSERT_FALSE(res.has_value());
   EXPECT_EQ(res.error().code(), atx::core::ErrorCode::NotImplemented);
@@ -2108,10 +2269,10 @@ TEST(AndersenLake, NonFiniteRateOrYield_IsInvalidArgument) {
   const double bad[] = {std::nan(""), inf, -inf};
   for (const double x : bad) {
     for (const Side side : {Side::Call, Side::Put}) {
-      const auto a = andersen_lake(S, K, T, sigma, 0.03, x, side);  // bad q
+      const auto a = andersen_lake(S, K, T, sigma, 0.03, x, side); // bad q
       ASSERT_FALSE(a.has_value());
       EXPECT_EQ(a.error().code(), atx::core::ErrorCode::InvalidArgument);
-      const auto b = andersen_lake(S, K, T, sigma, x, 0.01, side);  // bad r
+      const auto b = andersen_lake(S, K, T, sigma, x, 0.01, side); // bad r
       ASSERT_FALSE(b.has_value());
       EXPECT_EQ(b.error().code(), atx::core::ErrorCode::InvalidArgument);
     }
@@ -2121,8 +2282,8 @@ TEST(AndersenLake, NonFiniteRateOrYield_IsInvalidArgument) {
 
     std::vector<double> ks{90.0, 110.0};
     std::vector<double> px(2, 0.0);
-    const auto sl = andersen_lake_call_slice(S, std::span<const double>(ks), T,
-                                             sigma, 0.03, x, std::span<double>(px));
+    const auto sl = andersen_lake_call_slice(S, std::span<const double>(ks), T, sigma, 0.03, x,
+                                             std::span<double>(px));
     ASSERT_FALSE(sl.has_value());
     EXPECT_EQ(sl.error().code(), atx::core::ErrorCode::InvalidArgument);
   }
@@ -2144,8 +2305,10 @@ constexpr std::uint16_t kSigmaInterpNodes = 8;
 double smile_sigma(double K, double S, double sig_atm) {
   const double x = std::log(K / S);
   double s = sig_atm - 0.35 * x + 0.6 * x * x;
-  if (s < 0.08) s = 0.08;
-  if (s > 0.45) s = 0.45;
+  if (s < 0.08)
+    s = 0.08;
+  if (s > 0.45)
+    s = 0.45;
   return s;
 }
 
@@ -2153,9 +2316,8 @@ double smile_sigma(double K, double S, double sig_atm) {
 // the slice so the interpolant builds (n_strike > n_sigma). Each strike prices
 // independently, so the target's value is a pure function of (S,K,T,σ) given the
 // shared (T,r,q,box,n_sigma) interpolant — the object needed for FD greeks.
-double interp_target_price(double S, double K, double T, double sigma, double r,
-                           double q, Side side, double box_lo, double box_hi,
-                           std::uint16_t n_sigma) {
+double interp_target_price(double S, double K, double T, double sigma, double r, double q,
+                           Side side, double box_lo, double box_hi, std::uint16_t n_sigma) {
   std::vector<double> strikes{K};
   std::vector<double> sigmas{sigma};
   const double pad_sig = 0.5 * (box_lo + box_hi);
@@ -2169,13 +2331,12 @@ double interp_target_price(double S, double K, double T, double sigma, double r,
   so.n_sigma = n_sigma;
   so.sigma_lo = box_lo;
   so.sigma_hi = box_hi;
-  so.min_tau = 0.0;    // greek harness: no near-expiry guard
-  so.min_sigma = 0.0;  // target σ already inside the box
-  const auto rc = (side == Side::Put)
-                      ? andersen_lake_put_slice_sigma(S, strikes, sigmas, T, r, q,
-                                                      std::span<double>(px), so)
-                      : andersen_lake_call_slice_sigma(S, strikes, sigmas, T, r, q,
-                                                       std::span<double>(px), so);
+  so.min_tau = 0.0;   // greek harness: no near-expiry guard
+  so.min_sigma = 0.0; // target σ already inside the box
+  const auto rc =
+      (side == Side::Put)
+          ? andersen_lake_put_slice_sigma(S, strikes, sigmas, T, r, q, std::span<double>(px), so)
+          : andersen_lake_call_slice_sigma(S, strikes, sigmas, T, r, q, std::span<double>(px), so);
   EXPECT_TRUE(rc.has_value()) << (rc ? std::string{} : rc.error().to_string());
   return px[0];
 }
@@ -2183,7 +2344,10 @@ double interp_target_price(double S, double K, double T, double sigma, double r,
 // §9.1 price gate: interpolated put+call board vs the cold per-strike scalar
 // reference over a fitted-smile ladder at several (τ,r,q). <= $0.001/share.
 TEST(SigmaInterp, MatchesColdWithinPriceGate) {
-  struct Case { double S, T, r, q, sig_atm; const char* tag; };
+  struct Case {
+    double S, T, r, q, sig_atm;
+    const char *tag;
+  };
   const Case cases[] = {
       {100.0, 0.50, 0.05, 0.00, 0.22, "atm-noq"},
       {100.0, 1.00, 0.03, 0.06, 0.25, "dividend-region"},
@@ -2191,7 +2355,7 @@ TEST(SigmaInterp, MatchesColdWithinPriceGate) {
       {100.0, 0.75, 0.06, 0.02, 0.18, "low-vol"},
   };
   double max_gap = 0.0;
-  for (const Case& c : cases) {
+  for (const Case &c : cases) {
     std::vector<double> strikes;
     for (double K = 0.55 * c.S; K <= 1.45 * c.S + 1e-9; K += 0.025 * c.S) {
       strikes.push_back(K);
@@ -2224,9 +2388,9 @@ TEST(SigmaInterp, MatchesColdWithinPriceGate) {
             value_or_fail(andersen_lake(c.S, strikes[i], c.T, sigmas[i], c.r, c.q, side));
         const double g = std::fabs(px[i] - ref);
         cgap = std::max(cgap, g);
-        EXPECT_LT(g, 1.0e-3)
-            << c.tag << (side == Side::Put ? " put" : " call") << " K=" << strikes[i]
-            << " sig=" << sigmas[i] << " interp=" << px[i] << " cold=" << ref;
+        EXPECT_LT(g, 1.0e-3) << c.tag << (side == Side::Put ? " put" : " call")
+                             << " K=" << strikes[i] << " sig=" << sigmas[i] << " interp=" << px[i]
+                             << " cold=" << ref;
       }
       max_gap = std::max(max_gap, cgap);
       std::printf("[sigma-interp px] %-16s %-4s n=%2zu n_sig=%u interp=%2zu fb=%zu maxgap=%.2e\n",
@@ -2258,12 +2422,11 @@ TEST(SigmaInterp, ConvergenceInNSigma) {
       so.use_sigma_boundary_interp = true;
       so.n_sigma = ns;
       std::vector<double> px(n, 0.0);
-      const auto rc =
-          (side == Side::Put)
-              ? andersen_lake_put_slice_sigma(S, strikes, sigmas, T, r, q,
-                                              std::span<double>(px), so)
-              : andersen_lake_call_slice_sigma(S, strikes, sigmas, T, r, q,
-                                               std::span<double>(px), so);
+      const auto rc = (side == Side::Put)
+                          ? andersen_lake_put_slice_sigma(S, strikes, sigmas, T, r, q,
+                                                          std::span<double>(px), so)
+                          : andersen_lake_call_slice_sigma(S, strikes, sigmas, T, r, q,
+                                                           std::span<double>(px), so);
       ASSERT_TRUE(rc.has_value());
       for (std::size_t i = 0; i < n; ++i) {
         const double ref = value_or_fail(andersen_lake(S, strikes[i], T, sigmas[i], r, q, side));
@@ -2278,7 +2441,10 @@ TEST(SigmaInterp, ConvergenceInNSigma) {
 // on the interpolant price) vs the cold scalar reference (greeks_fd_reference,
 // 17 independent american_price solves) AND the Crank-Nicolson PDE oracle.
 TEST(SigmaInterp, MeetsPdeGreekGates) {
-  struct Case { double S, K, T, sigma, r, q; const char* tag; };
+  struct Case {
+    double S, K, T, sigma, r, q;
+    const char *tag;
+  };
   const Case cases[] = {
       {100.0, 100.0, 1.00, 0.25, 0.03, 0.06, "atm-div"},
       {100.0, 110.0, 0.75, 0.22, 0.03, 0.06, "otm-wing"},
@@ -2289,17 +2455,18 @@ TEST(SigmaInterp, MeetsPdeGreekGates) {
   const atx::vol::test::OraclePdeOpts grid{};
   double max_delta_gap = 0.0, max_price_gap = 0.0;
   for (Side side : {Side::Put, Side::Call}) {
-    for (const Case& c : cases) {
+    for (const Case &c : cases) {
       const double box_lo = std::max(0.02, c.sigma - 0.12);
       const double box_hi = c.sigma + 0.12;
       const double hS = 1.0e-3 * c.S;
       double hv = 1.0e-3;
-      if (c.sigma - hv <= 0.0) hv = 0.5 * c.sigma;
+      if (c.sigma - hv <= 0.0)
+        hv = 0.5 * c.sigma;
       const double hr = 1.0e-4, hT = 1.0e-3;
       const bool near_expiry = (c.T - hT <= 1.0e-8);
       auto P = [&](double dS, double dsig, double dr, double dT) {
-        return interp_target_price(c.S + dS, c.K, c.T + dT, c.sigma + dsig, c.r + dr, c.q,
-                                   side, box_lo, box_hi, kSigmaInterpNodes);
+        return interp_target_price(c.S + dS, c.K, c.T + dT, c.sigma + dsig, c.r + dr, c.q, side,
+                                   box_lo, box_hi, kSigmaInterpNodes);
       };
       const double p0 = P(0, 0, 0, 0);
       const double p_Sp = P(+hS, 0, 0, 0), p_Sm = P(-hS, 0, 0, 0);
@@ -2325,7 +2492,7 @@ TEST(SigmaInterp, MeetsPdeGreekGates) {
       g.charm = -(p_SpTp - p_SpTm - p_SmTp + p_SmTm) / (2.0 * hS * dT_den);
 
       const AmericanGreeks cold = greeks_fd_reference(c.S, c.K, c.T, c.sigma, c.r, c.q, side);
-      const char* sd = (side == Side::Put) ? "P" : "C";
+      const char *sd = (side == Side::Put) ? "P" : "C";
       // §9.2 vs the independent cold FD reference.
       EXPECT_LT(std::fabs(g.delta - cold.delta), 2.0e-5) << sd << c.tag << " delta";
       const double dg = std::fabs(g.gamma - cold.gamma);
@@ -2335,23 +2502,27 @@ TEST(SigmaInterp, MeetsPdeGreekGates) {
       EXPECT_LT(std::fabs(g.theta - cold.theta) / 365.0, 1.0e-3) << sd << c.tag << " theta-contrib";
       EXPECT_LT(std::fabs(g.vanna - cold.vanna) * (0.01 * c.S) * 0.01, 1.0e-3)
           << sd << c.tag << " vanna-contrib";
-      EXPECT_LT(std::fabs(g.volga - cold.volga) * 0.01 * 0.01, 1.0e-3) << sd << c.tag << " volga-contrib";
+      EXPECT_LT(std::fabs(g.volga - cold.volga) * 0.01 * 0.01, 1.0e-3)
+          << sd << c.tag << " volga-contrib";
       EXPECT_LT(std::fabs(g.charm - cold.charm) * (0.01 * c.S) / 365.0, 1.0e-3)
           << sd << c.tag << " charm-contrib";
       max_delta_gap = std::max(max_delta_gap, std::fabs(g.delta - cold.delta));
       // External anchor: the Crank-Nicolson PDE oracle price + numeric δ.
       const double v0 = oracle_pde_golden(c.S, c.K, c.T, c.sigma, c.r, c.q, side, grid);
       ASSERT_TRUE(std::isfinite(v0)) << sd << c.tag;
-      EXPECT_LT(std::fabs(g.price - v0) / std::fmax(v0, 1.0e-6), 5.0e-3) << sd << c.tag << " price-vs-pde";
+      EXPECT_LT(std::fabs(g.price - v0) / std::fmax(v0, 1.0e-6), 5.0e-3)
+          << sd << c.tag << " price-vs-pde";
       max_price_gap = std::max(max_price_gap, std::fabs(g.price - v0));
       const double hd = 0.01 * c.S;
       const double vSp = oracle_pde_golden(c.S + hd, c.K, c.T, c.sigma, c.r, c.q, side, grid);
       const double vSm = oracle_pde_golden(c.S - hd, c.K, c.T, c.sigma, c.r, c.q, side, grid);
       ASSERT_TRUE(std::isfinite(vSp) && std::isfinite(vSm)) << sd << c.tag;
-      EXPECT_LT(std::fabs(g.delta - (vSp - vSm) / (2.0 * hd)), 1.0e-2) << sd << c.tag << " delta-vs-pde";
+      EXPECT_LT(std::fabs(g.delta - (vSp - vSm) / (2.0 * hd)), 1.0e-2)
+          << sd << c.tag << " delta-vs-pde";
     }
   }
-  std::printf("[sigma-interp greeks] n_sigma=%u  max |delta gap| vs cold=%.3e  max |price gap| vs pde=%.3e\n",
+  std::printf("[sigma-interp greeks] n_sigma=%u  max |delta gap| vs cold=%.3e  max |price gap| vs "
+              "pde=%.3e\n",
               kSigmaInterpNodes, max_delta_gap, max_price_gap);
 }
 
@@ -2366,35 +2537,36 @@ TEST(SigmaInterp, ClampBox_FallsBackToCold) {
     sigmas.push_back(0.25);
   }
   const std::size_t oob = strikes.size() / 2;
-  sigmas[oob] = 0.45;  // well above the box below
+  sigmas[oob] = 0.45; // well above the box below
   std::vector<double> px(strikes.size(), 0.0);
   SigmaInterpOptions so;
   so.use_sigma_boundary_interp = true;
   so.n_sigma = 8;
   so.sigma_lo = 0.20;
-  so.sigma_hi = 0.30;  // excludes σ=0.45
+  so.sigma_hi = 0.30; // excludes σ=0.45
   SigmaSliceStats st;
-  ASSERT_TRUE(andersen_lake_put_slice_sigma(S, strikes, sigmas, T, r, q,
-                                            std::span<double>(px), so, std::nullopt, &st)
+  ASSERT_TRUE(andersen_lake_put_slice_sigma(S, strikes, sigmas, T, r, q, std::span<double>(px), so,
+                                            std::nullopt, &st)
                   .has_value());
   EXPECT_TRUE(st.used_interp);
   EXPECT_GE(st.n_cold_fallback, 1u);
   const double ref = value_or_fail(andersen_lake(S, strikes[oob], T, sigmas[oob], r, q, Side::Put));
-  EXPECT_TRUE(bits_equal(px[oob], ref)) << "oob K=" << strikes[oob] << " px=" << px[oob]
-                                        << " cold=" << ref;
+  EXPECT_TRUE(bits_equal(px[oob], ref))
+      << "oob K=" << strikes[oob] << " px=" << px[oob] << " cold=" << ref;
   // Near-expiry τ guard: the whole slice takes the cold path, each bit-identical.
   SigmaInterpOptions sg;
   sg.use_sigma_boundary_interp = true;
   sg.n_sigma = 8;
-  sg.min_tau = 0.05;  // > 0.02 below
+  sg.min_tau = 0.05; // > 0.02 below
   SigmaSliceStats st2;
-  ASSERT_TRUE(andersen_lake_put_slice_sigma(S, strikes, sigmas, 0.02, r, q,
-                                            std::span<double>(px), sg, std::nullopt, &st2)
+  ASSERT_TRUE(andersen_lake_put_slice_sigma(S, strikes, sigmas, 0.02, r, q, std::span<double>(px),
+                                            sg, std::nullopt, &st2)
                   .has_value());
   EXPECT_FALSE(st2.used_interp);
   EXPECT_EQ(st2.n_cold_fallback, strikes.size());
   for (std::size_t i = 0; i < strikes.size(); ++i) {
-    const double cref = value_or_fail(andersen_lake(S, strikes[i], 0.02, sigmas[i], r, q, Side::Put));
+    const double cref =
+        value_or_fail(andersen_lake(S, strikes[i], 0.02, sigmas[i], r, q, Side::Put));
     EXPECT_TRUE(bits_equal(px[i], cref)) << "near-expiry cold K=" << strikes[i];
   }
 }
@@ -2414,17 +2586,18 @@ TEST(SigmaInterp, SolveCount) {
   on.n_sigma = 8;
   if constexpr (!atx::vol::counters::counters_enabled()) {
     SigmaSliceStats st;
-    ASSERT_TRUE(andersen_lake_put_slice_sigma(S, strikes, sigmas, T, r, q,
-                                              std::span<double>(px), on, std::nullopt, &st)
+    ASSERT_TRUE(andersen_lake_put_slice_sigma(S, strikes, sigmas, T, r, q, std::span<double>(px),
+                                              on, std::nullopt, &st)
                     .has_value());
     EXPECT_EQ(st.n_boundary_solves, static_cast<std::size_t>(st.n_sigma) + st.n_cold_fallback);
     EXPECT_LT(st.n_boundary_solves, strikes.size());
-    GTEST_SKIP() << "ATX_VOL_COUNTERS off: rebuild with -DATX_VOL_COUNTERS=ON for the counter proof";
+    GTEST_SKIP()
+        << "ATX_VOL_COUNTERS off: rebuild with -DATX_VOL_COUNTERS=ON for the counter proof";
   } else {
     atx::vol::counters::reset();
     SigmaSliceStats st;
-    ASSERT_TRUE(andersen_lake_put_slice_sigma(S, strikes, sigmas, T, r, q,
-                                              std::span<double>(px), on, std::nullopt, &st)
+    ASSERT_TRUE(andersen_lake_put_slice_sigma(S, strikes, sigmas, T, r, q, std::span<double>(px),
+                                              on, std::nullopt, &st)
                     .has_value());
     const auto solves =
         atx::vol::counters::snapshot().get(atx::vol::counters::Counter::BoundarySolves);
@@ -2432,11 +2605,11 @@ TEST(SigmaInterp, SolveCount) {
     EXPECT_EQ(st.n_boundary_solves, static_cast<std::size_t>(st.n_sigma) + st.n_cold_fallback);
     EXPECT_LT(solves, strikes.size());
     atx::vol::counters::reset();
-    SigmaInterpOptions off;  // flag OFF -> cold per-strike reference
+    SigmaInterpOptions off; // flag OFF -> cold per-strike reference
     off.use_sigma_boundary_interp = false;
     SigmaSliceStats st_off;
-    ASSERT_TRUE(andersen_lake_put_slice_sigma(S, strikes, sigmas, T, r, q,
-                                              std::span<double>(px), off, std::nullopt, &st_off)
+    ASSERT_TRUE(andersen_lake_put_slice_sigma(S, strikes, sigmas, T, r, q, std::span<double>(px),
+                                              off, std::nullopt, &st_off)
                     .has_value());
     const auto cold_solves =
         atx::vol::counters::snapshot().get(atx::vol::counters::Counter::BoundarySolves);
@@ -2458,12 +2631,12 @@ TEST(SigmaInterp, FlagOff_BitIdenticalToScalar) {
   std::vector<double> px(strikes.size(), 0.0);
   for (Side side : {Side::Put, Side::Call}) {
     SigmaInterpOptions off;
-    off.use_sigma_boundary_interp = false;  // explicit cold reference (default is now ON)
-    const auto rc = (side == Side::Put)
-                        ? andersen_lake_put_slice_sigma(S, strikes, sigmas, T, r, q,
-                                                        std::span<double>(px), off)
-                        : andersen_lake_call_slice_sigma(S, strikes, sigmas, T, r, q,
-                                                         std::span<double>(px), off);
+    off.use_sigma_boundary_interp = false; // explicit cold reference (default is now ON)
+    const auto rc =
+        (side == Side::Put)
+            ? andersen_lake_put_slice_sigma(S, strikes, sigmas, T, r, q, std::span<double>(px), off)
+            : andersen_lake_call_slice_sigma(S, strikes, sigmas, T, r, q, std::span<double>(px),
+                                             off);
     ASSERT_TRUE(rc.has_value());
     for (std::size_t i = 0; i < strikes.size(); ++i) {
       const double ref = value_or_fail(andersen_lake(S, strikes[i], T, sigmas[i], r, q, side));
@@ -2495,40 +2668,43 @@ struct TemporalBook {
   double max_gap = 0.0;
   int contracts = 0;
 };
-TemporalBook run_temporal_book(const std::optional<AlOpts>& opts, bool converge,
-                               double dsigma, double move_guard) {
+TemporalBook run_temporal_book(const std::optional<AlOpts> &opts, bool converge, double dsigma,
+                               double move_guard) {
   TemporalBook b;
   const double S = 100.0, q = 0.0;
   const int n_snap = 12;
-  const double dT = 1.0 / 252.0;  // one trading day of decay per snapshot
+  const double dT = 1.0 / 252.0; // one trading day of decay per snapshot
   const double dr = 1.0e-4;
   for (double K : {80.0, 90.0, 100.0, 110.0, 120.0}) {
     for (double T0 : {0.25, 0.5, 1.0, 2.0}) {
       for (double sig0 : {0.15, 0.25, 0.40}) {
         for (double r0 : {0.02, 0.04, 0.06}) {
-          const bool ok = al_temporal_warm_probe(
-              S, K, q, T0, sig0, r0, dT, dsigma, dr, n_snap, opts, converge, 40,
-              move_guard, b.cold, b.warm, b.warm_hits, b.cold_reseeds, b.max_gap);
-          if (ok) ++b.contracts;
+          const bool ok = al_temporal_warm_probe(S, K, q, T0, sig0, r0, dT, dsigma, dr, n_snap,
+                                                 opts, converge, 40, move_guard, b.cold, b.warm,
+                                                 b.warm_hits, b.cold_reseeds, b.max_gap);
+          if (ok)
+            ++b.contracts;
         }
       }
     }
   }
   return b;
 }
-double mean_of(const std::vector<int>& v) {
-  if (v.empty()) return -1.0;
+double mean_of(const std::vector<int> &v) {
+  if (v.empty())
+    return -1.0;
   long s = 0;
-  for (int x : v) s += x;
+  for (int x : v)
+    s += x;
   return static_cast<double>(s) / static_cast<double>(v.size());
 }
-}  // namespace
+} // namespace
 
 // The correctness floor: a warm-seeded book equals the cold-seeded book. In
 // converge-to-tol mode both reach the boundary tol, so the prices agree to well
 // under the §9.1/§9.2 budget (a seed change converges to the same fixed point).
 TEST(WarmAcrossTime, ConvergesToCold) {
-  for (const std::optional<AlOpts>& opts :
+  for (const std::optional<AlOpts> &opts :
        {std::optional<AlOpts>{std::nullopt}, std::optional<AlOpts>{al_fast_opts()}}) {
     const TemporalBook b = run_temporal_book(opts, /*converge=*/true, 0.002, 0.12);
     ASSERT_GT(b.contracts, 100);
@@ -2546,9 +2722,12 @@ TEST(WarmAcrossTime, ConvergesToCold) {
 // (3-4x slower cold solves + a full validated repin) for the sprint's own ~1.04x
 // single-solve wall gap. KILL: leave warm-across-time OFF; pins stay byte-for-byte.
 TEST(WarmAcrossTime, SweepReduction) {
-  struct Row { const char* name; std::optional<AlOpts> opts; };
+  struct Row {
+    const char *name;
+    std::optional<AlOpts> opts;
+  };
   const Row schemes[] = {{"accurate{12,24}", std::nullopt}, {"fast{7,16}", al_fast_opts()}};
-  for (const Row& row : schemes) {
+  for (const Row &row : schemes) {
     const TemporalBook fx = run_temporal_book(row.opts, /*converge=*/false, 0.002, 0.12);
     const TemporalBook cv = run_temporal_book(row.opts, /*converge=*/true, 0.002, 0.12);
     ASSERT_GT(fx.cold.size(), 100u);
@@ -2557,14 +2736,14 @@ TEST(WarmAcrossTime, SweepReduction) {
     const double cut_fixed = (mcf > 0) ? 100.0 * (mcf - mwf) / mcf : 0.0;
     const double cut_conv = (mcc > 0) ? 100.0 * (mcc - mwc) / mcc : 0.0;
     const double warm_hit_rate =
-        100.0 * fx.warm_hits / std::max<int>(1, fx.warm_hits + fx.cold_reseeds +
-                                                    (static_cast<int>(fx.warm.size()) -
-                                                     fx.warm_hits - fx.cold_reseeds));
+        100.0 * fx.warm_hits /
+        std::max<int>(1, fx.warm_hits + fx.cold_reseeds +
+                             (static_cast<int>(fx.warm.size()) - fx.warm_hits - fx.cold_reseeds));
     std::printf(
         "WARMTIME %-16s N=%zu | FIXED medianJN+FP cold=%d warm=%d cut=%.1f%% meanC=%.2f "
         "meanW=%.2f | CONV cold=%d warm=%d cut=%.1f%% | warm_hit=%.0f%% reseeds=%d gapFX=%.2e\n",
-        row.name, fx.cold.size(), mcf, mwf, cut_fixed, mean_of(fx.cold), mean_of(fx.warm),
-        mcc, mwc, cut_conv, warm_hit_rate, fx.cold_reseeds, fx.max_gap);
+        row.name, fx.cold.size(), mcf, mwf, cut_fixed, mean_of(fx.cold), mean_of(fx.warm), mcc, mwc,
+        cut_conv, warm_hit_rate, fx.cold_reseeds, fx.max_gap);
     // SHIPPED relationship: the FIXED-budget median cut does NOT reach the 40% gate.
     EXPECT_LT(cut_fixed, 40.0)
         << row.name << ": fixed-budget warm-start does not cut median sweeps >=40% (kill)";
@@ -2597,14 +2776,17 @@ TEST(WarmAcrossTime, MoveGuard_ColdReseeds) {
 namespace {
 using atx::vol::detail::al_implicit_diff_put_greeks;
 using atx::vol::detail::ImplicitDiffGreeks;
-}  // namespace
+} // namespace
 
 // The implicit-diff linear system is correct: the sensitivity y_σ = −J⁻¹R_σ matches
 // a finite difference of the RE-SOLVED boundary (the ground-truth ∂y/∂σ), proving
 // the central-difference J and R_σ are accurate (the brief's "checked step").
 TEST(ImplicitDiff, JacobianAccurate) {
   const double K = 100.0;
-  struct C { double S, T, sigma, r, q; const char* tag; };
+  struct C {
+    double S, T, sigma, r, q;
+    const char *tag;
+  };
   const C cases[] = {
       {100.0, 1.00, 0.25, 0.05, 0.0, "atm"},
       {90.0, 0.50, 0.30, 0.05, 0.0, "itm"},
@@ -2612,8 +2794,8 @@ TEST(ImplicitDiff, JacobianAccurate) {
       {100.0, 0.30, 0.35, 0.06, 0.0, "short-T"},
   };
   double worst = 0.0;
-  for (const C& c : cases) {
-    double jerr = 0.0;  // max rel gap of y_σ vs the re-solved-boundary FD sensitivity
+  for (const C &c : cases) {
+    double jerr = 0.0; // max rel gap of y_σ vs the re-solved-boundary FD sensitivity
     const ImplicitDiffGreeks g =
         al_implicit_diff_put_greeks(c.S, K, c.T, c.sigma, c.r, c.q, std::nullopt,
                                     /*validate=*/true, jerr);
@@ -2626,7 +2808,10 @@ TEST(ImplicitDiff, JacobianAccurate) {
 
 TEST(ImplicitDiff, MeetsPdeGreekGates) {
   const double K = 100.0;
-  struct C { double S, T, sigma, r, q; const char* tag; };
+  struct C {
+    double S, T, sigma, r, q;
+    const char *tag;
+  };
   // Rate / yield / wing / near-expiry / exercise-region corner grid (§9.2).
   const C cases[] = {
       {100.0, 1.00, 0.25, 0.05, 0.00, "atm"},
@@ -2640,7 +2825,7 @@ TEST(ImplicitDiff, MeetsPdeGreekGates) {
   const atx::vol::test::OraclePdeOpts grid{};
   double max_vega = 0.0, max_rho = 0.0, max_theta = 0.0, max_delta = 0.0;
   double max_vega_5s = 0.0, max_rho_5s = 0.0;
-  for (const C& c : cases) {
+  for (const C &c : cases) {
     double jerr = 0.0;
     const ImplicitDiffGreeks g =
         al_implicit_diff_put_greeks(c.S, K, c.T, c.sigma, c.r, c.q, std::nullopt, false, jerr);
@@ -2650,8 +2835,8 @@ TEST(ImplicitDiff, MeetsPdeGreekGates) {
     // PDE-oracle numeric greeks.
     const double hv = 1.0e-2, hr = 1.0e-3, hT = 1.0e-2, hS = 0.01 * c.S;
     auto pde = [&](double dS, double dsig, double dr, double dT) {
-      return oracle_pde_american(c.S + dS, K, c.T + dT, c.sigma + dsig, c.r + dr, c.q,
-                                 Side::Put, grid);
+      return oracle_pde_american(c.S + dS, K, c.T + dT, c.sigma + dsig, c.r + dr, c.q, Side::Put,
+                                 grid);
     };
     const double vega_pde = (pde(0, hv, 0, 0) - pde(0, -hv, 0, 0)) / (2.0 * hv);
     const double rho_pde = (pde(0, 0, hr, 0) - pde(0, 0, -hr, 0)) / (2.0 * hr);
@@ -2663,16 +2848,14 @@ TEST(ImplicitDiff, MeetsPdeGreekGates) {
     max_delta = std::max(max_delta, std::fabs(g.delta - delta_pde));
     max_vega_5s = std::max(max_vega_5s, std::fabs(g.vega - five->vega));
     max_rho_5s = std::max(max_rho_5s, std::fabs(g.rho - five->rho));
-    std::printf(
-        "[P2.4-grid] %-14s vega id=%.4f pde=%.4f 5s=%.4f | rho id=%.4f pde=%.4f | "
-        "theta id=%.4f pde=%.4f | delta id=%.5f pde=%.5f\n",
-        c.tag, g.vega, vega_pde, five->vega, g.rho, rho_pde, g.theta, theta_pde,
-        g.delta, delta_pde);
+    std::printf("[P2.4-grid] %-14s vega id=%.4f pde=%.4f 5s=%.4f | rho id=%.4f pde=%.4f | "
+                "theta id=%.4f pde=%.4f | delta id=%.5f pde=%.5f\n",
+                c.tag, g.vega, vega_pde, five->vega, g.rho, rho_pde, g.theta, theta_pde, g.delta,
+                delta_pde);
   }
-  std::printf(
-      "[P2.4-grid] MAX |Δ| vs PDE: vega=%.3e rho=%.3e theta/365=%.3e delta=%.3e | "
-      "vs 5-solve: vega=%.3e rho=%.3e\n",
-      max_vega, max_rho, max_theta, max_delta, max_vega_5s, max_rho_5s);
+  std::printf("[P2.4-grid] MAX |Δ| vs PDE: vega=%.3e rho=%.3e theta/365=%.3e delta=%.3e | "
+              "vs 5-solve: vega=%.3e rho=%.3e\n",
+              max_vega, max_rho, max_theta, max_delta, max_vega_5s, max_rho_5s);
   // Report-only bounds — the actual ship decision is in the report. These loose
   // sanity gates just catch a gross mapping/sign error (an O(1) blow-up), not the
   // §9.2 fine gate (which the printout quantifies for the decision).
@@ -2690,16 +2873,15 @@ TEST(ImplicitDiff, Cost) {
       al_implicit_diff_put_greeks(S, K, T, sigma, r, q, std::nullopt, false, jerr);
   ASSERT_TRUE(g.ok);
   ASSERT_GT(g.base_sweeps, 0);
-  const double cost_be = 1.0 + static_cast<double>(g.cost_passes) /
-                                   static_cast<double>(g.base_sweeps);
-  std::printf(
-      "[P2.4-cost] n=%d base_sweeps=%d extra_residual_passes=%d -> cost=%.2f "
-      "boundary-equivalents (gate<=1.8); 5-solve route = 5.0\n",
-      g.n_boundary, g.base_sweeps, g.cost_passes, cost_be);
+  const double cost_be =
+      1.0 + static_cast<double>(g.cost_passes) / static_cast<double>(g.base_sweeps);
+  std::printf("[P2.4-cost] n=%d base_sweeps=%d extra_residual_passes=%d -> cost=%.2f "
+              "boundary-equivalents (gate<=1.8); 5-solve route = 5.0\n",
+              g.n_boundary, g.base_sweeps, g.cost_passes, cost_be);
   // Central-diff J dominates the cost -> over the 1.8 gate (kill-on-cost). The
   // number is the report evidence; a fully-analytic one-pass J/R_θ is the path to
   // the gate (documented in the report), not implemented here.
   EXPECT_GT(cost_be, 1.8) << "central-diff implicit-diff exceeds the 1.8 cost gate";
 }
 
-}  // namespace
+} // namespace

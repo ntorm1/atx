@@ -30,8 +30,8 @@
 #include <optional>
 #include <span>
 
-#include "atx/vol/american.hpp"  // AmericanMethod, AlOpts
-#include "atx/vol/types.hpp"     // Side, Result, Status
+#include "atx/vol/american.hpp" // AmericanMethod, AlOpts
+#include "atx/vol/types.hpp"    // Side, Result, Status
 
 namespace atx::vol {
 
@@ -69,12 +69,21 @@ namespace atx::vol {
 //                   Unavailable     — root-find did not converge in max_iter
 //                 Any pricer Error (e.g. Andersen-Lake NotImplemented on the
 //                 negative-rate corner) is propagated unchanged.
-[[nodiscard]] Result<double> american_implied_vol(
-    double price, double S, double K, double T, double r, double q, Side side,
-    AmericanMethod method = AmericanMethod::AndersenLake, double tol = 1.0e-7,
-    std::uint16_t max_iter = 64,
-    const std::optional<AlOpts>& opts = std::nullopt,
-    const CorrectionCache* correction = nullptr, double warm_start = 0.0) noexcept;
+[[nodiscard]] Result<double>
+american_implied_vol(double price, double S, double K, double T, double r, double q, Side side,
+                     AmericanMethod method = AmericanMethod::AndersenLake, double tol = 1.0e-7,
+                     std::uint16_t max_iter = 64, const std::optional<AlOpts> &opts = std::nullopt,
+                     const CorrectionCache *correction = nullptr, double warm_start = 0.0) noexcept;
+
+// Fixed-weight two-cache forward map. The blend is placed before the optional
+// solver controls so callers cannot accidentally bind it to the legacy cache
+// pointer slot. Exact endpoint weights preserve the single-cache route.
+[[nodiscard]] Result<double>
+american_implied_vol(double price, double S, double K, double T, double r, double q, Side side,
+                     const CorrectionBlend &correction,
+                     AmericanMethod method = AmericanMethod::AndersenLake, double tol = 1.0e-7,
+                     std::uint16_t max_iter = 64, const std::optional<AlOpts> &opts = std::nullopt,
+                     double warm_start = 0.0) noexcept;
 
 // Batch inversion over a strike axis (scalar-backed; mirrors the library's
 // *_batch shape and the parallel-status failure convention of
@@ -86,12 +95,10 @@ namespace atx::vol {
 // @return InvalidArgument on a span-length mismatch; otherwise Ok() with every
 //         lane written (a lane's own failure lives in status_out[i]).
 [[nodiscard]] Status american_implied_vol_batch(
-    std::span<const double> price, double S, std::span<const double> K, double T,
-    double r, double q, Side side, std::span<double> iv_out,
-    std::span<Status> status_out,
+    std::span<const double> price, double S, std::span<const double> K, double T, double r,
+    double q, Side side, std::span<double> iv_out, std::span<Status> status_out,
     AmericanMethod method = AmericanMethod::AndersenLake, double tol = 1.0e-7,
-    std::uint16_t max_iter = 64,
-    const std::optional<AlOpts>& opts = std::nullopt,
-    const CorrectionCache* correction = nullptr);
+    std::uint16_t max_iter = 64, const std::optional<AlOpts> &opts = std::nullopt,
+    const CorrectionCache *correction = nullptr);
 
-}  // namespace atx::vol
+} // namespace atx::vol

@@ -43,6 +43,7 @@
 #include "atx/vol/corpus.hpp"           // CorpusManifest
 #include "atx/vol/portfolio_pricer.hpp" // OptionContract, SurfaceSet, PriceOptions, PriceTotals
 #include "atx/vol/priced_surface.hpp"   // PricedSurface
+#include "atx/vol/query_pricing.hpp"    // QueryPricingTier
 #include "atx/vol/types.hpp"            // Result, Side
 
 namespace atx::vol {
@@ -91,11 +92,14 @@ private:
 // addresses and `surfaces_` is never mutated after `set_` is built).
 class MarketSnapshot {
 public:
-  // Open `archive_path`, map every surface, build the `SurfaceSet`, and take the
-  // valuation timestamp from the surfaces' `now_ts_ns` (validating they agree).
-  // Errors propagate from the archive open/map or `SurfaceSet::create`;
+  // Open `archive_path`, map every surface, prepare its runtime-only query tier,
+  // build the `SurfaceSet`, and take the valuation timestamp from the surfaces'
+  // `now_ts_ns` (validating they agree). The archive wire format is unchanged.
+  // Errors propagate from open/map/query preparation or `SurfaceSet::create`;
   // InvalidArgument if the archive is empty or its surfaces disagree on the ts.
-  [[nodiscard]] static Result<MarketSnapshot> load(std::string_view archive_path);
+  [[nodiscard]] static Result<MarketSnapshot>
+  load(std::string_view archive_path,
+       QueryPricingTier query_pricing_tier = QueryPricingTier::LegacyCompatible);
 
   MarketSnapshot(MarketSnapshot &&) noexcept = default;
   MarketSnapshot &operator=(MarketSnapshot &&) noexcept = default;
@@ -136,8 +140,9 @@ struct SnapshotCacheStats {
   std::uint64_t evictions{0};
 };
 
-// Thread-safe archive cache. Loads are coalesced by normalized path, so a
-// synchronous caller and an asynchronous prefetch share one archive open/map.
+// Thread-safe archive cache. Loads are coalesced by normalized path AND query
+// tier, so a synchronous caller and an asynchronous prefetch with the same
+// accuracy contract share one archive open/map. Distinct tiers never alias.
 // The default constructor is unbounded for deliberate reuse across repeated
 // backtest/reconciliation sweeps. Passing a positive capacity selects a
 // deterministic least-recently-used mode for one-pass pipelines. Automatic
@@ -156,8 +161,11 @@ public:
   SnapshotCache(SnapshotCache &&) noexcept = default;
   SnapshotCache &operator=(SnapshotCache &&) noexcept = default;
 
-  void prefetch(std::string archive_path);
-  [[nodiscard]] Result<std::shared_ptr<const MarketSnapshot>> load(std::string_view archive_path);
+  void prefetch(std::string archive_path,
+                QueryPricingTier query_pricing_tier = QueryPricingTier::LegacyCompatible);
+  [[nodiscard]] Result<std::shared_ptr<const MarketSnapshot>>
+  load(std::string_view archive_path,
+       QueryPricingTier query_pricing_tier = QueryPricingTier::LegacyCompatible);
   [[nodiscard]] SnapshotCacheStats stats() const noexcept;
   void clear();
 
@@ -211,7 +219,7 @@ struct FinancingConfig {
   // Long shares earn q_eff*S*dt. With premium financing off, also charge
   // r*S*dt here; when it is on, the cash ledger already carries that funding.
   bool shares_carry{false};
-  double initial_cash{0.0};    // opening cash balance
+  double initial_cash{0.0}; // opening cash balance
 };
 
 // ── Run config + result ─────────────────────────────────────────────────────
@@ -239,6 +247,10 @@ struct RunConfig {
   // exact continuation-PDE theta/charm) are a direct per-step speedup; the mark and
   // delta/gamma/vega/rho/vanna/volga are bit-identical to the FD path.
   PriceOptions price{/*n_threads=*/0, /*analytic_greeks=*/true};
+  // Archived surfaces historically served the cold reference pricer. Preserve
+  // that contract by default; faster cached query tiers are an explicit
+  // backtest-level accuracy/latency choice and never alter the archive bytes.
+  QueryPricingTier query_pricing_tier{QueryPricingTier::LegacyCompatible};
   FrictionModel frictions{};          // execution frictions (B2; default: frictionless)
   FinancingConfig financing{};        // cash/borrow ledger (B2; default: off => B1-identity)
   unsigned record_every_n{1};         // persist every Nth step (1 = every step)

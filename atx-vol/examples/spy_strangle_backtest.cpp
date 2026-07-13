@@ -57,20 +57,20 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/american.hpp"         // al_fast_opts, AmericanMethod
-#include "atx/vol/backtest.hpp"         // Clock, run_backtest, RunConfig, BacktestResult, MarketSnapshot
-#include "atx/vol/corpus.hpp"           // CorpusManifest, CorpusEntry, CorpusFitStatus
-#include "atx/vol/data.hpp"             // iso_to_ns, ns_to_iso_date, year_fraction, QuoteFrame
-#include "atx/vol/panel.hpp"            // make_synthetic_american_panel, SynthPanelSpec, load_chain_csv
-#include "atx/vol/priced_surface.hpp"   // PricedSurface, PricingContext
-#include "atx/vol/s3.hpp"               // S3Params
-#include "atx/vol/strategy.hpp"         // DeclarativeStrategy, StrategySpec
-#include "atx/vol/surface_archive.hpp"  // write_surface_archive_file, SurfaceArchiveItem, SurfaceArchive
-#include "atx/vol/surface_parity.hpp"   // SliceContext
-#include "atx/vol/tearsheet.hpp"        // TearSheet, tearsheet, write_backtest_tsv
-#include "atx/vol/types.hpp"            // Side, Result, Status
-#include "atx/vol/vol_curve.hpp"        // CurveSurface, EssviCurve
-#include "atx/vol/vol_surface.hpp"      // EssviParams
+#include "atx/vol/american.hpp" // al_fast_opts, AmericanMethod
+#include "atx/vol/backtest.hpp" // Clock, run_backtest, RunConfig, BacktestResult, MarketSnapshot
+#include "atx/vol/corpus.hpp"   // CorpusManifest, CorpusEntry, CorpusFitStatus
+#include "atx/vol/data.hpp"     // iso_to_ns, ns_to_iso_date, year_fraction, QuoteFrame
+#include "atx/vol/panel.hpp"    // make_synthetic_american_panel, SynthPanelSpec, load_chain_csv
+#include "atx/vol/priced_surface.hpp" // PricedSurface, PricingContext
+#include "atx/vol/s3.hpp"             // S3Params
+#include "atx/vol/strategy.hpp"       // DeclarativeStrategy, StrategySpec
+#include "atx/vol/surface_archive.hpp" // write_surface_archive_file, SurfaceArchiveItem, SurfaceArchive
+#include "atx/vol/surface_parity.hpp" // SliceContext
+#include "atx/vol/tearsheet.hpp"      // TearSheet, tearsheet, write_backtest_tsv
+#include "atx/vol/types.hpp"          // Side, Result, Status
+#include "atx/vol/vol_curve.hpp"      // CurveSurface, EssviCurve
+#include "atx/vol/vol_surface.hpp"    // EssviParams
 
 using namespace atx::vol;
 namespace fs = std::filesystem;
@@ -80,13 +80,13 @@ namespace {
 constexpr double kR = 0.043;
 constexpr std::int64_t kDayNs = 86400LL * 1000000000LL;
 constexpr std::uint32_t kSpyUid = 42;
-constexpr double kTenorT = 0.5;  // 6-month strangle
+constexpr double kTenorT = 0.5; // 6-month strangle
 
 // Business days (Mon-Fri; market holidays ignored — a synthetic calendar) in
 // [start_iso, end_iso] inclusive. Epoch day 0 (1970-01-01) is a Thursday, so a
 // UTC-midnight ns maps to weekday `((day % 7) + 4) % 7` with 0=Sun..6=Sat.
-[[nodiscard]] std::vector<std::string> business_days(const std::string& start_iso,
-                                                     const std::string& end_iso) {
+[[nodiscard]] std::vector<std::string> business_days(const std::string &start_iso,
+                                                     const std::string &end_iso) {
   std::vector<std::string> out;
   const std::int64_t s = iso_to_ns(start_iso);
   const std::int64_t e = iso_to_ns(end_iso);
@@ -94,7 +94,7 @@ constexpr double kTenorT = 0.5;  // 6-month strangle
     const long long day = ns / kDayNs;
     const int dow = static_cast<int>(((day % 7) + 4) % 7);
     if (dow == 0 || dow == 6) {
-      continue;  // weekend
+      continue; // weekend
     }
     out.push_back(ns_to_iso_date(ns));
   }
@@ -112,14 +112,14 @@ constexpr double kTenorT = 0.5;  // 6-month strangle
   int i = 0;
   for (const double T : Ts) {
     EssviParams e{};
-    e.theta = 0.04 + 0.005 * static_cast<double>(i) + vol_bump;  // ATM total variance level
+    e.theta = 0.04 + 0.005 * static_cast<double>(i) + vol_bump; // ATM total variance level
     e.phi = 1.5 - 0.05 * static_cast<double>(i);
-    e.rho = -0.4 + 0.02 * static_cast<double>(i);                 // index crash-put skew
+    e.rho = -0.4 + 0.02 * static_cast<double>(i); // index crash-put skew
     e.psi = 0.5;
     e.p = 0.5;
     e.lambda = 0.5;
     e.T = T;
-    e.F = S;  // flat forward = spot (the fixture/bench convention)
+    e.F = S; // flat forward = spot (the fixture/bench convention)
     e.expiry_id = static_cast<std::uint16_t>(i);
     cs.push(std::make_unique<EssviCurve>(e, std::exp(-kR * T)));
     ctx.push_back(SliceContext{T, S, 0.0, 0.02, 250, 7});
@@ -141,8 +141,8 @@ constexpr double kTenorT = 0.5;  // 6-month strangle
 }
 
 // Write one date's SPY archive; return its path.
-[[nodiscard]] std::string write_archive(const fs::path& dir, const std::string& date,
-                                        const PricedSurface& spy) {
+[[nodiscard]] std::string write_archive(const fs::path &dir, const std::string &date,
+                                        const PricedSurface &spy) {
   std::error_code ec;
   fs::create_directories(dir, ec);
   const std::string path = (dir / (date + ".atxvsa")).string();
@@ -156,10 +156,10 @@ constexpr double kTenorT = 0.5;  // 6-month strangle
   return path;
 }
 
-[[nodiscard]] CorpusManifest make_manifest(
-    const std::vector<std::pair<std::string, std::string>>& date_paths) {
+[[nodiscard]] CorpusManifest
+make_manifest(const std::vector<std::pair<std::string, std::string>> &date_paths) {
   CorpusManifest m;
-  for (const auto& [date, path] : date_paths) {
+  for (const auto &[date, path] : date_paths) {
     m.dates.push_back(date);
     CorpusEntry e;
     e.date = date;
@@ -176,9 +176,9 @@ constexpr double kTenorT = 0.5;  // 6-month strangle
   StrategySpec spec;
   spec.name = "spy-short-40d-6m-strangle-daily-restrike";
   LegSpec leg;
-  leg.symbol = "SPY";  // resolved to uid per snapshot (works for synthetic + real corpora)
+  leg.symbol = "SPY"; // resolved to uid per snapshot (works for synthetic + real corpora)
   leg.tenor.target_T = kTenorT;
-  leg.tenor.snap_to_listed = false;  // model-on-model; listed route is a separate workflow
+  leg.tenor.snap_to_listed = false; // model-on-model; listed route is a separate workflow
   leg.structure.kind = StructureSpec::Kind::Strangle;
   leg.structure.call_leg = StrikeSelector{StrikeSelector::Kind::Delta, 0.40};
   leg.structure.put_leg = StrikeSelector{StrikeSelector::Kind::Delta, 0.40};
@@ -199,14 +199,14 @@ constexpr double kTenorT = 0.5;  // 6-month strangle
 // Persist a QuoteFrame as the documented self-contained CSV chain (panel.hpp
 // load_chain_csv format): uid,snapshot_iso,spot,expiry_iso,strike,side,bid,ask,
 // bid_size,ask_size,under_spot. Returns the byte size written.
-[[nodiscard]] std::uintmax_t write_chain_csv(const fs::path& path, const QuoteFrame& f) {
+[[nodiscard]] std::uintmax_t write_chain_csv(const fs::path &path, const QuoteFrame &f) {
   std::ofstream os(path, std::ios::binary | std::ios::trunc);
   os << "uid,snapshot_iso,spot,expiry_iso,strike,side,bid,ask,bid_size,ask_size,under_spot\n";
-  for (const QuoteRow& r : f.rows) {
+  for (const QuoteRow &r : f.rows) {
     const std::string uid = r.uid.empty() ? f.uid : r.uid;
-    os << uid << ',' << f.snapshot_iso << ',' << f.spot << ',' << r.expiry_iso << ','
-       << r.strike << ',' << (r.side == Side::Call ? 'C' : 'P') << ',' << r.bid << ',' << r.ask
-       << ',' << r.bid_size << ',' << r.ask_size << ',' << f.spot << '\n';
+    os << uid << ',' << f.snapshot_iso << ',' << f.spot << ',' << r.expiry_iso << ',' << r.strike
+       << ',' << (r.side == Side::Call ? 'C' : 'P') << ',' << r.bid << ',' << r.ask << ','
+       << r.bid_size << ',' << r.ask_size << ',' << f.spot << '\n';
   }
   os.flush();
   std::error_code ec;
@@ -215,7 +215,7 @@ constexpr double kTenorT = 0.5;  // 6-month strangle
 
 // Build one dense SPY-like OPRA quote slice with rolling expiries and round-trip
 // it through the CSV store. Prints a confirmation line. Independent of the corpus.
-void confirm_quote_slice_store(const fs::path& dir) {
+void confirm_quote_slice_store(const fs::path &dir) {
   const std::string snap = "2026-04-01";
   SynthPanelSpec spec;
   spec.uid = "SPY";
@@ -231,7 +231,7 @@ void confirm_quote_slice_store(const fs::path& dir) {
     SynthExpiry e;
     e.expiry_iso = ns_to_iso_date(snap_ns + static_cast<std::int64_t>(off) * kDayNs);
     e.T = year_fraction(snap, e.expiry_iso);
-    const double s2 = 2.0 * std::sqrt(e.T) * -0.55;  // index strike-skew
+    const double s2 = 2.0 * std::sqrt(e.T) * -0.55; // index strike-skew
     e.truth = S3Params{0.10 + 0.05 * e.T, s2, 0.4};
     spec.expiries.push_back(e);
   }
@@ -259,27 +259,50 @@ void confirm_quote_slice_store(const fs::path& dir) {
   const bool ok = reloaded.has_value() && reloaded->rows.size() == panel->frame.rows.size();
   std::printf(
       "[storage] OPRA quote slice: %zu quotes -> CSV %.1f KB -> reload %s (%zu rows round-trip)\n",
-      panel->frame.rows.size(), static_cast<double>(bytes) / 1024.0,
-      ok ? "OK" : "MISMATCH", reloaded.has_value() ? reloaded->rows.size() : 0u);
+      panel->frame.rows.size(), static_cast<double>(bytes) / 1024.0, ok ? "OK" : "MISMATCH",
+      reloaded.has_value() ? reloaded->rows.size() : 0u);
 }
 
-}  // namespace
+} // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char **argv) {
   // Data source: a REAL corpus manifest (e.g. from spy_ytd_corpus over a Databento
   // OPRA pull) when --manifest / a positional path is given, else the built-in
   // deterministic synthetic corpus. --theta-per-day sets the constant-risk target.
   std::string manifest_path;
-  double target_theta_per_day = 10'000.0;  // $/day book theta (constant-risk sizing)
+  double target_theta_per_day = 10'000.0; // $/day book theta (constant-risk sizing)
+  QueryPricingTier query_pricing_tier = QueryPricingTier::LegacyCompatible;
+  std::string_view query_pricing_label = "legacy";
+  bool preload_snapshots = false;
   for (int i = 1; i < argc; ++i) {
     const std::string_view a = argv[i];
-    const auto nv = [&]() -> const char* { return (i + 1 < argc) ? argv[++i] : ""; };
+    const auto nv = [&]() -> const char * { return (i + 1 < argc) ? argv[++i] : ""; };
     if (a == "--manifest") {
       manifest_path = nv();
     } else if (a == "--theta-per-day") {
       target_theta_per_day = std::strtod(nv(), nullptr);
+    } else if (a == "--query-tier") {
+      const std::string_view value = nv();
+      if (value == "legacy") {
+        query_pricing_tier = QueryPricingTier::LegacyCompatible;
+      } else if (value == "cold") {
+        query_pricing_tier = QueryPricingTier::ColdReference;
+      } else if (value == "representative") {
+        query_pricing_tier = QueryPricingTier::RepresentativeFast;
+      } else if (value == "carry") {
+        query_pricing_tier = QueryPricingTier::CarryBank;
+      } else {
+        std::fprintf(stderr,
+                     "invalid --query-tier '%.*s' (expected legacy, cold, representative, or "
+                     "carry)\n",
+                     static_cast<int>(value.size()), value.data());
+        return 2;
+      }
+      query_pricing_label = value;
+    } else if (a == "--preload-snapshots") {
+      preload_snapshots = true;
     } else if (!a.empty() && a.front() != '-' && manifest_path.empty()) {
-      manifest_path = argv[i];  // positional manifest path
+      manifest_path = argv[i]; // positional manifest path
     } else {
       std::fprintf(stderr, "unknown arg: %s\n", argv[i]);
       return 2;
@@ -293,7 +316,7 @@ int main(int argc, char** argv) {
 
   // ── 1. Corpus: synthetic (built here) OR real (loaded from a manifest) ─────
   std::vector<std::string> dates;
-  std::string first_archive;  // representative archive path (reload-latency probe)
+  std::string first_archive; // representative archive path (reload-latency probe)
   std::string data_source;
   double build_ms = 0.0;
   std::uintmax_t total_arch_bytes = 0;
@@ -303,16 +326,16 @@ int main(int argc, char** argv) {
     fs::remove_all(base, ec);
     data_source = "synthetic rolling-vol eSSVI SPY corpus";
     dates = business_days("2026-01-02", "2026-07-02");
-    std::mt19937_64 rng(0x5391A11ED5EEDULL);  // fixed seed; NEVER time-based
+    std::mt19937_64 rng(0x5391A11ED5EEDULL); // fixed seed; NEVER time-based
     std::normal_distribution<double> z(0.0, 1.0);
-    const double sig_d = 0.12 / std::sqrt(252.0);            // ~12%/yr realized daily vol
-    const double mu_d = 0.05 / 252.0 - 0.5 * sig_d * sig_d;  // small drift, Ito-corrected
+    const double sig_d = 0.12 / std::sqrt(252.0);           // ~12%/yr realized daily vol
+    const double mu_d = 0.05 / 252.0 - 0.5 * sig_d * sig_d; // small drift, Ito-corrected
     double S = 600.0;
-    double vb = 0.0;  // AR(1) vol-regime bump
+    double vb = 0.0; // AR(1) vol-regime bump
     const auto t0 = std::chrono::steady_clock::now();
     std::vector<std::pair<std::string, std::string>> dp;
     dp.reserve(dates.size());
-    for (const std::string& date : dates) {
+    for (const std::string &date : dates) {
       const std::int64_t now = iso_to_ns(date);
       const PricedSurface spy = make_spy_surface(S, now, vb);
       const std::string path = write_archive(arch_dir, date, spy);
@@ -321,9 +344,10 @@ int main(int argc, char** argv) {
       // Advance the seeded path: a slow AR(1) vol regime with a realistic vol-of-vol.
       S *= std::exp(mu_d + sig_d * z(rng));
       vb = 0.96 * vb + 0.004 * z(rng);
-      vb = std::min(0.05, std::max(-0.015, vb));  // keep eSSVI theta > 0
+      vb = std::min(0.05, std::max(-0.015, vb)); // keep eSSVI theta > 0
     }
-    build_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    build_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     first_archive = dp.front().second;
     auto ck = Clock::from_manifest(make_manifest(dp));
     if (!ck) {
@@ -339,7 +363,7 @@ int main(int argc, char** argv) {
                    man.error().to_string().c_str());
       return 1;
     }
-    for (const CorpusEntry& e : man->entries) {
+    for (const CorpusEntry &e : man->entries) {
       if (e.status != CorpusFitStatus::Ok) {
         continue;
       }
@@ -385,14 +409,36 @@ int main(int argc, char** argv) {
   const SizeSpec size{SizeSpec::Kind::TargetTheta, kTargetThetaPerDay, -1.0};
   const StrategySpec spec = make_strangle_spec(size);
   DeclarativeStrategy strat{spec};
+  RunConfig run_config;
+  run_config.query_pricing_tier = query_pricing_tier;
+  double preload_ms = 0.0;
+  if (preload_snapshots) {
+    run_config.snapshot_cache = std::make_shared<SnapshotCache>();
+    run_config.prefetch_snapshots = false;
+    const auto preload_start = std::chrono::steady_clock::now();
+    for (const SnapshotRef &ref : clock->refs()) {
+      auto snapshot = run_config.snapshot_cache->load(ref.archive_path, query_pricing_tier);
+      if (!snapshot.has_value()) {
+        std::fprintf(stderr, "preload(%s): %s\n", ref.archive_path.c_str(),
+                     snapshot.error().to_string().c_str());
+        return 1;
+      }
+    }
+    preload_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - preload_start)
+            .count();
+    std::printf("[prep] preloaded %zu snapshots for %.*s tier in %.1f ms\n", clock->size(),
+                static_cast<int>(query_pricing_label.size()), query_pricing_label.data(),
+                preload_ms);
+  }
   const auto t_run0 = std::chrono::steady_clock::now();
-  auto res = run_backtest(*clock, strat);  // RunConfig{}: all-cores, analytic greeks
+  auto res = run_backtest(*clock, strat, run_config);
   const auto t_run1 = std::chrono::steady_clock::now();
   if (!res) {
     std::fprintf(stderr, "run_backtest: %s\n", res.error().to_string().c_str());
     return 1;
   }
-  const BacktestResult& r = *res;
+  const BacktestResult &r = *res;
   const TearSheet t = tearsheet(r);
 
   // ── 3. Table + tearsheet ──────────────────────────────────────────────────
@@ -420,6 +466,8 @@ int main(int argc, char** argv) {
        << "# contract_semantics=model-on-model continuous surface contracts (not listed fills)\n"
        << "# listed_workflow=spy_strangle_tradeable via listed_opra.hpp\n"
        << "# data_source=" << data_source << "\n"
+       << "# query_pricing_tier=" << query_pricing_label << "\n"
+       << "# snapshot_preload_ms=" << preload_ms << "\n"
        << "# window_start=" << dates.front() << "\n"
        << "# window_end=" << dates.back() << "\n"
        << "# business_days=" << dates.size() << "\n"
@@ -429,7 +477,7 @@ int main(int argc, char** argv) {
        << "# delta_target=0.40\n"
        << "# sizing=Target book theta $" << kTargetThetaPerDay << "/day (units resolved daily)\n"
        << "# target_theta_daily=" << kTargetThetaPerDay << "\n"
-       << "# target_theta=" << (kTargetThetaPerDay * 365.25) << "\n"  // annual; matches gross_theta
+       << "# target_theta=" << (kTargetThetaPerDay * 365.25) << "\n" // annual; matches gross_theta
        << "# wall_clock_ms=" << run_ms << "\n"
        << "# steps_per_s=" << sps << "\n"
        << "# total_return=" << t.total_return << "\n"
@@ -451,7 +499,7 @@ int main(int argc, char** argv) {
     }
   }
   const long long leg_reprices =
-      static_cast<long long>(priced_steps) * 2;  // 2 lots repriced per step
+      static_cast<long long>(priced_steps) * 2; // 2 lots repriced per step
   const double run_s = run_ms / 1000.0;
   const double steps_per_s = (run_s > 0.0) ? static_cast<double>(priced_steps) / run_s : 0.0;
 
@@ -485,17 +533,20 @@ int main(int argc, char** argv) {
     (void)sink;
   }
 
-  std::printf("\n[timing] backtest run: %.1f ms over %d priced steps => %.1f steps/s, "
+  std::printf("\n[timing] backtest run (%.*s query tier): %.1f ms over %d priced steps => %.1f "
+              "steps/s, "
               "%lld leg-reprices (%.3f ms/step, %.3f ms/leg-reprice)\n",
-              run_ms, priced_steps, steps_per_s, leg_reprices,
+              static_cast<int>(query_pricing_label.size()), query_pricing_label.data(), run_ms,
+              priced_steps, steps_per_s, leg_reprices,
               (priced_steps > 0) ? run_ms / priced_steps : 0.0,
               (leg_reprices > 0) ? run_ms / static_cast<double>(leg_reprices) : 0.0);
 
   std::printf("\n[tearsheet] (short 40d 6m strangle, TARGET book theta $%.0f/day, mult 100, "
-              "frictionless)\n", kTargetThetaPerDay);
+              "frictionless)\n",
+              kTargetThetaPerDay);
   std::printf("  total_return   = %.2f  ($ PnL, cumulative)\n", t.total_return);
-  std::printf("  ann_return     = %.2f   ann_vol = %.2f   sharpe = %.3f\n", t.ann_return,
-              t.ann_vol, t.sharpe);
+  std::printf("  ann_return     = %.2f   ann_vol = %.2f   sharpe = %.3f\n", t.ann_return, t.ann_vol,
+              t.sharpe);
   std::printf("  max_drawdown   = %.2f   hit_rate = %.3f\n", t.max_drawdown, t.hit_rate);
   std::printf("  avg_gross_vega = %.2f   avg_gross_gamma = %.4f\n", t.avg_gross_vega,
               t.avg_gross_gamma);

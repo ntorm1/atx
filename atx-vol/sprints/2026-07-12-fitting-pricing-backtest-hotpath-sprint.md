@@ -81,6 +81,207 @@ The closing measurements confirm the central diagnosis: the 28 ms fit kernel is 
 2.0 s admitted dual-risk pipeline. Certification, risk construction/validation, selector
 breadth, and data handoffs are the next-order costs.
 
+## 2026-07-13 query-kernel and OPRA second pass
+
+The follow-up review separated three workloads that had previously been compared as if they
+were the same operation:
+
+1. OPRA packet/message decode and latest-quote mutation;
+2. dirty-contract analytics after quote coalescing; and
+3. full-chain price/Greek refresh after a surface, spot, or carry generation changes.
+
+An OPRA quote message names one option series; it does not imply that a venue or market maker
+reruns a cold American solver for every option on every message. The official February 2025
+[OPRA SIP metrics](https://cdn.opraplan.com/documents/OPRA_SIP_Metrics_February_2025.pdf)
+report a 47.6 million-message/s actual peak. The September 2025
+[capacity projection](https://cdn.opraplan.com/documents/notices/OPRA_Capacity_Projections_Update_0925.pdf)
+projects July 2026 capacity of 13.575 million messages per 100 ms and 1.562 million per 10 ms,
+with median SIP latency under 18 microseconds. The
+[Pillar output specification](https://cdn.opraplan.com/documents/OPRA_Pillar_Output_Specification.pdf)
+defines compact per-series messages and dynamic root sharding, while the
+[multicast network specification](https://cdn.opraplan.com/documents/OPRA_Common_IP_Multicast_Distribution_Network.pdf)
+describes 102 regular-hours lines plus redundant streams and gap recovery. Cboe likewise
+describes consuming roughly 90 million feed messages/s while performing *millions*, not tens
+of millions, of analytics calculations/s in its
+[Options Analytics architecture](https://www.cboe.com/solutions/options-analytics).
+
+The repository's current real-data acceptance fixture is Databento `cbbo-1m`: a historical
+one-minute consolidated snapshot. It validates real symbols, strikes, expiries, quotes, carry,
+and surface behavior, but it is not a raw OPRA packet-replay or sequence/gap-recovery test.
+Feed throughput and analytics throughput therefore get separate SLAs below.
+
+### Implemented query-kernel result
+
+The cached-American Greek bundle previously differentiated a correction tensor with sixteen
+off-point sweeps. A differentiated nested-Clenshaw jet now returns correction value, gradient,
+and the required Hessian entries in one coefficient traversal. Cached price also shares one
+log-moneyness calculation between Black-76 and the correction tensor.
+
+| Release kernel, ATM put | Before | After | Change |
+|---|---:|---:|---:|
+| Cached American price | 3.488 us | 1.032 us | 3.38x faster |
+| Cached full Greeks | 48.828 us | 3.348 us | 14.58x faster |
+
+The whole-chain evaluator now computes model IV/price/Greeks once per consecutive expiry run,
+and the selected-ID overload snapshots and values only dirty rows. The first Release real-SPY
+run (14,014 contracts, 35 expiries) produced:
+
+| RepresentativeFast field set | 1 thread | 8 threads |
+|---|---:|---:|
+| Model price | 19.5 ms | 4.5 ms |
+| Full Greeks | 52.0 ms | 11.6 ms |
+| Model IV + price + Greeks | 51.3 ms | 11.9 ms |
+| Bid/ask/mid IV bands | 410.8 ms | 141.9 ms |
+| All fields | 500.7 ms | 131.4 ms |
+
+The closing warm+5 medians use deterministic 128-row same-expiry chunks and a mid-IV-first warm
+start. Relative to the historical mixed-path 1.267 s number, 131.4 ms is **9.64x**, close to but
+not honestly a repeated 10x result. The apples-to-apples same-process comparison is stronger:
+cold/representative medians were 150.1/7.1 ms for model price (21.1x), 1023.7/16.2 ms for full
+Greeks (63.1x), and 10526/304.2 ms for fully cold versus fast all-fields (34.6x). The latter is
+not comparable to the old mixed-path 1.267 s run, whose bands already used cached inversion.
+No one-shot or mismatched-denominator 10x ratio is treated as the SLA.
+
+### Explicit price/Greek accuracy tiers
+
+`QueryPricingTier` makes approximation a named configuration contract:
+
+| Tier | Intended use | Serving behavior |
+|---|---|---|
+| `LegacyCompatible` | existing callers | historical cached-eSSVI/cold-override behavior |
+| `ColdReference` | admission, risk, reconciliation | Andersen-Lake price and finite-difference Greeks |
+| `RepresentativeFast` | backtest screening and broad refresh | one fixed representative-carry correction pair |
+| `CarryBank` | tighter fast marks | bounded fixed-carry cache bank with query-time interpolation |
+
+The representative tier is deliberately retained. On the first same-fitted-surface comparison
+its median absolute price difference from cold Andersen-Lake was **$0.007666**. That is a
+plausible screening error for many backtests and accompanies the order-of-magnitude whole-chain
+gain. It is not sufficient by itself for unconditional execution or risk because the full-chain
+p99/max were $7.97/$10.59, delta p99 was 0.0536, and rho/second-order Greek tails were much
+larger. The error is concentrated in carry-distant/deep-wing contracts and is obscured by a
+single median.
+
+The final constant-weight carry bank reduced full-chain price p99/max to $2.43/$5.91 and OTM
+p99/max to $0.878/$1.19. Its median price error was slightly worse at $0.009423, confirming that
+carry mismatch is only one error source; broad-box Chebyshev interpolation also matters. The
+35-expiry 25-delta OTM strangle error was $0.468 median/$0.902 max for representative and $0.266
+median/$0.567 max for carry. Constant-weight two-cache interpolation is landed and preserves
+fixed-carry theta/charm semantics. Parallel bank construction cut the live fit to 131 ms versus
+106 ms representative, but archived one-use banks still have a poor construction break-even.
+
+### Archived backtest connection and gate result
+
+The archive bytes remain unchanged. `MarketSnapshot` now attaches transient query acceleration
+before publishing its immutable `SurfaceSet`; `RunConfig` propagates the tier through both
+backtest engines, base/shifted loads, prefetch, and reconciliation. `SnapshotCache` keys include
+normalized path plus tier, so cold and fast snapshots cannot alias. Legacy/Cold remain the
+default, and every out-of-box fast query falls back to the requested cold route.
+
+Real 123-date SPY OPRA-fitted archives expose the amortization boundary clearly:
+
+| Mode (fresh process, warm OS cache) | Cold | Representative | Carry |
+|---|---:|---:|---:|
+| End-to-end run median, 3 samples | 1547 ms | 2396 ms | 7836 ms |
+| Speedup versus cold | 1.00x | 0.65x | 0.20x |
+| Preload/build median | 1043 ms | 2157 ms | 6365 ms |
+| Reused/preloaded engine median | 436.6 ms | 64.3 ms | 96.9 ms |
+| Reused-engine speedup | 1.00x | 6.79x | 4.51x |
+
+The representative cache therefore does **not** produce a real 10x end-to-end win for a sparse
+two-leg daily strategy. It is faster after reuse, but cache construction dominates a one-pass
+corpus. Parallel side/center construction improved one-shot representative 3230 -> 2031 ms and
+carry 43035 -> 5350 ms before the balanced repeated run; it does not change the break-even
+conclusion. Repeated parameter sweeps can share the caller-owned unbounded cache, while a one-pass
+backtest should stay cold until caches are persisted, shared, or demand-built.
+
+Economic drift versus cold, aligned over all 123 dates:
+
+| Metric | Representative | Carry |
+|---|---:|---:|
+| Final NAV difference | -$14,587 | -$19,326 |
+| Maximum absolute NAV-path difference | $44,689 | $47,899 |
+| Daily P&L abs error median / p95 / max | $3,371 / $13,715 / $21,478 | $3,117 / $12,571 / $19,110 |
+| Daily P&L sign flips | 5 | 5 |
+| Sign flips with absolute cold P&L > $10k | 0 | 0 |
+| Unpriced rows / wrong lot-count rows | 0 / 0 | 0 / 0 |
+
+This is useful as a candidate screen, not as a NAV/risk publication path. The production policy
+is fast-screen then cold-confirm every accepted/rejected boundary candidate and all reported
+economics. A $0.0077 median option mark is retained as evidence, not treated as a strategy-level
+safety certificate.
+
+### OPRA-to-analytics target pipeline
+
+```text
+multicast line workers -> sequence/gap recovery -> symbol decode
+                                              -> dense latest-quote state
+                                              -> dirty bitmap/list + 10-100 us coalescer
+                                              -> one-writer underlier/expiry analytics workers
+                                              -> double-buffered marks/risk snapshots
+```
+
+- Line workers own packet ordering and recovery, not model state; a root can be distributed
+  across multiple OPRA lines.
+- A dense symbol table and structure-of-arrays quote state apply last-write-wins updates without
+  constructing `OptionChain`/`ChainSnapshot` objects per message.
+- Quote changes dirty only bid/ask/mid IV. Surface/spot/carry generations dirty model marks and
+  Greeks. A spot burst publishes an immediate delta/gamma Taylor mark and schedules exact
+  repricing instead of synchronously repricing the full board per tick.
+- One writer owns each underlier's mutable analytics state. Fitted surfaces and published output
+  buffers are immutable/copy-on-write, eliminating locks in readers.
+- Feed decode, effective-NBBO mutations, dirty analytics, refits, and full refreshes each have a
+  separate latency/throughput counter. Raw multicast replay is required before any OPRA
+  messages/s claim; `cbbo-1m` remains the numerical acceptance corpus.
+
+### Second-pass delivery plan
+
+| Package | Concrete work | Acceptance gate |
+|---|---|---|
+| Q1: cached derivative kernel | Fused correction jet, cached price log reuse, correct spot-coordinate chain rules | `/W4 /WX`; price and every Greek agree with independent FD within stated epsilons; >=5x cached-Greek kernel speedup |
+| Q2: explicit serving tiers | Cold, representative, and bounded carry-bank contracts; no implicit approximation from `use_correction_cache` | tier selection is observable; fitting/admission behavior is unchanged unless separately configured |
+| Q3: carry interpolation | Fixed-carry cache pairs and constant query-time blending; do not differentiate blend weights into theta/charm | endpoint identity, blended price/vega/Greek FD tests; report build/query/error frontier |
+| Q4: expiry-run fusion | Resolve curve/carry/cache once, fuse model and band work, use one parallel fan-out | all-fields repeated t8 median >=8x cold on real SPY; deterministic outputs/counters |
+| Q5: dirty-row API | O(k) selected snapshot/value path preserving order/duplicates | work and allocations independent of full-chain size; selected rows equal canonical rows |
+| Q6: caller-owned analytics state | `value_rows_into`/`value_expiry_into`, generation tags, reusable SoA buffers and dirty bitmap | zero steady-state allocation; one quote update touches O(1) state and O(k) requested analytics |
+| Q7: persistent scheduling | one-writer underlier workers and a reusable bounded executor | no per-call `jthread` creation; p99 dirty-batch latency measured under concurrent underliers |
+| Q8: adaptive backtest gate | calibrate by tenor/side/moneyness/liquidity; cold-confirm candidates inside the error margin | strategy decisions/NAV satisfy an explicit economic limit; no full-board median used as a safety certificate |
+| Q9: raw OPRA replay | multicast decoder, sequence/gap/retransmission counters, LWW quote store, coalescer | line-rate packet replay with zero loss; separate effective-update and analytics rates |
+| Q10: cache tiling/SIMD | local k/T tiles or higher-order central tiles, batch Black-76/jet evaluation | improve liquid OTM/25-delta p99 materially without losing the >=8x all-fields target |
+
+Q1-Q5 are implemented and pass their focused gates. Q8 now has the tier plumbing, real-corpus
+error evidence, and cold-fallback routing, but the adaptive calibration and automatic
+cold-confirm stage are not implemented. Q6-Q7 and Q9-Q10 remain because the public API still
+allocates snapshots/results, starts threads per fan-out, and has no raw multicast input contract.
+
+#### Ordered next sprint (two-week implementation plan)
+
+| Priority / estimate | Deliverable | Concrete tasks | Exit gate |
+|---|---|---|---|
+| P0, 2 days | Adaptive screen + cold confirmation | Record selected strike/quantity/achieved delta/query route; define price/delta margin bands; rerun cold only for candidates whose rank/threshold could change; publish cold economics only | zero decision mismatch versus all-cold on the 123-date corpus; >=3x total screening throughput on books above measured break-even |
+| P0, 2 days | Amortized cache lifecycle | Add cache-build/query counters and a demand threshold; share immutable correction tables by full `(box,nodes,r,q,side,opts)` key; evaluate an archive sidecar for offline-built tables | sparse two-leg one-pass is never slower than cold by >5%; repeated sweeps reuse one build; no cross-tier alias |
+| P1, 2 days | Caller-owned SoA evaluation | Add `value_rows_into`/`value_expiry_into`, generation tags, dirty bitmap/list, and reusable inversion scratch | zero steady-state allocations; selected six-ID path remains O(k); canonical row parity within epsilon |
+| P1, 2 days | Persistent scheduling | Replace per-call `jthread` fan-out with bounded underlier workers and work-stealing expiry chunks; keep deterministic output slots/reductions | process threads <= `H+2`; p95 dirty-batch latency under concurrent underliers improves >=2x |
+| P1, 1 day | Backtest state reuse | Carry target-date prepared Greeks into the next base step; index lots/UID aggregates without changing reduction order | >=40% fewer cold boundary solves; NAV/Greek differences within economic policy |
+| P2, 3 days | Raw OPRA replay harness | Decode Pillar messages, sequence/gap/retransmission accounting, dense symbol-id LWW quote SoA, 10-100 us coalescer, independent feed/effective-update/analytics counters | zero loss on recorded multicast replay; publish packet, effective quote, dirty analytics, refit, and full-refresh rates separately |
+
+The first checkpoint is the adaptive confirmation stage, not another global epsilon relaxation.
+The second is cache amortization: without it, sparse archived backtests should select cold even
+though the underlying cached price/Greek kernels are much faster.
+
+#### 2026-07-13 closing verification
+
+- Strict clang-cl Debug and Release builds passed for tests, the chain benchmark, American
+  benchmark, and real SPY backtest example.
+- The change-relevant Release filter passed 174 tests with three expected counters-off skips.
+- The complete Release executable ran 1,409 tests: 1,393 passed, seven skipped, and the nine
+  remaining failures are the already documented baseline set (four compiler-sensitive exact-bit
+  American/correction pins plus five artifact-cache SPY/multiname baselines). No new suite failure
+  remains.
+- Selected-ID and thread-count results are deterministic; price/Greek/cache-blend comparisons use
+  explicit numerical tolerances rather than an IEEE-754 identity product contract.
+- The benchmark data source is identified as Databento `cbbo-1m`/OPRA-fitted archives. No raw
+  OPRA message-rate claim is made.
+
 ## Correctness findings
 
 ### C0.1 Persisted SurfaceDb product policy is not the population request
@@ -364,7 +565,7 @@ semantics.
 - Any intentionally changed curve selection is reviewed as a model/configuration change with
   accuracy evidence, not hidden inside a performance commit.
 
-## Closing verification
+## First-pass closing verification (before the 2026-07-13 query-kernel pass)
 
 - Release `/W4 /WX` builds passed for the test binary, fitting and surface-v2 benchmarks,
   chain pricer, real SPY backtest, and universe auto-fit harness.

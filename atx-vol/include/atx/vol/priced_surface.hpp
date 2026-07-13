@@ -16,7 +16,8 @@
 //   * a `PricingContext`   — the scalars the cold re-pricing needs (spot, rate,
 //                            pricer method, Andersen-Lake preset, uid).
 //
-// A PricedSurface is exactly this bundle, and its query methods reproduce the
+// A PricedSurface is this bundle plus, when explicitly prepared, transient query
+// acceleration state. Its default and ColdReference query methods reproduce the
 // session's COLD served path bit-for-bit:
 //
 //   fair_value(K, T, side) = american_price(S, K, T, surface.iv(k, T), r,
@@ -33,26 +34,31 @@
 //
 // A session cannot be trivially serialized — its correction caches are large,
 // carry-baked Chebyshev tensors that would have to be rebuilt to re-price anyway,
-// and its VolSurface placeholder is unused on the override path. PricedSurface is
-// the small, pure, cache-free residue that fully determines the served theo. It
+// and its VolSurface placeholder is unused on the override path. The archived
+// PricedSurface payload is the small, pure, cache-free residue that fully
+// determines the served theo. Optional query caches are rebuilt from that payload
+// by `with_query_pricing`; they are never part of the wire format. PricedSurface
 // is the currency of `surface_archive` (fit -> PricedSurface -> serialize ->
 // deserialize -> PricedSurface -> price), and it is copy-free to construct from a
 // live session via `VolaSession::to_priced_surface`.
 //
 // ## Thread-safety
 //
-// Immutable after `create`. All query methods are const, allocation-free reads of
-// value state — safe to call concurrently on one PricedSurface from any number of
-// threads (the underlying CurveSurface and stateless cold pricer are both
+// Immutable after `create` or the rvalue-only `with_query_pricing` preparation.
+// All query methods are const, allocation-free reads of value state — safe to call
+// concurrently on one published PricedSurface from any number of threads (the
+// underlying CurveSurface, transient caches, and cold fallback are
 // concurrent-const-safe).
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
 #include <vector>
 
 #include "atx/vol/american.hpp" // AmericanGreeks, AmericanMethod, AlOpts, american_price/greeks
+#include "atx/vol/query_pricing.hpp"  // QueryPricingRoute, QueryPricingTier
 #include "atx/vol/simd/cpu.hpp"       // SimdIsa (call-local resolved price route)
 #include "atx/vol/surface_parity.hpp" // SliceContext
 #include "atx/vol/types.hpp"          // Result, Status, Side
@@ -74,13 +80,15 @@ struct PricingContext {
   std::uint32_t uid{0};                                // underlying id (informational)
 };
 
-// A fitted, cache-free, serialization-ready surface. Move-only (owns a move-only
-// `CurveSurface`). Construct via `create` (validating) or receive one from
-// `VolaSession::to_priced_surface` / `SurfaceArchive::map_symbol`.
+// A fitted, serialization-ready surface with optional transient query caches.
+// Move-only (owns a move-only `CurveSurface`). Construct via `create` (validating)
+// or receive one from `VolaSession::to_priced_surface` /
+// `SurfaceArchive::map_symbol`.
 class PricedSurface {
 public:
-  PricedSurface(PricedSurface &&) noexcept = default;
-  PricedSurface &operator=(PricedSurface &&) noexcept = default;
+  ~PricedSurface();
+  PricedSurface(PricedSurface &&) noexcept;
+  PricedSurface &operator=(PricedSurface &&) noexcept;
   PricedSurface(const PricedSurface &) = delete;
   PricedSurface &operator=(const PricedSurface &) = delete;
 
@@ -93,6 +101,13 @@ public:
   [[nodiscard]] static Result<PricedSurface>
   create(CurveSurface &&surface, std::vector<SliceContext> context, const PricingContext &pricing);
 
+  // Attach transient, archive-independent American correction state before
+  // publishing the surface to concurrent readers. The method is rvalue-only so
+  // no live immutable surface can change route under a caller. LegacyCompatible
+  // and ColdReference remain cache-free; the two fast tiers require Andersen-
+  // Lake and return InvalidArgument rather than silently serving another method.
+  [[nodiscard]] Result<PricedSurface> with_query_pricing(QueryPricingTier tier) &&;
+
   // ── Queries (const; reproduce the session's cold served path) ──────────────
 
   // European-equivalent implied vol at absolute strike K and year-fraction T. NaN
@@ -103,21 +118,25 @@ public:
   // Total variance w(k, T) = sigma^2 * T at (K, T). Same domain / NaN semantics.
   [[nodiscard]] double total_variance(double K, double T) const noexcept;
 
-  // Re-Americanized model fair value at (K, T, side): price the surface's model IV
-  // on the interpolated carry via cold `american_price`. Bit-identical to
-  // `VolaSession::fair_value` when the session serves cold (override present).
-  // InvalidArgument for non-finite/non-positive K/T; any pricer error propagated.
+  // Re-Americanized model fair value at (K, T, side). Cold tiers price the
+  // surface's model IV on interpolated carry via `american_price`; fast tiers use
+  // their certified cached surrogate and fall back to the same cold route outside
+  // its box. InvalidArgument for non-finite/non-positive K/T; any pricer error is
+  // propagated.
   [[nodiscard]] Result<double> fair_value(double K, double T, Side side) const;
 
-  // Model Greeks + price at (K, T, side) via cold `american_greeks` (null cache),
-  // bit-identical to `VolaSession::greeks` on the override path.
+  // Model Greeks + price at (K, T, side). Cold tiers use `american_greeks` with no
+  // cache. Fast tiers differentiate the cached surrogate directly and retain the
+  // cold route as their certified-box fallback.
   [[nodiscard]] Result<AmericanGreeks> greeks(double K, double T, Side side) const;
 
   // Faster Greeks via the analytic Andersen-Lake path (american_greeks_al): five
   // boundary solves instead of greeks()'s seven. price + delta/gamma/vega/rho/vanna/
   // volga are bit-identical to greeks(); theta/charm are the exact continuation-region
   // PDE (so NOT bit-reproducible across an archive round-trip — hence opt-in, off the
-  // bit-stable greeks() default). The pricer enables it via PriceOptions.
+  // bit-stable greeks() default). The pricer enables it via PriceOptions. On a
+  // fast query tier both methods intentionally return the same cached jet, so the
+  // analytic flag has no effect while the cache route is active.
   [[nodiscard]] Result<AmericanGreeks> greeks_analytic(double K, double T, Side side) const;
 
   // American delta ONLY at (K, T, side) via `american_delta` — the single axis the
@@ -182,9 +201,11 @@ public:
   // method computed individually before P1.1.
   [[nodiscard]] ResolvedSurfacePoint resolve(double K, double T) const noexcept;
 
-  // One fused single-point evaluation. `iv` and `price` are bit-identical to
-  // `iv(K,T)` / `fair_value(K,T,side).value()`; `greeks` is bit-identical to
+  // One fused single-point evaluation. `iv` and `price` match `iv(K,T)` /
+  // `fair_value(K,T,side).value()`; `greeks` matches
   // `greeks(K,T,side).value()` (or `greeks_analytic` when `analytic` is set).
+  // On an active fast route, `analytic` is deliberately ignored because the
+  // cached surrogate supplies a single internally consistent price/Greek jet.
   // `status` is Ok, or the propagated pricer error (e.g. the negative-carry
   // Unsupported corner), in which case the numeric fields are NaN.
   //
@@ -258,6 +279,13 @@ public:
   [[nodiscard]] const PricingContext &pricing() const noexcept { return pricing_; }
   [[nodiscard]] std::size_t n_slices() const noexcept { return surface_.n_slices(); }
   [[nodiscard]] std::uint32_t uid() const noexcept { return pricing_.uid; }
+  [[nodiscard]] QueryPricingTier query_pricing_tier() const noexcept { return query_pricing_tier_; }
+  [[nodiscard]] std::size_t query_cache_pair_count() const noexcept;
+
+  // Route that a valid point would take. Fast-configured points outside the
+  // certified cache box report ColdFallback. Invalid K/T also report fallback
+  // under a fast tier and ColdReference otherwise.
+  [[nodiscard]] QueryPricingRoute query_pricing_route(double K, double T, Side side) const noexcept;
 
   // The curve kind of slice `i` (ascending T). Precondition: i < n_slices().
   [[nodiscard]] VolCurveKind kind_at(std::size_t i) const noexcept;
@@ -285,10 +313,20 @@ private:
   [[nodiscard]] FusedResult evaluate_resolved(const ResolvedSurfacePoint &p, Side side,
                                               EvalField fields, bool analytic) const;
 
+  [[nodiscard]] Result<double> price_resolved(const ResolvedSurfacePoint &p, Side side) const;
+  [[nodiscard]] Result<AmericanGreeks> greeks_resolved(const ResolvedSurfacePoint &p, Side side,
+                                                       bool analytic) const;
+  [[nodiscard]] Result<double> delta_resolved(const ResolvedSurfacePoint &p, Side side) const;
+  [[nodiscard]] Result<double> vega_resolved(const ResolvedSurfacePoint &p, Side side) const;
+
+  struct QueryAccelerator;
+
   CurveSurface surface_;          // fitted curves (any kind), ascending T
   std::vector<SliceContext> ctx_; // per-slice carry (‖ surface_ slices)
   PricingContext pricing_;        // cold re-pricing scalars
   bool term_rates_{false};        // any slice df differs from scalar-r df
+  QueryPricingTier query_pricing_tier_{QueryPricingTier::LegacyCompatible};
+  std::unique_ptr<QueryAccelerator> query_accelerator_{};
 };
 
 // ── EvalField bitmask operators ──────────────────────────────────────────────

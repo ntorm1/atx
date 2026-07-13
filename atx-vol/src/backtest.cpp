@@ -222,11 +222,11 @@ struct StepPnl {
   for (const Lot &lot : lots) {
     if (lot.expiry_ts_ns <= shifted.ts_ns()) {
       if (lot.expiry_ts_ns != shifted.ts_ns()) {
-        return Err(ErrorCode::NotFound,
-                   "run_backtest: no exact expiry observation for lot id=" +
-                       std::to_string(lot.id) + " (expiry_ts_ns=" +
-                       std::to_string(lot.expiry_ts_ns) + ", next_snapshot_ts_ns=" +
-                       std::to_string(shifted.ts_ns()) + ")");
+        return Err(
+            ErrorCode::NotFound,
+            "run_backtest: no exact expiry observation for lot id=" + std::to_string(lot.id) +
+                " (expiry_ts_ns=" + std::to_string(lot.expiry_ts_ns) +
+                ", next_snapshot_ts_ns=" + std::to_string(shifted.ts_ns()) + ")");
       }
       const double T_base = residual_T(lot.expiry_ts_ns, base.ts_ns());
       const PricedSurface *bs = base.find(lot.contract.uid);
@@ -350,7 +350,8 @@ MarketSnapshot::MarketSnapshot(std::vector<PricedSurface> &&surfaces, SurfaceSet
 std::uint64_t MarketSnapshot::open_count() noexcept { return g_open_count.load(); }
 void MarketSnapshot::reset_open_count() noexcept { g_open_count.store(0); }
 
-Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path) {
+Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
+                                            QueryPricingTier query_pricing_tier) {
   ATX_VOL_PROFILE_SCOPE(SnapshotLoad);
   auto arch = [&]() {
     ATX_VOL_PROFILE_SCOPE(ArchiveOpen);
@@ -381,6 +382,17 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path) {
       return Err(ErrorCode::InvalidArgument,
                  "MarketSnapshot::load: surfaces disagree on now_ts_ns within a date");
     }
+  }
+
+  // Query caches are runtime accelerators, not archive state. Prepare every
+  // mapped surface under the caller's tier before building the pointer set, so
+  // no partially-prepared snapshot can become observable.
+  for (PricedSurface &surface : surfaces) {
+    auto prepared = std::move(surface).with_query_pricing(query_pricing_tier);
+    if (!prepared) {
+      return Err(prepared.error());
+    }
+    surface = std::move(*prepared);
   }
 
   // Non-owning resolver over the owned surfaces' stable addresses.
@@ -475,13 +487,13 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
   const std::shared_ptr<SnapshotCache> snapshot_cache =
       cfg.snapshot_cache ? cfg.snapshot_cache
                          : std::make_shared<SnapshotCache>(kPrivateSnapshotCacheCapacity);
-  auto base_res = snapshot_cache->load(refs[0].archive_path);
+  auto base_res = snapshot_cache->load(refs[0].archive_path, cfg.query_pricing_tier);
   if (!base_res) {
     return Err(base_res.error());
   }
   std::shared_ptr<const MarketSnapshot> base = std::move(*base_res);
   if (cfg.prefetch_snapshots && refs.size() > 1) {
-    snapshot_cache->prefetch(refs[1].archive_path);
+    snapshot_cache->prefetch(refs[1].archive_path, cfg.query_pricing_tier);
   }
 
   double nav = 0.0;
@@ -503,13 +515,13 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
   }
 
   for (std::size_t i = 1; i < refs.size(); ++i) {
-    auto shifted_res = snapshot_cache->load(refs[i].archive_path);
+    auto shifted_res = snapshot_cache->load(refs[i].archive_path, cfg.query_pricing_tier);
     if (!shifted_res) {
       return Err(shifted_res.error());
     }
     std::shared_ptr<const MarketSnapshot> shifted = std::move(*shifted_res);
     if (cfg.prefetch_snapshots && i + 1 < refs.size()) {
-      snapshot_cache->prefetch(refs[i + 1].archive_path);
+      snapshot_cache->prefetch(refs[i + 1].archive_path, cfg.query_pricing_tier);
     }
 
     // Partition + Taylor PnL-explain: byte-identical arithmetic to the strategy
@@ -829,13 +841,13 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
   const std::shared_ptr<SnapshotCache> snapshot_cache =
       cfg.snapshot_cache ? cfg.snapshot_cache
                          : std::make_shared<SnapshotCache>(kPrivateSnapshotCacheCapacity);
-  auto base_res = snapshot_cache->load(refs[0].archive_path);
+  auto base_res = snapshot_cache->load(refs[0].archive_path, cfg.query_pricing_tier);
   if (!base_res) {
     return Err(base_res.error());
   }
   std::shared_ptr<const MarketSnapshot> base = std::move(*base_res);
   if (cfg.prefetch_snapshots && refs.size() > 1) {
-    snapshot_cache->prefetch(refs[1].archive_path);
+    snapshot_cache->prefetch(refs[1].archive_path, cfg.query_pricing_tier);
   }
 
   double nav = 0.0;
@@ -881,13 +893,13 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
   }
 
   for (std::size_t i = 1; i < refs.size(); ++i) {
-    auto shifted_res = snapshot_cache->load(refs[i].archive_path);
+    auto shifted_res = snapshot_cache->load(refs[i].archive_path, cfg.query_pricing_tier);
     if (!shifted_res) {
       return Err(shifted_res.error());
     }
     std::shared_ptr<const MarketSnapshot> shifted = std::move(*shifted_res);
     if (cfg.prefetch_snapshots && i + 1 < refs.size()) {
-      snapshot_cache->prefetch(refs[i + 1].archive_path);
+      snapshot_cache->prefetch(refs[i + 1].archive_path, cfg.query_pricing_tier);
     }
 
     // 1. PnL of the current book (resolved on base) forward to shifted (unchanged B1).

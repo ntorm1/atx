@@ -6,12 +6,12 @@
 #include <memory>
 #include <vector>
 
+#include "american_boundary.hpp" // amer:: seam (structs + boundary-solve decls)
 #include "atx/core/math.hpp"
 #include "atx/vol/black76.hpp"
 #include "atx/vol/correction.hpp"
-#include "atx/vol/counters.hpp"  // ATX_VOL_COUNT (opt-in P0.2; no-op when OFF)
+#include "atx/vol/counters.hpp" // ATX_VOL_COUNT (opt-in P0.2; no-op when OFF)
 #include "atx/vol/greeks.hpp"
-#include "american_boundary.hpp"  // amer:: seam (structs + boundary-solve decls)
 
 namespace atx::vol {
 
@@ -42,22 +42,20 @@ inline constexpr double kPi = 3.14159265358979323846;
 // Hard limits — every per-solve buffer is stack-bounded (matches C ATS_AL_*).
 // kAlMaxNodes now lives in namespace amer (american_boundary.hpp); in scope here
 // via the `using namespace amer;` above.
-inline constexpr unsigned kAlMaxQuad = detail::kMaxQuadNodes;  // 64
+inline constexpr unsigned kAlMaxQuad = detail::kMaxQuadNodes; // 64
 
 // ── European legs (Black-76 reuse) ──────────────────────────────────────
 //
 // With F = S·e^{(r-q)T} and df = e^{-rT}, black76 reproduces the (S,K,r,q)
 // European put/call the C library computed inline. T,sigma are guaranteed > 0
 // at every call site here, so the degenerate black76 branch never fires.
-[[nodiscard]] double euro_put_sk(double S, double K, double T, double sigma,
-                                 double r, double q) noexcept {
-  return black76_price(S * std::exp((r - q) * T), K, T, sigma, std::exp(-r * T),
-                       Side::Put);
+[[nodiscard]] double euro_put_sk(double S, double K, double T, double sigma, double r,
+                                 double q) noexcept {
+  return black76_price(S * std::exp((r - q) * T), K, T, sigma, std::exp(-r * T), Side::Put);
 }
-[[nodiscard]] double euro_call_sk(double S, double K, double T, double sigma,
-                                  double r, double q) noexcept {
-  return black76_price(S * std::exp((r - q) * T), K, T, sigma, std::exp(-r * T),
-                       Side::Call);
+[[nodiscard]] double euro_call_sk(double S, double K, double T, double sigma, double r,
+                                  double q) noexcept {
+  return black76_price(S * std::exp((r - q) * T), K, T, sigma, std::exp(-r * T), Side::Call);
 }
 
 [[nodiscard]] double d1_of(double S, double K, double r, double q, double sigma,
@@ -68,16 +66,15 @@ inline constexpr unsigned kAlMaxQuad = detail::kMaxQuadNodes;  // 64
 
 // ── Barone-Adesi-Whaley smooth-pasting root find ────────────────────────
 
-[[nodiscard]] double put_residual(double Sx, double K, double T, double sigma,
-                                  double r, double q, double q1) noexcept {
+[[nodiscard]] double put_residual(double Sx, double K, double T, double sigma, double r, double q,
+                                  double q1) noexcept {
   const double pE = euro_put_sk(Sx, K, T, sigma, r, q);
   const double d1 = d1_of(Sx, K, r, q, sigma, T);
   const double bit = 1.0 - std::exp(-q * T) * norm_cdf(-d1);
   return K - Sx - pE + Sx * bit / q1;
 }
-[[nodiscard]] double put_residual_deriv(double Sx, double K, double T,
-                                        double sigma, double r, double q,
-                                        double q1) noexcept {
+[[nodiscard]] double put_residual_deriv(double Sx, double K, double T, double sigma, double r,
+                                        double q, double q1) noexcept {
   const double v = sigma * std::sqrt(T);
   const double d1 = d1_of(Sx, K, r, q, sigma, T);
   const double Nm = norm_cdf(-d1);
@@ -85,16 +82,15 @@ inline constexpr unsigned kAlMaxQuad = detail::kMaxQuadNodes;  // 64
   const double dq = std::exp(-q * T);
   return -1.0 + dq * Nm + (1.0 - dq * Nm) / q1 - dq * phim / (q1 * v);
 }
-[[nodiscard]] double call_residual(double Sx, double K, double T, double sigma,
-                                   double r, double q, double q2) noexcept {
+[[nodiscard]] double call_residual(double Sx, double K, double T, double sigma, double r, double q,
+                                   double q2) noexcept {
   const double cE = euro_call_sk(Sx, K, T, sigma, r, q);
   const double d1 = d1_of(Sx, K, r, q, sigma, T);
   const double bit = 1.0 - std::exp(-q * T) * norm_cdf(d1);
   return Sx - K - cE - Sx * bit / q2;
 }
-[[nodiscard]] double call_residual_deriv(double Sx, double K, double T,
-                                         double sigma, double r, double q,
-                                         double q2) noexcept {
+[[nodiscard]] double call_residual_deriv(double Sx, double K, double T, double sigma, double r,
+                                         double q, double q2) noexcept {
   const double v = sigma * std::sqrt(T);
   const double d1 = d1_of(Sx, K, r, q, sigma, T);
   const double Np = norm_cdf(d1);
@@ -103,9 +99,8 @@ inline constexpr unsigned kAlMaxQuad = detail::kMaxQuadNodes;  // 64
   return 1.0 - dq * Np - (1.0 - dq * Np) / q2 - dq * phip / (q2 * v);
 }
 
-[[nodiscard]] double newton_critical_put(double K, double T, double sigma,
-                                         double r, double q, double q1,
-                                         std::uint16_t max_iter, double tol) noexcept {
+[[nodiscard]] double newton_critical_put(double K, double T, double sigma, double r, double q,
+                                         double q1, std::uint16_t max_iter, double tol) noexcept {
   double lo = 1.0e-3 * K;
   double hi = K * (1.0 - 1.0e-6);
   double Sx = K * q1 / (q1 - 1.0);
@@ -135,9 +130,8 @@ inline constexpr unsigned kAlMaxQuad = detail::kMaxQuadNodes;  // 64
   }
   return Sx;
 }
-[[nodiscard]] double newton_critical_call(double K, double T, double sigma,
-                                          double r, double q, double q2,
-                                          std::uint16_t max_iter, double tol) noexcept {
+[[nodiscard]] double newton_critical_call(double K, double T, double sigma, double r, double q,
+                                          double q2, std::uint16_t max_iter, double tol) noexcept {
   double lo = K * (1.0 + 1.0e-6);
   double hi = K * 50.0;
   double Sx = K * q2 / (q2 - 1.0);
@@ -171,9 +165,8 @@ inline constexpr unsigned kAlMaxQuad = detail::kMaxQuadNodes;  // 64
 // Put critical price S* — the Jacobi-Newton seed for the AL boundary. Returns
 // false on degenerate input (matches the C -1 status); the several
 // "no early exercise" corners return true with S* = K.
-[[nodiscard]] bool baw_critical_put(double K, double T, double sigma, double r,
-                                    double q, std::uint16_t max_iter, double tol,
-                                    double& Sx_out) noexcept {
+[[nodiscard]] bool baw_critical_put(double K, double T, double sigma, double r, double q,
+                                    std::uint16_t max_iter, double tol, double &Sx_out) noexcept {
   if (!(K > 0.0 && T > 0.0 && sigma > 0.0)) {
     return false;
   }
@@ -200,9 +193,8 @@ inline constexpr unsigned kAlMaxQuad = detail::kMaxQuadNodes;  // 64
     Sx_out = K;
     return true;
   }
-  const double Sx = newton_critical_put(K, T, sigma, r, q, q1,
-                                        max_iter ? max_iter : std::uint16_t{16},
-                                        tol > 0.0 ? tol : 1.0e-10);
+  const double Sx = newton_critical_put(
+      K, T, sigma, r, q, q1, max_iter ? max_iter : std::uint16_t{16}, tol > 0.0 ? tol : 1.0e-10);
   if (!(Sx > 0.0 && Sx <= K)) {
     return false;
   }
@@ -220,9 +212,9 @@ inline constexpr unsigned kAlMaxQuad = detail::kMaxQuadNodes;  // 64
 // newton_critical_put unchanged. This is a MEASUREMENT SPIKE: it is compared with
 // the BAW seed on median JN sweep-count-to-convergence to decide ship-or-kill; it is
 // NOT wired into any production solve path.
-[[nodiscard]] bool qdplus_critical_put(double K, double T, double sigma, double r,
-                                       double q, std::uint16_t max_iter, double tol,
-                                       double& Sx_out) noexcept {
+[[nodiscard]] bool qdplus_critical_put(double K, double T, double sigma, double r, double q,
+                                       std::uint16_t max_iter, double tol,
+                                       double &Sx_out) noexcept {
   if (!(K > 0.0 && T > 0.0 && sigma > 0.0)) {
     return false;
   }
@@ -254,9 +246,9 @@ inline constexpr unsigned kAlMaxQuad = detail::kMaxQuadNodes;  // 64
     Sx_out = K;
     return true;
   }
-  const double Sx = newton_critical_put(K, T, sigma, r, q, q1_plus,
-                                        max_iter ? max_iter : std::uint16_t{16},
-                                        tol > 0.0 ? tol : 1.0e-10);
+  const double Sx =
+      newton_critical_put(K, T, sigma, r, q, q1_plus, max_iter ? max_iter : std::uint16_t{16},
+                          tol > 0.0 ? tol : 1.0e-10);
   if (!(Sx > 0.0 && Sx <= K)) {
     return false;
   }
@@ -269,7 +261,7 @@ inline constexpr unsigned kAlMaxQuad = detail::kMaxQuadNodes;  // 64
 // Implicit-QL (tqli) for a symmetric tridiagonal matrix, tracking only the
 // first eigenvector row z[] (Golub-Welsch needs only that for the weights).
 // Numerical Recipes 11.4.3, simplified. Returns true on convergence.
-[[nodiscard]] bool tqli_first_row(double* d, double* e, double* z, int n) noexcept {
+[[nodiscard]] bool tqli_first_row(double *d, double *e, double *z, int n) noexcept {
   for (int i = 1; i < n; ++i) {
     e[i - 1] = e[i];
   }
@@ -330,7 +322,7 @@ inline constexpr unsigned kAlMaxQuad = detail::kMaxQuadNodes;  // 64
   return true;
 }
 
-void sort_pairs(double* d, double* z, int n) noexcept {
+void sort_pairs(double *d, double *z, int n) noexcept {
   for (int i = 1; i < n; ++i) {
     const double dk = d[i];
     const double zk = z[i];
@@ -348,7 +340,7 @@ void sort_pairs(double* d, double* z, int n) noexcept {
 // Build the n-point Gauss-Legendre table on [-1, 1]. Jacobi matrix for monic
 // Legendre: diagonal 0, sub-diagonal b[i] = i / sqrt(4 i² - 1). Eigenvalues are
 // the nodes; weights are 2·z[k]² (μ₀ = 2). Returns false on non-convergence.
-[[nodiscard]] bool build_gl_table(unsigned n, double* xs, double* ws) noexcept {
+[[nodiscard]] bool build_gl_table(unsigned n, double *xs, double *ws) noexcept {
   if (n < 2 || n > kAlMaxQuad) {
     return false;
   }
@@ -380,7 +372,7 @@ void sort_pairs(double* d, double* z, int n) noexcept {
 
 // Lazily-built, thread-safe cache of the six supported orders. The magic-static
 // initializer runs once; the tables are read-only thereafter.
-[[nodiscard]] const std::array<detail::GaussLegendre, 6>& gl_tables() {
+[[nodiscard]] const std::array<detail::GaussLegendre, 6> &gl_tables() {
   static const std::array<detail::GaussLegendre, 6> tables = [] {
     constexpr std::array<unsigned, 6> sizes{8u, 16u, 24u, 32u, 48u, 64u};
     std::array<detail::GaussLegendre, 6> t{};
@@ -392,27 +384,27 @@ void sort_pairs(double* d, double* z, int n) noexcept {
   }();
   return tables;
 }
-[[nodiscard]] const detail::GaussLegendre* gl_find(unsigned n) {
+[[nodiscard]] const detail::GaussLegendre *gl_find(unsigned n) {
   // The six supported orders are static and scheme-fixed, so resolve directly to
   // the cached table by a constant-time switch (no per-solve linear scan) — a hot
   // loop of solves binds its Gauss-Legendre tables in O(1) each (P2.2 §2). Index
   // order matches gl_tables()'s {8,16,24,32,48,64}.
-  const std::array<detail::GaussLegendre, 6>& all = gl_tables();
+  const std::array<detail::GaussLegendre, 6> &all = gl_tables();
   switch (n) {
-    case 8:
-      return &all[0];
-    case 16:
-      return &all[1];
-    case 24:
-      return &all[2];
-    case 32:
-      return &all[3];
-    case 48:
-      return &all[4];
-    case 64:
-      return &all[5];
-    default:
-      break;
+  case 8:
+    return &all[0];
+  case 16:
+    return &all[1];
+  case 24:
+    return &all[2];
+  case 32:
+    return &all[3];
+  case 48:
+    return &all[4];
+  case 64:
+    return &all[5];
+  default:
+    break;
   }
   return nullptr;
 }
@@ -445,9 +437,8 @@ void sort_pairs(double* d, double* z, int n) noexcept {
 // sum. The body is a SINGLE source (same ops, same order) so the specialized and
 // generic instantiations are bit-identical.
 template <unsigned NB>
-[[nodiscard]] double al_cheb_eval_t(const double* z, const double* w,
-                                    const double* y, unsigned n_rt,
-                                    double zq) noexcept {
+[[nodiscard]] double al_cheb_eval_t(const double *z, const double *w, const double *y,
+                                    unsigned n_rt, double zq) noexcept {
   const unsigned n = (NB != 0) ? NB : n_rt;
   if (n == 0) {
     return 0.0;
@@ -468,8 +459,8 @@ template <unsigned NB>
   }
   return num / den;
 }
-[[nodiscard]] double al_cheb_eval(const double* z, const double* w,
-                                  const double* y, unsigned n, double zq) noexcept {
+[[nodiscard]] double al_cheb_eval(const double *z, const double *w, const double *y, unsigned n,
+                                  double zq) noexcept {
   return al_cheb_eval_t<0>(z, w, y, n, zq);
 }
 
@@ -500,21 +491,21 @@ template <unsigned NB>
 
 // AlWorkspace now lives in namespace amer (american_boundary.hpp).
 
-}  // anonymous namespace — closed so the seam definitions below get EXTERNAL
-   // linkage in atx::vol::amer (matching american_boundary.hpp). The file's
-   // anonymous namespace is reopened right after al_xmax_put.
+} // namespace
+// linkage in atx::vol::amer (matching american_boundary.hpp). The file's
+// anonymous namespace is reopened right after al_xmax_put.
 
 // scheme_from_opts / al_xmax_put are part of the boundary seam (amer). Definitions
 // stay here; declarations are in american_boundary.hpp.
 namespace amer {
 
 // ACCURATE preset when opts == nullopt; otherwise map the public knobs.
-[[nodiscard]] AlScheme scheme_from_opts(const std::optional<AlOpts>& opts) noexcept {
-  AlScheme s;  // {12, 24, 48, 2, 4, 1e-10}
+[[nodiscard]] AlScheme scheme_from_opts(const std::optional<AlOpts> &opts) noexcept {
+  AlScheme s; // {12, 24, 48, 2, 4, 1e-10}
   if (!opts) {
     return s;
   }
-  const AlOpts& o = *opts;
+  const AlOpts &o = *opts;
   if (o.n_collocation >= 6 && o.n_collocation <= kAlMaxNodes) {
     s.n_boundary = o.n_collocation;
   }
@@ -540,8 +531,8 @@ namespace amer {
   if (o.max_newton_iter > 0) {
     const std::uint16_t total = o.max_newton_iter;
     s.n_iter_jn = (total >= 2) ? std::uint16_t{2} : std::uint16_t{1};
-    s.n_iter_fp = (total > s.n_iter_jn) ? static_cast<std::uint16_t>(total - s.n_iter_jn)
-                                        : std::uint16_t{0};
+    s.n_iter_fp =
+        (total > s.n_iter_jn) ? static_cast<std::uint16_t>(total - s.n_iter_jn) : std::uint16_t{0};
   }
   if (o.tol > 0.0) {
     s.tol = o.tol;
@@ -571,9 +562,9 @@ namespace amer {
   return 0.0;
 }
 
-}  // namespace amer
+} // namespace amer
 
-namespace {  // reopen the file's anonymous namespace
+namespace { // reopen the file's anonymous namespace
 
 [[nodiscard]] double y_from_b(double b_val, double xmax) noexcept {
   if (b_val <= 0.0 || xmax <= 0.0) {
@@ -596,7 +587,7 @@ namespace {  // reopen the file's anonymous namespace
   return (std::log(z) + (r - q) * t) / v - 0.5 * v;
 }
 
-void al_init_nodes(AlBoundary& b, std::uint16_t n, double T, double K, double r,
+void al_init_nodes(AlBoundary &b, std::uint16_t n, double T, double K, double r,
                    double q) noexcept {
   b.n = n;
   b.T = T;
@@ -618,7 +609,7 @@ void al_init_nodes(AlBoundary& b, std::uint16_t n, double T, double K, double r,
   }
 }
 
-[[nodiscard]] double al_boundary_at(const AlBoundary& b, double u) noexcept {
+[[nodiscard]] double al_boundary_at(const AlBoundary &b, double u) noexcept {
   if (b.T <= 0.0) {
     return b.xmax;
   }
@@ -628,13 +619,12 @@ void al_init_nodes(AlBoundary& b, std::uint16_t n, double T, double K, double r,
   const double u_eff = (u >= b.T) ? b.T : u;
   const double z = 2.0 * std::sqrt(u_eff / b.T) - 1.0;
   const double zc = atx::core::clamp(z, -1.0, 1.0);
-  const double y_val =
-      al_cheb_eval(b.z.data(), b.wbary.data(), b.y.data(), b.n, zc);
+  const double y_val = al_cheb_eval(b.z.data(), b.wbary.data(), b.y.data(), b.n, zc);
   return b_from_y(y_val, b.xmax);
 }
 
-void al_seed_boundary(AlBoundary& b, double sigma, double r, double q) noexcept {
-  ATX_VOL_COUNT(BoundarySolves);  // one cold boundary seed (BAW re-seed per node)
+void al_seed_boundary(AlBoundary &b, double sigma, double r, double q) noexcept {
+  ATX_VOL_COUNT(BoundarySolves); // one cold boundary seed (BAW re-seed per node)
   b.y[0] = 0.0;
   for (std::uint16_t i = 1; i < b.n; ++i) {
     const double tau_i = b.tau[i];
@@ -660,7 +650,7 @@ void al_seed_boundary(AlBoundary& b, double sigma, double r, double q) noexcept 
 
 // P2.2b spike: identical to al_seed_boundary but seeds each node from the QD+
 // critical price instead of BAW. Measurement-only (not on a production path).
-void al_seed_boundary_qdplus(AlBoundary& b, double sigma, double r, double q) noexcept {
+void al_seed_boundary_qdplus(AlBoundary &b, double sigma, double r, double q) noexcept {
   b.y[0] = 0.0;
   for (std::uint16_t i = 1; i < b.n; ++i) {
     const double tau_i = b.tau[i];
@@ -699,19 +689,19 @@ void al_seed_boundary_qdplus(AlBoundary& b, double sigma, double r, double q) no
 // with the identical expression the loop used, so the specialized sweep is
 // bit-identical to the generic reference (which still recomputes inline). Only the
 // specialized fixed schemes are hoisted; the generic path leaves geo untouched.
-void al_bind_geometry(const AlBoundary& bnd, AlWorkspace& ws, double sigma,
-                      double r, double q) noexcept {
+void al_bind_geometry(const AlBoundary &bnd, AlWorkspace &ws, double sigma, double r,
+                      double q) noexcept {
   if (!ws.specialize || !al_fp_specialized(bnd.n, ws.n_quad_fp)) {
-    return;  // generic path recomputes inline; no geometry needed
+    return; // generic path recomputes inline; no geometry needed
   }
-  const double* xs = ws.qx_fp;
-  const double* wv = ws.qw_fp;
+  const double *xs = ws.qx_fp;
+  const double *wv = ws.qw_fp;
   const unsigned nq = ws.n_quad_fp;
   const double T = bnd.T;
   for (std::uint16_t j = 1; j < bnd.n; ++j) {
     const double tau = bnd.tau[j];
     if (tau <= 1.0e-14) {
-      continue;  // sweeps skip this node entirely
+      continue; // sweeps skip this node entirely
     }
     const double half_tau = 0.5 * tau;
     const unsigned gbase = static_cast<unsigned>(j) * kGeoQuadStride;
@@ -719,7 +709,7 @@ void al_bind_geometry(const AlBoundary& bnd, AlWorkspace& ws, double sigma,
       const double u = half_tau * (1.0 + xs[i]);
       const double t_u = tau - u;
       if (t_u <= 1.0e-14) {
-        continue;  // inactive node; the loop re-checks t_u and skips it
+        continue; // inactive node; the loop re-checks t_u and skips it
       }
       // al_boundary_at's z transform (u < T here, so u_eff == u — replicated so the
       // stored zc is bit-identical to the inline computation).
@@ -729,7 +719,7 @@ void al_bind_geometry(const AlBoundary& bnd, AlWorkspace& ws, double sigma,
       ws.geo_v[gbase + i] = sigma * std::sqrt(t_u);
       ws.geo_weru[gbase + i] = wv[i] * std::exp(r * u);
       ws.geo_wequ[gbase + i] = wv[i] * std::exp(q * u);
-      ATX_VOL_COUNT_N(ExpCalls, 2);  // exp(r·u), exp(q·u) — now paid ONCE per solve
+      ATX_VOL_COUNT_N(ExpCalls, 2); // exp(r·u), exp(q·u) — now paid ONCE per solve
     }
   }
 }
@@ -740,9 +730,9 @@ void al_bind_geometry(const AlBoundary& bnd, AlWorkspace& ws, double sigma,
 // as before this task). NB>0 reads the al_bind_geometry precompute — a pure hoist,
 // so the two paths are bit-identical.
 template <unsigned NB, unsigned NQ>
-void eqn_b_ND_impl(const AlBoundary& bnd, const AlWorkspace& ws,
-                   unsigned node_idx, double tau, double b_val, double sigma,
-                   double r, double q, double& N_out, double& D_out) noexcept {
+void eqn_b_ND_impl(const AlBoundary &bnd, const AlWorkspace &ws, unsigned node_idx, double tau,
+                   double b_val, double sigma, double r, double q, double &N_out,
+                   double &D_out) noexcept {
   const double K = bnd.K;
   if (tau <= 1.0e-14) {
     if (b_val < K) {
@@ -759,9 +749,9 @@ void eqn_b_ND_impl(const AlBoundary& bnd, const AlWorkspace& ws,
   }
   const double tip_p = norm_cdf(d_plus(tau, b_val / K, sigma, r, q));
   const double tip_m = norm_cdf(d_minus(tau, b_val / K, sigma, r, q));
-  ATX_VOL_COUNT_N(NormCdfCalls, 2);  // tip_p, tip_m
+  ATX_VOL_COUNT_N(NormCdfCalls, 2); // tip_p, tip_m
 
-  const double* xs = ws.qx_fp;
+  const double *xs = ws.qx_fp;
   const unsigned nq = (NQ != 0) ? NQ : ws.n_quad_fp;
   double n_int = 0.0;
   double d_int = 0.0;
@@ -777,8 +767,7 @@ void eqn_b_ND_impl(const AlBoundary& bnd, const AlWorkspace& ws,
       if (t_u <= 1.0e-14) {
         continue;
       }
-      const double y_val = al_cheb_eval_t<NB>(bnd.z.data(), bnd.wbary.data(),
-                                              bnd.y.data(), bnd.n,
+      const double y_val = al_cheb_eval_t<NB>(bnd.z.data(), bnd.wbary.data(), bnd.y.data(), bnd.n,
                                               ws.geo_zc[gbase + i]);
       const double bu = b_from_y(y_val, bnd.xmax);
       if (!(bu > 0.0)) {
@@ -796,7 +785,7 @@ void eqn_b_ND_impl(const AlBoundary& bnd, const AlWorkspace& ws,
     }
   } else {
     // Generic reference: recompute the geometry inline (the scalar cold path).
-    const double* wv = ws.qw_fp;
+    const double *wv = ws.qw_fp;
     // Transcendental-bound inner loop (2×sqrt, log, 2×exp, 2×norm_cdf per point),
     // run n_quad·n_boundary·n_sweeps times per solve — the dominant cold cost.
     // Two AVX2 vectorizations were built and MEASURED here and both reverted:
@@ -838,8 +827,8 @@ void eqn_b_ND_impl(const AlBoundary& bnd, const AlWorkspace& ws,
 }
 
 // ∂N/∂b, ∂D/∂b at fixed kernel.
-void eqn_b_NDd(const AlBoundary& bnd, double tau, double b_val, double sigma,
-               double r, double q, double& Nd_out, double& Dd_out) noexcept {
+void eqn_b_NDd(const AlBoundary &bnd, double tau, double b_val, double sigma, double r, double q,
+               double &Nd_out, double &Dd_out) noexcept {
   if (tau <= 1.0e-14 || !(b_val > 0.0)) {
     Nd_out = 0.0;
     Dd_out = 0.0;
@@ -854,8 +843,8 @@ void eqn_b_NDd(const AlBoundary& bnd, double tau, double b_val, double sigma,
 }
 
 template <unsigned NB, unsigned NQ>
-[[nodiscard]] double al_jn_sweep_impl(AlBoundary& b, AlWorkspace& ws,
-                                      double sigma, double r, double q) noexcept {
+[[nodiscard]] double al_jn_sweep_impl(AlBoundary &b, AlWorkspace &ws, double sigma, double r,
+                                      double q) noexcept {
   const unsigned n = (NB != 0) ? NB : b.n;
   double max_dy = 0.0;
   ws.next_y[0] = 0.0;
@@ -904,8 +893,8 @@ template <unsigned NB, unsigned NQ>
 
 // Dispatch to a compile-time-trip-count instantiation for the production fixed
 // schemes; the generic <0,0> is both the arbitrary-AlOpts path and the reference.
-[[nodiscard]] double al_jacobi_newton_sweep(AlBoundary& b, AlWorkspace& ws,
-                                            double sigma, double r, double q) noexcept {
+[[nodiscard]] double al_jacobi_newton_sweep(AlBoundary &b, AlWorkspace &ws, double sigma, double r,
+                                            double q) noexcept {
   ATX_VOL_COUNT(JacobiNewtonSweeps);
   if (ws.specialize) {
     if (b.n == 7 && ws.n_quad_fp == 16) {
@@ -919,8 +908,8 @@ template <unsigned NB, unsigned NQ>
 }
 
 template <unsigned NB, unsigned NQ>
-[[nodiscard]] double al_fp_sweep_impl(AlBoundary& b, AlWorkspace& ws,
-                                      double sigma, double r, double q) noexcept {
+[[nodiscard]] double al_fp_sweep_impl(AlBoundary &b, AlWorkspace &ws, double sigma, double r,
+                                      double q) noexcept {
   const unsigned n = (NB != 0) ? NB : b.n;
   double max_dy = 0.0;
   ws.next_y[0] = 0.0;
@@ -959,8 +948,8 @@ template <unsigned NB, unsigned NQ>
   return max_dy;
 }
 
-[[nodiscard]] double al_fixed_point_sweep(AlBoundary& b, AlWorkspace& ws,
-                                          double sigma, double r, double q) noexcept {
+[[nodiscard]] double al_fixed_point_sweep(AlBoundary &b, AlWorkspace &ws, double sigma, double r,
+                                          double q) noexcept {
   ATX_VOL_COUNT(FixedPointSweeps);
   if (ws.specialize) {
     if (b.n == 7 && ws.n_quad_fp == 16) {
@@ -973,9 +962,8 @@ template <unsigned NB, unsigned NQ>
   return al_fp_sweep_impl<0, 0>(b, ws, sigma, r, q);
 }
 
-[[nodiscard]] double premium_integrand_put(double z, const AlBoundary& b,
-                                           double S, double sigma, double r,
-                                           double q) noexcept {
+[[nodiscard]] double premium_integrand_put(double z, const AlBoundary &b, double S, double sigma,
+                                           double r, double q) noexcept {
   const double t = z * z;
   if (t <= 1.0e-14) {
     return 0.0;
@@ -993,21 +981,19 @@ template <unsigned NB, unsigned NQ>
   ATX_VOL_COUNT(LogCalls);
   ATX_VOL_COUNT_N(ExpCalls, 2);
   ATX_VOL_COUNT_N(NormCdfCalls, 2);
-  return 2.0 * z *
-         (r * b.K * dr * norm_cdf(-dp + v) - q * S * dq * norm_cdf(-dp));
+  return 2.0 * z * (r * b.K * dr * norm_cdf(-dp + v) - q * S * dq * norm_cdf(-dp));
 }
 
 // Premium quadrature, templated on the fixed premium trip count NP (P2.2 §3);
 // NP==0 is the generic runtime path. Single body, so bit-identical across NP.
 template <unsigned NP>
-[[nodiscard]] double al_put_premium_impl(const AlBoundary& b, const AlWorkspace& ws,
-                                         double S, double sigma, double r,
-                                         double q) noexcept {
+[[nodiscard]] double al_put_premium_impl(const AlBoundary &b, const AlWorkspace &ws, double S,
+                                         double sigma, double r, double q) noexcept {
   const double sqrtT = std::sqrt(b.T);
   const double half_sqrtT = 0.5 * sqrtT;
   double total = 0.0;
-  const double* xs = ws.qx_price;
-  const double* wv = ws.qw_price;
+  const double *xs = ws.qx_price;
+  const double *wv = ws.qw_price;
   const unsigned nq = (NP != 0) ? NP : ws.n_quad_price;
   for (unsigned i = 0; i < nq; ++i) {
     const double zi = half_sqrtT * (1.0 + xs[i]);
@@ -1017,19 +1003,18 @@ template <unsigned NP>
   return (total > 0.0) ? total : 0.0;
 }
 
-[[nodiscard]] double al_put_premium(const AlBoundary& b, const AlWorkspace& ws,
-                                    double S, double sigma, double r,
-                                    double q) noexcept {
+[[nodiscard]] double al_put_premium(const AlBoundary &b, const AlWorkspace &ws, double S,
+                                    double sigma, double r, double q) noexcept {
   if (ws.specialize) {
     switch (ws.n_quad_price) {
-      case 16:
-        return al_put_premium_impl<16>(b, ws, S, sigma, r, q);
-      case 24:
-        return al_put_premium_impl<24>(b, ws, S, sigma, r, q);
-      case 48:
-        return al_put_premium_impl<48>(b, ws, S, sigma, r, q);
-      default:
-        break;
+    case 16:
+      return al_put_premium_impl<16>(b, ws, S, sigma, r, q);
+    case 24:
+      return al_put_premium_impl<24>(b, ws, S, sigma, r, q);
+    case 48:
+      return al_put_premium_impl<48>(b, ws, S, sigma, r, q);
+    default:
+      break;
     }
   }
   return al_put_premium_impl<0>(b, ws, S, sigma, r, q);
@@ -1046,25 +1031,23 @@ template <unsigned NP>
 // AlSolveStatus and the three entry points below (al_solve_put_boundary[_warm],
 // al_put_price_from_boundary) are part of the boundary seam (amer) reused by
 // boundary_interp.cpp. The enum's declaration is in american_boundary.hpp.
-}  // anonymous namespace — closed so the seam definitions below get EXTERNAL
-   // linkage in atx::vol::amer; reopened right after al_put_price_from_boundary.
+} // namespace
+// linkage in atx::vol::amer; reopened right after al_put_price_from_boundary.
 namespace amer {
 
 // S-independent: init nodes, bind quadrature, seed + iterate the boundary. On Ok,
 // `bnd`/`ws` hold a converged boundary ready for al_put_price_from_boundary.
-[[nodiscard]] AlSolveStatus al_solve_put_boundary(double K, double T, double sigma,
-                                                  double r, double q,
-                                                  const AlScheme& sch,
-                                                  AlBoundary& bnd,
-                                                  AlWorkspace& ws,
-                                                  bool specialize) noexcept {  // default in header
+[[nodiscard]] AlSolveStatus al_solve_put_boundary(double K, double T, double sigma, double r,
+                                                  double q, const AlScheme &sch, AlBoundary &bnd,
+                                                  AlWorkspace &ws,
+                                                  bool specialize) noexcept { // default in header
   al_init_nodes(bnd, sch.n_boundary, T, K, r, q);
   if (!(bnd.xmax > 0.0)) {
     // Negative-rate/carry corner: AL cannot run. Flagged unsupported.
     return AlSolveStatus::Collapsed;
   }
-  const detail::GaussLegendre* fp = gl_find(sch.n_quad_fp);
-  const detail::GaussLegendre* pr = gl_find(sch.n_quad_price);
+  const detail::GaussLegendre *fp = gl_find(sch.n_quad_fp);
+  const detail::GaussLegendre *pr = gl_find(sch.n_quad_price);
   if (!fp || !fp->ok || !pr || !pr->ok) {
     return AlSolveStatus::TableMissing;
   }
@@ -1107,18 +1090,16 @@ namespace amer {
 // This handles all three bump axes uniformly: sigma/r bumps keep the tau-grid (the
 // interp is ~exact), a T bump shifts it (the interp re-maps the boundary). Used by
 // american_greeks_fd's warm path to skip 6 of its 7 cold seeds.
-[[nodiscard]] AlSolveStatus al_solve_put_boundary_warm(double K, double T, double sigma,
-                                                       double r, double q,
-                                                       const AlScheme& sch,
-                                                       const AlBoundary& seed,
-                                                       AlBoundary& bnd,
-                                                       AlWorkspace& ws) noexcept {
+[[nodiscard]] AlSolveStatus al_solve_put_boundary_warm(double K, double T, double sigma, double r,
+                                                       double q, const AlScheme &sch,
+                                                       const AlBoundary &seed, AlBoundary &bnd,
+                                                       AlWorkspace &ws) noexcept {
   al_init_nodes(bnd, sch.n_boundary, T, K, r, q);
   if (!(bnd.xmax > 0.0)) {
     return AlSolveStatus::Collapsed;
   }
-  const detail::GaussLegendre* fp = gl_find(sch.n_quad_fp);
-  const detail::GaussLegendre* pr = gl_find(sch.n_quad_price);
+  const detail::GaussLegendre *fp = gl_find(sch.n_quad_fp);
+  const detail::GaussLegendre *pr = gl_find(sch.n_quad_price);
   if (!fp || !fp->ok || !pr || !pr->ok) {
     return AlSolveStatus::TableMissing;
   }
@@ -1171,9 +1152,8 @@ namespace amer {
 // andersen_lake degenerate (T~0/sigma~0) and no-early-exercise (r<=0) guards, so
 // only the r>0 non-degenerate arm runs here. Clamp order matches al_solve_put's
 // exactly, so euro + premium + clamps is bit-identical to a full cold solve.
-[[nodiscard]] double al_put_price_from_boundary(const AlBoundary& bnd,
-                                                const AlWorkspace& ws, double S,
-                                                double K, double T, double sigma,
+[[nodiscard]] double al_put_price_from_boundary(const AlBoundary &bnd, const AlWorkspace &ws,
+                                                double S, double K, double T, double sigma,
                                                 double r, double q) noexcept {
   const double euro = euro_put_sk(S, K, T, sigma, r, q);
   const double prem = al_put_premium(bnd, ws, S, sigma, r, q);
@@ -1191,9 +1171,9 @@ namespace amer {
   return price;
 }
 
-}  // namespace amer
+} // namespace amer
 
-namespace {  // reopen the file's anonymous namespace
+namespace { // reopen the file's anonymous namespace
 
 // ExerciseRegime / classify_regime are defined once in american.hpp detail (the
 // single source of truth for the early-exercise regime table) and used here via
@@ -1202,7 +1182,7 @@ namespace {  // reopen the file's anonymous namespace
 // sides through one classifier.
 
 // Shared message for the double-continuation corner the ALO scheme cannot price.
-constexpr const char* kDoubleContinuationMsg =
+constexpr const char *kDoubleContinuationMsg =
     "double-continuation regime (put q < r <= 0 / call r < q <= 0): the "
     "single-boundary Andersen-Lake scheme cannot represent two exercise "
     "boundaries; see Andersen-Lake 2021 (double-boundary case)";
@@ -1211,33 +1191,31 @@ constexpr const char* kDoubleContinuationMsg =
 // `specialize` flag (default true) forces the generic runtime-trip-count kernel when
 // false — the seam behind detail::andersen_lake_generic_kernel that proves the
 // specialized fixed-scheme kernel is bit-identical to the generic path.
-[[nodiscard]] Result<double> al_solve_put(double S, double K, double T,
-                                          double sigma, double r, double q,
-                                          const AlScheme& sch,
-                                          bool specialize = true) {
+[[nodiscard]] Result<double> al_solve_put(double S, double K, double T, double sigma, double r,
+                                          double q, const AlScheme &sch, bool specialize = true) {
   switch (classify_regime(/*rate=*/r, /*yield=*/q)) {
-    case ExerciseRegime::European: {
-      const double euro = euro_put_sk(S, K, T, sigma, r, q);
-      const double intr = K - S;
-      const double price = (euro > intr) ? euro : (intr > 0.0 ? intr : 0.0);
-      return Ok(price);
-    }
-    case ExerciseRegime::Unsupported:
-      return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
-    case ExerciseRegime::American:
-      break;
+  case ExerciseRegime::European: {
+    const double euro = euro_put_sk(S, K, T, sigma, r, q);
+    const double intr = K - S;
+    const double price = (euro > intr) ? euro : (intr > 0.0 ? intr : 0.0);
+    return Ok(price);
+  }
+  case ExerciseRegime::Unsupported:
+    return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
+  case ExerciseRegime::American:
+    break;
   }
 
   AlBoundary bnd;
   AlWorkspace ws;
   switch (al_solve_put_boundary(K, T, sigma, r, q, sch, bnd, ws, specialize)) {
-    case AlSolveStatus::Collapsed:
-      return Err(ErrorCode::NotImplemented,
-                 "andersen_lake: asymptotic boundary collapsed (xmax <= 0)");
-    case AlSolveStatus::TableMissing:
-      return Err(ErrorCode::Internal, "andersen_lake: Gauss-Legendre table unavailable");
-    case AlSolveStatus::Ok:
-      break;
+  case AlSolveStatus::Collapsed:
+    return Err(ErrorCode::NotImplemented,
+               "andersen_lake: asymptotic boundary collapsed (xmax <= 0)");
+  case AlSolveStatus::TableMissing:
+    return Err(ErrorCode::Internal, "andersen_lake: Gauss-Legendre table unavailable");
+  case AlSolveStatus::Ok:
+    break;
   }
   return Ok(al_put_price_from_boundary(bnd, ws, S, K, T, sigma, r, q));
 }
@@ -1245,10 +1223,9 @@ constexpr const char* kDoubleContinuationMsg =
 // Shared core of the public andersen_lake entry point, parameterized on `specialize`
 // so detail::andersen_lake_generic_kernel can force the generic runtime-trip-count
 // kernel for the SAME scheme and prove the specialized path is bit-identical.
-[[nodiscard]] Result<double> andersen_lake_core(double S, double K, double T,
-                                                double sigma, double r, double q,
-                                                Side side,
-                                                const std::optional<AlOpts>& opts,
+[[nodiscard]] Result<double> andersen_lake_core(double S, double K, double T, double sigma,
+                                                double r, double q, Side side,
+                                                const std::optional<AlOpts> &opts,
                                                 bool specialize) {
   if (!(K > 0.0 && S > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "andersen_lake: S and K must be > 0");
@@ -1272,13 +1249,12 @@ constexpr const char* kDoubleContinuationMsg =
   const double rate = (side == Side::Put) ? r : q;
   const double yield = (side == Side::Put) ? q : r;
   switch (classify_regime(rate, yield)) {
-    case ExerciseRegime::European:
-      return Ok(black76_price(S * std::exp((r - q) * T), K, T, sigma,
-                              std::exp(-r * T), side));
-    case ExerciseRegime::Unsupported:
-      return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
-    case ExerciseRegime::American:
-      break;
+  case ExerciseRegime::European:
+    return Ok(black76_price(S * std::exp((r - q) * T), K, T, sigma, std::exp(-r * T), side));
+  case ExerciseRegime::Unsupported:
+    return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
+  case ExerciseRegime::American:
+    break;
   }
 
   const AlScheme sch = scheme_from_opts(opts);
@@ -1289,13 +1265,14 @@ constexpr const char* kDoubleContinuationMsg =
   return al_solve_put(K, S, T, sigma, q, r, sch, specialize);
 }
 
-// ── American Greeks (chain rule + FD on the correction gradient) ─────────
+// ── American Greeks (chain rule + analytic correction derivatives) ───────
 
-void american_greeks_first_order(double S, double K, double T, double sigma,
-                                 double r, double q, Side side,
-                                 const CorrectionCache* correction,
-                                 AmericanGreeks& out) {
-  const double m = std::exp((r - q) * T);  // F/S
+// Cached routes obtain the full correction gradient/Hessian from one
+// differentiated Clenshaw traversal; no off-point finite differences remain.
+template <typename Correction>
+void american_greeks_first_order(double S, double K, double T, double sigma, double r, double q,
+                                 Side side, const Correction *correction, AmericanGreeks &out) {
+  const double m = std::exp((r - q) * T); // F/S
   const double F = S * m;
   const double df = std::exp(-r * T);
   const double k_log = std::log(K / F);
@@ -1307,71 +1284,42 @@ void american_greeks_first_order(double S, double K, double T, double sigma,
   double dc_dk = 0.0;
   double dc_dT = 0.0;
   double dc_ds = 0.0;
+  double d2c_dk2 = 0.0;
+  double d2c_dk_dT = 0.0;
+  double d2c_dk_ds = 0.0;
+  double d2c_ds2 = 0.0;
   double c_val = 0.0;
   if (correction) {
-    c_val = correction->eval_grad(k_log, T, sigma, &dc_dk, &dc_dT, &dc_ds);
+    const CorrSecondOrder corr = correction->eval_second_order(k_log, T, sigma);
+    c_val = corr.value;
+    dc_dk = corr.dk_log;
+    dc_dT = corr.dT;
+    dc_ds = corr.dsigma;
+    d2c_dk2 = corr.dkk;
+    d2c_dk_dT = corr.dk_dT;
+    d2c_dk_ds = corr.dk_dsigma;
+    d2c_ds2 = corr.dsigma2;
   }
 
   out.price = euro_price + F * c_val;
 
-  const double D = gB.delta + c_val - dc_dk;  // ∂A/∂F
-  out.delta = m * D;                          // spot-delta convention
+  const double D = gB.delta + c_val - dc_dk; // ∂A/∂F
+  out.delta = m * D;                         // spot-delta convention
   out.vega = gB.vega + F * dc_ds;
   out.rho = gB.rho + T * F * D;
   out.theta = gB.theta - (r - q) * F * D - F * dc_dT;
-
-  const double hF = 1.0e-4 * F;
-  const double hS = 1.0e-4;
-  const double hT = 1.0e-5;
-
-  if (correction) {
-    const double F_up = F + hF;
-    const double F_dn = F - hF;
-    const double k_up = std::log(K / F_up);
-    const double k_dn = std::log(K / F_dn);
-
-    double dc_dk_up = 0.0;
-    double dc_dk_dn = 0.0;
-    const double cu = correction->eval_grad(k_up, T, sigma, &dc_dk_up, nullptr, nullptr);
-    const double cd = correction->eval_grad(k_dn, T, sigma, &dc_dk_dn, nullptr, nullptr);
-    const Greeks gB_up = black76_greeks(F_up, K, T, sigma, r, df, side).greeks;
-    const Greeks gB_dn = black76_greeks(F_dn, K, T, sigma, r, df, side).greeks;
-    const double D_up = gB_up.delta + cu - dc_dk_up;
-    const double D_dn = gB_dn.delta + cd - dc_dk_dn;
-    const double dD_dF = (D_up - D_dn) / (2.0 * hF);
-    out.gamma = m * m * dD_dF;
-
-    double dc_ds_up = 0.0;
-    double dc_ds_dn = 0.0;
-    // Value discarded here -> eval_partials skips the (unused) value sweep.
-    correction->eval_partials(k_up, T, sigma, nullptr, nullptr, &dc_ds_up);
-    correction->eval_partials(k_dn, T, sigma, nullptr, nullptr, &dc_ds_dn);
-    const double d2c_dF_ds = (dc_ds_up - dc_ds_dn) / (2.0 * hF);
-    out.vanna = m * (gB.vanna + dc_ds + F * d2c_dF_ds);
-
-    double dc_ds_p = 0.0;
-    double dc_ds_m = 0.0;
-    // Value discarded here -> eval_partials skips the (unused) value sweep.
-    correction->eval_partials(k_log, T, sigma + hS, nullptr, nullptr, &dc_ds_p);
-    correction->eval_partials(k_log, T, sigma - hS, nullptr, nullptr, &dc_ds_m);
-    const double d2c_ds2 = (dc_ds_p - dc_ds_m) / (2.0 * hS);
-    out.volga = gB.volga + F * d2c_ds2;
-
-    double dc_dk_Tp = 0.0;
-    double dc_dk_Tm = 0.0;
-    const double c_Tp = correction->eval_grad(k_log, T + hT, sigma, &dc_dk_Tp, nullptr, nullptr);
-    const double c_Tm = correction->eval_grad(k_log, T - hT, sigma, &dc_dk_Tm, nullptr, nullptr);
-    const double dDcorr_dT = ((c_Tp - dc_dk_Tp) - (c_Tm - dc_dk_Tm)) / (2.0 * hT);
-    out.charm = m * (gB.charm - dDcorr_dT);
-  } else {
-    out.gamma = gB.gamma * (m / S) * F;
-    out.vanna = gB.vanna;
-    out.volga = gB.volga;
-    out.charm = gB.charm;
-  }
+  const double D_F = gB.gamma + (d2c_dk2 - dc_dk) / F;
+  out.gamma = m * m * D_F;
+  out.vanna = m * (gB.vanna + dc_ds - d2c_dk_ds);
+  out.volga = gB.volga + F * d2c_ds2;
+  // Calendar charm is -d(spot delta)/dT at fixed S. Since spot delta=m*D,
+  // both m(T) and F(T)=S*m(T) contribute carry terms beyond the correction's
+  // explicit fixed-carry T partial.
+  const double carry = r - q;
+  out.charm = m * (gB.charm - dc_dT + d2c_dk_dT - carry * (D + F * D_F));
 }
 
-}  // namespace
+} // namespace
 
 // ── Warm-started ALO pricer (fixed contract, sigma sweep) ────────────────
 //
@@ -1381,25 +1329,25 @@ void american_greeks_first_order(double S, double K, double T, double sigma,
 // an internal PUT; a Call is the McDonald-Schroder put P(K,S,q,r), so the boundary
 // machinery is identical.
 struct AloPricer::State {
-  double Sp{};   // internal-put spot   (= K for a call)
-  double Kp{};   // internal-put strike (= S for a call) — drives the boundary
+  double Sp{}; // internal-put spot   (= K for a call)
+  double Kp{}; // internal-put strike (= S for a call) — drives the boundary
   double T{};
-  double rp{};   // internal-put rate   (= q for a call)
-  double qp{};   // internal-put yield  (= r for a call)
+  double rp{}; // internal-put rate   (= q for a call)
+  double qp{}; // internal-put yield  (= r for a call)
   AlScheme sch{};
   AlBoundary bnd{};
   AlWorkspace ws{};
-  bool prepared{false};       // node grid + quadrature bound, xmax > 0
-  bool european_only{false};  // no early exercise -> American == European
-  bool unsupported{false};    // double-continuation corner -> price() returns NaN
-  bool seeded{false};         // bnd.y[] holds a usable warm boundary
+  bool prepared{false};      // node grid + quadrature bound, xmax > 0
+  bool european_only{false}; // no early exercise -> American == European
+  bool unsupported{false};   // double-continuation corner -> price() returns NaN
+  bool seeded{false};        // bnd.y[] holds a usable warm boundary
   double last_sigma{-1.0};
 };
 
 AloPricer::AloPricer(double S, double K, double T, double r, double q, Side side,
-                     const std::optional<AlOpts>& opts)
+                     const std::optional<AlOpts> &opts)
     : st_(std::make_unique<State>()) {
-  State& s = *st_;
+  State &s = *st_;
   s.T = T;
   s.sch = scheme_from_opts(opts);
   // Internal put contract. Put: as-is. Call: McDonald-Schroder swap (S<->K, r<->q).
@@ -1421,24 +1369,24 @@ AloPricer::AloPricer(double S, double K, double T, double r, double q, Side side
   // channel). Only the American regime (rp > 0) prepares the boundary state, so
   // this is a no-op for every r>0 put / q>0 call (the whole production corpus).
   switch (classify_regime(/*rate=*/s.rp, /*yield=*/s.qp)) {
-    case ExerciseRegime::European:
-      s.european_only = true;
-      s.prepared = true;
-      return;
-    case ExerciseRegime::Unsupported:
-      s.unsupported = true;  // prepared stays false -> price() returns NaN
-      return;
-    case ExerciseRegime::American:
-      break;
+  case ExerciseRegime::European:
+    s.european_only = true;
+    s.prepared = true;
+    return;
+  case ExerciseRegime::Unsupported:
+    s.unsupported = true; // prepared stays false -> price() returns NaN
+    return;
+  case ExerciseRegime::American:
+    break;
   }
   al_init_nodes(s.bnd, s.sch.n_boundary, s.T, s.Kp, s.rp, s.qp);
   if (!(s.bnd.xmax > 0.0)) {
-    return;  // asymptotic boundary collapsed (matches andersen_lake NotImplemented)
+    return; // asymptotic boundary collapsed (matches andersen_lake NotImplemented)
   }
-  const detail::GaussLegendre* fp = gl_find(s.sch.n_quad_fp);
-  const detail::GaussLegendre* pr = gl_find(s.sch.n_quad_price);
+  const detail::GaussLegendre *fp = gl_find(s.sch.n_quad_fp);
+  const detail::GaussLegendre *pr = gl_find(s.sch.n_quad_price);
   if (!fp || !fp->ok || !pr || !pr->ok) {
-    return;  // quadrature table unavailable
+    return; // quadrature table unavailable
   }
   s.ws.qx_fp = fp->nodes.data();
   s.ws.qw_fp = fp->weights.data();
@@ -1450,11 +1398,11 @@ AloPricer::AloPricer(double S, double K, double T, double r, double q, Side side
 }
 
 AloPricer::~AloPricer() = default;
-AloPricer::AloPricer(AloPricer&&) noexcept = default;
-AloPricer& AloPricer::operator=(AloPricer&&) noexcept = default;
+AloPricer::AloPricer(AloPricer &&) noexcept = default;
+AloPricer &AloPricer::operator=(AloPricer &&) noexcept = default;
 
 double AloPricer::price(double sigma) noexcept {
-  State& s = *st_;
+  State &s = *st_;
   // Degenerate: sigma ~ 0 or T ~ 0 collapses to intrinsic (internal-put intrinsic
   // Kp - Sp equals the original option's intrinsic for both sides).
   if (!(sigma > 1.0e-8) || s.T <= 1.0e-12) {
@@ -1478,8 +1426,8 @@ double AloPricer::price(double sigma) noexcept {
   // the previous boundary is a poor seed and we re-seed cold via Barone-Adesi-
   // Whaley). Inside an IV Newton loop the near-convergence sigma steps are tiny,
   // so almost every residual after the bracket is a cheap warm solve.
-  const bool cold = !s.seeded || !(s.last_sigma > 0.0) ||
-                    std::fabs(sigma - s.last_sigma) > 0.12 * s.last_sigma;
+  const bool cold =
+      !s.seeded || !(s.last_sigma > 0.0) || std::fabs(sigma - s.last_sigma) > 0.12 * s.last_sigma;
   if (cold) {
     al_seed_boundary(s.bnd, sigma, s.rp, s.qp);
   }
@@ -1532,22 +1480,19 @@ AlOpts al_default_opts() noexcept { return AlOpts{12, 24, 8, 1.0e-10}; }
 
 AlOpts al_fast_opts() noexcept { return AlOpts{7, 16, 4, 1.0e-8}; }
 
-Result<double> andersen_lake(double S, double K, double T, double sigma,
-                             double r, double q, Side side,
-                             const std::optional<AlOpts>& opts) {
+Result<double> andersen_lake(double S, double K, double T, double sigma, double r, double q,
+                             Side side, const std::optional<AlOpts> &opts) {
   return andersen_lake_core(S, K, T, sigma, r, q, side, opts, /*specialize=*/true);
 }
 
-Status andersen_lake_call_slice(double S, std::span<const double> strikes,
-                                double T, double sigma, double r, double q,
-                                std::span<double> price_out,
-                                const std::optional<AlOpts>& opts) {
+Status andersen_lake_call_slice(double S, std::span<const double> strikes, double T, double sigma,
+                                double r, double q, std::span<double> price_out,
+                                const std::optional<AlOpts> &opts) {
   if (!(S > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "andersen_lake_call_slice: S must be > 0");
   }
   if (!(T >= 0.0) || !(sigma >= 0.0)) {
-    return Err(ErrorCode::InvalidArgument,
-               "andersen_lake_call_slice: T and sigma must be >= 0");
+    return Err(ErrorCode::InvalidArgument, "andersen_lake_call_slice: T and sigma must be >= 0");
   }
   if (strikes.size() != price_out.size()) {
     return Err(ErrorCode::InvalidArgument,
@@ -1555,13 +1500,11 @@ Status andersen_lake_call_slice(double S, std::span<const double> strikes,
   }
   for (const double K : strikes) {
     if (!(K > 0.0)) {
-      return Err(ErrorCode::InvalidArgument,
-                 "andersen_lake_call_slice: every strike must be > 0");
+      return Err(ErrorCode::InvalidArgument, "andersen_lake_call_slice: every strike must be > 0");
     }
   }
   if (!(std::isfinite(r) && std::isfinite(q))) {
-    return Err(ErrorCode::InvalidArgument,
-               "andersen_lake_call_slice: r and q must be finite");
+    return Err(ErrorCode::InvalidArgument, "andersen_lake_call_slice: r and q must be finite");
   }
 
   const std::size_t n = strikes.size();
@@ -1580,18 +1523,18 @@ Status andersen_lake_call_slice(double S, std::span<const double> strikes,
   // (matches the andersen_lake short-circuit exactly); Unsupported is the
   // double-continuation corner the ALO scheme cannot price.
   switch (classify_regime(/*rate=*/q, /*yield=*/r)) {
-    case ExerciseRegime::European: {
-      const double F = S * std::exp((r - q) * T);
-      const double df = std::exp(-r * T);
-      for (std::size_t i = 0; i < n; ++i) {
-        price_out[i] = black76_price(F, strikes[i], T, sigma, df, Side::Call);
-      }
-      return Ok();
+  case ExerciseRegime::European: {
+    const double F = S * std::exp((r - q) * T);
+    const double df = std::exp(-r * T);
+    for (std::size_t i = 0; i < n; ++i) {
+      price_out[i] = black76_price(F, strikes[i], T, sigma, df, Side::Call);
     }
-    case ExerciseRegime::Unsupported:
-      return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
-    case ExerciseRegime::American:
-      break;
+    return Ok();
+  }
+  case ExerciseRegime::Unsupported:
+    return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
+  case ExerciseRegime::American:
+    break;
   }
 
   // Boundary case (q > 0). The internal put has strike Kp = S (fixed), spot
@@ -1600,8 +1543,8 @@ Status andersen_lake_call_slice(double S, std::span<const double> strikes,
   // al_solve_put (with S=Sp) exactly so each price is bit-identical to
   // andersen_lake(S, K_i, T, sigma, r, q, Side::Call, opts).
   const AlScheme sch = scheme_from_opts(opts);
-  const double rp = q;  // internal-put rate
-  const double qp = r;  // internal-put yield
+  const double rp = q; // internal-put rate
+  const double qp = r; // internal-put yield
 
   AlBoundary bnd;
   AlWorkspace ws;
@@ -1610,11 +1553,10 @@ Status andersen_lake_call_slice(double S, std::span<const double> strikes,
     return Err(ErrorCode::NotImplemented,
                "andersen_lake_call_slice: asymptotic boundary collapsed (xmax <= 0)");
   }
-  const detail::GaussLegendre* fp = gl_find(sch.n_quad_fp);
-  const detail::GaussLegendre* pr = gl_find(sch.n_quad_price);
+  const detail::GaussLegendre *fp = gl_find(sch.n_quad_fp);
+  const detail::GaussLegendre *pr = gl_find(sch.n_quad_price);
   if (!fp || !fp->ok || !pr || !pr->ok) {
-    return Err(ErrorCode::Internal,
-               "andersen_lake_call_slice: Gauss-Legendre table unavailable");
+    return Err(ErrorCode::Internal, "andersen_lake_call_slice: Gauss-Legendre table unavailable");
   }
   ws.qx_fp = fp->nodes.data();
   ws.qw_fp = fp->weights.data();
@@ -1647,7 +1589,7 @@ Status andersen_lake_call_slice(double S, std::span<const double> strikes,
     const double euro = euro_put_sk(/*S=*/Ki, /*K=*/S, T, sigma, rp, qp);
     const double prem = al_put_premium(bnd, ws, /*S=*/Ki, sigma, rp, qp);
     double px = euro + prem;
-    const double intr = S - Ki;  // internal-put intrinsic Kp - Sp == call intrinsic
+    const double intr = S - Ki; // internal-put intrinsic Kp - Sp == call intrinsic
     if (intr > px) {
       px = intr;
     }
@@ -1659,16 +1601,14 @@ Status andersen_lake_call_slice(double S, std::span<const double> strikes,
   return Ok();
 }
 
-Status andersen_lake_put_slice(double S, std::span<const double> strikes,
-                               double T, double sigma, double r, double q,
-                               std::span<double> price_out,
-                               const std::optional<AlOpts>& opts) {
+Status andersen_lake_put_slice(double S, std::span<const double> strikes, double T, double sigma,
+                               double r, double q, std::span<double> price_out,
+                               const std::optional<AlOpts> &opts) {
   if (!(S > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "andersen_lake_put_slice: S must be > 0");
   }
   if (!(T >= 0.0) || !(sigma >= 0.0)) {
-    return Err(ErrorCode::InvalidArgument,
-               "andersen_lake_put_slice: T and sigma must be >= 0");
+    return Err(ErrorCode::InvalidArgument, "andersen_lake_put_slice: T and sigma must be >= 0");
   }
   if (strikes.size() != price_out.size()) {
     return Err(ErrorCode::InvalidArgument,
@@ -1676,13 +1616,11 @@ Status andersen_lake_put_slice(double S, std::span<const double> strikes,
   }
   for (const double K : strikes) {
     if (!(K > 0.0)) {
-      return Err(ErrorCode::InvalidArgument,
-                 "andersen_lake_put_slice: every strike must be > 0");
+      return Err(ErrorCode::InvalidArgument, "andersen_lake_put_slice: every strike must be > 0");
     }
   }
   if (!(std::isfinite(r) && std::isfinite(q))) {
-    return Err(ErrorCode::InvalidArgument,
-               "andersen_lake_put_slice: r and q must be finite");
+    return Err(ErrorCode::InvalidArgument, "andersen_lake_put_slice: r and q must be finite");
   }
 
   const std::size_t n = strikes.size();
@@ -1690,7 +1628,7 @@ Status andersen_lake_put_slice(double S, std::span<const double> strikes,
   // Degenerate: T ~ 0 or sigma ~ 0 collapses to intrinsic (mirrors andersen_lake).
   if (T <= 1.0e-12 || sigma <= 1.0e-8) {
     for (std::size_t i = 0; i < n; ++i) {
-      const double intr = strikes[i] - S;  // put intrinsic K_i - S
+      const double intr = strikes[i] - S; // put intrinsic K_i - S
       price_out[i] = (intr > 0.0) ? intr : 0.0;
     }
     return Ok();
@@ -1701,18 +1639,18 @@ Status andersen_lake_put_slice(double S, std::span<const double> strikes,
   // put per strike (matches andersen_lake's short-circuit exactly); Unsupported is
   // the double-continuation corner the ALO scheme cannot price.
   switch (classify_regime(/*rate=*/r, /*yield=*/q)) {
-    case ExerciseRegime::European: {
-      const double F = S * std::exp((r - q) * T);
-      const double df = std::exp(-r * T);
-      for (std::size_t i = 0; i < n; ++i) {
-        price_out[i] = black76_price(F, strikes[i], T, sigma, df, Side::Put);
-      }
-      return Ok();
+  case ExerciseRegime::European: {
+    const double F = S * std::exp((r - q) * T);
+    const double df = std::exp(-r * T);
+    for (std::size_t i = 0; i < n; ++i) {
+      price_out[i] = black76_price(F, strikes[i], T, sigma, df, Side::Put);
     }
-    case ExerciseRegime::Unsupported:
-      return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
-    case ExerciseRegime::American:
-      break;
+    return Ok();
+  }
+  case ExerciseRegime::Unsupported:
+    return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
+  case ExerciseRegime::American:
+    break;
   }
 
   // American (r > 0). Solve ONE boundary at the reference strike strikes[0], then
@@ -1737,28 +1675,26 @@ Status andersen_lake_put_slice(double S, std::span<const double> strikes,
   AlBoundary bnd;
   AlWorkspace ws;
   switch (al_solve_put_boundary(/*K=*/strikes[0], T, sigma, r, q, sch, bnd, ws)) {
-    case AlSolveStatus::Collapsed:
-      return Err(ErrorCode::NotImplemented,
-                 "andersen_lake_put_slice: asymptotic boundary collapsed (xmax <= 0)");
-    case AlSolveStatus::TableMissing:
-      return Err(ErrorCode::Internal,
-                 "andersen_lake_put_slice: Gauss-Legendre table unavailable");
-    case AlSolveStatus::Ok:
-      break;
+  case AlSolveStatus::Collapsed:
+    return Err(ErrorCode::NotImplemented,
+               "andersen_lake_put_slice: asymptotic boundary collapsed (xmax <= 0)");
+  case AlSolveStatus::TableMissing:
+    return Err(ErrorCode::Internal, "andersen_lake_put_slice: Gauss-Legendre table unavailable");
+  case AlSolveStatus::Ok:
+    break;
   }
 
   for (std::size_t i = 0; i < n; ++i) {
     const double Ki = strikes[i];
-    bnd.K = Ki;                        // homogeneity rescale: strike …
-    bnd.xmax = al_xmax_put(Ki, r, q);  // … and asymptotic level B(∞), same y[]
+    bnd.K = Ki;                       // homogeneity rescale: strike …
+    bnd.xmax = al_xmax_put(Ki, r, q); // … and asymptotic level B(∞), same y[]
     price_out[i] = al_put_price_from_boundary(bnd, ws, S, Ki, T, sigma, r, q);
   }
   return Ok();
 }
 
-Result<double> baw_american(double S, double K, double T, double sigma,
-                            double r, double q, Side side,
-                            std::uint16_t max_iter, double tol) {
+Result<double> baw_american(double S, double K, double T, double sigma, double r, double q,
+                            Side side, std::uint16_t max_iter, double tol) {
   if (!(K > 0.0 && S > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "baw_american: S and K must be > 0");
   }
@@ -1781,20 +1717,19 @@ Result<double> baw_american(double S, double K, double T, double sigma,
   }
 
   const double euro =
-      (side == Side::Call) ? euro_call_sk(S, K, T, sigma, r, q)
-                           : euro_put_sk(S, K, T, sigma, r, q);
+      (side == Side::Call) ? euro_call_sk(S, K, T, sigma, r, q) : euro_put_sk(S, K, T, sigma, r, q);
 
   // Same regime classification as andersen_lake (internal-put rate/yield). BAW is
   // a single-boundary approximation, so it cannot represent the double-continuation
   // corner either: return the SAME NotImplemented error there.
   switch (classify_regime(/*rate=*/(side == Side::Put) ? r : q,
                           /*yield=*/(side == Side::Put) ? q : r)) {
-    case ExerciseRegime::European:
-      return Ok(euro);
-    case ExerciseRegime::Unsupported:
-      return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
-    case ExerciseRegime::American:
-      break;
+  case ExerciseRegime::European:
+    return Ok(euro);
+  case ExerciseRegime::Unsupported:
+    return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
+  case ExerciseRegime::American:
+    break;
   }
 
   const double sigma2 = sigma * sigma;
@@ -1849,23 +1784,20 @@ Result<double> baw_american(double S, double K, double T, double sigma,
   return Ok(price > intr ? price : intr);
 }
 
-Result<double> american_price(double S, double K, double T, double sigma,
-                              double r, double q, Side side,
-                              AmericanMethod method,
-                              const std::optional<AlOpts>& opts) {
+Result<double> american_price(double S, double K, double T, double sigma, double r, double q,
+                              Side side, AmericanMethod method, const std::optional<AlOpts> &opts) {
   switch (method) {
-    case AmericanMethod::AndersenLake:
-      return andersen_lake(S, K, T, sigma, r, q, side, opts);
-    case AmericanMethod::Baw:
-      return baw_american(S, K, T, sigma, r, q, side);
+  case AmericanMethod::AndersenLake:
+    return andersen_lake(S, K, T, sigma, r, q, side, opts);
+  case AmericanMethod::Baw:
+    return baw_american(S, K, T, sigma, r, q, side);
   }
-  return Err(ErrorCode::Internal, "american_price: unhandled method");  // unreachable
+  return Err(ErrorCode::Internal, "american_price: unhandled method"); // unreachable
 }
 
-double american_price_cached(double S, double K, double T, double sigma,
-                             double r, double q, Side side,
-                             const CorrectionCache* correction) {
-  if (!correction || !correction->populated()) {
+double american_price_cached(double S, double K, double T, double sigma, double r, double q,
+                             Side side, const CorrectionCache *correction) {
+  if (!correction || !correction->populated() || correction->side() != side) {
     ATX_VOL_COUNT(CacheColdFallbacks);
     const Result<double> p = andersen_lake(S, K, T, sigma, r, q, side, std::nullopt);
     return p ? *p : std::numeric_limits<double>::quiet_NaN();
@@ -1875,23 +1807,51 @@ double american_price_cached(double S, double K, double T, double sigma,
   // premium in this regime). Surface NaN, matching the cold andersen_lake path,
   // which returns NotImplemented (-> NaN) above. No-op for r>0 puts / q>0 calls.
   if (classify_regime(/*rate=*/(side == Side::Put) ? r : q,
-                      /*yield=*/(side == Side::Put) ? q : r) ==
-      ExerciseRegime::Unsupported) {
+                      /*yield=*/(side == Side::Put) ? q : r) == ExerciseRegime::Unsupported) {
     return std::numeric_limits<double>::quiet_NaN();
   }
   const double df = std::exp(-r * T);
   const double F = S * std::exp((r - q) * T);
-  const double euro = black76_price(F, K, T, sigma, df, side);
-  const double k_log = std::log(K / F);
+  // Share one log-moneyness evaluation between Black-76 and the correction
+  // tensor. The previous path computed log(F/K) inside black76_price and then
+  // log(K/F) again here for the same point.
+  const double ln_fk = std::log(F / K);
+  const double sqrt_t = (T > 0.0) ? std::sqrt(T) : 0.0;
+  const double euro = black76_price_from_lnfk(F, K, T, sigma, df, ln_fk, sqrt_t, side);
+  const double k_log = -ln_fk;
   const double corr = correction->eval(k_log, T, sigma);
   ATX_VOL_COUNT(CacheHits);
   return euro + F * corr;
 }
 
-Result<AmericanGreeks> american_greeks(double S, double K, double T,
-                                       double sigma, double r, double q,
-                                       Side side,
-                                       const CorrectionCache* correction) {
+double american_price_cached(double S, double K, double T, double sigma, double r, double q,
+                             Side side, const CorrectionBlend &correction) {
+  if (!correction.usable(side)) {
+    return american_price_cached(S, K, T, sigma, r, q, side,
+                                 static_cast<const CorrectionCache *>(nullptr));
+  }
+  if (correction.upper_weight == 0.0 || correction.lower == correction.upper) {
+    return american_price_cached(S, K, T, sigma, r, q, side, correction.lower);
+  }
+  if (correction.upper_weight == 1.0) {
+    return american_price_cached(S, K, T, sigma, r, q, side, correction.upper);
+  }
+  if (classify_regime(/*rate=*/(side == Side::Put) ? r : q,
+                      /*yield=*/(side == Side::Put) ? q : r) == ExerciseRegime::Unsupported) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  const double df = std::exp(-r * T);
+  const double F = S * std::exp((r - q) * T);
+  const double ln_fk = std::log(F / K);
+  const double sqrt_t = (T > 0.0) ? std::sqrt(T) : 0.0;
+  const double euro = black76_price_from_lnfk(F, K, T, sigma, df, ln_fk, sqrt_t, side);
+  const double corr = correction.eval(-ln_fk, T, sigma);
+  ATX_VOL_COUNT(CacheHits);
+  return euro + F * corr;
+}
+
+Result<AmericanGreeks> american_greeks(double S, double K, double T, double sigma, double r,
+                                       double q, Side side, const CorrectionCache *correction) {
   // Degenerate-input contract: SURFACE an error. This is deliberately asymmetric
   // with `american_vega`, which returns a 0.0 sentinel on the same input. The
   // difference is intentional: `american_greeks` has no sentinel consumer — a
@@ -1902,13 +1862,17 @@ Result<AmericanGreeks> american_greeks(double S, double K, double T,
   if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !(sigma > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "american_greeks: S, K, T, sigma must be > 0");
   }
+  // A missing, empty, or opposite-side cache has no applicable correction.
+  // Match the documented null-cache contract and return the Black-76 leg.
+  if (correction != nullptr && (!correction->populated() || correction->side() != side)) {
+    correction = nullptr;
+  }
   // Double-continuation corner: the Black-76 + correction bundle would be built
   // on a silently-wrong European price. Surface the SAME NotImplemented error the
   // other entry points use rather than a wrong Greeks bundle. No-op for r>0 puts
   // / q>0 calls (the production corpus): those classify American.
   if (classify_regime(/*rate=*/(side == Side::Put) ? r : q,
-                      /*yield=*/(side == Side::Put) ? q : r) ==
-      ExerciseRegime::Unsupported) {
+                      /*yield=*/(side == Side::Put) ? q : r) == ExerciseRegime::Unsupported) {
     return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
   }
   AmericanGreeks out;
@@ -1916,14 +1880,35 @@ Result<AmericanGreeks> american_greeks(double S, double K, double T,
   return Ok(out);
 }
 
-Result<AmericanGreeks> american_greeks_fd(double S, double K, double T,
-                                          double sigma, double r, double q,
-                                          Side side, AmericanMethod method,
-                                          const std::optional<AlOpts>& opts,
-                                          bool warm_start) {
+Result<AmericanGreeks> american_greeks(double S, double K, double T, double sigma, double r,
+                                       double q, Side side, const CorrectionBlend &correction) {
+  if (!correction.usable(side)) {
+    return american_greeks(S, K, T, sigma, r, q, side,
+                           static_cast<const CorrectionCache *>(nullptr));
+  }
+  if (correction.upper_weight == 0.0 || correction.lower == correction.upper) {
+    return american_greeks(S, K, T, sigma, r, q, side, correction.lower);
+  }
+  if (correction.upper_weight == 1.0) {
+    return american_greeks(S, K, T, sigma, r, q, side, correction.upper);
+  }
   if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !(sigma > 0.0)) {
-    return Err(ErrorCode::InvalidArgument,
-               "american_greeks_fd: S, K, T, sigma must be > 0");
+    return Err(ErrorCode::InvalidArgument, "american_greeks: S, K, T, sigma must be > 0");
+  }
+  if (classify_regime(/*rate=*/(side == Side::Put) ? r : q,
+                      /*yield=*/(side == Side::Put) ? q : r) == ExerciseRegime::Unsupported) {
+    return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
+  }
+  AmericanGreeks out;
+  american_greeks_first_order(S, K, T, sigma, r, q, side, &correction, out);
+  return Ok(out);
+}
+
+Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double sigma, double r,
+                                          double q, Side side, AmericanMethod method,
+                                          const std::optional<AlOpts> &opts, bool warm_start) {
+  if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !(sigma > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "american_greeks_fd: S, K, T, sigma must be > 0");
   }
 
   // Central-difference steps (match the P0-1 spec). Near expiry the T-derivatives
@@ -1962,8 +1947,7 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T,
   // al_solve_put with r>0 non-degenerate IS solve-boundary + price-from-boundary,
   // and the degenerate / r<=0 guards below mirror andersen_lake exactly. The rare
   // boundary-collapse corner falls back to the scalar P() path (same error).
-  const bool put_fast =
-      (side == Side::Put) && (method == AmericanMethod::AndersenLake);
+  const bool put_fast = (side == Side::Put) && (method == AmericanMethod::AndersenLake);
   // Call fast path (P2.1): McDonald-Schroder prices a call via an internal put, and
   // that internal-put boundary IS spot-dependent (its strike = the call spot the
   // delta/gamma stencils bump) — but homogeneous of degree one in that strike, so
@@ -1971,8 +1955,7 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T,
   // put_fast structurally; see Pcall. NOT bit-identical to the cold call greeks —
   // the homogeneity rescale is exact in R, ~1e-13 in IEEE (far under the sprint's
   // ~1e-7 budget); accepted as default per the controller policy ruling.
-  const bool call_fast =
-      (side == Side::Call) && (method == AmericanMethod::AndersenLake);
+  const bool call_fast = (side == Side::Call) && (method == AmericanMethod::AndersenLake);
   const AlScheme sch = scheme_from_opts(opts);
   struct BndCache {
     double dsig{0.0}, dr{0.0}, dT{0.0};
@@ -2005,15 +1988,15 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T,
     // to the scalar P() path so andersen_lake's NotImplemented error propagates
     // through the bundle instead of a silently-wrong European Greeks set.
     switch (classify_regime(/*rate=*/r2, /*yield=*/q)) {
-      case ExerciseRegime::European:
-        return black76_price(S2 * std::exp((r2 - q) * T2), K, T2, sig2,
-                             std::exp(-r2 * T2), Side::Put);
-      case ExerciseRegime::Unsupported:
-        return P(dS, dsig, dr, dT);
-      case ExerciseRegime::American:
-        break;
+    case ExerciseRegime::European:
+      return black76_price(S2 * std::exp((r2 - q) * T2), K, T2, sig2, std::exp(-r2 * T2),
+                           Side::Put);
+    case ExerciseRegime::Unsupported:
+      return P(dS, dsig, dr, dT);
+    case ExerciseRegime::American:
+      break;
     }
-    BndCache* c = nullptr;
+    BndCache *c = nullptr;
     for (std::size_t i = 0; i < n_memo; ++i) {
       if (memo[i].dsig == dsig && memo[i].dr == dr && memo[i].dT == dT) {
         c = &memo[i];
@@ -2029,16 +2012,14 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T,
       // itself, and every boundary when warm_start is off, is solved cold.
       const bool is_base = (dsig == 0.0 && dr == 0.0 && dT == 0.0);
       const bool can_warm = warm_start && !is_base && n_memo > 1 && memo[0].ok &&
-                            memo[0].dsig == 0.0 && memo[0].dr == 0.0 &&
-                            memo[0].dT == 0.0;
+                            memo[0].dsig == 0.0 && memo[0].dr == 0.0 && memo[0].dT == 0.0;
       const AlSolveStatus st =
-          can_warm ? al_solve_put_boundary_warm(K, T2, sig2, r2, q, sch,
-                                                 memo[0].bnd, c->bnd, c->ws)
+          can_warm ? al_solve_put_boundary_warm(K, T2, sig2, r2, q, sch, memo[0].bnd, c->bnd, c->ws)
                    : al_solve_put_boundary(K, T2, sig2, r2, q, sch, c->bnd, c->ws);
       c->ok = (st == AlSolveStatus::Ok);
     }
     if (!c->ok) {
-      return P(dS, dsig, dr, dT);  // boundary collapsed: exact scalar fallback
+      return P(dS, dsig, dr, dT); // boundary collapsed: exact scalar fallback
     }
     return al_put_price_from_boundary(c->bnd, c->ws, S2, K, T2, sig2, r2, q);
   };
@@ -2063,7 +2044,7 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T,
     const double T2 = T + dT;
     // andersen_lake guards, replicated so each stencil matches a full cold call.
     if (T2 <= 1.0e-12 || sig2 <= 1.0e-8) {
-      const double intr = S2 - K;  // call intrinsic
+      const double intr = S2 - K; // call intrinsic
       return (intr > 0.0) ? intr : 0.0;
     }
     // Regime in the call's internal-put terms (rate = q, yield = r2 — the same
@@ -2072,15 +2053,15 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T,
     // (yield r2 < rate q <= 0) defers to the scalar P() path so andersen_lake's
     // NotImplemented propagates through the bundle, never a silently-wrong European.
     switch (classify_regime(/*rate=*/q, /*yield=*/r2)) {
-      case ExerciseRegime::European:
-        return black76_price(S2 * std::exp((r2 - q) * T2), K, T2, sig2,
-                             std::exp(-r2 * T2), Side::Call);
-      case ExerciseRegime::Unsupported:
-        return P(dS, dsig, dr, dT);
-      case ExerciseRegime::American:
-        break;
+    case ExerciseRegime::European:
+      return black76_price(S2 * std::exp((r2 - q) * T2), K, T2, sig2, std::exp(-r2 * T2),
+                           Side::Call);
+    case ExerciseRegime::Unsupported:
+      return P(dS, dsig, dr, dT);
+    case ExerciseRegime::American:
+      break;
     }
-    BndCache* c = nullptr;
+    BndCache *c = nullptr;
     for (std::size_t i = 0; i < n_memo; ++i) {
       if (memo[i].dsig == dsig && memo[i].dr == dr && memo[i].dT == dT) {
         c = &memo[i];
@@ -2098,13 +2079,12 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T,
       // exactly as the put path; the base and all-cold path solve fresh.
       const bool is_base = (dsig == 0.0 && dr == 0.0 && dT == 0.0);
       const bool can_warm = warm_start && !is_base && n_memo > 1 && memo[0].ok &&
-                            memo[0].dsig == 0.0 && memo[0].dr == 0.0 &&
-                            memo[0].dT == 0.0;
+                            memo[0].dsig == 0.0 && memo[0].dr == 0.0 && memo[0].dT == 0.0;
       const AlSolveStatus st =
-          can_warm ? al_solve_put_boundary_warm(/*K=*/S, T2, sig2, /*r=*/q, /*q=*/r2,
-                                                 sch, memo[0].bnd, c->bnd, c->ws)
-                   : al_solve_put_boundary(/*K=*/S, T2, sig2, /*r=*/q, /*q=*/r2, sch,
-                                           c->bnd, c->ws);
+          can_warm
+              ? al_solve_put_boundary_warm(/*K=*/S, T2, sig2, /*r=*/q, /*q=*/r2, sch, memo[0].bnd,
+                                           c->bnd, c->ws)
+              : al_solve_put_boundary(/*K=*/S, T2, sig2, /*r=*/q, /*q=*/r2, sch, c->bnd, c->ws);
       c->ok = (st == AlSolveStatus::Ok);
       // Capture the canonical base scaling (internal-strike = S) BEFORE any price
       // rescales it, so bumped states can warm-seed from an un-mutated memo[0].
@@ -2112,15 +2092,15 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T,
       c->base_xmax = c->bnd.xmax;
     }
     if (!c->ok) {
-      return P(dS, dsig, dr, dT);  // boundary collapsed: exact scalar fallback
+      return P(dS, dsig, dr, dT); // boundary collapsed: exact scalar fallback
     }
     // Homogeneity rescale of the base boundary to internal-strike = S2 (keep y[],
     // reset the strike and asymptotic level), then price the internal put at spot =
     // K (the fixed call strike), strike = S2 (the bumped call spot).
     c->bnd.K = S2;
     c->bnd.xmax = al_xmax_put(S2, /*r=*/q, /*q=*/r2);
-    const double price = al_put_price_from_boundary(
-        c->bnd, c->ws, /*spot=*/K, /*strike=*/S2, T2, sig2, /*r=*/q, /*q=*/r2);
+    const double price = al_put_price_from_boundary(c->bnd, c->ws, /*spot=*/K, /*strike=*/S2, T2,
+                                                    sig2, /*r=*/q, /*q=*/r2);
     // T9a-M1: restore the canonical base scaling so the in-place rescale above never
     // leaves a ~0.1%-off xmax in the memoized boundary. Without this, a subsequent
     // warm_start state seeds al_solve_put_boundary_warm from memo[0].bnd whose xmax
@@ -2183,8 +2163,8 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T,
   return Ok(out);
 }
 
-double american_vega(double S, double K, double T, double sigma, double r,
-                     double q, Side side, const CorrectionCache* correction) noexcept {
+double american_vega(double S, double K, double T, double sigma, double r, double q, Side side,
+                     const CorrectionCache *correction) noexcept {
   // Degenerate-input contract: return the 0.0 SENTINEL, not an error. This is a
   // LOAD-BEARING difference from `american_greeks` (which returns InvalidArgument
   // on the same input): the IV inverter's Newton step reads a 0 vega as "vega
@@ -2200,19 +2180,44 @@ double american_vega(double S, double K, double T, double sigma, double r,
   // full american_greeks bundle runs for its second-order FD terms.
   const double euro_vega = black76_greeks(F, K, T, sigma, r, df, side).greeks.vega;
   double dc_ds = 0.0;
-  if (correction) {
-    correction->eval_grad(std::log(K / F), T, sigma, nullptr, nullptr, &dc_ds);
+  if (correction != nullptr && correction->populated() && correction->side() == side) {
+    const double correction_value =
+        correction->eval_grad(std::log(K / F), T, sigma, nullptr, nullptr, &dc_ds);
+    // The served correction is max(0, polynomial). On the clamped branch its
+    // derivative is zero as well; retaining the raw polynomial partial here
+    // would make Newton's vega inconsistent with the cached forward map.
+    if (!(correction_value > 0.0)) {
+      dc_ds = 0.0;
+    }
   }
   return euro_vega + F * dc_ds;
 }
 
-Result<AmericanGreeks> american_greeks_al(double S, double K, double T,
-                                          double sigma, double r, double q,
-                                          Side side,
-                                          const std::optional<AlOpts>& opts) {
+double american_vega(double S, double K, double T, double sigma, double r, double q, Side side,
+                     const CorrectionBlend &correction) noexcept {
   if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !(sigma > 0.0)) {
-    return Err(ErrorCode::InvalidArgument,
-               "american_greeks_al: S, K, T, sigma must be > 0");
+    return 0.0;
+  }
+  if (!correction.usable(side)) {
+    return american_vega(S, K, T, sigma, r, q, side, static_cast<const CorrectionCache *>(nullptr));
+  }
+  if (correction.upper_weight == 0.0 || correction.lower == correction.upper) {
+    return american_vega(S, K, T, sigma, r, q, side, correction.lower);
+  }
+  if (correction.upper_weight == 1.0) {
+    return american_vega(S, K, T, sigma, r, q, side, correction.upper);
+  }
+  const double F = S * std::exp((r - q) * T);
+  const double df = std::exp(-r * T);
+  const double euro_vega = black76_greeks(F, K, T, sigma, r, df, side).greeks.vega;
+  const double dc_ds = correction.eval_dsigma(std::log(K / F), T, sigma);
+  return euro_vega + F * dc_ds;
+}
+
+Result<AmericanGreeks> american_greeks_al(double S, double K, double T, double sigma, double r,
+                                          double q, Side side, const std::optional<AlOpts> &opts) {
+  if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !(sigma > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "american_greeks_al: S, K, T, sigma must be > 0");
   }
   // Native analytic route for genuine early exercise on BOTH sides. Under the
   // McDonald-Schroder map C(S,K,r,q) = P(K,S,q,r) a call reduces to an internal put
@@ -2222,10 +2227,10 @@ Result<AmericanGreeks> american_greeks_al(double S, double K, double T,
   // degenerate corners (T~0 / sigma~0) and the no-early-exercise regime (rate <= 0,
   // American == European) fall back to the exact cold FD path on either side.
   const bool is_call = (side == Side::Call);
-  const double al_rate = is_call ? q : r;  // internal-put short rate
+  const double al_rate = is_call ? q : r; // internal-put short rate
   if (al_rate <= 0.0 || T <= 1.0e-12 || sigma <= 1.0e-8) {
-    return american_greeks_fd(S, K, T, sigma, r, q, side,
-                              AmericanMethod::AndersenLake, opts, /*warm_start=*/false);
+    return american_greeks_fd(S, K, T, sigma, r, q, side, AmericanMethod::AndersenLake, opts,
+                              /*warm_start=*/false);
   }
 
   // Boundaries: the base (spot-independent, so delta/gamma are EXACT finite
@@ -2239,7 +2244,8 @@ Result<AmericanGreeks> american_greeks_al(double S, double K, double T,
   const AlScheme sch = scheme_from_opts(opts);
   const double hS = 1.0e-3 * S;
   double hv = 1.0e-3;
-  if (sigma - hv <= 0.0) hv = 0.5 * sigma;
+  if (sigma - hv <= 0.0)
+    hv = 0.5 * sigma;
   const double hr = 1.0e-4;
   // Rate-bump regime guard. For a PUT the r-stencil bumps the internal-put SHORT
   // RATE (= r); the down-bump r - hr <= 0 crosses out of the American regime, so the
@@ -2250,17 +2256,16 @@ Result<AmericanGreeks> american_greeks_al(double S, double K, double T,
   // (rate q > 0) stays > 0. The only bumped-boundary failure a call can hit is a
   // numeric collapse, caught by the 5-solve `!= Ok` guard below.
   if (!is_call && r - hr <= 0.0) {
-    return american_greeks_fd(S, K, T, sigma, r, q, side,
-                              AmericanMethod::AndersenLake, opts, /*warm_start=*/false);
+    return american_greeks_fd(S, K, T, sigma, r, q, side, AmericanMethod::AndersenLake, opts,
+                              /*warm_start=*/false);
   }
 
   // Internal-put boundary solves. For a PUT the boundary is spot-independent (strike
   // = K fixed, rate = r±, yield = q). For a CALL it is solved at the BASE internal-
   // strike = S (the unbumped call spot) with rate = q fixed, yield = r± bumped, then
   // rescaled per spot stencil by strike homogeneity in `px`.
-  const double Kb = is_call ? S : K;  // base internal-strike
-  const auto solve = [&](AlBoundary& b, AlWorkspace& w, double sig_s,
-                         double dr) -> AlSolveStatus {
+  const double Kb = is_call ? S : K; // base internal-strike
+  const auto solve = [&](AlBoundary &b, AlWorkspace &w, double sig_s, double dr) -> AlSolveStatus {
     const double rate = is_call ? q : (r + dr);
     const double yield = is_call ? (r + dr) : q;
     return al_solve_put_boundary(Kb, T, sig_s, rate, yield, sch, b, w);
@@ -2272,8 +2277,8 @@ Result<AmericanGreeks> american_greeks_al(double S, double K, double T,
       solve(bvm, wvm, sigma - hv, 0.0) != AlSolveStatus::Ok ||
       solve(brp, wrp, sigma, +hr) != AlSolveStatus::Ok ||
       solve(brm, wrm, sigma, -hr) != AlSolveStatus::Ok) {
-    return american_greeks_fd(S, K, T, sigma, r, q, side,
-                              AmericanMethod::AndersenLake, opts, /*warm_start=*/false);
+    return american_greeks_fd(S, K, T, sigma, r, q, side, AmericanMethod::AndersenLake, opts,
+                              /*warm_start=*/false);
   }
 
   // Price at spot stencil S2 on a given solved boundary (its own sigma/r). The PUT
@@ -2283,7 +2288,7 @@ Result<AmericanGreeks> american_greeks_al(double S, double K, double T,
   // the internal put at spot = K (the fixed call strike), strike = S2. The in-place
   // rescale is safe: every px sets K + xmax before pricing, and no boundary is warm-
   // reused here (all five are solved cold above), so there is no stale-seed hazard.
-  const auto px = [&](AlBoundary& b, const AlWorkspace& w, double S2, double sig2,
+  const auto px = [&](AlBoundary &b, const AlWorkspace &w, double S2, double sig2,
                       double r2) -> double {
     if (is_call) {
       b.K = S2;
@@ -2361,7 +2366,7 @@ Result<AmericanGreeks> american_greeks_al(double S, double K, double T,
 // disclosed scope of the additive kernel (not silently swept under a
 // tolerance) and why it was not observed on the fitted-surface parity grid.
 Result<double> american_vega_al(double S, double K, double T, double sigma, double r, double q,
-                                Side side, const std::optional<AlOpts>& opts) {
+                                Side side, const std::optional<AlOpts> &opts) {
   if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !(sigma > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "american_vega_al: S, K, T, sigma must be > 0");
   }
@@ -2381,7 +2386,8 @@ Result<double> american_vega_al(double S, double K, double T, double sigma, doub
 
   const AlScheme sch = scheme_from_opts(opts);
   double hv = 1.0e-3;
-  if (sigma - hv <= 0.0) hv = 0.5 * sigma;
+  if (sigma - hv <= 0.0)
+    hv = 0.5 * sigma;
   const double hr = 1.0e-4;
   if (!is_call && r - hr <= 0.0) {
     return fd_vega();
@@ -2397,7 +2403,7 @@ Result<double> american_vega_al(double S, double K, double T, double sigma, doub
     return fd_vega();
   }
 
-  const auto px = [&](AlBoundary& b, const AlWorkspace& w, double sig2) -> double {
+  const auto px = [&](AlBoundary &b, const AlWorkspace &w, double sig2) -> double {
     if (is_call) {
       b.K = S;
       b.xmax = al_xmax_put(S, /*r=*/q, /*q=*/r);
@@ -2412,14 +2418,12 @@ Result<double> american_vega_al(double S, double K, double T, double sigma, doub
 }
 // ─────────────────────────────────────────────────────────────────────────
 
-Result<double> american_delta(double S, double K, double T, double sigma, double r,
-                              double q, Side side, AmericanMethod method,
-                              const std::optional<AlOpts>& opts) {
+Result<double> american_delta(double S, double K, double T, double sigma, double r, double q,
+                              Side side, AmericanMethod method, const std::optional<AlOpts> &opts) {
   if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !(sigma > 0.0)) {
-    return Err(ErrorCode::InvalidArgument,
-               "american_delta: S, K, T, sigma must be > 0");
+    return Err(ErrorCode::InvalidArgument, "american_delta: S, K, T, sigma must be > 0");
   }
-  const double hS = 1.0e-3 * S;  // same spot step as american_greeks_fd
+  const double hS = 1.0e-3 * S; // same spot step as american_greeks_fd
 
   // Put fast path (AndersenLake): the exercise boundary is spot-independent, so
   // BOTH spot stencils reprice against ONE base boundary — delta in a single
@@ -2447,21 +2451,19 @@ Result<double> american_delta(double S, double K, double T, double sigma, double
       // European put -> Black-76; the double-continuation corner (q < r <= 0) is
       // unpriceable -> surface andersen_lake's NotImplemented via american_price.
       switch (classify_regime(/*rate=*/r, /*yield=*/q)) {
-        case ExerciseRegime::European:
-          return black76_price(S2 * std::exp((r - q) * T), K, T, sigma,
-                               std::exp(-r * T), Side::Put);
-        case ExerciseRegime::Unsupported: {
-          const Result<double> p =
-              american_price(S2, K, T, sigma, r, q, Side::Put, method, opts);
-          if (!p) {
-            failed = true;
-            first_err = p.error();
-            return std::numeric_limits<double>::quiet_NaN();
-          }
-          return *p;
+      case ExerciseRegime::European:
+        return black76_price(S2 * std::exp((r - q) * T), K, T, sigma, std::exp(-r * T), Side::Put);
+      case ExerciseRegime::Unsupported: {
+        const Result<double> p = american_price(S2, K, T, sigma, r, q, Side::Put, method, opts);
+        if (!p) {
+          failed = true;
+          first_err = p.error();
+          return std::numeric_limits<double>::quiet_NaN();
         }
-        case ExerciseRegime::American:
-          break;
+        return *p;
+      }
+      case ExerciseRegime::American:
+        break;
       }
       if (!have_bnd) {
         bnd_ok = (al_solve_put_boundary(K, T, sigma, r, q, sch, bnd, ws) == AlSolveStatus::Ok);
@@ -2500,23 +2502,44 @@ Result<double> american_delta(double S, double K, double T, double sigma, double
   return Ok((*pSp - *pSm) / (2.0 * hS));
 }
 
+Result<double> american_delta(double S, double K, double T, double sigma, double r, double q,
+                              Side side, const CorrectionBlend &correction) {
+  if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !(sigma > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "american_delta: S, K, T, sigma must be > 0");
+  }
+  if (classify_regime(/*rate=*/(side == Side::Put) ? r : q,
+                      /*yield=*/(side == Side::Put) ? q : r) == ExerciseRegime::Unsupported) {
+    return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
+  }
+  const double carry = std::exp((r - q) * T);
+  const double F = S * carry;
+  const double df = std::exp(-r * T);
+  const double black_delta = black76_greeks(F, K, T, sigma, r, df, side).greeks.delta;
+  double correction_value = 0.0;
+  double correction_dk = 0.0;
+  if (correction.usable(side)) {
+    correction_value = correction.eval_value_dk(std::log(K / F), T, sigma, &correction_dk);
+    ATX_VOL_COUNT(CacheHits);
+  }
+  return Ok(carry * (black_delta + correction_value - correction_dk));
+}
+
 namespace detail {
 
 GaussLegendre gauss_legendre(unsigned n) {
-  const GaussLegendre* t = gl_find(n);
+  const GaussLegendre *t = gl_find(n);
   return t ? *t : GaussLegendre{};
 }
 
-Result<double> andersen_lake_generic_kernel(double S, double K, double T,
-                                            double sigma, double r, double q,
-                                            Side side,
-                                            const std::optional<AlOpts>& opts) {
+Result<double> andersen_lake_generic_kernel(double S, double K, double T, double sigma, double r,
+                                            double q, Side side,
+                                            const std::optional<AlOpts> &opts) {
   return andersen_lake_core(S, K, T, sigma, r, q, side, opts, /*specialize=*/false);
 }
 
-int al_boundary_jn_sweeps_to_converge(double K, double T, double sigma, double r,
-                                      double q, const std::optional<AlOpts>& opts,
-                                      AlSeedMode seed, double tol, int max_sweeps) {
+int al_boundary_jn_sweeps_to_converge(double K, double T, double sigma, double r, double q,
+                                      const std::optional<AlOpts> &opts, AlSeedMode seed,
+                                      double tol, int max_sweeps) {
   const AlScheme sch = scheme_from_opts(opts);
   AlBoundary bnd;
   AlWorkspace ws;
@@ -2524,8 +2547,8 @@ int al_boundary_jn_sweeps_to_converge(double K, double T, double sigma, double r
   if (!(bnd.xmax > 0.0)) {
     return -1;
   }
-  const GaussLegendre* fp = gl_find(sch.n_quad_fp);
-  const GaussLegendre* pr = gl_find(sch.n_quad_price);
+  const GaussLegendre *fp = gl_find(sch.n_quad_fp);
+  const GaussLegendre *pr = gl_find(sch.n_quad_price);
   if (!fp || !fp->ok || !pr || !pr->ok) {
     return -1;
   }
@@ -2570,18 +2593,16 @@ int al_boundary_jn_sweeps_to_converge(double K, double T, double sigma, double r
 // collapsed / table-missing corner); leaves `bnd`/`ws` holding the converged boundary
 // (ready for al_put_price_from_boundary or as the next snapshot's warm seed) and the
 // final residual in `resid_out`.
-[[nodiscard]] static int al_solve_put_counted(double K, double T, double sigma,
-                                              double r, double q, const AlScheme& sch,
-                                              const AlBoundary* seed, int jn_cap,
-                                              int fp_cap, AlBoundary& bnd,
-                                              AlWorkspace& ws,
-                                              double& resid_out) noexcept {
+[[nodiscard]] static int al_solve_put_counted(double K, double T, double sigma, double r, double q,
+                                              const AlScheme &sch, const AlBoundary *seed,
+                                              int jn_cap, int fp_cap, AlBoundary &bnd,
+                                              AlWorkspace &ws, double &resid_out) noexcept {
   al_init_nodes(bnd, sch.n_boundary, T, K, r, q);
   if (!(bnd.xmax > 0.0)) {
     return -1;
   }
-  const GaussLegendre* fp = gl_find(sch.n_quad_fp);
-  const GaussLegendre* pr = gl_find(sch.n_quad_price);
+  const GaussLegendre *fp = gl_find(sch.n_quad_fp);
+  const GaussLegendre *pr = gl_find(sch.n_quad_price);
   if (!fp || !fp->ok || !pr || !pr->ok) {
     return -1;
   }
@@ -2637,13 +2658,12 @@ int al_boundary_jn_sweeps_to_converge(double K, double T, double sigma, double r
   return sweeps;
 }
 
-bool al_temporal_warm_probe(double S, double K, double q, double T0, double sigma0,
-                            double r0, double dT, double dsigma, double dr, int n_snap,
-                            const std::optional<AlOpts>& opts, bool converge_to_tol,
-                            int max_sweeps, double move_guard_frac,
-                            std::vector<int>& cold_sweeps, std::vector<int>& warm_sweeps,
-                            int& warm_hits, int& cold_reseeds,
-                            double& max_price_gap) noexcept {
+bool al_temporal_warm_probe(double S, double K, double q, double T0, double sigma0, double r0,
+                            double dT, double dsigma, double dr, int n_snap,
+                            const std::optional<AlOpts> &opts, bool converge_to_tol, int max_sweeps,
+                            double move_guard_frac, std::vector<int> &cold_sweeps,
+                            std::vector<int> &warm_sweeps, int &warm_hits, int &cold_reseeds,
+                            double &max_price_gap) noexcept {
   const AlScheme sch = scheme_from_opts(opts);
   // Genuine early-exercise put only (rate = r). The whole sequence must stay American.
   if (!(r0 > 0.0) || !(K > 0.0) || !(S > 0.0)) {
@@ -2668,17 +2688,16 @@ bool al_temporal_warm_probe(double S, double K, double q, double T0, double sigm
     AlBoundary cbnd{};
     AlWorkspace cws{};
     double cresid = 0.0;
-    const int cs = al_solve_put_counted(K, T, sigma, r, q, sch, nullptr, jn_cap,
-                                        fp_cap, cbnd, cws, cresid);
+    const int cs =
+        al_solve_put_counted(K, T, sigma, r, q, sch, nullptr, jn_cap, fp_cap, cbnd, cws, cresid);
     if (cs < 0) {
-      break;  // collapsed corner — end the sequence
+      break; // collapsed corner — end the sequence
     }
     const double cold_px = al_put_price_from_boundary(cbnd, cws, S, K, T, sigma, r, q);
 
     // WARM: seed from the stored boundary unless the move guard fires.
-    const bool guard_fire =
-        have_store && (std::fabs(dsigma) > move_guard_frac * sigma ||
-                       std::fabs(dT) > move_guard_frac * T);
+    const bool guard_fire = have_store && (std::fabs(dsigma) > move_guard_frac * sigma ||
+                                           std::fabs(dT) > move_guard_frac * T);
     const bool can_warm = have_store && !guard_fire;
     AlBoundary wbnd{};
     AlWorkspace wws{};
@@ -2686,16 +2705,16 @@ bool al_temporal_warm_probe(double S, double K, double q, double T0, double sigm
     int ws_sweeps = 0;
     bool reseeded = false;
     if (can_warm) {
-      ws_sweeps = al_solve_put_counted(K, T, sigma, r, q, sch, &store_bnd, jn_cap,
-                                       fp_cap, wbnd, wws, wresid);
+      ws_sweeps = al_solve_put_counted(K, T, sigma, r, q, sch, &store_bnd, jn_cap, fp_cap, wbnd,
+                                       wws, wresid);
       // Residual-trend safety net: a stale warm seed that leaves the boundary far
       // from converged after its sweep budget falls back to a cold reseed so the
       // warm path is never worse than cold (charging the wasted warm sweeps).
       const double kTrend = 1.0e-3;
       if (ws_sweeps < 0 || wresid > kTrend) {
         const int wasted = (ws_sweeps > 0) ? ws_sweeps : 0;
-        const int rs = al_solve_put_counted(K, T, sigma, r, q, sch, nullptr, jn_cap,
-                                            fp_cap, wbnd, wws, wresid);
+        const int rs = al_solve_put_counted(K, T, sigma, r, q, sch, nullptr, jn_cap, fp_cap, wbnd,
+                                            wws, wresid);
         if (rs < 0) {
           break;
         }
@@ -2703,12 +2722,12 @@ bool al_temporal_warm_probe(double S, double K, double q, double T0, double sigm
         reseeded = true;
       }
     } else {
-      ws_sweeps = al_solve_put_counted(K, T, sigma, r, q, sch, nullptr, jn_cap, fp_cap,
-                                       wbnd, wws, wresid);
+      ws_sweeps =
+          al_solve_put_counted(K, T, sigma, r, q, sch, nullptr, jn_cap, fp_cap, wbnd, wws, wresid);
       if (ws_sweeps < 0) {
         break;
       }
-      reseeded = have_store;  // guard-forced cold reseed (not the first snapshot)
+      reseeded = have_store; // guard-forced cold reseed (not the first snapshot)
     }
     const double warm_px = al_put_price_from_boundary(wbnd, wws, S, K, T, sigma, r, q);
 
@@ -2739,8 +2758,8 @@ bool al_temporal_warm_probe(double S, double K, double q, double T0, double sigm
 // Dense pivoted LU solve of A·x = rhs for n <= kAlMaxNodes, stack-only. Overwrites
 // A and rhs; the solution is returned in rhs. Returns false on a (near-)singular
 // pivot.
-[[nodiscard]] static bool lu_solve_dense(double* A, double* rhs, int n) noexcept {
-  const int N = kAlMaxNodes;  // row stride
+[[nodiscard]] static bool lu_solve_dense(double *A, double *rhs, int n) noexcept {
+  const int N = kAlMaxNodes; // row stride
   for (int col = 0; col < n; ++col) {
     // Partial pivot.
     int piv = col;
@@ -2783,15 +2802,13 @@ bool al_temporal_warm_probe(double S, double K, double q, double T0, double sigm
   return true;
 }
 
-ImplicitDiffGreeks al_implicit_diff_put_greeks(double S, double K, double T,
-                                               double sigma, double r, double q,
-                                               const std::optional<AlOpts>& opts,
-                                               bool validate,
-                                               double& j_max_rel_err) noexcept {
+ImplicitDiffGreeks al_implicit_diff_put_greeks(double S, double K, double T, double sigma, double r,
+                                               double q, const std::optional<AlOpts> &opts,
+                                               bool validate, double &j_max_rel_err) noexcept {
   ImplicitDiffGreeks out;
   j_max_rel_err = 0.0;
   if (!(S > 0.0) || !(K > 0.0) || !(T > 1.0e-6) || !(sigma > 1.0e-6) || !(r > 0.0)) {
-    return out;  // genuine early-exercise put only
+    return out; // genuine early-exercise put only
   }
   const AlScheme sch = scheme_from_opts(opts);
 
@@ -2805,8 +2822,7 @@ ImplicitDiffGreeks al_implicit_diff_put_greeks(double S, double K, double T,
   const int base_jn = validate ? 60 : sch.n_iter_jn;
   const int base_fp = validate ? 60 : sch.n_iter_fp;
   const int base_sweeps =
-      al_solve_put_counted(K, T, sigma, r, q, sch, nullptr, base_jn, base_fp, base, ws,
-                           base_resid);
+      al_solve_put_counted(K, T, sigma, r, q, sch, nullptr, base_jn, base_fp, base, ws, base_resid);
   if (base_sweeps < 0) {
     return out;
   }
@@ -2816,18 +2832,18 @@ ImplicitDiffGreeks al_implicit_diff_put_greeks(double S, double K, double T,
   const double xmax = base.xmax;
   // Active interior nodes are 1..n-1 (node 0: tau=0, y fixed 0). Skip any degenerate
   // tau<=0 node (only node 0 in practice).
-  const int m = static_cast<int>(n) - 1;  // implicit-diff system dimension
+  const int m = static_cast<int>(n) - 1; // implicit-diff system dimension
   if (m < 1 || n > kAlMaxNodes) {
     return out;
   }
 
-  int cost_passes = 0;  // full-node residual-equivalent passes beyond the base solve
+  int cost_passes = 0; // full-node residual-equivalent passes beyond the base solve
 
   // Pure collocation residual R_i(y; σ, r) at a GIVEN y-vector (no sweep, no
   // mutation of `base`): R_i = y_i − y_from_b(α_i·N_i/D_i, xmax), R_0 = 0. One call
   // is ONE residual-equivalent pass.
-  AlBoundary scr = base;  // scratch: only .y varies
-  auto residual = [&](const double* yv, double sig, double rr, double* Rout) noexcept {
+  AlBoundary scr = base; // scratch: only .y varies
+  auto residual = [&](const double *yv, double sig, double rr, double *Rout) noexcept {
     for (std::uint16_t i = 0; i < n; ++i) {
       scr.y[i] = yv[i];
     }
@@ -2941,10 +2957,10 @@ ImplicitDiffGreeks al_implicit_diff_put_greeks(double S, double K, double T,
     AlBoundary bp{}, bm{};
     AlWorkspace wp{}, wm{};
     double rp0 = 0.0, rm0 = 0.0;
-    const int sp = al_solve_put_counted(K, T, sigma + hval, r, q, sch, nullptr, 60, 60,
-                                        bp, wp, rp0);
-    const int sm = al_solve_put_counted(K, T, sigma - hval, r, q, sch, nullptr, 60, 60,
-                                        bm, wm, rm0);
+    const int sp =
+        al_solve_put_counted(K, T, sigma + hval, r, q, sch, nullptr, 60, 60, bp, wp, rp0);
+    const int sm =
+        al_solve_put_counted(K, T, sigma - hval, r, q, sch, nullptr, 60, 60, bm, wm, rm0);
     if (sp > 0 && sm > 0) {
       for (int i = 0; i < m; ++i) {
         const std::uint16_t inode = static_cast<std::uint16_t>(i + 1);
@@ -2960,14 +2976,14 @@ ImplicitDiffGreeks al_implicit_diff_put_greeks(double S, double K, double T,
 
   // Price at spot `spot` from a MOVED boundary (y-vector) at (sig, rr): euro +
   // premium with the same clamps as al_put_price_from_boundary. One premium pass.
-  auto price_moved_spot = [&](const double* yv, double sig, double rr,
+  auto price_moved_spot = [&](const double *yv, double sig, double rr,
                               double spot) noexcept -> double {
     for (std::uint16_t i = 0; i < n; ++i) {
       scr.y[i] = yv[i];
     }
     return al_put_price_from_boundary(scr, ws, spot, K, T, sig, rr, q);
   };
-  auto price_moved = [&](const double* yv, double sig, double rr) noexcept -> double {
+  auto price_moved = [&](const double *yv, double sig, double rr) noexcept -> double {
     return price_moved_spot(yv, sig, rr, S);
   };
 
@@ -2997,7 +3013,7 @@ ImplicitDiffGreeks al_implicit_diff_put_greeks(double S, double K, double T,
                         price_moved_spot(ym.data(), sigma - hs, r, S - hSv)) /
                        (2.0 * hSv);
     out.vanna = (dvp - dvm) / (2.0 * hs);
-    cost_passes += 1;  // premium-eval-equivalents for the σ propagation bundle
+    cost_passes += 1; // premium-eval-equivalents for the σ propagation bundle
   }
   {
     const double hr = 1.0e-4;
@@ -3041,6 +3057,6 @@ ImplicitDiffGreeks al_implicit_diff_put_greeks(double S, double K, double T,
   return out;
 }
 
-}  // namespace detail
+} // namespace detail
 
-}  // namespace atx::vol
+} // namespace atx::vol

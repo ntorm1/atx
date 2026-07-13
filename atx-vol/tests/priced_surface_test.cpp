@@ -80,15 +80,13 @@ struct RefCarry {
     if (T == first.T) {
       return RefCarry{first.forward, first.q_eff};
     }
-    return RefCarry{s.pricing().S * std::exp((s.rate_at(T) - first.q_eff) * T),
-                    first.q_eff};
+    return RefCarry{s.pricing().S * std::exp((s.rate_at(T) - first.q_eff) * T), first.q_eff};
   }
   if (T >= last.T) {
     if (T == last.T) {
       return RefCarry{last.forward, last.q_eff};
     }
-    return RefCarry{s.pricing().S * std::exp((s.rate_at(T) - last.q_eff) * T),
-                    last.q_eff};
+    return RefCarry{s.pricing().S * std::exp((s.rate_at(T) - last.q_eff) * T), last.q_eff};
   }
   std::size_t hi = 0;
   while (hi < ctx.size() && ctx[hi].T <= T) {
@@ -366,8 +364,7 @@ TEST(PricedSurface, OffPillarCarryPreservesForwardIdentity) {
 
   for (const double T : probes) {
     const double forward = s.forward_at(T);
-    const double reproduced =
-        s.pricing().S * std::exp((s.rate_at(T) - s.q_eff_at(T)) * T);
+    const double reproduced = s.pricing().S * std::exp((s.rate_at(T) - s.q_eff_at(T)) * T);
     EXPECT_NEAR(reproduced, forward, 2.0e-13 * forward) << "T=" << T;
     EXPECT_DOUBLE_EQ(forward, ref_forward_at(s, T)) << "T=" << T;
   }
@@ -469,8 +466,8 @@ TEST(PricedSurface, PinnedPreChangeAnchors) {
   EXPECT_TRUE(std::isfinite(s.iv(K, T)));
   EXPECT_TRUE(std::isfinite(s.total_variance(K, T)));
   EXPECT_GT(s.forward_at(T), 0.0);
-  EXPECT_NEAR(s.pricing().S * std::exp((s.rate_at(T) - s.q_eff_at(T)) * T),
-              s.forward_at(T), 2.0e-13 * s.forward_at(T));
+  EXPECT_NEAR(s.pricing().S * std::exp((s.rate_at(T) - s.q_eff_at(T)) * T), s.forward_at(T),
+              2.0e-13 * s.forward_at(T));
   const auto fv = s.fair_value(K, T, side);
   ASSERT_TRUE(fv.has_value());
   const auto gk = s.greeks(K, T, side);
@@ -614,9 +611,9 @@ TEST(PricedSurface, EvaluateBatchLadderBitIdenticalToPerEntry) {
   std::vector<double> out_iv(n), out_px(n);
   std::vector<AmericanGreeks> out_gk(n);
   std::vector<Status> out_st(n);
-  const Status rc = s.evaluate_batch(Ks, Ts, sides, fields, /*analytic=*/false,
-                                     PricedSurface::EvaluationSoA{out_iv, out_px, out_gk, out_st,
-                                                                 {}, {}});
+  const Status rc =
+      s.evaluate_batch(Ks, Ts, sides, fields, /*analytic=*/false,
+                       PricedSurface::EvaluationSoA{out_iv, out_px, out_gk, out_st, {}, {}});
   ASSERT_TRUE(rc.has_value());
 
   for (std::size_t i = 0; i < n; ++i) {
@@ -654,9 +651,9 @@ TEST(PricedSurface, EvaluateBatchMixedTBitIdenticalToPerEntry) {
   std::vector<double> out_iv(n), out_px(n);
   std::vector<AmericanGreeks> out_gk(n);
   std::vector<Status> out_st(n);
-  const Status rc = s.evaluate_batch(Ks, Ts, sides, fields, /*analytic=*/true,
-                                     PricedSurface::EvaluationSoA{out_iv, out_px, out_gk, out_st,
-                                                                 {}, {}});
+  const Status rc =
+      s.evaluate_batch(Ks, Ts, sides, fields, /*analytic=*/true,
+                       PricedSurface::EvaluationSoA{out_iv, out_px, out_gk, out_st, {}, {}});
   ASSERT_TRUE(rc.has_value());
   for (std::size_t i = 0; i < n; ++i) {
     const auto e = s.evaluate(Ks[i], Ts[i], sides[i], fields, /*analytic=*/true);
@@ -723,7 +720,7 @@ TEST(PricedSurface, PriceOnlyResolvedBatchPoisonsIvWhenValidResolutionFailsToPri
   for (std::size_t i = 0; i < Ks.size(); ++i) {
     const auto expected = s.evaluate(Ks[i], Ts[i], sides[i], EF::Iv | EF::Price, false);
     EXPECT_EQ(status[i].has_value(), expected.status.has_value()) << i;
-    EXPECT_TRUE(bits_equal(iv[i], expected.iv)) << i;      // includes the NaN poison
+    EXPECT_TRUE(bits_equal(iv[i], expected.iv)) << i; // includes the NaN poison
     EXPECT_TRUE(bits_equal(price[i], expected.price)) << i;
     if (!expected.status.has_value()) {
       EXPECT_EQ(status[i].error().code(), expected.status.error().code()) << i;
@@ -738,7 +735,7 @@ TEST(PricedSurface, PriceOnlyResolvedBatchPoisonsIvWhenValidResolutionFailsToPri
 
 TEST(PricedSurface, EvaluateDedicatedDeltaAndVegaMatchScalarReferencesExactly) {
   const PricedSurface surfs[] = {make_essvi_varycarry(1), make_convex(3, 6, 40),
-                                  make_essvi(4, 6, AmericanMethod::Baw)};
+                                 make_essvi(4, 6, AmericanMethod::Baw)};
   const Grid g = method_grid();
   for (const PricedSurface &s : surfs) {
     for (const double K : g.Ks) {
@@ -854,8 +851,7 @@ TEST(PricedSurface, EvaluateBatchCombinedMaskPreservesFullBundleAndMirrorsReques
   std::vector<AmericanGreeks> greeks(strikes.size());
   std::vector<double> delta(strikes.size()), vega(strikes.size());
   std::vector<Status> status(strikes.size());
-  const EF fields =
-      EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder | EF::Delta | EF::Vega;
+  const EF fields = EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder | EF::Delta | EF::Vega;
 
   ASSERT_TRUE(s.evaluate_batch(strikes, tenors, sides, fields, true,
                                PricedSurface::EvaluationSoA{iv, price, greeks, status, delta, vega})
@@ -876,10 +872,9 @@ TEST(PricedSurface, EvaluateBatchCombinedMaskPreservesFullBundleAndMirrorsReques
 TEST(PricedSurface, FullBundleErrorPoisonsEveryNumericField) {
   const PricedSurface unsupported =
       make_essvi(2, 6, AmericanMethod::AndersenLake, al_fast_opts(), -0.01, -0.05);
-  const auto result = unsupported.evaluate(100.0, 0.29, Side::Put,
-                                           EF::Iv | EF::Price | EF::FirstOrder |
-                                               EF::SecondOrder | EF::Delta | EF::Vega,
-                                           true);
+  const auto result = unsupported.evaluate(
+      100.0, 0.29, Side::Put,
+      EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder | EF::Delta | EF::Vega, true);
   ASSERT_FALSE(result.status.has_value());
   EXPECT_TRUE(std::isnan(result.iv));
   EXPECT_TRUE(std::isnan(result.price));
@@ -926,8 +921,8 @@ TEST(PricedSurface, EvaluateBatchSelectiveRoutesAreThreadDeterministic) {
       EXPECT_TRUE(bits_equal(deltas[worker][i], deltas[0][i]));
       EXPECT_TRUE(bits_equal(vegas[worker][i], vegas[0][i]));
       EXPECT_EQ(statuses[worker][i].has_value(), statuses[0][i].has_value());
-      const auto scalar = s.evaluate(strikes[i], tenors[i], sides[i],
-                                     EF::Price | EF::Delta | EF::Vega, true);
+      const auto scalar =
+          s.evaluate(strikes[i], tenors[i], sides[i], EF::Price | EF::Delta | EF::Vega, true);
       EXPECT_EQ(statuses[worker][i].has_value(), scalar.status.has_value());
       if (!scalar.status.has_value()) {
         ASSERT_FALSE(statuses[worker][i].has_value());
@@ -984,8 +979,8 @@ TEST(PricedSurface, SelectiveRouteCountersProveFullBundleIsNotCalled) {
     ASSERT_TRUE(s.evaluate_batch(
                      strikes, tenors, sides,
                      EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder | EF::Delta | EF::Vega,
-                     true, PricedSurface::EvaluationSoA{iv, price, greeks, statuses, delta_out,
-                                                        vega_out})
+                     true,
+                     PricedSurface::EvaluationSoA{iv, price, greeks, statuses, delta_out, vega_out})
                     .has_value());
     snapshot = counters::snapshot();
     EXPECT_EQ(snapshot.get(counters::Counter::SurfaceDeltaRoutes), 0u);
@@ -1044,9 +1039,9 @@ TEST(PricedSurface, EvaluateBatchRejectsExactOutputAliasBeforeWriting) {
   const std::vector<double> before = iv_and_price;
   std::vector<Status> status(2);
 
-  const Status result =
-      s.evaluate_batch(Ks, Ts, sides, EF::Iv | EF::Price, false,
-                       PricedSurface::EvaluationSoA{iv_and_price, iv_and_price, {}, status, {}, {}});
+  const Status result = s.evaluate_batch(
+      Ks, Ts, sides, EF::Iv | EF::Price, false,
+      PricedSurface::EvaluationSoA{iv_and_price, iv_and_price, {}, status, {}, {}});
 
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
@@ -1106,20 +1101,18 @@ TEST(PricedSurface, EvaluateBatchValidatesSpans) {
   std::vector<Status> st(2);
   // K/T length mismatch.
   const std::vector<double> Ts1{0.30};
-  EXPECT_FALSE(
-      s.evaluate_batch(Ks, Ts1, sides, EF::Iv, false,
-                       PricedSurface::EvaluationSoA{iv, px, gk, st, {}, {}})
-          .has_value());
+  EXPECT_FALSE(s.evaluate_batch(Ks, Ts1, sides, EF::Iv, false,
+                                PricedSurface::EvaluationSoA{iv, px, gk, st, {}, {}})
+                   .has_value());
   // Greeks requested but greeks out-span empty.
   EXPECT_FALSE(s.evaluate_batch(Ks, Ts, sides, EF::FirstOrder, false,
                                 PricedSurface::EvaluationSoA{iv, px, {}, st, {}, {}})
                    .has_value());
   // Undersized iv out-span.
   std::vector<double> iv1(1);
-  EXPECT_FALSE(
-      s.evaluate_batch(Ks, Ts, sides, EF::Iv, false,
-                       PricedSurface::EvaluationSoA{iv1, px, gk, st, {}, {}})
-          .has_value());
+  EXPECT_FALSE(s.evaluate_batch(Ks, Ts, sides, EF::Iv, false,
+                                PricedSurface::EvaluationSoA{iv1, px, gk, st, {}, {}})
+                   .has_value());
 }
 
 // ── C1.7: PricedSurface::vega — single-axis eval, no full Greek bundle ───────
@@ -1174,4 +1167,163 @@ TEST(PricedSurfaceVega, DegenerateInputErrorContract) {
     ASSERT_FALSE(d.has_value());
     EXPECT_EQ(vg.error().code(), d.error().code());
   }
+}
+
+// Archived-surface query accelerators are explicit derived state. The historical
+// archive contract stays cold unless a caller opts into a named fast tier.
+TEST(PricedSurfaceQueryPricing, LegacyAndColdReferenceRemainColdAndCacheFree) {
+  const PricedSurface legacy = make_essvi(91, 6);
+  EXPECT_EQ(legacy.query_pricing_tier(), QueryPricingTier::LegacyCompatible);
+  EXPECT_EQ(legacy.query_cache_pair_count(), 0u);
+  EXPECT_EQ(legacy.query_pricing_route(100.0, 0.29, Side::Put), QueryPricingRoute::ColdReference);
+
+  PricedSurface cold_source = make_essvi(91, 6);
+  auto cold_result = std::move(cold_source).with_query_pricing(QueryPricingTier::ColdReference);
+  ASSERT_TRUE(cold_result.has_value());
+  const PricedSurface cold = std::move(*cold_result);
+  EXPECT_EQ(cold.query_pricing_tier(), QueryPricingTier::ColdReference);
+  EXPECT_EQ(cold.query_cache_pair_count(), 0u);
+
+  const auto legacy_price = legacy.fair_value(100.0, 0.29, Side::Put);
+  const auto cold_price = cold.fair_value(100.0, 0.29, Side::Put);
+  ASSERT_TRUE(legacy_price.has_value());
+  ASSERT_TRUE(cold_price.has_value());
+  EXPECT_EQ(hexbits(*legacy_price), hexbits(*cold_price));
+}
+
+TEST(PricedSurfaceQueryPricing, RepresentativeFastCoversEveryScalarAndFusedRoute) {
+  PricedSurface source = make_essvi(92, 6);
+  auto prepared = std::move(source).with_query_pricing(QueryPricingTier::RepresentativeFast);
+  ASSERT_TRUE(prepared.has_value());
+  const PricedSurface fast = std::move(*prepared);
+
+  constexpr double K = 100.0;
+  constexpr double T = 0.29;
+  constexpr Side side = Side::Put;
+  EXPECT_EQ(fast.query_pricing_tier(), QueryPricingTier::RepresentativeFast);
+  EXPECT_EQ(fast.query_cache_pair_count(), 1u);
+  EXPECT_EQ(fast.query_pricing_route(K, T, side), QueryPricingRoute::RepresentativeFast);
+
+  const auto price = fast.fair_value(K, T, side);
+  const auto greeks = fast.greeks(K, T, side);
+  const auto analytic = fast.greeks_analytic(K, T, side);
+  const auto delta = fast.delta(K, T, side);
+  const auto vega = fast.vega(K, T, side);
+  ASSERT_TRUE(price.has_value());
+  ASSERT_TRUE(greeks.has_value());
+  ASSERT_TRUE(analytic.has_value());
+  ASSERT_TRUE(delta.has_value());
+  ASSERT_TRUE(vega.has_value());
+  EXPECT_EQ(*greeks, *analytic); // analytic flag is irrelevant to a cached jet
+  EXPECT_NEAR(*price, greeks->price, 1.0e-10 * (1.0 + std::fabs(*price)));
+  EXPECT_EQ(hexbits(*delta), hexbits(greeks->delta));
+  EXPECT_NEAR(*vega, greeks->vega, 1.0e-11 * (1.0 + std::fabs(greeks->vega)));
+
+  const EF fields = EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder;
+  const PricedSurface::FusedResult fused = fast.evaluate(K, T, side, fields, true);
+  ASSERT_TRUE(fused.status.has_value());
+  EXPECT_NEAR(fused.price, *price, 1.0e-10 * (1.0 + std::fabs(*price)));
+  EXPECT_EQ(fused.greeks, *greeks);
+}
+
+TEST(PricedSurfaceQueryPricing, PriceOnlyBatchCannotBypassRepresentativeFastTier) {
+  PricedSurface source = make_essvi(93, 6);
+  auto prepared = std::move(source).with_query_pricing(QueryPricingTier::RepresentativeFast);
+  ASSERT_TRUE(prepared.has_value());
+  const PricedSurface fast = std::move(*prepared);
+
+  const std::vector<double> strikes{92.0, 100.0, 108.0, 115.0};
+  const std::vector<double> tenors(strikes.size(), 0.29);
+  const std::vector<Side> sides{Side::Call, Side::Put, Side::Call, Side::Put};
+  std::vector<double> iv(strikes.size());
+  std::vector<double> price(strikes.size());
+  std::vector<Status> status(strikes.size());
+  const Status batch = fast.evaluate_batch(
+      strikes, tenors, sides, EF::Iv | EF::Price, false,
+      PricedSurface::EvaluationSoA{iv, price, {}, status, {}, {}}, simd::SimdIsa::ForceAvx2);
+  ASSERT_TRUE(batch.has_value());
+  for (std::size_t i = 0; i < strikes.size(); ++i) {
+    const auto scalar = fast.fair_value(strikes[i], tenors[i], sides[i]);
+    ASSERT_TRUE(scalar.has_value());
+    ASSERT_TRUE(status[i].has_value());
+    EXPECT_EQ(hexbits(price[i]), hexbits(*scalar)) << "i=" << i;
+  }
+}
+
+TEST(PricedSurfaceQueryPricing, SelectiveBatchUsesFastDeltaAndVegaRoutes) {
+  PricedSurface source = make_essvi(94, 6);
+  auto prepared = std::move(source).with_query_pricing(QueryPricingTier::RepresentativeFast);
+  ASSERT_TRUE(prepared.has_value());
+  const PricedSurface fast = std::move(*prepared);
+
+  const std::vector<double> strikes{95.0, 105.0};
+  const std::vector<double> tenors(strikes.size(), 0.29);
+  const std::vector<Side> sides{Side::Put, Side::Call};
+  std::vector<double> price(strikes.size());
+  std::vector<double> delta(strikes.size());
+  std::vector<double> vega(strikes.size());
+  std::vector<Status> status(strikes.size());
+  const Status batch =
+      fast.evaluate_batch(strikes, tenors, sides, EF::Price | EF::Delta | EF::Vega, true,
+                          PricedSurface::EvaluationSoA{{}, price, {}, status, delta, vega});
+  ASSERT_TRUE(batch.has_value());
+  for (std::size_t i = 0; i < strikes.size(); ++i) {
+    const auto scalar_price = fast.fair_value(strikes[i], tenors[i], sides[i]);
+    const auto scalar_delta = fast.delta(strikes[i], tenors[i], sides[i]);
+    const auto scalar_vega = fast.vega(strikes[i], tenors[i], sides[i]);
+    ASSERT_TRUE(scalar_price.has_value());
+    ASSERT_TRUE(scalar_delta.has_value());
+    ASSERT_TRUE(scalar_vega.has_value());
+    ASSERT_TRUE(status[i].has_value());
+    EXPECT_EQ(hexbits(price[i]), hexbits(*scalar_price));
+    EXPECT_EQ(hexbits(delta[i]), hexbits(*scalar_delta));
+    EXPECT_EQ(hexbits(vega[i]), hexbits(*scalar_vega));
+  }
+}
+
+TEST(PricedSurfaceQueryPricing, OutsideCertifiedBoxFallsBackToColdReference) {
+  PricedSurface fast_source = make_essvi(95, 6);
+  auto prepared = std::move(fast_source).with_query_pricing(QueryPricingTier::RepresentativeFast);
+  ASSERT_TRUE(prepared.has_value());
+  const PricedSurface fast = std::move(*prepared);
+  const PricedSurface cold = make_essvi(95, 6);
+
+  const std::array<std::pair<double, double>, 2> probes{
+      std::pair{kS * std::exp(1.0), 0.29}, // outside fallback k domain
+      std::pair{kS, 0.03},                 // surface-valid, below cache T box
+  };
+  for (const auto &[K, T] : probes) {
+    EXPECT_EQ(fast.query_pricing_route(K, T, Side::Put), QueryPricingRoute::ColdFallback);
+    const auto actual = fast.greeks(K, T, Side::Put);
+    const auto expected = cold.greeks(K, T, Side::Put);
+    ASSERT_TRUE(actual.has_value());
+    ASSERT_TRUE(expected.has_value());
+    EXPECT_EQ(*actual, *expected) << "K=" << K << " T=" << T;
+  }
+}
+
+TEST(PricedSurfaceQueryPricing, CarryBankBuildsBoundedPairsAndServesBlendedJet) {
+  PricedSurface source = make_essvi_varycarry(96);
+  auto prepared = std::move(source).with_query_pricing(QueryPricingTier::CarryBank);
+  ASSERT_TRUE(prepared.has_value());
+  const PricedSurface bank = std::move(*prepared);
+
+  EXPECT_EQ(bank.query_pricing_tier(), QueryPricingTier::CarryBank);
+  EXPECT_GT(bank.query_cache_pair_count(), 1u);
+  EXPECT_LE(bank.query_cache_pair_count(), 16u);
+  constexpr double K = 101.0;
+  constexpr double T = 0.225;
+  EXPECT_EQ(bank.query_pricing_route(K, T, Side::Put), QueryPricingRoute::CarryBank);
+  const auto g = bank.greeks(K, T, Side::Put);
+  const auto ga = bank.greeks_analytic(K, T, Side::Put);
+  ASSERT_TRUE(g.has_value());
+  ASSERT_TRUE(ga.has_value());
+  EXPECT_EQ(*g, *ga);
+}
+
+TEST(PricedSurfaceQueryPricing, FastTierRejectsNonAndersenLakeSurface) {
+  PricedSurface source = make_essvi(97, 6, AmericanMethod::Baw);
+  const auto prepared = std::move(source).with_query_pricing(QueryPricingTier::RepresentativeFast);
+  ASSERT_FALSE(prepared.has_value());
+  EXPECT_EQ(prepared.error().code(), atx::core::ErrorCode::InvalidArgument);
 }
