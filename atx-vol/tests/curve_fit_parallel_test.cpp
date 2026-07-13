@@ -50,6 +50,8 @@ using atx::vol::Chain;
 using atx::vol::chain_index;
 using atx::vol::CurveConfig;
 using atx::vol::data_install;
+using atx::vol::ErrorCode;
+using atx::vol::VolCurveKind;
 using atx::vol::DividendEvent;
 using atx::vol::fit_curve_surface;
 using atx::vol::HybridDivParams;
@@ -508,4 +510,60 @@ TEST(CurveFitParity, ParityOffSkipsSecondDeAmOnSpy) {
     EXPECT_EQ(pr.n, 0u);
   }
   EXPECT_EQ(rep_off->worst_frac_within_bidask, 0.0);
+}
+
+// FIX A gate: the opt-in per-slice LinearVariance fallback. Force EVERY SplineVol
+// slice fit to fail (min_obs set above the per-slice usable-row count). With the
+// flag OFF this is the historical behavior — every slice is dropped, the surface
+// is empty, and fit_curve_surface returns NotFound. With the flag ON, each failed
+// SplineVol slice is retried as LinearVariance (>= 2 nodes) and served, so the
+// board that would otherwise error now produces a full surface of linear slices.
+TEST(CurveFitSliceFallback, LinearFallbackRecoversForcedSplineFailures) {
+  const Underlying under = make_synthetic_underlying();
+
+  CurveConfig cfg;
+  cfg.kind = VolCurveKind::SplineVol;
+  cfg.spline.min_obs = 999;  // force every SplineVol slice fit to fail
+
+  // Flag OFF (default): every slice fails => surface empty => Err (byte-identical
+  // to the historical drop-the-slice path).
+  const SurfaceParityInputs in_off = base_inputs(1);
+  auto rep_off = fit_curve_surface(under, in_off, cfg);
+  ASSERT_FALSE(rep_off.has_value());
+  EXPECT_EQ(rep_off.error().code(), ErrorCode::NotFound);
+
+  // Flag ON: each failed SplineVol slice is recovered via LinearVariance.
+  SurfaceParityInputs in_on = base_inputs(1);
+  in_on.calib.per_slice_linear_fallback = true;
+  auto rep_on = fit_curve_surface(under, in_on, cfg);
+  ASSERT_TRUE(rep_on.has_value()) << rep_on.error().to_string();
+  EXPECT_EQ(rep_on->n_slices, 4u);
+  EXPECT_EQ(rep_on->n_slice_linear_fallback, 4u);
+  ASSERT_EQ(rep_on->surface.n_slices(), 4u);
+  for (std::size_t i = 0; i < rep_on->surface.n_slices(); ++i) {
+    EXPECT_EQ(rep_on->surface.slices()[i]->kind(), VolCurveKind::LinearVariance)
+        << "slice " << i << " should be a linear fallback";
+  }
+}
+
+// The fallback flag must not perturb a board whose primary curve already fits:
+// with the default ConvexDense config (which fits all four synthetic slices), the
+// flag-on surface is bit-identical to flag-off and no fallback slice is used.
+TEST(CurveFitSliceFallback, FlagDoesNotPerturbSucceedingFit) {
+  const Underlying under = make_synthetic_underlying();
+  CurveConfig cfg;  // default = ConvexDense, succeeds on every slice
+
+  const SurfaceParityInputs in_off = base_inputs(1);
+  auto rep_off = fit_curve_surface(under, in_off, cfg);
+  ASSERT_TRUE(rep_off.has_value()) << rep_off.error().to_string();
+
+  SurfaceParityInputs in_on = base_inputs(1);
+  in_on.calib.per_slice_linear_fallback = true;
+  auto rep_on = fit_curve_surface(under, in_on, cfg);
+  ASSERT_TRUE(rep_on.has_value()) << rep_on.error().to_string();
+
+  EXPECT_EQ(rep_off->n_slice_linear_fallback, 0u);
+  EXPECT_EQ(rep_on->n_slice_linear_fallback, 0u);
+  ASSERT_EQ(rep_off->n_slices, rep_on->n_slices);
+  expect_bit_identical(*rep_off, *rep_on, /*strict_finite*/ true);
 }

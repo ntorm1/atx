@@ -238,6 +238,21 @@ struct CalibOpts {
   std::uint32_t min_obs_per_slice{4};
   double max_post_fit_sigma{2.0};
   double max_spread_to_mid_pct{0.60};
+
+  // Opt-in per-slice LinearVariance fallback (coverage recovery). When TRUE and
+  // the configured curve kind is NOT already LinearVariance, a per-slice fit
+  // failure in the curve-agnostic driver (`fit_curve_surface`) is retried for
+  // THAT slice with `VolCurveKind::LinearVariance` before the slice is dropped.
+  // A thin per-expiry-sparse name whose primary (e.g. SplineVol) fit needs more
+  // usable de-Americanized rows than the funnel yields can then still produce a
+  // served linear-in-variance slice from >=2 nodes, instead of dropping the whole
+  // board. The fallback slice goes through the SAME `fit_slice_curve` admission
+  // (>=2 nodes + the union-grid calendar floor against the prior slice) as any
+  // LinearVariance slice — no numerical-sanity check is bypassed. Heterogeneous
+  // (SplineVol + LinearVariance) slices in one surface are already supported.
+  // DEFAULT FALSE => byte-identical to the historical drop-the-slice behavior;
+  // ConvexDense / Svi / eSSVI paths stay bit-identical.
+  bool per_slice_linear_fallback{false};
 };
 
 // The calibration defaults (`ats_vol_calib_default_opts`). Equal to a

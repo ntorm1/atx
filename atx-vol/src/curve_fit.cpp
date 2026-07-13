@@ -402,16 +402,45 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
       ms_fit_slice += elapsed_ms(t_slice0, ProfileClock::now());
     }
     if (!slice_res) {
-      // Diagnostic-only (env-gated, failure path): surface WHY a slice was
-      // dropped so a caller can tell a genuinely-thin expiry from a curve-family
-      // fit defect (e.g. SplineVol ill-conditioning on boards eSSVI fits). No
-      // behavioural change; getenv runs only on the already-failed branch.
-      if (slice_debug_enabled()) {
-        std::fprintf(stderr, "[slice-drop] kind=%d T=%.4f F=%.2f obs=%zu err=%s\n",
-                     static_cast<int>(cfg.kind), T, F, prepared.fit_observations().size(),
-                     slice_res.error().to_string().c_str());
+      // FIX A (opt-in coverage recovery): retry THIS slice with a linear-in-
+      // variance curve before dropping it. A thin per-expiry-sparse name whose
+      // primary (e.g. SplineVol) fit needs more usable de-Am rows than the funnel
+      // (OTM-side-only + bid>0 + audit + floors) yields can still produce a served
+      // LinearVariance slice from >=2 nodes. The fallback re-enters `fit_slice_curve`
+      // with an unchanged CurveConfig except `kind`, so it passes the SAME
+      // admission (>=2 nodes + union-grid calendar floor against the prior slice's
+      // w_prev / calendar_floor_knots) as any LinearVariance slice — no
+      // numerical-sanity check is bypassed. Gated on `per_slice_linear_fallback`
+      // and skipped when the primary kind is already LinearVariance, so the
+      // default path (flag off) is byte-identical to the historical drop.
+      if (in.calib.per_slice_linear_fallback && cfg.kind != VolCurveKind::LinearVariance) {
+        CurveConfig fallback_cfg = cfg;
+        fallback_cfg.kind = VolCurveKind::LinearVariance;
+        const auto t_fb0 = ProfileClock::now();
+        auto fb_res = fit_slice_curve(fallback_cfg, prepared.fit_observations(), F, T, df, w_prev,
+                                      calendar_floor_knots);
+        if (profile) {
+          ms_fit_slice += elapsed_ms(t_fb0, ProfileClock::now());
+        }
+        if (fb_res) {
+          // Recovered: adopt the linear slice and fall through to the normal
+          // commit path (parity scoring + w_prev carry for the next expiry).
+          slice_res = std::move(fb_res);
+          ++out.n_slice_linear_fallback;
+        }
       }
-      continue;
+      if (!slice_res) {
+        // Diagnostic-only (env-gated, failure path): surface WHY a slice was
+        // dropped so a caller can tell a genuinely-thin expiry from a curve-family
+        // fit defect (e.g. SplineVol ill-conditioning on boards eSSVI fits). No
+        // behavioural change; getenv runs only on the already-failed branch.
+        if (slice_debug_enabled()) {
+          std::fprintf(stderr, "[slice-drop] kind=%d T=%.4f F=%.2f obs=%zu err=%s\n",
+                       static_cast<int>(cfg.kind), T, F, prepared.fit_observations().size(),
+                       slice_res.error().to_string().c_str());
+        }
+        continue;
+      }
     }
     const IVolCurve *const slice = slice_res->get();
 
