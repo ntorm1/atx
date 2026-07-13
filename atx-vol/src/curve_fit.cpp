@@ -53,6 +53,22 @@ using ProfileClock = std::chrono::steady_clock;
 #endif
 }
 
+[[nodiscard]] bool slice_debug_enabled() noexcept {
+#if defined(_WIN32)
+  char *raw = nullptr;
+  std::size_t len = 0;
+  if (_dupenv_s(&raw, &len, "ATX_SLICE_DEBUG") != 0 || raw == nullptr) {
+    return false;
+  }
+  const bool enabled = len > 0 && raw[0] != '\0' && raw[0] != '0';
+  std::free(raw);
+  return enabled;
+#else
+  const char *v = std::getenv("ATX_SLICE_DEBUG");
+  return v != nullptr && v[0] != '\0' && v[0] != '0';
+#endif
+}
+
 [[nodiscard]] double elapsed_ms(ProfileClock::time_point t0, ProfileClock::time_point t1) noexcept {
   return std::chrono::duration<double, std::milli>(t1 - t0).count();
 }
@@ -381,6 +397,15 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
       ms_fit_slice += elapsed_ms(t_slice0, ProfileClock::now());
     }
     if (!slice_res) {
+      // Diagnostic-only (env-gated, failure path): surface WHY a slice was
+      // dropped so a caller can tell a genuinely-thin expiry from a curve-family
+      // fit defect (e.g. SplineVol ill-conditioning on boards eSSVI fits). No
+      // behavioural change; getenv runs only on the already-failed branch.
+      if (slice_debug_enabled()) {
+        std::fprintf(stderr, "[slice-drop] kind=%d T=%.4f F=%.2f obs=%zu err=%s\n",
+                     static_cast<int>(cfg.kind), T, F, prepared.fit_observations().size(),
+                     slice_res.error().to_string().c_str());
+      }
       continue;
     }
     const IVolCurve *const slice = slice_res->get();
