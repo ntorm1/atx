@@ -229,7 +229,12 @@ void source_quote_lookup(const Chain &chain, std::span<const FitObs> obs,
     prepare_inputs.iv_tolerance = in.deam.iv_tol;
     prepare_inputs.iv_max_iterations = in.deam.iv_max_iter;
     prepare_inputs.method = in.deam.method;
-    prepare_inputs.policy = PreparedObservationPolicy::Configured;
+    // Opt-in lenient preparation (default Configured => bit-identical). Under
+    // LegacyEssviCompatibility the builder honours the audit knobs below, so the
+    // lenient path still repriced-audits its fitted inversions (risk contract).
+    prepare_inputs.policy = in.fit_prep_policy;
+    prepare_inputs.audit_fit_inversions = in.deam.audit_fit_inversions;
+    prepare_inputs.max_iv_residual_half_spreads = in.deam.max_iv_residual_half_spreads;
     prepare_inputs.prepare_scoring = in.score_parity;
     const auto t_obs0 = ProfileClock::now();
     Result<PreparedSlice> prepared = PreparedSlice::create(chain, prepare_inputs);

@@ -43,6 +43,7 @@
 #include "atx/vol/curve.hpp"        // DividendEvent
 #include "atx/vol/deamer.hpp"       // DeAmOptions
 #include "atx/vol/parity.hpp"       // ParityReport
+#include "atx/vol/prepared_policy.hpp"  // PreparedObservationPolicy
 #include "atx/vol/types.hpp"        // Result
 #include "atx/vol/universe.hpp"     // Underlying
 #include "atx/vol/vol_surface.hpp"  // VolSurface
@@ -158,6 +159,17 @@ struct SurfaceParityInputs {
   // serial certification pass bit-for-bit. Only consulted by
   // `fit_curve_surface`; `run_surface_parity` does not read this field.
   std::optional<AmericanCorrectionCaches> deam_cert_caches{};
+
+  // Observation-preparation policy for the polymorphic fit pre-pass
+  // (`fit_curve_surface` -> `run_deam_prepass`). Configured (default) applies
+  // CalibOpts through the shared, always-audited calibration builder and is
+  // bit-identical to the historical curve-driver path — the strict usable-row
+  // floor can starve thin single-name expiries. LegacyEssviCompatibility uses
+  // the permissive eSSVI cold-driver predicate (the policy the served eSSVI
+  // `run_surface_parity` path prepares under), keeping those thin expiries;
+  // under it the pre-pass audits fitted inversions per `deam.audit_fit_inversions`.
+  // Only consulted by `fit_curve_surface`; `run_surface_parity` does not read it.
+  PreparedObservationPolicy fit_prep_policy{PreparedObservationPolicy::Configured};
 };
 
 // Per-fitted-slice pricing context: everything the composable facade

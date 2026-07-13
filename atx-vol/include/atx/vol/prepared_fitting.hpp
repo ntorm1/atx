@@ -23,6 +23,7 @@
 
 #include "atx/vol/calib.hpp"
 #include "atx/vol/deamer.hpp"
+#include "atx/vol/prepared_policy.hpp" // PreparedObservationPolicy (leaf definition)
 #include "atx/vol/types.hpp"
 #include "atx/vol/universe.hpp"
 
@@ -46,10 +47,10 @@ struct ObservationKey {
 
 using ObservationRejectionReason = ObsRejectionReason;
 
-enum class PreparedObservationPolicy : std::uint8_t {
-  Configured = 0,
-  LegacyEssviCompatibility,
-};
+// PreparedObservationPolicy is defined in atx/vol/prepared_policy.hpp (included
+// above) — split into a leaf header so structs whose default member initializer
+// names ::Configured (SurfaceParityInputs, SessionInputs, PricerConfig) get the
+// complete enum without the include cycle prepared_fitting.hpp would create.
 // DEFERRED (invariant #4.9 — explicit, not silent): the served eSSVI path
 // deliberately prepares under LegacyEssviCompatibility for byte-compatibility
 // with the historical cold driver, even though the family selector scores

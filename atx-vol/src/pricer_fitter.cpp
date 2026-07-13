@@ -534,6 +534,9 @@ Status PricerFitter::fit(const OptionChain &chain,
   if (cfg_.use_deam_cache_for_fit.has_value()) {
     in.use_deam_cache_for_fit = *cfg_.use_deam_cache_for_fit;
   }
+  if (cfg_.fit_prep_policy) in.fit_prep_policy = *cfg_.fit_prep_policy;
+  if (cfg_.audit_fit_inversions) in.deam.audit_fit_inversions = *cfg_.audit_fit_inversions;
+  if (cfg_.warm_start_carry) in.deam.warm_start_carry = *cfg_.warm_start_carry;
   if (cfg_.max_obs_per_slice.has_value()) {
     in.calib.max_obs_per_slice = *cfg_.max_obs_per_slice;
   }
@@ -580,6 +583,7 @@ Status PricerFitter::fit(const OptionChain &chain,
     sp.score_parity = in.score_parity;
     sp.enforce_calendar_floor = in.enforce_calendar_floor;
     sp.use_deam_cache_for_fit = in.use_deam_cache_for_fit;
+    sp.fit_prep_policy = in.fit_prep_policy;
     Result<SelectorResult> selected = select_curve(chain.underlying(), sp, cfg_.selector);
     if (!selected.has_value()) {
       SurfaceBuildReport report;
@@ -751,6 +755,9 @@ Status PricerFitter::fit(const OptionChain &chain,
     if (cfg_.use_deam_cache_for_fit.has_value()) {
       in.use_deam_cache_for_fit = *cfg_.use_deam_cache_for_fit;
     }
+    if (cfg_.fit_prep_policy) in.fit_prep_policy = *cfg_.fit_prep_policy;
+    if (cfg_.audit_fit_inversions) in.deam.audit_fit_inversions = *cfg_.audit_fit_inversions;
+    if (cfg_.warm_start_carry) in.deam.warm_start_carry = *cfg_.warm_start_carry;
     if (cfg_.max_obs_per_slice.has_value()) {
       in.calib.max_obs_per_slice = *cfg_.max_obs_per_slice;
     }
@@ -1083,6 +1090,7 @@ Status PricerFitter::fit(const OptionChain &chain,
     sp.score_parity = in.score_parity;
     sp.enforce_calendar_floor = in.enforce_calendar_floor;
     sp.use_deam_cache_for_fit = in.use_deam_cache_for_fit;
+    sp.fit_prep_policy = in.fit_prep_policy;
     Result<SelectorResult> selected = select_curve(chain.underlying(), sp, cfg_.selector);
     if (selected.has_value()) {
       SelectorResult chosen = std::move(*selected);

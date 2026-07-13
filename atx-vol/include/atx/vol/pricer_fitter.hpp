@@ -37,6 +37,7 @@
 #include "atx/vol/curve.hpp"          // DividendEvent
 #include "atx/vol/curve_selector.hpp" // SelectorConfig, SelectorResult
 #include "atx/vol/fit_policy.hpp"     // FitContext, FitPolicyConfig, FitDecision
+#include "atx/vol/prepared_policy.hpp" // PreparedObservationPolicy
 #include "atx/vol/session.hpp"        // VolaSession, FitPreset, SessionDiagnostics
 #include "atx/vol/surface_policy.hpp" // explicit mark/risk purpose and quality policy
 #include "atx/vol/types.hpp"          // Result, Status, Side
@@ -155,6 +156,20 @@ struct PricerConfig {
   std::optional<bool> score_parity{};
   std::optional<bool> enforce_calendar_floor{};
   std::optional<bool> use_deam_cache_for_fit{};
+  // Optional overrides for the polymorphic-fit observation-preparation policy and
+  // its fit-inversion audit. nullopt (default) => no override, bit-identical to
+  // the session default (Configured / preset-derived audit). Set fit_prep_policy
+  // to LegacyEssviCompatibility to keep thin single-name expiries the strict
+  // usable-row floor would starve (see SessionInputs::fit_prep_policy);
+  // audit_fit_inversions gates the lenient path's cold-reference fit audit.
+  std::optional<PreparedObservationPolicy> fit_prep_policy{};
+  std::optional<bool> audit_fit_inversions{};
+  // Opt into the cross-pair warm start for the term-borrow carry solve
+  // (DeAmOptions::warm_start_carry): seeds each near-ATM pair's borrow
+  // fixed-point from the previous pair's converged state, cutting the
+  // American-solve count in the de-Am hot path. nullopt => no override
+  // (bit-identical cold carry solve).
+  std::optional<bool> warm_start_carry{};
   // Optional per-slice cap applied before American-IV de-Am inversion. nullopt
   // => use the preset default; 0 => no cap.
   std::optional<std::uint32_t> max_obs_per_slice{};

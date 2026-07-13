@@ -54,6 +54,7 @@
 #include "atx/vol/corpus.hpp"        // CorpusBoard, corpus_board_from_opra
 #include "atx/vol/opra_batch.hpp"    // OpraBatchSpec, load_opra_daterange
 #include "atx/vol/parallel_for.hpp"  // parallel_for, atx_auto_worker_count
+#include "atx/vol/prepared_policy.hpp" // PreparedObservationPolicy
 #include "atx/vol/pricer_fitter.hpp" // PricerFitter, PricerConfig, OutputField
 #include "atx/vol/session.hpp"       // FitPreset, SessionDiagnostics
 #include "atx/vol/types.hpp"         // Result
@@ -149,7 +150,9 @@ double pctile(std::vector<double> &v, double p) {
 
 // Build a SplineVol-pinned config from CLI knobs.
 PricerConfig make_spline_config(FitPreset preset, const FitContext &ctx, double lambda,
-                                double mult_floor, std::size_t min_obs) {
+                                double mult_floor, std::size_t min_obs,
+                                const std::string &fit_prep_arg, bool audit_fit_inv,
+                                bool warm_carry) {
   PricerConfig cfg;
   cfg.preset = preset;
   cfg.context = ctx;
@@ -160,6 +163,16 @@ PricerConfig make_spline_config(FitPreset preset, const FitContext &ctx, double 
   cc.spline.mult_floor = mult_floor;
   cc.spline.min_obs = min_obs;
   cfg.curve = cc;
+  // Observation-preparation policy for the polymorphic (SplineVol) fit path.
+  // "configured" (default) reproduces the historical strict-floor baseline;
+  // "legacy" keeps thin single-name expiries via the permissive eSSVI predicate.
+  cfg.fit_prep_policy = (fit_prep_arg == "legacy")
+                            ? PreparedObservationPolicy::LegacyEssviCompatibility
+                            : PreparedObservationPolicy::Configured;
+  cfg.audit_fit_inversions = audit_fit_inv;
+  // Opt into the cross-pair warm start for the de-Am carry solve (off = the
+  // bit-identical cold reference path).
+  cfg.warm_start_carry = warm_carry;
   return cfg;
 }
 
@@ -169,6 +182,11 @@ int main(int argc, char **argv) {
   std::string opra_root, date, symbols_file, out_csv = "opra_spline_bench_results.csv";
   std::string snapshot_suffix = "T14:00:00Z";
   std::string preset_name_arg = "accurate";
+  // Observation-preparation policy knobs. Defaults reproduce the current report
+  // baseline: strict "configured" preparation with fit-inversion audit ON.
+  std::string fit_prep_arg = "configured";
+  bool audit_fit_inv = true;
+  bool warm_carry = false;
   double r = 0.043;
   double spline_lambda = 1.0e-3;
   double spline_mult_floor = 0.05;
@@ -197,6 +215,9 @@ int main(int argc, char **argv) {
     else if (a == "--spline-min-obs") spline_min_obs = static_cast<std::size_t>(std::strtoull(nv(), nullptr, 10));
     else if (a == "--profile-symbol") profile_symbol = nv();
     else if (a == "--profile-iters") profile_iters = static_cast<std::size_t>(std::strtoull(nv(), nullptr, 10));
+    else if (a == "--fit-prep") fit_prep_arg = nv();
+    else if (a == "--no-audit-fit-inv") audit_fit_inv = false;
+    else if (a == "--warm-carry") warm_carry = true;
     else {
       std::fprintf(stderr, "unknown arg: %s\n", argv[i]);
       return 2;
@@ -208,6 +229,7 @@ int main(int argc, char **argv) {
                  "[--symbols-file FILE] [--snapshot-suffix T14:00:00Z] [--r 0.043] "
                  "[--preset accurate] [--fit-workers N] [--limit N] [--out FILE] [--no-value] "
                  "[--spline-lambda X] [--spline-mult-floor X] [--spline-min-obs N] "
+                 "[--fit-prep configured|legacy] [--no-audit-fit-inv] [--warm-carry] "
                  "[--profile-symbol SYM] [--profile-iters N]\n");
     return 2;
   }
@@ -230,6 +252,8 @@ int main(int argc, char **argv) {
               fit_workers);
   std::printf("[spline] lambda=%.3g mult_floor=%.3g min_obs=%zu grid=29pt(kSrMoneynessGrid)\n",
               spline_lambda, spline_mult_floor, spline_min_obs);
+  std::printf("[prep] fit-prep=%s audit-fit-inv=%s\n", fit_prep_arg.c_str(),
+              audit_fit_inv ? "on" : "off");
 #if defined(NDEBUG)
   std::printf("[build] Release (NDEBUG)\n");
 #else
@@ -306,7 +330,8 @@ int main(int argc, char **argv) {
       row.n_options = chain->ids().size();
 
       const PricerConfig cfg = make_spline_config(preset, board.fit_context, spline_lambda,
-                                                  spline_mult_floor, spline_min_obs);
+                                                  spline_mult_floor, spline_min_obs,
+                                                  fit_prep_arg, audit_fit_inv, warm_carry);
       PricerFitter fitter{cfg};
 
       const auto t2 = Clock::now();
@@ -535,7 +560,8 @@ int main(int argc, char **argv) {
         std::printf("  chain build failed: %s\n", chain.error().to_string().c_str());
       } else {
         const PricerConfig cfg = make_spline_config(preset, board.fit_context, spline_lambda,
-                                                    spline_mult_floor, spline_min_obs);
+                                                    spline_mult_floor, spline_min_obs,
+                                                    fit_prep_arg, audit_fit_inv, warm_carry);
         std::vector<double> t_fit;
         t_fit.reserve(profile_iters);
         std::size_t n_slices = 0;
