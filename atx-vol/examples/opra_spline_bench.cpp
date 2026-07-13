@@ -44,6 +44,7 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -56,7 +57,9 @@
 #include "atx/vol/parallel_for.hpp"  // parallel_for, atx_auto_worker_count
 #include "atx/vol/prepared_policy.hpp" // PreparedObservationPolicy
 #include "atx/vol/pricer_fitter.hpp" // PricerFitter, PricerConfig, OutputField
-#include "atx/vol/session.hpp"       // FitPreset, SessionDiagnostics
+#include "atx/vol/session.hpp"       // FitPreset, SessionDiagnostics, SessionInputs
+#include "atx/vol/surface_parity.hpp" // CalendarRepair
+#include "atx/vol/american.hpp"      // al_fast_opts, al_default_opts
 #include "atx/vol/types.hpp"         // Result
 #include "atx/vol/vol_curve.hpp"     // VolCurveKind, CurveConfig, to_string
 
@@ -196,6 +199,15 @@ int main(int argc, char **argv) {
   bool do_value = true;
   std::string profile_symbol;
   std::size_t profile_iters = 200;
+  // De-Am / calendar sweep overrides applied via session_overlay AFTER the
+  // preset + pinned curve + PricerConfig overrides. Each nullopt keeps the
+  // preset default, so a plain run is byte-identical to the historical path.
+  std::optional<std::uint32_t> ov_max_borrow_pairs, ov_n_atm;
+  std::optional<bool> ov_al_fast, ov_score_parity, ov_cal_floor;
+  std::optional<double> ov_iv_tol;
+  std::optional<int> ov_cal_repair; // 0=None, 1=MonotoneFit
+  std::optional<std::uint32_t> ov_max_obs; // per-slice de-Am inversion cap (0 = none)
+  std::optional<bool> ov_corr_cache;       // use_correction_cache override
 
   for (int i = 1; i < argc; ++i) {
     const std::string_view a = argv[i];
@@ -218,6 +230,15 @@ int main(int argc, char **argv) {
     else if (a == "--fit-prep") fit_prep_arg = nv();
     else if (a == "--no-audit-fit-inv") audit_fit_inv = false;
     else if (a == "--warm-carry") warm_carry = true;
+    else if (a == "--max-borrow-pairs") ov_max_borrow_pairs = static_cast<std::uint32_t>(std::strtoul(nv(), nullptr, 10));
+    else if (a == "--n-atm") ov_n_atm = static_cast<std::uint32_t>(std::strtoul(nv(), nullptr, 10));
+    else if (a == "--al") { const std::string v = nv(); ov_al_fast = (v == "fast"); }
+    else if (a == "--iv-tol") ov_iv_tol = std::strtod(nv(), nullptr);
+    else if (a == "--calendar-repair") { const std::string v = nv(); ov_cal_repair = (v == "monotone") ? 1 : 0; }
+    else if (a == "--no-score-parity") ov_score_parity = false;
+    else if (a == "--no-cal-floor") ov_cal_floor = false;
+    else if (a == "--max-obs") ov_max_obs = static_cast<std::uint32_t>(std::strtoul(nv(), nullptr, 10));
+    else if (a == "--no-correction-cache") ov_corr_cache = false;
     else {
       std::fprintf(stderr, "unknown arg: %s\n", argv[i]);
       return 2;
@@ -243,6 +264,23 @@ int main(int argc, char **argv) {
   }
   if (limit > 0 && symbols.size() > limit) symbols.resize(limit);
   const FitPreset preset = parse_preset(preset_name_arg);
+
+  // De-Am / calendar sweep overlay: the final word on SessionInputs, applied
+  // just before VolaSession::build. Leaves the pinned curve + prep policy alone.
+  const std::function<void(SessionInputs &)> overlay =
+      [=](SessionInputs &in) {
+        if (ov_max_borrow_pairs) in.deam.max_borrow_pairs = *ov_max_borrow_pairs;
+        if (ov_n_atm) in.deam.n_atm = *ov_n_atm;
+        if (ov_al_fast) in.deam.al_opts = *ov_al_fast ? al_fast_opts() : al_default_opts();
+        if (ov_iv_tol) in.deam.iv_tol = *ov_iv_tol;
+        if (ov_cal_repair)
+          in.calendar_repair =
+              (*ov_cal_repair == 1) ? CalendarRepair::MonotoneFit : CalendarRepair::None;
+        if (ov_score_parity) in.score_parity = *ov_score_parity;
+        if (ov_cal_floor) in.enforce_calendar_floor = *ov_cal_floor;
+        if (ov_max_obs) in.calib.max_obs_per_slice = *ov_max_obs;
+        if (ov_corr_cache) in.use_correction_cache = *ov_corr_cache;
+      };
 
   std::setvbuf(stdout, nullptr, _IONBF, 0);
 
@@ -335,7 +373,7 @@ int main(int argc, char **argv) {
       PricerFitter fitter{cfg};
 
       const auto t2 = Clock::now();
-      const Status st = fitter.fit(chain.value());
+      const Status st = fitter.fit(chain.value(), overlay);
       row.fit_ms = ms_since(t2);
       if (!st) {
         row.status = "fit_error";
@@ -568,7 +606,7 @@ int main(int argc, char **argv) {
         for (std::size_t it = 0; it < profile_iters; ++it) {
           PricerFitter fitter{cfg};
           const auto t0 = Clock::now();
-          const Status st = fitter.fit(chain.value());
+          const Status st = fitter.fit(chain.value(), overlay);
           t_fit.push_back(ms_since(t0));
           if (st && fitter.surface()) n_slices = fitter.surface()->diagnostics().n_slices;
         }

@@ -88,3 +88,4 @@ __pycache__/
 .venv/
 # Parquet lakehouse exports are reproducible from the DuckDB warehouse
 atx-impl/db/lake/
+*.csv
