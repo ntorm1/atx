@@ -148,6 +148,45 @@ TEST(SurfaceDbPopulate, FitsAndStoresPartitionsPerDate) {
   std::filesystem::remove_all(root);
 }
 
+TEST(SurfaceDbPopulate, PropagatesStoredSurfacePolicyAndPersistsServedProvenance) {
+  const auto root = test_root("surface_policy_provenance");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  SymbolFitConfig symbol_cfg = symbol_config_from_preset(FitPreset::Hft);
+  symbol_cfg.surface_policy.quality_mode = FitQualityMode::Accuracy;
+  symbol_cfg.surface_policy.outputs = SurfaceOutputs::MarketMark;
+  symbol_cfg.surface_policy.risk_admission = RiskAdmission::NotApplicable;
+  symbol_cfg.surface_policy.fallback = SurfaceFallback::None;
+  ASSERT_TRUE(db->upsert_symbol("AAA", symbol_cfg).has_value());
+
+  const std::vector<CorpusBoard> boards = {make_board(kDate0, "AAA", 100.0, 0.28)};
+  auto result = populate_surface_db(*db, boards, SurfaceDbPopulateConfig{});
+  ASSERT_TRUE(result.has_value()) << (result ? "" : result.error().to_string());
+  ASSERT_EQ(result->n_ok, 1u);
+
+  auto archive = db->open_partition(kDate0);
+  ASSERT_TRUE(archive.has_value()) << (archive ? "" : archive.error().to_string());
+  auto archived = archive->provenance("AAA");
+  ASSERT_TRUE(archived.has_value()) << (archived ? "" : archived.error().to_string());
+  EXPECT_FALSE(archived->legacy_format);
+  EXPECT_EQ(archived->purpose, SurfacePurpose::MarketMark);
+  EXPECT_EQ(archived->quality_mode, FitQualityMode::Accuracy);
+  EXPECT_EQ(archived->state, SurfaceState::Healthy);
+
+  auto manifested = db->surface_provenance("AAA");
+  ASSERT_TRUE(manifested.has_value()) << (manifested ? "" : manifested.error().to_string());
+  ASSERT_TRUE(manifested->has_value());
+  EXPECT_FALSE((*manifested)->legacy_format);
+  EXPECT_EQ((*manifested)->purpose, archived->purpose);
+  EXPECT_EQ((*manifested)->quality_mode, archived->quality_mode);
+  EXPECT_EQ((*manifested)->state, archived->state);
+  EXPECT_EQ((*manifested)->validation.failures, archived->validation.failures);
+  EXPECT_EQ((*manifested)->served_generation, archived->served_generation);
+
+  std::filesystem::remove_all(root);
+}
+
 TEST(SurfaceDbPopulate, HonorsDisabledSymbol) {
   const auto root = test_root("disabled");
   auto db = SurfaceDb::create(root.string());
@@ -339,11 +378,17 @@ TEST(SurfaceDbPopulate, SymbolConfigOverlayReachesFit) {
   distinctive_al.max_newton_iter = 6;
   distinctive_al.tol = 1.0e-9;
 
-  SymbolFitConfig fallback_a;
-  fallback_a.preset = FitPreset::Fast;
+  // Start from the documented preset identity, then explicitly request the
+  // market-mark product path. FitPreset::Fast is otherwise a legacy risk
+  // request, whose mandatory risk policy deliberately owns Andersen-Lake
+  // resolution and would make a mark-only numerical overlay irrelevant.
+  SymbolFitConfig fallback_a = symbol_config_from_preset(FitPreset::Fast);
+  fallback_a.surface_policy.outputs = SurfaceOutputs::MarketMark;
+  fallback_a.surface_policy.risk_admission = RiskAdmission::NotApplicable;
+  fallback_a.surface_policy.fallback = SurfaceFallback::None;
   fallback_a.al_override = false; // baseline: preset's own al_opts stands
 
-  SymbolFitConfig cfg_b;
+  SymbolFitConfig cfg_b = fallback_a;
   cfg_b.preset = FitPreset::Fast; // SAME preset as fallback_a
   cfg_b.al_override = true;
   cfg_b.al = distinctive_al;

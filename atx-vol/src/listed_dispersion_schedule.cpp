@@ -106,8 +106,13 @@ template <class T> [[nodiscard]] bool parse_integer(std::string_view text, T &ou
     return Err(ErrorCode::InvalidArgument,
                "build_listed_dispersion_roll: selected contract has expired");
   }
-  ATX_TRY(AmericanGreeks greeks, surface->greeks(quote.strike, T, quote.side));
-  return Ok(ListedOptionRisk{greeks.price, greeks.delta, greeks.vega});
+  using Field = PricedSurface::EvalField;
+  const PricedSurface::FusedResult evaluated = surface->evaluate(
+      quote.strike, T, quote.side, Field::Price | Field::Delta | Field::Vega, false);
+  if (!evaluated.status.has_value()) {
+    return Err(evaluated.status.error());
+  }
+  return Ok(ListedOptionRisk{evaluated.price, evaluated.greeks.delta, evaluated.greeks.vega});
 }
 
 struct StraddleRisk {

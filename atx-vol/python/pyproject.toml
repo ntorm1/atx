@@ -1,0 +1,39 @@
+[build-system]
+requires = [
+    "scikit-build-core>=0.10",
+    "pybind11>=2.12",
+]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "atxvol"
+version = "0.1.0"
+description = "Python bindings for the atx-vol options and volatility library"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Nathan Tormaschy" }]
+dependencies = ["numpy>=1.23"]
+
+[project.optional-dependencies]
+test = ["pytest>=7", "numpy>=1.23"]
+
+[tool.scikit-build]
+minimum-version = "0.10"
+build-dir = "build/{wheel_tag}"
+wheel.packages = ["src/atxvol"]
+build.verbose = true
+install.components = ["python"]
+
+[tool.scikit-build.cmake]
+build-type = "Release"
+args = ["-GNinja"]
+
+[tool.scikit-build.cmake.define]
+CMAKE_C_COMPILER = "clang-cl"
+CMAKE_CXX_COMPILER = "clang-cl"
+VCPKG_TARGET_TRIPLET = "x64-windows"
+ATX_BUILD_TESTS = "OFF"
+ATX_BUILD_BENCH = "OFF"
+ATX_BUILD_EXAMPLES = "OFF"
+ATX_WERROR = "OFF"
+ATX_SHARED_LIBS = "OFF"

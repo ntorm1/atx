@@ -45,6 +45,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <utility>
 #include <vector>
 
 #include <benchmark/benchmark.h>
@@ -61,7 +62,9 @@
 #include "atx/vol/essvi_calib.hpp"   // essvi_fit_slice, essvi_calib_surface
 #include "atx/vol/market_env.hpp"    // MarketEnv
 #include "atx/vol/panel.hpp"         // make_synthetic_american_panel, SynthPanelSpec
+#include "atx/vol/pricer_fitter.hpp" // PricerFitter, PricerConfig
 #include "atx/vol/spy_fixture.hpp"   // make_spy_synthetic_spec
+#include "atx/vol/surface_policy.hpp" // explicit v2 purpose/admission policy
 #include "atx/vol/svi_calib.hpp"     // svi_fit_slice (quasi-explicit raw-SVI)
 #include "atx/vol/types.hpp"         // Side
 #include "atx/vol/universe.hpp"      // Underlying, Chain
@@ -266,6 +269,121 @@ void BM_SurfaceColdReal(benchmark::State &state) {
 // ~1536/side — is a per-underlier surface-fit-cadence cost, not a per-fit one).
 // All three surface cases run at the same default worker count for a like-for-
 // like raw-vs-cold-vs-cached comparison.
+
+// Canonical facade benchmarks. Unlike BM_SurfaceColdReal's legacy calibration
+// primitive, these rows include PricerFitter policy resolution, surface build,
+// admission, and transactional publication. Parquet load + OptionChain install
+// happen once before the timed loop.
+struct FacadeRealFixture {
+  OptionChain chain;
+  std::size_t quotes{0u};
+};
+
+[[nodiscard]] std::optional<FacadeRealFixture> build_facade_real_fixture() {
+  const auto &fixture = atx::vol::testkit::kSpyFitFixtures[0];
+  std::optional<atx::vol::testkit::OpraBoard> opra =
+      atx::vol::testkit::load_spy_fit_fixture(fixture);
+  if (!opra.has_value()) {
+    return std::nullopt;
+  }
+  Result<OptionChain> chain = OptionChain::from_frame(opra->panel.frame, opra->env());
+  if (!chain.has_value()) {
+    return std::nullopt;
+  }
+  const std::size_t quotes = chain->size();
+  return FacadeRealFixture{std::move(*chain), quotes};
+}
+
+[[nodiscard]] PricerConfig hft_mark_config() {
+  PricerConfig config;
+  config.preset = FitPreset::Hft;
+  return config;
+}
+
+[[nodiscard]] PricerConfig v2_latency_dual_config() {
+  PricerConfig config;
+  config.quality_mode = FitQualityMode::Latency;
+  config.outputs = SurfaceOutputs::MarketMarkAndRisk;
+  config.risk_admission = RiskAdmission::Required;
+  config.fallback = SurfaceFallback::None;
+  CurveConfig risk_curve;
+  risk_curve.kind = VolCurveKind::ConvexDense;
+  config.curve = risk_curve;
+  return config;
+}
+
+[[nodiscard]] bool admitted_hft_mark(const PricerFitter &fitter) noexcept {
+  const FittedSurface *surface = fitter.market_mark_surface();
+  const SurfaceBundle bundle = fitter.bundle();
+  const std::optional<SurfaceBuildReport> &report = fitter.published_report();
+  return surface != nullptr && surface->purpose() == SurfacePurpose::MarketMark &&
+         surface->session().inputs().curve.kind == VolCurveKind::LinearVariance &&
+         bundle.market_mark_health.state == SurfaceState::Healthy &&
+         bundle.market_mark_health.serving_candidate() && report.has_value() && report->published &&
+         report->published_curve.kind == VolCurveKind::LinearVariance &&
+         !report->attempts.empty() && report->attempts.back().admission.admitted;
+}
+
+[[nodiscard]] bool admitted_v2_latency_dual(const PricerFitter &fitter) noexcept {
+  const SurfaceBundle bundle = fitter.bundle();
+  const std::optional<SurfaceBuildReport> &report = fitter.published_report();
+  const bool admitted_state = bundle.risk_health.state == SurfaceState::Healthy ||
+                              bundle.risk_health.state == SurfaceState::Degraded;
+  return bundle.market_mark != nullptr && bundle.risk != nullptr &&
+         bundle.market_mark->purpose() == SurfacePurpose::MarketMark &&
+         bundle.risk->purpose() == SurfacePurpose::Risk &&
+         bundle.market_mark->session().inputs().curve.kind == VolCurveKind::LinearVariance &&
+         bundle.risk->session().inputs().curve.kind == VolCurveKind::ConvexDense &&
+         bundle.market_mark_health.serving_candidate() && bundle.risk_health.serving_candidate() &&
+         admitted_state && !bundle.risk_health.using_fallback() && report.has_value() &&
+         report->published && report->published_curve.kind == VolCurveKind::ConvexDense;
+}
+
+template <class ConfigFactory, class AdmissionCheck>
+void BM_FacadeReal(benchmark::State &state, ConfigFactory config_factory,
+                   AdmissionCheck admission_check) {
+  std::optional<FacadeRealFixture> fixture = build_facade_real_fixture();
+  if (!fixture.has_value()) {
+    state.SkipWithError("real SPY facade fixture build failed");
+    return;
+  }
+
+  std::size_t slices = 0u;
+  bool degraded = false;
+  for (auto _ : state) {
+    PricerFitter fitter{config_factory()};
+    const Status fitted = fitter.fit(fixture->chain);
+    if (!fitted.has_value() || !admission_check(fitter)) {
+      state.SkipWithError("real SPY facade fit was not admitted as configured");
+      break;
+    }
+    const FittedSurface *served = fitter.surface();
+    slices = served != nullptr ? served->session().expiries().size() : 0u;
+    degraded = fitter.bundle().risk_health.state == SurfaceState::Degraded;
+    benchmark::DoNotOptimize(slices);
+    benchmark::ClobberMemory();
+  }
+
+  const double iterations = static_cast<double>(state.iterations());
+  const double quotes = static_cast<double>(fixture->quotes);
+  state.SetItemsProcessed(state.iterations()); // one admitted facade fit per item
+  state.counters["quotes"] = quotes;
+  state.counters["slices"] = static_cast<double>(slices);
+  state.counters["admitted"] = slices > 0u ? 1.0 : 0.0;
+  state.counters["degraded"] = degraded ? 1.0 : 0.0;
+  state.counters["quotes_per_s"] =
+      benchmark::Counter(iterations * quotes, benchmark::Counter::kIsRate);
+  state.counters["slice_fits_per_s"] = benchmark::Counter(
+      iterations * static_cast<double>(slices), benchmark::Counter::kIsRate);
+}
+
+void BM_FacadeHftMarkReal(benchmark::State &state) {
+  BM_FacadeReal(state, hft_mark_config, admitted_hft_mark);
+}
+
+void BM_FacadeV2LatencyDualReal(benchmark::State &state) {
+  BM_FacadeReal(state, v2_latency_dual_config, admitted_v2_latency_dual);
+}
 
 struct BoardCaches {
   CorrectionCache call;
@@ -618,6 +736,13 @@ const int kRegistered = [] {
     apply_common(benchmark::RegisterBenchmark("fit/surface_cold/spy_real", BM_SurfaceColdReal))
         ->Unit(benchmark::kMicrosecond)
         ->MinTime(2.0);
+    apply_common(benchmark::RegisterBenchmark("fit/facade/hft_mark/spy_real", BM_FacadeHftMarkReal))
+        ->Unit(benchmark::kMillisecond)
+        ->UseRealTime();
+    apply_common(benchmark::RegisterBenchmark("fit/facade/v2_latency_dual_convex/spy_real",
+                                               BM_FacadeV2LatencyDualReal))
+        ->Unit(benchmark::kMillisecond)
+        ->UseRealTime();
   }
   // C2.3 de-Am surface cases: same board + driver as fit/surface_cold, routed
   // through the opt-in de-Americanization path (cold Andersen-Lake vs cached

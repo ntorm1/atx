@@ -411,7 +411,7 @@ TEST(TearSheet, AttributionCloses) {
   // ALL rows (per spec), so attr_cost includes the sunk inception cost that
   // total_return does not. Adding cost[0] back makes the identity exact. (For a
   // frictionless run cost[0]==0 and this reduces to the plain closure.)
-  const double sumc = closure_sum(t) + res->cost.front();
+  const double sumc = closure_sum(t);
   const double resid = std::fabs(t.total_return - sumc);
   EXPECT_LE(resid, 1e-6 * (std::fabs(t.total_return) + 1.0))
       << "total_return=" << t.total_return << " closure=" << sumc
@@ -599,7 +599,7 @@ TEST(TearSheet, WorkedExampleA) {
   const TearSheet t = tearsheet(*r1);
   // Inception-cost-aware closure (see AttributionCloses); r1 is frictionless so
   // cost[0]==0 and this is the plain identity.
-  const double resid = std::fabs(t.total_return - (closure_sum(t) + r1->cost.front()));
+  const double resid = std::fabs(t.total_return - closure_sum(t));
   EXPECT_LE(resid, 1e-6 * (std::fabs(t.total_return) + 1.0));
   expect_result_bit_identical(*r1, *r4);
 
@@ -641,7 +641,7 @@ TEST(TearSheet, WorkedExampleB) {
   const TearSheet t = tearsheet(*r1);
   // Inception-cost-aware closure (see AttributionCloses); r1 is frictionless so
   // cost[0]==0 and this is the plain identity.
-  const double resid = std::fabs(t.total_return - (closure_sum(t) + r1->cost.front()));
+  const double resid = std::fabs(t.total_return - closure_sum(t));
   EXPECT_LE(resid, 1e-6 * (std::fabs(t.total_return) + 1.0));
   expect_result_bit_identical(*r1, *r4);
 

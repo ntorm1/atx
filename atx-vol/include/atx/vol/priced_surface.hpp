@@ -23,7 +23,7 @@
 //                                            q_eff(T), side, method, al_opts)
 //
 // where k = ln(K / F(T)) and (F, q_eff) are the session's exact
-// clamp-outside / linear-between forward interpolation. This is the path the
+// flat-carry tails / log-state-between forward interpolation. This is the path the
 // ConvexDense (index / SPY) surface is served on — `VolaSession::fair_value`
 // takes the cold Andersen-Lake branch whenever a polymorphic override is present
 // (see session.hpp `served_cache`) — so a PricedSurface snapshot of such a
@@ -240,10 +240,11 @@ public:
 
   // ── Term carry accessors (the query re-pricing forward / effective yield) ──
   //
-  // The interpolated term forward F(T) and effective carry q_eff(T): clamp to the
-  // endpoint slice outside [T_0, T_last], linearly interpolate between. Both
-  // return 0 for a non-finite / non-positive T. Match `VolaSession::forward_at` /
-  // `q_eff_at` exactly.
+  // F(T) is geometrically interpolated between pillars; q_eff(T) is derived from
+  // F(T), rate_at(T), spot, and T. In either tail, endpoint q_eff/r remain flat
+  // and F is derived at the query T. Exact pillars retain calibrated state.
+  // Both return 0 for a non-finite / non-positive T and
+  // match `VolaSession::forward_at` / `q_eff_at` economically.
   [[nodiscard]] double forward_at(double T) const noexcept;
   [[nodiscard]] double q_eff_at(double T) const noexcept;
   // Per-expiry rate derived from each stored curve's discount factor. Old
@@ -265,8 +266,8 @@ private:
   PricedSurface(CurveSurface &&surface, std::vector<SliceContext> &&ctx,
                 const PricingContext &pricing) noexcept;
 
-  // The interpolated (forward, q_eff) at T — the session's exact clamp-outside /
-  // linear-between mechanic. Precondition: ctx_ non-empty, ascending T.
+  // The interpolated forward and identity-preserving effective carry at T.
+  // Precondition: ctx_ non-empty, ascending T.
   struct ForwardCarry {
     double forward{0.0};
     double q_eff{0.0};

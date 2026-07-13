@@ -2,6 +2,7 @@
 
 #include "atx/vol/american_batch.hpp" // exact resolved price-only batch
 #include "atx/vol/counters.hpp"
+#include "term_carry.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -83,12 +84,19 @@ Result<PricedSurface> PricedSurface::create(CurveSurface &&surface,
                  "PricedSurface::create: slice T's not strictly ascending");
     }
   }
+  for (const SliceContext &slice : context) {
+    if (!(slice.T > 0.0) || !std::isfinite(slice.T) || !(slice.forward > 0.0) ||
+        !std::isfinite(slice.forward) || !std::isfinite(slice.q_eff)) {
+      return Err(ErrorCode::InvalidArgument,
+                 "PricedSurface::create: invalid slice carry context");
+    }
+  }
   return PricedSurface{std::move(surface), std::move(context), pricing};
 }
 
 PricedSurface::ForwardCarry PricedSurface::interp_forward(double T) const noexcept {
   // Precondition: ctx_ non-empty and ascending in T (create guarantees it). This
-  // is byte-identical to VolaSession::interp_forward so the served theo matches.
+  // shares VolaSession::interp_forward's log-forward/discount-state semantics.
   const SliceContext &first = ctx_.front();
   const SliceContext &last = ctx_.back();
   const auto slice_rate = [this](std::size_t index) noexcept {
@@ -101,10 +109,20 @@ PricedSurface::ForwardCarry PricedSurface::interp_forward(double T) const noexce
                : pricing_.r;
   };
   if (T <= first.T) {
-    return ForwardCarry{first.forward, first.q_eff, slice_rate(0u)};
+    const double rate = slice_rate(0u);
+    if (T == first.T) {
+      return ForwardCarry{first.forward, first.q_eff, rate};
+    }
+    const double forward = pricing_.S * std::exp((rate - first.q_eff) * T);
+    return ForwardCarry{forward, first.q_eff, rate};
   }
   if (T >= last.T) {
-    return ForwardCarry{last.forward, last.q_eff, slice_rate(ctx_.size() - 1u)};
+    const double rate = slice_rate(ctx_.size() - 1u);
+    if (T == last.T) {
+      return ForwardCarry{last.forward, last.q_eff, rate};
+    }
+    const double forward = pricing_.S * std::exp((rate - last.q_eff) * T);
+    return ForwardCarry{forward, last.q_eff, rate};
   }
   // Interior (first.T < T < last.T): `hi` is the first index with ctx_[hi].T > T
   // — exactly where the old linear scan `while (ctx_[hi].T <= T) ++hi` stops. On
@@ -119,30 +137,40 @@ PricedSurface::ForwardCarry PricedSurface::interp_forward(double T) const noexce
   const std::size_t lo = hi - 1;
   const SliceContext &a = ctx_[lo];
   const SliceContext &b = ctx_[hi];
+  if (T == a.T) {
+    return ForwardCarry{a.forward, a.q_eff, slice_rate(lo)};
+  }
   const double span = b.T - a.T;
   const double alpha = (span > 0.0) ? (T - a.T) / span : 0.0;
   const double rate_lo = slice_rate(lo);
   const double rate_hi = slice_rate(hi);
-  return ForwardCarry{a.forward + alpha * (b.forward - a.forward),
-                      a.q_eff + alpha * (b.q_eff - a.q_eff), rate_lo + alpha * (rate_hi - rate_lo)};
+  const double forward = interpolate_positive_log(a.forward, b.forward, alpha);
+  double rate = pricing_.r;
+  if (term_rates_) {
+    const double log_df_lo = -rate_lo * a.T;
+    const double log_df_hi = -rate_hi * b.T;
+    rate = -(log_df_lo + alpha * (log_df_hi - log_df_lo)) / T;
+  }
+  const double q_eff = coherent_q_eff(pricing_.S, forward, T, rate);
+  return ForwardCarry{forward, q_eff, rate};
 }
 
 double PricedSurface::forward_at(double T) const noexcept {
-  if (!(T > 0.0) || ctx_.empty()) {
+  if (!(T > 0.0) || !std::isfinite(T) || ctx_.empty()) {
     return 0.0;
   }
   return interp_forward(T).forward;
 }
 
 double PricedSurface::q_eff_at(double T) const noexcept {
-  if (!(T > 0.0) || ctx_.empty()) {
+  if (!(T > 0.0) || !std::isfinite(T) || ctx_.empty()) {
     return 0.0;
   }
   return interp_forward(T).q_eff;
 }
 
 double PricedSurface::rate_at(double T) const noexcept {
-  if (!(T > 0.0) || ctx_.empty()) {
+  if (!(T > 0.0) || !std::isfinite(T) || ctx_.empty()) {
     return 0.0;
   }
   return interp_forward(T).rate;

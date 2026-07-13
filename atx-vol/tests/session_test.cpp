@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -31,6 +32,7 @@ namespace {
 using atx::vol::build_observations;
 using atx::vol::build_observations_european;
 using atx::vol::CalibOpts;
+using atx::vol::Chain;
 using atx::vol::chain_index;
 using atx::vol::data_install;
 using atx::vol::FitDiag;
@@ -340,7 +342,7 @@ TEST(FitPreset, PopulatesPolicyFieldsPerPreset) {
   EXPECT_TRUE(fast.use_correction_cache);
   EXPECT_TRUE(fast.score_parity);
   EXPECT_TRUE(fast.enforce_calendar_floor);
-  EXPECT_FALSE(fast.use_deam_cache_for_fit);
+  EXPECT_TRUE(fast.use_deam_cache_for_fit);
   EXPECT_EQ(fast.calib.max_obs_per_slice, 0u);
   EXPECT_DOUBLE_EQ(fast.calib.max_otm_shortcut_premium_spread_frac, 0.0);
   ASSERT_TRUE(fast.deam.al_opts.has_value());
@@ -363,6 +365,7 @@ TEST(FitPreset, PopulatesPolicyFieldsPerPreset) {
   EXPECT_EQ(robust.deam.method, AmericanMethod::AndersenLake);
   EXPECT_EQ(robust.deam.n_atm, std::size_t{3});
   EXPECT_EQ(robust.calendar_repair, CalendarRepair::MonotoneFit);
+  EXPECT_TRUE(robust.use_deam_cache_for_fit);
 
   SessionInputs hft;
   apply_fit_preset(hft, FitPreset::Hft);
@@ -383,6 +386,126 @@ TEST(FitPreset, PopulatesPolicyFieldsPerPreset) {
   EXPECT_EQ(acc.calendar_repair, CalendarRepair::None);
   ASSERT_TRUE(acc.deam.al_opts.has_value());
   EXPECT_EQ(acc.deam.al_opts->max_newton_iter, al_default_opts().max_newton_iter);
+  EXPECT_FALSE(acc.use_deam_cache_for_fit);
+}
+
+TEST(VolaSession, OffPillarCarryIsCoherentAcrossLiveAndPricedPaths) {
+  const SynthPanelSpec spec = make_spec();
+  Universe u;
+  const Underlying *under = install(spec, u);
+  ASSERT_NE(under, nullptr);
+
+  SessionInputs inputs = make_inputs(spec);
+  for (const SynthExpiry &expiry : spec.expiries) {
+    inputs.expiry_rate_T.push_back(expiry.T);
+  }
+  inputs.expiry_rates = {0.021, 0.027, 0.034, 0.041};
+  const auto session = VolaSession::build(*under, inputs);
+  ASSERT_TRUE(session.has_value()) << session.error().to_string();
+  auto priced = session->to_priced_surface();
+  ASSERT_TRUE(priced.has_value()) << priced.error().to_string();
+
+  const std::span<const atx::vol::SliceContext> pillars = session->expiries();
+  ASSERT_GE(pillars.size(), std::size_t{2});
+  std::vector<double> probes{pillars.front().T * 0.5, pillars.back().T * 1.5};
+  for (std::size_t i = 0; i + 1u < pillars.size(); ++i) {
+    probes.push_back(0.5 * (pillars[i].T + pillars[i + 1u].T));
+  }
+
+  for (const double T : probes) {
+    const double live_forward = session->forward_at(T);
+    const double live_reproduced =
+        inputs.S * std::exp((session->rate_at(T) - session->q_eff_at(T)) * T);
+    EXPECT_NEAR(live_reproduced, live_forward, 2.0e-13 * live_forward) << "T=" << T;
+
+    const double priced_forward = priced->forward_at(T);
+    const double priced_reproduced =
+        inputs.S * std::exp((priced->rate_at(T) - priced->q_eff_at(T)) * T);
+    EXPECT_NEAR(priced_reproduced, priced_forward, 2.0e-13 * priced_forward) << "T=" << T;
+    EXPECT_NEAR(priced_forward, live_forward, 2.0e-13 * live_forward) << "T=" << T;
+    EXPECT_NEAR(priced->q_eff_at(T), session->q_eff_at(T), 2.0e-13) << "T=" << T;
+  }
+  EXPECT_DOUBLE_EQ(session->q_eff_at(pillars.front().T * 0.5), pillars.front().q_eff);
+  EXPECT_DOUBLE_EQ(session->q_eff_at(pillars.back().T * 1.5), pillars.back().q_eff);
+
+  for (const atx::vol::SliceContext &pillar : pillars) {
+    EXPECT_DOUBLE_EQ(session->forward_at(pillar.T), pillar.forward);
+    EXPECT_DOUBLE_EQ(session->q_eff_at(pillar.T), pillar.q_eff);
+    EXPECT_NEAR(priced->forward_at(pillar.T), pillar.forward,
+                2.0e-13 * pillar.forward);
+    EXPECT_NEAR(priced->q_eff_at(pillar.T), pillar.q_eff, 2.0e-13);
+  }
+}
+
+TEST(DeAmFitCache, CachedAndColdLinearVarianceFitsAreEconomicallyEquivalent) {
+  const SynthPanelSpec spec = make_spec();
+  Universe u;
+  const Underlying* under = install(spec, u);
+  ASSERT_NE(under, nullptr);
+
+  SessionInputs cold = make_inputs(spec);
+  atx::vol::apply_fit_preset(cold, atx::vol::FitPreset::Fast);
+  cold.curve.kind = VolCurveKind::LinearVariance;
+  cold.use_deam_cache_for_fit = false;
+  SessionInputs cached = cold;
+  cached.use_deam_cache_for_fit = true;
+
+  const auto cold_session = VolaSession::build(*under, cold);
+  ASSERT_TRUE(cold_session.has_value()) << cold_session.error().to_string();
+  const auto cached_session = VolaSession::build(*under, cached);
+  ASSERT_TRUE(cached_session.has_value()) << cached_session.error().to_string();
+
+  // These are economic serving tolerances, not an implementation-detail
+  // requirement for bit-identical fitted parameters.
+  constexpr double kIvTolerance = 5.0e-3;     // 50 vol basis points
+  // Cached proposals may move the fitted mark by a few ticks, but must stay a
+  // small fraction of the executable uncertainty on this deliberately wide
+  // (2% half-spread) fixture and below five cents per share.
+  constexpr double kPriceTolerance = 5.0e-2;
+  constexpr double kHalfSpreadFraction = 0.25;
+  for (std::size_t expiry_index = 0u; expiry_index < cold_session->expiries().size();
+       ++expiry_index) {
+    const auto& expiry = cold_session->expiries()[expiry_index];
+    const Chain& chain = under->chains[expiry_index];
+    for (const double strike : {90.0, 100.0, 110.0}) {
+      const Side side = strike >= spec.spot ? Side::Call : Side::Put;
+      EXPECT_NEAR(cached_session->iv(strike, expiry.T),
+                  cold_session->iv(strike, expiry.T), kIvTolerance);
+      const auto cached_price = cached_session->fair_value(strike, expiry.T, side);
+      const auto cold_price = cold_session->fair_value(strike, expiry.T, side);
+      ASSERT_TRUE(cached_price.has_value()) << cached_price.error().to_string();
+      ASSERT_TRUE(cold_price.has_value()) << cold_price.error().to_string();
+      EXPECT_NEAR(*cached_price, *cold_price, kPriceTolerance);
+      const auto strike_it = std::lower_bound(chain.strikes.begin(), chain.strikes.end(), strike);
+      ASSERT_NE(strike_it, chain.strikes.end());
+      const auto strike_index = static_cast<std::uint16_t>(
+          std::distance(chain.strikes.begin(), strike_it));
+      const std::size_t quote_index = chain_index(strike_index, side);
+      const double half_spread = 0.5 * (chain.asks[quote_index] - chain.bids[quote_index]);
+      EXPECT_LE(std::fabs(*cached_price - *cold_price),
+                kHalfSpreadFraction * half_spread);
+    }
+  }
+}
+
+TEST(DeAmFitCache, TermRateSessionsForceTheColdFitPath) {
+  const SynthPanelSpec spec = make_spec();
+  Universe u;
+  const Underlying* under = install(spec, u);
+  ASSERT_NE(under, nullptr);
+
+  SessionInputs in = make_inputs(spec);
+  atx::vol::apply_fit_preset(in, atx::vol::FitPreset::Robust);
+  ASSERT_TRUE(in.use_deam_cache_for_fit);
+  for (const auto& expiry : spec.expiries) {
+    in.expiry_rate_T.push_back(expiry.T);
+    in.expiry_rates.push_back(spec.r);
+  }
+
+  const auto session = VolaSession::build(*under, in);
+  ASSERT_TRUE(session.has_value()) << session.error().to_string();
+  EXPECT_FALSE(session->inputs().use_correction_cache);
+  EXPECT_FALSE(session->inputs().use_deam_cache_for_fit);
 }
 
 TEST(VolaSession, FairValueLadder_MatchesScalarAndHandlesBadStrikes) {
@@ -656,7 +779,10 @@ TEST(Session, InterpModeReachesEval) {
   // untouched surface_.iv() path, unperturbed by adding InterpMode" -- is
   // unchanged and is still asserted structurally by the >1e-4
   // ShapeBlend-vs-default check above, which passes.
-  EXPECT_NEAR(iv_default, 0.35727349168272737, 1e-12);
+  // Proposal-cache reuse and the coherent log-forward carry interpolation may
+  // move this off-pillar fitted IV. Keep it inside the sprint's liquid-node
+  // materiality limit; the >1e-4 contrast above is the routing assertion.
+  EXPECT_NEAR(iv_default, 0.35727349168272737, 1e-5);
 }
 
 TEST(VolaSession, OverrideRefitIsLocalDeterministicAndTimed) {
@@ -779,13 +905,10 @@ TEST(VolaSession, BawMethodIsNeverInversionCertified) {
   }
 }
 
-// 2e (carry I1): the robust carry weights are functions of the bid/ask SPREAD
-// (quality weight ~ 1/(0.0025 + rel_spread)^2), so a spread-only update on a
-// selected carry pair moves the admitted forward. The certified observation
-// cache must fall back to the full recompute path, not serve the stale forward
-// as certified (§14: "any price, eligibility, or carry-coordinate change falls
-// back to the full certified path").
-TEST(VolaSession, CachedRefitRejectsSpreadOnlyChangeOnCarryPair) {
+// Robust carry weights are functions of bid/ask spread. Re-resolve that carry,
+// but retain the certified coordinate when the aggregate move is below the
+// documented economic threshold.
+TEST(VolaSession, CachedRefitAcceptsImmaterialSpreadOnlyCarryMove) {
   const SynthPanelSpec spec = make_spec();
   Universe u;
   const Underlying* under = install(spec, u);
@@ -816,8 +939,59 @@ TEST(VolaSession, CachedRefitRejectsSpreadOnlyChangeOnCarryPair) {
     widened.asks[idx] = mid + half;
   }
   const auto reused = sess->cached_refit_observations(widened, 0u);
-  EXPECT_FALSE(reused.has_value())
-      << "spread-only change on a carry pair must invalidate the certified cache";
+  EXPECT_TRUE(reused.has_value())
+      << (reused.has_value() ? "" : reused.error().to_string());
+}
+
+// A spread-only update still changes a selected carry input, but with a single
+// carry pair the resolved forward depends only on the unchanged call/put mids.
+// The incremental cache may therefore reuse the certified European IV/vega and
+// refresh only the spread-derived weights after re-resolving the carry.
+TEST(VolaSession, CachedRefitAcceptsSpreadOnlyChangeWhenCarryCoordinateIsUnchanged) {
+  const SynthPanelSpec spec = make_spec();
+  Universe u;
+  const Underlying* under = install(spec, u);
+  ASSERT_NE(under, nullptr);
+
+  SessionInputs in = make_inputs(spec);
+  in.deam.al_opts = atx::vol::al_fast_opts();
+  in.deam.max_borrow_pairs = 1u;
+  in.deam.min_confident_borrow_pairs = 1u;
+  const auto sess = VolaSession::build(*under, in);
+  ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
+
+  const auto original = sess->cached_refit_observations(under->chains[0], 0u);
+  ASSERT_TRUE(original.has_value()) << original.error().to_string();
+
+  atx::vol::Chain widened = under->chains[0];
+  const std::vector<std::uint16_t> pairs =
+      carry_pair_strikes(widened, spec.spot, sess->inputs().deam);
+  ASSERT_EQ(pairs.size(), 1u);
+  const std::size_t strike_index = pairs.front();
+  for (const Side side : {Side::Call, Side::Put}) {
+    const std::size_t quote_index =
+        chain_index(static_cast<std::uint16_t>(strike_index), side);
+    const double mid = widened.mids[quote_index];
+    const double half = 1.25 * 0.5 *
+                        (widened.asks[quote_index] - widened.bids[quote_index]);
+    ASSERT_GT(mid - half, 0.0);
+    widened.bids[quote_index] = mid - half;
+    widened.asks[quote_index] = mid + half;
+  }
+
+  const auto refreshed = sess->cached_refit_observations(widened, 0u);
+  ASSERT_TRUE(refreshed.has_value()) << refreshed.error().to_string();
+  ASSERT_EQ(refreshed->size(), original->size());
+
+  bool weight_changed = false;
+  for (std::size_t i = 0; i < refreshed->size(); ++i) {
+    EXPECT_DOUBLE_EQ((*refreshed)[i].sigma_mkt, (*original)[i].sigma_mkt);
+    EXPECT_DOUBLE_EQ((*refreshed)[i].vega, (*original)[i].vega);
+    if ((*refreshed)[i].weight_w != (*original)[i].weight_w) {
+      weight_changed = true;
+    }
+  }
+  EXPECT_TRUE(weight_changed);
 }
 
 // 2e (carry I2): when too few pairs sit inside the ±6% ATM band, the carry

@@ -289,7 +289,7 @@ TEST_F(BacktestReal, RealSpyPutDeltaHedged) {
   // Tearsheet: closure identity + every field finite.
   const TearSheet t = tearsheet(r);
   EXPECT_TRUE(all_finite(t)) << "tearsheet carries a NaN/Inf field";
-  const double closure = closure_sum(t) + r.cost.front();  // inception-cost-aware (B3)
+  const double closure = closure_sum(t);
   const double resid = std::fabs(t.total_return - closure);
   EXPECT_LE(resid, 1e-6 * (std::fabs(t.total_return) + 1.0))
       << "total_return=" << t.total_return << " closure=" << closure;

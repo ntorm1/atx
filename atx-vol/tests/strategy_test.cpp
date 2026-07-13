@@ -252,6 +252,52 @@ TEST(Strategy, Structures) {
   EXPECT_NEAR(std::fabs(gp->delta), 0.40, 1e-4);
 }
 
+TEST(Strategy, SnapToListedFailsClosedAtStrikeResolution) {
+  const PricedSurface s = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  TenorSpec tenor;
+  tenor.target_T = 0.25;
+  tenor.snap_to_listed = true;
+
+  const auto strike = resolve_strike(
+      s, tenor, Side::Call, StrikeSelector{StrikeSelector::Kind::AtmForward, 0.0});
+
+  ASSERT_FALSE(strike.has_value());
+  EXPECT_EQ(strike.error().code(), ErrorCode::NotImplemented);
+  EXPECT_NE(strike.error().message().find("model-on-model"), std::string::npos);
+  EXPECT_NE(strike.error().message().find("listed OPRA workflow"), std::string::npos);
+}
+
+TEST(Strategy, SnapToListedCannotBeDroppedByMissingNamePolicy) {
+  const fs::path dir = fresh_dir("snap-to-listed-policy");
+  const PricedSurface s = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  const std::string p = write_archive(dir, "2026-08-01", {{"SPX", &s}});
+  auto snap = MarketSnapshot::load(p);
+  ASSERT_TRUE(snap.has_value()) << snap.error().to_string();
+
+  LegSpec listed;
+  listed.uid = kUid;
+  listed.symbol = "SPX";
+  listed.tenor.target_T = 0.25;
+  listed.tenor.snap_to_listed = true;
+  listed.structure.kind = StructureSpec::Kind::Single;
+  listed.size = SizeSpec{SizeSpec::Kind::FixedContracts, 1.0, +1.0};
+
+  LegSpec model = listed;
+  model.tenor.snap_to_listed = false;
+
+  StrategySpec spec;
+  spec.legs = {listed, model};
+  spec.missing = MissingNameSpec{MissingNamePolicy::DropRenormalize, 1};
+  std::vector<ResolveDrop> dropped;
+
+  const auto sized = resolve_spec_with_policy(*snap, spec, &dropped);
+
+  ASSERT_FALSE(sized.has_value());
+  EXPECT_EQ(sized.error().code(), ErrorCode::NotImplemented);
+  EXPECT_NE(sized.error().message().find("listed OPRA workflow"), std::string::npos);
+  EXPECT_TRUE(dropped.empty());
+}
+
 // ── 3. Flat-vega cross-strangle nets to ~0 book vega ────────────────────────
 TEST(Strategy, FlatVega) {
   const fs::path dir = fresh_dir("flatvega");
@@ -313,7 +359,7 @@ TEST(Strategy, FlatVega) {
 // ── 4. Overlapping clips: a cohort per step, dropped as they expire ─────────
 TEST(Strategy, OverlappingClips) {
   const fs::path dir = fresh_dir("clips");
-  const std::vector<int> day_off = {0, 5, 10, 15, 20, 25, 125}; // final = big time-jump
+  const std::vector<int> day_off = {0, 5, 10, 15, 20, 25, 30};
   std::vector<std::pair<std::string, std::string>> dp;
   for (std::size_t d = 0; d < day_off.size(); ++d) {
     const std::int64_t now = kBaseNow + static_cast<std::int64_t>(day_off[d]) * kDayNs;
@@ -331,7 +377,9 @@ TEST(Strategy, OverlappingClips) {
   spec.name = "spy-25d-put-daily-clip";
   LegSpec leg;
   leg.uid = kUid;
-  leg.tenor.target_T = 0.06; // ~22 days: cohorts expire within the corpus
+  // Exactly 20 days so every cohort's engine-owned settlement has an exact
+  // snapshot observation; a later snapshot spot is not a settlement price.
+  leg.tenor.target_T = (20.0 * static_cast<double>(kDayNs)) / kNsPerYear;
   leg.structure.kind = StructureSpec::Kind::Single;
   leg.structure.single_side = Side::Put;
   // ATM-forward strike keeps pricing in the surface core (variance > 0) as each
@@ -348,18 +396,18 @@ TEST(Strategy, OverlappingClips) {
   const BacktestResult &r = *res;
   ASSERT_EQ(r.size(), day_off.size());
 
-  // Monotonic +1 growth while no cohort has yet crossed expiry (rows 0..4).
-  for (std::size_t i = 0; i < 5; ++i) {
+  // Monotonic +1 growth before the first exact expiry observation (rows 0..3).
+  for (std::size_t i = 0; i < 4; ++i) {
     EXPECT_EQ(r.n_open_lots[i], static_cast<double>(i + 1)) << "row " << i;
   }
-  // Cohorts genuinely expire (settlement fires) and the count drops.
+  // Thereafter one cohort settles and one opens at each five-day step.
   double tot_settle = 0.0;
   for (const double x : r.pnl_settlement) {
     tot_settle += std::fabs(x);
   }
   EXPECT_GT(tot_settle, 0.0);
-  EXPECT_LT(r.n_open_lots.back(), r.n_open_lots[4]); // final jump expires the backlog
-  EXPECT_EQ(r.n_open_lots.back(), 1.0);              // only the fresh clip remains
+  EXPECT_EQ(r.n_open_lots[4], 4.0);
+  EXPECT_EQ(r.n_open_lots.back(), 4.0);
 
   std::printf("[strategy] overlapping-clip n_open_lots ="
               " {%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f}\n",

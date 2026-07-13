@@ -18,7 +18,7 @@
 #include "atx/vol/calib.hpp"        // build_observations_european
 #include "atx/vol/correction.hpp"   // AmericanCorrectionCaches (cached inversion hot path)
 #include "atx/vol/deamer.hpp"       // resolve_chain_forward
-#include "atx/vol/parallel_for.hpp" // parallel_for (shared block-partition fan-out)
+#include "atx/vol/parallel_for.hpp" // parallel_for / parallel_for_dynamic fan-out
 #include "atx/vol/prepared_fitting.hpp" // prepare_expiry (canonical refit preparation)
 #include "atx/vol/risk_surface_validation.hpp"
 
@@ -471,11 +471,10 @@ Status PricerFitter::fit(const OptionChain &chain,
     return Err(failure);
   }
 
-  // A session overlay is a main-transactional-API argument (per-symbol input
-  // layering with post-overlay decision/report re-stamping); force main's
-  // single-surface world when one is supplied, even for an otherwise v2-shaped
-  // config.
-  if (!is_v2_request() || static_cast<bool>(session_overlay)) {
+  // Product intent alone selects legacy versus v2 routing. A per-symbol session
+  // overlay layers numerical inputs inside the selected branch; it must never
+  // demote an explicit v2 Risk/Mark request to the legacy single-surface path.
+  if (!is_v2_request()) {
   // ── Legacy / main single-surface transactional fit (default v2 fields) ──
   // The caller did not opt into the v2 dual mark/risk API, so serve ONE
   // surface admitted by FitAdmissionPolicy (mark consumer by default; the
@@ -500,6 +499,7 @@ Status PricerFitter::fit(const OptionChain &chain,
 
   SessionInputs in =
       make_session_inputs(effective_preset, chain.spot(), chain.rate(), chain.now_ns());
+  in.fit_workers = cfg_.fit_workers;
   if (chain.env().yield.size() > 0u) {
     in.expiry_rate_T.reserve(chain.underlying().chains.size());
     in.expiry_rates.reserve(chain.underlying().chains.size());
@@ -577,6 +577,7 @@ Status PricerFitter::fit(const OptionChain &chain,
     sp.calib = in.calib;
     sp.band_k = in.band_k;
     sp.repair = in.calendar_repair;
+    sp.fit_workers = in.fit_workers;
     sp.score_parity = in.score_parity;
     sp.enforce_calendar_floor = in.enforce_calendar_floor;
     sp.use_deam_cache_for_fit = in.use_deam_cache_for_fit;
@@ -734,6 +735,7 @@ Status PricerFitter::fit(const OptionChain &chain,
   const FitQualityMode quality_mode = request.quality_mode;
 
   const auto configure_common = [&](SessionInputs &in) {
+    in.fit_workers = cfg_.fit_workers;
     if (chain.env().yield.size() > 0u) {
       in.expiry_rate_T.clear();
       in.expiry_rates.clear();
@@ -1080,6 +1082,7 @@ Status PricerFitter::fit(const OptionChain &chain,
     sp.calib = in.calib;
     sp.band_k = in.band_k;
     sp.repair = in.calendar_repair;
+    sp.fit_workers = in.fit_workers;
     sp.score_parity = in.score_parity;
     sp.enforce_calendar_floor = in.enforce_calendar_floor;
     sp.use_deam_cache_for_fit = in.use_deam_cache_for_fit;
@@ -1840,6 +1843,8 @@ Result<ChainValuation> PricerFitter::value_chain(const OptionChain &chain, Outpu
   const unsigned nt = n_threads ? n_threads : cfg_.n_threads;
   const bool want_bands = has(fields, OutputField::BidIV) || has(fields, OutputField::AskIV) ||
                           has(fields, OutputField::MidIV);
+  const bool want_side_bands =
+      has(fields, OutputField::BidIV) || has(fields, OutputField::AskIV);
 
   // The per-side correction caches the fit built. Routing the bid/ask/mid IV
   // inversions through them replaces the cold per-residual Andersen-Lake solve
@@ -1849,11 +1854,34 @@ Result<ChainValuation> PricerFitter::value_chain(const OptionChain &chain, Outpu
   // transparently falls back to the cold path (bit-identical, just slower).
   const AmericanCorrectionCaches caches = sess.correction_caches();
 
-  const auto eval = [&](std::size_t i) {
+  struct alignas(64) LocalCounts {
+    std::size_t bid_unset{0};
+    std::size_t ask_unset{0};
+    std::size_t bid_iv_fail{0};
+    std::size_t ask_iv_fail{0};
+  };
+  // Resolve auto exactly once and pass the resolved value to the worker-id
+  // overload below, so the local array and worker-id range cannot diverge if
+  // process environment is changed concurrently by a test harness.
+  unsigned resolved_nt = nt == 0u ? atx_auto_worker_count() : nt;
+  if (resolved_nt > n) {
+    resolved_nt = static_cast<unsigned>(n);
+  }
+  std::vector<LocalCounts> local_counts(
+      want_side_bands ? std::max(1u, resolved_nt) : 0u);
+
+  const auto eval = [&](std::size_t i, LocalCounts *counts) {
+    assert(!want_side_bands || counts != nullptr);
     const double K = snap.strike[i];
     const double T = snap.T[i];
     const Side side = snap.side[i];
     if (!(K > 0.0) || !(T > 0.0)) {
+      if (counts != nullptr && has(fields, OutputField::BidIV)) {
+        ++counts->bid_unset;
+      }
+      if (counts != nullptr && has(fields, OutputField::AskIV)) {
+        ++counts->ask_unset;
+      }
       return; // decode failed or degenerate expiry — leave the row NaN
     }
     const double q = sess.q_eff_at(T);
@@ -1886,21 +1914,54 @@ Result<ChainValuation> PricerFitter::value_chain(const OptionChain &chain, Outpu
       return american_implied_vol(px, S, K, T, rate, q, side, AmericanMethod::AndersenLake, 1.0e-7,
                                   64, std::nullopt, cc, ws);
     };
-    if (has(fields, OutputField::BidIV) && snap.bid[i] > 0.0) {
-      const auto iv = invert(snap.bid[i]);
-      val.bid_iv[i] = iv.has_value() ? *iv : nan;
+    if (has(fields, OutputField::BidIV)) {
+      const double bid = snap.bid[i];
+      if (!(bid > 0.0) || !std::isfinite(bid)) {
+        ++counts->bid_unset;
+      } else {
+        const auto iv = invert(bid);
+        if (iv.has_value()) {
+          val.bid_iv[i] = *iv;
+        } else {
+          ++counts->bid_iv_fail;
+        }
+      }
     }
-    if (has(fields, OutputField::AskIV) && snap.ask[i] > 0.0) {
-      const auto iv = invert(snap.ask[i]);
-      val.ask_iv[i] = iv.has_value() ? *iv : nan;
+    if (has(fields, OutputField::AskIV)) {
+      const double ask = snap.ask[i];
+      if (!(ask > 0.0) || !std::isfinite(ask)) {
+        ++counts->ask_unset;
+      } else {
+        const auto iv = invert(ask);
+        if (iv.has_value()) {
+          val.ask_iv[i] = *iv;
+        } else {
+          ++counts->ask_iv_fail;
+        }
+      }
     }
-    if (has(fields, OutputField::MidIV) && snap.mid[i] > 0.0) {
-      const auto iv = invert(snap.mid[i]);
-      val.mid_iv[i] = iv.has_value() ? *iv : nan;
+    if (has(fields, OutputField::MidIV)) {
+      const double mid = snap.mid[i];
+      if (mid > 0.0 && std::isfinite(mid)) {
+        const auto iv = invert(mid);
+        val.mid_iv[i] = iv.has_value() ? *iv : nan;
+      }
     }
   };
 
-  parallel_for(n, nt, eval);
+  if (want_side_bands) {
+    parallel_for_dynamic(n, resolved_nt, [&](std::size_t i, unsigned worker_id) {
+      eval(i, &local_counts[worker_id]);
+    });
+  } else {
+    parallel_for(n, nt, [&](std::size_t i) { eval(i, nullptr); });
+  }
+  for (const LocalCounts &counts : local_counts) {
+    val.n_bid_unset += counts.bid_unset;
+    val.n_ask_unset += counts.ask_unset;
+    val.n_bid_iv_fail += counts.bid_iv_fail;
+    val.n_ask_iv_fail += counts.ask_iv_fail;
+  }
   return Ok(std::move(val));
 }
 

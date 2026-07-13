@@ -145,8 +145,26 @@ Result<double> resolve_strike_by_delta(const PricedSurface& s, double T, Side si
 
 // ── StrikeSelector -> absolute K ────────────────────────────────────────────
 
+namespace {
+
+[[nodiscard]] Status validate_model_tenor(const TenorSpec& tenor) {
+  if (!tenor.snap_to_listed) {
+    return Ok();
+  }
+  return Err(ErrorCode::NotImplemented,
+             "TenorSpec::snap_to_listed is unavailable in the model-on-model declarative "
+             "strategy; use the listed OPRA workflow in listed_opra.hpp (see "
+             "spy_strangle_tradeable)");
+}
+
+}  // namespace
+
 Result<double> resolve_strike(const PricedSurface& s, const TenorSpec& tenor, Side side,
                               const StrikeSelector& sel) {
+  const Status tenor_status = validate_model_tenor(tenor);
+  if (!tenor_status) {
+    return Err(tenor_status.error());
+  }
   const double T = tenor.target_T;
   switch (sel.kind) {
     case StrikeSelector::Kind::AtmForward: {
@@ -177,6 +195,10 @@ Result<double> resolve_strike(const PricedSurface& s, const TenorSpec& tenor, Si
 // ── LegSpec -> ResolvedLeg(s) ───────────────────────────────────────────────
 
 Result<std::vector<ResolvedLeg>> expand_leg(const MarketSnapshot& snap, const LegSpec& leg) {
+  const Status tenor_status = validate_model_tenor(leg.tenor);
+  if (!tenor_status) {
+    return Err(tenor_status.error());
+  }
   std::uint32_t uid = leg.uid;
   if (uid == 0) {
     const std::optional<std::uint32_t> u = snap.uid_of(leg.symbol);
@@ -366,6 +388,15 @@ resolve_spec_impl(const MarketSnapshot& snap, const StrategySpec& spec, const Mi
                   std::vector<ResolveDrop>* dropped) {
   if (dropped != nullptr) {
     dropped->clear();
+  }
+  // This is a configuration/capability error, never missing market data. Reject
+  // the whole spec before DropRenormalize can turn an explicitly requested
+  // listed contract into a silent model-contract substitution or name drop.
+  for (const LegSpec& leg : spec.legs) {
+    const Status tenor_status = validate_model_tenor(leg.tenor);
+    if (!tenor_status) {
+      return Err(tenor_status.error());
+    }
   }
   const bool drop_policy = missing.policy == MissingNamePolicy::DropRenormalize;
 

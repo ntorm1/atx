@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -15,6 +16,7 @@
 
 #include "atx/core/error.hpp"
 #include "atx/vol/chain.hpp"
+#include "atx/vol/data.hpp"
 #include "atx/vol/panel.hpp"
 #include "atx/vol/parallel_for.hpp"  // atx_auto_worker_count (ATX_VOL_FIT_WORKERS gate)
 #include "atx/vol/pricer_fitter.hpp"
@@ -409,7 +411,9 @@ TEST_F(PricerFitterTest, IncrementalEssviAgreesWithColdFitOnUpdatedBoard) {
 
   PricerFitter incremental{essvi_config()};
   ASSERT_TRUE(incremental.fit(*chain_).has_value());
-  EXPECT_FALSE(incremental.surface()->session().inputs().use_deam_cache_for_fit);
+  // Fast/Robust presets now reuse certified de-Americanization proposals by
+  // default; the cold-fit comparison below is the economic correctness guard.
+  EXPECT_TRUE(incremental.surface()->session().inputs().use_deam_cache_for_fit);
   EXPECT_NE(incremental.surface()->session().correction_caches().call, nullptr);
   EXPECT_NE(incremental.surface()->session().correction_caches().put, nullptr);
   const atx::vol::ExpiryId target =
@@ -779,6 +783,10 @@ TEST_F(PricerFitterTest, ValueChainThreadCountDeterminism) {
     EXPECT_TRUE(same(a.greeks[i].delta, b.greeks[i].delta));
     EXPECT_TRUE(same(a.greeks[i].vega, b.greeks[i].vega));
   }
+  EXPECT_EQ(a.n_bid_unset, b.n_bid_unset);
+  EXPECT_EQ(a.n_ask_unset, b.n_ask_unset);
+  EXPECT_EQ(a.n_bid_iv_fail, b.n_bid_iv_fail);
+  EXPECT_EQ(a.n_ask_iv_fail, b.n_ask_iv_fail);
 }
 
 TEST_F(PricerFitterTest, ValueChainPopulatesOnlyRequestedFields) {
@@ -795,6 +803,122 @@ TEST_F(PricerFitterTest, ValueChainPopulatesOnlyRequestedFields) {
   EXPECT_TRUE(v.greeks.empty());
   EXPECT_TRUE(atx::vol::has(v.filled, OutputField::ModelIV));
   EXPECT_FALSE(atx::vol::has(v.filled, OutputField::ModelPrice));
+}
+
+TEST_F(PricerFitterTest, ValueChainSeparatesUnsetSidesFromAttemptedInversionFailures) {
+  PricerFitter fitter{PricerConfig{.preset = FitPreset::Fast, .n_threads = 1}};
+  ASSERT_TRUE(fitter.fit(*chain_).has_value());
+
+  const auto baseline = fitter.value_chain(*chain_, OutputField::Bands, 1);
+  ASSERT_TRUE(baseline.has_value()) << baseline.error().to_string();
+
+  std::vector<OptionId> ids;
+  std::vector<double> bids;
+  std::vector<double> asks;
+  for (const OptionId id : chain_->ids()) {
+    const auto option = chain_->at(id);
+    ASSERT_TRUE(option.has_value());
+    const bool itm = option->side == Side::Call ? option->strike < spot_ : option->strike > spot_;
+    if (itm && ids.size() < 4u) {
+      ids.push_back(id);
+      bids.push_back(0.0);
+      asks.push_back(option->ask);
+    }
+  }
+  ASSERT_EQ(ids.size(), 4u);
+  ASSERT_TRUE(chain_->update_quotes(ids, bids, asks).has_value());
+
+  const auto unset = fitter.value_chain(*chain_, OutputField::Bands, 1);
+  ASSERT_TRUE(unset.has_value()) << unset.error().to_string();
+  EXPECT_EQ(unset->n_bid_unset, baseline->n_bid_unset + 4u);
+  EXPECT_EQ(unset->n_ask_unset, baseline->n_ask_unset);
+  EXPECT_EQ(unset->n_bid_iv_fail, baseline->n_bid_iv_fail);
+  const std::size_t bid_nans = static_cast<std::size_t>(std::count_if(
+      unset->bid_iv.begin(), unset->bid_iv.end(), [](double value) { return std::isnan(value); }));
+  EXPECT_EQ(bid_nans, unset->n_bid_unset + unset->n_bid_iv_fail);
+
+  const OptionId attempted_id = ids.front();
+  constexpr double kImpossiblePremium = 1.0e9;
+  const std::array<OptionId, 1> attempted_ids{attempted_id};
+  const std::array<double, 1> impossible_bids{kImpossiblePremium};
+  const std::array<double, 1> impossible_asks{kImpossiblePremium + 1.0};
+  ASSERT_TRUE(chain_->update_quotes(attempted_ids, impossible_bids, impossible_asks).has_value());
+  const auto attempted = fitter.value_chain(*chain_, OutputField::Bands, 1);
+  ASSERT_TRUE(attempted.has_value()) << attempted.error().to_string();
+  EXPECT_EQ(attempted->n_bid_unset, baseline->n_bid_unset + 3u);
+  EXPECT_EQ(attempted->n_ask_unset, baseline->n_ask_unset);
+  EXPECT_EQ(attempted->n_bid_iv_fail, baseline->n_bid_iv_fail + 1u);
+  EXPECT_EQ(attempted->n_ask_iv_fail, baseline->n_ask_iv_fail + 1u);
+}
+
+TEST_F(PricerFitterTest, ValueChainUnsetCountersAreThreadCountInvariant) {
+  PricerFitter fitter{PricerConfig{.preset = FitPreset::Fast}};
+  ASSERT_TRUE(fitter.fit(*chain_).has_value());
+
+  const auto baseline = fitter.value_chain(*chain_, OutputField::Bands, 1);
+  ASSERT_TRUE(baseline.has_value()) << baseline.error().to_string();
+
+  std::vector<OptionId> ids;
+  std::vector<double> bids;
+  std::vector<double> asks;
+  for (const OptionId id : chain_->ids()) {
+    const auto option = chain_->at(id);
+    ASSERT_TRUE(option.has_value());
+    if (ids.size() < 5u && std::isfinite(option->bid) && option->bid > 0.0) {
+      ids.push_back(id);
+      bids.push_back(0.0);
+      asks.push_back(option->ask);
+    }
+  }
+  ASSERT_EQ(ids.size(), 5u);
+  ASSERT_TRUE(chain_->update_quotes(ids, bids, asks).has_value());
+
+  const auto serial = fitter.value_chain(*chain_, OutputField::Bands, 1);
+  const auto parallel = fitter.value_chain(*chain_, OutputField::Bands, 4);
+  ASSERT_TRUE(serial.has_value());
+  ASSERT_TRUE(parallel.has_value());
+  EXPECT_EQ(serial->n_bid_unset, baseline->n_bid_unset + 5u);
+  EXPECT_EQ(serial->n_bid_unset, parallel->n_bid_unset);
+  EXPECT_EQ(serial->n_ask_unset, parallel->n_ask_unset);
+  EXPECT_EQ(serial->n_bid_iv_fail, parallel->n_bid_iv_fail);
+  EXPECT_EQ(serial->n_ask_iv_fail, parallel->n_ask_iv_fail);
+}
+
+TEST(ValueChain, DegenerateLegsCountBothRequestedSidesAsUnset) {
+  const SynthPanelSpec spec = make_spy_synthetic_spec();
+  auto panel = make_synthetic_american_panel(spec);
+  ASSERT_TRUE(panel.has_value()) << panel.error().message();
+  auto healthy = OptionChain::from_frame(panel->frame, spec.r, spec.spot);
+  ASSERT_TRUE(healthy.has_value()) << healthy.error().message();
+
+  PricerFitter fitter{PricerConfig{.preset = FitPreset::Fast, .n_threads = 1}};
+  ASSERT_TRUE(fitter.fit(*healthy).has_value());
+  const auto baseline = fitter.value_chain(*healthy, OutputField::Bands, 1);
+  ASSERT_TRUE(baseline.has_value());
+
+  atx::vol::QuoteFrame augmented = panel->frame;
+  atx::vol::QuoteRow call;
+  call.uid = spec.uid;
+  call.expiry_iso = spec.snapshot_iso;
+  call.strike = spec.spot;
+  call.side = Side::Call;
+  call.bid = 5.0;
+  call.ask = 5.5;
+  atx::vol::QuoteRow put = call;
+  put.side = Side::Put;
+  put.bid = 4.0;
+  put.ask = 4.5;
+  augmented.rows.push_back(call);
+  augmented.rows.push_back(put);
+
+  auto degenerate = OptionChain::from_frame(augmented, spec.r, spec.spot);
+  ASSERT_TRUE(degenerate.has_value()) << degenerate.error().message();
+  const auto valued = fitter.value_chain(*degenerate, OutputField::Bands, 1);
+  ASSERT_TRUE(valued.has_value()) << valued.error().to_string();
+  EXPECT_EQ(valued->n_bid_unset, baseline->n_bid_unset + 2u);
+  EXPECT_EQ(valued->n_ask_unset, baseline->n_ask_unset + 2u);
+  EXPECT_EQ(valued->n_bid_iv_fail, baseline->n_bid_iv_fail);
+  EXPECT_EQ(valued->n_ask_iv_fail, baseline->n_ask_iv_fail);
 }
 
 TEST_F(PricerFitterTest, HftUsesDirectLinearVarianceCurve) {
@@ -1044,16 +1168,14 @@ TEST(PricerFitterPolicy, KnownTruthConvexRiskSurfaceReportsIndependentInvariantE
 // consumes the parallel de-Am prepass's already-computed per-slice carry +
 // inversion-audit diagnostics instead of a second, serial re-derivation. Prove
 // that dedup is behavior-preserving: fit the SAME SPY-dense board twice --
-// once with the de-Am prepass forced serial (ATX_VOL_FIT_WORKERS=1), once
-// auto (hardware_concurrency) -- and assert the certification diagnostics AND
+// once with PricerConfig::fit_workers forced serial, once auto
+// (hardware_concurrency) -- and assert the certification diagnostics AND
 // the admission outcome are bit-identical, per the S0-3
 // expect_per_expiry_bit_identical precedent. The default auto-routed policy
 // on this dense board serves BOTH a LinearVariance market mark and a
 // ConvexDense risk surface (see perf finding C1's profile), so this exercises
 // both curve-driver call sites the dedup touched.
 TEST(PricerFitterPolicy, CertificationAndAdmissionBitIdenticalAcrossFitWorkerCounts) {
-  FitWorkersEnvGuard env_guard;  // restores ATX_VOL_FIT_WORKERS on scope exit
-
   SynthPanelSpec spec = make_spy_synthetic_spec();
   auto panel = make_synthetic_american_panel(spec);
   ASSERT_TRUE(panel.has_value()) << panel.error().message();
@@ -1064,22 +1186,20 @@ TEST(PricerFitterPolicy, CertificationAndAdmissionBitIdenticalAcrossFitWorkerCou
   // surface (main's transactional fit; da718f7 "default serves marks"). The
   // dual mark+risk bundle this determinism check exercises is the explicit v2
   // opt-in, so request it explicitly here (quality_mode flips is_v2_request()).
-  const auto dual_config = [] {
+  const auto dual_config = [](unsigned fit_workers) {
     PricerConfig config;
     config.quality_mode = atx::vol::FitQualityMode::Latency;
     config.outputs = atx::vol::SurfaceOutputs::MarketMarkAndRisk;
+    config.fit_workers = fit_workers;
     return config;
   };
-  set_fit_workers_env("1");
-  ASSERT_EQ(atx::vol::atx_auto_worker_count(), 1u);
-  PricerFitter serial{dual_config()};
+  PricerFitter serial{dual_config(1u)};
   const auto t0 = std::chrono::steady_clock::now();
   ASSERT_TRUE(serial.fit(*chain).has_value());
   const auto t1 = std::chrono::steady_clock::now();
   const atx::vol::SurfaceBundle serial_bundle = serial.bundle();
 
-  unset_fit_workers_env();
-  PricerFitter parallel{dual_config()};
+  PricerFitter parallel{dual_config(0u)};
   const auto t2 = std::chrono::steady_clock::now();
   ASSERT_TRUE(parallel.fit(*chain).has_value());
   const auto t3 = std::chrono::steady_clock::now();
@@ -1107,6 +1227,10 @@ TEST(PricerFitterPolicy, CertificationAndAdmissionBitIdenticalAcrossFitWorkerCou
   ASSERT_NE(parallel_bundle.market_mark, nullptr);
   ASSERT_NE(serial_bundle.risk, nullptr);
   ASSERT_NE(parallel_bundle.risk, nullptr);
+  EXPECT_EQ(serial_bundle.market_mark->session().inputs().fit_workers, 1u);
+  EXPECT_EQ(serial_bundle.risk->session().inputs().fit_workers, 1u);
+  EXPECT_EQ(parallel_bundle.market_mark->session().inputs().fit_workers, 0u);
+  EXPECT_EQ(parallel_bundle.risk->session().inputs().fit_workers, 0u);
 
   {
     SCOPED_TRACE("market_mark");

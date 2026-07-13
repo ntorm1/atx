@@ -86,6 +86,15 @@ struct ChainValuation {
   std::vector<AmericanGreeks> greeks;
   OutputField filled{OutputField::None};
 
+  // NaN provenance for requested bid/ask IV bands. `unset` means inversion
+  // was not attempted because the quote side was non-positive/non-finite or
+  // the contract itself was degenerate. `iv_fail` means a finite positive
+  // quote was attempted but could not be inverted. Both leave the output NaN.
+  std::size_t n_bid_unset{0};
+  std::size_t n_ask_unset{0};
+  std::size_t n_bid_iv_fail{0};
+  std::size_t n_ask_iv_fail{0};
+
   [[nodiscard]] std::size_t size() const noexcept { return ids.size(); }
 
   // Row index for an id (linear scan), or nullopt.
@@ -164,6 +173,10 @@ struct PricerConfig {
   // Worker count for value_chain. 0 => std::thread::hardware_concurrency();
   // 1 => serial. A per-call `value_chain(..., n_threads)` overrides this.
   unsigned n_threads{0};
+  // Worker count for a non-eSSVI fit's independent per-expiry preparation.
+  // 0 => machine/env auto; 1 => serial. Distinct from value-chain evaluation
+  // threads so an outer board scheduler can suppress nested fan-out.
+  unsigned fit_workers{0};
   // Extra discrete cash dividends the surface build should honour. Usually left
   // empty — the chain's `MarketEnv` supplies the dividend schedule; a non-empty
   // value here overrides the env's divs.

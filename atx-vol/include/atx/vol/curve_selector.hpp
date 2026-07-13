@@ -90,6 +90,9 @@ struct SelectorResult {
   std::size_t chosen_index{0};        // index into the candidate list
   std::vector<CandidateScore> scores; // per candidate (‖ candidate list)
   std::vector<std::size_t> sampled_expiry_indices;
+  // Candidates fully scored before an optional budget stopped the search.
+  std::size_t scores_evaluated{0};
+  bool budget_exhausted{false};
 };
 
 // Search policy.
@@ -101,6 +104,11 @@ struct SelectorConfig {
   unsigned oos_max_expiries{8};
   // Out-of-sample ties within this vega-weighted margin break toward fewer DoF.
   double parsimony_margin{0.004};
+  // Whole-call steady-clock budget in milliseconds. Zero is unlimited. The
+  // budget is checked only between fully-scored candidates and cannot stop the
+  // search before at least one candidate satisfies the selector's admission
+  // floors, so it cannot create a budget-only NotFound result.
+  double time_budget_ms{0.0};
   // Common-key coverage floors. Missing candidate outputs remain missing; they
   // are never removed from the denominator to make the candidate look better.
   double min_expiry_coverage{1.0};

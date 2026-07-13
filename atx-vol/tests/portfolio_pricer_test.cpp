@@ -69,15 +69,15 @@ constexpr std::int64_t kNow = 1700000000000000000LL;
 // bumping only S / r / now leaves the model IV untouched (clean axis isolation).
 [[nodiscard]] PricedSurface make_essvi(std::uint32_t uid, int n, double theta_bump = 0.0,
                                        double S = kS, double r = kR, std::int64_t now = kNow,
-                                       double q_eff = 0.02) {
+                                       double q_eff = 0.02, bool flat_smile = false) {
   CurveSurface cs;
   std::vector<SliceContext> ctx;
   for (int i = 0; i < n; ++i) {
     const double T = 0.05 + 0.10 * static_cast<double>(i);
-    const double F = kS;
+    const double F = S * std::exp((r - q_eff) * T);
     EssviParams e{};
     e.theta = 0.04 + 0.005 * static_cast<double>(i) + theta_bump;
-    e.phi = 1.5 - 0.05 * static_cast<double>(i);
+    e.phi = flat_smile ? 0.0 : 1.5 - 0.05 * static_cast<double>(i);
     e.rho = -0.4 + 0.02 * static_cast<double>(i);
     e.psi = 0.5;
     e.p = 0.5;
@@ -808,8 +808,9 @@ TEST(PortfolioPricer, Price_ThreadCounts_BitIdentical) {
 
 TEST(PortfolioPricer, PnlExplain_SpotBump_DeltaGammaOnly) {
   const double dS = 0.05; // small spot move -> 2nd-order Taylor is tight
-  const PricedSurface base = make_essvi(1, 5);
-  const PricedSurface shifted = make_essvi(1, 5, /*theta_bump*/ 0.0, /*S*/ kS + dS);
+  const PricedSurface base = make_essvi(1, 5, 0.0, kS, kR, kNow, 0.02, true);
+  const PricedSurface shifted =
+      make_essvi(1, 5, 0.0, kS + dS, kR, kNow, 0.02, true);
   const SurfaceSet bset = set_of({&base});
   const SurfaceSet sset = set_of({&shifted});
 
@@ -853,8 +854,9 @@ TEST(PortfolioPricer, PnlExplain_SpotBump_DeltaGammaOnly) {
 
 TEST(PortfolioPricer, PnlExplain_RateBump_RhoOnly) {
   const double dr = 1e-4; // 1 bp
-  const PricedSurface base = make_essvi(1, 5);
-  const PricedSurface shifted = make_essvi(1, 5, 0.0, kS, kR + dr);
+  const PricedSurface base = make_essvi(1, 5, 0.0, kS, kR, kNow, 0.02, true);
+  const PricedSurface shifted =
+      make_essvi(1, 5, 0.0, kS, kR + dr, kNow, 0.02, true);
   const SurfaceSet bset = set_of({&base});
   const SurfaceSet sset = set_of({&shifted});
 

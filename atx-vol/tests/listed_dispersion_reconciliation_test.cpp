@@ -37,6 +37,7 @@ PricedSurface make_surface(std::uint32_t uid, double spot, std::int64_t now) {
   std::vector<SliceContext> context;
   std::uint16_t expiry_id = 0;
   for (const double term : {0.05, 0.10, 0.20, 0.50}) {
+    const double forward = spot * std::exp((kRate - 0.02) * term);
     EssviParams parameters{};
     parameters.theta = 0.04 + 0.01 * term;
     parameters.phi = 1.4;
@@ -45,10 +46,10 @@ PricedSurface make_surface(std::uint32_t uid, double spot, std::int64_t now) {
     parameters.p = 0.5;
     parameters.lambda = 0.5;
     parameters.T = term;
-    parameters.F = spot;
+    parameters.F = forward;
     parameters.expiry_id = expiry_id++;
     curves.push(std::make_unique<EssviCurve>(parameters, std::exp(-kRate * term)));
-    context.push_back(SliceContext{term, spot, 0.0, 0.02, 100, 7});
+    context.push_back(SliceContext{term, forward, 0.0, 0.02, 100, 7});
   }
   PricingContext pricing;
   pricing.S = spot;

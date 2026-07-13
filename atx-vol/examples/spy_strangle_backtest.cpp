@@ -14,6 +14,9 @@
 // `roll_at_T` set ABOVE the tenor (1.0): the single cohort's residual T (~0.5) is
 // always below the threshold, so `lifecycle_decide` clears and reopens it every
 // step (strategy.cpp:336). Every recorded row carries exactly 2 open lots.
+// These are explicitly MODEL-ON-MODEL continuous contracts, not listed OPRA
+// instruments or executable fills. Use `spy_strangle_tradeable` for the existing
+// listed OPRA contract/quote workflow.
 //
 // DATA (no paid Databento pull; synthetic per the house rule): a deterministic
 // rolling-vol synthetic SPY corpus. A seeded (never time-based) mt19937_64 drives
@@ -175,6 +178,7 @@ constexpr double kTenorT = 0.5;  // 6-month strangle
   LegSpec leg;
   leg.symbol = "SPY";  // resolved to uid per snapshot (works for synthetic + real corpora)
   leg.tenor.target_T = kTenorT;
+  leg.tenor.snap_to_listed = false;  // model-on-model; listed route is a separate workflow
   leg.structure.kind = StructureSpec::Kind::Strangle;
   leg.structure.call_leg = StrikeSelector{StrikeSelector::Kind::Delta, 0.40};
   leg.structure.put_leg = StrikeSelector{StrikeSelector::Kind::Delta, 0.40};
@@ -359,6 +363,15 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "corpus has no dates\n");
     return 1;
   }
+  // A real-manifest run does not build the synthetic corpus above, so it has
+  // not created `base` as a side effect. Create the report directory explicitly
+  // before write_backtest_tsv / the CSV writer use it on a fresh machine.
+  fs::create_directories(base, ec);
+  if (ec) {
+    std::fprintf(stderr, "cannot create output directory %s: %s\n", base.string().c_str(),
+                 ec.message().c_str());
+    return 1;
+  }
   std::printf("[data] %s: %zu dates %s..%s\n", data_source.c_str(), dates.size(),
               dates.front().c_str(), dates.back().c_str());
 
@@ -404,6 +417,8 @@ int main(int argc, char** argv) {
     os.precision(10);
     os << "# symbol=SPY\n"
        << "# strategy=Short 40-Delta 6M Strangle, Daily Restrike\n"
+       << "# contract_semantics=model-on-model continuous surface contracts (not listed fills)\n"
+       << "# listed_workflow=spy_strangle_tradeable via listed_opra.hpp\n"
        << "# data_source=" << data_source << "\n"
        << "# window_start=" << dates.front() << "\n"
        << "# window_end=" << dates.back() << "\n"
@@ -442,6 +457,8 @@ int main(int argc, char** argv) {
 
   std::printf("\n=== SPY short 40-delta 6m strangle, restriked daily (%s -> %s) ===\n",
               dates.front().c_str(), dates.back().c_str());
+  std::printf("contract semantics: model-on-model continuous surface contracts (not listed fills)\n"
+              "listed OPRA workflow: spy_strangle_tradeable via listed_opra.hpp\n");
   std::printf("corpus: %s | %zu dates, %.1f KB archives (%.2f KB/surface)%s\n", data_source.c_str(),
               dates.size(), static_cast<double>(total_arch_bytes) / 1024.0,
               static_cast<double>(total_arch_bytes) / 1024.0 / static_cast<double>(dates.size()),

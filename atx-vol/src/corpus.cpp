@@ -545,8 +545,16 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
   // ── Fan out board fits; each worker writes its own disjoint slot ───────────
   std::vector<FitSlot> slots(n);
   const Status schedule_status = detail::run_bounded_fit_tasks(
-      n, cfg.n_threads, [&boards, &slots, &cfg, admission](std::size_t index) -> Status {
-        slots[index] = fit_board(boards[index], cfg.fit_template, admission);
+      n, cfg.n_threads, [&boards, &slots, &cfg, admission, n](std::size_t index) -> Status {
+        PricerConfig fit_config = cfg.fit_template;
+        // Auto or explicit multi-worker outer scheduling owns the machine
+        // budget. Keep each non-eSSVI board's expiry preparation serial so the
+        // two levels cannot multiply into H^2 runnable threads. An explicitly
+        // serial outer scheduler retains the caller's inner budget.
+        if (n > 1u && cfg.n_threads != 1u) {
+          fit_config.fit_workers = 1u;
+        }
+        slots[index] = fit_board(boards[index], fit_config, admission);
         return Ok();
       });
 

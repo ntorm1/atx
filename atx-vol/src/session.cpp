@@ -1,5 +1,7 @@
 #include "atx/vol/session.hpp"
 
+#include "term_carry.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -100,6 +102,24 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
   const double span = in.expiry_rate_T[hi] - in.expiry_rate_T[lo];
   const double alpha = (T - in.expiry_rate_T[lo]) / span;
   return in.expiry_rates[lo] + alpha * (in.expiry_rates[hi] - in.expiry_rates[lo]);
+}
+
+[[nodiscard]] double query_rate_at(const SessionInputs &in, double T) noexcept {
+  if (in.expiry_rates.empty() || T <= in.expiry_rate_T.front() ||
+      T >= in.expiry_rate_T.back()) {
+    return input_rate_at(in, T);
+  }
+  const auto it = std::upper_bound(in.expiry_rate_T.begin(), in.expiry_rate_T.end(), T);
+  const std::size_t hi = static_cast<std::size_t>(it - in.expiry_rate_T.begin());
+  const std::size_t lo = hi - 1u;
+  if (T == in.expiry_rate_T[lo]) {
+    return in.expiry_rates[lo];
+  }
+  const double alpha = (T - in.expiry_rate_T[lo]) /
+                       (in.expiry_rate_T[hi] - in.expiry_rate_T[lo]);
+  const double log_df_lo = -in.expiry_rates[lo] * in.expiry_rate_T[lo];
+  const double log_df_hi = -in.expiry_rates[hi] * in.expiry_rate_T[hi];
+  return -(log_df_lo + alpha * (log_df_hi - log_df_lo)) / T;
 }
 
 void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> context) {
@@ -530,6 +550,7 @@ void apply_fit_preset(SessionInputs& in, FitPreset preset) noexcept {
       in.deam.iv_tol = 1.0e-5;
       in.deam.n_atm = 1;
       // Fast leaves the raw eSSVI surface and still scores parity diagnostics.
+      in.use_deam_cache_for_fit = true;
       in.calendar_repair = CalendarRepair::None;
       break;
     case FitPreset::Hft:
@@ -563,6 +584,7 @@ void apply_fit_preset(SessionInputs& in, FitPreset preset) noexcept {
       // So it stays at its default (disabled); accuracy comes from the backbone.
       // Robust makes the surface calendar-arb-free near-money at held quality;
       // Accurate reports the raw calendar status without altering the fit.
+      in.use_deam_cache_for_fit = (preset == FitPreset::Robust);
       in.calendar_repair =
           (preset == FitPreset::Robust) ? CalendarRepair::MonotoneFit
                                         : CalendarRepair::None;
@@ -626,6 +648,7 @@ Result<VolaSession> VolaSession::build(const Underlying& under,
   sp.calib = eff.calib;
   sp.band_k = eff.band_k;
   sp.repair = eff.calendar_repair;
+  sp.fit_workers = eff.fit_workers;
   sp.score_parity = eff.score_parity;
   sp.enforce_calendar_floor = eff.enforce_calendar_floor;
   sp.use_deam_cache_for_fit = eff.use_deam_cache_for_fit;
@@ -958,10 +981,20 @@ VolaSession::ForwardCarry VolaSession::interp_forward(double T) const noexcept {
   const SliceContext& first = ctx_.front();
   const SliceContext& last = ctx_.back();
   if (T <= first.T) {
-    return ForwardCarry{first.forward, first.q_eff, input_rate_at(in_, T)};
+    const double rate = query_rate_at(in_, T);
+    if (T == first.T) {
+      return ForwardCarry{first.forward, first.q_eff, rate};
+    }
+    const double forward = in_.S * std::exp((rate - first.q_eff) * T);
+    return ForwardCarry{forward, first.q_eff, rate};
   }
   if (T >= last.T) {
-    return ForwardCarry{last.forward, last.q_eff, input_rate_at(in_, T)};
+    const double rate = query_rate_at(in_, T);
+    if (T == last.T) {
+      return ForwardCarry{last.forward, last.q_eff, rate};
+    }
+    const double forward = in_.S * std::exp((rate - last.q_eff) * T);
+    return ForwardCarry{forward, last.q_eff, rate};
   }
 
   // Strictly between the endpoints: find the first slice whose T exceeds the
@@ -974,31 +1007,36 @@ VolaSession::ForwardCarry VolaSession::interp_forward(double T) const noexcept {
   const std::size_t lo = hi - 1;
   const SliceContext& a = ctx_[lo];
   const SliceContext& b = ctx_[hi];
+  if (T == a.T) {
+    return ForwardCarry{a.forward, a.q_eff, query_rate_at(in_, T)};
+  }
   const double span = b.T - a.T;
   const double alpha = (span > 0.0) ? (T - a.T) / span : 0.0;
-  return ForwardCarry{a.forward + alpha * (b.forward - a.forward),
-                      a.q_eff + alpha * (b.q_eff - a.q_eff), input_rate_at(in_, T)};
+  const double forward = interpolate_positive_log(a.forward, b.forward, alpha);
+  const double rate = query_rate_at(in_, T);
+  const double q_eff = coherent_q_eff(in_.S, forward, T, rate);
+  return ForwardCarry{forward, q_eff, rate};
 }
 
 double VolaSession::forward_at(double T) const noexcept {
-  if (!(T > 0.0) || ctx_.empty()) {
+  if (!(T > 0.0) || !std::isfinite(T) || ctx_.empty()) {
     return 0.0;
   }
   return interp_forward(T).forward;
 }
 
 double VolaSession::q_eff_at(double T) const noexcept {
-  if (!(T > 0.0) || ctx_.empty()) {
+  if (!(T > 0.0) || !std::isfinite(T) || ctx_.empty()) {
     return 0.0;
   }
   return interp_forward(T).q_eff;
 }
 
 double VolaSession::rate_at(double T) const noexcept {
-  if (!(T > 0.0)) {
+  if (!(T > 0.0) || !std::isfinite(T)) {
     return 0.0;
   }
-  return input_rate_at(in_, T);
+  return query_rate_at(in_, T);
 }
 
 Result<PricedSurface> VolaSession::to_priced_surface() const {
@@ -1466,6 +1504,8 @@ VolaSession::cached_refit_observations(const Chain &chain,
       return Err(ErrorCode::Unavailable,
                  "VolaSession::cached_refit_observations: carry pair eligibility changed");
     }
+    bool carry_coordinate_inputs_changed = false;
+    bool carry_weight_inputs_changed = false;
     for (const std::uint16_t pair_strike : current_pairs) {
       for (const Side side : {Side::Call, Side::Put}) {
         const std::size_t quote_idx = chain_index(pair_strike, side);
@@ -1475,14 +1515,41 @@ VolaSession::cached_refit_observations(const Chain &chain,
                      "VolaSession::cached_refit_observations: malformed carry pair index");
         }
         const bool ts_known = quote_idx < chain.ts_ns.size();
-        if (chain.bids[quote_idx] != chain_bids[quote_idx] ||
-            chain.asks[quote_idx] != chain_asks[quote_idx] ||
+        carry_coordinate_inputs_changed =
+            carry_coordinate_inputs_changed ||
             chain.mids[quote_idx] != chain_mids[quote_idx] ||
-            chain.flags[quote_idx] != chain_flags[quote_idx] ||
-            (ts_known && chain.ts_ns[quote_idx] != chain_ts[quote_idx])) {
-          return Err(ErrorCode::Unavailable,
-                     "VolaSession::cached_refit_observations: carry inputs changed");
-        }
+            chain.flags[quote_idx] != chain_flags[quote_idx];
+        carry_weight_inputs_changed =
+            carry_weight_inputs_changed ||
+            chain.bids[quote_idx] != chain_bids[quote_idx] ||
+            chain.asks[quote_idx] != chain_asks[quote_idx] ||
+            (ts_known && chain.ts_ns[quote_idx] != chain_ts[quote_idx]);
+      }
+    }
+    // Mid/eligibility changes alter the carry observations themselves and are
+    // never eligible for cached-IV reuse, even when their aggregate forward
+    // happens to move by less than the economic threshold below.
+    if (carry_coordinate_inputs_changed) {
+      return Err(ErrorCode::Unavailable,
+                 "VolaSession::cached_refit_observations: carry prices or flags changed");
+    }
+    if (carry_weight_inputs_changed) {
+      const double rate = input_rate_at(in_, chain.T);
+      const Result<ChainForward> refreshed_carry = resolve_chain_forward(
+          chain, in_.S, rate, in_.cash_divs, in_.now_ts_ns, in_.deam);
+      if (!refreshed_carry.has_value()) {
+        return Err(std::move(refreshed_carry).error());
+      }
+      // Keep the certified coordinate when the carry-weight update moves the
+      // forward by an economically immaterial amount. A 1e-5 log-forward move
+      // changes k by at most 1e-5 and is below the sprint's liquid-node IV/price
+      // materiality limits; larger or non-finite moves require a cold rebuild.
+      constexpr double kMaxCachedForwardLogShift = 1.0e-5;
+      const double forward_shift =
+          std::fabs(std::log(refreshed_carry->forward / ctx_[slice_idx].forward));
+      if (!std::isfinite(forward_shift) || forward_shift > kMaxCachedForwardLogShift) {
+        return Err(ErrorCode::Unavailable,
+                   "VolaSession::cached_refit_observations: carry coordinate changed");
       }
     }
   }

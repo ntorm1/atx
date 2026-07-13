@@ -70,8 +70,8 @@
 //     absolute-strike query first resolves the term forward F(T).
 //   * Forward / carry  F = S * e^{(r - q) T}, with discrete cash dividends folded
 //     into the forward (q is the effective continuous carry, q_eff). A query at T
-//     clamps outside [T_0, T_last] and LINEARLY interpolates (F, q_eff) between
-//     bracketing fitted slices — the one mechanic the queries re-price on.
+//     interpolates log-forward/discount state between pillars and holds endpoint
+//     carry flat in the tails — one coherent carry mechanic.
 //   * Time  T is a year-fraction on a 365.25-day year (data.cpp `year_fraction`).
 //   * Greeks are SPOT-based: delta = dP/dS, gamma = d2P/dS2; theta is CALENDAR,
 //     theta = dP/dt = -dP/dT. vega = dP/dsigma, rho = dP/dr.

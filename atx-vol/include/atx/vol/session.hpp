@@ -21,11 +21,10 @@
 // The surface stores each slice in LOG-MONEYNESS k = ln(K / F_slice), so a query
 // at an absolute strike K must use the forward AT the queried T. `build` records
 // each fitted slice's (T, forward, q_eff) in ascending T; a query at T locates T
-// among those slice T's and, for a T strictly between two slices, LINEARLY
-// interpolates `forward` and `q_eff`; a T at or beyond an endpoint clamps to that
-// endpoint slice. That interpolated (F(T), q_eff(T)) drives both the surface's
-// log-moneyness and the American re-pricing carry, exactly as the de-Am q_eff
-// bridge intends (S*e^{(r-q_eff)T} == F).
+// among those slice T's and geometrically interpolates market-implied `forward`.
+// Interior q_eff is derived from that forward and interpolated discount state,
+// preserving S*e^{(r-q_eff)T} == F. Exact pillars retain calibrated carry. In
+// either tail, endpoint q_eff/r are held flat and F is derived at the query T.
 //
 // ## Ownership / move semantics
 //
@@ -116,6 +115,11 @@ struct SessionInputs {
   // slice whose wing crosses, with the per-expiry parity then scored off the
   // repaired surface so the reported quality is what the surface serves.
   CalendarRepair calendar_repair{CalendarRepair::None};
+  // Worker budget for the independent per-expiry preparation phase used by
+  // non-eSSVI curve families. 0 => machine/env auto; 1 => serial. Orchestrators
+  // that already parallelize across boards set this to 1 to avoid nested H^2
+  // fan-out. The eSSVI path is sequential and ignores this field.
+  unsigned fit_workers{0};
   // Cross-expiry interpolation mode for arbitrary-T queries served off this
   // session's surface. PiecewiseTotalVariance (default) is bit-identical to
   // current behavior; ShapeBlend is the FLEX-style vol-multiple blend. Only
@@ -538,8 +542,8 @@ class VolaSession {
 
   // ── Term carry accessors (the query re-pricing forward / effective yield) ──
   //
-  // The interpolated term forward F(T) and effective carry q_eff(T) at an
-  // arbitrary T — the SAME clamp-outside / linear-interp-between-slices mechanic
+  // The interpolated term forward F(T) and coherent effective carry q_eff(T) at
+  // an arbitrary T — the same clamp-outside / log-state-between-slices mechanic
   // the const queries use to re-price (see the forward-interpolation note above).
   // Exposed so a batch / whole-chain evaluator can resolve the per-expiry carry
   // (e.g. to invert bid/ask to American IV on the fit's own carry) without a
@@ -595,8 +599,8 @@ class VolaSession {
   }
 
   // Locate T among the ascending slice T's and return the term forward / carry:
-  // clamp to the endpoint slice outside [T_0, T_last]; linearly interpolate
-  // between the two bracketing slices inside. Precondition: at least one slice
+  // hold endpoint carry flat outside [T_0, T_last]; interpolate log-forward and
+  // log-discount state between bracketing slices. Precondition: at least one slice
   // (guaranteed — build errors on an empty surface).
   [[nodiscard]] ForwardCarry interp_forward(double T) const noexcept;
 
