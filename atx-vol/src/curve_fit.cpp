@@ -416,9 +416,30 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
       if (in.calib.per_slice_linear_fallback && cfg.kind != VolCurveKind::LinearVariance) {
         CurveConfig fallback_cfg = cfg;
         fallback_cfg.kind = VolCurveKind::LinearVariance;
+        // Calendar consistency for the inserted linear slice: a LinearVariance
+        // fit only floors w >= w_prev at its OWN nodes, so between/beyond those
+        // nodes its flat-wing extrapolation can dip under w_prev, breaking the
+        // mid-chain calendar order the SplineVol projection otherwise maintains
+        // (measured: enabling the fallback without this drops calendar-arb-free
+        // to ~37%). Union the risk-check grid (the exact points arb_check_calendar
+        // samples, [-0.60, 0.60] / 64) into the floor knots so the served linear
+        // slice dominates w_prev at every checked point. Only for the fallback;
+        // the primary path is unchanged.
+        std::vector<double> fb_floor_knots(calendar_floor_knots.begin(),
+                                           calendar_floor_knots.end());
+        if (w_prev) {
+          constexpr double kFbCalMin = -0.60;
+          constexpr double kFbCalMax = 0.60;
+          constexpr int kFbCalIntervals = 64;
+          constexpr double kFbCalDk =
+              (kFbCalMax - kFbCalMin) / static_cast<double>(kFbCalIntervals);
+          for (int gi = 0; gi <= kFbCalIntervals; ++gi) {
+            fb_floor_knots.push_back(kFbCalMin + kFbCalDk * static_cast<double>(gi));
+          }
+        }
         const auto t_fb0 = ProfileClock::now();
         auto fb_res = fit_slice_curve(fallback_cfg, prepared.fit_observations(), F, T, df, w_prev,
-                                      calendar_floor_knots);
+                                      std::span<const double>{fb_floor_knots});
         if (profile) {
           ms_fit_slice += elapsed_ms(t_fb0, ProfileClock::now());
         }

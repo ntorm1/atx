@@ -158,6 +158,25 @@ struct CalibOpts {
   // This is a cold-start latency knob for very dense index boards; the default
   // preserves the historical full-board fit exactly.
   std::uint32_t max_obs_per_slice{0};
+  // 0 = unlimited = current behavior. Positive = cap the number of OTM strikes
+  // per expiry that the LEGACY (`LegacyEssviCompatibility`) observation-prep
+  // path de-Americanizes. The legacy prep inverts one (cold-ish) Andersen-Lake
+  // solve per OTM strike to build the fit strip; on a liquid name a single wide
+  // expiry can carry ~600 strikes → ~600 inversions, yet a 29-knot SplineVol
+  // curve is fully constrained by ~40-60 well-spread observations, so most of
+  // that work is wasted. When an expiry has MORE candidate strikes than this cap
+  // (counted AFTER the cheap validity filter but BEFORE the expensive de-Am
+  // inversion), only a deterministic moneyness-SPREAD subset of size `cap` is
+  // de-Americanized: the near-ATM core is kept densely (most signal + vega),
+  // both extreme wings are pinned (the spline's outer knots stay constrained),
+  // and the intermediate strikes are thinned by an even moneyness stride. The
+  // dropped candidates are recorded with the `ObservationCap` rejection reason
+  // and never inverted. This is a cold-start LATENCY knob only: the forward /
+  // borrow carry solve (near-ATM pair set) is untouched, and when scoring is
+  // enabled parity still scores the full original chain, so accuracy is
+  // unaffected. If an expiry has <= `cap` candidates the prep is BIT-IDENTICAL
+  // to the uncapped path. Only the legacy prep honors this field.
+  std::uint32_t max_deam_strikes_per_expiry{0};
   // 0 = always de-Americanize each fit row with the configured American-IV
   // solver. Positive = allow an HFT shortcut for OTM rows whose BAW-estimated
   // early-exercise premium at the raw Black-76 IV is at most this fraction of

@@ -209,6 +209,7 @@ int main(int argc, char **argv) {
   std::optional<std::uint32_t> ov_max_obs; // per-slice de-Am inversion cap (0 = none)
   std::optional<bool> ov_corr_cache;       // use_correction_cache override
   std::optional<bool> ov_slice_fallback;   // per-slice LinearVariance fallback override
+  std::optional<std::uint32_t> ov_max_deam_strikes; // legacy-prep de-Am strike cap (0 = none)
 
   for (int i = 1; i < argc; ++i) {
     const std::string_view a = argv[i];
@@ -241,6 +242,7 @@ int main(int argc, char **argv) {
     else if (a == "--max-obs") ov_max_obs = static_cast<std::uint32_t>(std::strtoul(nv(), nullptr, 10));
     else if (a == "--no-correction-cache") ov_corr_cache = false;
     else if (a == "--slice-fallback") { const std::string v = nv(); ov_slice_fallback = (v == "on"); }
+    else if (a == "--max-deam-strikes") ov_max_deam_strikes = static_cast<std::uint32_t>(std::strtoul(nv(), nullptr, 10));
     else {
       std::fprintf(stderr, "unknown arg: %s\n", argv[i]);
       return 2;
@@ -283,6 +285,7 @@ int main(int argc, char **argv) {
         if (ov_max_obs) in.calib.max_obs_per_slice = *ov_max_obs;
         if (ov_corr_cache) in.use_correction_cache = *ov_corr_cache;
         if (ov_slice_fallback) in.calib.per_slice_linear_fallback = *ov_slice_fallback;
+        if (ov_max_deam_strikes) in.calib.max_deam_strikes_per_expiry = *ov_max_deam_strikes;
       };
 
   std::setvbuf(stdout, nullptr, _IONBF, 0);
