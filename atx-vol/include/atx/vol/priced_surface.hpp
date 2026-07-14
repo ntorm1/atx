@@ -293,6 +293,10 @@ public:
   [[nodiscard]] const PricingContext &pricing() const noexcept { return pricing_; }
   [[nodiscard]] std::size_t n_slices() const noexcept { return surface_.n_slices(); }
   [[nodiscard]] std::uint32_t uid() const noexcept { return pricing_.uid; }
+  // Never-reused process-local value identity. Plain moves transfer it, move
+  // assignment replaces it, and successful query-tier preparation refreshes it.
+  // Retained valuation caches use this to reject same-address pointee ABA.
+  [[nodiscard]] std::uint64_t instance_id() const noexcept { return instance_id_; }
   [[nodiscard]] QueryPricingTier query_pricing_tier() const noexcept { return query_pricing_tier_; }
   [[nodiscard]] std::size_t query_cache_pair_count() const noexcept;
 
@@ -349,6 +353,7 @@ private:
   bool term_rates_{false};        // any slice df differs from scalar-r df
   QueryPricingTier query_pricing_tier_{QueryPricingTier::LegacyCompatible};
   std::unique_ptr<QueryAccelerator> query_accelerator_{};
+  std::uint64_t instance_id_{0};
 };
 
 // ── EvalField bitmask operators ──────────────────────────────────────────────

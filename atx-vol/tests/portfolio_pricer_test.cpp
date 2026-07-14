@@ -1085,6 +1085,240 @@ TEST(PortfolioPricer, PnlExplain_CombinedShift_SumsToTotal_And_ThreadDeterminist
   EXPECT_TRUE(bits_equal(a->total.pnl_total, b->total.pnl_total));
 }
 
+TEST(PortfolioPricer, PnlTotals_ReusesMatchingFullGreekBaseSolve) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+
+  const std::int64_t one_hour = static_cast<std::int64_t>(3600.0 * 1e9);
+  const PricedSurface base = make_essvi(1, 5);
+  const PricedSurface shifted = make_essvi(1, 5, 0.0005, kS + 0.1, kR + 0.0005, kNow + one_hour);
+  const SurfaceSet bset = set_of({&base});
+  const SurfaceSet sset = set_of({&shifted});
+
+  auto portfolio = Portfolio::create(pnl_book());
+  ASSERT_TRUE(portfolio.has_value()) << portfolio.error().to_string();
+  const PortfolioPricer pricer(std::move(*portfolio));
+  PriceOptions options;
+  options.n_threads = 1u;
+  options.analytic_greeks = true;
+
+  PortfolioWorkspace reused_workspace;
+  reused_workspace.reserve(pricer.portfolio().n_contracts(), pricer.portfolio().n_positions());
+  const auto base_risk =
+      pricer.price_totals(bset, PriceFieldMask::FullGreeks, reused_workspace, options);
+  ASSERT_TRUE(base_risk.has_value()) << base_risk.error().to_string();
+
+  if constexpr (counters_enabled()) {
+    atx::vol::counters::reset();
+  }
+  const auto reused = pricer.pnl_totals(bset, sset, reused_workspace, options);
+  ASSERT_TRUE(reused.has_value()) << reused.error().to_string();
+  const auto reused_counters = atx::vol::counters::snapshot();
+  const std::uint64_t reused_boundary_solves = reused_counters.get(Counter::BoundarySolves);
+
+  PortfolioWorkspace fresh_workspace;
+  fresh_workspace.reserve(pricer.portfolio().n_contracts(), pricer.portfolio().n_positions());
+  if constexpr (counters_enabled()) {
+    atx::vol::counters::reset();
+  }
+  const auto fresh = pricer.pnl_totals(bset, sset, fresh_workspace, options);
+  ASSERT_TRUE(fresh.has_value()) << fresh.error().to_string();
+  const auto fresh_counters = atx::vol::counters::snapshot();
+  const std::uint64_t fresh_boundary_solves = fresh_counters.get(Counter::BoundarySolves);
+
+  expect_pnl_totals_bit_identical(*reused, *fresh);
+  if constexpr (counters_enabled()) {
+    EXPECT_LT(reused_boundary_solves, fresh_boundary_solves);
+    EXPECT_EQ(fresh_boundary_solves - reused_boundary_solves,
+              std::uint64_t{5} * pricer.portfolio().n_contracts());
+    EXPECT_EQ(reused_counters.get(Counter::BaseGreekReuseLanes), pricer.portfolio().n_contracts());
+    EXPECT_EQ(fresh_counters.get(Counter::BaseGreekReuseLanes), 0u);
+  } else {
+    EXPECT_FALSE(atx::vol::counters::snapshot().enabled);
+  }
+}
+
+TEST(PortfolioPricer, PnlTotals_BaseRiskStampFailsClosedOnEveryMismatch) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+
+  const std::int64_t one_hour = static_cast<std::int64_t>(3600.0 * 1e9);
+  const PricedSurface base = make_essvi(1, 5);
+  const PricedSurface shifted = make_essvi(1, 5, 0.0005, kS + 0.1, kR + 0.0005, kNow + one_hour);
+  const SurfaceSet bset = set_of({&base});
+  const SurfaceSet sset = set_of({&shifted});
+
+  auto portfolio = Portfolio::create(pnl_book());
+  ASSERT_TRUE(portfolio.has_value()) << portfolio.error().to_string();
+  PortfolioPricer pricer(std::move(*portfolio));
+  PortfolioWorkspace workspace;
+  workspace.reserve(pricer.portfolio().n_contracts(), pricer.portfolio().n_positions());
+
+  PriceOptions analytic;
+  analytic.n_threads = 1u;
+  analytic.analytic_greeks = true;
+  const auto warm = [&](const SurfaceSet &surfaces, const PriceOptions &options) {
+    const auto risk = pricer.price_totals(surfaces, PriceFieldMask::FullGreeks, workspace, options);
+    ASSERT_TRUE(risk.has_value()) << risk.error().to_string();
+  };
+  const auto expect_miss = [&](const SurfaceSet &base_set, const PriceOptions &options) {
+    if constexpr (counters_enabled()) {
+      atx::vol::counters::reset();
+    }
+    const auto actual = pricer.pnl_totals(base_set, sset, workspace, options);
+    ASSERT_TRUE(actual.has_value()) << actual.error().to_string();
+    const auto measured = atx::vol::counters::snapshot();
+
+    PortfolioWorkspace fresh_workspace;
+    const auto expected = pricer.pnl_totals(base_set, sset, fresh_workspace, options);
+    ASSERT_TRUE(expected.has_value()) << expected.error().to_string();
+    expect_pnl_totals_bit_identical(*actual, *expected);
+    if constexpr (counters_enabled()) {
+      EXPECT_EQ(measured.get(Counter::BaseGreekReuseLanes), 0u);
+    }
+  };
+
+  // A separately-created set never aliases merely because uid, timestamp, and
+  // immutable surface pointers happen to be identical.
+  warm(bset, analytic);
+  const SurfaceSet rebuilt = set_of({&base});
+  expect_miss(rebuilt, analytic);
+
+  // The analytic and call-local execution contracts are part of the exact risk
+  // stamp even when the selected cold surface would happen to return equal marks.
+  warm(bset, analytic);
+  PriceOptions finite_difference = analytic;
+  finite_difference.analytic_greeks = false;
+  expect_miss(bset, finite_difference);
+
+  warm(bset, analytic);
+  PriceOptions forced_cold = analytic;
+  forced_cold.query_execution = QueryExecution::ColdReference;
+  expect_miss(bset, forced_cold);
+
+  // Marks overwrite the shared unique-result SoA and must invalidate its Greek
+  // provenance before P&L can observe it.
+  warm(bset, analytic);
+  const auto marks = pricer.price_totals(bset, PriceFieldMask::Marks, workspace, analytic);
+  ASSERT_TRUE(marks.has_value()) << marks.error().to_string();
+  expect_miss(bset, analytic);
+
+  // A changed tenor advances the logical-book revision and invalidates even
+  // though the same Portfolio/Pricer object and unique count remain in place.
+  warm(bset, analytic);
+  std::vector<double> next_t;
+  next_t.reserve(pricer.portfolio().n_positions());
+  for (const Position &position : pricer.portfolio().positions()) {
+    next_t.push_back(position.contract.T - 1.0 / 365.25);
+  }
+  ASSERT_TRUE(pricer.retime(next_t).has_value());
+  expect_miss(bset, analytic);
+}
+
+TEST(PortfolioPricer, PnlTotals_SurfaceSetCopiesAndMovesPreserveExactRiskIdentity) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+
+  const PricedSurface base = make_essvi(1, 5);
+  const PricedSurface shifted = make_essvi(1, 5, 0.0005, kS + 0.1);
+  const SurfaceSet bset = set_of({&base});
+  const SurfaceSet sset = set_of({&shifted});
+  SurfaceSet copied = bset;
+  SurfaceSet moved = std::move(copied);
+
+  auto portfolio = Portfolio::create(pnl_book());
+  ASSERT_TRUE(portfolio.has_value()) << portfolio.error().to_string();
+  const PortfolioPricer pricer(std::move(*portfolio));
+  PortfolioWorkspace workspace;
+  PriceOptions options;
+  options.n_threads = 1u;
+  options.analytic_greeks = true;
+  const auto risk = pricer.price_totals(bset, PriceFieldMask::FullGreeks, workspace, options);
+  ASSERT_TRUE(risk.has_value()) << risk.error().to_string();
+
+  if constexpr (counters_enabled()) {
+    atx::vol::counters::reset();
+  }
+  const auto moved_result = pricer.pnl_totals(moved, sset, workspace, options);
+  ASSERT_TRUE(moved_result.has_value()) << moved_result.error().to_string();
+  const auto moved_counts = atx::vol::counters::snapshot();
+  if constexpr (counters_enabled()) {
+    EXPECT_EQ(moved_counts.get(Counter::BaseGreekReuseLanes), pricer.portfolio().n_contracts());
+  }
+
+  if constexpr (counters_enabled()) {
+    atx::vol::counters::reset();
+  }
+  const auto moved_from_result = pricer.pnl_totals(copied, sset, workspace, options);
+  ASSERT_TRUE(moved_from_result.has_value()) << moved_from_result.error().to_string();
+  const auto moved_from_counts = atx::vol::counters::snapshot();
+  EXPECT_EQ(moved_from_result->n_ok, 0u);
+  if constexpr (counters_enabled()) {
+    EXPECT_EQ(moved_from_counts.get(Counter::BaseGreekReuseLanes), 0u);
+  }
+}
+
+TEST(PortfolioPricer, PnlTotals_SameAddressSurfaceReplacementInvalidatesBaseRisk) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+
+  PricedSurface base = make_essvi(1, 5);
+  const PricedSurface shifted = make_essvi(1, 5, 0.0005, kS + 0.1);
+  const SurfaceSet bset = set_of({&base});
+  const SurfaceSet sset = set_of({&shifted});
+  auto portfolio = Portfolio::create(pnl_book());
+  ASSERT_TRUE(portfolio.has_value()) << portfolio.error().to_string();
+  const PortfolioPricer pricer(std::move(*portfolio));
+  PortfolioWorkspace workspace;
+  PriceOptions options;
+  options.n_threads = 1u;
+  options.analytic_greeks = true;
+
+  const auto warm = pricer.price_totals(bset, PriceFieldMask::FullGreeks, workspace, options);
+  ASSERT_TRUE(warm.has_value()) << warm.error().to_string();
+  const std::uint64_t original_instance = base.instance_id();
+  base = make_essvi(1, 5, 0.002, kS - 1.0, kR + 0.001, kNow);
+  EXPECT_NE(base.instance_id(), original_instance);
+
+  if constexpr (counters_enabled()) {
+    atx::vol::counters::reset();
+  }
+  const auto replaced = pricer.pnl_totals(bset, sset, workspace, options);
+  ASSERT_TRUE(replaced.has_value()) << replaced.error().to_string();
+  const auto replaced_counts = atx::vol::counters::snapshot();
+  PortfolioWorkspace fresh_workspace;
+  const auto replaced_fresh = pricer.pnl_totals(bset, sset, fresh_workspace, options);
+  ASSERT_TRUE(replaced_fresh.has_value()) << replaced_fresh.error().to_string();
+  expect_pnl_totals_bit_identical(*replaced, *replaced_fresh);
+  if constexpr (counters_enabled()) {
+    EXPECT_EQ(replaced_counts.get(Counter::BaseGreekReuseLanes), 0u);
+  }
+
+  // Query-tier preparation is a semantic value change even when the caller
+  // moves the prepared value back into the exact same object address.
+  const auto rewarmed = pricer.price_totals(bset, PriceFieldMask::FullGreeks, workspace, options);
+  ASSERT_TRUE(rewarmed.has_value()) << rewarmed.error().to_string();
+  const std::uint64_t cold_instance = base.instance_id();
+  auto prepared = std::move(base).with_query_pricing(QueryPricingTier::RepresentativeFast);
+  ASSERT_TRUE(prepared.has_value()) << prepared.error().to_string();
+  base = std::move(*prepared);
+  EXPECT_NE(base.instance_id(), cold_instance);
+
+  if constexpr (counters_enabled()) {
+    atx::vol::counters::reset();
+  }
+  const auto prepared_result = pricer.pnl_totals(bset, sset, workspace, options);
+  ASSERT_TRUE(prepared_result.has_value()) << prepared_result.error().to_string();
+  const auto prepared_counts = atx::vol::counters::snapshot();
+  PortfolioWorkspace prepared_fresh_workspace;
+  const auto prepared_fresh = pricer.pnl_totals(bset, sset, prepared_fresh_workspace, options);
+  ASSERT_TRUE(prepared_fresh.has_value()) << prepared_fresh.error().to_string();
+  expect_pnl_totals_bit_identical(*prepared_result, *prepared_fresh);
+  if constexpr (counters_enabled()) {
+    EXPECT_EQ(prepared_counts.get(Counter::BaseGreekReuseLanes), 0u);
+  }
+}
+
 TEST(PortfolioPricer, ForcedColdPnlAndTotalsMatchIndependentColdPreparedSurfaces) {
   const std::int64_t one_hour = static_cast<std::int64_t>(3600.0 * 1e9);
   PricedSurface fast_base_source = make_essvi(1, 5);
@@ -1854,6 +2088,44 @@ TEST(PortfolioPricer, PnlExplainInto_BitIdenticalToPnlExplain) {
   EXPECT_TRUE(bits_equal(fs.total.pnl_rho, ref->total.pnl_rho));
   EXPECT_TRUE(bits_equal(fs.total.pnl_charm, ref->total.pnl_charm));
   EXPECT_TRUE(bits_equal(fs.total.pnl_unexplained, ref->total.pnl_unexplained));
+}
+
+TEST(PortfolioPricer, PnlExplainInto_ReusedMixedStatusRowsMatchFreshWorkspace) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+
+  const PnlSurfaces surf;
+  const SurfaceSet base = surf.base();
+  const SurfaceSet shifted = surf.shifted();
+  auto portfolio = Portfolio::create(pnl_multi_book());
+  ASSERT_TRUE(portfolio.has_value()) << portfolio.error().to_string();
+  const PortfolioPricer pricer(std::move(*portfolio));
+  const std::size_t n = pricer.portfolio().n_positions();
+
+  PortfolioWorkspace reused_workspace;
+  reused_workspace.reserve(pricer.portfolio().n_contracts(), n);
+  FrameStore base_risk(n, /*want_greeks=*/true);
+  ASSERT_TRUE(
+      pricer.price_into(base, PriceFieldMask::FullGreeks, base_risk.view(), reused_workspace)
+          .has_value());
+
+  PnlFrameStore reused(n);
+  if constexpr (counters_enabled()) {
+    atx::vol::counters::reset();
+  }
+  ASSERT_TRUE(pricer.pnl_explain_into(base, shifted, reused.view(), reused_workspace).has_value());
+  const auto measured = atx::vol::counters::snapshot();
+
+  PortfolioWorkspace fresh_workspace;
+  PnlFrameStore fresh(n);
+  ASSERT_TRUE(pricer.pnl_explain_into(base, shifted, fresh.view(), fresh_workspace).has_value());
+  expect_pnl_frame_bit_identical(reused, fresh);
+  EXPECT_EQ(reused.status.back(), PriceStatus::ModelUnavailable);
+  if constexpr (counters_enabled()) {
+    // Exactly one unique contract is the intentionally missing uid 99 lane;
+    // every surface-backed base Greek lane is reused.
+    EXPECT_EQ(measured.get(Counter::BaseGreekReuseLanes), pricer.portfolio().n_contracts() - 1u);
+  }
 }
 
 TEST(PortfolioPricer, PnlTotals_BitIdenticalToPnlExplainTotal) {

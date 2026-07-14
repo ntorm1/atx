@@ -71,7 +71,8 @@ constexpr std::uint32_t kUid = 7;
 // (q_eff = 0.02), slices spanning T in [0.05, 1.0]. `vol_bump` shifts the whole
 // term's ATM variance. Mirrors pnl_greeks_consistency's make_essvi.
 [[nodiscard]] PricedSurface make_surface(std::uint32_t uid, double S, double fwd,
-                                         std::int64_t now_ts, double vol_bump = 0.0) {
+                                         std::int64_t now_ts, double vol_bump = 0.0,
+                                         AmericanMethod method = AmericanMethod::AndersenLake) {
   CurveSurface cs;
   std::vector<SliceContext> ctx;
   const double Ts[] = {0.05, 0.10, 0.20, 0.35, 0.50, 0.75, 1.00};
@@ -96,7 +97,7 @@ constexpr std::uint32_t kUid = 7;
   pc.S = S;
   pc.r = kR;
   pc.now_ts_ns = now_ts;
-  pc.method = AmericanMethod::AndersenLake;
+  pc.method = method;
   pc.al_opts = al_fast_opts();
   pc.uid = uid;
   auto ps = PricedSurface::create(std::move(cs), std::move(ctx), pc);
@@ -309,6 +310,135 @@ TEST(Backtest, SnapshotCacheIdentityIncludesNormalizedPathAndQueryTier) {
   EXPECT_EQ(stats.retained_entries, 3u);
 }
 
+TEST(Backtest, ReuseOnlyFastMissLoadsColdAndLaterReusesEagerFastSnapshot) {
+  const fs::path dir = fresh_dir("snapshot-cache-reuse-only");
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  const std::string path = write_one(dir, "2026-08-01", "SPX", surface);
+  const std::string alias =
+      (fs::path{path}.parent_path() / "." / fs::path{path}.filename()).string();
+
+  MarketSnapshot::reset_open_count();
+  SnapshotCache cache;
+  auto cold_on_miss =
+      cache.load(path, QueryPricingTier::RepresentativeFast, QueryCacheBuildPolicy::ReuseOnly);
+  ASSERT_TRUE(cold_on_miss.has_value()) << cold_on_miss.error().to_string();
+  ASSERT_EQ((*cold_on_miss)->surfaces().size(), 1u);
+  EXPECT_EQ((*cold_on_miss)->surfaces().front().query_pricing_tier(),
+            QueryPricingTier::ColdReference);
+  EXPECT_EQ((*cold_on_miss)->surfaces().front().query_cache_pair_count(), 0u);
+  EXPECT_EQ(MarketSnapshot::open_count(), 1u);
+
+  auto same_cold =
+      cache.load(alias, QueryPricingTier::RepresentativeFast, QueryCacheBuildPolicy::ReuseOnly);
+  ASSERT_TRUE(same_cold.has_value()) << same_cold.error().to_string();
+  EXPECT_EQ(same_cold->get(), cold_on_miss->get());
+  EXPECT_EQ(MarketSnapshot::open_count(), 1u);
+
+  auto eager_fast =
+      cache.load(path, QueryPricingTier::RepresentativeFast, QueryCacheBuildPolicy::Eager);
+  ASSERT_TRUE(eager_fast.has_value()) << eager_fast.error().to_string();
+  ASSERT_EQ((*eager_fast)->surfaces().size(), 1u);
+  EXPECT_EQ((*eager_fast)->surfaces().front().query_pricing_tier(),
+            QueryPricingTier::RepresentativeFast);
+  EXPECT_EQ((*eager_fast)->surfaces().front().query_cache_pair_count(), 1u);
+  EXPECT_NE(eager_fast->get(), cold_on_miss->get());
+  EXPECT_EQ(MarketSnapshot::open_count(), 2u);
+
+  auto reused_fast =
+      cache.load(alias, QueryPricingTier::RepresentativeFast, QueryCacheBuildPolicy::ReuseOnly);
+  ASSERT_TRUE(reused_fast.has_value()) << reused_fast.error().to_string();
+  EXPECT_EQ(reused_fast->get(), eager_fast->get());
+  EXPECT_EQ(MarketSnapshot::open_count(), 2u);
+  const SnapshotCacheStats stats = cache.stats();
+  EXPECT_EQ(stats.loads, 2u);
+  EXPECT_EQ(stats.fast_build_loads, 1u);
+  EXPECT_EQ(stats.reuse_only_fast_hits, 1u);
+  EXPECT_EQ(stats.reuse_only_cold_resolutions, 2u);
+}
+
+TEST(Backtest, ConcurrentReuseOnlyFastMissesCoalesceOnOneColdSnapshot) {
+  const fs::path dir = fresh_dir("snapshot-cache-reuse-only-concurrent");
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  const std::string path = write_one(dir, "2026-08-01", "SPX", surface);
+
+  MarketSnapshot::reset_open_count();
+  SnapshotCache cache;
+  std::vector<std::future<Result<std::shared_ptr<const MarketSnapshot>>>> loads;
+  for (int i = 0; i < 8; ++i) {
+    loads.push_back(std::async(std::launch::async, [&cache, path] {
+      return cache.load(path, QueryPricingTier::RepresentativeFast,
+                        QueryCacheBuildPolicy::ReuseOnly);
+    }));
+  }
+  const MarketSnapshot *first = nullptr;
+  for (auto &load : loads) {
+    auto snapshot = load.get();
+    ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+    first = first == nullptr ? snapshot->get() : first;
+    EXPECT_EQ(snapshot->get(), first);
+    EXPECT_EQ((*snapshot)->surfaces().front().query_pricing_tier(),
+              QueryPricingTier::ColdReference);
+  }
+  EXPECT_EQ(MarketSnapshot::open_count(), 1u);
+  EXPECT_EQ(cache.stats().loads, 1u);
+  EXPECT_GE(cache.stats().hits, 7u);
+  EXPECT_EQ(cache.stats().fast_build_loads, 0u);
+  EXPECT_EQ(cache.stats().reuse_only_fast_hits, 0u);
+  EXPECT_EQ(cache.stats().reuse_only_cold_resolutions, 8u);
+}
+
+TEST(Backtest, ReuseOnlyFailedFastEntryFallsBackToColdRegardlessOfCacheHistory) {
+  const fs::path dir = fresh_dir("snapshot-cache-reuse-only-failed-fast");
+  const PricedSurface surface =
+      make_surface(kUid, 100.0, 100.0, kBaseNow, 0.0, AmericanMethod::Baw);
+  const std::string path = write_one(dir, "2026-08-01", "SPX", surface);
+
+  MarketSnapshot::reset_open_count();
+  SnapshotCache cache;
+  const auto eager =
+      cache.load(path, QueryPricingTier::RepresentativeFast, QueryCacheBuildPolicy::Eager);
+  ASSERT_FALSE(eager.has_value());
+  EXPECT_EQ(eager.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_EQ(MarketSnapshot::open_count(), 1u);
+
+  const auto reuse =
+      cache.load(path, QueryPricingTier::RepresentativeFast, QueryCacheBuildPolicy::ReuseOnly);
+  ASSERT_TRUE(reuse.has_value()) << reuse.error().to_string();
+  EXPECT_EQ((*reuse)->surfaces().front().query_pricing_tier(), QueryPricingTier::ColdReference);
+  EXPECT_EQ((*reuse)->surfaces().front().query_cache_pair_count(), 0u);
+  EXPECT_EQ(MarketSnapshot::open_count(), 2u);
+
+  // Eager retains its original requested-tier error contract even after a cold
+  // snapshot has become available through ReuseOnly.
+  const auto eager_again =
+      cache.load(path, QueryPricingTier::RepresentativeFast, QueryCacheBuildPolicy::Eager);
+  ASSERT_FALSE(eager_again.has_value());
+  EXPECT_EQ(eager_again.error().code(), ErrorCode::InvalidArgument);
+  const SnapshotCacheStats stats = cache.stats();
+  EXPECT_EQ(stats.loads, 2u);
+  EXPECT_EQ(stats.fast_build_loads, 1u);
+  EXPECT_EQ(stats.reuse_only_fast_hits, 1u);
+  EXPECT_EQ(stats.reuse_only_cold_resolutions, 1u);
+}
+
+TEST(Backtest, InvalidQueryCacheBuildPolicyFailsBeforeArchiveOpen) {
+  const fs::path dir = fresh_dir("snapshot-cache-invalid-build-policy");
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  const std::string path = write_one(dir, "2026-08-01", "SPX", surface);
+  const auto invalid = static_cast<QueryCacheBuildPolicy>(255u);
+
+  MarketSnapshot::reset_open_count();
+  SnapshotCache cache;
+  const auto loaded = cache.load(path, QueryPricingTier::RepresentativeFast, invalid);
+  ASSERT_FALSE(loaded.has_value());
+  EXPECT_EQ(loaded.error().code(), ErrorCode::InvalidArgument);
+  const Status prefetched = cache.prefetch(path, QueryPricingTier::RepresentativeFast, invalid);
+  ASSERT_FALSE(prefetched.has_value());
+  EXPECT_EQ(prefetched.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_EQ(MarketSnapshot::open_count(), 0u);
+  EXPECT_EQ(cache.stats().loads, 0u);
+}
+
 TEST(Backtest, RunConfigPropagatesQueryTierThroughPrefetchAndLoad) {
   const fs::path dir = fresh_dir("run-query-tier");
   const CorpusManifest manifest = make_evolving_corpus(dir, "SPX", 3);
@@ -337,6 +467,55 @@ TEST(Backtest, RunConfigPropagatesQueryTierThroughPrefetchAndLoad) {
   EXPECT_EQ(config.snapshot_cache->stats().loads, after_run.loads + 1u);
 }
 
+TEST(Backtest, ReuseOnlyRunUsesColdOnMissAndPreparedFastAfterExplicitPreload) {
+  const fs::path dir = fresh_dir("run-query-tier-reuse-only");
+  const CorpusManifest manifest = make_evolving_corpus(dir, "SPX", 3);
+  auto clock = Clock::from_manifest(manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  const std::int64_t expiry = kBaseNow + 120 * kDayNs;
+
+  RunConfig fresh_config;
+  fresh_config.query_pricing_tier = QueryPricingTier::RepresentativeFast;
+  fresh_config.query_cache_build_policy = QueryCacheBuildPolicy::ReuseOnly;
+  fresh_config.price.query_execution = QueryExecution::ColdReference;
+  fresh_config.snapshot_cache = std::make_shared<SnapshotCache>();
+  const auto fresh = run_backtest(*clock, survivor_book(expiry), fresh_config);
+  ASSERT_TRUE(fresh.has_value()) << fresh.error().to_string();
+  const SnapshotCacheStats fresh_stats = fresh_config.snapshot_cache->stats();
+  EXPECT_EQ(fresh_stats.loads, static_cast<std::uint64_t>(clock->size()));
+  for (const SnapshotRef &ref : clock->refs()) {
+    auto snapshot = fresh_config.snapshot_cache->load(
+        ref.archive_path, QueryPricingTier::RepresentativeFast, QueryCacheBuildPolicy::ReuseOnly);
+    ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+    EXPECT_EQ((*snapshot)->surfaces().front().query_pricing_tier(),
+              QueryPricingTier::ColdReference);
+    EXPECT_EQ((*snapshot)->surfaces().front().query_cache_pair_count(), 0u);
+  }
+  EXPECT_EQ(fresh_config.snapshot_cache->stats().loads, fresh_stats.loads);
+
+  RunConfig preloaded_config = fresh_config;
+  preloaded_config.snapshot_cache = std::make_shared<SnapshotCache>();
+  for (const SnapshotRef &ref : clock->refs()) {
+    auto snapshot = preloaded_config.snapshot_cache->load(
+        ref.archive_path, QueryPricingTier::RepresentativeFast, QueryCacheBuildPolicy::Eager);
+    ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+  }
+  const SnapshotCacheStats preload_stats = preloaded_config.snapshot_cache->stats();
+  const auto preloaded = run_backtest(*clock, survivor_book(expiry), preloaded_config);
+  ASSERT_TRUE(preloaded.has_value()) << preloaded.error().to_string();
+  EXPECT_EQ(preloaded_config.snapshot_cache->stats().loads, preload_stats.loads);
+  for (const SnapshotRef &ref : clock->refs()) {
+    auto snapshot = preloaded_config.snapshot_cache->load(
+        ref.archive_path, QueryPricingTier::RepresentativeFast, QueryCacheBuildPolicy::ReuseOnly);
+    ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+    EXPECT_EQ((*snapshot)->surfaces().front().query_pricing_tier(),
+              QueryPricingTier::RepresentativeFast);
+    EXPECT_EQ((*snapshot)->surfaces().front().query_cache_pair_count(), 1u);
+  }
+  EXPECT_EQ(preloaded_config.snapshot_cache->stats().loads, preload_stats.loads);
+  expect_result_bit_identical(*fresh, *preloaded);
+}
+
 TEST(Backtest, AdaptiveStrategyRejectsFastEconomicsUnlessColdIsExplicit) {
   const fs::path dir = fresh_dir("adaptive-economic-route");
   const CorpusManifest manifest = make_evolving_corpus(dir, "SPX", 2);
@@ -358,6 +537,117 @@ TEST(Backtest, AdaptiveStrategyRejectsFastEconomicsUnlessColdIsExplicit) {
   config.price.query_execution = QueryExecution::ColdReference;
   const auto accepted = run_backtest(*clock, strategy, config);
   ASSERT_TRUE(accepted.has_value()) << accepted.error().to_string();
+
+  config.query_cache_build_policy = QueryCacheBuildPolicy::ReuseOnly;
+  config.snapshot_cache = std::make_shared<SnapshotCache>();
+  const auto reuse_only = run_backtest(*clock, strategy, config);
+  ASSERT_TRUE(reuse_only.has_value()) << reuse_only.error().to_string();
+  auto actual =
+      config.snapshot_cache->load(clock->refs().front().archive_path, config.query_pricing_tier,
+                                  QueryCacheBuildPolicy::ReuseOnly);
+  ASSERT_TRUE(actual.has_value()) << actual.error().to_string();
+  EXPECT_EQ((*actual)->surfaces().front().query_pricing_tier(), QueryPricingTier::ColdReference);
+  EXPECT_EQ((*actual)->surfaces().front().query_cache_pair_count(), 0u);
+}
+
+TEST(Backtest, AdaptiveStrategyHandlesFreshFullAndPartialFastResidency) {
+  const fs::path dir = fresh_dir("adaptive-cache-residency");
+  const CorpusManifest manifest = make_evolving_corpus(dir, "SPX", 3);
+  auto clock = Clock::from_manifest(manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  StrategySpec spec;
+  spec.name = "adaptive-residency";
+  spec.resolution.fast_screen_cold_confirm = true;
+  spec.lifecycle.entry = LifecycleSpec::Entry::EveryStep;
+  spec.lifecycle.holding = LifecycleSpec::Holding::HoldToExpiry;
+  LegSpec leg;
+  leg.uid = kUid;
+  leg.tenor.target_T = 0.50;
+  leg.structure.kind = StructureSpec::Kind::Strangle;
+  leg.structure.call_leg = {StrikeSelector::Kind::Delta, 0.40};
+  leg.structure.put_leg = {StrikeSelector::Kind::Delta, 0.40};
+  leg.size = {SizeSpec::Kind::FixedContracts, 1.0, -1.0};
+  spec.legs.push_back(leg);
+
+  const auto make_config = [](std::shared_ptr<SnapshotCache> cache) {
+    RunConfig config;
+    config.query_pricing_tier = QueryPricingTier::RepresentativeFast;
+    config.query_cache_build_policy = QueryCacheBuildPolicy::ReuseOnly;
+    config.price.query_execution = QueryExecution::ColdReference;
+    config.snapshot_cache = std::move(cache);
+    return config;
+  };
+
+  RunConfig fresh_config = make_config(std::make_shared<SnapshotCache>());
+  DeclarativeStrategy fresh_strategy{spec};
+  const auto fresh = run_backtest(*clock, fresh_strategy, fresh_config);
+  ASSERT_TRUE(fresh.has_value()) << fresh.error().to_string();
+  const SnapshotCacheStats fresh_stats = fresh_config.snapshot_cache->stats();
+  EXPECT_EQ(fresh_stats.fast_build_loads, 0u);
+  EXPECT_EQ(fresh_stats.reuse_only_fast_hits, 0u);
+  EXPECT_GT(fresh_stats.reuse_only_cold_resolutions, 0u);
+
+  RunConfig full_config = make_config(std::make_shared<SnapshotCache>());
+  for (const SnapshotRef &ref : clock->refs()) {
+    auto snapshot = full_config.snapshot_cache->load(
+        ref.archive_path, QueryPricingTier::RepresentativeFast, QueryCacheBuildPolicy::Eager);
+    ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+  }
+  const std::uint64_t full_preload_count = full_config.snapshot_cache->stats().loads;
+  DeclarativeStrategy full_strategy{spec};
+  const auto full = run_backtest(*clock, full_strategy, full_config);
+  ASSERT_TRUE(full.has_value()) << full.error().to_string();
+  const SnapshotCacheStats full_stats = full_config.snapshot_cache->stats();
+  EXPECT_EQ(full_stats.loads, full_preload_count);
+  EXPECT_EQ(full_stats.fast_build_loads, static_cast<std::uint64_t>(clock->size()));
+  EXPECT_GT(full_stats.reuse_only_fast_hits, 0u);
+  EXPECT_EQ(full_stats.reuse_only_cold_resolutions, 0u);
+
+  RunConfig partial_config = make_config(std::make_shared<SnapshotCache>());
+  auto first_fast = partial_config.snapshot_cache->load(clock->refs().front().archive_path,
+                                                        QueryPricingTier::RepresentativeFast,
+                                                        QueryCacheBuildPolicy::Eager);
+  ASSERT_TRUE(first_fast.has_value()) << first_fast.error().to_string();
+  DeclarativeStrategy partial_strategy{spec};
+  const auto partial = run_backtest(*clock, partial_strategy, partial_config);
+  ASSERT_TRUE(partial.has_value()) << partial.error().to_string();
+  const SnapshotCacheStats partial_stats = partial_config.snapshot_cache->stats();
+  EXPECT_EQ(partial_stats.fast_build_loads, 1u);
+  EXPECT_GT(partial_stats.reuse_only_fast_hits, 0u);
+  EXPECT_GT(partial_stats.reuse_only_cold_resolutions, 0u);
+
+  ASSERT_EQ(fresh->size(), full->size());
+  ASSERT_EQ(fresh->size(), partial->size());
+  for (std::size_t i = 0; i < fresh->size(); ++i) {
+    EXPECT_EQ(fresh->n_open_lots[i], full->n_open_lots[i]) << i;
+    EXPECT_EQ(fresh->n_open_lots[i], partial->n_open_lots[i]) << i;
+    EXPECT_NEAR(fresh->pnl_total[i], full->pnl_total[i], 1.0) << i;
+    EXPECT_NEAR(fresh->pnl_total[i], partial->pnl_total[i], 1.0) << i;
+    EXPECT_NEAR(fresh->nav[i], full->nav[i], 2.0) << i;
+    EXPECT_NEAR(fresh->nav[i], partial->nav[i], 2.0) << i;
+  }
+
+  const auto validate_cold_residuals = [&spec, &clock](const RunConfig &config) {
+    for (const SnapshotRef &ref : clock->refs()) {
+      auto snapshot = config.snapshot_cache->load(ref.archive_path, config.query_pricing_tier,
+                                                  QueryCacheBuildPolicy::ReuseOnly);
+      ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+      const auto resolved = resolve_spec(**snapshot, spec);
+      ASSERT_TRUE(resolved.has_value()) << resolved.error().to_string();
+      for (const SizedLeg &resolved_leg : *resolved) {
+        const PricedSurface *surface = (*snapshot)->find(resolved_leg.leg.uid);
+        ASSERT_NE(surface, nullptr);
+        const auto delta = surface->delta(resolved_leg.leg.K, resolved_leg.leg.T,
+                                          resolved_leg.leg.side, QueryExecution::ColdReference);
+        ASSERT_TRUE(delta.has_value()) << delta.error().to_string();
+        EXPECT_LE(std::fabs(std::fabs(*delta) - 0.40), spec.resolution.cold_delta_tolerance);
+      }
+    }
+  };
+  validate_cold_residuals(fresh_config);
+  validate_cold_residuals(full_config);
+  validate_cold_residuals(partial_config);
 }
 
 TEST(Backtest, BoundedSnapshotCacheCoalescesAndRetainsOnlyWorkingSet) {

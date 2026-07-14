@@ -548,11 +548,11 @@ tolerances; real 35-pillar IV query <=2 us/query after reproducing the reported 
 8. WP7 selective kernels/layout.
 
 Implemented on local `main` in this goal: WP0-WP3, the selector and unset-side portions of WP4,
-bounded snapshot lifetime from WP6, and one production selective-pricing slice from WP7. WP5's
-prepared-portfolio/adjacent-Greek reuse, streaming OPRA ingestion, persistent executors, and the
-remaining SoA/layout work stay as measured follow-on packages; their gates were not claimed as
-complete. C0.5-C0.9 are closed, including explicit model-on-model versus listed-contract
-semantics.
+the first exact adjacent-date Greek-reuse slice of WP5, bounded snapshot lifetime from WP6, and
+one production selective-pricing slice from WP7. Streaming OPRA ingestion, complete linear-time
+bookkeeping, persistent cache/prefetch scheduling, and the remaining SoA/layout work stay as
+measured follow-on packages; their gates are not claimed as complete. C0.5-C0.9 are closed,
+including explicit model-on-model versus listed-contract semantics.
 
 ## Release gates
 
@@ -715,3 +715,99 @@ not a new kernel speedup claim.
 The adaptive gate is shipped as useful but not complete: accuracy is economically acceptable and
 the `$0.0077` approximation remains valuable, but the observed `1.25x` confirmed speedup is below
 the next-sprint `2x` target and far below the representative-everywhere diagnostic ceiling.
+
+## 2026-07-14 milestone 2: demand-aware cache lifecycle and adjacent-date risk reuse
+
+This milestone keeps the `$0.0077/share` representative approximation as an explicit fast-path
+candidate while separating two workloads that previously paid the same construction cost:
+
+- `Eager` builds the requested accelerator on a cache miss and is intended for repeated sweeps.
+- `ReuseOnly` consumes an already resident accelerator but resolves a miss through a coalesced
+  `ColdReference` entry. A sparse one-pass adaptive run therefore does not build thousands of
+  representative samples that it will never reuse.
+
+The cache keys remain execution-specific. `ReuseOnly` never stores cold state under a fast key,
+concurrent cold misses coalesce, and a previously failed eager fast future falls back through the
+same cold-resolution path. Invalid policies fail before opening an archive. New counters report
+fast builds, reuse-only fast candidates, and reuse-only cold resolutions. The example exposes the
+requested tier, lifecycle policy, and cache statistics in both console and result metadata.
+
+### Correctness and pricing-state reuse
+
+The backtest previously recomputed an unchanged post-trade full-risk frame at the next date's P&L
+boundary. `PortfolioWorkspace` now retains the exact full-Greek frame and reuses only the base
+Greek lane when all semantic provenance matches:
+
+- `SurfaceSet` logical identity and every per-uid `PricedSurface` instance identity;
+- portfolio logical identity and revision;
+- analytic-versus-finite-difference Greek mode;
+- `QueryExecution`; and
+- output cardinality.
+
+Marks and target-date surfaces are still resolved normally, so elapsed-time IV and mark changes
+are not bypassed. Preparing, solving, retiming, replacing, moving, or reconfiguring a priced
+surface invalidates or changes the relevant stamp. Surface-set copies intentionally preserve
+logical identity; moves transfer it and leave a new empty identity behind. Tests cover same-address
+replacement, move-out/reconfigure/move-back, mixed successful/unavailable contracts, and all
+configuration mismatches. Reused and freshly recomputed P&L frames are identical in these gates.
+
+An instrumented ten-contract analytic P&L boundary dropped from 60 boundary solves to 10, exactly
+five eliminated base-Greek bump solves per contract. The two-leg proof dropped from 12 to 2. This
+is a targeted adjacent-date win, not completion of WP5: strategy sizing still computes Greeks
+separately from full-book entry risk, and lot/uid bookkeeping is not yet linearized.
+
+### Real OPRA performance evidence and interpretation
+
+Corpus: `C:/atx/data/spy_ytd/archives/manifest.tsv`, 123 dates, Release. All timing claims below
+are engine time after the requested preload; preparation time is reported separately where used.
+
+| Experiment | Cold median | Fast/adaptive median | Observed speedup | Interpretation |
+|---|---:|---:|---:|---|
+| Fresh adaptive, `ReuseOnly`, seven-run alternating sample | noisy; paired sample centred near `1.3 s` | `1.266 s` | about `0.95x` in the original alternating set | zero fast builds, 245 cold resolutions; avoids the prior eager-build regression |
+| Preloaded adaptive-confirm, five-run alternating sample | `403.8 ms` | `289.0 ms` | `1.40x` | 123 resident fast candidates; retains cold confirmation/economics |
+| Preloaded RepresentativeFast everywhere, clean seven-run sample | `589.9 ms` | `68.7 ms` | `8.59x` paired median | cold leg was highly multimodal (`48.8%` CV), so this is an upper observation, not a stable claim |
+| RepresentativeFast compared with the cleaner preloaded cold median | `403.8 ms` | `68.7 ms` | `5.88x` | conservative cross-sample comparison |
+
+The defensible conclusion is a measured representative-everywhere range of roughly `5.9x-8.6x`
+on this corpus, with the earlier clean milestone at `7.48x`. A `10x` result is not yet reproduced.
+The path remains worth developing: median price error is economically plausible as a screen, but
+the `$7.97` p99 and `$10.59` maximum prohibit using it unconfirmed for published economics.
+
+Fresh `ReuseOnly` adaptive and all-cold runs were economically identical on the corpus: maximum
+daily P&L difference `0`, maximum NAV-path difference `0`, zero sign flips, and the same final NAV
+of `-$166,628.9254`. This establishes that demand-aware materialization changes construction
+work, not the economic route. Preloaded adaptive-confirm continues to use the bounded-drift
+acceptance evidence from the preceding section.
+
+### Verification and compatibility
+
+- Debug and Release strict `/W4 /WX` targets build for `atx-vol-tests` and
+  `spy_strangle_backtest`.
+- Final integrated Release gate: 109 tests ran across `PortfolioPricer`, `PricedSurface`,
+  `Backtest`, `SpyStrangleBacktest`, and `Strategy`; 108 passed and one instrumentation-only test
+  skipped because counters were disabled in that binary.
+- Dedicated cache gates cover fresh/full/partial residency, concurrent miss coalescing, failed
+  fast-entry fallback, invalid policy, policy propagation through both backtest runners, and real
+  adaptive economics.
+- `git diff --check` is clean.
+
+This milestone extends public aggregates and adds identities to `SurfaceSet` and `PricedSurface`.
+Although fields were appended where practical, the public object layout changed. The DLL and all
+consumers must be rebuilt together; binary compatibility with an older consumer is unsupported.
+
+### Revised next sprint, in execution order
+
+| Priority / estimate | Work | Acceptance gate |
+|---|---|---|
+| P0 / 1-2 d | Align TargetTheta/strategy sizing Greek configuration with `RunConfig`, then carry a complete entry-risk seed into portfolio execution | no duplicate full-book entry solve; configured analytic/FD route is consistent; at least another 20% engine reduction with unchanged listed contracts and economically immaterial P&L drift |
+| P0 / 2 d | Replace the dense 16x8x12 representative tensor with a purpose-specific, shared screen table and tune its interpolation/quantization against OPRA | median error no worse than `$0.0077`; p99 below one quoted half-spread on the qualified liquid set; preloaded representative gate reaches a stable `>=10x` at CV `<=10%` or records the measured ceiling |
+| P0 / 1 d | Complete served-route and adaptive outcome telemetry in the general `RunReport`, not only the example | every leg reports fast/refine/fallback counts and build/reuse time; aggregate counts reconcile with cache counters |
+| P0 / 1 d | Apply screen/confirm to exact listed OPRA contract selection | selected call/put identities match exhaustive cold selection across the qualified corpus |
+| P1 / 2-3 d | Replace `std::async` cache building/prefetch with one bounded persistent scheduler and make insertion exception-transactional | peak threads `<=H+2`; no wait or future destruction under the cache mutex; injected allocation/task failures leave no orphan LRU or active-load entry |
+| P1 / 2 d | Retain strategy-to-execution risk seeds and linearize lot/uid/survivor bookkeeping | 1,000-lot x 252-date run is O(N+U), at least 40% fewer total boundary solves, and `>=2x` throughput |
+| P1 / 3 d | Add caller-owned chain valuation workspace with exact generation stamps and right-size chunk storage | zero warm scratch growth; no 100x chunk over-reserve; foreign/stale chain state fails closed; full chain value improves `>=10%` |
+| P2 / 2 d | Stream raw OPRA date batches through fit/archive with bounded lifetime | one archive open per date and effectively constant RSS from 125 to 1,250 dates |
+
+Benchmark discipline for the next sprint: pin the host to an idle state, run one discarded warm-up,
+use alternating order with at least seven measured repetitions, report median/p95/CV and preload
+time separately, and reject a `10x` claim unless both cold and fast samples have CV `<=10%`.

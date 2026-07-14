@@ -132,12 +132,23 @@ private:
   std::vector<std::pair<std::string, std::uint32_t>> syms_; // symbol -> uid
 };
 
+// ABI note: the appended route counters and RunConfig policy below change these
+// public aggregate layouts. This pre-1.0 release requires a full atx-vol DLL and
+// consumer rebuild; binary compatibility with earlier headers is not promised.
 struct SnapshotCacheStats {
   std::uint64_t loads{0};
   std::uint64_t hits{0};
   std::uint64_t prefetches{0};
   std::uint64_t retained_entries{0};
   std::uint64_t evictions{0};
+  // Appended route telemetry. fast_build_loads counts fast snapshot loads
+  // actually started, not the number of per-surface accelerator pairs.
+  // reuse_only_fast_hits counts requested fast entries found by load OR
+  // prefetch, including in-flight/failed candidates; a failed candidate that
+  // ultimately serves cold increments reuse_only_cold_resolutions as well.
+  std::uint64_t fast_build_loads{0};
+  std::uint64_t reuse_only_fast_hits{0};
+  std::uint64_t reuse_only_cold_resolutions{0};
 };
 
 // Thread-safe archive cache. Loads are coalesced by normalized path AND query
@@ -163,9 +174,20 @@ public:
 
   void prefetch(std::string archive_path,
                 QueryPricingTier query_pricing_tier = QueryPricingTier::LegacyCompatible);
+  // ReuseOnly checks the requested fast-tier entry atomically and otherwise
+  // prefetches ColdReference under its own key. This function never publishes a
+  // cold snapshot under a fast identity.
+  [[nodiscard]] Status prefetch(std::string archive_path, QueryPricingTier query_pricing_tier,
+                                QueryCacheBuildPolicy build_policy);
   [[nodiscard]] Result<std::shared_ptr<const MarketSnapshot>>
   load(std::string_view archive_path,
        QueryPricingTier query_pricing_tier = QueryPricingTier::LegacyCompatible);
+  // ReuseOnly returns an existing/in-flight fast snapshot when available and a
+  // separately-keyed ColdReference snapshot on a fast miss. Concurrent callers
+  // requesting the same effective key coalesce on one shared load.
+  [[nodiscard]] Result<std::shared_ptr<const MarketSnapshot>>
+  load(std::string_view archive_path, QueryPricingTier query_pricing_tier,
+       QueryCacheBuildPolicy build_policy);
   [[nodiscard]] SnapshotCacheStats stats() const noexcept;
   void clear();
 
@@ -264,6 +286,10 @@ struct RunConfig {
   // archive open/map with pricing and strategy work on the current step.
   std::shared_ptr<SnapshotCache> snapshot_cache{};
   bool prefetch_snapshots{true};
+  // Appended for positional aggregate source compatibility. ReuseOnly consumes
+  // a prepared fast snapshot but loads a separately-keyed cold snapshot on a
+  // fast miss. Eager preserves the historical requested-tier behavior.
+  QueryCacheBuildPolicy query_cache_build_policy{QueryCacheBuildPolicy::Eager};
 };
 
 // SoA time series. Row 0 is inception (opening friction in PnL/NAV, otherwise

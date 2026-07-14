@@ -194,6 +194,11 @@ private:
 
 class SurfaceSet {
 public:
+  SurfaceSet(const SurfaceSet &) = default;
+  SurfaceSet &operator=(const SurfaceSet &) = default;
+  SurfaceSet(SurfaceSet &&other) noexcept;
+  SurfaceSet &operator=(SurfaceSet &&other) noexcept;
+
   // Build from a plain vector of surfaces; each surface supplies its own uid.
   // @return InvalidArgument on a null pointer or a duplicate uid.
   [[nodiscard]] static Result<SurfaceSet> create(std::span<const PricedSurface *const> surfaces);
@@ -204,8 +209,15 @@ public:
   [[nodiscard]] std::size_t size() const noexcept { return by_uid_.size(); }
 
 private:
-  SurfaceSet() = default;
+  friend class PortfolioPricer;
+
+  SurfaceSet() noexcept;
   std::vector<std::pair<std::uint32_t, const PricedSurface *>> by_uid_; // sorted by uid
+  // Process-unique identity for exact retained-valuation provenance. Copies keep
+  // the identity because they resolve the same immutable surface objects; moves
+  // transfer it, empty the moved-from resolver, and refresh its identity to
+  // close same-address ABA.
+  std::uint64_t logical_id_{0};
 };
 
 // ── Price field mask (which PriceFrame columns to materialize) ─────────────
@@ -317,7 +329,13 @@ struct PriceFrameView {
 // changes — the Greek route/mask no longer forces a rebuild: the permutation,
 // groups, oci, and aligned K/T/uid columns derive purely from (uid,side,T), so
 // the substrate is byte-identical for Marks and FullGreeks) — performing no
-// *frame* allocation on the hot path. (At `PriceOptions::n_threads > 1` the
+// *frame* allocation on the hot path. A successful FullGreeks price also
+// retains its exact per-contract risk. A following P&L call for the same
+// logical SurfaceSet, every referenced PricedSurface instance, book revision,
+// analytic route, and query execution reuses that bundle and solves only
+// shifted IV/marks. A marks-only price or any stamp mismatch invalidates/fails
+// closed to the ordinary full solve.
+// (At `PriceOptions::n_threads > 1` the
 // worker fan-out allocates a `std::vector<std::jthread>` plus thread stacks —
 // a threading-layer cost, not a frame allocation; only `n_threads == 1` is
 // fully allocation-free end to end.)

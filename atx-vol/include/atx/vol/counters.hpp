@@ -89,6 +89,8 @@ enum class Counter : unsigned {
   SurfaceFullGreekRoutes,
   // Correction cache derivative-coefficient transform (T16b)
   ChebDiffCoefs, // cheb_diff_coefs calls (build-time C_k precompute + query-time T/sigma partials)
+  // Adjacent valuation reuse: unique-contract base-Greek lanes skipped by P&L.
+  BaseGreekReuseLanes,
   Count_
 };
 
@@ -123,6 +125,7 @@ inline constexpr const char *kNames[kCount] = {
     "cnt_surface_vega_routes",
     "cnt_surface_full_greek_routes",
     "cnt_cheb_diff_coefs",
+    "cnt_base_greek_reuse_lanes",
 };
 
 // A point-in-time copy of every counter. `enabled == false` is the sentinel a

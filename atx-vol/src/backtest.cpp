@@ -487,13 +487,18 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
   const std::shared_ptr<SnapshotCache> snapshot_cache =
       cfg.snapshot_cache ? cfg.snapshot_cache
                          : std::make_shared<SnapshotCache>(kPrivateSnapshotCacheCapacity);
-  auto base_res = snapshot_cache->load(refs[0].archive_path, cfg.query_pricing_tier);
+  auto base_res = snapshot_cache->load(refs[0].archive_path, cfg.query_pricing_tier,
+                                       cfg.query_cache_build_policy);
   if (!base_res) {
     return Err(base_res.error());
   }
   std::shared_ptr<const MarketSnapshot> base = std::move(*base_res);
   if (cfg.prefetch_snapshots && refs.size() > 1) {
-    snapshot_cache->prefetch(refs[1].archive_path, cfg.query_pricing_tier);
+    const Status prefetch_status = snapshot_cache->prefetch(
+        refs[1].archive_path, cfg.query_pricing_tier, cfg.query_cache_build_policy);
+    if (!prefetch_status) {
+      return Err(prefetch_status.error());
+    }
   }
 
   double nav = 0.0;
@@ -515,13 +520,18 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
   }
 
   for (std::size_t i = 1; i < refs.size(); ++i) {
-    auto shifted_res = snapshot_cache->load(refs[i].archive_path, cfg.query_pricing_tier);
+    auto shifted_res = snapshot_cache->load(refs[i].archive_path, cfg.query_pricing_tier,
+                                            cfg.query_cache_build_policy);
     if (!shifted_res) {
       return Err(shifted_res.error());
     }
     std::shared_ptr<const MarketSnapshot> shifted = std::move(*shifted_res);
     if (cfg.prefetch_snapshots && i + 1 < refs.size()) {
-      snapshot_cache->prefetch(refs[i + 1].archive_path, cfg.query_pricing_tier);
+      const Status prefetch_status = snapshot_cache->prefetch(
+          refs[i + 1].archive_path, cfg.query_pricing_tier, cfg.query_cache_build_policy);
+      if (!prefetch_status) {
+        return Err(prefetch_status.error());
+      }
     }
 
     // Partition + Taylor PnL-explain: byte-identical arithmetic to the strategy
@@ -849,13 +859,18 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
   const std::shared_ptr<SnapshotCache> snapshot_cache =
       cfg.snapshot_cache ? cfg.snapshot_cache
                          : std::make_shared<SnapshotCache>(kPrivateSnapshotCacheCapacity);
-  auto base_res = snapshot_cache->load(refs[0].archive_path, cfg.query_pricing_tier);
+  auto base_res = snapshot_cache->load(refs[0].archive_path, cfg.query_pricing_tier,
+                                       cfg.query_cache_build_policy);
   if (!base_res) {
     return Err(base_res.error());
   }
   std::shared_ptr<const MarketSnapshot> base = std::move(*base_res);
   if (cfg.prefetch_snapshots && refs.size() > 1) {
-    snapshot_cache->prefetch(refs[1].archive_path, cfg.query_pricing_tier);
+    const Status prefetch_status = snapshot_cache->prefetch(
+        refs[1].archive_path, cfg.query_pricing_tier, cfg.query_cache_build_policy);
+    if (!prefetch_status) {
+      return Err(prefetch_status.error());
+    }
   }
 
   double nav = 0.0;
@@ -901,13 +916,18 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
   }
 
   for (std::size_t i = 1; i < refs.size(); ++i) {
-    auto shifted_res = snapshot_cache->load(refs[i].archive_path, cfg.query_pricing_tier);
+    auto shifted_res = snapshot_cache->load(refs[i].archive_path, cfg.query_pricing_tier,
+                                            cfg.query_cache_build_policy);
     if (!shifted_res) {
       return Err(shifted_res.error());
     }
     std::shared_ptr<const MarketSnapshot> shifted = std::move(*shifted_res);
     if (cfg.prefetch_snapshots && i + 1 < refs.size()) {
-      snapshot_cache->prefetch(refs[i + 1].archive_path, cfg.query_pricing_tier);
+      const Status prefetch_status = snapshot_cache->prefetch(
+          refs[i + 1].archive_path, cfg.query_pricing_tier, cfg.query_cache_build_policy);
+      if (!prefetch_status) {
+        return Err(prefetch_status.error());
+      }
     }
 
     // 1. PnL of the current book (resolved on base) forward to shifted (unchanged B1).

@@ -6,10 +6,12 @@
 #include "term_carry.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <future>
 #include <limits>
 #include <memory>
@@ -29,6 +31,19 @@ using atx::core::Ok;
 namespace {
 
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+
+[[nodiscard]] std::uint64_t allocate_surface_instance_id() noexcept {
+  static std::atomic<std::uint64_t> next{1};
+  std::uint64_t candidate = next.load();
+  for (;;) {
+    if (candidate == std::numeric_limits<std::uint64_t>::max()) {
+      std::terminate();
+    }
+    if (next.compare_exchange_weak(candidate, candidate + 1)) {
+      return candidate;
+    }
+  }
+}
 
 void poison(AmericanGreeks &greeks) noexcept {
   greeks.delta = greeks.gamma = greeks.vega = greeks.theta = greeks.rho = greeks.vanna =
@@ -310,12 +325,30 @@ struct PricedSurface::QueryAccelerator {
 };
 
 PricedSurface::~PricedSurface() = default;
-PricedSurface::PricedSurface(PricedSurface &&) noexcept = default;
-PricedSurface &PricedSurface::operator=(PricedSurface &&) noexcept = default;
+PricedSurface::PricedSurface(PricedSurface &&other) noexcept
+    : surface_(std::move(other.surface_)), ctx_(std::move(other.ctx_)), pricing_(other.pricing_),
+      term_rates_(other.term_rates_), query_pricing_tier_(other.query_pricing_tier_),
+      query_accelerator_(std::move(other.query_accelerator_)),
+      instance_id_(std::exchange(other.instance_id_, allocate_surface_instance_id())) {}
+
+PricedSurface &PricedSurface::operator=(PricedSurface &&other) noexcept {
+  if (this == &other) {
+    return *this;
+  }
+  surface_ = std::move(other.surface_);
+  ctx_ = std::move(other.ctx_);
+  pricing_ = other.pricing_;
+  term_rates_ = other.term_rates_;
+  query_pricing_tier_ = other.query_pricing_tier_;
+  query_accelerator_ = std::move(other.query_accelerator_);
+  instance_id_ = std::exchange(other.instance_id_, allocate_surface_instance_id());
+  return *this;
+}
 
 PricedSurface::PricedSurface(CurveSurface &&surface, std::vector<SliceContext> &&ctx,
                              const PricingContext &pricing) noexcept
-    : surface_{std::move(surface)}, ctx_{std::move(ctx)}, pricing_{pricing} {
+    : surface_{std::move(surface)}, ctx_{std::move(ctx)}, pricing_{pricing},
+      instance_id_{allocate_surface_instance_id()} {
   for (const std::unique_ptr<IVolCurve> &slice : surface_.slices()) {
     if (slice->df() != std::exp(-pricing_.r * slice->T())) {
       term_rates_ = true;
@@ -358,6 +391,7 @@ Result<PricedSurface> PricedSurface::with_query_pricing(QueryPricingTier tier) &
   case QueryPricingTier::ColdReference:
     query_pricing_tier_ = tier;
     query_accelerator_.reset();
+    instance_id_ = allocate_surface_instance_id();
     return Ok(std::move(*this));
   case QueryPricingTier::RepresentativeFast:
   case QueryPricingTier::CarryBank:
@@ -373,6 +407,7 @@ Result<PricedSurface> PricedSurface::with_query_pricing(QueryPricingTier tier) &
   }
   query_accelerator_ = std::move(*accelerator);
   query_pricing_tier_ = tier;
+  instance_id_ = allocate_surface_instance_id();
   return Ok(std::move(*this));
 }
 

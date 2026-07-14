@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cassert>
 #include <chrono>
 #include <filesystem>
 #include <future>
@@ -39,6 +40,19 @@ struct SnapshotCacheKeyHash {
                                          QueryPricingTier query_pricing_tier) {
   return SnapshotCacheKey{std::filesystem::path{path}.lexically_normal().string(),
                           query_pricing_tier};
+}
+
+[[nodiscard]] bool is_fast_tier(QueryPricingTier tier) noexcept {
+  return tier == QueryPricingTier::RepresentativeFast || tier == QueryPricingTier::CarryBank;
+}
+
+[[nodiscard]] bool is_valid_build_policy(QueryCacheBuildPolicy policy) noexcept {
+  switch (policy) {
+  case QueryCacheBuildPolicy::Eager:
+  case QueryCacheBuildPolicy::ReuseOnly:
+    return true;
+  }
+  return false;
 }
 
 [[nodiscard]] SnapshotResult load_snapshot(std::string path, QueryPricingTier query_pricing_tier) {
@@ -113,6 +127,9 @@ struct SnapshotCache::Impl {
   std::atomic<std::uint64_t> prefetches{0};
   std::atomic<std::uint64_t> retained_entries{0};
   std::atomic<std::uint64_t> evictions{0};
+  std::atomic<std::uint64_t> fast_build_loads{0};
+  std::atomic<std::uint64_t> reuse_only_fast_hits{0};
+  std::atomic<std::uint64_t> reuse_only_cold_resolutions{0};
 };
 
 SnapshotCache::SnapshotCache() : impl_{std::make_shared<Impl>()} {}
@@ -121,34 +138,78 @@ SnapshotCache::SnapshotCache(std::size_t max_retained_entries)
 SnapshotCache::~SnapshotCache() = default;
 
 void SnapshotCache::prefetch(std::string archive_path, QueryPricingTier query_pricing_tier) {
-  const SnapshotCacheKey key = cache_key(archive_path, query_pricing_tier);
+  (void)prefetch(std::move(archive_path), query_pricing_tier, QueryCacheBuildPolicy::Eager);
+}
+
+Status SnapshotCache::prefetch(std::string archive_path, QueryPricingTier query_pricing_tier,
+                               QueryCacheBuildPolicy build_policy) {
+  if (!is_valid_build_policy(build_policy)) {
+    return atx::core::Err(ErrorCode::InvalidArgument,
+                          "SnapshotCache::prefetch: invalid query-cache build policy");
+  }
+  const SnapshotCacheKey requested_key = cache_key(archive_path, query_pricing_tier);
   std::lock_guard lock{impl_->mutex};
-  const auto found = impl_->entries.find(key);
+  SnapshotCacheKey effective_key = requested_key;
+  auto found = impl_->entries.find(effective_key);
+  const bool reuse_only_fast =
+      build_policy == QueryCacheBuildPolicy::ReuseOnly && is_fast_tier(query_pricing_tier);
+  if (found != impl_->entries.end() && reuse_only_fast) {
+    impl_->reuse_only_fast_hits.fetch_add(1u, std::memory_order_relaxed);
+  } else if (found == impl_->entries.end() && reuse_only_fast) {
+    impl_->reuse_only_cold_resolutions.fetch_add(1u, std::memory_order_relaxed);
+    effective_key.query_pricing_tier = QueryPricingTier::ColdReference;
+    found = impl_->entries.find(effective_key);
+  }
   if (found != impl_->entries.end()) {
     impl_->hits.fetch_add(1u, std::memory_order_relaxed);
     impl_->touch(found);
-    impl_->trim(key);
-    return;
+    impl_->trim(effective_key);
+    return atx::core::Ok();
   }
   impl_->prefetches.fetch_add(1u, std::memory_order_relaxed);
   impl_->loads.fetch_add(1u, std::memory_order_relaxed);
-  impl_->recency.push_back(key);
+  impl_->recency.push_back(effective_key);
   const auto recency = std::prev(impl_->recency.end());
-  impl_->entries.emplace(key, Impl::Entry{start_load(key.path, key.query_pricing_tier), recency, 0u,
-                                          impl_->next_generation++});
+  impl_->entries.emplace(
+      effective_key, Impl::Entry{start_load(effective_key.path, effective_key.query_pricing_tier),
+                                 recency, 0u, impl_->next_generation++});
+  if (is_fast_tier(effective_key.query_pricing_tier)) {
+    impl_->fast_build_loads.fetch_add(1u, std::memory_order_relaxed);
+  }
   impl_->retained_entries.store(static_cast<std::uint64_t>(impl_->entries.size()),
                                 std::memory_order_relaxed);
-  impl_->trim(key);
+  impl_->trim(effective_key);
+  return atx::core::Ok();
 }
 
 Result<SnapshotPtr> SnapshotCache::load(std::string_view archive_path,
                                         QueryPricingTier query_pricing_tier) {
-  const SnapshotCacheKey key = cache_key(archive_path, query_pricing_tier);
+  return load(archive_path, query_pricing_tier, QueryCacheBuildPolicy::Eager);
+}
+
+Result<SnapshotPtr> SnapshotCache::load(std::string_view archive_path,
+                                        QueryPricingTier query_pricing_tier,
+                                        QueryCacheBuildPolicy build_policy) {
+  if (!is_valid_build_policy(build_policy)) {
+    return atx::core::Err(ErrorCode::InvalidArgument,
+                          "SnapshotCache::load: invalid query-cache build policy");
+  }
+  const SnapshotCacheKey requested_key = cache_key(archive_path, query_pricing_tier);
+  SnapshotCacheKey effective_key = requested_key;
   std::shared_future<SnapshotResult> future;
   std::uint64_t generation = 0u;
   {
     std::lock_guard lock{impl_->mutex};
-    const auto found = impl_->entries.find(key);
+    auto found = impl_->entries.find(effective_key);
+    const bool reuse_only_fast =
+        build_policy == QueryCacheBuildPolicy::ReuseOnly && is_fast_tier(query_pricing_tier);
+    if (found != impl_->entries.end() && reuse_only_fast) {
+      impl_->reuse_only_fast_hits.fetch_add(1u, std::memory_order_relaxed);
+    } else if (found == impl_->entries.end() && reuse_only_fast) {
+      impl_->reuse_only_cold_resolutions.fetch_add(1u, std::memory_order_relaxed);
+      effective_key.query_pricing_tier = QueryPricingTier::ColdReference;
+      found = impl_->entries.find(effective_key);
+    }
     if (found != impl_->entries.end()) {
       impl_->hits.fetch_add(1u, std::memory_order_relaxed);
       future = found->second.future;
@@ -157,25 +218,51 @@ Result<SnapshotPtr> SnapshotCache::load(std::string_view archive_path,
       impl_->touch(found);
     } else {
       impl_->loads.fetch_add(1u, std::memory_order_relaxed);
-      future = start_load(key.path, key.query_pricing_tier);
-      impl_->recency.push_back(key);
+      future = start_load(effective_key.path, effective_key.query_pricing_tier);
+      impl_->recency.push_back(effective_key);
       const auto recency = std::prev(impl_->recency.end());
       generation = impl_->next_generation++;
-      impl_->entries.emplace(key, Impl::Entry{future, recency, 1u, generation});
+      impl_->entries.emplace(effective_key, Impl::Entry{future, recency, 1u, generation});
+      if (is_fast_tier(effective_key.query_pricing_tier)) {
+        impl_->fast_build_loads.fetch_add(1u, std::memory_order_relaxed);
+      }
       impl_->retained_entries.store(static_cast<std::uint64_t>(impl_->entries.size()),
                                     std::memory_order_relaxed);
     }
-    impl_->trim(key);
+    impl_->trim(effective_key);
   }
-  SnapshotResult result = future.get();
-  {
+  const auto release_active_load = [&] {
     std::lock_guard lock{impl_->mutex};
-    const auto found = impl_->entries.find(key);
+    const auto found = impl_->entries.find(effective_key);
     if (found != impl_->entries.end() && found->second.generation == generation) {
-      --found->second.active_loads;
+      assert(found->second.active_loads > 0u);
+      if (found->second.active_loads > 0u) {
+        --found->second.active_loads;
+      }
       impl_->touch(found);
     }
-    impl_->trim(key);
+    impl_->trim(effective_key);
+  };
+  SnapshotResult result = [&]() -> SnapshotResult {
+    try {
+      return future.get();
+    } catch (...) {
+      // A shared async state can propagate an allocation/system exception
+      // instead of returning Result. Release the bounded-LRU pin before
+      // preserving that exceptional contract.
+      release_active_load();
+      throw;
+    }
+  }();
+  release_active_load();
+  if (!result.has_value() && build_policy == QueryCacheBuildPolicy::ReuseOnly &&
+      is_fast_tier(query_pricing_tier) && effective_key.query_pricing_tier == query_pricing_tier) {
+    // A pre-existing/in-flight eager fast build can fail even though the archive
+    // is valid for cold serving (for example, a non-Andersen-Lake surface).
+    // ReuseOnly is a best-available acceleration contract, so make its outcome
+    // independent of cache history and coalesce on the cold key.
+    impl_->reuse_only_cold_resolutions.fetch_add(1u, std::memory_order_relaxed);
+    return load(requested_key.path, QueryPricingTier::ColdReference, QueryCacheBuildPolicy::Eager);
   }
   return result;
 }
@@ -185,7 +272,10 @@ SnapshotCacheStats SnapshotCache::stats() const noexcept {
                             impl_->hits.load(std::memory_order_relaxed),
                             impl_->prefetches.load(std::memory_order_relaxed),
                             impl_->retained_entries.load(std::memory_order_relaxed),
-                            impl_->evictions.load(std::memory_order_relaxed)};
+                            impl_->evictions.load(std::memory_order_relaxed),
+                            impl_->fast_build_loads.load(std::memory_order_relaxed),
+                            impl_->reuse_only_fast_hits.load(std::memory_order_relaxed),
+                            impl_->reuse_only_cold_resolutions.load(std::memory_order_relaxed)};
 }
 
 void SnapshotCache::clear() {

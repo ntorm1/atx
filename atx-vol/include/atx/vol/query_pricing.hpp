@@ -17,6 +17,16 @@ enum class QueryPricingTier : std::uint8_t {
   CarryBank = 3,
 };
 
+// Runtime preparation policy for transient archived-surface accelerators.
+// Eager preserves the requested tier and builds it on a cache miss. ReuseOnly
+// consumes an already-cached fast snapshot when one exists, but resolves a fast
+// miss to a separately-keyed ColdReference snapshot instead of paying a build
+// that a sparse one-pass workload cannot amortize.
+enum class QueryCacheBuildPolicy : std::uint8_t {
+  Eager = 0,
+  ReuseOnly = 1,
+};
+
 // Per-call execution override. Configured follows the surface's prepared query
 // tier; ColdReference bypasses any transient correction accelerator without
 // rebuilding or mutating the immutable surface.

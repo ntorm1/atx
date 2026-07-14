@@ -418,15 +418,26 @@ int main(int argc, char **argv) {
   if (adaptive_confirm) {
     // Cached corrections propose strikes only. Every accepted strike, sizing
     // Greek, entry/close/settlement mark, book Greek, and P&L query is served by
-    // the cold reference path.
+    // the cold reference path. A fresh sparse pass does not build accelerators
+    // it cannot amortize; an explicit preload below Eager-builds them once and
+    // this run then consumes those same fast snapshots.
     run_config.price.query_execution = QueryExecution::ColdReference;
+    run_config.query_cache_build_policy = QueryCacheBuildPolicy::ReuseOnly;
+    // Match the engine's private current/base/look-ahead working set while
+    // retaining the route counters for the real-corpus acceptance report.
+    run_config.snapshot_cache = std::make_shared<SnapshotCache>(3u);
   }
+  const std::string_view query_cache_build_label =
+      run_config.query_cache_build_policy == QueryCacheBuildPolicy::ReuseOnly ? "reuse-only"
+                                                                              : "eager";
   double preload_ms = 0.0;
   if (preload_snapshots) {
     run_config.snapshot_cache = std::make_shared<SnapshotCache>();
     run_config.prefetch_snapshots = false;
     const auto preload_start = std::chrono::steady_clock::now();
     for (const SnapshotRef &ref : clock->refs()) {
+      // The two-argument overload is deliberately Eager: the subsequent
+      // ReuseOnly adaptive pass consumes these prepared snapshots.
       auto snapshot = run_config.snapshot_cache->load(ref.archive_path, query_pricing_tier);
       if (!snapshot.has_value()) {
         std::fprintf(stderr, "preload(%s): %s\n", ref.archive_path.c_str(),
@@ -450,6 +461,8 @@ int main(int argc, char **argv) {
   }
   const BacktestResult &r = *res;
   const TearSheet t = tearsheet(r);
+  const SnapshotCacheStats cache_stats =
+      run_config.snapshot_cache ? run_config.snapshot_cache->stats() : SnapshotCacheStats{};
 
   // ── 3. Table + tearsheet ──────────────────────────────────────────────────
   const std::string tsv = (base / "spy_short_strangle.tsv").string();
@@ -477,6 +490,10 @@ int main(int argc, char **argv) {
        << "# listed_workflow=spy_strangle_tradeable via listed_opra.hpp\n"
        << "# data_source=" << data_source << "\n"
        << "# query_pricing_tier=" << query_pricing_label << "\n"
+       << "# query_cache_build_policy=" << query_cache_build_label << "\n"
+       << "# cache_fast_build_loads=" << cache_stats.fast_build_loads << "\n"
+       << "# cache_reuse_only_fast_hits=" << cache_stats.reuse_only_fast_hits << "\n"
+       << "# cache_reuse_only_cold_resolutions=" << cache_stats.reuse_only_cold_resolutions << "\n"
        << "# adaptive_confirm=" << (adaptive_confirm ? "true" : "false") << "\n"
        << "# snapshot_preload_ms=" << preload_ms << "\n"
        << "# window_start=" << dates.front() << "\n"
@@ -522,6 +539,14 @@ int main(int argc, char **argv) {
               dates.size(), static_cast<double>(total_arch_bytes) / 1024.0,
               static_cast<double>(total_arch_bytes) / 1024.0 / static_cast<double>(dates.size()),
               synthetic ? "" : " [fit offline by spy_ytd_corpus]");
+  if (run_config.snapshot_cache != nullptr) {
+    std::printf("[cache] loads=%llu fast-builds=%llu reuse-fast-candidates=%llu "
+                "reuse-cold-resolutions=%llu\n",
+                static_cast<unsigned long long>(cache_stats.loads),
+                static_cast<unsigned long long>(cache_stats.fast_build_loads),
+                static_cast<unsigned long long>(cache_stats.reuse_only_fast_hits),
+                static_cast<unsigned long long>(cache_stats.reuse_only_cold_resolutions));
+  }
   if (synthetic) {
     std::printf("synthetic-corpus build: %.0f ms\n", build_ms);
     confirm_quote_slice_store(base / "quotes");
@@ -544,10 +569,12 @@ int main(int argc, char **argv) {
     (void)sink;
   }
 
-  std::printf("\n[timing] backtest run (%.*s query tier%s): %.1f ms over %d priced steps => %.1f "
+  std::printf("\n[timing] backtest run (%.*s requested tier, %.*s cache%s): %.1f ms over %d "
+              "priced steps => %.1f "
               "steps/s, "
               "%lld leg-reprices (%.3f ms/step, %.3f ms/leg-reprice)\n",
               static_cast<int>(query_pricing_label.size()), query_pricing_label.data(),
+              static_cast<int>(query_cache_build_label.size()), query_cache_build_label.data(),
               adaptive_confirm ? ", adaptive cold confirmation/economics" : "", run_ms,
               priced_steps, steps_per_s, leg_reprices,
               (priced_steps > 0) ? run_ms / priced_steps : 0.0,

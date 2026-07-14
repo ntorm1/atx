@@ -14,6 +14,7 @@
 #include <memory>
 #include <optional>
 #include <unordered_map>
+#include <utility>
 
 #include "atx/vol/american.hpp"           // AmericanGreeks
 #include "atx/vol/counters.hpp"           // ATX_VOL_COUNT (opt-in P0.2; no-op when OFF)
@@ -61,9 +62,9 @@ struct ContractKeyHash {
 }
 
 // A never-reused process-local identity for exact O(1) workspace invalidation.
-// The compare/exchange refuses to wrap: exhausting 2^64-1 logical books is a
+// The compare/exchange refuses to wrap: exhausting 2^64-1 logical objects is a
 // process-fatal invariant breach, never an excuse to reintroduce an ABA window.
-[[nodiscard]] std::uint64_t allocate_logical_book_id() noexcept {
+[[nodiscard]] std::uint64_t allocate_logical_id() noexcept {
   static std::atomic<std::uint64_t> next{1};
   std::uint64_t candidate = next.load();
   for (;;) {
@@ -80,18 +81,18 @@ struct ContractKeyHash {
 
 // ── Portfolio ─────────────────────────────────────────────────────────────
 
-Portfolio::Portfolio() noexcept : logical_id_(allocate_logical_book_id()) {}
+Portfolio::Portfolio() noexcept : logical_id_(allocate_logical_id()) {}
 
 Portfolio::Portfolio(const Portfolio &other)
     : positions_(other.positions_), contracts_(other.contracts_),
       pos_contract_ix_(other.pos_contract_ix_), first_position_ix_(other.first_position_ix_),
-      uids_(other.uids_), logical_id_(allocate_logical_book_id()), revision_(0) {}
+      uids_(other.uids_), logical_id_(allocate_logical_id()), revision_(0) {}
 
 Portfolio::Portfolio(Portfolio &&other) noexcept
     : positions_(std::move(other.positions_)), contracts_(std::move(other.contracts_)),
       pos_contract_ix_(std::move(other.pos_contract_ix_)),
       first_position_ix_(std::move(other.first_position_ix_)), uids_(std::move(other.uids_)),
-      logical_id_(std::exchange(other.logical_id_, allocate_logical_book_id())),
+      logical_id_(std::exchange(other.logical_id_, allocate_logical_id())),
       revision_(std::exchange(other.revision_, 0)) {}
 
 Portfolio &Portfolio::operator=(const Portfolio &other) {
@@ -112,7 +113,7 @@ Portfolio &Portfolio::operator=(Portfolio &&other) noexcept {
   pos_contract_ix_ = std::move(other.pos_contract_ix_);
   first_position_ix_ = std::move(other.first_position_ix_);
   uids_ = std::move(other.uids_);
-  logical_id_ = std::exchange(other.logical_id_, allocate_logical_book_id());
+  logical_id_ = std::exchange(other.logical_id_, allocate_logical_id());
   revision_ = std::exchange(other.revision_, 0);
   return *this;
 }
@@ -204,6 +205,24 @@ Status Portfolio::retime(std::span<const double> position_T) {
 }
 
 // ── SurfaceSet ────────────────────────────────────────────────────────────
+
+SurfaceSet::SurfaceSet() noexcept : logical_id_(allocate_logical_id()) {}
+
+SurfaceSet::SurfaceSet(SurfaceSet &&other) noexcept
+    : by_uid_(std::move(other.by_uid_)),
+      logical_id_(std::exchange(other.logical_id_, allocate_logical_id())) {
+  other.by_uid_.clear();
+}
+
+SurfaceSet &SurfaceSet::operator=(SurfaceSet &&other) noexcept {
+  if (this == &other) {
+    return *this;
+  }
+  by_uid_ = std::move(other.by_uid_);
+  logical_id_ = std::exchange(other.logical_id_, allocate_logical_id());
+  other.by_uid_.clear();
+  return *this;
+}
 
 Result<SurfaceSet> SurfaceSet::create(std::span<const PricedSurface *const> surfaces) {
   SurfaceSet ss;
@@ -595,6 +614,16 @@ struct PortfolioWorkspace::Impl {
   std::optional<PreparedPortfolio> prepared; // retained across snapshots (built once)
   std::uint64_t prepared_logical_id{0};      // exact book identity the substrate is for
   std::uint64_t prepared_revision{0};        // exact retime revision the substrate is for
+  // Exact provenance for `px` when it holds a FullGreeks result. P&L may reuse
+  // this base bundle only when every field matches; marks-only pricing
+  // overwrites `px` and invalidates the stamp before solving.
+  bool base_risk_valid{false};
+  std::uint64_t base_surface_logical_id{0};
+  std::vector<std::uint64_t> base_surface_instance_ids;
+  std::uint64_t base_book_logical_id{0};
+  std::uint64_t base_book_revision{0};
+  bool base_analytic_greeks{false};
+  QueryExecution base_query_execution{QueryExecution::Configured};
 };
 
 PortfolioWorkspace::PortfolioWorkspace() : impl_(std::make_unique<Impl>()) {}
@@ -621,6 +650,7 @@ void PortfolioWorkspace::reserve(std::size_t n_unique, std::size_t n_positions) 
   impl_->pnl_s_status.reserve(n_unique);
   impl_->pnl_junk.reserve(n_unique);
   impl_->pnl_junk_status.reserve(n_unique);
+  impl_->base_surface_instance_ids.reserve(n_unique);
 }
 
 // ── Pricing entry points ───────────────────────────────────────────────────
@@ -651,6 +681,7 @@ Status PortfolioPricer::price_into(const SurfaceSet &surfaces, PriceFieldMask fi
   }
 
   PortfolioWorkspace::Impl &w = *ws.impl_;
+  w.base_risk_valid = false;
   const bool analytic = want_greeks ? opts.analytic_greeks : false;
   if (Status s = ensure_prepared(pf_, w.prepared, pf_.logical_id_, pf_.revision_,
                                  w.prepared_logical_id, w.prepared_revision);
@@ -671,6 +702,19 @@ Status PortfolioPricer::price_into(const SurfaceSet &surfaces, PriceFieldMask fi
   scatter_rows(positions, pf_, w.px, want_greeks, opts.skew_adjusted_delta, opts.n_threads, out);
   *out.total = PriceTotals{};
   reduce_price_totals(positions, pf_, w.px, want_greeks, opts.skew_adjusted_delta, *out.total);
+  if (want_greeks) {
+    w.base_surface_logical_id = surfaces.logical_id_;
+    w.base_surface_instance_ids.resize(pf_.uids().size());
+    for (std::size_t i = 0; i < pf_.uids().size(); ++i) {
+      const PricedSurface *const surface = surfaces.find(pf_.uids()[i]);
+      w.base_surface_instance_ids[i] = surface != nullptr ? surface->instance_id() : 0u;
+    }
+    w.base_book_logical_id = pf_.logical_id_;
+    w.base_book_revision = pf_.revision_;
+    w.base_analytic_greeks = analytic;
+    w.base_query_execution = opts.query_execution;
+    w.base_risk_valid = true;
+  }
   return atx::core::Ok();
 }
 
@@ -682,6 +726,7 @@ Result<PriceTotals> PortfolioPricer::price_totals(const SurfaceSet &surfaces, Pr
   const bool want_greeks = has_field(fields, PriceFieldMask::Greeks);
 
   PortfolioWorkspace::Impl &w = *ws.impl_;
+  w.base_risk_valid = false;
   const bool analytic = want_greeks ? opts.analytic_greeks : false;
   if (Status s = ensure_prepared(pf_, w.prepared, pf_.logical_id_, pf_.revision_,
                                  w.prepared_logical_id, w.prepared_revision);
@@ -698,6 +743,19 @@ Result<PriceTotals> PortfolioPricer::price_totals(const SurfaceSet &surfaces, Pr
   // price(...).total.
   PriceTotals t{};
   reduce_price_totals(positions, pf_, w.px, want_greeks, opts.skew_adjusted_delta, t);
+  if (want_greeks) {
+    w.base_surface_logical_id = surfaces.logical_id_;
+    w.base_surface_instance_ids.resize(pf_.uids().size());
+    for (std::size_t i = 0; i < pf_.uids().size(); ++i) {
+      const PricedSurface *const surface = surfaces.find(pf_.uids()[i]);
+      w.base_surface_instance_ids[i] = surface != nullptr ? surface->instance_id() : 0u;
+    }
+    w.base_book_logical_id = pf_.logical_id_;
+    w.base_book_revision = pf_.revision_;
+    w.base_analytic_greeks = analytic;
+    w.base_query_execution = opts.query_execution;
+    w.base_risk_valid = true;
+  }
   return t;
 }
 
@@ -773,13 +831,14 @@ namespace {
 void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
                        const SurfaceSet &shifted, std::span<const OptionContract> contracts,
                        bool analytic, QueryExecution query_execution, unsigned n_threads,
-                       std::vector<ContractPnl> &pnl, std::vector<double> &b_iv,
-                       std::vector<double> &b_price, std::vector<AmericanGreeks> &b_greeks,
-                       std::vector<Status> &b_status, std::vector<double> &s_tt,
-                       std::vector<double> &s_iv, std::vector<double> &s_price,
-                       std::vector<Status> &s_status, std::vector<double> &s_junk,
-                       std::vector<Status> &s_junk_status) {
+                       std::span<const ContractPx> cached_base, std::vector<ContractPnl> &pnl,
+                       std::vector<double> &b_iv, std::vector<double> &b_price,
+                       std::vector<AmericanGreeks> &b_greeks, std::vector<Status> &b_status,
+                       std::vector<double> &s_tt, std::vector<double> &s_iv,
+                       std::vector<double> &s_price, std::vector<Status> &s_status,
+                       std::vector<double> &s_junk, std::vector<Status> &s_junk_status) {
   const std::size_t n_unique = pp.n_unique();
+  const bool reuse_base = cached_base.size() == contracts.size();
   using EF = PricedSurface::EvalField;
 
   pnl.resize(contracts.size());
@@ -814,6 +873,9 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
       }
       return;
     }
+    if (reuse_base) {
+      ATX_VOL_COUNT_N(BaseGreekReuseLanes, gsz);
+    }
     // Per-group-constant state moves (the surfaces, hence dt/dS/dr, are per-uid).
     const double dt =
         static_cast<double>(st->pricing().now_ts_ns - sb->pricing().now_ts_ns) / kNsPerYear;
@@ -823,16 +885,18 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
       s_tt[p] = tcol[p] - dt; // T_t = T_b - dt (bit-identical to the ungrouped subtraction)
     }
 
-    // Base surface at T_b: greeks + mark + iv (sig_b), analytic route as requested.
-    PricedSurface::EvaluationSoA base_soa{std::span<double>(b_iv).subspan(s, gsz),
-                                          std::span<double>(b_price).subspan(s, gsz),
-                                          std::span<AmericanGreeks>(b_greeks).subspan(s, gsz),
-                                          std::span<Status>(b_status).subspan(s, gsz),
-                                          {},
-                                          {}};
-    (void)sb->evaluate_batch(kcol.subspan(s, gsz), tcol.subspan(s, gsz), scol.subspan(s, gsz),
-                             EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder, analytic,
-                             base_soa, simd::SimdIsa::Auto, query_execution);
+    if (!reuse_base) {
+      // Base surface at T_b: greeks + mark + iv (sig_b), analytic route as requested.
+      PricedSurface::EvaluationSoA base_soa{std::span<double>(b_iv).subspan(s, gsz),
+                                            std::span<double>(b_price).subspan(s, gsz),
+                                            std::span<AmericanGreeks>(b_greeks).subspan(s, gsz),
+                                            std::span<Status>(b_status).subspan(s, gsz),
+                                            {},
+                                            {}};
+      (void)sb->evaluate_batch(kcol.subspan(s, gsz), tcol.subspan(s, gsz), scol.subspan(s, gsz),
+                               EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder, analytic,
+                               base_soa, simd::SimdIsa::Auto, query_execution);
+    }
     // Shifted surface at the COMMON base maturity T_b: iv only (sig_t).
     PricedSurface::EvaluationSoA sig_soa{std::span<double>(s_iv).subspan(s, gsz),
                                          std::span<double>(s_junk).subspan(s, gsz),
@@ -866,19 +930,26 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
         out.status = PriceStatus::InvalidContract; // rolled past expiry
         continue;
       }
-      if (!b_status[p].has_value() || !std::isfinite(b_greeks[p].price) ||
-          !s_status[p].has_value() || !std::isfinite(s_price[p])) {
+      const ContractPx *const cached = reuse_base ? &cached_base[orig] : nullptr;
+      if (cached != nullptr && cached->status != PriceStatus::Ok) {
+        out.status = cached->status;
+        continue;
+      }
+      const bool base_ok = cached != nullptr
+                               ? std::isfinite(cached->fair_value)
+                               : b_status[p].has_value() && std::isfinite(b_greeks[p].price);
+      if (!base_ok || !s_status[p].has_value() || !std::isfinite(s_price[p])) {
         out.status = PriceStatus::NumericError;
         continue;
       }
-      const double sig_b = b_iv[p]; // == sb->iv(K,T_b), from the base resolve
+      const double sig_b = cached != nullptr ? cached->iv : b_iv[p];
       const double sig_t = s_iv[p]; // == st->iv(K,T_b), common maturity
       if (!(std::isfinite(sig_b) && std::isfinite(sig_t))) {
         out.status = PriceStatus::NumericError;
         continue;
       }
-      out.gb = b_greeks[p];
-      out.price_base = b_greeks[p].price; // greeks().price IS the American fair_value
+      out.gb = cached != nullptr ? cached->g : b_greeks[p];
+      out.price_base = cached != nullptr ? cached->fair_value : b_greeks[p].price;
       out.price_target = s_price[p];
       out.dS = dS;
       out.dvol = sig_t - sig_b;
@@ -1043,10 +1114,32 @@ Status PortfolioPricer::pnl_explain_into(const SurfaceSet &base, const SurfaceSe
     return Err(s.error());
   }
 
+  const auto surface_instances_match = [&]() noexcept {
+    const std::span<const std::uint32_t> uids = pf_.uids();
+    if (w.base_surface_instance_ids.size() != uids.size()) {
+      return false;
+    }
+    for (std::size_t i = 0; i < uids.size(); ++i) {
+      const PricedSurface *const surface = base.find(uids[i]);
+      const std::uint64_t instance_id = surface != nullptr ? surface->instance_id() : 0u;
+      if (w.base_surface_instance_ids[i] != instance_id) {
+        return false;
+      }
+    }
+    return true;
+  };
+  const bool reuse_base = w.base_risk_valid && w.base_surface_logical_id == base.logical_id_ &&
+                          w.base_book_logical_id == pf_.logical_id_ &&
+                          w.base_book_revision == pf_.revision_ &&
+                          w.base_analytic_greeks == opts.analytic_greeks &&
+                          w.base_query_execution == opts.query_execution &&
+                          w.px.size() == contracts.size() && surface_instances_match();
+  const std::span<const ContractPx> cached_base =
+      reuse_base ? std::span<const ContractPx>{w.px} : std::span<const ContractPx>{};
   solve_pnl_uniques(*w.prepared, base, shifted, contracts, opts.analytic_greeks,
-                    opts.query_execution, opts.n_threads, w.pnl, w.b_iv, w.b_price, w.b_greeks,
-                    w.b_status, w.pnl_tt, w.pnl_s_iv, w.pnl_s_price, w.pnl_s_status, w.pnl_junk,
-                    w.pnl_junk_status);
+                    opts.query_execution, opts.n_threads, cached_base, w.pnl, w.b_iv, w.b_price,
+                    w.b_greeks, w.b_status, w.pnl_tt, w.pnl_s_iv, w.pnl_s_price, w.pnl_s_status,
+                    w.pnl_junk, w.pnl_junk_status);
 
   // 19 per-row columns = 141 bytes/position (8 + 4 + 16*8 + 1). No FrameAllocations:
   // the output spans are caller-owned and the scratch was reserved.
@@ -1071,10 +1164,32 @@ Result<PnlTotals> PortfolioPricer::pnl_totals(const SurfaceSet &base, const Surf
     return Err(s.error());
   }
 
+  const auto surface_instances_match = [&]() noexcept {
+    const std::span<const std::uint32_t> uids = pf_.uids();
+    if (w.base_surface_instance_ids.size() != uids.size()) {
+      return false;
+    }
+    for (std::size_t i = 0; i < uids.size(); ++i) {
+      const PricedSurface *const surface = base.find(uids[i]);
+      const std::uint64_t instance_id = surface != nullptr ? surface->instance_id() : 0u;
+      if (w.base_surface_instance_ids[i] != instance_id) {
+        return false;
+      }
+    }
+    return true;
+  };
+  const bool reuse_base = w.base_risk_valid && w.base_surface_logical_id == base.logical_id_ &&
+                          w.base_book_logical_id == pf_.logical_id_ &&
+                          w.base_book_revision == pf_.revision_ &&
+                          w.base_analytic_greeks == opts.analytic_greeks &&
+                          w.base_query_execution == opts.query_execution &&
+                          w.px.size() == contracts.size() && surface_instances_match();
+  const std::span<const ContractPx> cached_base =
+      reuse_base ? std::span<const ContractPx>{w.px} : std::span<const ContractPx>{};
   solve_pnl_uniques(*w.prepared, base, shifted, contracts, opts.analytic_greeks,
-                    opts.query_execution, opts.n_threads, w.pnl, w.b_iv, w.b_price, w.b_greeks,
-                    w.b_status, w.pnl_tt, w.pnl_s_iv, w.pnl_s_price, w.pnl_s_status, w.pnl_junk,
-                    w.pnl_junk_status);
+                    opts.query_execution, opts.n_threads, cached_base, w.pnl, w.b_iv, w.b_price,
+                    w.b_greeks, w.b_status, w.pnl_tt, w.pnl_s_iv, w.pnl_s_price, w.pnl_s_status,
+                    w.pnl_junk, w.pnl_junk_status);
 
   // No scatter, no per-row frame: reduce the weighted per-row decomposition over
   // positions in fixed input order — bit-identical to pnl_explain(...).total.
