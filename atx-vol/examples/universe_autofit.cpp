@@ -12,6 +12,8 @@
 //   universe_autofit --opra-root DIR --date YYYY-MM-DD --symbols-file FILE
 //       [--snapshot-suffix T14:00:00Z] [--r 0.043] [--preset robust]
 //       [--fit-workers N] [--limit N] [--out results.csv] [--no-value]
+//       [--oos-max-expiries N] [--selector-budget-ms N] [--sparse-floor N]
+//       [--min-direct-confidence X]
 //
 // Output CSV: one row per symbol with load/fit/value status + diagnostics.
 // Summary to stdout: status counts, curve-family histogram, profile histogram,
@@ -20,12 +22,14 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <fstream>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -160,6 +164,10 @@ int main(int argc, char **argv) {
   unsigned fit_workers = atx_auto_worker_count();
   std::size_t limit = 0;
   bool do_value = true;
+  std::optional<unsigned> oos_max_expiries;
+  std::optional<double> selector_budget_ms;
+  std::optional<std::uint32_t> sparse_floor;
+  std::optional<double> min_direct_confidence;
 
   for (int i = 1; i < argc; ++i) {
     const std::string_view a = argv[i];
@@ -175,6 +183,13 @@ int main(int argc, char **argv) {
     else if (a == "--out") out_csv = nv();
     else if (a == "--no-value") do_value = false;
     else if (a == "--pin") pin_kind = nv();
+    else if (a == "--oos-max-expiries")
+      oos_max_expiries = static_cast<unsigned>(std::strtoul(nv(), nullptr, 10));
+    else if (a == "--selector-budget-ms") selector_budget_ms = std::strtod(nv(), nullptr);
+    else if (a == "--sparse-floor")
+      sparse_floor = static_cast<std::uint32_t>(std::strtoul(nv(), nullptr, 10));
+    else if (a == "--min-direct-confidence")
+      min_direct_confidence = std::strtod(nv(), nullptr);
     else {
       std::fprintf(stderr, "unknown arg: %s\n", argv[i]);
       return 2;
@@ -184,7 +199,9 @@ int main(int argc, char **argv) {
     std::fprintf(stderr,
                  "usage: universe_autofit --opra-root DIR --date YYYY-MM-DD --symbols-file FILE "
                  "[--snapshot-suffix T14:00:00Z] [--r 0.043] [--preset robust] [--fit-workers N] "
-                 "[--limit N] [--out FILE] [--no-value]\n");
+                 "[--limit N] [--out FILE] [--no-value] [--oos-max-expiries N] "
+                 "[--selector-budget-ms N] [--sparse-floor N] "
+                 "[--min-direct-confidence X]\n");
     return 2;
   }
 
@@ -280,6 +297,12 @@ int main(int argc, char **argv) {
       cfg.preset = preset;
       cfg.context = board.fit_context;
       cfg.n_threads = 1; // board-level parallelism only; keep each fit serial
+      cfg.fit_workers = 1; // prevent board fan-out from nesting expiry fan-out
+      if (oos_max_expiries.has_value()) cfg.selector.oos_max_expiries = *oos_max_expiries;
+      if (selector_budget_ms.has_value()) cfg.selector.time_budget_ms = *selector_budget_ms;
+      if (sparse_floor.has_value()) cfg.policy.sparse_validation_floor = *sparse_floor;
+      if (min_direct_confidence.has_value())
+        cfg.policy.min_direct_confidence = *min_direct_confidence;
       if (!pin_kind.empty()) {
         CurveConfig cc;
         if (pin_kind == "linear-variance") cc.kind = VolCurveKind::LinearVariance;

@@ -11,16 +11,18 @@
 //   3. AttributionCloses— axes + unexplained == pnl_total (non-settlement).
 //   4. Determinism      — n_threads 1 vs 4 => BacktestResult bit-identical.
 //   5. Granularity      — coarse recorded nav/attribution == fine at samples.
-//   6. ExpirySettlement — a lot crossing expiry settles at intrinsic and drops.
+//   6. ExpirySettlement — exact expiry observation settles at intrinsic and drops.
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <future>
 #include <memory>
 #include <span>
 #include <string>
@@ -73,6 +75,7 @@ constexpr std::uint32_t kUid = 7;
   const double Ts[] = {0.05, 0.10, 0.20, 0.35, 0.50, 0.75, 1.00};
   int i = 0;
   for (const double T : Ts) {
+    const double coherent_fwd = fwd * std::exp((kR - 0.02) * T);
     EssviParams e{};
     e.theta = 0.04 + 0.005 * static_cast<double>(i) + vol_bump;
     e.phi = 1.5 - 0.05 * static_cast<double>(i);
@@ -81,10 +84,10 @@ constexpr std::uint32_t kUid = 7;
     e.p = 0.5;
     e.lambda = 0.5;
     e.T = T;
-    e.F = fwd;
+    e.F = coherent_fwd;
     e.expiry_id = static_cast<std::uint16_t>(i);
     cs.push(std::make_unique<EssviCurve>(e, std::exp(-kR * T)));
-    ctx.push_back(SliceContext{T, fwd, 0.0, 0.02, 250, 7});
+    ctx.push_back(SliceContext{T, coherent_fwd, 0.0, 0.02, 250, 7});
     ++i;
   }
   PricingContext pc;
@@ -226,6 +229,155 @@ TEST(Backtest, SnapshotCacheCoalescesPrefetchAndLoads) {
   EXPECT_GE(stats.hits, 2u);
 }
 
+TEST(Backtest, ArchivedSnapshotDefaultsColdAndPreparesEverySurfaceForRequestedTier) {
+  const fs::path dir = fresh_dir("snapshot-query-tier");
+  const PricedSurface first_surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  const PricedSurface second_surface = make_surface(kUid + 1u, 25.0, 25.0, kBaseNow);
+  std::error_code ec;
+  fs::create_directories(dir, ec);
+  const std::string path = (dir / "2026-08-01.atxvsa").string();
+  const std::array<SurfaceArchiveItem, 2> items{
+      {{"SPX", &first_surface}, {"VIX", &second_surface}}};
+  const Status write_status = write_surface_archive_file(path, items);
+  ASSERT_TRUE(write_status.has_value()) << write_status.error().to_string();
+
+  auto legacy = MarketSnapshot::load(path);
+  ASSERT_TRUE(legacy.has_value()) << legacy.error().to_string();
+  ASSERT_EQ(legacy->surfaces().size(), items.size());
+  for (const PricedSurface &surface : legacy->surfaces()) {
+    EXPECT_EQ(surface.query_pricing_tier(), QueryPricingTier::LegacyCompatible);
+    EXPECT_EQ(surface.query_pricing_route(100.0, 0.25, Side::Put),
+              QueryPricingRoute::ColdReference);
+  }
+
+  auto fast = MarketSnapshot::load(path, QueryPricingTier::RepresentativeFast);
+  ASSERT_TRUE(fast.has_value()) << fast.error().to_string();
+  ASSERT_EQ(fast->surfaces().size(), items.size());
+  for (const PricedSurface &surface : fast->surfaces()) {
+    EXPECT_EQ(surface.query_pricing_tier(), QueryPricingTier::RepresentativeFast);
+  }
+}
+
+TEST(Backtest, SnapshotCacheIdentityIncludesNormalizedPathAndQueryTier) {
+  const fs::path dir = fresh_dir("snapshot-cache-tier-identity");
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  const std::string path = write_one(dir, "2026-08-01", "SPX", surface);
+  const std::string alias =
+      (fs::path{path}.parent_path() / "." / fs::path{path}.filename()).string();
+
+  MarketSnapshot::reset_open_count();
+  SnapshotCache cache;
+  auto legacy = cache.load(path);
+  auto same_legacy = cache.load(alias);
+  auto cold = cache.load(path, QueryPricingTier::ColdReference);
+  auto fast = cache.load(path, QueryPricingTier::RepresentativeFast);
+  ASSERT_TRUE(legacy.has_value()) << legacy.error().to_string();
+  ASSERT_TRUE(same_legacy.has_value()) << same_legacy.error().to_string();
+  ASSERT_TRUE(cold.has_value()) << cold.error().to_string();
+  ASSERT_TRUE(fast.has_value()) << fast.error().to_string();
+  EXPECT_EQ(legacy->get(), same_legacy->get());
+  EXPECT_NE(legacy->get(), cold->get());
+  EXPECT_NE(cold->get(), fast->get());
+  EXPECT_EQ((*legacy)->surfaces().front().query_pricing_tier(), QueryPricingTier::LegacyCompatible);
+  EXPECT_EQ((*cold)->surfaces().front().query_pricing_tier(), QueryPricingTier::ColdReference);
+  EXPECT_EQ((*fast)->surfaces().front().query_pricing_tier(), QueryPricingTier::RepresentativeFast);
+  EXPECT_EQ(MarketSnapshot::open_count(), 3u);
+  const SnapshotCacheStats stats = cache.stats();
+  EXPECT_EQ(stats.loads, 3u);
+  EXPECT_GE(stats.hits, 1u);
+  EXPECT_EQ(stats.retained_entries, 3u);
+}
+
+TEST(Backtest, RunConfigPropagatesQueryTierThroughPrefetchAndLoad) {
+  const fs::path dir = fresh_dir("run-query-tier");
+  const CorpusManifest manifest = make_evolving_corpus(dir, "SPX", 3);
+  auto clock = Clock::from_manifest(manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  RunConfig config;
+  config.query_pricing_tier = QueryPricingTier::RepresentativeFast;
+  config.snapshot_cache = std::make_shared<SnapshotCache>();
+  auto result = run_backtest(*clock, PortfolioState{}, config);
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+
+  const SnapshotCacheStats after_run = config.snapshot_cache->stats();
+  ASSERT_EQ(after_run.loads, static_cast<std::uint64_t>(clock->size()));
+  for (const SnapshotRef &ref : clock->refs()) {
+    auto snapshot = config.snapshot_cache->load(ref.archive_path, config.query_pricing_tier);
+    ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+    EXPECT_EQ((*snapshot)->surfaces().front().query_pricing_tier(),
+              QueryPricingTier::RepresentativeFast);
+  }
+  EXPECT_EQ(config.snapshot_cache->stats().loads, after_run.loads);
+
+  auto legacy = config.snapshot_cache->load(clock->refs().front().archive_path);
+  ASSERT_TRUE(legacy.has_value()) << legacy.error().to_string();
+  EXPECT_EQ((*legacy)->surfaces().front().query_pricing_tier(), QueryPricingTier::LegacyCompatible);
+  EXPECT_EQ(config.snapshot_cache->stats().loads, after_run.loads + 1u);
+}
+
+TEST(Backtest, BoundedSnapshotCacheCoalescesAndRetainsOnlyWorkingSet) {
+  constexpr int kDates = 12;
+  constexpr std::size_t kCapacity = 3u;
+  const fs::path dir = fresh_dir("snapshot-cache-bounded");
+  const CorpusManifest manifest = make_evolving_corpus(dir, "SPX", kDates);
+  auto clock = Clock::from_manifest(manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  const std::span<const SnapshotRef> refs = clock->refs();
+
+  SnapshotCache cache{kCapacity};
+  MarketSnapshot::reset_open_count();
+
+  // Exercise duplicate synchronous callers against the same prefetched future.
+  cache.prefetch(refs[0].archive_path);
+  std::vector<std::future<Result<std::shared_ptr<const MarketSnapshot>>>> duplicate_loads;
+  for (int i = 0; i < 8; ++i) {
+    duplicate_loads.push_back(std::async(
+        std::launch::async, [&cache, path = refs[0].archive_path] { return cache.load(path); }));
+  }
+  const MarketSnapshot *first = nullptr;
+  for (auto &pending : duplicate_loads) {
+    auto loaded = pending.get();
+    ASSERT_TRUE(loaded.has_value()) << loaded.error().to_string();
+    first = first == nullptr ? loaded->get() : first;
+    EXPECT_EQ(loaded->get(), first);
+  }
+
+  // A long one-pass traversal must not retain the entire corpus.
+  for (std::size_t i = 1; i < refs.size(); ++i) {
+    auto loaded = cache.load(refs[i].archive_path);
+    ASSERT_TRUE(loaded.has_value()) << loaded.error().to_string();
+  }
+  const SnapshotCacheStats stats = cache.stats();
+  EXPECT_EQ(MarketSnapshot::open_count(), static_cast<std::uint64_t>(kDates));
+  EXPECT_EQ(stats.loads, static_cast<std::uint64_t>(kDates));
+  EXPECT_GE(stats.hits, 8u);
+  EXPECT_EQ(stats.retained_entries, kCapacity);
+  EXPECT_EQ(stats.evictions, static_cast<std::uint64_t>(kDates) - kCapacity);
+}
+
+TEST(Backtest, PrivateBoundedCachePreservesUnboundedSweepOutput) {
+  constexpr int kDates = 10;
+  const fs::path dir = fresh_dir("snapshot-cache-private-bounded");
+  const CorpusManifest manifest = make_evolving_corpus(dir, "SPX", kDates);
+  auto clock = Clock::from_manifest(manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  const std::int64_t expiry = kBaseNow + 120 * kDayNs;
+
+  auto private_bounded = run_backtest(*clock, survivor_book(expiry));
+  ASSERT_TRUE(private_bounded.has_value()) << private_bounded.error().to_string();
+
+  RunConfig reusable_config;
+  reusable_config.snapshot_cache = std::make_shared<SnapshotCache>();
+  auto reusable_unbounded = run_backtest(*clock, survivor_book(expiry), reusable_config);
+  ASSERT_TRUE(reusable_unbounded.has_value()) << reusable_unbounded.error().to_string();
+  expect_result_bit_identical(*private_bounded, *reusable_unbounded);
+
+  const SnapshotCacheStats stats = reusable_config.snapshot_cache->stats();
+  EXPECT_EQ(stats.retained_entries, static_cast<std::uint64_t>(kDates));
+  EXPECT_EQ(stats.evictions, 0u);
+}
+
 // ── 2a. Aging: spot-only step reconstructs to a tiny residual ───────────────
 TEST(Backtest, AgingSpotOnly) {
   const fs::path dir = fresh_dir("spot");
@@ -362,8 +514,8 @@ TEST(Backtest, Granularity) {
 TEST(Backtest, ExpirySettlement) {
   const fs::path dir = fresh_dir("expiry");
   const std::int64_t now0 = kBaseNow;
-  const std::int64_t now1 = kBaseNow + 45 * kDayNs;
-  const std::int64_t exp_expiring = kBaseNow + 30 * kDayNs;  // between the two dates
+  const std::int64_t now1 = kBaseNow + 30 * kDayNs;
+  const std::int64_t exp_expiring = now1;                    // exact settlement observation
   const std::int64_t exp_survivor = kBaseNow + 200 * kDayNs; // survives
 
   const PricedSurface d0 = make_surface(kUid, 100.0, 100.0, now0);
@@ -402,6 +554,30 @@ TEST(Backtest, ExpirySettlement) {
               r.pnl_settlement[1], intrinsic, *mark, r.n_open_lots[1]);
 }
 
+TEST(Backtest, MissingExactExpiryObservationFailsClosed) {
+  const fs::path dir = fresh_dir("expiry-observation-gap");
+  const std::int64_t now0 = kBaseNow;
+  const std::int64_t expiry = kBaseNow + 30 * kDayNs;
+  const std::int64_t now1 = kBaseNow + 45 * kDayNs;
+
+  const PricedSurface d0 = make_surface(kUid, 100.0, 100.0, now0);
+  const PricedSurface d1 = make_surface(kUid, 103.0, 103.0, now1);
+  const std::string p0 = write_one(dir, "2026-08-01", "SPX", d0);
+  const std::string p1 = write_one(dir, "2026-09-15", "SPX", d1);
+  auto clock = Clock::from_manifest(make_manifest({{"2026-08-01", p0}, {"2026-09-15", p1}}, "SPX"));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  PortfolioState st;
+  st.lots.push_back(
+      Lot{7, OptionContract{kUid, 95.0, 0.0, Side::Call}, +5.0, 100.0, expiry, 0, 0.0});
+
+  auto res = run_backtest(*clock, std::move(st));
+  ASSERT_FALSE(res.has_value());
+  EXPECT_EQ(res.error().code(), ErrorCode::NotFound);
+  EXPECT_NE(res.error().message().find("exact expiry observation"), std::string::npos);
+  EXPECT_NE(res.error().message().find("lot id=7"), std::string::npos);
+}
+
 // ── S1-3b: the fixed-book overload counts unpriced lots and stays bit-identical ─
 //
 // The fixed-book step loop was inlined body-for-body from `compute_step`; S1-3b
@@ -424,29 +600,15 @@ TEST(Backtest, DefaultPolicyIsBitIdenticalToBaseline) {
     EXPECT_EQ(res->n_unpriced_lots[i], 0.0) << "row " << i; // nothing ever missing
   }
 
-  const double base_pnl[5] = {0.0, 189.71333426451054, 189.94298069959081, 190.1654866911926,
-                              190.38108754234776};
-  const double base_nav[5] = {0.0, 189.71333426451054, 379.65631496410134, 569.82180165529394,
-                              760.20288919764175};
-#if defined(NDEBUG)
-  // MSVC's optimized finite-difference kernel lands a few ULPs away from Debug.
-  const double base_gvega[5] = {4446.8460038043386, 4405.0601179476344, 4363.4745384070866,
-                                4322.1342913331464, 4280.9780342554232};
-  const double base_gdelta[5] = {436.3997665745822, 437.42803455088381, 438.42715766542261,
-                                 439.39816042959558, 440.34201938326316};
-#else
-  const double base_gvega[5] = {4446.8460038040721, 4405.0601179476344, 4363.4745384070866,
-                                4322.1342913331464, 4280.9780342554232};
-  const double base_gdelta[5] = {436.39976657457953, 437.42803455088381, 438.42715766542261,
-                                 439.39816042959558, 440.34201938326578};
-#endif
+  RunConfig explicit_default;
+  explicit_default.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  auto explicit_res = run_backtest(*clock, survivor_book(expiry), explicit_default);
+  ASSERT_TRUE(explicit_res.has_value()) << explicit_res.error().to_string();
+  expect_result_bit_identical(*res, *explicit_res);
+
   for (std::size_t i = 0; i < 5; ++i) {
-    EXPECT_TRUE(bits_equal(res->pnl_total[i], base_pnl[i])) << "pnl_total row " << i;
-    EXPECT_TRUE(bits_equal(res->nav[i], base_nav[i])) << "nav row " << i;
-    EXPECT_TRUE(bits_equal(res->gross_vega[i], base_gvega[i])) << "gvega row " << i;
-    EXPECT_TRUE(bits_equal(res->gross_delta[i], base_gdelta[i])) << "gdelta row " << i;
     EXPECT_EQ(res->pnl_settlement[i], 0.0) << "settle row " << i;
     EXPECT_EQ(res->n_open_lots[i], 2.0) << "nlots row " << i;
   }
-  std::printf("[s1-3b] fixed-book bit-identical over 5 rows, all n_unpriced_lots == 0\n");
+  std::printf("[s1-3b] default policy equals explicit ExcludeAndReport over 5 rows\n");
 }

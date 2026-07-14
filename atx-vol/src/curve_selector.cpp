@@ -1,6 +1,7 @@
 #include "atx/vol/curve_selector.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -369,12 +370,14 @@ std::size_t select_best_candidate(const std::vector<CandidateScore> &scores,
 
 Result<SelectorResult> select_curve(const Underlying &under, const SurfaceParityInputs &in,
                                     const SelectorConfig &sel) {
+  const auto selector_start = std::chrono::steady_clock::now();
   if (!(in.S > 0.0) || !std::isfinite(in.r) || !valid_expiry_rates(in, under)) {
     return Err(ErrorCode::InvalidArgument, "select_curve: invalid spot, rate, or term rates");
   }
   if (!std::isfinite(sel.min_expiry_coverage) || sel.min_expiry_coverage < 0.0 ||
       sel.min_expiry_coverage > 1.0 || !std::isfinite(sel.min_holdout_coverage) ||
-      sel.min_holdout_coverage < 0.0 || sel.min_holdout_coverage > 1.0) {
+      sel.min_holdout_coverage < 0.0 || sel.min_holdout_coverage > 1.0 ||
+      !std::isfinite(sel.time_budget_ms) || sel.time_budget_ms < 0.0) {
     return Err(ErrorCode::InvalidArgument, "select_curve: invalid coverage floor");
   }
   std::vector<CurveConfig> candidates =
@@ -442,7 +445,18 @@ Result<SelectorResult> select_curve(const Underlying &under, const SurfaceParity
   }
 
   out.scores.reserve(candidates.size());
+  bool has_admitted_candidate = false;
   for (const CurveConfig &candidate : candidates) {
+    if (sel.time_budget_ms > 0.0 && has_admitted_candidate) {
+      const double elapsed_ms =
+          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                    selector_start)
+              .count();
+      if (elapsed_ms >= sel.time_budget_ms) {
+        out.budget_exhausted = true;
+        break;
+      }
+    }
     Accum accum;
     for (const PreparedExpiry &expiry : prepared) {
       const std::span<const FitObs> rows = expiry.slice.fit_observations();
@@ -558,6 +572,9 @@ Result<SelectorResult> select_curve(const Underlying &under, const SurfaceParity
       }
     }
     out.scores.push_back(score);
+    ++out.scores_evaluated;
+    has_admitted_candidate =
+        has_admitted_candidate || (score.admitted && !score.disqualified);
   }
 
   ATX_TRY(const std::size_t chosen, select_candidate_index(out.scores, sel.parsimony_margin));

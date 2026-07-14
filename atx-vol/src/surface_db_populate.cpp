@@ -27,7 +27,8 @@ using atx::core::Ok;
 namespace {
 
 // Translate the PricerConfig-representable subset of a SymbolFitConfig
-// (preset, curve-when-pinned, and the four optional<bool> knobs) so the
+// (product policy, preset, curve-when-pinned, and the four optional<bool>
+// knobs) so the
 // fallback-ladder's "a caller-pinned curve is never silently substituted"
 // invariant (pricer_fitter.cpp) holds for a symbol-config pin exactly the
 // way it already holds for CorpusBoard::curve. The fields PricerConfig
@@ -38,6 +39,10 @@ namespace {
 [[nodiscard]] PricerConfig pricer_config_for_symbol(const SymbolFitConfig &cfg) {
   PricerConfig out;
   out.preset = cfg.preset;
+  out.quality_mode = cfg.surface_policy.quality_mode;
+  out.outputs = cfg.surface_policy.outputs;
+  out.risk_admission = cfg.surface_policy.risk_admission;
+  out.fallback = cfg.surface_policy.fallback;
   if (cfg.pin_curve) {
     out.curve = cfg.curve;
   }
@@ -161,7 +166,13 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db, std::span<cons
         if (!resolved.enabled) {
           continue;
         }
-        const PricerConfig pc = pricer_config_for_symbol(resolved);
+        PricerConfig pc = pricer_config_for_symbol(resolved);
+        // SurfaceDb's zero worker count is explicitly serial. Only suppress
+        // inner expiry fan-out when an actual multi-board outer fan-out is in
+        // use; serial and single-board callers retain standalone auto behavior.
+        if (range_n > 1u && cfg.n_threads > 1u) {
+          pc.fit_workers = 1u;
+        }
         slots[k] = fit_board(board, pc, /*admission=*/nullptr, [&resolved](SessionInputs &in) {
           apply_symbol_config(resolved, in);
         });
@@ -226,7 +237,8 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db, std::span<cons
         }
         names.push_back(board.symbol);
         stamped.push_back(std::move(*stamped_surface));
-        items.push_back(SurfaceArchiveItem{names.back(), &stamped.back()});
+        items.push_back(
+            SurfaceArchiveItem{names.back(), &stamped.back(), slot.provenance});
       } else {
         ++acc.stats.n_failed;
         ++stats.n_failed;

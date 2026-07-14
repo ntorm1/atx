@@ -9,7 +9,10 @@
 // resolve-today -> pnl_explain-forward -> move-swap loop that produces a SoA
 // `BacktestResult` time series (PnL + attribution + book greeks). There is NO
 // strategy, NO frictions, and NO cash ledger here — those arrive in B1/B2. The
-// book is handed in whole and held to expiry; expiring lots settle at intrinsic.
+// book is handed in whole and held to expiry; expiring lots settle at intrinsic
+// only when the clock contains an observation at the exact expiry timestamp.
+// Crossing expiry without that observation fails closed: a later spot is not a
+// valid settlement price.
 //
 // ## Load-once invariant
 //
@@ -40,6 +43,7 @@
 #include "atx/vol/corpus.hpp"           // CorpusManifest
 #include "atx/vol/portfolio_pricer.hpp" // OptionContract, SurfaceSet, PriceOptions, PriceTotals
 #include "atx/vol/priced_surface.hpp"   // PricedSurface
+#include "atx/vol/query_pricing.hpp"    // QueryPricingTier
 #include "atx/vol/types.hpp"            // Result, Side
 
 namespace atx::vol {
@@ -88,11 +92,14 @@ private:
 // addresses and `surfaces_` is never mutated after `set_` is built).
 class MarketSnapshot {
 public:
-  // Open `archive_path`, map every surface, build the `SurfaceSet`, and take the
-  // valuation timestamp from the surfaces' `now_ts_ns` (validating they agree).
-  // Errors propagate from the archive open/map or `SurfaceSet::create`;
+  // Open `archive_path`, map every surface, prepare its runtime-only query tier,
+  // build the `SurfaceSet`, and take the valuation timestamp from the surfaces'
+  // `now_ts_ns` (validating they agree). The archive wire format is unchanged.
+  // Errors propagate from open/map/query preparation or `SurfaceSet::create`;
   // InvalidArgument if the archive is empty or its surfaces disagree on the ts.
-  [[nodiscard]] static Result<MarketSnapshot> load(std::string_view archive_path);
+  [[nodiscard]] static Result<MarketSnapshot>
+  load(std::string_view archive_path,
+       QueryPricingTier query_pricing_tier = QueryPricingTier::LegacyCompatible);
 
   MarketSnapshot(MarketSnapshot &&) noexcept = default;
   MarketSnapshot &operator=(MarketSnapshot &&) noexcept = default;
@@ -129,22 +136,36 @@ struct SnapshotCacheStats {
   std::uint64_t loads{0};
   std::uint64_t hits{0};
   std::uint64_t prefetches{0};
+  std::uint64_t retained_entries{0};
+  std::uint64_t evictions{0};
 };
 
-// Thread-safe archive cache. Loads are coalesced by normalized path, so a
-// synchronous caller and an asynchronous prefetch share one archive open/map.
-// The cache is copyable and may be shared across backtest/reconciliation passes.
+// Thread-safe archive cache. Loads are coalesced by normalized path AND query
+// tier, so a synchronous caller and an asynchronous prefetch with the same
+// accuracy contract share one archive open/map. Distinct tiers never alias.
+// The default constructor is unbounded for deliberate reuse across repeated
+// backtest/reconciliation sweeps. Passing a positive capacity selects a
+// deterministic least-recently-used mode for one-pass pipelines. Automatic
+// eviction never removes an in-flight future; bounded mode can therefore exceed
+// its target temporarily while every candidate is loading, then trims on the
+// next cache operation. Copies share both entries and the configured mode.
 class SnapshotCache {
 public:
+  // Reusable/unbounded mode.
   SnapshotCache();
+  // Bounded LRU mode. A zero capacity is defensively normalized to one entry.
+  explicit SnapshotCache(std::size_t max_retained_entries);
   ~SnapshotCache();
   SnapshotCache(const SnapshotCache &) noexcept = default;
   SnapshotCache &operator=(const SnapshotCache &) noexcept = default;
   SnapshotCache(SnapshotCache &&) noexcept = default;
   SnapshotCache &operator=(SnapshotCache &&) noexcept = default;
 
-  void prefetch(std::string archive_path);
-  [[nodiscard]] Result<std::shared_ptr<const MarketSnapshot>> load(std::string_view archive_path);
+  void prefetch(std::string archive_path,
+                QueryPricingTier query_pricing_tier = QueryPricingTier::LegacyCompatible);
+  [[nodiscard]] Result<std::shared_ptr<const MarketSnapshot>>
+  load(std::string_view archive_path,
+       QueryPricingTier query_pricing_tier = QueryPricingTier::LegacyCompatible);
   [[nodiscard]] SnapshotCacheStats stats() const noexcept;
   void clear();
 
@@ -195,8 +216,10 @@ struct FrictionModel {
 struct FinancingConfig {
   double borrow_rate{0.0};     // continuous, on |short shares| * S (hard-borrow proxy)
   bool finance_premium{false}; // cash balance accrues at r (DEFAULT OFF => B2 == B1)
-  bool shares_carry{false};    // long shares earn q_eff*S*dt, pay r*S*dt
-  double initial_cash{0.0};    // opening cash balance
+  // Long shares earn q_eff*S*dt. With premium financing off, also charge
+  // r*S*dt here; when it is on, the cash ledger already carries that funding.
+  bool shares_carry{false};
+  double initial_cash{0.0}; // opening cash balance
 };
 
 // ── Run config + result ─────────────────────────────────────────────────────
@@ -224,6 +247,10 @@ struct RunConfig {
   // exact continuation-PDE theta/charm) are a direct per-step speedup; the mark and
   // delta/gamma/vega/rho/vanna/volga are bit-identical to the FD path.
   PriceOptions price{/*n_threads=*/0, /*analytic_greeks=*/true};
+  // Archived surfaces historically served the cold reference pricer. Preserve
+  // that contract by default; faster cached query tiers are an explicit
+  // backtest-level accuracy/latency choice and never alter the archive bytes.
+  QueryPricingTier query_pricing_tier{QueryPricingTier::LegacyCompatible};
   FrictionModel frictions{};          // execution frictions (B2; default: frictionless)
   FinancingConfig financing{};        // cash/borrow ledger (B2; default: off => B1-identity)
   unsigned record_every_n{1};         // persist every Nth step (1 = every step)
@@ -232,14 +259,15 @@ struct RunConfig {
   // the pre-report arithmetic bit-for-bit and only reports the count in the result.
   UnpricedLotPolicy unpriced{UnpricedLotPolicy::ExcludeAndReport};
   // A null cache creates a private per-run cache. Supplying one permits archive
-  // reuse across backtest and reconciliation passes. Look-ahead overlaps the next
+  // reuse across backtest and reconciliation passes. Private one-pass caches retain
+  // at most the current/base/look-ahead working set. Look-ahead overlaps the next
   // archive open/map with pricing and strategy work on the current step.
   std::shared_ptr<SnapshotCache> snapshot_cache{};
   bool prefetch_snapshots{true};
 };
 
-// SoA time series. Row 0 is inception (all-zero PnL, nav 0, book greeks on the
-// first date); each later recorded row is one priced step, downsampled by
+// SoA time series. Row 0 is inception (opening friction in PnL/NAV, otherwise
+// zero PnL, book greeks on the first date); each later recorded row is one priced step, downsampled by
 // `record_every_n` (the final step is always recorded). `pnl_*` are per-step;
 // `nav` is the cumulative Σ pnl_total (incl. settlement) from inception = 0.
 struct BacktestResult {
@@ -279,8 +307,9 @@ struct BacktestResult {
 
 // B0 driver: MTM a FIXED hand-built book forward across the clock. Canonical
 // loop: base = load(refs[0]); for i in 1..N-1 { shifted = load(refs[i]);
-// pnl_explain(base -> shifted); settle expiries; record @ granularity;
-// base = std::move(shifted); }.
+// pnl_explain(base -> shifted); settle expiries observed exactly at shifted.ts;
+// record @ granularity; base = std::move(shifted); }. NotFound is returned when
+// the clock crosses a held lot's expiry without an exact timestamp observation.
 [[nodiscard]] Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
                                                   const RunConfig &cfg = {});
 
@@ -289,7 +318,8 @@ struct BacktestResult {
 // cohorts / closing lots — then the same resolve-today -> pnl_explain-forward ->
 // move-swap loop MTMs the evolving book. Book greeks and `signals(base)` are
 // recorded AFTER each step's entries. Settlement of expiring lots is engine-owned
-// (at intrinsic), identical to the fixed-book overload.
+// (at intrinsic), identical to the fixed-book overload and subject to the same
+// exact-expiry-observation contract.
 [[nodiscard]] Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat,
                                                   const RunConfig &cfg = {});
 

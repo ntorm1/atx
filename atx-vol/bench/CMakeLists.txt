@@ -105,9 +105,9 @@ target_link_libraries(atx-vol-reloc-bench
 
 # Fitting/calibration throughput (C0.3): calibrations/s as a first-class
 # number, directly comparable to the published 16.5k American-calibrations/s
-# anchor (fit/american_iv/*), plus whole-surface and single-slice eSSVI fit
-# cost (fit/surface_cold/*, fit/slice_*), plus the corpus build-throughput
-# case relocated from atx-vol-reloc-bench above.
+# anchor (fit/american_iv/*), legacy whole-surface and single-slice eSSVI
+# cost (fit/surface_cold/*, fit/slice_*), canonical real-OPRA facade admission
+# rows (fit/facade/*), plus the relocated corpus build-throughput case.
 add_executable(atx-vol-fitting-bench
     bench_main.cpp
     fitting_throughput_bench.cpp

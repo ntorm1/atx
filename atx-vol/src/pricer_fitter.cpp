@@ -13,12 +13,12 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
-#include "atx/vol/american_iv.hpp"  // american_implied_vol
-#include "atx/vol/black76.hpp"      // black76_price (independent publication oracle)
-#include "atx/vol/calib.hpp"        // build_observations_european
-#include "atx/vol/correction.hpp"   // AmericanCorrectionCaches (cached inversion hot path)
-#include "atx/vol/deamer.hpp"       // resolve_chain_forward
-#include "atx/vol/parallel_for.hpp" // parallel_for (shared block-partition fan-out)
+#include "atx/vol/american_iv.hpp"      // american_implied_vol
+#include "atx/vol/black76.hpp"          // black76_price (independent publication oracle)
+#include "atx/vol/calib.hpp"            // build_observations_european
+#include "atx/vol/correction.hpp"       // AmericanCorrectionCaches (cached inversion hot path)
+#include "atx/vol/deamer.hpp"           // resolve_chain_forward
+#include "atx/vol/parallel_for.hpp"     // parallel_for / parallel_for_dynamic fan-out
 #include "atx/vol/prepared_fitting.hpp" // prepare_expiry (canonical refit preparation)
 #include "atx/vol/risk_surface_validation.hpp"
 
@@ -81,8 +81,7 @@ void merge_session_failure_context(const SessionDiagnostics &diagnostics,
   if (!diagnostics.inversion_certified) {
     digest.failures |= ValidationFailure::InversionResidual;
   }
-  if (diagnostics.n_carry_skipped_expiries > 0 ||
-      diagnostics.n_audit_starved_expiries > 0) {
+  if (diagnostics.n_carry_skipped_expiries > 0 || diagnostics.n_audit_starved_expiries > 0) {
     // §5.2: expiries dropped by the carry gate or starved by the fit audit
     // must be surfaced. CarryGap is the one publish-with-Degraded reason
     // (decide_risk_surface_admission); combined with any other failure it
@@ -100,11 +99,10 @@ void merge_session_failure_context(const SessionDiagnostics &diagnostics,
     // rejection reports how many samples breached, not a bare bit — never
     // clear anything the geometric oracle already found.
     digest.failures |= ValidationFailure::PriceBounds;
-    const std::uint64_t merged =
-        static_cast<std::uint64_t>(digest.n_price_bound_violations) +
-        static_cast<std::uint64_t>(diagnostics.n_price_bound_violations);
-    digest.n_price_bound_violations = static_cast<std::uint32_t>(std::min<std::uint64_t>(
-        merged, std::numeric_limits<std::uint32_t>::max()));
+    const std::uint64_t merged = static_cast<std::uint64_t>(digest.n_price_bound_violations) +
+                                 static_cast<std::uint64_t>(diagnostics.n_price_bound_violations);
+    digest.n_price_bound_violations = static_cast<std::uint32_t>(
+        std::min<std::uint64_t>(merged, std::numeric_limits<std::uint32_t>::max()));
   }
 }
 
@@ -354,12 +352,11 @@ duplicate_maturity_report(const Underlying &under, const CurveConfig &curve) {
   attempt.evidence.parity_state = diagnostics.parity_state;
   attempt.evidence.calendar_arb_free = diagnostics.calendar_arb_free;
   attempt.evidence.worst_frac_within_bidask = diagnostics.worst_frac_within_bidask;
-  attempt.evidence.finite_diagnostics =
-      diagnostics.parity_state == ParityDiagnosticState::Valid &&
-      std::isfinite(diagnostics.worst_frac_within_bidask) &&
-      std::isfinite(diagnostics.mean_frac_within_bidask) &&
-      std::isfinite(diagnostics.mean_chi2_reduced) &&
-      std::isfinite(diagnostics.mean_rmse_vol);
+  attempt.evidence.finite_diagnostics = diagnostics.parity_state == ParityDiagnosticState::Valid &&
+                                        std::isfinite(diagnostics.worst_frac_within_bidask) &&
+                                        std::isfinite(diagnostics.mean_frac_within_bidask) &&
+                                        std::isfinite(diagnostics.mean_chi2_reduced) &&
+                                        std::isfinite(diagnostics.mean_rmse_vol);
 
   const std::span<const SliceContext> fitted = session.expiries();
   std::vector<bool> consumed(fitted.size(), false);
@@ -471,255 +468,260 @@ Status PricerFitter::fit(const OptionChain &chain,
     return Err(failure);
   }
 
-  // A session overlay is a main-transactional-API argument (per-symbol input
-  // layering with post-overlay decision/report re-stamping); force main's
-  // single-surface world when one is supplied, even for an otherwise v2-shaped
-  // config.
-  if (!is_v2_request() || static_cast<bool>(session_overlay)) {
-  // ── Legacy / main single-surface transactional fit (default v2 fields) ──
-  // The caller did not opt into the v2 dual mark/risk API, so serve ONE
-  // surface admitted by FitAdmissionPolicy (mark consumer by default; the
-  // strict risk consumer via risk_admission_policy()). No forced Project
-  // repair -- the preset owns calendar policy -- so refit_expiry can consume
-  // it. Published into the market_mark slot; effective_request() resolves
-  // reads there for a legacy request.
-  timings_ = {};
-  if (candidate_generation_ == std::numeric_limits<std::uint64_t>::max()) {
-    return Err(ErrorCode::OutOfRange, "surface generation counter exhausted");
-  }
-  std::optional<SelectorResult> next_selection;
-  std::optional<FitDecision> next_decision;
-  FitPreset effective_preset = cfg_.preset;
-  const bool pinned_hft = !cfg_.curve.has_value() && cfg_.preset == FitPreset::Hft;
-  if (!cfg_.curve.has_value() && !pinned_hft) {
-    FitDecision d =
-        select_fit_policy(chain.underlying(), chain.underlying().ticker, cfg_.context, cfg_.policy);
-    effective_preset = d.needs_cross_validation ? cfg_.preset : d.preset;
-    next_decision = std::move(d);
-  }
+  // Product intent alone selects legacy versus v2 routing. A per-symbol session
+  // overlay layers numerical inputs inside the selected branch; it must never
+  // demote an explicit v2 Risk/Mark request to the legacy single-surface path.
+  if (!is_v2_request()) {
+    // ── Legacy / main single-surface transactional fit (default v2 fields) ──
+    // The caller did not opt into the v2 dual mark/risk API, so serve ONE
+    // surface admitted by FitAdmissionPolicy (mark consumer by default; the
+    // strict risk consumer via risk_admission_policy()). No forced Project
+    // repair -- the preset owns calendar policy -- so refit_expiry can consume
+    // it. Published into the market_mark slot; effective_request() resolves
+    // reads there for a legacy request.
+    timings_ = {};
+    if (candidate_generation_ == std::numeric_limits<std::uint64_t>::max()) {
+      return Err(ErrorCode::OutOfRange, "surface generation counter exhausted");
+    }
+    std::optional<SelectorResult> next_selection;
+    std::optional<FitDecision> next_decision;
+    FitPreset effective_preset = cfg_.preset;
+    const bool pinned_hft = !cfg_.curve.has_value() && cfg_.preset == FitPreset::Hft;
+    if (!cfg_.curve.has_value() && !pinned_hft) {
+      FitDecision d = select_fit_policy(chain.underlying(), chain.underlying().ticker, cfg_.context,
+                                        cfg_.policy);
+      effective_preset = d.needs_cross_validation ? cfg_.preset : d.preset;
+      next_decision = std::move(d);
+    }
 
-  SessionInputs in =
-      make_session_inputs(effective_preset, chain.spot(), chain.rate(), chain.now_ns());
-  if (chain.env().yield.size() > 0u) {
-    in.expiry_rate_T.reserve(chain.underlying().chains.size());
-    in.expiry_rates.reserve(chain.underlying().chains.size());
-    for (const Chain &expiry : chain.underlying().chains) {
-      in.expiry_rate_T.push_back(expiry.T);
-      in.expiry_rates.push_back(chain.env().rate_at(expiry.T));
-    }
-  }
-  // Apply the selected profile's existing quote/calibration policy through the
-  // same SessionInputs consumed by every curve family. Reapply the preset after
-  // copying the profile so latency/fidelity controls (HFT knot cap, shortcut,
-  // de-Am options) remain authoritative.
-  if (next_decision.has_value() && effective_preset != FitPreset::Hft) {
-    const auto profile = profile_lookup(next_decision->profile.kind);
-    if (profile.has_value()) {
-      in.calib = profile.value()->calib;
-      apply_fit_preset(in, effective_preset);
-    }
-  }
-  // Dividends: the chain's MarketEnv supplies the schedule; a non-empty config
-  // value overrides it.
-  in.cash_divs = cfg_.cash_divs.empty() ? chain.env().cash_divs : cfg_.cash_divs;
-  if (cfg_.use_correction_cache.has_value()) {
-    in.use_correction_cache = *cfg_.use_correction_cache;
-  }
-  if (cfg_.score_parity.has_value()) {
-    in.score_parity = *cfg_.score_parity;
-  }
-  if (cfg_.enforce_calendar_floor.has_value()) {
-    in.enforce_calendar_floor = *cfg_.enforce_calendar_floor;
-  }
-  if (cfg_.use_deam_cache_for_fit.has_value()) {
-    in.use_deam_cache_for_fit = *cfg_.use_deam_cache_for_fit;
-  }
-  if (cfg_.fit_prep_policy) in.fit_prep_policy = *cfg_.fit_prep_policy;
-  if (cfg_.audit_fit_inversions) in.deam.audit_fit_inversions = *cfg_.audit_fit_inversions;
-  if (cfg_.warm_start_carry) in.deam.warm_start_carry = *cfg_.warm_start_carry;
-  if (cfg_.max_obs_per_slice.has_value()) {
-    in.calib.max_obs_per_slice = *cfg_.max_obs_per_slice;
-  }
-  if (cfg_.max_deam_strikes_per_expiry.has_value()) {
-    in.calib.max_deam_strikes_per_expiry = *cfg_.max_deam_strikes_per_expiry;
-  }
-  if (cfg_.max_otm_shortcut_premium_spread_frac.has_value()) {
-    in.calib.max_otm_shortcut_premium_spread_frac = *cfg_.max_otm_shortcut_premium_spread_frac;
-  }
-  if (!in.expiry_rates.empty()) {
-    // CorrectionCache is built at one scalar (r, q) pair. A term-rate board
-    // must stay on the cold pricer until the cache itself becomes term-aware.
-    in.use_correction_cache = false;
-    in.use_deam_cache_for_fit = false;
-  }
-
-  // Curve config: pinned, profile-direct, or held-out selected for this board.
-  if (cfg_.curve.has_value()) {
-    in.curve = *cfg_.curve;
-  } else if (pinned_hft) {
-    // Hft's preset-pinned direct market curve avoids both selector candidate
-    // fits and the per-expiry dense QP on penny-dense index boards.
-    in.curve.kind = VolCurveKind::LinearVariance;
-  } else if (next_decision.has_value() && !next_decision->needs_cross_validation) {
-    // The adaptive knot budget is a policy default, so an explicit
-    // cfg_.max_obs_per_slice (already applied above) must win -- its documented
-    // contract is "nullopt => use the preset default". Apply the cap before
-    // mirroring calib into the curve so the two never disagree.
-    if (next_decision->curve.kind == VolCurveKind::LinearVariance &&
-        !cfg_.max_obs_per_slice.has_value() && cfg_.policy.dense_node_cap > 0) {
-      in.calib.max_obs_per_slice = cfg_.policy.dense_node_cap;
-    }
-    next_decision->curve.parametric = in.calib;
-    in.curve = next_decision->curve;
-  } else {
-    SurfaceParityInputs sp;
-    sp.S = in.S;
-    sp.r = in.r;
-    sp.expiry_rate_T = in.expiry_rate_T;
-    sp.expiry_rates = in.expiry_rates;
-    sp.cash_divs = in.cash_divs;
-    sp.now_ts_ns = in.now_ts_ns;
-    sp.deam = in.deam;
-    sp.calib = in.calib;
-    sp.band_k = in.band_k;
-    sp.repair = in.calendar_repair;
-    sp.score_parity = in.score_parity;
-    sp.enforce_calendar_floor = in.enforce_calendar_floor;
-    sp.use_deam_cache_for_fit = in.use_deam_cache_for_fit;
-    sp.fit_prep_policy = in.fit_prep_policy;
-    Result<SelectorResult> selected = select_curve(chain.underlying(), sp, cfg_.selector);
-    if (!selected.has_value()) {
-      SurfaceBuildReport report;
-      report.primary_curve = in.curve;
-      report.retained_last_known_good = market_mark_surface_ != nullptr;
-      report.attempts.push_back(failed_attempt_report(
-          chain.underlying(), in.curve, selected.error(), SurfaceBuildStage::Selection));
-      last_attempt_report_ = std::move(report);
-      return Err(std::move(selected).error());
-    }
-    SelectorResult chosen = std::move(*selected);
-    // Parametric candidates inherit the selected profile's calibration policy;
-    // the held-out selector chooses family/curve-local knobs, not a second quote
-    // filtering policy.
-    chosen.chosen.parametric = in.calib;
-    in.curve = chosen.chosen;
-    if (next_decision.has_value()) {
-      next_decision->curve = chosen.chosen;
-      next_decision->preset = effective_preset;
-    }
-    next_selection = std::move(chosen);
-  }
-
-  if (session_overlay) {
-    session_overlay(in);
-  }
-  if (next_decision.has_value()) {
-    next_decision->primary_curve = in.curve;
-    next_decision->curve = in.curve;
-    next_decision->used_fallback = false;
-  }
-
-  const Underlying &under = chain.underlying();
-  const CurveConfig primary_curve = in.curve;
-  SurfaceBuildReport report;
-  report.primary_curve = primary_curve;
-  std::optional<VolaSession> admitted_session;
-  std::optional<atx::core::Error> primary_failure;
-
-  Result<VolaSession> built = VolaSession::build(under, in);
-  if (!built.has_value()) {
-    primary_failure = built.error();
-    report.attempts.push_back(failed_attempt_report(under, in.curve, built.error()));
-  } else {
-    SurfaceBuildAttemptReport attempt =
-        completed_attempt_report(under, in.curve, *built, cfg_.admission);
-    const bool admitted = attempt.admission.admitted;
-    report.attempts.push_back(std::move(attempt));
-    if (admitted) {
-      admitted_session.emplace(std::move(*built));
-    }
-  }
-  // A profile is a fast prior, not permission to drop an underlier: walk the
-  // fallback ladder for anything the policy routed, including a board whose curve
-  // came from the held-out selector. A curve the CALLER pinned (cfg_.curve, or the
-  // preset-pinned Hft dense route) is an explicit instruction and is never
-  // silently substituted.
-  const bool auto_routed = next_decision.has_value() && !cfg_.curve.has_value() && !pinned_hft;
-  if (!admitted_session.has_value() && auto_routed) {
-    for (const VolCurveKind rung : fallback_curve_rungs(primary_curve.kind)) {
-      in.curve = primary_curve;
-      in.curve.kind = rung;
-      Result<VolaSession> retry = VolaSession::build(under, in);
-      if (!retry.has_value()) {
-        report.attempts.push_back(failed_attempt_report(under, in.curve, retry.error()));
-        continue;
+    SessionInputs in =
+        make_session_inputs(effective_preset, chain.spot(), chain.rate(), chain.now_ns());
+    in.fit_workers = cfg_.fit_workers;
+    if (chain.env().yield.size() > 0u) {
+      in.expiry_rate_T.reserve(chain.underlying().chains.size());
+      in.expiry_rates.reserve(chain.underlying().chains.size());
+      for (const Chain &expiry : chain.underlying().chains) {
+        in.expiry_rate_T.push_back(expiry.T);
+        in.expiry_rates.push_back(chain.env().rate_at(expiry.T));
       }
+    }
+    // Apply the selected profile's existing quote/calibration policy through the
+    // same SessionInputs consumed by every curve family. Reapply the preset after
+    // copying the profile so latency/fidelity controls (HFT knot cap, shortcut,
+    // de-Am options) remain authoritative.
+    if (next_decision.has_value() && effective_preset != FitPreset::Hft) {
+      const auto profile = profile_lookup(next_decision->profile.kind);
+      if (profile.has_value()) {
+        in.calib = profile.value()->calib;
+        apply_fit_preset(in, effective_preset);
+      }
+    }
+    // Dividends: the chain's MarketEnv supplies the schedule; a non-empty config
+    // value overrides it.
+    in.cash_divs = cfg_.cash_divs.empty() ? chain.env().cash_divs : cfg_.cash_divs;
+    if (cfg_.use_correction_cache.has_value()) {
+      in.use_correction_cache = *cfg_.use_correction_cache;
+    }
+    in.query_pricing_tier = cfg_.query_pricing_tier;
+    if (cfg_.score_parity.has_value()) {
+      in.score_parity = *cfg_.score_parity;
+    }
+    if (cfg_.enforce_calendar_floor.has_value()) {
+      in.enforce_calendar_floor = *cfg_.enforce_calendar_floor;
+    }
+    if (cfg_.use_deam_cache_for_fit.has_value()) {
+      in.use_deam_cache_for_fit = *cfg_.use_deam_cache_for_fit;
+    }
+    if (cfg_.fit_prep_policy) in.fit_prep_policy = *cfg_.fit_prep_policy;
+    if (cfg_.audit_fit_inversions) in.deam.audit_fit_inversions = *cfg_.audit_fit_inversions;
+    if (cfg_.warm_start_carry) in.deam.warm_start_carry = *cfg_.warm_start_carry;
+    if (cfg_.max_obs_per_slice.has_value()) {
+      in.calib.max_obs_per_slice = *cfg_.max_obs_per_slice;
+    }
+    if (cfg_.max_deam_strikes_per_expiry.has_value()) {
+      in.calib.max_deam_strikes_per_expiry = *cfg_.max_deam_strikes_per_expiry;
+    }
+    if (cfg_.max_otm_shortcut_premium_spread_frac.has_value()) {
+      in.calib.max_otm_shortcut_premium_spread_frac = *cfg_.max_otm_shortcut_premium_spread_frac;
+    }
+    if (!in.expiry_rates.empty()) {
+      // CorrectionCache is built at one scalar (r, q) pair. A term-rate board
+      // must stay on the cold pricer until the cache itself becomes term-aware.
+      if (in.query_pricing_tier == QueryPricingTier::LegacyCompatible ||
+          in.query_pricing_tier == QueryPricingTier::ColdReference) {
+        in.use_correction_cache = false;
+      }
+      in.use_deam_cache_for_fit = false;
+    }
+
+    // Curve config: pinned, profile-direct, or held-out selected for this board.
+    if (cfg_.curve.has_value()) {
+      in.curve = *cfg_.curve;
+    } else if (pinned_hft) {
+      // Hft's preset-pinned direct market curve avoids both selector candidate
+      // fits and the per-expiry dense QP on penny-dense index boards.
+      in.curve.kind = VolCurveKind::LinearVariance;
+    } else if (next_decision.has_value() && !next_decision->needs_cross_validation) {
+      // The adaptive knot budget is a policy default, so an explicit
+      // cfg_.max_obs_per_slice (already applied above) must win -- its documented
+      // contract is "nullopt => use the preset default". Apply the cap before
+      // mirroring calib into the curve so the two never disagree.
+      if (next_decision->curve.kind == VolCurveKind::LinearVariance &&
+          !cfg_.max_obs_per_slice.has_value() && cfg_.policy.dense_node_cap > 0) {
+        in.calib.max_obs_per_slice = cfg_.policy.dense_node_cap;
+      }
+      next_decision->curve.parametric = in.calib;
+      in.curve = next_decision->curve;
+    } else {
+      SurfaceParityInputs sp;
+      sp.S = in.S;
+      sp.r = in.r;
+      sp.expiry_rate_T = in.expiry_rate_T;
+      sp.expiry_rates = in.expiry_rates;
+      sp.cash_divs = in.cash_divs;
+      sp.now_ts_ns = in.now_ts_ns;
+      sp.deam = in.deam;
+      sp.calib = in.calib;
+      sp.band_k = in.band_k;
+      sp.repair = in.calendar_repair;
+      sp.fit_workers = in.fit_workers;
+      sp.fit_prep_policy = in.fit_prep_policy;
+      sp.score_parity = in.score_parity;
+      sp.enforce_calendar_floor = in.enforce_calendar_floor;
+      sp.use_deam_cache_for_fit = in.use_deam_cache_for_fit;
+      Result<SelectorResult> selected = select_curve(chain.underlying(), sp, cfg_.selector);
+      if (!selected.has_value()) {
+        SurfaceBuildReport report;
+        report.primary_curve = in.curve;
+        report.retained_last_known_good = market_mark_surface_ != nullptr;
+        report.attempts.push_back(failed_attempt_report(
+            chain.underlying(), in.curve, selected.error(), SurfaceBuildStage::Selection));
+        last_attempt_report_ = std::move(report);
+        return Err(std::move(selected).error());
+      }
+      SelectorResult chosen = std::move(*selected);
+      // Parametric candidates inherit the selected profile's calibration policy;
+      // the held-out selector chooses family/curve-local knobs, not a second quote
+      // filtering policy.
+      chosen.chosen.parametric = in.calib;
+      in.curve = chosen.chosen;
+      if (next_decision.has_value()) {
+        next_decision->curve = chosen.chosen;
+        next_decision->preset = effective_preset;
+      }
+      next_selection = std::move(chosen);
+    }
+
+    if (session_overlay) {
+      session_overlay(in);
+    }
+    if (next_decision.has_value()) {
+      next_decision->primary_curve = in.curve;
+      next_decision->curve = in.curve;
+      next_decision->used_fallback = false;
+    }
+
+    const Underlying &under = chain.underlying();
+    const CurveConfig primary_curve = in.curve;
+    SurfaceBuildReport report;
+    report.primary_curve = primary_curve;
+    std::optional<VolaSession> admitted_session;
+    std::optional<atx::core::Error> primary_failure;
+
+    Result<VolaSession> built = VolaSession::build(under, in);
+    if (!built.has_value()) {
+      primary_failure = built.error();
+      report.attempts.push_back(failed_attempt_report(under, in.curve, built.error()));
+    } else {
       SurfaceBuildAttemptReport attempt =
-          completed_attempt_report(under, in.curve, *retry, cfg_.admission);
+          completed_attempt_report(under, in.curve, *built, cfg_.admission);
       const bool admitted = attempt.admission.admitted;
       report.attempts.push_back(std::move(attempt));
-      if (!admitted) {
-        continue;
+      if (admitted) {
+        admitted_session.emplace(std::move(*built));
       }
-      admitted_session.emplace(std::move(*retry));
-      report.used_fallback = true;
-      next_decision->primary_curve = primary_curve;
-      next_decision->curve = in.curve;
-      next_decision->used_fallback = true;
-      break;
     }
-  }
-  if (!admitted_session.has_value()) {
-    report.retained_last_known_good = market_mark_surface_ != nullptr;
-    last_attempt_report_ = std::move(report);
-    if (primary_failure.has_value()) {
-      return Err(std::move(*primary_failure));
+    // A profile is a fast prior, not permission to drop an underlier: walk the
+    // fallback ladder for anything the policy routed, including a board whose curve
+    // came from the held-out selector. A curve the CALLER pinned (cfg_.curve, or the
+    // preset-pinned Hft dense route) is an explicit instruction and is never
+    // silently substituted.
+    const bool auto_routed = next_decision.has_value() && !cfg_.curve.has_value() && !pinned_hft;
+    if (!admitted_session.has_value() && auto_routed) {
+      for (const VolCurveKind rung : fallback_curve_rungs(primary_curve.kind)) {
+        in.curve = primary_curve;
+        in.curve.kind = rung;
+        Result<VolaSession> retry = VolaSession::build(under, in);
+        if (!retry.has_value()) {
+          report.attempts.push_back(failed_attempt_report(under, in.curve, retry.error()));
+          continue;
+        }
+        SurfaceBuildAttemptReport attempt =
+            completed_attempt_report(under, in.curve, *retry, cfg_.admission);
+        const bool admitted = attempt.admission.admitted;
+        report.attempts.push_back(std::move(attempt));
+        if (!admitted) {
+          continue;
+        }
+        admitted_session.emplace(std::move(*retry));
+        report.used_fallback = true;
+        next_decision->primary_curve = primary_curve;
+        next_decision->curve = in.curve;
+        next_decision->used_fallback = true;
+        break;
+      }
     }
-    return Err(ErrorCode::Unavailable, "PricerFitter::fit: every built surface failed admission");
-  }
-  report.published = true;
-  report.published_curve = in.curve;
-  report.attempts.back().stage = SurfaceBuildStage::Publication;
-  VolaSession sess = std::move(*admitted_session);
-  // FittedSurface's ctor is private (friend PricerFitter), so make_unique cannot
-  // reach it — construct explicitly.
-  const std::uint64_t legacy_generation = ++candidate_generation_;
-  const SurfacePurpose legacy_purpose =
-      cfg_.admission.consumer == SurfaceConsumer::Risk ? SurfacePurpose::Risk
-                                                       : SurfacePurpose::MarketMark;
-  const FitQualityMode legacy_quality = map_legacy_fit_preset(cfg_.preset).quality_mode;
-  std::shared_ptr<const FittedSurface> next_surface(
-      new FittedSurface(std::move(sess), legacy_purpose, legacy_quality, legacy_generation));
-  std::optional<SurfaceBuildReport> next_published{report};
-  std::optional<SurfaceBuildReport> next_attempt{std::move(report)};
-  FitSnapshotProvenance provenance;
-  provenance.chain_instance_id = chain.instance_id();
-  provenance.board_revision = chain.quote_revision();
-  provenance.uid = chain.uid();
-  provenance.expiry_revisions.assign(chain.expiry_quote_revisions().begin(),
-                                     chain.expiry_quote_revisions().end());
-  std::optional<FitSnapshotProvenance> next_provenance{std::move(provenance)};
+    if (!admitted_session.has_value()) {
+      report.retained_last_known_good = market_mark_surface_ != nullptr;
+      last_attempt_report_ = std::move(report);
+      if (primary_failure.has_value()) {
+        return Err(std::move(*primary_failure));
+      }
+      return Err(ErrorCode::Unavailable, "PricerFitter::fit: every built surface failed admission");
+    }
+    report.published = true;
+    report.published_curve = in.curve;
+    report.attempts.back().stage = SurfaceBuildStage::Publication;
+    VolaSession sess = std::move(*admitted_session);
+    // FittedSurface's ctor is private (friend PricerFitter), so make_unique cannot
+    // reach it — construct explicitly.
+    const std::uint64_t legacy_generation = ++candidate_generation_;
+    const SurfacePurpose legacy_purpose = cfg_.admission.consumer == SurfaceConsumer::Risk
+                                              ? SurfacePurpose::Risk
+                                              : SurfacePurpose::MarketMark;
+    const FitQualityMode legacy_quality = map_legacy_fit_preset(cfg_.preset).quality_mode;
+    std::shared_ptr<const FittedSurface> next_surface(
+        new FittedSurface(std::move(sess), legacy_purpose, legacy_quality, legacy_generation));
+    std::optional<SurfaceBuildReport> next_published{report};
+    std::optional<SurfaceBuildReport> next_attempt{std::move(report)};
+    FitSnapshotProvenance provenance;
+    provenance.chain_instance_id = chain.instance_id();
+    provenance.board_revision = chain.quote_revision();
+    provenance.uid = chain.uid();
+    provenance.expiry_revisions.assign(chain.expiry_quote_revisions().begin(),
+                                       chain.expiry_quote_revisions().end());
+    std::optional<FitSnapshotProvenance> next_provenance{std::move(provenance)};
 
-  // Transaction boundary: admitted state and its provenance become current
-  // together. Every earlier failure leaves the last-known-good publication.
-  market_mark_surface_ = std::move(next_surface);
-  market_mark_health_ = SurfaceHealth{
-      .purpose = legacy_purpose,
-      .quality_mode = legacy_quality,
-      .state = SurfaceState::Healthy,
-      .reasons = ValidationFailure::None,
-      .candidate_generation = legacy_generation,
-      .served_generation = legacy_generation,
-  };
-  selection_ = std::move(next_selection);
-  served_selection_ = selection_;
-  decision_ = std::move(next_decision);
-  served_decision_ = decision_;
-  published_report_ = std::move(next_published);
-  last_attempt_report_ = std::move(next_attempt);
-  published_provenance_ = std::move(next_provenance);
-  timings_.total_ms = elapsed_ms(fit_start);
-  return Ok();
+    // Transaction boundary: admitted state and its provenance become current
+    // together. Every earlier failure leaves the last-known-good publication.
+    market_mark_surface_ = std::move(next_surface);
+    market_mark_health_ = SurfaceHealth{
+        .purpose = legacy_purpose,
+        .quality_mode = legacy_quality,
+        .state = SurfaceState::Healthy,
+        .reasons = ValidationFailure::None,
+        .candidate_generation = legacy_generation,
+        .served_generation = legacy_generation,
+    };
+    selection_ = std::move(next_selection);
+    served_selection_ = selection_;
+    decision_ = std::move(next_decision);
+    served_decision_ = decision_;
+    published_report_ = std::move(next_published);
+    last_attempt_report_ = std::move(next_attempt);
+    published_provenance_ = std::move(next_provenance);
+    timings_.total_ms = elapsed_ms(fit_start);
+    return Ok();
   }
 
   timings_ = {};
@@ -741,6 +743,7 @@ Status PricerFitter::fit(const OptionChain &chain,
   const FitQualityMode quality_mode = request.quality_mode;
 
   const auto configure_common = [&](SessionInputs &in) {
+    in.fit_workers = cfg_.fit_workers;
     if (chain.env().yield.size() > 0u) {
       in.expiry_rate_T.clear();
       in.expiry_rates.clear();
@@ -755,6 +758,7 @@ Status PricerFitter::fit(const OptionChain &chain,
     if (cfg_.use_correction_cache.has_value()) {
       in.use_correction_cache = *cfg_.use_correction_cache;
     }
+    in.query_pricing_tier = cfg_.query_pricing_tier;
     if (cfg_.use_deam_cache_for_fit.has_value()) {
       in.use_deam_cache_for_fit = *cfg_.use_deam_cache_for_fit;
     }
@@ -768,11 +772,13 @@ Status PricerFitter::fit(const OptionChain &chain,
       in.calib.max_deam_strikes_per_expiry = *cfg_.max_deam_strikes_per_expiry;
     }
     if (cfg_.max_otm_shortcut_premium_spread_frac.has_value()) {
-      in.calib.max_otm_shortcut_premium_spread_frac =
-          *cfg_.max_otm_shortcut_premium_spread_frac;
+      in.calib.max_otm_shortcut_premium_spread_frac = *cfg_.max_otm_shortcut_premium_spread_frac;
     }
     if (!in.expiry_rates.empty()) {
-      in.use_correction_cache = false;
+      if (in.query_pricing_tier == QueryPricingTier::LegacyCompatible ||
+          in.query_pricing_tier == QueryPricingTier::ColdReference) {
+        in.use_correction_cache = false;
+      }
       in.use_deam_cache_for_fit = false;
     }
   };
@@ -971,9 +977,8 @@ Status PricerFitter::fit(const OptionChain &chain,
     SurfaceBuildReport report;
     report.primary_curve = validation_curve;
     report.retained_last_known_good = risk_surface_ != nullptr;
-    report.attempts.push_back(failed_attempt_report(chain.underlying(), validation_curve,
-                                                    policy_error,
-                                                    SurfaceBuildStage::InputValidation));
+    report.attempts.push_back(failed_attempt_report(
+        chain.underlying(), validation_curve, policy_error, SurfaceBuildStage::InputValidation));
     last_attempt_report_ = std::move(report);
     // §5.6: the requested mark is still built and published on its own
     // contract; only the risk output is refused. The caller must still learn
@@ -983,11 +988,9 @@ Status PricerFitter::fit(const OptionChain &chain,
     return Err(std::move(policy_error));
   }
 
-  const FitPreset risk_preset = quality_mode == FitQualityMode::Latency
-                                    ? FitPreset::Fast
-                                    : quality_mode == FitQualityMode::Accuracy
-                                          ? FitPreset::Accurate
-                                          : FitPreset::Robust;
+  const FitPreset risk_preset = quality_mode == FitQualityMode::Latency    ? FitPreset::Fast
+                                : quality_mode == FitQualityMode::Accuracy ? FitPreset::Accurate
+                                                                           : FitPreset::Robust;
   const auto risk_start = Clock::now();
   SessionInputs in = make_session_inputs(risk_preset, chain.spot(), chain.rate(), chain.now_ns());
   configure_common(in);
@@ -1093,10 +1096,11 @@ Status PricerFitter::fit(const OptionChain &chain,
     sp.calib = in.calib;
     sp.band_k = in.band_k;
     sp.repair = in.calendar_repair;
+    sp.fit_workers = in.fit_workers;
+    sp.fit_prep_policy = in.fit_prep_policy;
     sp.score_parity = in.score_parity;
     sp.enforce_calendar_floor = in.enforce_calendar_floor;
     sp.use_deam_cache_for_fit = in.use_deam_cache_for_fit;
-    sp.fit_prep_policy = in.fit_prep_policy;
     Result<SelectorResult> selected = select_curve(chain.underlying(), sp, cfg_.selector);
     if (selected.has_value()) {
       SelectorResult chosen = std::move(*selected);
@@ -1208,12 +1212,10 @@ Status PricerFitter::fit(const OptionChain &chain,
   }
 
   VolaSession sess = std::move(*built);
-  const RiskSurfaceValidationConfig validation_config =
-      risk_validation_config(quality_mode);
+  const RiskSurfaceValidationConfig validation_config = risk_validation_config(quality_mode);
   const auto validate_candidate = [&](const VolaSession &candidate) {
     const auto validation_start = Clock::now();
-    Result<ValidationDigest> checked =
-        validate_risk_surface(candidate, validation_config);
+    Result<ValidationDigest> checked = validate_risk_surface(candidate, validation_config);
     timings_.risk_validation_ms += elapsed_ms(validation_start);
     ValidationDigest result;
     if (checked.has_value()) {
@@ -1230,8 +1232,7 @@ Status PricerFitter::fit(const OptionChain &chain,
   // default = the WP12 Mark-serving numerical floor, strict risk policy is the
   // caller's opt-in). The policy verdict is folded into the digest BEFORE the
   // oracle decision so served health can never disagree with publication.
-  const auto admission_attempt = [&](const VolaSession &candidate,
-                                     ValidationDigest &digest) {
+  const auto admission_attempt = [&](const VolaSession &candidate, ValidationDigest &digest) {
     SurfaceBuildAttemptReport attempt =
         completed_attempt_report(under, in.curve, candidate, cfg_.admission);
     if (!attempt.admission.admitted) {
@@ -1254,16 +1255,15 @@ Status PricerFitter::fit(const OptionChain &chain,
   if (!admission.publish_candidate && auto_routed) {
     const CurveConfig rejected_curve = in.curve;
     for (const VolCurveKind rung : fallback_curve_rungs(rejected_curve.kind)) {
-      if (rung == VolCurveKind::LinearVariance) continue;
+      if (rung == VolCurveKind::LinearVariance)
+        continue;
       SessionInputs retry_inputs = in;
       retry_inputs.curve.kind = rung;
       const auto retry_start = Clock::now();
-      Result<VolaSession> retry =
-          VolaSession::build(chain.underlying(), retry_inputs);
+      Result<VolaSession> retry = VolaSession::build(chain.underlying(), retry_inputs);
       timings_.risk_build_ms += elapsed_ms(retry_start);
       if (!retry.has_value()) {
-        report.attempts.push_back(
-            failed_attempt_report(under, retry_inputs.curve, retry.error()));
+        report.attempts.push_back(failed_attempt_report(under, retry_inputs.curve, retry.error()));
         continue;
       }
       in = std::move(retry_inputs);
@@ -1272,7 +1272,8 @@ Status PricerFitter::fit(const OptionChain &chain,
       AdmissionDecision retry_admission = decide_risk_surface_admission(
           retry_digest, quality_mode, candidate_generation_, prior, cfg_.fallback);
       report.attempts.push_back(std::move(retry_attempt));
-      if (!retry_admission.publish_candidate) continue;
+      if (!retry_admission.publish_candidate)
+        continue;
       sess = std::move(*retry);
       digest = retry_digest;
       admission = retry_admission;
@@ -1313,8 +1314,7 @@ Status PricerFitter::fit(const OptionChain &chain,
     const SessionDiagnostics &session_diagnostics = sess.diagnostics();
     return Err(ErrorCode::Unavailable,
                "risk surface rejected: model=" + std::string(to_string(sess.inputs().curve.kind)) +
-                   " mask=" +
-                   std::to_string(static_cast<std::uint32_t>(digest.failures)) +
+                   " mask=" + std::to_string(static_cast<std::uint32_t>(digest.failures)) +
                    " butterfly=" + std::to_string(digest.n_butterfly_violations) +
                    " butterfly_slack=" + std::to_string(digest.max_butterfly_slack) +
                    " butterfly_k=" + std::to_string(digest.first_butterfly_k) +
@@ -1331,8 +1331,7 @@ Status PricerFitter::fit(const OptionChain &chain,
                    " first_k=" + std::to_string(digest.first_non_finite_k) +
                    " first_slice=" + std::to_string(digest.first_non_finite_slice) +
                    " carry=" + (session_diagnostics.carry_confident ? "ok" : "failed") +
-                   " inversion=" +
-                   (session_diagnostics.inversion_certified ? "ok" : "failed"));
+                   " inversion=" + (session_diagnostics.inversion_certified ? "ok" : "failed"));
   }
 
   // Transaction boundary: the admitted risk surface, its provenance records,
@@ -1397,8 +1396,8 @@ Result<ExpiryRefitDiagnostics> PricerFitter::refit_expiry(const OptionChain &cha
     published_curve = served->session().inputs().curve;
   }
   const auto fail = [&](atx::core::Error error,
-                        SurfaceBuildStage stage = SurfaceBuildStage::Build)
-      -> Result<ExpiryRefitDiagnostics> {
+                        SurfaceBuildStage stage =
+                            SurfaceBuildStage::Build) -> Result<ExpiryRefitDiagnostics> {
     SurfaceBuildReport report;
     report.primary_curve = published_curve;
     report.refit_expiry = expiry_id;
@@ -1422,9 +1421,9 @@ Result<ExpiryRefitDiagnostics> PricerFitter::refit_expiry(const OptionChain &cha
   }
   const Underlying &under = chain.underlying();
   if (expiry_id >= under.chains.size() || under.chains[expiry_id].expiry_id != expiry_id) {
-    return fail(atx::core::Error{ErrorCode::NotFound,
-                                 "PricerFitter::refit_expiry: expiry id not found"},
-                SurfaceBuildStage::InputValidation);
+    return fail(
+        atx::core::Error{ErrorCode::NotFound, "PricerFitter::refit_expiry: expiry id not found"},
+        SurfaceBuildStage::InputValidation);
   }
   const std::span<const std::uint64_t> current_revisions = chain.expiry_quote_revisions();
   if (current_revisions.size() != published.expiry_revisions.size()) {
@@ -1434,10 +1433,10 @@ Result<ExpiryRefitDiagnostics> PricerFitter::refit_expiry(const OptionChain &cha
   }
   for (std::size_t index = 0u; index < current_revisions.size(); ++index) {
     if (index != expiry_id && current_revisions[index] != published.expiry_revisions[index]) {
-      return fail(atx::core::Error{
-                      ErrorCode::InvalidArgument,
-                      "PricerFitter::refit_expiry: a non-target expiry has newer quotes"},
-                  SurfaceBuildStage::InputValidation);
+      return fail(
+          atx::core::Error{ErrorCode::InvalidArgument,
+                           "PricerFitter::refit_expiry: a non-target expiry has newer quotes"},
+          SurfaceBuildStage::InputValidation);
     }
   }
   if (published_curve.kind != VolCurveKind::Essvi) {
@@ -1450,14 +1449,13 @@ Result<ExpiryRefitDiagnostics> PricerFitter::refit_expiry(const OptionChain &cha
     break;
   case CalendarRepair::MonotoneFit:
   case CalendarRepair::Project:
-    return fail(atx::core::Error{
-                    ErrorCode::NotImplemented,
-                    "PricerFitter::refit_expiry: configured calendar repair is unsupported"},
-                SurfaceBuildStage::InputValidation);
+    return fail(
+        atx::core::Error{ErrorCode::NotImplemented,
+                         "PricerFitter::refit_expiry: configured calendar repair is unsupported"},
+        SurfaceBuildStage::InputValidation);
   }
   if (candidate_generation_ == std::numeric_limits<std::uint64_t>::max()) {
-    return fail(atx::core::Error{ErrorCode::OutOfRange,
-                                 "surface generation counter exhausted"},
+    return fail(atx::core::Error{ErrorCode::OutOfRange, "surface generation counter exhausted"},
                 SurfaceBuildStage::InputValidation);
   }
 
@@ -1476,9 +1474,9 @@ Result<ExpiryRefitDiagnostics> PricerFitter::refit_expiry(const OptionChain &cha
     fitted_index = index;
   }
   if (!fitted_index.has_value()) {
-    return fail(atx::core::Error{ErrorCode::NotFound,
-                                 "PricerFitter::refit_expiry: expiry was not fitted"},
-                SurfaceBuildStage::InputValidation);
+    return fail(
+        atx::core::Error{ErrorCode::NotFound, "PricerFitter::refit_expiry: expiry was not fitted"},
+        SurfaceBuildStage::InputValidation);
   }
 
   Result<CanonicalPreparedExpiry> prepared =
@@ -1527,9 +1525,9 @@ Result<ExpiryRefitDiagnostics> PricerFitter::refit_expiry(const OptionChain &cha
     }
     merge_session_failure_context(candidate.diagnostics(), digest);
     finalize_validation_digest(digest, validation_config);
-    const AdmissionDecision risk_admission = decide_risk_surface_admission(
-        digest, quality_mode, candidate_generation_, served->generation(),
-        SurfaceFallback::LastKnownGood);
+    const AdmissionDecision risk_admission =
+        decide_risk_surface_admission(digest, quality_mode, candidate_generation_,
+                                      served->generation(), SurfaceFallback::LastKnownGood);
     risk_health_ = risk_admission.health;
     if (!risk_admission.publish_candidate) {
       report.retained_last_known_good = true;
@@ -1545,9 +1543,8 @@ Result<ExpiryRefitDiagnostics> PricerFitter::refit_expiry(const OptionChain &cha
   report.published = true;
   const SliceContext refreshed_context = candidate.expiries()[*fitted_index];
   const FitQualityMode published_quality = served->quality_mode();
-  std::unique_ptr<FittedSurface> next_surface(
-      new FittedSurface(std::move(candidate), served->purpose(), published_quality,
-                        candidate_generation_));
+  std::unique_ptr<FittedSurface> next_surface(new FittedSurface(
+      std::move(candidate), served->purpose(), published_quality, candidate_generation_));
   std::optional<SurfaceBuildReport> next_published{report};
   std::optional<SurfaceBuildReport> next_attempt{std::move(report)};
   FitSnapshotProvenance provenance;
@@ -1570,18 +1567,12 @@ Result<ExpiryRefitDiagnostics> PricerFitter::refit_expiry(const OptionChain &cha
   last_attempt_report_ = std::move(next_attempt);
   published_provenance_ = std::move(next_provenance);
 
-  return Ok(ExpiryRefitDiagnostics{expiry_id,
-                                   chain.quote_revision(),
-                                   published_curve.kind,
-                                   true,
-                                   refreshed_context.n_used,
-                                   refreshed_context.n_dropped,
-                                   std::optional<FitDiag>{*fit_diag},
-                                   admission});
+  return Ok(ExpiryRefitDiagnostics{expiry_id, chain.quote_revision(), published_curve.kind, true,
+                                   refreshed_context.n_used, refreshed_context.n_dropped,
+                                   std::optional<FitDiag>{*fit_diag}, admission});
 }
 
-Result<FitDiag> PricerFitter::refit_risk_slice(const OptionChain &chain,
-                                               std::size_t slice_idx) {
+Result<FitDiag> PricerFitter::refit_risk_slice(const OptionChain &chain, std::size_t slice_idx) {
   using Clock = std::chrono::steady_clock;
   const auto incremental_start = Clock::now();
   const auto elapsed_ms = [](Clock::time_point start) {
@@ -1593,8 +1584,7 @@ Result<FitDiag> PricerFitter::refit_risk_slice(const OptionChain &chain,
   timings_.incremental_publish_ms = 0.0;
   timings_.incremental_total_ms = 0.0;
   if (risk_surface_ == nullptr) {
-    return Err(ErrorCode::Unavailable,
-               "PricerFitter::refit_risk_slice: no admitted risk surface");
+    return Err(ErrorCode::Unavailable, "PricerFitter::refit_risk_slice: no admitted risk surface");
   }
   if (candidate_generation_ == std::numeric_limits<std::uint64_t>::max()) {
     return Err(ErrorCode::OutOfRange, "surface generation counter exhausted");
@@ -1614,20 +1604,17 @@ Result<FitDiag> PricerFitter::refit_risk_slice(const OptionChain &chain,
   const auto retain_prior = [&](ValidationFailure failure) {
     ValidationDigest digest;
     digest.failures = failure;
-    const RiskSurfaceValidationConfig validation_config =
-        risk_validation_config(quality_mode);
+    const RiskSurfaceValidationConfig validation_config = risk_validation_config(quality_mode);
     finalize_validation_digest(digest, validation_config);
-    risk_health_ = decide_risk_surface_admission(
-                       digest, quality_mode, candidate_generation_, prior_generation,
-                       SurfaceFallback::LastKnownGood)
+    risk_health_ = decide_risk_surface_admission(digest, quality_mode, candidate_generation_,
+                                                 prior_generation, SurfaceFallback::LastKnownGood)
                        .health;
   };
 
   const SliceContext &context = contexts[slice_idx];
   const Chain *updated_chain = nullptr;
   for (const Chain &candidate_chain : chain.underlying().chains) {
-    if (std::fabs(candidate_chain.T - context.T) <=
-        1.0e-10 * std::max(1.0, context.T)) {
+    if (std::fabs(candidate_chain.T - context.T) <= 1.0e-10 * std::max(1.0, context.T)) {
       updated_chain = &candidate_chain;
       break;
     }
@@ -1644,8 +1631,7 @@ Result<FitDiag> PricerFitter::refit_risk_slice(const OptionChain &chain,
       live_session.cached_refit_observations(*updated_chain, slice_idx);
   if (!observation_rows.has_value()) {
     Result<ChainForward> carry = resolve_chain_forward(
-        *updated_chain, inputs.S, rate, inputs.cash_divs, inputs.now_ts_ns,
-        inputs.deam);
+        *updated_chain, inputs.S, rate, inputs.cash_divs, inputs.now_ts_ns, inputs.deam);
     if (!carry.has_value() || !carry->carry.confident) {
       retain_prior(ValidationFailure::InsufficientData);
       if (!carry.has_value()) {
@@ -1658,8 +1644,7 @@ Result<FitDiag> PricerFitter::refit_risk_slice(const OptionChain &chain,
     // A local curve owns its original forward coordinate. Moving that
     // coordinate without rebuilding the whole term structure would silently
     // change every k, so promote the update to the cold fit path.
-    const double forward_shift =
-        std::fabs(std::log(carry->forward / context.forward));
+    const double forward_shift = std::fabs(std::log(carry->forward / context.forward));
     if (!std::isfinite(forward_shift) || forward_shift > 1.0e-8) {
       retain_prior(ValidationFailure::StaleInput);
       return Err(ErrorCode::Unavailable,
@@ -1667,13 +1652,12 @@ Result<FitDiag> PricerFitter::refit_risk_slice(const OptionChain &chain,
     }
 
     const double df = std::exp(-rate * context.T);
-    const AmericanCorrectionCaches deam_caches =
-        inputs.use_deam_cache_for_fit ? live_session.correction_caches()
-                                     : AmericanCorrectionCaches{};
+    const AmericanCorrectionCaches deam_caches = inputs.use_deam_cache_for_fit
+                                                     ? live_session.correction_caches_at(context.T)
+                                                     : AmericanCorrectionCaches{};
     Result<ObsSet> observations = build_observations_european(
-        *updated_chain, inputs.S, rate, context.forward, context.T, df,
-        inputs.calib, deam_caches, inputs.deam.al_opts, inputs.deam.iv_tol,
-        inputs.deam.iv_max_iter, inputs.deam.method);
+        *updated_chain, inputs.S, rate, context.forward, context.T, df, inputs.calib, deam_caches,
+        inputs.deam.al_opts, inputs.deam.iv_tol, inputs.deam.iv_max_iter, inputs.deam.method);
     if (!observations.has_value()) {
       retain_prior(ValidationFailure::InsufficientData);
       return Err(std::move(observations).error());
@@ -1681,9 +1665,8 @@ Result<FitDiag> PricerFitter::refit_risk_slice(const OptionChain &chain,
     // Fail-closed for EVERY method: a non-AndersenLake method has no audit and
     // can never certify (deam_inversion_certified). Node drops within the
     // configured cap are tolerated; beyond it the refit is refused.
-    if (!deam_inversion_certified(
-            observations->deam_audit,
-            inputs.calib.max_certified_deam_drop_fraction)) {
+    if (!deam_inversion_certified(observations->deam_audit,
+                                  inputs.calib.max_certified_deam_drop_fraction)) {
       retain_prior(ValidationFailure::InversionResidual);
       return Err(ErrorCode::Unavailable,
                  "PricerFitter::refit_risk_slice: price-to-IV inversion audit failed");
@@ -1701,8 +1684,7 @@ Result<FitDiag> PricerFitter::refit_risk_slice(const OptionChain &chain,
     return refit;
   }
 
-  const RiskSurfaceValidationConfig validation_config =
-      risk_validation_config(quality_mode);
+  const RiskSurfaceValidationConfig validation_config = risk_validation_config(quality_mode);
   const auto validation_start = Clock::now();
   Result<ValidationDigest> checked = validate_risk_surface(candidate, validation_config);
   timings_.incremental_validation_ms = elapsed_ms(validation_start);
@@ -1717,9 +1699,9 @@ Result<FitDiag> PricerFitter::refit_risk_slice(const OptionChain &chain,
   // Healthy with the expiry silently missing (§5.2).
   merge_session_failure_context(candidate.diagnostics(), digest);
   finalize_validation_digest(digest, validation_config);
-  const AdmissionDecision admission = decide_risk_surface_admission(
-      digest, quality_mode, candidate_generation_, prior_generation,
-      SurfaceFallback::LastKnownGood);
+  const AdmissionDecision admission =
+      decide_risk_surface_admission(digest, quality_mode, candidate_generation_, prior_generation,
+                                    SurfaceFallback::LastKnownGood);
   risk_health_ = admission.health;
   if (!admission.publish_candidate) {
     return Err(ErrorCode::Unavailable,
@@ -1727,8 +1709,8 @@ Result<FitDiag> PricerFitter::refit_risk_slice(const OptionChain &chain,
   }
 
   const auto publish_start = Clock::now();
-  risk_surface_.reset(new FittedSurface(std::move(candidate), SurfacePurpose::Risk,
-                                        quality_mode, candidate_generation_));
+  risk_surface_.reset(new FittedSurface(std::move(candidate), SurfacePurpose::Risk, quality_mode,
+                                        candidate_generation_));
   timings_.incremental_publish_ms = elapsed_ms(publish_start);
   timings_.incremental_total_ms = elapsed_ms(incremental_start);
   return refit;
@@ -1773,9 +1755,9 @@ PricerFitter::EffectiveRequest PricerFitter::effective_request() const noexcept 
   // v2 request. An unnamed field falls back to the legacy preset's §9 mapping:
   // Hft is a market-mark request (never an implicit risk request), every other
   // preset's dual bundle carries that preset's quality budget.
-  const SurfaceOutputs outputs = cfg_.outputs.value_or(
-      legacy.purpose == SurfacePurpose::MarketMark ? SurfaceOutputs::MarketMark
-                                                   : SurfaceOutputs::MarketMarkAndRisk);
+  const SurfaceOutputs outputs = cfg_.outputs.value_or(legacy.purpose == SurfacePurpose::MarketMark
+                                                           ? SurfaceOutputs::MarketMark
+                                                           : SurfaceOutputs::MarketMarkAndRisk);
   return EffectiveRequest{outputs, cfg_.quality_mode.value_or(legacy.quality_mode)};
 }
 
@@ -1797,18 +1779,39 @@ Result<ChainValuation> PricerFitter::value_chain(const OptionChain &chain, Outpu
   // Fail-closed purpose default: mirrors surface(). A caller that wants the
   // mark interpolant while risk is requested/unserved states so explicitly via
   // the SurfacePurpose::MarketMark overload.
-  const SurfacePurpose purpose =
-      has_output(effective_request().outputs, SurfacePurpose::Risk)
-          ? SurfacePurpose::Risk
-          : SurfacePurpose::MarketMark;
+  const SurfacePurpose purpose = has_output(effective_request().outputs, SurfacePurpose::Risk)
+                                     ? SurfacePurpose::Risk
+                                     : SurfacePurpose::MarketMark;
   return value_chain(chain, fields, purpose, n_threads);
 }
 
+Result<ChainValuation> PricerFitter::value_chain(const OptionChain &chain,
+                                                 std::span<const OptionId> selected_ids,
+                                                 OutputField fields, unsigned n_threads) const {
+  const SurfacePurpose purpose = has_output(effective_request().outputs, SurfacePurpose::Risk)
+                                     ? SurfacePurpose::Risk
+                                     : SurfacePurpose::MarketMark;
+  return value_chain(chain, selected_ids, fields, purpose, n_threads);
+}
+
 Result<ChainValuation> PricerFitter::value_chain(const OptionChain &chain, OutputField fields,
-                                                 SurfacePurpose purpose,
+                                                 SurfacePurpose purpose, unsigned n_threads) const {
+  return value_snapshot(chain, chain.snapshot(), fields, purpose, n_threads);
+}
+
+Result<ChainValuation> PricerFitter::value_chain(const OptionChain &chain,
+                                                 std::span<const OptionId> selected_ids,
+                                                 OutputField fields, SurfacePurpose purpose,
                                                  unsigned n_threads) const {
-  const FittedSurface *served = purpose == SurfacePurpose::Risk ? risk_surface_.get()
-                                                                : market_mark_surface_.get();
+  ATX_TRY(ChainSnapshot snapshot, chain.snapshot(selected_ids));
+  return value_snapshot(chain, std::move(snapshot), fields, purpose, n_threads);
+}
+
+Result<ChainValuation> PricerFitter::value_snapshot(const OptionChain &chain, ChainSnapshot snap,
+                                                    OutputField fields, SurfacePurpose purpose,
+                                                    unsigned n_threads) const {
+  const FittedSurface *served =
+      purpose == SurfacePurpose::Risk ? risk_surface_.get() : market_mark_surface_.get();
   if (served == nullptr) {
     if (purpose == SurfacePurpose::Risk) {
       // Name the risk rejection so a tick-loop caller cannot mistake this for
@@ -1827,7 +1830,6 @@ Result<ChainValuation> PricerFitter::value_chain(const OptionChain &chain, Outpu
   const double nan = std::numeric_limits<double>::quiet_NaN();
 
   ChainValuation val;
-  ChainSnapshot snap = chain.snapshot();
   val.ids = std::move(snap.ids);
   val.filled = fields;
   const std::size_t n = val.ids.size();
@@ -1854,6 +1856,9 @@ Result<ChainValuation> PricerFitter::value_chain(const OptionChain &chain, Outpu
   const unsigned nt = n_threads ? n_threads : cfg_.n_threads;
   const bool want_bands = has(fields, OutputField::BidIV) || has(fields, OutputField::AskIV) ||
                           has(fields, OutputField::MidIV);
+  const bool want_model = has(fields, OutputField::ModelIV) ||
+                          has(fields, OutputField::ModelPrice) || has(fields, OutputField::Greeks);
+  const bool want_side_bands = has(fields, OutputField::BidIV) || has(fields, OutputField::AskIV);
 
   // The per-side correction caches the fit built. Routing the bid/ask/mid IV
   // inversions through them replaces the cold per-residual Andersen-Lake solve
@@ -1861,60 +1866,173 @@ Result<ChainValuation> PricerFitter::value_chain(const OptionChain &chain, Outpu
   // path (Black-76 + one Chebyshev evaluation) — the SOTA American-IV method (a
   // fast surrogate in the root-find, not a pricer). A null cache for a side
   // transparently falls back to the cold path (bit-identical, just slower).
-  const AmericanCorrectionCaches caches = sess.correction_caches();
-
-  const auto eval = [&](std::size_t i) {
-    const double K = snap.strike[i];
-    const double T = snap.T[i];
-    const Side side = snap.side[i];
-    if (!(K > 0.0) || !(T > 0.0)) {
-      return; // decode failed or degenerate expiry — leave the row NaN
-    }
-    const double q = sess.q_eff_at(T);
-    const double rate = sess.rate_at(T);
-    if (has(fields, OutputField::ModelIV)) {
-      val.model_iv[i] = sess.iv(K, T);
-    }
-    if (has(fields, OutputField::ModelPrice)) {
-      const auto fv = sess.fair_value(K, T, side);
-      val.model_price[i] = fv.has_value() ? *fv : nan;
-    }
-    if (has(fields, OutputField::Greeks)) {
-      const auto g = sess.greeks(K, T, side);
-      if (g.has_value()) {
-        val.greeks[i] = *g;
-      } else {
-        val.greeks[i].price = nan;
-      }
-    }
-    if (!want_bands) {
-      return;
-    }
-    // Parallel American-IV band inversions through the cached hot path. The
-    // surface's own IV at (K, T) seeds all three (bid/ask/mid vols sit within a
-    // spread's width of it), so each is 1-2 Newton steps.
-    const CorrectionCache *cc = caches.for_side(side);
-    const double miv = sess.iv(K, T);
-    const double ws = (std::isfinite(miv) && miv > 0.0) ? miv : 0.0;
-    const auto invert = [&](double px) {
-      return american_implied_vol(px, S, K, T, rate, q, side, AmericanMethod::AndersenLake, 1.0e-7,
-                                  64, std::nullopt, cc, ws);
-    };
-    if (has(fields, OutputField::BidIV) && snap.bid[i] > 0.0) {
-      const auto iv = invert(snap.bid[i]);
-      val.bid_iv[i] = iv.has_value() ? *iv : nan;
-    }
-    if (has(fields, OutputField::AskIV) && snap.ask[i] > 0.0) {
-      const auto iv = invert(snap.ask[i]);
-      val.ask_iv[i] = iv.has_value() ? *iv : nan;
-    }
-    if (has(fields, OutputField::MidIV) && snap.mid[i] > 0.0) {
-      const auto iv = invert(snap.mid[i]);
-      val.mid_iv[i] = iv.has_value() ? *iv : nan;
-    }
+  struct alignas(64) LocalCounts {
+    std::size_t bid_unset{0};
+    std::size_t ask_unset{0};
+    std::size_t bid_iv_fail{0};
+    std::size_t ask_iv_fail{0};
   };
+  // Resolve auto exactly once and pass the resolved value to the worker-id
+  // overload below, so the local array and worker-id range cannot diverge if
+  // process environment is changed concurrently by a test harness.
+  unsigned resolved_nt = nt == 0u ? atx_auto_worker_count() : nt;
+  if (resolved_nt > n) {
+    resolved_nt = static_cast<unsigned>(n);
+  }
+  // A canonical whole-chain snapshot is expiry-major; a selected-id snapshot
+  // may contain shorter or single-row runs. Split each consecutive equal-T run
+  // into bounded chunks: each task still hoists its carry/cache lookup, while a
+  // dense OPRA expiry no longer becomes one indivisible straggler that idles the
+  // other value-chain workers.
+  constexpr std::size_t kValuationChunkRows = 128u;
+  struct ValuationChunk {
+    std::size_t begin{0u};
+    std::size_t end{0u};
+    double T{0.0};
+  };
+  std::vector<ValuationChunk> work_chunks;
+  work_chunks.reserve(n);
+  for (std::size_t begin = 0u; begin < n;) {
+    const double T = snap.T[begin];
+    std::size_t run_end = begin + 1u;
+    while (run_end < n && snap.T[run_end] == T) {
+      ++run_end;
+    }
+    for (std::size_t chunk_begin = begin; chunk_begin < run_end;
+         chunk_begin += kValuationChunkRows) {
+      work_chunks.push_back(
+          ValuationChunk{chunk_begin, std::min(run_end, chunk_begin + kValuationChunkRows), T});
+    }
+    begin = run_end;
+  }
+  if (resolved_nt > work_chunks.size()) {
+    resolved_nt = static_cast<unsigned>(work_chunks.size());
+  }
+  std::vector<LocalCounts> local_counts(want_side_bands ? std::max(1u, resolved_nt) : 0u);
+  std::vector<double> band_model_iv;
+  if (want_bands && !has(fields, OutputField::ModelIV)) {
+    band_model_iv.assign(n, nan);
+  }
+  if (want_model || want_bands) {
+    parallel_for_dynamic(
+        work_chunks.size(), resolved_nt, [&](std::size_t chunk_index, unsigned worker_id) {
+          const ValuationChunk &range = work_chunks[chunk_index];
+          LocalCounts *counts = want_side_bands ? &local_counts[worker_id] : nullptr;
+          if (!(range.T > 0.0) || !std::isfinite(range.T)) {
+            for (std::size_t i = range.begin; i < range.end; ++i) {
+              if (counts != nullptr && has(fields, OutputField::BidIV)) {
+                ++counts->bid_unset;
+              }
+              if (counts != nullptr && has(fields, OutputField::AskIV)) {
+                ++counts->ask_unset;
+              }
+            }
+            return;
+          }
+          const std::size_t count = range.end - range.begin;
+          std::span<double> iv_out;
+          if (has(fields, OutputField::ModelIV)) {
+            iv_out = std::span<double>{val.model_iv}.subspan(range.begin, count);
+          } else if (want_bands) {
+            iv_out = std::span<double>{band_model_iv}.subspan(range.begin, count);
+          }
+          const std::span<double> price_out =
+              has(fields, OutputField::ModelPrice)
+                  ? std::span<double>{val.model_price}.subspan(range.begin, count)
+                  : std::span<double>{};
+          const std::span<AmericanGreeks> greeks_out =
+              has(fields, OutputField::Greeks)
+                  ? std::span<AmericanGreeks>{val.greeks}.subspan(range.begin, count)
+                  : std::span<AmericanGreeks>{};
+          const Status model_status = sess.evaluate_ladder(
+              range.T, std::span<const double>{snap.strike}.subspan(range.begin, count),
+              std::span<const Side>{snap.side}.subspan(range.begin, count), iv_out, price_out,
+              greeks_out);
+          assert(model_status.has_value());
+          (void)model_status;
+          if (!want_bands) {
+            return;
+          }
 
-  parallel_for(n, nt, eval);
+          const VolaSession::ForwardCarry carry = sess.interp_forward(range.T);
+          const CorrectionBlend call_correction = sess.correction_blend_at(range.T, Side::Call);
+          const CorrectionBlend put_correction = sess.correction_blend_at(range.T, Side::Put);
+          for (std::size_t i = range.begin; i < range.end; ++i) {
+            const double K = snap.strike[i];
+            const Side side = snap.side[i];
+            if (!(K > 0.0) || !std::isfinite(K)) {
+              if (counts != nullptr && has(fields, OutputField::BidIV)) {
+                ++counts->bid_unset;
+              }
+              if (counts != nullptr && has(fields, OutputField::AskIV)) {
+                ++counts->ask_unset;
+              }
+              continue;
+            }
+            const double model_iv =
+                has(fields, OutputField::ModelIV) ? val.model_iv[i] : band_model_iv[i];
+            const double model_seed = std::isfinite(model_iv) && model_iv > 0.0 ? model_iv : 0.0;
+            const CorrectionBlend &correction =
+                side == Side::Call ? call_correction : put_correction;
+            const auto invert = [&](double price, double warm_start) {
+              return american_implied_vol(price, S, K, range.T, carry.rate, carry.q_eff, side,
+                                          correction, AmericanMethod::AndersenLake,
+                                          sess.inputs().deam.iv_tol, sess.inputs().deam.iv_max_iter,
+                                          std::nullopt, warm_start);
+            };
+            double band_seed = model_seed;
+            // When all bands are requested the mid is the closest observed price to
+            // the model mark. Solve it first and reuse its converged IV for both
+            // spread-adjacent sides. If mid is absent/fails, retain the model seed;
+            // do not synthesize mid work for a BidIV/AskIV-only request.
+            if (has(fields, OutputField::MidIV)) {
+              const double mid = snap.mid[i];
+              if (mid > 0.0 && std::isfinite(mid)) {
+                const auto iv = invert(mid, model_seed);
+                if (iv.has_value()) {
+                  val.mid_iv[i] = *iv;
+                  band_seed = *iv;
+                } else {
+                  val.mid_iv[i] = nan;
+                }
+              }
+            }
+            if (has(fields, OutputField::BidIV)) {
+              const double bid = snap.bid[i];
+              if (!(bid > 0.0) || !std::isfinite(bid)) {
+                ++counts->bid_unset;
+              } else {
+                const auto iv = invert(bid, band_seed);
+                if (iv.has_value()) {
+                  val.bid_iv[i] = *iv;
+                } else {
+                  ++counts->bid_iv_fail;
+                }
+              }
+            }
+            if (has(fields, OutputField::AskIV)) {
+              const double ask = snap.ask[i];
+              if (!(ask > 0.0) || !std::isfinite(ask)) {
+                ++counts->ask_unset;
+              } else {
+                const auto iv = invert(ask, band_seed);
+                if (iv.has_value()) {
+                  val.ask_iv[i] = *iv;
+                } else {
+                  ++counts->ask_iv_fail;
+                }
+              }
+            }
+          }
+        });
+  }
+
+  for (const LocalCounts &counts : local_counts) {
+    val.n_bid_unset += counts.bid_unset;
+    val.n_ask_unset += counts.ask_unset;
+    val.n_bid_iv_fail += counts.bid_iv_fail;
+    val.n_ask_iv_fail += counts.ask_iv_fail;
+  }
   return Ok(std::move(val));
 }
 

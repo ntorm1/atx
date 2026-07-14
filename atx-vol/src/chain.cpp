@@ -27,6 +27,26 @@ std::atomic<std::uint64_t> g_next_chain_instance_id{1u};
   return 0u;
 }
 
+void reserve_snapshot(ChainSnapshot &snapshot, std::size_t size) {
+  snapshot.ids.reserve(size);
+  snapshot.T.reserve(size);
+  snapshot.strike.reserve(size);
+  snapshot.bid.reserve(size);
+  snapshot.ask.reserve(size);
+  snapshot.mid.reserve(size);
+  snapshot.side.reserve(size);
+}
+
+void append_snapshot_row(ChainSnapshot &snapshot, const OptionRef &option) {
+  snapshot.ids.push_back(option.id);
+  snapshot.T.push_back(option.T);
+  snapshot.strike.push_back(option.strike);
+  snapshot.bid.push_back(option.bid);
+  snapshot.ask.push_back(option.ask);
+  snapshot.mid.push_back(option.mid);
+  snapshot.side.push_back(option.side);
+}
+
 } // namespace
 
 Result<OptionChain> OptionChain::from_frame(const QuoteFrame &frame, MarketEnv env) {
@@ -110,13 +130,7 @@ ChainSnapshot OptionChain::snapshot() const {
   }
   const Underlying &U = *under.value();
   const std::size_t n = size();
-  out.ids.reserve(n);
-  out.T.reserve(n);
-  out.strike.reserve(n);
-  out.bid.reserve(n);
-  out.ask.reserve(n);
-  out.mid.reserve(n);
-  out.side.reserve(n);
+  reserve_snapshot(out, n);
   for (const Chain &c : U.chains) {
     const std::uint16_t ns = static_cast<std::uint16_t>(c.n_strikes());
     for (std::uint16_t si = 0; si < ns; ++si) {
@@ -133,6 +147,16 @@ ChainSnapshot OptionChain::snapshot() const {
     }
   }
   return out;
+}
+
+Result<ChainSnapshot> OptionChain::snapshot(std::span<const OptionId> selected_ids) const {
+  ChainSnapshot out;
+  reserve_snapshot(out, selected_ids.size());
+  for (const OptionId id : selected_ids) {
+    ATX_TRY(const OptionRef option, at(id));
+    append_snapshot_row(out, option);
+  }
+  return Ok(std::move(out));
 }
 
 Result<OptionRef> OptionChain::at(OptionId id) const {
@@ -202,8 +226,7 @@ Status OptionChain::update_quotes(std::span<const OptionId> ids, std::span<const
     for (std::size_t expiry = 0u; expiry < touched_expiry.size(); ++expiry) {
       if (touched_expiry[expiry] &&
           expiry_quote_revisions_[expiry] == std::numeric_limits<std::uint64_t>::max()) {
-        return Err(ErrorCode::OutOfRange,
-                   "OptionChain::update_quotes: expiry revision exhausted");
+        return Err(ErrorCode::OutOfRange, "OptionChain::update_quotes: expiry revision exhausted");
       }
     }
   }

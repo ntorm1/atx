@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -15,8 +16,9 @@
 
 #include "atx/core/error.hpp"
 #include "atx/vol/chain.hpp"
+#include "atx/vol/data.hpp"
 #include "atx/vol/panel.hpp"
-#include "atx/vol/parallel_for.hpp"  // atx_auto_worker_count (ATX_VOL_FIT_WORKERS gate)
+#include "atx/vol/parallel_for.hpp" // atx_auto_worker_count (ATX_VOL_FIT_WORKERS gate)
 #include "atx/vol/pricer_fitter.hpp"
 #include "atx/vol/risk_surface_validation.hpp"
 #include "atx/vol/session.hpp"
@@ -42,6 +44,7 @@ using atx::vol::OptionId;
 using atx::vol::OutputField;
 using atx::vol::PricerConfig;
 using atx::vol::PricerFitter;
+using atx::vol::QueryPricingTier;
 using atx::vol::Side;
 using atx::vol::SynthPanelSpec;
 using atx::vol::VolaSession;
@@ -94,20 +97,20 @@ bool same(double a, double b) {
 // de-Am prepass worker count without a session-level knob (VolaSession::build
 // always drives fit_curve_surface with fit_workers=0 / auto).
 #if defined(_MSC_VER)
-void set_fit_workers_env(const char* value) { ::_putenv_s("ATX_VOL_FIT_WORKERS", value); }
+void set_fit_workers_env(const char *value) { ::_putenv_s("ATX_VOL_FIT_WORKERS", value); }
 void unset_fit_workers_env() { ::_putenv_s("ATX_VOL_FIT_WORKERS", ""); }
 #else
-void set_fit_workers_env(const char* value) { ::setenv("ATX_VOL_FIT_WORKERS", value, 1); }
+void set_fit_workers_env(const char *value) { ::setenv("ATX_VOL_FIT_WORKERS", value, 1); }
 void unset_fit_workers_env() { ::unsetenv("ATX_VOL_FIT_WORKERS"); }
 #endif
 
 // RAII guard: restores the prior ATX_VOL_FIT_WORKERS value on scope exit, even
 // if an ASSERT_* below exits the test early.
 class FitWorkersEnvGuard {
- public:
+public:
   FitWorkersEnvGuard() {
 #if defined(_MSC_VER)
-    char* prev = nullptr;
+    char *prev = nullptr;
     std::size_t prev_n = 0;
     had_prev_ = (::_dupenv_s(&prev, &prev_n, "ATX_VOL_FIT_WORKERS") == 0) && (prev != nullptr);
     if (prev != nullptr) {
@@ -115,15 +118,15 @@ class FitWorkersEnvGuard {
       std::free(prev);
     }
 #else
-    const char* prev = std::getenv("ATX_VOL_FIT_WORKERS");
+    const char *prev = std::getenv("ATX_VOL_FIT_WORKERS");
     had_prev_ = prev != nullptr;
     if (prev != nullptr) {
       prev_val_ = prev;
     }
 #endif
   }
-  FitWorkersEnvGuard(const FitWorkersEnvGuard&) = delete;
-  FitWorkersEnvGuard& operator=(const FitWorkersEnvGuard&) = delete;
+  FitWorkersEnvGuard(const FitWorkersEnvGuard &) = delete;
+  FitWorkersEnvGuard &operator=(const FitWorkersEnvGuard &) = delete;
   ~FitWorkersEnvGuard() {
     if (had_prev_) {
       set_fit_workers_env(prev_val_.c_str());
@@ -132,7 +135,7 @@ class FitWorkersEnvGuard {
     }
   }
 
- private:
+private:
   bool had_prev_ = false;
   std::string prev_val_;
 };
@@ -142,9 +145,8 @@ class FitWorkersEnvGuard {
 // instead of a serial re-derivation. Mirrors curve_fit_parallel_test.cpp's
 // expect_per_expiry_bit_identical (EXPECT_EQ throughout -- bit-exact, not a
 // tolerance check).
-void expect_route_bit_identical(const atx::vol::InversionRouteDiagnostics& a,
-                                const atx::vol::InversionRouteDiagnostics& b,
-                                const char* label) {
+void expect_route_bit_identical(const atx::vol::InversionRouteDiagnostics &a,
+                                const atx::vol::InversionRouteDiagnostics &b, const char *label) {
   EXPECT_EQ(a.n_proposed, b.n_proposed) << label;
   EXPECT_EQ(a.n_audited, b.n_audited) << label;
   EXPECT_EQ(a.n_accepted, b.n_accepted) << label;
@@ -154,8 +156,8 @@ void expect_route_bit_identical(const atx::vol::InversionRouteDiagnostics& a,
   EXPECT_EQ(a.max_residual_half_spreads, b.max_residual_half_spreads) << label;
 }
 
-void expect_inversion_bit_identical(const atx::vol::DeAmAuditDiagnostics& a,
-                                    const atx::vol::DeAmAuditDiagnostics& b) {
+void expect_inversion_bit_identical(const atx::vol::DeAmAuditDiagnostics &a,
+                                    const atx::vol::DeAmAuditDiagnostics &b) {
   expect_route_bit_identical(a.shortcut, b.shortcut, "shortcut");
   expect_route_bit_identical(a.cache, b.cache, "cache");
   expect_route_bit_identical(a.fast, b.fast, "fast");
@@ -169,8 +171,8 @@ void expect_inversion_bit_identical(const atx::vol::DeAmAuditDiagnostics& a,
   EXPECT_EQ(a.n_deam_accepted, b.n_deam_accepted);
 }
 
-void expect_carry_bit_identical(const atx::vol::SessionCarryDiagnostics& a,
-                                const atx::vol::SessionCarryDiagnostics& b) {
+void expect_carry_bit_identical(const atx::vol::SessionCarryDiagnostics &a,
+                                const atx::vol::SessionCarryDiagnostics &b) {
   EXPECT_EQ(a.n_candidates, b.n_candidates);
   EXPECT_EQ(a.n_attempted, b.n_attempted);
   EXPECT_EQ(a.n_solved, b.n_solved);
@@ -184,9 +186,8 @@ void expect_carry_bit_identical(const atx::vol::SessionCarryDiagnostics& a,
   EXPECT_EQ(a.confident, b.confident);
 }
 
-void expect_slice_diagnostics_bit_identical(
-    std::span<const atx::vol::SessionSliceDiagnostics> a,
-    std::span<const atx::vol::SessionSliceDiagnostics> b) {
+void expect_slice_diagnostics_bit_identical(std::span<const atx::vol::SessionSliceDiagnostics> a,
+                                            std::span<const atx::vol::SessionSliceDiagnostics> b) {
   ASSERT_EQ(a.size(), b.size());
   for (std::size_t i = 0; i < a.size(); ++i) {
     SCOPED_TRACE("slice " + std::to_string(i));
@@ -198,8 +199,8 @@ void expect_slice_diagnostics_bit_identical(
   }
 }
 
-void expect_session_diagnostics_bit_identical(const atx::vol::SessionDiagnostics& a,
-                                              const atx::vol::SessionDiagnostics& b) {
+void expect_session_diagnostics_bit_identical(const atx::vol::SessionDiagnostics &a,
+                                              const atx::vol::SessionDiagnostics &b) {
   EXPECT_EQ(a.worst_frac_within_bidask, b.worst_frac_within_bidask);
   EXPECT_EQ(a.mean_frac_within_bidask, b.mean_frac_within_bidask);
   EXPECT_EQ(a.mean_chi2_reduced, b.mean_chi2_reduced);
@@ -315,9 +316,10 @@ TEST_F(PricerFitterTest, QuoteRevisionsAdvanceOnlyForValidTouchedExpiries) {
   const OptionId first = chain.ids().front();
   const auto quote = chain.at(first);
   ASSERT_TRUE(quote.has_value());
-  ASSERT_TRUE(chain.update_quotes(std::span<const OptionId>{&first, 1u},
-                                  std::span<const double>{&quote->bid, 1u},
-                                  std::span<const double>{&quote->ask, 1u})
+  ASSERT_TRUE(chain
+                  .update_quotes(std::span<const OptionId>{&first, 1u},
+                                 std::span<const double>{&quote->bid, 1u},
+                                 std::span<const double>{&quote->ask, 1u})
                   .has_value());
   EXPECT_EQ(chain.quote_revision(), 1u);
   const atx::vol::ExpiryId touched = atx::vol::cid_expiry(first);
@@ -328,9 +330,10 @@ TEST_F(PricerFitterTest, QuoteRevisionsAdvanceOnlyForValidTouchedExpiries) {
   const OptionId invalid{0u};
   const double bid = 1.0;
   const double ask = 1.1;
-  ASSERT_TRUE(chain.update_quotes(std::span<const OptionId>{&invalid, 1u},
-                                  std::span<const double>{&bid, 1u},
-                                  std::span<const double>{&ask, 1u})
+  ASSERT_TRUE(chain
+                  .update_quotes(std::span<const OptionId>{&invalid, 1u},
+                                 std::span<const double>{&bid, 1u},
+                                 std::span<const double>{&ask, 1u})
                   .has_value());
   EXPECT_EQ(chain.quote_revision(), 1u);
 }
@@ -390,7 +393,7 @@ TEST_F(PricerFitterTest, RefitRecomputesParityStateConsistentWithReports) {
   EXPECT_EQ(fitter.surface()->diagnostics().parity_state, atx::vol::ParityDiagnosticState::Valid);
   double worst = std::numeric_limits<double>::infinity();
   std::size_t scored = 0;
-  for (const atx::vol::ParityReport& p : fitter.surface()->session().parity()) {
+  for (const atx::vol::ParityReport &p : fitter.surface()->session().parity()) {
     EXPECT_GT(p.n, 0u);
     if (p.n > 0u) {
       worst = std::min(worst, p.frac_fv_within_bidask);
@@ -409,7 +412,9 @@ TEST_F(PricerFitterTest, IncrementalEssviAgreesWithColdFitOnUpdatedBoard) {
 
   PricerFitter incremental{essvi_config()};
   ASSERT_TRUE(incremental.fit(*chain_).has_value());
-  EXPECT_FALSE(incremental.surface()->session().inputs().use_deam_cache_for_fit);
+  // Fast/Robust presets now reuse certified de-Americanization proposals by
+  // default; the cold-fit comparison below is the economic correctness guard.
+  EXPECT_TRUE(incremental.surface()->session().inputs().use_deam_cache_for_fit);
   EXPECT_NE(incremental.surface()->session().correction_caches().call, nullptr);
   EXPECT_NE(incremental.surface()->session().correction_caches().put, nullptr);
   const atx::vol::ExpiryId target =
@@ -433,17 +438,16 @@ TEST_F(PricerFitterTest, RefitExplicitlyRejectsConfiguredCalendarRepairModes) {
     config.admission.consumer = atx::vol::SurfaceConsumer::Mark;
     config.admission.require_calendar_arb_free = false;
     PricerFitter fitter{config};
-    ASSERT_TRUE(fitter
-                    .fit(*chain_, [repair](atx::vol::SessionInputs &inputs) {
-                      inputs.calendar_repair = repair;
-                    })
-                    .has_value());
+    ASSERT_TRUE(
+        fitter
+            .fit(*chain_,
+                 [repair](atx::vol::SessionInputs &inputs) { inputs.calendar_repair = repair; })
+            .has_value());
     const FittedSurface *const published_surface = fitter.surface();
     ASSERT_TRUE(fitter.published_report().has_value());
     const std::size_t published_attempts = fitter.published_report()->attempts.size();
     ASSERT_TRUE(fitter.published_provenance().has_value());
-    const atx::vol::FitSnapshotProvenance published_provenance =
-        *fitter.published_provenance();
+    const atx::vol::FitSnapshotProvenance published_provenance = *fitter.published_provenance();
 
     const auto rejected = fitter.refit_expiry(*chain_, 0u);
     ASSERT_FALSE(rejected.has_value());
@@ -455,8 +459,7 @@ TEST_F(PricerFitterTest, RefitExplicitlyRejectsConfiguredCalendarRepairModes) {
     ASSERT_TRUE(fitter.published_provenance().has_value());
     EXPECT_EQ(fitter.published_provenance()->chain_instance_id,
               published_provenance.chain_instance_id);
-    EXPECT_EQ(fitter.published_provenance()->board_revision,
-              published_provenance.board_revision);
+    EXPECT_EQ(fitter.published_provenance()->board_revision, published_provenance.board_revision);
     EXPECT_EQ(fitter.published_provenance()->expiry_revisions,
               published_provenance.expiry_revisions);
     ASSERT_TRUE(fitter.last_attempt_report().has_value());
@@ -489,8 +492,7 @@ TEST_F(PricerFitterTest, CrossingMiddleExpiryRefitIsRejectedAndPreservesPublicat
   ASSERT_TRUE(stressed_chain.has_value()) << stressed_chain.error().to_string();
   replace_expiry_quotes(*chain_, *stressed_chain, static_cast<atx::vol::ExpiryId>(kMiddle));
 
-  const auto rejected =
-      fitter.refit_expiry(*chain_, static_cast<atx::vol::ExpiryId>(kMiddle));
+  const auto rejected = fitter.refit_expiry(*chain_, static_cast<atx::vol::ExpiryId>(kMiddle));
   ASSERT_FALSE(rejected.has_value());
   EXPECT_EQ(fitter.surface(), published);
   EXPECT_DOUBLE_EQ(fitter.surface()->diagnostics().worst_frac_within_bidask,
@@ -505,10 +507,10 @@ TEST_F(PricerFitterTest, CrossingMiddleExpiryRefitIsRejectedAndPreservesPublicat
   const auto &admission = fitter.last_attempt_report()->attempts.back().admission;
   EXPECT_TRUE(atx::vol::has_admission_failure(
                   admission, atx::vol::SurfaceAdmissionReason::CalendarTotalVariance) ||
-              atx::vol::has_admission_failure(
-                  admission, atx::vol::SurfaceAdmissionReason::ForwardVariance) ||
-              atx::vol::has_admission_failure(
-                  admission, atx::vol::SurfaceAdmissionReason::CalendarArbitrage));
+              atx::vol::has_admission_failure(admission,
+                                              atx::vol::SurfaceAdmissionReason::ForwardVariance) ||
+              atx::vol::has_admission_failure(admission,
+                                              atx::vol::SurfaceAdmissionReason::CalendarArbitrage));
 }
 
 TEST_F(PricerFitterTest, RefitRejectsDirtyNonTargetExpiryTransactionally) {
@@ -554,11 +556,12 @@ TEST_F(PricerFitterTest, RefitConsumesResolvedOverlayInputs) {
 
   PricerFitter fitter{essvi_config()};
   ASSERT_TRUE(fitter
-                  .fit(*chain_, [](atx::vol::SessionInputs &inputs) {
-                    inputs.band_k = 1.75;
-                    inputs.deam.iv_tol = 2.0e-6;
-                    inputs.use_correction_cache = false;
-                  })
+                  .fit(*chain_,
+                       [](atx::vol::SessionInputs &inputs) {
+                         inputs.band_k = 1.75;
+                         inputs.deam.iv_tol = 2.0e-6;
+                         inputs.use_correction_cache = false;
+                       })
                   .has_value());
   const atx::vol::ExpiryId target =
       static_cast<atx::vol::ExpiryId>(chain_->underlying().chains.size() - 1u);
@@ -609,10 +612,12 @@ TEST_F(PricerFitterTest, LocalRiskRefitPublishesCopyOnWriteGeneration) {
   for (const OptionId id : chain_->ids()) {
     const auto option = chain_->at(id);
     ASSERT_TRUE(option.has_value());
-    if (std::fabs(option->T - target_T) > 1.0e-12) continue;
+    if (std::fabs(option->T - target_T) > 1.0e-12)
+      continue;
     const std::size_t quote_idx =
         atx::vol::chain_index(atx::vol::cid_strike_idx(id), atx::vol::cid_side(id));
-    if (chain_->underlying().chains.front().flags[quote_idx] != 0u) continue;
+    if (chain_->underlying().chains.front().flags[quote_idx] != 0u)
+      continue;
     const double half_spread = 0.45 * (option->ask - option->bid);
     ids.push_back(id);
     bids.push_back(std::max(0.0, option->mid - half_spread));
@@ -625,8 +630,7 @@ TEST_F(PricerFitterTest, LocalRiskRefitPublishesCopyOnWriteGeneration) {
   // the certified observation cache must REFUSE reuse and route the refit
   // through the full recompute path (which re-resolves carry and re-audits).
   const auto cached =
-      before.risk->session().cached_refit_observations(
-          chain_->underlying().chains.front(), 0u);
+      before.risk->session().cached_refit_observations(chain_->underlying().chains.front(), 0u);
   ASSERT_FALSE(cached.has_value())
       << "carry-pair spread change must invalidate the certified cache";
   ASSERT_TRUE(fitter.refit_risk_slice(*chain_, 0u).has_value());
@@ -675,7 +679,7 @@ TEST_F(PricerFitterTest, SessionBoundaryRejectsUnsupportedPersistedCalibrationPo
   residual.residual_basis_kind = atx::vol::ResidualBasisKind::Fengler;
   unsupported.push_back(residual);
 
-  for (const atx::vol::CalibOpts& opts : unsupported) {
+  for (const atx::vol::CalibOpts &opts : unsupported) {
     atx::vol::SessionInputs inputs =
         atx::vol::make_session_inputs(FitPreset::Fast, spot_, r_, chain_->now_ns());
     inputs.calib = opts;
@@ -702,7 +706,7 @@ TEST_F(PricerFitterTest, GenericParityOptOutCannotPublishRiskButCanPublishMark) 
   ASSERT_FALSE(risk_status.has_value());
   ASSERT_TRUE(risk_fitter.last_attempt_report().has_value());
   ASSERT_FALSE(risk_fitter.last_attempt_report()->attempts.empty());
-  const auto& risk_attempt = risk_fitter.last_attempt_report()->attempts.front();
+  const auto &risk_attempt = risk_fitter.last_attempt_report()->attempts.front();
   EXPECT_EQ(risk_attempt.evidence.parity_state, atx::vol::ParityDiagnosticState::Disabled);
   EXPECT_TRUE(atx::vol::has_admission_failure(
       risk_attempt.admission, atx::vol::SurfaceAdmissionReason::DiagnosticsUnavailable));
@@ -722,8 +726,7 @@ TEST_F(PricerFitterTest, PinnedEssviStillScoresParityWhenGenericScoreFlagIsFalse
   config.score_parity = false;
   PricerFitter fitter{config};
   ASSERT_TRUE(fitter.fit(*chain_).has_value());
-  EXPECT_EQ(fitter.surface()->diagnostics().parity_state,
-            atx::vol::ParityDiagnosticState::Valid);
+  EXPECT_EQ(fitter.surface()->diagnostics().parity_state, atx::vol::ParityDiagnosticState::Valid);
   const std::span<const atx::vol::ParityReport> parity = fitter.surface()->session().parity();
   ASSERT_FALSE(parity.empty());
   for (const atx::vol::ParityReport &report : parity) {
@@ -779,6 +782,154 @@ TEST_F(PricerFitterTest, ValueChainThreadCountDeterminism) {
     EXPECT_TRUE(same(a.greeks[i].delta, b.greeks[i].delta));
     EXPECT_TRUE(same(a.greeks[i].vega, b.greeks[i].vega));
   }
+  EXPECT_EQ(a.n_bid_unset, b.n_bid_unset);
+  EXPECT_EQ(a.n_ask_unset, b.n_ask_unset);
+  EXPECT_EQ(a.n_bid_iv_fail, b.n_bid_iv_fail);
+  EXPECT_EQ(a.n_ask_iv_fail, b.n_ask_iv_fail);
+}
+
+TEST(PricerFitterValueChain, SameExpiryChunksRemainBitIdenticalAcrossWorkers) {
+  SynthPanelSpec spec = make_spy_synthetic_spec();
+  spec.strikes.clear();
+  for (double strike = 540.0; strike <= 660.0 + 1.0e-9; strike += 1.5) {
+    spec.strikes.push_back(strike);
+  }
+  auto chain = make_chain_from_spec(spec);
+  ASSERT_TRUE(chain.has_value()) << chain.error().message();
+  const std::vector<OptionId> dense_ids = chain->ids();
+  const std::size_t first_expiry_rows =
+      static_cast<std::size_t>(std::count_if(dense_ids.begin(), dense_ids.end(), [](OptionId id) {
+        return atx::vol::cid_expiry(id) == 0u;
+      }));
+  ASSERT_GT(first_expiry_rows, 128u); // force at least two same-T work chunks
+
+  PricerConfig config{.preset = FitPreset::Hft, .use_correction_cache = true};
+  config.query_pricing_tier = QueryPricingTier::RepresentativeFast;
+  PricerFitter fitter{config};
+  ASSERT_TRUE(fitter.fit(*chain).has_value());
+
+  const auto serial = fitter.value_chain(*chain, OutputField::All, 1u);
+  const auto parallel = fitter.value_chain(*chain, OutputField::All, 8u);
+  ASSERT_TRUE(serial.has_value()) << serial.error().message();
+  ASSERT_TRUE(parallel.has_value()) << parallel.error().message();
+  ASSERT_EQ(serial->size(), parallel->size());
+  for (std::size_t i = 0u; i < serial->size(); ++i) {
+    EXPECT_EQ(serial->ids[i], parallel->ids[i]);
+    EXPECT_TRUE(same(serial->model_iv[i], parallel->model_iv[i]));
+    EXPECT_TRUE(same(serial->model_price[i], parallel->model_price[i]));
+    EXPECT_TRUE(same(serial->bid_iv[i], parallel->bid_iv[i]));
+    EXPECT_TRUE(same(serial->ask_iv[i], parallel->ask_iv[i]));
+    EXPECT_TRUE(same(serial->mid_iv[i], parallel->mid_iv[i]));
+    EXPECT_TRUE(same(serial->greeks[i].price, parallel->greeks[i].price));
+    EXPECT_TRUE(same(serial->greeks[i].delta, parallel->greeks[i].delta));
+    EXPECT_TRUE(same(serial->greeks[i].gamma, parallel->greeks[i].gamma));
+    EXPECT_TRUE(same(serial->greeks[i].vega, parallel->greeks[i].vega));
+    EXPECT_TRUE(same(serial->greeks[i].theta, parallel->greeks[i].theta));
+    EXPECT_TRUE(same(serial->greeks[i].rho, parallel->greeks[i].rho));
+    EXPECT_TRUE(same(serial->greeks[i].vanna, parallel->greeks[i].vanna));
+    EXPECT_TRUE(same(serial->greeks[i].volga, parallel->greeks[i].volga));
+    EXPECT_TRUE(same(serial->greeks[i].charm, parallel->greeks[i].charm));
+  }
+  EXPECT_EQ(serial->n_bid_unset, parallel->n_bid_unset);
+  EXPECT_EQ(serial->n_ask_unset, parallel->n_ask_unset);
+  EXPECT_EQ(serial->n_bid_iv_fail, parallel->n_bid_iv_fail);
+  EXPECT_EQ(serial->n_ask_iv_fail, parallel->n_ask_iv_fail);
+}
+
+TEST_F(PricerFitterTest, ValueChainSelectedIdsMatchesFullChainRowsInCallerOrder) {
+  PricerFitter fitter{PricerConfig{.preset = FitPreset::Fast}};
+  ASSERT_TRUE(fitter.fit(*chain_).has_value());
+  const std::vector<OptionId> all_ids = chain_->ids();
+  ASSERT_GE(all_ids.size(), 6u);
+  const std::vector<OptionId> selected{all_ids[5], all_ids[1], all_ids[5]};
+  constexpr OutputField fields = OutputField::ModelIV | OutputField::MidIV;
+
+  const auto full = fitter.value_chain(*chain_, fields, 1);
+  const auto dirty = fitter.value_chain(*chain_, std::span<const OptionId>(selected), fields, 8);
+
+  ASSERT_TRUE(full.has_value()) << full.error().message();
+  ASSERT_TRUE(dirty.has_value()) << dirty.error().message();
+  ASSERT_EQ(dirty->ids, selected);
+  ASSERT_EQ(dirty->model_iv.size(), selected.size());
+  ASSERT_EQ(dirty->mid_iv.size(), selected.size());
+  EXPECT_TRUE(dirty->model_price.empty());
+  EXPECT_TRUE(dirty->greeks.empty());
+  for (std::size_t i = 0u; i < selected.size(); ++i) {
+    const auto full_row = full->row_of(selected[i]);
+    ASSERT_TRUE(full_row.has_value());
+    EXPECT_TRUE(same(dirty->model_iv[i], full->model_iv[*full_row]));
+    EXPECT_TRUE(same(dirty->mid_iv[i], full->mid_iv[*full_row]));
+  }
+}
+
+TEST_F(PricerFitterTest, ValueChainSelectedIdsRejectsUnknownId) {
+  PricerFitter fitter{PricerConfig{.preset = FitPreset::Fast}};
+  ASSERT_TRUE(fitter.fit(*chain_).has_value());
+  const OptionId invalid{0u};
+
+  const auto valued =
+      fitter.value_chain(*chain_, std::span<const OptionId>{&invalid, 1u}, OutputField::MidIV, 1);
+
+  ASSERT_FALSE(valued.has_value());
+  EXPECT_EQ(valued.error().code(), atx::core::ErrorCode::NotFound);
+}
+
+TEST_F(PricerFitterTest, ValueChainSelectedIdsAcceptsEmptySelection) {
+  PricerFitter fitter{PricerConfig{.preset = FitPreset::Fast}};
+  ASSERT_TRUE(fitter.fit(*chain_).has_value());
+
+  const auto valued =
+      fitter.value_chain(*chain_, std::span<const OptionId>{}, OutputField::Bands, 1);
+
+  ASSERT_TRUE(valued.has_value()) << valued.error().message();
+  EXPECT_EQ(valued->size(), 0u);
+  EXPECT_TRUE(valued->bid_iv.empty());
+  EXPECT_TRUE(valued->ask_iv.empty());
+  EXPECT_TRUE(valued->mid_iv.empty());
+  EXPECT_EQ(valued->n_bid_unset, 0u);
+  EXPECT_EQ(valued->n_ask_unset, 0u);
+}
+
+TEST_F(PricerFitterTest, ChainSelectedSnapshotPreservesRequestedOrderAndDuplicates) {
+  const OptionChain &chain = *chain_;
+  const std::vector<OptionId> all_ids = chain.ids();
+  ASSERT_GE(all_ids.size(), 4u);
+  const std::vector<OptionId> selected{all_ids[3], all_ids[0], all_ids[3]};
+
+  const auto snap = chain.snapshot(std::span<const OptionId>(selected));
+
+  ASSERT_TRUE(snap.has_value()) << snap.error().message();
+  ASSERT_EQ(snap->ids, selected);
+  ASSERT_EQ(snap->size(), selected.size());
+  for (std::size_t i = 0u; i < selected.size(); ++i) {
+    const auto ref = chain.at(selected[i]);
+    ASSERT_TRUE(ref.has_value());
+    EXPECT_DOUBLE_EQ(snap->T[i], ref->T);
+    EXPECT_DOUBLE_EQ(snap->strike[i], ref->strike);
+    EXPECT_DOUBLE_EQ(snap->bid[i], ref->bid);
+    EXPECT_DOUBLE_EQ(snap->ask[i], ref->ask);
+    EXPECT_DOUBLE_EQ(snap->mid[i], ref->mid);
+    EXPECT_EQ(snap->side[i], ref->side);
+  }
+}
+
+TEST_F(PricerFitterTest, ChainSelectedSnapshotRejectsForeignOrUnknownId) {
+  const OptionChain &chain = *chain_;
+  const OptionId invalid{0u};
+
+  const auto snap = chain.snapshot(std::span<const OptionId>{&invalid, 1u});
+
+  ASSERT_FALSE(snap.has_value());
+  EXPECT_EQ(snap.error().code(), atx::core::ErrorCode::NotFound);
+}
+
+TEST_F(PricerFitterTest, ChainSelectedSnapshotAcceptsEmptySelection) {
+  const OptionChain &chain = *chain_;
+
+  const auto snap = chain.snapshot(std::span<const OptionId>{});
+
+  ASSERT_TRUE(snap.has_value()) << snap.error().message();
+  EXPECT_EQ(snap->size(), 0u);
 }
 
 TEST_F(PricerFitterTest, ValueChainPopulatesOnlyRequestedFields) {
@@ -797,6 +948,122 @@ TEST_F(PricerFitterTest, ValueChainPopulatesOnlyRequestedFields) {
   EXPECT_FALSE(atx::vol::has(v.filled, OutputField::ModelPrice));
 }
 
+TEST_F(PricerFitterTest, ValueChainSeparatesUnsetSidesFromAttemptedInversionFailures) {
+  PricerFitter fitter{PricerConfig{.preset = FitPreset::Fast, .n_threads = 1}};
+  ASSERT_TRUE(fitter.fit(*chain_).has_value());
+
+  const auto baseline = fitter.value_chain(*chain_, OutputField::Bands, 1);
+  ASSERT_TRUE(baseline.has_value()) << baseline.error().to_string();
+
+  std::vector<OptionId> ids;
+  std::vector<double> bids;
+  std::vector<double> asks;
+  for (const OptionId id : chain_->ids()) {
+    const auto option = chain_->at(id);
+    ASSERT_TRUE(option.has_value());
+    const bool itm = option->side == Side::Call ? option->strike < spot_ : option->strike > spot_;
+    if (itm && ids.size() < 4u) {
+      ids.push_back(id);
+      bids.push_back(0.0);
+      asks.push_back(option->ask);
+    }
+  }
+  ASSERT_EQ(ids.size(), 4u);
+  ASSERT_TRUE(chain_->update_quotes(ids, bids, asks).has_value());
+
+  const auto unset = fitter.value_chain(*chain_, OutputField::Bands, 1);
+  ASSERT_TRUE(unset.has_value()) << unset.error().to_string();
+  EXPECT_EQ(unset->n_bid_unset, baseline->n_bid_unset + 4u);
+  EXPECT_EQ(unset->n_ask_unset, baseline->n_ask_unset);
+  EXPECT_EQ(unset->n_bid_iv_fail, baseline->n_bid_iv_fail);
+  const std::size_t bid_nans = static_cast<std::size_t>(std::count_if(
+      unset->bid_iv.begin(), unset->bid_iv.end(), [](double value) { return std::isnan(value); }));
+  EXPECT_EQ(bid_nans, unset->n_bid_unset + unset->n_bid_iv_fail);
+
+  const OptionId attempted_id = ids.front();
+  constexpr double kImpossiblePremium = 1.0e9;
+  const std::array<OptionId, 1> attempted_ids{attempted_id};
+  const std::array<double, 1> impossible_bids{kImpossiblePremium};
+  const std::array<double, 1> impossible_asks{kImpossiblePremium + 1.0};
+  ASSERT_TRUE(chain_->update_quotes(attempted_ids, impossible_bids, impossible_asks).has_value());
+  const auto attempted = fitter.value_chain(*chain_, OutputField::Bands, 1);
+  ASSERT_TRUE(attempted.has_value()) << attempted.error().to_string();
+  EXPECT_EQ(attempted->n_bid_unset, baseline->n_bid_unset + 3u);
+  EXPECT_EQ(attempted->n_ask_unset, baseline->n_ask_unset);
+  EXPECT_EQ(attempted->n_bid_iv_fail, baseline->n_bid_iv_fail + 1u);
+  EXPECT_EQ(attempted->n_ask_iv_fail, baseline->n_ask_iv_fail + 1u);
+}
+
+TEST_F(PricerFitterTest, ValueChainUnsetCountersAreThreadCountInvariant) {
+  PricerFitter fitter{PricerConfig{.preset = FitPreset::Fast}};
+  ASSERT_TRUE(fitter.fit(*chain_).has_value());
+
+  const auto baseline = fitter.value_chain(*chain_, OutputField::Bands, 1);
+  ASSERT_TRUE(baseline.has_value()) << baseline.error().to_string();
+
+  std::vector<OptionId> ids;
+  std::vector<double> bids;
+  std::vector<double> asks;
+  for (const OptionId id : chain_->ids()) {
+    const auto option = chain_->at(id);
+    ASSERT_TRUE(option.has_value());
+    if (ids.size() < 5u && std::isfinite(option->bid) && option->bid > 0.0) {
+      ids.push_back(id);
+      bids.push_back(0.0);
+      asks.push_back(option->ask);
+    }
+  }
+  ASSERT_EQ(ids.size(), 5u);
+  ASSERT_TRUE(chain_->update_quotes(ids, bids, asks).has_value());
+
+  const auto serial = fitter.value_chain(*chain_, OutputField::Bands, 1);
+  const auto parallel = fitter.value_chain(*chain_, OutputField::Bands, 4);
+  ASSERT_TRUE(serial.has_value());
+  ASSERT_TRUE(parallel.has_value());
+  EXPECT_EQ(serial->n_bid_unset, baseline->n_bid_unset + 5u);
+  EXPECT_EQ(serial->n_bid_unset, parallel->n_bid_unset);
+  EXPECT_EQ(serial->n_ask_unset, parallel->n_ask_unset);
+  EXPECT_EQ(serial->n_bid_iv_fail, parallel->n_bid_iv_fail);
+  EXPECT_EQ(serial->n_ask_iv_fail, parallel->n_ask_iv_fail);
+}
+
+TEST(ValueChain, DegenerateLegsCountBothRequestedSidesAsUnset) {
+  const SynthPanelSpec spec = make_spy_synthetic_spec();
+  auto panel = make_synthetic_american_panel(spec);
+  ASSERT_TRUE(panel.has_value()) << panel.error().message();
+  auto healthy = OptionChain::from_frame(panel->frame, spec.r, spec.spot);
+  ASSERT_TRUE(healthy.has_value()) << healthy.error().message();
+
+  PricerFitter fitter{PricerConfig{.preset = FitPreset::Fast, .n_threads = 1}};
+  ASSERT_TRUE(fitter.fit(*healthy).has_value());
+  const auto baseline = fitter.value_chain(*healthy, OutputField::Bands, 1);
+  ASSERT_TRUE(baseline.has_value());
+
+  atx::vol::QuoteFrame augmented = panel->frame;
+  atx::vol::QuoteRow call;
+  call.uid = spec.uid;
+  call.expiry_iso = spec.snapshot_iso;
+  call.strike = spec.spot;
+  call.side = Side::Call;
+  call.bid = 5.0;
+  call.ask = 5.5;
+  atx::vol::QuoteRow put = call;
+  put.side = Side::Put;
+  put.bid = 4.0;
+  put.ask = 4.5;
+  augmented.rows.push_back(call);
+  augmented.rows.push_back(put);
+
+  auto degenerate = OptionChain::from_frame(augmented, spec.r, spec.spot);
+  ASSERT_TRUE(degenerate.has_value()) << degenerate.error().message();
+  const auto valued = fitter.value_chain(*degenerate, OutputField::Bands, 1);
+  ASSERT_TRUE(valued.has_value()) << valued.error().to_string();
+  EXPECT_EQ(valued->n_bid_unset, baseline->n_bid_unset + 2u);
+  EXPECT_EQ(valued->n_ask_unset, baseline->n_ask_unset + 2u);
+  EXPECT_EQ(valued->n_bid_iv_fail, baseline->n_bid_iv_fail);
+  EXPECT_EQ(valued->n_ask_iv_fail, baseline->n_ask_iv_fail);
+}
+
 TEST_F(PricerFitterTest, HftUsesDirectLinearVarianceCurve) {
   PricerFitter fitter{PricerConfig{.preset = FitPreset::Hft}};
   ASSERT_TRUE(fitter.fit(*chain_).has_value());
@@ -804,6 +1071,72 @@ TEST_F(PricerFitterTest, HftUsesDirectLinearVarianceCurve) {
   ASSERT_TRUE(priced.has_value()) << priced.error().to_string();
   ASSERT_GT(priced->n_slices(), 0u);
   EXPECT_EQ(priced->kind_at(0), atx::vol::VolCurveKind::LinearVariance);
+  const VolaSession &session = fitter.surface()->session();
+  EXPECT_FALSE(
+      session.correction_blend_at(session.expiries().front().T, Side::Call).usable(Side::Call));
+}
+
+TEST_F(PricerFitterTest, HftQueryPricingTiersKeepColdAndRepresentativeDistinct) {
+  PricerConfig cold_config{.preset = FitPreset::Hft, .use_correction_cache = true};
+  cold_config.query_pricing_tier = QueryPricingTier::ColdReference;
+  PricerFitter cold{cold_config};
+  ASSERT_TRUE(cold.fit(*chain_).has_value());
+  const VolaSession &cold_session = cold.surface()->session();
+  EXPECT_FALSE(cold_session.correction_caches().any());
+  EXPECT_FALSE(cold_session.correction_blend_at(cold_session.expiries().front().T, Side::Put)
+                   .usable(Side::Put));
+
+  PricerConfig fast_config{.preset = FitPreset::Hft, .use_correction_cache = true};
+  fast_config.query_pricing_tier = QueryPricingTier::RepresentativeFast;
+  PricerFitter fast{fast_config};
+  ASSERT_TRUE(fast.fit(*chain_).has_value());
+  const VolaSession &fast_session = fast.surface()->session();
+  EXPECT_EQ(fast_session.query_cache_bank_size(), 0u);
+  const atx::vol::CorrectionBlend representative =
+      fast_session.correction_blend_at(fast_session.expiries().front().T, Side::Put);
+  EXPECT_TRUE(representative.usable(Side::Put));
+  EXPECT_EQ(representative.upper_weight, 0.0);
+}
+
+TEST_F(PricerFitterTest, HftCarryBankQueriesExplicitlyEnableBankedCacheServing) {
+  PricerConfig config{.preset = FitPreset::Hft, .use_correction_cache = true};
+  config.query_pricing_tier = QueryPricingTier::CarryBank;
+  PricerFitter fitter{config};
+  ASSERT_TRUE(fitter.fit(*chain_).has_value());
+
+  const VolaSession &session = fitter.surface()->session();
+  const atx::vol::AmericanCorrectionCaches caches = session.correction_caches();
+  ASSERT_NE(caches.call, nullptr);
+  ASSERT_NE(caches.put, nullptr);
+  EXPECT_EQ(session.inputs().query_pricing_tier, QueryPricingTier::CarryBank);
+  EXPECT_GT(session.query_cache_bank_size(), 0u);
+
+  const std::span<const atx::vol::SliceContext> expiries = session.expiries();
+  ASSERT_GE(expiries.size(), 2u);
+  for (const double endpoint_T : {expiries.front().T, expiries.back().T}) {
+    const atx::vol::CorrectionBlend endpoint = session.correction_blend_at(endpoint_T, Side::Call);
+    ASSERT_TRUE(endpoint.usable(Side::Call));
+    EXPECT_EQ(endpoint.upper_weight, 0.0);
+  }
+
+  const auto option = chain_->at(chain_->ids().front());
+  ASSERT_TRUE(option.has_value());
+  const auto price = session.fair_value(option->strike, option->T, option->side);
+  const auto greeks = session.greeks(option->strike, option->T, option->side);
+  ASSERT_TRUE(price.has_value()) << price.error().to_string();
+  ASSERT_TRUE(greeks.has_value()) << greeks.error().to_string();
+  EXPECT_NEAR(*price, greeks->price, 1.0e-12 * (1.0 + std::fabs(*price)));
+
+  const double between_T = 0.5 * (expiries[0].T + expiries[1].T);
+  const atx::vol::CorrectionBlend between = session.correction_blend_at(between_T, Side::Put);
+  ASSERT_TRUE(between.usable(Side::Put));
+  EXPECT_GE(between.upper_weight, 0.0);
+  EXPECT_LE(between.upper_weight, 1.0);
+  const auto between_price = session.fair_value(chain_->spot(), between_T, Side::Put);
+  const auto between_greeks = session.greeks(chain_->spot(), between_T, Side::Put);
+  ASSERT_TRUE(between_price.has_value()) << between_price.error().to_string();
+  ASSERT_TRUE(between_greeks.has_value()) << between_greeks.error().to_string();
+  EXPECT_NEAR(*between_price, between_greeks->price, 1.0e-12 * (1.0 + std::fabs(*between_price)));
 }
 
 // "A profile is a latency prior, not permission to drop an underlier." Every kind
@@ -1044,16 +1377,14 @@ TEST(PricerFitterPolicy, KnownTruthConvexRiskSurfaceReportsIndependentInvariantE
 // consumes the parallel de-Am prepass's already-computed per-slice carry +
 // inversion-audit diagnostics instead of a second, serial re-derivation. Prove
 // that dedup is behavior-preserving: fit the SAME SPY-dense board twice --
-// once with the de-Am prepass forced serial (ATX_VOL_FIT_WORKERS=1), once
-// auto (hardware_concurrency) -- and assert the certification diagnostics AND
+// once with PricerConfig::fit_workers forced serial, once auto
+// (hardware_concurrency) -- and assert the certification diagnostics AND
 // the admission outcome are bit-identical, per the S0-3
 // expect_per_expiry_bit_identical precedent. The default auto-routed policy
 // on this dense board serves BOTH a LinearVariance market mark and a
 // ConvexDense risk surface (see perf finding C1's profile), so this exercises
 // both curve-driver call sites the dedup touched.
 TEST(PricerFitterPolicy, CertificationAndAdmissionBitIdenticalAcrossFitWorkerCounts) {
-  FitWorkersEnvGuard env_guard;  // restores ATX_VOL_FIT_WORKERS on scope exit
-
   SynthPanelSpec spec = make_spy_synthetic_spec();
   auto panel = make_synthetic_american_panel(spec);
   ASSERT_TRUE(panel.has_value()) << panel.error().message();
@@ -1064,22 +1395,20 @@ TEST(PricerFitterPolicy, CertificationAndAdmissionBitIdenticalAcrossFitWorkerCou
   // surface (main's transactional fit; da718f7 "default serves marks"). The
   // dual mark+risk bundle this determinism check exercises is the explicit v2
   // opt-in, so request it explicitly here (quality_mode flips is_v2_request()).
-  const auto dual_config = [] {
+  const auto dual_config = [](unsigned fit_workers) {
     PricerConfig config;
     config.quality_mode = atx::vol::FitQualityMode::Latency;
     config.outputs = atx::vol::SurfaceOutputs::MarketMarkAndRisk;
+    config.fit_workers = fit_workers;
     return config;
   };
-  set_fit_workers_env("1");
-  ASSERT_EQ(atx::vol::atx_auto_worker_count(), 1u);
-  PricerFitter serial{dual_config()};
+  PricerFitter serial{dual_config(1u)};
   const auto t0 = std::chrono::steady_clock::now();
   ASSERT_TRUE(serial.fit(*chain).has_value());
   const auto t1 = std::chrono::steady_clock::now();
   const atx::vol::SurfaceBundle serial_bundle = serial.bundle();
 
-  unset_fit_workers_env();
-  PricerFitter parallel{dual_config()};
+  PricerFitter parallel{dual_config(0u)};
   const auto t2 = std::chrono::steady_clock::now();
   ASSERT_TRUE(parallel.fit(*chain).has_value());
   const auto t3 = std::chrono::steady_clock::now();
@@ -1091,10 +1420,9 @@ TEST(PricerFitterPolicy, CertificationAndAdmissionBitIdenticalAcrossFitWorkerCou
   // risk builds) with the de-Am prepass forced serial vs auto-parallel.
   const double ms_serial = std::chrono::duration<double, std::milli>(t1 - t0).count();
   const double ms_parallel = std::chrono::duration<double, std::milli>(t3 - t2).count();
-  std::printf(
-      "[PricerFitterPolicy SPY] fit_workers=1 %.1fms, fit_workers=0(auto) %.1fms, "
-      "speedup=%.2fx\n",
-      ms_serial, ms_parallel, (ms_parallel > 0.0) ? (ms_serial / ms_parallel) : 0.0);
+  std::printf("[PricerFitterPolicy SPY] fit_workers=1 %.1fms, fit_workers=0(auto) %.1fms, "
+              "speedup=%.2fx\n",
+              ms_serial, ms_parallel, (ms_parallel > 0.0) ? (ms_serial / ms_parallel) : 0.0);
 
   // Admission outcome: same health state + failure reasons for both surfaces.
   EXPECT_EQ(serial_bundle.market_mark_health.state, parallel_bundle.market_mark_health.state);
@@ -1107,6 +1435,10 @@ TEST(PricerFitterPolicy, CertificationAndAdmissionBitIdenticalAcrossFitWorkerCou
   ASSERT_NE(parallel_bundle.market_mark, nullptr);
   ASSERT_NE(serial_bundle.risk, nullptr);
   ASSERT_NE(parallel_bundle.risk, nullptr);
+  EXPECT_EQ(serial_bundle.market_mark->session().inputs().fit_workers, 1u);
+  EXPECT_EQ(serial_bundle.risk->session().inputs().fit_workers, 1u);
+  EXPECT_EQ(parallel_bundle.market_mark->session().inputs().fit_workers, 0u);
+  EXPECT_EQ(parallel_bundle.risk->session().inputs().fit_workers, 0u);
 
   {
     SCOPED_TRACE("market_mark");
@@ -1136,7 +1468,7 @@ TEST(PricerFitterPolicy, CertificationAndAdmissionBitIdenticalAcrossFitWorkerCou
 // distinctness assertion at the end is the in-suite regression tripwire for
 // the indexing bug (every slice reporting slice 0's carry).
 TEST(PricerFitterPolicy, EssviCertificationAndAdmissionBitIdenticalAcrossFitWorkerCounts) {
-  FitWorkersEnvGuard env_guard;  // restores ATX_VOL_FIT_WORKERS on scope exit
+  FitWorkersEnvGuard env_guard; // restores ATX_VOL_FIT_WORKERS on scope exit
 
   SynthPanelSpec spec = make_spy_synthetic_spec();
   auto panel = make_synthetic_american_panel(spec);
@@ -1171,9 +1503,8 @@ TEST(PricerFitterPolicy, EssviCertificationAndAdmissionBitIdenticalAcrossFitWork
   ASSERT_NE(parallel_bundle.risk, nullptr);
   expect_session_diagnostics_bit_identical(serial_bundle.risk->diagnostics(),
                                            parallel_bundle.risk->diagnostics());
-  expect_slice_diagnostics_bit_identical(
-      serial_bundle.risk->session().slice_diagnostics(),
-      parallel_bundle.risk->session().slice_diagnostics());
+  expect_slice_diagnostics_bit_identical(serial_bundle.risk->session().slice_diagnostics(),
+                                         parallel_bundle.risk->session().slice_diagnostics());
 
   // Regression tripwire for the review's Critical finding: with the indexing
   // bug every slice reported slice 0's carry — require at least two slices to
@@ -1231,9 +1562,9 @@ TEST_F(PricerFitterTest, RiskEssviRungServesOnlyAuditedInversions) {
   ASSERT_NE(bundle.risk, nullptr);
   EXPECT_EQ(bundle.risk_health.state, atx::vol::SurfaceState::Healthy);
 
-  const auto& session = bundle.risk->session();
+  const auto &session = bundle.risk->session();
   EXPECT_TRUE(session.inputs().deam.audit_fit_inversions);
-  const auto& diag = session.diagnostics();
+  const auto &diag = session.diagnostics();
   EXPECT_GT(diag.n_iv_proposed, std::size_t{0});
   EXPECT_EQ(diag.n_iv_audited, diag.n_iv_proposed);
   EXPECT_TRUE(diag.inversion_certified);
@@ -1259,7 +1590,8 @@ TEST_F(PricerFitterTest, CarryFailedExpiryPublishesDegradedWithCarryGap) {
   for (const OptionId id : chain_->ids()) {
     const auto option = chain_->at(id);
     ASSERT_TRUE(option.has_value());
-    if (std::fabs(option->T - bad_T) > 1.0e-12) continue;
+    if (std::fabs(option->T - bad_T) > 1.0e-12)
+      continue;
     ids.push_back(id);
     bids.push_back(2.0);
     asks.push_back(1.0);
@@ -1271,12 +1603,11 @@ TEST_F(PricerFitterTest, CarryFailedExpiryPublishesDegradedWithCarryGap) {
   const atx::vol::SurfaceBundle bundle = fitter.bundle();
   ASSERT_NE(bundle.risk, nullptr);
   EXPECT_EQ(bundle.risk_health.state, atx::vol::SurfaceState::Degraded);
-  EXPECT_TRUE(atx::vol::has_validation_failure(
-      bundle.risk_health.reasons, atx::vol::ValidationFailure::CarryGap));
+  EXPECT_TRUE(atx::vol::has_validation_failure(bundle.risk_health.reasons,
+                                               atx::vol::ValidationFailure::CarryGap));
   EXPECT_TRUE(bundle.risk_health.serving_candidate());
   EXPECT_FALSE(bundle.risk_health.using_fallback());
-  EXPECT_EQ(bundle.risk->session().diagnostics().n_carry_skipped_expiries,
-            std::size_t{1});
+  EXPECT_EQ(bundle.risk->session().diagnostics().n_carry_skipped_expiries, std::size_t{1});
 }
 
 // Task 2d follow-up (review I-1): a Degraded+CarryGap surface must STAY
@@ -1298,10 +1629,11 @@ TEST_F(PricerFitterTest, RefitKeepsCarryGapDegradedWhileExpiryStillMissing) {
   for (const OptionId id : chain_->ids()) {
     const auto option = chain_->at(id);
     ASSERT_TRUE(option.has_value());
-    if (std::fabs(option->T - bad_T) > 1.0e-12) continue;
+    if (std::fabs(option->T - bad_T) > 1.0e-12)
+      continue;
     ids.push_back(id);
     bids.push_back(2.0);
-    asks.push_back(1.0);  // crossed: carry fails for this expiry
+    asks.push_back(1.0); // crossed: carry fails for this expiry
   }
   ASSERT_FALSE(ids.empty());
   ASSERT_TRUE(chain_->update_quotes(ids, bids, asks).has_value());
@@ -1310,8 +1642,8 @@ TEST_F(PricerFitterTest, RefitKeepsCarryGapDegradedWhileExpiryStillMissing) {
   const atx::vol::SurfaceBundle gapped = fitter.bundle();
   ASSERT_NE(gapped.risk, nullptr);
   ASSERT_EQ(gapped.risk_health.state, atx::vol::SurfaceState::Degraded);
-  ASSERT_TRUE(atx::vol::has_validation_failure(
-      gapped.risk_health.reasons, atx::vol::ValidationFailure::CarryGap));
+  ASSERT_TRUE(atx::vol::has_validation_failure(gapped.risk_health.reasons,
+                                               atx::vol::ValidationFailure::CarryGap));
 
   // Local refit of a FITTED slice (index 0, untouched expiry) succeeds and
   // publishes a new generation — but the surface still misses the crossed
@@ -1321,11 +1653,10 @@ TEST_F(PricerFitterTest, RefitKeepsCarryGapDegradedWhileExpiryStillMissing) {
   ASSERT_NE(after.risk, nullptr);
   EXPECT_EQ(after.risk->generation(), gapped.risk->generation() + 1u);
   EXPECT_EQ(after.risk_health.state, atx::vol::SurfaceState::Degraded);
-  EXPECT_TRUE(atx::vol::has_validation_failure(
-      after.risk_health.reasons, atx::vol::ValidationFailure::CarryGap));
+  EXPECT_TRUE(atx::vol::has_validation_failure(after.risk_health.reasons,
+                                               atx::vol::ValidationFailure::CarryGap));
   EXPECT_TRUE(after.risk_health.serving_candidate());
-  EXPECT_EQ(after.risk->session().diagnostics().n_carry_skipped_expiries,
-            std::size_t{1});
+  EXPECT_EQ(after.risk->session().diagnostics().n_carry_skipped_expiries, std::size_t{1});
 }
 
 // rfx Task 3 review follow-up (oracle I-2): the ConvexDense served-price
@@ -1353,11 +1684,11 @@ TEST(RiskSurfaceAdmission, PriceBoundClampCountRejectsCandidateWithPriceBounds) 
   // A candidate the geometric oracle found clean, from a session whose only
   // defect is two served-price clamp events.
   SessionDiagnostics diagnostics;
-  diagnostics.carry_confident = true;      // isolate the price-bound path:
-  diagnostics.inversion_certified = true;  // no other non-geometric failure
+  diagnostics.carry_confident = true;     // isolate the price-bound path:
+  diagnostics.inversion_certified = true; // no other non-geometric failure
   diagnostics.n_price_bound_violations = 2;
 
-  ValidationDigest digest;  // geometrically clean (failures == None)
+  ValidationDigest digest; // geometrically clean (failures == None)
   ASSERT_TRUE(digest.admitted());
   merge_session_failure_context(diagnostics, digest);
   finalize_validation_digest(digest);
@@ -1369,8 +1700,7 @@ TEST(RiskSurfaceAdmission, PriceBoundClampCountRejectsCandidateWithPriceBounds) 
   const AdmissionDecision decision = decide_risk_surface_admission(
       digest, FitQualityMode::Balanced, 42, 41, SurfaceFallback::LastKnownGood);
   EXPECT_FALSE(decision.publish_candidate);
-  EXPECT_TRUE(has_validation_failure(decision.health.reasons,
-                                     ValidationFailure::PriceBounds));
+  EXPECT_TRUE(has_validation_failure(decision.health.reasons, ValidationFailure::PriceBounds));
   EXPECT_TRUE(decision.health.using_fallback());
   EXPECT_EQ(decision.health.state, SurfaceState::Degraded);
 

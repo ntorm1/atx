@@ -1,14 +1,18 @@
 #include "atx/vol/priced_surface.hpp"
 
 #include "atx/vol/american_batch.hpp" // exact resolved price-only batch
+#include "atx/vol/correction.hpp"
 #include "atx/vol/counters.hpp"
+#include "term_carry.hpp"
 
 #include <algorithm>
 #include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <future>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <utility>
@@ -53,6 +57,262 @@ template <class Input, class Output>
 
 } // namespace
 
+struct PricedSurface::QueryAccelerator {
+  struct Entry {
+    double T{0.0};
+    double rate{0.0};
+    double q_eff{0.0};
+    std::optional<CorrectionCache> call{};
+    std::optional<CorrectionCache> put{};
+  };
+
+  struct Domain {
+    double k_min{-0.75};
+    double k_max{0.75};
+    double T_min{0.0};
+    double T_max{0.0};
+    double sigma_min{0.05};
+    double sigma_max{1.50};
+  };
+
+  [[nodiscard]] static Domain domain_from(const PricedSurface &surface) noexcept {
+    Domain domain;
+    double node_k_min = std::numeric_limits<double>::infinity();
+    double node_k_max = -std::numeric_limits<double>::infinity();
+    for (const std::unique_ptr<IVolCurve> &curve : surface.surface_.slices()) {
+      if (curve->kind() == VolCurveKind::LinearVariance) {
+        const auto *linear = dynamic_cast<const LinearVarianceCurve *>(curve.get());
+        if (linear != nullptr) {
+          for (const double k : linear->k_nodes()) {
+            if (std::isfinite(k)) {
+              node_k_min = std::min(node_k_min, k);
+              node_k_max = std::max(node_k_max, k);
+            }
+          }
+        }
+      } else if (curve->kind() == VolCurveKind::ConvexDense) {
+        const auto *convex = dynamic_cast<const ConvexDenseCurve *>(curve.get());
+        if (convex != nullptr && convex->fit().F > 0.0) {
+          for (const double strike : convex->fit().u) {
+            if (strike > 0.0 && std::isfinite(strike)) {
+              const double k = std::log(strike / convex->fit().F);
+              node_k_min = std::min(node_k_min, k);
+              node_k_max = std::max(node_k_max, k);
+            }
+          }
+        }
+      }
+    }
+    if (std::isfinite(node_k_min) && std::isfinite(node_k_max) && node_k_max > node_k_min) {
+      domain.k_min = node_k_min - 0.05;
+      domain.k_max = node_k_max + 0.05;
+    }
+    const double first_T = surface.ctx_.front().T;
+    const double last_T = surface.ctx_.back().T;
+    domain.T_min = 0.9 * first_T;
+    domain.T_max = (last_T > first_T) ? 1.1 * last_T : 1.5 * first_T;
+    return domain;
+  }
+
+  [[nodiscard]] static Result<Entry> build_entry(const PricedSurface &surface, const Domain &domain,
+                                                 std::size_t context_index, bool parallel_sides) {
+    constexpr std::uint16_t kNK = 16;
+    constexpr std::uint16_t kNT = 8;
+    constexpr std::uint16_t kNS = 12;
+    const SliceContext &context = surface.ctx_[context_index];
+    Entry entry;
+    entry.T = context.T;
+    entry.rate = surface.rate_at(context.T);
+    entry.q_eff = context.q_eff;
+    const auto build_side = [&](Side side) {
+      return CorrectionCache::build(kNK, kNT, kNS, entry.rate, entry.q_eff, domain.k_min,
+                                    domain.k_max, domain.T_min, domain.T_max, domain.sigma_min,
+                                    domain.sigma_max, side,
+                                    std::optional<AlOpts>{surface.pricing_.al_opts});
+    };
+    std::future<Result<CorrectionCache>> put_future;
+    if (parallel_sides) {
+      put_future = std::async(std::launch::async, build_side, Side::Put);
+    }
+    auto call = build_side(Side::Call);
+    if (!call.has_value()) {
+      if (parallel_sides) {
+        (void)put_future.get();
+      }
+      return Err(call.error());
+    }
+    auto put = parallel_sides ? put_future.get() : build_side(Side::Put);
+    if (!put.has_value()) {
+      return Err(put.error());
+    }
+    entry.call = std::move(*call);
+    entry.put = std::move(*put);
+    return Ok(std::move(entry));
+  }
+
+  [[nodiscard]] static std::size_t representative_index(const PricedSurface &surface) noexcept {
+    std::size_t best = 0u;
+    double best_score = std::numeric_limits<double>::infinity();
+    for (std::size_t candidate = 0u; candidate < surface.ctx_.size(); ++candidate) {
+      const double candidate_rate = surface.rate_at(surface.ctx_[candidate].T);
+      double score = 0.0;
+      for (std::size_t peer = 0u; peer < surface.ctx_.size(); ++peer) {
+        const double weight =
+            static_cast<double>(std::max<std::size_t>(1u, surface.ctx_[peer].n_used));
+        score += weight * (std::fabs(candidate_rate - surface.rate_at(surface.ctx_[peer].T)) +
+                           std::fabs(surface.ctx_[candidate].q_eff - surface.ctx_[peer].q_eff));
+      }
+      if (score < best_score) {
+        best = candidate;
+        best_score = score;
+      }
+    }
+    return best;
+  }
+
+  [[nodiscard]] static std::vector<std::size_t> bank_indices(const PricedSurface &surface) {
+    constexpr std::size_t kMaxCarryCenters = 16u;
+    const std::size_t target = std::min(kMaxCarryCenters, surface.ctx_.size());
+    std::vector<std::size_t> selected{0u};
+    selected.reserve(target);
+    while (selected.size() < target) {
+      std::size_t farthest = surface.ctx_.size();
+      double farthest_distance = 0.0;
+      for (std::size_t candidate = 0u; candidate < surface.ctx_.size(); ++candidate) {
+        if (std::find(selected.begin(), selected.end(), candidate) != selected.end()) {
+          continue;
+        }
+        const double candidate_rate = surface.rate_at(surface.ctx_[candidate].T);
+        double nearest = std::numeric_limits<double>::infinity();
+        for (const std::size_t chosen : selected) {
+          const double distance =
+              std::fabs(candidate_rate - surface.rate_at(surface.ctx_[chosen].T)) +
+              std::fabs(surface.ctx_[candidate].q_eff - surface.ctx_[chosen].q_eff);
+          nearest = std::min(nearest, distance);
+        }
+        if (nearest > farthest_distance) {
+          farthest = candidate;
+          farthest_distance = nearest;
+        }
+      }
+      if (farthest == surface.ctx_.size() || !(farthest_distance > 0.0)) {
+        break;
+      }
+      selected.push_back(farthest);
+    }
+    std::sort(selected.begin(), selected.end());
+    return selected;
+  }
+
+  [[nodiscard]] static Result<std::unique_ptr<QueryAccelerator>> build(const PricedSurface &surface,
+                                                                       QueryPricingTier tier) {
+    auto accelerator = std::make_unique<QueryAccelerator>();
+    const Domain domain = domain_from(surface);
+    std::vector<std::size_t> indices;
+    if (tier == QueryPricingTier::RepresentativeFast) {
+      indices.push_back(representative_index(surface));
+    } else {
+      indices = bank_indices(surface);
+    }
+    accelerator->entries.reserve(indices.size());
+    if (indices.size() == 1u) {
+      auto entry = build_entry(surface, domain, indices.front(), true);
+      if (!entry.has_value()) {
+        return Err(entry.error());
+      }
+      accelerator->entries.push_back(std::move(*entry));
+    } else {
+      // Centers are independent immutable derived state. Gather index-stable
+      // futures in order so the bank and first reported error stay deterministic.
+      std::vector<std::future<Result<Entry>>> futures;
+      futures.reserve(indices.size());
+      for (const std::size_t index : indices) {
+        futures.push_back(std::async(std::launch::async, [&surface, domain, index] {
+          return build_entry(surface, domain, index, false);
+        }));
+      }
+      for (std::future<Result<Entry>> &future : futures) {
+        auto entry = future.get();
+        if (!entry.has_value()) {
+          return Err(entry.error());
+        }
+        accelerator->entries.push_back(std::move(*entry));
+      }
+    }
+    if (accelerator->entries.empty()) {
+      return Err(ErrorCode::InvalidArgument,
+                 "PricedSurface::with_query_pricing: no usable cache centers");
+    }
+    return Ok(std::move(accelerator));
+  }
+
+  [[nodiscard]] const CorrectionCache *cache_for(const Entry &entry, Side side) const noexcept {
+    if (side == Side::Call) {
+      return entry.call.has_value() ? &*entry.call : nullptr;
+    }
+    return entry.put.has_value() ? &*entry.put : nullptr;
+  }
+
+  [[nodiscard]] CorrectionBlend blend_at(const ResolvedSurfacePoint &point, Side side,
+                                         QueryPricingTier tier) const noexcept {
+    if (entries.empty()) {
+      return {};
+    }
+    const auto usable_single = [&](const Entry &entry) noexcept {
+      const CorrectionCache *cache = cache_for(entry, side);
+      return cache != nullptr && cache->contains(point.k_log, point.T, point.sigma)
+                 ? CorrectionBlend::single(cache)
+                 : CorrectionBlend{};
+    };
+    if (tier == QueryPricingTier::RepresentativeFast || entries.size() == 1u) {
+      return usable_single(entries.front());
+    }
+    const auto upper = std::lower_bound(
+        entries.begin(), entries.end(), point.T,
+        [](const Entry &entry, double maturity) noexcept { return entry.T < maturity; });
+    if (upper == entries.begin()) {
+      return usable_single(*upper);
+    }
+    if (upper == entries.end()) {
+      return usable_single(entries.back());
+    }
+    if (upper->T == point.T) {
+      return usable_single(*upper);
+    }
+
+    const Entry &hi = *upper;
+    const Entry &lo = *(upper - 1);
+    const CorrectionCache *lo_cache = cache_for(lo, side);
+    const CorrectionCache *hi_cache = cache_for(hi, side);
+    if (lo_cache == nullptr || hi_cache == nullptr ||
+        !lo_cache->contains(point.k_log, point.T, point.sigma) ||
+        !hi_cache->contains(point.k_log, point.T, point.sigma)) {
+      return {};
+    }
+    const double dr = hi.rate - lo.rate;
+    const double dq = hi.q_eff - lo.q_eff;
+    const double norm2 = dr * dr + dq * dq;
+    if (!(norm2 > 0.0) || !std::isfinite(norm2)) {
+      return CorrectionBlend::single(lo_cache);
+    }
+    const double projection = ((point.rate - lo.rate) * dr + (point.q_eff - lo.q_eff) * dq) / norm2;
+    const double upper_weight = std::clamp(projection, 0.0, 1.0);
+    if (upper_weight == 0.0) {
+      return CorrectionBlend::single(lo_cache);
+    }
+    if (upper_weight == 1.0) {
+      return CorrectionBlend::single(hi_cache);
+    }
+    return CorrectionBlend{lo_cache, hi_cache, upper_weight};
+  }
+
+  std::vector<Entry> entries;
+};
+
+PricedSurface::~PricedSurface() = default;
+PricedSurface::PricedSurface(PricedSurface &&) noexcept = default;
+PricedSurface &PricedSurface::operator=(PricedSurface &&) noexcept = default;
+
 PricedSurface::PricedSurface(CurveSurface &&surface, std::vector<SliceContext> &&ctx,
                              const PricingContext &pricing) noexcept
     : surface_{std::move(surface)}, ctx_{std::move(ctx)}, pricing_{pricing} {
@@ -83,12 +343,64 @@ Result<PricedSurface> PricedSurface::create(CurveSurface &&surface,
                  "PricedSurface::create: slice T's not strictly ascending");
     }
   }
+  for (const SliceContext &slice : context) {
+    if (!(slice.T > 0.0) || !std::isfinite(slice.T) || !(slice.forward > 0.0) ||
+        !std::isfinite(slice.forward) || !std::isfinite(slice.q_eff)) {
+      return Err(ErrorCode::InvalidArgument, "PricedSurface::create: invalid slice carry context");
+    }
+  }
   return PricedSurface{std::move(surface), std::move(context), pricing};
+}
+
+Result<PricedSurface> PricedSurface::with_query_pricing(QueryPricingTier tier) && {
+  switch (tier) {
+  case QueryPricingTier::LegacyCompatible:
+  case QueryPricingTier::ColdReference:
+    query_pricing_tier_ = tier;
+    query_accelerator_.reset();
+    return Ok(std::move(*this));
+  case QueryPricingTier::RepresentativeFast:
+  case QueryPricingTier::CarryBank:
+    break;
+  }
+  if (pricing_.method != AmericanMethod::AndersenLake) {
+    return Err(ErrorCode::InvalidArgument,
+               "PricedSurface::with_query_pricing: fast tiers require Andersen-Lake");
+  }
+  auto accelerator = QueryAccelerator::build(*this, tier);
+  if (!accelerator.has_value()) {
+    return Err(accelerator.error());
+  }
+  query_accelerator_ = std::move(*accelerator);
+  query_pricing_tier_ = tier;
+  return Ok(std::move(*this));
+}
+
+std::size_t PricedSurface::query_cache_pair_count() const noexcept {
+  return query_accelerator_ != nullptr ? query_accelerator_->entries.size() : 0u;
+}
+
+QueryPricingRoute PricedSurface::query_pricing_route(double K, double T, Side side) const noexcept {
+  if (query_pricing_tier_ == QueryPricingTier::LegacyCompatible ||
+      query_pricing_tier_ == QueryPricingTier::ColdReference) {
+    return QueryPricingRoute::ColdReference;
+  }
+  const ResolvedSurfacePoint point = resolve(K, T);
+  if (!point.valid || query_accelerator_ == nullptr) {
+    return QueryPricingRoute::ColdFallback;
+  }
+  const CorrectionBlend correction = query_accelerator_->blend_at(point, side, query_pricing_tier_);
+  if (!correction.usable(side)) {
+    return QueryPricingRoute::ColdFallback;
+  }
+  return query_pricing_tier_ == QueryPricingTier::RepresentativeFast
+             ? QueryPricingRoute::RepresentativeFast
+             : QueryPricingRoute::CarryBank;
 }
 
 PricedSurface::ForwardCarry PricedSurface::interp_forward(double T) const noexcept {
   // Precondition: ctx_ non-empty and ascending in T (create guarantees it). This
-  // is byte-identical to VolaSession::interp_forward so the served theo matches.
+  // shares VolaSession::interp_forward's log-forward/discount-state semantics.
   const SliceContext &first = ctx_.front();
   const SliceContext &last = ctx_.back();
   const auto slice_rate = [this](std::size_t index) noexcept {
@@ -101,10 +413,20 @@ PricedSurface::ForwardCarry PricedSurface::interp_forward(double T) const noexce
                : pricing_.r;
   };
   if (T <= first.T) {
-    return ForwardCarry{first.forward, first.q_eff, slice_rate(0u)};
+    const double rate = slice_rate(0u);
+    if (T == first.T) {
+      return ForwardCarry{first.forward, first.q_eff, rate};
+    }
+    const double forward = pricing_.S * std::exp((rate - first.q_eff) * T);
+    return ForwardCarry{forward, first.q_eff, rate};
   }
   if (T >= last.T) {
-    return ForwardCarry{last.forward, last.q_eff, slice_rate(ctx_.size() - 1u)};
+    const double rate = slice_rate(ctx_.size() - 1u);
+    if (T == last.T) {
+      return ForwardCarry{last.forward, last.q_eff, rate};
+    }
+    const double forward = pricing_.S * std::exp((rate - last.q_eff) * T);
+    return ForwardCarry{forward, last.q_eff, rate};
   }
   // Interior (first.T < T < last.T): `hi` is the first index with ctx_[hi].T > T
   // — exactly where the old linear scan `while (ctx_[hi].T <= T) ++hi` stops. On
@@ -119,30 +441,40 @@ PricedSurface::ForwardCarry PricedSurface::interp_forward(double T) const noexce
   const std::size_t lo = hi - 1;
   const SliceContext &a = ctx_[lo];
   const SliceContext &b = ctx_[hi];
+  if (T == a.T) {
+    return ForwardCarry{a.forward, a.q_eff, slice_rate(lo)};
+  }
   const double span = b.T - a.T;
   const double alpha = (span > 0.0) ? (T - a.T) / span : 0.0;
   const double rate_lo = slice_rate(lo);
   const double rate_hi = slice_rate(hi);
-  return ForwardCarry{a.forward + alpha * (b.forward - a.forward),
-                      a.q_eff + alpha * (b.q_eff - a.q_eff), rate_lo + alpha * (rate_hi - rate_lo)};
+  const double forward = interpolate_positive_log(a.forward, b.forward, alpha);
+  double rate = pricing_.r;
+  if (term_rates_) {
+    const double log_df_lo = -rate_lo * a.T;
+    const double log_df_hi = -rate_hi * b.T;
+    rate = -(log_df_lo + alpha * (log_df_hi - log_df_lo)) / T;
+  }
+  const double q_eff = coherent_q_eff(pricing_.S, forward, T, rate);
+  return ForwardCarry{forward, q_eff, rate};
 }
 
 double PricedSurface::forward_at(double T) const noexcept {
-  if (!(T > 0.0) || ctx_.empty()) {
+  if (!(T > 0.0) || !std::isfinite(T) || ctx_.empty()) {
     return 0.0;
   }
   return interp_forward(T).forward;
 }
 
 double PricedSurface::q_eff_at(double T) const noexcept {
-  if (!(T > 0.0) || ctx_.empty()) {
+  if (!(T > 0.0) || !std::isfinite(T) || ctx_.empty()) {
     return 0.0;
   }
   return interp_forward(T).q_eff;
 }
 
 double PricedSurface::rate_at(double T) const noexcept {
-  if (!(T > 0.0) || ctx_.empty()) {
+  if (!(T > 0.0) || !std::isfinite(T) || ctx_.empty()) {
     return 0.0;
   }
   return interp_forward(T).rate;
@@ -188,6 +520,80 @@ double PricedSurface::total_variance(double K, double T) const noexcept {
   return p.valid ? surface_.w(p.k_log, T) : kNaN;
 }
 
+Result<double> PricedSurface::price_resolved(const ResolvedSurfacePoint &p, Side side) const {
+  if (query_accelerator_ != nullptr) {
+    const CorrectionBlend correction = query_accelerator_->blend_at(p, side, query_pricing_tier_);
+    if (correction.usable(side)) {
+      const double cached =
+          american_price_cached(pricing_.S, p.K, p.T, p.sigma, p.rate, p.q_eff, side, correction);
+      if (std::isfinite(cached)) {
+        return Ok(cached);
+      }
+    }
+  }
+  return american_price(pricing_.S, p.K, p.T, p.sigma, p.rate, p.q_eff, side, pricing_.method,
+                        std::optional<AlOpts>{pricing_.al_opts});
+}
+
+Result<AmericanGreeks> PricedSurface::greeks_resolved(const ResolvedSurfacePoint &p, Side side,
+                                                      bool analytic) const {
+  if (query_accelerator_ != nullptr) {
+    const CorrectionBlend correction = query_accelerator_->blend_at(p, side, query_pricing_tier_);
+    if (correction.usable(side)) {
+      auto cached =
+          american_greeks(pricing_.S, p.K, p.T, p.sigma, p.rate, p.q_eff, side, correction);
+      if (cached.has_value()) {
+        return cached;
+      }
+    }
+  }
+  if (analytic && pricing_.method == AmericanMethod::AndersenLake) {
+    return american_greeks_al(pricing_.S, p.K, p.T, p.sigma, p.rate, p.q_eff, side,
+                              std::optional<AlOpts>{pricing_.al_opts});
+  }
+  return american_greeks_fd(pricing_.S, p.K, p.T, p.sigma, p.rate, p.q_eff, side, pricing_.method,
+                            std::optional<AlOpts>{pricing_.al_opts});
+}
+
+Result<double> PricedSurface::delta_resolved(const ResolvedSurfacePoint &p, Side side) const {
+  if (query_accelerator_ != nullptr) {
+    const CorrectionBlend correction = query_accelerator_->blend_at(p, side, query_pricing_tier_);
+    if (correction.usable(side)) {
+      auto cached =
+          american_delta(pricing_.S, p.K, p.T, p.sigma, p.rate, p.q_eff, side, correction);
+      if (cached.has_value()) {
+        return cached;
+      }
+    }
+  }
+  return american_delta(pricing_.S, p.K, p.T, p.sigma, p.rate, p.q_eff, side, pricing_.method,
+                        std::optional<AlOpts>{pricing_.al_opts});
+}
+
+Result<double> PricedSurface::vega_resolved(const ResolvedSurfacePoint &p, Side side) const {
+  if (query_accelerator_ != nullptr) {
+    const CorrectionBlend correction = query_accelerator_->blend_at(p, side, query_pricing_tier_);
+    if (correction.usable(side)) {
+      const double cached =
+          american_vega(pricing_.S, p.K, p.T, p.sigma, p.rate, p.q_eff, side, correction);
+      if (std::isfinite(cached)) {
+        return Ok(cached);
+      }
+    }
+  }
+  if (pricing_.method == AmericanMethod::AndersenLake) {
+    return american_vega_al(pricing_.S, p.K, p.T, p.sigma, p.rate, p.q_eff, side,
+                            std::optional<AlOpts>{pricing_.al_opts});
+  }
+  const Result<AmericanGreeks> greeks =
+      american_greeks_fd(pricing_.S, p.K, p.T, p.sigma, p.rate, p.q_eff, side, pricing_.method,
+                         std::optional<AlOpts>{pricing_.al_opts});
+  if (!greeks.has_value()) {
+    return Err(greeks.error());
+  }
+  return Ok(greeks->vega);
+}
+
 Result<double> PricedSurface::fair_value(double K, double T, Side side) const {
   const ResolvedSurfacePoint p = resolve(K, T);
   if (!p.valid) {
@@ -198,8 +604,7 @@ Result<double> PricedSurface::fair_value(double K, double T, Side side) const {
   // resolved preset as an engaged optional reproduces the session's own call
   // `american_price(..., in_.deam.al_opts)` exactly (in_ carries the resolved AL
   // opts post-build).
-  return american_price(pricing_.S, K, T, p.sigma, p.rate, p.q_eff, side, pricing_.method,
-                        std::optional<AlOpts>{pricing_.al_opts});
+  return price_resolved(p, side);
 }
 
 Result<AmericanGreeks> PricedSurface::greeks(double K, double T, Side side) const {
@@ -213,8 +618,7 @@ Result<AmericanGreeks> PricedSurface::greeks(double K, double T, Side side) cons
   // Cold (warm_start=false) keeps greeks bit-reproducible across a surface archive
   // round-trip (the LifecycleIntegration contract); the warm hot path lives in the
   // backtest engine (cross-step reuse), not this bit-stable reprice primitive.
-  return american_greeks_fd(pricing_.S, K, T, p.sigma, p.rate, p.q_eff, side, pricing_.method,
-                            std::optional<AlOpts>{pricing_.al_opts});
+  return greeks_resolved(p, side, false);
 }
 
 Result<AmericanGreeks> PricedSurface::greeks_analytic(double K, double T, Side side) const {
@@ -226,12 +630,10 @@ Result<AmericanGreeks> PricedSurface::greeks_analytic(double K, double T, Side s
   // Analytic Andersen-Lake greeks (5 solves; theta/charm via the continuation PDE).
   // Same base boundary as fair_value(), so greeks_analytic().price == fair_value().
   // BAW / degenerate corners fall back to the cold FD path inside american_greeks_al.
-  if (pricing_.method == AmericanMethod::AndersenLake) {
-    return american_greeks_al(pricing_.S, K, T, p.sigma, p.rate, p.q_eff, side,
-                              std::optional<AlOpts>{pricing_.al_opts});
-  }
-  return american_greeks_fd(pricing_.S, K, T, p.sigma, p.rate, p.q_eff, side, pricing_.method,
-                            std::optional<AlOpts>{pricing_.al_opts});
+  // Fast tiers differentiate their cached surrogate directly, so the analytic
+  // flag has no alternate numerical meaning there. Cold serving retains the
+  // Andersen-Lake/PDE route.
+  return greeks_resolved(p, side, true);
 }
 
 Result<double> PricedSurface::delta(double K, double T, Side side) const {
@@ -242,8 +644,7 @@ Result<double> PricedSurface::delta(double K, double T, Side side) const {
   // Delta-only fast path — same (S, sigma, r, q_eff, method, al_opts) plumbing as
   // greeks(), so this returns greeks().delta bit-identically at ~1-2 boundary solves
   // instead of seventeen (see american_delta).
-  return american_delta(pricing_.S, K, T, p.sigma, p.rate, p.q_eff, side, pricing_.method,
-                        std::optional<AlOpts>{pricing_.al_opts});
+  return delta_resolved(p, side);
 }
 
 Result<double> PricedSurface::vega(double K, double T, Side side) const {
@@ -251,23 +652,7 @@ Result<double> PricedSurface::vega(double K, double T, Side side) const {
   if (!p.valid) {
     return Err(ErrorCode::InvalidArgument, "PricedSurface::vega: non-finite or non-positive K/T");
   }
-  // Vega-only fast path. Same routing greeks_analytic() uses: the AndersenLake
-  // method takes the native analytic route (american_vega_al, bit-identical to
-  // greeks_analytic(K,T,side).vega at ~0-2 boundary solves instead of 5); any
-  // other method falls back to the SAME american_greeks_fd call
-  // greeks_analytic() itself forwards on that branch, so the extracted .vega is
-  // bit-identical there too.
-  if (pricing_.method == AmericanMethod::AndersenLake) {
-    return american_vega_al(pricing_.S, K, T, p.sigma, p.rate, p.q_eff, side,
-                            std::optional<AlOpts>{pricing_.al_opts});
-  }
-  const Result<AmericanGreeks> g =
-      american_greeks_fd(pricing_.S, K, T, p.sigma, p.rate, p.q_eff, side, pricing_.method,
-                         std::optional<AlOpts>{pricing_.al_opts});
-  if (!g) {
-    return Err(g.error());
-  }
-  return Ok(g->vega);
+  return vega_resolved(p, side);
 }
 
 PricedSurface::FusedResult PricedSurface::evaluate_resolved(const ResolvedSurfacePoint &p,
@@ -299,12 +684,7 @@ PricedSurface::FusedResult PricedSurface::evaluate_resolved(const ResolvedSurfac
     // Route exactly as greeks() / greeks_analytic() do; american_greeks_*().price
     // IS the fair value (bit-identical), so Greeks yield the mark for free.
     ATX_VOL_COUNT(SurfaceFullGreekRoutes);
-    Result<AmericanGreeks> g =
-        (analytic && pricing_.method == AmericanMethod::AndersenLake)
-            ? american_greeks_al(pricing_.S, p.K, p.T, p.sigma, p.rate, p.q_eff, side,
-                                 std::optional<AlOpts>{pricing_.al_opts})
-            : american_greeks_fd(pricing_.S, p.K, p.T, p.sigma, p.rate, p.q_eff, side,
-                                 pricing_.method, std::optional<AlOpts>{pricing_.al_opts});
+    Result<AmericanGreeks> g = greeks_resolved(p, side, analytic);
     if (!g.has_value()) {
       r.iv = kNaN;
       r.price = kNaN;
@@ -318,8 +698,7 @@ PricedSurface::FusedResult PricedSurface::evaluate_resolved(const ResolvedSurfac
   }
   if (has_field(fields, EvalField::Price)) {
     ATX_VOL_COUNT(SurfaceScalarPriceRoutes);
-    Result<double> fv = american_price(pricing_.S, p.K, p.T, p.sigma, p.rate, p.q_eff, side,
-                                       pricing_.method, std::optional<AlOpts>{pricing_.al_opts});
+    Result<double> fv = price_resolved(p, side);
     if (!fv.has_value()) {
       r.iv = kNaN;
       r.price = kNaN;
@@ -331,9 +710,7 @@ PricedSurface::FusedResult PricedSurface::evaluate_resolved(const ResolvedSurfac
   }
   if (has_field(fields, EvalField::Delta)) {
     ATX_VOL_COUNT(SurfaceDeltaRoutes);
-    const Result<double> delta =
-        american_delta(pricing_.S, p.K, p.T, p.sigma, p.rate, p.q_eff, side, pricing_.method,
-                       std::optional<AlOpts>{pricing_.al_opts});
+    const Result<double> delta = delta_resolved(p, side);
     if (!delta.has_value()) {
       r.iv = kNaN;
       r.price = kNaN;
@@ -345,20 +722,7 @@ PricedSurface::FusedResult PricedSurface::evaluate_resolved(const ResolvedSurfac
   }
   if (has_field(fields, EvalField::Vega)) {
     ATX_VOL_COUNT(SurfaceVegaRoutes);
-    Result<double> vega_result;
-    if (pricing_.method == AmericanMethod::AndersenLake) {
-      vega_result = american_vega_al(pricing_.S, p.K, p.T, p.sigma, p.rate, p.q_eff, side,
-                                     std::optional<AlOpts>{pricing_.al_opts});
-    } else {
-      const Result<AmericanGreeks> greeks =
-          american_greeks_fd(pricing_.S, p.K, p.T, p.sigma, p.rate, p.q_eff, side, pricing_.method,
-                             std::optional<AlOpts>{pricing_.al_opts});
-      if (!greeks.has_value()) {
-        vega_result = Err(greeks.error());
-      } else {
-        vega_result = Ok(greeks->vega);
-      }
-    }
+    Result<double> vega_result = vega_resolved(p, side);
     if (!vega_result.has_value()) {
       r.iv = kNaN;
       r.price = kNaN;
@@ -379,8 +743,7 @@ PricedSurface::FusedResult PricedSurface::evaluate(double K, double T, Side side
 
 Status PricedSurface::evaluate_batch(std::span<const double> K, std::span<const double> T,
                                      std::span<const Side> side, EvalField fields, bool analytic,
-                                     EvaluationSoA out,
-                                     simd::SimdIsa resolved_price_isa) const {
+                                     EvaluationSoA out, simd::SimdIsa resolved_price_isa) const {
   const std::size_t n = K.size();
   if (T.size() != n || side.size() != n) {
     return Err(ErrorCode::InvalidArgument,
@@ -446,7 +809,11 @@ Status PricedSurface::evaluate_batch(std::span<const double> K, std::span<const 
     }
     const bool t_valid = std::isfinite(t) && (t > 0.0);
     const ForwardCarry fc = t_valid ? interp_forward(t) : ForwardCarry{};
-    if (want_price && !want_greeks && !selective_only) {
+    // The resolved batch dispatcher is a cold-American kernel and accepts no
+    // correction state. Fast tiers stay on evaluate_resolved so a price-only
+    // ladder cannot silently bypass its configured surrogate; the call-local
+    // ISA selector is therefore meaningful only on the cold path.
+    if (want_price && !want_greeks && !selective_only && query_accelerator_ == nullptr) {
       if (!t_valid) {
         for (std::size_t e = i; e < j; ++e) {
           ResolvedSurfacePoint p;

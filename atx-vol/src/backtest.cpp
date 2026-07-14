@@ -34,6 +34,11 @@ namespace {
 // Process-wide archive-open counter (test seam). Loads increment it exactly once.
 std::atomic<std::uint64_t> g_open_count{0};
 
+// A forward-only run owns base, shifted, and at most one prefetched future.
+// Retaining three cache entries covers that working set without accumulating one
+// mapped archive per date. Caller-supplied caches remain reusable and unbounded.
+constexpr std::size_t kPrivateSnapshotCacheCapacity = 3u;
+
 // Contract residual T on the snapshot dated `base_ts`: (expiry - base.ts)/year.
 [[nodiscard]] double residual_T(std::int64_t expiry_ts_ns, std::int64_t base_ts_ns) noexcept {
   return (static_cast<double>(expiry_ts_ns) - static_cast<double>(base_ts_ns)) / kNsPerYear;
@@ -190,10 +195,11 @@ struct ReusablePriceFrame {
   return Ok(result);
 }
 
-// One priced step base -> shifted over `lots`: partition expiring lots (settled at
-// intrinsic: qty*mult*(intrinsic(S_shifted) - base_mark)) from survivors, then
-// Taylor PnL-explain the survivors. Byte-identical arithmetic to the fixed-book
-// loop above; shared by the strategy overload.
+// One priced step base -> shifted over `lots`: partition lots with an exact
+// expiry-time observation (settled at intrinsic: qty*mult*(intrinsic(S_expiry) -
+// base_mark)) from survivors, then Taylor PnL-explain the survivors. A step that
+// skips across expiry fails closed because the shifted spot is not an expiry
+// settlement observation. Shared by both backtest overloads.
 struct StepPnl {
   PnlTotals totals{};
   double settlement{0.0};
@@ -215,6 +221,13 @@ struct StepPnl {
   double settlement = 0.0;
   for (const Lot &lot : lots) {
     if (lot.expiry_ts_ns <= shifted.ts_ns()) {
+      if (lot.expiry_ts_ns != shifted.ts_ns()) {
+        return Err(
+            ErrorCode::NotFound,
+            "run_backtest: no exact expiry observation for lot id=" + std::to_string(lot.id) +
+                " (expiry_ts_ns=" + std::to_string(lot.expiry_ts_ns) +
+                ", next_snapshot_ts_ns=" + std::to_string(shifted.ts_ns()) + ")");
+      }
       const double T_base = residual_T(lot.expiry_ts_ns, base.ts_ns());
       const PricedSurface *bs = base.find(lot.contract.uid);
       const PricedSurface *ss = shifted.find(lot.contract.uid);
@@ -337,7 +350,8 @@ MarketSnapshot::MarketSnapshot(std::vector<PricedSurface> &&surfaces, SurfaceSet
 std::uint64_t MarketSnapshot::open_count() noexcept { return g_open_count.load(); }
 void MarketSnapshot::reset_open_count() noexcept { g_open_count.store(0); }
 
-Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path) {
+Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
+                                            QueryPricingTier query_pricing_tier) {
   ATX_VOL_PROFILE_SCOPE(SnapshotLoad);
   auto arch = [&]() {
     ATX_VOL_PROFILE_SCOPE(ArchiveOpen);
@@ -368,6 +382,17 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path) {
       return Err(ErrorCode::InvalidArgument,
                  "MarketSnapshot::load: surfaces disagree on now_ts_ns within a date");
     }
+  }
+
+  // Query caches are runtime accelerators, not archive state. Prepare every
+  // mapped surface under the caller's tier before building the pointer set, so
+  // no partially-prepared snapshot can become observable.
+  for (PricedSurface &surface : surfaces) {
+    auto prepared = std::move(surface).with_query_pricing(query_pricing_tier);
+    if (!prepared) {
+      return Err(prepared.error());
+    }
+    surface = std::move(*prepared);
   }
 
   // Non-owning resolver over the owned surfaces' stable addresses.
@@ -460,14 +485,15 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
 
   // base = load(refs[0]) — the inception snapshot.
   const std::shared_ptr<SnapshotCache> snapshot_cache =
-      cfg.snapshot_cache ? cfg.snapshot_cache : std::make_shared<SnapshotCache>();
-  auto base_res = snapshot_cache->load(refs[0].archive_path);
+      cfg.snapshot_cache ? cfg.snapshot_cache
+                         : std::make_shared<SnapshotCache>(kPrivateSnapshotCacheCapacity);
+  auto base_res = snapshot_cache->load(refs[0].archive_path, cfg.query_pricing_tier);
   if (!base_res) {
     return Err(base_res.error());
   }
   std::shared_ptr<const MarketSnapshot> base = std::move(*base_res);
   if (cfg.prefetch_snapshots && refs.size() > 1) {
-    snapshot_cache->prefetch(refs[1].archive_path);
+    snapshot_cache->prefetch(refs[1].archive_path, cfg.query_pricing_tier);
   }
 
   double nav = 0.0;
@@ -489,13 +515,13 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
   }
 
   for (std::size_t i = 1; i < refs.size(); ++i) {
-    auto shifted_res = snapshot_cache->load(refs[i].archive_path);
+    auto shifted_res = snapshot_cache->load(refs[i].archive_path, cfg.query_pricing_tier);
     if (!shifted_res) {
       return Err(shifted_res.error());
     }
     std::shared_ptr<const MarketSnapshot> shifted = std::move(*shifted_res);
     if (cfg.prefetch_snapshots && i + 1 < refs.size()) {
-      snapshot_cache->prefetch(refs[i + 1].archive_path);
+      snapshot_cache->prefetch(refs[i + 1].archive_path, cfg.query_pricing_tier);
     }
 
     // Partition + Taylor PnL-explain: byte-identical arithmetic to the strategy
@@ -813,14 +839,15 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
   };
 
   const std::shared_ptr<SnapshotCache> snapshot_cache =
-      cfg.snapshot_cache ? cfg.snapshot_cache : std::make_shared<SnapshotCache>();
-  auto base_res = snapshot_cache->load(refs[0].archive_path);
+      cfg.snapshot_cache ? cfg.snapshot_cache
+                         : std::make_shared<SnapshotCache>(kPrivateSnapshotCacheCapacity);
+  auto base_res = snapshot_cache->load(refs[0].archive_path, cfg.query_pricing_tier);
   if (!base_res) {
     return Err(base_res.error());
   }
   std::shared_ptr<const MarketSnapshot> base = std::move(*base_res);
   if (cfg.prefetch_snapshots && refs.size() > 1) {
-    snapshot_cache->prefetch(refs[1].archive_path);
+    snapshot_cache->prefetch(refs[1].archive_path, cfg.query_pricing_tier);
   }
 
   double nav = 0.0;
@@ -855,20 +882,24 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
                  unpriced_greeks_error_message(g->n_unpriced, g->first_unpriced_uid, refs[0].date));
     }
     const double g_delta = g->total.delta + shares_sum();
-    push_row(refs[0].date, base->ts_ns(), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-             0.0, 0.0, ex->cost, 0.0, cash, g_delta, g->total, ex->turnover_notional,
+    // Opening fills are the first economic event of the run. execute() already
+    // deducted their friction from cash; stamp the same loss into row-0 PnL/NAV
+    // so total return and attribution include every paid dollar.
+    nav = -ex->cost;
+    push_row(refs[0].date, base->ts_ns(), nav, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+             0.0, 0.0, ex->cost, nav, cash, g_delta, g->total, ex->turnover_notional,
              ex->turnover_vega, book.lots.size(), 0.0, static_cast<double>(g->n_unpriced));
     record_signals(*base);
   }
 
   for (std::size_t i = 1; i < refs.size(); ++i) {
-    auto shifted_res = snapshot_cache->load(refs[i].archive_path);
+    auto shifted_res = snapshot_cache->load(refs[i].archive_path, cfg.query_pricing_tier);
     if (!shifted_res) {
       return Err(shifted_res.error());
     }
     std::shared_ptr<const MarketSnapshot> shifted = std::move(*shifted_res);
     if (cfg.prefetch_snapshots && i + 1 < refs.size()) {
-      snapshot_cache->prefetch(refs[i + 1].archive_path);
+      snapshot_cache->prefetch(refs[i + 1].archive_path, cfg.query_pricing_tier);
     }
 
     // 1. PnL of the current book (resolved on base) forward to shifted (unchanged B1).
@@ -905,7 +936,12 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
       const double short_amt = std::max(0.0, -n);                    // |min(shares,0)|
       financing += -cfg.financing.borrow_rate * short_amt * Sb * dt; // borrow (0 when rate 0)
       if (cfg.financing.shares_carry) {
-        financing += n * (bs->q_eff_at(0.25) - bs->pricing().r) * Sb * dt; // long div, pay finance
+        // Buying shares has already reduced the financed cash balance, so cash
+        // carry owns the funding cost when enabled. Charging r here too would
+        // count it twice. Without cash financing, retain the standalone (q-r)
+        // total-carry shortcut.
+        const double funding_rate = cfg.financing.finance_premium ? 0.0 : bs->pricing().r;
+        financing += n * (bs->q_eff_at(0.25) - funding_rate) * Sb * dt;
       }
     }
 

@@ -21,11 +21,10 @@
 // The surface stores each slice in LOG-MONEYNESS k = ln(K / F_slice), so a query
 // at an absolute strike K must use the forward AT the queried T. `build` records
 // each fitted slice's (T, forward, q_eff) in ascending T; a query at T locates T
-// among those slice T's and, for a T strictly between two slices, LINEARLY
-// interpolates `forward` and `q_eff`; a T at or beyond an endpoint clamps to that
-// endpoint slice. That interpolated (F(T), q_eff(T)) drives both the surface's
-// log-moneyness and the American re-pricing carry, exactly as the de-Am q_eff
-// bridge intends (S*e^{(r-q_eff)T} == F).
+// among those slice T's and geometrically interpolates market-implied `forward`.
+// Interior q_eff is derived from that forward and interpolated discount state,
+// preserving S*e^{(r-q_eff)T} == F. Exact pillars retain calibrated carry. In
+// either tail, endpoint q_eff/r are held flat and F is derived at the query T.
 //
 // ## Ownership / move semantics
 //
@@ -61,6 +60,7 @@
 #include "atx/vol/prepared_policy.hpp" // PreparedObservationPolicy
 #include "atx/vol/priced_surface.hpp"  // PricedSurface, PricingContext (to_priced_surface)
 #include "atx/vol/projection.hpp"      // InterpMode (SessionInputs::interp, ShapeBlend eval)
+#include "atx/vol/query_pricing.hpp"   // QueryPricingTier
 #include "atx/vol/surface_parity.hpp"  // SliceContext, run_surface_parity
 #include "atx/vol/types.hpp"           // Result, Side
 #include "atx/vol/universe.hpp"        // Underlying (build input)
@@ -77,14 +77,14 @@ class PricerFitter;
 // `SurfaceParityInputs` when driving `run_surface_parity`; the same fields are
 // retained so the const queries can re-price off the fitted surface.
 struct SessionInputs {
-  double S{0.0};                          // spot (> 0); the OpraPanel implied_spot when built from a frame
-  double r{0.0};                          // continuously-compounded rate (finite)
-  std::vector<double> expiry_rate_T;      // empty => legacy scalar r
-  std::vector<double> expiry_rates;       // aligned with expiry_rate_T
-  std::vector<DividendEvent> cash_divs;   // discrete cash-dividend schedule
-  std::int64_t now_ts_ns{0};              // valuation timestamp (epoch ns)
-  DeAmOptions deam{};                     // borrow-implication + pricer method / AL opts
-  CalibOpts calib{};                      // per-slice curve-fit policy
+  double S{0.0}; // spot (> 0); the OpraPanel implied_spot when built from a frame
+  double r{0.0}; // continuously-compounded rate (finite)
+  std::vector<double> expiry_rate_T;    // empty => legacy scalar r
+  std::vector<double> expiry_rates;     // aligned with expiry_rate_T
+  std::vector<DividendEvent> cash_divs; // discrete cash-dividend schedule
+  std::int64_t now_ts_ns{0};            // valuation timestamp (epoch ns)
+  DeAmOptions deam{};                   // borrow-implication + pricer method / AL opts
+  CalibOpts calib{};                    // per-slice curve-fit policy
   // Curve family to fit. Essvi (default) is byte-identical to the historical
   // eSSVI path (run_surface_parity, with calendar repair). ConvexDense / Svi fit
   // through the curve-agnostic driver (fit_curve_surface) and are served via the
@@ -93,7 +93,7 @@ struct SessionInputs {
   // eSSVI/SVI knobs in curve.parametric (calib mirrors curve.parametric for the
   // default path).
   CurveConfig curve{VolCurveKind::Essvi};
-  double band_k{1.0};                     // minimum-edge band multiplier (parity)
+  double band_k{1.0}; // minimum-edge band multiplier (parity)
   // Build a per-side Chebyshev correction cache over the chain's (k, T, sigma)
   // box and route every American inversion / re-pricing through the fast cached
   // pricer (Black-76 + correction). ON by default (the SOTA hot path); the
@@ -102,6 +102,13 @@ struct SessionInputs {
   // build. Set false to force the reference cold path (e.g. for a cold-vs-cached
   // benchmark).
   bool use_correction_cache{true};
+  // Explicit query-serving tier. LegacyCompatible preserves the historical
+  // cached-eSSVI/cold-override behavior; ColdReference forces Andersen-Lake/FD;
+  // RepresentativeFast uses one term-wide carry surrogate; CarryBank builds a
+  // bounded post-fit fixed-carry bank and interpolates adjacent entries. The two
+  // fast tiers are opt-in because their marks/Greeks can differ slightly from
+  // the cold reference.
+  QueryPricingTier query_pricing_tier{QueryPricingTier::LegacyCompatible};
   // ConvexDense/SVI cold-start controls. `score_parity=false` skips the redundant
   // diagnostic re-Americanization pass after fitting; the surface is unchanged,
   // but per-expiry parity diagnostics are intentionally zeroed. Disabling the
@@ -125,6 +132,11 @@ struct SessionInputs {
   // slice whose wing crosses, with the per-expiry parity then scored off the
   // repaired surface so the reported quality is what the surface serves.
   CalendarRepair calendar_repair{CalendarRepair::None};
+  // Worker budget for the independent per-expiry preparation phase used by
+  // non-eSSVI curve families. 0 => machine/env auto; 1 => serial. Orchestrators
+  // that already parallelize across boards set this to 1 to avoid nested H^2
+  // fan-out. The eSSVI path is sequential and ignores this field.
+  unsigned fit_workers{0};
   // Cross-expiry interpolation mode for arbitrary-T queries served off this
   // session's surface. PiecewiseTotalVariance (default) is bit-identical to
   // current behavior; ShapeBlend is the FLEX-style vol-multiple blend. Only
@@ -209,13 +221,12 @@ enum class FitPreset : std::uint8_t {
 // Populate the fit-policy fields of `in` for `preset` (Andersen-Lake opts,
 // iv_tol, n_atm, use_correction_cache, calendar_repair), leaving the market
 // snapshot fields untouched. Idempotent; safe to call before `build`/`from_frame`.
-void apply_fit_preset(SessionInputs& in, FitPreset preset) noexcept;
+void apply_fit_preset(SessionInputs &in, FitPreset preset) noexcept;
 
 // Convenience: a SessionInputs preconfigured for `preset` with the market
 // snapshot filled. Equivalent to setting the four snapshot fields then calling
 // `apply_fit_preset`.
-[[nodiscard]] SessionInputs make_session_inputs(FitPreset preset, double S,
-                                                double r,
+[[nodiscard]] SessionInputs make_session_inputs(FitPreset preset, double S, double r,
                                                 std::int64_t now_ts_ns = 0);
 
 enum class ParityDiagnosticState : std::uint8_t {
@@ -245,23 +256,23 @@ struct IncrementalRefitDiagnostics {
 // reports and the per-slice context at build time. `parity_state` distinguishes
 // a genuine zero score from an opt-out or a scoring failure.
 struct SessionDiagnostics {
-  double worst_frac_within_bidask{0.0};   // min over expiries of frac in bid-ask
-  double mean_frac_within_bidask{0.0};    // mean over expiries
-  double mean_chi2_reduced{0.0};          // mean reduced chi-square (vol space)
-  double mean_rmse_vol{0.0};              // mean RMSE(model vol - mkt vol)
-  bool   calendar_arb_free{false};        // surface calendar no-arb check
-  std::size_t n_calendar_viol_pre{0};     // calendar violations BEFORE any repair;
-                                           // on a FAILED check, stamped with sentinel
-                                           // 1 (calendar_arb_free=false) — nonzero
-                                           // means "found violations OR check failed"
-  std::size_t n_slices{0};                // fitted slice count
-  std::size_t n_quotes{0};                // sum of per-slice n_used
+  double worst_frac_within_bidask{0.0}; // min over expiries of frac in bid-ask
+  double mean_frac_within_bidask{0.0};  // mean over expiries
+  double mean_chi2_reduced{0.0};        // mean reduced chi-square (vol space)
+  double mean_rmse_vol{0.0};            // mean RMSE(model vol - mkt vol)
+  bool calendar_arb_free{false};        // surface calendar no-arb check
+  std::size_t n_calendar_viol_pre{0};   // calendar violations BEFORE any repair;
+                                        // on a FAILED check, stamped with sentinel
+                                        // 1 (calendar_arb_free=false) — nonzero
+                                        // means "found violations OR check failed"
+  std::size_t n_slices{0};              // fitted slice count
+  std::size_t n_quotes{0};              // sum of per-slice n_used
   ParityDiagnosticState parity_state{ParityDiagnosticState::NotScored};
   // SpiderRock-style band-violation stats, rolled up from each expiry's
   // ParityReport::band (record-only; not used to gate slice selection).
-  std::size_t n_bid_miss{};   // sum over slices
-  std::size_t n_ask_miss{};   // sum over slices
-  double max_prc_err{};       // max over slices (premium units)
+  std::size_t n_bid_miss{}; // sum over slices
+  std::size_t n_ask_miss{}; // sum over slices
+  double max_prc_err{};     // max over slices (premium units)
   // eMove implied from the two fitted expiries bracketing the first
   // scheduled event in `(now_ts_ns, last fitted expiry]` (SessionInputs::
   // events), via `implied_emove` on those two expiries' own ATM total
@@ -276,8 +287,8 @@ struct SessionDiagnostics {
   // finite value here is the ONLY condition under which queries route
   // through the event-aware blend (see SessionInputs::events).
   double implied_emove{std::numeric_limits<double>::quiet_NaN()};
-  std::size_t n_carry_slices{0};          // slices with a resolved carry diagnostic
-  std::size_t n_carry_confident{0};       // carry slices clearing confidence gates
+  std::size_t n_carry_slices{0};    // slices with a resolved carry diagnostic
+  std::size_t n_carry_confident{0}; // carry slices clearing confidence gates
   // Expiries the fit DROPPED because carry could not be resolved (confidence
   // gate / no quotable pair / degenerate forward). A surface missing expiries
   // must surface the gap (§5.2); risk admission maps a non-zero count to a
@@ -307,7 +318,7 @@ struct SessionDiagnostics {
   std::size_t n_iv_fallback{0};
   std::size_t n_iv_rejected_residual{0};
   double max_iv_proposal_residual_half_spreads{0.0};
-  bool carry_confident{false};             // true iff every fitted slice is confident
+  bool carry_confident{false}; // true iff every fitted slice is confident
   // True iff every fitted slice's inversions ran the AUDITED route (the fit
   // rows themselves, not just a diagnostic re-run), every accepted node passed
   // the cold-reference residual budget, and tolerated node drops stayed under
@@ -345,11 +356,11 @@ struct SessionSliceDiagnostics {
 
 // Stateful surface handle. Construct with `build` / `from_frame`; then query.
 class VolaSession {
- public:
+public:
   // Move-only: the fitted surface is heavy state, not a value to copy. Declaring
   // the moves implicitly deletes the copy operations (that is intentional).
-  VolaSession(VolaSession&&) noexcept = default;
-  VolaSession& operator=(VolaSession&&) noexcept = default;
+  VolaSession(VolaSession &&) noexcept = default;
+  VolaSession &operator=(VolaSession &&) noexcept = default;
 
   // ── Construction ─────────────────────────────────────────────────────────
 
@@ -357,14 +368,13 @@ class VolaSession {
   // (S <= 0 / non-finite r => InvalidArgument; no chains or no usable slice =>
   // NotFound) and retains its fitted surface, per-slice context, per-expiry
   // parity, and pricing inputs. Any parity-harness error is propagated.
-  [[nodiscard]] static Result<VolaSession> build(const Underlying& under,
-                                                 const SessionInputs& in);
+  [[nodiscard]] static Result<VolaSession> build(const Underlying &under, const SessionInputs &in);
 
   // Build directly from an in-memory quote frame: install it into a local
   // `Universe` (`data_install`), resolve the resulting `Underlying`, then
   // `build`. Propagates any install / build error.
-  [[nodiscard]] static Result<VolaSession> from_frame(const QuoteFrame& frame,
-                                                      const SessionInputs& in);
+  [[nodiscard]] static Result<VolaSession> from_frame(const QuoteFrame &frame,
+                                                      const SessionInputs &in);
 
   // Deep copy for copy-on-write publication. The fitted polymorphic curves and
   // correction caches are independently owned by the clone, so a local refit
@@ -392,8 +402,7 @@ class VolaSession {
   // side's correction cache when the session built one (else the cold Black-76-
   // leg path). InvalidArgument if K/T are non-finite or non-positive; any pricer
   // error is propagated.
-  [[nodiscard]] Result<AmericanGreeks> greeks(double K, double T,
-                                              Side side) const;
+  [[nodiscard]] Result<AmericanGreeks> greeks(double K, double T, Side side) const;
 
   // ── Strike-ladder queries (SoA; reprice a whole expiry in one call) ────────
   //
@@ -418,10 +427,8 @@ class VolaSession {
   // a chain must not sink the rest of the reprice. The call returns
   // InvalidArgument only for a structural error: non-finite/non-positive `T`, or
   // `strikes`/`sides`/`out` of unequal length.
-  [[nodiscard]] Status fair_value_ladder(double T,
-                                         std::span<const double> strikes,
-                                         std::span<const Side> sides,
-                                         std::span<double> out) const;
+  [[nodiscard]] Status fair_value_ladder(double T, std::span<const double> strikes,
+                                         std::span<const Side> sides, std::span<double> out) const;
 
   // Greeks-ladder analogue of `fair_value_ladder`. `out[i]` receives the full
   // AmericanGreeks bundle; a per-strike failure leaves that slot value-
@@ -430,6 +437,18 @@ class VolaSession {
   [[nodiscard]] Status greeks_ladder(double T, std::span<const double> strikes,
                                      std::span<const Side> sides,
                                      std::span<AmericanGreeks> out) const;
+
+  // Fused ladder evaluation for callers that need more than one model column.
+  // Carry is resolved once for the expiry and surface IV once per strike. When
+  // `greeks_out` is requested, its American price also supplies `price_out`, so
+  // the cached correction graph is differentiated only once per contract.
+  // Every output span is optional (empty means unrequested); each nonempty span
+  // must match `strikes.size()`. Invalid strikes are isolated as NaNs. The hot
+  // path is allocation-free and safe for concurrent calls on a built session.
+  [[nodiscard]] Status evaluate_ladder(double T, std::span<const double> strikes,
+                                       std::span<const Side> sides, std::span<double> iv_out,
+                                       std::span<double> price_out,
+                                       std::span<AmericanGreeks> greeks_out) const;
 
   // ── Incremental update (tick-to-quote) ─────────────────────────────────────
   //
@@ -477,15 +496,14 @@ class VolaSession {
   // @return InvalidArgument for an out-of-range `slice_idx`, empty `new_obs`, or
   //         a surface with no eSSVI slice at that index; the fit's own error
   //         (Unavailable on a degenerate slice) otherwise; else Ok(FitDiag).
-  [[nodiscard]] Result<FitDiag> refit_slice(std::size_t slice_idx,
-                                            std::span<const FitObs> new_obs);
+  [[nodiscard]] Result<FitDiag> refit_slice(std::size_t slice_idx, std::span<const FitObs> new_obs);
 
   // Fast path for quote updates that changed uncertainty but not price. The
   // original, already-certified European IVs are reused exactly and only their
   // spread-derived weights are refreshed. A price/flag/shape change returns an
   // error so the caller can fall back to full de-Americanization.
-  [[nodiscard]] Result<std::vector<FitObs>>
-  cached_refit_observations(const Chain &chain, std::size_t slice_idx) const;
+  [[nodiscard]] Result<std::vector<FitObs>> cached_refit_observations(const Chain &chain,
+                                                                      std::size_t slice_idx) const;
 
   // ── Serialization snapshot ─────────────────────────────────────────────────
   //
@@ -508,7 +526,7 @@ class VolaSession {
 
   // ── Introspection ──────────────────────────────────────────────────────────
 
-  [[nodiscard]] const VolSurface& surface() const noexcept { return surface_; }
+  [[nodiscard]] const VolSurface &surface() const noexcept { return surface_; }
 
   // The optional polymorphic-surface override (ConvexDense / Svi / C8):
   // nullptr on the default eSSVI path (queries read surface()), non-null when
@@ -517,38 +535,31 @@ class VolaSession {
   // slices' own fit structure (e.g. the independent risk-surface validator's
   // node-k grid densification, oracle finding I-3) without the session
   // itself becoming curve-family-aware anywhere else.
-  [[nodiscard]] const CurveSurface* curve_override() const noexcept {
+  [[nodiscard]] const CurveSurface *curve_override() const noexcept {
     return curve_override_.has_value() ? &*curve_override_ : nullptr;
   }
 
   // Per fitted slice, ascending T. Parallel to `parity()`.
-  [[nodiscard]] std::span<const SliceContext> expiries() const noexcept {
-    return ctx_;
-  }
+  [[nodiscard]] std::span<const SliceContext> expiries() const noexcept { return ctx_; }
 
   // Per-expiry re-Americanized parity, ascending T (parallel to `expiries()`).
-  [[nodiscard]] std::span<const ParityReport> parity() const noexcept {
-    return parity_;
-  }
+  [[nodiscard]] std::span<const ParityReport> parity() const noexcept { return parity_; }
 
-  [[nodiscard]] const SessionDiagnostics& diagnostics() const noexcept {
-    return diag_;
-  }
+  [[nodiscard]] const SessionDiagnostics &diagnostics() const noexcept { return diag_; }
 
-  [[nodiscard]] std::span<const SessionSliceDiagnostics>
-  slice_diagnostics() const noexcept {
+  [[nodiscard]] std::span<const SessionSliceDiagnostics> slice_diagnostics() const noexcept {
     return slice_diag_;
   }
 
   // Effective, fully-resolved fit inputs retained by the session. Quality
   // scoring uses these so a direct/fallback OOS refit sees the same preset,
   // quote filter, dividends, carry, and pricer policy as the shipped surface.
-  [[nodiscard]] const SessionInputs& inputs() const noexcept { return in_; }
+  [[nodiscard]] const SessionInputs &inputs() const noexcept { return in_; }
 
   // ── Term carry accessors (the query re-pricing forward / effective yield) ──
   //
-  // The interpolated term forward F(T) and effective carry q_eff(T) at an
-  // arbitrary T — the SAME clamp-outside / linear-interp-between-slices mechanic
+  // The interpolated term forward F(T) and coherent effective carry q_eff(T) at
+  // an arbitrary T — the same clamp-outside / log-state-between-slices mechanic
   // the const queries use to re-price (see the forward-interpolation note above).
   // Exposed so a batch / whole-chain evaluator can resolve the per-expiry carry
   // (e.g. to invert bid/ask to American IV on the fit's own carry) without a
@@ -564,16 +575,32 @@ class VolaSession {
   // faster than a cold Andersen-Lake solve per residual, and self-consistent with
   // the session's own re-pricing.
   [[nodiscard]] AmericanCorrectionCaches correction_caches() const noexcept {
-    return query_caches();
+    return in_.query_pricing_tier == QueryPricingTier::ColdReference ? AmericanCorrectionCaches{}
+                                                                     : query_caches();
   }
 
- private:
+  // T-aware query-cache selection. In the CarryBank tier the session owns a
+  // bounded bank of fixed-(r,q) cache pairs built after fitting; this selects
+  // the closest carry center while preserving fixed-carry Greek semantics.
+  // Outside that tier this is identical to correction_caches().
+  [[nodiscard]] AmericanCorrectionCaches correction_caches_at(double T) const noexcept;
+  // Fixed-carry interpolation for CarryBank. Adjacent bank entries are chosen
+  // in expiry order, then the query carry is projected onto their (r,q) segment
+  // to obtain one clamped, call-constant weight. Other tiers return a single
+  // endpoint (or an unusable blend for their cold path).
+  [[nodiscard]] CorrectionBlend correction_blend_at(double T, Side side) const noexcept;
+  [[nodiscard]] std::size_t query_cache_bank_size() const noexcept {
+    return query_cache_bank_.size();
+  }
+
+private:
   friend class PricerFitter;
 
   [[nodiscard]] VolaSession clone_for_refit() const;
-  [[nodiscard]] Result<FitDiag> apply_prepared_essvi_refit(
-      std::size_t slice_idx, const CanonicalPreparedExpiry &prepared);
+  [[nodiscard]] Result<FitDiag> apply_prepared_essvi_refit(std::size_t slice_idx,
+                                                           const CanonicalPreparedExpiry &prepared);
   [[nodiscard]] Status refresh_refit_diagnostics();
+  void build_fast_query_cache_bank(const Underlying &under);
 
   // The interpolated term forward and effective carry at a queried T.
   struct ForwardCarry {
@@ -587,25 +614,22 @@ class VolaSession {
   // (optional) per-side correction caches built during `build`, and the optional
   // polymorphic-surface override: empty for the default eSSVI path (queries read
   // `surface_`); populated for ConvexDense / Svi (queries read the override).
-  VolaSession(VolSurface&& surface, std::vector<SliceContext>&& ctx,
-              std::vector<ParityReport>&& parity, SessionInputs in,
-              const SessionDiagnostics& diag,
-              std::vector<SessionSliceDiagnostics>&& slice_diag,
-              std::optional<CorrectionCache>&& corr_call,
-              std::optional<CorrectionCache>&& corr_put,
-              std::optional<CurveSurface>&& curve_override);
+  VolaSession(VolSurface &&surface, std::vector<SliceContext> &&ctx,
+              std::vector<ParityReport> &&parity, SessionInputs in, const SessionDiagnostics &diag,
+              std::vector<SessionSliceDiagnostics> &&slice_diag,
+              std::optional<CorrectionCache> &&corr_call, std::optional<CorrectionCache> &&corr_put,
+              std::optional<CurveSurface> &&curve_override);
 
   // Non-owning per-side cache bundle for the query re-pricing (empty when the
   // caches were not built). Recomputed on each call so it survives a move.
   [[nodiscard]] AmericanCorrectionCaches query_caches() const noexcept {
-    return AmericanCorrectionCaches{
-        corr_call_ ? &*corr_call_ : nullptr,
-        corr_put_ ? &*corr_put_ : nullptr};
+    return AmericanCorrectionCaches{corr_call_ ? &*corr_call_ : nullptr,
+                                    corr_put_ ? &*corr_put_ : nullptr};
   }
 
   // Locate T among the ascending slice T's and return the term forward / carry:
-  // clamp to the endpoint slice outside [T_0, T_last]; linearly interpolate
-  // between the two bracketing slices inside. Precondition: at least one slice
+  // hold endpoint carry flat outside [T_0, T_last]; interpolate log-forward and
+  // log-discount state between bracketing slices. Precondition: at least one slice
   // (guaranteed — build errors on an empty surface).
   [[nodiscard]] ForwardCarry interp_forward(double T) const noexcept;
 
@@ -626,8 +650,7 @@ class VolaSession {
   // interp_forward), so the handle skips the forward cache; only the slice
   // bracket is needed here. NaN if the inserted-slice handle fails to build
   // (never for a successfully built session's own surface_).
-  [[nodiscard]] double shape_blend_total_variance(double k_log,
-                                                  double T) const noexcept;
+  [[nodiscard]] double shape_blend_total_variance(double k_log, double T) const noexcept;
 
   // True iff a query should route through the event-aware blend: `events`
   // is set AND the post-fit solve landed on a finite eMove (see
@@ -644,34 +667,39 @@ class VolaSession {
   // legacy call. `in_.interp` still selects which blend gets event-censored
   // (PiecewiseTotalVariance vs ShapeBlend -- see w_on_inserted_slice's doc).
   // Only called when `event_aware_active()` is true.
-  [[nodiscard]] double event_aware_total_variance(double k_log,
-                                                  double T) const noexcept;
+  [[nodiscard]] double event_aware_total_variance(double k_log, double T) const noexcept;
 
-  // Correction cache to serve a query through, or nullptr for the cold (accurate)
-  // Andersen-Lake path. The single-carry cache is a self-consistent DE-AM round-
-  // trip surrogate; pricing an arbitrary MODEL IV through it is penny-inaccurate
-  // on carry-distant expiries (its correction is baked at one representative
-  // carry). So the high-accuracy override surface (ConvexDense) serves COLD — the
-  // price the library produces then matches the fitted surface's ~99.5% board
-  // accuracy — while the eSSVI default keeps the fast cached path unchanged
-  // (byte-identical). Band-IV inversions in value_chain stay on the cache
-  // regardless (they are diagnostic bands, and the cache is their forward map).
-  [[nodiscard]] const CorrectionCache* served_cache(Side side) const noexcept {
-    if (curve_override_.has_value()) {
+  // Correction cache to serve a query through, or nullptr for the cold
+  // Andersen-Lake path. LegacyCompatible preserves the historical distinction
+  // between cached eSSVI and cold polymorphic overrides. RepresentativeFast
+  // explicitly serves the single-carry surrogate; CarryBank is handled by
+  // correction_blend_at before this single-cache fallback is reached.
+  [[nodiscard]] const CorrectionCache *served_cache(double T, Side side) const noexcept {
+    if (in_.query_pricing_tier == QueryPricingTier::ColdReference ||
+        (curve_override_.has_value() &&
+         in_.query_pricing_tier == QueryPricingTier::LegacyCompatible)) {
       return nullptr;
     }
-    const CorrectionCache* const cc = query_caches().for_side(side);
+    const CorrectionCache *const cc = correction_caches_at(T).for_side(side);
     return (cc != nullptr && cc->populated() && cc->side() == side) ? cc : nullptr;
   }
 
   VolSurface surface_;
-  std::vector<SliceContext> ctx_;      // ascending T
-  std::vector<ParityReport> parity_;   // ascending T (‖ ctx_)
+  std::vector<SliceContext> ctx_;    // ascending T
+  std::vector<ParityReport> parity_; // ascending T (‖ ctx_)
   SessionInputs in_;
   SessionDiagnostics diag_;
-  std::vector<SessionSliceDiagnostics> slice_diag_;  // compact, ascending T
-  std::optional<CorrectionCache> corr_call_;  // empty => cold path for calls
-  std::optional<CorrectionCache> corr_put_;   // empty => cold path for puts
+  std::vector<SessionSliceDiagnostics> slice_diag_; // compact, ascending T
+  std::optional<CorrectionCache> corr_call_;        // empty => cold path for calls
+  std::optional<CorrectionCache> corr_put_;         // empty => cold path for puts
+  struct QueryCacheBankEntry {
+    double T{0.0};
+    double rate{0.0};
+    double q_eff{0.0};
+    std::optional<CorrectionCache> call{};
+    std::optional<CorrectionCache> put{};
+  };
+  std::vector<QueryCacheBankEntry> query_cache_bank_;
   // Polymorphic-surface override (ConvexDense / Svi). Empty => default eSSVI path
   // (queries read surface_). Move-only, like the session itself.
   std::optional<CurveSurface> curve_override_;
@@ -694,4 +722,4 @@ class VolaSession {
   std::shared_ptr<const IncrementalObservationStore> incremental_observations_;
 };
 
-}  // namespace atx::vol
+} // namespace atx::vol

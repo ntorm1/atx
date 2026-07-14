@@ -72,6 +72,7 @@ constexpr std::uint32_t kUid = 7;
   const double Ts[] = {0.05, 0.10, 0.20, 0.35, 0.50, 0.75, 1.00};
   int i = 0;
   for (const double T : Ts) {
+    const double term_forward = fwd * std::exp((kR - 0.02) * T);
     EssviParams e{};
     e.theta = 0.04 + 0.005 * static_cast<double>(i) + vol_bump;
     e.phi = 1.5 - 0.05 * static_cast<double>(i);
@@ -80,10 +81,10 @@ constexpr std::uint32_t kUid = 7;
     e.p = 0.5;
     e.lambda = 0.5;
     e.T = T;
-    e.F = fwd;
+    e.F = term_forward;
     e.expiry_id = static_cast<std::uint16_t>(i);
     cs.push(std::make_unique<EssviCurve>(e, std::exp(-kR * T)));
-    ctx.push_back(SliceContext{T, fwd, 0.0, 0.02, 250, 7});
+    ctx.push_back(SliceContext{T, term_forward, 0.0, 0.02, 250, 7});
     ++i;
   }
   PricingContext pc;
@@ -297,6 +298,34 @@ TEST(BacktestExec, ZeroFrictionIdentity) {
   std::printf("[btexec] identity rows=%zu (default == explicit-zero, ledger cols 0)\n", a.size());
 }
 
+TEST(BacktestExec, OpeningCostReducesInceptionNavAndReturn) {
+  const fs::path dir = fresh_dir("opening-cost");
+  const Corpus c = make_corpus(dir, "SPX", 3);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const StrategySpec spec =
+      single_clip(kUid, 0.5, Side::Put,
+                  StrikeSelector{StrikeSelector::Kind::AtmForward, 0.0});
+  DeclarativeStrategy strat{spec};
+  RunConfig cfg;
+  cfg.frictions.per_contract_cost = 2.5;
+
+  auto result = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  const BacktestResult &r = *result;
+  ASSERT_EQ(r.size(), 3u);
+  ASSERT_EQ(r.cost.front(), 2.5);
+  EXPECT_EQ(r.pnl_total.front(), -r.cost.front());
+  EXPECT_EQ(r.nav.front(), -r.cost.front());
+
+  double summed_pnl = 0.0;
+  for (const double pnl : r.pnl_total) {
+    summed_pnl += pnl;
+  }
+  EXPECT_EQ(r.nav.back(), summed_pnl);
+}
+
 // ── 2. NAV reconciliation (book value increment == step_total) ──────────────
 TEST(BacktestExec, NavReconciliation) {
   const fs::path dir = fresh_dir("navrecon");
@@ -434,6 +463,65 @@ TEST(BacktestExec, Financing) {
     }
     EXPECT_GT(short_steps, 0);
     std::printf("[btexec] borrow: %d short-share steps bleeding at rate 0.05\n", short_steps);
+  }
+}
+
+TEST(BacktestExec, ShareCarryAndCashFinancingComposeWithoutDoubleFunding) {
+  const fs::path dir = fresh_dir("share-carry-composition");
+  const Corpus c = make_corpus(dir, "SPX", 3, 100.0, 0.0, 0.0);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  constexpr double target_T = 0.5;
+  constexpr double q_eff = 0.02;
+  const StrategySpec spec = single_clip(
+      kUid, target_T, Side::Call, StrikeSelector{StrikeSelector::Kind::AtmForward, 0.0},
+      HedgeSpec{HedgeSpec::Kind::DeltaToZero, HedgeSpec::Cadence::Daily, 1e-6});
+
+  auto snap0 = MarketSnapshot::load(c.dp.front().second);
+  ASSERT_TRUE(snap0.has_value()) << snap0.error().to_string();
+  const PricedSurface *surface0 = snap0->find(kUid);
+  ASSERT_NE(surface0, nullptr);
+  const double K = surface0->forward_at(target_T);
+  const std::int64_t expiry = snap0->ts_ns() + std::llround(target_T * kNsPerYear);
+
+  for (const bool finance_premium : {false, true}) {
+    for (const bool shares_carry : {false, true}) {
+      DeclarativeStrategy strat{spec};
+      RunConfig cfg;
+      cfg.financing.finance_premium = finance_premium;
+      cfg.financing.shares_carry = shares_carry;
+      cfg.financing.initial_cash = 1'000'000.0;
+
+      auto result = run_backtest(*clock, strat, cfg);
+      ASSERT_TRUE(result.has_value()) << result.error().to_string();
+      const BacktestResult &r = *result;
+      ASSERT_EQ(r.size(), c.dp.size());
+
+      for (std::size_t i = 1; i < r.size(); ++i) {
+        auto previous = MarketSnapshot::load(c.dp[i - 1].second);
+        ASSERT_TRUE(previous.has_value()) << previous.error().to_string();
+        const PricedSurface *surface = previous->find(kUid);
+        ASSERT_NE(surface, nullptr);
+        const double T = res_T(expiry, previous->ts_ns());
+        const double option_delta = lot_delta(*surface, K, T, Side::Call, 1.0, 100.0);
+        const double shares = r.gross_delta[i - 1] - option_delta;
+        const double dt = static_cast<double>(r.ts_ns[i] - r.ts_ns[i - 1]) / kNsPerYear;
+        const double spot = surface->pricing().S;
+
+        double expected = 0.0;
+        if (finance_premium) {
+          expected += r.cash[i - 1] * (std::exp(kR * dt) - 1.0);
+        }
+        if (shares_carry) {
+          const double carry_rate = finance_premium ? q_eff : q_eff - kR;
+          expected += shares * carry_rate * spot * dt;
+        }
+        EXPECT_NEAR(r.financing[i], expected, 1e-8 * (std::fabs(expected) + 1.0))
+            << "finance_premium=" << finance_premium << " shares_carry=" << shares_carry
+            << " row=" << i;
+      }
+    }
   }
 }
 

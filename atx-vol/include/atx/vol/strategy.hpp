@@ -11,9 +11,11 @@
 // constraints — so trades like "3m 25Δ put, new clip each day" or "9m 40Δ XOM
 // strangle vs 3m 40Δ SPY strangle, flat vega" are expressible with no bespoke code.
 //
-// B1 SCOPE: no frictions, no cash ledger, no hedge overlay (B2). Entries fill at
-// mid (the surface mark); PnL still flows through `pnl_explain`. `HedgeSpec` and
-// `TenorSpec::snap_to_listed` are declared but not executed here (reserved hooks).
+// B1 SCOPE: no frictions, no cash ledger, no hedge overlay (B2). Entries are
+// model-on-model continuous contracts filled at the surface mark; PnL still flows
+// through `pnl_explain`. `HedgeSpec` is executed by B2. Listed strikes, expiries,
+// quotes, and fills belong to the existing `listed_opra.hpp` workflow (see the
+// `spy_strangle_tradeable` example), not this declarative interpreter.
 
 #include <cstddef>
 #include <cstdint>
@@ -32,12 +34,13 @@ namespace atx::vol {
 
 // ── The DSL grammar ─────────────────────────────────────────────────────────
 
-// WHICH tenor: a target year-fraction, optionally snapped to a listed slice T.
-// B1 always prices on the interpolated surface at `target_T` (snap_to_listed is a
-// reserved hook, ignored here).
+// WHICH model tenor: a continuous target year-fraction on the interpolated
+// surface. This creates a synthetic model contract, not a listed OPRA contract.
+// `snap_to_listed=true` fails with NotImplemented; use the listed OPRA workflow
+// in `listed_opra.hpp` when contract identity and tradeable quotes are required.
 struct TenorSpec {
   double target_T{30.0 / 365.25}; // e.g. 0.25 (3m), 0.75 (9m)
-  bool snap_to_listed{false};     // reserved (B1: false / ignored)
+  bool snap_to_listed{false};     // true is rejected; never silently ignored
 };
 
 // WHICH strike, per leg-side.
@@ -150,9 +153,10 @@ struct StrategySpec {
 
 // ── Resolution primitives ───────────────────────────────────────────────────
 
-// A concrete option leg produced by expanding a `LegSpec` against a snapshot,
-// before sizing. `vega` is the per-share American greek vega (> 0 for both call
-// and put); `sigma` is the surface IV at (K, T).
+// A synthetic model option leg produced by expanding a `LegSpec` against a
+// snapshot, before sizing. It has continuous (K,T) surface coordinates, not a
+// listed contract identity or executable quote. `vega` is the per-share American
+// greek vega (> 0 for both call and put); `sigma` is the surface IV at (K, T).
 struct ResolvedLeg {
   std::uint32_t uid{0};
   double K{0.0};
@@ -182,8 +186,10 @@ struct SizedLeg {
 [[nodiscard]] Result<double> resolve_strike_by_delta(const PricedSurface &s, double T, Side side,
                                                      double target_abs_delta);
 
-// Resolve a `StrikeSelector` to an absolute strike K (AtmForward = F(target_T);
-// Delta = the solver; Moneyness = F * exp(value); AbsStrike = value).
+// Resolve a `StrikeSelector` to a synthetic-model absolute strike K (AtmForward =
+// F(target_T); Delta = the solver; Moneyness = F * exp(value); AbsStrike = value).
+// NotImplemented when `tenor.snap_to_listed` is true; this API has no listed
+// contract or quote provenance and never pretends a model strike is tradeable.
 [[nodiscard]] Result<double> resolve_strike(const PricedSurface &s, const TenorSpec &tenor,
                                             Side side, const StrikeSelector &sel);
 

@@ -1,15 +1,22 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "atx/core/error.hpp"
+#include "atx/vol/american.hpp"
+#include "atx/vol/counters.hpp"
 #include "atx/vol/dispersion.hpp"
 #include "atx/vol/listed_dispersion.hpp"
 #include "atx/vol/listed_dispersion_schedule.hpp"
+#include "atx/vol/priced_surface.hpp"
+#include "atx/vol/surface_parity.hpp"
+#include "atx/vol/vol_curve.hpp"
 
 using namespace atx::vol;
 
@@ -91,7 +98,87 @@ constexpr std::int64_t kExpiry = kValuation + 30 * static_cast<std::int64_t>(kLi
   return cfg;
 }
 
+[[nodiscard]] Result<PricedSurface> surface(std::uint32_t uid, double spot, double sigma) {
+  const double tenor = static_cast<double>(kExpiry - kValuation) / kNsPerYear;
+  EssviParams params{};
+  params.theta = sigma * sigma * tenor;
+  params.phi = 1.1;
+  params.rho = -0.25;
+  params.psi = 0.5;
+  params.p = 0.5;
+  params.lambda = 0.5;
+  params.T = tenor;
+  params.F = spot;
+
+  constexpr double rate = 0.04;
+  CurveSurface curves;
+  curves.push(std::make_unique<EssviCurve>(params, std::exp(-rate * tenor)));
+  std::vector<SliceContext> context{{tenor, spot, 0.0, rate, 200u, 5u}};
+
+  PricingContext pricing;
+  pricing.S = spot;
+  pricing.r = rate;
+  pricing.now_ts_ns = kValuation;
+  pricing.method = AmericanMethod::AndersenLake;
+  pricing.al_opts = al_fast_opts();
+  pricing.uid = uid;
+  return PricedSurface::create(std::move(curves), std::move(context), pricing);
+}
+
 } // namespace
+
+TEST(ListedDispersionSchedule, SurfaceAdapterUsesOnlyMarkDeltaVegaRoutes) {
+  auto index = surface(1u, 500.0, 0.22);
+  auto name0 = surface(2u, 100.0, 0.30);
+  auto name1 = surface(3u, 200.0, 0.34);
+  ASSERT_TRUE(index.has_value()) << index.error().to_string();
+  ASSERT_TRUE(name0.has_value()) << name0.error().to_string();
+  ASSERT_TRUE(name1.has_value()) << name1.error().to_string();
+  std::vector<PricedSurface> surfaces;
+  surfaces.push_back(std::move(*index));
+  surfaces.push_back(std::move(*name0));
+  surfaces.push_back(std::move(*name1));
+  std::vector<const PricedSurface *> pointers;
+  pointers.reserve(surfaces.size());
+  for (const PricedSurface &item : surfaces) {
+    pointers.push_back(&item);
+  }
+  auto set = SurfaceSet::create(pointers);
+  ASSERT_TRUE(set.has_value()) << set.error().to_string();
+
+  if constexpr (counters::counters_enabled()) {
+    counters::reset();
+  }
+  auto roll = build_listed_dispersion_roll(selection(), *set, build_config());
+  ASSERT_TRUE(roll.has_value()) << roll.error().to_string();
+
+  if constexpr (counters::counters_enabled()) {
+    const counters::Snapshot measured = counters::snapshot();
+    EXPECT_EQ(measured.get(counters::Counter::SurfaceScalarPriceRoutes), 6u);
+    EXPECT_EQ(measured.get(counters::Counter::SurfaceDeltaRoutes), 6u);
+    EXPECT_EQ(measured.get(counters::Counter::SurfaceVegaRoutes), 6u);
+    EXPECT_EQ(measured.get(counters::Counter::SurfaceFullGreekRoutes), 0u);
+    // Across three calls and three puts this fixture costs price(6) + dedicated
+    // delta(9) + dedicated vega(12) solves. The retired six full FD bundles
+    // cost 6 * 7 = 42 cold solves.
+    EXPECT_EQ(measured.get(counters::Counter::BoundarySolves), 27u);
+  } else {
+    EXPECT_FALSE(counters::snapshot().enabled);
+  }
+
+  const double tenor = static_cast<double>(kExpiry - kValuation) / kNsPerYear;
+  ASSERT_EQ(roll->legs.size(), 6u);
+  for (const ListedScheduleLeg &leg : roll->legs) {
+    const PricedSurface *priced = set->find(leg.uid);
+    ASSERT_NE(priced, nullptr);
+    const auto oracle = priced->greeks_analytic(leg.strike, tenor, leg.side);
+    ASSERT_TRUE(oracle.has_value()) << oracle.error().to_string();
+    EXPECT_NEAR(leg.model_mark, oracle->price, 1.0e-8);
+    EXPECT_NEAR(leg.delta_per_share, oracle->delta, 1.0e-7);
+    EXPECT_NEAR(leg.vega_per_unit_vol, oracle->vega,
+                1.0e-7 * std::max(1.0, std::fabs(oracle->vega)));
+  }
+}
 
 TEST(ListedDispersionSchedule, SizesShortIndexLongNamesVegaFlat) {
   auto roll = build_listed_dispersion_roll(selection(), risks(), build_config());

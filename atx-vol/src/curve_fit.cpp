@@ -169,12 +169,23 @@ void source_quote_lookup(const Chain &chain, std::span<const FitObs> obs,
   return in.expiry_rates.empty() ? in.r : in.expiry_rates[index];
 }
 
-// Phase 1: the cold, per-chain de-Am (resolve_chain_forward + the European
-// observation build) fanned out over `n_threads` workers. Pure per-chain work,
-// disjoint output slots — see `ChainPrepass` above.
+// The fit cache is a proposal accelerator only. Term-rate boards cannot reuse
+// the scalar-rate correction box, and ConvexDense remains cold because its
+// near-interpolating fit is materially more sensitive to proposal error. The
+// observation builder still cold-audits every accepted Andersen-Lake proposal.
+[[nodiscard]] bool allow_fit_cache(const SurfaceParityInputs &in, VolCurveKind kind) noexcept {
+  return in.use_deam_cache_for_fit && in.expiry_rates.empty() && in.deam.caches.any() &&
+         kind != VolCurveKind::ConvexDense;
+}
+
+// Phase 1: per-chain de-Am (resolve_chain_forward + the European observation
+// build) fanned out over `n_threads` workers. Pure per-chain work, disjoint
+// output slots — see `ChainPrepass` above.
 [[nodiscard]] std::vector<ChainPrepass> run_deam_prepass(const Underlying &under,
                                                          const SurfaceParityInputs &in,
-                                                         unsigned n_threads, bool profile) {
+                                                         VolCurveKind kind, unsigned n_threads,
+                                                         bool profile) {
+  const bool use_fit_cache = allow_fit_cache(in, kind);
   std::vector<ChainPrepass> prepass(under.chains.size());
   // Long/dense expiries have highly variable Andersen-Lake cost. Run the
   // largest boards first and let workers dynamically claim the next chain;
@@ -211,11 +222,10 @@ void source_quote_lookup(const Chain &chain, std::span<const FitObs> obs,
     const double q_eff = rate - std::log(F / in.S) / T;
     const double df = std::exp(-rate * T);
 
-    // COLD per-strike de-Am (no correction cache) at the caller's Andersen-Lake
-    // accuracy: see the HARD CONSTRAINT note on the (now sequential-only)
-    // fit/parity walk below — this pre-pass must stay cold for the same reason.
+    // Use the cache only as an audited proposal on eligible scalar-rate curve
+    // families. allow_fit_cache() keeps sensitive and incompatible paths cold.
     const AmericanCorrectionCaches fit_caches =
-        in.use_deam_cache_for_fit ? in.deam.caches : AmericanCorrectionCaches{};
+        use_fit_cache ? in.deam.caches : AmericanCorrectionCaches{};
     PreparedSliceInputs prepare_inputs;
     prepare_inputs.expiry_index = static_cast<std::uint32_t>(i);
     prepare_inputs.S = in.S;
@@ -341,7 +351,7 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
   // (perf C1) out of each committed slot instead of copying them again.
   std::vector<ChainPrepass> prepass;
   try {
-    prepass = run_deam_prepass(under, in, in.fit_workers, profile);
+    prepass = run_deam_prepass(under, in, cfg.kind, in.fit_workers, profile);
   } catch (const std::exception &e) {
     return Err(ErrorCode::Internal,
                std::string("fit_curve_surface: de-Am prepass failed: ") + e.what());
@@ -503,7 +513,7 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
         // Re-Americanize through the same cache policy that produced the one
         // canonical European row. A cold fit must not score against a cached
         // inverse map (or vice versa).
-        pin.caches = in.use_deam_cache_for_fit ? in.deam.caches : AmericanCorrectionCaches{};
+        pin.caches = allow_fit_cache(in, cfg.kind) ? in.deam.caches : AmericanCorrectionCaches{};
         auto pr = chain_parity(score.strike, score.bid, score.ask, score.mid, score.side, model_iv,
                                score.market_iv, pin);
         if (pr) {

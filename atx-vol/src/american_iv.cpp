@@ -9,7 +9,7 @@
 
 #include "atx/core/error.hpp"
 #include "atx/vol/american.hpp"
-#include "atx/vol/correction.hpp"  // CorrectionCache, american_price_cached hot path
+#include "atx/vol/correction.hpp" // CorrectionCache, american_price_cached hot path
 #include "atx/vol/implied_vol.hpp"
 #include "atx/vol/types.hpp"
 
@@ -25,13 +25,13 @@ namespace {
 // geometrically for the rare quote implying a vol above 500%.
 constexpr double kSigmaLo = 1.0e-4;
 constexpr double kSigmaHi = 5.0;
-constexpr double kSigmaHiCap = 40.0;  // hard ceiling for hi expansion
-constexpr unsigned kMaxExpand = 8;    // bounded hi-doubling budget
+constexpr double kSigmaHiCap = 40.0; // hard ceiling for hi expansion
+constexpr unsigned kMaxExpand = 8;   // bounded hi-doubling budget
 
 // American immediate-exercise value (undiscounted) and the price ceiling.
 struct NoArbBand {
-  double intrinsic;  // max(0, S-K) call / max(0, K-S) put
-  double upper;      // S call / K put
+  double intrinsic; // max(0, S-K) call / max(0, K-S) put
+  double upper;     // S call / K put
 };
 
 [[nodiscard]] NoArbBand american_band(double S, double K, Side side) noexcept {
@@ -46,9 +46,8 @@ struct NoArbBand {
 // well-placed seed; it silently yields nullopt when the American price sits
 // above the European no-arb band (common for deep-ITM American puts), leaving
 // the caller to fall back to the bracket midpoint.
-[[nodiscard]] std::optional<double> euro_seed(double price, double S, double K,
-                                              double T, double r, double q,
-                                              Side side) noexcept {
+[[nodiscard]] std::optional<double> euro_seed(double price, double S, double K, double T, double r,
+                                              double q, Side side) noexcept {
   const double F = S * std::exp((r - q) * T);
   const double df = std::exp(-r * T);
   const Result<double> iv = implied_vol(price, F, K, T, df, side);
@@ -61,56 +60,78 @@ struct NoArbBand {
 // American vega for the Newton step. `american_vega` (a null correction gives the
 // Black-76 European-leg vega, which shares the sign and scale of the American
 // vega; the bracket keeps a mis-scaled step safe) instead of the full
-// `american_greeks` bundle — the inverter only needs vega, and the bundle's
-// second-order FD terms are ~6 extra cache evaluations per Newton step. Returns 0
+// `american_greeks` bundle — the inverter only needs the sigma partial. Returns 0
 // when the vega is non-finite or non-positive, which the rtsafe range test reads
 // as "force bisection".
-[[nodiscard]] double newton_vega(double S, double K, double T, double sigma,
-                                 double r, double q, Side side,
-                                 const CorrectionCache* correction) noexcept {
-  const double v = american_vega(S, K, T, sigma, r, q, side, correction);
+[[nodiscard]] double correction_vega(double S, double K, double T, double sigma, double r, double q,
+                                     Side side, const CorrectionCache *correction) noexcept {
+  return american_vega(S, K, T, sigma, r, q, side, correction);
+}
+
+[[nodiscard]] double correction_vega(double S, double K, double T, double sigma, double r, double q,
+                                     Side side, const CorrectionBlend *correction) noexcept {
+  if (correction == nullptr) {
+    return american_vega(S, K, T, sigma, r, q, side, static_cast<const CorrectionCache *>(nullptr));
+  }
+  return american_vega(S, K, T, sigma, r, q, side, *correction);
+}
+
+template <typename Correction>
+[[nodiscard]] double newton_vega(double S, double K, double T, double sigma, double r, double q,
+                                 Side side, const Correction *correction) noexcept {
+  const double v = correction_vega(S, K, T, sigma, r, q, side, correction);
   return (std::isfinite(v) && v > 0.0) ? v : 0.0;
 }
 
 // True iff `correction` is usable as the forward map for `side`: non-null,
 // populated, and built for the SAME side (a side-mismatched cache would apply
 // the wrong early-exercise correction, so it is ignored — cold path instead).
-[[nodiscard]] bool cache_usable(const CorrectionCache* correction,
-                                Side side) noexcept {
-  return correction != nullptr && correction->populated() &&
-         correction->side() == side;
+[[nodiscard]] bool cache_usable(const CorrectionCache *correction, Side side) noexcept {
+  return correction != nullptr && correction->populated() && correction->side() == side;
 }
 
-}  // namespace
+[[nodiscard]] bool cache_usable(const CorrectionBlend *correction, Side side) noexcept {
+  return correction != nullptr && correction->usable(side);
+}
 
-Result<double> american_implied_vol(double price, double S, double K, double T,
-                                    double r, double q, Side side,
-                                    AmericanMethod method, double tol,
-                                    std::uint16_t max_iter,
-                                    const std::optional<AlOpts>& opts,
-                                    const CorrectionCache* correction,
-                                    double warm_start) noexcept {
+[[nodiscard]] double cached_price(double S, double K, double T, double sigma, double r, double q,
+                                  Side side, const CorrectionCache *correction) noexcept {
+  return american_price_cached(S, K, T, sigma, r, q, side, correction);
+}
+
+[[nodiscard]] double cached_price(double S, double K, double T, double sigma, double r, double q,
+                                  Side side, const CorrectionBlend *correction) noexcept {
+  return american_price_cached(S, K, T, sigma, r, q, side, *correction);
+}
+
+} // namespace
+
+namespace {
+
+template <typename Correction>
+Result<double> american_implied_vol_impl(double price, double S, double K, double T, double r,
+                                         double q, Side side, AmericanMethod method, double tol,
+                                         std::uint16_t max_iter, const std::optional<AlOpts> &opts,
+                                         const Correction *correction, double warm_start) noexcept {
   // Route price + vega through the cached hot path when the cache matches side.
   const bool use_cache = cache_usable(correction, side);
+  const Correction *const active_correction = use_cache ? correction : nullptr;
   // ── Boundary validation ────────────────────────────────────────────────
-  if (!std::isfinite(price) || !std::isfinite(S) || !std::isfinite(K) ||
-      !std::isfinite(T) || !std::isfinite(r) || !std::isfinite(q)) {
+  if (!std::isfinite(price) || !std::isfinite(S) || !std::isfinite(K) || !std::isfinite(T) ||
+      !std::isfinite(r) || !std::isfinite(q)) {
     return Err(ErrorCode::OutOfRange, "american_implied_vol: non-finite input");
   }
   if (S <= 0.0 || K <= 0.0 || T <= 0.0) {
-    return Err(ErrorCode::InvalidArgument,
-               "american_implied_vol: S/K/T must be > 0");
+    return Err(ErrorCode::InvalidArgument, "american_implied_vol: S/K/T must be > 0");
   }
 
   const NoArbBand band = american_band(S, K, side);
   const double band_tol = 1.0e-9 * band.upper + 1.0e-12;
   if (price < band.intrinsic - band_tol) {
-    return Err(ErrorCode::OutOfRange,
-               "american_implied_vol: price below intrinsic");
+    return Err(ErrorCode::OutOfRange, "american_implied_vol: price below intrinsic");
   }
   if (price > band.upper + band_tol) {
-    return Err(ErrorCode::OutOfRange,
-               "american_implied_vol: price above upper bound");
+    return Err(ErrorCode::OutOfRange, "american_implied_vol: price above upper bound");
   }
   // A price at intrinsic implies sigma -> 0 (no finite IV above the floor);
   // mirror the European inverter and clamp to the vol floor.
@@ -135,8 +156,7 @@ Result<double> american_implied_vol(double price, double S, double K, double T,
   // price surfaces as an Internal error rather than an unbounded bracket.
   const auto residual = [&](double sigma) -> Result<double> {
     if (use_cache) {
-      const double p =
-          american_price_cached(S, K, T, sigma, r, q, side, correction);
+      const double p = cached_price(S, K, T, sigma, r, q, side, active_correction);
       if (!std::isfinite(p)) {
         return Err(ErrorCode::Internal,
                    "american_implied_vol: cached pricer produced a non-finite price");
@@ -153,7 +173,7 @@ Result<double> american_implied_vol(double price, double S, double K, double T,
     }
     Result<double> p = american_price(S, K, T, sigma, r, q, side, method, opts);
     if (!p) {
-      return p;  // propagate the pricer's Error
+      return p; // propagate the pricer's Error
     }
     return Ok(*p - price);
   };
@@ -170,8 +190,8 @@ Result<double> american_implied_vol(double price, double S, double K, double T,
   // (American ~ European, root within a few percent of the seed) the entire
   // bracket-and-polish is warm. A caller warm_start (a prior nearby sigma) is used
   // as the seed when valid; the safeguarded Newton below makes any seed safe.
-  double xl = 0.0;  // residual(xl) < 0
-  double xh = 0.0;  // residual(xh) >= 0
+  double xl = 0.0; // residual(xl) < 0
+  double xh = 0.0; // residual(xh) >= 0
   double rts = 0.0;
   double f = 0.0;
   bool bracketed = false;
@@ -179,8 +199,7 @@ Result<double> american_implied_vol(double price, double S, double K, double T,
   double seed = 0.0;
   if (warm_start > kSigmaLo && warm_start < kSigmaHi) {
     seed = warm_start;
-  } else if (const std::optional<double> es =
-                 euro_seed(price, S, K, T, r, q, side)) {
+  } else if (const std::optional<double> es = euro_seed(price, S, K, T, r, q, side)) {
     if (*es > kSigmaLo && *es < kSigmaHi) {
       seed = *es;
     }
@@ -189,7 +208,7 @@ Result<double> american_implied_vol(double price, double S, double K, double T,
   if (seed > 0.0) {
     ATX_TRY(double f_seed, residual(seed));
     if (f_seed == 0.0) {
-      return Ok(seed);  // seed is the root
+      return Ok(seed); // seed is the root
     }
     rts = seed;
     f = f_seed;
@@ -200,7 +219,7 @@ Result<double> american_implied_vol(double price, double S, double K, double T,
       xh = seed;
       double s_lo = seed;
       for (unsigned e = 0; e < 16; ++e) {
-        s_lo *= 0.93;  // ~7% < the 12% AloPricer warm-reseed band
+        s_lo *= 0.93; // ~7% < the 12% AloPricer warm-reseed band
         if (s_lo <= kSigmaLo) {
           s_lo = kSigmaLo;
         }
@@ -233,8 +252,7 @@ Result<double> american_implied_vol(double price, double S, double K, double T,
         }
       }
       if (!bracketed) {
-        return Err(ErrorCode::OutOfRange,
-                   "american_implied_vol: price above max-vol price");
+        return Err(ErrorCode::OutOfRange, "american_implied_vol: price above max-vol price");
       }
     }
   }
@@ -251,14 +269,13 @@ Result<double> american_implied_vol(double price, double S, double K, double T,
     double b = kSigmaHi;
     ATX_TRY(double fb, residual(b));
     for (unsigned e = 0; fb < 0.0 && b < kSigmaHiCap && e < kMaxExpand; ++e) {
-      a = b;  // f(a) < 0 preserved (the old b was still on the negative side)
+      a = b; // f(a) < 0 preserved (the old b was still on the negative side)
       b = std::fmin(b * 2.0, kSigmaHiCap);
       ATX_TRY(double fb_next, residual(b));
       fb = fb_next;
     }
     if (fb < 0.0) {
-      return Err(ErrorCode::OutOfRange,
-                 "american_implied_vol: price above max-vol price");
+      return Err(ErrorCode::OutOfRange, "american_implied_vol: price above max-vol price");
     }
     xl = a;
     xh = b;
@@ -268,23 +285,22 @@ Result<double> american_implied_vol(double price, double S, double K, double T,
   }
 
   // ── Safeguarded Newton (rtsafe): oriented so f(xl) < 0 < f(xh) ─────────
-  bool converged = (f == 0.0);  // seed landed exactly on the root
+  bool converged = (f == 0.0); // seed landed exactly on the root
   double dx = xh - xl;
   double dx_old = dx;
-  double df = converged ? 0.0 : newton_vega(S, K, T, rts, r, q, side, correction);
+  double df = converged ? 0.0 : newton_vega(S, K, T, rts, r, q, side, active_correction);
 
   for (std::uint16_t iter = 0; !converged && iter < max_iter; ++iter) {
     // Bisect when the Newton iterate would leave [xl, xh] or is not shrinking
     // the step by at least half — this is what guarantees convergence.
-    const bool newton_out =
-        (((rts - xh) * df - f) * ((rts - xl) * df - f)) > 0.0;
+    const bool newton_out = (((rts - xh) * df - f) * ((rts - xl) * df - f)) > 0.0;
     const bool newton_slow = std::fabs(2.0 * f) > std::fabs(dx_old * df);
     dx_old = dx;
     if (newton_out || newton_slow) {
       dx = 0.5 * (xh - xl);
       rts = xl + dx;
       if (rts == xl) {
-        converged = true;  // interval collapsed to a representable point
+        converged = true; // interval collapsed to a representable point
         break;
       }
     } else {
@@ -292,7 +308,7 @@ Result<double> american_implied_vol(double price, double S, double K, double T,
       const double prev = rts;
       rts -= dx;
       if (rts == prev) {
-        converged = true;  // step below one ULP
+        converged = true; // step below one ULP
         break;
       }
     }
@@ -303,13 +319,13 @@ Result<double> american_implied_vol(double price, double S, double K, double T,
 
     ATX_TRY(double f_next, residual(rts));
     f = f_next;
-    df = newton_vega(S, K, T, rts, r, q, side, correction);
+    df = newton_vega(S, K, T, rts, r, q, side, active_correction);
     if (f < 0.0) {
       xl = rts;
     } else if (f > 0.0) {
       xh = rts;
     } else {
-      converged = true;  // exact hit
+      converged = true; // exact hit
       break;
     }
   }
@@ -334,7 +350,7 @@ Result<double> american_implied_vol(double price, double S, double K, double T,
   if (alo) {
     for (int k = 0; k < 2; ++k) {
       ATX_TRY(double pc, american_price(S, K, T, rts, r, q, side, method, opts));
-      const double v = newton_vega(S, K, T, rts, r, q, side, correction);
+      const double v = newton_vega(S, K, T, rts, r, q, side, active_correction);
       if (!(v > 0.0)) {
         break;
       }
@@ -342,7 +358,7 @@ Result<double> american_implied_vol(double price, double S, double K, double T,
       const double prev = rts;
       rts -= step;
       if (!(rts > 0.0)) {
-        rts = prev;  // keep the last valid iterate
+        rts = prev; // keep the last valid iterate
         break;
       }
       if (std::fabs(step) < tol) {
@@ -353,23 +369,37 @@ Result<double> american_implied_vol(double price, double S, double K, double T,
   return Ok(rts);
 }
 
+} // namespace
+
+Result<double> american_implied_vol(double price, double S, double K, double T, double r, double q,
+                                    Side side, AmericanMethod method, double tol,
+                                    std::uint16_t max_iter, const std::optional<AlOpts> &opts,
+                                    const CorrectionCache *correction, double warm_start) noexcept {
+  return american_implied_vol_impl(price, S, K, T, r, q, side, method, tol, max_iter, opts,
+                                   correction, warm_start);
+}
+
+Result<double> american_implied_vol(double price, double S, double K, double T, double r, double q,
+                                    Side side, const CorrectionBlend &correction,
+                                    AmericanMethod method, double tol, std::uint16_t max_iter,
+                                    const std::optional<AlOpts> &opts, double warm_start) noexcept {
+  return american_implied_vol_impl(price, S, K, T, r, q, side, method, tol, max_iter, opts,
+                                   &correction, warm_start);
+}
+
 Status american_implied_vol_batch(std::span<const double> price, double S,
-                                  std::span<const double> K, double T, double r,
-                                  double q, Side side, std::span<double> iv_out,
-                                  std::span<Status> status_out,
-                                  AmericanMethod method, double tol,
-                                  std::uint16_t max_iter,
-                                  const std::optional<AlOpts>& opts,
-                                  const CorrectionCache* correction) {
+                                  std::span<const double> K, double T, double r, double q,
+                                  Side side, std::span<double> iv_out, std::span<Status> status_out,
+                                  AmericanMethod method, double tol, std::uint16_t max_iter,
+                                  const std::optional<AlOpts> &opts,
+                                  const CorrectionCache *correction) {
   const std::size_t n = price.size();
   if (K.size() != n || iv_out.size() != n || status_out.size() != n) {
-    return Err(ErrorCode::InvalidArgument,
-               "american_implied_vol_batch: span length mismatch");
+    return Err(ErrorCode::InvalidArgument, "american_implied_vol_batch: span length mismatch");
   }
   for (std::size_t i = 0; i < n; ++i) {
-    Result<double> iv = american_implied_vol(price[i], S, K[i], T, r, q, side,
-                                             method, tol, max_iter, opts,
-                                             correction);
+    Result<double> iv = american_implied_vol(price[i], S, K[i], T, r, q, side, method, tol,
+                                             max_iter, opts, correction);
     if (iv) {
       iv_out[i] = *iv;
       status_out[i] = Ok();
@@ -382,4 +412,4 @@ Status american_implied_vol_batch(std::span<const double> price, double S,
   return Ok();
 }
 
-}  // namespace atx::vol
+} // namespace atx::vol

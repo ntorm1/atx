@@ -159,6 +159,7 @@ collect_quality(const CorpusBoard &board, const OptionChain &chain, const Pricer
     scoring.calib = resolved.calib;
     scoring.band_k = resolved.band_k;
     scoring.repair = resolved.calendar_repair;
+    scoring.fit_workers = resolved.fit_workers;
     scoring.score_parity = resolved.score_parity;
     scoring.enforce_calendar_floor = resolved.enforce_calendar_floor;
     scoring.use_deam_cache_for_fit = resolved.use_deam_cache_for_fit;

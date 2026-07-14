@@ -357,6 +357,69 @@ TEST(CurveSelector, NoScorableCandidateReturnsZero) {
   EXPECT_EQ(select_best_candidate(scores, kMargin), 0u);
 }
 
+TEST(SelectorBudget, UnlimitedDefaultEvaluatesEveryCandidate) {
+  const Underlying under = make_bumpy_underlying();
+  const SurfaceParityInputs in = bumpy_inputs();
+
+  const auto selected = select_curve(under, in);
+  ASSERT_TRUE(selected.has_value()) << selected.error().to_string();
+  EXPECT_FALSE(selected->budget_exhausted);
+  EXPECT_EQ(selected->scores_evaluated, selected->scores.size());
+  EXPECT_EQ(selected->scores.size(), default_selector_candidates().size());
+}
+
+TEST(SelectorBudget, ExpiredBudgetStopsOnlyBetweenCompletedCandidates) {
+  const Underlying under = make_bumpy_underlying();
+  const SurfaceParityInputs in = bumpy_inputs();
+
+  CurveConfig essvi;
+  essvi.kind = VolCurveKind::Essvi;
+  CurveConfig c8;
+  c8.kind = VolCurveKind::C8;
+  CurveConfig convex;
+  convex.kind = VolCurveKind::ConvexDense;
+  SelectorConfig config;
+  config.candidates = {essvi, c8, convex};
+  config.time_budget_ms = 0.001;
+
+  const auto selected = select_curve(under, in, config);
+  ASSERT_TRUE(selected.has_value()) << selected.error().to_string();
+  EXPECT_TRUE(selected->budget_exhausted);
+  EXPECT_EQ(selected->scores_evaluated, 1u);
+  EXPECT_EQ(selected->scores.size(), 1u);
+  EXPECT_EQ(selected->chosen.kind, VolCurveKind::Essvi);
+}
+
+TEST(SelectorBudget, ExpiredBudgetCannotStarveFirstSelectableCandidate) {
+  const Underlying under = make_bumpy_underlying();
+  const SurfaceParityInputs in = bumpy_inputs();
+
+  CurveConfig impossible;
+  impossible.kind = VolCurveKind::SplineVol;
+  impossible.spline.min_obs = 1000u;
+  CurveConfig essvi;
+  essvi.kind = VolCurveKind::Essvi;
+  CurveConfig c8;
+  c8.kind = VolCurveKind::C8;
+  SelectorConfig config;
+  config.candidates = {impossible, essvi, c8};
+  config.time_budget_ms = 0.001;
+
+  const auto selected = select_curve(under, in, config);
+  ASSERT_TRUE(selected.has_value()) << selected.error().to_string();
+  EXPECT_TRUE(selected->budget_exhausted);
+  EXPECT_EQ(selected->scores_evaluated, 2u);
+  EXPECT_EQ(selected->scores.size(), 2u);
+  EXPECT_EQ(selected->chosen_index, 1u);
+  EXPECT_EQ(selected->chosen.kind, VolCurveKind::Essvi);
+}
+
+TEST(SelectorBudget, RejectsNegativeBudget) {
+  SelectorConfig config;
+  config.time_budget_ms = -1.0;
+  EXPECT_FALSE(select_curve(make_bumpy_underlying(), bumpy_inputs(), config).has_value());
+}
+
 // Task I5.3: the per-kind butterfly gate (`detail::slice_butterfly_violations`,
 // the mapping `select_curve` applies to every fitted candidate slice before
 // scoring) must read SplineVol's OWN fitted diagnostic count

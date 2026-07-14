@@ -4,12 +4,14 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <utility>
 
 #include "atx/vol/american.hpp"
 #include "atx/vol/black76.hpp"
 #include "atx/vol/correction.hpp"
 #include "atx/vol/counters.hpp"
+#include "atx/vol/greeks.hpp"
 
 // American-correction cache coverage, ported from the C ats-vol tests
 // test_correction_cache.c and test_amer_clamp_policy.c:
@@ -24,9 +26,11 @@ namespace {
 
 using atx::vol::andersen_lake;
 using atx::vol::black76_price;
+using atx::vol::CorrectionBlend;
 using atx::vol::CorrectionCache;
 using atx::vol::CorrPartials;
 using atx::vol::CorrResult;
+using atx::vol::CorrSecondOrder;
 using atx::vol::ExtrapPolicy;
 using atx::vol::Side;
 namespace detail = atx::vol::detail;
@@ -71,8 +75,10 @@ TEST(Chebyshev, Clenshaw_MatchesDirectSum) {
     coefs[k] = 0.1 * std::sin(static_cast<double>(k) + 1.0) - 0.05 * static_cast<double>(k);
   }
   const auto cheb_T = [](std::uint16_t k, double x) {
-    if (k == 0) return 1.0;
-    if (k == 1) return x;
+    if (k == 0)
+      return 1.0;
+    if (k == 1)
+      return x;
     double t0 = 1.0, t1 = x, t2 = 0.0;
     for (std::uint16_t i = 2; i <= k; ++i) {
       t2 = 2.0 * x * t1 - t0;
@@ -114,8 +120,7 @@ TEST(Chebyshev, DiffCoefs_MatchesAnalyticDerivative) {
   detail::cheb_diff_coefs(coefs.data(), dcoefs.data(), N, 1.0);
   for (int i = -9; i <= 9; ++i) {
     const double x = 0.1 * static_cast<double>(i);
-    EXPECT_LT(std::fabs(2.0 * std::cos(2.0 * x) -
-                        detail::cheb_clenshaw1d(dcoefs.data(), N, x)),
+    EXPECT_LT(std::fabs(2.0 * std::cos(2.0 * x) - detail::cheb_clenshaw1d(dcoefs.data(), N, x)),
               1.0e-9);
   }
 }
@@ -166,20 +171,20 @@ TEST(Chebyshev, Clenshaw3dPartial_MatchesAnalytic) {
   const double xi = 0.3, xj = -0.2, xk = 0.1;
 
   const double exact_di = 0.3 * std::exp(0.3 * xi) * std::cos(xj) * (1.0 + 0.2 * xk * xk);
-  EXPECT_LT(std::fabs(detail::cheb_clenshaw3d_partial(vals.data(), n_k, n_T, n_s,
-                                                      xi, xj, xk, 0, 1.0, tmp.data()) -
+  EXPECT_LT(std::fabs(detail::cheb_clenshaw3d_partial(vals.data(), n_k, n_T, n_s, xi, xj, xk, 0,
+                                                      1.0, tmp.data()) -
                       exact_di),
             1.0e-8);
 
   const double exact_dj = -std::exp(0.3 * xi) * std::sin(xj) * (1.0 + 0.2 * xk * xk);
-  EXPECT_LT(std::fabs(detail::cheb_clenshaw3d_partial(vals.data(), n_k, n_T, n_s,
-                                                      xi, xj, xk, 1, 1.0, tmp.data()) -
+  EXPECT_LT(std::fabs(detail::cheb_clenshaw3d_partial(vals.data(), n_k, n_T, n_s, xi, xj, xk, 1,
+                                                      1.0, tmp.data()) -
                       exact_dj),
             1.0e-8);
 
   const double exact_dk = 0.4 * xk * std::exp(0.3 * xi) * std::cos(xj);
-  EXPECT_LT(std::fabs(detail::cheb_clenshaw3d_partial(vals.data(), n_k, n_T, n_s,
-                                                      xi, xj, xk, 2, 1.0, tmp.data()) -
+  EXPECT_LT(std::fabs(detail::cheb_clenshaw3d_partial(vals.data(), n_k, n_T, n_s, xi, xj, xk, 2,
+                                                      1.0, tmp.data()) -
                       exact_dk),
             1.0e-8);
 }
@@ -247,10 +252,11 @@ TEST(Chebyshev, DerivTensors_EvalPartialsBitIdenticalToLive) {
   std::array<double, detail::kChebMaxNodes> drow{};
   for (std::uint16_t j = 0; j < n_T; ++j)
     for (std::uint16_t k = 0; k < n_s; ++k) {
-      const double* row = coefs.data() + detail::cheb_idx(0, j, k, n_k, n_s);
+      const double *row = coefs.data() + detail::cheb_idx(0, j, k, n_k, n_s);
       detail::cheb_diff_coefs(row, drow.data(), n_k, scale_k);
-      double* orow = Ck.data() + detail::cheb_idx(0, j, k, n_k, n_s);
-      for (std::uint16_t i = 0; i < n_k; ++i) orow[i] = drow[i];
+      double *orow = Ck.data() + detail::cheb_idx(0, j, k, n_k, n_s);
+      for (std::uint16_t i = 0; i < n_k; ++i)
+        orow[i] = drow[i];
     }
 
   std::array<double, 64 * 64> tmp{};
@@ -260,8 +266,8 @@ TEST(Chebyshev, DerivTensors_EvalPartialsBitIdenticalToLive) {
         const double xi = 0.2 * static_cast<double>(a);
         const double xj = 0.2 * static_cast<double>(b);
         const double xk = 0.2 * static_cast<double>(c);
-        const double live = detail::cheb_clenshaw3d_partial(
-            coefs.data(), n_k, n_T, n_s, xi, xj, xk, 0, scale_k, tmp.data());
+        const double live = detail::cheb_clenshaw3d_partial(coefs.data(), n_k, n_T, n_s, xi, xj, xk,
+                                                            0, scale_k, tmp.data());
         const double pre =
             detail::cheb_clenshaw3d(Ck.data(), n_k, n_T, n_s, xi, xj, xk, tmp.data());
         EXPECT_EQ(std::bit_cast<std::uint64_t>(pre), std::bit_cast<std::uint64_t>(live))
@@ -273,8 +279,8 @@ TEST(Chebyshev, DerivTensors_EvalPartialsBitIdenticalToLive) {
 
 TEST(CorrectionCache, PopulateEval_MatchesAndersenLake_PutGrid) {
   const double r = 0.05, q = 0.0;
-  auto built = CorrectionCache::build(24, 16, 12, r, q, -0.5, 0.5,
-                                      30.0 / 365.25, 2.0, 0.10, 0.80, Side::Put);
+  auto built = CorrectionCache::build(24, 16, 12, r, q, -0.5, 0.5, 30.0 / 365.25, 2.0, 0.10, 0.80,
+                                      Side::Put);
   ASSERT_TRUE(built.has_value());
   const CorrectionCache tbl = std::move(*built);
 
@@ -283,11 +289,17 @@ TEST(CorrectionCache, PopulateEval_MatchesAndersenLake_PutGrid) {
   double sum_sq_err = 0.0;
   int n_eval = 0;
   for (int i = 0; i < 200; ++i) {
-    seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17;
+    seed ^= seed << 13;
+    seed ^= seed >> 7;
+    seed ^= seed << 17;
     const double u1 = static_cast<double>(seed & 0xFFFFFFFFu) / 4294967296.0;
-    seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17;
+    seed ^= seed << 13;
+    seed ^= seed >> 7;
+    seed ^= seed << 17;
     const double u2 = static_cast<double>(seed & 0xFFFFFFFFu) / 4294967296.0;
-    seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17;
+    seed ^= seed << 13;
+    seed ^= seed >> 7;
+    seed ^= seed << 17;
     const double u3 = static_cast<double>(seed & 0xFFFFFFFFu) / 4294967296.0;
 
     const double k_log = -0.45 + 0.90 * u1;
@@ -315,8 +327,8 @@ TEST(CorrectionCache, PopulateEval_MatchesAndersenLake_PutGrid) {
 
 TEST(CorrectionCache, PopulateEval_MatchesAndersenLake_CallWithDividend) {
   const double r = 0.02, q = 0.05;
-  auto built = CorrectionCache::build(24, 16, 12, r, q, -0.5, 0.5,
-                                      30.0 / 365.25, 2.0, 0.10, 0.80, Side::Call);
+  auto built = CorrectionCache::build(24, 16, 12, r, q, -0.5, 0.5, 30.0 / 365.25, 2.0, 0.10, 0.80,
+                                      Side::Call);
   ASSERT_TRUE(built.has_value());
   const CorrectionCache tbl = std::move(*built);
 
@@ -324,11 +336,17 @@ TEST(CorrectionCache, PopulateEval_MatchesAndersenLake_CallWithDividend) {
   double max_abs_err = 0.0;
   int n_eval = 0;
   for (int i = 0; i < 200; ++i) {
-    seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17;
+    seed ^= seed << 13;
+    seed ^= seed >> 7;
+    seed ^= seed << 17;
     const double u1 = static_cast<double>(seed & 0xFFFFFFFFu) / 4294967296.0;
-    seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17;
+    seed ^= seed << 13;
+    seed ^= seed >> 7;
+    seed ^= seed << 17;
     const double u2 = static_cast<double>(seed & 0xFFFFFFFFu) / 4294967296.0;
-    seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17;
+    seed ^= seed << 13;
+    seed ^= seed >> 7;
+    seed ^= seed << 17;
     const double u3 = static_cast<double>(seed & 0xFFFFFFFFu) / 4294967296.0;
 
     const double k_log = -0.45 + 0.90 * u1;
@@ -350,8 +368,8 @@ TEST(CorrectionCache, PopulateEval_MatchesAndersenLake_CallWithDividend) {
 }
 
 TEST(CorrectionCache, Eval_IsNonNegativeAcrossBox) {
-  auto built = CorrectionCache::build(24, 16, 12, 0.05, 0.0, -0.5, 0.5,
-                                      30.0 / 365.25, 2.0, 0.10, 0.80, Side::Put);
+  auto built = CorrectionCache::build(24, 16, 12, 0.05, 0.0, -0.5, 0.5, 30.0 / 365.25, 2.0, 0.10,
+                                      0.80, Side::Put);
   ASSERT_TRUE(built.has_value());
   const CorrectionCache tbl = std::move(*built);
   for (int a = 0; a < 5; ++a)
@@ -400,8 +418,8 @@ TEST(CorrectionCache, Build_RejectsInvertedBox) {
 // ── Extrapolation policy (out-of-box query behaviour) ───────────────────
 
 CorrectionCache make_small_correction() {
-  auto built = CorrectionCache::build(8, 6, 6, 0.05, 0.0, -0.3, 0.3, 0.10, 1.0,
-                                      0.15, 0.60, Side::Put);
+  auto built =
+      CorrectionCache::build(8, 6, 6, 0.05, 0.0, -0.3, 0.3, 0.10, 1.0, 0.15, 0.60, Side::Put);
   EXPECT_TRUE(built.has_value());
   return built ? std::move(*built) : CorrectionCache{};
 }
@@ -425,13 +443,11 @@ TEST(CorrectionCacheExtrap, NanOutside_ReturnsNanValue) {
   ASSERT_TRUE(tbl.set_extrap_policy(ExtrapPolicy::NanOutside).has_value());
   EXPECT_EQ(tbl.extrap_policy(), ExtrapPolicy::NanOutside);
 
-  const auto in_box =
-      tbl.query(0.05, 0.4, 0.30, CorrPartials::Value | CorrPartials::Dsigma);
+  const auto in_box = tbl.query(0.05, 0.4, 0.30, CorrPartials::Value | CorrPartials::Dsigma);
   ASSERT_TRUE(in_box.has_value());
   EXPECT_TRUE(std::isfinite(in_box->value));
 
-  const auto oob_k =
-      tbl.query(0.5, 0.4, 0.30, CorrPartials::Value | CorrPartials::Dsigma);
+  const auto oob_k = tbl.query(0.5, 0.4, 0.30, CorrPartials::Value | CorrPartials::Dsigma);
   ASSERT_TRUE(oob_k.has_value());
   EXPECT_TRUE(std::isnan(oob_k->value));
   EXPECT_EQ(oob_k->dsigma, 0.0);
@@ -465,8 +481,8 @@ TEST(CorrectionCacheExtrap, SetPolicy_RejectsInvalid) {
 
 TEST(CorrectionCache, CachedPrice_MatchesColdAndersenLake) {
   const double r = 0.05, q = 0.0;
-  auto built = CorrectionCache::build(24, 16, 12, r, q, -0.5, 0.5,
-                                      30.0 / 365.25, 2.0, 0.10, 0.80, Side::Put);
+  auto built = CorrectionCache::build(24, 16, 12, r, q, -0.5, 0.5, 30.0 / 365.25, 2.0, 0.10, 0.80,
+                                      Side::Put);
   ASSERT_TRUE(built.has_value());
   const CorrectionCache tbl = std::move(*built);
 
@@ -485,14 +501,14 @@ TEST(CorrectionCache, CachedPrice_MatchesColdAndersenLake) {
 TEST(CorrectionCache, PutRowCollapse_SolveCount) {
   constexpr std::uint16_t n_k = 12, n_T = 6, n_s = 4;
   if constexpr (!atx::vol::counters::counters_enabled()) {
-    auto built = CorrectionCache::build(n_k, n_T, n_s, 0.05, 0.0, -0.5, 0.5,
-                                        30.0 / 365.25, 2.0, 0.10, 0.80, Side::Put);
+    auto built = CorrectionCache::build(n_k, n_T, n_s, 0.05, 0.0, -0.5, 0.5, 30.0 / 365.25, 2.0,
+                                        0.10, 0.80, Side::Put);
     ASSERT_TRUE(built.has_value());
     GTEST_SKIP() << "ATX_VOL_COUNTERS off: rebuild with -DATX_VOL_COUNTERS=ON";
   } else {
     atx::vol::counters::reset();
-    auto built = CorrectionCache::build(n_k, n_T, n_s, 0.05, 0.0, -0.5, 0.5,
-                                        30.0 / 365.25, 2.0, 0.10, 0.80, Side::Put);
+    auto built = CorrectionCache::build(n_k, n_T, n_s, 0.05, 0.0, -0.5, 0.5, 30.0 / 365.25, 2.0,
+                                        0.10, 0.80, Side::Put);
     ASSERT_TRUE(built.has_value());
     const auto snap = atx::vol::counters::snapshot();
     EXPECT_TRUE(snap.enabled);
@@ -516,8 +532,8 @@ TEST(CorrectionCache, PutRowCollapse_SolveCount) {
 // pre-hoist n_T*n_s + n_s + 1.
 TEST(CorrectionCache, DerivTensors_KLogPartial_NoPerQueryDiffCoefs) {
   constexpr std::uint16_t n_k = 12, n_T = 6, n_s = 8;
-  auto built = CorrectionCache::build(n_k, n_T, n_s, 0.05, 0.0, -0.5, 0.5,
-                                      30.0 / 365.25, 2.0, 0.10, 0.80, Side::Put);
+  auto built = CorrectionCache::build(n_k, n_T, n_s, 0.05, 0.0, -0.5, 0.5, 30.0 / 365.25, 2.0, 0.10,
+                                      0.80, Side::Put);
   ASSERT_TRUE(built.has_value());
   const CorrectionCache tbl = std::move(*built);
 
@@ -553,50 +569,280 @@ TEST(CorrectionCache, DerivTensors_KLogPartial_NoPerQueryDiffCoefs) {
 // silently encoding a pure-European surface. Reject the build up front.
 TEST(CorrectionCache, Build_RejectsUnsupportedRegime) {
   // Double-continuation PUT (q < r <= 0).
-  auto rp = CorrectionCache::build(8, 8, 8, -0.005, -0.02, -0.5, 0.5, 0.1, 1.0,
-                                   0.1, 0.5, Side::Put);
+  auto rp =
+      CorrectionCache::build(8, 8, 8, -0.005, -0.02, -0.5, 0.5, 0.1, 1.0, 0.1, 0.5, Side::Put);
   ASSERT_FALSE(rp.has_value());
   EXPECT_EQ(rp.error().code(), atx::core::ErrorCode::NotImplemented);
   // Double-continuation CALL (r < q <= 0).
-  auto rc = CorrectionCache::build(8, 8, 8, -0.02, -0.005, -0.5, 0.5, 0.1, 1.0,
-                                   0.1, 0.5, Side::Call);
+  auto rc =
+      CorrectionCache::build(8, 8, 8, -0.02, -0.005, -0.5, 0.5, 0.1, 1.0, 0.1, 0.5, Side::Call);
   ASSERT_FALSE(rc.has_value());
   EXPECT_EQ(rc.error().code(), atx::core::ErrorCode::NotImplemented);
   // European corner (put r <= 0 && r <= q) is NOT unsupported — it still builds.
-  auto re = CorrectionCache::build(8, 8, 8, -0.02, -0.005, -0.5, 0.5, 0.1, 1.0,
-                                   0.1, 0.5, Side::Put);
+  auto re =
+      CorrectionCache::build(8, 8, 8, -0.02, -0.005, -0.5, 0.5, 0.1, 1.0, 0.1, 0.5, Side::Put);
   EXPECT_TRUE(re.has_value());
 }
 
 // Fix-wave 1b: the POPULATED-cache hot path must return NaN when queried in the
 // Unsupported regime (the guard keys off the query's (r, q), not the cache's).
 TEST(CorrectionCache, CachedPrice_UnsupportedRegime_ReturnsNaN) {
-  const double r = 0.05, q = 0.0;  // American put — a valid, populated cache
-  auto built = CorrectionCache::build(16, 12, 8, r, q, -0.5, 0.5, 0.1, 2.0, 0.1,
-                                      0.8, Side::Put);
+  const double r = 0.05, q = 0.0; // American put — a valid, populated cache
+  auto built = CorrectionCache::build(16, 12, 8, r, q, -0.5, 0.5, 0.1, 2.0, 0.1, 0.8, Side::Put);
   ASSERT_TRUE(built.has_value());
   const CorrectionCache tbl = std::move(*built);
   // Query at an Unsupported (r, q): guard must surface NaN, not euro+F*corr.
-  const double px = atx::vol::american_price_cached(100.0, 100.0, 1.0, 0.30,
-                                                    -0.005, -0.02, Side::Put, &tbl);
+  const double px =
+      atx::vol::american_price_cached(100.0, 100.0, 1.0, 0.30, -0.005, -0.02, Side::Put, &tbl);
   EXPECT_TRUE(std::isnan(px));
 }
 
-// ── Task 3: bit-identity pins for the value-sweep / scratch waste removal ──
-//
-// These lock the exact double bit patterns of eval / eval_grad / eval_partials
-// and the american_greeks bundle so that removing the discarded value sweep and
-// right-sizing the Clenshaw scratch is provably output-preserving. The expected
-// hex was captured from the PRE-change Release/Debug build; if any of these move,
-// the "pure waste removal" claim is false.
+// ── Fused second-order correction jet ───────────────────────────────────────
+TEST(CorrectionCache, SecondOrderJet_MatchesIndependentFiniteDifferences) {
+  auto built = CorrectionCache::build(/*n_k=*/16, /*n_T=*/8, /*n_s=*/12,
+                                      /*r=*/0.05, /*q=*/0.0,
+                                      /*k_log_min=*/-0.5, /*k_log_max=*/0.5,
+                                      /*T_min=*/0.05, /*T_max=*/2.0,
+                                      /*sigma_min=*/0.10, /*sigma_max=*/0.80, Side::Put);
+  ASSERT_TRUE(built.has_value());
+  const CorrectionCache tbl = std::move(*built);
+
+  constexpr double k = -0.08;
+  constexpr double T = 0.65;
+  constexpr double sigma = 0.32;
+  constexpr double hk = 1.0e-5;
+  constexpr double hT = 1.0e-5;
+  constexpr double hs = 1.0e-5;
+  const auto jet = tbl.eval_second_order(k, T, sigma);
+
+  double dk = 0.0;
+  double dT = 0.0;
+  double ds = 0.0;
+  const double value = tbl.eval_grad(k, T, sigma, &dk, &dT, &ds);
+  EXPECT_NEAR(jet.value, value, 1.0e-14);
+  EXPECT_NEAR(jet.dk_log, dk, 1.0e-12);
+  EXPECT_NEAR(jet.dT, dT, 1.0e-12);
+  EXPECT_NEAR(jet.dsigma, ds, 1.0e-12);
+
+  const auto partials = [&tbl](double qk, double qT, double qs) {
+    std::array<double, 3> out{};
+    tbl.eval_partials(qk, qT, qs, &out[0], &out[1], &out[2]);
+    return out;
+  };
+  const auto k_up = partials(k + hk, T, sigma);
+  const auto k_dn = partials(k - hk, T, sigma);
+  const auto T_up = partials(k, T + hT, sigma);
+  const auto T_dn = partials(k, T - hT, sigma);
+  const auto s_up = partials(k, T, sigma + hs);
+  const auto s_dn = partials(k, T, sigma - hs);
+
+  EXPECT_NEAR(jet.dkk, (k_up[0] - k_dn[0]) / (2.0 * hk), 1.0e-7);
+  EXPECT_NEAR(jet.dk_dT, (T_up[0] - T_dn[0]) / (2.0 * hT), 1.0e-7);
+  EXPECT_NEAR(jet.dk_dsigma, (s_up[0] - s_dn[0]) / (2.0 * hs), 1.0e-7);
+  EXPECT_NEAR(jet.dsigma2, (s_up[2] - s_dn[2]) / (2.0 * hs), 1.0e-7);
+
+  const auto clamped = tbl.eval_second_order(/*k_log=*/0.8, /*T=*/0.01,
+                                             /*sigma=*/1.0);
+  EXPECT_EQ(clamped.value, tbl.eval(0.8, 0.01, 1.0));
+  EXPECT_EQ(clamped.dk_log, 0.0);
+  EXPECT_EQ(clamped.dT, 0.0);
+  EXPECT_EQ(clamped.dsigma, 0.0);
+  EXPECT_EQ(clamped.dkk, 0.0);
+  EXPECT_EQ(clamped.dk_dT, 0.0);
+  EXPECT_EQ(clamped.dk_dsigma, 0.0);
+  EXPECT_EQ(clamped.dsigma2, 0.0);
+}
+
+TEST(CorrectionCache, SecondOrderJet_UnpopulatedAndSingleAxisOobContracts) {
+  const CorrSecondOrder empty =
+      CorrectionCache{}.eval_second_order(/*k_log=*/0.0, /*T=*/0.5, /*sigma=*/0.3);
+  EXPECT_EQ(empty.value, 0.0);
+  EXPECT_EQ(empty.dk_log, 0.0);
+  EXPECT_EQ(empty.dT, 0.0);
+  EXPECT_EQ(empty.dsigma, 0.0);
+  EXPECT_EQ(empty.dkk, 0.0);
+  EXPECT_EQ(empty.dk_dT, 0.0);
+  EXPECT_EQ(empty.dk_dsigma, 0.0);
+  EXPECT_EQ(empty.dsigma2, 0.0);
+
+  auto built = CorrectionCache::build(/*n_k=*/16, /*n_T=*/8, /*n_s=*/12,
+                                      /*r=*/0.05, /*q=*/0.0,
+                                      /*k_log_min=*/-0.5, /*k_log_max=*/0.5,
+                                      /*T_min=*/0.05, /*T_max=*/2.0,
+                                      /*sigma_min=*/0.10, /*sigma_max=*/0.80, Side::Put);
+  ASSERT_TRUE(built.has_value());
+  const CorrectionCache tbl = std::move(*built);
+
+  const CorrSecondOrder k_oob = tbl.eval_second_order(0.8, 0.5, 0.3);
+  EXPECT_EQ(k_oob.value, tbl.eval(0.8, 0.5, 0.3));
+  EXPECT_EQ(k_oob.dk_log, 0.0);
+  EXPECT_EQ(k_oob.dkk, 0.0);
+  EXPECT_EQ(k_oob.dk_dT, 0.0);
+  EXPECT_EQ(k_oob.dk_dsigma, 0.0);
+
+  const CorrSecondOrder T_oob = tbl.eval_second_order(0.0, 0.01, 0.3);
+  EXPECT_EQ(T_oob.value, tbl.eval(0.0, 0.01, 0.3));
+  EXPECT_EQ(T_oob.dT, 0.0);
+  EXPECT_EQ(T_oob.dk_dT, 0.0);
+
+  const CorrSecondOrder sigma_oob = tbl.eval_second_order(0.0, 0.5, 1.0);
+  EXPECT_EQ(sigma_oob.value, tbl.eval(0.0, 0.5, 1.0));
+  EXPECT_EQ(sigma_oob.dsigma, 0.0);
+  EXPECT_EQ(sigma_oob.dk_dsigma, 0.0);
+  EXPECT_EQ(sigma_oob.dsigma2, 0.0);
+}
+
+TEST(CorrectionCache, ContainsRequiresPopulatedFinitePointInsideClosedBox) {
+  const CorrectionCache empty;
+  EXPECT_FALSE(empty.contains(0.0, 0.5, 0.3));
+
+  auto built = CorrectionCache::build(/*n_k=*/8, /*n_T=*/6, /*n_s=*/6,
+                                      /*r=*/0.05, /*q=*/0.01,
+                                      /*k_log_min=*/-0.5, /*k_log_max=*/0.5,
+                                      /*T_min=*/0.05, /*T_max=*/1.0,
+                                      /*sigma_min=*/0.10, /*sigma_max=*/0.80, Side::Put);
+  ASSERT_TRUE(built.has_value());
+  const CorrectionCache cache = std::move(*built);
+
+  EXPECT_TRUE(cache.contains(-0.5, 0.05, 0.10));
+  EXPECT_TRUE(cache.contains(0.5, 1.0, 0.80));
+  EXPECT_TRUE(cache.contains(0.0, 0.5, 0.30));
+  EXPECT_FALSE(cache.contains(std::nextafter(-0.5, -1.0), 0.5, 0.30));
+  EXPECT_FALSE(cache.contains(std::nextafter(0.5, 1.0), 0.5, 0.30));
+  EXPECT_FALSE(cache.contains(0.0, std::nextafter(0.05, 0.0), 0.30));
+  EXPECT_FALSE(cache.contains(0.0, 0.5, std::nextafter(0.80, 1.0)));
+  EXPECT_FALSE(cache.contains(std::numeric_limits<double>::quiet_NaN(), 0.5, 0.30));
+  EXPECT_FALSE(cache.contains(0.0, std::numeric_limits<double>::infinity(), 0.30));
+}
+
+TEST(CorrectionCache, ClampedZeroCorrectionHasZeroServedDerivatives) {
+  // A non-dividend-paying call has no early-exercise premium. This gives a
+  // naturally zero correction surface and locks the derivative contract to the
+  // max(0, polynomial) value actually served by eval()/cached pricing.
+  auto built = CorrectionCache::build(
+      /*n_k=*/8, /*n_T=*/6, /*n_s=*/6, /*r=*/0.05, /*q=*/0.0,
+      /*k_log_min=*/-0.3, /*k_log_max=*/0.3,
+      /*T_min=*/0.05, /*T_max=*/1.0,
+      /*sigma_min=*/0.10, /*sigma_max=*/0.80, Side::Call);
+  ASSERT_TRUE(built.has_value());
+  const CorrectionCache cache = std::move(*built);
+  constexpr double k = -0.08;
+  constexpr double T = 0.50;
+  constexpr double sigma = 0.30;
+  ASSERT_EQ(cache.eval(k, T, sigma), 0.0);
+
+  const CorrSecondOrder jet = cache.eval_second_order(k, T, sigma);
+  EXPECT_EQ(jet.value, 0.0);
+  EXPECT_EQ(jet.dk_log, 0.0);
+  EXPECT_EQ(jet.dT, 0.0);
+  EXPECT_EQ(jet.dsigma, 0.0);
+  EXPECT_EQ(jet.dkk, 0.0);
+  EXPECT_EQ(jet.dk_dT, 0.0);
+  EXPECT_EQ(jet.dk_dsigma, 0.0);
+  EXPECT_EQ(jet.dsigma2, 0.0);
+
+  const CorrectionBlend single = CorrectionBlend::single(&cache);
+  EXPECT_EQ(single.eval_dsigma(k, T, sigma), 0.0);
+
+  constexpr double S = 100.0;
+  const double F = S * std::exp(0.05 * T);
+  const double K = F * std::exp(k);
+  const double df = std::exp(-0.05 * T);
+  const double black_vega =
+      atx::vol::black76_greeks(F, K, T, sigma, 0.05, df, Side::Call).greeks.vega;
+  EXPECT_EQ(atx::vol::american_vega(S, K, T, sigma, 0.05, 0.0, Side::Call, &cache), black_vega);
+}
+
+TEST(CorrectionBlend, EndpointsAndMidpointBlendEveryDerivative) {
+  auto lower_result = CorrectionCache::build(
+      /*n_k=*/16, /*n_T=*/8, /*n_s=*/12, /*r=*/0.04, /*q=*/0.00,
+      /*k_log_min=*/-0.5, /*k_log_max=*/0.5,
+      /*T_min=*/0.05, /*T_max=*/2.0,
+      /*sigma_min=*/0.10, /*sigma_max=*/0.80, Side::Put);
+  auto upper_result = CorrectionCache::build(
+      /*n_k=*/16, /*n_T=*/8, /*n_s=*/12, /*r=*/0.06, /*q=*/0.03,
+      /*k_log_min=*/-0.5, /*k_log_max=*/0.5,
+      /*T_min=*/0.05, /*T_max=*/2.0,
+      /*sigma_min=*/0.10, /*sigma_max=*/0.80, Side::Put);
+  ASSERT_TRUE(lower_result.has_value());
+  ASSERT_TRUE(upper_result.has_value());
+  const CorrectionCache lower = std::move(*lower_result);
+  const CorrectionCache upper = std::move(*upper_result);
+  constexpr double k = -0.08;
+  constexpr double T = 0.65;
+  constexpr double sigma = 0.32;
+
+  const CorrectionBlend single = CorrectionBlend::single(&lower);
+  ASSERT_TRUE(single.usable(Side::Put));
+  EXPECT_EQ(single.eval(k, T, sigma), lower.eval(k, T, sigma));
+  EXPECT_EQ(single.eval_second_order(k, T, sigma).value,
+            lower.eval_second_order(k, T, sigma).value);
+
+  const CorrectionBlend upper_endpoint{&lower, &upper, 1.0};
+  ASSERT_TRUE(upper_endpoint.usable(Side::Put));
+  EXPECT_EQ(upper_endpoint.eval(k, T, sigma), upper.eval(k, T, sigma));
+
+  constexpr double weight = 0.35;
+  const CorrectionBlend blend{&lower, &upper, weight};
+  ASSERT_TRUE(blend.usable(Side::Put));
+  const CorrSecondOrder lo = lower.eval_second_order(k, T, sigma);
+  const CorrSecondOrder hi = upper.eval_second_order(k, T, sigma);
+  const CorrSecondOrder got = blend.eval_second_order(k, T, sigma);
+  const auto expected = [](double a, double b) { return a + weight * (b - a); };
+  EXPECT_EQ(got.value, expected(lo.value, hi.value));
+  EXPECT_EQ(got.dk_log, expected(lo.dk_log, hi.dk_log));
+  EXPECT_EQ(got.dT, expected(lo.dT, hi.dT));
+  EXPECT_EQ(got.dsigma, expected(lo.dsigma, hi.dsigma));
+  EXPECT_EQ(got.dkk, expected(lo.dkk, hi.dkk));
+  EXPECT_EQ(got.dk_dT, expected(lo.dk_dT, hi.dk_dT));
+  EXPECT_EQ(got.dk_dsigma, expected(lo.dk_dsigma, hi.dk_dsigma));
+  EXPECT_EQ(got.dsigma2, expected(lo.dsigma2, hi.dsigma2));
+
+  double lo_dk = 0.0;
+  double blended_dk = 0.0;
+  EXPECT_NEAR(lower.eval_value_dk(k, T, sigma, &lo_dk), lo.value, 1.0e-13);
+  EXPECT_NEAR(lo_dk, lo.dk_log, 1.0e-12);
+  EXPECT_NEAR(blend.eval_value_dk(k, T, sigma, &blended_dk), got.value, 1.0e-13);
+  EXPECT_NEAR(blended_dk, got.dk_log, 1.0e-12);
+
+  double lo_dsigma = 0.0;
+  double hi_dsigma = 0.0;
+  lower.eval_partials(k, T, sigma, nullptr, nullptr, &lo_dsigma);
+  upper.eval_partials(k, T, sigma, nullptr, nullptr, &hi_dsigma);
+  EXPECT_EQ(blend.eval_dsigma(k, T, sigma), expected(lo_dsigma, hi_dsigma));
+
+  constexpr double hT = 1.0e-5;
+  const double finite_difference =
+      (blend.eval(k, T + hT, sigma) - blend.eval(k, T - hT, sigma)) / (2.0 * hT);
+  EXPECT_NEAR(got.dT, finite_difference, 1.0e-7);
+}
+
+TEST(CorrectionBlend, RejectsInvalidWeightMissingEndpointAndMixedSide) {
+  auto put_result =
+      CorrectionCache::build(8, 6, 6, 0.04, 0.0, -0.3, 0.3, 0.05, 1.0, 0.1, 0.8, Side::Put);
+  auto call_result =
+      CorrectionCache::build(8, 6, 6, 0.04, 0.02, -0.3, 0.3, 0.05, 1.0, 0.1, 0.8, Side::Call);
+  ASSERT_TRUE(put_result.has_value());
+  ASSERT_TRUE(call_result.has_value());
+  const CorrectionCache put = std::move(*put_result);
+  const CorrectionCache call = std::move(*call_result);
+
+  EXPECT_FALSE((CorrectionBlend{&put, nullptr, 0.5}).usable(Side::Put));
+  EXPECT_FALSE((CorrectionBlend{&put, &call, 0.5}).usable(Side::Put));
+  EXPECT_FALSE((CorrectionBlend{&put, &put, -0.1}).usable(Side::Put));
+  EXPECT_FALSE(
+      (CorrectionBlend{&put, &put, std::numeric_limits<double>::quiet_NaN()}).usable(Side::Put));
+}
+
+// Exact value/first-partial pins remain bit-identical. The former Greek bundle
+// bits below are now a tolerance reference because the second-order jet replaces
+// its finite-difference approximation with analytic interpolant derivatives.
 namespace pin {
 
 using atx::vol::american_greeks;
 using atx::vol::AmericanGreeks;
 
-[[nodiscard]] std::uint64_t bits(double d) noexcept {
-  return std::bit_cast<std::uint64_t>(d);
-}
+[[nodiscard]] std::uint64_t bits(double d) noexcept { return std::bit_cast<std::uint64_t>(d); }
 
 // Deterministic put cache at production-shaped dims (16 x 8 x 12), r>0/q>=0 carry
 // (a valid American regime, per Task 1). build() is deterministic given its args.
@@ -612,19 +858,27 @@ using atx::vol::AmericanGreeks;
 
 // Query points: three interior, then one out-of-box per axis (pins the clamp +
 // oob-partial-zeroing that eval_partials must reproduce).
-struct QPt { double k_log, T, sigma; };
+struct QPt {
+  double k_log, T, sigma;
+};
 constexpr std::array<QPt, 6> kQ = {{
-    {0.00, 0.25, 0.30}, {-0.30, 1.00, 0.50}, {0.40, 0.15, 0.20},
-    {0.80, 0.25, 0.30},  // k_log > box  -> oob_k
-    {0.00, 0.05, 0.30},  // T < box      -> oob_T
-    {0.00, 0.25, 0.95},  // sigma > box  -> oob_s
+    {0.00, 0.25, 0.30},
+    {-0.30, 1.00, 0.50},
+    {0.40, 0.15, 0.20},
+    {0.80, 0.25, 0.30}, // k_log > box  -> oob_k
+    {0.00, 0.05, 0.30}, // T < box      -> oob_T
+    {0.00, 0.25, 0.95}, // sigma > box  -> oob_s
 }};
 
 // american_greeks points (r=0.05, q=0.0, Put — matches the cache); all land the
 // internal k_log = log(K/F) inside the box (the common cached path).
-struct GPt { double S, K, T, sigma; };
+struct GPt {
+  double S, K, T, sigma;
+};
 constexpr std::array<GPt, 3> kG = {{
-    {100.0, 100.0, 0.25, 0.30}, {100.0, 110.0, 0.50, 0.45}, {100.0, 90.0, 0.15, 0.25},
+    {100.0, 100.0, 0.25, 0.30},
+    {100.0, 110.0, 0.50, 0.45},
+    {100.0, 90.0, 0.15, 0.25},
 }};
 
 // Pre-change bit patterns (captured from the current Debug build; the Release
@@ -642,21 +896,33 @@ constexpr std::array<GPt, 3> kG = {{
 // and the AmericanGreeks.*_MatchesFd_* bundle-accuracy tests (american_test) —
 // all green with margin on the new cache.
 constexpr std::array<std::array<std::uint64_t, 5>, 6> kEvalPins = {{
-    {{0x3f53d821e0eb7c52, 0x3f53d821e0eb7c52, 0x3f8d4b35b7aa3c34, 0x3f77248f99846d58, 0xbf62bdf240536700}},
-    {{0x3f5ae5637f2e32a9, 0x3f5ae5637f2e32a9, 0x3f8026cccd3c2462, 0x3f69f6635748411c, 0x3f7085ebc3eda166}},
-    {{0x3f86c328003cc841, 0x3f86c328003cc841, 0x3f7a56efd8898000, 0x3fb32d46c233181f, 0x3f5ffdd6731a9f52}},
-    {{0x3f94f6c1485f287d, 0x3f94f6c1485f287d, 0x0000000000000000, 0x3fb4b71771002121, 0xbf401eec38c25338}},
-    {{0x3f31deddf8f2afd8, 0x3f31deddf8f2afd8, 0x3f7841a8f90cc72c, 0x0000000000000000, 0x3f674b203f881a5c}},
-    {{0x3f50fa36d6f1989c, 0x3f50fa36d6f1989c, 0x3f74c8b97424267c, 0x3f7597b918916db8, 0x0000000000000000}},
+    {{0x3f53d821e0eb7c52, 0x3f53d821e0eb7c52, 0x3f8d4b35b7aa3c34, 0x3f77248f99846d58,
+      0xbf62bdf240536700}},
+    {{0x3f5ae5637f2e32a9, 0x3f5ae5637f2e32a9, 0x3f8026cccd3c2462, 0x3f69f6635748411c,
+      0x3f7085ebc3eda166}},
+    {{0x3f86c328003cc841, 0x3f86c328003cc841, 0x3f7a56efd8898000, 0x3fb32d46c233181f,
+      0x3f5ffdd6731a9f52}},
+    {{0x3f94f6c1485f287d, 0x3f94f6c1485f287d, 0x0000000000000000, 0x3fb4b71771002121,
+      0xbf401eec38c25338}},
+    {{0x3f31deddf8f2afd8, 0x3f31deddf8f2afd8, 0x3f7841a8f90cc72c, 0x0000000000000000,
+      0x3f674b203f881a5c}},
+    {{0x3f50fa36d6f1989c, 0x3f50fa36d6f1989c, 0x3f74c8b97424267c, 0x3f7597b918916db8,
+      0x0000000000000000}},
 }};
 
 // american_greeks bundle bits: {delta,gamma,vega,theta,rho,vanna,volga,charm,price}.
 // T16a-repinned (see kEvalPins note); validated against the AmericanGreeks.*_MatchesFd_*
 // accuracy tests, which recompute the bundle vs finite differences on this same cache.
 constexpr std::array<std::array<std::uint64_t, 9>, 3> kGreekPins = {{
-    {{0xbfdcc1435ba70a4e, 0x3f9bc19fa8b9f349, 0x40338baa7f016d54, 0xc023a60cf9ad4fb9, 0xc029229e12ac2ed7, 0x3faa9866f415ee56, 0xbfeed34a5db9f3dc, 0x3f94d45e9eede270, 0x4015c8e2bbd78fd5}},
-    {{0xbfe15513b06efcdc, 0x3f8b8257a7c397d9, 0x403bbc10d4dc0673, 0xc023f8298c7d39bf, 0xc041ce3ecb7f9661, 0x3fd91d32f03b6ddd, 0x4022fbf470c613e7, 0xbfc3eea44a94656e, 0x403173bba4a7ef99}},
-    {{0xbfbd512b7c16460e, 0x3f94370020cc8635, 0x401d22186848da37, 0xc0164b736804f874, 0xbffcce2aabf1f2b8, 0xbfea6505d7bc7734, 0x40451252fa86eec7, 0x3fe6966c66d6a066, 0x3fe1e55a0dcb12ae}},
+    {{0xbfdcc1435ba70a4e, 0x3f9bc19fa8b9f349, 0x40338baa7f016d54, 0xc023a60cf9ad4fb9,
+      0xc029229e12ac2ed7, 0x3faa9866f415ee56, 0xbfeed34a5db9f3dc, 0x3f94d45e9eede270,
+      0x4015c8e2bbd78fd5}},
+    {{0xbfe15513b06efcdc, 0x3f8b8257a7c397d9, 0x403bbc10d4dc0673, 0xc023f8298c7d39bf,
+      0xc041ce3ecb7f9661, 0x3fd91d32f03b6ddd, 0x4022fbf470c613e7, 0xbfc3eea44a94656e,
+      0x403173bba4a7ef99}},
+    {{0xbfbd512b7c16460e, 0x3f94370020cc8635, 0x401d22186848da37, 0xc0164b736804f874,
+      0xbffcce2aabf1f2b8, 0xbfea6505d7bc7734, 0x40451252fa86eec7, 0x3fe6966c66d6a066,
+      0x3fe1e55a0dcb12ae}},
 }};
 
 TEST(Pin, EvalAndEvalGradBitIdentical) {
@@ -671,22 +937,28 @@ TEST(Pin, EvalAndEvalGradBitIdentical) {
     EXPECT_EQ(bits(dk), kEvalPins[i][2]) << "dk @" << i;
     EXPECT_EQ(bits(dT), kEvalPins[i][3]) << "dT @" << i;
     EXPECT_EQ(bits(ds), kEvalPins[i][4]) << "dsigma @" << i;
-    EXPECT_EQ(bits(v), bits(vg)) << "eval vs eval_grad value @" << i;  // public contract
+    EXPECT_EQ(bits(v), bits(vg)) << "eval vs eval_grad value @" << i; // public contract
   }
 }
 
-TEST(Pin, AmericanGreeksBundleBitIdentical) {
+TEST(Pin, AmericanGreeksSecondOrderJet_RemainsNumericallyEquivalent) {
   const CorrectionCache tbl = make_pin_cache();
+  // The fused second-order jet differentiates the interpolant analytically;
+  // these bounds constrain its intentional departure from the former finite-
+  // difference stencil while the independent Greek-vs-price-FD tests above
+  // continue to lock the economically meaningful contract.
+  constexpr std::array<double, 9> tolerance = {1.0e-9, 1.0e-7, 1.0e-9, 1.0e-9, 1.0e-9,
+                                               1.0e-6, 1.0e-4, 1.0e-1, 1.0e-10};
   for (std::size_t i = 0; i < kG.size(); ++i) {
     const GPt g = kG[i];
     const auto res = american_greeks(g.S, g.K, g.T, g.sigma, 0.05, 0.0, Side::Put, &tbl);
     ASSERT_TRUE(res.has_value());
-    const AmericanGreeks& a = *res;
-    const std::array<std::uint64_t, 9> got = {
-        bits(a.delta), bits(a.gamma), bits(a.vega), bits(a.theta), bits(a.rho),
-        bits(a.vanna), bits(a.volga), bits(a.charm), bits(a.price)};
+    const AmericanGreeks &a = *res;
+    const std::array<double, 9> got = {a.delta, a.gamma, a.vega,  a.theta, a.rho,
+                                       a.vanna, a.volga, a.charm, a.price};
     for (std::size_t f = 0; f < got.size(); ++f) {
-      EXPECT_EQ(got[f], kGreekPins[i][f]) << "field " << f << " @pt " << i;
+      const double expected = std::bit_cast<double>(kGreekPins[i][f]);
+      EXPECT_NEAR(got[f], expected, tolerance[f]) << "field " << f << " @pt " << i;
     }
   }
 }
@@ -699,7 +971,7 @@ TEST(Pin, EvalPartialsMatchesEvalGrad) {
   for (std::size_t i = 0; i < kQ.size(); ++i) {
     const QPt p = kQ[i];
     double gk = 0, gT = 0, gs = 0;
-    tbl.eval_grad(p.k_log, p.T, p.sigma, &gk, &gT, &gs);  // reference partials
+    tbl.eval_grad(p.k_log, p.T, p.sigma, &gk, &gT, &gs); // reference partials
     double pk = 0, pT = 0, ps = 0;
     tbl.eval_partials(p.k_log, p.T, p.sigma, &pk, &pT, &ps);
     EXPECT_EQ(bits(pk), kEvalPins[i][2]) << "dk pin @" << i;
@@ -717,6 +989,6 @@ TEST(Pin, EvalPartialsMatchesEvalGrad) {
   }
 }
 
-}  // namespace pin
+} // namespace pin
 
-}  // namespace
+} // namespace

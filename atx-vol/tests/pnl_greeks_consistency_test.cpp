@@ -61,19 +61,20 @@ constexpr std::int64_t kNow = 1700000000000000000LL;
   return pc;
 }
 
-// eSSVI priced surface (F fixed at kS, positive carry q_eff => genuine American
-// early-exercise premium on both sides, so European != American).
+// Coherent eSSVI priced surface with positive carry q_eff, giving genuine
+// American early-exercise premium on both sides (European != American).
 [[nodiscard]] PricedSurface make_essvi(std::uint32_t uid, int n, double theta_bump = 0.0,
                                        double S = kS, double r = kR,
-                                       std::int64_t now = kNow, double q_eff = 0.02) {
+                                       std::int64_t now = kNow, double q_eff = 0.02,
+                                       bool flat_smile = false) {
   CurveSurface cs;
   std::vector<SliceContext> ctx;
   for (int i = 0; i < n; ++i) {
     const double T = 0.05 + 0.10 * static_cast<double>(i);
-    const double F = kS;
+    const double F = S * std::exp((r - q_eff) * T);
     EssviParams e{};
     e.theta = 0.04 + 0.005 * static_cast<double>(i) + theta_bump;
-    e.phi = 1.5 - 0.05 * static_cast<double>(i);
+    e.phi = flat_smile ? 0.0 : 1.5 - 0.05 * static_cast<double>(i);
     e.rho = -0.4 + 0.02 * static_cast<double>(i);
     e.psi = 0.5;
     e.p = 0.5;
@@ -194,8 +195,11 @@ TEST(PnlGreeksConsistency, Session_ConvexDense_GreeksPrice_BitEqual_FairValue) {
 // ── 2. PnL axis isolation, synthetic known-truth (American greeks). ───────────
 TEST(PnlGreeksConsistency, PnlExplain_SpotOnly_ResidualTiny_AmericanGreeks) {
   const double dS = 0.05;
-  const PricedSurface base = make_essvi(1, 5);
-  const PricedSurface shifted = make_essvi(1, 5, /*theta_bump*/ 0.0, /*S*/ kS + dS);
+  // A flat smile isolates the spot axis while coherent carry moves F with S;
+  // a skewed sticky-moneyness surface would correctly generate d_vol at fixed K.
+  const PricedSurface base = make_essvi(1, 5, 0.0, kS, kR, kNow, 0.02, true);
+  const PricedSurface shifted =
+      make_essvi(1, 5, 0.0, kS + dS, kR, kNow, 0.02, true);
   const SurfaceSet bset = set_of({&base});
   const SurfaceSet sset = set_of({&shifted});
 
@@ -261,8 +265,11 @@ TEST(PnlGreeksConsistency, PnlExplain_VolOnly_VegaVolgaCarry) {
 
 TEST(PnlGreeksConsistency, PnlExplain_RateOnly_RhoCarry) {
   const double dr = 1e-4;
-  const PricedSurface base = make_essvi(1, 5);
-  const PricedSurface shifted = make_essvi(1, 5, 0.0, kS, kR + dr);
+  // Flat smiles isolate the rate axis; with a skewed sticky-moneyness surface,
+  // the coherent forward move correctly also changes IV at fixed strike.
+  const PricedSurface base = make_essvi(1, 5, 0.0, kS, kR, kNow, 0.02, true);
+  const PricedSurface shifted =
+      make_essvi(1, 5, 0.0, kS, kR + dr, kNow, 0.02, true);
   const SurfaceSet bset = set_of({&base});
   const SurfaceSet sset = set_of({&shifted});
 

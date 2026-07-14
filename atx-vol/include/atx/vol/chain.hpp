@@ -120,6 +120,15 @@ public:
   // worker threads. Empty only if the underlying can no longer be resolved.
   [[nodiscard]] ChainSnapshot snapshot() const;
 
+  // Flatten only `selected_ids`, preserving caller order and duplicates. Work
+  // and allocation are proportional to the selection, so a quote-update loop
+  // does not scan or materialize the full board. The returned snapshot is
+  // detached from later quote updates, exactly like snapshot().
+  //
+  // @return NotFound if any id is foreign or does not name a listed leg. An
+  //         empty selection succeeds with an empty snapshot.
+  [[nodiscard]] Result<ChainSnapshot> snapshot(std::span<const OptionId> selected_ids) const;
+
   // Number of option legs present (== ids().size(), without materializing).
   [[nodiscard]] std::size_t size() const noexcept;
 

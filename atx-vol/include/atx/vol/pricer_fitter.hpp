@@ -87,6 +87,15 @@ struct ChainValuation {
   std::vector<AmericanGreeks> greeks;
   OutputField filled{OutputField::None};
 
+  // NaN provenance for requested bid/ask IV bands. `unset` means inversion
+  // was not attempted because the quote side was non-positive/non-finite or
+  // the contract itself was degenerate. `iv_fail` means a finite positive
+  // quote was attempted but could not be inverted. Both leave the output NaN.
+  std::size_t n_bid_unset{0};
+  std::size_t n_ask_unset{0};
+  std::size_t n_bid_iv_fail{0};
+  std::size_t n_ask_iv_fail{0};
+
   [[nodiscard]] std::size_t size() const noexcept { return ids.size(); }
 
   // Row index for an id (linear scan), or nullopt.
@@ -153,6 +162,11 @@ struct PricerConfig {
   // de-Am diagnostic pass; false for `enforce_calendar_floor` maximizes raw
   // in-band fit quality by fitting dense slices independently.
   std::optional<bool> use_correction_cache{};
+  // Explicit query-time pricing contract. LegacyCompatible preserves historical
+  // serving, ColdReference forces cold Andersen-Lake/FD, RepresentativeFast uses
+  // one term-wide carry surrogate, and CarryBank interpolates a bounded bank.
+  // Fast tiers are opt-in and independent of the cache-build override above.
+  QueryPricingTier query_pricing_tier{QueryPricingTier::LegacyCompatible};
   std::optional<bool> score_parity{};
   std::optional<bool> enforce_calendar_floor{};
   std::optional<bool> use_deam_cache_for_fit{};
@@ -188,6 +202,10 @@ struct PricerConfig {
   // Worker count for value_chain. 0 => std::thread::hardware_concurrency();
   // 1 => serial. A per-call `value_chain(..., n_threads)` overrides this.
   unsigned n_threads{0};
+  // Worker count for a non-eSSVI fit's independent per-expiry preparation.
+  // 0 => machine/env auto; 1 => serial. Distinct from value-chain evaluation
+  // threads so an outer board scheduler can suppress nested fan-out.
+  unsigned fit_workers{0};
   // Extra discrete cash dividends the surface build should honour. Usually left
   // empty — the chain's `MarketEnv` supplies the dividend schedule; a non-empty
   // value here overrides the env's divs.
@@ -304,8 +322,8 @@ public:
 
 private:
   friend class PricerFitter;
-  explicit FittedSurface(VolaSession &&sess, SurfacePurpose purpose,
-                         FitQualityMode quality_mode, std::uint64_t generation)
+  explicit FittedSurface(VolaSession &&sess, SurfacePurpose purpose, FitQualityMode quality_mode,
+                         std::uint64_t generation)
       : sess_(std::move(sess)), purpose_(purpose), quality_mode_(quality_mode),
         generation_(generation) {}
   VolaSession sess_;
@@ -375,8 +393,7 @@ public:
   // requires a full fit; otherwise only the local slice and its adjacent
   // calendar pairs are refit before an independently validated generation is
   // atomically published. The prior generation remains served on every error.
-  [[nodiscard]] Result<FitDiag> refit_risk_slice(const OptionChain &chain,
-                                                 std::size_t slice_idx);
+  [[nodiscard]] Result<FitDiag> refit_risk_slice(const OptionChain &chain, std::size_t slice_idx);
 
   // True iff the config's default-purpose surface is served (see surface()).
   [[nodiscard]] bool fitted() const noexcept;
@@ -387,15 +404,13 @@ public:
   // legacy HFT mapping) receives its market surface. Purpose-specific state is
   // always available via risk_surface() / market_mark_surface().
   [[nodiscard]] const FittedSurface *surface() const noexcept;
-  [[nodiscard]] const FittedSurface *risk_surface() const noexcept {
-    return risk_surface_.get();
-  }
+  [[nodiscard]] const FittedSurface *risk_surface() const noexcept { return risk_surface_.get(); }
   [[nodiscard]] const FittedSurface *market_mark_surface() const noexcept {
     return market_mark_surface_.get();
   }
   [[nodiscard]] SurfaceBundle bundle() const noexcept {
     return SurfaceBundle{market_mark_surface_, risk_surface_, market_mark_health_,
-                         risk_health_, timings_, candidate_generation_};
+                         risk_health_,         timings_,      candidate_generation_};
   }
 
   [[nodiscard]] const PricerConfig &config() const noexcept { return cfg_; }
@@ -451,6 +466,23 @@ public:
                                                    SurfacePurpose purpose,
                                                    unsigned n_threads = 0) const;
 
+  // Price only `selected_ids`, preserving caller order and duplicates. Work
+  // and output allocation are proportional to the selection; this is the
+  // quote-update path for dirty options and does not snapshot or scan the full
+  // board. Field and surface-purpose semantics are identical to the full-chain
+  // overloads above.
+  //
+  // @return NotFound if any selected id is foreign or unknown; Unavailable if
+  //         the requested surface is unserved; otherwise Ok(valuation).
+  [[nodiscard]] Result<ChainValuation> value_chain(const OptionChain &chain,
+                                                   std::span<const OptionId> selected_ids,
+                                                   OutputField fields,
+                                                   unsigned n_threads = 0) const;
+  [[nodiscard]] Result<ChainValuation> value_chain(const OptionChain &chain,
+                                                   std::span<const OptionId> selected_ids,
+                                                   OutputField fields, SurfacePurpose purpose,
+                                                   unsigned n_threads = 0) const;
+
 private:
   // Effective §9 request after the one-release legacy-preset mapping. Computed
   // in one place so fit(), the default-purpose accessors, and value_chain can
@@ -459,6 +491,10 @@ private:
     SurfaceOutputs outputs{SurfaceOutputs::MarketMarkAndRisk};
     FitQualityMode quality_mode{FitQualityMode::Balanced};
   };
+  [[nodiscard]] Result<ChainValuation> value_snapshot(const OptionChain &chain,
+                                                      ChainSnapshot snapshot, OutputField fields,
+                                                      SurfacePurpose purpose,
+                                                      unsigned n_threads) const;
   [[nodiscard]] EffectiveRequest effective_request() const noexcept;
   // True iff the caller explicitly opted into the v2 dual mark/risk API (a
   // non-default quality_mode or outputs). A legacy request (default v2 fields)
@@ -473,9 +509,9 @@ private:
   SurfaceHealth risk_health_{};
   FitPhaseTimings timings_{};
   std::uint64_t candidate_generation_{};
-  std::optional<SelectorResult> selection_; // last auto-select outcome (if any)
+  std::optional<SelectorResult> selection_;        // last auto-select outcome (if any)
   std::optional<SelectorResult> served_selection_; // selector that produced served risk
-  std::optional<FitDecision> decision_;     // last unified policy outcome
+  std::optional<FitDecision> decision_;            // last unified policy outcome
   std::optional<SurfaceBuildReport> published_report_;
   std::optional<SurfaceBuildReport> last_attempt_report_;
   std::optional<FitSnapshotProvenance> published_provenance_;

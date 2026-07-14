@@ -327,6 +327,35 @@ TEST(SurfaceArchive, RoundTrip_Essvi_TheoBitIdentical) {
   expect_theo_bit_identical(orig, *got);
 }
 
+TEST(SurfaceArchive, RoundTrip_OffPillarCarryPreservesForwardIdentity) {
+  const PricedSurface orig = make_essvi(42, 5);
+  auto got = round_trip(orig, "SPY", "spy");
+  ASSERT_TRUE(got.has_value());
+
+  const std::span<const SliceContext> pillars = orig.context();
+  ASSERT_GE(pillars.size(), std::size_t{2});
+  const double probes[] = {
+      pillars.front().T * 0.5,
+      0.5 * (pillars[1].T + pillars[2].T),
+      pillars.back().T * 1.5,
+  };
+  for (const double T : probes) {
+    const double forward = got->forward_at(T);
+    EXPECT_NEAR(got->pricing().S * std::exp((got->rate_at(T) - got->q_eff_at(T)) * T),
+                forward, 2.0e-13 * forward)
+        << "T=" << T;
+    EXPECT_DOUBLE_EQ(forward, orig.forward_at(T));
+    EXPECT_NEAR(got->q_eff_at(T), orig.q_eff_at(T), 2.0e-13) << "T=" << T;
+  }
+  EXPECT_DOUBLE_EQ(got->q_eff_at(probes[0]), pillars.front().q_eff);
+  EXPECT_DOUBLE_EQ(got->q_eff_at(probes[2]), pillars.back().q_eff);
+
+  for (const SliceContext &pillar : pillars) {
+    EXPECT_DOUBLE_EQ(got->forward_at(pillar.T), pillar.forward);
+    EXPECT_DOUBLE_EQ(got->q_eff_at(pillar.T), pillar.q_eff);
+  }
+}
+
 TEST(SurfaceArchive, RoundTrip_Svi_TheoBitIdentical) {
   const PricedSurface orig = make_svi(7, 4);
   auto got = round_trip(orig, "AAPL", "aapl");
