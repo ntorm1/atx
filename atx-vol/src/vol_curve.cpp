@@ -271,7 +271,8 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
                                                    std::span<const FitObs> obs_eu, double F,
                                                    double T, double df,
                                                    const std::function<double(double)> &w_prev,
-                                                   std::span<const double> calendar_floor_knots) {
+                                                   std::span<const double> calendar_floor_knots,
+                                                   std::pair<double, double> prev_data_k_range) {
   if (!(F > 0.0) || !(T > 0.0) || !(df > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "fit_slice_curve: F/T/df must be positive");
   }
@@ -552,8 +553,9 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
       // downcast safe). `calendar_floor_knots` remains unused by the v1 spline.
       auto *spline = static_cast<SplineVolCurve *>(curve.get());
       ATX_TRY_VOID(spline->project_calendar(w_prev, kRiskCalendarMin,
-                                            kRiskCalendarMax,
-                                            kRiskCalendarIntervals));
+                                            kRiskCalendarMax, kRiskCalendarIntervals,
+                                            prev_data_k_range.first,
+                                            prev_data_k_range.second));
     }
     return Ok(std::move(curve));
   }

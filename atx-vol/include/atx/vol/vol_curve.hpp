@@ -109,6 +109,14 @@ public:
 
   [[nodiscard]] virtual VolCurveKind kind() const noexcept = 0;
 
+  // True iff `k_log` is outside the region this curve fit from tradeable quotes
+  // (pure extrapolation). Default false — a parametric curve is defined and
+  // meaningful across the whole line. Overridden by SplineVolCurve, whose natural
+  // spline flat-extrapolates beyond its observed moneyness range; the served
+  // calendar check uses this to avoid certifying a non-tradeable wing crossing as
+  // arbitrage. Never used on the arithmetic hot path.
+  [[nodiscard]] virtual bool is_extrapolated(double /*k_log*/) const noexcept { return false; }
+
   // Effective degrees of freedom — the CurveSelector's parsimony tie-break signal
   // (fewer DoF wins a near-tie, penalising an overfit dense curve on a sparse
   // board). Parametric curves return their parameter count; the dense fit returns
@@ -260,21 +268,37 @@ public:
   [[nodiscard]] const SplineVolParams &params() const noexcept { return p_; }
 
   // Project this served slice onto the calendar cone above a previously admitted
-  // total-variance curve `w_prev`, the SplineVol analogue of the
-  // Essvi/Svi/C8 `arb_project_calendar_*_pair` calls in fit_slice_curve. It is a
-  // per-knot, ATM-PRESERVING monotone lift: each pass only RAISES active-knot
-  // multiples to clear the shared-grid deficit (never lowers), so served total
-  // variance is non-decreasing across passes and the map onto the cone is a
-  // bounded monotone one (it terminates). A knot with no deficit is untouched —
-  // in particular the z = 0 (ATM) knot, whose value the spline serves exactly,
-  // so served ATM vol is unchanged unless there is a genuine ATM crossing.
-  // Mutates the knot multiples and rebuilds the cached second derivatives in
-  // place. Returns Unavailable (matching the siblings) if the gap does not close
-  // within the pass budget — rare; the caller treats it as a slice failure.
-  // Defined in spline_curve.cpp, beside the natural-spline core it reuses.
+  // total-variance curve `w_prev`, the SplineVol analogue of the Essvi/Svi/C8
+  // `arb_project_calendar_*_pair` calls in fit_slice_curve. Computes the max
+  // additive shared-grid deficit max_k [w_prev(k) - w(k)]_+ over the comparable
+  // ([-k,k] / n_grid) points and, if positive, applies a SINGLE uniform additive
+  // total-variance offset (SplineVolParams::w_offset) that clears the whole grid
+  // at once -- exactly the parallel level shift SVI's `a` / C8's `v` apply.
+  // A uniform offset (vs a per-knot multiple lift) is immune to the natural
+  // cubic's between-knot ringing and needs no iteration, so it always converges;
+  // it preserves the fitted skew SHAPE (only the level rises) and fires only on
+  // a genuine crossing (offset stays 0 otherwise, incl. the front expiry with no
+  // w_prev). Grid points where either curve is non-finite (deep-wing spline
+  // undershoot) are skipped, matching the downstream calendar check. Returns
+  // Unavailable only if NO grid point is comparable (degenerate pair). Defined in
+  // spline_curve.cpp, beside the natural-spline core it reuses.
   [[nodiscard]] Result<CalendarPairProjection>
   project_calendar(const std::function<double(double)> &w_prev, double k_min,
-                   double k_max, std::uint32_t n_grid);
+                   double k_max, std::uint32_t n_grid,
+                   double kprev_lo = -std::numeric_limits<double>::infinity(),
+                   double kprev_hi = std::numeric_limits<double>::infinity());
+
+  // Data-supported log-moneyness range [z_lo_valid, z_hi_valid] * (atm*sqrt(T)):
+  // the span the observed strikes cover. Outside it the served spline is
+  // extrapolation. Used to intersect adjacent slices' tradeable ranges for the
+  // calendar projection + check (see is_extrapolated).
+  [[nodiscard]] std::pair<double, double> data_k_range() const noexcept;
+
+  // True iff `k_log` lies outside this slice's data-supported range (pure
+  // extrapolation / flat wing). The served-surface calendar check skips any grid
+  // point where EITHER adjacent slice is extrapolating, so calendar
+  // no-arbitrage is certified only where both slices carry tradeable quotes.
+  [[nodiscard]] bool is_extrapolated(double k_log) const noexcept override;
 
 private:
   SplineVolParams p_;
@@ -396,13 +420,20 @@ struct CurveConfig {
 // `calendar_floor_knots`; fitting on the union of both node sets makes its
 // piecewise-linear calendar floor hold between nodes as well.
 // SplineVol projects the fitted slice onto the calendar cone above `w_prev`
-// (per-knot, ATM-preserving lift — see SplineVolCurve::project_calendar),
-// matching the Essvi/Svi/C8 branches; the front slice (null `w_prev`) is
-// unchanged. `calendar_floor_knots` is still ignored by the v1 spline.
+// (uniform total-variance offset over the tradeable overlap — see
+// SplineVolCurve::project_calendar), matching the Essvi/Svi/C8 branches; the
+// front slice (null `w_prev`) is unchanged. `calendar_floor_knots` is still
+// ignored by the v1 spline. `prev_data_k_range` (default the whole line) is the
+// previous slice's data-supported log-moneyness range; SplineVol intersects it
+// with its own so the calendar projection acts only where BOTH slices carry
+// quotes (a non-tradeable wing crossing is left to the extrapolation).
 [[nodiscard]] Result<std::unique_ptr<IVolCurve>>
 fit_slice_curve(const CurveConfig &cfg, std::span<const FitObs> obs_eu, double F, double T,
                 double df, const std::function<double(double)> &w_prev = {},
-                std::span<const double> calendar_floor_knots = {});
+                std::span<const double> calendar_floor_knots = {},
+                std::pair<double, double> prev_data_k_range = {
+                    -std::numeric_limits<double>::infinity(),
+                    std::numeric_limits<double>::infinity()});
 
 // Local/warm analogue of fit_slice_curve. Reuses the current curve's state where
 // the family supports it: eSSVI/C8 parameters seed LM directly and ConvexDense

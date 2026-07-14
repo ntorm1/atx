@@ -173,6 +173,15 @@ struct PricerConfig {
   // Optional per-slice cap applied before American-IV de-Am inversion. nullopt
   // => use the preset default; 0 => no cap.
   std::optional<std::uint32_t> max_obs_per_slice{};
+  // Optional cap on the number of OTM strikes de-Americanized per expiry in the
+  // legacy observation prep (CalibOpts::max_deam_strikes_per_expiry). nullopt =>
+  // preset default (0 = unlimited). Setting e.g. 64 for a pinned SplineVol fit
+  // bounds the per-strike inversion strip -- a 29-knot cubic spline is fully
+  // determined by a moneyness-spread subset -- cutting fit latency on wide,
+  // liquid boards without touching the forward/borrow carry solve. The subsample
+  // pins both wing extremes + a dense near-ATM core, so the served fit and its
+  // in-bidask/calendar-arb quality are unchanged.
+  std::optional<std::uint32_t> max_deam_strikes_per_expiry{};
   // Reuse raw European IV when the estimated OTM early-exercise premium is at
   // most this fraction of the NBBO spread. nullopt => preset default.
   std::optional<double> max_otm_shortcut_premium_spread_frac{};

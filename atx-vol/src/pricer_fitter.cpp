@@ -540,6 +540,9 @@ Status PricerFitter::fit(const OptionChain &chain,
   if (cfg_.max_obs_per_slice.has_value()) {
     in.calib.max_obs_per_slice = *cfg_.max_obs_per_slice;
   }
+  if (cfg_.max_deam_strikes_per_expiry.has_value()) {
+    in.calib.max_deam_strikes_per_expiry = *cfg_.max_deam_strikes_per_expiry;
+  }
   if (cfg_.max_otm_shortcut_premium_spread_frac.has_value()) {
     in.calib.max_otm_shortcut_premium_spread_frac = *cfg_.max_otm_shortcut_premium_spread_frac;
   }
@@ -760,6 +763,9 @@ Status PricerFitter::fit(const OptionChain &chain,
     if (cfg_.warm_start_carry) in.deam.warm_start_carry = *cfg_.warm_start_carry;
     if (cfg_.max_obs_per_slice.has_value()) {
       in.calib.max_obs_per_slice = *cfg_.max_obs_per_slice;
+    }
+    if (cfg_.max_deam_strikes_per_expiry.has_value()) {
+      in.calib.max_deam_strikes_per_expiry = *cfg_.max_deam_strikes_per_expiry;
     }
     if (cfg_.max_otm_shortcut_premium_spread_frac.has_value()) {
       in.calib.max_otm_shortcut_premium_spread_frac =

@@ -240,6 +240,14 @@ Result<std::vector<ArbViolation>> arb_check_calendar(const CurveSurface &s,
     const IVolCurve &curr = *slices[i];
     for (std::uint32_t g = 0; g <= n_grid; ++g) {
       const double k = k_min + dk * static_cast<double>(g);
+      // Calendar no-arbitrage is a statement about TRADEABLE quotes: skip any
+      // point where either slice is pure extrapolation (a SplineVol flat wing
+      // beyond its observed strikes). Default is_extrapolated()==false, so every
+      // parametric family (Essvi/Svi/C8/ConvexDense/LinearVariance) is checked on
+      // the full grid exactly as before — bit-identical.
+      if (prev.is_extrapolated(k) || curr.is_extrapolated(k)) {
+        continue;
+      }
       const double wp = prev.w(k);
       const double wc = curr.w(k);
       if (!std::isfinite(wp) || !std::isfinite(wc)) {

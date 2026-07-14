@@ -382,11 +382,18 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
     //    the immediately-shorter expiry.
     std::function<double(double)> w_prev;
     std::span<const double> calendar_floor_knots;
+    std::pair<double, double> prev_data_k_range{-std::numeric_limits<double>::infinity(),
+                                                std::numeric_limits<double>::infinity()};
     if (in.enforce_calendar_floor && !out.surface.empty() && out.context.back().T < T) {
       const IVolCurve *prev = out.surface.slices().back().get();
       w_prev = [prev](double k) { return prev->w(k); };
       if (const auto *linear = dynamic_cast<const LinearVarianceCurve *>(prev); linear != nullptr) {
         calendar_floor_knots = linear->k_nodes();
+      }
+      // The SplineVol calendar projection acts only on the tradeable overlap of
+      // the two slices' data ranges; hand it the previous spline slice's range.
+      if (const auto *sp = dynamic_cast<const SplineVolCurve *>(prev); sp != nullptr) {
+        prev_data_k_range = sp->data_k_range();
       }
     }
     // The calendar floor inside fit_convex_slice enforces w_curr >= w_prev at the
@@ -396,8 +403,8 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
     // calendar structure this trades some price-in-band tightness for no-arb — an
     // explicit product choice (see spy_bidask_regression_test's rebaselined floor).
     const auto t_slice0 = ProfileClock::now();
-    auto slice_res =
-        fit_slice_curve(cfg, prepared.fit_observations(), F, T, df, w_prev, calendar_floor_knots);
+    auto slice_res = fit_slice_curve(cfg, prepared.fit_observations(), F, T, df, w_prev,
+                                     calendar_floor_knots, prev_data_k_range);
     if (profile) {
       ms_fit_slice += elapsed_ms(t_slice0, ProfileClock::now());
     }

@@ -98,6 +98,11 @@ struct SplineVolParams {
   std::vector<double> mult;      // per-knot vol multiples, > 0 (>= mult_floor)
   double z_lo_valid{0.0};        // observed standardized-moneyness range;
   double z_hi_valid{0.0};        // flat outside [z.front(), z.back()] regardless.
+  // Uniform additive total-variance offset applied by the calendar-cone
+  // projection (SplineVolCurve::project_calendar): served w = (atm*m(z))^2*T +
+  // w_offset. 0 for a freshly fitted slice and for the front expiry (no w_prev);
+  // set >0 only to clear a genuine calendar crossing against the prior slice.
+  double w_offset{0.0};
   // Post-fit Lee/Roper butterfly-density violation count on a 128-pt k-grid
   // spanning [z_lo_valid, z_hi_valid] (NOT projected — see file-top comment
   // step 6). 0 == clean.
