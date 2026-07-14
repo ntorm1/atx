@@ -16,10 +16,12 @@
 
 #include "atx/core/error.hpp"
 #include "atx/vol/chain.hpp"
+#include "atx/vol/counters.hpp"
 #include "atx/vol/data.hpp"
 #include "atx/vol/panel.hpp"
 #include "atx/vol/parallel_for.hpp" // atx_auto_worker_count (ATX_VOL_FIT_WORKERS gate)
 #include "atx/vol/pricer_fitter.hpp"
+#include "atx/vol/pricing_executor.hpp"
 #include "atx/vol/risk_surface_validation.hpp"
 #include "atx/vol/session.hpp"
 #include "atx/vol/spy_fixture.hpp"
@@ -658,6 +660,54 @@ TEST_F(PricerFitterTest, FitStoresSurfaceAndGatesValueChain) {
   EXPECT_GT(fitter.surface()->diagnostics().n_slices, 0u);
 }
 
+TEST_F(PricerFitterTest, ValueChainRejectsDifferentChainInstanceWithSameLocalUid) {
+  PricerFitter fitter{PricerConfig{.preset = FitPreset::Fast, .n_threads = 1}};
+  ASSERT_TRUE(fitter.fit(*chain_).has_value());
+  ASSERT_NE(fitter.surface(), nullptr);
+  auto other = make_chain_from_spec(make_spy_synthetic_spec());
+  ASSERT_TRUE(other.has_value()) << other.error().to_string();
+  ASSERT_EQ(other->uid(), chain_->uid()) << "fresh single-underlying universes reuse local uid 1";
+  ASSERT_NE(other->instance_id(), chain_->instance_id());
+
+  const auto default_purpose = fitter.value_chain(*other, OutputField::ModelIV, 1u);
+  ASSERT_FALSE(default_purpose.has_value());
+  EXPECT_EQ(default_purpose.error().code(), atx::core::ErrorCode::InvalidArgument);
+
+  const auto explicit_purpose =
+      fitter.value_chain(*other, OutputField::ModelIV, fitter.surface()->purpose(), 1u);
+  ASSERT_FALSE(explicit_purpose.has_value());
+  EXPECT_EQ(explicit_purpose.error().code(), atx::core::ErrorCode::InvalidArgument);
+}
+
+TEST_F(PricerFitterTest, ValueChainSelectedRejectsDifferentChainAfterValidatingIds) {
+  PricerFitter fitter{PricerConfig{.preset = FitPreset::Fast, .n_threads = 1}};
+  ASSERT_TRUE(fitter.fit(*chain_).has_value());
+  ASSERT_NE(fitter.surface(), nullptr);
+  auto other = make_chain_from_spec(make_spy_synthetic_spec());
+  ASSERT_TRUE(other.has_value()) << other.error().to_string();
+  ASSERT_EQ(other->uid(), chain_->uid()) << "fresh single-underlying universes reuse local uid 1";
+  ASSERT_NE(other->instance_id(), chain_->instance_id());
+  const std::vector<OptionId> other_ids = other->ids();
+  ASSERT_GE(other_ids.size(), 2u);
+  const std::span<const OptionId> selected{other_ids.data(), 2u};
+
+  const auto default_purpose = fitter.value_chain(*other, selected, OutputField::MidIV, 1u);
+  ASSERT_FALSE(default_purpose.has_value());
+  EXPECT_EQ(default_purpose.error().code(), atx::core::ErrorCode::InvalidArgument);
+
+  const auto explicit_purpose =
+      fitter.value_chain(*other, selected, OutputField::MidIV, fitter.surface()->purpose(), 1u);
+  ASSERT_FALSE(explicit_purpose.has_value());
+  EXPECT_EQ(explicit_purpose.error().code(), atx::core::ErrorCode::InvalidArgument);
+
+  const OptionId invalid{0u};
+  const auto invalid_selected =
+      fitter.value_chain(*other, std::span<const OptionId>{&invalid, 1u}, OutputField::MidIV, 1u);
+  ASSERT_FALSE(invalid_selected.has_value());
+  EXPECT_EQ(invalid_selected.error().code(), atx::core::ErrorCode::NotFound)
+      << "selected-id validation must remain earlier than fitted-chain provenance validation";
+}
+
 TEST_F(PricerFitterTest, SessionBoundaryRejectsUnsupportedPersistedCalibrationPolicies) {
   std::vector<atx::vol::CalibOpts> unsupported;
   atx::vol::CalibOpts interval;
@@ -808,6 +858,14 @@ TEST(PricerFitterValueChain, SameExpiryChunksRemainBitIdenticalAcrossWorkers) {
   PricerFitter fitter{config};
   ASSERT_TRUE(fitter.fit(*chain).has_value());
 
+  // Create the process pool before resetting instrumentation. PoolDispatches
+  // below proves the valuation uses this executor; WorkerLaunches verifies that
+  // its persistent workers were not rebuilt during the measured call.
+  atx::vol::PricingExecutor &executor = atx::vol::pricing_executor();
+  std::array<unsigned, 128> warm{};
+  executor.run_blocks(warm.size(), 8u, [&](std::size_t i) { warm[i] = 1u; });
+  atx::vol::counters::reset();
+
   const auto serial = fitter.value_chain(*chain, OutputField::All, 1u);
   const auto parallel = fitter.value_chain(*chain, OutputField::All, 8u);
   ASSERT_TRUE(serial.has_value()) << serial.error().message();
@@ -834,6 +892,16 @@ TEST(PricerFitterValueChain, SameExpiryChunksRemainBitIdenticalAcrossWorkers) {
   EXPECT_EQ(serial->n_ask_unset, parallel->n_ask_unset);
   EXPECT_EQ(serial->n_bid_iv_fail, parallel->n_bid_iv_fail);
   EXPECT_EQ(serial->n_ask_iv_fail, parallel->n_ask_iv_fail);
+  if constexpr (atx::vol::counters::counters_enabled()) {
+    const atx::vol::counters::Snapshot counts = atx::vol::counters::snapshot();
+    EXPECT_EQ(counts.get(atx::vol::counters::Counter::WorkerLaunches), 0u);
+    if (executor.size() > 0u) {
+      EXPECT_EQ(counts.get(atx::vol::counters::Counter::PoolDispatches), 1u)
+          << "only the multi-chunk parallel valuation should wake the persistent pool";
+    } else {
+      EXPECT_EQ(counts.get(atx::vol::counters::Counter::PoolDispatches), 0u);
+    }
+  }
 }
 
 TEST_F(PricerFitterTest, ValueChainSelectedIdsMatchesFullChainRowsInCallerOrder) {
@@ -1031,13 +1099,6 @@ TEST(ValueChain, DegenerateLegsCountBothRequestedSidesAsUnset) {
   const SynthPanelSpec spec = make_spy_synthetic_spec();
   auto panel = make_synthetic_american_panel(spec);
   ASSERT_TRUE(panel.has_value()) << panel.error().message();
-  auto healthy = OptionChain::from_frame(panel->frame, spec.r, spec.spot);
-  ASSERT_TRUE(healthy.has_value()) << healthy.error().message();
-
-  PricerFitter fitter{PricerConfig{.preset = FitPreset::Fast, .n_threads = 1}};
-  ASSERT_TRUE(fitter.fit(*healthy).has_value());
-  const auto baseline = fitter.value_chain(*healthy, OutputField::Bands, 1);
-  ASSERT_TRUE(baseline.has_value());
 
   atx::vol::QuoteFrame augmented = panel->frame;
   atx::vol::QuoteRow call;
@@ -1056,6 +1117,23 @@ TEST(ValueChain, DegenerateLegsCountBothRequestedSidesAsUnset) {
 
   auto degenerate = OptionChain::from_frame(augmented, spec.r, spec.spot);
   ASSERT_TRUE(degenerate.has_value()) << degenerate.error().message();
+
+  // Fit and value the same chain instance: value_chain deliberately rejects
+  // cross-chain surface/quote mixing. Compare the full chain with a selected
+  // view that omits only the two T=0 rows added above.
+  PricerFitter fitter{PricerConfig{.preset = FitPreset::Fast, .n_threads = 1}};
+  ASSERT_TRUE(fitter.fit(*degenerate).has_value());
+  const atx::vol::ChainSnapshot snapshot = degenerate->snapshot();
+  std::vector<OptionId> regular_ids;
+  regular_ids.reserve(snapshot.size());
+  for (std::size_t i = 0; i < snapshot.size(); ++i) {
+    if (snapshot.T[i] > 0.0) {
+      regular_ids.push_back(snapshot.ids[i]);
+    }
+  }
+  ASSERT_EQ(regular_ids.size() + 2u, snapshot.size());
+  const auto baseline = fitter.value_chain(*degenerate, regular_ids, OutputField::Bands, 1);
+  ASSERT_TRUE(baseline.has_value()) << baseline.error().to_string();
   const auto valued = fitter.value_chain(*degenerate, OutputField::Bands, 1);
   ASSERT_TRUE(valued.has_value()) << valued.error().to_string();
   EXPECT_EQ(valued->n_bid_unset, baseline->n_bid_unset + 2u);

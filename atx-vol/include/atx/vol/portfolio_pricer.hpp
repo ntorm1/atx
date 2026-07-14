@@ -80,6 +80,7 @@
 
 #include "atx/vol/adjusted_greeks.hpp" // StickyParams
 #include "atx/vol/priced_surface.hpp"  // PricedSurface, PricingContext
+#include "atx/vol/query_pricing.hpp"   // QueryExecution
 #include "atx/vol/types.hpp"           // Result, Status, Side
 
 namespace atx::vol {
@@ -479,6 +480,10 @@ struct PriceOptions {
   // mutates the process-global ISA override. Full-Greek evaluation remains on
   // its existing scalar/analytic routes.
   simd::SimdIsa resolved_price_isa{simd::SimdIsa::Auto};
+  // Per-call economics route. Configured follows each prepared surface's query
+  // tier; ColdReference bypasses transient correction accelerators for marks,
+  // Greeks, totals, and every P&L leg without rebuilding the surface.
+  QueryExecution query_execution{QueryExecution::Configured};
 };
 
 class PortfolioPricer {

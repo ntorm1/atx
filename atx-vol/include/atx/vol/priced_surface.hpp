@@ -110,6 +110,11 @@ public:
 
   // ── Queries (const; reproduce the session's cold served path) ──────────────
 
+  // Every American price/Greek entry point accepts a call-local execution
+  // contract. Configured follows the immutable surface's prepared tier;
+  // ColdReference bypasses its transient accelerator without mutating or
+  // reconstructing the surface. IV and total variance are tier-independent.
+
   // European-equivalent implied vol at absolute strike K and year-fraction T. NaN
   // outside the surface's no-extrapolation domain or for non-finite/non-positive
   // K/T. Identical to `VolaSession::iv` on the override path.
@@ -123,12 +128,16 @@ public:
   // their certified cached surrogate and fall back to the same cold route outside
   // its box. InvalidArgument for non-finite/non-positive K/T; any pricer error is
   // propagated.
-  [[nodiscard]] Result<double> fair_value(double K, double T, Side side) const;
+  [[nodiscard]] Result<double>
+  fair_value(double K, double T, Side side,
+             QueryExecution execution = QueryExecution::Configured) const;
 
   // Model Greeks + price at (K, T, side). Cold tiers use `american_greeks` with no
   // cache. Fast tiers differentiate the cached surrogate directly and retain the
   // cold route as their certified-box fallback.
-  [[nodiscard]] Result<AmericanGreeks> greeks(double K, double T, Side side) const;
+  [[nodiscard]] Result<AmericanGreeks>
+  greeks(double K, double T, Side side,
+         QueryExecution execution = QueryExecution::Configured) const;
 
   // Faster Greeks via the analytic Andersen-Lake path (american_greeks_al): five
   // boundary solves instead of greeks()'s seven. price + delta/gamma/vega/rho/vanna/
@@ -137,12 +146,15 @@ public:
   // bit-stable greeks() default). The pricer enables it via PriceOptions. On a
   // fast query tier both methods intentionally return the same cached jet, so the
   // analytic flag has no effect while the cache route is active.
-  [[nodiscard]] Result<AmericanGreeks> greeks_analytic(double K, double T, Side side) const;
+  [[nodiscard]] Result<AmericanGreeks>
+  greeks_analytic(double K, double T, Side side,
+                  QueryExecution execution = QueryExecution::Configured) const;
 
   // American delta ONLY at (K, T, side) via `american_delta` — the single axis the
   // strike-from-delta solver consumes, at ~1-2 boundary solves instead of greeks()'s
   // seventeen (bit-identical value; same S/sigma/carry plumbing as greeks()).
-  [[nodiscard]] Result<double> delta(double K, double T, Side side) const;
+  [[nodiscard]] Result<double> delta(double K, double T, Side side,
+                                     QueryExecution execution = QueryExecution::Configured) const;
 
   // American vega ONLY at (K, T, side) — the single axis a vega-neutral sizing
   // call (e.g. the dispersion book build) needs, WITHOUT greeks_analytic()'s full
@@ -152,7 +164,8 @@ public:
   // the existing non-AL-method FD fallback. The API contract is exact equality
   // to this dedicated reference; equality to a full analytic bundle is not a
   // general cross-method guarantee. (C1.7)
-  [[nodiscard]] Result<double> vega(double K, double T, Side side) const;
+  [[nodiscard]] Result<double> vega(double K, double T, Side side,
+                                    QueryExecution execution = QueryExecution::Configured) const;
 
   // ── Fused resolution + single-point / batch evaluation (P1.1) ──────────────
   //
@@ -222,8 +235,8 @@ public:
     Status status{};         // default-constructed == Ok
   };
 
-  [[nodiscard]] FusedResult evaluate(double K, double T, Side side, EvalField fields,
-                                     bool analytic) const;
+  [[nodiscard]] FusedResult evaluate(double K, double T, Side side, EvalField fields, bool analytic,
+                                     QueryExecution execution = QueryExecution::Configured) const;
 
   // Caller-provided, one-entry-per-query output spans for `evaluate_batch`.
   // On the legacy path (no Delta/Vega bit), the original iv/price/status sizing
@@ -257,7 +270,8 @@ public:
   [[nodiscard]] Status evaluate_batch(std::span<const double> K, std::span<const double> T,
                                       std::span<const Side> side, EvalField fields, bool analytic,
                                       EvaluationSoA out,
-                                      simd::SimdIsa resolved_price_isa = simd::SimdIsa::Auto) const;
+                                      simd::SimdIsa resolved_price_isa = simd::SimdIsa::Auto,
+                                      QueryExecution execution = QueryExecution::Configured) const;
 
   // ── Term carry accessors (the query re-pricing forward / effective yield) ──
   //
@@ -284,8 +298,11 @@ public:
 
   // Route that a valid point would take. Fast-configured points outside the
   // certified cache box report ColdFallback. Invalid K/T also report fallback
-  // under a fast tier and ColdReference otherwise.
-  [[nodiscard]] QueryPricingRoute query_pricing_route(double K, double T, Side side) const noexcept;
+  // under a fast tier and ColdReference otherwise. A forced-cold execution
+  // always reports ColdReference.
+  [[nodiscard]] QueryPricingRoute
+  query_pricing_route(double K, double T, Side side,
+                      QueryExecution execution = QueryExecution::Configured) const noexcept;
 
   // The curve kind of slice `i` (ascending T). Precondition: i < n_slices().
   [[nodiscard]] VolCurveKind kind_at(std::size_t i) const noexcept;
@@ -311,13 +328,18 @@ private:
   // Shared price/Greek routing for `evaluate` / `evaluate_batch` off one resolved
   // point — the single place the field bitmask drives the pricer calls.
   [[nodiscard]] FusedResult evaluate_resolved(const ResolvedSurfacePoint &p, Side side,
-                                              EvalField fields, bool analytic) const;
+                                              EvalField fields, bool analytic,
+                                              QueryExecution execution) const;
 
-  [[nodiscard]] Result<double> price_resolved(const ResolvedSurfacePoint &p, Side side) const;
+  [[nodiscard]] Result<double> price_resolved(const ResolvedSurfacePoint &p, Side side,
+                                              QueryExecution execution) const;
   [[nodiscard]] Result<AmericanGreeks> greeks_resolved(const ResolvedSurfacePoint &p, Side side,
-                                                       bool analytic) const;
-  [[nodiscard]] Result<double> delta_resolved(const ResolvedSurfacePoint &p, Side side) const;
-  [[nodiscard]] Result<double> vega_resolved(const ResolvedSurfacePoint &p, Side side) const;
+                                                       bool analytic,
+                                                       QueryExecution execution) const;
+  [[nodiscard]] Result<double> delta_resolved(const ResolvedSurfacePoint &p, Side side,
+                                              QueryExecution execution) const;
+  [[nodiscard]] Result<double> vega_resolved(const ResolvedSurfacePoint &p, Side side,
+                                             QueryExecution execution) const;
 
   struct QueryAccelerator;
 

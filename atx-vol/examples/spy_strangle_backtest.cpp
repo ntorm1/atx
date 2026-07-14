@@ -274,6 +274,7 @@ int main(int argc, char **argv) {
   QueryPricingTier query_pricing_tier = QueryPricingTier::LegacyCompatible;
   std::string_view query_pricing_label = "legacy";
   bool preload_snapshots = false;
+  bool adaptive_confirm = false;
   for (int i = 1; i < argc; ++i) {
     const std::string_view a = argv[i];
     const auto nv = [&]() -> const char * { return (i + 1 < argc) ? argv[++i] : ""; };
@@ -301,6 +302,8 @@ int main(int argc, char **argv) {
       query_pricing_label = value;
     } else if (a == "--preload-snapshots") {
       preload_snapshots = true;
+    } else if (a == "--adaptive-confirm") {
+      adaptive_confirm = true;
     } else if (!a.empty() && a.front() != '-' && manifest_path.empty()) {
       manifest_path = argv[i]; // positional manifest path
     } else {
@@ -407,10 +410,17 @@ int main(int argc, char **argv) {
   // == target * 365.25.)
   const double kTargetThetaPerDay = target_theta_per_day;
   const SizeSpec size{SizeSpec::Kind::TargetTheta, kTargetThetaPerDay, -1.0};
-  const StrategySpec spec = make_strangle_spec(size);
+  StrategySpec spec = make_strangle_spec(size);
+  spec.resolution.fast_screen_cold_confirm = adaptive_confirm;
   DeclarativeStrategy strat{spec};
   RunConfig run_config;
   run_config.query_pricing_tier = query_pricing_tier;
+  if (adaptive_confirm) {
+    // Cached corrections propose strikes only. Every accepted strike, sizing
+    // Greek, entry/close/settlement mark, book Greek, and P&L query is served by
+    // the cold reference path.
+    run_config.price.query_execution = QueryExecution::ColdReference;
+  }
   double preload_ms = 0.0;
   if (preload_snapshots) {
     run_config.snapshot_cache = std::make_shared<SnapshotCache>();
@@ -467,6 +477,7 @@ int main(int argc, char **argv) {
        << "# listed_workflow=spy_strangle_tradeable via listed_opra.hpp\n"
        << "# data_source=" << data_source << "\n"
        << "# query_pricing_tier=" << query_pricing_label << "\n"
+       << "# adaptive_confirm=" << (adaptive_confirm ? "true" : "false") << "\n"
        << "# snapshot_preload_ms=" << preload_ms << "\n"
        << "# window_start=" << dates.front() << "\n"
        << "# window_end=" << dates.back() << "\n"
@@ -533,10 +544,11 @@ int main(int argc, char **argv) {
     (void)sink;
   }
 
-  std::printf("\n[timing] backtest run (%.*s query tier): %.1f ms over %d priced steps => %.1f "
+  std::printf("\n[timing] backtest run (%.*s query tier%s): %.1f ms over %d priced steps => %.1f "
               "steps/s, "
               "%lld leg-reprices (%.3f ms/step, %.3f ms/leg-reprice)\n",
-              static_cast<int>(query_pricing_label.size()), query_pricing_label.data(), run_ms,
+              static_cast<int>(query_pricing_label.size()), query_pricing_label.data(),
+              adaptive_confirm ? ", adaptive cold confirmation/economics" : "", run_ms,
               priced_steps, steps_per_s, leg_reprices,
               (priced_steps > 0) ? run_ms / priced_steps : 0.0,
               (leg_reprices > 0) ? run_ms / static_cast<double>(leg_reprices) : 0.0);

@@ -37,6 +37,12 @@
 // worker, or the caller while it is running its own block 0) execute FULLY INLINE
 // instead of dispatching.
 //
+// A body exception is captured at its first caller/worker observation. Every
+// participant still reaches the join barrier before that exception is rethrown on
+// the calling thread, so stack-backed closures remain alive and the pool remains
+// reusable. An inline/nested call has no participants to join and propagates
+// directly.
+//
 // ## Sizing / topology
 //
 // The pool draws from the same core budget the fitter's `parallel_for` uses: its
@@ -100,6 +106,19 @@ public:
                static_cast<void *>(std::addressof(body)));
   }
 
+  // On successful completion, run `body(index, worker_id)` exactly once for every
+  // index in [0, n), dynamically claiming indices to balance irregular work. If
+  // a body throws, all active contexts finish before rethrow, but unclaimed work
+  // is not part of the exceptional-completion contract. A participating
+  // execution context owns one stable worker_id in [0, resolved_threads) for
+  // the dispatch lifetime, so callers may safely index pre-sized per-worker
+  // scratch. Auto/clamping, inline-threshold, join-barrier, and nested-inline
+  // behavior match run_blocks/run_ranges; inline work always uses worker_id 0.
+  template <class F> void run_dynamic(std::size_t n, unsigned n_threads, F &&body) {
+    run_dynamic_erased(n, n_threads, &trampoline_dynamic<std::remove_reference_t<F>>,
+                       static_cast<void *>(std::addressof(body)));
+  }
+
   // Pool worker count (fixed for the pool's life). May be 0 on a single-core box
   // (everything then runs inline). `n_threads` requests never exceed size() + 1.
   [[nodiscard]] unsigned size() const noexcept;
@@ -115,6 +134,7 @@ private:
   // the caller's `body` on its own stack, kept alive by the join-barrier; the
   // trampoline is a captureless-lambda function pointer (one per body type).
   using Trampoline = void (*)(void *, std::size_t, std::size_t);
+  using DynamicTrampoline = void (*)(void *, std::size_t, unsigned);
 
   template <class U> static void trampoline_blocks(void *c, std::size_t lo, std::size_t hi) {
     U &f = *static_cast<U *>(c);
@@ -125,8 +145,13 @@ private:
   template <class U> static void trampoline_ranges(void *c, std::size_t lo, std::size_t hi) {
     (*static_cast<U *>(c))(lo, hi);
   }
+  template <class U>
+  static void trampoline_dynamic(void *c, std::size_t index, unsigned worker_id) {
+    (*static_cast<U *>(c))(index, worker_id);
+  }
 
   void run_erased(std::size_t n, unsigned n_threads, Trampoline fn, void *closure);
+  void run_dynamic_erased(std::size_t n, unsigned n_threads, DynamicTrampoline fn, void *closure);
 
   struct State;
   std::unique_ptr<State> state_;

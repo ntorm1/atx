@@ -361,6 +361,32 @@ void expect_pnl_frame_bit_identical(const PnlFrameStore &actual, const PnlFrameS
   expect_pnl_totals_bit_identical(actual.total, expected.total);
 }
 
+void expect_pnl_frame_bit_identical(const PnlFrame &actual, const PnlFrame &expected) {
+  ASSERT_EQ(actual.size(), expected.size());
+  for (std::size_t i = 0; i < actual.size(); ++i) {
+    EXPECT_EQ(actual.id[i], expected.id[i]) << i;
+    EXPECT_EQ(actual.uid[i], expected.uid[i]) << i;
+    EXPECT_EQ(actual.status[i], expected.status[i]) << i;
+    EXPECT_TRUE(bits_equal(actual.pv_base[i], expected.pv_base[i])) << i;
+    EXPECT_TRUE(bits_equal(actual.pv_target[i], expected.pv_target[i])) << i;
+    EXPECT_TRUE(bits_equal(actual.pnl_total[i], expected.pnl_total[i])) << i;
+    EXPECT_TRUE(bits_equal(actual.pnl_delta[i], expected.pnl_delta[i])) << i;
+    EXPECT_TRUE(bits_equal(actual.pnl_gamma[i], expected.pnl_gamma[i])) << i;
+    EXPECT_TRUE(bits_equal(actual.pnl_vega[i], expected.pnl_vega[i])) << i;
+    EXPECT_TRUE(bits_equal(actual.pnl_volga[i], expected.pnl_volga[i])) << i;
+    EXPECT_TRUE(bits_equal(actual.pnl_vanna[i], expected.pnl_vanna[i])) << i;
+    EXPECT_TRUE(bits_equal(actual.pnl_theta[i], expected.pnl_theta[i])) << i;
+    EXPECT_TRUE(bits_equal(actual.pnl_rho[i], expected.pnl_rho[i])) << i;
+    EXPECT_TRUE(bits_equal(actual.pnl_charm[i], expected.pnl_charm[i])) << i;
+    EXPECT_TRUE(bits_equal(actual.pnl_unexplained[i], expected.pnl_unexplained[i])) << i;
+    EXPECT_TRUE(bits_equal(actual.d_spot[i], expected.d_spot[i])) << i;
+    EXPECT_TRUE(bits_equal(actual.d_vol[i], expected.d_vol[i])) << i;
+    EXPECT_TRUE(bits_equal(actual.d_time[i], expected.d_time[i])) << i;
+    EXPECT_TRUE(bits_equal(actual.d_rate[i], expected.d_rate[i])) << i;
+  }
+  expect_pnl_totals_bit_identical(actual.total, expected.total);
+}
+
 // A multi-underlying (uids 1/2/3 essvi + a no-surface uid 99), multi-expiry,
 // mixed-side book with a dedup pair — exercises the grouped P&L substrate's
 // equal-T ladders (three strikes per (uid,side,T) run) and the ModelUnavailable /
@@ -417,9 +443,8 @@ TEST(PortfolioPricer, BitIdenticalRetimePreservesWarmedPreparedSubstrate) {
   PortfolioPricer pricer(std::move(*portfolio));
   PortfolioWorkspace workspace;
   FrameStore warmup(positions.size(), /*want_greeks=*/false);
-  ASSERT_TRUE(pricer
-                  .price_into(surfaces, PriceFieldMask::Marks, warmup.view(), workspace)
-                  .has_value());
+  ASSERT_TRUE(
+      pricer.price_into(surfaces, PriceFieldMask::Marks, warmup.view(), workspace).has_value());
 
   if constexpr (counters_enabled()) {
     atx::vol::counters::reset();
@@ -427,9 +452,8 @@ TEST(PortfolioPricer, BitIdenticalRetimePreservesWarmedPreparedSubstrate) {
   const std::array<double, 2> same_t{0.15, 0.25};
   ASSERT_TRUE(pricer.retime(same_t).has_value());
   FrameStore result(positions.size(), /*want_greeks=*/false);
-  ASSERT_TRUE(pricer
-                  .price_into(surfaces, PriceFieldMask::Marks, result.view(), workspace)
-                  .has_value());
+  ASSERT_TRUE(
+      pricer.price_into(surfaces, PriceFieldMask::Marks, result.view(), workspace).has_value());
   if constexpr (counters_enabled()) {
     EXPECT_EQ(atx::vol::counters::snapshot().get(Counter::PreparedBuilds), 0u);
   }
@@ -748,6 +772,59 @@ TEST(PortfolioPricer, Price_MultiKind_MultiUnderlying_BitIdenticalToGreeks) {
   EXPECT_TRUE(bits_equal(f.pv[2], 1.5 * f.pv[4])); // qty 3 vs 2
 }
 
+TEST(PortfolioPricer, ForcedColdPriceAndTotalsMatchIndependentColdPreparedSurface) {
+  PricedSurface fast_source = make_essvi(1, 5);
+  auto fast_prepared =
+      std::move(fast_source).with_query_pricing(QueryPricingTier::RepresentativeFast);
+  ASSERT_TRUE(fast_prepared.has_value()) << fast_prepared.error().to_string();
+  const PricedSurface fast = std::move(*fast_prepared);
+
+  PricedSurface cold_source = make_essvi(1, 5);
+  auto cold_prepared = std::move(cold_source).with_query_pricing(QueryPricingTier::ColdReference);
+  ASSERT_TRUE(cold_prepared.has_value()) << cold_prepared.error().to_string();
+  const PricedSurface cold = std::move(*cold_prepared);
+  const SurfaceSet fast_set = set_of({&fast});
+  const SurfaceSet cold_set = set_of({&cold});
+
+  auto portfolio = Portfolio::create(pnl_book());
+  ASSERT_TRUE(portfolio.has_value()) << portfolio.error().to_string();
+  const PortfolioPricer pricer(std::move(*portfolio));
+
+  PriceOptions forced;
+  forced.n_threads = 1u;
+  forced.analytic_greeks = true;
+  forced.query_execution = QueryExecution::ColdReference;
+  PriceOptions configured = forced;
+  configured.query_execution = QueryExecution::Configured;
+
+  const auto actual = pricer.price(fast_set, forced);
+  const auto expected = pricer.price(cold_set, configured);
+  ASSERT_TRUE(actual.has_value()) << actual.error().to_string();
+  ASSERT_TRUE(expected.has_value()) << expected.error().to_string();
+  expect_frame_bit_identical(*actual, *expected);
+
+  PortfolioWorkspace actual_workspace;
+  PortfolioWorkspace expected_workspace;
+  const auto actual_totals =
+      pricer.price_totals(fast_set, PriceFieldMask::FullGreeks, actual_workspace, forced);
+  const auto expected_totals =
+      pricer.price_totals(cold_set, PriceFieldMask::FullGreeks, expected_workspace, configured);
+  ASSERT_TRUE(actual_totals.has_value()) << actual_totals.error().to_string();
+  ASSERT_TRUE(expected_totals.has_value()) << expected_totals.error().to_string();
+  expect_totals_bit_identical(*actual_totals, *expected_totals);
+
+  const auto configured_fast = pricer.price(fast_set, configured);
+  ASSERT_TRUE(configured_fast.has_value()) << configured_fast.error().to_string();
+  bool observed_fast_approximation = false;
+  for (std::size_t i = 0u; i < configured_fast->size(); ++i) {
+    observed_fast_approximation = observed_fast_approximation ||
+                                  !bits_equal(configured_fast->price[i], expected->price[i]) ||
+                                  !bits_equal(configured_fast->delta[i], expected->delta[i]);
+  }
+  EXPECT_TRUE(observed_fast_approximation)
+      << "forced-cold parity must exercise an active fast tier";
+}
+
 TEST(PortfolioPricer, Price_DegenerateContract_Invalid) {
   const PricedSurface s1 = make_essvi(1, 4);
   const SurfaceSet surfaces = set_of({&s1});
@@ -809,8 +886,7 @@ TEST(PortfolioPricer, Price_ThreadCounts_BitIdentical) {
 TEST(PortfolioPricer, PnlExplain_SpotBump_DeltaGammaOnly) {
   const double dS = 0.05; // small spot move -> 2nd-order Taylor is tight
   const PricedSurface base = make_essvi(1, 5, 0.0, kS, kR, kNow, 0.02, true);
-  const PricedSurface shifted =
-      make_essvi(1, 5, 0.0, kS + dS, kR, kNow, 0.02, true);
+  const PricedSurface shifted = make_essvi(1, 5, 0.0, kS + dS, kR, kNow, 0.02, true);
   const SurfaceSet bset = set_of({&base});
   const SurfaceSet sset = set_of({&shifted});
 
@@ -855,8 +931,7 @@ TEST(PortfolioPricer, PnlExplain_SpotBump_DeltaGammaOnly) {
 TEST(PortfolioPricer, PnlExplain_RateBump_RhoOnly) {
   const double dr = 1e-4; // 1 bp
   const PricedSurface base = make_essvi(1, 5, 0.0, kS, kR, kNow, 0.02, true);
-  const PricedSurface shifted =
-      make_essvi(1, 5, 0.0, kS, kR + dr, kNow, 0.02, true);
+  const PricedSurface shifted = make_essvi(1, 5, 0.0, kS, kR + dr, kNow, 0.02, true);
   const SurfaceSet bset = set_of({&base});
   const SurfaceSet sset = set_of({&shifted});
 
@@ -1008,6 +1083,76 @@ TEST(PortfolioPricer, PnlExplain_CombinedShift_SumsToTotal_And_ThreadDeterminist
     EXPECT_TRUE(bits_equal(a->pnl_unexplained[i], b->pnl_unexplained[i])) << i;
   }
   EXPECT_TRUE(bits_equal(a->total.pnl_total, b->total.pnl_total));
+}
+
+TEST(PortfolioPricer, ForcedColdPnlAndTotalsMatchIndependentColdPreparedSurfaces) {
+  const std::int64_t one_hour = static_cast<std::int64_t>(3600.0 * 1e9);
+  PricedSurface fast_base_source = make_essvi(1, 5);
+  PricedSurface fast_shifted_source =
+      make_essvi(1, 5, 0.0005, kS + 0.1, kR + 0.0005, kNow + one_hour);
+  auto fast_base_prepared =
+      std::move(fast_base_source).with_query_pricing(QueryPricingTier::RepresentativeFast);
+  auto fast_shifted_prepared =
+      std::move(fast_shifted_source).with_query_pricing(QueryPricingTier::RepresentativeFast);
+  ASSERT_TRUE(fast_base_prepared.has_value()) << fast_base_prepared.error().to_string();
+  ASSERT_TRUE(fast_shifted_prepared.has_value()) << fast_shifted_prepared.error().to_string();
+  const PricedSurface fast_base = std::move(*fast_base_prepared);
+  const PricedSurface fast_shifted = std::move(*fast_shifted_prepared);
+
+  PricedSurface cold_base_source = make_essvi(1, 5);
+  PricedSurface cold_shifted_source =
+      make_essvi(1, 5, 0.0005, kS + 0.1, kR + 0.0005, kNow + one_hour);
+  auto cold_base_prepared =
+      std::move(cold_base_source).with_query_pricing(QueryPricingTier::ColdReference);
+  auto cold_shifted_prepared =
+      std::move(cold_shifted_source).with_query_pricing(QueryPricingTier::ColdReference);
+  ASSERT_TRUE(cold_base_prepared.has_value()) << cold_base_prepared.error().to_string();
+  ASSERT_TRUE(cold_shifted_prepared.has_value()) << cold_shifted_prepared.error().to_string();
+  const PricedSurface cold_base = std::move(*cold_base_prepared);
+  const PricedSurface cold_shifted = std::move(*cold_shifted_prepared);
+
+  const SurfaceSet fast_base_set = set_of({&fast_base});
+  const SurfaceSet fast_shifted_set = set_of({&fast_shifted});
+  const SurfaceSet cold_base_set = set_of({&cold_base});
+  const SurfaceSet cold_shifted_set = set_of({&cold_shifted});
+  auto portfolio = Portfolio::create(pnl_book());
+  ASSERT_TRUE(portfolio.has_value()) << portfolio.error().to_string();
+  const PortfolioPricer pricer(std::move(*portfolio));
+
+  PriceOptions forced;
+  forced.n_threads = 1u;
+  forced.analytic_greeks = true;
+  forced.query_execution = QueryExecution::ColdReference;
+  PriceOptions configured = forced;
+  configured.query_execution = QueryExecution::Configured;
+
+  const auto actual = pricer.pnl_explain(fast_base_set, fast_shifted_set, forced);
+  const auto expected = pricer.pnl_explain(cold_base_set, cold_shifted_set, configured);
+  ASSERT_TRUE(actual.has_value()) << actual.error().to_string();
+  ASSERT_TRUE(expected.has_value()) << expected.error().to_string();
+  expect_pnl_frame_bit_identical(*actual, *expected);
+
+  PortfolioWorkspace actual_workspace;
+  PortfolioWorkspace expected_workspace;
+  const auto actual_totals =
+      pricer.pnl_totals(fast_base_set, fast_shifted_set, actual_workspace, forced);
+  const auto expected_totals =
+      pricer.pnl_totals(cold_base_set, cold_shifted_set, expected_workspace, configured);
+  ASSERT_TRUE(actual_totals.has_value()) << actual_totals.error().to_string();
+  ASSERT_TRUE(expected_totals.has_value()) << expected_totals.error().to_string();
+  expect_pnl_totals_bit_identical(*actual_totals, *expected_totals);
+
+  const auto configured_fast = pricer.pnl_explain(fast_base_set, fast_shifted_set, configured);
+  ASSERT_TRUE(configured_fast.has_value()) << configured_fast.error().to_string();
+  bool observed_fast_approximation = false;
+  for (std::size_t i = 0u; i < configured_fast->size(); ++i) {
+    observed_fast_approximation =
+        observed_fast_approximation ||
+        !bits_equal(configured_fast->pv_base[i], expected->pv_base[i]) ||
+        !bits_equal(configured_fast->pv_target[i], expected->pv_target[i]);
+  }
+  EXPECT_TRUE(observed_fast_approximation)
+      << "forced-cold parity must exercise an active fast tier";
 }
 
 // American-consistent Taylor reconstruction. The Greeks are now AMERICAN (cold
@@ -1312,17 +1457,16 @@ TEST(PortfolioPricer, MarksResolvedRoutesAreThreadDeterministicAndScalarCompatib
   FrameStore scalar_ref(n, /*want_greeks=*/false);
   FrameStore avx_ref(n, /*want_greeks=*/false);
   const unsigned thread_counts[] = {1, 2, 4, 8};
-  const simd::SimdIsa routes[] = {simd::SimdIsa::ForceScalar,
-                                  simd::SimdIsa::ForceAvx2};
+  const simd::SimdIsa routes[] = {simd::SimdIsa::ForceScalar, simd::SimdIsa::ForceAvx2};
 
   for (std::size_t route_ix = 0; route_ix < 2; ++route_ix) {
-    FrameStore& route_ref = (route_ix == 0) ? scalar_ref : avx_ref;
+    FrameStore &route_ref = (route_ix == 0) ? scalar_ref : avx_ref;
     for (std::size_t thread_ix = 0; thread_ix < 4; ++thread_ix) {
       FrameStore actual(n, /*want_greeks=*/false);
       const PriceOptions opts{.n_threads = thread_counts[thread_ix],
                               .resolved_price_isa = routes[route_ix]};
-      ASSERT_TRUE(pricer.price_into(surfaces, PriceFieldMask::Marks, actual.view(), ws, opts)
-                      .has_value());
+      ASSERT_TRUE(
+          pricer.price_into(surfaces, PriceFieldMask::Marks, actual.view(), ws, opts).has_value());
       auto totals = pricer.price_totals(surfaces, PriceFieldMask::Marks, ws, opts);
       ASSERT_TRUE(totals.has_value());
       expect_totals_bit_identical(*totals, actual.total);
@@ -1499,10 +1643,8 @@ TEST(PortfolioPricer, PriceInto_AlternatingMasks_NoRebuild) {
   FrameStore fm(n, /*want_greeks=*/false);
   PriceFrameView vg = fg.view();
   PriceFrameView vm = fm.view();
-  const PriceOptions greek_opts{.n_threads = 4,
-                                .resolved_price_isa = simd::SimdIsa::ForceScalar};
-  const PriceOptions mark_opts{.n_threads = 4,
-                               .resolved_price_isa = simd::SimdIsa::ForceAvx2};
+  const PriceOptions greek_opts{.n_threads = 4, .resolved_price_isa = simd::SimdIsa::ForceScalar};
+  const PriceOptions mark_opts{.n_threads = 4, .resolved_price_isa = simd::SimdIsa::ForceAvx2};
 
   // Warm-up build (the mask does not affect the substrate it builds).
   ASSERT_TRUE(

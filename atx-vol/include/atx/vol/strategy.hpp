@@ -139,6 +139,19 @@ struct HedgeSpec {
   double band{0.0}; // rebalance only when |net delta| > band (0 = every cadence tick)
 };
 
+// Optional strike-resolution accuracy policy. The default preserves the
+// configured surface route exactly. Adaptive mode is intended for a surface
+// prepared as RepresentativeFast or CarryBank: it uses that route only to
+// propose a delta strike, then cold-validates/refines the proposal and falls
+// back to the robust all-cold bracketed solver when necessary. Sizing Greeks
+// and entry marks are also forced cold in this mode.
+struct ResolutionOptions {
+  bool fast_screen_cold_confirm{false};
+  double cold_delta_tolerance{1.0e-5};
+  double max_log_strike_step{0.05};
+  unsigned max_refine_iterations{8};
+};
+
 struct StrategySpec {
   std::string name;
   std::vector<LegSpec> legs;
@@ -149,6 +162,9 @@ struct StrategySpec {
   // Default {Error, min_names=2} preserves resolve_spec's pre-existing hard-fail
   // behavior exactly: `resolve_spec` ignores this field entirely (always Error).
   MissingNameSpec missing{};
+  // Appended after the original aggregate fields so existing positional
+  // StrategySpec initializers keep their pre-adaptive meaning.
+  ResolutionOptions resolution{};
 };
 
 // ── Resolution primitives ───────────────────────────────────────────────────
@@ -156,7 +172,8 @@ struct StrategySpec {
 // A synthetic model option leg produced by expanding a `LegSpec` against a
 // snapshot, before sizing. It has continuous (K,T) surface coordinates, not a
 // listed contract identity or executable quote. `vega` is the per-share American
-// greek vega (> 0 for both call and put); `sigma` is the surface IV at (K, T).
+// greek vega (> 0 for both call and put); `sigma` is the surface IV at (K, T),
+// and `model_price` is carried from that same final Greeks query for entry reuse.
 struct ResolvedLeg {
   std::uint32_t uid{0};
   double K{0.0};
@@ -167,6 +184,8 @@ struct ResolvedLeg {
   double gamma{0.0}; // per-share American gamma (> 0 for a long option)
   Side side{Side::Call};
   std::string group;
+  // Appended after the original aggregate fields for source compatibility.
+  double model_price{-1.0}; // nonnegative mark returned with the final sizing Greeks
 };
 
 // A sized option leg: a `ResolvedLeg` with a signed contract `qty` and contract
@@ -186,18 +205,31 @@ struct SizedLeg {
 [[nodiscard]] Result<double> resolve_strike_by_delta(const PricedSurface &s, double T, Side side,
                                                      double target_abs_delta);
 
+// Adaptive overload. When enabled, every successful return has been validated
+// by `PricedSurface::delta(..., QueryExecution::ColdReference)` within
+// `cold_delta_tolerance`; local refinement is bounded and exhaustion falls back
+// to the robust solver running entirely ColdReference.
+[[nodiscard]] Result<double> resolve_strike_by_delta(const PricedSurface &s, double T, Side side,
+                                                     double target_abs_delta,
+                                                     const ResolutionOptions &options);
+
 // Resolve a `StrikeSelector` to a synthetic-model absolute strike K (AtmForward =
 // F(target_T); Delta = the solver; Moneyness = F * exp(value); AbsStrike = value).
 // NotImplemented when `tenor.snap_to_listed` is true; this API has no listed
 // contract or quote provenance and never pretends a model strike is tradeable.
 [[nodiscard]] Result<double> resolve_strike(const PricedSurface &s, const TenorSpec &tenor,
                                             Side side, const StrikeSelector &sel);
+[[nodiscard]] Result<double> resolve_strike(const PricedSurface &s, const TenorSpec &tenor,
+                                            Side side, const StrikeSelector &sel,
+                                            const ResolutionOptions &options);
 
 // Expand a `LegSpec` against a snapshot into concrete (uid,K,T,side) legs with
 // per-share vega + sigma, before sizing. Single -> 1, Straddle/Strangle -> 2,
 // RiskReversal -> InvalidArgument (not in B1).
 [[nodiscard]] Result<std::vector<ResolvedLeg>> expand_leg(const MarketSnapshot &snap,
                                                           const LegSpec &leg);
+[[nodiscard]] Result<std::vector<ResolvedLeg>>
+expand_leg(const MarketSnapshot &snap, const LegSpec &leg, const ResolutionOptions &options);
 
 // Resolve a whole `StrategySpec` into a sized book: expand every leg, apply
 // per-leg base sizing (FixedContracts/TargetVega/Weight, multiplier 100), then the
@@ -276,6 +308,12 @@ public:
   // reads it each step and trades the shares ledger to satisfy it. Default: None
   // (no hedge), so a strategy that ignores it runs exactly as in B1.
   [[nodiscard]] virtual HedgeSpec hedge_spec() const { return {}; }
+  // Economic route required by the strategy's decision policy. The engine
+  // rejects a fast prepared tier when it cannot satisfy a ColdReference
+  // requirement, preventing confirmed decisions from leaking into fast marks.
+  [[nodiscard]] virtual QueryExecution required_economic_execution() const noexcept {
+    return QueryExecution::Configured;
+  }
 };
 
 // Interprets a `StrategySpec` against each snapshot. Holds the lifecycle state:
@@ -288,6 +326,10 @@ public:
                  std::uint64_t &next_lot_id) override;
 
   [[nodiscard]] HedgeSpec hedge_spec() const override { return spec_.hedge; }
+  [[nodiscard]] QueryExecution required_economic_execution() const noexcept override {
+    return spec_.resolution.fast_screen_cold_confirm ? QueryExecution::ColdReference
+                                                     : QueryExecution::Configured;
+  }
 
   [[nodiscard]] const StrategySpec &spec() const noexcept { return spec_; }
 

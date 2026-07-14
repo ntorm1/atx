@@ -156,7 +156,8 @@ struct Corpus {
 // write_archive + MarketSnapshot::load, for tests that only need one snapshot
 // resolved by symbol (not a full clocked corpus).
 [[nodiscard]] Result<MarketSnapshot>
-snapshot_of(const std::vector<std::pair<std::string, const PricedSurface *>> &items, const char *tag) {
+snapshot_of(const std::vector<std::pair<std::string, const PricedSurface *>> &items,
+            const char *tag) {
   const fs::path dir = fresh_dir(tag);
   const std::string path = write_archive(dir, "2026-12-01", items);
   return MarketSnapshot::load(path);
@@ -215,7 +216,157 @@ TEST(Strategy, StrikeFromDelta) {
   std::printf("[strategy] strike-from-delta worst |delta| error = %.2e\n", worst_err);
 }
 
+TEST(Strategy, AdaptiveStrikeResolutionAlwaysColdConfirmsAcrossGrid) {
+  PricedSurface source = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  auto prepared = std::move(source).with_query_pricing(QueryPricingTier::RepresentativeFast);
+  ASSERT_TRUE(prepared.has_value()) << prepared.error().to_string();
+  const PricedSurface fast = std::move(*prepared);
+  const PricedSurface cold = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  const ResolutionOptions options{/*fast_screen_cold_confirm=*/true};
+
+  for (const double T : {0.10, 0.25, 0.50, 0.75}) {
+    for (const auto &[side, target] : std::vector<std::pair<Side, double>>{
+             {Side::Call, 0.25}, {Side::Call, 0.40}, {Side::Put, 0.25}, {Side::Put, 0.40}}) {
+      const auto adaptive = resolve_strike_by_delta(fast, T, side, target, options);
+      const auto reference = resolve_strike_by_delta(cold, T, side, target);
+      ASSERT_TRUE(adaptive.has_value()) << adaptive.error().to_string();
+      ASSERT_TRUE(reference.has_value()) << reference.error().to_string();
+
+      const auto achieved = fast.delta(*adaptive, T, side, QueryExecution::ColdReference);
+      ASSERT_TRUE(achieved.has_value()) << achieved.error().to_string();
+      EXPECT_LE(std::fabs(std::fabs(*achieved) - target), options.cold_delta_tolerance)
+          << "T=" << T << " side=" << static_cast<int>(side) << " target=" << target;
+      EXPECT_NEAR(*adaptive, *reference, 2.0e-4 * cold.forward_at(T))
+          << "T=" << T << " side=" << static_cast<int>(side) << " target=" << target;
+    }
+  }
+}
+
+TEST(Strategy, AdaptiveResolutionColdSizesEverySelectorAndStoresColdEntryMark) {
+  const fs::path dir = fresh_dir("adaptive-resolution");
+  const PricedSurface archived = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  const std::string path = write_archive(dir, "2026-08-01", {{"SPY", &archived}});
+  auto fast_snapshot = MarketSnapshot::load(path, QueryPricingTier::RepresentativeFast);
+  auto cold_snapshot = MarketSnapshot::load(path, QueryPricingTier::ColdReference);
+  ASSERT_TRUE(fast_snapshot.has_value()) << fast_snapshot.error().to_string();
+  ASSERT_TRUE(cold_snapshot.has_value()) << cold_snapshot.error().to_string();
+
+  StrategySpec adaptive_spec;
+  adaptive_spec.resolution.fast_screen_cold_confirm = true;
+  LegSpec strangle;
+  strangle.uid = kUid;
+  strangle.tenor.target_T = 0.50;
+  strangle.structure.kind = StructureSpec::Kind::Strangle;
+  strangle.structure.call_leg = {StrikeSelector::Kind::Delta, 0.40};
+  strangle.structure.put_leg = {StrikeSelector::Kind::Delta, 0.40};
+  strangle.size = {SizeSpec::Kind::TargetTheta, 10.0, -1.0};
+  adaptive_spec.legs.push_back(strangle);
+  LegSpec absolute;
+  absolute.uid = kUid;
+  absolute.tenor.target_T = 0.25;
+  absolute.structure.kind = StructureSpec::Kind::Single;
+  absolute.structure.single_side = Side::Put;
+  absolute.strike = {StrikeSelector::Kind::AbsStrike, 95.0};
+  absolute.size = {SizeSpec::Kind::FixedContracts, 2.0, +1.0};
+  adaptive_spec.legs.push_back(absolute);
+
+  StrategySpec cold_spec = adaptive_spec;
+  cold_spec.resolution = {};
+  const auto adaptive = resolve_spec(*fast_snapshot, adaptive_spec);
+  const auto reference = resolve_spec(*cold_snapshot, cold_spec);
+  ASSERT_TRUE(adaptive.has_value()) << adaptive.error().to_string();
+  ASSERT_TRUE(reference.has_value()) << reference.error().to_string();
+  ASSERT_EQ(adaptive->size(), reference->size());
+  for (std::size_t i = 0; i < adaptive->size(); ++i) {
+    const SizedLeg &actual = (*adaptive)[i];
+    const SizedLeg &expected = (*reference)[i];
+    EXPECT_EQ(actual.leg.uid, expected.leg.uid) << i;
+    EXPECT_EQ(actual.leg.side, expected.leg.side) << i;
+    EXPECT_NEAR(actual.leg.K, expected.leg.K, 2.0e-4 * 100.0) << i;
+    EXPECT_NEAR(actual.leg.vega, expected.leg.vega, 1.0e-3 * (1.0 + std::fabs(expected.leg.vega)))
+        << i;
+    EXPECT_NEAR(actual.leg.theta, expected.leg.theta,
+                1.0e-3 * (1.0 + std::fabs(expected.leg.theta)))
+        << i;
+    EXPECT_NEAR(actual.leg.gamma, expected.leg.gamma,
+                1.0e-3 * (1.0 + std::fabs(expected.leg.gamma)))
+        << i;
+    EXPECT_NEAR(actual.qty, expected.qty, 1.0e-3 * (1.0 + std::fabs(expected.qty))) << i;
+
+    const PricedSurface *surface = fast_snapshot->find(actual.leg.uid);
+    ASSERT_NE(surface, nullptr);
+    const auto cold_greeks =
+        surface->greeks(actual.leg.K, actual.leg.T, actual.leg.side, QueryExecution::ColdReference);
+    ASSERT_TRUE(cold_greeks.has_value()) << cold_greeks.error().to_string();
+    EXPECT_EQ(actual.leg.vega, cold_greeks->vega) << i;
+    EXPECT_EQ(actual.leg.theta, cold_greeks->theta) << i;
+    EXPECT_EQ(actual.leg.gamma, cold_greeks->gamma) << i;
+  }
+
+  DeclarativeStrategy strategy{adaptive_spec};
+  PortfolioState book;
+  std::uint64_t next_lot_id = 1;
+  const Status opened = strategy.on_step(*fast_snapshot, 0, book, next_lot_id);
+  ASSERT_TRUE(opened.has_value()) << opened.error().to_string();
+  ASSERT_EQ(book.lots.size(), adaptive->size());
+  for (const Lot &lot : book.lots) {
+    const PricedSurface *surface = fast_snapshot->find(lot.contract.uid);
+    ASSERT_NE(surface, nullptr);
+    const auto cold_mark = surface->fair_value(lot.contract.K, lot.contract.T, lot.contract.side,
+                                               QueryExecution::ColdReference);
+    ASSERT_TRUE(cold_mark.has_value()) << cold_mark.error().to_string();
+    EXPECT_EQ(lot.entry_price, *cold_mark);
+  }
+}
+
+TEST(Strategy, AdaptiveStrikeResolutionFallsBackToColdSolverWhenRefinementIsDisabled) {
+  PricedSurface source = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  auto prepared = std::move(source).with_query_pricing(QueryPricingTier::CarryBank);
+  ASSERT_TRUE(prepared.has_value()) << prepared.error().to_string();
+  const PricedSurface fast = std::move(*prepared);
+  ResolutionOptions options{/*fast_screen_cold_confirm=*/true};
+  options.cold_delta_tolerance = 1.0e-8;
+  options.max_refine_iterations = 0;
+
+  const auto strike = resolve_strike_by_delta(fast, 0.50, Side::Put, 0.25, options);
+  ASSERT_TRUE(strike.has_value()) << strike.error().to_string();
+  const auto achieved = fast.delta(*strike, 0.50, Side::Put, QueryExecution::ColdReference);
+  ASSERT_TRUE(achieved.has_value()) << achieved.error().to_string();
+  EXPECT_LE(std::fabs(std::fabs(*achieved) - 0.25), options.cold_delta_tolerance);
+}
+
 // ── 2. Structures: a 40d strangle => OTM call + OTM put ─────────────────────
+TEST(Strategy, InvalidAdaptiveOptionsFailBeforeAnyMissingNameDrop) {
+  const fs::path dir = fresh_dir("adaptive-invalid-options");
+  const PricedSurface archived = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  const std::string path = write_archive(dir, "2026-08-01", {{"SPY", &archived}});
+  auto snapshot = MarketSnapshot::load(path, QueryPricingTier::RepresentativeFast);
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+
+  for (const StrikeSelector::Kind selector_kind :
+       {StrikeSelector::Kind::AbsStrike, StrikeSelector::Kind::Delta}) {
+    StrategySpec spec;
+    spec.resolution.fast_screen_cold_confirm = true;
+    spec.resolution.cold_delta_tolerance = 0.0;
+    spec.missing = MissingNameSpec{MissingNamePolicy::DropRenormalize, 0u};
+    LegSpec leg;
+    leg.uid = kUid;
+    leg.tenor.target_T = 0.50;
+    leg.structure.kind = StructureSpec::Kind::Single;
+    leg.structure.single_side = Side::Call;
+    leg.strike =
+        StrikeSelector{selector_kind, selector_kind == StrikeSelector::Kind::Delta ? 0.40 : 100.0};
+    leg.size = SizeSpec{SizeSpec::Kind::FixedContracts, 1.0, +1.0};
+    spec.legs.push_back(leg);
+    std::vector<ResolveDrop> dropped;
+
+    const auto result = resolve_spec_with_policy(*snapshot, spec, &dropped);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+    EXPECT_TRUE(dropped.empty()) << "invalid configuration is not missing market data";
+  }
+}
+
 TEST(Strategy, Structures) {
   const fs::path dir = fresh_dir("structures");
   const PricedSurface s = make_surface(kUid, 100.0, 100.0, kBaseNow);
@@ -258,8 +409,8 @@ TEST(Strategy, SnapToListedFailsClosedAtStrikeResolution) {
   tenor.target_T = 0.25;
   tenor.snap_to_listed = true;
 
-  const auto strike = resolve_strike(
-      s, tenor, Side::Call, StrikeSelector{StrikeSelector::Kind::AtmForward, 0.0});
+  const auto strike =
+      resolve_strike(s, tenor, Side::Call, StrikeSelector{StrikeSelector::Kind::AtmForward, 0.0});
 
   ASSERT_FALSE(strike.has_value());
   EXPECT_EQ(strike.error().code(), ErrorCode::NotImplemented);

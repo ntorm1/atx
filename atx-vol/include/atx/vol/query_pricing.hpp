@@ -17,6 +17,14 @@ enum class QueryPricingTier : std::uint8_t {
   CarryBank = 3,
 };
 
+// Per-call execution override. Configured follows the surface's prepared query
+// tier; ColdReference bypasses any transient correction accelerator without
+// rebuilding or mutating the immutable surface.
+enum class QueryExecution : std::uint8_t {
+  Configured = 0,
+  ColdReference = 1,
+};
+
 // Per-query route introspection. A fast-configured surface reports
 // ColdFallback when the resolved point is outside its certified correction box.
 enum class QueryPricingRoute : std::uint8_t {

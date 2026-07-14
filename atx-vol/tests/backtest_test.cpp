@@ -29,11 +29,13 @@
 #include <utility>
 #include <vector>
 
+#include "atx/core/error.hpp"
 #include "atx/vol/american.hpp" // al_fast_opts, AmericanMethod
 #include "atx/vol/backtest.hpp"
 #include "atx/vol/corpus.hpp"           // CorpusManifest, CorpusEntry, CorpusFitStatus
 #include "atx/vol/portfolio_pricer.hpp" // OptionContract
 #include "atx/vol/priced_surface.hpp"   // PricedSurface, PricingContext
+#include "atx/vol/strategy.hpp"         // IStrategy
 #include "atx/vol/surface_archive.hpp"  // write_surface_archive_file, SurfaceArchiveItem
 #include "atx/vol/surface_parity.hpp"   // SliceContext
 #include "atx/vol/types.hpp"            // Side, Result, Status
@@ -158,6 +160,25 @@ make_manifest(const std::vector<std::pair<std::string, std::string>> &date_paths
       Lot{2, OptionContract{kUid, 105.0, 0.0, Side::Put}, -3.0, 100.0, expiry, 0, 0.0});
   return st;
 }
+
+class OpenThenCloseStrategy final : public IStrategy {
+public:
+  explicit OpenThenCloseStrategy(std::int64_t expiry) noexcept : expiry_{expiry} {}
+
+  Status on_step(const MarketSnapshot & /*base*/, std::size_t step_index, PortfolioState &book,
+                 std::uint64_t &next_lot_id) override {
+    if (step_index == 0u) {
+      book.lots.push_back(Lot{next_lot_id++, OptionContract{kUid, 95.0, 0.0, Side::Call}, +5.0,
+                              100.0, expiry_, 0u, 2.0});
+    } else if (step_index == 1u) {
+      book.lots.clear();
+    }
+    return atx::core::Ok();
+  }
+
+private:
+  std::int64_t expiry_{0};
+};
 
 void expect_result_bit_identical(const BacktestResult &a, const BacktestResult &b) {
   ASSERT_EQ(a.size(), b.size());
@@ -314,6 +335,29 @@ TEST(Backtest, RunConfigPropagatesQueryTierThroughPrefetchAndLoad) {
   ASSERT_TRUE(legacy.has_value()) << legacy.error().to_string();
   EXPECT_EQ((*legacy)->surfaces().front().query_pricing_tier(), QueryPricingTier::LegacyCompatible);
   EXPECT_EQ(config.snapshot_cache->stats().loads, after_run.loads + 1u);
+}
+
+TEST(Backtest, AdaptiveStrategyRejectsFastEconomicsUnlessColdIsExplicit) {
+  const fs::path dir = fresh_dir("adaptive-economic-route");
+  const CorpusManifest manifest = make_evolving_corpus(dir, "SPX", 2);
+  auto clock = Clock::from_manifest(manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  StrategySpec spec;
+  spec.resolution.fast_screen_cold_confirm = true;
+  DeclarativeStrategy strategy{spec};
+  RunConfig config;
+  config.query_pricing_tier = QueryPricingTier::RepresentativeFast;
+  config.prefetch_snapshots = false;
+
+  const auto rejected = run_backtest(*clock, strategy, config);
+  ASSERT_FALSE(rejected.has_value());
+  EXPECT_EQ(rejected.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(rejected.error().message().find("requires ColdReference economics"), std::string::npos);
+
+  config.price.query_execution = QueryExecution::ColdReference;
+  const auto accepted = run_backtest(*clock, strategy, config);
+  ASSERT_TRUE(accepted.has_value()) << accepted.error().to_string();
 }
 
 TEST(Backtest, BoundedSnapshotCacheCoalescesAndRetainsOnlyWorkingSet) {
@@ -552,6 +596,86 @@ TEST(Backtest, ExpirySettlement) {
 
   std::printf("[backtest] settlement=%.4f (intrinsic=%.2f base_mark=%.4f) survivors=%.0f\n",
               r.pnl_settlement[1], intrinsic, *mark, r.n_open_lots[1]);
+}
+
+TEST(Backtest, ForcedColdEconomicsOnFastSnapshotsMatchColdPreparedSettlementRun) {
+  const fs::path dir = fresh_dir("forced-cold-settlement");
+  const std::int64_t now0 = kBaseNow;
+  const std::int64_t now1 = kBaseNow + 30 * kDayNs;
+  const std::int64_t exp_expiring = now1;
+  const std::int64_t exp_survivor = kBaseNow + 200 * kDayNs;
+  const PricedSurface d0 = make_surface(kUid, 100.0, 100.0, now0);
+  const PricedSurface d1 = make_surface(kUid, 103.0, 103.0, now1);
+  const std::string p0 = write_one(dir, "2026-08-01", "SPX", d0);
+  const std::string p1 = write_one(dir, "2026-09-15", "SPX", d1);
+  auto clock = Clock::from_manifest(make_manifest({{"2026-08-01", p0}, {"2026-09-15", p1}}, "SPX"));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const auto initial = [=] {
+    PortfolioState state;
+    state.lots.push_back(
+        Lot{1, OptionContract{kUid, 95.0, 0.0, Side::Call}, +5.0, 100.0, exp_expiring, 0, 0.0});
+    state.lots.push_back(
+        Lot{2, OptionContract{kUid, 100.0, 0.0, Side::Put}, -2.0, 100.0, exp_survivor, 0, 0.0});
+    return state;
+  };
+
+  RunConfig fast_config;
+  fast_config.price.n_threads = 1u;
+  fast_config.price.query_execution = QueryExecution::ColdReference;
+  fast_config.query_pricing_tier = QueryPricingTier::RepresentativeFast;
+  fast_config.prefetch_snapshots = false;
+  RunConfig cold_config;
+  cold_config.price.n_threads = 1u;
+  cold_config.price.query_execution = QueryExecution::Configured;
+  cold_config.query_pricing_tier = QueryPricingTier::ColdReference;
+  cold_config.prefetch_snapshots = false;
+
+  const auto fast_result = run_backtest(*clock, initial(), fast_config);
+  const auto cold_result = run_backtest(*clock, initial(), cold_config);
+  ASSERT_TRUE(fast_result.has_value()) << fast_result.error().to_string();
+  ASSERT_TRUE(cold_result.has_value()) << cold_result.error().to_string();
+  ASSERT_EQ(fast_result->size(), 2u);
+  ASSERT_NE(fast_result->pnl_settlement[1], 0.0);
+  expect_result_bit_identical(*fast_result, *cold_result);
+}
+
+TEST(Backtest, ForcedColdEconomicsOnFastSnapshotsMatchColdPreparedRollClose) {
+  const fs::path dir = fresh_dir("forced-cold-roll-close");
+  const CorpusManifest manifest = make_evolving_corpus(dir, "SPX", 2);
+  auto clock = Clock::from_manifest(manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  const std::int64_t expiry = kBaseNow + 200 * kDayNs;
+
+  RunConfig fast_config;
+  fast_config.price.n_threads = 1u;
+  fast_config.price.query_execution = QueryExecution::ColdReference;
+  fast_config.query_pricing_tier = QueryPricingTier::RepresentativeFast;
+  fast_config.frictions.spread_kind = FrictionModel::SpreadKind::PriceBps;
+  fast_config.frictions.half_spread_bps = 100.0;
+  fast_config.prefetch_snapshots = false;
+  RunConfig cold_config = fast_config;
+  cold_config.price.query_execution = QueryExecution::Configured;
+  cold_config.query_pricing_tier = QueryPricingTier::ColdReference;
+
+  OpenThenCloseStrategy fast_strategy{expiry};
+  OpenThenCloseStrategy cold_strategy{expiry};
+  const auto fast_result = run_backtest(*clock, fast_strategy, fast_config);
+  const auto cold_result = run_backtest(*clock, cold_strategy, cold_config);
+  ASSERT_TRUE(fast_result.has_value()) << fast_result.error().to_string();
+  ASSERT_TRUE(cold_result.has_value()) << cold_result.error().to_string();
+  ASSERT_EQ(fast_result->size(), 2u);
+  ASSERT_EQ(cold_result->size(), fast_result->size());
+  expect_result_bit_identical(*fast_result, *cold_result);
+  for (std::size_t i = 0u; i < fast_result->size(); ++i) {
+    EXPECT_TRUE(bits_equal(fast_result->cost[i], cold_result->cost[i])) << i;
+    EXPECT_TRUE(bits_equal(fast_result->cash[i], cold_result->cash[i])) << i;
+    EXPECT_TRUE(bits_equal(fast_result->turnover_notional[i], cold_result->turnover_notional[i]))
+        << i;
+    EXPECT_TRUE(bits_equal(fast_result->turnover_vega[i], cold_result->turnover_vega[i])) << i;
+  }
+  EXPECT_GT(fast_result->cost[1], 0.0) << "step 1 must exercise the roll-close mark";
+  EXPECT_EQ(fast_result->n_open_lots[1], 0.0);
 }
 
 TEST(Backtest, MissingExactExpiryObservationFailsClosed) {

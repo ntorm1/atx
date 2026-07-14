@@ -75,7 +75,7 @@ enum class Counter : unsigned {
   // Portfolio pricer — retained-substrate accounting
   PreparedBuilds, // PreparedPortfolio::create calls from the pricer (0 on a warm reuse)
   // Pricing executor (P1.4) — persistent pool dispatch accounting
-  PoolDispatches,            // times run_blocks/run_ranges woke the pool (0 on the inline path)
+  PoolDispatches,            // run_blocks/run_ranges/run_dynamic pool wakes (0 inline)
   ResolvedPriceWrapperCalls, // exact wrapper entries reached from PricedSurface
   ResolvedPriceWrapperLanes, // lanes submitted to those wrapper entries
   AmericanAvxPackDispatches, // complete packs actually dispatched to AVX2

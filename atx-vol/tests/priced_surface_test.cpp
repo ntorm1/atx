@@ -1226,6 +1226,123 @@ TEST(PricedSurfaceQueryPricing, RepresentativeFastCoversEveryScalarAndFusedRoute
   EXPECT_EQ(fused.greeks, *greeks);
 }
 
+TEST(PricedSurfaceQueryPricing, ForcedColdExecutionMatchesIndependentColdSurfaceScalarsAndFused) {
+  PricedSurface source = make_essvi(98, 6);
+  auto prepared = std::move(source).with_query_pricing(QueryPricingTier::RepresentativeFast);
+  ASSERT_TRUE(prepared.has_value());
+  const PricedSurface fast = std::move(*prepared);
+
+  PricedSurface cold_source = make_essvi(98, 6);
+  auto cold_prepared = std::move(cold_source).with_query_pricing(QueryPricingTier::ColdReference);
+  ASSERT_TRUE(cold_prepared.has_value());
+  const PricedSurface cold = std::move(*cold_prepared);
+
+  constexpr double K = 104.0;
+  constexpr double T = 0.29;
+  constexpr Side side = Side::Put;
+  constexpr QueryExecution force_cold = QueryExecution::ColdReference;
+
+  const auto price = fast.fair_value(K, T, side, force_cold);
+  const auto cold_price = cold.fair_value(K, T, side);
+  const auto greeks = fast.greeks(K, T, side, force_cold);
+  const auto cold_greeks = cold.greeks(K, T, side);
+  const auto analytic = fast.greeks_analytic(K, T, side, force_cold);
+  const auto cold_analytic = cold.greeks_analytic(K, T, side);
+  const auto delta = fast.delta(K, T, side, force_cold);
+  const auto cold_delta = cold.delta(K, T, side);
+  const auto vega = fast.vega(K, T, side, force_cold);
+  const auto cold_vega = cold.vega(K, T, side);
+
+  ASSERT_TRUE(price.has_value());
+  ASSERT_TRUE(cold_price.has_value());
+  ASSERT_TRUE(greeks.has_value());
+  ASSERT_TRUE(cold_greeks.has_value());
+  ASSERT_TRUE(analytic.has_value());
+  ASSERT_TRUE(cold_analytic.has_value());
+  ASSERT_TRUE(delta.has_value());
+  ASSERT_TRUE(cold_delta.has_value());
+  ASSERT_TRUE(vega.has_value());
+  ASSERT_TRUE(cold_vega.has_value());
+  EXPECT_EQ(hexbits(*price), hexbits(*cold_price));
+  EXPECT_EQ(*greeks, *cold_greeks);
+  EXPECT_EQ(*analytic, *cold_analytic);
+  EXPECT_EQ(hexbits(*delta), hexbits(*cold_delta));
+  EXPECT_EQ(hexbits(*vega), hexbits(*cold_vega));
+
+  const EF fields = EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder;
+  const auto fused = fast.evaluate(K, T, side, fields, true, force_cold);
+  const auto cold_fused = cold.evaluate(K, T, side, fields, true);
+  ASSERT_TRUE(fused.status.has_value());
+  ASSERT_TRUE(cold_fused.status.has_value());
+  EXPECT_EQ(hexbits(fused.iv), hexbits(cold_fused.iv));
+  EXPECT_EQ(hexbits(fused.price), hexbits(cold_fused.price));
+  EXPECT_EQ(fused.greeks, cold_fused.greeks);
+}
+
+TEST(PricedSurfaceQueryPricing, ForcedColdExecutionMatchesIndependentColdSurfaceBatch) {
+  PricedSurface source = make_essvi(99, 6);
+  auto prepared = std::move(source).with_query_pricing(QueryPricingTier::RepresentativeFast);
+  ASSERT_TRUE(prepared.has_value());
+  const PricedSurface fast = std::move(*prepared);
+
+  PricedSurface cold_source = make_essvi(99, 6);
+  auto cold_prepared = std::move(cold_source).with_query_pricing(QueryPricingTier::ColdReference);
+  ASSERT_TRUE(cold_prepared.has_value());
+  const PricedSurface cold = std::move(*cold_prepared);
+
+  const std::vector<double> strikes{92.0, 100.0, 108.0, 115.0};
+  const std::vector<double> tenors(strikes.size(), 0.29);
+  const std::vector<Side> sides{Side::Call, Side::Put, Side::Call, Side::Put};
+  std::vector<double> iv(strikes.size()), price(strikes.size()), delta(strikes.size()),
+      vega(strikes.size());
+  std::vector<AmericanGreeks> greeks(strikes.size());
+  std::vector<Status> status(strikes.size());
+  std::vector<double> cold_iv(strikes.size()), cold_price(strikes.size()),
+      cold_delta(strikes.size()), cold_vega(strikes.size());
+  std::vector<AmericanGreeks> cold_greeks(strikes.size());
+  std::vector<Status> cold_status(strikes.size());
+  const EF fields = EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder | EF::Delta | EF::Vega;
+
+  const Status actual =
+      fast.evaluate_batch(strikes, tenors, sides, fields, true,
+                          PricedSurface::EvaluationSoA{iv, price, greeks, status, delta, vega},
+                          simd::SimdIsa::Auto, QueryExecution::ColdReference);
+  const Status expected =
+      cold.evaluate_batch(strikes, tenors, sides, fields, true,
+                          PricedSurface::EvaluationSoA{cold_iv, cold_price, cold_greeks,
+                                                       cold_status, cold_delta, cold_vega});
+  ASSERT_TRUE(actual.has_value());
+  ASSERT_TRUE(expected.has_value());
+  for (std::size_t i = 0; i < strikes.size(); ++i) {
+    ASSERT_TRUE(status[i].has_value()) << i;
+    ASSERT_TRUE(cold_status[i].has_value()) << i;
+    EXPECT_EQ(hexbits(iv[i]), hexbits(cold_iv[i])) << i;
+    EXPECT_EQ(hexbits(price[i]), hexbits(cold_price[i])) << i;
+    EXPECT_EQ(greeks[i], cold_greeks[i]) << i;
+    EXPECT_EQ(hexbits(delta[i]), hexbits(cold_delta[i])) << i;
+    EXPECT_EQ(hexbits(vega[i]), hexbits(cold_vega[i])) << i;
+  }
+
+  std::fill(price.begin(), price.end(), 0.0);
+  std::fill(cold_price.begin(), cold_price.end(), 0.0);
+  const Status price_only =
+      fast.evaluate_batch(strikes, tenors, sides, EF::Iv | EF::Price, false,
+                          PricedSurface::EvaluationSoA{iv, price, {}, status, {}, {}},
+                          simd::SimdIsa::ForceAvx2, QueryExecution::ColdReference);
+  const Status cold_price_only = cold.evaluate_batch(
+      strikes, tenors, sides, EF::Iv | EF::Price, false,
+      PricedSurface::EvaluationSoA{cold_iv, cold_price, {}, cold_status, {}, {}},
+      simd::SimdIsa::ForceAvx2);
+  ASSERT_TRUE(price_only.has_value());
+  ASSERT_TRUE(cold_price_only.has_value());
+  for (std::size_t i = 0; i < strikes.size(); ++i) {
+    ASSERT_TRUE(status[i].has_value()) << i;
+    ASSERT_TRUE(cold_status[i].has_value()) << i;
+    EXPECT_EQ(hexbits(iv[i]), hexbits(cold_iv[i])) << i;
+    EXPECT_EQ(hexbits(price[i]), hexbits(cold_price[i])) << i;
+  }
+}
+
 TEST(PricedSurfaceQueryPricing, PriceOnlyBatchCannotBypassRepresentativeFastTier) {
   PricedSurface source = make_essvi(93, 6);
   auto prepared = std::move(source).with_query_pricing(QueryPricingTier::RepresentativeFast);

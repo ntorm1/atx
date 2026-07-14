@@ -339,8 +339,8 @@ struct ContractPnl {
 void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
                    std::span<const OptionContract> contracts, bool want_greeks, bool analytic,
                    bool skew_adjusted_delta, const StickyParams &sticky,
-                   simd::SimdIsa resolved_price_isa, unsigned n_threads,
-                   std::vector<ContractPx> &px, std::vector<double> &b_iv,
+                   simd::SimdIsa resolved_price_isa, QueryExecution query_execution,
+                   unsigned n_threads, std::vector<ContractPx> &px, std::vector<double> &b_iv,
                    std::vector<double> &b_price, std::vector<AmericanGreeks> &b_greeks,
                    std::vector<Status> &b_status) {
   const std::size_t n_unique = pp.n_unique();
@@ -374,15 +374,17 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
       }
       return;
     }
-    PricedSurface::EvaluationSoA soa{
-        std::span<double>(b_iv).subspan(s, gsz), std::span<double>(b_price).subspan(s, gsz),
-        want_greeks ? std::span<AmericanGreeks>(b_greeks).subspan(s, gsz)
-                    : std::span<AmericanGreeks>{},
-        std::span<Status>(b_status).subspan(s, gsz), {}, {}};
+    PricedSurface::EvaluationSoA soa{std::span<double>(b_iv).subspan(s, gsz),
+                                     std::span<double>(b_price).subspan(s, gsz),
+                                     want_greeks
+                                         ? std::span<AmericanGreeks>(b_greeks).subspan(s, gsz)
+                                         : std::span<AmericanGreeks>{},
+                                     std::span<Status>(b_status).subspan(s, gsz),
+                                     {},
+                                     {}};
     const Status batch_status =
-        surf->evaluate_batch(kcol.subspan(s, gsz), tcol.subspan(s, gsz),
-                             scol.subspan(s, gsz), fields, analytic, soa,
-                             resolved_price_isa);
+        surf->evaluate_batch(kcol.subspan(s, gsz), tcol.subspan(s, gsz), scol.subspan(s, gsz),
+                             fields, analytic, soa, resolved_price_isa, query_execution);
     if (!batch_status.has_value()) {
       for (std::uint32_t p = s; p < e; ++p) {
         b_iv[p] = kNaN;
@@ -508,8 +510,8 @@ void scatter_rows(std::span<const Position> positions, const Portfolio &pf,
 // Greek sums stay NaN (a clean 0.0 would read as a genuinely vega-flat book).
 // `t` must be zero-initialized by the caller.
 void reduce_price_totals(std::span<const Position> positions, const Portfolio &pf,
-                         std::span<const ContractPx> px, bool want_greeks,
-                         bool skew_adjusted_delta, PriceTotals &t) {
+                         std::span<const ContractPx> px, bool want_greeks, bool skew_adjusted_delta,
+                         PriceTotals &t) {
   if (!want_greeks) {
     t.delta = t.gamma = t.vega = t.theta = t.rho = kNaN;
     t.vanna = t.volga = t.charm = kNaN;
@@ -657,8 +659,8 @@ Status PortfolioPricer::price_into(const SurfaceSet &surfaces, PriceFieldMask fi
   }
 
   solve_uniques(*w.prepared, surfaces, contracts, want_greeks, analytic, opts.skew_adjusted_delta,
-                opts.sticky, opts.resolved_price_isa, opts.n_threads, w.px, w.b_iv, w.b_price,
-                w.b_greeks, w.b_status);
+                opts.sticky, opts.resolved_price_isa, opts.query_execution, opts.n_threads, w.px,
+                w.b_iv, w.b_price, w.b_greeks, w.b_status);
 
   // FrameBytes reflects the mask (37 B/pos Marks, 101 B/pos FullGreeks). No
   // FrameAllocations: the output spans are caller-owned and the scratch was
@@ -688,8 +690,8 @@ Result<PriceTotals> PortfolioPricer::price_totals(const SurfaceSet &surfaces, Pr
   }
 
   solve_uniques(*w.prepared, surfaces, contracts, want_greeks, analytic, opts.skew_adjusted_delta,
-                opts.sticky, opts.resolved_price_isa, opts.n_threads, w.px, w.b_iv, w.b_price,
-                w.b_greeks, w.b_status);
+                opts.sticky, opts.resolved_price_isa, opts.query_execution, opts.n_threads, w.px,
+                w.b_iv, w.b_price, w.b_greeks, w.b_status);
 
   // No scatter, no per-row frame: reduce weight*result over positions in fixed
   // input order straight off the unique-result SoA — bit-identical to
@@ -770,12 +772,13 @@ namespace {
 // per-entry bit-identical regardless of where a sub-call begins).
 void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
                        const SurfaceSet &shifted, std::span<const OptionContract> contracts,
-                       bool analytic, unsigned n_threads, std::vector<ContractPnl> &pnl,
-                       std::vector<double> &b_iv, std::vector<double> &b_price,
-                       std::vector<AmericanGreeks> &b_greeks, std::vector<Status> &b_status,
-                       std::vector<double> &s_tt, std::vector<double> &s_iv,
-                       std::vector<double> &s_price, std::vector<Status> &s_status,
-                       std::vector<double> &s_junk, std::vector<Status> &s_junk_status) {
+                       bool analytic, QueryExecution query_execution, unsigned n_threads,
+                       std::vector<ContractPnl> &pnl, std::vector<double> &b_iv,
+                       std::vector<double> &b_price, std::vector<AmericanGreeks> &b_greeks,
+                       std::vector<Status> &b_status, std::vector<double> &s_tt,
+                       std::vector<double> &s_iv, std::vector<double> &s_price,
+                       std::vector<Status> &s_status, std::vector<double> &s_junk,
+                       std::vector<Status> &s_junk_status) {
   const std::size_t n_unique = pp.n_unique();
   using EF = PricedSurface::EvalField;
 
@@ -824,22 +827,32 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
     PricedSurface::EvaluationSoA base_soa{std::span<double>(b_iv).subspan(s, gsz),
                                           std::span<double>(b_price).subspan(s, gsz),
                                           std::span<AmericanGreeks>(b_greeks).subspan(s, gsz),
-                                          std::span<Status>(b_status).subspan(s, gsz), {}, {}};
+                                          std::span<Status>(b_status).subspan(s, gsz),
+                                          {},
+                                          {}};
     (void)sb->evaluate_batch(kcol.subspan(s, gsz), tcol.subspan(s, gsz), scol.subspan(s, gsz),
                              EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder, analytic,
-                             base_soa);
+                             base_soa, simd::SimdIsa::Auto, query_execution);
     // Shifted surface at the COMMON base maturity T_b: iv only (sig_t).
-    PricedSurface::EvaluationSoA sig_soa{
-        std::span<double>(s_iv).subspan(s, gsz), std::span<double>(s_junk).subspan(s, gsz),
-        std::span<AmericanGreeks>{}, std::span<Status>(s_junk_status).subspan(s, gsz), {}, {}};
+    PricedSurface::EvaluationSoA sig_soa{std::span<double>(s_iv).subspan(s, gsz),
+                                         std::span<double>(s_junk).subspan(s, gsz),
+                                         std::span<AmericanGreeks>{},
+                                         std::span<Status>(s_junk_status).subspan(s, gsz),
+                                         {},
+                                         {}};
     (void)st->evaluate_batch(kcol.subspan(s, gsz), tcol.subspan(s, gsz), scol.subspan(s, gsz),
-                             EF::Iv, /*analytic=*/false, sig_soa);
+                             EF::Iv, /*analytic=*/false, sig_soa, simd::SimdIsa::Auto,
+                             query_execution);
     // Shifted surface at the rolled maturity T_t: American mark only (price_target).
-    PricedSurface::EvaluationSoA px_soa{
-        std::span<double>(s_junk).subspan(s, gsz), std::span<double>(s_price).subspan(s, gsz),
-        std::span<AmericanGreeks>{}, std::span<Status>(s_status).subspan(s, gsz), {}, {}};
+    PricedSurface::EvaluationSoA px_soa{std::span<double>(s_junk).subspan(s, gsz),
+                                        std::span<double>(s_price).subspan(s, gsz),
+                                        std::span<AmericanGreeks>{},
+                                        std::span<Status>(s_status).subspan(s, gsz),
+                                        {},
+                                        {}};
     (void)st->evaluate_batch(kcol.subspan(s, gsz), std::span<double>(s_tt).subspan(s, gsz),
-                             scol.subspan(s, gsz), EF::Price, /*analytic=*/false, px_soa);
+                             scol.subspan(s, gsz), EF::Price, /*analytic=*/false, px_soa,
+                             simd::SimdIsa::Auto, query_execution);
 
     for (std::uint32_t p = s; p < e; ++p) {
       const std::uint32_t orig = oci[p];
@@ -1030,9 +1043,10 @@ Status PortfolioPricer::pnl_explain_into(const SurfaceSet &base, const SurfaceSe
     return Err(s.error());
   }
 
-  solve_pnl_uniques(*w.prepared, base, shifted, contracts, opts.analytic_greeks, opts.n_threads,
-                    w.pnl, w.b_iv, w.b_price, w.b_greeks, w.b_status, w.pnl_tt, w.pnl_s_iv,
-                    w.pnl_s_price, w.pnl_s_status, w.pnl_junk, w.pnl_junk_status);
+  solve_pnl_uniques(*w.prepared, base, shifted, contracts, opts.analytic_greeks,
+                    opts.query_execution, opts.n_threads, w.pnl, w.b_iv, w.b_price, w.b_greeks,
+                    w.b_status, w.pnl_tt, w.pnl_s_iv, w.pnl_s_price, w.pnl_s_status, w.pnl_junk,
+                    w.pnl_junk_status);
 
   // 19 per-row columns = 141 bytes/position (8 + 4 + 16*8 + 1). No FrameAllocations:
   // the output spans are caller-owned and the scratch was reserved.
@@ -1057,9 +1071,10 @@ Result<PnlTotals> PortfolioPricer::pnl_totals(const SurfaceSet &base, const Surf
     return Err(s.error());
   }
 
-  solve_pnl_uniques(*w.prepared, base, shifted, contracts, opts.analytic_greeks, opts.n_threads,
-                    w.pnl, w.b_iv, w.b_price, w.b_greeks, w.b_status, w.pnl_tt, w.pnl_s_iv,
-                    w.pnl_s_price, w.pnl_s_status, w.pnl_junk, w.pnl_junk_status);
+  solve_pnl_uniques(*w.prepared, base, shifted, contracts, opts.analytic_greeks,
+                    opts.query_execution, opts.n_threads, w.pnl, w.b_iv, w.b_price, w.b_greeks,
+                    w.b_status, w.pnl_tt, w.pnl_s_iv, w.pnl_s_price, w.pnl_s_status, w.pnl_junk,
+                    w.pnl_junk_status);
 
   // No scatter, no per-row frame: reduce the weighted per-row decomposition over
   // positions in fixed input order — bit-identical to pnl_explain(...).total.

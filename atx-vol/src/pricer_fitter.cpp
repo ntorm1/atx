@@ -18,8 +18,9 @@
 #include "atx/vol/calib.hpp"            // build_observations_european
 #include "atx/vol/correction.hpp"       // AmericanCorrectionCaches (cached inversion hot path)
 #include "atx/vol/deamer.hpp"           // resolve_chain_forward
-#include "atx/vol/parallel_for.hpp"     // parallel_for / parallel_for_dynamic fan-out
+#include "atx/vol/parallel_for.hpp"     // atx_auto_worker_count
 #include "atx/vol/prepared_fitting.hpp" // prepare_expiry (canonical refit preparation)
+#include "atx/vol/pricing_executor.hpp" // persistent whole-chain task fan-out
 #include "atx/vol/risk_surface_validation.hpp"
 
 namespace atx::vol {
@@ -1811,6 +1812,15 @@ Result<ChainValuation> PricerFitter::value_snapshot(const OptionChain &chain, Ch
     return Err(ErrorCode::Unavailable,
                "PricerFitter::value_chain: requested surface purpose is unavailable");
   }
+  if (!published_provenance_.has_value()) {
+    return Err(ErrorCode::Unavailable,
+               "PricerFitter::value_chain: fitted-chain provenance is unavailable");
+  }
+  const FitSnapshotProvenance &published = *published_provenance_;
+  if (chain.instance_id() != published.chain_instance_id || chain.uid() != published.uid) {
+    return Err(ErrorCode::InvalidArgument,
+               "PricerFitter::value_chain: chain instance differs from fit");
+  }
   const VolaSession &sess = served->session();
   const double S = chain.spot();
   const double nan = std::numeric_limits<double>::quiet_NaN();
@@ -1858,9 +1868,9 @@ Result<ChainValuation> PricerFitter::value_snapshot(const OptionChain &chain, Ch
     std::size_t bid_iv_fail{0};
     std::size_t ask_iv_fail{0};
   };
-  // Resolve auto exactly once and pass the resolved value to the worker-id
-  // overload below, so the local array and worker-id range cannot diverge if
-  // process environment is changed concurrently by a test harness.
+  // Resolve auto exactly once and use the same upper bound for per-worker state
+  // and dispatch. The fixed executor may clamp this value downward to its pool
+  // size, but never produces a worker id beyond this pre-sized local array.
   unsigned resolved_nt = nt == 0u ? atx_auto_worker_count() : nt;
   if (resolved_nt > n) {
     resolved_nt = static_cast<unsigned>(n);
@@ -1899,8 +1909,8 @@ Result<ChainValuation> PricerFitter::value_snapshot(const OptionChain &chain, Ch
   if (want_bands && !has(fields, OutputField::ModelIV)) {
     band_model_iv.assign(n, nan);
   }
-  if (want_model || want_bands) {
-    parallel_for_dynamic(
+  if ((want_model || want_bands) && !work_chunks.empty()) {
+    pricing_executor().run_dynamic(
         work_chunks.size(), resolved_nt, [&](std::size_t chunk_index, unsigned worker_id) {
           const ValuationChunk &range = work_chunks[chunk_index];
           LocalCounts *counts = want_side_bands ? &local_counts[worker_id] : nullptr;

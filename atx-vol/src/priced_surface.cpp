@@ -380,7 +380,11 @@ std::size_t PricedSurface::query_cache_pair_count() const noexcept {
   return query_accelerator_ != nullptr ? query_accelerator_->entries.size() : 0u;
 }
 
-QueryPricingRoute PricedSurface::query_pricing_route(double K, double T, Side side) const noexcept {
+QueryPricingRoute PricedSurface::query_pricing_route(double K, double T, Side side,
+                                                     QueryExecution execution) const noexcept {
+  if (execution == QueryExecution::ColdReference) {
+    return QueryPricingRoute::ColdReference;
+  }
   if (query_pricing_tier_ == QueryPricingTier::LegacyCompatible ||
       query_pricing_tier_ == QueryPricingTier::ColdReference) {
     return QueryPricingRoute::ColdReference;
@@ -520,8 +524,9 @@ double PricedSurface::total_variance(double K, double T) const noexcept {
   return p.valid ? surface_.w(p.k_log, T) : kNaN;
 }
 
-Result<double> PricedSurface::price_resolved(const ResolvedSurfacePoint &p, Side side) const {
-  if (query_accelerator_ != nullptr) {
+Result<double> PricedSurface::price_resolved(const ResolvedSurfacePoint &p, Side side,
+                                             QueryExecution execution) const {
+  if (execution == QueryExecution::Configured && query_accelerator_ != nullptr) {
     const CorrectionBlend correction = query_accelerator_->blend_at(p, side, query_pricing_tier_);
     if (correction.usable(side)) {
       const double cached =
@@ -536,8 +541,9 @@ Result<double> PricedSurface::price_resolved(const ResolvedSurfacePoint &p, Side
 }
 
 Result<AmericanGreeks> PricedSurface::greeks_resolved(const ResolvedSurfacePoint &p, Side side,
-                                                      bool analytic) const {
-  if (query_accelerator_ != nullptr) {
+                                                      bool analytic,
+                                                      QueryExecution execution) const {
+  if (execution == QueryExecution::Configured && query_accelerator_ != nullptr) {
     const CorrectionBlend correction = query_accelerator_->blend_at(p, side, query_pricing_tier_);
     if (correction.usable(side)) {
       auto cached =
@@ -555,8 +561,9 @@ Result<AmericanGreeks> PricedSurface::greeks_resolved(const ResolvedSurfacePoint
                             std::optional<AlOpts>{pricing_.al_opts});
 }
 
-Result<double> PricedSurface::delta_resolved(const ResolvedSurfacePoint &p, Side side) const {
-  if (query_accelerator_ != nullptr) {
+Result<double> PricedSurface::delta_resolved(const ResolvedSurfacePoint &p, Side side,
+                                             QueryExecution execution) const {
+  if (execution == QueryExecution::Configured && query_accelerator_ != nullptr) {
     const CorrectionBlend correction = query_accelerator_->blend_at(p, side, query_pricing_tier_);
     if (correction.usable(side)) {
       auto cached =
@@ -570,8 +577,9 @@ Result<double> PricedSurface::delta_resolved(const ResolvedSurfacePoint &p, Side
                         std::optional<AlOpts>{pricing_.al_opts});
 }
 
-Result<double> PricedSurface::vega_resolved(const ResolvedSurfacePoint &p, Side side) const {
-  if (query_accelerator_ != nullptr) {
+Result<double> PricedSurface::vega_resolved(const ResolvedSurfacePoint &p, Side side,
+                                            QueryExecution execution) const {
+  if (execution == QueryExecution::Configured && query_accelerator_ != nullptr) {
     const CorrectionBlend correction = query_accelerator_->blend_at(p, side, query_pricing_tier_);
     if (correction.usable(side)) {
       const double cached =
@@ -594,7 +602,8 @@ Result<double> PricedSurface::vega_resolved(const ResolvedSurfacePoint &p, Side 
   return Ok(greeks->vega);
 }
 
-Result<double> PricedSurface::fair_value(double K, double T, Side side) const {
+Result<double> PricedSurface::fair_value(double K, double T, Side side,
+                                         QueryExecution execution) const {
   const ResolvedSurfacePoint p = resolve(K, T);
   if (!p.valid) {
     return Err(ErrorCode::InvalidArgument,
@@ -604,10 +613,11 @@ Result<double> PricedSurface::fair_value(double K, double T, Side side) const {
   // resolved preset as an engaged optional reproduces the session's own call
   // `american_price(..., in_.deam.al_opts)` exactly (in_ carries the resolved AL
   // opts post-build).
-  return price_resolved(p, side);
+  return price_resolved(p, side, execution);
 }
 
-Result<AmericanGreeks> PricedSurface::greeks(double K, double T, Side side) const {
+Result<AmericanGreeks> PricedSurface::greeks(double K, double T, Side side,
+                                             QueryExecution execution) const {
   const ResolvedSurfacePoint p = resolve(K, T);
   if (!p.valid) {
     return Err(ErrorCode::InvalidArgument, "PricedSurface::greeks: non-finite or non-positive K/T");
@@ -618,10 +628,11 @@ Result<AmericanGreeks> PricedSurface::greeks(double K, double T, Side side) cons
   // Cold (warm_start=false) keeps greeks bit-reproducible across a surface archive
   // round-trip (the LifecycleIntegration contract); the warm hot path lives in the
   // backtest engine (cross-step reuse), not this bit-stable reprice primitive.
-  return greeks_resolved(p, side, false);
+  return greeks_resolved(p, side, false, execution);
 }
 
-Result<AmericanGreeks> PricedSurface::greeks_analytic(double K, double T, Side side) const {
+Result<AmericanGreeks> PricedSurface::greeks_analytic(double K, double T, Side side,
+                                                      QueryExecution execution) const {
   const ResolvedSurfacePoint p = resolve(K, T);
   if (!p.valid) {
     return Err(ErrorCode::InvalidArgument,
@@ -633,10 +644,10 @@ Result<AmericanGreeks> PricedSurface::greeks_analytic(double K, double T, Side s
   // Fast tiers differentiate their cached surrogate directly, so the analytic
   // flag has no alternate numerical meaning there. Cold serving retains the
   // Andersen-Lake/PDE route.
-  return greeks_resolved(p, side, true);
+  return greeks_resolved(p, side, true, execution);
 }
 
-Result<double> PricedSurface::delta(double K, double T, Side side) const {
+Result<double> PricedSurface::delta(double K, double T, Side side, QueryExecution execution) const {
   const ResolvedSurfacePoint p = resolve(K, T);
   if (!p.valid) {
     return Err(ErrorCode::InvalidArgument, "PricedSurface::delta: non-finite or non-positive K/T");
@@ -644,20 +655,21 @@ Result<double> PricedSurface::delta(double K, double T, Side side) const {
   // Delta-only fast path — same (S, sigma, r, q_eff, method, al_opts) plumbing as
   // greeks(), so this returns greeks().delta bit-identically at ~1-2 boundary solves
   // instead of seventeen (see american_delta).
-  return delta_resolved(p, side);
+  return delta_resolved(p, side, execution);
 }
 
-Result<double> PricedSurface::vega(double K, double T, Side side) const {
+Result<double> PricedSurface::vega(double K, double T, Side side, QueryExecution execution) const {
   const ResolvedSurfacePoint p = resolve(K, T);
   if (!p.valid) {
     return Err(ErrorCode::InvalidArgument, "PricedSurface::vega: non-finite or non-positive K/T");
   }
-  return vega_resolved(p, side);
+  return vega_resolved(p, side, execution);
 }
 
 PricedSurface::FusedResult PricedSurface::evaluate_resolved(const ResolvedSurfacePoint &p,
                                                             Side side, EvalField fields,
-                                                            bool analytic) const {
+                                                            bool analytic,
+                                                            QueryExecution execution) const {
   FusedResult r;
   if (!p.valid) {
     r.iv = kNaN;
@@ -684,7 +696,7 @@ PricedSurface::FusedResult PricedSurface::evaluate_resolved(const ResolvedSurfac
     // Route exactly as greeks() / greeks_analytic() do; american_greeks_*().price
     // IS the fair value (bit-identical), so Greeks yield the mark for free.
     ATX_VOL_COUNT(SurfaceFullGreekRoutes);
-    Result<AmericanGreeks> g = greeks_resolved(p, side, analytic);
+    Result<AmericanGreeks> g = greeks_resolved(p, side, analytic, execution);
     if (!g.has_value()) {
       r.iv = kNaN;
       r.price = kNaN;
@@ -698,7 +710,7 @@ PricedSurface::FusedResult PricedSurface::evaluate_resolved(const ResolvedSurfac
   }
   if (has_field(fields, EvalField::Price)) {
     ATX_VOL_COUNT(SurfaceScalarPriceRoutes);
-    Result<double> fv = price_resolved(p, side);
+    Result<double> fv = price_resolved(p, side, execution);
     if (!fv.has_value()) {
       r.iv = kNaN;
       r.price = kNaN;
@@ -710,7 +722,7 @@ PricedSurface::FusedResult PricedSurface::evaluate_resolved(const ResolvedSurfac
   }
   if (has_field(fields, EvalField::Delta)) {
     ATX_VOL_COUNT(SurfaceDeltaRoutes);
-    const Result<double> delta = delta_resolved(p, side);
+    const Result<double> delta = delta_resolved(p, side, execution);
     if (!delta.has_value()) {
       r.iv = kNaN;
       r.price = kNaN;
@@ -722,7 +734,7 @@ PricedSurface::FusedResult PricedSurface::evaluate_resolved(const ResolvedSurfac
   }
   if (has_field(fields, EvalField::Vega)) {
     ATX_VOL_COUNT(SurfaceVegaRoutes);
-    Result<double> vega_result = vega_resolved(p, side);
+    Result<double> vega_result = vega_resolved(p, side, execution);
     if (!vega_result.has_value()) {
       r.iv = kNaN;
       r.price = kNaN;
@@ -737,13 +749,14 @@ PricedSurface::FusedResult PricedSurface::evaluate_resolved(const ResolvedSurfac
 }
 
 PricedSurface::FusedResult PricedSurface::evaluate(double K, double T, Side side, EvalField fields,
-                                                   bool analytic) const {
-  return evaluate_resolved(resolve(K, T), side, fields, analytic);
+                                                   bool analytic, QueryExecution execution) const {
+  return evaluate_resolved(resolve(K, T), side, fields, analytic, execution);
 }
 
 Status PricedSurface::evaluate_batch(std::span<const double> K, std::span<const double> T,
                                      std::span<const Side> side, EvalField fields, bool analytic,
-                                     EvaluationSoA out, simd::SimdIsa resolved_price_isa) const {
+                                     EvaluationSoA out, simd::SimdIsa resolved_price_isa,
+                                     QueryExecution execution) const {
   const std::size_t n = K.size();
   if (T.size() != n || side.size() != n) {
     return Err(ErrorCode::InvalidArgument,
@@ -813,13 +826,14 @@ Status PricedSurface::evaluate_batch(std::span<const double> K, std::span<const 
     // correction state. Fast tiers stay on evaluate_resolved so a price-only
     // ladder cannot silently bypass its configured surrogate; the call-local
     // ISA selector is therefore meaningful only on the cold path.
-    if (want_price && !want_greeks && !selective_only && query_accelerator_ == nullptr) {
+    if (want_price && !want_greeks && !selective_only &&
+        (execution == QueryExecution::ColdReference || query_accelerator_ == nullptr)) {
       if (!t_valid) {
         for (std::size_t e = i; e < j; ++e) {
           ResolvedSurfacePoint p;
           p.K = K[e];
           p.T = t;
-          const FusedResult fr = evaluate_resolved(p, side[e], fields, analytic);
+          const FusedResult fr = evaluate_resolved(p, side[e], fields, analytic, execution);
           out.iv[e] = fr.iv;
           out.price[e] = fr.price;
           out.status[e] = fr.status;
@@ -876,7 +890,7 @@ Status PricedSurface::evaluate_batch(std::span<const double> K, std::span<const 
         if (!batch_status.has_value()) {
           return batch_status;
         }
-        const FusedResult fr = evaluate_resolved(p, side[e], fields, analytic);
+        const FusedResult fr = evaluate_resolved(p, side[e], fields, analytic, execution);
         out.iv[e] = fr.iv;
         out.price[e] = fr.price;
         out.status[e] = fr.status;
@@ -899,7 +913,7 @@ Status PricedSurface::evaluate_batch(std::span<const double> K, std::span<const 
         p.K = K[e];
         p.T = t; // valid == false
       }
-      const FusedResult fr = evaluate_resolved(p, side[e], fields, analytic);
+      const FusedResult fr = evaluate_resolved(p, side[e], fields, analytic, execution);
       if (!selective_only || want_iv) {
         out.iv[e] = fr.iv;
       }

@@ -434,7 +434,8 @@ public:
   // surface or with Unavailable — never by the market mark. Pass
   // SurfacePurpose::MarketMark explicitly to price the mark interpolant.
   //
-  // @return Unavailable if the requested surface is unserved; otherwise
+  // @return Unavailable if the requested surface is unserved; InvalidArgument
+  //         if `chain` differs from the fitted chain instance/uid; otherwise
   //         Ok(valuation).
   [[nodiscard]] Result<ChainValuation> value_chain(const OptionChain &chain, OutputField fields,
                                                    unsigned n_threads = 0) const;
@@ -449,7 +450,8 @@ public:
   // overloads above.
   //
   // @return NotFound if any selected id is foreign or unknown; Unavailable if
-  //         the requested surface is unserved; otherwise Ok(valuation).
+  //         the requested surface is unserved; InvalidArgument if `chain`
+  //         differs from the fitted chain instance/uid; otherwise Ok(valuation).
   [[nodiscard]] Result<ChainValuation> value_chain(const OptionChain &chain,
                                                    std::span<const OptionId> selected_ids,
                                                    OutputField fields,

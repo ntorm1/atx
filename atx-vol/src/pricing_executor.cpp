@@ -4,14 +4,16 @@
 #include "atx/vol/pricing_executor.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <exception>
 #include <mutex>
 #include <thread>
 #include <vector>
 
-#include "atx/vol/counters.hpp"      // ATX_VOL_COUNT (opt-in; no-op when OFF)
-#include "atx/vol/parallel_for.hpp"  // atx_auto_worker_count (shared core budget)
+#include "atx/vol/counters.hpp"     // ATX_VOL_COUNT (opt-in; no-op when OFF)
+#include "atx/vol/parallel_for.hpp" // atx_auto_worker_count (shared core budget)
 
 #if defined(_MSC_VER)
 #ifndef NOMINMAX
@@ -100,8 +102,8 @@ bool g_built = false;
   // Second pass: collect logical CPUs of cores at max EfficiencyClass (group 0).
   for (DWORD off = 0; off < len;) {
     auto *info = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buf.data() + off);
-    if (info->Relationship == RelationProcessorCore &&
-        info->Processor.EfficiencyClass == max_eff && info->Processor.GroupCount >= 1) {
+    if (info->Relationship == RelationProcessorCore && info->Processor.EfficiencyClass == max_eff &&
+        info->Processor.GroupCount >= 1) {
       const KAFFINITY mask = info->Processor.GroupMask[0].Mask;
       for (unsigned b = 0; b < 64; ++b) {
         if ((mask >> b) & 1u) {
@@ -197,6 +199,8 @@ struct PricingExecutor::State {
   std::size_t block = 0;
   unsigned active = 0;    // participating workers this dispatch (== nt - 1)
   unsigned remaining = 0; // participating workers not yet finished
+  std::atomic_flag exception_captured{};
+  std::exception_ptr exception{}; // single-writer winner of exception_captured
   std::uint64_t epoch = 0;
   bool stopping = false;
 
@@ -238,8 +242,7 @@ struct PricingExecutor::State {
 #if defined(_MSC_VER)
     if (affinity_mask != 0) {
       // Best-effort: a 0 return means the pin failed; we simply continue unpinned.
-      (void)::SetThreadAffinityMask(::GetCurrentThread(),
-                                    static_cast<DWORD_PTR>(affinity_mask));
+      (void)::SetThreadAffinityMask(::GetCurrentThread(), static_cast<DWORD_PTR>(affinity_mask));
     }
 #else
     (void)affinity_mask;
@@ -266,7 +269,13 @@ struct PricingExecutor::State {
         const std::size_t lo = static_cast<std::size_t>(w + 1) * blk;
         const std::size_t hi = (lo + blk < n_) ? (lo + blk) : n_;
         if (lo < hi) {
-          fn_(cl, lo, hi);
+          try {
+            fn_(cl, lo, hi);
+          } catch (...) {
+            if (!exception_captured.test_and_set(std::memory_order_acq_rel)) {
+              exception = std::current_exception();
+            }
+          }
         }
       }
       lk.lock();
@@ -290,17 +299,40 @@ struct PricingExecutor::State {
       block = blk;
       active = A;
       remaining = A;
+      exception = nullptr;
+      exception_captured.clear(std::memory_order_release);
       ++epoch;
     }
     cv_go.notify_all();
     ATX_VOL_COUNT(PoolDispatches); // one real pool wake (0 on the inline path)
 
     // Block 0 on the calling thread (t_in_executor is already set by run_erased).
+    std::exception_ptr caller_failure;
     const std::size_t hi0 = (blk < n_) ? blk : n_;
-    fn_(cl, 0, hi0);
+    try {
+      fn_(cl, 0, hi0);
+    } catch (...) {
+      if (!exception_captured.test_and_set(std::memory_order_acq_rel)) {
+        caller_failure = std::current_exception();
+      }
+    }
 
     std::unique_lock<std::mutex> lk(m);
+    if (caller_failure != nullptr) {
+      exception = caller_failure;
+    }
     cv_done.wait(lk, [&] { return remaining == 0; });
+    std::exception_ptr failure = exception;
+    fn = nullptr;
+    closure = nullptr;
+    n = 0u;
+    block = 0u;
+    active = 0u;
+    exception = nullptr;
+    lk.unlock();
+    if (failure != nullptr) {
+      std::rethrow_exception(failure);
+    }
   }
 };
 
@@ -350,6 +382,59 @@ void PricingExecutor::run_erased(std::size_t n, unsigned n_threads, Trampoline f
 }
 
 // ── Process singleton + one-time configuration ───────────────────────────────
+
+void PricingExecutor::run_dynamic_erased(std::size_t n, unsigned n_threads, DynamicTrampoline fn,
+                                         void *cl) {
+  if (n == 0u) {
+    return;
+  }
+  State &s = *state_;
+  const unsigned P = s.P;
+  unsigned nt = (n_threads == 0u) ? (P + 1u) : n_threads;
+  if (nt > P + 1u) {
+    nt = P + 1u;
+  }
+  if (static_cast<std::size_t>(nt) > n) {
+    nt = static_cast<unsigned>(n);
+  }
+  if (nt <= 1u || n < kInlineThreshold || t_in_executor) {
+    for (std::size_t index = 0u; index < n; ++index) {
+      fn(cl, index, 0u);
+    }
+    return;
+  }
+
+  struct DynamicDispatch {
+    std::atomic<std::size_t> next{0u};
+    std::size_t count{0u};
+    DynamicTrampoline fn{nullptr};
+    void *closure{nullptr};
+  } dispatch;
+  dispatch.count = n;
+  dispatch.fn = fn;
+  dispatch.closure = cl;
+  const auto run_context = [](void *opaque, std::size_t lo, std::size_t) {
+    auto &job = *static_cast<DynamicDispatch *>(opaque);
+    const unsigned worker_id = static_cast<unsigned>(lo);
+    for (;;) {
+      const std::size_t index = job.next.fetch_add(1u, std::memory_order_relaxed);
+      if (index >= job.count) {
+        return;
+      }
+      job.fn(job.closure, index, worker_id);
+    }
+  };
+
+  const bool prev = t_in_executor;
+  struct FlagRestorer {
+    bool previous;
+    ~FlagRestorer() { t_in_executor = previous; }
+  } restorer{prev};
+  t_in_executor = true;
+  // One fixed range per execution context: lo is its stable worker id. Each
+  // context dynamically drains the shared index counter until all work is claimed.
+  s.dispatch(run_context, &dispatch, nt, 1u, nt - 1u);
+}
 
 PricingExecutor &pricing_executor() noexcept {
   static PricingExecutor g{[] {

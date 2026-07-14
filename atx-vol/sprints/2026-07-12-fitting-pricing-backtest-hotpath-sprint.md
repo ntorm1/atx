@@ -603,3 +603,115 @@ limit):
 Correctness fixes such as charging previously omitted execution cost are exempt from the P&L
 equivalence limit; they require an analytic identity and an explicit before/after economic
 explanation instead.
+
+## 2026-07-14 continuation: adaptive confirmation and persistent valuation scheduling
+
+The `$0.0077/share` RepresentativeFast median error is retained as a useful screening signal.
+It is not promoted to the default published-economic route because the same real-SPY sample has
+a `$7.97` p99 and `$10.59` maximum error. The implemented compromise is explicit and opt-in:
+
+1. prepare RepresentativeFast or CarryBank state once;
+2. use the configured cache only to propose a delta strike;
+3. cold-validate the proposal to `1e-5`, apply bounded local refinement, and fall back to the
+   robust all-cold solver on any failure or exhausted budget;
+4. source final sizing Greeks and the entry mark from one cold query; and
+5. force portfolio marks/Greeks, P&L, settlement, and roll-close economics cold.
+
+The direct representative-everywhere route remains available for exploratory screening and
+parameter triage. It is deliberately distinguishable from adaptive-confirmed output.
+
+### Correctness and connection changes landed in this continuation
+
+- `PricerFitter::value_chain` now rejects a chain whose process-unique instance/uid differs from
+  the chain that published the served surface. This closes a real cross-board mixing defect where
+  chain-A spot/carry could be combined with chain-B quotes.
+- `QueryExecution::{Configured,ColdReference}` is a per-call override across scalar, fused, and
+  batch `PricedSurface` queries. Forced cold bypasses the accelerator without rebuilding or
+  mutating the archived surface.
+- `PriceOptions::query_execution` reaches price frames/totals, P&L frames/totals, settlement, and
+  roll-close economics. Representative-prepared/forced-cold results are tested exactly against
+  independently cold-prepared surfaces.
+- `StrategySpec::resolution` adds bounded fast-screen/cold-confirm resolution. No successful
+  adaptive delta strike can leave without cold validation. Final cold Greeks carry their price
+  through `ResolvedLeg`, eliminating the previous duplicate entry solve. The strategy declares a
+  cold-economic requirement, and the engine rejects a fast prepared tier unless `PriceOptions`
+  explicitly forces cold economics.
+- The persistent `PricingExecutor` now supports exception-safe dynamic tasks with stable worker
+  ids, a completion barrier before rethrow, nested-inline safety, and reuse after caller/worker
+  exceptions. `PricerFitter::value_chain` uses it instead of constructing `std::jthread`s on each
+  valuation.
+- The real-manifest example exposes `--adaptive-confirm` and records the execution mode in its
+  output metadata.
+- ABI decision: this pre-1.0 change extends public option aggregates and the strategy virtual
+  interface. Positional aggregate source compatibility is preserved by appending new fields, but
+  binary compatibility is intentionally not promised; the DLL and every consumer must be rebuilt
+  together for this release.
+
+### Real OPRA evidence
+
+Corpus: `C:/atx/data/spy_ytd/archives/manifest.tsv`, 123 dates, Release, alternating order.
+
+| Mode | Cache lifecycle | Repetitions | Median engine time | CV | Versus cold |
+|---|---|---:|---:|---:|---:|
+| ColdReference | fresh/private | 5 | 1305.7 ms | 22.19% | 1.00x |
+| RepresentativeFast everywhere | fresh/private | 5 | 2041.1 ms | 6.00% | 0.64x |
+| Representative screen + cold confirm/economics | fresh/private | 5 | 2048.5 ms | 14.59% | 0.64x |
+| ColdReference | preloaded | 5 | 431.8 ms | 12.07% | 1.00x |
+| RepresentativeFast everywhere | preloaded | 5 | 57.7 ms | 6.04% | 7.48x |
+| Representative screen + cold confirm/economics | preloaded | 5 | 330.9 ms | 15.80% | 1.30x |
+
+After reusing the final cold-Greeks price as the entry mark, a fresh alternating seven-run
+preloaded sample measured cold `447.2 ms` versus adaptive `357.4 ms`, or `1.25x`. The host was
+noisy, so `1.25x` is the claimed adaptive result; the earlier `1.30x` is supporting evidence, not
+the headline. Fresh adaptive remains unacceptable for a one-pass sparse backtest because eager
+cache construction dominates.
+
+Adaptive versus all-cold economics on the real corpus:
+
+| Metric | Result |
+|---|---:|
+| Daily P&L absolute difference, median / p95 / max | `$0.18 / $2.75 / $4.92` |
+| P&L sign flips | `0 / 122` |
+| Maximum NAV-path absolute difference | `$12.73` |
+| Final NAV | cold `-$166,628.93`; adaptive `-$166,623.63` |
+| Final NAV difference | `+$5.29` |
+
+The current 14,014-leg chain benchmark still reports RepresentativeFast all-fields t8 at
+`131.8 ms` (previous milestone `131.4 ms`, effectively flat under host noise) while the new
+counter gate proves zero steady-state worker launches and one persistent-pool dispatch for a
+multi-chunk valuation. The scheduler change is therefore an allocation/thread-lifecycle fix,
+not a new kernel speedup claim.
+
+### Verification state
+
+- Strict Debug and Release `/W4 /WX` test targets and the Release chain/backtest examples build.
+- Final Release focused gate: `26/26` passed across provenance, forced-cold scalar/batch,
+  portfolio/P&L/backtest economics, adaptive resolution, persistent-executor exception safety,
+  concurrent top-level failure/reuse, invalid-policy fail-close, and whole-chain dispatch.
+- Debug full run before adapting the degenerate-chain regression: 1,425 ran, 1,408 passed,
+  7 skipped, 10 failed. The one change-induced failure was the old test's intentional foreign
+  chain valuation; it was rewritten to fit/value one chain and then passed with both provenance
+  regressions. The remaining nine are reproduced/documented compiler/artifact pins, including
+  the pre-change Debug `PreparedPortfolio` fingerprint mismatch; no new implementation failure
+  remains in the focused gate.
+- Final broad Release run: 1,416 selected, 1,406 passed, 7 skipped, and 3 failed. The three are
+  documented exact-bit baselines (`AndersenLakeRegime.PositiveRateGrid_BitIdenticalToPrechange`,
+  `Pin.EvalAndEvalGradBitIdentical`, and `Pin.EvalPartialsMatchesEvalGrad`) that were missed by the
+  attempted named-baseline exclusion; all other selected tests passed.
+
+### Next sprint, ordered by economic leverage
+
+| Priority / estimate | Work | Acceptance gate |
+|---|---|---|
+| P0 / 1-2 d | Add actual-served-route, fast/cold query-count, confirmation-outcome, accelerator-build-time, and cache-reuse telemetry | every adaptive leg explains screen/refine/fallback calls; numeric cache fallback is observable rather than predicted |
+| P0 / 1 d | Add demand-aware cache materialization (`Eager` versus `Amortized`) | sparse one-pass adaptive is no more than 5% slower than cold and builds zero accelerators; reusable sweeps still build once |
+| P0 / 1 d | Apply the screen/confirm policy to listed OPRA selection | exact listed call/put identity matches exhaustive cold selection across the qualified corpus |
+| P1 / 2 d | Fuse cold confirmation, sizing Greeks, and price; tune bounded refinement from measured query counts | at least 50% fewer cold delta-search calls; preloaded adaptive at least 2x cold with the economic limits above |
+| P1 / 2-3 d | Move live/archive accelerator builders and snapshot prefetch to bounded persistent scheduling | peak process threads <= `H+2`; no `std::async` fan-out; no wait/destruction under cache mutex |
+| P1 / 3 d | Add caller-owned `value_rows_into` / `value_expiry_into` workspace and generation stamps | zero warm valuation scratch growth; foreign/stale chain stamps fail closed; full model-price improves at least 10% |
+| P1 / 3 d | Replace backtest lot/uid vector scans and retain adjacent-date pricing state | O(N+U) bookkeeping; at least 40% fewer repeated boundary solves on a 1,000-lot stress book |
+| P2 / 2 d | Stream raw OPRA date batches through fit/archive with bounded lifetime | one archive open per date and effectively constant RSS from 125 to 1,250 dates |
+
+The adaptive gate is shipped as useful but not complete: accuracy is economically acceptable and
+the `$0.0077` approximation remains valuable, but the observed `1.25x` confirmed speedup is below
+the next-sprint `2x` target and far below the representative-everywhere diagnostic ceiling.

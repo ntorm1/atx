@@ -234,7 +234,7 @@ struct StepPnl {
       if (bs == nullptr || ss == nullptr) {
         return Err(ErrorCode::NotFound, "run_backtest: no surface for settling lot");
       }
-      auto mark = bs->fair_value(lot.contract.K, T_base, lot.contract.side);
+      auto mark = bs->fair_value(lot.contract.K, T_base, lot.contract.side, opts.query_execution);
       if (!mark) {
         return Err(mark.error());
       }
@@ -581,6 +581,14 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
   if (refs.empty()) {
     return Err(ErrorCode::InvalidArgument, "run_backtest: empty clock");
   }
+  const bool prepared_fast = cfg.query_pricing_tier == QueryPricingTier::RepresentativeFast ||
+                             cfg.query_pricing_tier == QueryPricingTier::CarryBank;
+  if (strat.required_economic_execution() == QueryExecution::ColdReference && prepared_fast &&
+      cfg.price.query_execution != QueryExecution::ColdReference) {
+    return Err(ErrorCode::InvalidArgument,
+               "run_backtest: strategy requires ColdReference economics for the configured "
+               "fast query tier");
+  }
   const std::size_t stride = (cfg.record_every_n == 0) ? std::size_t{1} : cfg.record_every_n;
 
   BacktestResult out;
@@ -779,7 +787,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
       double vega = 0.0;
       if (s != nullptr) {
         const Result<AmericanGreeks> risk =
-            s->greeks_analytic(lot.contract.K, T_res, lot.contract.side);
+            s->greeks_analytic(lot.contract.K, T_res, lot.contract.side, cfg.price.query_execution);
         if (!risk) {
           return Err(risk.error());
         }
