@@ -80,6 +80,42 @@ struct PricingContext {
   std::uint32_t uid{0};                                // underlying id (informational)
 };
 
+class PricedSurface;
+
+// Immutable proof that one exact PricedSurface instance evaluated one exact
+// contract through a specified full-Greek route. Construction is private: a
+// caller may copy or move a genuine seed, but cannot fabricate or alter its
+// provenance or numeric payload.
+class FullGreekSeed final {
+public:
+  [[nodiscard]] std::uint32_t uid() const noexcept { return uid_; }
+  [[nodiscard]] double K() const noexcept { return K_; }
+  [[nodiscard]] double T() const noexcept { return T_; }
+  [[nodiscard]] Side side() const noexcept { return side_; }
+  [[nodiscard]] std::uint64_t surface_instance_id() const noexcept { return surface_instance_id_; }
+  [[nodiscard]] bool analytic_greeks() const noexcept { return analytic_greeks_; }
+  [[nodiscard]] QueryExecution query_execution() const noexcept { return query_execution_; }
+  [[nodiscard]] double iv() const noexcept { return iv_; }
+  [[nodiscard]] const AmericanGreeks &greeks() const noexcept { return greeks_; }
+
+private:
+  friend class PricedSurface;
+
+  FullGreekSeed(std::uint32_t uid, double K, double T, Side side, std::uint64_t surface_instance_id,
+                bool analytic_greeks, QueryExecution query_execution, double iv,
+                const AmericanGreeks &greeks) noexcept;
+
+  std::uint32_t uid_;
+  double K_;
+  double T_;
+  Side side_;
+  std::uint64_t surface_instance_id_;
+  bool analytic_greeks_;
+  QueryExecution query_execution_;
+  double iv_;
+  AmericanGreeks greeks_;
+};
+
 // A fitted, serialization-ready surface with optional transient query caches.
 // Move-only (owns a move-only `CurveSurface`). Construct via `create` (validating)
 // or receive one from `VolaSession::to_priced_surface` /
@@ -148,6 +184,17 @@ public:
   // analytic flag has no effect while the cache route is active.
   [[nodiscard]] Result<AmericanGreeks>
   greeks_analytic(double K, double T, Side side,
+                  QueryExecution execution = QueryExecution::Configured) const;
+
+  // Produce an immutable full-Greek handoff seed through one fused surface
+  // resolution and one full American-Greek evaluation. The seed is valid only
+  // for this exact surface instance, raw (uid,K,T,side), analytic route, and
+  // effective execution route. Configured and ColdReference are equivalent only
+  // when this surface's LegacyCompatible/ColdReference tier resolves both to the
+  // cold route; prepared fast tiers keep them distinct. @return the underlying
+  // evaluation error on an invalid or unsupported query.
+  [[nodiscard]] Result<FullGreekSeed>
+  full_greek_seed(double K, double T, Side side, bool analytic,
                   QueryExecution execution = QueryExecution::Configured) const;
 
   // American delta ONLY at (K, T, side) via `american_delta` — the single axis the

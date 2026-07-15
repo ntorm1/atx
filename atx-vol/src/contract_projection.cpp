@@ -131,7 +131,8 @@ struct DeltaSolution {
 
 [[nodiscard]] Result<DeltaSolution> solve_american_delta(const PricedSurface &surface, double T,
                                                          Side side, double target_abs_delta,
-                                                         double tolerance) {
+                                                         double tolerance,
+                                                         QueryExecution query_execution) {
   if (!(target_abs_delta > 0.0 && target_abs_delta < 1.0) ||
       !(std::isfinite(tolerance) && tolerance > 0.0 && tolerance <= 1.0e-3)) {
     return Err(ErrorCode::InvalidArgument, "contract projection: invalid delta target/tolerance");
@@ -164,7 +165,7 @@ struct DeltaSolution {
   std::uint16_t evaluations = 0;
   const auto evaluate = [&](double k) -> Residual {
     ++evaluations;
-    const Result<double> delta = surface.delta(forward * std::exp(k), T, side);
+    const Result<double> delta = surface.delta(forward * std::exp(k), T, side, query_execution);
     if (delta && std::isfinite(*delta)) {
       return Residual{std::fabs(*delta) - target_abs_delta, *delta, true};
     }
@@ -390,7 +391,7 @@ Result<ProjectedOption> project_option_contract(const PricedSurface &surface,
   case ProjectedStrikeKind::Delta: {
     ATX_TRY(const DeltaSolution solution,
             solve_american_delta(surface, residual_t, spec.side, spec.strike.value,
-                                 config.delta_tolerance));
+                                 config.delta_tolerance, config.query_execution));
     strike = solution.strike;
     achieved_delta = solution.achieved_delta;
     delta_evaluations = solution.evaluations;
@@ -430,7 +431,8 @@ Result<ProjectedOption> project_option_contract(const PricedSurface &surface,
   }
   if (config.output == OptionProjectionOutput::Mark) {
     const auto evaluated =
-        surface.evaluate(strike, residual_t, spec.side, PricedSurface::EvalField::Price, false);
+        surface.evaluate(strike, residual_t, spec.side, PricedSurface::EvalField::Price, false,
+                         config.query_execution);
     if (!evaluated.status || !std::isfinite(evaluated.price)) {
       return Err(evaluated.status ? ErrorCode::Unavailable : evaluated.status.error().code(),
                  "contract projection: mark failed");
@@ -441,8 +443,8 @@ Result<ProjectedOption> project_option_contract(const PricedSurface &surface,
 
   const auto fields = PricedSurface::EvalField::Price | PricedSurface::EvalField::FirstOrder |
                       PricedSurface::EvalField::SecondOrder;
-  const auto evaluated =
-      surface.evaluate(strike, residual_t, spec.side, fields, config.analytic_greeks);
+  const auto evaluated = surface.evaluate(strike, residual_t, spec.side, fields,
+                                          config.analytic_greeks, config.query_execution);
   if (!evaluated.status || !std::isfinite(evaluated.price)) {
     return Err(evaluated.status ? ErrorCode::Unavailable : evaluated.status.error().code(),
                "contract projection: full-risk evaluation failed");

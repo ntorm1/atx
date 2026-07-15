@@ -72,6 +72,14 @@ template <class Input, class Output>
 
 } // namespace
 
+FullGreekSeed::FullGreekSeed(std::uint32_t uid, double K, double T, Side side,
+                             std::uint64_t surface_instance_id, bool analytic_greeks,
+                             QueryExecution query_execution, double iv,
+                             const AmericanGreeks &greeks) noexcept
+    : uid_(uid), K_(K), T_(T), side_(side), surface_instance_id_(surface_instance_id),
+      analytic_greeks_(analytic_greeks), query_execution_(query_execution), iv_(iv),
+      greeks_(greeks) {}
+
 struct PricedSurface::QueryAccelerator {
   struct Entry {
     double T{0.0};
@@ -680,6 +688,18 @@ Result<AmericanGreeks> PricedSurface::greeks_analytic(double K, double T, Side s
   // flag has no alternate numerical meaning there. Cold serving retains the
   // Andersen-Lake/PDE route.
   return greeks_resolved(p, side, true, execution);
+}
+
+Result<FullGreekSeed> PricedSurface::full_greek_seed(double K, double T, Side side, bool analytic,
+                                                     QueryExecution execution) const {
+  using EF = EvalField;
+  const FusedResult evaluated = evaluate(
+      K, T, side, EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder, analytic, execution);
+  if (!evaluated.status.has_value()) {
+    return Err(evaluated.status.error());
+  }
+  return FullGreekSeed{uid(),           K, T, side, instance_id_, analytic, execution, evaluated.iv,
+                       evaluated.greeks};
 }
 
 Result<double> PricedSurface::delta(double K, double T, Side side, QueryExecution execution) const {

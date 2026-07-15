@@ -23,7 +23,9 @@
 #include <cstring>
 #include <filesystem>
 #include <future>
+#include <limits>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -32,7 +34,8 @@
 #include "atx/core/error.hpp"
 #include "atx/vol/american.hpp" // al_fast_opts, AmericanMethod
 #include "atx/vol/backtest.hpp"
-#include "atx/vol/corpus.hpp"           // CorpusManifest, CorpusEntry, CorpusFitStatus
+#include "atx/vol/corpus.hpp" // CorpusManifest, CorpusEntry, CorpusFitStatus
+#include "atx/vol/counters.hpp"
 #include "atx/vol/portfolio_pricer.hpp" // OptionContract
 #include "atx/vol/priced_surface.hpp"   // PricedSurface, PricingContext
 #include "atx/vol/strategy.hpp"         // IStrategy
@@ -107,15 +110,42 @@ constexpr std::uint32_t kUid = 7;
 
 // Write one surface as this date's archive; return its path (creating `dir`).
 [[nodiscard]] std::string write_one(const fs::path &dir, const std::string &date,
-                                    const std::string &symbol, const PricedSurface &s) {
+                                    const std::string &symbol, const PricedSurface &s,
+                                    std::optional<SurfaceProvenance> provenance = std::nullopt) {
   std::error_code ec;
   fs::create_directories(dir, ec);
   const std::string path = (dir / (date + ".atxvsa")).string();
-  const SurfaceArchiveItem item{symbol, &s};
+  const SurfaceArchiveItem item{symbol, &s, std::move(provenance)};
   const std::span<const SurfaceArchiveItem> items(&item, 1);
   const Status st = write_surface_archive_file(path, items);
   EXPECT_TRUE(st.has_value()) << (st.has_value() ? std::string{} : st.error().to_string());
   return path;
+}
+
+[[nodiscard]] SurfaceProvenance make_provenance(SurfacePurpose purpose, SurfaceState state,
+                                                std::uint64_t served_generation,
+                                                std::uint64_t validation_id = 1u) {
+  SurfaceProvenance provenance;
+  provenance.purpose = purpose;
+  provenance.quality_mode = FitQualityMode::Balanced;
+  provenance.state = state;
+  provenance.validation.validation_id = validation_id;
+  provenance.source_generation = served_generation;
+  provenance.served_generation = served_generation;
+  switch (state) {
+  case SurfaceState::Healthy:
+    break;
+  case SurfaceState::Degraded:
+    provenance.validation.failures = ValidationFailure::CarryGap;
+    break;
+  case SurfaceState::Stale:
+    provenance.validation.failures = ValidationFailure::StaleInput;
+    break;
+  case SurfaceState::Rejected:
+    provenance.validation.failures = ValidationFailure::PriceBounds;
+    break;
+  }
+  return provenance;
 }
 
 // Hand-build an Ok-only manifest over (date, archive_path) rows.
@@ -181,6 +211,207 @@ private:
   std::int64_t expiry_{0};
 };
 
+class DuplicateIdOpenThenCloseStrategy final : public IStrategy {
+public:
+  explicit DuplicateIdOpenThenCloseStrategy(std::int64_t expiry) noexcept : expiry_{expiry} {}
+
+  Status on_step(const MarketSnapshot & /*base*/, std::size_t step_index, PortfolioState &book,
+                 std::uint64_t &next_lot_id) override {
+    if (step_index == 0u) {
+      constexpr std::uint64_t duplicate_id = 777u;
+      book.lots.push_back(Lot{duplicate_id, OptionContract{kUid, 95.0, 0.0, Side::Call}, +1.0,
+                              100.0, expiry_, 0u, 2.0});
+      book.lots.push_back(Lot{duplicate_id, OptionContract{kUid, 105.0, 0.0, Side::Put}, -1.0,
+                              100.0, expiry_, 0u, 3.0});
+      next_lot_id += 2u;
+    } else if (step_index == 1u) {
+      book.lots.clear();
+    }
+    return atx::core::Ok();
+  }
+
+private:
+  std::int64_t expiry_{0};
+};
+
+class MutateExistingLotStrategy final : public IStrategy {
+public:
+  explicit MutateExistingLotStrategy(std::int64_t expiry) noexcept : expiry_{expiry} {}
+
+  Status on_step(const MarketSnapshot & /*base*/, std::size_t step_index, PortfolioState &book,
+                 std::uint64_t &next_lot_id) override {
+    if (step_index == 0u) {
+      book.lots.push_back(Lot{next_lot_id++, OptionContract{kUid, 95.0, 0.0, Side::Call}, +1.0,
+                              100.0, expiry_, 3u, 2.0});
+    } else if (step_index == 1u) {
+      book.lots.front().qty = 2.0;
+    }
+    return atx::core::Ok();
+  }
+
+private:
+  std::int64_t expiry_{0};
+};
+
+class ReuseClosedLotIdStrategy final : public IStrategy {
+public:
+  explicit ReuseClosedLotIdStrategy(std::int64_t expiry) noexcept : expiry_{expiry} {}
+
+  Status on_step(const MarketSnapshot & /*base*/, std::size_t step_index, PortfolioState &book,
+                 std::uint64_t &next_lot_id) override {
+    if (step_index == 0u) {
+      reused_id_ = next_lot_id++;
+      book.lots.push_back(Lot{reused_id_, OptionContract{kUid, 95.0, 0.0, Side::Call}, +1.0, 100.0,
+                              expiry_, 0u, 2.0});
+    } else if (step_index == 1u) {
+      book.lots.clear();
+    } else if (step_index == 2u) {
+      book.lots.push_back(Lot{reused_id_, OptionContract{kUid, 105.0, 0.0, Side::Put}, -1.0, 100.0,
+                              expiry_, 1u, 3.0});
+    }
+    return atx::core::Ok();
+  }
+
+private:
+  std::int64_t expiry_{0};
+  std::uint64_t reused_id_{0};
+};
+
+class RollBackNextLotIdStrategy final : public IStrategy {
+public:
+  Status on_step(const MarketSnapshot & /*base*/, std::size_t /*step_index*/,
+                 PortfolioState & /*book*/, std::uint64_t &next_lot_id) override {
+    --next_lot_id;
+    return atx::core::Ok();
+  }
+};
+
+class InvalidEntryStrategy final : public IStrategy {
+public:
+  explicit InvalidEntryStrategy(Lot lot) noexcept : lot_{std::move(lot)} {}
+
+  Status on_step(const MarketSnapshot & /*base*/, std::size_t step_index, PortfolioState &book,
+                 std::uint64_t &next_lot_id) override {
+    ++on_step_calls;
+    if (step_index == 0u) {
+      lot_.id = next_lot_id++;
+      book.lots.push_back(lot_);
+    }
+    return atx::core::Ok();
+  }
+
+  [[nodiscard]] std::span<const FullGreekSeed> entry_risk_seeds() const noexcept override {
+    ++seed_calls;
+    return {};
+  }
+
+  [[nodiscard]] std::vector<std::pair<std::string, double>>
+  signals(const MarketSnapshot & /*base*/) const override {
+    ++signal_calls;
+    return {};
+  }
+
+  [[nodiscard]] HedgeSpec hedge_spec() const override {
+    ++hedge_calls;
+    return {};
+  }
+
+  unsigned on_step_calls{0u};
+  mutable unsigned seed_calls{0u};
+  mutable unsigned signal_calls{0u};
+  mutable unsigned hedge_calls{0u};
+
+private:
+  Lot lot_{};
+};
+
+class InvalidHedgeStrategy final : public IStrategy {
+public:
+  explicit InvalidHedgeStrategy(HedgeSpec hedge) noexcept : hedge_{hedge} {}
+
+  Status on_step(const MarketSnapshot & /*base*/, std::size_t /*step_index*/,
+                 PortfolioState & /*book*/, std::uint64_t & /*next_lot_id*/) override {
+    ++on_step_calls;
+    return atx::core::Ok();
+  }
+
+  [[nodiscard]] HedgeSpec hedge_spec() const override {
+    ++hedge_calls;
+    return hedge_;
+  }
+
+  unsigned on_step_calls{0u};
+  mutable unsigned hedge_calls{0u};
+
+private:
+  HedgeSpec hedge_{};
+};
+
+class MassOpenThenCloseStrategy final : public IStrategy {
+public:
+  MassOpenThenCloseStrategy(std::int64_t expiry, std::size_t n_lots) noexcept
+      : expiry_{expiry}, n_lots_{n_lots} {}
+
+  Status on_step(const MarketSnapshot & /*base*/, std::size_t step_index, PortfolioState &book,
+                 std::uint64_t &next_lot_id) override {
+    if (step_index == 0u) {
+      book.lots.reserve(n_lots_);
+      for (std::size_t i = 0; i < n_lots_; ++i) {
+        book.lots.push_back(Lot{next_lot_id++, OptionContract{kUid, 95.0, 0.0, Side::Call}, +1.0,
+                                100.0, expiry_, 0u, 2.0});
+      }
+    } else if (step_index == 1u) {
+      book.lots.clear();
+    }
+    return atx::core::Ok();
+  }
+
+private:
+  std::int64_t expiry_{0};
+  std::size_t n_lots_{0};
+};
+
+class PriceOptionsSpyStrategy final : public IStrategy {
+public:
+  Status on_step(const MarketSnapshot & /*base*/, std::size_t /*step_index*/,
+                 PortfolioState & /*book*/, std::uint64_t & /*next_lot_id*/) override {
+    ++legacy_calls;
+    return atx::core::Ok();
+  }
+
+  Status on_step(const MarketSnapshot & /*base*/, std::size_t /*step_index*/,
+                 PortfolioState & /*book*/, std::uint64_t & /*next_lot_id*/,
+                 const PriceOptions &options) override {
+    ++priced_calls;
+    last_options = options;
+    return atx::core::Ok();
+  }
+
+  unsigned legacy_calls{0};
+  unsigned priced_calls{0};
+  PriceOptions last_options{};
+};
+
+[[nodiscard]] StrategySpec daily_two_leg_roll_spec() {
+  StrategySpec spec;
+  spec.name = "daily-two-leg-roll";
+  LegSpec call;
+  call.uid = kUid;
+  call.tenor.target_T = 30.0 / 365.25;
+  call.structure.kind = StructureSpec::Kind::Single;
+  call.structure.single_side = Side::Call;
+  call.strike = {StrikeSelector::Kind::AbsStrike, 95.0};
+  call.size = {SizeSpec::Kind::FixedContracts, 1.0, +1.0};
+  LegSpec put = call;
+  put.structure.single_side = Side::Put;
+  put.strike = {StrikeSelector::Kind::AbsStrike, 105.0};
+  put.size.sign = -1.0;
+  spec.legs = {call, put};
+  spec.lifecycle.holding = LifecycleSpec::Holding::RollAtHorizon;
+  spec.lifecycle.roll_at_T = 29.5 / 365.25;
+  return spec;
+}
+
 void expect_result_bit_identical(const BacktestResult &a, const BacktestResult &b) {
   ASSERT_EQ(a.size(), b.size());
   const std::vector<std::pair<const std::vector<double> *, const std::vector<double> *>> cols = {
@@ -231,6 +462,404 @@ TEST(Backtest, LoadOnce) {
   EXPECT_EQ(res->size(), static_cast<std::size_t>(n)); // inception + (n-1) steps
 }
 
+TEST(Backtest, FixedBookDuplicateLotIdsFailBeforeArchiveLoadOrPricing) {
+  const fs::path dir = fresh_dir("fixed-book-duplicate-id");
+  const CorpusManifest manifest = make_evolving_corpus(dir, "SPX", 1);
+  auto clock = Clock::from_manifest(manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  PortfolioState book = survivor_book(kBaseNow + 120 * kDayNs);
+  book.lots[1].id = book.lots[0].id;
+  MarketSnapshot::reset_open_count();
+
+  const auto result = run_backtest(*clock, std::move(book));
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(result.error().message().find("duplicate lot id=1 in initial fixed book"),
+            std::string::npos);
+  EXPECT_EQ(MarketSnapshot::open_count(), 0u);
+}
+
+TEST(Backtest, InvalidRunConfigFailsBeforeArchiveLoadOrPricing) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+
+  const fs::path dir = fresh_dir("invalid-run-config");
+  const CorpusManifest manifest = make_evolving_corpus(dir, "SPX", 1);
+  auto clock = Clock::from_manifest(manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  std::vector<std::pair<std::string, RunConfig>> cases;
+  const auto add_case = [&cases](std::string name, const auto &mutate) {
+    RunConfig config;
+    mutate(config);
+    cases.emplace_back(std::move(name), std::move(config));
+  };
+  add_case("zero record stride", [](RunConfig &c) { c.record_every_n = 0u; });
+  add_case("nan price spread", [](RunConfig &c) {
+    c.frictions.half_spread_bps = std::numeric_limits<double>::quiet_NaN();
+  });
+  add_case("negative vol tick", [](RunConfig &c) { c.frictions.vol_tick = -0.01; });
+  add_case("infinite contract cost", [](RunConfig &c) {
+    c.frictions.per_contract_cost = std::numeric_limits<double>::infinity();
+  });
+  add_case("negative hedge slippage", [](RunConfig &c) { c.frictions.hedge_slippage_bps = -1.0; });
+  add_case("nan initial cash", [](RunConfig &c) {
+    c.financing.initial_cash = std::numeric_limits<double>::quiet_NaN();
+  });
+  add_case("negative borrow rate", [](RunConfig &c) { c.financing.borrow_rate = -0.01; });
+  add_case("nan borrow rate", [](RunConfig &c) {
+    c.financing.borrow_rate = std::numeric_limits<double>::quiet_NaN();
+  });
+  add_case("prices-only backtest", [](RunConfig &c) { c.price.prices_only = true; });
+  add_case("nan sticky weight", [](RunConfig &c) {
+    c.price.sticky.ref_uprc_weight = std::numeric_limits<double>::quiet_NaN();
+  });
+  add_case("invalid spread kind", [](RunConfig &c) {
+    c.frictions.spread_kind = static_cast<FrictionModel::SpreadKind>(255u);
+  });
+  add_case("invalid query tier",
+           [](RunConfig &c) { c.query_pricing_tier = static_cast<QueryPricingTier>(255u); });
+  add_case("invalid query execution",
+           [](RunConfig &c) { c.price.query_execution = static_cast<QueryExecution>(255u); });
+
+  for (auto &[name, config] : cases) {
+    SCOPED_TRACE(name);
+    MarketSnapshot::reset_open_count();
+    if constexpr (counters_enabled()) {
+      atx::vol::counters::reset();
+    }
+    const auto result = run_backtest(*clock, PortfolioState{}, config);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+    EXPECT_EQ(MarketSnapshot::open_count(), 0u);
+    if constexpr (counters_enabled()) {
+      EXPECT_EQ(atx::vol::counters::snapshot().get(Counter::BoundarySolves), 0u);
+    }
+
+    PriceOptionsSpyStrategy strategy;
+    MarketSnapshot::reset_open_count();
+    if constexpr (counters_enabled()) {
+      atx::vol::counters::reset();
+    }
+    const auto strategy_result = run_backtest(*clock, strategy, config);
+    ASSERT_FALSE(strategy_result.has_value());
+    EXPECT_EQ(strategy_result.error().code(), ErrorCode::InvalidArgument);
+    EXPECT_EQ(strategy.legacy_calls, 0u);
+    EXPECT_EQ(strategy.priced_calls, 0u);
+    EXPECT_EQ(MarketSnapshot::open_count(), 0u);
+    if constexpr (counters_enabled()) {
+      EXPECT_EQ(atx::vol::counters::snapshot().get(Counter::BoundarySolves), 0u);
+    }
+  }
+}
+
+TEST(Backtest, InvalidFixedBookEconomicsFailBeforeArchiveLoadOrPricing) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+
+  const fs::path dir = fresh_dir("invalid-fixed-book-economics");
+  const CorpusManifest manifest = make_evolving_corpus(dir, "SPX", 1);
+  auto clock = Clock::from_manifest(manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  std::vector<std::pair<std::string, PortfolioState>> cases;
+  const auto add_case = [&cases](std::string name, const auto &mutate) {
+    PortfolioState book = survivor_book(kBaseNow + 120 * kDayNs);
+    mutate(book.lots.front());
+    cases.emplace_back(std::move(name), std::move(book));
+  };
+  add_case("nan entry price",
+           [](Lot &lot) { lot.entry_price = std::numeric_limits<double>::quiet_NaN(); });
+  add_case("zero multiplier", [](Lot &lot) { lot.multiplier = 0.0; });
+  add_case("nan quantity", [](Lot &lot) { lot.qty = std::numeric_limits<double>::quiet_NaN(); });
+  add_case("zero strike", [](Lot &lot) { lot.contract.K = 0.0; });
+  add_case("nan model tenor",
+           [](Lot &lot) { lot.contract.T = std::numeric_limits<double>::quiet_NaN(); });
+  add_case("invalid option side", [](Lot &lot) { lot.contract.side = static_cast<Side>(255u); });
+
+  for (auto &[name, book] : cases) {
+    SCOPED_TRACE(name);
+    MarketSnapshot::reset_open_count();
+    if constexpr (counters_enabled()) {
+      atx::vol::counters::reset();
+    }
+    const auto result = run_backtest(*clock, std::move(book));
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+    EXPECT_EQ(MarketSnapshot::open_count(), 0u);
+    if constexpr (counters_enabled()) {
+      EXPECT_EQ(atx::vol::counters::snapshot().get(Counter::BoundarySolves), 0u);
+    }
+  }
+}
+
+TEST(Backtest, InitialExpiryMustBeAfterInceptionBeforePricing) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+
+  const fs::path dir = fresh_dir("invalid-fixed-book-expiry");
+  const CorpusManifest manifest = make_evolving_corpus(dir, "SPX", 1);
+  auto clock = Clock::from_manifest(manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  PortfolioState book = survivor_book(kBaseNow);
+  MarketSnapshot::reset_open_count();
+  if constexpr (counters_enabled()) {
+    atx::vol::counters::reset();
+  }
+
+  const auto result = run_backtest(*clock, std::move(book));
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(result.error().message().find("expiry_ts_ns"), std::string::npos);
+  EXPECT_EQ(MarketSnapshot::open_count(), 1u);
+  if constexpr (counters_enabled()) {
+    EXPECT_EQ(atx::vol::counters::snapshot().get(Counter::BoundarySolves), 0u);
+  }
+}
+
+TEST(Backtest, InvalidStrategyEntryFailsBeforeExecutionSideEffects) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+
+  const fs::path dir = fresh_dir("invalid-strategy-entry");
+  const CorpusManifest manifest = make_evolving_corpus(dir, "SPX", 1);
+  auto clock = Clock::from_manifest(manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  Lot invalid{0u, OptionContract{kUid, 95.0, 0.0, Side::Call}, 1.0, 100.0, kBaseNow + 120 * kDayNs,
+              0u, std::numeric_limits<double>::quiet_NaN()};
+  InvalidEntryStrategy strategy{invalid};
+  RunConfig config;
+  config.prefetch_snapshots = false;
+  MarketSnapshot::reset_open_count();
+  if constexpr (counters_enabled()) {
+    atx::vol::counters::reset();
+  }
+
+  const auto result = run_backtest(*clock, strategy, config);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(result.error().message().find("entry_price"), std::string::npos);
+  EXPECT_EQ(strategy.on_step_calls, 1u);
+  EXPECT_EQ(strategy.hedge_calls, 0u);
+  EXPECT_EQ(strategy.seed_calls, 0u);
+  EXPECT_EQ(strategy.signal_calls, 0u);
+  EXPECT_EQ(MarketSnapshot::open_count(), 1u);
+  if constexpr (counters_enabled()) {
+    EXPECT_EQ(atx::vol::counters::snapshot().get(Counter::BoundarySolves), 0u);
+  }
+}
+
+TEST(Backtest, InvalidHedgeSpecFailsBeforePricingOrExecutionMutation) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+
+  const fs::path dir = fresh_dir("invalid-hedge-spec");
+  const CorpusManifest manifest = make_evolving_corpus(dir, "SPX", 1);
+  auto clock = Clock::from_manifest(manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  HedgeSpec invalid;
+  invalid.kind = HedgeSpec::Kind::DeltaToZero;
+  invalid.band = std::numeric_limits<double>::quiet_NaN();
+  InvalidHedgeStrategy strategy{invalid};
+  RunConfig config;
+  config.prefetch_snapshots = false;
+  if constexpr (counters_enabled()) {
+    atx::vol::counters::reset();
+  }
+
+  const auto result = run_backtest(*clock, strategy, config);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(result.error().message().find("hedge band"), std::string::npos);
+  EXPECT_EQ(strategy.on_step_calls, 1u);
+  EXPECT_EQ(strategy.hedge_calls, 1u);
+  if constexpr (counters_enabled()) {
+    EXPECT_EQ(atx::vol::counters::snapshot().get(Counter::BoundarySolves), 0u);
+  }
+}
+
+TEST(Backtest, ReusableTargetMarkFrameKeepsWarmStorageAndActivePrefix) {
+  ReusableTargetMarkFrame frame;
+  frame.prepare(3u);
+  TargetMarkView initial = frame.write_view();
+  ASSERT_EQ(initial.id.size(), 3u);
+  const std::uint64_t *const id_data = initial.id.data();
+  const double *const mark_data = initial.price_target.data();
+  const double *const vega_data = initial.base_vega_proxy.data();
+  const PriceStatus *const status_data = initial.status.data();
+  initial.id[0] = 7u;
+  initial.price_target[0] = 1.25;
+  initial.base_vega_proxy[0] = 0.75;
+  initial.status[0] = PriceStatus::Ok;
+  initial.id[1] = 8u;
+  initial.id[2] = 9u;
+  ASSERT_TRUE(frame.seal().has_value());
+  const auto match = frame.find_ok(7u);
+  ASSERT_TRUE(match.has_value());
+  EXPECT_DOUBLE_EQ(match->raw_mark, 1.25);
+  EXPECT_DOUBLE_EQ(match->base_vega_proxy, 0.75);
+
+  frame.prepare(1u);
+  EXPECT_EQ(frame.size(), 1u);
+  EXPECT_EQ(frame.storage_size(), 3u);
+  TargetMarkView smaller = frame.write_view();
+  EXPECT_EQ(smaller.id.data(), id_data);
+  EXPECT_EQ(smaller.price_target.data(), mark_data);
+  EXPECT_EQ(smaller.base_vega_proxy.data(), vega_data);
+  EXPECT_EQ(smaller.status.data(), status_data);
+
+  frame.prepare(2u);
+  EXPECT_EQ(frame.storage_size(), 3u);
+  TargetMarkView rewarmed = frame.write_view();
+  EXPECT_EQ(rewarmed.id.data(), id_data);
+  EXPECT_EQ(rewarmed.price_target.data(), mark_data);
+  EXPECT_EQ(rewarmed.base_vega_proxy.data(), vega_data);
+  EXPECT_EQ(rewarmed.status.data(), status_data);
+}
+
+TEST(Backtest, ReusableTargetMarkFrameSealsOneThousandUnorderedIdsWithoutRegrowing) {
+  constexpr std::size_t n = 1'000u;
+  ReusableTargetMarkFrame frame;
+  frame.prepare(n);
+  TargetMarkView rows = frame.write_view();
+  for (std::size_t i = 0; i < n; ++i) {
+    rows.id[i] = static_cast<std::uint64_t>(n - i);
+    rows.price_target[i] = static_cast<double>(i) / 100.0;
+    rows.base_vega_proxy[i] = 0.5;
+    rows.status[i] = PriceStatus::Ok;
+  }
+  ASSERT_TRUE(frame.seal().has_value());
+  ASSERT_EQ(frame.index_storage_size(), n);
+  const auto first = frame.find_ok(1u);
+  const auto middle = frame.find_ok(500u);
+  const auto last = frame.find_ok(1'000u);
+  ASSERT_TRUE(first.has_value());
+  ASSERT_TRUE(middle.has_value());
+  ASSERT_TRUE(last.has_value());
+  EXPECT_DOUBLE_EQ(first->raw_mark, 9.99);
+  EXPECT_DOUBLE_EQ(middle->raw_mark, 5.0);
+  EXPECT_DOUBLE_EQ(last->raw_mark, 0.0);
+
+  frame.prepare(n / 2u);
+  TargetMarkView smaller = frame.write_view();
+  for (std::size_t i = 0; i < smaller.id.size(); ++i) {
+    smaller.id[i] = static_cast<std::uint64_t>(i + 1u);
+    smaller.price_target[i] = 1.0;
+    smaller.base_vega_proxy[i] = 0.5;
+    smaller.status[i] = PriceStatus::Ok;
+  }
+  ASSERT_TRUE(frame.seal().has_value());
+  EXPECT_EQ(frame.storage_size(), n);
+  EXPECT_EQ(frame.index_storage_size(), n);
+}
+
+TEST(Backtest, ReusableTargetMarkFrameRejectsDuplicateIdsWhenSealed) {
+  ReusableTargetMarkFrame frame;
+  frame.prepare(2u);
+  TargetMarkView rows = frame.write_view();
+  rows.id[0] = 11u;
+  rows.id[1] = 11u;
+  rows.price_target[0] = 1.0;
+  rows.price_target[1] = 2.0;
+  rows.base_vega_proxy[0] = 0.5;
+  rows.base_vega_proxy[1] = 0.5;
+  rows.status[0] = PriceStatus::Ok;
+  rows.status[1] = PriceStatus::Ok;
+
+  const Status sealed = frame.seal();
+  ASSERT_FALSE(sealed.has_value());
+  EXPECT_EQ(sealed.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(sealed.error().message().find("duplicate target-mark lot id=11"), std::string::npos);
+  EXPECT_FALSE(frame.find_ok(11u).has_value());
+}
+
+TEST(Backtest, ReusableTargetMarkFrameRejectsStaleMissingBadAndMismatchedRows) {
+  ReusableTargetMarkFrame frame;
+  frame.prepare(1u);
+  TargetMarkView row = frame.write_view();
+  row.id[0] = 7u;
+  row.price_target[0] = 1.25;
+  row.base_vega_proxy[0] = 0.75;
+  row.status[0] = PriceStatus::Ok;
+  ASSERT_TRUE(frame.seal().has_value());
+  EXPECT_FALSE(frame.find_ok(8u).has_value()); // id mismatch
+
+  row.status[0] = PriceStatus::NumericError;
+  EXPECT_FALSE(frame.find_ok(7u).has_value()); // bad P&L lane
+  row.status[0] = PriceStatus::Ok;
+  row.price_target[0] = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_FALSE(frame.find_ok(7u).has_value()); // malformed Ok lane
+  row.price_target[0] = 1.25;
+  row.base_vega_proxy[0] = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_FALSE(frame.find_ok(7u).has_value()); // malformed telemetry proxy
+
+  frame.prepare(0u);
+  EXPECT_EQ(frame.storage_size(), 1u);
+  EXPECT_FALSE(frame.find_ok(7u).has_value()); // inactive stale storage
+}
+
+TEST(Backtest, EngineForwardsRunPriceOptionsToStrategy) {
+  const fs::path dir = fresh_dir("strategy-price-options");
+  const CorpusManifest manifest = make_evolving_corpus(dir, "SPX", 2);
+  auto clock = Clock::from_manifest(manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  PriceOptionsSpyStrategy strategy;
+  RunConfig config;
+  config.price.n_threads = 3u;
+  config.price.analytic_greeks = true;
+  config.price.query_execution = QueryExecution::ColdReference;
+  config.prefetch_snapshots = false;
+  const auto result = run_backtest(*clock, strategy, config);
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  EXPECT_EQ(strategy.legacy_calls, 0u);
+  EXPECT_EQ(strategy.priced_calls, 2u);
+  EXPECT_EQ(strategy.last_options.n_threads, config.price.n_threads);
+  EXPECT_EQ(strategy.last_options.analytic_greeks, config.price.analytic_greeks);
+  EXPECT_EQ(strategy.last_options.query_execution, config.price.query_execution);
+}
+
+TEST(Backtest, DeclarativeEntryReusesStrategyFullGreekSeedWithoutDuplicateSolve) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+
+  const fs::path dir = fresh_dir("strategy-entry-seed-reuse");
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  const std::string path = write_one(dir, "2026-08-01", "SPX", surface);
+  auto clock = Clock::from_manifest(make_manifest({{"2026-08-01", path}}, "SPX"));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  StrategySpec spec;
+  LegSpec leg;
+  leg.uid = kUid;
+  leg.tenor.target_T = 0.123456789012345;
+  leg.structure.kind = StructureSpec::Kind::Single;
+  leg.structure.single_side = Side::Call;
+  leg.strike = {StrikeSelector::Kind::AbsStrike, 101.0};
+  leg.size = {SizeSpec::Kind::FixedContracts, 1.0, +1.0};
+  spec.legs.push_back(leg);
+  DeclarativeStrategy strategy{spec};
+
+  RunConfig config;
+  config.price.n_threads = 1u;
+  config.price.analytic_greeks = true;
+  config.prefetch_snapshots = false;
+  if constexpr (counters_enabled()) {
+    atx::vol::counters::reset();
+  }
+  const auto result = run_backtest(*clock, strategy, config);
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  ASSERT_EQ(result->size(), 1u);
+  EXPECT_EQ(result->n_open_lots.front(), 1.0);
+  if constexpr (counters_enabled()) {
+    const auto measured = atx::vol::counters::snapshot();
+    EXPECT_EQ(measured.get(Counter::FullGreekSeedReuseLanes), 1u);
+    EXPECT_EQ(measured.get(Counter::FullGreekSeedRejectedCandidates), 0u);
+    EXPECT_EQ(measured.get(Counter::SurfaceFullGreekRoutes), 1u);
+    EXPECT_EQ(measured.get(Counter::BoundarySolves), 5u);
+  }
+}
+
 TEST(Backtest, SnapshotCacheCoalescesPrefetchAndLoads) {
   const fs::path dir = fresh_dir("snapshot-cache");
   const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
@@ -278,6 +907,228 @@ TEST(Backtest, ArchivedSnapshotDefaultsColdAndPreparesEverySurfaceForRequestedTi
   for (const PricedSurface &surface : fast->surfaces()) {
     EXPECT_EQ(surface.query_pricing_tier(), QueryPricingTier::RepresentativeFast);
   }
+}
+
+TEST(Backtest, MarketSnapshotPreservesSameBlobProvenanceByDirectoryUid) {
+  const fs::path dir = fresh_dir("snapshot-provenance-pairing");
+  std::error_code ec;
+  fs::create_directories(dir, ec);
+  const std::string path = (dir / "2026-08-01.atxvsa").string();
+  const PricedSurface zzz = make_surface(42u, 100.0, 100.0, kBaseNow);
+  const PricedSurface aaa = make_surface(7u, 25.0, 25.0, kBaseNow);
+  SurfaceProvenance zzz_provenance =
+      make_provenance(SurfacePurpose::Risk, SurfaceState::Healthy, 42u, 420u);
+  SurfaceProvenance aaa_provenance =
+      make_provenance(SurfacePurpose::Risk, SurfaceState::Degraded, 7u, 70u);
+  const std::array<SurfaceArchiveItem, 2> items{
+      SurfaceArchiveItem{"ZZZ", &zzz, zzz_provenance},
+      SurfaceArchiveItem{"AAA", &aaa, aaa_provenance},
+  };
+  const Status written = write_surface_archive_file(path, items);
+  ASSERT_TRUE(written.has_value()) << written.error().to_string();
+
+  auto snapshot = MarketSnapshot::load(path);
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+  ASSERT_EQ(snapshot->surfaces().size(), 2u);
+  ASSERT_EQ(snapshot->provenances().size(), snapshot->surfaces().size());
+  EXPECT_EQ(snapshot->surfaces()[0].uid(), 7u);
+  EXPECT_EQ(snapshot->surfaces()[1].uid(), 42u);
+  EXPECT_EQ(snapshot->provenances()[0].validation.validation_id, 70u);
+  EXPECT_EQ(snapshot->provenances()[1].validation.validation_id, 420u);
+  const SurfaceProvenance *aaa_got = snapshot->provenance(7u);
+  const SurfaceProvenance *zzz_got = snapshot->provenance(42u);
+  ASSERT_NE(aaa_got, nullptr);
+  ASSERT_NE(zzz_got, nullptr);
+  EXPECT_EQ(aaa_got->validation.validation_id, 70u);
+  EXPECT_EQ(aaa_got->served_generation, 7u);
+  EXPECT_EQ(zzz_got->validation.validation_id, 420u);
+  EXPECT_EQ(zzz_got->served_generation, 42u);
+  EXPECT_EQ(snapshot->provenance(999u), nullptr);
+}
+
+TEST(Backtest, LegacyArchivePassesCompatibilityAndFailsStrictRiskPolicy) {
+  const fs::path dir = fresh_dir("legacy-provenance-policy");
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  const std::string path = write_one(dir, "2026-08-01", "SPX", surface);
+  auto clock = Clock::from_manifest(make_manifest({{"2026-08-01", path}}, "SPX"));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  RunConfig compatibility;
+  compatibility.prefetch_snapshots = false;
+  const auto accepted = run_backtest(*clock, PortfolioState{}, compatibility);
+  ASSERT_TRUE(accepted.has_value()) << accepted.error().to_string();
+
+  RunConfig strict = compatibility;
+  strict.surface_provenance_policy = SurfaceProvenancePolicy::RequireAdmittedRisk;
+  const auto rejected = run_backtest(*clock, PortfolioState{}, strict);
+  ASSERT_FALSE(rejected.has_value());
+  EXPECT_EQ(rejected.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(rejected.error().message().find("uid=7"), std::string::npos);
+  EXPECT_NE(rejected.error().message().find("purpose=MarketMark"), std::string::npos);
+  EXPECT_NE(rejected.error().message().find("state=Degraded"), std::string::npos);
+  EXPECT_NE(rejected.error().message().find("legacy=true"), std::string::npos);
+}
+
+TEST(Backtest, ExplicitHealthyRiskPassesStrictPolicyInBothRunOverloads) {
+  const fs::path dir = fresh_dir("healthy-risk-provenance-policy");
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  const SurfaceProvenance provenance =
+      make_provenance(SurfacePurpose::Risk, SurfaceState::Healthy, 3u);
+  const std::string path = write_one(dir, "2026-08-01", "SPX", surface, provenance);
+  auto clock = Clock::from_manifest(make_manifest({{"2026-08-01", path}}, "SPX"));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  RunConfig strict;
+  strict.prefetch_snapshots = false;
+  strict.surface_provenance_policy = SurfaceProvenancePolicy::RequireAdmittedRisk;
+
+  const auto fixed = run_backtest(*clock, PortfolioState{}, strict);
+  ASSERT_TRUE(fixed.has_value()) << fixed.error().to_string();
+  PriceOptionsSpyStrategy strategy;
+  const auto declarative = run_backtest(*clock, strategy, strict);
+  ASSERT_TRUE(declarative.has_value()) << declarative.error().to_string();
+}
+
+TEST(Backtest, StrictPolicyPassesMultipleAlignedAdmittedSurfaces) {
+  const fs::path dir = fresh_dir("multiname-provenance-policy");
+  std::error_code ec;
+  fs::create_directories(dir, ec);
+  const std::string path = (dir / "2026-08-01.atxvsa").string();
+  const PricedSurface zzz = make_surface(42u, 100.0, 100.0, kBaseNow);
+  const PricedSurface aaa = make_surface(7u, 25.0, 25.0, kBaseNow);
+  const SurfaceProvenance healthy =
+      make_provenance(SurfacePurpose::Risk, SurfaceState::Healthy, 42u, 420u);
+  const SurfaceProvenance degraded =
+      make_provenance(SurfacePurpose::Risk, SurfaceState::Degraded, 7u, 70u);
+  const std::array<SurfaceArchiveItem, 2> items{
+      SurfaceArchiveItem{"ZZZ", &zzz, healthy},
+      SurfaceArchiveItem{"AAA", &aaa, degraded},
+  };
+  const Status written = write_surface_archive_file(path, items);
+  ASSERT_TRUE(written.has_value()) << written.error().to_string();
+  auto clock = Clock::from_manifest(make_manifest({{"2026-08-01", path}}, "AAA"));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  RunConfig strict;
+  strict.prefetch_snapshots = false;
+  strict.surface_provenance_policy = SurfaceProvenancePolicy::RequireAdmittedRisk;
+
+  const auto fixed = run_backtest(*clock, PortfolioState{}, strict);
+  ASSERT_TRUE(fixed.has_value()) << fixed.error().to_string();
+  PriceOptionsSpyStrategy strategy;
+  const auto declarative = run_backtest(*clock, strategy, strict);
+  ASSERT_TRUE(declarative.has_value()) << declarative.error().to_string();
+}
+
+TEST(Backtest, StrictPolicyValidatesEveryShiftedSnapshotInBothRunOverloads) {
+  const fs::path dir = fresh_dir("shifted-provenance-policy");
+  const PricedSurface base_surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  const PricedSurface shifted_surface = make_surface(kUid, 101.0, 101.0, kBaseNow + kDayNs);
+  const SurfaceProvenance admitted =
+      make_provenance(SurfacePurpose::Risk, SurfaceState::Healthy, 3u);
+  const SurfaceProvenance inadmissible =
+      make_provenance(SurfacePurpose::MarketMark, SurfaceState::Healthy, 4u);
+  const std::string base_path = write_one(dir, "2026-08-01", "SPX", base_surface, admitted);
+  const std::string shifted_path =
+      write_one(dir, "2026-08-02", "SPX", shifted_surface, inadmissible);
+  auto clock = Clock::from_manifest(
+      make_manifest({{"2026-08-01", base_path}, {"2026-08-02", shifted_path}}, "SPX"));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  RunConfig strict;
+  strict.prefetch_snapshots = false;
+  strict.surface_provenance_policy = SurfaceProvenancePolicy::RequireAdmittedRisk;
+
+  const auto fixed = run_backtest(*clock, PortfolioState{}, strict);
+  ASSERT_FALSE(fixed.has_value());
+  EXPECT_NE(fixed.error().message().find("purpose=MarketMark"), std::string::npos);
+  PriceOptionsSpyStrategy strategy;
+  const auto declarative = run_backtest(*clock, strategy, strict);
+  ASSERT_FALSE(declarative.has_value());
+  EXPECT_NE(declarative.error().message().find("purpose=MarketMark"), std::string::npos);
+}
+
+TEST(Backtest, MarketMarkSurfaceFailsStrictRiskPolicy) {
+  const fs::path dir = fresh_dir("market-mark-provenance-policy");
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  const SurfaceProvenance provenance =
+      make_provenance(SurfacePurpose::MarketMark, SurfaceState::Healthy, 3u);
+  const std::string path = write_one(dir, "2026-08-01", "SPX", surface, provenance);
+  auto clock = Clock::from_manifest(make_manifest({{"2026-08-01", path}}, "SPX"));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  RunConfig strict;
+  strict.prefetch_snapshots = false;
+  strict.surface_provenance_policy = SurfaceProvenancePolicy::RequireAdmittedRisk;
+
+  const auto result = run_backtest(*clock, PortfolioState{}, strict);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_NE(result.error().message().find("purpose=MarketMark"), std::string::npos);
+  EXPECT_NE(result.error().message().find("legacy=false"), std::string::npos);
+}
+
+TEST(Backtest, StaleAndRejectedRiskSurfacesFailStrictPolicy) {
+  for (const SurfaceState state : {SurfaceState::Stale, SurfaceState::Rejected}) {
+    const fs::path dir = fresh_dir(state == SurfaceState::Stale ? "stale-provenance-policy"
+                                                                : "rejected-provenance-policy");
+    const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+    const SurfaceProvenance provenance = make_provenance(SurfacePurpose::Risk, state, 3u);
+    const std::string path = write_one(dir, "2026-08-01", "SPX", surface, provenance);
+    auto clock = Clock::from_manifest(make_manifest({{"2026-08-01", path}}, "SPX"));
+    ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+    RunConfig strict;
+    strict.prefetch_snapshots = false;
+    strict.surface_provenance_policy = SurfaceProvenancePolicy::RequireAdmittedRisk;
+
+    const auto result = run_backtest(*clock, PortfolioState{}, strict);
+    ASSERT_FALSE(result.has_value());
+    const std::string expected_state =
+        state == SurfaceState::Stale ? "state=Stale" : "state=Rejected";
+    EXPECT_NE(result.error().message().find(expected_state), std::string::npos);
+  }
+}
+
+TEST(Backtest, DegradedRiskPassesStrictPolicyButZeroServedGenerationFails) {
+  const fs::path dir = fresh_dir("degraded-provenance-policy");
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  const SurfaceProvenance admitted =
+      make_provenance(SurfacePurpose::Risk, SurfaceState::Degraded, 3u);
+  const std::string admitted_path = write_one(dir, "2026-08-01", "SPX", surface, admitted);
+  auto admitted_clock = Clock::from_manifest(make_manifest({{"2026-08-01", admitted_path}}, "SPX"));
+  ASSERT_TRUE(admitted_clock.has_value()) << admitted_clock.error().to_string();
+  RunConfig strict;
+  strict.prefetch_snapshots = false;
+  strict.surface_provenance_policy = SurfaceProvenancePolicy::RequireAdmittedRisk;
+  const auto accepted = run_backtest(*admitted_clock, PortfolioState{}, strict);
+  ASSERT_TRUE(accepted.has_value()) << accepted.error().to_string();
+
+  SurfaceProvenance zero_generation =
+      make_provenance(SurfacePurpose::Risk, SurfaceState::Healthy, 0u);
+  const std::string zero_path = write_one(dir, "2026-08-02", "SPX", surface, zero_generation);
+  auto zero_clock = Clock::from_manifest(make_manifest({{"2026-08-02", zero_path}}, "SPX"));
+  ASSERT_TRUE(zero_clock.has_value()) << zero_clock.error().to_string();
+  const auto rejected = run_backtest(*zero_clock, PortfolioState{}, strict);
+  ASSERT_FALSE(rejected.has_value());
+  EXPECT_NE(rejected.error().message().find("served_generation=0"), std::string::npos);
+}
+
+TEST(Backtest, StrictPolicyValidatesPreloadedCacheInBothRunOverloads) {
+  const fs::path dir = fresh_dir("preloaded-provenance-policy");
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  const std::string path = write_one(dir, "2026-08-01", "SPX", surface);
+  auto clock = Clock::from_manifest(make_manifest({{"2026-08-01", path}}, "SPX"));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  auto cache = std::make_shared<SnapshotCache>();
+  auto preloaded = cache->load(path);
+  ASSERT_TRUE(preloaded.has_value()) << preloaded.error().to_string();
+  const std::uint64_t load_count = cache->stats().loads;
+  RunConfig strict;
+  strict.prefetch_snapshots = false;
+  strict.snapshot_cache = cache;
+  strict.surface_provenance_policy = SurfaceProvenancePolicy::RequireAdmittedRisk;
+
+  const auto fixed = run_backtest(*clock, PortfolioState{}, strict);
+  ASSERT_FALSE(fixed.has_value());
+  PriceOptionsSpyStrategy strategy;
+  const auto declarative = run_backtest(*clock, strategy, strict);
+  ASSERT_FALSE(declarative.has_value());
+  EXPECT_EQ(cache->stats().loads, load_count);
 }
 
 TEST(Backtest, SnapshotCacheIdentityIncludesNormalizedPathAndQueryTier) {
@@ -514,6 +1365,83 @@ TEST(Backtest, ReuseOnlyRunUsesColdOnMissAndPreparedFastAfterExplicitPreload) {
   }
   EXPECT_EQ(preloaded_config.snapshot_cache->stats().loads, preload_stats.loads);
   expect_result_bit_identical(*fresh, *preloaded);
+}
+
+TEST(Backtest, ReuseOnlyFastConfiguredEconomicsRejectsAllResidencyBeforeIoInBothOverloads) {
+  const fs::path dir = fresh_dir("run-query-tier-reuse-only-route-gate");
+  const CorpusManifest manifest = make_evolving_corpus(dir, "SPX", 3);
+  auto clock = Clock::from_manifest(manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  const std::int64_t expiry = kBaseNow + 120 * kDayNs;
+
+  const auto expect_rejected = [&clock](const std::shared_ptr<SnapshotCache> &cache,
+                                        QueryPricingTier tier, const char *residency) {
+    SCOPED_TRACE(residency);
+    RunConfig config;
+    config.query_pricing_tier = tier;
+    config.query_cache_build_policy = QueryCacheBuildPolicy::ReuseOnly;
+    config.price.query_execution = QueryExecution::Configured;
+    config.snapshot_cache = cache;
+    const std::uint64_t loads_before = cache->stats().loads;
+
+    MarketSnapshot::reset_open_count();
+    const auto fixed = run_backtest(*clock, survivor_book(expiry), config);
+    ASSERT_FALSE(fixed.has_value());
+    EXPECT_EQ(fixed.error().code(), ErrorCode::InvalidArgument);
+    EXPECT_NE(fixed.error().message().find("ReuseOnly"), std::string::npos);
+    EXPECT_EQ(MarketSnapshot::open_count(), 0u);
+    EXPECT_EQ(cache->stats().loads, loads_before);
+
+    MarketSnapshot::reset_open_count();
+    PriceOptionsSpyStrategy strategy;
+    const auto declarative = run_backtest(*clock, strategy, config);
+    ASSERT_FALSE(declarative.has_value());
+    EXPECT_EQ(declarative.error().code(), ErrorCode::InvalidArgument);
+    EXPECT_NE(declarative.error().message().find("ReuseOnly"), std::string::npos);
+    EXPECT_EQ(MarketSnapshot::open_count(), 0u);
+    EXPECT_EQ(cache->stats().loads, loads_before);
+  };
+
+  expect_rejected(std::make_shared<SnapshotCache>(), QueryPricingTier::RepresentativeFast,
+                  "fresh-representative-fast");
+  expect_rejected(std::make_shared<SnapshotCache>(), QueryPricingTier::CarryBank,
+                  "fresh-carry-bank");
+
+  auto full = std::make_shared<SnapshotCache>();
+  for (const SnapshotRef &ref : clock->refs()) {
+    auto loaded = full->load(ref.archive_path, QueryPricingTier::RepresentativeFast,
+                             QueryCacheBuildPolicy::Eager);
+    ASSERT_TRUE(loaded.has_value()) << loaded.error().to_string();
+  }
+  expect_rejected(full, QueryPricingTier::RepresentativeFast, "full-fast-residency");
+
+  auto partial = std::make_shared<SnapshotCache>();
+  auto loaded = partial->load(clock->refs().front().archive_path,
+                              QueryPricingTier::RepresentativeFast, QueryCacheBuildPolicy::Eager);
+  ASSERT_TRUE(loaded.has_value()) << loaded.error().to_string();
+  expect_rejected(partial, QueryPricingTier::RepresentativeFast, "partial-fast-residency");
+}
+
+TEST(Backtest, ReuseOnlyConfiguredEconomicsAllowsColdAndLegacyRequestedTiers) {
+  const fs::path dir = fresh_dir("run-query-tier-reuse-only-cold-compatible");
+  const CorpusManifest manifest = make_evolving_corpus(dir, "SPX", 2);
+  auto clock = Clock::from_manifest(manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  for (const QueryPricingTier tier :
+       {QueryPricingTier::ColdReference, QueryPricingTier::LegacyCompatible}) {
+    SCOPED_TRACE(static_cast<unsigned>(tier));
+    RunConfig config;
+    config.query_pricing_tier = tier;
+    config.query_cache_build_policy = QueryCacheBuildPolicy::ReuseOnly;
+    config.price.query_execution = QueryExecution::Configured;
+    config.snapshot_cache = std::make_shared<SnapshotCache>();
+    const auto fixed = run_backtest(*clock, PortfolioState{}, config);
+    ASSERT_TRUE(fixed.has_value()) << fixed.error().to_string();
+    PriceOptionsSpyStrategy strategy;
+    const auto declarative = run_backtest(*clock, strategy, config);
+    ASSERT_TRUE(declarative.has_value()) << declarative.error().to_string();
+  }
 }
 
 TEST(Backtest, AdaptiveStrategyRejectsFastEconomicsUnlessColdIsExplicit) {
@@ -966,6 +1894,241 @@ TEST(Backtest, ForcedColdEconomicsOnFastSnapshotsMatchColdPreparedRollClose) {
   }
   EXPECT_GT(fast_result->cost[1], 0.0) << "step 1 must exercise the roll-close mark";
   EXPECT_EQ(fast_result->n_open_lots[1], 0.0);
+}
+
+TEST(Backtest, DailyTwoLegRollReusesExactPnlTargetMarksWithoutChangingEconomics) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+
+  const fs::path dir = fresh_dir("daily-roll-target-marks");
+  const CorpusManifest manifest = make_evolving_corpus(dir, "SPX", 4);
+  auto clock = Clock::from_manifest(manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  DeclarativeStrategy strategy{daily_two_leg_roll_spec()};
+  RunConfig config;
+  config.price.n_threads = 1u;
+  config.price.analytic_greeks = true;
+  config.prefetch_snapshots = false;
+  if constexpr (counters_enabled()) {
+    atx::vol::counters::reset();
+  }
+
+  const auto result = run_backtest(*clock, strategy, config);
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  ASSERT_EQ(result->size(), 4u);
+  EXPECT_EQ(result->n_open_lots, (std::vector<double>{2.0, 2.0, 2.0, 2.0}));
+  // Bit pins captured before the target-mark handoff. Close cash and notional
+  // remain numerically identical while their redundant Greek solves disappear.
+  constexpr std::array<double, 4> expected_cash{-3.0734556197676284, -3.548979869780851,
+                                                -4.0009109642776366, -4.4307747789998757};
+  constexpr std::array<double, 4> expected_turnover{2200.5417380996087, 4444.3187954021723,
+                                                    4493.5146516456771, 4543.6617275559584};
+  for (std::size_t i = 0; i < result->size(); ++i) {
+    EXPECT_DOUBLE_EQ(result->cash[i], expected_cash[i]) << i;
+    EXPECT_DOUBLE_EQ(result->turnover_notional[i], expected_turnover[i]) << i;
+  }
+  EXPECT_TRUE(std::isfinite(result->turnover_vega[1]));
+  EXPECT_GT(result->turnover_vega[1], 0.0);
+  if constexpr (counters_enabled()) {
+    const auto measured = atx::vol::counters::snapshot();
+    // Inception resolves two entry bundles (10 solves). Each later date pays
+    // two target marks in P&L plus two new entry bundles: 12, never the old 22.
+    EXPECT_EQ(measured.get(Counter::BoundarySolves), 10u + 3u * 12u);
+    EXPECT_EQ(measured.get(Counter::SurfaceFullGreekRoutes), 4u * 2u);
+  }
+}
+
+TEST(Backtest, PriceBpsRollCloseReusesPnlMarkWithoutASecondSurfaceSolve) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+
+  const fs::path dir = fresh_dir("price-bps-target-marks");
+  auto clock = Clock::from_manifest(make_evolving_corpus(dir, "SPX", 2));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  DeclarativeStrategy strategy{daily_two_leg_roll_spec()};
+  RunConfig config;
+  config.price.n_threads = 1u;
+  config.price.analytic_greeks = true;
+  config.frictions.spread_kind = FrictionModel::SpreadKind::PriceBps;
+  config.frictions.half_spread_bps = 100.0;
+  config.prefetch_snapshots = false;
+  if constexpr (counters_enabled()) {
+    atx::vol::counters::reset();
+  }
+
+  const auto result = run_backtest(*clock, strategy, config);
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  ASSERT_EQ(result->size(), 2u);
+  EXPECT_DOUBLE_EQ(result->cost[1], 44.443187954021731);
+  EXPECT_DOUBLE_EQ(result->cash[1], -69.997585204798639);
+  EXPECT_DOUBLE_EQ(result->turnover_notional[1], 4444.3187954021723);
+  EXPECT_TRUE(std::isfinite(result->turnover_vega[1]));
+  EXPECT_GT(result->turnover_vega[1], 0.0);
+  if constexpr (counters_enabled()) {
+    const auto measured = atx::vol::counters::snapshot();
+    EXPECT_EQ(measured.get(Counter::BoundarySolves), 10u + 12u);
+    EXPECT_EQ(measured.get(Counter::SurfaceFullGreekRoutes), 4u);
+  }
+}
+
+TEST(Backtest, VolTicksRollCloseUsesConfiguredFdOrAnalyticGreekRoute) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+
+  const fs::path dir = fresh_dir("vol-ticks-target-marks");
+  auto clock = Clock::from_manifest(make_evolving_corpus(dir, "SPX", 2));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  auto cache = std::make_shared<SnapshotCache>();
+  for (const SnapshotRef &ref : clock->refs()) {
+    const auto loaded = cache->load(ref.archive_path, QueryPricingTier::RepresentativeFast,
+                                    QueryCacheBuildPolicy::Eager);
+    ASSERT_TRUE(loaded.has_value()) << loaded.error().to_string();
+  }
+  const auto run = [&](bool analytic) {
+    DeclarativeStrategy strategy{daily_two_leg_roll_spec()};
+    RunConfig config;
+    config.price.n_threads = 1u;
+    config.price.analytic_greeks = analytic;
+    config.price.query_execution = QueryExecution::ColdReference;
+    config.query_pricing_tier = QueryPricingTier::RepresentativeFast;
+    config.snapshot_cache = cache;
+    config.frictions.spread_kind = FrictionModel::SpreadKind::VolTicks;
+    config.frictions.vol_tick = 0.01;
+    config.prefetch_snapshots = false;
+    if constexpr (counters_enabled()) {
+      atx::vol::counters::reset();
+    }
+    auto result = run_backtest(*clock, strategy, config);
+    const auto measured = atx::vol::counters::snapshot();
+    return std::pair{std::move(result), measured};
+  };
+
+  auto [fd, fd_counts] = run(false);
+  auto [analytic, analytic_counts] = run(true);
+  ASSERT_TRUE(fd.has_value()) << fd.error().to_string();
+  ASSERT_TRUE(analytic.has_value()) << analytic.error().to_string();
+  EXPECT_TRUE(bits_equal(fd->cost[1], analytic->cost[1]));
+  EXPECT_TRUE(bits_equal(fd->cash[1], analytic->cash[1]));
+  EXPECT_TRUE(bits_equal(fd->turnover_notional[1], analytic->turnover_notional[1]));
+  EXPECT_TRUE(bits_equal(fd->turnover_vega[1], analytic->turnover_vega[1]));
+  if constexpr (counters_enabled()) {
+    // FD: 14 inception + (2 target + 14 close + 14 new-entry) = 44.
+    EXPECT_EQ(fd_counts.get(Counter::BoundarySolves), 44u);
+    // Analytic: 10 inception + (2 target + 10 close + 10 new-entry) = 32.
+    EXPECT_EQ(analytic_counts.get(Counter::BoundarySolves), 32u);
+    EXPECT_EQ(fd_counts.get(Counter::SurfaceFullGreekRoutes), 4u);
+    EXPECT_EQ(analytic_counts.get(Counter::SurfaceFullGreekRoutes), 4u);
+  }
+}
+
+TEST(Backtest, DuplicateOpenLotIdsFailClosedBeforePricingOrPartialClose) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+
+  const fs::path dir = fresh_dir("ambiguous-target-mark-fallback");
+  auto clock = Clock::from_manifest(make_evolving_corpus(dir, "SPX", 2));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  DuplicateIdOpenThenCloseStrategy strategy{kBaseNow + 200 * kDayNs};
+  RunConfig config;
+  config.price.n_threads = 1u;
+  config.prefetch_snapshots = false;
+  if constexpr (counters_enabled()) {
+    atx::vol::counters::reset();
+  }
+
+  const auto result = run_backtest(*clock, strategy, config);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(result.error().message().find("duplicate lot id=777"), std::string::npos);
+  if constexpr (counters_enabled()) {
+    EXPECT_EQ(atx::vol::counters::snapshot().get(Counter::BoundarySolves), 0u);
+  }
+}
+
+TEST(Backtest, StrategyCannotMutateEconomicFieldsOfASurvivingLot) {
+  const fs::path dir = fresh_dir("mutated-surviving-lot");
+  auto clock = Clock::from_manifest(make_evolving_corpus(dir, "SPX", 2));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  MutateExistingLotStrategy strategy{kBaseNow + 200 * kDayNs};
+  RunConfig config;
+  config.price.n_threads = 1u;
+  config.prefetch_snapshots = false;
+
+  const auto result = run_backtest(*clock, strategy, config);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(result.error().message().find("mutated surviving lot id=1"), std::string::npos);
+}
+
+TEST(Backtest, StrategyCannotReuseAClosedLotId) {
+  const fs::path dir = fresh_dir("reused-closed-lot-id");
+  auto clock = Clock::from_manifest(make_evolving_corpus(dir, "SPX", 3));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  ReuseClosedLotIdStrategy strategy{kBaseNow + 200 * kDayNs};
+  RunConfig config;
+  config.price.n_threads = 1u;
+  config.prefetch_snapshots = false;
+
+  const auto result = run_backtest(*clock, strategy, config);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(result.error().message().find("reused or non-monotonic lot id=1"), std::string::npos);
+}
+
+TEST(Backtest, StrategyCannotRollBackNextLotId) {
+  const fs::path dir = fresh_dir("next-lot-id-rollback");
+  auto clock = Clock::from_manifest(make_evolving_corpus(dir, "SPX", 1));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  RollBackNextLotIdStrategy strategy;
+  RunConfig config;
+  config.prefetch_snapshots = false;
+
+  const auto result = run_backtest(*clock, strategy, config);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(result.error().message().find("next_lot_id non-monotonic"), std::string::npos);
+}
+
+TEST(Backtest, ThousandLotMassRollUsesUniqueIndexedIdentityAndPreservesAccounting) {
+  constexpr std::size_t n_lots = 1'000u;
+  const fs::path dir = fresh_dir("thousand-lot-mass-roll");
+  auto clock = Clock::from_manifest(make_evolving_corpus(dir, "SPX", 2));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  MassOpenThenCloseStrategy strategy{kBaseNow + 200 * kDayNs, n_lots};
+  RunConfig config;
+  config.price.n_threads = 4u;
+  config.prefetch_snapshots = false;
+
+  const auto result = run_backtest(*clock, strategy, config);
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  ASSERT_EQ(result->size(), 2u);
+  EXPECT_EQ(result->n_open_lots[0], static_cast<double>(n_lots));
+  EXPECT_EQ(result->n_open_lots[1], 0.0);
+  EXPECT_TRUE(std::isfinite(result->nav[1]));
+}
+
+TEST(Backtest, BadTargetMarkWithoutFallbackSurfaceNeverBooksAZeroClose) {
+  const fs::path dir = fresh_dir("bad-target-mark-no-zero-close");
+  const PricedSurface day0 = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  constexpr std::uint32_t other_uid = 8u;
+  const PricedSurface day1 = make_surface(other_uid, 101.0, 101.0, kBaseNow + kDayNs);
+  const std::string path0 = write_one(dir, "2026-08-01", "SPX", day0);
+  const std::string path1 = write_one(dir, "2026-08-02", "OTHER", day1);
+  auto clock =
+      Clock::from_manifest(make_manifest({{"2026-08-01", path0}, {"2026-08-02", path1}}, "SPX"));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  OpenThenCloseStrategy strategy{kBaseNow + 200 * kDayNs};
+  RunConfig config;
+  config.price.n_threads = 1u;
+  config.frictions.spread_kind = FrictionModel::SpreadKind::PriceBps;
+  config.frictions.half_spread_bps = 100.0;
+  config.prefetch_snapshots = false;
+
+  const auto result = run_backtest(*clock, strategy, config);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::NotFound);
+  EXPECT_NE(result.error().message().find("roll-close lot id=1"), std::string::npos);
+  EXPECT_NE(result.error().message().find("uid=7"), std::string::npos);
 }
 
 TEST(Backtest, MissingExactExpiryObservationFailsClosed) {

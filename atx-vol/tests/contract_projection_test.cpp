@@ -149,6 +149,29 @@ TEST(ContractProjection, StrikeConventionsResolveAgainstSameSurfacePoint) {
   EXPECT_EQ(atm->definition.expiry_ts_ns, timestamp(2026, 8, 9));
 }
 
+TEST(ContractProjection, PriceOptionsRouteCanForceColdOnPreparedFastSurface) {
+  PricedSurface source = make_surface(2u, 120.0, timestamp(2026, 7, 10));
+  auto prepared = std::move(source).with_query_pricing(QueryPricingTier::RepresentativeFast);
+  ASSERT_TRUE(prepared) << (prepared ? std::string{} : prepared.error().to_string());
+  const PricedSurface fast = std::move(*prepared);
+
+  OptionProjectionConfig config;
+  config.output = OptionProjectionOutput::FullGreeks;
+  config.analytic_greeks = true;
+  config.query_execution = QueryExecution::ColdReference;
+  const auto projected = project_option_contract(
+      fast,
+      spec(2u, Side::Put, ProjectedMaturitySpec::days(30), ProjectedStrikeSpec::atm_forward()),
+      config);
+  ASSERT_TRUE(projected) << (projected ? std::string{} : projected.error().to_string());
+  const auto cold =
+      fast.greeks_analytic(projected->definition.contract.K, projected->definition.contract.T,
+                           Side::Put, QueryExecution::ColdReference);
+  ASSERT_TRUE(cold) << (cold ? std::string{} : cold.error().to_string());
+  EXPECT_EQ(projected->model_mark, cold->price);
+  EXPECT_EQ(projected->greeks.vega, cold->vega);
+}
+
 TEST(ContractProjection, PreparedBatchIsInputOrderedAndThreadInvariant) {
   const std::int64_t now = timestamp(2026, 7, 10);
   std::vector<PricedSurface> surfaces;

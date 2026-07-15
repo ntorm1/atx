@@ -19,6 +19,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -186,6 +187,13 @@ struct ResolvedLeg {
   std::string group;
   // Appended after the original aggregate fields for source compatibility.
   double model_price{-1.0}; // nonnegative mark returned with the final sizing Greeks
+  // Exact integer anchor chosen before any strike or risk query. `T` is the
+  // year fraction re-derived from this anchor and the snapshot timestamp, so
+  // the immediate engine portfolio has the identical raw contract key.
+  std::int64_t expiry_ts_ns{0};
+  // Genuine PricedSurface-produced full-risk result for the exact resolved
+  // contract and route. Empty only for legacy/default-constructed aggregate use.
+  std::optional<FullGreekSeed> full_greek_seed{};
 };
 
 // A sized option leg: a `ResolvedLeg` with a signed contract `qty` and contract
@@ -222,6 +230,10 @@ struct SizedLeg {
 [[nodiscard]] Result<double> resolve_strike(const PricedSurface &s, const TenorSpec &tenor,
                                             Side side, const StrikeSelector &sel,
                                             const ResolutionOptions &options);
+[[nodiscard]] Result<double> resolve_strike(const PricedSurface &s, const TenorSpec &tenor,
+                                            Side side, const StrikeSelector &sel,
+                                            const ResolutionOptions &options,
+                                            const PriceOptions &price_options);
 
 // Expand a `LegSpec` against a snapshot into concrete (uid,K,T,side) legs with
 // per-share vega + sigma, before sizing. Single -> 1, Straddle/Strangle -> 2,
@@ -230,6 +242,10 @@ struct SizedLeg {
                                                           const LegSpec &leg);
 [[nodiscard]] Result<std::vector<ResolvedLeg>>
 expand_leg(const MarketSnapshot &snap, const LegSpec &leg, const ResolutionOptions &options);
+[[nodiscard]] Result<std::vector<ResolvedLeg>> expand_leg(const MarketSnapshot &snap,
+                                                          const LegSpec &leg,
+                                                          const ResolutionOptions &options,
+                                                          const PriceOptions &price_options);
 
 // Resolve a whole `StrategySpec` into a sized book: expand every leg, apply
 // per-leg base sizing (FixedContracts/TargetVega/Weight, multiplier 100), then the
@@ -239,6 +255,9 @@ expand_leg(const MarketSnapshot &snap, const LegSpec &leg, const ResolutionOptio
 // `spec.missing` is ignored).
 [[nodiscard]] Result<std::vector<SizedLeg>> resolve_spec(const MarketSnapshot &snap,
                                                          const StrategySpec &spec);
+[[nodiscard]] Result<std::vector<SizedLeg>> resolve_spec(const MarketSnapshot &snap,
+                                                         const StrategySpec &spec,
+                                                         const PriceOptions &price_options);
 
 // One leg dropped by `resolve_spec_with_policy` under `DropRenormalize`: the
 // leg's symbol and the underlying resolve/sizing error, verbatim (a drop is
@@ -251,10 +270,12 @@ struct ResolveDrop {
 // Policy-aware `resolve_spec`. Under `spec.missing.policy == Error` this is
 // EXACTLY `resolve_spec` (identical errors; `dropped` untouched by policy — see
 // below). Under `DropRenormalize`:
-//  - a leg whose expansion or sizing fails is DROPPED and recorded in `*dropped`
-//    (symbol + error detail), UNLESS the leg's group equals `spec.constraint.group_b`
+//  - a leg whose expansion or sizing fails with NotFound/Unavailable is DROPPED
+//    and recorded in `*dropped` (symbol + error detail), UNLESS the leg's group
+//    equals `spec.constraint.group_b`
 //    (the scaled hedge group) — a missing hedge leg makes the whole entry
-//    unbuildable: returns Err(Unavailable, ...).
+//    unbuildable: returns Err(Unavailable, ...). Configuration/capability errors
+//    such as InvalidArgument always propagate.
 //  - if the count of surviving legs whose group == `spec.constraint.group_a`
 //    (all legs when `constraint.kind == None`) is < `spec.missing.min_names`,
 //    returns Err(Unavailable, ...).
@@ -265,6 +286,10 @@ struct ResolveDrop {
 // ultimately errors out, e.g. via the hedge-leg or min_names guard above).
 [[nodiscard]] Result<std::vector<SizedLeg>>
 resolve_spec_with_policy(const MarketSnapshot &snap, const StrategySpec &spec,
+                         std::vector<ResolveDrop> *dropped = nullptr);
+[[nodiscard]] Result<std::vector<SizedLeg>>
+resolve_spec_with_policy(const MarketSnapshot &snap, const StrategySpec &spec,
+                         const PriceOptions &price_options,
                          std::vector<ResolveDrop> *dropped = nullptr);
 
 // ── Lifecycle helper (shared by strategies) ─────────────────────────────────
@@ -298,6 +323,22 @@ public:
   virtual ~IStrategy() = default;
   virtual Status on_step(const MarketSnapshot &base, std::size_t step_index, PortfolioState &book,
                          std::uint64_t &next_lot_id) = 0;
+  // Pricing-aware entry point used by the backtest engine. The default forwards
+  // to the original virtual so ordinary strategy overrides remain source
+  // compatible; overloaded member-function pointers require explicit
+  // disambiguation. Adding this public virtual changes the vtable ABI, so binary
+  // consumers must rebuild. Implementations that price or resolve new positions
+  // may override it to share the engine's economics and Greek route.
+  virtual Status on_step(const MarketSnapshot &base, std::size_t step_index, PortfolioState &book,
+                         std::uint64_t &next_lot_id, const PriceOptions & /*price_options*/) {
+    return on_step(base, step_index, book, next_lot_id);
+  }
+  // Full-risk seeds produced for lots opened by the most recent on_step call.
+  // The engine consumes this view immediately; the default keeps existing
+  // strategies source-compatible and safely falls back to ordinary pricing.
+  [[nodiscard]] virtual std::span<const FullGreekSeed> entry_risk_seeds() const noexcept {
+    return {};
+  }
   // Strategy diagnostics evaluated on the base snapshot (name -> value), recorded
   // per persisted row. Default: none.
   [[nodiscard]] virtual std::vector<std::pair<std::string, double>>
@@ -324,6 +365,11 @@ public:
 
   Status on_step(const MarketSnapshot &base, std::size_t step_index, PortfolioState &book,
                  std::uint64_t &next_lot_id) override;
+  Status on_step(const MarketSnapshot &base, std::size_t step_index, PortfolioState &book,
+                 std::uint64_t &next_lot_id, const PriceOptions &price_options) override;
+  [[nodiscard]] std::span<const FullGreekSeed> entry_risk_seeds() const noexcept override {
+    return last_entry_seeds_;
+  }
 
   [[nodiscard]] HedgeSpec hedge_spec() const override { return spec_.hedge; }
   [[nodiscard]] QueryExecution required_economic_execution() const noexcept override {
@@ -343,14 +389,24 @@ public:
   }
 
 private:
-  // Resolve the spec against `base` and append a fresh cohort of lots.
-  Status open_cohort(const MarketSnapshot &base, PortfolioState &book, std::uint64_t &next_lot_id);
+  struct PendingCohort {
+    std::vector<Lot> lots;
+    std::vector<FullGreekSeed> seeds;
+    std::int64_t front_expiry{0};
+  };
+
+  // Resolve and fully validate a fresh cohort without changing externally
+  // visible book/id/lifecycle state. `nullopt` is a policy-driven no-trade.
+  [[nodiscard]] Result<std::optional<PendingCohort>>
+  prepare_cohort(const MarketSnapshot &base, std::uint64_t first_lot_id,
+                 const PriceOptions &price_options);
 
   StrategySpec spec_;
   std::uint32_t cohort_counter_{0};
   std::int64_t front_expiry_{0};
   bool have_front_{false};
   std::vector<ResolveDrop> last_dropped_;
+  std::vector<FullGreekSeed> last_entry_seeds_;
 };
 
 // ── DispersionStrategy (adapter over build_dispersion_book) ──────────────────
@@ -378,6 +434,11 @@ public:
 
   Status on_step(const MarketSnapshot &base, std::size_t step_index, PortfolioState &book,
                  std::uint64_t &next_lot_id) override;
+  Status on_step(const MarketSnapshot &base, std::size_t step_index, PortfolioState &book,
+                 std::uint64_t &next_lot_id, const PriceOptions &price_options) override;
+  [[nodiscard]] std::span<const FullGreekSeed> entry_risk_seeds() const noexcept override {
+    return last_entry_seeds_;
+  }
 
   [[nodiscard]] std::vector<std::pair<std::string, double>>
   signals(const MarketSnapshot &base) const override;
@@ -392,6 +453,11 @@ public:
   [[nodiscard]] HedgeSpec hedge_spec() const override { return hedge_; }
 
 private:
+  // `price_options == nullptr` preserves the documented legacy 4-arg/build_book
+  // construction exactly. A non-null route is the engine seed-producing path.
+  Status on_step_impl(const MarketSnapshot &base, std::size_t step_index, PortfolioState &book,
+                      std::uint64_t &next_lot_id, const PriceOptions *price_options);
+
   DispersionUniverse universe_;
   DispersionConfig cfg_;
   LifecycleSpec lifecycle_;
@@ -399,6 +465,7 @@ private:
   std::uint32_t cohort_counter_{0};
   std::int64_t front_expiry_{0};
   bool have_front_{false};
+  std::vector<FullGreekSeed> last_entry_seeds_;
 };
 
 } // namespace atx::vol

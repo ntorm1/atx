@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <utility>
@@ -31,6 +32,42 @@ namespace {
 
 constexpr double kLegacyDeltaTolerance = 1.0e-4;
 constexpr unsigned kMaxAdaptiveRefineIterations = 16u;
+constexpr double kInt64ExclusiveUpper = 0x1p63;
+
+struct CanonicalTenor {
+  std::int64_t expiry_ts_ns{0};
+  double T{0.0};
+};
+
+[[nodiscard]] double timestamp_delta_ns(std::int64_t lhs, std::int64_t rhs) noexcept {
+  if (lhs >= rhs) {
+    return static_cast<double>(static_cast<std::uint64_t>(lhs) - static_cast<std::uint64_t>(rhs));
+  }
+  return -static_cast<double>(static_cast<std::uint64_t>(rhs) - static_cast<std::uint64_t>(lhs));
+}
+
+[[nodiscard]] Result<CanonicalTenor> canonicalize_tenor(std::int64_t valuation_ts_ns,
+                                                        double requested_T) {
+  if (!(std::isfinite(requested_T) && requested_T > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "expand_leg: tenor T must be finite and positive");
+  }
+  const double tenor_ns = requested_T * kNsPerYear;
+  if (!std::isfinite(tenor_ns)) {
+    return Err(ErrorCode::InvalidArgument, "expand_leg: tenor expiry is out of range");
+  }
+  const double rounded_ns = std::round(tenor_ns);
+  // The upper bound is exclusive because double(INT64_MAX) rounds to 2^63;
+  // checking against INT64_MAX after conversion would itself risk UB.
+  if (!(rounded_ns >= 1.0 && rounded_ns < kInt64ExclusiveUpper)) {
+    return Err(ErrorCode::InvalidArgument, "expand_leg: tenor expiry is out of range");
+  }
+  const std::int64_t delta_ns = static_cast<std::int64_t>(rounded_ns);
+  if (valuation_ts_ns > std::numeric_limits<std::int64_t>::max() - delta_ns) {
+    return Err(ErrorCode::InvalidArgument, "expand_leg: tenor expiry overflows timestamp");
+  }
+  const std::int64_t expiry_ts_ns = valuation_ts_ns + delta_ns;
+  return Ok(CanonicalTenor{expiry_ts_ns, static_cast<double>(delta_ns) / kNsPerYear});
+}
 
 [[nodiscard]] Result<double> resolve_strike_by_delta_routed(const PricedSurface &s, double T,
                                                             Side side, double target_abs_delta,
@@ -330,20 +367,31 @@ Result<double> resolve_strike(const PricedSurface &s, const TenorSpec &tenor, Si
 
 Result<double> resolve_strike(const PricedSurface &s, const TenorSpec &tenor, Side side,
                               const StrikeSelector &sel, const ResolutionOptions &options) {
-  if (!options.fast_screen_cold_confirm || sel.kind != StrikeSelector::Kind::Delta) {
-    return resolve_strike(s, tenor, side, sel);
-  }
+  return resolve_strike(s, tenor, side, sel, options, PriceOptions{});
+}
+
+Result<double> resolve_strike(const PricedSurface &s, const TenorSpec &tenor, Side side,
+                              const StrikeSelector &sel, const ResolutionOptions &options,
+                              const PriceOptions &price_options) {
   const Status tenor_status = validate_model_tenor(tenor);
   if (!tenor_status) {
     return Err(tenor_status.error());
   }
-  return resolve_strike_by_delta(s, tenor.target_T, side, sel.value, options);
+  if (sel.kind != StrikeSelector::Kind::Delta) {
+    return resolve_strike(s, tenor, side, sel);
+  }
+  if (options.fast_screen_cold_confirm) {
+    return resolve_strike_by_delta(s, tenor.target_T, side, sel.value, options);
+  }
+  return resolve_strike_by_delta_routed(s, tenor.target_T, side, sel.value,
+                                        price_options.query_execution, kLegacyDeltaTolerance);
 }
 
 // ── LegSpec -> ResolvedLeg(s) ───────────────────────────────────────────────
 
 Result<std::vector<ResolvedLeg>> expand_leg(const MarketSnapshot &snap, const LegSpec &leg,
-                                            const ResolutionOptions &options) {
+                                            const ResolutionOptions &options,
+                                            const PriceOptions &price_options) {
   const Status tenor_status = validate_model_tenor(leg.tenor);
   if (!tenor_status) {
     return Err(tenor_status.error());
@@ -360,34 +408,45 @@ Result<std::vector<ResolvedLeg>> expand_leg(const MarketSnapshot &snap, const Le
   if (surf == nullptr) {
     return Err(ErrorCode::NotFound, "expand_leg: no surface for leg's uid");
   }
-  const double T = leg.tenor.target_T;
-  if (!(std::isfinite(T) && T > 0.0)) {
-    return Err(ErrorCode::InvalidArgument, "expand_leg: tenor T must be finite and positive");
+  const Result<CanonicalTenor> canonical = canonicalize_tenor(snap.ts_ns(), leg.tenor.target_T);
+  if (!canonical) {
+    return Err(canonical.error());
   }
-  const QueryExecution sizing_execution =
-      options.fast_screen_cold_confirm ? QueryExecution::ColdReference : QueryExecution::Configured;
+  const double T = canonical->T;
+  TenorSpec canonical_tenor = leg.tenor;
+  canonical_tenor.target_T = T;
+  const QueryExecution sizing_execution = options.fast_screen_cold_confirm
+                                              ? QueryExecution::ColdReference
+                                              : price_options.query_execution;
+  const auto sizing_seed = [&](double K, Side side) -> Result<FullGreekSeed> {
+    return surf->full_greek_seed(K, T, side, price_options.analytic_greeks, sizing_execution);
+  };
 
   // Resolve one (side, selector) into a ResolvedLeg with per-share vega + sigma.
   const auto make_one = [&](Side side, const StrikeSelector &sel) -> Result<ResolvedLeg> {
-    const Result<double> K = resolve_strike(*surf, leg.tenor, side, sel, options);
+    const Result<double> K =
+        resolve_strike(*surf, canonical_tenor, side, sel, options, price_options);
     if (!K) {
       return Err(K.error());
     }
-    const Result<AmericanGreeks> gr = surf->greeks(*K, T, side, sizing_execution);
-    if (!gr) {
-      return Err(gr.error());
+    Result<FullGreekSeed> seed = sizing_seed(*K, side);
+    if (!seed) {
+      return Err(seed.error());
     }
+    const AmericanGreeks &gr = seed->greeks();
     ResolvedLeg rl;
     rl.uid = uid;
     rl.K = *K;
     rl.T = T;
-    rl.sigma = surf->iv(*K, T);
-    rl.model_price = gr->price;
-    rl.vega = gr->vega; // signed greek vega (> 0 for both call and put)
-    rl.theta = gr->theta;
-    rl.gamma = gr->gamma;
+    rl.sigma = seed->iv();
+    rl.model_price = gr.price;
+    rl.vega = gr.vega; // signed greek vega (> 0 for both call and put)
+    rl.theta = gr.theta;
+    rl.gamma = gr.gamma;
     rl.side = side;
     rl.group = leg.group;
+    rl.expiry_ts_ns = canonical->expiry_ts_ns;
+    rl.full_greek_seed.emplace(std::move(*seed));
     return Ok(rl);
   };
 
@@ -403,28 +462,31 @@ Result<std::vector<ResolvedLeg>> expand_leg(const MarketSnapshot &snap, const Le
   }
   case StructureSpec::Kind::Straddle: {
     // Call + Put at the SAME strike (the leg's selector; default AtmForward).
-    const Result<double> K = resolve_strike(*surf, leg.tenor, Side::Call, leg.strike, options);
+    const Result<double> K =
+        resolve_strike(*surf, canonical_tenor, Side::Call, leg.strike, options, price_options);
     if (!K) {
       return Err(K.error());
     }
-    const double sigma = surf->iv(*K, T);
     for (const Side side : {Side::Call, Side::Put}) {
-      const Result<AmericanGreeks> gr = surf->greeks(*K, T, side, sizing_execution);
-      if (!gr) {
-        return Err(gr.error());
+      Result<FullGreekSeed> seed = sizing_seed(*K, side);
+      if (!seed) {
+        return Err(seed.error());
       }
+      const AmericanGreeks &gr = seed->greeks();
       ResolvedLeg rl;
       rl.uid = uid;
       rl.K = *K;
       rl.T = T;
-      rl.sigma = sigma;
-      rl.model_price = gr->price;
-      rl.vega = gr->vega;
-      rl.theta = gr->theta;
-      rl.gamma = gr->gamma;
+      rl.sigma = seed->iv();
+      rl.model_price = gr.price;
+      rl.vega = gr.vega;
+      rl.theta = gr.theta;
+      rl.gamma = gr.gamma;
       rl.side = side;
       rl.group = leg.group;
-      out.push_back(rl);
+      rl.expiry_ts_ns = canonical->expiry_ts_ns;
+      rl.full_greek_seed.emplace(std::move(*seed));
+      out.push_back(std::move(rl));
     }
     break;
   }
@@ -445,6 +507,11 @@ Result<std::vector<ResolvedLeg>> expand_leg(const MarketSnapshot &snap, const Le
     return Err(ErrorCode::InvalidArgument, "expand_leg: RiskReversal not in B1");
   }
   return Ok(std::move(out));
+}
+
+Result<std::vector<ResolvedLeg>> expand_leg(const MarketSnapshot &snap, const LegSpec &leg,
+                                            const ResolutionOptions &options) {
+  return expand_leg(snap, leg, options, PriceOptions{});
 }
 
 Result<std::vector<ResolvedLeg>> expand_leg(const MarketSnapshot &snap, const LegSpec &leg) {
@@ -474,10 +541,11 @@ namespace {
 // message — are bit-identical to the pre-refactor inline form).
 [[nodiscard]] Result<std::vector<SizedLeg>> expand_and_size_leg(const MarketSnapshot &snap,
                                                                 const LegSpec &ls,
-                                                                const ResolutionOptions &options) {
+                                                                const ResolutionOptions &options,
+                                                                const PriceOptions &price_options) {
   constexpr double kMult = 100.0;
 
-  Result<std::vector<ResolvedLeg>> exp = expand_leg(snap, ls, options);
+  Result<std::vector<ResolvedLeg>> exp = expand_leg(snap, ls, options, price_options);
   if (!exp) {
     return Err(exp.error());
   }
@@ -545,7 +613,8 @@ namespace {
 [[nodiscard]] Result<std::vector<SizedLeg>> resolve_spec_impl(const MarketSnapshot &snap,
                                                               const StrategySpec &spec,
                                                               const MissingNameSpec &missing,
-                                                              std::vector<ResolveDrop> *dropped) {
+                                                              std::vector<ResolveDrop> *dropped,
+                                                              const PriceOptions &price_options) {
   if (dropped != nullptr) {
     dropped->clear();
   }
@@ -582,10 +651,14 @@ namespace {
   std::vector<SizedLeg> sized;
   std::size_t group_a_survivors = 0;
   for (const LegSpec &ls : spec.legs) {
-    Result<std::vector<SizedLeg>> leg_sized = expand_and_size_leg(snap, ls, spec.resolution);
+    Result<std::vector<SizedLeg>> leg_sized =
+        expand_and_size_leg(snap, ls, spec.resolution, price_options);
     if (!leg_sized) {
-      if (!drop_policy) {
-        return Err(leg_sized.error()); // Error policy: hard fail, unchanged
+      const ErrorCode code = leg_sized.error().code();
+      const bool droppable_market_failure =
+          code == ErrorCode::NotFound || code == ErrorCode::Unavailable;
+      if (!drop_policy || !droppable_market_failure) {
+        return Err(leg_sized.error()); // hard/configuration failure: never a name drop
       }
       if (has_constraint && ls.group == gb) {
         // The scaled hedge group is never droppable: without it the entry can't
@@ -639,13 +712,26 @@ namespace {
 } // namespace
 
 Result<std::vector<SizedLeg>> resolve_spec(const MarketSnapshot &snap, const StrategySpec &spec) {
-  return resolve_spec_impl(snap, spec, MissingNameSpec{MissingNamePolicy::Error, 2}, nullptr);
+  return resolve_spec(snap, spec, PriceOptions{});
+}
+
+Result<std::vector<SizedLeg>> resolve_spec(const MarketSnapshot &snap, const StrategySpec &spec,
+                                           const PriceOptions &price_options) {
+  return resolve_spec_impl(snap, spec, MissingNameSpec{MissingNamePolicy::Error, 2}, nullptr,
+                           price_options);
 }
 
 Result<std::vector<SizedLeg>> resolve_spec_with_policy(const MarketSnapshot &snap,
                                                        const StrategySpec &spec,
                                                        std::vector<ResolveDrop> *dropped) {
-  return resolve_spec_impl(snap, spec, spec.missing, dropped);
+  return resolve_spec_with_policy(snap, spec, PriceOptions{}, dropped);
+}
+
+Result<std::vector<SizedLeg>> resolve_spec_with_policy(const MarketSnapshot &snap,
+                                                       const StrategySpec &spec,
+                                                       const PriceOptions &price_options,
+                                                       std::vector<ResolveDrop> *dropped) {
+  return resolve_spec_impl(snap, spec, spec.missing, dropped, price_options);
 }
 
 // ── Lifecycle decision ──────────────────────────────────────────────────────
@@ -669,8 +755,7 @@ LifecycleDecision lifecycle_decide(const LifecycleSpec &lifecycle, std::size_t s
   // RollAtHorizon: a single cohort, rolled at the horizon.
   bool need = book_empty;
   if (!need && have_front) {
-    const double residual_T =
-        (static_cast<double>(front_expiry) - static_cast<double>(base_ts)) / kNsPerYear;
+    const double residual_T = timestamp_delta_ns(front_expiry, base_ts) / kNsPerYear;
     if (residual_T < lifecycle.roll_at_T) {
       need = true;
     }
@@ -680,9 +765,11 @@ LifecycleDecision lifecycle_decide(const LifecycleSpec &lifecycle, std::size_t s
 
 // ── DeclarativeStrategy ─────────────────────────────────────────────────────
 
-Status DeclarativeStrategy::open_cohort(const MarketSnapshot &base, PortfolioState &book,
-                                        std::uint64_t &next_lot_id) {
-  Result<std::vector<SizedLeg>> sized = resolve_spec_with_policy(base, spec_, &last_dropped_);
+Result<std::optional<DeclarativeStrategy::PendingCohort>>
+DeclarativeStrategy::prepare_cohort(const MarketSnapshot &base, std::uint64_t first_lot_id,
+                                    const PriceOptions &price_options) {
+  Result<std::vector<SizedLeg>> sized =
+      resolve_spec_with_policy(base, spec_, price_options, &last_dropped_);
   if (!sized) {
     // NO-TRADE CONTRACT (mirrors DispersionStrategy, dispersion_strategy.cpp):
     // under DropRenormalize, Unavailable means the entry can't be built today
@@ -690,68 +777,120 @@ Status DeclarativeStrategy::open_cohort(const MarketSnapshot &base, PortfolioSta
     // step. Leave the book untouched and continue; any other error is fatal.
     if (spec_.missing.policy == MissingNamePolicy::DropRenormalize &&
         sized.error().code() == ErrorCode::Unavailable) {
-      return Ok();
+      return Ok(std::optional<PendingCohort>{});
     }
     return Err(sized.error());
   }
-  const std::uint32_t cohort = cohort_counter_++;
-  std::int64_t front_expiry = 0;
-  bool have_front = false;
+  if (sized->empty()) {
+    return Ok(std::optional<PendingCohort>{});
+  }
   for (const SizedLeg &sl : *sized) {
     if (!(std::isfinite(sl.leg.model_price) && sl.leg.model_price >= 0.0)) {
       return Err(ErrorCode::Unavailable, "DeclarativeStrategy: sized leg has no model mark");
     }
-    const std::int64_t expiry = base.ts_ns() + std::llround(sl.leg.T * kNsPerYear);
+    if (sl.leg.expiry_ts_ns <= base.ts_ns()) {
+      return Err(ErrorCode::Unavailable, "DeclarativeStrategy: sized leg has no future expiry");
+    }
+    if (!sl.leg.full_greek_seed.has_value()) {
+      return Err(ErrorCode::Unavailable, "DeclarativeStrategy: sized leg has no full-risk seed");
+    }
+  }
+
+  PendingCohort pending;
+  pending.lots.reserve(sized->size());
+  pending.seeds.reserve(sized->size());
+  std::uint64_t lot_id = first_lot_id;
+  bool have_front = false;
+  for (SizedLeg &sl : *sized) {
+    const std::int64_t expiry = sl.leg.expiry_ts_ns;
     Lot lot;
-    lot.id = next_lot_id++;
+    lot.id = lot_id++;
     lot.contract = OptionContract{sl.leg.uid, sl.leg.K, sl.leg.T, sl.leg.side};
     lot.qty = sl.qty;
     lot.multiplier = sl.multiplier;
     lot.expiry_ts_ns = expiry;
-    lot.cohort = cohort;
+    lot.cohort = cohort_counter_;
     // The final sizing-Greeks query already produced this exact mark. Reuse it
     // instead of paying for a second American solve per entry leg.
     lot.entry_price = sl.leg.model_price; // fill at model mid
-    book.lots.push_back(lot);
-    if (!have_front || expiry < front_expiry) {
-      front_expiry = expiry;
+    pending.lots.push_back(lot);
+    pending.seeds.push_back(std::move(*sl.leg.full_greek_seed));
+    if (!have_front || expiry < pending.front_expiry) {
+      pending.front_expiry = expiry;
       have_front = true;
     }
   }
-  if (have_front) {
-    front_expiry_ = front_expiry; // earliest-expiring leg drives the roll
-    have_front_ = true;
-  }
-  return Ok();
+  return Ok(std::optional<PendingCohort>{std::move(pending)});
 }
 
 Status DeclarativeStrategy::on_step(const MarketSnapshot &base, std::size_t step_index,
                                     PortfolioState &book, std::uint64_t &next_lot_id) {
-  if (spec_.lifecycle.holding == LifecycleSpec::Holding::CloseAtHorizon) {
-    // Close pass FIRST, before any entry this step: erase every lot whose
-    // residual maturity has fallen below roll_at_T. The engine's before/after
+  return on_step(base, step_index, book, next_lot_id, PriceOptions{});
+}
+
+Status DeclarativeStrategy::on_step(const MarketSnapshot &base, std::size_t step_index,
+                                    PortfolioState &book, std::uint64_t &next_lot_id,
+                                    const PriceOptions &price_options) {
+  last_entry_seeds_.clear();
+  const bool close_at_horizon = spec_.lifecycle.holding == LifecycleSpec::Holding::CloseAtHorizon;
+  const std::int64_t base_ts = base.ts_ns();
+  const double roll_at_T = spec_.lifecycle.roll_at_T;
+  const auto closes_at_horizon = [base_ts, roll_at_T](const Lot &lot) noexcept {
+    return timestamp_delta_ns(lot.expiry_ts_ns, base_ts) < roll_at_T * kNsPerYear;
+  };
+  bool effective_book_empty = book.lots.empty();
+  if (close_at_horizon) {
+    // Identify every horizon close without mutating the live book. If this step
+    // also enters, the closes commit only after the new cohort is fully prepared.
+    // The engine's before/after
     // `book.lots` diff (src/backtest.cpp `execute`) books these as roll-closes
     // at today's marks — never settlement (the engine's own expiry settle runs
     // earlier in its loop, strictly before on_step, so a lot closed here never
     // reaches that path).
-    const std::int64_t base_ts = base.ts_ns();
-    const double roll_at_T = spec_.lifecycle.roll_at_T;
-    std::erase_if(book.lots, [base_ts, roll_at_T](const Lot &lot) {
-      const double residual_ns = static_cast<double>(lot.expiry_ts_ns - base_ts);
-      return residual_ns < roll_at_T * kNsPerYear;
-    });
+    effective_book_empty =
+        std::none_of(book.lots.begin(), book.lots.end(),
+                     [&closes_at_horizon](const Lot &lot) { return !closes_at_horizon(lot); });
   }
 
-  const LifecycleDecision d = lifecycle_decide(spec_.lifecycle, step_index, book.lots.empty(),
+  const LifecycleDecision d = lifecycle_decide(spec_.lifecycle, step_index, effective_book_empty,
                                                base.ts_ns(), front_expiry_, have_front_);
   if (!d.open) {
+    if (close_at_horizon) {
+      std::erase_if(book.lots, closes_at_horizon);
+    }
     return Ok();
+  }
+  Result<std::optional<PendingCohort>> prepared = prepare_cohort(base, next_lot_id, price_options);
+  if (!prepared) {
+    return Err(prepared.error());
+  }
+  if (!prepared->has_value()) {
+    return Ok();
+  }
+  PendingCohort &pending = **prepared;
+
+  std::size_t retained = d.clear ? 0u : book.lots.size();
+  if (close_at_horizon && !d.clear) {
+    retained = static_cast<std::size_t>(
+        std::count_if(book.lots.begin(), book.lots.end(),
+                      [&closes_at_horizon](const Lot &lot) { return !closes_at_horizon(lot); }));
+  }
+  book.lots.reserve(retained + pending.lots.size());
+  if (close_at_horizon) {
+    std::erase_if(book.lots, closes_at_horizon);
   }
   if (d.clear) {
     book.lots.clear(); // RollAtHorizon: close the front cohort before reopening
-    have_front_ = false;
   }
-  return open_cohort(base, book, next_lot_id);
+  for (Lot &lot : pending.lots) {
+    book.lots.push_back(std::move(lot));
+  }
+  next_lot_id += static_cast<std::uint64_t>(pending.lots.size());
+  ++cohort_counter_;
+  front_expiry_ = pending.front_expiry; // earliest-expiring leg drives the roll
+  have_front_ = true;
+  last_entry_seeds_ = std::move(pending.seeds);
+  return Ok();
 }
 
 } // namespace atx::vol

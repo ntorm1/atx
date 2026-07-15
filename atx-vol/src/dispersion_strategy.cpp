@@ -30,8 +30,51 @@ using atx::core::Err;
 using atx::core::ErrorCode;
 using atx::core::Ok;
 
+namespace {
+
+struct CanonicalTenor {
+  std::int64_t expiry_ts_ns{0};
+  double T{0.0};
+};
+
+[[nodiscard]] Result<CanonicalTenor> canonical_tenor(std::int64_t valuation_ts_ns,
+                                                     double requested_T) {
+  if (!std::isfinite(requested_T) || requested_T <= 0.0) {
+    return Err(ErrorCode::InvalidArgument,
+               "DispersionStrategy: target_T must be finite and positive");
+  }
+  const long double offset =
+      static_cast<long double>(requested_T) * static_cast<long double>(kNsPerYear);
+  constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
+  if (!(offset >= 0.5L && offset < static_cast<long double>(kMax) - 0.5L)) {
+    return Err(ErrorCode::InvalidArgument,
+               "DispersionStrategy: target_T cannot be represented as an expiry");
+  }
+  const std::int64_t tenor_ns = static_cast<std::int64_t>(std::llround(offset));
+  if (tenor_ns <= 0 || valuation_ts_ns > kMax - tenor_ns) {
+    return Err(ErrorCode::InvalidArgument,
+               "DispersionStrategy: target expiry overflows timestamp range");
+  }
+  return Ok(CanonicalTenor{valuation_ts_ns + tenor_ns, static_cast<double>(tenor_ns) / kNsPerYear});
+}
+
+} // namespace
+
 Status DispersionStrategy::on_step(const MarketSnapshot &base, std::size_t step_index,
                                    PortfolioState &book, std::uint64_t &next_lot_id) {
+  return on_step_impl(base, step_index, book, next_lot_id, nullptr);
+}
+
+Status DispersionStrategy::on_step(const MarketSnapshot &base, std::size_t step_index,
+                                   PortfolioState &book, std::uint64_t &next_lot_id,
+                                   const PriceOptions &price_options) {
+  return on_step_impl(base, step_index, book, next_lot_id, &price_options);
+}
+
+Status DispersionStrategy::on_step_impl(const MarketSnapshot &base, std::size_t step_index,
+                                        PortfolioState &book, std::uint64_t &next_lot_id,
+                                        const PriceOptions *price_options) {
+  last_entry_seeds_.clear();
   const LifecycleDecision d = lifecycle_decide(lifecycle_, step_index, book.lots.empty(),
                                                base.ts_ns(), front_expiry_, have_front_);
   if (!d.open) {
@@ -57,9 +100,21 @@ Status DispersionStrategy::on_step(const MarketSnapshot &base, std::size_t step_
     return Err(ru.error());
   }
 
+  DispersionConfig effective_cfg = cfg_;
+  std::int64_t expiry = 0;
+  if (!effective_cfg.projected_maturity.has_value()) {
+    ATX_TRY(const CanonicalTenor canonical, canonical_tenor(base.ts_ns(), effective_cfg.target_T));
+    if (price_options != nullptr) {
+      effective_cfg.target_T = canonical.T;
+    }
+    expiry = canonical.expiry_ts_ns;
+  }
+
   Result<DispersionBook> built = [&]() {
     ATX_VOL_PROFILE_SCOPE(StrategyBuildBook);
-    return build_dispersion_book(ru->universe, base.set(), cfg_);
+    return price_options == nullptr
+               ? build_dispersion_book(ru->universe, base.set(), effective_cfg)
+               : build_dispersion_book(ru->universe, base.set(), effective_cfg, *price_options);
   }();
   if (!built) {
     // NO-TRADE CONTRACT: under DropRenormalize an Unavailable book means too few
@@ -75,35 +130,60 @@ Status DispersionStrategy::on_step(const MarketSnapshot &base, std::size_t step_
   // The build succeeded: this is a real trading step. NOW apply the roll (erase the
   // prior cohort) and open the fresh lots. Applying `d.clear` here — after the build,
   // not before — is what keeps a no-trade roll step from force-closing the held book.
-  if (d.clear) {
-    book.lots.clear();
-    have_front_ = false;
+  if (built->entry_marks.size() != built->positions.size()) {
+    return Err(ErrorCode::Internal, "DispersionStrategy: entry mark count mismatch");
   }
-  const std::uint32_t cohort = cohort_counter_++;
+  if (price_options != nullptr && built->entry_risk_seeds.size() != built->positions.size()) {
+    return Err(ErrorCode::Internal, "DispersionStrategy: entry seed count mismatch");
+  }
+  if (price_options == nullptr && !built->entry_risk_seeds.empty()) {
+    return Err(ErrorCode::Internal, "DispersionStrategy: legacy builder produced entry seeds");
+  }
+  if (built->positions.size() >
+      static_cast<std::size_t>(std::numeric_limits<std::uint64_t>::max() - next_lot_id)) {
+    return Err(ErrorCode::OutOfRange, "DispersionStrategy: lot id range overflow");
+  }
   const std::int64_t projected_expiry = built->index_leg.call_definition.expiry_ts_ns;
-  const std::int64_t expiry = projected_expiry != 0
-                                  ? projected_expiry
-                                  : base.ts_ns() + std::llround(cfg_.target_T * kNsPerYear);
+  if (projected_expiry != 0) {
+    expiry = projected_expiry;
+  }
+  if (expiry <= base.ts_ns()) {
+    return Err(ErrorCode::Internal, "DispersionStrategy: nonpositive entry expiry");
+  }
+
+  const std::uint32_t cohort = cohort_counter_;
+  std::vector<Lot> replacement;
+  replacement.reserve(built->positions.size());
+  std::uint64_t staged_next_lot_id = next_lot_id;
   {
     ATX_VOL_PROFILE_SCOPE(StrategyEntryMarks);
-    if (built->entry_marks.size() != built->positions.size()) {
-      return Err(ErrorCode::Internal, "DispersionStrategy: entry mark count mismatch");
-    }
     for (std::size_t i = 0; i < built->positions.size(); ++i) {
       const Position &p = built->positions[i];
       Lot lot;
-      lot.id = next_lot_id++;
+      lot.id = staged_next_lot_id++;
       lot.contract = p.contract;
       lot.qty = p.qty;
       lot.multiplier = p.multiplier;
       lot.expiry_ts_ns = expiry;
       lot.cohort = cohort;
-      lot.entry_price = built->entry_marks[i]; // mark reused from sizing
-      book.lots.push_back(lot);
+      lot.entry_price = built->entry_marks[i];
+      replacement.push_back(lot);
     }
   }
+
+  if (d.clear) {
+    book.lots = std::move(replacement);
+  } else {
+    book.lots.reserve(book.lots.size() + replacement.size());
+    for (Lot &lot : replacement) {
+      book.lots.push_back(std::move(lot));
+    }
+  }
+  next_lot_id = staged_next_lot_id;
+  ++cohort_counter_;
   front_expiry_ = expiry;
   have_front_ = true;
+  last_entry_seeds_ = std::move(built->entry_risk_seeds);
   return Ok();
 }
 

@@ -17,6 +17,24 @@ using atx::core::Err;
 using atx::core::ErrorCode;
 using atx::core::Ok;
 
+namespace {
+
+[[nodiscard]] Result<double> residual_T(std::int64_t expiry_ts_ns, std::int64_t valuation_ts_ns) {
+  if (expiry_ts_ns <= valuation_ts_ns) {
+    return Err(ErrorCode::InvalidArgument, "materialize_listed_dispersion_roll: roll has expired");
+  }
+  const std::uint64_t delta_ns =
+      static_cast<std::uint64_t>(expiry_ts_ns) - static_cast<std::uint64_t>(valuation_ts_ns);
+  const double T = static_cast<double>(delta_ns) / kNsPerYear;
+  if (!std::isfinite(T) || T <= 0.0) {
+    return Err(ErrorCode::InvalidArgument,
+               "materialize_listed_dispersion_roll: invalid residual tenor");
+  }
+  return Ok(T);
+}
+
+} // namespace
+
 Result<std::vector<Lot>> materialize_listed_dispersion_roll(const ListedScheduleRoll &roll,
                                                             std::int64_t valuation_ts_ns,
                                                             std::uint64_t first_lot_id) {
@@ -28,10 +46,7 @@ Result<std::vector<Lot>> materialize_listed_dispersion_roll(const ListedSchedule
                "materialize_listed_dispersion_roll: valuation timestamp mismatch");
   }
 
-  const double T = static_cast<double>(roll.expiry_ts_ns - valuation_ts_ns) / kNsPerYear;
-  if (!std::isfinite(T) || T <= 0.0) {
-    return Err(ErrorCode::InvalidArgument, "materialize_listed_dispersion_roll: roll has expired");
-  }
+  ATX_TRY(const double T, residual_T(roll.expiry_ts_ns, valuation_ts_ns));
 
   std::vector<Lot> lots;
   lots.reserve(roll.legs.size());
@@ -65,7 +80,14 @@ Result<ListedDispersionStrategy> ListedDispersionStrategy::create(ListedDispersi
 
 Status ListedDispersionStrategy::on_step(const MarketSnapshot &base, std::size_t step_index,
                                          PortfolioState &book, std::uint64_t &next_lot_id) {
+  return on_step(base, step_index, book, next_lot_id, PriceOptions{});
+}
+
+Status ListedDispersionStrategy::on_step(const MarketSnapshot &base, std::size_t step_index,
+                                         PortfolioState &book, std::uint64_t &next_lot_id,
+                                         const PriceOptions &price_options) {
   (void)step_index;
+  last_entry_seeds_.clear();
   if (next_roll_ == schedule_.rolls.size()) {
     return Ok();
   }
@@ -80,23 +102,29 @@ Status ListedDispersionStrategy::on_step(const MarketSnapshot &base, std::size_t
 
   // Validate the complete replacement against the loaded archive before
   // mutating the book, id counter, or schedule cursor.
+  std::vector<FullGreekSeed> seeds;
+  seeds.reserve(roll.legs.size());
   for (const ListedScheduleLeg &leg : roll.legs) {
     const PricedSurface *surface = base.find(leg.uid);
     if (surface == nullptr) {
       return Err(ErrorCode::NotFound, "ListedDispersionStrategy: scheduled surface is unavailable");
     }
-    const double T = static_cast<double>(leg.expiry_ts_ns - base.ts_ns()) / kNsPerYear;
-    ATX_TRY(double mark, surface->fair_value(leg.strike, T, leg.side));
-    if (mark != leg.model_mark) {
+    ATX_TRY(const double T, residual_T(leg.expiry_ts_ns, base.ts_ns()));
+    ATX_TRY(FullGreekSeed seed,
+            surface->full_greek_seed(leg.strike, T, leg.side, price_options.analytic_greeks,
+                                     price_options.query_execution));
+    if (seed.greeks().price != leg.model_mark) {
       return Err(ErrorCode::Unavailable,
                  "ListedDispersionStrategy: archive mark differs from schedule");
     }
+    seeds.push_back(std::move(seed));
   }
   ATX_TRY(auto replacement, materialize_listed_dispersion_roll(roll, base.ts_ns(), next_lot_id));
 
   book.lots = std::move(replacement);
   next_lot_id += static_cast<std::uint64_t>(roll.legs.size());
   ++next_roll_;
+  last_entry_seeds_ = std::move(seeds);
   return Ok();
 }
 

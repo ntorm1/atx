@@ -232,6 +232,18 @@ struct SurfaceProvenance {
 // as degraded market marks rather than silently promoted to risk.
 [[nodiscard]] SurfaceProvenance legacy_surface_provenance() noexcept;
 
+// One independently-owned reconstruction paired with the provenance parsed from
+// the same archive blob. The record is move-only because PricedSurface owns its
+// polymorphic curves; moving transfers both the surface and its exact metadata.
+struct ArchivedSurface {
+  PricedSurface surface;
+  SurfaceProvenance provenance;
+};
+static_assert(!std::is_copy_constructible_v<ArchivedSurface>);
+static_assert(!std::is_copy_assignable_v<ArchivedSurface>);
+static_assert(std::is_nothrow_move_constructible_v<ArchivedSurface>);
+static_assert(std::is_nothrow_move_assignable_v<ArchivedSurface>);
+
 // Blob-level pricing scalars (one per surface) — the cold re-pricing context.
 // Mirrors `PricingContext` + the `AlOpts` fields, laid out fixed-width.
 struct ArchivePricingRecord {
@@ -354,6 +366,11 @@ public:
   // Reconstruct every surface, in directory order. ParseError if any blob fails.
   [[nodiscard]] Result<std::vector<PricedSurface>> map_all() const;
 
+  // Reconstruct every surface and its same-blob provenance in directory order.
+  // Each blob checksum and header are parsed once. ParseError if any blob or
+  // tagged provenance record fails validation.
+  [[nodiscard]] Result<std::vector<ArchivedSurface>> map_all_with_provenance() const;
+
   // Reconstruct every surface into caller storage, in directory order. Returns the
   // number written. OutOfRange if `out.size() < count()`; ParseError on a bad blob.
   [[nodiscard]] Result<std::size_t> map_all_into(std::span<std::optional<PricedSurface>> out) const;
@@ -362,8 +379,8 @@ private:
   SurfaceArchive() = default;
 
   [[nodiscard]] const ArchiveIndexSlot *find_slot(std::string_view symbol) const noexcept;
-  [[nodiscard]] Result<PricedSurface> reconstruct(std::uint64_t offset, std::uint64_t size,
-                                                  std::uint32_t expected_crc) const;
+  [[nodiscard]] Result<ArchivedSurface> reconstruct(const ArchiveIndexSlot &slot,
+                                                    const ArchiveDirEntry *directory) const;
   [[nodiscard]] Result<SurfaceProvenance> read_provenance(std::uint64_t offset, std::uint64_t size,
                                                           std::uint32_t expected_crc) const;
 

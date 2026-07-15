@@ -207,6 +207,9 @@ struct DispersionBook {
   std::vector<std::size_t> used_names;
   std::vector<Position> positions;
   std::vector<double> entry_marks;
+  // Optional exact full-risk handoff in position order. The legacy builder
+  // leaves this empty; the PriceOptions overload produces one seed per position.
+  std::vector<FullGreekSeed> entry_risk_seeds;
   std::vector<DroppedName> dropped;
 };
 
@@ -245,6 +248,10 @@ struct DispersionBook {
 [[nodiscard]] Result<DispersionBook> build_dispersion_book(const DispersionUniverse &universe,
                                                            const SurfaceSet &surfaces,
                                                            const DispersionConfig &cfg);
+[[nodiscard]] Result<DispersionBook> build_dispersion_book(const DispersionUniverse &universe,
+                                                           const SurfaceSet &surfaces,
+                                                           const DispersionConfig &cfg,
+                                                           const PriceOptions &price_options);
 
 // Return a copy of `src` with only its `pricing().uid` replaced by `uid` (curves
 // and per-slice context deep-cloned; spot / rate / pricer / AL preset unchanged),

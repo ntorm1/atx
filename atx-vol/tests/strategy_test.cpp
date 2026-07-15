@@ -22,14 +22,16 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "atx/vol/american.hpp"   // al_fast_opts, AmericanMethod, AmericanGreeks
-#include "atx/vol/backtest.hpp"   // MarketSnapshot, Clock, run_backtest
-#include "atx/vol/corpus.hpp"     // CorpusManifest, CorpusEntry, CorpusFitStatus
+#include "atx/vol/american.hpp" // al_fast_opts, AmericanMethod, AmericanGreeks
+#include "atx/vol/backtest.hpp" // MarketSnapshot, Clock, run_backtest
+#include "atx/vol/corpus.hpp"   // CorpusManifest, CorpusEntry, CorpusFitStatus
+#include "atx/vol/counters.hpp"
 #include "atx/vol/dispersion.hpp" // DispersionUniverse, dispersion_signal
 #include "atx/vol/dispersion_backtest.hpp"
 #include "atx/vol/portfolio_pricer.hpp" // Portfolio, SurfaceSet, PortfolioPricer, Position
@@ -161,6 +163,30 @@ snapshot_of(const std::vector<std::pair<std::string, const PricedSurface *>> &it
   const fs::path dir = fresh_dir(tag);
   const std::string path = write_archive(dir, "2026-12-01", items);
   return MarketSnapshot::load(path);
+}
+
+void expect_lot_equal(const Lot &actual, const Lot &expected) {
+  EXPECT_EQ(actual.id, expected.id);
+  EXPECT_EQ(actual.contract.uid, expected.contract.uid);
+  EXPECT_EQ(actual.contract.K, expected.contract.K);
+  EXPECT_EQ(actual.contract.T, expected.contract.T);
+  EXPECT_EQ(actual.contract.side, expected.contract.side);
+  EXPECT_EQ(actual.qty, expected.qty);
+  EXPECT_EQ(actual.multiplier, expected.multiplier);
+  EXPECT_EQ(actual.expiry_ts_ns, expected.expiry_ts_ns);
+  EXPECT_EQ(actual.cohort, expected.cohort);
+  EXPECT_EQ(actual.entry_price, expected.entry_price);
+}
+
+[[nodiscard]] LegSpec fixed_call(std::uint32_t uid, double T = 0.25) {
+  LegSpec leg;
+  leg.uid = uid;
+  leg.tenor.target_T = T;
+  leg.structure.kind = StructureSpec::Kind::Single;
+  leg.structure.single_side = Side::Call;
+  leg.strike = {StrikeSelector::Kind::AbsStrike, 100.0};
+  leg.size = {SizeSpec::Kind::FixedContracts, 1.0, +1.0};
+  return leg;
 }
 
 } // namespace
@@ -316,6 +342,499 @@ TEST(Strategy, AdaptiveResolutionColdSizesEverySelectorAndStoresColdEntryMark) {
                                                QueryExecution::ColdReference);
     ASSERT_TRUE(cold_mark.has_value()) << cold_mark.error().to_string();
     EXPECT_EQ(lot.entry_price, *cold_mark);
+  }
+}
+
+TEST(Strategy, PriceOptionsForceColdForNonadaptiveStrikeSizingAndEntryMark) {
+  const fs::path dir = fresh_dir("price-options-forced-cold");
+  const PricedSurface archived = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  const std::string path = write_archive(dir, "2026-08-01", {{"SPY", &archived}});
+  auto fast_snapshot = MarketSnapshot::load(path, QueryPricingTier::RepresentativeFast);
+  auto cold_snapshot = MarketSnapshot::load(path, QueryPricingTier::ColdReference);
+  ASSERT_TRUE(fast_snapshot.has_value()) << fast_snapshot.error().to_string();
+  ASSERT_TRUE(cold_snapshot.has_value()) << cold_snapshot.error().to_string();
+
+  StrategySpec spec;
+  LegSpec leg;
+  leg.uid = kUid;
+  leg.tenor.target_T = 0.50;
+  leg.structure.kind = StructureSpec::Kind::Single;
+  leg.structure.single_side = Side::Put;
+  leg.strike = {StrikeSelector::Kind::Delta, 0.40};
+  leg.size = {SizeSpec::Kind::TargetTheta, 10.0, -1.0};
+  spec.legs.push_back(leg);
+
+  PriceOptions options;
+  options.query_execution = QueryExecution::ColdReference;
+  const auto actual = resolve_spec(*fast_snapshot, spec, options);
+  const auto reference = resolve_spec(*cold_snapshot, spec);
+  ASSERT_TRUE(actual.has_value()) << actual.error().to_string();
+  ASSERT_TRUE(reference.has_value()) << reference.error().to_string();
+  ASSERT_EQ(actual->size(), reference->size());
+  ASSERT_EQ(actual->size(), 1u);
+  const SizedLeg &a = actual->front();
+  const SizedLeg &r = reference->front();
+  EXPECT_EQ(a.leg.K, r.leg.K);
+  EXPECT_EQ(a.leg.model_price, r.leg.model_price);
+  EXPECT_EQ(a.leg.vega, r.leg.vega);
+  EXPECT_EQ(a.leg.theta, r.leg.theta);
+  EXPECT_EQ(a.leg.gamma, r.leg.gamma);
+  EXPECT_EQ(a.qty, r.qty);
+}
+
+TEST(Strategy, PriceOptionsAnalyticGreeksDriveTargetThetaSizing) {
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  auto snapshot = snapshot_of({{"SPY", &surface}}, "price-options-analytic-theta");
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+
+  StrategySpec spec;
+  LegSpec leg;
+  leg.uid = kUid;
+  leg.tenor.target_T = 0.50;
+  leg.structure.kind = StructureSpec::Kind::Straddle;
+  leg.strike = {StrikeSelector::Kind::AbsStrike, 100.0};
+  leg.size = {SizeSpec::Kind::TargetTheta, 12.5, -1.0};
+  spec.legs.push_back(leg);
+
+  PriceOptions options;
+  options.analytic_greeks = true;
+  options.query_execution = QueryExecution::ColdReference;
+  const auto sized = resolve_spec(*snapshot, spec, options);
+  ASSERT_TRUE(sized.has_value()) << sized.error().to_string();
+  ASSERT_EQ(sized->size(), 2u);
+
+  const PricedSurface *resolved_surface = snapshot->find(kUid);
+  ASSERT_NE(resolved_surface, nullptr);
+  double book_theta = 0.0;
+  double structure_theta = 0.0;
+  for (const SizedLeg &sl : *sized) {
+    ASSERT_TRUE(sl.leg.full_greek_seed.has_value());
+    EXPECT_EQ(sl.leg.expiry_ts_ns,
+              kBaseNow + static_cast<std::int64_t>(std::round(0.50 * kNsPerYear)));
+    const FullGreekSeed &seed = *sl.leg.full_greek_seed;
+    EXPECT_EQ(seed.surface_instance_id(), resolved_surface->instance_id());
+    EXPECT_TRUE(seed.analytic_greeks());
+    EXPECT_EQ(seed.query_execution(), QueryExecution::ColdReference);
+    EXPECT_EQ(seed.K(), sl.leg.K);
+    EXPECT_EQ(seed.T(), sl.leg.T);
+    EXPECT_EQ(seed.side(), sl.leg.side);
+    const auto expected = resolved_surface->greeks_analytic(sl.leg.K, sl.leg.T, sl.leg.side,
+                                                            QueryExecution::ColdReference);
+    ASSERT_TRUE(expected.has_value()) << expected.error().to_string();
+    EXPECT_EQ(sl.leg.model_price, expected->price);
+    EXPECT_EQ(sl.leg.vega, expected->vega);
+    EXPECT_EQ(sl.leg.theta, expected->theta);
+    EXPECT_EQ(sl.leg.gamma, expected->gamma);
+    structure_theta += seed.greeks().theta;
+    book_theta += sl.qty * sl.multiplier * sl.leg.theta;
+  }
+  const double expected_qty = -12.5 * 365.25 / (std::fabs(structure_theta) * 100.0);
+  EXPECT_EQ(sized->front().qty, expected_qty);
+  EXPECT_EQ(sized->back().qty, expected_qty);
+  EXPECT_NEAR(std::fabs(book_theta), 12.5 * 365.25, 1.0e-11 * std::fabs(book_theta));
+}
+
+TEST(Strategy, NonGridTenorCanonicalizesToExactExpiryBeforeSeededSizing) {
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  auto snapshot = snapshot_of({{"SPY", &surface}}, "canonical-non-grid-tenor");
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+
+  constexpr double kRequestedT = 0.123456789012345;
+  StrategySpec spec;
+  LegSpec leg;
+  leg.uid = kUid;
+  leg.tenor.target_T = kRequestedT;
+  leg.structure.kind = StructureSpec::Kind::Single;
+  leg.structure.single_side = Side::Call;
+  leg.strike = {StrikeSelector::Kind::AbsStrike, 101.0};
+  leg.size = {SizeSpec::Kind::FixedContracts, 1.0, +1.0};
+  spec.legs.push_back(leg);
+
+  PriceOptions options;
+  options.analytic_greeks = true;
+  options.query_execution = QueryExecution::ColdReference;
+  const auto sized = resolve_spec(*snapshot, spec, options);
+  ASSERT_TRUE(sized.has_value()) << sized.error().to_string();
+  ASSERT_EQ(sized->size(), 1u);
+  const ResolvedLeg &resolved = sized->front().leg;
+  const auto tenor_ns = static_cast<std::int64_t>(std::round(kRequestedT * kNsPerYear));
+  const std::int64_t expected_expiry = kBaseNow + tenor_ns;
+  const double expected_T = static_cast<double>(tenor_ns) / kNsPerYear;
+  EXPECT_EQ(resolved.expiry_ts_ns, expected_expiry);
+  EXPECT_EQ(resolved.T, expected_T);
+  ASSERT_TRUE(resolved.full_greek_seed.has_value());
+  const FullGreekSeed &seed = *resolved.full_greek_seed;
+  EXPECT_EQ(seed.T(), expected_T);
+  EXPECT_EQ(seed.K(), resolved.K);
+  EXPECT_EQ(seed.side(), resolved.side);
+  EXPECT_EQ(seed.surface_instance_id(), snapshot->find(kUid)->instance_id());
+  EXPECT_TRUE(seed.analytic_greeks());
+  EXPECT_EQ(seed.query_execution(), QueryExecution::ColdReference);
+
+  DeclarativeStrategy strategy{spec};
+  PortfolioState book;
+  std::uint64_t next_lot_id = 1;
+  const Status opened = strategy.on_step(*snapshot, 0, book, next_lot_id, options);
+  ASSERT_TRUE(opened.has_value()) << opened.error().to_string();
+  ASSERT_EQ(book.lots.size(), 1u);
+  EXPECT_EQ(book.lots.front().expiry_ts_ns, expected_expiry);
+  EXPECT_EQ(book.lots.front().contract.T, expected_T);
+  ASSERT_EQ(strategy.entry_risk_seeds().size(), 1u);
+  EXPECT_EQ(strategy.entry_risk_seeds().front().T(), expected_T);
+}
+
+TEST(Strategy, EntryRiskSeedsClearOnEveryStepWithoutANewEntry) {
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  auto snapshot = snapshot_of({{"SPY", &surface}}, "entry-seed-stale-clear");
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+
+  StrategySpec spec;
+  spec.lifecycle.entry = LifecycleSpec::Entry::EveryNDays;
+  spec.lifecycle.entry_every_n = 2;
+  spec.lifecycle.holding = LifecycleSpec::Holding::HoldToExpiry;
+  LegSpec leg;
+  leg.uid = kUid;
+  leg.tenor.target_T = 0.25;
+  leg.structure.kind = StructureSpec::Kind::Single;
+  leg.structure.single_side = Side::Put;
+  leg.strike = {StrikeSelector::Kind::AbsStrike, 95.0};
+  leg.size = {SizeSpec::Kind::FixedContracts, 1.0, +1.0};
+  spec.legs.push_back(leg);
+
+  DeclarativeStrategy strategy{spec};
+  PortfolioState book;
+  std::uint64_t next_lot_id = 1;
+  PriceOptions options;
+  options.analytic_greeks = true;
+  ASSERT_TRUE(strategy.on_step(*snapshot, 0, book, next_lot_id, options).has_value());
+  ASSERT_EQ(strategy.entry_risk_seeds().size(), 1u);
+  ASSERT_TRUE(strategy.on_step(*snapshot, 1, book, next_lot_id, options).has_value());
+  EXPECT_TRUE(strategy.entry_risk_seeds().empty());
+  EXPECT_EQ(book.lots.size(), 1u);
+}
+
+TEST(Strategy, TenorCanonicalizationRejectsExpiryOverflow) {
+  constexpr std::int64_t kNearMaxTs = std::numeric_limits<std::int64_t>::max() - 10;
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kNearMaxTs);
+  auto snapshot = snapshot_of({{"SPY", &surface}}, "canonical-tenor-overflow");
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+
+  LegSpec leg;
+  leg.uid = kUid;
+  leg.tenor.target_T = 1.0 / 365.25;
+  leg.structure.kind = StructureSpec::Kind::Single;
+  leg.strike = {StrikeSelector::Kind::AbsStrike, 100.0};
+  const auto expanded = expand_leg(*snapshot, leg, ResolutionOptions{}, PriceOptions{});
+  ASSERT_FALSE(expanded.has_value());
+  EXPECT_EQ(expanded.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(expanded.error().message().find("expiry"), std::string::npos);
+}
+
+TEST(Strategy, NegativeValuationTimestampCanonicalizesToExactFutureExpiry) {
+  constexpr std::int64_t kNegativeNow = -100 * kDayNs;
+  constexpr double kRequestedT = 0.25;
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kNegativeNow);
+  auto snapshot = snapshot_of({{"SPY", &surface}}, "canonical-tenor-negative-now");
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+
+  const auto expanded =
+      expand_leg(*snapshot, fixed_call(kUid, kRequestedT), ResolutionOptions{}, PriceOptions{});
+  ASSERT_TRUE(expanded.has_value()) << expanded.error().to_string();
+  ASSERT_EQ(expanded->size(), 1u);
+  const std::int64_t tenor_ns = static_cast<std::int64_t>(std::round(kRequestedT * kNsPerYear));
+  EXPECT_EQ(expanded->front().expiry_ts_ns, kNegativeNow + tenor_ns);
+  EXPECT_EQ(expanded->front().T, static_cast<double>(tenor_ns) / kNsPerYear);
+}
+
+TEST(Strategy, CloseAtHorizonHandlesExtremeSignedTimestampDistances) {
+  const PricedSurface min_surface =
+      make_surface(kUid, 100.0, 100.0, std::numeric_limits<std::int64_t>::min());
+  const PricedSurface max_surface =
+      make_surface(kUid, 100.0, 100.0, std::numeric_limits<std::int64_t>::max());
+  auto min_snapshot = snapshot_of({{"SPY", &min_surface}}, "close-horizon-int64-min");
+  auto max_snapshot = snapshot_of({{"SPY", &max_surface}}, "close-horizon-int64-max");
+  ASSERT_TRUE(min_snapshot.has_value()) << min_snapshot.error().to_string();
+  ASSERT_TRUE(max_snapshot.has_value()) << max_snapshot.error().to_string();
+
+  StrategySpec spec;
+  spec.lifecycle.entry = LifecycleSpec::Entry::EveryNDays;
+  spec.lifecycle.entry_every_n = 2;
+  spec.lifecycle.holding = LifecycleSpec::Holding::CloseAtHorizon;
+  spec.lifecycle.roll_at_T = 0.0;
+
+  Lot future;
+  future.id = 1;
+  future.contract = OptionContract{kUid, 100.0, 0.25, Side::Call};
+  future.qty = 1.0;
+  future.expiry_ts_ns = std::numeric_limits<std::int64_t>::max();
+  PortfolioState future_book;
+  future_book.lots.push_back(future);
+  DeclarativeStrategy future_strategy{spec};
+  std::uint64_t future_next_id = 2;
+  ASSERT_TRUE(future_strategy.on_step(*min_snapshot, 1, future_book, future_next_id).has_value());
+  ASSERT_EQ(future_book.lots.size(), 1u);
+  expect_lot_equal(future_book.lots.front(), future);
+
+  Lot expired = future;
+  expired.expiry_ts_ns = std::numeric_limits<std::int64_t>::min();
+  PortfolioState expired_book;
+  expired_book.lots.push_back(expired);
+  DeclarativeStrategy expired_strategy{spec};
+  std::uint64_t expired_next_id = 2;
+  ASSERT_TRUE(
+      expired_strategy.on_step(*max_snapshot, 1, expired_book, expired_next_id).has_value());
+  EXPECT_TRUE(expired_book.lots.empty());
+}
+
+TEST(Strategy, RollAtHorizonFailureLeavesBookIdsAndLifecycleStateUnchanged) {
+  const PricedSurface valid_surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  const PricedSurface unrelated_surface = make_surface(kUid + 1, 100.0, 100.0, kBaseNow);
+  auto valid = snapshot_of({{"SPY", &valid_surface}}, "roll-transaction-valid");
+  auto missing = snapshot_of({{"OTHER", &unrelated_surface}}, "roll-transaction-missing");
+  ASSERT_TRUE(valid.has_value()) << valid.error().to_string();
+  ASSERT_TRUE(missing.has_value()) << missing.error().to_string();
+
+  StrategySpec spec;
+  spec.lifecycle.holding = LifecycleSpec::Holding::RollAtHorizon;
+  spec.lifecycle.roll_at_T = 0.30;
+  spec.legs.push_back(fixed_call(kUid));
+  DeclarativeStrategy strategy{spec};
+  PortfolioState book;
+  std::uint64_t next_lot_id = 1;
+  ASSERT_TRUE(strategy.on_step(*valid, 0, book, next_lot_id).has_value());
+  ASSERT_EQ(book.lots.size(), 1u);
+  ASSERT_EQ(strategy.entry_risk_seeds().size(), 1u);
+  const Lot original = book.lots.front();
+  const std::uint64_t original_next_id = next_lot_id;
+
+  const Status failed = strategy.on_step(*missing, 1, book, next_lot_id);
+  ASSERT_FALSE(failed.has_value());
+  EXPECT_EQ(failed.error().code(), ErrorCode::NotFound);
+  ASSERT_EQ(book.lots.size(), 1u);
+  expect_lot_equal(book.lots.front(), original);
+  EXPECT_EQ(next_lot_id, original_next_id);
+  EXPECT_TRUE(strategy.entry_risk_seeds().empty());
+
+  ASSERT_TRUE(strategy.on_step(*valid, 1, book, next_lot_id).has_value());
+  ASSERT_EQ(book.lots.size(), 1u);
+  EXPECT_EQ(book.lots.front().id, original_next_id);
+  EXPECT_EQ(book.lots.front().cohort, original.cohort + 1u);
+}
+
+TEST(Strategy, RollAtHorizonNoTradeLeavesBookIdsAndLifecycleStateUnchanged) {
+  const PricedSurface valid_surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  const PricedSurface unrelated_surface = make_surface(kUid + 1, 100.0, 100.0, kBaseNow);
+  auto valid = snapshot_of({{"SPY", &valid_surface}}, "roll-no-trade-valid");
+  auto missing = snapshot_of({{"OTHER", &unrelated_surface}}, "roll-no-trade-missing");
+  ASSERT_TRUE(valid.has_value()) << valid.error().to_string();
+  ASSERT_TRUE(missing.has_value()) << missing.error().to_string();
+
+  StrategySpec spec;
+  spec.lifecycle.holding = LifecycleSpec::Holding::RollAtHorizon;
+  spec.lifecycle.roll_at_T = 0.30;
+  spec.missing = MissingNameSpec{MissingNamePolicy::DropRenormalize, 1};
+  spec.legs.push_back(fixed_call(kUid));
+  DeclarativeStrategy strategy{spec};
+  PortfolioState book;
+  std::uint64_t next_lot_id = 1;
+  ASSERT_TRUE(strategy.on_step(*valid, 0, book, next_lot_id).has_value());
+  ASSERT_EQ(book.lots.size(), 1u);
+  const Lot original = book.lots.front();
+  const std::uint64_t original_next_id = next_lot_id;
+
+  const Status no_trade = strategy.on_step(*missing, 1, book, next_lot_id);
+  ASSERT_TRUE(no_trade.has_value()) << no_trade.error().to_string();
+  ASSERT_EQ(book.lots.size(), 1u);
+  expect_lot_equal(book.lots.front(), original);
+  EXPECT_EQ(next_lot_id, original_next_id);
+  EXPECT_TRUE(strategy.entry_risk_seeds().empty());
+
+  ASSERT_TRUE(strategy.on_step(*valid, 1, book, next_lot_id).has_value());
+  ASSERT_EQ(book.lots.size(), 1u);
+  EXPECT_EQ(book.lots.front().id, original_next_id);
+  EXPECT_EQ(book.lots.front().cohort, original.cohort + 1u);
+}
+
+TEST(Strategy, CloseAtHorizonFailedReopenDoesNotCommitStagedCloses) {
+  const PricedSurface valid_surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  const PricedSurface unrelated_surface = make_surface(kUid + 1, 100.0, 100.0, kBaseNow);
+  auto valid = snapshot_of({{"SPY", &valid_surface}}, "close-transaction-valid");
+  auto missing = snapshot_of({{"OTHER", &unrelated_surface}}, "close-transaction-missing");
+  ASSERT_TRUE(valid.has_value()) << valid.error().to_string();
+  ASSERT_TRUE(missing.has_value()) << missing.error().to_string();
+
+  StrategySpec spec;
+  spec.lifecycle.entry = LifecycleSpec::Entry::EveryStep;
+  spec.lifecycle.holding = LifecycleSpec::Holding::CloseAtHorizon;
+  spec.lifecycle.roll_at_T = 0.30;
+  spec.legs.push_back(fixed_call(kUid));
+  DeclarativeStrategy strategy{spec};
+  PortfolioState book;
+  std::uint64_t next_lot_id = 1;
+  ASSERT_TRUE(strategy.on_step(*valid, 0, book, next_lot_id).has_value());
+  ASSERT_EQ(book.lots.size(), 1u);
+  const Lot original = book.lots.front();
+  const std::uint64_t original_next_id = next_lot_id;
+
+  const Status failed = strategy.on_step(*missing, 1, book, next_lot_id);
+  ASSERT_FALSE(failed.has_value());
+  ASSERT_EQ(book.lots.size(), 1u);
+  expect_lot_equal(book.lots.front(), original);
+  EXPECT_EQ(next_lot_id, original_next_id);
+  EXPECT_TRUE(strategy.entry_risk_seeds().empty());
+
+  ASSERT_TRUE(strategy.on_step(*valid, 1, book, next_lot_id).has_value());
+  ASSERT_EQ(book.lots.size(), 1u);
+  EXPECT_EQ(book.lots.front().id, original_next_id);
+  EXPECT_EQ(book.lots.front().cohort, original.cohort + 1u);
+}
+
+TEST(Strategy, DropRenormalizePropagatesInvalidAndOverflowingTenors) {
+  constexpr std::int64_t kNearMaxTs = std::numeric_limits<std::int64_t>::max() - 100 * kDayNs;
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kNearMaxTs);
+  auto snapshot = snapshot_of({{"SPY", &surface}}, "drop-invalid-tenor");
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+
+  const auto expect_invalid = [&](double invalid_T) {
+    StrategySpec spec;
+    spec.missing = MissingNameSpec{MissingNamePolicy::DropRenormalize, 1};
+    spec.legs.push_back(fixed_call(kUid, 20.0 / 365.25));
+    spec.legs.push_back(fixed_call(kUid, invalid_T));
+    std::vector<ResolveDrop> dropped;
+    const auto resolved = resolve_spec_with_policy(*snapshot, spec, &dropped);
+    ASSERT_FALSE(resolved.has_value());
+    EXPECT_EQ(resolved.error().code(), ErrorCode::InvalidArgument);
+    EXPECT_TRUE(dropped.empty());
+  };
+  expect_invalid(std::numeric_limits<double>::infinity());
+  expect_invalid(120.0 / 365.25); // valid model tenor, but absolute expiry overflows int64
+}
+
+TEST(Strategy, DropRenormalizeStillDropsMissingUid) {
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  auto snapshot = snapshot_of({{"SPY", &surface}}, "drop-missing-uid-only");
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+
+  StrategySpec spec;
+  spec.missing = MissingNameSpec{MissingNamePolicy::DropRenormalize, 1};
+  spec.legs.push_back(fixed_call(kUid));
+  spec.legs.push_back(fixed_call(kUid + 100));
+  std::vector<ResolveDrop> dropped;
+  const auto resolved = resolve_spec_with_policy(*snapshot, spec, &dropped);
+  ASSERT_TRUE(resolved.has_value()) << resolved.error().to_string();
+  EXPECT_EQ(resolved->size(), 1u);
+  ASSERT_EQ(dropped.size(), 1u);
+  EXPECT_NE(dropped.front().detail.find("no surface"), std::string::npos);
+}
+
+TEST(Strategy, AdaptivePriceOptionsKeepFinalAnalyticSizingCold) {
+  const fs::path dir = fresh_dir("adaptive-price-options-analytic");
+  const PricedSurface archived = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  const std::string path = write_archive(dir, "2026-08-01", {{"SPY", &archived}});
+  auto snapshot = MarketSnapshot::load(path, QueryPricingTier::RepresentativeFast);
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+
+  StrategySpec spec;
+  spec.resolution.fast_screen_cold_confirm = true;
+  LegSpec leg;
+  leg.uid = kUid;
+  leg.tenor.target_T = 0.50;
+  leg.structure.kind = StructureSpec::Kind::Single;
+  leg.structure.single_side = Side::Call;
+  leg.strike = {StrikeSelector::Kind::Delta, 0.40};
+  leg.size = {SizeSpec::Kind::TargetTheta, 10.0, -1.0};
+  spec.legs.push_back(leg);
+
+  PriceOptions options;
+  options.analytic_greeks = true;
+  options.query_execution = QueryExecution::Configured;
+  const auto sized = resolve_spec(*snapshot, spec, options);
+  ASSERT_TRUE(sized.has_value()) << sized.error().to_string();
+  ASSERT_EQ(sized->size(), 1u);
+  const SizedLeg &sl = sized->front();
+  const PricedSurface *resolved_surface = snapshot->find(kUid);
+  ASSERT_NE(resolved_surface, nullptr);
+  const auto expected = resolved_surface->greeks_analytic(sl.leg.K, sl.leg.T, sl.leg.side,
+                                                          QueryExecution::ColdReference);
+  ASSERT_TRUE(expected.has_value()) << expected.error().to_string();
+  EXPECT_EQ(sl.leg.model_price, expected->price);
+  EXPECT_EQ(sl.leg.vega, expected->vega);
+  EXPECT_EQ(sl.leg.theta, expected->theta);
+  EXPECT_EQ(sl.leg.gamma, expected->gamma);
+}
+
+TEST(Strategy, AdaptiveColdSeedReusesUnderConfiguredLegacyAndColdSurfaceTiers) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+
+  for (const QueryPricingTier tier :
+       {QueryPricingTier::LegacyCompatible, QueryPricingTier::ColdReference}) {
+    const char *const tag = tier == QueryPricingTier::LegacyCompatible
+                                ? "adaptive-seed-legacy-alias"
+                                : "adaptive-seed-cold-alias";
+    const fs::path dir = fresh_dir(tag);
+    const PricedSurface archived = make_surface(kUid, 100.0, 100.0, kBaseNow);
+    const std::string path = write_archive(dir, "2026-08-01", {{"SPY", &archived}});
+    auto snapshot = MarketSnapshot::load(path, tier);
+    ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+
+    StrategySpec spec;
+    spec.resolution.fast_screen_cold_confirm = true;
+    LegSpec leg = fixed_call(kUid, 0.25);
+    leg.strike = {StrikeSelector::Kind::Delta, 0.40};
+    spec.legs.push_back(leg);
+    DeclarativeStrategy strategy{spec};
+    PortfolioState book;
+    std::uint64_t next_lot_id = 1;
+    PriceOptions options;
+    options.n_threads = 1;
+    options.analytic_greeks = true;
+    options.query_execution = QueryExecution::Configured;
+    ASSERT_TRUE(strategy.on_step(*snapshot, 0, book, next_lot_id, options).has_value());
+    ASSERT_EQ(book.lots.size(), 1u);
+    ASSERT_EQ(strategy.entry_risk_seeds().size(), 1u);
+    EXPECT_EQ(strategy.entry_risk_seeds().front().query_execution(), QueryExecution::ColdReference);
+
+    const Lot &lot = book.lots.front();
+    const std::vector<Position> positions{Position{lot.id, lot.contract, lot.qty, lot.multiplier}};
+    auto portfolio = Portfolio::create(positions);
+    ASSERT_TRUE(portfolio.has_value());
+    const PortfolioPricer pricer{std::move(*portfolio)};
+    PortfolioWorkspace workspace;
+    PriceFrame frame;
+    frame.id.resize(1);
+    frame.uid.resize(1);
+    frame.pv.resize(1);
+    frame.price.resize(1);
+    frame.iv.resize(1);
+    frame.delta.resize(1);
+    frame.gamma.resize(1);
+    frame.vega.resize(1);
+    frame.theta.resize(1);
+    frame.rho.resize(1);
+    frame.vanna.resize(1);
+    frame.volga.resize(1);
+    frame.charm.resize(1);
+    frame.status.resize(1);
+    const PriceFrameView view{frame.id,    frame.uid,   frame.pv,    frame.price,  frame.iv,
+                              frame.delta, frame.gamma, frame.vega,  frame.theta,  frame.rho,
+                              frame.vanna, frame.volga, frame.charm, frame.status, &frame.total};
+    if constexpr (counters_enabled()) {
+      atx::vol::counters::reset();
+    }
+    ASSERT_TRUE(pricer
+                    .price_into(snapshot->set(), PriceFieldMask::FullGreeks, view, workspace,
+                                options, strategy.entry_risk_seeds())
+                    .has_value());
+    EXPECT_EQ(frame.status.front(), PriceStatus::Ok);
+    EXPECT_EQ(frame.price.front(), strategy.entry_risk_seeds().front().greeks().price);
+    if constexpr (counters_enabled()) {
+      const auto measured = atx::vol::counters::snapshot();
+      EXPECT_EQ(measured.get(Counter::FullGreekSeedReuseLanes), 1u);
+      EXPECT_EQ(measured.get(Counter::FullGreekSeedRejectedCandidates), 0u);
+      EXPECT_EQ(measured.get(Counter::SurfaceFullGreekRoutes), 0u);
+      EXPECT_EQ(measured.get(Counter::BoundarySolves), 0u);
+    }
   }
 }
 
@@ -641,7 +1160,114 @@ TEST(Strategy, DispersionParity) {
               sig->implied_corr, v_index, v_names);
 }
 
+TEST(Strategy, DispersionHonorsPriceOptionsAndPublishesExactEntrySeeds) {
+  const fs::path dir = fresh_dir("dispersion-price-options-seeds");
+  const PricedSurface idx = make_surface(1, 500.0, 500.0, kBaseNow, 0.00);
+  const PricedSurface n0 = make_surface(2, 100.0, 100.0, kBaseNow, 0.02);
+  const PricedSurface n1 = make_surface(3, 120.0, 120.0, kBaseNow, 0.03);
+  const std::string path =
+      write_archive(dir, "2026-10-01", {{"IDX", &idx}, {"NM0", &n0}, {"NM1", &n1}});
+  auto snapshot = MarketSnapshot::load(path, QueryPricingTier::RepresentativeFast);
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+
+  DispersionUniverse universe;
+  universe.index = DispersionMember{"IDX", 1, 0.0};
+  universe.names.push_back(DispersionMember{"NM0", 2, 0.6});
+  universe.names.push_back(DispersionMember{"NM1", 3, 0.4});
+  PriceOptions options;
+  options.analytic_greeks = true;
+  options.query_execution = QueryExecution::ColdReference;
+
+  for (const bool projected : {false, true}) {
+    DispersionConfig config;
+    config.target_T = 0.123456789012345;
+    if (projected) {
+      config.projected_maturity = ProjectedMaturitySpec::days(30);
+    }
+    const auto seeded_book = build_dispersion_book(universe, snapshot->set(), config, options);
+    ASSERT_TRUE(seeded_book.has_value()) << seeded_book.error().to_string();
+    ASSERT_EQ(seeded_book->entry_risk_seeds.size(), seeded_book->positions.size());
+    ASSERT_GE(seeded_book->entry_risk_seeds.size(), 2u);
+    EXPECT_EQ(seeded_book->index_leg.sigma, seeded_book->entry_risk_seeds[0].iv());
+    ASSERT_EQ(seeded_book->name_legs.size(), universe.names.size());
+    for (std::size_t name_index = 0; name_index < seeded_book->name_legs.size(); ++name_index) {
+      EXPECT_EQ(seeded_book->name_legs[name_index].sigma,
+                seeded_book->entry_risk_seeds[2u + 2u * name_index].iv());
+    }
+
+    DispersionStrategy strategy{universe, config};
+    PortfolioState book;
+    std::uint64_t next_lot_id = 1;
+    ASSERT_TRUE(strategy.on_step(*snapshot, 0, book, next_lot_id, options).has_value());
+    ASSERT_EQ(book.lots.size(), 6u);
+    ASSERT_EQ(strategy.entry_risk_seeds().size(), book.lots.size());
+    for (std::size_t i = 0; i < book.lots.size(); ++i) {
+      const Lot &lot = book.lots[i];
+      const FullGreekSeed &seed = strategy.entry_risk_seeds()[i];
+      EXPECT_EQ(seed.uid(), lot.contract.uid) << i;
+      EXPECT_EQ(seed.K(), lot.contract.K) << i;
+      EXPECT_EQ(seed.T(), lot.contract.T) << i;
+      EXPECT_EQ(seed.side(), lot.contract.side) << i;
+      EXPECT_TRUE(seed.analytic_greeks()) << i;
+      EXPECT_EQ(seed.query_execution(), QueryExecution::ColdReference) << i;
+      EXPECT_EQ(seed.greeks().price, lot.entry_price) << i;
+    }
+
+    ASSERT_TRUE(strategy.on_step(*snapshot, 1, book, next_lot_id, options).has_value());
+    EXPECT_TRUE(strategy.entry_risk_seeds().empty());
+  }
+}
+
 // ── 6. CloseAtHorizon: overlapping cohorts, each closed at ITS OWN DTE ───────
+TEST(Strategy, DispersionFourArgEntryMatchesLegacyBuildBookExactly) {
+  const fs::path dir = fresh_dir("dispersion-legacy-four-arg-parity");
+  const PricedSurface idx = make_surface(1, 500.0, 500.0, kBaseNow, 0.00);
+  const PricedSurface n0 = make_surface(2, 100.0, 100.0, kBaseNow, 0.02);
+  const PricedSurface n1 = make_surface(3, 120.0, 120.0, kBaseNow, 0.03);
+  const std::string path =
+      write_archive(dir, "2026-10-01", {{"IDX", &idx}, {"NM0", &n0}, {"NM1", &n1}});
+  auto snapshot = MarketSnapshot::load(path);
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+
+  DispersionUniverse universe;
+  universe.index = DispersionMember{"IDX", 1, 0.0};
+  universe.names.push_back(DispersionMember{"NM0", 2, 0.6});
+  universe.names.push_back(DispersionMember{"NM1", 3, 0.4});
+  for (const bool projected : {false, true}) {
+    DispersionConfig config;
+    config.target_T = 0.123456789012345;
+    if (projected) {
+      config.projected_maturity = ProjectedMaturitySpec::days(30);
+    }
+    DispersionStrategy strategy{universe, config};
+    const auto expected = strategy.build_book(*snapshot);
+    ASSERT_TRUE(expected.has_value()) << expected.error().to_string();
+
+    PortfolioState actual;
+    std::uint64_t next_lot_id = 1u;
+    ASSERT_TRUE(strategy.on_step(*snapshot, 0u, actual, next_lot_id).has_value());
+    ASSERT_EQ(actual.lots.size(), expected->positions.size());
+    ASSERT_EQ(expected->entry_marks.size(), expected->positions.size());
+    const std::int64_t expected_expiry =
+        expected->index_leg.call_definition.expiry_ts_ns != 0
+            ? expected->index_leg.call_definition.expiry_ts_ns
+            : snapshot->ts_ns() + std::llround(config.target_T * kNsPerYear);
+    for (std::size_t i = 0; i < actual.lots.size(); ++i) {
+      const Lot &lot = actual.lots[i];
+      const Position &position = expected->positions[i];
+      EXPECT_EQ(lot.contract.uid, position.contract.uid) << i;
+      EXPECT_EQ(lot.contract.K, position.contract.K) << i;
+      EXPECT_EQ(lot.contract.T, position.contract.T) << i;
+      EXPECT_EQ(lot.contract.side, position.contract.side) << i;
+      EXPECT_EQ(lot.qty, position.qty) << i;
+      EXPECT_EQ(lot.multiplier, position.multiplier) << i;
+      EXPECT_EQ(lot.entry_price, expected->entry_marks[i]) << i;
+      EXPECT_EQ(lot.expiry_ts_ns, expected_expiry) << i;
+    }
+    EXPECT_TRUE(strategy.entry_risk_seeds().empty());
+  }
+}
+
 TEST(Strategy, CloseAtHorizonOverlappingCohorts) {
   // 10 consecutive daily snapshots. Tenor 6 calendar days, close below 2.5
   // days residual (half-day margin keeps the comparison off exact-boundary

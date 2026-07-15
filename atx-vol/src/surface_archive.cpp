@@ -223,6 +223,7 @@ constexpr std::uint32_t kKnownValidationFailures = (1u << 12) - 1u;
 [[nodiscard]] bool provenance_record_valid(const ArchiveSurfaceProvenanceRecord &record) noexcept {
   const bool fields_valid = record.marker == kArchiveProvenanceMarker && record.purpose <= 1u &&
                             record.quality_mode <= 2u && record.state <= 3u &&
+                            record.reserved0 == 0u && record.reserved1 == 0u &&
                             (record.validation_failures & ~kKnownValidationFailures) == 0u;
   const bool healthy_is_clean = record.state != static_cast<std::uint8_t>(SurfaceState::Healthy) ||
                                 record.validation_failures == 0u;
@@ -249,8 +250,7 @@ from_provenance_record(const ArchiveSurfaceProvenanceRecord &record) {
     const auto *bytes = reinterpret_cast<const std::uint8_t *>(&record);
     if (!std::all_of(bytes, bytes + sizeof record,
                      [](std::uint8_t value) { return value == 0u; })) {
-      return Err(ErrorCode::ParseError,
-                 "surface archive: malformed legacy provenance bytes");
+      return Err(ErrorCode::ParseError, "surface archive: malformed legacy provenance bytes");
     }
     return Ok(legacy_surface_provenance());
   }
@@ -267,6 +267,35 @@ from_provenance_record(const ArchiveSurfaceProvenanceRecord &record) {
   provenance.served_generation = record.served_generation;
   provenance.legacy_format = false;
   return Ok(provenance);
+}
+
+[[nodiscard]] const ArchiveIndexSlot *
+find_directory_slot(std::span<const ArchiveIndexSlot> lookup,
+                    const ArchiveDirEntry &directory) noexcept {
+  if (lookup.empty() || directory.symbol_len > kArchiveSymbolMax) {
+    return nullptr;
+  }
+  const std::uint64_t mask = static_cast<std::uint64_t>(lookup.size()) - 1ull;
+  std::uint64_t index = directory.symbol_hash & mask;
+  for (std::size_t step = 0; step < lookup.size(); ++step) {
+    const ArchiveIndexSlot &slot = lookup[static_cast<std::size_t>(index)];
+    if (slot.flags == kArchiveSlotEmpty) {
+      return nullptr;
+    }
+    if (slot.symbol_len <= kArchiveSymbolMax && slot.symbol_hash == directory.symbol_hash &&
+        slot.symbol_len == directory.symbol_len &&
+        std::memcmp(slot.symbol, directory.symbol, directory.symbol_len) == 0) {
+      return &slot;
+    }
+    index = (index + 1ull) & mask;
+  }
+  return nullptr;
+}
+
+[[nodiscard]] bool directory_identity_matches(const ArchiveDirEntry &directory,
+                                              const ArchiveIndexSlot &slot) noexcept {
+  return directory.surface_offset == slot.surface_offset &&
+         directory.surface_size == slot.surface_size && directory.uid == slot.uid;
 }
 
 } // namespace
@@ -325,6 +354,10 @@ Result<std::vector<std::byte>> write_surface_archive(std::span<const SurfaceArch
     plan.surf = &ps;
     plan.provenance = it.provenance;
     if (plan.provenance.has_value()) {
+      if (plan.provenance->legacy_format) {
+        return Err(ErrorCode::InvalidArgument,
+                   "write_surface_archive: explicit legacy provenance is unsupported");
+      }
       const ArchiveSurfaceProvenanceRecord record = to_provenance_record(*plan.provenance);
       if (!provenance_record_valid(record)) {
         return Err(ErrorCode::InvalidArgument, "write_surface_archive: invalid surface provenance");
@@ -769,7 +802,16 @@ Result<SurfaceArchive> SurfaceArchive::open(std::vector<std::byte> bytes) {
                 static_cast<std::size_t>(dir_bytes));
   }
 
+  for (const ArchiveIndexSlot &slot : a.lookup_) {
+    if (slot.symbol_len > kArchiveSymbolMax) {
+      return Err(ErrorCode::ParseError, "SurfaceArchive::open: lookup symbol length out of bounds");
+    }
+  }
   for (const ArchiveDirEntry &de : a.directory_) {
+    if (de.symbol_len > kArchiveSymbolMax) {
+      return Err(ErrorCode::ParseError,
+                 "SurfaceArchive::open: directory symbol length out of bounds");
+    }
     if (de.surface_offset < h.data_offset) {
       return Err(ErrorCode::ParseError, "SurfaceArchive::open: directory entry precedes data");
     }
@@ -874,8 +916,10 @@ Result<SurfaceProvenance> SurfaceArchive::provenance(std::string_view symbol) co
   return read_provenance(slot->surface_offset, slot->surface_size, slot->surface_crc32c);
 }
 
-Result<PricedSurface> SurfaceArchive::reconstruct(std::uint64_t offset, std::uint64_t size,
-                                                  std::uint32_t expected_crc) const {
+Result<ArchivedSurface> SurfaceArchive::reconstruct(const ArchiveIndexSlot &slot,
+                                                    const ArchiveDirEntry *directory) const {
+  const std::uint64_t offset = slot.surface_offset;
+  const std::uint64_t size = slot.surface_size;
   if (size < sizeof(SurfaceBlobHeader)) {
     return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: blob smaller than header");
   }
@@ -884,7 +928,7 @@ Result<PricedSurface> SurfaceArchive::reconstruct(std::uint64_t offset, std::uin
   }
   const std::byte *base = buf_at(buffer_, offset);
 
-  if (crc32c(base, static_cast<std::size_t>(size)) != expected_crc) {
+  if (crc32c(base, static_cast<std::size_t>(size)) != slot.surface_crc32c) {
     return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: blob checksum mismatch");
   }
 
@@ -899,19 +943,13 @@ Result<PricedSurface> SurfaceArchive::reconstruct(std::uint64_t offset, std::uin
   if (bh.blob_size != size || bh.blob_header_size != sizeof(SurfaceBlobHeader)) {
     return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: blob size mismatch");
   }
-  ArchiveSurfaceProvenanceRecord provenance_record{};
-  std::memcpy(&provenance_record, bh.reserved, sizeof provenance_record);
-  if (!from_provenance_record(provenance_record).has_value()) {
-    return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: invalid surface provenance");
+  if (bh.uid != slot.uid) {
+    return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: blob uid mismatch");
   }
-  // NOTE: the whole-blob `surface_crc32c` verified above STRICTLY SUBSUMES the
-  // payload CRC (payload bytes are a subspan of the blob), so the hot path does NOT
-  // re-CRC the payload — one pass, not two. `payload_crc32c` is still written (a
-  // self-describing field for external tools / partial verification) but not
-  // re-checked here; verifying it would double the per-surface CRC cost for no
-  // added integrity.
-
-  // Section bounds.
+  if (bh.symbol_offset < sizeof(SurfaceBlobHeader) || bh.symbol_offset > size ||
+      bh.symbol_size > size - bh.symbol_offset) {
+    return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: symbol section out of bounds");
+  }
   if (bh.pricing_offset < sizeof(SurfaceBlobHeader) ||
       bh.pricing_size < sizeof(ArchivePricingRecord) || bh.pricing_offset > size ||
       bh.pricing_size > size - bh.pricing_offset) {
@@ -921,6 +959,38 @@ Result<PricedSurface> SurfaceArchive::reconstruct(std::uint64_t offset, std::uin
       bh.slices_size > size - bh.slices_offset) {
     return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: slices section out of bounds");
   }
+  if ((bh.symbol_offset % kArchiveArrayAlign) != 0u ||
+      (bh.pricing_offset % kArchiveArrayAlign) != 0u ||
+      (bh.slices_offset % kArchiveArrayAlign) != 0u) {
+    return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: section alignment mismatch");
+  }
+  const std::uint64_t symbol_end = bh.symbol_offset + bh.symbol_size;
+  const std::uint64_t pricing_end = bh.pricing_offset + bh.pricing_size;
+  if (symbol_end > bh.pricing_offset || pricing_end > bh.slices_offset) {
+    return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: section topology mismatch");
+  }
+  if (bh.symbol_size != slot.symbol_len ||
+      std::memcmp(base + static_cast<std::size_t>(bh.symbol_offset), slot.symbol,
+                  slot.symbol_len) != 0) {
+    return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: symbol identity mismatch");
+  }
+  if (directory != nullptr && bh.n_slices != directory->n_slices) {
+    return Err(ErrorCode::ParseError,
+               "SurfaceArchive::reconstruct: directory slice count mismatch");
+  }
+  ArchiveSurfaceProvenanceRecord provenance_record{};
+  std::memcpy(&provenance_record, bh.reserved, sizeof provenance_record);
+  auto provenance = from_provenance_record(provenance_record);
+  if (!provenance.has_value()) {
+    return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: invalid surface provenance");
+  }
+  // NOTE: the whole-blob `surface_crc32c` verified above STRICTLY SUBSUMES the
+  // payload CRC (payload bytes are a subspan of the blob), so the hot path does NOT
+  // re-CRC the payload — one pass, not two. `payload_crc32c` is still written (a
+  // self-describing field for external tools / partial verification) but not
+  // re-checked here; verifying it would double the per-surface CRC cost for no
+  // added integrity.
+
   const std::size_t n = bh.n_slices;
   if (n == 0) {
     return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: zero slices");
@@ -928,6 +998,9 @@ Result<PricedSurface> SurfaceArchive::reconstruct(std::uint64_t offset, std::uin
 
   ArchivePricingRecord pr;
   std::memcpy(&pr, base + static_cast<std::size_t>(bh.pricing_offset), sizeof pr);
+  if (pr.uid != slot.uid) {
+    return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: pricing uid mismatch");
+  }
   const PricingContext pc = from_pricing_record(pr);
 
   CurveSurface surface;
@@ -936,14 +1009,19 @@ Result<PricedSurface> SurfaceArchive::reconstruct(std::uint64_t offset, std::uin
 
   std::uint64_t off = bh.slices_offset;
   const std::uint64_t slices_end = bh.slices_offset + bh.slices_size;
+  std::uint16_t kind_bits = 0u;
   for (std::size_t i = 0; i < n; ++i) {
-    if (off + sizeof(ArchiveSliceHeader) > slices_end) {
+    if (off > slices_end || sizeof(ArchiveSliceHeader) > slices_end - off) {
       return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: slice header out of bounds");
     }
     ArchiveSliceHeader sh;
     std::memcpy(&sh, base + static_cast<std::size_t>(off), sizeof sh);
-    if (sh.rec_size < sizeof(ArchiveSliceHeader) || off + sh.rec_size > slices_end) {
+    if (sh.rec_size < sizeof(ArchiveSliceHeader) || sh.rec_size > slices_end - off) {
       return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: slice record out of bounds");
+    }
+    if ((sh.rec_size % kArchiveArrayAlign) != 0u) {
+      return Err(ErrorCode::ParseError,
+                 "SurfaceArchive::reconstruct: slice record alignment mismatch");
     }
     if (sh.payload_size > sh.rec_size - sizeof(ArchiveSliceHeader)) {
       return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: slice payload out of bounds");
@@ -1049,6 +1127,7 @@ Result<PricedSurface> SurfaceArchive::reconstruct(std::uint64_t offset, std::uin
     default:
       return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: unknown curve kind");
     }
+    kind_bits |= static_cast<std::uint16_t>(1u << static_cast<unsigned>(kind));
     surface.push(std::move(curve));
 
     SliceContext sc;
@@ -1062,13 +1141,19 @@ Result<PricedSurface> SurfaceArchive::reconstruct(std::uint64_t offset, std::uin
 
     off += sh.rec_size;
   }
+  if (off != slices_end) {
+    return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: incomplete slice consumption");
+  }
+  if (directory != nullptr && kind_bits != directory->kind_bits) {
+    return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: directory kind bits mismatch");
+  }
 
   auto ps = PricedSurface::create(std::move(surface), std::move(ctx), pc);
   if (!ps) {
     return Err(ErrorCode::ParseError,
                "SurfaceArchive::reconstruct: reconstructed surface failed validation");
   }
-  return ps;
+  return Ok(ArchivedSurface{std::move(*ps), std::move(*provenance)});
 }
 
 Result<PricedSurface> SurfaceArchive::map_symbol(std::string_view symbol) const {
@@ -1076,39 +1161,44 @@ Result<PricedSurface> SurfaceArchive::map_symbol(std::string_view symbol) const 
   if (s == nullptr) {
     return Err(ErrorCode::NotFound, "SurfaceArchive::map_symbol: symbol not present");
   }
-  return reconstruct(s->surface_offset, s->surface_size, s->surface_crc32c);
+  auto archived = reconstruct(*s, nullptr);
+  if (!archived.has_value()) {
+    return tl::unexpected<atx::core::Error>(std::move(archived).error());
+  }
+  return Ok(std::move(archived->surface));
 }
 
 Result<std::vector<PricedSurface>> SurfaceArchive::map_all() const {
   std::vector<PricedSurface> out;
   out.reserve(directory_.size());
-  const std::uint64_t mask =
-      lookup_.empty() ? 0ull : static_cast<std::uint64_t>(lookup_.size()) - 1ull;
   for (const ArchiveDirEntry &de : directory_) {
-    std::uint32_t expected = 0;
-    bool found = false;
-    std::uint64_t i = de.symbol_hash & mask;
-    for (std::size_t step = 0; step < lookup_.size(); ++step) {
-      const ArchiveIndexSlot &s = lookup_[static_cast<std::size_t>(i)];
-      if (s.flags == kArchiveSlotEmpty) {
-        break;
-      }
-      if (s.symbol_hash == de.symbol_hash && s.symbol_len == de.symbol_len &&
-          std::memcmp(s.symbol, de.symbol, de.symbol_len) == 0) {
-        expected = s.surface_crc32c;
-        found = true;
-        break;
-      }
-      i = (i + 1ull) & mask;
-    }
-    if (!found) {
+    const ArchiveIndexSlot *slot = find_directory_slot(lookup_, de);
+    if (slot == nullptr || !directory_identity_matches(de, *slot)) {
       return Err(ErrorCode::ParseError, "SurfaceArchive::map_all: directory/lookup mismatch");
     }
-    auto res = reconstruct(de.surface_offset, de.surface_size, expected);
+    auto res = reconstruct(*slot, &de);
     if (!res) {
       return tl::unexpected<atx::core::Error>(std::move(res).error());
     }
-    out.push_back(*std::move(res));
+    out.push_back(std::move(res->surface));
+  }
+  return Ok(std::move(out));
+}
+
+Result<std::vector<ArchivedSurface>> SurfaceArchive::map_all_with_provenance() const {
+  std::vector<ArchivedSurface> out;
+  out.reserve(directory_.size());
+  for (const ArchiveDirEntry &de : directory_) {
+    const ArchiveIndexSlot *slot = find_directory_slot(lookup_, de);
+    if (slot == nullptr || !directory_identity_matches(de, *slot)) {
+      return Err(ErrorCode::ParseError,
+                 "SurfaceArchive::map_all_with_provenance: directory/lookup mismatch");
+    }
+    auto res = reconstruct(*slot, &de);
+    if (!res.has_value()) {
+      return tl::unexpected<atx::core::Error>(std::move(res).error());
+    }
+    out.push_back(std::move(*res));
   }
   return Ok(std::move(out));
 }

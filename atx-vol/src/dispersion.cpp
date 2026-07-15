@@ -55,8 +55,27 @@ namespace {
 // Resolves the member's surface by uid and validates every quantity, naming the
 // symbol on any failure (a member with no fittable ATM straddle sinks the book —
 // the signal needs every leg).
-[[nodiscard]] Result<DispersionLeg> resolve_leg(const SurfaceSet &surfaces,
-                                                const DispersionMember &m, double T) {
+struct ResolvedDispersionLeg {
+  DispersionLeg leg;
+  std::optional<FullGreekSeed> call_seed;
+  std::optional<FullGreekSeed> put_seed;
+};
+
+[[nodiscard]] Status append_entry_seeds(ResolvedDispersionLeg &leg,
+                                        std::vector<FullGreekSeed> &out) {
+  if (leg.call_seed.has_value() != leg.put_seed.has_value()) {
+    return Err(ErrorCode::Internal, "dispersion: incomplete entry seed pair");
+  }
+  if (leg.call_seed.has_value()) {
+    out.push_back(std::move(*leg.call_seed));
+    out.push_back(std::move(*leg.put_seed));
+  }
+  return Ok();
+}
+
+[[nodiscard]] Result<ResolvedDispersionLeg> resolve_leg(const SurfaceSet &surfaces,
+                                                        const DispersionMember &m, double T,
+                                                        const PriceOptions *price_options) {
   const PricedSurface *surf = surfaces.find(m.uid);
   if (surf == nullptr) {
     return Err(ErrorCode::NotFound,
@@ -67,10 +86,13 @@ namespace {
     return Err(ErrorCode::Unavailable,
                "dispersion: no ATM forward for symbol '" + m.symbol + "' at the tenor");
   }
-  const double sigma = surf->iv(K, T);
-  if (!std::isfinite(sigma) || sigma <= 0.0) {
-    return Err(ErrorCode::Unavailable, "dispersion: ATM vol unavailable for symbol '" + m.symbol +
-                                           "' (tenor outside surface domain)");
+  double sigma = 0.0;
+  if (price_options == nullptr) {
+    sigma = surf->iv(K, T);
+    if (!std::isfinite(sigma) || sigma <= 0.0) {
+      return Err(ErrorCode::Unavailable, "dispersion: ATM vol unavailable for symbol '" + m.symbol +
+                                             "' (tenor outside surface domain)");
+    }
   }
 
   // C1.7: price + vega only — no full 5-solve AmericanGreeks bundle per side.
@@ -79,57 +101,81 @@ namespace {
   // bit-identical to `greeks_analytic().vega` on the AL path (american_vega_al),
   // so call_mark/put_mark/straddle_vega are unchanged from the old two-bundle
   // path while dropping the redundant delta/gamma/theta/rho/vanna/volga/charm
-  // solves neither this function nor its caller ever read.
-  const Result<double> call_price = surf->fair_value(K, T, Side::Call);
-  if (!call_price) {
-    return Err(call_price.error());
+  // solves neither the legacy pure builder nor its caller ever read. Engine
+  // entries instead produce exact full-risk seeds for sizing and risk handoff.
+  double call_mark = 0.0;
+  double put_mark = 0.0;
+  double call_vega = 0.0;
+  double put_vega = 0.0;
+  std::optional<FullGreekSeed> resolved_call_seed;
+  std::optional<FullGreekSeed> resolved_put_seed;
+  if (price_options != nullptr) {
+    ATX_TRY(FullGreekSeed call_seed,
+            surf->full_greek_seed(K, T, Side::Call, price_options->analytic_greeks,
+                                  price_options->query_execution));
+    ATX_TRY(FullGreekSeed put_seed,
+            surf->full_greek_seed(K, T, Side::Put, price_options->analytic_greeks,
+                                  price_options->query_execution));
+    call_mark = call_seed.greeks().price;
+    put_mark = put_seed.greeks().price;
+    call_vega = call_seed.greeks().vega;
+    put_vega = put_seed.greeks().vega;
+    sigma = call_seed.iv();
+    resolved_call_seed.emplace(std::move(call_seed));
+    resolved_put_seed.emplace(std::move(put_seed));
+  } else {
+    ATX_TRY(double resolved_call_mark, surf->fair_value(K, T, Side::Call));
+    ATX_TRY(double resolved_call_vega, surf->vega(K, T, Side::Call));
+    ATX_TRY(double resolved_put_mark, surf->fair_value(K, T, Side::Put));
+    ATX_TRY(double resolved_put_vega, surf->vega(K, T, Side::Put));
+    call_mark = resolved_call_mark;
+    put_mark = resolved_put_mark;
+    call_vega = resolved_call_vega;
+    put_vega = resolved_put_vega;
   }
-  const Result<double> call_vega = surf->vega(K, T, Side::Call);
-  if (!call_vega) {
-    return Err(call_vega.error());
+  if (!std::isfinite(sigma) || sigma <= 0.0) {
+    return Err(ErrorCode::Unavailable, "dispersion: ATM vol unavailable for symbol '" + m.symbol +
+                                           "' (tenor outside surface domain)");
   }
-  const Result<double> put_price = surf->fair_value(K, T, Side::Put);
-  if (!put_price) {
-    return Err(put_price.error());
-  }
-  const Result<double> put_vega = surf->vega(K, T, Side::Put);
-  if (!put_vega) {
-    return Err(put_vega.error());
-  }
-  const double straddle_vega = *call_vega + *put_vega;
+  const double straddle_vega = call_vega + put_vega;
   if (!std::isfinite(straddle_vega) || straddle_vega <= 0.0) {
     return Err(ErrorCode::Unavailable,
                "dispersion: degenerate ATM straddle vega for symbol '" + m.symbol + "'");
   }
 
-  DispersionLeg leg;
-  leg.symbol = m.symbol;
-  leg.uid = m.uid;
-  leg.K = K;
-  leg.T = T;
-  leg.sigma = sigma;
-  leg.straddle_vega = straddle_vega;
-  leg.straddle_qty = 0.0; // sized by the caller
-  leg.call_mark = *call_price;
-  leg.put_mark = *put_price;
-  return Ok(std::move(leg));
+  ResolvedDispersionLeg resolved;
+  resolved.leg.symbol = m.symbol;
+  resolved.leg.uid = m.uid;
+  resolved.leg.K = K;
+  resolved.leg.T = T;
+  resolved.leg.sigma = sigma;
+  resolved.leg.straddle_vega = straddle_vega;
+  resolved.leg.straddle_qty = 0.0; // sized by the caller
+  resolved.leg.call_mark = call_mark;
+  resolved.leg.put_mark = put_mark;
+  resolved.call_seed = std::move(resolved_call_seed);
+  resolved.put_seed = std::move(resolved_put_seed);
+  return Ok(std::move(resolved));
 }
 
 // Exact surface-only projection path. `maturity` is absolute for constituent
 // legs, so a calendar convention is resolved once by the index and cannot drift
 // across surfaces.
-[[nodiscard]] Result<DispersionLeg> resolve_projected_leg(const SurfaceSet &surfaces,
-                                                          const DispersionMember &member,
-                                                          const ProjectedMaturitySpec &maturity,
-                                                          double multiplier) {
+[[nodiscard]] Result<ResolvedDispersionLeg>
+resolve_projected_leg(const SurfaceSet &surfaces, const DispersionMember &member,
+                      const ProjectedMaturitySpec &maturity, double multiplier,
+                      const PriceOptions *price_options) {
   const PricedSurface *surface = surfaces.find(member.uid);
   if (surface == nullptr) {
     return Err(ErrorCode::NotFound,
                "dispersion: no surface registered for symbol '" + member.symbol + "'");
   }
   OptionProjectionConfig config;
-  config.output = OptionProjectionOutput::FullGreeks;
-  config.analytic_greeks = true;
+  config.output = price_options == nullptr ? OptionProjectionOutput::FullGreeks
+                                           : OptionProjectionOutput::DefinitionOnly;
+  config.analytic_greeks = price_options == nullptr || price_options->analytic_greeks;
+  config.query_execution =
+      price_options == nullptr ? QueryExecution::Configured : price_options->query_execution;
   const auto project = [&](Side side) {
     OptionProjectionSpec spec;
     spec.uid = member.uid;
@@ -152,23 +198,53 @@ namespace {
   put_spec.multiplier = multiplier;
   ATX_TRY(ProjectedOption put, project_option_contract(*surface, put_spec, config));
 
-  const double straddle_vega = call.greeks.vega + put.greeks.vega;
+  double resolved_sigma = call.implied_vol;
+  double call_mark = call.model_mark;
+  double put_mark = put.model_mark;
+  double call_vega = call.greeks.vega;
+  double put_vega = put.greeks.vega;
+  std::optional<FullGreekSeed> resolved_call_seed;
+  std::optional<FullGreekSeed> resolved_put_seed;
+  if (price_options != nullptr) {
+    ATX_TRY(FullGreekSeed call_seed,
+            surface->full_greek_seed(call.definition.contract.K, call.definition.contract.T,
+                                     Side::Call, price_options->analytic_greeks,
+                                     price_options->query_execution));
+    ATX_TRY(FullGreekSeed put_seed,
+            surface->full_greek_seed(put.definition.contract.K, put.definition.contract.T,
+                                     Side::Put, price_options->analytic_greeks,
+                                     price_options->query_execution));
+    call_mark = call_seed.greeks().price;
+    put_mark = put_seed.greeks().price;
+    call_vega = call_seed.greeks().vega;
+    put_vega = put_seed.greeks().vega;
+    resolved_sigma = call_seed.iv();
+    resolved_call_seed.emplace(std::move(call_seed));
+    resolved_put_seed.emplace(std::move(put_seed));
+  }
+  const double straddle_vega = call_vega + put_vega;
+  if (!std::isfinite(resolved_sigma) || resolved_sigma <= 0.0) {
+    return Err(ErrorCode::Unavailable,
+               "dispersion: projected vol unavailable for symbol '" + member.symbol + "'");
+  }
   if (!std::isfinite(straddle_vega) || straddle_vega <= 0.0) {
     return Err(ErrorCode::Unavailable,
                "dispersion: degenerate projected straddle vega for symbol '" + member.symbol + "'");
   }
-  DispersionLeg leg;
-  leg.symbol = member.symbol;
-  leg.uid = member.uid;
-  leg.K = call.definition.contract.K;
-  leg.T = call.definition.contract.T;
-  leg.sigma = call.implied_vol;
-  leg.straddle_vega = straddle_vega;
-  leg.call_mark = call.model_mark;
-  leg.put_mark = put.model_mark;
-  leg.call_definition = call.definition;
-  leg.put_definition = put.definition;
-  return Ok(std::move(leg));
+  ResolvedDispersionLeg resolved;
+  resolved.leg.symbol = member.symbol;
+  resolved.leg.uid = member.uid;
+  resolved.leg.K = call.definition.contract.K;
+  resolved.leg.T = call.definition.contract.T;
+  resolved.leg.sigma = resolved_sigma;
+  resolved.leg.straddle_vega = straddle_vega;
+  resolved.leg.call_mark = call_mark;
+  resolved.leg.put_mark = put_mark;
+  resolved.leg.call_definition = call.definition;
+  resolved.leg.put_definition = put.definition;
+  resolved.call_seed = std::move(resolved_call_seed);
+  resolved.put_seed = std::move(resolved_put_seed);
+  return Ok(std::move(resolved));
 }
 
 // Emit the two positions (Call then Put, same K/T/qty) of one sized straddle,
@@ -313,9 +389,12 @@ Result<DispersionSignal> dispersion_signal(const DispersionUniverse &universe,
   return Ok(std::move(sig));
 }
 
-Result<DispersionBook> build_dispersion_book(const DispersionUniverse &universe,
-                                             const SurfaceSet &surfaces,
-                                             const DispersionConfig &cfg) {
+namespace {
+
+[[nodiscard]] Result<DispersionBook> build_dispersion_book_impl(const DispersionUniverse &universe,
+                                                                const SurfaceSet &surfaces,
+                                                                const DispersionConfig &cfg,
+                                                                const PriceOptions *price_options) {
   if (!std::isfinite(cfg.target_T) || cfg.target_T <= 0.0) {
     return Err(ErrorCode::InvalidArgument, "dispersion: target_T must be finite and positive");
   }
@@ -346,30 +425,34 @@ Result<DispersionBook> build_dispersion_book(const DispersionUniverse &universe,
   }
 
   std::optional<ProjectedMaturitySpec> common_maturity;
-  Result<DispersionLeg> index_leg = resolve_leg(surfaces, universe.index, cfg.target_T);
+  Result<ResolvedDispersionLeg> index_leg =
+      resolve_leg(surfaces, universe.index, cfg.target_T, price_options);
   if (cfg.projected_maturity.has_value()) {
-    index_leg =
-        resolve_projected_leg(surfaces, universe.index, *cfg.projected_maturity, cfg.multiplier);
+    index_leg = resolve_projected_leg(surfaces, universe.index, *cfg.projected_maturity,
+                                      cfg.multiplier, price_options);
   }
   if (!index_leg) {
     return Err(index_leg.error());
   }
   if (cfg.projected_maturity.has_value()) {
-    common_maturity = ProjectedMaturitySpec::absolute(index_leg->call_definition.expiry_ts_ns);
+    common_maturity = ProjectedMaturitySpec::absolute(index_leg->leg.call_definition.expiry_ts_ns);
   }
 
   std::vector<std::size_t> used_names;
   std::vector<DispersionLeg> name_legs;
+  std::vector<FullGreekSeed> entry_risk_seeds;
   std::vector<DroppedName> dropped;
   used_names.reserve(universe.names.size());
   name_legs.reserve(universe.names.size());
+  entry_risk_seeds.reserve(2u * (1u + universe.names.size()));
   dropped.reserve(universe.names.size());
+  ATX_TRY_VOID(append_entry_seeds(*index_leg, entry_risk_seeds));
   for (std::size_t i = 0; i < universe.names.size(); ++i) {
     const DispersionMember &name = universe.names[i];
-    Result<DispersionLeg> leg =
+    Result<ResolvedDispersionLeg> leg =
         common_maturity.has_value()
-            ? resolve_projected_leg(surfaces, name, *common_maturity, cfg.multiplier)
-            : resolve_leg(surfaces, name, cfg.target_T);
+            ? resolve_projected_leg(surfaces, name, *common_maturity, cfg.multiplier, price_options)
+            : resolve_leg(surfaces, name, cfg.target_T, price_options);
     if (!leg) {
       const ErrorCode ec = leg.error().code();
       if (cfg.missing.policy == MissingNamePolicy::DropRenormalize &&
@@ -383,7 +466,8 @@ Result<DispersionBook> build_dispersion_book(const DispersionUniverse &universe,
       return Err(leg.error());
     }
     used_names.push_back(i);
-    name_legs.push_back(std::move(*leg));
+    ATX_TRY_VOID(append_entry_seeds(*leg, entry_risk_seeds));
+    name_legs.push_back(std::move(leg->leg));
   }
   if (used_names.size() < cfg.missing.min_names) {
     return Err(ErrorCode::Unavailable, "dispersion: only " + std::to_string(used_names.size()) +
@@ -403,8 +487,8 @@ Result<DispersionBook> build_dispersion_book(const DispersionUniverse &universe,
 
   const double index_sign = cfg.side == DispersionSide::ShortIndexLongNames ? -1.0 : 1.0;
   const double name_sign = -index_sign;
-  index_leg->straddle_qty =
-      index_sign * cfg.target_vega / (index_leg->straddle_vega * cfg.multiplier);
+  index_leg->leg.straddle_qty =
+      index_sign * cfg.target_vega / (index_leg->leg.straddle_vega * cfg.multiplier);
   for (std::size_t k = 0; k < used_names.size(); ++k) {
     const double normalized_weight = universe.names[used_names[k]].weight / sum_w;
     name_legs[k].straddle_qty = name_sign * normalized_weight * cfg.target_vega /
@@ -412,9 +496,10 @@ Result<DispersionBook> build_dispersion_book(const DispersionUniverse &universe,
   }
 
   DispersionBook book;
-  book.index_leg = std::move(*index_leg);
+  book.index_leg = std::move(index_leg->leg);
   book.name_legs = std::move(name_legs);
   book.used_names = std::move(used_names);
+  book.entry_risk_seeds = std::move(entry_risk_seeds);
   book.dropped = std::move(dropped);
   book.positions.reserve(2 * (1 + book.name_legs.size()));
   book.entry_marks.reserve(2 * (1 + book.name_legs.size()));
@@ -425,6 +510,21 @@ Result<DispersionBook> build_dispersion_book(const DispersionUniverse &universe,
     emit_straddle(leg, cfg.multiplier, next_id, book.positions, book.entry_marks);
   }
   return Ok(std::move(book));
+}
+
+} // namespace
+
+Result<DispersionBook> build_dispersion_book(const DispersionUniverse &universe,
+                                             const SurfaceSet &surfaces,
+                                             const DispersionConfig &cfg) {
+  return build_dispersion_book_impl(universe, surfaces, cfg, nullptr);
+}
+
+Result<DispersionBook> build_dispersion_book(const DispersionUniverse &universe,
+                                             const SurfaceSet &surfaces,
+                                             const DispersionConfig &cfg,
+                                             const PriceOptions &price_options) {
+  return build_dispersion_book_impl(universe, surfaces, cfg, &price_options);
 }
 
 Result<ResolvedUniverse> resolve_universe_uids(const DispersionUniverse &universe,

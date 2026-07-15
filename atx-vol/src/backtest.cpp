@@ -4,11 +4,13 @@
 
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <numeric>
 #include <optional>
 #include <span>
 #include <string>
@@ -41,7 +43,14 @@ constexpr std::size_t kPrivateSnapshotCacheCapacity = 3u;
 
 // Contract residual T on the snapshot dated `base_ts`: (expiry - base.ts)/year.
 [[nodiscard]] double residual_T(std::int64_t expiry_ts_ns, std::int64_t base_ts_ns) noexcept {
-  return (static_cast<double>(expiry_ts_ns) - static_cast<double>(base_ts_ns)) / kNsPerYear;
+  if (expiry_ts_ns >= base_ts_ns) {
+    const std::uint64_t delta =
+        static_cast<std::uint64_t>(expiry_ts_ns) - static_cast<std::uint64_t>(base_ts_ns);
+    return static_cast<double>(delta) / kNsPerYear;
+  }
+  const std::uint64_t delta =
+      static_cast<std::uint64_t>(base_ts_ns) - static_cast<std::uint64_t>(expiry_ts_ns);
+  return -static_cast<double>(delta) / kNsPerYear;
 }
 
 // Materialize the current book as `Position`s priced at `base_ts`'s residual T.
@@ -102,6 +111,284 @@ private:
   std::optional<PortfolioPricer> pricer_;
   PortfolioWorkspace workspace_;
 };
+
+[[nodiscard]] bool same_double_bits(double lhs, double rhs) noexcept {
+  return std::bit_cast<std::uint64_t>(lhs) == std::bit_cast<std::uint64_t>(rhs);
+}
+
+[[nodiscard]] bool valid_side(Side side) noexcept {
+  switch (side) {
+  case Side::Call:
+  case Side::Put:
+    return true;
+  default:
+    return false;
+  }
+}
+
+[[nodiscard]] bool valid_query_pricing_tier(QueryPricingTier tier) noexcept {
+  switch (tier) {
+  case QueryPricingTier::LegacyCompatible:
+  case QueryPricingTier::ColdReference:
+  case QueryPricingTier::RepresentativeFast:
+  case QueryPricingTier::CarryBank:
+    return true;
+  default:
+    return false;
+  }
+}
+
+[[nodiscard]] bool valid_query_cache_build_policy(QueryCacheBuildPolicy policy) noexcept {
+  switch (policy) {
+  case QueryCacheBuildPolicy::Eager:
+  case QueryCacheBuildPolicy::ReuseOnly:
+    return true;
+  default:
+    return false;
+  }
+}
+
+[[nodiscard]] bool valid_query_execution(QueryExecution execution) noexcept {
+  switch (execution) {
+  case QueryExecution::Configured:
+  case QueryExecution::ColdReference:
+    return true;
+  default:
+    return false;
+  }
+}
+
+[[nodiscard]] bool valid_resolved_price_isa(simd::SimdIsa isa) noexcept {
+  switch (isa) {
+  case simd::SimdIsa::Auto:
+  case simd::SimdIsa::ForceScalar:
+  case simd::SimdIsa::ForceAvx2:
+    return true;
+  default:
+    return false;
+  }
+}
+
+[[nodiscard]] bool valid_spread_kind(FrictionModel::SpreadKind kind) noexcept {
+  switch (kind) {
+  case FrictionModel::SpreadKind::None:
+  case FrictionModel::SpreadKind::PriceBps:
+  case FrictionModel::SpreadKind::VolTicks:
+    return true;
+  default:
+    return false;
+  }
+}
+
+[[nodiscard]] bool valid_unpriced_policy(UnpricedLotPolicy policy) noexcept {
+  switch (policy) {
+  case UnpricedLotPolicy::ExcludeAndReport:
+  case UnpricedLotPolicy::Error:
+    return true;
+  default:
+    return false;
+  }
+}
+
+[[nodiscard]] bool valid_provenance_policy(SurfaceProvenancePolicy policy) noexcept {
+  switch (policy) {
+  case SurfaceProvenancePolicy::Compatibility:
+  case SurfaceProvenancePolicy::RequireAdmittedRisk:
+    return true;
+  default:
+    return false;
+  }
+}
+
+[[nodiscard]] Status validate_run_config(const RunConfig &cfg) {
+  if (cfg.record_every_n == 0u) {
+    return Err(ErrorCode::InvalidArgument, "run_backtest: record_every_n must be positive");
+  }
+  if (!valid_query_pricing_tier(cfg.query_pricing_tier) ||
+      !valid_query_cache_build_policy(cfg.query_cache_build_policy) ||
+      !valid_query_execution(cfg.price.query_execution) ||
+      !valid_resolved_price_isa(cfg.price.resolved_price_isa) ||
+      !valid_spread_kind(cfg.frictions.spread_kind) || !valid_unpriced_policy(cfg.unpriced) ||
+      !valid_provenance_policy(cfg.surface_provenance_policy)) {
+    return Err(ErrorCode::InvalidArgument, "run_backtest: invalid RunConfig enum value");
+  }
+  if (cfg.price.prices_only) {
+    return Err(ErrorCode::InvalidArgument,
+               "run_backtest: prices_only cannot supply required backtest Greeks");
+  }
+  if (!std::isfinite(cfg.price.sticky.ref_uprc_weight)) {
+    return Err(ErrorCode::InvalidArgument, "run_backtest: sticky ref_uprc_weight must be finite");
+  }
+  const auto finite_nonnegative = [](double value) noexcept {
+    return std::isfinite(value) && value >= 0.0;
+  };
+  if (!finite_nonnegative(cfg.frictions.half_spread_bps) ||
+      !finite_nonnegative(cfg.frictions.vol_tick) ||
+      !finite_nonnegative(cfg.frictions.per_contract_cost) ||
+      !finite_nonnegative(cfg.frictions.hedge_slippage_bps)) {
+    return Err(ErrorCode::InvalidArgument,
+               "run_backtest: friction inputs must be finite and nonnegative");
+  }
+  if (!std::isfinite(cfg.financing.initial_cash)) {
+    return Err(ErrorCode::InvalidArgument, "run_backtest: initial_cash must be finite");
+  }
+  if (!finite_nonnegative(cfg.financing.borrow_rate)) {
+    return Err(ErrorCode::InvalidArgument,
+               "run_backtest: borrow_rate must be finite and nonnegative");
+  }
+  return Ok();
+}
+
+[[nodiscard]] Status validate_lot_economics(const Lot &lot, std::string_view owner,
+                                            std::optional<std::int64_t> base_ts) {
+  const auto invalid = [&lot, owner](std::string_view field) {
+    return Err(ErrorCode::InvalidArgument, "run_backtest: lot id=" + std::to_string(lot.id) +
+                                               " in " + std::string{owner} + " has invalid " +
+                                               std::string{field});
+  };
+  if (!std::isfinite(lot.contract.K) || lot.contract.K <= 0.0) {
+    return invalid("strike K");
+  }
+  if (!std::isfinite(lot.contract.T)) {
+    return invalid("contract T");
+  }
+  if (!valid_side(lot.contract.side)) {
+    return invalid("option side");
+  }
+  if (!std::isfinite(lot.qty)) {
+    return invalid("qty");
+  }
+  if (!std::isfinite(lot.multiplier) || lot.multiplier <= 0.0) {
+    return invalid("multiplier");
+  }
+  if (!std::isfinite(lot.entry_price) || lot.entry_price < 0.0) {
+    return invalid("entry_price");
+  }
+  if (base_ts.has_value() && lot.expiry_ts_ns <= *base_ts) {
+    return invalid("expiry_ts_ns (must be after base)");
+  }
+  return Ok();
+}
+
+[[nodiscard]] Status validate_lot_economics(std::span<const Lot> lots, std::string_view owner,
+                                            std::optional<std::int64_t> base_ts = std::nullopt) {
+  for (const Lot &lot : lots) {
+    ATX_TRY_VOID(validate_lot_economics(lot, owner, base_ts));
+  }
+  return Ok();
+}
+
+[[nodiscard]] Status validate_hedge_spec(const HedgeSpec &spec) {
+  switch (spec.kind) {
+  case HedgeSpec::Kind::None:
+  case HedgeSpec::Kind::DeltaToZero:
+    break;
+  default:
+    return Err(ErrorCode::InvalidArgument, "run_backtest: invalid hedge kind");
+  }
+  switch (spec.cadence) {
+  case HedgeSpec::Cadence::AtEntry:
+  case HedgeSpec::Cadence::Daily:
+    break;
+  default:
+    return Err(ErrorCode::InvalidArgument, "run_backtest: invalid hedge cadence");
+  }
+  if (!std::isfinite(spec.band) || spec.band < 0.0) {
+    return Err(ErrorCode::InvalidArgument,
+               "run_backtest: hedge band must be finite and nonnegative");
+  }
+  return Ok();
+}
+
+// A lot ID is the executor's identity key. Once emitted, every economic field is
+// immutable; a strategy expresses a resize/restrike as close-old plus open-new.
+[[nodiscard]] bool same_lot_identity(const Lot &lhs, const Lot &rhs) noexcept {
+  return lhs.id == rhs.id && lhs.contract.uid == rhs.contract.uid &&
+         same_double_bits(lhs.contract.K, rhs.contract.K) &&
+         same_double_bits(lhs.contract.T, rhs.contract.T) &&
+         lhs.contract.side == rhs.contract.side && same_double_bits(lhs.qty, rhs.qty) &&
+         same_double_bits(lhs.multiplier, rhs.multiplier) && lhs.expiry_ts_ns == rhs.expiry_ts_ns &&
+         lhs.cohort == rhs.cohort && same_double_bits(lhs.entry_price, rhs.entry_price);
+}
+
+// Grow-only sorted ID index. Rebuild changes only the active prefix once storage
+// is warm and never reorders the authoritative lot vector, preserving reduction
+// and execution arithmetic order.
+class ReusableLotIdIndex {
+public:
+  [[nodiscard]] Status rebuild(std::span<const Lot> lots, std::string_view owner) {
+    if (order_.size() < lots.size()) {
+      order_.resize(lots.size());
+    }
+    active_size_ = lots.size();
+    if (active_size_ == 0u) {
+      return Ok();
+    }
+    std::iota(order_.begin(), order_.begin() + static_cast<std::ptrdiff_t>(active_size_),
+              std::size_t{0});
+    std::sort(order_.begin(), order_.begin() + static_cast<std::ptrdiff_t>(active_size_),
+              [&lots](std::size_t lhs, std::size_t rhs) { return lots[lhs].id < lots[rhs].id; });
+    for (std::size_t i = 1; i < active_size_; ++i) {
+      const std::uint64_t id = lots[order_[i]].id;
+      if (lots[order_[i - 1u]].id == id) {
+        return Err(ErrorCode::InvalidArgument,
+                   "run_backtest: duplicate lot id=" + std::to_string(id) + " in " +
+                       std::string{owner});
+      }
+    }
+    return Ok();
+  }
+
+  [[nodiscard]] std::optional<std::size_t> find(std::span<const Lot> lots,
+                                                std::uint64_t id) const noexcept {
+    if (active_size_ == 0u) {
+      return std::nullopt;
+    }
+    const auto first = order_.begin();
+    const auto last = first + static_cast<std::ptrdiff_t>(active_size_);
+    const auto it =
+        std::lower_bound(first, last, id, [&lots](std::size_t index, std::uint64_t key) {
+          return lots[index].id < key;
+        });
+    if (it == last || lots[*it].id != id) {
+      return std::nullopt;
+    }
+    return *it;
+  }
+
+private:
+  std::vector<std::size_t> order_;
+  std::size_t active_size_{0};
+};
+
+[[nodiscard]] Status validate_strategy_transition(std::span<const Lot> before,
+                                                  std::span<const Lot> after,
+                                                  std::uint64_t next_id_before,
+                                                  std::uint64_t next_id_after, std::int64_t base_ts,
+                                                  ReusableLotIdIndex &before_index,
+                                                  ReusableLotIdIndex &after_index) {
+  ATX_TRY_VOID(validate_lot_economics(after, "post-strategy book", base_ts));
+  ATX_TRY_VOID(before_index.rebuild(before, "pre-strategy book"));
+  ATX_TRY_VOID(after_index.rebuild(after, "post-strategy book"));
+  if (next_id_after < next_id_before) {
+    return Err(ErrorCode::InvalidArgument, "run_backtest: strategy made next_lot_id non-monotonic");
+  }
+  for (const Lot &lot : after) {
+    const std::optional<std::size_t> prior = before_index.find(before, lot.id);
+    if (prior.has_value()) {
+      if (!same_lot_identity(before[*prior], lot)) {
+        return Err(ErrorCode::InvalidArgument,
+                   "run_backtest: mutated surviving lot id=" + std::to_string(lot.id));
+      }
+      continue;
+    }
+    if (lot.id < next_id_before || lot.id >= next_id_after) {
+      return Err(ErrorCode::InvalidArgument,
+                 "run_backtest: reused or non-monotonic lot id=" + std::to_string(lot.id));
+    }
+  }
+  return Ok();
+}
 
 // Book greeks + the count of positions the pricer could not value on THIS
 // snapshot's date. `total`'s `gross_*` sum only the Ok lanes; `n_unpriced`
@@ -214,7 +501,8 @@ struct StepPnl {
 [[nodiscard]] Result<StepPnl> compute_step(const MarketSnapshot &base,
                                            const MarketSnapshot &shifted,
                                            const std::vector<Lot> &lots, const PriceOptions &opts,
-                                           RetainedBookPricer &retained) {
+                                           RetainedBookPricer &retained,
+                                           ReusableTargetMarkFrame *target_marks = nullptr) {
   ATX_VOL_PROFILE_SCOPE(StepPnl);
   std::vector<Lot> alive;
   alive.reserve(lots.size());
@@ -251,10 +539,17 @@ struct StepPnl {
   PnlTotals t{};
   std::uint32_t n_unpriced = 0;
   std::uint32_t first_unpriced_uid = 0;
+  if (target_marks != nullptr) {
+    target_marks->prepare(alive.size());
+  }
   if (!alive.empty()) {
     ATX_TRY(PortfolioPricer * pricer, retained.prepare(alive, base.ts_ns()));
     PortfolioWorkspace &workspace = retained.workspace();
-    auto totals = pricer->pnl_totals(base.set(), shifted.set(), workspace, opts);
+    Result<PnlTotals> totals =
+        target_marks != nullptr
+            ? pricer->pnl_totals_with_target_marks_into(base.set(), shifted.set(),
+                                                        target_marks->write_view(), workspace, opts)
+            : pricer->pnl_totals(base.set(), shifted.set(), workspace, opts);
     if (!totals) {
       return Err(totals.error());
     }
@@ -278,6 +573,9 @@ struct StepPnl {
       }
     }
   }
+  if (target_marks != nullptr) {
+    ATX_TRY_VOID(target_marks->seal());
+  }
   return Ok(StepPnl{t, settlement, n_unpriced, first_unpriced_uid});
 }
 
@@ -299,6 +597,83 @@ struct StepPnl {
                                                         const std::string &date) {
   return "run_backtest: " + std::to_string(n_unpriced) + " held lot(s) have no surface on " + date +
          " (first uid=" + std::to_string(first_uid) + ")";
+}
+
+[[nodiscard]] constexpr std::string_view purpose_name(SurfacePurpose purpose) noexcept {
+  switch (purpose) {
+  case SurfacePurpose::MarketMark:
+    return "MarketMark";
+  case SurfacePurpose::Risk:
+    return "Risk";
+  }
+  return "Unknown";
+}
+
+[[nodiscard]] constexpr std::string_view state_name(SurfaceState state) noexcept {
+  switch (state) {
+  case SurfaceState::Healthy:
+    return "Healthy";
+  case SurfaceState::Degraded:
+    return "Degraded";
+  case SurfaceState::Stale:
+    return "Stale";
+  case SurfaceState::Rejected:
+    return "Rejected";
+  }
+  return "Unknown";
+}
+
+// Validate after every cache load, not only while constructing a snapshot. That
+// placement means a preloaded or previously cached compatibility snapshot cannot
+// bypass a stricter policy selected by a later backtest run.
+[[nodiscard]] Status validate_snapshot_provenance(const MarketSnapshot &snapshot,
+                                                  SurfaceProvenancePolicy policy) {
+  if (policy == SurfaceProvenancePolicy::Compatibility) {
+    return Ok();
+  }
+
+  const std::span<const PricedSurface> surfaces = snapshot.surfaces();
+  const std::span<const SurfaceProvenance> provenances = snapshot.provenances();
+  if (provenances.size() != surfaces.size()) {
+    return Err(ErrorCode::InvalidArgument,
+               "run_backtest: snapshot provenance is not aligned with surfaces");
+  }
+  for (std::size_t index = 0; index < surfaces.size(); ++index) {
+    const PricedSurface &surface = surfaces[index];
+    const SurfaceProvenance &provenance = provenances[index];
+    const bool admitted =
+        !provenance.legacy_format && provenance.purpose == SurfacePurpose::Risk &&
+        provenance.served_generation != 0u &&
+        (provenance.state == SurfaceState::Healthy || provenance.state == SurfaceState::Degraded);
+    if (!admitted) {
+      const std::string uid = std::to_string(surface.uid());
+      const std::string purpose{purpose_name(provenance.purpose)};
+      const std::string state{state_name(provenance.state)};
+      const std::string legacy = provenance.legacy_format ? "true" : "false";
+      const std::string served_generation = std::to_string(provenance.served_generation);
+      return Err(ErrorCode::InvalidArgument,
+                 "run_backtest: surface provenance rejected uid=" + uid + " purpose=" + purpose +
+                     " state=" + state + " legacy=" + legacy +
+                     " served_generation=" + served_generation);
+    }
+  }
+  return Ok();
+}
+
+// ReuseOnly may resolve each requested fast snapshot independently to either an
+// already-resident fast entry or a cold miss. Configured execution would then
+// make the economic P&L route depend on cache history, potentially mixing bases
+// within one run. A forced-cold execution is invariant to that residency choice.
+[[nodiscard]] Status validate_run_query_route(const RunConfig &cfg) {
+  const bool requested_fast = cfg.query_pricing_tier == QueryPricingTier::RepresentativeFast ||
+                              cfg.query_pricing_tier == QueryPricingTier::CarryBank;
+  if (cfg.query_cache_build_policy == QueryCacheBuildPolicy::ReuseOnly && requested_fast &&
+      cfg.price.query_execution != QueryExecution::ColdReference) {
+    return Err(ErrorCode::InvalidArgument,
+               "run_backtest: ReuseOnly with a fast requested tier requires ColdReference "
+               "economic query execution");
+  }
+  return Ok();
 }
 
 } // namespace
@@ -342,10 +717,12 @@ Result<Clock> Clock::from_surface_db(const SurfaceDb &db) {
 
 // ── MarketSnapshot ──────────────────────────────────────────────────────────
 
-MarketSnapshot::MarketSnapshot(std::vector<PricedSurface> &&surfaces, SurfaceSet &&set,
+MarketSnapshot::MarketSnapshot(std::vector<PricedSurface> &&surfaces,
+                               std::vector<SurfaceProvenance> &&provenance, SurfaceSet &&set,
                                std::int64_t ts,
                                std::vector<std::pair<std::string, std::uint32_t>> &&syms) noexcept
-    : surfaces_{std::move(surfaces)}, set_{std::move(set)}, ts_ns_{ts}, syms_{std::move(syms)} {}
+    : surfaces_{std::move(surfaces)}, provenance_{std::move(provenance)}, set_{std::move(set)},
+      ts_ns_{ts}, syms_{std::move(syms)} {}
 
 std::uint64_t MarketSnapshot::open_count() noexcept { return g_open_count.load(); }
 void MarketSnapshot::reset_open_count() noexcept { g_open_count.store(0); }
@@ -365,12 +742,19 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
 
   auto mapped = [&]() {
     ATX_VOL_PROFILE_SCOPE(ArchiveMap);
-    return arch->map_all();
+    return arch->map_all_with_provenance();
   }();
   if (!mapped) {
     return Err(mapped.error());
   }
-  std::vector<PricedSurface> surfaces = std::move(*mapped);
+  std::vector<PricedSurface> surfaces;
+  std::vector<SurfaceProvenance> provenance;
+  surfaces.reserve(mapped->size());
+  provenance.reserve(mapped->size());
+  for (ArchivedSurface &record : *mapped) {
+    surfaces.push_back(std::move(record.surface));
+    provenance.push_back(std::move(record.provenance));
+  }
   if (surfaces.empty()) {
     return Err(ErrorCode::InvalidArgument, "MarketSnapshot::load: archive holds no surfaces");
   }
@@ -414,7 +798,20 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
     syms.emplace_back(std::string(e.symbol, e.symbol_len), e.uid);
   }
 
-  return MarketSnapshot{std::move(surfaces), std::move(*set), ts, std::move(syms)};
+  return MarketSnapshot{std::move(surfaces), std::move(provenance), std::move(*set), ts,
+                        std::move(syms)};
+}
+
+const SurfaceProvenance *MarketSnapshot::provenance(std::uint32_t uid) const noexcept {
+  if (provenance_.size() != surfaces_.size()) {
+    return nullptr;
+  }
+  for (std::size_t i = 0; i < surfaces_.size(); ++i) {
+    if (surfaces_[i].uid() == uid) {
+      return &provenance_[i];
+    }
+  }
+  return nullptr;
 }
 
 std::optional<std::uint32_t> MarketSnapshot::uid_of(std::string_view symbol) const {
@@ -434,18 +831,86 @@ std::optional<std::uint32_t> MarketSnapshot::uid_of(std::string_view symbol) con
 
 // ── Driver ──────────────────────────────────────────────────────────────────
 
+void ReusableTargetMarkFrame::prepare(std::size_t n) {
+  if (id_.size() < n) {
+    id_.resize(n);
+    raw_mark_.resize(n);
+    base_vega_proxy_.resize(n);
+    status_.resize(n);
+    order_.resize(n);
+  }
+  active_size_ = n;
+  sealed_ = false;
+}
+
+TargetMarkView ReusableTargetMarkFrame::write_view() noexcept {
+  sealed_ = false;
+  return TargetMarkView{std::span<std::uint64_t>{id_.data(), active_size_},
+                        std::span<double>{raw_mark_.data(), active_size_},
+                        std::span<PriceStatus>{status_.data(), active_size_},
+                        std::span<double>{base_vega_proxy_.data(), active_size_}};
+}
+
+Status ReusableTargetMarkFrame::seal() {
+  sealed_ = false;
+  if (active_size_ == 0u) {
+    sealed_ = true;
+    return Ok();
+  }
+  std::iota(order_.begin(), order_.begin() + static_cast<std::ptrdiff_t>(active_size_),
+            std::size_t{0});
+  std::sort(order_.begin(), order_.begin() + static_cast<std::ptrdiff_t>(active_size_),
+            [this](std::size_t lhs, std::size_t rhs) { return id_[lhs] < id_[rhs]; });
+  for (std::size_t i = 1; i < active_size_; ++i) {
+    const std::uint64_t id = id_[order_[i]];
+    if (id_[order_[i - 1u]] == id) {
+      return Err(ErrorCode::InvalidArgument,
+                 "run_backtest: duplicate target-mark lot id=" + std::to_string(id));
+    }
+  }
+  sealed_ = true;
+  return Ok();
+}
+
+std::optional<ReusableTargetMarkFrame::Match>
+ReusableTargetMarkFrame::find_ok(std::uint64_t id) const noexcept {
+  if (!sealed_ || active_size_ == 0u) {
+    return std::nullopt;
+  }
+  const auto first = order_.begin();
+  const auto last = first + static_cast<std::ptrdiff_t>(active_size_);
+  const auto it = std::lower_bound(
+      first, last, id, [this](std::size_t index, std::uint64_t key) { return id_[index] < key; });
+  if (it == last || id_[*it] != id) {
+    return std::nullopt;
+  }
+  const std::size_t index = *it;
+  const double raw_mark = raw_mark_[index];
+  const double base_vega_proxy = base_vega_proxy_[index];
+  if (status_[index] != PriceStatus::Ok || !std::isfinite(raw_mark) || raw_mark < 0.0 ||
+      !std::isfinite(base_vega_proxy)) {
+    return std::nullopt;
+  }
+  return Match{raw_mark, base_vega_proxy};
+}
+
 Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
                                     const RunConfig &cfg) {
   ATX_VOL_PROFILE_SCOPE(BacktestTotal);
+  ATX_TRY_VOID(validate_run_config(cfg));
+  ATX_TRY_VOID(validate_run_query_route(cfg));
+  ATX_TRY_VOID(validate_lot_economics(initial.lots, "initial fixed book"));
   const std::span<const SnapshotRef> refs = clock.refs();
   if (refs.empty()) {
     return Err(ErrorCode::InvalidArgument, "run_backtest: empty clock");
   }
-  const std::size_t stride = (cfg.record_every_n == 0) ? std::size_t{1} : cfg.record_every_n;
+  const std::size_t stride = cfg.record_every_n;
 
   BacktestResult out;
   PortfolioState book = std::move(initial);
   RetainedBookPricer retained_pricer;
+  ReusableLotIdIndex initial_lot_index;
+  ATX_TRY_VOID(initial_lot_index.rebuild(book.lots, "initial fixed book"));
 
   // Append one row from fully-computed step totals.
   const auto push_row = [&out](const std::string &date, std::int64_t ts, double p_total,
@@ -493,6 +958,8 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
     return Err(base_res.error());
   }
   std::shared_ptr<const MarketSnapshot> base = std::move(*base_res);
+  ATX_TRY_VOID(validate_snapshot_provenance(*base, cfg.surface_provenance_policy));
+  ATX_TRY_VOID(validate_lot_economics(book.lots, "initial fixed book", base->ts_ns()));
   if (cfg.prefetch_snapshots && refs.size() > 1) {
     const Status prefetch_status = snapshot_cache->prefetch(
         refs[1].archive_path, cfg.query_pricing_tier, cfg.query_cache_build_policy);
@@ -526,6 +993,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
       return Err(shifted_res.error());
     }
     std::shared_ptr<const MarketSnapshot> shifted = std::move(*shifted_res);
+    ATX_TRY_VOID(validate_snapshot_provenance(*shifted, cfg.surface_provenance_policy));
     if (cfg.prefetch_snapshots && i + 1 < refs.size()) {
       const Status prefetch_status = snapshot_cache->prefetch(
           refs[i + 1].archive_path, cfg.query_pricing_tier, cfg.query_cache_build_policy);
@@ -587,25 +1055,36 @@ struct ExecResult {
 
 Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const RunConfig &cfg) {
   ATX_VOL_PROFILE_SCOPE(BacktestTotal);
+  ATX_TRY_VOID(validate_run_config(cfg));
+  ATX_TRY_VOID(validate_run_query_route(cfg));
   const std::span<const SnapshotRef> refs = clock.refs();
   if (refs.empty()) {
     return Err(ErrorCode::InvalidArgument, "run_backtest: empty clock");
   }
+  const QueryExecution required_execution = strat.required_economic_execution();
+  if (!valid_query_execution(required_execution)) {
+    return Err(ErrorCode::InvalidArgument,
+               "run_backtest: strategy returned invalid required economic execution");
+  }
   const bool prepared_fast = cfg.query_pricing_tier == QueryPricingTier::RepresentativeFast ||
                              cfg.query_pricing_tier == QueryPricingTier::CarryBank;
-  if (strat.required_economic_execution() == QueryExecution::ColdReference && prepared_fast &&
+  if (required_execution == QueryExecution::ColdReference && prepared_fast &&
       cfg.price.query_execution != QueryExecution::ColdReference) {
     return Err(ErrorCode::InvalidArgument,
                "run_backtest: strategy requires ColdReference economics for the configured "
                "fast query tier");
   }
-  const std::size_t stride = (cfg.record_every_n == 0) ? std::size_t{1} : cfg.record_every_n;
+  const std::size_t stride = cfg.record_every_n;
 
   BacktestResult out;
   PortfolioState book{};
   std::uint64_t next_id = 1; // monotonic lot ids the strategy consumes
   ReusablePriceFrame risk_frame;
+  ReusableTargetMarkFrame target_marks;
   RetainedBookPricer retained_pricer;
+  ReusableLotIdIndex before_lot_index;
+  ReusableLotIdIndex after_lot_index;
+  std::vector<Lot> before_lots;
 
   // ── Engine-internal cash + per-uid share ledger (B2) ──────────────────────
   double cash = cfg.financing.initial_cash;
@@ -712,36 +1191,19 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
   // then the DeltaToZero hedge overlay), updating `cash`/`shares` and returning the
   // step's realized friction `cost` + option turnover. Frictionless + hedge-None
   // ⇒ cost/turnover 0 and cash/shares untouched.
-  const auto execute = [&](const MarketSnapshot &base_snap,
-                           const std::vector<Lot> &before_lots) -> Result<ExecResult> {
+  const auto execute = [&](const MarketSnapshot &base_snap, const std::vector<Lot> &before_lots,
+                           const HedgeSpec &hedge_spec,
+                           const ReusableTargetMarkFrame *close_marks) -> Result<ExecResult> {
     ATX_VOL_PROFILE_SCOPE(Execution);
     ExecResult ex;
     bool entry_happened = false;
 
-    const auto in_before = [&before_lots](std::uint64_t id) {
-      for (const Lot &l : before_lots) {
-        if (l.id == id) {
-          return true;
-        }
-      }
-      return false;
-    };
-    const auto in_book = [&book](std::uint64_t id) {
-      for (const Lot &l : book.lots) {
-        if (l.id == id) {
-          return true;
-        }
-      }
-      return false;
-    };
-
     for (const Lot &lot : book.lots) {
-      if (!in_before(lot.id)) {
+      if (!before_lot_index.find(before_lots, lot.id).has_value()) {
         entry_happened = true;
         break;
       }
     }
-    const HedgeSpec hedge_spec = strat.hedge_spec();
     const bool hedge_fires =
         hedge_spec.kind == HedgeSpec::Kind::DeltaToZero &&
         ((hedge_spec.cadence == HedgeSpec::Cadence::Daily) ||
@@ -753,26 +1215,33 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     if (entry_happened || hedge_fires) {
       ATX_TRY(PortfolioPricer * pricer, retained_pricer.prepare(book.lots, base_snap.ts_ns()));
       risk_frame.resize(pricer->portfolio().n_positions());
+      const std::span<const FullGreekSeed> entry_seeds =
+          entry_happened ? strat.entry_risk_seeds() : std::span<const FullGreekSeed>{};
       ATX_TRY_VOID(pricer->price_into(base_snap.set(), PriceFieldMask::FullGreeks,
-                                      risk_frame.view(), retained_pricer.workspace(), cfg.price));
+                                      risk_frame.view(), retained_pricer.workspace(), cfg.price,
+                                      entry_seeds));
       ex.book_greeks = summarize_price_frame(risk_frame.frame);
       current_risk = &risk_frame.frame;
     }
 
     // Entry trades: lots present now but absent from `before_lots`.
-    for (const Lot &lot : book.lots) {
-      if (in_before(lot.id)) {
+    for (std::size_t lot_index = 0; lot_index < book.lots.size(); ++lot_index) {
+      const Lot &lot = book.lots[lot_index];
+      if (before_lot_index.find(before_lots, lot.id).has_value()) {
         continue;
       }
       ATX_VOL_PROFILE_SCOPE(EntryRisk);
       double vega = 0.0;
-      if (current_risk != nullptr) {
-        for (std::size_t i = 0; i < current_risk->size(); ++i) {
-          if (current_risk->id[i] == lot.id && current_risk->status[i] == PriceStatus::Ok) {
-            const double weight = lot.qty * lot.multiplier;
-            vega = weight != 0.0 ? current_risk->vega[i] / weight : 0.0;
-            break;
-          }
+      if (current_risk != nullptr &&
+          (lot_index >= current_risk->size() || current_risk->id[lot_index] != lot.id)) {
+        return Err(ErrorCode::Internal,
+                   "run_backtest: entry-risk frame is not aligned with lot id=" +
+                       std::to_string(lot.id));
+      }
+      if (current_risk != nullptr && current_risk->status[lot_index] == PriceStatus::Ok) {
+        const double weight = lot.qty * lot.multiplier;
+        if (weight != 0.0) {
+          vega = current_risk->vega[lot_index] / weight;
         }
       }
       const double mark = lot.entry_price; // entry_mark (fill at mid)
@@ -788,21 +1257,49 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     // Roll-close trades: lots in `before_lots` gone now (expiries were already
     // settled + erased before on_step, so these are strategy-driven closes).
     for (const Lot &lot : before_lots) {
-      if (in_book(lot.id)) {
+      if (after_lot_index.find(book.lots, lot.id).has_value()) {
         continue;
       }
       const double T_res = residual_T(lot.expiry_ts_ns, base_snap.ts_ns());
       const PricedSurface *s = base_snap.find(lot.contract.uid);
-      double mark = 0.0;
-      double vega = 0.0;
-      if (s != nullptr) {
+      const std::optional<ReusableTargetMarkFrame::Match> exact_mark =
+          close_marks != nullptr ? close_marks->find_ok(lot.id) : std::nullopt;
+      double mark = exact_mark.has_value() ? exact_mark->raw_mark : 0.0;
+      // None/PriceBps do not need target-date vega for friction. Report the P&L
+      // base bundle's unbounded one-step-lag approximation in turnover telemetry
+      // only; it never enters friction, cash, or NAV. VolTicks replaces it below
+      // with exact configured target-date vega.
+      double vega = exact_mark.has_value() ? exact_mark->base_vega_proxy : 0.0;
+      if (cfg.frictions.spread_kind == FrictionModel::SpreadKind::VolTicks) {
+        if (s == nullptr) {
+          return Err(ErrorCode::NotFound,
+                     "run_backtest: no surface for roll-close lot id=" + std::to_string(lot.id) +
+                         " uid=" + std::to_string(lot.contract.uid));
+        }
         const Result<AmericanGreeks> risk =
-            s->greeks_analytic(lot.contract.K, T_res, lot.contract.side, cfg.price.query_execution);
+            cfg.price.analytic_greeks
+                ? s->greeks_analytic(lot.contract.K, T_res, lot.contract.side,
+                                     cfg.price.query_execution)
+                : s->greeks(lot.contract.K, T_res, lot.contract.side, cfg.price.query_execution);
         if (!risk) {
           return Err(risk.error());
         }
-        mark = risk->price;
+        if (!exact_mark.has_value()) {
+          mark = risk->price;
+        }
         vega = risk->vega;
+      } else if (!exact_mark.has_value()) {
+        if (s == nullptr) {
+          return Err(ErrorCode::NotFound,
+                     "run_backtest: no surface for roll-close lot id=" + std::to_string(lot.id) +
+                         " uid=" + std::to_string(lot.contract.uid));
+        }
+        const Result<double> fallback =
+            s->fair_value(lot.contract.K, T_res, lot.contract.side, cfg.price.query_execution);
+        if (!fallback) {
+          return Err(fallback.error());
+        }
+        mark = *fallback;
       }
       const double hs = half_spread(mark, vega);
       const double leg_cost = std::fabs(lot.qty) * lot.multiplier * hs +
@@ -865,6 +1362,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     return Err(base_res.error());
   }
   std::shared_ptr<const MarketSnapshot> base = std::move(*base_res);
+  ATX_TRY_VOID(validate_snapshot_provenance(*base, cfg.surface_provenance_policy));
   if (cfg.prefetch_snapshots && refs.size() > 1) {
     const Status prefetch_status = snapshot_cache->prefetch(
         refs[1].archive_path, cfg.query_pricing_tier, cfg.query_cache_build_policy);
@@ -878,15 +1376,20 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
   // Inception (row 0): open positions AS OF refs[0], book entry frictions + premium
   // + the opening hedge into cash; PnL columns are zero; record post-trade cash.
   {
+    const std::uint64_t next_id_before = next_id;
     Status st = [&]() {
       ATX_VOL_PROFILE_SCOPE(StrategyStep);
-      return strat.on_step(*base, 0, book, next_id);
+      return strat.on_step(*base, 0, book, next_id, cfg.price);
     }();
     if (!st) {
       return Err(st.error());
     }
-    const std::vector<Lot> before_lots; // empty ⇒ every opened lot is a fresh entry
-    auto ex = execute(*base, before_lots);
+    before_lots.clear(); // empty => every opened lot is a fresh entry
+    ATX_TRY_VOID(validate_strategy_transition(before_lots, book.lots, next_id_before, next_id,
+                                              base->ts_ns(), before_lot_index, after_lot_index));
+    const HedgeSpec hedge_spec = strat.hedge_spec();
+    ATX_TRY_VOID(validate_hedge_spec(hedge_spec));
+    auto ex = execute(*base, before_lots, hedge_spec, nullptr);
     if (!ex) {
       return Err(ex.error());
     }
@@ -922,6 +1425,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
       return Err(shifted_res.error());
     }
     std::shared_ptr<const MarketSnapshot> shifted = std::move(*shifted_res);
+    ATX_TRY_VOID(validate_snapshot_provenance(*shifted, cfg.surface_provenance_policy));
     if (cfg.prefetch_snapshots && i + 1 < refs.size()) {
       const Status prefetch_status = snapshot_cache->prefetch(
           refs[i + 1].archive_path, cfg.query_pricing_tier, cfg.query_cache_build_policy);
@@ -931,7 +1435,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     }
 
     // 1. PnL of the current book (resolved on base) forward to shifted (unchanged B1).
-    auto step = compute_step(*base, *shifted, book.lots, cfg.price, retained_pricer);
+    auto step = compute_step(*base, *shifted, book.lots, cfg.price, retained_pricer, &target_marks);
     if (!step) {
       return Err(step.error());
     }
@@ -992,15 +1496,20 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     std::erase_if(book.lots, [&base](const Lot &l) { return l.expiry_ts_ns <= base->ts_ns(); });
 
     // 4-5. Strategy entries/rolls + hedge overlay on the new base.
-    const std::vector<Lot> before_lots = book.lots; // survivors before on_step
+    before_lots.assign(book.lots.begin(), book.lots.end()); // survivors before on_step
+    const std::uint64_t next_id_before = next_id;
     Status st = [&]() {
       ATX_VOL_PROFILE_SCOPE(StrategyStep);
-      return strat.on_step(*base, i, book, next_id);
+      return strat.on_step(*base, i, book, next_id, cfg.price);
     }();
     if (!st) {
       return Err(st.error());
     }
-    auto ex = execute(*base, before_lots);
+    ATX_TRY_VOID(validate_strategy_transition(before_lots, book.lots, next_id_before, next_id,
+                                              base->ts_ns(), before_lot_index, after_lot_index));
+    const HedgeSpec hedge_spec = strat.hedge_spec();
+    ATX_TRY_VOID(validate_hedge_spec(hedge_spec));
+    auto ex = execute(*base, before_lots, hedge_spec, &target_marks);
     if (!ex) {
       return Err(ex.error());
     }

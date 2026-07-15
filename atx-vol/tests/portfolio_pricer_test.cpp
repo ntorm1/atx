@@ -15,11 +15,14 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -44,6 +47,16 @@ constexpr std::int64_t kNow = 1700000000000000000LL;
   std::memcpy(&ba, &a, sizeof ba);
   std::memcpy(&bb, &b, sizeof bb);
   return ba == bb;
+}
+
+void expect_counters_unchanged(const atx::vol::counters::Snapshot &before,
+                               const atx::vol::counters::Snapshot &after) {
+  using atx::vol::counters::Counter;
+  EXPECT_EQ(after.enabled, before.enabled);
+  for (unsigned i = 0; i < atx::vol::counters::kCount; ++i) {
+    const Counter counter = static_cast<Counter>(i);
+    EXPECT_EQ(after.get(counter), before.get(counter)) << atx::vol::counters::kNames[i];
+  }
 }
 
 // Relative-tolerance closeness for coefficient-wiring checks (avoids fragile
@@ -316,6 +329,19 @@ struct PnlFrameStore {
                         pnl_delta, pnl_gamma, pnl_vega,  pnl_volga,       pnl_vanna,
                         pnl_theta, pnl_rho,   pnl_charm, pnl_unexplained, d_spot,
                         d_vol,     d_time,    d_rate,    status,          &total};
+  }
+};
+
+struct TargetMarkStore {
+  std::vector<std::uint64_t> id;
+  std::vector<double> price_target;
+  std::vector<double> base_vega_proxy;
+  std::vector<PriceStatus> status;
+
+  explicit TargetMarkStore(std::size_t n) : id(n), price_target(n), base_vega_proxy(n), status(n) {}
+
+  [[nodiscard]] TargetMarkView view() {
+    return TargetMarkView{id, price_target, status, base_vega_proxy};
   }
 };
 
@@ -1054,6 +1080,26 @@ TEST(PortfolioPricer, PnlExplain_TimeBump_ThetaAndVolRoll) {
   }
 }
 
+TEST(PortfolioPricer, PnlExplain_ExtremeTimestampDeltaRollsPastExpiryWithoutOverflow) {
+  const PricedSurface base =
+      make_essvi(1, 5, 0.0, kS, kR, (std::numeric_limits<std::int64_t>::min)());
+  const PricedSurface shifted =
+      make_essvi(1, 5, 0.0, kS, kR, (std::numeric_limits<std::int64_t>::max)());
+  const SurfaceSet bset = set_of({&base});
+  const SurfaceSet sset = set_of({&shifted});
+  const std::vector<Position> book{{1, {1, 100.0, 0.25, Side::Call}, 1.0, 100.0}};
+  auto portfolio = Portfolio::create(book);
+  ASSERT_TRUE(portfolio.has_value()) << portfolio.error().to_string();
+  const PortfolioPricer pricer(std::move(*portfolio));
+
+  auto result = pricer.pnl_explain(bset, sset);
+
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  ASSERT_EQ(result->size(), 1u);
+  EXPECT_EQ(result->status.front(), PriceStatus::InvalidContract);
+  EXPECT_EQ(result->total.n_ok, 0u);
+}
+
 TEST(PortfolioPricer, PnlExplain_CombinedShift_SumsToTotal_And_ThreadDeterministic) {
   const std::int64_t one_hour = static_cast<std::int64_t>(3600.0 * 1e9);
   const PricedSurface base = make_essvi(1, 5);
@@ -1461,6 +1507,18 @@ TEST(Portfolio, HundredThousandPositionsUseBoundedDedupHint) {
   EXPECT_EQ(portfolio->n_contracts(), kUnique);
 }
 
+TEST(Portfolio, Uint32IndexCapacityBoundaryIsCheckedWithoutAllocation) {
+  constexpr std::size_t kMaxIndexCount =
+      static_cast<std::size_t>((std::numeric_limits<std::uint32_t>::max)());
+  EXPECT_TRUE(detail::portfolio_index_count_is_representable(0u));
+  EXPECT_TRUE(detail::portfolio_index_count_is_representable(kMaxIndexCount));
+  if constexpr ((std::numeric_limits<std::size_t>::max)() >
+                (std::numeric_limits<std::uint32_t>::max)()) {
+    EXPECT_FALSE(
+        detail::portfolio_index_count_is_representable((std::numeric_limits<std::size_t>::max)()));
+  }
+}
+
 TEST(PortfolioPricer, PricesOnlyPopulatesMarksAndLeavesRiskNaN) {
   const PricedSurface surface = make_essvi(1, 5);
   const SurfaceSet surfaces = set_of({&surface});
@@ -1596,6 +1654,59 @@ TEST(PortfolioPricer, PriceInto_Marks_MarksBitIdentical_GreeksUntouched) {
   EXPECT_TRUE(std::isnan(fs.total.delta));
   EXPECT_TRUE(std::isnan(fs.total.vega));
   EXPECT_TRUE(std::isnan(fs.total.charm));
+}
+
+TEST(PortfolioPricer, PriceInto_ShiftedOutputColumnsAreRejectedBeforeWorkOrMutation) {
+  const PricedSurface surface = make_essvi(1, 5);
+  const SurfaceSet surfaces = set_of({&surface});
+  auto portfolio = Portfolio::create(pnl_book());
+  ASSERT_TRUE(portfolio.has_value()) << portfolio.error().to_string();
+  const PortfolioPricer pricer(std::move(*portfolio));
+  const std::size_t n = pricer.portfolio().n_positions();
+  FrameStore frame(n, /*want_greeks=*/true);
+  const FrameStore before_frame = frame;
+  constexpr double kSentinel = 1234.5;
+  std::vector<double> shared(n + 1u, kSentinel);
+  PriceFrameView view = frame.view();
+  view.pv = std::span<double>{shared}.first(n);
+  view.price = std::span<double>{shared}.subspan(1u, n);
+  PortfolioWorkspace workspace;
+  atx::vol::counters::reset();
+  const auto before_counters = atx::vol::counters::snapshot();
+
+  const Status result = pricer.price_into(surfaces, PriceFieldMask::FullGreeks, view, workspace,
+                                          PriceOptions{.n_threads = 4, .analytic_greeks = true});
+
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_EQ(shared, std::vector<double>(n + 1u, kSentinel));
+  expect_frame_bit_identical(frame, before_frame);
+  expect_counters_unchanged(before_counters, atx::vol::counters::snapshot());
+}
+
+TEST(PortfolioPricer, PriceInto_TotalEmbeddedInOutputColumnIsRejectedBeforeWorkOrMutation) {
+  const PricedSurface surface = make_essvi(1, 5);
+  const SurfaceSet surfaces = set_of({&surface});
+  const std::vector<Position> book{{17, {1, 100.0, 0.25, Side::Call}, 1.0, 100.0}};
+  auto portfolio = Portfolio::create(book);
+  ASSERT_TRUE(portfolio.has_value()) << portfolio.error().to_string();
+  const PortfolioPricer pricer(std::move(*portfolio));
+  FrameStore frame(1u, /*want_greeks=*/true);
+  frame.total.pv = 678.25;
+  const FrameStore before_frame = frame;
+  PriceFrameView view = frame.view();
+  view.pv = std::span<double>{&frame.total.pv, 1u};
+  PortfolioWorkspace workspace;
+  atx::vol::counters::reset();
+  const auto before_counters = atx::vol::counters::snapshot();
+
+  const Status result = pricer.price_into(surfaces, PriceFieldMask::FullGreeks, view, workspace,
+                                          PriceOptions{.n_threads = 4, .analytic_greeks = true});
+
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+  expect_frame_bit_identical(frame, before_frame);
+  expect_counters_unchanged(before_counters, atx::vol::counters::snapshot());
 }
 
 TEST(PortfolioPricer, PriceTotals_BitIdenticalToPriceTotal_BothMasks) {
@@ -2090,6 +2201,62 @@ TEST(PortfolioPricer, PnlExplainInto_BitIdenticalToPnlExplain) {
   EXPECT_TRUE(bits_equal(fs.total.pnl_unexplained, ref->total.pnl_unexplained));
 }
 
+TEST(PortfolioPricer, PnlExplainInto_ShiftedOutputColumnsAreRejectedBeforeWorkOrMutation) {
+  const PnlSurfaces surfaces;
+  const SurfaceSet base = surfaces.base();
+  const SurfaceSet shifted = surfaces.shifted();
+  auto portfolio = Portfolio::create(pnl_multi_book());
+  ASSERT_TRUE(portfolio.has_value()) << portfolio.error().to_string();
+  const PortfolioPricer pricer(std::move(*portfolio));
+  const std::size_t n = pricer.portfolio().n_positions();
+  PnlFrameStore frame(n);
+  const PnlFrameStore before_frame = frame;
+  constexpr double kSentinel = 987.5;
+  std::vector<double> shared(n + 1u, kSentinel);
+  PnlFrameView view = frame.view();
+  view.pv_base = std::span<double>{shared}.first(n);
+  view.pv_target = std::span<double>{shared}.subspan(1u, n);
+  PortfolioWorkspace workspace;
+  atx::vol::counters::reset();
+  const auto before_counters = atx::vol::counters::snapshot();
+
+  const Status result = pricer.pnl_explain_into(
+      base, shifted, view, workspace, PriceOptions{.n_threads = 4, .analytic_greeks = true});
+
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_EQ(shared, std::vector<double>(n + 1u, kSentinel));
+  expect_pnl_frame_bit_identical(frame, before_frame);
+  expect_counters_unchanged(before_counters, atx::vol::counters::snapshot());
+}
+
+TEST(PortfolioPricer, PnlExplainInto_TotalEmbeddedInOutputColumnIsRejectedBeforeWorkOrMutation) {
+  const PricedSurface base_surface = make_essvi(1, 5);
+  const PricedSurface target_surface = make_essvi(1, 5, 0.0005, kS + 0.1);
+  const SurfaceSet base = set_of({&base_surface});
+  const SurfaceSet target = set_of({&target_surface});
+  const std::vector<Position> book{{19, {1, 100.0, 0.25, Side::Put}, -1.0, 100.0}};
+  auto portfolio = Portfolio::create(book);
+  ASSERT_TRUE(portfolio.has_value()) << portfolio.error().to_string();
+  const PortfolioPricer pricer(std::move(*portfolio));
+  PnlFrameStore frame(1u);
+  frame.total.pnl_total = 321.25;
+  const PnlFrameStore before_frame = frame;
+  PnlFrameView view = frame.view();
+  view.pnl_total = std::span<double>{&frame.total.pnl_total, 1u};
+  PortfolioWorkspace workspace;
+  atx::vol::counters::reset();
+  const auto before_counters = atx::vol::counters::snapshot();
+
+  const Status result = pricer.pnl_explain_into(
+      base, target, view, workspace, PriceOptions{.n_threads = 4, .analytic_greeks = true});
+
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+  expect_pnl_frame_bit_identical(frame, before_frame);
+  expect_counters_unchanged(before_counters, atx::vol::counters::snapshot());
+}
+
 TEST(PortfolioPricer, PnlExplainInto_ReusedMixedStatusRowsMatchFreshWorkspace) {
   using atx::vol::counters::Counter;
   using atx::vol::counters::counters_enabled;
@@ -2319,5 +2486,1078 @@ TEST(PortfolioPricer, PnlExplain_Grouped_BitIdenticalToUngrouped) {
     EXPECT_TRUE(bits_equal(f.d_vol[i], dvol)) << i;
     EXPECT_TRUE(bits_equal(f.d_time[i], dt)) << i;
     EXPECT_TRUE(bits_equal(f.d_rate[i], dr)) << i;
+  }
+}
+
+// ── Full-Greek seed handoff ─────────────────────────────────────────────────
+
+static_assert(!std::is_aggregate_v<FullGreekSeed>);
+static_assert(!std::is_default_constructible_v<FullGreekSeed>);
+using LegacyPriceIntoMember = Status (PortfolioPricer::*)(const SurfaceSet &, PriceFieldMask,
+                                                          PriceFrameView, PortfolioWorkspace &,
+                                                          const PriceOptions &) const;
+[[maybe_unused]] constexpr LegacyPriceIntoMember kLegacyPriceInto =
+    static_cast<LegacyPriceIntoMember>(&PortfolioPricer::price_into);
+
+TEST(PortfolioPricerSeed, ProducerAndAllSeededPriceMatchFreshWithoutBoundarySolves) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+
+  const PricedSurface surface = make_essvi(1, 5);
+  const SurfaceSet surfaces = set_of({&surface});
+  auto portfolio = Portfolio::create(pnl_book());
+  ASSERT_TRUE(portfolio.has_value());
+  const PortfolioPricer pricer(std::move(*portfolio));
+  const PriceOptions options{.n_threads = 1, .analytic_greeks = true};
+
+  std::vector<FullGreekSeed> seeds;
+  seeds.reserve(pricer.portfolio().n_contracts());
+  for (const OptionContract &contract : pricer.portfolio().contracts()) {
+    auto seed = surface.full_greek_seed(contract.K, contract.T, contract.side,
+                                        options.analytic_greeks, options.query_execution);
+    ASSERT_TRUE(seed.has_value()) << seed.error().to_string();
+    EXPECT_EQ(seed->uid(), contract.uid);
+    EXPECT_TRUE(bits_equal(seed->K(), contract.K));
+    EXPECT_TRUE(bits_equal(seed->T(), contract.T));
+    EXPECT_EQ(seed->side(), contract.side);
+    EXPECT_EQ(seed->surface_instance_id(), surface.instance_id());
+    EXPECT_EQ(seed->analytic_greeks(), options.analytic_greeks);
+    EXPECT_EQ(seed->query_execution(), options.query_execution);
+    seeds.push_back(std::move(*seed));
+  }
+
+  const std::size_t n = pricer.portfolio().n_positions();
+  PortfolioWorkspace fresh_workspace;
+  PortfolioWorkspace seeded_workspace;
+  fresh_workspace.reserve(pricer.portfolio().n_contracts(), n);
+  seeded_workspace.reserve(pricer.portfolio().n_contracts(), n);
+  FrameStore fresh(n, /*want_greeks=*/true);
+  FrameStore seeded(n, /*want_greeks=*/true);
+  ASSERT_TRUE(
+      pricer
+          .price_into(surfaces, PriceFieldMask::FullGreeks, fresh.view(), fresh_workspace, options)
+          .has_value());
+
+  if constexpr (counters_enabled()) {
+    atx::vol::counters::reset();
+  }
+  ASSERT_TRUE(pricer
+                  .price_into(surfaces, PriceFieldMask::FullGreeks, seeded.view(), seeded_workspace,
+                              options, seeds)
+                  .has_value());
+  expect_frame_bit_identical(seeded, fresh);
+  if constexpr (counters_enabled()) {
+    const auto measured = atx::vol::counters::snapshot();
+    EXPECT_EQ(measured.get(Counter::BoundarySolves), 0u);
+    EXPECT_EQ(measured.get(Counter::FullGreekSeedReuseLanes), pricer.portfolio().n_contracts());
+    EXPECT_EQ(measured.get(Counter::FullGreekSeedRejectedCandidates), 0u);
+  }
+}
+
+TEST(PortfolioPricerSeed, PartialUnorderedSeedsSkipOnlyTheirUniqueContracts) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+
+  const PricedSurface surface = make_essvi(1, 5);
+  const SurfaceSet surfaces = set_of({&surface});
+  const std::vector<Position> book{
+      {1, {1, 92.0, 0.18, Side::Call}, 1.0, 100.0},
+      {2, {1, 100.0, 0.30, Side::Put}, -2.0, 100.0},
+      {3, {1, 108.0, 0.18, Side::Call}, 3.0, 100.0},
+  };
+  auto portfolio = Portfolio::create(book);
+  ASSERT_TRUE(portfolio.has_value());
+  const PortfolioPricer pricer(std::move(*portfolio));
+  const PriceOptions options{.n_threads = 1, .analytic_greeks = true};
+
+  const OptionContract &seeded_contract = pricer.portfolio().contracts().back();
+  auto seed = surface.full_greek_seed(seeded_contract.K, seeded_contract.T, seeded_contract.side,
+                                      options.analytic_greeks, options.query_execution);
+  ASSERT_TRUE(seed.has_value()) << seed.error().to_string();
+  const std::array<FullGreekSeed, 1> unordered{std::move(*seed)};
+
+  const std::size_t n = pricer.portfolio().n_positions();
+  PortfolioWorkspace fresh_workspace;
+  PortfolioWorkspace partial_workspace;
+  FrameStore fresh(n, /*want_greeks=*/true);
+  FrameStore partial(n, /*want_greeks=*/true);
+  ASSERT_TRUE(
+      pricer
+          .price_into(surfaces, PriceFieldMask::FullGreeks, fresh.view(), fresh_workspace, options)
+          .has_value());
+  if constexpr (counters_enabled()) {
+    atx::vol::counters::reset();
+  }
+  ASSERT_TRUE(pricer
+                  .price_into(surfaces, PriceFieldMask::FullGreeks, partial.view(),
+                              partial_workspace, options, unordered)
+                  .has_value());
+  expect_frame_bit_identical(partial, fresh);
+  if constexpr (counters_enabled()) {
+    const auto measured = atx::vol::counters::snapshot();
+    EXPECT_EQ(measured.get(Counter::BoundarySolves), 10u);
+    EXPECT_EQ(measured.get(Counter::FullGreekSeedReuseLanes), 1u);
+    EXPECT_EQ(measured.get(Counter::FullGreekSeedRejectedCandidates), 0u);
+  }
+}
+
+TEST(PortfolioPricerSeed, EveryProvenanceMismatchFallsBackToFreshSolve) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+
+  const PricedSurface surface = make_essvi(1, 5);
+  const PricedSurface other_uid = make_essvi(2, 5);
+  const PricedSurface other_instance = make_essvi(1, 5);
+  const SurfaceSet surfaces = set_of({&surface});
+  const std::vector<Position> book{{1, {1, 100.0, 0.25, Side::Call}, 1.0, 100.0}};
+  auto portfolio = Portfolio::create(book);
+  ASSERT_TRUE(portfolio.has_value());
+  const PortfolioPricer pricer(std::move(*portfolio));
+  const PriceOptions options{.n_threads = 1, .analytic_greeks = true};
+  const OptionContract contract = pricer.portfolio().contracts().front();
+
+  std::vector<FullGreekSeed> mismatches;
+  const auto append = [&mismatches](Result<FullGreekSeed> seed) {
+    ASSERT_TRUE(seed.has_value()) << seed.error().to_string();
+    mismatches.push_back(std::move(*seed));
+  };
+  append(other_uid.full_greek_seed(contract.K, contract.T, contract.side, options.analytic_greeks,
+                                   options.query_execution));
+  append(surface.full_greek_seed(contract.K + 1.0, contract.T, contract.side,
+                                 options.analytic_greeks, options.query_execution));
+  append(surface.full_greek_seed(contract.K, contract.T + 0.01, contract.side,
+                                 options.analytic_greeks, options.query_execution));
+  append(surface.full_greek_seed(contract.K, contract.T, Side::Put, options.analytic_greeks,
+                                 options.query_execution));
+  append(other_instance.full_greek_seed(contract.K, contract.T, contract.side,
+                                        options.analytic_greeks, options.query_execution));
+  append(surface.full_greek_seed(contract.K, contract.T, contract.side, false,
+                                 options.query_execution));
+
+  const std::size_t n = pricer.portfolio().n_positions();
+  for (const FullGreekSeed &mismatch : mismatches) {
+    PortfolioWorkspace workspace;
+    FrameStore actual(n, /*want_greeks=*/true);
+    if constexpr (counters_enabled()) {
+      atx::vol::counters::reset();
+    }
+    const std::array<FullGreekSeed, 1> candidate{mismatch};
+    ASSERT_TRUE(pricer
+                    .price_into(surfaces, PriceFieldMask::FullGreeks, actual.view(), workspace,
+                                options, candidate)
+                    .has_value());
+    if constexpr (counters_enabled()) {
+      const auto measured = atx::vol::counters::snapshot();
+      EXPECT_EQ(measured.get(Counter::BoundarySolves), 5u);
+      EXPECT_EQ(measured.get(Counter::FullGreekSeedReuseLanes), 0u);
+      EXPECT_EQ(measured.get(Counter::FullGreekSeedRejectedCandidates), 1u);
+    }
+  }
+}
+
+TEST(PortfolioPricerSeed, ConflictingDuplicateCandidatesForceFreshSolve) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+
+  const PricedSurface surface = make_essvi(1, 5);
+  const SurfaceSet surfaces = set_of({&surface});
+  const std::vector<Position> book{{1, {1, 100.0, 0.25, Side::Call}, 1.0, 100.0}};
+  auto portfolio = Portfolio::create(book);
+  ASSERT_TRUE(portfolio.has_value());
+  const PortfolioPricer pricer(std::move(*portfolio));
+  const OptionContract contract = pricer.portfolio().contracts().front();
+  const PriceOptions options{.n_threads = 1, .analytic_greeks = true};
+  auto matching = surface.full_greek_seed(contract.K, contract.T, contract.side, true,
+                                          QueryExecution::Configured);
+  auto conflicting = surface.full_greek_seed(contract.K, contract.T, contract.side, false,
+                                             QueryExecution::Configured);
+  ASSERT_TRUE(matching.has_value() && conflicting.has_value());
+  const std::array<FullGreekSeed, 2> seeds{std::move(*matching), std::move(*conflicting)};
+
+  PortfolioWorkspace workspace;
+  FrameStore actual(pricer.portfolio().n_positions(), /*want_greeks=*/true);
+  if constexpr (counters_enabled()) {
+    atx::vol::counters::reset();
+  }
+  ASSERT_TRUE(pricer
+                  .price_into(surfaces, PriceFieldMask::FullGreeks, actual.view(), workspace,
+                              options, seeds)
+                  .has_value());
+  if constexpr (counters_enabled()) {
+    const auto measured = atx::vol::counters::snapshot();
+    EXPECT_EQ(measured.get(Counter::BoundarySolves), 5u);
+    EXPECT_EQ(measured.get(Counter::FullGreekSeedReuseLanes), 0u);
+    EXPECT_EQ(measured.get(Counter::FullGreekSeedRejectedCandidates), 2u);
+  }
+}
+
+TEST(PortfolioPricerSeed, SkewAdjustedDeltaMatchesFreshPrice) {
+  const PricedSurface surface = make_essvi(1, 5);
+  const SurfaceSet surfaces = set_of({&surface});
+  auto portfolio = Portfolio::create(pnl_book());
+  ASSERT_TRUE(portfolio.has_value());
+  const PortfolioPricer pricer(std::move(*portfolio));
+  const PriceOptions options{.n_threads = 1,
+                             .analytic_greeks = true,
+                             .skew_adjusted_delta = true,
+                             .sticky = StickyParams{0.25}};
+  std::vector<FullGreekSeed> seeds;
+  seeds.reserve(pricer.portfolio().n_contracts());
+  for (const OptionContract &contract : pricer.portfolio().contracts()) {
+    auto seed = surface.full_greek_seed(contract.K, contract.T, contract.side,
+                                        options.analytic_greeks, options.query_execution);
+    ASSERT_TRUE(seed.has_value()) << seed.error().to_string();
+    seeds.push_back(std::move(*seed));
+  }
+
+  const std::size_t n = pricer.portfolio().n_positions();
+  PortfolioWorkspace fresh_workspace;
+  PortfolioWorkspace seeded_workspace;
+  FrameStore fresh(n, /*want_greeks=*/true);
+  FrameStore seeded(n, /*want_greeks=*/true);
+  ASSERT_TRUE(
+      pricer
+          .price_into(surfaces, PriceFieldMask::FullGreeks, fresh.view(), fresh_workspace, options)
+          .has_value());
+  ASSERT_TRUE(pricer
+                  .price_into(surfaces, PriceFieldMask::FullGreeks, seeded.view(), seeded_workspace,
+                              options, seeds)
+                  .has_value());
+  expect_frame_bit_identical(seeded, fresh);
+}
+
+TEST(PortfolioPricerSeed, SeededPricePublishesReusableBaseRisk) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+
+  const PricedSurface base_surface = make_essvi(1, 5);
+  const PricedSurface shifted_surface = make_essvi(1, 5, 0.0005, kS + 0.1, kR + 0.0005,
+                                                   kNow + static_cast<std::int64_t>(3600.0 * 1e9));
+  const SurfaceSet base = set_of({&base_surface});
+  const SurfaceSet shifted = set_of({&shifted_surface});
+  auto portfolio = Portfolio::create(pnl_book());
+  ASSERT_TRUE(portfolio.has_value());
+  const PortfolioPricer pricer(std::move(*portfolio));
+  const PriceOptions options{.n_threads = 1, .analytic_greeks = true};
+  std::vector<FullGreekSeed> seeds;
+  seeds.reserve(pricer.portfolio().n_contracts());
+  for (const OptionContract &contract : pricer.portfolio().contracts()) {
+    auto seed = base_surface.full_greek_seed(contract.K, contract.T, contract.side,
+                                             options.analytic_greeks, options.query_execution);
+    ASSERT_TRUE(seed.has_value()) << seed.error().to_string();
+    seeds.push_back(std::move(*seed));
+  }
+
+  const std::size_t n = pricer.portfolio().n_positions();
+  PortfolioWorkspace reused_workspace;
+  FrameStore base_risk(n, /*want_greeks=*/true);
+  ASSERT_TRUE(pricer
+                  .price_into(base, PriceFieldMask::FullGreeks, base_risk.view(), reused_workspace,
+                              options, seeds)
+                  .has_value());
+  if constexpr (counters_enabled()) {
+    atx::vol::counters::reset();
+  }
+  auto reused = pricer.pnl_totals(base, shifted, reused_workspace, options);
+  ASSERT_TRUE(reused.has_value());
+  const auto measured = atx::vol::counters::snapshot();
+
+  PortfolioWorkspace fresh_workspace;
+  auto fresh = pricer.pnl_totals(base, shifted, fresh_workspace, options);
+  ASSERT_TRUE(fresh.has_value());
+  expect_pnl_totals_bit_identical(*reused, *fresh);
+  if constexpr (counters_enabled()) {
+    EXPECT_EQ(measured.get(Counter::BaseGreekReuseLanes), pricer.portfolio().n_contracts());
+    EXPECT_EQ(measured.get(Counter::BoundarySolves), pricer.portfolio().n_contracts());
+  }
+}
+
+TEST(PortfolioPricerSeed, WarmAllSeededPriceReusesPreparedStorage) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+
+  const PricedSurface surface = make_essvi(1, 5);
+  const SurfaceSet surfaces = set_of({&surface});
+  auto portfolio = Portfolio::create(pnl_book());
+  ASSERT_TRUE(portfolio.has_value());
+  const PortfolioPricer pricer(std::move(*portfolio));
+  const PriceOptions options{.n_threads = 1, .analytic_greeks = true};
+  std::vector<FullGreekSeed> seeds;
+  seeds.reserve(pricer.portfolio().n_contracts());
+  for (const OptionContract &contract : pricer.portfolio().contracts()) {
+    auto seed = surface.full_greek_seed(contract.K, contract.T, contract.side,
+                                        options.analytic_greeks, options.query_execution);
+    ASSERT_TRUE(seed.has_value()) << seed.error().to_string();
+    seeds.push_back(std::move(*seed));
+  }
+
+  const std::size_t n = pricer.portfolio().n_positions();
+  PortfolioWorkspace workspace;
+  workspace.reserve(pricer.portfolio().n_contracts(), n);
+  FrameStore frame(n, /*want_greeks=*/true);
+  ASSERT_TRUE(
+      pricer
+          .price_into(surfaces, PriceFieldMask::FullGreeks, frame.view(), workspace, options, seeds)
+          .has_value());
+  if constexpr (counters_enabled()) {
+    atx::vol::counters::reset();
+    ASSERT_TRUE(pricer
+                    .price_into(surfaces, PriceFieldMask::FullGreeks, frame.view(), workspace,
+                                options, seeds)
+                    .has_value());
+    const auto measured = atx::vol::counters::snapshot();
+    EXPECT_EQ(measured.get(Counter::FrameAllocations), 0u);
+    EXPECT_EQ(measured.get(Counter::PreparedBuilds), 0u);
+    EXPECT_EQ(measured.get(Counter::BoundarySolves), 0u);
+    EXPECT_EQ(measured.get(Counter::FullGreekSeedReuseLanes), pricer.portfolio().n_contracts());
+  }
+}
+
+TEST(PortfolioPricerSeed, IdenticalDuplicateCandidatesAreAcceptedOnce) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+
+  const PricedSurface surface = make_essvi(1, 5);
+  const SurfaceSet surfaces = set_of({&surface});
+  const std::vector<Position> book{
+      {1, {1, 95.0, 0.25, Side::Call}, 1.0, 100.0},
+      {2, {1, 105.0, 0.25, Side::Call}, -1.0, 100.0},
+  };
+  auto portfolio = Portfolio::create(book);
+  ASSERT_TRUE(portfolio.has_value());
+  const PortfolioPricer pricer(std::move(*portfolio));
+  const PriceOptions options{.n_threads = 1, .analytic_greeks = true};
+  const OptionContract contract = pricer.portfolio().contracts().front();
+  auto seed =
+      surface.full_greek_seed(contract.K, contract.T, contract.side, true, options.query_execution);
+  ASSERT_TRUE(seed.has_value()) << seed.error().to_string();
+  const std::array<FullGreekSeed, 2> duplicates{*seed, *seed};
+
+  PortfolioWorkspace fresh_workspace;
+  PortfolioWorkspace seeded_workspace;
+  FrameStore fresh(book.size(), /*want_greeks=*/true);
+  FrameStore seeded(book.size(), /*want_greeks=*/true);
+  ASSERT_TRUE(
+      pricer
+          .price_into(surfaces, PriceFieldMask::FullGreeks, fresh.view(), fresh_workspace, options)
+          .has_value());
+  if constexpr (counters_enabled()) {
+    atx::vol::counters::reset();
+  }
+  ASSERT_TRUE(pricer
+                  .price_into(surfaces, PriceFieldMask::FullGreeks, seeded.view(), seeded_workspace,
+                              options, duplicates)
+                  .has_value());
+  expect_frame_bit_identical(seeded, fresh);
+  if constexpr (counters_enabled()) {
+    const auto measured = atx::vol::counters::snapshot();
+    EXPECT_EQ(measured.get(Counter::BoundarySolves), 5u);
+    EXPECT_EQ(measured.get(Counter::FullGreekSeedReuseLanes), 1u);
+    EXPECT_EQ(measured.get(Counter::FullGreekSeedRejectedCandidates), 0u);
+  }
+}
+
+TEST(PortfolioPricerSeed, EmptyBookRejectsNonemptyCandidateSetWithoutAllocation) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+
+  const PricedSurface surface = make_essvi(1, 5);
+  const SurfaceSet surfaces = set_of({&surface});
+  auto seed = surface.full_greek_seed(100.0, 0.25, Side::Call, true);
+  ASSERT_TRUE(seed.has_value()) << seed.error().to_string();
+  const std::array<FullGreekSeed, 1> candidates{std::move(*seed)};
+  const std::vector<Position> empty_book;
+  auto portfolio = Portfolio::create(empty_book);
+  ASSERT_TRUE(portfolio.has_value());
+  const PortfolioPricer pricer(std::move(*portfolio));
+  PortfolioWorkspace workspace;
+  FrameStore frame(0, /*want_greeks=*/true);
+
+  if constexpr (counters_enabled()) {
+    atx::vol::counters::reset();
+  }
+  ASSERT_TRUE(pricer
+                  .price_into(surfaces, PriceFieldMask::FullGreeks, frame.view(), workspace,
+                              PriceOptions{.n_threads = 1, .analytic_greeks = true}, candidates)
+                  .has_value());
+  EXPECT_EQ(frame.total.n_ok, 0u);
+  if constexpr (counters_enabled()) {
+    const auto measured = atx::vol::counters::snapshot();
+    EXPECT_EQ(measured.get(Counter::BoundarySolves), 0u);
+    EXPECT_EQ(measured.get(Counter::FullGreekSeedReuseLanes), 0u);
+    EXPECT_EQ(measured.get(Counter::FullGreekSeedRejectedCandidates), 1u);
+    EXPECT_EQ(measured.get(Counter::FrameAllocations), 0u);
+  }
+}
+
+TEST(PortfolioPricerSeed, MiddleLaneSeedSplitsOneHomogeneousGroup) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+
+  const PricedSurface surface = make_essvi(1, 5);
+  const SurfaceSet surfaces = set_of({&surface});
+  const std::vector<Position> book{
+      {1, {1, 90.0, 0.25, Side::Call}, 1.0, 100.0},
+      {2, {1, 100.0, 0.25, Side::Call}, 1.0, 100.0},
+      {3, {1, 110.0, 0.25, Side::Call}, 1.0, 100.0},
+  };
+  auto portfolio = Portfolio::create(book);
+  ASSERT_TRUE(portfolio.has_value());
+  const PortfolioPricer pricer(std::move(*portfolio));
+  const PriceOptions options{.n_threads = 1, .analytic_greeks = true};
+  const OptionContract middle = pricer.portfolio().contracts()[1];
+  auto seed =
+      surface.full_greek_seed(middle.K, middle.T, middle.side, true, options.query_execution);
+  ASSERT_TRUE(seed.has_value()) << seed.error().to_string();
+  const std::array<FullGreekSeed, 1> candidates{std::move(*seed)};
+
+  PortfolioWorkspace fresh_workspace;
+  PortfolioWorkspace seeded_workspace;
+  FrameStore fresh(book.size(), /*want_greeks=*/true);
+  FrameStore seeded(book.size(), /*want_greeks=*/true);
+  ASSERT_TRUE(
+      pricer
+          .price_into(surfaces, PriceFieldMask::FullGreeks, fresh.view(), fresh_workspace, options)
+          .has_value());
+  if constexpr (counters_enabled()) {
+    atx::vol::counters::reset();
+  }
+  ASSERT_TRUE(pricer
+                  .price_into(surfaces, PriceFieldMask::FullGreeks, seeded.view(), seeded_workspace,
+                              options, candidates)
+                  .has_value());
+  expect_frame_bit_identical(seeded, fresh);
+  if constexpr (counters_enabled()) {
+    const auto measured = atx::vol::counters::snapshot();
+    EXPECT_EQ(measured.get(Counter::BoundarySolves), 10u);
+    EXPECT_EQ(measured.get(Counter::FullGreekSeedReuseLanes), 1u);
+  }
+}
+
+TEST(PortfolioPricerSeed, PartialUnorderedSeedsAreThreadSafe) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+
+  const PricedSurface surface = make_essvi(1, 5);
+  const SurfaceSet surfaces = set_of({&surface});
+  std::vector<Position> book;
+  for (std::uint64_t i = 0; i < 6; ++i) {
+    book.push_back(
+        Position{i + 1, {1, 90.0 + 4.0 * static_cast<double>(i), 0.25, Side::Call}, 1.0, 100.0});
+  }
+  auto portfolio = Portfolio::create(book);
+  ASSERT_TRUE(portfolio.has_value());
+  const PortfolioPricer pricer(std::move(*portfolio));
+  const PriceOptions options{.n_threads = 4, .analytic_greeks = true};
+  std::vector<FullGreekSeed> candidates;
+  for (const std::size_t index : {std::size_t{4}, std::size_t{0}, std::size_t{2}}) {
+    const OptionContract contract = pricer.portfolio().contracts()[index];
+    auto seed = surface.full_greek_seed(contract.K, contract.T, contract.side, true,
+                                        options.query_execution);
+    ASSERT_TRUE(seed.has_value()) << seed.error().to_string();
+    candidates.push_back(std::move(*seed));
+  }
+
+  PortfolioWorkspace fresh_workspace;
+  PortfolioWorkspace seeded_workspace;
+  FrameStore fresh(book.size(), /*want_greeks=*/true);
+  FrameStore seeded(book.size(), /*want_greeks=*/true);
+  ASSERT_TRUE(
+      pricer
+          .price_into(surfaces, PriceFieldMask::FullGreeks, fresh.view(), fresh_workspace, options)
+          .has_value());
+  if constexpr (counters_enabled()) {
+    atx::vol::counters::reset();
+  }
+  ASSERT_TRUE(pricer
+                  .price_into(surfaces, PriceFieldMask::FullGreeks, seeded.view(), seeded_workspace,
+                              options, candidates)
+                  .has_value());
+  expect_frame_bit_identical(seeded, fresh);
+  if constexpr (counters_enabled()) {
+    const auto measured = atx::vol::counters::snapshot();
+    EXPECT_EQ(measured.get(Counter::BoundarySolves), 15u);
+    EXPECT_EQ(measured.get(Counter::FullGreekSeedReuseLanes), 3u);
+    EXPECT_EQ(measured.get(Counter::FullGreekSeedRejectedCandidates), 0u);
+  }
+}
+
+TEST(PortfolioPricerSeed, MarksMaskIgnoresCandidatesAndSeedCounters) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+
+  const PricedSurface surface = make_essvi(1, 5);
+  const SurfaceSet surfaces = set_of({&surface});
+  const std::vector<Position> book{{1, {1, 100.0, 0.25, Side::Call}, 1.0, 100.0}};
+  auto portfolio = Portfolio::create(book);
+  ASSERT_TRUE(portfolio.has_value());
+  const PortfolioPricer pricer(std::move(*portfolio));
+  auto seed = surface.full_greek_seed(100.0, 0.25, Side::Call, true);
+  ASSERT_TRUE(seed.has_value()) << seed.error().to_string();
+  const std::array<FullGreekSeed, 1> candidates{std::move(*seed)};
+  PortfolioWorkspace workspace;
+  FrameStore frame(book.size(), /*want_greeks=*/false);
+
+  if constexpr (counters_enabled()) {
+    atx::vol::counters::reset();
+  }
+  ASSERT_TRUE(pricer
+                  .price_into(surfaces, PriceFieldMask::Marks, frame.view(), workspace,
+                              PriceOptions{.n_threads = 1}, candidates)
+                  .has_value());
+  EXPECT_EQ(frame.status.front(), PriceStatus::Ok);
+  if constexpr (counters_enabled()) {
+    const auto measured = atx::vol::counters::snapshot();
+    EXPECT_EQ(measured.get(Counter::FullGreekSeedReuseLanes), 0u);
+    EXPECT_EQ(measured.get(Counter::FullGreekSeedRejectedCandidates), 0u);
+  }
+}
+
+TEST(PortfolioPricerSeed, ColdTierConfiguredAndForcedColdSeedsAliasInBothDirections) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+
+  const PricedSurface legacy = make_essvi(1, 5);
+  PricedSurface cold_source = make_essvi(1, 5);
+  auto cold_result = std::move(cold_source).with_query_pricing(QueryPricingTier::ColdReference);
+  ASSERT_TRUE(cold_result.has_value()) << cold_result.error().to_string();
+  const PricedSurface cold = std::move(*cold_result);
+  const std::vector<Position> book{{1, {1, 100.0, 0.25, Side::Call}, 1.0, 100.0}};
+  auto portfolio = Portfolio::create(book);
+  ASSERT_TRUE(portfolio.has_value());
+  const PortfolioPricer pricer(std::move(*portfolio));
+  const OptionContract contract = pricer.portfolio().contracts().front();
+
+  for (const PricedSurface *surface : {&legacy, &cold}) {
+    const SurfaceSet surfaces = set_of({surface});
+    for (const QueryExecution seed_execution :
+         {QueryExecution::Configured, QueryExecution::ColdReference}) {
+      const QueryExecution consumer_execution = seed_execution == QueryExecution::Configured
+                                                    ? QueryExecution::ColdReference
+                                                    : QueryExecution::Configured;
+      auto seed =
+          surface->full_greek_seed(contract.K, contract.T, contract.side, true, seed_execution);
+      ASSERT_TRUE(seed.has_value()) << seed.error().to_string();
+      const std::array<FullGreekSeed, 1> candidates{std::move(*seed)};
+      const PriceOptions options{
+          .n_threads = 1, .analytic_greeks = true, .query_execution = consumer_execution};
+      PortfolioWorkspace fresh_workspace;
+      PortfolioWorkspace seeded_workspace;
+      FrameStore fresh(book.size(), /*want_greeks=*/true);
+      FrameStore seeded(book.size(), /*want_greeks=*/true);
+      ASSERT_TRUE(pricer
+                      .price_into(surfaces, PriceFieldMask::FullGreeks, fresh.view(),
+                                  fresh_workspace, options)
+                      .has_value());
+      if constexpr (counters_enabled()) {
+        atx::vol::counters::reset();
+      }
+      ASSERT_TRUE(pricer
+                      .price_into(surfaces, PriceFieldMask::FullGreeks, seeded.view(),
+                                  seeded_workspace, options, candidates)
+                      .has_value());
+      expect_frame_bit_identical(seeded, fresh);
+      if constexpr (counters_enabled()) {
+        const auto measured = atx::vol::counters::snapshot();
+        EXPECT_EQ(measured.get(Counter::BoundarySolves), 0u);
+        EXPECT_EQ(measured.get(Counter::FullGreekSeedReuseLanes), 1u);
+        EXPECT_EQ(measured.get(Counter::FullGreekSeedRejectedCandidates), 0u);
+      }
+    }
+  }
+}
+
+TEST(PortfolioPricerSeed, MixedExecutionDuplicateCandidatesCanonicalizeOnColdTiers) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+
+  const PricedSurface legacy = make_essvi(1, 5);
+  PricedSurface cold_source = make_essvi(1, 5);
+  auto cold_result = std::move(cold_source).with_query_pricing(QueryPricingTier::ColdReference);
+  ASSERT_TRUE(cold_result.has_value()) << cold_result.error().to_string();
+  const PricedSurface cold = std::move(*cold_result);
+  const OptionContract duplicate{1, 100.0, 0.25, Side::Call};
+  const std::vector<Position> book{
+      {1, duplicate, 1.0, 100.0},
+      {2, duplicate, -1.0, 100.0},
+  };
+  auto portfolio = Portfolio::create(book);
+  ASSERT_TRUE(portfolio.has_value());
+  const PortfolioPricer pricer(std::move(*portfolio));
+  const OptionContract contract = pricer.portfolio().contracts().front();
+
+  for (const PricedSurface *surface : {&legacy, &cold}) {
+    const SurfaceSet surfaces = set_of({surface});
+    auto configured = surface->full_greek_seed(contract.K, contract.T, contract.side, true,
+                                               QueryExecution::Configured);
+    auto forced_cold = surface->full_greek_seed(contract.K, contract.T, contract.side, true,
+                                                QueryExecution::ColdReference);
+    ASSERT_TRUE(configured.has_value()) << configured.error().to_string();
+    ASSERT_TRUE(forced_cold.has_value()) << forced_cold.error().to_string();
+    const std::array<FullGreekSeed, 2> candidates{std::move(*configured), std::move(*forced_cold)};
+    for (const QueryExecution consumer_execution :
+         {QueryExecution::Configured, QueryExecution::ColdReference}) {
+      const PriceOptions options{
+          .n_threads = 1, .analytic_greeks = true, .query_execution = consumer_execution};
+      PortfolioWorkspace fresh_workspace;
+      PortfolioWorkspace seeded_workspace;
+      FrameStore fresh(book.size(), /*want_greeks=*/true);
+      FrameStore seeded(book.size(), /*want_greeks=*/true);
+      ASSERT_TRUE(pricer
+                      .price_into(surfaces, PriceFieldMask::FullGreeks, fresh.view(),
+                                  fresh_workspace, options)
+                      .has_value());
+
+      if constexpr (counters_enabled()) {
+        atx::vol::counters::reset();
+      }
+      ASSERT_TRUE(pricer
+                      .price_into(surfaces, PriceFieldMask::FullGreeks, seeded.view(),
+                                  seeded_workspace, options, candidates)
+                      .has_value());
+      expect_frame_bit_identical(seeded, fresh);
+      if constexpr (counters_enabled()) {
+        const auto measured = atx::vol::counters::snapshot();
+        EXPECT_EQ(measured.get(Counter::BoundarySolves), 0u);
+        EXPECT_EQ(measured.get(Counter::FullGreekSeedReuseLanes), 1u);
+        EXPECT_EQ(measured.get(Counter::FullGreekSeedRejectedCandidates), 0u);
+      }
+    }
+  }
+}
+
+TEST(PortfolioPricerSeed, FastTiersKeepConfiguredAndForcedColdSeedsDistinct) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+
+  PricedSurface representative_source = make_essvi(1, 5);
+  PricedSurface carry_source = make_essvi(1, 5);
+  auto representative_result =
+      std::move(representative_source).with_query_pricing(QueryPricingTier::RepresentativeFast);
+  auto carry_result = std::move(carry_source).with_query_pricing(QueryPricingTier::CarryBank);
+  ASSERT_TRUE(representative_result.has_value()) << representative_result.error().to_string();
+  ASSERT_TRUE(carry_result.has_value()) << carry_result.error().to_string();
+  const PricedSurface representative = std::move(*representative_result);
+  const PricedSurface carry = std::move(*carry_result);
+  const std::vector<Position> book{{1, {1, 100.0, 0.25, Side::Call}, 1.0, 100.0}};
+  auto portfolio = Portfolio::create(book);
+  ASSERT_TRUE(portfolio.has_value());
+  const PortfolioPricer pricer(std::move(*portfolio));
+  const OptionContract contract = pricer.portfolio().contracts().front();
+
+  for (const PricedSurface *surface : {&representative, &carry}) {
+    const SurfaceSet surfaces = set_of({surface});
+    for (const QueryExecution seed_execution :
+         {QueryExecution::Configured, QueryExecution::ColdReference}) {
+      const QueryExecution consumer_execution = seed_execution == QueryExecution::Configured
+                                                    ? QueryExecution::ColdReference
+                                                    : QueryExecution::Configured;
+      auto seed =
+          surface->full_greek_seed(contract.K, contract.T, contract.side, true, seed_execution);
+      ASSERT_TRUE(seed.has_value()) << seed.error().to_string();
+      const std::array<FullGreekSeed, 1> candidates{std::move(*seed)};
+      const PriceOptions options{
+          .n_threads = 1, .analytic_greeks = true, .query_execution = consumer_execution};
+      PortfolioWorkspace fresh_workspace;
+      PortfolioWorkspace seeded_workspace;
+      FrameStore fresh(book.size(), /*want_greeks=*/true);
+      FrameStore seeded(book.size(), /*want_greeks=*/true);
+      ASSERT_TRUE(pricer
+                      .price_into(surfaces, PriceFieldMask::FullGreeks, fresh.view(),
+                                  fresh_workspace, options)
+                      .has_value());
+      if constexpr (counters_enabled()) {
+        atx::vol::counters::reset();
+      }
+      ASSERT_TRUE(pricer
+                      .price_into(surfaces, PriceFieldMask::FullGreeks, seeded.view(),
+                                  seeded_workspace, options, candidates)
+                      .has_value());
+      expect_frame_bit_identical(seeded, fresh);
+      if constexpr (counters_enabled()) {
+        const auto measured = atx::vol::counters::snapshot();
+        EXPECT_EQ(measured.get(Counter::FullGreekSeedReuseLanes), 0u);
+        EXPECT_EQ(measured.get(Counter::FullGreekSeedRejectedCandidates), 1u);
+      }
+    }
+  }
+}
+
+TEST(PortfolioPricerSeed, MixedExecutionDuplicateCandidatesRemainRejectedOnFastTiers) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+
+  PricedSurface representative_source = make_essvi(1, 5);
+  PricedSurface carry_source = make_essvi(1, 5);
+  auto representative_result =
+      std::move(representative_source).with_query_pricing(QueryPricingTier::RepresentativeFast);
+  auto carry_result = std::move(carry_source).with_query_pricing(QueryPricingTier::CarryBank);
+  ASSERT_TRUE(representative_result.has_value()) << representative_result.error().to_string();
+  ASSERT_TRUE(carry_result.has_value()) << carry_result.error().to_string();
+  const PricedSurface representative = std::move(*representative_result);
+  const PricedSurface carry = std::move(*carry_result);
+  const OptionContract duplicate{1, 100.0, 0.25, Side::Call};
+  const std::vector<Position> book{
+      {1, duplicate, 1.0, 100.0},
+      {2, duplicate, -1.0, 100.0},
+  };
+  auto portfolio = Portfolio::create(book);
+  ASSERT_TRUE(portfolio.has_value());
+  const PortfolioPricer pricer(std::move(*portfolio));
+  const OptionContract contract = pricer.portfolio().contracts().front();
+  const PriceOptions options{
+      .n_threads = 1, .analytic_greeks = true, .query_execution = QueryExecution::Configured};
+
+  for (const PricedSurface *surface : {&representative, &carry}) {
+    const SurfaceSet surfaces = set_of({surface});
+    auto configured = surface->full_greek_seed(contract.K, contract.T, contract.side, true,
+                                               QueryExecution::Configured);
+    auto forced_cold = surface->full_greek_seed(contract.K, contract.T, contract.side, true,
+                                                QueryExecution::ColdReference);
+    ASSERT_TRUE(configured.has_value()) << configured.error().to_string();
+    ASSERT_TRUE(forced_cold.has_value()) << forced_cold.error().to_string();
+    const std::array<FullGreekSeed, 2> candidates{std::move(*configured), std::move(*forced_cold)};
+    PortfolioWorkspace fresh_workspace;
+    PortfolioWorkspace seeded_workspace;
+    FrameStore fresh(book.size(), /*want_greeks=*/true);
+    FrameStore seeded(book.size(), /*want_greeks=*/true);
+    ASSERT_TRUE(pricer
+                    .price_into(surfaces, PriceFieldMask::FullGreeks, fresh.view(), fresh_workspace,
+                                options)
+                    .has_value());
+
+    if constexpr (counters_enabled()) {
+      atx::vol::counters::reset();
+    }
+    ASSERT_TRUE(pricer
+                    .price_into(surfaces, PriceFieldMask::FullGreeks, seeded.view(),
+                                seeded_workspace, options, candidates)
+                    .has_value());
+    expect_frame_bit_identical(seeded, fresh);
+    if constexpr (counters_enabled()) {
+      const auto measured = atx::vol::counters::snapshot();
+      EXPECT_EQ(measured.get(Counter::FullGreekSeedReuseLanes), 0u);
+      EXPECT_EQ(measured.get(Counter::FullGreekSeedRejectedCandidates), 2u);
+    }
+  }
+}
+
+TEST(PortfolioPricerSeed, PerPositionDuplicateCandidatesStayWithinWarmCapacity) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+
+  const PricedSurface surface = make_essvi(1, 5);
+  const SurfaceSet surfaces = set_of({&surface});
+  const OptionContract duplicate{1, 100.0, 0.25, Side::Call};
+  const std::vector<Position> book{
+      {1, duplicate, 1.0, 100.0},
+      {2, duplicate, -2.0, 100.0},
+      {3, duplicate, 0.0, 100.0},
+  };
+  auto portfolio = Portfolio::create(book);
+  ASSERT_TRUE(portfolio.has_value());
+  const PortfolioPricer pricer(std::move(*portfolio));
+  EXPECT_EQ(pricer.portfolio().n_contracts(), 1u);
+  auto seed = surface.full_greek_seed(duplicate.K, duplicate.T, duplicate.side, true);
+  ASSERT_TRUE(seed.has_value()) << seed.error().to_string();
+  const std::array<FullGreekSeed, 3> candidates{*seed, *seed, *seed};
+  const PriceOptions options{.n_threads = 1, .analytic_greeks = true};
+  PortfolioWorkspace fresh_workspace;
+  PortfolioWorkspace seeded_workspace;
+  seeded_workspace.reserve(pricer.portfolio().n_contracts(), book.size());
+  FrameStore fresh(book.size(), /*want_greeks=*/true);
+  FrameStore seeded(book.size(), /*want_greeks=*/true);
+  ASSERT_TRUE(
+      pricer
+          .price_into(surfaces, PriceFieldMask::FullGreeks, fresh.view(), fresh_workspace, options)
+          .has_value());
+  if constexpr (counters_enabled()) {
+    atx::vol::counters::reset();
+  }
+  ASSERT_TRUE(pricer
+                  .price_into(surfaces, PriceFieldMask::FullGreeks, seeded.view(), seeded_workspace,
+                              options, candidates)
+                  .has_value());
+  expect_frame_bit_identical(seeded, fresh);
+  if constexpr (counters_enabled()) {
+    const auto measured = atx::vol::counters::snapshot();
+    EXPECT_EQ(measured.get(Counter::BoundarySolves), 0u);
+    EXPECT_EQ(measured.get(Counter::FullGreekSeedReuseLanes), 1u);
+    EXPECT_EQ(measured.get(Counter::FullGreekSeedRejectedCandidates), 0u);
+    EXPECT_EQ(measured.get(Counter::FrameAllocations), 0u);
+  }
+}
+
+// ── Exact P&L target-mark handoff ──────────────────────────────────────────
+
+TEST(PortfolioPricerTargetMarks, RawMarksMatchWeightedPnlFrameForLongShortZeroAndDuplicates) {
+  const std::int64_t one_hour = static_cast<std::int64_t>(3600.0 * 1e9);
+  const PricedSurface base_surface = make_essvi(1, 5);
+  const PricedSurface target_surface =
+      make_essvi(1, 5, 0.0007, kS + 0.15, kR + 0.0004, kNow + one_hour);
+  const SurfaceSet base = set_of({&base_surface});
+  const SurfaceSet target = set_of({&target_surface});
+  const OptionContract duplicate{1, 100.0, 0.25, Side::Call};
+  const std::vector<Position> book{
+      {11, duplicate, 2.0, 100.0},
+      {12, duplicate, -3.0, 25.0},
+      {13, duplicate, 0.0, 100.0},
+      {14, {1, 105.0, 0.30, Side::Put}, 1.5, 50.0},
+  };
+  auto portfolio = Portfolio::create(book);
+  ASSERT_TRUE(portfolio.has_value()) << portfolio.error().to_string();
+  const PortfolioPricer pricer(std::move(*portfolio));
+  const PriceOptions options{.n_threads = 1, .analytic_greeks = true};
+
+  auto frame = pricer.pnl_explain(base, target, options);
+  ASSERT_TRUE(frame.has_value()) << frame.error().to_string();
+  PortfolioWorkspace workspace;
+  TargetMarkStore marks(book.size());
+  auto totals =
+      pricer.pnl_totals_with_target_marks_into(base, target, marks.view(), workspace, options);
+  ASSERT_TRUE(totals.has_value()) << totals.error().to_string();
+  expect_pnl_totals_bit_identical(*totals, frame->total);
+
+  PortfolioWorkspace legacy_workspace;
+  auto legacy = pricer.pnl_totals(base, target, legacy_workspace, options);
+  ASSERT_TRUE(legacy.has_value()) << legacy.error().to_string();
+  expect_pnl_totals_bit_identical(*totals, *legacy);
+
+  for (std::size_t i = 0; i < book.size(); ++i) {
+    EXPECT_EQ(marks.id[i], book[i].id) << i;
+    EXPECT_EQ(marks.status[i], frame->status[i]) << i;
+    ASSERT_EQ(marks.status[i], PriceStatus::Ok) << i;
+    const double weight = book[i].qty * book[i].multiplier;
+    if (weight != 0.0) {
+      EXPECT_TRUE(bits_equal(weight * marks.price_target[i], frame->pv_target[i])) << i;
+    }
+    const auto base_risk =
+        base_surface.greeks_analytic(book[i].contract.K, book[i].contract.T, book[i].contract.side);
+    ASSERT_TRUE(base_risk.has_value()) << base_risk.error().to_string();
+    EXPECT_TRUE(bits_equal(marks.base_vega_proxy[i], base_risk->vega)) << i;
+  }
+  EXPECT_TRUE(bits_equal(marks.price_target[0], marks.price_target[1]));
+  EXPECT_TRUE(bits_equal(marks.price_target[0], marks.price_target[2]));
+  EXPECT_TRUE(bits_equal(frame->pv_target[2], 0.0));
+  EXPECT_TRUE(std::isfinite(marks.price_target[2]));
+}
+
+TEST(PortfolioPricerTargetMarks, InvalidViewIsRejectedBeforeAnyMutation) {
+  const PricedSurface base_surface = make_essvi(1, 5);
+  const PricedSurface target_surface = make_essvi(1, 5, 0.0005, kS + 0.1);
+  const SurfaceSet base = set_of({&base_surface});
+  const SurfaceSet target = set_of({&target_surface});
+  auto portfolio = Portfolio::create(pnl_book());
+  ASSERT_TRUE(portfolio.has_value()) << portfolio.error().to_string();
+  const PortfolioPricer pricer(std::move(*portfolio));
+  const std::size_t n = pricer.portfolio().n_positions();
+  TargetMarkStore marks(n);
+  std::fill(marks.id.begin(), marks.id.end(), std::uint64_t{0xfeedbeef});
+  std::fill(marks.price_target.begin(), marks.price_target.end(), 1234.5);
+  std::fill(marks.base_vega_proxy.begin(), marks.base_vega_proxy.end(), 678.25);
+  std::fill(marks.status.begin(), marks.status.end(), PriceStatus::InvalidContract);
+  const TargetMarkView invalid{std::span<std::uint64_t>{marks.id}.first(n - 1), marks.price_target,
+                               marks.status, marks.base_vega_proxy};
+  PortfolioWorkspace workspace;
+
+  const auto result = pricer.pnl_totals_with_target_marks_into(base, target, invalid, workspace);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+  for (std::size_t i = 0; i < n; ++i) {
+    EXPECT_EQ(marks.id[i], std::uint64_t{0xfeedbeef}) << i;
+    EXPECT_TRUE(bits_equal(marks.price_target[i], 1234.5)) << i;
+    EXPECT_TRUE(bits_equal(marks.base_vega_proxy[i], 678.25)) << i;
+    EXPECT_EQ(marks.status[i], PriceStatus::InvalidContract) << i;
+  }
+}
+
+TEST(PortfolioPricerTargetMarks, ExactAliasIsRejectedBeforeSolveOrMutation) {
+  using atx::vol::counters::Counter;
+
+  const PricedSurface base_surface = make_essvi(1, 5);
+  const PricedSurface target_surface = make_essvi(1, 5, 0.0005, kS + 0.1);
+  const SurfaceSet base = set_of({&base_surface});
+  const SurfaceSet target = set_of({&target_surface});
+  auto portfolio = Portfolio::create(pnl_book());
+  ASSERT_TRUE(portfolio.has_value()) << portfolio.error().to_string();
+  const PortfolioPricer pricer(std::move(*portfolio));
+  const std::size_t n = pricer.portfolio().n_positions();
+  constexpr std::uint64_t kIdSentinel = 0xfeedbeefULL;
+  constexpr double kNumericSentinel = 1234.5;
+  constexpr PriceStatus kStatusSentinel = PriceStatus::InvalidContract;
+  std::vector<std::uint64_t> id(n, kIdSentinel);
+  std::vector<double> shared_numeric(n, kNumericSentinel);
+  std::vector<PriceStatus> status(n, kStatusSentinel);
+  const TargetMarkView aliased{id, shared_numeric, status, shared_numeric};
+  PortfolioWorkspace workspace;
+  atx::vol::counters::reset();
+  const auto before = atx::vol::counters::snapshot();
+
+  const auto result = pricer.pnl_totals_with_target_marks_into(
+      base, target, aliased, workspace, PriceOptions{.n_threads = 4, .analytic_greeks = true});
+
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_EQ(id, std::vector<std::uint64_t>(n, kIdSentinel));
+  EXPECT_EQ(shared_numeric, std::vector<double>(n, kNumericSentinel));
+  EXPECT_EQ(status, std::vector<PriceStatus>(n, kStatusSentinel));
+  const auto after = atx::vol::counters::snapshot();
+  EXPECT_EQ(after.enabled, before.enabled);
+  for (unsigned i = 0; i < atx::vol::counters::kCount; ++i) {
+    const Counter counter = static_cast<Counter>(i);
+    EXPECT_EQ(after.get(counter), before.get(counter)) << atx::vol::counters::kNames[i];
+  }
+}
+
+TEST(PortfolioPricerTargetMarks, ShiftedAliasIsRejectedBeforeSolveOrMutation) {
+  using atx::vol::counters::Counter;
+
+  const PricedSurface base_surface = make_essvi(1, 5);
+  const PricedSurface target_surface = make_essvi(1, 5, 0.0005, kS + 0.1);
+  const SurfaceSet base = set_of({&base_surface});
+  const SurfaceSet target = set_of({&target_surface});
+  auto portfolio = Portfolio::create(pnl_book());
+  ASSERT_TRUE(portfolio.has_value()) << portfolio.error().to_string();
+  const PortfolioPricer pricer(std::move(*portfolio));
+  const std::size_t n = pricer.portfolio().n_positions();
+  constexpr std::uint64_t kIdSentinel = 0xfeedbeefULL;
+  constexpr double kNumericSentinel = 678.25;
+  constexpr PriceStatus kStatusSentinel = PriceStatus::InvalidContract;
+  std::vector<std::uint64_t> id(n, kIdSentinel);
+  std::vector<double> shared_numeric(n + 1u, kNumericSentinel);
+  std::vector<PriceStatus> status(n, kStatusSentinel);
+  const TargetMarkView aliased{id, std::span<double>{shared_numeric}.first(n), status,
+                               std::span<double>{shared_numeric}.subspan(1u, n)};
+  PortfolioWorkspace workspace;
+  atx::vol::counters::reset();
+  const auto before = atx::vol::counters::snapshot();
+
+  const auto result = pricer.pnl_totals_with_target_marks_into(
+      base, target, aliased, workspace, PriceOptions{.n_threads = 4, .analytic_greeks = true});
+
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_EQ(id, std::vector<std::uint64_t>(n, kIdSentinel));
+  EXPECT_EQ(shared_numeric, std::vector<double>(n + 1u, kNumericSentinel));
+  EXPECT_EQ(status, std::vector<PriceStatus>(n, kStatusSentinel));
+  const auto after = atx::vol::counters::snapshot();
+  EXPECT_EQ(after.enabled, before.enabled);
+  for (unsigned i = 0; i < atx::vol::counters::kCount; ++i) {
+    const Counter counter = static_cast<Counter>(i);
+    EXPECT_EQ(after.get(counter), before.get(counter)) << atx::vol::counters::kNames[i];
+  }
+}
+
+TEST(PortfolioPricerTargetMarks, MissingTargetSurfaceScattersStatusAndNaN) {
+  const PricedSurface base_surface = make_essvi(1, 5);
+  const PricedSurface other_surface = make_essvi(2, 5);
+  const SurfaceSet base = set_of({&base_surface});
+  const SurfaceSet missing_target = set_of({&other_surface});
+  auto portfolio = Portfolio::create(pnl_book());
+  ASSERT_TRUE(portfolio.has_value()) << portfolio.error().to_string();
+  const PortfolioPricer pricer(std::move(*portfolio));
+  TargetMarkStore marks(pricer.portfolio().n_positions());
+  PortfolioWorkspace workspace;
+
+  auto totals =
+      pricer.pnl_totals_with_target_marks_into(base, missing_target, marks.view(), workspace);
+  ASSERT_TRUE(totals.has_value()) << totals.error().to_string();
+  EXPECT_EQ(totals->n_ok, 0u);
+  for (std::size_t i = 0; i < marks.id.size(); ++i) {
+    EXPECT_EQ(marks.id[i], pricer.portfolio().positions()[i].id) << i;
+    EXPECT_EQ(marks.status[i], PriceStatus::ModelUnavailable) << i;
+    EXPECT_TRUE(std::isnan(marks.price_target[i])) << i;
+    EXPECT_TRUE(std::isnan(marks.base_vega_proxy[i])) << i;
+  }
+}
+
+TEST(PortfolioPricerTargetMarks, ThreadCountsAreBitIdentical) {
+  const std::int64_t one_hour = static_cast<std::int64_t>(3600.0 * 1e9);
+  const PricedSurface base_surface = make_essvi(1, 5);
+  const PricedSurface target_surface =
+      make_essvi(1, 5, 0.0008, kS + 0.2, kR + 0.0003, kNow + one_hour);
+  const SurfaceSet base = set_of({&base_surface});
+  const SurfaceSet target = set_of({&target_surface});
+  auto portfolio = Portfolio::create(pnl_book());
+  ASSERT_TRUE(portfolio.has_value()) << portfolio.error().to_string();
+  const PortfolioPricer pricer(std::move(*portfolio));
+  const std::size_t n = pricer.portfolio().n_positions();
+  TargetMarkStore single(n);
+  TargetMarkStore parallel(n);
+  PortfolioWorkspace single_workspace;
+  PortfolioWorkspace parallel_workspace;
+
+  auto one = pricer.pnl_totals_with_target_marks_into(
+      base, target, single.view(), single_workspace,
+      PriceOptions{.n_threads = 1, .analytic_greeks = true});
+  auto four = pricer.pnl_totals_with_target_marks_into(
+      base, target, parallel.view(), parallel_workspace,
+      PriceOptions{.n_threads = 4, .analytic_greeks = true});
+  ASSERT_TRUE(one.has_value()) << one.error().to_string();
+  ASSERT_TRUE(four.has_value()) << four.error().to_string();
+  expect_pnl_totals_bit_identical(*four, *one);
+  for (std::size_t i = 0; i < n; ++i) {
+    EXPECT_EQ(parallel.id[i], single.id[i]) << i;
+    EXPECT_EQ(parallel.status[i], single.status[i]) << i;
+    EXPECT_TRUE(bits_equal(parallel.price_target[i], single.price_target[i])) << i;
+    EXPECT_TRUE(bits_equal(parallel.base_vega_proxy[i], single.base_vega_proxy[i])) << i;
+  }
+}
+
+TEST(PortfolioPricerTargetMarks, WarmPathAddsNoAllocationOrValuationWork) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+
+  const std::int64_t one_hour = static_cast<std::int64_t>(3600.0 * 1e9);
+  const PricedSurface base_surface = make_essvi(1, 5);
+  const PricedSurface target_surface =
+      make_essvi(1, 5, 0.0008, kS + 0.2, kR + 0.0003, kNow + one_hour);
+  const SurfaceSet base = set_of({&base_surface});
+  const SurfaceSet target = set_of({&target_surface});
+  auto portfolio = Portfolio::create(pnl_book());
+  ASSERT_TRUE(portfolio.has_value()) << portfolio.error().to_string();
+  const PortfolioPricer pricer(std::move(*portfolio));
+  const std::size_t n = pricer.portfolio().n_positions();
+  const PriceOptions options{.n_threads = 1, .analytic_greeks = true};
+  TargetMarkStore marks(n);
+  PortfolioWorkspace marks_workspace;
+  marks_workspace.reserve(pricer.portfolio().n_contracts(), n);
+  auto warm_marks = pricer.pnl_totals_with_target_marks_into(base, target, marks.view(),
+                                                             marks_workspace, options);
+  ASSERT_TRUE(warm_marks.has_value()) << warm_marks.error().to_string();
+
+  if constexpr (counters_enabled()) {
+    atx::vol::counters::reset();
+  }
+  auto measured = pricer.pnl_totals_with_target_marks_into(base, target, marks.view(),
+                                                           marks_workspace, options);
+  ASSERT_TRUE(measured.has_value()) << measured.error().to_string();
+  const auto marks_counts = atx::vol::counters::snapshot();
+
+  PortfolioWorkspace totals_workspace;
+  totals_workspace.reserve(pricer.portfolio().n_contracts(), n);
+  auto warm_totals = pricer.pnl_totals(base, target, totals_workspace, options);
+  ASSERT_TRUE(warm_totals.has_value()) << warm_totals.error().to_string();
+  if constexpr (counters_enabled()) {
+    atx::vol::counters::reset();
+  }
+  auto legacy = pricer.pnl_totals(base, target, totals_workspace, options);
+  ASSERT_TRUE(legacy.has_value()) << legacy.error().to_string();
+  const auto totals_counts = atx::vol::counters::snapshot();
+  expect_pnl_totals_bit_identical(*measured, *legacy);
+
+  if constexpr (counters_enabled()) {
+    EXPECT_EQ(marks_counts.get(Counter::FrameAllocations), 0u);
+    EXPECT_EQ(marks_counts.get(Counter::PreparedBuilds), 0u);
+    EXPECT_EQ(marks_counts.get(Counter::FrameBytes), n * 25u);
+    EXPECT_EQ(totals_counts.get(Counter::FrameBytes), 0u);
+    for (unsigned i = 0; i < atx::vol::counters::kCount; ++i) {
+      const Counter counter = static_cast<Counter>(i);
+      if (counter == Counter::FrameBytes) {
+        continue;
+      }
+      EXPECT_EQ(marks_counts.get(counter), totals_counts.get(counter))
+          << atx::vol::counters::kNames[i];
+    }
   }
 }

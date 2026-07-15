@@ -44,6 +44,7 @@
 #include "atx/vol/portfolio_pricer.hpp" // OptionContract, SurfaceSet, PriceOptions, PriceTotals
 #include "atx/vol/priced_surface.hpp"   // PricedSurface
 #include "atx/vol/query_pricing.hpp"    // QueryPricingTier
+#include "atx/vol/surface_archive.hpp"  // SurfaceProvenance
 #include "atx/vol/types.hpp"            // Result, Side
 
 namespace atx::vol {
@@ -86,10 +87,11 @@ private:
 
 // ── Snapshot loader ─────────────────────────────────────────────────────────
 
-// A single loaded market date: owns the archive's `PricedSurface`s and holds a
-// non-owning `SurfaceSet` over their (stable) addresses. Move-only; the move
-// leaves the `SurfaceSet` pointers valid (vector move preserves element
-// addresses and `surfaces_` is never mutated after `set_` is built).
+// A single loaded market date: owns the archive's `PricedSurface`s and their
+// same-blob provenance, and holds a non-owning `SurfaceSet` over the surfaces'
+// stable addresses. Move-only; the move leaves the `SurfaceSet` pointers valid
+// (vector move preserves element addresses and `surfaces_` is never mutated
+// after `set_` is built).
 class MarketSnapshot {
 public:
   // Open `archive_path`, map every surface, prepare its runtime-only query tier,
@@ -110,6 +112,14 @@ public:
   [[nodiscard]] const PricedSurface *find(std::uint32_t uid) const noexcept {
     return set_.find(uid);
   }
+  // Same-archive provenance for uid. Pointer lifetime matches this snapshot;
+  // lookup performs no allocation and returns nullptr for an unknown uid.
+  [[nodiscard]] const SurfaceProvenance *provenance(std::uint32_t uid) const noexcept;
+  // Provenance aligned one-for-one with surfaces() in archive order. The view is
+  // invalidated only when this snapshot is destroyed or moved from.
+  [[nodiscard]] std::span<const SurfaceProvenance> provenances() const noexcept {
+    return provenance_;
+  }
   // Read-only view of the owned surfaces (archive order; always non-empty after a
   // successful load). Used by the financing ledger to read a representative
   // base-date rate. Safe across a move (vector move preserves element addresses).
@@ -123,18 +133,21 @@ public:
   static void reset_open_count() noexcept;
 
 private:
-  MarketSnapshot(std::vector<PricedSurface> &&surfaces, SurfaceSet &&set, std::int64_t ts,
+  MarketSnapshot(std::vector<PricedSurface> &&surfaces, std::vector<SurfaceProvenance> &&provenance,
+                 SurfaceSet &&set, std::int64_t ts,
                  std::vector<std::pair<std::string, std::uint32_t>> &&syms) noexcept;
 
-  std::vector<PricedSurface> surfaces_; // owned (map_all)
-  SurfaceSet set_;                      // non-owning over surfaces_
+  std::vector<PricedSurface> surfaces_;       // owned (archive directory order)
+  std::vector<SurfaceProvenance> provenance_; // same-blob, parallel to surfaces_
+  SurfaceSet set_;                            // non-owning over surfaces_
   std::int64_t ts_ns_{0};
   std::vector<std::pair<std::string, std::uint32_t>> syms_; // symbol -> uid
 };
 
-// ABI note: the appended route counters and RunConfig policy below change these
-// public aggregate layouts. This pre-1.0 release requires a full atx-vol DLL and
-// consumer rebuild; binary compatibility with earlier headers is not promised.
+// ABI note: this pre-1.0 hot-path revision changes the IStrategy vtable and the
+// public ResolvedLeg, MarketSnapshot, SnapshotCacheStats, and RunConfig layouts.
+// Rebuild the atx-vol DLL and every consumer together; binary compatibility with
+// earlier headers is not promised.
 struct SnapshotCacheStats {
   std::uint64_t loads{0};
   std::uint64_t hits{0};
@@ -198,9 +211,11 @@ private:
 
 // ── Book state (absolute-expiry aging) ──────────────────────────────────────
 
-// One open lot. `contract.T` is re-derived each step as (expiry_ts_ns -
-// base.ts)/year; `expiry_ts_ns` is the fixed anchor that drives both the aging
-// residual and the settlement trigger.
+// One open lot. At the engine boundary K must be finite and positive, T and qty
+// finite, multiplier finite and positive, entry_price finite and nonnegative,
+// side valid, and expiry_ts_ns strictly after the current base timestamp.
+// `contract.T` is re-derived each step as (expiry_ts_ns - base.ts)/year;
+// `expiry_ts_ns` is the fixed anchor that drives both aging and settlement.
 struct Lot {
   std::uint64_t id{0};
   OptionContract contract{};
@@ -246,17 +261,24 @@ struct FinancingConfig {
 
 // ── Run config + result ─────────────────────────────────────────────────────
 
-// What to do on a step when a HELD (non-expiring) lot's surface is absent from the
-// base or shifted snapshot. The pricer marks such a lot `ModelUnavailable` and the
-// reduction skips it, so its PnL and greeks are excluded from that step's totals.
+// What to do when a HELD (non-expiring) lot cannot be valued for step P&L or book
+// Greeks. This policy does not apply to a strategy-driven roll close: omitting a
+// close mark would destroy cash/economic value, so the executor always fails closed.
 enum class UnpricedLotPolicy : std::uint8_t {
-  // Preserve the historical arithmetic exactly (skip the lot) and merely REPORT the
-  // exclusion in `BacktestResult::n_unpriced_lots`. This is the default: the only
-  // change from the pre-report engine is that the count is surfaced, not discarded.
+  // Preserve the historical held-valuation arithmetic (skip the unavailable P&L or
+  // Greek lane) and report the exclusion in `BacktestResult::n_unpriced_lots`.
   ExcludeAndReport = 0,
   // Abort the run: any step with an unpriced held lot returns Err(NotFound). The mode
   // a production QIS run uses so a missing board can never silently truncate PnL.
   Error = 1,
+};
+
+// Admission policy for archived surfaces consumed by a backtest. Compatibility
+// preserves the historical behavior. RequireAdmittedRisk fails closed unless
+// every loaded surface is an admitted, currently serviceable risk surface.
+enum class SurfaceProvenancePolicy : std::uint8_t {
+  Compatibility = 0,
+  RequireAdmittedRisk = 1,
 };
 
 struct RunConfig {
@@ -275,10 +297,10 @@ struct RunConfig {
   QueryPricingTier query_pricing_tier{QueryPricingTier::LegacyCompatible};
   FrictionModel frictions{};          // execution frictions (B2; default: frictionless)
   FinancingConfig financing{};        // cash/borrow ledger (B2; default: off => B1-identity)
-  unsigned record_every_n{1};         // persist every Nth step (1 = every step)
+  unsigned record_every_n{1};         // positive; persist every Nth step (1 = every step)
   bool retain_position_frames{false}; // reserved for B1 (per-position frames)
-  // Policy for a held lot with no surface this step. DEFAULT ExcludeAndReport keeps
-  // the pre-report arithmetic bit-for-bit and only reports the count in the result.
+  // Policy for held P&L/Greek valuation only. Strategy close execution always
+  // requires an economically valid mark regardless of this setting.
   UnpricedLotPolicy unpriced{UnpricedLotPolicy::ExcludeAndReport};
   // A null cache creates a private per-run cache. Supplying one permits archive
   // reuse across backtest and reconciliation passes. Private one-pass caches retain
@@ -290,6 +312,46 @@ struct RunConfig {
   // a prepared fast snapshot but loads a separately-keyed cold snapshot on a
   // fast miss. Eager preserves the historical requested-tier behavior.
   QueryCacheBuildPolicy query_cache_build_policy{QueryCacheBuildPolicy::Eager};
+  // Appended for positional aggregate source compatibility. Strict production
+  // backtests opt in; the default deliberately preserves legacy archives.
+  SurfaceProvenancePolicy surface_provenance_policy{SurfaceProvenancePolicy::Compatibility};
+};
+
+// Reusable caller-owned handoff from a step's P&L target solve to the strategy
+// execution ledger. Storage grows to the largest observed book and never
+// shrinks; `prepare(n)` changes only the active prefix when capacity is already
+// warm. `seal()` builds a sorted ID index over the active prefix, rejects
+// duplicate lot IDs, and must succeed before lookup. A sealed lookup is O(log N),
+// allocation-free, and accepts only a matching Ok row with a finite nonnegative
+// raw per-contract mark and finite prior-date vega.
+class ReusableTargetMarkFrame {
+public:
+  struct Match {
+    double raw_mark{0.0};
+    // One-step-lag per-share vega from the P&L base solve. This is unbounded
+    // approximate turnover telemetry only, never a friction or cash input.
+    double base_vega_proxy{0.0};
+  };
+
+  void prepare(std::size_t n);
+  [[nodiscard]] TargetMarkView write_view() noexcept;
+  // Duplicate IDs return InvalidArgument and leave lookup disabled. Successful
+  // seals allocate only when the largest observed frame grows.
+  [[nodiscard]] Status seal();
+  [[nodiscard]] std::optional<Match> find_ok(std::uint64_t id) const noexcept;
+
+  [[nodiscard]] std::size_t size() const noexcept { return active_size_; }
+  [[nodiscard]] std::size_t storage_size() const noexcept { return id_.size(); }
+  [[nodiscard]] std::size_t index_storage_size() const noexcept { return order_.size(); }
+
+private:
+  std::vector<std::uint64_t> id_;
+  std::vector<double> raw_mark_;
+  std::vector<double> base_vega_proxy_;
+  std::vector<PriceStatus> status_;
+  std::vector<std::size_t> order_;
+  std::size_t active_size_{0};
+  bool sealed_{false};
 };
 
 // SoA time series. Row 0 is inception (opening friction in PnL/NAV, otherwise

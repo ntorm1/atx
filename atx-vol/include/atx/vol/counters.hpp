@@ -91,6 +91,10 @@ enum class Counter : unsigned {
   ChebDiffCoefs, // cheb_diff_coefs calls (build-time C_k precompute + query-time T/sigma partials)
   // Adjacent valuation reuse: unique-contract base-Greek lanes skipped by P&L.
   BaseGreekReuseLanes,
+  // Full-Greek producer/consumer handoff: accepted unique lanes and candidate
+  // seeds rejected for missing/mismatched/conflicting provenance.
+  FullGreekSeedReuseLanes,
+  FullGreekSeedRejectedCandidates,
   Count_
 };
 
@@ -126,6 +130,8 @@ inline constexpr const char *kNames[kCount] = {
     "cnt_surface_full_greek_routes",
     "cnt_cheb_diff_coefs",
     "cnt_base_greek_reuse_lanes",
+    "cnt_full_greek_seed_reuse_lanes",
+    "cnt_full_greek_seed_rejected_candidates",
 };
 
 // A point-in-time copy of every counter. `enabled == false` is the sentinel a

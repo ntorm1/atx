@@ -11,11 +11,13 @@
 #include <span>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 #include "atx/vol/black76.hpp"
 #include "atx/vol/dense_slice.hpp"
+#include "atx/vol/detail/archive_util.hpp"
 #include "atx/vol/priced_surface.hpp"
 #include "atx/vol/surface_archive.hpp"
 #include "atx/vol/vol_curve.hpp"
@@ -32,7 +34,12 @@ namespace {
 
 using atx::vol::AlOpts;
 using atx::vol::AmericanMethod;
+using atx::vol::ArchiveDirEntry;
+using atx::vol::ArchivedSurface;
 using atx::vol::ArchiveHeader;
+using atx::vol::ArchiveIndexSlot;
+using atx::vol::ArchivePricingRecord;
+using atx::vol::ArchiveSurfaceProvenanceRecord;
 using atx::vol::C8Curve;
 using atx::vol::C8Params;
 using atx::vol::ConvexDenseCurve;
@@ -41,28 +48,34 @@ using atx::vol::CurveSurface;
 using atx::vol::ErrorCode;
 using atx::vol::EssviCurve;
 using atx::vol::EssviParams;
+using atx::vol::fit_spline_vol_slice;
+using atx::vol::FitObs;
 using atx::vol::FitQualityMode;
 using atx::vol::LinearVarianceCurve;
 using atx::vol::PricedSurface;
 using atx::vol::PricingContext;
 using atx::vol::Side;
 using atx::vol::SliceContext;
-using atx::vol::FitObs;
-using atx::vol::fit_spline_vol_slice;
 using atx::vol::SplineVolCurve;
 using atx::vol::SplineVolParams;
 using atx::vol::SurfaceArchive;
 using atx::vol::SurfaceArchiveItem;
 using atx::vol::SurfaceArchiveWriteOpts;
+using atx::vol::SurfaceBlobHeader;
 using atx::vol::SurfaceProvenance;
 using atx::vol::SurfacePurpose;
 using atx::vol::SurfaceState;
+using atx::vol::svi_total_w;
 using atx::vol::SviCurve;
 using atx::vol::SviParams;
-using atx::vol::svi_total_w;
 using atx::vol::ValidationFailure;
 using atx::vol::VolCurveKind;
 using atx::vol::write_surface_archive;
+
+static_assert(!std::is_copy_constructible_v<ArchivedSurface>);
+static_assert(!std::is_copy_assignable_v<ArchivedSurface>);
+static_assert(std::is_nothrow_move_constructible_v<ArchivedSurface>);
+static_assert(std::is_nothrow_move_assignable_v<ArchivedSurface>);
 
 // Bit-exact double comparison via the object representation (NaN-safe: two NaNs
 // with the same payload compare equal, which is exactly what a byte round-trip
@@ -327,6 +340,318 @@ TEST(SurfaceArchive, RoundTrip_Essvi_TheoBitIdentical) {
   expect_theo_bit_identical(orig, *got);
 }
 
+namespace {
+
+void expect_provenance_equal(const SurfaceProvenance &expected, const SurfaceProvenance &actual) {
+  EXPECT_EQ(actual.purpose, expected.purpose);
+  EXPECT_EQ(actual.quality_mode, expected.quality_mode);
+  EXPECT_EQ(actual.state, expected.state);
+  EXPECT_EQ(actual.validation.failures, expected.validation.failures);
+  EXPECT_EQ(actual.validation.validation_id, expected.validation.validation_id);
+  EXPECT_EQ(actual.source_generation, expected.source_generation);
+  EXPECT_EQ(actual.served_generation, expected.served_generation);
+  EXPECT_EQ(actual.legacy_format, expected.legacy_format);
+}
+
+void repair_archive_metadata_and_header_crcs(std::vector<std::byte> &bytes) {
+  ArchiveHeader header{};
+  ASSERT_GE(bytes.size(), sizeof header);
+  std::memcpy(&header, bytes.data(), sizeof header);
+  const std::size_t lookup_offset = static_cast<std::size_t>(header.lookup_offset);
+  const std::size_t lookup_bytes =
+      static_cast<std::size_t>(header.lookup_slot_count) * sizeof(ArchiveIndexSlot);
+  const std::size_t directory_offset = static_cast<std::size_t>(header.directory_offset);
+  const std::size_t directory_bytes =
+      static_cast<std::size_t>(header.surface_count) * sizeof(atx::vol::ArchiveDirEntry);
+  std::uint32_t metadata =
+      atx::vol::detail::crc32c_update(0xFFFF'FFFFu, bytes.data() + lookup_offset, lookup_bytes);
+  metadata =
+      atx::vol::detail::crc32c_update(metadata, bytes.data() + directory_offset, directory_bytes) ^
+      0xFFFF'FFFFu;
+  header.metadata_crc32c = metadata;
+  header.header_crc32c = 0;
+  std::array<std::byte, sizeof(ArchiveHeader)> header_bytes{};
+  std::memcpy(header_bytes.data(), &header, sizeof header);
+  header.header_crc32c = atx::vol::detail::crc32c(header_bytes.data(), header_bytes.size());
+  std::memcpy(bytes.data(), &header, sizeof header);
+}
+
+void replace_first_directory_symbol_length(std::vector<std::byte> &bytes,
+                                           std::uint16_t symbol_length) {
+  ArchiveHeader header{};
+  ASSERT_GE(bytes.size(), sizeof header);
+  std::memcpy(&header, bytes.data(), sizeof header);
+  ASSERT_GT(header.surface_count, 0u);
+  const std::size_t offset = static_cast<std::size_t>(header.directory_offset);
+  ArchiveDirEntry entry{};
+  ASSERT_LE(offset + sizeof entry, bytes.size());
+  std::memcpy(&entry, bytes.data() + offset, sizeof entry);
+  entry.symbol_len = symbol_length;
+  std::memcpy(bytes.data() + offset, &entry, sizeof entry);
+  repair_archive_metadata_and_header_crcs(bytes);
+}
+
+void replace_first_lookup_symbol_length(std::vector<std::byte> &bytes,
+                                        std::uint16_t symbol_length) {
+  ArchiveHeader header{};
+  ASSERT_GE(bytes.size(), sizeof header);
+  std::memcpy(&header, bytes.data(), sizeof header);
+  const std::size_t slot_count = header.lookup_slot_count;
+  const std::size_t lookup_offset = static_cast<std::size_t>(header.lookup_offset);
+  ArchiveIndexSlot slot{};
+  std::size_t occupied_index = slot_count;
+  for (std::size_t i = 0; i < slot_count; ++i) {
+    std::memcpy(&slot, bytes.data() + lookup_offset + i * sizeof slot, sizeof slot);
+    if (slot.flags == atx::vol::kArchiveSlotOccupied) {
+      occupied_index = i;
+      break;
+    }
+  }
+  ASSERT_LT(occupied_index, slot_count);
+  slot.symbol_len = symbol_length;
+  std::memcpy(bytes.data() + lookup_offset + occupied_index * sizeof slot, &slot, sizeof slot);
+  repair_archive_metadata_and_header_crcs(bytes);
+}
+
+void cross_link_first_two_directory_entries(std::vector<std::byte> &bytes) {
+  ArchiveHeader header{};
+  ASSERT_GE(bytes.size(), sizeof header);
+  std::memcpy(&header, bytes.data(), sizeof header);
+  ASSERT_GE(header.surface_count, 2u);
+  const std::size_t offset = static_cast<std::size_t>(header.directory_offset);
+  std::array<ArchiveDirEntry, 2> entries{};
+  ASSERT_LE(offset + sizeof entries, bytes.size());
+  std::memcpy(entries.data(), bytes.data() + offset, sizeof entries);
+  std::swap(entries[0].surface_offset, entries[1].surface_offset);
+  std::swap(entries[0].surface_size, entries[1].surface_size);
+  std::swap(entries[0].uid, entries[1].uid);
+  std::memcpy(bytes.data() + offset, entries.data(), sizeof entries);
+  repair_archive_metadata_and_header_crcs(bytes);
+}
+
+void replace_first_provenance_state_and_repair_crcs(std::vector<std::byte> &bytes,
+                                                    std::uint8_t state) {
+  ArchiveHeader header{};
+  ASSERT_GE(bytes.size(), sizeof header);
+  std::memcpy(&header, bytes.data(), sizeof header);
+
+  const std::size_t slot_count = header.lookup_slot_count;
+  const std::size_t lookup_offset = static_cast<std::size_t>(header.lookup_offset);
+  ArchiveIndexSlot slot{};
+  std::size_t occupied_index = slot_count;
+  for (std::size_t i = 0; i < slot_count; ++i) {
+    std::memcpy(&slot, bytes.data() + lookup_offset + i * sizeof slot, sizeof slot);
+    if (slot.flags == atx::vol::kArchiveSlotOccupied) {
+      occupied_index = i;
+      break;
+    }
+  }
+  ASSERT_LT(occupied_index, slot_count);
+
+  const std::size_t blob_offset = static_cast<std::size_t>(slot.surface_offset);
+  SurfaceBlobHeader blob_header{};
+  ASSERT_LE(blob_offset + sizeof blob_header, bytes.size());
+  std::memcpy(&blob_header, bytes.data() + blob_offset, sizeof blob_header);
+  ArchiveSurfaceProvenanceRecord record{};
+  std::memcpy(&record, blob_header.reserved, sizeof record);
+  ASSERT_EQ(record.marker, atx::vol::kArchiveProvenanceMarker);
+  record.state = state;
+  std::memcpy(blob_header.reserved, &record, sizeof record);
+  std::memcpy(bytes.data() + blob_offset, &blob_header, sizeof blob_header);
+
+  slot.surface_crc32c = atx::vol::detail::crc32c(bytes.data() + blob_offset,
+                                                 static_cast<std::size_t>(slot.surface_size));
+  std::memcpy(bytes.data() + lookup_offset + occupied_index * sizeof slot, &slot, sizeof slot);
+  repair_archive_metadata_and_header_crcs(bytes);
+}
+
+struct FirstBlobLocation {
+  ArchiveHeader archive{};
+  ArchiveIndexSlot slot{};
+  std::size_t slot_offset{};
+  std::size_t blob_offset{};
+};
+
+[[nodiscard]] FirstBlobLocation first_blob_location(const std::vector<std::byte> &bytes) {
+  FirstBlobLocation location;
+  EXPECT_GE(bytes.size(), sizeof location.archive);
+  if (bytes.size() < sizeof location.archive) {
+    return location;
+  }
+  std::memcpy(&location.archive, bytes.data(), sizeof location.archive);
+  const std::size_t lookup_offset = static_cast<std::size_t>(location.archive.lookup_offset);
+  const std::size_t slot_count = location.archive.lookup_slot_count;
+  for (std::size_t i = 0; i < slot_count; ++i) {
+    const std::size_t slot_offset = lookup_offset + i * sizeof(ArchiveIndexSlot);
+    EXPECT_LE(slot_offset + sizeof(ArchiveIndexSlot), bytes.size());
+    if (slot_offset + sizeof(ArchiveIndexSlot) > bytes.size()) {
+      return location;
+    }
+    ArchiveIndexSlot slot{};
+    std::memcpy(&slot, bytes.data() + slot_offset, sizeof slot);
+    if (slot.flags == atx::vol::kArchiveSlotOccupied) {
+      location.slot = slot;
+      location.slot_offset = slot_offset;
+      location.blob_offset = static_cast<std::size_t>(slot.surface_offset);
+      return location;
+    }
+  }
+  ADD_FAILURE() << "archive has no occupied lookup slot";
+  return location;
+}
+
+void repair_first_blob_and_archive_crcs(std::vector<std::byte> &bytes) {
+  FirstBlobLocation location = first_blob_location(bytes);
+  ASSERT_GT(location.slot.surface_size, 0u);
+  ASSERT_LE(location.blob_offset + static_cast<std::size_t>(location.slot.surface_size),
+            bytes.size());
+  location.slot.surface_crc32c = atx::vol::detail::crc32c(
+      bytes.data() + location.blob_offset, static_cast<std::size_t>(location.slot.surface_size));
+  std::memcpy(bytes.data() + location.slot_offset, &location.slot, sizeof location.slot);
+  repair_archive_metadata_and_header_crcs(bytes);
+}
+
+template <typename Mutator>
+void mutate_first_blob_header(std::vector<std::byte> &bytes, Mutator mutator) {
+  const FirstBlobLocation location = first_blob_location(bytes);
+  SurfaceBlobHeader blob{};
+  ASSERT_LE(location.blob_offset + sizeof blob, bytes.size());
+  std::memcpy(&blob, bytes.data() + location.blob_offset, sizeof blob);
+  mutator(blob);
+  std::memcpy(bytes.data() + location.blob_offset, &blob, sizeof blob);
+  repair_first_blob_and_archive_crcs(bytes);
+}
+
+void replace_first_pricing_uid(std::vector<std::byte> &bytes, std::uint32_t uid) {
+  const FirstBlobLocation location = first_blob_location(bytes);
+  SurfaceBlobHeader blob{};
+  ASSERT_LE(location.blob_offset + sizeof blob, bytes.size());
+  std::memcpy(&blob, bytes.data() + location.blob_offset, sizeof blob);
+  const std::size_t pricing_offset =
+      location.blob_offset + static_cast<std::size_t>(blob.pricing_offset);
+  ArchivePricingRecord pricing{};
+  ASSERT_LE(pricing_offset + sizeof pricing, bytes.size());
+  std::memcpy(&pricing, bytes.data() + pricing_offset, sizeof pricing);
+  pricing.uid = uid;
+  std::memcpy(bytes.data() + pricing_offset, &pricing, sizeof pricing);
+  repair_first_blob_and_archive_crcs(bytes);
+}
+
+void replace_first_blob_symbol_byte(std::vector<std::byte> &bytes, char value) {
+  const FirstBlobLocation location = first_blob_location(bytes);
+  SurfaceBlobHeader blob{};
+  ASSERT_LE(location.blob_offset + sizeof blob, bytes.size());
+  std::memcpy(&blob, bytes.data() + location.blob_offset, sizeof blob);
+  const std::size_t symbol_offset =
+      location.blob_offset + static_cast<std::size_t>(blob.symbol_offset);
+  ASSERT_GT(blob.symbol_size, 0u);
+  ASSERT_LT(symbol_offset, bytes.size());
+  bytes[symbol_offset] = static_cast<std::byte>(value);
+  repair_first_blob_and_archive_crcs(bytes);
+}
+
+void shift_first_pricing_section_to_unaligned_offset(std::vector<std::byte> &bytes) {
+  const FirstBlobLocation location = first_blob_location(bytes);
+  SurfaceBlobHeader blob{};
+  ASSERT_LE(location.blob_offset + sizeof blob, bytes.size());
+  std::memcpy(&blob, bytes.data() + location.blob_offset, sizeof blob);
+  const std::size_t old_offset =
+      location.blob_offset + static_cast<std::size_t>(blob.pricing_offset);
+  const std::size_t new_offset = old_offset + 1u;
+  std::array<std::byte, sizeof(ArchivePricingRecord)> pricing{};
+  ASSERT_LE(new_offset + pricing.size(), bytes.size());
+  std::memcpy(pricing.data(), bytes.data() + old_offset, pricing.size());
+  std::memcpy(bytes.data() + new_offset, pricing.data(), pricing.size());
+  ++blob.pricing_offset;
+  std::memcpy(bytes.data() + location.blob_offset, &blob, sizeof blob);
+  repair_first_blob_and_archive_crcs(bytes);
+}
+
+void replace_first_directory_summary(std::vector<std::byte> &bytes,
+                                     std::optional<std::uint16_t> n_slices,
+                                     std::optional<std::uint16_t> kind_bits) {
+  ArchiveHeader header{};
+  ASSERT_GE(bytes.size(), sizeof header);
+  std::memcpy(&header, bytes.data(), sizeof header);
+  ASSERT_GT(header.surface_count, 0u);
+  const std::size_t offset = static_cast<std::size_t>(header.directory_offset);
+  ArchiveDirEntry entry{};
+  ASSERT_LE(offset + sizeof entry, bytes.size());
+  std::memcpy(&entry, bytes.data() + offset, sizeof entry);
+  if (n_slices.has_value()) {
+    entry.n_slices = *n_slices;
+  }
+  if (kind_bits.has_value()) {
+    entry.kind_bits = *kind_bits;
+  }
+  std::memcpy(bytes.data() + offset, &entry, sizeof entry);
+  repair_archive_metadata_and_header_crcs(bytes);
+}
+
+void replace_first_lookup_and_directory_uid(std::vector<std::byte> &bytes, std::uint32_t uid) {
+  FirstBlobLocation location = first_blob_location(bytes);
+  location.slot.uid = uid;
+  std::memcpy(bytes.data() + location.slot_offset, &location.slot, sizeof location.slot);
+  const std::size_t directory_offset = static_cast<std::size_t>(location.archive.directory_offset);
+  ArchiveDirEntry entry{};
+  ASSERT_LE(directory_offset + sizeof entry, bytes.size());
+  std::memcpy(&entry, bytes.data() + directory_offset, sizeof entry);
+  entry.uid = uid;
+  std::memcpy(bytes.data() + directory_offset, &entry, sizeof entry);
+  repair_archive_metadata_and_header_crcs(bytes);
+}
+
+void replace_first_provenance_reserved_and_repair_crcs(std::vector<std::byte> &bytes,
+                                                       std::uint8_t reserved0,
+                                                       std::uint32_t reserved1) {
+  mutate_first_blob_header(bytes, [reserved0, reserved1](SurfaceBlobHeader &blob) {
+    ArchiveSurfaceProvenanceRecord record{};
+    std::memcpy(&record, blob.reserved, sizeof record);
+    EXPECT_EQ(record.marker, atx::vol::kArchiveProvenanceMarker);
+    record.reserved0 = reserved0;
+    record.reserved1 = reserved1;
+    std::memcpy(blob.reserved, &record, sizeof record);
+  });
+}
+
+void expect_map_symbol_parse_error(std::vector<std::byte> bytes, std::string_view symbol) {
+  auto archive = SurfaceArchive::open(std::move(bytes));
+  ASSERT_TRUE(archive.has_value()) << archive.error().to_string();
+  const auto mapped = archive->map_symbol(symbol);
+  ASSERT_FALSE(mapped.has_value());
+  EXPECT_EQ(mapped.error().code(), ErrorCode::ParseError);
+}
+
+void expect_bulk_map_parse_error(std::vector<std::byte> bytes) {
+  auto archive = SurfaceArchive::open(std::move(bytes));
+  ASSERT_TRUE(archive.has_value()) << archive.error().to_string();
+  const auto plain = archive->map_all();
+  ASSERT_FALSE(plain.has_value());
+  EXPECT_EQ(plain.error().code(), ErrorCode::ParseError);
+  const auto paired = archive->map_all_with_provenance();
+  ASSERT_FALSE(paired.has_value());
+  EXPECT_EQ(paired.error().code(), ErrorCode::ParseError);
+}
+
+void expect_all_maps_parse_error_containing(std::vector<std::byte> bytes, std::string_view needle) {
+  auto archive = SurfaceArchive::open(std::move(bytes));
+  ASSERT_TRUE(archive.has_value()) << archive.error().to_string();
+  const auto symbol = archive->map_symbol("TEST");
+  ASSERT_FALSE(symbol.has_value());
+  EXPECT_EQ(symbol.error().code(), ErrorCode::ParseError);
+  EXPECT_NE(symbol.error().message().find(needle), std::string::npos);
+  const auto plain = archive->map_all();
+  ASSERT_FALSE(plain.has_value());
+  EXPECT_EQ(plain.error().code(), ErrorCode::ParseError);
+  EXPECT_NE(plain.error().message().find(needle), std::string::npos);
+  const auto paired = archive->map_all_with_provenance();
+  ASSERT_FALSE(paired.has_value());
+  EXPECT_EQ(paired.error().code(), ErrorCode::ParseError);
+  EXPECT_NE(paired.error().message().find(needle), std::string::npos);
+}
+
+} // namespace
+
 TEST(SurfaceArchive, RoundTrip_OffPillarCarryPreservesForwardIdentity) {
   const PricedSurface orig = make_essvi(42, 5);
   auto got = round_trip(orig, "SPY", "spy");
@@ -341,8 +666,8 @@ TEST(SurfaceArchive, RoundTrip_OffPillarCarryPreservesForwardIdentity) {
   };
   for (const double T : probes) {
     const double forward = got->forward_at(T);
-    EXPECT_NEAR(got->pricing().S * std::exp((got->rate_at(T) - got->q_eff_at(T)) * T),
-                forward, 2.0e-13 * forward)
+    EXPECT_NEAR(got->pricing().S * std::exp((got->rate_at(T) - got->q_eff_at(T)) * T), forward,
+                2.0e-13 * forward)
         << "T=" << T;
     EXPECT_DOUBLE_EQ(forward, orig.forward_at(T));
     EXPECT_NEAR(got->q_eff_at(T), orig.q_eff_at(T), 2.0e-13) << "T=" << T;
@@ -562,13 +887,111 @@ TEST(SurfaceArchive, LegacyV3ZeroReservedBytesDecodeAsUnadmittedMarketMark) {
   expect_theo_bit_identical(orig, *surface);
 }
 
+TEST(SurfaceArchive, MapAllWithProvenance_PairsExplicitMetadataInDirectoryOrder) {
+  const PricedSurface zzz = make_essvi(31, 3);
+  const PricedSurface aaa = make_svi(11, 2);
+  const PricedSurface mmm = make_linear(21, 4, 9);
+
+  SurfaceProvenance zzz_provenance;
+  zzz_provenance.purpose = SurfacePurpose::MarketMark;
+  zzz_provenance.quality_mode = FitQualityMode::Latency;
+  zzz_provenance.state = SurfaceState::Stale;
+  zzz_provenance.validation.failures = ValidationFailure::StaleInput;
+  zzz_provenance.validation.validation_id = 301;
+  zzz_provenance.source_generation = 31;
+  zzz_provenance.served_generation = 30;
+
+  SurfaceProvenance aaa_provenance;
+  aaa_provenance.purpose = SurfacePurpose::Risk;
+  aaa_provenance.quality_mode = FitQualityMode::Accuracy;
+  aaa_provenance.validation.validation_id = 101;
+  aaa_provenance.source_generation = 11;
+  aaa_provenance.served_generation = 11;
+
+  SurfaceProvenance mmm_provenance;
+  mmm_provenance.purpose = SurfacePurpose::MarketMark;
+  mmm_provenance.quality_mode = FitQualityMode::Balanced;
+  mmm_provenance.state = SurfaceState::Degraded;
+  mmm_provenance.validation.failures = ValidationFailure::CarryGap;
+  mmm_provenance.validation.validation_id = 201;
+  mmm_provenance.source_generation = 21;
+  mmm_provenance.served_generation = 21;
+
+  const std::array<SurfaceArchiveItem, 3> items{
+      SurfaceArchiveItem{"ZZZ", &zzz, zzz_provenance},
+      SurfaceArchiveItem{"AAA", &aaa, aaa_provenance},
+      SurfaceArchiveItem{"MMM", &mmm, mmm_provenance},
+  };
+  auto bytes = write_surface_archive(items);
+  ASSERT_TRUE(bytes.has_value()) << bytes.error().to_string();
+  auto archive = SurfaceArchive::open(std::move(*bytes));
+  ASSERT_TRUE(archive.has_value()) << archive.error().to_string();
+
+  auto mapped = archive->map_all_with_provenance();
+  ASSERT_TRUE(mapped.has_value()) << mapped.error().to_string();
+  ASSERT_EQ(mapped->size(), 3u);
+  EXPECT_EQ((*mapped)[0].surface.uid(), 11u);
+  expect_provenance_equal(aaa_provenance, (*mapped)[0].provenance);
+  EXPECT_EQ((*mapped)[1].surface.uid(), 21u);
+  expect_provenance_equal(mmm_provenance, (*mapped)[1].provenance);
+  EXPECT_EQ((*mapped)[2].surface.uid(), 31u);
+  expect_provenance_equal(zzz_provenance, (*mapped)[2].provenance);
+}
+
+TEST(SurfaceArchive, MapAllWithProvenance_LegacyZeroRecordUsesSafeLegacyProvenance) {
+  const PricedSurface original = make_linear(92, 3, 9);
+  const std::array<SurfaceArchiveItem, 1> items{SurfaceArchiveItem{"SPY", &original}};
+  auto bytes = write_surface_archive(items);
+  ASSERT_TRUE(bytes.has_value()) << bytes.error().to_string();
+  auto archive = SurfaceArchive::open(std::move(*bytes));
+  ASSERT_TRUE(archive.has_value()) << archive.error().to_string();
+
+  auto mapped = archive->map_all_with_provenance();
+  ASSERT_TRUE(mapped.has_value()) << mapped.error().to_string();
+  ASSERT_EQ(mapped->size(), 1u);
+  expect_provenance_equal(atx::vol::legacy_surface_provenance(), mapped->front().provenance);
+  expect_theo_bit_identical(original, mapped->front().surface);
+}
+
+TEST(SurfaceArchive, MapAllWithProvenance_MalformedTaggedRecordIsParseError) {
+  const PricedSurface original = make_essvi(93, 3);
+  SurfaceProvenance provenance;
+  provenance.validation.validation_id = 77;
+  const std::array<SurfaceArchiveItem, 1> items{SurfaceArchiveItem{"SPY", &original, provenance}};
+  auto bytes = write_surface_archive(items);
+  ASSERT_TRUE(bytes.has_value()) << bytes.error().to_string();
+  replace_first_provenance_state_and_repair_crcs(*bytes, 0xFFu);
+  auto archive = SurfaceArchive::open(std::move(*bytes));
+  ASSERT_TRUE(archive.has_value()) << archive.error().to_string();
+
+  auto mapped = archive->map_all_with_provenance();
+  ASSERT_FALSE(mapped.has_value());
+  EXPECT_EQ(mapped.error().code(), ErrorCode::ParseError);
+}
+
+TEST(SurfaceArchive, MapAllWithProvenance_RepairedReservedProvenanceFlagsAreParseErrors) {
+  const PricedSurface original = make_essvi(93, 3);
+  SurfaceProvenance provenance;
+  provenance.validation.validation_id = 77;
+  const std::array<SurfaceArchiveItem, 1> items{SurfaceArchiveItem{"SPY", &original, provenance}};
+
+  for (const auto [reserved0, reserved1] : {std::pair<std::uint8_t, std::uint32_t>{1u, 0u},
+                                            std::pair<std::uint8_t, std::uint32_t>{0u, 1u}}) {
+    SCOPED_TRACE(testing::Message()
+                 << "reserved0=" << static_cast<unsigned>(reserved0) << " reserved1=" << reserved1);
+    auto bytes = write_surface_archive(items);
+    ASSERT_TRUE(bytes.has_value()) << bytes.error().to_string();
+    replace_first_provenance_reserved_and_repair_crcs(*bytes, reserved0, reserved1);
+    expect_bulk_map_parse_error(std::move(*bytes));
+  }
+}
+
 TEST(SurfaceArchive, WriteRejectsHealthyProvenanceWithValidationFailures) {
   const PricedSurface orig = make_essvi(93, 2);
   SurfaceProvenance inconsistent;
   inconsistent.state = SurfaceState::Healthy;
   inconsistent.validation.failures = ValidationFailure::Butterfly;
-  const std::array<SurfaceArchiveItem, 1> items{
-      SurfaceArchiveItem{"SPY", &orig, inconsistent}};
+  const std::array<SurfaceArchiveItem, 1> items{SurfaceArchiveItem{"SPY", &orig, inconsistent}};
   auto result = write_surface_archive(items);
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
@@ -705,6 +1128,143 @@ TEST(SurfaceArchive, Format_RejectsCorruptedBlobPayload) {
   EXPECT_NE(mapped.error().message().find("checksum"), std::string::npos);
 }
 
+TEST(SurfaceArchive, MapSymbol_RejectsRepairedBlobHeaderUidMismatch) {
+  const PricedSurface surface = make_essvi(1, 3);
+  std::vector<std::byte> bytes = build_one(surface, "TEST");
+  mutate_first_blob_header(bytes, [](SurfaceBlobHeader &blob) { blob.uid = 99u; });
+  expect_map_symbol_parse_error(std::move(bytes), "TEST");
+}
+
+TEST(SurfaceArchive, MapSymbol_RejectsRepairedPricingUidMismatch) {
+  const PricedSurface surface = make_essvi(1, 3);
+  std::vector<std::byte> bytes = build_one(surface, "TEST");
+  replace_first_pricing_uid(bytes, 99u);
+  expect_map_symbol_parse_error(std::move(bytes), "TEST");
+}
+
+TEST(SurfaceArchive, MapSymbol_RejectsRepairedSymbolSectionOutOfBounds) {
+  const PricedSurface surface = make_essvi(1, 3);
+  std::vector<std::byte> bytes = build_one(surface, "TEST");
+  mutate_first_blob_header(bytes,
+                           [](SurfaceBlobHeader &blob) { blob.symbol_offset = blob.blob_size; });
+  expect_map_symbol_parse_error(std::move(bytes), "TEST");
+}
+
+TEST(SurfaceArchive, MapSymbol_RejectsRepairedSymbolLengthMismatch) {
+  const PricedSurface surface = make_essvi(1, 3);
+  std::vector<std::byte> bytes = build_one(surface, "TEST");
+  mutate_first_blob_header(bytes, [](SurfaceBlobHeader &blob) { ++blob.symbol_size; });
+  expect_map_symbol_parse_error(std::move(bytes), "TEST");
+}
+
+TEST(SurfaceArchive, MapSymbol_RejectsRepairedSymbolContentMismatch) {
+  const PricedSurface surface = make_essvi(1, 3);
+  std::vector<std::byte> bytes = build_one(surface, "TEST");
+  replace_first_blob_symbol_byte(bytes, 'X');
+  expect_map_symbol_parse_error(std::move(bytes), "TEST");
+}
+
+TEST(SurfaceArchive, MapAll_RejectsRepairedDirectorySliceCountMismatch) {
+  const PricedSurface surface = make_essvi(1, 3);
+  std::vector<std::byte> bytes = build_one(surface, "TEST");
+  replace_first_directory_summary(bytes, 4u, std::nullopt);
+  expect_bulk_map_parse_error(std::move(bytes));
+}
+
+TEST(SurfaceArchive, MapAll_RejectsRepairedDirectoryKindBitsMismatch) {
+  const PricedSurface surface = make_essvi(1, 3);
+  std::vector<std::byte> bytes = build_one(surface, "TEST");
+  replace_first_directory_summary(bytes, std::nullopt, 0u);
+  expect_bulk_map_parse_error(std::move(bytes));
+}
+
+TEST(SurfaceArchive, MapAll_RejectsLookupUidThatWouldBeAbsentFromMappedSurfaceSet) {
+  const PricedSurface surface = make_essvi(1, 3);
+  std::vector<std::byte> bytes = build_one(surface, "TEST");
+  replace_first_lookup_and_directory_uid(bytes, 99u);
+  expect_bulk_map_parse_error(std::move(bytes));
+}
+
+TEST(SurfaceArchive, MappingRejectsRepairedOverlappingPricingAndSlicesSections) {
+  const PricedSurface surface = make_essvi(1, 3);
+  std::vector<std::byte> bytes = build_one(surface, "TEST");
+  mutate_first_blob_header(bytes, [](SurfaceBlobHeader &blob) {
+    blob.pricing_size = blob.slices_offset - blob.pricing_offset + atx::vol::kArchiveArrayAlign;
+  });
+  expect_all_maps_parse_error_containing(std::move(bytes), "topology");
+}
+
+TEST(SurfaceArchive, MappingRejectsRepairedOutOfOrderSections) {
+  const PricedSurface surface = make_essvi(1, 3);
+  std::vector<std::byte> bytes = build_one(surface, "TEST");
+  mutate_first_blob_header(
+      bytes, [](SurfaceBlobHeader &blob) { blob.slices_offset = blob.symbol_offset; });
+  expect_all_maps_parse_error_containing(std::move(bytes), "topology");
+}
+
+TEST(SurfaceArchive, MappingRejectsRepairedUnalignedPricingSection) {
+  const PricedSurface surface = make_essvi(1, 3);
+  std::vector<std::byte> bytes = build_one(surface, "TEST");
+  shift_first_pricing_section_to_unaligned_offset(bytes);
+  expect_all_maps_parse_error_containing(std::move(bytes), "alignment");
+}
+
+TEST(SurfaceArchive, MappingRejectsRepairedUnconsumedSliceTail) {
+  const PricedSurface surface = make_essvi(1, 3);
+  std::vector<std::byte> bytes = build_one(surface, "TEST");
+  mutate_first_blob_header(bytes, [](SurfaceBlobHeader &blob) { --blob.n_slices; });
+  replace_first_directory_summary(bytes, 2u, std::nullopt);
+  expect_all_maps_parse_error_containing(std::move(bytes), "consumption");
+}
+
+TEST(SurfaceArchive, Open_RejectsOversizedDirectorySymbolLength) {
+  const PricedSurface surface = make_essvi(1, 3);
+  std::vector<std::byte> bytes = build_one(surface, "TEST");
+  ASSERT_FALSE(bytes.empty());
+  replace_first_directory_symbol_length(
+      bytes, static_cast<std::uint16_t>(atx::vol::kArchiveSymbolMax + 1u));
+
+  auto opened = SurfaceArchive::open(std::move(bytes));
+  ASSERT_FALSE(opened.has_value());
+  EXPECT_EQ(opened.error().code(), ErrorCode::ParseError);
+}
+
+TEST(SurfaceArchive, Open_RejectsOversizedLookupSymbolLength) {
+  const PricedSurface surface = make_essvi(1, 3);
+  std::vector<std::byte> bytes = build_one(surface, "TEST");
+  ASSERT_FALSE(bytes.empty());
+  replace_first_lookup_symbol_length(bytes,
+                                     static_cast<std::uint16_t>(atx::vol::kArchiveSymbolMax + 1u));
+
+  auto opened = SurfaceArchive::open(std::move(bytes));
+  ASSERT_FALSE(opened.has_value());
+  EXPECT_EQ(opened.error().code(), ErrorCode::ParseError);
+}
+
+TEST(SurfaceArchive, MapAll_RejectsCrossLinkedDirectoryAndLookupRecords) {
+  const PricedSurface aaa = make_essvi(1, 3);
+  const PricedSurface bbb = make_essvi(2, 3);
+  const std::array<SurfaceArchiveItem, 2> items{
+      SurfaceArchiveItem{"AAA", &aaa},
+      SurfaceArchiveItem{"BBB", &bbb},
+  };
+  auto bytes = write_surface_archive(items);
+  ASSERT_TRUE(bytes.has_value()) << bytes.error().to_string();
+  cross_link_first_two_directory_entries(*bytes);
+  auto archive = SurfaceArchive::open(std::move(*bytes));
+  ASSERT_TRUE(archive.has_value()) << archive.error().to_string();
+
+  auto plain = archive->map_all();
+  ASSERT_FALSE(plain.has_value());
+  EXPECT_EQ(plain.error().code(), ErrorCode::ParseError);
+  EXPECT_NE(plain.error().message().find("directory/lookup mismatch"), std::string::npos);
+
+  auto paired = archive->map_all_with_provenance();
+  ASSERT_FALSE(paired.has_value());
+  EXPECT_EQ(paired.error().code(), ErrorCode::ParseError);
+  EXPECT_NE(paired.error().message().find("directory/lookup mismatch"), std::string::npos);
+}
+
 TEST(SurfaceArchive, Write_RejectsDuplicateCanonicalSymbol) {
   const PricedSurface s1 = make_essvi(1, 3);
   const PricedSurface s2 = make_essvi(2, 3);
@@ -714,6 +1274,17 @@ TEST(SurfaceArchive, Write_RejectsDuplicateCanonicalSymbol) {
   auto built = write_surface_archive(items);
   ASSERT_FALSE(built.has_value());
   EXPECT_EQ(built.error().code(), ErrorCode::AlreadyExists);
+}
+
+TEST(SurfaceArchive, Write_RejectsExplicitLegacyProvenanceRecord) {
+  const PricedSurface surface = make_essvi(1, 3);
+  const SurfaceProvenance legacy = atx::vol::legacy_surface_provenance();
+  ASSERT_TRUE(legacy.legacy_format);
+  const std::array<SurfaceArchiveItem, 1> items{SurfaceArchiveItem{"SPY", &surface, legacy}};
+
+  auto built = write_surface_archive(items);
+  ASSERT_FALSE(built.has_value());
+  EXPECT_EQ(built.error().code(), ErrorCode::InvalidArgument);
 }
 
 TEST(SurfaceArchive, Write_RejectsEmptyAndNull) {
@@ -796,6 +1367,31 @@ TEST(SurfaceArchive, MultiSymbol_MixedKinds_MapAll_And_CapacityGuard) {
   EXPECT_EQ(*wrote, 6u);
   for (const auto &o : outs) {
     EXPECT_TRUE(o.has_value());
+  }
+}
+
+TEST(SurfaceArchive, MapAllWithProvenance_NumericallyMatchesMapAll) {
+  const PricedSurface spy = make_convex(1, 4, 32);
+  const PricedSurface aapl = make_essvi(2, 5);
+  const PricedSurface xom = make_svi(3, 3);
+  const std::array<SurfaceArchiveItem, 3> items{
+      SurfaceArchiveItem{"XOM", &xom},
+      SurfaceArchiveItem{"SPY", &spy},
+      SurfaceArchiveItem{"AAPL", &aapl},
+  };
+  auto bytes = write_surface_archive(items);
+  ASSERT_TRUE(bytes.has_value()) << bytes.error().to_string();
+  auto archive = SurfaceArchive::open(std::move(*bytes));
+  ASSERT_TRUE(archive.has_value()) << archive.error().to_string();
+
+  auto legacy = archive->map_all();
+  ASSERT_TRUE(legacy.has_value()) << legacy.error().to_string();
+  auto paired = archive->map_all_with_provenance();
+  ASSERT_TRUE(paired.has_value()) << paired.error().to_string();
+  ASSERT_EQ(legacy->size(), paired->size());
+  for (std::size_t i = 0; i < legacy->size(); ++i) {
+    EXPECT_EQ((*legacy)[i].uid(), (*paired)[i].surface.uid());
+    expect_theo_bit_identical((*legacy)[i], (*paired)[i].surface);
   }
 }
 

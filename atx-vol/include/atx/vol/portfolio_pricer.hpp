@@ -73,6 +73,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <span>
 #include <utility>
@@ -120,6 +121,17 @@ struct PortfolioBuildOptions {
   std::size_t expected_unique_contracts{0};
 };
 
+namespace detail {
+
+// Checked-narrowing seam shared by Portfolio::create and its boundary test. The
+// prepared substrate stores position-to-contract and execution indices as
+// uint32_t, so no allocation may begin for an unrepresentable position count.
+[[nodiscard]] constexpr bool portfolio_index_count_is_representable(std::size_t count) noexcept {
+  return count <= static_cast<std::size_t>((std::numeric_limits<std::uint32_t>::max)());
+}
+
+} // namespace detail
+
 // ── Per-lane status ───────────────────────────────────────────────────────
 
 enum class PriceStatus : std::uint8_t {
@@ -146,8 +158,8 @@ public:
   ~Portfolio() = default;
 
   // Build from positions (any order). An empty book is valid (yields empty
-  // frames). @return InvalidArgument only on a structurally impossible input
-  // (currently none — reserved for future validation).
+  // frames). The uint32-indexed prepared substrate limits the position count to
+  // UINT32_MAX; an oversized input returns InvalidArgument before allocation.
   [[nodiscard]] static Result<Portfolio> create(std::span<const Position> positions,
                                                 const PortfolioBuildOptions &options = {});
 
@@ -303,7 +315,9 @@ struct PriceFrame {
 // PortfolioWorkspace for the n_threads>1 worker-pool caveat). The eight
 // Greek spans may be left EMPTY under the Marks mask; `price_into` never touches
 // an empty Greek span. Every marks span (`id/uid/pv/price/iv/status`) and
-// `total` must be present and sized to the position count.
+// `total` must be present and sized to the position count. Every materialized
+// output span and the `total` object must occupy a disjoint byte range; overlap
+// is rejected before workspace mutation, pricing, counters, or output writes.
 struct PriceFrameView {
   std::span<std::uint64_t> id;
   std::span<std::uint32_t> uid;
@@ -364,8 +378,8 @@ public:
   PortfolioWorkspace(const PortfolioWorkspace &) = delete;
   PortfolioWorkspace &operator=(const PortfolioWorkspace &) = delete;
 
-  // Pre-size the internal scratch for a book of `n_unique` unique contracts
-  // (the per-row output frame is caller-owned, so `n_positions` is advisory).
+  // Pre-size the internal scratch for a book of `n_unique` unique contracts and
+  // up to `n_positions` seed candidates. Per-row output remains caller-owned.
   // Idempotent and grow-only; after this a matching `price_into`/`price_totals`
   // allocates nothing on its own buffers. The retained PreparedPortfolio is
   // still built lazily on the first call against a given book, then reused.
@@ -432,7 +446,8 @@ struct PnlFrame {
 // `pnl_explain_into` allocates no frame memory on the hot path (the retained
 // PreparedPortfolio and the P&L solve scratch in `ws` are reused across
 // snapshots). (At `opts.n_threads > 1` the worker fan-out itself allocates a
-// thread vector; see PortfolioWorkspace.)
+// thread vector; see PortfolioWorkspace.) Every column and the `total` object
+// must occupy a disjoint byte range; overlap is rejected before observable work.
 struct PnlFrameView {
   std::span<std::uint64_t> id;
   std::span<std::uint32_t> uid;
@@ -454,6 +469,20 @@ struct PnlFrameView {
   std::span<double> d_rate;
   std::span<PriceStatus> status;
   PnlTotals *total{nullptr};
+};
+
+// Minimal caller-owned output for handing exact shifted marks to a downstream
+// backtest ledger. Rows preserve portfolio input order. `price_target` is the
+// raw, unweighted per-contract mark (including for zero-quantity positions), not
+// PnlFrame::pv_target. `base_vega_proxy` is the already-computed prior-date raw
+// vega: downstream ledgers may use it for turnover telemetry without another
+// target-date solve, but never for target-date friction. Failed rows carry their
+// exact P&L status and NaN numeric outputs.
+struct TargetMarkView {
+  std::span<std::uint64_t> id;
+  std::span<double> price_target;
+  std::span<PriceStatus> status;
+  std::span<double> base_vega_proxy;
 };
 
 // ── The pricer ────────────────────────────────────────────────────────────
@@ -533,11 +562,24 @@ public:
   // empty); `FullGreeks` additionally writes the eight Greek columns. The marks
   // columns and the `pv` total are bit-identical to `price()`; the reduction is
   // the same fixed-input-order sum, so `out.total` is deterministic across
-  // thread counts. @return InvalidArgument on a view span-size mismatch, or the
-  // propagated substrate-build error.
+  // thread counts. `seeds` is an optional unordered set of immutable
+  // PricedSurface-produced FullGreeks results. Exact per-contract provenance
+  // matches skip only those unique solves; missing, stale, mismatched, or
+  // conflicting candidates fail closed to an ordinary solve. At most
+  // n_positions() candidates are accepted as input; a larger span is rejected
+  // as a whole to preserve the workspace's warm-allocation bound. Seeds are
+  // ignored under a marks-only mask. @return InvalidArgument on a view span-size
+  // mismatch, or the propagated substrate-build error.
   [[nodiscard]] Status price_into(const SurfaceSet &surfaces, PriceFieldMask fields,
                                   PriceFrameView out, PortfolioWorkspace &ws,
                                   const PriceOptions &opts = {}) const;
+
+  // Seed-aware overload kept separate so the established five-parameter ABI
+  // and member-function type remain available to existing callers.
+  [[nodiscard]] Status price_into(const SurfaceSet &surfaces, PriceFieldMask fields,
+                                  PriceFrameView out, PortfolioWorkspace &ws,
+                                  const PriceOptions &opts,
+                                  std::span<const FullGreekSeed> seeds) const;
 
   // Totals only: solve the book and reduce weight*result over positions in fixed
   // input order, with NO per-row frame allocation and NO scatter. Bit-identical
@@ -577,6 +619,19 @@ public:
   [[nodiscard]] Result<PnlTotals> pnl_totals(const SurfaceSet &base, const SurfaceSet &shifted,
                                              PortfolioWorkspace &ws,
                                              const PriceOptions &opts = {}) const;
+
+  // Totals plus exact per-position shifted marks from the SAME unique-contract
+  // solve. The established pnl_totals API and symbol remain unchanged; this
+  // named caller-owned variant performs no second surface evaluation. Every
+  // output span must equal n_positions() and all four mutable byte ranges must
+  // be pairwise disjoint. A size mismatch or overlap returns InvalidArgument
+  // before solving into the workspace or mutating any output element. Reserved
+  // workspace + caller storage is allocation-free on the single-threaded hot
+  // path.
+  [[nodiscard]] Result<PnlTotals>
+  pnl_totals_with_target_marks_into(const SurfaceSet &base, const SurfaceSet &shifted,
+                                    TargetMarkView out, PortfolioWorkspace &ws,
+                                    const PriceOptions &opts = {}) const;
 
 private:
   Portfolio pf_;

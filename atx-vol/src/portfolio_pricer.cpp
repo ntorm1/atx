@@ -4,14 +4,17 @@
 #include "atx/vol/portfolio_pricer.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <bit>
 #include <cmath>
 #include <cstdint>
 #include <exception>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <unordered_map>
 #include <utility>
@@ -27,6 +30,96 @@ namespace {
 
 // "No value" sentinel for a non-Ok lane's numeric columns.
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+
+using ByteRange = std::span<const std::byte>;
+
+template <class T>
+[[nodiscard]] ByteRange byte_range(std::span<T> values, bool active = true) noexcept {
+  return active ? std::as_bytes(values) : ByteRange{};
+}
+
+template <class T> [[nodiscard]] ByteRange byte_range(T &value) noexcept {
+  return std::as_bytes(std::span<T>{&value, 1u});
+}
+
+[[nodiscard]] bool byte_ranges_overlap(ByteRange lhs, ByteRange rhs) noexcept {
+  if (lhs.empty() || rhs.empty()) {
+    return false;
+  }
+  const std::less<const std::byte *> less;
+  const std::byte *const lhs_end = lhs.data() + lhs.size();
+  const std::byte *const rhs_end = rhs.data() + rhs.size();
+  return less(lhs.data(), rhs_end) && less(rhs.data(), lhs_end);
+}
+
+template <std::size_t N>
+[[nodiscard]] bool any_byte_ranges_overlap(const std::array<ByteRange, N> &ranges) noexcept {
+  for (std::size_t lhs = 0; lhs < N; ++lhs) {
+    for (std::size_t rhs = lhs + 1u; rhs < N; ++rhs) {
+      if (byte_ranges_overlap(ranges[lhs], ranges[rhs])) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+[[nodiscard]] bool price_frame_view_overlaps(const PriceFrameView &out, bool want_greeks) noexcept {
+  const std::array<ByteRange, 15> ranges{
+      byte_range(out.id),
+      byte_range(out.uid),
+      byte_range(out.pv),
+      byte_range(out.price),
+      byte_range(out.iv),
+      byte_range(out.delta, want_greeks),
+      byte_range(out.gamma, want_greeks),
+      byte_range(out.vega, want_greeks),
+      byte_range(out.theta, want_greeks),
+      byte_range(out.rho, want_greeks),
+      byte_range(out.vanna, want_greeks),
+      byte_range(out.volga, want_greeks),
+      byte_range(out.charm, want_greeks),
+      byte_range(out.status),
+      byte_range(*out.total),
+  };
+  return any_byte_ranges_overlap(ranges);
+}
+
+[[nodiscard]] bool pnl_frame_view_overlaps(const PnlFrameView &out) noexcept {
+  const std::array<ByteRange, 20> ranges{
+      byte_range(out.id),        byte_range(out.uid),
+      byte_range(out.pv_base),   byte_range(out.pv_target),
+      byte_range(out.pnl_total), byte_range(out.pnl_delta),
+      byte_range(out.pnl_gamma), byte_range(out.pnl_vega),
+      byte_range(out.pnl_volga), byte_range(out.pnl_vanna),
+      byte_range(out.pnl_theta), byte_range(out.pnl_rho),
+      byte_range(out.pnl_charm), byte_range(out.pnl_unexplained),
+      byte_range(out.d_spot),    byte_range(out.d_vol),
+      byte_range(out.d_time),    byte_range(out.d_rate),
+      byte_range(out.status),    byte_range(*out.total),
+  };
+  return any_byte_ranges_overlap(ranges);
+}
+
+[[nodiscard]] bool target_mark_view_overlaps(const TargetMarkView &out) noexcept {
+  const std::array<ByteRange, 4> ranges{
+      byte_range(out.id),
+      byte_range(out.price_target),
+      byte_range(out.status),
+      byte_range(out.base_vega_proxy),
+  };
+  return any_byte_ranges_overlap(ranges);
+}
+
+[[nodiscard]] double timestamp_delta_ns(std::int64_t lhs, std::int64_t rhs) noexcept {
+  if (lhs >= rhs) {
+    const std::uint64_t magnitude =
+        static_cast<std::uint64_t>(lhs) - static_cast<std::uint64_t>(rhs);
+    return static_cast<double>(magnitude);
+  }
+  const std::uint64_t magnitude = static_cast<std::uint64_t>(rhs) - static_cast<std::uint64_t>(lhs);
+  return -static_cast<double>(magnitude);
+}
 
 // Effective deliverable: non-finite or non-positive multiplier defaults to 100
 // (matches the legacy portfolio dollar convention).
@@ -59,6 +152,25 @@ struct ContractKeyHash {
 [[nodiscard]] ContractKey key_of(const OptionContract &c) noexcept {
   return ContractKey{c.uid, std::bit_cast<std::uint64_t>(c.K), std::bit_cast<std::uint64_t>(c.T),
                      static_cast<std::uint8_t>(c.side)};
+}
+
+[[nodiscard]] ContractKey key_of(const FullGreekSeed &seed) noexcept {
+  return ContractKey{seed.uid(), std::bit_cast<std::uint64_t>(seed.K()),
+                     std::bit_cast<std::uint64_t>(seed.T()),
+                     static_cast<std::uint8_t>(seed.side())};
+}
+
+[[nodiscard]] bool key_less(const ContractKey &a, const ContractKey &b) noexcept {
+  if (a.uid != b.uid) {
+    return a.uid < b.uid;
+  }
+  if (a.kbits != b.kbits) {
+    return a.kbits < b.kbits;
+  }
+  if (a.tbits != b.tbits) {
+    return a.tbits < b.tbits;
+  }
+  return a.side < b.side;
 }
 
 // A never-reused process-local identity for exact O(1) workspace invalidation.
@@ -120,6 +232,10 @@ Portfolio &Portfolio::operator=(Portfolio &&other) noexcept {
 
 Result<Portfolio> Portfolio::create(std::span<const Position> positions,
                                     const PortfolioBuildOptions &options) {
+  if (!detail::portfolio_index_count_is_representable(positions.size())) {
+    return Err(ErrorCode::InvalidArgument,
+               "Portfolio::create: position count exceeds uint32 index capacity");
+  }
   Portfolio pf;
   pf.positions_.assign(positions.begin(), positions.end());
   pf.pos_contract_ix_.resize(positions.size());
@@ -341,6 +457,138 @@ struct ContractPnl {
   return dw_dk / (2.0 * sigma * T);
 }
 
+[[nodiscard]] bool same_bits(double a, double b) noexcept {
+  return std::bit_cast<std::uint64_t>(a) == std::bit_cast<std::uint64_t>(b);
+}
+
+[[nodiscard]] bool same_greeks(const AmericanGreeks &a, const AmericanGreeks &b) noexcept {
+  return same_bits(a.delta, b.delta) && same_bits(a.gamma, b.gamma) && same_bits(a.vega, b.vega) &&
+         same_bits(a.theta, b.theta) && same_bits(a.rho, b.rho) && same_bits(a.vanna, b.vanna) &&
+         same_bits(a.volga, b.volga) && same_bits(a.charm, b.charm) && same_bits(a.price, b.price);
+}
+
+[[nodiscard]] bool same_seed_payload(const FullGreekSeed &a, const FullGreekSeed &b) noexcept {
+  return key_of(a) == key_of(b) && a.surface_instance_id() == b.surface_instance_id() &&
+         a.analytic_greeks() == b.analytic_greeks() && same_bits(a.iv(), b.iv()) &&
+         same_greeks(a.greeks(), b.greeks());
+}
+
+// Configured and forced-cold evaluations can differ in harmless solver roundoff
+// even when a cold-compatible surface maps both requests to the same economic
+// route. The caller separately validates both candidates' surface provenance and
+// route before this comparison; same-enum duplicates remain bit-strict.
+[[nodiscard]] bool same_seed_semantics(const FullGreekSeed &a, const FullGreekSeed &b) noexcept {
+  if (a.query_execution() == b.query_execution()) {
+    return same_seed_payload(a, b);
+  }
+  return (a.query_execution() == QueryExecution::Configured &&
+          b.query_execution() == QueryExecution::ColdReference) ||
+         (a.query_execution() == QueryExecution::ColdReference &&
+          b.query_execution() == QueryExecution::Configured);
+}
+
+[[nodiscard]] bool seed_route_matches(const FullGreekSeed &seed, const OptionContract &contract,
+                                      const SurfaceSet &surfaces, bool analytic,
+                                      QueryExecution query_execution) noexcept {
+  const PricedSurface *const surface = surfaces.find(contract.uid);
+  if (surface == nullptr) {
+    return false;
+  }
+  const QueryPricingTier tier = surface->query_pricing_tier();
+  const bool configured_is_cold =
+      tier == QueryPricingTier::LegacyCompatible || tier == QueryPricingTier::ColdReference;
+  const bool cold_alias =
+      configured_is_cold && ((seed.query_execution() == QueryExecution::Configured &&
+                              query_execution == QueryExecution::ColdReference) ||
+                             (seed.query_execution() == QueryExecution::ColdReference &&
+                              query_execution == QueryExecution::Configured));
+  const bool execution_matches = seed.query_execution() == query_execution || cold_alias;
+  return seed.surface_instance_id() == surface->instance_id() &&
+         seed.analytic_greeks() == analytic && execution_matches;
+}
+
+struct SeedStageCounts {
+  std::uint64_t accepted_unique{0};
+  std::uint64_t rejected_candidates{0};
+};
+
+[[nodiscard]] SeedStageCounts
+stage_full_greek_seeds(const SurfaceSet &surfaces, std::span<const OptionContract> contracts,
+                       bool analytic, QueryExecution query_execution, bool skew_adjusted_delta,
+                       const StickyParams &sticky, std::span<const FullGreekSeed> seeds,
+                       std::vector<ContractPx> &staged, std::vector<std::uint8_t> &accepted,
+                       std::vector<std::uint32_t> &seed_order,
+                       std::vector<std::uint8_t> &candidate_matched) {
+  staged.resize(contracts.size());
+  accepted.assign(contracts.size(), std::uint8_t{0});
+  seed_order.resize(seeds.size());
+  std::iota(seed_order.begin(), seed_order.end(), std::uint32_t{0});
+  std::sort(seed_order.begin(), seed_order.end(), [&seeds](std::uint32_t a, std::uint32_t b) {
+    return key_less(key_of(seeds[a]), key_of(seeds[b]));
+  });
+  candidate_matched.assign(seeds.size(), std::uint8_t{0});
+
+  SeedStageCounts counts;
+  for (std::size_t contract_index = 0; contract_index < contracts.size(); ++contract_index) {
+    const OptionContract &contract = contracts[contract_index];
+    const ContractKey contract_key = key_of(contract);
+    const auto first = std::lower_bound(seed_order.begin(), seed_order.end(), contract_key,
+                                        [&seeds](std::uint32_t seed_index, const ContractKey &key) {
+                                          return key_less(key_of(seeds[seed_index]), key);
+                                        });
+    auto last = first;
+    while (last != seed_order.end() && key_of(seeds[*last]) == contract_key) {
+      candidate_matched[*last] = std::uint8_t{1};
+      ++last;
+    }
+    if (first == last) {
+      continue;
+    }
+
+    const auto exact_execution =
+        std::find_if(first, last, [&seeds, query_execution](std::uint32_t candidate) {
+          return seeds[candidate].query_execution() == query_execution;
+        });
+    const FullGreekSeed &representative =
+        exact_execution != last ? seeds[*exact_execution] : seeds[*first];
+    bool consistent = true;
+    for (auto candidate = first; candidate != last; ++candidate) {
+      const bool candidate_route_matches =
+          seed_route_matches(seeds[*candidate], contract, surfaces, analytic, query_execution);
+      const bool candidate_is_consistent =
+          candidate_route_matches && same_seed_semantics(representative, seeds[*candidate]);
+      consistent = consistent && candidate_is_consistent;
+    }
+    if (!consistent) {
+      counts.rejected_candidates += static_cast<std::uint64_t>(std::distance(first, last));
+      continue;
+    }
+
+    ContractPx &out = staged[contract_index];
+    out = ContractPx{};
+    out.fair_value = representative.greeks().price;
+    out.g = representative.greeks();
+    out.iv = representative.iv();
+    out.status = PriceStatus::Ok;
+    if (skew_adjusted_delta) {
+      const PricedSurface *const surface = surfaces.find(contract.uid);
+      if (surface != nullptr) {
+        const double slope = priced_surface_skew_slope(*surface, contract.K, contract.T);
+        out.vega_slope = vega_slope_from_skew_slope(slope, surface->pricing().S, sticky);
+      }
+    }
+    accepted[contract_index] = std::uint8_t{1};
+    ++counts.accepted_unique;
+  }
+
+  for (const std::uint8_t matched : candidate_matched) {
+    if (matched == std::uint8_t{0}) {
+      ++counts.rejected_candidates;
+    }
+  }
+  return counts;
+}
+
 // Solve every UNIQUE contract into `px` (indexed by the ORIGINAL Portfolio
 // contract index), reusing the caller's batch-eval SoA scratch (`b_*`). This is
 // the T5 grouped, permuted, evaluate_batch fan-out factored verbatim so that
@@ -361,13 +609,20 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
                    simd::SimdIsa resolved_price_isa, QueryExecution query_execution,
                    unsigned n_threads, std::vector<ContractPx> &px, std::vector<double> &b_iv,
                    std::vector<double> &b_price, std::vector<AmericanGreeks> &b_greeks,
-                   std::vector<Status> &b_status) {
+                   std::vector<Status> &b_status, std::span<const ContractPx> staged_seeds = {},
+                   std::span<const std::uint8_t> accepted_seeds = {}) {
   const std::size_t n_unique = pp.n_unique();
   using EF = PricedSurface::EvalField;
   const EF fields =
       want_greeks ? (EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder) : (EF::Iv | EF::Price);
 
+  const bool have_seed_stage =
+      staged_seeds.size() == contracts.size() && accepted_seeds.size() == contracts.size();
   px.resize(contracts.size());
+  for (std::size_t i = 0; i < contracts.size(); ++i) {
+    px[i] =
+        have_seed_stage && accepted_seeds[i] != std::uint8_t{0} ? staged_seeds[i] : ContractPx{};
+  }
   b_iv.resize(n_unique);
   b_price.resize(n_unique);
   b_greeks.resize(want_greeks ? n_unique : 0);
@@ -379,6 +634,10 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
   const std::span<const double> kcol = pp.k();
   const std::span<const double> tcol = pp.t();
   const std::span<const Side> scol = pp.side();
+
+  const auto is_seeded = [&](std::uint32_t original_index) noexcept {
+    return have_seed_stage && accepted_seeds[original_index] != std::uint8_t{0};
+  };
 
   const auto solve_span = [&](std::uint32_t uid, std::uint32_t s, std::uint32_t e) {
     const std::size_t gsz = static_cast<std::size_t>(e - s);
@@ -446,6 +705,28 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
     }
   };
 
+  const auto solve_unseeded = [&](std::uint32_t uid, std::uint32_t s, std::uint32_t e) {
+    std::uint32_t p = s;
+    while (p < e) {
+      while (p < e && is_seeded(oci[p])) {
+        ++p;
+      }
+      const std::uint32_t begin = p;
+      while (p < e && !is_seeded(oci[p])) {
+        ++p;
+      }
+      if (begin < p) {
+        solve_span(uid, begin, p);
+      }
+    }
+  };
+
+  if (have_seed_stage &&
+      std::all_of(accepted_seeds.begin(), accepted_seeds.end(),
+                  [](std::uint8_t accepted) { return accepted != std::uint8_t{0}; })) {
+    return;
+  }
+
   if (!want_greeks && resolved_price_isa == simd::SimdIsa::ForceAvx2) {
     // Only the explicit AVX2 Marks route needs invariant pack membership. Each
     // immutable tile (up to kPreparedPriceTileLanes, a multiple of the four-lane
@@ -471,7 +752,7 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
     for (; git != groups.end() && git->begin < hi32; ++git) {
       const std::uint32_t s = std::max<std::uint32_t>(git->begin, lo32);
       const std::uint32_t e = std::min<std::uint32_t>(git->end, hi32);
-      solve_span(git->uid, s, e);
+      solve_unseeded(git->uid, s, e);
     }
   });
 }
@@ -598,7 +879,13 @@ void reduce_price_totals(std::span<const Position> positions, const Portfolio &p
 
 struct PortfolioWorkspace::Impl {
   std::vector<ContractPx> px; // per unique contract, ORIGINAL-index order
-  std::vector<double> b_iv;   // permuted-order batch-eval scratch (base surface)
+  // Full-Greek seed validation is staged separately so stale/conflicting
+  // candidates cannot partially overwrite the live retained-risk bundle.
+  std::vector<ContractPx> seed_px;
+  std::vector<std::uint8_t> seed_accepted;
+  std::vector<std::uint32_t> seed_order;
+  std::vector<std::uint8_t> seed_candidate_matched;
+  std::vector<double> b_iv; // permuted-order batch-eval scratch (base surface)
   std::vector<double> b_price;
   std::vector<AmericanGreeks> b_greeks; // sized 0 under Marks
   std::vector<Status> b_status;
@@ -632,11 +919,14 @@ PortfolioWorkspace::PortfolioWorkspace(PortfolioWorkspace &&) noexcept = default
 PortfolioWorkspace &PortfolioWorkspace::operator=(PortfolioWorkspace &&) noexcept = default;
 
 void PortfolioWorkspace::reserve(std::size_t n_unique, std::size_t n_positions) {
-  // The per-row output frame is caller-owned, so only the unique-contract count
-  // sizes the internal scratch; `n_positions` is advisory (kept for API symmetry
-  // and forward use).
-  (void)n_positions;
+  // The per-row output frame is caller-owned. Unique-contract scratch follows
+  // `n_unique`; seed-order validation follows the candidate upper bound supplied
+  // by the prepared portfolio position count.
   impl_->px.reserve(n_unique);
+  impl_->seed_px.reserve(n_unique);
+  impl_->seed_accepted.reserve(n_unique);
+  impl_->seed_order.reserve(n_positions);
+  impl_->seed_candidate_matched.reserve(n_positions);
   impl_->b_iv.reserve(n_unique);
   impl_->b_price.reserve(n_unique);
   impl_->b_greeks.reserve(n_unique);
@@ -658,6 +948,13 @@ void PortfolioWorkspace::reserve(std::size_t n_unique, std::size_t n_positions) 
 Status PortfolioPricer::price_into(const SurfaceSet &surfaces, PriceFieldMask fields,
                                    PriceFrameView out, PortfolioWorkspace &ws,
                                    const PriceOptions &opts) const {
+  return price_into(surfaces, fields, out, ws, opts, {});
+}
+
+Status PortfolioPricer::price_into(const SurfaceSet &surfaces, PriceFieldMask fields,
+                                   PriceFrameView out, PortfolioWorkspace &ws,
+                                   const PriceOptions &opts,
+                                   std::span<const FullGreekSeed> seeds) const {
   const std::span<const OptionContract> contracts = pf_.contracts();
   const std::span<const Position> positions = pf_.positions();
   const std::size_t n = positions.size();
@@ -679,6 +976,9 @@ Status PortfolioPricer::price_into(const SurfaceSet &surfaces, PriceFieldMask fi
       return Err(ErrorCode::InvalidArgument, "price_into: greek span/size mismatch");
     }
   }
+  if (price_frame_view_overlaps(out, want_greeks)) {
+    return Err(ErrorCode::InvalidArgument, "price_into: output ranges overlap");
+  }
 
   PortfolioWorkspace::Impl &w = *ws.impl_;
   w.base_risk_valid = false;
@@ -689,9 +989,33 @@ Status PortfolioPricer::price_into(const SurfaceSet &surfaces, PriceFieldMask fi
     return Err(s.error());
   }
 
+  std::span<const ContractPx> staged_seeds;
+  std::span<const std::uint8_t> accepted_seeds;
+  if (fields == PriceFieldMask::FullGreeks && !seeds.empty()) {
+    // Candidate indices are uint32_t throughout the prepared substrate. One
+    // genuine seed per position is a valid producer shape even when the book
+    // deduplicates contracts; a larger set fails closed so seed-order scratch
+    // stays within the reserve(n_unique, n_positions) warm-allocation bound.
+    const bool indices_representable =
+        seeds.size() <= static_cast<std::size_t>((std::numeric_limits<std::uint32_t>::max)());
+    const bool within_candidate_cap = seeds.size() <= positions.size();
+    if (!indices_representable || !within_candidate_cap) {
+      ATX_VOL_COUNT_N(FullGreekSeedRejectedCandidates, seeds.size());
+    } else {
+      const SeedStageCounts counts = stage_full_greek_seeds(
+          surfaces, contracts, analytic, opts.query_execution, opts.skew_adjusted_delta,
+          opts.sticky, seeds, w.seed_px, w.seed_accepted, w.seed_order, w.seed_candidate_matched);
+      (void)counts;
+      ATX_VOL_COUNT_N(FullGreekSeedReuseLanes, counts.accepted_unique);
+      ATX_VOL_COUNT_N(FullGreekSeedRejectedCandidates, counts.rejected_candidates);
+      staged_seeds = w.seed_px;
+      accepted_seeds = w.seed_accepted;
+    }
+  }
+
   solve_uniques(*w.prepared, surfaces, contracts, want_greeks, analytic, opts.skew_adjusted_delta,
                 opts.sticky, opts.resolved_price_isa, opts.query_execution, opts.n_threads, w.px,
-                w.b_iv, w.b_price, w.b_greeks, w.b_status);
+                w.b_iv, w.b_price, w.b_greeks, w.b_status, staged_seeds, accepted_seeds);
 
   // FrameBytes reflects the mask (37 B/pos Marks, 101 B/pos FullGreeks). No
   // FrameAllocations: the output spans are caller-owned and the scratch was
@@ -878,7 +1202,7 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
     }
     // Per-group-constant state moves (the surfaces, hence dt/dS/dr, are per-uid).
     const double dt =
-        static_cast<double>(st->pricing().now_ts_ns - sb->pricing().now_ts_ns) / kNsPerYear;
+        timestamp_delta_ns(st->pricing().now_ts_ns, sb->pricing().now_ts_ns) / kNsPerYear;
     const double dS = st->pricing().S - sb->pricing().S;
     const double dr = st->pricing().r - sb->pricing().r;
     for (std::uint32_t p = s; p < e; ++p) {
@@ -1036,6 +1360,22 @@ void scatter_pnl_rows(std::span<const Position> positions, const Portfolio &pf,
   });
 }
 
+// Minimal exact-mark scatter from the ContractPnl bundle produced by the totals
+// solve. Position weights are intentionally absent: the downstream ledger gets
+// one raw target mark for each input row, including zero-quantity duplicates.
+void scatter_target_mark_rows(std::span<const Position> positions, const Portfolio &pf,
+                              std::span<const ContractPnl> pnl, unsigned n_threads,
+                              const TargetMarkView &out) {
+  pricing_executor().run_blocks(positions.size(), n_threads, [&](std::size_t i) {
+    const Position &position = positions[i];
+    const ContractPnl &contract = pnl[pf.contract_ix(i)];
+    out.id[i] = position.id;
+    out.status[i] = contract.status;
+    out.price_target[i] = contract.status == PriceStatus::Ok ? contract.price_target : kNaN;
+    out.base_vega_proxy[i] = contract.status == PriceStatus::Ok ? contract.gb.vega : kNaN;
+  });
+}
+
 // Fixed-input-order totals reduction over the Ok lanes — the deterministic sum
 // (same order, same operand association) the ungrouped fused loop used, so totals
 // are bit-identical across thread counts AND across pnl_explain/pnl_explain_into/
@@ -1102,6 +1442,9 @@ Status PortfolioPricer::pnl_explain_into(const SurfaceSet &base, const SurfaceSe
       out.status.size() == n && out.total != nullptr;
   if (!ok) {
     return Err(ErrorCode::InvalidArgument, "pnl_explain_into: span/size mismatch");
+  }
+  if (pnl_frame_view_overlaps(out)) {
+    return Err(ErrorCode::InvalidArgument, "pnl_explain_into: output ranges overlap");
   }
 
   PortfolioWorkspace::Impl &w = *ws.impl_;
@@ -1196,6 +1539,33 @@ Result<PnlTotals> PortfolioPricer::pnl_totals(const SurfaceSet &base, const Surf
   PnlTotals t{};
   reduce_pnl_totals(positions, pf_, w.pnl, t);
   return t;
+}
+
+Result<PnlTotals> PortfolioPricer::pnl_totals_with_target_marks_into(
+    const SurfaceSet &base, const SurfaceSet &shifted, TargetMarkView out, PortfolioWorkspace &ws,
+    const PriceOptions &opts) const {
+  const std::size_t n = pf_.positions().size();
+  if (out.id.size() != n || out.price_target.size() != n || out.status.size() != n ||
+      out.base_vega_proxy.size() != n) {
+    return Err(ErrorCode::InvalidArgument, "pnl_totals_with_target_marks_into: span/size mismatch");
+  }
+  if (target_mark_view_overlaps(out)) {
+    return Err(ErrorCode::InvalidArgument, "pnl_totals_with_target_marks_into: spans overlap");
+  }
+
+  // pnl_totals performs the sole base/shifted solve and leaves its unique
+  // ContractPnl bundle in the caller's workspace. Scatter only after that solve
+  // succeeds, so an invalid view or substrate error cannot partially publish a
+  // target-mark frame.
+  Result<PnlTotals> totals = pnl_totals(base, shifted, ws, opts);
+  if (!totals.has_value()) {
+    return Err(totals.error());
+  }
+  const PortfolioWorkspace::Impl &w = *ws.impl_;
+  scatter_target_mark_rows(pf_.positions(), pf_, w.pnl, opts.n_threads, out);
+  // uint64 id + double mark + uint8 status + double prior-date vega proxy.
+  ATX_VOL_COUNT_N(FrameBytes, n * 25u);
+  return totals;
 }
 
 Result<PnlFrame> PortfolioPricer::pnl_explain(const SurfaceSet &base, const SurfaceSet &shifted,

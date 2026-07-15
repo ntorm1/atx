@@ -91,6 +91,9 @@ struct OptionProjectionConfig {
   // 0 uses the library worker policy (environment cap or hardware concurrency).
   // Scalar project_option_contract ignores this field.
   unsigned n_threads{0};
+  // Route every American pricing query through the same execution policy used
+  // by the surrounding backtest. Appended for aggregate-source compatibility.
+  QueryExecution query_execution{QueryExecution::Configured};
 };
 
 // Immutable economic identity resolved at one historical valuation. `contract.T`

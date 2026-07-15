@@ -268,6 +268,61 @@ The first checkpoint is the adaptive confirmation stage, not another global epsi
 The second is cache amortization: without it, sparse archived backtests should select cold even
 though the underlying cached price/Greek kernels are much faster.
 
+### 2026-07-14 strategy/pricer connection audit
+
+The next profiler-guided pass found that the sparse backtest is dominated by duplicated work at
+the strategy/pricer boundary, not by portfolio reduction. A representative daily two-leg roll
+currently spends approximately 36 American boundary solves per date after strike search:
+
+| Consumer | Solves/date | Why |
+|---|---:|---|
+| P&L target marks | 2 | one shifted mark per surviving leg |
+| Strategy roll-close marks | 10 | a second full analytic Greek bundle for the same two target marks |
+| Strategy sizing | 14 | a finite-difference full Greek bundle per new leg |
+| Post-entry book risk | 10 | a third full analytic bundle for the newly opened legs |
+
+Two exact handoffs are therefore the immediate P0. A provenance-checked full-Greek seed from
+strategy sizing can reduce the 36-solve path to 22 without changing the configured algorithm.
+Passing the already-computed P&L target marks into frictionless/price-spread roll execution can
+reduce it further to 12; volatility-tick friction still needs vega and retains a configured-risk
+fallback. Seeds must match the exact surface instance, raw contract identity, analytic/FD route,
+and query execution policy; any stale, missing, duplicate-conflicting, or forged candidate falls
+back to an ordinary solve.
+
+The audit also found three correctness gaps that are independent of approximation tolerance:
+
+- non-adaptive strategy selection/sizing did not honor `RunConfig.price.query_execution`;
+- sizing always used finite-difference Greeks even when the reported book used analytic Greeks;
+- `MarketSnapshot` discarded archive `SurfaceProvenance`, so a legacy degraded MarketMark could
+  not be distinguished from an admitted Risk surface by a backtest policy.
+
+The first two are configuration-connection defects. The third requires preserving provenance in
+archive order and adding an explicit compatibility-versus-admitted-risk run policy; the default
+must continue to load legacy archives, while production risk runs can fail closed.
+
+#### Accuracy-tolerant screen-table design
+
+The `$0.0077` representative median price error remains a useful fast-gate budget and is not a
+reason to discard the route. The current global 16x8x12 differentiated correction tensor is the
+wrong data structure for tightening its tails: it is built at one representative `(r,q)`, touches
+roughly 24 KiB for a two-sided delta query, and rings near the early-exercise boundary. The next
+cache experiment is a shared, side-specific OTM `ScreenTableBank`:
+
+- store direct price and delta samples rather than differentiating a global price polynomial;
+- use local monotone cubic/Hermite interpolation in moneyness/tenor so an exercise kink cannot
+  contaminate a whole broad box;
+- use a small rectangular `(r,q)` knot bank and interpolate state explicitly;
+- expose `try_screen` with no hidden cold build/fallback, then cold-confirm only decisions within
+  the calibrated rank/threshold error margin;
+- share immutable banks by full numerical/configuration key and keep the query working set near
+  1 KiB (bank budget at most 256 KiB per shared configuration).
+
+Real 14,014-leg SPY OPRA acceptance gates are: served coverage >=99%; median absolute price error
+<=`$0.0077`; liquid-OTM error/half-spread p99 <=1; delta p99 <=`1e-3`; cold confirmations <=2 per
+leg at p95; and a repeated end-to-end speedup >=10x with timing CV <=10%. The existing
+RepresentativeFast route does not yet meet the tail or stable end-to-end 10x gates, even though
+its warm whole-chain kernel can exceed 10x on denser workloads.
+
 #### 2026-07-13 closing verification
 
 - Strict clang-cl Debug and Release builds passed for tests, the chain benchmark, American

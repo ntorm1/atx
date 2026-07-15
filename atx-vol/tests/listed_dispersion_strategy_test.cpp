@@ -10,6 +10,7 @@
 
 #include "atx/vol/american.hpp"
 #include "atx/vol/backtest.hpp"
+#include "atx/vol/corpus.hpp"
 #include "atx/vol/listed_dispersion.hpp"
 #include "atx/vol/listed_dispersion_schedule.hpp"
 #include "atx/vol/listed_dispersion_strategy.hpp"
@@ -204,6 +205,84 @@ TEST(ListedDispersionStrategy, AtomicallyOpensArchiveVerifiedRollAndRequestsDail
   ASSERT_TRUE(strategy->on_step(*snapshot, 1u, book, next_id).has_value());
   EXPECT_EQ(book.lots.size(), opened.size());
   EXPECT_EQ(next_id, 100u + schedule.rolls.front().legs.size());
+  EXPECT_TRUE(strategy->entry_risk_seeds().empty());
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+}
+
+TEST(ListedDispersionStrategy, ForcedColdValidationPublishesExactEntrySeedsOnFastSnapshot) {
+  const std::vector<PricedSurface> source = surfaces();
+  const ListedDispersionSchedule schedule = schedule_from(source);
+  const fs::path dir = fresh_dir("cold-seeds-fast-snapshot");
+  auto snapshot =
+      MarketSnapshot::load(write_archive(dir, source), QueryPricingTier::RepresentativeFast);
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+  auto strategy = ListedDispersionStrategy::create(schedule);
+  ASSERT_TRUE(strategy.has_value()) << strategy.error().to_string();
+
+  PriceOptions options;
+  options.analytic_greeks = true;
+  options.query_execution = QueryExecution::ColdReference;
+  PortfolioState book;
+  std::uint64_t next_id = 100u;
+  ASSERT_TRUE(strategy->on_step(*snapshot, 0u, book, next_id, options).has_value());
+  ASSERT_EQ(book.lots.size(), schedule.rolls.front().legs.size());
+  ASSERT_EQ(strategy->entry_risk_seeds().size(), book.lots.size());
+  for (std::size_t i = 0; i < book.lots.size(); ++i) {
+    const Lot &lot = book.lots[i];
+    const FullGreekSeed &seed = strategy->entry_risk_seeds()[i];
+    EXPECT_EQ(seed.uid(), lot.contract.uid) << i;
+    EXPECT_EQ(seed.K(), lot.contract.K) << i;
+    EXPECT_EQ(seed.T(), lot.contract.T) << i;
+    EXPECT_EQ(seed.side(), lot.contract.side) << i;
+    EXPECT_TRUE(seed.analytic_greeks()) << i;
+    EXPECT_EQ(seed.query_execution(), QueryExecution::ColdReference) << i;
+    EXPECT_EQ(seed.greeks().price, lot.entry_price) << i;
+  }
+
+  ASSERT_TRUE(strategy->on_step(*snapshot, 1u, book, next_id, options).has_value());
+  EXPECT_TRUE(strategy->entry_risk_seeds().empty());
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+}
+
+TEST(ListedDispersionStrategy, ColdAuthoredScheduleRejectsFastConfiguredBeforeArchiveLoad) {
+  const std::vector<PricedSurface> source = surfaces();
+  const ListedDispersionSchedule schedule = schedule_from(source);
+  const fs::path dir = fresh_dir("cold-required-engine-gate");
+  const std::string archive_path = write_archive(dir, source);
+  CorpusManifest manifest;
+  manifest.dates.push_back("2026-07-10");
+  CorpusEntry entry;
+  entry.date = "2026-07-10";
+  entry.symbol = "SPY";
+  entry.status = CorpusFitStatus::Ok;
+  entry.archive_path = archive_path;
+  manifest.entries.push_back(std::move(entry));
+  auto clock = Clock::from_manifest(manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  auto strategy = ListedDispersionStrategy::create(schedule);
+  ASSERT_TRUE(strategy.has_value()) << strategy.error().to_string();
+  EXPECT_EQ(strategy->required_economic_execution(), QueryExecution::ColdReference);
+
+  RunConfig fast_configured;
+  fast_configured.query_pricing_tier = QueryPricingTier::RepresentativeFast;
+  fast_configured.price.query_execution = QueryExecution::Configured;
+  fast_configured.prefetch_snapshots = false;
+  MarketSnapshot::reset_open_count();
+  const auto rejected = run_backtest(*clock, *strategy, fast_configured);
+  ASSERT_FALSE(rejected.has_value());
+  EXPECT_EQ(rejected.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(rejected.error().message().find("requires ColdReference"), std::string::npos);
+  EXPECT_EQ(MarketSnapshot::open_count(), 0u);
+  EXPECT_EQ(strategy->next_roll_index(), 0u);
+
+  RunConfig forced_cold = fast_configured;
+  forced_cold.price.query_execution = QueryExecution::ColdReference;
+  const auto accepted = run_backtest(*clock, *strategy, forced_cold);
+  ASSERT_TRUE(accepted.has_value()) << accepted.error().to_string();
+  EXPECT_EQ(MarketSnapshot::open_count(), 1u);
+  EXPECT_TRUE(strategy->all_rolls_consumed());
   std::error_code ec;
   fs::remove_all(dir, ec);
 }
@@ -230,6 +309,7 @@ TEST(ListedDispersionStrategy, MarkMismatchLeavesBookCounterAndCursorUntouched) 
   EXPECT_EQ(book.lots.front().id, 77u);
   EXPECT_EQ(next_id, 100u);
   EXPECT_EQ(strategy->next_roll_index(), 0u);
+  EXPECT_TRUE(strategy->entry_risk_seeds().empty());
   std::error_code ec;
   fs::remove_all(dir, ec);
 }
