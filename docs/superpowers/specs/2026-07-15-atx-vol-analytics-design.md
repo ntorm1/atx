@@ -114,6 +114,9 @@ struct AnalyticsConfig {
   RndConfig rnd{};
   std::vector<double> rnd_tenors_years = {30.0/365.25, 90.0/365.25};  // RND is heavier; select
   bool   compute_varswap = true;
+  // Straddle→move multiplier: 0.79788 = expected |move| (MAD, Bachelier);
+  // 1.25331 = 1-sigma (68%) move; ~0.85 = empirical haircut. Documented, not hard-coded.
+  double straddle_move_multiplier = 0.79788;
 };
 
 struct EventContext { const EventSchedule* schedule = nullptr; double implied_emove = 0.0; };
