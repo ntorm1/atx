@@ -14,8 +14,8 @@
 
 #include "atx/core/error.hpp"
 #include "atx/vol/event_vol.hpp"      // count_events_at, implied_emove
-#include "atx/vol/pricer_fitter.hpp"  // PricerFitter, FittedSurface
 #include "atx/vol/priced_surface.hpp" // PricedSurface, PricingContext
+#include "atx/vol/pricer_fitter.hpp"  // PricerFitter, FittedSurface
 #include "atx/vol/session.hpp"        // VolaSession, SessionInputs, SessionDiagnostics
 #include "atx/vol/surface_parity.hpp" // SliceContext
 
@@ -27,9 +27,9 @@ using atx::core::Ok;
 
 namespace {
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
-}  // namespace
+} // namespace
 
-Result<double> earnings_implied_move(const PricedSurface& ps, const EventContext& ctx) {
+Result<double> earnings_implied_move(const PricedSurface &ps, const EventContext &ctx) {
   if (ctx.schedule == nullptr) {
     return Err(ErrorCode::InvalidArgument, "no event schedule");
   }
@@ -52,17 +52,17 @@ Result<double> earnings_implied_move(const PricedSurface& ps, const EventContext
   return Err(ErrorCode::NotFound, "no earnings bracket in fitted expiries");
 }
 
-Result<SurfaceAnalytics> compute_surface_analytics(const PricedSurface& ps,
-                                                   const AnalyticsConfig& cfg,
-                                                   const EventContext* ctx) {
+Result<SurfaceAnalytics> compute_surface_analytics(const PricedSurface &ps,
+                                                   const AnalyticsConfig &cfg,
+                                                   const EventContext *ctx) {
   SurfaceAnalytics out;
   out.uid = ps.uid();
   out.as_of_ts_ns = ps.pricing().now_ts_ns;
   out.spot = ps.pricing().S;
   out.implied_emove = (ctx != nullptr && ctx->schedule != nullptr) ? ctx->implied_emove : 0.0;
 
-  const std::vector<double>& tenors = cfg.tenors.tenors_years;
-  const std::vector<std::string>& labels = cfg.tenors.labels;
+  const std::vector<double> &tenors = cfg.tenors.tenors_years;
+  const std::vector<std::string> &labels = cfg.tenors.labels;
 
   for (std::size_t i = 0; i < tenors.size(); ++i) {
     const double T = tenors[i];
@@ -75,7 +75,7 @@ Result<SurfaceAnalytics> compute_surface_analytics(const PricedSurface& ps,
     const double F = atmf_forward(ps, T);
     const double atm = atmf_vol(ps, T);
     if (!std::isfinite(F) || !std::isfinite(atm)) {
-      t.valid = false;  // tenor outside the surface's no-extrapolation domain
+      t.valid = false; // tenor outside the surface's no-extrapolation domain
       out.tenors.push_back(std::move(t));
       continue;
     }
@@ -136,7 +136,7 @@ Result<SurfaceAnalytics> compute_surface_analytics(const PricedSurface& ps,
       if (!d.has_value()) {
         continue;
       }
-      for (auto& t : out.tenors) {
+      for (auto &t : out.tenors) {
         if (std::fabs(t.tenor_years - Tr) < 1e-9) {
           t.rnd_skewness = d->bkm_skew;
           t.rnd_kurtosis = d->bkm_kurt;
@@ -163,9 +163,9 @@ Result<SurfaceAnalytics> compute_surface_analytics(const PricedSurface& ps,
   out.ts_ratio_1m_3m =
       (std::isfinite(sig1m) && std::isfinite(sig3m) && sig3m != 0.0) ? sig1m / sig3m : kNaN;
 
-  const TenorAnalytics* first_valid = nullptr;
-  const TenorAnalytics* last_valid = nullptr;
-  for (const TenorAnalytics& t : out.tenors) {
+  const TenorAnalytics *first_valid = nullptr;
+  const TenorAnalytics *last_valid = nullptr;
+  for (const TenorAnalytics &t : out.tenors) {
     if (t.valid) {
       if (first_valid == nullptr) {
         first_valid = &t;
@@ -181,8 +181,8 @@ Result<SurfaceAnalytics> compute_surface_analytics(const PricedSurface& ps,
   return Ok(std::move(out));
 }
 
-Result<SurfaceAnalytics> compute_surface_analytics(const VolaSession& session,
-                                                   const AnalyticsConfig& cfg) {
+Result<SurfaceAnalytics> compute_surface_analytics(const VolaSession &session,
+                                                   const AnalyticsConfig &cfg) {
   ATX_TRY(auto ps, session.to_priced_surface());
   EventContext ec;
   ec.schedule = session.inputs().events.get();
@@ -191,22 +191,22 @@ Result<SurfaceAnalytics> compute_surface_analytics(const VolaSession& session,
   return compute_surface_analytics(ps, cfg, ec.schedule != nullptr ? &ec : nullptr);
 }
 
-Result<SurfaceAnalytics> compute_surface_analytics(const FittedSurface& fitted,
-                                                   const AnalyticsConfig& cfg) {
+Result<SurfaceAnalytics> compute_surface_analytics(const FittedSurface &fitted,
+                                                   const AnalyticsConfig &cfg) {
   return compute_surface_analytics(fitted.session(), cfg);
 }
 
-Result<SurfaceAnalytics> compute_surface_analytics(const PricerFitter& fitter,
-                                                   const AnalyticsConfig& cfg) {
-  const FittedSurface* fs = fitter.surface();
+Result<SurfaceAnalytics> compute_surface_analytics(const PricerFitter &fitter,
+                                                   const AnalyticsConfig &cfg) {
+  const FittedSurface *fs = fitter.surface();
   if (fs == nullptr) {
     return Err(ErrorCode::InvalidArgument, "fitter has no fitted surface");
   }
   return compute_surface_analytics(*fs, cfg);
 }
 
-Result<SurfaceDiff> compute_surface_diff(const PricedSurface& a, const PricedSurface& b,
-                                         const AnalyticsConfig& cfg) {
+Result<SurfaceDiff> compute_surface_diff(const PricedSurface &a, const PricedSurface &b,
+                                         const AnalyticsConfig &cfg) {
   if (a.uid() != b.uid()) {
     return Err(ErrorCode::InvalidArgument, "surface uid mismatch");
   }
@@ -217,11 +217,10 @@ Result<SurfaceDiff> compute_surface_diff(const PricedSurface& a, const PricedSur
   out.spot1 = a.pricing().S;
   out.spot2 = b.pricing().S;
   out.d_spot = out.spot2 - out.spot1;
-  out.log_return =
-      (out.spot1 > 0.0 && out.spot2 > 0.0) ? std::log(out.spot2 / out.spot1) : kNaN;
+  out.log_return = (out.spot1 > 0.0 && out.spot2 > 0.0) ? std::log(out.spot2 / out.spot1) : kNaN;
 
-  const std::vector<double>& tenors = cfg.tenors.tenors_years;
-  const std::vector<std::string>& labels = cfg.tenors.labels;
+  const std::vector<double> &tenors = cfg.tenors.tenors_years;
+  const std::vector<std::string> &labels = cfg.tenors.labels;
 
   double t_first_valid = kNaN;
   bool any_valid = false;
@@ -237,7 +236,7 @@ Result<SurfaceDiff> compute_surface_diff(const PricedSurface& a, const PricedSur
     const double va = atmf_vol(a, T);
     const double vb = atmf_vol(b, T);
     if (!std::isfinite(va) || !std::isfinite(vb)) {
-      td.valid = false;  // one of the surfaces is out of domain at this tenor
+      td.valid = false; // one of the surfaces is out of domain at this tenor
       out.tenors.push_back(std::move(td));
       continue;
     }
@@ -245,7 +244,7 @@ Result<SurfaceDiff> compute_surface_diff(const PricedSurface& a, const PricedSur
     td.d_forward = atmf_forward(b, T) - atmf_forward(a, T);
     td.d_atm_vol = vb - va;
 
-    const double K0 = atmf_forward(a, T);  // t1's ATM strike (sticky-strike)
+    const double K0 = atmf_forward(a, T); // t1's ATM strike (sticky-strike)
     td.d_vol_fixed_strike = b.iv(K0, T) - a.iv(K0, T);
 
     const auto pa = vol_at_delta(a, T, Side::Put, 0.25);
@@ -286,4 +285,4 @@ Result<SurfaceDiff> compute_surface_diff(const PricedSurface& a, const PricedSur
   return Ok(std::move(out));
 }
 
-}  // namespace atx::vol
+} // namespace atx::vol

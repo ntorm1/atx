@@ -20,9 +20,7 @@ namespace atx::vol {
 namespace {
 
 // ATMF vol read straight off the surface (self-contained, no primitive dep).
-[[nodiscard]] double atmf(const PricedSurface& ps, double T) {
-  return ps.iv(ps.forward_at(T), T);
-}
+[[nodiscard]] double atmf(const PricedSurface &ps, double T) { return ps.iv(ps.forward_at(T), T); }
 
 TEST(AnalyticsDensity, RndConfigDefaults) {
   const RndConfig c{};
@@ -38,7 +36,7 @@ TEST(AnalyticsDensity, FlatRndShapeAndMass) {
   const RndConfig cfg{};
   const auto res = risk_neutral_density(ps, T, cfg);
   ASSERT_TRUE(res.has_value());
-  const RiskNeutralDensity& r = *res;
+  const RiskNeutralDensity &r = *res;
 
   EXPECT_TRUE(r.valid);
   EXPECT_NEAR(r.forward, 100.0, 1e-9);
@@ -64,7 +62,7 @@ TEST(AnalyticsDensity, FlatRndMomentsAndBkmSkew) {
   const double T = 0.5;
   const auto res = risk_neutral_density(ps, T, RndConfig{});
   ASSERT_TRUE(res.has_value());
-  const RiskNeutralDensity& r = *res;
+  const RiskNeutralDensity &r = *res;
 
   // Price-space mean equals the forward within 1% of F.
   EXPECT_NEAR(r.mean, r.forward, 0.01 * r.forward);
@@ -81,18 +79,18 @@ TEST(AnalyticsDensity, FlatQuantilesMonotone) {
   const PricedSurface ps = testkit::make_flat_surface(1, 100.0, 100.0, 0.20);
   const auto res = risk_neutral_density(ps, 0.5, RndConfig{});
   ASSERT_TRUE(res.has_value());
-  const RiskNeutralDensity& r = *res;
+  const RiskNeutralDensity &r = *res;
 
   ASSERT_EQ(r.quantile_p.size(), r.quantile_k.size());
   ASSERT_GE(r.quantile_k.size(), 2u);
   for (std::size_t i = 1; i < r.quantile_k.size(); ++i) {
-    EXPECT_LT(r.quantile_k[i - 1], r.quantile_k[i]);  // ascending in probability
+    EXPECT_LT(r.quantile_k[i - 1], r.quantile_k[i]); // ascending in probability
   }
   // The median quantile straddles the forward (lognormal median just below F).
   const auto mid = std::lower_bound(r.quantile_p.begin(), r.quantile_p.end(), 0.50);
   if (mid != r.quantile_p.end() && std::fabs(*mid - 0.50) < 1e-9) {
     const std::size_t j = static_cast<std::size_t>(mid - r.quantile_p.begin());
-    EXPECT_LT(r.quantile_k[j], r.forward);  // median < forward
+    EXPECT_LT(r.quantile_k[j], r.forward); // median < forward
     EXPECT_GT(r.quantile_k[j], 0.90 * r.forward);
   }
 }
@@ -177,5 +175,5 @@ TEST(AnalyticsDensity, NonPositiveTIsError) {
   EXPECT_EQ(vs.error().code(), ErrorCode::InvalidArgument);
 }
 
-}  // namespace
-}  // namespace atx::vol
+} // namespace
+} // namespace atx::vol

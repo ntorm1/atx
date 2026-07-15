@@ -28,10 +28,10 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
 // Uniform-in-K strike grid plus the (flat-extrapolated) served IV at each node.
 struct StrikeGrid {
-  std::vector<double> K;      // ascending absolute strikes
-  std::vector<double> sigma;  // served IV, NaN wings flat-filled to nearest finite
-  double dK{0.0};             // uniform spacing (Khi − Klo)/(n − 1)
-  bool extrapolated{false};   // any NaN wing was flat-filled
+  std::vector<double> K;     // ascending absolute strikes
+  std::vector<double> sigma; // served IV, NaN wings flat-filled to nearest finite
+  double dK{0.0};            // uniform spacing (Khi − Klo)/(n − 1)
+  bool extrapolated{false};  // any NaN wing was flat-filled
 };
 
 // Odd grid size at least 11 (central 2nd-difference / strip integration want an
@@ -47,8 +47,8 @@ struct StrikeGrid {
 // Build the K_i = Klo + i·ΔK grid (Klo = F·e^{k_min}, Khi = F·e^{k_max}) and the
 // served IV at each node. Far-wing NaNs are flat-extrapolated to the nearest
 // finite IV so Black-76 prices stay finite across the whole grid.
-[[nodiscard]] StrikeGrid build_strike_grid(const PricedSurface& ps, double F, double T, int n,
-                                           const RndConfig& cfg) {
+[[nodiscard]] StrikeGrid build_strike_grid(const PricedSurface &ps, double F, double T, int n,
+                                           const RndConfig &cfg) {
   const std::size_t nn = static_cast<std::size_t>(n);
   StrikeGrid g;
   const double Klo = F * std::exp(cfg.k_min);
@@ -96,7 +96,7 @@ struct StrikeGrid {
 
 // Inverse CDF by linear interpolation: the strike where the (monotone) CDF first
 // reaches probability p. Flat outside [cdf.front(), cdf.back()].
-[[nodiscard]] double inverse_cdf(const std::vector<double>& K, const std::vector<double>& cdf,
+[[nodiscard]] double inverse_cdf(const std::vector<double> &K, const std::vector<double> &cdf,
                                  double p) {
   const std::size_t n = K.size();
   if (n == 0) {
@@ -120,7 +120,7 @@ struct StrikeGrid {
 }
 
 // Linear interpolation of the (monotone) CDF at an arbitrary strike x.
-[[nodiscard]] double interp_cdf_at(const std::vector<double>& K, const std::vector<double>& cdf,
+[[nodiscard]] double interp_cdf_at(const std::vector<double> &K, const std::vector<double> &cdf,
                                    double x) {
   const std::size_t n = K.size();
   if (n == 0) {
@@ -143,9 +143,9 @@ struct StrikeGrid {
   return cdf.back();
 }
 
-}  // namespace
+} // namespace
 
-Result<double> var_swap_vol(const PricedSurface& ps, double T, const RndConfig& cfg) {
+Result<double> var_swap_vol(const PricedSurface &ps, double T, const RndConfig &cfg) {
   if (!(T > 0.0) || !std::isfinite(T)) {
     return Err(ErrorCode::InvalidArgument, "var_swap_vol: T must be finite and > 0");
   }
@@ -154,7 +154,7 @@ Result<double> var_swap_vol(const PricedSurface& ps, double T, const RndConfig& 
     return Err(ErrorCode::InvalidArgument, "var_swap_vol: non-positive forward");
   }
   const double df = std::exp(-ps.rate_at(T) * T);
-  const double er = 1.0 / df;  // e^{rT}
+  const double er = 1.0 / df; // e^{rT}
 
   const int n = odd_grid_size(cfg.n_grid);
   StrikeGrid g = build_strike_grid(ps, F, T, n, cfg);
@@ -174,8 +174,8 @@ Result<double> var_swap_vol(const PricedSurface& ps, double T, const RndConfig& 
   return Ok(std::sqrt(k_var > 0.0 ? k_var : 0.0));
 }
 
-Result<RiskNeutralDensity> risk_neutral_density(const PricedSurface& ps, double T,
-                                                const RndConfig& cfg) {
+Result<RiskNeutralDensity> risk_neutral_density(const PricedSurface &ps, double T,
+                                                const RndConfig &cfg) {
   if (!(T > 0.0) || !std::isfinite(T)) {
     return Err(ErrorCode::InvalidArgument, "risk_neutral_density: T must be finite and > 0");
   }
@@ -187,7 +187,7 @@ Result<RiskNeutralDensity> risk_neutral_density(const PricedSurface& ps, double 
     return Err(ErrorCode::InvalidArgument, "risk_neutral_density: non-positive forward");
   }
   const double df = std::exp(-ps.rate_at(T) * T);
-  const double er = 1.0 / df;  // e^{rT}
+  const double er = 1.0 / df; // e^{rT}
 
   const int n = odd_grid_size(cfg.n_grid);
   const std::size_t nn = static_cast<std::size_t>(n);
@@ -211,7 +211,7 @@ Result<RiskNeutralDensity> risk_neutral_density(const PricedSurface& ps, double 
     const double d2 = (C[i + 1] - 2.0 * C[i] + C[i - 1]) / (dK * dK);
     double qi = er * d2;
     if (!(qi > 0.0)) {
-      qi = 0.0;  // clamp negatives (butterfly-arb noise) and NaN to 0
+      qi = 0.0; // clamp negatives (butterfly-arb noise) and NaN to 0
     }
     q[i] = qi;
   }
@@ -255,7 +255,7 @@ Result<RiskNeutralDensity> risk_neutral_density(const PricedSurface& ps, double 
     m4 += d * d * d * d * w;
   }
   const double sd = std::sqrt(var > 0.0 ? var : 0.0);
-  const double skewness = (var > 0.0) ? m3 / (var * sd) : 0.0;    // m3 / var^{1.5}
+  const double skewness = (var > 0.0) ? m3 / (var * sd) : 0.0; // m3 / var^{1.5}
   const double kurtosis = (var > 0.0) ? m4 / (var * var) : 0.0;
 
   // BKM model-free moments on the log return R = ln(K/F). Unified Carr–Madan
@@ -284,10 +284,9 @@ Result<RiskNeutralDensity> risk_neutral_density(const PricedSurface& ps, double 
   const double mu = -(er / 2.0) * V - (er / 6.0) * W - (er / 24.0) * X;
   const double bkm_variance = er * V - mu * mu;
   const double bkm_var_pos = bkm_variance > 0.0 ? bkm_variance : 0.0;
-  const double bkm_skew =
-      (bkm_var_pos > 0.0)
-          ? (er * W - 3.0 * mu * er * V + 2.0 * mu * mu * mu) / std::pow(bkm_var_pos, 1.5)
-          : 0.0;
+  const double bkm_skew = (bkm_var_pos > 0.0) ? (er * W - 3.0 * mu * er * V + 2.0 * mu * mu * mu) /
+                                                    std::pow(bkm_var_pos, 1.5)
+                                              : 0.0;
   const double bkm_kurt =
       (bkm_var_pos > 0.0)
           ? (er * X - 4.0 * mu * er * W + 6.0 * er * mu * mu * V - 3.0 * mu * mu * mu * mu) /
@@ -326,7 +325,8 @@ Result<RiskNeutralDensity> risk_neutral_density(const PricedSurface& ps, double 
   return Ok(std::move(out));
 }
 
-double implied_cdf(const PricedSurface& ps, double T, double K, const RndConfig& /*cfg*/) noexcept {
+double implied_cdf(const PricedSurface &ps, double T, double K,
+                   const RndConfig & /*cfg*/) noexcept {
   if (!(T > 0.0) || !(K > 0.0)) {
     return kNaN;
   }
@@ -356,4 +356,4 @@ double implied_cdf(const PricedSurface& ps, double T, double K, const RndConfig&
   return cdf;
 }
 
-}  // namespace atx::vol
+} // namespace atx::vol

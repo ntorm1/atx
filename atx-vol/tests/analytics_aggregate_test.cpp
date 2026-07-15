@@ -27,8 +27,8 @@ namespace {
 // takes an explicit θ per pillar, so a long slice can embed an earnings lump
 // θ = σ²·T + n·eMove².
 [[nodiscard]] PricedSurface make_theta_surface(std::uint32_t uid, double S, double fwd,
-                                               const std::vector<double>& Ts,
-                                               const std::vector<double>& thetas) {
+                                               const std::vector<double> &Ts,
+                                               const std::vector<double> &thetas) {
   CurveSurface cs;
   std::vector<SliceContext> ctx;
   std::uint16_t i = 0;
@@ -58,8 +58,9 @@ namespace {
   return testkit::unwrap_surface(PricedSurface::create(std::move(cs), std::move(ctx), pc));
 }
 
-[[nodiscard]] const TenorAnalytics* find_tenor(const SurfaceAnalytics& a, const std::string& label) {
-  for (const TenorAnalytics& t : a.tenors) {
+[[nodiscard]] const TenorAnalytics *find_tenor(const SurfaceAnalytics &a,
+                                               const std::string &label) {
+  for (const TenorAnalytics &t : a.tenors) {
     if (t.label == label) {
       return &t;
     }
@@ -67,8 +68,8 @@ namespace {
   return nullptr;
 }
 
-[[nodiscard]] const TenorDiff* find_tenor(const SurfaceDiff& d, const std::string& label) {
-  for (const TenorDiff& t : d.tenors) {
+[[nodiscard]] const TenorDiff *find_tenor(const SurfaceDiff &d, const std::string &label) {
+  for (const TenorDiff &t : d.tenors) {
     if (t.label == label) {
       return &t;
     }
@@ -87,13 +88,13 @@ TEST(AnalyticsAggregate, FlatSurfaceAnalytics) {
   const PricedSurface ps = testkit::make_flat_surface(1, 100.0, 100.0, 0.20);
   const auto res = compute_surface_analytics(ps);
   ASSERT_TRUE(res.has_value());
-  const SurfaceAnalytics& a = *res;
+  const SurfaceAnalytics &a = *res;
 
   EXPECT_TRUE(a.valid);
   EXPECT_EQ(a.uid, 1u);
   EXPECT_NEAR(a.spot, 100.0, 1e-9);
 
-  const TenorAnalytics* t3m = find_tenor(a, "3m");
+  const TenorAnalytics *t3m = find_tenor(a, "3m");
   ASSERT_NE(t3m, nullptr);
   ASSERT_TRUE(t3m->valid);
   EXPECT_NEAR(t3m->atm_vol, 0.20, 1e-3);
@@ -103,7 +104,7 @@ TEST(AnalyticsAggregate, FlatSurfaceAnalytics) {
 
   // Risk-neutral densities computed and valid (default rnd_tenors_years).
   ASSERT_FALSE(a.densities.empty());
-  for (const RiskNeutralDensity& d : a.densities) {
+  for (const RiskNeutralDensity &d : a.densities) {
     EXPECT_TRUE(d.valid);
   }
 
@@ -112,7 +113,7 @@ TEST(AnalyticsAggregate, FlatSurfaceAnalytics) {
 
   // At least one standard-grid tenor is in-domain (a.valid is the any-valid flag).
   std::size_t n_valid = 0;
-  for (const TenorAnalytics& t : a.tenors) {
+  for (const TenorAnalytics &t : a.tenors) {
     if (t.valid) {
       ++n_valid;
     }
@@ -127,7 +128,7 @@ TEST(AnalyticsAggregate, SkewedSurfaceTenorShape) {
   const auto res = compute_surface_analytics(ps);
   ASSERT_TRUE(res.has_value());
 
-  const TenorAnalytics* t3m = find_tenor(*res, "3m");
+  const TenorAnalytics *t3m = find_tenor(*res, "3m");
   ASSERT_NE(t3m, nullptr);
   ASSERT_TRUE(t3m->valid);
   // Downside skew ⇒ ∂σ/∂k < 0 and σ(25Δ put) > σ(25Δ call) ⇒ RR > 0.
@@ -143,12 +144,12 @@ TEST(AnalyticsAggregate, SurfaceDiffFlatLevelShift) {
   const PricedSurface b = testkit::make_flat_surface(7, 100.0, 100.0, 0.22);
   const auto res = compute_surface_diff(a, b);
   ASSERT_TRUE(res.has_value());
-  const SurfaceDiff& d = *res;
+  const SurfaceDiff &d = *res;
 
   EXPECT_TRUE(d.valid);
-  EXPECT_NEAR(d.log_return, 0.0, 1e-12);  // same spot
+  EXPECT_NEAR(d.log_return, 0.0, 1e-12); // same spot
 
-  const TenorDiff* t3m = find_tenor(d, "3m");
+  const TenorDiff *t3m = find_tenor(d, "3m");
   ASSERT_NE(t3m, nullptr);
   ASSERT_TRUE(t3m->valid);
   EXPECT_NEAR(t3m->d_atm_vol, 0.02, 1e-3);
@@ -203,11 +204,11 @@ TEST(AnalyticsAggregate, EarningsImpliedMoveFlatSurfaceIsZero) {
 
 TEST(AnalyticsAggregate, EarningsImpliedMoveNullScheduleIsError) {
   const PricedSurface ps = testkit::make_flat_surface(4, 100.0, 100.0, 0.20);
-  EventContext ctx;  // schedule == nullptr
+  EventContext ctx; // schedule == nullptr
   const auto e = earnings_implied_move(ps, ctx);
   ASSERT_FALSE(e.has_value());
   EXPECT_EQ(e.error().code(), ErrorCode::InvalidArgument);
 }
 
-}  // namespace
-}  // namespace atx::vol
+} // namespace
+} // namespace atx::vol

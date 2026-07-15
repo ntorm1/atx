@@ -14,9 +14,9 @@
 #include <span>
 
 #include "atx/core/error.hpp"
-#include "atx/vol/event_vol.hpp"     // count_events_at, censored_total_variance
+#include "atx/vol/event_vol.hpp" // count_events_at, censored_total_variance
 #include "atx/vol/priced_surface.hpp"
-#include "atx/vol/strategy.hpp"      // resolve_strike_by_delta
+#include "atx/vol/strategy.hpp" // resolve_strike_by_delta
 
 namespace atx::vol {
 
@@ -26,7 +26,7 @@ using atx::core::Ok;
 
 namespace {
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
-}  // namespace
+} // namespace
 
 TenorGrid TenorGrid::standard() {
   // 1w, 2w, 1m, 2m, 3m, 6m, 9m, 1y, 18m, 2y on the ACT/365.25 basis.
@@ -38,14 +38,14 @@ TenorGrid TenorGrid::standard() {
   };
 }
 
-double atmf_forward(const PricedSurface& ps, double T) noexcept {
+double atmf_forward(const PricedSurface &ps, double T) noexcept {
   if (!(T > 0.0 && std::isfinite(T))) {
     return kNaN;
   }
   return ps.forward_at(T);
 }
 
-double atmf_vol(const PricedSurface& ps, double T) noexcept {
+double atmf_vol(const PricedSurface &ps, double T) noexcept {
   const double F = ps.forward_at(T);
   // ps.iv NaNs outside its domain; the F>0 guard also rejects the degenerate
   // carry that `forward_at` returns (0) for a non-finite / non-positive T.
@@ -55,7 +55,7 @@ double atmf_vol(const PricedSurface& ps, double T) noexcept {
   return ps.iv(F, T);
 }
 
-Result<double> vol_at_delta(const PricedSurface& ps, double T, Side side, double abs_delta) {
+Result<double> vol_at_delta(const PricedSurface &ps, double T, Side side, double abs_delta) {
   if (!(abs_delta > 0.0 && abs_delta < 1.0)) {
     return Err(ErrorCode::InvalidArgument, "vol_at_delta: abs_delta must be in (0,1)");
   }
@@ -63,21 +63,21 @@ Result<double> vol_at_delta(const PricedSurface& ps, double T, Side side, double
   return Ok(ps.iv(K, T));
 }
 
-double vol_at_moneyness(const PricedSurface& ps, double T, double moneyness) noexcept {
+double vol_at_moneyness(const PricedSurface &ps, double T, double moneyness) noexcept {
   if (!(T > 0.0 && moneyness > 0.0)) {
     return kNaN;
   }
   return ps.iv(ps.forward_at(T) * moneyness, T);
 }
 
-Result<double> risk_reversal(const PricedSurface& ps, double T, double abs_delta) {
+Result<double> risk_reversal(const PricedSurface &ps, double T, double abs_delta) {
   // Equity sign: RR = σ(Δ-put) − σ(Δ-call)  (positive = downside rich).
   ATX_TRY(auto p, vol_at_delta(ps, T, Side::Put, abs_delta));
   ATX_TRY(auto c, vol_at_delta(ps, T, Side::Call, abs_delta));
   return Ok(p - c);
 }
 
-Result<double> butterfly(const PricedSurface& ps, double T, double abs_delta) {
+Result<double> butterfly(const PricedSurface &ps, double T, double abs_delta) {
   // BF = ½(σ_put + σ_call) − σ_atm at the given absolute delta.
   ATX_TRY(auto p, vol_at_delta(ps, T, Side::Put, abs_delta));
   ATX_TRY(auto c, vol_at_delta(ps, T, Side::Call, abs_delta));
@@ -85,7 +85,7 @@ Result<double> butterfly(const PricedSurface& ps, double T, double abs_delta) {
   return Ok(0.5 * (p + c) - a);
 }
 
-SkewCurvature skew_curvature(const PricedSurface& ps, double T, double k_ref) noexcept {
+SkewCurvature skew_curvature(const PricedSurface &ps, double T, double k_ref) noexcept {
   if (!(T > 0.0 && k_ref > 0.0)) {
     return SkewCurvature{};
   }
@@ -102,7 +102,7 @@ SkewCurvature skew_curvature(const PricedSurface& ps, double T, double k_ref) no
                        /*valid=*/true};
 }
 
-double forward_vol(const PricedSurface& ps, double T1, double T2) noexcept {
+double forward_vol(const PricedSurface &ps, double T1, double T2) noexcept {
   if (!(0.0 < T1 && T1 < T2)) {
     return kNaN;
   }
@@ -114,7 +114,7 @@ double forward_vol(const PricedSurface& ps, double T1, double T2) noexcept {
   return std::sqrt((w2 - w1) / (T2 - T1));
 }
 
-double atmf_vol_ex_earnings(const PricedSurface& ps, double T, const EventContext& ctx) noexcept {
+double atmf_vol_ex_earnings(const PricedSurface &ps, double T, const EventContext &ctx) noexcept {
   if (ctx.schedule == nullptr || !(ctx.implied_emove > 0.0) || !(T > 0.0)) {
     return kNaN;
   }
@@ -132,8 +132,8 @@ Result<double> implied_correlation_clean(double idx_var, std::span<const double>
   if (w.size() != var.size() || w.empty()) {
     return Err(ErrorCode::InvalidArgument, "clean corr: size mismatch or empty inputs");
   }
-  double s1 = 0.0;  // Σ wᵢ·√varᵢ
-  double s2 = 0.0;  // Σ wᵢ²·varᵢ
+  double s1 = 0.0; // Σ wᵢ·√varᵢ
+  double s2 = 0.0; // Σ wᵢ²·varᵢ
   for (std::size_t i = 0; i < w.size(); ++i) {
     s1 += w[i] * std::sqrt(var[i]);
     s2 += w[i] * w[i] * var[i];
@@ -146,7 +146,7 @@ Result<double> implied_correlation_clean(double idx_var, std::span<const double>
   if (!(denom > 1e-12 * s1 * s1) || !std::isfinite(idx_var)) {
     return Err(ErrorCode::InvalidArgument, "clean corr: non-positive cross term");
   }
-  return Ok((idx_var - s2) / denom);  // ρ intentionally NOT clamped.
+  return Ok((idx_var - s2) / denom); // ρ intentionally NOT clamped.
 }
 
 Result<double> implied_correlation_dirty(double idx_var, std::span<const double> w,
@@ -154,7 +154,7 @@ Result<double> implied_correlation_dirty(double idx_var, std::span<const double>
   if (w.size() != vol.size() || w.empty()) {
     return Err(ErrorCode::InvalidArgument, "dirty corr: size mismatch or empty inputs");
   }
-  double s1 = 0.0;  // Σ wᵢ·volᵢ
+  double s1 = 0.0; // Σ wᵢ·volᵢ
   for (std::size_t i = 0; i < w.size(); ++i) {
     s1 += w[i] * vol[i];
   }
@@ -165,4 +165,4 @@ Result<double> implied_correlation_dirty(double idx_var, std::span<const double>
   return Ok(idx_var / denom);
 }
 
-}  // namespace atx::vol
+} // namespace atx::vol

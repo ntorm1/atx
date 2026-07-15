@@ -151,9 +151,9 @@ TEST(AnalyticsPrimitives, ForwardVolFlatBetweenTenors) {
 
 TEST(AnalyticsPrimitives, ForwardVolNaNWhenNotOrdered) {
   const PricedSurface ps = testkit::make_flat_surface(1, 100.0, 100.0, 0.20);
-  EXPECT_TRUE(std::isnan(forward_vol(ps, 0.50, 0.35)));  // T2 < T1
-  EXPECT_TRUE(std::isnan(forward_vol(ps, 0.35, 0.35)));  // T2 == T1
-  EXPECT_TRUE(std::isnan(forward_vol(ps, 0.0, 0.50)));   // T1 <= 0
+  EXPECT_TRUE(std::isnan(forward_vol(ps, 0.50, 0.35))); // T2 < T1
+  EXPECT_TRUE(std::isnan(forward_vol(ps, 0.35, 0.35))); // T2 == T1
+  EXPECT_TRUE(std::isnan(forward_vol(ps, 0.0, 0.50)));  // T1 <= 0
 }
 
 // ── atmf_vol_ex_earnings ────────────────────────────────────────────────────
@@ -175,13 +175,13 @@ TEST(AnalyticsPrimitives, AtmfVolExEarningsCensorsOneEvent) {
 
 TEST(AnalyticsPrimitives, AtmfVolExEarningsNaNWithoutSchedule) {
   const PricedSurface ps = testkit::make_flat_surface(1, 100.0, 100.0, 0.20);
-  EventContext ctx;  // schedule == nullptr, implied_emove == 0
+  EventContext ctx; // schedule == nullptr, implied_emove == 0
   EXPECT_TRUE(std::isnan(atmf_vol_ex_earnings(ps, 0.50, ctx)));
 
   const EventSchedule sched = testkit::make_event_schedule(0.25);
   EventContext ctx_no_move;
   ctx_no_move.schedule = &sched;
-  ctx_no_move.implied_emove = 0.0;  // non-positive eMove ⇒ NaN
+  ctx_no_move.implied_emove = 0.0; // non-positive eMove ⇒ NaN
   EXPECT_TRUE(std::isnan(atmf_vol_ex_earnings(ps, 0.50, ctx_no_move)));
 }
 
@@ -236,5 +236,5 @@ TEST(AnalyticsPrimitives, ImpliedCorrelationDirtyRejectsEmpty) {
   EXPECT_EQ(r.error().code(), ErrorCode::InvalidArgument);
 }
 
-}  // namespace
-}  // namespace atx::vol
+} // namespace
+} // namespace atx::vol

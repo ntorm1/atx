@@ -56,7 +56,7 @@
 #include <string_view>
 #include <vector>
 
-#include "atx/vol/types.hpp"  // Side, Result, Status, ErrorCode
+#include "atx/vol/types.hpp" // Side, Result, Status, ErrorCode
 
 namespace atx::vol {
 
@@ -93,13 +93,13 @@ struct RndConfig {
 // Top-level knobs for `compute_surface_analytics`.
 struct AnalyticsConfig {
   TenorGrid tenors = TenorGrid::standard();
-  std::vector<double> delta_points = {0.25, 0.10};              // abs deltas for wings/RR/BF
-  std::vector<double> moneyness_points = {0.90, 0.95, 1.00, 1.05, 1.10};  // K = F·m
-  double skew_k_ref = 0.10;                                     // 3-pivot skew/curvature pivot
-  bool ex_earnings = true;                                      // censored (de-earnings-ed) ATM
+  std::vector<double> delta_points = {0.25, 0.10}; // abs deltas for wings/RR/BF
+  std::vector<double> moneyness_points = {0.90, 0.95, 1.00, 1.05, 1.10}; // K = F·m
+  double skew_k_ref = 0.10; // 3-pivot skew/curvature pivot
+  bool ex_earnings = true;  // censored (de-earnings-ed) ATM
   bool compute_rnd = true;
   RndConfig rnd{};
-  std::vector<double> rnd_tenors_years = {30.0 / 365.25, 90.0 / 365.25};  // RND is heavier; select
+  std::vector<double> rnd_tenors_years = {30.0 / 365.25, 90.0 / 365.25}; // RND is heavier; select
   bool compute_varswap = true;
   // Straddle→move multiplier: 0.79788 = expected |move| (MAD, Bachelier);
   // 1.25331 = 1-sigma (68%) move; ~0.85 = empirical haircut. Documented, not
@@ -111,7 +111,7 @@ struct AnalyticsConfig {
 // earnings instants; `implied_emove` is the per-event move vol (eMove). When
 // `schedule` is null the earnings-dependent fields are left NaN / zero.
 struct EventContext {
-  const EventSchedule* schedule = nullptr;
+  const EventSchedule *schedule = nullptr;
   double implied_emove = 0.0;
 };
 
@@ -119,9 +119,9 @@ struct EventContext {
 
 // ATM level plus the first two moneyness derivatives of the smile at k = 0.
 struct SkewCurvature {
-  double atm = 0.0;         // σ at k = 0
-  double skew_slope = 0.0;  // ∂σ/∂k |_{k=0}  (per unit log-moneyness)
-  double curvature = 0.0;   // ∂²σ/∂k² |_{k=0}
+  double atm = 0.0;        // σ at k = 0
+  double skew_slope = 0.0; // ∂σ/∂k |_{k=0}  (per unit log-moneyness)
+  double curvature = 0.0;  // ∂²σ/∂k² |_{k=0}
   bool valid = false;
 };
 
@@ -131,9 +131,9 @@ struct RiskNeutralDensity {
   double T = 0.0;
   double forward = 0.0;
   double df = 0.0;
-  std::vector<double> strikes;  // absolute strikes, ascending
-  std::vector<double> pdf;      // normalized risk-neutral density q(K)
-  std::vector<double> cdf;      // P(S_T <= K), monotone in [0, 1]
+  std::vector<double> strikes; // absolute strikes, ascending
+  std::vector<double> pdf;     // normalized risk-neutral density q(K)
+  std::vector<double> cdf;     // P(S_T <= K), monotone in [0, 1]
   // Moments from direct integration of the normalized RND.
   double mean = 0.0;
   double variance = 0.0;
@@ -144,10 +144,10 @@ struct RiskNeutralDensity {
   double bkm_variance = 0.0;
   double bkm_skew = 0.0;
   double bkm_kurt = 0.0;
-  double skew_index = 0.0;         // 100 − 10·bkm_skew  (CBOE-SKEW style)
-  double mass_before_norm = 1.0;   // raw grid mass pre-normalization (ragged-smile flag)
-  std::vector<double> quantile_p;  // requested probabilities (== RndConfig::quantiles)
-  std::vector<double> quantile_k;  // inverse-CDF strikes at quantile_p
+  double skew_index = 0.0;        // 100 − 10·bkm_skew  (CBOE-SKEW style)
+  double mass_before_norm = 1.0;  // raw grid mass pre-normalization (ragged-smile flag)
+  std::vector<double> quantile_p; // requested probabilities (== RndConfig::quantiles)
+  std::vector<double> quantile_k; // inverse-CDF strikes at quantile_p
   double prob_below_forward = 0.0;
   bool valid = false;
 };
@@ -161,23 +161,23 @@ struct TenorAnalytics {
   std::string label;
   double forward = 0.0;
   double df = 0.0;
-  double atm_vol = 0.0;          // ATMF, k = 0
-  double atm_vol_ex_earn = 0.0;  // earnings-stripped ATMF (NaN without EventContext)
-  int n_earnings = 0;            // scheduled events in (now, T]
+  double atm_vol = 0.0;         // ATMF, k = 0
+  double atm_vol_ex_earn = 0.0; // earnings-stripped ATMF (NaN without EventContext)
+  int n_earnings = 0;           // scheduled events in (now, T]
   // Per delta point (aligned to AnalyticsConfig::delta_points).
   std::vector<double> put_delta_vol;
   std::vector<double> call_delta_vol;
-  std::vector<double> risk_reversal;  // σ_put − σ_call
-  std::vector<double> butterfly;      // ½(σ_put + σ_call) − σ_atm
+  std::vector<double> risk_reversal; // σ_put − σ_call
+  std::vector<double> butterfly;     // ½(σ_put + σ_call) − σ_atm
   // Local smile shape.
   double skew_slope = 0.0;
   double curvature = 0.0;
-  std::vector<double> moneyness_vol;  // aligned to AnalyticsConfig::moneyness_points
-  double skew_90_110 = 0.0;           // σ(90%) − σ(110%)
+  std::vector<double> moneyness_vol; // aligned to AnalyticsConfig::moneyness_points
+  double skew_90_110 = 0.0;          // σ(90%) − σ(110%)
   // Variance / density derived.
-  double var_swap_vol = 0.0;        // sqrt(K_var), model-free (NaN if disabled)
-  double convexity_premium = 0.0;   // var_swap_vol − atm_vol
-  double expected_move = 0.0;       // straddle × AnalyticsConfig::straddle_move_multiplier
+  double var_swap_vol = 0.0;      // sqrt(K_var), model-free (NaN if disabled)
+  double convexity_premium = 0.0; // var_swap_vol − atm_vol
+  double expected_move = 0.0;     // straddle × AnalyticsConfig::straddle_move_multiplier
   // Populated only for tenors in AnalyticsConfig::rnd_tenors_years.
   double rnd_skewness = 0.0;
   double rnd_kurtosis = 0.0;
@@ -190,14 +190,14 @@ struct SurfaceAnalytics {
   std::uint32_t uid = 0;
   std::int64_t as_of_ts_ns = 0;
   double spot = 0.0;
-  double implied_emove = 0.0;  // per-event earnings move used (0 if none)
+  double implied_emove = 0.0; // per-event earnings move used (0 if none)
   std::vector<TenorAnalytics> tenors;
-  std::vector<RiskNeutralDensity> densities;  // one per rnd_tenors_years (if compute_rnd)
+  std::vector<RiskNeutralDensity> densities; // one per rnd_tenors_years (if compute_rnd)
   // Term-structure summary.
-  double ts_slope_1m_3m = 0.0;  // σ_3m − σ_1m
-  double ts_slope_3m_1y = 0.0;  // σ_1y − σ_3m
-  double ts_ratio_1m_3m = 0.0;  // σ_1m / σ_3m
-  bool backwardation = false;   // front ATM > back ATM
+  double ts_slope_1m_3m = 0.0; // σ_3m − σ_1m
+  double ts_slope_3m_1y = 0.0; // σ_1y − σ_3m
+  double ts_ratio_1m_3m = 0.0; // σ_1m / σ_3m
+  bool backwardation = false;  // front ATM > back ATM
   bool valid = false;
 };
 
@@ -208,9 +208,9 @@ struct TenorDiff {
   double tenor_years = 0.0;
   std::string label;
   double d_forward = 0.0;
-  double d_atm_vol = 0.0;           // ATMF change
-  double d_vol_fixed_strike = 0.0;  // sticky-strike: at t1's ATM strike K0
-  double d_vol_fixed_delta = 0.0;   // sticky-delta: at a fixed delta
+  double d_atm_vol = 0.0;          // ATMF change
+  double d_vol_fixed_strike = 0.0; // sticky-strike: at t1's ATM strike K0
+  double d_vol_fixed_delta = 0.0;  // sticky-delta: at a fixed delta
   double d_skew_slope = 0.0;
   double d_risk_reversal_25 = 0.0;
   double d_butterfly_25 = 0.0;
@@ -227,11 +227,11 @@ struct SurfaceDiff {
   double spot1 = 0.0;
   double spot2 = 0.0;
   double d_spot = 0.0;
-  double log_return = 0.0;  // ln(S2 / S1)
+  double log_return = 0.0; // ln(S2 / S1)
   std::vector<TenorDiff> tenors;
-  double sticky_strike_atm_pred = 0.0;  // 𝒮·R (front-tenor reference)
-  double sticky_delta_atm_pred = 0.0;   // 0
-  double residual_atm_move = 0.0;       // observed Δσ_atm − sticky_strike_atm_pred
+  double sticky_strike_atm_pred = 0.0; // 𝒮·R (front-tenor reference)
+  double sticky_delta_atm_pred = 0.0;  // 0
+  double residual_atm_move = 0.0;      // observed Δσ_atm − sticky_strike_atm_pred
   bool valid = false;
 };
 
@@ -239,56 +239,56 @@ struct SurfaceDiff {
 
 // ATMF vol σ(F(T), T) and forward F(T). NaN for a non-finite/non-positive T or
 // outside the surface's no-extrapolation domain.
-[[nodiscard]] double atmf_vol(const PricedSurface& ps, double T) noexcept;
-[[nodiscard]] double atmf_forward(const PricedSurface& ps, double T) noexcept;
+[[nodiscard]] double atmf_vol(const PricedSurface &ps, double T) noexcept;
+[[nodiscard]] double atmf_forward(const PricedSurface &ps, double T) noexcept;
 
 // Smile vol at the strike whose American |delta| equals `abs_delta` on `side`.
 // InvalidArgument if `abs_delta` ∉ (0,1) or the target is unreachable.
-[[nodiscard]] Result<double> vol_at_delta(const PricedSurface& ps, double T, Side side,
+[[nodiscard]] Result<double> vol_at_delta(const PricedSurface &ps, double T, Side side,
                                           double abs_delta);
 
 // Smile vol at K = F(T)·moneyness (moneyness = 1.0 is ATMF). NaN outside domain.
-[[nodiscard]] double vol_at_moneyness(const PricedSurface& ps, double T, double moneyness) noexcept;
+[[nodiscard]] double vol_at_moneyness(const PricedSurface &ps, double T, double moneyness) noexcept;
 
 // Risk reversal σ(Δ-put) − σ(Δ-call) and butterfly ½(σ_put+σ_call) − σ_atm at
 // the given absolute delta. InvalidArgument if either wing strike is unreachable.
-[[nodiscard]] Result<double> risk_reversal(const PricedSurface& ps, double T, double abs_delta);
-[[nodiscard]] Result<double> butterfly(const PricedSurface& ps, double T, double abs_delta);
+[[nodiscard]] Result<double> risk_reversal(const PricedSurface &ps, double T, double abs_delta);
+[[nodiscard]] Result<double> butterfly(const PricedSurface &ps, double T, double abs_delta);
 
 // ATM level, skew slope ∂σ/∂k, curvature ∂²σ/∂k² via a 3-pivot quadratic through
 // k ∈ {−k_ref, 0, +k_ref}. `valid` is false if any pivot is NaN.
-[[nodiscard]] SkewCurvature skew_curvature(const PricedSurface& ps, double T,
+[[nodiscard]] SkewCurvature skew_curvature(const PricedSurface &ps, double T,
                                            double k_ref) noexcept;
 
 // Forward (calendar) vol between two tenors: sqrt((w2 − w1)/(T2 − T1)) on ATMF
 // total variance w = σ²·T. NaN if T2 ≤ T1 or w2 ≤ w1 (calendar arb / numerical).
-[[nodiscard]] double forward_vol(const PricedSurface& ps, double T1, double T2) noexcept;
+[[nodiscard]] double forward_vol(const PricedSurface &ps, double T1, double T2) noexcept;
 
 // Model-free implied vol sqrt(K_var(T)) via the OTM log-strip on the served
 // surface. InvalidArgument for a non-finite/non-positive T or unresolved carry.
-[[nodiscard]] Result<double> var_swap_vol(const PricedSurface& ps, double T,
-                                          const RndConfig& cfg = {});
+[[nodiscard]] Result<double> var_swap_vol(const PricedSurface &ps, double T,
+                                          const RndConfig &cfg = {});
 
 // Risk-neutral density and implied-distribution summary at one expiry
 // (Breeden–Litzenberger + BKM). InvalidArgument for a non-finite/non-positive T
 // or unresolved carry.
-[[nodiscard]] Result<RiskNeutralDensity> risk_neutral_density(const PricedSurface& ps, double T,
-                                                              const RndConfig& cfg = {});
+[[nodiscard]] Result<RiskNeutralDensity> risk_neutral_density(const PricedSurface &ps, double T,
+                                                              const RndConfig &cfg = {});
 
 // Implied CDF P(S_T <= K) at one strike. NaN outside domain / for bad T.
-[[nodiscard]] double implied_cdf(const PricedSurface& ps, double T, double K,
-                                 const RndConfig& cfg = {}) noexcept;
+[[nodiscard]] double implied_cdf(const PricedSurface &ps, double T, double K,
+                                 const RndConfig &cfg = {}) noexcept;
 
 // Earnings-stripped ("censored") ATMF vol: sqrt((w_atm − n·eMove²)/T) over the
 // events in (now, T]. NaN if `ctx.schedule` is null or eMove ≤ 0.
-[[nodiscard]] double atmf_vol_ex_earnings(const PricedSurface& ps, double T,
-                                          const EventContext& ctx) noexcept;
+[[nodiscard]] double atmf_vol_ex_earnings(const PricedSurface &ps, double T,
+                                          const EventContext &ctx) noexcept;
 
 // Implied per-event earnings move from the two fitted expiries bracketing the
 // next earnings date. InvalidArgument if no such bracket exists or the pair does
 // not identify eMove (see event_vol.hpp::implied_emove).
-[[nodiscard]] Result<double> earnings_implied_move(const PricedSurface& ps,
-                                                   const EventContext& ctx);
+[[nodiscard]] Result<double> earnings_implied_move(const PricedSurface &ps,
+                                                   const EventContext &ctx);
 
 // Implied correlation for a dispersion basket from already-computed per-name
 // variances/vols and index weights. `clean` uses the full cross term; `dirty`
@@ -305,26 +305,26 @@ struct SurfaceDiff {
 
 // Full single-surface bundle. The session/fitted/fitter overloads snapshot to a
 // PricedSurface and auto-extract the earnings schedule + solved eMove.
-[[nodiscard]] Result<SurfaceAnalytics> compute_surface_analytics(const PricedSurface& ps,
-                                                                 const AnalyticsConfig& cfg = {},
-                                                                 const EventContext* ctx = nullptr);
-[[nodiscard]] Result<SurfaceAnalytics> compute_surface_analytics(const VolaSession& session,
-                                                                 const AnalyticsConfig& cfg = {});
-[[nodiscard]] Result<SurfaceAnalytics> compute_surface_analytics(const FittedSurface& fitted,
-                                                                 const AnalyticsConfig& cfg = {});
-[[nodiscard]] Result<SurfaceAnalytics> compute_surface_analytics(const PricerFitter& fitter,
-                                                                 const AnalyticsConfig& cfg = {});
+[[nodiscard]] Result<SurfaceAnalytics> compute_surface_analytics(const PricedSurface &ps,
+                                                                 const AnalyticsConfig &cfg = {},
+                                                                 const EventContext *ctx = nullptr);
+[[nodiscard]] Result<SurfaceAnalytics> compute_surface_analytics(const VolaSession &session,
+                                                                 const AnalyticsConfig &cfg = {});
+[[nodiscard]] Result<SurfaceAnalytics> compute_surface_analytics(const FittedSurface &fitted,
+                                                                 const AnalyticsConfig &cfg = {});
+[[nodiscard]] Result<SurfaceAnalytics> compute_surface_analytics(const PricerFitter &fitter,
+                                                                 const AnalyticsConfig &cfg = {});
 
 // Two-surface change bundle. Both surfaces must be the same underlying (uid);
 // sticky-strike uses t1's ATM strike per tenor. InvalidArgument on a uid mismatch.
-[[nodiscard]] Result<SurfaceDiff> compute_surface_diff(const PricedSurface& a,
-                                                       const PricedSurface& b,
-                                                       const AnalyticsConfig& cfg = {});
+[[nodiscard]] Result<SurfaceDiff> compute_surface_diff(const PricedSurface &a,
+                                                       const PricedSurface &b,
+                                                       const AnalyticsConfig &cfg = {});
 
 // ── Serializers (house CSV style: `# key=value` meta header + rows) ─────────
 
-[[nodiscard]] Status write_surface_analytics_csv(const SurfaceAnalytics& a, std::string_view path);
-[[nodiscard]] Status write_surface_diff_csv(const SurfaceDiff& d, std::string_view path);
-[[nodiscard]] Status write_rnd_csv(const RiskNeutralDensity& r, std::string_view path);
+[[nodiscard]] Status write_surface_analytics_csv(const SurfaceAnalytics &a, std::string_view path);
+[[nodiscard]] Status write_surface_diff_csv(const SurfaceDiff &d, std::string_view path);
+[[nodiscard]] Status write_rnd_csv(const RiskNeutralDensity &r, std::string_view path);
 
-}  // namespace atx::vol
+} // namespace atx::vol

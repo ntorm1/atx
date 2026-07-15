@@ -30,13 +30,13 @@
 namespace atx::vol::testkit {
 
 inline constexpr double kFixtureRate = 0.043;
-inline constexpr std::int64_t kFixtureNow = 1700000000000000000LL;  // 2023-11-14T22:13:20Z
+inline constexpr std::int64_t kFixtureNow = 1700000000000000000LL; // 2023-11-14T22:13:20Z
 inline constexpr std::int64_t kDayNs = 86400LL * 1000000000LL;
 inline constexpr double kYearNs = 365.25 * 86400.0 * 1e9;
 
 // The default slice grid (year-fractions), ascending — covers 18d … 1y so the
 // 1w/2w tenors interpolate below the front pillar's 50% floor is avoided.
-inline const std::vector<double>& fixture_tenors() {
+inline const std::vector<double> &fixture_tenors() {
   static const std::vector<double> t = {0.05, 0.10, 0.20, 0.35, 0.50, 0.75, 1.00};
   return t;
 }
@@ -53,14 +53,14 @@ inline const std::vector<double>& fixture_tenors() {
 [[nodiscard]] inline PricedSurface
 make_flat_surface(std::uint32_t uid, double S, double fwd, double sigma,
                   std::int64_t now_ts = kFixtureNow,
-                  const std::vector<double>& Ts = fixture_tenors()) {
+                  const std::vector<double> &Ts = fixture_tenors()) {
   CurveSurface cs;
   std::vector<SliceContext> ctx;
   std::uint16_t i = 0;
   for (const double T : Ts) {
     EssviParams e{};
-    e.theta = sigma * sigma * T;  // w = θ ⇒ iv = sqrt(θ/T) = sigma
-    e.phi = 0.0;                  // flat smile
+    e.theta = sigma * sigma * T; // w = θ ⇒ iv = sqrt(θ/T) = sigma
+    e.phi = 0.0;                 // flat smile
     e.rho = 0.0;
     e.psi = 0.5;
     e.p = 0.5;
@@ -86,7 +86,7 @@ make_flat_surface(std::uint32_t uid, double S, double fwd, double sigma,
 // downside skew (ρ<0). `vol_bump` shifts the whole level (for two-surface diffs).
 [[nodiscard]] inline PricedSurface
 make_skewed_surface(std::uint32_t uid, double S, double fwd, std::int64_t now_ts = kFixtureNow,
-                    double vol_bump = 0.0, const std::vector<double>& Ts = fixture_tenors()) {
+                    double vol_bump = 0.0, const std::vector<double> &Ts = fixture_tenors()) {
   CurveSurface cs;
   std::vector<SliceContext> ctx;
   std::uint16_t i = 0;
@@ -122,4 +122,4 @@ make_skewed_surface(std::uint32_t uid, double S, double fwd, std::int64_t now_ts
   return EventSchedule(std::vector<std::int64_t>{ev});
 }
 
-}  // namespace atx::vol::testkit
+} // namespace atx::vol::testkit
