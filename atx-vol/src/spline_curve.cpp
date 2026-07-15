@@ -246,10 +246,15 @@ double SplineVolCurve::w(double k_log) const noexcept {
     return kNaN;
   }
   const double z = k_log / (p_.atm_vol * std::sqrt(T_));
-  const double m = spline_eval(p_.z, p_.mult, m2nd_, z);
+  double m = spline_eval(p_.z, p_.mult, m2nd_, z);
   if (!(m > 0.0) || !std::isfinite(m)) {
     return kNaN;
   }
+  // Served-multiple ceiling: bound the spline's between-knot / data-gap
+  // OVERSHOOT so no served point spikes to an economically impossible vol. This
+  // keeps the calendar floor (which reads a prior slice's served w) from
+  // reacting to a phantom spike and over-lifting the whole next slice off band.
+  if (p_.mult_cap > 0.0 && m > p_.mult_cap) m = p_.mult_cap;
   const double sigma = p_.atm_vol * m;
   // w_offset is the calendar-cone projection's uniform total-variance lift
   // (0 unless a genuine crossing against the prior slice was cleared).
@@ -306,12 +311,14 @@ SplineVolCurve::project_calendar(const std::function<double(double)> &w_prev,
 
   // Served total variance at log-moneyness k under the current knot multiples
   // (offset applied separately). SAME arithmetic as w()'s finite branch.
+  const double mcap = p_.mult_cap;
   const auto served_base = [&](double k) noexcept -> double {
     const double z = k / axis;
-    const double m = spline_eval(p_.z, p_.mult, m2nd_, z);
+    double m = spline_eval(p_.z, p_.mult, m2nd_, z);
     if (!(m > 0.0) || !std::isfinite(m)) {
       return kNaN;  // matches w()'s NaN-on-undershoot; skipped as non-comparable
     }
+    if (mcap > 0.0 && m > mcap) m = mcap;  // match w()'s served ceiling
     const double sigma = atm * m;
     return sigma * sigma * T_;
   };
@@ -527,6 +534,7 @@ Result<std::unique_ptr<IVolCurve>> fit_spline_vol_slice(std::span<const FitObs> 
     p.z_hi_valid = z_hi;
     p.z = std::move(zk);
     p.mult = std::move(mult);
+    p.mult_cap = opts.mult_ceil;  // served-multiple overshoot ceiling (0 = off)
 
     const std::vector<double> m2nd_final = natural_spline_m(p.z, p.mult);
     p.n_butterfly_viol = count_butterfly_violations(p.z, p.mult, m2nd_final, p.atm_vol, T,

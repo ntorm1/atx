@@ -98,6 +98,14 @@ struct SplineVolParams {
   std::vector<double> mult;      // per-knot vol multiples, > 0 (>= mult_floor)
   double z_lo_valid{0.0};        // observed standardized-moneyness range;
   double z_hi_valid{0.0};        // flat outside [z.front(), z.back()] regardless.
+  // Served-multiple ceiling (set from SplineFitOpts::mult_ceil at fit time): the
+  // served m(z) is clamped to <= mult_cap in `w()`, bounding the natural cubic's
+  // between-knot / data-gap OVERSHOOT so no served point spikes to an
+  // economically impossible vol. This keeps the calendar-cone floor (which reads
+  // a prior slice's served w) from reacting to a phantom overshoot spike and
+  // over-lifting the whole next slice off its bid-ask band. 0 (or non-finite) ==
+  // no ceiling (legacy behaviour).
+  double mult_cap{0.0};
   // Uniform additive total-variance offset applied by the calendar-cone
   // projection (SplineVolCurve::project_calendar): served w = (atm*m(z))^2*T +
   // w_offset. 0 for a freshly fitted slice and for the front expiry (no w_prev);
@@ -112,8 +120,33 @@ struct SplineVolParams {
 // ── Fit options ──────────────────────────────────────────────────────────
 struct SplineFitOpts {
   std::span<const double> grid{kSrMoneynessGrid};  // candidate knot z-grid
-  double lambda{1.0e-3};      // 2nd-difference roughness penalty on multiples
+  // 2nd-difference (P-spline) roughness penalty on the fitted multiples. Raised
+  // 20x from the historical 1e-3 after a full-OPRA-universe sweep: the light
+  // penalty under-regularized the multiple curve, letting the natural cubic
+  // OVERSHOOT between the unevenly-spaced SR knots in sparse/wing regions. Those
+  // overshoot spikes fed the calendar-cone floor (which reads a prior slice's
+  // served w on a dense grid) and forced large ATM-level lifts on every
+  // subsequent expiry, pushing model prices above the ask across dense
+  // many-slice boards (the tail that dragged the universe mean down). At 0.02
+  // the multiple curve is smooth enough that the calendar floor lifts only for
+  // genuine crossings, lifting universe-mean frac-in-bidask 0.928 -> 0.963 and
+  // RMSE 0.070 -> 0.028 with calendar-arb-free held at 100% -- while staying
+  // gentle enough to still recover a clean SVI smile to <2e-3 vol RMSE and
+  // introduce no butterfly-density violations (SplineVol.RecoversSviSmile /
+  // .ButterflyViolationCounterOnConvexData). Larger lambda (>=0.1) lifts the
+  // universe mean further but over-smooths clean data into butterfly arb, so
+  // 0.02 is the accuracy/no-arb sweet spot.
+  double lambda{0.02};        // 2nd-difference roughness penalty on multiples
   double mult_floor{0.05};    // post-solve clamp on the fitted multiples
+  // Served-multiple ceiling (see SplineVolParams::mult_cap): the fitted curve's
+  // served m(z) is clamped to <= mult_ceil, bounding the residual between-knot
+  // overshoot the roughness penalty does not fully absorb so a single phantom
+  // spike cannot drive the calendar floor. 3.0 (== 300% of sigma_ATM) is well
+  // above any real tradeable-strike vol multiple, so it clips only overshoot
+  // (a tighter cap like 2.0 clips genuine deep-wing vols and adds bid misses);
+  // set <= 0 to disable. On top of the raised lambda it holds total bid misses
+  // flat (real wings unclipped) while trimming the worst pathological boards.
+  double mult_ceil{3.0};
   std::size_t min_obs{6};     // below this (raw or post-filter): InvalidArgument
 };
 

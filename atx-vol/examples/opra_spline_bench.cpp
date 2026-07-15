@@ -191,7 +191,7 @@ int main(int argc, char **argv) {
   bool audit_fit_inv = true;
   bool warm_carry = false;
   double r = 0.043;
-  double spline_lambda = 1.0e-3;
+  double spline_lambda = 0.02;  // matches SplineFitOpts::lambda default (raised from 1e-3)
   double spline_mult_floor = 0.05;
   std::size_t spline_min_obs = 6;
   unsigned fit_workers = atx_auto_worker_count();
