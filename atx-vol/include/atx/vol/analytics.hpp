@@ -46,9 +46,16 @@
 // ## Error / NaN semantics
 //
 // Aggregating entry points return `Result<...>`; per-metric primitives return
-// `double` / `Result<double>` and yield `NaN` outside the surface's
-// no-extrapolation domain (mirroring `PricedSurface::iv`). Every entry point is
-// a pure function of its arguments — safe to call concurrently.
+// `double` / `Result<double>` and yield `NaN` when the surface itself returns
+// NaN (a non-finite/non-positive K/T). NOTE: the served `CurveSurface`
+// FLAT-EXTRAPOLATES a parametric smile outside the fitted pillar range rather
+// than returning NaN, so a primitive like `atmf_vol` is finite even for a tenor
+// beyond the fitted expiries — that value is an extrapolation, not a fitted
+// number. `compute_surface_analytics` therefore gates each tenor to the fitted
+// pillar range `[context().front().T, context().back().T]`: an out-of-range
+// tenor is marked `extrapolated = true` and excluded from `valid` and the
+// term-structure summary. Every entry point is a pure function of its
+// arguments — safe to call concurrently.
 
 #include <cstdint>
 #include <span>
@@ -79,12 +86,18 @@ struct TenorGrid {
   [[nodiscard]] static TenorGrid standard();
 };
 
-// Risk-neutral density / model-free integration grid. The strike grid spans
-// `[k_min, k_max]` in log-forward-moneyness with `n_grid` points (odd is
-// preferred for the central second-difference and Simpson rules).
+// Risk-neutral density / model-free integration grid. The strike grid is
+// UNIFORM IN LOG-FORWARD-MONEYNESS `k = ln(K/F)` with `n_grid` points (forced
+// odd, ≥ 11, for the composite-Simpson quadrature). The half-width is
+// `max(|k_min|, k_max, width_sigmas · σ_atm · √T)`: `width_sigmas > 0` scales
+// the grid with the tenor's own vol so long-dated / high-vol tenors keep enough
+// tail coverage (a fixed ±0.60 truncates the strip and biases var-swap / BKM
+// kurtosis low); `[k_min, k_max]` remains a floor. Set `width_sigmas = 0` to pin
+// the fixed `[k_min, k_max]` span.
 struct RndConfig {
   double k_min = -0.60;
   double k_max = 0.60;
+  double width_sigmas = 6.0; // adaptive half-width in σ√T units (0 = fixed span)
   int n_grid = 201;
   std::vector<double> quantiles = {0.05, 0.25, 0.50, 0.75, 0.95};
   bool compute_moments = true;
@@ -99,7 +112,10 @@ struct AnalyticsConfig {
   bool ex_earnings = true;  // censored (de-earnings-ed) ATM
   bool compute_rnd = true;
   RndConfig rnd{};
-  std::vector<double> rnd_tenors_years = {30.0 / 365.25, 90.0 / 365.25}; // RND is heavier; select
+  // RND is heavier; compute it only at these tenors. Values that match a
+  // `tenors` grid year-fraction (within ~1 day) get their BKM moments copied
+  // back onto that TenorAnalytics. Defaults are grid-aligned (1m = 30d, 3m = 91d).
+  std::vector<double> rnd_tenors_years = {30.0 / 365.25, 91.0 / 365.25};
   bool compute_varswap = true;
   // Straddle→move multiplier: 0.79788 = expected |move| (MAD, Bachelier);
   // 1.25331 = 1-sigma (68%) move; ~0.85 = empirical haircut. Documented, not
@@ -145,7 +161,9 @@ struct RiskNeutralDensity {
   double bkm_skew = 0.0;
   double bkm_kurt = 0.0;
   double skew_index = 0.0;        // 100 − 10·bkm_skew  (CBOE-SKEW style)
+  double var_swap_vol = 0.0;      // sqrt(K_var): model-free implied vol off the same strip
   double mass_before_norm = 1.0;  // raw grid mass pre-normalization (ragged-smile flag)
+  bool extrapolated = false;      // any wing IV was flat-filled from the fitted range
   std::vector<double> quantile_p; // requested probabilities (== RndConfig::quantiles)
   std::vector<double> quantile_k; // inverse-CDF strikes at quantile_p
   double prob_below_forward = 0.0;
@@ -170,18 +188,27 @@ struct TenorAnalytics {
   std::vector<double> risk_reversal; // σ_put − σ_call
   std::vector<double> butterfly;     // ½(σ_put + σ_call) − σ_atm
   // Local smile shape.
-  double skew_slope = 0.0;
-  double curvature = 0.0;
+  double skew_slope = 0.0;           // ∂σ/∂k |_{k=0}  (raw, per unit log-moneyness)
+  double skew_slope_sqrt_t = 0.0;    // skew_slope · √T   (tenor-normalized, cross-T comparable)
+  double skew_slope_norm = 0.0;      // skew_slope / atm_vol   (level-normalized)
+  double curvature = 0.0;            // ∂²σ/∂k² |_{k=0}
   std::vector<double> moneyness_vol; // aligned to AnalyticsConfig::moneyness_points
   double skew_90_110 = 0.0;          // σ(90%) − σ(110%)
   // Variance / density derived.
   double var_swap_vol = 0.0;      // sqrt(K_var), model-free (NaN if disabled)
   double convexity_premium = 0.0; // var_swap_vol − atm_vol
   double expected_move = 0.0;     // straddle × AnalyticsConfig::straddle_move_multiplier
-  // Populated only for tenors in AnalyticsConfig::rnd_tenors_years.
+  double event_var_share = 0.0;   // n·eMove² / w_atm  (fraction of ATM variance from events)
+  // Populated only for tenors that match an AnalyticsConfig::rnd_tenors_years
+  // value (within ~1 day). rnd_skewness/rnd_kurtosis carry the BKM (log-return)
+  // moments; leave 0 when no RND was computed at this tenor.
   double rnd_skewness = 0.0;
   double rnd_kurtosis = 0.0;
   double prob_below_forward = 0.0;
+  // True when this tenor lies outside the fitted pillar range and the surface
+  // FLAT-EXTRAPOLATED the vol (the served CurveSurface does not NaN there). The
+  // metrics are still finite but are an extrapolation, not a fitted value.
+  bool extrapolated = false;
   bool valid = false;
 };
 
@@ -193,12 +220,15 @@ struct SurfaceAnalytics {
   double implied_emove = 0.0; // per-event earnings move used (0 if none)
   std::vector<TenorAnalytics> tenors;
   std::vector<RiskNeutralDensity> densities; // one per rnd_tenors_years (if compute_rnd)
-  // Term-structure summary.
+  // Forward (calendar) vol between consecutive IN-RANGE tenors, aligned so
+  // forward_vol_segments[i] spans (in_range_tenors[i], in_range_tenors[i+1]).
+  std::vector<double> forward_vol_segments;
+  // Term-structure summary (constant-maturity ATMF; NaN if a leg is out of range).
   double ts_slope_1m_3m = 0.0; // σ_3m − σ_1m
   double ts_slope_3m_1y = 0.0; // σ_1y − σ_3m
   double ts_ratio_1m_3m = 0.0; // σ_1m / σ_3m
-  bool backwardation = false;  // front ATM > back ATM
-  bool valid = false;
+  bool backwardation = false;  // front in-range ATM > back in-range ATM
+  bool valid = false;          // at least one in-range (non-extrapolated) tenor
 };
 
 // ── Two-surface change analytics ────────────────────────────────────────────
@@ -237,8 +267,10 @@ struct SurfaceDiff {
 
 // ── Primitives (public: composable and unit-testable) ───────────────────────
 
-// ATMF vol σ(F(T), T) and forward F(T). NaN for a non-finite/non-positive T or
-// outside the surface's no-extrapolation domain.
+// ATMF vol σ(F(T), T) and forward F(T). NaN for a non-finite/non-positive T.
+// For a T beyond the fitted pillar range the served surface flat-extrapolates,
+// so the value is finite but extrapolated (see the module note above); use
+// `compute_surface_analytics`'s `extrapolated` gate to distinguish in-range.
 [[nodiscard]] double atmf_vol(const PricedSurface &ps, double T) noexcept;
 [[nodiscard]] double atmf_forward(const PricedSurface &ps, double T) noexcept;
 
@@ -275,12 +307,17 @@ struct SurfaceDiff {
 [[nodiscard]] Result<RiskNeutralDensity> risk_neutral_density(const PricedSurface &ps, double T,
                                                               const RndConfig &cfg = {});
 
-// Implied CDF P(S_T <= K) at one strike. NaN outside domain / for bad T.
+// Implied CDF P(S_T <= K) at one strike via a central difference of Black-76
+// call prices (P(S_T ≤ K) = 1 + e^{rT}·∂C/∂K). NaN for a non-finite/non-positive
+// T or K. `cfg` is accepted for call-site symmetry with the other density
+// primitives but is not used (the estimator is a local finite difference, not a
+// grid).
 [[nodiscard]] double implied_cdf(const PricedSurface &ps, double T, double K,
                                  const RndConfig &cfg = {}) noexcept;
 
 // Earnings-stripped ("censored") ATMF vol: sqrt((w_atm − n·eMove²)/T) over the
-// events in (now, T]. NaN if `ctx.schedule` is null or eMove ≤ 0.
+// events in (now, T]. NaN if `ctx.schedule` is null, eMove ≤ 0, or if
+// n·eMove² ≥ w_atm.
 [[nodiscard]] double atmf_vol_ex_earnings(const PricedSurface &ps, double T,
                                           const EventContext &ctx) noexcept;
 

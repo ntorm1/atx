@@ -185,6 +185,18 @@ TEST(AnalyticsPrimitives, AtmfVolExEarningsNaNWithoutSchedule) {
   EXPECT_TRUE(std::isnan(atmf_vol_ex_earnings(ps, 0.50, ctx_no_move)));
 }
 
+// G9: an eMove whose event variance overshoots the total ATM variance (the censor
+// would floor to ~0 and hand back a spurious near-zero vol) ⇒ NaN, not a number.
+TEST(AnalyticsPrimitives, AtmfVolExEarningsNaNOnOvershoot) {
+  const PricedSurface ps = testkit::make_flat_surface(1, 100.0, 100.0, 0.20);
+  const double T = 0.05; // w_atm = σ²·T = 0.04·0.05 = 0.002
+  const EventSchedule sched = testkit::make_event_schedule(0.025); // one event in (now, T]
+  EventContext ctx;
+  ctx.schedule = &sched;
+  ctx.implied_emove = 0.10; // n·eMove² = 0.01 ≥ w_atm = 0.002 ⇒ NaN
+  EXPECT_TRUE(std::isnan(atmf_vol_ex_earnings(ps, T, ctx)));
+}
+
 // ── implied_correlation_clean / dirty ───────────────────────────────────────
 
 TEST(AnalyticsPrimitives, ImpliedCorrelationCleanRecoversHalf) {

@@ -137,6 +137,91 @@ TEST(AnalyticsAggregate, SkewedSurfaceTenorShape) {
   EXPECT_GT(t3m->risk_reversal[0], 0.0);
 }
 
+// ── Extrapolation gate (G7) ─────────────────────────────────────────────────
+
+TEST(AnalyticsAggregate, ExtrapolationGateMarksOutOfRangeTenors) {
+  // Flat fixture pillars span 0.05 … 1.0, so 1w/2w (below) and 18m/2y (above) are
+  // flat-extrapolated: marked extrapolated + excluded from `valid`; 3m is fitted.
+  const PricedSurface ps = testkit::make_flat_surface(1, 100.0, 100.0, 0.20);
+  const auto res = compute_surface_analytics(ps);
+  ASSERT_TRUE(res.has_value());
+  const SurfaceAnalytics &a = *res;
+
+  const TenorAnalytics *t1w = find_tenor(a, "1w");
+  ASSERT_NE(t1w, nullptr);
+  EXPECT_TRUE(t1w->extrapolated);
+  EXPECT_FALSE(t1w->valid);
+
+  const TenorAnalytics *t2y = find_tenor(a, "2y");
+  ASSERT_NE(t2y, nullptr);
+  EXPECT_TRUE(t2y->extrapolated);
+  EXPECT_FALSE(t2y->valid);
+
+  const TenorAnalytics *t3m = find_tenor(a, "3m");
+  ASSERT_NE(t3m, nullptr);
+  EXPECT_TRUE(t3m->valid);
+  EXPECT_FALSE(t3m->extrapolated);
+}
+
+// ── RND shared-grid copy-back (G8) ──────────────────────────────────────────
+
+TEST(AnalyticsAggregate, RndCopyBackSharesGridAtAlignedTenor) {
+  const PricedSurface ps = testkit::make_skewed_surface(2, 100.0, 100.0);
+  const auto res = compute_surface_analytics(ps);
+  ASSERT_TRUE(res.has_value());
+  const SurfaceAnalytics &a = *res;
+
+  const TenorAnalytics *t3m = find_tenor(a, "3m");
+  ASSERT_NE(t3m, nullptr);
+  ASSERT_TRUE(t3m->valid);
+  // The 91d default RND tenor now aligns with the 3m tenor, so its BKM skew is
+  // copied back (nonzero on a genuinely skewed surface).
+  EXPECT_NE(t3m->rnd_skewness, 0.0);
+  EXPECT_TRUE(std::isfinite(t3m->var_swap_vol));
+
+  // And the copied var_swap_vol is exactly the matching density's (no rebuild).
+  const RiskNeutralDensity *match = nullptr;
+  for (const RiskNeutralDensity &dn : a.densities) {
+    if (std::fabs(dn.T - 91.0 / 365.25) < 1.5 / 365.25) {
+      match = &dn;
+      break;
+    }
+  }
+  ASSERT_NE(match, nullptr);
+  EXPECT_DOUBLE_EQ(t3m->var_swap_vol, match->var_swap_vol);
+}
+
+// ── Forward-vol series + normalized skew ────────────────────────────────────
+
+TEST(AnalyticsAggregate, ForwardVolSegmentsFlatAreFlat) {
+  const PricedSurface ps = testkit::make_flat_surface(1, 100.0, 100.0, 0.20);
+  const auto res = compute_surface_analytics(ps);
+  ASSERT_TRUE(res.has_value());
+  const SurfaceAnalytics &a = *res;
+  ASSERT_FALSE(a.forward_vol_segments.empty());
+  for (const double seg : a.forward_vol_segments) {
+    EXPECT_NEAR(seg, 0.20, 1e-2);
+  }
+}
+
+TEST(AnalyticsAggregate, NormalizedSkewFlatZeroSkewedNegative) {
+  const PricedSurface flat = testkit::make_flat_surface(1, 100.0, 100.0, 0.20);
+  const auto rf = compute_surface_analytics(flat);
+  ASSERT_TRUE(rf.has_value());
+  const TenorAnalytics *f3m = find_tenor(*rf, "3m");
+  ASSERT_NE(f3m, nullptr);
+  EXPECT_NEAR(f3m->skew_slope_sqrt_t, 0.0, 1e-3);
+  EXPECT_NEAR(f3m->skew_slope_norm, 0.0, 1e-3);
+
+  const PricedSurface skew = testkit::make_skewed_surface(2, 100.0, 100.0);
+  const auto rs = compute_surface_analytics(skew);
+  ASSERT_TRUE(rs.has_value());
+  const TenorAnalytics *s3m = find_tenor(*rs, "3m");
+  ASSERT_NE(s3m, nullptr);
+  EXPECT_LT(s3m->skew_slope_sqrt_t, 0.0);
+  EXPECT_LT(s3m->skew_slope_norm, 0.0);
+}
+
 // ── Two-surface diff: pure level shift ──────────────────────────────────────
 
 TEST(AnalyticsAggregate, SurfaceDiffFlatLevelShift) {
@@ -155,8 +240,13 @@ TEST(AnalyticsAggregate, SurfaceDiffFlatLevelShift) {
   EXPECT_NEAR(t3m->d_atm_vol, 0.02, 1e-3);
   EXPECT_NEAR(t3m->d_vol_fixed_strike, 0.02, 1e-3);
   EXPECT_NEAR(t3m->d_skew_slope, 0.0, 1e-3);
+  // Pure level shift ⇒ the 25Δ wings move together, so the risk-reversal and
+  // butterfly changes are both ~0.
+  EXPECT_NEAR(t3m->d_risk_reversal_25, 0.0, 1e-3);
+  EXPECT_NEAR(t3m->d_butterfly_25, 0.0, 1e-3);
 
-  // Flat skew ⇒ no sticky-strike prediction ⇒ residual is the whole ATM move.
+  // Flat skew + equal forwards ⇒ no sticky-strike prediction ⇒ residual is the
+  // whole ATM move.
   EXPECT_NEAR(d.residual_atm_move, 0.02, 1e-3);
 }
 

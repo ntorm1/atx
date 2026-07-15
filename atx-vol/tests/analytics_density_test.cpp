@@ -69,10 +69,42 @@ TEST(AnalyticsDensity, FlatRndMomentsAndBkmSkew) {
 
   // Lognormal log-returns are ~symmetric ⇒ BKM skew ≈ 0. (The forward-referenced
   // BKM drift is essential here — a spot-referenced drift would inject ~−0.5.)
-  EXPECT_LT(std::fabs(r.bkm_skew), 0.15);
+  EXPECT_LT(std::fabs(r.bkm_skew), 0.05);
 
   // BKM variance ≈ sigma²·T = 0.04·0.5 = 0.02 for the flat surface.
-  EXPECT_NEAR(r.bkm_variance, 0.02, 0.003);
+  EXPECT_NEAR(r.bkm_variance, 0.02, 1e-3);
+}
+
+// Closed-form lognormal moments on the flat surface (F=100, σ=0.20, T=0.5, so
+// s² = σ²T = 0.02). Every reference below is exact for a lognormal(σ√T) RND; the
+// uniform-in-k Simpson grid with 6σ tail coverage must reproduce them tightly.
+TEST(AnalyticsDensity, FlatRndClosedFormMoments) {
+  const PricedSurface ps = testkit::make_flat_surface(1, 100.0, 100.0, 0.20);
+  const auto res = risk_neutral_density(ps, 0.5, RndConfig{});
+  ASSERT_TRUE(res.has_value());
+  const RiskNeutralDensity &r = *res;
+
+  // Price-space moments: mean = F, var = F²(e^{s²}−1), lognormal skew/kurtosis.
+  EXPECT_NEAR(r.mean, 100.0, 0.3);
+  EXPECT_NEAR(r.variance, 202.013, 3.0);  // F²(e^{s²}−1)
+  EXPECT_NEAR(r.skewness, 0.42927, 0.03); // (e^{s²}+2)√(e^{s²}−1)
+  EXPECT_NEAR(r.kurtosis, 3.32938, 0.05); // e^{4s²}+2e^{3s²}+3e^{2s²}−3 (raw)
+
+  // BKM (log-return) strip: variance = σ²T, symmetric ⇒ skew ≈ 0, kurt ≈ 3.
+  EXPECT_NEAR(r.bkm_variance, 0.02, 1e-3);
+  EXPECT_NEAR(r.bkm_skew, 0.0, 0.05);
+  EXPECT_NEAR(r.bkm_kurt, 3.0, 0.1);
+
+  // Raw grid mass integrates to unit probability before normalization.
+  EXPECT_NEAR(r.mass_before_norm, 1.0, 0.02);
+
+  // Centered CDF: monotone, pinned at the ends.
+  ASSERT_GT(r.cdf.size(), 0u);
+  EXPECT_NEAR(r.cdf.front(), 0.0, 0.02);
+  EXPECT_NEAR(r.cdf.back(), 1.0, 1e-6);
+  for (std::size_t i = 1; i < r.cdf.size(); ++i) {
+    EXPECT_GE(r.cdf[i], r.cdf[i - 1]);
+  }
 }
 
 TEST(AnalyticsDensity, FlatQuantilesMonotone) {
@@ -95,15 +127,56 @@ TEST(AnalyticsDensity, FlatQuantilesMonotone) {
   }
 }
 
+// Inverse-CDF quantiles vs the exact lognormal K_p = F·exp(−½σ²T + σ√T·Φ⁻¹(p)).
+// The centered CDF (cumulative trapezoid, no left-Riemann half-cell bias) should
+// land each quantile within ±0.6 in strike; a wider miss is a centering bug, not
+// a tolerance to loosen.
+TEST(AnalyticsDensity, FlatQuantilesClosedForm) {
+  const PricedSurface ps = testkit::make_flat_surface(1, 100.0, 100.0, 0.20);
+  const auto res = risk_neutral_density(ps, 0.5, RndConfig{});
+  ASSERT_TRUE(res.has_value());
+  const RiskNeutralDensity &r = *res;
+
+  // Aligned to the default RndConfig quantiles {0.05, 0.25, 0.50, 0.75, 0.95}.
+  const double expected[] = {78.458, 90.098, 99.005, 108.914, 124.934};
+  ASSERT_EQ(r.quantile_k.size(), 5u);
+  for (std::size_t j = 0; j < 5; ++j) {
+    EXPECT_NEAR(r.quantile_k[j], expected[j], 0.6) << "quantile index " << j;
+  }
+}
+
+// prob_below_forward pins the CDF-centering fix: for a lognormal(σ√T) RND,
+// P(S_T ≤ F) = Φ(½σ√T) = Φ(0.0707107) = 0.528188.
+TEST(AnalyticsDensity, FlatProbBelowForwardCentered) {
+  const PricedSurface ps = testkit::make_flat_surface(1, 100.0, 100.0, 0.20);
+  const auto res = risk_neutral_density(ps, 0.5, RndConfig{});
+  ASSERT_TRUE(res.has_value());
+  EXPECT_NEAR(res->prob_below_forward, 0.528188, 3e-3);
+}
+
 TEST(AnalyticsDensity, FlatVarSwapMatchesLevel) {
   const PricedSurface ps = testkit::make_flat_surface(1, 100.0, 100.0, 0.20);
   const double T = 0.5;
   const auto vs = var_swap_vol(ps, T, RndConfig{});
   ASSERT_TRUE(vs.has_value());
-  EXPECT_NEAR(*vs, 0.20, 0.01);
+  EXPECT_NEAR(*vs, 0.20, 2e-3);
 
   // Flat smile ⇒ no convexity premium over ATMF.
-  EXPECT_NEAR(*vs - atmf(ps, T), 0.0, 0.01);
+  EXPECT_NEAR(*vs - atmf(ps, T), 0.0, 2e-3);
+
+  // The density's var_swap_vol is computed off the SAME shared grid/strip and
+  // must equal the standalone primitive bit-for-bit.
+  const auto res = risk_neutral_density(ps, T, RndConfig{});
+  ASSERT_TRUE(res.has_value());
+  EXPECT_DOUBLE_EQ(res->var_swap_vol, *vs);
+}
+
+// implied_cdf on the flat surface is exact: P(S_T ≤ F) = Φ(½σ√T) = 0.528188.
+TEST(AnalyticsDensity, FlatImpliedCdfClosedForm) {
+  const PricedSurface ps = testkit::make_flat_surface(1, 100.0, 100.0, 0.20);
+  const double cdf_at_f = implied_cdf(ps, 0.5, 100.0, RndConfig{});
+  ASSERT_TRUE(std::isfinite(cdf_at_f));
+  EXPECT_NEAR(cdf_at_f, 0.528188, 5e-4);
 }
 
 TEST(AnalyticsDensity, FlatImpliedCdf) {
@@ -154,6 +227,21 @@ TEST(AnalyticsDensity, SkewedVarSwapCarriesConvexityPremium) {
   ASSERT_TRUE(vs.has_value());
   // Convex smile ⇒ model-free vol strictly above ATMF.
   EXPECT_GT(*vs, atmf(ps, T));
+}
+
+// The fixture is fitted out to a 1y pillar; a 2y tenor is served by a FLAT-
+// EXTRAPOLATED smile, so the density must flag `extrapolated`. An in-range tenor
+// (0.5) sits inside the pillar span and stays un-flagged.
+TEST(AnalyticsDensity, SkewedExtrapolatedFlagBeyondPillars) {
+  const PricedSurface ps = testkit::make_skewed_surface(2, 100.0, 100.0);
+
+  const auto in_range = risk_neutral_density(ps, 0.5, RndConfig{});
+  ASSERT_TRUE(in_range.has_value());
+  EXPECT_FALSE(in_range->extrapolated);
+
+  const auto beyond = risk_neutral_density(ps, 2.0, RndConfig{});
+  ASSERT_TRUE(beyond.has_value());
+  EXPECT_TRUE(beyond->extrapolated);
 }
 
 // ── Guards ──────────────────────────────────────────────────────────────────

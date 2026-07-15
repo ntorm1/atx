@@ -27,6 +27,13 @@ using atx::core::Ok;
 
 namespace {
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+
+// Unwrap a `Result<double>` to its value or NaN — lets a per-tenor bundle absorb
+// an unreachable wing / degenerate strip without failing the whole aggregate, and
+// lets downstream arithmetic propagate the NaN into the derived field.
+[[nodiscard]] double value_or_nan(const Result<double> &r) noexcept {
+  return r.has_value() ? *r : kNaN;
+}
 } // namespace
 
 Result<double> earnings_implied_move(const PricedSurface &ps, const EventContext &ctx) {
@@ -64,6 +71,29 @@ Result<SurfaceAnalytics> compute_surface_analytics(const PricedSurface &ps,
   const std::vector<double> &tenors = cfg.tenors.tenors_years;
   const std::vector<std::string> &labels = cfg.tenors.labels;
 
+  // Fitted pillar range: the served CurveSurface flat-extrapolates a parametric
+  // smile beyond [Tmin, Tmax], so atmf_vol is finite but FABRICATED there. Gate
+  // each tenor to the fitted range and mark out-of-range tenors extrapolated /
+  // invalid (see analytics.hpp "Error / NaN semantics").
+  const std::span<const SliceContext> pillars = ps.context();
+  const bool have_range = !pillars.empty();
+  const double Tmin = have_range ? pillars.front().T : kNaN;
+  const double Tmax = have_range ? pillars.back().T : kNaN;
+
+  // Risk-neutral densities computed ONCE up front over a shared strike grid; their
+  // BKM moments and var-swap vol are copied back onto any tenor that lines up
+  // (within ~1 day) so no tenor rebuilds a density grid it already has.
+  if (cfg.compute_rnd) {
+    for (const double Tr : cfg.rnd_tenors_years) {
+      auto d = risk_neutral_density(ps, Tr, cfg.rnd);
+      if (d.has_value()) {
+        out.densities.push_back(std::move(*d));
+      }
+    }
+  }
+
+  const double k = cfg.skew_k_ref;
+
   for (std::size_t i = 0; i < tenors.size(); ++i) {
     const double T = tenors[i];
     TenorAnalytics t;
@@ -72,86 +102,124 @@ Result<SurfaceAnalytics> compute_surface_analytics(const PricedSurface &ps,
       t.label = labels[i];
     }
 
-    const double F = atmf_forward(ps, T);
-    const double atm = atmf_vol(ps, T);
-    if (!std::isfinite(F) || !std::isfinite(atm)) {
-      t.valid = false; // tenor outside the surface's no-extrapolation domain
+    if (!have_range || !(T >= Tmin && T <= Tmax)) {
+      t.extrapolated = true; // flat-extrapolated smile: finite but not a fitted value
+      t.valid = false;
       out.tenors.push_back(std::move(t));
       continue;
     }
 
+    // In-range: resolve the forward and ATM vol ONCE and reuse them everywhere.
+    const double F = ps.forward_at(T);
+    const double atm = ps.iv(F, T);
     t.forward = F;
     t.df = std::exp(-ps.rate_at(T) * T);
     t.atm_vol = atm;
 
-    if (cfg.ex_earnings && ctx != nullptr && ctx->schedule != nullptr) {
-      t.atm_vol_ex_earn = atmf_vol_ex_earnings(ps, T, *ctx);
-      t.n_earnings = static_cast<int>(count_events_at(*ctx->schedule, ps.pricing().now_ts_ns, T));
+    // Earnings-stripped ATM + event-variance share.
+    std::size_t n_ev = 0;
+    double emove = 0.0;
+    if (ctx != nullptr && ctx->schedule != nullptr) {
+      n_ev = count_events_at(*ctx->schedule, ps.pricing().now_ts_ns, T);
+      emove = ctx->implied_emove;
+      t.n_earnings = static_cast<int>(n_ev);
+      t.atm_vol_ex_earn = cfg.ex_earnings ? atmf_vol_ex_earnings(ps, T, *ctx) : kNaN;
     } else {
       t.atm_vol_ex_earn = kNaN;
       t.n_earnings = 0;
     }
+    t.event_var_share = (ctx != nullptr && ctx->schedule != nullptr && emove > 0.0 && atm > 0.0)
+                            ? (static_cast<double>(n_ev) * emove * emove) / (atm * atm * T)
+                            : 0.0;
 
     // Delta wings: a wing strike can be unreachable in the far tail — store NaN
     // for that entry rather than failing the whole bundle.
     for (const double d : cfg.delta_points) {
-      const auto put = vol_at_delta(ps, T, Side::Put, d);
-      const auto call = vol_at_delta(ps, T, Side::Call, d);
-      const double pv = put.has_value() ? *put : kNaN;
-      const double cv = call.has_value() ? *call : kNaN;
+      const double pv = value_or_nan(vol_at_delta(ps, T, Side::Put, d));
+      const double cv = value_or_nan(vol_at_delta(ps, T, Side::Call, d));
       t.put_delta_vol.push_back(pv);
       t.call_delta_vol.push_back(cv);
       t.risk_reversal.push_back(pv - cv);
       t.butterfly.push_back(0.5 * (pv + cv) - atm);
     }
 
-    const SkewCurvature sc = skew_curvature(ps, T, cfg.skew_k_ref);
-    t.skew_slope = sc.skew_slope;
-    t.curvature = sc.curvature;
+    // Inline skew/curvature reusing F and atm (avoids skew_curvature's redundant
+    // forward_at + iv(F,T)). Leave slope/curvature 0 if a pivot is non-finite.
+    const double sp = ps.iv(F * std::exp(k), T);
+    const double sm = ps.iv(F * std::exp(-k), T);
+    if (std::isfinite(sp) && std::isfinite(sm)) {
+      t.skew_slope = (sp - sm) / (2.0 * k);
+      t.curvature = (sp + sm - 2.0 * atm) / (k * k);
+    }
+    t.skew_slope_sqrt_t = t.skew_slope * std::sqrt(T);
+    t.skew_slope_norm = (atm > 0.0) ? t.skew_slope / atm : kNaN;
 
+    // Fixed-moneyness vols (K = F·m), reusing F. Capture the 0.90 / 1.10 entries
+    // for skew_90_110 if the config carries them; else compute them directly.
+    double v90 = kNaN;
+    double v110 = kNaN;
+    bool have90 = false;
+    bool have110 = false;
     for (const double m : cfg.moneyness_points) {
-      t.moneyness_vol.push_back(vol_at_moneyness(ps, T, m));
+      const double mv = ps.iv(F * m, T);
+      t.moneyness_vol.push_back(mv);
+      if (m == 0.90) {
+        v90 = mv;
+        have90 = true;
+      } else if (m == 1.10) {
+        v110 = mv;
+        have110 = true;
+      }
     }
-    t.skew_90_110 = vol_at_moneyness(ps, T, 0.90) - vol_at_moneyness(ps, T, 1.10);
+    t.skew_90_110 = (have90 && have110)
+                        ? (v90 - v110)
+                        : (vol_at_moneyness(ps, T, 0.90) - vol_at_moneyness(ps, T, 1.10));
 
-    if (cfg.compute_varswap) {
-      const auto vs = var_swap_vol(ps, T, cfg.rnd);
-      t.var_swap_vol = vs.has_value() ? *vs : kNaN;
-      t.convexity_premium = t.var_swap_vol - atm;
+    // Var-swap vol / density copy-back: reuse a matching precomputed density's
+    // var_swap_vol + BKM moments (no second grid build); else compute var-swap.
+    const RiskNeutralDensity *match = nullptr;
+    for (const RiskNeutralDensity &d : out.densities) {
+      if (std::fabs(t.tenor_years - d.T) < 1.5 / 365.25) {
+        match = &d;
+        break;
+      }
+    }
+    if (match != nullptr) {
+      t.var_swap_vol = match->var_swap_vol;
+      t.rnd_skewness = match->bkm_skew;
+      t.rnd_kurtosis = match->bkm_kurt;
+      t.prob_below_forward = match->prob_below_forward;
     } else {
-      t.var_swap_vol = kNaN;
-      t.convexity_premium = kNaN;
+      t.var_swap_vol = cfg.compute_varswap ? value_or_nan(var_swap_vol(ps, T, cfg.rnd)) : kNaN;
     }
-
+    t.convexity_premium = t.var_swap_vol - atm;
     t.expected_move = cfg.straddle_move_multiplier * atm * std::sqrt(T);
     t.valid = true;
     out.tenors.push_back(std::move(t));
   }
 
-  // Risk-neutral density: one per selected tenor; copy its BKM shape moments back
-  // onto any matching per-tenor bundle.
-  if (cfg.compute_rnd) {
-    for (const double Tr : cfg.rnd_tenors_years) {
-      auto d = risk_neutral_density(ps, Tr, cfg.rnd);
-      if (!d.has_value()) {
-        continue;
-      }
-      for (auto &t : out.tenors) {
-        if (std::fabs(t.tenor_years - Tr) < 1e-9) {
-          t.rnd_skewness = d->bkm_skew;
-          t.rnd_kurtosis = d->bkm_kurt;
-          t.prob_below_forward = d->prob_below_forward;
-        }
-      }
-      out.densities.push_back(std::move(*d));
+  // Forward (calendar) vol between CONSECUTIVE in-range valid tenors (ascending),
+  // one segment per adjacent pair.
+  std::vector<double> in_range_T;
+  in_range_T.reserve(out.tenors.size());
+  for (const TenorAnalytics &t : out.tenors) {
+    if (t.valid) {
+      in_range_T.push_back(t.tenor_years);
     }
+  }
+  for (std::size_t i = 0; i + 1 < in_range_T.size(); ++i) {
+    out.forward_vol_segments.push_back(forward_vol(ps, in_range_T[i], in_range_T[i + 1]));
   }
 
   // Term-structure summary (constant-maturity ATMF read straight off the surface,
-  // same ACT/365.25 basis as the tenor grid). Leave the slope fields 0 on a NaN.
-  const double sig1m = atmf_vol(ps, 30.0 / 365.25);
-  const double sig3m = atmf_vol(ps, 91.0 / 365.25);
-  const double sig1y = atmf_vol(ps, 365.0 / 365.25);
+  // same ACT/365.25 basis as the tenor grid). A leg outside the fitted range is
+  // NaN; leave the slope fields 0 on a NaN, the ratio NaN.
+  const auto ts_vol = [&](double X) {
+    return (have_range && X >= Tmin && X <= Tmax) ? atmf_vol(ps, X) : kNaN;
+  };
+  const double sig1m = ts_vol(30.0 / 365.25);
+  const double sig3m = ts_vol(91.0 / 365.25);
+  const double sig1y = ts_vol(365.0 / 365.25);
   const double slope_1m_3m = sig3m - sig1m;
   const double slope_3m_1y = sig1y - sig3m;
   if (std::isfinite(slope_1m_3m)) {
@@ -222,7 +290,18 @@ Result<SurfaceDiff> compute_surface_diff(const PricedSurface &a, const PricedSur
   const std::vector<double> &tenors = cfg.tenors.tenors_years;
   const std::vector<std::string> &labels = cfg.tenors.labels;
 
+  // Gate tenors to the INTERSECTION of both surfaces' fitted pillar ranges — a
+  // change is only a fitted number where BOTH sides are in-range (neither
+  // flat-extrapolates).
+  const std::span<const SliceContext> pa_ctx = a.context();
+  const std::span<const SliceContext> pb_ctx = b.context();
+  const bool have_range = !pa_ctx.empty() && !pb_ctx.empty();
+  const double Tmin = have_range ? std::max(pa_ctx.front().T, pb_ctx.front().T) : kNaN;
+  const double Tmax = have_range ? std::min(pa_ctx.back().T, pb_ctx.back().T) : kNaN;
+
   double t_first_valid = kNaN;
+  double skew_a_first = kNaN; // stashed at the first valid tenor (no recompute)
+  double d_atm_first = kNaN;
   bool any_valid = false;
 
   for (std::size_t i = 0; i < tenors.size(); ++i) {
@@ -233,52 +312,54 @@ Result<SurfaceDiff> compute_surface_diff(const PricedSurface &a, const PricedSur
       td.label = labels[i];
     }
 
-    const double va = atmf_vol(a, T);
-    const double vb = atmf_vol(b, T);
-    if (!std::isfinite(va) || !std::isfinite(vb)) {
-      td.valid = false; // one of the surfaces is out of domain at this tenor
+    if (!have_range || !(T >= Tmin && T <= Tmax)) {
+      td.valid = false; // out of at least one surface's fitted range
       out.tenors.push_back(std::move(td));
       continue;
     }
 
+    const double va = atmf_vol(a, T);
+    const double vb = atmf_vol(b, T);
     td.d_forward = atmf_forward(b, T) - atmf_forward(a, T);
     td.d_atm_vol = vb - va;
 
     const double K0 = atmf_forward(a, T); // t1's ATM strike (sticky-strike)
     td.d_vol_fixed_strike = b.iv(K0, T) - a.iv(K0, T);
 
-    const auto pa = vol_at_delta(a, T, Side::Put, 0.25);
-    const auto pb = vol_at_delta(b, T, Side::Put, 0.25);
-    td.d_vol_fixed_delta = (pa.has_value() && pb.has_value()) ? (*pb - *pa) : kNaN;
+    // Resolve each 25Δ wing ONCE (4 root-finds, not 10) and derive the fixed-delta
+    // change, risk-reversal change, and butterfly change from those four vols.
+    // Any wing NaN propagates through the arithmetic into the derived field.
+    const double pa = value_or_nan(vol_at_delta(a, T, Side::Put, 0.25));
+    const double ca = value_or_nan(vol_at_delta(a, T, Side::Call, 0.25));
+    const double pb = value_or_nan(vol_at_delta(b, T, Side::Put, 0.25));
+    const double cb = value_or_nan(vol_at_delta(b, T, Side::Call, 0.25));
+    td.d_vol_fixed_delta = pb - pa;
+    td.d_risk_reversal_25 = (pb - cb) - (pa - ca);
+    td.d_butterfly_25 = (0.5 * (pb + cb) - vb) - (0.5 * (pa + ca) - va);
 
-    td.d_skew_slope = skew_curvature(b, T, cfg.skew_k_ref).skew_slope -
-                      skew_curvature(a, T, cfg.skew_k_ref).skew_slope;
-
-    const auto rra = risk_reversal(a, T, 0.25);
-    const auto rrb = risk_reversal(b, T, 0.25);
-    td.d_risk_reversal_25 = (rra.has_value() && rrb.has_value()) ? (*rrb - *rra) : kNaN;
-
-    const auto bfa = butterfly(a, T, 0.25);
-    const auto bfb = butterfly(b, T, 0.25);
-    td.d_butterfly_25 = (bfa.has_value() && bfb.has_value()) ? (*bfb - *bfa) : kNaN;
+    const double skew_a = skew_curvature(a, T, cfg.skew_k_ref).skew_slope;
+    const double skew_b = skew_curvature(b, T, cfg.skew_k_ref).skew_slope;
+    td.d_skew_slope = skew_b - skew_a;
 
     td.valid = true;
     if (!any_valid) {
-      t_first_valid = T;
       any_valid = true;
+      t_first_valid = T;
+      skew_a_first = skew_a;
+      d_atm_first = td.d_atm_vol;
     }
     out.tenors.push_back(std::move(td));
   }
 
-  // Sticky decomposition off the FIRST valid tenor: predicted ATM move under a
-  // sticky-strike regime is 𝒮·R, and the residual is the observed move minus it.
+  // Sticky decomposition off the FIRST valid tenor. The sticky-STRIKE regime
+  // tracks the FORWARD (not spot), so the predicted ATM move is 𝒮·ln(F2/F1); the
+  // residual is the observed ATM move minus that prediction.
   if (any_valid && std::isfinite(t_first_valid)) {
-    const double skew = skew_curvature(a, t_first_valid, cfg.skew_k_ref).skew_slope;
-    const double R = out.log_return;
-    out.sticky_strike_atm_pred = (std::isfinite(skew) && std::isfinite(R)) ? skew * R : 0.0;
+    const double fwd_ret = std::log(b.forward_at(t_first_valid) / a.forward_at(t_first_valid));
+    out.sticky_strike_atm_pred =
+        (std::isfinite(skew_a_first) && std::isfinite(fwd_ret)) ? skew_a_first * fwd_ret : 0.0;
     out.sticky_delta_atm_pred = 0.0;
-    out.residual_atm_move =
-        (atmf_vol(b, t_first_valid) - atmf_vol(a, t_first_valid)) - out.sticky_strike_atm_pred;
+    out.residual_atm_move = d_atm_first - out.sticky_strike_atm_pred;
   }
 
   out.valid = any_valid;

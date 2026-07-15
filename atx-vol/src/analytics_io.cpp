@@ -11,9 +11,13 @@
 
 #include "atx/vol/analytics.hpp"
 
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace atx::vol {
 
@@ -23,16 +27,24 @@ using atx::core::Ok;
 namespace {
 
 // `%.10g` — headline metric scalars (10 significant digits; readable, not meant
-// to round-trip bit-exactly). Matches run_report.cpp::fmt10.
+// to round-trip bit-exactly). Matches run_report.cpp::fmt10. A non-finite value
+// (NaN/Inf) yields an EMPTY field deterministically, so the platform's `nan(ind)`
+// token never lands in a cell or meta value.
 void put_g10(std::string &s, double v) {
+  if (!std::isfinite(v)) {
+    return;
+  }
   char buf[64];
   const int len = std::snprintf(buf, sizeof buf, "%.10g", v);
   s.append(buf, static_cast<std::size_t>(len > 0 ? len : 0));
 }
 
 // `%.17g` — full-precision series (round-trips a double bit-for-bit). Matches
-// run_report.cpp's series columns.
+// run_report.cpp's series columns. Non-finite → empty field (see `put_g10`).
 void put_g17(std::string &s, double v) {
+  if (!std::isfinite(v)) {
+    return;
+  }
   char buf[64];
   const int len = std::snprintf(buf, sizeof buf, "%.17g", v);
   s.append(buf, static_cast<std::size_t>(len > 0 ? len : 0));
@@ -95,18 +107,41 @@ Status write_surface_analytics_csv(const SurfaceAnalytics &a, std::string_view p
   put_g10(out, a.ts_slope_3m_1y);
   out += "\n# ts_ratio_1m_3m=";
   put_g10(out, a.ts_ratio_1m_3m);
+  out += "\n# forward_vol_segments=";
+  for (std::size_t i = 0; i < a.forward_vol_segments.size(); ++i) {
+    if (i > 0) {
+      out += ';';
+    }
+    put_g10(out, a.forward_vol_segments[i]);
+  }
   out += "\n# backwardation=";
   out += a.backwardation ? '1' : '0';
   out += "\n# valid=";
   out += a.valid ? '1' : '0';
   out += '\n';
 
-  // ── Header row: 17 fixed columns, then 4 wing groups (j∈[0,3]), then 5
-  //    fixed-moneyness columns (j∈[0,4]). ──
-  out += "tenor_years,label,forward,df,atm_vol,atm_vol_ex_earn,n_earnings,skew_slope,"
-         "curvature,skew_90_110,var_swap_vol,convexity_premium,expected_move,rnd_skewness,"
-         "rnd_kurtosis,prob_below_forward,valid";
-  for (int j = 0; j < 4; ++j) {
+  // Size the wing / moneyness column groups from the widest per-tenor vector
+  // (capped at 8) so a caller with more than the default 4 deltas / 5 moneyness
+  // points is not silently truncated (LOW-8).
+  std::size_t n_wing = 0;
+  std::size_t n_mvol = 0;
+  for (const auto &t : a.tenors) {
+    n_wing = std::max(n_wing, t.put_delta_vol.size());
+    n_wing = std::max(n_wing, t.call_delta_vol.size());
+    n_wing = std::max(n_wing, t.risk_reversal.size());
+    n_wing = std::max(n_wing, t.butterfly.size());
+    n_mvol = std::max(n_mvol, t.moneyness_vol.size());
+  }
+  n_wing = std::min<std::size_t>(n_wing, 8);
+  n_mvol = std::min<std::size_t>(n_mvol, 8);
+
+  // ── Header row: fixed columns, then `n_wing` wing groups, then `n_mvol`
+  //    fixed-moneyness columns. ──
+  out += "tenor_years,label,forward,df,atm_vol,atm_vol_ex_earn,n_earnings,event_var_share,"
+         "skew_slope,skew_slope_sqrt_t,skew_slope_norm,curvature,skew_90_110,var_swap_vol,"
+         "convexity_premium,expected_move,rnd_skewness,rnd_kurtosis,prob_below_forward,"
+         "extrapolated,valid";
+  for (std::size_t j = 0; j < n_wing; ++j) {
     const char d = static_cast<char>('0' + j);
     out += ",put_delta_vol_";
     out += d;
@@ -117,7 +152,7 @@ Status write_surface_analytics_csv(const SurfaceAnalytics &a, std::string_view p
     out += ",bf_";
     out += d;
   }
-  for (int j = 0; j < 5; ++j) {
+  for (std::size_t j = 0; j < n_mvol; ++j) {
     out += ",mvol_";
     out += static_cast<char>('0' + j);
   }
@@ -139,7 +174,13 @@ Status write_surface_analytics_csv(const SurfaceAnalytics &a, std::string_view p
     out += ',';
     put_i64(out, static_cast<std::int64_t>(t.n_earnings));
     out += ',';
+    put_g10(out, t.event_var_share);
+    out += ',';
     put_g10(out, t.skew_slope);
+    out += ',';
+    put_g10(out, t.skew_slope_sqrt_t);
+    out += ',';
+    put_g10(out, t.skew_slope_norm);
     out += ',';
     put_g10(out, t.curvature);
     out += ',';
@@ -157,8 +198,10 @@ Status write_surface_analytics_csv(const SurfaceAnalytics &a, std::string_view p
     out += ',';
     put_g10(out, t.prob_below_forward);
     out += ',';
+    out += t.extrapolated ? '1' : '0';
+    out += ',';
     out += t.valid ? '1' : '0';
-    for (std::size_t j = 0; j < 4; ++j) {
+    for (std::size_t j = 0; j < n_wing; ++j) {
       out += ',';
       put_g10_or_empty(out, t.put_delta_vol, j);
       out += ',';
@@ -168,7 +211,7 @@ Status write_surface_analytics_csv(const SurfaceAnalytics &a, std::string_view p
       out += ',';
       put_g10_or_empty(out, t.butterfly, j);
     }
-    for (std::size_t j = 0; j < 5; ++j) {
+    for (std::size_t j = 0; j < n_mvol; ++j) {
       out += ',';
       put_g10_or_empty(out, t.moneyness_vol, j);
     }
@@ -262,10 +305,14 @@ Status write_rnd_csv(const RiskNeutralDensity &r, std::string_view path) {
   put_g10(out, r.bkm_kurt);
   out += "\n# skew_index=";
   put_g10(out, r.skew_index);
+  out += "\n# var_swap_vol=";
+  put_g10(out, r.var_swap_vol);
   out += "\n# mass_before_norm=";
   put_g10(out, r.mass_before_norm);
   out += "\n# prob_below_forward=";
   put_g10(out, r.prob_below_forward);
+  out += "\n# extrapolated=";
+  out += r.extrapolated ? '1' : '0';
   out += "\n# valid=";
   out += r.valid ? '1' : '0';
   out += '\n';

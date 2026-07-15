@@ -123,6 +123,15 @@ double atmf_vol_ex_earnings(const PricedSurface &ps, double T, const EventContex
   if (!std::isfinite(w)) {
     return kNaN;
   }
+  // Earnings variance ≥ total ATM variance: the censor would floor the censored
+  // variance to ~0 and return a spurious near-zero vol from an ill-conditioned
+  // (eMove-overshoots-the-smile) input. Report NaN rather than a fabricated
+  // number. `!(lump < w)` is NaN-safe (w is finite here), so this fires only on a
+  // genuine overshoot, never on a comparison with NaN.
+  const double lump = static_cast<double>(n) * ctx.implied_emove * ctx.implied_emove;
+  if (!(lump < w)) {
+    return kNaN;
+  }
   const double wc = censored_total_variance(w, n, ctx.implied_emove);
   return std::sqrt(wc / T);
 }

@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <system_error>
@@ -111,7 +112,9 @@ RiskNeutralDensity make_rnd() {
   r.bkm_skew = -0.5;
   r.bkm_kurt = 3.7;
   r.skew_index = 105.0;
+  r.var_swap_vol = 0.26;
   r.mass_before_norm = 0.987;
+  r.extrapolated = false;
   r.quantile_p = {0.05, 0.50, 0.95};
   r.quantile_k = {88.0, 101.0, 116.0};
   r.prob_below_forward = 0.53;
@@ -138,6 +141,7 @@ TEST(AnalyticsIo, WriteSurfaceAnalytics) {
   a.ts_slope_1m_3m = 0.01;
   a.ts_slope_3m_1y = -0.005;
   a.ts_ratio_1m_3m = 1.05;
+  a.forward_vol_segments = {0.24, 0.23};
   a.backwardation = true;
   a.valid = true;
 
@@ -149,11 +153,14 @@ TEST(AnalyticsIo, WriteSurfaceAnalytics) {
   t0.atm_vol = 0.25;
   t0.atm_vol_ex_earn = 0.22;
   t0.n_earnings = 1;
-  t0.put_delta_vol = {0.28, 0.30};
-  t0.call_delta_vol = {0.24, 0.23};
-  t0.risk_reversal = {0.04, 0.07};
-  t0.butterfly = {0.01, 0.02};
+  t0.event_var_share = 0.18;
+  t0.put_delta_vol = {0.28, 0.30, 0.31, 0.32};
+  t0.call_delta_vol = {0.24, 0.23, 0.22, 0.21};
+  t0.risk_reversal = {0.04, 0.07, 0.09, 0.11};
+  t0.butterfly = {0.01, 0.02, 0.03, 0.04};
   t0.skew_slope = -0.5;
+  t0.skew_slope_sqrt_t = -0.14;
+  t0.skew_slope_norm = std::numeric_limits<double>::quiet_NaN(); // non-finite ⇒ empty cell
   t0.curvature = 1.2;
   t0.moneyness_vol = {0.30, 0.27, 0.25, 0.24, 0.26};
   t0.skew_90_110 = 0.04;
@@ -166,14 +173,16 @@ TEST(AnalyticsIo, WriteSurfaceAnalytics) {
   t0.valid = true;
 
   // Second tenor intentionally leaves the aligned wing/moneyness vectors empty
-  // (and a shorter-than-4/5 set on t0) to exercise the bounds guard.
+  // (a shorter-than-max set overall) to exercise the bounds guard, and is marked
+  // extrapolated to exercise that column.
   TenorAnalytics t1;
   t1.tenor_years = 0.25;
   t1.label = "3m";
   t1.forward = 102.0;
   t1.df = 0.997;
   t1.atm_vol = 0.24;
-  t1.valid = true;
+  t1.extrapolated = true;
+  t1.valid = false;
 
   a.tenors = {t0, t1};
 
@@ -189,15 +198,25 @@ TEST(AnalyticsIo, WriteSurfaceAnalytics) {
   EXPECT_TRUE(has_line_prefix(text, "# ts_slope_1m_3m="));
   EXPECT_TRUE(has_line_prefix(text, "# ts_slope_3m_1y="));
   EXPECT_TRUE(has_line_prefix(text, "# ts_ratio_1m_3m="));
+  EXPECT_TRUE(has_line_prefix(text, "# forward_vol_segments="));
   EXPECT_TRUE(has_line_prefix(text, "# backwardation="));
   EXPECT_TRUE(has_line_prefix(text, "# valid="));
   EXPECT_TRUE(has_line_prefix(text, "tenor_years,label,forward,df,"));
-  // Wing + moneyness columns must be part of the header.
+  // New fixed columns must be part of the header.
+  EXPECT_NE(text.find("event_var_share"), std::string::npos);
+  EXPECT_NE(text.find("skew_slope_sqrt_t"), std::string::npos);
+  EXPECT_NE(text.find("skew_slope_norm"), std::string::npos);
+  EXPECT_NE(text.find("extrapolated"), std::string::npos);
+  // Wing + moneyness columns are config-sized (t0 carries 4 wings / 5 moneyness).
   EXPECT_NE(text.find("put_delta_vol_0"), std::string::npos);
   EXPECT_NE(text.find("call_delta_vol_3"), std::string::npos);
   EXPECT_NE(text.find("rr_0"), std::string::npos);
   EXPECT_NE(text.find("bf_3"), std::string::npos);
   EXPECT_NE(text.find("mvol_4"), std::string::npos);
+  // A non-finite cell (t0.skew_slope_norm = NaN) is written as an empty field, so
+  // the platform nan(ind)/inf token never appears.
+  EXPECT_EQ(text.find("nan"), std::string::npos);
+  EXPECT_EQ(text.find("inf"), std::string::npos);
   EXPECT_EQ(count_data_rows(text), a.tenors.size());
 
   remove_quietly(path);
@@ -294,8 +313,10 @@ TEST(AnalyticsIo, WriteRnd) {
   EXPECT_TRUE(has_line_prefix(text, "# bkm_skew="));
   EXPECT_TRUE(has_line_prefix(text, "# bkm_kurt="));
   EXPECT_TRUE(has_line_prefix(text, "# skew_index="));
+  EXPECT_TRUE(has_line_prefix(text, "# var_swap_vol="));
   EXPECT_TRUE(has_line_prefix(text, "# mass_before_norm="));
   EXPECT_TRUE(has_line_prefix(text, "# prob_below_forward="));
+  EXPECT_TRUE(has_line_prefix(text, "# extrapolated="));
   EXPECT_TRUE(has_line_prefix(text, "# valid="));
   // One quantile meta line per (p, k) pair.
   EXPECT_TRUE(has_line_prefix(text, "# quantile_"));
