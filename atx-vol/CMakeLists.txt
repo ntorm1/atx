@@ -102,6 +102,10 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/dispersion_strategy.cpp
     src/tearsheet.cpp
     src/run_report.cpp
+    src/analytics_primitives.cpp
+    src/analytics_density.cpp
+    src/analytics_aggregate.cpp
+    src/analytics_io.cpp
 )
 add_library(atx::vol ALIAS atx-vol)
 
