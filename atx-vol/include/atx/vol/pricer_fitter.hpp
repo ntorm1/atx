@@ -37,6 +37,7 @@
 #include "atx/vol/curve.hpp"          // DividendEvent
 #include "atx/vol/curve_selector.hpp" // SelectorConfig, SelectorResult
 #include "atx/vol/fit_policy.hpp"     // FitContext, FitPolicyConfig, FitDecision
+#include "atx/vol/prepared_policy.hpp" // PreparedObservationPolicy
 #include "atx/vol/session.hpp"        // VolaSession, FitPreset, SessionDiagnostics
 #include "atx/vol/surface_policy.hpp" // explicit mark/risk purpose and quality policy
 #include "atx/vol/types.hpp"          // Result, Status, Side
@@ -169,9 +170,32 @@ struct PricerConfig {
   std::optional<bool> score_parity{};
   std::optional<bool> enforce_calendar_floor{};
   std::optional<bool> use_deam_cache_for_fit{};
+  // Optional overrides for the polymorphic-fit observation-preparation policy and
+  // its fit-inversion audit. nullopt (default) => no override, bit-identical to
+  // the session default (Configured / preset-derived audit). Set fit_prep_policy
+  // to LegacyEssviCompatibility to keep thin single-name expiries the strict
+  // usable-row floor would starve (see SessionInputs::fit_prep_policy);
+  // audit_fit_inversions gates the lenient path's cold-reference fit audit.
+  std::optional<PreparedObservationPolicy> fit_prep_policy{};
+  std::optional<bool> audit_fit_inversions{};
+  // Opt into the cross-pair warm start for the term-borrow carry solve
+  // (DeAmOptions::warm_start_carry): seeds each near-ATM pair's borrow
+  // fixed-point from the previous pair's converged state, cutting the
+  // American-solve count in the de-Am hot path. nullopt => no override
+  // (bit-identical cold carry solve).
+  std::optional<bool> warm_start_carry{};
   // Optional per-slice cap applied before American-IV de-Am inversion. nullopt
   // => use the preset default; 0 => no cap.
   std::optional<std::uint32_t> max_obs_per_slice{};
+  // Optional cap on the number of OTM strikes de-Americanized per expiry in the
+  // legacy observation prep (CalibOpts::max_deam_strikes_per_expiry). nullopt =>
+  // preset default (0 = unlimited). Setting e.g. 64 for a pinned SplineVol fit
+  // bounds the per-strike inversion strip -- a 29-knot cubic spline is fully
+  // determined by a moneyness-spread subset -- cutting fit latency on wide,
+  // liquid boards without touching the forward/borrow carry solve. The subsample
+  // pins both wing extremes + a dense near-ATM core, so the served fit and its
+  // in-bidask/calendar-arb quality are unchanged.
+  std::optional<std::uint32_t> max_deam_strikes_per_expiry{};
   // Reuse raw European IV when the estimated OTM early-exercise premium is at
   // most this fraction of the NBBO spread. nullopt => preset default.
   std::optional<double> max_otm_shortcut_premium_spread_frac{};

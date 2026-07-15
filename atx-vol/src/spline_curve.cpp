@@ -9,6 +9,7 @@
 #include "atx/core/error.hpp"
 #include "atx/core/linalg/linalg.hpp"  // MatX, VecX
 #include "atx/core/linalg/solve.hpp"   // solve_spd
+#include "atx/vol/arb.hpp"             // CalendarPairProjection (calendar cone)
 #include "atx/vol/vol_curve.hpp"       // IVolCurve, SplineVolCurve (full class)
 
 namespace atx::vol {
@@ -223,6 +224,20 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 SplineVolCurve::SplineVolCurve(SplineVolParams p, double T, double F, double df) noexcept
     : IVolCurve(T, F, df), p_(std::move(p)), m2nd_(natural_spline_m(p_.z, p_.mult)) {}
 
+std::pair<double, double> SplineVolCurve::data_k_range() const noexcept {
+  const double axis = p_.atm_vol * std::sqrt(T_);
+  if (!(axis > 0.0) || !std::isfinite(axis)) {
+    return {-std::numeric_limits<double>::infinity(),
+            std::numeric_limits<double>::infinity()};
+  }
+  return {p_.z_lo_valid * axis, p_.z_hi_valid * axis};
+}
+
+bool SplineVolCurve::is_extrapolated(double k_log) const noexcept {
+  const auto [lo, hi] = data_k_range();
+  return k_log < lo || k_log > hi;
+}
+
 double SplineVolCurve::w(double k_log) const noexcept {
   if (!(T_ > 0.0) || !(F_ > 0.0) || !(df_ > 0.0) || !std::isfinite(k_log)) {
     return kNaN;
@@ -231,12 +246,157 @@ double SplineVolCurve::w(double k_log) const noexcept {
     return kNaN;
   }
   const double z = k_log / (p_.atm_vol * std::sqrt(T_));
-  const double m = spline_eval(p_.z, p_.mult, m2nd_, z);
+  double m = spline_eval(p_.z, p_.mult, m2nd_, z);
   if (!(m > 0.0) || !std::isfinite(m)) {
     return kNaN;
   }
+  // Served-multiple ceiling: bound the spline's between-knot / data-gap
+  // OVERSHOOT so no served point spikes to an economically impossible vol. This
+  // keeps the calendar floor (which reads a prior slice's served w) from
+  // reacting to a phantom spike and over-lifting the whole next slice off band.
+  if (p_.mult_cap > 0.0 && m > p_.mult_cap) m = p_.mult_cap;
   const double sigma = p_.atm_vol * m;
-  return sigma * sigma * T_;
+  // w_offset is the calendar-cone projection's uniform total-variance lift
+  // (0 unless a genuine crossing against the prior slice was cleared).
+  return sigma * sigma * T_ + p_.w_offset;
+}
+
+// ── SplineVolCurve::project_calendar ────────────────────────────────────────
+//
+// Per-knot, ATM-preserving calendar lift onto the cone above `w_prev` — the
+// SplineVol analogue of arb_project_calendar_{svi,c8}_pair (arb.cpp). See the
+// method contract in vol_curve.hpp. Each pass only RAISES a knot multiple, so
+// served total variance is non-decreasing across passes: the projection is a
+// bounded monotone map onto the calendar cone and therefore terminates (same
+// argument as the C8/SVI `v`/`a` shift).
+Result<CalendarPairProjection>
+SplineVolCurve::project_calendar(const std::function<double(double)> &w_prev,
+                                 double k_min, double k_max,
+                                 std::uint32_t n_grid, double kprev_lo,
+                                 double kprev_hi) {
+  // Mirror validate_pair_projection_inputs (arb.cpp), plus the SplineVol-specific
+  // degeneracy guards so we never divide by a non-positive ATM vol or T.
+  if (!w_prev || n_grid == 0 || !(k_max > k_min)) {
+    return Err(ErrorCode::InvalidArgument,
+               "spline calendar pair projection: require previous curve and valid grid");
+  }
+  if (!(p_.atm_vol > 0.0) || !std::isfinite(p_.atm_vol) || !(T_ > 0.0) ||
+      p_.z.empty() || p_.z.size() != p_.mult.size()) {
+    return Err(ErrorCode::Unavailable,
+               "spline calendar pair projection: degenerate slice");
+  }
+
+  // Matches arb.cpp's file-local kCalendarPairTol (1e-7) used by every sibling
+  // pair projection. Replicated (it is not exported) so the spline agrees on the
+  // same convergence bar.
+  constexpr double kCalendarPairTol = 1.0e-7;
+  constexpr double kLiftEps = 1.0e-9;  // strict-clearance inflation (siblings' +1e-9)
+
+  const double atm = p_.atm_vol;
+  const double axis = atm * std::sqrt(T_);  // standardized moneyness z = k / axis
+  const double dk = (k_max - k_min) / static_cast<double>(n_grid);
+
+  // Enforcement domain = the TRADEABLE OVERLAP of the two slices' data-supported
+  // log-moneyness ranges. This slice's own data range is [z_lo_valid,
+  // z_hi_valid] * axis; `kprev_lo/kprev_hi` is the previous slice's (passed by
+  // the caller, +-inf if unknown). Calendar no-arbitrage is a statement about
+  // TRADEABLE quotes: outside the overlap at least one slice is pure
+  // extrapolation (a natural spline's flat wing), where a crossing is not a real
+  // arb and where forcing the global spline up to clear it would drag the
+  // in-sample smile off its bid-ask band. The served-surface calendar CHECK is
+  // restricted to the same overlap via SplineVolCurve::is_extrapolated, so the
+  // metric and the enforcement agree.
+  const double dom_lo = std::max(p_.z_lo_valid * axis, kprev_lo);
+  const double dom_hi = std::min(p_.z_hi_valid * axis, kprev_hi);
+
+  // Served total variance at log-moneyness k under the current knot multiples
+  // (offset applied separately). SAME arithmetic as w()'s finite branch.
+  const double mcap = p_.mult_cap;
+  const auto served_base = [&](double k) noexcept -> double {
+    const double z = k / axis;
+    double m = spline_eval(p_.z, p_.mult, m2nd_, z);
+    if (!(m > 0.0) || !std::isfinite(m)) {
+      return kNaN;  // matches w()'s NaN-on-undershoot; skipped as non-comparable
+    }
+    if (mcap > 0.0 && m > mcap) m = mcap;  // match w()'s served ceiling
+    const double sigma = atm * m;
+    return sigma * sigma * T_;
+  };
+
+  const std::size_t K = p_.z.size();
+  double offset = 0.0;  // uniform fallback for any residual the knot lifts miss
+
+  // Residual of w_prev over the base curve on the comparable OVERLAP grid:
+  // {max_k [w_prev(k) - (base(k)+offset)]_+, any-comparable}.
+  const auto overlap_residual = [&]() noexcept -> std::pair<double, bool> {
+    double resid = 0.0;
+    bool any = false;
+    for (std::uint32_t gi = 0; gi <= n_grid; ++gi) {
+      const double k = k_min + dk * static_cast<double>(gi);
+      if (k < dom_lo || k > dom_hi) continue;
+      const double wp = w_prev(k);
+      const double base = served_base(k);
+      if (!std::isfinite(wp) || !std::isfinite(base) || !(base > 0.0)) continue;
+      any = true;
+      resid = std::max(resid, wp - (base + offset));
+    }
+    return {resid, any};
+  };
+
+  CalendarPairProjection out;
+  const std::pair<double, bool> before = overlap_residual();
+  if (!before.second) {
+    // No shared tradeable range (disjoint data): nothing to enforce; the served
+    // calendar check (is_extrapolated) likewise finds no comparable point.
+    return Ok(out);
+  }
+  out.max_deficit_before = before.first;
+
+  // PER-KNOT, ATM-preserving lift over the overlap: the spline interpolates each
+  // knot exactly at its own z, so raising mult[j] to sqrt((w_prev(k_j)-offset)/T)
+  // /atm makes served w at k_j clear w_prev there. Only knots whose OWN k_j
+  // crosses are lifted -- the rest of the smile (in particular the z=0 ATM knot,
+  // unless it genuinely crosses) keeps its fitted value, so the near-money
+  // bid-ask fit is preserved (a uniform level shift would move it off band). A
+  // few passes absorb the cubic's between-knot coupling; each step only raises,
+  // so the map onto the calendar cone is bounded and monotone.
+  constexpr std::uint32_t kMaxPasses = 6;
+  for (std::uint32_t pass = 0; pass < kMaxPasses; ++pass) {
+    const std::pair<double, bool> gap = overlap_residual();
+    if (!gap.second || gap.first <= kCalendarPairTol) break;
+    bool changed = false;
+    for (std::size_t j = 0; j < K; ++j) {
+      const double k_j = p_.z[j] * axis;
+      if (k_j < dom_lo || k_j > dom_hi) continue;  // wing / non-overlap knot
+      const double wp_j = w_prev(k_j);
+      const double base_j = served_base(k_j);
+      if (!std::isfinite(wp_j) || !std::isfinite(base_j)) continue;
+      if (wp_j - (base_j + offset) > kCalendarPairTol) {
+        const double need_w = wp_j - offset;  // required base variance at k_j
+        if (need_w > 0.0) {
+          const double target = (std::sqrt(need_w / T_) / atm) * (1.0 + kLiftEps);
+          if (std::isfinite(target) && target > p_.mult[j]) {
+            p_.mult[j] = target;
+            changed = true;
+          }
+        }
+      }
+    }
+    if (!changed) break;  // knot lifts exhausted; any residual is between-knot
+    m2nd_ = natural_spline_m(p_.z, p_.mult);
+    ++out.passes;
+  }
+
+  // Fallback: a small uniform offset clears any residual the per-knot lifts left
+  // between knots (natural-cubic undershoot). Guaranteed to finish in one shot
+  // and, being only the leftover ringing gap, negligible for the band fit.
+  const std::pair<double, bool> after_knots = overlap_residual();
+  if (after_knots.second && after_knots.first > kCalendarPairTol) {
+    offset += after_knots.first * (1.0 + kLiftEps) + kLiftEps;
+    ++out.passes;
+  }
+  p_.w_offset = offset;
+  return Ok(out);
 }
 
 // ── fit_spline_vol_slice ─────────────────────────────────────────────────────
@@ -374,6 +534,7 @@ Result<std::unique_ptr<IVolCurve>> fit_spline_vol_slice(std::span<const FitObs> 
     p.z_hi_valid = z_hi;
     p.z = std::move(zk);
     p.mult = std::move(mult);
+    p.mult_cap = opts.mult_ceil;  // served-multiple overshoot ceiling (0 = off)
 
     const std::vector<double> m2nd_final = natural_spline_m(p.z, p.mult);
     p.n_butterfly_viol = count_butterfly_violations(p.z, p.mult, m2nd_final, p.atm_vol, T,

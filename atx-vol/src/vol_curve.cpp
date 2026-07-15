@@ -271,7 +271,8 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
                                                    std::span<const FitObs> obs_eu, double F,
                                                    double T, double df,
                                                    const std::function<double(double)> &w_prev,
-                                                   std::span<const double> calendar_floor_knots) {
+                                                   std::span<const double> calendar_floor_knots,
+                                                   std::pair<double, double> prev_data_k_range) {
   if (!(F > 0.0) || !(T > 0.0) || !(df > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "fit_slice_curve: F/T/df must be positive");
   }
@@ -543,10 +544,20 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
     return Ok(std::move(curve));
   }
   case VolCurveKind::SplineVol: {
-    // No w_prev / calendar_floor_knots support in v1 (see the fit_slice_curve
-    // doc comment) -- both are silently ignored, matching Essvi/Svi's existing
-    // "unchanged calendar handling" precedent above.
-    return fit_spline_vol_slice(obs_eu, F, T, df, cfg.spline);
+    ATX_TRY(std::unique_ptr<IVolCurve> curve,
+            fit_spline_vol_slice(obs_eu, F, T, df, cfg.spline));
+    if (w_prev) {
+      // Project onto the calendar cone above the previous expiry, matching the
+      // Essvi/Svi/C8 branches above. `curve` is a SplineVolCurve by construction
+      // (fit_spline_vol_slice always returns one; kind() == SplineVol makes the
+      // downcast safe). `calendar_floor_knots` remains unused by the v1 spline.
+      auto *spline = static_cast<SplineVolCurve *>(curve.get());
+      ATX_TRY_VOID(spline->project_calendar(w_prev, kRiskCalendarMin,
+                                            kRiskCalendarMax, kRiskCalendarIntervals,
+                                            prev_data_k_range.first,
+                                            prev_data_k_range.second));
+    }
+    return Ok(std::move(curve));
   }
   }
   return Err(ErrorCode::InvalidArgument, "fit_slice_curve: unknown curve kind");

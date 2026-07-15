@@ -23,6 +23,7 @@
 
 #include "atx/vol/calib.hpp"
 #include "atx/vol/deamer.hpp"
+#include "atx/vol/prepared_policy.hpp" // PreparedObservationPolicy (leaf definition)
 #include "atx/vol/types.hpp"
 #include "atx/vol/universe.hpp"
 
@@ -32,7 +33,20 @@ struct SurfaceParityInputs;
 
 namespace detail {
 struct PreparedSliceBuilder;
-}
+
+// Deterministic moneyness-spread subsample used by the legacy observation-prep
+// de-Am cap (`CalibOpts::max_deam_strikes_per_expiry`). Given the log-moneyness
+// (log(K/F)) of each candidate strike, in candidate order, returns a parallel
+// mask (1 = keep / de-Americanize, 0 = drop) selecting at most `cap` strikes:
+//   - the two extreme-wing candidates are always kept (outer spline knots);
+//   - the near-ATM core is kept densely (highest signal + vega);
+//   - the intermediate strikes are thinned by an even stride in moneyness.
+// The result is deterministic (same input → same mask) and never keeps more
+// than `cap`. With `cap == 0` or `moneyness.size() <= cap` every candidate is
+// kept (all-ones mask), so the caller's uncapped path stays bit-identical.
+[[nodiscard]] std::vector<char> select_deam_spread(const std::vector<double> &moneyness,
+                                                   std::uint32_t cap);
+} // namespace detail
 
 struct ObservationKey {
   std::uint32_t expiry_index{0};
@@ -46,10 +60,10 @@ struct ObservationKey {
 
 using ObservationRejectionReason = ObsRejectionReason;
 
-enum class PreparedObservationPolicy : std::uint8_t {
-  Configured = 0,
-  LegacyEssviCompatibility,
-};
+// PreparedObservationPolicy is defined in atx/vol/prepared_policy.hpp (included
+// above) — split into a leaf header so structs whose default member initializer
+// names ::Configured (SurfaceParityInputs, SessionInputs, PricerConfig) get the
+// complete enum without the include cycle prepared_fitting.hpp would create.
 // DEFERRED (invariant #4.9 — explicit, not silent): the served eSSVI path
 // deliberately prepares under LegacyEssviCompatibility for byte-compatibility
 // with the historical cold driver, even though the family selector scores

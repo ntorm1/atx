@@ -180,19 +180,19 @@ template <typename RateFn>
   // WELL-CONDITIONED expiry sets the spot; a per-expiry PCP failure is non-fatal
   // (we try the next), and only a fully empty search errors.
   constexpr double kMinSpotT = 3.0 / 365.0;
-  for (const auto& [expiry, strikes] : by_expiry) {
+  // Small local: back out one expiry's PCP forward from its co-terminal pairs.
+  // `out_gap` receives the nearest-ATM |call_mid - put_mid| of the chosen ref
+  // strike — the conditioning proxy the fallback below minimizes across expiries.
+  const auto forward_for_expiry = [&](const std::string& expiry, double t_front,
+                                      double& out_gap) -> Result<double> {
     std::vector<CoTermQuote> quotes;
-    for (const auto& [strike, pair] : strikes) {
+    for (const auto& [strike, pair] : by_expiry.at(expiry)) {
       if (pair.call_mid > 0.0 && pair.put_mid > 0.0) {
         quotes.push_back(CoTermQuote{strike, pair.call_mid, pair.put_mid});
       }
     }
     if (quotes.empty()) {
-      continue;
-    }
-    const double t_front = time_to_expiry_years(snapshot_ns, iso_to_ns(expiry), time);
-    if (!(t_front > kMinSpotT)) {
-      continue;  // 0DTE / same-week: too ill-conditioned for a PCP spot back-out
+      return Err(ErrorCode::Unavailable, "no co-terminal pair");
     }
     // This expiry's own rate (flat scalar, or the term curve at T_front). On the
     // flat path `rate_at` returns the scalar verbatim, so every float op below is
@@ -208,12 +208,61 @@ template <typename RateFn>
         s_ref = q.strike;
       }
     }
-    const Result<double> forward = imply_forward_atm_pcp(
-        std::span<const CoTermQuote>(quotes), s_ref, t_front, r);
+    out_gap = best;
+    const Result<double> forward =
+        imply_forward_atm_pcp(std::span<const CoTermQuote>(quotes), s_ref, t_front, r);
     if (!forward.has_value() || !(*forward > 0.0) || !std::isfinite(*forward)) {
-      continue;  // this expiry yielded no usable forward; try the next
+      return Err(ErrorCode::Unavailable, "no usable forward");
     }
-    return Ok(*forward * std::exp(-r * t_front));
+    const double spot = *forward * std::exp(-r * t_front);
+    if (!(spot > 0.0) || !std::isfinite(spot)) {
+      return Err(ErrorCode::Unavailable, "degenerate implied spot");
+    }
+    return Ok(spot);
+  };
+
+  // First pass — historical behavior, BIT-IDENTICAL for any name that carries at
+  // least one well-conditioned (T > 3/365) co-terminal pair: the earliest such
+  // expiry sets the spot and we return immediately. Healthy names (AAPL/SPY) all
+  // qualify here, so their implied spot is unchanged.
+  for (const auto& [expiry, strikes] : by_expiry) {
+    (void)strikes;
+    const double t_front = time_to_expiry_years(snapshot_ns, iso_to_ns(expiry), time);
+    if (!(t_front > kMinSpotT)) {
+      continue;  // 0DTE / same-week: too ill-conditioned for a PCP spot back-out
+    }
+    double gap = 0.0;
+    const Result<double> spot = forward_for_expiry(expiry, t_front, gap);
+    if (spot.has_value()) {
+      return spot;  // this expiry yielded a usable forward; done
+    }
+  }
+
+  // FIX D fallback — only reached when NO T > 3/365 expiry produced a usable
+  // spot (the ~thinnest names carry only very-short-dated two-sided pairs). Widen
+  // the horizon toward ~1 day and pick the BEST-CONDITIONED co-terminal pair
+  // across ALL qualifying expiries (nearest-ATM: smallest |call_mid - put_mid|),
+  // rather than the first. Still rejects any non-positive / non-finite forward,
+  // so a degenerate pair never yields a garbage spot. Because this runs only
+  // after the historical pass fully failed, no healthy-name spot is affected.
+  constexpr double kMinSpotTFallback = 1.0 / 365.0;
+  double best_spot = std::numeric_limits<double>::quiet_NaN();
+  double best_gap = std::numeric_limits<double>::infinity();
+  for (const auto& [expiry, strikes] : by_expiry) {
+    (void)strikes;
+    const double t_front = time_to_expiry_years(snapshot_ns, iso_to_ns(expiry), time);
+    if (!(t_front > kMinSpotTFallback)) {
+      continue;  // sub-1-day: PCP forward back-out too ill-conditioned even here
+    }
+    double gap = 0.0;
+    const Result<double> spot = forward_for_expiry(expiry, t_front, gap);
+    if (spot.has_value() && gap < best_gap) {
+      best_gap = gap;
+      best_spot = *spot;
+    }
+  }
+  if (std::isfinite(best_spot) && best_spot > 0.0) {
+    return Ok(best_spot);
   }
   return Err(ErrorCode::Unavailable,
              "no well-conditioned co-terminal expiry to imply spot; pass spot_override");

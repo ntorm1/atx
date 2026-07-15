@@ -287,6 +287,15 @@ if(ATX_BUILD_EXAMPLES)
     add_executable(universe_autofit examples/universe_autofit.cpp)
     target_link_libraries(universe_autofit PRIVATE atx::vol atx::core atx_warnings)
 
+    # SpiderRock SRCubic cubic-spline surface parity benchmark: pin
+    # VolCurveKind::SplineVol and fit a whole OPRA universe snapshot, reporting
+    # throughput (surfaces/slices/quotes per sec), fit-latency percentiles, the
+    # per-stage hot-path CPU split, and SpiderRock-native fit accuracy
+    # (fitMaxPrcErr, bid/ask misses, zero-violation rate) with a 45s/90%
+    # SpiderRock verdict. See examples/opra_spline_bench.cpp.
+    add_executable(opra_spline_bench examples/opra_spline_bench.cpp)
+    target_link_libraries(opra_spline_bench PRIVATE atx::vol atx::core atx_warnings)
+
     # Acceptance example: MAG7-vs-SPY dispersion-strangle backtest driven
     # entirely by a SurfaceDb -- open db -> Clock::from_surface_db ->
     # make_dispersion_strangle_spec -> DeclarativeStrategy -> run_backtest ->

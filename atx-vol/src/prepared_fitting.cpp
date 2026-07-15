@@ -73,6 +73,105 @@ constexpr double kMinSpread = 1.0e-8;
 
 namespace detail {
 
+std::vector<char> select_deam_spread(const std::vector<double> &moneyness, std::uint32_t cap) {
+  const std::size_t m = moneyness.size();
+  std::vector<char> selected(m, static_cast<char>(0));
+  // Uncapped, or the candidate set already fits under the cap: keep every
+  // candidate (all-ones). The legacy caller only invokes selection when the cap
+  // strictly binds, but keeping this total-safe makes the helper self-contained.
+  if (cap == 0u || m <= static_cast<std::size_t>(cap)) {
+    std::fill(selected.begin(), selected.end(), static_cast<char>(1));
+    return selected;
+  }
+  const std::size_t cap_n = static_cast<std::size_t>(cap);
+
+  // Sort candidate positions ascending by (moneyness, original index). The
+  // original-index tiebreak keeps the ordering total and deterministic even for
+  // duplicate strikes/moneyness.
+  std::vector<std::size_t> order(m);
+  for (std::size_t i = 0; i < m; ++i) {
+    order[i] = i;
+  }
+  std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) {
+    if (moneyness[a] != moneyness[b]) {
+      return moneyness[a] < moneyness[b];
+    }
+    return a < b;
+  });
+
+  // Work in sorted-position space; translate back to candidate order at the end.
+  std::vector<char> keep_sorted(m, static_cast<char>(0));
+  std::size_t count = 0;
+  const auto take = [&](std::size_t sorted_pos) {
+    if (count < cap_n && keep_sorted[sorted_pos] == 0) {
+      keep_sorted[sorted_pos] = static_cast<char>(1);
+      ++count;
+    }
+  };
+
+  // (1) Pin both extreme wings first so the spline's outer knots stay
+  //     constrained regardless of how the rest of the budget is spent.
+  take(0);
+  take(m - 1);
+
+  // (2) Dense near-ATM core (contiguous in moneyness), up to ~half the budget.
+  std::size_t atm = 0;
+  for (std::size_t p = 1; p < m; ++p) {
+    if (std::fabs(moneyness[order[p]]) < std::fabs(moneyness[order[atm]])) {
+      atm = p;
+    }
+  }
+  const std::size_t core_target = std::max<std::size_t>(1, cap_n / 2u);
+  take(atm);
+  std::size_t lo = atm;
+  std::size_t hi = atm;
+  std::size_t core_have = 1; // the ATM anchor (take() dedups if it was a wing)
+  while (core_have < core_target && count < cap_n && (lo > 0 || hi < m - 1)) {
+    bool take_low;
+    if (lo == 0) {
+      take_low = false;
+    } else if (hi == m - 1) {
+      take_low = true;
+    } else {
+      // Grow toward whichever neighbor sits nearer the money; ties pick the low
+      // side for a stable, deterministic core.
+      take_low = std::fabs(moneyness[order[lo - 1]]) <= std::fabs(moneyness[order[hi + 1]]);
+    }
+    if (take_low) {
+      --lo;
+      take(lo);
+    } else {
+      ++hi;
+      take(hi);
+    }
+    ++core_have;
+  }
+
+  // (3) Spend the remaining budget on an even stride across the full moneyness
+  //     range, thinning the intermediate strikes uniformly. Collisions with the
+  //     already-kept core/wings simply keep the final count at or below `cap`.
+  const std::size_t rest = cap_n - count;
+  if (rest == 1) {
+    take((m - 1) / 2u);
+  } else if (rest >= 2) {
+    for (std::size_t j = 0; j < rest && count < cap_n; ++j) {
+      const double frac = static_cast<double>(j) / static_cast<double>(rest - 1);
+      auto pos = static_cast<std::size_t>(std::llround(frac * static_cast<double>(m - 1)));
+      if (pos >= m) {
+        pos = m - 1;
+      }
+      take(pos);
+    }
+  }
+
+  for (std::size_t p = 0; p < m; ++p) {
+    if (keep_sorted[p] != 0) {
+      selected[order[p]] = static_cast<char>(1);
+    }
+  }
+  return selected;
+}
+
 struct PreparedSliceBuilder {
   static void reserve_score_rows(PreparedSlice &out, std::size_t count);
   static void append_score_row(PreparedSlice &out, ObservationKey key, const FitObs &row,
@@ -217,6 +316,47 @@ Result<PreparedSlice> PreparedSliceBuilder::prepare_legacy(const Chain &chain,
   }
   std::uint32_t n_audit_dropped = 0;
 
+  // De-Am strike cap (latency knob; charter: legacy prep only). When set and an
+  // expiry carries MORE candidate strikes than the cap, de-Americanize only a
+  // deterministic moneyness-spread subset — skipping the (cold-ish) Andersen-
+  // Lake inversion for the dropped strikes. The candidate set is enumerated with
+  // the SAME cheap filter (strike > 0 + quote_valid) the main loop applies just
+  // before the de-Am call, so the two agree exactly on which strikes are
+  // eligible. `cap_dropped` stays empty (and the main loop stays bit-identical)
+  // whenever the cap is unset or does not bind. The forward/borrow carry solve
+  // ran upstream on the full near-ATM pair set and is untouched here.
+  std::vector<char> cap_dropped;
+  if (inputs.calib.max_deam_strikes_per_expiry > 0u) {
+    const std::uint32_t deam_cap = inputs.calib.max_deam_strikes_per_expiry;
+    std::vector<std::size_t> candidate_index;
+    std::vector<double> candidate_moneyness;
+    candidate_index.reserve(chain.n_strikes());
+    candidate_moneyness.reserve(chain.n_strikes());
+    for (std::size_t index = 0; index < chain.n_strikes(); ++index) {
+      const double strike = chain.strikes[index];
+      if (!(strike > 0.0)) {
+        continue;
+      }
+      const double safe_k = std::log(strike / inputs.F);
+      const Side side = otm_side(safe_k);
+      const std::size_t quote_index = chain_index(static_cast<std::uint16_t>(index), side);
+      if (!quote_valid(chain, quote_index)) {
+        continue;
+      }
+      candidate_index.push_back(index);
+      candidate_moneyness.push_back(safe_k);
+    }
+    if (candidate_index.size() > static_cast<std::size_t>(deam_cap)) {
+      const std::vector<char> keep = select_deam_spread(candidate_moneyness, deam_cap);
+      cap_dropped.assign(chain.n_strikes(), static_cast<char>(0));
+      for (std::size_t c = 0; c < candidate_index.size(); ++c) {
+        if (keep[c] == 0) {
+          cap_dropped[candidate_index[c]] = static_cast<char>(1);
+        }
+      }
+    }
+  }
+
   for (std::size_t index = 0; index < chain.n_strikes(); ++index) {
     const double strike = chain.strikes[index];
     const double safe_k = (strike > 0.0) ? std::log(strike / inputs.F) : 0.0;
@@ -233,6 +373,11 @@ Result<PreparedSlice> PreparedSliceBuilder::prepare_legacy(const Chain &chain,
       observation.rejection = ObservationRejectionReason::InvalidStrike;
     } else if (!quote_valid(chain, quote_index)) {
       observation.rejection = ObservationRejectionReason::InvalidBidAsk;
+    } else if (!cap_dropped.empty() && cap_dropped[index] != 0) {
+      // Valid candidate thinned out by the de-Am strike cap: record it and skip
+      // the expensive inversion. `cap_dropped` is only non-empty when the cap
+      // strictly binds, so the uncapped path never reaches this branch.
+      observation.rejection = ObservationRejectionReason::ObservationCap;
     } else {
       Result<double> market_iv = european_equiv_iv(
           chain.mids[quote_index], inputs.S, strike, chain.T, inputs.r, inputs.q_eff, side,

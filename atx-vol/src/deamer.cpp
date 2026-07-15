@@ -104,6 +104,8 @@ struct DeAmStep {
   double forward = 0.0;
   double call_eu = 0.0;
   double put_eu = 0.0;
+  double sigma_c = 0.0;  // recovered call vol at this iterate (cross-pair warm seed)
+  double sigma_p = 0.0;  // recovered put vol at this iterate (cross-pair warm seed)
 };
 
 [[nodiscard]] Result<DeAmStep>
@@ -148,7 +150,7 @@ deam_pcp_step(double borrow, double call_mid, double put_mid, double S, double K
           imply_borrow_european_pcp(call_eu, put_eu, S, K, T, r, cash_divs,
                                     expiry_ns, now_ts_ns, hyb, kBorrowLo,
                                     kBorrowHi, kPcpTol));
-  return Ok(DeAmStep{b_next, F, call_eu, put_eu});
+  return Ok(DeAmStep{b_next, F, call_eu, put_eu, sigma_c, sigma_p});
 }
 
 }  // namespace
@@ -163,7 +165,10 @@ Result<TermBorrow> imply_term_borrow(double call_mid, double put_mid, double S,
                                      const HybridDivParams& hyb,
                                      AmericanMethod method,
                                      const std::optional<AlOpts>& opts,
-                                     const AmericanCorrectionCaches& caches) noexcept {
+                                     const AmericanCorrectionCaches& caches,
+                                     double borrow_seed, double sigma_c_seed,
+                                     double sigma_p_seed,
+                                     bool skip_redundant_final) noexcept {
   if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !std::isfinite(r) ||
       !(call_mid > 0.0) || !(put_mid > 0.0) || !std::isfinite(call_mid) ||
       !std::isfinite(put_mid)) {
@@ -174,15 +179,17 @@ Result<TermBorrow> imply_term_borrow(double call_mid, double put_mid, double S,
   // Fixed point borrow -> F -> q_eff -> vols -> European mids -> borrow. The
   // injected-borrow round-trip is an exact fixed point; the map is contractive
   // near it, so a handful of iterations converge for any sane co-terminal pair.
-  double borrow = 0.0;
-  double warm_c = 0.0;  // per-leg Newton warm starts, persisted across iterations
-  double warm_p = 0.0;
+  double borrow = borrow_seed;
+  double warm_c = sigma_c_seed;  // per-leg Newton warm starts, persisted across iterations
+  double warm_p = sigma_p_seed;
   bool converged = false;
+  DeAmStep last_step{};  // loop's final evaluation, reused by the fast path
   for (int it = 0; it < kBorrowMaxIter; ++it) {
     ATX_TRY(const DeAmStep step,
             deam_pcp_step(borrow, call_mid, put_mid, S, K, T, r, cash_divs,
                           expiry_ns, now_ts_ns, hyb, method, opts, caches, warm_c,
                           warm_p));
+    last_step = step;
     const double delta = step.borrow_next - borrow;
     borrow = step.borrow_next;
     if (std::fabs(delta) < kBorrowFpTol) {
@@ -195,16 +202,38 @@ Result<TermBorrow> imply_term_borrow(double call_mid, double put_mid, double S,
                "imply_term_borrow: borrow fixed point did not converge");
   }
 
+  const double df = std::exp(-r * T);
+  if (skip_redundant_final) {
+    // Fast path: drop the extra self-consistent de-Am (2 American solves per
+    // pair). The reported `forward` is hybrid_forward(converged borrow) — the
+    // SAME value the final step would compute (same function, same borrow), so
+    // it is bit-identical. Only the diagnostic rmse_pcp and the returned per-leg
+    // vols are read off the loop's last step, evaluated one iterate
+    // (< kBorrowFpTol = 1e-8) before the converged borrow — a sub-1e-8 shift in a
+    // diagnostic / warm-seed value. Load-bearing outputs (borrow, forward) are
+    // unchanged. Gated with warm_start_carry, so the default path is untouched.
+    const double F_final =
+        hybrid_forward(S, r, borrow, T, cash_divs, expiry_ns, now_ts_ns, hyb);
+    const double residual =
+        (last_step.call_eu - last_step.put_eu) - df * (F_final - K);
+    TermBorrow result{borrow, F_final, std::fabs(residual)};
+    result.sigma_call = last_step.sigma_c;
+    result.sigma_put = last_step.sigma_p;
+    return Ok(result);
+  }
+
   // One final self-consistent evaluation at the converged borrow, so `forward`
   // and the PCP residual are reported on a single coherent state.
   ATX_TRY(const DeAmStep final_step,
           deam_pcp_step(borrow, call_mid, put_mid, S, K, T, r, cash_divs,
                         expiry_ns, now_ts_ns, hyb, method, opts, caches, warm_c,
                         warm_p));
-  const double df = std::exp(-r * T);
   const double residual =
       (final_step.call_eu - final_step.put_eu) - df * (final_step.forward - K);
-  return Ok(TermBorrow{borrow, final_step.forward, std::fabs(residual)});
+  TermBorrow result{borrow, final_step.forward, std::fabs(residual)};
+  result.sigma_call = final_step.sigma_c;
+  result.sigma_put = final_step.sigma_p;
+  return Ok(result);
 }
 
 // ── Chain driver ────────────────────────────────────────────────────────
@@ -406,6 +435,12 @@ resolve_chain_carry(const Chain& chain, double S, double r,
   diag.n_candidates = both_valid.size();
   diag.n_attempted = k;
   diag.pairs.reserve(k);
+  // Cross-pair warm start: pairs are visited in ascending |K - S| order, so
+  // adjacent borrows/vols are nearly equal. Seed each solve from the previous
+  // pair's converged state to collapse the fixed-point + inner-Newton iteration
+  // counts. Seeds change only the initial guesses of the safeguarded Newton /
+  // borrow fixed-point; the converged root and per-leg vols are unchanged.
+  double seed_borrow = 0.0, seed_sc = 0.0, seed_sp = 0.0;
   for (std::size_t j = 0; j < k; ++j) {
     const std::size_t i = both_valid[j];
     const double K = chain.strikes[i];
@@ -413,8 +448,18 @@ resolve_chain_carry(const Chain& chain, double S, double r,
     const std::size_t pi = chain_index(static_cast<std::uint16_t>(i), Side::Put);
     const Result<TermBorrow> tb = imply_term_borrow(
         chain.mids[ci], chain.mids[pi], S, K, T, r, cash_divs, chain.expiry_ns,
-        now_ts_ns, opts.hyb, opts.method, opts.al_opts, cold_caches);
+        now_ts_ns, opts.hyb, opts.method, opts.al_opts, cold_caches, seed_borrow,
+        seed_sc, seed_sp, opts.warm_start_carry);
     if (tb) {
+      // Opt-in only: keep the default carry solve on the cold `borrow=0` /
+      // cold-Newton seed so the reference de-Am stays bit-identical (mirrors
+      // build_observations_european's `warm_start_deam` gate). When enabled,
+      // thread this pair's converged state into the next pair's solve.
+      if (opts.warm_start_carry) {
+        seed_borrow = tb->borrow;
+        seed_sc = tb->sigma_call;
+        seed_sp = tb->sigma_put;
+      }
       const double relative_spread = quote_relative_spread(chain, ci, pi);
       const double age = quote_age_seconds(chain, ci, pi, now_ts_ns);
       const double distance = std::fabs(std::log(K / S));

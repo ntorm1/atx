@@ -734,6 +734,7 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
   sp.score_parity = eff.score_parity;
   sp.enforce_calendar_floor = eff.enforce_calendar_floor;
   sp.use_deam_cache_for_fit = eff.use_deam_cache_for_fit;
+  sp.fit_prep_policy = eff.fit_prep_policy;
 
   // SOTA hot path: build per-side correction caches and route every American
   // inversion (de-Am) + re-pricing (parity) through the cached pricer. The

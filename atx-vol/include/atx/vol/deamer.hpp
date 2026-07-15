@@ -131,6 +131,8 @@ struct TermBorrow {
   double borrow = 0.0;    // implied continuous borrow (as in hybrid_forward)
   double forward = 0.0;   // hybrid_forward at the implied borrow
   double rmse_pcp = 0.0;  // |European PCP residual| at the solution (diagnostic)
+  double sigma_call = 0.0;  // recovered call vol at convergence (cross-pair warm seed)
+  double sigma_put = 0.0;   // recovered put vol at convergence (cross-pair warm seed)
 };
 
 // Independent cold-reference audit of an implied-vol proposal.  Approximate
@@ -167,7 +169,9 @@ struct IvRepricingAudit {
     std::int64_t now_ts_ns, const HybridDivParams& hyb,
     AmericanMethod method = AmericanMethod::AndersenLake,
     const std::optional<AlOpts>& opts = std::nullopt,
-    const AmericanCorrectionCaches& caches = {}) noexcept;
+    const AmericanCorrectionCaches& caches = {}, double borrow_seed = 0.0,
+    double sigma_c_seed = 0.0, double sigma_p_seed = 0.0,
+    bool skip_redundant_final = false) noexcept;
 
 // ── Chain driver ────────────────────────────────────────────────────────
 
@@ -262,6 +266,22 @@ struct DeAmOptions {
   // inversion. AndersenLake only — other methods have no audit and can never
   // be certified.
   bool audit_fit_inversions = false;
+  // Fast carry solve for the robust term-borrow (resolve_chain_carry). Two
+  // coupled American-solve reductions, both opt-in:
+  //   (1) cross-pair warm start — seed each near-ATM pair's borrow fixed-point +
+  //       inner-Newton from the previous pair's converged state (pairs visited in
+  //       ascending |K-S| order, so adjacent borrows/vols are nearly equal). Cuts
+  //       fixed-point iterations, most on hard-to-borrow names whose borrow is far
+  //       from the cold 0 seed.
+  //   (2) skip the redundant post-convergence self-consistent de-Am step
+  //       (2 American solves/pair): the reported forward is
+  //       hybrid_forward(converged borrow) — bit-identical to that step's forward
+  //       — so only the diagnostic rmse_pcp / returned warm-seed vols move by
+  //       < kBorrowFpTol=1e-8.
+  // Default false keeps the reference carry solve bit-identical (both paths shift
+  // sub-1e-8 values that move bit-exact pins); a perf-oriented caller opts in. The
+  // pricer stays cold Andersen-Lake and the converged root is unchanged.
+  bool warm_start_carry = false;
   // Optional per-side hot-path caches. Default-empty => cold Andersen-Lake path
   // (pre-cache behavior). When populated, every American inversion in the chain
   // driver + borrow fixed-point routes through `american_price_cached`.

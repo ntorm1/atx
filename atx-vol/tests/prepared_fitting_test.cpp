@@ -541,3 +541,65 @@ TEST(PreparedFitting, BoardCanonicalizesSliceOrderAndRejectsDuplicateExpiryKeys)
   duplicates.push_back(std::move(*duplicate_b));
   EXPECT_FALSE(PreparedBoard::create(std::move(duplicates)).has_value());
 }
+
+namespace {
+
+[[nodiscard]] std::size_t count_selected(const std::vector<char> &mask) {
+  std::size_t n = 0;
+  for (char c : mask) {
+    if (c != 0) {
+      ++n;
+    }
+  }
+  return n;
+}
+
+} // namespace
+
+TEST(PreparedFitting, DeamSpreadKeepsAtmAndWingsWithinCap) {
+  // 101 candidates, unique ATM at moneyness 0, symmetric wings at ±1.
+  std::vector<double> moneyness(101);
+  for (std::size_t i = 0; i < moneyness.size(); ++i) {
+    moneyness[i] = -1.0 + 2.0 * static_cast<double>(i) / 100.0;
+  }
+  constexpr std::uint32_t kCap = 16u;
+  const std::vector<char> mask = atx::vol::detail::select_deam_spread(moneyness, kCap);
+
+  ASSERT_EQ(mask.size(), moneyness.size());
+  // Invariant: never keep more than the cap.
+  EXPECT_LE(count_selected(mask), static_cast<std::size_t>(kCap));
+  // Both extreme wings are pinned (outer spline knots).
+  EXPECT_NE(mask.front(), 0);
+  EXPECT_NE(mask.back(), 0);
+  // The unique near-ATM strike is kept, densely with its immediate neighbors.
+  EXPECT_NE(mask[50], 0);
+  EXPECT_NE(mask[49], 0);
+  EXPECT_NE(mask[51], 0);
+  EXPECT_NE(mask[48], 0);
+  EXPECT_NE(mask[52], 0);
+  // The subsample is meaningfully populated (not a lone endpoint pair).
+  EXPECT_GE(count_selected(mask), static_cast<std::size_t>(kCap) / 2u);
+}
+
+TEST(PreparedFitting, DeamSpreadIsDeterministicAndOrderIndependent) {
+  std::vector<double> moneyness(200);
+  for (std::size_t i = 0; i < moneyness.size(); ++i) {
+    moneyness[i] = -0.8 + 1.6 * static_cast<double>(i) / 199.0;
+  }
+  const std::vector<char> a = atx::vol::detail::select_deam_spread(moneyness, 32u);
+  const std::vector<char> b = atx::vol::detail::select_deam_spread(moneyness, 32u);
+  EXPECT_EQ(a, b);
+  EXPECT_LE(count_selected(a), 32u);
+}
+
+TEST(PreparedFitting, DeamSpreadNoBindKeepsEverything) {
+  std::vector<double> moneyness = {-0.3, -0.1, 0.0, 0.1, 0.3};
+  // cap == 0 (unlimited) keeps all.
+  const std::vector<char> none = atx::vol::detail::select_deam_spread(moneyness, 0u);
+  EXPECT_EQ(count_selected(none), moneyness.size());
+  // candidate count <= cap keeps all (bit-identical to the uncapped path).
+  const std::vector<char> under = atx::vol::detail::select_deam_spread(moneyness, 8u);
+  EXPECT_EQ(count_selected(under), moneyness.size());
+  const std::vector<char> exact = atx::vol::detail::select_deam_spread(moneyness, 5u);
+  EXPECT_EQ(count_selected(exact), moneyness.size());
+}

@@ -75,6 +75,10 @@ struct CurveSurfaceReport {
   // Expiries dropped because carry resolution failed (confidence gate / no
   // quotable pair / degenerate forward) — surfaced, never silently skipped.
   std::size_t n_carry_skipped{0};
+  // Slices whose primary-curve fit failed but were recovered via the opt-in
+  // per-slice LinearVariance fallback (`CalibOpts::per_slice_linear_fallback`).
+  // Always 0 when the flag is off (the byte-identical default path).
+  std::size_t n_slice_linear_fallback{0};
   // Perf C1: per-slice input certification, ‖ context/per_expiry. Lets
   // `VolaSession::build` construct `SessionSliceDiagnostics` + the incremental
   // observation cache directly, without a second serial de-Am pass.

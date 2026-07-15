@@ -49,23 +49,24 @@
 #include <span>
 #include <vector>
 
-#include "atx/vol/american.hpp"       // AmericanGreeks (query return)
-#include "atx/vol/calib.hpp"          // CalibOpts
-#include "atx/vol/correction.hpp"     // CorrectionCache, AmericanCorrectionCaches
-#include "atx/vol/curve.hpp"          // DividendEvent
-#include "atx/vol/data.hpp"           // QuoteFrame (from_frame input)
-#include "atx/vol/deamer.hpp"         // DeAmOptions
-#include "atx/vol/event_vol.hpp"      // EventSchedule (SessionInputs::events), implied_emove
-#include "atx/vol/parity.hpp"         // ParityReport
-#include "atx/vol/priced_surface.hpp" // PricedSurface, PricingContext (to_priced_surface)
-#include "atx/vol/projection.hpp"     // InterpMode (SessionInputs::interp, ShapeBlend eval)
-#include "atx/vol/query_pricing.hpp"  // QueryPricingTier
-#include "atx/vol/surface_parity.hpp" // SliceContext, run_surface_parity
-#include "atx/vol/types.hpp"          // Result, Side
-#include "atx/vol/universe.hpp"       // Underlying (build input)
-#include "atx/vol/vol_curve.hpp"      // CurveConfig, CurveSurface, VolCurveKind
-#include "atx/vol/vol_surface.hpp"    // VolSurface
-#include "atx/vol/vol_time.hpp"       // TimeSpec (SessionInputs::time)
+#include "atx/vol/american.hpp"        // AmericanGreeks (query return)
+#include "atx/vol/calib.hpp"           // CalibOpts
+#include "atx/vol/correction.hpp"      // CorrectionCache, AmericanCorrectionCaches
+#include "atx/vol/curve.hpp"           // DividendEvent
+#include "atx/vol/data.hpp"            // QuoteFrame (from_frame input)
+#include "atx/vol/deamer.hpp"          // DeAmOptions
+#include "atx/vol/event_vol.hpp"       // EventSchedule (SessionInputs::events), implied_emove
+#include "atx/vol/parity.hpp"          // ParityReport
+#include "atx/vol/prepared_policy.hpp" // PreparedObservationPolicy
+#include "atx/vol/priced_surface.hpp"  // PricedSurface, PricingContext (to_priced_surface)
+#include "atx/vol/projection.hpp"      // InterpMode (SessionInputs::interp, ShapeBlend eval)
+#include "atx/vol/query_pricing.hpp"   // QueryPricingTier
+#include "atx/vol/surface_parity.hpp"  // SliceContext, run_surface_parity
+#include "atx/vol/types.hpp"           // Result, Side
+#include "atx/vol/universe.hpp"        // Underlying (build input)
+#include "atx/vol/vol_curve.hpp"       // CurveConfig, CurveSurface, VolCurveKind
+#include "atx/vol/vol_surface.hpp"     // VolSurface
+#include "atx/vol/vol_time.hpp"        // TimeSpec (SessionInputs::time)
 
 namespace atx::vol {
 
@@ -116,6 +117,14 @@ struct SessionInputs {
   bool score_parity{true};
   bool enforce_calendar_floor{true};
   bool use_deam_cache_for_fit{false};
+  // Observation-preparation policy for the polymorphic (ConvexDense / Svi /
+  // SplineVol) fit path, mapped onto `SurfaceParityInputs::fit_prep_policy` in
+  // `VolaSession::build`. Configured (default) is bit-identical to the historical
+  // curve-driver preparation; LegacyEssviCompatibility uses the permissive eSSVI
+  // cold-driver predicate, which keeps thin single-name expiries that the strict
+  // usable-row floor would otherwise starve. Only affects a polymorphic-curve
+  // build; the default eSSVI path (run_surface_parity) does not read it.
+  PreparedObservationPolicy fit_prep_policy{PreparedObservationPolicy::Configured};
   // Post-assembly calendar-arbitrage repair (see surface_parity.hpp
   // CalendarRepair). None (default) checks only — the raw independent-per-slice
   // surface may cross in the wings. Project makes the produced surface

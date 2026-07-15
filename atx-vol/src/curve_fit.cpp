@@ -53,6 +53,22 @@ using ProfileClock = std::chrono::steady_clock;
 #endif
 }
 
+[[nodiscard]] bool slice_debug_enabled() noexcept {
+#if defined(_WIN32)
+  char *raw = nullptr;
+  std::size_t len = 0;
+  if (_dupenv_s(&raw, &len, "ATX_SLICE_DEBUG") != 0 || raw == nullptr) {
+    return false;
+  }
+  const bool enabled = len > 0 && raw[0] != '\0' && raw[0] != '0';
+  std::free(raw);
+  return enabled;
+#else
+  const char *v = std::getenv("ATX_SLICE_DEBUG");
+  return v != nullptr && v[0] != '\0' && v[0] != '0';
+#endif
+}
+
 [[nodiscard]] double elapsed_ms(ProfileClock::time_point t0, ProfileClock::time_point t1) noexcept {
   return std::chrono::duration<double, std::milli>(t1 - t0).count();
 }
@@ -223,7 +239,12 @@ void source_quote_lookup(const Chain &chain, std::span<const FitObs> obs,
     prepare_inputs.iv_tolerance = in.deam.iv_tol;
     prepare_inputs.iv_max_iterations = in.deam.iv_max_iter;
     prepare_inputs.method = in.deam.method;
-    prepare_inputs.policy = PreparedObservationPolicy::Configured;
+    // Opt-in lenient preparation (default Configured => bit-identical). Under
+    // LegacyEssviCompatibility the builder honours the audit knobs below, so the
+    // lenient path still repriced-audits its fitted inversions (risk contract).
+    prepare_inputs.policy = in.fit_prep_policy;
+    prepare_inputs.audit_fit_inversions = in.deam.audit_fit_inversions;
+    prepare_inputs.max_iv_residual_half_spreads = in.deam.max_iv_residual_half_spreads;
     prepare_inputs.prepare_scoring = in.score_parity;
     const auto t_obs0 = ProfileClock::now();
     Result<PreparedSlice> prepared = PreparedSlice::create(chain, prepare_inputs);
@@ -371,11 +392,18 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
     //    the immediately-shorter expiry.
     std::function<double(double)> w_prev;
     std::span<const double> calendar_floor_knots;
+    std::pair<double, double> prev_data_k_range{-std::numeric_limits<double>::infinity(),
+                                                std::numeric_limits<double>::infinity()};
     if (in.enforce_calendar_floor && !out.surface.empty() && out.context.back().T < T) {
       const IVolCurve *prev = out.surface.slices().back().get();
       w_prev = [prev](double k) { return prev->w(k); };
       if (const auto *linear = dynamic_cast<const LinearVarianceCurve *>(prev); linear != nullptr) {
         calendar_floor_knots = linear->k_nodes();
+      }
+      // The SplineVol calendar projection acts only on the tradeable overlap of
+      // the two slices' data ranges; hand it the previous spline slice's range.
+      if (const auto *sp = dynamic_cast<const SplineVolCurve *>(prev); sp != nullptr) {
+        prev_data_k_range = sp->data_k_range();
       }
     }
     // The calendar floor inside fit_convex_slice enforces w_curr >= w_prev at the
@@ -385,13 +413,72 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
     // calendar structure this trades some price-in-band tightness for no-arb — an
     // explicit product choice (see spy_bidask_regression_test's rebaselined floor).
     const auto t_slice0 = ProfileClock::now();
-    auto slice_res =
-        fit_slice_curve(cfg, prepared.fit_observations(), F, T, df, w_prev, calendar_floor_knots);
+    auto slice_res = fit_slice_curve(cfg, prepared.fit_observations(), F, T, df, w_prev,
+                                     calendar_floor_knots, prev_data_k_range);
     if (profile) {
       ms_fit_slice += elapsed_ms(t_slice0, ProfileClock::now());
     }
     if (!slice_res) {
-      continue;
+      // FIX A (opt-in coverage recovery): retry THIS slice with a linear-in-
+      // variance curve before dropping it. A thin per-expiry-sparse name whose
+      // primary (e.g. SplineVol) fit needs more usable de-Am rows than the funnel
+      // (OTM-side-only + bid>0 + audit + floors) yields can still produce a served
+      // LinearVariance slice from >=2 nodes. The fallback re-enters `fit_slice_curve`
+      // with an unchanged CurveConfig except `kind`, so it passes the SAME
+      // admission (>=2 nodes + union-grid calendar floor against the prior slice's
+      // w_prev / calendar_floor_knots) as any LinearVariance slice — no
+      // numerical-sanity check is bypassed. Gated on `per_slice_linear_fallback`
+      // and skipped when the primary kind is already LinearVariance, so the
+      // default path (flag off) is byte-identical to the historical drop.
+      if (in.calib.per_slice_linear_fallback && cfg.kind != VolCurveKind::LinearVariance) {
+        CurveConfig fallback_cfg = cfg;
+        fallback_cfg.kind = VolCurveKind::LinearVariance;
+        // Calendar consistency for the inserted linear slice: a LinearVariance
+        // fit only floors w >= w_prev at its OWN nodes, so between/beyond those
+        // nodes its flat-wing extrapolation can dip under w_prev, breaking the
+        // mid-chain calendar order the SplineVol projection otherwise maintains
+        // (measured: enabling the fallback without this drops calendar-arb-free
+        // to ~37%). Union the risk-check grid (the exact points arb_check_calendar
+        // samples, [-0.60, 0.60] / 64) into the floor knots so the served linear
+        // slice dominates w_prev at every checked point. Only for the fallback;
+        // the primary path is unchanged.
+        std::vector<double> fb_floor_knots(calendar_floor_knots.begin(),
+                                           calendar_floor_knots.end());
+        if (w_prev) {
+          constexpr double kFbCalMin = -0.60;
+          constexpr double kFbCalMax = 0.60;
+          constexpr int kFbCalIntervals = 64;
+          constexpr double kFbCalDk =
+              (kFbCalMax - kFbCalMin) / static_cast<double>(kFbCalIntervals);
+          for (int gi = 0; gi <= kFbCalIntervals; ++gi) {
+            fb_floor_knots.push_back(kFbCalMin + kFbCalDk * static_cast<double>(gi));
+          }
+        }
+        const auto t_fb0 = ProfileClock::now();
+        auto fb_res = fit_slice_curve(fallback_cfg, prepared.fit_observations(), F, T, df, w_prev,
+                                      std::span<const double>{fb_floor_knots});
+        if (profile) {
+          ms_fit_slice += elapsed_ms(t_fb0, ProfileClock::now());
+        }
+        if (fb_res) {
+          // Recovered: adopt the linear slice and fall through to the normal
+          // commit path (parity scoring + w_prev carry for the next expiry).
+          slice_res = std::move(fb_res);
+          ++out.n_slice_linear_fallback;
+        }
+      }
+      if (!slice_res) {
+        // Diagnostic-only (env-gated, failure path): surface WHY a slice was
+        // dropped so a caller can tell a genuinely-thin expiry from a curve-family
+        // fit defect (e.g. SplineVol ill-conditioning on boards eSSVI fits). No
+        // behavioural change; getenv runs only on the already-failed branch.
+        if (slice_debug_enabled()) {
+          std::fprintf(stderr, "[slice-drop] kind=%d T=%.4f F=%.2f obs=%zu err=%s\n",
+                       static_cast<int>(cfg.kind), T, F, prepared.fit_observations().size(),
+                       slice_res.error().to_string().c_str());
+        }
+        continue;
+      }
     }
     const IVolCurve *const slice = slice_res->get();
 
