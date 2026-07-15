@@ -498,6 +498,7 @@ Status PricerFitter::fit(const OptionChain &chain,
     SessionInputs in =
         make_session_inputs(effective_preset, chain.spot(), chain.rate(), chain.now_ns());
     in.fit_workers = cfg_.fit_workers;
+    in.collect_stage_timings = cfg_.collect_stage_timings;
     if (chain.env().yield.size() > 0u) {
       in.expiry_rate_T.reserve(chain.underlying().chains.size());
       in.expiry_rates.reserve(chain.underlying().chains.size());
@@ -533,9 +534,12 @@ Status PricerFitter::fit(const OptionChain &chain,
     if (cfg_.use_deam_cache_for_fit.has_value()) {
       in.use_deam_cache_for_fit = *cfg_.use_deam_cache_for_fit;
     }
-    if (cfg_.fit_prep_policy) in.fit_prep_policy = *cfg_.fit_prep_policy;
-    if (cfg_.audit_fit_inversions) in.deam.audit_fit_inversions = *cfg_.audit_fit_inversions;
-    if (cfg_.warm_start_carry) in.deam.warm_start_carry = *cfg_.warm_start_carry;
+    if (cfg_.fit_prep_policy)
+      in.fit_prep_policy = *cfg_.fit_prep_policy;
+    if (cfg_.audit_fit_inversions)
+      in.deam.audit_fit_inversions = *cfg_.audit_fit_inversions;
+    if (cfg_.warm_start_carry)
+      in.deam.warm_start_carry = *cfg_.warm_start_carry;
     if (cfg_.max_obs_per_slice.has_value()) {
       in.calib.max_obs_per_slice = *cfg_.max_obs_per_slice;
     }
@@ -695,6 +699,8 @@ Status PricerFitter::fit(const OptionChain &chain,
         new FittedSurface(std::move(sess), legacy_purpose, legacy_quality, legacy_generation));
     std::optional<SurfaceBuildReport> next_published{report};
     std::optional<SurfaceBuildReport> next_attempt{std::move(report)};
+    std::optional<SelectorResult> next_served_selection{next_selection};
+    std::optional<FitDecision> next_served_decision{next_decision};
     FitSnapshotProvenance provenance;
     provenance.chain_instance_id = chain.instance_id();
     provenance.board_revision = chain.quote_revision();
@@ -702,11 +708,7 @@ Status PricerFitter::fit(const OptionChain &chain,
     provenance.expiry_revisions.assign(chain.expiry_quote_revisions().begin(),
                                        chain.expiry_quote_revisions().end());
     std::optional<FitSnapshotProvenance> next_provenance{std::move(provenance)};
-
-    // Transaction boundary: admitted state and its provenance become current
-    // together. Every earlier failure leaves the last-known-good publication.
-    market_mark_surface_ = std::move(next_surface);
-    market_mark_health_ = SurfaceHealth{
+    const SurfaceHealth next_health{
         .purpose = legacy_purpose,
         .quality_mode = legacy_quality,
         .state = SurfaceState::Healthy,
@@ -714,13 +716,18 @@ Status PricerFitter::fit(const OptionChain &chain,
         .candidate_generation = legacy_generation,
         .served_generation = legacy_generation,
     };
+
+    // Transaction boundary: admitted state and its provenance become current
+    // together. Every earlier failure leaves the last-known-good publication.
+    market_mark_surface_ = std::move(next_surface);
+    market_mark_provenance_ = std::move(next_provenance);
+    market_mark_health_ = next_health;
     selection_ = std::move(next_selection);
-    served_selection_ = selection_;
+    served_selection_ = std::move(next_served_selection);
     decision_ = std::move(next_decision);
-    served_decision_ = decision_;
+    served_decision_ = std::move(next_served_decision);
     published_report_ = std::move(next_published);
     last_attempt_report_ = std::move(next_attempt);
-    published_provenance_ = std::move(next_provenance);
     timings_.total_ms = elapsed_ms(fit_start);
     return Ok();
   }
@@ -745,6 +752,7 @@ Status PricerFitter::fit(const OptionChain &chain,
 
   const auto configure_common = [&](SessionInputs &in) {
     in.fit_workers = cfg_.fit_workers;
+    in.collect_stage_timings = cfg_.collect_stage_timings;
     if (chain.env().yield.size() > 0u) {
       in.expiry_rate_T.clear();
       in.expiry_rates.clear();
@@ -763,9 +771,12 @@ Status PricerFitter::fit(const OptionChain &chain,
     if (cfg_.use_deam_cache_for_fit.has_value()) {
       in.use_deam_cache_for_fit = *cfg_.use_deam_cache_for_fit;
     }
-    if (cfg_.fit_prep_policy) in.fit_prep_policy = *cfg_.fit_prep_policy;
-    if (cfg_.audit_fit_inversions) in.deam.audit_fit_inversions = *cfg_.audit_fit_inversions;
-    if (cfg_.warm_start_carry) in.deam.warm_start_carry = *cfg_.warm_start_carry;
+    if (cfg_.fit_prep_policy)
+      in.fit_prep_policy = *cfg_.fit_prep_policy;
+    if (cfg_.audit_fit_inversions)
+      in.deam.audit_fit_inversions = *cfg_.audit_fit_inversions;
+    if (cfg_.warm_start_carry)
+      in.deam.warm_start_carry = *cfg_.warm_start_carry;
     if (cfg_.max_obs_per_slice.has_value()) {
       in.calib.max_obs_per_slice = *cfg_.max_obs_per_slice;
     }
@@ -835,6 +846,7 @@ Status PricerFitter::fit(const OptionChain &chain,
       }
       if (cfg_.fallback == SurfaceFallback::None) {
         market_mark_surface_.reset();
+        market_mark_provenance_.reset();
       }
       market_mark_health_ = SurfaceHealth{
           .purpose = SurfacePurpose::MarketMark,
@@ -871,9 +883,10 @@ Status PricerFitter::fit(const OptionChain &chain,
     report.published = true;
     report.published_curve = mark_in.curve;
     report.attempts.back().stage = SurfaceBuildStage::Publication;
-    market_mark_surface_.reset(new FittedSurface(std::move(*built), SurfacePurpose::MarketMark,
-                                                 quality_mode, candidate_generation_));
-    market_mark_health_ = SurfaceHealth{
+    std::shared_ptr<const FittedSurface> next_surface(new FittedSurface(
+        std::move(*built), SurfacePurpose::MarketMark, quality_mode, candidate_generation_));
+    std::optional<FitSnapshotProvenance> next_provenance{snapshot_provenance()};
+    const SurfaceHealth next_health{
         .purpose = SurfacePurpose::MarketMark,
         .quality_mode = quality_mode,
         .state = SurfaceState::Healthy,
@@ -883,9 +896,11 @@ Status PricerFitter::fit(const OptionChain &chain,
     };
     std::optional<SurfaceBuildReport> next_published{report};
     std::optional<SurfaceBuildReport> next_attempt{std::move(report)};
+    market_mark_surface_ = std::move(next_surface);
+    market_mark_provenance_ = std::move(next_provenance);
+    market_mark_health_ = next_health;
     published_report_ = std::move(next_published);
     last_attempt_report_ = std::move(next_attempt);
-    published_provenance_ = snapshot_provenance();
     timings_.total_ms = elapsed_ms(fit_start);
     return Ok();
   }
@@ -920,10 +935,11 @@ Status PricerFitter::fit(const OptionChain &chain,
     mark_future.reset();
     timings_.market_mark_build_ms = result.elapsed_ms;
     if (result.built.has_value()) {
-      market_mark_surface_.reset(new FittedSurface(std::move(*result.built),
-                                                   SurfacePurpose::MarketMark, quality_mode,
-                                                   candidate_generation_));
-      market_mark_health_ = SurfaceHealth{
+      std::optional<FitSnapshotProvenance> next_provenance{snapshot_provenance()};
+      std::shared_ptr<const FittedSurface> next_surface(
+          new FittedSurface(std::move(*result.built), SurfacePurpose::MarketMark, quality_mode,
+                            candidate_generation_));
+      const SurfaceHealth next_health{
           .purpose = SurfacePurpose::MarketMark,
           .quality_mode = quality_mode,
           .state = SurfaceState::Healthy,
@@ -931,6 +947,12 @@ Status PricerFitter::fit(const OptionChain &chain,
           .candidate_generation = candidate_generation_,
           .served_generation = candidate_generation_,
       };
+      // Mark publication is independent of risk admission. Publish its surface,
+      // health, and chain identity as one no-fail state transition after every
+      // allocating operation above has succeeded.
+      market_mark_surface_ = std::move(next_surface);
+      market_mark_provenance_ = std::move(next_provenance);
+      market_mark_health_ = next_health;
       return Ok();
     }
     if (market_mark_surface_ != nullptr && cfg_.fallback == SurfaceFallback::LastKnownGood) {
@@ -947,6 +969,7 @@ Status PricerFitter::fit(const OptionChain &chain,
     }
     if (cfg_.fallback == SurfaceFallback::None) {
       market_mark_surface_.reset();
+      market_mark_provenance_.reset();
     }
     market_mark_health_ = SurfaceHealth{
         .purpose = SurfacePurpose::MarketMark,
@@ -970,6 +993,7 @@ Status PricerFitter::fit(const OptionChain &chain,
                        .health;
     if (cfg_.fallback == SurfaceFallback::None) {
       risk_surface_.reset();
+      risk_provenance_.reset();
       served_decision_.reset();
       served_selection_.reset();
     }
@@ -1206,6 +1230,7 @@ Status PricerFitter::fit(const OptionChain &chain,
     }
     if (cfg_.fallback == SurfaceFallback::None) {
       risk_surface_.reset();
+      risk_provenance_.reset();
       served_decision_.reset();
       served_selection_.reset();
     }
@@ -1309,6 +1334,7 @@ Status PricerFitter::fit(const OptionChain &chain,
     }
     if (cfg_.fallback == SurfaceFallback::None) {
       risk_surface_.reset();
+      risk_provenance_.reset();
       served_decision_.reset();
       served_selection_.reset();
     }
@@ -1340,15 +1366,20 @@ Status PricerFitter::fit(const OptionChain &chain,
   report.published = true;
   report.published_curve = in.curve;
   report.attempts.back().stage = SurfaceBuildStage::Publication;
-  risk_surface_.reset(new FittedSurface(std::move(sess), SurfacePurpose::Risk, quality_mode,
-                                        candidate_generation_));
-  served_decision_ = decision_;
-  served_selection_ = selection_;
+  std::optional<FitSnapshotProvenance> next_provenance{snapshot_provenance()};
+  std::optional<FitDecision> next_served_decision{decision_};
+  std::optional<SelectorResult> next_served_selection{selection_};
   std::optional<SurfaceBuildReport> next_published{report};
   std::optional<SurfaceBuildReport> next_attempt{std::move(report)};
+  std::shared_ptr<const FittedSurface> next_surface(new FittedSurface(
+      std::move(sess), SurfacePurpose::Risk, quality_mode, candidate_generation_));
+
+  risk_surface_ = std::move(next_surface);
+  risk_provenance_ = std::move(next_provenance);
+  served_decision_ = std::move(next_served_decision);
+  served_selection_ = std::move(next_served_selection);
   published_report_ = std::move(next_published);
   last_attempt_report_ = std::move(next_attempt);
-  published_provenance_ = snapshot_provenance();
   (void)finalize_mark();
   timings_.total_ms = elapsed_ms(fit_start);
   return Ok();
@@ -1386,12 +1417,14 @@ risk_validation_config(FitQualityMode quality_mode) noexcept {
 Result<ExpiryRefitDiagnostics> PricerFitter::refit_expiry(const OptionChain &chain,
                                                           ExpiryId expiry_id) {
   // The transactional expiry refit operates on the config's default-purpose
-  // surface (the one published_provenance_ describes). When that surface is
-  // the RISK surface, publication additionally requires the independent risk
-  // oracle below — the mark-grade FitAdmissionPolicy alone can never republish
-  // a risk surface (fail-closed, §5.2).
+  // surface and its matching provenance. When that surface is the RISK surface,
+  // publication additionally requires the independent risk oracle below — the
+  // mark-grade FitAdmissionPolicy alone can never republish a risk surface
+  // (fail-closed, §5.2).
   const bool risk_purpose = has_output(effective_request().outputs, SurfacePurpose::Risk);
   const FittedSurface *served = surface();
+  const std::optional<FitSnapshotProvenance> &published_provenance =
+      risk_purpose ? risk_provenance_ : market_mark_provenance_;
   CurveConfig published_curve{};
   if (served != nullptr) {
     published_curve = served->session().inputs().curve;
@@ -1410,11 +1443,11 @@ Result<ExpiryRefitDiagnostics> PricerFitter::refit_expiry(const OptionChain &cha
     return Err(std::move(error));
   };
 
-  if (served == nullptr || !published_provenance_.has_value()) {
+  if (served == nullptr || !published_provenance.has_value()) {
     return fail(atx::core::Error{ErrorCode::Unavailable,
                                  "PricerFitter::refit_expiry: no published surface"});
   }
-  const FitSnapshotProvenance &published = *published_provenance_;
+  const FitSnapshotProvenance &published = *published_provenance;
   if (chain.instance_id() != published.chain_instance_id || chain.uid() != published.uid) {
     return fail(atx::core::Error{ErrorCode::InvalidArgument,
                                  "PricerFitter::refit_expiry: chain instance differs from fit"},
@@ -1544,7 +1577,7 @@ Result<ExpiryRefitDiagnostics> PricerFitter::refit_expiry(const OptionChain &cha
   report.published = true;
   const SliceContext refreshed_context = candidate.expiries()[*fitted_index];
   const FitQualityMode published_quality = served->quality_mode();
-  std::unique_ptr<FittedSurface> next_surface(new FittedSurface(
+  std::shared_ptr<const FittedSurface> next_surface(new FittedSurface(
       std::move(candidate), served->purpose(), published_quality, candidate_generation_));
   std::optional<SurfaceBuildReport> next_published{report};
   std::optional<SurfaceBuildReport> next_attempt{std::move(report)};
@@ -1556,9 +1589,11 @@ Result<ExpiryRefitDiagnostics> PricerFitter::refit_expiry(const OptionChain &cha
   std::optional<FitSnapshotProvenance> next_provenance{std::move(provenance)};
 
   if (risk_purpose) {
-    risk_surface_ = std::shared_ptr<const FittedSurface>(std::move(next_surface));
+    risk_surface_ = std::move(next_surface);
+    risk_provenance_ = std::move(next_provenance);
   } else {
-    market_mark_surface_ = std::shared_ptr<const FittedSurface>(std::move(next_surface));
+    market_mark_surface_ = std::move(next_surface);
+    market_mark_provenance_ = std::move(next_provenance);
     market_mark_health_.state = SurfaceState::Healthy;
     market_mark_health_.reasons = ValidationFailure::None;
     market_mark_health_.candidate_generation = candidate_generation_;
@@ -1566,7 +1601,6 @@ Result<ExpiryRefitDiagnostics> PricerFitter::refit_expiry(const OptionChain &cha
   }
   published_report_ = std::move(next_published);
   last_attempt_report_ = std::move(next_attempt);
-  published_provenance_ = std::move(next_provenance);
 
   return Ok(ExpiryRefitDiagnostics{expiry_id, chain.quote_revision(), published_curve.kind, true,
                                    refreshed_context.n_used, refreshed_context.n_dropped,
@@ -1586,6 +1620,15 @@ Result<FitDiag> PricerFitter::refit_risk_slice(const OptionChain &chain, std::si
   timings_.incremental_total_ms = 0.0;
   if (risk_surface_ == nullptr) {
     return Err(ErrorCode::Unavailable, "PricerFitter::refit_risk_slice: no admitted risk surface");
+  }
+  if (!risk_provenance_.has_value()) {
+    return Err(ErrorCode::Unavailable,
+               "PricerFitter::refit_risk_slice: fitted-chain provenance is unavailable");
+  }
+  if (chain.instance_id() != risk_provenance_->chain_instance_id ||
+      chain.uid() != risk_provenance_->uid) {
+    return Err(ErrorCode::InvalidArgument,
+               "PricerFitter::refit_risk_slice: chain instance differs from fit");
   }
   if (candidate_generation_ == std::numeric_limits<std::uint64_t>::max()) {
     return Err(ErrorCode::OutOfRange, "surface generation counter exhausted");
@@ -1710,8 +1753,17 @@ Result<FitDiag> PricerFitter::refit_risk_slice(const OptionChain &chain, std::si
   }
 
   const auto publish_start = Clock::now();
-  risk_surface_.reset(new FittedSurface(std::move(candidate), SurfacePurpose::Risk, quality_mode,
-                                        candidate_generation_));
+  FitSnapshotProvenance provenance;
+  provenance.chain_instance_id = chain.instance_id();
+  provenance.board_revision = chain.quote_revision();
+  provenance.uid = chain.uid();
+  provenance.expiry_revisions.assign(chain.expiry_quote_revisions().begin(),
+                                     chain.expiry_quote_revisions().end());
+  std::optional<FitSnapshotProvenance> next_provenance{std::move(provenance)};
+  std::shared_ptr<const FittedSurface> next_surface(new FittedSurface(
+      std::move(candidate), SurfacePurpose::Risk, quality_mode, candidate_generation_));
+  risk_surface_ = std::move(next_surface);
+  risk_provenance_ = std::move(next_provenance);
   timings_.incremental_publish_ms = elapsed_ms(publish_start);
   timings_.incremental_total_ms = elapsed_ms(incremental_start);
   return refit;
@@ -1775,6 +1827,18 @@ const FittedSurface *PricerFitter::surface() const noexcept {
   return market_mark_surface_.get();
 }
 
+const std::optional<FitSnapshotProvenance> &PricerFitter::published_provenance() const noexcept {
+  const SurfacePurpose purpose = has_output(effective_request().outputs, SurfacePurpose::Risk)
+                                     ? SurfacePurpose::Risk
+                                     : SurfacePurpose::MarketMark;
+  return published_provenance(purpose);
+}
+
+const std::optional<FitSnapshotProvenance> &
+PricerFitter::published_provenance(SurfacePurpose purpose) const noexcept {
+  return purpose == SurfacePurpose::Risk ? risk_provenance_ : market_mark_provenance_;
+}
+
 Result<ChainValuation> PricerFitter::value_chain(const OptionChain &chain, OutputField fields,
                                                  unsigned n_threads) const {
   // Fail-closed purpose default: mirrors surface(). A caller that wants the
@@ -1826,11 +1890,12 @@ Result<ChainValuation> PricerFitter::value_snapshot(const OptionChain &chain, Ch
     return Err(ErrorCode::Unavailable,
                "PricerFitter::value_chain: requested surface purpose is unavailable");
   }
-  if (!published_provenance_.has_value()) {
+  const std::optional<FitSnapshotProvenance> &provenance = published_provenance(purpose);
+  if (!provenance.has_value()) {
     return Err(ErrorCode::Unavailable,
                "PricerFitter::value_chain: fitted-chain provenance is unavailable");
   }
-  const FitSnapshotProvenance &published = *published_provenance_;
+  const FitSnapshotProvenance &published = *provenance;
   if (chain.instance_id() != published.chain_instance_id || chain.uid() != published.uid) {
     return Err(ErrorCode::InvalidArgument,
                "PricerFitter::value_chain: chain instance differs from fit");

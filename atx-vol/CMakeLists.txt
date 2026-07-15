@@ -287,6 +287,46 @@ if(ATX_BUILD_EXAMPLES)
     add_executable(universe_autofit examples/universe_autofit.cpp)
     target_link_libraries(universe_autofit PRIVATE atx::vol atx::core atx_warnings)
 
+    # Stable economic regression oracle over the ten SPY fit fixtures plus the
+    # smoke100 OPRA snapshot. The CSV intentionally excludes wall-clock fields;
+    # its companion checker requires two identical runs to be byte-for-byte equal.
+    add_executable(accuracy_panel examples/accuracy_panel.cpp)
+    target_link_libraries(accuracy_panel PRIVATE atx::vol atx::core atx_warnings)
+    if(ATX_BUILD_TESTS)
+        find_package(Python3 COMPONENTS Interpreter QUIET)
+        if(Python3_Interpreter_FOUND)
+            add_test(
+                NAME AccuracyPanelDeterminism
+                COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_CURRENT_SOURCE_DIR}/tests/accuracy_panel_determinism_test.py
+                        --exe $<TARGET_FILE:accuracy_panel>
+                        --spy-root ${CMAKE_SOURCE_DIR}/data/spy_fit_slices
+                        --universe-root ${CMAKE_SOURCE_DIR}/data/opra_universe
+                        --symbols
+                            ${CMAKE_CURRENT_SOURCE_DIR}/tests/accuracy_panel_success_symbols.txt
+                        --no-spy
+                        --universe-limit 1
+                        --mode commit
+                        --require-ok
+            )
+            set_tests_properties(AccuracyPanelDeterminism PROPERTIES LABELS atx_vol_slow)
+            add_test(
+                NAME AccuracyPanelFailureDeterminism
+                COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_CURRENT_SOURCE_DIR}/tests/accuracy_panel_determinism_test.py
+                        --exe $<TARGET_FILE:accuracy_panel>
+                        --spy-root ${CMAKE_SOURCE_DIR}/data/spy_fit_slices
+                        --universe-root ${CMAKE_SOURCE_DIR}/data/opra_universe
+                        --symbols
+                            ${CMAKE_CURRENT_SOURCE_DIR}/tests/accuracy_panel_failure_symbols.txt
+                        --no-spy
+                        --universe-limit 1
+                        --mode commit
+            )
+            set_tests_properties(AccuracyPanelFailureDeterminism PROPERTIES LABELS atx_vol_slow)
+        endif()
+    endif()
+
     # SpiderRock SRCubic cubic-spline surface parity benchmark: pin
     # VolCurveKind::SplineVol and fit a whole OPRA universe snapshot, reporting
     # throughput (surfaces/slices/quotes per sec), fit-latency percentiles, the

@@ -1226,6 +1226,26 @@ TEST(PricedSurfaceQueryPricing, RepresentativeFastCoversEveryScalarAndFusedRoute
   EXPECT_EQ(fused.greeks, *greeks);
 }
 
+TEST(PricedSurfaceQueryPricing, LightweightTelemetryCountsOneResolvedRoutePerFusedRequest) {
+  namespace lw = counters::lightweight;
+  PricedSurface source = make_essvi(921, 6);
+  auto prepared = std::move(source).with_query_pricing(QueryPricingTier::RepresentativeFast);
+  ASSERT_TRUE(prepared.has_value());
+  const PricedSurface fast = std::move(*prepared);
+  const EF fields = EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder;
+
+  lw::reset();
+  for (std::uint32_t i = 0; i < lw::kSamplePeriod; ++i) {
+    const auto result = fast.evaluate(100.0, 0.29, Side::Put, fields, true);
+    ASSERT_TRUE(result.status.has_value());
+  }
+  const lw::Snapshot measured = lw::snapshot();
+  EXPECT_EQ(measured.query_attempt_samples(), 1u);
+  EXPECT_EQ(measured.representative_hit_samples, 1u);
+  EXPECT_EQ(measured.other_cache_hit_samples, 0u);
+  EXPECT_EQ(measured.cold_fallback_samples, 0u);
+}
+
 TEST(PricedSurfaceQueryPricing, ForcedColdExecutionMatchesIndependentColdSurfaceScalarsAndFused) {
   PricedSurface source = make_essvi(98, 6);
   auto prepared = std::move(source).with_query_pricing(QueryPricingTier::RepresentativeFast);
@@ -1417,6 +1437,25 @@ TEST(PricedSurfaceQueryPricing, OutsideCertifiedBoxFallsBackToColdReference) {
     ASSERT_TRUE(expected.has_value());
     EXPECT_EQ(*actual, *expected) << "K=" << K << " T=" << T;
   }
+}
+
+TEST(PricedSurfaceQueryPricing, LightweightTelemetryClassifiesFastTierMissOnce) {
+  namespace lw = counters::lightweight;
+  PricedSurface source = make_essvi(951, 6);
+  auto prepared = std::move(source).with_query_pricing(QueryPricingTier::RepresentativeFast);
+  ASSERT_TRUE(prepared.has_value());
+  const PricedSurface fast = std::move(*prepared);
+  const double strike = kS * std::exp(1.0);
+
+  lw::reset();
+  for (std::uint32_t i = 0; i < lw::kSamplePeriod; ++i) {
+    const auto result = fast.greeks(strike, 0.29, Side::Put);
+    ASSERT_TRUE(result.has_value());
+  }
+  const lw::Snapshot measured = lw::snapshot();
+  EXPECT_EQ(measured.query_attempt_samples(), 1u);
+  EXPECT_EQ(measured.cache_hit_samples(), 0u);
+  EXPECT_EQ(measured.cold_fallback_samples, 1u);
 }
 
 TEST(PricedSurfaceQueryPricing, CarryBankBuildsBoundedPairsAndServesBlendedJet) {

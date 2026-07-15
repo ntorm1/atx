@@ -229,12 +229,16 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
   char env_buf[8] = {};
   const bool profile =
       getenv_s(&env_sz, env_buf, sizeof(env_buf), "ATX_VOL_PROFILE") == 0 && env_sz > 0;
+  const bool time_stages = profile || in.collect_stage_timings;
   const auto now_ns = []() noexcept {
     return std::chrono::duration<double, std::milli>(
                std::chrono::steady_clock::now().time_since_epoch())
         .count();
   };
-  double ms_deam = 0.0, ms_align = 0.0, ms_fit = 0.0;
+  const double fit_start = time_stages ? now_ns() : 0.0;
+  double ms_carry = 0.0;
+  double ms_deam = 0.0;
+  double ms_fit = 0.0;
 
   // Chains are stored ascending in T; walk them in that order so slices land
   // in the surface ascending as set_slice_essvi requires.
@@ -248,13 +252,14 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
     // 1-2. One shared carry + observation seam. Compatibility preparation
     // consumes in.deam.caches unconditionally, preserving this cold eSSVI
     // driver's historical cache behavior.
-    const double t_deam = profile ? now_ns() : 0.0;
     PrepareExpiryDiagnostics prep_diag{};
     Result<CanonicalPreparedExpiry> prepared_result =
         prepare_expiry(chain, static_cast<std::uint32_t>(chain_index), in,
                        PreparedObservationPolicy::LegacyEssviCompatibility, &prep_diag);
-    if (profile)
-      ms_deam += now_ns() - t_deam;
+    if (time_stages) {
+      ms_carry += prep_diag.carry_solve_ms;
+      ms_deam += prep_diag.observation_deam_ms;
+    }
     if (!prepared_result.has_value()) {
       if (prep_diag.carry_failed) {
         // No slice, but the skip is counted, not hidden (§5.2).
@@ -279,14 +284,14 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
     // 3. Fit the eSSVI slice (natural form, T/F stamped in). MonotoneFit adds a
     //    calendar floor vs. the previous fitted slice (theta floor + active-set
     //    w-floor over the data range); every other mode is the plain fit.
-    const double t_fit = profile ? now_ns() : 0.0;
+    const double t_fit = time_stages ? now_ns() : 0.0;
     FitDiag diag{};
     Result<EssviParams> slice_res =
         (in.repair == CalendarRepair::MonotoneFit)
             ? fit_slice_calendar_floored(prepared, T, F, in.calib, &diag,
                                          has_prev ? &prev_slice : nullptr, df)
             : essvi_fit_slice(prepared.fit_observations(), T, F, in.calib, &diag);
-    if (profile)
+    if (time_stages)
       ms_fit += now_ns() - t_fit;
     if (!slice_res) {
       continue; // a slice that fails to fit contributes no slice
@@ -321,7 +326,7 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
   // 6. Calendar no-arbitrage on the assembled surface. Count the raw crossings
   //    BEFORE any repair (independent per-slice fits + wing extrapolation can
   //    cross in total variance), then optionally repair to arb-free.
-  const double t_cal = profile ? now_ns() : 0.0;
+  const double t_cal = time_stages ? now_ns() : 0.0;
   ATX_TRY(const std::vector<ArbViolation> pre_viols,
           arb_check_calendar(surface, kArbKMin, kArbKMax, kArbNGrid));
   const std::size_t n_calendar_viol_pre = pre_viols.size();
@@ -334,31 +339,32 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
     // non-eSSVI surface. Repair over the SAME grid the check samples so the
     // post-repair check is guaranteed clean. (MonotoneFit needs no post-hoc
     // pass — its theta floor already enforced ATM monotonicity during the fit.)
-    const double t_rep = profile ? now_ns() : 0.0;
+    const double t_rep = time_stages ? now_ns() : 0.0;
     ATX_TRY_VOID(arb_project_calendar_essvi(surface, kArbKMin, kArbKMax, kArbNGrid));
     ATX_TRY_VOID(arb_repair_calendar_residual(surface, kArbKMin, kArbKMax, kArbNGrid));
-    if (profile)
+    if (time_stages)
       ms_repair = now_ns() - t_rep;
   } else if (in.repair == CalendarRepair::MonotoneFit) {
     // The active-set fit uses penalty observations and can leave small
     // between-node crossings. Close those residuals over MonotoneFit's
     // documented near-money guarantee without projecting the extrapolated
     // wings, where a global theta bump materially degrades held fit quality.
-    const double t_rep = profile ? now_ns() : 0.0;
+    const double t_rep = time_stages ? now_ns() : 0.0;
     ATX_TRY(const std::vector<ArbViolation> near_money_viols,
             arb_check_calendar(surface, kMonotoneKMin, kMonotoneKMax, kArbNGrid));
     if (!near_money_viols.empty()) {
       ATX_TRY_VOID(arb_project_calendar_essvi(surface, kMonotoneKMin, kMonotoneKMax, kArbNGrid));
       ATX_TRY_VOID(arb_repair_calendar_residual(surface, kMonotoneKMin, kMonotoneKMax, kArbNGrid));
     }
-    if (profile)
+    if (time_stages)
       ms_repair = now_ns() - t_rep;
   }
+  double ms_calendar = time_stages ? (now_ns() - t_cal) : 0.0;
 
   // 7. Score per-expiry re-Am parity off the FINAL (possibly repaired) surface:
   //    the model IV is read back via iv_on_slice, so the number scored is the
   //    one the surface actually serves.
-  const double t_parity = profile ? now_ns() : 0.0;
+  const double t_parity = time_stages ? now_ns() : 0.0;
   for (const PendingSlice &ps : pending) {
     const PreparedScoreColumns &score = ps.prepared.score_columns();
     std::vector<double> model_iv;
@@ -382,36 +388,44 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
     worst = std::min(worst, parity.frac_fv_within_bidask);
     per_expiry.push_back(parity);
   }
-  const double ms_parity = profile ? (now_ns() - t_parity) : 0.0;
+  const double ms_parity = time_stages ? (now_ns() - t_parity) : 0.0;
 
   // 8. Final calendar check on the surface the caller receives.
+  const double final_calendar_start = time_stages ? now_ns() : 0.0;
   ATX_TRY(const std::vector<ArbViolation> cal_viols,
           arb_check_calendar(surface, kArbKMin, kArbKMax, kArbNGrid));
   const bool calendar_arb_free = cal_viols.empty();
+  if (time_stages) {
+    ms_calendar += now_ns() - final_calendar_start;
+  }
 
   if (profile) {
-    const double ms_cal = now_ns() - t_cal;
     std::fprintf(stderr,
-                 "[ATX_VOL_PROFILE] slices=%zu deam=%.1f align=%.1f fit=%.1f "
+                 "[ATX_VOL_PROFILE] slices=%zu carry=%.1f deam=%.1f fit=%.1f "
                  "repair=%.1f parity=%.1f calendar=%.1f ms viol_pre=%zu "
-                 "(deam=borrow+per-strike invert; align=OTM-leg invert; "
+                 "(carry=forward/borrow solve; deam=per-strike invert; "
                  "parity=re-Am score)\n",
-                 idx, ms_deam, ms_align, ms_fit, ms_repair, ms_parity, ms_cal, n_calendar_viol_pre);
+                 idx, ms_carry, ms_deam, ms_fit, ms_repair, ms_parity, ms_calendar,
+                 n_calendar_viol_pre);
   }
 
   SurfaceParityReport out{
-      std::move(surface),
-      std::move(expiry_T),
-      std::move(per_expiry),
-      std::move(context),
-      std::move(carry_diag),
-      worst,
-      calendar_arb_free,
-      idx,
-      n_calendar_viol_pre,
-      n_carry_skipped,
+      std::move(surface),    std::move(expiry_T),
+      std::move(per_expiry), std::move(context),
+      std::move(carry_diag), worst,
+      calendar_arb_free,     idx,
+      n_calendar_viol_pre,   n_carry_skipped,
       n_audit_starved,
   };
+  if (in.collect_stage_timings) {
+    out.fit_timings.carry_solve_ms = ms_carry;
+    out.fit_timings.observation_deam_ms = ms_deam;
+    out.fit_timings.slice_fit_ms = ms_fit;
+    out.fit_timings.audit_ms = ms_parity;
+    out.fit_timings.calendar_validation_ms = ms_calendar;
+    out.fit_timings.total_wall_ms = now_ns() - fit_start;
+    out.fit_timings.collected = true;
+  }
   return Ok(std::move(out));
 }
 

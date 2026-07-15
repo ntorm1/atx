@@ -20,21 +20,23 @@
 #include <vector>
 
 namespace atx::vol {
-struct CorpusBoard;  // full definition: atx/vol/corpus.hpp (kept forward-declared
-                      // here so this header stays light for its many consumers)
-}  // namespace atx::vol
+struct CorpusBoard; // full definition: atx/vol/corpus.hpp (kept forward-declared
+                    // here so this header stays light for its many consumers)
+} // namespace atx::vol
 
 namespace atx::vol::testkit {
-struct SpyFitFixture;  // full definition: tests/support/spy_fit_fixture.hpp (kept
-                        // forward-declared here for the same reason as CorpusBoard)
-}  // namespace atx::vol::testkit
+struct SpyFitFixture; // full definition: tests/support/spy_fit_fixture.hpp (kept
+                      // forward-declared here for the same reason as CorpusBoard)
+} // namespace atx::vol::testkit
 
 namespace atx::vol::test {
 
 // Path to a fitted+serialized SPY ConvexDense (Fast preset, node_cap=40)
-// surface for the 2026-06-05 OPRA fixture. Fits once per build tree, then
-// reloads. Empty path if the parquet fixture is unavailable (caller should
-// GTEST_SKIP, same as every direct-fit consumer does today).
+// surface for the 2026-06-05 OPRA fixture. The cache key carries a separate
+// fitted-surface behavior revision as well as the archive wire-format version,
+// so an intentional curve-shape change cannot silently reuse an older fit.
+// Empty path if the parquet fixture is unavailable (caller should GTEST_SKIP,
+// same as every direct-fit consumer does today).
 [[nodiscard]] std::filesystem::path cached_spy_convex_dense();
 
 // Directory containing a built corpus (one `<date>.atxvsa` per date plus
@@ -48,8 +50,8 @@ namespace atx::vol::test {
 // byte-identical corpus — `build_corpus` is deterministic across thread
 // counts, so the loser's tmp dir is content-identical and just gets
 // discarded).
-[[nodiscard]] std::filesystem::path cached_corpus(
-    const char* key, const std::function<std::vector<CorpusBoard>()>& boards);
+[[nodiscard]] std::filesystem::path
+cached_corpus(const char *key, const std::function<std::vector<CorpusBoard>()> &boards);
 
 // Path to a fitted+serialized Hft-preset `PricedSurface` (stored under symbol
 // "SPY") for one slice of the 10-fixture `kSpyFitFixtures` corpus
@@ -62,6 +64,6 @@ namespace atx::vol::test {
 // Fit gates that exercise the FITTER itself (cold-start timing / breadth,
 // e.g. `SpyFitCorpus.HftColdStartPreserves98PctOnEveryAvailableSlice`) must
 // NOT use this helper; they still fit live by design.
-[[nodiscard]] std::filesystem::path cached_hft_fit(const atx::vol::testkit::SpyFitFixture& fixture);
+[[nodiscard]] std::filesystem::path cached_hft_fit(const atx::vol::testkit::SpyFitFixture &fixture);
 
-}  // namespace atx::vol::test
+} // namespace atx::vol::test

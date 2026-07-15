@@ -3,6 +3,7 @@
 #include "term_carry.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -62,6 +63,45 @@ using atx::core::Ok;
 namespace {
 
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+constexpr std::size_t kColdPriceBlockRows = 128u;
+
+// Fixed-capacity price-only scratch. Public ladders are unbounded, so callers
+// flush one side whenever this block fills rather than allocating an owning SoA.
+struct ColdPriceBatch {
+  std::array<double, kColdPriceBlockRows> strikes;
+  std::array<double, kColdPriceBlockRows> sigmas;
+  std::array<double, kColdPriceBlockRows> prices;
+  std::array<std::size_t, kColdPriceBlockRows> rows;
+  std::size_t size{0u};
+};
+
+void flush_cold_price_batch(ColdPriceBatch &batch, Side side, double S, double T, double r,
+                            double q, AmericanMethod method, const std::optional<AlOpts> &al_opts,
+                            std::span<double> output) {
+  if (batch.size == 0u) {
+    return;
+  }
+  const std::span<const double> strikes{batch.strikes.data(), batch.size};
+  const std::span<const double> sigmas{batch.sigmas.data(), batch.size};
+  std::span<double> prices{batch.prices.data(), batch.size};
+  const SigmaInterpOptions interpolation{};
+  const Status status = side == Side::Call
+                            ? andersen_lake_call_slice_sigma(S, strikes, sigmas, T, r, q, prices,
+                                                             interpolation, al_opts)
+                            : andersen_lake_put_slice_sigma(S, strikes, sigmas, T, r, q, prices,
+                                                            interpolation, al_opts);
+  if (!status.has_value()) {
+    for (std::size_t i = 0u; i < batch.size; ++i) {
+      const auto scalar =
+          american_price(S, batch.strikes[i], T, batch.sigmas[i], r, q, side, method, al_opts);
+      batch.prices[i] = scalar.has_value() ? *scalar : kNaN;
+    }
+  }
+  for (std::size_t i = 0u; i < batch.size; ++i) {
+    output[batch.rows[i]] = batch.prices[i];
+  }
+  batch.size = 0u;
+}
 
 // A finite, strictly-positive query coordinate.
 [[nodiscard]] bool valid_query(double K, double T) noexcept {
@@ -683,6 +723,10 @@ SessionInputs make_session_inputs(FitPreset preset, double S, double r, std::int
 }
 
 Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInputs &in) {
+  using BuildClock = std::chrono::steady_clock;
+  const bool time_build = in.collect_stage_timings;
+  const BuildClock::time_point build_start =
+      time_build ? BuildClock::now() : BuildClock::time_point{};
   // The session is the fast production fit path: de-Americanize and sample the
   // correction cache with the fast ALO preset unless the caller pinned an
   // explicit accuracy. IV inversion / cache sampling only need ~1e-4 price
@@ -731,6 +775,7 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
   sp.band_k = eff.band_k;
   sp.repair = eff.calendar_repair;
   sp.fit_workers = eff.fit_workers;
+  sp.collect_stage_timings = eff.collect_stage_timings;
   sp.score_parity = eff.score_parity;
   sp.enforce_calendar_floor = eff.enforce_calendar_floor;
   sp.use_deam_cache_for_fit = eff.use_deam_cache_for_fit;
@@ -770,6 +815,7 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
 
     SessionDiagnostics cdiag{};
     cdiag.n_slices = crep.n_slices;
+    cdiag.fit_timings = crep.fit_timings;
     // `cdiag.implied_emove` intentionally stays at its NaN default here:
     // SessionInputs::events / the event-aware blend is eSSVI-default only
     // (same restriction as ShapeBlend -- see SessionInputs::events), and a
@@ -777,6 +823,8 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
     // Calendar no-arb across slices, measured on the served CurveSurface. Each
     // convex slice is butterfly-arb-free by construction; this is the missing
     // half. k-range spans a wide moneyness band around the money.
+    const BuildClock::time_point calendar_start =
+        time_build ? BuildClock::now() : BuildClock::time_point{};
     {
       constexpr double kBand = 0.60; // log-moneyness half-width to sample
       constexpr std::uint32_t kGrid = 64;
@@ -797,6 +845,10 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
       // ConvexDense session; see SessionDiagnostics::n_price_bound_violations).
       const auto price_bounds = arb_check_price_bounds(crep.surface, -kBand, kBand, kGrid);
       cdiag.n_price_bound_violations = price_bounds ? price_bounds->size() : 0;
+    }
+    if (time_build) {
+      cdiag.fit_timings.calendar_validation_ms +=
+          std::chrono::duration<double, std::milli>(BuildClock::now() - calendar_start).count();
     }
     {
       double worst = std::numeric_limits<double>::infinity();
@@ -903,6 +955,11 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
             std::move(incremental_chain_bids), std::move(incremental_chain_asks),
             std::move(incremental_chain_ts)});
     session.build_fast_query_cache_bank(under);
+    if (time_build) {
+      session.diag_.fit_timings.total_wall_ms =
+          std::chrono::duration<double, std::milli>(BuildClock::now() - build_start).count();
+      session.diag_.fit_timings.collected = true;
+    }
     return Ok(std::move(session));
   }
 
@@ -912,6 +969,7 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
   // moving those vectors into the session.
   SessionDiagnostics diag{};
   diag.n_slices = rep.n_slices;
+  diag.fit_timings = rep.fit_timings;
   diag.calendar_arb_free = rep.calendar_arb_free;
   diag.n_calendar_viol_pre = rep.n_calendar_viol_pre;
 
@@ -1024,6 +1082,11 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
           std::move(incremental_chain_bids), std::move(incremental_chain_asks),
           std::move(incremental_chain_ts)});
   session.build_fast_query_cache_bank(under);
+  if (time_build) {
+    session.diag_.fit_timings.total_wall_ms =
+        std::chrono::duration<double, std::milli>(BuildClock::now() - build_start).count();
+    session.diag_.fit_timings.collected = true;
+  }
   return Ok(std::move(session));
 }
 
@@ -1466,6 +1529,33 @@ Status VolaSession::evaluate_ladder(double T, std::span<const double> strikes,
   const ForwardCarry fc = interp_forward(T);
   const CorrectionBlend call_correction = correction_blend_at(T, Side::Call);
   const CorrectionBlend put_correction = correction_blend_at(T, Side::Put);
+
+  // Accuracy-trading cold price route: the shipped sigma-boundary interpolator
+  // replaces one Andersen-Lake boundary solve per contract with eight solves per
+  // side and bounded block. Its qualified real-SPY maximum price difference is
+  // 3.8e-5/share (below this sprint's 5e-5 healthy-vega gate). Greeks retain the
+  // exact existing route, cached prices retain the cached graph, and any batch
+  // rejection falls back contract-by-contract to the configured cold pricer.
+  // Fixed-capacity scratch keeps arbitrary public ladders allocation-free.
+  ColdPriceBatch cold_calls;
+  ColdPriceBatch cold_puts;
+  const auto scalar_price = [&](std::size_t row, Side side, double sigma) {
+    const auto result = american_price(in_.S, strikes[row], T, sigma, fc.rate, fc.q_eff, side,
+                                       in_.deam.method, in_.deam.al_opts);
+    price_out[row] = result.has_value() ? *result : kNaN;
+  };
+  const auto queue_cold = [&](std::size_t row, Side side, double sigma) {
+    ColdPriceBatch &batch = side == Side::Call ? cold_calls : cold_puts;
+    batch.strikes[batch.size] = strikes[row];
+    batch.sigmas[batch.size] = sigma;
+    batch.rows[batch.size] = row;
+    ++batch.size;
+    if (batch.size == kColdPriceBlockRows) {
+      flush_cold_price_batch(batch, side, in_.S, T, fc.rate, fc.q_eff, in_.deam.method,
+                             in_.deam.al_opts, price_out);
+    }
+  };
+
   for (std::size_t i = 0; i < n; ++i) {
     const double K = strikes[i];
     if (!std::isfinite(K) || !(K > 0.0)) {
@@ -1515,12 +1605,17 @@ Status VolaSession::evaluate_ladder(double T, std::span<const double> strikes,
 
     if (correction.usable(side)) {
       price_out[i] = american_price_cached(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, correction);
+    } else if (in_.deam.method == AmericanMethod::AndersenLake && std::isfinite(sigma) &&
+               sigma >= 0.0) {
+      queue_cold(i, side, sigma);
     } else {
-      const auto result = american_price(in_.S, K, T, sigma, fc.rate, fc.q_eff, side,
-                                         in_.deam.method, in_.deam.al_opts);
-      price_out[i] = result.has_value() ? *result : kNaN;
+      scalar_price(i, side, sigma);
     }
   }
+  flush_cold_price_batch(cold_calls, Side::Call, in_.S, T, fc.rate, fc.q_eff, in_.deam.method,
+                         in_.deam.al_opts, price_out);
+  flush_cold_price_batch(cold_puts, Side::Put, in_.S, T, fc.rate, fc.q_eff, in_.deam.method,
+                         in_.deam.al_opts, price_out);
   return Ok();
 }
 

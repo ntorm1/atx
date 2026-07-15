@@ -31,17 +31,17 @@
 #include <span>
 #include <vector>
 
-#include "atx/core/error.hpp"         // Error
-#include "atx/vol/american.hpp"       // AmericanGreeks
-#include "atx/vol/chain.hpp"          // OptionChain, OptionId
-#include "atx/vol/curve.hpp"          // DividendEvent
-#include "atx/vol/curve_selector.hpp" // SelectorConfig, SelectorResult
-#include "atx/vol/fit_policy.hpp"     // FitContext, FitPolicyConfig, FitDecision
+#include "atx/core/error.hpp"          // Error
+#include "atx/vol/american.hpp"        // AmericanGreeks
+#include "atx/vol/chain.hpp"           // OptionChain, OptionId
+#include "atx/vol/curve.hpp"           // DividendEvent
+#include "atx/vol/curve_selector.hpp"  // SelectorConfig, SelectorResult
+#include "atx/vol/fit_policy.hpp"      // FitContext, FitPolicyConfig, FitDecision
 #include "atx/vol/prepared_policy.hpp" // PreparedObservationPolicy
-#include "atx/vol/session.hpp"        // VolaSession, FitPreset, SessionDiagnostics
-#include "atx/vol/surface_policy.hpp" // explicit mark/risk purpose and quality policy
-#include "atx/vol/types.hpp"          // Result, Status, Side
-#include "atx/vol/vol_curve.hpp"      // CurveConfig, VolCurveKind
+#include "atx/vol/session.hpp"         // VolaSession, FitPreset, SessionDiagnostics
+#include "atx/vol/surface_policy.hpp"  // explicit mark/risk purpose and quality policy
+#include "atx/vol/types.hpp"           // Result, Status, Side
+#include "atx/vol/vol_curve.hpp"       // CurveConfig, VolCurveKind
 
 namespace atx::vol {
 
@@ -206,6 +206,10 @@ struct PricerConfig {
   // 0 => machine/env auto; 1 => serial. Distinct from value-chain evaluation
   // threads so an outer board scheduler can suppress nested fan-out.
   unsigned fit_workers{0};
+  // Publish a structured carry/de-Am/fit/audit/calendar wall-time breakdown in
+  // the built session diagnostics. Disabled by default to avoid clock reads on
+  // production fits.
+  bool collect_stage_timings{false};
   // Extra discrete cash dividends the surface build should honour. Usually left
   // empty — the chain's `MarketEnv` supplies the dividend schedule; a non-empty
   // value here overrides the env's divs.
@@ -444,9 +448,12 @@ public:
     return last_attempt_report_;
   }
 
-  [[nodiscard]] const std::optional<FitSnapshotProvenance> &published_provenance() const noexcept {
-    return published_provenance_;
-  }
+  // Provenance follows the same fail-closed default-purpose routing as
+  // surface(). The purpose-specific overload is required for a dual request:
+  // mark and risk may retain different last-known-good generations.
+  [[nodiscard]] const std::optional<FitSnapshotProvenance> &published_provenance() const noexcept;
+  [[nodiscard]] const std::optional<FitSnapshotProvenance> &
+  published_provenance(SurfacePurpose purpose) const noexcept;
 
   // Price the chain's options for the requested `fields`, fanned out across
   // `n_threads` workers (0 => cfg.n_threads; final 0 => hardware_concurrency,
@@ -516,7 +523,11 @@ private:
   std::optional<FitDecision> decision_;            // last unified policy outcome
   std::optional<SurfaceBuildReport> published_report_;
   std::optional<SurfaceBuildReport> last_attempt_report_;
-  std::optional<FitSnapshotProvenance> published_provenance_;
+  // A dual fit publishes and retains each purpose independently. Keeping one
+  // provenance record would either make a newly published mark unpriceable or
+  // misattribute a retained risk surface to the mark's newer chain snapshot.
+  std::optional<FitSnapshotProvenance> market_mark_provenance_;
+  std::optional<FitSnapshotProvenance> risk_provenance_;
   std::optional<FitDecision> served_decision_; // policy that produced served risk generation
 };
 

@@ -60,6 +60,7 @@
 #include "atx/vol/american.hpp" // al_fast_opts, AmericanMethod
 #include "atx/vol/backtest.hpp" // Clock, run_backtest, RunConfig, BacktestResult, MarketSnapshot
 #include "atx/vol/corpus.hpp"   // CorpusManifest, CorpusEntry, CorpusFitStatus
+#include "atx/vol/counters.hpp" // always-on sampled pricing telemetry
 #include "atx/vol/data.hpp"     // iso_to_ns, ns_to_iso_date, year_fraction, QuoteFrame
 #include "atx/vol/panel.hpp"    // make_synthetic_american_panel, SynthPanelSpec, load_chain_csv
 #include "atx/vol/priced_surface.hpp" // PricedSurface, PricingContext
@@ -452,9 +453,12 @@ int main(int argc, char **argv) {
                 static_cast<int>(query_pricing_label.size()), query_pricing_label.data(),
                 preload_ms);
   }
+  const counters::lightweight::Snapshot telemetry_before = counters::lightweight::snapshot();
   const auto t_run0 = std::chrono::steady_clock::now();
   auto res = run_backtest(*clock, strat, run_config);
   const auto t_run1 = std::chrono::steady_clock::now();
+  const counters::lightweight::Snapshot telemetry =
+      counters::lightweight::delta(telemetry_before, counters::lightweight::snapshot());
   if (!res) {
     std::fprintf(stderr, "run_backtest: %s\n", res.error().to_string().c_str());
     return 1;
@@ -494,6 +498,10 @@ int main(int argc, char **argv) {
        << "# cache_fast_build_loads=" << cache_stats.fast_build_loads << "\n"
        << "# cache_reuse_only_fast_hits=" << cache_stats.reuse_only_fast_hits << "\n"
        << "# cache_reuse_only_cold_resolutions=" << cache_stats.reuse_only_cold_resolutions << "\n"
+       << "# pricing_telemetry_sample_period=" << telemetry.sample_period << "\n"
+       << "# pricing_cache_attempts_est=" << telemetry.estimated_query_attempts() << "\n"
+       << "# pricing_cache_hit_rate=" << telemetry.cache_hit_rate() << "\n"
+       << "# pricing_cold_fallback_rate=" << telemetry.cold_fallback_rate() << "\n"
        << "# adaptive_confirm=" << (adaptive_confirm ? "true" : "false") << "\n"
        << "# snapshot_preload_ms=" << preload_ms << "\n"
        << "# window_start=" << dates.front() << "\n"
@@ -547,6 +555,15 @@ int main(int argc, char **argv) {
                 static_cast<unsigned long long>(cache_stats.reuse_only_fast_hits),
                 static_cast<unsigned long long>(cache_stats.reuse_only_cold_resolutions));
   }
+  std::printf(
+      "[pricing-telemetry] sample=1/%u attempts_est=%llu cache_hit=%.4f "
+      "representative_hit=%.4f cold_fallback=%.4f iv_est=%llu boundary/iv=%.2f exp/iv=%.2f\n",
+      telemetry.sample_period,
+      static_cast<unsigned long long>(telemetry.estimated_query_attempts()),
+      telemetry.cache_hit_rate(), telemetry.representative_hit_rate(),
+      telemetry.cold_fallback_rate(),
+      static_cast<unsigned long long>(telemetry.estimated_american_iv_inversions()),
+      telemetry.boundary_solves_per_inversion(), telemetry.exp_calls_per_inversion());
   if (synthetic) {
     std::printf("synthetic-corpus build: %.0f ms\n", build_ms);
     confirm_quote_slice_store(base / "quotes");

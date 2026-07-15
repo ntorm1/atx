@@ -11,6 +11,7 @@
 #   atx-vol-projection-bench <- contract_projection_bench.cpp
 #   atx-vol-simd-bench       <- simd_*bench.cpp
 #   atx-vol-fitting-bench    <- fitting_throughput_bench.cpp + corpus_build_bench.cpp
+#   atx-vol-e2e-hotpath-bench <- canonical real OPRA fit/value/backtest pipeline
 #                                (C0.3: calibration throughput as a first-class number)
 #
 # Shared, header-only helpers live beside them:
@@ -131,6 +132,46 @@ target_include_directories(atx-vol-fitting-bench
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../tests
 )
+
+add_executable(atx-vol-e2e-hotpath-bench
+    bench_main.cpp
+    e2e_hotpath_bench.cpp
+)
+target_link_libraries(atx-vol-e2e-hotpath-bench
+    PRIVATE
+        atx::vol
+        atx::core
+        benchmark::benchmark
+        atx_warnings
+        Threads::Threads
+)
+target_include_directories(atx-vol-e2e-hotpath-bench
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../tests
+)
+
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_test(
+        NAME atx-vol-e2e-benchmark-name-coverage
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/check_benchmark_names.py
+            --exe $<TARGET_FILE:atx-vol-e2e-hotpath-bench>
+            --required fit/e2e/spy_real
+            --required fit/e2e/100name
+            --required price/backtest/spy_real/cold
+            --required price/backtest/spy_real/representative_eager
+            --required price/backtest/spy_real/representative_warm
+            --required price/backtest/spy_real/representative_screen_cold_confirm
+    )
+    set_tests_properties(atx-vol-e2e-benchmark-name-coverage PROPERTIES LABELS atx_vol)
+    add_test(
+        NAME atx-vol-e2e-benchmark-name-checker-unit
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/check_benchmark_names_test.py
+    )
+    set_tests_properties(atx-vol-e2e-benchmark-name-checker-unit PROPERTIES LABELS atx_vol)
+endif()
 
 # Correctness-first V2 pipeline release gate. This target owns its main() and
 # computes admitted-only p50/p95 distributions directly because rejected fits

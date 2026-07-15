@@ -23,13 +23,13 @@
 #include <cstdint>
 #include <vector>
 
-#include "atx/vol/calib.hpp"           // FitObs, DeAmAuditDiagnostics
-#include "atx/vol/deamer.hpp"          // CarryDiagnostics
-#include "atx/vol/parity.hpp"          // ParityReport
-#include "atx/vol/surface_parity.hpp"  // SliceContext, SurfaceParityInputs
-#include "atx/vol/types.hpp"           // Result
-#include "atx/vol/universe.hpp"        // Underlying
-#include "atx/vol/vol_curve.hpp"       // CurveSurface, CurveConfig
+#include "atx/vol/calib.hpp"          // FitObs, DeAmAuditDiagnostics
+#include "atx/vol/deamer.hpp"         // CarryDiagnostics
+#include "atx/vol/parity.hpp"         // ParityReport
+#include "atx/vol/surface_parity.hpp" // SliceContext, SurfaceParityInputs
+#include "atx/vol/types.hpp"          // Result
+#include "atx/vol/universe.hpp"       // Underlying
+#include "atx/vol/vol_curve.hpp"      // CurveSurface, CurveConfig
 
 namespace atx::vol {
 
@@ -52,10 +52,10 @@ struct SliceInputCertification {
   CarryDiagnostics carry{};
   bool carry_available{false};
   DeAmAuditDiagnostics inversion{};
-  std::vector<FitObs> obs;                 // fit rows (ObsSet::obs)
-  std::vector<double> source_mids;         // ‖ obs; raw chain.mids at (K, side)
-  std::vector<std::uint8_t> source_flags;  // ‖ obs; raw chain.flags at (K, side)
-  std::vector<double> chain_mids;          // full-chain snapshot (incremental cache)
+  std::vector<FitObs> obs;                // fit rows (ObsSet::obs)
+  std::vector<double> source_mids;        // ‖ obs; raw chain.mids at (K, side)
+  std::vector<std::uint8_t> source_flags; // ‖ obs; raw chain.flags at (K, side)
+  std::vector<double> chain_mids;         // full-chain snapshot (incremental cache)
   std::vector<std::uint8_t> chain_flags;
   std::vector<double> chain_bids;
   std::vector<double> chain_asks;
@@ -83,6 +83,7 @@ struct CurveSurfaceReport {
   // `VolaSession::build` construct `SessionSliceDiagnostics` + the incremental
   // observation cache directly, without a second serial de-Am pass.
   std::vector<SliceInputCertification> input_certification;
+  SurfaceFitStageTimings fit_timings{};
 };
 
 // De-Americanize + fit each expiry chain of `under` into a `CurveSurface` of the

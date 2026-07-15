@@ -20,8 +20,8 @@
 //     read counters vanish.
 //   * `snapshot()` returns a Snapshot with `enabled == false` — the disabled
 //     sentinel a caller (or the zero-cost unit test) checks.
-//   * No global mutable state is defined, so there is no ABI surface and no
-//     static-init cost.
+//   * No exact-counter global mutable state is defined. The independent
+//     lightweight sampler below remains enabled in production builds.
 //
 // When the definition is PRESENT the counters are a header-only array of
 // `std::atomic<uint64_t>` (inline variables, C++20) incremented with relaxed
@@ -37,11 +37,12 @@
 //   const auto snap = atx::vol::counters::snapshot();
 //   if (snap.enabled) { use snap.get(Counter::BoundarySolves); }
 
+#include <atomic>
 #include <cstdint>
+#include <limits>
 
 #if defined(ATX_VOL_COUNTERS)
 #include <array>
-#include <atomic>
 #endif
 
 namespace atx::vol::counters {
@@ -203,5 +204,285 @@ inline void reset() noexcept {}
 #define ATX_VOL_COUNT_N(counter, n) ((void)0)
 
 #endif // ATX_VOL_COUNTERS
+
+// Always-on production telemetry. Unlike the exact diagnostic counters above,
+// this plane samples one in every kSamplePeriod root operations. Query outcomes
+// are mutually exclusive, and American-IV kernel work is accumulated in TLS and
+// published with three relaxed atomic additions only for a sampled inversion.
+// It therefore exposes useful rate/work estimates without putting an atomic on
+// every pricing event.
+namespace lightweight {
+
+inline constexpr std::uint32_t kSamplePeriod = 64u;
+static_assert((kSamplePeriod & (kSamplePeriod - 1u)) == 0u,
+              "lightweight counter sample period must be a power of two");
+
+struct Snapshot {
+  std::uint32_t sample_period{kSamplePeriod};
+  std::uint64_t representative_hit_samples{0u};
+  std::uint64_t other_cache_hit_samples{0u};
+  std::uint64_t cold_fallback_samples{0u};
+  std::uint64_t american_iv_samples{0u};
+  std::uint64_t boundary_solves_in_sampled_iv{0u};
+  std::uint64_t exp_calls_in_sampled_iv{0u};
+
+  [[nodiscard]] std::uint64_t cache_hit_samples() const noexcept {
+    return representative_hit_samples + other_cache_hit_samples;
+  }
+
+  [[nodiscard]] std::uint64_t query_attempt_samples() const noexcept {
+    return cache_hit_samples() + cold_fallback_samples;
+  }
+
+private:
+  [[nodiscard]] std::uint64_t estimate(std::uint64_t samples) const noexcept {
+    const std::uint64_t period = sample_period;
+    if (period != 0u && samples > std::numeric_limits<std::uint64_t>::max() / period) {
+      return std::numeric_limits<std::uint64_t>::max();
+    }
+    return samples * period;
+  }
+
+  [[nodiscard]] static double ratio(std::uint64_t numerator, std::uint64_t denominator) noexcept {
+    return denominator == 0u ? 0.0
+                             : static_cast<double>(numerator) / static_cast<double>(denominator);
+  }
+
+public:
+  [[nodiscard]] std::uint64_t estimated_query_attempts() const noexcept {
+    return estimate(query_attempt_samples());
+  }
+
+  [[nodiscard]] std::uint64_t estimated_cache_hits() const noexcept {
+    return estimate(cache_hit_samples());
+  }
+
+  [[nodiscard]] std::uint64_t estimated_cold_fallbacks() const noexcept {
+    return estimate(cold_fallback_samples);
+  }
+
+  [[nodiscard]] std::uint64_t estimated_american_iv_inversions() const noexcept {
+    return estimate(american_iv_samples);
+  }
+
+  [[nodiscard]] std::uint64_t estimated_boundary_solves() const noexcept {
+    return estimate(boundary_solves_in_sampled_iv);
+  }
+
+  [[nodiscard]] std::uint64_t estimated_exp_calls() const noexcept {
+    return estimate(exp_calls_in_sampled_iv);
+  }
+
+  [[nodiscard]] double cache_hit_rate() const noexcept {
+    return ratio(cache_hit_samples(), query_attempt_samples());
+  }
+
+  [[nodiscard]] double representative_hit_rate() const noexcept {
+    return ratio(representative_hit_samples, query_attempt_samples());
+  }
+
+  [[nodiscard]] double cold_fallback_rate() const noexcept {
+    return ratio(cold_fallback_samples, query_attempt_samples());
+  }
+
+  [[nodiscard]] double boundary_solves_per_inversion() const noexcept {
+    return ratio(boundary_solves_in_sampled_iv, american_iv_samples);
+  }
+
+  [[nodiscard]] double exp_calls_per_inversion() const noexcept {
+    return ratio(exp_calls_in_sampled_iv, american_iv_samples);
+  }
+};
+
+namespace detail {
+
+struct GlobalCounters {
+  std::atomic<std::uint64_t> representative_hits{0u};
+  std::atomic<std::uint64_t> other_cache_hits{0u};
+  std::atomic<std::uint64_t> cold_fallbacks{0u};
+  std::atomic<std::uint64_t> american_iv{0u};
+  std::atomic<std::uint64_t> boundary_solves{0u};
+  std::atomic<std::uint64_t> exp_calls{0u};
+};
+
+struct InversionAccumulator {
+  std::uint64_t boundary_solves{0u};
+  std::uint64_t exp_calls{0u};
+};
+
+struct SamplerState {
+  std::uint32_t position{0u};
+  std::uint32_t target{0u};
+  std::uint64_t random{0x9e3779b97f4a7c15ULL};
+};
+
+struct ThreadState {
+  SamplerState query{};
+  SamplerState american_iv{0u, 0u, 0xd1b54a32d192ed03ULL};
+  InversionAccumulator *active_inversion{nullptr};
+};
+
+inline GlobalCounters g_counters{};
+inline thread_local ThreadState t_state{};
+
+[[nodiscard]] inline bool take_sample(SamplerState &state) noexcept {
+  const bool sampled = state.position == state.target;
+  ++state.position;
+  if (state.position == kSamplePeriod) {
+    state.position = 0u;
+    // Xorshift64 changes the within-block sample position. Exactly one event
+    // per 64-event block is still selected, but a periodic pricing pattern
+    // cannot remain phase-locked to the sampler.
+    state.random ^= state.random << 13u;
+    state.random ^= state.random >> 7u;
+    state.random ^= state.random << 17u;
+    state.target = static_cast<std::uint32_t>(state.random) & (kSamplePeriod - 1u);
+  }
+  return sampled;
+}
+
+[[nodiscard]] inline std::uint64_t subtract_or_restart(std::uint64_t before,
+                                                       std::uint64_t after) noexcept {
+  return after >= before ? after - before : after;
+}
+
+} // namespace detail
+
+// One configured fast-cache attempt. If no hit is recorded before destruction,
+// the sampled operation is classified as a cold fallback. Copy/move are denied
+// so one attempt can publish at most one outcome.
+class QuerySample final {
+public:
+  explicit QuerySample(bool eligible) noexcept
+      : sampled_(eligible && detail::take_sample(detail::t_state.query)) {}
+
+  QuerySample(const QuerySample &) = delete;
+  QuerySample &operator=(const QuerySample &) = delete;
+  QuerySample(QuerySample &&) = delete;
+  QuerySample &operator=(QuerySample &&) = delete;
+
+  ~QuerySample() noexcept {
+    if (sampled_ && !completed_) {
+      // SAFETY: telemetry is an unordered aggregate; it does not synchronize
+      // application data, so relaxed ordering is sufficient.
+      detail::g_counters.cold_fallbacks.fetch_add(1u, std::memory_order_relaxed);
+    }
+  }
+
+  [[nodiscard]] bool sampled() const noexcept { return sampled_; }
+
+  void record_cache_hit(bool representative) noexcept {
+    if (!sampled_ || completed_) {
+      return;
+    }
+    std::atomic<std::uint64_t> &counter = representative ? detail::g_counters.representative_hits
+                                                         : detail::g_counters.other_cache_hits;
+    // SAFETY: see the destructor; no ordering relationship is consumed.
+    counter.fetch_add(1u, std::memory_order_relaxed);
+    completed_ = true;
+  }
+
+private:
+  bool sampled_{false};
+  bool completed_{false};
+};
+
+// Samples a complete American-IV inversion, including the boundary/exp work
+// performed by its residual evaluations. Nested scopes contribute to the outer
+// sampled inversion rather than publishing a second root operation.
+class AmericanIvSample final {
+public:
+  AmericanIvSample() noexcept : previous_(detail::t_state.active_inversion) {
+    if (previous_ == nullptr && detail::take_sample(detail::t_state.american_iv)) {
+      sampled_ = true;
+      detail::t_state.active_inversion = &accumulator_;
+    }
+  }
+
+  AmericanIvSample(const AmericanIvSample &) = delete;
+  AmericanIvSample &operator=(const AmericanIvSample &) = delete;
+  AmericanIvSample(AmericanIvSample &&) = delete;
+  AmericanIvSample &operator=(AmericanIvSample &&) = delete;
+
+  ~AmericanIvSample() noexcept {
+    if (!sampled_) {
+      return;
+    }
+    detail::t_state.active_inversion = previous_;
+    // SAFETY: these atomics publish diagnostic aggregates only. The TLS scope
+    // owns accumulator_ until all three additions complete.
+    detail::g_counters.american_iv.fetch_add(1u, std::memory_order_relaxed);
+    detail::g_counters.boundary_solves.fetch_add(accumulator_.boundary_solves,
+                                                 std::memory_order_relaxed);
+    detail::g_counters.exp_calls.fetch_add(accumulator_.exp_calls, std::memory_order_relaxed);
+  }
+
+private:
+  detail::InversionAccumulator accumulator_{};
+  detail::InversionAccumulator *previous_{nullptr};
+  bool sampled_{false};
+};
+
+inline void record_boundary_solves(std::uint64_t count = 1u) noexcept {
+  detail::InversionAccumulator *const active = detail::t_state.active_inversion;
+  if (active != nullptr) {
+    active->boundary_solves += count;
+  }
+}
+
+inline void record_exp_calls(std::uint64_t count) noexcept {
+  detail::InversionAccumulator *const active = detail::t_state.active_inversion;
+  if (active != nullptr) {
+    active->exp_calls += count;
+  }
+}
+
+[[nodiscard]] inline Snapshot snapshot() noexcept {
+  Snapshot result;
+  // SAFETY: a snapshot is a best-effort diagnostic view. Route attempts remain
+  // algebraically coherent because they are derived from exclusive outcomes.
+  result.representative_hit_samples =
+      detail::g_counters.representative_hits.load(std::memory_order_relaxed);
+  result.other_cache_hit_samples =
+      detail::g_counters.other_cache_hits.load(std::memory_order_relaxed);
+  result.cold_fallback_samples = detail::g_counters.cold_fallbacks.load(std::memory_order_relaxed);
+  result.american_iv_samples = detail::g_counters.american_iv.load(std::memory_order_relaxed);
+  result.boundary_solves_in_sampled_iv =
+      detail::g_counters.boundary_solves.load(std::memory_order_relaxed);
+  result.exp_calls_in_sampled_iv = detail::g_counters.exp_calls.load(std::memory_order_relaxed);
+  return result;
+}
+
+[[nodiscard]] inline Snapshot delta(const Snapshot &before, const Snapshot &after) noexcept {
+  Snapshot result;
+  result.sample_period = after.sample_period;
+  result.representative_hit_samples = detail::subtract_or_restart(before.representative_hit_samples,
+                                                                  after.representative_hit_samples);
+  result.other_cache_hit_samples =
+      detail::subtract_or_restart(before.other_cache_hit_samples, after.other_cache_hit_samples);
+  result.cold_fallback_samples =
+      detail::subtract_or_restart(before.cold_fallback_samples, after.cold_fallback_samples);
+  result.american_iv_samples =
+      detail::subtract_or_restart(before.american_iv_samples, after.american_iv_samples);
+  result.boundary_solves_in_sampled_iv = detail::subtract_or_restart(
+      before.boundary_solves_in_sampled_iv, after.boundary_solves_in_sampled_iv);
+  result.exp_calls_in_sampled_iv =
+      detail::subtract_or_restart(before.exp_calls_in_sampled_iv, after.exp_calls_in_sampled_iv);
+  return result;
+}
+
+// Test/measurement seam. Precondition: no concurrent producer and no active
+// AmericanIvSample on the calling thread.
+inline void reset() noexcept {
+  detail::g_counters.representative_hits.store(0u, std::memory_order_relaxed);
+  detail::g_counters.other_cache_hits.store(0u, std::memory_order_relaxed);
+  detail::g_counters.cold_fallbacks.store(0u, std::memory_order_relaxed);
+  detail::g_counters.american_iv.store(0u, std::memory_order_relaxed);
+  detail::g_counters.boundary_solves.store(0u, std::memory_order_relaxed);
+  detail::g_counters.exp_calls.store(0u, std::memory_order_relaxed);
+  detail::t_state = detail::ThreadState{};
+}
+
+} // namespace lightweight
 
 } // namespace atx::vol::counters

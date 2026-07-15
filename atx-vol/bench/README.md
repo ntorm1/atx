@@ -5,7 +5,7 @@ throughput work. Nothing in the performance sprint ships without a measured
 before/after through these targets; every claimed speedup is a **ratio** against
 a checked-in baseline, verified by `compare_baseline.py`.
 
-Six targets, built only when `ATX_BUILD_BENCH=ON` (the shared, atx-wide option —
+Benchmark targets are built only when `ATX_BUILD_BENCH=ON` (the shared, atx-wide option —
 Google Benchmark is **not** a hard atx-vol dependency):
 
 | target                    | source                          | what it measures |
@@ -16,6 +16,7 @@ Google Benchmark is **not** a hard atx-vol dependency):
 | `atx-vol-simd-bench` | `simd_*bench.cpp` | scalar-loop vs AVX2 SoA-batch throughput for the b76 value/vega, greeks, IV-invert, eSSVI backbone, and pnl-explain kernels |
 | `atx-vol-reloc-bench` | `backtest_throughput_bench.cpp`, `american_greeks_reuse_bench.cpp`, `strangle_solver_bench.cpp` | multi-underlier backtest steps/s, FD-vs-analytic American Greeks, and the SPY strangle solver's per-eval cost breakdown (relocated out of the test suite — they measure timing, not correctness) |
 | `atx-vol-fitting-bench` | `fitting_throughput_bench.cpp`, `corpus_build_bench.cpp` | whole-surface and single-slice eSSVI calibration cost (synthetic AND one real-OPRA SPY board), the 16.5k-anchor-comparable American-IV inversion rate, and 20-board corpus build throughput |
+| `atx-vol-e2e-hotpath-bench` | `e2e_hotpath_bench.cpp` | canonical real-OPRA fit/model-mark/snapshot path plus cold, representative, and screen-with-cold-confirm SPY backtests |
 
 The old `examples/*.cpp` hand-timed demos are left untouched — they are human
 demos, not gates.
@@ -37,6 +38,7 @@ current SSE2 build; that is the whole point of pinning it.
 ./build-rel/bin/atx-vol-american-bench.exe  --benchmark_out=amer.json --benchmark_out_format=json
 ./build-rel/bin/atx-vol-portfolio-bench.exe --benchmark_out=port.json --benchmark_out_format=json
 ./build-rel/bin/atx-vol-projection-bench.exe --benchmark_out=projection.json --benchmark_out_format=json
+./build-rel/bin/atx-vol-e2e-hotpath-bench.exe --benchmark_out=e2e.json --benchmark_out_format=json
 ```
 
 JSON is the deliverable format (`compare_baseline.py` reads it). Full-matrix wall
@@ -46,6 +48,15 @@ Filter while iterating, e.g. `--benchmark_filter='amer/american_price_cached/.*'
 Every case carries `->MinWarmUpTime(0.5)` (>= 0.5 s warm-up), `->Repetitions(5)`,
 `->ReportAggregatesOnly(false)`, and two custom statistics on top of Google
 Benchmark's median/mean/stddev: **`p95`** and **`cv`** (coefficient of variation).
+The two corpus-scale `fit/e2e/*` rows are the deliberate exception: each process
+runs exactly one corpus operation, and three separate processes supply the
+best-of-3 baseline. Their canonical value stage requests `OutputField::Prices`
+(model IV and model price) with production automatic valuation workers. Full
+`Prices | Bands` performs three market-IV inversions per quote and belongs only in
+an explicit noncanonical diagnostic, not the default accuracy panel or backtest
+hot path. The backtest rows retain the
+cold-oracle and screen/cold-confirm economic gates and use the common warmup and
+repetition policy above.
 
 ### Counters (`contracts/s`, `ns/option`, `bytes/s`, `positions/s`, ...)
 

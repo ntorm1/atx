@@ -904,6 +904,33 @@ TEST(PricerFitterValueChain, SameExpiryChunksRemainBitIdenticalAcrossWorkers) {
   }
 }
 
+TEST(PricerFitterValueChain, ColdPriceOnlyChunksAreDeterministicAcrossWorkers) {
+  SynthPanelSpec spec = make_spy_synthetic_spec();
+  spec.strikes.clear();
+  for (double strike = 540.0; strike <= 660.0 + 1.0e-9; strike += 1.5) {
+    spec.strikes.push_back(strike);
+  }
+  auto chain = make_chain_from_spec(spec);
+  ASSERT_TRUE(chain.has_value()) << chain.error().message();
+
+  PricerConfig config{.preset = FitPreset::Hft};
+  config.query_pricing_tier = QueryPricingTier::ColdReference;
+  PricerFitter fitter{config};
+  ASSERT_TRUE(fitter.fit(*chain).has_value());
+
+  const auto serial = fitter.value_chain(*chain, OutputField::Prices, 1u);
+  const auto parallel = fitter.value_chain(*chain, OutputField::Prices, 8u);
+  ASSERT_TRUE(serial.has_value()) << serial.error().message();
+  ASSERT_TRUE(parallel.has_value()) << parallel.error().message();
+  ASSERT_EQ(serial->ids, parallel->ids);
+  ASSERT_EQ(serial->model_iv.size(), parallel->model_iv.size());
+  ASSERT_EQ(serial->model_price.size(), parallel->model_price.size());
+  for (std::size_t i = 0u; i < serial->size(); ++i) {
+    EXPECT_DOUBLE_EQ(serial->model_iv[i], parallel->model_iv[i]);
+    EXPECT_DOUBLE_EQ(serial->model_price[i], parallel->model_price[i]);
+  }
+}
+
 TEST_F(PricerFitterTest, ValueChainSelectedIdsMatchesFullChainRowsInCallerOrder) {
   PricerFitter fitter{PricerConfig{.preset = FitPreset::Fast}};
   ASSERT_TRUE(fitter.fit(*chain_).has_value());
@@ -1646,6 +1673,37 @@ TEST_F(PricerFitterTest, RiskEssviRungServesOnlyAuditedInversions) {
   EXPECT_GT(diag.n_iv_proposed, std::size_t{0});
   EXPECT_EQ(diag.n_iv_audited, diag.n_iv_proposed);
   EXPECT_TRUE(diag.inversion_certified);
+}
+
+TEST_F(PricerFitterTest, StageTimingsAreOptInAndReportedByTheBuiltSession) {
+  PricerFitter uninstrumented{essvi_config()};
+  ASSERT_TRUE(uninstrumented.fit(*chain_).has_value());
+  ASSERT_NE(uninstrumented.surface(), nullptr);
+  const atx::vol::SurfaceFitStageTimings &disabled =
+      uninstrumented.surface()->diagnostics().fit_timings;
+  EXPECT_FALSE(disabled.collected);
+  EXPECT_EQ(disabled.total_wall_ms, 0.0);
+  EXPECT_EQ(disabled.carry_solve_ms, 0.0);
+  EXPECT_EQ(disabled.observation_deam_ms, 0.0);
+  EXPECT_EQ(disabled.slice_fit_ms, 0.0);
+  EXPECT_EQ(disabled.audit_ms, 0.0);
+  EXPECT_EQ(disabled.calendar_validation_ms, 0.0);
+
+  PricerConfig config = essvi_config();
+  config.collect_stage_timings = true;
+  config.fit_workers = 1u;
+  PricerFitter instrumented{config};
+  ASSERT_TRUE(instrumented.fit(*chain_).has_value());
+  ASSERT_NE(instrumented.surface(), nullptr);
+  const atx::vol::SurfaceFitStageTimings &reported =
+      instrumented.surface()->diagnostics().fit_timings;
+  EXPECT_TRUE(reported.collected);
+  EXPECT_GT(reported.total_wall_ms, 0.0);
+  EXPECT_GT(reported.carry_solve_ms, 0.0);
+  EXPECT_GT(reported.observation_deam_ms, 0.0);
+  EXPECT_GT(reported.slice_fit_ms, 0.0);
+  EXPECT_GE(reported.audit_ms, 0.0);
+  EXPECT_GE(reported.calendar_validation_ms, 0.0);
 }
 
 // Task 2d (carry I5): an expiry whose quotes are all crossed fails the carry

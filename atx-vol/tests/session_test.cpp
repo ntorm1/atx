@@ -10,9 +10,11 @@
 #include "atx/vol/american.hpp"
 #include "atx/vol/arb.hpp" // QuoteFlag (carry-skip diagnostics test)
 #include "atx/vol/calib.hpp"
+#include "atx/vol/counters.hpp"
 #include "atx/vol/curve.hpp"
 #include "atx/vol/data.hpp"
 #include "atx/vol/panel.hpp"
+#include "atx/vol/query_pricing.hpp"
 #include "atx/vol/s3.hpp"
 #include "atx/vol/session.hpp"
 #include "atx/vol/types.hpp"
@@ -594,6 +596,108 @@ TEST(VolaSession, EvaluateLadder_FusesModelOutputsAndMatchesScalarQueries) {
   std::vector<double> short_price(strikes.size() - 1u);
   EXPECT_FALSE(sess->evaluate_ladder(T, strikes, sides, {}, short_price, {}).has_value());
   EXPECT_TRUE(sess->evaluate_ladder(T, strikes, sides, iv, {}, {}).has_value());
+}
+
+TEST(VolaSession, EvaluateLadder_ColdPriceOnlyBatchesBySideWithinEconomicTolerance) {
+  const SynthPanelSpec spec = make_spec();
+  const auto panel = make_synthetic_american_panel(spec);
+  ASSERT_TRUE(panel.has_value()) << panel.error().to_string();
+
+  SessionInputs cold = make_inputs(spec);
+  cold.use_correction_cache = false;
+  cold.query_pricing_tier = atx::vol::QueryPricingTier::ColdReference;
+  const auto sess = VolaSession::from_frame(panel->frame, cold);
+  ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
+  ASSERT_FALSE(sess->correction_caches().any());
+
+  const double T = sess->expiries().back().T;
+  std::vector<double> strikes;
+  std::vector<Side> sides;
+  for (double strike = 70.0; strike <= 130.0; strike += 5.0) {
+    strikes.push_back(strike);
+    sides.push_back(Side::Call);
+    strikes.push_back(strike);
+    sides.push_back(Side::Put);
+  }
+  strikes.push_back(-5.0);
+  sides.push_back(Side::Put);
+
+  std::vector<double> iv(strikes.size());
+  std::vector<double> price(strikes.size());
+  atx::vol::counters::reset();
+  const auto status = sess->evaluate_ladder(T, strikes, sides, iv, price, {});
+  ASSERT_TRUE(status.has_value()) << status.error().to_string();
+  if constexpr (atx::vol::counters::counters_enabled()) {
+    const atx::vol::counters::Snapshot batch_counts = atx::vol::counters::snapshot();
+    // Thirteen valid rows per side are served by the default eight-node sigma
+    // interpolant. The pre-change scalar loop performs 26 boundary solves.
+    EXPECT_LE(batch_counts.get(atx::vol::counters::Counter::BoundarySolves), 16u);
+  }
+
+  double max_price_error = 0.0;
+  for (std::size_t i = 0; i < strikes.size(); ++i) {
+    if (!(strikes[i] > 0.0)) {
+      EXPECT_TRUE(std::isnan(iv[i]));
+      EXPECT_TRUE(std::isnan(price[i]));
+      continue;
+    }
+    const auto oracle = sess->fair_value(strikes[i], T, sides[i]);
+    ASSERT_TRUE(oracle.has_value()) << oracle.error().to_string();
+    const double error = std::fabs(price[i] - *oracle);
+    max_price_error = std::max(max_price_error, error);
+
+    // The sprint's healthy-vega economic gate is the tighter of half a penny
+    // tick and one tenth of one vol-bp's dollar vega. Low-vega wings retain the
+    // independent absolute slice-interpolation bound below.
+    const double vega = atx::vol::american_vega(
+        spec.spot, strikes[i], T, iv[i], sess->rate_at(T), sess->q_eff_at(T), sides[i],
+        static_cast<const atx::vol::CorrectionCache *>(nullptr));
+    if (vega >= 5.0) {
+      const double economic_gate = std::min(0.005, 0.1 * vega * 1.0e-4);
+      EXPECT_LE(error, economic_gate) << "row=" << i << " vega=" << vega;
+    }
+  }
+  EXPECT_LE(max_price_error, 5.0e-5);
+
+  // Requesting Greeks deliberately bypasses the accuracy-trading price-only
+  // route: both the bundle and the accompanying mark remain the scalar cold
+  // result, exactly as before.
+  const std::vector<double> greek_strikes = {90.0, 110.0};
+  const std::vector<Side> greek_sides = {Side::Put, Side::Call};
+  std::vector<double> greek_iv(greek_strikes.size());
+  std::vector<double> greek_prices(greek_strikes.size());
+  std::vector<atx::vol::AmericanGreeks> greeks(greek_strikes.size());
+  ASSERT_TRUE(sess->evaluate_ladder(T, greek_strikes, greek_sides, greek_iv, greek_prices, greeks)
+                  .has_value());
+  for (std::size_t i = 0u; i < greek_strikes.size(); ++i) {
+    const auto scalar = sess->greeks(greek_strikes[i], T, greek_sides[i]);
+    ASSERT_TRUE(scalar.has_value()) << scalar.error().to_string();
+    EXPECT_DOUBLE_EQ(greek_prices[i], scalar->price);
+    EXPECT_DOUBLE_EQ(greeks[i].price, scalar->price);
+    EXPECT_DOUBLE_EQ(greeks[i].delta, scalar->delta);
+    EXPECT_DOUBLE_EQ(greeks[i].vega, scalar->vega);
+  }
+}
+
+TEST(VolaSession, EvaluateLadder_CachedPriceOnlyRetainsExactCachedRoute) {
+  const SynthPanelSpec spec = make_spec();
+  const auto panel = make_synthetic_american_panel(spec);
+  ASSERT_TRUE(panel.has_value()) << panel.error().to_string();
+  const auto sess = VolaSession::from_frame(panel->frame, make_inputs(spec));
+  ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
+  ASSERT_TRUE(sess->correction_caches().any());
+
+  const double T = sess->expiries().front().T;
+  const std::vector<double> strikes = {80.0, 90.0, 100.0, 110.0, 120.0};
+  const std::vector<Side> sides = {Side::Put, Side::Put, Side::Call, Side::Call, Side::Call};
+  std::vector<double> iv(strikes.size());
+  std::vector<double> price(strikes.size());
+  ASSERT_TRUE(sess->evaluate_ladder(T, strikes, sides, iv, price, {}).has_value());
+  for (std::size_t i = 0; i < strikes.size(); ++i) {
+    const auto scalar = sess->fair_value(strikes[i], T, sides[i]);
+    ASSERT_TRUE(scalar.has_value()) << scalar.error().to_string();
+    EXPECT_DOUBLE_EQ(price[i], *scalar);
+  }
 }
 
 TEST(FitPreset, RobustPresetBuildsSessionOnKnownPanel) {

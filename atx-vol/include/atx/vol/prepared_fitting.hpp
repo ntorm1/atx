@@ -240,11 +240,13 @@ struct PrepareExpiryDiagnostics {
   // Configured preparation.
   std::uint32_t n_fit_rows{0};
   std::uint32_t n_audit_dropped{0};
+  // Populated only when SurfaceParityInputs::collect_stage_timings is true.
+  double carry_solve_ms{0.0};
+  double observation_deam_ms{0.0};
 };
 
 [[nodiscard]] Result<CanonicalPreparedExpiry>
-prepare_expiry(const Chain &chain, std::uint32_t expiry_index,
-               const SurfaceParityInputs &inputs, PreparedObservationPolicy policy,
-               PrepareExpiryDiagnostics *diag = nullptr);
+prepare_expiry(const Chain &chain, std::uint32_t expiry_index, const SurfaceParityInputs &inputs,
+               PreparedObservationPolicy policy, PrepareExpiryDiagnostics *diag = nullptr);
 
 } // namespace atx::vol

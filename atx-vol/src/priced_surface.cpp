@@ -569,12 +569,16 @@ double PricedSurface::total_variance(double K, double T) const noexcept {
 
 Result<double> PricedSurface::price_resolved(const ResolvedSurfacePoint &p, Side side,
                                              QueryExecution execution) const {
+  counters::lightweight::QuerySample telemetry_sample{execution == QueryExecution::Configured &&
+                                                      query_accelerator_ != nullptr};
   if (execution == QueryExecution::Configured && query_accelerator_ != nullptr) {
     const CorrectionBlend correction = query_accelerator_->blend_at(p, side, query_pricing_tier_);
     if (correction.usable(side)) {
       const double cached =
           american_price_cached(pricing_.S, p.K, p.T, p.sigma, p.rate, p.q_eff, side, correction);
       if (std::isfinite(cached)) {
+        telemetry_sample.record_cache_hit(query_pricing_tier_ ==
+                                          QueryPricingTier::RepresentativeFast);
         return Ok(cached);
       }
     }
@@ -586,12 +590,16 @@ Result<double> PricedSurface::price_resolved(const ResolvedSurfacePoint &p, Side
 Result<AmericanGreeks> PricedSurface::greeks_resolved(const ResolvedSurfacePoint &p, Side side,
                                                       bool analytic,
                                                       QueryExecution execution) const {
+  counters::lightweight::QuerySample telemetry_sample{execution == QueryExecution::Configured &&
+                                                      query_accelerator_ != nullptr};
   if (execution == QueryExecution::Configured && query_accelerator_ != nullptr) {
     const CorrectionBlend correction = query_accelerator_->blend_at(p, side, query_pricing_tier_);
     if (correction.usable(side)) {
       auto cached =
           american_greeks(pricing_.S, p.K, p.T, p.sigma, p.rate, p.q_eff, side, correction);
       if (cached.has_value()) {
+        telemetry_sample.record_cache_hit(query_pricing_tier_ ==
+                                          QueryPricingTier::RepresentativeFast);
         return cached;
       }
     }
@@ -606,12 +614,16 @@ Result<AmericanGreeks> PricedSurface::greeks_resolved(const ResolvedSurfacePoint
 
 Result<double> PricedSurface::delta_resolved(const ResolvedSurfacePoint &p, Side side,
                                              QueryExecution execution) const {
+  counters::lightweight::QuerySample telemetry_sample{execution == QueryExecution::Configured &&
+                                                      query_accelerator_ != nullptr};
   if (execution == QueryExecution::Configured && query_accelerator_ != nullptr) {
     const CorrectionBlend correction = query_accelerator_->blend_at(p, side, query_pricing_tier_);
     if (correction.usable(side)) {
       auto cached =
           american_delta(pricing_.S, p.K, p.T, p.sigma, p.rate, p.q_eff, side, correction);
       if (cached.has_value()) {
+        telemetry_sample.record_cache_hit(query_pricing_tier_ ==
+                                          QueryPricingTier::RepresentativeFast);
         return cached;
       }
     }
@@ -622,12 +634,16 @@ Result<double> PricedSurface::delta_resolved(const ResolvedSurfacePoint &p, Side
 
 Result<double> PricedSurface::vega_resolved(const ResolvedSurfacePoint &p, Side side,
                                             QueryExecution execution) const {
+  counters::lightweight::QuerySample telemetry_sample{execution == QueryExecution::Configured &&
+                                                      query_accelerator_ != nullptr};
   if (execution == QueryExecution::Configured && query_accelerator_ != nullptr) {
     const CorrectionBlend correction = query_accelerator_->blend_at(p, side, query_pricing_tier_);
     if (correction.usable(side)) {
       const double cached =
           american_vega(pricing_.S, p.K, p.T, p.sigma, p.rate, p.q_eff, side, correction);
       if (std::isfinite(cached)) {
+        telemetry_sample.record_cache_hit(query_pricing_tier_ ==
+                                          QueryPricingTier::RepresentativeFast);
         return Ok(cached);
       }
     }

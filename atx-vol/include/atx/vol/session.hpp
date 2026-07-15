@@ -137,6 +137,9 @@ struct SessionInputs {
   // that already parallelize across boards set this to 1 to avoid nested H^2
   // fan-out. The eSSVI path is sequential and ignores this field.
   unsigned fit_workers{0};
+  // Opt-in structured fit-stage timing. False keeps the production hot path
+  // free of steady-clock calls; true publishes the report in diagnostics().
+  bool collect_stage_timings{false};
   // Cross-expiry interpolation mode for arbitrary-T queries served off this
   // session's surface. PiecewiseTotalVariance (default) is bit-identical to
   // current behavior; ShapeBlend is the FLEX-style vol-multiple blend. Only
@@ -270,9 +273,10 @@ struct SessionDiagnostics {
   ParityDiagnosticState parity_state{ParityDiagnosticState::NotScored};
   // SpiderRock-style band-violation stats, rolled up from each expiry's
   // ParityReport::band (record-only; not used to gate slice selection).
-  std::size_t n_bid_miss{}; // sum over slices
-  std::size_t n_ask_miss{}; // sum over slices
-  double max_prc_err{};     // max over slices (premium units)
+  std::size_t n_bid_miss{};             // sum over slices
+  std::size_t n_ask_miss{};             // sum over slices
+  double max_prc_err{};                 // max over slices (premium units)
+  SurfaceFitStageTimings fit_timings{}; // zero/uncollected unless explicitly requested
   // eMove implied from the two fitted expiries bracketing the first
   // scheduled event in `(now_ts_ns, last fitted expiry]` (SessionInputs::
   // events), via `implied_emove` on those two expiries' own ATM total
@@ -442,6 +446,10 @@ public:
   // Carry is resolved once for the expiry and surface IV once per strike. When
   // `greeks_out` is requested, its American price also supplies `price_out`, so
   // the cached correction graph is differentiated only once per contract.
+  // A price-only uncached Andersen-Lake ladder uses the qualified eight-node
+  // sigma-boundary interpolation in bounded side-specific blocks (real-SPY max
+  // difference 3.8e-5/share versus scalar cold). Any rejected block falls back
+  // to scalar cold pricing; cached prices and every Greek route are unchanged.
   // Every output span is optional (empty means unrequested); each nonempty span
   // must match `strikes.size()`. Invalid strikes are isolated as NaNs. The hot
   // path is allocation-free and safe for concurrent calls on a built session.

@@ -33,6 +33,9 @@ using atx::vol::ErrorCode;
 using atx::vol::FitDecision;
 using atx::vol::FitPreset;
 using atx::vol::FitQualityMode;
+using atx::vol::has_validation_failure;
+using atx::vol::make_spy_synthetic_spec;
+using atx::vol::make_synthetic_american_panel;
 using atx::vol::OptionChain;
 using atx::vol::OptionId;
 using atx::vol::OutputField;
@@ -50,16 +53,13 @@ using atx::vol::SynthExpiry;
 using atx::vol::SynthPanelSpec;
 using atx::vol::ValidationFailure;
 using atx::vol::VolCurveKind;
-using atx::vol::has_validation_failure;
-using atx::vol::make_spy_synthetic_spec;
-using atx::vol::make_synthetic_american_panel;
 using atx::vol::year_fraction;
 
 [[nodiscard]] bool same(double a, double b) noexcept {
   return (std::isnan(a) && std::isnan(b)) || a == b;
 }
 
-void expect_same_greeks(const AmericanGreeks& a, const AmericanGreeks& b) {
+void expect_same_greeks(const AmericanGreeks &a, const AmericanGreeks &b) {
   EXPECT_TRUE(same(a.delta, b.delta));
   EXPECT_TRUE(same(a.gamma, b.gamma));
   EXPECT_TRUE(same(a.vega, b.vega));
@@ -71,8 +71,7 @@ void expect_same_greeks(const AmericanGreeks& a, const AmericanGreeks& b) {
   EXPECT_TRUE(same(a.price, b.price));
 }
 
-void expect_deterministic(const ChainValuation& serial,
-                          const ChainValuation& threaded) {
+void expect_deterministic(const ChainValuation &serial, const ChainValuation &threaded) {
   ASSERT_EQ(serial.size(), threaded.size());
   ASSERT_EQ(serial.filled, threaded.filled);
   ASSERT_EQ(serial.model_price.size(), threaded.model_price.size());
@@ -95,9 +94,11 @@ void expect_deterministic(const ChainValuation& serial,
 [[nodiscard]] std::optional<OptionChain> make_known_truth_chain() {
   const auto spec = make_spy_synthetic_spec();
   auto panel = make_synthetic_american_panel(spec);
-  if (!panel) return std::nullopt;
+  if (!panel)
+    return std::nullopt;
   auto chain = OptionChain::from_frame(panel->frame, spec.r, spec.spot);
-  if (!chain) return std::nullopt;
+  if (!chain)
+    return std::nullopt;
   return std::optional<OptionChain>{std::move(*chain)};
 }
 
@@ -110,11 +111,9 @@ void expect_deterministic(const ChainValuation& serial,
   return cfg;
 }
 
-class SurfaceV2Qualification
-    : public ::testing::TestWithParam<FitQualityMode> {};
+class SurfaceV2Qualification : public ::testing::TestWithParam<FitQualityMode> {};
 
-TEST_P(SurfaceV2Qualification,
-       KnownTruthBoardPublishesSeparatedAdmittedDeterministicBundle) {
+TEST_P(SurfaceV2Qualification, KnownTruthBoardPublishesSeparatedAdmittedDeterministicBundle) {
   auto chain = make_known_truth_chain();
   ASSERT_TRUE(chain.has_value());
   const FitQualityMode mode = GetParam();
@@ -135,6 +134,13 @@ TEST_P(SurfaceV2Qualification,
   EXPECT_EQ(bundle.risk->quality_mode(), mode);
   EXPECT_EQ(bundle.market_mark->generation(), bundle.candidate_generation);
   EXPECT_EQ(bundle.risk->generation(), bundle.candidate_generation);
+  ASSERT_TRUE(fitter.published_provenance(SurfacePurpose::MarketMark).has_value());
+  ASSERT_TRUE(fitter.published_provenance(SurfacePurpose::Risk).has_value());
+  EXPECT_EQ(fitter.published_provenance(SurfacePurpose::MarketMark)->chain_instance_id,
+            chain->instance_id());
+  EXPECT_EQ(fitter.published_provenance(SurfacePurpose::Risk)->chain_instance_id,
+            chain->instance_id());
+  EXPECT_EQ(fitter.published_provenance()->chain_instance_id, chain->instance_id());
 
   EXPECT_EQ(bundle.market_mark_health.state, SurfaceState::Healthy);
   EXPECT_EQ(bundle.market_mark_health.purpose, SurfacePurpose::MarketMark);
@@ -145,7 +151,7 @@ TEST_P(SurfaceV2Qualification,
   EXPECT_TRUE(bundle.risk_health.serving_candidate());
   EXPECT_FALSE(bundle.risk_health.using_fallback());
 
-  const auto& digest = bundle.risk_health.validation;
+  const auto &digest = bundle.risk_health.validation;
   EXPECT_TRUE(digest.admitted());
   EXPECT_EQ(digest.failures, ValidationFailure::None);
   EXPECT_NE(digest.validation_id, 0u);
@@ -167,7 +173,7 @@ TEST_P(SurfaceV2Qualification,
   EXPECT_EQ(mark_priced->kind_at(0), VolCurveKind::LinearVariance);
   EXPECT_NE(risk_priced->kind_at(0), VolCurveKind::LinearVariance);
 
-  const auto& input_diag = bundle.risk->diagnostics();
+  const auto &input_diag = bundle.risk->diagnostics();
   EXPECT_TRUE(input_diag.carry_confident);
   EXPECT_TRUE(input_diag.inversion_certified);
   EXPECT_EQ(input_diag.n_iv_rejected_residual, 0u);
@@ -179,18 +185,20 @@ TEST_P(SurfaceV2Qualification,
   expect_deterministic(*serial, *threaded);
 }
 
-INSTANTIATE_TEST_SUITE_P(
-    AllQualityModes, SurfaceV2Qualification,
-    ::testing::Values(FitQualityMode::Latency, FitQualityMode::Balanced,
-                      FitQualityMode::Accuracy),
-    [](const ::testing::TestParamInfo<FitQualityMode>& info) {
-      switch (info.param) {
-        case FitQualityMode::Latency: return std::string{"Latency"};
-        case FitQualityMode::Balanced: return std::string{"Balanced"};
-        case FitQualityMode::Accuracy: return std::string{"Accuracy"};
-      }
-      return std::string{"Unknown"};
-    });
+INSTANTIATE_TEST_SUITE_P(AllQualityModes, SurfaceV2Qualification,
+                         ::testing::Values(FitQualityMode::Latency, FitQualityMode::Balanced,
+                                           FitQualityMode::Accuracy),
+                         [](const ::testing::TestParamInfo<FitQualityMode> &info) {
+                           switch (info.param) {
+                           case FitQualityMode::Latency:
+                             return std::string{"Latency"};
+                           case FitQualityMode::Balanced:
+                             return std::string{"Balanced"};
+                           case FitQualityMode::Accuracy:
+                             return std::string{"Accuracy"};
+                           }
+                           return std::string{"Unknown"};
+                         });
 
 TEST(SurfaceV2Fallback, InvalidRefreshKeepsLastAdmittedRiskGeneration) {
   auto chain = make_known_truth_chain();
@@ -208,10 +216,9 @@ TEST(SurfaceV2Fallback, InvalidRefreshKeepsLastAdmittedRiskGeneration) {
 
   const std::vector<OptionId> ids = chain->ids();
   std::vector<double> bids(ids.size(), 2.0);
-  std::vector<double> asks(ids.size(), 1.0);  // crossed: every row is invalid
+  std::vector<double> asks(ids.size(), 1.0); // crossed: every row is invalid
   ASSERT_TRUE(chain
-                  ->update_quotes(std::span<const OptionId>(ids),
-                                  std::span<const double>(bids),
+                  ->update_quotes(std::span<const OptionId>(ids), std::span<const double>(bids),
                                   std::span<const double>(asks))
                   .has_value());
 
@@ -228,8 +235,8 @@ TEST(SurfaceV2Fallback, InvalidRefreshKeepsLastAdmittedRiskGeneration) {
   EXPECT_FALSE(after.risk_health.serving_candidate());
   EXPECT_EQ(after.risk_health.served_generation, admitted_generation);
   EXPECT_EQ(after.risk_health.fallback_generation, admitted_generation);
-  EXPECT_TRUE(has_validation_failure(after.risk_health.reasons,
-                                     ValidationFailure::InsufficientData));
+  EXPECT_TRUE(
+      has_validation_failure(after.risk_health.reasons, ValidationFailure::InsufficientData));
   EXPECT_EQ(after.risk_health.validation.validation_id, 0u);
   EXPECT_EQ(before.risk_health.validation.validation_id, validation_id);
   EXPECT_DOUBLE_EQ(after.risk->iv(chain->spot(), sample_T), sample_iv);
@@ -257,12 +264,11 @@ TEST_P(SurfaceV2Qualification, RiskBuildRunsTheModeCarryAndInversionBudgets) {
   const auto bundle = fitter.bundle();
   ASSERT_NE(bundle.risk, nullptr);
 
-  const SessionInputs& inputs = bundle.risk->session().inputs();
+  const SessionInputs &inputs = bundle.risk->session().inputs();
   const std::size_t expected_n_atm = mode == FitQualityMode::Latency    ? 3u
                                      : mode == FitQualityMode::Balanced ? 8u
                                                                         : 12u;
-  const std::size_t expected_max_pairs =
-      mode == FitQualityMode::Latency ? 6u : 12u;
+  const std::size_t expected_max_pairs = mode == FitQualityMode::Latency ? 6u : 12u;
   EXPECT_EQ(inputs.deam.n_atm, expected_n_atm);
   EXPECT_EQ(inputs.deam.max_borrow_pairs, expected_max_pairs);
   ASSERT_TRUE(inputs.deam.al_opts.has_value());
@@ -271,14 +277,13 @@ TEST_P(SurfaceV2Qualification, RiskBuildRunsTheModeCarryAndInversionBudgets) {
   EXPECT_EQ(inputs.deam.al_opts->n_quadrature, accurate.n_quadrature);
   EXPECT_EQ(inputs.deam.al_opts->max_newton_iter, accurate.max_newton_iter);
   EXPECT_DOUBLE_EQ(inputs.deam.al_opts->tol, accurate.tol);
-  const double expected_iv_tol =
-      mode == FitQualityMode::Latency ? 1.0e-5 : 1.0e-7;
+  const double expected_iv_tol = mode == FitQualityMode::Latency ? 1.0e-5 : 1.0e-7;
   EXPECT_DOUBLE_EQ(inputs.deam.iv_tol, expected_iv_tol);
   EXPECT_TRUE(inputs.deam.require_carry_confidence);
 
   // And the carry strip actually resolved multi-pair at (or above) the
   // admission gate's confidence floor.
-  const auto& diagnostics = bundle.risk->diagnostics();
+  const auto &diagnostics = bundle.risk->diagnostics();
   EXPECT_TRUE(diagnostics.carry_confident);
   EXPECT_GE(diagnostics.min_carry_effective_pairs, 3.0);
 }
@@ -296,8 +301,7 @@ TEST(SurfaceV2Fallback, DisabledFallbackMakesRejectedGenerationUnserviceable) {
   std::vector<double> bids(ids.size(), 2.0);
   std::vector<double> asks(ids.size(), 1.0);
   ASSERT_TRUE(chain
-                  ->update_quotes(std::span<const OptionId>(ids),
-                                  std::span<const double>(bids),
+                  ->update_quotes(std::span<const OptionId>(ids), std::span<const double>(bids),
                                   std::span<const double>(asks))
                   .has_value());
 
@@ -314,23 +318,24 @@ TEST(SurfaceV2Fallback, DisabledFallbackMakesRejectedGenerationUnserviceable) {
 // min_confident_borrow_pairs — so the risk build (require_carry_confidence)
 // drops every slice and fails outright, while the Hft LinearVariance mark —
 // single-pair borrow, no confidence gate — still publishes Healthy.
-void strip_put_bids_to_two_pairs(OptionChain& chain) {
+void strip_put_bids_to_two_pairs(OptionChain &chain) {
   std::vector<OptionId> ids;
   std::vector<double> bids;
   std::vector<double> asks;
   for (const OptionId id : chain.ids()) {
     const auto option = chain.at(id);
     ASSERT_TRUE(option.has_value());
-    if (option->side != Side::Put) continue;
-    if (option->strike == 595.0 || option->strike == 605.0) continue;
+    if (option->side != Side::Put)
+      continue;
+    if (option->strike == 595.0 || option->strike == 605.0)
+      continue;
     ids.push_back(id);
-    bids.push_back(0.0);  // one-sided quote: kills the co-terminal carry pair
+    bids.push_back(0.0); // one-sided quote: kills the co-terminal carry pair
     asks.push_back(option->ask);
   }
   ASSERT_FALSE(ids.empty());
   ASSERT_TRUE(chain
-                  .update_quotes(std::span<const OptionId>(ids),
-                                 std::span<const double>(bids),
+                  .update_quotes(std::span<const OptionId>(ids), std::span<const double>(bids),
                                  std::span<const double>(asks))
                   .has_value());
 }
@@ -353,7 +358,7 @@ TEST(SurfaceV2FailClosed, UnservedRiskIsNeverAnsweredByTheMarketMark) {
   config.fallback = SurfaceFallback::None;
   CurveConfig essvi;
   essvi.kind = VolCurveKind::Essvi;
-  config.curve = essvi;  // pinned: one deterministic risk build, no ladder
+  config.curve = essvi; // pinned: one deterministic risk build, no ladder
   PricerFitter fitter{config};
   EXPECT_FALSE(fitter.fit(*chain).has_value());
 
@@ -362,6 +367,13 @@ TEST(SurfaceV2FailClosed, UnservedRiskIsNeverAnsweredByTheMarketMark) {
   EXPECT_EQ(bundle.market_mark_health.state, SurfaceState::Healthy);
   EXPECT_EQ(bundle.risk, nullptr);
   EXPECT_EQ(bundle.risk_health.state, SurfaceState::Rejected);
+  ASSERT_TRUE(fitter.published_provenance(SurfacePurpose::MarketMark).has_value());
+  EXPECT_EQ(fitter.published_provenance(SurfacePurpose::MarketMark)->chain_instance_id,
+            chain->instance_id());
+  EXPECT_FALSE(fitter.published_provenance(SurfacePurpose::Risk).has_value());
+  // The no-argument accessor follows the requested default purpose and stays
+  // fail-closed even though explicit mark provenance exists.
+  EXPECT_FALSE(fitter.published_provenance().has_value());
 
   // Fail-closed purpose-less serving: no silent mark-for-risk substitution.
   EXPECT_FALSE(fitter.fitted());
@@ -381,7 +393,7 @@ TEST(SurfaceV2FailClosed, MarkOnlyConfigServesTheMarkByDefault) {
   auto chain = make_known_truth_chain();
   ASSERT_TRUE(chain.has_value());
   PricerConfig config;
-  config.outputs = SurfaceOutputs::MarketMark;  // explicit mark-only request
+  config.outputs = SurfaceOutputs::MarketMark; // explicit mark-only request
   PricerFitter fitter{config};
   ASSERT_TRUE(fitter.fit(*chain).has_value());
 
@@ -411,9 +423,9 @@ TEST(SurfaceV2LegacyCompat, HftWithPinnedLinearVarianceIsAMarkOnlyRequest) {
   ASSERT_NE(bundle.market_mark, nullptr);
   EXPECT_EQ(bundle.market_mark_health.state, SurfaceState::Healthy);
   EXPECT_EQ(bundle.market_mark->quality_mode(), FitQualityMode::Latency);
-  EXPECT_EQ(bundle.risk, nullptr);  // never an implicit risk request
+  EXPECT_EQ(bundle.risk, nullptr); // never an implicit risk request
 
-  ASSERT_NE(fitter.surface(), nullptr);  // mark-only request serves its mark
+  ASSERT_NE(fitter.surface(), nullptr); // mark-only request serves its mark
   EXPECT_EQ(fitter.surface()->purpose(), SurfacePurpose::MarketMark);
   auto priced = fitter.surface()->session().to_priced_surface();
   ASSERT_TRUE(priced.has_value()) << priced.error().to_string();
@@ -429,7 +441,7 @@ TEST(SurfaceV2LegacyCompat, InvalidRiskPolicyStillPublishesTheRequestedMark) {
   auto chain = make_known_truth_chain();
   ASSERT_TRUE(chain.has_value());
   PricerConfig config = config_for(FitQualityMode::Balanced);
-  config.enforce_calendar_floor = false;  // disabling a mandatory risk gate
+  config.enforce_calendar_floor = false; // disabling a mandatory risk gate
   PricerFitter fitter{config};
   const auto fitted = fitter.fit(*chain);
   ASSERT_FALSE(fitted.has_value());
@@ -442,6 +454,11 @@ TEST(SurfaceV2LegacyCompat, InvalidRiskPolicyStillPublishesTheRequestedMark) {
   EXPECT_EQ(bundle.risk, nullptr);
   EXPECT_EQ(bundle.risk_health.state, SurfaceState::Rejected);
   EXPECT_EQ(bundle.risk_health.candidate_generation, bundle.candidate_generation);
+  ASSERT_TRUE(fitter.published_provenance(SurfacePurpose::MarketMark).has_value());
+  EXPECT_EQ(fitter.published_provenance(SurfacePurpose::MarketMark)->board_revision,
+            chain->quote_revision());
+  EXPECT_FALSE(fitter.published_provenance(SurfacePurpose::Risk).has_value());
+  EXPECT_FALSE(fitter.published_provenance().has_value());
 
   EXPECT_TRUE(
       fitter.value_chain(*chain, OutputField::ModelIV, SurfacePurpose::MarketMark).has_value());
@@ -500,17 +517,17 @@ TEST(SurfaceV2LegacyCompat, LegacyRiskPresetsRouteThroughTheSharedMappingTable) 
   SynthPanelSpec spec = make_spy_synthetic_spec();
   spec.expiries.clear();
   struct Row {
-    const char* iso;
+    const char *iso;
     double sigma0;
     double skew_k;
     double c2;
   };
   const Row rows[] = {
-      {"2026-07-17", 0.10, -0.40, 0.10},  // ~1m calm base
-      {"2026-09-18", 0.16, -0.55, 0.15},  // ~3m steep put wing
-      {"2026-10-16", 0.19, -0.03, 0.02},  // ~4m flat smile hugging the 3m wing
+      {"2026-07-17", 0.10, -0.40, 0.10}, // ~1m calm base
+      {"2026-09-18", 0.16, -0.55, 0.15}, // ~3m steep put wing
+      {"2026-10-16", 0.19, -0.03, 0.02}, // ~4m flat smile hugging the 3m wing
   };
-  for (const Row& row : rows) {
+  for (const Row &row : rows) {
     SynthExpiry expiry;
     expiry.expiry_iso = row.iso;
     expiry.T = year_fraction(spec.snapshot_iso, row.iso);
@@ -519,9 +536,11 @@ TEST(SurfaceV2LegacyCompat, LegacyRiskPresetsRouteThroughTheSharedMappingTable) 
     spec.expiries.push_back(expiry);
   }
   auto panel = make_synthetic_american_panel(spec);
-  if (!panel) return std::nullopt;
+  if (!panel)
+    return std::nullopt;
   auto chain = OptionChain::from_frame(panel->frame, spec.r, spec.spot);
-  if (!chain) return std::nullopt;
+  if (!chain)
+    return std::nullopt;
   return std::optional<OptionChain>{std::move(*chain)};
 }
 
@@ -546,7 +565,7 @@ TEST(SurfaceV2Provenance, ValidationFallbackAdmissionRecordsTheServedFamily) {
   EXPECT_TRUE(bundle.risk_health.validation.admitted());
 
   ASSERT_TRUE(fitter.decision().has_value());
-  const FitDecision& decision = *fitter.decision();
+  const FitDecision &decision = *fitter.decision();
   EXPECT_TRUE(decision.used_fallback);
   EXPECT_EQ(decision.primary_curve.kind, VolCurveKind::ConvexDense);
   EXPECT_NE(decision.curve.kind, VolCurveKind::ConvexDense);
@@ -558,4 +577,4 @@ TEST(SurfaceV2Provenance, ValidationFallbackAdmissionRecordsTheServedFamily) {
   EXPECT_EQ(priced->kind_at(0), decision.curve.kind);
 }
 
-}  // namespace
+} // namespace

@@ -106,8 +106,8 @@ TEST(SpyBidAskRegression, PricerFitterExplicitConvexInBand) {
               sc.n_clean_in, sc.n_clean);
   EXPECT_GE(sc.px_clean, 70.0)
       << "risk is shape-safe; the separate market-mark surface owns quote fidelity";
-  const auto mark_sc = price_in_band(fitter.market_mark_surface()->session(),
-                                     chain->underlying(), board->spot(), board->r);
+  const auto mark_sc = price_in_band(fitter.market_mark_surface()->session(), chain->underlying(),
+                                     board->spot(), board->r);
   EXPECT_GE(mark_sc.px_clean, 98.0);
 }
 
@@ -144,13 +144,15 @@ TEST(SpyBidAskRegression, AutoSelectPicksDenseForSpy) {
     GTEST_SKIP() << "SPY OPRA parquet fixture not found";
   }
 
-  // No curve config => the unified policy recognizes the penny-dense ETF board
-  // and takes the bounded Latency risk route without publishing LinearVariance.
+  // No curve config => the unified policy recognizes the penny-dense ETF board.
+  // Naming Latency explicitly requests the v2 mark+risk pipeline; an otherwise
+  // legacy request intentionally serves the Hft LinearVariance market-mark route.
   auto chain = OptionChain::from_frame(board->panel.frame, board->env());
   ASSERT_TRUE(chain.has_value()) << chain.error().to_string();
 
   PricerConfig cfg;
   cfg.preset = FitPreset::Fast; // cfg.curve left unset => auto-select
+  cfg.quality_mode = FitQualityMode::Latency;
   PricerFitter fitter{cfg};
   const Status fit = fitter.fit(*chain);
   ASSERT_TRUE(fit.has_value()) << fit.error().to_string();
@@ -167,9 +169,8 @@ TEST(SpyBidAskRegression, AutoSelectPicksDenseForSpy) {
   const auto sc =
       price_in_band(fitter.surface()->session(), chain->underlying(), board->spot(), board->r);
   std::printf("[SPY auto-select] pxCLN(cold)=%.2f%%\n", sc.px_clean);
-  EXPECT_GE(sc.px_clean, 50.0)
-      << "Latency risk trades mark fidelity for bounded certified work";
-  const auto mark_sc = price_in_band(fitter.market_mark_surface()->session(),
-                                     chain->underlying(), board->spot(), board->r);
+  EXPECT_GE(sc.px_clean, 50.0) << "Latency risk trades mark fidelity for bounded certified work";
+  const auto mark_sc = price_in_band(fitter.market_mark_surface()->session(), chain->underlying(),
+                                     board->spot(), board->r);
   EXPECT_GE(mark_sc.px_clean, 98.0);
 }

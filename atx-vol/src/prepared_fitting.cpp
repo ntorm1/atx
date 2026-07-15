@@ -1,6 +1,7 @@
 #include "atx/vol/prepared_fitting.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -396,23 +397,22 @@ Result<PreparedSlice> PreparedSliceBuilder::prepare_legacy(const Chain &chain,
             chain.mids[quote_index], audit_spread, *market_iv, inputs.S, strike, chain.T, inputs.r,
             inputs.q_eff, side, inputs.max_iv_residual_half_spreads);
         if (!audit || !audit->passed) {
-          const Result<double> accurate =
-              european_equiv_iv(chain.mids[quote_index], inputs.S, strike, chain.T, inputs.r,
-                                inputs.q_eff, side, AmericanMethod::AndersenLake, std::nullopt,
-                                nullptr);
+          const Result<double> accurate = european_equiv_iv(
+              chain.mids[quote_index], inputs.S, strike, chain.T, inputs.r, inputs.q_eff, side,
+              AmericanMethod::AndersenLake, std::nullopt, nullptr);
           bool dropped = true;
           if (accurate.has_value()) {
             audit = audit_european_equiv_iv(chain.mids[quote_index], audit_spread, *accurate,
-                                            inputs.S, strike, chain.T, inputs.r, inputs.q_eff,
-                                            side, inputs.max_iv_residual_half_spreads);
+                                            inputs.S, strike, chain.T, inputs.r, inputs.q_eff, side,
+                                            inputs.max_iv_residual_half_spreads);
             if (audit && audit->passed) {
               market_iv = accurate;
               dropped = false;
             }
           }
           if (dropped) {
-            market_iv = Err(ErrorCode::Unavailable,
-                            "prepare_legacy: fit-inversion audit rejected the row");
+            market_iv =
+                Err(ErrorCode::Unavailable, "prepare_legacy: fit-inversion audit rejected the row");
             ++n_audit_dropped;
           }
         }
@@ -514,8 +514,7 @@ Result<PreparedBoard> PreparedBoard::create(std::vector<PreparedSlice> slices) {
   return Ok(std::move(board));
 }
 
-Result<CanonicalPreparedExpiry> prepare_expiry(const Chain &chain,
-                                               std::uint32_t expiry_index,
+Result<CanonicalPreparedExpiry> prepare_expiry(const Chain &chain, std::uint32_t expiry_index,
                                                const SurfaceParityInputs &inputs,
                                                PreparedObservationPolicy policy,
                                                PrepareExpiryDiagnostics *diag) {
@@ -549,8 +548,16 @@ Result<CanonicalPreparedExpiry> prepare_expiry(const Chain &chain,
     return Err(ErrorCode::InvalidArgument, "prepare_expiry: non-finite expiry rate");
   }
 
+  using StageClock = std::chrono::steady_clock;
+  const bool time_stages = inputs.collect_stage_timings && diag != nullptr;
+  const StageClock::time_point carry_start =
+      time_stages ? StageClock::now() : StageClock::time_point{};
   Result<ChainForward> carry_res =
       resolve_chain_forward(chain, inputs.S, rate, inputs.cash_divs, inputs.now_ts_ns, inputs.deam);
+  if (time_stages) {
+    diag->carry_solve_ms =
+        std::chrono::duration<double, std::milli>(StageClock::now() - carry_start).count();
+  }
   if (!carry_res.has_value()) {
     if (diag != nullptr) {
       diag->carry_failed = true; // §5.2: the caller surfaces the carry skip
@@ -576,8 +583,7 @@ Result<CanonicalPreparedExpiry> prepare_expiry(const Chain &chain,
   const AmericanCorrectionCaches fit_caches =
       policy == PreparedObservationPolicy::LegacyEssviCompatibility
           ? inputs.deam.caches
-          : (inputs.use_deam_cache_for_fit ? inputs.deam.caches
-                                           : AmericanCorrectionCaches{});
+          : (inputs.use_deam_cache_for_fit ? inputs.deam.caches : AmericanCorrectionCaches{});
   PreparedSliceInputs prepare_inputs;
   prepare_inputs.expiry_index = expiry_index;
   prepare_inputs.S = inputs.S;
@@ -603,7 +609,14 @@ Result<CanonicalPreparedExpiry> prepare_expiry(const Chain &chain,
     prepare_inputs.out_legacy_fit_rows = &diag->n_fit_rows;
     prepare_inputs.out_legacy_audit_dropped = &diag->n_audit_dropped;
   }
-  ATX_TRY(PreparedSlice prepared, PreparedSlice::create(chain, prepare_inputs));
+  const StageClock::time_point observation_start =
+      time_stages ? StageClock::now() : StageClock::time_point{};
+  Result<PreparedSlice> prepared_result = PreparedSlice::create(chain, prepare_inputs);
+  if (time_stages) {
+    diag->observation_deam_ms =
+        std::chrono::duration<double, std::milli>(StageClock::now() - observation_start).count();
+  }
+  ATX_TRY(PreparedSlice prepared, std::move(prepared_result));
   if (prepared.fit_observations().size() < kMinPreparedFitRows) {
     return Err(ErrorCode::NotFound, "prepare_expiry: fewer than five usable rows");
   }

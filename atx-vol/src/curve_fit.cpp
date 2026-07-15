@@ -107,9 +107,9 @@ struct ChainPrepass {
   // certification resolve does not).
   CarryDiagnostics carry;
   bool carry_available = false;
-  std::vector<double> source_mids;         // ‖ prepared fit rows; raw chain.mids at (K, side)
-  std::vector<std::uint8_t> source_flags;  // ‖ prepared fit rows; raw chain.flags at (K, side)
-  std::vector<double> chain_mids;          // full-chain snapshot
+  std::vector<double> source_mids;        // ‖ prepared fit rows; raw chain.mids at (K, side)
+  std::vector<std::uint8_t> source_flags; // ‖ prepared fit rows; raw chain.flags at (K, side)
+  std::vector<double> chain_mids;         // full-chain snapshot
   std::vector<std::uint8_t> chain_flags;
   std::vector<double> chain_bids;
   std::vector<double> chain_asks;
@@ -126,8 +126,7 @@ struct ChainPrepass {
 // `chain_index(strike_idx, fit_obs.side)`. Clears BOTH outputs (defensive) if
 // any row fails to map back onto the chain.
 void source_quote_lookup(const Chain &chain, std::span<const FitObs> obs,
-                         std::vector<double> &out_mids,
-                         std::vector<std::uint8_t> &out_flags) {
+                         std::vector<double> &out_mids, std::vector<std::uint8_t> &out_flags) {
   out_mids.clear();
   out_flags.clear();
   out_mids.reserve(obs.size());
@@ -184,7 +183,7 @@ void source_quote_lookup(const Chain &chain, std::span<const FitObs> obs,
 [[nodiscard]] std::vector<ChainPrepass> run_deam_prepass(const Underlying &under,
                                                          const SurfaceParityInputs &in,
                                                          VolCurveKind kind, unsigned n_threads,
-                                                         bool profile) {
+                                                         bool time_stages) {
   const bool use_fit_cache = allow_fit_cache(in, kind);
   std::vector<ChainPrepass> prepass(under.chains.size());
   // Long/dense expiries have highly variable Andersen-Lake cost. Run the
@@ -204,10 +203,11 @@ void source_quote_lookup(const Chain &chain, std::span<const FitObs> obs,
     if (!(T > 0.0)) {
       return;
     }
-    const auto t_forward0 = ProfileClock::now();
+    const ProfileClock::time_point t_forward0 =
+        time_stages ? ProfileClock::now() : ProfileClock::time_point{};
     const auto d_res =
         resolve_chain_forward(chain, in.S, rate, in.cash_divs, in.now_ts_ns, in.deam);
-    if (profile) {
+    if (time_stages) {
       slot.ms_forward_borrow = elapsed_ms(t_forward0, ProfileClock::now());
     }
     if (!d_res) {
@@ -246,9 +246,10 @@ void source_quote_lookup(const Chain &chain, std::span<const FitObs> obs,
     prepare_inputs.audit_fit_inversions = in.deam.audit_fit_inversions;
     prepare_inputs.max_iv_residual_half_spreads = in.deam.max_iv_residual_half_spreads;
     prepare_inputs.prepare_scoring = in.score_parity;
-    const auto t_obs0 = ProfileClock::now();
+    const ProfileClock::time_point t_obs0 =
+        time_stages ? ProfileClock::now() : ProfileClock::time_point{};
     Result<PreparedSlice> prepared = PreparedSlice::create(chain, prepare_inputs);
-    if (profile) {
+    if (time_stages) {
       slot.ms_obs_eu = elapsed_ms(t_obs0, ProfileClock::now());
     }
     if (!prepared || prepared->fit_observations().size() < kMinPreparedFitRows) {
@@ -280,10 +281,11 @@ void source_quote_lookup(const Chain &chain, std::span<const FitObs> obs,
     } else {
       DeAmOptions cert_deam = in.deam;
       cert_deam.caches = cert_caches;
-      const auto t_cert0 = ProfileClock::now();
+      const ProfileClock::time_point t_cert0 =
+          time_stages ? ProfileClock::now() : ProfileClock::time_point{};
       const auto cert_res =
           resolve_chain_forward(chain, in.S, rate, in.cash_divs, in.now_ts_ns, cert_deam);
-      if (profile) {
+      if (time_stages) {
         slot.ms_forward_borrow += elapsed_ms(t_cert0, ProfileClock::now());
       }
       if (cert_res) {
@@ -330,7 +332,9 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
   out.input_certification.reserve(under.chains.size());
   double worst = std::numeric_limits<double>::infinity();
   const bool profile = profile_enabled();
-  const auto t_fit0 = ProfileClock::now();
+  const bool time_stages = profile || in.collect_stage_timings;
+  const ProfileClock::time_point t_fit0 =
+      time_stages ? ProfileClock::now() : ProfileClock::time_point{};
 
   // Phase 1 (PARALLEL): the cold per-chain de-Am — resolve_chain_forward (term
   // forward/borrow) + build_observations_european (the 99.5% recipe's European
@@ -342,7 +346,8 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
   // (fine for the coarse eSSVI backbone) knocks the penny-tight dense fit out
   // of band. Correctness over speed here — cold Andersen-Lake per strike, just
   // run concurrently across chains.
-  const auto t_pre0 = ProfileClock::now();
+  const ProfileClock::time_point t_pre0 =
+      time_stages ? ProfileClock::now() : ProfileClock::time_point{};
   // The prepass fans out over jthreads; parallel_for_dynamic now rethrows the
   // first worker exception on this thread (e.g. std::bad_alloc from an
   // allocating de-Am body). Convert it to an Err so this Result-returning API
@@ -351,14 +356,14 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
   // (perf C1) out of each committed slot instead of copying them again.
   std::vector<ChainPrepass> prepass;
   try {
-    prepass = run_deam_prepass(under, in, cfg.kind, in.fit_workers, profile);
+    prepass = run_deam_prepass(under, in, cfg.kind, in.fit_workers, time_stages);
   } catch (const std::exception &e) {
     return Err(ErrorCode::Internal,
                std::string("fit_curve_surface: de-Am prepass failed: ") + e.what());
   } catch (...) {
     return Err(ErrorCode::Internal, "fit_curve_surface: de-Am prepass failed (unknown exception)");
   }
-  const double ms_prepass = profile ? elapsed_ms(t_pre0, ProfileClock::now()) : 0.0;
+  const double ms_prepass = time_stages ? elapsed_ms(t_pre0, ProfileClock::now()) : 0.0;
   for (const ChainPrepass &pre : prepass) {
     if (pre.carry_failed) {
       ++out.n_carry_skipped; // §5.2: carry-dropped expiries are surfaced
@@ -412,10 +417,11 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
     // so enforcement does not materially slow the fit. On boards with genuine
     // calendar structure this trades some price-in-band tightness for no-arb — an
     // explicit product choice (see spy_bidask_regression_test's rebaselined floor).
-    const auto t_slice0 = ProfileClock::now();
+    const ProfileClock::time_point t_slice0 =
+        time_stages ? ProfileClock::now() : ProfileClock::time_point{};
     auto slice_res = fit_slice_curve(cfg, prepared.fit_observations(), F, T, df, w_prev,
                                      calendar_floor_knots, prev_data_k_range);
-    if (profile) {
+    if (time_stages) {
       ms_fit_slice += elapsed_ms(t_slice0, ProfileClock::now());
     }
     if (!slice_res) {
@@ -454,10 +460,11 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
             fb_floor_knots.push_back(kFbCalMin + kFbCalDk * static_cast<double>(gi));
           }
         }
-        const auto t_fb0 = ProfileClock::now();
+        const ProfileClock::time_point t_fb0 =
+            time_stages ? ProfileClock::now() : ProfileClock::time_point{};
         auto fb_res = fit_slice_curve(fallback_cfg, prepared.fit_observations(), F, T, df, w_prev,
                                       std::span<const double>{fb_floor_knots});
-        if (profile) {
+        if (time_stages) {
           ms_fit_slice += elapsed_ms(t_fb0, ProfileClock::now());
         }
         if (fb_res) {
@@ -493,7 +500,8 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
     //    intended "no diagnostic" sentinel.
     ParityReport parity{};
     if (in.score_parity) {
-      const auto t_parity0 = ProfileClock::now();
+      const ProfileClock::time_point t_parity0 =
+          time_stages ? ProfileClock::now() : ProfileClock::time_point{};
       const PreparedScoreColumns &score = prepared.score_columns();
       if (score.k_log.size() >= 4u) {
         std::vector<double> model_iv;
@@ -520,7 +528,7 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
           parity = *pr;
         }
       }
-      if (profile) {
+      if (time_stages) {
         ms_chain_parity += elapsed_ms(t_parity0, ProfileClock::now());
       }
     }
@@ -563,7 +571,7 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
   }
   out.n_slices = out.surface.n_slices();
   out.worst_frac_within_bidask = std::isfinite(worst) ? worst : 0.0;
-  if (profile) {
+  if (time_stages) {
     double ms_forward_borrow = 0.0;
     double ms_obs_eu = 0.0;
     std::size_t n_usable = 0;
@@ -575,6 +583,17 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
         ++n_usable;
         n_quotes += pre.prepared->fit_observations().size();
       }
+    }
+    if (in.collect_stage_timings) {
+      out.fit_timings.carry_solve_ms = ms_forward_borrow;
+      out.fit_timings.observation_deam_ms = ms_obs_eu;
+      out.fit_timings.slice_fit_ms = ms_fit_slice;
+      out.fit_timings.audit_ms = ms_chain_parity;
+      out.fit_timings.total_wall_ms = elapsed_ms(t_fit0, ProfileClock::now());
+      out.fit_timings.collected = true;
+    }
+    if (!profile) {
+      return Ok(std::move(out));
     }
     std::fprintf(stderr,
                  "[ATX_VOL_PROFILE] curve_fit_total=%.3fms prepass_wall=%.3fms "

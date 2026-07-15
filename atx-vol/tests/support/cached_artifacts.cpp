@@ -20,28 +20,28 @@ namespace atx::vol::test {
 namespace fs = std::filesystem;
 
 fs::path cached_spy_convex_dense() {
-  const fs::path dir{"artifact-cache"};  // under the ctest CWD (build tree)
+  const fs::path dir{"artifact-cache"}; // under the ctest CWD (build tree)
   std::error_code ec;
   fs::create_directories(dir, ec);
 
-  // Suffixed with kArchiveMajor (the ATXVSA on-wire format version, from
-  // surface_archive.hpp) so a format bump invalidates any stale cache built by
-  // an older binary.
+  // `shapev3` is the fitted-surface behavior revision, independent of the
+  // ATXVSA wire-format version. Bump it whenever an intentional fit-policy or
+  // curve-shape change makes an archive from an older binary semantically stale;
+  // kArchiveMajor alone cannot detect that case.
   const fs::path file =
-      dir / ("spy_convexdense_nc40_shapev2_v" + std::to_string(kArchiveMajor) + ".atxvsa");
+      dir / ("spy_convexdense_nc40_shapev3_v" + std::to_string(kArchiveMajor) + ".atxvsa");
   if (fs::exists(file)) {
     return file;
   }
 
   auto board = atx::vol::testkit::load_opra_board("spy", "SPY");
   if (!board.has_value()) {
-    return {};  // caller GTEST_SKIPs, same as today
+    return {}; // caller GTEST_SKIPs, same as today
   }
 
   // The 99.5% recipe — verbatim from spy_archive_roundtrip_test.cpp /
   // spy_bidask_regression_test.cpp: Fast preset, ConvexDense, node_cap 40.
-  SessionInputs in = make_session_inputs(FitPreset::Fast, board->spot(), board->r,
-                                         board->now_ns());
+  SessionInputs in = make_session_inputs(FitPreset::Fast, board->spot(), board->r, board->now_ns());
   in.cash_divs = board->panel.frame.divs;
   in.curve.kind = VolCurveKind::ConvexDense;
   in.curve.convex.node_cap = 40;
@@ -62,8 +62,7 @@ fs::path cached_spy_convex_dense() {
   // rename means another process already published a byte-identical archive
   // (same fit recipe on the same fixture) — the loser just discards its tmp.
   std::mt19937_64 rng{std::random_device{}()};
-  const fs::path tmp =
-      dir / (file.filename().string() + "." + std::to_string(rng()) + ".tmp");
+  const fs::path tmp = dir / (file.filename().string() + "." + std::to_string(rng()) + ".tmp");
   const std::array<SurfaceArchiveItem, 1> items{SurfaceArchiveItem{"SPY", &*priced}};
   auto wrote = write_surface_archive_file(tmp.string(), items);
   if (!wrote.has_value()) {
@@ -73,14 +72,13 @@ fs::path cached_spy_convex_dense() {
   }
   fs::rename(tmp, file, ec);
   if (ec) {
-    fs::remove(tmp, ec);  // lost the race: someone else published — fine
+    fs::remove(tmp, ec); // lost the race: someone else published — fine
   }
   return file;
 }
 
-fs::path cached_corpus(const char* key,
-                       const std::function<std::vector<CorpusBoard>()>& boards) {
-  const fs::path root{"artifact-cache"};  // under the ctest CWD (build tree)
+fs::path cached_corpus(const char *key, const std::function<std::vector<CorpusBoard>()> &boards) {
+  const fs::path root{"artifact-cache"}; // under the ctest CWD (build tree)
   const fs::path dir = root / key;
   std::error_code ec;
   if (fs::exists(dir / "manifest.tsv")) {
@@ -98,7 +96,7 @@ fs::path cached_corpus(const char* key,
   auto man = build_corpus(boards(), tmp.string());
   if (!man.has_value()) {
     ADD_FAILURE() << "cached_corpus(" << key << "): " << man.error().to_string();
-    return tmp;  // let the caller fail on load with context (tmp dir left as-is)
+    return tmp; // let the caller fail on load with context (tmp dir left as-is)
   }
 
   // build_corpus bakes its OUT-DIR ARGUMENT (here, the tmp dir) into every
@@ -108,7 +106,7 @@ fs::path cached_corpus(const char* key,
   // entry of that date) and re-persist the manifest before publishing, so a
   // caller that reads dir/manifest.tsv after the rename finds archive_path
   // values that actually resolve.
-  for (CorpusEntry& e : man->entries) {
+  for (CorpusEntry &e : man->entries) {
     if (!e.archive_path.empty()) {
       e.archive_path = (dir / (e.date + ".atxvsa")).generic_string();
     }
@@ -121,13 +119,13 @@ fs::path cached_corpus(const char* key,
 
   fs::rename(tmp, dir, ec);
   if (ec) {
-    fs::remove_all(tmp, ec);  // lost the publish race — the winner's dir is equivalent
+    fs::remove_all(tmp, ec); // lost the publish race — the winner's dir is equivalent
   }
   return dir;
 }
 
-fs::path cached_hft_fit(const atx::vol::testkit::SpyFitFixture& fixture) {
-  const fs::path dir{"artifact-cache"};  // under the ctest CWD (build tree)
+fs::path cached_hft_fit(const atx::vol::testkit::SpyFitFixture &fixture) {
+  const fs::path dir{"artifact-cache"}; // under the ctest CWD (build tree)
   std::error_code ec;
   fs::create_directories(dir, ec);
 
@@ -141,7 +139,7 @@ fs::path cached_hft_fit(const atx::vol::testkit::SpyFitFixture& fixture) {
 
   auto board = atx::vol::testkit::load_spy_fit_fixture(fixture);
   if (!board.has_value()) {
-    return {};  // caller GTEST_SKIPs, same as today
+    return {}; // caller GTEST_SKIPs, same as today
   }
 
   // Verbatim fit recipe from SpyFitCorpus.HftColdStartPreserves98PctOnEveryAvailableSlice
@@ -168,8 +166,7 @@ fs::path cached_hft_fit(const atx::vol::testkit::SpyFitFixture& fixture) {
 
   // Atomic publish, identical pattern to cached_spy_convex_dense.
   std::mt19937_64 rng{std::random_device{}()};
-  const fs::path tmp =
-      dir / (file.filename().string() + "." + std::to_string(rng()) + ".tmp");
+  const fs::path tmp = dir / (file.filename().string() + "." + std::to_string(rng()) + ".tmp");
   const std::array<SurfaceArchiveItem, 1> items{SurfaceArchiveItem{"SPY", &*priced}};
   auto wrote = write_surface_archive_file(tmp.string(), items);
   if (!wrote.has_value()) {
@@ -179,9 +176,9 @@ fs::path cached_hft_fit(const atx::vol::testkit::SpyFitFixture& fixture) {
   }
   fs::rename(tmp, file, ec);
   if (ec) {
-    fs::remove(tmp, ec);  // lost the race: someone else published — fine
+    fs::remove(tmp, ec); // lost the race: someone else published — fine
   }
   return file;
 }
 
-}  // namespace atx::vol::test
+} // namespace atx::vol::test

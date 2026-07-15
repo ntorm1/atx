@@ -625,6 +625,7 @@ void al_init_nodes(AlBoundary &b, std::uint16_t n, double T, double K, double r,
 
 void al_seed_boundary(AlBoundary &b, double sigma, double r, double q) noexcept {
   ATX_VOL_COUNT(BoundarySolves); // one cold boundary seed (BAW re-seed per node)
+  counters::lightweight::record_boundary_solves();
   b.y[0] = 0.0;
   for (std::uint16_t i = 1; i < b.n; ++i) {
     const double tau_i = b.tau[i];
@@ -720,6 +721,7 @@ void al_bind_geometry(const AlBoundary &bnd, AlWorkspace &ws, double sigma, doub
       ws.geo_weru[gbase + i] = wv[i] * std::exp(r * u);
       ws.geo_wequ[gbase + i] = wv[i] * std::exp(q * u);
       ATX_VOL_COUNT_N(ExpCalls, 2); // exp(r·u), exp(q·u) — now paid ONCE per solve
+      counters::lightweight::record_exp_calls(2u);
     }
   }
 }
@@ -816,6 +818,7 @@ void eqn_b_ND_impl(const AlBoundary &bnd, const AlWorkspace &ws, unsigned node_i
       d_int += wv[i] * std::exp(q * u) * norm_cdf(dpv);
       ATX_VOL_COUNT(LogCalls);
       ATX_VOL_COUNT_N(ExpCalls, 2);
+      counters::lightweight::record_exp_calls(2u);
       ATX_VOL_COUNT_N(NormCdfCalls, 2);
     }
   }
@@ -980,6 +983,7 @@ template <unsigned NB, unsigned NQ>
   ATX_VOL_COUNT(PremiumQuadEvals);
   ATX_VOL_COUNT(LogCalls);
   ATX_VOL_COUNT_N(ExpCalls, 2);
+  counters::lightweight::record_exp_calls(2u);
   ATX_VOL_COUNT_N(NormCdfCalls, 2);
   return 2.0 * z * (r * b.K * dr * norm_cdf(-dp + v) - q * S * dq * norm_cdf(-dp));
 }

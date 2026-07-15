@@ -10,6 +10,7 @@
 #include "atx/core/error.hpp"
 #include "atx/vol/american.hpp"
 #include "atx/vol/correction.hpp" // CorrectionCache, american_price_cached hot path
+#include "atx/vol/counters.hpp"
 #include "atx/vol/implied_vol.hpp"
 #include "atx/vol/types.hpp"
 
@@ -113,6 +114,7 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
                                          double q, Side side, AmericanMethod method, double tol,
                                          std::uint16_t max_iter, const std::optional<AlOpts> &opts,
                                          const Correction *correction, double warm_start) noexcept {
+  counters::lightweight::AmericanIvSample telemetry_sample;
   // Route price + vega through the cached hot path when the cache matches side.
   const bool use_cache = cache_usable(correction, side);
   const Correction *const active_correction = use_cache ? correction : nullptr;

@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <optional>
 #include <span>
 #include <string>
@@ -10,6 +11,7 @@
 #include "atx/vol/american.hpp"
 #include "atx/vol/american_iv.hpp"
 #include "atx/vol/correction.hpp"
+#include "atx/vol/counters.hpp"
 #include "atx/vol/types.hpp"
 
 // American implied-vol inverter coverage.
@@ -309,4 +311,26 @@ TEST(AmericanIv, Batch_SpanLengthMismatch_ReturnsInvalidArgument) {
       american_implied_vol_batch(price, 100.0, K, 1.0, 0.05, 0.0, Side::Call, iv_out, status);
   ASSERT_FALSE(s.has_value());
   EXPECT_EQ(s.error().code(), atx::vol::ErrorCode::InvalidArgument);
+}
+
+TEST(AmericanIv, LightweightTelemetryMeasuresCompleteInversionKernel) {
+  namespace lw = atx::vol::counters::lightweight;
+  constexpr double S = 100.0;
+  constexpr double K = 105.0;
+  constexpr double T = 0.75;
+  constexpr double sigma = 0.24;
+  constexpr double r = 0.04;
+  constexpr double q = 0.01;
+  const double price =
+      value_or_fail(american_price(S, K, T, sigma, r, q, Side::Put, AmericanMethod::AndersenLake));
+
+  lw::reset();
+  for (std::uint32_t i = 0; i < lw::kSamplePeriod; ++i) {
+    const auto iv = american_implied_vol(price, S, K, T, r, q, Side::Put);
+    ASSERT_TRUE(iv.has_value());
+  }
+  const lw::Snapshot measured = lw::snapshot();
+  EXPECT_EQ(measured.american_iv_samples, 1u);
+  EXPECT_GT(measured.boundary_solves_in_sampled_iv, 0u);
+  EXPECT_GT(measured.exp_calls_in_sampled_iv, 0u);
 }

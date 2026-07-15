@@ -38,15 +38,15 @@
 #include <optional>
 #include <vector>
 
-#include "atx/vol/calib.hpp"        // CalibOpts
-#include "atx/vol/correction.hpp"   // AmericanCorrectionCaches (cert-carry resolve)
-#include "atx/vol/curve.hpp"        // DividendEvent
-#include "atx/vol/deamer.hpp"       // DeAmOptions
-#include "atx/vol/parity.hpp"       // ParityReport
-#include "atx/vol/prepared_policy.hpp"  // PreparedObservationPolicy
-#include "atx/vol/types.hpp"        // Result
-#include "atx/vol/universe.hpp"     // Underlying
-#include "atx/vol/vol_surface.hpp"  // VolSurface
+#include "atx/vol/calib.hpp"           // CalibOpts
+#include "atx/vol/correction.hpp"      // AmericanCorrectionCaches (cert-carry resolve)
+#include "atx/vol/curve.hpp"           // DividendEvent
+#include "atx/vol/deamer.hpp"          // DeAmOptions
+#include "atx/vol/parity.hpp"          // ParityReport
+#include "atx/vol/prepared_policy.hpp" // PreparedObservationPolicy
+#include "atx/vol/types.hpp"           // Result
+#include "atx/vol/universe.hpp"        // Underlying
+#include "atx/vol/vol_surface.hpp"     // VolSurface
 
 namespace atx::vol {
 
@@ -88,28 +88,48 @@ namespace atx::vol {
 // `None` (the default) leaves the surface untouched and only CHECKS calendar
 // arbitrage — byte-identical to the historical behaviour.
 enum class CalendarRepair : std::uint8_t {
-  None = 0,         // check only; leave the assembled surface untouched (default)
-  MonotoneFit = 1,  // sequential theta-floor fit: ATM-monotone, quality-preserving
-  Project = 2,      // post-hoc projection to strict |k|<=3 arb-free (quality cost)
+  None = 0,        // check only; leave the assembled surface untouched (default)
+  MonotoneFit = 1, // sequential theta-floor fit: ATM-monotone, quality-preserving
+  Project = 2,     // post-hoc projection to strict |k|<=3 arb-free (quality cost)
+};
+
+// Opt-in wall/worker-time breakdown for one surface build. The default build
+// path leaves `collected=false` and every duration zero; callers must request
+// collection explicitly, so production fits pay no steady-clock calls unless
+// they are being measured. Carry/observation durations are sums across expiry
+// workers, while total_wall_ms is elapsed wall time for the complete session
+// build. That distinction makes parallel efficiency observable.
+struct SurfaceFitStageTimings {
+  double carry_solve_ms{0.0};
+  double observation_deam_ms{0.0};
+  double slice_fit_ms{0.0};
+  double audit_ms{0.0};
+  double calendar_validation_ms{0.0};
+  double total_wall_ms{0.0};
+  bool collected{false};
 };
 
 // Market/pricing context for a whole-surface parity run. `cash_divs` is held by
 // value so the call owns a span-friendly copy of the dividend schedule, shared
 // across every expiry (each chain supplies its own T / expiry_ns).
 struct SurfaceParityInputs {
-  double S{0.0};                         // spot (> 0)
-  double r{0.0};                         // continuously-compounded rate (finite)
+  double S{0.0}; // spot (> 0)
+  double r{0.0}; // continuously-compounded rate (finite)
   // Optional vectors aligned with `Underlying::chains`. Empty preserves the
   // legacy scalar `r` path bit-for-bit; otherwise each expiry uses its own
   // continuously-compounded zero rate.
   std::vector<double> expiry_rate_T;
   std::vector<double> expiry_rates;
-  std::vector<DividendEvent> cash_divs;  // discrete cash-dividend schedule
-  std::int64_t now_ts_ns{0};             // valuation timestamp (epoch ns)
-  DeAmOptions deam{};                    // borrow-implication / pricer policy
-  CalibOpts calib{};                     // per-slice curve-fit policy
-  double band_k{1.0};                    // minimum-edge band multiplier (parity)
-  CalendarRepair repair{CalendarRepair::None};  // post-assembly calendar-arb repair
+  std::vector<DividendEvent> cash_divs;        // discrete cash-dividend schedule
+  std::int64_t now_ts_ns{0};                   // valuation timestamp (epoch ns)
+  DeAmOptions deam{};                          // borrow-implication / pricer policy
+  CalibOpts calib{};                           // per-slice curve-fit policy
+  double band_k{1.0};                          // minimum-edge band multiplier (parity)
+  CalendarRepair repair{CalendarRepair::None}; // post-assembly calendar-arb repair
+
+  // Enable the structured SurfaceFitStageTimings report. False is the hot-path
+  // default and performs no stage clock reads.
+  bool collect_stage_timings{false};
 
   // Worker count for the per-chain de-Americanization pre-pass in
   // `fit_curve_surface` (S0-1). Matches the `parallel_for` contract exactly:
@@ -189,10 +209,10 @@ struct SliceContext {
 // The whole-surface acceptance bundle. `surface` OWNS the fitted eSSVI surface
 // (movable); the vectors are parallel per fitted slice (ascending T).
 struct SurfaceParityReport {
-  VolSurface surface;                     // fitted eSSVI surface (move it out)
-  std::vector<double> expiry_T;           // per fitted slice, strictly ascending
-  std::vector<ParityReport> per_expiry;   // re-Americanized metrics per expiry
-  std::vector<SliceContext> context;      // per-slice re-pricing context (‖ expiry_T)
+  VolSurface surface;                   // fitted eSSVI surface (move it out)
+  std::vector<double> expiry_T;         // per fitted slice, strictly ascending
+  std::vector<ParityReport> per_expiry; // re-Americanized metrics per expiry
+  std::vector<SliceContext> context;    // per-slice re-pricing context (‖ expiry_T)
   // Perf C1: the carry diagnostics the FIT's `resolve_chain_forward` produced
   // for this slice (‖ context), resolved with `in.deam` — including whatever
   // caches it carried. `VolaSession::build`'s certification layer reuses these
@@ -201,10 +221,10 @@ struct SurfaceParityReport {
   // cache-free recompute so certification stays bit-identical to the
   // historical serial pass (perf C1 review fix).
   std::vector<CarryDiagnostics> carry;
-  double worst_frac_within_bidask{0.0};   // min over expiries of frac in bid-ask
-  bool calendar_arb_free{false};          // arb.hpp calendar check on the surface
-  std::size_t n_slices{0};                // fitted slice count (== expiry_T.size())
-  std::size_t n_calendar_viol_pre{0};     // calendar violations BEFORE any repair
+  double worst_frac_within_bidask{0.0}; // min over expiries of frac in bid-ask
+  bool calendar_arb_free{false};        // arb.hpp calendar check on the surface
+  std::size_t n_slices{0};              // fitted slice count (== expiry_T.size())
+  std::size_t n_calendar_viol_pre{0};   // calendar violations BEFORE any repair
   // Expiries dropped because carry resolution failed (confidence gate / no
   // quotable pair / degenerate forward) — surfaced, never silently skipped.
   std::size_t n_carry_skipped{0};
@@ -212,6 +232,7 @@ struct SurfaceParityReport {
   // the usable-observation floor (it would have fit but for audit drops) —
   // the audit-created analogue of a carry skip, surfaced the same way.
   std::size_t n_audit_starved{0};
+  SurfaceFitStageTimings fit_timings{};
 };
 
 // De-Americanize + fit each expiry chain of `under`, assemble an ascending-T
@@ -235,7 +256,7 @@ struct SurfaceParityReport {
 //                                   expiry produced a usable eSSVI slice.
 //               Any surface-construction, curve-fitter, or parity/pricer error
 //               is propagated.
-[[nodiscard]] atx::core::Result<SurfaceParityReport> run_surface_parity(
-    const Underlying& under, const SurfaceParityInputs& in);
+[[nodiscard]] atx::core::Result<SurfaceParityReport>
+run_surface_parity(const Underlying &under, const SurfaceParityInputs &in);
 
-}  // namespace atx::vol
+} // namespace atx::vol
