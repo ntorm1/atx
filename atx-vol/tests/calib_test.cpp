@@ -732,6 +732,56 @@ TEST(BuildObservationsEuropean, SharedSigmaBoundaryKeepsNegativeRatesOnScalarPat
   EXPECT_EQ(result->deam_audit.n_shared_put_lanes, 0u);
 }
 
+TEST(SharedLaneAcceptance, BoundsCombinedResidual) {
+  // R-07. A shared lane's sigma is the root of the NINE-node interpolated price
+  // map, so the true price error is bounded by the root-find residual PLUS the
+  // nine-node map's own interpolation error (estimated by the 9-vs-5 gap):
+  //     |price_true - mid| <= |price_true - price| + |price - mid|
+  //                        ~= |price - embedded|   + |price - mid|.
+  // Gating the two terms against `budget` INDEPENDENTLY only proves the sum is
+  // within 2 x budget. The sprint bound is a single budget, so the SUM is the
+  // quantity that must clear it.
+  using atx::vol::detail::shared_lane_residual_within_budget;
+  constexpr double kBudget = 1.0e-4;
+  constexpr double kMid = 5.0;
+
+  // The gap the independent gate misses: each term alone is comfortably inside
+  // `budget`, but the true price error this lane can carry is 1.2 x budget.
+  const double split_price = kMid + 0.6 * kBudget;
+  const double split_embedded = split_price - 0.6 * kBudget;
+  ASSERT_LT(std::fabs(split_price - kMid), kBudget);           // each term...
+  ASSERT_LT(std::fabs(split_price - split_embedded), kBudget); // ...passes alone
+  ASSERT_GT(std::fabs(split_price - kMid) + std::fabs(split_price - split_embedded), kBudget);
+  EXPECT_FALSE(shared_lane_residual_within_budget(split_price, kMid, split_embedded, kBudget));
+
+  // A lane whose COMBINED error is inside the budget stays acceptable — the
+  // tightening must not reject lanes that do prove the bound.
+  const double good_price = kMid + 0.3 * kBudget;
+  const double good_embedded = good_price - 0.3 * kBudget;
+  EXPECT_TRUE(shared_lane_residual_within_budget(good_price, kMid, good_embedded, kBudget));
+
+  // Exactly at the bound: the sum is what is compared, and <= budget is accepted.
+  const double edge_price = kMid + 0.5 * kBudget;
+  const double edge_embedded = edge_price - 0.5 * kBudget;
+  EXPECT_TRUE(shared_lane_residual_within_budget(edge_price, kMid, edge_embedded, kBudget));
+
+  // Either term alone blowing the budget still rejects (strictly stronger gate).
+  EXPECT_FALSE(shared_lane_residual_within_budget(kMid + 1.5 * kBudget, kMid, kMid + 1.5 * kBudget,
+                                                  kBudget));
+  EXPECT_FALSE(shared_lane_residual_within_budget(kMid, kMid, kMid + 1.5 * kBudget, kBudget));
+
+  // Fail-closed: a non-finite input or a non-positive budget is never acceptable.
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+  EXPECT_FALSE(shared_lane_residual_within_budget(nan, kMid, kMid, kBudget));
+  EXPECT_FALSE(shared_lane_residual_within_budget(kMid, nan, kMid, kBudget));
+  EXPECT_FALSE(shared_lane_residual_within_budget(kMid, kMid, nan, kBudget));
+  EXPECT_FALSE(shared_lane_residual_within_budget(inf, kMid, kMid, kBudget));
+  EXPECT_FALSE(shared_lane_residual_within_budget(kMid, kMid, kMid, 0.0));
+  EXPECT_FALSE(shared_lane_residual_within_budget(kMid, kMid, kMid, -kBudget));
+  EXPECT_FALSE(shared_lane_residual_within_budget(kMid, kMid, kMid, nan));
+}
+
 TEST(BuildObservationsEuropean, UltraShortTenorBypassesShortcut) {
   constexpr double T = 1.0 / 365.25;
   constexpr double r = 0.04;

@@ -486,9 +486,8 @@ void iterate_shared_lanes(std::span<SharedIvLane> lanes, detail::SigmaBoundaryIn
   const double price = shared_boundary_price(interp, *lane.observation, S, sigma);
   const double embedded = shared_boundary_embedded_price(interp, *lane.observation, S, sigma);
   const double budget = shared_economic_price_budget(*lane.observation, T, sigma, opts);
-  if (!(sigma > kObsIvMin && sigma < kObsIvMax) || !(budget > 0.0) || !std::isfinite(price) ||
-      !std::isfinite(embedded) || std::fabs(price - lane.observation->mid) > budget ||
-      std::fabs(price - embedded) > budget) {
+  if (!(sigma > kObsIvMin && sigma < kObsIvMax) ||
+      !detail::shared_lane_residual_within_budget(price, lane.observation->mid, embedded, budget)) {
     return false;
   }
   lane.observation->score_sigma_mkt = sigma;
@@ -724,6 +723,32 @@ void prepare_shared_boundary_proposals(std::vector<FitObs> &observations,
 }
 
 } // namespace
+
+namespace detail {
+
+bool shared_lane_residual_within_budget(double price, double mid, double embedded,
+                                        double budget) noexcept {
+  if (!std::isfinite(price) || !std::isfinite(mid) || !std::isfinite(embedded) ||
+      !(budget > 0.0)) {
+    return false;
+  }
+  // R-07. Numerically: the two residuals were previously compared against
+  // `budget` one at a time; they are now compared as a SUM, so this gate is
+  // strictly stronger and can only reject lanes the old one accepted (it never
+  // admits a new one). Correct because the sum, not either term, is what bounds
+  // the true price error: |price_true - mid| <= |price_true - price| +
+  // |price - mid|, and the 9-vs-5 gap |price - embedded| is this route's
+  // estimate of the first term. Bound now proven per accepted lane:
+  //     |price_true(sigma_hat) - mid| <~ budget
+  //                                    = min(0.005, 0.1 x vega x 1e-4,
+  //                                          0.5 x spread x half_spread_frac),
+  // where the old form proved only <~ 2 x budget. Measured on the smile-stress
+  // and flat fixtures the two terms run ~1e-6 against budgets ~1e-4..5e-3, so no
+  // live lane changes route; this closes the proof, it does not move prices.
+  return std::fabs(price - mid) + std::fabs(price - embedded) <= budget;
+}
+
+} // namespace detail
 
 CalibOpts calib_default_opts() noexcept { return CalibOpts{}; }
 

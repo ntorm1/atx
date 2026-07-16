@@ -402,6 +402,20 @@ struct DeAmAuditDiagnostics {
   std::uint32_t n_shared_boundary_lanes{0};
   std::uint32_t n_shared_call_lanes{0};
   std::uint32_t n_shared_put_lanes{0};
+  // R-32 — EXACT semantics, because this counter reads like a total and is not
+  // one. It counts ONLY the nine Chebyshev BUILD solves per eligible side (so a
+  // two-sided board reads 18), and nothing else. It EXCLUDES all cold boundary
+  // work done while certifying the side: each sentinel's `american_implied_vol`
+  // runs a root-find whose every residual evaluation is its own cold solve, and
+  // each sentinel's confirming `american_price` is one more. Those are real
+  // boundary solves — they are visible in the global `counters::BoundarySolves`,
+  // just not here — so this counter UNDERSTATES the route's true boundary work,
+  // by a factor driven by the sentinels' inversion iteration counts rather than
+  // by any fixed multiple. Both parts stay O(1) per side (nine nodes plus at
+  // most three bounded sentinels), which is the property the route claims; the
+  // counter is a build-node tally, not a boundary-work budget. Tests pin these
+  // values, so the semantics are fixed: measure real work with the global
+  // counter, not this one.
   std::uint32_t n_shared_boundary_solves{0};
   std::uint32_t n_shared_sentinel_reprices{0};
   std::uint32_t n_shared_scalar_fallback_lanes{0};
@@ -502,6 +516,31 @@ build_observations_european(const Chain &chain, double S, double r, double F, do
 // Fail-closed on a non-finite or negative budget.
 [[nodiscard]] bool deam_inversion_certified(const DeAmAuditDiagnostics &audit,
                                             double max_drop_fraction) noexcept;
+
+namespace detail {
+
+// W3.1 shared-boundary per-lane price-acceptance gate, exposed for direct test
+// (internal: not part of the supported API surface).
+//
+// A shared lane's accepted sigma is the root of the NINE-node interpolated price
+// map. Two distinct errors separate that map's value from the true American
+// price at the same sigma:
+//   * `price - mid`  — the root-find residual the lane actually converged to;
+//   * `price - embedded` — the 9-vs-5 Richardson gap, which is this route's only
+//     ESTIMATE of the nine-node map's own interpolation error.
+// The quantity the sprint bounds is the true price error, and by the triangle
+// inequality
+//     |price_true(sigma) - mid| <= |price_true(sigma) - price| + |price - mid|
+//                              ~= |price - embedded|          + |price - mid|,
+// so the SUM is what must clear `budget`. Gating each term against `budget`
+// independently would only prove the sum is within 2 x budget — a bound the
+// sprint never claimed. Returns true iff the lane is acceptable.
+//
+// Fail-closed: a non-finite input or a non-positive budget is never acceptable.
+[[nodiscard]] bool shared_lane_residual_within_budget(double price, double mid, double embedded,
+                                                      double budget) noexcept;
+
+} // namespace detail
 
 // O(1) calibrator-population predicate (ports `ats_vol_calib_obs_accepted`):
 // would the (strike_idx, side) tuple survive the same cascade as one row of
