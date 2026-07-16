@@ -65,10 +65,22 @@ inline constexpr double kTMinEval = 1.0 / 525600.0;
 inline constexpr double kIvMin = 0.005;
 inline constexpr double kIvMax = 10.0;
 
-// IV solver tolerance (absolute vol units) and iteration cap. A rational
-// initial guess plus one Householder step reaches machine precision for
-// almost all inputs; the cap is a bounded-loop guard (JPL Rule 2).
+// IV solver tolerance in VOL units and iteration cap. A rational initial guess
+// plus one Householder step reaches machine precision for almost all inputs; the
+// cap is a bounded-loop guard (JPL Rule 2). `kIvTol` governs the vol-step
+// termination test `|Δσ| < kIvTol` directly (Δσ is already in vol units).
 inline constexpr double kIvTol = 1.0e-12;
 inline constexpr int kIvMaxIter = 16;
+
+// Multiplier on the price-residual rounding-noise floor `ε·df·max(F,K)` used by
+// the price-residual termination test (K1). price_model is formed from the terms
+// df·F·Φ(d1) and df·K·Φ(d2), each of magnitude ~df·max(F,K), so their difference
+// carries an absolute rounding error of ~ε·df·max(F,K); the residual cannot be
+// driven below that regardless of σ. Comparing the price residual against this
+// notional-scaled floor (instead of the mis-scaled absolute `kIvTol`, which for
+// high-notional options sits *below* the floor and never fires) terminates the
+// inversion exactly when σ has reached machine precision. The 8× headroom keeps
+// the test above the accumulated multi-term rounding noise.
+inline constexpr double kIvResidNoiseFloor = 8.0;
 
 } // namespace atx::vol

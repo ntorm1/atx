@@ -1,6 +1,7 @@
 #include "atx/vol/implied_vol.hpp"
 
 #include <cmath>
+#include <limits>
 #include <optional>
 
 #include "atx/core/error.hpp"
@@ -136,10 +137,31 @@ seed_sr2017_core(double price_eff, double K, double T, double df,
   return seed_bs_k(price, F, T, df, y);
 }
 
-} // namespace
-
-Result<double> implied_vol(double price, double F, double K, double T,
-                           double df, Side side) {
+// Shared inversion core. `Trace == true` records the Halley-iteration count and
+// which termination test fired (test/measurement seam only). `Trace == false`
+// compiles every trace statement out via `if constexpr`, so the production entry
+// point below pays exactly zero overhead — no null-checks, no writes.
+//
+// K1 (accuracy-improving): the price-residual convergence test now compares the
+// residual against a *notional-scaled* tolerance rather than the absolute
+// `kIvTol`. `kIvTol` is documented as a tolerance in VOL units; the loop's
+// residual `fval = price_model - price` is in PRICE units. The floating-point
+// noise floor of that residual is ~ε·df·max(F,K) (the magnitude of the terms
+// `df·F·Φ(d1)` and `df·K·Φ(d2)` whose difference forms price_model). For a
+// high-notional / high-vega option that floor exceeds the absolute 1e-12, so the
+// old `|fval| < kIvTol` test could never fire — the loop always fell through to
+// the vol-step test, burning one extra (wasted) Halley evaluation past the point
+// where σ had already reached machine precision. Scaling the price tolerance by
+// the residual's own noise floor makes the test fire exactly when the residual
+// can no longer improve (σ machine-precise), saving that final evaluation while
+// holding σ to machine precision — far inside the 1e-4 vol economic bound.
+template <bool Trace>
+[[nodiscard]] Result<double> implied_vol_impl(double price, double F, double K, double T, double df,
+                                              Side side, int *iters, int *exit_reason) {
+  if constexpr (Trace) {
+    *iters = 0;
+    *exit_reason = -1; // -1 none, 0 price-residual test, 1 vol-step test
+  }
   if (!std::isfinite(price) || !std::isfinite(F) || !std::isfinite(K) ||
       !std::isfinite(T) || !std::isfinite(df)) {
     return Err(ErrorCode::OutOfRange, "implied_vol: non-finite input");
@@ -162,6 +184,11 @@ Result<double> implied_vol(double price, double F, double K, double T,
 
   const double sqrt_t = std::sqrt(T);
   const double ln_fk = std::log(F / K);
+  // Notional-scaled floor for the price-residual test (see the K1 note above).
+  // kIvResidNoiseFloor·ε·df·max(F,K) is the rounding-noise level of price_model;
+  // once |fval| drops below it, further Halley steps cannot reduce the residual.
+  const double price_noise =
+      kIvResidNoiseFloor * std::numeric_limits<double>::epsilon() * df * std::fmax(F, K);
   for (int iter = 0; iter < kIvMaxIter; ++iter) {
     const double v = sigma * sqrt_t;
     const double inv_v = 1.0 / v;
@@ -176,7 +203,10 @@ Result<double> implied_vol(double price, double F, double K, double T,
                              : df * (K * (1.0 - n_d2) - F * (1.0 - n_d1));
 
     const double fval = price_model - price;
-    if (std::fabs(fval) < kIvTol) {
+    if (std::fabs(fval) < price_noise) {
+      if constexpr (Trace) {
+        *exit_reason = 0;
+      }
       return Ok(sigma);
     }
 
@@ -199,13 +229,35 @@ Result<double> implied_vol(double price, double F, double K, double T,
     if (step < -0.5 * sigma) step = -0.5 * sigma;
     sigma += step;
     sigma = clamp(sigma, kIvMin, kIvMax);
+    if constexpr (Trace) {
+      ++(*iters);
+    }
 
     if (std::fabs(step) < kIvTol) {
+      if constexpr (Trace) {
+        *exit_reason = 1;
+      }
       return Ok(sigma);
     }
   }
 
   return Err(ErrorCode::Unavailable, "implied_vol: exhausted iterations");
+}
+
+} // namespace
+
+Result<double> implied_vol(double price, double F, double K, double T,
+                           double df, Side side) {
+  return implied_vol_impl<false>(price, F, K, T, df, side, nullptr, nullptr);
+}
+
+// Test/measurement seam (not in the public header). Same inversion as
+// implied_vol, additionally reporting the number of Halley steps computed
+// (`iters`) and which termination test fired (`exit_reason`: 0 = price-residual,
+// 1 = vol-step, -1 = none/error). Used by the K1 convergence tests.
+Result<double> implied_vol_traced(double price, double F, double K, double T, double df, Side side,
+                                  int &iters, int &exit_reason) {
+  return implied_vol_impl<true>(price, F, K, T, df, side, &iters, &exit_reason);
 }
 
 } // namespace atx::vol
