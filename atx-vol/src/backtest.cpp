@@ -74,7 +74,9 @@ public:
     if (!same_book(lots)) {
       ATX_TRY(Portfolio portfolio, Portfolio::create(positions_at(lots, valuation_ts)));
       pricer_.emplace(std::move(portfolio));
-      workspace_ = PortfolioWorkspace{};
+      // PortfolioWorkspace is grow-only and validates its retained substrate by
+      // logical book identity. Preserve its buffers across book changes instead
+      // of destroying and reallocating the high-water mark.
       workspace_.reserve(pricer_->portfolio().n_contracts(), pricer_->portfolio().n_positions());
       key_ = lots;
     } else {
@@ -88,6 +90,14 @@ public:
   }
 
   [[nodiscard]] PortfolioWorkspace &workspace() noexcept { return workspace_; }
+
+  [[nodiscard]] std::vector<Lot> &reset_alive_scratch(std::size_t capacity) {
+    alive_.clear();
+    if (alive_.capacity() < capacity) {
+      alive_.reserve(capacity);
+    }
+    return alive_;
+  }
 
 private:
   [[nodiscard]] bool same_book(const std::vector<Lot> &lots) const noexcept {
@@ -108,6 +118,7 @@ private:
 
   std::vector<Lot> key_;
   std::vector<double> tenors_;
+  std::vector<Lot> alive_;
   std::optional<PortfolioPricer> pricer_;
   PortfolioWorkspace workspace_;
 };
@@ -504,8 +515,7 @@ struct StepPnl {
                                            RetainedBookPricer &retained,
                                            ReusableTargetMarkFrame *target_marks = nullptr) {
   ATX_VOL_PROFILE_SCOPE(StepPnl);
-  std::vector<Lot> alive;
-  alive.reserve(lots.size());
+  std::vector<Lot> &alive = retained.reset_alive_scratch(lots.size());
   double settlement = 0.0;
   for (const Lot &lot : lots) {
     if (lot.expiry_ts_ns <= shifted.ts_ns()) {

@@ -33,8 +33,8 @@ struct SurfaceDbPopulateConfig {
   // manifest is overlaid via apply_symbol_config; a symbol absent from the
   // manifest uses `fallback` unchanged.
   SymbolFitConfig fallback{};
-  unsigned n_threads{0};          // 0 = serial; determinism must hold regardless
-  bool skip_existing{true};       // date key already in db.partitions() -> skip whole date
+  unsigned n_threads{0};    // 0 = serial; determinism must hold regardless
+  bool skip_existing{true}; // date key already in db.partitions() -> skip whole date
 };
 
 struct PopulateSymbolStats {
@@ -42,7 +42,7 @@ struct PopulateSymbolStats {
   std::uint32_t n_attempted{0};
   std::uint32_t n_ok{0};
   std::uint32_t n_failed{0};
-  std::uint32_t n_disabled{0};    // skipped because manifest enabled=false
+  std::uint32_t n_disabled{0}; // skipped because manifest enabled=false
   // Mean fit-quality score over successful fits, when the shared corpus fit
   // path yields one (oos_in_band from curve selection; see corpus.cpp's
   // CorpusEntry.oos_in_band recording). NaN when unavailable (e.g. the
@@ -56,12 +56,13 @@ struct SurfaceDbPopulateStats {
   std::uint32_t n_failed{0};
   std::uint32_t n_dates_written{0};
   std::uint32_t n_dates_skipped_existing{0};
-  std::vector<PopulateSymbolStats> per_symbol;   // sorted by symbol
+  std::vector<PopulateSymbolStats> per_symbol; // sorted by symbol
 };
 
 // Fit every board and store one partition per distinct board date (key =
-// date). Boards are grouped by date; within a date, boards fit in symbol
-// order (deterministic). A board whose symbol's manifest config has
+// date). Eligible boards share one bounded dynamic queue across all dates;
+// completed results are aggregated and written in deterministic date/symbol
+// order. A board whose symbol's manifest config has
 // enabled=false is skipped (n_disabled). A board whose fit fails records
 // n_failed and does NOT abort the date (document per-name failures, don't
 // silently drop). A date with zero successful fits writes NO partition.
@@ -78,8 +79,7 @@ populate_surface_db(SurfaceDb &db, std::span<const CorpusBoard> boards,
 // "symbol,n_attempted,n_ok,n_failed,n_disabled,success_rate,mean_oos_in_band",
 // one row per symbol (success_rate = n_ok / max(1, n_attempted - n_disabled),
 // %.10g; mean_oos_in_band prints "nan" when NaN).
-[[nodiscard]] Status write_populate_stats_csv(const SurfaceDbPopulateStats &s,
-                                              const MetaKv &meta,
+[[nodiscard]] Status write_populate_stats_csv(const SurfaceDbPopulateStats &s, const MetaKv &meta,
                                               std::string_view path);
 
-}  // namespace atx::vol
+} // namespace atx::vol

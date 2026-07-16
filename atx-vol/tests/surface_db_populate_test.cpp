@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -16,15 +17,15 @@
 #include <string_view>
 #include <vector>
 
-#include "atx/vol/american.hpp"           // AlOpts
+#include "atx/vol/american.hpp" // AlOpts
 #include "atx/vol/corpus.hpp"
-#include "atx/vol/data.hpp"              // iso_to_ns, year_fraction
+#include "atx/vol/data.hpp" // iso_to_ns, year_fraction
 #include "atx/vol/market_env.hpp"
-#include "atx/vol/panel.hpp"             // SynthPanelSpec, make_synthetic_american_panel
+#include "atx/vol/panel.hpp" // SynthPanelSpec, make_synthetic_american_panel
 #include "atx/vol/priced_surface.hpp"
-#include "atx/vol/run_report.hpp"        // MetaKv
-#include "atx/vol/s3.hpp"                // S3Params
-#include "atx/vol/session.hpp"           // FitPreset
+#include "atx/vol/run_report.hpp" // MetaKv
+#include "atx/vol/s3.hpp"         // S3Params
+#include "atx/vol/session.hpp"    // FitPreset
 #include "atx/vol/surface_archive.hpp"
 #include "atx/vol/surface_db.hpp"
 #include "atx/vol/surface_db_populate.hpp"
@@ -35,7 +36,8 @@ namespace atx::vol {
 namespace {
 
 std::filesystem::path test_root(std::string_view name) {
-  auto p = std::filesystem::temp_directory_path() / ("atx_surface_db_populate_" + std::string(name));
+  auto p =
+      std::filesystem::temp_directory_path() / ("atx_surface_db_populate_" + std::string(name));
   std::filesystem::remove_all(p);
   return p;
 }
@@ -112,6 +114,38 @@ constexpr const char *kDate1 = "2026-03-03";
   return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 }
 
+void expect_surface_bits_equal(const PricedSurface &actual, const PricedSurface &expected) {
+  const auto expect_double_bits = [](double lhs, double rhs) {
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(lhs), std::bit_cast<std::uint64_t>(rhs));
+  };
+  EXPECT_EQ(actual.uid(), expected.uid());
+  EXPECT_EQ(actual.n_slices(), expected.n_slices());
+  expect_double_bits(actual.pricing().S, expected.pricing().S);
+  expect_double_bits(actual.pricing().r, expected.pricing().r);
+  ASSERT_EQ(actual.context().size(), expected.context().size());
+  for (std::size_t i = 0u; i < actual.context().size(); ++i) {
+    const SliceContext &a = actual.context()[i];
+    const SliceContext &b = expected.context()[i];
+    expect_double_bits(a.T, b.T);
+    expect_double_bits(a.forward, b.forward);
+    expect_double_bits(a.borrow, b.borrow);
+    expect_double_bits(a.q_eff, b.q_eff);
+    EXPECT_EQ(a.n_used, b.n_used);
+    EXPECT_EQ(a.n_dropped, b.n_dropped);
+    for (const double moneyness : {0.85, 1.0, 1.15}) {
+      const double K = actual.pricing().S * moneyness;
+      expect_double_bits(actual.iv(K, a.T), expected.iv(K, b.T));
+      for (const Side side : {Side::Call, Side::Put}) {
+        const auto actual_price = actual.fair_value(K, a.T, side);
+        const auto expected_price = expected.fair_value(K, b.T, side);
+        ASSERT_TRUE(actual_price.has_value());
+        ASSERT_TRUE(expected_price.has_value());
+        expect_double_bits(*actual_price, *expected_price);
+      }
+    }
+  }
+}
+
 } // namespace
 
 TEST(SurfaceDbPopulate, FitsAndStoresPartitionsPerDate) {
@@ -146,6 +180,45 @@ TEST(SurfaceDbPopulate, FitsAndStoresPartitionsPerDate) {
   EXPECT_EQ(result->per_symbol[1].n_ok, 2u);
 
   std::filesystem::remove_all(root);
+}
+
+TEST(SurfaceDbPopulate, GlobalParallelQueuePreservesDeterministicPartitions) {
+  const auto serial_root = test_root("global_queue_serial");
+  const auto parallel_root = test_root("global_queue_parallel");
+  auto serial_db = SurfaceDb::create(serial_root.string());
+  auto parallel_db = SurfaceDb::create(parallel_root.string());
+  ASSERT_TRUE(serial_db.has_value());
+  ASSERT_TRUE(parallel_db.has_value());
+
+  const std::vector<CorpusBoard> boards = make_boards();
+  SurfaceDbPopulateConfig serial_cfg;
+  serial_cfg.n_threads = 1u;
+  auto serial = populate_surface_db(*serial_db, boards, serial_cfg);
+  ASSERT_TRUE(serial.has_value()) << (serial ? "" : serial.error().to_string());
+
+  SurfaceDbPopulateConfig parallel_cfg;
+  parallel_cfg.n_threads = 4u;
+  auto parallel = populate_surface_db(*parallel_db, boards, parallel_cfg);
+  ASSERT_TRUE(parallel.has_value()) << (parallel ? "" : parallel.error().to_string());
+
+  EXPECT_EQ(parallel->n_ok, serial->n_ok);
+  EXPECT_EQ(parallel->n_failed, serial->n_failed);
+  EXPECT_EQ(parallel->n_dates_written, serial->n_dates_written);
+  EXPECT_EQ(parallel->per_symbol.size(), serial->per_symbol.size());
+  for (const char *date : {kDate0, kDate1}) {
+    for (const char *symbol : {"AAA", "BBB"}) {
+      const auto serial_surface = serial_db->load_surface(date, symbol);
+      const auto parallel_surface = parallel_db->load_surface(date, symbol);
+      ASSERT_TRUE(serial_surface.has_value());
+      ASSERT_TRUE(parallel_surface.has_value());
+      // Archive creation timestamps and provenance generations intentionally
+      // differ between independent writes; the served numerical state must not.
+      expect_surface_bits_equal(*parallel_surface, *serial_surface);
+    }
+  }
+
+  std::filesystem::remove_all(serial_root);
+  std::filesystem::remove_all(parallel_root);
 }
 
 TEST(SurfaceDbPopulate, PropagatesStoredSurfacePolicyAndPersistsServedProvenance) {
@@ -208,18 +281,16 @@ TEST(SurfaceDbPopulate, HonorsDisabledSymbol) {
     EXPECT_EQ(archive->map_symbol("BBB").error().code(), ErrorCode::NotFound);
   }
 
-  const auto bbb_it =
-      std::find_if(result->per_symbol.begin(), result->per_symbol.end(),
-                   [](const PopulateSymbolStats &s) { return s.symbol == "BBB"; });
+  const auto bbb_it = std::find_if(result->per_symbol.begin(), result->per_symbol.end(),
+                                   [](const PopulateSymbolStats &s) { return s.symbol == "BBB"; });
   ASSERT_NE(bbb_it, result->per_symbol.end());
   EXPECT_EQ(bbb_it->n_attempted, 2u);
   EXPECT_EQ(bbb_it->n_disabled, 2u);
   EXPECT_EQ(bbb_it->n_ok, 0u);
   EXPECT_EQ(bbb_it->n_failed, 0u);
 
-  const auto aaa_it =
-      std::find_if(result->per_symbol.begin(), result->per_symbol.end(),
-                   [](const PopulateSymbolStats &s) { return s.symbol == "AAA"; });
+  const auto aaa_it = std::find_if(result->per_symbol.begin(), result->per_symbol.end(),
+                                   [](const PopulateSymbolStats &s) { return s.symbol == "AAA"; });
   ASSERT_NE(aaa_it, result->per_symbol.end());
   EXPECT_EQ(aaa_it->n_ok, 2u);
 
@@ -271,9 +342,8 @@ TEST(SurfaceDbPopulate, FailedFitRecordedNotFatal) {
   EXPECT_TRUE(archive0->map_symbol("AAA").has_value());
   EXPECT_EQ(archive0->map_symbol("BBB").error().code(), ErrorCode::NotFound);
 
-  const auto bbb_it =
-      std::find_if(result->per_symbol.begin(), result->per_symbol.end(),
-                   [](const PopulateSymbolStats &s) { return s.symbol == "BBB"; });
+  const auto bbb_it = std::find_if(result->per_symbol.begin(), result->per_symbol.end(),
+                                   [](const PopulateSymbolStats &s) { return s.symbol == "BBB"; });
   ASSERT_NE(bbb_it, result->per_symbol.end());
   EXPECT_EQ(bbb_it->n_attempted, 2u);
   EXPECT_EQ(bbb_it->n_failed, 1u);
@@ -332,8 +402,9 @@ TEST(SurfaceDbPopulate, StatsCsvShape) {
 
   const std::string text = read_file(csv_path);
   EXPECT_NE(text.find("# run=test\n"), std::string::npos);
-  EXPECT_NE(text.find("symbol,n_attempted,n_ok,n_failed,n_disabled,success_rate,mean_oos_in_band\n"),
-            std::string::npos)
+  EXPECT_NE(
+      text.find("symbol,n_attempted,n_ok,n_failed,n_disabled,success_rate,mean_oos_in_band\n"),
+      std::string::npos)
       << text;
   // AAA: n_attempted=2, n_ok=2, n_failed=0, n_disabled=0 -> success_rate=1;
   // pinned curve -> no OOS score -> "nan" (the NaN-when-unavailable rule).

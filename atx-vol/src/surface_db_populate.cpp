@@ -2,21 +2,22 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <fstream>
 #include <limits>
 #include <map>
 #include <string>
-#include <thread>
 #include <utility>
 #include <vector>
 
 #include "atx/core/error.hpp"
-#include "atx/vol/dispersion.hpp"      // with_uid
-#include "atx/vol/pricer_fitter.hpp"   // PricerConfig
-#include "atx/vol/session.hpp"         // SessionInputs
-#include "atx/vol/universe.hpp"        // uid_for_symbol
-#include "corpus_board_fit.hpp"        // FitSlot, fit_board (shared blessed fit path)
+#include "atx/vol/detail/fit_scheduler.hpp" // run_bounded_fit_tasks
+#include "atx/vol/dispersion.hpp"           // with_uid
+#include "atx/vol/pricer_fitter.hpp"        // PricerConfig
+#include "atx/vol/session.hpp"              // SessionInputs
+#include "atx/vol/universe.hpp"             // uid_for_symbol
+#include "corpus_board_fit.hpp"             // FitSlot, fit_board (shared blessed fit path)
 
 namespace atx::vol {
 
@@ -57,6 +58,12 @@ struct SymbolAccum {
   PopulateSymbolStats stats;
   double oos_sum{0.0};
   std::uint32_t oos_count{0};
+};
+
+struct DateRange {
+  std::size_t begin{0u};
+  std::size_t end{0u};
+  bool skip{false};
 };
 
 // ── Stats CSV formatting (mirrors run_report.cpp's meta+header+rows shape;
@@ -104,8 +111,9 @@ struct SymbolAccum {
 
 } // namespace
 
-Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db, std::span<const CorpusBoard> boards,
-                                                    const SurfaceDbPopulateConfig &cfg) {
+Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
+                                                   std::span<const CorpusBoard> boards,
+                                                   const SurfaceDbPopulateConfig &cfg) {
   if (boards.empty()) {
     return Err(ErrorCode::InvalidArgument, "populate_surface_db: empty boards");
   }
@@ -130,99 +138,101 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db, std::span<cons
   stats.n_boards = static_cast<std::uint32_t>(n);
   std::map<std::string, SymbolAccum> per_symbol; // ordered by symbol -> free sort
 
-  std::size_t i = 0;
+  // Resolve resumability before launching any fit. Writes remain date-ordered
+  // and serial, while every non-skipped board shares one dynamic queue.
+  std::vector<DateRange> date_ranges;
+  date_ranges.reserve(n);
+  std::size_t i = 0u;
   while (i < n) {
     const std::string &date = boards[order[i]].date;
-    std::size_t j = i;
+    std::size_t j = i + 1u;
     while (j < n && boards[order[j]].date == date) {
       ++j;
     }
 
+    bool skip = false;
     if (cfg.skip_existing) {
       const Result<SurfaceArchive> existing = db.open_partition(date);
       if (existing.has_value()) {
         ++stats.n_dates_skipped_existing;
-        i = j;
-        continue;
-      }
-      if (existing.error().code() != ErrorCode::NotFound) {
+        skip = true;
+      } else if (existing.error().code() != ErrorCode::NotFound) {
         return Err(existing.error());
       }
     }
+    date_ranges.push_back(DateRange{i, j, skip});
+    i = j;
+  }
 
-    const std::size_t range_n = j - i;
-    std::vector<SymbolFitConfig> resolved_cfgs(range_n);
-    std::vector<FitSlot> slots(range_n);
+  std::vector<SymbolFitConfig> resolved_cfgs(n);
+  std::vector<FitSlot> slots(n);
 
-    // Resolve the per-board manifest config + fit it. A disabled symbol's
-    // slot stays default (never fit); its config is still recorded so the
-    // aggregation pass below can count n_disabled without re-querying db.
-    const auto fit_range = [&](std::size_t start, std::size_t end) {
-      for (std::size_t k = start; k < end; ++k) {
-        const CorpusBoard &board = boards[order[i + k]];
-        const Result<SymbolFitConfig> found = db.symbol_config(board.symbol);
-        resolved_cfgs[k] = found.has_value() ? *found : cfg.fallback;
-        const SymbolFitConfig &resolved = resolved_cfgs[k];
-        if (!resolved.enabled) {
-          continue;
-        }
+  std::vector<std::size_t> fit_positions;
+  fit_positions.reserve(n);
+  for (const DateRange &range : date_ranges) {
+    if (range.skip) {
+      continue;
+    }
+    for (std::size_t pos = range.begin; pos < range.end; ++pos) {
+      const CorpusBoard &board = boards[order[pos]];
+      const Result<SymbolFitConfig> found = db.symbol_config(board.symbol);
+      resolved_cfgs[pos] = found.has_value() ? *found : cfg.fallback;
+      if (resolved_cfgs[pos].enabled) {
+        fit_positions.push_back(pos);
+      }
+    }
+  }
+
+  // SurfaceDb defines n_threads=0 as outer-serial. A real multi-board outer
+  // fan-out pins each fit to one worker to avoid nested H^2 parallelism.
+  const unsigned worker_budget = cfg.n_threads != 0u ? cfg.n_threads : 1u;
+  const bool parallel_outer = fit_positions.size() > 1u && worker_budget > 1u;
+  const Status scheduled = detail::run_bounded_fit_tasks(
+      fit_positions.size(), worker_budget, [&](std::size_t task_index) -> Status {
+        const std::size_t pos = fit_positions[task_index];
+        const CorpusBoard &board = boards[order[pos]];
+        const SymbolFitConfig &resolved = resolved_cfgs[pos];
         PricerConfig pc = pricer_config_for_symbol(resolved);
-        // SurfaceDb's zero worker count is explicitly serial. Only suppress
-        // inner expiry fan-out when an actual multi-board outer fan-out is in
-        // use; serial and single-board callers retain standalone auto behavior.
-        if (range_n > 1u && cfg.n_threads > 1u) {
+        if (parallel_outer) {
           pc.fit_workers = 1u;
         }
-        slots[k] = fit_board(board, pc, /*admission=*/nullptr, [&resolved](SessionInputs &in) {
+        slots[pos] = fit_board(board, pc, /*admission=*/nullptr, [&resolved](SessionInputs &in) {
           apply_symbol_config(resolved, in);
         });
-      }
-    };
+        return Ok();
+      });
+  if (!scheduled) {
+    return Err(scheduled.error());
+  }
 
-    std::size_t n_workers =
-        (cfg.n_threads != 0u) ? static_cast<std::size_t>(cfg.n_threads) : std::size_t{1u};
-    n_workers = std::min(n_workers, range_n);
-    {
-      std::vector<std::jthread> workers;
-      workers.reserve(n_workers > 0u ? n_workers - 1u : 0u);
-      const std::size_t base = range_n / n_workers;
-      const std::size_t rem = range_n % n_workers;
-      std::size_t pos = 0u;
-      for (std::size_t w = 0u; w < n_workers; ++w) {
-        const std::size_t sz = base + (w < rem ? std::size_t{1u} : std::size_t{0u});
-        const std::size_t start = pos;
-        const std::size_t end = pos + sz;
-        pos = end;
-        if (w + 1u < n_workers) {
-          workers.emplace_back([&fit_range, start, end] { fit_range(start, end); });
-        } else {
-          fit_range(start, end); // last chunk on the calling thread
-        }
-      }
-      // workers join here (jthread RAII) before slots/resolved_cfgs are read.
+  for (const DateRange &range : date_ranges) {
+    if (range.skip) {
+      continue;
     }
+    const std::size_t range_n = range.end - range.begin;
+    const std::string &date = boards[order[range.begin]].date;
 
     // ── Sequential aggregation: stats + owning storage for the write ────────
-    std::vector<std::string> names;      // owning symbol storage (kept alive
-    std::vector<PricedSurface> stamped;  // across write_partition below)
+    std::vector<std::string> names;     // owning symbol storage (kept alive
+    std::vector<PricedSurface> stamped; // across write_partition below)
     names.reserve(range_n);
     stamped.reserve(range_n);
     std::vector<SurfaceArchiveItem> items;
     items.reserve(range_n);
 
-    for (std::size_t k = 0; k < range_n; ++k) {
-      const CorpusBoard &board = boards[order[i + k]];
+    for (std::size_t pos = range.begin; pos < range.end; ++pos) {
+      const CorpusBoard &board = boards[order[pos]];
       SymbolAccum &acc = per_symbol[board.symbol];
       acc.stats.symbol = board.symbol;
       ++acc.stats.n_attempted;
 
-      const SymbolFitConfig &resolved = resolved_cfgs[k];
+      const SymbolFitConfig &resolved = resolved_cfgs[pos];
       if (!resolved.enabled) {
         ++acc.stats.n_disabled;
         continue;
       }
 
-      const FitSlot &slot = slots[k];
+      const FitSlot &slot = slots[pos];
       if (slot.status == CorpusFitStatus::Ok) {
         ++acc.stats.n_ok;
         ++stats.n_ok;
@@ -237,8 +247,7 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db, std::span<cons
         }
         names.push_back(board.symbol);
         stamped.push_back(std::move(*stamped_surface));
-        items.push_back(
-            SurfaceArchiveItem{names.back(), &stamped.back(), slot.provenance});
+        items.push_back(SurfaceArchiveItem{names.back(), &stamped.back(), slot.provenance});
       } else {
         ++acc.stats.n_failed;
         ++stats.n_failed;
@@ -252,17 +261,14 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db, std::span<cons
       }
       ++stats.n_dates_written;
     }
-
-    i = j;
   }
 
   stats.per_symbol.reserve(per_symbol.size());
   for (auto &[symbol, acc] : per_symbol) {
     (void)symbol;
     PopulateSymbolStats s = std::move(acc.stats);
-    s.mean_oos_in_band = acc.oos_count > 0u
-                             ? acc.oos_sum / static_cast<double>(acc.oos_count)
-                             : std::numeric_limits<double>::quiet_NaN();
+    s.mean_oos_in_band = acc.oos_count > 0u ? acc.oos_sum / static_cast<double>(acc.oos_count)
+                                            : std::numeric_limits<double>::quiet_NaN();
     stats.per_symbol.push_back(std::move(s));
   }
 
