@@ -45,6 +45,31 @@ constexpr double kCalDefaultThetaBump = 1.5;
   return t * t * t * (10.0 + t * (-15.0 + 6.0 * t));
 }
 
+// H'(t) = 30t⁴ − 60t³ + 30t² = 30·t²·(1−t)²; H''(t) = 60·t·(1−t)·(1−2t). Both
+// vanish at t=0 and t=1 (H is C2 there), so the windows below are C2 across the
+// whole z-line and the closed-form second derivative is continuous.
+[[nodiscard]] double smooth_step_d1(double t) noexcept {
+  if (t <= 0.0 || t >= 1.0) {
+    return 0.0;
+  }
+  const double omt = 1.0 - t;
+  return 30.0 * t * t * omt * omt;
+}
+
+[[nodiscard]] double smooth_step_d2(double t) noexcept {
+  if (t <= 0.0 || t >= 1.0) {
+    return 0.0;
+  }
+  return 60.0 * t * (1.0 - t) * (1.0 - 2.0 * t);
+}
+
+// Value + first two z-derivatives of a window (or any C2 scalar of z).
+struct WinD2 {
+  double v{};
+  double d1{};
+  double d2{};
+};
+
 // Window: 1 on [-1, +1], 0 outside [-3, +3], smooth C2 blend between.
 [[nodiscard]] double atm_window(double z) noexcept {
   const double a = std::fabs(z);
@@ -79,6 +104,39 @@ constexpr double kCalDefaultThetaBump = 1.5;
   return smooth_step((-z - 1.0) * 0.5);
 }
 
+// Closed-form value + z-derivatives of the three windows. In the blend region
+// each window is H(arg(z)) with arg affine in z: arg' is a constant c, arg''=0,
+// so value' = c·H'(arg) and value'' = c²·H''(arg). In the flat regions the
+// window is constant, hence both derivatives are zero.
+[[nodiscard]] WinD2 atm_window_d2(double z) noexcept {
+  const double a = std::fabs(z);
+  if (a <= 1.0 || a >= 3.0) {
+    return {atm_window(z), 0.0, 0.0};
+  }
+  const double arg = (3.0 - a) * 0.5;           // d(arg)/dz = -0.5·sign(z)
+  const double c = (z >= 0.0) ? -0.5 : 0.5;     // = -0.5·sign(z)
+  return {smooth_step(arg), c * smooth_step_d1(arg),
+          c * c * smooth_step_d2(arg)};
+}
+
+[[nodiscard]] WinD2 right_wing_window_d2(double z) noexcept {
+  if (z <= 1.0 || z >= 3.0) {
+    return {right_wing_window(z), 0.0, 0.0};
+  }
+  const double arg = (z - 1.0) * 0.5;           // d(arg)/dz = +0.5
+  return {smooth_step(arg), 0.5 * smooth_step_d1(arg),
+          0.25 * smooth_step_d2(arg)};
+}
+
+[[nodiscard]] WinD2 left_wing_window_d2(double z) noexcept {
+  if (z >= -1.0 || z <= -3.0) {
+    return {left_wing_window(z), 0.0, 0.0};
+  }
+  const double arg = (-z - 1.0) * 0.5;          // d(arg)/dz = -0.5
+  return {smooth_step(arg), -0.5 * smooth_step_d1(arg),
+          0.25 * smooth_step_d2(arg)};
+}
+
 // True iff mode j is active in the bitmask. Shift on `unsigned` so the
 // signedness-changing implicit conversions of `int >> size_t` are avoided
 // (/Wsign-conversion clean).
@@ -87,7 +145,75 @@ constexpr double kCalDefaultThetaBump = 1.5;
   return ((static_cast<unsigned>(active_modes) >> j) & 1u) != 0u;
 }
 
-// w, w', w'' by central finite differences (ats_vol_cstar_arb.c w_and_derivs_).
+// Value + first two z-derivatives of the j'th compact-support mode
+// B_j(z) = (1 − u²)³, u = (z − c_j)/h. With du/dz = 1/h:
+//   B'(z)  = −6·u·(1 − u²)² · (1/h)
+//   B''(z) = −6·(1 − u²)·(1 − 5u²) · (1/h²)
+// (dB/du = −6u(1−u²)², d²B/du² = −6(1−u²)(1−5u²); verified by expanding
+// (1−u²)³ and differentiating.) Zero outside |u| ≤ 1 or for out-of-range j.
+[[nodiscard]] WinD2 cstar_basis_d2(int j, double z) noexcept {
+  if (j < 0 || j >= static_cast<int>(kCStarNModes)) {
+    return {};
+  }
+  const double inv_h = 1.0 / kCStarBasisH;
+  const double u = (z - kCStarCenters[static_cast<std::size_t>(j)]) * inv_h;
+  if (u < -1.0 || u > 1.0) {
+    return {};
+  }
+  const double omu2 = 1.0 - u * u;
+  return {omu2 * omu2 * omu2, -6.0 * u * omu2 * omu2 * inv_h,
+          -6.0 * omu2 * (1.0 - 5.0 * u * u) * inv_h * inv_h};
+}
+
+// f(z), f'(z), f''(z) of the full modal shape (base + active modes), in closed
+// form. f value component is structurally identical to cstar_base() so the two
+// cannot drift. This replaces the prior central-FD `w_and_derivs`, whose w''
+// via (w₊−2w₀+w₋)/h² (h=1e-4 ⇒ h²=1e-8) lost ~8 digits to cancellation and
+// could false-flag/false-clear the butterfly gate near the boundary.
+struct FDerivs {
+  double f{};
+  double fp{};
+  double fpp{};
+};
+
+[[nodiscard]] FDerivs f_and_derivs_z(const CStarParams& s, double z) noexcept {
+  const double atm = 1.0 + 2.0 * s.s2 * z + s.c2 * z * z;
+  const double atmp = 2.0 * s.s2 + 2.0 * s.c2 * z;
+  const double atmpp = 2.0 * s.c2;
+
+  const WinD2 wa = atm_window_d2(z);
+  const WinD2 wr = right_wing_window_d2(z);
+  const WinD2 wl = left_wing_window_d2(z);
+
+  const double rl = z * s.C_right + 1.0;  // right line; rl' = C_right, rl'' = 0
+  const double rlp = s.C_right;
+  const double ll = -z * s.C_left + 1.0;  // left line;  ll' = -C_left, ll'' = 0
+  const double llp = -s.C_left;
+
+  double f = wa.v * atm + wr.v * rl + wl.v * ll;
+  double fp = wa.d1 * atm + wa.v * atmp + wr.d1 * rl + wr.v * rlp +
+              wl.d1 * ll + wl.v * llp;
+  double fpp = wa.d2 * atm + 2.0 * wa.d1 * atmp + wa.v * atmpp + wr.d2 * rl +
+               2.0 * wr.d1 * rlp + wl.d2 * ll + 2.0 * wl.d1 * llp;
+
+  if (s.active_modes != 0u) {
+    for (std::size_t j = 0; j < kCStarNModes; ++j) {
+      if (mode_active(s.active_modes, j)) {
+        const WinD2 b = cstar_basis_d2(static_cast<int>(j), z);
+        f += s.beta[j] * b.v;
+        fp += s.beta[j] * b.d1;
+        fpp += s.beta[j] * b.d2;
+      }
+    }
+  }
+  return {f, fp, fpp};
+}
+
+// RAW (un-floored) total variance w = θ·f(z) and its k-derivatives, in closed
+// form. z = k/√θ ⇒ w' = √θ·f'(z), w'' = f''(z). Distinct from the public
+// cstar_slice_w 1e-12 floor: w here may be ≤ 0 where the shape is degenerate,
+// which the Roper functional treats as an invalid (−∞) point. θ > 0 is a caller
+// precondition (cstar_min_roper_g / cstar_shape_valid guard it).
 struct WDerivs {
   double w{};
   double wp{};
@@ -95,11 +221,10 @@ struct WDerivs {
 };
 
 [[nodiscard]] WDerivs w_and_derivs(const CStarParams& s, double k) noexcept {
-  constexpr double h = 1.0e-4;
-  const double w0 = cstar_slice_w(s, k);
-  const double wpl = cstar_slice_w(s, k + h);
-  const double wmn = cstar_slice_w(s, k - h);
-  return {w0, (wpl - wmn) / (2.0 * h), (wpl - 2.0 * w0 + wmn) / (h * h)};
+  const double sqrt_theta = std::sqrt(s.theta);
+  const double z = k / sqrt_theta;
+  const FDerivs d = f_and_derivs_z(s, z);
+  return {s.theta * d.f, sqrt_theta * d.fp, d.fpp};
 }
 
 // Roper g(k): butterfly no-arb functional; g ≥ 0 everywhere ⇔ arb-free.
@@ -395,6 +520,14 @@ double cstar_slice_iv(const CStarParams& s, double k_log) noexcept {
   return std::sqrt(w / s.T);
 }
 
+CStarWDerivs cstar_slice_w_derivs(const CStarParams& s, double k_log) noexcept {
+  if (!(s.theta > 0.0)) {
+    return {kNaN, kNaN, kNaN};
+  }
+  const WDerivs d = w_and_derivs(s, k_log);
+  return {d.w, d.wp, d.wpp};
+}
+
 std::optional<std::array<double, kCStarNParams>> cstar_slice_grad_w(
     const CStarParams& s, double k_log) noexcept {
   if (!(s.theta > 0.0)) {
@@ -539,6 +672,25 @@ int cstar_block_dim(CStarBlock block, std::uint16_t active_modes) noexcept {
 
 // ── No-arb projection ──────────────────────────────────────────────────────
 
+bool cstar_shape_valid(const CStarParams& s) noexcept {
+  if (!(s.theta > 0.0)) {
+    return false;
+  }
+  // Raw-shape validity is a separate predicate from the public variance floor:
+  // cstar_slice_w() clamps to 1e-12 for safe evaluation, which would mask a
+  // model that produces a genuinely non-positive raw variance θ·f(z). Scan the
+  // un-floored raw variance across the no-arb grid.
+  for (int i = 0; i < kArbGridN; ++i) {
+    const double z = kArbZLo + (kArbZHi - kArbZLo) * static_cast<double>(i) /
+                                   static_cast<double>(kArbGridN - 1);
+    const double w_raw = s.theta * f_and_derivs_z(s, z).f;
+    if (!std::isfinite(w_raw) || !(w_raw > 0.0)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 double cstar_min_roper_g(const CStarParams& s) noexcept {
   if (!(s.theta > 0.0)) {
     return -kInf;
@@ -597,18 +749,51 @@ Status cstar_arb_project(CStarParams& s) {
   }
 
   // All modes damped and still violating: reduce base curvature toward 0.
-  double c2_lo = 0.0;
-  double c2_hi = s.c2;
-  for (int it = 0; it < 30; ++it) {
-    s.c2 = 0.5 * (c2_lo + c2_hi);
-    if (cstar_min_roper_g(s) >= 0.0) {
-      c2_hi = s.c2;
-    } else {
-      c2_lo = s.c2;
+  //
+  // BUG FIX (REVIEW §6.1 #11): the prior bisection labelled `c2_hi` (= original
+  // c2) as the search's upper bound and updated the WRONG bracket end — an
+  // infeasible midpoint advanced the feasible-labelled bound, so when the first
+  // midpoint was infeasible BOTH bounds stayed infeasible and it returned the
+  // arb-violating original c2 with Ok(). Fix: track the FEASIBLE endpoint
+  // explicitly (c2 = 0 is the low-curvature end, most likely arb-free; the
+  // original c2 is known infeasible here) and return it, so a feasible curvature
+  // is never discarded. Correctness, not a numeric refactor.
+  const double c2_orig = s.c2;
+  double c2_feasible = 0.0;
+  double c2_infeasible = c2_orig;
+  s.c2 = c2_feasible;
+  if (cstar_min_roper_g(s) >= 0.0) {
+    for (int it = 0; it < 40; ++it) {
+      const double mid = 0.5 * (c2_feasible + c2_infeasible);
+      s.c2 = mid;
+      if (cstar_min_roper_g(s) >= 0.0) {
+        c2_feasible = mid;  // push the feasible endpoint toward the original
+      } else {
+        c2_infeasible = mid;
+      }
     }
+    s.c2 = c2_feasible;
+  } else {
+    s.c2 = 0.0;  // even zero curvature is infeasible; keep the best candidate
   }
-  s.c2 = c2_hi;
   s.arb_damping = 0.0;
+
+  // Post-projection no-arbitrage validation — two predicates, two error codes.
+  // Projection is NOT guaranteed to reach feasibility (skew / wings can violate
+  // independently of the modal/curvature levers we control), so propagate the
+  // failure instead of the prior unconditional Ok(). Raw-shape invalidity (the
+  // model produces a non-positive raw variance) is distinct from a residual
+  // butterfly violation with positive variance.
+  if (!cstar_shape_valid(s)) {
+    return Err(ErrorCode::OutOfRange,
+               "cstar_arb_project: raw shape variance non-positive after "
+               "projection");
+  }
+  if (!(cstar_min_roper_g(s) >= 0.0)) {
+    return Err(ErrorCode::Unavailable,
+               "cstar_arb_project: butterfly arbitrage persists after "
+               "projection");
+  }
   return Ok();
 }
 

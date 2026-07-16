@@ -323,7 +323,11 @@ Result<CStarParams> cstar_seed_from_essvi(const EssviParams& src) {
   }
   fit_modes_from_essvi_residuals(dst, src);
   // The base shape alone is arb-free for sane (θ, s2, c2, C_L, C_R); the modes
-  // can violate. Projection is infallible here (θ > 0 guaranteed above).
+  // can violate. Projection is best-effort here: it now propagates a residual
+  // no-arb failure (Err), but the seed remains usable as a fallback baseline —
+  // cstar_calibrate_slice re-checks admissibility with the authoritative
+  // arb_check_butterfly_slice gate and rejects an inadmissible seed there. So a
+  // projection failure is intentionally not fatal at seed time.
   (void)cstar_arb_project(dst);
   return Ok(dst);
 }
