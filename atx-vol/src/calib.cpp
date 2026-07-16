@@ -669,7 +669,12 @@ void prepare_shared_boundary_proposals(std::vector<FitObs> &observations,
                                        DeAmAuditDiagnostics &diag) noexcept {
   // This is the private, pre-restatement ObsSet. Its score column is recomputed
   // below for every emitted row, so it safely carries the transient proposal
-  // and avoids allocating a parallel n-strike vector in the hot path.
+  // and avoids allocating a parallel n-strike vector in the hot path. The
+  // caller does allocate one such vector — `shortcut_mask` at :897 — but that
+  // one is required by the prepare/main-loop single-sourcing contract (both
+  // passes must agree on which rows the shortcut claims) and costs only 1
+  // byte/row; the score column here stays in-band for the same reason as
+  // before, since it needs no vector of its own at all.
   for (FitObs &observation : observations) {
     observation.score_sigma_mkt = kUnscoredIv;
   }
@@ -694,6 +699,12 @@ void prepare_shared_boundary_proposals(std::vector<FitObs> &observations,
   //
   // `r < 0.0` is retained: it flips the PUT side's internal rate negative, where
   // al_xmax_put(K, r<0, q>=0) == 0 leaves no asymptotic boundary to interpolate.
+  // That covers only the q_eff >= 0 sub-case of r < 0; al_xmax_put also
+  // supports r < 0 with q_eff < r < 0 (american.cpp:560-562: `if (r < 0.0 &&
+  // q < r) return K;`), a real single-boundary regime with a nonzero
+  // asymptote. This board-wide bail excludes that regime too — a deliberate,
+  // conservative choice, out of scope for R-09, not a gap in this guard's
+  // reasoning.
   if (!opts.use_shared_boundary_deam || opts.audit_accurate_inversions ||
       opts.anchor_kind != CalibAnchorKind::Mid || method != AmericanMethod::AndersenLake ||
       r < 0.0 || !(iv_tol > 0.0) || iv_max_iter == 0u) {

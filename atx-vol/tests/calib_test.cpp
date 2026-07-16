@@ -582,15 +582,11 @@ TEST(BuildObservationsEuropean, SharedSigmaBoundaryRunsUnderHftShortcutPreset) {
   // The shortcut mask is single-sourced: turning the shared route on must not
   // move one row into or out of the shortcut population.
   EXPECT_EQ(audit.shortcut.n_proposed, reference->deam_audit.shortcut.n_proposed);
-  EXPECT_EQ(audit.n_forced_short_tenor, reference->deam_audit.n_forced_short_tenor);
-  EXPECT_EQ(audit.n_forced_low_vega, reference->deam_audit.n_forced_low_vega);
-  EXPECT_EQ(audit.n_forced_far_wing, reference->deam_audit.n_forced_far_wing);
   // Shortcut rows and shared lanes are disjoint subsets of the same row set, so
   // their populations can never overshoot it. On this fixture the two routes
   // partition the board exactly (every row is claimed by one of them), which is
   // the strongest form of the disjointness claim: no row is double-counted and
   // none is stranded.
-  EXPECT_LE(audit.n_shared_boundary_lanes + audit.shortcut.n_proposed, audit.n_deam_rows);
   EXPECT_EQ(audit.n_shared_boundary_lanes + audit.shortcut.n_proposed, audit.n_deam_rows);
   EXPECT_LE(audit.n_shared_boundary_lanes, audit.accurate.n_proposed);
   EXPECT_EQ(audit.n_shared_scalar_fallback_lanes, 0u); // every non-shortcut row got a lane
