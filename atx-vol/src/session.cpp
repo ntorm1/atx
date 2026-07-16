@@ -686,13 +686,14 @@ void apply_fit_preset(SessionInputs &in, FitPreset preset) noexcept {
   in.calib.max_obs_per_slice = 0;
   in.calib.max_otm_shortcut_premium_spread_frac = 0.0;
   in.deam.method = AmericanMethod::AndersenLake;
-  in.deam.max_borrow_pairs = 12;
+  in.deam.carry_al_opts = al_fast_opts();
+  in.deam.max_borrow_pairs = 5;
   switch (preset) {
   case FitPreset::Fast:
     // Fast surface-fit path: the fast Andersen-Lake preset with the inversion
     // tol matched to its ~1e-4 accuracy floor (a tighter tol collapses
-    // safeguarded Newton into bisection and slows the fit), and a single ATM
-    // borrow pair (the term borrow the smile then absorbs into log-moneyness).
+    // safeguarded Newton into bisection and slows the fit), with the
+    // evidence-based five-pair carry cap.
     in.deam.al_opts = al_fast_opts();
     in.deam.iv_tol = 1.0e-5;
     in.deam.n_atm = 1;

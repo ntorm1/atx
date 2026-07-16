@@ -351,7 +351,9 @@ TEST(FitPreset, PopulatesPolicyFieldsPerPreset) {
   EXPECT_EQ(fast.deam.al_opts->n_collocation, al_fast_opts().n_collocation);
   EXPECT_EQ(fast.deam.method, AmericanMethod::AndersenLake);
   EXPECT_EQ(fast.deam.n_atm, std::size_t{1});
-  EXPECT_EQ(fast.deam.max_borrow_pairs, std::size_t{12});
+  EXPECT_EQ(fast.deam.max_borrow_pairs, std::size_t{5});
+  ASSERT_TRUE(fast.deam.carry_al_opts.has_value());
+  EXPECT_EQ(fast.deam.carry_al_opts->n_collocation, al_fast_opts().n_collocation);
   EXPECT_DOUBLE_EQ(fast.deam.iv_tol, 1.0e-5);
   EXPECT_EQ(fast.calendar_repair, CalendarRepair::None);
 
@@ -359,6 +361,7 @@ TEST(FitPreset, PopulatesPolicyFieldsPerPreset) {
   SessionInputs robust;
   robust.S = 200.0;
   robust.r = 0.05;
+  robust.deam.carry_al_opts = al_default_opts();
   apply_fit_preset(robust, FitPreset::Robust);
   EXPECT_DOUBLE_EQ(robust.S, 200.0);
   EXPECT_DOUBLE_EQ(robust.r, 0.05);
@@ -366,6 +369,9 @@ TEST(FitPreset, PopulatesPolicyFieldsPerPreset) {
   EXPECT_EQ(robust.deam.al_opts->n_collocation, al_default_opts().n_collocation);
   EXPECT_EQ(robust.deam.method, AmericanMethod::AndersenLake);
   EXPECT_EQ(robust.deam.n_atm, std::size_t{3});
+  EXPECT_EQ(robust.deam.max_borrow_pairs, std::size_t{5});
+  ASSERT_TRUE(robust.deam.carry_al_opts.has_value());
+  EXPECT_EQ(robust.deam.carry_al_opts->n_collocation, al_fast_opts().n_collocation);
   EXPECT_EQ(robust.calendar_repair, CalendarRepair::MonotoneFit);
   EXPECT_TRUE(robust.use_deam_cache_for_fit);
 
@@ -388,6 +394,7 @@ TEST(FitPreset, PopulatesPolicyFieldsPerPreset) {
   EXPECT_EQ(acc.calendar_repair, CalendarRepair::None);
   ASSERT_TRUE(acc.deam.al_opts.has_value());
   EXPECT_EQ(acc.deam.al_opts->max_newton_iter, al_default_opts().max_newton_iter);
+  EXPECT_EQ(acc.deam.max_borrow_pairs, std::size_t{5});
   EXPECT_FALSE(acc.use_deam_cache_for_fit);
 }
 

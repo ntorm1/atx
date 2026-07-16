@@ -155,9 +155,12 @@ struct CalibOpts {
   // 0 = use every surviving observation. Positive = cap the per-slice
   // de-Americanized fit population before the expensive American-IV inversion,
   // selecting adaptive knots by normalized total-variance interpolation error.
-  // This is a cold-start latency knob for very dense index boards; the default
-  // preserves the historical full-board fit exactly.
+  // This is a cold-start latency knob for very dense index boards. The default
+  // keeps the full population; adjacent-strike warm starts are controlled below.
   std::uint32_t max_obs_per_slice{0};
+  // Seed each call/put inversion from the previous accepted strike of the same
+  // side. Disable only to run the cold reference path for an A/B comparison.
+  bool warm_start_deam_adjacent_strikes{true};
   // 0 = unlimited = current behavior. Positive = cap the number of OTM strikes
   // per expiry that the LEGACY (`LegacyEssviCompatibility`) observation-prep
   // path de-Americanizes. The legacy prep inverts one (cold-ish) Andersen-Lake
@@ -188,6 +191,10 @@ struct CalibOpts {
   // it only inside this fraction of one half-spread; otherwise fall back to an
   // accurate inversion.  This is a hard residual ceiling, not a speed knob.
   double max_inversion_residual_half_spreads{0.25};
+  // Diagnostic reference switch. A direct accurate Andersen-Lake inversion is
+  // cold-polished against the audit map already, so its second full reprice is
+  // redundant. Fast/cache/shortcut and accurate-fallback proposals stay audited.
+  bool audit_accurate_inversions{false};
   // Proposal guards. Ultra-short, very low-vega and far-wing observations
   // bypass the raw-European OTM shortcut and go directly to inversion.
   double min_otm_shortcut_T{7.0 / 365.25};
@@ -284,7 +291,7 @@ struct CalibOpts {
 // ignored. `max_weight` must be finite and strictly positive.
 // @return InvalidArgument for malformed values/enums; NotImplemented for a
 //         recognized policy this build cannot execute truthfully.
-[[nodiscard]] Status validate_calib_options(const CalibOpts& opts) noexcept;
+[[nodiscard]] Status validate_calib_options(const CalibOpts &opts) noexcept;
 
 // ── Per-slice fit observation ────────────────────────────────────────────
 
@@ -351,7 +358,11 @@ struct FitDiag {
 
 struct InversionRouteDiagnostics {
   std::uint32_t n_proposed{0};
+  // Logical certifications. A successful direct accurate Andersen-Lake solve
+  // counts here without repeating its identical forward map.
   std::uint32_t n_audited{0};
+  // Actual independent cold Andersen-Lake reference reprices performed.
+  std::uint32_t n_reference_reprices{0};
   std::uint32_t n_accepted{0};
   std::uint32_t n_fallback{0};
   double p50_residual_half_spreads{0.0};
@@ -442,12 +453,13 @@ struct ObsSet {
 // `caches` (optional) routes the per-strike American de-Americanization through
 // the cached hot path (Black-76 + Chebyshev correction) instead of the cold
 // Andersen-Lake solve — the SAME accurate, self-consistent de-Am the eSSVI path
-// uses, orders of magnitude faster on a wide board. Default-empty => cold
-// (bit-identical to the historical behaviour).
+// uses, orders of magnitude faster on a wide board. Default-empty selects the
+// accurate cold map; adjacent-strike seeds may move the converged result by a
+// few ULPs while remaining inside the documented economic tolerance.
 //
 // `al_opts` / `iv_tol` / `iv_max_iter` tune the COLD Andersen-Lake inversion (the
 // path taken when `caches` is empty). They default to the ACCURATE preset
-// (nullopt = al_default_opts, 1e-7 / 64) so an unchanged caller is bit-identical.
+// (nullopt = al_default_opts, 1e-7 / 64).
 // The fast-preset served path (session Fast/Hft) passes its `DeAmOptions`
 // al_opts (al_fast_opts) + iv_tol here so the per-strike de-Am honors the SAME
 // fast-cold accuracy as the borrow solve — the surface only needs ~1e-4 price

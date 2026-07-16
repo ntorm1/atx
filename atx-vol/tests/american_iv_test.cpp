@@ -6,6 +6,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <thread>
 #include <utility>
 
 #include "atx/vol/american.hpp"
@@ -331,6 +332,88 @@ TEST(AmericanIv, LightweightTelemetryMeasuresCompleteInversionKernel) {
   }
   const lw::Snapshot measured = lw::snapshot();
   EXPECT_EQ(measured.american_iv_samples, 1u);
+  EXPECT_GT(measured.residual_evaluations_in_sampled_iv, 0u);
   EXPECT_GT(measured.boundary_solves_in_sampled_iv, 0u);
   EXPECT_GT(measured.exp_calls_in_sampled_iv, 0u);
+}
+
+TEST(AmericanIv, RetainedThreadLocalPricerAllocatesOnlyOnFirstColdInversion) {
+  using atx::vol::counters::Counter;
+  if constexpr (!atx::vol::counters::counters_enabled()) {
+    GTEST_SKIP() << "ATX_VOL_COUNTERS off: rebuild with -DATX_VOL_COUNTERS=ON";
+  }
+
+  const AlOpts fast = atx::vol::al_fast_opts();
+  constexpr double sigma_a = 0.24;
+  constexpr double sigma_b = 0.34;
+  const double price_a = value_or_fail(american_price(100.0, 105.0, 0.75, sigma_a, 0.04, 0.01,
+                                                      Side::Put, AmericanMethod::AndersenLake));
+  const double price_b = value_or_fail(american_price(180.0, 155.0, 0.35, sigma_b, 0.025, 0.065,
+                                                      Side::Call, AmericanMethod::AndersenLake,
+                                                      fast));
+
+  bool inversion_ok = true;
+  std::uint64_t first_allocations = 0u;
+  std::uint64_t reuse_allocations = 0u;
+  atx::vol::counters::reset();
+  std::jthread worker([&] {
+    const auto first = american_implied_vol(price_a, 100.0, 105.0, 0.75, 0.04, 0.01, Side::Put);
+    inversion_ok = first.has_value() && std::fabs(*first - sigma_a) < 1.0e-5;
+    first_allocations = atx::vol::counters::snapshot().get(Counter::AloStateAllocations);
+
+    atx::vol::counters::reset();
+    for (int i = 0; i < 8; ++i) {
+      const bool use_fast = (i & 1) != 0;
+      const auto iv = use_fast
+                          ? american_implied_vol(price_b, 180.0, 155.0, 0.35, 0.025, 0.065,
+                                                 Side::Call, AmericanMethod::AndersenLake, 1.0e-7,
+                                                 64, fast)
+                          : american_implied_vol(price_a, 100.0, 105.0, 0.75, 0.04, 0.01,
+                                                 Side::Put);
+      inversion_ok = inversion_ok && iv.has_value() &&
+                     std::fabs(*iv - (use_fast ? sigma_b : sigma_a)) < 1.0e-5;
+    }
+    reuse_allocations = atx::vol::counters::snapshot().get(Counter::AloStateAllocations);
+  });
+  worker.join();
+
+  EXPECT_TRUE(inversion_ok);
+  EXPECT_EQ(first_allocations, 1u);
+  EXPECT_EQ(reuse_allocations, 0u);
+}
+
+TEST(AmericanIv, BawAndCachedMapsBypassThreadLocalAloState) {
+  using atx::vol::counters::Counter;
+  if constexpr (!atx::vol::counters::counters_enabled()) {
+    GTEST_SKIP() << "ATX_VOL_COUNTERS off: rebuild with -DATX_VOL_COUNTERS=ON";
+  }
+
+  constexpr double S = 100.0;
+  constexpr double K = 102.0;
+  constexpr double T = 0.5;
+  constexpr double sigma = 0.27;
+  constexpr double r = 0.04;
+  constexpr double q = 0.0;
+  const double baw_price =
+      value_or_fail(american_price(S, K, T, sigma, r, q, Side::Put, AmericanMethod::Baw));
+  const CorrectionCache cache = make_iv_correction(r, q);
+  const double cache_price = american_price_cached(S, K, T, sigma, r, q, Side::Put, &cache);
+
+  bool baw_ok = false;
+  bool cache_ok = false;
+  atx::vol::counters::reset();
+  std::jthread worker([&] {
+    const auto baw_iv =
+        american_implied_vol(baw_price, S, K, T, r, q, Side::Put, AmericanMethod::Baw);
+    const auto cache_iv = american_implied_vol(cache_price, S, K, T, r, q, Side::Put,
+                                               AmericanMethod::AndersenLake, 1.0e-7, 64,
+                                               std::nullopt, &cache);
+    baw_ok = baw_iv.has_value() && std::fabs(*baw_iv - sigma) < 1.0e-3;
+    cache_ok = cache_iv.has_value() && std::fabs(*cache_iv - sigma) < 1.0e-6;
+  });
+  worker.join();
+
+  EXPECT_TRUE(baw_ok);
+  EXPECT_TRUE(cache_ok);
+  EXPECT_EQ(atx::vol::counters::snapshot().get(Counter::AloStateAllocations), 0u);
 }

@@ -114,15 +114,21 @@ TEST(LightweightCounters, InversionSampleBatchesKernelWork) {
 
   for (std::uint32_t i = 0; i < lw::kSamplePeriod; ++i) {
     lw::AmericanIvSample sample;
+    for (std::uint32_t residual = 0; residual < 11u; ++residual) {
+      lw::record_residual_evaluation();
+    }
     lw::record_boundary_solves(3u);
     lw::record_exp_calls(17u);
   }
 
   const lw::Snapshot measured = lw::snapshot();
   EXPECT_EQ(measured.american_iv_samples, 1u);
+  EXPECT_EQ(measured.residual_evaluations_in_sampled_iv, 11u);
   EXPECT_EQ(measured.boundary_solves_in_sampled_iv, 3u);
   EXPECT_EQ(measured.exp_calls_in_sampled_iv, 17u);
   EXPECT_EQ(measured.estimated_american_iv_inversions(), lw::kSamplePeriod);
+  EXPECT_EQ(measured.estimated_residual_evaluations(), 11u * lw::kSamplePeriod);
+  EXPECT_DOUBLE_EQ(measured.residual_evaluations_per_inversion(), 11.0);
   EXPECT_DOUBLE_EQ(measured.boundary_solves_per_inversion(), 3.0);
   EXPECT_DOUBLE_EQ(measured.exp_calls_per_inversion(), 17.0);
 }
@@ -145,6 +151,7 @@ TEST(LightweightCounters, ConcurrentWritersRetainEverySample) {
       }
       for (std::uint32_t i = 0; i < lw::kSamplePeriod; ++i) {
         lw::AmericanIvSample sample;
+        lw::record_residual_evaluation();
         lw::record_boundary_solves(2u);
         lw::record_exp_calls(5u);
       }
@@ -160,6 +167,7 @@ TEST(LightweightCounters, ConcurrentWritersRetainEverySample) {
   EXPECT_EQ(measured.cold_fallback_samples, 0u);
   EXPECT_EQ(measured.query_attempt_samples(), kWorkers);
   EXPECT_EQ(measured.american_iv_samples, kWorkers);
+  EXPECT_EQ(measured.residual_evaluations_in_sampled_iv, kWorkers);
   EXPECT_EQ(measured.boundary_solves_in_sampled_iv, 2u * kWorkers);
   EXPECT_EQ(measured.exp_calls_in_sampled_iv, 5u * kWorkers);
 }

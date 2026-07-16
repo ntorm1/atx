@@ -96,6 +96,9 @@ enum class Counter : unsigned {
   // seeds rejected for missing/mismatched/conflicting provenance.
   FullGreekSeedReuseLanes,
   FullGreekSeedRejectedCandidates,
+  // Retained Andersen-Lake state. Counts owning State allocations only; reset
+  // and each residual price must leave this unchanged.
+  AloStateAllocations,
   Count_
 };
 
@@ -133,6 +136,7 @@ inline constexpr const char *kNames[kCount] = {
     "cnt_base_greek_reuse_lanes",
     "cnt_full_greek_seed_reuse_lanes",
     "cnt_full_greek_seed_rejected_candidates",
+    "cnt_alo_state_allocations",
 };
 
 // A point-in-time copy of every counter. `enabled == false` is the sentinel a
@@ -208,7 +212,7 @@ inline void reset() noexcept {}
 // Always-on production telemetry. Unlike the exact diagnostic counters above,
 // this plane samples one in every kSamplePeriod root operations. Query outcomes
 // are mutually exclusive, and American-IV kernel work is accumulated in TLS and
-// published with three relaxed atomic additions only for a sampled inversion.
+// published with four relaxed atomic additions only for a sampled inversion.
 // It therefore exposes useful rate/work estimates without putting an atomic on
 // every pricing event.
 namespace lightweight {
@@ -223,6 +227,7 @@ struct Snapshot {
   std::uint64_t other_cache_hit_samples{0u};
   std::uint64_t cold_fallback_samples{0u};
   std::uint64_t american_iv_samples{0u};
+  std::uint64_t residual_evaluations_in_sampled_iv{0u};
   std::uint64_t boundary_solves_in_sampled_iv{0u};
   std::uint64_t exp_calls_in_sampled_iv{0u};
 
@@ -269,6 +274,10 @@ public:
     return estimate(boundary_solves_in_sampled_iv);
   }
 
+  [[nodiscard]] std::uint64_t estimated_residual_evaluations() const noexcept {
+    return estimate(residual_evaluations_in_sampled_iv);
+  }
+
   [[nodiscard]] std::uint64_t estimated_exp_calls() const noexcept {
     return estimate(exp_calls_in_sampled_iv);
   }
@@ -289,6 +298,10 @@ public:
     return ratio(boundary_solves_in_sampled_iv, american_iv_samples);
   }
 
+  [[nodiscard]] double residual_evaluations_per_inversion() const noexcept {
+    return ratio(residual_evaluations_in_sampled_iv, american_iv_samples);
+  }
+
   [[nodiscard]] double exp_calls_per_inversion() const noexcept {
     return ratio(exp_calls_in_sampled_iv, american_iv_samples);
   }
@@ -301,11 +314,13 @@ struct GlobalCounters {
   std::atomic<std::uint64_t> other_cache_hits{0u};
   std::atomic<std::uint64_t> cold_fallbacks{0u};
   std::atomic<std::uint64_t> american_iv{0u};
+  std::atomic<std::uint64_t> residual_evaluations{0u};
   std::atomic<std::uint64_t> boundary_solves{0u};
   std::atomic<std::uint64_t> exp_calls{0u};
 };
 
 struct InversionAccumulator {
+  std::uint64_t residual_evaluations{0u};
   std::uint64_t boundary_solves{0u};
   std::uint64_t exp_calls{0u};
 };
@@ -410,8 +425,10 @@ public:
     }
     detail::t_state.active_inversion = previous_;
     // SAFETY: these atomics publish diagnostic aggregates only. The TLS scope
-    // owns accumulator_ until all three additions complete.
+    // owns accumulator_ until all additions complete.
     detail::g_counters.american_iv.fetch_add(1u, std::memory_order_relaxed);
+    detail::g_counters.residual_evaluations.fetch_add(accumulator_.residual_evaluations,
+                                                      std::memory_order_relaxed);
     detail::g_counters.boundary_solves.fetch_add(accumulator_.boundary_solves,
                                                  std::memory_order_relaxed);
     detail::g_counters.exp_calls.fetch_add(accumulator_.exp_calls, std::memory_order_relaxed);
@@ -422,6 +439,13 @@ private:
   detail::InversionAccumulator *previous_{nullptr};
   bool sampled_{false};
 };
+
+inline void record_residual_evaluation() noexcept {
+  detail::InversionAccumulator *const active = detail::t_state.active_inversion;
+  if (active != nullptr) {
+    ++active->residual_evaluations;
+  }
+}
 
 inline void record_boundary_solves(std::uint64_t count = 1u) noexcept {
   detail::InversionAccumulator *const active = detail::t_state.active_inversion;
@@ -447,6 +471,8 @@ inline void record_exp_calls(std::uint64_t count) noexcept {
       detail::g_counters.other_cache_hits.load(std::memory_order_relaxed);
   result.cold_fallback_samples = detail::g_counters.cold_fallbacks.load(std::memory_order_relaxed);
   result.american_iv_samples = detail::g_counters.american_iv.load(std::memory_order_relaxed);
+  result.residual_evaluations_in_sampled_iv =
+      detail::g_counters.residual_evaluations.load(std::memory_order_relaxed);
   result.boundary_solves_in_sampled_iv =
       detail::g_counters.boundary_solves.load(std::memory_order_relaxed);
   result.exp_calls_in_sampled_iv = detail::g_counters.exp_calls.load(std::memory_order_relaxed);
@@ -464,6 +490,8 @@ inline void record_exp_calls(std::uint64_t count) noexcept {
       detail::subtract_or_restart(before.cold_fallback_samples, after.cold_fallback_samples);
   result.american_iv_samples =
       detail::subtract_or_restart(before.american_iv_samples, after.american_iv_samples);
+  result.residual_evaluations_in_sampled_iv = detail::subtract_or_restart(
+      before.residual_evaluations_in_sampled_iv, after.residual_evaluations_in_sampled_iv);
   result.boundary_solves_in_sampled_iv = detail::subtract_or_restart(
       before.boundary_solves_in_sampled_iv, after.boundary_solves_in_sampled_iv);
   result.exp_calls_in_sampled_iv =
@@ -478,6 +506,7 @@ inline void reset() noexcept {
   detail::g_counters.other_cache_hits.store(0u, std::memory_order_relaxed);
   detail::g_counters.cold_fallbacks.store(0u, std::memory_order_relaxed);
   detail::g_counters.american_iv.store(0u, std::memory_order_relaxed);
+  detail::g_counters.residual_evaluations.store(0u, std::memory_order_relaxed);
   detail::g_counters.boundary_solves.store(0u, std::memory_order_relaxed);
   detail::g_counters.exp_calls.store(0u, std::memory_order_relaxed);
   detail::t_state = detail::ThreadState{};

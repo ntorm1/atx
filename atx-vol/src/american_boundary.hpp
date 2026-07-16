@@ -67,10 +67,13 @@ struct AlWorkspace {
   // the test seam behind detail::andersen_lake_generic_kernel. Default true so
   // every production solve specializes.
   bool specialize = true;
-  // Sweep-invariant geometry for eqn_b_ND, filled ONCE per solve by
-  // al_bind_geometry when the scheme is specialized. NOT zero-init'd (filled
-  // before read) so the greeks paths that stack several workspaces do not pay a
-  // 512-double memset each.
+  // True only after the sigma-independent geometry below has been bound for the
+  // current (T,r,q,node-grid) contract. Retained pricers clear it on reset.
+  bool geo_static_bound = false;
+  // Sweep-invariant geometry for eqn_b_ND. zc/weru/wequ are bound once per
+  // contract; geo_v is rebound for each sigma. NOT zero-init'd (active elements
+  // are filled before read), so stacked workspaces do not pay four 512-double
+  // memsets.
   std::array<double, kGeoSize> geo_zc;    // clamped Chebyshev argument z_ji
   std::array<double, kGeoSize> geo_v;     // sigma * sqrt(t_u_ji)
   std::array<double, kGeoSize> geo_weru;  // qw_fp[i] * exp(r * u_ji)

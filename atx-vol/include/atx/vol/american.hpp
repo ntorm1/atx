@@ -254,7 +254,7 @@ struct SigmaSliceStats {
 //
 // `price(sigma)` reproduces `andersen_lake(S, K, T, sigma, r, q, side, opts)` to
 // the boundary tolerance (a warm and a cold solve converge to the same boundary).
-// Mutable warm state — NOT thread-safe; construct one per inversion. A large
+// Mutable warm state — NOT thread-safe; retain one per thread/inversion. A large
 // sigma jump (or the first call) transparently falls back to a cold seed.
 class AloPricer {
 public:
@@ -265,6 +265,12 @@ public:
   AloPricer &operator=(AloPricer &&) noexcept;
   AloPricer(const AloPricer &) = delete;
   AloPricer &operator=(const AloPricer &) = delete;
+
+  // Rebind this retained state to another fixed contract without allocating.
+  // The next price() starts from a cold boundary seed; no state from the prior
+  // contract or accuracy scheme is consumed. Not thread-safe, like price().
+  void reset(double S, double K, double T, double r, double q, Side side,
+             const std::optional<AlOpts> &opts = std::nullopt) noexcept;
 
   // American price at this contract and `sigma` (>= 0). Warm-starts the boundary
   // from the previous call. Returns NaN on the negative-rate/carry corners where

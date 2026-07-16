@@ -22,9 +22,9 @@
 // `american_price(sigma, method)` inverts back to `sigma` regardless of that
 // method's absolute accuracy — the round-trip is self-consistent.
 //
-// Stateless and pure — every entry is safe to call concurrently from any
-// thread. The cost is dominated by the cold American pricer, so this is a
-// cold-path routine (surface-fit cadence), not a per-tick kernel.
+// Observably pure and safe to call concurrently. Each thread retains private
+// Andersen-Lake scratch between calls; no pricing state is shared across threads.
+// This remains a cold-path routine (surface-fit cadence), not a per-tick kernel.
 
 #include <cstdint>
 #include <optional>

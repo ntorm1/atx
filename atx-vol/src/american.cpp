@@ -1,6 +1,7 @@
 #include "atx/vol/american.hpp"
 
 #include <array>
+#include <cassert>
 #include <cmath>
 #include <limits>
 #include <memory>
@@ -685,15 +686,17 @@ void al_seed_boundary_qdplus(AlBoundary &b, double sigma, double r, double q) no
 // including 2 sqrt + 2 exp, on EVERY Jacobi-Newton and fixed-point sweep. Only the
 // Chebyshev value over the sweep-varying bnd.y[] and b_from_y actually change.
 //
-// This fills them ONCE (weights folded into geo_weru/geo_wequ so the sweep loop is a
-// bare multiply-accumulate). It is a PURE HOIST: each stored quantity is computed
-// with the identical expression the loop used, so the specialized sweep is
-// bit-identical to the generic reference (which still recomputes inline). Only the
-// specialized fixed schemes are hoisted; the generic path leaves geo untouched.
-void al_bind_geometry(const AlBoundary &bnd, AlWorkspace &ws, double sigma, double r,
-                      double q) noexcept {
+// Bind the (T,r,q)-dependent portion once for a retained fixed contract. The
+// combined cold wrapper below explicitly invalidates before calling this seam;
+// AloPricer::reset does the same and then retains it across every sigma residual.
+void al_bind_geometry_static(const AlBoundary &bnd, AlWorkspace &ws, double r,
+                             double q) noexcept {
   if (!ws.specialize || !al_fp_specialized(bnd.n, ws.n_quad_fp)) {
+    ws.geo_static_bound = false;
     return; // generic path recomputes inline; no geometry needed
+  }
+  if (ws.geo_static_bound) {
+    return;
   }
   const double *xs = ws.qx_fp;
   const double *wv = ws.qw_fp;
@@ -717,13 +720,55 @@ void al_bind_geometry(const AlBoundary &bnd, AlWorkspace &ws, double sigma, doub
       const double u_eff = (u >= T) ? T : u;
       const double zz = 2.0 * std::sqrt(u_eff / T) - 1.0;
       ws.geo_zc[gbase + i] = atx::core::clamp(zz, -1.0, 1.0);
-      ws.geo_v[gbase + i] = sigma * std::sqrt(t_u);
       ws.geo_weru[gbase + i] = wv[i] * std::exp(r * u);
       ws.geo_wequ[gbase + i] = wv[i] * std::exp(q * u);
       ATX_VOL_COUNT_N(ExpCalls, 2); // exp(r·u), exp(q·u) — now paid ONCE per solve
       counters::lightweight::record_exp_calls(2u);
     }
   }
+  ws.geo_static_bound = true;
+}
+
+// Bind only sigma*sqrt(t_u). A missing static bind is an internal invariant
+// violation: assert in Debug and select the generic kernel in Release so no
+// indeterminate geometry can ever be consumed.
+void al_bind_geometry_sigma(const AlBoundary &bnd, AlWorkspace &ws, double sigma) noexcept {
+  if (!ws.specialize || !al_fp_specialized(bnd.n, ws.n_quad_fp)) {
+    return;
+  }
+  assert(ws.geo_static_bound);
+  if (!ws.geo_static_bound) {
+    ws.specialize = false;
+    return;
+  }
+  const double *xs = ws.qx_fp;
+  const unsigned nq = ws.n_quad_fp;
+  for (std::uint16_t j = 1; j < bnd.n; ++j) {
+    const double tau = bnd.tau[j];
+    if (tau <= 1.0e-14) {
+      continue;
+    }
+    const double half_tau = 0.5 * tau;
+    const unsigned gbase = static_cast<unsigned>(j) * kGeoQuadStride;
+    for (unsigned i = 0; i < nq; ++i) {
+      const double u = half_tau * (1.0 + xs[i]);
+      const double t_u = tau - u;
+      if (t_u <= 1.0e-14) {
+        continue;
+      }
+      ws.geo_v[gbase + i] = sigma * std::sqrt(t_u);
+    }
+  }
+}
+
+// Cold/Greeks/slice callers own one workspace per solve. Invalidate first so a
+// caller that reuses its stack object across contracts cannot consume stale
+// static geometry, then preserve the former all-at-once bind semantics.
+void al_bind_geometry(const AlBoundary &bnd, AlWorkspace &ws, double sigma, double r,
+                      double q) noexcept {
+  ws.geo_static_bound = false;
+  al_bind_geometry_static(bnd, ws, r, q);
+  al_bind_geometry_sigma(bnd, ws, sigma);
 }
 
 // Equation B kernel: N(τ,b), D(τ,b). Templated on the fixed-scheme trip counts
@@ -1328,19 +1373,24 @@ void american_greeks_first_order(double S, double K, double T, double sigma, dou
 // ── Warm-started ALO pricer (fixed contract, sigma sweep) ────────────────
 //
 // State mirrors al_solve_put's internals but hoists the sigma-independent setup
-// (node grid, Gauss-Legendre binding) into the constructor and keeps the
+// (node grid, Gauss-Legendre binding) into reset() and keeps the
 // early-exercise boundary `bnd.y[]` alive between price() calls. All calls solve
 // an internal PUT; a Call is the McDonald-Schroder put P(K,S,q,r), so the boundary
 // machinery is identical.
 struct AloPricer::State {
+  // User-provided construction deliberately avoids value-initializing the four
+  // 512-double geometry arrays. reset() binds every active element before a
+  // specialized kernel can read it.
+  State() noexcept {}
+
   double Sp{}; // internal-put spot   (= K for a call)
   double Kp{}; // internal-put strike (= S for a call) — drives the boundary
   double T{};
   double rp{}; // internal-put rate   (= q for a call)
   double qp{}; // internal-put yield  (= r for a call)
   AlScheme sch{};
-  AlBoundary bnd{};
-  AlWorkspace ws{};
+  AlBoundary bnd;
+  AlWorkspace ws;
   bool prepared{false};      // node grid + quadrature bound, xmax > 0
   bool european_only{false}; // no early exercise -> American == European
   bool unsupported{false};   // double-continuation corner -> price() returns NaN
@@ -1351,7 +1401,30 @@ struct AloPricer::State {
 AloPricer::AloPricer(double S, double K, double T, double r, double q, Side side,
                      const std::optional<AlOpts> &opts)
     : st_(std::make_unique<State>()) {
+  ATX_VOL_COUNT(AloStateAllocations);
+  reset(S, K, T, r, q, side, opts);
+}
+
+void AloPricer::reset(double S, double K, double T, double r, double q, Side side,
+                      const std::optional<AlOpts> &opts) noexcept {
+  assert(st_ != nullptr);
+  if (st_ == nullptr) {
+    return; // moved-from pricer: fail safe without allocating in reset()
+  }
   State &s = *st_;
+  s.prepared = false;
+  s.european_only = false;
+  s.unsupported = false;
+  s.seeded = false;
+  s.last_sigma = -1.0;
+  s.ws.specialize = true;
+  s.ws.geo_static_bound = false;
+  s.ws.qx_fp = nullptr;
+  s.ws.qw_fp = nullptr;
+  s.ws.n_quad_fp = 0;
+  s.ws.qx_price = nullptr;
+  s.ws.qw_price = nullptr;
+  s.ws.n_quad_price = 0;
   s.T = T;
   s.sch = scheme_from_opts(opts);
   // Internal put contract. Put: as-is. Call: McDonald-Schroder swap (S<->K, r<->q).
@@ -1398,6 +1471,7 @@ AloPricer::AloPricer(double S, double K, double T, double r, double q, Side side
   s.ws.qx_price = pr->nodes.data();
   s.ws.qw_price = pr->weights.data();
   s.ws.n_quad_price = s.sch.n_quad_price;
+  al_bind_geometry_static(s.bnd, s.ws, s.rp, s.qp);
   s.prepared = true;
 }
 
@@ -1406,6 +1480,10 @@ AloPricer::AloPricer(AloPricer &&) noexcept = default;
 AloPricer &AloPricer::operator=(AloPricer &&) noexcept = default;
 
 double AloPricer::price(double sigma) noexcept {
+  assert(st_ != nullptr);
+  if (st_ == nullptr) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
   State &s = *st_;
   // Degenerate: sigma ~ 0 or T ~ 0 collapses to intrinsic (internal-put intrinsic
   // Kp - Sp equals the original option's intrinsic for both sides).
@@ -1435,11 +1513,9 @@ double AloPricer::price(double sigma) noexcept {
   if (cold) {
     al_seed_boundary(s.bnd, sigma, s.rp, s.qp);
   }
-  // Rebind the sweep-invariant geometry for this sigma (v_ji = sigma·sqrt(t_u); the
-  // zc/exp blocks are sigma-independent but r/q are fixed for the contract, so a
-  // single per-price bind covers them). This replaces the transcendentals the sweep
-  // would otherwise recompute, so warm solves stay at parity or better.
-  al_bind_geometry(s.bnd, s.ws, sigma, s.rp, s.qp);
+  // reset() retained zc and the weighted rate/yield exponentials. Only the
+  // sigma-dependent diffusion scale changes between residual evaluations.
+  al_bind_geometry_sigma(s.bnd, s.ws, sigma);
   // Warm start skips ONLY the ~12-node Barone-Adesi-Whaley re-seed (the dominant
   // cold cost — 12 nested Newton root-finds), then runs the SAME sweep budget as a
   // cold solve (andersen_lake's n_iter_jn JN + n_iter_fp FP, early break at tol).

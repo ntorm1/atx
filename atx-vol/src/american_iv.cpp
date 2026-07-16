@@ -109,6 +109,54 @@ template <typename Correction>
 
 namespace {
 
+struct ThreadAloSlot {
+  std::optional<AloPricer> pricer;
+  bool busy{false};
+};
+
+inline thread_local ThreadAloSlot t_alo_slot{};
+
+// One inversion exclusively leases the retained per-thread pricer. A nested
+// same-thread inversion cannot overwrite the outer boundary, so it owns a local
+// fallback for the duration of the nested call.
+class ScopedAloPricer final {
+public:
+  ScopedAloPricer(double S, double K, double T, double r, double q, Side side,
+                  const std::optional<AlOpts> &opts) {
+    if (!t_alo_slot.busy) {
+      slot_ = &t_alo_slot;
+      if (slot_->pricer) {
+        slot_->pricer->reset(S, K, T, r, q, side, opts);
+      } else {
+        slot_->pricer.emplace(S, K, T, r, q, side, opts);
+      }
+      slot_->busy = true;
+      pricer_ = &*slot_->pricer;
+      return;
+    }
+    fallback_.emplace(S, K, T, r, q, side, opts);
+    pricer_ = &*fallback_;
+  }
+
+  ScopedAloPricer(const ScopedAloPricer &) = delete;
+  ScopedAloPricer &operator=(const ScopedAloPricer &) = delete;
+  ScopedAloPricer(ScopedAloPricer &&) = delete;
+  ScopedAloPricer &operator=(ScopedAloPricer &&) = delete;
+
+  ~ScopedAloPricer() noexcept {
+    if (slot_ != nullptr) {
+      slot_->busy = false;
+    }
+  }
+
+  [[nodiscard]] AloPricer &get() noexcept { return *pricer_; }
+
+private:
+  ThreadAloSlot *slot_{nullptr};
+  std::optional<AloPricer> fallback_;
+  AloPricer *pricer_{nullptr};
+};
+
 template <typename Correction>
 Result<double> american_implied_vol_impl(double price, double S, double K, double T, double r,
                                          double q, Side side, AmericanMethod method, double tol,
@@ -141,13 +189,11 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
     return Ok(kIvMin);
   }
 
-  // Warm-started ALO forward map for the cold Andersen-Lake path: one pricer per
-  // inversion holds the early-exercise boundary across residual evaluations, so
-  // each sigma re-solve reuses the previous boundary (1-2 sweeps) instead of a
-  // cold seed (12 Barone-Adesi-Whaley root-finds + ~6 sweeps). Identical output to
-  // repeated `andersen_lake(...)` calls, at a fraction of the cost. Only built for
-  // the un-cached AndersenLake path; the cached hot path and BAW keep their maps.
-  std::optional<AloPricer> alo;
+  // The retained TLS state is reset once per cold Andersen-Lake inversion and
+  // holds the early-exercise boundary across its residual evaluations. Cached
+  // and BAW maps bypass it entirely. Same-thread reentrancy gets an isolated
+  // local owner through ScopedAloPricer.
+  std::optional<ScopedAloPricer> alo;
   if (!use_cache && method == AmericanMethod::AndersenLake) {
     alo.emplace(S, K, T, r, q, side, opts);
   }
@@ -157,6 +203,7 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
   // Chebyshev correction), which is still monotone in sigma; a non-finite cached
   // price surfaces as an Internal error rather than an unbounded bracket.
   const auto residual = [&](double sigma) -> Result<double> {
+    counters::lightweight::record_residual_evaluation();
     if (use_cache) {
       const double p = cached_price(S, K, T, sigma, r, q, side, active_correction);
       if (!std::isfinite(p)) {
@@ -166,7 +213,7 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
       return Ok(p - price);
     }
     if (alo) {
-      const double p = alo->price(sigma);
+      const double p = alo->get().price(sigma);
       if (!std::isfinite(p)) {
         return Err(ErrorCode::NotImplemented,
                    "american_implied_vol: ALO boundary collapsed (negative-carry corner)");

@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <vector>
 
@@ -15,19 +16,17 @@ using atx::core::Err;
 using atx::core::ErrorCode;
 using atx::core::Ok;
 
-double hybrid_forward(double S, double r, double borrow, double T,
-                      std::span<const DividendEvent> cash_divs,
-                      std::int64_t expiry_ns, std::int64_t now_ts_ns,
-                      const HybridDivParams &hyb) noexcept {
-  if (!(S > 0.0) || !(T > 0.0) || !std::isfinite(r) || !std::isfinite(borrow) ||
+double hybrid_forward_base(double S, double r, double T, std::span<const DividendEvent> cash_divs,
+                           std::int64_t expiry_ns, std::int64_t now_ts_ns,
+                           const HybridDivParams &hyb) noexcept {
+  if (!(S > 0.0) || !(T > 0.0) || !std::isfinite(S) || !std::isfinite(T) || !std::isfinite(r) ||
       !std::isfinite(hyb.prop_div_yield) || !std::isfinite(hyb.blend)) {
     return kQuietNaN;
   }
 
   // Pure escrowed-cash forward (Battig-Jarrow), reused verbatim so blend == 0
   // reproduces it bit-for-bit and out-of-window dividends are handled once.
-  const double f_cash =
-      forward_div_corrected(S, r, T, cash_divs, expiry_ns, now_ts_ns);
+  const double f_cash = forward_div_corrected(S, r, T, cash_divs, expiry_ns, now_ts_ns);
 
   const double q = hyb.prop_div_yield;
   const double beta = hyb.blend;
@@ -35,95 +34,101 @@ double hybrid_forward(double S, double r, double borrow, double T,
   // G is the blend of the proportional base (β·S·e^{(r−βq)T}) and the escrowed
   // base ((1−β)·F_cash·e^{−βqT}); the borrow enters only through e^{−bT}, which
   // makes F strictly decreasing in `borrow` and monotone for PCP inversion.
-  const double g = beta * S * std::exp((r - beta * q) * T) +
-                   (1.0 - beta) * f_cash * std::exp(-beta * q * T);
-  return g * std::exp(-borrow * T);
+  return beta * S * std::exp((r - beta * q) * T) + (1.0 - beta) * f_cash * std::exp(-beta * q * T);
 }
 
-Result<double> imply_borrow_european_pcp(double call_price, double put_price,
-                                         double S, double K, double T, double r,
-                                         std::span<const DividendEvent> cash_divs,
-                                         std::int64_t expiry_ns,
-                                         std::int64_t now_ts_ns,
-                                         const HybridDivParams &hyb, double b_lo,
-                                         double b_hi, double tol) noexcept {
-  if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !std::isfinite(r) ||
-      !std::isfinite(call_price) || !std::isfinite(put_price)) {
+double hybrid_forward_from_base(double base, double borrow, double T) noexcept {
+  if (!std::isfinite(base) || !std::isfinite(borrow) || !(T > 0.0) || !std::isfinite(T)) {
+    return kQuietNaN;
+  }
+  return base * std::exp(-borrow * T);
+}
+
+double hybrid_forward(double S, double r, double borrow, double T,
+                      std::span<const DividendEvent> cash_divs, std::int64_t expiry_ns,
+                      std::int64_t now_ts_ns, const HybridDivParams &hyb) noexcept {
+  const double base = hybrid_forward_base(S, r, T, cash_divs, expiry_ns, now_ts_ns, hyb);
+  return hybrid_forward_from_base(base, borrow, T);
+}
+
+Result<double> imply_borrow_european_pcp_from_base(double call_price, double put_price, double K,
+                                                   double T, double r, double base, double b_lo,
+                                                   double b_hi, double tol) noexcept {
+  if (!(K > 0.0) || !std::isfinite(K) || !(T > 0.0) || !std::isfinite(T) || !std::isfinite(r) ||
+      !(base > 0.0) || !std::isfinite(base) || !std::isfinite(call_price) ||
+      !std::isfinite(put_price)) {
     return Err(ErrorCode::InvalidArgument,
                "imply_borrow_european_pcp: non-finite or non-positive input");
   }
-  if (!(b_lo < b_hi)) {
-    return Err(ErrorCode::InvalidArgument,
-               "imply_borrow_european_pcp: require b_lo < b_hi");
+  if (!(b_lo < b_hi) || !std::isfinite(b_lo) || !std::isfinite(b_hi)) {
+    return Err(ErrorCode::InvalidArgument, "imply_borrow_european_pcp: require b_lo < b_hi");
   }
-  if (!(tol > 0.0)) {
-    return Err(ErrorCode::InvalidArgument,
-               "imply_borrow_european_pcp: tol must be positive");
+  if (!(tol > 0.0) || !std::isfinite(tol)) {
+    return Err(ErrorCode::InvalidArgument, "imply_borrow_european_pcp: tol must be positive");
   }
 
-  const double df = std::exp(-r * T);
-  const double lhs = call_price - put_price; // observed C − P
-
-  // Objective g(b) = e^{−rT}(F(b) − K) − (C − P). Strictly decreasing in b.
-  const auto obj = [&](double b) noexcept {
-    const double f =
-        hybrid_forward(S, r, b, T, cash_divs, expiry_ns, now_ts_ns, hyb);
-    return df * (f - K) - lhs;
-  };
-
-  double lo = b_lo;
-  double hi = b_hi;
-  double g_lo = obj(lo);
-  double g_hi = obj(hi);
-  if (!std::isfinite(g_lo) || !std::isfinite(g_hi)) {
+  // PCP gives the target forward directly. Since F(b)=G*exp(-b*T), one log
+  // replaces the old ~33 objective evaluations. This is algebraically exact;
+  // the only numerical movement is ordinary floating-point rearrangement and
+  // is fixture-gated against the former bisection to 1e-8 in borrow-rate units.
+  const double target_forward = std::fma(call_price - put_price, std::exp(r * T), K);
+  if (!std::isfinite(target_forward)) {
     return Err(ErrorCode::InvalidArgument,
-               "imply_borrow_european_pcp: non-finite forward at bracket");
+               "imply_borrow_european_pcp: non-finite parity-implied forward");
   }
-  if (g_lo == 0.0) {
-    return Ok(lo);
-  }
-  if (g_hi == 0.0) {
-    return Ok(hi);
-  }
-  if ((g_lo > 0.0) == (g_hi > 0.0)) {
+  if (!(target_forward > 0.0)) {
     return Err(ErrorCode::OutOfRange,
                "imply_borrow_european_pcp: implied borrow outside [b_lo, b_hi]");
   }
 
-  // Bisection: bounded iteration cap (JPL Rule 2); 200 halvings drives any
-  // sane bracket below `tol` long before the cap.
-  constexpr int kMaxIter = 200;
-  double mid = 0.5 * (lo + hi);
-  for (int it = 0; it < kMaxIter; ++it) {
-    mid = 0.5 * (lo + hi);
-    const double g_mid = obj(mid);
-    if (g_mid == 0.0 || (hi - lo) < tol) {
-      return Ok(mid);
-    }
-    // Keep the sub-interval whose endpoints straddle the sign change.
-    if ((g_mid > 0.0) == (g_lo > 0.0)) {
-      lo = mid;
-      g_lo = g_mid;
-    } else {
-      hi = mid;
-    }
+  const double borrow = -std::log(target_forward / base) / T;
+  if (!std::isfinite(borrow)) {
+    return Err(ErrorCode::InvalidArgument, "imply_borrow_european_pcp: non-finite implied borrow");
   }
-  return Ok(mid);
+  const double endpoint_slack = 16.0 * std::numeric_limits<double>::epsilon() *
+                                std::max({1.0, std::fabs(b_lo), std::fabs(b_hi)});
+  if (borrow < b_lo) {
+    if (b_lo - borrow <= endpoint_slack) {
+      return Ok(b_lo);
+    }
+    return Err(ErrorCode::OutOfRange,
+               "imply_borrow_european_pcp: implied borrow outside [b_lo, b_hi]");
+  }
+  if (borrow > b_hi) {
+    if (borrow - b_hi <= endpoint_slack) {
+      return Ok(b_hi);
+    }
+    return Err(ErrorCode::OutOfRange,
+               "imply_borrow_european_pcp: implied borrow outside [b_lo, b_hi]");
+  }
+  return Ok(borrow);
 }
 
-Result<double> imply_forward_atm_pcp(std::span<const CoTermQuote> quotes, double S,
-                                     double T, double r, std::size_t n_atm) {
-  if (quotes.empty()) {
+Result<double> imply_borrow_european_pcp(double call_price, double put_price, double S, double K,
+                                         double T, double r,
+                                         std::span<const DividendEvent> cash_divs,
+                                         std::int64_t expiry_ns, std::int64_t now_ts_ns,
+                                         const HybridDivParams &hyb, double b_lo, double b_hi,
+                                         double tol) noexcept {
+  if (!(S > 0.0)) {
     return Err(ErrorCode::InvalidArgument,
-               "imply_forward_atm_pcp: empty quote strip");
+               "imply_borrow_european_pcp: non-finite or non-positive input");
+  }
+  const double base = hybrid_forward_base(S, r, T, cash_divs, expiry_ns, now_ts_ns, hyb);
+  return imply_borrow_european_pcp_from_base(call_price, put_price, K, T, r, base, b_lo, b_hi, tol);
+}
+
+Result<double> imply_forward_atm_pcp(std::span<const CoTermQuote> quotes, double S, double T,
+                                     double r, std::size_t n_atm) {
+  if (quotes.empty()) {
+    return Err(ErrorCode::InvalidArgument, "imply_forward_atm_pcp: empty quote strip");
   }
   if (!(S > 0.0) || !(T > 0.0) || !std::isfinite(r)) {
     return Err(ErrorCode::InvalidArgument,
                "imply_forward_atm_pcp: non-finite or non-positive input");
   }
   if (n_atm == 0) {
-    return Err(ErrorCode::InvalidArgument,
-               "imply_forward_atm_pcp: n_atm must be >= 1");
+    return Err(ErrorCode::InvalidArgument, "imply_forward_atm_pcp: n_atm must be >= 1");
   }
 
   // Select the k strikes nearest to S by |strike − S| (partial sort of indices;
@@ -133,10 +138,9 @@ Result<double> imply_forward_atm_pcp(std::span<const CoTermQuote> quotes, double
     idx[i] = i;
   }
   const std::size_t k = std::min(n_atm, quotes.size());
-  std::partial_sort(idx.begin(), idx.begin() + static_cast<std::ptrdiff_t>(k),
-                    idx.end(), [&](std::size_t a, std::size_t b) noexcept {
-                      return std::fabs(quotes[a].strike - S) <
-                             std::fabs(quotes[b].strike - S);
+  std::partial_sort(idx.begin(), idx.begin() + static_cast<std::ptrdiff_t>(k), idx.end(),
+                    [&](std::size_t a, std::size_t b) noexcept {
+                      return std::fabs(quotes[a].strike - S) < std::fabs(quotes[b].strike - S);
                     });
 
   const double carry = std::exp(r * T); // e^{+rT}

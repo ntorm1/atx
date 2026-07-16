@@ -2,17 +2,20 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
-#include "atx/vol/arb.hpp"       // QuoteFlag, to_u8
 #include "atx/vol/american.hpp"
-#include "atx/vol/black76.hpp"   // black76_price, black76_value_and_vega
+#include "atx/vol/arb.hpp"     // QuoteFlag, to_u8
+#include "atx/vol/black76.hpp" // black76_price, black76_value_and_vega
 #include "atx/vol/calib.hpp"
-#include "atx/vol/universe.hpp"  // Chain, chain_index
+#include "atx/vol/counters.hpp"
+#include "atx/vol/universe.hpp" // Chain, chain_index
 
 // Shared calibration-infrastructure coverage, ported from the C ats-vol tests
 // that exercised `ats_vol_svi_build_observations` /
@@ -25,6 +28,8 @@
 
 namespace {
 
+using atx::vol::american_price;
+using atx::vol::AmericanMethod;
 using atx::vol::black76_price;
 using atx::vol::black76_value_and_vega;
 using atx::vol::build_observations;
@@ -35,6 +40,8 @@ using atx::vol::CalibLossKind;
 using atx::vol::CalibOpts;
 using atx::vol::Chain;
 using atx::vol::chain_index;
+using atx::vol::deam_inversion_certified;
+using atx::vol::DeAmAuditDiagnostics;
 using atx::vol::ErrorCode;
 using atx::vol::EssviRhoMode;
 using atx::vol::FitObs;
@@ -45,10 +52,6 @@ using atx::vol::QuoteFlag;
 using atx::vol::ResidualBasisKind;
 using atx::vol::Side;
 using atx::vol::to_u8;
-using atx::vol::american_price;
-using atx::vol::AmericanMethod;
-using atx::vol::deam_inversion_certified;
-using atx::vol::DeAmAuditDiagnostics;
 using atx::vol::validate_calib_options;
 
 // ── Synthetic-chain fixture ─────────────────────────────────────────────
@@ -57,7 +60,7 @@ constexpr double kF = 100.0;
 constexpr double kT = 0.5;
 constexpr double kVol = 0.20;
 constexpr double kHalfSpread = 0.02;
-const double kDf = std::exp(-0.03 * kT);  // discount factor for r = 3%
+const double kDf = std::exp(-0.03 * kT); // discount factor for r = 3%
 
 Side preferred_side(double K) noexcept { return (K >= kF) ? Side::Call : Side::Put; }
 
@@ -94,8 +97,8 @@ Chain make_priced_chain(const std::vector<double> &strikes) {
   return c;
 }
 
-Chain make_american_chain(const std::vector<double>& strikes, double T,
-                          double r, double q, double sigma = 0.22) {
+Chain make_american_chain(const std::vector<double> &strikes, double T, double r, double q,
+                          double sigma = 0.22) {
   Chain c;
   c.uid = 2u;
   c.expiry_id = 1u;
@@ -136,12 +139,12 @@ TEST(BuildObservations, PricedChain_AcceptsPreferredSideWithCorrectFields) {
   ASSERT_TRUE(res.has_value());
   const ObsSet &os = *res;
   ASSERT_EQ(os.obs.size(), 5u);
-  EXPECT_EQ(os.n_dropped, 0u);  // every non-preferred leg is a silent skip
+  EXPECT_EQ(os.n_dropped, 0u); // every non-preferred leg is a silent skip
 
   for (std::size_t i = 0; i < strikes.size(); ++i) {
     const double K = strikes[i];
     const Side side = preferred_side(K);
-    const FitObs &o = os.obs[i];  // obs order follows strike order (one leg each)
+    const FitObs &o = os.obs[i]; // obs order follows strike order (one leg each)
 
     EXPECT_EQ(o.side, side);
     EXPECT_NEAR(o.K, K, 1e-12);
@@ -170,7 +173,7 @@ TEST(BuildObservations, PricedChain_AcceptsPreferredSideWithCorrectFields) {
     const double weight_w =
         std::min(weight_sigma / (denom_w * denom_w + 1e-18), calib_default_opts().max_weight);
     EXPECT_NEAR(o.weight_w, weight_w, std::fabs(weight_w) * 1e-9 + 1e-9);
-    EXPECT_DOUBLE_EQ(o.active_weight_w, o.weight_w);  // seeded equal for IRLS
+    EXPECT_DOUBLE_EQ(o.active_weight_w, o.weight_w); // seeded equal for IRLS
   }
 }
 
@@ -182,7 +185,7 @@ TEST(BuildObservations, MaxWeightClipsStoredAndActiveWeights) {
   const auto result = build_observations(c, kF, kT, kDf, opts);
   ASSERT_TRUE(result.has_value()) << result.error().to_string();
   ASSERT_FALSE(result->obs.empty());
-  for (const FitObs& observation : result->obs) {
+  for (const FitObs &observation : result->obs) {
     EXPECT_DOUBLE_EQ(observation.weight_w, opts.max_weight);
     EXPECT_DOUBLE_EQ(observation.active_weight_w, observation.weight_w);
   }
@@ -211,8 +214,8 @@ TEST(BuildObservations, AnchorBid_WritesBidIntoMidTargetButInvertsRawMid) {
   for (const FitObs &o : res->obs) {
     const Side side = preferred_side(o.K);
     const double mid = black76_price(kF, o.K, kT, kVol, kDf, side);
-    EXPECT_NEAR(o.mid, mid - kHalfSpread, 1e-12);  // target swapped to the bid
-    EXPECT_NEAR(o.sigma_mkt, kVol, 1e-4);          // inversion still used raw mid
+    EXPECT_NEAR(o.mid, mid - kHalfSpread, 1e-12); // target swapped to the bid
+    EXPECT_NEAR(o.sigma_mkt, kVol, 1e-4);         // inversion still used raw mid
   }
 }
 
@@ -237,7 +240,7 @@ TEST(BuildObservations, KillFlagOnPreferredLeg_DropsRow) {
   EXPECT_EQ(res->obs.size(), 5u);
   EXPECT_EQ(res->n_dropped, 1u);
   for (const FitObs &o : res->obs) {
-    EXPECT_GT(std::fabs(o.K - 85.0), 1e-9);  // the 85 row is gone
+    EXPECT_GT(std::fabs(o.K - 85.0), 1e-9); // the 85 row is gone
   }
 }
 
@@ -247,19 +250,19 @@ TEST(BuildObservations, KillFlagOnNonPreferredLeg_CountsDropButKeepsObs) {
   // ordering).
   const std::vector<double> strikes{85.0, 90.0, 95.0, 100.0, 105.0, 110.0};
   Chain c = make_priced_chain(strikes);
-  c.flags[chain_index(0, Side::Call)] = to_u8(QuoteFlag::Halted);  // 85 call = non-preferred
+  c.flags[chain_index(0, Side::Call)] = to_u8(QuoteFlag::Halted); // 85 call = non-preferred
 
   const auto res = build_observations(c, kF, kT, kDf, calib_default_opts());
   ASSERT_TRUE(res.has_value());
-  EXPECT_EQ(res->obs.size(), 6u);   // preferred 85 put still present
-  EXPECT_EQ(res->n_dropped, 1u);    // non-preferred flagged leg counted
+  EXPECT_EQ(res->obs.size(), 6u); // preferred 85 put still present
+  EXPECT_EQ(res->n_dropped, 1u);  // non-preferred flagged leg counted
 }
 
 TEST(BuildObservations, CrossedQuoteOnPreferredLeg_Dropped) {
   const std::vector<double> strikes{85.0, 90.0, 95.0, 100.0, 105.0, 110.0};
   Chain c = make_priced_chain(strikes);
-  const std::size_t idx = chain_index(3, Side::Call);  // 100 call preferred
-  c.asks[idx] = c.bids[idx];                            // ask == bid violates ask > bid
+  const std::size_t idx = chain_index(3, Side::Call); // 100 call preferred
+  c.asks[idx] = c.bids[idx];                          // ask == bid violates ask > bid
 
   const auto res = build_observations(c, kF, kT, kDf, calib_default_opts());
   ASSERT_TRUE(res.has_value());
@@ -272,11 +275,11 @@ TEST(BuildObservations, CrossedQuoteOnPreferredLeg_Dropped) {
 TEST(BuildObservations, WideSpreadVolOnPreferredLeg_Dropped) {
   const std::vector<double> strikes{85.0, 90.0, 95.0, 100.0, 105.0, 110.0};
   Chain c = make_priced_chain(strikes);
-  const std::size_t idx = chain_index(3, Side::Call);  // 100 call (ATM, high vega)
+  const std::size_t idx = chain_index(3, Side::Call); // 100 call (ATM, high vega)
   const double mid = c.mids[idx];
   c.bids[idx] = mid - 1.0;
-  c.asks[idx] = mid + 1.0;  // spread 2.0 -> spread/vega ~0.07 > max_spread_vol 0.05,
-                            // while (ask-bid)/mid ~0.36 stays under max_spread_to_mid_pct
+  c.asks[idx] = mid + 1.0; // spread 2.0 -> spread/vega ~0.07 > max_spread_vol 0.05,
+                           // while (ask-bid)/mid ~0.36 stays under max_spread_to_mid_pct
 
   const auto res = build_observations(c, kF, kT, kDf, calib_default_opts());
   ASSERT_TRUE(res.has_value());
@@ -306,27 +309,148 @@ TEST(BuildObservationsEuropean, ShortcutIsColdAuditedAndFallsBackWhenNeeded) {
   constexpr double q = 0.08;
   constexpr double F = 100.0;
   const double df = std::exp(-r * T);
-  const Chain chain = make_american_chain(
-      {85.0, 90.0, 95.0, 100.0, 105.0, 110.0, 115.0}, T, r, q);
+  const Chain chain = make_american_chain({85.0, 90.0, 95.0, 100.0, 105.0, 110.0, 115.0}, T, r, q);
   CalibOpts opts = calib_default_opts();
   opts.max_spread_vol = 1.0;
   opts.max_otm_shortcut_premium_spread_frac = 100.0;
   opts.max_inversion_residual_half_spreads = 0.01;
   opts.min_otm_shortcut_T = 0.0;
 
-  const auto result = build_observations_european(
-      chain, 100.0, r, F, T, df, opts, {}, std::nullopt, 1.0e-7, 64,
-      AmericanMethod::AndersenLake);
-  ASSERT_TRUE(result.has_value())
-      << (result ? std::string{} : result.error().to_string());
-  const auto& diag = result->deam_audit;
+  const auto result = build_observations_european(chain, 100.0, r, F, T, df, opts, {}, std::nullopt,
+                                                  1.0e-7, 64, AmericanMethod::AndersenLake);
+  ASSERT_TRUE(result.has_value()) << (result ? std::string{} : result.error().to_string());
+  const auto &diag = result->deam_audit;
   EXPECT_GT(diag.shortcut.n_proposed, 0u);
   EXPECT_EQ(diag.shortcut.n_audited, diag.shortcut.n_proposed);
   EXPECT_GT(diag.n_accurate_fallback, 0u);
   EXPECT_EQ(diag.n_rejected_residual, 0u);
-  EXPECT_LE(diag.accurate.max_residual_half_spreads,
-            opts.max_inversion_residual_half_spreads);
+  EXPECT_LE(diag.accurate.max_residual_half_spreads, opts.max_inversion_residual_half_spreads);
   EXPECT_GE(result->obs.size(), 5u);
+}
+
+TEST(BuildObservationsEuropean, AccurateRouteSkipsRedundantReferenceReprice) {
+  constexpr double T = 1.0;
+  constexpr double r = 0.05;
+  constexpr double q = 0.02;
+  const double F = 100.0 * std::exp((r - q) * T);
+  const double df = std::exp(-r * T);
+  const Chain chain =
+      make_american_chain({82.0, 88.0, 94.0, 100.0, 106.0, 112.0, 118.0}, T, r, q, 0.24);
+  CalibOpts reference_opts = calib_default_opts();
+  reference_opts.max_spread_vol = 1.0;
+  reference_opts.audit_accurate_inversions = true;
+
+  const auto reference =
+      build_observations_european(chain, 100.0, r, F, T, df, reference_opts, {}, std::nullopt,
+                                  1.0e-7, 64, AmericanMethod::AndersenLake, false);
+  ASSERT_TRUE(reference.has_value()) << reference.error().to_string();
+
+  CalibOpts optimized_opts = reference_opts;
+  optimized_opts.audit_accurate_inversions = false;
+  const auto optimized =
+      build_observations_european(chain, 100.0, r, F, T, df, optimized_opts, {}, std::nullopt,
+                                  1.0e-7, 64, AmericanMethod::AndersenLake, false);
+  ASSERT_TRUE(optimized.has_value()) << optimized.error().to_string();
+
+  ASSERT_EQ(optimized->obs.size(), reference->obs.size());
+  ASSERT_EQ(optimized->provenance.size(), reference->provenance.size());
+  for (std::size_t index = 0; index < optimized->obs.size(); ++index) {
+    const FitObs &actual = optimized->obs[index];
+    const FitObs &expected = reference->obs[index];
+    EXPECT_EQ(actual.source_strike_index, expected.source_strike_index);
+    EXPECT_EQ(actual.side, expected.side);
+    EXPECT_DOUBLE_EQ(actual.K, expected.K);
+    EXPECT_DOUBLE_EQ(actual.sigma_mkt, expected.sigma_mkt);
+  }
+  for (std::size_t index = 0; index < optimized->provenance.size(); ++index) {
+    EXPECT_EQ(optimized->provenance[index].source_strike_index,
+              reference->provenance[index].source_strike_index);
+    EXPECT_EQ(optimized->provenance[index].side, reference->provenance[index].side);
+    EXPECT_EQ(optimized->provenance[index].rejection, reference->provenance[index].rejection);
+  }
+  EXPECT_EQ(reference->deam_audit.accurate.n_reference_reprices,
+            reference->deam_audit.accurate.n_proposed);
+  EXPECT_EQ(optimized->deam_audit.accurate.n_reference_reprices, 0u);
+  EXPECT_EQ(optimized->deam_audit.accurate.n_audited, optimized->deam_audit.accurate.n_accepted);
+  EXPECT_TRUE(deam_inversion_certified(optimized->deam_audit, 0.10));
+}
+
+TEST(BuildObservationsEuropean, LooseAccurateControlsStillRequireReferenceReprice) {
+  constexpr double T = 1.0;
+  constexpr double r = 0.05;
+  constexpr double q = 0.02;
+  const double F = 100.0 * std::exp((r - q) * T);
+  const double df = std::exp(-r * T);
+  const Chain chain =
+      make_american_chain({82.0, 88.0, 94.0, 100.0, 106.0, 112.0, 118.0}, T, r, q, 0.24);
+  CalibOpts opts = calib_default_opts();
+  opts.max_spread_vol = 1.0;
+  opts.audit_accurate_inversions = false;
+
+  const auto result = build_observations_european(chain, 100.0, r, F, T, df, opts, {}, std::nullopt,
+                                                  1.0e-4, 64, AmericanMethod::AndersenLake, false);
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  EXPECT_GT(result->deam_audit.accurate.n_proposed, 0u);
+  EXPECT_EQ(result->deam_audit.accurate.n_reference_reprices,
+            result->deam_audit.accurate.n_proposed);
+}
+
+TEST(BuildObservationsEuropean, AdjacentWarmStartsReduceWorkInsideEconomicErrorBudget) {
+  constexpr double T = 1.0;
+  constexpr double r = 0.05;
+  constexpr double q = 0.02;
+  const double F = 100.0 * std::exp((r - q) * T);
+  const double df = std::exp(-r * T);
+  std::vector<double> strikes;
+  strikes.reserve(256u);
+  for (std::size_t index = 0; index < 256u; ++index) {
+    strikes.push_back(80.0 + 40.0 * static_cast<double>(index) / 255.0);
+  }
+  const Chain chain = make_american_chain(strikes, T, r, q, 0.24);
+
+  const auto run = [&](bool warm_start) {
+    CalibOpts opts = calib_default_opts();
+    opts.max_spread_vol = 1.0;
+    opts.min_vega_weight = 0.0;
+    opts.warm_start_deam_adjacent_strikes = warm_start;
+    atx::vol::counters::lightweight::reset();
+    const auto before = atx::vol::counters::lightweight::snapshot();
+    auto observations =
+        build_observations_european(chain, 100.0, r, F, T, df, opts, {}, std::nullopt, 1.0e-7, 64,
+                                    AmericanMethod::AndersenLake, false);
+    const auto after = atx::vol::counters::lightweight::snapshot();
+    return std::pair{std::move(observations),
+                     atx::vol::counters::lightweight::delta(before, after)};
+  };
+
+  auto [cold, cold_work] = run(false);
+  auto [warm, warm_work] = run(true);
+  ASSERT_TRUE(cold.has_value()) << cold.error().to_string();
+  ASSERT_TRUE(warm.has_value()) << warm.error().to_string();
+  ASSERT_EQ(warm->obs.size(), cold->obs.size());
+  ASSERT_EQ(warm->provenance.size(), cold->provenance.size());
+  for (std::size_t index = 0; index < warm->obs.size(); ++index) {
+    const FitObs &actual = warm->obs[index];
+    const FitObs &reference = cold->obs[index];
+    EXPECT_EQ(actual.source_strike_index, reference.source_strike_index);
+    EXPECT_EQ(actual.side, reference.side);
+    const double iv_error = std::fabs(actual.sigma_mkt - reference.sigma_mkt);
+    const double price_error = std::fabs(actual.mid - reference.mid);
+    const double economic_price_budget = std::min(0.005, 0.1 * reference.vega * 1.0e-4);
+    EXPECT_LE(iv_error, 1.0e-4);
+    EXPECT_LE(price_error, economic_price_budget);
+    EXPECT_LT(price_error, 0.5 * reference.spread);
+  }
+  for (std::size_t index = 0; index < warm->provenance.size(); ++index) {
+    EXPECT_EQ(warm->provenance[index].source_strike_index,
+              cold->provenance[index].source_strike_index);
+    EXPECT_EQ(warm->provenance[index].side, cold->provenance[index].side);
+    EXPECT_EQ(warm->provenance[index].rejection, cold->provenance[index].rejection);
+  }
+  ASSERT_EQ(warm_work.american_iv_samples, cold_work.american_iv_samples);
+  ASSERT_GT(warm_work.american_iv_samples, 1u);
+  EXPECT_LT(warm_work.residual_evaluations_in_sampled_iv,
+            cold_work.residual_evaluations_in_sampled_iv);
 }
 
 TEST(BuildObservationsEuropean, UltraShortTenorBypassesShortcut) {
@@ -335,19 +459,17 @@ TEST(BuildObservationsEuropean, UltraShortTenorBypassesShortcut) {
   constexpr double q = 0.02;
   const double F = 100.0 * std::exp((r - q) * T);
   const double df = std::exp(-r * T);
-  const Chain chain = make_american_chain(
-      {97.0, 98.0, 99.0, 100.0, 101.0, 102.0, 103.0}, T, r, q, 0.30);
+  const Chain chain =
+      make_american_chain({97.0, 98.0, 99.0, 100.0, 101.0, 102.0, 103.0}, T, r, q, 0.30);
   CalibOpts opts = calib_default_opts();
   opts.max_spread_vol = 5.0;
   opts.min_vega_weight = 0.0;
   opts.max_otm_shortcut_premium_spread_frac = 100.0;
   opts.min_otm_shortcut_T = 7.0 / 365.25;
 
-  const auto result = build_observations_european(
-      chain, 100.0, r, F, T, df, opts, {}, std::nullopt, 1.0e-7, 64,
-      AmericanMethod::AndersenLake);
-  ASSERT_TRUE(result.has_value())
-      << (result ? std::string{} : result.error().to_string());
+  const auto result = build_observations_european(chain, 100.0, r, F, T, df, opts, {}, std::nullopt,
+                                                  1.0e-7, 64, AmericanMethod::AndersenLake);
+  ASSERT_TRUE(result.has_value()) << (result ? std::string{} : result.error().to_string());
   EXPECT_EQ(result->deam_audit.shortcut.n_proposed, 0u);
   EXPECT_GT(result->deam_audit.n_forced_short_tenor, 0u);
   EXPECT_EQ(result->deam_audit.accurate.n_accepted, result->obs.size());
@@ -366,8 +488,7 @@ TEST(ObsAccepted, AgreesWithBuilderRowByRow) {
   for (std::size_t s = 0; s < strikes.size(); ++s) {
     for (int side_i = 0; side_i < 2; ++side_i) {
       const auto side = static_cast<Side>(static_cast<std::uint8_t>(side_i));
-      const auto acc =
-          obs_accepted(c, static_cast<std::uint16_t>(s), side, kF, kT, kDf, opts);
+      const auto acc = obs_accepted(c, static_cast<std::uint16_t>(s), side, kF, kT, kDf, opts);
 
       bool in_builder = false;
       double sigma_builder = 0.0;
@@ -417,6 +538,8 @@ TEST(ObsAccepted, NonPositiveDiscount_ReturnsInvalidArgument) {
 
 TEST(CalibOpts, DefaultOpts_MatchCLibraryValues) {
   const CalibOpts o = calib_default_opts();
+  EXPECT_TRUE(o.warm_start_deam_adjacent_strikes);
+  EXPECT_FALSE(o.audit_accurate_inversions);
 
   EXPECT_EQ(o.max_outer_iter, 4u);
   EXPECT_EQ(o.max_inner_iter, 12u);
@@ -435,10 +558,10 @@ TEST(CalibOpts, DefaultOpts_MatchCLibraryValues) {
   EXPECT_EQ(o.max_iter_trading, 35u);
   EXPECT_EQ(o.max_iter_risk, 100u);
   EXPECT_EQ(o.max_iter_reference, 250u);
-  EXPECT_EQ(o.max_iter_cold_fast, 10u);  // impl = 10 (header comment's "5" is stale)
+  EXPECT_EQ(o.max_iter_cold_fast, 10u); // impl = 10 (header comment's "5" is stale)
   EXPECT_DOUBLE_EQ(o.wing_floor_alpha, 0.0);
   EXPECT_TRUE(o.lee_bound_project);
-  EXPECT_FALSE(o.morozov_stop);  // impl = 0 (header comment's "1" is stale)
+  EXPECT_FALSE(o.morozov_stop); // impl = 0 (header comment's "1" is stale)
   EXPECT_DOUBLE_EQ(o.morozov_tau, 1.1);
   EXPECT_TRUE(o.validate_no_arb);
   EXPECT_TRUE(o.residual_disable);
@@ -450,7 +573,7 @@ TEST(CalibOpts, DefaultOpts_MatchCLibraryValues) {
   EXPECT_FALSE(o.essvi_asymmetric_rho);
   EXPECT_EQ(o.min_obs_per_slice, 4u);
   EXPECT_DOUBLE_EQ(o.max_post_fit_sigma, 2.0);
-  EXPECT_DOUBLE_EQ(o.max_spread_to_mid_pct, 0.60);  // impl = 0.60 (comment's "0.40" is stale)
+  EXPECT_DOUBLE_EQ(o.max_spread_to_mid_pct, 0.60); // impl = 0.60 (comment's "0.40" is stale)
 }
 
 TEST(CalibOpts, ValidationRejectsPersistedPoliciesThatAreNotImplemented) {
@@ -471,16 +594,15 @@ TEST(CalibOpts, ValidationRejectsPersistedPoliciesThatAreNotImplemented) {
   CalibOpts butterfly = calib_default_opts();
   butterfly.n_butterfly_grid = 128u;
   unsupported.push_back(butterfly);
-  for (const ResidualBasisKind basis : {ResidualBasisKind::Chebyshev,
-                                        ResidualBasisKind::WingBspline,
-                                        ResidualBasisKind::Fengler}) {
+  for (const ResidualBasisKind basis :
+       {ResidualBasisKind::Chebyshev, ResidualBasisKind::WingBspline, ResidualBasisKind::Fengler}) {
     CalibOpts residual = calib_default_opts();
     residual.residual_basis_kind = basis;
     unsupported.push_back(residual);
   }
 
   ASSERT_TRUE(validate_calib_options(calib_default_opts()).has_value());
-  for (const CalibOpts& opts : unsupported) {
+  for (const CalibOpts &opts : unsupported) {
     const auto status = validate_calib_options(opts);
     ASSERT_FALSE(status.has_value());
     EXPECT_EQ(status.error().code(), ErrorCode::NotImplemented);
@@ -526,28 +648,27 @@ TEST(CalibOpts, ValidationRejectsEnabledResidualWithNoneBasis) {
 // refuse certification beyond the cap, or whenever any route accepted
 // proposals it never audited (a non-Andersen-Lake method).
 
-[[nodiscard]] std::uint32_t route_propose_total(const DeAmAuditDiagnostics& a) {
-  return a.shortcut.n_proposed + a.cache.n_proposed + a.fast.n_proposed +
-         a.accurate.n_proposed;
+[[nodiscard]] std::uint32_t route_propose_total(const DeAmAuditDiagnostics &a) {
+  return a.shortcut.n_proposed + a.cache.n_proposed + a.fast.n_proposed + a.accurate.n_proposed;
 }
-[[nodiscard]] std::uint32_t route_audit_total(const DeAmAuditDiagnostics& a) {
-  return a.shortcut.n_audited + a.cache.n_audited + a.fast.n_audited +
-         a.accurate.n_audited;
+[[nodiscard]] std::uint32_t route_audit_total(const DeAmAuditDiagnostics &a) {
+  return a.shortcut.n_audited + a.cache.n_audited + a.fast.n_audited + a.accurate.n_audited;
 }
 
 // Chain whose mids are genuine American prices at `sigma` on carry q, except
 // the strikes in `poison` (all must satisfy F < K < S): those get the RAW
 // EUROPEAN price at `sigma`, which sits BELOW the American intrinsic floor
 // S - K, so the American inversion has no attainable sigma and the row drops.
-Chain make_poisoned_american_chain(const std::vector<double>& strikes,
-                                   const std::vector<double>& poison, double T,
-                                   double r, double q, double sigma) {
+Chain make_poisoned_american_chain(const std::vector<double> &strikes,
+                                   const std::vector<double> &poison, double T, double r, double q,
+                                   double sigma) {
   Chain c = make_american_chain(strikes, T, r, q, sigma);
   const double F = 100.0 * std::exp((r - q) * T);
   const double df = std::exp(-r * T);
   for (std::size_t i = 0; i < strikes.size(); ++i) {
     for (const double bad : poison) {
-      if (std::fabs(strikes[i] - bad) > 1e-9) continue;
+      if (std::fabs(strikes[i] - bad) > 1e-9)
+        continue;
       const std::size_t idx = chain_index(static_cast<std::uint16_t>(i), Side::Call);
       const double eu = black76_price(F, strikes[i], T, sigma, df, Side::Call);
       EXPECT_LT(eu, 100.0 - strikes[i]) << "poison mid must undercut intrinsic";
@@ -563,31 +684,28 @@ Chain make_poisoned_american_chain(const std::vector<double>& strikes,
 TEST(DeamCertification, SingleUnattainableQuoteIsDroppedAndStillCertified) {
   constexpr double T = 1.0;
   constexpr double r = 0.05;
-  constexpr double q = 0.20;  // heavy carry: F ~ 86 < S, so F < K < S exists
+  constexpr double q = 0.20; // heavy carry: F ~ 86 < S, so F < K < S exists
   constexpr double sigma = 0.22;
   const double F = 100.0 * std::exp((r - q) * T);
   const double df = std::exp(-r * T);
   // Exactly ONE call strike sits in the ill-conditioned F < K < S zone (where
   // an American call pins near intrinsic): the poisoned one. Every other row
   // is a well-conditioned OTM leg that must survive.
-  const std::vector<double> strikes{60.0, 64.0, 68.0, 72.0, 76.0, 80.0, 84.0,
+  const std::vector<double> strikes{60.0, 64.0,  68.0,  72.0,  76.0,  80.0, 84.0,
                                     92.0, 100.0, 104.0, 108.0, 112.0, 116.0};
-  const Chain chain =
-      make_poisoned_american_chain(strikes, {92.0}, T, r, q, sigma);
+  const Chain chain = make_poisoned_american_chain(strikes, {92.0}, T, r, q, sigma);
   CalibOpts opts = calib_default_opts();
   opts.max_spread_vol = 1.0;
 
-  const auto result = build_observations_european(
-      chain, 100.0, r, F, T, df, opts, {}, std::nullopt, 1.0e-7, 64,
-      AmericanMethod::AndersenLake);
-  ASSERT_TRUE(result.has_value())
-      << (result ? std::string{} : result.error().to_string());
-  const DeAmAuditDiagnostics& audit = result->deam_audit;
+  const auto result = build_observations_european(chain, 100.0, r, F, T, df, opts, {}, std::nullopt,
+                                                  1.0e-7, 64, AmericanMethod::AndersenLake);
+  ASSERT_TRUE(result.has_value()) << (result ? std::string{} : result.error().to_string());
+  const DeAmAuditDiagnostics &audit = result->deam_audit;
 
   // The poisoned node was dropped from the fit set and counted, never fitted.
   ASSERT_GT(audit.n_deam_rows, 0u);
   EXPECT_EQ(audit.n_deam_rows - audit.n_deam_accepted, 1u);
-  for (const FitObs& o : result->obs) {
+  for (const FitObs &o : result->obs) {
     EXPECT_GT(std::fabs(o.K - 92.0), 1e-9) << "poisoned node must not be fitted";
   }
 
@@ -604,19 +722,16 @@ TEST(DeamCertification, DropsBeyondCapRefuseCertification) {
   constexpr double sigma = 0.22;
   const double F = 100.0 * std::exp((r - q) * T);
   const double df = std::exp(-r * T);
-  const std::vector<double> strikes{60.0, 64.0, 68.0, 72.0, 76.0, 80.0, 84.0,
+  const std::vector<double> strikes{60.0, 64.0, 68.0, 72.0,  76.0,  80.0,  84.0,
                                     88.0, 92.0, 95.0, 100.0, 104.0, 108.0, 112.0};
-  const Chain chain =
-      make_poisoned_american_chain(strikes, {88.0, 92.0, 95.0}, T, r, q, sigma);
+  const Chain chain = make_poisoned_american_chain(strikes, {88.0, 92.0, 95.0}, T, r, q, sigma);
   CalibOpts opts = calib_default_opts();
   opts.max_spread_vol = 1.0;
 
-  const auto result = build_observations_european(
-      chain, 100.0, r, F, T, df, opts, {}, std::nullopt, 1.0e-7, 64,
-      AmericanMethod::AndersenLake);
-  ASSERT_TRUE(result.has_value())
-      << (result ? std::string{} : result.error().to_string());
-  const DeAmAuditDiagnostics& audit = result->deam_audit;
+  const auto result = build_observations_european(chain, 100.0, r, F, T, df, opts, {}, std::nullopt,
+                                                  1.0e-7, 64, AmericanMethod::AndersenLake);
+  ASSERT_TRUE(result.has_value()) << (result ? std::string{} : result.error().to_string());
+  const DeAmAuditDiagnostics &audit = result->deam_audit;
   EXPECT_EQ(audit.n_deam_rows - audit.n_deam_accepted, 3u);
   // 3 of 14 usable nodes (~21%) exceeds the 10% cap: fail-closed AT the cap.
   EXPECT_FALSE(deam_inversion_certified(audit, 0.10));
@@ -634,12 +749,12 @@ TEST(DeamCertification, PredicateCapsDropsAndRefusesUnauditedAcceptance) {
   DeAmAuditDiagnostics one_drop = clean;
   one_drop.n_deam_accepted = 19;
   one_drop.accurate.n_accepted = 19;
-  EXPECT_TRUE(deam_inversion_certified(one_drop, 0.10));  // 5% <= 10%
+  EXPECT_TRUE(deam_inversion_certified(one_drop, 0.10)); // 5% <= 10%
 
   DeAmAuditDiagnostics over_cap = clean;
   over_cap.n_deam_accepted = 15;
   over_cap.accurate.n_accepted = 15;
-  EXPECT_FALSE(deam_inversion_certified(over_cap, 0.10));  // 25% > 10%
+  EXPECT_FALSE(deam_inversion_certified(over_cap, 0.10)); // 25% > 10%
 
   // A route that accepted more than it audited (the vacuous-certification
   // shape of AmericanMethod::Baw, task 2b / carry I4) can never certify.
@@ -650,8 +765,7 @@ TEST(DeamCertification, PredicateCapsDropsAndRefusesUnauditedAcceptance) {
   // Degenerate ledgers and bad budgets fail closed.
   EXPECT_FALSE(deam_inversion_certified(DeAmAuditDiagnostics{}, 0.10));
   EXPECT_FALSE(deam_inversion_certified(clean, -0.10));
-  EXPECT_FALSE(deam_inversion_certified(
-      clean, std::numeric_limits<double>::quiet_NaN()));
+  EXPECT_FALSE(deam_inversion_certified(clean, std::numeric_limits<double>::quiet_NaN()));
 }
 
-}  // namespace
+} // namespace

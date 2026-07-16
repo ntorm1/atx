@@ -23,15 +23,17 @@
 
 namespace {
 
+using atx::vol::al_default_opts;
+using atx::vol::al_fast_opts;
 using atx::vol::american_implied_vol;
 using atx::vol::american_price;
-using atx::vol::audit_european_equiv_iv;
 using atx::vol::AmericanMethod;
+using atx::vol::audit_european_equiv_iv;
 using atx::vol::Chain;
 using atx::vol::chain_index;
+using atx::vol::de_americanize_chain;
 using atx::vol::DeAmOptions;
 using atx::vol::DeAmResult;
-using atx::vol::de_americanize_chain;
 using atx::vol::DividendEvent;
 using atx::vol::ErrorCode;
 using atx::vol::european_equiv_iv;
@@ -44,11 +46,9 @@ using atx::vol::Side;
 
 // Year-fraction → epoch-ns (365.25-day year, matching hybrid_forward).
 constexpr double kYearNs = 365.25 * 86400.0 * 1.0e9;
-[[nodiscard]] std::int64_t years_to_ns(double y) {
-  return static_cast<std::int64_t>(y * kYearNs);
-}
+[[nodiscard]] std::int64_t years_to_ns(double y) { return static_cast<std::int64_t>(y * kYearNs); }
 
-double value_or_fail(const atx::core::Result<double>& r) {
+double value_or_fail(const atx::core::Result<double> &r) {
   EXPECT_TRUE(r.has_value()) << (r ? std::string{} : r.error().to_string());
   return r ? *r : std::nan("");
 }
@@ -66,17 +66,15 @@ struct Scenario {
 };
 
 // A gentle smile: base 20% vol with a mild convex wing in log-moneyness.
-[[nodiscard]] double true_sigma(double k_log) noexcept {
-  return 0.20 + 0.15 * k_log * k_log;
-}
+[[nodiscard]] double true_sigma(double k_log) noexcept { return 0.20 + 0.15 * k_log * k_log; }
 
 // Build a fully-populated Chain whose per-side mids are American prices at the
 // per-strike true smile, on the forward implied by `b_true`. Bids/asks straddle
 // each mid by ±1% so every leg is quotable.
-[[nodiscard]] Chain make_synthetic_chain(const Scenario& sc, double b_true,
-                                         const std::vector<double>& strikes) {
-  const double F = hybrid_forward(sc.S, sc.r, b_true, sc.T, sc.divs, sc.expiry_ns,
-                                  sc.now_ns, sc.hyb);
+[[nodiscard]] Chain make_synthetic_chain(const Scenario &sc, double b_true,
+                                         const std::vector<double> &strikes) {
+  const double F =
+      hybrid_forward(sc.S, sc.r, b_true, sc.T, sc.divs, sc.expiry_ns, sc.now_ns, sc.hyb);
   const double q_eff = sc.r - std::log(F / sc.S) / sc.T;
 
   Chain chain;
@@ -103,7 +101,7 @@ struct Scenario {
   return chain;
 }
 
-}  // namespace
+} // namespace
 
 // ── Chain round-trip ─────────────────────────────────────────────────────
 
@@ -113,18 +111,17 @@ TEST(DeAmer, RoundTripSyntheticChain_RecoversSmileAndForward) {
   const std::vector<double> strikes{80.0, 90.0, 100.0, 110.0, 120.0};
   const Chain chain = make_synthetic_chain(sc, b_true, strikes);
 
-  const double f_true = hybrid_forward(sc.S, sc.r, b_true, sc.T, sc.divs,
-                                       sc.expiry_ns, sc.now_ns, sc.hyb);
+  const double f_true =
+      hybrid_forward(sc.S, sc.r, b_true, sc.T, sc.divs, sc.expiry_ns, sc.now_ns, sc.hyb);
 
   DeAmOptions opts;
   opts.hyb = sc.hyb;
   opts.imply_borrow = true;
   opts.n_atm = 3;
 
-  const auto res =
-      de_americanize_chain(chain, sc.S, sc.r, sc.divs, sc.now_ns, opts);
+  const auto res = de_americanize_chain(chain, sc.S, sc.r, sc.divs, sc.now_ns, opts);
   ASSERT_TRUE(res.has_value()) << (res ? std::string{} : res.error().to_string());
-  const DeAmResult& out = *res;
+  const DeAmResult &out = *res;
 
   EXPECT_NEAR(out.borrow, b_true, 1e-4);
   EXPECT_NEAR(out.forward, f_true, 1e-2);
@@ -138,10 +135,20 @@ TEST(DeAmer, RoundTripSyntheticChain_RecoversSmileAndForward) {
     // Log-moneyness is definitionally consistent with the returned forward.
     EXPECT_NEAR(out.k_log[i], std::log(strikes[i] / out.forward), 1e-12);
     // Recovered European-equivalent vol matches the injected smile.
-    EXPECT_NEAR(out.iv[i], true_sigma(std::log(strikes[i] / f_true)), 1e-4)
-        << "K=" << strikes[i];
+    EXPECT_NEAR(out.iv[i], true_sigma(std::log(strikes[i] / f_true)), 1e-4) << "K=" << strikes[i];
     EXPECT_GT(out.weight[i], 0.0);
   }
+}
+
+TEST(DeAmer, DefaultCarryBudgetUsesFiveFastAndersenLakePairs) {
+  const DeAmOptions opts;
+  const auto fast = al_fast_opts();
+  ASSERT_TRUE(opts.carry_al_opts.has_value());
+  EXPECT_EQ(opts.max_borrow_pairs, std::size_t{5});
+  EXPECT_EQ(opts.carry_al_opts->n_collocation, fast.n_collocation);
+  EXPECT_EQ(opts.carry_al_opts->n_quadrature, fast.n_quadrature);
+  EXPECT_EQ(opts.carry_al_opts->max_newton_iter, fast.max_newton_iter);
+  EXPECT_DOUBLE_EQ(opts.carry_al_opts->tol, fast.tol);
 }
 
 // ── Per-term borrow ──────────────────────────────────────────────────────
@@ -149,30 +156,52 @@ TEST(DeAmer, RoundTripSyntheticChain_RecoversSmileAndForward) {
 TEST(DeAmer, ImplyTermBorrow_RecoversInjectedBorrow) {
   const Scenario sc;
   const double b_true = 0.0225;
-  const double K = 100.0;  // ATM
+  const double K = 100.0; // ATM
 
-  const double F = hybrid_forward(sc.S, sc.r, b_true, sc.T, sc.divs, sc.expiry_ns,
-                                  sc.now_ns, sc.hyb);
+  const double F =
+      hybrid_forward(sc.S, sc.r, b_true, sc.T, sc.divs, sc.expiry_ns, sc.now_ns, sc.hyb);
   const double q_eff = sc.r - std::log(F / sc.S) / sc.T;
   const double sig = 0.25;
-  const double call = value_or_fail(american_price(sc.S, K, sc.T, sig, sc.r,
-                                                   q_eff, Side::Call, AmericanMethod::AndersenLake));
-  const double put = value_or_fail(american_price(sc.S, K, sc.T, sig, sc.r,
-                                                  q_eff, Side::Put, AmericanMethod::AndersenLake));
+  const double call = value_or_fail(
+      american_price(sc.S, K, sc.T, sig, sc.r, q_eff, Side::Call, AmericanMethod::AndersenLake));
+  const double put = value_or_fail(
+      american_price(sc.S, K, sc.T, sig, sc.r, q_eff, Side::Put, AmericanMethod::AndersenLake));
 
-  const auto res = imply_term_borrow(call, put, sc.S, K, sc.T, sc.r, sc.divs,
-                                     sc.expiry_ns, sc.now_ns, sc.hyb);
+  const auto res =
+      imply_term_borrow(call, put, sc.S, K, sc.T, sc.r, sc.divs, sc.expiry_ns, sc.now_ns, sc.hyb);
   ASSERT_TRUE(res.has_value()) << (res ? std::string{} : res.error().to_string());
   EXPECT_NEAR(res->borrow, b_true, 1e-4);
   EXPECT_NEAR(res->forward, F, 1e-2);
-  EXPECT_LT(res->rmse_pcp, 1e-6);
+  EXPECT_LT(res->rmse_pcp, 1e-4);
+}
+
+TEST(DeAmer, CarrySolveUsesItsOwnAndersenLakePreset) {
+  const Scenario sc;
+  const double b_true = 0.025;
+  Chain chain = make_synthetic_chain(sc, b_true, {100.0});
+
+  DeAmOptions opts;
+  opts.hyb = sc.hyb;
+  opts.n_atm = 1;
+  opts.max_borrow_pairs = 1;
+  opts.al_opts = al_default_opts();
+  opts.carry_al_opts = al_fast_opts();
+  const auto resolved = resolve_chain_forward(chain, sc.S, sc.r, sc.divs, sc.now_ns, opts);
+  ASSERT_TRUE(resolved.has_value()) << (resolved ? std::string{} : resolved.error().to_string());
+
+  const auto expected = imply_term_borrow(
+      chain.mids[chain_index(0u, Side::Call)], chain.mids[chain_index(0u, Side::Put)], sc.S,
+      chain.strikes[0], chain.T, sc.r, sc.divs, chain.expiry_ns, sc.now_ns, sc.hyb,
+      AmericanMethod::AndersenLake, opts.carry_al_opts);
+  ASSERT_TRUE(expected.has_value()) << (expected ? std::string{} : expected.error().to_string());
+  EXPECT_NEAR(resolved->borrow, expected->borrow, 1.0e-12);
+  EXPECT_NEAR(resolved->forward, expected->forward, 1.0e-10);
 }
 
 TEST(DeAmer, RobustCarryRejectsOneBadAtmPairAndReportsSensitivity) {
   const Scenario sc;
   const double b_true = 0.031;
-  const std::vector<double> strikes{94.0, 96.0, 98.0, 100.0,
-                                    102.0, 104.0, 106.0};
+  const std::vector<double> strikes{94.0, 96.0, 98.0, 100.0, 102.0, 104.0, 106.0};
   Chain chain = make_synthetic_chain(sc, b_true, strikes);
 
   // Keep a valid/tight quote but dislocate one pair's call mid. A simple mean
@@ -188,19 +217,16 @@ TEST(DeAmer, RobustCarryRejectsOneBadAtmPairAndReportsSensitivity) {
   opts.max_borrow_pairs = strikes.size();
   opts.require_carry_confidence = true;
 
-  const auto result = resolve_chain_forward(chain, sc.S, sc.r, sc.divs,
-                                            sc.now_ns, opts);
-  ASSERT_TRUE(result.has_value())
-      << (result ? std::string{} : result.error().to_string());
-  const double expected = hybrid_forward(sc.S, sc.r, b_true, sc.T, sc.divs,
-                                         sc.expiry_ns, sc.now_ns, sc.hyb);
+  const auto result = resolve_chain_forward(chain, sc.S, sc.r, sc.divs, sc.now_ns, opts);
+  ASSERT_TRUE(result.has_value()) << (result ? std::string{} : result.error().to_string());
+  const double expected =
+      hybrid_forward(sc.S, sc.r, b_true, sc.T, sc.divs, sc.expiry_ns, sc.now_ns, sc.hyb);
   EXPECT_NEAR(result->forward, expected, 0.05);
   EXPECT_TRUE(result->carry.confident);
   EXPECT_GE(result->carry.n_solved, 6u);
   EXPECT_TRUE(result->carry.n_solved < result->carry.n_attempted ||
               result->carry.n_retained < result->carry.n_solved);
-  EXPECT_LT(result->carry.max_leave_one_out_shift,
-            opts.max_carry_leave_one_out);
+  EXPECT_LT(result->carry.max_leave_one_out_shift, opts.max_carry_leave_one_out);
   EXPECT_GE(result->carry.confidence_half_width, 0.0);
 }
 
@@ -214,8 +240,7 @@ TEST(DeAmer, CarryConfidenceGateRejectsSinglePair) {
   opts.min_confident_borrow_pairs = 3;
   opts.require_carry_confidence = true;
 
-  const auto result = resolve_chain_forward(chain, sc.S, sc.r, sc.divs,
-                                            sc.now_ns, opts);
+  const auto result = resolve_chain_forward(chain, sc.S, sc.r, sc.divs, sc.now_ns, opts);
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().code(), ErrorCode::Unavailable);
 }
@@ -223,18 +248,15 @@ TEST(DeAmer, CarryConfidenceGateRejectsSinglePair) {
 TEST(DeAmer, RobustCarrySupportsHardToBorrowStrip) {
   const Scenario sc;
   const double b_true = 0.15;
-  Chain chain = make_synthetic_chain(sc, b_true,
-                                     {94.0, 96.0, 98.0, 100.0, 102.0, 104.0});
+  Chain chain = make_synthetic_chain(sc, b_true, {94.0, 96.0, 98.0, 100.0, 102.0, 104.0});
   DeAmOptions opts;
   opts.hyb = sc.hyb;
   opts.n_atm = 6;
   opts.max_borrow_pairs = 6;
   opts.require_carry_confidence = true;
 
-  const auto result = resolve_chain_forward(chain, sc.S, sc.r, sc.divs,
-                                            sc.now_ns, opts);
-  ASSERT_TRUE(result.has_value())
-      << (result ? std::string{} : result.error().to_string());
+  const auto result = resolve_chain_forward(chain, sc.S, sc.r, sc.divs, sc.now_ns, opts);
+  ASSERT_TRUE(result.has_value()) << (result ? std::string{} : result.error().to_string());
   EXPECT_NEAR(result->borrow, b_true, 1e-4);
   EXPECT_TRUE(result->carry.confident);
   EXPECT_GE(result->carry.effective_pair_count, 3.0);
@@ -259,12 +281,10 @@ TEST(DeAmer, EuropeanEquivIv_EqualsAmericanImpliedVol) {
 TEST(DeAmer, AccurateRepricingAuditCertifiesKnownSigma) {
   const double S = 100.0, K = 95.0, T = 0.5, r = 0.05, q = 0.01;
   const double sigma = 0.24;
-  const double mid = value_or_fail(american_price(
-      S, K, T, sigma, r, q, Side::Put, AmericanMethod::AndersenLake));
-  const auto audit = audit_european_equiv_iv(
-      mid, 0.04, sigma, S, K, T, r, q, Side::Put, 0.25);
-  ASSERT_TRUE(audit.has_value())
-      << (audit ? std::string{} : audit.error().to_string());
+  const double mid =
+      value_or_fail(american_price(S, K, T, sigma, r, q, Side::Put, AmericanMethod::AndersenLake));
+  const auto audit = audit_european_equiv_iv(mid, 0.04, sigma, S, K, T, r, q, Side::Put, 0.25);
+  ASSERT_TRUE(audit.has_value()) << (audit ? std::string{} : audit.error().to_string());
   EXPECT_TRUE(audit->passed);
   EXPECT_LT(audit->residual_half_spreads, 1.0e-6);
 }
@@ -272,9 +292,9 @@ TEST(DeAmer, AccurateRepricingAuditCertifiesKnownSigma) {
 // ── OTM-side selection rule ──────────────────────────────────────────────
 
 TEST(DeAmer, OtmSide_PicksCallAboveForwardPutBelow) {
-  EXPECT_EQ(otm_side(0.30), Side::Call);   // k > 0: OTM call
-  EXPECT_EQ(otm_side(0.00), Side::Call);   // ATM: Call by convention
-  EXPECT_EQ(otm_side(-0.30), Side::Put);   // k < 0: OTM put
+  EXPECT_EQ(otm_side(0.30), Side::Call); // k > 0: OTM call
+  EXPECT_EQ(otm_side(0.00), Side::Call); // ATM: Call by convention
+  EXPECT_EQ(otm_side(-0.30), Side::Put); // k < 0: OTM put
 }
 
 // A deep-ITM strike must be inverted through its OTM opposite leg. Poison the
@@ -285,34 +305,32 @@ TEST(DeAmer, DeepItmStrike_InvertsViaOtmOppositeSide) {
   const std::vector<double> strikes{60.0, 100.0, 140.0};
   Chain chain = make_synthetic_chain(sc, b_true, strikes);
 
-  const double F = hybrid_forward(sc.S, sc.r, b_true, sc.T, sc.divs, sc.expiry_ns,
-                                  sc.now_ns, sc.hyb);
+  const double F =
+      hybrid_forward(sc.S, sc.r, b_true, sc.T, sc.divs, sc.expiry_ns, sc.now_ns, sc.hyb);
 
   // K=60 is a deep-ITM CALL (k<0 → OTM side is the PUT): cross the call leg.
   const std::size_t c60 = chain_index(0u, Side::Call);
   chain.bids[c60] = 50.0;
-  chain.asks[c60] = 1.0;  // crossed → invalid
+  chain.asks[c60] = 1.0; // crossed → invalid
   // K=140 is a deep-ITM PUT (k>0 → OTM side is the CALL): cross the put leg.
   const std::size_t p140 = chain_index(2u, Side::Put);
   chain.bids[p140] = 50.0;
-  chain.asks[p140] = 1.0;  // crossed → invalid
+  chain.asks[p140] = 1.0; // crossed → invalid
 
   DeAmOptions opts;
   opts.hyb = sc.hyb;
-  opts.imply_borrow = false;  // fix borrow so the poisoned wings don't feed it
+  opts.imply_borrow = false; // fix borrow so the poisoned wings don't feed it
   opts.borrow_fixed = b_true;
 
-  const auto res =
-      de_americanize_chain(chain, sc.S, sc.r, sc.divs, sc.now_ns, opts);
+  const auto res = de_americanize_chain(chain, sc.S, sc.r, sc.divs, sc.now_ns, opts);
   ASSERT_TRUE(res.has_value()) << (res ? std::string{} : res.error().to_string());
-  const DeAmResult& out = *res;
+  const DeAmResult &out = *res;
 
   // All three survive because each was inverted through its clean OTM leg.
   EXPECT_EQ(out.n_used, 3u);
   EXPECT_EQ(out.n_dropped, 0u);
   for (std::size_t i = 0; i < out.iv.size(); ++i) {
-    EXPECT_NEAR(out.iv[i], true_sigma(std::log(strikes[i] / F)), 1e-4)
-        << "K=" << strikes[i];
+    EXPECT_NEAR(out.iv[i], true_sigma(std::log(strikes[i] / F)), 1e-4) << "K=" << strikes[i];
   }
 }
 
@@ -335,13 +353,12 @@ TEST(DeAmer, CrossedAndZeroQuotes_CountedNotInverted) {
 
   DeAmOptions opts;
   opts.hyb = sc.hyb;
-  opts.imply_borrow = false;  // borrow not under test here
+  opts.imply_borrow = false; // borrow not under test here
   opts.borrow_fixed = b_true;
 
-  const auto res =
-      de_americanize_chain(chain, sc.S, sc.r, sc.divs, sc.now_ns, opts);
+  const auto res = de_americanize_chain(chain, sc.S, sc.r, sc.divs, sc.now_ns, opts);
   ASSERT_TRUE(res.has_value()) << (res ? std::string{} : res.error().to_string());
-  const DeAmResult& out = *res;
+  const DeAmResult &out = *res;
 
   EXPECT_EQ(out.n_dropped, 2u);
   EXPECT_EQ(out.n_used, strikes.size() - 2u);

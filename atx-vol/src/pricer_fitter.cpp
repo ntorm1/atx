@@ -1071,14 +1071,14 @@ Status PricerFitter::fit(const OptionChain &chain,
       // work and narrower validation, never from publishing an unaudited IV.
       in.deam.al_opts = al_default_opts();
       in.deam.n_atm = 3;
-      in.deam.max_borrow_pairs = 6;
+      in.deam.max_borrow_pairs = 5;
       in.calib.max_obs_per_slice = cfg_.max_obs_per_slice.value_or(40u);
       in.calib.max_otm_shortcut_premium_spread_frac =
           cfg_.max_otm_shortcut_premium_spread_frac.value_or(0.50);
       break;
     case FitQualityMode::Balanced:
       in.deam.n_atm = 8;
-      in.deam.max_borrow_pairs = 12;
+      in.deam.max_borrow_pairs = 5;
       // Certified fast proposals frequently require a cold fallback on dense
       // boards, paying for both paths. The direct accurate reference is faster
       // in that regime and is the correctness-first Balanced default.

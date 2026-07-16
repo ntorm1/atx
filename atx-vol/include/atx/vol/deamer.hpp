@@ -108,12 +108,12 @@ namespace atx::vol {
 // american_implied_vol's 1e-7 / 64). Keep `tol` at/above the pricer's own price
 // accuracy: a tol tighter than the (fast-preset) pricer can resolve turns the
 // safeguarded Newton into a bisection stall, each step a full American solve.
-[[nodiscard]] atx::core::Result<double> european_equiv_iv(
-    double american_mid, double S, double K, double T, double r, double q_eff,
-    Side side, AmericanMethod method = AmericanMethod::AndersenLake,
-    const std::optional<AlOpts>& opts = std::nullopt,
-    const CorrectionCache* correction = nullptr, double tol = 1.0e-7,
-    std::uint16_t max_iter = 64) noexcept;
+[[nodiscard]] atx::core::Result<double>
+european_equiv_iv(double american_mid, double S, double K, double T, double r, double q_eff,
+                  Side side, AmericanMethod method = AmericanMethod::AndersenLake,
+                  const std::optional<AlOpts> &opts = std::nullopt,
+                  const CorrectionCache *correction = nullptr, double tol = 1.0e-7,
+                  std::uint16_t max_iter = 64) noexcept;
 
 // Per-term borrow implied from a co-terminal near-ATM American call+put.
 //
@@ -128,11 +128,11 @@ namespace atx::vol {
 // This is the American-PCP-band-aware borrow the dividend module deliberately
 // deferred to here: de-Americanize first, then apply the European PCP equality.
 struct TermBorrow {
-  double borrow = 0.0;    // implied continuous borrow (as in hybrid_forward)
-  double forward = 0.0;   // hybrid_forward at the implied borrow
-  double rmse_pcp = 0.0;  // |European PCP residual| at the solution (diagnostic)
-  double sigma_call = 0.0;  // recovered call vol at convergence (cross-pair warm seed)
-  double sigma_put = 0.0;   // recovered put vol at convergence (cross-pair warm seed)
+  double borrow = 0.0;     // implied continuous borrow (as in hybrid_forward)
+  double forward = 0.0;    // hybrid_forward at the implied borrow
+  double rmse_pcp = 0.0;   // |European PCP residual| at the solution (diagnostic)
+  double sigma_call = 0.0; // recovered call vol at convergence (cross-pair warm seed)
+  double sigma_put = 0.0;  // recovered put vol at convergence (cross-pair warm seed)
 };
 
 // Independent cold-reference audit of an implied-vol proposal.  Approximate
@@ -145,10 +145,10 @@ struct IvRepricingAudit {
   bool passed{false};
 };
 
-[[nodiscard]] atx::core::Result<IvRepricingAudit> audit_european_equiv_iv(
-    double american_mid, double bid_ask_spread, double sigma, double S,
-    double K, double T, double r, double q_eff, Side side,
-    double max_residual_half_spreads = 0.25) noexcept;
+[[nodiscard]] atx::core::Result<IvRepricingAudit>
+audit_european_equiv_iv(double american_mid, double bid_ask_spread, double sigma, double S,
+                        double K, double T, double r, double q_eff, Side side,
+                        double max_residual_half_spreads = 0.25) noexcept;
 
 // @param call_mid,put_mid co-terminal American call/put mids at (K, T)
 // @param S,K,T            spot, strike, year-fraction (all > 0)
@@ -165,17 +165,15 @@ struct IvRepricingAudit {
 //                         (plus any pricer/inverter error propagated).
 [[nodiscard]] atx::core::Result<TermBorrow> imply_term_borrow(
     double call_mid, double put_mid, double S, double K, double T, double r,
-    std::span<const DividendEvent> cash_divs, std::int64_t expiry_ns,
-    std::int64_t now_ts_ns, const HybridDivParams& hyb,
-    AmericanMethod method = AmericanMethod::AndersenLake,
-    const std::optional<AlOpts>& opts = std::nullopt,
-    const AmericanCorrectionCaches& caches = {}, double borrow_seed = 0.0,
-    double sigma_c_seed = 0.0, double sigma_p_seed = 0.0,
+    std::span<const DividendEvent> cash_divs, std::int64_t expiry_ns, std::int64_t now_ts_ns,
+    const HybridDivParams &hyb, AmericanMethod method = AmericanMethod::AndersenLake,
+    const std::optional<AlOpts> &opts = std::nullopt, const AmericanCorrectionCaches &caches = {},
+    double borrow_seed = 0.0, double sigma_c_seed = 0.0, double sigma_p_seed = 0.0,
     bool skip_redundant_final = false) noexcept;
 
 // ── Chain driver ────────────────────────────────────────────────────────
 
-struct DeAmOptions;  // forward decl for resolve_chain_forward
+struct DeAmOptions; // forward decl for resolve_chain_forward
 
 // Just the per-term (forward, borrow) for a chain: the borrow-implication
 // front half of de_americanize_chain WITHOUT the per-strike inversion strip.
@@ -212,15 +210,15 @@ struct CarryDiagnostics {
 };
 
 struct ChainForward {
-  double forward = 0.0;  // hybrid_forward at the resolved borrow
-  double borrow = 0.0;   // implied (or fixed) per-term borrow
+  double forward = 0.0; // hybrid_forward at the resolved borrow
+  double borrow = 0.0;  // implied (or fixed) per-term borrow
   CarryDiagnostics carry{};
 };
 
-[[nodiscard]] atx::core::Result<ChainForward> resolve_chain_forward(
-    const Chain& chain, double S, double r,
-    std::span<const DividendEvent> cash_divs, std::int64_t now_ts_ns,
-    const DeAmOptions& opts) noexcept;
+[[nodiscard]] atx::core::Result<ChainForward>
+resolve_chain_forward(const Chain &chain, double S, double r,
+                      std::span<const DividendEvent> cash_divs, std::int64_t now_ts_ns,
+                      const DeAmOptions &opts) noexcept;
 
 // Strike indices of the co-terminal pairs ELIGIBLE for the robust carry solve
 // — exactly the selection `resolve_chain_forward` makes (both legs quotable,
@@ -230,22 +228,26 @@ struct ChainForward {
 // quotable. Exposed so the certified observation cache can invalidate on ANY
 // change to a carry-relevant quote (price, spread, timestamp, or eligibility),
 // including pairs the nearest-pair fallback selects outside the ATM band.
-[[nodiscard]] std::vector<std::uint16_t> carry_pair_strikes(
-    const Chain& chain, double S, const DeAmOptions& opts);
+[[nodiscard]] std::vector<std::uint16_t> carry_pair_strikes(const Chain &chain, double S,
+                                                            const DeAmOptions &opts);
 
 struct DeAmOptions {
   HybridDivParams hyb{};
   AmericanMethod method = AmericanMethod::AndersenLake;
   std::optional<AlOpts> al_opts = std::nullopt;
-  bool imply_borrow = true;    // if false, use borrow_fixed
-  double borrow_fixed = 0.0;   // borrow used when imply_borrow == false
-  std::size_t n_atm = 3;       // near-ATM co-terminal pairs used for the borrow
-  std::size_t max_borrow_pairs = 12; // cap robust band expansion; 1 = fastest
+  // Carry inference is an economically 1e-4 input, independent of the served
+  // per-strike de-Am preset. The fast AL scheme holds that bound without paying
+  // accurate-query quadrature for every fixed-point leg.
+  std::optional<AlOpts> carry_al_opts = al_fast_opts();
+  bool imply_borrow = true;         // if false, use borrow_fixed
+  double borrow_fixed = 0.0;        // borrow used when imply_borrow == false
+  std::size_t n_atm = 3;            // near-ATM co-terminal pairs used for the borrow
+  std::size_t max_borrow_pairs = 5; // real-OPRA accuracy plateau; 1 = fastest
   std::size_t min_confident_borrow_pairs = 3;
-  double carry_atm_band = 0.06;              // |K/S - 1| adaptive band
-  double max_carry_dispersion = 0.02;        // annualized borrow-rate units
-  double max_carry_leave_one_out = 0.005;    // annualized borrow-rate units
-  bool require_carry_confidence = false;     // compatibility seam; admission may require it
+  double carry_atm_band = 0.06;           // |K/S - 1| adaptive band
+  double max_carry_dispersion = 0.02;     // annualized borrow-rate units
+  double max_carry_leave_one_out = 0.005; // annualized borrow-rate units
+  bool require_carry_confidence = false;  // compatibility seam; admission may require it
   // American-IV inversion Newton controls for the per-strike de-Am solve. The
   // default (1e-7 / 64) matches american_implied_vol and keeps the cold path
   // bit-identical; the fast-preset session loosens `iv_tol` to the fast pricer's
@@ -278,26 +280,27 @@ struct DeAmOptions {
   //       hybrid_forward(converged borrow) — bit-identical to that step's forward
   //       — so only the diagnostic rmse_pcp / returned warm-seed vols move by
   //       < kBorrowFpTol=1e-8.
-  // Default false keeps the reference carry solve bit-identical (both paths shift
-  // sub-1e-8 values that move bit-exact pins); a perf-oriented caller opts in. The
-  // pricer stays cold Andersen-Lake and the converged root is unchanged.
+  // Default false keeps the configured carry solve bit-identical (both paths
+  // shift sub-1e-8 values that move bit-exact pins); a perf-oriented caller opts
+  // in. The pricer stays uncached Andersen-Lake and the converged root is
+  // unchanged.
   bool warm_start_carry = false;
-  // Optional per-side hot-path caches. Default-empty => cold Andersen-Lake path
-  // (pre-cache behavior). When populated, every American inversion in the chain
-  // driver + borrow fixed-point routes through `american_price_cached`.
+  // Optional per-side hot-path caches for the per-strike chain driver. Carry
+  // inference deliberately stays uncached and uses carry_al_opts so query-cache
+  // approximation error cannot bias the term forward.
   AmericanCorrectionCaches caches{};
 };
 
 struct DeAmResult {
-  double forward = 0.0;             // per-term forward used
-  double borrow = 0.0;             // implied or fixed
-  std::vector<double> k_log;       // ln(K/F) per surviving strike
-  std::vector<double> iv;          // European-equivalent IV per chosen (strike,side)
-  std::vector<double> weight;      // vega/spread weight hint (parallel to iv)
-  std::size_t n_used = 0;          // surviving strikes inverted
-  std::size_t n_dropped = 0;       // strikes skipped (bad quote / failed invert)
-  std::size_t n_iv_audited = 0;    // cache/fast proposals cold-reference checked
-  std::size_t n_iv_fallback = 0;   // failed proposals recomputed accurately
+  double forward = 0.0;          // per-term forward used
+  double borrow = 0.0;           // implied or fixed
+  std::vector<double> k_log;     // ln(K/F) per surviving strike
+  std::vector<double> iv;        // European-equivalent IV per chosen (strike,side)
+  std::vector<double> weight;    // vega/spread weight hint (parallel to iv)
+  std::size_t n_used = 0;        // surviving strikes inverted
+  std::size_t n_dropped = 0;     // strikes skipped (bad quote / failed invert)
+  std::size_t n_iv_audited = 0;  // cache/fast proposals cold-reference checked
+  std::size_t n_iv_fallback = 0; // failed proposals recomputed accurately
   double max_iv_residual_half_spreads = 0.0;
   CarryDiagnostics carry{};
 };
@@ -329,9 +332,9 @@ struct DeAmResult {
 //                     Unavailable     — imply_borrow requested but no near-ATM
 //                                       pair yielded a borrow
 //                     Internal        — a non-finite/non-positive term forward
-[[nodiscard]] atx::core::Result<DeAmResult> de_americanize_chain(
-    const Chain& chain, double S, double r,
-    std::span<const DividendEvent> cash_divs, std::int64_t now_ts_ns,
-    const DeAmOptions& opts) noexcept;
+[[nodiscard]] atx::core::Result<DeAmResult>
+de_americanize_chain(const Chain &chain, double S, double r,
+                     std::span<const DividendEvent> cash_divs, std::int64_t now_ts_ns,
+                     const DeAmOptions &opts) noexcept;
 
-}  // namespace atx::vol
+} // namespace atx::vol

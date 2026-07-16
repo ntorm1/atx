@@ -1464,6 +1464,64 @@ TEST(AloPricer, WarmSweep_TracksColdWithinSchemeNoise) {
   }
 }
 
+TEST(AloPricer, ResetAcrossContractsSidesAndSchemesMatchesFreshColdState) {
+  struct Case {
+    double S;
+    double K;
+    double T;
+    double sigma;
+    double r;
+    double q;
+    Side side;
+    std::optional<AlOpts> opts;
+  };
+  const std::array<Case, 4> cases{{
+      {100.0, 112.0, 1.75, 0.21, 0.045, 0.012, Side::Put, std::nullopt},
+      {180.0, 155.0, 0.35, 0.34, 0.025, 0.065, Side::Call, al_fast_opts()},
+      {72.0, 80.0, 0.08, 0.46, 0.052, 0.018, Side::Put, al_fast_opts()},
+      {310.0, 335.0, 2.0, 0.17, 0.02, 0.055, Side::Call, std::nullopt},
+  }};
+
+  AloPricer retained(95.0, 140.0, 2.5, 0.06, 0.01, Side::Put, al_fast_opts());
+  ASSERT_TRUE(std::isfinite(retained.price(0.12))); // contaminate the warm boundary
+  retained.reset(70.0, 100.0, 1.0, -0.005, -0.02, Side::Put);
+  EXPECT_TRUE(std::isnan(retained.price(0.30)));
+  retained.reset(100.0, 110.0, 1.0, -0.01, 0.0, Side::Put);
+  EXPECT_NEAR(retained.price(0.30), euro_put(100.0, 110.0, 1.0, 0.30, -0.01, 0.0), 1.0e-10);
+  for (const Case &c : cases) {
+    retained.reset(c.S, c.K, c.T, c.r, c.q, c.side, c.opts);
+    const double reused = retained.price(c.sigma);
+    AloPricer fresh(c.S, c.K, c.T, c.r, c.q, c.side, c.opts);
+    const double fresh_price = fresh.price(c.sigma);
+    const double cold = value_or_fail(
+        andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, c.opts));
+    EXPECT_TRUE(bits_equal(reused, fresh_price));
+    EXPECT_TRUE(bits_equal(reused, cold));
+  }
+}
+
+TEST(AloPricer, StaticGeometryExpCallsArePaidOncePerReset) {
+  using atx::vol::counters::Counter;
+  if constexpr (!atx::vol::counters::counters_enabled()) {
+    GTEST_SKIP() << "ATX_VOL_COUNTERS off: rebuild with -DATX_VOL_COUNTERS=ON";
+  }
+
+  atx::vol::counters::reset();
+  AloPricer pr(100.0, 105.0, 0.75, 0.04, 0.01, Side::Put);
+  EXPECT_EQ(atx::vol::counters::snapshot().get(Counter::ExpCalls), 528u);
+  ASSERT_TRUE(std::isfinite(pr.price(0.24)));
+  EXPECT_EQ(atx::vol::counters::snapshot().get(Counter::ExpCalls), 528u + 96u);
+  ASSERT_TRUE(std::isfinite(pr.price(0.25)));
+  EXPECT_EQ(atx::vol::counters::snapshot().get(Counter::ExpCalls), 528u + 2u * 96u);
+
+  pr.reset(180.0, 155.0, 0.35, 0.025, 0.065, Side::Call, al_fast_opts());
+  EXPECT_EQ(atx::vol::counters::snapshot().get(Counter::ExpCalls),
+            528u + 2u * 96u + 192u);
+  ASSERT_TRUE(std::isfinite(pr.price(0.34)));
+  EXPECT_EQ(atx::vol::counters::snapshot().get(Counter::ExpCalls),
+            528u + 2u * 96u + 192u + 32u);
+}
+
 // Degenerate sigma collapses to intrinsic; a no-early-exercise contract (put with
 // r <= 0) collapses to the European price — mirroring andersen_lake's guards.
 TEST(AloPricer, DegenerateAndEuropeanBranches) {

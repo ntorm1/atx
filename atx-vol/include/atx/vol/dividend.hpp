@@ -85,6 +85,22 @@ struct HybridDivParams {
   double blend = 0.0;
 };
 
+// Borrow-independent factor G in the hybrid forward F(b) = G*exp(-b*T).
+// Bind it once per expiry/carry strip and reuse it for every trial borrow.
+//
+// @return G, or NaN under the same invalid-input contract as hybrid_forward.
+[[nodiscard]] double hybrid_forward_base(double S, double r, double T,
+                                         std::span<const DividendEvent> cash_divs,
+                                         std::int64_t expiry_ns, std::int64_t now_ts_ns,
+                                         const HybridDivParams &hyb) noexcept;
+
+// Apply a borrow to a previously bound hybrid-forward base.
+//
+// @param base       finite borrow-independent factor returned above
+// @param borrow,T   finite continuous borrow and positive year-fraction
+// @return           base*exp(-borrow*T), or NaN on invalid input
+[[nodiscard]] double hybrid_forward_from_base(double base, double borrow, double T) noexcept;
+
 // Hybrid dividend forward (see header formula and sign conventions above).
 //
 // `borrow` enters as an extra continuous carry: borrow > 0 lowers the forward
@@ -117,30 +133,41 @@ struct HybridDivParams {
 //     C − P = e^{−rT}·(F(b) − K),   F(b) = hybrid_forward(..., borrow = b, hyb)
 //
 // F(b) is strictly monotone (decreasing) in b — F(b) = G·e^{−b·T}, G > 0
-// independent of b — so the objective has a single sign change and bisection
-// converges unconditionally over [b_lo, b_hi].
+// independent of b — so PCP has the direct solution
+//
+//     b = -ln(((C-P)·e^{rT} + K) / G) / T.
 //
 // @param call_price European call price/mid at (K, T)
 // @param put_price  European put price/mid at (K, T)
 // @param S,K,T,r    spot, strike, year-fraction (all > 0), cc rate (finite)
 // @param cash_divs  cash dividend schedule (as in hybrid_forward)
 // @param hyb        blend + proportional-yield parameters (borrow is solved)
-// @param b_lo,b_hi  search bracket for the borrow (b_lo < b_hi)
-// @param tol        absolute convergence tolerance on b (bracket half-width)
+// @param b_lo,b_hi  accepted range for the borrow (finite, b_lo < b_hi)
+// @param tol        finite positive endpoint-roundoff allowance on the range
 // @return           the implied borrow b, or:
 //                     InvalidArgument — bad scalar inputs / bracket / tol,
-//                                       or a non-finite objective at an endpoint
+//                                       or a non-finite forward factor
 //                     OutOfRange      — the implied borrow lies outside
 //                                       [b_lo, b_hi] (no sign change)
 //
 // See the PORT NOTE above: this is the European *equality*; American mids must
 // be de-Americanised upstream before it applies.
+[[nodiscard]] atx::core::Result<double> imply_borrow_european_pcp(
+    double call_price, double put_price, double S, double K, double T, double r,
+    std::span<const DividendEvent> cash_divs, std::int64_t expiry_ns, std::int64_t now_ts_ns,
+    const HybridDivParams &hyb, double b_lo = -0.5, double b_hi = 0.5, double tol = 1e-8) noexcept;
+
+// Closed-form PCP inversion using a pre-bound G. This is the carry-loop entry:
+// callers that solve several co-terminal pairs bind the expiry geometry once
+// with hybrid_forward_base rather than rescanning dividends per fixed-point
+// iteration and PCP solve.
+//
+// @param base       finite, positive borrow-independent hybrid-forward factor
+// @return           same result/error contract as imply_borrow_european_pcp
 [[nodiscard]] atx::core::Result<double>
-imply_borrow_european_pcp(double call_price, double put_price, double S, double K,
-                          double T, double r, std::span<const DividendEvent> cash_divs,
-                          std::int64_t expiry_ns, std::int64_t now_ts_ns,
-                          const HybridDivParams &hyb, double b_lo = -0.5,
-                          double b_hi = 0.5, double tol = 1e-8) noexcept;
+imply_borrow_european_pcp_from_base(double call_price, double put_price, double K, double T,
+                                    double r, double base, double b_lo = -0.5, double b_hi = 0.5,
+                                    double tol = 1e-8) noexcept;
 
 // One co-terminal call/put strike's mids, for the strip convenience below.
 struct CoTermQuote {
@@ -166,8 +193,8 @@ struct CoTermQuote {
 // @param n_atm  number of nearest-to-ATM strikes to average (>= 1; clamped to
 //               the strip size)
 // @return       the mean near-ATM PCP forward, or InvalidArgument on bad input.
-[[nodiscard]] atx::core::Result<double>
-imply_forward_atm_pcp(std::span<const CoTermQuote> quotes, double S, double T,
-                      double r, std::size_t n_atm = 3);
+[[nodiscard]] atx::core::Result<double> imply_forward_atm_pcp(std::span<const CoTermQuote> quotes,
+                                                              double S, double T, double r,
+                                                              std::size_t n_atm = 3);
 
 } // namespace atx::vol

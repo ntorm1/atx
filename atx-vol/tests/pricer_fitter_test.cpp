@@ -152,6 +152,7 @@ void expect_route_bit_identical(const atx::vol::InversionRouteDiagnostics &a,
                                 const atx::vol::InversionRouteDiagnostics &b, const char *label) {
   EXPECT_EQ(a.n_proposed, b.n_proposed) << label;
   EXPECT_EQ(a.n_audited, b.n_audited) << label;
+  EXPECT_EQ(a.n_reference_reprices, b.n_reference_reprices) << label;
   EXPECT_EQ(a.n_accepted, b.n_accepted) << label;
   EXPECT_EQ(a.n_fallback, b.n_fallback) << label;
   EXPECT_EQ(a.p50_residual_half_spreads, b.p50_residual_half_spreads) << label;

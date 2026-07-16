@@ -788,6 +788,10 @@ stratified_commit_positions(const ChainSnapshot &snapshot, const PricedSurface &
 
   PricerConfig config;
   config.preset = args.preset;
+  // This executable is the economic oracle for the same legacy production
+  // route, not a mark-latency benchmark. Preserve that route while explicitly
+  // retaining the parity diagnostics W1.5 may elide for ordinary mark callers.
+  config.score_parity = true;
   config.context = board.fit_context;
   config.n_threads = 1u;
   config.fit_workers = 1u;

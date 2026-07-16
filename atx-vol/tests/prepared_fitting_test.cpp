@@ -184,16 +184,15 @@ TEST(PreparedFitting, SharedExpiryPreparationPreservesPolicySpecificCacheRouting
   inputs.deam.caches = atx::vol::AmericanCorrectionCaches{&call_cache, &put_cache};
   inputs.use_deam_cache_for_fit = false;
 
-  const auto legacy = atx::vol::prepare_expiry(
-      chain, 3u, inputs, PreparedObservationPolicy::LegacyEssviCompatibility);
+  const auto legacy = atx::vol::prepare_expiry(chain, 3u, inputs,
+                                               PreparedObservationPolicy::LegacyEssviCompatibility);
   ASSERT_TRUE(legacy.has_value()) << legacy.error().to_string();
   EXPECT_TRUE(legacy->slice.provenance().call_cache);
   EXPECT_TRUE(legacy->slice.provenance().put_cache);
 
   const auto configured_without_cache =
       atx::vol::prepare_expiry(chain, 3u, inputs, PreparedObservationPolicy::Configured);
-  ASSERT_TRUE(configured_without_cache.has_value())
-      << configured_without_cache.error().to_string();
+  ASSERT_TRUE(configured_without_cache.has_value()) << configured_without_cache.error().to_string();
   EXPECT_FALSE(configured_without_cache->slice.provenance().call_cache);
   EXPECT_FALSE(configured_without_cache->slice.provenance().put_cache);
 
@@ -390,6 +389,23 @@ TEST(PreparedFitting, ScoringOptOutSkipsIndependentRawMidInversions) {
   EXPECT_EQ(prepared->provenance().n_score_inversions, prepared->fit_observations().size());
 }
 
+TEST(PreparedFitting, MidAnchorReusesMathematicallyIdenticalFitSigmaForScoring) {
+  const Chain chain = make_chain();
+  PreparedSliceInputs inputs = configured_inputs();
+  inputs.calib.max_obs_per_slice = 6u;
+  inputs.calib.anchor_kind = atx::vol::CalibAnchorKind::Mid;
+  inputs.prepare_scoring = true;
+
+  const auto prepared = PreparedSlice::create(chain, inputs);
+  ASSERT_TRUE(prepared.has_value()) << prepared.error().to_string();
+  EXPECT_EQ(prepared->provenance().n_score_inversions, 0u);
+  ASSERT_EQ(prepared->fit_observations().size(), prepared->score_columns().market_iv.size());
+  for (std::size_t index = 0; index < prepared->fit_observations().size(); ++index) {
+    EXPECT_DOUBLE_EQ(prepared->score_columns().market_iv[index],
+                     prepared->fit_observations()[index].sigma_mkt);
+  }
+}
+
 TEST(PreparedFitting, ScoringDoesNotChangeFitObservationsOnAcceleratedPaths) {
   const Chain chain = make_chain();
 
@@ -413,16 +429,11 @@ TEST(PreparedFitting, ScoringDoesNotChangeFitObservationsOnAcceleratedPaths) {
     }
   };
 
-  // Each preset flips `independent_score` on: the observation-cap path (Mid and
-  // Bid anchors) and the OTM premium shortcut. Turning scoring on must not add,
+  // Bid anchors and the OTM premium shortcut require an independent raw-mid
+  // inversion. A Mid-anchored capped path reuses the fit sigma. Scoring must not add,
   // drop, reorder, or reweight any fit row — its raw-mid inversion is scoring
   // only and can never gate a row's presence in the fit population.
   std::vector<PreparedSliceInputs> presets;
-  {
-    PreparedSliceInputs in = configured_inputs();
-    in.calib.max_obs_per_slice = 6u; // cap path: warm-start + independent scoring
-    presets.push_back(in);
-  }
   {
     PreparedSliceInputs in = configured_inputs();
     in.calib.max_obs_per_slice = 6u;

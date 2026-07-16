@@ -12,11 +12,11 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
-#include "atx/vol/american_iv.hpp"  // american_implied_vol (de-Americanization)
-#include "atx/vol/arb.hpp"          // QuoteFlag, has_flag (kill-mask filter step)
-#include "atx/vol/black76.hpp"      // black76_value_and_vega, black76_price
-#include "atx/vol/deamer.hpp"       // cold-reference IV proposal audit
-#include "atx/vol/implied_vol.hpp"  // implied_vol (IV inversion)
+#include "atx/vol/american_iv.hpp" // american_implied_vol (de-Americanization)
+#include "atx/vol/arb.hpp"         // QuoteFlag, has_flag (kill-mask filter step)
+#include "atx/vol/black76.hpp"     // black76_value_and_vega, black76_price
+#include "atx/vol/deamer.hpp"      // cold-reference IV proposal audit
+#include "atx/vol/implied_vol.hpp" // implied_vol (IV inversion)
 
 // Shared calibration infrastructure — implementation.
 //
@@ -303,24 +303,26 @@ void cap_observations_for_deam(ObsSet &set, std::uint32_t requested_cap) {
 }
 
 [[nodiscard]] bool use_otm_shortcut_deam(const FitObs &o, double S, double T, double r,
-                                         double q_eff, const CalibOpts &opts,
-                                         AmericanMethod method,
-                                         DeAmAuditDiagnostics* diag) noexcept {
+                                         double q_eff, const CalibOpts &opts, AmericanMethod method,
+                                         DeAmAuditDiagnostics *diag) noexcept {
   if (!(opts.max_otm_shortcut_premium_spread_frac > 0.0) ||
       opts.anchor_kind != CalibAnchorKind::Mid || method != AmericanMethod::AndersenLake ||
       !(o.spread > 0.0) || !(o.sigma_mkt > kObsIvMin && o.sigma_mkt < kObsIvMax)) {
     return false;
   }
   if (T < opts.min_otm_shortcut_T) {
-    if (diag != nullptr) ++diag->n_forced_short_tenor;
+    if (diag != nullptr)
+      ++diag->n_forced_short_tenor;
     return false;
   }
   if (o.vega < opts.min_otm_shortcut_vega) {
-    if (diag != nullptr) ++diag->n_forced_low_vega;
+    if (diag != nullptr)
+      ++diag->n_forced_low_vega;
     return false;
   }
   if (std::fabs(o.k) > opts.max_otm_shortcut_abs_k) {
-    if (diag != nullptr) ++diag->n_forced_far_wing;
+    if (diag != nullptr)
+      ++diag->n_forced_far_wing;
     return false;
   }
 
@@ -339,20 +341,24 @@ void cap_observations_for_deam(ObsSet &set, std::uint32_t requested_cap) {
 
 enum class IvRoute : std::uint8_t { Shortcut = 0, Cache = 1, Fast = 2, Accurate = 3 };
 
-[[nodiscard]] InversionRouteDiagnostics& route_diag(DeAmAuditDiagnostics& diag,
+[[nodiscard]] InversionRouteDiagnostics &route_diag(DeAmAuditDiagnostics &diag,
                                                     IvRoute route) noexcept {
   switch (route) {
-    case IvRoute::Shortcut: return diag.shortcut;
-    case IvRoute::Cache: return diag.cache;
-    case IvRoute::Fast: return diag.fast;
-    case IvRoute::Accurate: return diag.accurate;
+  case IvRoute::Shortcut:
+    return diag.shortcut;
+  case IvRoute::Cache:
+    return diag.cache;
+  case IvRoute::Fast:
+    return diag.fast;
+  case IvRoute::Accurate:
+    return diag.accurate;
   }
   return diag.accurate;
 }
 
-void finalize_route_diag(InversionRouteDiagnostics& diag,
-                         std::vector<double> residuals) {
-  if (residuals.empty()) return;
+void finalize_route_diag(InversionRouteDiagnostics &diag, std::vector<double> residuals) {
+  if (residuals.empty())
+    return;
   std::sort(residuals.begin(), residuals.end());
   const auto percentile = [&](double p) {
     const double pos = p * static_cast<double>(residuals.size() - 1);
@@ -366,11 +372,11 @@ void finalize_route_diag(InversionRouteDiagnostics& diag,
   diag.max_residual_half_spreads = residuals.back();
 }
 
-}  // namespace
+} // namespace
 
 CalibOpts calib_default_opts() noexcept { return CalibOpts{}; }
 
-Status validate_calib_options(const CalibOpts& opts) noexcept {
+Status validate_calib_options(const CalibOpts &opts) noexcept {
   if (!std::isfinite(opts.max_weight) || !(opts.max_weight > 0.0)) {
     return Err(ErrorCode::InvalidArgument,
                "validate_calib_options: max_weight must be finite and positive");
@@ -383,8 +389,7 @@ Status validate_calib_options(const CalibOpts& opts) noexcept {
     return Err(ErrorCode::NotImplemented,
                "validate_calib_options: parametric interval loss is not implemented");
   default:
-    return Err(ErrorCode::InvalidArgument,
-               "validate_calib_options: invalid calibration loss kind");
+    return Err(ErrorCode::InvalidArgument, "validate_calib_options: invalid calibration loss kind");
   }
   switch (opts.essvi_rho_mode) {
   case EssviRhoMode::PerSlice:
@@ -394,8 +399,7 @@ Status validate_calib_options(const CalibOpts& opts) noexcept {
     return Err(ErrorCode::NotImplemented,
                "validate_calib_options: requested eSSVI rho mode is not implemented");
   default:
-    return Err(ErrorCode::InvalidArgument,
-               "validate_calib_options: invalid eSSVI rho mode");
+    return Err(ErrorCode::InvalidArgument, "validate_calib_options: invalid eSSVI rho mode");
   }
   if (opts.essvi_asymmetric_rho) {
     return Err(ErrorCode::NotImplemented,
@@ -444,8 +448,7 @@ Status validate_calib_options(const CalibOpts& opts) noexcept {
     return Err(ErrorCode::NotImplemented,
                "validate_calib_options: requested residual basis is not implemented");
   default:
-    return Err(ErrorCode::InvalidArgument,
-               "validate_calib_options: invalid residual basis kind");
+    return Err(ErrorCode::InvalidArgument, "validate_calib_options: invalid residual basis kind");
   }
   return Ok();
 }
@@ -534,12 +537,12 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
   out.obs.reserve(am->obs.size());
   out.provenance = std::move(am->provenance);
   out.n_dropped = am->n_dropped;
-  // Warm-starting changes the last few bits of a tolerance-terminated IV solve.
-  // Keep the historical/default full-board path cold so its fitted surface stays
-  // bit-identical; the accelerated path opts in through either of its explicit
-  // observation shortcuts.
-  const bool warm_start_deam =
-      opts.max_obs_per_slice > 0 || opts.max_otm_shortcut_premium_spread_frac > 0.0;
+  // Chain strikes are ascending. Independent side seeds therefore follow a
+  // nearby point on the smile without ever crossing call/put solver state. A
+  // tolerance-terminated seed may move the last bits; the cold-reference gate
+  // requires |dIV| <= 1e-4 and |dPrice| <= min(half tick, 0.1*vega*1e-4), while
+  // remaining strictly inside the source quote's half-spread.
+  const bool warm_start_deam = opts.warm_start_deam_adjacent_strikes;
   double warm_call = 0.0;
   double warm_put = 0.0;
   std::array<std::vector<double>, 4> audit_residuals;
@@ -554,10 +557,14 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
       out.provenance[source_index].rejection = reason;
     };
     ++out.deam_audit.n_deam_rows;
-    const bool shortcut =
-        use_otm_shortcut_deam(o, S, T, r, q_eff, opts, method, &out.deam_audit);
-    const bool independent_score = prepare_scoring && (shortcut || warm_start_deam ||
-                                                       opts.anchor_kind != CalibAnchorKind::Mid);
+    const bool shortcut = use_otm_shortcut_deam(o, S, T, r, q_eff, opts, method, &out.deam_audit);
+    // A Mid fit inversion and its score solve the same equation. Warm-starting
+    // can move a tolerance-terminated result by a few ULPs, but that is not an
+    // independent economic observation; reuse it. A shortcut has no fit
+    // inversion, while Bid/Ask anchors target a different premium, so both still
+    // require the cold raw-mid scoring solve.
+    const bool independent_score =
+        prepare_scoring && (shortcut || opts.anchor_kind != CalibAnchorKind::Mid);
     // Anchor-independent score. Inverted COLD off the raw symmetric mid so the
     // scored IV is anchor-agnostic (the fit inversion below may target a bid/ask
     // anchor). A failed or out-of-band scoring inversion leaves the row UNSCORED
@@ -577,76 +584,83 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
     // `o.mid` is the anchor premium (the raw American mid under the default Mid
     // anchor). Recover the European-equivalent lognormal vol, then restate the
     // observation entirely in European terms.
-    const CorrectionCache* correction = caches.for_side(o.side);
-    const bool cache_proposal = correction != nullptr && correction->populated() &&
-                                correction->side() == o.side;
-    const IvRoute route = shortcut
-                              ? IvRoute::Shortcut
-                              : (cache_proposal
-                                     ? IvRoute::Cache
-                                     : (method == AmericanMethod::AndersenLake &&
-                                                al_opts.has_value()
-                                            ? IvRoute::Fast
-                                            : IvRoute::Accurate));
-    InversionRouteDiagnostics& proposal_diag =
-        route_diag(out.deam_audit, route);
+    const CorrectionCache *correction = caches.for_side(o.side);
+    const bool cache_proposal =
+        correction != nullptr && correction->populated() && correction->side() == o.side;
+    const IvRoute route =
+        shortcut ? IvRoute::Shortcut
+                 : (cache_proposal ? IvRoute::Cache
+                                   : (method == AmericanMethod::AndersenLake && al_opts.has_value()
+                                          ? IvRoute::Fast
+                                          : IvRoute::Accurate));
+    InversionRouteDiagnostics &proposal_diag = route_diag(out.deam_audit, route);
     ++proposal_diag.n_proposed;
     const double warm = warm_start_deam ? ((o.side == Side::Call) ? warm_call : warm_put) : 0.0;
     Result<double> sig = shortcut
                              ? Ok(o.sigma_mkt)
-                             : american_implied_vol(
-                                   o.mid, S, o.K, T, r, q_eff, o.side, method,
-                                   iv_tol, iv_max_iter, al_opts, correction, warm);
+                             : american_implied_vol(o.mid, S, o.K, T, r, q_eff, o.side, method,
+                                                    iv_tol, iv_max_iter, al_opts, correction, warm);
     if (!sig.has_value() || !(*sig > kObsIvMin && *sig < kObsIvMax)) {
       reject(ObsRejectionReason::Deamericanization);
       continue;
     }
+    bool fit_sigma_converged = !shortcut;
 
-    // All Andersen-Lake routes, including the nominally accurate one, are
-    // independently repriced. Approximate proposals that miss the budget are
-    // recomputed with the cold accurate solver; the fallback is audited again.
+    // A successful direct accurate inversion has already been cold-polished
+    // against the exact map used by audit_european_equiv_iv. Repeating that map
+    // cannot add independent evidence, so it is a logical audit with no reprice.
+    // Approximate proposals still require an independent reference reprice and
+    // an audited accurate fallback when they miss the budget.
     if (method == AmericanMethod::AndersenLake) {
-      ++proposal_diag.n_audited;
-      Result<IvRepricingAudit> audit = audit_european_equiv_iv(
-          o.mid, o.spread, *sig, S, o.K, T, r, q_eff, o.side,
-          opts.max_inversion_residual_half_spreads);
-      if (audit) {
-        audit_residuals[static_cast<std::size_t>(route)].push_back(
-            audit->residual_half_spreads);
-      }
-      if (!audit || !audit->passed) {
-        if (route == IvRoute::Accurate) {
-          ++out.deam_audit.n_rejected_residual;
-          reject(ObsRejectionReason::Deamericanization);
-          continue;
-        }
-        ++proposal_diag.n_fallback;
-        ++out.deam_audit.n_accurate_fallback;
-        InversionRouteDiagnostics& accurate_diag = out.deam_audit.accurate;
-        ++accurate_diag.n_proposed;
-        sig = american_implied_vol(o.mid, S, o.K, T, r, q_eff, o.side,
-                                   AmericanMethod::AndersenLake, 1.0e-7, 64,
-                                   std::nullopt, nullptr, *sig);
-        if (!sig || !(*sig > kObsIvMin && *sig < kObsIvMax)) {
-          reject(ObsRejectionReason::Deamericanization);
-          continue;
-        }
-        ++accurate_diag.n_audited;
-        audit = audit_european_equiv_iv(
-            o.mid, o.spread, *sig, S, o.K, T, r, q_eff, o.side,
-            opts.max_inversion_residual_half_spreads);
+      const bool trusted_accurate_controls = iv_tol <= 1.0e-7 && iv_max_iter >= 64;
+      if (route == IvRoute::Accurate && !opts.audit_accurate_inversions &&
+          trusted_accurate_controls) {
+        ++proposal_diag.n_audited;
+        ++proposal_diag.n_accepted;
+      } else {
+        ++proposal_diag.n_audited;
+        ++proposal_diag.n_reference_reprices;
+        Result<IvRepricingAudit> audit =
+            audit_european_equiv_iv(o.mid, o.spread, *sig, S, o.K, T, r, q_eff, o.side,
+                                    opts.max_inversion_residual_half_spreads);
         if (audit) {
-          audit_residuals[static_cast<std::size_t>(IvRoute::Accurate)].push_back(
-              audit->residual_half_spreads);
+          audit_residuals[static_cast<std::size_t>(route)].push_back(audit->residual_half_spreads);
         }
         if (!audit || !audit->passed) {
-          ++out.deam_audit.n_rejected_residual;
-          reject(ObsRejectionReason::Deamericanization);
-          continue;
+          if (route == IvRoute::Accurate) {
+            ++out.deam_audit.n_rejected_residual;
+            reject(ObsRejectionReason::Deamericanization);
+            continue;
+          }
+          ++proposal_diag.n_fallback;
+          ++out.deam_audit.n_accurate_fallback;
+          InversionRouteDiagnostics &accurate_diag = out.deam_audit.accurate;
+          ++accurate_diag.n_proposed;
+          sig =
+              american_implied_vol(o.mid, S, o.K, T, r, q_eff, o.side, AmericanMethod::AndersenLake,
+                                   1.0e-7, 64, std::nullopt, nullptr, *sig);
+          if (!sig || !(*sig > kObsIvMin && *sig < kObsIvMax)) {
+            reject(ObsRejectionReason::Deamericanization);
+            continue;
+          }
+          ++accurate_diag.n_audited;
+          ++accurate_diag.n_reference_reprices;
+          audit = audit_european_equiv_iv(o.mid, o.spread, *sig, S, o.K, T, r, q_eff, o.side,
+                                          opts.max_inversion_residual_half_spreads);
+          if (audit) {
+            audit_residuals[static_cast<std::size_t>(IvRoute::Accurate)].push_back(
+                audit->residual_half_spreads);
+          }
+          if (!audit || !audit->passed) {
+            ++out.deam_audit.n_rejected_residual;
+            reject(ObsRejectionReason::Deamericanization);
+            continue;
+          }
+          ++accurate_diag.n_accepted;
+          fit_sigma_converged = true;
+        } else {
+          ++proposal_diag.n_accepted;
         }
-        ++accurate_diag.n_accepted;
-      } else {
-        ++proposal_diag.n_accepted;
       }
     } else {
       ++proposal_diag.n_accepted;
@@ -656,7 +670,7 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
     if (!independent_score) {
       score_sigma = sigma_eu;
     }
-    if (warm_start_deam) {
+    if (warm_start_deam && fit_sigma_converged) {
       if (o.side == Side::Call) {
         warm_call = sigma_eu;
       } else {
@@ -686,12 +700,10 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
     ++out.deam_audit.n_deam_accepted;
     out.obs.push_back(o);
   }
-  finalize_route_diag(out.deam_audit.shortcut,
-                      std::move(audit_residuals[0]));
+  finalize_route_diag(out.deam_audit.shortcut, std::move(audit_residuals[0]));
   finalize_route_diag(out.deam_audit.cache, std::move(audit_residuals[1]));
   finalize_route_diag(out.deam_audit.fast, std::move(audit_residuals[2]));
-  finalize_route_diag(out.deam_audit.accurate,
-                      std::move(audit_residuals[3]));
+  finalize_route_diag(out.deam_audit.accurate, std::move(audit_residuals[3]));
   if (out.obs.size() < kMinObs) {
     return Err(ErrorCode::NotFound,
                "build_observations_european: fewer than 5 European obs survived");
@@ -707,8 +719,8 @@ bool deam_inversion_certified(const DeAmAuditDiagnostics &audit,
   const auto route_audited = [](const InversionRouteDiagnostics &route) noexcept {
     return route.n_accepted <= route.n_audited;
   };
-  if (!route_audited(audit.shortcut) || !route_audited(audit.cache) ||
-      !route_audited(audit.fast) || !route_audited(audit.accurate)) {
+  if (!route_audited(audit.shortcut) || !route_audited(audit.cache) || !route_audited(audit.fast) ||
+      !route_audited(audit.accurate)) {
     return false;
   }
   // 2. The stage must have run and produced at least one accepted node.
@@ -721,14 +733,13 @@ bool deam_inversion_certified(const DeAmAuditDiagnostics &audit,
     return false;
   }
   const std::uint32_t dropped = audit.n_deam_rows - audit.n_deam_accepted;
-  const double drop_fraction = static_cast<double>(dropped) /
-                               static_cast<double>(audit.n_deam_rows);
+  const double drop_fraction =
+      static_cast<double>(dropped) / static_cast<double>(audit.n_deam_rows);
   return drop_fraction <= max_drop_fraction;
 }
 
-Result<double> obs_accepted(const Chain &chain, std::uint16_t strike_idx,
-                            Side side, double F, double T, double df,
-                            const CalibOpts &opts) {
+Result<double> obs_accepted(const Chain &chain, std::uint16_t strike_idx, Side side, double F,
+                            double T, double df, const CalibOpts &opts) {
   if (strike_idx >= chain.n_strikes()) {
     return Err(ErrorCode::InvalidArgument, "obs_accepted: strike_idx out of range");
   }
