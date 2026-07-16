@@ -173,6 +173,12 @@ void expect_inversion_bit_identical(const atx::vol::DeAmAuditDiagnostics &a,
   EXPECT_EQ(a.n_rejected_residual, b.n_rejected_residual);
   EXPECT_EQ(a.n_deam_rows, b.n_deam_rows);
   EXPECT_EQ(a.n_deam_accepted, b.n_deam_accepted);
+  EXPECT_EQ(a.n_shared_boundary_lanes, b.n_shared_boundary_lanes);
+  EXPECT_EQ(a.n_shared_call_lanes, b.n_shared_call_lanes);
+  EXPECT_EQ(a.n_shared_put_lanes, b.n_shared_put_lanes);
+  EXPECT_EQ(a.n_shared_boundary_solves, b.n_shared_boundary_solves);
+  EXPECT_EQ(a.n_shared_sentinel_reprices, b.n_shared_sentinel_reprices);
+  EXPECT_EQ(a.n_shared_scalar_fallback_lanes, b.n_shared_scalar_fallback_lanes);
 }
 
 void expect_carry_bit_identical(const atx::vol::SessionCarryDiagnostics &a,
@@ -248,6 +254,12 @@ protected:
   double r_{0.0};
   double spot_{0.0};
 };
+
+TEST(PricerFitterPolicy, ProductionSelectorDefaultsToBroadCoverageEssviOnly) {
+  const PricerConfig config;
+  ASSERT_EQ(config.selector.candidates.size(), 1u);
+  EXPECT_EQ(config.selector.candidates.front().kind, atx::vol::VolCurveKind::Essvi);
+}
 
 TEST_F(PricerFitterTest, ChainEnumerateDecodeAndSnapshot) {
   const OptionChain &chain = *chain_;

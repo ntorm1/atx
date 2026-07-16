@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <span>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -17,6 +18,7 @@
 #include "atx/vol/black76.hpp"     // black76_value_and_vega, black76_price
 #include "atx/vol/deamer.hpp"      // cold-reference IV proposal audit
 #include "atx/vol/implied_vol.hpp" // implied_vol (IV inversion)
+#include "boundary_interp.hpp"     // retained sigma-boundary de-Am path
 
 // Shared calibration infrastructure — implementation.
 //
@@ -372,6 +374,298 @@ void finalize_route_diag(InversionRouteDiagnostics &diag, std::vector<double> re
   diag.max_residual_half_spreads = residuals.back();
 }
 
+inline constexpr std::uint16_t kSharedSigmaNodes = 9u;
+inline constexpr std::size_t kSharedMinSideRows = 16u;
+inline constexpr std::size_t kSharedMinAcceptedRows = 12u;
+inline constexpr std::size_t kSharedLaneCapacity = 128u;
+inline constexpr double kSharedMinT = 3.0 / 365.0;
+inline constexpr double kSharedMinSigma = 0.01;
+
+struct SharedIvLane {
+  FitObs *observation{nullptr};
+  double lo{0.0};
+  double hi{0.0};
+  double f_lo{0.0};
+  double f_hi{0.0};
+  bool active{false};
+};
+
+[[nodiscard]] double shared_boundary_price(detail::SigmaBoundaryInterp &interp, const FitObs &o,
+                                           double S, double sigma) noexcept {
+  const double internal_spot = o.side == Side::Call ? o.K : S;
+  const double internal_strike = o.side == Side::Call ? S : o.K;
+  return interp.price_internal_put(internal_spot, internal_strike, sigma);
+}
+
+[[nodiscard]] double shared_boundary_embedded_price(detail::SigmaBoundaryInterp &interp,
+                                                    const FitObs &o, double S,
+                                                    double sigma) noexcept {
+  const double internal_spot = o.side == Side::Call ? o.K : S;
+  const double internal_strike = o.side == Side::Call ? S : o.K;
+  return interp.price_internal_put_embedded(internal_spot, internal_strike, sigma);
+}
+
+[[nodiscard]] double shared_economic_price_budget(const FitObs &o, double T, double sigma,
+                                                  const CalibOpts &opts) noexcept {
+  const double deam_vega = black76_value_and_vega(o.F, o.K, T, sigma, o.df, o.side).vega;
+  const double conservative_vega = std::min(o.vega, deam_vega);
+  const double half_spread_budget =
+      0.5 * o.spread * std::min(0.99, opts.max_inversion_residual_half_spreads);
+  return std::min({0.005, 0.1 * conservative_vega * 1.0e-4, half_spread_budget});
+}
+
+[[nodiscard]] bool initialize_shared_lane(SharedIvLane &lane, detail::SigmaBoundaryInterp &interp,
+                                          FitObs &o, double S) noexcept {
+  lane.observation = &o;
+  lane.lo = interp.sigma_lo();
+  lane.hi = o.sigma_mkt;
+  if (!(lane.hi > lane.lo)) {
+    return false;
+  }
+  const double price_lo = shared_boundary_price(interp, o, S, lane.lo);
+  const double price_hi = shared_boundary_price(interp, o, S, lane.hi);
+  lane.f_lo = price_lo - o.mid;
+  lane.f_hi = price_hi - o.mid;
+  lane.active = std::isfinite(lane.f_lo) && std::isfinite(lane.f_hi) && lane.f_lo < 0.0 &&
+                lane.f_hi >= 0.0 && price_hi >= price_lo;
+  return lane.active;
+}
+
+void iterate_shared_lanes(std::span<SharedIvLane> lanes, detail::SigmaBoundaryInterp &interp,
+                          double S, double solve_tol, std::uint16_t max_iter) noexcept {
+  for (std::uint16_t iteration = 0u; iteration < max_iter; ++iteration) {
+    bool any_active = false;
+    for (SharedIvLane &lane : lanes) {
+      if (!lane.active) {
+        continue;
+      }
+      const double width = lane.hi - lane.lo;
+      if (width <= solve_tol) {
+        lane.active = false;
+        continue;
+      }
+      any_active = true;
+      double sigma = 0.5 * (lane.lo + lane.hi);
+      const double residual_span = lane.f_hi - lane.f_lo;
+      if (residual_span > 0.0 && std::isfinite(residual_span)) {
+        const double secant = lane.lo - lane.f_lo * width / residual_span;
+        // A central secant is accepted; a tail-hugging regula-falsi step is
+        // replaced by bisection so each iteration shrinks the bracket by at
+        // least 25% and the bounded max_iter contract is constructive.
+        const double guard = 0.25 * width;
+        if (secant > lane.lo + guard && secant < lane.hi - guard) {
+          sigma = secant;
+        }
+      }
+      const double residual =
+          shared_boundary_price(interp, *lane.observation, S, sigma) - lane.observation->mid;
+      if (!std::isfinite(residual)) {
+        lane.active = false;
+        lane.observation = nullptr;
+      } else if (residual < 0.0) {
+        lane.lo = sigma;
+        lane.f_lo = residual;
+      } else {
+        lane.hi = sigma;
+        lane.f_hi = residual;
+      }
+    }
+    if (!any_active) {
+      break;
+    }
+  }
+}
+
+[[nodiscard]] bool finalize_shared_lane(SharedIvLane &lane, detail::SigmaBoundaryInterp &interp,
+                                        double S, double T, double solve_tol,
+                                        const CalibOpts &opts) noexcept {
+  if (lane.observation == nullptr || lane.hi < lane.lo || lane.hi - lane.lo > solve_tol) {
+    return false;
+  }
+  const double sigma = 0.5 * (lane.lo + lane.hi);
+  const double price = shared_boundary_price(interp, *lane.observation, S, sigma);
+  const double embedded = shared_boundary_embedded_price(interp, *lane.observation, S, sigma);
+  const double budget = shared_economic_price_budget(*lane.observation, T, sigma, opts);
+  if (!(sigma > kObsIvMin && sigma < kObsIvMax) || !(budget > 0.0) || !std::isfinite(price) ||
+      !std::isfinite(embedded) || std::fabs(price - lane.observation->mid) > budget ||
+      std::fabs(price - embedded) > budget) {
+    return false;
+  }
+  lane.observation->score_sigma_mkt = sigma;
+  return true;
+}
+
+[[nodiscard]] std::size_t solve_shared_side(std::vector<FitObs> &observations, Side side, double S,
+                                            double T, detail::SigmaBoundaryInterp &interp,
+                                            double iv_tol, std::uint16_t max_iter,
+                                            const CalibOpts &opts) noexcept {
+  const double solve_tol = std::min(std::max(iv_tol, 1.0e-9), 2.5e-5);
+  std::size_t accepted = 0u;
+  std::size_t scan = 0u;
+  while (scan < observations.size()) {
+    std::array<SharedIvLane, kSharedLaneCapacity> storage{};
+    std::size_t count = 0u;
+    while (scan < observations.size() && count < storage.size()) {
+      FitObs &observation = observations[scan++];
+      if (observation.side == side) {
+        if (!initialize_shared_lane(storage[count], interp, observation, S)) {
+          storage[count].observation = nullptr;
+        }
+        ++count;
+      }
+    }
+    std::span<SharedIvLane> lanes{storage.data(), count};
+    iterate_shared_lanes(lanes, interp, S, solve_tol, max_iter);
+    for (SharedIvLane &lane : lanes) {
+      if (finalize_shared_lane(lane, interp, S, T, solve_tol, opts)) {
+        ++accepted;
+      }
+    }
+  }
+  return accepted;
+}
+
+[[nodiscard]] FitObs *shared_accepted_at(std::vector<FitObs> &observations, Side side,
+                                         std::size_t rank) noexcept {
+  for (FitObs &observation : observations) {
+    if (observation.side == side && std::isfinite(observation.score_sigma_mkt)) {
+      if (rank == 0u) {
+        return &observation;
+      }
+      --rank;
+    }
+  }
+  return nullptr;
+}
+
+[[nodiscard]] bool certify_shared_side(std::vector<FitObs> &observations, Side side, double S,
+                                       double T, double r, double q_eff, std::size_t accepted,
+                                       double iv_tol, std::uint16_t iv_max_iter,
+                                       const CalibOpts &opts, DeAmAuditDiagnostics &diag) noexcept {
+  if (accepted == 0u) {
+    return false;
+  }
+  const std::array<std::size_t, 3> ranks{0u, accepted / 2u, accepted - 1u};
+  const std::size_t sentinel_count = std::min<std::size_t>(accepted, ranks.size());
+  for (std::size_t sentinel = 0u; sentinel < sentinel_count; ++sentinel) {
+    const std::size_t rank = sentinel_count == 1u
+                                 ? ranks[0]
+                                 : (sentinel_count == 2u ? ranks[2u * sentinel] : ranks[sentinel]);
+    FitObs *const observation = shared_accepted_at(observations, side, rank);
+    if (observation == nullptr) {
+      return false;
+    }
+    ++diag.n_shared_sentinel_reprices;
+    const Result<double> reference = american_implied_vol(
+        observation->mid, S, observation->K, T, r, q_eff, side, AmericanMethod::AndersenLake,
+        std::min(iv_tol, 1.0e-7), std::max(iv_max_iter, std::uint16_t{64}), std::nullopt, nullptr);
+    if (!reference || std::fabs(*reference - observation->score_sigma_mkt) > 1.0e-4) {
+      return false;
+    }
+    const Result<double> reference_price =
+        american_price(S, observation->K, T, observation->score_sigma_mkt, r, q_eff, side,
+                       AmericanMethod::AndersenLake, std::nullopt);
+    const double budget =
+        shared_economic_price_budget(*observation, T, observation->score_sigma_mkt, opts);
+    if (!reference_price || !(budget > 0.0) ||
+        std::fabs(*reference_price - observation->mid) > budget) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void invalidate_shared_side(std::vector<FitObs> &observations, Side side) noexcept {
+  for (FitObs &observation : observations) {
+    if (observation.side == side) {
+      observation.score_sigma_mkt = kUnscoredIv;
+    }
+  }
+}
+
+void prepare_shared_boundary_side(std::vector<FitObs> &observations, Side side, double S, double T,
+                                  double r, double q_eff, const CalibOpts &opts,
+                                  const std::optional<AlOpts> &al_opts, double iv_tol,
+                                  std::uint16_t iv_max_iter, DeAmAuditDiagnostics &diag) noexcept {
+  std::size_t side_rows = 0u;
+  double min_seed = std::numeric_limits<double>::infinity();
+  double max_seed = 0.0;
+  for (const FitObs &observation : observations) {
+    if (observation.side == side) {
+      ++side_rows;
+      min_seed = std::min(min_seed, observation.sigma_mkt);
+      max_seed = std::max(max_seed, observation.sigma_mkt);
+    }
+  }
+  const double internal_rate = side == Side::Call ? q_eff : r;
+  if (side_rows < kSharedMinSideRows || !(T >= kSharedMinT) || !(internal_rate > 0.0)) {
+    return;
+  }
+  const double sigma_lo = std::max(kSharedMinSigma, 0.35 * min_seed);
+  const double sigma_hi = std::min(kObsIvMax, max_seed * (1.0 + 1.0e-12));
+  if (!(sigma_hi > sigma_lo) || sigma_hi / sigma_lo > 20.0) {
+    return;
+  }
+  const double internal_yield = side == Side::Call ? r : q_eff;
+  detail::SigmaBoundaryInterp interp;
+  const amer::AlScheme scheme = amer::scheme_from_opts(al_opts);
+  if (!interp.build(S, T, internal_rate, internal_yield, sigma_lo, sigma_hi, kSharedSigmaNodes,
+                    scheme)) {
+    diag.n_shared_scalar_fallback_lanes += static_cast<std::uint32_t>(side_rows);
+    return;
+  }
+  diag.n_shared_boundary_solves += kSharedSigmaNodes;
+  const std::size_t accepted =
+      solve_shared_side(observations, side, S, T, interp, iv_tol, iv_max_iter, opts);
+  const std::uint32_t sentinels_before = diag.n_shared_sentinel_reprices;
+  const bool certified = accepted >= kSharedMinAcceptedRows &&
+                         certify_shared_side(observations, side, S, T, r, q_eff, accepted, iv_tol,
+                                             iv_max_iter, opts, diag);
+  const std::uint32_t sentinel_count = diag.n_shared_sentinel_reprices - sentinels_before;
+  const IvRoute shared_route = al_opts.has_value() ? IvRoute::Fast : IvRoute::Accurate;
+  route_diag(diag, shared_route).n_reference_reprices += sentinel_count;
+  if (!certified) {
+    invalidate_shared_side(observations, side);
+    diag.n_shared_scalar_fallback_lanes += static_cast<std::uint32_t>(side_rows);
+    return;
+  }
+  diag.n_shared_boundary_lanes += static_cast<std::uint32_t>(accepted);
+  diag.n_shared_scalar_fallback_lanes += static_cast<std::uint32_t>(side_rows - accepted);
+  if (side == Side::Call) {
+    diag.n_shared_call_lanes += static_cast<std::uint32_t>(accepted);
+  } else {
+    diag.n_shared_put_lanes += static_cast<std::uint32_t>(accepted);
+  }
+}
+
+void prepare_shared_boundary_proposals(std::vector<FitObs> &observations, double S, double T,
+                                       double r, double q_eff, const CalibOpts &opts,
+                                       const AmericanCorrectionCaches &caches,
+                                       const std::optional<AlOpts> &al_opts, double iv_tol,
+                                       std::uint16_t iv_max_iter, AmericanMethod method,
+                                       DeAmAuditDiagnostics &diag) noexcept {
+  // This is the private, pre-restatement ObsSet. Its score column is recomputed
+  // below for every emitted row, so it safely carries the transient proposal
+  // and avoids allocating a parallel n-strike vector in the hot path.
+  for (FitObs &observation : observations) {
+    observation.score_sigma_mkt = kUnscoredIv;
+  }
+  if (!opts.use_shared_boundary_deam || opts.audit_accurate_inversions ||
+      opts.anchor_kind != CalibAnchorKind::Mid || opts.max_otm_shortcut_premium_spread_frac > 0.0 ||
+      method != AmericanMethod::AndersenLake || r < 0.0 || q_eff < 0.0 || !(iv_tol > 0.0) ||
+      iv_max_iter == 0u) {
+    return;
+  }
+  for (const Side side : {Side::Put, Side::Call}) {
+    const CorrectionCache *const cache = caches.for_side(side);
+    if (cache != nullptr && cache->populated() && cache->side() == side) {
+      continue;
+    }
+    prepare_shared_boundary_side(observations, side, S, T, r, q_eff, opts, al_opts, iv_tol,
+                                 iv_max_iter, diag);
+  }
+}
+
 } // namespace
 
 CalibOpts calib_default_opts() noexcept { return CalibOpts{}; }
@@ -545,6 +839,8 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
   const bool warm_start_deam = opts.warm_start_deam_adjacent_strikes;
   double warm_call = 0.0;
   double warm_put = 0.0;
+  prepare_shared_boundary_proposals(am->obs, S, T, r, q_eff, opts, caches, al_opts, iv_tol,
+                                    iv_max_iter, method, out.deam_audit);
   std::array<std::vector<double>, 4> audit_residuals;
   for (FitObs o : am->obs) {
     const std::size_t source_index = o.source_strike_index;
@@ -558,6 +854,8 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
     };
     ++out.deam_audit.n_deam_rows;
     const bool shortcut = use_otm_shortcut_deam(o, S, T, r, q_eff, opts, method, &out.deam_audit);
+    const bool shared_proposal = !shortcut && std::isfinite(o.score_sigma_mkt) &&
+                                 o.score_sigma_mkt > kObsIvMin && o.score_sigma_mkt < kObsIvMax;
     // A Mid fit inversion and its score solve the same equation. Warm-starting
     // can move a tolerance-terminated result by a few ULPs, but that is not an
     // independent economic observation; reuse it. A shortcut has no fit
@@ -596,10 +894,12 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
     InversionRouteDiagnostics &proposal_diag = route_diag(out.deam_audit, route);
     ++proposal_diag.n_proposed;
     const double warm = warm_start_deam ? ((o.side == Side::Call) ? warm_call : warm_put) : 0.0;
-    Result<double> sig = shortcut
-                             ? Ok(o.sigma_mkt)
-                             : american_implied_vol(o.mid, S, o.K, T, r, q_eff, o.side, method,
-                                                    iv_tol, iv_max_iter, al_opts, correction, warm);
+    Result<double> sig =
+        shortcut ? Ok(o.sigma_mkt)
+                 : (shared_proposal
+                        ? Ok(o.score_sigma_mkt)
+                        : american_implied_vol(o.mid, S, o.K, T, r, q_eff, o.side, method, iv_tol,
+                                               iv_max_iter, al_opts, correction, warm));
     if (!sig.has_value() || !(*sig > kObsIvMin && *sig < kObsIvMax)) {
       reject(ObsRejectionReason::Deamericanization);
       continue;
@@ -613,8 +913,16 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
     // an audited accurate fallback when they miss the budget.
     if (method == AmericanMethod::AndersenLake) {
       const bool trusted_accurate_controls = iv_tol <= 1.0e-7 && iv_max_iter >= 64;
-      if (route == IvRoute::Accurate && !opts.audit_accurate_inversions &&
-          trusted_accurate_controls) {
+      if (shared_proposal) {
+        // W3.1 accuracy-trading route: every lane cleared the embedded 9-vs-5
+        // price estimator and its side cleared three higher-accuracy cold IV
+        // sentinels. Repricing every accepted lane would restore O(strikes)
+        // boundary work and erase the structural gain; the bounded sentinels
+        // are the independent audit for this side.
+        ++proposal_diag.n_audited;
+        ++proposal_diag.n_accepted;
+      } else if (route == IvRoute::Accurate && !opts.audit_accurate_inversions &&
+                 trusted_accurate_controls) {
         ++proposal_diag.n_audited;
         ++proposal_diag.n_accepted;
       } else {

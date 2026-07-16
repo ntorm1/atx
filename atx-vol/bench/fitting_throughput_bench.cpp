@@ -50,25 +50,25 @@
 
 #include <benchmark/benchmark.h>
 
-#include "atx/vol/american.hpp"      // AmericanMethod, american_price
-#include "atx/vol/american_iv.hpp"   // american_implied_vol
-#include "atx/vol/calib.hpp"         // CalibOpts, FitObs, calib_default_opts, build_observations_european
-#include "atx/vol/chain.hpp"         // OptionChain
-#include "atx/vol/correction.hpp"    // CorrectionCache, AmericanCorrectionCaches
-#include "atx/vol/curve.hpp"         // CurveSet, ForwardPoint
-#include "atx/vol/deamer.hpp"        // DeAmOptions
-#include "atx/vol/data.hpp"          // iso_to_ns
-#include "atx/vol/dividend.hpp"      // hybrid_forward, HybridDivParams (real-board forward)
-#include "atx/vol/essvi_calib.hpp"   // essvi_fit_slice, essvi_calib_surface
-#include "atx/vol/market_env.hpp"    // MarketEnv
-#include "atx/vol/panel.hpp"         // make_synthetic_american_panel, SynthPanelSpec
-#include "atx/vol/pricer_fitter.hpp" // PricerFitter, PricerConfig
-#include "atx/vol/spy_fixture.hpp"   // make_spy_synthetic_spec
+#include "atx/vol/american.hpp"    // AmericanMethod, american_price
+#include "atx/vol/american_iv.hpp" // american_implied_vol
+#include "atx/vol/calib.hpp" // CalibOpts, FitObs, calib_default_opts, build_observations_european
+#include "atx/vol/chain.hpp" // OptionChain
+#include "atx/vol/correction.hpp"     // CorrectionCache, AmericanCorrectionCaches
+#include "atx/vol/curve.hpp"          // CurveSet, ForwardPoint
+#include "atx/vol/data.hpp"           // iso_to_ns
+#include "atx/vol/deamer.hpp"         // DeAmOptions
+#include "atx/vol/dividend.hpp"       // hybrid_forward, HybridDivParams (real-board forward)
+#include "atx/vol/essvi_calib.hpp"    // essvi_fit_slice, essvi_calib_surface
+#include "atx/vol/market_env.hpp"     // MarketEnv
+#include "atx/vol/panel.hpp"          // make_synthetic_american_panel, SynthPanelSpec
+#include "atx/vol/pricer_fitter.hpp"  // PricerFitter, PricerConfig
+#include "atx/vol/spy_fixture.hpp"    // make_spy_synthetic_spec
 #include "atx/vol/surface_policy.hpp" // explicit v2 purpose/admission policy
-#include "atx/vol/svi_calib.hpp"     // svi_fit_slice (quasi-explicit raw-SVI)
-#include "atx/vol/types.hpp"         // Side
-#include "atx/vol/universe.hpp"      // Underlying, Chain
-#include "atx/vol/vol_surface.hpp"   // VolSurface, EssviParams, Parametrization
+#include "atx/vol/svi_calib.hpp"      // svi_fit_slice (quasi-explicit raw-SVI)
+#include "atx/vol/types.hpp"          // Side
+#include "atx/vol/universe.hpp"       // Underlying, Chain
+#include "atx/vol/vol_surface.hpp"    // VolSurface, EssviParams, Parametrization
 
 #include "bench_util.hpp"
 #include "support/spy_fit_fixture.hpp" // kSpyFitFixtures, find_spy_fit_parquet, load_spy_fit_fixture
@@ -146,8 +146,7 @@ void BM_SurfaceCold(benchmark::State &state) {
     state.SkipWithError("SPY board build failed");
     return;
   }
-  auto surf_res =
-      VolSurface::create(1u, Parametrization::Essvi, board->under.chains.size());
+  auto surf_res = VolSurface::create(1u, Parametrization::Essvi, board->under.chains.size());
   if (!surf_res.has_value()) {
     state.SkipWithError("VolSurface::create failed");
     return;
@@ -236,8 +235,7 @@ void BM_SurfaceColdReal(benchmark::State &state) {
     state.SkipWithError("real SPY board build failed");
     return;
   }
-  auto surf_res =
-      VolSurface::create(1u, Parametrization::Essvi, board->under.chains.size());
+  auto surf_res = VolSurface::create(1u, Parametrization::Essvi, board->under.chains.size());
   if (!surf_res.has_value()) {
     state.SkipWithError("VolSurface::create failed");
     return;
@@ -373,8 +371,8 @@ void BM_FacadeReal(benchmark::State &state, ConfigFactory config_factory,
   state.counters["degraded"] = degraded ? 1.0 : 0.0;
   state.counters["quotes_per_s"] =
       benchmark::Counter(iterations * quotes, benchmark::Counter::kIsRate);
-  state.counters["slice_fits_per_s"] = benchmark::Counter(
-      iterations * static_cast<double>(slices), benchmark::Counter::kIsRate);
+  state.counters["slice_fits_per_s"] =
+      benchmark::Counter(iterations * static_cast<double>(slices), benchmark::Counter::kIsRate);
 }
 
 void BM_FacadeHftMarkReal(benchmark::State &state) {
@@ -430,12 +428,12 @@ struct BoardCaches {
   constexpr std::uint16_t kNT = 8;
   constexpr std::uint16_t kNS = 12;
   BoardCaches bc;
-  if (auto cc = CorrectionCache::build(kNK, kNT, kNS, board.r, q_rep, k_min, k_max,
-                                       T_min, T_max, kSigMin, kSigMax, Side::Call)) {
+  if (auto cc = CorrectionCache::build(kNK, kNT, kNS, board.r, q_rep, k_min, k_max, T_min, T_max,
+                                       kSigMin, kSigMax, Side::Call)) {
     bc.call = std::move(*cc);
   }
-  if (auto pp = CorrectionCache::build(kNK, kNT, kNS, board.r, q_rep, k_min, k_max,
-                                       T_min, T_max, kSigMin, kSigMax, Side::Put)) {
+  if (auto pp = CorrectionCache::build(kNK, kNT, kNS, board.r, q_rep, k_min, k_max, T_min, T_max,
+                                       kSigMin, kSigMax, Side::Put)) {
     bc.put = std::move(*pp);
   }
   return bc;
@@ -447,15 +445,14 @@ void BM_SurfaceDeAmCold(benchmark::State &state) {
     state.SkipWithError("SPY board build failed");
     return;
   }
-  auto surf_res =
-      VolSurface::create(1u, Parametrization::Essvi, board->under.chains.size());
+  auto surf_res = VolSurface::create(1u, Parametrization::Essvi, board->under.chains.size());
   if (!surf_res.has_value()) {
     state.SkipWithError("VolSurface::create failed");
     return;
   }
   VolSurface surface = *surf_res;
   const CalibOpts opts = calib_default_opts();
-  const DeAmOptions deam{};  // empty caches => cold Andersen-Lake per strike
+  const DeAmOptions deam{}; // empty caches => cold Andersen-Lake per strike
 
   for (auto _ : state) {
     const Status st = essvi_calib_surface(surface, board->under, board->curves, opts,
@@ -477,8 +474,7 @@ void BM_SurfaceDeAmCached(benchmark::State &state) {
     state.SkipWithError("SPY board build failed");
     return;
   }
-  auto surf_res =
-      VolSurface::create(1u, Parametrization::Essvi, board->under.chains.size());
+  auto surf_res = VolSurface::create(1u, Parametrization::Essvi, board->under.chains.size());
   if (!surf_res.has_value()) {
     state.SkipWithError("VolSurface::create failed");
     return;
@@ -535,8 +531,7 @@ struct SliceFixture {
   const double df = board->curves.yield.disc(fx.T);
   fx.opts = calib_default_opts();
 
-  auto obs_res =
-      build_observations_european(c, board->spot, board->r, fx.F, fx.T, df, fx.opts);
+  auto obs_res = build_observations_european(c, board->spot, board->r, fx.F, fx.T, df, fx.opts);
   if (!obs_res.has_value() || obs_res->obs.size() < fx.opts.min_obs_per_slice) {
     return std::nullopt;
   }
@@ -577,8 +572,7 @@ void BM_SliceWarmRefit(benchmark::State &state) {
   const EssviParams warm_seed = *prior;
 
   for (auto _ : state) {
-    const auto fit =
-        essvi_fit_slice(fx->obs, fx->T, fx->F, fx->opts, nullptr, 0.0, &warm_seed);
+    const auto fit = essvi_fit_slice(fx->obs, fx->T, fx->F, fx->opts, nullptr, 0.0, &warm_seed);
     if (!fit.has_value()) {
       state.SkipWithError("essvi_fit_slice (warm) failed");
       break;
@@ -659,8 +653,7 @@ struct IvTarget {
   for (const Expiry &e : expiries) {
     for (double K = 540.0; K <= 660.0 + 1.0e-9; K += 5.0) {
       for (const Side side : {Side::Call, Side::Put}) {
-        const auto price =
-            american_price(kSpot, K, e.T, e.vol, kRate, kBorrow, side);
+        const auto price = american_price(kSpot, K, e.T, e.vol, kRate, kBorrow, side);
         if (!price.has_value()) {
           continue; // skip an unpriceable corner rather than corrupt the batch
         }
@@ -695,8 +688,7 @@ void BM_AmericanIvCold(benchmark::State &state) {
     benchmark::DoNotOptimize(sink);
     benchmark::ClobberMemory();
   }
-  state.SetItemsProcessed(state.iterations() *
-                          static_cast<std::int64_t>(targets.size()));
+  state.SetItemsProcessed(state.iterations() * static_cast<std::int64_t>(targets.size()));
 }
 
 void BM_AmericanIvWarm(benchmark::State &state) {
@@ -710,15 +702,96 @@ void BM_AmericanIvWarm(benchmark::State &state) {
     for (const IvTarget &t : targets) {
       const double warm_start = t.true_vol * (1.0 + 1.0e-3); // realistic live-refresh seed
       const auto iv = american_implied_vol(t.price, t.S, t.K, t.T, t.r, t.q, t.side,
-                                            AmericanMethod::AndersenLake, 1.0e-7, 64,
-                                            std::nullopt, nullptr, warm_start);
+                                           AmericanMethod::AndersenLake, 1.0e-7, 64, std::nullopt,
+                                           nullptr, warm_start);
       sink += iv.has_value() ? *iv : 0.0;
     }
     benchmark::DoNotOptimize(sink);
     benchmark::ClobberMemory();
   }
+  state.SetItemsProcessed(state.iterations() * static_cast<std::int64_t>(targets.size()));
+}
+
+struct SharedDeamFixture {
+  Chain chain;
+  double S{100.0};
+  double T{1.0};
+  double r{0.05};
+  double q{0.02};
+  double F{0.0};
+  double df{0.0};
+};
+
+[[nodiscard]] std::optional<SharedDeamFixture> build_shared_deam_fixture() {
+  SharedDeamFixture fixture;
+  fixture.F = fixture.S * std::exp((fixture.r - fixture.q) * fixture.T);
+  fixture.df = std::exp(-fixture.r * fixture.T);
+  fixture.chain.uid = 9001u;
+  fixture.chain.expiry_id = 1u;
+  fixture.chain.T = fixture.T;
+  fixture.chain.strikes.reserve(96u);
+  for (std::size_t index = 0u; index < 96u; ++index) {
+    fixture.chain.strikes.push_back(72.0 + 56.0 * static_cast<double>(index) / 95.0);
+  }
+  const std::size_t quote_count = 2u * fixture.chain.strikes.size();
+  fixture.chain.bids.assign(quote_count, 0.0);
+  fixture.chain.asks.assign(quote_count, 0.0);
+  fixture.chain.mids.assign(quote_count, 0.0);
+  fixture.chain.ivs.assign(quote_count, std::numeric_limits<double>::quiet_NaN());
+  fixture.chain.bid_sizes.assign(quote_count, 10u);
+  fixture.chain.ask_sizes.assign(quote_count, 10u);
+  fixture.chain.ts_ns.assign(quote_count, 0);
+  fixture.chain.flags.assign(quote_count, 0u);
+  for (std::size_t strike = 0u; strike < fixture.chain.strikes.size(); ++strike) {
+    for (const Side side : {Side::Call, Side::Put}) {
+      const Result<double> price =
+          american_price(fixture.S, fixture.chain.strikes[strike], fixture.T, 0.24, fixture.r,
+                         fixture.q, side, AmericanMethod::AndersenLake, std::nullopt);
+      if (!price || !(*price > 0.0)) {
+        return std::nullopt;
+      }
+      const std::size_t quote = chain_index(static_cast<std::uint16_t>(strike), side);
+      const double half_spread = std::min(0.01, 0.10 * *price);
+      fixture.chain.mids[quote] = *price;
+      fixture.chain.bids[quote] = *price - half_spread;
+      fixture.chain.asks[quote] = *price + half_spread;
+    }
+  }
+  return fixture;
+}
+
+void BM_SharedBoundaryDeam(benchmark::State &state) {
+  const std::optional<SharedDeamFixture> fixture = build_shared_deam_fixture();
+  if (!fixture) {
+    state.SkipWithError("shared-boundary de-Am fixture build failed");
+    return;
+  }
+  CalibOpts opts = calib_default_opts();
+  opts.max_spread_vol = 1.0;
+  opts.min_vega_weight = 0.0;
+  opts.use_shared_boundary_deam = state.range(0) != 0;
+  std::uint32_t shared_lanes = 0u;
+  std::uint32_t boundary_nodes = 0u;
+  std::uint32_t scalar_fallbacks = 0u;
+  for (auto _ : state) {
+    const Result<ObsSet> observations = build_observations_european(
+        fixture->chain, fixture->S, fixture->r, fixture->F, fixture->T, fixture->df, opts, {},
+        std::nullopt, 1.0e-7, 64, AmericanMethod::AndersenLake, false);
+    if (!observations) {
+      state.SkipWithError("shared-boundary de-Am observation build failed");
+      break;
+    }
+    shared_lanes = observations->deam_audit.n_shared_boundary_lanes;
+    boundary_nodes = observations->deam_audit.n_shared_boundary_solves;
+    scalar_fallbacks = observations->deam_audit.n_shared_scalar_fallback_lanes;
+    benchmark::DoNotOptimize(observations->obs.data());
+    benchmark::ClobberMemory();
+  }
+  state.counters["shared_lanes"] = static_cast<double>(shared_lanes);
+  state.counters["boundary_nodes"] = static_cast<double>(boundary_nodes);
+  state.counters["scalar_fallbacks"] = static_cast<double>(scalar_fallbacks);
   state.SetItemsProcessed(state.iterations() *
-                          static_cast<std::int64_t>(targets.size()));
+                          static_cast<std::int64_t>(fixture->chain.n_strikes()));
 }
 
 const int kRegistered = [] {
@@ -740,29 +813,35 @@ const int kRegistered = [] {
         ->Unit(benchmark::kMillisecond)
         ->UseRealTime();
     apply_common(benchmark::RegisterBenchmark("fit/facade/v2_latency_dual_convex/spy_real",
-                                               BM_FacadeV2LatencyDualReal))
+                                              BM_FacadeV2LatencyDualReal))
         ->Unit(benchmark::kMillisecond)
         ->UseRealTime();
   }
   // C2.3 de-Am surface cases: same board + driver as fit/surface_cold, routed
   // through the opt-in de-Americanization path (cold Andersen-Lake vs cached
   // Black-76 + Chebyshev correction). Directly comparable to fit/surface_cold.
-  apply_common(
-      benchmark::RegisterBenchmark("fit/surface_deam_cold/spy_synth", BM_SurfaceDeAmCold))
+  apply_common(benchmark::RegisterBenchmark("fit/surface_deam_cold/spy_synth", BM_SurfaceDeAmCold))
       ->Unit(benchmark::kMicrosecond);
   apply_common(
       benchmark::RegisterBenchmark("fit/surface_deam_cached/spy_synth", BM_SurfaceDeAmCached))
       ->Unit(benchmark::kMicrosecond);
   apply_common(benchmark::RegisterBenchmark("fit/slice_cold/spy_synth", BM_SliceCold))
       ->Unit(benchmark::kMicrosecond);
-  apply_common(
-      benchmark::RegisterBenchmark("fit/slice_warm_refit/spy_synth", BM_SliceWarmRefit))
+  apply_common(benchmark::RegisterBenchmark("fit/slice_warm_refit/spy_synth", BM_SliceWarmRefit))
       ->Unit(benchmark::kMicrosecond);
   apply_common(benchmark::RegisterBenchmark("fit/svi_slice_cold/spy_synth", BM_SviSliceCold))
       ->Unit(benchmark::kMicrosecond);
   apply_common(benchmark::RegisterBenchmark("fit/american_iv/cold", BM_AmericanIvCold))
       ->Unit(benchmark::kMicrosecond);
   apply_common(benchmark::RegisterBenchmark("fit/american_iv/warm", BM_AmericanIvWarm))
+      ->Unit(benchmark::kMicrosecond);
+  apply_common(benchmark::RegisterBenchmark("fit/deam_shared_boundary/scalar_reference",
+                                            BM_SharedBoundaryDeam))
+      ->Arg(0)
+      ->Unit(benchmark::kMicrosecond);
+  apply_common(
+      benchmark::RegisterBenchmark("fit/deam_shared_boundary/retained", BM_SharedBoundaryDeam))
+      ->Arg(1)
       ->Unit(benchmark::kMicrosecond);
   return 0;
 }();

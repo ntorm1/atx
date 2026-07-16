@@ -161,6 +161,12 @@ struct CalibOpts {
   // Seed each call/put inversion from the previous accepted strike of the same
   // side. Disable only to run the cold reference path for an A/B comparison.
   bool warm_start_deam_adjacent_strikes{true};
+  // Share one retained nine-node sigma interpolation of the transformed
+  // Andersen-Lake boundary across a sufficiently wide expiry/side ladder.
+  // An embedded five-node estimator and accurate cold sentinels certify the
+  // side before any proposal is admitted; ineligible or failed lanes remain on
+  // the scalar inverter. Disable for a cold-reference A/B comparison.
+  bool use_shared_boundary_deam{true};
   // 0 = unlimited = current behavior. Positive = cap the number of OTM strikes
   // per expiry that the LEGACY (`LegacyEssviCompatibility`) observation-prep
   // path de-Americanizes. The legacy prep inverts one (cold-ish) Andersen-Lake
@@ -391,6 +397,14 @@ struct DeAmAuditDiagnostics {
   // non-finite restatement) that certification caps by fraction.
   std::uint32_t n_deam_rows{0};
   std::uint32_t n_deam_accepted{0};
+  // W3.1 shared-boundary route. Boundary work is constant per eligible side
+  // (nine build nodes) plus bounded cold sentinels and selective scalar lanes.
+  std::uint32_t n_shared_boundary_lanes{0};
+  std::uint32_t n_shared_call_lanes{0};
+  std::uint32_t n_shared_put_lanes{0};
+  std::uint32_t n_shared_boundary_solves{0};
+  std::uint32_t n_shared_sentinel_reprices{0};
+  std::uint32_t n_shared_scalar_fallback_lanes{0};
 };
 
 // The output of `build_observations`: the surviving rows plus the count of
@@ -460,6 +474,11 @@ struct ObsSet {
 // `al_opts` / `iv_tol` / `iv_max_iter` tune the COLD Andersen-Lake inversion (the
 // path taken when `caches` is empty). They default to the ACCURATE preset
 // (nullopt = al_default_opts, 1e-7 / 64).
+// With `opts.use_shared_boundary_deam`, a sufficiently wide positive-rate,
+// non-short expiry/side uses one retained sigma-boundary interpolant before
+// scalar inversion. An embedded estimator and bounded accurate sentinels must
+// clear the economic price/IV budgets; failed sides and individual lanes fall
+// back to this same scalar path in deterministic source order.
 // The fast-preset served path (session Fast/Hft) passes its `DeAmOptions`
 // al_opts (al_fast_opts) + iv_tol here so the per-strike de-Am honors the SAME
 // fast-cold accuracy as the borrow solve — the surface only needs ~1e-4 price

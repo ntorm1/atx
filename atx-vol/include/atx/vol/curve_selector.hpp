@@ -32,6 +32,8 @@
 
 namespace atx::vol {
 
+struct FitAdmissionPolicy;
+
 namespace detail {
 // Per-kind butterfly violation count for a fitted slice — the exact
 // selection-time mapping `select_curve` applies to every candidate's fitted
@@ -43,8 +45,8 @@ namespace detail {
 // never call this directly. `k_lo`/`k_hi` bound the C8 grid (padded by the
 // caller).
 [[nodiscard]] std::uint32_t slice_butterfly_violations(const IVolCurve &cv, double T, double k_lo,
-                                                        double k_hi) noexcept;
-}  // namespace detail
+                                                       double k_hi) noexcept;
+} // namespace detail
 
 // One candidate's out-of-sample score.
 struct CandidateScore {
@@ -70,11 +72,11 @@ struct CandidateScore {
   // secondary tie-break (after oos_vw, before parsimony DoF). `metrics_valid`
   // is false when the held-out sample was too thin for a reduced chi-square
   // (N <= dof), in which case chi2_reduced does not participate in the tie-break.
-  double chi2_reduced{0.0};          // reduced chi^2 over held-out obs
-  double rmse_vol{0.0};              // held-out vol RMSE
-  double avE5_vol{0.0};              // held-out mean|resid|*1e5
-  std::size_t n_within_band{0};      // held-out obs inside their 1σ error bar
-  bool metrics_valid{false};         // slice_fit_metrics succeeded
+  double chi2_reduced{0.0};     // reduced chi^2 over held-out obs
+  double rmse_vol{0.0};         // held-out vol RMSE
+  double avE5_vol{0.0};         // held-out mean|resid|*1e5
+  std::size_t n_within_band{0}; // held-out obs inside their 1σ error bar
+  bool metrics_valid{false};    // slice_fit_metrics succeeded
   // Butterfly no-arb disqualification: a family whose fitted slice fails its
   // butterfly check (closed-form MM for raw-SVI, grid g-check for C8;
   // by-construction kinds are skipped) is DISQUALIFIED and scores as a
@@ -105,15 +107,31 @@ struct SelectorConfig {
   // Out-of-sample ties within this vega-weighted margin break toward fewer DoF.
   double parsimony_margin{0.004};
   // Whole-call steady-clock budget in milliseconds. Zero is unlimited. The
-  // budget is checked only between fully-scored candidates and cannot stop the
-  // search before at least one candidate satisfies the selector's admission
-  // floors, so it cannot create a budget-only NotFound result.
+  // budget is checked only between fully-scored candidates, so one candidate
+  // is the maximum non-preemptible unit. Expiry preparation is included. If the
+  // first completed candidate is not admissible, the call returns Unavailable
+  // instead of silently ignoring the deadline to search the remaining ladder.
   double time_budget_ms{0.0};
   // Common-key coverage floors. Missing candidate outputs remain missing; they
   // are never removed from the denominator to make the candidate look better.
   double min_expiry_coverage{1.0};
   double min_holdout_coverage{1.0};
+  // The candidate chosen on the common held-out population is rebuilt by its
+  // serving driver before publication. That driver may apply a different
+  // preparation policy, so require it to retain at least a majority of the
+  // board's attempted strike population. The gate is selector-only: direct or
+  // explicitly pinned curves continue to use FitAdmissionPolicy unchanged.
+  double min_served_quote_coverage{0.50};
 };
+
+namespace detail {
+// Tighten (never relax) the caller's publication contract for a family chosen
+// by cross-validation. Kept as a pure seam so the selector-to-serving rebuild
+// cannot silently optimize quality by abstaining on most of the board.
+[[nodiscard]] FitAdmissionPolicy
+selector_served_admission_policy(const FitAdmissionPolicy &base,
+                                 const SelectorConfig &selector) noexcept;
+} // namespace detail
 
 // Deterministic lexicographic rank used by `select_curve`: admission, expiry
 // coverage, held-out-key coverage, OOS quality, then complexity within the
@@ -121,10 +139,17 @@ struct SelectorConfig {
 [[nodiscard]] Result<std::size_t> select_candidate_index(std::span<const CandidateScore> scores,
                                                          double parsimony_margin);
 
-// Default family ladder: convex dense, cache-friendly linear variance, eSSVI,
-// raw SVI, and event-capable C8. High-confidence boards bypass this expensive
-// validation; it is the ambiguity fallback and explicit research mode.
+// Default family ladder: the broad-coverage eSSVI baseline first, then
+// cache-friendly linear variance, convex dense, raw SVI, and event-capable C8.
+// High-confidence boards bypass this expensive validation; it is the ambiguity
+// fallback and explicit research mode.
 [[nodiscard]] std::vector<CurveConfig> default_selector_candidates();
+
+// Bounded production policy for ambiguous boards. Production evaluates only
+// the broad-coverage eSSVI baseline; callers that explicitly request research
+// cross-validation may use SelectorConfig{} (all default candidates, unlimited
+// soft deadline) or provide their own candidate ladder/budget.
+[[nodiscard]] SelectorConfig production_selector_config();
 
 // Pure winner-selection policy over already-scored candidates (Task C2.5). The
 // ordering is: (1) best out-of-sample vega-weighted in-band `oos_vw`; within
@@ -134,14 +159,14 @@ struct SelectorConfig {
 // Candidates that failed to fit (`n_holdout == 0`) or were butterfly-
 // DISQUALIFIED are excluded. Returns the winning index into `scores` (0 when no
 // candidate is scorable — callers gate on that upstream). Deterministic; pure.
-[[nodiscard]] std::size_t
-select_best_candidate(const std::vector<CandidateScore> &scores,
-                      double parsimony_margin) noexcept;
+[[nodiscard]] std::size_t select_best_candidate(const std::vector<CandidateScore> &scores,
+                                                double parsimony_margin) noexcept;
 
 // Choose the best curve config for `under` under `in` (market/carry policy).
 //
 // @return InvalidArgument if S <= 0 / r non-finite / no candidates; NotFound if
-//         no candidate produced a scorable fit on any expiry; otherwise the
+//         no candidate produced a scorable fit on any expiry; Unavailable if a
+//         bounded search expires before one is admissible; otherwise the
 //         selection (with per-candidate diagnostics).
 [[nodiscard]] Result<SelectorResult> select_curve(const Underlying &under,
                                                   const SurfaceParityInputs &in,

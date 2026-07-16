@@ -18,6 +18,7 @@
 #include "atx/vol/arb.hpp"         // arb_check_butterfly_svi_mm, arb_check_butterfly_slice
 #include "atx/vol/deamer.hpp"      // resolve_chain_forward
 #include "atx/vol/fit_metrics.hpp" // slice_fit_metrics, SliceFitMetrics
+#include "atx/vol/fit_policy.hpp"  // FitAdmissionPolicy
 #include "atx/vol/prepared_fitting.hpp"
 #include "atx/vol/universe.hpp"
 
@@ -40,12 +41,23 @@ std::vector<CurveConfig> default_selector_candidates() {
   svi.kind = VolCurveKind::Svi;
   CurveConfig c8;
   c8.kind = VolCurveKind::C8;
-  candidates.push_back(convex);
-  candidates.push_back(linear);
+  // Establish a broad-coverage, low-dimensional baseline first. A bounded
+  // selector can then return a usable eSSVI surface after one completed fit;
+  // the remaining families must demonstrate a real common-population gain.
   candidates.push_back(essvi);
+  candidates.push_back(linear);
+  candidates.push_back(convex);
   candidates.push_back(svi);
   candidates.push_back(c8);
   return candidates;
+}
+
+SelectorConfig production_selector_config() {
+  SelectorConfig config;
+  CurveConfig essvi;
+  essvi.kind = VolCurveKind::Essvi;
+  config.candidates.push_back(essvi);
+  return config;
 }
 
 namespace detail {
@@ -57,8 +69,7 @@ namespace detail {
 // just reported), and 0 for the by-construction / out-of-scope kinds
 // (ConvexDense, eSSVI, LinearVariance). `k_lo`/`k_hi` bound the C8 grid (padded
 // by the caller).
-[[nodiscard]] std::uint32_t slice_butterfly_violations(const IVolCurve &cv,
-                                                       double T, double k_lo,
+[[nodiscard]] std::uint32_t slice_butterfly_violations(const IVolCurve &cv, double T, double k_lo,
                                                        double k_hi) noexcept {
   switch (cv.kind()) {
   case VolCurveKind::Svi: {
@@ -66,14 +77,14 @@ namespace detail {
     return arb_check_butterfly_svi_mm(sp, T).n_violations;
   }
   case VolCurveKind::C8: {
-    const auto bf = arb_check_butterfly_slice(
-        [&cv](double kk) { return cv.w(kk); }, T, k_lo, k_hi, 64u);
+    const auto bf =
+        arb_check_butterfly_slice([&cv](double kk) { return cv.w(kk); }, T, k_lo, k_hi, 64u);
     return bf.has_value() ? static_cast<std::uint32_t>(bf->size()) : 0u;
   }
   case VolCurveKind::ConvexDense:
   case VolCurveKind::Essvi:
   case VolCurveKind::LinearVariance:
-    return 0u;  // by-construction arb-free (LinearVariance g-check out of scope)
+    return 0u; // by-construction arb-free (LinearVariance g-check out of scope)
   case VolCurveKind::SplineVol: {
     const auto &sv = static_cast<const SplineVolCurve &>(cv);
     const std::size_t n = sv.params().n_butterfly_viol;
@@ -85,7 +96,7 @@ namespace detail {
   return 0u;
 }
 
-}  // namespace detail
+} // namespace detail
 
 namespace {
 
@@ -100,6 +111,29 @@ struct Accum {
   std::vector<double> iv_model, iv_mkt, bid, ask, vega;
   std::uint32_t n_butterfly_viol{0u};
   bool disqualified{false};
+
+  void reserve(std::size_t count) {
+    iv_model.reserve(count);
+    iv_mkt.reserve(count);
+    bid.reserve(count);
+    ask.reserve(count);
+    vega.reserve(count);
+  }
+
+  void reset() noexcept {
+    n = 0u;
+    in_band = 0u;
+    win = 0.0;
+    dof_sum = 0u;
+    n_slices = 0u;
+    iv_model.clear();
+    iv_mkt.clear();
+    bid.clear();
+    ask.clear();
+    vega.clear();
+    n_butterfly_viol = 0u;
+    disqualified = false;
+  }
 };
 
 struct PreparedExpiry {
@@ -108,8 +142,12 @@ struct PreparedExpiry {
   double q_eff{0.0};
   double df{0.0};
   PreparedSlice slice{};
-  std::vector<std::size_t> strike_order{};
+  std::vector<FitObs> fit_rows{};
+  std::vector<std::size_t> holdout_rows{};
   std::size_t n_required_holdout{0u};
+  double required_vega_weight{0.0};
+  double fit_k_lo{0.0};
+  double fit_k_hi{0.0};
 };
 
 [[nodiscard]] bool valid_expiry_rates(const SurfaceParityInputs &in,
@@ -218,16 +256,34 @@ prepare_expiry(const Underlying &under, const SurfaceParityInputs &in, std::size
   out.df = df;
   out.slice = std::move(*prepared);
   const std::span<const FitObs> rows = out.slice.fit_observations();
-  out.strike_order.resize(rows.size());
-  std::iota(out.strike_order.begin(), out.strike_order.end(), std::size_t{0u});
+  std::vector<std::size_t> strike_order(rows.size());
+  std::iota(strike_order.begin(), strike_order.end(), std::size_t{0u});
   std::stable_sort(
-      out.strike_order.begin(), out.strike_order.end(),
+      strike_order.begin(), strike_order.end(),
       [rows](std::size_t left, std::size_t right) { return rows[left].K < rows[right].K; });
+  out.fit_rows.reserve((rows.size() + 1u) / 2u);
+  out.holdout_rows.reserve(rows.size() / 2u);
   const PreparedScoreColumns &score = out.slice.score_columns();
-  for (std::size_t p = 1u; p < out.strike_order.size(); p += 2u) {
-    const std::size_t row = out.strike_order[p];
-    if (score.bid[row] > 0.0 && score.ask[row] > score.bid[row]) {
-      ++out.n_required_holdout;
+  for (std::size_t p = 0u; p < strike_order.size(); ++p) {
+    const std::size_t row_index = strike_order[p];
+    if ((p % 2u) == 0u) {
+      out.fit_rows.push_back(rows[row_index]);
+      continue;
+    }
+    if (!(score.bid[row_index] > 0.0) || !(score.ask[row_index] > score.bid[row_index])) {
+      continue;
+    }
+    out.holdout_rows.push_back(row_index);
+    ++out.n_required_holdout;
+    const double vega = rows[row_index].vega;
+    out.required_vega_weight += vega > 0.0 ? vega * vega : 0.0;
+  }
+  if (!out.fit_rows.empty()) {
+    out.fit_k_lo = out.fit_rows.front().k;
+    out.fit_k_hi = out.fit_rows.front().k;
+    for (const FitObs &row : out.fit_rows) {
+      out.fit_k_lo = std::min(out.fit_k_lo, row.k);
+      out.fit_k_hi = std::max(out.fit_k_hi, row.k);
     }
   }
   return out;
@@ -250,6 +306,18 @@ constexpr double kChi2Tol = 1.0e-9; // fall through to DoF when chi2 ~equal
 
 } // namespace
 
+namespace detail {
+
+FitAdmissionPolicy selector_served_admission_policy(const FitAdmissionPolicy &base,
+                                                    const SelectorConfig &selector) noexcept {
+  FitAdmissionPolicy effective = base;
+  effective.min_quote_coverage =
+      std::max(effective.min_quote_coverage, selector.min_served_quote_coverage);
+  return effective;
+}
+
+} // namespace detail
+
 Result<std::size_t> select_candidate_index(std::span<const CandidateScore> scores,
                                            double parsimony_margin) {
   if (scores.empty() || !std::isfinite(parsimony_margin) || parsimony_margin < 0.0) {
@@ -261,11 +329,10 @@ Result<std::size_t> select_candidate_index(std::span<const CandidateScore> score
   for (std::size_t i = 0u; i < scores.size(); ++i) {
     const CandidateScore &candidate = scores[i];
     if (!candidate.admitted || candidate.disqualified ||
-        !std::isfinite(candidate.expiry_coverage) ||
-        !std::isfinite(candidate.holdout_coverage) || !std::isfinite(candidate.oos_vw) ||
-        candidate.expiry_coverage < 0.0 || candidate.expiry_coverage > 1.0 ||
-        candidate.holdout_coverage < 0.0 || candidate.holdout_coverage > 1.0 ||
-        candidate.oos_vw < 0.0 || candidate.oos_vw > 1.0) {
+        !std::isfinite(candidate.expiry_coverage) || !std::isfinite(candidate.holdout_coverage) ||
+        !std::isfinite(candidate.oos_vw) || candidate.expiry_coverage < 0.0 ||
+        candidate.expiry_coverage > 1.0 || candidate.holdout_coverage < 0.0 ||
+        candidate.holdout_coverage > 1.0 || candidate.oos_vw < 0.0 || candidate.oos_vw > 1.0) {
       continue;
     }
     if (candidate.expiry_coverage > max_expiry_coverage) {
@@ -307,8 +374,7 @@ Result<std::size_t> select_candidate_index(std::span<const CandidateScore> score
       continue;
     }
     if (average_dof(candidate) < average_dof(incumbent) ||
-        (average_dof(candidate) == average_dof(incumbent) &&
-         candidate.oos_vw > incumbent.oos_vw)) {
+        (average_dof(candidate) == average_dof(incumbent) && candidate.oos_vw > incumbent.oos_vw)) {
       best = i;
     }
   }
@@ -377,7 +443,9 @@ Result<SelectorResult> select_curve(const Underlying &under, const SurfaceParity
   if (!std::isfinite(sel.min_expiry_coverage) || sel.min_expiry_coverage < 0.0 ||
       sel.min_expiry_coverage > 1.0 || !std::isfinite(sel.min_holdout_coverage) ||
       sel.min_holdout_coverage < 0.0 || sel.min_holdout_coverage > 1.0 ||
-      !std::isfinite(sel.time_budget_ms) || sel.time_budget_ms < 0.0) {
+      !std::isfinite(sel.min_served_quote_coverage) || sel.min_served_quote_coverage < 0.0 ||
+      sel.min_served_quote_coverage > 1.0 || !std::isfinite(sel.time_budget_ms) ||
+      sel.time_budget_ms < 0.0) {
     return Err(ErrorCode::InvalidArgument, "select_curve: invalid coverage floor");
   }
   std::vector<CurveConfig> candidates =
@@ -428,16 +496,7 @@ Result<SelectorResult> select_curve(const Underlying &under, const SurfaceParity
       continue;
     }
     required_holdout += expiry->n_required_holdout;
-    const std::span<const FitObs> rows = expiry->slice.fit_observations();
-    const PreparedScoreColumns &score = expiry->slice.score_columns();
-    for (std::size_t p = 1u; p < expiry->strike_order.size(); p += 2u) {
-      const std::size_t row_index = expiry->strike_order[p];
-      if (!(score.bid[row_index] > 0.0) || !(score.ask[row_index] > score.bid[row_index])) {
-        continue;
-      }
-      const double vega = rows[row_index].vega;
-      required_vega_weight += vega > 0.0 ? vega * vega : 0.0;
-    }
+    required_vega_weight += expiry->required_vega_weight;
     prepared.push_back(std::move(*expiry));
   }
   if (prepared.empty() || required_holdout == 0u) {
@@ -446,27 +505,23 @@ Result<SelectorResult> select_curve(const Underlying &under, const SurfaceParity
 
   out.scores.reserve(candidates.size());
   bool has_admitted_candidate = false;
+  Accum accum;
+  accum.reserve(required_holdout);
   for (const CurveConfig &candidate : candidates) {
-    if (sel.time_budget_ms > 0.0 && has_admitted_candidate) {
-      const double elapsed_ms =
-          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
-                                                    selector_start)
-              .count();
+    if (sel.time_budget_ms > 0.0 && !out.scores.empty()) {
+      const double elapsed_ms = std::chrono::duration<double, std::milli>(
+                                    std::chrono::steady_clock::now() - selector_start)
+                                    .count();
       if (elapsed_ms >= sel.time_budget_ms) {
         out.budget_exhausted = true;
         break;
       }
     }
-    Accum accum;
+    accum.reset();
     for (const PreparedExpiry &expiry : prepared) {
       const std::span<const FitObs> rows = expiry.slice.fit_observations();
-      std::vector<FitObs> fit_rows;
-      fit_rows.reserve((rows.size() + 1u) / 2u);
-      for (std::size_t p = 0u; p < expiry.strike_order.size(); p += 2u) {
-        fit_rows.push_back(rows[expiry.strike_order[p]]);
-      }
       Result<std::unique_ptr<IVolCurve>> fitted = fit_slice_curve(
-          candidate, fit_rows, expiry.slice.forward(), expiry.slice.maturity(), expiry.df);
+          candidate, expiry.fit_rows, expiry.slice.forward(), expiry.slice.maturity(), expiry.df);
       if (!fitted) {
         continue;
       }
@@ -478,27 +533,17 @@ Result<SelectorResult> select_curve(const Underlying &under, const SurfaceParity
       // family with any butterfly-violating fitted slice scores as a
       // fit-failure. Grid bounds for the C8 check are the fitted strikes padded
       // by 0.5 in log-moneyness (matches the fit_slice_curve gate).
-      double fit_k_lo = fit_rows.front().k;
-      double fit_k_hi = fit_rows.front().k;
-      for (const FitObs &o : fit_rows) {
-        fit_k_lo = std::min(fit_k_lo, o.k);
-        fit_k_hi = std::max(fit_k_hi, o.k);
-      }
       const std::uint32_t nv = detail::slice_butterfly_violations(
-          curve, expiry.slice.maturity(), fit_k_lo - 0.5, fit_k_hi + 0.5);
+          curve, expiry.slice.maturity(), expiry.fit_k_lo - 0.5, expiry.fit_k_hi + 0.5);
       accum.n_butterfly_viol += nv;
       if (nv > 0u) {
         accum.disqualified = true;
       }
 
       const PreparedScoreColumns &score = expiry.slice.score_columns();
-      for (std::size_t p = 1u; p < expiry.strike_order.size(); p += 2u) {
-        const std::size_t row_index = expiry.strike_order[p];
+      for (const std::size_t row_index : expiry.holdout_rows) {
         const double bid = score.bid[row_index];
         const double ask = score.ask[row_index];
-        if (!(bid > 0.0) || !(ask > bid)) {
-          continue;
-        }
         const FitObs &observation = rows[row_index];
         const double model_iv = curve.iv(observation.k);
         if (!std::isfinite(model_iv)) {
@@ -573,8 +618,12 @@ Result<SelectorResult> select_curve(const Underlying &under, const SurfaceParity
     }
     out.scores.push_back(score);
     ++out.scores_evaluated;
-    has_admitted_candidate =
-        has_admitted_candidate || (score.admitted && !score.disqualified);
+    has_admitted_candidate = has_admitted_candidate || (score.admitted && !score.disqualified);
+  }
+
+  if (out.budget_exhausted && !has_admitted_candidate) {
+    return Err(ErrorCode::Unavailable,
+               "select_curve: time budget expired before an admitted candidate");
   }
 
   ATX_TRY(const std::size_t chosen, select_candidate_index(out.scores, sel.parsimony_margin));

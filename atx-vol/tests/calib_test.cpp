@@ -413,6 +413,7 @@ TEST(BuildObservationsEuropean, AdjacentWarmStartsReduceWorkInsideEconomicErrorB
     opts.max_spread_vol = 1.0;
     opts.min_vega_weight = 0.0;
     opts.warm_start_deam_adjacent_strikes = warm_start;
+    opts.use_shared_boundary_deam = false; // isolate the adjacent-seed A/B
     atx::vol::counters::lightweight::reset();
     const auto before = atx::vol::counters::lightweight::snapshot();
     auto observations =
@@ -451,6 +452,127 @@ TEST(BuildObservationsEuropean, AdjacentWarmStartsReduceWorkInsideEconomicErrorB
   ASSERT_GT(warm_work.american_iv_samples, 1u);
   EXPECT_LT(warm_work.residual_evaluations_in_sampled_iv,
             cold_work.residual_evaluations_in_sampled_iv);
+}
+
+TEST(BuildObservationsEuropean, SharedSigmaBoundaryPreservesEconomicsWithConstantNodeWork) {
+  constexpr double T = 1.0;
+  constexpr double r = 0.05;
+  constexpr double q = 0.02;
+  const double F = 100.0 * std::exp((r - q) * T);
+  const double df = std::exp(-r * T);
+  std::vector<double> strikes;
+  strikes.reserve(96u);
+  for (std::size_t index = 0; index < 96u; ++index) {
+    strikes.push_back(72.0 + 56.0 * static_cast<double>(index) / 95.0);
+  }
+  const Chain chain = make_american_chain(strikes, T, r, q, 0.24);
+
+  CalibOpts reference_opts = calib_default_opts();
+  reference_opts.max_spread_vol = 1.0;
+  reference_opts.min_vega_weight = 0.0;
+  reference_opts.use_shared_boundary_deam = false;
+  atx::vol::counters::reset();
+  const auto reference =
+      build_observations_european(chain, 100.0, r, F, T, df, reference_opts, {}, std::nullopt,
+                                  1.0e-7, 64, AmericanMethod::AndersenLake, false);
+  const auto reference_work = atx::vol::counters::snapshot();
+  ASSERT_TRUE(reference.has_value()) << reference.error().to_string();
+
+  CalibOpts shared_opts = reference_opts;
+  shared_opts.use_shared_boundary_deam = true;
+  atx::vol::counters::reset();
+  const auto shared =
+      build_observations_european(chain, 100.0, r, F, T, df, shared_opts, {}, std::nullopt, 1.0e-7,
+                                  64, AmericanMethod::AndersenLake, false);
+  const auto shared_work = atx::vol::counters::snapshot();
+  ASSERT_TRUE(shared.has_value()) << shared.error().to_string();
+
+  ASSERT_EQ(shared->obs.size(), reference->obs.size());
+  ASSERT_EQ(shared->provenance.size(), reference->provenance.size());
+  for (std::size_t index = 0; index < shared->obs.size(); ++index) {
+    const FitObs &actual = shared->obs[index];
+    const FitObs &expected = reference->obs[index];
+    EXPECT_EQ(actual.source_strike_index, expected.source_strike_index);
+    EXPECT_EQ(actual.side, expected.side);
+    const double iv_error = std::fabs(actual.sigma_mkt - expected.sigma_mkt);
+    const double price_error = std::fabs(actual.mid - expected.mid);
+    const double economic_price_budget = std::min(0.005, 0.1 * expected.vega * 1.0e-4);
+    EXPECT_LE(iv_error, 1.0e-4);
+    EXPECT_LE(price_error, economic_price_budget);
+    EXPECT_LT(price_error, 0.5 * expected.spread);
+  }
+  for (std::size_t index = 0; index < shared->provenance.size(); ++index) {
+    EXPECT_EQ(shared->provenance[index].source_strike_index,
+              reference->provenance[index].source_strike_index);
+    EXPECT_EQ(shared->provenance[index].side, reference->provenance[index].side);
+    EXPECT_EQ(shared->provenance[index].rejection, reference->provenance[index].rejection);
+  }
+
+  const DeAmAuditDiagnostics &audit = shared->deam_audit;
+  EXPECT_GT(audit.n_shared_boundary_lanes, 0u);
+  EXPECT_GT(audit.n_shared_call_lanes, 0u);
+  EXPECT_GT(audit.n_shared_put_lanes, 0u);
+  EXPECT_EQ(audit.n_shared_boundary_solves, 18u);
+  EXPECT_GT(audit.n_shared_sentinel_reprices, 0u);
+  EXPECT_LE(audit.n_shared_sentinel_reprices, 6u);
+  EXPECT_LT(audit.n_shared_scalar_fallback_lanes, audit.n_deam_rows);
+  EXPECT_GE(audit.accurate.n_proposed, audit.n_shared_boundary_lanes);
+  EXPECT_EQ(audit.accurate.n_accepted, audit.accurate.n_proposed);
+  EXPECT_EQ(audit.accurate.n_audited, audit.accurate.n_accepted);
+  EXPECT_TRUE(deam_inversion_certified(audit, 0.10));
+  if constexpr (atx::vol::counters::counters_enabled()) {
+    EXPECT_LT(shared_work.get(atx::vol::counters::Counter::BoundarySolves),
+              reference_work.get(atx::vol::counters::Counter::BoundarySolves));
+  }
+  atx::vol::counters::reset();
+}
+
+TEST(BuildObservationsEuropean, SharedSigmaBoundaryKeepsShortTenorOnScalarPath) {
+  constexpr double T = 2.0 / 365.25;
+  constexpr double r = 0.05;
+  constexpr double q = 0.02;
+  const double F = 100.0 * std::exp((r - q) * T);
+  const double df = std::exp(-r * T);
+  std::vector<double> strikes;
+  strikes.reserve(48u);
+  for (std::size_t index = 0; index < 48u; ++index) {
+    strikes.push_back(94.0 + 12.0 * static_cast<double>(index) / 47.0);
+  }
+  const Chain chain = make_american_chain(strikes, T, r, q, 0.30);
+  CalibOpts opts = calib_default_opts();
+  opts.max_spread_vol = 5.0;
+  opts.min_vega_weight = 0.0;
+  opts.use_shared_boundary_deam = true;
+
+  const auto result = build_observations_european(chain, 100.0, r, F, T, df, opts, {}, std::nullopt,
+                                                  1.0e-7, 64, AmericanMethod::AndersenLake, false);
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  EXPECT_EQ(result->deam_audit.n_shared_boundary_lanes, 0u);
+  EXPECT_EQ(result->deam_audit.n_shared_boundary_solves, 0u);
+  EXPECT_EQ(result->deam_audit.accurate.n_accepted, result->obs.size());
+}
+
+TEST(BuildObservationsEuropean, SharedSigmaBoundaryKeepsNegativeRatesOnScalarPath) {
+  constexpr double T = 1.0;
+  constexpr double r = -0.01;
+  constexpr double q = 0.02;
+  const double F = 100.0 * std::exp((r - q) * T);
+  const double df = std::exp(-r * T);
+  std::vector<double> strikes;
+  strikes.reserve(48u);
+  for (std::size_t index = 0; index < 48u; ++index) {
+    strikes.push_back(78.0 + 44.0 * static_cast<double>(index) / 47.0);
+  }
+  const Chain chain = make_american_chain(strikes, T, r, q, 0.24);
+  CalibOpts opts = calib_default_opts();
+  opts.max_spread_vol = 5.0;
+  opts.min_vega_weight = 0.0;
+
+  const auto result = build_observations_european(chain, 100.0, r, F, T, df, opts, {}, std::nullopt,
+                                                  1.0e-7, 64, AmericanMethod::AndersenLake, false);
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  EXPECT_EQ(result->deam_audit.n_shared_boundary_lanes, 0u);
+  EXPECT_EQ(result->deam_audit.n_shared_boundary_solves, 0u);
 }
 
 TEST(BuildObservationsEuropean, UltraShortTenorBypassesShortcut) {
@@ -539,6 +661,7 @@ TEST(ObsAccepted, NonPositiveDiscount_ReturnsInvalidArgument) {
 TEST(CalibOpts, DefaultOpts_MatchCLibraryValues) {
   const CalibOpts o = calib_default_opts();
   EXPECT_TRUE(o.warm_start_deam_adjacent_strikes);
+  EXPECT_TRUE(o.use_shared_boundary_deam);
   EXPECT_FALSE(o.audit_accurate_inversions);
 
   EXPECT_EQ(o.max_outer_iter, 4u);

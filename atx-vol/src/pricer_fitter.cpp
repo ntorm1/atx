@@ -637,6 +637,10 @@ Status PricerFitter::fit(const OptionChain &chain,
 
     const Underlying &under = chain.underlying();
     const CurveConfig primary_curve = in.curve;
+    const FitAdmissionPolicy publication_admission =
+        next_selection.has_value()
+            ? detail::selector_served_admission_policy(cfg_.admission, cfg_.selector)
+            : cfg_.admission;
     SurfaceBuildReport report;
     report.primary_curve = primary_curve;
     std::optional<VolaSession> admitted_session;
@@ -648,7 +652,7 @@ Status PricerFitter::fit(const OptionChain &chain,
       report.attempts.push_back(failed_attempt_report(under, in.curve, built.error()));
     } else {
       SurfaceBuildAttemptReport attempt =
-          completed_attempt_report(under, in.curve, *built, cfg_.admission);
+          completed_attempt_report(under, in.curve, *built, publication_admission);
       const bool admitted = attempt.admission.admitted;
       report.attempts.push_back(std::move(attempt));
       if (admitted) {
@@ -671,7 +675,7 @@ Status PricerFitter::fit(const OptionChain &chain,
           continue;
         }
         SurfaceBuildAttemptReport attempt =
-            completed_attempt_report(under, in.curve, *retry, cfg_.admission);
+            completed_attempt_report(under, in.curve, *retry, publication_admission);
         const bool admitted = attempt.admission.admitted;
         report.attempts.push_back(std::move(attempt));
         if (!admitted) {

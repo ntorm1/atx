@@ -5,25 +5,26 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <string>
 #include <vector>
 
-#include "atx/vol/american.hpp"        // american_price, AmericanMethod
+#include "atx/vol/american.hpp" // american_price, AmericanMethod
 #include "atx/vol/chain.hpp"
-#include "atx/vol/curve_selector.hpp"  // CandidateScore, select_candidate_index, select_curve
-#include "atx/vol/dividend.hpp"        // hybrid_forward, HybridDivParams, DividendEvent
+#include "atx/vol/curve_selector.hpp" // CandidateScore, select_candidate_index, select_curve
+#include "atx/vol/dividend.hpp"       // hybrid_forward, HybridDivParams, DividendEvent
 #include "atx/vol/fit_policy.hpp"
 #include "atx/vol/panel.hpp"
 #include "atx/vol/spy_fixture.hpp"
-#include "atx/vol/vol_curve.hpp"       // VolCurveKind, CurveConfig
+#include "atx/vol/vol_curve.hpp" // VolCurveKind, CurveConfig
 
 namespace {
 
 using atx::vol::CandidateScore;
 using atx::vol::FitAdmissionPolicy;
-using atx::vol::SurfaceAdmissionEvidence;
 using atx::vol::ParityDiagnosticState;
-using atx::vol::SurfaceAdmissionReason;
 using atx::vol::select_best_candidate;
+using atx::vol::SurfaceAdmissionEvidence;
+using atx::vol::SurfaceAdmissionReason;
 using atx::vol::VolCurveKind;
 
 TEST(CurveSelector, FullCommonKeyCoverageBeatsEasyPartialCandidate) {
@@ -66,6 +67,38 @@ TEST(CurveSelector, RefusesToChooseWhenNoCandidateMeetsCommonKeyAdmission) {
   const auto selected = atx::vol::select_candidate_index(scores, 0.004);
   ASSERT_FALSE(selected.has_value());
   EXPECT_EQ(selected.error().code(), atx::core::ErrorCode::NotFound);
+}
+
+TEST(CurveSelector, ServedCoverageFloorRejectsNarrowFamilySpecificRebuild) {
+  atx::vol::FitAdmissionPolicy base;
+  base.min_quote_coverage = 0.25;
+  atx::vol::SelectorConfig selector;
+  selector.min_served_quote_coverage = 0.50;
+
+  const atx::vol::FitAdmissionPolicy effective =
+      atx::vol::detail::selector_served_admission_policy(base, selector);
+  EXPECT_DOUBLE_EQ(effective.min_quote_coverage, 0.50);
+  base.min_quote_coverage = 0.75;
+  EXPECT_DOUBLE_EQ(
+      atx::vol::detail::selector_served_admission_policy(base, selector).min_quote_coverage, 0.75);
+
+  SurfaceAdmissionEvidence evidence;
+  evidence.attempted_expiries = 1u;
+  evidence.fitted_expiries = 1u;
+  evidence.attempted_quotes = 100u;
+  evidence.fitted_quotes = 47u;
+  evidence.front_expiry_fitted = true;
+  evidence.parity_state = ParityDiagnosticState::Disabled;
+  evidence.finite_iv_domain = true;
+  evidence.european_price_bounds = true;
+  const auto narrow = atx::vol::evaluate_surface_admission(evidence, effective);
+  EXPECT_TRUE(
+      atx::vol::has_admission_failure(narrow, SurfaceAdmissionReason::InsufficientQuoteCoverage));
+
+  evidence.fitted_quotes = 89u;
+  const auto broad = atx::vol::evaluate_surface_admission(evidence, effective);
+  EXPECT_FALSE(
+      atx::vol::has_admission_failure(broad, SurfaceAdmissionReason::InsufficientQuoteCoverage));
 }
 
 TEST(CurveSelector, ParsimonyMarginIsAnchoredToGlobalQualityLeader) {
@@ -191,10 +224,9 @@ using atx::vol::Chain;
 using atx::vol::chain_index;
 using atx::vol::CurveConfig;
 using atx::vol::default_selector_candidates;
-using atx::vol::detail::slice_butterfly_violations;
 using atx::vol::DividendEvent;
-using atx::vol::HybridDivParams;
 using atx::vol::hybrid_forward;
+using atx::vol::HybridDivParams;
 using atx::vol::select_curve;
 using atx::vol::SelectorConfig;
 using atx::vol::Side;
@@ -202,12 +234,13 @@ using atx::vol::SplineVolCurve;
 using atx::vol::SplineVolParams;
 using atx::vol::SurfaceParityInputs;
 using atx::vol::Underlying;
+using atx::vol::detail::slice_butterfly_violations;
 
 // A scorable candidate with the fields the policy reads. `dof_sum`/`n_slices`
 // give avg DoF = dof_sum/n_slices.
-[[nodiscard]] CandidateScore mk(VolCurveKind kind, double oos_vw, double chi2,
-                                bool metrics_valid, std::size_t dof_sum,
-                                std::size_t n_slices, bool disqualified = false) {
+[[nodiscard]] CandidateScore mk(VolCurveKind kind, double oos_vw, double chi2, bool metrics_valid,
+                                std::size_t dof_sum, std::size_t n_slices,
+                                bool disqualified = false) {
   CandidateScore s;
   s.kind = kind;
   s.oos_vw = oos_vw;
@@ -215,7 +248,7 @@ using atx::vol::Underlying;
   s.metrics_valid = metrics_valid;
   s.dof_sum = dof_sum;
   s.n_slices = n_slices;
-  s.n_holdout = 100;  // scorable
+  s.n_holdout = 100; // scorable
   s.disqualified = disqualified;
   return s;
 }
@@ -245,7 +278,7 @@ constexpr double kBumpRate = 0.03;
 [[nodiscard]] Chain make_bumpy_chain(double T, int n_strikes) {
   Chain c;
   c.T = T;
-  c.expiry_ns = static_cast<std::int64_t>(T * 3.1536e16);  // ACT/365-ish, ns/yr
+  c.expiry_ns = static_cast<std::int64_t>(T * 3.1536e16); // ACT/365-ish, ns/yr
 
   const std::vector<DividendEvent> no_divs;
   const double F = hybrid_forward(kBumpSpot, kBumpRate, /*borrow=*/0.0, T, no_divs, c.expiry_ns,
@@ -305,7 +338,7 @@ constexpr double kBumpRate = 0.03;
   SurfaceParityInputs in{};
   in.S = kBumpSpot;
   in.r = kBumpRate;
-  in.deam.imply_borrow = false;  // borrow fixed at 0 -- see make_bumpy_chain
+  in.deam.imply_borrow = false; // borrow fixed at 0 -- see make_bumpy_chain
   in.deam.borrow_fixed = 0.0;
   return in;
 }
@@ -315,8 +348,8 @@ TEST(CurveSelector, TieBreaksOnChiSquareClosestToOne) {
   // parsimony tie band and has chi^2 much closer to 1 (even at higher DoF).
   // The chi^2 tie-break runs BEFORE parsimony, so B wins.
   std::vector<CandidateScore> scores;
-  scores.push_back(mk(VolCurveKind::Essvi, 0.900, 2.5, true, 20, 4));  // dof 5
-  scores.push_back(mk(VolCurveKind::C8, 0.899, 1.1, true, 32, 4));     // dof 8
+  scores.push_back(mk(VolCurveKind::Essvi, 0.900, 2.5, true, 20, 4)); // dof 5
+  scores.push_back(mk(VolCurveKind::C8, 0.899, 1.1, true, 32, 4));    // dof 8
   EXPECT_EQ(select_best_candidate(scores, kMargin), 1u);
 }
 
@@ -334,8 +367,8 @@ TEST(CurveSelector, ParsimonyBreaksTieWhenChiSquareUnavailable) {
   // Equal oos_vw, neither has valid metrics (chi^2 does not participate): the
   // tie falls through to fewer average DoF — the parsimonious family wins.
   std::vector<CandidateScore> scores;
-  scores.push_back(mk(VolCurveKind::C8, 0.900, 0.0, false, 32, 4));      // dof 8
-  scores.push_back(mk(VolCurveKind::Essvi, 0.900, 0.0, false, 12, 4));   // dof 3
+  scores.push_back(mk(VolCurveKind::C8, 0.900, 0.0, false, 32, 4));    // dof 8
+  scores.push_back(mk(VolCurveKind::Essvi, 0.900, 0.0, false, 12, 4)); // dof 3
   EXPECT_EQ(select_best_candidate(scores, kMargin), 1u);
 }
 
@@ -366,6 +399,7 @@ TEST(SelectorBudget, UnlimitedDefaultEvaluatesEveryCandidate) {
   EXPECT_FALSE(selected->budget_exhausted);
   EXPECT_EQ(selected->scores_evaluated, selected->scores.size());
   EXPECT_EQ(selected->scores.size(), default_selector_candidates().size());
+  EXPECT_EQ(default_selector_candidates().front().kind, VolCurveKind::Essvi);
 }
 
 TEST(SelectorBudget, ExpiredBudgetStopsOnlyBetweenCompletedCandidates) {
@@ -390,7 +424,7 @@ TEST(SelectorBudget, ExpiredBudgetStopsOnlyBetweenCompletedCandidates) {
   EXPECT_EQ(selected->chosen.kind, VolCurveKind::Essvi);
 }
 
-TEST(SelectorBudget, ExpiredBudgetCannotStarveFirstSelectableCandidate) {
+TEST(SelectorBudget, ExpiredBudgetDoesNotRunPastAnUnselectableCandidate) {
   const Underlying under = make_bumpy_underlying();
   const SurfaceParityInputs in = bumpy_inputs();
 
@@ -406,17 +440,20 @@ TEST(SelectorBudget, ExpiredBudgetCannotStarveFirstSelectableCandidate) {
   config.time_budget_ms = 0.001;
 
   const auto selected = select_curve(under, in, config);
-  ASSERT_TRUE(selected.has_value()) << selected.error().to_string();
-  EXPECT_TRUE(selected->budget_exhausted);
-  EXPECT_EQ(selected->scores_evaluated, 2u);
-  EXPECT_EQ(selected->scores.size(), 2u);
-  EXPECT_EQ(selected->chosen_index, 1u);
-  EXPECT_EQ(selected->chosen.kind, VolCurveKind::Essvi);
+  ASSERT_FALSE(selected.has_value());
+  EXPECT_EQ(selected.error().code(), atx::core::ErrorCode::Unavailable);
+  EXPECT_NE(selected.error().message().find("time budget"), std::string::npos);
 }
 
 TEST(SelectorBudget, RejectsNegativeBudget) {
   SelectorConfig config;
   config.time_budget_ms = -1.0;
+  EXPECT_FALSE(select_curve(make_bumpy_underlying(), bumpy_inputs(), config).has_value());
+}
+
+TEST(CurveSelector, RejectsInvalidServedCoverageFloor) {
+  SelectorConfig config;
+  config.min_served_quote_coverage = 1.01;
   EXPECT_FALSE(select_curve(make_bumpy_underlying(), bumpy_inputs(), config).has_value());
 }
 
@@ -457,19 +494,19 @@ TEST(CurveSelector, SplineCandidateFlagOffIsBitIdenticalToBaseline) {
   const Underlying under = make_bumpy_underlying();
   const SurfaceParityInputs in = bumpy_inputs();
 
-  SelectorConfig sel_off;  // candidates empty -> default_selector_candidates()
+  SelectorConfig sel_off; // candidates empty -> default_selector_candidates()
   auto out_off = select_curve(under, in, sel_off);
   ASSERT_TRUE(out_off.has_value()) << out_off.error().to_string();
   ASSERT_EQ(out_off->scores.size(), 5u);
 
   std::vector<CurveConfig> six = default_selector_candidates();
   ASSERT_EQ(six.size(), 5u);
-  six[0].spline_candidate = true;  // opt-in lives on ANY candidate's config
+  six[0].spline_candidate = true; // opt-in lives on ANY candidate's config
   SelectorConfig sel_on;
   sel_on.candidates = six;
   auto out_on = select_curve(under, in, sel_on);
   ASSERT_TRUE(out_on.has_value()) << out_on.error().to_string();
-  ASSERT_EQ(out_on->scores.size(), 6u);  // the 5 + appended SplineVol
+  ASSERT_EQ(out_on->scores.size(), 6u); // the 5 + appended SplineVol
 
   for (std::size_t i = 0; i < 5; ++i) {
     const CandidateScore &a = out_off->scores[i];
@@ -550,7 +587,7 @@ TEST(CurveSelector, SplineCandidateCarriesRequesterFitOpts) {
   CurveConfig essvi;
   essvi.kind = VolCurveKind::Essvi;
   essvi.spline_candidate = true;
-  essvi.spline.min_obs = 1000;  // unreachable by the fixture's held-in split
+  essvi.spline.min_obs = 1000; // unreachable by the fixture's held-in split
   SelectorConfig sel_on;
   sel_on.candidates = {essvi};
   auto out_on = select_curve(under, in, sel_on);

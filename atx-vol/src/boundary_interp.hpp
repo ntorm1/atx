@@ -23,8 +23,8 @@
 
 #include <cstdint>
 
-#include "american_boundary.hpp"  // amer:: boundary structs + solve/price seam
-#include "atx/vol/american.hpp"   // AlOpts
+#include "american_boundary.hpp" // amer:: boundary structs + solve/price seam
+#include "atx/vol/american.hpp"  // AlOpts
 
 namespace atx::vol::detail {
 
@@ -35,8 +35,8 @@ namespace atx::vol::detail {
 // rescales to the queried strike, and runs the premium quadrature. Mutable eval
 // scratch => NOT thread-safe; construct one per slice (like AloPricer).
 class SigmaBoundaryInterp {
- public:
-  static constexpr unsigned kSigmaMax = 16;  // hard cap on n_σ
+public:
+  static constexpr unsigned kSigmaMax = 16; // hard cap on n_σ
 
   SigmaBoundaryInterp() = default;
 
@@ -45,9 +45,9 @@ class SigmaBoundaryInterp {
   // Chebyshev-Lobatto nodes. Returns false (caller falls back to cold) when the
   // box is degenerate, n_sigma is out of range, the regime is non-American, or
   // any node solve fails.
-  [[nodiscard]] bool build(double Kp_ref, double T, double rp, double qp,
-                           double sigma_lo, double sigma_hi, std::uint16_t n_sigma,
-                           const amer::AlScheme& sch) noexcept;
+  [[nodiscard]] bool build(double Kp_ref, double T, double rp, double qp, double sigma_lo,
+                           double sigma_hi, std::uint16_t n_sigma,
+                           const amer::AlScheme &sch) noexcept;
 
   [[nodiscard]] bool ok() const noexcept { return ok_; }
 
@@ -57,14 +57,20 @@ class SigmaBoundaryInterp {
   // only the σ interpolation approximates). Allocation-free.
   [[nodiscard]] double price_internal_put(double Sp, double Kp, double sigma) noexcept;
 
+  // Lower-order price estimator using the even nodes of an odd-sized Lobatto
+  // grid (9 -> embedded 5) without another boundary solve. The caller compares
+  // it with price_internal_put() and accepts interpolation only when their gap
+  // clears its economic error budget. Returns NaN when no embedded grid exists.
+  [[nodiscard]] double price_internal_put_embedded(double Sp, double Kp, double sigma) noexcept;
+
   [[nodiscard]] double sigma_lo() const noexcept { return sigma_lo_; }
   [[nodiscard]] double sigma_hi() const noexcept { return sigma_hi_; }
   [[nodiscard]] std::uint16_t n_sigma() const noexcept { return n_sigma_; }
 
- private:
+private:
   amer::AlScheme sch_{};
-  amer::AlWorkspace ws_{};      // price-quad binding (captured from a node solve)
-  amer::AlBoundary scratch_{};  // node structure (z/wbary/x/tau/n/T) + eval y[]
+  amer::AlWorkspace ws_{};     // price-quad binding (captured from a node solve)
+  amer::AlBoundary scratch_{}; // node structure (z/wbary/x/tau/n/T) + eval y[]
   double T_ = 0.0;
   double rp_ = 0.0;
   double qp_ = 0.0;
@@ -73,10 +79,10 @@ class SigmaBoundaryInterp {
   std::uint16_t n_sigma_ = 0;
   std::uint16_t n_boundary_ = 0;
   bool ok_ = false;
-  double sz_[kSigmaMax] = {};  // σ Chebyshev-Lobatto z-nodes in [-1, 1]
-  double sw_[kSigmaMax] = {};  // 2nd-kind barycentric weights for the σ grid
+  double sz_[kSigmaMax] = {}; // σ Chebyshev-Lobatto z-nodes in [-1, 1]
+  double sw_[kSigmaMax] = {}; // 2nd-kind barycentric weights for the σ grid
   // series_[k * kSigmaMax + s] = dimensionless y[k] at σ-node s.
   double series_[amer::kAlMaxNodes * kSigmaMax] = {};
 };
 
-}  // namespace atx::vol::detail
+} // namespace atx::vol::detail

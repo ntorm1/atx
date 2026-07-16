@@ -5,9 +5,9 @@
 #include <optional>
 #include <span>
 
-#include "atx/core/math.hpp"      // atx::core::clamp
-#include "atx/vol/black76.hpp"    // black76_price (European legs)
-#include "american_boundary.hpp"  // amer:: seam
+#include "american_boundary.hpp" // amer:: seam
+#include "atx/core/math.hpp"     // atx::core::clamp
+#include "atx/vol/black76.hpp"   // black76_price (European legs)
 
 namespace atx::vol {
 
@@ -39,8 +39,8 @@ inline constexpr double kPi = 3.14159265358979323846;
 
 // 2nd-kind barycentric Lagrange interpolation of y[] on nodes z[] with weights
 // w[], evaluated at zq. IDENTICAL scheme to american.cpp's al_cheb_eval_t<0>.
-[[nodiscard]] double bary_eval(const double* z, const double* w, const double* y,
-                               unsigned n, double zq) noexcept {
+[[nodiscard]] double bary_eval(const double *z, const double *w, const double *y, unsigned n,
+                               double zq) noexcept {
   if (n == 0) {
     return 0.0;
   }
@@ -61,9 +61,37 @@ inline constexpr double kPi = 3.14159265358979323846;
   return num / den;
 }
 
+// An odd Lobatto grid contains a lower-order Lobatto grid at its even indices
+// (9 nodes contain 5). Recompute the embedded grid's alternating weights: the
+// full grid's even-index weights are not the embedded grid's weights.
+[[nodiscard]] double bary_eval_embedded_even(const double *z, const double *y, unsigned n,
+                                             double zq) noexcept {
+  if (n < 3 || (n & 1u) == 0u) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  const unsigned embedded_n = (n + 1u) / 2u;
+  double num = 0.0;
+  double den = 0.0;
+  for (unsigned j = 0; j < embedded_n; ++j) {
+    const unsigned i = 2u * j;
+    const double dz = zq - z[i];
+    if (dz == 0.0) {
+      return y[i];
+    }
+    double weight = (j & 1u) != 0u ? -1.0 : 1.0;
+    if (j == 0u || j + 1u == embedded_n) {
+      weight *= 0.5;
+    }
+    const double quotient = weight / dz;
+    num += quotient * y[i];
+    den += quotient;
+  }
+  return num / den;
+}
+
 // Shared message for the double-continuation corner the ALO scheme cannot price
 // (matches american.cpp's kDoubleContinuationMsg).
-constexpr const char* kDoubleContinuationMsg =
+constexpr const char *kDoubleContinuationMsg =
     "double-continuation regime (put q < r <= 0 / call r < q <= 0): the "
     "single-boundary Andersen-Lake scheme cannot represent two exercise "
     "boundaries; see Andersen-Lake 2021 (double-boundary case)";
@@ -72,13 +100,12 @@ constexpr const char* kDoubleContinuationMsg =
 // andersen_lake American arm (same amer:: primitives, same clamp order). Used as
 // the reference AND the ColdFallback path. Returns nullopt on a boundary
 // collapse / table-missing (caller surfaces the error).
-[[nodiscard]] std::optional<double> cold_internal_put(double Sp, double Kp, double T,
-                                                      double sigma, double rp, double qp,
-                                                      const amer::AlScheme& sch) noexcept {
+[[nodiscard]] std::optional<double> cold_internal_put(double Sp, double Kp, double T, double sigma,
+                                                      double rp, double qp,
+                                                      const amer::AlScheme &sch) noexcept {
   amer::AlBoundary bnd{};
   amer::AlWorkspace ws{};
-  const amer::AlSolveStatus st =
-      amer::al_solve_put_boundary(Kp, T, sigma, rp, qp, sch, bnd, ws);
+  const amer::AlSolveStatus st = amer::al_solve_put_boundary(Kp, T, sigma, rp, qp, sch, bnd, ws);
   if (st != amer::AlSolveStatus::Ok) {
     return std::nullopt;
   }
@@ -88,13 +115,10 @@ constexpr const char* kDoubleContinuationMsg =
 // Core of both public slice routes. `is_call` selects the McDonald-Schroder
 // internal-put mapping; the regime/degenerate short-circuits are done by the
 // callers (this runs only for the American regime, T > 0).
-[[nodiscard]] Status slice_sigma_impl(bool is_call, double S,
-                                      std::span<const double> strikes,
-                                      std::span<const double> sigmas, double T,
-                                      double r, double q, std::span<double> price_out,
-                                      const SigmaInterpOptions& sopts,
-                                      const std::optional<AlOpts>& opts,
-                                      SigmaSliceStats* stats) {
+[[nodiscard]] Status slice_sigma_impl(bool is_call, double S, std::span<const double> strikes,
+                                      std::span<const double> sigmas, double T, double r, double q,
+                                      std::span<double> price_out, const SigmaInterpOptions &sopts,
+                                      const std::optional<AlOpts> &opts, SigmaSliceStats *stats) {
   const std::size_t n = strikes.size();
   const amer::AlScheme sch = amer::scheme_from_opts(opts);
 
@@ -130,10 +154,9 @@ constexpr const char* kDoubleContinuationMsg =
 
   // ── build the interpolant (only when it can pay: flag on, T not near-expiry,
   // a non-degenerate box, and more strikes than σ-nodes) ──────────────────
-  const bool box_ok = std::isfinite(sig_lo) && std::isfinite(sig_hi) &&
-                      (sig_hi - sig_lo) > 1.0e-9;
-  const bool want_interp = sopts.use_sigma_boundary_interp && (T >= sopts.min_tau) &&
-                           box_ok && (n > sopts.n_sigma);
+  const bool box_ok = std::isfinite(sig_lo) && std::isfinite(sig_hi) && (sig_hi - sig_lo) > 1.0e-9;
+  const bool want_interp =
+      sopts.use_sigma_boundary_interp && (T >= sopts.min_tau) && box_ok && (n > sopts.n_sigma);
   SigmaBoundaryInterp interp;
   bool interp_ok = false;
   if (want_interp) {
@@ -160,8 +183,8 @@ constexpr const char* kDoubleContinuationMsg =
       continue;
     }
 
-    const bool route_interp = interp_ok && (sig >= sopts.min_sigma) &&
-                              (sig >= sig_lo - 1.0e-12) && (sig <= sig_hi + 1.0e-12);
+    const bool route_interp = interp_ok && (sig >= sopts.min_sigma) && (sig >= sig_lo - 1.0e-12) &&
+                              (sig <= sig_hi + 1.0e-12);
     if (route_interp) {
       price_out[i] = interp.price_internal_put(Sp, Kp, sig);
       ++st.n_interp;
@@ -176,7 +199,7 @@ constexpr const char* kDoubleContinuationMsg =
     }
     price_out[i] = *px;
     ++st.n_cold_fallback;
-    ++st.n_boundary_solves;  // a genuine cold solve
+    ++st.n_boundary_solves; // a genuine cold solve
   }
 
   if (stats != nullptr) {
@@ -185,19 +208,19 @@ constexpr const char* kDoubleContinuationMsg =
   return Ok();
 }
 
-}  // namespace
+} // namespace
 
 namespace detail {
 
-bool SigmaBoundaryInterp::build(double Kp_ref, double T, double rp, double qp,
-                                double sigma_lo, double sigma_hi, std::uint16_t n_sigma,
-                                const amer::AlScheme& sch) noexcept {
+bool SigmaBoundaryInterp::build(double Kp_ref, double T, double rp, double qp, double sigma_lo,
+                                double sigma_hi, std::uint16_t n_sigma,
+                                const amer::AlScheme &sch) noexcept {
   ok_ = false;
   if (!(T > 1.0e-12) || !(sigma_hi > sigma_lo) || n_sigma < 2 || n_sigma > kSigmaMax) {
     return false;
   }
   if (!(amer::al_xmax_put(Kp_ref, rp, qp) > 0.0)) {
-    return false;  // non-American regime — no asymptotic boundary
+    return false; // non-American regime — no asymptotic boundary
   }
   sch_ = sch;
   T_ = T;
@@ -230,7 +253,7 @@ bool SigmaBoundaryInterp::build(double Kp_ref, double T, double rp, double qp,
       return false;
     }
     if (!captured) {
-      scratch_ = bnd;  // K-independent node structure (z/wbary/x/tau/n/T)
+      scratch_ = bnd; // K-independent node structure (z/wbary/x/tau/n/T)
       captured = true;
     }
     for (unsigned k = 0; k < n_boundary_; ++k) {
@@ -259,16 +282,28 @@ double SigmaBoundaryInterp::price_internal_put(double Sp, double Kp, double sigm
   return amer::al_put_price_from_boundary(scratch_, ws_, Sp, Kp, T_, sigma, rp_, qp_);
 }
 
-}  // namespace detail
+double SigmaBoundaryInterp::price_internal_put_embedded(double Sp, double Kp,
+                                                        double sigma) noexcept {
+  if (!ok_ || n_sigma_ < 3u || (n_sigma_ & 1u) == 0u || sigma < sigma_lo_ || sigma > sigma_hi_) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  const double z = 2.0 * (sigma - sigma_lo_) / (sigma_hi_ - sigma_lo_) - 1.0;
+  for (unsigned k = 0; k < n_boundary_; ++k) {
+    scratch_.y[k] = bary_eval_embedded_even(sz_, &series_[k * kSigmaMax], n_sigma_, z);
+  }
+  scratch_.K = Kp;
+  scratch_.xmax = amer::al_xmax_put(Kp, rp_, qp_);
+  return amer::al_put_price_from_boundary(scratch_, ws_, Sp, Kp, T_, sigma, rp_, qp_);
+}
+
+} // namespace detail
 
 // ── Public opt-in slice routes ───────────────────────────────────────────
 
 Status andersen_lake_put_slice_sigma(double S, std::span<const double> strikes,
-                                     std::span<const double> sigmas, double T, double r,
-                                     double q, std::span<double> price_out,
-                                     const SigmaInterpOptions& sopts,
-                                     const std::optional<AlOpts>& opts,
-                                     SigmaSliceStats* stats) {
+                                     std::span<const double> sigmas, double T, double r, double q,
+                                     std::span<double> price_out, const SigmaInterpOptions &sopts,
+                                     const std::optional<AlOpts> &opts, SigmaSliceStats *stats) {
   if (!(S > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "andersen_lake_put_slice_sigma: S must be > 0");
   }
@@ -292,8 +327,7 @@ Status andersen_lake_put_slice_sigma(double S, std::span<const double> strikes,
     }
   }
   if (!(std::isfinite(r) && std::isfinite(q))) {
-    return Err(ErrorCode::InvalidArgument,
-               "andersen_lake_put_slice_sigma: r and q must be finite");
+    return Err(ErrorCode::InvalidArgument, "andersen_lake_put_slice_sigma: r and q must be finite");
   }
   const std::size_t n = strikes.size();
 
@@ -312,33 +346,30 @@ Status andersen_lake_put_slice_sigma(double S, std::span<const double> strikes,
   }
 
   switch (classify_regime(/*rate=*/r, /*yield=*/q)) {
-    case ExerciseRegime::European: {
-      const double F = S * std::exp((r - q) * T);
-      const double df = std::exp(-r * T);
-      for (std::size_t i = 0; i < n; ++i) {
-        const double sig = sigmas[i];
-        price_out[i] = (sig <= 1.0e-8)
-                           ? ((strikes[i] - S) > 0.0 ? strikes[i] - S : 0.0)
-                           : black76_price(F, strikes[i], T, sig, df, Side::Put);
-      }
-      return Ok();
+  case ExerciseRegime::European: {
+    const double F = S * std::exp((r - q) * T);
+    const double df = std::exp(-r * T);
+    for (std::size_t i = 0; i < n; ++i) {
+      const double sig = sigmas[i];
+      price_out[i] = (sig <= 1.0e-8) ? ((strikes[i] - S) > 0.0 ? strikes[i] - S : 0.0)
+                                     : black76_price(F, strikes[i], T, sig, df, Side::Put);
     }
-    case ExerciseRegime::Unsupported:
-      return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
-    case ExerciseRegime::American:
-      break;
+    return Ok();
+  }
+  case ExerciseRegime::Unsupported:
+    return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
+  case ExerciseRegime::American:
+    break;
   }
 
-  return slice_sigma_impl(/*is_call=*/false, S, strikes, sigmas, T, r, q, price_out, sopts,
-                          opts, stats);
+  return slice_sigma_impl(/*is_call=*/false, S, strikes, sigmas, T, r, q, price_out, sopts, opts,
+                          stats);
 }
 
 Status andersen_lake_call_slice_sigma(double S, std::span<const double> strikes,
-                                      std::span<const double> sigmas, double T, double r,
-                                      double q, std::span<double> price_out,
-                                      const SigmaInterpOptions& sopts,
-                                      const std::optional<AlOpts>& opts,
-                                      SigmaSliceStats* stats) {
+                                      std::span<const double> sigmas, double T, double r, double q,
+                                      std::span<double> price_out, const SigmaInterpOptions &sopts,
+                                      const std::optional<AlOpts> &opts, SigmaSliceStats *stats) {
   if (!(S > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "andersen_lake_call_slice_sigma: S must be > 0");
   }
@@ -383,25 +414,24 @@ Status andersen_lake_call_slice_sigma(double S, std::span<const double> strikes,
 
   // Call regime is classified in the internal-put (rate=q, yield=r) terms.
   switch (classify_regime(/*rate=*/q, /*yield=*/r)) {
-    case ExerciseRegime::European: {
-      const double F = S * std::exp((r - q) * T);
-      const double df = std::exp(-r * T);
-      for (std::size_t i = 0; i < n; ++i) {
-        const double sig = sigmas[i];
-        price_out[i] = (sig <= 1.0e-8)
-                           ? ((S - strikes[i]) > 0.0 ? S - strikes[i] : 0.0)
-                           : black76_price(F, strikes[i], T, sig, df, Side::Call);
-      }
-      return Ok();
+  case ExerciseRegime::European: {
+    const double F = S * std::exp((r - q) * T);
+    const double df = std::exp(-r * T);
+    for (std::size_t i = 0; i < n; ++i) {
+      const double sig = sigmas[i];
+      price_out[i] = (sig <= 1.0e-8) ? ((S - strikes[i]) > 0.0 ? S - strikes[i] : 0.0)
+                                     : black76_price(F, strikes[i], T, sig, df, Side::Call);
     }
-    case ExerciseRegime::Unsupported:
-      return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
-    case ExerciseRegime::American:
-      break;
+    return Ok();
+  }
+  case ExerciseRegime::Unsupported:
+    return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
+  case ExerciseRegime::American:
+    break;
   }
 
-  return slice_sigma_impl(/*is_call=*/true, S, strikes, sigmas, T, r, q, price_out, sopts,
-                          opts, stats);
+  return slice_sigma_impl(/*is_call=*/true, S, strikes, sigmas, T, r, q, price_out, sopts, opts,
+                          stats);
 }
 
-}  // namespace atx::vol
+} // namespace atx::vol

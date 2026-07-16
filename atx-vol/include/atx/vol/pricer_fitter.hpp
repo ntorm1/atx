@@ -140,13 +140,15 @@ struct PricerConfig {
   // cross-validation. Auto policy may choose a profile-specific effective
   // preset; set Hft explicitly to retain the legacy hard-pinned dense route.
   FitPreset preset{FitPreset::Robust};
-  // Curve family + per-kind knobs. std::nullopt (the default) => the CurveSelector
-  // searches for the best kind + config for THIS board (out-of-sample
-  // generalization; SPY-dense boards pick ConvexDense, sparse single-name boards
-  // pick the parsimonious eSSVI backbone). Set it explicitly to pin a curve.
+  // Curve family + per-kind knobs. std::nullopt (the default) lets the profile
+  // policy route confident boards and sends ambiguous boards through `selector`.
+  // Set it explicitly to pin a curve.
   std::optional<CurveConfig> curve{};
-  // Search policy used only when `curve` is std::nullopt.
-  SelectorConfig selector{};
+  // Search policy used only when `curve` is std::nullopt. Production defaults
+  // to a single broad-coverage eSSVI candidate, which removes the historical
+  // unbounded five-family search. Explicit research callers may assign
+  // SelectorConfig{} or their own bounded ladder.
+  SelectorConfig selector{production_selector_config()};
   // Unified profile/session/event auto-selection policy and per-snapshot hints.
   FitPolicyConfig policy{};
   FitContext context{};
