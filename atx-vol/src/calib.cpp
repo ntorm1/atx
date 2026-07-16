@@ -495,9 +495,16 @@ void iterate_shared_lanes(std::span<SharedIvLane> lanes, detail::SigmaBoundaryIn
   return true;
 }
 
-[[nodiscard]] std::size_t solve_shared_side(std::vector<FitObs> &observations, Side side, double S,
-                                            double T, detail::SigmaBoundaryInterp &interp,
-                                            double iv_tol, std::uint16_t max_iter,
+// `shortcut_mask` is parallel to `observations`: a non-zero entry marks a row the
+// OTM shortcut has already claimed. Such a row is never opened as a shared lane —
+// the main loop's per-row priority is `shortcut -> shared_proposal -> scalar`, so a
+// lane for it would be solved and then discarded, and its accepted-rank position
+// would displace a real lane from the bounded sentinel certification.
+[[nodiscard]] std::size_t solve_shared_side(std::vector<FitObs> &observations,
+                                            std::span<const std::uint8_t> shortcut_mask, Side side,
+                                            double S, double T,
+                                            detail::SigmaBoundaryInterp &interp, double iv_tol,
+                                            std::uint16_t max_iter,
                                             const CalibOpts &opts) noexcept {
   const double solve_tol = std::min(std::max(iv_tol, 1.0e-9), 2.5e-5);
   std::size_t accepted = 0u;
@@ -506,8 +513,9 @@ void iterate_shared_lanes(std::span<SharedIvLane> lanes, detail::SigmaBoundaryIn
     std::array<SharedIvLane, kSharedLaneCapacity> storage{};
     std::size_t count = 0u;
     while (scan < observations.size() && count < storage.size()) {
-      FitObs &observation = observations[scan++];
-      if (observation.side == side) {
+      const std::size_t index = scan++;
+      FitObs &observation = observations[index];
+      if (observation.side == side && shortcut_mask[index] == 0u) {
         if (!initialize_shared_lane(storage[count], interp, observation, S)) {
           storage[count].observation = nullptr;
         }
@@ -583,15 +591,29 @@ void invalidate_shared_side(std::vector<FitObs> &observations, Side side) noexce
   }
 }
 
-void prepare_shared_boundary_side(std::vector<FitObs> &observations, Side side, double S, double T,
-                                  double r, double q_eff, const CalibOpts &opts,
+void prepare_shared_boundary_side(std::vector<FitObs> &observations,
+                                  std::span<const std::uint8_t> shortcut_mask, Side side, double S,
+                                  double T, double r, double q_eff, const CalibOpts &opts,
                                   const std::optional<AlOpts> &al_opts, double iv_tol,
                                   std::uint16_t iv_max_iter, DeAmAuditDiagnostics &diag) noexcept {
+  // Rows the OTM shortcut has claimed are excluded from the population this
+  // interpolant serves. Two numeric consequences, both intentional:
+  //   * `side_rows` (vs kSharedMinSideRows) now counts only rows that can
+  //     actually become lanes, so the "is this side wide enough to amortise nine
+  //     boundary builds" test is answered about the real beneficiaries rather
+  //     than being inflated by rows that will never touch the interpolant.
+  //   * The [sigma_lo, sigma_hi] bracket is spanned by the non-shortcut seeds
+  //     only. Every lane sets hi = its own sigma_mkt and lo = interp.sigma_lo(),
+  //     so each solve stays inside the built domain; dropping shortcut seeds can
+  //     only tighten that domain, never widen it, which holds or improves the
+  //     nine-node density and hence accuracy. The domain is still certified by
+  //     the unchanged sentinel block below.
   std::size_t side_rows = 0u;
   double min_seed = std::numeric_limits<double>::infinity();
   double max_seed = 0.0;
-  for (const FitObs &observation : observations) {
-    if (observation.side == side) {
+  for (std::size_t index = 0; index < observations.size(); ++index) {
+    const FitObs &observation = observations[index];
+    if (observation.side == side && shortcut_mask[index] == 0u) {
       ++side_rows;
       min_seed = std::min(min_seed, observation.sigma_mkt);
       max_seed = std::max(max_seed, observation.sigma_mkt);
@@ -616,7 +638,7 @@ void prepare_shared_boundary_side(std::vector<FitObs> &observations, Side side, 
   }
   diag.n_shared_boundary_solves += kSharedSigmaNodes;
   const std::size_t accepted =
-      solve_shared_side(observations, side, S, T, interp, iv_tol, iv_max_iter, opts);
+      solve_shared_side(observations, shortcut_mask, side, S, T, interp, iv_tol, iv_max_iter, opts);
   const std::uint32_t sentinels_before = diag.n_shared_sentinel_reprices;
   const bool certified = accepted >= kSharedMinAcceptedRows &&
                          certify_shared_side(observations, side, S, T, r, q_eff, accepted, iv_tol,
@@ -638,8 +660,9 @@ void prepare_shared_boundary_side(std::vector<FitObs> &observations, Side side, 
   }
 }
 
-void prepare_shared_boundary_proposals(std::vector<FitObs> &observations, double S, double T,
-                                       double r, double q_eff, const CalibOpts &opts,
+void prepare_shared_boundary_proposals(std::vector<FitObs> &observations,
+                                       std::span<const std::uint8_t> shortcut_mask, double S,
+                                       double T, double r, double q_eff, const CalibOpts &opts,
                                        const AmericanCorrectionCaches &caches,
                                        const std::optional<AlOpts> &al_opts, double iv_tol,
                                        std::uint16_t iv_max_iter, AmericanMethod method,
@@ -650,19 +673,42 @@ void prepare_shared_boundary_proposals(std::vector<FitObs> &observations, double
   for (FitObs &observation : observations) {
     observation.score_sigma_mkt = kUnscoredIv;
   }
+  // W3.1 wiring. Two former bails are deliberately NOT tested here:
+  //
+  //   * `max_otm_shortcut_premium_spread_frac > 0.0` — the OTM shortcut and the
+  //     shared boundary are per-ROW alternatives, not board-level exclusives.
+  //     Disabling the whole board because SOME rows shortcut left every live
+  //     Hft/Configured board (SPY -> IndexEtfUltraLiquid -> Hft sets 0.50) on the
+  //     scalar inverter. `shortcut_mask` now carves the shortcut's rows out of
+  //     the shared population, so the two routes coexist and the per-row priority
+  //     `shortcut -> shared_proposal -> scalar` is unchanged.
+  //
+  //   * `q_eff < 0.0` — this bailed the whole board, but only the CALL side's
+  //     internal rate IS q_eff. The PUT side's internal regime is (rate = r,
+  //     yield = q_eff), so r > 0 with slightly negative q_eff (a hard-to-borrow
+  //     single name) is a regular single-boundary American-put regime that the
+  //     interpolant models exactly. The per-side `internal_rate > 0.0` test still
+  //     excludes the call side there, and build()'s al_xmax_put(...) > 0.0 test
+  //     excludes any genuinely non-American corner, so the guard was strictly
+  //     redundant for puts and wrong to apply board-wide.
+  //
+  // `r < 0.0` is retained: it flips the PUT side's internal rate negative, where
+  // al_xmax_put(K, r<0, q>=0) == 0 leaves no asymptotic boundary to interpolate.
   if (!opts.use_shared_boundary_deam || opts.audit_accurate_inversions ||
-      opts.anchor_kind != CalibAnchorKind::Mid || opts.max_otm_shortcut_premium_spread_frac > 0.0 ||
-      method != AmericanMethod::AndersenLake || r < 0.0 || q_eff < 0.0 || !(iv_tol > 0.0) ||
-      iv_max_iter == 0u) {
+      opts.anchor_kind != CalibAnchorKind::Mid || method != AmericanMethod::AndersenLake ||
+      r < 0.0 || !(iv_tol > 0.0) || iv_max_iter == 0u) {
     return;
+  }
+  if (shortcut_mask.size() != observations.size()) {
+    return; // fail closed: without the mask a shortcut row could become a lane
   }
   for (const Side side : {Side::Put, Side::Call}) {
     const CorrectionCache *const cache = caches.for_side(side);
     if (cache != nullptr && cache->populated() && cache->side() == side) {
       continue;
     }
-    prepare_shared_boundary_side(observations, side, S, T, r, q_eff, opts, al_opts, iv_tol,
-                                 iv_max_iter, diag);
+    prepare_shared_boundary_side(observations, shortcut_mask, side, S, T, r, q_eff, opts, al_opts,
+                                 iv_tol, iv_max_iter, diag);
   }
 }
 
@@ -839,10 +885,26 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
   const bool warm_start_deam = opts.warm_start_deam_adjacent_strikes;
   double warm_call = 0.0;
   double warm_put = 0.0;
-  prepare_shared_boundary_proposals(am->obs, S, T, r, q_eff, opts, caches, al_opts, iv_tol,
-                                    iv_max_iter, method, out.deam_audit);
+  // Single-sourced OTM-shortcut mask. The predicate depends only on pre-de-Am row
+  // fields, so hoisting it out of the main loop is decision-preserving, and it
+  // must be hoisted: the prepare pass below has to know which rows the shortcut
+  // claims in order to exclude them from the shared population, and the main loop
+  // has to make the identical call when it picks the row's route. Evaluating it
+  // twice would risk divergence (a shortcut row silently promoted to a shared
+  // lane) and would double-count the n_forced_* proposal-guard diagnostics.
+  // Cost is neutral: the loop below used to run exactly this predicate once per
+  // row, and it still runs exactly once per row.
+  std::vector<std::uint8_t> shortcut_mask(am->obs.size(), 0u);
+  for (std::size_t index = 0; index < am->obs.size(); ++index) {
+    shortcut_mask[index] =
+        use_otm_shortcut_deam(am->obs[index], S, T, r, q_eff, opts, method, &out.deam_audit) ? 1u
+                                                                                            : 0u;
+  }
+  prepare_shared_boundary_proposals(am->obs, shortcut_mask, S, T, r, q_eff, opts, caches, al_opts,
+                                    iv_tol, iv_max_iter, method, out.deam_audit);
   std::array<std::vector<double>, 4> audit_residuals;
-  for (FitObs o : am->obs) {
+  for (std::size_t obs_index = 0; obs_index < am->obs.size(); ++obs_index) {
+    FitObs o = am->obs[obs_index];
     const std::size_t source_index = o.source_strike_index;
     if (source_index >= chain.n_strikes() || source_index >= out.provenance.size()) {
       return Err(ErrorCode::Internal,
@@ -853,9 +915,19 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
       out.provenance[source_index].rejection = reason;
     };
     ++out.deam_audit.n_deam_rows;
-    const bool shortcut = use_otm_shortcut_deam(o, S, T, r, q_eff, opts, method, &out.deam_audit);
+    // Same mask the prepare pass consumed — not a re-evaluation. Priority order
+    // is unchanged: shortcut -> shared_proposal -> scalar.
+    const bool shortcut = shortcut_mask[obs_index] != 0u;
     const bool shared_proposal = !shortcut && std::isfinite(o.score_sigma_mkt) &&
                                  o.score_sigma_mkt > kObsIvMin && o.score_sigma_mkt < kObsIvMax;
+    // A shortcut-claimed row must never also be a shared lane. `solve_shared_side`
+    // skips masked rows, so a masked row carrying a shared proposal means the two
+    // consumers disagreed about the mask — the exact divergence single-sourcing
+    // exists to prevent. Fail closed rather than silently preferring a route.
+    if (shortcut && std::isfinite(o.score_sigma_mkt)) {
+      return Err(ErrorCode::Internal,
+                 "build_observations_european: shortcut row carries a shared-boundary proposal");
+    }
     // A Mid fit inversion and its score solve the same equation. Warm-starting
     // can move a tolerance-terminated result by a few ULPs, but that is not an
     // independent economic observation; reuse it. A shortcut has no fit
