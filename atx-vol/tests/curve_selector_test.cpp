@@ -711,19 +711,44 @@ TEST(FitAdmission, DisabledParityIsAllowedOnlyForAnExplicitMarkConsumer) {
   mark.consumer = atx::vol::SurfaceConsumer::Mark;
   EXPECT_TRUE(atx::vol::evaluate_surface_admission(evidence, mark).admitted);
 
+  mark.min_worst_frac_within_bidask = 0.50;
+  const auto quality_gated_mark = atx::vol::evaluate_surface_admission(evidence, mark);
+  EXPECT_FALSE(quality_gated_mark.admitted);
+  EXPECT_TRUE(atx::vol::has_admission_failure(quality_gated_mark,
+                                              SurfaceAdmissionReason::DiagnosticsUnavailable));
+
   FitAdmissionPolicy quote = mark;
+  quote.min_worst_frac_within_bidask = 0.0;
   quote.consumer = atx::vol::SurfaceConsumer::Quote;
   const auto quote_decision = atx::vol::evaluate_surface_admission(evidence, quote);
   EXPECT_FALSE(quote_decision.admitted);
-  EXPECT_TRUE(atx::vol::has_admission_failure(
-      quote_decision, SurfaceAdmissionReason::DiagnosticsUnavailable));
+  EXPECT_TRUE(atx::vol::has_admission_failure(quote_decision,
+                                              SurfaceAdmissionReason::DiagnosticsUnavailable));
 
   FitAdmissionPolicy risk = mark;
   risk.consumer = atx::vol::SurfaceConsumer::Risk;
   const auto risk_decision = atx::vol::evaluate_surface_admission(evidence, risk);
   EXPECT_FALSE(risk_decision.admitted);
-  EXPECT_TRUE(atx::vol::has_admission_failure(
-      risk_decision, SurfaceAdmissionReason::DiagnosticsUnavailable));
+  EXPECT_TRUE(atx::vol::has_admission_failure(risk_decision,
+                                              SurfaceAdmissionReason::DiagnosticsUnavailable));
+}
+
+TEST(FitAdmission, ParityConsumptionCoversConsumerEnablementAndMarkQualityFloor) {
+  FitAdmissionPolicy policy;
+  policy.consumer = atx::vol::SurfaceConsumer::Mark;
+  EXPECT_FALSE(atx::vol::fit_admission_consumes_parity(policy));
+
+  policy.min_worst_frac_within_bidask = 0.50;
+  EXPECT_TRUE(atx::vol::fit_admission_consumes_parity(policy));
+
+  policy.min_worst_frac_within_bidask = 0.0;
+  policy.consumer = atx::vol::SurfaceConsumer::Quote;
+  EXPECT_TRUE(atx::vol::fit_admission_consumes_parity(policy));
+  policy.consumer = atx::vol::SurfaceConsumer::Risk;
+  EXPECT_TRUE(atx::vol::fit_admission_consumes_parity(policy));
+
+  policy.enabled = false;
+  EXPECT_FALSE(atx::vol::fit_admission_consumes_parity(policy));
 }
 
 } // namespace

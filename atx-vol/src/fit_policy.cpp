@@ -127,10 +127,10 @@ SurfaceAdmissionDecision evaluate_surface_admission(const SurfaceAdmissionEviden
     fail(SurfaceAdmissionReason::DuplicateMaturity);
   }
   const bool diagnostics_valid = evidence.parity_state == ParityDiagnosticState::Valid;
-  const bool disabled_mark_diagnostics =
-      policy.consumer == SurfaceConsumer::Mark &&
+  const bool disabled_unconsumed_mark_diagnostics =
+      policy.consumer == SurfaceConsumer::Mark && !fit_admission_consumes_parity(policy) &&
       evidence.parity_state == ParityDiagnosticState::Disabled;
-  if (!diagnostics_valid && !disabled_mark_diagnostics) {
+  if (!diagnostics_valid && !disabled_unconsumed_mark_diagnostics) {
     fail(SurfaceAdmissionReason::DiagnosticsUnavailable);
   }
   if (diagnostics_valid &&

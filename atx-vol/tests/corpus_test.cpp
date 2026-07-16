@@ -1040,6 +1040,38 @@ TEST(QualifiedCorpus, QuarantinedFitStaysReportedAndCannotLeakIntoADateArchive) 
   EXPECT_EQ(*readback, quality);
 }
 
+TEST(QualifiedCorpus, PinnedMarkFitRetainsParityConsumedByActiveQualityRule) {
+  const fs::path out = fresh_out_dir("qualified-pinned-fit-parity");
+  CorpusBoard board = board_from_spec(make_index_spec("SPY", "2026-06-17", 600.0), "2026-06-17",
+                                      "SPY", convex_dense_pin());
+  board.source_provenance_complete = true;
+
+  QualifiedCorpusConfig cfg;
+  cfg.build.fit_template.use_correction_cache = false;
+  cfg.build.fit_template.use_deam_cache_for_fit = false;
+  cfg.admission.enabled = true;
+  CorpusAdmissionRule rule;
+  rule.min_fit_in_band = 0.0;
+  rule.max_mean_vol_rmse = 1.0;
+  rule.max_mean_reduced_chi2 = 1.0e9;
+  rule.require_calendar_arb_free = false;
+  for (CorpusAdmissionRule &profile_rule : cfg.admission.by_profile) {
+    profile_rule = rule;
+  }
+
+  auto built = build_qualified_corpus(std::span<const CorpusBoard>(&board, 1u), out.string(), cfg);
+  ASSERT_TRUE(built.has_value()) << built.error().to_string();
+  ASSERT_EQ(built->quality.entries.size(), 1u);
+  const QualifiedCorpusEntry &entry = built->quality.entries.front();
+  EXPECT_EQ(entry.disposition, CorpusDisposition::Admitted);
+  EXPECT_EQ(entry.primary_reason, CorpusAdmissionReason::None);
+  EXPECT_EQ(entry.failed_checks, 0u);
+  EXPECT_GT(entry.quality.n_fit_scorable, 0u);
+  EXPECT_TRUE(entry.quality.fit_in_band.has_value());
+  EXPECT_TRUE(entry.quality.mean_vol_rmse.has_value());
+  EXPECT_TRUE(entry.quality.mean_reduced_chi2.has_value());
+}
+
 TEST(QualifiedCorpus, SuccessfulOneSidedBoardIsQuarantinedWithExactEvidence) {
   const fs::path out = fresh_out_dir("qualified-one-sided");
   CurveConfig essvi;

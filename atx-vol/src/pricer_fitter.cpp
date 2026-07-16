@@ -527,6 +527,13 @@ Status PricerFitter::fit(const OptionChain &chain,
     in.query_pricing_tier = cfg_.query_pricing_tier;
     if (cfg_.score_parity.has_value()) {
       in.score_parity = *cfg_.score_parity;
+    } else if (fit_admission_consumes_parity(cfg_.admission)) {
+      in.score_parity = true;
+    } else if (cfg_.admission.consumer == SurfaceConsumer::Mark) {
+      // A floor-free Mark admission consumes the fitted curve, not the
+      // re-Americanized quality report. Diagnostic-dependent Mark policies and
+      // Quote/Risk remain scored by default.
+      in.score_parity = false;
     }
     if (cfg_.enforce_calendar_floor.has_value()) {
       in.enforce_calendar_floor = *cfg_.enforce_calendar_floor;
@@ -562,10 +569,12 @@ Status PricerFitter::fit(const OptionChain &chain,
     // Curve config: pinned, profile-direct, or held-out selected for this board.
     if (cfg_.curve.has_value()) {
       in.curve = *cfg_.curve;
+      in.curve_pinned = true;
     } else if (pinned_hft) {
       // Hft's preset-pinned direct market curve avoids both selector candidate
       // fits and the per-expiry dense QP on penny-dense index boards.
       in.curve.kind = VolCurveKind::LinearVariance;
+      in.curve_pinned = true;
     } else if (next_decision.has_value() && !next_decision->needs_cross_validation) {
       // The adaptive knot budget is a policy default, so an explicit
       // cfg_.max_obs_per_slice (already applied above) must win -- its documented
@@ -768,6 +777,13 @@ Status PricerFitter::fit(const OptionChain &chain,
       in.use_correction_cache = *cfg_.use_correction_cache;
     }
     in.query_pricing_tier = cfg_.query_pricing_tier;
+    if (cfg_.score_parity.has_value()) {
+      in.score_parity = *cfg_.score_parity;
+    } else if (fit_admission_consumes_parity(cfg_.admission)) {
+      in.score_parity = true;
+    } else if (cfg_.admission.consumer == SurfaceConsumer::Mark) {
+      in.score_parity = false;
+    }
     if (cfg_.use_deam_cache_for_fit.has_value()) {
       in.use_deam_cache_for_fit = *cfg_.use_deam_cache_for_fit;
     }
@@ -820,6 +836,7 @@ Status PricerFitter::fit(const OptionChain &chain,
         make_session_inputs(FitPreset::Hft, chain.spot(), chain.rate(), chain.now_ns());
     configure_common(mark_in);
     mark_in.curve.kind = VolCurveKind::LinearVariance;
+    mark_in.curve_pinned = true;
     if (session_overlay) {
       session_overlay(mark_in);
     }
@@ -912,6 +929,7 @@ Status PricerFitter::fit(const OptionChain &chain,
         make_session_inputs(FitPreset::Hft, chain.spot(), chain.rate(), chain.now_ns());
     configure_common(mark_in);
     mark_in.curve.kind = VolCurveKind::LinearVariance;
+    mark_in.curve_pinned = true;
     if (session_overlay) {
       session_overlay(mark_in);
     }
@@ -1103,6 +1121,7 @@ Status PricerFitter::fit(const OptionChain &chain,
 
   if (cfg_.curve.has_value()) {
     in.curve = *cfg_.curve;
+    in.curve_pinned = true;
   } else if (decision_.has_value() && !decision_->needs_cross_validation) {
     decision_->curve.parametric = in.calib;
     if (decision_->curve.kind == VolCurveKind::ConvexDense) {

@@ -131,6 +131,21 @@ struct FitAdmissionPolicy {
   bool require_long_tenor{false};
 };
 
+// Whether admission requires the re-Americanized fit diagnostic pass. Quote
+// and Risk fail closed without diagnostics. Mark can omit them only when its
+// bid/ask quality floor is disabled; an invalid floor fails independently and
+// therefore does not need diagnostic evidence to reject.
+[[nodiscard]] constexpr bool
+fit_admission_consumes_parity(const FitAdmissionPolicy &policy) noexcept {
+  if (!policy.enabled) {
+    return false;
+  }
+  if (policy.consumer != SurfaceConsumer::Mark) {
+    return true;
+  }
+  return policy.min_worst_frac_within_bidask > 0.0 && policy.min_worst_frac_within_bidask <= 1.0;
+}
+
 // The strict risk-serving contract: every attempted expiry fitted, the front
 // expiry present, no consecutive expiry gaps, calendar no-arbitrage, and the full
 // Risk-consumer strike/calendar shape invariants (via consumer=Risk in

@@ -263,6 +263,43 @@ struct RefCarry {
   return std::move(*ps);
 }
 
+[[nodiscard]] std::unique_ptr<IVolCurve> make_test_essvi_curve(double T, double F, double df,
+                                                               std::uint16_t expiry_id) {
+  EssviParams e{};
+  e.theta = 0.04 + 0.002 * static_cast<double>(expiry_id);
+  e.phi = 1.25;
+  e.rho = -0.30;
+  e.psi = 0.5;
+  e.p = 0.5;
+  e.lambda = 0.5;
+  e.T = T;
+  e.F = F;
+  e.expiry_id = expiry_id;
+  return std::make_unique<EssviCurve>(e, df);
+}
+
+[[nodiscard]] PricedSurface make_rate_surface(std::uint32_t uid, double pricing_rate,
+                                              const std::array<double, 3> &slice_rates,
+                                              double flat_df_relative_shift = 0.0) {
+  constexpr std::array<double, 3> maturities{0.05, 0.25, 0.75};
+  constexpr double q_eff = 0.015;
+  CurveSurface surface;
+  std::vector<SliceContext> context;
+  context.reserve(maturities.size());
+  for (std::size_t i = 0; i < maturities.size(); ++i) {
+    const double T = maturities[i];
+    const double rate = slice_rates[i];
+    const double forward = kS * std::exp((rate - q_eff) * T);
+    const double df = std::exp(-rate * T) * (1.0 + flat_df_relative_shift);
+    surface.push(make_test_essvi_curve(T, forward, df, static_cast<std::uint16_t>(i)));
+    context.push_back(SliceContext{T, forward, 0.0, q_eff, 200, 5});
+  }
+  auto priced = PricedSurface::create(std::move(surface), std::move(context),
+                                      make_pricing(uid, kS, pricing_rate));
+  EXPECT_TRUE(priced.has_value());
+  return std::move(*priced);
+}
+
 [[nodiscard]] PricedSurface make_convex(std::uint32_t uid, int n, int nodes) {
   CurveSurface cs;
   std::vector<SliceContext> ctx;
@@ -309,6 +346,66 @@ struct Grid {
 }
 
 } // namespace
+
+TEST(CurveSurface, CachedBracketCollapsesExactNodesAndMatchesDirectEvaluation) {
+  const PricedSurface priced = make_essvi(901, 6);
+  const CurveSurface &surface = priced.surface();
+  constexpr double k = 0.075;
+
+  EXPECT_DOUBLE_EQ(surface.w(k, surface.slices()[2]->T()), surface.slices()[2]->w(k));
+  EXPECT_TRUE(std::isfinite(surface.w(k, 0.23)));
+  EXPECT_TRUE(std::isfinite(surface.iv(k, 0.23)));
+  EXPECT_TRUE(std::isfinite(surface.w(k, 0.01)));
+  EXPECT_DOUBLE_EQ(surface.w(k, 2.0), surface.slices().back()->w(k));
+}
+
+TEST(CurveSurface, CloneAndReplaceKeepCachedMaturitiesCoherent) {
+  const PricedSurface priced = make_essvi(902, 4);
+  CurveSurface surface = priced.surface().clone();
+
+  const double original_maturity = surface.slices()[1]->T();
+  EXPECT_DOUBLE_EQ(surface.w(0.0, original_maturity), surface.slices()[1]->w(0.0));
+
+  const Status replaced =
+      surface.replace(1u, make_test_essvi_curve(0.19, kS, std::exp(-kR * 0.19), 42u));
+  ASSERT_TRUE(replaced.has_value());
+  EXPECT_DOUBLE_EQ(surface.w(0.0, 0.19), surface.slices()[1]->w(0.0));
+  EXPECT_TRUE(std::isfinite(surface.w(0.0, original_maturity)));
+}
+
+TEST(PricedSurface, FlatDiscountRoundoffUsesConstantRateBranch) {
+  constexpr double rate = 0.043;
+  const PricedSurface surface = make_rate_surface(903, rate, {rate, rate, rate}, 5.0e-13);
+
+  for (const double T : {0.01, 0.05, 0.14, 0.25, 0.50, 0.75, 1.25}) {
+    EXPECT_DOUBLE_EQ(surface.rate_at(T), rate) << "T=" << T;
+  }
+}
+
+TEST(PricedSurface, GenuineTermDiscountsPreservePillarAndInterpolatedRates) {
+  constexpr double pricing_rate = 0.043;
+  constexpr std::array<double, 3> rates{pricing_rate, 0.0431, 0.0440};
+  const PricedSurface surface = make_rate_surface(904, pricing_rate, rates);
+  const std::span<const SliceContext> context = surface.context();
+
+  for (std::size_t i = 0; i < rates.size(); ++i) {
+    EXPECT_NEAR(surface.rate_at(context[i].T), rates[i], 2.0e-15) << "pillar=" << i;
+  }
+
+  constexpr double query_T = 0.50;
+  constexpr double alpha = (query_T - 0.25) / (0.75 - 0.25);
+  constexpr double expected =
+      (rates[1] * 0.25 + alpha * (rates[2] * 0.75 - rates[1] * 0.25)) / query_T;
+  EXPECT_NEAR(surface.rate_at(query_T), expected, 2.0e-15);
+}
+
+TEST(PricedSurface, TinyDiscountFactorsUseRelativeRatherThanAbsoluteFlatTolerance) {
+  constexpr double pricing_rate = 100.0;
+  constexpr std::array<double, 3> rates{pricing_rate, pricing_rate, pricing_rate + 1.0e-6};
+  const PricedSurface surface = make_rate_surface(905, pricing_rate, rates);
+
+  EXPECT_NEAR(surface.rate_at(0.75), rates.back(), 2.0e-14);
+}
 
 // ── interp_forward equivalence: linear scan vs (post-change) binary search ────
 //

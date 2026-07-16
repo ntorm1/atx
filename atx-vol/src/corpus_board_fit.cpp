@@ -191,6 +191,28 @@ collect_quality(const CorpusBoard &board, const OptionChain &chain, const Pricer
   return quality;
 }
 
+[[nodiscard]] bool consumes_fit_parity(const CorpusAdmissionRule &rule) noexcept {
+  return rule.min_fit_in_band.has_value() || rule.max_mean_vol_rmse.has_value() ||
+         rule.max_mean_reduced_chi2.has_value();
+}
+
+void retain_consumed_fit_parity(const OptionChain &chain, const CorpusAdmissionPolicy *admission,
+                                PricerConfig &cfg) {
+  if (admission == nullptr || !admission->enabled) {
+    return;
+  }
+  const FitDecision decision =
+      select_fit_policy(chain.underlying(), chain.underlying().ticker, cfg.context, cfg.policy);
+  const std::size_t profile_index = static_cast<std::size_t>(decision.profile.kind);
+  if (profile_index < admission->by_profile.size() &&
+      consumes_fit_parity(admission->by_profile[profile_index])) {
+    // The fitter's Mark admission does not consume parity, but qualified-corpus
+    // admission can do so immediately afterward. Make that outer dependency
+    // explicit before the Mark fast-path default elides the diagnostic pass.
+    cfg.score_parity = true;
+  }
+}
+
 } // namespace
 
 std::uint32_t saturated_u32(std::size_t value) noexcept {
@@ -233,6 +255,7 @@ FitSlot fit_board(const CorpusBoard &board, const PricerConfig &tmpl,
     if (board.curve.has_value()) {
       cfg.curve = *board.curve; // per-board pin overrides the template policy
     }
+    retain_consumed_fit_parity(*chain, admission, cfg);
     PricerFitter fitter{cfg};
     const Status st = fitter.fit(*chain, session_overlay);
     if (!st) {

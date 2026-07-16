@@ -491,6 +491,31 @@ struct FixedCacheCarry {
   double q_eff{0.0};
 };
 
+// A selector-routed surface keeps the historical eager cache because a later
+// fallback rung can still publish eSSVI. Once the family is pinned, construction
+// is useful only for the eSSVI fit/serve path, an explicitly fast query tier, or
+// a polymorphic fit that accepts cache proposals. ConvexDense deliberately keeps
+// its fit cold, and LegacyCompatible/ColdReference never serve its override from
+// the representative cache.
+[[nodiscard]] bool should_build_session_caches(const SessionInputs &in) noexcept {
+  if (!in.use_correction_cache) {
+    return false;
+  }
+  if (!in.curve_pinned || in.curve.kind == VolCurveKind::Essvi) {
+    return true;
+  }
+  switch (in.query_pricing_tier) {
+  case QueryPricingTier::LegacyCompatible:
+  case QueryPricingTier::ColdReference:
+    break;
+  case QueryPricingTier::RepresentativeFast:
+  case QueryPricingTier::CarryBank:
+    return true;
+  }
+  return in.use_deam_cache_for_fit && in.expiry_rates.empty() &&
+         in.curve.kind != VolCurveKind::ConvexDense;
+}
+
 // Build both per-side Chebyshev correction caches over the underlying's
 // (k_log, T, sigma) box. A side whose build fails is left empty, so the pipeline
 // transparently falls back to the cold Andersen-Lake path for that side.
@@ -787,7 +812,7 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
   // into the session for the const queries. Empty (build failed / disabled) =>
   // the cold Andersen-Lake path, transparently.
   BuiltCaches caches;
-  if (eff.use_correction_cache) {
+  if (should_build_session_caches(eff)) {
     caches = build_session_caches(under, eff);
     // RepresentativeFast/CarryBank may serve cached corrections, but never use
     // a representative-rate cache to de-Americanize a term-rate fit. The fitted

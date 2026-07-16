@@ -70,8 +70,8 @@ TEST(SimdImpliedVolBatch, RoundTripMatchesInputAndScalar) {
   const std::size_t n = g.size();
   std::vector<double> iv(n, 0.0);
   std::vector<std::uint8_t> ok(n, 0);
-  simd::implied_vol_batch(g.price.data(), g.F.data(), g.K.data(), g.T.data(),
-                          g.df.data(), g.side.data(), iv.data(), ok.data(), n);
+  simd::implied_vol_batch(g.price.data(), g.F.data(), g.K.data(), g.T.data(), g.df.data(),
+                          g.side.data(), iv.data(), ok.data(), n);
 
   // Accepted AVX2 lanes carry the Cheb-Φ σ bias (~1e-9); patched lanes are exact
   // (~1e-12). A combined abs+rel tol of 1e-8 leaves ~10× headroom on both.
@@ -83,8 +83,7 @@ TEST(SimdImpliedVolBatch, RoundTripMatchesInputAndScalar) {
     ASSERT_EQ(ok[i], 1u) << "i=" << i;
     ASSERT_TRUE(std::isfinite(iv[i])) << "i=" << i;
 
-    const Result<double> r = implied_vol(g.price[i], g.F[i], g.K[i], g.T[i],
-                                         g.df[i], g.side[i]);
+    const Result<double> r = implied_vol(g.price[i], g.F[i], g.K[i], g.T[i], g.df[i], g.side[i]);
     ASSERT_TRUE(r.has_value()) << "i=" << i;
 
     const double e_in = std::abs(iv[i] - g.sigma_in[i]);
@@ -93,8 +92,7 @@ TEST(SimdImpliedVolBatch, RoundTripMatchesInputAndScalar) {
     max_vs_scalar = std::max(max_vs_scalar, e_sc);
     EXPECT_LE(e_in, kAbs + kRel * g.sigma_in[i])
         << "i=" << i << " iv=" << iv[i] << " sigma_in=" << g.sigma_in[i];
-    EXPECT_LE(e_sc, kAbs + kRel * std::abs(*r))
-        << "i=" << i << " iv=" << iv[i] << " scalar=" << *r;
+    EXPECT_LE(e_sc, kAbs + kRel * std::abs(*r)) << "i=" << i << " iv=" << iv[i] << " scalar=" << *r;
   }
   EXPECT_LT(max_vs_input, kAbs);
   EXPECT_LT(max_vs_scalar, kAbs);
@@ -128,13 +126,12 @@ TEST(SimdImpliedVolBatch, NoArbViolationsAndDegenerateFlagged) {
   }
   std::vector<double> iv(n, 0.0);
   std::vector<std::uint8_t> ok(n, 7);
-  simd::implied_vol_batch(price.data(), F.data(), K.data(), T.data(), dfv.data(),
-                          side.data(), iv.data(), ok.data(), n);
+  simd::implied_vol_batch(price.data(), F.data(), K.data(), T.data(), dfv.data(), side.data(),
+                          iv.data(), ok.data(), n);
   for (std::size_t i = 0; i < n; ++i) {
     EXPECT_EQ(ok[i], 0u) << "i=" << i;
     // Cross-check the scalar inverter agrees this input has no valid IV.
-    const Result<double> r =
-        implied_vol(price[i], F[i], K[i], T[i], dfv[i], side[i]);
+    const Result<double> r = implied_vol(price[i], F[i], K[i], T[i], dfv[i], side[i]);
     EXPECT_FALSE(r.has_value()) << "i=" << i;
   }
 }
@@ -151,25 +148,28 @@ TEST(SimdImpliedVolBatch, BandEdgePricesMatchScalar) {
   std::vector<double> price, F, K, T, dfv;
   std::vector<Side> side;
   const auto add = [&](double p, double f, double k, Side s) {
-    price.push_back(p); F.push_back(f); K.push_back(k);
-    T.push_back(1.0); dfv.push_back(df); side.push_back(s);
+    price.push_back(p);
+    F.push_back(f);
+    K.push_back(k);
+    T.push_back(1.0);
+    dfv.push_back(df);
+    side.push_back(s);
   };
   // Deep-ITM call/put at (and a hair above) discounted intrinsic, and a hair
   // below the discounted upper bound — the σ→0 and σ→∞ band corners.
-  add(df * (100.0 - 60.0), 100.0, 60.0, Side::Call);          // call at intrinsic
-  add(df * (100.0 - 60.0) + 1e-4, 100.0, 60.0, Side::Call);   // just inside
-  add(df * (90.0 - 40.0), 40.0, 90.0, Side::Put);             // put at intrinsic
-  add(df * 100.0 - 1e-4, 100.0, 60.0, Side::Call);            // near upper bound
-  add(df * (120.0 - 70.0), 120.0, 70.0, Side::Call);          // another ITM lane
+  add(df * (100.0 - 60.0), 100.0, 60.0, Side::Call);        // call at intrinsic
+  add(df * (100.0 - 60.0) + 1e-4, 100.0, 60.0, Side::Call); // just inside
+  add(df * (90.0 - 40.0), 40.0, 90.0, Side::Put);           // put at intrinsic
+  add(df * 100.0 - 1e-4, 100.0, 60.0, Side::Call);          // near upper bound
+  add(df * (120.0 - 70.0), 120.0, 70.0, Side::Call);        // another ITM lane
 
   const std::size_t n = price.size();
   std::vector<double> iv(n, 0.0);
   std::vector<std::uint8_t> ok(n, 0);
-  simd::implied_vol_batch(price.data(), F.data(), K.data(), T.data(), dfv.data(),
-                          side.data(), iv.data(), ok.data(), n);
+  simd::implied_vol_batch(price.data(), F.data(), K.data(), T.data(), dfv.data(), side.data(),
+                          iv.data(), ok.data(), n);
   for (std::size_t i = 0; i < n; ++i) {
-    const Result<double> want =
-        implied_vol(price[i], F[i], K[i], T[i], dfv[i], side[i]);
+    const Result<double> want = implied_vol(price[i], F[i], K[i], T[i], dfv[i], side[i]);
     EXPECT_EQ(ok[i] != 0, want.has_value()) << "i=" << i;
     if (want && ok[i]) {
       EXPECT_DOUBLE_EQ(iv[i], *want) << "i=" << i; // patched ⇒ bit-exact
@@ -183,24 +183,47 @@ TEST(SimdImpliedVolBatch, HandlesEveryTailResidue) {
   for (std::size_t n = 1; n <= 11; ++n) {
     std::vector<double> iv(n, 0.0);
     std::vector<std::uint8_t> ok(n, 0);
-    simd::implied_vol_batch(g.price.data(), g.F.data(), g.K.data(), g.T.data(),
-                            g.df.data(), g.side.data(), iv.data(), ok.data(), n);
+    simd::implied_vol_batch(g.price.data(), g.F.data(), g.K.data(), g.T.data(), g.df.data(),
+                            g.side.data(), iv.data(), ok.data(), n);
     for (std::size_t i = 0; i < n; ++i) {
       EXPECT_EQ(ok[i], 1u) << "n=" << n << " i=" << i;
-      const Result<double> r = implied_vol(g.price[i], g.F[i], g.K[i], g.T[i],
-                                           g.df[i], g.side[i]);
+      const Result<double> r = implied_vol(g.price[i], g.F[i], g.K[i], g.T[i], g.df[i], g.side[i]);
       ASSERT_TRUE(r.has_value()) << "n=" << n << " i=" << i;
-      EXPECT_LE(std::abs(iv[i] - *r), 1e-8 + 1e-8 * std::abs(*r))
-          << "n=" << n << " i=" << i;
+      EXPECT_LE(std::abs(iv[i] - *r), 1e-8 + 1e-8 * std::abs(*r)) << "n=" << n << " i=" << i;
     }
+  }
+}
+
+TEST(SimdImpliedVolBatch, NonCallSideMatchesScalarAcrossBlockAndTail) {
+  constexpr std::size_t kN = 5;
+  const double discount = std::exp(-0.03 * 0.5);
+  const Side non_call = static_cast<Side>(0xffU);
+  const std::vector<double> F(kN, 100.0);
+  const std::vector<double> K(kN, 105.0);
+  const std::vector<double> T(kN, 0.5);
+  const std::vector<double> df(kN, discount);
+  const std::vector<Side> side(kN, non_call);
+  std::vector<double> price(kN);
+  for (std::size_t i = 0; i < kN; ++i) {
+    price[i] = black76_price(F[i], K[i], T[i], 0.25, df[i], non_call);
+  }
+  std::vector<double> iv(kN);
+  std::vector<std::uint8_t> ok(kN);
+  simd::implied_vol_batch(price.data(), F.data(), K.data(), T.data(), df.data(), side.data(),
+                          iv.data(), ok.data(), kN);
+  for (std::size_t i = 0; i < kN; ++i) {
+    const Result<double> scalar = implied_vol(price[i], F[i], K[i], T[i], df[i], non_call);
+    ASSERT_EQ(ok[i] != 0U, scalar.has_value()) << "lane " << i;
+    ASSERT_TRUE(scalar.has_value()) << "lane " << i;
+    EXPECT_LE(std::abs(iv[i] - *scalar), 1.0e-8 + 1.0e-8 * std::abs(*scalar)) << "lane " << i;
   }
 }
 
 TEST(SimdImpliedVolBatch, ZeroLengthIsNoOp) {
   double iv_sentinel = 42.0;
   std::uint8_t ok_sentinel = 9;
-  simd::implied_vol_batch(nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-                          &iv_sentinel, &ok_sentinel, 0);
+  simd::implied_vol_batch(nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &iv_sentinel,
+                          &ok_sentinel, 0);
   EXPECT_EQ(iv_sentinel, 42.0);
   EXPECT_EQ(ok_sentinel, 9u);
 }

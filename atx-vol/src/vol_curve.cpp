@@ -168,60 +168,78 @@ double LinearVarianceCurve::w(double k_log) const noexcept {
 
 void CurveSurface::push(std::unique_ptr<IVolCurve> slice) {
   if (slice != nullptr) {
-    slices_.push_back(std::move(slice));
+    const double maturity = slice->T();
+    maturities_.push_back(maturity);
+    try {
+      slices_.push_back(std::move(slice));
+    } catch (...) {
+      maturities_.pop_back();
+      throw;
+    }
   }
 }
 
-Status CurveSurface::replace(std::size_t index,
-                             std::unique_ptr<IVolCurve> slice) {
+Status CurveSurface::replace(std::size_t index, std::unique_ptr<IVolCurve> slice) {
   if (index >= slices_.size() || slice == nullptr) {
-    return Err(ErrorCode::InvalidArgument,
-               "CurveSurface::replace: invalid index or null slice");
+    return Err(ErrorCode::InvalidArgument, "CurveSurface::replace: invalid index or null slice");
   }
   const double lower_T = index > 0 ? slices_[index - 1]->T() : 0.0;
-  const double upper_T = index + 1 < slices_.size()
-                             ? slices_[index + 1]->T()
-                             : std::numeric_limits<double>::infinity();
+  const double upper_T = index + 1 < slices_.size() ? slices_[index + 1]->T()
+                                                    : std::numeric_limits<double>::infinity();
   if (!(slice->T() > lower_T) || !(slice->T() < upper_T)) {
     return Err(ErrorCode::InvalidArgument,
                "CurveSurface::replace: replacement breaks maturity order");
   }
   slices_[index] = std::move(slice);
+  maturities_[index] = slices_[index]->T();
   return Ok();
 }
 
 CurveSurface CurveSurface::clone() const {
   CurveSurface out;
   out.slices_.reserve(slices_.size());
+  out.maturities_.reserve(maturities_.size());
   for (const std::unique_ptr<IVolCurve> &s : slices_) {
-    out.slices_.push_back(s->clone());
+    out.push(s->clone());
   }
   return out;
 }
 
-CurveSurface::Bracket CurveSurface::locate(double T) const noexcept {
-  const std::size_t n = slices_.size();
-  // Clamp below the first / at-or-above the last; linear-interp between.
-  if (T <= slices_.front()->T()) {
+CurveSurface::Bracket CurveSurface::bracket(double T) const noexcept {
+  const std::size_t n = maturities_.size();
+  if (n == 0 || !(T > maturities_.front())) {
     return Bracket{0, 0, 0.0};
   }
-  if (T >= slices_.back()->T()) {
+  if (T >= maturities_.back()) {
     return Bracket{n - 1, n - 1, 0.0};
   }
-  std::size_t hi = 1;
-  while (hi < n && slices_[hi]->T() < T) {
-    ++hi;
+  const auto upper = std::lower_bound(maturities_.begin() + 1, maturities_.end(), T);
+  const std::size_t hi = static_cast<std::size_t>(upper - maturities_.begin());
+  // Exact-node queries evaluate exactly that slice. Besides avoiding one
+  // virtual call, this prevents an invalid neighbouring slice from poisoning a
+  // valid node through the otherwise-zero interpolation weight.
+  if (*upper == T) {
+    return Bracket{hi, hi, 0.0};
   }
   const std::size_t lo = hi - 1;
-  const double Tlo = slices_[lo]->T();
-  const double Thi = slices_[hi]->T();
+  const double Tlo = maturities_[lo];
+  const double Thi = maturities_[hi];
   const double span = Thi - Tlo;
-  const double frac = span > 0.0 ? (T - Tlo) / span : 0.0;
-  return Bracket{lo, hi, frac};
+  const double upper_weight = span > 0.0 ? (T - Tlo) / span : 0.0;
+  return Bracket{lo, hi, upper_weight};
 }
 
 double CurveSurface::w(double k_log, double T) const noexcept {
   if (slices_.empty() || !(T > 0.0)) {
+    return kNaN;
+  }
+  return w(k_log, T, bracket(T));
+}
+
+double CurveSurface::w(double k_log, double T, Bracket resolved) const noexcept {
+  if (slices_.empty() || !(T > 0.0) || resolved.lo >= slices_.size() ||
+      resolved.hi >= slices_.size() || resolved.lo > resolved.hi ||
+      !(resolved.upper_weight >= 0.0 && resolved.upper_weight <= 1.0)) {
     return kNaN;
   }
   // Short-end model: below the front slice, hold implied vol FLAT at the front
@@ -233,16 +251,15 @@ double CurveSurface::w(double k_log, double T) const noexcept {
     const double w_front = slices_.front()->w(k_log);
     return std::isfinite(w_front) ? w_front * (T / T_front) : kNaN;
   }
-  const Bracket b = locate(T);
-  const double wlo = slices_[b.lo]->w(k_log);
-  if (b.lo == b.hi) {
+  const double wlo = slices_[resolved.lo]->w(k_log);
+  if (resolved.is_single_slice()) {
     return wlo; // long-end: flat total variance beyond the last slice
   }
-  const double whi = slices_[b.hi]->w(k_log);
+  const double whi = slices_[resolved.hi]->w(k_log);
   if (!std::isfinite(wlo) || !std::isfinite(whi)) {
     return kNaN;
   }
-  return (1.0 - b.frac) * wlo + b.frac * whi;
+  return (1.0 - resolved.upper_weight) * wlo + resolved.upper_weight * whi;
 }
 
 double CurveSurface::iv(double k_log, double T) const noexcept {
@@ -253,16 +270,27 @@ double CurveSurface::iv(double k_log, double T) const noexcept {
   return std::sqrt(wk / T);
 }
 
+double CurveSurface::iv(double k_log, double T, Bracket resolved) const noexcept {
+  const double wk = w(k_log, T, resolved);
+  if (!(wk > 0.0) || !(T > 0.0)) {
+    return kNaN;
+  }
+  return std::sqrt(wk / T);
+}
+
 double CurveSurface::forward_at(double T) const noexcept {
   if (slices_.empty()) {
     return 0.0;
   }
-  const Bracket b = locate(T);
+  if (std::isnan(T)) {
+    return kNaN;
+  }
+  const Bracket b = bracket(T);
   const double flo = slices_[b.lo]->F();
-  if (b.lo == b.hi) {
+  if (b.is_single_slice()) {
     return flo;
   }
-  return (1.0 - b.frac) * flo + b.frac * slices_[b.hi]->F();
+  return (1.0 - b.upper_weight) * flo + b.upper_weight * slices_[b.hi]->F();
 }
 
 // ── fit_slice_curve ─────────────────────────────────────────────────────────

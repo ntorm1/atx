@@ -25,6 +25,7 @@
 #include "atx/vol/risk_surface_validation.hpp"
 #include "atx/vol/session.hpp"
 #include "atx/vol/spy_fixture.hpp"
+#include "atx/vol/surface_archive.hpp"
 #include "atx/vol/types.hpp"
 #include "atx/vol/vol_curve.hpp"
 
@@ -751,6 +752,7 @@ TEST_F(PricerFitterTest, GenericParityOptOutCannotPublishRiskButCanPublishMark) 
   PricerConfig risk_config;
   risk_config.preset = FitPreset::Hft;
   risk_config.admission = atx::vol::risk_admission_policy();
+  risk_config.score_parity = false;
   PricerFitter risk_fitter{risk_config};
   const auto risk_status = risk_fitter.fit(*chain_);
   ASSERT_FALSE(risk_status.has_value());
@@ -771,6 +773,52 @@ TEST_F(PricerFitterTest, GenericParityOptOutCannotPublishRiskButCanPublishMark) 
             atx::vol::ParityDiagnosticState::Disabled);
 }
 
+TEST_F(PricerFitterTest, MarkBidAskFloorRetainsParityScoringByDefault) {
+  PricerConfig config;
+  config.preset = FitPreset::Fast;
+  config.curve = atx::vol::CurveConfig{atx::vol::VolCurveKind::ConvexDense};
+  config.use_correction_cache = false;
+  config.use_deam_cache_for_fit = false;
+  config.admission.min_worst_frac_within_bidask = 0.95;
+
+  PricerFitter fitter{config};
+  (void)fitter.fit(*chain_);
+  ASSERT_TRUE(fitter.last_attempt_report().has_value());
+  ASSERT_FALSE(fitter.last_attempt_report()->attempts.empty());
+  const atx::vol::SurfaceBuildAttemptReport &attempt =
+      fitter.last_attempt_report()->attempts.front();
+  ASSERT_TRUE(attempt.build_succeeded);
+  EXPECT_EQ(attempt.evidence.parity_state, atx::vol::ParityDiagnosticState::Valid);
+  EXPECT_TRUE(attempt.evidence.finite_diagnostics);
+  EXPECT_EQ(atx::vol::has_admission_failure(attempt.admission,
+                                            atx::vol::SurfaceAdmissionReason::QualityBelowFloor),
+            attempt.evidence.worst_frac_within_bidask <
+                config.admission.min_worst_frac_within_bidask);
+}
+
+TEST_F(PricerFitterTest, V2MarkBidAskFloorRetainsParityScoringByDefault) {
+  PricerConfig config;
+  config.preset = FitPreset::Hft;
+  config.outputs = atx::vol::SurfaceOutputs::MarketMark;
+  config.use_correction_cache = false;
+  config.use_deam_cache_for_fit = false;
+  config.admission.min_worst_frac_within_bidask = 0.95;
+
+  PricerFitter fitter{config};
+  (void)fitter.fit(*chain_);
+  ASSERT_TRUE(fitter.last_attempt_report().has_value());
+  ASSERT_FALSE(fitter.last_attempt_report()->attempts.empty());
+  const atx::vol::SurfaceBuildAttemptReport &attempt =
+      fitter.last_attempt_report()->attempts.front();
+  ASSERT_TRUE(attempt.build_succeeded);
+  EXPECT_EQ(attempt.evidence.parity_state, atx::vol::ParityDiagnosticState::Valid);
+  EXPECT_TRUE(attempt.evidence.finite_diagnostics);
+  EXPECT_EQ(atx::vol::has_admission_failure(attempt.admission,
+                                            atx::vol::SurfaceAdmissionReason::QualityBelowFloor),
+            attempt.evidence.worst_frac_within_bidask <
+                config.admission.min_worst_frac_within_bidask);
+}
+
 TEST_F(PricerFitterTest, PinnedEssviStillScoresParityWhenGenericScoreFlagIsFalse) {
   PricerConfig config = essvi_config();
   config.score_parity = false;
@@ -782,6 +830,73 @@ TEST_F(PricerFitterTest, PinnedEssviStillScoresParityWhenGenericScoreFlagIsFalse
   for (const atx::vol::ParityReport &report : parity) {
     EXPECT_GT(report.n, 0u);
   }
+}
+
+TEST_F(PricerFitterTest, PinnedConvexMarkDropsUnservedDiagnosticsWithoutMovingArchive) {
+  PricerConfig default_config;
+  default_config.preset = FitPreset::Fast;
+  default_config.curve = atx::vol::CurveConfig{atx::vol::VolCurveKind::ConvexDense};
+  default_config.use_deam_cache_for_fit = false;
+
+  PricerConfig scored_config = default_config;
+  scored_config.score_parity = true;
+
+  PricerFitter default_fitter{default_config};
+  PricerFitter scored_fitter{scored_config};
+  ASSERT_TRUE(default_fitter.fit(*chain_).has_value());
+  ASSERT_TRUE(scored_fitter.fit(*chain_).has_value());
+  ASSERT_NE(default_fitter.surface(), nullptr);
+  ASSERT_NE(scored_fitter.surface(), nullptr);
+
+  const VolaSession &default_session = default_fitter.surface()->session();
+  const VolaSession &scored_session = scored_fitter.surface()->session();
+  EXPECT_TRUE(default_session.inputs().curve_pinned);
+  EXPECT_FALSE(default_session.inputs().score_parity);
+  EXPECT_EQ(default_session.diagnostics().parity_state, atx::vol::ParityDiagnosticState::Disabled);
+  EXPECT_TRUE(scored_session.inputs().score_parity);
+  EXPECT_EQ(scored_session.diagnostics().parity_state, atx::vol::ParityDiagnosticState::Valid);
+
+  // LegacyCompatible serves a polymorphic override cold, and ConvexDense also
+  // rejects cache proposals during fit. The requested cache therefore has no
+  // consumer on either path and must never be constructed.
+  EXPECT_TRUE(default_session.inputs().use_correction_cache);
+  EXPECT_TRUE(scored_session.inputs().use_correction_cache);
+  EXPECT_FALSE(default_session.correction_caches().any());
+  EXPECT_FALSE(scored_session.correction_caches().any());
+
+  auto default_priced = default_session.to_priced_surface();
+  auto scored_priced = scored_session.to_priced_surface();
+  ASSERT_TRUE(default_priced.has_value()) << default_priced.error().to_string();
+  ASSERT_TRUE(scored_priced.has_value()) << scored_priced.error().to_string();
+  const std::array<atx::vol::SurfaceArchiveItem, 1> default_items{
+      atx::vol::SurfaceArchiveItem{"SPY", &*default_priced}};
+  const std::array<atx::vol::SurfaceArchiveItem, 1> scored_items{
+      atx::vol::SurfaceArchiveItem{"SPY", &*scored_priced}};
+  atx::vol::SurfaceArchiveWriteOpts archive_opts;
+  archive_opts.created_ts_ns = 42;
+  const auto default_archive = atx::vol::write_surface_archive(default_items, archive_opts);
+  const auto scored_archive = atx::vol::write_surface_archive(scored_items, archive_opts);
+  ASSERT_TRUE(default_archive.has_value()) << default_archive.error().to_string();
+  ASSERT_TRUE(scored_archive.has_value()) << scored_archive.error().to_string();
+  EXPECT_EQ(*default_archive, *scored_archive);
+}
+
+TEST_F(PricerFitterTest, PinnedCurveRiskAdmissionRetainsParityByDefault) {
+  PricerConfig config;
+  config.preset = FitPreset::Fast;
+  config.curve = atx::vol::CurveConfig{atx::vol::VolCurveKind::ConvexDense};
+  config.use_correction_cache = false;
+  config.use_deam_cache_for_fit = false;
+  config.admission = atx::vol::risk_admission_policy();
+
+  PricerFitter fitter{config};
+  (void)fitter.fit(*chain_);
+  ASSERT_TRUE(fitter.last_attempt_report().has_value());
+  ASSERT_FALSE(fitter.last_attempt_report()->attempts.empty());
+  const atx::vol::SurfaceBuildAttemptReport &attempt =
+      fitter.last_attempt_report()->attempts.front();
+  ASSERT_TRUE(attempt.build_succeeded);
+  EXPECT_EQ(attempt.evidence.parity_state, atx::vol::ParityDiagnosticState::Valid);
 }
 
 TEST_F(PricerFitterTest, ValueChainFieldsMatchSessionScalarQueries) {
@@ -1187,6 +1302,7 @@ TEST_F(PricerFitterTest, HftQueryPricingTiersKeepColdAndRepresentativeDistinct) 
   PricerFitter cold{cold_config};
   ASSERT_TRUE(cold.fit(*chain_).has_value());
   const VolaSession &cold_session = cold.surface()->session();
+  EXPECT_TRUE(cold_session.inputs().curve_pinned);
   EXPECT_FALSE(cold_session.correction_caches().any());
   EXPECT_FALSE(cold_session.correction_blend_at(cold_session.expiries().front().T, Side::Put)
                    .usable(Side::Put));
@@ -1196,6 +1312,8 @@ TEST_F(PricerFitterTest, HftQueryPricingTiersKeepColdAndRepresentativeDistinct) 
   PricerFitter fast{fast_config};
   ASSERT_TRUE(fast.fit(*chain_).has_value());
   const VolaSession &fast_session = fast.surface()->session();
+  EXPECT_TRUE(fast_session.inputs().curve_pinned);
+  EXPECT_TRUE(fast_session.correction_caches().any());
   EXPECT_EQ(fast_session.query_cache_bank_size(), 0u);
   const atx::vol::CorrectionBlend representative =
       fast_session.correction_blend_at(fast_session.expiries().front().T, Side::Put);
@@ -1211,6 +1329,7 @@ TEST_F(PricerFitterTest, HftCarryBankQueriesExplicitlyEnableBankedCacheServing) 
 
   const VolaSession &session = fitter.surface()->session();
   const atx::vol::AmericanCorrectionCaches caches = session.correction_caches();
+  EXPECT_TRUE(session.inputs().curve_pinned);
   ASSERT_NE(caches.call, nullptr);
   ASSERT_NE(caches.put, nullptr);
   EXPECT_EQ(session.inputs().query_pricing_tier, QueryPricingTier::CarryBank);

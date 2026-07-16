@@ -31,6 +31,22 @@ using atx::core::Ok;
 namespace {
 
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+// A discount-factor difference at this scale changes log-forward by at most
+// approximately 1e-12. Treating it as the configured scalar rate is therefore
+// economically immaterial while absorbing serialization/libm roundoff.
+constexpr double kFlatDiscountRelativeTolerance = 1.0e-12;
+
+[[nodiscard]] bool discount_matches_scalar_rate(double df, double T, double rate) noexcept {
+  if (!(df > 0.0) || !std::isfinite(df) || !(T > 0.0) || !std::isfinite(T)) {
+    return false;
+  }
+  const double expected = std::exp(-rate * T);
+  if (!(expected > 0.0) || !std::isfinite(expected)) {
+    return false;
+  }
+  const double scale = std::max(std::abs(df), std::abs(expected));
+  return std::abs(df - expected) <= kFlatDiscountRelativeTolerance * scale;
+}
 
 [[nodiscard]] std::uint64_t allocate_surface_instance_id() noexcept {
   static std::atomic<std::uint64_t> next{1};
@@ -335,7 +351,8 @@ struct PricedSurface::QueryAccelerator {
 PricedSurface::~PricedSurface() = default;
 PricedSurface::PricedSurface(PricedSurface &&other) noexcept
     : surface_(std::move(other.surface_)), ctx_(std::move(other.ctx_)), pricing_(other.pricing_),
-      term_rates_(other.term_rates_), query_pricing_tier_(other.query_pricing_tier_),
+      slice_rates_(std::move(other.slice_rates_)), term_rates_(other.term_rates_),
+      query_pricing_tier_(other.query_pricing_tier_),
       query_accelerator_(std::move(other.query_accelerator_)),
       instance_id_(std::exchange(other.instance_id_, allocate_surface_instance_id())) {}
 
@@ -346,6 +363,7 @@ PricedSurface &PricedSurface::operator=(PricedSurface &&other) noexcept {
   surface_ = std::move(other.surface_);
   ctx_ = std::move(other.ctx_);
   pricing_ = other.pricing_;
+  slice_rates_ = std::move(other.slice_rates_);
   term_rates_ = other.term_rates_;
   query_pricing_tier_ = other.query_pricing_tier_;
   query_accelerator_ = std::move(other.query_accelerator_);
@@ -354,16 +372,11 @@ PricedSurface &PricedSurface::operator=(PricedSurface &&other) noexcept {
 }
 
 PricedSurface::PricedSurface(CurveSurface &&surface, std::vector<SliceContext> &&ctx,
-                             const PricingContext &pricing) noexcept
+                             const PricingContext &pricing, std::vector<double> &&slice_rates,
+                             bool term_rates) noexcept
     : surface_{std::move(surface)}, ctx_{std::move(ctx)}, pricing_{pricing},
-      instance_id_{allocate_surface_instance_id()} {
-  for (const std::unique_ptr<IVolCurve> &slice : surface_.slices()) {
-    if (slice->df() != std::exp(-pricing_.r * slice->T())) {
-      term_rates_ = true;
-      break;
-    }
-  }
-}
+      slice_rates_{std::move(slice_rates)}, term_rates_{term_rates},
+      instance_id_{allocate_surface_instance_id()} {}
 
 Result<PricedSurface> PricedSurface::create(CurveSurface &&surface,
                                             std::vector<SliceContext> context,
@@ -390,7 +403,23 @@ Result<PricedSurface> PricedSurface::create(CurveSurface &&surface,
       return Err(ErrorCode::InvalidArgument, "PricedSurface::create: invalid slice carry context");
     }
   }
-  return PricedSurface{std::move(surface), std::move(context), pricing};
+  std::vector<double> slice_rates;
+  slice_rates.reserve(surface.n_slices());
+  bool term_rates = false;
+  for (const std::unique_ptr<IVolCurve> &slice : surface.slices()) {
+    const double T = slice->T();
+    const double df = slice->df();
+    if (discount_matches_scalar_rate(df, T, pricing.r)) {
+      slice_rates.push_back(pricing.r);
+      continue;
+    }
+    term_rates = true;
+    const double decoded_rate =
+        T > 0.0 && df > 0.0 && std::isfinite(df) ? -std::log(df) / T : pricing.r;
+    slice_rates.push_back(decoded_rate);
+  }
+  return PricedSurface{std::move(surface), std::move(context), pricing, std::move(slice_rates),
+                       term_rates};
 }
 
 Result<PricedSurface> PricedSurface::with_query_pricing(QueryPricingTier tier) && {
@@ -451,13 +480,7 @@ PricedSurface::ForwardCarry PricedSurface::interp_forward(double T) const noexce
   const SliceContext &first = ctx_.front();
   const SliceContext &last = ctx_.back();
   const auto slice_rate = [this](std::size_t index) noexcept {
-    if (!term_rates_) {
-      return pricing_.r;
-    }
-    const IVolCurve &slice = *surface_.slices()[index];
-    return slice.T() > 0.0 && slice.df() > 0.0 && std::isfinite(slice.df())
-               ? -std::log(slice.df()) / slice.T()
-               : pricing_.r;
+    return term_rates_ ? slice_rates_[index] : pricing_.r;
   };
   if (T <= first.T) {
     const double rate = slice_rate(0u);
@@ -539,8 +562,15 @@ PricedSurface::ResolvedSurfacePoint PricedSurface::resolve(double K, double T) c
 
 PricedSurface::ResolvedSurfacePoint
 PricedSurface::resolve_with_carry(double K, double T, ForwardCarry fc) const noexcept {
+  return resolve_with_carry_and_bracket(K, T, fc, surface_.bracket(T));
+}
+
+PricedSurface::ResolvedSurfacePoint
+PricedSurface::resolve_with_carry_and_bracket(double K, double T, ForwardCarry fc,
+                                              CurveSurface::Bracket bracket) const noexcept {
   // Precondition: T is a valid query T (finite, > 0) so `fc` == interp_forward(T);
-  // only K's validity is re-checked here so a strike ladder can reuse one carry.
+  // only K's validity is re-checked here so a strike ladder can reuse one carry
+  // and one surface bracket.
   ResolvedSurfacePoint p;
   p.K = K;
   p.T = T;
@@ -551,7 +581,7 @@ PricedSurface::resolve_with_carry(double K, double T, ForwardCarry fc) const noe
   p.q_eff = fc.q_eff;
   p.rate = fc.rate;
   p.k_log = std::log(K / fc.forward);
-  p.sigma = surface_.iv(p.k_log, T);
+  p.sigma = surface_.iv(p.k_log, T, bracket);
   p.valid = true;
   return p;
 }
@@ -893,6 +923,8 @@ Status PricedSurface::evaluate_batch(std::span<const double> K, std::span<const 
     }
     const bool t_valid = std::isfinite(t) && (t > 0.0);
     const ForwardCarry fc = t_valid ? interp_forward(t) : ForwardCarry{};
+    const CurveSurface::Bracket surface_bracket =
+        t_valid ? surface_.bracket(t) : CurveSurface::Bracket{};
     // The resolved batch dispatcher is a cold-American kernel and accepts no
     // correction state. Fast tiers stay on evaluate_resolved so a price-only
     // ladder cannot silently bypass its configured surrogate; the call-local
@@ -952,7 +984,7 @@ Status PricedSurface::evaluate_batch(std::span<const double> K, std::span<const 
 
       std::size_t valid_begin = i;
       for (std::size_t e = i; e < j; ++e) {
-        const ResolvedSurfacePoint p = resolve_with_carry(K[e], t, fc);
+        const ResolvedSurfacePoint p = resolve_with_carry_and_bracket(K[e], t, fc, surface_bracket);
         if (p.valid) {
           out.iv[e] = p.sigma;
           continue;
@@ -979,7 +1011,7 @@ Status PricedSurface::evaluate_batch(std::span<const double> K, std::span<const 
       // == resolve(K,t), and evaluate_resolved is the shared routing.
       ResolvedSurfacePoint p;
       if (t_valid) {
-        p = resolve_with_carry(K[e], t, fc);
+        p = resolve_with_carry_and_bracket(K[e], t, fc, surface_bracket);
       } else {
         p.K = K[e];
         p.T = t; // valid == false

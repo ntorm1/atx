@@ -1,6 +1,6 @@
 #pragma once
 
-// Scalar-backed batch/SIMD kernel layer for atx-vol.
+// Validated public batch/SIMD kernel layer for atx-vol.
 //
 // Ported from the C `ats-vol` library's hand-written AVX2 batch kernels
 // (ats_pricer_b76_avx2.c, ats_pricer_b76_from_lnFK_avx2.c,
@@ -8,21 +8,15 @@
 // ats_greeks_b76_avx2.c, ats_vol_essvi_avx2.c) and their public *_batch
 // declarations (ats_b76.h, ats_iv.h, ats_greeks.h, ats_vol_surface.h).
 //
-// The C kernels carried one CONTRACT that this port preserves exactly:
-//
-//     batch result == scalar result (to machine precision).
-//
-// The C's own SIMD paths honoured that contract by patching every lane that
-// the vectorized Chebyshev-Φ path could not price to full accuracy (|d| > 6
-// wings, T <= 0 / sigma <= 0 degenerates) back through the scalar kernel, and
-// its test (test_pricer_simd.c) asserted the batch matched the scalar
-// reference lane-by-lane. This port takes that contract to its logical
-// conclusion: each batch entry is a bounded loop over the ALREADY-PORTED
-// scalar kernel, so the batch output is bit-identical to the scalar output on
-// every lane by construction. The hand-written AVX2 vectorization is a
-// documented performance follow-on (see the PORT NOTE in batch.cpp and
-// atx-vol/README.md); it is a throughput optimization, not a numerical one —
-// the scalar kernels here remain the numerical source of truth.
+// Price, Greeks, fused value/vega, and eSSVI evaluation runtime-dispatch to
+// the existing four-lane AVX2+FMA kernels. Those kernels patch degenerate,
+// deep-wing, ill-conditioned, and scalar-tail lanes through the scalar source
+// of truth. Interior lanes use deterministic vector transcendental
+// approximations: price/Greek error is bounded by the SIMD kernel gates
+// (~1e-6 absolute plus 1e-7 relative) and eSSVI by ~1e-12. Hosts without
+// AVX2+FMA take the scalar loop. From-lnFK remains scalar because no matching
+// vector kernel exists; IV remains scalar because its measured AVX2 route was
+// slower on the sprint reference host.
 //
 // Shape conventions mirror the C's *_batch signatures: struct-of-arrays
 // (SoA) inputs/outputs as spans, with the per-slice-shared scalars (T, sqrt_t,
@@ -31,9 +25,11 @@
 // all per-lane spans have equal length and returns InvalidArgument otherwise
 // (agent profile §4: validate at the boundary).
 //
-// Thread-safety: every entry is a pure function of its arguments over
-// disjoint output storage — the underlying scalar kernels are stateless, so
-// concurrent calls on non-overlapping outputs from any threads are safe.
+// Every output must be byte-disjoint from all inputs and other outputs. The
+// boundary rejects overlap with InvalidArgument before writing because a
+// four-lane load/store kernel cannot safely honor arbitrary span aliasing.
+// Calls over disjoint storage are allocation-free except for Error payloads on
+// failed IV lanes and are safe to run concurrently.
 
 #include <span>
 
@@ -52,13 +48,10 @@ namespace atx::vol {
 // All spans must share one length; degenerate lanes (T <= 0 / sigma <= 0)
 // collapse to discounted intrinsic exactly as the scalar kernel does.
 //
-// @return InvalidArgument if the span lengths differ.
-[[nodiscard]] Status black76_price_batch(std::span<const double> F,
-                                         std::span<const double> K,
-                                         std::span<const double> T,
-                                         std::span<const double> sigma,
-                                         std::span<const double> df,
-                                         std::span<const Side> side,
+// @return InvalidArgument if the span lengths differ or output overlaps input.
+[[nodiscard]] Status black76_price_batch(std::span<const double> F, std::span<const double> K,
+                                         std::span<const double> T, std::span<const double> sigma,
+                                         std::span<const double> df, std::span<const Side> side,
                                          std::span<double> price_out);
 
 // ── Black-76 price from precomputed log-moneyness (SoA, shared slice) ─────
@@ -67,12 +60,14 @@ namespace atx::vol {
 // shared across all lanes (one expiry slice); `F`, `K`, `sigma`, `ln_fk`, and
 // `side` are per-lane. Each lane calls `black76_price_from_lnfk`.
 //
-// @return InvalidArgument if the per-lane span lengths differ.
-[[nodiscard]] Status black76_price_from_lnfk_batch(
-    std::span<const double> F, std::span<const double> K, double T,
-    double sqrt_t, std::span<const double> sigma, double df,
-    std::span<const double> ln_fk, std::span<const Side> side,
-    std::span<double> price_out);
+// @return InvalidArgument if the per-lane span lengths differ or output
+//         overlaps input.
+[[nodiscard]] Status black76_price_from_lnfk_batch(std::span<const double> F,
+                                                   std::span<const double> K, double T,
+                                                   double sqrt_t, std::span<const double> sigma,
+                                                   double df, std::span<const double> ln_fk,
+                                                   std::span<const Side> side,
+                                                   std::span<double> price_out);
 
 // ── Black-76 fused value + vega (SoA, shared T) ──────────────────────────
 //
@@ -84,12 +79,13 @@ namespace atx::vol {
 // (the default) is the sentinel for "compute sqrt(T) internally", exactly as
 // the scalar kernel.
 //
-// @return InvalidArgument if the per-lane span lengths differ.
-[[nodiscard]] Status black76_value_and_vega_batch(
-    std::span<const double> F, std::span<const double> K, double T,
-    std::span<const double> sigma, std::span<const double> df,
-    std::span<const Side> side, std::span<double> value_out,
-    std::span<double> vega_out, double sqrt_t_in = -1.0);
+// @return InvalidArgument if the per-lane span lengths differ or either output
+//         overlaps an input or the other output.
+[[nodiscard]] Status
+black76_value_and_vega_batch(std::span<const double> F, std::span<const double> K, double T,
+                             std::span<const double> sigma, std::span<const double> df,
+                             std::span<const Side> side, std::span<double> value_out,
+                             std::span<double> vega_out, double sqrt_t_in = -1.0);
 
 // ── Implied-volatility inversion (SoA, parallel status) ──────────────────
 //
@@ -101,17 +97,17 @@ namespace atx::vol {
 // argument validation — Ok() means the spans were well-formed; inspect
 // `status_out` for per-lane outcomes.
 //
-// @return InvalidArgument if the span lengths differ.
-[[nodiscard]] Status implied_vol_batch(
-    std::span<const double> price, std::span<const double> F,
-    std::span<const double> K, std::span<const double> T,
-    std::span<const double> df, std::span<const Side> side,
-    std::span<double> iv_out, std::span<Status> status_out);
+// @return InvalidArgument if lengths differ or outputs overlap inputs/each
+//         other.
+[[nodiscard]] Status implied_vol_batch(std::span<const double> price, std::span<const double> F,
+                                       std::span<const double> K, std::span<const double> T,
+                                       std::span<const double> df, std::span<const Side> side,
+                                       std::span<double> iv_out, std::span<Status> status_out);
 
 // ── Analytic Black-76 Greeks (SoA in, AoS Greeks out) ────────────────────
 //
 // Mirrors the C `ats_greeks_b76_batch`. Writes the eight sensitivities to
-// `greeks_out[i]` via the scalar `black76_greeks`. `price_out` is optional:
+// `greeks_out[i]`; `price_out` is optional:
 // pass an empty span to skip the premium (matches the C's nullable
 // `out_price`); when non-empty it must match the input length and receives the
 // per-lane premium.
@@ -122,14 +118,13 @@ namespace atx::vol {
 // `black76_greeks(F, K, T, sigma, r, df, side)` — the numerical source of
 // truth it calls — so the (r, df) order is uniform across atx-vol.
 //
-// @return InvalidArgument if the span lengths differ, or if a non-empty
-//         `price_out` does not match the input length.
-[[nodiscard]] Status black76_greeks_batch(
-    std::span<const double> F, std::span<const double> K,
-    std::span<const double> T, std::span<const double> sigma,
-    std::span<const double> r, std::span<const double> df,
-    std::span<const Side> side, std::span<Greeks> greeks_out,
-    std::span<double> price_out = {});
+// @return InvalidArgument if lengths differ, a non-empty `price_out` does not
+//         match the input length, or outputs overlap inputs/each other.
+[[nodiscard]] Status black76_greeks_batch(std::span<const double> F, std::span<const double> K,
+                                          std::span<const double> T, std::span<const double> sigma,
+                                          std::span<const double> r, std::span<const double> df,
+                                          std::span<const Side> side, std::span<Greeks> greeks_out,
+                                          std::span<double> price_out = {});
 
 // ── eSSVI total variance over a k-grid (single slice, SoA) ───────────────
 //
@@ -138,9 +133,8 @@ namespace atx::vol {
 // essvi_w(slice, k_log[i])` — the base 3-parameter Gatheral-Jacquier backbone,
 // the exact symmetric-no-residual form the C fast path evaluated.
 //
-// @return InvalidArgument if `k_log` and `w_out` differ in length.
-[[nodiscard]] Status essvi_w_batch(const EssviSlice& slice,
-                                   std::span<const double> k_log,
+// @return InvalidArgument if lengths differ or output overlaps input.
+[[nodiscard]] Status essvi_w_batch(const EssviSlice &slice, std::span<const double> k_log,
                                    std::span<double> w_out);
 
-}  // namespace atx::vol
+} // namespace atx::vol

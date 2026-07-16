@@ -11,15 +11,20 @@
 
 namespace atx::vol::simd::detail {
 
-void black76_price_batch_avx2(const double* F, const double* K, const double* T,
-                              const double* sigma, const double* df,
-                              const Side* side, double* price_out,
-                              std::size_t n) noexcept;
+void black76_price_batch_avx2(const double *F, const double *K, const double *T,
+                              const double *sigma, const double *df, const Side *side,
+                              double *price_out, std::size_t n) noexcept;
 
-void black76_value_vega_batch_avx2(const double* F, const double* K,
-                                   const double* T, const double* sigma,
-                                   const double* df, const Side* side,
-                                   double* price_out, double* vega_out,
-                                   std::size_t n) noexcept;
+void black76_value_vega_batch_avx2(const double *F, const double *K, const double *T,
+                                   const double *sigma, const double *df, const Side *side,
+                                   double *price_out, double *vega_out, std::size_t n) noexcept;
+
+// Slice-shaped overload: one T (and optional precomputed sqrt(T)) is shared by
+// every lane. `sqrt_t_in < 0` computes sqrt(T); non-negative values are used
+// exactly as supplied, matching black76_value_and_vega.
+void black76_value_vega_shared_t_batch_avx2(const double *F, const double *K, double T,
+                                            double sqrt_t_in, const double *sigma, const double *df,
+                                            const Side *side, double *price_out, double *vega_out,
+                                            std::size_t n) noexcept;
 
 } // namespace atx::vol::simd::detail

@@ -331,8 +331,7 @@ public:
   // Replace one pillar without exposing a partially-mutated surface. The caller
   // normally applies this to a staged clone and publishes the clone only after
   // adjacent calendar and independent strike-shape admission pass.
-  [[nodiscard]] Status replace(std::size_t index,
-                               std::unique_ptr<IVolCurve> slice);
+  [[nodiscard]] Status replace(std::size_t index, std::unique_ptr<IVolCurve> slice);
 
   // Deep copy — every slice cloned into a fresh independently-owned surface. Lets
   // a caller duplicate this move-only container (e.g. snapshot a live session's
@@ -358,15 +357,27 @@ public:
   }
 
 private:
-  // Locate the bracket for T; returns {lo, hi, weight} where the interpolated
-  // value is (1-w)*val(lo) + w*val(hi). Clamps to an endpoint outside the range.
+  friend class PricedSurface;
+
+  // Internal equal-tenor query token. Keeping it private prevents callers from
+  // forging or retaining a cross-surface/stale bracket; PricedSurface resolves
+  // and consumes it inside one const batch operation.
   struct Bracket {
-    std::size_t lo{0}, hi{0};
-    double frac{0.0};
+    std::size_t lo{0};
+    std::size_t hi{0};
+    double upper_weight{0.0};
+
+    [[nodiscard]] bool is_single_slice() const noexcept { return lo == hi; }
   };
-  [[nodiscard]] Bracket locate(double T) const noexcept;
+
+  [[nodiscard]] Bracket bracket(double T) const noexcept;
+  [[nodiscard]] double w(double k_log, double T, Bracket resolved) const noexcept;
+  [[nodiscard]] double iv(double k_log, double T, Bracket resolved) const noexcept;
 
   std::vector<std::unique_ptr<IVolCurve>> slices_; // ascending T
+  // Contiguous mirror of slice maturities. Queries binary-search this array
+  // instead of chasing unique_ptrs through the polymorphic slice stack.
+  std::vector<double> maturities_; // == slices_.size(), ascending T
 };
 
 // ── Curve configuration ─────────────────────────────────────────────────────

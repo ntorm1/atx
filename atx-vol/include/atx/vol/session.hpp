@@ -99,8 +99,9 @@ struct SessionInputs {
   // pricer (Black-76 + correction). ON by default (the SOTA hot path); the
   // round-trip stays self-consistent because the same cache prices both legs.
   // Falls back to the cold Andersen-Lake path automatically if a cache fails to
-  // build. Set false to force the reference cold path (e.g. for a cold-vs-cached
-  // benchmark).
+  // build. A pinned polymorphic curve also elides construction when its fit and
+  // query policies cannot consume the cache. Set false to force the reference
+  // cold path (e.g. for a cold-vs-cached benchmark).
   bool use_correction_cache{true};
   // Explicit query-serving tier. LegacyCompatible preserves the historical
   // cached-eSSVI/cold-override behavior; ColdReference forces Andersen-Lake/FD;
@@ -193,6 +194,13 @@ struct SessionInputs {
   // root-cause fix -- stamping `expiry_ns` directly onto fitted eSSVI slices
   // instead of synthesizing it from T -- is a follow-up task.
   TimeSpec time{};
+  // Appended for positional aggregate source compatibility. True only when the
+  // caller selected `curve` explicitly and the fitter will not substitute
+  // another family. A pinned non-eSSVI LegacyCompatible/Cold surface may omit a
+  // correction cache when neither fit nor queries can read it; an auto-routed
+  // surface retains the cache because its fallback ladder can still publish
+  // eSSVI. Runtime policy only; not archived.
+  bool curve_pinned{false};
 };
 
 // ── Named calibration presets ─────────────────────────────────────────────

@@ -360,7 +360,8 @@ public:
 
 private:
   PricedSurface(CurveSurface &&surface, std::vector<SliceContext> &&ctx,
-                const PricingContext &pricing) noexcept;
+                const PricingContext &pricing, std::vector<double> &&slice_rates,
+                bool term_rates) noexcept;
 
   // The interpolated forward and identity-preserving effective carry at T.
   // Precondition: ctx_ non-empty, ascending T.
@@ -375,6 +376,9 @@ private:
   // Bit-identical to `resolve(K, T)` when `fc == interp_forward(T)`.
   [[nodiscard]] ResolvedSurfacePoint resolve_with_carry(double K, double T,
                                                         ForwardCarry fc) const noexcept;
+  [[nodiscard]] ResolvedSurfacePoint
+  resolve_with_carry_and_bracket(double K, double T, ForwardCarry fc,
+                                 CurveSurface::Bracket bracket) const noexcept;
 
   // Shared price/Greek routing for `evaluate` / `evaluate_batch` off one resolved
   // point — the single place the field bitmask drives the pricer calls.
@@ -397,7 +401,10 @@ private:
   CurveSurface surface_;          // fitted curves (any kind), ascending T
   std::vector<SliceContext> ctx_; // per-slice carry (‖ surface_ slices)
   PricingContext pricing_;        // cold re-pricing scalars
-  bool term_rates_{false};        // any slice df differs from scalar-r df
+  // Construction-time rates decoded from each slice discount factor. This
+  // removes the former two logarithms per off-pillar term-rate query.
+  std::vector<double> slice_rates_; // one per surface slice
+  bool term_rates_{false};          // any material departure from scalar r
   QueryPricingTier query_pricing_tier_{QueryPricingTier::LegacyCompatible};
   std::unique_ptr<QueryAccelerator> query_accelerator_{};
   std::uint64_t instance_id_{0};
