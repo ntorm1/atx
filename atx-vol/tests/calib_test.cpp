@@ -527,6 +527,155 @@ TEST(BuildObservationsEuropean, SharedSigmaBoundaryPreservesEconomicsWithConstan
   atx::vol::counters::reset();
 }
 
+TEST(BuildObservationsEuropean, SharedSigmaBoundaryRunsUnderHftShortcutPreset) {
+  // SPY resolves to IndexEtfUltraLiquid -> FitPreset::Hft, which sets
+  // max_otm_shortcut_premium_spread_frac = 0.50 (src/session.cpp). The OTM
+  // shortcut and the shared boundary are per-ROW alternatives, not board-level
+  // exclusives, so the shared route must still serve the non-shortcut rows.
+  //
+  // Both arms hold the shortcut fixed at the live Hft value, which isolates the
+  // shared-boundary change: the shortcut mask is derived from pre-de-Am row
+  // fields only, so it is bit-identical in both arms and every shortcut-claimed
+  // row is bit-identical too. The remaining rows are the ones under test.
+  constexpr double T = 1.0;
+  constexpr double r = 0.05;
+  constexpr double q = 0.02;
+  const double F = 100.0 * std::exp((r - q) * T);
+  const double df = std::exp(-r * T);
+  std::vector<double> strikes;
+  strikes.reserve(96u);
+  for (std::size_t index = 0; index < 96u; ++index) {
+    strikes.push_back(72.0 + 56.0 * static_cast<double>(index) / 95.0);
+  }
+  const Chain chain = make_american_chain(strikes, T, r, q, 0.24);
+
+  CalibOpts reference_opts = calib_default_opts();
+  reference_opts.max_spread_vol = 1.0;
+  reference_opts.min_vega_weight = 0.0;
+  reference_opts.max_otm_shortcut_premium_spread_frac = 0.50; // the live Hft preset value
+  reference_opts.use_shared_boundary_deam = false;
+  const auto reference =
+      build_observations_european(chain, 100.0, r, F, T, df, reference_opts, {}, std::nullopt,
+                                  1.0e-7, 64, AmericanMethod::AndersenLake, false);
+  ASSERT_TRUE(reference.has_value()) << reference.error().to_string();
+  ASSERT_EQ(reference->deam_audit.n_shared_boundary_solves, 0u);
+  // The fixture must exercise BOTH routes, or "they coexist" proves nothing. On
+  // this board the shortcut claims the whole call side (a q = 2% American call
+  // carries almost no early-exercise premium), leaving the puts to the shared
+  // boundary — the exact partition the wiring is for.
+  ASSERT_GE(reference->deam_audit.shortcut.n_proposed, 10u)
+      << "fixture must exercise the OTM shortcut on a substantive row population";
+
+  CalibOpts shared_opts = reference_opts;
+  shared_opts.use_shared_boundary_deam = true;
+  const auto shared =
+      build_observations_european(chain, 100.0, r, F, T, df, shared_opts, {}, std::nullopt, 1.0e-7,
+                                  64, AmericanMethod::AndersenLake, false);
+  // build_observations_european fails Internal if a shortcut-claimed row ever
+  // carries a shared proposal, so a successful return IS the disjointness proof.
+  ASSERT_TRUE(shared.has_value()) << shared.error().to_string();
+
+  const DeAmAuditDiagnostics &audit = shared->deam_audit;
+  // The headline: the shared route activates under the live Hft shortcut config.
+  EXPECT_GT(audit.n_shared_boundary_solves, 0u);
+  EXPECT_GT(audit.n_shared_boundary_lanes, 0u);
+  // The shortcut mask is single-sourced: turning the shared route on must not
+  // move one row into or out of the shortcut population.
+  EXPECT_EQ(audit.shortcut.n_proposed, reference->deam_audit.shortcut.n_proposed);
+  EXPECT_EQ(audit.n_forced_short_tenor, reference->deam_audit.n_forced_short_tenor);
+  EXPECT_EQ(audit.n_forced_low_vega, reference->deam_audit.n_forced_low_vega);
+  EXPECT_EQ(audit.n_forced_far_wing, reference->deam_audit.n_forced_far_wing);
+  // Shortcut rows and shared lanes are disjoint subsets of the same row set, so
+  // their populations can never overshoot it. On this fixture the two routes
+  // partition the board exactly (every row is claimed by one of them), which is
+  // the strongest form of the disjointness claim: no row is double-counted and
+  // none is stranded.
+  EXPECT_LE(audit.n_shared_boundary_lanes + audit.shortcut.n_proposed, audit.n_deam_rows);
+  EXPECT_EQ(audit.n_shared_boundary_lanes + audit.shortcut.n_proposed, audit.n_deam_rows);
+  EXPECT_LE(audit.n_shared_boundary_lanes, audit.accurate.n_proposed);
+  EXPECT_EQ(audit.n_shared_scalar_fallback_lanes, 0u); // every non-shortcut row got a lane
+  EXPECT_TRUE(deam_inversion_certified(audit, 0.10));
+
+  ASSERT_EQ(shared->obs.size(), reference->obs.size());
+  ASSERT_EQ(shared->provenance.size(), reference->provenance.size());
+  for (std::size_t index = 0; index < shared->obs.size(); ++index) {
+    const FitObs &actual = shared->obs[index];
+    const FitObs &expected = reference->obs[index];
+    EXPECT_EQ(actual.source_strike_index, expected.source_strike_index);
+    EXPECT_EQ(actual.side, expected.side);
+    const double iv_error = std::fabs(actual.sigma_mkt - expected.sigma_mkt);
+    const double price_error = std::fabs(actual.mid - expected.mid);
+    const double economic_price_budget = std::min(0.005, 0.1 * expected.vega * 1.0e-4);
+    EXPECT_LE(iv_error, 1.0e-4);
+    EXPECT_LE(price_error, economic_price_budget);
+    EXPECT_LT(price_error, 0.5 * expected.spread);
+  }
+  for (std::size_t index = 0; index < shared->provenance.size(); ++index) {
+    EXPECT_EQ(shared->provenance[index].source_strike_index,
+              reference->provenance[index].source_strike_index);
+    EXPECT_EQ(shared->provenance[index].side, reference->provenance[index].side);
+    EXPECT_EQ(shared->provenance[index].rejection, reference->provenance[index].rejection);
+  }
+}
+
+TEST(BuildObservationsEuropean, SharedSigmaBoundaryServesPutSideOnNegativeBorrow) {
+  // R-09. A hard-to-borrow single name quotes r > 0 against a slightly NEGATIVE
+  // effective yield. The shared interpolant's internal regime for the PUT side is
+  // (rate = r, yield = q_eff): with r > 0 that is a regular single-boundary
+  // American-put regime, so the put side must share boundaries. The CALL side's
+  // internal rate IS q_eff, so it is genuinely unsupported and stays scalar.
+  constexpr double T = 1.0;
+  constexpr double r = 0.05;
+  constexpr double q = -0.02; // negative borrow => q_eff == q == -0.02
+  const double F = 100.0 * std::exp((r - q) * T);
+  const double df = std::exp(-r * T);
+  std::vector<double> strikes;
+  strikes.reserve(96u);
+  for (std::size_t index = 0; index < 96u; ++index) {
+    strikes.push_back(72.0 + 56.0 * static_cast<double>(index) / 95.0);
+  }
+  const Chain chain = make_american_chain(strikes, T, r, q, 0.24);
+
+  CalibOpts reference_opts = calib_default_opts();
+  reference_opts.max_spread_vol = 1.0;
+  reference_opts.min_vega_weight = 0.0;
+  reference_opts.use_shared_boundary_deam = false;
+  const auto reference =
+      build_observations_european(chain, 100.0, r, F, T, df, reference_opts, {}, std::nullopt,
+                                  1.0e-7, 64, AmericanMethod::AndersenLake, false);
+  ASSERT_TRUE(reference.has_value()) << reference.error().to_string();
+
+  CalibOpts shared_opts = reference_opts;
+  shared_opts.use_shared_boundary_deam = true;
+  const auto shared =
+      build_observations_european(chain, 100.0, r, F, T, df, shared_opts, {}, std::nullopt, 1.0e-7,
+                                  64, AmericanMethod::AndersenLake, false);
+  ASSERT_TRUE(shared.has_value()) << shared.error().to_string();
+
+  const DeAmAuditDiagnostics &audit = shared->deam_audit;
+  EXPECT_GT(audit.n_shared_put_lanes, 0u);
+  EXPECT_EQ(audit.n_shared_call_lanes, 0u); // internal call rate == q_eff < 0
+  EXPECT_EQ(audit.n_shared_boundary_solves, 9u); // one nine-node build, put side only
+  EXPECT_TRUE(deam_inversion_certified(audit, 0.10));
+
+  ASSERT_EQ(shared->obs.size(), reference->obs.size());
+  for (std::size_t index = 0; index < shared->obs.size(); ++index) {
+    const FitObs &actual = shared->obs[index];
+    const FitObs &expected = reference->obs[index];
+    EXPECT_EQ(actual.source_strike_index, expected.source_strike_index);
+    EXPECT_EQ(actual.side, expected.side);
+    const double iv_error = std::fabs(actual.sigma_mkt - expected.sigma_mkt);
+    const double price_error = std::fabs(actual.mid - expected.mid);
+    const double economic_price_budget = std::min(0.005, 0.1 * expected.vega * 1.0e-4);
+    EXPECT_LE(iv_error, 1.0e-4);
+    EXPECT_LE(price_error, economic_price_budget);
+    EXPECT_LT(price_error, 0.5 * expected.spread);
+  }
+  for (std::size_t index = 0; index < shared->provenance.size(); ++index) {
+    EXPECT_EQ(shared->provenance[index].rejection, reference->provenance[index].rejection);
+  }
+}
+
 TEST(BuildObservationsEuropean, SharedSigmaBoundaryKeepsShortTenorOnScalarPath) {
   constexpr double T = 2.0 / 365.25;
   constexpr double r = 0.05;
@@ -553,9 +702,18 @@ TEST(BuildObservationsEuropean, SharedSigmaBoundaryKeepsShortTenorOnScalarPath) 
 }
 
 TEST(BuildObservationsEuropean, SharedSigmaBoundaryKeepsNegativeRatesOnScalarPath) {
+  // Pins the RETAINED function-level guard: r < 0. R-09 removed the companion
+  // q_eff < 0 bail (a put side under r > 0 is a regular American-put regime), but
+  // r < 0 flips the PUT side's internal rate negative, and al_xmax_put(K, r<0,
+  // q>=0) == 0 means there is no asymptotic boundary to interpolate at all. This
+  // board must stay wholly on the scalar inverter.
+  //
+  // q_eff == q == +0.02 here, so r < 0 is unambiguously the only guard that can
+  // fire — the assertion cannot be satisfied by the removed q_eff < 0 bail.
   constexpr double T = 1.0;
   constexpr double r = -0.01;
   constexpr double q = 0.02;
+  static_assert(r < 0.0 && q > 0.0, "fixture must isolate the retained r < 0 guard");
   const double F = 100.0 * std::exp((r - q) * T);
   const double df = std::exp(-r * T);
   std::vector<double> strikes;
@@ -567,12 +725,15 @@ TEST(BuildObservationsEuropean, SharedSigmaBoundaryKeepsNegativeRatesOnScalarPat
   CalibOpts opts = calib_default_opts();
   opts.max_spread_vol = 5.0;
   opts.min_vega_weight = 0.0;
+  opts.use_shared_boundary_deam = true;
 
   const auto result = build_observations_european(chain, 100.0, r, F, T, df, opts, {}, std::nullopt,
                                                   1.0e-7, 64, AmericanMethod::AndersenLake, false);
   ASSERT_TRUE(result.has_value()) << result.error().to_string();
   EXPECT_EQ(result->deam_audit.n_shared_boundary_lanes, 0u);
   EXPECT_EQ(result->deam_audit.n_shared_boundary_solves, 0u);
+  EXPECT_EQ(result->deam_audit.n_shared_call_lanes, 0u);
+  EXPECT_EQ(result->deam_audit.n_shared_put_lanes, 0u);
 }
 
 TEST(BuildObservationsEuropean, UltraShortTenorBypassesShortcut) {
