@@ -1,5 +1,33 @@
 # atx-vol Fit → Price → Backtest Hot-Path Sprint — "Beat SOTA on Speed & Accuracy"
 
+## Handoff summary — stopped 2026-07-15
+
+Implementation was deliberately stopped at the user's request after landing and verifying the latest coherent batches. Local `main` has no uncommitted code changes from the interrupted explorer tasks. The last code commit is `52324e5`; the two new implementation commits are:
+
+- `c485081` (`perf(vol): share deamericanization boundaries and bound selection`): W3.1 retained sigma-boundary interpolation and W3.2 prepared/common-population selector work, coverage admission, and production eSSVI-only default.
+- `52324e5` (`perf(vol): balance fit boards and retain backtest scratch`): W4.1 global dynamic board queue and the allocation-reuse portion of W4.4.
+
+What is proven now:
+
+- Strict Release builds of `atx-vol-tests`, `atx-vol-fitting-bench`, and `atx-vol-e2e-hotpath-bench` pass. The focused Release gate passed 110/110 tests; the focused Debug backtest/execution gate passed 67/67 tests.
+- The W3.1 isolated Release benchmark is a real but incremental win: scalar de-Americanization mean `41.261 ms` versus retained-boundary `23.114 ms` for 96 lanes, or **1.78x**. It performs 18 retained boundary solves with zero scalar fallbacks. Do not describe this as 10x.
+- The single-operation real-OPRA SPY gate is `492 ms` total, `469.828 ms` fit, `411.783 ms` observation de-Americanization, and `19.204 ms` Prices-only value. It publishes through `LegacyEssviCompatibility` (`published_override_boards=1`), so the new shared-boundary prepared path is bypassed on the actual slow board. This pipeline connection, not curve solving or valuation, is the immediate blocker.
+- The production selector is intentionally bounded by one eSSVI candidate rather than a fictitious hard deadline: candidate fitting is non-preemptible. Generic `SelectorConfig{}` remains explicit unlimited research behavior. The common-population coverage floor rejects MU's misleading SVI result (2,567/5,580 keys, 46.00%) while eSSVI serves 4,867/5,580 (87.22%).
+- W4.1 now dynamically claims boards across dates and preserves deterministic aggregation/write order. W4.4 retains the grow-only `PortfolioWorkspace` and `alive` scratch for a stable book; its correctness tests pass, but an allocation/latency acceptance benchmark is still required.
+
+Next agent: start with W3.3/W3.4, not another broad benchmark. On each slice, allow Configured preparation to fall back to an explicitly audited `LegacyEssviCompatibility` preparation only for expected `NotFound`/insufficient-data outcomes. Propagate numerical, model, configuration, and QP failures so the product fallback ladder runs; do not silently convert them into missing coverage. Populate truthful de-Americanization diagnostics and per-slice provenance. Then rerun only the one-operation SPY gate and the 25-name recovery cohort before the 519-name acceptance cohort. The proposed 25-name cohort is `CZR,RPRX,RXT,ROIV,HST,FTV,EQH,IBN,TSLQ,JHX,MNTS,OKLL,EQX,SIDU,HIMX,GFI,DGXX,VNET,ESI,BFAM,PCOR,HTHT,IBRX,ALHC,GGG`.
+
+Other high-value pending work and traps:
+
+- W4.3 can manually port the valid OPRA-only pieces from unmerged commit `a28cea3`: configurable outer threads, pre-sized disjoint slots, dynamic file claims, deterministic serial progress/errors, checked size arithmetic, and projection of the eight consumed Parquet columns. Arrow internal threads should remain off. Do **not** claim fingerprint-before-decode until a persisted sidecar/build identity exists.
+- The snapshot cache key is still only normalized path plus query tier and can serve a stale archive rewritten at the same path. A cheap identity can read the fixed archive header and include file size, created timestamp, header CRC, and metadata CRC without decoding/hashing the archive. Add a same-path rewrite regression.
+- Do not route nested fit fan-out into the current `pricing_executor` unchanged. Its dispatch mutex is held while outer tasks run; a `PricerFitter` `std::async` child can re-enter without inheriting the TLS guard, block on that mutex, and deadlock its waiting parent. Use a sibling fit executor or a queued scheduler with an explicit nested budget, and flatten dual-output fan-out under an outer scheduler.
+- W4.5's small-book cutoff must be measured at `n={1,2,3,4,6,8,12,16}`. Existing evidence shows the cold executor can already win at four contracts, so a blanket `<8` serial rule may regress.
+- CStar is not connected to the production OPRA fit-to-price path. Before performance work, fix its reversed `c2` projection bisection, require post-projection no-arbitrage validation, propagate projection failure, separate raw shape validity from the public variance floor, and replace the actual finite-difference acceptance gate with the analytic CStar density scanner. Treat CStar optimization as isolated R&D until it consumes the already prepared American observations and an existing eSSVI seed.
+- Never run Debug and Release builds concurrently: all FetchContent trees share `C:\atx-cache\deps\spdlog-build` and can mix `_ITERATOR_DEBUG_LEVEL`. Configure the target preset immediately before its sequential build. Reserve the ~212-second 100-name benchmark for the final integration gate; use isolated microbenchmarks and one real-OPRA operation during development.
+
+Relevant primary research already reviewed: Andersen–Lake–Offengenden for retained transformed boundaries, Healy for negative-rate/multiple-boundary behavior, OSQP status/stopping semantics, oneTBB nested scheduling/work isolation, Arrow projection/threading, Gatheral–Jacquier/Roper no-arbitrage conditions, and Eigen fixed-size matrices. Follow up with primary-source web research when a new hot-path mechanism is found; do not one-shot an algorithm from recollection.
+
 **Date:** 2026-07-14
 **Author:** deep-dive review (6 parallel explorer agents + SOTA web research + 3 spot-verifications against source)
 **Status:** implementation in progress on local `main`. Every code claim carries a `file:line`; every optimization has an acceptance gate and a change-class note (pure-refactor vs. accuracy-trading vs. accuracy-improving). **Bit-identity is not required** — see §4's economic-correctness gate.
@@ -26,14 +54,14 @@ Commit SHAs are recorded after the corresponding code commit lands; ledger-only 
 | W2.4 Closed-form PCP borrow | complete | `e7d5ebb78208b8eda62c5f71a9661c4571c2e0c4` | One prebound hybrid-forward base plus `fma/log` replaces bisection. Sweep parity is within `1e-8`; finite-domain, bracket, endpoint, and just-outside-bracket regressions pass. |
 | W2.5 Kill redundant audit + double score | complete | `e7d5ebb78208b8eda62c5f71a9661c4571c2e0c4` | Mid scoring reuses the fit sigma. Direct accurate AL skips duplicate repricing only under proven `iv_tol<=1e-7`/`max_iter>=64` controls; loose controls and every approximate route still cold-audit. |
 | W2.6 Warm-start adjacent strikes on cold path | complete | `e7d5ebb78208b8eda62c5f71a9661c4571c2e0c4` | Independent call/put seeds propagate across all sorted strikes, update only from converged solves, and are disableable for reference A/B. Sampled residual telemetry proves less work within the economic price/IV bound. |
-| W3.1 Slice-σ shared exercise boundary | pending | — | — |
-| W3.2 Fix the CrossValidation selector | pending | — | — |
+| W3.1 Slice-σ shared exercise boundary | complete (incremental 1.78x isolated; real legacy route still bypasses it) | `c485081` | Release scalar mean `41.261 ms` versus retained `23.114 ms` over 96 lanes; 18 boundary solves and zero scalar fallbacks. |
+| W3.2 Fix the CrossValidation selector | complete | `c485081` | Prepared observations/common population, liquidity-stratified expiry sampling, reusable accumulators, coverage floor, and bounded production eSSVI-only policy; focused Release tests pass. |
 | W3.3 Per-slice Legacy fallback | pending | — | — |
 | W3.4 Admission correctness | pending | — | — |
-| W4.1 Global dynamic board queue | pending | — | — |
+| W4.1 Global dynamic board queue | complete (structural/correctness gate; full throughput gate pending) | `52324e5` | One global dynamically claimed queue across dates; deterministic semantic surface comparison passes. |
 | W4.2 Pool the fit-side fan-out | pending | — | — |
 | W4.3 Parallel + projected OPRA ingest | pending | — | — |
-| W4.4 Backtest MTM loop de-thrash | pending | — | Prerequisite retained-pricer work landed in `d3aa285`; acceptance benchmark remains. |
+| W4.4 Backtest MTM loop de-thrash | partial | `52324e5` | Grow-only workspace and `alive` scratch are retained for a stable book; 67 focused Debug tests pass. Allocation/latency acceptance benchmark remains. |
 | W4.5 Guard H² generically + serial-below-threshold pricing | pending | — | — |
 | W5.1 Table-drive CStar no-arb projection | pending | — | — |
 | W5.2 Analytic CStar Jacobian + w'' | pending | — | — |
