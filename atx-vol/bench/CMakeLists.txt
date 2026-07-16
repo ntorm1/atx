@@ -173,6 +173,30 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(atx-vol-e2e-benchmark-name-checker-unit PROPERTIES LABELS atx_vol)
 endif()
 
+# Structured vol-surface analytics throughput: the full compute_surface_analytics
+# bundle (term structure + skew/wing + RND + var-swap), the density-off bundle,
+# the risk-neutral-density and var-swap primitives, and the two-surface diff.
+# Reuses the testkit skewed-surface fixture (tests/support/analytics_fixture.hpp)
+# via the same-directory quoted include, so — like atx-vol-fitting-bench — it
+# needs ../tests as an extra PRIVATE quoted-include root (bench/ has no sibling
+# support/ analytics fixture).
+add_executable(atx-vol-analytics-bench
+    bench_main.cpp
+    analytics_bench.cpp
+)
+target_link_libraries(atx-vol-analytics-bench
+    PRIVATE
+        atx::vol
+        atx::core
+        benchmark::benchmark
+        atx_warnings
+        Threads::Threads
+)
+target_include_directories(atx-vol-analytics-bench
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../tests
+)
+
 # Correctness-first V2 pipeline release gate. This target owns its main() and
 # computes admitted-only p50/p95 distributions directly because rejected fits
 # must not enter Google Benchmark's iteration timing population.

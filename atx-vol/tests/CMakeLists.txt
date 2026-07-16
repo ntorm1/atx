@@ -103,6 +103,10 @@ add_executable(atx-vol-tests
     surface_db_backtest_test.cpp
     surface_db_populate_test.cpp
     mag7_dispersion_backtest_test.cpp
+    analytics_primitives_test.cpp
+    analytics_density_test.cpp
+    analytics_aggregate_test.cpp
+    analytics_io_test.cpp
 )
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).
