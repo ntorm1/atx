@@ -323,6 +323,23 @@ Branch `feat/sota-a-american`, base `main@7fca341`. Strict Debug (dev, counters-
 
 **Exit status:** strict Debug green — full `atx_vol_fast` 1469/1470 and `atx-core` Parquet 61/61 pass; the only Debug failures, `SurfaceV2Provenance.ValidationFallbackAdmissionRecordsTheServedFamily` (fast) and `OpraBreadthCorpus.UnifiedPolicyFitsEveryAvailableBoard` (slow), are **proven pre-existing** (both fail identically with S4 reverted / at the pre-sub-sprint baseline; production eSSVI/v2 path, Sprint-R territory, not touched by this sub-sprint). CStar is isolated R&D throughout — no `curve_selector.cpp` / production wiring.
 
+### Sprint I — step S5 real-OPRA outcome (panel agent, branch `feat/sota-i-panel`, base c3a8ebe)
+
+`atx-vol-cstar-panel` builds clean (`/W4 /WX`) in the worktree; `--synthetic` runs on any checkout (table reproduces the S5 A/B). The `--real` mode was generalized **inside `examples/cstar_panel.cpp` only** (new `discover_opra_boards` + `--symbols`/CSV; read-only reuse of `load_opra_cbbo_parquet` → `data_install` → `Universe` chains + read-only `VolaSession` forward/carry; **no pipeline/library TU touched**) and **ran on real Databento OPRA**.
+
+**Data note:** the PLAN's 25-name recovery cohort (`CZR,RPRX,…,GGG`) is **data-gated — not on disk**. The only real OPRA present is `C:\atx-data\spy-dispersion\opra\<SYM>\<date>.parquet` = **SPY + 10 mega-caps (AAPL,AMZN,AVGO,GOOGL,JPM,LLY,META,MSFT,NVDA,XOM), 2026-01-02/-05/-06**, which the run used instead.
+
+| Item | Result |
+|---|---|
+| Real boards run | SPY×3 dates (81 exp) + 10 mega-caps×3 dates (555 exp); 636 expiries, ~29k paired obs |
+| Coverage (CStar admits) | SPY **9/81 (89% gap)**; cohort 478/555 (14% gap) — vs eSSVI 100% both |
+| Vol-RMSE (CStar/eSSVI) | SPY 0.0325/0.0218 (1.49×); cohort 0.0258/0.0110 (**2.35× WORSE**) — fails `vol-RMSE ≤ prior` |
+| In-band | SPY 15.6% vs 3.6%; cohort **70.9% vs 42.8%** (CStar better) |
+| Price-χ² | SPY 1068 vs 1711; cohort **21.5 vs 34.4** (CStar better) |
+| Butterfly-arb flags | CStar SPY **3**, cohort 1; eSSVI **0** both. gneg: SPY 3, cohort 2 |
+| Fit wall | eSSVI 1.5–3.2 ms/slice, CStar 12–16 ms (**5–8×**) |
+| **Recommendation** | **KEEP R&D — do NOT include, do NOT kill.** Synthetic modal win does not generalize: vol-RMSE regresses, SPY admission collapses, new arb flags. Narrow single-name-only R&D path (GOOGL/META/MSFT/JPM/XOM show real price-χ²/in-band gains) once vol-RMSE regression + admission fragility are fixed. Evidence + blockers in `docs/reviews/2026-07-16-cstar-vs-essvi-evidence-panel.md`. No `curve_selector.cpp` change — dispatcher owns the ladder call. |
+
 ---
 
 ## 7. Multi-sprint roadmap
