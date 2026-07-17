@@ -2,9 +2,11 @@
 //
 // Built with -mavx2 -mfma (see atx-vol/CMakeLists.txt). Called only when the
 // dispatch layer confirms AVX2+FMA at runtime. Lane-parallel across 4 contracts;
-// the n % 4 tail and any degenerate/deep-wing lanes fall through to the exact
-// scalar kernel atx::vol::black76_greeks, which keeps the batch bit-for-bit with
-// the scalar source of truth wherever the Chebyshev-Φ core would lose accuracy.
+// the n % 4 tail and any degenerate lanes fall through to the exact scalar
+// kernel atx::vol::black76_greeks. Φ is the full-range Cody rational-erfc form
+// (detail/vector_math.hpp), machine-accurate on the entire real line, so the
+// vectorized Greeks track the scalar source of truth to ≈1e-16 everywhere —
+// deep wings included — and no |d| wing patch is needed (K2).
 //
 // ── One vector core, two scatters (P3.4) ──────────────────────────────────
 // The 4-lane math is computed ONCE per block into stack columns (greeks_block);
@@ -16,7 +18,7 @@
 //
 // Per 4-lane pass (shares the d1/d2/Φ math with the pricer):
 //   v    = σ·√T,  d1 = (ln(F/K) + ½v²)/v,  d2 = d1 - v
-//   Φ(·) = Chebyshev-Clenshaw (fused Φ(d1)+Φ(d2)),  φ(d1) = vectorized pdf
+//   Φ(·) = ½·erfc(−·/√2), Cody rational erfc (fused Φ(d1)+Φ(d2)), φ(d1) = pdf
 //   price/delta are side-dependent; the remaining seven Greeks are call/put
 //   symmetric. Field formulas match src/greeks.cpp exactly, including the
 //   calendar-time theta (∂P/∂t = -∂P/∂T) and rho = -T·price sign conventions:
@@ -25,11 +27,10 @@
 //     theta = r·price - df·F·φ(d1)·σ/(2√T)
 //     charm = r·delta + df·φ(d1)·d2/(2T)   rho = -T·price
 // Degenerate lanes (T ≤ 0 or σ ≤ 0) get dummy finite inputs to stay branchless,
-// then are patched; deep-wing lanes (|d1|,|d2| > kNormCdfWing) are patched too.
+// then are patched, as are the rare NaN-d lanes (R-22).
 
 #include "greeks_batch_avx2.hpp"
 
-#include "atx/vol/detail/norm_cdf_cheb.hpp"
 #include "atx/vol/detail/vector_math.hpp"
 #include "atx/vol/greeks.hpp"
 #include "atx/vol/simd/greeks_batch.hpp"
@@ -40,8 +41,8 @@
 
 namespace atx::vol::simd::detail {
 
-// Pull in the shared 4-lane transcendentals (log_pd/exp_pd/norm_cdf_pd2/
-// norm_pdf_pd) and Chebyshev table, which live in atx::vol::detail.
+// Pull in the shared 4-lane transcendentals (log_pd/exp_pd/norm_cdf_erfc_pd2/
+// norm_pdf_pd), which live in atx::vol::detail.
 using namespace atx::vol::detail;
 
 namespace {
@@ -78,23 +79,27 @@ ATX_FORCE_INLINE __m256d input_patch_mask(__m256d F, __m256d K, __m256d T, __m25
   return _mm256_or_pd(patch, _mm256_cmp_pd(df, zero, _CMP_LE_OQ));
 }
 
-// Lanes needing the exact scalar path: degenerate (T ≤ 0 or σ ≤ 0), deep-wing
-// (either d exceeds the accurate interior), OR a non-finite d. Returns a 4-bit
-// movemask. R-22: the wing compares are ORDERED (false for NaN), so a NaN d
-// produced by finite inputs (F/K under/overflow with a σ²T overflow → ±inf
-// cancellation) escaped them. An unordered self-compare (NaN iff x != x) routes
-// such a lane to the scalar kernel, which returns NaN, matching it exactly. (K2's
-// erfc Φ also propagates NaN rather than clamping it, so the two agree either
-// way; this makes the routing explicit and robust to future Φ changes.)
+// Lanes needing the exact scalar path: degenerate (T ≤ 0 or σ ≤ 0) OR a
+// NON-FINITE d (±inf or NaN). Returns a 4-bit movemask.
+//
+// K2 wing-patch removal (accuracy-improving): the deep-wing |d| > kNormCdfWing
+// escape for FINITE d is GONE. It existed only because the degree-48
+// Chebyshev–Clenshaw Φ lost accuracy past |d| ≈ 6; the Cody rational-erfc Φ
+// (norm_cdf_erfc_pd2) that now feeds this kernel is full double precision across
+// the ENTIRE real line (and exp_pd flushes its deep-underflow tail to 0), so a
+// finite deep-wing lane computes its Greeks on the vector path to ≈1e-16 instead
+// of routing to scalar; tests/simd_greeks_test.cpp gates the wing lanes.
+//
+// Non-finite d (retained, correctness — NOT accuracy): d can be NaN (R-22: FINITE
+// F/K under/overflow with a σ²T overflow → ±inf cancellation) or ±inf (log_pd of
+// an under/overflowed F/K plus a ½v² overflow). The retired ORDERED wing compares
+// caught ±inf but not NaN; an unordered self-compare caught NaN but not ±inf.
+// `nonfinite_mask` (magnitude > DBL_MAX, unordered-true) catches BOTH in one test,
+// routing such a lane to the scalar source of truth — independent of Φ accuracy,
+// so it stays now the finite-wing patch is gone.
 ATX_FORCE_INLINE int patch_bits(__m256d degen, __m256d d1, __m256d d2) noexcept {
-  const __m256d w = _mm256_set1_pd(kNormCdfWing);
-  const __m256d nw = _mm256_set1_pd(-kNormCdfWing);
-  const __m256d wing = _mm256_or_pd(
-      _mm256_or_pd(_mm256_cmp_pd(d1, w, _CMP_GT_OQ), _mm256_cmp_pd(d1, nw, _CMP_LT_OQ)),
-      _mm256_or_pd(_mm256_cmp_pd(d2, w, _CMP_GT_OQ), _mm256_cmp_pd(d2, nw, _CMP_LT_OQ)));
-  const __m256d nan_d = _mm256_or_pd(_mm256_cmp_pd(d1, d1, _CMP_UNORD_Q),
-                                     _mm256_cmp_pd(d2, d2, _CMP_UNORD_Q));
-  return _mm256_movemask_pd(_mm256_or_pd(_mm256_or_pd(degen, wing), nan_d));
+  const __m256d nonfinite_d = _mm256_or_pd(nonfinite_mask(d1), nonfinite_mask(d2));
+  return _mm256_movemask_pd(_mm256_or_pd(degen, nonfinite_d));
 }
 
 // One 4-lane block, computed into aligned stack columns. The eight Greeks + price
@@ -132,8 +137,10 @@ ATX_FORCE_INLINE int greeks_block(const double *F, const double *K, const double
 
   __m256d Nd1, Nd2;
   // K2 (accuracy-improving): full-range Cody rational-erfc Φ (≈1e-16) replaces
-  // the degree-48 Chebyshev–Clenshaw (~1e-11). The patch mask (degenerate +
-  // |d|>kNormCdfWing) is retained, so PatchedLanesAreBitExact still holds.
+  // the degree-48 Chebyshev–Clenshaw (~1e-11), retiring the deep-wing patch — the
+  // patch mask now covers only degenerate + NaN-d lanes (see patch_bits). Deep-
+  // wing lanes compute here; DegenerateLanesAreBitExact still gates the patched
+  // rows and DeepWingLanesMatchScalarTightly gates the wing rows.
   norm_cdf_erfc_pd2(d1, d2, Nd1, Nd2);
   const __m256d phi = norm_pdf_pd(d1);   // φ(d1), shared across Greeks
 

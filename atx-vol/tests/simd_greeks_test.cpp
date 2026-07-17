@@ -5,10 +5,11 @@
 // vectorized result reproduces the scalar per-contract atx::vol::black76_greeks
 // to full risk accuracy across all eight sensitivities + price, including the
 // awkward cases the SIMD path must special-case: n not a multiple of 4 (scalar
-// tail), degenerate lanes (T ≤ 0 or σ ≤ 0), and deep-wing lanes (|d| large) that
-// the kernel patches through the exact scalar path. If AVX2 is absent the batch
-// runs the scalar loop and these become identity checks — still valid, just
-// trivially exact.
+// tail) and degenerate lanes (T ≤ 0 or σ ≤ 0) that the kernel patches through
+// the exact scalar path. Deep-wing lanes (|d| large) are NO LONGER patched (K2):
+// the Cody rational-erfc Φ prices them on the vector path to machine accuracy.
+// If AVX2 is absent the batch runs the scalar loop and these become identity
+// checks — still valid, just trivially exact.
 
 #include "atx/vol/simd/greeks_batch.hpp"
 
@@ -58,7 +59,8 @@ Batch make_grid() {
   b.push(100.0, 95.0, 0.0, 0.20, 0.03, 1.0, Side::Call);
   b.push(100.0, 105.0, -1.0, 0.20, 0.03, 1.0, Side::Put);
   b.push(100.0, 100.0, 0.5, 0.0, 0.03, 0.98, Side::Call);
-  // Deep-wing lanes: |d| far beyond the Chebyshev interior (patched to scalar).
+  // Deep-wing lanes: |d| far beyond the old Chebyshev interior. Post-K2 these
+  // price on the vector Cody-erfc Φ (no wing patch); see DeepWingLanesMatchScalar.
   b.push(100.0, 5.0, 2.0, 0.10, 0.03, 0.95, Side::Call);
   b.push(100.0, 5000.0, 2.0, 0.10, 0.03, 0.95, Side::Put);
   return b;
@@ -110,10 +112,13 @@ TEST(SimdBlack76GreeksBatch, MatchesScalarAcrossGrid) {
   EXPECT_LT(m_delta, kAbs);
 }
 
-// Degenerate + deep-wing rows are patched through the scalar kernel, so they
-// must reproduce it bit-for-bit (up to ULP). The five special rows sit at the
-// tail of make_grid(), straddling a full SIMD group and the scalar tail.
-TEST(SimdBlack76GreeksBatch, PatchedLanesAreBitExact) {
+// The five special rows sit at the tail of make_grid(): the first THREE are
+// degenerate (expired / zero-vol), the last TWO are deep-wing. They straddle a
+// full SIMD group and the scalar tail.
+//
+// Degenerate rows are still routed through the exact scalar kernel by patch_bits
+// (T ≤ 0 or σ ≤ 0), so they must reproduce it bit-for-bit (up to ULP).
+TEST(SimdBlack76GreeksBatch, DegenerateLanesAreBitExact) {
   const Batch b = make_grid();
   const std::size_t n = b.size();
   std::vector<Greeks> got(n);
@@ -121,7 +126,7 @@ TEST(SimdBlack76GreeksBatch, PatchedLanesAreBitExact) {
   simd::black76_greeks_batch(b.F.data(), b.K.data(), b.T.data(), b.sigma.data(),
                              b.r.data(), b.df.data(), b.side.data(), got.data(),
                              price.data(), n);
-  for (std::size_t i = n - 5; i < n; ++i) {
+  for (std::size_t i = n - 5; i < n - 2; ++i) {
     const Black76Greeks w = black76_greeks(b.F[i], b.K[i], b.T[i], b.sigma[i],
                                            b.r[i], b.df[i], b.side[i]);
     EXPECT_DOUBLE_EQ(price[i], w.price) << "i=" << i;
@@ -134,6 +139,45 @@ TEST(SimdBlack76GreeksBatch, PatchedLanesAreBitExact) {
     EXPECT_DOUBLE_EQ(got[i].volga, w.greeks.volga) << "i=" << i;
     EXPECT_DOUBLE_EQ(got[i].charm, w.greeks.charm) << "i=" << i;
   }
+}
+
+// K2 wing-patch removal (accuracy-improving): the two deep-wing rows (|d| ≫ 6)
+// are NO LONGER patched to scalar — they compute their Greeks on the Cody
+// rational-erfc vector Φ, which is full double precision on the entire real line.
+// So each field now matches the std::erfc scalar source of truth to a
+// machine-class tolerance (not bit-for-bit), strictly better than the retired
+// ~1e-11 Chebyshev interior the old wing patch existed to avoid — and orders of
+// magnitude inside the 1e-6 economic price bound.
+TEST(SimdBlack76GreeksBatch, DeepWingLanesMatchScalarTightly) {
+  const Batch b = make_grid();
+  const std::size_t n = b.size();
+  std::vector<Greeks> got(n);
+  std::vector<double> price(n, 0.0);
+  simd::black76_greeks_batch(b.F.data(), b.K.data(), b.T.data(), b.sigma.data(),
+                             b.r.data(), b.df.data(), b.side.data(), got.data(),
+                             price.data(), n);
+  // Absolute floor for the near-zero deep-wing Greeks (gamma/vega/vanna/volga
+  // are ~1e-96 there) plus a tight relative term for the O(1) price/delta/rho.
+  constexpr double kAbs = 1e-9;
+  constexpr double kRel = 1e-11;
+  double m_price = 0.0, m_delta = 0.0, m_gamma = 0.0, m_vega = 0.0, m_theta = 0.0,
+         m_rho = 0.0, m_vanna = 0.0, m_volga = 0.0, m_charm = 0.0;
+  for (std::size_t i = n - 2; i < n; ++i) {
+    const Black76Greeks w = black76_greeks(b.F[i], b.K[i], b.T[i], b.sigma[i],
+                                           b.r[i], b.df[i], b.side[i]);
+    expect_close(price[i], w.price, kAbs, kRel, "price", i, m_price);
+    expect_close(got[i].delta, w.greeks.delta, kAbs, kRel, "delta", i, m_delta);
+    expect_close(got[i].gamma, w.greeks.gamma, kAbs, kRel, "gamma", i, m_gamma);
+    expect_close(got[i].vega, w.greeks.vega, kAbs, kRel, "vega", i, m_vega);
+    expect_close(got[i].theta, w.greeks.theta, kAbs, kRel, "theta", i, m_theta);
+    expect_close(got[i].rho, w.greeks.rho, kAbs, kRel, "rho", i, m_rho);
+    expect_close(got[i].vanna, w.greeks.vanna, kAbs, kRel, "vanna", i, m_vanna);
+    expect_close(got[i].volga, w.greeks.volga, kAbs, kRel, "volga", i, m_volga);
+    expect_close(got[i].charm, w.greeks.charm, kAbs, kRel, "charm", i, m_charm);
+  }
+  std::printf("[SimdBlack76GreeksBatch] deep-wing max abs err: price=%.3e delta=%.3e "
+              "rho=%.3e\n",
+              m_price, m_delta, m_rho);
 }
 
 // The scalar tail (n % 4 != 0) must be handled for every residue class.
@@ -173,7 +217,8 @@ TEST(SimdBlack76GreeksBatch, ZeroLengthIsNoOp) {
 // black76_greeks_batch_soa and black76_greeks_batch share ONE vector core, so the
 // SoA per-greek columns must equal the AoS Greeks[] field-for-field BIT-for-bit
 // (EXPECT_EQ, not a tolerance) — the whole point of the reshape. This straddles a
-// full SIMD group, the scalar tail, and the patched degenerate/deep-wing lanes.
+// full SIMD group, the scalar tail, the patched degenerate lanes, and the
+// vector-priced deep-wing lanes.
 TEST(B76GreeksSoA, MatchesAoSBitIdentical) {
   const Batch b = make_grid();
   const std::size_t n = b.size();

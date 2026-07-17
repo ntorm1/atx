@@ -32,6 +32,10 @@ inline constexpr double kInvLn2 = 1.4426950408889634;
 inline constexpr double kSqrt2 = 1.4142135623730951;
 inline constexpr double kExpHi = 709.782712893384;
 inline constexpr double kExpLo = -745.13321910194;
+// ln(DBL_MIN): below this, exp(x) is denormal or zero. The 2^N reconstruction in
+// exp_pd builds only NORMALIZED doubles (biased exponent ≥ 1), so it emits
+// garbage there; lanes at or below this threshold are flushed to 0 instead.
+inline constexpr double kExpMinNormal = -708.3964185322641;
 inline constexpr double kInvSqrt2Pi = 0.398942280401432677939946059934381868;
 
 // Natural log, 4-lane. Full double accuracy on positive normals; the caller
@@ -84,7 +88,16 @@ ATX_FORCE_INLINE __m256d log_pd(__m256d x) noexcept {
 
 // exp, 4-lane. Clamped to the representable range; Cody-Waite reduction to
 // r ∈ [-ln2/2, ln2/2] then a degree-11 Taylor series and 2^N scaling.
+//
+// Underflow (correctness): the 2^N step below reconstructs a NORMALIZED double
+// from a biased exponent, so it cannot represent a denormal or zero result and
+// would emit garbage for x < ln(DBL_MIN). exp(x) there is ≤ one denormal ULP, so
+// such lanes are flushed to exactly 0.0 — matching std::exp to within a denormal.
+// This is what lets the Cody-erfc Φ and the φ pdf evaluate the DEEP wings
+// (|d| ≳ 38, where exp(−½d²) underflows) directly on the vector path, after the
+// K2 wing-patch removal retired the scalar detour that used to hide this.
 ATX_FORCE_INLINE __m256d exp_pd(__m256d x) noexcept {
+    const __m256d underflow = _mm256_cmp_pd(x, _mm256_set1_pd(kExpMinNormal), _CMP_LT_OQ);
     __m256d xc = _mm256_min_pd(_mm256_max_pd(x, _mm256_set1_pd(kExpLo)),
                                _mm256_set1_pd(kExpHi));
 
@@ -112,7 +125,10 @@ ATX_FORCE_INLINE __m256d exp_pd(__m256d x) noexcept {
     const __m256i N64 = _mm256_cvtepi32_epi64(N32);
     const __m256i biased = _mm256_add_epi64(N64, _mm256_set1_epi64x(1023));
     const __m256d two_to_N = _mm256_castsi256_pd(_mm256_slli_epi64(biased, 52));
-    return _mm256_mul_pd(p, two_to_N);
+    const __m256d result = _mm256_mul_pd(p, two_to_N);
+    // Flush the underflow lanes (x < ln(DBL_MIN)) to 0: andnot(mask, v) clears the
+    // lanes where mask is all-ones, keeps the rest bit-for-bit.
+    return _mm256_andnot_pd(underflow, result);
 }
 
 // Standard-normal density φ(x) = (1/√2π)·exp(-½x²), 4-lane.
