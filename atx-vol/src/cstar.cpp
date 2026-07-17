@@ -286,43 +286,296 @@ struct WGradFull {
   return out;
 }
 
-// Roper g(k): butterfly no-arb functional; g ≥ 0 everywhere ⇔ arb-free.
-[[nodiscard]] double roper_g_at(const CStarParams& s, double k) noexcept {
-  const WDerivs d = w_and_derivs(s, k);
-  if (!(d.w > 0.0)) {
-    return -kInf;
+// ── Table-driven no-arb sweep (SPRINT W5.1) ────────────────────────────────
+//
+// The Roper min-g sweep over the fixed 240-point z-grid runs ~100–160×/project
+// (30-iteration bisection × up to 4 mode groups + the 40-iteration c2 fallback).
+// The window values (atm / right-wing / left-wing) and the modal basis B_j with
+// its first two derivatives are functions of z ALONE — the grid and the mode
+// centers are fixed — so they are constant across every sweep and every slice.
+// Precompute them once into a static table; each sweep is then a
+// transcendental-free BLAS-1 pass whose f/f'/f'' are affine combinations of the
+// tabulated columns with the slice's current (θ, s2, c2, wings, β). The
+// arithmetic is identical to f_and_derivs_z (same terms, same order), so the
+// result matches the per-point analytic path to the ULP.
+struct RoperGridTable {
+  std::array<double, kArbGridN> z{};
+  std::array<double, kArbGridN> wa{};    // atm window value/d1/d2
+  std::array<double, kArbGridN> wap{};
+  std::array<double, kArbGridN> wapp{};
+  std::array<double, kArbGridN> wr{};    // right-wing window value/d1/d2
+  std::array<double, kArbGridN> wrp{};
+  std::array<double, kArbGridN> wrpp{};
+  std::array<double, kArbGridN> wl{};    // left-wing window value/d1/d2
+  std::array<double, kArbGridN> wlp{};
+  std::array<double, kArbGridN> wlpp{};
+  std::array<std::array<double, kCStarNModes>, kArbGridN> b{};    // basis value
+  std::array<std::array<double, kCStarNModes>, kArbGridN> bp{};   // basis d1
+  std::array<std::array<double, kCStarNModes>, kArbGridN> bpp{};  // basis d2
+};
+
+[[nodiscard]] const RoperGridTable& roper_grid_table() noexcept {
+  static const RoperGridTable table = [] {
+    RoperGridTable t;
+    for (int i = 0; i < kArbGridN; ++i) {
+      const auto ui = static_cast<std::size_t>(i);
+      const double z = kArbZLo + (kArbZHi - kArbZLo) * static_cast<double>(i) /
+                                     static_cast<double>(kArbGridN - 1);
+      t.z[ui] = z;
+      const WinD2 a = atm_window_d2(z);
+      const WinD2 r = right_wing_window_d2(z);
+      const WinD2 l = left_wing_window_d2(z);
+      t.wa[ui] = a.v;
+      t.wap[ui] = a.d1;
+      t.wapp[ui] = a.d2;
+      t.wr[ui] = r.v;
+      t.wrp[ui] = r.d1;
+      t.wrpp[ui] = r.d2;
+      t.wl[ui] = l.v;
+      t.wlp[ui] = l.d1;
+      t.wlpp[ui] = l.d2;
+      for (std::size_t j = 0; j < kCStarNModes; ++j) {
+        const WinD2 bd = cstar_basis_d2(static_cast<int>(j), z);
+        t.b[ui][j] = bd.v;
+        t.bp[ui][j] = bd.d1;
+        t.bpp[ui][j] = bd.d2;
+      }
+    }
+    return t;
+  }();
+  return table;
+}
+
+// Compact the active mode indices into `out` (length ≥ kCStarNModes); returns
+// the count. Hoisted out of the sweep so the BLAS-1 pass touches only live
+// columns.
+[[nodiscard]] std::size_t active_mode_list(
+    std::uint16_t active_modes,
+    std::array<std::size_t, kCStarNModes>& out) noexcept {
+  std::size_t n = 0;
+  for (std::size_t j = 0; j < kCStarNModes; ++j) {
+    if (mode_active(active_modes, j)) {
+      out[n++] = j;
+    }
   }
-  const double t = 1.0 - k * d.wp / (2.0 * d.w);
-  return t * t - 0.25 * d.wp * d.wp * (1.0 / d.w + 0.25) + 0.5 * d.wpp;
+  return n;
+}
+
+// One grid point's raw variance + k-derivatives from the tabulated columns.
+struct GridPoint {
+  double w{};
+  double wp{};
+  double wpp{};
+  double k{};
+};
+
+[[nodiscard]] GridPoint sweep_point(
+    const RoperGridTable& t, const CStarParams& s, double sqrt_theta,
+    const std::array<std::size_t, kCStarNModes>& active, std::size_t n_active,
+    std::size_t ui) noexcept {
+  const double z = t.z[ui];
+  const double atm = 1.0 + 2.0 * s.s2 * z + s.c2 * z * z;
+  const double atmp = 2.0 * s.s2 + 2.0 * s.c2 * z;
+  const double atmpp = 2.0 * s.c2;
+  const double rl = z * s.C_right + 1.0;
+  const double ll = -z * s.C_left + 1.0;
+
+  double f = t.wa[ui] * atm + t.wr[ui] * rl + t.wl[ui] * ll;
+  double fp = t.wap[ui] * atm + t.wa[ui] * atmp + t.wrp[ui] * rl +
+              t.wr[ui] * s.C_right + t.wlp[ui] * ll + t.wl[ui] * (-s.C_left);
+  double fpp = t.wapp[ui] * atm + 2.0 * t.wap[ui] * atmp + t.wa[ui] * atmpp +
+               t.wrpp[ui] * rl + 2.0 * t.wrp[ui] * s.C_right + t.wlpp[ui] * ll +
+               2.0 * t.wlp[ui] * (-s.C_left);
+  for (std::size_t a = 0; a < n_active; ++a) {
+    const std::size_t j = active[a];
+    const double bj = s.beta[j];
+    f += bj * t.b[ui][j];
+    fp += bj * t.bp[ui][j];
+    fpp += bj * t.bpp[ui][j];
+  }
+  return {s.theta * f, sqrt_theta * fp, fpp, z * sqrt_theta};
+}
+
+// Minimum Roper g over the tabulated grid (with the 1/w division — the exact
+// value the public API returns). theta > 0 is a caller precondition.
+[[nodiscard]] double roper_min_g_tab(const CStarParams& s) noexcept {
+  const RoperGridTable& t = roper_grid_table();
+  const double sqrt_theta = std::sqrt(s.theta);
+  std::array<std::size_t, kCStarNModes> active{};
+  const std::size_t n_active = active_mode_list(s.active_modes, active);
+
+  double g_min = kInf;
+  for (int i = 0; i < kArbGridN; ++i) {
+    const GridPoint p =
+        sweep_point(t, s, sqrt_theta, active, n_active, static_cast<std::size_t>(i));
+    if (!(p.w > 0.0)) {
+      return -kInf;  // degenerate raw variance (matches the per-point −∞ signal)
+    }
+    const double tt = 1.0 - p.k * p.wp / (2.0 * p.w);
+    const double g =
+        tt * tt - 0.25 * p.wp * p.wp * (1.0 / p.w + 0.25) + 0.5 * p.wpp;
+    if (g < g_min) {
+      g_min = g;
+    }
+  }
+  return g_min;
+}
+
+// Division-free butterfly-arb-free predicate: true iff min Roper g ≥ 0.
+//
+// Since w > 0 at every grid point of an arb-free slice, sign(g) = sign(w²·g),
+// and w²·g = (w − ½·k·w')² − ¼·w'²·(w + ¼·w²) + ½·w''·w² has NO 1/w division.
+// The projection's inner bisections only ever sign-test min g ≥ 0, so routing
+// them through this predicate removes the per-point division (the dominant cost)
+// from the ~100–160 sweeps a projection performs — the real S3 win on top of
+// the table. The public cstar_min_roper_g keeps the exact-value form above.
+[[nodiscard]] bool roper_arb_free(const CStarParams& s) noexcept {
+  if (!(s.theta > 0.0)) {
+    return false;
+  }
+  const RoperGridTable& t = roper_grid_table();
+  const double sqrt_theta = std::sqrt(s.theta);
+  std::array<std::size_t, kCStarNModes> active{};
+  const std::size_t n_active = active_mode_list(s.active_modes, active);
+
+  for (int i = 0; i < kArbGridN; ++i) {
+    const GridPoint p =
+        sweep_point(t, s, sqrt_theta, active, n_active, static_cast<std::size_t>(i));
+    if (!(p.w > 0.0)) {
+      return false;
+    }
+    const double whalf = p.w - 0.5 * p.k * p.wp;
+    const double w2g = whalf * whalf -
+                       0.25 * p.wp * p.wp * (p.w + 0.25 * p.w * p.w) +
+                       0.5 * p.wpp * p.w * p.w;
+    if (w2g < 0.0) {
+      return false;
+    }
+  }
+  return true;
 }
 
 // Largest uniform damping factor in [0, 1] on the group's modal coefficients
 // keeping min Roper g ≥ 0 (bisection). Non-group betas are held at `saved`;
 // group betas are set to original[j] · factor. (ats_vol_cstar_arb.c)
+//
+// SPRINT W5.1 — incremental BLAS-1 sweep over the damping factor. The base
+// shape and the NON-group modes are fixed across the 30 bisection iterations;
+// only the group's contribution scales linearly with `factor`. So the fixed
+// part f0/f0'/f0'' and the scalable part g/g'/g'' (group modes at `original`
+// amplitude) are precomputed ONCE per bisection into six L1-resident grid
+// vectors — one pass over the 63 KB static table — and each iteration is then a
+// division-free f = f0 + factor·g sweep over cache-resident data. This replaces
+// the prior 30 full re-sweeps of the table (the projection was memory-bound
+// streaming the mode columns on every damping evaluation). Same betas at every
+// factor ⇒ the same converged damping to within FP reassociation.
 [[nodiscard]] double bisect_group_damping(
     CStarParams& s, std::uint16_t group_mask,
     const std::array<double, kCStarNModes>& original) noexcept {
-  std::array<double, kCStarNModes> saved = s.beta;
+  const std::array<double, kCStarNModes> saved = s.beta;
 
-  if (cstar_min_roper_g(s) >= 0.0) {
+  if (roper_arb_free(s)) {
     return 1.0;
   }
+
+  const RoperGridTable& t = roper_grid_table();
+  const double sqrt_theta = std::sqrt(s.theta);
+
+  // Partition active modes into fixed (non-group, at `saved`) and scalable
+  // (group, at `original`).
+  std::array<std::size_t, kCStarNModes> fixed{};
+  std::array<std::size_t, kCStarNModes> grp{};
+  std::size_t n_fixed = 0;
+  std::size_t n_grp = 0;
+  for (std::size_t j = 0; j < kCStarNModes; ++j) {
+    if (!mode_active(s.active_modes, j)) {
+      continue;
+    }
+    if (mode_active(group_mask, j)) {
+      grp[n_grp++] = j;
+    } else {
+      fixed[n_fixed++] = j;
+    }
+  }
+
+  // Precompute f0/f0'/f0'' (base + fixed modes) and g/g'/g'' (group at original).
+  std::array<double, kArbGridN> f0{};
+  std::array<double, kArbGridN> f0p{};
+  std::array<double, kArbGridN> f0pp{};
+  std::array<double, kArbGridN> gc{};
+  std::array<double, kArbGridN> gcp{};
+  std::array<double, kArbGridN> gcpp{};
+  for (int i = 0; i < kArbGridN; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    const double z = t.z[ui];
+    const double atm = 1.0 + 2.0 * s.s2 * z + s.c2 * z * z;
+    const double atmp = 2.0 * s.s2 + 2.0 * s.c2 * z;
+    const double atmpp = 2.0 * s.c2;
+    const double rl = z * s.C_right + 1.0;
+    const double ll = -z * s.C_left + 1.0;
+    double f = t.wa[ui] * atm + t.wr[ui] * rl + t.wl[ui] * ll;
+    double fp = t.wap[ui] * atm + t.wa[ui] * atmp + t.wrp[ui] * rl +
+                t.wr[ui] * s.C_right + t.wlp[ui] * ll + t.wl[ui] * (-s.C_left);
+    double fpp = t.wapp[ui] * atm + 2.0 * t.wap[ui] * atmp + t.wa[ui] * atmpp +
+                 t.wrpp[ui] * rl + 2.0 * t.wrp[ui] * s.C_right +
+                 t.wlpp[ui] * ll + 2.0 * t.wlp[ui] * (-s.C_left);
+    for (std::size_t a = 0; a < n_fixed; ++a) {
+      const std::size_t j = fixed[a];
+      f += saved[j] * t.b[ui][j];
+      fp += saved[j] * t.bp[ui][j];
+      fpp += saved[j] * t.bpp[ui][j];
+    }
+    f0[ui] = f;
+    f0p[ui] = fp;
+    f0pp[ui] = fpp;
+    double g = 0.0;
+    double gp = 0.0;
+    double gpp = 0.0;
+    for (std::size_t a = 0; a < n_grp; ++a) {
+      const std::size_t j = grp[a];
+      g += original[j] * t.b[ui][j];
+      gp += original[j] * t.bp[ui][j];
+      gpp += original[j] * t.bpp[ui][j];
+    }
+    gc[ui] = g;
+    gcp[ui] = gp;
+    gcpp[ui] = gpp;
+  }
+
+  const auto arb_free_at = [&](double factor) noexcept -> bool {
+    for (int i = 0; i < kArbGridN; ++i) {
+      const auto ui = static_cast<std::size_t>(i);
+      const double f = f0[ui] + factor * gc[ui];
+      const double w = s.theta * f;
+      if (!(w > 0.0)) {
+        return false;
+      }
+      const double fp = f0p[ui] + factor * gcp[ui];
+      const double fpp = f0pp[ui] + factor * gcpp[ui];
+      const double wp = sqrt_theta * fp;
+      const double k = t.z[ui] * sqrt_theta;
+      const double whalf = w - 0.5 * k * wp;
+      const double w2g =
+          whalf * whalf - 0.25 * wp * wp * (w + 0.25 * w * w) + 0.5 * fpp * w * w;
+      if (w2g < 0.0) {
+        return false;
+      }
+    }
+    return true;
+  };
 
   double lo = 0.0;
   double hi = 1.0;
   for (int it = 0; it < 30; ++it) {
     const double mid = 0.5 * (lo + hi);
-    for (std::size_t j = 0; j < kCStarNModes; ++j) {
-      s.beta[j] = mode_active(group_mask, j) ? original[j] * mid : saved[j];
-    }
-    if (cstar_min_roper_g(s) >= 0.0) {
+    if (arb_free_at(mid)) {
       lo = mid;
     } else {
       hi = mid;
     }
   }
-  for (std::size_t j = 0; j < kCStarNModes; ++j) {
-    s.beta[j] = mode_active(group_mask, j) ? original[j] * lo : saved[j];
+  for (std::size_t a = 0; a < n_grp; ++a) {
+    s.beta[grp[a]] = original[grp[a]] * lo;  // non-group betas already == saved
   }
   return lo;
 }
@@ -728,19 +981,10 @@ double cstar_min_roper_g(const CStarParams& s) noexcept {
   if (!(s.theta > 0.0)) {
     return -kInf;
   }
-  const double sqrt_theta = std::sqrt(s.theta);
-  const double k_lo = kArbZLo * sqrt_theta;
-  const double k_hi = kArbZHi * sqrt_theta;
-  double g_min = kInf;
-  for (int i = 0; i < kArbGridN; ++i) {
-    const double k = k_lo + (k_hi - k_lo) * static_cast<double>(i) /
-                                static_cast<double>(kArbGridN - 1);
-    const double g = roper_g_at(s, k);
-    if (g < g_min) {
-      g_min = g;
-    }
-  }
-  return g_min;
+  // Table-driven BLAS-1 sweep (SPRINT W5.1): the constant window/basis columns
+  // are precomputed once, so the ~100–160 sweeps a projection performs no longer
+  // recompute the modal basis and smooth-step windows at every grid point.
+  return roper_min_g_tab(s);
 }
 
 Status cstar_arb_project(CStarParams& s) {
@@ -748,7 +992,7 @@ Status cstar_arb_project(CStarParams& s) {
     return Err(ErrorCode::InvalidArgument, "cstar_arb_project: theta must be > 0");
   }
 
-  if (cstar_min_roper_g(s) >= 0.0) {
+  if (roper_arb_free(s)) {
     s.arb_damping = 1.0;
     return Ok();
   }
@@ -775,7 +1019,7 @@ Status cstar_arb_project(CStarParams& s) {
         original[j] = s.beta[j];
       }
     }
-    if (cstar_min_roper_g(s) >= 0.0) {
+    if (roper_arb_free(s)) {
       s.arb_damping = damping_min;
       return Ok();
     }
@@ -795,11 +1039,11 @@ Status cstar_arb_project(CStarParams& s) {
   double c2_feasible = 0.0;
   double c2_infeasible = c2_orig;
   s.c2 = c2_feasible;
-  if (cstar_min_roper_g(s) >= 0.0) {
+  if (roper_arb_free(s)) {
     for (int it = 0; it < 40; ++it) {
       const double mid = 0.5 * (c2_feasible + c2_infeasible);
       s.c2 = mid;
-      if (cstar_min_roper_g(s) >= 0.0) {
+      if (roper_arb_free(s)) {
         c2_feasible = mid;  // push the feasible endpoint toward the original
       } else {
         c2_infeasible = mid;
@@ -822,7 +1066,7 @@ Status cstar_arb_project(CStarParams& s) {
                "cstar_arb_project: raw shape variance non-positive after "
                "projection");
   }
-  if (!(cstar_min_roper_g(s) >= 0.0)) {
+  if (!roper_arb_free(s)) {
     return Err(ErrorCode::Unavailable,
                "cstar_arb_project: butterfly arbitrage persists after "
                "projection");

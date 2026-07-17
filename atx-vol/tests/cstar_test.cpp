@@ -342,6 +342,82 @@ TEST(CStarWAndGrad, RejectsNonPositiveTheta) {
   EXPECT_FALSE(cstar_slice_w_and_grad(s, 0.0).has_value());
 }
 
+// ── S3: table-driven no-arb projection (SPRINT W5.1) ─────────────────────────
+
+namespace {
+// Independent per-point reference min Roper g, using the public per-point
+// (non-tabulated) analytic derivatives. Mirrors the internal grid: 240 points
+// over z ∈ [-5.5, +5.5] (kArbGridN / kArbZLo / kArbZHi in cstar.cpp). Validates
+// that the table-driven sweep did not change the value it computes.
+double ref_min_roper_g(const CStarParams& s) {
+  const double sqrt_theta = std::sqrt(s.theta);
+  double g_min = std::numeric_limits<double>::infinity();
+  for (int i = 0; i < 240; ++i) {
+    const double z = -5.5 + 11.0 * static_cast<double>(i) / 239.0;
+    const double k = z * sqrt_theta;
+    const auto d = cstar_slice_w_derivs(s, k);
+    if (!(d.w > 0.0)) {
+      return -std::numeric_limits<double>::infinity();
+    }
+    const double t = 1.0 - k * d.wp / (2.0 * d.w);
+    const double g = t * t - 0.25 * d.wp * d.wp * (1.0 / d.w + 0.25) + 0.5 * d.wpp;
+    g_min = std::min(g_min, g);
+  }
+  return g_min;
+}
+}  // namespace
+
+TEST(CStarMinRoperG, TableDriven_MatchesPerPointReference) {
+  std::vector<CStarParams> fixtures;
+  fixtures.push_back(make_test_slice());  // C16 curvature + modes
+  {
+    CStarParams flat{};
+    flat.T = 0.05;
+    flat.F = 100.0;
+    flat.theta = 0.03;
+    flat.C_left = 0.05;
+    flat.C_right = 0.05;
+    flat.active_modes = cstar_tier_mask(CStarTier::C5);
+    fixtures.push_back(flat);
+  }
+  {
+    CStarParams arb = make_test_slice();  // mildly arb via a modal spike
+    arb.beta[5] = 0.15;
+    fixtures.push_back(arb);
+  }
+  for (const CStarParams& s : fixtures) {
+    const double ref = ref_min_roper_g(s);
+    const double got = cstar_min_roper_g(s);
+    EXPECT_NEAR(got, ref, 1.0e-9 + 1.0e-7 * std::fabs(ref));
+  }
+}
+
+// The incremental modal-damping path (division-free predicate + precomputed
+// fixed/scalable contributions) must still drive a genuinely arb-violating C16
+// slice to butterfly-arb-free — the projection-equivalence gate for S3.
+TEST(CStarArbProject, ModalArb_IncrementalDamping_ProducesArbFree) {
+  // Gently-shaped (arb-free) base with an ATM modal spike as the sole arb
+  // source, so damping the ATM group resolves it cleanly.
+  CStarParams s{};
+  s.T = 0.08;
+  s.F = 100.0;
+  s.theta = 0.04;
+  s.s2 = -0.06;
+  s.c2 = 0.20;
+  s.C_left = 0.22;
+  s.C_right = 0.16;
+  s.active_modes = cstar_tier_mask(CStarTier::C16);
+  s.beta[5] = 0.35;  // strong ATM convexity spike => butterfly violation
+  s.beta[4] = -0.20;
+  s.beta[6] = -0.20;
+  ASSERT_LT(cstar_min_roper_g(s), 0.0);  // precondition: arb present
+
+  const auto rc = cstar_arb_project(s);
+  ASSERT_TRUE(rc.has_value());
+  EXPECT_GE(cstar_min_roper_g(s), -1.0e-9);  // resolved to arb-free
+  EXPECT_LT(s.arb_damping, 1.0);             // some damping was applied
+}
+
 // ── Block extraction (mirror test_vol_cstar_blocks.c) ───────────────────────
 
 TEST(CStarBlocks, BaseBlock_ExtractsFirst5Partials) {
