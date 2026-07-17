@@ -63,15 +63,23 @@ ATX_FORCE_INLINE __m256d input_patch_mask(__m256d F, __m256d K, __m256d T, __m25
   return _mm256_or_pd(patch, _mm256_cmp_pd(df, zero, _CMP_LE_OQ));
 }
 
-// Lanes needing the exact scalar path: degenerate (T ≤ 0 or σ ≤ 0) OR deep-wing
-// (either d exceeds the Chebyshev-accurate interior). Returns a 4-bit movemask.
+// Lanes needing the exact scalar path: degenerate (T ≤ 0 or σ ≤ 0), deep-wing
+// (either d exceeds the accurate interior), OR a non-finite d. Returns a 4-bit
+// movemask. R-22: the wing compares are ORDERED (false for NaN), so a NaN d
+// produced by finite inputs (F/K under/overflow with a σ²T overflow → ±inf
+// cancellation) escaped them. An unordered self-compare (NaN iff x != x) routes
+// such a lane to the scalar kernel, which returns NaN, matching it exactly. (K2's
+// erfc Φ also propagates NaN rather than clamping it, so the two agree either
+// way; this makes the routing explicit and robust to future Φ changes.)
 ATX_FORCE_INLINE int patch_bits(__m256d degen, __m256d d1, __m256d d2) noexcept {
   const __m256d w = _mm256_set1_pd(kNormCdfWing);
   const __m256d nw = _mm256_set1_pd(-kNormCdfWing);
   const __m256d wing = _mm256_or_pd(
       _mm256_or_pd(_mm256_cmp_pd(d1, w, _CMP_GT_OQ), _mm256_cmp_pd(d1, nw, _CMP_LT_OQ)),
       _mm256_or_pd(_mm256_cmp_pd(d2, w, _CMP_GT_OQ), _mm256_cmp_pd(d2, nw, _CMP_LT_OQ)));
-  return _mm256_movemask_pd(_mm256_or_pd(degen, wing));
+  const __m256d nan_d = _mm256_or_pd(_mm256_cmp_pd(d1, d1, _CMP_UNORD_Q),
+                                     _mm256_cmp_pd(d2, d2, _CMP_UNORD_Q));
+  return _mm256_movemask_pd(_mm256_or_pd(_mm256_or_pd(degen, wing), nan_d));
 }
 
 struct PerLaneExpiry {
