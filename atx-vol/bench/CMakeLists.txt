@@ -228,6 +228,22 @@ target_link_libraries(atx-vol-cstar-bench
         Threads::Threads
 )
 
+# Whole-universe cycle-time harness (Sub-Sprint S / S6). Ingest -> fit -> archive
+# per-stage breakdown over a self-contained 3-name smoke universe, Iterations(1)
+# corpus-style. Harness only — no baseline recorded this sprint.
+add_executable(atx-vol-universe-cycle-bench
+    bench_main.cpp
+    universe_cycle_bench.cpp
+)
+target_link_libraries(atx-vol-universe-cycle-bench
+    PRIVATE
+        atx::vol
+        atx::core
+        benchmark::benchmark
+        atx_warnings
+        Threads::Threads
+)
+
 # CStar vs eSSVI evidence panel (Sub-Sprint S / S5). A standalone tool (its own
 # main(), no benchmark::benchmark) that fits both engines to identical per-board
 # observations and prints the ladder-decision metrics. Sourced from examples/ but
