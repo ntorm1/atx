@@ -192,11 +192,39 @@ struct CStarParams {
 // Per-slice implied vol sqrt(w / T). NaN if T ≤ 0 or w non-positive.
 [[nodiscard]] double cstar_slice_iv(const CStarParams& s, double k_log) noexcept;
 
+// RAW total variance and its first two log-moneyness derivatives.
+struct CStarWDerivs {
+  double w{};    // θ·f(z)              (un-floored; may be ≤ 0 if degenerate)
+  double wp{};   // ∂w/∂k = √θ·f'(z)
+  double wpp{};  // ∂²w/∂k² = f''(z)
+};
+
+// Total variance w and its first two k-derivatives (w, w', w'') in closed form
+// from the modal shape — the exact w'' used by the butterfly (Roper) no-arb
+// gate, replacing the prior central-FD w'' that lost ~8 digits to cancellation.
+// The variance is RAW (un-floored): distinct from cstar_slice_w's public 1e-12
+// floor, so a degenerate shape reports w ≤ 0 rather than a masked positive.
+// All three components NaN when theta ≤ 0.
+[[nodiscard]] CStarWDerivs cstar_slice_w_derivs(const CStarParams& s,
+                                                double k_log) noexcept;
+
 // Gradient ∂w/∂(theta, s2, c2, C_left, C_right, beta[0..10]) — 16 partials in
 // the canonical order. nullopt when theta ≤ 0 (undefined z). theta enters both
 // as the multiplicative level and through z = k/√theta; both are accounted for.
 [[nodiscard]] std::optional<std::array<double, kCStarNParams>>
 cstar_slice_grad_w(const CStarParams& s, double k_log) noexcept;
+
+// Floored total variance w AND the 16-partial gradient in a SINGLE shape
+// evaluation — the fused form the LM normal-equations build consumes so each
+// observation traverses the modal shape once per iteration instead of twice.
+// `w` matches cstar_slice_w; `grad` matches cstar_slice_grad_w. nullopt when
+// theta ≤ 0.
+struct CStarWGrad {
+  double w{};
+  std::array<double, kCStarNParams> grad{};
+};
+[[nodiscard]] std::optional<CStarWGrad> cstar_slice_w_and_grad(
+    const CStarParams& s, double k_log) noexcept;
 
 // ── Block accessors (block-coordinate LM support) ──────────────────────────
 
@@ -224,14 +252,31 @@ void cstar_apply_block_step(CStarParams& s, CStarBlock block,
 
 // ── No-arb (butterfly) projection ──────────────────────────────────────────
 
+// Raw-shape validity predicate (distinct from the public variance floor): true
+// iff theta > 0 and the un-floored raw variance θ·f(z) is finite and strictly
+// positive across the no-arb grid. cstar_slice_w() floors to 1e-12 for safe
+// evaluation; this predicate answers whether the model itself yields a valid
+// (positive) variance without that floor. Used by the projection's
+// post-completion validation to distinguish a degenerate shape (raw variance
+// ≤ 0) from a residual butterfly violation.
+[[nodiscard]] bool cstar_shape_valid(const CStarParams& s) noexcept;
+
 // Minimum Roper g(k) over a dense z-grid (240 knots on z ∈ [-5.5, +5.5]).
 // NaN for a null-ish (theta ≤ 0) slice's -infinity signal is folded here.
 [[nodiscard]] double cstar_min_roper_g(const CStarParams& s) noexcept;
 
 // Project the slice to no-arb by damping modal coefficients in priority order
 // (far-wing → shoulder → near-wing → ATM), then base curvature as a fallback.
-// Sets `arb_damping` ∈ [0, 1]. InvalidArgument if theta ≤ 0. Not noexcept: the
-// error path constructs a diagnostic string.
+// Sets `arb_damping` ∈ [0, 1]. On completion runs a post-projection
+// no-arbitrage validation and PROPAGATES failure (it no longer returns Ok
+// unconditionally):
+//   • InvalidArgument — theta ≤ 0 (precondition).
+//   • OutOfRange      — raw shape variance non-positive after projection
+//                       (degenerate model; cstar_shape_valid fails).
+//   • Unavailable     — butterfly arbitrage persists after projection
+//                       (min Roper g < 0 with a positive raw variance).
+// On success the slice is butterfly-arb-free on the grid. Not noexcept: the
+// error paths construct diagnostic strings.
 [[nodiscard]] Status cstar_arb_project(CStarParams& s);
 
 // ── Calendar projection (surface-level, operating on a slice span) ─────────

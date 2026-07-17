@@ -186,4 +186,16 @@ private:
 
 [[nodiscard]] Result<ParquetTable> read_parquet(std::string_view path);
 
+// Column-projected read: decodes ONLY `columns` (in the given order), leaving
+// every other column in the file untouched — the decoded-byte win for consumers
+// that use a small fixed subset. Arrow's INTERNAL read threads are turned OFF so
+// the caller's outer thread pool owns all parallelism (no nested oversubscription
+// when many files are read concurrently). The kept columns' values and row count
+// are identical to read_parquet(path) restricted to the same names (frame-equal).
+// An empty `columns` span is treated as "read everything" (delegates to the full
+// read). Every name must exist in the file schema, else InvalidArgument — callers
+// that tolerate optional columns should intersect with schema() first.
+[[nodiscard]] Result<ParquetTable> read_parquet(
+    std::string_view path, std::span<const std::string_view> columns);
+
 } // namespace atx::core::io

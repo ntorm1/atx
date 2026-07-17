@@ -263,3 +263,53 @@ if(Python3_Interpreter_FOUND)
     )
     set_tests_properties(atx-vol-american-shootout-name-coverage PROPERTIES LABELS atx_vol)
 endif()
+
+# ── Sub-Sprint S (Agent S) — appended targets ─────────────────────────────
+# CStar (C16M) calibration + no-arb hot path (Sub-Sprint S: W5.1 table-driven
+# arb projection, W5.2 analytic Jacobian + fused w/gradient). normal_eq/{legacy,
+# fused} bracket the S2 fusion win; arb/cstar/{project,min_roper_g} baseline the
+# S3 table-driven projection.
+add_executable(atx-vol-cstar-bench
+    bench_main.cpp
+    cstar_bench.cpp
+)
+target_link_libraries(atx-vol-cstar-bench
+    PRIVATE
+        atx::vol
+        atx::core
+        benchmark::benchmark
+        atx_warnings
+        Threads::Threads
+)
+
+# Whole-universe cycle-time harness (Sub-Sprint S / S6). Ingest -> fit -> archive
+# per-stage breakdown over a self-contained 3-name smoke universe, Iterations(1)
+# corpus-style. Harness only — no baseline recorded this sprint.
+add_executable(atx-vol-universe-cycle-bench
+    bench_main.cpp
+    universe_cycle_bench.cpp
+)
+target_link_libraries(atx-vol-universe-cycle-bench
+    PRIVATE
+        atx::vol
+        atx::core
+        benchmark::benchmark
+        atx_warnings
+        Threads::Threads
+)
+
+# CStar vs eSSVI evidence panel (Sub-Sprint S / S5). A standalone tool (its own
+# main(), no benchmark::benchmark) that fits both engines to identical per-board
+# observations and prints the ladder-decision metrics. Sourced from examples/ but
+# wired here so it builds under the already-on ATX_BUILD_BENCH without pulling in
+# the full ATX_BUILD_EXAMPLES set.
+add_executable(atx-vol-cstar-panel
+    ${CMAKE_CURRENT_SOURCE_DIR}/../examples/cstar_panel.cpp
+)
+target_link_libraries(atx-vol-cstar-panel
+    PRIVATE
+        atx::vol
+        atx::core
+        atx_warnings
+        Threads::Threads
+)

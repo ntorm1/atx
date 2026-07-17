@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -46,64 +47,75 @@ constexpr int kIrlsOuterMax = 4;
 constexpr int kTotalIterCap = 72;
 constexpr double kHuberK = 1.345;
 
+// Fixed-capacity normal-equation storage: the CStar parameter vector is at most
+// kCStarNParams (16) wide (base 5 + up to 11 modes), so H/g live on the stack as
+// fixed-size Eigen matrices and every build_normal_eq_* call re-zeros them
+// in place — no per-LM-iteration heap allocation (the prior MatX::Zero(dim,dim)
+// allocated dim² doubles every trial evaluation). Only the SPD solve, which
+// runs once per accepted/rejected step, materialises a dynamic MatX.
+constexpr int kCStarDimCap = static_cast<int>(kCStarNParams);  // 16
+using MatFixed = Eigen::Matrix<double, kCStarDimCap, kCStarDimCap>;
+using VecFixed = Eigen::Matrix<double, kCStarDimCap, 1>;
+
+// ── Vol-domain block normal equations ──────────────────────────────────────
+
+struct NormalEq {
+  MatFixed H{MatFixed::Zero()};
+  VecFixed g{VecFixed::Zero()};
+  double sse{};
+  int n_used{};
+  int dim{};
+};
+
 // Solve the Marquardt-damped normal equations (H + λ·diag(H))·dx = −g via
 // atx-core's SPD solver. Returns nullopt if the damped system is not
 // positive-definite (caller grows λ and retries — mirrors the C's Cholesky
-// failure branch). `H` is symmetric by construction.
-[[nodiscard]] std::optional<VecX> solve_damped(const MatX& H, const VecX& g,
+// failure branch). `H` is symmetric by construction. The dim×dim active block
+// is copied into a dynamic MatX only here, at solve time.
+[[nodiscard]] std::optional<VecX> solve_damped(const NormalEq& ne,
                                                double lambda) {
-  const Eigen::Index d = H.rows();
-  MatX Hd = H;
-  for (Eigen::Index j = 0; j < d; ++j) {
+  const int d = ne.dim;
+  MatX Hd = ne.H.topLeftCorner(d, d);
+  for (int j = 0; j < d; ++j) {
     Hd(j, j) *= (1.0 + lambda);
     if (Hd(j, j) < 1.0e-18) {
       Hd(j, j) = 1.0e-18;
     }
   }
-  auto res = solve_spd(Hd, VecX(-g));
+  auto res = solve_spd(Hd, VecX(-ne.g.head(d)));
   if (!res) {
     return std::nullopt;
   }
   return *res;
 }
 
-// ── Vol-domain block normal equations ──────────────────────────────────────
-
-struct NormalEq {
-  MatX H;
-  VecX g;
-  double sse{};
-  int n_used{};
-};
-
 [[nodiscard]] NormalEq build_normal_eq_w(const CStarParams& s, CStarBlock block,
                                          int dim, std::span<const double> k_log,
                                          std::span<const double> w_target,
                                          std::span<const double> spread_w,
                                          std::span<const double> w_obs) {
+  assert(dim <= kCStarDimCap);
   NormalEq ne;
-  ne.H = MatX::Zero(dim, dim);
-  ne.g = VecX::Zero(dim);
+  ne.dim = dim;  // H/g already zero-initialised (fixed-cap, no heap alloc)
 
   const std::size_t n_obs = k_log.size();
   std::array<double, kCStarNParams> row_buf{};
   for (std::size_t i = 0; i < n_obs; ++i) {
-    const double w_model = cstar_slice_w(s, k_log[i]);
-    if (!std::isfinite(w_model)) {
+    // Fused single-pass w + analytic gradient (was cstar_slice_w followed by a
+    // second, FD-gradient evaluation of the same shape).
+    const auto wg = cstar_slice_w_and_grad(s, k_log[i]);
+    if (!wg) {
       continue;
     }
+    const double w_model = wg->w;  // floored & finite by construction
     const double sd =
         (!spread_w.empty() && spread_w[i] > 1.0e-12) ? spread_w[i] : 1.0;
     const double w_w = w_obs.empty() ? 1.0 : w_obs[i];
     if (!(w_w > 0.0)) {
       continue;
     }
-    const auto grad = cstar_slice_grad_w(s, k_log[i]);
-    if (!grad) {
-      continue;
-    }
     const int row_dim = cstar_extract_block_grad(
-        *grad, block, s.active_modes, std::span<double>{row_buf});
+        wg->grad, block, s.active_modes, std::span<double>{row_buf});
     if (row_dim != dim) {
       continue;
     }
@@ -155,7 +167,7 @@ Result<CStarLmStatus> cstar_lm_inner_block_w(
 
   bool accepted = false;
   for (int it = 0; it < max_inner_iters; ++it) {
-    auto dx = solve_damped(ne.H, ne.g, lambda);
+    auto dx = solve_damped(ne, lambda);
     if (!dx) {
       lambda *= kLambdaGrow;
       if (lambda > kLambdaMax) {
@@ -323,7 +335,11 @@ Result<CStarParams> cstar_seed_from_essvi(const EssviParams& src) {
   }
   fit_modes_from_essvi_residuals(dst, src);
   // The base shape alone is arb-free for sane (θ, s2, c2, C_L, C_R); the modes
-  // can violate. Projection is infallible here (θ > 0 guaranteed above).
+  // can violate. Projection is best-effort here: it now propagates a residual
+  // no-arb failure (Err), but the seed remains usable as a fallback baseline —
+  // cstar_calibrate_slice re-checks admissibility with the authoritative
+  // arb_check_butterfly_slice gate and rejects an inadmissible seed there. So a
+  // projection failure is intentionally not fatal at seed time.
   (void)cstar_arb_project(dst);
   return Ok(dst);
 }
@@ -347,7 +363,13 @@ struct PriceRow {
 [[nodiscard]] PriceRow build_price_row(const CStarParams& s, const FitObs& o) {
   PriceRow out;
   const double k = o.k;  // FitObs::k is log(K/F)
-  const double w_model = cstar_slice_w(s, k);
+  // Fused single-pass w + analytic gradient (was cstar_slice_w followed by a
+  // separate FD-gradient evaluation of the same shape).
+  const auto wg = cstar_slice_w_and_grad(s, k);
+  if (!wg) {
+    return out;
+  }
+  const double w_model = wg->w;
   if (!(w_model > 0.0)) {
     return out;
   }
@@ -368,16 +390,11 @@ struct PriceRow {
   const double dPrice_dsigma = vv.vega;
   const double dsig_dw = 1.0 / (2.0 * sigma_model * s.T);
 
-  const auto grad = cstar_slice_grad_w(s, k);
-  if (!grad) {
-    return out;
-  }
-
   const double half_spread = half_spread_of(o);
   out.r = (P_pred - o.mid) / half_spread;
   const double scale = (1.0 / half_spread) * dPrice_dsigma * dsig_dw;
   for (std::size_t j = 0; j < kCStarNParams; ++j) {
-    out.J[j] = (*grad)[j] * scale;
+    out.J[j] = wg->grad[j] * scale;
   }
   out.ok = true;
   return out;
@@ -387,9 +404,9 @@ struct PriceRow {
                                              CStarBlock block, int dim,
                                              std::span<const FitObs> obs,
                                              std::span<const double> w_obs) {
+  assert(dim <= kCStarDimCap);
   NormalEq ne;
-  ne.H = MatX::Zero(dim, dim);
-  ne.g = VecX::Zero(dim);
+  ne.dim = dim;  // H/g already zero-initialised (fixed-cap, no heap alloc)
 
   std::array<double, kCStarNParams> row_buf{};
   for (std::size_t i = 0; i < obs.size(); ++i) {
@@ -479,7 +496,7 @@ void lm_inner_block_price(CStarParams& slice, CStarBlock block,
   }
 
   for (int it = 0; it < max_inner_iters; ++it) {
-    auto dx = solve_damped(ne.H, ne.g, lambda);
+    auto dx = solve_damped(ne, lambda);
     if (!dx) {
       lambda *= kLambdaGrow;
       if (lambda > kLambdaMax) {

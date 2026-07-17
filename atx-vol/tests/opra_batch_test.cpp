@@ -232,6 +232,61 @@ TEST(OpraBatch, DateRange_ProgressFiresPerCellMonotonic) {
   fs::remove_all(root);
 }
 
+// ── Parallel vs serial load: n_threads must not change the result (W4.3) ─────
+// Entries land by index into a pre-sized vector and counters are counted from the
+// completed slots after the join, so the batch result is identical for any worker
+// count. A wide grid with a hole makes a multi-worker queue finish cells out of
+// index order -- any completion-order dependence would surface as a mismatch.
+TEST(OpraBatch, DateRange_ParallelEqualsSerial) {
+  const fs::path root = fs::temp_directory_path() / "atx_opra_batch_parallel";
+  fs::remove_all(root);
+
+  const std::vector<std::string> dates = {"2026-06-01", "2026-06-02", "2026-06-03",
+                                          "2026-06-04", "2026-06-05", "2026-06-08"};
+  for (const std::string& d : dates) {
+    write_pair(root / "XOM" / (d + ".parquet"), "XOM", "260918", 110.0, kXomFwd);
+    if (d != "2026-06-03") {  // a deliberate AAPL hole -> a NotFound cell in the grid
+      write_pair(root / "AAPL" / (d + ".parquet"), "AAPL", "260918", 110.0, kAaplFwd);
+    }
+  }
+
+  OpraBatchSpec spec;
+  spec.symbols = {"XOM", "AAPL"};
+  spec.date_lo = "2026-06-01";
+  spec.date_hi = "2026-06-08";
+  spec.root_dir = root.string();
+  spec.r = 0.0;
+
+  spec.n_threads = 1;
+  const auto serial = load_opra_daterange(spec);
+  spec.n_threads = 8;
+  const auto parallel = load_opra_daterange(spec);
+  ASSERT_TRUE(serial.has_value()) << serial.error().to_string();
+  ASSERT_TRUE(parallel.has_value()) << parallel.error().to_string();
+
+  EXPECT_EQ(serial->n_total, parallel->n_total);
+  EXPECT_EQ(serial->n_loaded, parallel->n_loaded);
+  EXPECT_EQ(serial->n_missing, parallel->n_missing);
+  EXPECT_EQ(serial->n_error, parallel->n_error);
+  ASSERT_EQ(serial->entries.size(), parallel->entries.size());
+
+  for (std::size_t i = 0; i < serial->entries.size(); ++i) {
+    const OpraBatchEntry& s = serial->entries[i];
+    const OpraBatchEntry& p = parallel->entries[i];
+    EXPECT_EQ(s.symbol, p.symbol) << "entry " << i;
+    EXPECT_EQ(s.date, p.date) << "entry " << i;
+    EXPECT_EQ(s.panel.has_value(), p.panel.has_value()) << s.symbol << " " << s.date;
+    if (s.panel.has_value()) {
+      EXPECT_EQ(s.panel->n_contracts, p.panel->n_contracts) << s.symbol << " " << s.date;
+      EXPECT_DOUBLE_EQ(s.panel->implied_spot, p.panel->implied_spot) << s.symbol << " " << s.date;
+    } else {
+      EXPECT_EQ(s.panel.error().code(), p.panel.error().code()) << s.symbol << " " << s.date;
+    }
+  }
+
+  fs::remove_all(root);
+}
+
 // ── Malformed spec -> top-level Err ─────────────────────────────────────────
 
 TEST(OpraBatch, MalformedSpec_EmptySymbols_Rejected) {
