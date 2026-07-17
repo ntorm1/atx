@@ -274,6 +274,19 @@
 
 **Sub-sprint S exit gate:** strict Debug+Release green; CStar correctness fixtures green (projection propagates failure, analytic butterfly gate, no false flags); 10–50× projection bench recorded; ingest parallel+projected with frame-identical proof; CStar evidence panel + recommendation checked in.
 
+### Sub-Sprint S — ledger (Agent S, branch `feat/sota-s-surface`)
+
+| Task | Status | Commit | Key numbers | Class |
+|---|---|---|---|---|
+| S1 CStar correctness prerequisites | done | `eeae918` | reversed `c2` bisection fixed; projection propagates `Err` (`OutOfRange` raw-shape / `Unavailable` butterfly) vs the prior unconditional `Ok`; raw-shape validity split from the public floor; closed-form analytic `w''` replaces FD /1e-8; **zero false butterfly flags** on the fixture set; 44/44 CStar tests | correctness + accuracy-improving |
+| S2 Analytic Jacobian + fused w/grad + fixed-cap Eigen | done | `195d959` | closed-form `f'(z)` in the θ-partial (only grad[0] moves; rest bit-identical); single-pass `cstar_slice_w_and_grad`; `NormalEq` H/g are fixed-cap `Eigen::Matrix<double,16,16>` (no per-LM-iter heap); `fit/cstar/normal_eq` legacy 8837 → fused 4811 ns (~1.8×, provisional/concurrent host — fusion+FD-removal; H accumulation dilutes) | accuracy-improving |
+| S3 Table-driven division-free no-arb projection | done | `7d8a8ca` | static window/basis table + division-free `w²·g` sign predicate + incremental group damping (precompute fixed/scalable part once per bisection); `arb/cstar/project` 928,891 → **62,662 ns = ~14.8×** best-of-3 (provisional, concurrent host, CV~13%) — inside the 10–50× gate; equivalence to per-point reference to the ULP | pure-refactor |
+| S4 Parallel + projected OPRA ingest | done | `a0db885` | new `read_parquet(path, columns)` (Arrow internal threads OFF) frame-equal (atx-core test + proven byte-equal on **real** vxx-close board, 9/9); opra_panel projects the 8 consumed columns; `load_opra_daterange` parallel via `parallel_for_dynamic` (`n_threads`), `DateRange_ParallelEqualsSerial` green; checked size arithmetic; wall-clock speedup → Sprint I quiet host | pure-refactor |
+| S5 CStar vs eSSVI evidence panel | done | `82750a5` | modal-feature board: vol-RMSE 0.0028 → 0.0005 (**5.6×**), in-band 59% → 100%, χ² 1.23 → 0.00; no regression on smooth smiles; **0 false arb flags** everywhere; ~60–90× eSSVI fit cost; steep-skew admission rejects rho≈−0.60. **Rec: KEEP R&D** (conditional selective ladder entry, real-OPRA validation at Sprint I) — `docs/reviews/2026-07-16-cstar-vs-essvi-evidence-panel.md` | infrastructure / R&D evidence |
+| S6 Whole-universe cycle harness | done | `f53e70d` | `bench/universe_cycle_bench.cpp` ingest→fit→archive per-stage JSON (Iterations(1)); 3-name synthetic smoke, 3/3 loaded/fitted/archived (ingest ~15 / fit ~236 / archive ~1.4 ms, indicative only); **no baseline** recorded (per plan) | infrastructure |
+
+**Exit status:** strict Debug green — full `atx_vol_fast` 1469/1470 and `atx-core` Parquet 61/61 pass; the only Debug failures, `SurfaceV2Provenance.ValidationFallbackAdmissionRecordsTheServedFamily` (fast) and `OpraBreadthCorpus.UnifiedPolicyFitsEveryAvailableBoard` (slow), are **proven pre-existing** (both fail identically with S4 reverted / at the pre-sub-sprint baseline; production eSSVI/v2 path, Sprint-R territory, not touched by this sub-sprint). CStar is isolated R&D throughout — no `curve_selector.cpp` / production wiring.
+
 ---
 
 ## 7. Multi-sprint roadmap
