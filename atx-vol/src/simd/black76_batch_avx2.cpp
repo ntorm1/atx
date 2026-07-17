@@ -112,7 +112,6 @@ template <typename Expiry>
 void value_vega_batch_avx2_impl(const double *F, const double *K, const double *sigma,
                                 const double *df, const Side *side, double *price_out,
                                 double *vega_out, std::size_t n, const Expiry &expiry) noexcept {
-  const double *coefs = norm_cdf_cheb_coefs().data();
   const __m256d half = _mm256_set1_pd(0.5);
   const __m256d one = _mm256_set1_pd(1.0);
   const __m256d zero = _mm256_setzero_pd();
@@ -139,7 +138,7 @@ void value_vega_batch_avx2_impl(const double *F, const double *K, const double *
     const __m256d d2 = _mm256_sub_pd(d1, v);
 
     __m256d nd1, nd2;
-    norm_cdf_pd2(d1, d2, coefs, nd1, nd2);
+    norm_cdf_erfc_pd2(d1, d2, nd1, nd2); // K2: full-range Cody erfc Φ (see price batch)
     const __m256d call = _mm256_mul_pd(
         safe_df, _mm256_sub_pd(_mm256_mul_pd(safe_f, nd1), _mm256_mul_pd(safe_k, nd2)));
     const __m256d put =
@@ -181,7 +180,6 @@ void value_vega_batch_avx2_impl(const double *F, const double *K, const double *
 void black76_price_batch_avx2(const double *F, const double *K, const double *T,
                               const double *sigma, const double *df, const Side *side,
                               double *price_out, std::size_t n) noexcept {
-  const double *coefs = norm_cdf_cheb_coefs().data();
   const __m256d half = _mm256_set1_pd(0.5);
   const __m256d one = _mm256_set1_pd(1.0);
   const __m256d zero = _mm256_setzero_pd();
@@ -208,7 +206,11 @@ void black76_price_batch_avx2(const double *F, const double *K, const double *T,
     const __m256d d2 = _mm256_sub_pd(d1, v);
 
     __m256d Nd1, Nd2;
-    norm_cdf_pd2(d1, d2, coefs, Nd1, Nd2); // fused: hides Clenshaw latency
+    // K2 (accuracy-improving): full-range Cody rational-erfc Φ (≈1e-16, correct
+    // wings) replaces the degree-48 Chebyshev–Clenshaw (~1e-11, |d|≤7 only). The
+    // patch mask below is retained unchanged (degenerate + |d|>kNormCdfWing lanes
+    // still route to the scalar kernel), so patched-lane parity is preserved.
+    norm_cdf_erfc_pd2(d1, d2, Nd1, Nd2);
 
     const __m256d call =
         _mm256_mul_pd(safeDf, _mm256_sub_pd(_mm256_mul_pd(safeF, Nd1), _mm256_mul_pd(safeK, Nd2)));

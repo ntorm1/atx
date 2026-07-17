@@ -99,7 +99,6 @@ struct BlockOut {
 ATX_FORCE_INLINE int greeks_block(const double *F, const double *K, const double *T,
                                   const double *sigma, const double *r, const double *df,
                                   const Side *side, std::size_t i, BlockOut &b) noexcept {
-  const double *coefs = norm_cdf_cheb_coefs().data();
   const __m256d half = _mm256_set1_pd(0.5);
   const __m256d one = _mm256_set1_pd(1.0);
   const __m256d two = _mm256_set1_pd(2.0);
@@ -124,7 +123,10 @@ ATX_FORCE_INLINE int greeks_block(const double *F, const double *K, const double
   const __m256d d2 = _mm256_sub_pd(d1, v);
 
   __m256d Nd1, Nd2;
-  norm_cdf_pd2(d1, d2, coefs, Nd1, Nd2); // fused: hides Clenshaw latency
+  // K2 (accuracy-improving): full-range Cody rational-erfc Φ (≈1e-16) replaces
+  // the degree-48 Chebyshev–Clenshaw (~1e-11). The patch mask (degenerate +
+  // |d|>kNormCdfWing) is retained, so PatchedLanesAreBitExact still holds.
+  norm_cdf_erfc_pd2(d1, d2, Nd1, Nd2);
   const __m256d phi = norm_pdf_pd(d1);   // φ(d1), shared across Greeks
 
   // Prices (call & put); side blend selects per lane.
