@@ -1,6 +1,7 @@
 #include "atx/vol/opra_panel.hpp"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <charconv>
 #include <cmath>
@@ -314,7 +315,32 @@ Result<OsiSymbol> parse_osi_symbol(std::string_view sym) {
 }
 
 Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
-  auto table_res = io::read_parquet(spec.path);
+  // ── Projected read (W4.3) ─────────────────────────────────────────────────
+  // Decode ONLY the columns panel construction consumes (verified against every
+  // table access in this file): ts, symbol, bid_px/ask_px/bid_sz/ask_sz, plus
+  // the optional instrument_id / underlying. We project the intersection of that
+  // set with the file schema, so a file MISSING an optional column still loads,
+  // and a missing REQUIRED column still fails at the identical downstream
+  // column_view/strings call (same code + text) the read-all path hit. Kept
+  // values and row count are byte-identical to a full read, so fitted surfaces
+  // are unchanged — only the decoded-byte count drops.
+  static constexpr std::array<std::string_view, 8> kOpraWanted = {
+      "ts",     "symbol", "bid_px",        "ask_px",
+      "bid_sz", "ask_sz", "instrument_id", "underlying"};
+  auto scan_res = io::LazyParquet::scan(spec.path);
+  if (!scan_res.has_value()) {
+    return Err(ErrorCode::InvalidArgument, scan_res.error().to_string());
+  }
+  const io::Schema& file_schema = scan_res.value().schema();
+  std::vector<std::string_view> projection;
+  projection.reserve(kOpraWanted.size());
+  for (const std::string_view name : kOpraWanted) {
+    if (file_schema.find(name) != nullptr) {
+      projection.push_back(name);
+    }
+  }
+  auto table_res =
+      io::read_parquet(spec.path, std::span<const std::string_view>{projection});
   if (!table_res.has_value()) {
     return Err(ErrorCode::InvalidArgument, table_res.error().to_string());
   }

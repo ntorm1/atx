@@ -28,8 +28,13 @@
 //
 // Pure functions over by-value RAII aggregates (Rule of Zero). `load_opra_daterange`
 // borrows the parquet files under `spec.root_dir` for the duration of the call and
-// returns an owning result; the optional progress callback is invoked synchronously
-// on the calling thread after each file. No shared mutable state.
+// returns an owning result. The per-(symbol, date) reads fan out over
+// `spec.n_threads` workers (W4.3): each cell writes only its own pre-sized result
+// slot, and the parquet read path holds no shared mutable state (distinct files,
+// a fresh per-call Arrow reader), so the result is identical for any thread count.
+// The optional progress callback is invoked synchronously on the calling thread in
+// a serial post-join pass (monotonic `done`), so callers still see one in-order
+// call per cell.
 
 #include <cstddef>
 #include <cstdint>
@@ -112,6 +117,15 @@ struct OpraBatchSpec {
   CorpusMarketInputTable market_inputs{};
   MissingMarketInputPolicy missing_market_inputs{MissingMarketInputPolicy::UseFallback};
   OpraProvenanceMode provenance_mode{OpraProvenanceMode::Compatibility};
+
+  // Per-file load fan-out (W4.3). 0 = auto (hardware concurrency), 1 = serial.
+  // The (symbol, date) cells are loaded over a dynamic worker queue; each cell
+  // writes only its own pre-sized result slot (disjoint) after pure reads of the
+  // shared spec, so the batch result is IDENTICAL for any value (each read hits a
+  // distinct parquet file, and read_parquet / LazyParquet hold no shared mutable
+  // state). Progress + counters are aggregated deterministically in a serial
+  // post-join pass, so `progress`'s monotonic `done` contract holds.
+  unsigned n_threads{0};
 };
 
 // One (symbol, date) cell of a batch. `panel` is `Ok` on a successful load,

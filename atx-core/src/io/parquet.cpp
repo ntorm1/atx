@@ -191,6 +191,71 @@ Result<ParquetTable> read_parquet(std::string_view path) {
   catch (...) { return Err(ErrorCode::Internal, "read_parquet: unknown exception"); }
 }
 
+Result<ParquetTable> read_parquet(std::string_view path,
+                                  std::span<const std::string_view> columns) {
+  if (columns.empty()) {
+    return read_parquet(path);  // empty projection => full read
+  }
+  try {
+    if (!std::filesystem::exists(path)) {
+      return Err(ErrorCode::NotFound,
+                 std::string{"read_parquet: no such file: "} + std::string{path});
+    }
+    auto in = arrow::io::ReadableFile::Open(std::string{path});
+    if (!in.ok()) {
+      return Err(from_arrow(in.status(), "read_parquet(cols) open"));
+    }
+    auto reader_res = parquet::arrow::OpenFile(*in, arrow::default_memory_pool());
+    if (!reader_res.ok()) {
+      return Err(from_arrow(reader_res.status(), "read_parquet(cols) open parquet"));
+    }
+    std::unique_ptr<parquet::arrow::FileReader> reader = *std::move(reader_res);
+    // Arrow's own read threads OFF: an outer pool (e.g. the OPRA loader's
+    // per-file fan-out) owns parallelism; nested Arrow threads would oversubscribe.
+    reader->set_use_threads(false);
+
+    // Resolve column names -> leaf indices against the file schema. Flat schema:
+    // arrow field index == leaf column index (same mapping resolve_indices uses).
+    std::shared_ptr<arrow::Schema> aschema;
+    const auto st = reader->GetSchema(&aschema);
+    if (!st.ok()) {
+      return Err(from_arrow(st, "read_parquet(cols) get schema"));
+    }
+    std::vector<int> indices;
+    indices.reserve(columns.size());
+    for (const std::string_view name : columns) {
+      const int i = aschema->GetFieldIndex(std::string{name});
+      if (i < 0) {
+        return Err(ErrorCode::InvalidArgument,
+                   std::string{"read_parquet: unknown column '"} +
+                       std::string{name} + "'");
+      }
+      indices.push_back(i);
+    }
+
+    auto table_res = reader->ReadTable(indices);
+    if (!table_res.ok()) {
+      return Err(from_arrow(table_res.status(), "read_parquet(cols) read table"));
+    }
+    auto impl = std::make_unique<ParquetTable::Impl>();
+    impl->table = *std::move(table_res);
+    // Combine chunks so each column is a single contiguous chunk owned by the
+    // table (keeps column_view's raw_values() alias alive across row groups).
+    auto combined = impl->table->CombineChunks(arrow::default_memory_pool());
+    if (!combined.ok()) {
+      return Err(from_arrow(combined.status(), "read_parquet(cols) combine chunks"));
+    }
+    impl->table = *combined;
+    impl->schema = schema_from_arrow(*impl->table->schema());
+    return ParquetTable{std::move(impl)};
+  }
+  catch (const std::bad_alloc&) { throw; }
+  catch (const std::exception& e) { return Err(ErrorCode::Internal, e.what()); }
+  catch (...) {
+    return Err(ErrorCode::Internal, "read_parquet(cols): unknown exception");
+  }
+}
+
 // LazyParquet Impl holds the open file + reader + cached metadata/schema, plus
 // the deferred-scan plan state consumed by collect()/stream() in later tasks.
 struct LazyParquet::Impl {

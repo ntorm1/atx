@@ -11,6 +11,8 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <span>
+#include <string_view>
 
 using namespace atx::core::io;
 
@@ -259,6 +261,50 @@ TEST(Parquet, SelectEmptyKeepsAllColumns) {
   auto lz = LazyParquet::scan(path);
   ASSERT_TRUE(lz.has_value());
   auto t = lz->collect(); // no select -> all columns
+  ASSERT_TRUE(t.has_value());
+  EXPECT_EQ(t->num_columns(), 2);
+}
+
+// ── Column-projected read_parquet overload (Sub-Sprint S / W4.3) ─────────────
+
+// Projected read decodes ONLY the requested column; its values and row count are
+// identical to a full read restricted to that column (the frame-equality gate).
+TEST(Parquet, ReadParquetProjection_FrameEqualsFullRestricted) {
+  auto path = temp_path("projeq");
+  write_table(make_numeric_table(64), path);
+
+  auto full = read_parquet(path);
+  ASSERT_TRUE(full.has_value());
+  const std::string_view cols[] = {"val"};
+  auto proj = read_parquet(path, std::span<const std::string_view>{cols});
+  ASSERT_TRUE(proj.has_value());
+
+  EXPECT_EQ(proj->num_columns(), 1);
+  EXPECT_EQ(proj->num_rows(), full->num_rows());
+  EXPECT_EQ(proj->schema().find("id"), nullptr);  // unprojected column is absent
+
+  auto vf = full->column_view<double>("val");
+  auto vp = proj->column_view<double>("val");
+  ASSERT_TRUE(vf.has_value());
+  ASSERT_TRUE(vp.has_value());
+  ASSERT_EQ(vf->size(), vp->size());
+  for (std::size_t i = 0; i < vf->size(); ++i) {
+    EXPECT_DOUBLE_EQ((*vf)[i], (*vp)[i]) << "row " << i;
+  }
+}
+
+TEST(Parquet, ReadParquetProjection_UnknownColumnIsInvalidArgument) {
+  auto path = temp_path("projbad");
+  write_table(make_numeric_table(5), path);
+  const std::string_view cols[] = {"nope"};
+  EXPECT_EQ(read_parquet(path, std::span<const std::string_view>{cols}).error().code(),
+            atx::core::ErrorCode::InvalidArgument);
+}
+
+TEST(Parquet, ReadParquetProjection_EmptyReadsAll) {
+  auto path = temp_path("projempty");
+  write_table(make_numeric_table(5), path);
+  auto t = read_parquet(path, std::span<const std::string_view>{});
   ASSERT_TRUE(t.has_value());
   EXPECT_EQ(t->num_columns(), 2);
 }
