@@ -227,3 +227,19 @@ target_link_libraries(atx-vol-cstar-bench
         atx_warnings
         Threads::Threads
 )
+
+# CStar vs eSSVI evidence panel (Sub-Sprint S / S5). A standalone tool (its own
+# main(), no benchmark::benchmark) that fits both engines to identical per-board
+# observations and prints the ladder-decision metrics. Sourced from examples/ but
+# wired here so it builds under the already-on ATX_BUILD_BENCH without pulling in
+# the full ATX_BUILD_EXAMPLES set.
+add_executable(atx-vol-cstar-panel
+    ${CMAKE_CURRENT_SOURCE_DIR}/../examples/cstar_panel.cpp
+)
+target_link_libraries(atx-vol-cstar-panel
+    PRIVATE
+        atx::vol
+        atx::core
+        atx_warnings
+        Threads::Threads
+)
