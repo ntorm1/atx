@@ -122,9 +122,11 @@ constexpr const char *kDoubleContinuationMsg =
   const std::size_t n = strikes.size();
   const amer::AlScheme sch = amer::scheme_from_opts(opts);
 
-  // Internal-put mapping. Put: the put itself (Sp = S, Kp = K_i, rp = r, qp = q),
-  // Kp_ref = S is a homogeneity choice. Call C(S,K,r,q) = P(K,S,q,r): internal
-  // put has FIXED strike Kp = S and varying spot Sp = K_i, rp = q, qp = r.
+  // Internal-put mapping. The per-strike (Sp, Kp) half is single-sourced in
+  // detail::internal_put_coords (see boundary_interp.hpp); Kp_ref = S is a
+  // homogeneity choice, and the (rate, yield) swap below is the build-input half
+  // of the same duality.
+  const Side side = is_call ? Side::Call : Side::Put;
   const double rp = is_call ? q : r;
   const double qp = is_call ? r : q;
   const double Kp_ref = S;
@@ -173,8 +175,7 @@ constexpr const char *kDoubleContinuationMsg =
   // ── per-strike routing ─────────────────────────────────────────────────
   for (std::size_t i = 0; i < n; ++i) {
     const double sig = sigmas[i];
-    const double Sp = is_call ? strikes[i] : S;
-    const double Kp = is_call ? S : strikes[i];
+    const auto [Sp, Kp] = detail::internal_put_coords(side, S, strikes[i]);
 
     // Degenerate σ collapses to intrinsic (no boundary solve).
     if (sig <= 1.0e-8) {
@@ -186,7 +187,7 @@ constexpr const char *kDoubleContinuationMsg =
     const bool route_interp = interp_ok && (sig >= sopts.min_sigma) && (sig >= sig_lo - 1.0e-12) &&
                               (sig <= sig_hi + 1.0e-12);
     if (route_interp) {
-      price_out[i] = interp.price_internal_put(Sp, Kp, sig);
+      price_out[i] = interp.price_side(side, S, strikes[i], sig);
       ++st.n_interp;
       continue;
     }
@@ -242,6 +243,30 @@ bool SigmaBoundaryInterp::build(double Kp_ref, double T, double rp, double qp, d
   }
 
   // n_σ cold solves at Kp_ref; store each collocation node's y[] across σ.
+  //
+  // R-11c investigated chaining al_solve_put_boundary_WARM across these nodes
+  // (node 0 cold, each later node seeded from its converged neighbour) on the
+  // theory that adjacent σ-nodes are small bumps. They are NOT, and the idea is
+  // deliberately not taken up. A Chebyshev-Lobatto grid clusters at the box ENDS,
+  // so its mid-box gaps are the widest in the grid: ~0.12 on the [0.15, 0.8]
+  // smile box and ~0.03 even on a flat 0.24 board — 25x to 1200x the "~0.1% bump"
+  // al_solve_put_boundary_warm is documented for. From that far away a converged
+  // neighbour is a WORSE seed than the cold Barone-Adesi-Whaley approximation it
+  // would replace, and because the sweep budget is fixed (n_iter_jn + n_iter_fp)
+  // with only an early-exit on tol, the solve does not spend longer to recover —
+  // it returns AlSolveStatus::Ok carrying an under-converged boundary, silently.
+  //
+  // Measured worst |node price - cold per-strike andersen_lake| (the σ-nodes are
+  // where barycentric evaluation is exact, so this is the seed's error alone):
+  //     cold build (this code)              7.1e-15
+  //     warm-chained, box [0.084, 0.24]     3.1e-05
+  //     warm-chained, box [0.15,  0.80]     1.3e-04
+  // The warm error lands at the same scale as the route's own economic budget
+  // (min(0.005, 0.1 x vega x 1e-4, half-spread)), and the 9-vs-5 embedded gate
+  // could not catch it because both estimators would share the same wrong y[].
+  // It bought ~3.5% of retained-arm throughput — far under the noise floor of the
+  // measurement, let alone the accuracy. SigmaInterp.WarmNodeBuildMatchesColdBuild
+  // pins the cold build's 7.1e-15 and is the guard on any future attempt.
   const double half_span = 0.5 * (sigma_hi - sigma_lo);
   bool captured = false;
   for (unsigned s = 0; s < n_sigma; ++s) {

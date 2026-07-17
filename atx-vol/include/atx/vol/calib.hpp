@@ -540,6 +540,49 @@ namespace detail {
 [[nodiscard]] bool shared_lane_residual_within_budget(double price, double mid, double embedded,
                                                       double budget) noexcept;
 
+// W3.1 shared-boundary per-lane root-finding bracket, exposed for direct test
+// (internal: not part of the supported API surface).
+//
+// Brackets a root of the nine-node interpolated price map in sigma. The caller
+// establishes the invariant `f_lo < 0 <= f_hi` on `[lo, hi]` before the first
+// step; every `update` preserves it. Evaluator-agnostic on purpose: the lane loop
+// supplies residuals from the interpolant, and the unit test supplies them from a
+// closed-form price, so the test drives the SAME stepping logic production runs.
+//
+// Termination is on bracket WIDTH (`hi - lo <= solve_tol`), because that is what
+// `finalize_shared_lane` re-tests before accepting a lane -- so the width, not the
+// residual, is the quantity a step must contract.
+struct SharedLaneBracket {
+  // Steps after which the secant is abandoned and every remaining step bisects
+  // unconditionally. This is the constructive iteration bound (see next_sigma):
+  // Illinois converges this map in ~5 steps and at worst 11 measured, so at 24
+  // the backstop is >2x clear of the real workload and never fires in practice;
+  // once it does fire, each step halves, and the widest bracket the route admits
+  // (w0 <= kObsIvMax - kSharedMinSigma = 4.99) needs at most
+  // ceil(log2(4.99 / 1e-9)) = 33 halvings against the tightest solve_tol. So a
+  // lane terminates within 24 + 33 = 57 evaluations, inside the max_iter = 64 the
+  // production route passes.
+  static constexpr std::uint16_t kMaxSecantSteps = 24u;
+
+  double lo{0.0};
+  double hi{0.0};
+  double f_lo{0.0};
+  double f_hi{0.0};
+  // Which endpoint survived the previous update: +1 = hi, -1 = lo, 0 = no update
+  // yet. Drives the Illinois deflation in `update`.
+  std::int8_t retained{0};
+  // Steps folded in so far; arms the bisection backstop above.
+  std::uint16_t steps{0};
+
+  // Next sigma to probe: the Illinois-modified regula-falsi step while it lands
+  // strictly inside the bracket, else the midpoint.
+  [[nodiscard]] double next_sigma() const noexcept;
+
+  // Fold a probe `(sigma, residual)` into the bracket, keeping the side whose
+  // sign it matches, then apply the Illinois deflation (see below).
+  void update(double sigma, double residual) noexcept;
+};
+
 } // namespace detail
 
 // O(1) calibrator-population predicate (ports `ats_vol_calib_obs_accepted`):

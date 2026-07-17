@@ -28,6 +28,29 @@
 
 namespace atx::vol::detail {
 
+// R-31. The McDonald-Schroder internal-put coordinates of a (side, S, K) option —
+// the ONE place this duality is written down.
+//
+// Put:  the put itself           -> Sp = S, Kp = K.
+// Call: C(S,K,r,q) = P(K,S,q,r)  -> the internal put has FIXED strike Kp = S and
+//       varying spot Sp = K.
+// The (rate, yield) half of the same duality (rp/qp swapped for a call) is a
+// BUILD input rather than a per-price one, so it stays with the build() callers.
+//
+// Single-sourced because this mapping was independently re-derived at each call
+// site — slice_sigma_impl and the shared-boundary de-Am lanes in calib.cpp — and
+// two hand-copies of a duality this easy to invert are two chances to silently
+// price a call as a put.
+struct InternalPutCoords {
+  double Sp{0.0};
+  double Kp{0.0};
+};
+
+[[nodiscard]] constexpr InternalPutCoords internal_put_coords(Side side, double S,
+                                                              double K) noexcept {
+  return side == Side::Call ? InternalPutCoords{K, S} : InternalPutCoords{S, K};
+}
+
 // One (τ, rp, qp) internal-put slice's σ-Chebyshev boundary interpolant.
 //
 // build() does n_σ cold boundary solves (heap-free; the object is ~20 KB of
@@ -56,6 +79,19 @@ public:
   // is held fixed (no rescale — bit-structural match to andersen_lake_call_slice,
   // only the σ interpolation approximates). Allocation-free.
   [[nodiscard]] double price_internal_put(double Sp, double Kp, double sigma) noexcept;
+
+  // R-31. Side-aware entry points: the internal-put mapping (internal_put_coords
+  // above) applied for you, so no caller re-derives it.
+  [[nodiscard]] double price_side(Side side, double S, double K, double sigma) noexcept {
+    const InternalPutCoords c = internal_put_coords(side, S, K);
+    return price_internal_put(c.Sp, c.Kp, sigma);
+  }
+
+  // price_side's companion on the lower-order embedded estimator (see below).
+  [[nodiscard]] double price_side_embedded(Side side, double S, double K, double sigma) noexcept {
+    const InternalPutCoords c = internal_put_coords(side, S, K);
+    return price_internal_put_embedded(c.Sp, c.Kp, sigma);
+  }
 
   // Lower-order price estimator using the even nodes of an odd-sized Lobatto
   // grid (9 -> embedded 5) without another boundary solve. The caller compares

@@ -129,6 +129,42 @@ Chain make_american_chain(const std::vector<double> &strikes, double T, double r
   return c;
 }
 
+// Smile variant of make_american_chain: strike i is priced at its OWN vol
+// sigmas[i] rather than one flat vol across the board. A flat board gives the
+// shared interpolant a ~3x-wide sigma-box that nine Chebyshev nodes fit almost
+// exactly, which is why it cannot evidence anything about interpolation stress.
+Chain make_american_smile_chain(const std::vector<double> &strikes,
+                               const std::vector<double> &sigmas, double T, double r, double q) {
+  Chain c;
+  c.uid = 3u;
+  c.expiry_id = 1u;
+  c.T = T;
+  c.strikes = strikes;
+  const std::size_t n2 = 2u * strikes.size();
+  c.bids.assign(n2, 0.0);
+  c.asks.assign(n2, 0.0);
+  c.mids.assign(n2, 0.0);
+  c.ivs.assign(n2, std::numeric_limits<double>::quiet_NaN());
+  c.bid_sizes.assign(n2, 10);
+  c.ask_sizes.assign(n2, 10);
+  c.ts_ns.assign(n2, 0);
+  c.flags.assign(n2, 0u);
+  for (std::size_t i = 0; i < strikes.size(); ++i) {
+    for (Side side : {Side::Call, Side::Put}) {
+      const std::size_t idx = chain_index(static_cast<std::uint16_t>(i), side);
+      const auto p = american_price(100.0, strikes[i], T, sigmas[i], r, q, side,
+                                    AmericanMethod::AndersenLake, std::nullopt);
+      EXPECT_TRUE(p.has_value());
+      const double mid = p ? *p : 1.0;
+      const double half = std::fmin(0.002, 0.10 * mid);
+      c.mids[idx] = mid;
+      c.bids[idx] = mid - half;
+      c.asks[idx] = mid + half;
+    }
+  }
+  return c;
+}
+
 // ── build_observations: happy path + field correctness ──────────────────
 
 TEST(BuildObservations, PricedChain_AcceptsPreferredSideWithCorrectFields) {
@@ -527,6 +563,114 @@ TEST(BuildObservationsEuropean, SharedSigmaBoundaryPreservesEconomicsWithConstan
   atx::vol::counters::reset();
 }
 
+TEST(BuildObservationsEuropean, SharedSigmaBoundaryHoldsEconomicBoundOnSteepSmile) {
+  // The smile-stress pin. Two things live here that nothing else in the suite
+  // covers:
+  //
+  // 1. R-08's retirement evidence. Task 2 investigated a suspected
+  //    sigma-monotonicity / multi-root risk in the interpolated price map and
+  //    retired it as not-live, on a measurement taken with a throwaway probe:
+  //    on a sigma in [0.15, 0.8] smile board the worst per-lane IV error against
+  //    the EXACT scalar inverter was ~5e-08, ~2000x inside the 1e-4 bound, and the
+  //    genuine interpolation wiggles (~ -3.1e-04 near K=110) sit only in low-vega
+  //    wings that the existing budget and bracket-sign gates already exclude.
+  //    Evidence that lives in a deleted probe is not evidence, so it is pinned
+  //    here.
+  //
+  // 2. R-11a's guard. The Illinois step rewrote HOW every lane finds its root, so
+  //    this fixture — the widest sigma-box the route admits, ~15x — is also the
+  //    regression test for that change. If the bound below ever fails, that is a
+  //    real finding about the root-finder or the interpolant; do not loosen it.
+  constexpr double T = 1.0;
+  constexpr double r = 0.05;
+  constexpr double q = 0.02;
+  const double F = 100.0 * std::exp((r - q) * T);
+  const double df = std::exp(-r * T);
+  std::vector<double> strikes;
+  std::vector<double> sigmas;
+  strikes.reserve(96u);
+  sigmas.reserve(96u);
+  for (std::size_t index = 0; index < 96u; ++index) {
+    const double t = static_cast<double>(index) / 95.0;
+    strikes.push_back(72.0 + 56.0 * t);
+    sigmas.push_back(0.80 + (0.15 - 0.80) * t); // steep put skew, box ~[0.0525, 0.8]
+  }
+  const Chain chain = make_american_smile_chain(strikes, sigmas, T, r, q);
+
+  CalibOpts reference_opts = calib_default_opts();
+  reference_opts.max_spread_vol = 1.0;
+  reference_opts.min_vega_weight = 0.0;
+  reference_opts.use_shared_boundary_deam = false; // the exact scalar inverter
+  const auto reference =
+      build_observations_european(chain, 100.0, r, F, T, df, reference_opts, {}, std::nullopt,
+                                  1.0e-7, 64, AmericanMethod::AndersenLake, false);
+  ASSERT_TRUE(reference.has_value()) << reference.error().to_string();
+
+  CalibOpts shared_opts = reference_opts;
+  shared_opts.use_shared_boundary_deam = true;
+  const auto shared =
+      build_observations_european(chain, 100.0, r, F, T, df, shared_opts, {}, std::nullopt, 1.0e-7,
+                                  64, AmericanMethod::AndersenLake, false);
+  ASSERT_TRUE(shared.has_value()) << shared.error().to_string();
+
+  const DeAmAuditDiagnostics &audit = shared->deam_audit;
+  ASSERT_GT(audit.n_shared_boundary_lanes, 0u) << "fixture must actually exercise shared lanes";
+  ASSERT_EQ(shared->obs.size(), reference->obs.size());
+
+  // (a) Every row holds the economic bound against the exact scalar reference.
+  double worst_iv = 0.0;
+  double worst_px = 0.0;
+  for (std::size_t index = 0; index < shared->obs.size(); ++index) {
+    const FitObs &actual = shared->obs[index];
+    const FitObs &expected = reference->obs[index];
+    ASSERT_EQ(actual.source_strike_index, expected.source_strike_index);
+    ASSERT_EQ(actual.side, expected.side);
+    const double iv_error = std::fabs(actual.sigma_mkt - expected.sigma_mkt);
+    const double price_error = std::fabs(actual.mid - expected.mid);
+    worst_iv = std::max(worst_iv, iv_error);
+    worst_px = std::max(worst_px, price_error);
+    EXPECT_LE(iv_error, 1.0e-4) << "K=" << chain.strikes[actual.source_strike_index];
+    EXPECT_LE(price_error, std::min(0.005, 0.1 * expected.vega * 1.0e-4));
+    EXPECT_LT(price_error, 0.5 * expected.spread); // strictly inside the half-spread
+  }
+  // The route's accuracy claim is not merely "inside 1e-4" — it is inside it by a
+  // wide margin, and the margin is the actual evidence R-08 was retired on.
+  // Measured here: 4.4e-08 (Task 2's throwaway probe measured 5.0e-08 on the same
+  // board shape before the Illinois step; the step did not move it). The bound is
+  // pinned ~200x above the measurement so a silent degradation is visible while
+  // normal solver jitter is not, and ~10x below the sprint's own 1e-4.
+  EXPECT_LE(worst_iv, 1.0e-5) << "worst per-lane IV vs the exact scalar inverter";
+  EXPECT_LE(worst_px, 1.0e-4) << "worst per-lane price vs the exact scalar inverter";
+
+  // (b) The route does not blanket-accept: this board exercises the per-lane
+  // rejection path, and every row is accounted for as exactly one of {accepted
+  // lane, scalar fallback}. A row the gates reject is served by the exact scalar
+  // inverter, which is why a lane that cannot prove its bound never reaches a
+  // price.
+  EXPECT_GT(audit.n_shared_scalar_fallback_lanes, 0u)
+      << "fixture must exercise the per-lane rejection path, not only acceptance";
+  EXPECT_EQ(audit.n_shared_boundary_lanes + audit.n_shared_scalar_fallback_lanes,
+            audit.n_deam_rows);
+
+  // NB on scope. The brief for this test also asked to assert that "lanes in the
+  // low-vega wing regions fall back to scalar rather than being accepted". That
+  // is NOT assertable here, and the reason is worth recording rather than
+  // papering over with a threshold that no row can trip:
+  //   * The wiggles Task 2 found (~ -3.1e-04 near K=110) live in low-vega regions
+  //     of the SIGMA axis — deep-ITM saturation at intrinsic, inside a lane's own
+  //     bracket — not in low-vega STRIKES. There is no "wing row" to observe fall
+  //     back.
+  //   * On this board, vega over admitted rows spans ~15.3 to ~37.6: a
+  //     vega-collapsed row does not survive to become a lane at all, because the
+  //     upstream quote cascade (mid > 0, the IV band, max_spread_vol) drops it
+  //     before de-Americanization ever sees it.
+  // So the wing defense is real but sits one layer earlier than the brief placed
+  // it, and asserting it here would have been a permanently-true test. What
+  // actually keeps the wiggles away from an accepted price is (a) above plus the
+  // bracket-sign gate in initialize_shared_lane and the budget > 0 gate in
+  // finalize_shared_lane, all of which this fixture does exercise.
+}
+
 TEST(BuildObservationsEuropean, SharedSigmaBoundaryRunsUnderHftShortcutPreset) {
   // SPY resolves to IndexEtfUltraLiquid -> FitPreset::Hft, which sets
   // max_otm_shortcut_premium_spread_frac = 0.50 (src/session.cpp). The OTM
@@ -780,6 +924,108 @@ TEST(SharedLaneAcceptance, BoundsCombinedResidual) {
   EXPECT_FALSE(shared_lane_residual_within_budget(kMid, kMid, kMid, 0.0));
   EXPECT_FALSE(shared_lane_residual_within_budget(kMid, kMid, kMid, -kBudget));
   EXPECT_FALSE(shared_lane_residual_within_budget(kMid, kMid, kMid, nan));
+}
+
+// Drives detail::SharedLaneBracket exactly as iterate_shared_lanes does — same
+// next_sigma()/update() pair, same `hi - lo <= solve_tol` width termination, same
+// bounded max_iter — but against a closed-form Black-76 price map rather than the
+// nine-node interpolant. That substitution is what makes the lane's cost
+// countable; the STEPPING LOGIC under test is the production one, not a copy.
+//
+// Returns the number of residual evaluations, or -1 when the endpoints do not
+// bracket (which production's initialize_shared_lane rejects before iterating).
+// The two endpoint evaluations are excluded: initialize_shared_lane pays those
+// identically before and after R-11a, so the iteration count is the comparable
+// unit. In production each of these evals is 12 barycentric interps plus a
+// 48-node premium quadrature — this count IS the lane's cost.
+[[nodiscard]] int drive_shared_lane_bracket(double F, double K, double T, double df, Side side,
+                                            double mid, double sigma_lo, double sigma_hi,
+                                            double solve_tol, std::uint16_t max_iter,
+                                            double *sigma_out) {
+  atx::vol::detail::SharedLaneBracket bracket{};
+  bracket.lo = sigma_lo;
+  bracket.hi = sigma_hi;
+  bracket.f_lo = black76_price(F, K, T, sigma_lo, df, side) - mid;
+  bracket.f_hi = black76_price(F, K, T, sigma_hi, df, side) - mid;
+  if (!(bracket.f_lo < 0.0 && bracket.f_hi >= 0.0)) {
+    return -1;
+  }
+  int evals = 0;
+  for (std::uint16_t iteration = 0; iteration < max_iter; ++iteration) {
+    if (bracket.hi - bracket.lo <= solve_tol) {
+      break;
+    }
+    const double sigma = bracket.next_sigma();
+    bracket.update(sigma, black76_price(F, K, T, sigma, df, side) - mid);
+    ++evals;
+  }
+  *sigma_out = 0.5 * (bracket.lo + bracket.hi);
+  return evals;
+}
+
+TEST(SharedLaneIteration, IllinoisStepCutsEvalsPerLane) {
+  // R-11a. A shared lane opens on [interp.sigma_lo(), sigma_mkt] and its root
+  // structurally HUGS the `hi` end: sigma_mkt is the Black-76 iv of an AMERICAN
+  // mid, which always overstates the American iv the lane is actually solving
+  // for, so the root sits a few percent below `hi`. That is the one geometry
+  // plain regula falsi handles worst — the secant lands in the outer quarter, the
+  // 25%-shrink guard rejects it, and the step degenerates to pure bisection for
+  // the whole solve. Bisecting a ~0.1-0.75 wide bracket to solve_tol = 1e-7 costs
+  // ~21-23 evals, versus the ~4-8 safeguarded-Newton evals of the scalar path the
+  // shared route replaced.
+  //
+  // The fixture mirrors that geometry on the widest sigma-box the route admits.
+  constexpr double T = 1.0;
+  constexpr double r = 0.05;
+  constexpr double q = 0.02;
+  constexpr double S = 100.0;
+  const double F = S * std::exp((r - q) * T);
+  const double df = std::exp(-r * T);
+  constexpr double kSolveTol = 1.0e-7;  // production solve_tol at the default iv_tol = 1e-7
+  constexpr std::uint16_t kMaxIter = 64u;
+
+  int total_evals = 0;
+  int worst_evals = 0;
+  int lanes = 0;
+  double worst_sigma_error = 0.0;
+  for (int index = 0; index < 96; ++index) {
+    const double t = static_cast<double>(index) / 95.0;
+    const double K = 72.0 + 56.0 * t;
+    const double sigma_mkt = 0.80 + (0.15 - 0.80) * t; // steep [0.15, 0.8] smile
+    const double sigma_lo = 0.35 * 0.15;               // the route's 0.35 * min_seed
+    const double sigma_root = 0.95 * sigma_mkt;        // root hugs `hi`, as in production
+    for (const Side side : {Side::Call, Side::Put}) {
+      const double mid = black76_price(F, K, T, sigma_root, df, side);
+      double sigma = 0.0;
+      const int evals = drive_shared_lane_bracket(F, K, T, df, side, mid, sigma_lo, sigma_mkt,
+                                                  kSolveTol, kMaxIter, &sigma);
+      if (evals < 0) {
+        continue;
+      }
+      ++lanes;
+      total_evals += evals;
+      worst_evals = std::max(worst_evals, evals);
+      worst_sigma_error = std::max(worst_sigma_error, std::fabs(sigma - sigma_root));
+    }
+  }
+  ASSERT_GT(lanes, 100) << "fixture must exercise a substantive lane population";
+  const double mean_evals = static_cast<double>(total_evals) / static_cast<double>(lanes);
+
+  // Speed is not bought with accuracy: termination is still on bracket WIDTH, so
+  // the accepted sigma (the bracket midpoint) is within solve_tol/2 of the true
+  // root regardless of how the step chooses its probes. This must hold before and
+  // after R-11a — it is what makes the eval-count comparison fair.
+  EXPECT_LE(worst_sigma_error, kSolveTol) << "worst |sigma - root| = " << worst_sigma_error;
+
+  // The headline. Measured on this fixture, mean / worst evals per lane:
+  //     falsi + the old 25% trust region (pre-R-11a)  22.50 / 24
+  //     Illinois, trust region replaced by a backstop   5.19 / 11
+  // Thresholds sit just above the measured values so a regression in either the
+  // step rule or the safeguard interaction fails here rather than silently
+  // costing throughput. NB both are well under SharedLaneBracket's 24-step
+  // secant budget, so the bisection backstop is not what is being measured.
+  EXPECT_LE(mean_evals, 7.0) << "mean evals/lane = " << mean_evals;
+  EXPECT_LE(worst_evals, 13) << "worst evals/lane = " << worst_evals;
 }
 
 TEST(BuildObservationsEuropean, UltraShortTenorBypassesShortcut) {

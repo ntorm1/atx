@@ -4,7 +4,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <optional>
@@ -2594,6 +2593,80 @@ TEST(SigmaInterp, MeetsPdeGreekGates) {
 // A σ outside the clamp box, and (whole slice) a near-expiry τ below the guard,
 // both take the cold solve tagged ColdFallback — BIT-IDENTICAL to the direct
 // andersen_lake solve.
+// R-11c. Pins that every sigma-node of the interpolant carries a boundary
+// converged to the SAME fixed point as a cold per-strike andersen_lake solve.
+//
+// Probing exactly AT the sigma-nodes is what makes this a statement about the
+// BOUNDARY SOLVE rather than about interpolation: the barycentric evaluator
+// returns node s's stored boundary verbatim when queried at sigma_s, so
+// sigma-interpolation error is zero there by construction, and any gap against
+// the cold reference is the node solve's alone. (The flag-OFF arm is documented
+// as bit-identical to andersen_lake per strike, so it is the honest reference.)
+//
+// This is the guard that REJECTED R-11c's proposed optimisation — chaining
+// al_solve_put_boundary_warm across the nodes to skip eight cold Barone-Adesi-
+// Whaley seeds. Chebyshev-Lobatto gaps are 25x-1200x too wide for the warm
+// seeder, which then returns Ok on an under-converged boundary; this assertion
+// caught it at 3.1e-05 (flat box) / 1.3e-04 (smile box) against the cold build's
+// 7.1e-15. See the rationale block in SigmaBoundaryInterp::build(). Any future
+// attempt to warm-seed the node grid must clear this bound first.
+TEST(SigmaInterp, WarmNodeBuildMatchesColdBuild) {
+  const double S = 100.0, T = 1.0, r = 0.05, q = 0.02;
+  const double sigma_lo = 0.15, sigma_hi = 0.80; // the steep-smile box, ~15x wide
+  constexpr std::uint16_t kNodes = 9;
+  const double pi = std::acos(-1.0);
+
+  // build()'s own Chebyshev-Lobatto parameterisation, reproduced exactly.
+  std::vector<double> node_sigma;
+  for (unsigned s = 0; s < kNodes; ++s) {
+    const double z = (s == 0) ? -1.0
+                              : (s + 1u == kNodes
+                                     ? 1.0
+                                     : -std::cos(pi * static_cast<double>(s) /
+                                                 static_cast<double>(kNodes - 1u)));
+    node_sigma.push_back(sigma_lo + 0.5 * (sigma_hi - sigma_lo) * (z + 1.0));
+  }
+
+  // More strikes than sigma-nodes (the interpolant's own build gate), every one
+  // sitting on a node so the comparison stays exact.
+  std::vector<double> strikes, sigmas;
+  for (int i = 0; i < 18; ++i) {
+    strikes.push_back(70.0 + 60.0 * static_cast<double>(i) / 17.0);
+    sigmas.push_back(node_sigma[static_cast<std::size_t>(i) % kNodes]);
+  }
+
+  SigmaInterpOptions warm;
+  warm.use_sigma_boundary_interp = true;
+  warm.n_sigma = kNodes;
+  warm.sigma_lo = sigma_lo;
+  warm.sigma_hi = sigma_hi;
+  std::vector<double> px_warm(strikes.size(), 0.0);
+  SigmaSliceStats st;
+  ASSERT_TRUE(andersen_lake_put_slice_sigma(S, strikes, sigmas, T, r, q,
+                                            std::span<double>(px_warm), warm, std::nullopt, &st)
+                  .has_value());
+  ASSERT_TRUE(st.used_interp);
+  ASSERT_EQ(st.n_interp, strikes.size()); // no strike may sneak onto the cold path
+  ASSERT_EQ(st.n_cold_fallback, 0u);
+
+  SigmaInterpOptions cold = warm;
+  cold.use_sigma_boundary_interp = false; // bit-identical cold andersen_lake per strike
+  std::vector<double> px_cold(strikes.size(), 0.0);
+  ASSERT_TRUE(andersen_lake_put_slice_sigma(S, strikes, sigmas, T, r, q,
+                                            std::span<double>(px_cold), cold, std::nullopt, nullptr)
+                  .has_value());
+
+  double worst = 0.0;
+  for (std::size_t i = 0; i < strikes.size(); ++i) {
+    worst = std::max(worst, std::fabs(px_warm[i] - px_cold[i]));
+  }
+  // The cold node build lands at ~7e-15 (pure round-off through the homogeneity
+  // rescale + premium quadrature). The bound is set well above that but far below
+  // the route's economic budget, so it stays a real assertion about the boundary
+  // solve rather than a restatement of machine epsilon.
+  EXPECT_LE(worst, 1.0e-9) << "node build no longer matches the cold solve: " << worst;
+}
+
 TEST(SigmaInterp, ClampBox_FallsBackToCold) {
   const double S = 100.0, T = 0.5, r = 0.05, q = 0.02;
   std::vector<double> strikes, sigmas;

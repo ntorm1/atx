@@ -722,7 +722,29 @@ struct SharedDeamFixture {
   double df{0.0};
 };
 
-[[nodiscard]] std::optional<SharedDeamFixture> build_shared_deam_fixture() {
+// Per-strike quoting vol for the shared-boundary A/B fixture.
+//
+// `smile == false` is the original board: FLAT 0.24 across every strike. Its
+// sigma-box is [0.35 * 0.24, 0.24] = [0.084, 0.24] — only ~2.9x wide and
+// trivially interpolable by nine Chebyshev nodes, so that arm measures the route's
+// MECHANICS (lane iteration, build amortisation) and not interpolation stress.
+//
+// `smile == true` sweeps sigma monotonically across [0.15, 0.8] in strike — a
+// steep equity put-skew. The box becomes [0.0525, 0.8], ~15x wide (just inside the
+// route's own <= 20x admission cap), which is the widest span the shared
+// interpolant will ever be asked to serve. This is the arm that actually stresses
+// the nine-node interpolation, and it is the same fixture shape the sprint's
+// smile-stress accuracy evidence was measured on.
+[[nodiscard]] double shared_deam_fixture_sigma(bool smile, std::size_t strike,
+                                               std::size_t n_strikes) {
+  if (!smile || n_strikes < 2u) {
+    return 0.24;
+  }
+  const double t = static_cast<double>(strike) / static_cast<double>(n_strikes - 1u);
+  return 0.80 + (0.15 - 0.80) * t;
+}
+
+[[nodiscard]] std::optional<SharedDeamFixture> build_shared_deam_fixture(bool smile) {
   SharedDeamFixture fixture;
   fixture.F = fixture.S * std::exp((fixture.r - fixture.q) * fixture.T);
   fixture.df = std::exp(-fixture.r * fixture.T);
@@ -743,9 +765,11 @@ struct SharedDeamFixture {
   fixture.chain.ts_ns.assign(quote_count, 0);
   fixture.chain.flags.assign(quote_count, 0u);
   for (std::size_t strike = 0u; strike < fixture.chain.strikes.size(); ++strike) {
+    const double sigma =
+        shared_deam_fixture_sigma(smile, strike, fixture.chain.strikes.size());
     for (const Side side : {Side::Call, Side::Put}) {
       const Result<double> price =
-          american_price(fixture.S, fixture.chain.strikes[strike], fixture.T, 0.24, fixture.r,
+          american_price(fixture.S, fixture.chain.strikes[strike], fixture.T, sigma, fixture.r,
                          fixture.q, side, AmericanMethod::AndersenLake, std::nullopt);
       if (!price || !(*price > 0.0)) {
         return std::nullopt;
@@ -760,8 +784,11 @@ struct SharedDeamFixture {
   return fixture;
 }
 
+// range(0): 0 = scalar reference arm, 1 = shared-boundary arm.
+// range(1): 0 = flat 0.24 board, 1 = steep [0.15, 0.8] smile board.
 void BM_SharedBoundaryDeam(benchmark::State &state) {
-  const std::optional<SharedDeamFixture> fixture = build_shared_deam_fixture();
+  const std::optional<SharedDeamFixture> fixture =
+      build_shared_deam_fixture(/*smile=*/state.range(1) != 0);
   if (!fixture) {
     state.SkipWithError("shared-boundary de-Am fixture build failed");
     return;
@@ -835,13 +862,24 @@ const int kRegistered = [] {
       ->Unit(benchmark::kMicrosecond);
   apply_common(benchmark::RegisterBenchmark("fit/american_iv/warm", BM_AmericanIvWarm))
       ->Unit(benchmark::kMicrosecond);
+  // Flat 0.24 board: measures route mechanics on a trivially-interpolable box.
   apply_common(benchmark::RegisterBenchmark("fit/deam_shared_boundary/scalar_reference",
                                             BM_SharedBoundaryDeam))
-      ->Arg(0)
+      ->Args({0, 0})
       ->Unit(benchmark::kMicrosecond);
   apply_common(
       benchmark::RegisterBenchmark("fit/deam_shared_boundary/retained", BM_SharedBoundaryDeam))
-      ->Arg(1)
+      ->Args({1, 0})
+      ->Unit(benchmark::kMicrosecond);
+  // Steep [0.15, 0.8] smile board: the ~15x-wide sigma-box that actually stresses
+  // the nine-node interpolation. Same A/B, so the two boards are comparable.
+  apply_common(benchmark::RegisterBenchmark("fit/deam_shared_boundary_smile/scalar_reference",
+                                            BM_SharedBoundaryDeam))
+      ->Args({0, 1})
+      ->Unit(benchmark::kMicrosecond);
+  apply_common(benchmark::RegisterBenchmark("fit/deam_shared_boundary_smile/retained",
+                                            BM_SharedBoundaryDeam))
+      ->Args({1, 1})
       ->Unit(benchmark::kMicrosecond);
   return 0;
 }();

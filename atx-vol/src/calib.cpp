@@ -383,26 +383,23 @@ inline constexpr double kSharedMinSigma = 0.01;
 
 struct SharedIvLane {
   FitObs *observation{nullptr};
-  double lo{0.0};
-  double hi{0.0};
-  double f_lo{0.0};
-  double f_hi{0.0};
+  detail::SharedLaneBracket bracket{};
   bool active{false};
 };
 
+// R-31. The McDonald-Schroder internal-put mapping these two used to re-derive
+// inline now lives once, in detail::internal_put_coords (boundary_interp.hpp),
+// behind the side-aware price_side/price_side_embedded entry points that
+// slice_sigma_impl also calls. Same arithmetic, one definition.
 [[nodiscard]] double shared_boundary_price(detail::SigmaBoundaryInterp &interp, const FitObs &o,
                                            double S, double sigma) noexcept {
-  const double internal_spot = o.side == Side::Call ? o.K : S;
-  const double internal_strike = o.side == Side::Call ? S : o.K;
-  return interp.price_internal_put(internal_spot, internal_strike, sigma);
+  return interp.price_side(o.side, S, o.K, sigma);
 }
 
 [[nodiscard]] double shared_boundary_embedded_price(detail::SigmaBoundaryInterp &interp,
                                                     const FitObs &o, double S,
                                                     double sigma) noexcept {
-  const double internal_spot = o.side == Side::Call ? o.K : S;
-  const double internal_strike = o.side == Side::Call ? S : o.K;
-  return interp.price_internal_put_embedded(internal_spot, internal_strike, sigma);
+  return interp.price_side_embedded(o.side, S, o.K, sigma);
 }
 
 [[nodiscard]] double shared_economic_price_budget(const FitObs &o, double T, double sigma,
@@ -417,17 +414,18 @@ struct SharedIvLane {
 [[nodiscard]] bool initialize_shared_lane(SharedIvLane &lane, detail::SigmaBoundaryInterp &interp,
                                           FitObs &o, double S) noexcept {
   lane.observation = &o;
-  lane.lo = interp.sigma_lo();
-  lane.hi = o.sigma_mkt;
-  if (!(lane.hi > lane.lo)) {
+  lane.bracket = detail::SharedLaneBracket{};
+  lane.bracket.lo = interp.sigma_lo();
+  lane.bracket.hi = o.sigma_mkt;
+  if (!(lane.bracket.hi > lane.bracket.lo)) {
     return false;
   }
-  const double price_lo = shared_boundary_price(interp, o, S, lane.lo);
-  const double price_hi = shared_boundary_price(interp, o, S, lane.hi);
-  lane.f_lo = price_lo - o.mid;
-  lane.f_hi = price_hi - o.mid;
-  lane.active = std::isfinite(lane.f_lo) && std::isfinite(lane.f_hi) && lane.f_lo < 0.0 &&
-                lane.f_hi >= 0.0 && price_hi >= price_lo;
+  const double price_lo = shared_boundary_price(interp, o, S, lane.bracket.lo);
+  const double price_hi = shared_boundary_price(interp, o, S, lane.bracket.hi);
+  lane.bracket.f_lo = price_lo - o.mid;
+  lane.bracket.f_hi = price_hi - o.mid;
+  lane.active = std::isfinite(lane.bracket.f_lo) && std::isfinite(lane.bracket.f_hi) &&
+                lane.bracket.f_lo < 0.0 && lane.bracket.f_hi >= 0.0 && price_hi >= price_lo;
   return lane.active;
 }
 
@@ -439,35 +437,19 @@ void iterate_shared_lanes(std::span<SharedIvLane> lanes, detail::SigmaBoundaryIn
       if (!lane.active) {
         continue;
       }
-      const double width = lane.hi - lane.lo;
-      if (width <= solve_tol) {
+      if (lane.bracket.hi - lane.bracket.lo <= solve_tol) {
         lane.active = false;
         continue;
       }
       any_active = true;
-      double sigma = 0.5 * (lane.lo + lane.hi);
-      const double residual_span = lane.f_hi - lane.f_lo;
-      if (residual_span > 0.0 && std::isfinite(residual_span)) {
-        const double secant = lane.lo - lane.f_lo * width / residual_span;
-        // A central secant is accepted; a tail-hugging regula-falsi step is
-        // replaced by bisection so each iteration shrinks the bracket by at
-        // least 25% and the bounded max_iter contract is constructive.
-        const double guard = 0.25 * width;
-        if (secant > lane.lo + guard && secant < lane.hi - guard) {
-          sigma = secant;
-        }
-      }
+      const double sigma = lane.bracket.next_sigma();
       const double residual =
           shared_boundary_price(interp, *lane.observation, S, sigma) - lane.observation->mid;
       if (!std::isfinite(residual)) {
         lane.active = false;
         lane.observation = nullptr;
-      } else if (residual < 0.0) {
-        lane.lo = sigma;
-        lane.f_lo = residual;
       } else {
-        lane.hi = sigma;
-        lane.f_hi = residual;
+        lane.bracket.update(sigma, residual);
       }
     }
     if (!any_active) {
@@ -479,10 +461,11 @@ void iterate_shared_lanes(std::span<SharedIvLane> lanes, detail::SigmaBoundaryIn
 [[nodiscard]] bool finalize_shared_lane(SharedIvLane &lane, detail::SigmaBoundaryInterp &interp,
                                         double S, double T, double solve_tol,
                                         const CalibOpts &opts) noexcept {
-  if (lane.observation == nullptr || lane.hi < lane.lo || lane.hi - lane.lo > solve_tol) {
+  if (lane.observation == nullptr || lane.bracket.hi < lane.bracket.lo ||
+      lane.bracket.hi - lane.bracket.lo > solve_tol) {
     return false;
   }
-  const double sigma = 0.5 * (lane.lo + lane.hi);
+  const double sigma = 0.5 * (lane.bracket.lo + lane.bracket.hi);
   const double price = shared_boundary_price(interp, *lane.observation, S, sigma);
   const double embedded = shared_boundary_embedded_price(interp, *lane.observation, S, sigma);
   const double budget = shared_economic_price_budget(*lane.observation, T, sigma, opts);
@@ -725,6 +708,98 @@ void prepare_shared_boundary_proposals(std::vector<FitObs> &observations,
 } // namespace
 
 namespace detail {
+
+double SharedLaneBracket::next_sigma() const noexcept {
+  const double middle = 0.5 * (lo + hi);
+  // Bisection backstop. This REPLACES the former "reject any secant landing in
+  // the outer 25% of the bracket" trust region -- see update() for why that guard
+  // had to go, and kMaxSecantSteps for the bound this carries in its place.
+  if (steps >= kMaxSecantSteps) {
+    return middle;
+  }
+  const double residual_span = f_hi - f_lo;
+  if (!(residual_span > 0.0) || !std::isfinite(residual_span)) {
+    return middle;
+  }
+  const double secant = lo - f_lo * (hi - lo) / residual_span;
+  // Any probe strictly inside the bracket is admissible. A step landing ON an
+  // endpoint (or off it, via round-off) would make no progress, so it bisects.
+  if (!(secant > lo && secant < hi)) {
+    return middle;
+  }
+  return secant;
+}
+
+void SharedLaneBracket::update(double sigma, double residual) noexcept {
+  // R-11a. Numerically: the retained endpoint's stored residual is now HALVED
+  // whenever that same endpoint survives two updates in a row (the Illinois
+  // modification of false position); previously both stored residuals were always
+  // the exact residuals at the endpoints.
+  //
+  // Why it is correct. `f_lo`/`f_hi` are consumed by exactly one expression --
+  // the secant in `next_sigma()` -- and only through their SIGNS (for the
+  // invariant) and their RATIO (for the crossing point). Halving preserves the
+  // sign, so the bracket invariant `f_lo < 0 <= f_hi` is untouched and the root
+  // stays enclosed; `finalize_shared_lane` re-prices from scratch at the accepted
+  // sigma and never reads either field, so a deflated residual cannot leak into
+  // an accepted price. What halving changes is only WHICH point inside the
+  // bracket is probed next.
+  //
+  // Why it is needed. A lane's root hugs `hi` (hi = sigma_mkt is the Black-76 iv
+  // of an American mid, which overstates the American iv being solved for), and
+  // the map is convex in sigma there, so the plain secant always undershoots and
+  // `hi` is retained forever: the bracket creeps up from `lo` and its WIDTH --
+  // the quantity `hi - lo <= solve_tol` terminates on -- contracts only
+  // geometrically. Deflating the stagnant endpoint's residual pulls the next
+  // secant toward it, which is what makes the width collapse superlinearly
+  // (order ~1.44) instead.
+  //
+  // Bound it holds: the accepted sigma is unchanged in kind -- termination is
+  // still `hi - lo <= solve_tol` on a bracket that still encloses the root, so
+  // the converged sigma stays within solve_tol/2 of the true root exactly as
+  // before.
+  ++steps;
+  if (residual < 0.0) {
+    lo = sigma;
+    f_lo = residual;
+    if (retained > 0) {
+      f_hi *= 0.5; // `hi` retained twice running -> deflate it
+    }
+    retained = 1;
+  } else {
+    hi = sigma;
+    f_hi = residual;
+    if (retained < 0) {
+      f_lo *= 0.5; // `lo` retained twice running -> deflate it
+    }
+    retained = -1;
+  }
+  // R-11a, second numeric change: the former safeguard rejected any secant
+  // landing in the outer quarter of the bracket and bisected instead, which made
+  // every iteration contract the width by >= 25% and bounded the iteration count
+  // constructively. That guard CANNOT coexist with Illinois, and removing it is
+  // what actually buys the speedup. Deflating the stagnant endpoint works
+  // precisely BY aiming the next secant at that endpoint -- i.e. into the outer
+  // quarter -- so the guard rejected exactly the steps Illinois exists to take.
+  // Measured on the steep-smile lane fixture (mean evals/lane, worst):
+  //     falsi + 25% guard (the pre-change path)  22.50 / 24   <- baseline
+  //     Illinois + 25% guard                     22.66 / 25   <- a REGRESSION
+  //     Illinois, guard replaced per below        5.19 / 11
+  // The middle row is the point: keeping the guard as Illinois' "fallback", as
+  // one might expect to be the conservative choice, silently discards every
+  // deflated step and costs more than it saves.
+  //
+  // The bound the guard carried is re-established by kMaxSecantSteps' bisection
+  // backstop (see calib.hpp) rather than by a per-step trust region: 24 + 33 = 57
+  // evaluations worst case against the unchanged max_iter = 64, versus the 25%
+  // guard's own ceil(log(1.33e-7)/log(0.75)) = 55. So the worst case is
+  // materially unchanged while the typical case is ~4.4x cheaper.
+  //
+  // Nothing about acceptance moves: the bracket still encloses the root, the loop
+  // still terminates on `hi - lo <= solve_tol`, and a lane that somehow fails to
+  // reach solve_tol within max_iter is still rejected by finalize_shared_lane and
+  // served by the exact scalar inverter. Only the probe SEQUENCE changes.
+}
 
 bool shared_lane_residual_within_budget(double price, double mid, double embedded,
                                         double budget) noexcept {
