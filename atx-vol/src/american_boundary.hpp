@@ -78,6 +78,21 @@ struct AlWorkspace {
   std::array<double, kGeoSize> geo_v;     // sigma * sqrt(t_u_ji)
   std::array<double, kGeoSize> geo_weru;  // qw_fp[i] * exp(r * u_ji)
   std::array<double, kGeoSize> geo_wequ;  // qw_fp[i] * exp(q * u_ji)
+#ifndef NDEBUG
+  // R-30: Debug-only bind key naming the contract the sweep-invariant static
+  // geometry above (geo_zc/geo_weru/geo_wequ) was bound for. Written when
+  // al_bind_geometry_static binds; asserted on every reuse in al_bind_geometry_sigma
+  // so a retained workspace can never silently consume geometry from a different
+  // (T, r, q, node-grid) contract (the obs-23864 revalidation-trust regression shape).
+  struct GeoBindKey {
+    double T = 0.0;
+    double r = 0.0;
+    double q = 0.0;
+    std::uint16_t n = 0;   // matches AlBoundary::n
+    unsigned nq = 0;       // matches AlWorkspace::n_quad_fp
+    bool set = false;
+  } geo_bind_key{};
+#endif
 };
 
 // Boundary solve status (S-independence seam). Ok => bnd/ws hold a converged
@@ -100,6 +115,19 @@ enum class AlSolveStatus { Ok, Collapsed, TableMissing };
                                                   const AlScheme& sch,
                                                   AlBoundary& bnd, AlWorkspace& ws,
                                                   bool specialize = true) noexcept;
+
+// Seed-ONLY variant for the AVX2 boundary batch (Task A1). Does exactly what
+// al_solve_put_boundary does BEFORE its sweep loop — init the node grid, bind the
+// Gauss-Legendre quadrature pointers, and lay down the cold Barone-Adesi-Whaley seed
+// y[] — but SKIPS al_bind_geometry (the sweep-invariant geometry precompute: ~n·nq
+// exp+sqrt per solve). The AVX2 kernel recomputes all geometry inline per lane and
+// never reads ws.geo_*, so that precompute is pure waste on the batch seed path.
+// The seed y[] and node/quadrature state are bit-identical to al_solve_put_boundary
+// with the sweep budget zeroed, so the caller's own (vector) sweeps reach the same
+// converged boundary. The caller runs the sweeps; this only seeds.
+[[nodiscard]] AlSolveStatus al_seed_put_boundary(double K, double T, double sigma, double r,
+                                                 double q, const AlScheme& sch, AlBoundary& bnd,
+                                                 AlWorkspace& ws) noexcept;
 
 // Warm variant: seed from an already-converged boundary a small (sigma,r,T) bump
 // away instead of a cold Barone-Adesi-Whaley re-seed.

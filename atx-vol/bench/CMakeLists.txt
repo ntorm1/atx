@@ -225,3 +225,41 @@ target_link_libraries(atx-vol-iv-shootout-bench
         atx_warnings
         Threads::Threads
 )
+
+# ── Sub-Sprint A (Agent A) — appended targets ─────────────────────────────
+# American price/IV shootout: the µs/op-vs-error frontier across the standardized
+# grid vs the ALO envelope (SSRN 2547027). Task A3.
+add_executable(atx-vol-american-shootout-bench
+    bench_main.cpp
+    american_shootout_bench.cpp
+)
+target_link_libraries(atx-vol-american-shootout-bench
+    PRIVATE
+        atx::vol
+        atx::core
+        benchmark::benchmark
+        atx_warnings
+        Threads::Threads
+)
+
+# Self-gating name-coverage CTest (mirrors the W0.1 pattern; does NOT rely on
+# compare_baseline.py, which another sprint owns): fail loud if the shootout ever
+# drops a tier row.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_test(
+        NAME atx-vol-american-shootout-name-coverage
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/check_benchmark_names.py
+            --exe $<TARGET_FILE:atx-vol-american-shootout-bench>
+            --required american/price/fast
+            --required american/price/accurate
+            --required american/price/reference
+            --required american/iv/accurate
+            --required american/corners/resolve
+            --required american/boundary_batch/scalar
+            --required american/boundary_batch/avx2
+    )
+    set_tests_properties(atx-vol-american-shootout-name-coverage PROPERTIES LABELS atx_vol)
+endif()
