@@ -4,6 +4,18 @@
 // on hosts without AVX2+FMA and for the from-lnFK kernel, which has no vector
 // implementation. Outputs are required to be disjoint from every input because
 // the vector kernels load and store in four-lane blocks.
+//
+// R-23 (flagged limitation, NOT yet lifted): `overlaps_any` below rejects ALL
+// output↔input overlap, including the *exact* in==out identity aliasing (same
+// base pointer AND same length) that the pre-W1 scalar batch supported — and
+// which is in fact safe even on the vector route, since each 4-lane block is
+// loaded before its same-block store. Lifting this (permitting exact identity
+// while still rejecting staggered overlap and output↔output aliasing) is a small
+// change here, but the five Batch.*_OutputAliasesInput_InvalidArgument cases in
+// tests/batch_test.cpp bit-pin the current reject-identity contract. That test
+// file is outside this sub-sprint's ownership, so per the R-23 finding's second
+// option the break is documented rather than lifted; Sprint I should permit
+// identity aliasing here and update those five assertions together.
 
 #include "atx/vol/batch.hpp"
 
