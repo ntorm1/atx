@@ -107,6 +107,9 @@ add_executable(atx-vol-tests
     analytics_density_test.cpp
     analytics_aggregate_test.cpp
     analytics_io_test.cpp
+    # Sub-Sprint A (Agent A) — appended targets:
+    american_bindkey_test.cpp        # A4 (R-30) retained-geometry bind-key guardrail
+    american_negrate_domain_test.cpp # A5 negative-rate / double-boundary domain map
 )
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).
