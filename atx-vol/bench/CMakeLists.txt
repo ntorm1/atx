@@ -210,3 +210,18 @@ target_link_libraries(atx-vol-surface-v2-bench
         atx_warnings
         Threads::Threads
 )
+
+# K5 — IV inversion shootout: atx-vol scalar + AVX2 ns/op and σ error vs a
+# long-double bisection oracle, standing vs the Jäckel LBR ~180 ns/op reference.
+add_executable(atx-vol-iv-shootout-bench
+    bench_main.cpp
+    iv_shootout_bench.cpp
+)
+target_link_libraries(atx-vol-iv-shootout-bench
+    PRIVATE
+        atx::vol
+        atx::core
+        benchmark::benchmark
+        atx_warnings
+        Threads::Threads
+)
