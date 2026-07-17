@@ -174,4 +174,141 @@ ATX_FORCE_INLINE void norm_cdf_pd2(__m256d x0, __m256d x1, const double* coefs,
     r1 = _mm256_add_pd(c0, _mm256_fmsub_pd(t1, b1, b2));
 }
 
+// ── Full-range standard-normal CDF via Cody rational erfc (K2, W5.3) ───────
+//
+// Φ(x) = ½·erfc(−x/√2), with erfc evaluated by W. J. Cody's near-minimax
+// rational approximation. Primary source: W. J. Cody, "Rational Chebyshev
+// Approximations for the Error Function", Math. Comp. 23 (1969), 631–637; the
+// coefficients below are transcribed from Cody's own reference implementation
+// (SPECFUN / ACM TOMS Algorithm 715 CALERF, netlib.org/specfun) — NOT from
+// memory. erfc(y) for y ≥ 0 uses three regions, all in double precision:
+//   y ≤ 0.46875 : erf via a degree-4/4 rational in y², erfc = 1 − erf.
+//   0.46875 < y ≤ 4 : erfc = e·N(y)/D(y), e = exp(−y²), degree-8/8.
+//   y > 4 : erfc = e·(1/√π − w·N(w)/D(w))/y, w = 1/y², degree-5/5 (asymptotic).
+//
+// vs. the degree-48 Chebyshev–Clenshaw norm_cdf_pd above: this is full
+// double-precision across the ENTIRE real line — including the deep wings the
+// Chebyshev fit (accurate only on |x| ≤ ~7, ~1e-11) could never reach — so the
+// pricing kernels no longer need a |d| > kNormCdfWing scalar wing patch. It
+// costs an exp(−y²) and two divisions the polynomial path avoids; the accuracy
+// (≈1e-16 vs 1e-11, and correct denormal wings) is the point. Class:
+// accuracy-improving. All lanes evaluate every region branchlessly and select
+// by y with blendv (a pure bitwise select), so the non-finite region-3 math on
+// small-y lanes is computed but never selected.
+//
+// Cody CALERF coefficients (double precision):
+inline constexpr double kCodyThresh = 0.46875;
+inline constexpr double kCodySqrtPiInv = 5.6418958354775628695e-1; // 1/√π
+inline constexpr double kCodyA[5] = {3.16112374387056560e00, 1.13864154151050156e02,
+                                     3.77485237685302021e02, 3.20937758913846947e03,
+                                     1.85777706184603153e-1};
+inline constexpr double kCodyB[4] = {2.36012909523441209e01, 2.44024637934444173e02,
+                                     1.28261652607737228e03, 2.84423683343917062e03};
+inline constexpr double kCodyC[9] = {5.64188496988670089e-1, 8.88314979438837594e0,
+                                     6.61191906371416295e01, 2.98635138197400131e02,
+                                     8.81952221241769090e02, 1.71204761263407058e03,
+                                     2.05107837782607147e03, 1.23033935479799725e03,
+                                     2.15311535474403846e-8};
+inline constexpr double kCodyD[8] = {1.57449261107098347e01, 1.17693950891312499e02,
+                                     5.37181101862009858e02, 1.62138957456669019e03,
+                                     3.29079923573345963e03, 4.36261909014324716e03,
+                                     3.43936767414372164e03, 1.23033935480374942e03};
+inline constexpr double kCodyP[6] = {3.05326634961232344e-1, 3.60344899949804439e-1,
+                                     1.25781726111229246e-1, 1.60837851487422766e-2,
+                                     6.58749161529837803e-4, 1.63153871373020978e-2};
+inline constexpr double kCodyQ[5] = {2.56852019228982242e00, 1.87295284992346047e00,
+                                     5.27905102951428412e-1, 6.05183413124413191e-2,
+                                     2.33520497626869185e-3};
+
+// erfc(y) for y ≥ 0, four lanes. Callers pass y = |x|·(1/√2) ≥ 0.
+ATX_FORCE_INLINE __m256d erfc_nonneg_pd(__m256d y) noexcept {
+    const __m256d ysq = _mm256_mul_pd(y, y);
+    // e = exp(−y²), shared by regions 2 and 3.
+    const __m256d e = exp_pd(_mm256_sub_pd(_mm256_setzero_pd(), ysq));
+
+    // Region 1 (y ≤ 0.46875): erf via degree-4/4 rational in ysq; erfc = 1 − erf.
+    __m256d num1 = _mm256_set1_pd(kCodyA[4]);
+    num1 = _mm256_fmadd_pd(num1, ysq, _mm256_set1_pd(kCodyA[0]));
+    num1 = _mm256_fmadd_pd(num1, ysq, _mm256_set1_pd(kCodyA[1]));
+    num1 = _mm256_fmadd_pd(num1, ysq, _mm256_set1_pd(kCodyA[2]));
+    num1 = _mm256_fmadd_pd(num1, ysq, _mm256_set1_pd(kCodyA[3]));
+    __m256d den1 = _mm256_set1_pd(1.0);
+    den1 = _mm256_fmadd_pd(den1, ysq, _mm256_set1_pd(kCodyB[0]));
+    den1 = _mm256_fmadd_pd(den1, ysq, _mm256_set1_pd(kCodyB[1]));
+    den1 = _mm256_fmadd_pd(den1, ysq, _mm256_set1_pd(kCodyB[2]));
+    den1 = _mm256_fmadd_pd(den1, ysq, _mm256_set1_pd(kCodyB[3]));
+    const __m256d erf = _mm256_div_pd(_mm256_mul_pd(y, num1), den1);
+    const __m256d r_lo = _mm256_sub_pd(_mm256_set1_pd(1.0), erf);
+
+    // Region 2 (0.46875 < y ≤ 4): erfc = e·N(y)/D(y), degree-8/8.
+    __m256d num2 = _mm256_set1_pd(kCodyC[8]);
+    num2 = _mm256_fmadd_pd(num2, y, _mm256_set1_pd(kCodyC[0]));
+    num2 = _mm256_fmadd_pd(num2, y, _mm256_set1_pd(kCodyC[1]));
+    num2 = _mm256_fmadd_pd(num2, y, _mm256_set1_pd(kCodyC[2]));
+    num2 = _mm256_fmadd_pd(num2, y, _mm256_set1_pd(kCodyC[3]));
+    num2 = _mm256_fmadd_pd(num2, y, _mm256_set1_pd(kCodyC[4]));
+    num2 = _mm256_fmadd_pd(num2, y, _mm256_set1_pd(kCodyC[5]));
+    num2 = _mm256_fmadd_pd(num2, y, _mm256_set1_pd(kCodyC[6]));
+    num2 = _mm256_fmadd_pd(num2, y, _mm256_set1_pd(kCodyC[7]));
+    __m256d den2 = _mm256_set1_pd(1.0);
+    den2 = _mm256_fmadd_pd(den2, y, _mm256_set1_pd(kCodyD[0]));
+    den2 = _mm256_fmadd_pd(den2, y, _mm256_set1_pd(kCodyD[1]));
+    den2 = _mm256_fmadd_pd(den2, y, _mm256_set1_pd(kCodyD[2]));
+    den2 = _mm256_fmadd_pd(den2, y, _mm256_set1_pd(kCodyD[3]));
+    den2 = _mm256_fmadd_pd(den2, y, _mm256_set1_pd(kCodyD[4]));
+    den2 = _mm256_fmadd_pd(den2, y, _mm256_set1_pd(kCodyD[5]));
+    den2 = _mm256_fmadd_pd(den2, y, _mm256_set1_pd(kCodyD[6]));
+    den2 = _mm256_fmadd_pd(den2, y, _mm256_set1_pd(kCodyD[7]));
+    const __m256d r_mid = _mm256_mul_pd(e, _mm256_div_pd(num2, den2));
+
+    // Region 3 (y > 4): asymptotic erfc = e·(1/√π − w·N(w)/D(w))/y, w = 1/y².
+    // For small-y lanes w is huge and these results are non-finite, but they are
+    // never selected below.
+    const __m256d w = _mm256_div_pd(_mm256_set1_pd(1.0), ysq);
+    __m256d num3 = _mm256_set1_pd(kCodyP[5]);
+    num3 = _mm256_fmadd_pd(num3, w, _mm256_set1_pd(kCodyP[0]));
+    num3 = _mm256_fmadd_pd(num3, w, _mm256_set1_pd(kCodyP[1]));
+    num3 = _mm256_fmadd_pd(num3, w, _mm256_set1_pd(kCodyP[2]));
+    num3 = _mm256_fmadd_pd(num3, w, _mm256_set1_pd(kCodyP[3]));
+    num3 = _mm256_fmadd_pd(num3, w, _mm256_set1_pd(kCodyP[4]));
+    __m256d den3 = _mm256_set1_pd(1.0);
+    den3 = _mm256_fmadd_pd(den3, w, _mm256_set1_pd(kCodyQ[0]));
+    den3 = _mm256_fmadd_pd(den3, w, _mm256_set1_pd(kCodyQ[1]));
+    den3 = _mm256_fmadd_pd(den3, w, _mm256_set1_pd(kCodyQ[2]));
+    den3 = _mm256_fmadd_pd(den3, w, _mm256_set1_pd(kCodyQ[3]));
+    den3 = _mm256_fmadd_pd(den3, w, _mm256_set1_pd(kCodyQ[4]));
+    __m256d r_hi = _mm256_mul_pd(w, _mm256_div_pd(num3, den3));
+    r_hi = _mm256_div_pd(_mm256_sub_pd(_mm256_set1_pd(kCodySqrtPiInv), r_hi), y);
+    r_hi = _mm256_mul_pd(e, r_hi);
+
+    // Select region by y.
+    const __m256d in_lo = _mm256_cmp_pd(y, _mm256_set1_pd(kCodyThresh), _CMP_LE_OQ);
+    const __m256d in_hi = _mm256_cmp_pd(y, _mm256_set1_pd(4.0), _CMP_GT_OQ);
+    __m256d erfc = _mm256_blendv_pd(r_mid, r_hi, in_hi); // mid vs asymptotic
+    erfc = _mm256_blendv_pd(erfc, r_lo, in_lo);          // then the erf region
+    return erfc;
+}
+
+// Standard-normal CDF Φ(x) = ½·erfc(−x/√2), full range (Cody). Four lanes.
+ATX_FORCE_INLINE __m256d norm_cdf_erfc_pd(__m256d x) noexcept {
+    const __m256d abs_x = _mm256_andnot_pd(_mm256_set1_pd(-0.0), x);
+    const __m256d y = _mm256_mul_pd(abs_x, _mm256_set1_pd(1.0 / kSqrt2));
+    const __m256d ea = erfc_nonneg_pd(y);
+    const __m256d half_ea = _mm256_mul_pd(_mm256_set1_pd(0.5), ea);
+    // x ≥ 0 → 1 − ½·erfc(|x|/√2); x < 0 → ½·erfc(|x|/√2).
+    const __m256d hi = _mm256_sub_pd(_mm256_set1_pd(1.0), half_ea);
+    const __m256d nonneg = _mm256_cmp_pd(x, _mm256_setzero_pd(), _CMP_GE_OQ);
+    return _mm256_blendv_pd(half_ea, hi, nonneg);
+}
+
+// Φ for TWO independent vectors (Cody erfc). Same result as two norm_cdf_erfc_pd
+// calls; kept as a paired entry so the pricing kernels read like the fused
+// Chebyshev norm_cdf_pd2 they replace, and so the two independent erfc chains
+// overlap in the out-of-order window (hiding the div/exp latency).
+ATX_FORCE_INLINE void norm_cdf_erfc_pd2(__m256d x0, __m256d x1, __m256d &r0,
+                                        __m256d &r1) noexcept {
+    r0 = norm_cdf_erfc_pd(x0);
+    r1 = norm_cdf_erfc_pd(x1);
+}
+
 } // namespace atx::vol::detail

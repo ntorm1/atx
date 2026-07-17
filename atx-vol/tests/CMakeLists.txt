@@ -107,6 +107,7 @@ add_executable(atx-vol-tests
     analytics_density_test.cpp
     analytics_aggregate_test.cpp
     analytics_io_test.cpp
+    iv_convergence_test.cpp
 )
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).
