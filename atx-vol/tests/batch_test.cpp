@@ -18,8 +18,10 @@
 // Public batch API parity tests, ported from the C ats-vol test_pricer_simd.c.
 // Interior lanes may take the runtime-dispatched AVX2 kernels, whose vector
 // transcendental approximations are economically immaterial but not bit
-// identical to the scalar source of truth. Degenerate/deep-wing lanes retain
-// exact scalar patch-through. Length and alias guards cover the public boundary.
+// identical to the scalar source of truth. Degenerate lanes retain exact scalar
+// patch-through; deep-wing lanes are machine-accurate on the Cody-erfc vector Φ
+// (K2). Length and alias guards cover the public boundary — exact in==out
+// identity aliasing is permitted in place (R-23), staggered overlap rejected.
 
 namespace {
 
@@ -179,10 +181,36 @@ TEST(Batch, Price_LengthMismatch_InvalidArgument) {
   EXPECT_EQ(st.error().code(), ErrorCode::InvalidArgument);
 }
 
-TEST(Batch, Price_OutputAliasesInput_InvalidArgument) {
-  Grid g = make_grid(8);
-  const Status st = black76_price_batch(std::span<const double>(g.F), g.K, g.T, g.sigma, g.df,
-                                        g.side, std::span<double>(g.F));
+// R-23: exact in==out identity aliasing is PERMITTED at the public boundary and
+// computes in place, bit-for-bit with the disjoint-output result. The kernel
+// loads each 4-lane block (and the scalar tail element) fully before its
+// same-index store, so an output that exactly coincides with an input reads
+// every value before it is overwritten. 70 rows exercise the AVX2 blocks and the
+// 2-lane scalar tail.
+TEST(Batch, Price_ExactInPlaceAliasing_MatchesDisjoint) {
+  const Grid g = make_grid(70);
+  std::vector<double> ref(g.F.size());
+  ASSERT_TRUE(
+      black76_price_batch(g.F, g.K, g.T, g.sigma, g.df, g.side, std::span<double>(ref)).has_value());
+  std::vector<double> f = g.F; // serves as both the F input and the price output
+  const Status st = black76_price_batch(std::span<const double>(f), g.K, g.T, g.sigma, g.df, g.side,
+                                        std::span<double>(f));
+  ASSERT_TRUE(st.has_value());
+  for (std::size_t i = 0; i < ref.size(); ++i) {
+    EXPECT_DOUBLE_EQ(f[i], ref[i]) << "lane " << i;
+  }
+}
+
+// A staggered (non-identity) overlap of output onto an input is NOT safe in
+// place and must still be rejected: shift price_out by one element so it shares
+// storage with F without exactly coinciding.
+TEST(Batch, Price_PartialOverlapInput_InvalidArgument) {
+  const Grid g = make_grid(8);
+  std::vector<double> buf(g.F.size() + 1);
+  std::copy(g.F.begin(), g.F.end(), buf.begin());
+  const std::span<const double> F_in(buf.data(), g.F.size());    // buf[0 .. n-1]
+  const std::span<double> price_out(buf.data() + 1, g.F.size()); // buf[1 .. n]  (staggered)
+  const Status st = black76_price_batch(F_in, g.K, g.T, g.sigma, g.df, g.side, price_out);
   ASSERT_FALSE(st.has_value());
   EXPECT_EQ(st.error().code(), ErrorCode::InvalidArgument);
 }
@@ -221,14 +249,26 @@ TEST(Batch, FromLnfk_LengthMismatch_InvalidArgument) {
   EXPECT_EQ(st.error().code(), ErrorCode::InvalidArgument);
 }
 
-TEST(Batch, FromLnfk_OutputAliasesInput_InvalidArgument) {
-  Grid g = make_grid(8);
-  std::vector<double> ln_fk(8, 0.0);
-  const Status st = black76_price_from_lnfk_batch(std::span<const double>(g.F), g.K, 0.35,
-                                                  std::sqrt(0.35), g.sigma, std::exp(-0.05 * 0.35),
-                                                  ln_fk, g.side, std::span<double>(g.F));
-  ASSERT_FALSE(st.has_value());
-  EXPECT_EQ(st.error().code(), ErrorCode::InvalidArgument);
+TEST(Batch, FromLnfk_ExactInPlaceAliasing_MatchesDisjoint) {
+  const Grid g = make_grid(70);
+  const double T = 0.35;
+  const double sqrt_t = std::sqrt(T);
+  const double df = std::exp(-0.05 * T);
+  std::vector<double> ln_fk(g.F.size());
+  for (std::size_t i = 0; i < g.F.size(); ++i) {
+    ln_fk[i] = std::log(g.F[i] / g.K[i]);
+  }
+  std::vector<double> ref(g.F.size());
+  ASSERT_TRUE(black76_price_from_lnfk_batch(g.F, g.K, T, sqrt_t, g.sigma, df, ln_fk, g.side,
+                                            std::span<double>(ref))
+                  .has_value());
+  std::vector<double> f = g.F; // both the F input and the price output
+  const Status st = black76_price_from_lnfk_batch(std::span<const double>(f), g.K, T, sqrt_t,
+                                                  g.sigma, df, ln_fk, g.side, std::span<double>(f));
+  ASSERT_TRUE(st.has_value());
+  for (std::size_t i = 0; i < ref.size(); ++i) {
+    EXPECT_DOUBLE_EQ(f[i], ref[i]) << "lane " << i;
+  }
 }
 
 // ── value+vega batch == scalar (T shared; sentinel and supplied sqrt_t) ───
@@ -279,6 +319,8 @@ TEST(Batch, ValueAndVega_LengthMismatch_InvalidArgument) {
   EXPECT_EQ(st.error().code(), ErrorCode::InvalidArgument);
 }
 
+// Two OUTPUTS sharing storage is always a caller bug — rejected even at exact
+// identity (unlike output↔input aliasing, which is permitted in place).
 TEST(Batch, ValueAndVega_OutputsAlias_InvalidArgument) {
   const Grid g = make_grid(8);
   std::vector<double> out(8);
@@ -286,6 +328,27 @@ TEST(Batch, ValueAndVega_OutputsAlias_InvalidArgument) {
                                                  std::span<double>(out), std::span<double>(out));
   ASSERT_FALSE(st.has_value());
   EXPECT_EQ(st.error().code(), ErrorCode::InvalidArgument);
+}
+
+TEST(Batch, ValueAndVega_ValueOutExactInPlaceAliasing_MatchesDisjoint) {
+  const Grid g = make_grid(70);
+  const double T = 0.5;
+  std::vector<double> ref_value(g.F.size());
+  std::vector<double> ref_vega(g.F.size());
+  ASSERT_TRUE(black76_value_and_vega_batch(g.F, g.K, T, g.sigma, g.df, g.side,
+                                           std::span<double>(ref_value), std::span<double>(ref_vega))
+                  .has_value());
+  // value_out aliases the F input exactly; vega_out is a disjoint buffer.
+  std::vector<double> f = g.F;
+  std::vector<double> vega(g.F.size());
+  const Status st =
+      black76_value_and_vega_batch(std::span<const double>(f), g.K, T, g.sigma, g.df, g.side,
+                                   std::span<double>(f), std::span<double>(vega));
+  ASSERT_TRUE(st.has_value());
+  for (std::size_t i = 0; i < ref_value.size(); ++i) {
+    EXPECT_DOUBLE_EQ(f[i], ref_value[i]) << "value lane " << i;
+    EXPECT_DOUBLE_EQ(vega[i], ref_vega[i]) << "vega lane " << i;
+  }
 }
 
 // ── IV batch == scalar over round-tripped prices; parallel status ─────────
@@ -375,14 +438,31 @@ TEST(Batch, ImpliedVol_LengthMismatch_InvalidArgument) {
   EXPECT_EQ(st.error().code(), ErrorCode::InvalidArgument);
 }
 
-TEST(Batch, ImpliedVol_OutputAliasesInput_InvalidArgument) {
-  const Grid g = make_grid(8);
-  std::vector<double> price(8, 1.0);
-  std::vector<Status> status(8);
-  const Status st = implied_vol_batch(std::span<const double>(price), g.F, g.K, g.T, g.df, g.side,
-                                      std::span<double>(price), std::span<Status>(status));
-  ASSERT_FALSE(st.has_value());
-  EXPECT_EQ(st.error().code(), ErrorCode::InvalidArgument);
+TEST(Batch, ImpliedVol_ExactInPlaceAliasing_MatchesDisjoint) {
+  const Grid g = make_grid(70);
+  std::vector<double> price(g.F.size());
+  for (std::size_t i = 0; i < g.F.size(); ++i) {
+    price[i] = black76_price(g.F[i], g.K[i], g.T[i], g.sigma[i], g.df[i], g.side[i]);
+  }
+  std::vector<double> ref_iv(g.F.size());
+  std::vector<Status> ref_status(g.F.size());
+  ASSERT_TRUE(implied_vol_batch(price, g.F, g.K, g.T, g.df, g.side, std::span<double>(ref_iv),
+                                std::span<Status>(ref_status))
+                  .has_value());
+  // iv_out aliases the price input exactly; status_out is a disjoint buffer.
+  std::vector<double> p = price;
+  std::vector<Status> status(g.F.size());
+  const Status st = implied_vol_batch(std::span<const double>(p), g.F, g.K, g.T, g.df, g.side,
+                                      std::span<double>(p), std::span<Status>(status));
+  ASSERT_TRUE(st.has_value());
+  for (std::size_t i = 0; i < ref_iv.size(); ++i) {
+    ASSERT_EQ(status[i].has_value(), ref_status[i].has_value()) << "lane " << i;
+    if (ref_status[i].has_value()) {
+      EXPECT_DOUBLE_EQ(p[i], ref_iv[i]) << "lane " << i;
+    } else {
+      EXPECT_TRUE(std::isnan(p[i])) << "lane " << i;
+    }
+  }
 }
 
 // ── Greeks batch == scalar (all eight + price; and price-skipped) ─────────
@@ -450,14 +530,29 @@ TEST(Batch, Greeks_PriceOutMismatch_InvalidArgument) {
   EXPECT_EQ(st.error().code(), ErrorCode::InvalidArgument);
 }
 
-TEST(Batch, Greeks_PriceOutputAliasesInput_InvalidArgument) {
-  Grid g = make_grid(8);
-  std::vector<double> r(8, 0.03);
-  std::vector<Greeks> greeks(8);
-  const Status st = black76_greeks_batch(std::span<const double>(g.F), g.K, g.T, g.sigma, r, g.df,
-                                         g.side, std::span<Greeks>(greeks), std::span<double>(g.F));
-  ASSERT_FALSE(st.has_value());
-  EXPECT_EQ(st.error().code(), ErrorCode::InvalidArgument);
+TEST(Batch, Greeks_PriceExactInPlaceAliasing_MatchesDisjoint) {
+  const Grid g = make_grid(70);
+  std::vector<double> r(g.F.size());
+  for (std::size_t i = 0; i < g.F.size(); ++i) {
+    r[i] = -std::log(g.df[i]) / g.T[i];
+  }
+  std::vector<Greeks> ref_greeks(g.F.size());
+  std::vector<double> ref_price(g.F.size());
+  ASSERT_TRUE(black76_greeks_batch(g.F, g.K, g.T, g.sigma, r, g.df, g.side,
+                                   std::span<Greeks>(ref_greeks), std::span<double>(ref_price))
+                  .has_value());
+  // price_out aliases the F input exactly; greeks_out is a disjoint buffer.
+  std::vector<double> f = g.F;
+  std::vector<Greeks> greeks(g.F.size());
+  const Status st = black76_greeks_batch(std::span<const double>(f), g.K, g.T, g.sigma, r, g.df,
+                                         g.side, std::span<Greeks>(greeks), std::span<double>(f));
+  ASSERT_TRUE(st.has_value());
+  for (std::size_t i = 0; i < ref_price.size(); ++i) {
+    EXPECT_DOUBLE_EQ(f[i], ref_price[i]) << "price lane " << i;
+    EXPECT_DOUBLE_EQ(greeks[i].delta, ref_greeks[i].delta) << "delta lane " << i;
+    EXPECT_DOUBLE_EQ(greeks[i].vega, ref_greeks[i].vega) << "vega lane " << i;
+    EXPECT_DOUBLE_EQ(greeks[i].gamma, ref_greeks[i].gamma) << "gamma lane " << i;
+  }
 }
 
 // ── eSSVI total-variance batch == scalar over a k-grid ────────────────────
@@ -485,12 +580,20 @@ TEST(Batch, EssviW_LengthMismatch_InvalidArgument) {
   EXPECT_EQ(st.error().code(), ErrorCode::InvalidArgument);
 }
 
-TEST(Batch, EssviW_OutputAliasesInput_InvalidArgument) {
+TEST(Batch, EssviW_ExactInPlaceAliasing_MatchesDisjoint) {
   const EssviSlice slice{0.04, 1.2, -0.3, 0.5};
-  std::vector<double> k_log(8, 0.0);
-  const Status st = essvi_w_batch(slice, std::span<const double>(k_log), std::span<double>(k_log));
-  ASSERT_FALSE(st.has_value());
-  EXPECT_EQ(st.error().code(), ErrorCode::InvalidArgument);
+  std::vector<double> k_log(129);
+  for (std::size_t i = 0; i < k_log.size(); ++i) {
+    k_log[i] = -0.8 + 1.6 * static_cast<double>(i) / static_cast<double>(k_log.size() - 1);
+  }
+  std::vector<double> ref(k_log.size());
+  ASSERT_TRUE(essvi_w_batch(slice, k_log, std::span<double>(ref)).has_value());
+  std::vector<double> k = k_log; // both the k_log input and the w output
+  const Status st = essvi_w_batch(slice, std::span<const double>(k), std::span<double>(k));
+  ASSERT_TRUE(st.has_value());
+  for (std::size_t i = 0; i < ref.size(); ++i) {
+    EXPECT_DOUBLE_EQ(k[i], ref[i]) << "lane " << i;
+  }
 }
 
 TEST(Batch, Price_NonfiniteAndInvalidDomainLanesMatchScalarSemantics) {
