@@ -4,10 +4,12 @@
 // supports it (this CI/dev box does — Alder Lake). These tests assert that the
 // vectorized result reproduces the scalar per-contract kernels in
 // atx/vol/black76.hpp to full pricing accuracy, including the awkward cases the
-// SIMD path must special-case: n not a multiple of 4 (scalar tail), degenerate
-// lanes (T ≤ 0 or σ ≤ 0), and deep-wing lanes (|d| large) that the kernel patches
-// through the exact scalar path. If AVX2 is absent the batch runs the scalar
-// loop and these become identity checks — still valid, just trivially exact.
+// SIMD path must special-case: n not a multiple of 4 (scalar tail) and
+// degenerate lanes (T ≤ 0 or σ ≤ 0) that the kernel patches through the exact
+// scalar path. Deep-wing lanes (|d| large) are NO LONGER patched (K2): the Cody
+// rational-erfc Φ prices them on the vector path to machine accuracy. If AVX2 is
+// absent the batch runs the scalar loop and these become identity checks — still
+// valid, just trivially exact.
 
 #include "atx/vol/simd/black76_batch.hpp"
 
@@ -53,7 +55,8 @@ Batch make_grid() {
   b.push(100.0, 95.0, 0.0, 0.20, 1.0, Side::Call);
   b.push(100.0, 105.0, -1.0, 0.20, 1.0, Side::Put);
   b.push(100.0, 100.0, 0.5, 0.0, 0.98, Side::Call);
-  // Deep-wing lanes: |d| far beyond the Chebyshev interior (patched to scalar).
+  // Deep-wing lanes: |d| far beyond the old Chebyshev interior. Post-K2 these
+  // price on the vector Cody-erfc Φ (no wing patch) to machine accuracy.
   b.push(100.0, 5.0, 2.0, 0.10, 0.95, Side::Call);
   b.push(100.0, 5000.0, 2.0, 0.10, 0.95, Side::Put);
   return b;
