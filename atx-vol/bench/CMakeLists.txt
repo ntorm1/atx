@@ -210,3 +210,20 @@ target_link_libraries(atx-vol-surface-v2-bench
         atx_warnings
         Threads::Threads
 )
+
+# CStar (C16M) calibration + no-arb hot path (Sub-Sprint S: W5.1 table-driven
+# arb projection, W5.2 analytic Jacobian + fused w/gradient). normal_eq/{legacy,
+# fused} bracket the S2 fusion win; arb/cstar/{project,min_roper_g} baseline the
+# S3 table-driven projection.
+add_executable(atx-vol-cstar-bench
+    bench_main.cpp
+    cstar_bench.cpp
+)
+target_link_libraries(atx-vol-cstar-bench
+    PRIVATE
+        atx::vol
+        atx::core
+        benchmark::benchmark
+        atx_warnings
+        Threads::Threads
+)

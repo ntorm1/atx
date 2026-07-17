@@ -214,6 +214,18 @@ struct CStarWDerivs {
 [[nodiscard]] std::optional<std::array<double, kCStarNParams>>
 cstar_slice_grad_w(const CStarParams& s, double k_log) noexcept;
 
+// Floored total variance w AND the 16-partial gradient in a SINGLE shape
+// evaluation — the fused form the LM normal-equations build consumes so each
+// observation traverses the modal shape once per iteration instead of twice.
+// `w` matches cstar_slice_w; `grad` matches cstar_slice_grad_w. nullopt when
+// theta ≤ 0.
+struct CStarWGrad {
+  double w{};
+  std::array<double, kCStarNParams> grad{};
+};
+[[nodiscard]] std::optional<CStarWGrad> cstar_slice_w_and_grad(
+    const CStarParams& s, double k_log) noexcept;
+
 // ── Block accessors (block-coordinate LM support) ──────────────────────────
 
 // Compact `active_modes` into an ascending list of indices written to `out`

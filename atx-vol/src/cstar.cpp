@@ -227,6 +227,65 @@ struct WDerivs {
   return {s.theta * d.f, sqrt_theta * d.fp, d.fpp};
 }
 
+// Fused single-pass evaluation of the floored total variance w AND the full
+// 16-partial gradient ∂w/∂(theta, s2, c2, C_left, C_right, beta[0..10]). One
+// shape traversal replaces the prior cstar_slice_w + cstar_slice_grad_w pair
+// (two independent f-evaluations) inside the LM normal-equations build, and
+// the theta partial uses the CLOSED-FORM f'(z) instead of a central FD (which
+// lost ~half the significant digits). `ok` is false when theta ≤ 0.
+struct WGradFull {
+  double w{};
+  std::array<double, kCStarNParams> grad{};
+  bool ok{false};
+};
+
+[[nodiscard]] WGradFull eval_w_and_grad(const CStarParams& s,
+                                        double k_log) noexcept {
+  WGradFull out;
+  if (!(s.theta > 0.0)) {
+    return out;  // ok == false
+  }
+  const double sqrt_theta = std::sqrt(s.theta);
+  const double z = k_log / sqrt_theta;
+
+  const double atm = 1.0 + 2.0 * s.s2 * z + s.c2 * z * z;
+  const double atmp = 2.0 * s.s2 + 2.0 * s.c2 * z;
+  const WinD2 wa = atm_window_d2(z);
+  const WinD2 wr = right_wing_window_d2(z);
+  const WinD2 wl = left_wing_window_d2(z);
+  const double rl = z * s.C_right + 1.0;
+  const double ll = -z * s.C_left + 1.0;
+
+  double f = wa.v * atm + wr.v * rl + wl.v * ll;
+  double fp = wa.d1 * atm + wa.v * atmp + wr.d1 * rl + wr.v * s.C_right +
+              wl.d1 * ll + wl.v * (-s.C_left);
+
+  // One mode traversal: accumulate f/f' from active modes AND fill every
+  // ∂w/∂beta_j = θ·B_j(z) (defined for all modes; extraction picks the active).
+  for (std::size_t j = 0; j < kCStarNModes; ++j) {
+    const WinD2 b = cstar_basis_d2(static_cast<int>(j), z);
+    out.grad[kCStarNBase + j] = s.theta * b.v;
+    if (mode_active(s.active_modes, j)) {
+      f += s.beta[j] * b.v;
+      fp += s.beta[j] * b.d1;
+    }
+  }
+
+  out.grad[0] = f - 0.5 * z * fp;          // ∂w/∂theta (analytic f')
+  out.grad[1] = s.theta * 2.0 * z * wa.v;  // ∂w/∂s2
+  out.grad[2] = s.theta * z * z * wa.v;    // ∂w/∂c2
+  out.grad[3] = s.theta * wl.v * (-z);     // ∂w/∂C_left
+  out.grad[4] = s.theta * wr.v * z;        // ∂w/∂C_right
+
+  double w = s.theta * f;
+  if (!std::isfinite(w) || w <= 1.0e-12) {
+    w = 1.0e-12;  // same public variance floor as cstar_slice_w
+  }
+  out.w = w;
+  out.ok = true;
+  return out;
+}
+
 // Roper g(k): butterfly no-arb functional; g ≥ 0 everywhere ⇔ arb-free.
 [[nodiscard]] double roper_g_at(const CStarParams& s, double k) noexcept {
   const WDerivs d = w_and_derivs(s, k);
@@ -533,46 +592,20 @@ std::optional<std::array<double, kCStarNParams>> cstar_slice_grad_w(
   if (!(s.theta > 0.0)) {
     return std::nullopt;
   }
-  const double sqrt_theta = std::sqrt(s.theta);
-  const double z = k_log / sqrt_theta;
-
-  // f(z) and f'(z) by central FD on the full shape (base + active modes).
-  constexpr double h_z = 1.0e-4;
-  const double f0 = cstar_base(z, s.s2, s.c2, s.C_left, s.C_right);
-  const double fp = cstar_base(z + h_z, s.s2, s.c2, s.C_left, s.C_right);
-  const double fm = cstar_base(z - h_z, s.s2, s.c2, s.C_left, s.C_right);
-  double f_full = f0;
-  double fprime = (fp - fm) / (2.0 * h_z);
-
-  if (s.active_modes != 0u) {
-    for (std::size_t j = 0; j < kCStarNModes; ++j) {
-      if (mode_active(s.active_modes, j)) {
-        const int jj = static_cast<int>(j);
-        const double bz = cstar_basis(jj, z);
-        f_full += s.beta[j] * bz;
-        const double bp = cstar_basis(jj, z + h_z);
-        const double bm = cstar_basis(jj, z - h_z);
-        fprime += s.beta[j] * (bp - bm) / (2.0 * h_z);
-      }
-    }
+  const WGradFull wg = eval_w_and_grad(s, k_log);
+  if (!wg.ok) {
+    return std::nullopt;
   }
+  return wg.grad;
+}
 
-  std::array<double, kCStarNParams> grad{};
-  grad[0] = f_full - 0.5 * z * fprime;                  // ∂w/∂theta
-
-  const double w_atm = atm_window(z);
-  grad[1] = s.theta * 2.0 * z * w_atm;                  // ∂w/∂s2
-  grad[2] = s.theta * z * z * w_atm;                    // ∂w/∂c2
-
-  const double w_L = left_wing_window(z);
-  const double w_R = right_wing_window(z);
-  grad[3] = s.theta * w_L * (-z);                       // ∂w/∂C_left
-  grad[4] = s.theta * w_R * z;                          // ∂w/∂C_right
-
-  for (std::size_t j = 0; j < kCStarNModes; ++j) {      // ∂w/∂beta_j
-    grad[kCStarNBase + j] = s.theta * cstar_basis(static_cast<int>(j), z);
+std::optional<CStarWGrad> cstar_slice_w_and_grad(const CStarParams& s,
+                                                 double k_log) noexcept {
+  const WGradFull wg = eval_w_and_grad(s, k_log);
+  if (!wg.ok) {
+    return std::nullopt;
   }
-  return grad;
+  return CStarWGrad{wg.w, wg.grad};
 }
 
 // ── Block accessors ────────────────────────────────────────────────────────

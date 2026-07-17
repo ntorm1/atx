@@ -32,6 +32,7 @@ using atx::vol::cstar_extract_block_grad;
 using atx::vol::cstar_min_roper_g;
 using atx::vol::cstar_modal_indices;
 using atx::vol::cstar_shape_valid;
+using atx::vol::cstar_slice_w_and_grad;
 using atx::vol::cstar_slice_w_derivs;
 using atx::vol::cstar_project_calendar;
 using atx::vol::cstar_slice_grad_w;
@@ -279,6 +280,66 @@ TEST(CStarShapeValid, TrueForSaneSlice_FalseForNegativeVarianceShape) {
   CStarParams degenerate = sane;
   degenerate.s2 = 1.5;
   EXPECT_FALSE(cstar_shape_valid(degenerate));
+}
+
+// ── S2: analytic CStar Jacobian + fused w/gradient (SPRINT W5.2) ─────────────
+
+namespace {
+CStarParams perturb_param(CStarParams s, int p, double d) {
+  switch (p) {
+  case 0: s.theta += d; break;
+  case 1: s.s2 += d; break;
+  case 2: s.c2 += d; break;
+  case 3: s.C_left += d; break;
+  case 4: s.C_right += d; break;
+  default: s.beta[static_cast<std::size_t>(p - static_cast<int>(kCStarNBase))] += d;
+    break;
+  }
+  return s;
+}
+}  // namespace
+
+// The analytic 16-partial gradient (theta partial now uses closed-form f'(z),
+// previously a central FD that lost ~half the digits) agrees with a central-FD
+// reference of cstar_slice_w across the parameter box. C16 fixture so every
+// beta partial corresponds to a live dependency.
+TEST(CStarGrad, Analytic_MatchesCentralFdReference) {
+  const CStarParams base = make_test_slice();  // C16: all 16 partials real
+  for (const double k : {-0.12, -0.03, 0.0, 0.05, 0.11}) {
+    const auto g = cstar_slice_grad_w(base, k);
+    ASSERT_TRUE(g.has_value());
+    for (int p = 0; p < static_cast<int>(kCStarNParams); ++p) {
+      constexpr double h = 1.0e-6;
+      const double wp = cstar_slice_w(perturb_param(base, p, h), k);
+      const double wm = cstar_slice_w(perturb_param(base, p, -h), k);
+      const double fd = (wp - wm) / (2.0 * h);
+      EXPECT_NEAR((*g)[static_cast<std::size_t>(p)], fd,
+                  1.0e-6 + 1.0e-5 * std::fabs(fd))
+          << "k=" << k << " param=" << p;
+    }
+  }
+}
+
+// The fused single-pass evaluator returns exactly the same w and gradient as
+// the separate cstar_slice_w / cstar_slice_grad_w calls it replaces.
+TEST(CStarWAndGrad, MatchesSeparateEvaluators) {
+  const CStarParams s = make_test_slice();
+  for (const double k : {-0.1, -0.02, 0.0, 0.06, 0.12}) {
+    const auto wg = cstar_slice_w_and_grad(s, k);
+    ASSERT_TRUE(wg.has_value());
+    EXPECT_DOUBLE_EQ(wg->w, cstar_slice_w(s, k));
+    const auto g = cstar_slice_grad_w(s, k);
+    ASSERT_TRUE(g.has_value());
+    for (std::size_t p = 0; p < kCStarNParams; ++p) {
+      EXPECT_DOUBLE_EQ(wg->grad[p], (*g)[p]) << "param=" << p;
+    }
+  }
+}
+
+TEST(CStarWAndGrad, RejectsNonPositiveTheta) {
+  CStarParams s = make_test_slice();
+  s.theta = 0.0;
+  EXPECT_FALSE(cstar_slice_w_and_grad(s, 0.0).has_value());
 }
 
 // ── Block extraction (mirror test_vol_cstar_blocks.c) ───────────────────────
