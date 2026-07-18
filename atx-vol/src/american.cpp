@@ -216,16 +216,32 @@ inline constexpr unsigned kAlMaxQuad = detail::kMaxQuadNodes; // 64
   return true;
 }
 
-// ── P2.2b SPIKE: QD+ critical-price seed (Li 2010) ────────────────────────
+// ── QD+ critical-price seed (Li 2010) ─────────────────────────────────────
 //
 // The QD+ approximation refines the QD/Barone-Adesi-Whaley quadratic exponent with
 // the leading Li (2010) "+" correction c = (1−h)·M / (h·√disc), which vanishes as
 // τ→∞ (h→1, QD/BAW recovered) and grows near expiry (h→0) where the frozen-θ QD
 // approximation is worst. The corrected exponent q1⁺ = q1 + c drives the SAME
 // smooth-pasting root find (put_residual with q1⁺ in place of q1), so this reuses
-// newton_critical_put unchanged. This is a MEASUREMENT SPIKE: it is compared with
-// the BAW seed on median JN sweep-count-to-convergence to decide ship-or-kill; it is
-// NOT wired into any production solve path.
+// newton_critical_put unchanged.
+//
+// Reference: M. Li, "Analytical Approximations for the Critical Stock Price of
+// American Options: A Performance Comparison" (2010), Review of Derivatives
+// Research 13(1): 75-99 — the QD+ (quadratic + O(h) drift) seed. The fast-tier
+// American price envelope this seed was hypothesized to help close is the
+// Andersen-Lake-Offengenden QdFp benchmark, L. Andersen, M. Lake, D. Offengenden,
+// "High-Performance American Option Pricing", SSRN 2547027 (2015) (~10–22 µs/op).
+//
+// Task A6 A/B'd this seed against BAW on the american-shootout price grid (see
+// american_shootout_bench.cpp rows american/price/fast_{baw16,qdplus16,qdplus8,
+// baw8}). RESULT — document-defer: under the truncated fast-tier sweep budget
+// (2 JN + 2 FP) the QD+ seed REGRESSED max abs price error vs the reference from
+// 1.44e-3 (BAW, the current fast-tier bound) to 4.62e-3, and trimming the premium
+// quadrature 16→8 pushed it further (BAW/8 = 4.90e-3), so there is no accuracy
+// headroom to trade for throughput and every production scheme keeps BAW. QdPlus
+// stays SELECTABLE per-scheme (AlScheme::seed) so the shootout A/B and the
+// al_boundary_jn_sweeps_to_converge seed-count spike keep measuring it; it is NOT
+// on any production solve path.
 [[nodiscard]] bool qdplus_critical_put(double K, double T, double sigma, double r, double q,
                                        std::uint16_t max_iter, double tol,
                                        double &Sx_out) noexcept {
@@ -663,8 +679,10 @@ void al_seed_boundary(AlBoundary &b, double sigma, double r, double q) noexcept 
   }
 }
 
-// P2.2b spike: identical to al_seed_boundary but seeds each node from the QD+
-// critical price instead of BAW. Measurement-only (not on a production path).
+// Identical to al_seed_boundary but seeds each node from the QD+ critical price
+// (Li 2010) instead of BAW. Selectable per-scheme via AlScheme::seed for the A6
+// shootout A/B and al_boundary_jn_sweeps_to_converge's QdPlus mode; NOT the default
+// for any production scheme (A6 measured it worse than BAW — see qdplus_critical_put).
 void al_seed_boundary_qdplus(AlBoundary &b, double sigma, double r, double q) noexcept {
   b.y[0] = 0.0;
   for (std::uint16_t i = 1; i < b.n; ++i) {
@@ -1092,6 +1110,8 @@ template <unsigned NP>
                                     double sigma, double r, double q) noexcept {
   if (ws.specialize) {
     switch (ws.n_quad_price) {
+    case 8:
+      return al_put_premium_impl<8>(b, ws, S, sigma, r, q);
     case 16:
       return al_put_premium_impl<16>(b, ws, S, sigma, r, q);
     case 24:
@@ -1145,7 +1165,16 @@ namespace amer {
   ws.n_quad_price = sch.n_quad_price;
   al_bind_geometry(bnd, ws, sigma, r, q);
 
-  al_seed_boundary(bnd, sigma, r, q);
+  // A6: the scheme selects the cold critical-boundary seed. QdPlus (Li 2010)
+  // steepens the QD/BAW exponent near expiry where the frozen-θ approximation is
+  // worst; it reaches the SAME converged fixed point as BAW but from a closer
+  // start, so a fixed fast-tier sweep budget lands nearer the boundary (smaller
+  // residual → smaller price error). Baw stays the default for every other scheme.
+  if (sch.seed == detail::AlSeedMode::QdPlus) {
+    al_seed_boundary_qdplus(bnd, sigma, r, q);
+  } else {
+    al_seed_boundary(bnd, sigma, r, q);
+  }
 
   double resid = 1.0;
   for (std::uint16_t k = 0; k < sch.n_iter_jn; ++k) {
@@ -1167,18 +1196,16 @@ namespace amer {
   return AlSolveStatus::Ok;
 }
 
-// Seed-only path for the AVX2 boundary batch (Task A1, pure-refactor). Runs exactly
-// the pre-sweep prefix of al_solve_put_boundary — node init, quadrature binding, and
-// the cold Barone-Adesi-Whaley seed — but SKIPS al_bind_geometry. The AVX2 kernel
-// recomputes every geometry term inline per lane (it mirrors the generic <0,0>
-// kernel) and never reads ws.geo_*, so binding the ~n·nq exp+sqrt sweep-invariant
-// geometry on the seed is pure waste that serialized the 4-lane batch. Skipping it
-// leaves bnd.y[]/nodes/quadrature bit-identical to al_solve_put_boundary with the
-// sweep budget zeroed, so the AVX2 output is unchanged (parity preserved); only the
-// wasted per-lane bind is gone. ws.specialize is set false: no specialized ws
-// geometry exists, and the caller owns the sweeps.
-[[nodiscard]] AlSolveStatus al_seed_put_boundary(double K, double T, double sigma, double r,
-                                                 double q, const AlScheme &sch, AlBoundary &bnd,
+// Init-ONLY path for the AVX2 boundary batch (Task A5; supersedes A1's
+// al_seed_put_boundary). Runs the pre-sweep prefix of al_solve_put_boundary — node
+// init (z/wbary/x/tau/xmax) + Gauss-Legendre binding — but does NEITHER the cold BAW
+// seed NOR al_bind_geometry. The AVX2 kernel recomputes geometry inline per lane and
+// now lays down the BAW seed 4-wide itself (american_boundary_avx2.cpp), so the
+// scalar per-lane Barone-Adesi-Whaley Newton — the dominant serialization that capped
+// the pack speedup at ~1.6× — is gone from the seed path. bnd.y[] is left at 0 (the
+// caller's vector seed fills it); ws.specialize is false (the kernel owns geometry).
+[[nodiscard]] AlSolveStatus al_init_put_boundary(double K, double T, double r, double q,
+                                                 const AlScheme &sch, AlBoundary &bnd,
                                                  AlWorkspace &ws) noexcept {
   al_init_nodes(bnd, sch.n_boundary, T, K, r, q);
   if (!(bnd.xmax > 0.0)) {
@@ -1196,7 +1223,6 @@ namespace amer {
   ws.qx_price = pr->nodes.data();
   ws.qw_price = pr->weights.data();
   ws.n_quad_price = sch.n_quad_price;
-  al_seed_boundary(bnd, sigma, r, q);
   return AlSolveStatus::Ok;
 }
 
@@ -1343,8 +1369,10 @@ constexpr const char *kDoubleContinuationMsg =
 // kernel for the SAME scheme and prove the specialized path is bit-identical.
 [[nodiscard]] Result<double> andersen_lake_core(double S, double K, double T, double sigma,
                                                 double r, double q, Side side,
-                                                const std::optional<AlOpts> &opts,
-                                                bool specialize) {
+                                                const std::optional<AlOpts> &opts, bool specialize,
+                                                std::optional<detail::AlSeedMode> seed_override =
+                                                    std::nullopt,
+                                                std::uint16_t n_quad_price_override = 0) {
   if (!(K > 0.0 && S > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "andersen_lake: S and K must be > 0");
   }
@@ -1375,7 +1403,16 @@ constexpr const char *kDoubleContinuationMsg =
     break;
   }
 
-  const AlScheme sch = scheme_from_opts(opts);
+  AlScheme sch = scheme_from_opts(opts);
+  // A6 measurement seam: force a specific seed / premium-quad order on top of the
+  // preset so the shootout can A/B (BAW vs QD+, 16 vs 8 premium nodes) in one
+  // build. Both overrides are inert (nullopt / 0) on every production call.
+  if (seed_override) {
+    sch.seed = *seed_override;
+  }
+  if (n_quad_price_override != 0) {
+    sch.n_quad_price = n_quad_price_override;
+  }
   if (side == Side::Put) {
     return al_solve_put(S, K, T, sigma, r, q, sch, specialize);
   }
@@ -2689,6 +2726,13 @@ Result<double> andersen_lake_generic_kernel(double S, double K, double T, double
                                             double q, Side side,
                                             const std::optional<AlOpts> &opts) {
   return andersen_lake_core(S, K, T, sigma, r, q, side, opts, /*specialize=*/false);
+}
+
+Result<double> andersen_lake_seeded(double S, double K, double T, double sigma, double r, double q,
+                                    Side side, const std::optional<AlOpts> &opts, AlSeedMode seed,
+                                    std::uint16_t n_quad_price) {
+  return andersen_lake_core(S, K, T, sigma, r, q, side, opts, /*specialize=*/true, seed,
+                            n_quad_price);
 }
 
 int al_boundary_jn_sweeps_to_converge(double K, double T, double sigma, double r, double q,

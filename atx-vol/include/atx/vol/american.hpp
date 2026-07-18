@@ -528,6 +528,17 @@ enum class AlSeedMode : std::uint8_t { Baw = 0, QdPlus = 1, Oracle = 2 };
                                                     double q, const std::optional<AlOpts> &opts,
                                                     AlSeedMode seed, double tol, int max_sweeps);
 
+// A6 bench/measurement seam. Prices exactly like `andersen_lake` but FORCES the
+// cold boundary seed (`seed`) and, when `n_quad_price != 0`, overrides the premium
+// Gauss-Legendre order — so american_shootout_bench can A/B the QD+ seed and a
+// trimmed premium quadrature against the BAW/16 fast-tier baseline in a single
+// build. Production `andersen_lake` calls are unaffected (they never route here).
+[[nodiscard]] Result<double> andersen_lake_seeded(double S, double K, double T, double sigma,
+                                                  double r, double q, Side side,
+                                                  const std::optional<AlOpts> &opts,
+                                                  AlSeedMode seed,
+                                                  std::uint16_t n_quad_price = 0);
+
 // ── P2.3 (research spike): warm-start the boundary ACROSS TIME ────────────
 //
 // Price ONE American PUT contract (fixed strike K, spot S, yield q) over a temporal

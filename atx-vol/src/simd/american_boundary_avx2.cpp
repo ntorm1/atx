@@ -108,13 +108,14 @@ void american_put_boundary_batch_avx2(const double* S, const double* K,
 
     std::size_t i = 0;
     for (; i + 4 <= n; i += 4) {
-        // ── 1. Per-lane SCALAR seed (init nodes + BAW seed, no sweeps) ────
-        // Task A1: the seed lays down node geometry + quadrature pointers + the cold
-        // BAW y[] via al_seed_put_boundary, which SKIPS al_bind_geometry — the
-        // sweep-invariant geometry precompute this kernel never reads (it recomputes
-        // every geometry term inline below). Dropping that per-lane bind removes the
-        // dominant scalar serialization on the seed while leaving the seed y[]
-        // bit-identical, so the vectorized sweeps + price are unchanged (parity held).
+        // ── 1. Per-lane node INIT ONLY (grid + quadrature, no seed) ───────
+        // Task A5: init lays down the node geometry (z/wbary/x/tau/xmax) + quadrature
+        // pointers via al_init_put_boundary — al_solve_put_boundary's pre-sweep prefix
+        // WITHOUT the cold BAW seed. The scalar per-lane Barone-Adesi-Whaley Newton was the
+        // dominant serialization capping the pack speedup (~1.6×); it is replaced by
+        // the 4-wide BAW Newton seed in step 2.5 below, which fills the packed Y[]
+        // directly. bnd[l].y[] is left at 0 (al_init_nodes zeroes it) and unused.
+        // Init also skips al_bind_geometry (the kernel recomputes geometry inline).
         amer::AlBoundary bnd[4];
         amer::AlWorkspace ws[4];
         bool eligible[4];
@@ -128,8 +129,8 @@ void american_put_boundary_batch_avx2(const double* S, const double* K,
             bool ok = !degen && american && std::isfinite(r[idx]) &&
                       std::isfinite(q[idx]) && K[idx] > 0.0 && S[idx] > 0.0;
             if (ok) {
-                const amer::AlSolveStatus st = amer::al_seed_put_boundary(
-                    K[idx], T[idx], sigma[idx], r[idx], q[idx], sch, bnd[l], ws[l]);
+                const amer::AlSolveStatus st = amer::al_init_put_boundary(
+                    K[idx], T[idx], r[idx], q[idx], sch, bnd[l], ws[l]);
                 ok = (st == amer::AlSolveStatus::Ok);
             }
             eligible[l] = ok;
@@ -208,6 +209,138 @@ void american_put_boundary_batch_avx2(const double* S, const double* K,
                 log_pd(_mm256_div_pd(sel(ok, b, one), sel(ok, xmax, one)));
             return _mm256_and_pd(_mm256_mul_pd(lg, lg), ok);
         };
+
+        // ── 2.5 Vector Barone-Adesi-Whaley critical-price seed (Task A5) ──
+        // 4-wide replacement for the scalar per-lane BAW Newton (american.cpp
+        // al_seed_boundary → baw_critical_put → newton_critical_put), the dominant
+        // scalar serialization the batch used to pay per lane. M = 2r/σ² and
+        // N = 2(r−q)/σ² are τ-independent (per lane); only h = 1−e^{−rτ} varies per
+        // collocation node, so q1 is formed per node and ONE bracketed 4-lane Newton
+        // (16 iters, tol 1e-10·K — the exact scalar budget) solves the smooth-pasting
+        // root for all lanes. Then y[j] = y_from_b(clamp(S*), xmax), matching the
+        // scalar seed (fallback K·(1−0.3·√(τ/T)) on a non-converged / corner lane;
+        // clamp to xmax; floor 1e-6·K). This BREAKS bit-parity with the scalar seed
+        // (vector transcendentals), so the gate is ECONOMIC-BOUND (kNormalGate) not
+        // byte-identical — but the seed only sets the sweeps' starting point and the
+        // accurate scheme converges to tol, so the swept boundary/price is unchanged
+        // within the gate (AvxBoundary parity tests). Scalar path stays source of truth.
+        {
+            const __m256d ALL = _mm256_castsi256_pd(_mm256_set1_epi64x(-1));
+            auto notm = [&](__m256d m) { return _mm256_andnot_pd(m, ALL); };
+            const __m256d sig2 = _mm256_mul_pd(SIG, SIG);
+            const __m256d Mv = _mm256_div_pd(_mm256_mul_pd(two, Rv), sig2);
+            const __m256d Nv = _mm256_div_pd(_mm256_mul_pd(two, RmQ), sig2);
+            const __m256d Nm1 = _mm256_sub_pd(Nv, one);
+            const __m256d four = _mm256_set1_pd(4.0);
+            const __m256d loK = _mm256_mul_pd(_mm256_set1_pd(1.0e-3), Kv);
+            const __m256d hiK = _mm256_mul_pd(_mm256_set1_pd(1.0 - 1.0e-6), Kv);
+            const __m256d stolK = _mm256_mul_pd(_mm256_set1_pd(1.0e-10), Kv); // newton tol·K
+            const __m256d fpEPS = _mm256_set1_pd(1.0e-15);
+            const __m256d fb03 = _mm256_set1_pd(0.3);
+            const __m256d rpos = _mm256_cmp_pd(Rv, zero, _CMP_GT_OQ);
+            // BAW smooth-pasting residual f and derivative f' (american.cpp
+            // put_residual / put_residual_deriv), 4-lane, sharing F/df/dq/d1/Φ(-d1).
+            auto res_deriv = [&](__m256d Sx, __m256d tau, __m256d q1, __m256d& f,
+                                 __m256d& fp) {
+                const __m256d v = _mm256_mul_pd(SIG, _mm256_sqrt_pd(tau));
+                const __m256d F = _mm256_mul_pd(Sx, exp_pd(_mm256_mul_pd(RmQ, tau)));
+                const __m256d df = exp_pd(_mm256_sub_pd(zero, _mm256_mul_pd(Rv, tau)));
+                const __m256d dq = exp_pd(_mm256_sub_pd(zero, _mm256_mul_pd(Qv, tau)));
+                const __m256d d1 = _mm256_div_pd(
+                    _mm256_add_pd(log_pd(_mm256_div_pd(F, Kv)),
+                                  _mm256_mul_pd(half, _mm256_mul_pd(v, v))),
+                    v);
+                const __m256d d2 = _mm256_sub_pd(d1, v);
+                __m256d Nnd1, Nnd2; // Φ(-d1), Φ(-d2)
+                norm_cdf_erfc_pd2(_mm256_sub_pd(zero, d1), _mm256_sub_pd(zero, d2), Nnd1,
+                                  Nnd2);
+                const __m256d phim = norm_pdf_pd(_mm256_sub_pd(zero, d1)); // φ(-d1)=φ(d1)
+                const __m256d pE = _mm256_mul_pd(
+                    df, _mm256_sub_pd(_mm256_mul_pd(Kv, Nnd2), _mm256_mul_pd(F, Nnd1)));
+                const __m256d dqN = _mm256_mul_pd(dq, Nnd1);
+                const __m256d bit = _mm256_sub_pd(one, dqN);
+                // f = K - Sx - pE + Sx·bit/q1
+                f = _mm256_add_pd(_mm256_sub_pd(_mm256_sub_pd(Kv, Sx), pE),
+                                  _mm256_div_pd(_mm256_mul_pd(Sx, bit), q1));
+                // f' = -1 + dq·N(-d1) + (1 - dq·N(-d1))/q1 - dq·φ(-d1)/(q1·v)
+                fp = _mm256_add_pd(
+                    _mm256_add_pd(neg_one, dqN),
+                    _mm256_sub_pd(_mm256_div_pd(bit, q1),
+                                  _mm256_div_pd(_mm256_mul_pd(dq, phim),
+                                                _mm256_mul_pd(q1, v))));
+            };
+
+            for (unsigned nodei = 1; nodei < nb; ++nodei) {
+                const __m256d tau = TAU[nodei];
+                const __m256d tau_gt = _mm256_cmp_pd(tau, TINY, _CMP_GT_OQ);
+                const __m256d h =
+                    _mm256_sub_pd(one, exp_pd(_mm256_sub_pd(zero, _mm256_mul_pd(Rv, tau))));
+                const __m256d hpos = _mm256_cmp_pd(h, zero, _CMP_GT_OQ);
+                const __m256d disc = _mm256_add_pd(
+                    _mm256_mul_pd(Nm1, Nm1),
+                    _mm256_div_pd(_mm256_mul_pd(four, Mv), sel(hpos, h, one)));
+                const __m256d dpos = _mm256_cmp_pd(disc, zero, _CMP_GE_OQ);
+                const __m256d sqrt_disc = _mm256_sqrt_pd(_mm256_max_pd(disc, zero));
+                // q1 = 0.5·(-(N-1) - √disc) (< 0 for a genuine seed lane).
+                const __m256d q1 = _mm256_mul_pd(
+                    half, _mm256_sub_pd(_mm256_sub_pd(zero, Nm1), sqrt_disc));
+                // A lane runs the Newton only where BAW would (τ>0 ∧ r>0 ∧ h>0 ∧ disc≥0);
+                // the corners return S* = K (BAW's early-out), Newton skipped.
+                const __m256d nl = _mm256_and_pd(_mm256_and_pd(tau_gt, rpos),
+                                                 _mm256_and_pd(hpos, dpos));
+                const __m256d Sx0 = _mm256_div_pd(_mm256_mul_pd(Kv, q1),
+                                                  _mm256_sub_pd(q1, one));
+                const __m256d mid0 = _mm256_mul_pd(half, _mm256_add_pd(loK, hiK));
+                const __m256d in_br =
+                    _mm256_and_pd(_mm256_cmp_pd(Sx0, loK, _CMP_GT_OQ),
+                                  _mm256_cmp_pd(Sx0, hiK, _CMP_LT_OQ));
+                __m256d Sx = sel(nl, sel(in_br, Sx0, mid0), Kv);
+                __m256d lo = loK;
+                __m256d hi = hiK;
+                __m256d done = notm(nl); // non-Newton lanes start frozen at S* = K
+                for (int it = 0; it < 16; ++it) {
+                    if (_mm256_movemask_pd(done) == 0xF) {
+                        break;
+                    }
+                    __m256d f, fp;
+                    res_deriv(Sx, tau, q1, f, fp);
+                    const __m256d act = notm(done);
+                    const __m256d fpos = _mm256_cmp_pd(f, zero, _CMP_GT_OQ);
+                    lo = sel(_mm256_and_pd(act, fpos), Sx, lo);
+                    hi = sel(_mm256_and_pd(act, notm(fpos)), Sx, hi);
+                    const __m256d mid = _mm256_mul_pd(half, _mm256_add_pd(lo, hi));
+                    const __m256d conv_f =
+                        _mm256_and_pd(act, _mm256_cmp_pd(abs_pd(f), stolK, _CMP_LT_OQ));
+                    const __m256d fp_ok = _mm256_cmp_pd(abs_pd(fp), fpEPS, _CMP_GT_OQ);
+                    __m256d Sxn = sel(fp_ok, _mm256_sub_pd(Sx, _mm256_div_pd(f, fp)), mid);
+                    const __m256d outb = _mm256_or_pd(_mm256_cmp_pd(Sxn, lo, _CMP_LE_OQ),
+                                                      _mm256_cmp_pd(Sxn, hi, _CMP_GE_OQ));
+                    Sxn = sel(outb, mid, Sxn);
+                    const __m256d dS = _mm256_sub_pd(Sxn, Sx);
+                    const __m256d conv_dS = _mm256_and_pd(
+                        _mm256_and_pd(act, notm(conv_f)),
+                        _mm256_cmp_pd(abs_pd(dS), stolK, _CMP_LT_OQ));
+                    // Apply the step only where active AND not already converged on |f|
+                    // (scalar returns the pre-step Sx on the |f| test); freeze on either.
+                    Sx = sel(_mm256_and_pd(act, notm(conv_f)), Sxn, Sx);
+                    done = _mm256_or_pd(done, _mm256_or_pd(conv_f, conv_dS));
+                }
+                // BAW returns ok iff 0 < S* ≤ K (corner lanes hold S* = K → ok); else
+                // al_seed_boundary's fallback S* = K·(1 - 0.3·√(τ/T)).
+                const __m256d baw_ok =
+                    _mm256_and_pd(_mm256_cmp_pd(Sx, zero, _CMP_GT_OQ),
+                                  _mm256_cmp_pd(Sx, Kv, _CMP_LE_OQ));
+                const __m256d Sfb = _mm256_mul_pd(
+                    Kv, _mm256_sub_pd(one, _mm256_mul_pd(
+                                               fb03, _mm256_sqrt_pd(_mm256_div_pd(tau, Tv)))));
+                Sx = sel(baw_ok, Sx, Sfb);
+                Sx = _mm256_min_pd(Sx, XMAX);                       // clamp to xmax
+                Sx = sel(_mm256_cmp_pd(Sx, zero, _CMP_GT_OQ), Sx, // floor 1e-6·K
+                         _mm256_mul_pd(K1e6, Kv));
+                Y[nodei] = sel(tau_gt, y_from_b_pd(Sx, XMAX), zero);
+            }
+        }
+
         // Barycentric cheb interp of the pack boundary at zc (nodes shared, y per-lane).
         auto cheb_eval = [&](__m256d zc) {
             __m256d num = zero;
