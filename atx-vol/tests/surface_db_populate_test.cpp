@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -99,6 +100,30 @@ constexpr const char *kDate1 = "2026-03-03";
   b.symbol = symbol;
   b.frame = panel->frame;
   b.env = MarketEnv::flat(spec.spot, spec.r, iso_to_ns(date), spec.cash_divs);
+  return b;
+}
+
+// A fittable board whose frame row count scales with a caller-chosen strike
+// count (an evenly-spaced [0.80, 1.20] moneyness ladder over the same four
+// expiries as make_board_spec). Used by the U2 LPT claim-order tests to build
+// boards of genuinely different sizes plus a deliberate size tie (two boards
+// with identical numeric parameters -> structurally identical row counts).
+[[nodiscard]] CorpusBoard make_board_n_strikes(const std::string &date, const std::string &symbol,
+                                               double spot, double sigma0, int n_strikes) {
+  SynthPanelSpec s = make_board_spec(symbol, date, spot, sigma0);
+  s.strikes.clear();
+  for (int i = 0; i < n_strikes; ++i) {
+    const double m =
+        0.80 + (1.20 - 0.80) * static_cast<double>(i) / static_cast<double>(n_strikes - 1);
+    s.strikes.push_back(spot * m);
+  }
+  auto panel = make_synthetic_american_panel(s);
+  EXPECT_TRUE(panel.has_value()) << (panel ? "" : panel.error().to_string());
+  CorpusBoard b;
+  b.date = date;
+  b.symbol = symbol;
+  b.frame = panel->frame;
+  b.env = MarketEnv::flat(s.spot, s.r, iso_to_ns(date), s.cash_divs);
   return b;
 }
 
@@ -222,6 +247,119 @@ TEST(SurfaceDbPopulate, GlobalParallelQueuePreservesDeterministicPartitions) {
 
   std::filesystem::remove_all(serial_root);
   std::filesystem::remove_all(parallel_root);
+}
+
+// U2 (R-13) [pure-refactor]: the outer fit queue claims boards in
+// Longest-Processing-Time order -- largest frame first -- so the heavy tail
+// starts early rather than stranding cores at the end of the run. With a single
+// worker the bounded queue runs tasks in claim order, so before_board_fit
+// observes exactly the claim order. Sizes are chosen so the largest board (DDD)
+// is NOT the date/symbol-first board (a naive date/symbol claim order would
+// fail this test), and BBB/CCC are a deliberate size tie whose break must be
+// the deterministic original (date,symbol) order.
+TEST(SurfaceDbPopulate, LptClaimsLargestBoardsFirstDeterministically) {
+  const auto root = test_root("lpt_order");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  std::vector<CorpusBoard> boards;
+  boards.push_back(make_board_n_strikes(kDate0, "AAA", 100.0, 0.28, 11)); // smallest
+  boards.push_back(make_board_n_strikes(kDate0, "BBB", 60.0, 0.34, 13));  // tie group
+  boards.push_back(make_board_n_strikes(kDate0, "CCC", 60.0, 0.34, 13));  // tie group
+  boards.push_back(make_board_n_strikes(kDate0, "DDD", 90.0, 0.29, 15));  // largest
+
+  // The sizes must be genuinely distinct (else the ordering claim is vacuous)
+  // and the tie group must really tie.
+  const std::size_t rows_aaa = boards[0].frame.rows.size();
+  const std::size_t rows_bbb = boards[1].frame.rows.size();
+  const std::size_t rows_ccc = boards[2].frame.rows.size();
+  const std::size_t rows_ddd = boards[3].frame.rows.size();
+  ASSERT_EQ(rows_bbb, rows_ccc) << "BBB/CCC must be a genuine size tie";
+  ASSERT_GT(rows_ddd, rows_bbb) << "DDD must be strictly largest";
+  ASSERT_GT(rows_bbb, rows_aaa) << "AAA must be strictly smallest";
+
+  std::vector<std::string> claim_order;
+  std::mutex claim_mu;
+  PopulateTestHooks hooks;
+  hooks.before_board_fit = [&](const std::string & /*date*/, const std::string &symbol) {
+    std::lock_guard<std::mutex> lk(claim_mu);
+    claim_order.push_back(symbol);
+  };
+
+  SurfaceDbPopulateConfig cfg;
+  cfg.n_threads = 1u; // single worker => the bounded queue runs tasks in claim order
+  auto result = populate_surface_db(*db, boards, cfg, &hooks);
+  ASSERT_TRUE(result.has_value()) << (result ? "" : result.error().to_string());
+  ASSERT_EQ(result->n_ok, 4u);
+
+  // Largest-first; the BBB/CCC size tie breaks to ascending (date,symbol) order.
+  const std::vector<std::string> expected{"DDD", "BBB", "CCC", "AAA"};
+  EXPECT_EQ(claim_order, expected);
+
+  std::filesystem::remove_all(root);
+}
+
+// U2 (R-13) [pure-refactor]: LPT reorders *scheduling* only, never output. A
+// full multi-board populate (whose LPT claim order DDD,BBB,CCC,AAA is a
+// non-trivial reorder of the date/symbol order) must write, for every symbol, a
+// surface bit-identical to that symbol fit alone (a single-board populate has a
+// trivial one-task claim order, so its output is the pre-LPT reference). Equal
+// bits across the two schedules is the operational meaning of "byte-identical to
+// the pre-LPT launch order": each board's fit is independent and deterministic,
+// so claim order cannot move a single bit of any surface.
+TEST(SurfaceDbPopulate, LptReorderingKeepsOutputByteIdentical) {
+  struct Spec {
+    const char *symbol;
+    double spot;
+    double sigma0;
+    int n_strikes;
+  };
+  const Spec specs[] = {
+      {"AAA", 100.0, 0.28, 11},
+      {"BBB", 60.0, 0.34, 13},
+      {"CCC", 60.0, 0.34, 13},
+      {"DDD", 90.0, 0.29, 15},
+  };
+
+  const auto full_root = test_root("lpt_identity_full");
+  auto full_db = SurfaceDb::create(full_root.string());
+  ASSERT_TRUE(full_db.has_value());
+
+  std::vector<CorpusBoard> boards;
+  for (const Spec &sp : specs) {
+    boards.push_back(make_board_n_strikes(kDate0, sp.symbol, sp.spot, sp.sigma0, sp.n_strikes));
+  }
+
+  SurfaceDbPopulateConfig full_cfg;
+  full_cfg.n_threads = 1u; // serial => execution follows the LPT claim order
+  auto full = populate_surface_db(*full_db, boards, full_cfg);
+  ASSERT_TRUE(full.has_value()) << (full ? "" : full.error().to_string());
+  ASSERT_EQ(full->n_ok, 4u);
+
+  // Per-symbol reference: fit each board ALONE (one task => no reorder), then
+  // require the multi-board LPT-scheduled surface to match it bit-for-bit.
+  for (const Spec &sp : specs) {
+    const auto ref_root = test_root(std::string("lpt_identity_ref_") + sp.symbol);
+    auto ref_db = SurfaceDb::create(ref_root.string());
+    ASSERT_TRUE(ref_db.has_value());
+    const std::vector<CorpusBoard> one = {
+        make_board_n_strikes(kDate0, sp.symbol, sp.spot, sp.sigma0, sp.n_strikes)};
+    SurfaceDbPopulateConfig ref_cfg;
+    ref_cfg.n_threads = 1u;
+    auto ref = populate_surface_db(*ref_db, one, ref_cfg);
+    ASSERT_TRUE(ref.has_value()) << (ref ? "" : ref.error().to_string());
+    ASSERT_EQ(ref->n_ok, 1u);
+
+    const auto full_surface = full_db->load_surface(kDate0, sp.symbol);
+    const auto ref_surface = ref_db->load_surface(kDate0, sp.symbol);
+    ASSERT_TRUE(full_surface.has_value()) << sp.symbol;
+    ASSERT_TRUE(ref_surface.has_value()) << sp.symbol;
+    expect_surface_bits_equal(*full_surface, *ref_surface);
+
+    std::filesystem::remove_all(ref_root);
+  }
+
+  std::filesystem::remove_all(full_root);
 }
 
 // Streaming / per-date-release guard (R-03 / U1). Proves populate writes and

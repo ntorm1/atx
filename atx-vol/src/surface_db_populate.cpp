@@ -198,6 +198,42 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
     remaining[r].store(enabled_in_range, std::memory_order_relaxed);
   }
 
+  // ── U2 (R-13) [pure-refactor]: Longest-Processing-Time claim order ──────────
+  // Claim the largest boards first (descending frame rows) so the shared bounded
+  // queue starts the heavy SPY-scale tail immediately instead of stranding it
+  // behind many small boards near the end -- that tail otherwise sets the
+  // makespan and leaves cores idle once the small work drains. This reorders
+  // *scheduling* only: `fit_task` writes `slots[pos]` keyed by board, every
+  // fit_board is independent and deterministic, and the drain still visits
+  // dates/boards in date/symbol order -- so all surfaces and stats stay
+  // byte-identical (only which worker claims which board, and when, changes).
+  // `remaining[r]` is a per-range count untouched by the reorder, so the
+  // per-date drain is unaffected. `stable_sort` preserves the prior (date asc,
+  // symbol asc) order for equal-row ties, keeping the claim order deterministic
+  // (tie-break by original position). Frame rows is a cheap, monotone proxy for
+  // fit cost (quotes to price); an exact cost model is unnecessary for LPT to
+  // dominate the naive order on a skewed board-size distribution.
+  {
+    const std::size_t k = fit_positions.size();
+    std::vector<std::size_t> claim_perm(k);
+    for (std::size_t t = 0; t < k; ++t) {
+      claim_perm[t] = t;
+    }
+    std::stable_sort(claim_perm.begin(), claim_perm.end(),
+                     [&](std::size_t a, std::size_t b) noexcept {
+                       return boards[order[fit_positions[a]]].frame.rows.size() >
+                              boards[order[fit_positions[b]]].frame.rows.size();
+                     });
+    std::vector<std::size_t> claim_positions(k);
+    std::vector<std::size_t> claim_ranges(k);
+    for (std::size_t t = 0; t < k; ++t) {
+      claim_positions[t] = fit_positions[claim_perm[t]];
+      claim_ranges[t] = fit_task_range[claim_perm[t]];
+    }
+    fit_positions = std::move(claim_positions);
+    fit_task_range = std::move(claim_ranges);
+  }
+
   // SurfaceDb defines n_threads=0 as outer-serial. A real multi-board outer
   // fan-out pins each fit to one worker to avoid nested H^2 parallelism.
   const unsigned worker_budget = cfg.n_threads != 0u ? cfg.n_threads : 1u;
