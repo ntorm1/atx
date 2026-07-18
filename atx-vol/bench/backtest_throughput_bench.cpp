@@ -34,7 +34,7 @@
 #include "atx/vol/corpus.hpp"           // CorpusManifest, CorpusEntry, CorpusFitStatus
 #include "atx/vol/priced_surface.hpp"   // PricedSurface, PricingContext
 #include "atx/vol/strategy.hpp"         // DeclarativeStrategy, StrategySpec
-#include "atx/vol/surface_archive.hpp"  // write_surface_archive_file, SurfaceArchiveItem
+#include "atx/vol/surface_archive.hpp"  // write_surface_archive_v2_file, SurfaceArchiveItem
 #include "atx/vol/surface_parity.hpp"   // SliceContext
 #include "atx/vol/types.hpp"            // Side, Status
 #include "atx/vol/vol_curve.hpp"        // CurveSurface, EssviCurve
@@ -61,6 +61,19 @@ constexpr int kD = 20;                  // dates (=> D-1 priced steps)
 constexpr int kU = 4;                   // underliers per date
 constexpr std::uint32_t kUidBase = 100;
 constexpr double kTargetT = 0.15;       // straddle tenor (in-grid all run)
+
+// ── Universe-shaped case (M2) dimensions ─────────────────────────────────────
+// N names × daily entry × held-to-expiry × daily delta-hedge — the WS-D dispersion
+// strategy shape (40Δ strangles, DeltaToZero daily). Sized so the growing book
+// (~kUnivN×(kUnivD-1)×2 option lots ≈ 180) lands near the scoreboard's 160-lot
+// reference so the reshaped steps/s is directly comparable to the ~64 steps/s
+// baseline, while the SHAPE (per-entry 40Δ delta-solves + a daily full-book hedge)
+// is the real hot loop the ≥5–10× gate targets. The 3M tenor stays inside the
+// synthetic grid's [0.05, 1.0] span across the whole (~9 trading-day) run.
+constexpr int kUnivD = 10;              // universe dates (=> 9 priced steps)
+constexpr int kUnivN = 10;              // universe names
+constexpr std::uint32_t kUnivUidBase = 200;
+constexpr double kUnivTargetT = 0.25;   // 3M strangle tenor (in-grid all run)
 
 // Setup failures happen once, outside the timed region (static fixture init), so an
 // abort is the honest response — a benchmark of an error return measures nothing.
@@ -118,7 +131,10 @@ constexpr double kTargetT = 0.15;       // straddle tenor (in-grid all run)
   for (const auto& [sym, ps] : items) {
     its.push_back(SurfaceArchiveItem{sym, ps});
   }
-  const Status st = write_surface_archive_file(path, its);
+  // ATXVSA2 (v2) writer: MarketSnapshot::load is v2-only (SurfaceArchiveV2::
+  // open_file) after the WS-S S4 clean-break cutover, so the backtest under test
+  // only accepts a v2 archive. Inputs (SurfaceArchiveItem) are unchanged from v1.
+  const Status st = write_surface_archive_v2_file(path, its);
   if (!st.has_value()) {
     bench_fatal(st.error().to_string());
   }
@@ -141,32 +157,35 @@ constexpr double kTargetT = 0.15;       // straddle tenor (in-grid all run)
   return m;
 }
 
-// Build the D per-date archives (each holding U distinct-uid synthetic surfaces) and
-// return the Clock over them. Run ONCE (static fixture) — the archives are written to
-// a process-lifetime temp dir and read from disk by each `run_backtest`.
-[[nodiscard]] Clock build_corpus() {
-  const fs::path dir = fs::temp_directory_path() / "atx-backtest-throughput-bench";
+// Build `n_dates` per-date archives (each holding `n_u` distinct-uid synthetic
+// surfaces) and return the Clock over them. Run ONCE (static fixture) — the archives
+// are written to a process-lifetime temp dir and read from disk by each
+// `run_backtest`. Shared by the straddle and universe cases (distinct uid_base +
+// dir so their fixtures never collide).
+[[nodiscard]] Clock build_corpus_impl(int n_dates, int n_u, std::uint32_t uid_base,
+                                      const char* dir_name) {
+  const fs::path dir = fs::temp_directory_path() / dir_name;
   std::error_code ec;
   fs::remove_all(dir, ec);
 
   std::vector<std::pair<std::string, std::string>> dp;
-  dp.reserve(static_cast<std::size_t>(kD));
-  for (int d = 0; d < kD; ++d) {
+  dp.reserve(static_cast<std::size_t>(n_dates));
+  for (int d = 0; d < n_dates; ++d) {
     const std::int64_t now = kBaseNow + static_cast<std::int64_t>(d) * kDayNs;
     // Surfaces are kept alive in `owned` for the duration of the archive write.
     std::vector<PricedSurface> owned;
-    owned.reserve(static_cast<std::size_t>(kU));
+    owned.reserve(static_cast<std::size_t>(n_u));
     std::vector<std::pair<std::string, const PricedSurface*>> items;
-    items.reserve(static_cast<std::size_t>(kU));
-    for (int u = 0; u < kU; ++u) {
+    items.reserve(static_cast<std::size_t>(n_u));
+    for (int u = 0; u < n_u; ++u) {
       const double S = (100.0 + 10.0 * static_cast<double>(u)) *
                        (1.0 + 0.003 * static_cast<double>(d));
       const double vb = 0.001 * static_cast<double>(d) + 0.002 * static_cast<double>(u);
-      owned.push_back(make_surface(kUidBase + static_cast<std::uint32_t>(u), S, S, now, vb));
+      owned.push_back(make_surface(uid_base + static_cast<std::uint32_t>(u), S, S, now, vb));
     }
     std::vector<std::string> syms;
-    syms.reserve(static_cast<std::size_t>(kU));
-    for (int u = 0; u < kU; ++u) {
+    syms.reserve(static_cast<std::size_t>(n_u));
+    for (int u = 0; u < n_u; ++u) {
       syms.push_back("U" + std::to_string(u));
       items.emplace_back(syms.back(), &owned[static_cast<std::size_t>(u)]);
     }
@@ -179,15 +198,22 @@ constexpr double kTargetT = 0.15;       // straddle tenor (in-grid all run)
   if (!clock.has_value()) {
     bench_fatal(clock.error().to_string());
   }
-  if (clock->size() != static_cast<std::size_t>(kD)) {
+  if (clock->size() != static_cast<std::size_t>(n_dates)) {
     bench_fatal("clock size mismatch");
   }
   return std::move(*clock);
 }
 
-// Process-lifetime Clock fixture (built once on first use).
+// Process-lifetime Clock fixtures (built once on first use).
 [[nodiscard]] const Clock& corpus_clock() {
-  static const Clock clock = build_corpus();
+  static const Clock clock =
+      build_corpus_impl(kD, kU, kUidBase, "atx-backtest-throughput-bench");
+  return clock;
+}
+
+[[nodiscard]] const Clock& universe_clock() {
+  static const Clock clock =
+      build_corpus_impl(kUnivD, kUnivN, kUnivUidBase, "atx-backtest-universe-bench");
   return clock;
 }
 
@@ -208,10 +234,55 @@ constexpr double kTargetT = 0.15;       // straddle tenor (in-grid all run)
   return spec;
 }
 
+// The WS-D universe strategy shape: for each of kUnivN names, a 40Δ Strangle (OTM
+// call + OTM put, strikes resolved by delta off the synthetic surface), a fresh
+// cohort EVERY step, HELD TO EXPIRY (overlapping cohorts), with a DeltaToZero hedge
+// rebalanced DAILY. FixedContracts sizing keeps the book deterministic (net-vega
+// cross-leg sizing is a WS-D/D4 concern, not this throughput baseline). The engine
+// executes the hedge overlay (validate_hedge_spec accepts DeltaToZero+Daily; the
+// step re-prices the full book once to supply both entry Greeks and the per-uid
+// hedge delta), so this steps/s number is the real deserialize+price+delta-hedge
+// hot loop the ≥5–10× gate targets.
+[[nodiscard]] StrategySpec make_universe_spec() {
+  StrategySpec spec;
+  spec.name = "universe-40d-strangle-htx-dhedge";
+  for (int u = 0; u < kUnivN; ++u) {
+    LegSpec leg;
+    leg.uid = kUnivUidBase + static_cast<std::uint32_t>(u);
+    leg.tenor.target_T = kUnivTargetT;
+    leg.tenor.snap_to_listed = false;
+    leg.structure.kind = StructureSpec::Kind::Strangle;  // OTM call + OTM put
+    leg.structure.call_leg = StrikeSelector{StrikeSelector::Kind::Delta, 0.40};
+    leg.structure.put_leg = StrikeSelector{StrikeSelector::Kind::Delta, 0.40};
+    leg.size = SizeSpec{SizeSpec::Kind::FixedContracts, 1.0, +1.0};
+    spec.legs.push_back(std::move(leg));
+  }
+  spec.lifecycle.entry = LifecycleSpec::Entry::EveryStep;
+  spec.lifecycle.holding = LifecycleSpec::Holding::HoldToExpiry;
+  spec.hedge = HedgeSpec{HedgeSpec::Kind::DeltaToZero, HedgeSpec::Cadence::Daily, 0.0};
+  return spec;
+}
+
+// Manual warm-up — replaces apply_common's GB-managed MinWarmUpTime(0.5), which
+// Google Benchmark 1.9.0 FORBIDS alongside the review-mandated explicit
+// Iterations() (Benchmark::Iterations asserts IsZero(min_warmup_time_), so the
+// combination aborts the whole binary at static-init). One untimed backtest
+// primes turbo / I-cache / the run_backtest thread-pool / the snapshot cache
+// before the timed reps — the same "brief turbo prime" intent, moved in-body so
+// the review's Iterations(kBtItersPerRep) x Repetitions(kBtReps) sampling scheme
+// (and its CV/p95 stats) is preserved verbatim. Runs once per repetition (each BM
+// body is invoked once per rep), matching MinWarmUpTime's per-rep warm-up cadence.
+void warm_up_backtest(const Clock& clock, const StrategySpec& spec) {
+  DeclarativeStrategy warm{spec};
+  auto warm_res = run_backtest(clock, warm);
+  benchmark::DoNotOptimize(warm_res);
+}
+
 // ── Throughput: D dates x U underliers, straddle clips held to expiry ──────────
 void BM_MultiUnderlierStraddle(benchmark::State& state) {
   const Clock& clock = corpus_clock();
   const StrategySpec spec = make_spec();
+  warm_up_backtest(clock, spec);  // in-body warm-up (see warm_up_backtest / registration)
 
   double final_open_lots = 0.0;
   for (auto _ : state) {
@@ -246,10 +317,86 @@ void BM_MultiUnderlierStraddle(benchmark::State& state) {
   state.counters["final_open_lots"] = final_open_lots;
 }
 
+// ── Throughput (M2): universe of 40Δ strangles, held to expiry, daily delta-hedge ──
+// The reshaped real-universe case. kUnivN names each enter a 40Δ strangle EVERY step
+// (strikes resolved by delta off the synthetic surface — the per-entry solve WS-P P4
+// batches), held to expiry (overlapping cohorts), with a DAILY DeltaToZero hedge. The
+// book grows to ~kUnivN×(kUnivD-1)×2 option lots; each step re-prices the whole open
+// book once for marks + Greeks + the per-uid hedge delta. Headline: steps/s (== the
+// scoreboard's backtest ★ratify metric); final_open_lots reports the book size.
+void BM_UniverseStrangleHedged(benchmark::State& state) {
+  const Clock& clock = universe_clock();
+  const StrategySpec spec = make_universe_spec();
+  warm_up_backtest(clock, spec);  // in-body warm-up (see warm_up_backtest / registration)
+
+  double final_open_lots = 0.0;
+  for (auto _ : state) {
+    DeclarativeStrategy strat{spec};
+    auto res = run_backtest(clock, strat);
+    if (!res.has_value()) {
+      state.SkipWithError(res.error().to_string().c_str());
+      break;
+    }
+    if (res->size() != static_cast<std::size_t>(kUnivD)) {
+      state.SkipWithError("run_backtest produced unexpected row count");
+      break;
+    }
+    if (!res->n_open_lots.empty()) {
+      final_open_lots = res->n_open_lots.back();
+    }
+    benchmark::DoNotOptimize(res->nav.data());
+    benchmark::ClobberMemory();
+  }
+
+  const int priced_steps = kUnivD - 1;
+  // leg_steps = strangle (2 legs) × N names × priced_steps (entry legs opened; the
+  // held book that each step reprices is far larger — final_open_lots captures it).
+  const long long leg_steps = static_cast<long long>(priced_steps) * kUnivN * 2;
+  const double iters = static_cast<double>(state.iterations());
+  state.SetItemsProcessed(state.iterations() * static_cast<std::int64_t>(priced_steps));
+  state.counters["leg_steps_per_s"] =
+      benchmark::Counter(iters * static_cast<double>(leg_steps), benchmark::Counter::kIsRate);
+  state.counters["names"] = static_cast<double>(kUnivN);
+  state.counters["final_open_lots"] = final_open_lots;
+}
+
+// Sample-count override (review fix, finding #2). These are heavy sub-second
+// backtests: apply_common's default (5 reps, and with a ~0.3 s op only ~1-2 auto
+// iterations/rep) gives only ~5-10 timed executions, so two outlier reps swing the
+// CV. Fix each rep to Iterations(kBtItersPerRep) work (each reported rep-mean
+// averages that many full backtests) AND raise to kBtReps repetitions — enough that
+// no pair of noisy reps dominates the CV before M4 freezes the steps/s as a gate.
+constexpr int kBtReps = 15;
+constexpr int kBtItersPerRep = 4;
+
+// Warm-up reconciliation (SHAPE (a), chosen deliberately). apply_common chains
+// MinWarmUpTime(0.5), but Google Benchmark 1.9.0's Benchmark::Iterations() asserts
+// IsZero(min_warmup_time_) — so apply_common(...)->Iterations(N) aborts the binary
+// at static-init (benchmark_register.cc:369). We clear the GB warm-up on JUST these
+// two rows with ->MinWarmUpTime(0.0) (legal here: iterations_ is still 0 at that
+// point in the chain) and re-supply the warm-up manually in-body via
+// warm_up_backtest() (one untimed op per rep). We deliberately KEEP explicit
+// Iterations(kBtItersPerRep) rather than switch to MinTime auto-iteration (shape
+// (b)): the finding-#2 fix relies on DETERMINISTIC, fixed work per rep so each
+// rep-mean averages exactly kBtItersPerRep full backtests — the property that makes
+// the CV meaningful. So the sampling scheme (kBtItersPerRep x kBtReps, CV/p95) is
+// preserved verbatim; only the warm-up delivery mechanism moved (GB -> in-body).
+// apply_common is shared by ~20 other bench files, so this is fixed at the two
+// conflicting rows here, never in apply_common.
 const int kRegistered = [] {
   apply_common(benchmark::RegisterBenchmark("backtest/multiunderlier_straddle/steps",
                                             BM_MultiUnderlierStraddle))
+      ->MinWarmUpTime(0.0)  // clear apply_common's GB warm-up (illegal with Iterations); warm-up is in-body
       ->Unit(benchmark::kMillisecond)
+      ->Iterations(kBtItersPerRep)
+      ->Repetitions(kBtReps)
+      ->UseRealTime();
+  apply_common(benchmark::RegisterBenchmark("backtest/universe_strangle_hedged/steps",
+                                            BM_UniverseStrangleHedged))
+      ->MinWarmUpTime(0.0)  // clear apply_common's GB warm-up (illegal with Iterations); warm-up is in-body
+      ->Unit(benchmark::kMillisecond)
+      ->Iterations(kBtItersPerRep)
+      ->Repetitions(kBtReps)
       ->UseRealTime();
   return 0;
 }();

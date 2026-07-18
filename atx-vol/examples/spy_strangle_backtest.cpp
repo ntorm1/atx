@@ -21,14 +21,14 @@
 // DATA (no paid Databento pull; synthetic per the house rule): a deterministic
 // rolling-vol synthetic SPY corpus. A seeded (never time-based) mt19937_64 drives
 // an evolving spot path (~12%/yr realized) and a mean-reverting ATM-vol regime; a
-// per-date eSSVI `PricedSurface` (analytic, no fit) is written to a per-date ATXVSA
-// v3 archive. The surface's [0.05,1.0] slice grid spans the 6m tenor, so the
+// per-date eSSVI `PricedSurface` (analytic, no fit) is written to a per-date ATXVSA2
+// (v2) archive. The surface's [0.05,1.0] slice grid spans the 6m tenor, so the
 // 40-delta strike solve and the T=0.5 reprice are exercised exactly as in
 // production. Timestamps are real calendar dates, so aging (theta) sees the true
 // day count (incl. weekend 3-day gaps).
 //
 // STORAGE this driver exercises + confirms:
-//   * surface binary archive = ATXVSA v3 (write_surface_archive_file / SurfaceArchive):
+//   * surface binary archive = ATXVSA2 (write_surface_archive_v2_file / SurfaceArchiveV2):
 //     O(1) symbol lookup, CRC-32C integrity. The corpus IS this store; we report
 //     bytes/surface and single-symbol reload latency.
 //   * OPRA option quote slices = QuoteFrame (make_synthetic_american_panel), the
@@ -66,7 +66,7 @@
 #include "atx/vol/priced_surface.hpp" // PricedSurface, PricingContext
 #include "atx/vol/s3.hpp"             // S3Params
 #include "atx/vol/strategy.hpp"       // DeclarativeStrategy, StrategySpec
-#include "atx/vol/surface_archive.hpp" // write_surface_archive_file, SurfaceArchiveItem, SurfaceArchive
+#include "atx/vol/surface_archive.hpp" // write_surface_archive_v2_file, SurfaceArchiveItem, SurfaceArchiveV2
 #include "atx/vol/surface_parity.hpp" // SliceContext
 #include "atx/vol/tearsheet.hpp"      // TearSheet, tearsheet, write_backtest_tsv
 #include "atx/vol/types.hpp"          // Side, Result, Status
@@ -149,7 +149,7 @@ constexpr double kTenorT = 0.5; // 6-month strangle
   const std::string path = (dir / (date + ".atxvsa")).string();
   const SurfaceArchiveItem item{"SPY", &spy};
   const std::span<const SurfaceArchiveItem> items(&item, 1);
-  const Status st = write_surface_archive_file(path, items);
+  const Status st = write_surface_archive_v2_file(path, items);
   if (!st) {
     std::fprintf(stderr, "write_archive: %s\n", st.error().to_string().c_str());
     std::exit(1);

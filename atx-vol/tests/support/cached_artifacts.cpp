@@ -29,7 +29,7 @@ fs::path cached_spy_convex_dense() {
   // curve-shape change makes an archive from an older binary semantically stale;
   // kArchiveMajor alone cannot detect that case.
   const fs::path file =
-      dir / ("spy_convexdense_nc40_shapev3_v" + std::to_string(kArchiveMajor) + ".atxvsa");
+      dir / ("spy_convexdense_nc40_shapev3_v" + std::to_string(kArchiveV2Major) + ".atxvsa");
   if (fs::exists(file)) {
     return file;
   }
@@ -64,7 +64,7 @@ fs::path cached_spy_convex_dense() {
   std::mt19937_64 rng{std::random_device{}()};
   const fs::path tmp = dir / (file.filename().string() + "." + std::to_string(rng()) + ".tmp");
   const std::array<SurfaceArchiveItem, 1> items{SurfaceArchiveItem{"SPY", &*priced}};
-  auto wrote = write_surface_archive_file(tmp.string(), items);
+  auto wrote = write_surface_archive_v2_file(tmp.string(), items);
   if (!wrote.has_value()) {
     ADD_FAILURE() << wrote.error().to_string();
     fs::remove(tmp, ec);
@@ -132,7 +132,7 @@ fs::path cached_hft_fit(const atx::vol::testkit::SpyFitFixture &fixture) {
   // Keyed on fixture.id (stable, unique per fixture) + kArchiveMajor, same
   // invalidate-on-format-bump rationale as cached_spy_convex_dense.
   const fs::path file = dir / ("hftfit_" + std::string(fixture.id) + "_v" +
-                               std::to_string(kArchiveMajor) + ".atxvsa");
+                               std::to_string(kArchiveV2Major) + ".atxvsa");
   if (fs::exists(file)) {
     return file;
   }
@@ -168,7 +168,7 @@ fs::path cached_hft_fit(const atx::vol::testkit::SpyFitFixture &fixture) {
   std::mt19937_64 rng{std::random_device{}()};
   const fs::path tmp = dir / (file.filename().string() + "." + std::to_string(rng()) + ".tmp");
   const std::array<SurfaceArchiveItem, 1> items{SurfaceArchiveItem{"SPY", &*priced}};
-  auto wrote = write_surface_archive_file(tmp.string(), items);
+  auto wrote = write_surface_archive_v2_file(tmp.string(), items);
   if (!wrote.has_value()) {
     ADD_FAILURE() << wrote.error().to_string();
     fs::remove(tmp, ec);

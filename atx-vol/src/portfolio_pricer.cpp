@@ -21,6 +21,7 @@
 
 #include "atx/vol/american.hpp"           // AmericanGreeks
 #include "atx/vol/counters.hpp"           // ATX_VOL_COUNT (opt-in P0.2; no-op when OFF)
+#include "atx/vol/detail/adjoint_greeks.hpp" // WS-P P3: american_greeks_adjoint A/B route
 #include "atx/vol/prepared_portfolio.hpp" // PreparedPortfolio (grouped exec substrate)
 #include "atx/vol/pricing_executor.hpp"   // pricing_executor(): the persistent P1.4 pool
 
@@ -605,7 +606,7 @@ stage_full_greek_seeds(const SurfaceSet &surfaces, std::span<const OptionContrac
 // across a raw-bit-equal-T ladder (bit-identical to per-contract evaluate).
 void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
                    std::span<const OptionContract> contracts, bool want_greeks, bool analytic,
-                   bool skew_adjusted_delta, const StickyParams &sticky,
+                   bool adjoint_greeks, bool skew_adjusted_delta, const StickyParams &sticky,
                    simd::SimdIsa resolved_price_isa, QueryExecution query_execution,
                    unsigned n_threads, std::vector<ContractPx> &px, std::vector<double> &b_iv,
                    std::vector<double> &b_price, std::vector<AmericanGreeks> &b_greeks,
@@ -613,8 +614,16 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
                    std::span<const std::uint8_t> accepted_seeds = {}) {
   const std::size_t n_unique = pp.n_unique();
   using EF = PricedSurface::EvalField;
-  const EF fields =
-      want_greeks ? (EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder) : (EF::Iv | EF::Price);
+  // WS-P P3 adjoint A/B: request IV ONLY from evaluate_batch (priced_surface.cpp:
+  // "Iv-only: no pricer solve"). The FD greek bundle is never computed, AND the mark's
+  // boundary solve is skipped — american_greeks_adjoint's ONE taped AL solve provides
+  // BOTH delta..charm AND the served mark (its al_put_price_from_boundary == the
+  // andersen_lake mark), so each unique contract pays a SINGLE boundary solve instead
+  // of two (I-2 fuse). Non-adjoint FullGreeks stays the FD bundle; Marks stays Iv|Price.
+  const EF fields = adjoint_greeks
+                        ? EF::Iv
+                        : ((want_greeks) ? (EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder)
+                                         : (EF::Iv | EF::Price));
 
   const bool have_seed_stage =
       staged_seeds.size() == contracts.size() && accepted_seeds.size() == contracts.size();
@@ -654,7 +663,7 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
     }
     PricedSurface::EvaluationSoA soa{std::span<double>(b_iv).subspan(s, gsz),
                                      std::span<double>(b_price).subspan(s, gsz),
-                                     want_greeks
+                                     (want_greeks && !adjoint_greeks)
                                          ? std::span<AmericanGreeks>(b_greeks).subspan(s, gsz)
                                          : std::span<AmericanGreeks>{},
                                      std::span<Status>(b_status).subspan(s, gsz),
@@ -688,6 +697,38 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
         }
         out.fair_value = b_price[p];
         out.status = PriceStatus::Ok;
+        continue;
+      }
+      if (adjoint_greeks) {
+        // WS-P P3+I-2 adjoint A/B: evaluate_batch computed IV ONLY (no boundary solve).
+        // american_greeks_adjoint's single taped Andersen-Lake solve provides BOTH the
+        // risk bundle AND the mark (its price IS the andersen_lake mark), resolved at
+        // the SAME (sigma,rate,q) — so each contract pays ONE boundary solve, not two.
+        // delta/gamma stay bit-identical to the FD path (spot-independent boundary),
+        // vega/rho match the served mark on the wide domain, FD fallback inside the
+        // kernel elsewhere. The served mark is the kernel's AL price (price ==
+        // fair_value); it equals the FD-route mark to the andersen_lake tolerance.
+        if (!b_status[p].has_value()) {
+          out.status = PriceStatus::NumericError;
+          continue;
+        }
+        const auto rp = surf->resolve(kcol[p], tcol[p]);
+        bool took = false;
+        const Result<AmericanGreeks> ga = detail::american_greeks_adjoint(
+            surf->pricing().S, kcol[p], tcol[p], rp.sigma, rp.rate, rp.q_eff, scol[p],
+            std::optional<AlOpts>{surf->pricing().al_opts}, &took);
+        if (!ga.has_value() || !std::isfinite(ga->price)) {
+          out.status = PriceStatus::NumericError;
+          continue;
+        }
+        b_greeks[p] = *ga;
+        out.fair_value = ga->price;
+        out.g = *ga;
+        out.status = PriceStatus::Ok;
+        if (skew_adjusted_delta) {
+          const double slope = priced_surface_skew_slope(*surf, kcol[p], tcol[p]);
+          out.vega_slope = vega_slope_from_skew_slope(slope, surf->pricing().S, sticky);
+        }
         continue;
       }
       if (!b_status[p].has_value() || !std::isfinite(b_greeks[p].price)) {
@@ -983,6 +1024,8 @@ Status PortfolioPricer::price_into(const SurfaceSet &surfaces, PriceFieldMask fi
   PortfolioWorkspace::Impl &w = *ws.impl_;
   w.base_risk_valid = false;
   const bool analytic = want_greeks ? opts.analytic_greeks : false;
+  // WS-P P3 adjoint A/B (compute-only): route risk through american_greeks_adjoint.
+  const bool use_adjoint = want_greeks && opts.adjoint_greeks;
   if (Status s = ensure_prepared(pf_, w.prepared, pf_.logical_id_, pf_.revision_,
                                  w.prepared_logical_id, w.prepared_revision);
       !s.has_value()) {
@@ -991,7 +1034,8 @@ Status PortfolioPricer::price_into(const SurfaceSet &surfaces, PriceFieldMask fi
 
   std::span<const ContractPx> staged_seeds;
   std::span<const std::uint8_t> accepted_seeds;
-  if (fields == PriceFieldMask::FullGreeks && !seeds.empty()) {
+  // Seeds carry FD-computed greeks; never mix them into an adjoint-greeks frame.
+  if (fields == PriceFieldMask::FullGreeks && !seeds.empty() && !use_adjoint) {
     // Candidate indices are uint32_t throughout the prepared substrate. One
     // genuine seed per position is a valid producer shape even when the book
     // deduplicates contracts; a larger set fails closed so seed-order scratch
@@ -1013,9 +1057,10 @@ Status PortfolioPricer::price_into(const SurfaceSet &surfaces, PriceFieldMask fi
     }
   }
 
-  solve_uniques(*w.prepared, surfaces, contracts, want_greeks, analytic, opts.skew_adjusted_delta,
-                opts.sticky, opts.resolved_price_isa, opts.query_execution, opts.n_threads, w.px,
-                w.b_iv, w.b_price, w.b_greeks, w.b_status, staged_seeds, accepted_seeds);
+  solve_uniques(*w.prepared, surfaces, contracts, want_greeks, analytic, use_adjoint,
+                opts.skew_adjusted_delta, opts.sticky, opts.resolved_price_isa,
+                opts.query_execution, opts.n_threads, w.px, w.b_iv, w.b_price, w.b_greeks,
+                w.b_status, staged_seeds, accepted_seeds);
 
   // FrameBytes reflects the mask (37 B/pos Marks, 101 B/pos FullGreeks). No
   // FrameAllocations: the output spans are caller-owned and the scratch was
@@ -1026,7 +1071,9 @@ Status PortfolioPricer::price_into(const SurfaceSet &surfaces, PriceFieldMask fi
   scatter_rows(positions, pf_, w.px, want_greeks, opts.skew_adjusted_delta, opts.n_threads, out);
   *out.total = PriceTotals{};
   reduce_price_totals(positions, pf_, w.px, want_greeks, opts.skew_adjusted_delta, *out.total);
-  if (want_greeks) {
+  // Adjoint mode is compute-only: leave base_risk_valid false so a later pnl_totals
+  // cannot reuse adjoint-computed base risk under an FD assumption (it recomputes).
+  if (want_greeks && !use_adjoint) {
     w.base_surface_logical_id = surfaces.logical_id_;
     w.base_surface_instance_ids.resize(pf_.uids().size());
     for (std::size_t i = 0; i < pf_.uids().size(); ++i) {
@@ -1052,22 +1099,24 @@ Result<PriceTotals> PortfolioPricer::price_totals(const SurfaceSet &surfaces, Pr
   PortfolioWorkspace::Impl &w = *ws.impl_;
   w.base_risk_valid = false;
   const bool analytic = want_greeks ? opts.analytic_greeks : false;
+  const bool use_adjoint = want_greeks && opts.adjoint_greeks; // WS-P P3 adjoint A/B
   if (Status s = ensure_prepared(pf_, w.prepared, pf_.logical_id_, pf_.revision_,
                                  w.prepared_logical_id, w.prepared_revision);
       !s.has_value()) {
     return Err(s.error());
   }
 
-  solve_uniques(*w.prepared, surfaces, contracts, want_greeks, analytic, opts.skew_adjusted_delta,
-                opts.sticky, opts.resolved_price_isa, opts.query_execution, opts.n_threads, w.px,
-                w.b_iv, w.b_price, w.b_greeks, w.b_status);
+  solve_uniques(*w.prepared, surfaces, contracts, want_greeks, analytic, use_adjoint,
+                opts.skew_adjusted_delta, opts.sticky, opts.resolved_price_isa,
+                opts.query_execution, opts.n_threads, w.px, w.b_iv, w.b_price, w.b_greeks,
+                w.b_status);
 
   // No scatter, no per-row frame: reduce weight*result over positions in fixed
   // input order straight off the unique-result SoA — bit-identical to
   // price(...).total.
   PriceTotals t{};
   reduce_price_totals(positions, pf_, w.px, want_greeks, opts.skew_adjusted_delta, t);
-  if (want_greeks) {
+  if (want_greeks && !use_adjoint) {
     w.base_surface_logical_id = surfaces.logical_id_;
     w.base_surface_instance_ids.resize(pf_.uids().size());
     for (std::size_t i = 0; i < pf_.uids().size(); ++i) {

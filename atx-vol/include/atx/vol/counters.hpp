@@ -38,6 +38,7 @@
 //   if (snap.enabled) { use snap.get(Counter::BoundarySolves); }
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <limits>
 
@@ -560,5 +561,98 @@ inline void reset() noexcept {
 }
 
 } // namespace lightweight
+
+// ── Harness-side pipeline stage attribution (M3, backtest hot-path sprint) ────
+//
+// A zero-dependency (std::chrono only) named-stage wall-time accumulator + RAII
+// scoped timer for attributing an end-to-end pipeline wall to its fit / serialize /
+// deserialize / price stages. UNLIKE the exact `ATX_VOL_COUNT*` counters above it is
+// ALWAYS compiled in (it carries no global mutable state and touches nothing on the
+// pricing hot path) — it is a measurement facility a bench or an instrumented
+// pipeline can adopt to time each stage BOUNDARY from the outside, without
+// instrumenting the stage's own TU.
+//
+// Ownership/threading: a `StageAccumulator` is single-thread-owned by convention —
+// the thread that drives the four stages of one board owns the accumulator it feeds.
+// (Stages may themselves fan out internally; this times the wall the driver observes.)
+//
+//   using namespace atx::vol::counters::timing;
+//   StageAccumulator acc;
+//   { ScopedStageTimer t(acc, Stage::Fit);         fitter.fit(chain); }
+//   { ScopedStageTimer t(acc, Stage::Serialize);   bytes = serialize(surface); }
+//   { ScopedStageTimer t(acc, Stage::Deserialize); board = deserialize(bytes); }
+//   { ScopedStageTimer t(acc, Stage::Price);       price_grid(board); }
+//   const double deser_frac = acc.fraction(Stage::Deserialize);
+namespace timing {
+
+enum class Stage : unsigned {
+  Fit = 0,     // fit a board (OptionChain -> FittedSurface)
+  Serialize,   // fit output -> on-disk bytes (snapshot + write_surface_archive)
+  Deserialize, // bytes -> ready-to-price surfaces (open + reconstruct)
+  Price,       // price + greeks over the deserialized surfaces
+  Count_
+};
+
+inline constexpr unsigned kStageCount = static_cast<unsigned>(Stage::Count_);
+inline constexpr const char *kStageNames[kStageCount] = {"fit", "serialize", "deserialize",
+                                                         "price"};
+
+// Accumulates elapsed wall (nanoseconds) per stage across many timed scopes.
+class StageAccumulator {
+public:
+  void add_ns(Stage stage, double ns) noexcept { ns_[static_cast<unsigned>(stage)] += ns; }
+
+  [[nodiscard]] double ns(Stage stage) const noexcept { return ns_[static_cast<unsigned>(stage)]; }
+  [[nodiscard]] double ms(Stage stage) const noexcept { return ns(stage) * 1.0e-6; }
+
+  [[nodiscard]] double total_ns() const noexcept {
+    double total = 0.0;
+    for (unsigned i = 0; i < kStageCount; ++i) {
+      total += ns_[i];
+    }
+    return total;
+  }
+
+  // Fraction of the summed stage wall attributable to `stage` (0 when nothing timed).
+  [[nodiscard]] double fraction(Stage stage) const noexcept {
+    const double total = total_ns();
+    return total > 0.0 ? ns(stage) / total : 0.0;
+  }
+
+  void reset() noexcept {
+    for (unsigned i = 0; i < kStageCount; ++i) {
+      ns_[i] = 0.0;
+    }
+  }
+
+private:
+  double ns_[kStageCount] = {};
+};
+
+// RAII: charges its lifetime's elapsed wall to `stage` on the given accumulator.
+// steady_clock is monotonic (immune to wall-clock adjustments) — the right source
+// for an elapsed-duration measurement.
+class ScopedStageTimer {
+public:
+  ScopedStageTimer(StageAccumulator &acc, Stage stage) noexcept
+      : acc_(acc), stage_(stage), start_(std::chrono::steady_clock::now()) {}
+
+  ScopedStageTimer(const ScopedStageTimer &) = delete;
+  ScopedStageTimer &operator=(const ScopedStageTimer &) = delete;
+  ScopedStageTimer(ScopedStageTimer &&) = delete;
+  ScopedStageTimer &operator=(ScopedStageTimer &&) = delete;
+
+  ~ScopedStageTimer() noexcept {
+    const auto end = std::chrono::steady_clock::now();
+    acc_.add_ns(stage_, std::chrono::duration<double, std::nano>(end - start_).count());
+  }
+
+private:
+  StageAccumulator &acc_;
+  Stage stage_;
+  std::chrono::steady_clock::time_point start_;
+};
+
+} // namespace timing
 
 } // namespace atx::vol::counters

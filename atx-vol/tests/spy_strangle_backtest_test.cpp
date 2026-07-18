@@ -96,7 +96,7 @@ constexpr double kTenorT = 0.5;
   const std::string path = (dir / (date + ".atxvsa")).string();
   const SurfaceArchiveItem item{"SPY", &spy};
   const std::span<const SurfaceArchiveItem> items(&item, 1);
-  const Status st = write_surface_archive_file(path, items);
+  const Status st = write_surface_archive_v2_file(path, items);
   EXPECT_TRUE(st.has_value()) << (st.has_value() ? std::string{} : st.error().to_string());
   return path;
 }

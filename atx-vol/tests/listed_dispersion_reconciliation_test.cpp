@@ -183,7 +183,7 @@ std::string write_archive(const fs::path &dir, const std::string &date,
   const std::vector<SurfaceArchiveItem> items = {
       {"SPY", &surfaces[0]}, {"N0", &surfaces[1]}, {"N1", &surfaces[2]}};
   const std::string path = (dir / (date + ".atxvsa")).string();
-  const Status status = write_surface_archive_file(path, items);
+  const Status status = write_surface_archive_v2_file(path, items);
   EXPECT_TRUE(status) << (status ? std::string{} : status.error().to_string());
   return path;
 }

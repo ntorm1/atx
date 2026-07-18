@@ -129,9 +129,9 @@ TEST(SpyPortfolioPnl, MultiUnderlying_Price_And_ControlledExplain) {
   // spy_archive_roundtrip_test both prove the reload prices bit-identically to
   // a live session). XOM: single-name default, still fit live (21 KB board,
   // cheap -- no cache needed).
-  auto arch = SurfaceArchive::open_file(spy_archive_path.string());
+  auto arch = SurfaceArchiveV2::open_file(spy_archive_path.string());
   ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
-  auto spy_ps = arch->map_symbol("SPY");
+  auto spy_ps = arch->reconstruct_symbol("SPY");
   ASSERT_TRUE(spy_ps.has_value()) << spy_ps.error().to_string();
   ASSERT_EQ(spy_ps->uid(), *spy_uid) << "archived SPY uid must match this test's reserved slot";
 

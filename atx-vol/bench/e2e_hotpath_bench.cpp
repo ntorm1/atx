@@ -18,6 +18,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -28,9 +29,16 @@
 #include "atx/vol/backtest.hpp"
 #include "atx/vol/chain.hpp"
 #include "atx/vol/corpus.hpp"
+#include "atx/vol/counters.hpp"       // counters::timing — stage attribution (M3)
+#include "atx/vol/data.hpp"           // year_fraction (synthetic attribution panel)
+#include "atx/vol/panel.hpp"          // SynthPanelSpec, make_synthetic_american_panel
+#include "atx/vol/priced_surface.hpp" // PricedSurface (deserialized price stage)
 #include "atx/vol/pricer_fitter.hpp"
 #include "atx/vol/query_pricing.hpp"
+#include "atx/vol/s3.hpp"             // S3Params (synthetic truth)
 #include "atx/vol/strategy.hpp"
+#include "atx/vol/surface_archive.hpp" // write_surface_archive / SurfaceArchive
+#include "atx/vol/types.hpp"           // Side
 
 #include "bench_util.hpp"
 #include "support/opra_fixture.hpp"
@@ -545,9 +553,253 @@ benchmark::internal::Benchmark *register_corpus_scale(const char *name,
       ->UseRealTime();
 }
 
+// ── M3: per-stage attribution harness (class: tooling) ───────────────────────
+//
+// Attributes the end-to-end pipeline wall — the north-star loop fit -> serialize ->
+// deserialize -> price/greeks — to its four stages, so effort lands on the real
+// critical path (and a 5%-of-wall stage is never "optimized"). The stage BOUNDARIES
+// are timed HARNESS-SIDE via counters::timing::ScopedStageTimer (no foreign TU is
+// instrumented — WS-M owns only the harness). It runs on a SELF-CONTAINED synthetic
+// board so it always produces a number under the quiet-window protocol, independent
+// of whether the real-OPRA fixtures the fit/backtest rows above need are on disk.
+//
+// Stage definitions (each timed from the driver's vantage):
+//   fit         — PricerFitter::fit(chain): OptionChain -> FittedSurface.
+//   serialize   — snapshot (VolaSession::to_priced_surface) + write_surface_archive:
+//                 the fit output packed to on-disk bytes (memcpy-bound).
+//   deserialize — SurfaceArchive::open + map_all_with_provenance: bytes -> a
+//                 ready-to-price PricedSurface (v1 whole-blob CRC + reconstruct).
+//   price       — american price+greeks over a (K,T,side) grid on the deserialized
+//                 surface (the pricing/greeks the backtest hot loop pays per step).
+//
+// The reported fractions are stage/total. NOTE for the reader: in the BACKTEST hot
+// loop only deserialize+price recur (fit+serialize are the offline populate); the
+// per-stage ms let M4 read both the full-pipeline split AND the deser:price ratio
+// that governs the in-loop budget.
+
+namespace timing = atx::vol::counters::timing;
+
+// A few synthetic liquid boards (distinct spots) — a genuine cold fit each, not a
+// hand-rolled surface. Mirrors surface_v2_bench's make_liquid_fixture.
+[[nodiscard]] SynthPanelSpec make_attribution_spec(double spot) {
+  SynthPanelSpec spec;
+  spec.uid = "SYNTHATTR";
+  spec.snapshot_iso = "2026-06-19";
+  spec.spot = spot;
+  spec.r = kRate;
+  spec.borrow = 0.0;
+  spec.half_spread_frac = 0.01;
+  spec.min_half_spread = 0.02;
+  constexpr std::string_view expiries[]{"2026-07-17", "2026-08-21", "2026-09-18", "2026-12-18",
+                                        "2027-03-19"};
+  for (const std::string_view expiry : expiries) {
+    SynthExpiry slice;
+    slice.expiry_iso = std::string(expiry);
+    slice.T = year_fraction(spec.snapshot_iso, expiry);
+    slice.truth = S3Params{0.30, 0.0, 0.0};
+    spec.expiries.push_back(std::move(slice));
+  }
+  constexpr std::size_t kStrikeCount = 65;
+  spec.strikes.reserve(kStrikeCount);
+  for (std::size_t i = 0; i < kStrikeCount; ++i) {
+    const double fraction = static_cast<double>(i) / static_cast<double>(kStrikeCount - 1u);
+    const double log_moneyness = -0.80 + 1.60 * fraction;
+    spec.strikes.push_back(spec.spot * std::exp(log_moneyness));
+  }
+  return spec;
+}
+
+struct AttributionCorpus {
+  std::vector<OptionChain> chains;
+  std::vector<double> spots;
+  std::string error;
+};
+
+[[nodiscard]] AttributionCorpus load_attribution_corpus() {
+  AttributionCorpus corpus;
+  const double spots[] = {90.0, 100.0, 110.0, 125.0};
+  for (const double spot : spots) {
+    Result<SynthPanel> panel = make_synthetic_american_panel(make_attribution_spec(spot));
+    if (!panel.has_value()) {
+      corpus.error = "synthetic attribution panel construction failed: " + panel.error().to_string();
+      return corpus;
+    }
+    Result<OptionChain> chain = OptionChain::from_frame(panel->frame, kRate, spot);
+    if (!chain.has_value()) {
+      corpus.error = "synthetic attribution chain install failed: " + chain.error().to_string();
+      return corpus;
+    }
+    corpus.chains.push_back(std::move(*chain));
+    corpus.spots.push_back(spot);
+  }
+  return corpus;
+}
+
+struct AttributionReport {
+  timing::StageAccumulator acc;
+  std::size_t boards{0};
+  std::size_t priced_points{0};
+  bool ok{false};
+};
+
+// One full pass: fit -> serialize -> deserialize -> price for every board, charging
+// each stage's wall to `report.acc`.
+[[nodiscard]] AttributionReport run_attribution_iteration(const AttributionCorpus &corpus) {
+  AttributionReport report;
+  // A representative price grid: 5 OTM/ITM strikes × 2 maturities × both sides.
+  const double moneyness[] = {0.85, 0.93, 1.00, 1.08, 1.20};
+  const double Ts[] = {0.10, 0.25};
+
+  for (std::size_t b = 0; b < corpus.chains.size(); ++b) {
+    const OptionChain &chain = corpus.chains[b];
+    const double spot = corpus.spots[b];
+
+    PricerConfig config;
+    config.preset = FitPreset::Robust; // production routing (published curve family)
+
+    PricerFitter fitter{config};
+    {
+      timing::ScopedStageTimer t(report.acc, timing::Stage::Fit);
+      const Status fitted = fitter.fit(chain);
+      if (!fitted.has_value()) {
+        return report; // ok stays false
+      }
+    }
+    const FittedSurface *surface = fitter.surface();
+    if (surface == nullptr) {
+      return report;
+    }
+
+    std::vector<std::byte> bytes;
+    {
+      timing::ScopedStageTimer t(report.acc, timing::Stage::Serialize);
+      Result<PricedSurface> snapshot = surface->session().to_priced_surface();
+      if (!snapshot.has_value()) {
+        return report;
+      }
+      SurfaceArchiveItem item;
+      item.symbol = "SYNTH";
+      item.surface = &*snapshot;
+      Result<std::vector<std::byte>> serialized =
+          write_surface_archive(std::span<const SurfaceArchiveItem>(&item, 1));
+      if (!serialized.has_value()) {
+        return report;
+      }
+      bytes = std::move(*serialized);
+    }
+
+    std::optional<PricedSurface> ready;
+    {
+      timing::ScopedStageTimer t(report.acc, timing::Stage::Deserialize);
+      Result<SurfaceArchive> archive = SurfaceArchive::open(std::move(bytes));
+      if (!archive.has_value()) {
+        return report;
+      }
+      Result<std::vector<ArchivedSurface>> all = archive->map_all_with_provenance();
+      if (!all.has_value() || all->empty()) {
+        return report;
+      }
+      ready.emplace(std::move(all->front().surface));
+    }
+
+    {
+      timing::ScopedStageTimer t(report.acc, timing::Stage::Price);
+      for (const double m : moneyness) {
+        const double K = spot * m;
+        for (const double T : Ts) {
+          for (const Side side : {Side::Call, Side::Put}) {
+            Result<AmericanGreeks> g = ready->greeks(K, T, side);
+            if (g.has_value()) {
+              benchmark::DoNotOptimize(g->price);
+              ++report.priced_points;
+            }
+          }
+        }
+      }
+    }
+    ++report.boards;
+  }
+  report.ok = report.boards == corpus.chains.size();
+  return report;
+}
+
+void BM_PipelineAttribution(benchmark::State &state) {
+  const AttributionCorpus corpus = load_attribution_corpus();
+  if (!corpus.error.empty()) {
+    state.SkipWithError(corpus.error.c_str());
+    return;
+  }
+
+  // Manual warm-up — apply_common chains MinWarmUpTime(0.5), which Google Benchmark
+  // 1.9.0 forbids alongside this row's explicit Iterations() (Benchmark::Iterations
+  // asserts IsZero(min_warmup_time_); the combination aborts the binary at
+  // static-init). The registration clears the GB warm-up with ->MinWarmUpTime(0.0)
+  // and the "brief turbo prime" is re-supplied here: one untimed attribution pass
+  // before the timed reps. Keeps the review's Iterations(3) x Repetitions(15)
+  // sampling (finding #2) verbatim; only the warm-up delivery moved (GB -> in-body).
+  // Runs once per repetition (this body is invoked once per rep), matching
+  // MinWarmUpTime's per-rep cadence. The corpus is self-contained synthetic, so the
+  // warm pass always completes.
+  {
+    AttributionReport warm = run_attribution_iteration(corpus);
+    benchmark::DoNotOptimize(warm.priced_points);  // non-const: mutable-ref DoNotOptimize overload
+  }
+
+  AttributionReport last;
+  for (auto _ : state) {
+    last = run_attribution_iteration(corpus);
+    if (!last.ok) {
+      state.SkipWithError("synthetic pipeline attribution did not complete every stage");
+      break;
+    }
+    benchmark::ClobberMemory();
+  }
+  if (!last.ok) {
+    return;
+  }
+  using timing::Stage;
+  state.SetItemsProcessed(state.iterations() * static_cast<std::int64_t>(last.boards));
+  state.counters["boards"] = static_cast<double>(last.boards);
+  state.counters["priced_points"] = static_cast<double>(last.priced_points);
+  // Per-stage wall (ms, summed across boards in one iteration) and its fraction of
+  // the attributed total — the headline attribution numbers M4 ratifies.
+  state.counters["fit_ms"] = last.acc.ms(Stage::Fit);
+  state.counters["serialize_ms"] = last.acc.ms(Stage::Serialize);
+  state.counters["deserialize_ms"] = last.acc.ms(Stage::Deserialize);
+  state.counters["price_ms"] = last.acc.ms(Stage::Price);
+  state.counters["attributed_total_ms"] = last.acc.total_ns() * 1.0e-6;
+  state.counters["fit_frac"] = last.acc.fraction(Stage::Fit);
+  state.counters["serialize_frac"] = last.acc.fraction(Stage::Serialize);
+  state.counters["deserialize_frac"] = last.acc.fraction(Stage::Deserialize);
+  state.counters["price_frac"] = last.acc.fraction(Stage::Price);
+}
+
 const int kRegistered = [] {
   register_corpus_scale("fit/e2e/spy_real", BM_FitE2e<load_spy_fit_corpus>);
   register_corpus_scale("fit/e2e/100name", BM_FitE2e<load_universe_fit_corpus>);
+  // Sample-count override (review fix, finding #2): the attribution pass is a heavy
+  // ~0.66 s op, so apply_common's default (5 reps × ~1 auto iteration) gives only ~5
+  // timed executions and a single slow rep swings the wall CV. Fix 3 iterations/rep
+  // (each rep-mean averages 3 full passes) and raise to 15 reps for a stable CV
+  // before M4 reads the stage fractions. The fit/price SPLIT was already stable
+  // (fit_frac CV ~0.4%); this stabilizes the absolute wall too.
+  //
+  // Warm-up reconciliation (shape (a)): apply_common chains MinWarmUpTime(0.5), but
+  // Google Benchmark 1.9.0's Benchmark::Iterations() asserts IsZero(min_warmup_time_),
+  // so apply_common(...)->Iterations(3) aborts the binary at static-init
+  // (benchmark_register.cc:369). Clear the GB warm-up on THIS row only with
+  // ->MinWarmUpTime(0.0) (legal here: iterations_ is still 0 at that chain point);
+  // BM_PipelineAttribution re-supplies the warm-up in-body. Iterations(3) x
+  // Repetitions(15) is kept verbatim (finding #2 needs deterministic fixed work/rep
+  // for a meaningful CV; MinTime auto-iteration would undo it). apply_common (shared
+  // by ~20 bench files) is untouched; the other rows in this binary are unaffected.
+  apply_common(benchmark::RegisterBenchmark("attribution/pipeline/synth_fit_ser_deser_price",
+                                            BM_PipelineAttribution))
+      ->MinWarmUpTime(0.0)  // clear apply_common's GB warm-up (illegal with Iterations); warm-up is in-body
+      ->Unit(benchmark::kMillisecond)
+      ->Iterations(3)
+      ->Repetitions(15)
+      ->UseRealTime();
   apply_common(benchmark::RegisterBenchmark("price/backtest/spy_real/cold",
                                             BM_BacktestReal<BacktestMode::Cold>))
       ->Unit(benchmark::kMillisecond)

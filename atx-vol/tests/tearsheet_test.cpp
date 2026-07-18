@@ -121,7 +121,7 @@ write_archive(const fs::path &dir, const std::string &date,
   for (const auto &[sym, ps] : items) {
     its.push_back(SurfaceArchiveItem{sym, ps});
   }
-  const Status st = write_surface_archive_file(path, its);
+  const Status st = write_surface_archive_v2_file(path, its);
   EXPECT_TRUE(st.has_value()) << (st.has_value() ? std::string{} : st.error().to_string());
   return path;
 }

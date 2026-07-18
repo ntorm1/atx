@@ -340,3 +340,42 @@ endif()
 # the existing atx-vol-iv-shootout-bench target without touching its own block.
 add_subdirectory(thirdparty/lets_be_rational)
 target_link_libraries(atx-vol-iv-shootout-bench PRIVATE lbr_lets_be_rational)
+
+# ── WS-M M1 (infra-measure) — surface-archive serialize/deserialize bench ─────
+# The missing ser/deser measurement (backtest hot-path sprint, task M1): serialize
+# µs/surface + partition write MB/s, and deserialize µs-to-ready-to-price across the
+# v1 whole-board reconstruct (open + map_all_with_provenance), a pre-opened
+# reconstruct, and the single-symbol reconstruct (the WS-S subset-map baseline).
+# Count sweep {1,4,16,50,100} × {Essvi, ConvexDense}. v2 zero-copy modes (mmap-open,
+# subset-map) slot in on the format branch via the typed extension seam in the TU.
+add_executable(atx-vol-surface-archive-bench
+    bench_main.cpp
+    surface_archive_bench.cpp
+)
+target_link_libraries(atx-vol-surface-archive-bench
+    PRIVATE
+        atx::vol
+        atx::core
+        benchmark::benchmark
+        atx_warnings
+        Threads::Threads
+)
+
+# ── WS-F F-b (fit) — fused streaming fit->serialize throughput ─────────────────
+# surfaces/sec through populate_surface_db (U1 streaming per-date fit->serialize->
+# release into a SurfaceDb, ATXVSA2 writer). Distinct from corpus_build_bench.cpp
+# (measure-owned, whole-corpus build_corpus boards/s); this times the SurfaceDb
+# streaming populate the universe-date target rides on. Own target so it appends
+# cleanly to the shared bench CMakeLists (one owner per TU).
+add_executable(atx-vol-fit-serialize-bench
+    bench_main.cpp
+    fit_serialize_bench.cpp
+)
+target_link_libraries(atx-vol-fit-serialize-bench
+    PRIVATE
+        atx::vol
+        atx::core
+        benchmark::benchmark
+        atx_warnings
+        Threads::Threads
+)

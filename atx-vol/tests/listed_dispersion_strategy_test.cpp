@@ -143,7 +143,7 @@ pointers(const std::vector<PricedSurface> &surfaces) {
   const std::string path = (dir / "2026-07-10.atxvsa").string();
   const std::vector<SurfaceArchiveItem> items = {
       {"SPY", &surfaces[0]}, {"N0", &surfaces[1]}, {"N1", &surfaces[2]}};
-  const Status status = write_surface_archive_file(path, items);
+  const Status status = write_surface_archive_v2_file(path, items);
   EXPECT_TRUE(status.has_value()) << status.error().to_string();
   return path;
 }

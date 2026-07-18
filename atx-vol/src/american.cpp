@@ -1315,6 +1315,154 @@ namespace amer {
   return price;
 }
 
+// P2 (WS-P) seam — the PURE collocation residual R(y; sigma, r, q). Mirrors the
+// private `residual` lambda in detail::al_implicit_diff_put_greeks verbatim, but
+// as a linkable symbol the adjoint-greeks kernel (detail/adjoint_greeks.cpp) can
+// call to form J = dR/dy and R_sigma/R_r. Pure function of (y, sigma, r, q):
+// copies y into a scratch boundary, runs the generic inline-geometry kernel
+// eqn_b_ND_impl<0,0>, and returns the fixed-point residual per node. Does not
+// mutate bnd/ws state that any other caller observes (scr is a local copy).
+void al_put_boundary_residual(const AlBoundary &bnd, const AlWorkspace &ws, const double *y,
+                              double sigma, double r, double q, double *R_out) noexcept {
+  const std::uint16_t n = bnd.n;
+  const double xmax = bnd.xmax;
+  const double K = bnd.K;
+  AlBoundary scr = bnd; // scratch: only .y varies; node grid / xmax / K fixed
+  for (std::uint16_t i = 0; i < n; ++i) {
+    scr.y[i] = y[i];
+  }
+  R_out[0] = 0.0;
+  for (std::uint16_t i = 1; i < n; ++i) {
+    const double tau = scr.tau[i];
+    if (tau <= 1.0e-14) {
+      R_out[i] = 0.0;
+      continue;
+    }
+    const double b_val = b_from_y(y[i], xmax);
+    double N = 0.0, D = 0.0;
+    eqn_b_ND_impl<0, 0>(scr, ws, i, tau, b_val, sigma, r, q, N, D);
+    double R = 0.0;
+    if (D > 1.0e-300) {
+      const double alpha = K * std::exp(-(r - q) * tau);
+      double b_new = alpha * N / D;
+      if (b_new > xmax) {
+        b_new = xmax;
+      }
+      if (!(b_new > 0.0)) {
+        b_new = 1.0e-6 * K;
+      }
+      R = y[i] - y_from_b(b_new, xmax);
+    }
+    R_out[i] = R;
+  }
+}
+
+// P3-pre (WS-P) seam — Christianson reverse-accumulation-through-iterations. The
+// three primitives the adjoint-greeks kernel taps to differentiate through the
+// BUDGET-LIMITED solve so the AAD greek matches the actual mark derivative on the
+// whole domain (not just the well-converged fixed-point subset). See the header for
+// the Christianson (1994) citation and the mark-consistency rationale.
+
+AlSolveStatus al_solve_put_boundary_tape(double K, double T, double sigma, double r, double q,
+                                         const AlScheme &sch, AlBoundary &bnd, AlWorkspace &ws,
+                                         AlSolveTape &tape) noexcept {
+  tape.n_steps = 0;
+  if (static_cast<int>(sch.n_iter_jn) + static_cast<int>(sch.n_iter_fp) > kAlMaxTapeSweeps) {
+    return AlSolveStatus::TableMissing; // budget exceeds tape capacity — caller falls back to fd
+  }
+  al_init_nodes(bnd, sch.n_boundary, T, K, r, q);
+  if (!(bnd.xmax > 0.0)) {
+    return AlSolveStatus::Collapsed;
+  }
+  const detail::GaussLegendre *fp = gl_find(sch.n_quad_fp);
+  const detail::GaussLegendre *pr = gl_find(sch.n_quad_price);
+  if (!fp || !fp->ok || !pr || !pr->ok) {
+    return AlSolveStatus::TableMissing;
+  }
+  // GENERIC (inline-geometry) kernel — specialize=false — so every taped sweep uses
+  // the SAME map al_apply_boundary_sweep replays for the Christianson tangent (the
+  // tangent MUST differentiate exactly the map that produced each taped iterate). This
+  // boundary agrees with production al_solve_put_boundary (specialized) only to the
+  // pure-hoist tolerance (~1e-9 in the delta/price tests), NOT bit-identically, so it is
+  // NOT reused as a served mark — the adjoint kernel serves its own AL price.
+  ws.specialize = false;
+  ws.qx_fp = fp->nodes.data();
+  ws.qw_fp = fp->weights.data();
+  ws.n_quad_fp = sch.n_quad_fp;
+  ws.qx_price = pr->nodes.data();
+  ws.qw_price = pr->weights.data();
+  ws.n_quad_price = sch.n_quad_price;
+  if (sch.seed == detail::AlSeedMode::QdPlus) {
+    al_seed_boundary_qdplus(bnd, sigma, r, q);
+  } else {
+    al_seed_boundary(bnd, sigma, r, q);
+  }
+  for (std::uint16_t i = 0; i < bnd.n; ++i) {
+    tape.y_iter[0][i] = bnd.y[i]; // y^0 = seed
+  }
+  std::uint16_t step = 0;
+  double resid = 1.0;
+  for (std::uint16_t k = 0; k < sch.n_iter_jn; ++k) {
+    resid = al_jacobi_newton_sweep(bnd, ws, sigma, r, q);
+    tape.is_jn[step] = true;
+    for (std::uint16_t i = 0; i < bnd.n; ++i) {
+      tape.y_iter[step + 1][i] = bnd.y[i];
+    }
+    ++step;
+    if (resid <= sch.tol) {
+      ATX_VOL_COUNT(EarlyResidualExits);
+      break;
+    }
+  }
+  if (resid > sch.tol) {
+    for (std::uint16_t k = 0; k < sch.n_iter_fp; ++k) {
+      resid = al_fixed_point_sweep(bnd, ws, sigma, r, q);
+      tape.is_jn[step] = false;
+      for (std::uint16_t i = 0; i < bnd.n; ++i) {
+        tape.y_iter[step + 1][i] = bnd.y[i];
+      }
+      ++step;
+      if (resid <= sch.tol) {
+        ATX_VOL_COUNT(EarlyResidualExits);
+        break;
+      }
+    }
+  }
+  tape.n_steps = step;
+  return AlSolveStatus::Ok;
+}
+
+void al_apply_boundary_sweep(const AlBoundary &bnd, const AlWorkspace &ws, const double *y_in,
+                             double sigma, double r, double q, bool is_jn,
+                             double *y_out) noexcept {
+  AlBoundary scr = bnd; // node grid / xmax / K / T / z / wbary / tau fixed; only .y varies
+  for (std::uint16_t i = 0; i < bnd.n; ++i) {
+    scr.y[i] = y_in[i];
+  }
+  AlWorkspace scr_ws;          // fresh scratch — generic kernel reads only the quad pointers
+  scr_ws.specialize = false;   // force eqn_b_ND_impl<0,0> (inline geometry; no geo_* rebind)
+  scr_ws.qx_fp = ws.qx_fp;
+  scr_ws.qw_fp = ws.qw_fp;
+  scr_ws.n_quad_fp = ws.n_quad_fp;
+  if (is_jn) {
+    (void)al_jacobi_newton_sweep(scr, scr_ws, sigma, r, q);
+  } else {
+    (void)al_fixed_point_sweep(scr, scr_ws, sigma, r, q);
+  }
+  for (std::uint16_t i = 0; i < bnd.n; ++i) {
+    y_out[i] = scr.y[i];
+  }
+}
+
+void al_seed_boundary_into(const AlBoundary &bnd, double sigma, double r, double q,
+                           double *y_out) noexcept {
+  AlBoundary scr = bnd;
+  al_seed_boundary(scr, sigma, r, q);
+  for (std::uint16_t i = 0; i < bnd.n; ++i) {
+    y_out[i] = scr.y[i];
+  }
+}
+
 } // namespace amer
 
 namespace { // reopen the file's anonymous namespace

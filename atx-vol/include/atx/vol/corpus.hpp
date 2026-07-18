@@ -45,7 +45,7 @@
 #include "atx/vol/fit_policy.hpp"      // FitDecisionSource, FitPreset, ProfileKind
 #include "atx/vol/market_env.hpp"      // MarketEnv
 #include "atx/vol/pricer_fitter.hpp"   // PricerConfig
-#include "atx/vol/surface_archive.hpp" // SurfaceArchiveWriteOpts
+#include "atx/vol/surface_archive.hpp" // ArchiveV2WriteOpts
 #include "atx/vol/types.hpp"           // Result, Status, ErrorCode
 #include "atx/vol/vol_curve.hpp"       // VolCurveKind
 
@@ -306,8 +306,8 @@ struct CorpusConfig {
   // Worker count for the ACROSS-board fan-out. 0 => hardware_concurrency (>= 1),
   // clamped to the board count.
   unsigned n_threads{0};
-  // Options forwarded verbatim to every per-date archive write.
-  SurfaceArchiveWriteOpts write_opts{};
+  // Options forwarded verbatim to every per-date archive write (ATXVSA2, S4).
+  ArchiveV2WriteOpts write_opts{};
 };
 
 struct QualifiedCorpusConfig {

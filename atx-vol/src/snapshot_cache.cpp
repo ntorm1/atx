@@ -4,19 +4,23 @@
 #include <atomic>
 #include <cassert>
 #include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <future>
 #include <iterator>
 #include <list>
+#include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
-#include "atx/vol/surface_archive.hpp" // ArchiveHeader / ArchiveContentIdentity (R-19 identity)
+#include "atx/vol/surface_archive.hpp" // ArchiveV2Header / ArchiveContentIdentity (R-19 identity)
 
 namespace atx::vol {
 
@@ -59,40 +63,50 @@ struct SnapshotCacheKeyHash {
   return false;
 }
 
-[[nodiscard]] SnapshotResult load_snapshot(std::string path, QueryPricingTier query_pricing_tier) {
-  ATX_TRY(MarketSnapshot snapshot, MarketSnapshot::load(path, query_pricing_tier));
+using UidSubset = std::shared_ptr<const std::vector<std::uint32_t>>;
+
+[[nodiscard]] SnapshotResult load_snapshot(std::string path, QueryPricingTier query_pricing_tier,
+                                           const UidSubset &referenced_uids) {
+  const std::span<const std::uint32_t> subset =
+      referenced_uids ? std::span<const std::uint32_t>{*referenced_uids}
+                      : std::span<const std::uint32_t>{};
+  ATX_TRY(MarketSnapshot snapshot, MarketSnapshot::load(path, query_pricing_tier, subset));
   return std::make_shared<const MarketSnapshot>(std::move(snapshot));
 }
 
 [[nodiscard]] std::shared_future<SnapshotResult> start_load(const std::string &path,
-                                                            QueryPricingTier query_pricing_tier) {
+                                                            QueryPricingTier query_pricing_tier,
+                                                            UidSubset referenced_uids) {
   return std::async(std::launch::async,
-                    [path, query_pricing_tier] { return load_snapshot(path, query_pricing_tier); })
+                    [path, query_pricing_tier, referenced_uids = std::move(referenced_uids)] {
+                      return load_snapshot(path, query_pricing_tier, referenced_uids);
+                    })
       .share();
 }
 
 // R-19 (F6): the current content identity of the archive at `path`, read from its
-// 464-byte header only. Any successful read produces a non-zero, byte-content-
+// 256-byte v2 header only. Any successful read produces a non-zero, byte-content-
 // sensitive identity (see `ArchiveContentIdentity`); an unreadable / not-yet-an-
 // archive file yields the default (all-zero) identity so the actual load surfaces
 // the real error while the cache still keys deterministically. Called BEFORE the
 // cache mutex so the small header read never serializes other cache operations.
+// S4 clean break: partitions are ATXVSA2 (magic "ATXVSA20"); v1 is gone.
 [[nodiscard]] ArchiveContentIdentity current_identity(const std::string &path) {
   std::ifstream in{path, std::ios::binary};
   if (!in) {
     return {};
   }
-  ArchiveHeader header{};
+  ArchiveV2Header header{};
   in.read(reinterpret_cast<char *>(&header), sizeof(header));
   if (in.gcount() != static_cast<std::streamsize>(sizeof(header))) {
     return {}; // shorter than a header — not a valid archive (yet)
   }
-  static constexpr char kMagic[8] = {'A', 'T', 'X', 'V', 'S', 'A', '0', '3'};
+  static constexpr char kMagic[8] = {'A', 'T', 'X', 'V', 'S', 'A', '2', '0'};
   if (std::memcmp(header.magic, kMagic, sizeof(kMagic)) != 0 ||
-      header.header_size != sizeof(ArchiveHeader)) {
-    return {}; // not an ATXVSA v3 archive; identity is unknown
+      header.header_size != sizeof(ArchiveV2Header)) {
+    return {}; // not an ATXVSA2 archive; identity is unknown
   }
-  return archive_identity_from_header(header);
+  return archive_v2_identity_from_header(header);
 }
 
 } // namespace
@@ -109,8 +123,9 @@ struct SnapshotCache::Impl {
     ArchiveContentIdentity identity{};
   };
 
-  explicit Impl(std::optional<std::size_t> max_entries_in = std::nullopt)
-      : max_entries{max_entries_in} {}
+  explicit Impl(std::optional<std::size_t> max_entries_in = std::nullopt,
+                UidSubset referenced_uids_in = nullptr)
+      : max_entries{max_entries_in}, referenced_uids{std::move(referenced_uids_in)} {}
 
   using EntryMap = std::unordered_map<SnapshotCacheKey, Entry, SnapshotCacheKeyHash>;
 
@@ -175,6 +190,10 @@ struct SnapshotCache::Impl {
   EntryMap entries;
   std::list<SnapshotCacheKey> recency; // least-recently-used at front
   std::optional<std::size_t> max_entries;
+  // B1: the book's referenced uids applied to every deserialize through this cache
+  // (empty/null => whole board). Immutable after construction; captured by the async
+  // loader, so held by shared_ptr to avoid per-load copies.
+  UidSubset referenced_uids;
   std::uint64_t next_generation{1u};
   std::atomic<std::uint64_t> loads{0};
   std::atomic<std::uint64_t> hits{0};
@@ -189,6 +208,13 @@ struct SnapshotCache::Impl {
 SnapshotCache::SnapshotCache() : impl_{std::make_shared<Impl>()} {}
 SnapshotCache::SnapshotCache(std::size_t max_retained_entries)
     : impl_{std::make_shared<Impl>(std::max<std::size_t>(1u, max_retained_entries))} {}
+SnapshotCache::SnapshotCache(std::size_t max_retained_entries,
+                             std::vector<std::uint32_t> referenced_uids)
+    : impl_{std::make_shared<Impl>(
+          std::max<std::size_t>(1u, max_retained_entries),
+          referenced_uids.empty()
+              ? nullptr
+              : std::make_shared<const std::vector<std::uint32_t>>(std::move(referenced_uids)))} {}
 SnapshotCache::~SnapshotCache() = default;
 
 void SnapshotCache::prefetch(std::string archive_path, QueryPricingTier query_pricing_tier) {
@@ -227,8 +253,10 @@ Status SnapshotCache::prefetch(std::string archive_path, QueryPricingTier query_
   impl_->recency.push_back(effective_key);
   const auto recency = std::prev(impl_->recency.end());
   impl_->entries.emplace(
-      effective_key, Impl::Entry{start_load(effective_key.path, effective_key.query_pricing_tier),
-                                 recency, 0u, impl_->next_generation++, identity});
+      effective_key,
+      Impl::Entry{start_load(effective_key.path, effective_key.query_pricing_tier,
+                             impl_->referenced_uids),
+                  recency, 0u, impl_->next_generation++, identity});
   if (is_fast_tier(effective_key.query_pricing_tier)) {
     impl_->fast_build_loads.fetch_add(1u, std::memory_order_relaxed);
   }
@@ -276,7 +304,8 @@ Result<SnapshotPtr> SnapshotCache::load(std::string_view archive_path,
       impl_->touch(found);
     } else {
       impl_->loads.fetch_add(1u, std::memory_order_relaxed);
-      future = start_load(effective_key.path, effective_key.query_pricing_tier);
+      future = start_load(effective_key.path, effective_key.query_pricing_tier,
+                          impl_->referenced_uids);
       impl_->recency.push_back(effective_key);
       const auto recency = std::prev(impl_->recency.end());
       generation = impl_->next_generation++;

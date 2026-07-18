@@ -30,7 +30,7 @@
 namespace {
 
 using atx::vol::arb_check_calendar;
-using atx::vol::SurfaceArchive;
+using atx::vol::SurfaceArchiveV2;
 
 }  // namespace
 
@@ -41,9 +41,9 @@ TEST(CurveSurfaceNoArb, SpyDenseIsCalendarArbFree) {
                     "opra_dbn_to_parquet to materialise the fixture.";
   }
 
-  auto arch = SurfaceArchive::open_file(archive_path.string());
+  auto arch = SurfaceArchiveV2::open_file(archive_path.string());
   ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
-  auto recon = arch->map_symbol("SPY");
+  auto recon = arch->reconstruct_symbol("SPY");
   ASSERT_TRUE(recon.has_value()) << recon.error().to_string();
 
   auto viol = arb_check_calendar(recon->surface(), -0.6, 0.6, 64);

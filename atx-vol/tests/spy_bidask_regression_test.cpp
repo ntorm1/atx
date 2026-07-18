@@ -58,9 +58,9 @@ TEST(SpyBidAskRegression, ConvexDenseServedViaSessionInBand) {
     GTEST_SKIP() << "SPY OPRA parquet fixture not found";
   }
 
-  auto arch = SurfaceArchive::open_file(archive_path.string());
+  auto arch = SurfaceArchiveV2::open_file(archive_path.string());
   ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
-  auto recon = arch->map_symbol("SPY");
+  auto recon = arch->reconstruct_symbol("SPY");
   ASSERT_TRUE(recon.has_value()) << recon.error().to_string();
 
   const auto sc = price_in_band(*recon, board->underlying(), board->spot(), board->r);
