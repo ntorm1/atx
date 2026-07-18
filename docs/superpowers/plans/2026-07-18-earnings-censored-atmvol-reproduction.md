@@ -58,7 +58,8 @@ term-structure output uses censored-*space* interpolation.
   };
   struct SrTenorGrid;               // Task 2
   struct EarningsFitConfig {
-    double clock_days_per_year{365.25};
+    std::span<const double> tenor_T{};  // 12 SR tenor year-fractions (precomputed via tenor_years,
+                                        // Task 2) for PARAMETRIC-model sampling of atm_cen (secondary).
     double emove_lo{0.0};
     double emove_hi{0.30};
     double wcen_floor{1e-10};        // reuse event_vol kWCenFloor semantics
@@ -137,44 +138,76 @@ git commit -m "feat(vol): earnings term-fit types + censored_atm_vol primitive"
 
 ---
 
-## Task 2: SpiderRock fixed tenor grid
+## Task 2: SpiderRock fixed tenor grid (TRADING days) + calendar-aware tenor→T
+
+**CORRECTION (data-recon):** the SpiderRock tenors are **TRADING days** (5,10,21,42,63,84,105,126,
+189,252,378,504 = 21/mo, 63/qtr, 252/yr), and `nEarnCnt_Nd` counts within an N-**trading-day**
+horizon. So a tenor's year-fraction is NOT `N/365.25`; it is `time_to_expiry_years(now, advance N
+NYSE trading days from now, convention)`. This task provides the grid + the calendar-aware converter.
 
 **Files:**
 - Create: `atx-vol/include/atx/vol/sr_tenor_grid.hpp`
+- Create: `atx-vol/src/sr_tenor_grid.cpp`
+- Modify: `atx-vol/CMakeLists.txt` (add `src/sr_tenor_grid.cpp` to the atx-vol lib sources)
 - Test: extend `atx-vol/tests/earnings_term_fit_test.cpp`
 
 **Interfaces:**
+- Consumes: `VolTimeCalendar` (`us_default`), `TimeSpec`, `time_to_expiry_years`, `kCalendarYearNs`
+  (all in `atx/vol/vol_time.hpp`).
 - Produces:
   ```cpp
   namespace atx::vol {
   struct SrTenorGrid {
-    // SpiderRock censored-term tenors, calendar days (matches tbltickerhistory columns).
-    static constexpr std::array<int, 12> kDays{5,10,21,42,63,84,105,126,189,252,378,504};
-    // year-fraction of tenor i under a given clock day-count basis.
-    [[nodiscard]] static constexpr double years(std::size_t i, double days_per_year) noexcept
-    { return static_cast<double>(kDays[i]) / days_per_year; }
+    // SpiderRock censored-term tenors, TRADING days (matches tbltickerhistory columns/nEarnCnt).
+    static constexpr std::array<int, 12> kTradingDays{5,10,21,42,63,84,105,126,189,252,378,504};
   };
+  // advance n NYSE trading days (skip weekends + cal holidays) from now_ns; n>=0.
+  [[nodiscard]] std::int64_t advance_trading_days(std::int64_t now_ns, int n,
+                                                  const VolTimeCalendar& cal) noexcept;
+  // year-fraction of a tenor: advance n trading days, then apply the time convention.
+  [[nodiscard]] double tenor_years(std::int64_t now_ns, int n_trading_days,
+                                   const TimeSpec& spec) noexcept; // uses VolTimeCalendar::us_default()
   }
   ```
 
 - [ ] **Step 1: Write the failing test**
 ```cpp
 #include "atx/vol/sr_tenor_grid.hpp"
-TEST(SrTenorGrid_Days_MatchTickerHistoryColumns) {
-  EXPECT_EQ(SrTenorGrid::kDays.front(), 5);
-  EXPECT_EQ(SrTenorGrid::kDays.back(), 504);
-  EXPECT_EQ(SrTenorGrid::kDays.size(), 12u);
-  EXPECT_NEAR(SrTenorGrid::years(0, 365.25), 5.0/365.25, 1e-15);
+#include "atx/vol/vol_time.hpp"
+TEST(SrTenorGrid_TradingDays_MatchTickerHistoryColumns) {
+  EXPECT_EQ(SrTenorGrid::kTradingDays.front(), 5);
+  EXPECT_EQ(SrTenorGrid::kTradingDays.back(), 504);
+  EXPECT_EQ(SrTenorGrid::kTradingDays.size(), 12u);
+}
+TEST(SrTenorGrid_AdvanceTradingDays_SkipsWeekend) {
+  // Fri 2026-02-13 16:00 UTC + 1 trading day -> Tue 2026-02-17 (Mon 02-16 Presidents Day holiday).
+  const std::int64_t fri = 1770998400000000000LL; // 2026-02-13T16:00:00Z (verify exact ns in impl)
+  const auto& cal = VolTimeCalendar::us_default();
+  const std::int64_t nxt = advance_trading_days(fri, 1, cal);
+  // 2026-02-16 is a NYSE holiday; next trading day is 2026-02-17.
+  EXPECT_GT(nxt, fri);
+}
+TEST(SrTenorGrid_TenorYears_252TdApproxOneYear) {
+  const std::int64_t now = 1770998400000000000LL; // some instant
+  const double y = tenor_years(now, 252, TimeSpec{}); // Calendar365 default
+  EXPECT_GT(y, 0.95);
+  EXPECT_LT(y, 1.05);
 }
 ```
 
-- [ ] **Step 2: Run to verify fail** — Run: `powershell scripts\atx-build.ps1 build atx-vol-tests` (header missing).
-- [ ] **Step 3: Write header** (the struct above; `#include <array>`, `#include <cstddef>`).
-- [ ] **Step 4: Run to verify pass** — `powershell scripts\atx-build.ps1 -Ctest -R SrTenorGrid_Days`.
+- [ ] **Step 2: Run to verify fail** — `powershell scripts\atx-build.ps1 build atx-vol-tests` (symbols missing).
+- [ ] **Step 3: Write header + impl.** `advance_trading_days`: from `now_ns`, step one civil day at a
+  time (via `kCalendarYearNs`-free day math — reuse `days_from_civil`/`civil_from_days` in vol_time),
+  skipping Saturdays/Sundays and `cal.is_holiday(day)`, decrementing `n` on each trading day, until
+  `n` reaches 0; keep the intraday time-of-day of `now_ns`. `tenor_years`: `time_to_expiry_years(now,
+  advance_trading_days(now, n, VolTimeCalendar::us_default()), spec)`. Bound the loop (`n` trading
+  days ⇒ ≤ `2*n + 20` civil steps; assert the bound). Add `src/sr_tenor_grid.cpp` to the lib.
+- [ ] **Step 4: Run to verify pass** — `powershell scripts\atx-build.ps1 -Ctest -R SrTenorGrid`.
 - [ ] **Step 5: Commit**
 ```bash
-git add atx-vol/include/atx/vol/sr_tenor_grid.hpp atx-vol/tests/earnings_term_fit_test.cpp
-git commit -m "feat(vol): SpiderRock fixed tenor grid (5d..504d)"
+git add atx-vol/include/atx/vol/sr_tenor_grid.hpp atx-vol/src/sr_tenor_grid.cpp \
+        atx-vol/tests/earnings_term_fit_test.cpp atx-vol/CMakeLists.txt
+git commit -m "feat(vol): SpiderRock trading-day tenor grid + calendar-aware tenor->T converter"
 ```
 
 ---
@@ -254,8 +287,12 @@ git commit -m "feat(vol): censored term-curve fit lt+(st-lt)exp(-decay*T) via de
   Behavior: outer 1D minimization of `fit_term_curve_for_emove(...).rms_resid` over
   `emove ∈ [cfg.emove_lo, cfg.emove_hi]` (golden-section, `cfg.max_iters` cap); at the optimum,
   populate `{emove, st, lt, decay, fit_error, expiry_count}` and sample
-  `atm_cen[i] = term_curve_value(curve, SrTenorGrid::years(i, cfg.clock_days_per_year))` for the
-  12 grid tenors. `fit_code`: `LeftBound`/`RightBound` if the optimum sits on a bound, `MaxSteps`
+  `atm_cen[i] = term_curve_value(curve, cfg.tenor_T[i])` for the 12 grid tenors when `cfg.tenor_T`
+  is provided (empty ⇒ `atm_cen` empty). **NOTE (data-recon):** this `atm_cen` is the PARAMETRIC-
+  model read = a SECONDARY summary. The PRIMARY `atmCenI_Nd` reproduction target is the RAW
+  censored-space interpolation produced in Tasks 7/8 (censor listed-expiry ATM variance with this
+  `emove`, interpolate censored total variance to each tenor's T, `atmCenI=sqrt(w_cen(T)/T)`).
+  `fit_code`: `LeftBound`/`RightBound` if the optimum sits on a bound, `MaxSteps`
   if the cap hit, `CenterFlat` if the objective is ~flat in emove (event-underidentified — e.g.
   all `n` equal), else `Minimum`. `Err(InvalidArgument)` if `obs.size() < 2`, any non-finite/
   non-positive `T`/`w_dirty`, or all `n==0` (no event to identify — caller wants the ex-event
@@ -274,14 +311,18 @@ TEST(EarningsTermFit_FitEarningsTerm_RecoversEmoveAndCurve) {
     const double w  = sc*sc*p.T + double(p.n)*e*e;      // dirty = censored + event
     obs.push_back({p.T, w, p.n});
   }
-  EarningsFitConfig cfg{};
+  // 12 tenor year-fractions (calendar-approx here; the tool uses tenor_years from Task 2).
+  std::array<double,12> tt{};
+  const std::array<int,12> td{5,10,21,42,63,84,105,126,189,252,378,504};
+  for (std::size_t i=0;i<12;++i) tt[i] = td[i]/252.0;   // trading-day basis
+  EarningsFitConfig cfg{}; cfg.tenor_T = tt;
   auto r = fit_earnings_term(obs, cfg);
   ASSERT_TRUE(r.has_value());
   EXPECT_NEAR(r->emove, e, 2e-3);
   EXPECT_NEAR(r->st, st, 3e-3);
   EXPECT_NEAR(r->lt, lt, 3e-3);
   EXPECT_EQ(r->atm_cen.size(), 12u);
-  EXPECT_NEAR(r->atm_cen[0], lt+(st-lt)*std::exp(-decay*(5.0/365.25)), 3e-3); // 5d
+  EXPECT_NEAR(r->atm_cen[0], lt+(st-lt)*std::exp(-decay*tt[0]), 3e-3); // 5d parametric read
 }
 
 TEST(EarningsTermFit_FitEarningsTerm_AllZeroEvents_EmoveZero) {

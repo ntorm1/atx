@@ -21,10 +21,15 @@ honestly where a knob (snapshot instant, exact pricer) caps achievable match.
 - Censor: σ_C(T) = sqrt((σ_T²·T − n·σ_E²)/T). Re-add: σ_T² = (σ_C²·T + n·σ_E²)/T.
 - **iEMove objective** (vendor): jointly minimize deviation of censored ATM expiry points from a
   **smooth term-curve model** over all fittable expiries → this IS the st/lt/decay fit.
-- **st/lt/decay** parametric censored term curve (form inferred, standard):
-      atmCen_model(T) = lt + (st − lt)·exp(−decay·T)
-  st = 5d anchor, lt = 504d anchor, decay = model decay param.
-- atmCenI_{Nd} = censored ATM vol at fixed CALENDAR-day tenor N (raw-interp vs parametric read = knob).
+- **st/lt/decay** parametric censored term curve (form inferred, standard) — a SEPARATE smooth
+  SUMMARY fit: atmCen_model(T) = lt + (st − lt)·exp(−decay·T); st=short anchor, lt=long anchor.
+- **atmCenI_{Nd} = RAW censored-space interpolation** of ATM total variance at fixed tenor N —
+  NOT the parametric-model read (verified: NVDA model@21d≈.372 vs atmCenI_21d=.395). This is the
+  PRIMARY <0.2-vol-pt target (produced by S2 censored interp + S3 tenor grid); {st,lt,decay} is a
+  secondary summary. Reproduce both.
+- **Tenor N and nEarnCnt_Nd are in TRADING DAYS** (21/mo, 63/qtr, 252/yr). Convert tenor N→T by
+  advancing N NYSE trading days from `now` (VolTimeCalendar) then applying the time convention;
+  count earnings within N trading days for nEarnCnt.
 - ATM = **forward-ATM** (strike where call≈put) with **implied sdiv/borrow**; American IV
   (vendor CRR + Vellekoop-Nieuwenhuis discrete-div splicing), European-equivalent lognormal report.
 - Clock: SpiderRock VolTimeCalc, α=0.7, 1890 trading h/yr, 6870 non-trading; earnings get NO
