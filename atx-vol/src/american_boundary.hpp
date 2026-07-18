@@ -173,4 +173,54 @@ void al_put_boundary_residual(const AlBoundary& bnd, const AlWorkspace& ws,
                               const double* y, double sigma, double r, double q,
                               double* R_out) noexcept;
 
+// ── P3-pre (WS-P) seam: reverse-accumulation-through-iterations (Christianson) ──
+//
+// The IFT-adjoint (P2) differentiates the EXACT fixed point y_fp(θ); the production
+// Andersen-Lake solve is BUDGET-LIMITED (2 JN + 4 FP, early-exit at tol) so it
+// returns an under-converged y*(θ) ≠ y_fp and its mark is price(y*;θ). fd/al
+// differentiate that ACTUAL mark (dy*/dθ); the IFT does not, so it is mark-consistent
+// only on the well-converged subset (~14% of a realistic grid — measured). To match
+// the budget-limited mark on the WHOLE domain we differentiate THROUGH THE ITERATION
+// ACTUALLY RUN — Christianson, "Reverse accumulation and attractive fixed points"
+// (Optimization Methods & Software 3 (1994) 311–326): tape the iterate sequence
+// (seed y⁰, y¹=G₁(y⁰;θ), …, yᴺ=Gₙ(yᴺ⁻¹;θ)) and propagate the tangent through it.
+// These three primitives expose exactly what the adjoint TU needs to tape + replay.
+
+// Max sweeps the tape can hold (ACCURATE preset is 2 JN + 4 FP = 6). A scheme whose
+// n_iter_jn + n_iter_fp exceeds this makes al_solve_put_boundary_tape return
+// TableMissing so the adjoint caller falls back to the FD bundle.
+inline constexpr std::uint16_t kAlMaxTapeSweeps = 16;
+
+// Records the seed + every swept iterate + the sweep kind (JN vs FP) at each step
+// (after the actual early-exit budget). y_iter[0] = seed; y_iter[k] = boundary after
+// sweep k for k = 1..n_steps. Stack-bounded (mirrors AlBoundary::y sizing).
+struct AlSolveTape {
+  std::uint16_t n_steps = 0;
+  std::array<bool, kAlMaxTapeSweeps> is_jn{};
+  std::array<std::array<double, kAlMaxNodes>, kAlMaxTapeSweeps + 1> y_iter{};
+};
+
+// Numerically IDENTICAL to al_solve_put_boundary (same seed, same specialized JN/FP
+// sweeps, same tol early-exit) — the final bnd/ws are bit-identical, so the mark is
+// unchanged — but ALSO records `tape`. Collapsed/TableMissing exactly as the base
+// solve (plus TableMissing if the budget exceeds kAlMaxTapeSweeps).
+[[nodiscard]] AlSolveStatus al_solve_put_boundary_tape(double K, double T, double sigma, double r,
+                                                       double q, const AlScheme& sch,
+                                                       AlBoundary& bnd, AlWorkspace& ws,
+                                                       AlSolveTape& tape) noexcept;
+
+// Apply ONE boundary sweep (Jacobi-Newton if is_jn, else fixed-point) of the GENERIC
+// inline-geometry kernel to y_in at (sigma,r,q), writing the swept boundary to y_out.
+// Pure: does not mutate bnd/ws. The generic kernel recomputes geometry inline, so a
+// PERTURBED sigma/r needs no geometry rebind; at the unperturbed inputs it reproduces
+// the specialized production sweep bit-identically (the geo precompute is a pure
+// hoist). This is Gₖ(·;θ) for the Christianson tangent's directional differences.
+void al_apply_boundary_sweep(const AlBoundary& bnd, const AlWorkspace& ws, const double* y_in,
+                             double sigma, double r, double q, bool is_jn, double* y_out) noexcept;
+
+// The cold Barone-Adesi-Whaley boundary seed (al_seed_boundary) written to y_out
+// WITHOUT mutating bnd — the tape's y⁰ and the source of the seed tangent ∂y⁰/∂θ.
+void al_seed_boundary_into(const AlBoundary& bnd, double sigma, double r, double q,
+                           double* y_out) noexcept;
+
 }  // namespace atx::vol::amer
