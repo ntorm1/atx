@@ -28,7 +28,6 @@
 
 #include "iv_batch_avx2.hpp"
 
-#include "atx/vol/detail/norm_cdf_cheb.hpp"
 #include "atx/vol/detail/vector_math.hpp"
 #include "atx/vol/implied_vol.hpp"
 
@@ -38,107 +37,156 @@
 
 namespace atx::vol::simd::detail {
 
-// Pull in the shared 4-lane transcendentals (log_pd/exp_pd/norm_cdf_pd2/
-// norm_pdf_pd), the Chebyshev table, and kNormCdfWing — all in atx::vol::detail.
+// Pull in the shared 4-lane transcendentals (log_pd/exp_pd/norm_cdf_erfc_pd2/
+// norm_pdf_pd) — all in atx::vol::detail.
 using namespace atx::vol::detail;
 
 namespace {
 
-// High-precision π (matches the scalar seed's Polya factor 2/π to the last ULP).
-constexpr double kPi = 3.141592653589793238462643383279502884;
-constexpr double kTwoOverPi = 2.0 / kPi;
-constexpr double kOneMinusKp = 1.0 - kTwoOverPi;
+// Accept threshold for the FUSED probe residual (K3). The batch runs 3 Halley
+// steps and folds the accept-gate Φ/φ evaluation into the LAST step, so the gate
+// residual is evaluated at the σ BEFORE that step — one step stale (larger than
+// the emitted σ's residual). A well-conditioned accepted lane (vega ≥ the ill-cond
+// floor — low-vega / short-dated lanes are already routed to scalar) whose
+// pre-step residual is below this is driven to machine precision by the final
+// step, so the emitted σ tracks the scalar inverter far inside the 1e-8 parity
+// bound the simd_iv suite asserts. A converged interior lane sits orders below it;
+// a lane above it is genuinely non-converged (seed pathology / near-arb edge).
+constexpr double kIvProbeResidTol = 1.0e-4;
 
-// Accept a lane's vector σ only if its Halley residual (computed with Cheb-Φ)
-// falls under this. Cheb-Φ has ~1e-11 uniform absolute error, so a converged
-// interior lane sits far below 1e-6; a lane that stays above it is genuinely
-// non-converged (seed pathology / near-arb edge) and patches to scalar.
-constexpr double kIvResidTol = 1.0e-6;
+// Conditioning gate. σ-parity to scalar ≈ (Φ price bias)/vega, with the price
+// bias ≈ εΦ·(F+K)·df. K3: Φ is now the full-range Cody rational-erfc (εΦ ≈ 1e-16,
+// machine), NOT the old degree-48 Chebyshev (εΦ ≈ few·1e-11), so requiring
+// vega ≥ coef·(F+K)·df keeps σ-parity ≲ εΦ/coef ≈ 1e-16/coef — orders below the
+// 1e-8 suite bound for any coef ≳ 1e-8. The floor's job is therefore now purely
+// numerical-stability: guard the Halley step's 1/vega² against near-zero-vega
+// (deep-wing / near-expiry) lanes, which patch to the exact scalar inverter. The
+// old 0.05 (sized for the Chebyshev bias) needlessly patched entire short-dated
+// ATM columns whose σ the vector path now recovers to machine precision (e.g.
+// T = 1/365 ATM vega ≈ 0.021·F < 0.05·(F+K)·df). 0.005 keeps ~2e-14 σ-parity
+// headroom while returning those lanes to the vector path (K3 patch-rate cut).
+constexpr double kIvVegaFloorCoef = 0.005;
 
-// Conditioning gate. σ-parity to scalar ≈ (Cheb-Φ price bias)/vega, with the
-// price bias ≈ εΦ·(F+K)·df and εΦ ≈ few·1e-11. Requiring vega ≥ coef·(F+K)·df
-// keeps that ratio ≲ εΦ/coef ≈ 1e-9 for accepted lanes (F cancels, so the gate
-// is forward-scale invariant); lower-vega lanes patch to scalar. coef = 0.05
-// leaves ~10× headroom under the round-trip tolerance.
-constexpr double kIvVegaFloorCoef = 0.05;
+// Peter J. Acklam's rational inverse-normal CDF Φ⁻¹(p), 4-lane. Central rational
+// body + both symmetric tails, selected branchlessly (all three computed, blended
+// by p). Relative error < 1.15e-9 — far more than a seed needs. Vector sibling of
+// implied_vol.cpp::norm_ppf. Primary source: P. J. Acklam, "An algorithm for
+// computing the inverse normal cumulative distribution function" (2003).
+ATX_FORCE_INLINE __m256d norm_ppf_pd(__m256d p) noexcept {
+  const __m256d one = _mm256_set1_pd(1.0);
+  const __m256d a0 = _mm256_set1_pd(-3.969683028665376e+01);
+  const __m256d a1 = _mm256_set1_pd(2.209460984245205e+02);
+  const __m256d a2 = _mm256_set1_pd(-2.759285104469687e+02);
+  const __m256d a3 = _mm256_set1_pd(1.383577518672690e+02);
+  const __m256d a4 = _mm256_set1_pd(-3.066479806614716e+01);
+  const __m256d a5 = _mm256_set1_pd(2.506628277459239e+00);
+  const __m256d b0 = _mm256_set1_pd(-5.447609879822406e+01);
+  const __m256d b1 = _mm256_set1_pd(1.615858368580409e+02);
+  const __m256d b2 = _mm256_set1_pd(-1.556989798598866e+02);
+  const __m256d b3 = _mm256_set1_pd(6.680131188771972e+01);
+  const __m256d b4 = _mm256_set1_pd(-1.328068155288572e+01);
+  const __m256d c0 = _mm256_set1_pd(-7.784894002430293e-03);
+  const __m256d c1 = _mm256_set1_pd(-3.223964580411365e-01);
+  const __m256d c2 = _mm256_set1_pd(-2.400758277161838e+00);
+  const __m256d c3 = _mm256_set1_pd(-2.549732539343734e+00);
+  const __m256d c4 = _mm256_set1_pd(4.374664141464968e+00);
+  const __m256d c5 = _mm256_set1_pd(2.938163982698783e+00);
+  const __m256d d0 = _mm256_set1_pd(7.784695709041462e-03);
+  const __m256d d1 = _mm256_set1_pd(3.224671290700398e-01);
+  const __m256d d2 = _mm256_set1_pd(2.445134137142996e+00);
+  const __m256d d3 = _mm256_set1_pd(3.754408661907416e+00);
 
-// Vectorized SR-2017 closed-form IV seed. Returns σ clamped to [kIvMin, kIvMax];
-// `valid` receives an all-ones lane where the closed form is well posed. See
-// implied_vol.cpp::seed_sr2017_core for the scalar reference and derivation.
-ATX_FORCE_INLINE __m256d sr2017_seed_pd(__m256d price, __m256d F, __m256d K, __m256d T, __m256d df,
-                                        __m256d eps, __m256d &valid) noexcept {
+  // Central body: q = p − 0.5, r = q².
+  const __m256d q = _mm256_sub_pd(p, _mm256_set1_pd(0.5));
+  const __m256d r = _mm256_mul_pd(q, q);
+  __m256d cnum = a0;
+  cnum = _mm256_fmadd_pd(cnum, r, a1);
+  cnum = _mm256_fmadd_pd(cnum, r, a2);
+  cnum = _mm256_fmadd_pd(cnum, r, a3);
+  cnum = _mm256_fmadd_pd(cnum, r, a4);
+  cnum = _mm256_fmadd_pd(cnum, r, a5);
+  cnum = _mm256_mul_pd(cnum, q);
+  __m256d cden = b0;
+  cden = _mm256_fmadd_pd(cden, r, b1);
+  cden = _mm256_fmadd_pd(cden, r, b2);
+  cden = _mm256_fmadd_pd(cden, r, b3);
+  cden = _mm256_fmadd_pd(cden, r, b4);
+  cden = _mm256_fmadd_pd(cden, r, one);
+  const __m256d x_central = _mm256_div_pd(cnum, cden);
+
+  const __m256d neg2 = _mm256_set1_pd(-2.0);
+  // Lower tail (p < 0.02425): ql = √(−2 ln p).
+  const __m256d ql = _mm256_sqrt_pd(_mm256_mul_pd(neg2, log_pd(p)));
+  __m256d lnum = c0;
+  lnum = _mm256_fmadd_pd(lnum, ql, c1);
+  lnum = _mm256_fmadd_pd(lnum, ql, c2);
+  lnum = _mm256_fmadd_pd(lnum, ql, c3);
+  lnum = _mm256_fmadd_pd(lnum, ql, c4);
+  lnum = _mm256_fmadd_pd(lnum, ql, c5);
+  __m256d lden = d0;
+  lden = _mm256_fmadd_pd(lden, ql, d1);
+  lden = _mm256_fmadd_pd(lden, ql, d2);
+  lden = _mm256_fmadd_pd(lden, ql, d3);
+  lden = _mm256_fmadd_pd(lden, ql, one);
+  const __m256d x_lower = _mm256_div_pd(lnum, lden);
+
+  // Upper tail (p > 0.97575): qu = √(−2 ln(1−p)); x = −(rational).
+  const __m256d qu = _mm256_sqrt_pd(_mm256_mul_pd(neg2, log_pd(_mm256_sub_pd(one, p))));
+  __m256d unum = c0;
+  unum = _mm256_fmadd_pd(unum, qu, c1);
+  unum = _mm256_fmadd_pd(unum, qu, c2);
+  unum = _mm256_fmadd_pd(unum, qu, c3);
+  unum = _mm256_fmadd_pd(unum, qu, c4);
+  unum = _mm256_fmadd_pd(unum, qu, c5);
+  __m256d uden = d0;
+  uden = _mm256_fmadd_pd(uden, qu, d1);
+  uden = _mm256_fmadd_pd(uden, qu, d2);
+  uden = _mm256_fmadd_pd(uden, qu, d3);
+  uden = _mm256_fmadd_pd(uden, qu, one);
+  const __m256d x_upper = _mm256_sub_pd(_mm256_setzero_pd(), _mm256_div_pd(unum, uden));
+
+  __m256d x = x_central;
+  x = _mm256_blendv_pd(x, x_lower, _mm256_cmp_pd(p, _mm256_set1_pd(0.02425), _CMP_LT_OQ));
+  x = _mm256_blendv_pd(x, x_upper, _mm256_cmp_pd(p, _mm256_set1_pd(0.97575), _CMP_GT_OQ));
+  return x;
+}
+
+// Vectorized Choi-Kim-Kwak (2023) tighter LOWER bound L₃ IV seed (arXiv:2302.08758,
+// Cor. 5.2) — the vector sibling of implied_vol.cpp::seed_choi_l3, and the exact
+// same seed the scalar hot path now uses (K2). Exact ATM, tight in the wings, so
+// the Halley loop starts in the cubic basin. CHEAP: reuses the block's lnFK,
+// gets eᵏ = max/min by DIVISION (no libm exp — the old SR seed spent 4 vector
+// exp + 2 vector log here), so its only transcendental is the one rational-plus-
+// log Acklam probit. `valid` is set where the standardized time value c > 0 and
+// σ > 0; degenerate lanes fall through to the scalar patch (Choi→SR corner seed).
+ATX_FORCE_INLINE __m256d seed_choi_l3_pd(__m256d price, __m256d F, __m256d K, __m256d df,
+                                         __m256d is_put, __m256d lnFK, __m256d sqrtT,
+                                         __m256d &valid) noexcept {
   const __m256d zero = _mm256_setzero_pd();
   const __m256d one = _mm256_set1_pd(1.0);
-  const __m256d two = _mm256_set1_pd(2.0);
-  const __m256d four = _mm256_set1_pd(4.0);
-  const __m256d kp = _mm256_set1_pd(kTwoOverPi);
-  const __m256d one_m_kp = _mm256_set1_pd(kOneMinusKp);
+  const __m256d m = _mm256_min_pd(F, K);
+  const __m256d fwd_price = _mm256_div_pd(price, df);
+  const __m256d intr_call = _mm256_max_pd(_mm256_sub_pd(F, K), zero);
+  const __m256d intr_put = _mm256_max_pd(_mm256_sub_pd(K, F), zero);
+  const __m256d intr = _mm256_blendv_pd(intr_call, intr_put, is_put);
+  const __m256d c = _mm256_div_pd(_mm256_sub_pd(fwd_price, intr), m);
 
-  // Put-call parity flip ITM → OTM. ITM iff eps·(F − K) > 0.
-  const __m256d FmK = _mm256_sub_pd(F, K);
-  const __m256d itm = _mm256_cmp_pd(_mm256_mul_pd(eps, FmK), zero, _CMP_GT_OQ);
-  const __m256d delta = _mm256_mul_pd(df, FmK);
-  const __m256d adj = _mm256_blendv_pd(zero, _mm256_mul_pd(eps, delta), itm);
-  __m256d price_eff = _mm256_sub_pd(price, adj);
-  price_eff = _mm256_max_pd(price_eff, _mm256_set1_pd(1.0e-15));
-  const __m256d eps_eff = _mm256_blendv_pd(eps, _mm256_sub_pd(zero, eps), itm);
+  const __m256d k = _mm256_andnot_pd(_mm256_set1_pd(-0.0), lnFK); // |ln(F/K)|
+  const __m256d ek = _mm256_div_pd(_mm256_max_pd(F, K), m);       // eᵏ = max/min, no exp
+  const __m256d argnum = _mm256_mul_pd(c, _mm256_add_pd(c, ek));
+  const __m256d argden = _mm256_sub_pd(_mm256_add_pd(_mm256_add_pd(c, c), ek), one);
+  __m256d arg = _mm256_div_pd(argnum, argden);
+  // Φ⁻¹ needs an argument in (0,1); clamp the degenerate edges.
+  arg = _mm256_min_pd(_mm256_max_pd(arg, _mm256_set1_pd(1.0e-300)),
+                      _mm256_set1_pd(1.0 - 1.0e-16));
+  const __m256d x = norm_ppf_pd(arg);
+  // s = d₁⁻¹(x) = x + √(x² + 2k) = total vol σ·√T.
+  const __m256d s = _mm256_add_pd(x, _mm256_sqrt_pd(_mm256_fmadd_pd(x, x, _mm256_add_pd(k, k))));
+  const __m256d sigma = _mm256_div_pd(s, sqrtT);
 
-  // SR-2017 main formula (paper Table 3).
-  const __m256d y = log_pd(_mm256_div_pd(F, K));
-  const __m256d Q = _mm256_div_pd(price_eff, _mm256_mul_pd(df, K));
-  const __m256d f = _mm256_div_pd(F, K); // exact F/K, no exp(log) round-trip
-  const __m256d f_m1 = _mm256_sub_pd(f, one);
-  const __m256d R = _mm256_sub_pd(_mm256_mul_pd(two, Q), _mm256_mul_pd(eps_eff, f_m1));
-
-  const __m256d pky = _mm256_mul_pd(kp, y);
-  const __m256d e_pky = exp_pd(pky);
-  const __m256d e_mky = exp_pd(_mm256_sub_pd(zero, pky));
-  const __m256d y_h = _mm256_mul_pd(one_m_kp, y);
-  const __m256d e_y_h = exp_pd(y_h);
-  const __m256d e_y_l = exp_pd(_mm256_sub_pd(zero, y_h));
-
-  const __m256d diff = _mm256_sub_pd(e_y_h, e_y_l);
-  const __m256d A = _mm256_mul_pd(diff, diff);
-  const __m256d sum_h = _mm256_add_pd(e_y_h, e_y_l);
-  const __m256d f2 = _mm256_mul_pd(f, f);
-  const __m256d f2_R2 = _mm256_sub_pd(f2, _mm256_mul_pd(R, R));
-  // B = 4(e_mky + e_pky) − 2 sum_h (1 + f² − R²)/f.
-  const __m256d term1 = _mm256_mul_pd(four, _mm256_add_pd(e_mky, e_pky));
-  const __m256d inner = _mm256_add_pd(one, f2_R2);
-  const __m256d term2 = _mm256_div_pd(_mm256_mul_pd(_mm256_mul_pd(two, sum_h), inner), f);
-  const __m256d B = _mm256_sub_pd(term1, term2);
-
-  // C = (4Q/f²)(Q − ε(f−1))((f+1)−R)((f+1)+R).
-  const __m256d Q_minus = _mm256_sub_pd(Q, _mm256_mul_pd(eps_eff, f_m1));
-  const __m256d f_plus = _mm256_add_pd(f, one);
-  const __m256d Cf1 = _mm256_sub_pd(f_plus, R);
-  const __m256d Cf2 = _mm256_add_pd(f_plus, R);
-  const __m256d coef = _mm256_div_pd(_mm256_mul_pd(four, Q), f2);
-  const __m256d Cc = _mm256_mul_pd(_mm256_mul_pd(coef, Q_minus), _mm256_mul_pd(Cf1, Cf2));
-
-  // disc = max(B² + 4AC, 0); β = 2C / (B + √disc) (stable, avoids B−√ cancel).
-  __m256d disc = _mm256_fmadd_pd(four, _mm256_mul_pd(A, Cc), _mm256_mul_pd(B, B));
-  disc = _mm256_max_pd(disc, zero);
-  const __m256d denom = _mm256_add_pd(B, _mm256_sqrt_pd(disc));
-  const __m256d beta = _mm256_div_pd(_mm256_mul_pd(two, Cc), denom);
-
-  // γ = −log(β)/k. Clamp β to a tiny positive floor so a bad lane yields a
-  // finite (invalid-flagged) value rather than NaN.
-  const __m256d beta_safe = _mm256_max_pd(beta, _mm256_set1_pd(1.0e-300));
-  const __m256d gamma = _mm256_div_pd(_mm256_sub_pd(zero, log_pd(beta_safe)), kp);
-
-  // σ√T = √(γ+y) + √(γ−y); clamp operands at 0 to keep √ finite on bad lanes.
-  const __m256d gpy = _mm256_max_pd(_mm256_add_pd(gamma, y), zero);
-  const __m256d gmy = _mm256_max_pd(_mm256_sub_pd(gamma, y), zero);
-  const __m256d sqrt_v = _mm256_add_pd(_mm256_sqrt_pd(gpy), _mm256_sqrt_pd(gmy));
-  const __m256d sigma = _mm256_div_pd(sqrt_v, _mm256_sqrt_pd(T));
-
-  // Validity: β > 0, γ ≥ |y|, σ > 0 (each false on any NaN lane).
-  const __m256d abs_y = _mm256_andnot_pd(_mm256_set1_pd(-0.0), y);
-  const __m256d v1 = _mm256_cmp_pd(beta, zero, _CMP_GT_OQ);
-  const __m256d v2 = _mm256_cmp_pd(gamma, abs_y, _CMP_GE_OQ);
-  const __m256d v3 = _mm256_cmp_pd(sigma, zero, _CMP_GT_OQ);
-  valid = _mm256_and_pd(v1, _mm256_and_pd(v2, v3));
+  const __m256d vc = _mm256_cmp_pd(c, zero, _CMP_GT_OQ);
+  const __m256d vs = _mm256_cmp_pd(sigma, zero, _CMP_GT_OQ);
+  valid = _mm256_and_pd(vc, vs);
 
   const __m256d s_min = _mm256_set1_pd(kIvMin);
   const __m256d s_max = _mm256_set1_pd(kIvMax);
@@ -147,7 +195,7 @@ ATX_FORCE_INLINE __m256d sr2017_seed_pd(__m256d price, __m256d F, __m256d K, __m
 
 // One Halley (order-3) step on the *original* (price, side). Returns the updated
 // σ (bounded + clamped exactly as the scalar). Pre-computed sqrtT / lnFK are
-// shared across the two passes.
+// shared across the passes.
 ATX_FORCE_INLINE __m256d iv_halley_step_pd(__m256d sigma, __m256d price, __m256d F, __m256d K,
                                            __m256d df, __m256d is_put, __m256d sqrtT,
                                            __m256d lnFK) noexcept {
@@ -192,28 +240,53 @@ ATX_FORCE_INLINE __m256d iv_halley_step_pd(__m256d sigma, __m256d price, __m256d
   return _mm256_min_pd(_mm256_max_pd(sigma_new, s_min), s_max);
 }
 
-// Evaluate d1, d2, vega and the price residual at the final σ, for the accept /
-// patch gate (the residual from the last Halley step is one σ stale).
-ATX_FORCE_INLINE void iv_evaluate_pd(__m256d sigma, __m256d price, __m256d F, __m256d K, __m256d df,
-                                     __m256d is_put, __m256d sqrtT, __m256d lnFK, __m256d &d1o,
-                                     __m256d &d2o, __m256d &vegao, __m256d &resido) noexcept {
+// Combined FINAL Halley step + accept-gate probe (K3). Evaluates Φ/φ ONCE at the
+// input σ and returns BOTH the stepped σ (one further Halley refinement) AND the
+// vega + price residual AT THE INPUT σ for the accept/patch gate. Folding the gate
+// evaluation into the last step removes a whole redundant Φ/φ evaluation pass —
+// the batch's dominant cost is these erfc/exp passes, so 4 passes (3 steps + a
+// separate evaluate) drop to 3. The returned residual therefore bounds the
+// PRE-step σ; the caller's accept threshold is loosened accordingly
+// (kIvProbeResidTol): a well-conditioned lane (vega ≥ the ill-cond floor, so the
+// risky low-vega / short-dated lanes are already routed to scalar) whose pre-step
+// residual is under it is driven to machine precision by this step, so the emitted
+// post-step σ tracks scalar far inside the 1e-8 parity bound.
+ATX_FORCE_INLINE __m256d iv_halley_step_probe_pd(__m256d sigma, __m256d price, __m256d F, __m256d K,
+                                                 __m256d df, __m256d is_put, __m256d sqrtT,
+                                                 __m256d lnFK, __m256d &vegao,
+                                                 __m256d &resido) noexcept {
+  const __m256d zero = _mm256_setzero_pd();
   const __m256d half = _mm256_set1_pd(0.5);
+  const __m256d two = _mm256_set1_pd(2.0);
   const __m256d v = _mm256_mul_pd(sigma, sqrtT);
   const __m256d half_v2 = _mm256_mul_pd(half, _mm256_mul_pd(v, v));
   const __m256d d1 = _mm256_div_pd(_mm256_add_pd(lnFK, half_v2), v);
   const __m256d d2 = _mm256_sub_pd(d1, v);
   __m256d Nd1, Nd2;
-  norm_cdf_erfc_pd2(d1, d2, Nd1, Nd2); // K2: full-range Cody erfc Φ
+  norm_cdf_erfc_pd2(d1, d2, Nd1, Nd2); // full-range Cody erfc Φ (accurate in the wings)
   const __m256d phi1 = norm_pdf_pd(d1);
   const __m256d call_pr =
       _mm256_mul_pd(df, _mm256_sub_pd(_mm256_mul_pd(F, Nd1), _mm256_mul_pd(K, Nd2)));
   const __m256d put_pr = _mm256_fmadd_pd(df, _mm256_sub_pd(K, F), call_pr);
   const __m256d price_model = _mm256_blendv_pd(call_pr, put_pr, is_put);
+  const __m256d resid = _mm256_sub_pd(price_model, price);
+  const __m256d vega = _mm256_mul_pd(_mm256_mul_pd(df, F), _mm256_mul_pd(phi1, sqrtT));
+  const __m256d volga =
+      _mm256_div_pd(_mm256_mul_pd(vega, _mm256_mul_pd(d1, d2)), sigma); // vega·d1·d2/σ
+  vegao = vega;
+  resido = resid;
 
-  d1o = d1;
-  d2o = d2;
-  vegao = _mm256_mul_pd(_mm256_mul_pd(df, F), _mm256_mul_pd(phi1, sqrtT));
-  resido = _mm256_sub_pd(price_model, price);
+  // Halley step (bound + clamp identical to iv_halley_step_pd).
+  const __m256d num = _mm256_mul_pd(two, _mm256_mul_pd(resid, vega));
+  const __m256d two_v2 = _mm256_mul_pd(two, _mm256_mul_pd(vega, vega));
+  const __m256d den = _mm256_fnmadd_pd(resid, volga, two_v2); // 2v² − resid·volga
+  const __m256d step = _mm256_div_pd(_mm256_sub_pd(zero, num), den);
+  const __m256d s_lo = _mm256_sub_pd(zero, _mm256_mul_pd(half, sigma));
+  const __m256d step_b = _mm256_min_pd(_mm256_max_pd(step, s_lo), sigma);
+  const __m256d sigma_new = _mm256_add_pd(sigma, step_b);
+  const __m256d s_min = _mm256_set1_pd(kIvMin);
+  const __m256d s_max = _mm256_set1_pd(kIvMax);
+  return _mm256_min_pd(_mm256_max_pd(sigma_new, s_min), s_max);
 }
 
 // Patch a single lane through the exact scalar inverter, writing (iv, ok).
@@ -246,8 +319,7 @@ void implied_vol_batch_avx2(const double *price, const double *F, const double *
   const __m256d one = _mm256_set1_pd(1.0);
   const __m256d all_ones = _mm256_cmp_pd(zero, zero, _CMP_EQ_OQ);
   const __m256d abs_mask = _mm256_set1_pd(-0.0);
-  const __m256d wing = _mm256_set1_pd(kNormCdfWing);
-  const __m256d resid_tol = _mm256_set1_pd(kIvResidTol);
+  const __m256d resid_tol = _mm256_set1_pd(kIvProbeResidTol);
   const __m256d vfloor_coef = _mm256_set1_pd(kIvVegaFloorCoef);
 
   std::size_t i = 0;
@@ -280,22 +352,29 @@ void implied_vol_batch_avx2(const double *price, const double *F, const double *
                                                     _mm256_cmp_pd(dfv, zero, _CMP_LE_OQ)))));
     const __m256d safeT = _mm256_blendv_pd(Tv, one, bad);
 
-    __m256d seed_valid;
-    __m256d sigma = sr2017_seed_pd(Pv, Fv, Kv, safeT, dfv, eps, seed_valid);
-
     const __m256d sqrtT = _mm256_sqrt_pd(safeT);
     const __m256d lnFK = log_pd(_mm256_div_pd(Fv, Kv));
+
+    // K3: the cheap Choi-2023 L₃ seed (same as the scalar K2 seed) starts inside
+    // the Halley cubic basin, so THREE Halley steps drive the lanes to machine
+    // precision on-vector — no |d| wing patch needed (the evaluate uses full-range
+    // Cody erfc Φ, accurate in the deep wings), so wing lanes now stay vector
+    // instead of paying a scalar detour. The 3rd step is what lets the tighter
+    // seed reach the accept residual on the harder wing/deep lanes.
+    __m256d seed_valid;
+    __m256d sigma = seed_choi_l3_pd(Pv, Fv, Kv, dfv, is_put, lnFK, sqrtT, seed_valid);
     sigma = iv_halley_step_pd(sigma, Pv, Fv, Kv, dfv, is_put, sqrtT, lnFK);
     sigma = iv_halley_step_pd(sigma, Pv, Fv, Kv, dfv, is_put, sqrtT, lnFK);
+    // Final step fuses the accept-gate evaluation: it returns σ₃ AND (vega, resid)
+    // at σ₂, so no separate 4th Φ/φ pass is needed (K3 — the batch's dominant cost).
+    __m256d vega, resid;
+    sigma = iv_halley_step_probe_pd(sigma, Pv, Fv, Kv, dfv, is_put, sqrtT, lnFK, vega, resid);
 
-    __m256d d1, d2, vega, resid;
-    iv_evaluate_pd(sigma, Pv, Fv, Kv, dfv, is_put, sqrtT, lnFK, d1, d2, vega, resid);
-
-    // Assemble the patch mask (true → this lane goes to scalar).
-    const __m256d abs_d1 = _mm256_andnot_pd(abs_mask, d1);
-    const __m256d abs_d2 = _mm256_andnot_pd(abs_mask, d2);
-    const __m256d wing_bad = _mm256_or_pd(_mm256_cmp_pd(abs_d1, wing, _CMP_GT_OQ),
-                                          _mm256_cmp_pd(abs_d2, wing, _CMP_GT_OQ));
+    // Assemble the patch mask (true → this lane goes to scalar). Genuinely
+    // ill-conditioned (tiny vega) or non-converged lanes still patch to the exact
+    // scalar inverter for full parity; the wing patch is retired (Cody erfc Φ). The
+    // residual gate uses the (one-step-stale) probe residual, so its threshold is
+    // kIvProbeResidTol; the emitted σ has had one more Halley step past it.
     const __m256d abs_resid = _mm256_andnot_pd(abs_mask, resid);
     const __m256d not_conv = _mm256_cmp_pd(abs_resid, resid_tol, _CMP_GE_OQ);
     const __m256d vfloor = _mm256_mul_pd(_mm256_mul_pd(vfloor_coef, _mm256_add_pd(Fv, Kv)), dfv);
@@ -305,7 +384,6 @@ void implied_vol_batch_avx2(const double *price, const double *F, const double *
                                          _mm256_cmp_pd(resid, resid, _CMP_UNORD_Q));
 
     __m256d patch = _mm256_or_pd(bad, not_valid);
-    patch = _mm256_or_pd(patch, wing_bad);
     patch = _mm256_or_pd(patch, ill_cond);
     patch = _mm256_or_pd(patch, not_conv);
     patch = _mm256_or_pd(patch, nan_out);
