@@ -327,3 +327,12 @@ if(Python3_Interpreter_FOUND)
     )
     set_tests_properties(atx-vol-compare-baseline-unit PROPERTIES LABELS atx_vol)
 endif()
+
+# ── WS-0 M2 (infra-measure) — LBR same-host shootout ──────────────────────
+# Vendored Peter Jäckel "Let's Be Rational" (bench/thirdparty/lets_be_rational,
+# license verified permissive). Isolated warnings-off static lib, linked ONLY
+# into the IV shootout so BM_IvShootout_Jaeckel can run head-to-head vs atx-vol
+# on this host. target_link_libraries accumulates, so this appends the link to
+# the existing atx-vol-iv-shootout-bench target without touching its own block.
+add_subdirectory(thirdparty/lets_be_rational)
+target_link_libraries(atx-vol-iv-shootout-bench PRIVATE lbr_lets_be_rational)

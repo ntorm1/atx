@@ -1,0 +1,34 @@
+======================================================================================
+Copyright © 2013-2014 Peter Jäckel.
+
+Permission to use, copy, modify, and distribute this software is freely granted,
+provided that this notice is preserved.
+
+WARRANTY DISCLAIMER
+The Software is provided "as is" without warranty of any kind, either express or implied,
+including without limitation any implied warranties of condition, uninterrupted use,
+merchantability, fitness for a particular purpose, or non-infringement.
+======================================================================================
+
+The source resides at www.jaeckel.org/LetsBeRational.7z .
+
+This is the verbatim copyright and permission notice carried at the top of the
+"Let's Be Rational" source files (LetsBeRational.cpp, normaldistribution.h,
+rationalcubic.{h,cpp}, importexport.h). Per the grant above, redistribution is
+freely permitted PROVIDED THIS NOTICE IS PRESERVED — which is why every vendored
+file retains its original header unmodified and why this LICENSE ships alongside.
+
+--------------------------------------------------------------------------------
+erf_cody.cpp — additional provenance
+
+erf_cody.cpp is not original Jäckel code. Its own header states:
+
+    "Original Fortran code taken from http://www.netlib.org/specfun/erf,
+     compiled with f2c, and adapted by hand."
+
+The underlying algorithms are W. J. Cody's rational Chebyshev approximations for
+erf / erfc / erfcx (W. J. Cody, "Rational Chebyshev Approximation for the Error
+Function", Math. Comp. 23 (1969), pp. 631-638), distributed via netlib SPECFUN,
+which is in the public domain and freely redistributable. The f2c-translated file
+is redistributed here under the same "preserve this notice" terms as the rest of
+the Let's-Be-Rational distribution; its warranty-disclaimer header is preserved.
