@@ -838,3 +838,100 @@ TEST(BacktestExec, HedgeLedgerAllocationIsStepInvariant) {
               static_cast<unsigned long long>(on_d), static_cast<unsigned long long>(off_d),
               static_cast<unsigned long long>(on_2d), static_cast<unsigned long long>(off_2d));
 }
+
+// ── B4. Held-to-expiry daily overlapping cohorts compose + settle at scale ───────
+//
+// EveryStep entry + HoldToExpiry over kNames 40Δ strangles builds many overlapping
+// daily cohorts; a ~20-clock-day tenor (target_T = 20*kDayNs/kNsPerYear, which
+// rounds to exactly 20 clock-days so expiries land ON clock dates) makes cohorts
+// reach expiry MID-RUN — exercising the expiry sweep + engine settlement (B2
+// batched marks) at scale, not just accumulation. Verifies the composition is
+// correct (overlapping cohorts accumulate, cohorts settle, the book never empties)
+// and bit-identical across thread counts (determinism at scale).
+TEST(BacktestExec, HeldToExpiryDailyCohortsComposeAtScale) {
+  const fs::path dir = fresh_dir("b4-cohorts");
+  constexpr int kNames = 4;
+  constexpr int kDates = 24;
+  static const char* kSyms[] = {"AAA", "BBB", "CCC", "DDD"};
+
+  std::vector<std::pair<std::string, std::string>> dp;
+  for (int d = 0; d < kDates; ++d) {
+    const std::int64_t now = kBaseNow + static_cast<std::int64_t>(d) * kDayNs;
+    std::vector<PricedSurface> surfaces;
+    surfaces.reserve(kNames);
+    for (int u = 0; u < kNames; ++u) {
+      const double S = (100.0 + 10.0 * static_cast<double>(u)) * (1.0 + 0.003 * static_cast<double>(d));
+      surfaces.push_back(make_surface(kUid + static_cast<std::uint32_t>(u), S, S, now,
+                                      0.001 * static_cast<double>(d) + 0.002 * static_cast<double>(u)));
+    }
+    std::vector<SurfaceArchiveItem> items;
+    for (int u = 0; u < kNames; ++u) {
+      items.push_back(SurfaceArchiveItem{kSyms[u], &surfaces[u]});
+    }
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "2026-08-%02d", d + 1);
+    const std::string path = (dir / (std::string(buf) + ".atxvsa")).string();
+    ASSERT_TRUE(write_surface_archive_v2_file(path, items).has_value());
+    dp.emplace_back(buf, path);
+  }
+  auto clock = Clock::from_manifest(make_manifest(dp, "AAA"));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const double tenor_T = static_cast<double>(20 * kDayNs) / kNsPerYear; // -> exactly 20 clock-days
+  StrategySpec spec;
+  spec.name = "b4-daily-strangle-htx";
+  for (int u = 0; u < kNames; ++u) {
+    LegSpec leg;
+    leg.uid = kUid + static_cast<std::uint32_t>(u);
+    leg.tenor.target_T = tenor_T;
+    leg.tenor.snap_to_listed = false;
+    leg.structure.kind = StructureSpec::Kind::Strangle;
+    leg.structure.call_leg = StrikeSelector{StrikeSelector::Kind::Delta, 0.40};
+    leg.structure.put_leg = StrikeSelector{StrikeSelector::Kind::Delta, 0.40};
+    leg.size = SizeSpec{SizeSpec::Kind::FixedContracts, 1.0, +1.0};
+    spec.legs.push_back(leg);
+  }
+  spec.lifecycle.entry = LifecycleSpec::Entry::EveryStep;
+  spec.lifecycle.holding = LifecycleSpec::Holding::HoldToExpiry;
+
+  const auto run = [&](unsigned n_threads) {
+    DeclarativeStrategy strat{spec};
+    RunConfig cfg;
+    cfg.price.n_threads = n_threads;
+    return run_backtest(*clock, strat, cfg);
+  };
+
+  auto r1 = run(1);
+  ASSERT_TRUE(r1.has_value()) << r1.error().to_string();
+  ASSERT_EQ(r1->size(), static_cast<std::size_t>(kDates));
+
+  double max_lots = 0.0;
+  int settle_rows = 0;
+  for (std::size_t i = 0; i < r1->size(); ++i) {
+    max_lots = std::max(max_lots, r1->n_open_lots[i]);
+    if (std::fabs(r1->pnl_settlement[i]) > 0.0) {
+      ++settle_rows;
+    }
+    EXPECT_GT(r1->n_open_lots[i], 0.0) << "book emptied at row " << i;
+  }
+  // Overlapping cohorts accumulate to many legs; cohorts reach expiry mid-run.
+  EXPECT_GT(max_lots, static_cast<double>(kNames * 2 * 10)) << "cohorts did not overlap at scale";
+  EXPECT_GT(settle_rows, 0) << "no cohort reached expiry/settlement within the run";
+
+  // Determinism at scale: bit-identical across thread counts.
+  auto r4 = run(4);
+  ASSERT_TRUE(r4.has_value()) << r4.error().to_string();
+  ASSERT_EQ(r1->size(), r4->size());
+  for (std::size_t i = 0; i < r1->size(); ++i) {
+    EXPECT_TRUE(bits_equal(r1->nav[i], r4->nav[i])) << "nav row " << i;
+    EXPECT_TRUE(bits_equal(r1->pnl_total[i], r4->pnl_total[i])) << "pnl_total row " << i;
+    EXPECT_TRUE(bits_equal(r1->pnl_settlement[i], r4->pnl_settlement[i])) << "settle row " << i;
+    EXPECT_TRUE(bits_equal(r1->gross_vega[i], r4->gross_vega[i])) << "gross_vega row " << i;
+    EXPECT_EQ(r1->n_open_lots[i], r4->n_open_lots[i]) << "n_open_lots row " << i;
+  }
+  std::printf("[btexec] B4 cohorts: %d names, %d dates, max_open_lots=%.0f, settle_rows=%d, "
+              "det(1 vs 4 threads)=OK\n",
+              kNames, kDates, max_lots, settle_rows);
+}
