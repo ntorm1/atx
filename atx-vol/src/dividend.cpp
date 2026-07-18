@@ -85,6 +85,14 @@ Result<double> imply_borrow_european_pcp_from_base(double call_price, double put
   if (!std::isfinite(borrow)) {
     return Err(ErrorCode::InvalidArgument, "imply_borrow_european_pcp: non-finite implied borrow");
   }
+  // R-26: `tol` is VESTIGIAL for this closed form and is deliberately NOT used as
+  // the endpoint allowance. The former bisection consumed it as a convergence
+  // tolerance; the PCP inversion is algebraically exact, so the only allowance a
+  // root at the bracket edge needs is representable floating-point roundoff — a
+  // fixed machine-epsilon slack, NOT `tol`. Widening the slack to `tol` would
+  // admit a root genuinely outside [b_lo, b_hi] (pinned rejected by
+  // dividend_test.cpp::ClosedFormRejectsRootOutsideBracketEvenWithinSolverToler
+  // ance). `tol` is still validated finite-positive for API compatibility.
   const double endpoint_slack = 16.0 * std::numeric_limits<double>::epsilon() *
                                 std::max({1.0, std::fabs(b_lo), std::fabs(b_hi)});
   if (borrow < b_lo) {

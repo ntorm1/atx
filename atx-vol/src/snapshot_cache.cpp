@@ -4,7 +4,9 @@
 #include <atomic>
 #include <cassert>
 #include <chrono>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <future>
 #include <iterator>
 #include <list>
@@ -13,6 +15,8 @@
 #include <string>
 #include <unordered_map>
 #include <utility>
+
+#include "atx/vol/surface_archive.hpp" // ArchiveHeader / ArchiveContentIdentity (R-19 identity)
 
 namespace atx::vol {
 
@@ -67,6 +71,30 @@ struct SnapshotCacheKeyHash {
       .share();
 }
 
+// R-19 (F6): the current content identity of the archive at `path`, read from its
+// 464-byte header only. Any successful read produces a non-zero, byte-content-
+// sensitive identity (see `ArchiveContentIdentity`); an unreadable / not-yet-an-
+// archive file yields the default (all-zero) identity so the actual load surfaces
+// the real error while the cache still keys deterministically. Called BEFORE the
+// cache mutex so the small header read never serializes other cache operations.
+[[nodiscard]] ArchiveContentIdentity current_identity(const std::string &path) {
+  std::ifstream in{path, std::ios::binary};
+  if (!in) {
+    return {};
+  }
+  ArchiveHeader header{};
+  in.read(reinterpret_cast<char *>(&header), sizeof(header));
+  if (in.gcount() != static_cast<std::streamsize>(sizeof(header))) {
+    return {}; // shorter than a header — not a valid archive (yet)
+  }
+  static constexpr char kMagic[8] = {'A', 'T', 'X', 'V', 'S', 'A', '0', '3'};
+  if (std::memcmp(header.magic, kMagic, sizeof(kMagic)) != 0 ||
+      header.header_size != sizeof(ArchiveHeader)) {
+    return {}; // not an ATXVSA v3 archive; identity is unknown
+  }
+  return archive_identity_from_header(header);
+}
+
 } // namespace
 
 struct SnapshotCache::Impl {
@@ -75,6 +103,10 @@ struct SnapshotCache::Impl {
     std::list<SnapshotCacheKey>::iterator recency;
     std::size_t active_loads{0u};
     std::uint64_t generation{0u};
+    // R-19 (F6): the archive content identity this entry was loaded against. A
+    // later request whose freshly-read identity differs means the archive was
+    // rewritten in place — the entry is stale and must be evicted, never served.
+    ArchiveContentIdentity identity{};
   };
 
   explicit Impl(std::optional<std::size_t> max_entries_in = std::nullopt)
@@ -84,6 +116,28 @@ struct SnapshotCache::Impl {
 
   void touch(EntryMap::iterator entry) {
     recency.splice(recency.end(), recency, entry->second.recency);
+  }
+
+  // R-19 (F6): must hold `mutex`. If `found` is a live entry whose stored content
+  // identity no longer matches `identity` (the archive at this key's path was
+  // rewritten in place), EVICT it and return end() so the caller reloads the new
+  // bytes — never serving the stale snapshot. Generation-guarding in
+  // `release_active_load` makes any in-flight caller's later release a no-op on
+  // this key, so evicting an entry with outstanding loads is safe. A default
+  // (all-zero) `identity` — an unreadable / not-yet-written archive — is treated
+  // as "unknown, do not evict" so a transient stat failure never thrashes a live
+  // entry.
+  EntryMap::iterator evict_if_stale(EntryMap::iterator found,
+                                    const ArchiveContentIdentity &identity) {
+    if (found == entries.end() || identity == ArchiveContentIdentity{} ||
+        found->second.identity == identity) {
+      return found;
+    }
+    recency.erase(found->second.recency);
+    entries.erase(found);
+    evictions.fetch_add(1u, std::memory_order_relaxed);
+    retained_entries.store(static_cast<std::uint64_t>(entries.size()), std::memory_order_relaxed);
+    return entries.end();
   }
 
   // Must be called with mutex held. A shared_future copied by a load caller owns
@@ -148,9 +202,11 @@ Status SnapshotCache::prefetch(std::string archive_path, QueryPricingTier query_
                           "SnapshotCache::prefetch: invalid query-cache build policy");
   }
   const SnapshotCacheKey requested_key = cache_key(archive_path, query_pricing_tier);
+  // R-19: read the archive's content identity before the lock (small header read).
+  const ArchiveContentIdentity identity = current_identity(requested_key.path);
   std::lock_guard lock{impl_->mutex};
   SnapshotCacheKey effective_key = requested_key;
-  auto found = impl_->entries.find(effective_key);
+  auto found = impl_->evict_if_stale(impl_->entries.find(effective_key), identity);
   const bool reuse_only_fast =
       build_policy == QueryCacheBuildPolicy::ReuseOnly && is_fast_tier(query_pricing_tier);
   if (found != impl_->entries.end() && reuse_only_fast) {
@@ -158,7 +214,7 @@ Status SnapshotCache::prefetch(std::string archive_path, QueryPricingTier query_
   } else if (found == impl_->entries.end() && reuse_only_fast) {
     impl_->reuse_only_cold_resolutions.fetch_add(1u, std::memory_order_relaxed);
     effective_key.query_pricing_tier = QueryPricingTier::ColdReference;
-    found = impl_->entries.find(effective_key);
+    found = impl_->evict_if_stale(impl_->entries.find(effective_key), identity);
   }
   if (found != impl_->entries.end()) {
     impl_->hits.fetch_add(1u, std::memory_order_relaxed);
@@ -172,7 +228,7 @@ Status SnapshotCache::prefetch(std::string archive_path, QueryPricingTier query_
   const auto recency = std::prev(impl_->recency.end());
   impl_->entries.emplace(
       effective_key, Impl::Entry{start_load(effective_key.path, effective_key.query_pricing_tier),
-                                 recency, 0u, impl_->next_generation++});
+                                 recency, 0u, impl_->next_generation++, identity});
   if (is_fast_tier(effective_key.query_pricing_tier)) {
     impl_->fast_build_loads.fetch_add(1u, std::memory_order_relaxed);
   }
@@ -195,12 +251,14 @@ Result<SnapshotPtr> SnapshotCache::load(std::string_view archive_path,
                           "SnapshotCache::load: invalid query-cache build policy");
   }
   const SnapshotCacheKey requested_key = cache_key(archive_path, query_pricing_tier);
+  // R-19: read the archive's content identity before the lock (small header read).
+  const ArchiveContentIdentity identity = current_identity(requested_key.path);
   SnapshotCacheKey effective_key = requested_key;
   std::shared_future<SnapshotResult> future;
   std::uint64_t generation = 0u;
   {
     std::lock_guard lock{impl_->mutex};
-    auto found = impl_->entries.find(effective_key);
+    auto found = impl_->evict_if_stale(impl_->entries.find(effective_key), identity);
     const bool reuse_only_fast =
         build_policy == QueryCacheBuildPolicy::ReuseOnly && is_fast_tier(query_pricing_tier);
     if (found != impl_->entries.end() && reuse_only_fast) {
@@ -208,7 +266,7 @@ Result<SnapshotPtr> SnapshotCache::load(std::string_view archive_path,
     } else if (found == impl_->entries.end() && reuse_only_fast) {
       impl_->reuse_only_cold_resolutions.fetch_add(1u, std::memory_order_relaxed);
       effective_key.query_pricing_tier = QueryPricingTier::ColdReference;
-      found = impl_->entries.find(effective_key);
+      found = impl_->evict_if_stale(impl_->entries.find(effective_key), identity);
     }
     if (found != impl_->entries.end()) {
       impl_->hits.fetch_add(1u, std::memory_order_relaxed);
@@ -222,7 +280,7 @@ Result<SnapshotPtr> SnapshotCache::load(std::string_view archive_path,
       impl_->recency.push_back(effective_key);
       const auto recency = std::prev(impl_->recency.end());
       generation = impl_->next_generation++;
-      impl_->entries.emplace(effective_key, Impl::Entry{future, recency, 1u, generation});
+      impl_->entries.emplace(effective_key, Impl::Entry{future, recency, 1u, generation, identity});
       if (is_fast_tier(effective_key.query_pricing_tier)) {
         impl_->fast_build_loads.fetch_add(1u, std::memory_order_relaxed);
       }

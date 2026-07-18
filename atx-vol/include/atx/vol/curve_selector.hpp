@@ -72,6 +72,17 @@ struct CandidateScore {
   // secondary tie-break (after oos_vw, before parsimony DoF). `metrics_valid`
   // is false when the held-out sample was too thin for a reduced chi-square
   // (N <= dof), in which case chi2_reduced does not participate in the tie-break.
+  //
+  // R-34 (comparability constraint): `chi2_reduced` / `rmse_vol` / `avE5_vol` are
+  // aggregated over THIS candidate's OWN scored held-out rows. They are only
+  // cross-candidate comparable when every candidate scored the SAME population —
+  // i.e. under a coverage floor of 1.0 (`SelectorConfig::min_expiry_coverage ==
+  // min_holdout_coverage == 1.0`, the production config), where a candidate that
+  // drops a row fails admission rather than scoring a thinner sub-population.
+  // Under relaxed research floors (< 1.0) different candidates can score
+  // non-comparable sub-populations, so a caller must NOT read these as a
+  // like-for-like ranking there; `select_best_candidate` still uses them only as
+  // a bounded secondary tie-break within the `parsimony_margin` oos_vw band.
   double chi2_reduced{0.0};     // reduced chi^2 over held-out obs
   double rmse_vol{0.0};         // held-out vol RMSE
   double avE5_vol{0.0};         // held-out mean|resid|*1e5
@@ -168,9 +179,13 @@ selector_served_admission_policy(const FitAdmissionPolicy &base,
 //         no candidate produced a scorable fit on any expiry; Unavailable if a
 //         bounded search expires before one is admissible; otherwise the
 //         selection (with per-candidate diagnostics).
+// R-33: `sel` is REQUIRED (no default). A defaulted SelectorConfig{} is the
+// unbounded research ladder (all candidates, unlimited soft deadline); silently
+// granting it to any caller that forgot the argument is a footgun. Production
+// callers pass `production_selector_config()`; tests pass an explicit config.
 [[nodiscard]] Result<SelectorResult> select_curve(const Underlying &under,
                                                   const SurfaceParityInputs &in,
-                                                  const SelectorConfig &sel = {});
+                                                  const SelectorConfig &sel);
 
 // Score one already-selected family on the selector's deterministic even/odd
 // holdout. This performs no all-family search and is the quality path for direct

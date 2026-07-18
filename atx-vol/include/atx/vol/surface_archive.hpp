@@ -130,6 +130,36 @@ static_assert(sizeof(ArchiveHeader) == 464, "ArchiveHeader layout drift");
 static_assert(std::is_trivially_copyable_v<ArchiveHeader>);
 static_assert(std::is_standard_layout_v<ArchiveHeader>);
 
+// R-19 (F6): a cheap content/build identity for an on-disk archive, derived
+// purely from its 464-byte header. `file_size` + `created_ts_ns` distinguish a
+// rewrite that changes size or timestamp; `header_crc32c` covers the header
+// (incl. schema_hash, surface_count, created_ts) and `metadata_crc32c` covers
+// the lookup ‖ directory span — and because every per-blob CRC lives in a lookup
+// slot, ANY blob-payload rewrite changes `metadata_crc32c` too, EVEN one that
+// preserves the byte length (the same-length/different-CRC case). So two archives
+// with the same identity are byte-equivalent for serving purposes. Reading this
+// identity is one small header read, not a whole-file hash — see
+// `SnapshotCache`, which keys/evicts on it so a rewritten archive never serves a
+// stale cached snapshot.
+struct ArchiveContentIdentity {
+  std::uint64_t file_size{0};
+  std::uint64_t created_ts_ns{0};
+  std::uint32_t header_crc32c{0};
+  std::uint32_t metadata_crc32c{0};
+
+  [[nodiscard]] bool operator==(const ArchiveContentIdentity &) const noexcept = default;
+};
+
+// Pure projection of the content identity from an already-parsed header (no I/O).
+// Callers that only have the raw header bytes memcpy them into an `ArchiveHeader`
+// and call this; the file read stays in the caller (keeps <fstream> out of this
+// widely-included header).
+[[nodiscard]] inline ArchiveContentIdentity
+archive_identity_from_header(const ArchiveHeader &header) noexcept {
+  return ArchiveContentIdentity{header.file_size, header.created_ts_ns, header.header_crc32c,
+                                header.metadata_crc32c};
+}
+
 // Open-addressed lookup slot. Carries the blob's whole-blob CRC so a symbol probe
 // verifies integrity without a second table.
 struct ArchiveIndexSlot {

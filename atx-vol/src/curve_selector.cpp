@@ -242,6 +242,13 @@ prepare_expiry(const Underlying &under, const SurfaceParityInputs &in, std::size
   inputs.iv_tolerance = in.deam.iv_tol;
   inputs.iv_max_iterations = in.deam.iv_max_iter;
   inputs.method = in.deam.method;
+  // R-35: the selector INTENTIONALLY scores every candidate under Configured
+  // preparation — NOT `in.fit_prep_policy` — so the family comparison uses one
+  // common, audited row population (cross-candidate comparability, per the
+  // invariant #4.9 note in prepared_fitting.hpp). `in.fit_prep_policy` governs
+  // only the SERVED build in fit_curve_surface; consulting it here would let the
+  // permissive Legacy predicate feed different populations to different
+  // candidates. Hardcoded on purpose, not an oversight.
   inputs.policy = PreparedObservationPolicy::Configured;
   inputs.prepare_scoring = true;
   Result<PreparedSlice> prepared = PreparedSlice::create(chain, inputs);

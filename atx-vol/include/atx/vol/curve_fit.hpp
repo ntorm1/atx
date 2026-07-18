@@ -79,10 +79,28 @@ struct CurveSurfaceReport {
   // per-slice LinearVariance fallback (`CalibOpts::per_slice_linear_fallback`).
   // Always 0 when the flag is off (the byte-identical default path).
   std::size_t n_slice_linear_fallback{0};
+  // W3.3 (F3): slices whose Configured preparation STARVED below the usable-row
+  // floor and were recovered by re-preparing under LegacyEssviCompatibility (the
+  // permissive eSSVI cold-driver predicate), gated on
+  // `SurfaceParityInputs::per_slice_legacy_prep_fallback`. The rescued slice
+  // truthfully carries `LegacyEssviCompatibility` provenance with a default
+  // (never-certified) de-Am audit — certification must not claim Configured-grade
+  // de-Am for it. Always 0 when the flag is off (byte-identical default path).
+  std::size_t n_slices_legacy_rescued{0};
+  // W3.3 (F3): expiries that stayed below the usable-row floor even after any
+  // rescue attempt — truthfully thin (not a defect), surfaced so admission can
+  // distinguish a genuinely sparse board from one starved by a preparation
+  // funnel that a permissive policy would have kept.
+  std::size_t n_slices_starved{0};
   // Perf C1: per-slice input certification, ‖ context/per_expiry. Lets
   // `VolaSession::build` construct `SessionSliceDiagnostics` + the incremental
   // observation cache directly, without a second serial de-Am pass.
   std::vector<SliceInputCertification> input_certification;
+  // W3.4 (F4): per-expiry build outcome for EVERY chain walked (‖ under.chains,
+  // in chain order — NOT the fitted-slice order of context/per_expiry). Always
+  // populated so admission can distinguish a thin/absent expiry from a defect
+  // (`ExpiryFitReport` / `ExpiryFitOutcome` are defined in surface_parity.hpp).
+  std::vector<ExpiryFitReport> expiry_reports;
   SurfaceFitStageTimings fit_timings{};
 };
 

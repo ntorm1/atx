@@ -394,7 +394,9 @@ TEST(SelectorBudget, UnlimitedDefaultEvaluatesEveryCandidate) {
   const Underlying under = make_bumpy_underlying();
   const SurfaceParityInputs in = bumpy_inputs();
 
-  const auto selected = select_curve(under, in);
+  // R-33: `select_curve` no longer defaults `sel`; pass the unbounded research
+  // config explicitly (the behavior this test asserts).
+  const auto selected = select_curve(under, in, atx::vol::SelectorConfig{});
   ASSERT_TRUE(selected.has_value()) << selected.error().to_string();
   EXPECT_FALSE(selected->budget_exhausted);
   EXPECT_EQ(selected->scores_evaluated, selected->scores.size());

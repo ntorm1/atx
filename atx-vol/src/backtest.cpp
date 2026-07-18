@@ -94,7 +94,11 @@ public:
   [[nodiscard]] std::vector<Lot> &reset_alive_scratch(std::size_t capacity) {
     alive_.clear();
     if (alive_.capacity() < capacity) {
-      alive_.reserve(capacity);
+      // R-35: grow geometrically, not to the EXACT requested capacity. A book
+      // that grows a lot at a time across steps would otherwise trigger an
+      // exact reserve every step (O(n^2) reallocations); doubling keeps the
+      // amortized growth this reused scratch buffer is meant to provide.
+      alive_.reserve(std::max(capacity, alive_.capacity() * 2u));
     }
     return alive_;
   }
@@ -553,6 +557,12 @@ struct StepPnl {
     target_marks->prepare(alive.size());
   }
   if (!alive.empty()) {
+    // R-35: `alive` IS `retained`'s own alive_ scratch (from reset_alive_scratch
+    // above). Passing it back into retained.prepare() is a self-alias, and it is
+    // SAFE only because prepare() strictly READS `lots` (into positions_at /
+    // tenors_ / key_ copies) and never mutates alive_ (in particular never calls
+    // reset_alive_scratch). Keep it that way: prepare() must not write through the
+    // scratch buffer while it holds this reference.
     ATX_TRY(PortfolioPricer * pricer, retained.prepare(alive, base.ts_ns()));
     PortfolioWorkspace &workspace = retained.workspace();
     Result<PnlTotals> totals =

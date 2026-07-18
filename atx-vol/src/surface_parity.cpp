@@ -58,6 +58,14 @@ constexpr std::uint32_t kArbNGrid = 25;
 constexpr double kMonotoneKMin = -0.7;
 constexpr double kMonotoneKMax = 0.7;
 
+// W3.4 (F4): an EXPECTED slice failure is a genuinely thin / data-shaped outcome
+// (`NotFound` = fewer than the usable-row floor; `Unavailable` = non-positive
+// forward, audit-rejected rows). Every other code (`InvalidArgument`, `Internal`,
+// `OutOfRange`, …) is a real defect that the completeness contract propagates.
+[[nodiscard]] bool slice_error_is_expected(ErrorCode code) noexcept {
+  return code == ErrorCode::NotFound || code == ErrorCode::Unavailable;
+}
+
 // ── Calendar-floor-constrained slice fit (active-set) ────────────────────
 //
 // Fit this slice subject to a calendar floor w(k) >= w_prev(k) over the slice's
@@ -202,6 +210,12 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
   std::vector<PendingSlice> pending;
   pending.reserve(n_chains);
 
+  // W3.4 (F4): per-expiry build outcome for EVERY chain walked (‖ under.chains,
+  // in chain order). Lets admission distinguish a thin/absent expiry from a real
+  // defect and stop treating a partial fit as a clean success.
+  std::vector<ExpiryFitReport> expiry_reports;
+  expiry_reports.reserve(n_chains);
+
   double worst = std::numeric_limits<double>::infinity();
   std::size_t idx = 0; // ascending write index / fitted-slice count
   // Expiries dropped because carry could not be resolved (confidence gate /
@@ -246,6 +260,8 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
     const Chain &chain = under.chains[chain_index];
     const double T = chain.T;
     if (!(T > 0.0)) {
+      expiry_reports.push_back(
+          ExpiryFitReport{chain_index, T, ExpiryFitOutcome::Skipped, 0, ErrorCode::Unknown});
       continue; // degenerate maturity: skip (not fatal)
     }
 
@@ -261,16 +277,33 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
       ms_deam += prep_diag.observation_deam_ms;
     }
     if (!prepared_result.has_value()) {
+      const ErrorCode prep_code = prepared_result.error().code();
       if (prep_diag.carry_failed) {
         // No slice, but the skip is counted, not hidden (§5.2).
         ++n_carry_skipped;
-      } else if (prep_diag.n_fit_rows + prep_diag.n_audit_dropped >= kMinPreparedFitRows) {
-        // Fewer than the minimum usable strikes survived, but the slice would
-        // have reached the floor but for rows the fit-inversion audit dropped
-        // — the gap was CREATED by the audit; count it so admission can
-        // surface it instead of serving a silently thinner surface. Genuinely
-        // sparse slices keep the historical silent-skip shape.
-        ++n_audit_starved;
+        expiry_reports.push_back(ExpiryFitReport{chain_index, T, ExpiryFitOutcome::CarryFailed,
+                                                   0, prep_code});
+      } else if (!slice_error_is_expected(prep_code)) {
+        // W3.4 (F4): a HARD preparation defect (not carry, not thin) — surface it
+        // and, under the completeness contract, fail the board instead of
+        // silently publishing the rest as a clean partial fit.
+        expiry_reports.push_back(
+            ExpiryFitReport{chain_index, T, ExpiryFitOutcome::PrepFailed, 0, prep_code});
+        if (in.fail_board_on_hard_slice_error) {
+          return Err(prep_code, "run_surface_parity: expiry preparation failed (hard): " +
+                                    prepared_result.error().to_string());
+        }
+      } else {
+        if (prep_diag.n_fit_rows + prep_diag.n_audit_dropped >= kMinPreparedFitRows) {
+          // Fewer than the minimum usable strikes survived, but the slice would
+          // have reached the floor but for rows the fit-inversion audit dropped
+          // — the gap was CREATED by the audit; count it so admission can
+          // surface it instead of serving a silently thinner surface. Genuinely
+          // sparse slices keep the historical silent-skip shape.
+          ++n_audit_starved;
+        }
+        expiry_reports.push_back(
+            ExpiryFitReport{chain_index, T, ExpiryFitOutcome::PrepStarved, 0, prep_code});
       }
       continue;
     }
@@ -294,8 +327,21 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
     if (time_stages)
       ms_fit += now_ns() - t_fit;
     if (!slice_res) {
+      // W3.4 (F4): record the fit failure and, under the completeness contract,
+      // propagate a HARD fit error instead of silently dropping the slice.
+      const ErrorCode fit_code = slice_res.error().code();
+      expiry_reports.push_back(ExpiryFitReport{
+          chain_index, T, ExpiryFitOutcome::FitFailed, prepared.fit_observations().size(),
+          fit_code});
+      if (in.fail_board_on_hard_slice_error && !slice_error_is_expected(fit_code)) {
+        return Err(fit_code, "run_surface_parity: expiry slice fit failed (hard): " +
+                                 slice_res.error().to_string());
+      }
       continue; // a slice that fails to fit contributes no slice
     }
+    expiry_reports.push_back(ExpiryFitReport{
+        chain_index, T, ExpiryFitOutcome::Fitted, prepared.fit_observations().size(),
+        ErrorCode::Unknown});
     prev_slice = *slice_res; // carry forward for the next slice's calendar floor
     has_prev = true;
 
@@ -417,6 +463,7 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
       n_calendar_viol_pre,   n_carry_skipped,
       n_audit_starved,
   };
+  out.expiry_reports = std::move(expiry_reports); // W3.4 (F4): ‖ under.chains, chain order
   if (in.collect_stage_timings) {
     out.fit_timings.carry_solve_ms = ms_carry;
     out.fit_timings.observation_deam_ms = ms_deam;

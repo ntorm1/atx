@@ -51,6 +51,7 @@ using atx::vol::chain_index;
 using atx::vol::CurveConfig;
 using atx::vol::data_install;
 using atx::vol::ErrorCode;
+using atx::vol::ExpiryFitOutcome;
 using atx::vol::VolCurveKind;
 using atx::vol::DividendEvent;
 using atx::vol::fit_curve_surface;
@@ -566,4 +567,126 @@ TEST(CurveFitSliceFallback, FlagDoesNotPerturbSucceedingFit) {
   EXPECT_EQ(rep_on->n_slice_linear_fallback, 0u);
   ASSERT_EQ(rep_off->n_slices, rep_on->n_slices);
   expect_bit_identical(*rep_off, *rep_on, /*strict_finite*/ true);
+}
+
+// F3 (W3.3) gate: the opt-in per-slice Legacy-prep rescue (thin-slice recovery).
+// A very tight max_spread_to_mid_pct starves the Configured observation funnel on
+// EVERY slice (synthetic spread/mid ~0.5% > the 0.1% cap => build_observations_
+// european drops all rows => NotFound), while the permissive
+// LegacyEssviCompatibility predicate ignores that spread cap and keeps them. With
+// the flag OFF the board starves to NotFound (byte-identical historical drop);
+// with the flag ON each starved slice is re-prepared under Legacy and served,
+// recovering the whole board — the "80% failure" cohort mechanism in miniature.
+TEST(CurveFitLegacyPrepRescue, RecoversConfiguredStarvedSlices) {
+  const Underlying under = make_synthetic_underlying();
+  CurveConfig cfg;  // default ConvexDense
+
+  // Flag OFF: Configured starves every slice => surface empty => NotFound.
+  SurfaceParityInputs in_off = base_inputs(1);
+  in_off.calib.max_spread_to_mid_pct = 0.001;  // 0.1% cap starves Configured prep
+  auto rep_off = fit_curve_surface(under, in_off, cfg);
+  ASSERT_FALSE(rep_off.has_value());
+  EXPECT_EQ(rep_off.error().code(), ErrorCode::NotFound);
+
+  // Flag ON: each starved slice recovered under LegacyEssviCompatibility prep.
+  SurfaceParityInputs in_on = in_off;
+  in_on.per_slice_legacy_prep_fallback = true;
+  auto rep_on = fit_curve_surface(under, in_on, cfg);
+  ASSERT_TRUE(rep_on.has_value()) << rep_on.error().to_string();
+  EXPECT_EQ(rep_on->n_slices, 4u);
+  EXPECT_EQ(rep_on->n_slices_legacy_rescued, 4u);
+  EXPECT_EQ(rep_on->n_slices_starved, 0u);
+  ASSERT_EQ(rep_on->surface.n_slices(), 4u);
+}
+
+// The rescue flag must not perturb a board whose Configured preparation already
+// succeeds: flag-on is bit-identical to flag-off and no slice is rescued.
+TEST(CurveFitLegacyPrepRescue, FlagDoesNotPerturbHealthyBoard) {
+  const Underlying under = make_synthetic_underlying();
+  CurveConfig cfg;  // default ConvexDense, fits every slice under Configured
+
+  const SurfaceParityInputs in_off = base_inputs(1);
+  auto rep_off = fit_curve_surface(under, in_off, cfg);
+  ASSERT_TRUE(rep_off.has_value()) << rep_off.error().to_string();
+
+  SurfaceParityInputs in_on = base_inputs(1);
+  in_on.per_slice_legacy_prep_fallback = true;
+  auto rep_on = fit_curve_surface(under, in_on, cfg);
+  ASSERT_TRUE(rep_on.has_value()) << rep_on.error().to_string();
+
+  EXPECT_EQ(rep_off->n_slices_legacy_rescued, 0u);
+  EXPECT_EQ(rep_on->n_slices_legacy_rescued, 0u);
+  EXPECT_EQ(rep_on->n_slices_starved, 0u);
+  ASSERT_EQ(rep_off->n_slices, rep_on->n_slices);
+  expect_bit_identical(*rep_off, *rep_on, /*strict_finite*/ true);
+}
+
+// F4 (W3.4) gate: the per-expiry outcome taxonomy is populated for every chain
+// walked. A fully healthy board reports Fitted for all four expiries.
+TEST(CurveFitExpiryTaxonomy, HealthyBoardReportsAllFitted) {
+  const Underlying under = make_synthetic_underlying();
+  CurveConfig cfg;  // ConvexDense fits all four
+  auto rep = fit_curve_surface(under, base_inputs(1), cfg);
+  ASSERT_TRUE(rep.has_value()) << rep.error().to_string();
+  ASSERT_EQ(rep->expiry_reports.size(), 4u);
+  for (const auto& er : rep->expiry_reports) {
+    EXPECT_EQ(er.outcome, ExpiryFitOutcome::Fitted);
+    EXPECT_EQ(er.error, ErrorCode::Unknown);
+  }
+  EXPECT_EQ(rep->n_slices, 4u);
+}
+
+// F4 (W3.4): a PARTIAL board (one thin expiry that starves Configured prep) is
+// still served, but the report now carries an explicit per-expiry reason for the
+// dropped slice instead of silently omitting it (F-02 honesty at the driver).
+// Because the thin expiry is a SOFT (NotFound) starve, the completeness contract
+// (fail_board_on_hard_slice_error) does NOT fail the board — the deliberate
+// Mark-policy tolerance for genuinely sparse expiries is preserved.
+TEST(CurveFitExpiryTaxonomy, ReportsPerExpiryOutcomesOnPartialBoard) {
+  Underlying under;  // three dense + one thin (< kMinPreparedFitRows OTM rows)
+  under.spot = kSpot;
+  under.chains.push_back(make_chain(0.10, 17));
+  under.chains.push_back(make_chain(0.30, 4));  // starves Configured prep
+  under.chains.push_back(make_chain(0.60, 17));
+  under.chains.push_back(make_chain(1.00, 17));
+
+  CurveConfig cfg;  // ConvexDense
+  const SurfaceParityInputs in = base_inputs(1);
+  auto rep = fit_curve_surface(under, in, cfg);
+  ASSERT_TRUE(rep.has_value()) << rep.error().to_string();  // partial fit still succeeds
+  ASSERT_EQ(rep->expiry_reports.size(), 4u);
+  EXPECT_EQ(rep->expiry_reports[0].outcome, ExpiryFitOutcome::Fitted);
+  EXPECT_EQ(rep->expiry_reports[1].outcome, ExpiryFitOutcome::PrepStarved);
+  EXPECT_EQ(rep->expiry_reports[2].outcome, ExpiryFitOutcome::Fitted);
+  EXPECT_EQ(rep->expiry_reports[3].outcome, ExpiryFitOutcome::Fitted);
+  EXPECT_EQ(rep->n_slices, 3u);
+
+  SurfaceParityInputs in_strict = in;
+  in_strict.fail_board_on_hard_slice_error = true;
+  auto rep_strict = fit_curve_surface(under, in_strict, cfg);
+  ASSERT_TRUE(rep_strict.has_value()) << rep_strict.error().to_string();  // soft thin not escalated
+  EXPECT_EQ(rep_strict->n_slices, 3u);
+}
+
+// F4 (W3.4): the F-02 driver fix. A HARD slice-fit failure (forced SplineVol
+// InvalidArgument) is DROPPED by default (historical: board fails only at zero
+// slices), but under the completeness contract it is PROPAGATED verbatim so the
+// caller/ladder sees a real defect instead of a partial fit published as success.
+TEST(CurveFitExpiryTaxonomy, HardFitErrorPropagatesUnderCompletenessContract) {
+  const Underlying under = make_synthetic_underlying();
+  CurveConfig cfg;
+  cfg.kind = VolCurveKind::SplineVol;
+  cfg.spline.min_obs = 999;  // every SplineVol fit fails with InvalidArgument (hard)
+
+  // Flag OFF: every slice drops => surface empty => NotFound (historical).
+  auto rep_off = fit_curve_surface(under, base_inputs(1), cfg);
+  ASSERT_FALSE(rep_off.has_value());
+  EXPECT_EQ(rep_off.error().code(), ErrorCode::NotFound);
+
+  // Flag ON: the first hard fit failure is propagated verbatim.
+  SurfaceParityInputs in_on = base_inputs(1);
+  in_on.fail_board_on_hard_slice_error = true;
+  auto rep_on = fit_curve_surface(under, in_on, cfg);
+  ASSERT_FALSE(rep_on.has_value());
+  EXPECT_EQ(rep_on.error().code(), ErrorCode::InvalidArgument);
 }

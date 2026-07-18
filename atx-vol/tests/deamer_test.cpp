@@ -198,6 +198,46 @@ TEST(DeAmer, CarrySolveUsesItsOwnAndersenLakePreset) {
   EXPECT_NEAR(resolved->forward, expected->forward, 1.0e-10);
 }
 
+// R-27: default-constructed DeAmOptions moved every library caller to the
+// fast-AL / 5-pair carry solve, and carry is unaudited by design. This pins that
+// even in a HIGH-DIVIDEND regime (F/S ~= 0.90, driven by a large mid-life cash
+// dividend so the ATM co-terminal pairs are deep-ITM puts / OTM calls) the
+// implied borrow stays within the economic 1e-4 bound under BOTH the fast carry
+// preset (the default) and the accurate one — so the fast default is not silently
+// trading carry accuracy away where the dividend load is heaviest.
+TEST(DeAmer, HighDividendCarryHoldsFastVsAccurateWithinEconomicBound) {
+  Scenario sc;
+  sc.divs = {{years_to_ns(0.5), 17.0}}; // ~17% mid-life cash div -> F/S ~= 0.90
+  const double b_true = 0.02;
+  const std::vector<double> strikes{85.0, 90.0, 95.0, 100.0, 105.0};
+  const Chain chain = make_synthetic_chain(sc, b_true, strikes);
+
+  const double f_true =
+      hybrid_forward(sc.S, sc.r, b_true, sc.T, sc.divs, sc.expiry_ns, sc.now_ns, sc.hyb);
+  ASSERT_LT(f_true / sc.S, 0.95) << "fixture must exercise a high-dividend (F/S << 1) regime";
+
+  const auto resolve_with = [&](const std::optional<atx::vol::AlOpts> &carry_preset) {
+    DeAmOptions opts;
+    opts.hyb = sc.hyb;
+    opts.n_atm = 3;
+    opts.max_borrow_pairs = strikes.size();
+    opts.carry_al_opts = carry_preset;
+    return resolve_chain_forward(chain, sc.S, sc.r, sc.divs, sc.now_ns, opts);
+  };
+
+  const auto fast = resolve_with(al_fast_opts());      // the default carry preset
+  const auto accurate = resolve_with(std::nullopt);    // cold accurate Andersen-Lake
+  ASSERT_TRUE(fast.has_value()) << (fast ? std::string{} : fast.error().to_string());
+  ASSERT_TRUE(accurate.has_value()) << (accurate ? std::string{} : accurate.error().to_string());
+
+  EXPECT_NEAR(fast->borrow, b_true, 1e-4);
+  EXPECT_NEAR(accurate->borrow, b_true, 1e-4);
+  EXPECT_NEAR(fast->forward, f_true, 1e-4 * sc.S);
+  EXPECT_NEAR(accurate->forward, f_true, 1e-4 * sc.S);
+  // Fast and accurate presets must agree with each other, not just with truth.
+  EXPECT_NEAR(fast->borrow, accurate->borrow, 1e-4);
+}
+
 TEST(DeAmer, RobustCarryRejectsOneBadAtmPairAndReportsSensitivity) {
   const Scenario sc;
   const double b_true = 0.031;
