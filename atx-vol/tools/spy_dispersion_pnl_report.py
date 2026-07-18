@@ -211,6 +211,25 @@ def build(meta: dict, df: pd.DataFrame, out: Path) -> None:
         tag += f" · Alphabet dedup: dropped {dropped}"
     fig.text(0.965, 0.018, tag, ha="right", fontsize=8.5, color=MUTE, style="italic")
 
+    # Calendar-gap annotation (I1): make silent holes / a narrowed window loud on
+    # the artifact itself so the PNG can be audited against the request.
+    try:
+        missing = int(float(meta.get("missing_sessions", "0") or 0))
+    except (TypeError, ValueError):
+        missing = 0
+    narrowed = meta.get("window_narrowed", "no") == "yes"
+    if missing > 0 or narrowed:
+        parts = []
+        if missing > 0:
+            parts.append(f"{missing} expected session(s) MISSING from the run")
+        if narrowed:
+            parts.append(
+                f"window narrowed to {meta.get('window_start','?')}→{meta.get('window_end','?')} "
+                f"(requested {meta.get('requested_start','?')}→{meta.get('requested_end','?')})"
+            )
+        fig.text(0.068, 0.018, "[!] CALENDAR GAP: " + "; ".join(parts),
+                 ha="left", fontsize=9, fontweight="bold", color=NEG)
+
     fig.savefig(out, dpi=150, facecolor=PAPER)
     plt.close(fig)
     print(f"[spy_dispersion_pnl_report] wrote {out}")

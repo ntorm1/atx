@@ -377,11 +377,26 @@ def main() -> int:
         parents = [to_parent(s) for s in miss]
         digest = hashlib.sha256((date + "|" + ",".join(sorted(miss))).encode()).hexdigest()[:12]
         dbn_path = dbn_dir / f"{date}_{args.snap_utc.replace(':', '')}_{digest}.dbn.zst"
+        store = None
+        tag = ""
         if dbn_path.exists():
-            store = db.DBNStore.from_file(dbn_path)
-            tag = "cached"
-        else:
-            store = None
+            # A crash DURING a prior DBN write can leave a torn/corrupt .dbn.zst
+            # that still exists() and would raise on every resume. Guard the
+            # decode: on failure, quarantine the bad file (.corrupt) and fall
+            # through to re-pull rather than wedging the whole run.
+            try:
+                store = db.DBNStore.from_file(dbn_path)
+                tag = "cached"
+            except Exception as exc:  # noqa: BLE001
+                corrupt = dbn_path.parent / (dbn_path.name + ".corrupt")
+                try:
+                    os.replace(dbn_path, corrupt)
+                except OSError:
+                    pass
+                print(f"  {date}: cached DBN unreadable ({str(exc)[:70]}); quarantined "
+                      f"-> {corrupt.name}, re-pulling", file=sys.stderr)
+                store = None
+        if store is None:
             for attempt in range(6):
                 try:
                     store = client.timeseries.get_range(
@@ -396,7 +411,11 @@ def main() -> int:
                 print(f"  {date}: FAILED after retries — left for a later resume", file=sys.stderr)
                 failed_days.append(date)
                 continue
-            store.to_file(dbn_path)
+            # Atomic cache write (same-fs tmp -> os.replace), so a crash during
+            # the write never leaves a torn .dbn.zst that wedges the next resume.
+            dbn_tmp = dbn_path.parent / (dbn_path.name + ".tmp")
+            store.to_file(dbn_tmp)
+            os.replace(dbn_tmp, dbn_path)
             tag = "pulled"
         assert store is not None  # None path already continued above
         nf, nu = decode_and_split(store, date, args.snap_utc, root_to_sym,

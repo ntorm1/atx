@@ -37,6 +37,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -121,6 +122,39 @@ constexpr int kNumDates = 12;
   EXPECT_TRUE(db.has_value()) << (db.has_value() ? std::string{} : db.error().to_string());
   const std::int64_t base_ts = 1'700'000'000'000'000'000LL;
   for (int d = 0; d < kNumDates; ++d) {
+    char date[11];
+    std::snprintf(date, sizeof date, "2026-03-%02d", d + 1);
+    const std::int64_t ts = base_ts + static_cast<std::int64_t>(d) * kDayNs;
+    std::vector<PricedSurface> surfaces;
+    surfaces.reserve(kNames.size() + 1);
+    for (std::size_t i = 0; i < kNames.size(); ++i) {
+      const double spot = kBaseSpot[i] * (1.0 + 0.004 * static_cast<double>(d));
+      surfaces.push_back(make_surface(spot, ts, kVolBump[i], static_cast<std::uint32_t>(i + 1)));
+    }
+    surfaces.push_back(make_surface(kIndexSpot * (1.0 + 0.003 * static_cast<double>(d)), ts, 0.0,
+                                    static_cast<std::uint32_t>(kNames.size() + 1)));
+    std::vector<SurfaceArchiveItem> items;
+    items.reserve(surfaces.size());
+    for (std::size_t i = 0; i < kNames.size(); ++i) {
+      items.push_back(SurfaceArchiveItem{kNames[i], &surfaces[i]});
+    }
+    items.push_back(SurfaceArchiveItem{kIndexSym, &surfaces.back()});
+    EXPECT_TRUE(db->write_partition(date, items).has_value());
+  }
+  return root;
+}
+
+// Same fixture db, but OMITTING day index `skip_day` (0-based) — an F-c
+// fit-dropped session that leaves no partition (a silent mid-range hole).
+[[nodiscard]] fs::path build_fixture_db_skip(std::string_view tag, int skip_day) {
+  const fs::path root = test_root(tag);
+  auto db = SurfaceDb::create(root.string());
+  EXPECT_TRUE(db.has_value()) << (db.has_value() ? std::string{} : db.error().to_string());
+  const std::int64_t base_ts = 1'700'000'000'000'000'000LL;
+  for (int d = 0; d < kNumDates; ++d) {
+    if (d == skip_day) {
+      continue; // the dropped session — no partition written
+    }
     char date[11];
     std::snprintf(date, sizeof date, "2026-03-%02d", d + 1);
     const std::int64_t ts = base_ts + static_cast<std::int64_t>(d) * kDayNs;
@@ -413,4 +447,69 @@ TEST(SpyDispersionPnl, Determinism_TwoRunAndThreads) {
   expect_result_bit_identical(*a, *c);
   std::error_code ec;
   fs::remove_all(db_root, ec);
+}
+
+// ── 8. Calendar-gap audit (I1): a fit-dropped mid-range session is detectable ─
+// An F-c-dropped session leaves NO partition, so the clock built from the db
+// silently omits that date (a hole in the PnL track). The driver's audit
+// compares an expected trading calendar (what --expected-sessions supplies)
+// against the actual clock refs; the set-difference must surface exactly the
+// dropped session. A full-coverage db yields zero missing.
+TEST(SpyDispersionPnl, CalendarGapDetected) {
+  constexpr int kSkip = 6; // omit 2026-03-07
+  const fs::path db_root = build_fixture_db_skip("gap", kSkip);
+  auto db = SurfaceDb::open(db_root.string());
+  ASSERT_TRUE(db.has_value()) << db.error().to_string();
+  auto clock = Clock::from_surface_db(*db);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  // The dropped session leaves no partition -> the clock is one ref short and
+  // that date is absent (the silent hole the audit must catch).
+  ASSERT_EQ(clock->refs().size(), static_cast<std::size_t>(kNumDates - 1));
+
+  std::set<std::string> actual;
+  for (const SnapshotRef &ref : clock->refs()) {
+    actual.insert(ref.date);
+  }
+  char skipped[11];
+  std::snprintf(skipped, sizeof skipped, "2026-03-%02d", kSkip + 1);
+  EXPECT_EQ(actual.count(skipped), 0u) << "dropped session should be absent from the clock";
+
+  // Expected trading calendar = the full kNumDates sessions (as an external
+  // --expected-sessions file would list). Set-difference == the dropped date.
+  std::vector<std::string> expected;
+  for (int d = 0; d < kNumDates; ++d) {
+    char buf[11];
+    std::snprintf(buf, sizeof buf, "2026-03-%02d", d + 1);
+    expected.emplace_back(buf);
+  }
+  std::vector<std::string> missing;
+  for (const std::string &d : expected) {
+    if (actual.find(d) == actual.end()) {
+      missing.push_back(d);
+    }
+  }
+  ASSERT_EQ(missing.size(), 1u);
+  EXPECT_EQ(missing[0], std::string(skipped));
+
+  // Full coverage -> zero missing (no false positive).
+  const fs::path full_root = build_fixture_db("gap_full");
+  auto full_db = SurfaceDb::open(full_root.string());
+  ASSERT_TRUE(full_db.has_value()) << full_db.error().to_string();
+  auto full_clock = Clock::from_surface_db(*full_db);
+  ASSERT_TRUE(full_clock.has_value()) << full_clock.error().to_string();
+  std::set<std::string> full_actual;
+  for (const SnapshotRef &ref : full_clock->refs()) {
+    full_actual.insert(ref.date);
+  }
+  std::size_t full_missing = 0;
+  for (const std::string &d : expected) {
+    if (full_actual.find(d) == full_actual.end()) {
+      ++full_missing;
+    }
+  }
+  EXPECT_EQ(full_missing, 0u);
+
+  std::error_code ec;
+  fs::remove_all(db_root, ec);
+  fs::remove_all(full_root, ec);
 }

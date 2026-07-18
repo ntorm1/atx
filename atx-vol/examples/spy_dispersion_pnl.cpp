@@ -22,12 +22,14 @@
 // Exit codes: 2 bad args, 1 runtime error. OFF by default (ATX_BUILD_EXAMPLES).
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -99,7 +101,7 @@ using Meta = std::vector<std::pair<std::string, std::string>>;
   const std::string canon_index = canonical_symbol(index_sym);
   std::vector<std::string> names;
   std::string line;
-  bool header = true;
+  bool first = true;
   while (std::getline(in, line)) {
     if (!line.empty() && line.back() == '\r') {
       line.pop_back();
@@ -109,14 +111,20 @@ using Meta = std::vector<std::pair<std::string, std::string>>;
     }
     const char delim = (line.find('\t') != std::string::npos) ? '\t' : ',';
     const std::vector<std::string> f = split(line, delim);
-    if (header) {
-      header = false; // skip the column-name row
+    if (f.empty()) {
       continue;
     }
-    if (f.size() < 2) {
-      continue;
+    // D1 universe schema puts the symbol in column 1 (effective_date,symbol,...);
+    // a bare one-symbol-per-line list puts it in column 0.
+    const std::string &symbol = (f.size() >= 2) ? f[1] : f[0];
+    if (first) {
+      first = false;
+      // Skip the first row ONLY when it is a genuine column-name header (content
+      // detection), so a headerless file does not silently lose its first symbol.
+      if (canonical_symbol(f[0]) == "EFFECTIVE_DATE" || canonical_symbol(symbol) == "SYMBOL") {
+        continue;
+      }
     }
-    const std::string &symbol = f[1];
     if (canonical_symbol(symbol) == canon_index) {
       continue; // the index leg is added separately
     }
@@ -190,6 +198,45 @@ using Meta = std::vector<std::pair<std::string, std::string>>;
   return Clock::from_manifest(m);
 }
 
+// Looks like an ISO date `YYYY-MM-DD` (cheap; the audit only needs to skip a
+// header row and pick the date column, not validate the calendar).
+[[nodiscard]] bool looks_like_date(std::string_view s) {
+  return s.size() == 10 && s[4] == '-' && s[7] == '-' && std::isdigit((unsigned char)s[0]);
+}
+
+// Read an explicit trading-session calendar: one date per row (a bare list, or
+// any tab/comma-separated table whose FIRST date-shaped column is the session
+// date). Non-date first tokens (headers) are skipped. Deduped, sorted.
+[[nodiscard]] Result<std::vector<std::string>> read_expected_sessions(const std::string &path) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    return atx::core::Err(ErrorCode::NotFound, "cannot open --expected-sessions: " + path);
+  }
+  std::set<std::string> dates;
+  std::string line;
+  while (std::getline(in, line)) {
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+    if (line.empty() || line[0] == '#') {
+      continue;
+    }
+    const char delim = (line.find('\t') != std::string::npos) ? '\t'
+                       : (line.find(',') != std::string::npos) ? ','
+                                                               : ' ';
+    for (const std::string &tok : split(line, delim)) {
+      if (looks_like_date(tok)) {
+        dates.insert(tok);
+        break; // first date-shaped column is the session date
+      }
+    }
+  }
+  if (dates.empty()) {
+    return atx::core::Err(ErrorCode::InvalidArgument, "--expected-sessions has no dates: " + path);
+  }
+  return atx::core::Ok(std::vector<std::string>(dates.begin(), dates.end()));
+}
+
 struct Args {
   std::string db;
   std::string out;
@@ -198,6 +245,7 @@ struct Args {
   std::string index_symbol{"SPY"};
   std::string start;                       // inclusive window bounds (empty = whole db)
   std::string end;
+  std::string expected_sessions;           // optional trading-calendar file (gap audit)
   std::size_t top_n{50};                   // cap on names after dedup
   double delta{0.40};
   double tenor_days{90.0};
@@ -212,8 +260,8 @@ void usage() {
   std::fprintf(stderr,
                "usage: spy_dispersion_pnl --db DIR [--out DIR] "
                "[--universe FILE | --names A,B,C] [--index SPY] "
-               "[--start YYYY-MM-DD] [--end YYYY-MM-DD] [--top-n 50] "
-               "[--delta 0.40] [--tenor-days 90] [--theta-per-name 10.0] "
+               "[--start YYYY-MM-DD] [--end YYYY-MM-DD] [--expected-sessions FILE] "
+               "[--top-n 50] [--delta 0.40] [--tenor-days 90] [--theta-per-name 10.0] "
                "[--min-names 4] [--no-hedge] [--frictions] [--threads N]\n");
 }
 
@@ -235,6 +283,8 @@ void usage() {
       a.start = nv();
     } else if (arg == "--end") {
       a.end = nv();
+    } else if (arg == "--expected-sessions") {
+      a.expected_sessions = nv();
     } else if (arg == "--top-n") {
       a.top_n = static_cast<std::size_t>(std::strtoul(nv(), nullptr, 10));
     } else if (arg == "--delta") {
@@ -306,6 +356,78 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  // ── Calendar-gap audit (I1): the PNG must be auditable against the request. ──
+  // A trading day missing from the db (an F-c fit-drop) leaves no partition and
+  // silently holes/narrows the track; the meta records the ACTUAL window only.
+  // Here we record requested-vs-actual and count expected sessions absent from
+  // the run. Expected-session source: `--expected-sessions` (a trading calendar
+  // — the ONLY way to see interior F-c drops, since the db cannot self-report a
+  // date it never wrote), else the db's own in-range partition dates (self-
+  // contained: surfaces boundary narrowing, but missing==0 for interior holes).
+  const std::string actual_start = clock->refs().front().date;
+  const std::string actual_end = clock->refs().back().date;
+  const std::string requested_start = args.start.empty() ? actual_start : args.start;
+  const std::string requested_end = args.end.empty() ? actual_end : args.end;
+  std::set<std::string> actual_dates;
+  for (const SnapshotRef &ref : clock->refs()) {
+    actual_dates.insert(ref.date);
+  }
+  std::vector<std::string> expected;
+  std::string calendar_source;
+  if (!args.expected_sessions.empty()) {
+    auto es = read_expected_sessions(args.expected_sessions);
+    if (!es) {
+      std::fprintf(stderr, "read_expected_sessions: %s\n", es.error().to_string().c_str());
+      return 1;
+    }
+    for (const std::string &d : *es) {
+      if (d >= requested_start && d <= requested_end) {
+        expected.push_back(d);
+      }
+    }
+    calendar_source = "expected_sessions_file";
+  } else {
+    for (const auto &p : db->partitions()) {
+      if (p.key >= requested_start && p.key <= requested_end) {
+        expected.push_back(p.key);
+      }
+    }
+    calendar_source = "db_partitions";
+  }
+  std::sort(expected.begin(), expected.end());
+  expected.erase(std::unique(expected.begin(), expected.end()), expected.end());
+  std::vector<std::string> missing;
+  for (const std::string &d : expected) {
+    if (actual_dates.find(d) == actual_dates.end()) {
+      missing.push_back(d);
+    }
+  }
+  const bool window_narrowed = (!args.start.empty() && actual_start > args.start) ||
+                               (!args.end.empty() && actual_end < args.end);
+  std::string missing_list = "none";
+  if (!missing.empty()) {
+    missing_list.clear();
+    const std::size_t cap = std::min<std::size_t>(missing.size(), 30);
+    for (std::size_t i = 0; i < cap; ++i) {
+      if (i != 0) {
+        missing_list += ',';
+      }
+      missing_list += missing[i];
+    }
+    if (missing.size() > cap) {
+      missing_list += ",...(+" + std::to_string(missing.size() - cap) + " more)";
+    }
+    std::fprintf(stderr,
+                 "WARNING: %zu expected session(s) missing from the run (source=%s): %s\n",
+                 missing.size(), calendar_source.c_str(), missing_list.c_str());
+  }
+  if (window_narrowed) {
+    std::fprintf(stderr,
+                 "WARNING: window narrowed — requested [%s .. %s] but db covers [%s .. %s]\n",
+                 requested_start.c_str(), requested_end.c_str(), actual_start.c_str(),
+                 actual_end.c_str());
+  }
+
   DispersionStrangleConfig cfg;
   cfg.names = names;
   cfg.index_symbol = args.index_symbol;
@@ -362,8 +484,15 @@ int main(int argc, char **argv) {
       {"db_root", db->root()},
       {"db_generation", std::to_string(db->generation())},
       {"db_partitions", std::to_string(db->partitions().size())},
-      {"window_start", clock->refs().front().date},
-      {"window_end", clock->refs().back().date},
+      {"window_start", actual_start},
+      {"window_end", actual_end},
+      {"requested_start", requested_start},
+      {"requested_end", requested_end},
+      {"calendar_source", calendar_source},
+      {"expected_sessions", std::to_string(expected.size())},
+      {"missing_sessions", std::to_string(missing.size())},
+      {"missing_sessions_list", missing_list},
+      {"window_narrowed", window_narrowed ? "yes" : "no"},
       {"n_steps", std::to_string(r.size())},
       {"n_names", std::to_string(cfg.names.size())},
       {"delta_target", fmt_num(cfg.target_abs_delta)},
@@ -402,7 +531,9 @@ int main(int argc, char **argv) {
       dropped_alphabet.empty() ? std::string{}
                                : (" | dropped " + dropped_alphabet + " (Alphabet dedup)");
   std::printf("=== SPY vega-flat dispersion PnL track ===\n"
-              "db: %s (gen %llu) | window: %s .. %s (%zu steps)\n"
+              "db: %s (gen %llu) | requested: %s .. %s | actual: %s .. %s (%zu steps)\n"
+              "[audit] calendar_source=%s expected_sessions=%zu missing_sessions=%zu "
+              "window_narrowed=%s\n"
               "names: %zu vs index %s | delta=%.2f tenor=%.0fd theta/name=$%.2f/day held-to-expiry "
               "hedge=%s frictions=%s%s\n"
               "[timing] run_backtest: %.1f ms over %zu steps (%.1f steps/s) peak_lots=%.0f\n"
@@ -411,8 +542,10 @@ int main(int argc, char **argv) {
               "[wrote] %s\n"
               "  render: python tools/spy_dispersion_pnl_report.py %s\n",
               db->root().c_str(), static_cast<unsigned long long>(db->generation()),
-              clock->refs().front().date.c_str(), clock->refs().back().date.c_str(), r.size(),
-              cfg.names.size(), cfg.index_symbol.c_str(), cfg.target_abs_delta, cfg.tenor_days,
+              requested_start.c_str(), requested_end.c_str(), actual_start.c_str(),
+              actual_end.c_str(), r.size(), calendar_source.c_str(), expected.size(),
+              missing.size(), window_narrowed ? "yes" : "no", cfg.names.size(),
+              cfg.index_symbol.c_str(), cfg.target_abs_delta, cfg.tenor_days,
               cfg.theta_per_name_daily, args.hedge ? "on" : "off", args.frictions ? "on" : "off",
               dropped_note.c_str(), wall_ms, r.size(), steps_per_s, peak_lots, ts.total_return,
               ts.sharpe, ts.ann_vol, ts.max_drawdown, ts.hit_rate, ts.avg_gross_vega,

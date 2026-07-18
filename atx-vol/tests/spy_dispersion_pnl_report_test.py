@@ -142,6 +142,37 @@ class SpyDispersionPnlReportTest(unittest.TestCase):
             # a truncated / blank render.
             self.assertGreater(len(data), 20_000, "PNG is trivially small")
 
+    def test_renders_with_calendar_gap_annotation(self):
+        # I1(c): when meta records missing sessions / a narrowed window, the
+        # renderer still produces a PNG (the gap-annotation branch is taken).
+        with tempfile.TemporaryDirectory() as directory:
+            tsv = pathlib.Path(directory) / "gap.tsv"
+            gap_meta = dict(META)
+            gap_meta.update({
+                "requested_start": "2026-01-02",
+                "requested_end": "2026-07-17",
+                "window_start": "2026-01-02",
+                "window_end": "2026-07-10",
+                "calendar_source": "expected_sessions_file",
+                "expected_sessions": "10",
+                "missing_sessions": "2",
+                "missing_sessions_list": "2026-03-06,2026-05-11",
+                "window_narrowed": "yes",
+            })
+            with tsv.open("w", encoding="utf-8", newline="\n") as fh:
+                for k, v in gap_meta.items():
+                    fh.write(f"# {k}={v}\n")
+                fh.write("\t".join(SERIES_COLUMNS) + "\n")
+                for row in _synthetic_rows():
+                    fh.write("\t".join(str(row[c]) for c in SERIES_COLUMNS) + "\n")
+            result = run_script(tsv)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            out = tsv.with_name(tsv.stem + "_pnl_track.png")
+            self.assertTrue(out.exists())
+            data = out.read_bytes()
+            self.assertTrue(data.startswith(PNG_MAGIC))
+            self.assertGreater(len(data), 20_000)
+
     def test_custom_output_path(self):
         with tempfile.TemporaryDirectory() as directory:
             tsv = pathlib.Path(directory) / "run.tsv"

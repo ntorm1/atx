@@ -239,14 +239,25 @@ void append_backtest_series_tsv(std::string& out, const BacktestResult& r) {
   }
 }
 
-// Append the `# key=value` meta header (one line per entry, verbatim, in order).
+// Append `s` with any structural control character (newline, carriage return,
+// tab) replaced by a single space, so a meta key/value can never corrupt the
+// `# key=value` header framing or the `\t`-separated body that follows.
+void append_sanitized(std::string& out, std::string_view s) {
+  for (const char c : s) {
+    out += (c == '\n' || c == '\r' || c == '\t') ? ' ' : c;
+  }
+}
+
+// Append the `# key=value` meta header (one line per entry, in order). Keys and
+// values are sanitized (newline/CR/tab -> space) so no value can break out of
+// its line or inject a spurious column.
 void append_meta_header(std::string& out,
                         std::span<const std::pair<std::string, std::string>> meta) {
   for (const auto& [k, v] : meta) {
     out += "# ";
-    out += k;
+    append_sanitized(out, k);
     out += '=';
-    out += v;
+    append_sanitized(out, v);
     out += '\n';
   }
 }
