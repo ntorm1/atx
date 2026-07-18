@@ -21,6 +21,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
@@ -30,6 +31,7 @@
 #include <filesystem>
 #include <memory>
 #include <new>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -936,17 +938,20 @@ TEST(BacktestExec, HeldToExpiryDailyCohortsComposeAtScale) {
               kNames, kDates, max_lots, settle_rows);
 }
 
-// ── B5. Whole-loop parity + determinism gate ─────────────────────────────────
+// ── B5a. Strategy-overload hedge + cohort determinism (B3 + B4) ───────────────
 //
-// The full B1..B4 hot loop on the M2 universe shape (kNames 40Δ strangles,
-// EveryStep entry, HoldToExpiry, DeltaToZero DAILY hedge — subset-deser + batched
-// settlement marks + O(1) hedge ledger + daily overlapping cohorts) must be:
+// EXACT coverage: the STRATEGY overload on the M2 universe shape (kNames 40Δ
+// strangles, EveryStep entry, HoldToExpiry, DeltaToZero DAILY hedge). This exercises
+// B3 (the O(1) daily delta-hedge ledger, band 0.0 so it fires every step) and B4
+// (daily overlapping cohort accumulation). It does NOT exercise B1 subset-deser (the
+// strategy overload's private cache carries no referenced_uids => whole-board load)
+// nor B2 batched settlement (target_T=0.25 over kDates => no mid-run expiries,
+// pnl_settlement == 0 every row); those composed paths are gated by
+// FixedBookComposedSubsetAndSettlement_Deterministic (B1+B2) below and by B4's
+// HeldToExpiryDailyCohortsComposeAtScale (settlement at scale). Asserts:
 //   (a) bit-identical across two runs (determinism), and
 //   (b) bit-identical across thread counts (thread-invariant reductions).
-// This is the §3 determinism gate for the whole loop. (Economic parity vs the
-// pre-optimization path is carried by the per-task gates: B1/B3 are bit-identical
-// refactors and B2 is economic parity ~1e-9, pinned by ExpirySettlement.)
-TEST(BacktestExec, UniverseLoopParityAndDeterminism) {
+TEST(BacktestExec, StrategyLoopHedgeAndCohorts_Deterministic) {
   const fs::path dir = fresh_dir("b5-universe");
   constexpr int kNames = 4;
   constexpr int kDates = 12;
@@ -1023,7 +1028,117 @@ TEST(BacktestExec, UniverseLoopParityAndDeterminism) {
       EXPECT_TRUE(bits_equal(ca[k], cc[k])) << "thread-invariance col " << k << " row " << i;
     }
   }
-  std::printf("[btexec] B5 whole-loop: %d names x %d dates hedged; bit-identical over 2 runs and "
-              "1-vs-4 threads\n",
+  std::printf("[btexec] B5a strategy hedge+cohorts (B3+B4): %d names x %d dates hedged; bit-identical "
+              "over 2 runs and 1-vs-4 threads\n",
               kNames, kDates);
+}
+
+// ── B5b. Fixed-book composed subset-deser + batched settlement determinism (B1 + B2) ─
+//
+// The strategy gate above cannot exercise B1 (strategy overload = whole board) nor
+// B2 (no expiries), so this companion gates the composed FIXED-BOOK path where BOTH
+// run. The archive holds 4 names; the fixed book references only 2 (book ⊂ archive),
+// so the fixed-book overload's private cache subset-deserializes. To PROVE the
+// subset path is load-bearing (not merely present), the 2 UNREFERENCED surfaces are
+// written with a MISMATCHED now_ts_ns: a whole-board load then fails the
+// surfaces-agree-on-ts check (asserted as a positive control), while the subset load
+// of the 2 referenced (matching-ts) names succeeds — so a run that succeeds MUST have
+// taken the subset path. One book lot expires exactly on a mid-window clock date, so
+// B2 batched settlement fires (asserted: exactly one settling row). Then 2-run +
+// 1-vs-4-thread bit-identity over the composed run.
+TEST(BacktestExec, FixedBookComposedSubsetAndSettlement_Deterministic) {
+  const fs::path dir = fresh_dir("b5-composed");
+  constexpr int kDates = 6;
+  const std::int64_t kExpiry = kBaseNow + 3 * kDayNs; // settles at date index 3
+  static const char* kSyms[] = {"AAA", "BBB", "CCC", "DDD"};
+  const std::uint32_t ref_uids[] = {kUid, kUid + 2}; // referenced (AAA, CCC)
+
+  std::vector<std::pair<std::string, std::string>> dp;
+  for (int d = 0; d < kDates; ++d) {
+    const std::int64_t now = kBaseNow + static_cast<std::int64_t>(d) * kDayNs;
+    std::vector<PricedSurface> surfaces;
+    surfaces.reserve(4);
+    for (int u = 0; u < 4; ++u) {
+      const bool referenced = (u == 0 || u == 2);
+      // Unreferenced surfaces carry a DIFFERENT now_ts so a WHOLE-board load fails.
+      const std::int64_t ts = referenced ? now : now + 1000000;
+      const double S = (100.0 + 10.0 * static_cast<double>(u)) * (1.0 + 0.003 * static_cast<double>(d));
+      surfaces.push_back(make_surface(kUid + static_cast<std::uint32_t>(u), S, S, ts,
+                                      0.001 * static_cast<double>(d) + 0.002 * static_cast<double>(u)));
+    }
+    std::vector<SurfaceArchiveItem> items;
+    for (int u = 0; u < 4; ++u) {
+      items.push_back(SurfaceArchiveItem{kSyms[u], &surfaces[u]});
+    }
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "2026-08-%02d", d + 1);
+    const std::string path = (dir / (std::string(buf) + ".atxvsa")).string();
+    ASSERT_TRUE(write_surface_archive_v2_file(path, items).has_value());
+    dp.emplace_back(buf, path);
+  }
+  auto clock = Clock::from_manifest(make_manifest(dp, "AAA"));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  // Positive control: a WHOLE-BOARD load fails (mixed now_ts across the 4 surfaces).
+  auto whole = MarketSnapshot::load(dp.front().second);
+  EXPECT_FALSE(whole.has_value()) << "whole-board load should fail on mismatched now_ts_ns — the "
+                                     "subset path is what makes the run below succeed";
+  // The subset load of the 2 referenced (matching-ts) names succeeds with 2 surfaces.
+  auto sub = MarketSnapshot::load(dp.front().second, QueryPricingTier::LegacyCompatible,
+                                  std::span<const std::uint32_t>{ref_uids});
+  ASSERT_TRUE(sub.has_value()) << sub.error().to_string();
+  EXPECT_EQ(sub->surfaces().size(), 2u);
+
+  const auto make_book = [&]() {
+    PortfolioState b;
+    // kUid lot expires mid-window (settles at date 3); kUid+2 lot held past the window.
+    b.lots.push_back(
+        Lot{1, OptionContract{kUid, 100.0, 0.0, Side::Call}, +2.0, 100.0, kExpiry, 0, 0.0});
+    b.lots.push_back(Lot{2, OptionContract{kUid + 2, 120.0, 0.0, Side::Put}, -1.0, 100.0,
+                         kBaseNow + 120 * kDayNs, 0, 0.0});
+    return b;
+  };
+  const auto run = [&](unsigned n_threads) {
+    RunConfig cfg;
+    cfg.price.n_threads = n_threads; // default (null) cache => private subset cache (B1)
+    return run_backtest(*clock, make_book(), cfg);
+  };
+
+  auto a = run(1);
+  ASSERT_TRUE(a.has_value()) << (a.has_value() ? std::string{} : a.error().to_string())
+                             << " (the fixed-book subset run must succeed even though the "
+                                "whole-board load fails — proof the B1 subset path ran)";
+  // B2 batched settlement ran: exactly one lot expired mid-window and settled.
+  int settle_rows = 0;
+  for (std::size_t i = 0; i < a->size(); ++i) {
+    if (std::fabs(a->pnl_settlement[i]) > 0.0) {
+      ++settle_rows;
+    }
+  }
+  EXPECT_EQ(settle_rows, 1) << "B2 batched settlement did not fire in the composed run";
+
+  auto b = run(1); // determinism (second run)
+  auto c = run(4); // thread-invariance
+  ASSERT_TRUE(b.has_value()) << b.error().to_string();
+  ASSERT_TRUE(c.has_value()) << c.error().to_string();
+  ASSERT_EQ(a->size(), b->size());
+  ASSERT_EQ(a->size(), c->size());
+  const auto cols = [](const BacktestResult& r, std::size_t i) {
+    return std::array<double, 6>{r.nav[i],   r.pnl_total[i],  r.pnl_settlement[i],
+                                 r.pnl_delta[i], r.gross_vega[i], r.gross_delta[i]};
+  };
+  for (std::size_t i = 0; i < a->size(); ++i) {
+    const auto ca = cols(*a, i);
+    const auto cb = cols(*b, i);
+    const auto cc = cols(*c, i);
+    for (std::size_t k = 0; k < ca.size(); ++k) {
+      EXPECT_TRUE(bits_equal(ca[k], cb[k])) << "two-run determinism col " << k << " row " << i;
+      EXPECT_TRUE(bits_equal(ca[k], cc[k])) << "thread-invariance col " << k << " row " << i;
+    }
+  }
+  std::printf("[btexec] B5b composed fixed-book (B1 subset + B2 settle): whole-board load fails, "
+              "subset run succeeds, settle_rows=%d, bit-identical over 2 runs and 1-vs-4 threads\n",
+              settle_rows);
 }

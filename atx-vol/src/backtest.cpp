@@ -16,6 +16,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -998,17 +999,14 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
   bool loaded_subset = false;
   if (!referenced_uids.empty()) {
     ATX_VOL_PROFILE_SCOPE(ArchiveMap);
+    // O(dir) match via a hash set of the referenced uids (built once) instead of an
+    // O(dir x subset) nested scan.
+    const std::unordered_set<std::uint32_t> wanted_uids(referenced_uids.begin(),
+                                                        referenced_uids.end());
     surfaces.reserve(referenced_uids.size());
     provenance.reserve(referenced_uids.size());
     for (const ArchiveV2DirEntry &e : dir) {
-      bool wanted = false;
-      for (const std::uint32_t u : referenced_uids) {
-        if (u == e.uid) {
-          wanted = true;
-          break;
-        }
-      }
-      if (!wanted) {
+      if (wanted_uids.find(e.uid) == wanted_uids.end()) {
         continue;
       }
       const std::string_view sym{e.symbol, e.symbol_len};
