@@ -62,6 +62,19 @@ constexpr int kU = 4;                   // underliers per date
 constexpr std::uint32_t kUidBase = 100;
 constexpr double kTargetT = 0.15;       // straddle tenor (in-grid all run)
 
+// ── Universe-shaped case (M2) dimensions ─────────────────────────────────────
+// N names × daily entry × held-to-expiry × daily delta-hedge — the WS-D dispersion
+// strategy shape (40Δ strangles, DeltaToZero daily). Sized so the growing book
+// (~kUnivN×(kUnivD-1)×2 option lots ≈ 180) lands near the scoreboard's 160-lot
+// reference so the reshaped steps/s is directly comparable to the ~64 steps/s
+// baseline, while the SHAPE (per-entry 40Δ delta-solves + a daily full-book hedge)
+// is the real hot loop the ≥5–10× gate targets. The 3M tenor stays inside the
+// synthetic grid's [0.05, 1.0] span across the whole (~9 trading-day) run.
+constexpr int kUnivD = 10;              // universe dates (=> 9 priced steps)
+constexpr int kUnivN = 10;              // universe names
+constexpr std::uint32_t kUnivUidBase = 200;
+constexpr double kUnivTargetT = 0.25;   // 3M strangle tenor (in-grid all run)
+
 // Setup failures happen once, outside the timed region (static fixture init), so an
 // abort is the honest response — a benchmark of an error return measures nothing.
 [[noreturn]] void bench_fatal(const std::string& msg) {
@@ -141,32 +154,35 @@ constexpr double kTargetT = 0.15;       // straddle tenor (in-grid all run)
   return m;
 }
 
-// Build the D per-date archives (each holding U distinct-uid synthetic surfaces) and
-// return the Clock over them. Run ONCE (static fixture) — the archives are written to
-// a process-lifetime temp dir and read from disk by each `run_backtest`.
-[[nodiscard]] Clock build_corpus() {
-  const fs::path dir = fs::temp_directory_path() / "atx-backtest-throughput-bench";
+// Build `n_dates` per-date archives (each holding `n_u` distinct-uid synthetic
+// surfaces) and return the Clock over them. Run ONCE (static fixture) — the archives
+// are written to a process-lifetime temp dir and read from disk by each
+// `run_backtest`. Shared by the straddle and universe cases (distinct uid_base +
+// dir so their fixtures never collide).
+[[nodiscard]] Clock build_corpus_impl(int n_dates, int n_u, std::uint32_t uid_base,
+                                      const char* dir_name) {
+  const fs::path dir = fs::temp_directory_path() / dir_name;
   std::error_code ec;
   fs::remove_all(dir, ec);
 
   std::vector<std::pair<std::string, std::string>> dp;
-  dp.reserve(static_cast<std::size_t>(kD));
-  for (int d = 0; d < kD; ++d) {
+  dp.reserve(static_cast<std::size_t>(n_dates));
+  for (int d = 0; d < n_dates; ++d) {
     const std::int64_t now = kBaseNow + static_cast<std::int64_t>(d) * kDayNs;
     // Surfaces are kept alive in `owned` for the duration of the archive write.
     std::vector<PricedSurface> owned;
-    owned.reserve(static_cast<std::size_t>(kU));
+    owned.reserve(static_cast<std::size_t>(n_u));
     std::vector<std::pair<std::string, const PricedSurface*>> items;
-    items.reserve(static_cast<std::size_t>(kU));
-    for (int u = 0; u < kU; ++u) {
+    items.reserve(static_cast<std::size_t>(n_u));
+    for (int u = 0; u < n_u; ++u) {
       const double S = (100.0 + 10.0 * static_cast<double>(u)) *
                        (1.0 + 0.003 * static_cast<double>(d));
       const double vb = 0.001 * static_cast<double>(d) + 0.002 * static_cast<double>(u);
-      owned.push_back(make_surface(kUidBase + static_cast<std::uint32_t>(u), S, S, now, vb));
+      owned.push_back(make_surface(uid_base + static_cast<std::uint32_t>(u), S, S, now, vb));
     }
     std::vector<std::string> syms;
-    syms.reserve(static_cast<std::size_t>(kU));
-    for (int u = 0; u < kU; ++u) {
+    syms.reserve(static_cast<std::size_t>(n_u));
+    for (int u = 0; u < n_u; ++u) {
       syms.push_back("U" + std::to_string(u));
       items.emplace_back(syms.back(), &owned[static_cast<std::size_t>(u)]);
     }
@@ -179,15 +195,22 @@ constexpr double kTargetT = 0.15;       // straddle tenor (in-grid all run)
   if (!clock.has_value()) {
     bench_fatal(clock.error().to_string());
   }
-  if (clock->size() != static_cast<std::size_t>(kD)) {
+  if (clock->size() != static_cast<std::size_t>(n_dates)) {
     bench_fatal("clock size mismatch");
   }
   return std::move(*clock);
 }
 
-// Process-lifetime Clock fixture (built once on first use).
+// Process-lifetime Clock fixtures (built once on first use).
 [[nodiscard]] const Clock& corpus_clock() {
-  static const Clock clock = build_corpus();
+  static const Clock clock =
+      build_corpus_impl(kD, kU, kUidBase, "atx-backtest-throughput-bench");
+  return clock;
+}
+
+[[nodiscard]] const Clock& universe_clock() {
+  static const Clock clock =
+      build_corpus_impl(kUnivD, kUnivN, kUnivUidBase, "atx-backtest-universe-bench");
   return clock;
 }
 
@@ -205,6 +228,35 @@ constexpr double kTargetT = 0.15;       // straddle tenor (in-grid all run)
   }
   spec.lifecycle.entry = LifecycleSpec::Entry::EveryStep;
   spec.lifecycle.holding = LifecycleSpec::Holding::HoldToExpiry;
+  return spec;
+}
+
+// The WS-D universe strategy shape: for each of kUnivN names, a 40Δ Strangle (OTM
+// call + OTM put, strikes resolved by delta off the synthetic surface), a fresh
+// cohort EVERY step, HELD TO EXPIRY (overlapping cohorts), with a DeltaToZero hedge
+// rebalanced DAILY. FixedContracts sizing keeps the book deterministic (net-vega
+// cross-leg sizing is a WS-D/D4 concern, not this throughput baseline). The engine
+// executes the hedge overlay (validate_hedge_spec accepts DeltaToZero+Daily; the
+// step re-prices the full book once to supply both entry Greeks and the per-uid
+// hedge delta), so this steps/s number is the real deserialize+price+delta-hedge
+// hot loop the ≥5–10× gate targets.
+[[nodiscard]] StrategySpec make_universe_spec() {
+  StrategySpec spec;
+  spec.name = "universe-40d-strangle-htx-dhedge";
+  for (int u = 0; u < kUnivN; ++u) {
+    LegSpec leg;
+    leg.uid = kUnivUidBase + static_cast<std::uint32_t>(u);
+    leg.tenor.target_T = kUnivTargetT;
+    leg.tenor.snap_to_listed = false;
+    leg.structure.kind = StructureSpec::Kind::Strangle;  // OTM call + OTM put
+    leg.structure.call_leg = StrikeSelector{StrikeSelector::Kind::Delta, 0.40};
+    leg.structure.put_leg = StrikeSelector{StrikeSelector::Kind::Delta, 0.40};
+    leg.size = SizeSpec{SizeSpec::Kind::FixedContracts, 1.0, +1.0};
+    spec.legs.push_back(std::move(leg));
+  }
+  spec.lifecycle.entry = LifecycleSpec::Entry::EveryStep;
+  spec.lifecycle.holding = LifecycleSpec::Holding::HoldToExpiry;
+  spec.hedge = HedgeSpec{HedgeSpec::Kind::DeltaToZero, HedgeSpec::Cadence::Daily, 0.0};
   return spec;
 }
 
@@ -246,9 +298,55 @@ void BM_MultiUnderlierStraddle(benchmark::State& state) {
   state.counters["final_open_lots"] = final_open_lots;
 }
 
+// ── Throughput (M2): universe of 40Δ strangles, held to expiry, daily delta-hedge ──
+// The reshaped real-universe case. kUnivN names each enter a 40Δ strangle EVERY step
+// (strikes resolved by delta off the synthetic surface — the per-entry solve WS-P P4
+// batches), held to expiry (overlapping cohorts), with a DAILY DeltaToZero hedge. The
+// book grows to ~kUnivN×(kUnivD-1)×2 option lots; each step re-prices the whole open
+// book once for marks + Greeks + the per-uid hedge delta. Headline: steps/s (== the
+// scoreboard's backtest ★ratify metric); final_open_lots reports the book size.
+void BM_UniverseStrangleHedged(benchmark::State& state) {
+  const Clock& clock = universe_clock();
+  const StrategySpec spec = make_universe_spec();
+
+  double final_open_lots = 0.0;
+  for (auto _ : state) {
+    DeclarativeStrategy strat{spec};
+    auto res = run_backtest(clock, strat);
+    if (!res.has_value()) {
+      state.SkipWithError(res.error().to_string().c_str());
+      break;
+    }
+    if (res->size() != static_cast<std::size_t>(kUnivD)) {
+      state.SkipWithError("run_backtest produced unexpected row count");
+      break;
+    }
+    if (!res->n_open_lots.empty()) {
+      final_open_lots = res->n_open_lots.back();
+    }
+    benchmark::DoNotOptimize(res->nav.data());
+    benchmark::ClobberMemory();
+  }
+
+  const int priced_steps = kUnivD - 1;
+  // leg_steps = strangle (2 legs) × N names × priced_steps (entry legs opened; the
+  // held book that each step reprices is far larger — final_open_lots captures it).
+  const long long leg_steps = static_cast<long long>(priced_steps) * kUnivN * 2;
+  const double iters = static_cast<double>(state.iterations());
+  state.SetItemsProcessed(state.iterations() * static_cast<std::int64_t>(priced_steps));
+  state.counters["leg_steps_per_s"] =
+      benchmark::Counter(iters * static_cast<double>(leg_steps), benchmark::Counter::kIsRate);
+  state.counters["names"] = static_cast<double>(kUnivN);
+  state.counters["final_open_lots"] = final_open_lots;
+}
+
 const int kRegistered = [] {
   apply_common(benchmark::RegisterBenchmark("backtest/multiunderlier_straddle/steps",
                                             BM_MultiUnderlierStraddle))
+      ->Unit(benchmark::kMillisecond)
+      ->UseRealTime();
+  apply_common(benchmark::RegisterBenchmark("backtest/universe_strangle_hedged/steps",
+                                            BM_UniverseStrangleHedged))
       ->Unit(benchmark::kMillisecond)
       ->UseRealTime();
   return 0;
