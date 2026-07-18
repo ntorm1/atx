@@ -1,13 +1,17 @@
 #pragma once
 
-// ── Adjoint (AAD) American / European greeks — WS-P P2 ────────────────────
+// ── Adjoint (AAD) American / European greeks — WS-P P2 + P3-pre ───────────
 //
 // Hand-coded adjoint algorithmic differentiation of the Andersen-Lake American
-// pricer, with implicit-function-theorem (IFT) differentiation THROUGH the
-// early-exercise boundary. All 8 greeks (delta, gamma, vega, theta, rho, vanna,
-// volga, charm) from ONE forward evaluation plus one adjoint sweep — constant
-// cost in the number of upstream inputs — machine-precise vs a central-difference
-// reference. Design + primary-source citations: docs/adjoint_greeks_design.md.
+// pricer. All 8 greeks (delta, gamma, vega, theta, rho, vanna, volga, charm) from
+// ONE taped forward solve plus a reverse tangent through the early-exercise
+// boundary. P2 differentiated the exact fixed point via the implicit-function
+// theorem (mark-consistent only on the ~1/12 well-converged subset); P3-pre
+// switches the boundary sensitivities to Christianson (1994) reverse-accumulation
+// through the ACTUAL budget-limited iteration, so the greek matches the served mark
+// derivative on the wide domain (~83% of a realistic grid). Machine-precise vs a
+// central-difference reference. Design + primary-source citations:
+// docs/adjoint_greeks_design.md.
 //
 // This is the pricing lever that replaces american_greeks/fd_warm (the ~1.5 ms,
 // ~7-boundary-solve finite-difference bundle). The existing FD path is UNTOUCHED
@@ -33,13 +37,17 @@ namespace atx::vol::detail {
 [[nodiscard]] AmericanGreeks european_greeks_adjoint(double S, double K, double T, double sigma,
                                                      double r, double q, Side side) noexcept;
 
-// American greeks via the IFT-adjoint. Claims genuine early-exercise PUTS only
-// (r > 0, non-degenerate, single-boundary American regime): delta/gamma from
-// frozen-base-boundary spot stencils (boundary is spot-independent — exact, NOT
-// the Γ=0 trap); vega/rho from the reverse IFT (one J^T solve, then dot products);
-// vanna from the first-order boundary tangent y_σ; volga from a COLD σ± boundary
-// re-solve 2nd difference (a warm re-solve's residual is amplified by 1/h² and
-// blows up); theta/charm from the continuation-region Black-Scholes PDE identity.
+// American greeks via the Christianson through-iterations adjoint. Claims genuine
+// early-exercise PUTS only (r > 0, non-degenerate, single-boundary American
+// regime): delta/gamma from frozen-base-boundary spot stencils (boundary is
+// spot-independent — exact, NOT the Γ=0 trap); vega/rho from the boundary tangent
+// dy*/dσ, dy*/dr differentiated THROUGH the actual budget-limited Andersen-Lake
+// iteration the pricer ran (Christianson 1994 reverse-accumulation of iterated
+// maps — matches the served mark derivative on the wide domain, not just the
+// well-converged fixed-point subset the P2 IFT claimed); vanna from the first-order
+// boundary tangent y_σ; volga from a COLD σ± boundary re-solve 2nd difference (a
+// warm re-solve's residual is amplified by 1/h² and blows up); theta/charm from the
+// continuation-region Black-Scholes PDE identity.
 //
 // Every other regime falls back to american_greeks_fd (the untouched FD
 // reference): calls, the European-exact regime (American == European), degenerate

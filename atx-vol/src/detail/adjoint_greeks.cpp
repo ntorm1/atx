@@ -1,11 +1,15 @@
-// ── Adjoint (AAD) American / European greeks — WS-P P2 ────────────────────
+// ── Adjoint (AAD) American / European greeks — WS-P P2 + P3-pre ───────────
 //
 // Hand-coded adjoint algorithmic differentiation of the Andersen-Lake American
-// pricer with implicit-function-theorem (IFT) differentiation THROUGH the
-// early-exercise boundary. See docs/adjoint_greeks_design.md for the full design
-// and the primary-source citations (Giles-Glasserman 2006; Savine ch.9; Henrard/
-// OpenGamma AAD+IFT 2011; Griewank-Walther cheap-gradient bound; Deussen/Naumann
-// EuroAD-2015 American AAD envelope + Γ=0 trap). Class: accuracy-improving.
+// pricer. The boundary sensitivities (vega/rho/vanna) are differentiated THROUGH
+// the actual budget-limited exercise-boundary iteration via Christianson (1994)
+// reverse-accumulation of iterated maps (P3-pre domain widening), superseding the
+// P2 exact-fixed-point IFT which was mark-consistent only on the narrow
+// well-converged subset. See docs/adjoint_greeks_design.md for the full design and
+// the primary-source citations (Giles-Glasserman 2006; Savine ch.9; Henrard/
+// OpenGamma AAD+IFT 2011; Christianson 1994 reverse accumulation of attractive
+// fixed points; Griewank-Walther cheap-gradient bound; Deussen/Naumann EuroAD-2015
+// American AAD envelope + Γ=0 trap). Class: accuracy-improving.
 //
 // Pure functions (no globals/statics mutation) — live == backtest bit-for-bit.
 
@@ -179,10 +183,17 @@ using amer::AlSolveTape;
 // The budget-limited solve is y* = seed(θ) then y^k = G_k(y^{k-1}; θ) for the taped
 // sweeps. Its EXACT tangent (the derivative the mark actually has, matching fd/al) is
 //   ẏ^0 = ∂seed/∂θ ,   ẏ^k = ∂G_k/∂y · ẏ^{k-1} + ∂G_k/∂θ ,   dy*/dθ = ẏ^N.
-// Each step's directional derivative ∂G_k/∂y·ẏ + ∂G_k/∂θ is one CENTRAL difference of
-// the REAL seed / sweep in the combined direction (ẏ^{k-1}, θ̇) — zero derivation risk
-// (it differentiates literally the map the pricer ran), and it converges to the same
-// value fd's cold re-solve does. param_sel: 0 => d/dσ, 1 => d/dr. ydot is node-indexed
+// Each step needs the directional derivative ∂G_k/∂y·ẏ (a JVP) and the DIRECT partial
+// ∂G_k/∂θ. Both are differenced against the SAME base point G_k(y^k;θ) — which the tape
+// ALREADY holds as y^{k+1} (al_solve_put_boundary_tape and al_apply_boundary_sweep run
+// the bit-identical generic sweep, so y^{k+1} == G_k(y^k;θ) to the last bit). So each
+// step is a FORWARD difference reusing y^{k+1} as the unperturbed anchor: ONE sweep for
+// the JVP + ONE for the θ-partial (2 apps/step) instead of the 4 a central pair costs —
+// halving the tangent's sweep-application count, the dominant per-solve adjoint cost.
+// Zero derivation risk (it still differentiates literally the map the pricer ran); the
+// O(h) forward-vs-O(h²) central truncation is far below the mark's own ~1e-2 self-noise
+// (verified: RealisticGridWideMarkExactParity / AdjointPathAccuracyVsMark stay green vs
+// Richardson of the true mark). param_sel: 0 => d/dσ, 1 => d/dr. ydot is node-indexed
 // (ydot[0] = 0, node 0 pinned); interior part ydot+1 feeds price_moved.
 void boundary_tangent_through_iters(const AlBoundary &bnd, const AlWorkspace &ws,
                                     const AlSolveTape &tape, double sigma, double r, double q,
@@ -190,9 +201,7 @@ void boundary_tangent_through_iters(const AlBoundary &bnd, const AlWorkspace &ws
   const std::uint16_t n = bnd.n;
   const double dth = (param_sel == 0) ? (1.0e-6 * std::fmax(sigma, 1.0e-3)) : 1.0e-6;
   const double sp = (param_sel == 0) ? sigma + dth : sigma;
-  const double sm = (param_sel == 0) ? sigma - dth : sigma;
   const double rp = (param_sel == 1) ? r + dth : r;
-  const double rm = (param_sel == 1) ? r - dth : r;
   // ẏ^0 = 0: the seed tangent ∂(BAW seed)/∂θ is DROPPED. Christianson's attractive-
   // fixed-point result says the tangent recursion forgets its initial value at the
   // iteration's contraction rate, so the seed tangent's contribution to ẏ^N is damped
@@ -205,16 +214,17 @@ void boundary_tangent_through_iters(const AlBoundary &bnd, const AlWorkspace &ws
   for (std::uint16_t i = 0; i < n; ++i) {
     ydot[i] = 0.0;
   }
-  // ẏ^k = ∂G_k/∂y·ẏ^{k-1} + ∂G_k/∂θ. The JVP (y-direction) and the DIRECT θ-partial are
-  // differenced SEPARATELY with independently-scaled steps: a single combined step fails
-  // when the tangent grows large through a barely-contracting boundary — the y-perturbation
-  // dominates and the θ-perturbation shrinks below the roundoff floor, dropping the direct
-  // ∂G/∂θ term (a systematic few-% bias, observed at low-σ/deep-ITM).
-  std::array<double, kAlMaxNodes> yp{}, ym{}, gp{}, gm{}, jvp{};
+  // The JVP (y-direction) and the DIRECT θ-partial are differenced SEPARATELY with
+  // independently-scaled steps: a single combined step fails when the tangent grows
+  // large through a barely-contracting boundary — the y-perturbation dominates and the
+  // θ-perturbation shrinks below the roundoff floor, dropping the direct ∂G/∂θ term (a
+  // systematic few-% bias, observed at low-σ/deep-ITM).
+  std::array<double, kAlMaxNodes> yp{}, gp{}, jvp{};
   for (std::uint16_t k = 0; k < tape.n_steps; ++k) {
-    const double *yb = tape.y_iter[k].data(); // base input to sweep k (from the tape)
-    // ── JVP  J_k · ẏ : central difference in the y-direction ẏ (θ held at base), the
-    //    step scaled so the probe is ~1e-7 regardless of ‖ẏ‖. (Skipped while ẏ≡0.)
+    const double *yb = tape.y_iter[k].data();       // base input to sweep k (from the tape)
+    const double *ynext = tape.y_iter[k + 1].data(); // = G_k(yb; θ) — the forward-diff anchor
+    // ── JVP  J_k · ẏ : forward difference in the y-direction ẏ (θ held at base), step
+    //    scaled so the probe is ~1e-7 regardless of ‖ẏ‖. (Skipped while ẏ≡0.)
     double ymax = 0.0;
     for (std::uint16_t i = 0; i < n; ++i) {
       ymax = std::fmax(ymax, std::fabs(ydot[i]));
@@ -223,23 +233,21 @@ void boundary_tangent_through_iters(const AlBoundary &bnd, const AlWorkspace &ws
       const double hy = 1.0e-7 / std::fmax(ymax, 1.0);
       for (std::uint16_t i = 0; i < n; ++i) {
         yp[i] = yb[i] + hy * ydot[i];
-        ym[i] = yb[i] - hy * ydot[i];
       }
       amer::al_apply_boundary_sweep(bnd, ws, yp.data(), sigma, r, q, tape.is_jn[k], jvp.data());
-      amer::al_apply_boundary_sweep(bnd, ws, ym.data(), sigma, r, q, tape.is_jn[k], gp.data());
       for (std::uint16_t i = 0; i < n; ++i) {
-        jvp[i] = (jvp[i] - gp[i]) / (2.0 * hy);
+        jvp[i] = (jvp[i] - ynext[i]) / hy;
       }
     } else {
       for (std::uint16_t i = 0; i < n; ++i) {
         jvp[i] = 0.0;
       }
     }
-    // ── DIRECT partial ∂G_k/∂θ : central difference in θ (y held at the tape point yb).
+    // ── DIRECT partial ∂G_k/∂θ : forward difference in θ (y held at the tape point yb,
+    //    anchored on y^{k+1} = G_k(yb;θ)).
     amer::al_apply_boundary_sweep(bnd, ws, yb, sp, rp, q, tape.is_jn[k], gp.data());
-    amer::al_apply_boundary_sweep(bnd, ws, yb, sm, rm, q, tape.is_jn[k], gm.data());
     for (std::uint16_t i = 0; i < n; ++i) {
-      ydot[i] = jvp[i] + (gp[i] - gm[i]) / (2.0 * dth);
+      ydot[i] = jvp[i] + (gp[i] - ynext[i]) / dth;
     }
   }
 }
