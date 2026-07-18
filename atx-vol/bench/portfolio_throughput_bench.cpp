@@ -284,13 +284,17 @@ void run_ladder(benchmark::State& state, LadderMode mode, PricedSurface::EvalFie
 
 // ── 2/3. PortfolioPricer::price / pnl_explain ────────────────────────────
 void run_price(benchmark::State& state, std::size_t n_unique, std::size_t ratio,
-               unsigned n_threads, bool prices_only, bool analytic) {
+               unsigned n_threads, bool prices_only, bool analytic, bool adjoint = false) {
   const PortfolioPricer& pr = pricer_for(n_unique, ratio);
   const SurfaceSet& surfaces = market().base_set();
   PriceOptions opts;
   opts.n_threads = n_threads;
   opts.prices_only = prices_only;
   opts.analytic_greeks = analytic;
+  // WS-P P5: adjoint FullGreeks A/B (evaluate_batch marks + american_greeks_adjoint
+  // risk instead of the FD bundle). Compare this row to the matching
+  // port/price/greeks (FD) and port/price/analytic (american_greeks_al) rows.
+  opts.adjoint_greeks = adjoint;
   for (auto _ : state) {
     auto fr = pr.price(surfaces, opts);
     benchmark::DoNotOptimize(fr->total.pv);
@@ -773,6 +777,30 @@ void register_all() {
                          buf, [nu, ratio, nt](benchmark::State& st) {
                            run_price(st, nu, ratio, nt, /*prices_only=*/false,
                                      /*analytic=*/true);
+                         }))
+            ->Unit(benchmark::kMicrosecond)
+            ->UseRealTime();
+      }
+    }
+  }
+
+  // 2c-adjoint (WS-P P5). FullGreeks risk via the Christianson through-iterations
+  // adjoint (PriceOptions::adjoint_greeks) — the A/B against the FD bundle
+  // (port/price/greeks) and the AL analytic bundle (port/price/analytic) at the same
+  // { n_unique x ratio x threads } cells. Honest measurement: apply_common stamps the
+  // per-row _cv aggregate; treat any row with cv > 0.05 (5%) as provisional on a
+  // shared/noisy host. Report BOTH scopes (full 8-greek bundle here; first-order
+  // delta+vega is the micro-bench in adjoint_greeks_test DISABLED_PerfSanity). The
+  // >=5x gate scope is PM-held — this row reports the number, it does not claim it.
+  for (const std::size_t nu : uniques) {
+    for (const std::size_t ratio : {std::size_t{1}, std::size_t{100}}) {
+      for (const unsigned nt : {1u, 8u}) {
+        char buf[128];
+        std::snprintf(buf, sizeof buf, "port/price/adjoint/u%zu/r%zu/t%u", nu, ratio, nt);
+        apply_common(benchmark::RegisterBenchmark(
+                         buf, [nu, ratio, nt](benchmark::State& st) {
+                           run_price(st, nu, ratio, nt, /*prices_only=*/false,
+                                     /*analytic=*/false, /*adjoint=*/true);
                          }))
             ->Unit(benchmark::kMicrosecond)
             ->UseRealTime();

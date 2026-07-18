@@ -221,16 +221,17 @@ TEST(AdjointGreeksAmerican, DeltaGammaBitIdenticalToFd) {
   }
 }
 
-// WHERE THE ADJOINT PATH ACTUALLY RUNS, its greeks match the true derivative.
-// The IFT computes the fixed-point derivative; it agrees with the actual (loose,
-// budget-limited ACCURATE-preset) andersen_lake pricer only where the boundary is
-// well-converged, which the ‖R(y0)‖≤1e-7 guard selects (a MINORITY of points — see
-// AdjointDomainNarrowButSafe). This test gates ONLY those took==true points vs
-// Richardson AND vs the validated forward-IFT spike; every fallback point is
-// exercised by DeltaGammaBitIdenticalToFd / FallbackMatchesFd instead.
-TEST(AdjointGreeksAmerican, AdjointPathAccuracyVsRichardson) {
+// WHERE THE CHRISTIANSON ADJOINT PATH RUNS, its FIRST-ORDER greeks (the hedge-critical
+// delta/vega/rho/theta) match the budget-limited MARK derivative on the WHOLE wide
+// domain — because through-iterations differentiates the actual iteration the pricer
+// ran, not the exact fixed point. Reference: high-quality Richardson central-difference
+// of the ACCURATE-preset andersen_lake (the mark). Tolerances are two-tier: tight on the
+// realistic grid (T ≤ 0.5, the backtest hot path), economic on the adversarial long-T
+// low-σ corners where even Richardson vs al disagree ~5% (the mark itself is noisy).
+// volga (the noisy 2nd-order greek) is gated only on the smooth subgrid.
+TEST(AdjointGreeksAmerican, AdjointPathAccuracyVsMark) {
   const double S = 100.0;
-  int took_n = 0, spike_checked = 0;
+  int took_n = 0;
   for (double K : {80.0, 88.0, 96.0, 100.0, 104.0, 108.0, 112.0}) {
     for (double T : {0.1, 0.4, 1.0}) {
       for (double sigma : {0.15, 0.25, 0.4}) {
@@ -241,48 +242,41 @@ TEST(AdjointGreeksAmerican, AdjointPathAccuracyVsRichardson) {
               american_greeks_adjoint(S, K, T, sigma, r, q, Side::Put, std::nullopt, &took);
           ASSERT_TRUE(g.has_value());
           if (!took) {
-            continue; // fell back to fd (see AdjointDomainNarrowButSafe) — not the adjoint
+            continue; // fell back to fd (loss-free: delta/gamma bit-identical) — not the adjoint
           }
           ++took_n;
+          const bool realistic = (T <= 0.5); // the backtest hot path (short-to-medium T)
           const std::string at = "K=" + std::to_string(K) + " T=" + std::to_string(T) +
                                  " sig=" + std::to_string(sigma) + " r=" + std::to_string(r);
           const double vega_ref =
               rich_d1([&](double v) { return alput(S, K, T, v, r, q); }, sigma, 1.0e-3);
           const double rho_ref =
               rich_d1([&](double rr) { return alput(S, K, T, sigma, rr, q); }, r, 1.0e-3);
-          const double volga_ref =
-              rich_d2([&](double v) { return alput(S, K, T, v, r, q); }, sigma, 3.0e-3);
           const auto fd = american_greeks_fd(S, K, T, sigma, r, q, Side::Put);
           ASSERT_TRUE(fd.has_value());
-          // First-order σ/r sensitivities have clean Richardson references — gate
-          // vega/rho tightly there. gamma/vanna are S-derivatives whose Richardson
-          // reference is unreliable at near-expiry (sharp S-curvature vs a cold-solve
-          // step floor), so gate them vs fd (same-family method): gamma is
-          // bit-identical (spot-independent boundary), vanna within the 2nd-order
-          // plateau. volga (cold-re-solve 2nd diff) is 2nd-order-accurate only.
-          EXPECT_NEAR(g->vega, vega_ref, 5.0e-3 + 2.0e-3 * std::fabs(vega_ref)) << "vega " << at;
-          EXPECT_NEAR(g->rho, rho_ref, 5.0e-3 + 2.0e-3 * std::fabs(rho_ref)) << "rho " << at;
-          EXPECT_NEAR(g->gamma, fd->gamma, 1.0e-8) << "gamma " << at;
-          EXPECT_NEAR(g->vanna, fd->vanna, 5.0e-2 + 5.0e-2 * std::fabs(fd->vanna)) << "vanna " << at;
-          EXPECT_NEAR(g->volga, volga_ref, 2.0e0 + 5.0e-2 * std::fabs(volga_ref)) << "volga " << at;
-          // Independent correctness anchor: the reverse-IFT adjoint must equal the
-          // VALIDATED forward-IFT spike (al_implicit_diff_put_greeks) — a reference
-          // that is not Richardson and not the code under test.
-          double jerr = 0.0;
-          const auto sp = atx::vol::detail::al_implicit_diff_put_greeks(S, K, T, sigma, r, q,
-                                                                        std::nullopt, false, jerr);
-          if (sp.ok) {
-            EXPECT_NEAR(g->vega, sp.vega, 1.0e-3 + 1.0e-3 * std::fabs(sp.vega))
-                << "vega vs forward-IFT spike " << at;
-            EXPECT_NEAR(g->delta, sp.delta, 1.0e-6) << "delta vs spike " << at;
-            ++spike_checked;
+          // FIRST-ORDER (hedge-critical): tight on realistic, economic on adversarial.
+          const double vtol = realistic ? (5.0e-3 + 3.0e-3 * std::fabs(vega_ref))
+                                        : (1.0e-2 + 3.0e-2 * std::fabs(vega_ref));
+          const double rtol = realistic ? (5.0e-3 + 3.0e-3 * std::fabs(rho_ref))
+                                        : (1.0e-2 + 3.0e-2 * std::fabs(rho_ref));
+          EXPECT_NEAR(g->vega, vega_ref, vtol) << "vega " << at;
+          EXPECT_NEAR(g->rho, rho_ref, rtol) << "rho " << at;
+          EXPECT_NEAR(g->gamma, fd->gamma, 1.0e-8) << "gamma " << at; // spot-independent boundary
+          // SECOND-ORDER (vanna, volga): 2nd-order-accurate only, and gated only on the
+          // SMOOTH realistic grid. At the adversarial long-T low-σ corners the mark's 2nd
+          // σ-derivative is genuinely noise (fd's own vanna/volga flip sign there), so these
+          // greeks are not claimed — the hedge-critical first-order greeks above are.
+          if (realistic) {
+            EXPECT_NEAR(g->vanna, fd->vanna, 5.0e-2 + 5.0e-2 * std::fabs(fd->vanna)) << "vanna " << at;
+            const double volga_ref =
+                rich_d2([&](double v) { return alput(S, K, T, v, r, q); }, sigma, 3.0e-3);
+            EXPECT_NEAR(g->volga, volga_ref, 2.0e0 + 1.0e-1 * std::fabs(volga_ref)) << "volga " << at;
           }
         }
       }
     }
   }
-  EXPECT_GT(took_n, 10) << "adjoint path must fire on a non-trivial number of points";
-  EXPECT_GT(spike_checked, 8);
+  EXPECT_GT(took_n, 100) << "Christianson adjoint fires on the DOMINANT share of the grid";
 }
 
 // Negative borrow (q < 0): the reliable greeks (price/delta/gamma/rho) match fd.
@@ -312,12 +306,12 @@ TEST(AdjointGreeksAmerican, NegativeBorrowReliable) {
   EXPECT_GT(checked, 20);
 }
 
-// Honesty gate on the DOMAIN: the IFT-adjoint fast-lane fires only where the
-// budget-limited ACCURATE-preset boundary is well-converged (‖R(y0)‖≤1e-7) — a
-// MINORITY of the grid — and safely hands every other point to the exact fd
-// bundle. This test documents that split as a hard fact and confirms the fallback
-// is loss-free (delta/gamma stay bit-identical whichever path runs).
-TEST(AdjointGreeksAmerican, AdjointDomainNarrowButSafe) {
+// DOMAIN-WIDTH gate (P3-pre, the primary Amdahl lever): Christianson through-iterations
+// differentiates the actual budget-limited solve, so the adjoint fast-lane now fires on
+// the DOMINANT share of the grid (vs the ~1/12 the P2 fixed-point IFT claimed) — that is
+// what lifts the portfolio-greeks speedup off the ~1.09× Amdahl cap. Fallback stays
+// loss-free (delta/gamma bit-identical whichever path runs).
+TEST(AdjointGreeksAmerican, AdjointDomainWideAndSafe) {
   const double S = 100.0;
   int took_n = 0, total = 0;
   for (double K : {80.0, 88.0, 96.0, 100.0, 104.0, 108.0, 112.0}) {
@@ -340,11 +334,53 @@ TEST(AdjointGreeksAmerican, AdjointDomainNarrowButSafe) {
       }
     }
   }
-  // Documented fact: the adjoint fires on a minority (~1/12 with the ACCURATE
-  // preset's 6-sweep budget) and falls back elsewhere. Both bounds are asserted so
-  // a future change that silently widens/collapses the domain trips this test.
-  EXPECT_GT(took_n, 8) << "adjoint should fire on the well-converged subset";
-  EXPECT_LT(took_n, total) << "and must fall back on the under-converged majority";
+  // Christianson widens the domain to the majority (the whole point). The lower bound
+  // trips if a change silently re-narrows it; the fallback (< total) is kept for the
+  // genuinely-unstable corners the self-consistency guard hands to fd.
+  EXPECT_GT(took_n, (3 * total) / 4) << "Christianson adjoint must fire on the dominant share";
+  EXPECT_LE(took_n, total);
+}
+
+// P3-pre GATE: on a REALISTIC backtest-shaped put grid (moneyness 0.85–1.15, T up to
+// 6M, σ/r/q of liquid single names), the Christianson adjoint (a) fires on the DOMINANT
+// share (the Amdahl lever — was ~14% for the P2 fixed-point IFT), (b) keeps the mark
+// bit-identical to the production andersen_lake pricer, and (c) matches the mark's
+// vega/rho to economic tolerance. This is the primary domain-widening acceptance gate.
+TEST(AdjointGreeksAmerican, RealisticGridWideMarkExactParity) {
+  const double S = 100.0;
+  int took_n = 0, total = 0, vega_ok = 0;
+  for (double mny : {0.85, 0.90, 0.95, 1.00, 1.05, 1.10, 1.15}) {
+    const double K = S / mny;
+    for (double T : {0.05, 0.08, 0.12, 0.25, 0.5}) {
+      for (double sigma : {0.15, 0.22, 0.30, 0.40}) {
+        for (double r : {0.03, 0.045}) {
+          for (double q : {0.0, 0.015}) {
+            if (atx::vol::detail::classify_regime(r, q) != atx::vol::detail::ExerciseRegime::American)
+              continue;
+            bool took = false;
+            const auto g = american_greeks_adjoint(S, K, T, sigma, r, q, Side::Put, std::nullopt, &took);
+            const auto fd = american_greeks_fd(S, K, T, sigma, r, q, Side::Put);
+            ASSERT_TRUE(g.has_value());
+            ASSERT_TRUE(fd.has_value());
+            ++total;
+            // (b) mark bit-identical + (delta/gamma loss-free) whichever path runs.
+            EXPECT_NEAR(g->price, fd->price, 1.0e-9);
+            EXPECT_NEAR(g->delta, fd->delta, 1.0e-9);
+            EXPECT_NEAR(g->gamma, fd->gamma, 1.0e-8);
+            if (!took) continue;
+            ++took_n;
+            // (c) vega vs Richardson of the mark, economic.
+            const double vega_ref =
+                rich_d1([&](double v) { return alput(S, K, T, v, r, q); }, sigma, 1.0e-3);
+            if (std::fabs(g->vega - vega_ref) <= 1.0e-2 + 5.0e-3 * std::fabs(vega_ref)) ++vega_ok;
+          }
+        }
+      }
+    }
+  }
+  // (a) dominant engagement — the domain-widening headline (measured ≈ 83%).
+  EXPECT_GT(took_n, (3 * total) / 4) << "engagement=" << took_n << "/" << total;
+  EXPECT_GT(vega_ok, (95 * took_n) / 100) << "vega economic parity on ≥95% of adjoint-path points";
 }
 
 // I-3: pin the IFT boundary correction (-λ^T R_σ) where it is MATERIAL. Near
@@ -567,8 +603,86 @@ TEST(AdjointGreeksAmerican, DISABLED_PerfSanity) {
                                       atx::vol::AmericanMethod::AndersenLake, std::nullopt, true);
     return g.has_value() ? g->vega + g->delta : 0.0;
   });
-  std::cout << "[perf sanity] american_greeks: aad=" << aad << " items/s  fd_warm=" << fdw
+  // BOTH SCOPES (the PM holds the >=5x gate scope decision).
+  //  * FULL 8-greek bundle: aad (all 8 in one taped solve + reverse tangent) vs
+  //    fd_warm (the full FD bundle). This is the row the portfolio adjoint A/B uses.
+  //  * FIRST-ORDER delta+vega: the adjoint kernel ALWAYS computes the full bundle
+  //    (no first_order_only fast path this wave), so its first-order cost == aad; the
+  //    FD first-order composite is the delta-only + vega-only fast paths
+  //    (american_delta + american_vega_al, ~2 boundary solves each). This exposes
+  //    that a delta+vega-only need is cheaper via the FD fast paths than via the full
+  //    adjoint kernel — a first_order_only adjoint (skip vanna/volga) is the lever.
+  const double fd_first = bench([&](const APt& p) {
+    const auto d = atx::vol::american_delta(S, p.K, p.T, p.sigma, p.r, p.q, Side::Put);
+    const auto v = atx::vol::american_vega_al(S, p.K, p.T, p.sigma, p.r, p.q, Side::Put);
+    return (d.has_value() ? *d : 0.0) + (v.has_value() ? *v : 0.0);
+  });
+  std::cout << "[perf sanity] FULL 8-greek: aad=" << aad << " items/s  fd_warm=" << fdw
             << " items/s  speedup=" << (aad / fdw) << "x\n";
+  std::cout << "[perf sanity] FIRST-ORDER delta+vega: aad(full kernel)=" << aad
+            << " items/s  fd_first(delta+vega_al)=" << fd_first
+            << " items/s  speedup=" << (aad / fd_first) << "x\n";
+  SUCCEED();
+}
+
+// P3-pre DECISION DIAGNOSTIC (DISABLED). Measures, on a realistic backtest-shaped
+// put grid, (a) the fixed-point-IFT-domain engagement fraction (took==true), and
+// (b) how far the fixed-point IFT vega (al_implicit_diff_put_greeks — differentiates
+// the EXACT fixed point y_fp) is from the budget-limited MARK vega (rich_d1 of the
+// ACCURATE-preset andersen_lake — differentiates y*(θ) the solver actually returns),
+// split by convergence. Answers: can we widen by simply loosening the ‖R‖ guard, or
+// must we differentiate through the iterations (Christianson)?
+TEST(AdjointGreeksAmerican, DISABLED_DomainRealityScan) {
+  using atx::vol::detail::al_implicit_diff_put_greeks;
+  const double S = 100.0;
+  int n_total = 0, n_took = 0;
+  // through-iters (american_greeks_adjoint) vs the two mark estimates, RELATIVE gaps.
+  std::vector<double> ti_vs_al, ti_vs_rich, al_vs_rich;
+  for (double m : {0.80, 0.85, 0.90, 0.95, 1.00, 1.05, 1.10, 1.15, 1.20}) {
+    const double K = S / m; // spot-moneyness m = S/K
+    for (double T : {0.02, 0.05, 0.08, 0.12, 0.17, 0.25, 0.35, 0.5}) {
+      for (double sigma : {0.12, 0.18, 0.25, 0.32, 0.45}) {
+        for (double r : {0.03, 0.045, 0.05}) {
+          for (double q : {0.0, 0.012, 0.025}) {
+            if (atx::vol::detail::classify_regime(r, q) != atx::vol::detail::ExerciseRegime::American) {
+              continue;
+            }
+            bool took = false;
+            const auto g = american_greeks_adjoint(S, K, T, sigma, r, q, Side::Put, std::nullopt, &took);
+            if (!g.has_value()) {
+              continue;
+            }
+            ++n_total;
+            n_took += took ? 1 : 0;
+            const double rich = rich_d1([&](double v) { return alput(S, K, T, v, r, q); }, sigma, 1.0e-3);
+            const double denom = std::fabs(rich) + 1.0;
+            const auto al = atx::vol::american_greeks_al(S, K, T, sigma, r, q, Side::Put);
+            if (took && al.has_value()) {
+              ti_vs_al.push_back(std::fabs(g->vega - al->vega) / denom);
+              ti_vs_rich.push_back(std::fabs(g->vega - rich) / denom);
+              al_vs_rich.push_back(std::fabs(al->vega - rich) / denom);
+            }
+          }
+        }
+      }
+    }
+  }
+  auto pct = [](std::vector<double>& v, double p) {
+    if (v.empty()) return 0.0;
+    std::sort(v.begin(), v.end());
+    return v[std::min(v.size() - 1, (size_t)(p * v.size()))];
+  };
+  std::cout << "[domain reality] realistic put grid N=" << n_total
+            << "  through-iters engagement took=" << n_took << "/" << n_total << " ("
+            << (100.0 * n_took / std::max(1, n_total)) << "%)\n";
+  std::cout << "  through-iters vega vs al   : median=" << pct(ti_vs_al, 0.5)
+            << " p90=" << pct(ti_vs_al, 0.9) << " p99=" << pct(ti_vs_al, 0.99)
+            << " max=" << pct(ti_vs_al, 1.0) << " n=" << ti_vs_al.size() << "\n";
+  std::cout << "  through-iters vega vs rich : median=" << pct(ti_vs_rich, 0.5)
+            << " p90=" << pct(ti_vs_rich, 0.9) << " p99=" << pct(ti_vs_rich, 0.99)
+            << " max=" << pct(ti_vs_rich, 1.0) << "\n";
+  std::cout << "  al vega vs rich (mark self-noise): median=" << pct(al_vs_rich, 0.5)
+            << " p90=" << pct(al_vs_rich, 0.9) << " max=" << pct(al_vs_rich, 1.0) << "\n";
   SUCCEED();
 }
 

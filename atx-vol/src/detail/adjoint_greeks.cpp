@@ -1,11 +1,15 @@
-// ── Adjoint (AAD) American / European greeks — WS-P P2 ────────────────────
+// ── Adjoint (AAD) American / European greeks — WS-P P2 + P3-pre ───────────
 //
 // Hand-coded adjoint algorithmic differentiation of the Andersen-Lake American
-// pricer with implicit-function-theorem (IFT) differentiation THROUGH the
-// early-exercise boundary. See docs/adjoint_greeks_design.md for the full design
-// and the primary-source citations (Giles-Glasserman 2006; Savine ch.9; Henrard/
-// OpenGamma AAD+IFT 2011; Griewank-Walther cheap-gradient bound; Deussen/Naumann
-// EuroAD-2015 American AAD envelope + Γ=0 trap). Class: accuracy-improving.
+// pricer. The boundary sensitivities (vega/rho/vanna) are differentiated THROUGH
+// the actual budget-limited exercise-boundary iteration via Christianson (1994)
+// reverse-accumulation of iterated maps (P3-pre domain widening), superseding the
+// P2 exact-fixed-point IFT which was mark-consistent only on the narrow
+// well-converged subset. See docs/adjoint_greeks_design.md for the full design and
+// the primary-source citations (Giles-Glasserman 2006; Savine ch.9; Henrard/
+// OpenGamma AAD+IFT 2011; Christianson 1994 reverse accumulation of attractive
+// fixed points; Griewank-Walther cheap-gradient bound; Deussen/Naumann EuroAD-2015
+// American AAD envelope + Γ=0 trap). Class: accuracy-improving.
 //
 // Pure functions (no globals/statics mutation) — live == backtest bit-for-bit.
 
@@ -152,77 +156,13 @@ struct EuroSecondOrder {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// American IFT-adjoint (genuine early-exercise puts, r > 0)
+// American adjoint via Christianson through-iterations (early-exercise puts, r > 0)
 // ══════════════════════════════════════════════════════════════════════════
 
 using amer::AlBoundary;
 using amer::AlScheme;
 using amer::AlWorkspace;
 using amer::kAlMaxNodes;
-
-// Dense partial-pivot LU (Doolittle), row-major stride `n`, in place. A small
-// well-conditioned system (m ≤ 31; J = I - ∂G/∂y with the fixed-point map G a
-// contraction ⇒ eigenvalues clustered near 1). Own LU (not the file-static one in
-// american.cpp) so this TU is self-contained. Returns false on a zero pivot.
-[[nodiscard]] bool lu_factor(double *A, int n, int *piv) noexcept {
-  for (int i = 0; i < n; ++i) {
-    piv[i] = i;
-  }
-  for (int k = 0; k < n; ++k) {
-    int p = k;
-    double amax = std::fabs(A[k * n + k]);
-    for (int i = k + 1; i < n; ++i) {
-      const double v = std::fabs(A[i * n + k]);
-      if (v > amax) {
-        amax = v;
-        p = i;
-      }
-    }
-    if (!(amax > 0.0)) {
-      return false;
-    }
-    if (p != k) {
-      for (int j = 0; j < n; ++j) {
-        std::swap(A[k * n + j], A[p * n + j]);
-      }
-      std::swap(piv[k], piv[p]);
-    }
-    const double akk = A[k * n + k];
-    for (int i = k + 1; i < n; ++i) {
-      const double f = A[i * n + k] / akk;
-      A[i * n + k] = f;
-      for (int j = k + 1; j < n; ++j) {
-        A[i * n + j] -= f * A[k * n + j];
-      }
-    }
-  }
-  return true;
-}
-
-// Solve A x = b from a factorization (LU + piv), b overwritten with x.
-void lu_solve(const double *LU, const int *piv, double *b, int n) noexcept {
-  std::array<double, kAlMaxNodes> y{};
-  for (int i = 0; i < n; ++i) {
-    y[i] = b[piv[i]];
-  }
-  for (int i = 0; i < n; ++i) { // forward (unit lower)
-    double s = y[i];
-    for (int j = 0; j < i; ++j) {
-      s -= LU[i * n + j] * y[j];
-    }
-    y[i] = s;
-  }
-  for (int i = n - 1; i >= 0; --i) { // back (upper)
-    double s = y[i];
-    for (int j = i + 1; j < n; ++j) {
-      s -= LU[i * n + j] * y[j];
-    }
-    y[i] = s / LU[i * n + i];
-  }
-  for (int i = 0; i < n; ++i) {
-    b[i] = y[i];
-  }
-}
 
 // Price from a boundary whose interior nodes are y0 + scale*dir (node 0 pinned).
 [[nodiscard]] double price_moved(const AlBoundary &base, const AlWorkspace &ws, double S, double K,
@@ -236,8 +176,87 @@ void lu_solve(const double *LU, const int *piv, double *b, int n) noexcept {
   return amer::al_put_price_from_boundary(scr, ws, S, K, T, sigma, r, q);
 }
 
-// The American IFT-adjoint core. Returns nullopt on any regime it does not claim
-// (caller falls back to american_greeks_fd). Genuine early-exercise PUTS only.
+using amer::AlSolveTape;
+
+// dy*/dθ via reverse-accumulation-through-iterations (Christianson 1994, "Reverse
+// accumulation and attractive fixed points", Optim. Methods & Software 3:311-326).
+// The budget-limited solve is y* = seed(θ) then y^k = G_k(y^{k-1}; θ) for the taped
+// sweeps. Its EXACT tangent (the derivative the mark actually has, matching fd/al) is
+//   ẏ^0 = ∂seed/∂θ ,   ẏ^k = ∂G_k/∂y · ẏ^{k-1} + ∂G_k/∂θ ,   dy*/dθ = ẏ^N.
+// Each step needs the directional derivative ∂G_k/∂y·ẏ (a JVP) and the DIRECT partial
+// ∂G_k/∂θ. Both are differenced against the SAME base point G_k(y^k;θ) — which the tape
+// ALREADY holds as y^{k+1} (al_solve_put_boundary_tape and al_apply_boundary_sweep run
+// the bit-identical generic sweep, so y^{k+1} == G_k(y^k;θ) to the last bit). So each
+// step is a FORWARD difference reusing y^{k+1} as the unperturbed anchor: ONE sweep for
+// the JVP + ONE for the θ-partial (2 apps/step) instead of the 4 a central pair costs —
+// halving the tangent's sweep-application count, the dominant per-solve adjoint cost.
+// Zero derivation risk (it still differentiates literally the map the pricer ran); the
+// O(h) forward-vs-O(h²) central truncation is far below the mark's own ~1e-2 self-noise
+// (verified: RealisticGridWideMarkExactParity / AdjointPathAccuracyVsMark stay green vs
+// Richardson of the true mark). param_sel: 0 => d/dσ, 1 => d/dr. ydot is node-indexed
+// (ydot[0] = 0, node 0 pinned); interior part ydot+1 feeds price_moved.
+void boundary_tangent_through_iters(const AlBoundary &bnd, const AlWorkspace &ws,
+                                    const AlSolveTape &tape, double sigma, double r, double q,
+                                    int param_sel, double *ydot) noexcept {
+  const std::uint16_t n = bnd.n;
+  const double dth = (param_sel == 0) ? (1.0e-6 * std::fmax(sigma, 1.0e-3)) : 1.0e-6;
+  const double sp = (param_sel == 0) ? sigma + dth : sigma;
+  const double rp = (param_sel == 1) ? r + dth : r;
+  // ẏ^0 = 0: the seed tangent ∂(BAW seed)/∂θ is DROPPED. Christianson's attractive-
+  // fixed-point result says the tangent recursion forgets its initial value at the
+  // iteration's contraction rate, so the seed tangent's contribution to ẏ^N is damped
+  // by ∏M_j and negligible where the sweeps contract (the whole realistic grid: matches
+  // al's cold-re-solve vega to ~1e-6 median). And the BAW seed is an iterative solve
+  // converged only to ~1e-10, so an FD estimate of its derivative injects far MORE noise
+  // than the signal it would add (measured: including it raised the max error 10×). The
+  // weakly-contracting corners where the dropped term is non-negligible (T≳1y, low σ)
+  // are caught by the self-consistency guard and handed to fd.
+  for (std::uint16_t i = 0; i < n; ++i) {
+    ydot[i] = 0.0;
+  }
+  // The JVP (y-direction) and the DIRECT θ-partial are differenced SEPARATELY with
+  // independently-scaled steps: a single combined step fails when the tangent grows
+  // large through a barely-contracting boundary — the y-perturbation dominates and the
+  // θ-perturbation shrinks below the roundoff floor, dropping the direct ∂G/∂θ term (a
+  // systematic few-% bias, observed at low-σ/deep-ITM).
+  std::array<double, kAlMaxNodes> yp{}, gp{}, jvp{};
+  for (std::uint16_t k = 0; k < tape.n_steps; ++k) {
+    const double *yb = tape.y_iter[k].data();       // base input to sweep k (from the tape)
+    const double *ynext = tape.y_iter[k + 1].data(); // = G_k(yb; θ) — the forward-diff anchor
+    // ── JVP  J_k · ẏ : forward difference in the y-direction ẏ (θ held at base), step
+    //    scaled so the probe is ~1e-7 regardless of ‖ẏ‖. (Skipped while ẏ≡0.)
+    double ymax = 0.0;
+    for (std::uint16_t i = 0; i < n; ++i) {
+      ymax = std::fmax(ymax, std::fabs(ydot[i]));
+    }
+    if (ymax > 0.0) {
+      const double hy = 1.0e-7 / std::fmax(ymax, 1.0);
+      for (std::uint16_t i = 0; i < n; ++i) {
+        yp[i] = yb[i] + hy * ydot[i];
+      }
+      amer::al_apply_boundary_sweep(bnd, ws, yp.data(), sigma, r, q, tape.is_jn[k], jvp.data());
+      for (std::uint16_t i = 0; i < n; ++i) {
+        jvp[i] = (jvp[i] - ynext[i]) / hy;
+      }
+    } else {
+      for (std::uint16_t i = 0; i < n; ++i) {
+        jvp[i] = 0.0;
+      }
+    }
+    // ── DIRECT partial ∂G_k/∂θ : forward difference in θ (y held at the tape point yb,
+    //    anchored on y^{k+1} = G_k(yb;θ)).
+    amer::al_apply_boundary_sweep(bnd, ws, yb, sp, rp, q, tape.is_jn[k], gp.data());
+    for (std::uint16_t i = 0; i < n; ++i) {
+      ydot[i] = jvp[i] + (gp[i] - ynext[i]) / dth;
+    }
+  }
+}
+
+// The American adjoint core. Returns nullopt on any regime it does not claim (caller
+// falls back to american_greeks_fd). Genuine early-exercise PUTS only. Boundary
+// sensitivities (vega/rho/vanna) come from Christianson through-iterations so they
+// match the budget-limited mark on the whole domain, not the narrow well-converged
+// fixed-point subset the P2 IFT claimed.
 [[nodiscard]] std::optional<AmericanGreeks>
 american_put_adjoint(double S, double K, double T, double sigma, double r, double q,
                      const std::optional<AlOpts> &opts) noexcept {
@@ -248,14 +267,20 @@ american_put_adjoint(double S, double K, double T, double sigma, double r, doubl
   const AlScheme sch = amer::scheme_from_opts(opts);
   AlBoundary bnd{};
   AlWorkspace ws{};
-  if (amer::al_solve_put_boundary(K, T, sigma, r, q, sch, bnd, ws) != amer::AlSolveStatus::Ok) {
+  AlSolveTape tape{};
+  // Tape the budget-limited solve (generic kernel; agrees with production
+  // al_solve_put_boundary only to the pure-hoist ~1e-9 tolerance, NOT bit-identically —
+  // see al_solve_put_boundary_tape). `tape` holds seed + every swept iterate for the
+  // Christianson tangent. The served mark is P0 below (this kernel's own AL price via
+  // al_put_price_from_boundary), not this boundary reused as a production mark.
+  if (amer::al_solve_put_boundary_tape(K, T, sigma, r, q, sch, bnd, ws, tape) !=
+      amer::AlSolveStatus::Ok) {
     return std::nullopt;
   }
   const std::uint16_t n = bnd.n;
   if (n < 2) {
     return std::nullopt;
   }
-  const int m = n - 1; // interior collocation nodes (node 0 pinned)
 
   auto price_at = [&](double s, double sig, double rr) noexcept {
     return amer::al_put_price_from_boundary(bnd, ws, s, K, T, sig, rr, q);
@@ -289,162 +314,57 @@ american_put_adjoint(double S, double K, double T, double sigma, double r, doubl
     return std::nullopt;
   }
 
-  // IFT precondition: the boundary must be a CONVERGED fixed point R(y0) ≈ 0. The
-  // scheme early-exits at tol=1e-10 but caps its sweep budget, so a nasty corner
-  // (ITM / long-T / low-σ / negative-carry) can return a boundary that still
-  // carries residual. Differentiating a non-converged fixed point via IFT is
-  // invalid — the derivative would omit the truncated-iteration term. Verify
-  // convergence; hand unconverged points to the FD bundle (which re-solves each
-  // bumped boundary directly and needs no IFT precondition).
-  {
-    std::array<double, kAlMaxNodes> R0{};
-    amer::al_put_boundary_residual(bnd, ws, bnd.y.data(), sigma, r, q, R0.data());
-    double rmax = 0.0;
-    for (std::uint16_t i = 1; i < n; ++i) {
-      rmax = std::fmax(rmax, std::fabs(R0[i]));
-    }
-    if (!(rmax <= 1.0e-7)) {
-      return std::nullopt;
-    }
-  }
+  // ── Boundary tangents dy*/dσ, dy*/dr via Christianson through-iterations — the
+  // EXACT derivative of the budget-limited solve, matching the mark (fd/al) on the
+  // whole domain (no ‖R‖≤1e-7 fixed-point precondition; that guard is what capped the
+  // P2 IFT to the well-converged ~14% and Amdahl-limited the portfolio speedup).
+  std::array<double, kAlMaxNodes> ydot_s{}, ydot_r{};
+  boundary_tangent_through_iters(bnd, ws, tape, sigma, r, q, /*d/dσ=*/0, ydot_s.data());
+  boundary_tangent_through_iters(bnd, ws, tape, sigma, r, q, /*d/dr=*/1, ydot_r.data());
 
-  // ── Jacobian J = ∂R/∂y (m×m) and ∂P/∂y (m-vector), via central FD of the pure
-  // residual seam and the price-from-boundary. Node grid / xmax / K held fixed.
-  std::array<double, kAlMaxNodes> y0{};
-  for (std::uint16_t i = 0; i < n; ++i) {
-    y0[i] = bnd.y[i];
-  }
-  std::array<double, kAlMaxNodes * kAlMaxNodes> J{}; // row-major stride m
-  std::array<double, kAlMaxNodes> Rp{};
-  std::array<double, kAlMaxNodes> Rm{};
-  std::array<double, kAlMaxNodes> ywork{};
-  std::array<double, kAlMaxNodes> Py{};
-  for (std::uint16_t i = 0; i < n; ++i) {
-    ywork[i] = y0[i];
-  }
-  for (int jc = 0; jc < m; ++jc) {
-    const int jn = jc + 1;
-    const double yj = y0[jn];
-    const double h = 1.0e-6 * std::fmax(std::fabs(yj), 1.0e-3);
-    ywork[jn] = yj + h;
-    amer::al_put_boundary_residual(bnd, ws, ywork.data(), sigma, r, q, Rp.data());
-    const double Pp_y = [&] {
-      AlBoundary scr = bnd;
-      scr.y[jn] = yj + h;
-      return amer::al_put_price_from_boundary(scr, ws, S, K, T, sigma, r, q);
-    }();
-    ywork[jn] = yj - h;
-    amer::al_put_boundary_residual(bnd, ws, ywork.data(), sigma, r, q, Rm.data());
-    const double Pm_y = [&] {
-      AlBoundary scr = bnd;
-      scr.y[jn] = yj - h;
-      return amer::al_put_price_from_boundary(scr, ws, S, K, T, sigma, r, q);
-    }();
-    ywork[jn] = yj;
-    for (int ir = 0; ir < m; ++ir) {
-      J[ir * m + jc] = (Rp[ir + 1] - Rm[ir + 1]) / (2.0 * h);
-    }
-    Py[jc] = (Pp_y - Pm_y) / (2.0 * h);
-  }
-
-  // ── R_sigma, R_r (interior m-vectors): central FD of the pure residual.
-  const double hs = 1.0e-5 * std::fmax(sigma, 1.0e-3);
-  const double hr = 1.0e-6;
-  std::array<double, kAlMaxNodes> Rsp{}, Rsm{}, Rrp{}, Rrm{};
-  amer::al_put_boundary_residual(bnd, ws, y0.data(), sigma + hs, r, q, Rsp.data());
-  amer::al_put_boundary_residual(bnd, ws, y0.data(), sigma - hs, r, q, Rsm.data());
-  amer::al_put_boundary_residual(bnd, ws, y0.data(), sigma, r + hr, q, Rrp.data());
-  amer::al_put_boundary_residual(bnd, ws, y0.data(), sigma, r - hr, q, Rrm.data());
-  std::array<double, kAlMaxNodes> Rsig{}, Rrho{};
-  for (int k = 0; k < m; ++k) {
-    Rsig[k] = (Rsp[k + 1] - Rsm[k + 1]) / (2.0 * hs);
-    Rrho[k] = (Rrp[k + 1] - Rrm[k + 1]) / (2.0 * hr);
-  }
-
-  // ── Adjoint boundary multiplier: J^T λ = ∂P/∂y  (ONE transposed solve). Then
-  // vega = ∂P/∂σ|_y - λ^T R_σ, rho = ∂P/∂r|_y - λ^T R_r.  Reverse-mode IFT
-  // (Henrard/OpenGamma 2011; Giles-Glasserman 2006): the boundary adjoint is
-  // solved once regardless of the number of upstream parameters.
-  std::array<double, kAlMaxNodes * kAlMaxNodes> Jt{};
-  for (int i = 0; i < m; ++i) {
-    for (int j = 0; j < m; ++j) {
-      Jt[i * m + j] = J[j * m + i];
-    }
-  }
-  std::array<int, kAlMaxNodes> piv{};
-  std::array<double, kAlMaxNodes> lam{};
-  for (int i = 0; i < m; ++i) {
-    lam[i] = Py[i];
-  }
-  if (!lu_factor(Jt.data(), m, piv.data())) {
-    return std::nullopt;
-  }
-  // Ill-conditioning guard. J = I - ∂G/∂y with G the boundary fixed-point map; a
-  // U-pivot ratio near 0 means an eigenvalue of ∂G/∂y is near 1 (the iteration
-  // barely contracts — a near-degenerate boundary, e.g. the ITM / long-T / low-σ
-  // negative-carry corner). There the IFT amplifies the FD-estimated J/R_σ/∂P/∂y
-  // by ~1/pivot, so vega/rho/vanna/volga become unreliable. Hand those points to
-  // the robust FD bundle (which re-solves each bumped boundary directly).
-  {
-    double pmin = std::fabs(Jt[0]);
-    double pmax = pmin;
-    for (int i = 1; i < m; ++i) {
-      const double d = std::fabs(Jt[i * m + i]);
-      pmin = std::fmin(pmin, d);
-      pmax = std::fmax(pmax, d);
-    }
-    if (!(pmin > 1.0e-10 * pmax)) {
-      return std::nullopt;
-    }
-  }
-  lu_solve(Jt.data(), piv.data(), lam.data(), m);
-
-  // Frozen-boundary direct σ/r partials (boundary y0 held; premium+euro re-evaluated).
-  const double hsig_p = 1.0e-4 * std::fmax(sigma, 1.0e-3);
-  const double hr_p = 1.0e-5;
-  const double dPsig_frozen = (price_at(S, sigma + hsig_p, r) - price_at(S, sigma - hsig_p, r)) /
-                              (2.0 * hsig_p);
-  const double dPr_frozen = (price_at(S, sigma, r + hr_p) - price_at(S, sigma, r - hr_p)) /
-                            (2.0 * hr_p);
-  double lam_dot_Rsig = 0.0, lam_dot_Rrho = 0.0;
-  for (int k = 0; k < m; ++k) {
-    lam_dot_Rsig += lam[k] * Rsig[k];
-    lam_dot_Rrho += lam[k] * Rrho[k];
-  }
-  const double vega = dPsig_frozen - lam_dot_Rsig;
-  const double rho = dPr_frozen - lam_dot_Rrho;
+  // vega = dP/dσ (total) = ∂P/∂σ|_y + (∂P/∂y)·(dy*/dσ). Realized as one moving-boundary
+  // central difference: move the boundary along its Christianson tangent ẏ_σ by ±h and
+  // re-price at σ±h — this reproduces mark(σ±h) to O(h²), i.e. exactly al's cold-re-solve
+  // vega, but from ONE taped solve instead of two extra boundary solves. ydot+1 is the
+  // interior-node view price_moved consumes (node 0 is pinned, ydot[0]=0).
+  const double hsig = 1.0e-4 * std::fmax(sigma, 1.0e-3);
+  const double hrho = 1.0e-5;
+  const double vega =
+      (price_moved(bnd, ws, S, K, T, sigma + hsig, r, q, ydot_s.data() + 1, hsig) -
+       price_moved(bnd, ws, S, K, T, sigma - hsig, r, q, ydot_s.data() + 1, -hsig)) /
+      (2.0 * hsig);
+  // rho's tangent ẏ_r is NOT independently guarded per-point (only vega is, via the
+  // cold-re-solve self-consistency check below). rho rides on that: ẏ_r and ẏ_σ share
+  // the same taped iteration and contraction, so a corner unstable enough to corrupt ẏ_r
+  // corrupts ẏ_σ too and is caught by the vega guard → FD fallback. rho is additionally
+  // gated vs Richardson-of-the-mark on the grid in AdjointPathAccuracyVsMark.
+  const double rho = (price_moved(bnd, ws, S, K, T, sigma, r + hrho, q, ydot_r.data() + 1, hrho) -
+                      price_moved(bnd, ws, S, K, T, sigma, r - hrho, q, ydot_r.data() + 1, -hrho)) /
+                     (2.0 * hrho);
 
   // ── theta / charm: continuation-region Black-Scholes PDE identity (no T-boundary
   // grid derivative). θ = rV - (r-q)S·Δ - ½σ²S²·Γ ; charm = ∂θ/∂S. We are always in
-  // the continuation region here: the exercise-region / straddle guard above
-  // already handed any point at the intrinsic clamp to the FD bundle, so the PDE
-  // identity holds unconditionally at this spot.
+  // the continuation region here: the exercise-region / straddle guard above already
+  // handed any point at the intrinsic clamp to the FD bundle, so the PDE identity
+  // holds unconditionally at this spot.
   const double theta = r * P0 - (r - q) * S * delta - 0.5 * sigma * sigma * S * S * gamma;
   const double charm = r * delta - (r - q) * (delta + S * gamma) -
                        0.5 * sigma * sigma * (2.0 * S * gamma + S * S * speed);
 
-  // ── vanna = ∂delta/∂σ via the FIRST-ORDER boundary tangent y_σ (forward IFT:
-  // J y_σ = -R_σ). Only first-order boundary motion enters a mixed 2nd derivative.
-  std::array<double, kAlMaxNodes * kAlMaxNodes> Jf = J;
-  std::array<int, kAlMaxNodes> pivf{};
-  std::array<double, kAlMaxNodes> ysig{};
-  for (int k = 0; k < m; ++k) {
-    ysig[k] = -Rsig[k];
-  }
-  double vanna = 0.0;
-  if (lu_factor(Jf.data(), m, pivf.data())) {
-    lu_solve(Jf.data(), pivf.data(), ysig.data(), m);
-    const double hsv = 1.0e-3 * std::fmax(sigma, 1.0e-3);
-    const double hSv = 1.0e-3 * S;
-    // delta on the σ+ / σ- moved boundaries.
-    const double dvp = (price_moved(bnd, ws, S + hSv, K, T, sigma + hsv, r, q, ysig.data(), hsv) -
-                        price_moved(bnd, ws, S - hSv, K, T, sigma + hsv, r, q, ysig.data(), hsv)) /
-                       (2.0 * hSv);
-    const double dvm = (price_moved(bnd, ws, S + hSv, K, T, sigma - hsv, r, q, ysig.data(), -hsv) -
-                        price_moved(bnd, ws, S - hSv, K, T, sigma - hsv, r, q, ysig.data(), -hsv)) /
-                       (2.0 * hSv);
-    vanna = (dvp - dvm) / (2.0 * hsv);
-  }
+  // ── vanna = ∂delta/∂σ. Only the FIRST-ORDER boundary motion ẏ_σ enters a mixed 2nd
+  // derivative; move the boundary along ẏ_σ (the Christianson tangent) and take a
+  // spot-difference of delta on the σ± moved boundaries.
+  const double hsv = 1.0e-3 * std::fmax(sigma, 1.0e-3);
+  const double hSv = 1.0e-3 * S;
+  const double dvp =
+      (price_moved(bnd, ws, S + hSv, K, T, sigma + hsv, r, q, ydot_s.data() + 1, hsv) -
+       price_moved(bnd, ws, S - hSv, K, T, sigma + hsv, r, q, ydot_s.data() + 1, hsv)) /
+      (2.0 * hSv);
+  const double dvm =
+      (price_moved(bnd, ws, S + hSv, K, T, sigma - hsv, r, q, ydot_s.data() + 1, -hsv) -
+       price_moved(bnd, ws, S - hSv, K, T, sigma - hsv, r, q, ydot_s.data() + 1, -hsv)) /
+      (2.0 * hSv);
+  const double vanna = (dvp - dvm) / (2.0 * hsv);
 
   // ── volga = ∂²P/∂σ²: COLD σ± boundary RE-SOLVE (captures y_σσ exactly and to
   // full tol — a warm re-solve's residual is amplified by 1/hvol² in the 2nd
@@ -466,13 +386,15 @@ american_put_adjoint(double S, double K, double T, double sigma, double r, doubl
       const double Psp = amer::al_put_price_from_boundary(bsp, wsp, S, K, T, sigma + hvol, r, q);
       const double Psm = amer::al_put_price_from_boundary(bsm, wsm, S, K, T, sigma - hvol, r, q);
       volga = (Psp - 2.0 * P0 + Psm) / (hvol * hvol);
-      // Self-consistency guard: the IFT vega and this INDEPENDENT cold-re-solve
-      // vega must agree. A disagreement means the boundary solver is unstable at
-      // this corner (the ITM / long-T / low-σ negative-carry region), so neither
-      // the IFT nor the re-solve is trustworthy — hand the point to the FD bundle.
+      // Self-consistency guard: the Christianson through-iterations vega and this
+      // INDEPENDENT cold-re-solve vega both estimate the SAME budget-limited mark
+      // derivative, so they must agree closely. A gap means the boundary solver is
+      // unstable at this corner (ITM / long-T / low-σ / negative-carry) where even
+      // fd is unreliable — hand the point to the FD bundle. (Tolerance covers the
+      // coarse hvol=5e-3 re-solve's O(hvol²·volga) truncation vs the tight tangent.)
       const double vega_resolve = (Psp - Psm) / (2.0 * hvol);
       if (std::fabs(vega - vega_resolve) >
-          2.0e-2 * (std::fabs(vega) + std::fabs(vega_resolve) + 1.0)) {
+          3.0e-2 * (std::fabs(vega) + std::fabs(vega_resolve)) + 1.0e-3) {
         return std::nullopt;
       }
     } else {

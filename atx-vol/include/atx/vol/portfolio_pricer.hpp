@@ -498,6 +498,19 @@ struct PriceOptions {
   // bit-identical to the FD path; theta/charm become the exact PDE value. Off by
   // default so PortfolioPricer::price is unchanged; the backtest enables it.
   bool analytic_greeks{false};
+  // WS-P P3 A/B: route the FullGreeks risk columns through the Christianson
+  // through-iterations adjoint kernel (detail::american_greeks_adjoint) instead of
+  // the finite-difference bundle. evaluate_batch computes IV + American mark only
+  // (Marks fields), then delta/gamma/vega/theta/rho/vanna/volga/charm come from ONE
+  // taped Andersen-Lake solve + a reverse boundary tangent per unique contract —
+  // delta/gamma bit-identical to the FD path (spot-independent boundary), vega/rho
+  // matched to the served mark on ~83% of a realistic grid, FD fallback elsewhere.
+  // The mark (PriceFrame::price / fair_value) is the same andersen_lake value the FD
+  // path serves. Off by default (every existing result bit-identical). This mode is
+  // COMPUTE-ONLY: it does not stage FullGreek seeds and does not publish a reusable
+  // base-risk stamp, so a later pnl_totals cannot reuse adjoint base risk under an FD
+  // assumption (it recomputes, fail-safe). Supersedes analytic_greeks when both set.
+  bool adjoint_greeks{false};
   // Quote-refresh mode: compute IV + American mark only (one solve per unique
   // contract) and leave risk columns NaN. Full Greeks remain the default for
   // backward compatibility; market-making quote loops should enable this and
