@@ -762,9 +762,17 @@ void BM_PipelineAttribution(benchmark::State &state) {
 const int kRegistered = [] {
   register_corpus_scale("fit/e2e/spy_real", BM_FitE2e<load_spy_fit_corpus>);
   register_corpus_scale("fit/e2e/100name", BM_FitE2e<load_universe_fit_corpus>);
+  // Sample-count override (review fix, finding #2): the attribution pass is a heavy
+  // ~0.66 s op, so apply_common's default (5 reps × ~1 auto iteration) gives only ~5
+  // timed executions and a single slow rep swings the wall CV. Fix 3 iterations/rep
+  // (each rep-mean averages 3 full passes) and raise to 15 reps for a stable CV
+  // before M4 reads the stage fractions. The fit/price SPLIT was already stable
+  // (fit_frac CV ~0.4%); this stabilizes the absolute wall too.
   apply_common(benchmark::RegisterBenchmark("attribution/pipeline/synth_fit_ser_deser_price",
                                             BM_PipelineAttribution))
       ->Unit(benchmark::kMillisecond)
+      ->Iterations(3)
+      ->Repetitions(15)
       ->UseRealTime();
   apply_common(benchmark::RegisterBenchmark("price/backtest/spy_real/cold",
                                             BM_BacktestReal<BacktestMode::Cold>))
