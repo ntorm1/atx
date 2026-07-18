@@ -404,3 +404,25 @@ Sprint X  (leadership, optional) SplineVol/SRCubic candidate in the selector lad
 5. **Bit-identity is a telltale, not a gate** — the §Global economic bound governs; goldens update with documented justification.
 6. **CStar stays off the production path** until the S5 evidence panel and the Sprint I decision — no selector edits from any sub-sprint.
 7. **Merge conflicts in `bench/CMakeLists.txt`** are expected and trivial: keep all targets (precedent: the analytics merge resolution).
+
+---
+
+## 9. Sprint I execution ledger (2026-07-17)
+
+Full write-up: `sprints/2026-07-16-sprint-i-results.md`. Branch
+`feat/sota-integration@3ecc3e3` (on `main@51df565`). Not pushed; not merged to main.
+
+| Sprint I item | Outcome |
+|---|---|
+| Merge R→K→A→S→I-S→I-K | Done; disjointness held; I-K never touched `american_boundary_avx2.cpp` |
+| I-K R-23 aliasing | Exact `in==out` identity aliasing permitted; positive tests added |
+| I-K K2 wing-patch | Retired; **surfaced+fixed 2 latent bugs** (`exp_pd` >`ln(DBL_MIN)` garbage; `±inf` d past R-22 NaN guard) |
+| I-K R-24 IV routing | AVX2 ~0.95× scalar + looser → **no-flip**, both entries scalar; kernel off-dispatch |
+| I-S CStar real-OPRA panel | Ran on SPY+10 mega-caps (25-name cohort data-gated); real data does NOT generalize the synthetic win → **KEEP R&D** |
+| Correctness gate (Debug/`rel`) | **PASS** — only the 6 pre-existing v2 failures; zero new |
+| rel-avx2 suite | 6 + 11 bit-identity/rounding failures; **11 verified ISA-only** (pass under Debug, LSB ~2e-15) — not a regression; per-ISA golden tolerance is the fix if rel-avx2 must gate |
+| Boundary ship gate | quiet 1.87× (<2.0×) → `kShipAvx2Boundary` **stays false**; ship path = BAW-seed vectorization (Sprint X) |
+| K5 IV / A3 American / S3 fusion | ~329 ns/op (tighter than LBR) / fast ~47.5 µs (above ALO) / normal_eq **1.96×** |
+| SPY e2e one-op | **347 ms** (from 492); ≤200 ms **not met** — `observation_deam` 272.9 ms/board dominates → needs the deferred de-Am boundary wiring |
+| Φ-swap accuracy panel | **data-gated** here; validated at economic-bound by in-repo parity gates; run command in results doc |
+| **BLOCKED on user** | de-Am wiring into `boundary_interp.cpp::build` + R→integration merge (calib/boundary_interp conflicts, user present) — the path from 347 ms toward ≤200 ms |
