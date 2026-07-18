@@ -603,8 +603,25 @@ TEST(AdjointGreeksAmerican, DISABLED_PerfSanity) {
                                       atx::vol::AmericanMethod::AndersenLake, std::nullopt, true);
     return g.has_value() ? g->vega + g->delta : 0.0;
   });
-  std::cout << "[perf sanity] american_greeks: aad=" << aad << " items/s  fd_warm=" << fdw
+  // BOTH SCOPES (the PM holds the >=5x gate scope decision).
+  //  * FULL 8-greek bundle: aad (all 8 in one taped solve + reverse tangent) vs
+  //    fd_warm (the full FD bundle). This is the row the portfolio adjoint A/B uses.
+  //  * FIRST-ORDER delta+vega: the adjoint kernel ALWAYS computes the full bundle
+  //    (no first_order_only fast path this wave), so its first-order cost == aad; the
+  //    FD first-order composite is the delta-only + vega-only fast paths
+  //    (american_delta + american_vega_al, ~2 boundary solves each). This exposes
+  //    that a delta+vega-only need is cheaper via the FD fast paths than via the full
+  //    adjoint kernel — a first_order_only adjoint (skip vanna/volga) is the lever.
+  const double fd_first = bench([&](const APt& p) {
+    const auto d = atx::vol::american_delta(S, p.K, p.T, p.sigma, p.r, p.q, Side::Put);
+    const auto v = atx::vol::american_vega_al(S, p.K, p.T, p.sigma, p.r, p.q, Side::Put);
+    return (d.has_value() ? *d : 0.0) + (v.has_value() ? *v : 0.0);
+  });
+  std::cout << "[perf sanity] FULL 8-greek: aad=" << aad << " items/s  fd_warm=" << fdw
             << " items/s  speedup=" << (aad / fdw) << "x\n";
+  std::cout << "[perf sanity] FIRST-ORDER delta+vega: aad(full kernel)=" << aad
+            << " items/s  fd_first(delta+vega_al)=" << fd_first
+            << " items/s  speedup=" << (aad / fd_first) << "x\n";
   SUCCEED();
 }
 
