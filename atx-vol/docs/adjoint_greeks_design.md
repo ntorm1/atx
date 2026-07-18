@@ -262,3 +262,39 @@ First-order greeks (delta, vega, rho) and gamma target the tight plateau; theta/
 (PDE identity) and volga (2nd-order) carry documented looser tolerances (their FD
 references are themselves the noisiest). The existing `american_greeks_fd` path stays
 the untouched fallback until parity holds (Trap 2 discipline).
+
+---
+
+## 8. Implementation status & the throughput path (P2 → wave 2)
+
+**Landed (P2):** correctness. delta/gamma are bit-identical to `american_greeks_fd`;
+vega/rho are machine-precise vs Richardson in the smooth region; the IFT boundary
+adjoint is validated across the hard grid (incl. negative borrow); robust guards
+(exercise-region/straddle, unconverged fixed point, ill-conditioned J, IFT-vs-
+re-solve self-consistency) hand the pathological neg-carry corners to the FD bundle.
+
+**NOT yet landed (the ≥5× lever — wave 2):** *the current kernel builds the boundary
+Jacobian `J = ∂R/∂y` and `∂P/∂y` by FINITE DIFFERENCES* (~2m residual + 2m price
+evals, m≈11 on the ACCURATE preset) and computes volga by 2 cold σ± re-solves. An
+informal rel-avx2 best-of-3 measured **0.81× vs fd_warm on the full 8-greek bundle**
+(618 vs 764 items/s) — the FD-Jacobian assembly costs more than the 4 warm boundary
+re-solves it replaces. This is a correct-but-unoptimized prototype: it is *not yet*
+the "one forward + one adjoint sweep" the target assumes.
+
+The ≥5× requires replacing the 44 FD evals with a **hand-coded analytic reverse
+sweep**:
+- **Analytic `∂P/∂y`**: differentiate the Gauss-Legendre premium quadrature w.r.t.
+  the boundary nodes in closed form (the integrand's `al_boundary_at` barycentric
+  weights give `∂b(u)/∂y_j` analytically). One reverse pass over the quadrature.
+- **Analytic `J = ∂R/∂y`**: the residual's `N,D` integrals depend on the boundary at
+  all nodes through the same barycentric interpolation; `eqn_b_NDd` already gives the
+  self-term `∂N/∂b_i, ∂D/∂b_i`, and the cross-node coupling is the interpolation
+  weight matrix — a closed-form dense `J` with no residual re-evaluation.
+- **Skip volga on the first-order-only path** (P4 strike-resolve / hedge delta+vega):
+  no cold re-solves; pure IFT.
+
+With those, the adjoint cost collapses to ~1 forward price + 1 reverse sweep + one
+`m×m` solve — the Giles–Glasserman constant-cost regime. This is a wave-2 task
+(P3 wires it into `PortfolioPricer`; P5 measures it against the WS-M baseline). The
+**architecture is already correct** for it: the surface chain-rule composes through
+the single adjoint seed `σ̄` (§6) regardless of how `J`/`∂P/∂y` are computed.
