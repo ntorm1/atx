@@ -23,7 +23,7 @@
 | American boundary batch | AVX2 vs scalar | **1.87×** (< 2.0× gate → `kShipAvx2Boundary=false`) | ≥2.0× shipped | gate not cleared | WS-3 |
 | **SPY one-op e2e** | ms/op | **347 ms** → **★139 ms @ fit_workers=4** (96 ms @ 8) | **≤200 ms** (stretch ≤150) | GATE MET via E1 parallelism → A1 DEFERRED | WS-1 ✅ |
 | **100-name fit CPU** | ×-reduction vs W0 | **unmeasured** (bench is latency×N, not parallel) | **≥10×** (waypoint ≥4×) | no parallel executor | WS-1 |
-| **519-name / universe** | full-cycle wall vs 45 s | **unmeasured** (no baseline; OOM-at-risk) | **< 45 s @ ≥6 eff cores** | scheduler R-03/12/13/14 open | WS-5 |
+| **519-name / universe** | full-cycle wall vs 45 s | **★ mechanism proven** 11-name 3.83×@P=8, RSS 55.6→67.1 MB (U1 streaming, OOM fixed) | **< 45 s @ ≥6 eff cores** | absolute gated on **data (519 names) + hardware (≥6 phys P-cores; laptop=4)** | WS-5 ◐ |
 | **Surface accuracy** | in-band fraction (519) | **unmeasured on cohort** (SPY dense ~99.5 % via ConvexDense) | **~90 %** universe-wide | data-gated + eSSVI wing tune | WS-6 |
 
 ---
