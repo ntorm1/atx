@@ -149,7 +149,7 @@ constexpr double kTenorT = 0.5; // 6-month strangle
   const std::string path = (dir / (date + ".atxvsa")).string();
   const SurfaceArchiveItem item{"SPY", &spy};
   const std::span<const SurfaceArchiveItem> items(&item, 1);
-  const Status st = write_surface_archive_file(path, items);
+  const Status st = write_surface_archive_v2_file(path, items);
   if (!st) {
     std::fprintf(stderr, "write_archive: %s\n", st.error().to_string().c_str());
     std::exit(1);

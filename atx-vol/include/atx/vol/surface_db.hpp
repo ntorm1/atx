@@ -400,8 +400,8 @@ public:
   // never appear in a partition.
   [[nodiscard]] Status write_partition(std::string_view key,
                                        std::span<const SurfaceArchiveItem> items,
-                                       const SurfaceArchiveWriteOpts &opts = {});
-  [[nodiscard]] Result<SurfaceArchive> open_partition(std::string_view key) const;
+                                       const ArchiveV2WriteOpts &opts = {});
+  [[nodiscard]] Result<SurfaceArchiveV2> open_partition(std::string_view key) const;
   [[nodiscard]] Result<PricedSurface> load_surface(std::string_view key,
                                                    std::string_view symbol) const;
   [[nodiscard]] Status drop_partition(std::string_view key);

@@ -118,7 +118,7 @@ constexpr std::uint32_t kUid = 7;
   const std::string path = (dir / (date + ".atxvsa")).string();
   const SurfaceArchiveItem item{symbol, &s, std::move(provenance)};
   const std::span<const SurfaceArchiveItem> items(&item, 1);
-  const Status st = write_surface_archive_file(path, items);
+  const Status st = write_surface_archive_v2_file(path, items);
   EXPECT_TRUE(st.has_value()) << (st.has_value() ? std::string{} : st.error().to_string());
   return path;
 }
@@ -890,7 +890,7 @@ TEST(Backtest, ArchivedSnapshotDefaultsColdAndPreparesEverySurfaceForRequestedTi
   const std::string path = (dir / "2026-08-01.atxvsa").string();
   const std::array<SurfaceArchiveItem, 2> items{
       {{"SPX", &first_surface}, {"VIX", &second_surface}}};
-  const Status write_status = write_surface_archive_file(path, items);
+  const Status write_status = write_surface_archive_v2_file(path, items);
   ASSERT_TRUE(write_status.has_value()) << write_status.error().to_string();
 
   auto legacy = MarketSnapshot::load(path);
@@ -925,7 +925,7 @@ TEST(Backtest, MarketSnapshotPreservesSameBlobProvenanceByDirectoryUid) {
       SurfaceArchiveItem{"ZZZ", &zzz, zzz_provenance},
       SurfaceArchiveItem{"AAA", &aaa, aaa_provenance},
   };
-  const Status written = write_surface_archive_file(path, items);
+  const Status written = write_surface_archive_v2_file(path, items);
   ASSERT_TRUE(written.has_value()) << written.error().to_string();
 
   auto snapshot = MarketSnapshot::load(path);
@@ -1004,7 +1004,7 @@ TEST(Backtest, StrictPolicyPassesMultipleAlignedAdmittedSurfaces) {
       SurfaceArchiveItem{"ZZZ", &zzz, healthy},
       SurfaceArchiveItem{"AAA", &aaa, degraded},
   };
-  const Status written = write_surface_archive_file(path, items);
+  const Status written = write_surface_archive_v2_file(path, items);
   ASSERT_TRUE(written.has_value()) << written.error().to_string();
   auto clock = Clock::from_manifest(make_manifest({{"2026-08-01", path}}, "AAA"));
   ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
@@ -1173,15 +1173,17 @@ TEST(Backtest, SnapshotCacheEvictsStaleEntryWhenArchiveRewrittenSameLength) {
   fs::create_directories(dir, mkdir_ec);
   const std::string path = (dir / "2026-08-01.atxvsa").string();
 
-  // Pin created_ts_ns so the two archives differ ONLY in blob content — the
-  // same-byte-length / different-CRC case (§6.5), never a timestamp change.
-  SurfaceArchiveWriteOpts opts;
+  // Pin created_ts_ns so the two archives differ ONLY in surface content — the
+  // same-byte-length / different-CRC case (§6.5), never a timestamp change. In v2
+  // the record's payload_crc32c is mirrored into its directory entry, so this
+  // content-only rewrite still changes metadata_crc32c → the content identity.
+  ArchiveV2WriteOpts opts;
   opts.created_ts_ns = 1'000;
   const auto write_forward = [&](double forward) {
     const PricedSurface s = make_surface(kUid, 100.0, forward, kBaseNow);
     const SurfaceArchiveItem item{"SPX", &s, std::nullopt};
     const std::span<const SurfaceArchiveItem> items(&item, 1);
-    const Status st = write_surface_archive_file(path, items, opts);
+    const Status st = write_surface_archive_v2_file(path, items, opts);
     ASSERT_TRUE(st.has_value()) << st.error().to_string();
   };
 

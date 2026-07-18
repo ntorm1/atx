@@ -1523,7 +1523,8 @@ write_surface_archive_v2(std::span<const SurfaceArchiveItem> items,
   // 5. Materialize.
   std::vector<std::byte> buffer(static_cast<std::size_t>(file_size));
 
-  for (V2SurfacePlan &plan : plans) {
+  for (std::size_t idx = 0; idx < plans.size(); ++idx) {
+    V2SurfacePlan &plan = plans[idx];
     std::byte *base = buf_at(buffer, plan.file_offset);
     const PricingContext &pc = plan.surf->pricing();
 
@@ -1653,6 +1654,12 @@ write_surface_archive_v2(std::span<const SurfaceArchiveItem> items,
     // Record payload CRC (lazy: written, never verified on the price path).
     const std::uint32_t crc = record_crc_v2(base, plan.record_size);
     std::memcpy(base + offsetof(ArchiveV2SurfaceHeader, payload_crc32c), &crc, sizeof crc);
+    // R-19 (F6): mirror this record's CRC into its directory entry so
+    // `metadata_crc32c` (which covers lookup ‖ directory, computed below) is
+    // sensitive to a same-length in-place payload rewrite — the content-identity
+    // the SnapshotCache/SurfaceDb staleness check relies on. directory[idx] is the
+    // entry for plans[idx] (built in the same order above).
+    directory[idx].payload_crc32c = crc;
   }
 
   if (lookup_bytes > 0) {
@@ -2007,6 +2014,272 @@ Result<std::vector<ArchivedSurfaceView>> SurfaceArchiveV2::map_all_with_provenan
       return tl::unexpected<atx::core::Error>(std::move(v).error());
     }
     out.push_back(ArchivedSurfaceView{std::move(*v), std::move(*prov)});
+  }
+  return Ok(std::move(out));
+}
+
+namespace {
+
+// Bounds + natural-alignment check for a v2 column: `count` elems of `elem` bytes
+// at record-relative `off` in a record of `rs` bytes (mirrors the view's guard).
+[[nodiscard]] bool v2_column_ok(std::uint64_t off, std::uint64_t elem, std::uint64_t count,
+                                std::uint64_t rs, std::uint64_t align) noexcept {
+  if ((off % align) != 0u || off > rs) {
+    return false;
+  }
+  return elem * count <= rs - off; // count bounded by n_slices (u32) -> no overflow
+}
+
+// Rebuild an OWNED PricedSurface from one v2 record's byte extent — the inverse of
+// write_surface_archive_v2 and the deleted v1 `reconstruct`. Every field is read
+// via memcpy (never reinterpret_cast) so it is alignment-safe regardless of the
+// record base. The curve constructors + SliceContext fields + PricingContext are
+// IDENTICAL to what the old v1 reconstruct built from the same source surface, so
+// the result is bit-for-bit the source PricedSurface (the S2 view gate proved the
+// view matches the source over the same serialized columns; this materializes the
+// same data into an owned surface for the callers that still need one).
+[[nodiscard]] Result<PricedSurface> reconstruct_v2_record(std::span<const std::byte> record) {
+  if (record.size() < sizeof(ArchiveV2SurfaceHeader)) {
+    return Err(ErrorCode::ParseError, "reconstruct_v2: record smaller than header");
+  }
+  ArchiveV2SurfaceHeader h;
+  std::memcpy(&h, record.data(), sizeof h);
+  if (std::memcmp(h.magic, kSurfaceRecordMagicBytes, 8) != 0) {
+    return Err(ErrorCode::ParseError, "reconstruct_v2: bad record magic");
+  }
+  if (h.record_size != record.size()) {
+    return Err(ErrorCode::ParseError, "reconstruct_v2: record size mismatch");
+  }
+  if (h.n_slices == 0) {
+    return Err(ErrorCode::ParseError, "reconstruct_v2: zero slices");
+  }
+  const std::uint64_t n = h.n_slices;
+  const std::uint64_t rs = record.size();
+  if (!(v2_column_ok(h.col_kind_off, 1, n, rs, 1) && v2_column_ok(h.col_T_off, 8, n, rs, 8) &&
+        v2_column_ok(h.col_forward_off, 8, n, rs, 8) && v2_column_ok(h.col_qeff_off, 8, n, rs, 8) &&
+        v2_column_ok(h.col_df_off, 8, n, rs, 8) && v2_column_ok(h.col_borrow_off, 8, n, rs, 8) &&
+        v2_column_ok(h.col_nused_off, 8, n, rs, 8) &&
+        v2_column_ok(h.col_ndropped_off, 8, n, rs, 8) &&
+        v2_column_ok(h.col_nodecount_off, 4, n, rs, 4) &&
+        v2_column_ok(h.col_payload_off_off, 8, n, rs, 8))) {
+    return Err(ErrorCode::ParseError, "reconstruct_v2: column out of bounds / misaligned");
+  }
+
+  const std::byte *base = record.data();
+  const auto rd_f64 = [&](std::uint64_t col_off, std::uint64_t i) noexcept {
+    double v;
+    std::memcpy(&v, base + col_off + i * 8, 8);
+    return v;
+  };
+  const auto rd_u64 = [&](std::uint64_t col_off, std::uint64_t i) noexcept {
+    std::uint64_t v;
+    std::memcpy(&v, base + col_off + i * 8, 8);
+    return v;
+  };
+
+  PricingContext pc;
+  pc.S = h.S;
+  pc.r = h.r;
+  pc.now_ts_ns = h.now_ts_ns;
+  pc.uid = h.uid;
+  pc.method = static_cast<AmericanMethod>(h.method);
+  pc.al_opts.n_collocation = h.al_n_collocation;
+  pc.al_opts.n_quadrature = h.al_n_quadrature;
+  pc.al_opts.max_newton_iter = h.al_max_newton_iter;
+  pc.al_opts.tol = h.al_tol;
+
+  CurveSurface surface;
+  std::vector<SliceContext> ctx;
+  ctx.reserve(static_cast<std::size_t>(n));
+  for (std::uint64_t i = 0; i < n; ++i) {
+    std::uint8_t kind_byte = 0;
+    std::memcpy(&kind_byte, base + h.col_kind_off + i, 1);
+    const auto kind = static_cast<VolCurveKind>(kind_byte);
+    const double T = rd_f64(h.col_T_off, i);
+    const double fwd = rd_f64(h.col_forward_off, i);
+    const double qeff = rd_f64(h.col_qeff_off, i);
+    const double df = rd_f64(h.col_df_off, i);
+    const double borrow = rd_f64(h.col_borrow_off, i);
+    const std::uint64_t nused = rd_u64(h.col_nused_off, i);
+    const std::uint64_t ndropped = rd_u64(h.col_ndropped_off, i);
+    std::uint32_t nc = 0;
+    std::memcpy(&nc, base + h.col_nodecount_off + i * 4, 4);
+    const std::uint64_t poff = rd_u64(h.col_payload_off_off, i);
+    if ((poff % kArchiveV2ColumnAlign) != 0u || poff > rs) {
+      return Err(ErrorCode::ParseError, "reconstruct_v2: slice payload misaligned/out of bounds");
+    }
+    const std::uint64_t avail = rs - poff;
+    const std::byte *p = base + poff;
+    const std::size_t nb = static_cast<std::size_t>(nc) * sizeof(double);
+
+    std::unique_ptr<IVolCurve> curve;
+    switch (kind) {
+    case VolCurveKind::Essvi: {
+      if (sizeof(EssviParams) > avail) {
+        return Err(ErrorCode::ParseError, "reconstruct_v2: essvi payload out of bounds");
+      }
+      EssviParams e{};
+      std::memcpy(&e, p, sizeof e);
+      curve = std::make_unique<EssviCurve>(e, df);
+      break;
+    }
+    case VolCurveKind::Svi: {
+      if (sizeof(SviParams) > avail) {
+        return Err(ErrorCode::ParseError, "reconstruct_v2: svi payload out of bounds");
+      }
+      SviParams sv{};
+      std::memcpy(&sv, p, sizeof sv);
+      curve = std::make_unique<SviCurve>(sv, df);
+      break;
+    }
+    case VolCurveKind::C8: {
+      if (sizeof(C8Params) > avail) {
+        return Err(ErrorCode::ParseError, "reconstruct_v2: c8 payload out of bounds");
+      }
+      C8Params c8{};
+      std::memcpy(&c8, p, sizeof c8);
+      curve = std::make_unique<C8Curve>(c8, df);
+      break;
+    }
+    case VolCurveKind::LinearVariance: {
+      const std::uint64_t need = 2ull * static_cast<std::uint64_t>(nc) * sizeof(double);
+      if (nc == 0 || need > avail) {
+        return Err(ErrorCode::ParseError, "reconstruct_v2: linear payload out of bounds");
+      }
+      std::vector<double> k(nc);
+      std::vector<double> w(nc);
+      std::memcpy(k.data(), p, nb);
+      std::memcpy(w.data(), p + nb, nb);
+      curve = std::make_unique<LinearVarianceCurve>(T, fwd, df, std::move(k), std::move(w));
+      break;
+    }
+    case VolCurveKind::ConvexDense: {
+      const std::uint64_t need = 24ull + 2ull * static_cast<std::uint64_t>(nc) * sizeof(double);
+      if (nc == 0 || need > avail) {
+        return Err(ErrorCode::ParseError, "reconstruct_v2: convex payload out of bounds");
+      }
+      ConvexSliceFit fit;
+      fit.T = T;
+      fit.F = fwd;
+      fit.df = df;
+      std::memcpy(&fit.rmse_price, p + 0, 8);
+      std::uint64_t n_obs = 0;
+      std::uint64_t n_active = 0;
+      std::memcpy(&n_obs, p + 8, 8);
+      std::memcpy(&n_active, p + 16, 8);
+      fit.n_obs = static_cast<std::size_t>(n_obs);
+      fit.n_active = static_cast<std::size_t>(n_active);
+      fit.u.resize(nc);
+      fit.C.resize(nc);
+      std::memcpy(fit.u.data(), p + 24, nb);
+      std::memcpy(fit.C.data(), p + 24 + nb, nb);
+      curve = std::make_unique<ConvexDenseCurve>(std::move(fit));
+      break;
+    }
+    case VolCurveKind::SplineVol: {
+      // atm_vol,z_lo,z_hi f64x3 | n u32 | pad u32 | z[n] | mult[n] | mult_cap f64 |
+      // w_offset f64 | viol u32 (mult_cap + w_offset are LIVE in w(); review C1).
+      const std::uint64_t need = 52ull + 16ull * static_cast<std::uint64_t>(nc);
+      if (need > avail) {
+        return Err(ErrorCode::ParseError, "reconstruct_v2: spline payload out of bounds");
+      }
+      SplineVolParams sp;
+      std::memcpy(&sp.atm_vol, p + 0, 8);
+      std::memcpy(&sp.z_lo_valid, p + 8, 8);
+      std::memcpy(&sp.z_hi_valid, p + 16, 8);
+      std::uint32_t n32 = 0;
+      std::memcpy(&n32, p + 24, 4);
+      if (n32 != nc) {
+        return Err(ErrorCode::ParseError, "reconstruct_v2: spline node count mismatch");
+      }
+      sp.z.resize(nc);
+      sp.mult.resize(nc);
+      std::memcpy(sp.z.data(), p + 32, nb);
+      std::memcpy(sp.mult.data(), p + 32 + nb, nb);
+      std::memcpy(&sp.mult_cap, p + 32 + 2 * nb, 8);
+      std::memcpy(&sp.w_offset, p + 40 + 2 * nb, 8);
+      std::uint32_t viol = 0;
+      std::memcpy(&viol, p + 48 + 2 * nb, 4);
+      sp.n_butterfly_viol = viol;
+      curve = std::make_unique<SplineVolCurve>(std::move(sp), T, fwd, df);
+      break;
+    }
+    default:
+      return Err(ErrorCode::ParseError, "reconstruct_v2: unknown curve kind");
+    }
+    surface.push(std::move(curve));
+
+    SliceContext sc;
+    sc.T = T;
+    sc.forward = fwd;
+    sc.borrow = borrow;
+    sc.q_eff = qeff;
+    sc.n_used = static_cast<std::size_t>(nused);
+    sc.n_dropped = static_cast<std::size_t>(ndropped);
+    ctx.push_back(sc);
+  }
+
+  auto ps = PricedSurface::create(std::move(surface), std::move(ctx), pc);
+  if (!ps) {
+    return Err(ErrorCode::ParseError, "reconstruct_v2: reconstructed surface failed validation");
+  }
+  return Ok(std::move(*ps));
+}
+
+} // namespace
+
+Result<PricedSurface> SurfaceArchiveV2::reconstruct_symbol(std::string_view symbol) const {
+  const ArchiveV2LookupSlot *s = find_slot(symbol);
+  if (s == nullptr) {
+    return Err(ErrorCode::NotFound, "SurfaceArchiveV2::reconstruct_symbol: symbol not present");
+  }
+  if (s->surface_offset > bytes_.size() || s->surface_size > bytes_.size() - s->surface_offset) {
+    return Err(ErrorCode::ParseError, "SurfaceArchiveV2::reconstruct_symbol: record out of bounds");
+  }
+  return reconstruct_v2_record(bytes_.subspan(static_cast<std::size_t>(s->surface_offset),
+                                              static_cast<std::size_t>(s->surface_size)));
+}
+
+Result<std::vector<PricedSurface>> SurfaceArchiveV2::reconstruct_all() const {
+  std::vector<PricedSurface> out;
+  out.reserve(directory_.size());
+  for (const ArchiveV2DirEntry &de : directory_) {
+    if (de.surface_offset > bytes_.size() || de.surface_size > bytes_.size() - de.surface_offset) {
+      return Err(ErrorCode::ParseError, "SurfaceArchiveV2::reconstruct_all: record out of bounds");
+    }
+    auto ps = reconstruct_v2_record(
+        bytes_.subspan(static_cast<std::size_t>(de.surface_offset),
+                       static_cast<std::size_t>(de.surface_size)));
+    if (!ps) {
+      return tl::unexpected<atx::core::Error>(std::move(ps).error());
+    }
+    out.push_back(std::move(*ps));
+  }
+  return Ok(std::move(out));
+}
+
+Result<std::vector<ArchivedSurface>> SurfaceArchiveV2::reconstruct_all_with_provenance() const {
+  std::vector<ArchivedSurface> out;
+  out.reserve(directory_.size());
+  for (const ArchiveV2DirEntry &de : directory_) {
+    if (de.surface_offset > bytes_.size() || de.surface_size > bytes_.size() - de.surface_offset) {
+      return Err(ErrorCode::ParseError,
+                 "SurfaceArchiveV2::reconstruct_all_with_provenance: record OOB");
+    }
+    const std::span<const std::byte> rec =
+        bytes_.subspan(static_cast<std::size_t>(de.surface_offset),
+                       static_cast<std::size_t>(de.surface_size));
+    ArchiveV2SurfaceHeader h;
+    std::memcpy(&h, rec.data(), sizeof h);
+    auto prov = provenance_from_v2_header(h);
+    if (!prov) {
+      return tl::unexpected<atx::core::Error>(std::move(prov).error());
+    }
+    auto ps = reconstruct_v2_record(rec);
+    if (!ps) {
+      return tl::unexpected<atx::core::Error>(std::move(ps).error());
+    }
+    out.push_back(ArchivedSurface{std::move(*ps), std::move(*prov)});
   }
   return Ok(std::move(out));
 }

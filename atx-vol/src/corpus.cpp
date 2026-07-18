@@ -476,8 +476,7 @@ void fingerprint_append_admission_rule(std::string &out, const CorpusAdmissionRu
   fingerprint_append_u64(bytes, fit.policy.dense_node_cap);
   fingerprint_append_u64(bytes, cfg.build.write_opts.flags);
   fingerprint_append_u64(bytes, cfg.build.write_opts.lookup_load_pct);
-  fingerprint_append_u64(bytes, cfg.build.write_opts.blob_alignment);
-  fingerprint_append_u64(bytes, cfg.build.write_opts.array_alignment);
+  fingerprint_append_u64(bytes, cfg.build.write_opts.surface_alignment);
   fingerprint_append_u64(bytes, static_cast<std::uint64_t>(cfg.build.write_opts.created_ts_ns));
   return fingerprint_bytes(bytes);
 }
@@ -696,7 +695,7 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
                                              slots[idx].provenance});
         }
       }
-      const Status w = write_surface_archive_file(apath, items, cfg.write_opts);
+      const Status w = write_surface_archive_v2_file(apath, items, cfg.write_opts);
       if (!w) {
         return Err(w.error()); // propagate IoError / AlreadyExists
       }
@@ -802,12 +801,14 @@ read_date_checkpoint(std::string_view out_dir, std::string_view date,
     return Err(ErrorCode::AlreadyExists, "CorpusBuildSession: date checkpoint archive unavailable");
   }
   if (archive_exists) {
-    ATX_TRY(SurfaceArchive archive, SurfaceArchive::open_file(expected_archive.generic_string()));
+    ATX_TRY(SurfaceArchiveV2 archive, SurfaceArchiveV2::open_file(expected_archive.generic_string()));
     if (archive.count() != admitted) {
       return Err(ErrorCode::ParseError,
                  "CorpusBuildSession: date checkpoint archive count mismatch");
     }
-    ATX_TRY(std::vector<PricedSurface> mapped, archive.map_all());
+    // Only the surface COUNT is cross-checked here, so map zero-copy views (no
+    // per-surface reconstruct); the v2 subset-map touches nothing but framing.
+    ATX_TRY(std::vector<PricedSurfaceView> mapped, archive.map_all());
     if (mapped.size() != admitted) {
       return Err(ErrorCode::ParseError, "CorpusBuildSession: date checkpoint archive map mismatch");
     }

@@ -470,9 +470,9 @@ TEST(Corpus, RoundTrip_ReloadedSurfaceReproducesFreshFitBitIdentical) {
       continue;
     }
     // Reopen the date's archive and reconstruct the surface.
-    auto arch = SurfaceArchive::open_file(e.archive_path);
+    auto arch = SurfaceArchiveV2::open_file(e.archive_path);
     ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
-    auto reloaded = arch->map_symbol(e.symbol);
+    auto reloaded = arch->reconstruct_symbol(e.symbol);
     ASSERT_TRUE(reloaded.has_value()) << reloaded.error().to_string();
 
     // Reproduce the board's fit inline (deterministic) and compare bit-for-bit.
@@ -512,7 +512,7 @@ TEST(Corpus, ArchivedProvenanceReflectsFitterHealthNotLegacyDefault) {
     if (e.status != CorpusFitStatus::Ok) {
       continue;
     }
-    auto arch = SurfaceArchive::open_file(e.archive_path);
+    auto arch = SurfaceArchiveV2::open_file(e.archive_path);
     ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
     auto provenance = arch->provenance(e.symbol);
     ASSERT_TRUE(provenance.has_value()) << provenance.error().to_string();
@@ -718,11 +718,11 @@ TEST(Corpus, Deterministic_AcrossThreadCounts) {
     if (a.status != CorpusFitStatus::Ok) {
       continue;
     }
-    auto arch_a = SurfaceArchive::open_file(a.archive_path);
-    auto arch_b = SurfaceArchive::open_file(b.archive_path);
+    auto arch_a = SurfaceArchiveV2::open_file(a.archive_path);
+    auto arch_b = SurfaceArchiveV2::open_file(b.archive_path);
     ASSERT_TRUE(arch_a.has_value() && arch_b.has_value());
-    auto sa = arch_a->map_symbol(a.symbol);
-    auto sb = arch_b->map_symbol(b.symbol);
+    auto sa = arch_a->reconstruct_symbol(a.symbol);
+    auto sb = arch_b->reconstruct_symbol(b.symbol);
     ASSERT_TRUE(sa.has_value() && sb.has_value());
     expect_surfaces_bit_identical(*sa, *sb, n_points);
   }
@@ -1390,12 +1390,12 @@ void exercise_generated_property_corpus(std::size_t count, const char *tag) {
   ASSERT_FALSE(serial_bytes.empty());
   EXPECT_EQ(serial_bytes, parallel_bytes);
 
-  auto serial_open = SurfaceArchive::open_file(serial_archive.generic_string());
-  auto parallel_open = SurfaceArchive::open_file(parallel_archive.generic_string());
+  auto serial_open = SurfaceArchiveV2::open_file(serial_archive.generic_string());
+  auto parallel_open = SurfaceArchiveV2::open_file(parallel_archive.generic_string());
   ASSERT_TRUE(serial_open.has_value()) << serial_open.error().to_string();
   ASSERT_TRUE(parallel_open.has_value()) << parallel_open.error().to_string();
-  auto serial_surfaces = serial_open->map_all();
-  auto parallel_surfaces = parallel_open->map_all();
+  auto serial_surfaces = serial_open->reconstruct_all();
+  auto parallel_surfaces = parallel_open->reconstruct_all();
   ASSERT_TRUE(serial_surfaces.has_value()) << serial_surfaces.error().to_string();
   ASSERT_TRUE(parallel_surfaces.has_value()) << parallel_surfaces.error().to_string();
   ASSERT_EQ(serial_surfaces->size(), serial->quality.n_admitted);

@@ -89,7 +89,7 @@ constexpr std::int64_t kDayNs = 86400LL * 1000000000LL;
   for (const auto& [sym, ps] : items) {
     its.push_back(SurfaceArchiveItem{sym, ps});
   }
-  const Status st = write_surface_archive_file(path, its);
+  const Status st = write_surface_archive_v2_file(path, its);
   if (!st) {
     std::fprintf(stderr, "write_archive: %s\n", st.error().to_string().c_str());
     std::exit(1);

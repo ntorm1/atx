@@ -1075,7 +1075,7 @@ std::string SurfaceDb::partition_path(std::string_view canonical_key) const {
 }
 
 Status SurfaceDb::write_partition(std::string_view key, std::span<const SurfaceArchiveItem> items,
-                                  const SurfaceArchiveWriteOpts &opts) {
+                                  const ArchiveV2WriteOpts &opts) {
   auto canon = canonicalize_key(key);
   if (!canon) {
     return Err(canon.error());
@@ -1085,7 +1085,7 @@ Status SurfaceDb::write_partition(std::string_view key, std::span<const SurfaceA
   // The archive write is itself atomic (tmp+rename, see write_surface_archive_file);
   // do it BEFORE touching the manifest so a failed/interrupted archive write
   // (e.g. empty `items` -> InvalidArgument) never advances the partition index.
-  auto wrote = write_surface_archive_file(path, items, opts);
+  auto wrote = write_surface_archive_v2_file(path, items, opts);
   if (!wrote) {
     return Err(wrote.error());
   }
@@ -1128,7 +1128,7 @@ Status SurfaceDb::write_partition(std::string_view key, std::span<const SurfaceA
   return persist_locked(std::move(symbol_entries), std::move(parts));
 }
 
-Result<SurfaceArchive> SurfaceDb::open_partition(std::string_view key) const {
+Result<SurfaceArchiveV2> SurfaceDb::open_partition(std::string_view key) const {
   auto canon = canonicalize_key(key);
   if (!canon) {
     return Err(canon.error());
@@ -1137,7 +1137,7 @@ Result<SurfaceArchive> SurfaceDb::open_partition(std::string_view key) const {
   if (snap->find_partition(*canon) == nullptr) {
     return Err(ErrorCode::NotFound, "SurfaceDb::open_partition: partition not present");
   }
-  return SurfaceArchive::open_file(partition_path(*canon));
+  return SurfaceArchiveV2::open_file(partition_path(*canon));
 }
 
 Result<PricedSurface> SurfaceDb::load_surface(std::string_view key, std::string_view symbol) const {
@@ -1145,7 +1145,10 @@ Result<PricedSurface> SurfaceDb::load_surface(std::string_view key, std::string_
   if (!arch) {
     return Err(arch.error());
   }
-  return arch->map_symbol(symbol);
+  // Owned reconstruct (not a zero-copy view): `arch` is a local, so a borrowed
+  // view would dangle. The S5 view cache keeps the mapping alive per partition
+  // and hands out zero-copy views instead — this is the interim owned path.
+  return arch->reconstruct_symbol(symbol);
 }
 
 Status SurfaceDb::drop_partition(std::string_view key) {

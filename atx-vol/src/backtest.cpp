@@ -750,9 +750,14 @@ void MarketSnapshot::reset_open_count() noexcept { g_open_count.store(0); }
 Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
                                             QueryPricingTier query_pricing_tier) {
   ATX_VOL_PROFILE_SCOPE(SnapshotLoad);
+  // S4 clean-break cutover: the whole board is deserialized from the v2 zero-copy
+  // format. `reconstruct_all_with_provenance` rebuilds OWNED PricedSurfaces (kept
+  // whole-board here on purpose) — the subset-map/PricedSurfaceView zero-copy win
+  // reaching this loop is B1 (seam §6), not this format swap. The reconstructed
+  // surfaces are bit-identical to what the old v1 reader produced.
   auto arch = [&]() {
     ATX_VOL_PROFILE_SCOPE(ArchiveOpen);
-    return SurfaceArchive::open_file(archive_path);
+    return SurfaceArchiveV2::open_file(archive_path);
   }();
   if (!arch) {
     return Err(arch.error());
@@ -762,7 +767,7 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
 
   auto mapped = [&]() {
     ATX_VOL_PROFILE_SCOPE(ArchiveMap);
-    return arch->map_all_with_provenance();
+    return arch->reconstruct_all_with_provenance();
   }();
   if (!mapped) {
     return Err(mapped.error());
@@ -812,9 +817,9 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
 
   // symbol -> uid from the archive directory (canonical symbol bytes).
   std::vector<std::pair<std::string, std::uint32_t>> syms;
-  const std::span<const ArchiveDirEntry> dir = arch->directory();
+  const std::span<const ArchiveV2DirEntry> dir = arch->directory();
   syms.reserve(dir.size());
-  for (const ArchiveDirEntry &e : dir) {
+  for (const ArchiveV2DirEntry &e : dir) {
     syms.emplace_back(std::string(e.symbol, e.symbol_len), e.uid);
   }
 

@@ -16,7 +16,7 @@
 #include <unordered_map>
 #include <utility>
 
-#include "atx/vol/surface_archive.hpp" // ArchiveHeader / ArchiveContentIdentity (R-19 identity)
+#include "atx/vol/surface_archive.hpp" // ArchiveV2Header / ArchiveContentIdentity (R-19 identity)
 
 namespace atx::vol {
 
@@ -72,27 +72,28 @@ struct SnapshotCacheKeyHash {
 }
 
 // R-19 (F6): the current content identity of the archive at `path`, read from its
-// 464-byte header only. Any successful read produces a non-zero, byte-content-
+// 256-byte v2 header only. Any successful read produces a non-zero, byte-content-
 // sensitive identity (see `ArchiveContentIdentity`); an unreadable / not-yet-an-
 // archive file yields the default (all-zero) identity so the actual load surfaces
 // the real error while the cache still keys deterministically. Called BEFORE the
 // cache mutex so the small header read never serializes other cache operations.
+// S4 clean break: partitions are ATXVSA2 (magic "ATXVSA20"); v1 is gone.
 [[nodiscard]] ArchiveContentIdentity current_identity(const std::string &path) {
   std::ifstream in{path, std::ios::binary};
   if (!in) {
     return {};
   }
-  ArchiveHeader header{};
+  ArchiveV2Header header{};
   in.read(reinterpret_cast<char *>(&header), sizeof(header));
   if (in.gcount() != static_cast<std::streamsize>(sizeof(header))) {
     return {}; // shorter than a header — not a valid archive (yet)
   }
-  static constexpr char kMagic[8] = {'A', 'T', 'X', 'V', 'S', 'A', '0', '3'};
+  static constexpr char kMagic[8] = {'A', 'T', 'X', 'V', 'S', 'A', '2', '0'};
   if (std::memcmp(header.magic, kMagic, sizeof(kMagic)) != 0 ||
-      header.header_size != sizeof(ArchiveHeader)) {
-    return {}; // not an ATXVSA v3 archive; identity is unknown
+      header.header_size != sizeof(ArchiveV2Header)) {
+    return {}; // not an ATXVSA2 archive; identity is unknown
   }
-  return archive_identity_from_header(header);
+  return archive_v2_identity_from_header(header);
 }
 
 } // namespace
