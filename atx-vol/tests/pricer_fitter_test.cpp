@@ -1807,6 +1807,43 @@ TEST_F(PricerFitterTest, RiskEssviRungServesOnlyAuditedInversions) {
   EXPECT_TRUE(diag.inversion_certified);
 }
 
+// F2 (R-02): the risk rebuild applies a served-breadth floor on ALL routes (a
+// superset of the mark-path selector_served_admission_policy), so a rebuild whose
+// served quote coverage is below the floor can never admit into the safety-
+// critical risk surface. Derive the floor from the board's OWN achieved coverage
+// so the assertion does not depend on the exact synthetic quote count.
+TEST_F(PricerFitterTest, RiskRebuildRejectedBelowServedBreadthFloor) {
+  PricerConfig config;
+  config.quality_mode = atx::vol::FitQualityMode::Balanced;
+  config.outputs = atx::vol::SurfaceOutputs::Risk;
+  atx::vol::CurveConfig curve;
+  curve.kind = atx::vol::VolCurveKind::Essvi;
+  config.curve = curve; // pin the family: isolate admission from the fallback ladder
+
+  // Control: under the production served floor (0.50) this board admits on risk.
+  PricerFitter admits{config};
+  ASSERT_TRUE(admits.fit(*chain_).has_value());
+  EXPECT_EQ(admits.bundle().risk_health.state, atx::vol::SurfaceState::Healthy);
+  ASSERT_NE(admits.bundle().risk, nullptr);
+
+  // Measure the coverage this board actually served, then set the floor strictly
+  // between it and 1.0 so the SAME board is now "below floor".
+  ASSERT_TRUE(admits.last_attempt_report().has_value());
+  const auto &evidence = admits.last_attempt_report()->attempts.back().evidence;
+  ASSERT_GT(evidence.attempted_quotes, 0u);
+  const double served_coverage =
+      static_cast<double>(evidence.fitted_quotes) / static_cast<double>(evidence.attempted_quotes);
+  ASSERT_LT(served_coverage, 1.0) << "a real board always drops some wing strikes";
+  config.selector.min_served_quote_coverage = 0.5 * (served_coverage + 1.0);
+
+  // Below-floor: the risk rebuild must now be rejected and publish no surface.
+  PricerFitter rejects{config};
+  const auto result = rejects.fit(*chain_);
+  EXPECT_FALSE(result.has_value());
+  EXPECT_EQ(rejects.bundle().risk, nullptr);
+  EXPECT_NE(rejects.bundle().risk_health.state, atx::vol::SurfaceState::Healthy);
+}
+
 TEST_F(PricerFitterTest, StageTimingsAreOptInAndReportedByTheBuiltSession) {
   PricerFitter uninstrumented{essvi_config()};
   ASSERT_TRUE(uninstrumented.fit(*chain_).has_value());
