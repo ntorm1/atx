@@ -103,6 +103,7 @@ add_executable(atx-vol-tests
     surface_db_backtest_test.cpp
     surface_db_populate_test.cpp
     mag7_dispersion_backtest_test.cpp
+    spy_dispersion_pnl_test.cpp
     analytics_primitives_test.cpp
     analytics_density_test.cpp
     analytics_aggregate_test.cpp
