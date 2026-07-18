@@ -34,7 +34,7 @@
 #include "atx/vol/corpus.hpp"           // CorpusManifest, CorpusEntry, CorpusFitStatus
 #include "atx/vol/priced_surface.hpp"   // PricedSurface, PricingContext
 #include "atx/vol/strategy.hpp"         // DeclarativeStrategy, StrategySpec
-#include "atx/vol/surface_archive.hpp"  // write_surface_archive_file, SurfaceArchiveItem
+#include "atx/vol/surface_archive.hpp"  // write_surface_archive_v2_file, SurfaceArchiveItem
 #include "atx/vol/surface_parity.hpp"   // SliceContext
 #include "atx/vol/types.hpp"            // Side, Status
 #include "atx/vol/vol_curve.hpp"        // CurveSurface, EssviCurve
@@ -131,7 +131,10 @@ constexpr double kUnivTargetT = 0.25;   // 3M strangle tenor (in-grid all run)
   for (const auto& [sym, ps] : items) {
     its.push_back(SurfaceArchiveItem{sym, ps});
   }
-  const Status st = write_surface_archive_file(path, its);
+  // ATXVSA2 (v2) writer: MarketSnapshot::load is v2-only (SurfaceArchiveV2::
+  // open_file) after the WS-S S4 clean-break cutover, so the backtest under test
+  // only accepts a v2 archive. Inputs (SurfaceArchiveItem) are unchanged from v1.
+  const Status st = write_surface_archive_v2_file(path, its);
   if (!st.has_value()) {
     bench_fatal(st.error().to_string());
   }

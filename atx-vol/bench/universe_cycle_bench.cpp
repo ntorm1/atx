@@ -9,7 +9,7 @@
 //                   PricerFitter (the production surface fit), run as a BLACK BOX
 //                   (no edits to any Sprint-R TU).
 //   * archive_ms  — serialize every fitted surface via the blessed
-//                   write_surface_archive_file writer.
+//                   write_surface_archive_v2_file writer (ATXVSA2 / v2).
 //   * total_ms    — ingest + fit + archive.
 // Reported as Google Benchmark counters (JSON via --benchmark_format=json), one
 // Iterations(1) corpus-style row (the W0.1 pattern) so the cycle runs exactly
@@ -59,7 +59,7 @@
 #include "atx/vol/opra_batch.hpp"        // load_opra_daterange, corpus_board_from_opra
 #include "atx/vol/pricer_fitter.hpp"     // PricerFitter, PricerConfig
 #include "atx/vol/session.hpp"           // FitPreset
-#include "atx/vol/surface_archive.hpp"   // write_surface_archive_file
+#include "atx/vol/surface_archive.hpp"   // write_surface_archive_v2_file
 #include "atx/vol/surface_db.hpp"        // SurfaceDb, symbol_config_from_preset
 #include "atx/vol/surface_db_populate.hpp"  // populate_surface_db (U1-U4 + E2)
 #include "atx/vol/vol_curve.hpp"         // CurveConfig
@@ -225,7 +225,9 @@ void BM_UniverseCycle_Smoke3(benchmark::State& state) {
         items.push_back(SurfaceArchiveItem{symbols[i], &priced[i], std::nullopt});
       }
       const fs::path apath = fs::temp_directory_path() / "atx_universe_cycle_smoke.atxvsa";
-      const Status w = write_surface_archive_file(
+      // ATXVSA2 (v2) writer — the blessed archive writer after the WS-S S4
+      // clean-break cutover; same SurfaceArchiveItem inputs as the v1 writer.
+      const Status w = write_surface_archive_v2_file(
           apath.string(), std::span<const SurfaceArchiveItem>{items});
       if (w.has_value()) {
         n_archived = priced.size();
