@@ -44,6 +44,27 @@ inline constexpr bool kFmaContraction = false;
   }
 }
 
+// Per-ISA tolerance for *accumulated* economic scalars — a backtest's running
+// cash / turnover, a portfolio's column-sum totals — that were pinned with
+// EXPECT_DOUBLE_EQ or bit-identity. Unlike a single evaluation (golden_isa_tol,
+// ~13 ULP peak drift), an accumulator sums ~1-ULP FMA-contraction drift over
+// thousands of grid evaluations, so its *absolute* delta compounds well past the
+// 32-ULP single-value band (observed 2.4e-12 on an O(1) running cash total,
+// ~2.5e3 ULP, ~5.5e-13 relative). This band therefore stays the EXPECT_DOUBLE_EQ
+// 4-ULP gate on the reference ISA (byte-exact / tight preserved — golden_isa_tol
+// is 0 there, so fmax keeps the 4-ULP base) and opens to a RELATIVE economic band
+// under FMA: 1e-9 * max(1,|expected|), ~1.8e3x over the worst observed drift yet
+// still ~6-7 orders inside any P&L-material move, so a real regression trips.
+[[nodiscard]] inline double golden_isa_accum_tol(double expected) noexcept {
+  const double base =
+      4.0 * std::numeric_limits<double>::epsilon() * std::fmax(1.0, std::fabs(expected));
+  if constexpr (!kFmaContraction) {
+    return base;
+  } else {
+    return std::fmax(base, 1.0e-9 * std::fmax(1.0, std::fabs(expected)));
+  }
+}
+
 // Byte-exact on the reference ISA (matches the tests' bits_equal / EXPECT_EQ
 // intent, incl. NaN discrimination); within golden_isa_tol() under FMA.
 [[nodiscard]] inline bool golden_close(double got, double expected) noexcept {
@@ -58,6 +79,26 @@ inline constexpr bool kFmaContraction = false;
       return std::isnan(got) && std::isnan(expected);
     }
     return std::fabs(got - expected) <= golden_isa_tol(expected);
+  }
+}
+
+// Like golden_close (byte-exact on the reference ISA — the SSE2 gate is untouched)
+// but the FMA band is the RELATIVE accumulator band (golden_isa_accum_tol) instead
+// of the 32-ULP single-value one. For reduction *totals* (e.g. a portfolio's
+// column-sum totals vs a serial re-sum) whose per-element marks stay byte-exact
+// but whose FMA reduction *order* drifts more than 32 ULP.
+[[nodiscard]] inline bool golden_accum_close(double got, double expected) noexcept {
+  if constexpr (!kFmaContraction) {
+    std::uint64_t a = 0;
+    std::uint64_t b = 0;
+    std::memcpy(&a, &got, sizeof a);
+    std::memcpy(&b, &expected, sizeof b);
+    return a == b;
+  } else {
+    if (std::isnan(got) || std::isnan(expected)) {
+      return std::isnan(got) && std::isnan(expected);
+    }
+    return std::fabs(got - expected) <= golden_isa_accum_tol(expected);
   }
 }
 

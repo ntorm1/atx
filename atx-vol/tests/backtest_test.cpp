@@ -43,6 +43,7 @@
 #include "atx/vol/surface_parity.hpp"   // SliceContext
 #include "atx/vol/types.hpp"            // Side, Result, Status
 #include "atx/vol/vol_curve.hpp"        // CurveSurface, EssviCurve
+#include "support/isa_golden_tol.hpp"   // golden_isa_accum_tol (per-ISA FMA band)
 #include "atx/vol/vol_surface.hpp"      // EssviParams
 
 using namespace atx::vol;
@@ -1971,13 +1972,23 @@ TEST(Backtest, DailyTwoLegRollReusesExactPnlTargetMarksWithoutChangingEconomics)
   EXPECT_EQ(result->n_open_lots, (std::vector<double>{2.0, 2.0, 2.0, 2.0}));
   // Bit pins captured before the target-mark handoff. Close cash and notional
   // remain numerically identical while their redundant Greek solves disappear.
+  // infra / test-tolerance (WS-0): the running `cash` accumulator sums ~1-ULP
+  // FMA-contraction drift over the run's surface solves, landing ~2.4e-12 (rel
+  // ~5e-13) off the SSE2-captured pin under rel-avx2 (/arch:AVX2) — an accumulated
+  // contraction telltale, not an economics change. golden_isa_accum_tol keeps the
+  // 4-ULP EXPECT_DOUBLE_EQ gate on the SSE2 reference ISA and opens a relative
+  // economic band under FMA. See support/isa_golden_tol.hpp.
   constexpr std::array<double, 4> expected_cash{-3.0734556197676284, -3.548979869780851,
                                                 -4.0009109642776366, -4.4307747789998757};
   constexpr std::array<double, 4> expected_turnover{2200.5417380996087, 4444.3187954021723,
                                                     4493.5146516456771, 4543.6617275559584};
   for (std::size_t i = 0; i < result->size(); ++i) {
-    EXPECT_DOUBLE_EQ(result->cash[i], expected_cash[i]) << i;
-    EXPECT_DOUBLE_EQ(result->turnover_notional[i], expected_turnover[i]) << i;
+    EXPECT_NEAR(result->cash[i], expected_cash[i],
+                atx::vol::test::golden_isa_accum_tol(expected_cash[i]))
+        << i;
+    EXPECT_NEAR(result->turnover_notional[i], expected_turnover[i],
+                atx::vol::test::golden_isa_accum_tol(expected_turnover[i]))
+        << i;
   }
   EXPECT_TRUE(std::isfinite(result->turnover_vega[1]));
   EXPECT_GT(result->turnover_vega[1], 0.0);
@@ -2011,9 +2022,15 @@ TEST(Backtest, PriceBpsRollCloseReusesPnlMarkWithoutASecondSurfaceSolve) {
   const auto result = run_backtest(*clock, strategy, config);
   ASSERT_TRUE(result.has_value()) << result.error().to_string();
   ASSERT_EQ(result->size(), 2u);
-  EXPECT_DOUBLE_EQ(result->cost[1], 44.443187954021731);
-  EXPECT_DOUBLE_EQ(result->cash[1], -69.997585204798639);
-  EXPECT_DOUBLE_EQ(result->turnover_notional[1], 4444.3187954021723);
+  // infra / test-tolerance (WS-0): same accumulated-FMA-contraction telltale as
+  // above — `cash` drifts ~1.9e-12 off the SSE2 pin under rel-avx2. SSE2 keeps its
+  // 4-ULP EXPECT_DOUBLE_EQ gate; FMA gets the relative economic band.
+  EXPECT_NEAR(result->cost[1], 44.443187954021731,
+              atx::vol::test::golden_isa_accum_tol(44.443187954021731));
+  EXPECT_NEAR(result->cash[1], -69.997585204798639,
+              atx::vol::test::golden_isa_accum_tol(-69.997585204798639));
+  EXPECT_NEAR(result->turnover_notional[1], 4444.3187954021723,
+              atx::vol::test::golden_isa_accum_tol(4444.3187954021723));
   EXPECT_TRUE(std::isfinite(result->turnover_vega[1]));
   EXPECT_GT(result->turnover_vega[1], 0.0);
   if constexpr (counters_enabled()) {
