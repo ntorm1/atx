@@ -6,7 +6,7 @@
 
 **Base:** `main @ 121d39c` (local only, nothing pushed). Inherits the completed **2026-07-17 north-star sprint** (Waves A/B/C + universe + F-tasks — §0). Source-of-truth research: `atx-vol/research/mm/2026-07-18-options-market-making-system-design.md` (5 angles, 25 sources, 23/25 claims adversarially verified) — cite its `[n]` tags in-code for any adopted algorithm.
 
-**Architecture of this sprint:** six workstreams. Three are **P0 product features that make it an MM business** (WS-Q quoting, WS-R portfolio risk, WS-H hedging). Two are **P1 measured-gap closers with published fixes** (WS-K IV/boundary latency via FlashIV; WS-S streaming surface via Mingone unconstrained eSSVI). One is **throughput/correctness hardening + a foundational spike** (WS-X: AVX-512 tier, discrete-div PDE, AAD spike). The load-bearing insight from the research: *the numerics core is already frontier — the value now is the layers above pricing that don't exist yet* (quoter, cross-name risk, streaming), plus eliminating the AVX2 scalar-patch lanes that cap the IV/boundary SIMD wins.
+**Architecture of this sprint:** seven workstreams. Three are **P0 product features that make it an MM business** (WS-Q quoting, WS-R portfolio risk, WS-H hedging). Two are **P1 measured-gap closers with published fixes** (WS-K IV/boundary latency via FlashIV; WS-S streaming surface via Mingone unconstrained eSSVI). One is **throughput/correctness hardening + a foundational spike** (WS-X: AVX-512 tier, discrete-div PDE, AAD spike). The seventh — **WS-B backtesting — is a first-class keystone, not an afterthought:** the backtest engine is the **end-to-end dogfooding harness** that proves WS-Q/R/H/S on historical data by running the *exact same primitives live and in replay* (no backtest-specific reimplementation), and it gets wired into the **live fit path** (fit-on-the-fly from raw chains through `session`/`curve_fit`/`pricer_fitter`), not just pre-fitted archives. The load-bearing insight from the research: *the numerics core is already frontier — the value now is the layers above pricing that don't exist yet* (quoter, cross-name risk, streaming, and the backtest that validates them), plus eliminating the AVX2 scalar-patch lanes that cap the IV/boundary SIMD wins.
 
 **Tech stack:** C++20, clang-cl 18, CMake presets + Ninja (`dev` Debug/build, `rel` SSE2, `rel-avx2` AVX2/build-rel-avx2, `hygiene`). `/W4 /permissive- /WX`. atx::vol over atx::core. Runtime CPUID SIMD dispatch. Work-stealing `PricingExecutor` (E1 nested budget + E2 help-first steal — landed).
 
@@ -53,6 +53,7 @@ Four waves, ~20 tasks, all reviewed + merged; `main` passes **both Debug and rel
 | **Tick→fit→quote bus** | lock-free inter-thread messaging | **❌ batch pipeline** | LMAX-Disruptor ring buffer `[19]` | WS-S |
 | **AVX-512 tier** | 8×f64 kernels | AVX2 4×f64 | ~2× on throughput-bound kernels `[20]` | WS-X |
 | **Portfolio greeks cost** | full gradient vs #factors | cold FD "bumping" (`adjusted_greeks`) | AAD ~4× one eval, factor-independent `[16]` | WS-X (spike) |
+| **Backtest as MM harness** | quote/hedge/risk replay on shared primitives? | **archive-MTM only** (B0/B1/B2: pnl_explain fixed/strategy book, frictions, financing) | quoter+hedger+risk backtestable via *identical* live/replay code; fit-on-the-fly from raw chains; tick-by-tick streaming replay | WS-B |
 
 ---
 
@@ -73,6 +74,7 @@ atx-vol's numerical core is **already the industry-standard family** — ALO spe
 - **Research discipline:** any adopted hot-path algorithm gets primary-source verification cited in-code (the research `[n]` tag + the paper). The 2026 IV preprints (FlashIV `[4]`, Schadner `[5]`) are **directional** — bench in-repo before committing to a target; treat self-reported/Java-port speedups as "there is headroom," not gospel.
 - **⚠︎R / seam coordination:** `calib.cpp`, `boundary_interp.{cpp,hpp}`, `deamer.cpp`, `american_iv.cpp`, `american.cpp`, `pricer_fitter.cpp`, `essvi_calib.cpp`, `curve_fit.cpp` are shared across workstreams and with the prior sprint. A task touching them adds a **new** entry point / a guarded branch and keeps the scalar path byte-unchanged as the source of truth; parity-gate the new branch; agree the seam with the workstream owner (or the dispatching session acting for them) before forking.
 - **Deprecated-path rule:** `portfolio.hpp`, `portfolio_risk.hpp`, `scenario_grid.hpp`, `pnl_attribution.hpp` (deprecated) are **ported to the canonical path** (`portfolio_pricer.hpp` + `PricingExecutor`), not extended in place. Do not add new callers of deprecated headers.
+- **Live/backtest primitive parity (backtest is first-class):** the quoter (WS-Q), risk aggregation (WS-R), and hedger (WS-H) MUST be **pure functions over the canonical types** (`portfolio_pricer` marks/greeks, `SurfaceSet`, aggregate-greek views) so the **identical code runs live and inside `run_backtest`** — no backtest-specific reimplementation of quote/hedge/risk math. WS-B consumes those functions through an `IStrategy` and the canonical pricer; a divergence between live and replay behavior is a bug, not a modeling choice. The backtest's existing invariants are load-bearing and must be preserved: **bit-identical output for any `PriceOptions::n_threads`** (serial-scatter reduction), the **load-once snapshot invariant** (`MarketSnapshot::open_count()`), fail-closed settlement (exact-expiry-observation), and `RunConfig{}` default reproducing the frictionless/B1 run bit-for-bit.
 
 ---
 
@@ -140,6 +142,17 @@ Owner: **perf agent**. Coordinates the SIMD dispatch seam with WS-K.
 | **X2** | Discrete-cash-dividend American PDE pricer | new `src/american_div_pde.cpp`, test vs ALO | Small FD/PDE pricer **specifically** for early exercise around ex-div dates where ALO is only approximate; validate vs the PDE test-oracle | Correctness for dividend-paying single names | Med | — | correctness |
 | **X3** | AAD-over-pricing-graph spike (foundational) | new `src/detail/aad_tape.hpp` prototype, one greek path, bench | Prototype adjoint AD on one pricing path: full gradient at ~4× one eval, factor-count-independent `[16]`. Gate: correctness vs FD + the ~4× cost bound. **Spike only** — full adoption is a later sprint; this de-risks the WS-R AAD foundation | The correct long-term foundation for millions-of-contracts risk | High (large) | R1 | research |
 
+### WS-B — Backtesting engine: the end-to-end MM dogfooding harness *(first-class keystone; wires Q/R/H/S onto the hot path via identical live/replay code)*
+Owner: **backtest agent**. Owns `backtest.{cpp,hpp}`, `strategy.{cpp,hpp}`, `tearsheet.{cpp,hpp}`. **Consumes** WS-Q/R/H/S public APIs (§3 live/backtest parity rule) — it must NOT reimplement quote/hedge/risk math. Already on the hot path (`portfolio_pricer::pnl_explain`, `PricingExecutor`, `PricedSurface`, `SnapshotCache`); this WS extends that, preserving every invariant in §3.
+
+| ID | Title | Files | Approach | Impact | Risk | Deps | Class |
+|---|---|---|---|---|---|---|---|
+| **B1** | Quoter-strategy backtest (dogfood WS-Q) | `src/strategy.cpp` (new `QuotingStrategy : IStrategy`), `include/atx/vol/strategy.hpp`, test | An `IStrategy` that calls the **WS-Q quoter functions directly** (identical to live) to emit two-sided quotes each step; simulate fills against the step's marks (with `FrictionModel` half-spread as the crossing model); track inventory into the existing `PortfolioState`/`ReusableTargetMarkFrame` | Proves the quoter on history; the quote logic is shared, not forked | Med | Q2, Q4 | feature |
+| **B2** | Delta-hedge schedule in the loop (dogfood WS-H) | `src/backtest.cpp` (hedge step), `strategy.cpp`, test | Run the **WS-H hedge schedule** each step over the book's aggregate delta; realize hedge-share MTM through the existing `pnl_shares` + `hedge_slippage_bps` columns (already in `BacktestResult`/`FrictionModel`); financing via `FinancingConfig` | Backtests the joint quote+hedge PnL on the shared hedger | Med | H1, B1 | feature |
+| **B3** | Book-level risk + scenario replay (dogfood WS-R) | `src/backtest.cpp` (greeks/scenario), `tearsheet.cpp`, test | Replace the engine's ad-hoc `gross_*` greeks with the **WS-R canonical cross-underlier aggregation** (R1); add per-step scenario-grid stress + VaR/ES (R2/R4) series to `BacktestResult` | The book greeks/VaR a backtest reports come from the same risk layer as live | Med | R1, R2 | feature/refactor |
+| **B4** | Fit-on-the-fly driver — wire the backtest to the **live fit path** | new `src/backtest_livefit.cpp` (`Clock::from_raw_chains` + a fitting driver), consume `session`/`curve_fit`/`pricer_fitter` + WS-S S3 incremental refit, test | A driver that fits raw OPRA chains through the **production fit engine** (not pre-fitted archives) each step — optionally the S3 tick-by-tick incremental refit — so the backtest exercises the identical fit hot path. Keeps the archive route (`Clock::from_surface_db`) as the fast/parity path | First-class: the backtest fits the same way production does; enables strategy research on the live surface | Med-High | S3 (or archive-only interim), session | feature |
+| **B5** | MM tearsheet + throughput/determinism gate | `include/atx/vol/tearsheet.hpp` + `src/tearsheet.cpp`, new `bench/backtest_bench.cpp`, test | Extend `tearsheet` with MM metrics (fill rate, spread capture, inventory/vega PnL, hedge cost, quote uptime); **assert bit-identical across `n_threads` for the full quote→hedge→risk loop** (extend the existing determinism gate); bench end-to-end backtest throughput on the executor | Trustworthy MM PnL attribution + the determinism guarantee extended to the new loop | Low-Med | B1, B2, B3 | feature/infra |
+
 ---
 
 ## 5. Ownership / disjointness matrix (one writer per TU)
@@ -152,9 +165,10 @@ Owner: **perf agent**. Coordinates the SIMD dispatch seam with WS-K.
 | **iv-kernel** (`wt-k-iv`) ⚠︎R | `implied_vol.cpp`, `black76.cpp`, `simd/iv_batch_avx2.cpp`, `detail/vector_math.hpp`, `detail/scalar_erfc.hpp`, `simd/american_boundary_avx2.cpp`, `american.cpp` (K6 seed seam + K7 `reset_warm`), `american_boundary_batch.cpp`, `deamer.cpp` (K7 move-guard), `american_iv.cpp` (K7 overload), `detail/norm_cdf_cheb.*`, `bench/iv_shootout_bench.cpp` |
 | **surface** (`wt-s-surface`) ⚠︎R | `essvi_calib.{cpp,hpp}`, `arb.hpp`, new `svi_direct.cpp`, `svi_calib.hpp`, `dense_slice.hpp`, `curve_fit.cpp` (incremental entry), `session.cpp`, `vol_time.hpp`, new `detail/ring_buffer.hpp` + `stream_bus.cpp` |
 | **perf** (`wt-x-perf`) | new `simd/*_avx512.cpp`, new `american_div_pde.cpp`, new `detail/aad_tape.hpp`; **reads** `vector_math.hpp` dispatch (coordinate the ISA-tier seam with iv-kernel — append-only dispatch entries) |
+| **backtest** (`wt-b-backtest`) | `backtest.{cpp,hpp}`, `strategy.{cpp,hpp}`, `tearsheet.{cpp,hpp}`, new `backtest_livefit.cpp`, `bench/backtest_bench.cpp`, `backtest_test.cpp`; **consumes** (read-only) the WS-Q/R/H/S public APIs + `session`/`curve_fit`/`pricer_fitter` — never reimplements their math |
 | **Shared, append-only** | `bench/CMakeLists.txt`, `tests/CMakeLists.txt`, `vector_math.hpp` dispatch table (keep-all-entries merge) |
 
-**Contention notes:** (1) `vector_math.hpp` — iv-kernel (K2/K8) edits the Φ/erfc kernels; perf (X1) appends an AVX-512 dispatch tier. Coordinate: iv-kernel owns the kernel bodies, perf appends ISA entries; agree the dispatch signature before X1 forks. (2) `american.cpp`/`american_boundary_avx2.cpp` — iv-kernel owns (K6/K7); no other WS touches them this sprint (A1/A2/A3/A7 stay deferred). (3) `portfolio_pricer.*` — risk owns (R1); quoter (Q4) and hedger (H1) **consume** its public API only. (4) `essvi_calib.cpp`/`arb.hpp`/`curve_fit.cpp` — surface owns; quoter reads the fitted surface. (5) The user is actively editing **atx-core** (`db/sqlite`, `atx-kb/`, `atx-db/`, root `CMakeLists.txt`) — no atx-vol contention; leave the live tree's uncommitted atx-core work untouched.
+**Contention notes:** (1) `vector_math.hpp` — iv-kernel (K2/K8) edits the Φ/erfc kernels; perf (X1) appends an AVX-512 dispatch tier. Coordinate: iv-kernel owns the kernel bodies, perf appends ISA entries; agree the dispatch signature before X1 forks. (2) `american.cpp`/`american_boundary_avx2.cpp` — iv-kernel owns (K6/K7); no other WS touches them this sprint (A1/A2/A3/A7 stay deferred). (3) `portfolio_pricer.*` — risk owns (R1); quoter (Q4) and hedger (H1) **consume** its public API only. (4) `essvi_calib.cpp`/`arb.hpp`/`curve_fit.cpp` — surface owns; quoter reads the fitted surface. (5) The user is actively editing **atx-core** (`db/sqlite`, `atx-kb/`, `atx-db/`, root `CMakeLists.txt`) — no atx-vol contention; leave the live tree's uncommitted atx-core work untouched. (6) **backtest owns only its own TUs and consumes Q/R/H/S as read-only public APIs** — so it merges cleanly after them; the §3 live/backtest parity rule means the quote/hedge/risk agents must expose their math as pure functions (not embedded in a live-only loop) — flag it to those agents at dispatch so B1/B2/B3 have callable seams.
 
 ---
 
@@ -180,15 +194,24 @@ graph TD
   subgraph WSX[WS-X throughput/correctness · P2/P3]
     K2 --> X1; X2; R1 --> X3
   end
+  subgraph WSB[WS-B backtest · MM harness keystone]
+    B1 --> B2 --> B5; B3 --> B5; B4
+  end
   R1 --> R2
   R1 --> Q4
   Q2 --> Q4
   Q2 --> H1
   R1 --> H1
   R2 --> H2
+  Q2 --> B1
+  Q4 --> B1
+  H1 --> B2
+  R1 --> B3
+  R2 --> B3
+  S3 --> B4
 ```
 
-**Keystone edges:** `R1` (cross-name aggregation) gates Q4, H1, R2, X3 — the risk layer is the hub the quoter+hedger consume. `Q1→Q2` is the whole quoter root. `K1` (profile) gates every IV effort. `S1`/`S2` gate S3 (streaming). AAD `X3` is the long-term risk foundation (spike now, adopt later).
+**Keystone edges:** `R1` (cross-name aggregation) gates Q4, H1, R2, X3, B3 — the risk layer is the hub the quoter+hedger+backtest consume. `Q1→Q2` is the whole quoter root. `K1` (profile) gates every IV effort. `S1`/`S2` gate S3 (streaming), and S3 gates the fit-on-the-fly backtest B4. **WS-B is the integration harness: it consumes Q2/Q4 (B1), H1 (B2), R1/R2 (B3), S3 (B4) — so it lands late but its parity gate (B5) is what proves the whole MM loop is live/replay-identical.** AAD `X3` is the long-term risk foundation (spike now, adopt later).
 
 ---
 
@@ -220,6 +243,11 @@ graph TD
 | X1 | `feat/mm-perf` | ☐ todo | — | AVX-512 ×AVX2 (gated on HW) |
 | X2 | `feat/mm-perf` | ☐ todo | — | div-PDE vs ALO |
 | X3 | `feat/mm-perf` | ☐ todo | — | AAD ~4× + FD parity |
+| B1 | `feat/mm-backtest` | ☐ todo | — | quoter-strategy fills (shared code) |
+| B2 | `feat/mm-backtest` | ☐ todo | — | hedge PnL in loop |
+| B3 | `feat/mm-backtest` | ☐ todo | — | canonical book greeks + VaR |
+| B4 | `feat/mm-backtest` | ☐ todo | — | fit-on-the-fly vs archive parity |
+| B5 | `feat/mm-backtest` | ☐ todo | — | MM tearsheet + n_threads bit-identical |
 
 Update convention: `☐ todo → ◐ in-progress → ☑ landed`; paste the commit SHA(s) + the one-line gate result (measured number). The dispatching session owns merges (order §8), each gate re-run on merge (Debug correctness → rel-avx2 confirm → ff main).
 
@@ -229,10 +257,10 @@ Update convention: `☐ todo → ◐ in-progress → ☑ landed`; paste the comm
 
 - **Wave 1 (immediately, parallel — no cross-deps):** **Q1/Q2** (quoter root), **R1** (risk hub keystone), **K1** (IV profile), **S1 + S2** (surface reparam + direct-conic, independent), **K7** (carry reuse, independent), **S4** (ring buffer, independent). Six disjoint worktrees.
 - **Wave 2 (after Wave 1):** **R2/R3/R4** (after R1), **Q3/Q4** (after Q2 + R1), **K2** (after K1) → **K3/K6/K8** (after K2), **K5** (after K1), **S3** (after S1/S2), **X1** (after the K2 dispatch seam), **X2** (independent).
-- **Wave 3:** **H1** (after Q2 + R1) → **H2** (after H1 + R2), **X3** AAD spike (after R1). The hedger + AAD close the P0 risk/hedge loop and the foundational bet.
-- **Wave 4:** integration gate ladder (quote→risk→hedge on a synthetic book; streaming-refit latency; IV/boundary re-measure under M3) + DoD re-run + a published-internally IV head-to-head (§10 open question 3).
+- **Wave 3:** **H1** (after Q2 + R1) → **H2** (after H1 + R2), **X3** AAD spike (after R1), **B1** (after Q2/Q4) + **B3** (after R1/R2) + **B4** (after S3, or archive-only interim immediately). The hedger + AAD + the first backtest dogfood wiring.
+- **Wave 4:** **B2** (after H1 + B1) → **B5** (after B1/B2/B3) — the full quote→hedge→risk backtest loop + the live/replay parity + `n_threads` bit-identical gate. Then the integration gate ladder (quote→risk→hedge replayed on a real 11-name cohort via B4 fit-on-the-fly; streaming-refit latency; IV/boundary re-measure under M3) + DoD re-run + the published-internally IV head-to-head (§10 open question 3).
 
-**Merge order:** WS-K/WS-S numerics + WS-R risk hub → WS-Q quoter → WS-H hedger → WS-X, dispatching session owns each merge + gate re-run (same protocol as the north-star sprint: stage on `feat/mm-integration`, batched Debug gate, ff main; nothing pushed).
+**Merge order:** WS-K/WS-S numerics + WS-R risk hub → WS-Q quoter → WS-H hedger → **WS-B backtest (consumes them all; lands last, its B5 parity gate validates the whole loop)** → WS-X, dispatching session owns each merge + gate re-run (same protocol as the north-star sprint: stage on `feat/mm-integration`, batched Debug gate, ff main; nothing pushed). Note WS-B4 (fit-on-the-fly / archive route) has no hard dep and can start in Wave 3 against the existing archive path, adding the S3 streaming route once WS-S lands.
 
 ---
 
@@ -257,6 +285,7 @@ Update convention: `☐ todo → ◐ in-progress → ☑ landed`; paste the comm
 | **IV latency** | AVX2 IV ≥ true-lane-count-approaching (scalar-patch lanes eliminated, K2); scalar toward ≤180 ns (K3) or documented-directional; Schadner spike resolved (adopt/shelve-with-evidence) |
 | **American boundary batch** | shipped ≥2.0× on a quiet host (K6) **or** documented-deferred with the measured quiet ratio; `build()` wired if shipped |
 | **Streaming surface** | Mingone unconstrained eSSVI — every calibration iterate arb-free by construction (S1); incremental single-expiry refit measured toward ~10 ms (S3); direct-conic fast-tier available (S2); lock-free bus (S4) |
+| **Backtest (first-class MM harness)** | quoter (B1) + hedger (B2) + canonical risk/VaR (B3) backtestable through `run_backtest` via the **identical live/replay code** (no forked math); fit-on-the-fly driver wires the live fit path (B4); MM tearsheet (B5) reports fill/spread/inventory/hedge metrics; **the full quote→hedge→risk loop stays bit-identical across `n_threads`** and `RunConfig{}` reproduces the frictionless run bit-for-bit; load-once + fail-closed-settlement invariants preserved |
 | **Carried deferrals** | K7 carry reuse landed (determinism preserved) or documented; Chebyshev-Φ retired (K8) |
 | **Correctness** | zero new Debug failures beyond the 5 pre-existing v2 known-red; both Debug and rel-avx2 stay green to that set; every adopted algorithm cites its primary source in-code |
 | **Honesty** | all headline perf numbers under the M3 quiet-window protocol; 2026-preprint IV numbers benched in-repo before any target is cited (§11.6) |
