@@ -340,14 +340,27 @@ void BM_UniverseStrangleHedged(benchmark::State& state) {
   state.counters["final_open_lots"] = final_open_lots;
 }
 
+// Sample-count override (review fix, finding #2). These are heavy sub-second
+// backtests: apply_common's default (5 reps, and with a ~0.3 s op only ~1-2 auto
+// iterations/rep) gives only ~5-10 timed executions, so two outlier reps swing the
+// CV. Fix each rep to Iterations(kBtItersPerRep) work (each reported rep-mean
+// averages that many full backtests) AND raise to kBtReps repetitions — enough that
+// no pair of noisy reps dominates the CV before M4 freezes the steps/s as a gate.
+constexpr int kBtReps = 15;
+constexpr int kBtItersPerRep = 4;
+
 const int kRegistered = [] {
   apply_common(benchmark::RegisterBenchmark("backtest/multiunderlier_straddle/steps",
                                             BM_MultiUnderlierStraddle))
       ->Unit(benchmark::kMillisecond)
+      ->Iterations(kBtItersPerRep)
+      ->Repetitions(kBtReps)
       ->UseRealTime();
   apply_common(benchmark::RegisterBenchmark("backtest/universe_strangle_hedged/steps",
                                             BM_UniverseStrangleHedged))
       ->Unit(benchmark::kMillisecond)
+      ->Iterations(kBtItersPerRep)
+      ->Repetitions(kBtReps)
       ->UseRealTime();
   return 0;
 }();
