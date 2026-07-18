@@ -51,6 +51,7 @@
 #include "atx/vol/surface_archive.hpp"   // write_surface_archive, SurfaceArchive
 #include "atx/vol/types.hpp"             // Side
 #include "atx/vol/vol_curve.hpp"         // CurveConfig, VolCurveKind, CurveSurface
+#include "support/isa_golden_tol.hpp"    // golden_accum_close (per-ISA FMA band)
 
 using namespace atx::vol;
 
@@ -248,12 +249,22 @@ TEST(LifecycleIntegration, ChainToFitToArchiveToPortfolioToPnl) {
   }
   ASSERT_GT(n_ok, 15u);
   EXPECT_EQ(f.total.n_ok, n_ok);
-  // Frame totals == the in-order Ok-lane column sums (the pricer reduces serially
-  // in input order, so this is a bit-identical match).
-  EXPECT_TRUE(bits_equal(f.total.pv, sum_pv));
-  EXPECT_TRUE(bits_equal(f.total.delta, sum_delta));
-  EXPECT_TRUE(bits_equal(f.total.gamma, sum_gamma));
-  EXPECT_TRUE(bits_equal(f.total.vega, sum_vega));
+  // Frame totals == the in-order Ok-lane column sums. The pricer reduces serially
+  // in input order, so on the SSE2 reference ISA this is a bit-identical match
+  // (golden_accum_close is byte-exact there). infra / test-tolerance (WS-0): under
+  // rel-avx2 (/arch:AVX2) the pricer's reduction FMA-contracts differently than
+  // this serial re-sum, so the *totals* drift a few ULP while every per-lane mark
+  // above stays byte-exact — a reduction-order contraction telltale, not an
+  // economics change. golden_accum_close opens a relative economic band under FMA
+  // only. See support/isa_golden_tol.hpp.
+  EXPECT_TRUE(atx::vol::test::golden_accum_close(f.total.pv, sum_pv))
+      << "pv got=" << f.total.pv << " sum=" << sum_pv << " d=" << (f.total.pv - sum_pv);
+  EXPECT_TRUE(atx::vol::test::golden_accum_close(f.total.delta, sum_delta))
+      << "delta got=" << f.total.delta << " sum=" << sum_delta << " d=" << (f.total.delta - sum_delta);
+  EXPECT_TRUE(atx::vol::test::golden_accum_close(f.total.gamma, sum_gamma))
+      << "gamma got=" << f.total.gamma << " sum=" << sum_gamma << " d=" << (f.total.gamma - sum_gamma);
+  EXPECT_TRUE(atx::vol::test::golden_accum_close(f.total.vega, sum_vega))
+      << "vega got=" << f.total.vega << " sum=" << sum_vega << " d=" << (f.total.vega - sum_vega);
 
   // ── Assertion 5: pnl_explain over a pure spot bump. ───────────────────────
   // Same fitted curves, spot +0.2% (dvol = dt = drate = 0): a pure spot move

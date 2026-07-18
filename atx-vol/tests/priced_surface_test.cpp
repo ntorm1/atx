@@ -37,6 +37,7 @@
 #include "atx/vol/priced_surface.hpp"
 #include "atx/vol/surface_parity.hpp"
 #include "atx/vol/vol_curve.hpp"
+#include "support/isa_golden_tol.hpp" // golden_close (per-ISA FMA band)
 
 using namespace atx::vol;
 
@@ -1313,7 +1314,13 @@ TEST(PricedSurfaceQueryPricing, RepresentativeFastCoversEveryScalarAndFusedRoute
   ASSERT_TRUE(vega.has_value());
   EXPECT_EQ(*greeks, *analytic); // analytic flag is irrelevant to a cached jet
   EXPECT_NEAR(*price, greeks->price, 1.0e-10 * (1.0 + std::fabs(*price)));
-  EXPECT_EQ(hexbits(*delta), hexbits(greeks->delta));
+  // infra / test-tolerance (WS-0): the scalar delta() route and the cached-jet
+  // greeks().delta route are byte-identical on the SSE2 reference ISA, but under
+  // rel-avx2 (/arch:AVX2) they FMA-contract into a 1-ULP split — a contraction
+  // telltale, not a route divergence. golden_close keeps the exact hexbits gate on
+  // SSE2 and admits the machine-precision band under FMA. See support/isa_golden_tol.hpp.
+  EXPECT_TRUE(atx::vol::test::golden_close(*delta, greeks->delta))
+      << "delta=" << *delta << " greeks.delta=" << greeks->delta;
   EXPECT_NEAR(*vega, greeks->vega, 1.0e-11 * (1.0 + std::fabs(greeks->vega)));
 
   const EF fields = EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder;
