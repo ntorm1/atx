@@ -11,6 +11,7 @@
 #include "atx/vol/event_vol.hpp"
 #include "atx/vol/projection.hpp"
 #include "atx/vol/vol_surface.hpp"
+#include "support/isa_golden_tol.hpp"
 
 // Surface projection spine, ported from the C ats-vol test_vol_projection.c.
 // The oracle IV/prices come from the already-ported VolSurface::w/iv and the
@@ -640,7 +641,12 @@ TEST(VolProjection, ShapeBlendEvalBitIdenticalAfterForwardReuse) {
       req.interp_mode = InterpMode::ShapeBlend;
       auto res = atx::vol::surface_eval_ex(sf, cs, nullptr, tm, req);
       ASSERT_TRUE(res.has_value()) << "T=" << T << " k=" << k;
-      EXPECT_EQ(res->iv, kPinIv[i]) << "T=" << T << " k=" << k << " i=" << i;
+      // M4: iv is byte-exact on the SSE2 source-of-truth ISA; a machine-precision
+      // per-ISA band under FMA contraction (rel-avx2), where ShapeBlend eval
+      // drifts ~1 ULP from the pin. flags is integral — never drifts. See
+      // support/isa_golden_tol.hpp.
+      EXPECT_TRUE(atx::vol::test::golden_close(res->iv, kPinIv[i]))
+          << "T=" << T << " k=" << k << " i=" << i << " iv=" << res->iv;
       EXPECT_EQ(res->flags, kPinFlags[i]) << "T=" << T << " k=" << k << " i=" << i;
       ++i;
     }

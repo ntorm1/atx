@@ -17,6 +17,7 @@
 #include "atx/vol/correction.hpp"
 #include "atx/vol/counters.hpp"
 #include "atx/vol/greeks.hpp"
+#include "support/isa_golden_tol.hpp"
 #include "support/oracle_pde_golden.hpp"
 #include "support/oracle_pricer_pde.hpp"
 
@@ -2053,7 +2054,10 @@ TEST(BoundaryHoist, PriceBitIdenticalToPrechange) {
     const std::optional<AlOpts> opts =
         p.fast ? std::optional<AlOpts>(al_fast_opts()) : std::nullopt;
     const double got = value_or_fail(andersen_lake(p.S, p.K, p.T, p.sigma, p.r, p.q, p.side, opts));
-    EXPECT_TRUE(bits_equal(got, p.expected))
+    // M4: byte-exact on the SSE2 source-of-truth ISA; a machine-precision per-ISA
+    // band under FMA contraction (rel-avx2), where the accurate side drifts ~1-2
+    // ULP from the pin. See support/isa_golden_tol.hpp.
+    EXPECT_TRUE(atx::vol::test::golden_close(got, p.expected))
         << (p.fast ? "fast" : "accurate") << " side=" << (p.side == Side::Call ? "C" : "P")
         << " got=" << got << " expected=" << p.expected;
   }

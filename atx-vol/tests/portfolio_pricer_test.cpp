@@ -30,6 +30,7 @@
 #include "atx/vol/counters.hpp"
 #include "atx/vol/portfolio_pricer.hpp"
 #include "atx/vol/priced_surface.hpp"
+#include "support/isa_golden_tol.hpp"
 #include "atx/vol/vol_curve.hpp"
 #include "atx/vol/vol_surface.hpp"
 
@@ -771,28 +772,37 @@ TEST(PortfolioPricer, Price_MultiKind_MultiUnderlying_BitIdenticalToGreeks) {
     const double w = p.qty * p.multiplier;
     const auto fv = s.fair_value(p.contract.K, p.contract.T, p.contract.side);
     ASSERT_TRUE(fv.has_value());
-    EXPECT_TRUE(bits_equal(f.price[i], *fv)); // per-share American mark
-    EXPECT_TRUE(bits_equal(f.iv[i], s.iv(p.contract.K, p.contract.T)));
-    EXPECT_TRUE(bits_equal(f.pv[i], w * *fv));
-    EXPECT_TRUE(bits_equal(f.delta[i], w * g->delta));
-    EXPECT_TRUE(bits_equal(f.gamma[i], w * g->gamma));
-    EXPECT_TRUE(bits_equal(f.vega[i], w * g->vega));
-    EXPECT_TRUE(bits_equal(f.theta[i], w * g->theta));
-    EXPECT_TRUE(bits_equal(f.rho[i], w * g->rho));
-    EXPECT_TRUE(bits_equal(f.vanna[i], w * g->vanna));
-    EXPECT_TRUE(bits_equal(f.volga[i], w * g->volga));
-    EXPECT_TRUE(bits_equal(f.charm[i], w * g->charm));
+    // M4: the batched pricer output vs an independent scalar oracle recompute.
+    // Byte-exact on the SSE2 source-of-truth ISA; a machine-precision per-ISA
+    // band under FMA contraction (rel-avx2), where the two paths fuse a*b+c
+    // differently and land ~1 ULP apart. See support/isa_golden_tol.hpp.
+    EXPECT_TRUE(atx::vol::test::golden_close(f.price[i], *fv)); // per-share American mark
+    EXPECT_TRUE(atx::vol::test::golden_close(f.iv[i], s.iv(p.contract.K, p.contract.T)));
+    EXPECT_TRUE(atx::vol::test::golden_close(f.pv[i], w * *fv));
+    EXPECT_TRUE(atx::vol::test::golden_close(f.delta[i], w * g->delta));
+    EXPECT_TRUE(atx::vol::test::golden_close(f.gamma[i], w * g->gamma));
+    EXPECT_TRUE(atx::vol::test::golden_close(f.vega[i], w * g->vega));
+    EXPECT_TRUE(atx::vol::test::golden_close(f.theta[i], w * g->theta));
+    EXPECT_TRUE(atx::vol::test::golden_close(f.rho[i], w * g->rho));
+    EXPECT_TRUE(atx::vol::test::golden_close(f.vanna[i], w * g->vanna));
+    EXPECT_TRUE(atx::vol::test::golden_close(f.volga[i], w * g->volga));
+    EXPECT_TRUE(atx::vol::test::golden_close(f.charm[i], w * g->charm));
     expect_total.pv += f.pv[i];
     expect_total.delta += f.delta[i];
     expect_total.vega += f.vega[i];
     ++expect_total.n_ok;
   }
   EXPECT_EQ(f.total.n_ok, 5u);
-  EXPECT_TRUE(bits_equal(f.total.pv, expect_total.pv));
-  EXPECT_TRUE(bits_equal(f.total.delta, expect_total.delta));
-  EXPECT_TRUE(bits_equal(f.total.vega, expect_total.vega));
+  // M4: pricer totals vs an independent sequential reduction — the two summation
+  // orders round differently under FMA (rel-avx2). Byte-exact on SSE2; per-ISA
+  // band under FMA. See support/isa_golden_tol.hpp.
+  EXPECT_TRUE(atx::vol::test::golden_close(f.total.pv, expect_total.pv));
+  EXPECT_TRUE(atx::vol::test::golden_close(f.total.delta, expect_total.delta));
+  EXPECT_TRUE(atx::vol::test::golden_close(f.total.vega, expect_total.vega));
 
   // id12 and id14 reference one contract: same per-share price/iv, scaled PV.
+  // These are within-build determinism identities (same path, same ISA) — they
+  // hold bit-exactly on ANY single build, so they stay bits_equal.
   EXPECT_TRUE(bits_equal(f.price[2], f.price[4]));
   EXPECT_TRUE(bits_equal(f.iv[2], f.iv[4]));
   EXPECT_TRUE(bits_equal(f.pv[2], 1.5 * f.pv[4])); // qty 3 vs 2
