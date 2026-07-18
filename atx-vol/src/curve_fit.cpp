@@ -478,6 +478,34 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
   for (std::size_t ci = 0; ci < under.chains.size(); ++ci) {
     ChainPrepass &pre = prepass[ci];
     if (!pre.usable) {
+      // W3.4 (F4): record why this expiry produced no slice, and — under the
+      // completeness contract — propagate a HARD preparation defect instead of
+      // silently dropping it and publishing the rest as a clean partial fit.
+      ExpiryFitReport rep{};
+      rep.chain_index = ci;
+      rep.maturity = under.chains[ci].T;
+      switch (pre.prep_outcome) {
+      case SlicePrepOutcome::CarryFailed:
+        rep.outcome = ExpiryFitOutcome::CarryFailed;
+        break;
+      case SlicePrepOutcome::Starved:
+        rep.outcome = ExpiryFitOutcome::PrepStarved;
+        break;
+      case SlicePrepOutcome::Failed:
+        rep.outcome = ExpiryFitOutcome::PrepFailed;
+        rep.error = pre.prep_error.has_value() ? pre.prep_error->code() : ErrorCode::Unknown;
+        break;
+      default:
+        rep.outcome = ExpiryFitOutcome::Skipped; // degenerate maturity (T<=0)
+        break;
+      }
+      out.expiry_reports.push_back(rep);
+      if (pre.prep_outcome == SlicePrepOutcome::Failed && in.fail_board_on_hard_slice_error) {
+        return Err(rep.error, "fit_curve_surface: expiry " + std::to_string(ci) +
+                                  " preparation failed (hard): " +
+                                  (pre.prep_error.has_value() ? pre.prep_error->to_string()
+                                                              : std::string("unknown")));
+      }
       continue;
     }
     const double T = pre.T;
@@ -517,6 +545,7 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
     // explicit product choice (see spy_bidask_regression_test's rebaselined floor).
     const ProfileClock::time_point t_slice0 =
         time_stages ? ProfileClock::now() : ProfileClock::time_point{};
+    bool used_linear_fallback = false; // W3.4: FittedFallbackCurve vs Fitted taxonomy
     auto slice_res = fit_slice_curve(cfg, prepared.fit_observations(), F, T, df, w_prev,
                                      calendar_floor_knots, prev_data_k_range);
     if (time_stages) {
@@ -570,6 +599,7 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
           // commit path (parity scoring + w_prev carry for the next expiry).
           slice_res = std::move(fb_res);
           ++out.n_slice_linear_fallback;
+          used_linear_fallback = true;
         }
       }
       if (!slice_res) {
@@ -581,6 +611,24 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
           std::fprintf(stderr, "[slice-drop] kind=%d T=%.4f F=%.2f obs=%zu err=%s\n",
                        static_cast<int>(cfg.kind), T, F, prepared.fit_observations().size(),
                        slice_res.error().to_string().c_str());
+        }
+        // W3.4 (F4): record the fit failure and, under the completeness contract,
+        // propagate a HARD fit error (e.g. a non-converged QP `Internal`) instead
+        // of dropping the slice and publishing the rest as a clean partial fit. A
+        // SOFT code (NotFound / Unavailable — a genuinely thin or butterfly-
+        // inadmissible slice) is still dropped, preserving the Mark tolerance.
+        const ErrorCode fit_code = slice_res.error().code();
+        ExpiryFitReport rep{};
+        rep.chain_index = ci;
+        rep.maturity = T;
+        rep.n_observations = prepared.fit_observations().size();
+        rep.outcome = ExpiryFitOutcome::FitFailed;
+        rep.error = fit_code;
+        out.expiry_reports.push_back(rep);
+        if (in.fail_board_on_hard_slice_error && !prep_error_is_expected(fit_code)) {
+          return Err(fit_code, "fit_curve_surface: expiry " + std::to_string(ci) +
+                                   " slice fit failed (hard): " +
+                                   slice_res.error().to_string());
         }
         continue;
       }
@@ -634,6 +682,19 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
     // 5. Commit the slice + its context (ascending T by construction).
     if (pre.prep_outcome == SlicePrepOutcome::PreparedLegacyRescue) {
       ++out.n_slices_legacy_rescued; // W3.3: a starved slice recovered under Legacy prep
+    }
+    // W3.4 (F4): the committed-slice outcome — LinearVariance fallback and
+    // Legacy-prep rescue are surfaced distinctly from a clean primary fit.
+    {
+      ExpiryFitReport rep{};
+      rep.chain_index = ci;
+      rep.maturity = T;
+      rep.n_observations = prepared.fit_observations().size();
+      rep.outcome = used_linear_fallback ? ExpiryFitOutcome::FittedFallbackCurve
+                    : (pre.prep_outcome == SlicePrepOutcome::PreparedLegacyRescue)
+                        ? ExpiryFitOutcome::FittedLegacyPrep
+                        : ExpiryFitOutcome::Fitted;
+      out.expiry_reports.push_back(rep);
     }
     out.surface.push(std::move(*slice_res));
     out.context.push_back(SliceContext{T, F, pre.borrow, q_eff, prepared.fit_observations().size(),

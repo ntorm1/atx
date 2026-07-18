@@ -38,6 +38,7 @@
 #include <optional>
 #include <vector>
 
+#include "atx/core/error.hpp"          // ErrorCode (ExpiryFitReport)
 #include "atx/vol/calib.hpp"           // CalibOpts
 #include "atx/vol/correction.hpp"      // AmericanCorrectionCaches (cert-carry resolve)
 #include "atx/vol/curve.hpp"           // DividendEvent
@@ -207,6 +208,18 @@ struct SurfaceParityInputs {
   // instead of dropping the whole surface. DEFAULT FALSE => byte-identical to the
   // historical drop-the-slice behavior. Only consulted by `fit_curve_surface`.
   bool per_slice_legacy_prep_fallback{false};
+
+  // W3.4 (F4): completeness contract. When TRUE, an expiry whose PREPARATION or
+  // slice FIT fails with a HARD error code (anything other than NotFound /
+  // Unavailable — i.e. a genuine defect such as a non-converged QP `Internal`)
+  // makes the driver RETURN that error instead of silently dropping the slice and
+  // publishing a partial surface as success (F-02). Genuinely thin expiries
+  // (NotFound / Unavailable) are still dropped, preserving the deliberate
+  // Mark-policy tolerance for sparse boards. DEFAULT FALSE => byte-identical to
+  // the historical "drop the slice, fail only at zero slices" behavior; a
+  // completeness-requiring consumer (risk admission, the recovery cohort) opts in.
+  // Consulted by both `fit_curve_surface` and `run_surface_parity`.
+  bool fail_board_on_hard_slice_error{false};
 };
 
 // Per-fitted-slice pricing context: everything the composable facade
@@ -221,6 +234,33 @@ struct SliceContext {
   double q_eff{0.0};        // effective carry: r - ln(F/S)/T
   std::size_t n_used{0};    // strikes that survived to the fit
   std::size_t n_dropped{0}; // strikes skipped (bad quote / failed invert)
+};
+
+// W3.4 (F4): per-expiry FIT-driver outcome taxonomy (distinct from the
+// admission-layer `ExpiryBuildReport` in pricer_fitter.hpp). One `ExpiryFitReport`
+// is emitted for EVERY chain the driver walks (fitted or not), so a caller — and
+// the admission layer — can tell a genuinely thin/absent expiry from a real
+// defect instead of inferring "Missing" by maturity matching, and stop treating
+// a partial fit (e.g. 1-of-24 slices after hard failures on the rest) as a clean
+// success. Shared by both drivers (`run_surface_parity`, `fit_curve_surface`).
+enum class ExpiryFitOutcome : std::uint8_t {
+  Fitted = 0,          // the primary curve fit succeeded
+  FittedFallbackCurve, // recovered via the per-slice LinearVariance fallback
+  FittedLegacyPrep,    // fit succeeded on a Legacy-prep-rescued (thin) slice
+  CarryFailed,         // carry / forward resolution failed — no slice
+  PrepStarved,         // below the usable-row floor (thin) — no slice
+  PrepFailed,          // HARD preparation error (defect) — `error` is set
+  FitFailed,           // slice fit failed — `error` is set
+  Skipped,             // degenerate maturity (T<=0) — never attempted
+};
+
+struct ExpiryFitReport {
+  std::size_t chain_index{0};
+  double maturity{0.0};
+  ExpiryFitOutcome outcome{ExpiryFitOutcome::Skipped};
+  std::size_t n_observations{0};
+  // Meaningful for PrepFailed / FitFailed: the code the failed step returned.
+  atx::core::ErrorCode error{atx::core::ErrorCode::Unknown};
 };
 
 // The whole-surface acceptance bundle. `surface` OWNS the fitted eSSVI surface
@@ -249,6 +289,11 @@ struct SurfaceParityReport {
   // the usable-observation floor (it would have fit but for audit drops) —
   // the audit-created analogue of a carry skip, surfaced the same way.
   std::size_t n_audit_starved{0};
+  // W3.4 (F4): per-expiry build outcome for EVERY chain walked (‖ under.chains,
+  // in chain order — NOT the fitted-slice order). Always populated. The trailing
+  // `{}` gives it a default member initializer so the positional aggregate init
+  // below (which stops at n_audit_starved) does not trip -Wmissing-field-init.
+  std::vector<ExpiryFitReport> expiry_reports{};
   SurfaceFitStageTimings fit_timings{};
 };
 

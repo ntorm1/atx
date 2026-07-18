@@ -96,6 +96,11 @@ struct CurveSurfaceReport {
   // `VolaSession::build` construct `SessionSliceDiagnostics` + the incremental
   // observation cache directly, without a second serial de-Am pass.
   std::vector<SliceInputCertification> input_certification;
+  // W3.4 (F4): per-expiry build outcome for EVERY chain walked (‖ under.chains,
+  // in chain order — NOT the fitted-slice order of context/per_expiry). Always
+  // populated so admission can distinguish a thin/absent expiry from a defect
+  // (`ExpiryFitReport` / `ExpiryFitOutcome` are defined in surface_parity.hpp).
+  std::vector<ExpiryFitReport> expiry_reports;
   SurfaceFitStageTimings fit_timings{};
 };
 
