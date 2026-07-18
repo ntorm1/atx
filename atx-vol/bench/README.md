@@ -82,6 +82,51 @@ When ON, both bench targets dump the per-operation counts as `cnt_*` columns in
 the JSON (measured over a single representative op *outside* the timed loop, so
 warm-up does not inflate them).
 
+## Quiet-window bench protocol (M3)
+
+This box is an i7-1260P — a P+E hybrid with no CPU-frequency pinning — so raw
+numbers are only citable under a disciplined protocol. Every bench exe that links
+`bench_main.cpp` (all of them except `atx-vol-surface-v2-bench` / `atx-vol-cstar-panel`,
+which own their `main()`) now enforces it automatically:
+
+1. **P-core pinning.** Before the first pool use `main()` calls
+   `configure_pricing_executor(Topology::PerformanceCores)`, landing the pricing
+   executor's workers on the performance cores (best-effort on Windows; falls back
+   to `Auto` sizing if P-core discovery / the affinity API fails — affinity is a
+   latency prior, never a correctness gate). *Scope caveat:* this pins the
+   **pricing** executor pool; the fitter's own `parallel_for` pool shares the same
+   core budget/env cap but is **not** pinned by this call, so a fit-heavy row
+   (`fit/e2e/*`) is only partially covered. Cap fit fan-out with
+   `ATX_VOL_FIT_WORKERS` and lease the P-cores to one bench at a time when several
+   agents share the box.
+2. **Turbo/thermal preamble + warmup.** `main()` prints a stderr preamble (quiesce
+   the box; take best-of-N; reject CV>5%) and runs a brief active warmup so the
+   first measured case does not eat the cold-clock / pre-turbo transient. Each case
+   additionally carries the `apply_common()` `>=0.5 s` `MinWarmUpTime`. Skip the
+   warmup with `ATX_BENCH_NO_WARMUP=1`.
+3. **Best-of-N + CV≤5% gate.** A run is trustworthy only when its coefficient of
+   variation (stddev/mean over the 5 repetitions) is `<= 5%`. Take best-of-N and
+   discard/flag any kept run whose row is `NOISY`; `compare_baseline.py` reads the
+   same `cv` statistic and never gates a `CV>5%` row. The `Iterations(1)` corpus
+   rows (`fit/e2e/*`) carry no in-process CV — supply best-of-3 from three separate
+   processes, as before.
+4. **Per-ISA baseline naming (enforced).** The exe knows its own build ISA
+   (`__AVX2__` ⇒ `avx2`, else `sse2`) and **refuses** a `--benchmark_out` that
+   lands under a `baselines/` directory unless the filename carries this build's
+   ISA tag (and not the other's). An `avx2` run therefore cannot overwrite an
+   `sse2` baseline (or vice-versa). Convention:
+   `i7-1260p-clang18-{sse2,avx2}-<bench>.json`.
+
+**Self-check (M3 verification, class `tooling`).** Run any bench exe with
+`--atx-self-check` to prove the CV gate rejects a synthetic high-variance sample
+and accepts a low-variance one, and that per-ISA naming is enforced (accepts the
+this-ISA name, rejects the other-ISA and ISA-less names). It exits `0` on success
+without touching Google Benchmark:
+
+```
+./build-rel-avx2/bin/atx-vol-e2e-hotpath-bench.exe --atx-self-check
+```
+
 ## Regenerate a baseline
 
 Baselines live in `bench/baselines/<host>-<compiler>-<isa>.json`. On the pinned
@@ -131,8 +176,10 @@ python bench/compare_baseline.py bench/baselines/i7-1260p-clang18-sse2-american.
 An ISA-fair `rel-avx2` preset also exists (global `/arch:AVX2`, same clang-cl/
 sccache/shared-deps toolchain, `binaryDir=build-rel-avx2`) — see CMakePresets.json.
 Baselines produced under it are named `i7-1260p-clang18-avx2-<target>.json`
-(note `-avx2-` replacing `-sse2-`); none exist yet, and none were produced by
-this task — they become meaningful once the C1/C2 AVX2 wiring work lands.
+(note `-avx2-` replacing `-sse2-`). The `-avx2-`/`-sse2-` split is no longer a
+naming *convention* alone: it is **enforced** by `bench_main.cpp` (M3, above) — an
+`avx2` exe refuses to write an `-sse2-` baselines/ file and vice-versa, so the two
+ISAs can never clobber each other's baseline.
 
 ## Baselines (C0.2: reloc / simd / fitting gaps + real-OPRA fit case)
 
