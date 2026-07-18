@@ -268,9 +268,11 @@ american_put_adjoint(double S, double K, double T, double sigma, double r, doubl
   AlBoundary bnd{};
   AlWorkspace ws{};
   AlSolveTape tape{};
-  // Tape the budget-limited solve. The final bnd/ws are bit-identical to
-  // al_solve_put_boundary (marks unchanged); `tape` holds seed + every swept iterate
-  // for the Christianson tangent.
+  // Tape the budget-limited solve (generic kernel; agrees with production
+  // al_solve_put_boundary only to the pure-hoist ~1e-9 tolerance, NOT bit-identically —
+  // see al_solve_put_boundary_tape). `tape` holds seed + every swept iterate for the
+  // Christianson tangent. The served mark is P0 below (this kernel's own AL price via
+  // al_put_price_from_boundary), not this boundary reused as a production mark.
   if (amer::al_solve_put_boundary_tape(K, T, sigma, r, q, sch, bnd, ws, tape) !=
       amer::AlSolveStatus::Ok) {
     return std::nullopt;
@@ -331,6 +333,11 @@ american_put_adjoint(double S, double K, double T, double sigma, double r, doubl
       (price_moved(bnd, ws, S, K, T, sigma + hsig, r, q, ydot_s.data() + 1, hsig) -
        price_moved(bnd, ws, S, K, T, sigma - hsig, r, q, ydot_s.data() + 1, -hsig)) /
       (2.0 * hsig);
+  // rho's tangent ẏ_r is NOT independently guarded per-point (only vega is, via the
+  // cold-re-solve self-consistency check below). rho rides on that: ẏ_r and ẏ_σ share
+  // the same taped iteration and contraction, so a corner unstable enough to corrupt ẏ_r
+  // corrupts ẏ_σ too and is caught by the vega guard → FD fallback. rho is additionally
+  // gated vs Richardson-of-the-mark on the grid in AdjointPathAccuracyVsMark.
   const double rho = (price_moved(bnd, ws, S, K, T, sigma, r + hrho, q, ydot_r.data() + 1, hrho) -
                       price_moved(bnd, ws, S, K, T, sigma, r - hrho, q, ydot_r.data() + 1, -hrho)) /
                      (2.0 * hrho);

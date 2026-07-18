@@ -614,12 +614,16 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
                    std::span<const std::uint8_t> accepted_seeds = {}) {
   const std::size_t n_unique = pp.n_unique();
   using EF = PricedSurface::EvalField;
-  // WS-P P3 adjoint A/B: request IV + mark only (Marks) from evaluate_batch — the FD
-  // greek bundle is never computed; delta..charm come from american_greeks_adjoint
-  // in the solve_span loop below (one taped AL solve + reverse boundary tangent).
-  const EF fields = (want_greeks && !adjoint_greeks)
-                        ? (EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder)
-                        : (EF::Iv | EF::Price);
+  // WS-P P3 adjoint A/B: request IV ONLY from evaluate_batch (priced_surface.cpp:
+  // "Iv-only: no pricer solve"). The FD greek bundle is never computed, AND the mark's
+  // boundary solve is skipped — american_greeks_adjoint's ONE taped AL solve provides
+  // BOTH delta..charm AND the served mark (its al_put_price_from_boundary == the
+  // andersen_lake mark), so each unique contract pays a SINGLE boundary solve instead
+  // of two (I-2 fuse). Non-adjoint FullGreeks stays the FD bundle; Marks stays Iv|Price.
+  const EF fields = adjoint_greeks
+                        ? EF::Iv
+                        : ((want_greeks) ? (EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder)
+                                         : (EF::Iv | EF::Price));
 
   const bool have_seed_stage =
       staged_seeds.size() == contracts.size() && accepted_seeds.size() == contracts.size();
@@ -696,14 +700,15 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
         continue;
       }
       if (adjoint_greeks) {
-        // WS-P P3 adjoint A/B: the Marks (b_iv/b_price) came from evaluate_batch; the
-        // risk bundle comes from american_greeks_adjoint at the SAME resolved
-        // (sigma,rate,q) the mark was priced at — so delta/gamma stay bit-identical to
-        // the FD path (spot-independent boundary), vega/rho match the served mark on
-        // the wide domain, and the kernel falls back to FD internally elsewhere. The
-        // mark is preserved (g.price := b_price[p]) so the marks column is the
-        // andersen_lake value regardless of greek method (price == fair_value).
-        if (!b_status[p].has_value() || !std::isfinite(b_price[p])) {
+        // WS-P P3+I-2 adjoint A/B: evaluate_batch computed IV ONLY (no boundary solve).
+        // american_greeks_adjoint's single taped Andersen-Lake solve provides BOTH the
+        // risk bundle AND the mark (its price IS the andersen_lake mark), resolved at
+        // the SAME (sigma,rate,q) — so each contract pays ONE boundary solve, not two.
+        // delta/gamma stay bit-identical to the FD path (spot-independent boundary),
+        // vega/rho match the served mark on the wide domain, FD fallback inside the
+        // kernel elsewhere. The served mark is the kernel's AL price (price ==
+        // fair_value); it equals the FD-route mark to the andersen_lake tolerance.
+        if (!b_status[p].has_value()) {
           out.status = PriceStatus::NumericError;
           continue;
         }
@@ -716,11 +721,9 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
           out.status = PriceStatus::NumericError;
           continue;
         }
-        AmericanGreeks g = *ga;
-        g.price = b_price[p]; // keep the evaluate_batch mark; price == fair_value
-        b_greeks[p] = g;
-        out.fair_value = b_price[p];
-        out.g = g;
+        b_greeks[p] = *ga;
+        out.fair_value = ga->price;
+        out.g = *ga;
         out.status = PriceStatus::Ok;
         if (skew_adjusted_delta) {
           const double slope = priced_surface_skew_slope(*surf, kcol[p], tcol[p]);

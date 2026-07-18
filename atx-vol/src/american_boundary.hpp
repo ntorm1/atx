@@ -200,10 +200,16 @@ struct AlSolveTape {
   std::array<std::array<double, kAlMaxNodes>, kAlMaxTapeSweeps + 1> y_iter{};
 };
 
-// Numerically IDENTICAL to al_solve_put_boundary (same seed, same specialized JN/FP
-// sweeps, same tol early-exit) — the final bnd/ws are bit-identical, so the mark is
-// unchanged — but ALSO records `tape`. Collapsed/TableMissing exactly as the base
-// solve (plus TableMissing if the budget exceeds kAlMaxTapeSweeps).
+// Same seed, same JN/FP schedule, same tol early-exit as al_solve_put_boundary, but
+// runs the GENERIC (specialize=false) kernel — so it can be replayed bit-for-bit by
+// al_apply_boundary_sweep for the Christianson tangent (below) — and ALSO records
+// `tape`. NOT bit-identical to production al_solve_put_boundary, which defaults to the
+// specialized kernel; the two agree only to the "pure hoist" tolerance the delta/price
+// tests bound to ~1e-9, NOT to 0 ULP. So do NOT treat the taped boundary as the served
+// mark or as a bit-exact FD-parity oracle. Mark safety in the portfolio path comes from
+// evaluate_batch (or, under the I-2 fuse, from american_greeks_adjoint's own AL price),
+// never from this boundary being bit-identical to production. Collapsed/TableMissing
+// exactly as the base solve (plus TableMissing if the budget exceeds kAlMaxTapeSweeps).
 [[nodiscard]] AlSolveStatus al_solve_put_boundary_tape(double K, double T, double sigma, double r,
                                                        double q, const AlScheme& sch,
                                                        AlBoundary& bnd, AlWorkspace& ws,
@@ -212,9 +218,12 @@ struct AlSolveTape {
 // Apply ONE boundary sweep (Jacobi-Newton if is_jn, else fixed-point) of the GENERIC
 // inline-geometry kernel to y_in at (sigma,r,q), writing the swept boundary to y_out.
 // Pure: does not mutate bnd/ws. The generic kernel recomputes geometry inline, so a
-// PERTURBED sigma/r needs no geometry rebind; at the unperturbed inputs it reproduces
-// the specialized production sweep bit-identically (the geo precompute is a pure
-// hoist). This is Gₖ(·;θ) for the Christianson tangent's directional differences.
+// PERTURBED sigma/r needs no geometry rebind. The load-bearing guarantee: at the taped
+// inputs it reproduces the tape's GENERIC sweep BIT-FOR-BIT (al_solve_put_boundary_tape
+// runs the same specialize=false kernel) — that is what makes y_iter[k+1] the exact
+// forward-difference anchor. (It matches the SPECIALIZED production sweep only to the
+// pure-hoist ~1e-9 tolerance, which is NOT relied on here.) This is Gₖ(·;θ) for the
+// Christianson tangent's directional differences.
 void al_apply_boundary_sweep(const AlBoundary& bnd, const AlWorkspace& ws, const double* y_in,
                              double sigma, double r, double q, bool is_jn, double* y_out) noexcept;
 

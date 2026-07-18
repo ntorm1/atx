@@ -1625,11 +1625,12 @@ TEST(PortfolioPricer, PriceInto_FullGreeks_BitIdenticalToPrice) {
   EXPECT_TRUE(bits_equal(fs.total.charm, ref->total.charm));
 }
 
-// WS-P P3: the adjoint-greeks A/B route. FullGreeks risk columns are produced by
-// detail::american_greeks_adjoint (evaluate_batch computes IV + mark only, then one
-// taped Andersen-Lake solve + a reverse Christianson boundary tangent per unique
-// contract) instead of the FD bundle. Gate: on a genuine-early-exercise put book the
-// adjoint route (a) keeps the mark the same andersen_lake value, (b) is delta/gamma
+// WS-P P3+I-2: the adjoint-greeks A/B route. FullGreeks risk columns AND the mark are
+// produced by detail::american_greeks_adjoint (evaluate_batch computes IV only, then ONE
+// taped Andersen-Lake solve provides both the reverse Christianson tangent greeks and
+// the AL mark per unique contract — one boundary solve, not two) instead of the FD
+// bundle. Gate: on a genuine-early-exercise put book the adjoint route (a) keeps the
+// mark the same andersen_lake value (kernel AL price vs FD-route mark, ~1e-9), (b) is delta/gamma
 // bit-identical to the FD route (the boundary is spot-independent so both stencil the
 // same base boundary), (c) matches vega/rho to economic tolerance (the adjoint tracks
 // the served mark, the FD bundle its own bumped re-solve), and (d) is bit-identical

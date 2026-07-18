@@ -1380,10 +1380,11 @@ AlSolveStatus al_solve_put_boundary_tape(double K, double T, double sigma, doubl
     return AlSolveStatus::TableMissing;
   }
   // GENERIC (inline-geometry) kernel — specialize=false — so every taped sweep uses
-  // the SAME map al_apply_boundary_sweep replays for the Christianson tangent. The
-  // generic and specialized kernels are a pure hoist of each other so the final
-  // boundary is bit-identical to al_solve_put_boundary (marks unchanged), but the
-  // tangent MUST differentiate exactly the map that produced each taped iterate.
+  // the SAME map al_apply_boundary_sweep replays for the Christianson tangent (the
+  // tangent MUST differentiate exactly the map that produced each taped iterate). This
+  // boundary agrees with production al_solve_put_boundary (specialized) only to the
+  // pure-hoist tolerance (~1e-9 in the delta/price tests), NOT bit-identically, so it is
+  // NOT reused as a served mark — the adjoint kernel serves its own AL price.
   ws.specialize = false;
   ws.qx_fp = fp->nodes.data();
   ws.qw_fp = fp->weights.data();
