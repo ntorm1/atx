@@ -42,6 +42,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <optional>
 #include <span>
@@ -54,9 +55,14 @@
 #include "atx/core/io/parquet_writer.hpp"  // write_parquet, WriteColumn
 #include "atx/vol/black76.hpp"             // black76_price
 #include "atx/vol/chain.hpp"              // OptionChain
-#include "atx/vol/opra_batch.hpp"        // load_opra_daterange, market_env_from_frame
+#include "atx/vol/corpus.hpp"            // CorpusBoard
+#include "atx/vol/opra_batch.hpp"        // load_opra_daterange, corpus_board_from_opra
 #include "atx/vol/pricer_fitter.hpp"     // PricerFitter, PricerConfig
+#include "atx/vol/session.hpp"           // FitPreset
 #include "atx/vol/surface_archive.hpp"   // write_surface_archive_file
+#include "atx/vol/surface_db.hpp"        // SurfaceDb, symbol_config_from_preset
+#include "atx/vol/surface_db_populate.hpp"  // populate_surface_db (U1-U4 + E2)
+#include "atx/vol/vol_curve.hpp"         // CurveConfig
 
 namespace {
 
@@ -237,6 +243,172 @@ void BM_UniverseCycle_Smoke3(benchmark::State& state) {
     state.counters["n_boards_archived"] = static_cast<double>(n_archived);
   }
 }
+
+// ── U6: real multi-name universe-cycle mechanism proof ──────────────────────
+// The smoke row above is a SELF-CONTAINED harness (synthetic 3-name universe, its
+// own manual fit loop) that predates the streaming SurfaceDb pipeline. This row
+// instead drives the LANDED production universe machinery end-to-end on REAL OPRA
+// boards on disk:
+//   ingest  = load_opra_daterange (the parallel + projected OPRA loader; W4.3)
+//   fit     = populate_surface_db — U1 streaming per-date partition release,
+//             U2 Longest-Processing-Time claim order, U3 date-granular durability,
+//             U4 shared small-book worker budget, over the E2 help-first
+//             work-stealing pool. The per-date archive write happens INSIDE the
+//             fit drain (streaming), so archive folds into fit and
+//             ingest_ms + fit_ms == the full universe cycle.
+// Env-configured so it stays OFF unless a cohort is supplied — the smoke row and
+// CI baseline are untouched (this row is registered only when the root env is
+// set):
+//   ATX_UNIVERSE_OPRA_ROOT  parquet hive root; files at <root>/{sym}/{date}.parquet
+//   ATX_UNIVERSE_SYMBOLS    CSV cohort, e.g. "AAPL,AMZN,SPY,XOM"
+//   ATX_UNIVERSE_DATE_LO    "YYYY-MM-DD" inclusive lower (default = _DATE_HI)
+//   ATX_UNIVERSE_DATE_HI    "YYYY-MM-DD" inclusive upper (default = _DATE_LO)
+//   ATX_UNIVERSE_WORKERS    ingest+fit workers; 0 = auto (hw concurrency), 1 = serial
+//   ATX_UNIVERSE_R          flat fallback rate (default 0.043)
+// Counters mirror the smoke schema (ingest_ms/fit_ms/archive_ms/total_ms + board
+// counts) plus `workers`, so a worker sweep (one process per count) reads a stable
+// schema. Best-of-3 via Repetitions; a fresh temp SurfaceDb per repetition so
+// skip_existing never short-circuits the fit.
+
+[[nodiscard]] std::string env_str(const char* name) {
+#if defined(_MSC_VER)
+  char* raw = nullptr;
+  std::size_t n = 0;
+  if (::_dupenv_s(&raw, &n, name) != 0 || raw == nullptr) {
+    return {};
+  }
+  std::string v(raw);
+  std::free(raw);
+  return v;
+#else
+  const char* raw = std::getenv(name);
+  return raw != nullptr ? std::string(raw) : std::string{};
+#endif
+}
+
+[[nodiscard]] std::vector<std::string> split_csv(const std::string& s) {
+  std::vector<std::string> out;
+  std::size_t start = 0;
+  while (start <= s.size()) {
+    const std::size_t end = s.find(',', start);
+    const std::string field =
+        s.substr(start, end == std::string::npos ? s.size() - start : end - start);
+    if (!field.empty()) {
+      out.push_back(field);
+    }
+    if (end == std::string::npos) {
+      break;
+    }
+    start = end + 1;
+  }
+  return out;
+}
+
+void BM_UniverseCycle_Real(benchmark::State& state) {
+  const std::string opra_root = env_str("ATX_UNIVERSE_OPRA_ROOT");
+  const std::vector<std::string> symbols = split_csv(env_str("ATX_UNIVERSE_SYMBOLS"));
+  std::string date_hi = env_str("ATX_UNIVERSE_DATE_HI");
+  std::string date_lo = env_str("ATX_UNIVERSE_DATE_LO");
+  if (date_hi.empty()) {
+    date_hi = date_lo;
+  }
+  if (date_lo.empty()) {
+    date_lo = date_hi;
+  }
+  if (opra_root.empty() || symbols.empty() || date_lo.empty()) {
+    state.SkipWithError(
+        "set ATX_UNIVERSE_OPRA_ROOT / _SYMBOLS / _DATE_LO[/_DATE_HI] to run the real cohort");
+    return;
+  }
+  const std::string workers_s = env_str("ATX_UNIVERSE_WORKERS");
+  const unsigned workers =
+      workers_s.empty() ? 0u : static_cast<unsigned>(std::strtoul(workers_s.c_str(), nullptr, 10));
+  const std::string r_s = env_str("ATX_UNIVERSE_R");
+  const double r = r_s.empty() ? 0.043 : std::strtod(r_s.c_str(), nullptr);
+
+  for (auto _ : state) {
+    // Fresh db per repetition so skip_existing never short-circuits the fit.
+    const fs::path db_root = fs::temp_directory_path() / "atx_universe_cycle_real_db";
+    fs::remove_all(db_root);
+    Result<SurfaceDb> db = SurfaceDb::create(db_root.string());
+    if (!db.has_value()) {
+      state.SkipWithError("SurfaceDb::create failed");
+      return;
+    }
+    for (const std::string& sym : symbols) {
+      SymbolFitConfig c = symbol_config_from_preset(FitPreset::Fast);
+      c.pin_curve = true;
+      c.curve = CurveConfig{};  // default pinned ConvexDense (mirrors mag7_surfdb_populate)
+      (void)db->upsert_symbol(sym, c);
+    }
+
+    // ── Stage 1: ingest (parallel projected OPRA loader) ──────────────────
+    OpraBatchSpec spec;
+    spec.symbols = symbols;
+    spec.date_lo = date_lo;
+    spec.date_hi = date_hi;
+    spec.root_dir = opra_root;
+    spec.r = r;
+    spec.n_threads = workers;
+    const auto t_ing = std::chrono::steady_clock::now();
+    auto batch = load_opra_daterange(spec);
+    const double ingest_ms = ms_since(t_ing);
+
+    std::vector<CorpusBoard> boards;
+    std::size_t n_loaded = 0;
+    if (batch.has_value()) {
+      boards.reserve(batch->n_loaded);
+      for (OpraBatchEntry& e : batch->entries) {
+        if (!e.panel.has_value()) {
+          continue;  // NotFound (weekend/holiday) or a load failure — non-fatal
+        }
+        ++n_loaded;
+        boards.push_back(corpus_board_from_opra(e.date, e.symbol, std::move(*e.panel)));
+      }
+    }
+
+    // ── Stage 2+3: fit + streaming per-date archive write (populate) ──────
+    double fit_ms = 0.0;
+    std::size_t n_ok = 0;
+    std::size_t n_dates_written = 0;
+    if (!boards.empty()) {
+      SurfaceDbPopulateConfig cfg;
+      cfg.n_threads = workers;
+      cfg.skip_existing = false;
+      const auto t_fit = std::chrono::steady_clock::now();
+      const Result<SurfaceDbPopulateStats> st = populate_surface_db(*db, boards, cfg);
+      fit_ms = ms_since(t_fit);
+      if (st.has_value()) {
+        n_ok = st->n_ok;
+        n_dates_written = st->n_dates_written;
+      }
+    }
+
+    state.counters["ingest_ms"] = ingest_ms;
+    state.counters["fit_ms"] = fit_ms;
+    state.counters["archive_ms"] = 0.0;  // folded into fit (streaming writer)
+    state.counters["total_ms"] = ingest_ms + fit_ms;
+    state.counters["workers"] = static_cast<double>(workers);
+    state.counters["n_names"] = static_cast<double>(symbols.size());
+    state.counters["n_boards_loaded"] = static_cast<double>(n_loaded);
+    state.counters["n_boards_fitted"] = static_cast<double>(n_ok);
+    state.counters["n_dates_written"] = static_cast<double>(n_dates_written);
+  }
+}
+
+// Register the real-cohort row ONLY when a cohort root is supplied, so the
+// default (smoke) run and its CI baseline see exactly the smoke3 row and nothing
+// changes. Env is read at static-init (set before process launch), so this is a
+// clean compile-in-always / register-on-demand gate.
+[[maybe_unused]] const int kRegisterUniverseReal = [] {
+  if (!env_str("ATX_UNIVERSE_OPRA_ROOT").empty()) {
+    benchmark::RegisterBenchmark("universe/cycle/real", BM_UniverseCycle_Real)
+        ->Iterations(1)
+        ->Repetitions(3)
+        ->UseRealTime();
+  }
+  return 0;
+}();
 
 }  // namespace
 
