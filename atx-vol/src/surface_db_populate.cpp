@@ -19,6 +19,7 @@
 #include "atx/vol/pricer_fitter.hpp"        // PricerConfig
 #include "atx/vol/session.hpp"              // SessionInputs
 #include "atx/vol/universe.hpp"             // uid_for_symbol
+#include "atx/vol/vol_curve.hpp"            // CurveConfig (index dense pin)
 #include "corpus_board_fit.hpp"             // FitSlot, fit_board (shared blessed fit path)
 
 namespace atx::vol {
@@ -452,6 +453,107 @@ Status write_populate_stats_csv(const SurfaceDbPopulateStats &s, const MetaKv &m
     body += '\n';
   }
   return write_meta_body(full_meta, body, path, "write_populate_stats_csv");
+}
+
+Result<UniversePopulateCoverage>
+populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
+                            const UniversePopulateSpec &spec,
+                            const PopulateTestHooks *test_hooks) {
+  UniversePopulateCoverage cov;
+  cov.cells_loaded = static_cast<std::uint32_t>(boards.size());
+  if (boards.empty()) {
+    return Ok(std::move(cov)); // graceful no-op: an un-pulled window has no boards
+  }
+
+  // 1. Seed per-symbol manifest configs (idempotent). The index leg is pinned to the
+  //    dense recipe (the SPY/index precedent, spy_ytd_corpus.cpp); every other symbol
+  //    is left on the preset's auto-selector (pin_curve=false), which picks the
+  //    parsimonious backbone the board's microstructure warrants. A symbol already in
+  //    the manifest is left untouched (a resumed run / operator override wins).
+  for (std::size_t i = 0; i < boards.size(); ++i) {
+    const std::string &sym = boards[i].symbol;
+    bool first = true;
+    for (std::size_t j = 0; j < i; ++j) {
+      if (boards[j].symbol == sym) {
+        first = false;
+        break;
+      }
+    }
+    if (!first || db.symbol_config(sym).has_value()) {
+      continue;
+    }
+    SymbolFitConfig c = symbol_config_from_preset(spec.preset);
+    if (!spec.index_symbol.empty() && sym == spec.index_symbol) {
+      c.pin_curve = true;
+      c.curve = CurveConfig{}; // default = the dense index recipe (node_cap 40)
+    }
+    const Status up = db.upsert_symbol(sym, c);
+    if (!up) {
+      return Err(up.error());
+    }
+  }
+
+  // 2. Cell-aware resume: group by date, and (re)write a date only when a loaded
+  //    board adds a symbol the partition does not already carry. A whole-date rewrite
+  //    re-fits the already-present cells (the price of date-keyed partitions), so it
+  //    is guarded to never DROP an existing symbol absent from this run's loaded set.
+  std::map<std::string, std::vector<std::size_t>> by_date;
+  for (std::size_t i = 0; i < boards.size(); ++i) {
+    by_date[boards[i].date].push_back(i);
+  }
+  cov.dates_total = static_cast<std::uint32_t>(by_date.size());
+
+  std::vector<CorpusBoard> kept; // boards on the dates that need a (re)write
+  for (const auto &[date, idxs] : by_date) {
+    const Result<SurfaceArchiveV2> part = db.open_partition(date); // Err(NotFound) if none yet
+    std::uint32_t present = 0;
+    std::uint32_t to_add = 0;
+    for (const std::size_t i : idxs) {
+      const bool in_db = part.has_value() && part->find(boards[i].symbol).has_value();
+      if (in_db) {
+        ++present;
+      } else {
+        ++to_add;
+      }
+    }
+    if (to_add == 0u) {
+      ++cov.dates_skipped_complete; // every loaded cell already present
+      cov.cells_already_present += present;
+      continue;
+    }
+    // Guard: the partition holds a symbol not in this run's loaded set (present <
+    // total) — a whole-partition rewrite from `idxs` alone would drop it. Skip.
+    if (part.has_value() && present < part->count()) {
+      ++cov.dates_skipped_would_drop;
+      cov.cells_already_present += present;
+      continue;
+    }
+    ++cov.dates_written;
+    cov.cells_to_fit += to_add;
+    cov.cells_refit += present;
+    for (const std::size_t i : idxs) {
+      kept.push_back(boards[i]);
+    }
+  }
+
+  // 3. Fuse fit->serialize->release over the needing-work dates via the streaming
+  //    populate (executor fan-out, RSS O(dates in flight)). skip_existing is off:
+  //    the cell-aware filter above already chose exactly the dates to rewrite.
+  if (!kept.empty()) {
+    SurfaceDbPopulateConfig pcfg;
+    pcfg.fallback = symbol_config_from_preset(spec.preset);
+    pcfg.n_threads = spec.fit_workers;
+    pcfg.skip_existing = false;
+    const Result<SurfaceDbPopulateStats> st = populate_surface_db(db, kept, pcfg, test_hooks);
+    if (!st) {
+      return Err(st.error());
+    }
+    cov.cells_ok = st->n_ok;
+    cov.cells_failed = st->n_failed;
+    cov.per_symbol = std::move(st->per_symbol);
+  }
+
+  return Ok(std::move(cov));
 }
 
 } // namespace atx::vol

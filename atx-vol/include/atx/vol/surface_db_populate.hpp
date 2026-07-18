@@ -101,6 +101,56 @@ populate_surface_db(SurfaceDb &db, std::span<const CorpusBoard> boards,
                     const SurfaceDbPopulateConfig &cfg = {},
                     const PopulateTestHooks *test_hooks = nullptr);
 
+// ── F-c: universe-scale, cell-aware resumable populate ──────────────────────
+//
+// The universe populate driver's testable core. Wraps populate_surface_db with
+// (1) per-symbol manifest-config seeding (an index leg pinned to the dense recipe,
+// every other symbol left on the preset's auto-selector) and (2) CELL-AWARE
+// idempotent resume: a partition (= date) is (re)written only when a loaded board
+// adds a symbol the partition does not already carry, so re-running as the OPRA
+// pull dribbles in new (symbol,date) cells fits only the new work and a re-run over
+// unchanged data fits ZERO. Uses the fused streaming populate_surface_db underneath
+// (per-date fit->serialize->release on the executor pool), so RSS stays
+// O(dates in flight). The caller loads the hive (load_opra_daterange ->
+// corpus_board_from_opra) and hands the available boards in; this function owns the
+// config seeding, the resume filtering, the populate call, and the coverage report.
+//
+// Determinism: byte-identical across fit_workers (populate_surface_db invariant);
+// the resume filter is a deterministic date/symbol grouping.
+//
+// SAFETY: a date is skipped (never rewritten) if its partition already holds a
+// symbol NOT present in this run's loaded set — a whole-partition rewrite would
+// drop it. This cannot happen on the intended workflow (the pull only grows, the
+// full run has a fixed symbol set) but guards a narrower-symbol re-run from data loss.
+struct UniversePopulateSpec {
+  std::string index_symbol{};        // pinned to the dense index recipe; empty = none
+  FitPreset preset{FitPreset::Fast}; // non-index symbols use this preset's auto-selector
+  unsigned fit_workers{0};           // 0 = auto (honors ATX_VOL_FIT_WORKERS); 1 = serial
+};
+
+struct UniversePopulateCoverage {
+  std::uint32_t cells_loaded{0};             // boards handed in (available parquet cells)
+  std::uint32_t cells_to_fit{0};             // NEW (symbol,date) cells scheduled this run
+  std::uint32_t cells_refit{0};              // already-present cells re-fit by a same-date rewrite
+  std::uint32_t cells_already_present{0};    // skipped: symbol already in its date partition
+  std::uint32_t cells_ok{0};                 // populate n_ok over the (re)written dates
+  std::uint32_t cells_failed{0};             // populate n_failed over the (re)written dates
+  std::uint32_t dates_total{0};              // distinct dates among the loaded boards
+  std::uint32_t dates_written{0};            // dates that needed a (re)write this run
+  std::uint32_t dates_skipped_complete{0};   // dates whose loaded cells were all present
+  std::uint32_t dates_skipped_would_drop{0}; // dates skipped to avoid dropping an existing symbol
+  std::vector<PopulateSymbolStats> per_symbol; // from the underlying populate (written dates only)
+};
+
+// Seed per-symbol configs (idempotent) then cell-aware-resume-populate the given
+// boards into `db`. Empty `boards` is a graceful no-op (all-zero coverage), NOT an
+// error — an un-pulled window legitimately yields no boards. Top-level Err only on a
+// db config/write failure.
+[[nodiscard]] Result<UniversePopulateCoverage>
+populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
+                            const UniversePopulateSpec &spec,
+                            const PopulateTestHooks *test_hooks = nullptr);
+
 // Stats file for the report: meta (caller's, plus n_boards/n_ok/n_failed/
 // n_dates_written appended), header
 // "symbol,n_attempted,n_ok,n_failed,n_disabled,success_rate,mean_oos_in_band",

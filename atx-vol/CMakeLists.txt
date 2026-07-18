@@ -287,6 +287,13 @@ if(ATX_BUILD_EXAMPLES)
     add_executable(mag7_surfdb_populate examples/mag7_surfdb_populate.cpp)
     target_link_libraries(mag7_surfdb_populate PRIVATE atx::vol atx::core atx_warnings)
 
+    # WS-F F-c: fit + serialize the SPY-dispersion universe (SPY + top-N) across a
+    # YTD date range from the real OPRA hive into a SurfaceDb via the fused
+    # streaming populate_universe_streaming (cell-aware idempotent resume). Gate
+    # test: SurfaceDbPopulate.UniverseStreamingResumeOverRealHive.
+    add_executable(universe_surfdb_populate examples/universe_surfdb_populate.cpp)
+    target_link_libraries(universe_surfdb_populate PRIVATE atx::vol atx::core atx_warnings)
+
     # Whole-universe auto-select fit stress harness: one OPRA snapshot minute,
     # N thousand underliers, PricerConfig::curve unset (unified policy +
     # CurveSelector routing per board), per-symbol outcome CSV + summary.
