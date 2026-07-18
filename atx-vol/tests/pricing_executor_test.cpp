@@ -19,6 +19,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstddef>
+#include <cstdint>
 #include <mutex>
 #include <numeric>
 #include <stdexcept>
@@ -366,6 +367,179 @@ TEST(PricingExecutor, RepeatedConcurrent_DeterministicDisjointWrites) {
       ex.run_blocks(n, nt, [&](std::size_t i) { out[i] = static_cast<std::uint64_t>(i) + 1; });
       ASSERT_EQ(out, ref) << "rep=" << rep << " nt=" << nt;
     }
+  }
+}
+
+// ── E1: explicit nested-budget dispatch (run_*_nested) ───────────────────────
+//
+// The plain run_* above keep inlining when nested (the two guard tests earlier).
+// These exercise the opt-in second level: a dispatch issued from INSIDE a dispatch
+// that borrows the outer's idle workers. They prove (a) no deadlock, (b) results
+// are bit-identical for every outer/inner worker count, (c) the nested level really
+// reaches a pool worker, and (d) the graceful fallback to inline when no worker is
+// idle. If any of these hung the ctest timeout would fire (the deadlock guard).
+
+// nested_budget() is 0 at top level and equals the idle window (P - active_outer)
+// seen from within an outer dispatch, then restored to 0 on the way out.
+TEST(PricingExecutor, NestedBudget_ReflectsIdleWindowAndRestores) {
+  PricingExecutor ex;
+  EXPECT_EQ(ex.nested_budget(), 0u); // top level: no enclosing dispatch
+  if (ex.size() == 0u) {
+    GTEST_SKIP() << "single-context executor never dispatches, so never nests";
+  }
+  std::atomic<unsigned> budget_in_body{~0u};
+  // Two outer contexts => active_outer == 1 => idle window == P - 1.
+  ex.run_ranges(4u, 2u, [&](std::size_t, std::size_t) {
+    budget_in_body.store(ex.nested_budget(), std::memory_order_relaxed);
+  });
+  EXPECT_EQ(budget_in_body.load(std::memory_order_relaxed), ex.size() - 1u);
+  EXPECT_EQ(ex.nested_budget(), 0u); // restored after the dispatch returns
+}
+
+// The keystone deadlock proof: nest a dispatch inside a dispatch (both levels the
+// nested API) and join. Every cell written exactly once; completion == no deadlock.
+TEST(PricingExecutor, NestedDispatch_NoDeadlockAndCoversEveryCellOnce) {
+  PricingExecutor ex;
+  constexpr std::size_t R = 96;
+  constexpr std::size_t C = 40;
+  std::vector<int> grid(R * C, 0);
+  ex.run_ranges_nested(R, 8u, [&](std::size_t lo, std::size_t hi) {
+    for (std::size_t r = lo; r < hi; ++r) {
+      // Issued from within an outer dispatch's body: dispatches onto the idle
+      // window when one exists, else inlines — either way, disjoint correct writes.
+      ex.run_blocks_nested(C, 8u, [&](std::size_t c) { grid[r * C + c] += 1; });
+    }
+  });
+  for (std::size_t k = 0; k < R * C; ++k) {
+    EXPECT_EQ(grid[k], 1) << k;
+  }
+}
+
+// Determinism gate: the nested scatter must be byte-identical to the serial
+// reference for EVERY outer/inner worker-count pair — the block partition never
+// moves which context writes a cell, so the result cannot depend on thread count.
+TEST(PricingExecutor, NestedDispatch_DeterministicAcrossWorkerCounts) {
+  PricingExecutor ex;
+  constexpr std::size_t R = 24;
+  constexpr std::size_t C = 100;
+  const auto cell = [](std::size_t r, std::size_t c) -> std::uint64_t {
+    return (r + 1u) * 1000003ull + (c + 1u) * 97ull; // unique per (r, c)
+  };
+  std::vector<std::uint64_t> ref(R * C);
+  for (std::size_t r = 0; r < R; ++r) {
+    for (std::size_t c = 0; c < C; ++c) {
+      ref[r * C + c] = cell(r, c);
+    }
+  }
+  for (unsigned outer_nt : {1u, 2u, 3u, 4u, 8u, 16u}) {
+    for (unsigned inner_nt : {0u, 1u, 2u, 3u, 5u, 8u, 16u}) {
+      std::vector<std::uint64_t> out(R * C, 0u);
+      ex.run_ranges(R, outer_nt, [&](std::size_t lo, std::size_t hi) {
+        for (std::size_t r = lo; r < hi; ++r) {
+          ex.run_blocks_nested(C, inner_nt,
+                               [&](std::size_t c) { out[r * C + c] = cell(r, c); });
+        }
+      });
+      ASSERT_EQ(out, ref) << "outer_nt=" << outer_nt << " inner_nt=" << inner_nt;
+    }
+  }
+}
+
+// Proof the nested level ACTUALLY parallelizes: with an idle window available, the
+// static-partition nested dispatch runs on more than one thread (a parked pool
+// worker helps), and — under -DATX_VOL_COUNTERS=ON — wakes the pool beyond the
+// single outer dispatch (PoolDispatches >= 2).
+TEST(PricingExecutor, NestedDispatch_ReachesAPoolWorkerAndWakesThePool) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+  if (pricing_executor().size() < 2u) {
+    GTEST_SKIP() << "needs >= 2 pool workers to leave an idle window for nesting";
+  }
+  PricingExecutor &ex = pricing_executor();
+  constexpr std::size_t R = 2;
+  constexpr std::size_t C = 4096;
+  std::vector<int> grid(R * C, 0);
+  std::mutex mu;
+  std::vector<std::thread::id> nested_threads;
+
+  const auto run = [&] {
+    ex.run_ranges(R, 2u, [&](std::size_t lo, std::size_t hi) {
+      for (std::size_t r = lo; r < hi; ++r) {
+        // Outer left P-1 workers parked; a nested block-partition dispatch gives a
+        // non-empty block to each, so at least one runs on a different thread.
+        ex.run_ranges_nested(C, 0u, [&](std::size_t clo, std::size_t chi) {
+          for (std::size_t c = clo; c < chi; ++c) {
+            grid[r * C + c] += 1;
+          }
+          std::lock_guard<std::mutex> lk(mu);
+          nested_threads.push_back(std::this_thread::get_id());
+        });
+      }
+    });
+  };
+
+  if constexpr (counters_enabled()) {
+    atx::vol::counters::reset();
+    run();
+    const std::uint64_t dispatches =
+        atx::vol::counters::snapshot().get(Counter::PoolDispatches);
+    EXPECT_GE(dispatches, 2u)
+        << "one outer + >= 1 nested pool wake expected; got " << dispatches;
+  } else {
+    run();
+  }
+
+  for (std::size_t k = 0; k < R * C; ++k) {
+    EXPECT_EQ(grid[k], 1) << k;
+  }
+  std::sort(nested_threads.begin(), nested_threads.end());
+  nested_threads.erase(std::unique(nested_threads.begin(), nested_threads.end()),
+                       nested_threads.end());
+  EXPECT_GE(nested_threads.size(), 2u)
+      << "nested dispatch did not reach a parked pool worker";
+}
+
+// Fallback: when the outer dispatch claims the WHOLE pool (n_threads=0), the idle
+// window is empty, so every nested dispatch inlines. Must still complete + be
+// correct — proves the budget math cannot self-oversubscribe into a deadlock.
+TEST(PricingExecutor, NestedDispatch_UnderFullPoolInlinesSafely) {
+  PricingExecutor ex;
+  constexpr std::size_t R = 64;
+  constexpr std::size_t C = 40;
+  std::vector<int> grid(R * C, 0);
+  ex.run_ranges_nested(R, 0u, [&](std::size_t lo, std::size_t hi) {
+    for (std::size_t r = lo; r < hi; ++r) {
+      ex.run_blocks_nested(C, 0u, [&](std::size_t c) { grid[r * C + c] += 1; });
+    }
+  });
+  for (std::size_t k = 0; k < R * C; ++k) {
+    EXPECT_EQ(grid[k], 1) << k;
+  }
+}
+
+// run_dynamic_nested keeps a stable worker_id in [0, resolved_threads) per context
+// even when nested, so nested per-worker scratch is safe. Every index handled once.
+TEST(PricingExecutor, NestedDynamic_StableWorkerIdsCoverEveryIndexOnce) {
+  PricingExecutor ex;
+  constexpr std::size_t R = 8;
+  constexpr std::size_t C = 257;
+  std::vector<std::atomic<unsigned>> hits(R * C);
+  std::atomic<bool> worker_id_out_of_range{false};
+  ex.run_ranges(R, 4u, [&](std::size_t lo, std::size_t hi) {
+    for (std::size_t r = lo; r < hi; ++r) {
+      const unsigned budget = ex.nested_budget();
+      const unsigned contexts = budget + 1u; // caller + idle window
+      ex.run_dynamic_nested(C, 0u, [&](std::size_t c, unsigned worker_id) {
+        hits[r * C + c].fetch_add(1u, std::memory_order_relaxed);
+        if (worker_id >= contexts) {
+          worker_id_out_of_range.store(true, std::memory_order_relaxed);
+        }
+      });
+    }
+  });
+  EXPECT_FALSE(worker_id_out_of_range.load(std::memory_order_relaxed));
+  for (std::size_t k = 0; k < R * C; ++k) {
+    EXPECT_EQ(hits[k].load(std::memory_order_relaxed), 1u) << k;
   }
 }
 

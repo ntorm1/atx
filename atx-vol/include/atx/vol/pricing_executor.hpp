@@ -29,13 +29,24 @@
 // never moves which slot an index lands in. This is a plumbing swap: the caller's
 // serial scatter and fixed-order totals reduction are untouched.
 //
-// ## Nested-parallelism guard (real correctness, not cosmetic)
+// ## Nesting: inline-by-default, with an opt-in one-level nested budget (E1)
 //
 // A pool worker must never block waiting on the pool it is running inside — that
-// self-oversubscribes and would deadlock a fully-occupied pool. A thread-local
-// re-entrancy flag makes a `run_*` call issued from *within* executor work (a pool
-// worker, or the caller while it is running its own block 0) execute FULLY INLINE
-// instead of dispatching.
+// self-oversubscribes and would deadlock a fully-occupied pool. So the DEFAULT
+// `run_blocks` / `run_ranges` / `run_dynamic` still run FULLY INLINE when issued
+// from within executor work (a pool worker, or the caller running its own block 0):
+// byte-for-byte the historical re-entrancy guard, and the safe choice for every
+// existing call site.
+//
+// The `*_nested` variants add an EXPLICIT, bounded second level. A per-thread
+// `{depth, idle_budget}` records how many pool workers the enclosing TOP-LEVEL
+// dispatch left parked (`H - active_outer`); a single nested dispatch may fan onto
+// exactly those idle workers via a second job slot with a DISJOINT worker set — so
+// it never waits on a worker busy in the outer dispatch, and cannot deadlock. A
+// second nested level (depth >= 2) always inlines, bounding recursion and live job
+// slots to two. `nested_budget()` exposes the current window for callers that size
+// their own fan-out (the fit/universe scheduler, WS-5). At top level the `*_nested`
+// variants are identical to their plain counterparts.
 //
 // A body exception is captured at its first caller/worker observation. Every
 // participant still reaches the join barrier before that exception is rethrown on
@@ -95,7 +106,7 @@ public:
   // must be written by exactly its own slot (disjoint writes) for bit-identity.
   template <class F> void run_blocks(std::size_t n, unsigned n_threads, F &&body) {
     run_erased(n, n_threads, &trampoline_blocks<std::remove_reference_t<F>>,
-               static_cast<void *>(std::addressof(body)));
+               static_cast<void *>(std::addressof(body)), /*allow_nested=*/false);
   }
 
   // Run `body(lo, hi)` ONCE per contiguous block (so a worker can amortize
@@ -103,7 +114,26 @@ public:
   // body must write only slots derived from its own [lo, hi).
   template <class F> void run_ranges(std::size_t n, unsigned n_threads, F &&body) {
     run_erased(n, n_threads, &trampoline_ranges<std::remove_reference_t<F>>,
-               static_cast<void *>(std::addressof(body)));
+               static_cast<void *>(std::addressof(body)), /*allow_nested=*/false);
+  }
+
+  // Nested-capable variants of run_blocks / run_ranges (E1). IDENTICAL to their
+  // plain counterparts at TOP LEVEL. The difference is only when called from INSIDE
+  // another dispatch's body: the plain run_* run inline (the deadlock-safe default),
+  // while these may make ONE additional level of real pool dispatch, borrowing up to
+  // `nested_budget()` idle workers (the `H - active_outer` the enclosing top-level
+  // dispatch left parked). A second nested level (depth >= 2) always inlines. The
+  // nested dispatch never wakes a worker busy in the enclosing dispatch, so it
+  // cannot self-oversubscribe or deadlock, and the block partition keeps the result
+  // bit-identical for any worker count. This is the explicit nested-budget path the
+  // fit / universe fan-outs (WS-5) build on.
+  template <class F> void run_blocks_nested(std::size_t n, unsigned n_threads, F &&body) {
+    run_erased(n, n_threads, &trampoline_blocks<std::remove_reference_t<F>>,
+               static_cast<void *>(std::addressof(body)), /*allow_nested=*/true);
+  }
+  template <class F> void run_ranges_nested(std::size_t n, unsigned n_threads, F &&body) {
+    run_erased(n, n_threads, &trampoline_ranges<std::remove_reference_t<F>>,
+               static_cast<void *>(std::addressof(body)), /*allow_nested=*/true);
   }
 
   // On successful completion, run `body(index, worker_id)` exactly once for every
@@ -116,12 +146,30 @@ public:
   // behavior match run_blocks/run_ranges; inline work always uses worker_id 0.
   template <class F> void run_dynamic(std::size_t n, unsigned n_threads, F &&body) {
     run_dynamic_erased(n, n_threads, &trampoline_dynamic<std::remove_reference_t<F>>,
-                       static_cast<void *>(std::addressof(body)));
+                       static_cast<void *>(std::addressof(body)), /*allow_nested=*/false);
+  }
+
+  // Nested-capable run_dynamic (E1). Identical to run_dynamic at top level; from
+  // inside another dispatch's body it may make ONE nested dispatch over the idle
+  // window (see run_blocks_nested). Each participating context still owns one stable
+  // worker_id in [0, resolved_threads) for the nested dispatch's lifetime, so nested
+  // per-worker scratch stays race-free.
+  template <class F> void run_dynamic_nested(std::size_t n, unsigned n_threads, F &&body) {
+    run_dynamic_erased(n, n_threads, &trampoline_dynamic<std::remove_reference_t<F>>,
+                       static_cast<void *>(std::addressof(body)), /*allow_nested=*/true);
   }
 
   // Pool worker count (fixed for the pool's life). May be 0 on a single-core box
   // (everything then runs inline). `n_threads` requests never exceed size() + 1.
   [[nodiscard]] unsigned size() const noexcept;
+
+  // Idle pool workers a `*_nested` dispatch may borrow on THIS thread right now: the
+  // `H - active_outer` window the enclosing top-level dispatch left parked. 0 at top
+  // level, at nested depth >= 2, or when the outer dispatch claimed the whole pool.
+  // A caller sizing a nested fan-out (e.g. WS-5 U4's shared worker budget) reads this
+  // to pick n_threads; a `*_nested` call then fans over up to this many extra workers
+  // plus the calling context. Reads only per-thread state (no pool interaction).
+  [[nodiscard]] unsigned nested_budget() const noexcept;
 
 private:
   // Build a pool with an explicit topology (used by the process singleton after it
@@ -150,8 +198,10 @@ private:
     (*static_cast<U *>(c))(index, worker_id);
   }
 
-  void run_erased(std::size_t n, unsigned n_threads, Trampoline fn, void *closure);
-  void run_dynamic_erased(std::size_t n, unsigned n_threads, DynamicTrampoline fn, void *closure);
+  void run_erased(std::size_t n, unsigned n_threads, Trampoline fn, void *closure,
+                  bool allow_nested);
+  void run_dynamic_erased(std::size_t n, unsigned n_threads, DynamicTrampoline fn, void *closure,
+                          bool allow_nested);
 
   struct State;
   std::unique_ptr<State> state_;
