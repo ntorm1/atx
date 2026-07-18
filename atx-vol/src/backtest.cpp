@@ -601,6 +601,33 @@ struct ReusablePriceFrame {
                           frame.delta, frame.gamma, frame.vega,  frame.theta,  frame.rho,
                           frame.vanna, frame.volga, frame.charm, frame.status, &frame.total};
   }
+
+  // Marks-only sizing (B2 settlement): marks columns to n, greek columns emptied so
+  // a PriceFieldMask::Marks price_into stays off the greek path (the seam leaves the
+  // eight greek spans EMPTY under the Marks mask). clear() keeps capacity, so this is
+  // allocation-free once warm.
+  void resize_marks(std::size_t n) {
+    frame.id.resize(n);
+    frame.uid.resize(n);
+    frame.pv.resize(n);
+    frame.price.resize(n);
+    frame.iv.resize(n);
+    frame.status.resize(n);
+    frame.delta.clear();
+    frame.gamma.clear();
+    frame.vega.clear();
+    frame.theta.clear();
+    frame.rho.clear();
+    frame.vanna.clear();
+    frame.volga.clear();
+    frame.charm.clear();
+  }
+
+  [[nodiscard]] PriceFrameView marks_view() noexcept {
+    return PriceFrameView{frame.id, frame.uid, frame.pv,     frame.price, frame.iv, {}, {}, {},
+                          {},       {},        {},           {},          {},       frame.status,
+                          &frame.total};
+  }
 };
 
 // Price the current lots against `snap` at its residual T and report how many
@@ -658,9 +685,21 @@ struct StepPnl {
                                            const MarketSnapshot &shifted,
                                            const std::vector<Lot> &lots, const PriceOptions &opts,
                                            RetainedBookPricer &retained,
-                                           ReusableTargetMarkFrame *target_marks = nullptr) {
+                                           ReusableTargetMarkFrame *target_marks = nullptr,
+                                           RetainedBookPricer *settle = nullptr,
+                                           ReusablePriceFrame *settle_frame = nullptr) {
   ATX_VOL_PROFILE_SCOPE(StepPnl);
   std::vector<Lot> &alive = retained.reset_alive_scratch(lots.size());
+  // B2: batch the expiry-settlement base marks (bottleneck #3). When a settlement
+  // pricer is supplied, expiring lots are collected and their base marks come from
+  // ONE PortfolioPricer Marks pass below, replacing the per-lot scalar fair_value.
+  // The batched mark equals the scalar fair_value to the andersen_lake tolerance
+  // (~1e-9 — economic parity per §3, checked by the ExpirySettlement gate); the
+  // settlement is accumulated in the SAME lot order and the pricer reduction is
+  // thread-invariant, so the result is deterministic and thread-count-invariant.
+  // With no settle pricer (settle==nullptr) the exact per-lot scalar path is kept.
+  const bool batch_settle = settle != nullptr && settle_frame != nullptr;
+  std::vector<Lot> *expiring = batch_settle ? &settle->reset_alive_scratch(lots.size()) : nullptr;
   double settlement = 0.0;
   for (const Lot &lot : lots) {
     if (lot.expiry_ts_ns <= shifted.ts_ns()) {
@@ -671,12 +710,16 @@ struct StepPnl {
                 " (expiry_ts_ns=" + std::to_string(lot.expiry_ts_ns) +
                 ", next_snapshot_ts_ns=" + std::to_string(shifted.ts_ns()) + ")");
       }
-      const double T_base = residual_T(lot.expiry_ts_ns, base.ts_ns());
       const PricedSurface *bs = base.find(lot.contract.uid);
       const PricedSurface *ss = shifted.find(lot.contract.uid);
       if (bs == nullptr || ss == nullptr) {
         return Err(ErrorCode::NotFound, "run_backtest: no surface for settling lot");
       }
+      if (expiring != nullptr) {
+        expiring->push_back(lot); // base mark supplied by the batched pass below
+        continue;
+      }
+      const double T_base = residual_T(lot.expiry_ts_ns, base.ts_ns());
       auto mark = bs->fair_value(lot.contract.K, T_base, lot.contract.side, opts.query_execution);
       if (!mark) {
         return Err(mark.error());
@@ -688,6 +731,38 @@ struct StepPnl {
       settlement += lot.qty * lot.multiplier * (intrinsic - *mark);
     } else {
       alive.push_back(lot);
+    }
+  }
+  // B2 batched settlement: one Marks pass over all expiring lots at the base-date
+  // residual T, then accumulate settlement in expiring (input) order. `bs`/`ss`
+  // were validated non-null in the partition loop above.
+  if (expiring != nullptr && !expiring->empty()) {
+    ATX_TRY(PortfolioPricer * sp, settle->prepare(*expiring, base.ts_ns()));
+    settle_frame->resize_marks(sp->portfolio().n_positions());
+    ATX_TRY_VOID(sp->price_into(base.set(), PriceFieldMask::Marks, settle_frame->marks_view(),
+                                settle->workspace(), opts));
+    const PriceFrame &sf = settle_frame->frame;
+    for (std::size_t i = 0; i < expiring->size(); ++i) {
+      const Lot &lot = (*expiring)[i];
+      // price_into writes one row per position in input order == expiring order.
+      if (i >= sf.size() || sf.id[i] != lot.id) {
+        return Err(ErrorCode::Internal,
+                   "run_backtest: settlement frame misaligned with expiring lot id=" +
+                       std::to_string(lot.id));
+      }
+      if (sf.status[i] != PriceStatus::Ok) {
+        // Settlement requires an economically valid base mark; fail closed exactly
+        // as the scalar path's fair_value error would.
+        return Err(ErrorCode::NotFound,
+                   "run_backtest: no valid base mark for settling lot id=" +
+                       std::to_string(lot.id));
+      }
+      const PricedSurface *ss = shifted.find(lot.contract.uid);
+      const double S = ss->pricing().S;
+      const double K = lot.contract.K;
+      const double intrinsic =
+          (lot.contract.side == Side::Call) ? std::max(0.0, S - K) : std::max(0.0, K - S);
+      settlement += lot.qty * lot.multiplier * (intrinsic - sf.price[i]);
     }
   }
 
@@ -1075,6 +1150,8 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
   BacktestResult out;
   PortfolioState book = std::move(initial);
   RetainedBookPricer retained_pricer;
+  RetainedBookPricer settle_pricer;      // B2: retained batched-settlement pricer
+  ReusablePriceFrame settle_frame;       // B2: retained Marks frame for settlement
   ReusableLotIdIndex initial_lot_index;
   ATX_TRY_VOID(initial_lot_index.rebuild(book.lots, "initial fixed book"));
 
@@ -1171,7 +1248,8 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
     // Partition + Taylor PnL-explain: byte-identical arithmetic to the strategy
     // overload's step (shared `compute_step`), which now also reports the count of
     // held lots the pricer could not value this step.
-    auto step = compute_step(*base, *shifted, book.lots, cfg.price, retained_pricer);
+    auto step = compute_step(*base, *shifted, book.lots, cfg.price, retained_pricer,
+                             /*target_marks=*/nullptr, &settle_pricer, &settle_frame);
     if (!step) {
       return Err(step.error());
     }
@@ -1248,6 +1326,8 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
   ReusablePriceFrame risk_frame;
   ReusableTargetMarkFrame target_marks;
   RetainedBookPricer retained_pricer;
+  RetainedBookPricer settle_pricer;      // B2: retained batched-settlement pricer
+  ReusablePriceFrame settle_frame;       // B2: retained Marks frame for settlement
   ReusableLotIdIndex before_lot_index;
   ReusableLotIdIndex after_lot_index;
   std::vector<Lot> before_lots;
@@ -1555,7 +1635,8 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     }
 
     // 1. PnL of the current book (resolved on base) forward to shifted (unchanged B1).
-    auto step = compute_step(*base, *shifted, book.lots, cfg.price, retained_pricer, &target_marks);
+    auto step = compute_step(*base, *shifted, book.lots, cfg.price, retained_pricer, &target_marks,
+                             &settle_pricer, &settle_frame);
     if (!step) {
       return Err(step.error());
     }
