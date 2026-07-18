@@ -81,6 +81,11 @@ struct PricingContext {
 };
 
 class PricedSurface;
+// WS-S S2 seam: the zero-copy read view (priced_surface_view.hpp) evaluates the
+// same cold path as PricedSurface and must be able to mint a genuine FullGreekSeed
+// (its constructor is private). Forward-declared here so it can be befriended
+// below without pulling the view header into this widely-included one.
+class PricedSurfaceView;
 
 // Immutable proof that one exact PricedSurface instance evaluated one exact
 // contract through a specified full-Greek route. Construction is private: a
@@ -100,6 +105,7 @@ public:
 
 private:
   friend class PricedSurface;
+  friend class PricedSurfaceView; // WS-S S2: the view mints seeds on the same cold path
 
   FullGreekSeed(std::uint32_t uid, double K, double T, Side side, std::uint64_t surface_instance_id,
                 bool analytic_greeks, QueryExecution query_execution, double iv,

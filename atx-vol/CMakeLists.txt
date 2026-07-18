@@ -77,6 +77,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/curve_fit.cpp
     src/curve_selector.cpp
     src/priced_surface.cpp
+    src/priced_surface_view.cpp
     src/prepared_portfolio.cpp
     src/pricing_executor.cpp
     src/portfolio_pricer.cpp
@@ -349,4 +350,9 @@ if(ATX_BUILD_EXAMPLES)
     # examples/mag7_dispersion_backtest.cpp.
     add_executable(mag7_dispersion_backtest examples/mag7_dispersion_backtest.cpp)
     target_link_libraries(mag7_dispersion_backtest PRIVATE atx::vol atx::core atx_warnings)
+
+    # bt-hotpath WS-S (S3): THROWAWAY one-shot v1 .atxvsa -> v2 .atxvsa2 migrator.
+    # Wave 2 (S4) runs it over the committed fixtures, then v1 read is deleted.
+    add_executable(migrate_atxvsa_v1_to_v2 tools/migrate_atxvsa_v1_to_v2.cpp)
+    target_link_libraries(migrate_atxvsa_v1_to_v2 PRIVATE atx::vol atx::core atx_warnings)
 endif()

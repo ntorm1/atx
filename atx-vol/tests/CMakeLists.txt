@@ -114,6 +114,8 @@ add_executable(atx-vol-tests
     # Wave-B iv-kernel (Agent K) — appended targets:
     scalar_erfc_test.cpp             # K3-prep: scalar Cody erfc ULP + round-trip gate
     iv_seed_test.cpp                 # K2: Choi-2023 tighter seed accuracy + Halley-step gate
+    # bt-hotpath WS-S (format agent) — appended targets:
+    surface_archive_v2_test.cpp      # S1-S3: ATXVSA2 zero-copy view parity + subset-map isolation
 )
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).
