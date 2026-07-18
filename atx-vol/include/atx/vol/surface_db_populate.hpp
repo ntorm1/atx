@@ -15,6 +15,7 @@
 // uid stamping, and SurfaceDb partition writes on top.
 
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <span>
 #include <string>
@@ -59,10 +60,28 @@ struct SurfaceDbPopulateStats {
   std::vector<PopulateSymbolStats> per_symbol; // sorted by symbol
 };
 
+// Deterministic test seam for the streaming/per-date-release path. Production
+// callers pass nullptr (the default). Both callbacks default-empty; when set
+// they MUST be thread-safe: `before_board_fit` runs on a fit worker thread
+// immediately before each board's fit begins, `after_partition_write` runs on
+// the draining thread immediately after a date's partition is written. The sole
+// use is the streaming test, which blocks a later date's board until an earlier
+// date's partition lands to prove writes are streamed (not deferred to a single
+// global join) — see SurfaceDbPopulate.StreamsPartitionsBeforeGlobalJoin.
+struct PopulateTestHooks {
+  std::function<void(const std::string &date, const std::string &symbol)> before_board_fit{};
+  std::function<void(const std::string &date)> after_partition_write{};
+};
+
 // Fit every board and store one partition per distinct board date (key =
-// date). Eligible boards share one bounded dynamic queue across all dates;
-// completed results are aggregated and written in deterministic date/symbol
-// order. A board whose symbol's manifest config has
+// date). Eligible boards share one bounded dynamic queue across all dates; the
+// fits stream: each date's partition is aggregated, written, and RELEASED in
+// ascending date order as soon as that date's fits complete, while later dates
+// are still being fit — so peak RSS is O(dates in flight), not O(all dates).
+// Results (surfaces + stats) are byte-identical to a launch-then-join-then-write
+// populate: every board's fit is independent/deterministic and the drain visits
+// dates and boards in the same deterministic date/symbol order. A board whose
+// symbol's manifest config has
 // enabled=false is skipped (n_disabled). A board whose fit fails records
 // n_failed and does NOT abort the date (document per-name failures, don't
 // silently drop). A date with zero successful fits writes NO partition.
@@ -72,7 +91,8 @@ struct SurfaceDbPopulateStats {
 // the db rejects.
 [[nodiscard]] Result<SurfaceDbPopulateStats>
 populate_surface_db(SurfaceDb &db, std::span<const CorpusBoard> boards,
-                    const SurfaceDbPopulateConfig &cfg = {});
+                    const SurfaceDbPopulateConfig &cfg = {},
+                    const PopulateTestHooks *test_hooks = nullptr);
 
 // Stats file for the report: meta (caller's, plus n_boards/n_ok/n_failed/
 // n_dates_written appended), header
