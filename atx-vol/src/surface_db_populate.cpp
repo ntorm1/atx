@@ -365,6 +365,18 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
       }
     }
   }
+  // ── U3 (R-12) [correctness]: durability across a fit-worker exception ───────
+  // By the time control reaches here, EVERY completed date has already been
+  // written by the drain loop above: each db.write_partition atomically commits
+  // that date's archive file (tmp+rename) AND a generation-bumped manifest, and
+  // it runs BEFORE the fit_runner join at the enclosing block's exit. So a fit
+  // worker exception -- bad_alloc in fit_board, the slot move, or any throw --
+  // reaches `fit_status` only AFTER the earlier dates are durable on disk, and
+  // returning Err here CANNOT roll them back: a re-run with skip_existing sees
+  // the finished dates and skips them (crash-resume; no hours-of-fits loss).
+  // This is exactly the date-granular durability R-12 flagged as regressed
+  // before the streaming writer; the guarantee is pinned by
+  // SurfaceDbPopulate.CompletedDatesSurviveLaterWorkerThrow.
   if (!fit_status) {
     return Err(fit_status.error());
   }

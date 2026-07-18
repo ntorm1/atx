@@ -16,6 +16,7 @@
 #include <fstream>
 #include <iterator>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -414,6 +415,82 @@ TEST(SurfaceDbPopulate, StreamsPartitionsBeforeGlobalJoin) {
   EXPECT_TRUE(date0_written_before_date1_finished.load())
       << "kDate0 partition was not written until kDate1 fits finished -- populate "
          "deferred all writes to a single global join (peak RSS O(all dates))";
+
+  std::filesystem::remove_all(root);
+}
+
+// U3 (R-12) [correctness]: a fit-worker exception mid-run must NOT discard the
+// dates that already completed and were written. The midpoint review flagged
+// that a single throwing board (bad_alloc in fit_board / the slot move) made
+// run_bounded_fit_tasks return Internal and populate return having written zero
+// partitions -- hours of finished fits gone. The streaming per-date writer
+// restores date-granular durability: kDate0 is committed to disk (archive +
+// generation-bumped manifest) before the global join, so a later kDate1 throw
+// cannot roll it back. The throw is injected via before_board_fit -- a faithful,
+// deterministic proxy for a worker exception (both land in run_next's catch(...)
+// -> FailureKind::Exception -> Internal). The kDate1 boards first wait until
+// kDate0 is durably written, so the exception is genuinely "mid-run, after some
+// dates completed". Durability is asserted from a FRESH SurfaceDb::open of the
+// same root (crash-resume: a new process reads only what was committed to disk,
+// never this run's in-memory state).
+TEST(SurfaceDbPopulate, CompletedDatesSurviveLaterWorkerThrow) {
+  const auto root = test_root("durability_worker_throw");
+  {
+    auto db = SurfaceDb::create(root.string());
+    ASSERT_TRUE(db.has_value());
+
+    const std::vector<CorpusBoard> boards = make_boards(); // 2 dates x 2 symbols
+
+    std::atomic<bool> date0_written{false};
+    PopulateTestHooks hooks;
+    hooks.after_partition_write = [&](const std::string &date) {
+      if (date == kDate0) {
+        date0_written.store(true, std::memory_order_release);
+      }
+    };
+    hooks.before_board_fit = [&](const std::string &date, const std::string & /*symbol*/) {
+      if (date != kDate1) {
+        return; // only the later date throws; the earlier date completes cleanly
+      }
+      // Wait until kDate0 is durably on disk, THEN throw -- guaranteeing the
+      // worker exception fires strictly after an earlier date completed.
+      using clock = std::chrono::steady_clock;
+      const auto deadline = clock::now() + std::chrono::seconds(5);
+      while (clock::now() < deadline && !date0_written.load(std::memory_order_acquire)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+      throw std::runtime_error("injected mid-run worker exception (kDate1)");
+    };
+
+    SurfaceDbPopulateConfig cfg;
+    cfg.n_threads = 4u; // >= n_boards so kDate1 boards run alongside kDate0's
+    auto result = populate_surface_db(*db, boards, cfg, &hooks);
+
+    // The worker exception surfaces as a top-level Internal error ...
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code(), ErrorCode::Internal);
+    // ... and kDate0 really was written before the throw was allowed to fire.
+    EXPECT_TRUE(date0_written.load())
+        << "kDate0 never completed before the injected throw -- test would not be "
+           "exercising the mid-run durability path";
+  } // drop the in-process SurfaceDb handle: only on-disk state remains below
+
+  // Crash-resume: a fresh open sees kDate0 durably committed even though
+  // populate returned an error; kDate1 never completed so it is absent.
+  auto reopened = SurfaceDb::open(root.string());
+  ASSERT_TRUE(reopened.has_value()) << (reopened ? "" : reopened.error().to_string());
+
+  auto part0 = reopened->open_partition(kDate0);
+  ASSERT_TRUE(part0.has_value())
+      << "kDate0 partition was discarded by the later kDate1 worker throw -- date-"
+         "granular durability regressed (R-12)";
+  for (const char *symbol : {"AAA", "BBB"}) {
+    auto s = reopened->load_surface(kDate0, symbol);
+    EXPECT_TRUE(s.has_value()) << "kDate0/" << symbol
+                               << " not durable: " << (s ? "" : s.error().to_string());
+  }
+  // kDate1 never produced a successful fit (both boards threw), so no partition.
+  EXPECT_EQ(reopened->open_partition(kDate1).error().code(), ErrorCode::NotFound);
 
   std::filesystem::remove_all(root);
 }
