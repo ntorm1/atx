@@ -567,3 +567,55 @@ TEST(CurveFitSliceFallback, FlagDoesNotPerturbSucceedingFit) {
   ASSERT_EQ(rep_off->n_slices, rep_on->n_slices);
   expect_bit_identical(*rep_off, *rep_on, /*strict_finite*/ true);
 }
+
+// F3 (W3.3) gate: the opt-in per-slice Legacy-prep rescue (thin-slice recovery).
+// A very tight max_spread_to_mid_pct starves the Configured observation funnel on
+// EVERY slice (synthetic spread/mid ~0.5% > the 0.1% cap => build_observations_
+// european drops all rows => NotFound), while the permissive
+// LegacyEssviCompatibility predicate ignores that spread cap and keeps them. With
+// the flag OFF the board starves to NotFound (byte-identical historical drop);
+// with the flag ON each starved slice is re-prepared under Legacy and served,
+// recovering the whole board — the "80% failure" cohort mechanism in miniature.
+TEST(CurveFitLegacyPrepRescue, RecoversConfiguredStarvedSlices) {
+  const Underlying under = make_synthetic_underlying();
+  CurveConfig cfg;  // default ConvexDense
+
+  // Flag OFF: Configured starves every slice => surface empty => NotFound.
+  SurfaceParityInputs in_off = base_inputs(1);
+  in_off.calib.max_spread_to_mid_pct = 0.001;  // 0.1% cap starves Configured prep
+  auto rep_off = fit_curve_surface(under, in_off, cfg);
+  ASSERT_FALSE(rep_off.has_value());
+  EXPECT_EQ(rep_off.error().code(), ErrorCode::NotFound);
+
+  // Flag ON: each starved slice recovered under LegacyEssviCompatibility prep.
+  SurfaceParityInputs in_on = in_off;
+  in_on.per_slice_legacy_prep_fallback = true;
+  auto rep_on = fit_curve_surface(under, in_on, cfg);
+  ASSERT_TRUE(rep_on.has_value()) << rep_on.error().to_string();
+  EXPECT_EQ(rep_on->n_slices, 4u);
+  EXPECT_EQ(rep_on->n_slices_legacy_rescued, 4u);
+  EXPECT_EQ(rep_on->n_slices_starved, 0u);
+  ASSERT_EQ(rep_on->surface.n_slices(), 4u);
+}
+
+// The rescue flag must not perturb a board whose Configured preparation already
+// succeeds: flag-on is bit-identical to flag-off and no slice is rescued.
+TEST(CurveFitLegacyPrepRescue, FlagDoesNotPerturbHealthyBoard) {
+  const Underlying under = make_synthetic_underlying();
+  CurveConfig cfg;  // default ConvexDense, fits every slice under Configured
+
+  const SurfaceParityInputs in_off = base_inputs(1);
+  auto rep_off = fit_curve_surface(under, in_off, cfg);
+  ASSERT_TRUE(rep_off.has_value()) << rep_off.error().to_string();
+
+  SurfaceParityInputs in_on = base_inputs(1);
+  in_on.per_slice_legacy_prep_fallback = true;
+  auto rep_on = fit_curve_surface(under, in_on, cfg);
+  ASSERT_TRUE(rep_on.has_value()) << rep_on.error().to_string();
+
+  EXPECT_EQ(rep_off->n_slices_legacy_rescued, 0u);
+  EXPECT_EQ(rep_on->n_slices_legacy_rescued, 0u);
+  EXPECT_EQ(rep_on->n_slices_starved, 0u);
+  ASSERT_EQ(rep_off->n_slices, rep_on->n_slices);
+  expect_bit_identical(*rep_off, *rep_on, /*strict_finite*/ true);
+}

@@ -73,6 +73,30 @@ using ProfileClock = std::chrono::steady_clock;
   return std::chrono::duration<double, std::milli>(t1 - t0).count();
 }
 
+// W3.3 (F3): per-chain preparation outcome. The prepass records EXACTLY why a
+// chain did or did not become a fittable slice so phase 2 can (a) count truthful
+// rescue/starvation tallies and (b) — under
+// `SurfaceParityInputs::fail_board_on_hard_slice_error` — propagate a genuine
+// preparation defect instead of silently converting it to missing coverage.
+enum class SlicePrepOutcome : std::uint8_t {
+  Skipped,              // degenerate maturity (T<=0) — never attempted
+  Prepared,             // the primary policy produced a fittable slice
+  PreparedLegacyRescue, // recovered via the opt-in Legacy-prep rescue
+  Starved,              // below the usable-row floor even after any rescue (thin)
+  CarryFailed,          // carry / forward resolution failed
+  Failed,               // HARD preparation error (defect) — error retained
+};
+
+// Error taxonomy (REVIEW §6.2). An EXPECTED preparation failure is a genuinely
+// thin / data-shaped outcome (`NotFound` = fewer than the usable-row floor;
+// `Unavailable` = non-positive forward, audit-rejected rows) — eligible for the
+// Legacy rescue and, when unrescued, a truthful drop. Every other code
+// (`InvalidArgument`, `Internal`, `OutOfRange`, `Unknown`, …) is a real defect
+// that must be retained and surfaced, never silently swallowed.
+[[nodiscard]] bool prep_error_is_expected(ErrorCode code) noexcept {
+  return code == ErrorCode::NotFound || code == ErrorCode::Unavailable;
+}
+
 // Per-chain output slot for the parallel de-Am pre-pass (phase 1). `usable`
 // mirrors EXACTLY the set of `continue` gates the old sequential loop applied
 // (T<=0, forward resolve failed, F non-finite/non-positive, obs below the
@@ -114,6 +138,15 @@ struct ChainPrepass {
   std::vector<double> chain_bids;
   std::vector<double> chain_asks;
   std::vector<std::int64_t> chain_ts;
+  // W3.3/W3.4 (F3/F4): why this chain did or did not become a fittable slice.
+  // Default Skipped (degenerate maturity, never attempted). `prep_error` retains
+  // a HARD preparation failure verbatim so phase 2 can propagate it truthfully.
+  SlicePrepOutcome prep_outcome = SlicePrepOutcome::Skipped;
+  std::optional<atx::core::Error> prep_error;
+  // Legacy-rescue preparation tallies (meaningful only when a rescue ran):
+  // rows the permissive predicate kept, and rows its fit-inversion audit dropped.
+  std::uint32_t legacy_fit_rows = 0;
+  std::uint32_t legacy_audit_dropped = 0;
 };
 
 // Recover each fit observation's SOURCE chain quote (raw American mid + kill-
@@ -212,11 +245,13 @@ void source_quote_lookup(const Chain &chain, std::span<const FitObs> obs,
     }
     if (!d_res) {
       slot.carry_failed = true;
+      slot.prep_outcome = SlicePrepOutcome::CarryFailed;
       return;
     }
     const double F = d_res->forward;
     if (!(F > 0.0) || !std::isfinite(F)) {
       slot.carry_failed = true;
+      slot.prep_outcome = SlicePrepOutcome::CarryFailed;
       return;
     }
     const double q_eff = rate - std::log(F / in.S) / T;
@@ -252,8 +287,68 @@ void source_quote_lookup(const Chain &chain, std::span<const FitObs> obs,
     if (time_stages) {
       slot.ms_obs_eu = elapsed_ms(t_obs0, ProfileClock::now());
     }
-    if (!prepared || prepared->fit_observations().size() < kMinPreparedFitRows) {
-      return;
+
+    // W3.3 (F3): classify the primary preparation and, when eligible, rescue.
+    const bool primary_ok =
+        prepared.has_value() && prepared->fit_observations().size() >= kMinPreparedFitRows;
+    if (!primary_ok) {
+      // A HARD create() error (Internal / InvalidArgument / OutOfRange / …) is a
+      // real defect: retain it and mark Failed so phase 2 can surface it truthfully
+      // rather than convert a QP/certification failure into missing coverage. A
+      // below-floor SUCCESS and an EXPECTED error (NotFound / Unavailable) are
+      // genuinely thin — eligible for the opt-in Legacy-prep rescue.
+      if (!prepared.has_value() && !prep_error_is_expected(prepared.error().code())) {
+        slot.prep_outcome = SlicePrepOutcome::Failed;
+        slot.prep_error = prepared.error();
+        return;
+      }
+      const bool rescue_eligible =
+          in.per_slice_legacy_prep_fallback &&
+          in.fit_prep_policy != PreparedObservationPolicy::LegacyEssviCompatibility;
+      if (!rescue_eligible) {
+        // No rescue (flag off, or already Legacy): truthfully Starved — the
+        // byte-identical historical drop.
+        slot.prep_outcome = SlicePrepOutcome::Starved;
+        return;
+      }
+      // Re-prepare under the permissive eSSVI cold-driver predicate, forcing the
+      // fit-inversion audit ON (correctness-first serving, charter §8.1) so a
+      // rescued row is still repriced-audited. The rescued slice truthfully
+      // carries LegacyEssviCompatibility provenance with a default (never-
+      // certified) de-Am audit — certification must not claim Configured-grade
+      // de-Am for it.
+      PreparedSliceInputs rescue_inputs = prepare_inputs;
+      rescue_inputs.policy = PreparedObservationPolicy::LegacyEssviCompatibility;
+      rescue_inputs.audit_fit_inversions = true;
+      rescue_inputs.out_legacy_fit_rows = &slot.legacy_fit_rows;
+      rescue_inputs.out_legacy_audit_dropped = &slot.legacy_audit_dropped;
+      const ProfileClock::time_point t_rescue0 =
+          time_stages ? ProfileClock::now() : ProfileClock::time_point{};
+      Result<PreparedSlice> rescued = PreparedSlice::create(chain, rescue_inputs);
+      if (time_stages) {
+        // Both create() calls fold into observation_deam_ms so the timing stays
+        // honest about the total de-Am work this rescue cost.
+        slot.ms_obs_eu += elapsed_ms(t_rescue0, ProfileClock::now());
+      }
+      if (!rescued.has_value()) {
+        // A HARD rescue error also propagates; an expected rescue failure leaves
+        // the slice truthfully Starved (the historical drop).
+        if (!prep_error_is_expected(rescued.error().code())) {
+          slot.prep_outcome = SlicePrepOutcome::Failed;
+          slot.prep_error = rescued.error();
+        } else {
+          slot.prep_outcome = SlicePrepOutcome::Starved;
+        }
+        return;
+      }
+      if (rescued->fit_observations().size() < kMinPreparedFitRows) {
+        slot.prep_outcome = SlicePrepOutcome::Starved;
+        return;
+      }
+      prepared = std::move(rescued);
+      slot.prep_outcome = SlicePrepOutcome::PreparedLegacyRescue;
+    } else {
+      slot.prep_outcome = SlicePrepOutcome::Prepared;
     }
 
     slot.T = T;
@@ -367,6 +462,9 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
   for (const ChainPrepass &pre : prepass) {
     if (pre.carry_failed) {
       ++out.n_carry_skipped; // §5.2: carry-dropped expiries are surfaced
+    }
+    if (pre.prep_outcome == SlicePrepOutcome::Starved) {
+      ++out.n_slices_starved; // W3.3: thin even after any rescue — surfaced, not hidden
     }
   }
 
@@ -534,6 +632,9 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
     }
 
     // 5. Commit the slice + its context (ascending T by construction).
+    if (pre.prep_outcome == SlicePrepOutcome::PreparedLegacyRescue) {
+      ++out.n_slices_legacy_rescued; // W3.3: a starved slice recovered under Legacy prep
+    }
     out.surface.push(std::move(*slice_res));
     out.context.push_back(SliceContext{T, F, pre.borrow, q_eff, prepared.fit_observations().size(),
                                        static_cast<std::size_t>(prepared.n_dropped())});

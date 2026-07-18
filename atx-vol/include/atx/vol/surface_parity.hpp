@@ -190,6 +190,23 @@ struct SurfaceParityInputs {
   // under it the pre-pass audits fitted inversions per `deam.audit_fit_inversions`.
   // Only consulted by `fit_curve_surface`; `run_surface_parity` does not read it.
   PreparedObservationPolicy fit_prep_policy{PreparedObservationPolicy::Configured};
+
+  // W3.3 (F3): opt-in per-slice Legacy-prep rescue (thin-slice recovery). When
+  // TRUE and the primary `fit_prep_policy` is Configured, a slice whose
+  // Configured preparation starves below the usable-row floor with an EXPECTED
+  // error (NotFound / Unavailable — genuinely thin, non-positive forward, or
+  // audit-rejected rows) or that produces fewer than the floor is RE-PREPARED
+  // under LegacyEssviCompatibility (the permissive eSSVI cold-driver predicate)
+  // with `deam.audit_fit_inversions` forced on, so the rescued rows are still
+  // repriced-audited (correctness-first serving, charter §8.1). A HARD
+  // preparation error (Internal / InvalidArgument / OutOfRange / …) is a real
+  // defect: it is never rescued and is retained on the prepass slot so the driver
+  // can surface it truthfully. This is the root-cause
+  // fix for the failed-board cohort ("80% failure"): the majority-route thin
+  // single-name expiries that the strict Configured funnel starved are recovered
+  // instead of dropping the whole surface. DEFAULT FALSE => byte-identical to the
+  // historical drop-the-slice behavior. Only consulted by `fit_curve_surface`.
+  bool per_slice_legacy_prep_fallback{false};
 };
 
 // Per-fitted-slice pricing context: everything the composable facade
