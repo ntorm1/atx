@@ -360,3 +360,22 @@ target_link_libraries(atx-vol-surface-archive-bench
         atx_warnings
         Threads::Threads
 )
+
+# ── WS-F F-b (fit) — fused streaming fit->serialize throughput ─────────────────
+# surfaces/sec through populate_surface_db (U1 streaming per-date fit->serialize->
+# release into a SurfaceDb, ATXVSA2 writer). Distinct from corpus_build_bench.cpp
+# (measure-owned, whole-corpus build_corpus boards/s); this times the SurfaceDb
+# streaming populate the universe-date target rides on. Own target so it appends
+# cleanly to the shared bench CMakeLists (one owner per TU).
+add_executable(atx-vol-fit-serialize-bench
+    bench_main.cpp
+    fit_serialize_bench.cpp
+)
+target_link_libraries(atx-vol-fit-serialize-bench
+    PRIVATE
+        atx::vol
+        atx::core
+        benchmark::benchmark
+        atx_warnings
+        Threads::Threads
+)

@@ -28,6 +28,7 @@
 #include "atx/vol/market_env.hpp"
 #include "atx/vol/panel.hpp" // SynthPanelSpec, make_synthetic_american_panel
 #include "atx/vol/priced_surface.hpp"
+#include "atx/vol/priced_surface_view.hpp" // PricedSurfaceView (S5 map_surface)
 #include "atx/vol/run_report.hpp" // MetaKv
 #include "atx/vol/s3.hpp"         // S3Params
 #include "atx/vol/session.hpp"    // FitPreset
@@ -175,7 +176,70 @@ void expect_surface_bits_equal(const PricedSurface &actual, const PricedSurface 
   }
 }
 
+// F-a end-to-end proof (WS-F), populate write-site: the zero-copy S5 view
+// (SurfaceDb::map_surface -> LoadedSurface/PricedSurfaceView — the reconstruct-free
+// deserialize the backtest reaches through SurfaceDb) must price the fit-populated
+// partition bit-for-bit with the owned reconstruct path (load_surface). populate
+// writes v2 via write_surface_archive_v2_file (surface_db.cpp); this proves that
+// serialized fit output is read identically through the production zero-copy view.
+void expect_view_matches_reconstruct(const PricedSurfaceView &view,
+                                     const PricedSurface &owned) {
+  const auto eq = [](double lhs, double rhs) {
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(lhs), std::bit_cast<std::uint64_t>(rhs));
+  };
+  ASSERT_EQ(view.n_slices(), owned.n_slices());
+  for (const SliceContext &c : owned.context()) {
+    const double T = c.T;
+    eq(view.forward_at(T), owned.forward_at(T));
+    for (const double moneyness : {0.85, 1.0, 1.15}) {
+      const double K = owned.pricing().S * moneyness;
+      eq(view.iv(K, T), owned.iv(K, T));
+      for (const Side side : {Side::Call, Side::Put}) {
+        const auto pv = view.fair_value(K, T, side);
+        const auto po = owned.fair_value(K, T, side);
+        ASSERT_EQ(pv.has_value(), po.has_value());
+        if (pv.has_value()) {
+          eq(*pv, *po);
+        }
+        const auto gv = view.greeks(K, T, side);
+        const auto go = owned.greeks(K, T, side);
+        ASSERT_EQ(gv.has_value(), go.has_value());
+        if (gv.has_value()) {
+          eq(gv->delta, go->delta);
+          eq(gv->gamma, go->gamma);
+          eq(gv->vega, go->vega);
+          eq(gv->theta, go->theta);
+        }
+      }
+    }
+  }
+}
+
 } // namespace
+
+TEST(SurfaceDbPopulate, MapSurfaceViewReproducesReconstructedFitOutput) {
+  const auto root = test_root("v2view");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  const std::vector<CorpusBoard> boards = make_boards();
+  auto result = populate_surface_db(*db, boards, SurfaceDbPopulateConfig{});
+  ASSERT_TRUE(result.has_value()) << (result ? "" : result.error().to_string());
+  ASSERT_EQ(result->n_ok, 4u);
+
+  std::size_t n_checked = 0;
+  for (const char *date : {kDate0, kDate1}) {
+    for (const char *sym : {"AAA", "BBB"}) {
+      auto owned = db->load_surface(date, sym);
+      ASSERT_TRUE(owned.has_value()) << (owned ? "" : owned.error().to_string());
+      auto loaded = db->map_surface(date, sym);
+      ASSERT_TRUE(loaded.has_value()) << (loaded ? "" : loaded.error().to_string());
+      expect_view_matches_reconstruct(**loaded, *owned);
+      ++n_checked;
+    }
+  }
+  EXPECT_EQ(n_checked, 4u);
+}
 
 TEST(SurfaceDbPopulate, FitsAndStoresPartitionsPerDate) {
   const auto root = test_root("basic");
