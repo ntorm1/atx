@@ -22,7 +22,17 @@ struct SpyFitFixture {
 };
 
 inline constexpr std::array<SpyFitFixture, 10> kSpyFitFixtures{{
-    {"selloff-open", "SPY_2026-02-12T1435Z.parquet", "2026-02-12T14:35:00Z", "selloff/open"},
+    // Entry 0 regenerated from the on-disk raw OPRA CBBO pull
+    // C:/atx-data/spy-dispersion/opra/SPY/2026-01-02.parquet (the processed
+    // 2026-02-12 slice is gone). The snapshot stamp MUST match the raw data's
+    // real minute (2026-01-02T19:55Z) — it is NOT cosmetic: the loader uses it
+    // to compute every year-fraction and to drop 0DTE/expired expiries, so a
+    // mismatched stamp would silently discard ~14 near expiries. Regenerate via
+    //   python atx-vol/tools/make_fit_slice.py \
+    //     --src C:/atx-data/spy-dispersion/opra/SPY/2026-01-02.parquet \
+    //     --out data/spy_fit_slices/SPY_2026-01-02T1955Z.parquet --underlying SPY
+    // Yields 9626 quotes over 32 expiries (the E1 fit_workers wall-win slice).
+    {"jan02-close", "SPY_2026-01-02T1955Z.parquet", "2026-01-02T19:55:00Z", "regen/close"},
     {"selloff-mid", "SPY_2026-02-12T1700Z.parquet", "2026-02-12T17:00:00Z", "selloff/midday"},
     {"selloff-pm", "SPY_2026-02-12T1955Z.parquet", "2026-02-12T19:55:00Z", "selloff/afternoon"},
     {"rally-open", "SPY_2026-03-09T1335Z.parquet", "2026-03-09T13:35:00Z", "wide-rally/open"},
