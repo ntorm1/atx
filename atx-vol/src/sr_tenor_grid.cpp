@@ -3,26 +3,14 @@
 #include <cassert>
 #include <cstdint>
 
+#include "atx/vol/vol_time.hpp"
+
 namespace atx::vol {
 
 namespace {
 
 constexpr std::int64_t kNsPerSec = 1'000'000'000LL;
 constexpr std::int64_t kNsPerDay = 24LL * 3600LL * kNsPerSec;
-
-// 0 = Sunday .. 6 = Saturday, for days-since-epoch (Howard Hinnant's
-// weekday-from-days identity; see `vol_time.cpp`'s `weekday_from_days` for
-// the canonical derivation -- duplicated here because that copy has internal
-// linkage). Operates directly on the epoch day index, no civil (y,m,d)
-// round-trip needed (see the header's "Day-index arithmetic" doc note).
-[[nodiscard]] constexpr int weekday_from_days(std::int64_t z) noexcept {
-  return static_cast<int>(z >= -4 ? (z + 4) % 7 : (z + 5) % 7 + 6);
-}
-
-[[nodiscard]] constexpr bool is_weekend_day(std::int64_t z) noexcept {
-  const int wd = weekday_from_days(z);
-  return wd == 0 || wd == 6;
-}
 
 }  // namespace
 
@@ -52,7 +40,7 @@ std::int64_t advance_trading_days(std::int64_t now_ns, int n,
   int remaining = n;
   for (std::int64_t steps = 0; steps < max_steps && remaining > 0; ++steps) {
     ++day;
-    if (is_weekend_day(day)) {
+    if (is_weekend_day(static_cast<std::int32_t>(day))) {
       continue;
     }
     if (cal.is_holiday(static_cast<std::int32_t>(day))) {

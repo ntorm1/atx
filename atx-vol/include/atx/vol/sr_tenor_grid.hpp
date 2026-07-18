@@ -25,14 +25,13 @@
 // construction (a UTC calendar day boundary every 86400e9 ns, matching the
 // proleptic-Gregorian numbering `days_from_civil`/`civil_from_days` produce
 // internally in `vol_time.cpp`), and weekday parity (Sat/Sun) is a direct
-// `mod 7` of that same index. So stepping trading days never needs to convert
-// through a civil (year, month, day) triple at all -- unlike
-// `vol_time.cpp`'s ET-session-boundary math, which DOES need
-// `days_from_civil`/`civil_from_days` (and DST resolution) because it must
-// locate a wall-clock hour on a specific ET calendar day. Those two
-// helpers have internal linkage in `vol_time.cpp` (anonymous namespace, not
-// part of `vol_time.hpp`'s public surface) and are therefore not usable from
-// this translation unit regardless; this module simply does not need them.
+// `mod 7` of that same index (`weekday_from_days`/`is_weekend_day`, public on
+// `vol_time.hpp`). So stepping trading days never needs to convert through a
+// civil (year, month, day) triple at all -- unlike `vol_time.cpp`'s
+// ET-session-boundary math, which DOES need `days_from_civil`/
+// `civil_from_days` (and DST resolution) because it must locate a wall-clock
+// hour on a specific ET calendar day; this module simply does not need that
+// extra machinery.
 //
 // ## Thread-safety
 //

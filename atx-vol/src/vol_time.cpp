@@ -51,22 +51,12 @@ struct CivilDate {
   return CivilDate{static_cast<std::int32_t>(y + (m <= 2 ? 1 : 0)), m, d};
 }
 
-// 0 = Sunday .. 6 = Saturday, for days-since-epoch (Hinnant).
-[[nodiscard]] constexpr int weekday_from_days(std::int64_t z) noexcept {
-  return static_cast<int>(z >= -4 ? (z + 4) % 7 : (z + 5) % 7 + 6);
-}
-
-[[nodiscard]] constexpr bool is_weekend_day(std::int64_t z) noexcept {
-  const int wd = weekday_from_days(z);
-  return wd == 0 || wd == 6;
-}
-
 // n-th (1-based) occurrence of weekday `target` (0=Sun..6=Sat) in month (y,m),
 // as a days-since-epoch value.
 [[nodiscard]] constexpr std::int64_t nth_weekday_of_month(std::int32_t y, std::uint32_t m,
                                                           int target, int n) noexcept {
   const std::int64_t first = days_from_civil(y, m, 1U);
-  const int first_wd = weekday_from_days(first);
+  const int first_wd = weekday_from_days(static_cast<std::int32_t>(first));
   const int offset = (target - first_wd + 7) % 7;
   return first + offset + static_cast<std::int64_t>(n - 1) * 7;
 }
@@ -118,6 +108,20 @@ struct CivilDate {
 }
 
 }  // namespace
+
+// See vol_time.hpp's doc comment for the day-index convention. Not
+// `constexpr` (moved off the anonymous-namespace copy this promotes) -- no
+// call site in this TU or elsewhere needs compile-time evaluation, so leaf
+// runtime functions are the simpler, header-declared surface.
+int weekday_from_days(std::int32_t day_since_epoch) noexcept {
+  const std::int64_t z = day_since_epoch;
+  return static_cast<int>(z >= -4 ? (z + 4) % 7 : (z + 5) % 7 + 6);
+}
+
+bool is_weekend_day(std::int32_t day_since_epoch) noexcept {
+  const int wd = weekday_from_days(day_since_epoch);
+  return wd == 0 || wd == 6;
+}
 
 VolTimeCalendar::VolTimeCalendar(std::vector<std::int32_t> holiday_days)
     : days_(std::move(holiday_days)) {
@@ -187,7 +191,7 @@ double trading_hours_between(std::int64_t start_ns, std::int64_t end_ns,
 
   double trading_ns = 0.0;
   for (std::int64_t z = z_lo; z <= z_hi; ++z) {
-    if (is_weekend_day(z)) {
+    if (is_weekend_day(static_cast<std::int32_t>(z))) {
       continue;
     }
     if (cal.is_holiday(static_cast<std::int32_t>(z))) {
