@@ -263,6 +263,72 @@ TEST(AmericanIv, PriceAtIntrinsic_ClampsToFloor) {
   EXPECT_DOUBLE_EQ(*iv, atx::vol::kIvMin);
 }
 
+// ── R-05: seeded fast path evaluates the floor/ceiling BEFORE clamping/rejecting
+//
+// The seeded bracket takes bounded (16-step) geometric steps from the warm/euro
+// seed. A seed far from a genuine in-range root can exhaust those steps without
+// reaching the true vol floor (step-down) or ceiling (step-up). Before this fix
+// the fast path then clamped to kIvMin / returned OutOfRange spuriously — even
+// though a real, identifiable IV sits inside the bracket — violating the
+// documented warm_start contract ("the result is unchanged; only the iteration
+// count differs"). The floor/ceiling is now priced first, matching the
+// wide-bracket fallback, so the genuine root is solved.
+
+TEST(AmericanIv, SeededStepDown_TinyInRangeIv_NotClampedToFloor) {
+  const double S = 100.0, K = 100.0, T = 1.0, r = 0.05, q = 0.0;
+  const double true_sigma = 0.05; // small but far above kIvMin (1e-4)
+  const double p = value_or_fail(
+      american_price(S, K, T, true_sigma, r, q, Side::Call, AmericanMethod::AndersenLake));
+  // warm_start = 2.0 >> true_sigma: the ~7%/step step-down halts near 0.62,
+  // never reaching kSigmaLo, so the pre-fix fast path returned kIvMin.
+  const auto iv =
+      american_implied_vol(p, S, K, T, r, q, Side::Call, AmericanMethod::AndersenLake, 1.0e-7, 64,
+                           std::nullopt, /*correction=*/nullptr, /*warm_start=*/2.0);
+  ASSERT_TRUE(iv.has_value()) << (iv ? std::string{} : iv.error().to_string());
+  // true_sigma (0.05) is a full 10x the vol floor (kIvMin = 0.005); the pre-fix
+  // fast path returned exactly kIvMin here, so any value clearly above the floor
+  // proves the spurious clamp is gone.
+  EXPECT_GT(*iv, atx::vol::kIvMin * 2.0) << "genuine tiny IV must not be clamped to the floor";
+  EXPECT_NEAR(*iv, true_sigma, 1.0e-5);
+}
+
+TEST(AmericanIv, SeededStepUp_HighInRangeIv_NotRejectedAsOutOfRange) {
+  const double S = 100.0, K = 100.0, T = 1.0, r = 0.05, q = 0.0;
+  const double true_sigma = 1.2; // high but well below kSigmaHiCap (40)
+  const double p = value_or_fail(
+      american_price(S, K, T, true_sigma, r, q, Side::Call, AmericanMethod::AndersenLake));
+  // warm_start = 0.1 << true_sigma: the *1.15/step step-up halts near 0.81,
+  // never reaching kSigmaHiCap, so the pre-fix fast path returned OutOfRange.
+  const auto iv =
+      american_implied_vol(p, S, K, T, r, q, Side::Call, AmericanMethod::AndersenLake, 1.0e-7, 64,
+                           std::nullopt, /*correction=*/nullptr, /*warm_start=*/0.1);
+  ASSERT_TRUE(iv.has_value()) << (iv ? std::string{} : iv.error().to_string());
+  const double reprice =
+      value_or_fail(american_price(S, K, T, *iv, r, q, Side::Call, AmericanMethod::AndersenLake));
+  EXPECT_NEAR(reprice, p, 1.0e-5 * std::fmax(1.0, p));
+  EXPECT_NEAR(*iv, true_sigma, 1.0e-3);
+}
+
+// The seeded fast path must agree with the no-warm-start (euro-seeded) path for
+// the SAME quote: a warm_start only changes the search trajectory, never the
+// returned IV. This pins the R-05 invariant across both branches at once.
+TEST(AmericanIv, WarmStartResultInvariantToSeed) {
+  const double S = 100.0, K = 105.0, T = 0.75, r = 0.04, q = 0.01;
+  const double true_sigma = 0.22;
+  const double p = value_or_fail(
+      american_price(S, K, T, true_sigma, r, q, Side::Put, AmericanMethod::AndersenLake));
+  const auto base = american_implied_vol(p, S, K, T, r, q, Side::Put);
+  ASSERT_TRUE(base.has_value()) << (base ? std::string{} : base.error().to_string());
+  for (double ws : {0.02, 0.1, 0.5, 2.0, 4.5}) {
+    const auto iv =
+        american_implied_vol(p, S, K, T, r, q, Side::Put, AmericanMethod::AndersenLake, 1.0e-7, 64,
+                             std::nullopt, /*correction=*/nullptr, /*warm_start=*/ws);
+    ASSERT_TRUE(iv.has_value()) << "warm_start=" << ws << ": "
+                                << (iv ? std::string{} : iv.error().to_string());
+    EXPECT_NEAR(*iv, *base, 1.0e-6) << "warm_start=" << ws;
+  }
+}
+
 // ── Batch helper over a strike axis ──────────────────────────────────────
 
 TEST(AmericanIv, Batch_StrikeAxis_MatchesScalar) {

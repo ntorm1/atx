@@ -267,12 +267,14 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
       // always in [xl, xh].
       xh = seed;
       double s_lo = seed;
+      double f_lo = f_seed; // residual at the current lower probe (>= 0 until bracketed)
       for (unsigned e = 0; e < 16; ++e) {
         s_lo *= 0.93; // ~7% < the 12% AloPricer warm-reseed band
         if (s_lo <= kSigmaLo) {
           s_lo = kSigmaLo;
         }
-        ATX_TRY(double f_lo, residual(s_lo));
+        ATX_TRY(double f_step, residual(s_lo));
+        f_lo = f_step;
         if (f_lo < 0.0) {
           xl = s_lo;
           bracketed = true;
@@ -283,17 +285,38 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
         }
       }
       if (!bracketed) {
-        // Even the vol floor over-prices the quote -> IV is at/below the floor.
-        return Ok(kIvMin);
+        // [correctness R-05] The bounded step-down (16 warm ~7% steps) can halt
+        // ABOVE the vol floor when the seed is large — s_lo may still be well
+        // inside (kSigmaLo, seed). Evaluate the TRUE floor before clamping: only
+        // when even kSigmaLo over-prices the quote (residual >= 0) is the IV
+        // genuinely at/below the floor. Otherwise a real, tiny-but-in-range root
+        // sits in (kSigmaLo, s_lo] and must be solved, not clamped to kIvMin
+        // (which would violate the documented warm_start "result unchanged"
+        // contract). Mirrors the wide-bracket fallback's floor test below.
+        double f_floor = f_lo;
+        if (s_lo > kSigmaLo) {
+          ATX_TRY(double f_at_floor, residual(kSigmaLo));
+          f_floor = f_at_floor;
+        }
+        if (f_floor >= 0.0) {
+          return Ok(kIvMin);
+        }
+        xl = kSigmaLo;
+        xh = s_lo; // residual(s_lo) = f_lo >= 0 (loop ended without a sign change)
+        rts = s_lo;
+        f = f_lo;
+        bracketed = true;
       }
     } else {
       // f(seed) < 0 (seed under-estimates — rare; the bound above is >= 0). Step
       // up to the sign change; the seed stays the lower bracket end (xl).
       xl = seed;
       double s_hi = seed;
+      double f_hi = f_seed; // residual at the current upper probe (< 0 until bracketed)
       for (unsigned e = 0; e < 16 && s_hi < kSigmaHiCap; ++e) {
         s_hi = std::fmin(s_hi * 1.15, kSigmaHiCap);
-        ATX_TRY(double f_hi, residual(s_hi));
+        ATX_TRY(double f_step, residual(s_hi));
+        f_hi = f_step;
         if (f_hi >= 0.0) {
           xh = s_hi;
           bracketed = true;
@@ -301,7 +324,27 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
         }
       }
       if (!bracketed) {
-        return Err(ErrorCode::OutOfRange, "american_implied_vol: price above max-vol price");
+        // [correctness R-05] The bounded step-up (16 warm steps) can halt BELOW
+        // kSigmaHiCap when the seed is small — s_hi may still be well inside
+        // [seed, kSigmaHiCap). Evaluate the TRUE ceiling before rejecting: only
+        // when even kSigmaHiCap under-prices the quote (residual < 0) is the price
+        // genuinely above the max-vol price. Otherwise a real, in-range (but high)
+        // root sits in [s_hi, kSigmaHiCap] and must be solved, not rejected as
+        // OutOfRange (which would violate the documented warm_start "result
+        // unchanged" contract). Mirrors the wide-bracket fallback's hi-expansion.
+        double f_ceil = f_hi;
+        if (s_hi < kSigmaHiCap) {
+          ATX_TRY(double f_at_ceil, residual(kSigmaHiCap));
+          f_ceil = f_at_ceil;
+        }
+        if (f_ceil < 0.0) {
+          return Err(ErrorCode::OutOfRange, "american_implied_vol: price above max-vol price");
+        }
+        xl = s_hi; // residual(s_hi) = f_hi < 0 (loop ended without a sign change)
+        xh = kSigmaHiCap;
+        rts = s_hi;
+        f = f_hi;
+        bracketed = true;
       }
     }
   }

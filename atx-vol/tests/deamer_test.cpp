@@ -175,6 +175,37 @@ TEST(DeAmer, ImplyTermBorrow_RecoversInjectedBorrow) {
   EXPECT_LT(res->rmse_pcp, 1e-4);
 }
 
+// R-06: deamer.cpp codifies the nested tolerance ladder
+// (kPcpTol < kBorrowFpTol < kInnerIvTol) as a compile-time static_assert. This
+// pins its ECONOMIC consequence: because the borrow fixed point (kBorrowFpTol =
+// 1e-8) resolves far below the inner-IV economic bound (kInnerIvTol = 1e-4), the
+// reported PCP residual stays inside its 1e-4 acceptance contract across borrow
+// regimes and strikes. An edit that inverted the ladder (letting inner-IV noise
+// masquerade as an unconverged map) would surface here as an rmse_pcp blow-up.
+TEST(DeAmer, ToleranceLadderKeepsPcpResidualWithinEconomicBound) {
+  const Scenario sc;
+  constexpr double kEconomicBound = 1.0e-4; // == kInnerIvTol (deamer.cpp)
+  for (const double b_true : {0.005, 0.02, 0.035}) {
+    for (const double K : {90.0, 100.0, 110.0}) {
+      const double F =
+          hybrid_forward(sc.S, sc.r, b_true, sc.T, sc.divs, sc.expiry_ns, sc.now_ns, sc.hyb);
+      const double q_eff = sc.r - std::log(F / sc.S) / sc.T;
+      const double sig = 0.25;
+      const double call = value_or_fail(american_price(sc.S, K, sc.T, sig, sc.r, q_eff, Side::Call,
+                                                       AmericanMethod::AndersenLake));
+      const double put = value_or_fail(american_price(sc.S, K, sc.T, sig, sc.r, q_eff, Side::Put,
+                                                      AmericanMethod::AndersenLake));
+      const auto res = imply_term_borrow(call, put, sc.S, K, sc.T, sc.r, sc.divs, sc.expiry_ns,
+                                         sc.now_ns, sc.hyb);
+      ASSERT_TRUE(res.has_value())
+          << "b_true=" << b_true << " K=" << K << ": "
+          << (res ? std::string{} : res.error().to_string());
+      EXPECT_LT(res->rmse_pcp, kEconomicBound) << "b_true=" << b_true << " K=" << K;
+      EXPECT_NEAR(res->borrow, b_true, kEconomicBound) << "b_true=" << b_true << " K=" << K;
+    }
+  }
+}
+
 TEST(DeAmer, CarrySolveUsesItsOwnAndersenLakePreset) {
   const Scenario sc;
   const double b_true = 0.025;

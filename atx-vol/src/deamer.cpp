@@ -28,18 +28,35 @@ using atx::core::Ok;
 
 namespace {
 
-// Accuracy of the inner American inversions used by the borrow fixed-point.
-// Aligned with the borrow's 1e-4 economic target and the fast ALO preset's
-// ~1e-4 price-accuracy floor. A tighter IV-step tolerance only burns
-// Newton/bisection iterations (each a full American solve) without moving the
-// reported carry economically, so this is capped deliberately.
+// ── De-Am carry solve tolerance ladder (R-06) ───────────────────────────
+//
+// The carry solve NESTS three root-finds. Each is measured in its own units, so
+// they look unrelated, but they are consistent iff they satisfy one ordering:
+//
+//     kPcpTol  <  kBorrowFpTol  <  kInnerIvTol
+//   (1e-10)       (1e-8)           (1e-4)
+//   PCP root  <  borrow map Δ   <  inner-IV economic bound
+//
+// The rule is "every inner solve must resolve TIGHTER than the loop that
+// consumes its output," so no stage's own numerical noise leaks into the stage
+// above it. The static_assert at the end of this block pins that ordering.
+//
+// kInnerIvTol — the de-Am ECONOMIC bound (vol units). It is the Newton-step
+// tolerance of each inner American-IV inversion and is set AT the fast ALO
+// preset's ~1e-4 price-accuracy floor / the borrow's 1e-4 economic target: an
+// IV step tighter than the pricer can resolve only burns full American solves
+// (each Newton/bisection step is one) without moving the reported carry. This is
+// the loosest tolerance and the economic bound the whole solve is accurate to.
 constexpr double kInnerIvTol = 1.0e-4;
 constexpr std::uint16_t kInnerIvMaxIter = std::uint16_t{48};
 
-// Borrow fixed-point controls. Borrow itself is only meaningful to ~1e-4, but
-// the reported PCP residual (rmse_pcp) scales with |Δborrow| at convergence.
-// Keep the map tolerance tight so the reporting diagnostic stays below its 1e-4
-// acceptance contract without forcing the expensive inner IV solves tighter.
+// kBorrowFpTol — the outer borrow fixed-point |Δborrow| convergence (rate
+// units). Deliberately resolved BELOW the 1e-4 economic bound: the reported PCP
+// residual (rmse_pcp) scales with |Δborrow| at convergence, so driving the map
+// to 1e-8 keeps that diagnostic comfortably inside its 1e-4 acceptance contract.
+// It does NOT tighten the economic accuracy of the borrow (still ~1e-4, capped
+// by kInnerIvTol) — the per-leg Newton warm starts make the extra fixed-point
+// iterations nearly free, so this costs a couple of iterations, not solves.
 constexpr double kBorrowFpTol = 1.0e-8; // |Δborrow| convergence on the map
 constexpr int kBorrowMaxIter = 64;      // bounded-loop guard (JPL Rule 2)
 
@@ -47,7 +64,20 @@ constexpr int kBorrowMaxIter = 64;      // bounded-loop guard (JPL Rule 2)
 // realistic hard-to-borrow name; a root outside it surfaces as OutOfRange.
 constexpr double kBorrowLo = -0.5;
 constexpr double kBorrowHi = 0.5;
+// kPcpTol — the innermost European-PCP borrow root tolerance. Tighter than
+// kBorrowFpTol so the PCP root's own residual never dominates the |Δborrow|
+// fixed-point test that consumes it.
 constexpr double kPcpTol = 1.0e-10;
+
+// R-06 tolerance-consistency invariant: the nested solves are consistent iff
+// each resolves strictly tighter than the loop above it. A future edit that
+// loosens an inner tolerance past the loop it feeds (e.g. kBorrowFpTol >=
+// kInnerIvTol, which would let inner-IV noise masquerade as an unconverged
+// borrow map, or kPcpTol >= kBorrowFpTol) now fails to COMPILE here.
+static_assert(kPcpTol < kBorrowFpTol,
+              "kPcpTol must resolve tighter than the borrow fixed-point it feeds");
+static_assert(kBorrowFpTol < kInnerIvTol,
+              "kBorrowFpTol must resolve below the inner-IV economic bound (kInnerIvTol)");
 
 // Floor on the bid/ask spread used in the weight hint, so a locked (bid == ask)
 // but otherwise valid quote does not divide by zero.
