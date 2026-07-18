@@ -18,7 +18,8 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
-#include "atx/vol/american.hpp" // AmericanGreeks
+#include "atx/vol/american.hpp"         // AmericanGreeks
+#include "atx/vol/pricing_executor.hpp" // WS-P P4: batched-basket strike resolve fan-out
 
 namespace atx::vol {
 
@@ -316,6 +317,34 @@ Result<double> resolve_strike_by_delta(const PricedSurface &s, double T, Side si
     return resolve_strike_by_delta(s, T, side, target_abs_delta);
   }
   return resolve_strike_by_delta_adaptive(s, T, side, target_abs_delta, options);
+}
+
+std::vector<Result<double>>
+resolve_strikes_by_delta_batched(std::span<const DeltaResolveLane> lanes, unsigned n_threads) {
+  // Pre-size with a per-slot sentinel; run_blocks then writes each slot exactly once
+  // (disjoint per-lane writes → bit-identical output for any worker count). Each lane
+  // runs the SAME solver `resolve_strike_by_delta` uses, so out[i] is bit-identical to
+  // the serial per-name resolve — the batching is a pure fan-out, not a new numeric
+  // path (P4: kills the per-name serial iterative solve, bottleneck #4).
+  std::vector<Result<double>> out;
+  out.reserve(lanes.size());
+  for (std::size_t i = 0; i < lanes.size(); ++i) {
+    out.emplace_back(Err(ErrorCode::InvalidArgument, "resolve_strikes_by_delta_batched: unresolved"));
+  }
+  if (lanes.empty()) {
+    return out;
+  }
+  pricing_executor().run_blocks(lanes.size(), n_threads, [&](std::size_t i) {
+    const DeltaResolveLane &lane = lanes[i];
+    if (lane.surface == nullptr) {
+      out[i] = Err(ErrorCode::InvalidArgument, "resolve_strikes_by_delta_batched: null surface");
+      return;
+    }
+    out[i] = resolve_strike_by_delta_routed(*lane.surface, lane.T, lane.side,
+                                            lane.target_abs_delta, QueryExecution::Configured,
+                                            kLegacyDeltaTolerance);
+  });
+  return out;
 }
 
 namespace {
