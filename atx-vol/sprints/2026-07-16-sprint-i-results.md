@@ -172,3 +172,53 @@ e2e gate. That is the path from 347 ms toward ≤200 ms.
   `51df5655…-dirty` intact) and both agents switched to absolute worktree script
   paths. Lesson for future dispatch: instruct agents to invoke
   `C:\atx-wt\<wt>\scripts\atx-build.ps1` by **absolute path** from the start.
+
+## 9. Merge to local main — DONE (2026-07-17, user-authorized)
+
+§6 is superseded: the user authorized landing everything on local `main`. Order and
+result:
+
+1. **`e37ea65`** — Sprint R Task-2 WIP (the uncommitted `boundary_interp`/`calib`
+   work) committed as its own step. Verified disjoint from the integration change-set
+   (integration touches none of the 6 R files).
+2. **`08f3923`** — `feat/sota-integration` merged into `main` with `--no-ff`. **No
+   conflicts** (disjoint). 50 files, +7829/−331.
+3. **Merged-main Debug gate: PASS.** `atx-vol-tests` builds clean (0 errors); the
+   `atx_vol` suite is **6 failed / 1705 = exactly the 6 pre-existing v2-path failures,
+   zero new**. Sprint R Task-2 WIP + integration compose cleanly (american/calib
+   tests green; the pinned `SigmaInterp.NodeBuildMatchesColdSolve` 7.1e-15 gate holds).
+
+Nothing pushed. Local `main` only.
+
+### De-Am boundary wiring — deliberately NOT force-wired (evidence-based)
+
+The §6 handoff assumed the wiring was the SPY-e2e lever. On inspection of
+`boundary_interp.cpp::build()` it is not, and forcing it would be wrong:
+
+- **The AVX2 boundary kernel is gated off** (`kShipAvx2Boundary=false`, quiet-host
+  1.87× < 2.0×). Routing production de-Am through it contradicts its own ship
+  decision; `american_put_boundary_batch(Auto)` routes scalar regardless.
+- **`build()` is once-per-board.** It does `n_sigma` (~5–9) independent cold σ-solves
+  amortized across all strikes via σ-interpolation. The 272.9 ms/board de-Am cost is
+  dominated by ~12k **per-quote** inversions (`price_internal_put` + European leg),
+  not `build()`. Batching `build()`'s 9 solves is negligible for the gate.
+- Doing so would also risk the pinned 7.1e-15 cold-solve accuracy gate for ~0 gain.
+
+**The real ≤200 ms lever is the per-quote de-Am path, not A's boundary batch:**
+either Sprint R's R-11 de-Am improvements (the user's WIP direction) or a new
+vectorization of the per-quote de-Am inversion across a slice (unbuilt; a future
+sprint). SPY e2e stands at **347 ms** (from 492). The A boundary batch stays
+available (ForceAvx2, parity-tested) and ships only once the BAW-seed vectorization
+clears the 2.0× gate (Sprint X).
+
+### Remaining (all optional / future, none blocking)
+
+- Clear the boundary ship gate via BAW-seed vectorization → then wiring becomes valid
+  (Sprint X); or vectorize per-quote de-Am for the ≤200 ms gate.
+- Chebyshev-Φ retirement: migrate `american_boundary_avx2.cpp` to the Cody-erfc Φ
+  (accuracy-improving; gated-off path, needs boundary parity re-validation).
+- Φ-swap accuracy panel on the user's real data (§4 command).
+- The 6 pre-existing v2 failures (triage doc has fixes).
+- Branch/worktree cleanup: `feat/sota-{k-inversion,a-american,s-surface,i-panel,
+  i-kernels,integration}` are merged; `feat/sota-i-boundary` never carried commits
+  (dead spawn). Prune at will.
