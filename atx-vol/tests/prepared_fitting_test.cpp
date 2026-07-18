@@ -520,7 +520,12 @@ TEST(PreparedFitting, LegacyCompatibilityRemainsWiredThroughEssviSurfaceEndToEnd
   EXPECT_EQ(report->context.front().n_used, underlying.chains.front().n_strikes());
   // Golden from the historical permissive eSSVI route on this deliberately
   // flagged/locked board. This pins the compatibility seam end to end.
-  EXPECT_NEAR(report->surface.iv_on_slice(0u, 0.0), 0.35315599514657198, 1.0e-12);
+  // Economic-seam pin, not a bit-identity pin (PLAN §3): the K2 Choi-L3 IV
+  // seed (e34e3bb) changes the de-Am inversion's Halley path, shifting this
+  // converged ATM IV by ~4.9e-11 vol pts — six orders inside the 1e-4 economic
+  // gate. Tolerance is 1e-9: tight enough to catch any real regression
+  // (>=1e-4-class), loose enough to tolerate iteration-seed LSB drift.
+  EXPECT_NEAR(report->surface.iv_on_slice(0u, 0.0), 0.35315599514657198, 1.0e-9);
 }
 
 TEST(PreparedFitting, BoardCanonicalizesSliceOrderAndRejectsDuplicateExpiryKeys) {
