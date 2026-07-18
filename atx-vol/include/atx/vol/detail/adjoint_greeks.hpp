@@ -37,8 +37,9 @@ namespace atx::vol::detail {
 // (r > 0, non-degenerate, single-boundary American regime): delta/gamma from
 // frozen-base-boundary spot stencils (boundary is spot-independent — exact, NOT
 // the Γ=0 trap); vega/rho from the reverse IFT (one J^T solve, then dot products);
-// vanna from the first-order boundary tangent y_σ; volga from a warm σ± boundary
-// re-solve; theta/charm from the continuation-region Black-Scholes PDE identity.
+// vanna from the first-order boundary tangent y_σ; volga from a COLD σ± boundary
+// re-solve 2nd difference (a warm re-solve's residual is amplified by 1/h² and
+// blows up); theta/charm from the continuation-region Black-Scholes PDE identity.
 //
 // Every other regime falls back to american_greeks_fd (the untouched FD
 // reference): calls, the European-exact regime (American == European), degenerate
@@ -47,10 +48,16 @@ namespace atx::vol::detail {
 // american_greeks_fd on the whole domain, exact on the fallback regimes and
 // adjoint-accelerated on the genuine-early-exercise put hot path.
 //
+// @param took_adjoint_path optional out: set true iff the genuine IFT-adjoint path
+//        produced the result (false on every FD/European fallback). Lets tests and
+//        callers confirm WHICH path ran behind a reliability claim (a fallback also
+//        returns has_value(), so the value alone is ambiguous). Pure: writes only
+//        through the caller's pointer, no global state.
 // @return InvalidArgument on non-positive S/K/T/σ (matches american_greeks_fd);
 //         otherwise the 8 greeks + price, with price == the andersen_lake mark.
 [[nodiscard]] Result<AmericanGreeks>
 american_greeks_adjoint(double S, double K, double T, double sigma, double r, double q, Side side,
-                        const std::optional<AlOpts> &opts = std::nullopt);
+                        const std::optional<AlOpts> &opts = std::nullopt,
+                        bool *took_adjoint_path = nullptr);
 
 } // namespace atx::vol::detail

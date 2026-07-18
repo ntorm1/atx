@@ -167,42 +167,50 @@ the asymmetry that makes our life tractable:
   (`vanna = ∂²P/∂S∂σ|_y + ∂²P/∂S∂y · y_σ`), computed as a spot-difference of delta over
   the σ-moved boundary `y* ± h·y_σ`. No `y_σσ`.
 - **volga** is the one greek needing the **second-order** boundary sensitivity `y_σσ`.
-  Design choice below.
 
-### Second-order strategy — **forward-over-adjoint (tangent bundle), IFT-consistent**
+### Second-order strategy — **as implemented (P2): cold σ± re-solve for volga**
 
-We compute the second-order boundary sensitivity `y_σσ` by **differentiating the IFT
-relation once more** (a forward tangent over the reverse/adjoint machinery), reusing the
-*already-factored* Jacobian `J`:
+`volga = ∂²P/∂σ²` is computed by **two COLD boundary re-solves at σ ± h** (h = 5e-3) and
+a second price difference `(P(σ+h) − 2P₀ + P(σ−h))/h²` — the proven `american_greeks_al`
+route, which captures `y_σσ` exactly (each re-solve lands the full boundary at its σ).
+The re-solves must be **cold**, not warm: a warm re-solve stops at a larger residual and
+that residual is amplified by `1/h²` in the second difference, so volga blows up.
+gamma/vanna do NOT re-solve (gamma frozen spot stencil; vanna the first-order `y_σ`
+tangent), so only volga carries the two extra solves. Because a raw 2nd σ-derivative of a
+budget-limited quadrature price is inherently noisy, **volga is 2nd-order-accurate only,
+not machine-precise** — its parity tolerance is documented separately (§7) and gated
+loosely; it is NOT claimed as a tight greek.
 
-```
-J y_σ  = -R_σ                                        (first-order IFT; already have it)
-J y_σσ = -( R_σσ + 2 R_σy·y_σ + R_yy[y_σ, y_σ] )     (second-order IFT — SAME J, new RHS)
-```
+*(Wave-2 candidate, NOT built in P2:* a forward-over-adjoint *tangent-bundle* that gets
+`y_σσ` from a second IFT solve `J y_σσ = −(R_σσ + 2R_σy·y_σ + R_yy[y_σ,y_σ])`, reusing the
+factored `J` — no re-solve. It needs its own parity gate before it can replace the cold
+re-solve; see §8.)
 
-`R_σσ`, the directional `R_σy·y_σ`, and the directional `R_yy[y_σ,y_σ]` are obtained by
-central finite differences of the *pure residual seam* along σ and along the `y_σ`
-direction (no boundary re-solve). Then
-
-```
-volga = ∂²P/∂σ²|_y  +  2 (∂²P/∂σ∂y)·y_σ  +  (∂²P/∂y²)[y_σ,y_σ]  +  (∂P/∂y)·y_σσ
-```
-
-with the `P` second-derivatives as directional differences of `al_put_price_from_
-boundary`. This keeps volga in the **no-extra-full-solve** IFT budget and reuses the LU
-factorization (one more back-substitution). Because a raw 2nd derivative of a quadrature
-price is the noisiest quantity here, volga's parity tolerance is documented separately
-(§7) and, if the tangent route does not clear the tolerance in a given regime, the
-kernel falls back to a boundary-re-solve second difference (the proven
-`american_greeks_al` route) — never worse than the existing analytic path.
+**Domain of the adjoint path — a NARROW well-converged fast-lane, not the whole grid.**
+The IFT computes the derivative of the *exact fixed point* `y_fp(θ)`. The production
+Andersen-Lake pricer runs a **budget-limited** sweep schedule (ACCURATE preset: 2 JN + 4
+FP sweeps, early-exit at tol=1e-10), so for the majority of contracts it stops
+*under-converged* — the solver output `y*(θ)` carries residual `‖R(y*)‖ ~ 1e-6…1e-4`, and
+its actual derivative (what `andersen_lake`/`fd` compute) is `dy*/dθ`, **not** `dy_fp/dθ`.
+Where the boundary is well-converged (`‖R(y*)‖ ≤ 1e-7`), `y* ≈ y_fp` and the IFT matches
+the pricer's true derivative; elsewhere they diverge (measured up to ~20% on vega). The
+kernel therefore **guards on `‖R(y0)‖ ≤ 1e-7` and only claims the well-converged subset**
+(~1/12 of a representative grid, concentrated at short maturities), handing every other
+point to the exact `fd` bundle. The reverse-IFT result was cross-validated to agree with
+the already-validated *forward*-IFT spike `al_implicit_diff_put_greeks` to < 1e-3, so the
+narrow domain is a property of the loose pricer, **not** an implementation bug. Widening
+it (wave 2) requires either tightening the pricer's boundary convergence — which costs
+pricing throughput and changes the mark — or adopting the well-converged IFT greek as the
+canonical greek and re-baselining `fd` to match. That is a P3/P5 design decision.
 
 **Fallbacks (kept intact).** Calls, the European-exact regime (r ≤ 0, American ==
-European), degenerate T~0 / σ~0, the negative-carry / double-continuation corners, and
-the exercised region route to the existing `american_greeks_fd` (the untouched FD
-reference). P3 will add the user-facing `--force-fd` switch. The adjoint path claims
-only genuine-early-exercise **puts** (r > 0) this wave — mirroring `american_greeks_al`,
-which is also put-only for its native route. (Call adjoint via the McDonald-Schroder
-dual-greek map is a wave-2 extension.)
+European), degenerate T~0 / σ~0, the negative-carry / double-continuation corners, the
+exercised/straddle region, an unconverged base fixed point, an ill-conditioned `J`, and
+an IFT-vs-cold-re-solve vega self-consistency failure all route to the untouched
+`american_greeks_fd`. P3 will add the user-facing `--force-fd` switch. The adjoint path
+claims only genuine-early-exercise **puts** (r > 0) this wave — mirroring
+`american_greeks_al`, which is also put-only for its native route. (Call adjoint via the
+McDonald-Schroder dual-greek map is a wave-2 extension.)
 
 ---
 
@@ -253,25 +261,46 @@ seam at `σ̄` means the American adjoint never needs to know the surface parame
 ## 7. Parity gate & tolerances (target: machine-precise vs the FD convergence plateau)
 
 Reference: high-quality **central differences** of the *same* priced function
-(`andersen_lake` / `al_put_price_from_boundary`), well-chosen steps, Richardson where a
-single step cannot reach the plateau. Grid: moneyness × maturity × vol × rate/borrow
-sign flips (**negative borrow**), deep ITM/OTM, near-expiry, near the exercise boundary,
-and European-optimal regions (boundary adjoint must vanish cleanly). Achieved
-per-greek tolerances are recorded in the P2 report and the parity test asserts them.
-First-order greeks (delta, vega, rho) and gamma target the tight plateau; theta/charm
-(PDE identity) and volga (2nd-order) carry documented looser tolerances (their FD
-references are themselves the noisiest). The existing `american_greeks_fd` path stays
-the untouched fallback until parity holds (Trap 2 discipline).
+(`andersen_lake` / `al_put_price_from_boundary`), Richardson-extrapolated where a single
+step cannot reach the plateau, **plus** an independent cross-check vs the already-validated
+*forward*-IFT spike `al_implicit_diff_put_greeks`. Grid: moneyness × maturity × vol ×
+rate/borrow sign flips (**negative borrow**), deep ITM/OTM, near-expiry, near the exercise
+boundary, and European-optimal regions.
+
+Gating is **per-region**, because the achievable accuracy is not uniform:
+
+| greek | full grid | adjoint-path subset (‖R(y0)‖≤1e-7) | reference |
+|---|---|---|---|
+| price | ≤ 1e-9 | — | andersen_lake |
+| delta, gamma | **BIT-IDENTICAL to fd** (incl. neg borrow) | — | fd (same spot-independent boundary + stencil) |
+| vega, rho | (mostly fallback→fd) | **≤ 5e-3 vs Richardson AND vs the forward-IFT spike** | Richardson / spike |
+| vanna | — | 2nd-order plateau (~5e-2 vs fd) | fd |
+| volga | — | **2nd-order only, loose (~2·|·|); NOT machine-precise** | Richardson |
+| theta, charm | ~1–4% vs fd (PDE identity, near-expiry ITM worst) | — | fd |
+
+Because the IFT-adjoint claims only the **well-converged subset** (§4), the tight vega/rho
+gate runs only on `took_adjoint_path == true` points (a `bool*` out-param the test asserts,
+so a silent fd fallback cannot make the parity vacuous — the reviewer's ⚠️-1). The material
+`−λ^T R_σ` correction is separately pinned where the American vega departs from the European
+vega, so a wrong-sign/scaled correction cannot hide. The existing `american_greeks_fd` path
+stays the untouched fallback everywhere the adjoint does not claim (Trap 2 discipline).
+
+**"Machine-precise" is scoped, not blanket:** first-order vega/rho are machine-precise vs
+Richardson *on the well-converged adjoint subset*; delta/gamma are bit-identical to fd
+*everywhere*; volga and (near-expiry) theta/charm are only 2nd-order/PDE-accurate.
 
 ---
 
 ## 8. Implementation status & the throughput path (P2 → wave 2)
 
-**Landed (P2):** correctness. delta/gamma are bit-identical to `american_greeks_fd`;
-vega/rho are machine-precise vs Richardson in the smooth region; the IFT boundary
-adjoint is validated across the hard grid (incl. negative borrow); robust guards
-(exercise-region/straddle, unconverged fixed point, ill-conditioned J, IFT-vs-
-re-solve self-consistency) hand the pathological neg-carry corners to the FD bundle.
+**Landed (P2):** correctness. delta/gamma are bit-identical to `american_greeks_fd`
+*everywhere*; vega/rho are machine-precise vs Richardson **and** vs the validated
+forward-IFT spike **on the well-converged adjoint subset**; robust guards
+(exercise-region/straddle, unconverged fixed point `‖R(y0)‖>1e-7`, ill-conditioned J,
+IFT-vs-re-solve self-consistency) hand every other point — including the narrow
+under-converged majority and the neg-carry corners — to the FD bundle. The domain is
+narrow by design (§4): the IFT is only consistent with the loose pricer where the loose
+boundary is well-converged.
 
 **NOT yet landed (the ≥5× lever — wave 2):** *the current kernel builds the boundary
 Jacobian `J = ∂R/∂y` and `∂P/∂y` by FINITE DIFFERENCES* (~2m residual + 2m price
@@ -298,3 +327,27 @@ With those, the adjoint cost collapses to ~1 forward price + 1 reverse sweep + o
 (P3 wires it into `PortfolioPricer`; P5 measures it against the WS-M baseline). The
 **architecture is already correct** for it: the surface chain-rule composes through
 the single adjoint seed `σ̄` (§6) regardless of how `J`/`∂P/∂y` are computed.
+
+### Wave-2 ≥5× preface (reviewer guidance — gate ownership)
+
+Two wave-2 gates MUST precede P3 wiring, and the PM holds the ≥5× decision:
+
+1. **The analytic `∂R/∂y` cross-node Jacobian is NEW numerical code** (only the diagonal
+   `eqn_b_NDd` self-term exists today). A bug there re-opens the exact Trap-2 boundary-
+   differentiation risk this wave closed. It **must ship with its own parity gate** (vs the
+   FD Jacobian this wave used, and vs the forward-IFT spike) before any consumer trusts it.
+2. **Analytic volga (the tangent-bundle `y_σσ`)** likewise needs its own parity gate before
+   it replaces the cold re-solve; volga is the noisiest greek and is currently loose.
+3. **The ≥5× gate is scoped, not blanket.** The first-order **delta+vega hedge/resolve
+   path** (no volga, re-solve-free) is the credible ≥5× target and the real backtest hot
+   cost; scalar-only, the realistic win is ~2.5–4× (Giles/Griewank bound the full gradient
+   at 3–4× one price vs `fd_warm`'s ~7 solve-equivalents), reaching 5× only if the reverse
+   sweep is genuinely ~1× price. The **full 8-greek bundle** keeps volga's 2 cold re-solves
+   unless the analytic `y_σσ` lands, so "all 8 greeks ≥5×" is optimistic; the PM should
+   decide between a first-order-scoped ≥5× gate and a looser full-bundle target once P5 has
+   the WS-M baseline. Do **not** treat the P2 0.81× as the throughput verdict — it is a
+   disclosed prototype and the FD Jacobian is the known bottleneck.
+
+Note the domain narrowness (§4) is a *separate* wave-2 lever from the FD-Jacobian cost:
+even a fully analytic sweep only fires where the loose boundary is well-converged unless
+the pricer's convergence is also revisited.

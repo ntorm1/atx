@@ -415,16 +415,13 @@ american_put_adjoint(double S, double K, double T, double sigma, double r, doubl
   const double rho = dPr_frozen - lam_dot_Rrho;
 
   // ── theta / charm: continuation-region Black-Scholes PDE identity (no T-boundary
-  // grid derivative). θ = rV - (r-q)S·Δ - ½σ²S²·Γ ; charm = ∂θ/∂S. In the
-  // exercised region (V ≤ intrinsic) θ = charm = 0.
-  const double intr0 = K - S;
-  const bool exercised = (P0 <= intr0 + 1.0e-9 * K) && (intr0 > 0.0);
-  double theta = 0.0, charm = 0.0;
-  if (!exercised) {
-    theta = r * P0 - (r - q) * S * delta - 0.5 * sigma * sigma * S * S * gamma;
-    charm = r * delta - (r - q) * (delta + S * gamma) -
-            0.5 * sigma * sigma * (2.0 * S * gamma + S * S * speed);
-  }
+  // grid derivative). θ = rV - (r-q)S·Δ - ½σ²S²·Γ ; charm = ∂θ/∂S. We are always in
+  // the continuation region here: the exercise-region / straddle guard above
+  // already handed any point at the intrinsic clamp to the FD bundle, so the PDE
+  // identity holds unconditionally at this spot.
+  const double theta = r * P0 - (r - q) * S * delta - 0.5 * sigma * sigma * S * S * gamma;
+  const double charm = r * delta - (r - q) * (delta + S * gamma) -
+                       0.5 * sigma * sigma * (2.0 * S * gamma + S * S * speed);
 
   // ── vanna = ∂delta/∂σ via the FIRST-ORDER boundary tangent y_σ (forward IFT:
   // J y_σ = -R_σ). Only first-order boundary motion enters a mixed 2nd derivative.
@@ -527,7 +524,11 @@ AmericanGreeks european_greeks_adjoint(double S, double K, double T, double sigm
 
 Result<AmericanGreeks> american_greeks_adjoint(double S, double K, double T, double sigma,
                                                double r, double q, Side side,
-                                               const std::optional<AlOpts> &opts) {
+                                               const std::optional<AlOpts> &opts,
+                                               bool *took_adjoint_path) {
+  if (took_adjoint_path != nullptr) {
+    *took_adjoint_path = false;
+  }
   if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !(sigma > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "american_greeks_adjoint: S, K, T, sigma must be > 0");
   }
@@ -539,6 +540,9 @@ Result<AmericanGreeks> american_greeks_adjoint(double S, double K, double T, dou
   if (side == Side::Put &&
       classify_regime(/*rate=*/r, /*yield=*/q) == ExerciseRegime::American) {
     if (std::optional<AmericanGreeks> g = american_put_adjoint(S, K, T, sigma, r, q, opts)) {
+      if (took_adjoint_path != nullptr) {
+        *took_adjoint_path = true; // the genuine IFT-adjoint path produced this result
+      }
       return Ok(*g);
     }
   } else if (side == Side::Put && classify_regime(r, q) == ExerciseRegime::European) {
