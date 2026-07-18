@@ -17,11 +17,13 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
 #include <numeric>
+#include <set>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -234,9 +236,12 @@ TEST(PricingExecutor, DynamicExceptionIsRethrownAndPoolRemainsReusable) {
   }
 }
 
-// Concurrent top-level clients share one executor job slot. One failing client
-// must release dispatch_mtx after its barrier/rethrow so the other clients finish,
-// and the pool must remain reusable afterward.
+// Concurrent top-level clients each run an INDEPENDENT job through the shared
+// work-stealing queue (E2 retired the single per-level slot + dispatch_mtx). This
+// verifies the property that outlived that refactor: one client's failure is
+// ISOLATED to its own job (exactly one caught exception), every other client still
+// writes its full disjoint result, and the pool remains reusable. (Name kept for
+// history; the callers no longer serialize on a shared slot.)
 TEST(PricingExecutor, ConcurrentTopLevelCallersSerializeAcrossFailureAndRemainReusable) {
   PricingExecutor ex;
   constexpr unsigned callers = 4u;
@@ -541,6 +546,274 @@ TEST(PricingExecutor, NestedDynamic_StableWorkerIdsCoverEveryIndexOnce) {
   for (std::size_t k = 0; k < R * C; ++k) {
     EXPECT_EQ(hits[k].load(std::memory_order_relaxed), 1u) << k;
   }
+}
+
+// ── E2: unified work-stealing scheduler (retires the per-level dispatch_mtx) ──
+//
+// E2 replaced E1's two fixed job slots + single-slot dispatch_mtx serialization
+// with one shared task queue drained HELP-FIRST. These tests pin the new contract:
+//   (a) determinism — a nested (outer -> inner) reduction is byte-identical across
+//       worker counts {1,2,4,8}, even run from many concurrent external threads;
+//   (b) deadlock-freedom — cross-dependent dispatchers that DEADLOCKED under the
+//       old single-slot design now make progress (guarded by an in-body timeout so
+//       a regression fails cleanly instead of hanging the suite);
+//   (c) PoolDispatches counts outer + every nested pool wake;
+//   (d) an EXTERNAL-outer (bounded-queue style) caller's slices run CONCURRENTLY on
+//       the pool (no serialization) and reach pool workers.
+
+namespace {
+// Generous cap on every cross-thread rendezvous below: on the correct scheduler the
+// counterpart arrives in microseconds, so this only elapses on a genuine deadlock —
+// the wait_for then returns false, the body records it, and the dispatch unwinds so
+// the test fails cleanly rather than hanging (and hanging the whole ctest process).
+constexpr std::chrono::seconds kRendezvousTimeout{20};
+} // namespace
+
+// (a) Determinism across worker counts {1,2,4,8}, under CONCURRENT external drivers.
+// The block partition fixes which context owns a cell; the work-stealing queue only
+// moves which thread runs it, so every driver must reproduce the serial reference
+// byte-for-byte for every (outer, inner) worker-count pair.
+TEST(PricingExecutor, E2_ConcurrentNestedDeterministicAcrossWorkerCounts) {
+  PricingExecutor ex;
+  constexpr std::size_t R = 16;
+  constexpr std::size_t C = 64;
+  const auto cell = [](std::size_t r, std::size_t c) -> std::uint64_t {
+    return (r + 1u) * 2654435761ull ^ ((c + 1u) * 40503ull); // unique per (r, c)
+  };
+  std::vector<std::uint64_t> ref(R * C);
+  for (std::size_t r = 0; r < R; ++r) {
+    for (std::size_t c = 0; c < C; ++c) {
+      ref[r * C + c] = cell(r, c);
+    }
+  }
+  for (unsigned outer_nt : {1u, 2u, 4u, 8u}) {
+    for (unsigned inner_nt : {1u, 2u, 4u, 8u}) {
+      constexpr unsigned T = 4; // concurrent external drivers sharing one pool
+      std::vector<std::vector<std::uint64_t>> outs(T, std::vector<std::uint64_t>(R * C, 0u));
+      std::vector<std::thread> drivers;
+      drivers.reserve(T);
+      for (unsigned t = 0; t < T; ++t) {
+        drivers.emplace_back([&, t] {
+          ex.run_ranges(R, outer_nt, [&](std::size_t lo, std::size_t hi) {
+            for (std::size_t r = lo; r < hi; ++r) {
+              ex.run_blocks_nested(C, inner_nt,
+                                   [&](std::size_t c) { outs[t][r * C + c] = cell(r, c); });
+            }
+          });
+        });
+      }
+      for (std::thread &d : drivers) {
+        d.join();
+      }
+      for (unsigned t = 0; t < T; ++t) {
+        ASSERT_EQ(outs[t], ref) << "outer_nt=" << outer_nt << " inner_nt=" << inner_nt << " t=" << t;
+      }
+    }
+  }
+}
+
+// (b) Deadlock-freedom, TOP LEVEL: two external callers whose block-0 bodies depend
+// on each other. Under E1's dispatch_mtx[0] the second caller blocked acquiring the
+// single slot the first holds for its whole call (block-0 included) -> neither flag
+// is ever set -> deadlock. The work-stealing scheduler gives each its own job, so
+// both make progress. A regression trips the in-body timeout and fails here.
+TEST(PricingExecutor, E2_ConcurrentTopLevelDispatchersDoNotDeadlock) {
+  PricingExecutor ex;
+  if (ex.size() == 0u) {
+    GTEST_SKIP() << "single-context executor cannot exercise concurrent dispatchers";
+  }
+  constexpr std::size_t n = 64;
+  std::mutex mu;
+  std::condition_variable cv;
+  bool a_started = false;
+  bool b_started = false;
+  bool a_timed_out = false;
+  bool b_timed_out = false;
+  std::vector<int> ga(n, 0);
+  std::vector<int> gb(n, 0);
+
+  std::thread ta([&] {
+    ex.run_ranges(n, 2u, [&](std::size_t lo, std::size_t hi) {
+      for (std::size_t i = lo; i < hi; ++i) {
+        ga[i] += 1;
+      }
+      if (lo == 0u) { // block 0 on caller A's own thread
+        std::unique_lock<std::mutex> lk(mu);
+        a_started = true;
+        cv.notify_all();
+        if (!cv.wait_for(lk, kRendezvousTimeout, [&] { return b_started; })) {
+          a_timed_out = true;
+        }
+      }
+    });
+  });
+  std::thread tb([&] {
+    ex.run_ranges(n, 2u, [&](std::size_t lo, std::size_t hi) {
+      for (std::size_t i = lo; i < hi; ++i) {
+        gb[i] += 1;
+      }
+      if (lo == 0u) { // block 0 on caller B's own thread
+        std::unique_lock<std::mutex> lk(mu);
+        b_started = true;
+        cv.notify_all();
+        if (!cv.wait_for(lk, kRendezvousTimeout, [&] { return a_started; })) {
+          b_timed_out = true;
+        }
+      }
+    });
+  });
+  ta.join();
+  tb.join();
+
+  EXPECT_FALSE(a_timed_out) << "caller A never saw B start — dispatchers serialized";
+  EXPECT_FALSE(b_timed_out) << "caller B never saw A start — dispatchers serialized";
+  for (std::size_t i = 0; i < n; ++i) {
+    EXPECT_EQ(ga[i], 1) << i;
+    EXPECT_EQ(gb[i], 1) << i;
+  }
+}
+
+// (b) Deadlock-freedom, NESTED: within ONE outer dispatch two concurrent contexts
+// (context 0 on the dispatcher, context 1 on a worker) each issue a nested dispatch
+// whose block-0 bodies depend on each other. Under E1's dispatch_mtx[1] the worker's
+// nested dispatch blocked on the single nested slot the dispatcher holds while it
+// waits on the worker -> deadlock. Help-first draining breaks it. Needs >= 2 pool
+// workers so both nested dispatches actually reach the pool (idle window >= 1). The
+// outer spans R=4 rows (>= kInlineThreshold, so it truly dispatches): with nt=2,
+// context 0 owns rows [0,2) (row 0 waits) and context 1 owns rows [2,4) (row 2 sets).
+TEST(PricingExecutor, E2_NestedCrossDependentDispatchesMakeProgress) {
+  PricingExecutor ex;
+  if (ex.size() < 2u) {
+    GTEST_SKIP() << "needs >= 2 pool workers for both nested dispatches to reach the pool";
+  }
+  constexpr std::size_t R = 4;
+  constexpr std::size_t C = 256;
+  std::vector<int> grid(R * C, 0);
+  std::mutex mu;
+  std::condition_variable cv;
+  bool setter_ran = false;
+  bool waiter_timed_out = false;
+
+  ex.run_ranges_nested(R, 2u, [&](std::size_t lo, std::size_t hi) {
+    for (std::size_t r = lo; r < hi; ++r) {
+      const bool waiter = (r == 0u); // row 0 (context 0, dispatcher) waits
+      const bool setter = (r == 2u); // row 2 (context 1, a worker) sets
+      ex.run_blocks_nested(C, 0u, [&, waiter, setter](std::size_t c) {
+        grid[r * C + c] += 1;
+        if (c == 0u && setter) {
+          std::unique_lock<std::mutex> lk(mu);
+          setter_ran = true;
+          cv.notify_all();
+        } else if (c == 0u && waiter) {
+          std::unique_lock<std::mutex> lk(mu);
+          if (!cv.wait_for(lk, kRendezvousTimeout, [&] { return setter_ran; })) {
+            waiter_timed_out = true;
+          }
+        }
+      });
+    }
+  });
+
+  EXPECT_FALSE(waiter_timed_out) << "nested dispatches serialized on a single slot";
+  for (std::size_t k = 0; k < R * C; ++k) {
+    EXPECT_EQ(grid[k], 1) << k;
+  }
+}
+
+// (c) PoolDispatches counts the outer wake plus every nested pool wake. The outer
+// spans R=4 rows (>= kInlineThreshold, so it truly dispatches: +1) and each row
+// issues one nested dispatch that actually dispatches (idle window >= 1 with >= 2
+// workers: +4), so >= 1 + 2 real wakes are recorded under nesting.
+TEST(PricingExecutor, E2_PoolDispatchesCountsOuterPlusNestedWakes) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+  if (pricing_executor().size() < 2u) {
+    GTEST_SKIP() << "needs >= 2 pool workers to leave an idle window for nesting";
+  }
+  PricingExecutor &ex = pricing_executor(); // singleton owns the global counter
+  constexpr std::size_t R = 4;
+  constexpr std::size_t C = 256;
+  const auto run = [&] {
+    std::vector<int> grid(R * C, 0);
+    ex.run_ranges(R, 2u, [&](std::size_t lo, std::size_t hi) {
+      for (std::size_t r = lo; r < hi; ++r) {
+        ex.run_blocks_nested(C, 0u, [&](std::size_t c) { grid[r * C + c] += 1; });
+      }
+    });
+    for (std::size_t k = 0; k < R * C; ++k) {
+      EXPECT_EQ(grid[k], 1) << k;
+    }
+  };
+
+  if constexpr (counters_enabled()) {
+    { // warm the pool so worker launches don't perturb anything measured
+      std::vector<int> warm(4096, 0);
+      ex.run_blocks(warm.size(), 8u, [&](std::size_t i) { warm[i] = 1; });
+    }
+    atx::vol::counters::reset();
+    run();
+    const std::uint64_t dispatches = atx::vol::counters::snapshot().get(Counter::PoolDispatches);
+    EXPECT_GE(dispatches, 3u) << "expected >= 1 outer + >= 2 nested pool wakes; got " << dispatches;
+  } else {
+    run();
+  }
+}
+
+// (d) External-outer concurrency: several external (bounded-queue style) callers each
+// drive a pricing slice. Their block-0 contexts rendezvous at a K-way barrier that
+// can ONLY complete if all K slices are in flight at once — under E1's dispatch_mtx[0]
+// they ran one-at-a-time and the barrier timed out. It also records that the slices'
+// non-zero blocks reached pool worker threads (each slice uses > 1 worker).
+TEST(PricingExecutor, E2_ExternalOuterSlicesRunConcurrentlyAndUseWorkers) {
+  PricingExecutor ex;
+  if (ex.size() == 0u) {
+    GTEST_SKIP() << "single-context executor has no pool workers to share";
+  }
+  constexpr unsigned K = 3;      // external bounded-queue-style callers
+  constexpr std::size_t n = 512; // >= pool so non-zero blocks land on workers
+  std::mutex mu;
+  std::condition_variable cv;
+  unsigned at_barrier = 0;
+  bool released = false;
+  bool barrier_timed_out = false;
+  std::mutex tmu;
+  std::set<std::thread::id> worker_block_threads;
+  const std::thread::id nil{};
+
+  const auto slice = [&] {
+    ex.run_ranges(n, 0u, [&](std::size_t lo, std::size_t hi) {
+      if (lo == 0u) { // block 0 runs on this external caller thread: rendezvous
+        std::unique_lock<std::mutex> lk(mu);
+        if (++at_barrier == K) {
+          released = true;
+          cv.notify_all();
+        } else if (!cv.wait_for(lk, kRendezvousTimeout, [&] { return released; })) {
+          barrier_timed_out = true;
+        }
+      } else { // a non-zero block: dispatched to a pool worker
+        std::lock_guard<std::mutex> lk(tmu);
+        worker_block_threads.insert(std::this_thread::get_id());
+      }
+      for (std::size_t i = lo; i < hi; ++i) {
+        (void)i;
+      }
+    });
+  };
+
+  std::vector<std::thread> callers;
+  callers.reserve(K);
+  for (unsigned k = 0; k < K; ++k) {
+    callers.emplace_back(slice);
+  }
+  for (std::thread &c : callers) {
+    c.join();
+  }
+
+  EXPECT_FALSE(barrier_timed_out)
+      << "external-outer slices serialized — the pool served them one at a time";
+  EXPECT_FALSE(worker_block_threads.count(nil));
+  EXPECT_GE(worker_block_threads.size(), 1u)
+      << "external-outer slices never reached a pool worker";
 }
 
 } // namespace

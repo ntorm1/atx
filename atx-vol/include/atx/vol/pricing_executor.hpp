@@ -40,13 +40,15 @@
 //
 // The `*_nested` variants add an EXPLICIT, bounded second level. A per-thread
 // `{depth, idle_budget}` records how many pool workers the enclosing TOP-LEVEL
-// dispatch left parked (`H - active_outer`); a single nested dispatch may fan onto
-// exactly those idle workers via a second job slot with a DISJOINT worker set — so
-// it never waits on a worker busy in the outer dispatch, and cannot deadlock. A
-// second nested level (depth >= 2) always inlines, bounding recursion and live job
-// slots to two. `nested_budget()` exposes the current window for callers that size
-// their own fan-out (the fit/universe scheduler, WS-5). At top level the `*_nested`
-// variants are identical to their plain counterparts.
+// dispatch left parked (`H - active_outer`); a nested dispatch sizes its fan-out to
+// that window and pushes its contexts onto the shared work-stealing queue (E2). A
+// dispatcher blocked on its own fan-out drains that queue HELP-FIRST — it runs
+// queued tasks instead of parking on a slot — so a nested (or concurrent, or
+// external-outer) dispatch can never wait on a slot a busy worker must first free,
+// and cannot deadlock. A second nested level (depth >= 2) always inlines, bounding
+// the live nesting to two. `nested_budget()` exposes the current window for callers
+// that size their own fan-out (the fit/universe scheduler, WS-5). At top level the
+// `*_nested` variants are identical to their plain counterparts.
 //
 // A body exception is captured at its first caller/worker observation. Every
 // participant still reaches the join barrier before that exception is rethrown on
