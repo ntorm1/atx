@@ -531,6 +531,14 @@ benchmark::internal::Benchmark *register_corpus_scale(const char *name,
   // A corpus operation can already contain 100 admitted boards. Process-level
   // best-of-3 owns baseline noise control; adaptive warmup and in-process repeats
   // would multiply cold fitting work and make the canonical gate impractical.
+  //
+  // Because this is Iterations(1) with no repeats, Google Benchmark emits NO
+  // aggregate row (no median/stddev/cv) for these rows — only a single
+  // `iteration` row. compare_baseline.py therefore treats them as CV-UNGUARDED:
+  // it falls back to the iteration real_time to gate a CRASH (a vanished/errored
+  // row → MISSING → hard fail), while a ratio move alone is advisory (a lone
+  // iteration carries no CV). Keep this Iterations(1) contract in sync with that
+  // fallback if the corpus scale registration ever changes.
   return benchmark::RegisterBenchmark(name, function)
       ->Iterations(1)
       ->Unit(benchmark::kMillisecond)

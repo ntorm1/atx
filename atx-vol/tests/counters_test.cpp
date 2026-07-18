@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <thread>
 #include <vector>
@@ -170,6 +171,81 @@ TEST(LightweightCounters, ConcurrentWritersRetainEverySample) {
   EXPECT_EQ(measured.residual_evaluations_in_sampled_iv, kWorkers);
   EXPECT_EQ(measured.boundary_solves_in_sampled_iv, 2u * kWorkers);
   EXPECT_EQ(measured.exp_calls_in_sampled_iv, 5u * kWorkers);
+}
+
+// R-21: a nested inversion under an UNSAMPLED outer must not re-sample itself as
+// a second root. White-box: force the american_iv sampler to miss on the next
+// scope (position 0 != target), then confirm only the root advanced it.
+TEST(LightweightCounters, NestedUnderUnsampledOuterIsNotASecondRoot) {
+  namespace lw = atx::vol::counters::lightweight;
+  namespace det = atx::vol::counters::lightweight::detail;
+  lw::reset();
+  det::t_state.american_iv.position = 0u;
+  det::t_state.american_iv.target = 5u; // next scope at position 0 will NOT sample
+  {
+    lw::AmericanIvSample outer; // depth 0 -> root, but misses the sample here
+    EXPECT_EQ(det::t_state.inversion_depth, 1u);
+    {
+      lw::AmericanIvSample nested; // depth 1 -> must never take its own sample
+      EXPECT_EQ(det::t_state.inversion_depth, 2u);
+      lw::record_residual_evaluation();
+    }
+    EXPECT_EQ(det::t_state.inversion_depth, 1u);
+  }
+  EXPECT_EQ(det::t_state.inversion_depth, 0u);
+  // Only the root touched the sampler (advance by 1, not 2) — the old
+  // active_inversion==nullptr gate would have let the nested scope sample too.
+  EXPECT_EQ(det::t_state.american_iv.position, 1u);
+  const lw::Snapshot s = lw::snapshot();
+  EXPECT_EQ(s.american_iv_samples, 0u); // neither scope was sampled
+  EXPECT_EQ(s.residual_evaluations_in_sampled_iv, 0u);
+}
+
+// The sampled root absorbs its nested scope's kernel work (not a separate root).
+TEST(LightweightCounters, NestedWorkAttributesToTheSampledRoot) {
+  namespace lw = atx::vol::counters::lightweight;
+  namespace det = atx::vol::counters::lightweight::detail;
+  lw::reset();
+  det::t_state.american_iv.position = 0u;
+  det::t_state.american_iv.target = 0u; // next scope samples (position == target)
+  {
+    lw::AmericanIvSample outer;
+    lw::record_residual_evaluation(); // 1 in the outer
+    {
+      lw::AmericanIvSample nested;       // not a root; work flows to the outer
+      lw::record_residual_evaluation();  // 2nd residual -> outer accumulator
+      lw::record_boundary_solves(2u);
+    }
+  }
+  const lw::Snapshot s = lw::snapshot();
+  EXPECT_EQ(s.american_iv_samples, 1u);                // exactly one root
+  EXPECT_EQ(s.residual_evaluations_in_sampled_iv, 2u); // outer + nested
+  EXPECT_EQ(s.boundary_solves_in_sampled_iv, 2u);
+}
+
+// R-20: each thread seeds its samplers distinctly and rolls the target before
+// first use, so the sampling phase decorrelates across threads instead of every
+// thread locking to target==0 (which always observed the first event).
+TEST(LightweightCounters, PerThreadSeedDecorrelatesSamplingPhase) {
+  namespace det = atx::vol::counters::lightweight::detail;
+  constexpr int kThreads = 16;
+  std::vector<std::uint32_t> query_targets(kThreads, 0u);
+  std::vector<std::thread> ts;
+  ts.reserve(kThreads);
+  for (int i = 0; i < kThreads; ++i) {
+    ts.emplace_back([&query_targets, i] {
+      // First touch of t_state on this thread runs the ThreadState ctor, which
+      // mixes a per-thread seed and rolls the initial target.
+      query_targets[static_cast<std::size_t>(i)] = det::t_state.query.target;
+    });
+  }
+  for (std::thread &t : ts) {
+    t.join();
+  }
+  const std::uint32_t first = query_targets.front();
+  const bool all_equal = std::all_of(query_targets.begin(), query_targets.end(),
+                                     [first](std::uint32_t v) { return v == first; });
+  EXPECT_FALSE(all_equal) << "per-thread seeding must decorrelate the sampling phase";
 }
 
 } // namespace

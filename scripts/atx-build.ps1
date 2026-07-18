@@ -16,6 +16,28 @@
 .EXAMPLE
   # Run the ORATS tests:
   pwsh scripts/atx-build.ps1 -Ctest -R DataOratsHistory
+
+.NOTES
+  ABSOLUTE-PATH BANNER (parallel-worktree agents). This script ALWAYS builds the
+  worktree that physically contains it (`$RepoRoot`, from `$PSScriptRoot`) — never
+  your shell's cwd. Invoke it by its ABSOLUTE path
+  (`& C:\atx-wt\<wt>\scripts\atx-build.ps1 ...`) and stand in that same worktree.
+  A relative `.\scripts\...` resolves against the cwd, which defaults to the live
+  C:\atx tree — that reconfigured the live tree twice last sprint. The wrong-tree
+  guard below now refuses when your cwd's git worktree != `$RepoRoot`.
+
+  DEPS ISOLATION (parallel agents). Pass a per-worktree, per-preset
+  `-DFETCHCONTENT_BASE_DIR=C:/atx-wt/<wt>/deps/<preset>` at configure so N agents
+  (and Debug vs Release in one tree) never share a `spdlog-build` object tree —
+  that shared tree races on `_ITERATOR_DEBUG_LEVEL`. `new-worktree.ps1 -Isolated`
+  wires this automatically.
+
+  P-CORE BENCH-LEASE. Benchmarks are only citable on a quiet host: pin to the
+  P-cores (`configure_pricing_executor(PerformanceCores)`) and, when several
+  agents share the box, LEASE the P-cores to one bench at a time and cap fit
+  fan-out with `ATX_VOL_FIT_WORKERS` (e.g. `$env:ATX_VOL_FIT_WORKERS=1` for a
+  single-op latency bench, or a small cap so a background fit does not oversubscribe
+  the leased cores). Correctness gates run on Debug/`rel`; perf on `rel-avx2`.
 #>
 [CmdletBinding(PositionalBinding = $false)]
 param(
@@ -32,6 +54,30 @@ $VsRoot   = "C:\Program Files\Microsoft Visual Studio\2022\Community"
 $VcVars   = Join-Path $VsRoot "VC\Auxiliary\Build\vcvars64.bat"
 $NinjaDir = Join-Path $VsRoot "Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
+
+# ── Wrong-tree guard (M6) ──────────────────────────────────────────────────
+# This script builds $RepoRoot — the worktree that physically CONTAINS it (via
+# $PSScriptRoot), NOT your shell's cwd. To keep that honest and kill the cwd-trap
+# that silently reconfigured the live C:\atx tree twice last sprint, refuse to run
+# unless your shell is standing in the SAME git worktree you are about to build.
+# The safe pattern becomes: `Set-Location <worktree>` then invoke that tree's
+# scripts\atx-build.ps1. Override once (CI / deliberate cross-tree) by setting
+# $env:ATX_BUILD_ALLOW_ANY_TREE=1.
+$pwdToplevel = (& git -C "$PWD" rev-parse --show-toplevel 2>$null)
+if ($LASTEXITCODE -eq 0 -and $pwdToplevel -and -not $env:ATX_BUILD_ALLOW_ANY_TREE) {
+  $normRepo = ([System.IO.Path]::GetFullPath($RepoRoot)).TrimEnd('\', '/').Replace('\', '/')
+  $normPwd  = ([System.IO.Path]::GetFullPath($pwdToplevel.Trim())).TrimEnd('\', '/').Replace('\', '/')
+  if ($normRepo -ne $normPwd) {
+    throw @"
+[atx-build] WRONG-TREE GUARD: refusing to build.
+  this script builds : $normRepo   (the worktree that contains it)
+  your shell is in   : $normPwd
+These differ — the cwd-trap that silently reconfigured the live tree last sprint.
+Fix: Set-Location '$RepoRoot'  then re-run (or invoke that tree's own
+scripts\atx-build.ps1 from inside it). Deliberate override: `$env:ATX_BUILD_ALLOW_ANY_TREE=1.
+"@
+  }
+}
 
 if (-not (Test-Path $VcVars))   { throw "vcvars64.bat not found at $VcVars" }
 if (-not (Test-Path $NinjaDir)) { throw "Ninja dir not found at $NinjaDir" }

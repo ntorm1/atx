@@ -313,3 +313,26 @@ target_link_libraries(atx-vol-cstar-panel
         atx_warnings
         Threads::Threads
 )
+
+# ── WS-0 M1 (infra-measure) — bench-gate unit test ────────────────────────
+# compare_baseline.py gates fit-row regressions/crashes. Its unit test pins the
+# iteration-real_time fallback + CV-unguarded advisory so the fit/e2e blind spot
+# (Iterations(1) rows emit no aggregate → invisible to the gate) stays closed.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_test(
+        NAME atx-vol-compare-baseline-unit
+        COMMAND ${Python3_EXECUTABLE} -m unittest compare_baseline_test
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    set_tests_properties(atx-vol-compare-baseline-unit PROPERTIES LABELS atx_vol)
+endif()
+
+# ── WS-0 M2 (infra-measure) — LBR same-host shootout ──────────────────────
+# Vendored Peter Jäckel "Let's Be Rational" (bench/thirdparty/lets_be_rational,
+# license verified permissive). Isolated warnings-off static lib, linked ONLY
+# into the IV shootout so BM_IvShootout_Jaeckel can run head-to-head vs atx-vol
+# on this host. target_link_libraries accumulates, so this appends the link to
+# the existing atx-vol-iv-shootout-bench target without touching its own block.
+add_subdirectory(thirdparty/lets_be_rational)
+target_link_libraries(atx-vol-iv-shootout-bench PRIVATE lbr_lets_be_rational)

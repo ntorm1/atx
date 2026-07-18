@@ -12,6 +12,7 @@
 #include "atx/vol/correction.hpp"
 #include "atx/vol/counters.hpp"
 #include "atx/vol/greeks.hpp"
+#include "support/isa_golden_tol.hpp"
 
 // American-correction cache coverage, ported from the C ats-vol tests
 // test_correction_cache.c and test_amer_clamp_policy.c:
@@ -848,7 +849,13 @@ using atx::vol::AmericanGreeks;
 [[nodiscard]] std::uint64_t bits(double d) noexcept { return std::bit_cast<std::uint64_t>(d); }
 
 [[nodiscard]] double rounding_tolerance(double reference) noexcept {
-  return 4.0 * std::numeric_limits<double>::epsilon() * std::fmax(1.0, std::fabs(reference));
+  const double base = 4.0 * std::numeric_limits<double>::epsilon() * std::fmax(1.0, std::fabs(reference));
+  // M4: 4 ULP on the SSE2 source-of-truth ISA; widened to 32 ULP under FMA-
+  // contracting builds (rel-avx2), where the interpolant's dsigma partial fuses
+  // a*b+c and drifts ~3e-15 (~13 ULP) from the pinned SSE2 value — contraction,
+  // not a regression. See support/isa_golden_tol.hpp. golden_isa_tol() returns 0
+  // on the reference ISA, so the SSE2 gate keeps its 4-ULP strictness.
+  return std::fmax(base, atx::vol::test::golden_isa_tol(reference));
 }
 
 // Deterministic put cache at production-shaped dims (16 x 8 x 12), r>0/q>=0 carry
