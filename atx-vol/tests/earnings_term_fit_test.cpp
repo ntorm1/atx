@@ -224,6 +224,13 @@ TEST(EarningsTermFit_FitEarningsTerm, RecoversEmoveAndCurve) {
   EXPECT_NEAR(r->emove, e, 2e-3);
   EXPECT_NEAR(r->st, st, 3e-3);
   EXPECT_NEAR(r->lt, lt, 3e-3);
+  // decay is only weakly constrained by a curve-fit's own T-spread alone
+  // (see fit_term_curve_for_emove's own RecoversPlantedCurve test, which
+  // uses the same 1e-2 tolerance for an equivalent noiseless-model
+  // recovery); pinning it here (not just emove/st/lt) closes the gap where
+  // a gross decay regression could otherwise slip through this, the core
+  // joint-fit test, undetected.
+  EXPECT_NEAR(r->decay, decay, 1e-2);
   EXPECT_EQ(r->fit_code, atx::vol::EmoveFitCode::Minimum);
   EXPECT_EQ(r->expiry_count, obs.size());
   ASSERT_EQ(r->atm_cen.size(), 12u);
@@ -339,6 +346,102 @@ TEST(EarningsTermFit_FitEarningsTerm, ZeroMaxIters_MaxSteps) {
   const auto r = fit_earnings_term(obs, cfg);
   ASSERT_TRUE(r.has_value());
   EXPECT_EQ(r->fit_code, atx::vol::EmoveFitCode::MaxSteps);
+}
+
+TEST(EarningsTermFit_FitEarningsTerm, SingleFrontFloor_DoesNotBiasEmoveDown) {
+  // Same planted curve/emove as RecoversEmoveAndCurve (st=0.55, lt=0.28,
+  // decay=4.0, e=0.07), but the FRONT observation (T=0.03) is a noisy/stale
+  // quote: its dirty total variance is fixed at n*0.04^2, so its RAW
+  // censored variance (w_dirty - n*emove^2) crosses the floor at
+  // emove ~= 0.04 -- WELL below the true emove=0.07 -- and stays floored
+  // for every candidate emove from there up through the [0.25,0.30]
+  // overshoot plateau. The TRUE optimum itself therefore floors this one
+  // front point. For that floor to bind exactly at the planted emove, the
+  // front quote's OWN implied diffusive vol must genuinely be ~0 (a
+  // structural consequence of "floors at e", not an arbitrarily extreme
+  // choice) -- so this single stale point legitimately perturbs the
+  // (unweighted, 7-point) LSQ fit; the fix's job is to stop the search from
+  // being wrongly EXCLUDED from the whole region beyond the clamp, not to
+  // make the fit immune to a real outlier's influence.
+  //
+  // Verified (Python replica of this exact algorithm, both pre- and
+  // post-fix, against this exact dataset) that the pre-fix bug -- ranking
+  // ANY candidate that floors even one event-bearing observation as
+  // +infinity -- disqualifies the ENTIRE [~0.04, 0.30] region outright
+  // (including the true optimum at 0.07) and pins the search at
+  // emove_lo=0.0, the search bracket's OWN left edge -- nowhere near 0.04,
+  // let alone 0.07. Post-fix, with the other 6 event-bearing points still a
+  // strict majority non-floored, the search instead finds a genuine
+  // interior `Minimum` well past the clamp threshold, in the true
+  // optimum's neighborhood (not laser-precise, given the legitimate
+  // single-outlier perturbation above, but a real, substantial correction
+  // toward the truth, not away from it).
+  const double st = 0.55, lt = 0.28, decay = 4.0, e = 0.07;
+  struct P {
+    double T;
+    std::size_t n;
+  };
+  std::vector<P> pts{{0.06, 1}, {0.12, 1}, {0.25, 2}, {0.5, 2}, {1.0, 2}, {2.0, 3}};
+  std::vector<CensorObsInput> obs;
+  for (auto p : pts) {
+    const double sc = lt + (st - lt) * std::exp(-decay * p.T);
+    const double w = sc * sc * p.T + static_cast<double>(p.n) * e * e;
+    obs.push_back({p.T, w, p.n});
+  }
+  // Front point: T=0.03, n=1, dirty total variance fixed at 1*0.04^2 (NOT
+  // the planted-curve value) -- a stale quote whose implied diffusive vol
+  // is ~0 once censored, clamping at the floor for emove >= ~0.04.
+  obs.insert(obs.begin(), CensorObsInput{0.03, 0.04 * 0.04, 1});
+
+  std::array<double, 12> tt{};
+  const std::array<int, 12> td{5, 10, 21, 42, 63, 84, 105, 126, 189, 252, 378, 504};
+  for (std::size_t i = 0; i < 12; ++i) {
+    tt[i] = static_cast<double>(td[i]) / 252.0;
+  }
+  EarningsFitConfig cfg{};
+  cfg.tenor_T = tt;
+  const auto r = fit_earnings_term(obs, cfg);
+  ASSERT_TRUE(r.has_value());
+  // A genuine interior optimum was found (not forced to the emove_lo bound
+  // the pre-fix bug produces), clearly past the ~0.04 clamp threshold --
+  // demonstrating the search actually explored and selected from the
+  // region beyond the clamp instead of being excluded from it -- and within
+  // a generous (given the legitimate single-outlier perturbation explained
+  // above), but still discriminating, distance of the true planted 0.07:
+  // comfortably rules out both the pre-fix emove=0.0 result and the
+  // "excluded entirely / pinned at the clamp threshold" failure mode this
+  // fix targets.
+  EXPECT_EQ(r->fit_code, atx::vol::EmoveFitCode::Minimum);
+  EXPECT_GT(r->emove, 0.05);
+  EXPECT_NEAR(r->emove, e, 0.08);
+}
+
+TEST(EarningsTermFit_FitEarningsTerm, AllNEqualNonzero_ClassifiesMinimum) {
+  // Every observation shares the SAME nonzero event count (n=1): a constant
+  // event lump is only WEAKLY identified -- separable, in principle, from
+  // the T-scaled shape of the term curve itself, since a flexible-enough
+  // curve can partially compensate -- but it IS identified: the objective
+  // still has a genuine, if shallow, local minimum. This must classify
+  // Minimum, NOT CenterFlat (CenterFlat is reserved for the all-n==0
+  // special case and a genuinely flat objective; pins the corrected
+  // contract after the review found the module's prior doc/behavior
+  // conflated "weakly identified" with "flat").
+  const double st = 0.50, lt = 0.30, decay = 3.0, e = 0.05;
+  struct P {
+    double T;
+    std::size_t n;
+  };
+  std::vector<P> pts{{0.05, 1}, {0.10, 1}, {0.25, 1}, {0.5, 1}, {1.0, 1}, {2.0, 1}};
+  std::vector<CensorObsInput> obs;
+  for (auto p : pts) {
+    const double sc = lt + (st - lt) * std::exp(-decay * p.T);
+    const double w = sc * sc * p.T + static_cast<double>(p.n) * e * e;
+    obs.push_back({p.T, w, p.n});
+  }
+  const auto r = fit_earnings_term(obs, EarningsFitConfig{});
+  ASSERT_TRUE(r.has_value());
+  EXPECT_TRUE(std::isfinite(r->emove));
+  EXPECT_EQ(r->fit_code, atx::vol::EmoveFitCode::Minimum);
 }
 
 } // namespace

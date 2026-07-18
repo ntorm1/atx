@@ -1,6 +1,7 @@
 #include "atx/vol/earnings_term_fit.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <limits>
@@ -239,52 +240,89 @@ constexpr double kOuterBoundTol = 1e-6;       // "optimum sits on a bound" epsil
 constexpr double kOuterFlatRelTol = 1e-2;     // relative-improvement flatness epsilon
 constexpr double kOuterFlatScaleFloor = 1e-6; // floor so a near-zero scan scale doesn't
                                                // blow up the relative flatness ratio
+// Grid-index radius (each side of the coarse grid's best index) used for the
+// LOCAL flatness scale -- see search_emove's own doc comment. Wider than the
+// golden-section refine's own +/-1-grid-step bracket: a single grid step
+// (~kOuterGridN-th of the bracket width) can be too narrow to register a
+// genuine but gently-sloping trend toward a bound as "not flat" (a real,
+// monotonically-improving-to-the-edge objective can look almost unchanged
+// one step in), so this uses a several-step window instead -- still a small
+// fraction of the whole bracket, i.e. still genuinely LOCAL, just wide
+// enough to carry a reliable signal.
+constexpr int kOuterFlatNeighborSteps = 4;
 
-// True iff `emove` forces at least one event-bearing (`n > 0`) observation's
-// RAW censored variance below the EFFECTIVE floor `censored_atm_vol` actually
-// applies: `max(kWCenFloor, wcen_floor)` -- `censored_total_variance`
-// (event_vol.hpp) floors at the fixed `kWCenFloor` first, then
-// `censored_atm_vol` floors AGAIN at the caller-supplied `wcen_floor` (see
-// this header's own self-review notes on that double floor); using only
-// `kWCenFloor` here would under-detect clamping whenever a caller passes a
-// STRICTER `cfg.wcen_floor > kWCenFloor`. Either floor binding means the
-// model assumption `w_dirty >= n*emove^2` is violated for that observation
-// at this candidate. The floor exists as a numerical guard for downstream
-// serving (so a later `sqrt` never sees a non-positive value), NOT as
-// evidence that a candidate `emove` is a good fit: once censoring clamps,
-// that observation's `censored_atm_vol` collapses toward `sqrt(floor/T)`
-// regardless of what its true censored vol should have been, and a FLEXIBLE
-// 3-parameter term curve can fit a whole batch of such near-identical,
-// near-zero, clamped points deceptively well (a spuriously LOW rms_resid
-// that reflects the clamp, not the model). See `outer_objective`/
-// `search_emove` for how this keeps the outer search from mistaking that
-// clamp-driven artifact for the true optimum.
-[[nodiscard]] bool any_observation_floors(std::span<const CensorObsInput> obs, double emove,
-                                          double wcen_floor) noexcept {
+// Event-bearing (`n > 0`) observation counts at one candidate `emove`: how
+// many total exist, and how many do NOT clamp against the EFFECTIVE floor
+// `censored_atm_vol` actually applies: `max(kWCenFloor, wcen_floor)` --
+// `censored_total_variance` (event_vol.hpp) floors at the fixed
+// `kWCenFloor` first, then `censored_atm_vol` floors AGAIN at the
+// caller-supplied `wcen_floor` (see this header's own self-review notes on
+// that double floor); using only `kWCenFloor` here would under-detect
+// clamping whenever a caller passes a STRICTER `cfg.wcen_floor >
+// kWCenFloor`.
+struct EventFloorCounts {
+  std::size_t event_bearing{}; // total obs with n > 0
+  std::size_t non_floored{};   // of those, how many do NOT clamp
+};
+
+// `outer_objective` uses these counts to detect the DEGENERATE
+// under-identified case only -- NOT "any single observation floors". See
+// `outer_objective`'s own doc comment for why the broader (any-single-clamp)
+// exclusion biases the recovered `emove` downward on real data, and for why
+// the degenerate test is TWO conditions, not just "fewer than 2 survive".
+[[nodiscard]] EventFloorCounts count_event_floor_status(std::span<const CensorObsInput> obs,
+                                                         double emove, double wcen_floor) noexcept {
   const double effective_floor = std::max(kWCenFloor, wcen_floor);
+  EventFloorCounts counts{};
   for (const auto &o : obs) {
     if (o.n == 0) {
-      continue; // w_cen = w_dirty - 0 = w_dirty, already validated > 0
+      continue; // not event-bearing; irrelevant to floor-clamp identification
     }
+    ++counts.event_bearing;
     const double raw = o.w_dirty - static_cast<double>(o.n) * emove * emove;
-    if (raw < effective_floor) {
-      return true;
+    if (!(raw < effective_floor)) {
+      ++counts.non_floored;
     }
   }
-  return false;
+  return counts;
 }
 
 // The outer search's objective: `curve.rms_resid`, but `+infinity` (strictly
-// worse than every legitimate candidate's finite rms) when `emove` clamps
-// any observation (`any_observation_floors`). Applied to EVERY candidate the
-// grid scan and golden-section refine touch, so neither stage can converge
-// into -- or even directionally drift toward -- the clamp-collapse region on
-// raw rms_resid alone. `curve.rms_resid` itself (Task 3's own, unmodified
-// metric) is untouched; this is purely a comparison-ranking layer the outer
-// search applies on top of it.
+// worse than every legitimate candidate's finite rms) ONLY in the
+// DEGENERATE under-identified case (`count_event_floor_status`):
+//   (a) fewer than 2 event-bearing observations remain NON-floored, or
+//   (b) the floored observations are NOT a strict MINORITY of the
+//       event-bearing set (`2*non_floored <= event_bearing`).
+// A single clamped observation, with a genuine MAJORITY of others still
+// informative, is NOT excluded: it simply contributes its floored (near-
+// `sqrt(floor/T)`) value to `curve.rms_resid` like any other point, per
+// `fit_term_curve_for_emove`'s own unweighted LSQ (Task 3) -- exactly what
+// SpiderRock's own floor is FOR (letting one noisy/stale quote still
+// contribute via clamping, not disqualifying the candidate outright).
+//
+// Excluding on ANY single clamp (this module's first-draft design) was too
+// aggressive: on real data, a single front quote that happens to clamp at
+// the TRUE `emove` would rank an otherwise-correct candidate `+infinity`,
+// biasing the recovered `emove` DOWNWARD toward whatever smaller value
+// avoids the clamp instead of the true optimum (see
+// `FitEarningsTerm_SingleFrontFloor_DoesNotBiasEmoveDown` in the test file).
+//
+// Condition (b) -- requiring floored to be a strict MINORITY, not merely
+// "< 2 survive" -- closes a real gap found while re-verifying this fix
+// against the existing bound-pinned tests: with 7 event-bearing
+// observations, a candidate where 5 float and only 2 survive (`non_floored
+// == 2`, clears the naive "< 2" bar) still lets a flexible 3-parameter
+// curve fit those 2 real points plus 5 near-identical clamped points
+// deceptively well -- the SAME spuriously-low-`rms_resid` artifact the
+// under-identified exclusion exists to catch in the first place, just with
+// 2 survivors instead of 0 or 1. Requiring a strict majority to survive
+// (matching this function's own doc: floored observations are only
+// legitimately absorbed "being a minority") rejects that artifact while
+// still admitting the single-front-floor case above (6 of 7 survive).
 [[nodiscard]] double outer_objective(std::span<const CensorObsInput> obs, double emove,
                                      const TermCurve &curve, double wcen_floor) noexcept {
-  if (any_observation_floors(obs, emove, wcen_floor)) {
+  const EventFloorCounts counts = count_event_floor_status(obs, emove, wcen_floor);
+  if (counts.non_floored < 2 || 2 * counts.non_floored <= counts.event_bearing) {
     return std::numeric_limits<double>::infinity();
   }
   return curve.rms_resid;
@@ -345,16 +383,34 @@ struct OuterSearchResult {
 // is the brief's own "objective may not be perfectly unimodal on noisy real
 // data" caveat, made concrete.
 //
-// `is_flat` (-> `EmoveFitCode::CenterFlat`) evidence: the WORST finite
-// (non-clamped) objective seen anywhere in the grid, `scan_max_finite`,
-// against the search's own best finding -- a real, identified minimum
-// improves substantially on that generic/arbitrary-point scale; an
-// under-identified objective (too few observations relative to the term
-// curve's own 3 free parameters, or an event-count pattern that does not
-// distinguish emove from the curve shape) does not, regardless of which
-// point the search happens to converge near. Clamped (+infinity) grid
-// points are excluded from this scale on purpose -- they say nothing about
-// whether the LEGITIMATE region of the bracket identifies emove.
+// `is_flat` (-> `EmoveFitCode::CenterFlat`) evidence: the objective at the
+// coarse grid's own NEARBY neighbor points around the best index
+// (`kOuterFlatNeighborSteps` grid steps to either side, clamped at the grid
+// ends), NOT the worst finite objective anywhere across the whole bracket
+// (and NOT just the immediate golden-section refine bracket's own +/-1-step
+// endpoints either -- see `kOuterFlatNeighborSteps`'s own doc comment for
+// why a single grid step proved too narrow to reliably distinguish a real,
+// gently-sloping bound-pinned trend from genuine flatness). A whole-bracket
+// scale is dominated by whichever endpoint of
+// `[emove_lo, emove_hi]` happens to be furthest from the optimum (typically
+// `emove=0`), which can both under-fire (a negligible LOCAL improvement
+// looks "large enough" next to a distant, unrelated point) and mis-fire
+// (flagging a merely WEAKLY-identified case as flat purely because the
+// bracket's own worst endpoint happens to be far away -- see the header's
+// module doc: an all-`n`-equal-nonzero event pattern is exactly this case --
+// a constant event lump is separable, in principle, from the T-scaled shape
+// of the term curve itself, so `emove` is only weakly pinned, but it IS
+// pinned, and must classify `Minimum`, not `CenterFlat`). A LOCAL scale
+// measures genuine flatness right where it matters: how much the objective
+// changes immediately around the point the search actually settled on.
+//
+// Any nearby neighbor clamped (`+infinity`) while the optimum itself is
+// finite is treated as decisively NOT flat, skipping the ratio test -- that
+// shape is a sharply-bounded, well-defined minimum (the opposite of flat),
+// not evidence of insufficient identification. Only when the optimum itself
+// is non-finite (a pathological `cfg` where even the best candidate in the
+// whole bracket clamps) is `is_flat` unconditionally true -- no legitimate
+// evidence exists anywhere.
 [[nodiscard]] OuterSearchResult search_emove(std::span<const CensorObsInput> obs, double emove_lo,
                                              double emove_hi,
                                              const EarningsFitConfig &cfg) noexcept {
@@ -368,19 +424,18 @@ struct OuterSearchResult {
 
   // Coarse grid: kOuterGridN evenly spaced points INCLUDING both endpoints
   // (i=0 => lo0, i=kOuterGridN-1 => hi0), statically bounded (JPL Rule 2).
+  // Every point's objective is retained in `grid_objective` (fixed-size,
+  // stack-allocated -- no dynamic allocation) so the LOCAL flatness scale
+  // below can reuse them directly instead of re-evaluating.
+  std::array<double, static_cast<std::size_t>(kOuterGridN)> grid_objective{};
   EmoveEval best{};
   bool best_set = false;
-  double scan_max_finite = 0.0;
-  bool any_finite = false;
   int best_idx = 0;
   for (int i = 0; i < kOuterGridN; ++i) {
     const double frac = static_cast<double>(i) / static_cast<double>(kOuterGridN - 1);
     const double e = lo0 + frac * (hi0 - lo0);
     const EmoveEval ev = evaluate_emove(obs, e, cfg);
-    if (std::isfinite(ev.objective)) {
-      scan_max_finite = any_finite ? std::max(scan_max_finite, ev.objective) : ev.objective;
-      any_finite = true;
-    }
+    grid_objective[static_cast<std::size_t>(i)] = ev.objective;
     if (!best_set || ev.objective < best.objective) {
       best = ev;
       best_idx = i;
@@ -399,6 +454,28 @@ struct OuterSearchResult {
   const int hi_idx = std::min(best_idx + 1, kOuterGridN - 1);
   double lo = lo0 + static_cast<double>(lo_idx) * grid_step;
   double hi = lo0 + static_cast<double>(hi_idx) * grid_step;
+
+  // LOCAL flatness-scale evidence (see is_flat below / the doc comment
+  // above): the coarse grid's own objective values within
+  // `kOuterFlatNeighborSteps` grid indices of the best index (clamped at
+  // the grid ends) -- a WIDER window than the golden-section refine
+  // bracket's own +/-1-step neighbors, reusing the already-computed
+  // `grid_objective` values rather than evaluating new candidates.
+  const int flat_lo_idx = std::max(best_idx - kOuterFlatNeighborSteps, 0);
+  const int flat_hi_idx = std::min(best_idx + kOuterFlatNeighborSteps, kOuterGridN - 1);
+  double local_worst = 0.0;
+  bool any_local_finite = false;
+  bool any_local_clamped = false;
+  for (int i = flat_lo_idx; i <= flat_hi_idx; ++i) {
+    const double v = grid_objective[static_cast<std::size_t>(i)];
+    if (std::isfinite(v)) {
+      local_worst = any_local_finite ? std::max(local_worst, v) : v;
+      any_local_finite = true;
+    } else {
+      any_local_clamped = true;
+    }
+  }
+
   const int iters = std::max(cfg.max_iters, 0);
   double c = hi - kGolden * (hi - lo);
   double d = lo + kGolden * (hi - lo);
@@ -440,21 +517,32 @@ struct OuterSearchResult {
   if (refined.objective < best.objective) {
     best = refined;
   }
-  if (std::isfinite(refined.objective)) {
-    scan_max_finite = any_finite ? std::max(scan_max_finite, refined.objective) : refined.objective;
-    any_finite = true;
-  }
 
-  const double scale = std::max(scan_max_finite, kOuterFlatScaleFloor);
-  // best.curve.rms_resid (not best.objective, which is +infinity in the
-  // fully-degenerate all-clamped fallback -- see any_finite below) is the
-  // TRUE residual to compare against the grid's generic scale.
-  const double improvement = scan_max_finite - best.curve.rms_resid;
-  // !any_finite: every grid point AND the refine clamped (a pathological
-  // cfg, e.g. emove_lo itself already clamps) -- no legitimate evidence
-  // anywhere in the bracket, so this is flat/uninformative by definition,
-  // not merely "improvement too small".
-  const bool is_flat = !any_finite || !(improvement > kOuterFlatRelTol * scale);
+  // is_flat: see the doc comment above for the full LOCAL-scale rationale.
+  // Every value folded into `local_worst`/`any_local_clamped` came from
+  // `grid_objective`, i.e. the SAME coarse-grid sweep `best` was chosen
+  // from, so `local_worst >= best.objective` whenever both are finite. The
+  // flat window always includes `best_idx` itself, so whenever the
+  // (possibly refine-improved) `best.objective` is finite, `any_local_
+  // finite` is guaranteed true too -- there is no third "optimum finite but
+  // zero local evidence" case to handle separately.
+  bool is_flat;
+  if (!std::isfinite(best.objective)) {
+    // Pathological cfg: even the best candidate anywhere in the whole
+    // bracket clamps (or the bracket is otherwise fully degenerate) -- no
+    // legitimate evidence exists anywhere, so this is flat by definition.
+    is_flat = true;
+  } else if (any_local_clamped) {
+    // At least one nearby neighbor of the optimum is disqualified
+    // (floor-clamped, per outer_objective) while the optimum itself is
+    // finite: a sharply-bounded, well-defined minimum -- the opposite of
+    // flat.
+    is_flat = false;
+  } else {
+    const double scale = std::max(local_worst, kOuterFlatScaleFloor);
+    const double improvement = local_worst - best.curve.rms_resid;
+    is_flat = !(improvement > kOuterFlatRelTol * scale);
+  }
 
   return OuterSearchResult{best, max_steps_hit, is_flat};
 }

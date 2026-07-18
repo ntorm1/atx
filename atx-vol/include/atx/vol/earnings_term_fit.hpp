@@ -122,21 +122,49 @@
 //     clamp EVERY event-bearing observation to the same near-zero floored
 //     value, which a flexible 3-parameter term curve then fits deceptively
 //     well (a spuriously LOW `rms_resid` that reflects the clamp, not the
-//     model). `search_emove`'s `outer_objective` treats any candidate that
-//     clamps even one event-bearing observation as `+infinity` for ranking
-//     purposes specifically to keep the search from mistaking that artifact
-//     for the true optimum -- `TermCurve::rms_resid` itself (what
+//     model). `search_emove`'s `outer_objective` treats a candidate as
+//     `+infinity` for ranking purposes ONLY in that DEGENERATE
+//     under-identified case -- fewer than 2 event-bearing observations
+//     remain NON-floored at that `emove` -- NOT whenever any single
+//     observation clamps. A lone clamped observation, with >=2 others still
+//     informative, is left in: it simply contributes its floored value to
+//     `curve.rms_resid` like any other point (exactly what SpiderRock's own
+//     floor is FOR -- letting one noisy/stale quote still contribute via
+//     clamping rather than disqualifying the candidate outright). Excluding
+//     on ANY single clamp was tried first and rejected: on real data, a
+//     single front quote that happens to clamp at the TRUE `emove` would
+//     rank an otherwise-correct candidate `+infinity`, biasing the recovered
+//     `emove` DOWNWARD toward whatever smaller value avoids the clamp
+//     instead of the true optimum. `TermCurve::rms_resid` itself (what
 //     `EarningsTermFit::fit_error` ultimately reports) is untouched by this;
 //     it is purely a comparison-ranking layer the outer search applies on
 //     top of Task 3's own unmodified metric.
 //
-//     `EmoveFitCode::CenterFlat` evidence comes from the SAME coarse grid:
-//     the worst FINITE (non-clamped) objective seen anywhere in it, compared
-//     against the search's own best finding -- a real, identified minimum
-//     improves substantially on that generic/arbitrary-point scale; an
-//     under-identified objective (too few observations relative to the term
-//     curve's own 3 free parameters, or an event-count pattern that does not
-//     distinguish emove from the curve shape) does not. This measures
+//     `EmoveFitCode::CenterFlat` evidence comes from a LOCAL scale: the
+//     objective at the coarse grid's own immediate neighbor points around
+//     the search's best finding (one grid step to either side), compared
+//     against that best finding itself -- a real, identified minimum
+//     (including a WEAKLY identified one, see below) improves measurably
+//     over its own immediate neighborhood; a genuinely flat/uninformative
+//     objective does not. This is a LOCAL scale deliberately, not the worst
+//     finite objective anywhere across the whole bracket: a whole-bracket
+//     scale is dominated by whichever endpoint of `[emove_lo, emove_hi]`
+//     happens to be furthest from the optimum (typically `emove=0`), which
+//     can both under-fire (a negligible local improvement looks "large
+//     enough" next to a distant, unrelated point) and mis-fire (flagging a
+//     weakly-but-genuinely-identified case as flat purely because the
+//     bracket's own worst endpoint happens to be far away).
+//
+//     `CenterFlat` is reserved for two cases only: (a) the all-`n==0`
+//     special case below (`emove` is not identifiable from the data AT ALL
+//     -- there is nothing to censor out, so the outer search is bypassed
+//     entirely), and (b) a GENUINELY numerically-flat objective per the
+//     local-scale test above. An all-`n`-equal-NONZERO event pattern is
+//     NEITHER of these: it is only WEAKLY identified (a constant event lump
+//     is, in principle, separable from the T-scaled shape of the term curve
+//     itself, since a flexible-enough curve can partially compensate) but it
+//     IS identified -- the objective still has a genuine, if shallow, local
+//     minimum -- so it classifies `Minimum`, not `CenterFlat`. This measures
 //     identification strength directly from the data rather than
 //     pattern-matching structurally on `obs[i].n` (e.g. "are all counts
 //     equal") -- see `earnings_term_fit.cpp`'s `search_emove`/
@@ -313,9 +341,12 @@ struct EarningsTermFit {
 //          `LeftBound`/`RightBound` if the optimum sits on a search bound,
 //          `MaxSteps` if `cfg.max_iters` was exhausted before the
 //          golden-section bracket converged, `CenterFlat` if the objective
-//          does not meaningfully discriminate `emove` across the bracket
-//          (event-under-identified, e.g. all `n` equal -- including the
-//          all-`n==0` special case below), else `Minimum`.
+//          is genuinely flat/uninformative in the LOCAL neighborhood of the
+//          search's best finding (reserved for the all-`n==0` special case
+//          below, or an otherwise fully-degenerate bracket -- NOT a merely
+//          weakly-identified case, e.g. all `n` equal and nonzero, which
+//          still has a genuine local minimum and classifies `Minimum`),
+//          else `Minimum`.
 //
 //          Err(InvalidArgument) if `obs.size() < 2`, or any observation's `T`
 //          or `w_dirty` is non-finite or <= 0.
