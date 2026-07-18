@@ -254,3 +254,47 @@ other `u2688` family (`prices_only`, `analytic`, `pnl_explain`,
 `scatter_only`) are untouched. The re-take is owned by the 07-11 sprint's
 C0.1 task, after a backtest rewiring; until then `port/price/greeks/u2688/*`
 has no baseline claim.
+
+## Backtest hot-path throughput sprint (WS-M: M1/M2/M3)
+
+Three measurement targets landed for the backtest hot-path sprint (the loop
+**fit -> serialize -> deserialize -> price/greeks**). All three are captured under
+the quiet-window protocol on `rel-avx2` and named `-avx2-` (enforced).
+
+- **M1 — `atx-vol-surface-archive-bench`** (`surface_archive_bench.cpp`): the
+  previously-missing ATXVSA-v3 serialize/deserialize measurement.
+  - `surface_archive/serialize/{essvi,convexdense}/count:{1,4,16,50,100}` —
+    `write_surface_archive` in memory; `items_per_second` == surfaces/s (µs/surface
+    = 1e6 / surfaces_per_s), `bytes_per_second` == partition write MB/s,
+    `bytes_per_surface` exposes the 4096-B blob-pad amplification WS-S kills.
+  - `surface_archive/deserialize/<payload>/<mode>/count:N` — three v1 modes:
+    `open_reconstruct_all` (open + `map_all_with_provenance`, the whole-board
+    "bytes -> ready-to-price" the backtest pays every step), `reconstruct_all`
+    (map_all on a pre-opened archive, isolating reconstruct from open), and
+    `reconstruct_one` (`map_symbol` one symbol — the WS-S subset-map baseline).
+    WS-S appends the v2 zero-copy modes (`mmap_open`, `subset_map_zero_copy`) via
+    the typed extension seam in the TU.
+  - Baseline: `i7-1260p-clang18-avx2-surface-archive.json`.
+- **M2 — universe case in `atx-vol-reloc-bench`** (`backtest_throughput_bench.cpp`):
+  `backtest/universe_strangle_hedged/steps` — kUnivN=10 names × daily 40Δ Strangle
+  entry × held-to-expiry (overlapping cohorts) × daily DeltaToZero hedge (the WS-D
+  strategy shape), synthetic surfaces. Headline `steps/s` (items/s) + `final_open_lots`
+  book size. The pre-existing `backtest/multiunderlier_straddle/steps` stays as the
+  ATM straddle reference. Baseline: `i7-1260p-clang18-avx2-backtest-throughput.json`.
+- **M3 — attribution row in `atx-vol-e2e-hotpath-bench`** (`e2e_hotpath_bench.cpp`):
+  `attribution/pipeline/synth_fit_ser_deser_price` — a self-contained synthetic
+  fit -> serialize -> deserialize -> price pass whose four stage boundaries are timed
+  harness-side via `counters::timing::ScopedStageTimer` (no foreign TU instrumented).
+  Publishes `{fit,serialize,deserialize,price}_ms` + `_frac` so effort lands on the
+  real critical path. Baseline: `i7-1260p-clang18-avx2-e2e-attribution.json`.
+
+Regenerate (pinned host, quiet box, `rel-avx2`, fit fan-out capped):
+
+```
+cmake --preset rel-avx2 -DATX_BUILD_BENCH=ON -DFETCHCONTENT_BASE_DIR=C:/atx-wt/<wt>/deps/rel-avx2
+cmake --build build-rel-avx2 --target atx-vol-surface-archive-bench atx-vol-reloc-bench atx-vol-e2e-hotpath-bench
+$env:ATX_VOL_FIT_WORKERS=1
+./build-rel-avx2/bin/atx-vol-surface-archive-bench.exe --benchmark_out=bench/baselines/i7-1260p-clang18-avx2-surface-archive.json --benchmark_out_format=json
+./build-rel-avx2/bin/atx-vol-reloc-bench.exe --benchmark_filter="backtest/" --benchmark_out=bench/baselines/i7-1260p-clang18-avx2-backtest-throughput.json --benchmark_out_format=json
+./build-rel-avx2/bin/atx-vol-e2e-hotpath-bench.exe --benchmark_filter="attribution" --benchmark_out=bench/baselines/i7-1260p-clang18-avx2-e2e-attribution.json --benchmark_out_format=json
+```
