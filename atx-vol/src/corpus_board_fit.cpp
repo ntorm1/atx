@@ -209,7 +209,13 @@ void retain_consumed_fit_parity(const OptionChain &chain, const CorpusAdmissionP
     // The fitter's Mark admission does not consume parity, but qualified-corpus
     // admission can do so immediately afterward. Make that outer dependency
     // explicit before the Mark fast-path default elides the diagnostic pass.
-    cfg.score_parity = true;
+    // R-25: only DEFAULT parity on when the caller left it unset. An explicit
+    // `score_parity == false` is documented to fail closed (parity-consuming
+    // admission then rejects the board for want of the diagnostic), so it must
+    // not be silently overridden here.
+    if (!cfg.score_parity.has_value()) {
+      cfg.score_parity = true;
+    }
   }
 }
 

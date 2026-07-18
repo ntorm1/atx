@@ -143,7 +143,13 @@ struct HybridDivParams {
 // @param cash_divs  cash dividend schedule (as in hybrid_forward)
 // @param hyb        blend + proportional-yield parameters (borrow is solved)
 // @param b_lo,b_hi  accepted range for the borrow (finite, b_lo < b_hi)
-// @param tol        finite positive endpoint-roundoff allowance on the range
+// @param tol        VESTIGIAL (R-26): validated finite-positive for API
+//                   compatibility, but the closed-form PCP inversion is exact and
+//                   does NOT consume it. A root at the bracket edge is admitted
+//                   only within a fixed machine-roundoff slack, never within
+//                   `tol` — a root genuinely outside [b_lo, b_hi] is rejected
+//                   even when |root - edge| < tol. Retained so the former
+//                   bisection's signature stays call-compatible.
 // @return           the implied borrow b, or:
 //                     InvalidArgument — bad scalar inputs / bracket / tol,
 //                                       or a non-finite forward factor
