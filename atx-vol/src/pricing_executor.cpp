@@ -7,6 +7,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <exception>
 #include <mutex>
 #include <thread>
@@ -65,36 +66,34 @@ constexpr std::size_t kInlineThreshold = 4;
 // The old bool only encoded "am I inside executor work?" and forced EVERY nested
 // run_* fully inline. This struct additionally carries the idle-worker budget the
 // enclosing top-level dispatch left unused, so an OPT-IN nested dispatch
-// (run_*_nested) can safely fan a second level onto exactly those parked workers.
-// The plain run_* still inline when nested (byte-for-byte the old guard), so no
-// existing call site changes behavior.
+// (run_*_nested) can size a bounded second level to those spare workers. The plain
+// run_* still inline when nested (byte-for-byte the old guard), so no existing call
+// site changes behavior.
 //
 //   depth 0  — not inside a dispatch. A run_* here is a TOP-LEVEL dispatch onto the
 //              whole pool (caller + P workers). Identical to the old `!t_in_executor`.
 //   depth 1  — running a top-level dispatch's body (the caller's block 0, or a pool
 //              worker). A plain run_* here runs INLINE (the deadlock-safe default the
-//              old bool gave); a run_*_nested here may make ONE nested dispatch onto
-//              [idle_base, idle_base+idle_budget) — the H - active_outer workers the
-//              top-level dispatch left parked.
+//              old bool gave); a run_*_nested here may make ONE nested dispatch sized
+//              to `idle_budget` (= H - active_outer, the workers the top-level dispatch
+//              left parked), whose contexts flow through the shared work-stealing queue.
 //   depth>=2 — running a nested dispatch's body. Every run_* runs INLINE. Only ONE
-//              nested level is allowed: this bounds recursion and the number of live
-//              job slots to two.
+//              nested level is allowed: this bounds the live nesting to two.
 //
-// Deadlock-freedom: a nested dispatch NEVER wakes a worker already busy on the
-// enclosing dispatch (it borrows only parked workers), so no participant can block
-// waiting on a slot it must itself service (plan §11.3 — the REAL nested-dispatch
-// deadlock at HEAD). See PricingExecutor::State below for the two-slot machinery.
+// Deadlock-freedom (E2): a blocked dispatcher drains the shared queue help-first
+// instead of parking on a slot, so no participant can wait on a slot it must itself
+// service (plan §11.3 — the REAL nested-dispatch deadlock at HEAD). `idle_budget` now
+// sizes the nested fan-out's degree; the queue, not a worker-index window, places it.
+// See PricingExecutor::State below for the work-stealing machinery.
 struct NestState {
   unsigned depth = 0;
-  unsigned idle_base = 0;   // first parked pool-worker index (meaningful at depth 1)
-  unsigned idle_budget = 0; // parked pool workers a nested dispatch may borrow
+  unsigned idle_budget = 0; // spare pool workers a nested dispatch may size itself to
 };
 thread_local NestState t_nest{};
 
 // A resolved dispatch decision. `nt == 0` means "run this call inline".
 struct DispatchPlan {
-  unsigned level = 0; // which job slot: 0 = top-level, 1 = nested
-  unsigned base = 0;  // first pool-worker index that services the job
+  unsigned level = 0; // nesting level of this dispatch: 0 = top-level, 1 = nested
   unsigned nt = 0;    // execution contexts (caller + workers); 0 => inline
 };
 
@@ -104,7 +103,9 @@ struct DispatchPlan {
 // the resulting per-index partition (and thus the result) is identical for any
 // worker count. `allow_nested` is set only by the run_*_nested entry points; a plain
 // nested run_* falls through to the inline (nt == 0) return, preserving today's
-// deadlock-safe default.
+// deadlock-safe default. `level` selects the nesting window a context body sees; the
+// work-stealing substrate reaches workers through the shared queue, so no
+// first-worker index is needed (E1's `base` retired with the fixed job slots).
 [[nodiscard]] DispatchPlan plan_dispatch(unsigned pool_workers, std::size_t n,
                                          unsigned n_threads, bool allow_nested) {
   const NestState ns = t_nest;
@@ -112,11 +113,9 @@ struct DispatchPlan {
   unsigned avail = 0u;
   if (ns.depth == 0u) {
     plan.level = 0u;
-    plan.base = 0u;
     avail = pool_workers + 1u; // caller + every worker
   } else if (ns.depth == 1u && allow_nested) {
     plan.level = 1u;
-    plan.base = ns.idle_base;
     avail = ns.idle_budget + 1u; // caller + only the parked (idle) workers
   } else {
     return plan; // nt == 0: plain nested run_* (inline), or depth >= 2 (inline)
@@ -243,49 +242,64 @@ struct PoolPlan {
 
 } // namespace
 
-// ── PricingExecutor::State — the persistent pool + generation barrier ────────
+// ── PricingExecutor::State — the persistent work-stealing pool (E2) ───────────
+//
+// CHANGE CLASS: pure-refactor of the scheduling substrate. The computed per-index
+// results are BYTE-IDENTICAL to E1: the block partition (which context owns which
+// output slot, `plan_dispatch` + `block`) is untouched — the ONLY change is WHICH
+// thread runs a given context and HOW a blocked dispatcher waits. E1's two fixed
+// `Job` slots + `dispatch_mtx[2]` single-slot serialization are retired for one
+// shared task queue drained HELP-FIRST: a dispatcher waiting on its fan-out runs
+// queued tasks instead of parking on a mutex. That removes the serialization that
+// made concurrent top-level (and external-outer bounded-queue, the U5 case) callers
+// wait one-at-a-time, and makes nested dispatch deadlock-free without the E1
+// idle-window slot dance. Every nested work unit flows through THIS queue — never a
+// bare std::async that re-enters the pool (plan §3, the known real deadlock) — which
+// is exactly what makes help-first safe.
+//
+// Determinism proof (unchanged from E1): each output slot is written by exactly one
+// context whose index range is fixed by (n, block) alone; the queue only moves which
+// THREAD executes that context, never the slot it owns, so the result is identical
+// for any worker count. Deadlock-freedom: a Job lives on its dispatcher's stack and
+// is destroyed only after `refs` (its outstanding queued tasks) reaches 0, so no
+// thread ever dereferences a freed Job; and a dispatcher blocked on its fan-out
+// always makes progress by running a queued task (its own or another job's) rather
+// than parking on a slot that a busy worker must first release.
 
 struct PricingExecutor::State {
   unsigned P = 0;
 
-  // One fork-join job slot PER nesting level: job[0] is the top-level dispatch,
-  // job[1] the single permitted nested dispatch. A slot per level (rather than one
-  // shared slot) is what lets a nested dispatch run CONCURRENTLY with its enclosing
-  // one without corrupting the outer job's bookkeeping — the two slots carry
-  // independent epoch / remaining / exception state and, crucially, service DISJOINT
-  // worker sets: level 1 only ever wakes workers level 0 left parked.
+  // A dispatched fan-out. Lives on the dispatcher's stack for the whole call. Its
+  // (nt-1) worker contexts become queue Tasks; context 0 runs inline on the
+  // dispatcher. `refs` counts queued tasks not yet run to completion; it reaching 0
+  // means no other thread still references this Job (the dispatcher's join waits for
+  // exactly this before letting the Job leave scope).
   struct Job {
     Trampoline fn = nullptr;
     void *closure = nullptr;
     std::size_t n = 0;
     std::size_t block = 0;
-    unsigned base = 0;      // first participating worker index for this job
-    unsigned active = 0;    // participating workers this dispatch
-    unsigned remaining = 0; // participating workers not yet finished
-    std::uint64_t epoch = 0;
+    unsigned nt = 0;               // total contexts (>= 2 whenever a Job is queued)
+    unsigned child_depth = 0;      // nesting depth published to each context's body
+    unsigned active_for_child = 0; // top-level worker contexts (sizes the idle window)
+    std::atomic<unsigned> refs{0}; // outstanding queued tasks; 0 => Job unreferenced
     std::atomic_flag exception_captured{};
     std::exception_ptr exception{}; // single-writer winner of exception_captured
   };
 
-  // Serializes dispatchers WITHIN a level (each level has one shared slot).
-  // dispatch_mtx[0] is the original top-level serialization: the singleton is
-  // documented concurrent-queryable (PortfolioPricer), so a second top-level caller
-  // waits for the first's region, which also stops the two big fan-outs
-  // oversubscribing the box. dispatch_mtx[1] serializes the rarer nested dispatchers
-  // that share the idle-worker window. Lock order is always dispatch_mtx[0] ->
-  // dispatch_mtx[1] -> m (m is innermost and released before any longer wait), and
-  // workers never take dispatch_mtx[0], so no cycle is possible. E2 retires both by
-  // moving to a work-stealing deque.
-  std::mutex dispatch_mtx[2];
+  // One task = "run context `ctx` (in [1, nt)) of `job`". Context 0 is the
+  // dispatcher's own inline block and is never queued.
+  struct Task {
+    Job *job = nullptr;
+    unsigned ctx = 0;
+  };
 
-  std::mutex m;
-  std::condition_variable cv_go;      // workers wait here for the next dispatch
-  std::condition_variable cv_done[2]; // the caller at each level waits for completion
-  std::condition_variable cv_started; // start() waits here until all workers park
-  unsigned started = 0;               // workers that have reached their park loop
-
-  Job job[2];         // job[0] = top-level, job[1] = nested (all guarded by m)
+  std::mutex m;                       // guards `queue`, `started`, `stopping`
+  std::condition_variable cv_q;       // workers AND helping dispatchers wait here
+  std::condition_variable cv_started; // start() waits until every worker has parked
+  std::deque<Task> queue;             // the shared work-stealing task queue
   bool stopping = false;
+  unsigned started = 0;
 
   std::vector<std::thread> workers;
 
@@ -295,14 +309,10 @@ struct PricingExecutor::State {
     workers.reserve(P);
     for (unsigned w = 0; w < P; ++w) {
       const std::uint64_t mask = (w < plan.masks.size()) ? plan.masks[w] : std::uint64_t{0};
-      workers.emplace_back([this, w, mask] { worker_loop(w, mask); });
+      workers.emplace_back([this, mask] { worker_loop(mask); });
       ATX_VOL_COUNT(WorkerLaunches); // thread ACTUALLY created (once, at first use)
     }
-    // Startup barrier: return only once every worker has parked (seen == epoch ==
-    // 0). Each worker reads `seen`, bumps `started`, and parks all while holding
-    // `m`, so no dispatch can advance `epoch` before every worker is waiting —
-    // otherwise a late-starting worker would read the already-advanced epoch into
-    // `seen`, skip the pending job, and hang the first barrier.
+    // Startup barrier: return only once every worker has reached its park loop.
     std::unique_lock<std::mutex> lk(m);
     cv_started.wait(lk, [&] { return started == P; });
   }
@@ -310,9 +320,9 @@ struct PricingExecutor::State {
   ~State() {
     {
       std::lock_guard<std::mutex> lk(m);
-      stopping = true;
+      stopping = true; // no dispatch is in flight at destruction, so `queue` is empty
     }
-    cv_go.notify_all();
+    cv_q.notify_all();
     for (std::thread &t : workers) {
       if (t.joinable()) {
         t.join();
@@ -320,7 +330,7 @@ struct PricingExecutor::State {
     }
   }
 
-  void worker_loop(unsigned w, std::uint64_t affinity_mask) {
+  void worker_loop(std::uint64_t affinity_mask) {
 #if defined(_MSC_VER)
     if (affinity_mask != 0) {
       // Best-effort: a 0 return means the pin failed; we simply continue unpinned.
@@ -330,61 +340,46 @@ struct PricingExecutor::State {
     (void)affinity_mask;
 #endif
     std::unique_lock<std::mutex> lk(m);
-    std::uint64_t seen0 = job[0].epoch; // 0 — start()'s barrier holds any dispatch until parked
-    std::uint64_t seen1 = job[1].epoch; // 0
     ++started;
     cv_started.notify_one();
     for (;;) {
-      cv_go.wait(lk, [&] {
-        return stopping || job[0].epoch != seen0 || job[1].epoch != seen1;
-      });
+      cv_q.wait(lk, [&] { return stopping || !queue.empty(); });
       if (stopping) {
         return;
       }
-      // A nested (level-1) generation can be published WHILE this worker runs its
-      // level-0 block, so handle both slots every wake — neither can be missed, and
-      // a worker not in a slot's disjoint range simply advances `seen` and re-parks.
-      run_generation(lk, w, job[0], cv_done[0], seen0, /*child_depth=*/1u);
-      run_generation(lk, w, job[1], cv_done[1], seen1, /*child_depth=*/2u);
+      const Task t = queue.front();
+      queue.pop_front();
+      lk.unlock();
+      run_task(t);
+      lk.lock();
     }
   }
 
-  // Advance ONE job slot's generation on worker `w`. Entered and left holding `lk`.
-  // If the slot's epoch moved since `seen`, snapshot it and — when `w` participates —
-  // run this worker's contiguous block, then decrement the slot's remaining count.
-  // Non-participants only advance `seen` so they re-park instead of spinning.
-  void run_generation(std::unique_lock<std::mutex> &lk, unsigned w, Job &j,
-                      std::condition_variable &done_cv, std::uint64_t &seen,
-                      unsigned child_depth) {
-    if (j.epoch == seen) {
-      return;
+  // Run one queued task to completion (WITHOUT holding `m`), then release its Job
+  // ref. The last task of a job wakes anyone waiting on that job's completion.
+  void run_task(const Task &t) {
+    run_context_body(*t.job, t.ctx);
+    if (t.job->refs.fetch_sub(1u, std::memory_order_acq_rel) == 1u) {
+      std::lock_guard<std::mutex> lk(m);
+      cv_q.notify_all();
     }
-    seen = j.epoch;
-    // Snapshot the job under the lock, then run without holding it.
-    const Trampoline fn_ = j.fn;
-    void *const cl = j.closure;
-    const std::size_t n_ = j.n;
-    const std::size_t blk = j.block;
-    const unsigned base = j.base;
-    const unsigned active = j.active;
-    if (w < base || w >= base + active) {
-      return; // not a participant this generation (seen already advanced)
-    }
-    const unsigned k = w - base;                                   // 0-based rank in this job
-    const std::size_t lo = static_cast<std::size_t>(k + 1u) * blk; // block 0 is the dispatcher's
-    const std::size_t hi = (lo + blk < n_) ? (lo + blk) : n_;
-    // Publish this worker's nesting state so a run_*_nested inside the body sees the
-    // right depth/budget. A level-0 worker (child_depth 1) exposes the idle window;
-    // a level-1 worker (child_depth 2) exposes none (a further run_* inlines).
-    // Restored before we retouch shared state.
+  }
+
+  // Execute context `ctx` of `j`: block [ctx*block, min((ctx+1)*block, n)) for
+  // run_blocks/run_ranges; a single worker-id slot for run_dynamic (block == 1, so
+  // `lo` IS the worker id the trampoline reads). Publishes the body's nesting window
+  // (a level-0 job's body sees depth 1 + the idle budget; a nested job's body sees
+  // depth 2 + no budget, so a further run_* inlines) and captures the FIRST body
+  // exception. Never rethrows — the dispatcher rethrows after the join barrier.
+  void run_context_body(Job &j, unsigned ctx) {
     const NestState prev = t_nest;
-    t_nest.depth = child_depth;
-    t_nest.idle_base = (child_depth == 1u) ? active : 0u;
-    t_nest.idle_budget = (child_depth == 1u) ? (P - active) : 0u;
-    lk.unlock();
+    t_nest.depth = j.child_depth;
+    t_nest.idle_budget = (j.child_depth == 1u) ? (P - j.active_for_child) : 0u;
+    const std::size_t lo = static_cast<std::size_t>(ctx) * j.block;
+    const std::size_t hi = (lo + j.block < j.n) ? (lo + j.block) : j.n;
     if (lo < hi) {
       try {
-        fn_(cl, lo, hi);
+        j.fn(j.closure, lo, hi);
       } catch (...) {
         if (!j.exception_captured.test_and_set(std::memory_order_acq_rel)) {
           j.exception = std::current_exception();
@@ -392,60 +387,58 @@ struct PricingExecutor::State {
       }
     }
     t_nest = prev;
-    lk.lock();
-    if (--j.remaining == 0u) {
-      done_cv.notify_one();
-    }
   }
 
-  // Publish a job to slot `level`, run block 0 inline on the caller, join. `base`
-  // is the first worker index that services it (0 at top level; the idle-window base
-  // when nested); workers [base, base+active) run blocks 1..active. The caller's
-  // NestState is already advanced by run_erased / run_dynamic_erased.
-  void dispatch(unsigned level, unsigned base, unsigned active, Trampoline fn_, void *cl,
-                std::size_t n_, std::size_t blk) {
-    Job &j = job[level];
-    std::lock_guard<std::mutex> dlk(dispatch_mtx[level]); // one dispatcher per level
+  // Publish a fan-out of `nt` contexts: queue contexts 1..nt-1 as Tasks, run context
+  // 0 inline on the calling thread, then HELP-FIRST join — drain the shared queue
+  // (this job's tasks, or opportunistically another job's) until every task of THIS
+  // job has completed. A blocked dispatcher therefore runs queued work instead of
+  // parking behind a single slot, which is what retires E1's `dispatch_mtx` and makes
+  // concurrent / nested dispatch deadlock-free. `child_depth` / `active_for_child`
+  // size the nesting window each context body sees (semantics unchanged from E1).
+  // The first captured body exception is rethrown once the barrier is reached.
+  void dispatch(unsigned nt, Trampoline fn, void *closure, std::size_t n, std::size_t block,
+                unsigned child_depth, unsigned active_for_child) {
+    Job j;
+    j.fn = fn;
+    j.closure = closure;
+    j.n = n;
+    j.block = block;
+    j.nt = nt;
+    j.child_depth = child_depth;
+    j.active_for_child = active_for_child;
+    j.refs.store(nt - 1u, std::memory_order_relaxed);
     {
       std::lock_guard<std::mutex> lk(m);
-      j.fn = fn_;
-      j.closure = cl;
-      j.n = n_;
-      j.block = blk;
-      j.base = base;
-      j.active = active;
-      j.remaining = active;
-      j.exception = nullptr;
-      j.exception_captured.clear(std::memory_order_release);
-      ++j.epoch;
-    }
-    cv_go.notify_all();
-    ATX_VOL_COUNT(PoolDispatches); // one real pool wake (0 on the inline path)
-
-    // Block 0 on the calling thread (t_nest already advanced by the run_* wrapper).
-    std::exception_ptr caller_failure;
-    const std::size_t hi0 = (blk < n_) ? blk : n_;
-    try {
-      fn_(cl, 0, hi0);
-    } catch (...) {
-      if (!j.exception_captured.test_and_set(std::memory_order_acq_rel)) {
-        caller_failure = std::current_exception();
+      for (unsigned ctx = 1u; ctx < nt; ++ctx) {
+        queue.push_back(Task{&j, ctx});
       }
     }
+    cv_q.notify_all();
+    ATX_VOL_COUNT(PoolDispatches); // one real pool wake (0 on the inline path)
 
+    // Context 0 (block 0 / worker-id 0) on the calling thread, matching E1.
+    run_context_body(j, 0u);
+
+    // Help-first join: run queued tasks until this job has no outstanding task.
     std::unique_lock<std::mutex> lk(m);
-    if (caller_failure != nullptr) {
-      j.exception = caller_failure;
+    for (;;) {
+      if (j.refs.load(std::memory_order_acquire) == 0u) {
+        break;
+      }
+      if (!queue.empty()) {
+        const Task t = queue.front();
+        queue.pop_front();
+        lk.unlock();
+        run_task(t);
+        lk.lock();
+      } else {
+        cv_q.wait(lk, [&] {
+          return j.refs.load(std::memory_order_acquire) == 0u || !queue.empty();
+        });
+      }
     }
-    cv_done[level].wait(lk, [&] { return j.remaining == 0u; });
-    std::exception_ptr failure = j.exception;
-    j.fn = nullptr;
-    j.closure = nullptr;
-    j.n = 0u;
-    j.block = 0u;
-    j.base = 0u;
-    j.active = 0u;
-    j.exception = nullptr;
+    const std::exception_ptr failure = j.exception;
     lk.unlock();
     if (failure != nullptr) {
       std::rethrow_exception(failure);
@@ -474,19 +467,6 @@ unsigned PricingExecutor::nested_budget() const noexcept {
   return (t_nest.depth == 1u) ? t_nest.idle_budget : 0u;
 }
 
-// Advance this thread's NestState for the duration of a dispatch's block 0. At the
-// top level (level 0) the workers [0, active) are busy and [active, P) stay parked,
-// forming the idle window a single nested dispatch may borrow; a nested dispatch
-// (level 1) exposes no budget of its own since a further run_* would inline.
-namespace {
-void enter_nesting(NestState &prev, unsigned level, unsigned active, unsigned P) {
-  prev = t_nest;
-  t_nest.depth = prev.depth + 1u;
-  t_nest.idle_base = (level == 0u) ? active : 0u;
-  t_nest.idle_budget = (level == 0u) ? (P - active) : 0u;
-}
-} // namespace
-
 void PricingExecutor::run_erased(std::size_t n, unsigned n_threads, Trampoline fn, void *cl,
                                  bool allow_nested) {
   if (n == 0) {
@@ -502,16 +482,13 @@ void PricingExecutor::run_erased(std::size_t n, unsigned n_threads, Trampoline f
   }
   const std::size_t block = (n + plan.nt - 1u) / plan.nt;
   const unsigned active = plan.nt - 1u;
-  // Exception-safe save/restore of this thread's nesting state across block 0: if
-  // the caller's block-0 body throws out of dispatch(), the TLS must still be reset
-  // (a leaked depth would wrongly inline — or misroute — every later run_* here).
-  NestState prev;
-  enter_nesting(prev, plan.level, active, s.P);
-  struct Restorer {
-    NestState prev;
-    ~Restorer() { t_nest = prev; }
-  } restorer{prev};
-  s.dispatch(plan.level, plan.base, active, fn, cl, n, block);
+  // Each context body runs one nesting level deeper than the dispatcher. A top-level
+  // (level 0) job exposes the idle window (P - active parked workers) to its bodies;
+  // a nested (level 1) job exposes none (a further run_* inlines). run_context_body
+  // saves/sets/restores t_nest per context, so a body throwing cannot leak the depth.
+  const unsigned child_depth = t_nest.depth + 1u;
+  const unsigned active_for_child = (plan.level == 0u) ? active : 0u;
+  s.dispatch(plan.nt, fn, cl, n, block, child_depth, active_for_child);
 }
 
 // ── Process singleton + one-time configuration ───────────────────────────────
@@ -536,10 +513,10 @@ void PricingExecutor::run_dynamic_erased(std::size_t n, unsigned n_threads, Dyna
     std::size_t count{0u};
     DynamicTrampoline fn{nullptr};
     void *closure{nullptr};
-  } dispatch;
-  dispatch.count = n;
-  dispatch.fn = fn;
-  dispatch.closure = cl;
+  } dyn;
+  dyn.count = n;
+  dyn.fn = fn;
+  dyn.closure = cl;
   const auto run_context = [](void *opaque, std::size_t lo, std::size_t) {
     auto &job = *static_cast<DynamicDispatch *>(opaque);
     const unsigned worker_id = static_cast<unsigned>(lo);
@@ -553,15 +530,13 @@ void PricingExecutor::run_dynamic_erased(std::size_t n, unsigned n_threads, Dyna
   };
 
   const unsigned active = nt - 1u;
-  NestState prev;
-  enter_nesting(prev, plan.level, active, s.P);
-  struct Restorer {
-    NestState prev;
-    ~Restorer() { t_nest = prev; }
-  } restorer{prev};
-  // One fixed range per execution context: lo is its stable worker id in [0, nt).
-  // Each context dynamically drains the shared index counter until all work is claimed.
-  s.dispatch(plan.level, plan.base, active, run_context, &dispatch, nt, 1u);
+  const unsigned child_depth = t_nest.depth + 1u;
+  const unsigned active_for_child = (plan.level == 0u) ? active : 0u;
+  // One fixed context per worker-id in [0, nt): with block == 1 and n == nt, context
+  // k maps to the single slot [k, k+1), whose `lo` the trampoline reads as its stable
+  // worker id, then drains the shared index counter until all work is claimed. The
+  // context runs whole on one thread, so worker-id -> thread stays stable even nested.
+  s.dispatch(nt, run_context, &dyn, nt, 1u, child_depth, active_for_child);
 }
 
 PricingExecutor &pricing_executor() noexcept {
