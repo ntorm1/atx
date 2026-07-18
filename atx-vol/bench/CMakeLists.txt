@@ -256,6 +256,10 @@ if(Python3_Interpreter_FOUND)
             --required american/price/fast
             --required american/price/accurate
             --required american/price/reference
+            --required american/price/fast_baw16
+            --required american/price/fast_qdplus16
+            --required american/price/fast_qdplus8
+            --required american/price/fast_baw8
             --required american/iv/accurate
             --required american/corners/resolve
             --required american/boundary_batch/scalar

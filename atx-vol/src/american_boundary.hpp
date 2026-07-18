@@ -41,6 +41,14 @@ struct AlScheme {
   std::uint16_t n_iter_jn = 2;
   std::uint16_t n_iter_fp = 4;
   double tol = 1.0e-10;
+  // Cold critical-boundary seed the solve lays down before the JN/FP sweeps.
+  // Baw (Barone-Adesi-Whaley) is the default; QdPlus is the Li (2010) "+"
+  // refinement, kept SELECTABLE for measurement. Task A6 A/B'd QdPlus on the
+  // shootout and it REGRESSED fast-tier accuracy (max abs err 1.44e-3 → 4.62e-3
+  // under the truncated fast sweep budget), so every production scheme stays Baw;
+  // see the qdplus_critical_put note in american.cpp. Defaulting to Baw leaves the
+  // accurate / reference / boundary_interp schemes byte-unchanged.
+  detail::AlSeedMode seed = detail::AlSeedMode::Baw;
 };
 
 struct AlBoundary {

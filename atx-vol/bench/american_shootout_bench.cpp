@@ -96,6 +96,18 @@ struct Contract {
   return r.has_value() ? *r : std::numeric_limits<double>::quiet_NaN();
 }
 
+// A6 A/B seam: price with a FORCED cold seed and (optionally) a trimmed premium
+// Gauss-Legendre order on top of `opts`, so the shootout can compare BAW vs the
+// Li-2010 QD+ seed and 16 vs 8 premium nodes against the same reference in one
+// build. n_quad_price == 0 keeps the preset's premium order.
+[[nodiscard]] double price_or_nan_seeded(const Contract& c, const std::optional<AlOpts>& opts,
+                                         atx::vol::detail::AlSeedMode seed,
+                                         std::uint16_t n_quad_price) noexcept {
+  const atx::vol::Result<double> r = atx::vol::detail::andersen_lake_seeded(
+      c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, opts, seed, n_quad_price);
+  return r.has_value() ? *r : std::numeric_limits<double>::quiet_NaN();
+}
+
 // Reference prices for the grid (computed once; the accuracy denominator).
 [[nodiscard]] const std::vector<double>& reference_prices(const std::vector<Contract>& grid) {
   static const std::vector<double> refs = [&] {
@@ -162,6 +174,67 @@ void run_price_tier(benchmark::State& state, const std::optional<AlOpts>& opts) 
   state.counters["med_abs_err"] = a.med_abs;
 }
 
+// ── A6 fast-tier seed / premium-quad A/B ──────────────────────────────────
+//
+// The fast tier (al_fast_opts: 7-node boundary, order-16 fixed-point + premium
+// quadrature, 2 JN + 2 FP sweeps) sits at ~1.44e-3 max abs error vs the reference —
+// right at its documented bound. Task A6 asks whether the Li-2010 QD+ cold seed
+// (steeper near-expiry exponent) buys enough accuracy headroom to then TRIM the
+// premium quadrature 16→8 and still hold that bound while dropping µs/op. These
+// rows measure all four corners of that A/B against the SAME reference in one build:
+//   fast/baw16   — BAW seed,  16 premium nodes = the pre-A6 fast-tier baseline
+//   fast/qdplus16 — QD+ seed, 16 premium nodes = seed-only accuracy gain
+//   fast/qdplus8  — QD+ seed,  8 premium nodes = seed + trim (the A6 candidate)
+//   fast/baw8    — BAW seed,   8 premium nodes = trim WITHOUT the seed (control:
+//                  shows the trim alone breaks the bound, so the seed is load-bearing)
+[[nodiscard]] Accuracy accuracy_vs_reference_seeded(const std::vector<Contract>& grid,
+                                                    const std::vector<double>& refs,
+                                                    const std::optional<AlOpts>& opts,
+                                                    atx::vol::detail::AlSeedMode seed,
+                                                    std::uint16_t n_quad_price) {
+  std::vector<double> errs;
+  errs.reserve(grid.size());
+  double max_abs = 0.0;
+  for (std::size_t i = 0; i < grid.size(); ++i) {
+    const double p = price_or_nan_seeded(grid[i], opts, seed, n_quad_price);
+    if (!std::isfinite(p) || !std::isfinite(refs[i])) {
+      continue;
+    }
+    const double e = std::abs(p - refs[i]);
+    errs.push_back(e);
+    max_abs = std::max(max_abs, e);
+  }
+  Accuracy a;
+  a.max_abs = max_abs;
+  if (!errs.empty()) {
+    std::sort(errs.begin(), errs.end());
+    a.med_abs = errs[errs.size() / 2];
+  }
+  return a;
+}
+
+void run_price_tier_seeded(benchmark::State& state, const std::optional<AlOpts>& opts,
+                           atx::vol::detail::AlSeedMode seed, std::uint16_t n_quad_price) {
+  const std::vector<Contract> grid = shootout_grid();
+  const std::vector<double>& refs = reference_prices(grid);
+  double sink = 0.0;
+  for (auto _ : state) {
+    for (const Contract& c : grid) {
+      sink += price_or_nan_seeded(c, opts, seed, n_quad_price);
+    }
+    benchmark::DoNotOptimize(sink);
+  }
+  benchmark::ClobberMemory();
+  const double ops = static_cast<double>(state.iterations()) * static_cast<double>(grid.size());
+  state.SetItemsProcessed(static_cast<std::int64_t>(ops));
+  const Accuracy a = accuracy_vs_reference_seeded(grid, refs, opts, seed, n_quad_price);
+  state.counters["grid"] = static_cast<double>(grid.size());
+  state.counters["us_per_op"] =
+      benchmark::Counter(ops * 1e-6, benchmark::Counter::kIsRate | benchmark::Counter::kInvert);
+  state.counters["max_abs_err"] = a.max_abs;
+  state.counters["med_abs_err"] = a.med_abs;
+}
+
 void american_price_fast(benchmark::State& state) {
   run_price_tier(state, std::optional<AlOpts>{atx::vol::al_fast_opts()});
 }
@@ -170,6 +243,23 @@ void american_price_accurate(benchmark::State& state) {
 }
 void american_price_reference(benchmark::State& state) {
   run_price_tier(state, std::optional<AlOpts>{reference_opts()});
+}
+
+void american_price_fast_baw16(benchmark::State& state) {
+  run_price_tier_seeded(state, std::optional<AlOpts>{atx::vol::al_fast_opts()},
+                        atx::vol::detail::AlSeedMode::Baw, 16);
+}
+void american_price_fast_qdplus16(benchmark::State& state) {
+  run_price_tier_seeded(state, std::optional<AlOpts>{atx::vol::al_fast_opts()},
+                        atx::vol::detail::AlSeedMode::QdPlus, 16);
+}
+void american_price_fast_qdplus8(benchmark::State& state) {
+  run_price_tier_seeded(state, std::optional<AlOpts>{atx::vol::al_fast_opts()},
+                        atx::vol::detail::AlSeedMode::QdPlus, 8);
+}
+void american_price_fast_baw8(benchmark::State& state) {
+  run_price_tier_seeded(state, std::optional<AlOpts>{atx::vol::al_fast_opts()},
+                        atx::vol::detail::AlSeedMode::Baw, 8);
 }
 
 // Full American IV inversion at the ACCURATE preset: a self-consistent round trip —
@@ -342,6 +432,18 @@ void register_all() {
   apply_common(benchmark::RegisterBenchmark("american/price/accurate", american_price_accurate))
       ->Unit(benchmark::kMicrosecond);
   apply_common(benchmark::RegisterBenchmark("american/price/reference", american_price_reference))
+      ->Unit(benchmark::kMicrosecond);
+  // A6 fast-tier seed/premium A/B (see the block above american_price_fast_baw16).
+  apply_common(
+      benchmark::RegisterBenchmark("american/price/fast_baw16", american_price_fast_baw16))
+      ->Unit(benchmark::kMicrosecond);
+  apply_common(
+      benchmark::RegisterBenchmark("american/price/fast_qdplus16", american_price_fast_qdplus16))
+      ->Unit(benchmark::kMicrosecond);
+  apply_common(
+      benchmark::RegisterBenchmark("american/price/fast_qdplus8", american_price_fast_qdplus8))
+      ->Unit(benchmark::kMicrosecond);
+  apply_common(benchmark::RegisterBenchmark("american/price/fast_baw8", american_price_fast_baw8))
       ->Unit(benchmark::kMicrosecond);
   apply_common(benchmark::RegisterBenchmark("american/iv/accurate", american_iv_accurate))
       ->Unit(benchmark::kMicrosecond);
