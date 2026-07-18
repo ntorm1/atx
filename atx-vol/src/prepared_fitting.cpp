@@ -358,6 +358,61 @@ Result<PreparedSlice> PreparedSliceBuilder::prepare_legacy(const Chain &chain,
     }
   }
 
+  // F1 (R-01p2): shared-boundary de-Am batch pre-pass. Route the Legacy/eSSVI
+  // de-Am through the SAME retained sigma-boundary interpolant the Configured
+  // builder (`build_observations_european`) uses — one boundary solve per
+  // slice-side across strikes — instead of the per-row scalar
+  // `american_implied_vol`. Seed one candidate observation per valid OTM leg using
+  // the IDENTICAL `strike > 0` + `quote_valid` + cap predicate the main loop
+  // applies below, so the two agree exactly on which strikes are eligible, then
+  // cache each CERTIFIED European-equivalent IV by strike index. Any row the batch
+  // does not certify keeps NaN and falls through to the byte-identical scalar
+  // `european_equiv_iv` (the parity oracle). The helper itself honours
+  // `inputs.calib.use_shared_boundary_deam` and the shared engagement guards, so
+  // with the batch disabled every entry stays NaN and the main loop is
+  // bit-identical to the pre-F1 per-row path.
+  std::vector<double> batch_iv(chain.n_strikes(), std::numeric_limits<double>::quiet_NaN());
+  {
+    std::vector<FitObs> batch_rows;
+    std::vector<std::size_t> batch_row_strike;
+    batch_rows.reserve(chain.n_strikes());
+    batch_row_strike.reserve(chain.n_strikes());
+    for (std::size_t index = 0; index < chain.n_strikes(); ++index) {
+      const double strike = chain.strikes[index];
+      if (!(strike > 0.0)) {
+        continue;
+      }
+      const Side side = otm_side(std::log(strike / inputs.F));
+      const std::size_t quote_index = chain_index(static_cast<std::uint16_t>(index), side);
+      if (!quote_valid(chain, quote_index) || (!cap_dropped.empty() && cap_dropped[index] != 0)) {
+        continue;
+      }
+      FitObs seed;
+      seed.K = strike;
+      seed.F = inputs.F;
+      seed.df = inputs.df;
+      seed.side = side;
+      seed.mid = chain.mids[quote_index];
+      seed.spread = chain.asks[quote_index] - chain.bids[quote_index];
+      seed.source_strike_index = static_cast<std::uint32_t>(index);
+      batch_rows.push_back(seed);
+      batch_row_strike.push_back(index);
+    }
+    if (!batch_rows.empty()) {
+      DeAmAuditDiagnostics batch_audit{};
+      // Certified count is consumed per-row via score_sigma_mkt below (NaN = fall
+      // through to the scalar oracle), so the aggregate return is intentionally
+      // discarded here.
+      static_cast<void>(shared_boundary_deam_batch(
+          batch_rows, inputs.S, inputs.r, inputs.F, chain.T, inputs.df, inputs.calib, inputs.caches,
+          inputs.al_opts, inputs.iv_tolerance, inputs.iv_max_iterations, inputs.method,
+          &batch_audit));
+      for (std::size_t j = 0; j < batch_rows.size(); ++j) {
+        batch_iv[batch_row_strike[j]] = batch_rows[j].score_sigma_mkt;
+      }
+    }
+  }
+
   for (std::size_t index = 0; index < chain.n_strikes(); ++index) {
     const double strike = chain.strikes[index];
     const double safe_k = (strike > 0.0) ? std::log(strike / inputs.F) : 0.0;
@@ -380,10 +435,17 @@ Result<PreparedSlice> PreparedSliceBuilder::prepare_legacy(const Chain &chain,
       // strictly binds, so the uncapped path never reaches this branch.
       observation.rejection = ObservationRejectionReason::ObservationCap;
     } else {
-      Result<double> market_iv = european_equiv_iv(
-          chain.mids[quote_index], inputs.S, strike, chain.T, inputs.r, inputs.q_eff, side,
-          inputs.method, inputs.al_opts, inputs.caches.for_side(side), inputs.iv_tolerance,
-          inputs.iv_max_iterations);
+      // F1 (R-01p2): take the shared-boundary batch IV when this row was certified
+      // above; otherwise invert it with the byte-identical per-row scalar oracle.
+      // The scalar call, arguments unchanged, remains the parity oracle for every
+      // uncertified row and the sole path when the batch is disabled.
+      Result<double> market_iv =
+          std::isfinite(batch_iv[index])
+              ? Ok(batch_iv[index])
+              : european_equiv_iv(chain.mids[quote_index], inputs.S, strike, chain.T, inputs.r,
+                                  inputs.q_eff, side, inputs.method, inputs.al_opts,
+                                  inputs.caches.for_side(side), inputs.iv_tolerance,
+                                  inputs.iv_max_iterations);
       // Correctness-first serving (§8.1): under `audit_fit_inversions` every
       // fitted proposal is repriced against the cold Andersen-Lake reference. A
       // failed proposal is recomputed accurately and re-audited; a row that

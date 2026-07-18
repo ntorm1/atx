@@ -43,6 +43,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <vector>
 
 #include "atx/vol/american.hpp"    // AlOpts (de-Am Andersen-Lake accuracy preset)
@@ -504,6 +505,48 @@ build_observations_european(const Chain &chain, double S, double r, double F, do
                             double iv_tol = 1.0e-7, std::uint16_t iv_max_iter = 64,
                             AmericanMethod method = AmericanMethod::AndersenLake,
                             bool prepare_scoring = true);
+
+// F1 (R-01p2) shared-boundary de-Am LANE BATCH — the NEW entry point that lets
+// the Legacy/eSSVI prepare path de-Americanize a slice through the SAME retained
+// sigma-boundary interpolant `build_observations_european` uses (one boundary
+// solve per slice-side across strikes) instead of a per-row scalar
+// `american_implied_vol`. It is the exact machinery the Configured builder runs
+// internally, re-exported so the Legacy driver can share it.
+//
+// Contract (mirrors §5.3/§8.1 — "a shortcut may PROPOSE an answer; it may not
+// certify its own answer"): for every `rows[i]` the batch solves AND certifies to
+// the economic price/IV budget (a nine-node interpolant plus bounded accurate
+// cold-Andersen-Lake sentinels that must clear |ΔIV| ≤ 1e-4 and the per-lane
+// price budget), the row's European-equivalent IV is written into
+// `rows[i].score_sigma_mkt`. Every other row is left `kUnscoredIv` (NaN). The
+// per-row scalar inverter (`european_equiv_iv` / `american_implied_vol`) stays the
+// numerical SOURCE OF TRUTH and PARITY ORACLE: the caller MUST invert every
+// unscored row scalar (byte-identical to the pre-batch path), and the batch never
+// forces a route on the caller.
+//
+// Each `rows[i]` must carry the raw American observation the batch needs — `mid`
+// (the OTM-leg American premium to de-Americanize), `K`, `side`, `spread`
+// (ask−bid, which drives the per-lane price budget). The Black-76 upper-bound seed
+// (`sigma_mkt`) and B76 `vega` are (re)derived INTERNALLY exactly as
+// `build_observations` derives them (`sigma_mkt = implied_vol(mid, F, K, T, df,
+// side)`), so the caller need not pre-seed them; a row whose European seed
+// inversion fails or leaves the band is left unscored (scalar fallback). `F`/`df`
+// are the shared per-slice forward/discount; the carry is q_eff = r − ln(F/S)/T,
+// exactly as the Configured builder forms it, so the two paths de-Americanize on
+// the identical forward. Engagement honours `opts.use_shared_boundary_deam` and
+// the same guards `build_observations_european` applies (Mid anchor, Andersen-
+// Lake, r ≥ 0, a wide-enough positive-rate side); when any guard fails the batch
+// writes nothing and returns 0 (all rows fall to scalar). `audit` accrues the
+// same DeAmAuditDiagnostics the internal path records (may be a throwaway).
+//
+// @return the number of rows certified (i.e. `score_sigma_mkt` written).
+[[nodiscard]] std::size_t
+shared_boundary_deam_batch(std::span<FitObs> rows, double S, double r, double F, double T, double df,
+                           const CalibOpts &opts, const AmericanCorrectionCaches &caches = {},
+                           const std::optional<AlOpts> &al_opts = std::nullopt,
+                           double iv_tol = 1.0e-7, std::uint16_t iv_max_iter = 64,
+                           AmericanMethod method = AmericanMethod::AndersenLake,
+                           DeAmAuditDiagnostics *audit = nullptr);
 
 // Inversion certificate over one slice's de-Americanization audit (charter
 // §5.3/§8.1: "a cache or shortcut may propose an answer; it may not certify

@@ -1225,6 +1225,73 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
   return Ok(std::move(out));
 }
 
+std::size_t shared_boundary_deam_batch(std::span<FitObs> rows, double S, double r, double F,
+                                       double T, double df, const CalibOpts &opts,
+                                       const AmericanCorrectionCaches &caches,
+                                       const std::optional<AlOpts> &al_opts, double iv_tol,
+                                       std::uint16_t iv_max_iter, AmericanMethod method,
+                                       DeAmAuditDiagnostics *audit) {
+  // Fail-closed: leave every row unscored so a malformed call degrades to the
+  // caller's scalar oracle, never to a silently wrong shared proposal.
+  for (FitObs &row : rows) {
+    row.score_sigma_mkt = kUnscoredIv;
+  }
+  if (!(S > 0.0) || !(F > 0.0) || !(T > 0.0) || !(df > 0.0) || !std::isfinite(r) || rows.empty()) {
+    return 0u;
+  }
+  // q_eff bridge: S·e^{(r−q_eff)T} == F exactly — the SAME carry
+  // build_observations_european forms, so both paths de-Americanize on one forward.
+  const double q_eff = r - std::log(F / S) / T;
+
+  // Build the shared-lane population. Only a row whose OTM leg inverts to an
+  // in-band European (Black-76) seed can open a lane: the seed is the lane bracket
+  // hi and (with the side's min/max seeds) spans the interpolant's sigma domain, so
+  // a failed-seed row must be EXCLUDED rather than admitted with a 0 seed that would
+  // collapse that domain. Excluded rows stay unscored and fall to the scalar oracle.
+  std::vector<FitObs> population;
+  population.reserve(rows.size());
+  std::vector<std::size_t> population_to_row;
+  population_to_row.reserve(rows.size());
+  for (std::size_t index = 0; index < rows.size(); ++index) {
+    FitObs seed = rows[index];
+    seed.F = F;
+    seed.df = df;
+    const Result<double> european_seed = implied_vol(seed.mid, F, seed.K, T, df, seed.side);
+    if (!european_seed.has_value() ||
+        !(*european_seed > kObsIvMin && *european_seed < kObsIvMax)) {
+      continue; // no European seed — the caller's scalar fallback handles this row
+    }
+    seed.sigma_mkt = *european_seed;
+    seed.vega = black76_value_and_vega(F, seed.K, T, *european_seed, df, seed.side).vega;
+    seed.score_sigma_mkt = kUnscoredIv;
+    population.push_back(seed);
+    population_to_row.push_back(index);
+  }
+  if (population.empty()) {
+    return 0u;
+  }
+  // The Legacy driver runs no OTM-shortcut route, so every eligible row is a
+  // shared-lane candidate (all-zero mask); any row the batch does not certify falls
+  // to the scalar oracle. `prepare_shared_boundary_proposals` itself enforces the
+  // engagement guards (use_shared_boundary_deam, Mid anchor, Andersen-Lake, r ≥ 0,
+  // a wide-enough positive-rate side) and writes score_sigma_mkt only for lanes it
+  // solves AND certifies against the bounded accurate sentinels.
+  DeAmAuditDiagnostics throwaway{};
+  DeAmAuditDiagnostics &diag = (audit != nullptr) ? *audit : throwaway;
+  const std::vector<std::uint8_t> shortcut_mask(population.size(), 0u);
+  prepare_shared_boundary_proposals(population, shortcut_mask, S, T, r, q_eff, opts, caches, al_opts,
+                                    iv_tol, iv_max_iter, method, diag);
+  std::size_t certified = 0u;
+  for (std::size_t index = 0; index < population.size(); ++index) {
+    const double sigma = population[index].score_sigma_mkt;
+    if (std::isfinite(sigma) && sigma > kObsIvMin && sigma < kObsIvMax) {
+      rows[population_to_row[index]].score_sigma_mkt = sigma;
+      ++certified;
+    }
+  }
+  return certified;
+}
+
 bool deam_inversion_certified(const DeAmAuditDiagnostics &audit,
                               double max_drop_fraction) noexcept {
   // 1. Every ACCEPTED proposal must have been audited. A route that accepts

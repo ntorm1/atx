@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
+#include "atx/vol/american.hpp"
 #include "atx/vol/arb.hpp"
 #include "atx/vol/black76.hpp"
 #include "atx/vol/correction.hpp"
@@ -73,6 +74,42 @@ constexpr double kDf = 0.9851119396030626;
   chain.flags[stale] = static_cast<std::uint8_t>(QuoteFlag::Stale);
   const std::size_t crossed = chain_index(6u, Side::Call);
   chain.bids[crossed] = chain.asks[crossed];
+  return chain;
+}
+
+// Wide American-priced board (flat vol) for the F1 shared-boundary parity gate.
+// Each (strike, side) mid is the exact Andersen-Lake American premium at `sigma`;
+// bid/ask straddle it. ~64 strikes gives each OTM side well over the 16-row
+// shared-lane floor so the batch actually engages.
+[[nodiscard]] Chain make_american_board(const std::vector<double> &strikes, double T, double r,
+                                        double q, double sigma) {
+  Chain chain;
+  chain.uid = 71u;
+  chain.expiry_id = 7u;
+  chain.T = T;
+  chain.strikes = strikes;
+  const std::size_t n_sides = 2u * strikes.size();
+  chain.bids.assign(n_sides, 0.0);
+  chain.asks.assign(n_sides, 0.0);
+  chain.mids.assign(n_sides, 0.0);
+  chain.ivs.assign(n_sides, std::numeric_limits<double>::quiet_NaN());
+  chain.bid_sizes.assign(n_sides, 10u);
+  chain.ask_sizes.assign(n_sides, 10u);
+  chain.ts_ns.assign(n_sides, 0);
+  chain.flags.assign(n_sides, 0u);
+  for (std::size_t i = 0; i < strikes.size(); ++i) {
+    for (const Side side : {Side::Call, Side::Put}) {
+      const std::size_t idx = chain_index(static_cast<std::uint16_t>(i), side);
+      const auto price =
+          atx::vol::american_price(100.0, strikes[i], T, sigma, r, q, side,
+                                   atx::vol::AmericanMethod::AndersenLake, std::nullopt);
+      const double mid = price.has_value() ? *price : 1.0;
+      const double half = std::fmin(0.002, 0.10 * mid);
+      chain.mids[idx] = mid;
+      chain.bids[idx] = mid - half;
+      chain.asks[idx] = mid + half;
+    }
+  }
   return chain;
 }
 
@@ -170,6 +207,110 @@ TEST(PreparedFitting, LegacyCompatibilityPreservesHistoricalPermissiveRowsAndWei
   const double expected_weight = (vega * vega) / (spread * spread * two_sigma_t * two_sigma_t);
   EXPECT_DOUBLE_EQ(row.weight_w, expected_weight);
   EXPECT_DOUBLE_EQ(row.active_weight_w, expected_weight);
+}
+
+TEST(PreparedFitting, LegacySharedBoundaryDeamMatchesScalarWithinEconomicBound) {
+  // F1 (R-01p2): the Legacy/eSSVI de-Am now routes through the shared exercise-
+  // boundary batch (one boundary solve per slice-side across strikes) instead of a
+  // per-row scalar american_implied_vol. This is the parity gate: the batch
+  // European-equivalent IV must match the exact scalar inverter within the economic
+  // bound (1e-4 vol pts), the batch must not drop in-band rows (in-band >= prior),
+  // and it must not worsen the eSSVI fit (chi^2 <= prior, economic slack).
+  constexpr double T = 1.0;
+  constexpr double r = 0.05;
+  constexpr double q = 0.02;
+  const double F = 100.0 * std::exp((r - q) * T);
+  const double df = std::exp(-r * T);
+  const double q_eff = r - std::log(F / 100.0) / T;
+
+  std::vector<double> strikes;
+  strikes.reserve(64u);
+  for (std::size_t i = 0; i < 64u; ++i) {
+    strikes.push_back(72.0 + 56.0 * static_cast<double>(i) / 63.0);
+  }
+  const Chain chain = make_american_board(strikes, T, r, q, 0.24);
+
+  PreparedSliceInputs base;
+  base.expiry_index = 5u;
+  base.S = 100.0;
+  base.r = r;
+  base.F = F;
+  base.q_eff = q_eff;
+  base.df = df;
+  base.policy = PreparedObservationPolicy::LegacyEssviCompatibility;
+  base.calib = CalibOpts{};
+
+  PreparedSliceInputs batch_inputs = base;
+  batch_inputs.calib.use_shared_boundary_deam = true; // the F1 batch route
+  PreparedSliceInputs scalar_inputs = base;
+  scalar_inputs.calib.use_shared_boundary_deam = false; // the exact per-row oracle
+
+  const auto batch = PreparedSlice::create(chain, batch_inputs);
+  const auto scalar = PreparedSlice::create(chain, scalar_inputs);
+  ASSERT_TRUE(batch.has_value()) << batch.error().to_string();
+  ASSERT_TRUE(scalar.has_value()) << scalar.error().to_string();
+
+  // (a) Engagement + direct parity oracle. Drive the exported lane helper over the
+  // same OTM candidate legs and require it to certify a real population (a side
+  // certifies only at >= 12 accepted lanes), so the end-to-end parity below is not
+  // vacuous. Every certified batch IV must match the exact scalar
+  // european_equiv_iv within 1e-4 vol pts.
+  std::vector<atx::vol::FitObs> seeds;
+  seeds.reserve(strikes.size());
+  for (std::size_t i = 0; i < strikes.size(); ++i) {
+    const Side side = (strikes[i] >= F) ? Side::Call : Side::Put;
+    const std::size_t quote_index = chain_index(static_cast<std::uint16_t>(i), side);
+    atx::vol::FitObs seed;
+    seed.K = strikes[i];
+    seed.side = side;
+    seed.mid = chain.mids[quote_index];
+    seed.spread = chain.asks[quote_index] - chain.bids[quote_index];
+    seeds.push_back(seed);
+  }
+  const std::size_t certified = atx::vol::shared_boundary_deam_batch(
+      seeds, 100.0, r, F, T, df, base.calib, {}, std::nullopt, 1.0e-7, 64,
+      atx::vol::AmericanMethod::AndersenLake, nullptr);
+  ASSERT_GE(certified, 12u) << "shared-boundary batch must engage on this board";
+
+  double worst_direct = 0.0;
+  for (const atx::vol::FitObs &seed : seeds) {
+    if (!std::isfinite(seed.score_sigma_mkt)) {
+      continue; // uncertified row -> scalar fallback, nothing to compare
+    }
+    const auto oracle =
+        atx::vol::european_equiv_iv(seed.mid, 100.0, seed.K, T, r, q_eff, seed.side);
+    ASSERT_TRUE(oracle.has_value()) << oracle.error().to_string();
+    worst_direct = std::max(worst_direct, std::fabs(seed.score_sigma_mkt - *oracle));
+  }
+  EXPECT_LE(worst_direct, 1.0e-4) << "batch vs scalar de-Am IV (direct)";
+
+  // (b) End-to-end wiring: the two Legacy arms select the identical population
+  // (selection is independent of the de-Am route), so the fit rows line up 1:1 and
+  // differ only in the de-Am IV, which must hold the bound row-for-row.
+  ASSERT_EQ(batch->fit_observations().size(), scalar->fit_observations().size());
+  ASSERT_GE(batch->fit_observations().size(), scalar->fit_observations().size()); // in-band >= prior
+  double worst_e2e = 0.0;
+  for (std::size_t i = 0; i < batch->fit_observations().size(); ++i) {
+    const atx::vol::FitObs &b = batch->fit_observations()[i];
+    const atx::vol::FitObs &s = scalar->fit_observations()[i];
+    ASSERT_EQ(b.source_strike_index, s.source_strike_index);
+    ASSERT_EQ(b.side, s.side);
+    worst_e2e = std::max(worst_e2e, std::fabs(b.sigma_mkt - s.sigma_mkt));
+    EXPECT_LE(std::fabs(b.sigma_mkt - s.sigma_mkt), 1.0e-4)
+        << "K=" << b.K << " side=" << static_cast<int>(b.side);
+  }
+
+  // (c) No fit regression: the eSSVI slice fitted on the batch population is no
+  // worse than the scalar one beyond an economically-negligible margin.
+  atx::vol::FitDiag diag_batch;
+  atx::vol::FitDiag diag_scalar;
+  const auto fit_batch =
+      atx::vol::essvi_fit_slice(batch->fit_observations(), T, F, CalibOpts{}, &diag_batch);
+  const auto fit_scalar =
+      atx::vol::essvi_fit_slice(scalar->fit_observations(), T, F, CalibOpts{}, &diag_scalar);
+  ASSERT_TRUE(fit_batch.has_value()) << fit_batch.error().to_string();
+  ASSERT_TRUE(fit_scalar.has_value()) << fit_scalar.error().to_string();
+  EXPECT_LE(diag_batch.rmse_vol_vega_weighted, diag_scalar.rmse_vol_vega_weighted + 1.0e-3);
 }
 
 TEST(PreparedFitting, SharedExpiryPreparationPreservesPolicySpecificCacheRouting) {
