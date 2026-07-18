@@ -331,10 +331,53 @@ struct SamplerState {
   std::uint64_t random{0x9e3779b97f4a7c15ULL};
 };
 
+// R-20: a monotonic nonce, bumped once per constructed ThreadState, so every
+// thread seeds its samplers from a distinct value. With a fixed shared seed AND
+// target==0, every thread's sampler was phase-locked to the same within-block
+// positions and always observed the FIRST event of block 0 (and of every short
+// run) — a systematic bias in *which* operations the DoD counters describe.
+inline std::atomic<std::uint64_t> g_sampler_seed_nonce{0u};
+
+// splitmix64 finalizer over (base ^ nonce): a well-mixed, thread-distinct seed.
+[[nodiscard]] inline std::uint64_t mix_thread_seed(std::uint64_t base) noexcept {
+  const std::uint64_t nonce = g_sampler_seed_nonce.fetch_add(1u, std::memory_order_relaxed);
+  std::uint64_t z = base ^ (0x9e3779b97f4a7c15ULL * (nonce + 1u));
+  z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+  z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+  return z ^ (z >> 31);
+}
+
+// Advance the xorshift64 stream and pick the next within-block target position.
+// Exactly one event per kSamplePeriod block is still selected; only the phase
+// moves, so a periodic pricing pattern cannot stay phase-locked to the sampler.
+inline void roll_sample_target(SamplerState &state) noexcept {
+  state.random ^= state.random << 13u;
+  state.random ^= state.random >> 7u;
+  state.random ^= state.random << 17u;
+  state.target = static_cast<std::uint32_t>(state.random) & (kSamplePeriod - 1u);
+}
+
 struct ThreadState {
   SamplerState query{};
-  SamplerState american_iv{0u, 0u, 0xd1b54a32d192ed03ULL};
+  SamplerState american_iv{};
   InversionAccumulator *active_inversion{nullptr};
+  // R-21: nesting depth of AmericanIvSample scopes on this thread. Only the
+  // OUTERMOST inversion (depth 0 -> 1) is eligible to be sampled as a root;
+  // deeper scopes are always part of the outer operation, whether or not the
+  // outer was itself sampled. (The prior `active_inversion==nullptr` gate
+  // conflated "not nested" with "outer not sampled", so a nested inversion under
+  // an unsampled outer re-sampled itself as a spurious extra root.)
+  std::uint32_t inversion_depth{0u};
+
+  ThreadState() noexcept {
+    // R-20: distinct per-thread seed for each independent sampler stream...
+    query.random = mix_thread_seed(0x9e3779b97f4a7c15ULL);
+    american_iv.random = mix_thread_seed(0xd1b54a32d192ed03ULL);
+    // ...and roll the target BEFORE first use so block 0's sampled position is
+    // randomized too (otherwise target==0 always samples the very first event).
+    roll_sample_target(query);
+    roll_sample_target(american_iv);
+  }
 };
 
 inline GlobalCounters g_counters{};
@@ -345,13 +388,7 @@ inline thread_local ThreadState t_state{};
   ++state.position;
   if (state.position == kSamplePeriod) {
     state.position = 0u;
-    // Xorshift64 changes the within-block sample position. Exactly one event
-    // per 64-event block is still selected, but a periodic pricing pattern
-    // cannot remain phase-locked to the sampler.
-    state.random ^= state.random << 13u;
-    state.random ^= state.random >> 7u;
-    state.random ^= state.random << 17u;
-    state.target = static_cast<std::uint32_t>(state.random) & (kSamplePeriod - 1u);
+    roll_sample_target(state);
   }
   return sampled;
 }
@@ -408,7 +445,14 @@ private:
 class AmericanIvSample final {
 public:
   AmericanIvSample() noexcept : previous_(detail::t_state.active_inversion) {
-    if (previous_ == nullptr && detail::take_sample(detail::t_state.american_iv)) {
+    // R-21: only the OUTERMOST inversion is a root; a nested scope never takes
+    // its own sample (regardless of whether the outer was sampled), so a
+    // nested-under-unsampled inversion can no longer be miscounted as a second
+    // root — its kernel work flows to `active_inversion` (the outer accumulator
+    // when the outer was sampled, else nullptr = correctly uncounted).
+    const bool is_root = detail::t_state.inversion_depth == 0u;
+    ++detail::t_state.inversion_depth;
+    if (is_root && detail::take_sample(detail::t_state.american_iv)) {
       sampled_ = true;
       detail::t_state.active_inversion = &accumulator_;
     }
@@ -420,6 +464,9 @@ public:
   AmericanIvSample &operator=(AmericanIvSample &&) = delete;
 
   ~AmericanIvSample() noexcept {
+    // Unwind the nesting depth for every scope (sampled or not), symmetric with
+    // the constructor's increment.
+    --detail::t_state.inversion_depth;
     if (!sampled_) {
       return;
     }
