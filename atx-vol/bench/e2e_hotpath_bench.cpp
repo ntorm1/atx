@@ -730,6 +730,21 @@ void BM_PipelineAttribution(benchmark::State &state) {
     return;
   }
 
+  // Manual warm-up — apply_common chains MinWarmUpTime(0.5), which Google Benchmark
+  // 1.9.0 forbids alongside this row's explicit Iterations() (Benchmark::Iterations
+  // asserts IsZero(min_warmup_time_); the combination aborts the binary at
+  // static-init). The registration clears the GB warm-up with ->MinWarmUpTime(0.0)
+  // and the "brief turbo prime" is re-supplied here: one untimed attribution pass
+  // before the timed reps. Keeps the review's Iterations(3) x Repetitions(15)
+  // sampling (finding #2) verbatim; only the warm-up delivery moved (GB -> in-body).
+  // Runs once per repetition (this body is invoked once per rep), matching
+  // MinWarmUpTime's per-rep cadence. The corpus is self-contained synthetic, so the
+  // warm pass always completes.
+  {
+    AttributionReport warm = run_attribution_iteration(corpus);
+    benchmark::DoNotOptimize(warm.priced_points);  // non-const: mutable-ref DoNotOptimize overload
+  }
+
   AttributionReport last;
   for (auto _ : state) {
     last = run_attribution_iteration(corpus);
@@ -768,8 +783,19 @@ const int kRegistered = [] {
   // (each rep-mean averages 3 full passes) and raise to 15 reps for a stable CV
   // before M4 reads the stage fractions. The fit/price SPLIT was already stable
   // (fit_frac CV ~0.4%); this stabilizes the absolute wall too.
+  //
+  // Warm-up reconciliation (shape (a)): apply_common chains MinWarmUpTime(0.5), but
+  // Google Benchmark 1.9.0's Benchmark::Iterations() asserts IsZero(min_warmup_time_),
+  // so apply_common(...)->Iterations(3) aborts the binary at static-init
+  // (benchmark_register.cc:369). Clear the GB warm-up on THIS row only with
+  // ->MinWarmUpTime(0.0) (legal here: iterations_ is still 0 at that chain point);
+  // BM_PipelineAttribution re-supplies the warm-up in-body. Iterations(3) x
+  // Repetitions(15) is kept verbatim (finding #2 needs deterministic fixed work/rep
+  // for a meaningful CV; MinTime auto-iteration would undo it). apply_common (shared
+  // by ~20 bench files) is untouched; the other rows in this binary are unaffected.
   apply_common(benchmark::RegisterBenchmark("attribution/pipeline/synth_fit_ser_deser_price",
                                             BM_PipelineAttribution))
+      ->MinWarmUpTime(0.0)  // clear apply_common's GB warm-up (illegal with Iterations); warm-up is in-body
       ->Unit(benchmark::kMillisecond)
       ->Iterations(3)
       ->Repetitions(15)

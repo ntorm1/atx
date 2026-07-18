@@ -34,7 +34,7 @@
 #include "atx/vol/corpus.hpp"           // CorpusManifest, CorpusEntry, CorpusFitStatus
 #include "atx/vol/priced_surface.hpp"   // PricedSurface, PricingContext
 #include "atx/vol/strategy.hpp"         // DeclarativeStrategy, StrategySpec
-#include "atx/vol/surface_archive.hpp"  // write_surface_archive_file, SurfaceArchiveItem
+#include "atx/vol/surface_archive.hpp"  // write_surface_archive_v2_file, SurfaceArchiveItem
 #include "atx/vol/surface_parity.hpp"   // SliceContext
 #include "atx/vol/types.hpp"            // Side, Status
 #include "atx/vol/vol_curve.hpp"        // CurveSurface, EssviCurve
@@ -131,7 +131,10 @@ constexpr double kUnivTargetT = 0.25;   // 3M strangle tenor (in-grid all run)
   for (const auto& [sym, ps] : items) {
     its.push_back(SurfaceArchiveItem{sym, ps});
   }
-  const Status st = write_surface_archive_file(path, its);
+  // ATXVSA2 (v2) writer: MarketSnapshot::load is v2-only (SurfaceArchiveV2::
+  // open_file) after the WS-S S4 clean-break cutover, so the backtest under test
+  // only accepts a v2 archive. Inputs (SurfaceArchiveItem) are unchanged from v1.
+  const Status st = write_surface_archive_v2_file(path, its);
   if (!st.has_value()) {
     bench_fatal(st.error().to_string());
   }
@@ -260,10 +263,26 @@ constexpr double kUnivTargetT = 0.25;   // 3M strangle tenor (in-grid all run)
   return spec;
 }
 
+// Manual warm-up — replaces apply_common's GB-managed MinWarmUpTime(0.5), which
+// Google Benchmark 1.9.0 FORBIDS alongside the review-mandated explicit
+// Iterations() (Benchmark::Iterations asserts IsZero(min_warmup_time_), so the
+// combination aborts the whole binary at static-init). One untimed backtest
+// primes turbo / I-cache / the run_backtest thread-pool / the snapshot cache
+// before the timed reps — the same "brief turbo prime" intent, moved in-body so
+// the review's Iterations(kBtItersPerRep) x Repetitions(kBtReps) sampling scheme
+// (and its CV/p95 stats) is preserved verbatim. Runs once per repetition (each BM
+// body is invoked once per rep), matching MinWarmUpTime's per-rep warm-up cadence.
+void warm_up_backtest(const Clock& clock, const StrategySpec& spec) {
+  DeclarativeStrategy warm{spec};
+  auto warm_res = run_backtest(clock, warm);
+  benchmark::DoNotOptimize(warm_res);
+}
+
 // ── Throughput: D dates x U underliers, straddle clips held to expiry ──────────
 void BM_MultiUnderlierStraddle(benchmark::State& state) {
   const Clock& clock = corpus_clock();
   const StrategySpec spec = make_spec();
+  warm_up_backtest(clock, spec);  // in-body warm-up (see warm_up_backtest / registration)
 
   double final_open_lots = 0.0;
   for (auto _ : state) {
@@ -308,6 +327,7 @@ void BM_MultiUnderlierStraddle(benchmark::State& state) {
 void BM_UniverseStrangleHedged(benchmark::State& state) {
   const Clock& clock = universe_clock();
   const StrategySpec spec = make_universe_spec();
+  warm_up_backtest(clock, spec);  // in-body warm-up (see warm_up_backtest / registration)
 
   double final_open_lots = 0.0;
   for (auto _ : state) {
@@ -349,15 +369,31 @@ void BM_UniverseStrangleHedged(benchmark::State& state) {
 constexpr int kBtReps = 15;
 constexpr int kBtItersPerRep = 4;
 
+// Warm-up reconciliation (SHAPE (a), chosen deliberately). apply_common chains
+// MinWarmUpTime(0.5), but Google Benchmark 1.9.0's Benchmark::Iterations() asserts
+// IsZero(min_warmup_time_) — so apply_common(...)->Iterations(N) aborts the binary
+// at static-init (benchmark_register.cc:369). We clear the GB warm-up on JUST these
+// two rows with ->MinWarmUpTime(0.0) (legal here: iterations_ is still 0 at that
+// point in the chain) and re-supply the warm-up manually in-body via
+// warm_up_backtest() (one untimed op per rep). We deliberately KEEP explicit
+// Iterations(kBtItersPerRep) rather than switch to MinTime auto-iteration (shape
+// (b)): the finding-#2 fix relies on DETERMINISTIC, fixed work per rep so each
+// rep-mean averages exactly kBtItersPerRep full backtests — the property that makes
+// the CV meaningful. So the sampling scheme (kBtItersPerRep x kBtReps, CV/p95) is
+// preserved verbatim; only the warm-up delivery mechanism moved (GB -> in-body).
+// apply_common is shared by ~20 other bench files, so this is fixed at the two
+// conflicting rows here, never in apply_common.
 const int kRegistered = [] {
   apply_common(benchmark::RegisterBenchmark("backtest/multiunderlier_straddle/steps",
                                             BM_MultiUnderlierStraddle))
+      ->MinWarmUpTime(0.0)  // clear apply_common's GB warm-up (illegal with Iterations); warm-up is in-body
       ->Unit(benchmark::kMillisecond)
       ->Iterations(kBtItersPerRep)
       ->Repetitions(kBtReps)
       ->UseRealTime();
   apply_common(benchmark::RegisterBenchmark("backtest/universe_strangle_hedged/steps",
                                             BM_UniverseStrangleHedged))
+      ->MinWarmUpTime(0.0)  // clear apply_common's GB warm-up (illegal with Iterations); warm-up is in-body
       ->Unit(benchmark::kMillisecond)
       ->Iterations(kBtItersPerRep)
       ->Repetitions(kBtReps)
