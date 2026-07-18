@@ -7,7 +7,9 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -15,6 +17,7 @@
 #include <iterator>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include "atx/vol/american.hpp" // AlOpts
@@ -219,6 +222,62 @@ TEST(SurfaceDbPopulate, GlobalParallelQueuePreservesDeterministicPartitions) {
 
   std::filesystem::remove_all(serial_root);
   std::filesystem::remove_all(parallel_root);
+}
+
+// Streaming / per-date-release guard (R-03 / U1). Proves populate writes and
+// releases each date's partition as that date's fits complete -- streamed
+// across the still-running shared queue -- rather than deferring every write to
+// a single global join (peak RSS O(all dates), the 519-name OOM). Mechanism: a
+// later-date (kDate1) board blocks in its fit until the earlier date's (kDate0)
+// partition is on disk. A streaming populate lets the drain write kDate0 while
+// kDate1's boards are still pending, so the block clears and populate finishes;
+// a "join every fit, then write" populate cannot write kDate0 until this very
+// board finishes, so the block would spin to its deadline and leave the witness
+// flag false. A finite deadline turns that would-be deadlock into a clean
+// assertion failure instead of a hang.
+TEST(SurfaceDbPopulate, StreamsPartitionsBeforeGlobalJoin) {
+  const auto root = test_root("streaming");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  const std::vector<CorpusBoard> boards = make_boards(); // 2 dates x 2 symbols
+
+  std::atomic<bool> date0_written{false};
+  std::atomic<bool> date0_written_before_date1_finished{false};
+
+  PopulateTestHooks hooks;
+  hooks.after_partition_write = [&](const std::string &date) {
+    if (date == kDate0) {
+      date0_written.store(true, std::memory_order_release);
+    }
+  };
+  hooks.before_board_fit = [&](const std::string &date, const std::string & /*symbol*/) {
+    if (date != kDate1) {
+      return; // only the later date's boards gate on the earlier partition
+    }
+    using clock = std::chrono::steady_clock;
+    const auto deadline = clock::now() + std::chrono::seconds(5);
+    while (clock::now() < deadline) {
+      if (date0_written.load(std::memory_order_acquire)) {
+        date0_written_before_date1_finished.store(true, std::memory_order_release);
+        return;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+  };
+
+  SurfaceDbPopulateConfig cfg;
+  cfg.n_threads = 4u; // >= n_boards so kDate1 boards start alongside kDate0's
+  auto result = populate_surface_db(*db, boards, cfg, &hooks);
+  ASSERT_TRUE(result.has_value()) << (result ? "" : result.error().to_string());
+
+  EXPECT_EQ(result->n_dates_written, 2u);
+  EXPECT_EQ(result->n_ok, 4u);
+  EXPECT_TRUE(date0_written_before_date1_finished.load())
+      << "kDate0 partition was not written until kDate1 fits finished -- populate "
+         "deferred all writes to a single global join (peak RSS O(all dates))";
+
+  std::filesystem::remove_all(root);
 }
 
 TEST(SurfaceDbPopulate, PropagatesStoredSurfacePolicyAndPersistsServedProvenance) {
