@@ -352,6 +352,16 @@ if(ATX_BUILD_EXAMPLES)
     add_executable(mag7_dispersion_backtest examples/mag7_dispersion_backtest.cpp)
     target_link_libraries(mag7_dispersion_backtest PRIVATE atx::vol atx::core atx_warnings)
 
+    # WS-D acceptance driver: the vega-flat SPY dispersion PnL-track backtest
+    # (long top-N 40Δ strangles vs a short SPY strangle, net-vega-zero at entry,
+    # daily clip, daily delta-hedge, held to expiry) -> the pnl_track.tsv the
+    # Python renderer tools/spy_dispersion_pnl_report.py turns into the
+    # acceptance PNG. Strategy gate: SpyDispersionPnl
+    # (tests/spy_dispersion_pnl_test.cpp); render gate: SpyDispersionPnlReport
+    # (tests/spy_dispersion_pnl_report_test.py). See examples/spy_dispersion_pnl.cpp.
+    add_executable(spy_dispersion_pnl examples/spy_dispersion_pnl.cpp)
+    target_link_libraries(spy_dispersion_pnl PRIVATE atx::vol atx::core atx_warnings)
+
     # bt-hotpath WS-S (S3): THROWAWAY one-shot v1 .atxvsa -> v2 .atxvsa2 migrator.
     # Wave 2 (S4) runs it over the committed fixtures, then v1 read is deleted.
     add_executable(migrate_atxvsa_v1_to_v2 tools/migrate_atxvsa_v1_to_v2.cpp)

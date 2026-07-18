@@ -103,6 +103,7 @@ add_executable(atx-vol-tests
     surface_db_backtest_test.cpp
     surface_db_populate_test.cpp
     mag7_dispersion_backtest_test.cpp
+    spy_dispersion_pnl_test.cpp
     analytics_primitives_test.cpp
     analytics_density_test.cpp
     analytics_aggregate_test.cpp
@@ -204,4 +205,9 @@ if(Python3_Interpreter_FOUND)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/mag7_dispersion_report_test.py
     )
     set_tests_properties(Mag7DispersionReport PROPERTIES LABELS atx_vol)
+    add_test(
+        NAME SpyDispersionPnlReport
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/spy_dispersion_pnl_report_test.py
+    )
+    set_tests_properties(SpyDispersionPnlReport PROPERTIES LABELS atx_vol)
 endif()

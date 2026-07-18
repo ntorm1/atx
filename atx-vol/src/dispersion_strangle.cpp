@@ -96,7 +96,15 @@ Result<StrategySpec> make_dispersion_strangle_spec(const DispersionStrangleConfi
     return Err(ErrorCode::InvalidArgument,
                "make_dispersion_strangle_spec: target_abs_delta must lie in (0,1)");
   }
-  if (!(cfg.tenor_days > cfg.close_dte_days)) {
+  // HoldToExpiry ignores close_dte_days for the lifecycle (cohorts age to their
+  // own expiry), so only tenor_days > 0 is required there; CloseAtHorizon must
+  // still have a positive residual window (tenor > close).
+  if (cfg.hold_to_expiry) {
+    if (!(cfg.tenor_days > 0.0)) {
+      return Err(ErrorCode::InvalidArgument,
+                 "make_dispersion_strangle_spec: tenor_days must be > 0");
+    }
+  } else if (!(cfg.tenor_days > cfg.close_dte_days)) {
     return Err(ErrorCode::InvalidArgument,
                "make_dispersion_strangle_spec: tenor_days must exceed close_dte_days");
   }
@@ -144,7 +152,11 @@ Result<StrategySpec> make_dispersion_strangle_spec(const DispersionStrangleConfi
   spec.lifecycle.entry =
       (cfg.entry_every_n_days == 1) ? LifecycleSpec::Entry::EveryStep : LifecycleSpec::Entry::EveryNDays;
   spec.lifecycle.entry_every_n = cfg.entry_every_n_days;
-  spec.lifecycle.holding = LifecycleSpec::Holding::CloseAtHorizon;
+  // HoldToExpiry: overlapping daily clips, each held to its own expiry and
+  // settled by the engine at intrinsic (roll_at_T unused). CloseAtHorizon:
+  // each cohort independently closed at marks once its residual T < roll_at_T.
+  spec.lifecycle.holding = cfg.hold_to_expiry ? LifecycleSpec::Holding::HoldToExpiry
+                                              : LifecycleSpec::Holding::CloseAtHorizon;
   spec.lifecycle.roll_at_T = cfg.close_dte_days / kCalendarDaysPerYear;
 
   spec.missing = cfg.missing;

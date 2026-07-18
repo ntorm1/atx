@@ -32,6 +32,15 @@ struct DispersionStrangleConfig {
   double index_base_vega{10000.0};             // pre-constraint index sizing seed
   MissingNameSpec missing{MissingNamePolicy::DropRenormalize, 4};
   HedgeSpec hedge{};                           // default: no delta hedge
+  // Lifecycle: hold each daily cohort to its OWN expiry (LifecycleSpec::
+  // HoldToExpiry) rather than closing it early at `close_dte_days`
+  // (CloseAtHorizon). The vega-flat dispersion PnL-track deliverable (WS-D D4)
+  // holds to expiry: overlapping clips accumulate, each aged to its expiry and
+  // settled by the engine at intrinsic once residual T reaches 0. When true,
+  // `close_dte_days` is IGNORED for the lifecycle (only `tenor_days > 0` is
+  // required). Default false preserves the CloseAtHorizon behaviour exactly, so
+  // existing callers/tests are bit-identical.
+  bool hold_to_expiry{false};
 };
 
 // Validated assembly into the declarative DSL:
@@ -43,7 +52,8 @@ struct DispersionStrangleConfig {
 //  - constraint FlatVega{group_a="basket", group_b="index"} (scales the index
 //    leg so gross index vega == gross basket vega; opposite signs net ~0);
 //  - lifecycle: EveryStep when entry_every_n_days==1 else EveryNDays with
-//    entry_every_n, Holding::CloseAtHorizon, roll_at_T = close_dte_days/365.25;
+//    entry_every_n; Holding::HoldToExpiry when cfg.hold_to_expiry else
+//    Holding::CloseAtHorizon with roll_at_T = close_dte_days/365.25;
 //  - spec.missing = cfg.missing, spec.hedge = cfg.hedge,
 //    spec.name = "mag7_dispersion_strangle" (or names.size()-agnostic label).
 // InvalidArgument when: names empty; index_symbol empty; names contains a

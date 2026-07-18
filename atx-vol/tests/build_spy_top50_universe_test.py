@@ -65,6 +65,45 @@ class BuildSpyTop50UniverseTest(unittest.TestCase):
             self.assertEqual(rows[0]["source"], "SEC_NPORT_0001410368-26-020131")
             self.assertEqual(rows[0]["as_of"], "2025-12-31")
 
+    def test_index_symbol_prepends_index_leg(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            xml = root / "source.xml"
+            mapping = root / "map.tsv"
+            output = root / "universe.tsv"
+            xml.write_text(filing(), encoding="utf-8")
+            with mapping.open("w", newline="", encoding="ascii") as stream:
+                writer = csv.writer(stream, delimiter="\t", lineterminator="\n")
+                writer.writerow(["cusip", "name", "ticker"])
+                for index in range(50):
+                    writer.writerow([f"{index:09d}", f"Name {index:02d}", f"T{index:02d}"])
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--xml",
+                    str(xml),
+                    "--symbol-map",
+                    str(mapping),
+                    "--out",
+                    str(output),
+                    "--index-symbol",
+                    "SPY",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            with output.open(newline="", encoding="ascii") as stream:
+                rows = list(csv.DictReader(stream, delimiter="\t"))
+            self.assertEqual(len(rows), 51)
+            self.assertEqual(rows[0]["symbol"], "SPY")
+            self.assertEqual(rows[0]["source"], "INDEX_ETF_SPDR_SPY")
+            self.assertEqual(rows[0]["raw_weight"], "100.000000000000")
+            self.assertEqual(rows[1]["symbol"], "T00")  # top constituent follows the leg
+            self.assertEqual(rows[-1]["symbol"], "T49")
+
     def test_rejects_wrong_filing_identity(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
