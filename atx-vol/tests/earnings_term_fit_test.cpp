@@ -23,8 +23,10 @@
 //     term-curve fit -- for a FIXED eMove, search `decay` (1D, bounded) and
 //     solve `{st,lt}` by linear LSQ at each candidate, see
 //     earnings_term_fit.hpp's own model comment for the full contract.
-// The `EarningsTermFit` joint eMove/curve result type is exercised by a
-// later task's tests, not here.
+//   - `fit_earnings_term` (Task 4): the joint {eMove,st,lt,decay} fit -- the
+//     OUTER golden-section search over `emove` wrapping
+//     `fit_term_curve_for_emove` as its inner solve, see
+//     earnings_term_fit.hpp's own doc comment for the full contract.
 
 namespace {
 
@@ -32,6 +34,7 @@ using atx::vol::advance_trading_days;
 using atx::vol::censored_atm_vol;
 using atx::vol::CensorObsInput;
 using atx::vol::EarningsFitConfig;
+using atx::vol::fit_earnings_term;
 using atx::vol::fit_term_curve_for_emove;
 using atx::vol::SrTenorGrid;
 using atx::vol::tenor_years;
@@ -185,6 +188,157 @@ TEST(EarningsTermFit_FitTermCurve, AllEqualTGuardsSingularSolve) {
   EXPECT_GT(c.decay, 0.0);
   EXPECT_TRUE(std::isfinite(c.rms_resid));
   EXPECT_GE(c.rms_resid, 0.0);
+}
+
+// ── fit_earnings_term (Task 4) ──────────────────────────────────────────────
+
+TEST(EarningsTermFit_FitEarningsTerm, RecoversEmoveAndCurve) {
+  // Planted {st,lt,decay,emove}: dirty w = censored(planted curve) +
+  // n*emove^2, event counts strictly increasing with T so eMove is actually
+  // identified (unlike the AllZeroEvents / all-n-equal under-identified
+  // cases below). The outer golden-section search over emove should recover
+  // the planted quadruple to well within its bracket's convergence floor.
+  const double st = 0.55, lt = 0.28, decay = 4.0, e = 0.07;
+  struct P {
+    double T;
+    std::size_t n;
+  };
+  std::vector<P> pts{{0.03, 1}, {0.06, 1}, {0.12, 1}, {0.25, 2}, {0.5, 2}, {1.0, 2}, {2.0, 3}};
+  std::vector<CensorObsInput> obs;
+  for (auto p : pts) {
+    const double sc = lt + (st - lt) * std::exp(-decay * p.T);
+    const double w = sc * sc * p.T + static_cast<double>(p.n) * e * e; // dirty = censored + event
+    obs.push_back({p.T, w, p.n});
+  }
+  // 12 tenor year-fractions (calendar-approx here; the tool uses tenor_years
+  // from Task 2).
+  std::array<double, 12> tt{};
+  const std::array<int, 12> td{5, 10, 21, 42, 63, 84, 105, 126, 189, 252, 378, 504};
+  for (std::size_t i = 0; i < 12; ++i) {
+    tt[i] = static_cast<double>(td[i]) / 252.0; // trading-day basis
+  }
+  EarningsFitConfig cfg{};
+  cfg.tenor_T = tt;
+  const auto r = fit_earnings_term(obs, cfg);
+  ASSERT_TRUE(r.has_value());
+  EXPECT_NEAR(r->emove, e, 2e-3);
+  EXPECT_NEAR(r->st, st, 3e-3);
+  EXPECT_NEAR(r->lt, lt, 3e-3);
+  EXPECT_EQ(r->fit_code, atx::vol::EmoveFitCode::Minimum);
+  EXPECT_EQ(r->expiry_count, obs.size());
+  ASSERT_EQ(r->atm_cen.size(), 12u);
+  EXPECT_NEAR(r->atm_cen[0], lt + (st - lt) * std::exp(-decay * tt[0]), 3e-3); // 5d parametric read
+}
+
+TEST(EarningsTermFit_FitEarningsTerm, AllZeroEvents_EmoveZero) {
+  // No scheduled event before either listed expiry: emove is not
+  // identifiable from this obs set at all (nothing to censor out) -- this is
+  // the caller's ex-event curve, still Ok (not Err), per the brief's special
+  // case.
+  std::vector<CensorObsInput> obs{{0.05, 0.3 * 0.3 * 0.05, 0}, {0.5, 0.28 * 0.28 * 0.5, 0}};
+  const auto r = fit_earnings_term(obs, EarningsFitConfig{});
+  ASSERT_TRUE(r.has_value());
+  EXPECT_NEAR(r->emove, 0.0, 1e-9);
+  EXPECT_EQ(r->fit_code, atx::vol::EmoveFitCode::CenterFlat);
+  EXPECT_EQ(r->expiry_count, obs.size());
+}
+
+TEST(EarningsTermFit_FitEarningsTerm, TooFewObs_InvalidArgument) {
+  const std::vector<CensorObsInput> obs{{0.25, 0.05, 1}};
+  const auto r = fit_earnings_term(obs, EarningsFitConfig{});
+  ASSERT_FALSE(r.has_value());
+  EXPECT_EQ(r.error().code(), atx::core::ErrorCode::InvalidArgument);
+}
+
+TEST(EarningsTermFit_FitEarningsTerm, NonPositiveT_InvalidArgument) {
+  const std::vector<CensorObsInput> obs{{0.0, 0.05, 1}, {0.5, 0.04, 1}};
+  const auto r = fit_earnings_term(obs, EarningsFitConfig{});
+  ASSERT_FALSE(r.has_value());
+  EXPECT_EQ(r.error().code(), atx::core::ErrorCode::InvalidArgument);
+}
+
+TEST(EarningsTermFit_FitEarningsTerm, NonPositiveWDirty_InvalidArgument) {
+  const std::vector<CensorObsInput> obs{{0.25, 0.0, 1}, {0.5, 0.04, 1}};
+  const auto r = fit_earnings_term(obs, EarningsFitConfig{});
+  ASSERT_FALSE(r.has_value());
+  EXPECT_EQ(r.error().code(), atx::core::ErrorCode::InvalidArgument);
+}
+
+TEST(EarningsTermFit_FitEarningsTerm, OptimumAboveBracket_RightBound) {
+  // Same planted data as RecoversEmoveAndCurve (true emove=0.07), but the
+  // search bracket's upper end (0.02) sits BELOW the true value -- the
+  // objective keeps improving all the way to emove_hi within the bracket, so
+  // the search should pin at the right bound rather than report an interior
+  // Minimum.
+  const double st = 0.55, lt = 0.28, decay = 4.0, e = 0.07;
+  struct P {
+    double T;
+    std::size_t n;
+  };
+  std::vector<P> pts{{0.03, 1}, {0.06, 1}, {0.12, 1}, {0.25, 2}, {0.5, 2}, {1.0, 2}, {2.0, 3}};
+  std::vector<CensorObsInput> obs;
+  for (auto p : pts) {
+    const double sc = lt + (st - lt) * std::exp(-decay * p.T);
+    const double w = sc * sc * p.T + static_cast<double>(p.n) * e * e;
+    obs.push_back({p.T, w, p.n});
+  }
+  EarningsFitConfig cfg{};
+  cfg.emove_hi = 0.02;
+  const auto r = fit_earnings_term(obs, cfg);
+  ASSERT_TRUE(r.has_value());
+  EXPECT_EQ(r->fit_code, atx::vol::EmoveFitCode::RightBound);
+  EXPECT_NEAR(r->emove, cfg.emove_hi, 1e-4);
+}
+
+TEST(EarningsTermFit_FitEarningsTerm, OptimumBelowBracket_LeftBound) {
+  // Mirrors OptimumAboveBracket_RightBound: true emove=0.07 sits BELOW the
+  // search bracket's lower end (0.10) this time -- the objective keeps
+  // improving all the way down to emove_lo within the bracket, so the search
+  // should pin at the left bound.
+  const double st = 0.55, lt = 0.28, decay = 4.0, e = 0.07;
+  struct P {
+    double T;
+    std::size_t n;
+  };
+  std::vector<P> pts{{0.03, 1}, {0.06, 1}, {0.12, 1}, {0.25, 2}, {0.5, 2}, {1.0, 2}, {2.0, 3}};
+  std::vector<CensorObsInput> obs;
+  for (auto p : pts) {
+    const double sc = lt + (st - lt) * std::exp(-decay * p.T);
+    const double w = sc * sc * p.T + static_cast<double>(p.n) * e * e;
+    obs.push_back({p.T, w, p.n});
+  }
+  EarningsFitConfig cfg{};
+  cfg.emove_lo = 0.10;
+  cfg.emove_hi = 0.30;
+  const auto r = fit_earnings_term(obs, cfg);
+  ASSERT_TRUE(r.has_value());
+  EXPECT_EQ(r->fit_code, atx::vol::EmoveFitCode::LeftBound);
+  EXPECT_NEAR(r->emove, cfg.emove_lo, 1e-4);
+}
+
+TEST(EarningsTermFit_FitEarningsTerm, ZeroMaxIters_MaxSteps) {
+  // cfg.max_iters == 0: the golden-section refine loop never runs, so the
+  // local refine bracket (roughly two coarse-grid steps wide) never
+  // collapses below the convergence tolerance -- MaxSteps takes priority
+  // over whatever bound/flat diagnosis the (unconverged) bracket might
+  // otherwise suggest.
+  const double st = 0.55, lt = 0.28, decay = 4.0, e = 0.07;
+  struct P {
+    double T;
+    std::size_t n;
+  };
+  std::vector<P> pts{{0.03, 1}, {0.06, 1}, {0.12, 1}, {0.25, 2}, {0.5, 2}, {1.0, 2}, {2.0, 3}};
+  std::vector<CensorObsInput> obs;
+  for (auto p : pts) {
+    const double sc = lt + (st - lt) * std::exp(-decay * p.T);
+    const double w = sc * sc * p.T + static_cast<double>(p.n) * e * e;
+    obs.push_back({p.T, w, p.n});
+  }
+  EarningsFitConfig cfg{};
+  cfg.max_iters = 0;
+  const auto r = fit_earnings_term(obs, cfg);
+  ASSERT_TRUE(r.has_value());
+  EXPECT_EQ(r->fit_code, atx::vol::EmoveFitCode::MaxSteps);
 }
 
 } // namespace

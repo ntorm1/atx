@@ -2,15 +2,14 @@
 
 // Earnings-censored ATM vol term-fit core, following SpiderRock LiveVolSurfaces
 // (Connect 8.6.6.3 Analytics) atmCen reproduction. This header lays down the
-// value vocabulary shared by every task in the reproduction sprint, plus two
+// value vocabulary shared by every task in the reproduction sprint, plus the
 // implemented pieces: the per-expiry censoring primitive (`censored_atm_vol`,
-// Task 1) and the censored term-curve fit (`TermCurve` /
-// `fit_term_curve_for_emove` / `term_curve_value`, Task 3). The SR tenor grid
-// lives in `sr_tenor_grid.hpp` (Task 2). The joint eMove/curve solve --
-// searching `eMove` itself, wrapping `fit_term_curve_for_emove` as its inner
-// solve, and populating `EarningsTermFit` -- is a later task (see the
-// module-level `EarningsTermFit` doc notes below for what is and is not
-// implemented yet).
+// Task 1), the censored term-curve fit (`TermCurve` /
+// `fit_term_curve_for_emove` / `term_curve_value`, Task 3), and the joint
+// {eMove, st, lt, decay} fit (`fit_earnings_term`, Task 4) -- a bounded
+// golden-section search over `eMove` wrapping `fit_term_curve_for_emove` as
+// its inner solve, populating `EarningsTermFit`. The SR tenor grid lives in
+// `sr_tenor_grid.hpp` (Task 2).
 //
 // ## Model
 //
@@ -24,39 +23,39 @@
 //   sigma_cen(T_i) = sqrt(max(w_cen_i, floor) / T_i)
 //   w_cen_i        = w_dirty_i - n_i * eMove^2   (censored_total_variance)
 //
-// A later task (the term-curve/joint fit) will search over candidate `eMove`
-// values, computing `censored_atm_vol` at every listed expiry per candidate
-// and scoring how well the resulting censored points fit a parametric term
-// curve -- this header does not perform that search; it only provides the
-// per-expiry building block plus the result vocabulary the search will
-// populate.
+// `fit_earnings_term` (Task 4) performs that search: it computes
+// `censored_atm_vol` at every listed expiry per candidate `eMove` (via
+// `fit_term_curve_for_emove`) and scores how well the resulting censored
+// points fit the parametric term curve, minimizing that score's RMS residual
+// over `eMove` itself.
 //
 // ## Types
 //
 //   - `CensorObsInput`: one listed expiry's raw (dirty) ATM total variance,
 //     year-fraction, and scheduled-event count -- the exact inputs
 //     `censored_atm_vol` needs to strip the event contribution back out.
-//   - `EmoveFitCode`: outcome tag for the (not-yet-implemented) eMove search --
-//     declared now because `EarningsTermFit::fit_code` needs the type, and
-//     later tasks must not each invent their own.
+//   - `EmoveFitCode`: outcome tag for `fit_earnings_term`'s eMove search --
+//     declared alongside `EarningsTermFit::fit_code` (its only field that
+//     needs the type) so no later task invents its own.
 //   - `SrTenorGrid`: forward-declared only. The SR-native tenor grid (12
 //     year-fractions with a fixed rolling schedule) is Task 2's type; nothing
 //     here depends on its definition.
-//   - `EarningsFitConfig`: knobs for the fit -- the (not-yet-implemented)
-//     `eMove` search bounds/iteration cap, the shared `wcen_floor` (mirrors
+//   - `EarningsFitConfig`: knobs for the fit -- the `eMove` search bounds
+//     (`emove_lo`/`emove_hi`) and iteration cap (`max_iters`) `fit_earnings_term`
+//     (Task 4) searches over, the shared `wcen_floor` (mirrors
 //     `event_vol.hpp`'s `kWCenFloor` semantics; a caller-supplied value need
-//     not equal it), and the tenor grid used to sample the (not-yet-wired)
-//     parametric curve's secondary `atm_cen` output. `fit_term_curve_for_emove`
-//     (Task 3) only consumes `wcen_floor` from this struct today -- the
-//     `emove_*`/`max_iters`/`tenor_T` fields exist for the later joint solve.
+//     not equal it) both it and `fit_term_curve_for_emove` (Task 3) read, and
+//     the tenor grid `fit_earnings_term` samples the fitted parametric
+//     curve's secondary `atm_cen` output at.
 //   - `TermCurve`: the censored term-curve fit's result for ONE fixed `eMove`
 //     -- solved `{st,lt,decay}` plus the fit's RMS residual. See
 //     `fit_term_curve_for_emove`'s own doc comment for the fit contract and
 //     `term_curve_value` for evaluating the fitted curve at a query `T`.
-//   - `EarningsTermFit`: the (not-yet-implemented) JOINT fit's result
-//     vocabulary -- solved `eMove` (the outer search Task 3 does not perform),
-//     the `TermCurve` parameters for that solved `eMove`, the per-grid-tenor
-//     sampled `atm_cen` curve, fit residual, and outcome code.
+//   - `EarningsTermFit`: `fit_earnings_term`'s (Task 4) result vocabulary --
+//     the solved `eMove` (the OUTER search `fit_term_curve_for_emove` itself
+//     does not perform), the `TermCurve` parameters at that solved `eMove`,
+//     the per-grid-tenor sampled `atm_cen` curve, fit residual, and outcome
+//     code.
 //
 // ## Self-review notes (documented chosen behavior)
 //
@@ -95,23 +94,68 @@
 //     v1" LSQ-weighting note) -- every observation counts equally regardless
 //     of `T` or `n`.
 //
+//   - `fit_earnings_term` (Task 4): the OUTER search minimizes
+//     `fit_term_curve_for_emove(obs, emove, cfg).rms_resid` over `emove in
+//     [cfg.emove_lo, cfg.emove_hi]` -- never a general nonlinear optimizer
+//     over `{emove,st,lt,decay}` jointly (the INNER `{st,lt,decay}` solve at
+//     each candidate `emove` is Task 3's own decay-search + 2x2 LSQ,
+//     unchanged here). It is a coarse LINEAR grid across the bracket
+//     (finds a competitive neighborhood) followed by a golden-section
+//     refine of that neighborhood, capped at `cfg.max_iters` refine steps --
+//     the same "grid finds the region, golden-section refines it" structure
+//     `fit_term_curve_for_emove`'s own decay search already uses, extended
+//     to this outer layer because a bare two-point golden section over the
+//     WHOLE bracket has no defense against a non-unimodal objective (see
+//     below) when its two starting interior points both land on the wrong
+//     side of the true optimum -- it would silently converge to the WRONG
+//     local minimum with no signal anything went wrong. The grid stage is
+//     what makes "golden-section finds *a* local minimum in the bracket,
+//     which matches SpiderRock's own bracketed-fit behavior and is
+//     acceptable" (this task's own brief) actually land on the RIGHT local
+//     minimum in practice, not an arbitrary one.
+//
+//     Real censored-vol term structures are not guaranteed unimodal in
+//     `emove` for a very concrete reason this module can name precisely:
+//     `censored_atm_vol`'s floor (`kWCenFloor`, `event_vol.hpp`) exists to
+//     guard a downstream `sqrt` against a non-positive censored variance,
+//     not to signal a good fit -- but a large enough candidate `emove` can
+//     clamp EVERY event-bearing observation to the same near-zero floored
+//     value, which a flexible 3-parameter term curve then fits deceptively
+//     well (a spuriously LOW `rms_resid` that reflects the clamp, not the
+//     model). `search_emove`'s `outer_objective` treats any candidate that
+//     clamps even one event-bearing observation as `+infinity` for ranking
+//     purposes specifically to keep the search from mistaking that artifact
+//     for the true optimum -- `TermCurve::rms_resid` itself (what
+//     `EarningsTermFit::fit_error` ultimately reports) is untouched by this;
+//     it is purely a comparison-ranking layer the outer search applies on
+//     top of Task 3's own unmodified metric.
+//
+//     `EmoveFitCode::CenterFlat` evidence comes from the SAME coarse grid:
+//     the worst FINITE (non-clamped) objective seen anywhere in it, compared
+//     against the search's own best finding -- a real, identified minimum
+//     improves substantially on that generic/arbitrary-point scale; an
+//     under-identified objective (too few observations relative to the term
+//     curve's own 3 free parameters, or an event-count pattern that does not
+//     distinguish emove from the curve shape) does not. This measures
+//     identification strength directly from the data rather than
+//     pattern-matching structurally on `obs[i].n` (e.g. "are all counts
+//     equal") -- see `earnings_term_fit.cpp`'s `search_emove`/
+//     `classify_fit_code` for the full priority order between `MaxSteps`/
+//     `CenterFlat`/`LeftBound`/`RightBound`/`Minimum`.
+//
 // ## Thread-safety
 //
-// `censored_atm_vol`, `fit_term_curve_for_emove`, and `term_curve_value` are
-// pure functions of their arguments -- safe to call concurrently from any
-// number of threads. Every type in this header is a plain value type with no
-// shared state.
+// `censored_atm_vol`, `fit_term_curve_for_emove`, `term_curve_value`, and
+// `fit_earnings_term` are pure functions of their arguments -- safe to call
+// concurrently from any number of threads. Every type in this header is a
+// plain value type with no shared state.
 
 #include <cstddef>
 #include <cstdint>
 #include <span>
 #include <vector>
 
-// NOTE: no `atx/vol/types.hpp` include here -- nothing in this task's surface
-// (`CensorObsInput`, `EmoveFitCode`, `EarningsFitConfig`, `EarningsTermFit`,
-// `censored_atm_vol`) names `Result`/`ErrorCode`. A later task's
-// Result-returning fit entry point should add that include itself, alongside
-// the function that actually needs it, rather than importing it unused now.
+#include "atx/vol/types.hpp" // Result, ErrorCode (fit_earnings_term, Task 4)
 
 namespace atx::vol {
 
@@ -138,12 +182,17 @@ struct TermCurve {
   double rms_resid{};
 };
 
-// Outcome of the (not-yet-implemented) per-underlying eMove search. Declared
-// now so `EarningsTermFit::fit_code` has its type; every enumerator beyond
+// Outcome of `fit_earnings_term`'s (Task 4) per-underlying eMove search.
+// Declared alongside `EarningsTermFit::fit_code`; every enumerator beyond
 // `Ok` names a specific way the search can fail to land on an interior
 // optimum (bracket exhaustion, a flat objective, degenerate inputs) rather
 // than a single generic failure code, so a caller can distinguish "no
-// evidence either way" from "hit a numerical wall".
+// evidence either way" from "hit a numerical wall". `fit_earnings_term`
+// itself only ever produces `MaxSteps`/`LeftBound`/`RightBound`/`CenterFlat`/
+// `Minimum` -- `Ok` and `Degenerate` are reserved for other callers of this
+// vocabulary (`Degenerate`-worthy inputs, e.g. `obs.size() < 2`, are instead
+// rejected outright via `Err(InvalidArgument)`; see `fit_earnings_term`'s own
+// doc comment).
 enum class EmoveFitCode : std::uint8_t {
   Ok,         // converged to an interior minimum
   Minimum,    // best point found, but not a clean interior converge
@@ -160,10 +209,11 @@ enum class EmoveFitCode : std::uint8_t {
 struct SrTenorGrid;
 
 // Knobs for the term-curve fit. `fit_term_curve_for_emove` (Task 3) reads
-// only `wcen_floor`; the eMove search bounds/iteration cap and the tenor
-// grid used to sample the fitted parametric curve's secondary `atm_cen`
-// output (`EarningsTermFit::atm_cen`) are consumed by the (not-yet-
-// implemented) joint solve that wraps it.
+// only `wcen_floor`; `fit_earnings_term` (Task 4) additionally reads
+// `emove_lo`/`emove_hi`/`max_iters` (the outer golden-section search's
+// bracket and iteration cap) and `tenor_T` (the grid it samples the fitted
+// parametric curve's secondary `atm_cen` output at,
+// `EarningsTermFit::atm_cen`).
 struct EarningsFitConfig {
   // 12 SR tenor year-fractions (precomputed via tenor_years, Task 2) for
   // PARAMETRIC-model sampling of atm_cen (secondary). Non-owning: the caller
@@ -176,8 +226,8 @@ struct EarningsFitConfig {
   // weighting of each expiry in the term-curve LSQ (uniform in v1)
 };
 
-// Result of the (not-yet-implemented) joint eMove / censored term-curve fit
-// for one underlying's listed expiries.
+// Result of `fit_earnings_term`'s (Task 4) joint eMove / censored term-curve
+// fit for one underlying's listed expiries.
 struct EarningsTermFit {
   double emove{};              // iEMove
   double st{};                 // parametric censored term curve: short-term level
@@ -236,5 +286,48 @@ struct EarningsTermFit {
 // `lt + (st - lt)*exp(-decay*T)`. Pure arithmetic, no validation -- a
 // non-finite `T`/`c` field propagates to a non-finite result.
 [[nodiscard]] double term_curve_value(const TermCurve &c, double T) noexcept;
+
+// Joint {eMove, st, lt, decay} fit (Task 4): the OUTER search wrapping
+// `fit_term_curve_for_emove` (Task 3) as its inner solve. Searches
+// `emove* = argmin` over `emove in [cfg.emove_lo, cfg.emove_hi]` of
+// `fit_term_curve_for_emove(obs, emove, cfg).rms_resid`, via a golden-section
+// search bounded by `cfg.max_iters` (see the module self-review notes above
+// for why this is a 1-D search, not a joint nonlinear optimizer, and for the
+// documented non-unimodality caveat). At the optimum, populates
+// `{emove,st,lt,decay,fit_error}` from that `emove`'s `TermCurve`, and (when
+// `cfg.tenor_T` is non-empty) samples `atm_cen[i] = term_curve_value(curve,
+// cfg.tenor_T[i])` -- this `atm_cen` is the PARAMETRIC-model read, a
+// SECONDARY summary; the PRIMARY `atmCenI_Nd` reproduction target is a raw
+// censored-space interpolation built by later tasks, not this parametric
+// sample (see the header's module doc).
+//
+// @param obs  per-expiry raw (dirty) observations; `obs.size() >= 2`
+//             required -- with fewer, the term curve's own 3 free parameters
+//             `{st,lt,decay}` cannot be pinned down independently of `emove`
+// @param cfg  fit knobs: `emove_lo`/`emove_hi` search bracket, `max_iters`
+//             cap, `wcen_floor` (passed through to `fit_term_curve_for_emove`
+//             at every candidate `emove`), `tenor_T` (parametric `atm_cen`
+//             sample grid; empty => `atm_cen` empty)
+// @return  Ok(EarningsTermFit) with `expiry_count == obs.size()` and
+//          `fit_error` equal to the optimum's `rms_resid`. `fit_code` is
+//          `LeftBound`/`RightBound` if the optimum sits on a search bound,
+//          `MaxSteps` if `cfg.max_iters` was exhausted before the
+//          golden-section bracket converged, `CenterFlat` if the objective
+//          does not meaningfully discriminate `emove` across the bracket
+//          (event-under-identified, e.g. all `n` equal -- including the
+//          all-`n==0` special case below), else `Minimum`.
+//
+//          Err(InvalidArgument) if `obs.size() < 2`, or any observation's `T`
+//          or `w_dirty` is non-finite or <= 0.
+//
+//          SPECIAL CASE: if every observation has `n == 0` (no scheduled
+//          event before any listed expiry), `emove` is not identifiable from
+//          `obs` at all -- there is no event contribution to censor out.
+//          Returns Ok with `emove == 0.0`, `fit_code == CenterFlat`, and
+//          `{st,lt,decay,fit_error}` from `fit_term_curve_for_emove(obs, 0.0,
+//          cfg)` directly (the caller's ex-event curve; still a valid Ok
+//          result, per the brief -- not an error).
+[[nodiscard]] Result<EarningsTermFit> fit_earnings_term(std::span<const CensorObsInput> obs,
+                                                         const EarningsFitConfig &cfg);
 
 } // namespace atx::vol

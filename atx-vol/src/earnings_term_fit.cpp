@@ -3,11 +3,17 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <limits>
+#include <utility>
 #include <vector>
 
-#include "atx/vol/event_vol.hpp" // censored_total_variance
+#include "atx/core/error.hpp"
+#include "atx/vol/event_vol.hpp" // censored_total_variance, kWCenFloor
 
 namespace atx::vol {
+
+using atx::core::Err;
+using atx::core::Ok;
 
 double censored_atm_vol(const CensorObsInput &o, double emove, double wcen_floor) noexcept {
   // censored_total_variance already floors at the fixed kWCenFloor; flooring
@@ -205,6 +211,362 @@ TermCurve fit_term_curve_for_emove(std::span<const CensorObsInput> obs, double e
 
 double term_curve_value(const TermCurve &c, double T) noexcept {
   return c.lt + (c.st - c.lt) * std::exp(-c.decay * T);
+}
+
+namespace {
+
+// ── Outer eMove search (Task 4) ────────────────────────────────────────────
+//
+// Wraps `fit_term_curve_for_emove` as a 1-D search over `emove`: a coarse
+// LINEAR grid across `[emove_lo, emove_hi]` finds a competitive neighborhood,
+// then a golden-section refine (bounded by `EarningsFitConfig::max_iters`,
+// per the brief) narrows that neighborhood to the precise optimum -- the
+// same "grid finds the region, golden-section refines it" structure
+// `fit_term_curve_for_emove`'s own decay search already uses above, extended
+// to this outer layer for the reason explained on `search_emove` itself: a
+// bare two-point golden section over the WHOLE bracket has no defense
+// against a non-unimodal objective when its two starting interior points
+// both land on the wrong side of the true optimum. These tunables are NOT
+// exposed via `EarningsFitConfig` (mirrors kDecayLo/kDecayHi/... above): the
+// brief fixes the search's bracket (cfg.emove_lo/emove_hi) and refine cap
+// (cfg.max_iters); these are the grid density and secondary-diagnosis
+// epsilons for the bracket-convergence / bound-pinned / flat-objective
+// checks, scaled to the eMove/vol domain (O(1e-2)-O(1)), never to
+// DBL_EPSILON.
+constexpr int kOuterGridN = 41;               // coarse linear grid density (mirrors kDecayGridN)
+constexpr double kOuterBracketTol = 1e-9;     // golden-section bracket-width convergence
+constexpr double kOuterBoundTol = 1e-6;       // "optimum sits on a bound" epsilon
+constexpr double kOuterFlatRelTol = 1e-2;     // relative-improvement flatness epsilon
+constexpr double kOuterFlatScaleFloor = 1e-6; // floor so a near-zero scan scale doesn't
+                                               // blow up the relative flatness ratio
+
+// True iff `emove` forces at least one event-bearing (`n > 0`) observation's
+// RAW censored variance below the EFFECTIVE floor `censored_atm_vol` actually
+// applies: `max(kWCenFloor, wcen_floor)` -- `censored_total_variance`
+// (event_vol.hpp) floors at the fixed `kWCenFloor` first, then
+// `censored_atm_vol` floors AGAIN at the caller-supplied `wcen_floor` (see
+// this header's own self-review notes on that double floor); using only
+// `kWCenFloor` here would under-detect clamping whenever a caller passes a
+// STRICTER `cfg.wcen_floor > kWCenFloor`. Either floor binding means the
+// model assumption `w_dirty >= n*emove^2` is violated for that observation
+// at this candidate. The floor exists as a numerical guard for downstream
+// serving (so a later `sqrt` never sees a non-positive value), NOT as
+// evidence that a candidate `emove` is a good fit: once censoring clamps,
+// that observation's `censored_atm_vol` collapses toward `sqrt(floor/T)`
+// regardless of what its true censored vol should have been, and a FLEXIBLE
+// 3-parameter term curve can fit a whole batch of such near-identical,
+// near-zero, clamped points deceptively well (a spuriously LOW rms_resid
+// that reflects the clamp, not the model). See `outer_objective`/
+// `search_emove` for how this keeps the outer search from mistaking that
+// clamp-driven artifact for the true optimum.
+[[nodiscard]] bool any_observation_floors(std::span<const CensorObsInput> obs, double emove,
+                                          double wcen_floor) noexcept {
+  const double effective_floor = std::max(kWCenFloor, wcen_floor);
+  for (const auto &o : obs) {
+    if (o.n == 0) {
+      continue; // w_cen = w_dirty - 0 = w_dirty, already validated > 0
+    }
+    const double raw = o.w_dirty - static_cast<double>(o.n) * emove * emove;
+    if (raw < effective_floor) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// The outer search's objective: `curve.rms_resid`, but `+infinity` (strictly
+// worse than every legitimate candidate's finite rms) when `emove` clamps
+// any observation (`any_observation_floors`). Applied to EVERY candidate the
+// grid scan and golden-section refine touch, so neither stage can converge
+// into -- or even directionally drift toward -- the clamp-collapse region on
+// raw rms_resid alone. `curve.rms_resid` itself (Task 3's own, unmodified
+// metric) is untouched; this is purely a comparison-ranking layer the outer
+// search applies on top of it.
+[[nodiscard]] double outer_objective(std::span<const CensorObsInput> obs, double emove,
+                                     const TermCurve &curve, double wcen_floor) noexcept {
+  if (any_observation_floors(obs, emove, wcen_floor)) {
+    return std::numeric_limits<double>::infinity();
+  }
+  return curve.rms_resid;
+}
+
+// One evaluated candidate emove: the value, its wrapped `TermCurve` fit
+// (`curve.rms_resid` is Task 3's own unmodified metric -- what
+// `EarningsTermFit::fit_error` ultimately reports), and `objective` (what
+// `search_emove`'s comparisons actually rank candidates by; see
+// `outer_objective`).
+struct EmoveEval {
+  double emove{};
+  TermCurve curve{};
+  double objective{};
+};
+
+[[nodiscard]] EmoveEval evaluate_emove(std::span<const CensorObsInput> obs, double emove,
+                                       const EarningsFitConfig &cfg) noexcept {
+  const TermCurve curve = fit_term_curve_for_emove(obs, emove, cfg);
+  return EmoveEval{emove, curve, outer_objective(obs, emove, curve, cfg.wcen_floor)};
+}
+
+// Golden-section search result plus the two diagnostic flags
+// `classify_fit_code` maps onto `EmoveFitCode`.
+struct OuterSearchResult {
+  EmoveEval best{};
+  bool max_steps_hit{};
+  bool is_flat{};
+};
+
+// 1-D search minimizing `evaluate_emove(...).objective` over
+// `[emove_lo, emove_hi]` (reordered defensively if the caller passed them
+// backwards -- see below): a `kOuterGridN`-point coarse LINEAR grid (emove
+// is naturally linear scale, unlike decay's multiplicative one -- no
+// log-spacing needed) finds the best-scoring neighborhood, then a
+// golden-section refine -- bounded by `cfg.max_iters` refine steps, per the
+// brief -- narrows JUST that neighborhood (the grid's best index +/- one
+// grid step) to the precise optimum. Mirrors `fit_term_curve_for_emove`'s
+// own decay-search structure exactly (coarse grid -> local golden-section
+// refine -> keep whichever of {grid best, refined} is better).
+//
+// WHY a grid stage at all, when the brief names "golden-section" alone: a
+// bare two-point golden section starting from the WHOLE `[emove_lo,
+// emove_hi]` bracket has no fallback when its two initial interior points
+// (at the golden-ratio fractions of the bracket) both already sit in a
+// region `outer_objective` scores worse than the true optimum -- the
+// comparison between two already-bad points carries no information about
+// which direction (if either) leads back toward the real minimum, so the
+// bracket can shrink the WRONG way and never recover (this is exactly what
+// a batch of event-bearing observations with a wide default
+// `[0, emove_hi=0.30]` bracket can trigger: past some `emove`, EVERY
+// observation clamps per `any_observation_floors`, and the two initial
+// golden-ratio points can both already be past that clamp threshold). The
+// grid's `kOuterGridN` points span the WHOLE bracket up front, so at least
+// one of them almost always lands inside whatever neighborhood is genuinely
+// competitive, giving the refine a correctly-anchored starting bracket
+// instead of blindly bisecting from the two golden-ratio points alone. This
+// is the brief's own "objective may not be perfectly unimodal on noisy real
+// data" caveat, made concrete.
+//
+// `is_flat` (-> `EmoveFitCode::CenterFlat`) evidence: the WORST finite
+// (non-clamped) objective seen anywhere in the grid, `scan_max_finite`,
+// against the search's own best finding -- a real, identified minimum
+// improves substantially on that generic/arbitrary-point scale; an
+// under-identified objective (too few observations relative to the term
+// curve's own 3 free parameters, or an event-count pattern that does not
+// distinguish emove from the curve shape) does not, regardless of which
+// point the search happens to converge near. Clamped (+infinity) grid
+// points are excluded from this scale on purpose -- they say nothing about
+// whether the LEGITIMATE region of the bracket identifies emove.
+[[nodiscard]] OuterSearchResult search_emove(std::span<const CensorObsInput> obs, double emove_lo,
+                                             double emove_hi,
+                                             const EarningsFitConfig &cfg) noexcept {
+  // Defensive ordering only, not validation: emove_lo/emove_hi are the
+  // caller's contract (like fit_term_curve_for_emove's own cfg fields are;
+  // see fit_earnings_term's doc comment). A misconfigured lo > hi still
+  // produces a sane, ordered bracket instead of walking the golden-section
+  // math backwards.
+  const double lo0 = std::min(emove_lo, emove_hi);
+  const double hi0 = std::max(emove_lo, emove_hi);
+
+  // Coarse grid: kOuterGridN evenly spaced points INCLUDING both endpoints
+  // (i=0 => lo0, i=kOuterGridN-1 => hi0), statically bounded (JPL Rule 2).
+  EmoveEval best{};
+  bool best_set = false;
+  double scan_max_finite = 0.0;
+  bool any_finite = false;
+  int best_idx = 0;
+  for (int i = 0; i < kOuterGridN; ++i) {
+    const double frac = static_cast<double>(i) / static_cast<double>(kOuterGridN - 1);
+    const double e = lo0 + frac * (hi0 - lo0);
+    const EmoveEval ev = evaluate_emove(obs, e, cfg);
+    if (std::isfinite(ev.objective)) {
+      scan_max_finite = any_finite ? std::max(scan_max_finite, ev.objective) : ev.objective;
+      any_finite = true;
+    }
+    if (!best_set || ev.objective < best.objective) {
+      best = ev;
+      best_idx = i;
+      best_set = true;
+    }
+  }
+
+  // Golden-section refine within the coarse grid's neighboring bracket
+  // around the best index (clamped at the grid ends) -- mirrors
+  // `fit_term_curve_for_emove`'s own decay-search refine exactly. Capped at
+  // cfg.max_iters (clamped non-negative -- a caller-supplied negative cap
+  // degenerates to "no refine steps", never a negative/unbounded trip
+  // count -- JPL Rule 2).
+  const double grid_step = (hi0 - lo0) / static_cast<double>(kOuterGridN - 1);
+  const int lo_idx = std::max(best_idx - 1, 0);
+  const int hi_idx = std::min(best_idx + 1, kOuterGridN - 1);
+  double lo = lo0 + static_cast<double>(lo_idx) * grid_step;
+  double hi = lo0 + static_cast<double>(hi_idx) * grid_step;
+  const int iters = std::max(cfg.max_iters, 0);
+  double c = hi - kGolden * (hi - lo);
+  double d = lo + kGolden * (hi - lo);
+  EmoveEval fc = evaluate_emove(obs, c, cfg);
+  EmoveEval fd = evaluate_emove(obs, d, cfg);
+  for (int it = 0; it < iters; ++it) {
+    if (!(hi - lo > kOuterBracketTol)) {
+      break; // bracket already converged; further refine steps buy nothing
+    }
+    if (fc.objective < fd.objective) {
+      hi = d;
+      d = c;
+      fd = fc;
+      c = hi - kGolden * (hi - lo);
+      fc = evaluate_emove(obs, c, cfg);
+    } else {
+      lo = c;
+      c = d;
+      fc = fd;
+      d = lo + kGolden * (hi - lo);
+      fd = evaluate_emove(obs, d, cfg);
+    }
+  }
+  // Cap exhausted before the LOCAL refine bracket collapsed below
+  // tolerance => the search did not converge (EmoveFitCode::MaxSteps); a
+  // zero-iteration cap also lands here, correctly (no refine happened).
+  const bool max_steps_hit = (hi - lo > kOuterBracketTol);
+
+  EmoveEval refined = evaluate_emove(obs, 0.5 * (lo + hi), cfg);
+  for (const EmoveEval &cand : {fc, fd}) {
+    if (cand.objective < refined.objective) {
+      refined = cand;
+    }
+  }
+  // Keep whichever of {grid best, refined} scores better -- the refine's
+  // narrower bracket cannot make the fit worse than the grid already found,
+  // but comparing rather than assuming keeps this correct even if it someday
+  // did (same pattern as fit_term_curve_for_emove's own decay refine above).
+  if (refined.objective < best.objective) {
+    best = refined;
+  }
+  if (std::isfinite(refined.objective)) {
+    scan_max_finite = any_finite ? std::max(scan_max_finite, refined.objective) : refined.objective;
+    any_finite = true;
+  }
+
+  const double scale = std::max(scan_max_finite, kOuterFlatScaleFloor);
+  // best.curve.rms_resid (not best.objective, which is +infinity in the
+  // fully-degenerate all-clamped fallback -- see any_finite below) is the
+  // TRUE residual to compare against the grid's generic scale.
+  const double improvement = scan_max_finite - best.curve.rms_resid;
+  // !any_finite: every grid point AND the refine clamped (a pathological
+  // cfg, e.g. emove_lo itself already clamps) -- no legitimate evidence
+  // anywhere in the bracket, so this is flat/uninformative by definition,
+  // not merely "improvement too small".
+  const bool is_flat = !any_finite || !(improvement > kOuterFlatRelTol * scale);
+
+  return OuterSearchResult{best, max_steps_hit, is_flat};
+}
+
+// Maps a completed `search_emove` result to `EmoveFitCode`, per the brief.
+// Priority order (checked top to bottom, first match wins):
+//   1. MaxSteps -- the search did not converge, so its bound/flat diagnosis
+//      below is not yet trustworthy (the bracket may still be wide).
+//   2. CenterFlat -- converged, but the data don't discriminate emove.
+//      Checked before the bound tests: a flat objective's "best" point can
+//      land anywhere (including near an edge) on numerical noise alone, and
+//      reporting CenterFlat is the more informative/honest signal than a
+//      spurious LeftBound/RightBound.
+//   3. LeftBound / RightBound -- converged, non-flat, but the optimum sits
+//      at (or past) a search-bracket edge -- a real signal the bracket
+//      itself may be too narrow.
+//   4. Minimum -- a genuine interior optimum.
+[[nodiscard]] EmoveFitCode classify_fit_code(const OuterSearchResult &search, double emove_lo,
+                                             double emove_hi) noexcept {
+  if (search.max_steps_hit) {
+    return EmoveFitCode::MaxSteps;
+  }
+  if (search.is_flat) {
+    return EmoveFitCode::CenterFlat;
+  }
+  const double lo = std::min(emove_lo, emove_hi);
+  const double hi = std::max(emove_lo, emove_hi);
+  if (search.best.emove <= lo + kOuterBoundTol) {
+    return EmoveFitCode::LeftBound;
+  }
+  if (search.best.emove >= hi - kOuterBoundTol) {
+    return EmoveFitCode::RightBound;
+  }
+  return EmoveFitCode::Minimum;
+}
+
+// Samples a fitted parametric curve at every `tenor_T` grid point -- the
+// SECONDARY `atm_cen` read (see `fit_earnings_term`'s own doc comment for why
+// this is not the PRIMARY atmCenI_Nd target). Empty `tenor_T` => empty
+// result, matching the brief. Bounded by `tenor_T.size()` (the SR grid is 12
+// points; a caller-supplied span is otherwise unbounded but this is the
+// function's only allocation, sized once up front, same pattern as
+// `fit_term_curve_for_emove`'s own `y` precompute above).
+[[nodiscard]] std::vector<double> sample_atm_cen(const TermCurve &curve,
+                                                 std::span<const double> tenor_T) {
+  std::vector<double> out;
+  out.reserve(tenor_T.size());
+  for (const double T : tenor_T) {
+    out.push_back(term_curve_value(curve, T));
+  }
+  return out;
+}
+
+} // namespace
+
+Result<EarningsTermFit> fit_earnings_term(std::span<const CensorObsInput> obs,
+                                          const EarningsFitConfig &cfg) {
+  // Validate at the boundary (agent profile SS4): obs.size() < 2 cannot pin
+  // down the term curve's own 3 free parameters {st,lt,decay} independently
+  // of emove (see the header's doc comment), and a non-finite/non-positive
+  // T or w_dirty would propagate NaN/garbage through every downstream sqrt
+  // and division rather than failing loudly here.
+  if (obs.size() < 2) {
+    return Err(ErrorCode::InvalidArgument,
+               "fit_earnings_term: need >= 2 expiries to identify {emove, st, lt, decay}");
+  }
+
+  bool all_zero_events = true;
+  for (const auto &o : obs) {
+    if (!std::isfinite(o.T) || !(o.T > 0.0)) {
+      return Err(ErrorCode::InvalidArgument, "fit_earnings_term: every T must be finite and > 0");
+    }
+    if (!std::isfinite(o.w_dirty) || !(o.w_dirty > 0.0)) {
+      return Err(ErrorCode::InvalidArgument,
+                 "fit_earnings_term: every w_dirty must be finite and > 0");
+    }
+    if (o.n != 0) {
+      all_zero_events = false;
+    }
+  }
+
+  EarningsTermFit out{};
+  out.expiry_count = obs.size();
+
+  if (all_zero_events) {
+    // No scheduled event before any listed expiry: emove is not
+    // identifiable from obs at all (there is nothing to censor out). This is
+    // the caller's ex-event curve, still a valid Ok result (see the header's
+    // doc comment), not an error -- skip the outer search entirely rather
+    // than run it over an objective that is exactly emove-invariant by
+    // construction (every obs[i].n == 0 makes censored_atm_vol's
+    // n_i*emove^2 term identically 0 for every candidate emove).
+    const TermCurve curve = fit_term_curve_for_emove(obs, 0.0, cfg);
+    out.emove = 0.0;
+    out.st = curve.st;
+    out.lt = curve.lt;
+    out.decay = curve.decay;
+    out.fit_error = curve.rms_resid;
+    out.fit_code = EmoveFitCode::CenterFlat;
+    out.atm_cen = sample_atm_cen(curve, cfg.tenor_T);
+    return Ok(std::move(out));
+  }
+
+  const OuterSearchResult search = search_emove(obs, cfg.emove_lo, cfg.emove_hi, cfg);
+  out.emove = search.best.emove;
+  out.st = search.best.curve.st;
+  out.lt = search.best.curve.lt;
+  out.decay = search.best.curve.decay;
+  out.fit_error = search.best.curve.rms_resid;
+  out.fit_code = classify_fit_code(search, cfg.emove_lo, cfg.emove_hi);
+  out.atm_cen = sample_atm_cen(search.best.curve, cfg.tenor_T);
+  return Ok(std::move(out));
 }
 
 } // namespace atx::vol
