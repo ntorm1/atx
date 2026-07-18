@@ -27,7 +27,7 @@
 #include "atx/vol/phase_profile.hpp"
 #include "atx/vol/priced_surface.hpp"  // PricedSurface, PricingContext
 #include "atx/vol/strategy.hpp"        // DispersionStrategy
-#include "atx/vol/surface_archive.hpp" // write_surface_archive_file, SurfaceArchiveItem
+#include "atx/vol/surface_archive.hpp" // write_surface_archive_v2_file, SurfaceArchiveItem
 #include "atx/vol/surface_parity.hpp"  // SliceContext
 #include "atx/vol/tearsheet.hpp"       // tearsheet, write_backtest_tsv
 #include "atx/vol/types.hpp"           // Side, Result, Status
@@ -90,7 +90,7 @@ write_archive(const fs::path &dir, const std::string &date,
   for (const auto &[sym, ps] : items) {
     its.push_back(SurfaceArchiveItem{sym, ps});
   }
-  const Status st = write_surface_archive_file(path, its);
+  const Status st = write_surface_archive_v2_file(path, its);
   if (!st) {
     std::fprintf(stderr, "write_archive: %s\n", st.error().to_string().c_str());
     std::exit(1);

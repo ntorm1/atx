@@ -91,9 +91,16 @@ data_off   ├──────────────────────
 ```
 
 `lookup ‖ directory` is the **metadata span** covered by `metadata_crc32c`. Both
-the lookup slot and the directory entry carry `(surface_offset, surface_size)`
-so a rewrite that changes any surface's bytes changes `metadata_crc32c` (content
-identity, reused from v1's F6 `ArchiveContentIdentity`).
+the lookup slot and the directory entry carry `(surface_offset, surface_size)`,
+and **the directory entry additionally carries a copy of each record's
+`payload_crc32c`** (wave-2 S4/S5) — so *any* surface-payload rewrite, **including
+one that preserves the record's byte length and offset**, changes
+`metadata_crc32c` and hence the archive's content identity (F6
+`ArchiveContentIdentity`, reused from v1). Without the directory CRC copy a
+same-length in-place rewrite would be invisible to the identity: v2's per-record
+CRC otherwise lives only in the record header, which `metadata_crc32c` does not
+cover (the price of the lazy-CRC deserialize win). This is the faithful v2 port of
+v1's per-blob `surface_crc32c` in the lookup slot.
 
 ### 2.1 SurfaceRecord — columnar, self-contained
 

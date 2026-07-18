@@ -334,7 +334,10 @@ constexpr double kArchR = 0.043;
 // across a (K, T, side) grid: implied vol, total variance, and re-Americanized
 // fair value. Copied verbatim (pattern) from surface_archive_test.cpp -- the
 // binding bit-identity oracle for this task.
-void expect_theo_bit_identical(const PricedSurface &a, const PricedSurface &b) {
+// `b` is templated so it accepts either a PricedSurface or a PricedSurfaceView
+// (S5's map_surface returns the latter) — both expose the same const query API.
+template <class B>
+void expect_theo_bit_identical(const PricedSurface &a, const B &b) {
   ASSERT_EQ(a.n_slices(), b.n_slices());
   ASSERT_EQ(a.uid(), b.uid());
   const std::array<double, 4> Ks{85.0, 100.0, 108.0, 120.0};
@@ -749,6 +752,189 @@ TEST(SurfaceDbPartition, WriteOpenLoad_TheoBitIdentical) {
   ASSERT_TRUE(arch.has_value());
   EXPECT_EQ(arch->count(), 2u);
   ASSERT_TRUE(arch->map_symbol("MSFT").has_value());
+  std::filesystem::remove_all(root);
+}
+
+// S5: map_surface serves a zero-copy view over a SHARED per-partition mapping —
+// two loads of the same partition (even for different symbols) reuse one mapping
+// (cache hit), and the view prices bit-identically to the source surface.
+TEST(SurfaceDbPartition, ViewCacheSharesOneMappingAcrossLoads) {
+  const auto root = test_root("part_viewcache_hit");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  const auto s1 = make_essvi(/*uid=*/1, /*n_slices=*/3);
+  const auto s2 = make_convex(/*uid=*/2, /*n_slices=*/2, /*n_nodes=*/40);
+  const std::vector<SurfaceArchiveItem> items{{"AAPL", &s1}, {"MSFT", &s2}};
+  ASSERT_TRUE(db->write_partition("2026-07-10", items).has_value());
+
+  auto a = db->map_surface("2026-07-10", "aapl");
+  auto b = db->map_surface("2026-07-10", "msft");
+  ASSERT_TRUE(a.has_value()) << a.error().to_string();
+  ASSERT_TRUE(b.has_value()) << b.error().to_string();
+  // Same partition => one shared mapping (the cache-hit invariant).
+  EXPECT_EQ(a->partition.get(), b->partition.get());
+  // Zero-copy views price bit-identically to the source surfaces.
+  EXPECT_EQ((*a)->kind_at(0), VolCurveKind::Essvi);
+  expect_theo_bit_identical(s1, **a);
+  EXPECT_EQ((*b)->kind_at(0), VolCurveKind::ConvexDense);
+  expect_theo_bit_identical(s2, **b);
+  std::filesystem::remove_all(root);
+}
+
+// S5: rewriting a partition in place changes its F6 content identity, so the next
+// map_surface EVICTS the stale mapping and serves the NEW bytes — while an
+// already-returned view stays valid (it co-owns the old mapping).
+TEST(SurfaceDbPartition, ViewCacheEvictsOnPartitionRewrite) {
+  const auto root = test_root("part_viewcache_evict");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  const auto v1 = make_essvi(/*uid=*/1, /*n_slices=*/3);
+  const std::vector<SurfaceArchiveItem> items1{{"AAPL", &v1}};
+  ASSERT_TRUE(db->write_partition("2026-07-10", items1).has_value());
+
+  auto loaded1 = db->map_surface("2026-07-10", "aapl");
+  ASSERT_TRUE(loaded1.has_value()) << loaded1.error().to_string();
+  EXPECT_EQ((*loaded1)->kind_at(0), VolCurveKind::Essvi);
+  expect_theo_bit_identical(v1, **loaded1);
+  const SurfaceArchiveV2 *old_mapping = loaded1->partition.get();
+
+  // Rewrite the SAME key with a DIFFERENT-kind surface (new content identity).
+  const auto v2 = make_convex(/*uid=*/1, /*n_slices=*/2, /*n_nodes=*/40);
+  const std::vector<SurfaceArchiveItem> items2{{"AAPL", &v2}};
+  ASSERT_TRUE(db->write_partition("2026-07-10", items2).has_value());
+
+  auto loaded2 = db->map_surface("2026-07-10", "aapl");
+  ASSERT_TRUE(loaded2.has_value()) << loaded2.error().to_string();
+  // A fresh mapping was opened (the stale one was evicted on rewrite).
+  EXPECT_NE(loaded2->partition.get(), old_mapping);
+  // The remapped view reflects the NEW content, not the stale surface.
+  EXPECT_EQ((*loaded2)->kind_at(0), VolCurveKind::ConvexDense);
+  expect_theo_bit_identical(v2, **loaded2);
+  // The old view co-owns its old mapping, so it is still valid post-rewrite.
+  expect_theo_bit_identical(v1, **loaded1);
+  std::filesystem::remove_all(root);
+}
+
+// S5 LRU bound (Important-1 fix): the view cache holds each partition's FULL
+// bytes resident, so it MUST be capacity-bounded or the B1 hot loop (~135 daily
+// partitions) grows RSS unboundedly. With a cap of 2, sweeping 3 distinct
+// partitions never keeps more than 2 mappings resident.
+TEST(SurfaceDbPartition, ViewCacheBoundsResidentEntriesToCapacity) {
+  const auto root = test_root("part_viewcache_cap");
+  SurfaceDbCreateOpts copts;
+  copts.partition_cache_capacity = 2;
+  auto db = SurfaceDb::create(root.string(), copts);
+  ASSERT_TRUE(db.has_value());
+  EXPECT_EQ(db->partition_cache_stats().capacity, 2u);
+
+  const std::array<const char *, 3> keys{"2026-07-01", "2026-07-02", "2026-07-03"};
+  for (std::size_t i = 0; i < keys.size(); ++i) {
+    const auto s = make_essvi(/*uid=*/static_cast<std::uint32_t>(i + 1), /*n_slices=*/2);
+    const std::vector<SurfaceArchiveItem> items{{"AAPL", &s}};
+    ASSERT_TRUE(db->write_partition(keys[i], items).has_value());
+  }
+  // Access all three; resident must never exceed the cap of 2.
+  for (const char *key : keys) {
+    auto m = db->map_surface(key, "aapl");
+    ASSERT_TRUE(m.has_value()) << m.error().to_string();
+    EXPECT_LE(db->partition_cache_stats().resident, 2u);
+  }
+  // After touching 3 distinct partitions with cap 2, exactly 2 stay resident.
+  EXPECT_EQ(db->partition_cache_stats().resident, 2u);
+  std::filesystem::remove_all(root);
+}
+
+// S5 LRU order: the LEAST-recently-USED partition is evicted first, and a
+// map_surface HIT refreshes recency (so a re-read protects an entry from
+// eviction). Proven by pointer identity of the shared mapping: a retained
+// partition returns the SAME SurfaceArchiveV2*, an evicted one is reopened
+// fresh (a DIFFERENT pointer). The two held LoadedSurfaces pin the old object
+// addresses so a fresh open cannot alias them (no ABA).
+TEST(SurfaceDbPartition, ViewCacheEvictsLeastRecentlyUsedFirst) {
+  const auto root = test_root("part_viewcache_lru");
+  SurfaceDbCreateOpts copts;
+  copts.partition_cache_capacity = 2;
+  auto db = SurfaceDb::create(root.string(), copts);
+  ASSERT_TRUE(db.has_value());
+
+  const std::array<const char *, 3> keys{"2026-07-01", "2026-07-02", "2026-07-03"};
+  for (std::size_t i = 0; i < keys.size(); ++i) {
+    const auto s = make_essvi(/*uid=*/static_cast<std::uint32_t>(i + 1), /*n_slices=*/2);
+    const std::vector<SurfaceArchiveItem> items{{"AAPL", &s}};
+    ASSERT_TRUE(db->write_partition(keys[i], items).has_value());
+  }
+
+  auto a1 = db->map_surface(keys[0], "aapl"); // resident {P1}
+  ASSERT_TRUE(a1.has_value());
+  const SurfaceArchiveV2 *p1 = a1->partition.get();
+  auto a2 = db->map_surface(keys[1], "aapl"); // resident {P1, P2}
+  ASSERT_TRUE(a2.has_value());
+  const SurfaceArchiveV2 *p2 = a2->partition.get();
+
+  // Re-read P1: a HIT that refreshes P1 to most-recently-used, so P2 becomes the
+  // LRU victim (not P1).
+  auto a1b = db->map_surface(keys[0], "aapl");
+  ASSERT_TRUE(a1b.has_value());
+  EXPECT_EQ(a1b->partition.get(), p1); // same mapping — cache hit
+
+  // Insert P3: exceeds cap 2, so the LRU (P2) is evicted; P1 survives.
+  auto a3 = db->map_surface(keys[2], "aapl"); // resident {P1, P3}
+  ASSERT_TRUE(a3.has_value());
+  EXPECT_EQ(db->partition_cache_stats().resident, 2u);
+
+  // P1 is still cached => SAME pointer (a hit, not a reopen).
+  auto a1c = db->map_surface(keys[0], "aapl");
+  ASSERT_TRUE(a1c.has_value());
+  EXPECT_EQ(a1c->partition.get(), p1) << "least-recently-used eviction removed the wrong entry";
+
+  // P2 was evicted => a fresh mapping (DIFFERENT pointer). a2 still pins the old
+  // P2 object, so the new open cannot reuse its address.
+  auto a2b = db->map_surface(keys[1], "aapl");
+  ASSERT_TRUE(a2b.has_value());
+  EXPECT_NE(a2b->partition.get(), p2) << "expected LRU P2 to have been evicted and reopened";
+  std::filesystem::remove_all(root);
+}
+
+// S5 co-ownership under CAPACITY eviction (distinct from the rewrite-eviction
+// case above): when an entry is LRU-evicted to honor the cap, a caller still
+// holding its LoadedSurface must keep pricing correctly — the backing buffer
+// dies only when the last co-owner drops, never at eviction.
+TEST(SurfaceDbPartition, ViewCacheEvictedViewStaysValidWhenHeld) {
+  const auto root = test_root("part_viewcache_evict_held");
+  SurfaceDbCreateOpts copts;
+  copts.partition_cache_capacity = 1; // one resident entry => next distinct load evicts
+  auto db = SurfaceDb::create(root.string(), copts);
+  ASSERT_TRUE(db.has_value());
+
+  const auto v1 = make_essvi(/*uid=*/1, /*n_slices=*/3);
+  const std::vector<SurfaceArchiveItem> items1{{"AAPL", &v1}};
+  ASSERT_TRUE(db->write_partition("2026-07-01", items1).has_value());
+  const auto v2 = make_convex(/*uid=*/2, /*n_slices=*/2, /*n_nodes=*/40);
+  const std::vector<SurfaceArchiveItem> items2{{"AAPL", &v2}};
+  ASSERT_TRUE(db->write_partition("2026-07-02", items2).has_value());
+
+  auto loaded1 = db->map_surface("2026-07-01", "aapl");
+  ASSERT_TRUE(loaded1.has_value()) << loaded1.error().to_string();
+  const SurfaceArchiveV2 *old_mapping = loaded1->partition.get();
+  EXPECT_EQ(db->partition_cache_stats().resident, 1u);
+
+  // Load a DIFFERENT partition: with cap 1, this evicts P1's mapping from the
+  // cache. loaded1 still co-owns it.
+  auto loaded2 = db->map_surface("2026-07-02", "aapl");
+  ASSERT_TRUE(loaded2.has_value()) << loaded2.error().to_string();
+  EXPECT_EQ(db->partition_cache_stats().resident, 1u);
+
+  // The evicted-but-held view is still valid and prices bit-identically to v1.
+  expect_theo_bit_identical(v1, **loaded1);
+
+  // Confirm P1 really was evicted (not merely still present): reopening it now
+  // yields a FRESH mapping — a different pointer — since loaded1 pins the old one.
+  auto reopened = db->map_surface("2026-07-01", "aapl");
+  ASSERT_TRUE(reopened.has_value()) << reopened.error().to_string();
+  EXPECT_NE(reopened->partition.get(), old_mapping);
+  expect_theo_bit_identical(v1, **reopened);
   std::filesystem::remove_all(root);
 }
 

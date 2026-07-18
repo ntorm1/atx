@@ -58,6 +58,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <list>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -65,6 +66,7 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <unordered_map>
 #include <vector>
 
 #include "atx/vol/american.hpp"        // AlOpts
@@ -336,8 +338,40 @@ decode_symbol_provenance(const DbSymbolRecord &rec) noexcept;
 // ── SurfaceDb: create/open, atomic manifest persistence, symbol CRUD,
 // refresh(), partition IO ─────────────────────────────────────────────────
 
+// Default LRU bound for the S5 partition view cache. Each resident entry pins a
+// whole partition file's bytes in RAM: SurfaceArchiveV2::open_file reads the
+// entire file into an owned buffer (the real-mmap `atx::tsdb::Mapping` seam is
+// deferred to a later wave — see surface_archive.hpp), so an UNBOUNDED cache
+// would grow RSS by one full partition per distinct key the reader touches. The
+// backtest hot loop (B1) sweeps ~135 daily partitions, which without a bound
+// would keep every day's bytes resident for the SurfaceDb's lifetime and break
+// the sprint's RSS = O(in-flight) invariant. 16 keeps a working set of recent
+// partitions hot — comfortably covering the typical lookback / roll windows a
+// step reprices across — while bounding resident bytes to O(16 partitions).
+// Callers with a wider working set raise it via SurfaceDb{Create,Open}Opts; a
+// zero is normalized to 1 (see SurfaceDb::open).
+inline constexpr std::size_t kSurfaceDbDefaultPartitionCacheCapacity = 16;
+
 struct SurfaceDbCreateOpts {
   std::int64_t created_ts_ns{0}; // 0 => system clock
+  // Passed through to the SurfaceDb::open that create() returns, so a
+  // create-then-read caller configures the view cache in one call.
+  std::size_t partition_cache_capacity{kSurfaceDbDefaultPartitionCacheCapacity};
+};
+
+struct SurfaceDbOpenOpts {
+  // Max partition mappings held resident in the S5 view cache (LRU-evicted).
+  // See kSurfaceDbDefaultPartitionCacheCapacity for the resident-bytes rationale
+  // and the default. Zero is normalized to 1.
+  std::size_t partition_cache_capacity{kSurfaceDbDefaultPartitionCacheCapacity};
+};
+
+// Observability for the S5 partition view cache. `resident` is the number of
+// mappings held right now; `capacity` is the configured LRU bound. A
+// diagnostic/test hook (mirrors SnapshotCache::stats()); off every hot path.
+struct SurfaceDbCacheStats {
+  std::size_t resident{0};
+  std::size_t capacity{0};
 };
 
 // An opened surface database. Const queries are thread-safe (they read an
@@ -354,6 +388,19 @@ struct SurfaceDbCreateOpts {
 // themselves; distinct keys are unaffected. Cross-process: single writer,
 // many readers; every manifest mutation is an atomic rewrite (tmp+rename)
 // with generation++ so a reader process picks it up via refresh().
+// A zero-copy surface handle returned by SurfaceDb::map_surface (S5). It CO-OWNS
+// the partition mapping it borrows (via the shared_ptr) so the view stays valid
+// even after the partition is later rewritten or evicted from the db's view
+// cache — the seam §4 "never let a view outlive the archive" rule, enforced by
+// construction. `operator*` / `operator->` forward to the view so callers write
+// `loaded->fair_value(...)`. Move-only (the view is move-only).
+struct LoadedSurface {
+  std::shared_ptr<const SurfaceArchiveV2> partition; // keeps the mapping alive
+  PricedSurfaceView view;                            // borrows `partition`'s bytes
+  [[nodiscard]] const PricedSurfaceView *operator->() const noexcept { return &view; }
+  [[nodiscard]] const PricedSurfaceView &operator*() const noexcept { return view; }
+};
+
 class SurfaceDb {
 public:
   // Create <root>/ (and partitions/) and write an empty manifest
@@ -363,10 +410,15 @@ public:
                                                 const SurfaceDbCreateOpts &opts = {});
 
   // Open an existing database. Errors: NotFound (no manifest), ParseError,
-  // IoError.
-  [[nodiscard]] static Result<SurfaceDb> open(std::string_view root);
+  // IoError. `opts` configures the S5 partition view-cache LRU bound.
+  [[nodiscard]] static Result<SurfaceDb> open(std::string_view root,
+                                              const SurfaceDbOpenOpts &opts = {});
 
   [[nodiscard]] const std::string &root() const noexcept { return root_; }
+
+  // Current partition view-cache occupancy + its LRU bound (S5). Diagnostic /
+  // test hook; thread-safe.
+  [[nodiscard]] SurfaceDbCacheStats partition_cache_stats() const;
 
   // ── Manifest snapshot queries (thread-safe) ──
   [[nodiscard]] std::shared_ptr<const DbManifest> manifest() const;
@@ -400,10 +452,25 @@ public:
   // never appear in a partition.
   [[nodiscard]] Status write_partition(std::string_view key,
                                        std::span<const SurfaceArchiveItem> items,
-                                       const SurfaceArchiveWriteOpts &opts = {});
-  [[nodiscard]] Result<SurfaceArchive> open_partition(std::string_view key) const;
+                                       const ArchiveV2WriteOpts &opts = {});
+  [[nodiscard]] Result<SurfaceArchiveV2> open_partition(std::string_view key) const;
+
+  // Reconstruct an OWNED surface for `symbol` in partition `key`. S5: reads the
+  // partition through a shared, per-partition MMAP CACHE (keyed by canonical key,
+  // evicted when the file's F6 content identity changes), so repeated loads of the
+  // same partition reuse one mapping instead of re-reading the whole file each
+  // call. Still materializes an owned PricedSurface (for callers that need one);
+  // the zero-copy path is `map_surface`.
   [[nodiscard]] Result<PricedSurface> load_surface(std::string_view key,
                                                    std::string_view symbol) const;
+
+  // Zero-copy view of `symbol` in partition `key`, over the shared cached mapping
+  // (S5). The returned LoadedSurface co-owns the mapping so the view is safe even
+  // across a concurrent rewrite/eviction. This is the reconstruct-free deserialize
+  // path (kills bottleneck #2): O(1) hash-probe + a stack view on a cache hit, no
+  // per-surface allocation for parametric kinds.
+  [[nodiscard]] Result<LoadedSurface> map_surface(std::string_view key,
+                                                  std::string_view symbol) const;
   [[nodiscard]] Status drop_partition(std::string_view key);
 
 private:
@@ -413,9 +480,35 @@ private:
   [[nodiscard]] std::string manifest_path() const;
   [[nodiscard]] std::string partition_path(std::string_view canonical_key) const;
 
+  // S5 view cache: return the shared mapping for the partition at `canonical_key`,
+  // opening it iff absent or its on-disk F6 content identity changed (rewrite).
+  // Shared across cohorts/callers; I/O happens outside `cache_mu_`.
+  [[nodiscard]] Result<std::shared_ptr<const SurfaceArchiveV2>>
+  cached_partition(std::string_view canonical_key) const;
+  // Drop any cached mapping for `canonical_key` (called on write/drop).
+  void evict_partition(std::string_view canonical_key) const;
+
+  // One cached partition mapping + the content identity it was opened against +
+  // this key's slot in `cache_recency_` (its LRU position).
+  struct PartitionCacheEntry {
+    std::shared_ptr<const SurfaceArchiveV2> archive;
+    ArchiveContentIdentity identity;
+    std::list<std::string>::iterator recency;
+  };
+
   std::string root_{};
   mutable std::unique_ptr<std::mutex> mu_{}; // guards snapshot_ swap + writes
   std::shared_ptr<const DbManifest> snapshot_{};
+  // S5 partition view cache (guarded by cache_mu_). `cache_recency_` orders keys
+  // least-recently-USED at the front, most-recently at the back; each map entry
+  // stores an iterator into it. On a hit the key is spliced to the back; when the
+  // map exceeds partition_cache_capacity_ the front (LRU) key is evicted. Evicting
+  // only drops the cache's shared_ptr — an outstanding LoadedSurface / caller that
+  // still co-owns the mapping keeps it alive, so no in-use view is invalidated.
+  mutable std::unique_ptr<std::mutex> cache_mu_{};
+  mutable std::unordered_map<std::string, PartitionCacheEntry> partition_cache_{};
+  mutable std::list<std::string> cache_recency_{};
+  std::size_t partition_cache_capacity_{kSurfaceDbDefaultPartitionCacheCapacity};
 };
 
 } // namespace atx::vol

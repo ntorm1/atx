@@ -886,13 +886,17 @@ Result<SurfaceDb> SurfaceDb::create(std::string_view root, const SurfaceDbCreate
     return Err(wrote.error());
   }
 
-  return open(root);
+  return open(root, SurfaceDbOpenOpts{opts.partition_cache_capacity});
 }
 
-Result<SurfaceDb> SurfaceDb::open(std::string_view root) {
+Result<SurfaceDb> SurfaceDb::open(std::string_view root, const SurfaceDbOpenOpts &opts) {
   SurfaceDb db;
   db.root_ = std::string(root);
   db.mu_ = std::make_unique<std::mutex>();
+  db.cache_mu_ = std::make_unique<std::mutex>(); // S5 partition view cache
+  // Normalize a zero capacity to a single resident entry so the LRU bound is
+  // always positive (an unbounded cache is exactly the RSS defect S5 fixes).
+  db.partition_cache_capacity_ = std::max<std::size_t>(1u, opts.partition_cache_capacity);
 
   auto bytes = read_file_fully(db.manifest_path());
   if (!bytes) {
@@ -1075,7 +1079,7 @@ std::string SurfaceDb::partition_path(std::string_view canonical_key) const {
 }
 
 Status SurfaceDb::write_partition(std::string_view key, std::span<const SurfaceArchiveItem> items,
-                                  const SurfaceArchiveWriteOpts &opts) {
+                                  const ArchiveV2WriteOpts &opts) {
   auto canon = canonicalize_key(key);
   if (!canon) {
     return Err(canon.error());
@@ -1085,10 +1089,14 @@ Status SurfaceDb::write_partition(std::string_view key, std::span<const SurfaceA
   // The archive write is itself atomic (tmp+rename, see write_surface_archive_file);
   // do it BEFORE touching the manifest so a failed/interrupted archive write
   // (e.g. empty `items` -> InvalidArgument) never advances the partition index.
-  auto wrote = write_surface_archive_file(path, items, opts);
+  auto wrote = write_surface_archive_v2_file(path, items, opts);
   if (!wrote) {
     return Err(wrote.error());
   }
+  // S5: the partition file was just rewritten — drop any stale cached mapping so
+  // the next load/map reopens the new bytes (the F6 identity check would catch it
+  // too, but evicting here is unconditional and cheap).
+  evict_partition(*canon);
 
   std::error_code size_ec;
   const std::uintmax_t file_size = std::filesystem::file_size(path, size_ec);
@@ -1128,7 +1136,7 @@ Status SurfaceDb::write_partition(std::string_view key, std::span<const SurfaceA
   return persist_locked(std::move(symbol_entries), std::move(parts));
 }
 
-Result<SurfaceArchive> SurfaceDb::open_partition(std::string_view key) const {
+Result<SurfaceArchiveV2> SurfaceDb::open_partition(std::string_view key) const {
   auto canon = canonicalize_key(key);
   if (!canon) {
     return Err(canon.error());
@@ -1137,15 +1145,142 @@ Result<SurfaceArchive> SurfaceDb::open_partition(std::string_view key) const {
   if (snap->find_partition(*canon) == nullptr) {
     return Err(ErrorCode::NotFound, "SurfaceDb::open_partition: partition not present");
   }
-  return SurfaceArchive::open_file(partition_path(*canon));
+  return SurfaceArchiveV2::open_file(partition_path(*canon));
+}
+
+namespace {
+// F6 content identity of the partition file at `path`, from its 256-byte v2
+// header only (cheap — no full read); mirrors SnapshotCache::current_identity. A
+// missing / not-yet-v2 file yields the default identity ("unknown").
+[[nodiscard]] ArchiveContentIdentity read_partition_identity(const std::string &path) {
+  std::ifstream in{path, std::ios::binary};
+  if (!in) {
+    return {};
+  }
+  ArchiveV2Header header{};
+  in.read(reinterpret_cast<char *>(&header), sizeof(header));
+  if (in.gcount() != static_cast<std::streamsize>(sizeof(header))) {
+    return {};
+  }
+  static constexpr char kMagic[8] = {'A', 'T', 'X', 'V', 'S', 'A', '2', '0'};
+  if (std::memcmp(header.magic, kMagic, sizeof(kMagic)) != 0 ||
+      header.header_size != sizeof(ArchiveV2Header)) {
+    return {};
+  }
+  return archive_v2_identity_from_header(header);
+}
+} // namespace
+
+Result<std::shared_ptr<const SurfaceArchiveV2>>
+SurfaceDb::cached_partition(std::string_view canonical_key) const {
+  const std::string key{canonical_key};
+  const std::string path = partition_path(canonical_key);
+  // Read the on-disk identity BEFORE the lock (small header read) so a rewrite
+  // that changed the file evicts the stale mapping (F6). A default identity
+  // (unreadable / not-yet-v2) is "unknown": keep any cached mapping (a transient
+  // blip must not thrash a live entry); a true miss falls through to open, whose
+  // error is the real one.
+  const ArchiveContentIdentity identity = read_partition_identity(path);
+  {
+    std::lock_guard<std::mutex> lock(*cache_mu_);
+    const auto it = partition_cache_.find(key);
+    if (it != partition_cache_.end() &&
+        (identity == ArchiveContentIdentity{} || it->second.identity == identity)) {
+      // Hit: this key is now the most-recently-USED, so splice it to the back of
+      // the recency list (refreshes LRU order — a re-read protects it from
+      // eviction; the front stays the genuine least-recently-used victim).
+      cache_recency_.splice(cache_recency_.end(), cache_recency_, it->second.recency);
+      return it->second.archive; // shared mapping, identity unchanged/unknown
+    }
+  }
+  // Miss or stale: open fresh OUTSIDE the lock (no whole-file I/O under cache_mu_).
+  auto opened = SurfaceArchiveV2::open_file(path);
+  if (!opened) {
+    return Err(opened.error());
+  }
+  auto shared = std::make_shared<const SurfaceArchiveV2>(std::move(*opened));
+  const ArchiveContentIdentity opened_identity = shared->identity();
+  {
+    std::lock_guard<std::mutex> lock(*cache_mu_);
+    // Re-check under the lock: a concurrent open of the same key may have raced
+    // ahead. Replace an existing entry's mapping in place (keeping its recency
+    // slot, then refreshed to MRU); otherwise insert a fresh MRU entry.
+    const auto it = partition_cache_.find(key);
+    if (it != partition_cache_.end()) {
+      it->second.archive = shared;
+      it->second.identity = opened_identity;
+      cache_recency_.splice(cache_recency_.end(), cache_recency_, it->second.recency);
+    } else {
+      cache_recency_.push_back(key);
+      auto recency = std::prev(cache_recency_.end());
+      partition_cache_.emplace(key, PartitionCacheEntry{shared, opened_identity, recency});
+    }
+    // Bound resident mappings: evict least-recently-used (front) keys until at
+    // cap. The just-inserted key is at the back (MRU), so it is never the victim
+    // while capacity >= 1. Eviction only drops the cache's shared_ptr; any caller
+    // still co-owning the mapping keeps it alive (view-safety across eviction).
+    while (partition_cache_.size() > partition_cache_capacity_ && !cache_recency_.empty()) {
+      const std::string &victim = cache_recency_.front();
+      partition_cache_.erase(victim);
+      cache_recency_.pop_front();
+    }
+  }
+  return shared;
+}
+
+void SurfaceDb::evict_partition(std::string_view canonical_key) const {
+  std::lock_guard<std::mutex> lock(*cache_mu_);
+  const auto it = partition_cache_.find(std::string(canonical_key));
+  if (it != partition_cache_.end()) {
+    cache_recency_.erase(it->second.recency);
+    partition_cache_.erase(it);
+  }
+}
+
+SurfaceDbCacheStats SurfaceDb::partition_cache_stats() const {
+  std::lock_guard<std::mutex> lock(*cache_mu_);
+  return SurfaceDbCacheStats{partition_cache_.size(), partition_cache_capacity_};
 }
 
 Result<PricedSurface> SurfaceDb::load_surface(std::string_view key, std::string_view symbol) const {
-  auto arch = open_partition(key);
+  auto canon = canonicalize_key(key);
+  if (!canon) {
+    return Err(canon.error());
+  }
+  const std::shared_ptr<const DbManifest> snap = manifest();
+  if (snap->find_partition(*canon) == nullptr) {
+    return Err(ErrorCode::NotFound, "SurfaceDb::load_surface: partition not present");
+  }
+  auto arch = cached_partition(*canon);
   if (!arch) {
     return Err(arch.error());
   }
-  return arch->map_symbol(symbol);
+  // Owned reconstruct over the shared cached mapping (the mapping is read once per
+  // partition, not once per load). Callers that hold a PricedSurface (the
+  // PortfolioPricer's SurfaceSet) use this; the zero-copy path is map_surface.
+  return (*arch)->reconstruct_symbol(symbol);
+}
+
+Result<LoadedSurface> SurfaceDb::map_surface(std::string_view key, std::string_view symbol) const {
+  auto canon = canonicalize_key(key);
+  if (!canon) {
+    return Err(canon.error());
+  }
+  const std::shared_ptr<const DbManifest> snap = manifest();
+  if (snap->find_partition(*canon) == nullptr) {
+    return Err(ErrorCode::NotFound, "SurfaceDb::map_surface: partition not present");
+  }
+  auto arch = cached_partition(*canon);
+  if (!arch) {
+    return Err(arch.error());
+  }
+  auto view = (*arch)->map_symbol(symbol);
+  if (!view) {
+    return Err(view.error());
+  }
+  // The view borrows (*arch)'s bytes; co-own the mapping so it stays valid across
+  // a later eviction / in-place rewrite (seam §4).
+  return LoadedSurface{*arch, std::move(*view)};
 }
 
 Status SurfaceDb::drop_partition(std::string_view key) {
@@ -1170,6 +1305,9 @@ Status SurfaceDb::drop_partition(std::string_view key) {
   if (!persisted) {
     return Err(persisted.error());
   }
+  // S5: drop any cached mapping for the dropped key (mu_ -> cache_mu_ nesting is
+  // the same lock order as the read paths, so it cannot deadlock).
+  evict_partition(*canon);
 
   // Manifest-first ordering is deliberate, not incidental: the index entry is
   // already gone (and generation already bumped) by the time we get here, so

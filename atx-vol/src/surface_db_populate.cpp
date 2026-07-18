@@ -155,7 +155,7 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
 
     bool skip = false;
     if (cfg.skip_existing) {
-      const Result<SurfaceArchive> existing = db.open_partition(date);
+      const Result<SurfaceArchiveV2> existing = db.open_partition(date);
       if (existing.has_value()) {
         ++stats.n_dates_skipped_existing;
         skip = true;

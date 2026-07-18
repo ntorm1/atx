@@ -114,9 +114,9 @@ TEST(SigmaInterpCorpus, RealBoard_WithinGates) {
     if (!board.has_value() || archive_path.empty()) {
       continue;
     }
-    auto arch = SurfaceArchive::open_file(archive_path.string());
+    auto arch = SurfaceArchiveV2::open_file(archive_path.string());
     ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
-    auto recon = arch->map_symbol("SPY");
+    auto recon = arch->reconstruct_symbol("SPY");
     ASSERT_TRUE(recon.has_value()) << recon.error().to_string();
     ++loaded;
     const double S = board->spot();

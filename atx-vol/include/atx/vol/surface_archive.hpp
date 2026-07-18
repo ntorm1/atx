@@ -476,6 +476,20 @@ static_assert(sizeof(ArchiveV2Header) == 256, "ArchiveV2Header layout drift");
 static_assert(std::is_trivially_copyable_v<ArchiveV2Header>);
 static_assert(std::is_standard_layout_v<ArchiveV2Header>);
 
+// R-19 (F6) content identity from an already-parsed v2 header (no I/O) — the v2
+// analogue of `archive_identity_from_header`. `file_size` + `created_ts_ns`
+// distinguish a rewrite that changes size or timestamp; `header_crc32c` covers
+// the header (incl. schema_hash, surface_count, created_ts) and `metadata_crc32c`
+// covers the lookup ‖ directory span (and because a rewrite of any surface's
+// bytes changes its directory/lookup (offset,size), it changes this too). Used by
+// `SnapshotCache` to evict a stale cached snapshot when a partition is rewritten
+// in place. Mirrors `SurfaceArchiveV2::identity()`.
+[[nodiscard]] inline ArchiveContentIdentity
+archive_v2_identity_from_header(const ArchiveV2Header &header) noexcept {
+  return ArchiveContentIdentity{header.file_size, header.created_ts_ns, header.header_crc32c,
+                                header.metadata_crc32c};
+}
+
 // Open-addressed lookup slot: symbol → surface record byte offset/size. O(1)
 // `map_symbol` / `find`. No CRC here (CRC is lazy / per-record).
 struct ArchiveV2LookupSlot {
@@ -502,7 +516,15 @@ struct ArchiveV2DirEntry {
   std::uint16_t kind_bits{}; // OR of (1u << VolCurveKind)
   std::uint16_t symbol_len{};
   std::uint16_t flags{};
-  std::uint32_t reserved0{};
+  // R-19 (F6) content identity: a copy of this record's `payload_crc32c` (also in
+  // the record header). It lives in the directory — which `metadata_crc32c`
+  // covers — so ANY surface-payload rewrite (even one that preserves the record's
+  // byte length and offset) changes `metadata_crc32c` and therefore the archive's
+  // content identity. This is the v2 analogue of v1's per-blob `surface_crc32c`
+  // in the lookup slot; without it a same-length in-place rewrite would be
+  // invisible to the SnapshotCache/SurfaceDb staleness check (the record CRC is
+  // otherwise only in the record header, which the metadata CRC does not cover).
+  std::uint32_t payload_crc32c{};
   char symbol[32]{};
   std::uint8_t reserved[8]{};
 };
@@ -570,6 +592,7 @@ static_assert(offsetof(ArchiveV2LookupSlot, surface_size) == 16);
 static_assert(offsetof(ArchiveV2DirEntry, surface_offset) == 0);
 static_assert(offsetof(ArchiveV2DirEntry, surface_size) == 8);
 static_assert(offsetof(ArchiveV2DirEntry, symbol_hash) == 16);
+static_assert(offsetof(ArchiveV2DirEntry, payload_crc32c) == 36);
 static_assert(offsetof(ArchiveV2SurfaceHeader, record_size) == 8);
 static_assert(offsetof(ArchiveV2SurfaceHeader, S) == 16);
 static_assert(offsetof(ArchiveV2SurfaceHeader, r) == 24);
@@ -665,6 +688,22 @@ public:
 
   // Whole-board views paired with per-record provenance, in directory order.
   [[nodiscard]] Result<std::vector<ArchivedSurfaceView>> map_all_with_provenance() const;
+
+  // ── Owned reconstruct (whole-board deserialize keeping v1 semantics) ─────────
+  //
+  // S4 clean-break cutover: these rebuild an OWNED `PricedSurface` from a v2
+  // record — the inverse of `write_surface_archive_v2`, bit-identical to the
+  // source surface (and hence to what the deleted v1 `reconstruct` produced,
+  // since v2 serializes the same SliceContext fields + curve params). They exist
+  // for the whole-board readers that still feed the `PortfolioPricer`'s
+  // `SurfaceSet` of `const PricedSurface*` (backtest `MarketSnapshot::load`,
+  // `SurfaceDb`) — re-pointing that pricer at zero-copy `PricedSurfaceView`s is
+  // B1/greeks work (seam §6), not this format cutover. The zero-copy subset-map
+  // win reaches the hot path via `map_symbol` (B1), not here. Slower than the
+  // views (per-surface allocation), but only used off the hot path.
+  [[nodiscard]] Result<PricedSurface> reconstruct_symbol(std::string_view symbol) const;
+  [[nodiscard]] Result<std::vector<PricedSurface>> reconstruct_all() const;
+  [[nodiscard]] Result<std::vector<ArchivedSurface>> reconstruct_all_with_provenance() const;
 
   // ── Lazy integrity (validate-on-demand; never on the price path) ─────────────
 
