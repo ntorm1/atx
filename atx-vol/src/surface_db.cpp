@@ -886,14 +886,17 @@ Result<SurfaceDb> SurfaceDb::create(std::string_view root, const SurfaceDbCreate
     return Err(wrote.error());
   }
 
-  return open(root);
+  return open(root, SurfaceDbOpenOpts{opts.partition_cache_capacity});
 }
 
-Result<SurfaceDb> SurfaceDb::open(std::string_view root) {
+Result<SurfaceDb> SurfaceDb::open(std::string_view root, const SurfaceDbOpenOpts &opts) {
   SurfaceDb db;
   db.root_ = std::string(root);
   db.mu_ = std::make_unique<std::mutex>();
   db.cache_mu_ = std::make_unique<std::mutex>(); // S5 partition view cache
+  // Normalize a zero capacity to a single resident entry so the LRU bound is
+  // always positive (an unbounded cache is exactly the RSS defect S5 fixes).
+  db.partition_cache_capacity_ = std::max<std::size_t>(1u, opts.partition_cache_capacity);
 
   auto bytes = read_file_fully(db.manifest_path());
   if (!bytes) {
@@ -1183,7 +1186,11 @@ SurfaceDb::cached_partition(std::string_view canonical_key) const {
     const auto it = partition_cache_.find(key);
     if (it != partition_cache_.end() &&
         (identity == ArchiveContentIdentity{} || it->second.identity == identity)) {
-      return it->second.archive; // hit: shared mapping, identity unchanged/unknown
+      // Hit: this key is now the most-recently-USED, so splice it to the back of
+      // the recency list (refreshes LRU order — a re-read protects it from
+      // eviction; the front stays the genuine least-recently-used victim).
+      cache_recency_.splice(cache_recency_.end(), cache_recency_, it->second.recency);
+      return it->second.archive; // shared mapping, identity unchanged/unknown
     }
   }
   // Miss or stale: open fresh OUTSIDE the lock (no whole-file I/O under cache_mu_).
@@ -1195,14 +1202,44 @@ SurfaceDb::cached_partition(std::string_view canonical_key) const {
   const ArchiveContentIdentity opened_identity = shared->identity();
   {
     std::lock_guard<std::mutex> lock(*cache_mu_);
-    partition_cache_[key] = PartitionCacheEntry{shared, opened_identity};
+    // Re-check under the lock: a concurrent open of the same key may have raced
+    // ahead. Replace an existing entry's mapping in place (keeping its recency
+    // slot, then refreshed to MRU); otherwise insert a fresh MRU entry.
+    const auto it = partition_cache_.find(key);
+    if (it != partition_cache_.end()) {
+      it->second.archive = shared;
+      it->second.identity = opened_identity;
+      cache_recency_.splice(cache_recency_.end(), cache_recency_, it->second.recency);
+    } else {
+      cache_recency_.push_back(key);
+      auto recency = std::prev(cache_recency_.end());
+      partition_cache_.emplace(key, PartitionCacheEntry{shared, opened_identity, recency});
+    }
+    // Bound resident mappings: evict least-recently-used (front) keys until at
+    // cap. The just-inserted key is at the back (MRU), so it is never the victim
+    // while capacity >= 1. Eviction only drops the cache's shared_ptr; any caller
+    // still co-owning the mapping keeps it alive (view-safety across eviction).
+    while (partition_cache_.size() > partition_cache_capacity_ && !cache_recency_.empty()) {
+      const std::string &victim = cache_recency_.front();
+      partition_cache_.erase(victim);
+      cache_recency_.pop_front();
+    }
   }
   return shared;
 }
 
 void SurfaceDb::evict_partition(std::string_view canonical_key) const {
   std::lock_guard<std::mutex> lock(*cache_mu_);
-  partition_cache_.erase(std::string(canonical_key));
+  const auto it = partition_cache_.find(std::string(canonical_key));
+  if (it != partition_cache_.end()) {
+    cache_recency_.erase(it->second.recency);
+    partition_cache_.erase(it);
+  }
+}
+
+SurfaceDbCacheStats SurfaceDb::partition_cache_stats() const {
+  std::lock_guard<std::mutex> lock(*cache_mu_);
+  return SurfaceDbCacheStats{partition_cache_.size(), partition_cache_capacity_};
 }
 
 Result<PricedSurface> SurfaceDb::load_surface(std::string_view key, std::string_view symbol) const {

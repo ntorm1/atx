@@ -58,6 +58,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <list>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -337,8 +338,40 @@ decode_symbol_provenance(const DbSymbolRecord &rec) noexcept;
 // ── SurfaceDb: create/open, atomic manifest persistence, symbol CRUD,
 // refresh(), partition IO ─────────────────────────────────────────────────
 
+// Default LRU bound for the S5 partition view cache. Each resident entry pins a
+// whole partition file's bytes in RAM: SurfaceArchiveV2::open_file reads the
+// entire file into an owned buffer (the real-mmap `atx::tsdb::Mapping` seam is
+// deferred to a later wave — see surface_archive.hpp), so an UNBOUNDED cache
+// would grow RSS by one full partition per distinct key the reader touches. The
+// backtest hot loop (B1) sweeps ~135 daily partitions, which without a bound
+// would keep every day's bytes resident for the SurfaceDb's lifetime and break
+// the sprint's RSS = O(in-flight) invariant. 16 keeps a working set of recent
+// partitions hot — comfortably covering the typical lookback / roll windows a
+// step reprices across — while bounding resident bytes to O(16 partitions).
+// Callers with a wider working set raise it via SurfaceDb{Create,Open}Opts; a
+// zero is normalized to 1 (see SurfaceDb::open).
+inline constexpr std::size_t kSurfaceDbDefaultPartitionCacheCapacity = 16;
+
 struct SurfaceDbCreateOpts {
   std::int64_t created_ts_ns{0}; // 0 => system clock
+  // Passed through to the SurfaceDb::open that create() returns, so a
+  // create-then-read caller configures the view cache in one call.
+  std::size_t partition_cache_capacity{kSurfaceDbDefaultPartitionCacheCapacity};
+};
+
+struct SurfaceDbOpenOpts {
+  // Max partition mappings held resident in the S5 view cache (LRU-evicted).
+  // See kSurfaceDbDefaultPartitionCacheCapacity for the resident-bytes rationale
+  // and the default. Zero is normalized to 1.
+  std::size_t partition_cache_capacity{kSurfaceDbDefaultPartitionCacheCapacity};
+};
+
+// Observability for the S5 partition view cache. `resident` is the number of
+// mappings held right now; `capacity` is the configured LRU bound. A
+// diagnostic/test hook (mirrors SnapshotCache::stats()); off every hot path.
+struct SurfaceDbCacheStats {
+  std::size_t resident{0};
+  std::size_t capacity{0};
 };
 
 // An opened surface database. Const queries are thread-safe (they read an
@@ -377,10 +410,15 @@ public:
                                                 const SurfaceDbCreateOpts &opts = {});
 
   // Open an existing database. Errors: NotFound (no manifest), ParseError,
-  // IoError.
-  [[nodiscard]] static Result<SurfaceDb> open(std::string_view root);
+  // IoError. `opts` configures the S5 partition view-cache LRU bound.
+  [[nodiscard]] static Result<SurfaceDb> open(std::string_view root,
+                                              const SurfaceDbOpenOpts &opts = {});
 
   [[nodiscard]] const std::string &root() const noexcept { return root_; }
+
+  // Current partition view-cache occupancy + its LRU bound (S5). Diagnostic /
+  // test hook; thread-safe.
+  [[nodiscard]] SurfaceDbCacheStats partition_cache_stats() const;
 
   // ── Manifest snapshot queries (thread-safe) ──
   [[nodiscard]] std::shared_ptr<const DbManifest> manifest() const;
@@ -450,17 +488,27 @@ private:
   // Drop any cached mapping for `canonical_key` (called on write/drop).
   void evict_partition(std::string_view canonical_key) const;
 
-  // One cached partition mapping + the content identity it was opened against.
+  // One cached partition mapping + the content identity it was opened against +
+  // this key's slot in `cache_recency_` (its LRU position).
   struct PartitionCacheEntry {
     std::shared_ptr<const SurfaceArchiveV2> archive;
     ArchiveContentIdentity identity;
+    std::list<std::string>::iterator recency;
   };
 
   std::string root_{};
   mutable std::unique_ptr<std::mutex> mu_{}; // guards snapshot_ swap + writes
   std::shared_ptr<const DbManifest> snapshot_{};
-  mutable std::unique_ptr<std::mutex> cache_mu_{}; // guards partition_cache_ (S5)
+  // S5 partition view cache (guarded by cache_mu_). `cache_recency_` orders keys
+  // least-recently-USED at the front, most-recently at the back; each map entry
+  // stores an iterator into it. On a hit the key is spliced to the back; when the
+  // map exceeds partition_cache_capacity_ the front (LRU) key is evicted. Evicting
+  // only drops the cache's shared_ptr — an outstanding LoadedSurface / caller that
+  // still co-owns the mapping keeps it alive, so no in-use view is invalidated.
+  mutable std::unique_ptr<std::mutex> cache_mu_{};
   mutable std::unordered_map<std::string, PartitionCacheEntry> partition_cache_{};
+  mutable std::list<std::string> cache_recency_{};
+  std::size_t partition_cache_capacity_{kSurfaceDbDefaultPartitionCacheCapacity};
 };
 
 } // namespace atx::vol

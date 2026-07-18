@@ -35,7 +35,7 @@
     "library_version": "v1.9.0",
     "library_build_type": "release",
     "json_schema_version": 1,
-    "cv_provisional_policy": "provisional=true where cv (stddev/mean over repetitions) > 0.05; cv_pct = cv*100. Captured on a shared host (sibling agents building); PM triggers a final quiet-window re-capture before M4. This ADDITIVE file carries the WS-S v2 rows (serialize_v2 / mmap_open / subset_map_zero_copy) alongside the v1 baseline rows so the v1:v2 ratios are a same-run comparison."
+    "cv_provisional_policy": "provisional=true where cv (stddev/mean over repetitions) > 0.05; cv_pct = cv*100. Captured on a shared host (sibling agents building); PM triggers a final quiet-window re-capture before M4. This ADDITIVE file carries the WS-S v2 rows (serialize_v2 / mmap_open / subset_map_zero_copy) alongside the v1 baseline rows so the v1:v2 ratios are a same-run comparison. Honest max CV across ALL rows is 43.46% on the v1 serialize/essvi/count:50 mean row (an earlier headline said 'max CV ~18%', which covers only the v2 subset — serialize_v2/convexdense/count:100 tops out at 18.38%); every high-CV row is flagged provisional=true, so nothing noisy is presented as reliable, and the shared-host re-capture supersedes these figures."
   },
   "benchmarks": [
     {
