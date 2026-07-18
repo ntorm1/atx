@@ -64,9 +64,12 @@
 #include <type_traits>
 #include <vector>
 
-#include "atx/vol/priced_surface.hpp" // PricedSurface, PricingContext
-#include "atx/vol/surface_policy.hpp" // purpose, quality, health, validation
+#include "atx/vol/priced_surface.hpp"      // PricedSurface, PricingContext
+#include "atx/vol/priced_surface_view.hpp" // PricedSurfaceView (v2 zero-copy read view)
+#include "atx/vol/surface_policy.hpp"      // purpose, quality, health, validation
 #include "atx/vol/types.hpp"
+
+#include <memory> // std::shared_ptr (v2 backing owner)
 
 namespace atx::vol {
 
@@ -418,6 +421,239 @@ private:
   ArchiveHeader header_{};                 // parsed copy
   std::vector<ArchiveIndexSlot> lookup_{}; // parsed copy of the lookup table
   std::vector<ArchiveDirEntry> directory_{};
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ATXVSA2 — zero-copy mmap columnar format (v2). Spec + design lineage:
+// atx-vol/docs/atxvsa2-format.md. Single contiguous region; per-symbol directory
+// of BYTE-OFFSETS (no pointers → no relocation on map); per-surface COLUMNAR SoA
+// slice arrays (Arrow-style contiguous typed columns); every field naturally
+// aligned (FlatBuffers); surfaces packed on 64-B (NO 4096-B blob pad). Integrity
+// is LAZY: `open` checks header + metadata + framing only; per-record CRC is
+// validate-on-demand, never on the price path. Sources cited in the design note.
+// ═══════════════════════════════════════════════════════════════════════════
+
+inline constexpr std::uint16_t kArchiveV2Major = 4; // distinct from v1 (major 3)
+inline constexpr std::uint16_t kArchiveV2Minor = 0;
+
+// Surfaces pack on this file alignment (cache line / SIMD headroom) — replaces
+// v1's 4096-B kArchiveBlobAlign (bottleneck #6). Columns inside a record align to
+// their natural size (8 for f64/u64). The file TAIL is padded to a page for mmap.
+inline constexpr std::uint32_t kArchiveV2SurfaceAlign = 64;
+inline constexpr std::uint32_t kArchiveV2ColumnAlign = 8;
+inline constexpr std::uint32_t kArchiveV2FilePageAlign = 4096;
+
+inline constexpr std::uint16_t kArchiveV2SlotEmpty = 0;
+inline constexpr std::uint16_t kArchiveV2SlotOccupied = 1;
+
+// ── File header (offset 0). All fields naturally aligned (8-byte block first). ──
+struct ArchiveV2Header {
+  char magic[8]{}; // "ATXVSA20", no NUL
+  std::uint64_t file_size{};
+  std::uint64_t created_ts_ns{};
+  std::uint64_t schema_hash{};         // v2 sizeof-fold + v2 salt
+  std::uint64_t writer_version_hash{}; // informational; 0 if unset
+  std::uint64_t lookup_offset{};
+  std::uint64_t directory_offset{};
+  std::uint64_t data_offset{};
+  std::uint32_t surface_count{};
+  std::uint32_t lookup_slot_count{}; // power of two
+  std::uint32_t lookup_slot_size{};  // sizeof(ArchiveV2LookupSlot)
+  std::uint32_t dir_entry_size{};    // sizeof(ArchiveV2DirEntry)
+  std::uint32_t surface_header_size{}; // sizeof(ArchiveV2SurfaceHeader)
+  std::uint32_t header_crc32c{};       // over header bytes, this field = 0
+  std::uint32_t metadata_crc32c{};     // over (lookup ‖ directory) bytes
+  std::uint32_t flags{};
+  std::uint16_t major{}; // kArchiveV2Major
+  std::uint16_t minor{};
+  std::uint16_t header_size{};  // sizeof(ArchiveV2Header)
+  std::uint16_t endian{};       // 1 = little
+  std::uint16_t pointer_bits{}; // 64
+  std::uint16_t reserved_u16{};
+  std::uint8_t reserved[148]{}; // pad to 256; covered by header_crc
+};
+static_assert(sizeof(ArchiveV2Header) == 256, "ArchiveV2Header layout drift");
+static_assert(std::is_trivially_copyable_v<ArchiveV2Header>);
+static_assert(std::is_standard_layout_v<ArchiveV2Header>);
+
+// Open-addressed lookup slot: symbol → surface record byte offset/size. O(1)
+// `map_symbol` / `find`. No CRC here (CRC is lazy / per-record).
+struct ArchiveV2LookupSlot {
+  std::uint64_t symbol_hash{};
+  std::uint64_t surface_offset{}; // byte offset (file-relative) to the record
+  std::uint64_t surface_size{};   // record extent (self-contained)
+  std::uint32_t uid{};
+  std::uint16_t symbol_len{};
+  std::uint16_t flags{}; // kArchiveV2Slot*
+  char symbol[32]{};     // canonical, not NUL-terminated
+};
+static_assert(sizeof(ArchiveV2LookupSlot) == 64, "ArchiveV2LookupSlot layout drift");
+static_assert(std::is_trivially_copyable_v<ArchiveV2LookupSlot>);
+static_assert(std::is_standard_layout_v<ArchiveV2LookupSlot>);
+
+// Directory entry (one per surface, sorted by canonical symbol) — the ordered
+// jump table for `map_all`. Byte offsets, never pointers.
+struct ArchiveV2DirEntry {
+  std::uint64_t surface_offset{};
+  std::uint64_t surface_size{};
+  std::uint64_t symbol_hash{};
+  std::uint32_t uid{};
+  std::uint16_t n_slices{};
+  std::uint16_t kind_bits{}; // OR of (1u << VolCurveKind)
+  std::uint16_t symbol_len{};
+  std::uint16_t flags{};
+  std::uint32_t reserved0{};
+  char symbol[32]{};
+  std::uint8_t reserved[8]{};
+};
+static_assert(sizeof(ArchiveV2DirEntry) == 80, "ArchiveV2DirEntry layout drift");
+static_assert(std::is_trivially_copyable_v<ArchiveV2DirEntry>);
+static_assert(std::is_standard_layout_v<ArchiveV2DirEntry>);
+
+// Per-surface record header (at each record's start). Carries the pricing
+// scalars, the provenance record, and the block of record-relative BYTE OFFSETS
+// to the columnar SoA slice arrays (the "pointer section", Cap'n Proto style).
+// Fields ordered by descending alignment so there is no internal padding.
+struct ArchiveV2SurfaceHeader {
+  char magic[8]{}; // "ATXVSR20"
+  std::uint64_t record_size{};
+  double S{};
+  double r{};
+  std::int64_t now_ts_ns{};
+  double al_tol{};
+  std::uint64_t prov_validation_id{};
+  std::uint64_t prov_source_generation{};
+  std::uint64_t prov_served_generation{};
+  // Record-relative offsets to the columnar arrays (each 8-B aligned).
+  std::uint64_t col_kind_off{};        // u8[n_slices]
+  std::uint64_t col_T_off{};           // f64[n_slices]  (ascending)
+  std::uint64_t col_forward_off{};     // f64[n_slices]
+  std::uint64_t col_qeff_off{};        // f64[n_slices]
+  std::uint64_t col_df_off{};          // f64[n_slices]
+  std::uint64_t col_borrow_off{};      // f64[n_slices]
+  std::uint64_t col_nused_off{};       // u64[n_slices]
+  std::uint64_t col_ndropped_off{};    // u64[n_slices]
+  std::uint64_t col_nodecount_off{};   // u32[n_slices]
+  std::uint64_t col_payload_off_off{}; // u64[n_slices] (record-relative payload offsets)
+  std::uint32_t uid{};
+  std::uint32_t n_slices{};
+  std::uint32_t prov_marker{}; // kArchiveProvenanceMarker, or 0 legacy
+  std::uint32_t prov_validation_failures{};
+  std::uint32_t payload_crc32c{}; // over record bytes with this field = 0 (lazy)
+  std::uint32_t flags{};
+  std::uint16_t kind_bits{};
+  std::uint8_t method{}; // AmericanMethod
+  std::uint8_t prov_purpose{};
+  std::uint8_t prov_quality_mode{};
+  std::uint8_t prov_state{};
+  std::uint16_t al_n_collocation{};
+  std::uint16_t al_n_quadrature{};
+  std::uint16_t al_max_newton_iter{};
+  std::uint16_t reserved_u16{};
+  std::uint8_t reserved[66]{}; // pad to 256
+};
+static_assert(sizeof(ArchiveV2SurfaceHeader) == 256, "ArchiveV2SurfaceHeader layout drift");
+static_assert(std::is_trivially_copyable_v<ArchiveV2SurfaceHeader>);
+static_assert(std::is_standard_layout_v<ArchiveV2SurfaceHeader>);
+
+// ── v2 writer ────────────────────────────────────────────────────────────────
+
+struct ArchiveV2WriteOpts {
+  std::uint32_t flags{0};
+  std::uint32_t lookup_load_pct{70};                    // (0, 100]
+  std::uint32_t surface_alignment{kArchiveV2SurfaceAlign};
+  std::int64_t created_ts_ns{0}; // 0 => system clock
+};
+
+// Serialize `items` into an in-memory ATXVSA2 buffer (memcpy-bound). Same
+// `SurfaceArchiveItem` inputs as v1 — callers re-target by swapping the function
+// name (clean break §0: no compatibility overload). Errors mirror v1's writer.
+[[nodiscard]] Result<std::vector<std::byte>>
+write_surface_archive_v2(std::span<const SurfaceArchiveItem> items,
+                         const ArchiveV2WriteOpts &opts = {});
+
+// As above, persisted atomically (".tmp" + rename).
+[[nodiscard]] Status write_surface_archive_v2_file(std::string_view path,
+                                                   std::span<const SurfaceArchiveItem> items,
+                                                   const ArchiveV2WriteOpts &opts = {});
+
+// ── v2 reader ────────────────────────────────────────────────────────────────
+
+// One reconstructed view paired with the provenance parsed from the same record
+// (the v2 analogue of ArchivedSurface; move-only because the view owns its
+// materialized heavy curves and never-reused instance id).
+struct ArchivedSurfaceView {
+  PricedSurfaceView view;
+  SurfaceProvenance provenance;
+};
+
+// An opened ATXVSA2 archive. BACKING-AGNOSTIC: it owns a `std::span<const
+// std::byte>` over the mapped region plus a type-erased owner keeping the backing
+// (an owned buffer today; a real `atx::tsdb::Mapping` in wave 2) alive. All query
+// methods are `const`; a returned `PricedSurfaceView` BORROWS this archive's bytes
+// and must not outlive it. Move-only.
+class SurfaceArchiveV2 {
+public:
+  // Take ownership of `bytes` and validate framing (magic, version, endian,
+  // sizes, schema hash, header CRC, metadata CRC, directory/lookup bounds). Does
+  // NOT CRC any surface record (lazy). ParseError on any framing failure.
+  [[nodiscard]] static Result<SurfaceArchiveV2> open(std::vector<std::byte> bytes);
+
+  // Read `path` fully into a buffer and `open` it. Adds IoError / NotFound.
+  [[nodiscard]] static Result<SurfaceArchiveV2> open_file(std::string_view path);
+
+  // The MMAP SEAM (wave 2). View over externally-owned bytes; `owner` keeps the
+  // backing (e.g. an `atx::tsdb::Mapping`-owning shared_ptr) alive for the
+  // archive's lifetime. Same framing validation as `open`.
+  [[nodiscard]] static Result<SurfaceArchiveV2>
+  open_borrowed(std::span<const std::byte> bytes, std::shared_ptr<const void> owner);
+
+  [[nodiscard]] std::uint32_t count() const noexcept { return header_.surface_count; }
+  [[nodiscard]] const ArchiveV2Header &header() const noexcept { return header_; }
+  [[nodiscard]] std::span<const ArchiveV2DirEntry> directory() const noexcept { return directory_; }
+  [[nodiscard]] ArchiveContentIdentity identity() const noexcept {
+    return ArchiveContentIdentity{header_.file_size, header_.created_ts_ns, header_.header_crc32c,
+                                  header_.metadata_crc32c};
+  }
+
+  // Resolve `symbol` (case-insensitive) to its directory entry. NotFound if absent.
+  [[nodiscard]] Result<ArchiveV2DirEntry> find(std::string_view symbol) const;
+
+  // Provenance from a symbol's record header (no payload CRC). NotFound if absent.
+  [[nodiscard]] Result<SurfaceProvenance> provenance(std::string_view symbol) const;
+
+  // SUBSET MAP: hash-probe `symbol`, build a zero-copy view over ONLY that
+  // record's byte extent — touches no other surface's bytes (bottleneck #1).
+  // NotFound if absent; ParseError on a bad record.
+  [[nodiscard]] Result<PricedSurfaceView> map_symbol(std::string_view symbol) const;
+
+  // Whole-board: a view over every surface, in directory order.
+  [[nodiscard]] Result<std::vector<PricedSurfaceView>> map_all() const;
+
+  // Whole-board views paired with per-record provenance, in directory order.
+  [[nodiscard]] Result<std::vector<ArchivedSurfaceView>> map_all_with_provenance() const;
+
+  // ── Lazy integrity (validate-on-demand; never on the price path) ─────────────
+
+  // Verify one symbol's record payload CRC. NotFound if absent; ParseError on
+  // a checksum/framing failure; Ok otherwise.
+  [[nodiscard]] Status validate_symbol(std::string_view symbol) const;
+  // Verify every record's payload CRC. Ok iff all pass.
+  [[nodiscard]] Status validate_all() const;
+
+private:
+  SurfaceArchiveV2() = default;
+
+  [[nodiscard]] static Result<SurfaceArchiveV2> open_impl(std::span<const std::byte> bytes,
+                                                          std::shared_ptr<const void> owner);
+  [[nodiscard]] const ArchiveV2LookupSlot *find_slot(std::string_view symbol) const noexcept;
+  [[nodiscard]] Status validate_record(std::uint64_t offset, std::uint64_t size) const;
+
+  std::span<const std::byte> bytes_{};        // the mapped region (borrowed view)
+  std::shared_ptr<const void> owner_{};       // keeps the backing alive
+  ArchiveV2Header header_{};                   // parsed copy
+  std::vector<ArchiveV2LookupSlot> lookup_{};  // parsed copy
+  std::vector<ArchiveV2DirEntry> directory_{}; // parsed copy
 };
 
 } // namespace atx::vol
