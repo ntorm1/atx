@@ -211,6 +211,8 @@ graph TD
 
 **Wave C (ready subset) LANDED + MERGED to `main @ ddaea1a`** (2026-07-18, local only, nothing pushed). U4 (small-book worker budget) + isatol (rel-avx2 residual ISA-drift toleranced — `752c441`) + A5 (BAW-seed AVX2 vectorization, economic-parity green, ship-flag deferred) + A6 (QD+ seed NEGATIVE, document-defer). Debug gate: 5 v2 known-red, **0 new**. **rel-avx2 now green to only the 5 v2 known-red** (isatol closed the 4 residual ISA-drift telltales incl. the priced_surface 1-ULP hexbits-delta, not a route hash) → **§10 "M4 = Release green under rel-avx2" DoD item CLOSED**. Wave-C gated remainder (A2/A3/A7 dep deferred-A1; U5 dep Sprint-R R-14/R-15; U6/V1 need the 519/100 OPRA cohort; E3 cross-owner) and F1/F2/F5 (⚠︎R Sprint-R seam) await user decisions.
 
+**F-tasks (⚠︎R) LANDED + MERGED to `main @ bd00ede`** (2026-07-18, local only, nothing pushed; user granted full seam-design control + "accept mechanism proofs" for the absolutes). F1 (R-01p2 — Legacy/eSSVI de-Am now routed through the shared-boundary batch, **3.99× on a 96-strike board**, the big fit-speed lever) + F2 (R-02 served floor) + F5 R-05/R-06. Debug gate: 5 v2 known-red, **0 new** (F1's reroute left the LegacyCompat golden untouched — narrow boards don't engage the batch). **R-10 deferred** (needs the `AloPricer::reset_warm` primitive; WIP stashed). Two flags: F2's default now enforces the 0.50 served-coverage floor (synthetic-validated; wants a real 14-board OPRA corpus re-run when data exists), and the 519/100/accuracy **absolutes stay host+data-deferred per the user's "accept mechanism proofs" call** (mechanism proofs stand: SPY wall-win, 11-name 3.83× universe scaling, F1 3.99× de-Am).
+
 | Task | Branch | Status | SHA(s) | Gate result |
 |---|---|---|---|---|
 | M1 | `feat/ns-measure` | ☑ landed | `1a14397` | compare_baseline.py + test; e2e bench doc |
@@ -235,12 +237,13 @@ graph TD
 | A6 | `feat/ns-am-price` | ☑ landed (NEGATIVE / doc-defer) | `24accb1` | QD+ seed regresses fast-tier acc 3.2× (1.44e-3→4.62e-3), no speed win; prod seed stays BAW byte-unchanged; A/B infra + in-code negative finding (Li 2010 / SSRN 2547027 cited) |
 | A7 | `feat/ns-am-price` | ☐ todo (Wave C) | — | warm-IV µs |
 | A8 | `feat/ns-am-price` | ☐ todo (Wave D) | — | — |
-| F1 | `feat/ns-fit` | ☐ todo (Wave B, ⚠︎R) | — | R-01p2 wiring |
+| F1 | `feat/ns-fit-b` | ☑ landed | `4dbc067` | ⚠︎R R-01p2: `shared_boundary_deam_batch` seam on span<FitObs>; Legacy/eSSVI de-Am **297.6→74.6 ms/board = 3.99×**; parity ≤1e-4 (scalar byte-unchanged fallback); off-flag bit-identical |
 | F3 | `feat/ns-fit` | ☑ landed | `886645c` | SlicePrepOutcome + per_slice_legacy_prep_fallback; rescue 4/4 slices |
 | F4 | `feat/ns-fit` | ☑ landed | `453910e` | ExpiryFitReport/Outcome; fail_board_on_hard_slice_error; honest partial-board |
 | F6 | `feat/ns-fit` | ☑ landed | `c925431` | snapshot_cache + ArchiveContentIdentity/metadata_crc32c; no stale serve |
 | F7 | `feat/ns-fit` | ☑ landed | `7c08438` | corpus_board_fit/dividend/curve_selector/backtest/deamer_test P3 cleanups |
-| F2,F5 | `feat/ns-fit` | ☐ todo (Wave B, ⚠︎R) | — | R-02 floor / seam-gated |
+| F2 | `feat/ns-fit-b` | ☑ landed | `975adc2` | ⚠︎R R-02: served-breadth floor on ALL risk-rebuild routes (0.0→0.50 prod floor). ⚠ default-behavior change — synthetic-validated; real 14-board OPRA corpus re-run pending data |
+| F5 | `feat/ns-fit-f5` | ☑ landed (R-05/R-06); R-10 deferred | `f4b2c15` (R-05), `51b1164` (R-06) | ⚠︎R R-05 IV floor/ceiling eval before seeded clamps (red→green); R-06 carry tol ladder + static_asserts (no drift). **R-10 DEFERRED**: needs `AloPricer::reset_warm` in american.cpp (amprice TU); reset_warm WIP stashed (`stash@{0}`), non-critical perf, clean re-dispatch later |
 | U1 | `feat/ns-sched` | ☑ landed | `0d55d6e` | streaming populate; RSS O(all)→O(in-flight); determinism bit-id; 11/11 |
 | U2 | `feat/ns-sched-b` | ☑ landed | `13dff09` | LPT outer claim order (desc by frame rows, deterministic tie-break); byte-identical output |
 | U3 | `feat/ns-sched-b` | ☑ landed | `3661564` | date-granular durability across a worker throw; crash-resume test (fresh open) passes |
