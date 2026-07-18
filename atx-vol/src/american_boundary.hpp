@@ -152,4 +152,25 @@ enum class AlSolveStatus { Ok, Collapsed, TableMissing };
                                                 double K, double T, double sigma,
                                                 double r, double q) noexcept;
 
+// ── P2 (WS-P) seam: the PURE collocation residual R(y; sigma, r) ──────────
+//
+// Adjoint / implicit-function-theorem greeks (detail/adjoint_greeks.cpp) need the
+// residual as a linkable symbol to form the Jacobian J = dR/dy and the parameter
+// sensitivities R_sigma/R_r. Until now R existed ONLY as a private lambda inside
+// detail::al_implicit_diff_put_greeks (american.cpp), over the file-static kernel
+// eqn_b_ND_impl<0,0>. This entry point exposes the SAME computation with no change
+// to any existing behaviour: it is a PURE function of (y, sigma, r) given an
+// already-initialised bnd (node grid / xmax / K / T fixed) and its bound ws.
+//
+// Writes R_out[0..bnd.n-1]. Node 0 is pinned (R_out[0] = 0); interior node i gives
+//   R_out[i] = y[i] - y_from_b( clamp( alpha * N(tau_i,b_i) / D(tau_i,b_i) ) )
+// with b_i = xmax*exp(-sqrt(y[i])), alpha = K*exp(-(r-q)*tau_i). The generic
+// (inline-geometry) kernel is used, so ws need not have its sweep-invariant
+// geometry re-bound for a perturbed (sigma, r, q). Does not mutate bnd. q is an
+// explicit argument (not read from bnd) so R_r/R_sigma central differences bump
+// exactly one parameter while holding the node grid (bnd.tau/xmax/K) fixed.
+void al_put_boundary_residual(const AlBoundary& bnd, const AlWorkspace& ws,
+                              const double* y, double sigma, double r, double q,
+                              double* R_out) noexcept;
+
 }  // namespace atx::vol::amer

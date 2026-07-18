@@ -1315,6 +1315,48 @@ namespace amer {
   return price;
 }
 
+// P2 (WS-P) seam — the PURE collocation residual R(y; sigma, r, q). Mirrors the
+// private `residual` lambda in detail::al_implicit_diff_put_greeks verbatim, but
+// as a linkable symbol the adjoint-greeks kernel (detail/adjoint_greeks.cpp) can
+// call to form J = dR/dy and R_sigma/R_r. Pure function of (y, sigma, r, q):
+// copies y into a scratch boundary, runs the generic inline-geometry kernel
+// eqn_b_ND_impl<0,0>, and returns the fixed-point residual per node. Does not
+// mutate bnd/ws state that any other caller observes (scr is a local copy).
+void al_put_boundary_residual(const AlBoundary &bnd, const AlWorkspace &ws, const double *y,
+                              double sigma, double r, double q, double *R_out) noexcept {
+  const std::uint16_t n = bnd.n;
+  const double xmax = bnd.xmax;
+  const double K = bnd.K;
+  AlBoundary scr = bnd; // scratch: only .y varies; node grid / xmax / K fixed
+  for (std::uint16_t i = 0; i < n; ++i) {
+    scr.y[i] = y[i];
+  }
+  R_out[0] = 0.0;
+  for (std::uint16_t i = 1; i < n; ++i) {
+    const double tau = scr.tau[i];
+    if (tau <= 1.0e-14) {
+      R_out[i] = 0.0;
+      continue;
+    }
+    const double b_val = b_from_y(y[i], xmax);
+    double N = 0.0, D = 0.0;
+    eqn_b_ND_impl<0, 0>(scr, ws, i, tau, b_val, sigma, r, q, N, D);
+    double R = 0.0;
+    if (D > 1.0e-300) {
+      const double alpha = K * std::exp(-(r - q) * tau);
+      double b_new = alpha * N / D;
+      if (b_new > xmax) {
+        b_new = xmax;
+      }
+      if (!(b_new > 0.0)) {
+        b_new = 1.0e-6 * K;
+      }
+      R = y[i] - y_from_b(b_new, xmax);
+    }
+    R_out[i] = R;
+  }
+}
+
 } // namespace amer
 
 namespace { // reopen the file's anonymous namespace

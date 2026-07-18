@@ -116,6 +116,8 @@ add_executable(atx-vol-tests
     iv_seed_test.cpp                 # K2: Choi-2023 tighter seed accuracy + Halley-step gate
     # bt-hotpath WS-S (format agent) — appended targets:
     surface_archive_v2_test.cpp      # S1-S3: ATXVSA2 zero-copy view parity + subset-map isolation
+    # Wave-P AAD greeks (Agent greeks) — appended target:
+    adjoint_greeks_test.cpp          # P2: adjoint/IFT American greeks parity vs central-diff FD
 )
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).
