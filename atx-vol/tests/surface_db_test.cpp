@@ -334,7 +334,10 @@ constexpr double kArchR = 0.043;
 // across a (K, T, side) grid: implied vol, total variance, and re-Americanized
 // fair value. Copied verbatim (pattern) from surface_archive_test.cpp -- the
 // binding bit-identity oracle for this task.
-void expect_theo_bit_identical(const PricedSurface &a, const PricedSurface &b) {
+// `b` is templated so it accepts either a PricedSurface or a PricedSurfaceView
+// (S5's map_surface returns the latter) — both expose the same const query API.
+template <class B>
+void expect_theo_bit_identical(const PricedSurface &a, const B &b) {
   ASSERT_EQ(a.n_slices(), b.n_slices());
   ASSERT_EQ(a.uid(), b.uid());
   const std::array<double, 4> Ks{85.0, 100.0, 108.0, 120.0};
@@ -749,6 +752,68 @@ TEST(SurfaceDbPartition, WriteOpenLoad_TheoBitIdentical) {
   ASSERT_TRUE(arch.has_value());
   EXPECT_EQ(arch->count(), 2u);
   ASSERT_TRUE(arch->map_symbol("MSFT").has_value());
+  std::filesystem::remove_all(root);
+}
+
+// S5: map_surface serves a zero-copy view over a SHARED per-partition mapping —
+// two loads of the same partition (even for different symbols) reuse one mapping
+// (cache hit), and the view prices bit-identically to the source surface.
+TEST(SurfaceDbPartition, ViewCacheSharesOneMappingAcrossLoads) {
+  const auto root = test_root("part_viewcache_hit");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  const auto s1 = make_essvi(/*uid=*/1, /*n_slices=*/3);
+  const auto s2 = make_convex(/*uid=*/2, /*n_slices=*/2, /*n_nodes=*/40);
+  const std::vector<SurfaceArchiveItem> items{{"AAPL", &s1}, {"MSFT", &s2}};
+  ASSERT_TRUE(db->write_partition("2026-07-10", items).has_value());
+
+  auto a = db->map_surface("2026-07-10", "aapl");
+  auto b = db->map_surface("2026-07-10", "msft");
+  ASSERT_TRUE(a.has_value()) << a.error().to_string();
+  ASSERT_TRUE(b.has_value()) << b.error().to_string();
+  // Same partition => one shared mapping (the cache-hit invariant).
+  EXPECT_EQ(a->partition.get(), b->partition.get());
+  // Zero-copy views price bit-identically to the source surfaces.
+  EXPECT_EQ((*a)->kind_at(0), VolCurveKind::Essvi);
+  expect_theo_bit_identical(s1, **a);
+  EXPECT_EQ((*b)->kind_at(0), VolCurveKind::ConvexDense);
+  expect_theo_bit_identical(s2, **b);
+  std::filesystem::remove_all(root);
+}
+
+// S5: rewriting a partition in place changes its F6 content identity, so the next
+// map_surface EVICTS the stale mapping and serves the NEW bytes — while an
+// already-returned view stays valid (it co-owns the old mapping).
+TEST(SurfaceDbPartition, ViewCacheEvictsOnPartitionRewrite) {
+  const auto root = test_root("part_viewcache_evict");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  const auto v1 = make_essvi(/*uid=*/1, /*n_slices=*/3);
+  const std::vector<SurfaceArchiveItem> items1{{"AAPL", &v1}};
+  ASSERT_TRUE(db->write_partition("2026-07-10", items1).has_value());
+
+  auto loaded1 = db->map_surface("2026-07-10", "aapl");
+  ASSERT_TRUE(loaded1.has_value()) << loaded1.error().to_string();
+  EXPECT_EQ((*loaded1)->kind_at(0), VolCurveKind::Essvi);
+  expect_theo_bit_identical(v1, **loaded1);
+  const SurfaceArchiveV2 *old_mapping = loaded1->partition.get();
+
+  // Rewrite the SAME key with a DIFFERENT-kind surface (new content identity).
+  const auto v2 = make_convex(/*uid=*/1, /*n_slices=*/2, /*n_nodes=*/40);
+  const std::vector<SurfaceArchiveItem> items2{{"AAPL", &v2}};
+  ASSERT_TRUE(db->write_partition("2026-07-10", items2).has_value());
+
+  auto loaded2 = db->map_surface("2026-07-10", "aapl");
+  ASSERT_TRUE(loaded2.has_value()) << loaded2.error().to_string();
+  // A fresh mapping was opened (the stale one was evicted on rewrite).
+  EXPECT_NE(loaded2->partition.get(), old_mapping);
+  // The remapped view reflects the NEW content, not the stale surface.
+  EXPECT_EQ((*loaded2)->kind_at(0), VolCurveKind::ConvexDense);
+  expect_theo_bit_identical(v2, **loaded2);
+  // The old view co-owns its old mapping, so it is still valid post-rewrite.
+  expect_theo_bit_identical(v1, **loaded1);
   std::filesystem::remove_all(root);
 }
 

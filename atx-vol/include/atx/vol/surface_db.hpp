@@ -65,6 +65,7 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <unordered_map>
 #include <vector>
 
 #include "atx/vol/american.hpp"        // AlOpts
@@ -354,6 +355,19 @@ struct SurfaceDbCreateOpts {
 // themselves; distinct keys are unaffected. Cross-process: single writer,
 // many readers; every manifest mutation is an atomic rewrite (tmp+rename)
 // with generation++ so a reader process picks it up via refresh().
+// A zero-copy surface handle returned by SurfaceDb::map_surface (S5). It CO-OWNS
+// the partition mapping it borrows (via the shared_ptr) so the view stays valid
+// even after the partition is later rewritten or evicted from the db's view
+// cache — the seam §4 "never let a view outlive the archive" rule, enforced by
+// construction. `operator*` / `operator->` forward to the view so callers write
+// `loaded->fair_value(...)`. Move-only (the view is move-only).
+struct LoadedSurface {
+  std::shared_ptr<const SurfaceArchiveV2> partition; // keeps the mapping alive
+  PricedSurfaceView view;                            // borrows `partition`'s bytes
+  [[nodiscard]] const PricedSurfaceView *operator->() const noexcept { return &view; }
+  [[nodiscard]] const PricedSurfaceView &operator*() const noexcept { return view; }
+};
+
 class SurfaceDb {
 public:
   // Create <root>/ (and partitions/) and write an empty manifest
@@ -402,8 +416,23 @@ public:
                                        std::span<const SurfaceArchiveItem> items,
                                        const ArchiveV2WriteOpts &opts = {});
   [[nodiscard]] Result<SurfaceArchiveV2> open_partition(std::string_view key) const;
+
+  // Reconstruct an OWNED surface for `symbol` in partition `key`. S5: reads the
+  // partition through a shared, per-partition MMAP CACHE (keyed by canonical key,
+  // evicted when the file's F6 content identity changes), so repeated loads of the
+  // same partition reuse one mapping instead of re-reading the whole file each
+  // call. Still materializes an owned PricedSurface (for callers that need one);
+  // the zero-copy path is `map_surface`.
   [[nodiscard]] Result<PricedSurface> load_surface(std::string_view key,
                                                    std::string_view symbol) const;
+
+  // Zero-copy view of `symbol` in partition `key`, over the shared cached mapping
+  // (S5). The returned LoadedSurface co-owns the mapping so the view is safe even
+  // across a concurrent rewrite/eviction. This is the reconstruct-free deserialize
+  // path (kills bottleneck #2): O(1) hash-probe + a stack view on a cache hit, no
+  // per-surface allocation for parametric kinds.
+  [[nodiscard]] Result<LoadedSurface> map_surface(std::string_view key,
+                                                  std::string_view symbol) const;
   [[nodiscard]] Status drop_partition(std::string_view key);
 
 private:
@@ -413,9 +442,25 @@ private:
   [[nodiscard]] std::string manifest_path() const;
   [[nodiscard]] std::string partition_path(std::string_view canonical_key) const;
 
+  // S5 view cache: return the shared mapping for the partition at `canonical_key`,
+  // opening it iff absent or its on-disk F6 content identity changed (rewrite).
+  // Shared across cohorts/callers; I/O happens outside `cache_mu_`.
+  [[nodiscard]] Result<std::shared_ptr<const SurfaceArchiveV2>>
+  cached_partition(std::string_view canonical_key) const;
+  // Drop any cached mapping for `canonical_key` (called on write/drop).
+  void evict_partition(std::string_view canonical_key) const;
+
+  // One cached partition mapping + the content identity it was opened against.
+  struct PartitionCacheEntry {
+    std::shared_ptr<const SurfaceArchiveV2> archive;
+    ArchiveContentIdentity identity;
+  };
+
   std::string root_{};
   mutable std::unique_ptr<std::mutex> mu_{}; // guards snapshot_ swap + writes
   std::shared_ptr<const DbManifest> snapshot_{};
+  mutable std::unique_ptr<std::mutex> cache_mu_{}; // guards partition_cache_ (S5)
+  mutable std::unordered_map<std::string, PartitionCacheEntry> partition_cache_{};
 };
 
 } // namespace atx::vol
