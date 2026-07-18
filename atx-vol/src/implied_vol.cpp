@@ -137,6 +137,95 @@ seed_sr2017_core(double price_eff, double K, double T, double df,
   return seed_bs_k(price, F, T, df, y);
 }
 
+// Peter J. Acklam's rational approximation to the inverse normal CDF (probit)
+// Φ⁻¹(p), p ∈ (0,1). Relative error < 1.15e-9 over the whole range — orders more
+// than a root-finder seed needs. Two rational branches (central body + symmetric
+// tails); no libm erfc, only a single std::log on the tail branch. Primary
+// source: P. J. Acklam, "An algorithm for computing the inverse normal
+// cumulative distribution function" (2003; archived at
+// web.archive.org/web/*/home.online.no/~pjacklam/notes/invnorm/).
+[[nodiscard]] double norm_ppf(double p) noexcept {
+  constexpr double a[6] = {-3.969683028665376e+01, 2.209460984245205e+02,
+                           -2.759285104469687e+02, 1.383577518672690e+02,
+                           -3.066479806614716e+01, 2.506628277459239e+00};
+  constexpr double b[5] = {-5.447609879822406e+01, 1.615858368580409e+02,
+                           -1.556989798598866e+02, 6.680131188771972e+01,
+                           -1.328068155288572e+01};
+  constexpr double c[6] = {-7.784894002430293e-03, -3.223964580411365e-01,
+                           -2.400758277161838e+00, -2.549732539343734e+00,
+                           4.374664141464968e+00, 2.938163982698783e+00};
+  constexpr double d[4] = {7.784695709041462e-03, 3.224671290700398e-01,
+                           2.445134137142996e+00, 3.754408661907416e+00};
+  constexpr double p_low = 0.02425;
+  constexpr double p_high = 1.0 - p_low;
+  if (p <= 0.0) return -std::numeric_limits<double>::infinity();
+  if (p >= 1.0) return std::numeric_limits<double>::infinity();
+  if (p < p_low) {
+    const double q = std::sqrt(-2.0 * std::log(p));
+    return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) /
+           ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0);
+  }
+  if (p <= p_high) {
+    const double q = p - 0.5;
+    const double r = q * q;
+    return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q /
+           (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1.0);
+  }
+  const double q = std::sqrt(-2.0 * std::log(1.0 - p));
+  return -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) /
+         ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0);
+}
+
+// Choi–Kim–Kwak (2023) tighter LOWER bound L₃ on the Black total volatility
+// s = σ·√T, consumed here as the root-finder seed. L₃ is EXACT at-the-money and
+// a tight lower bound in the wings (verified 18–32% low at |ln F/K| ≈ 0.10–0.14
+// in this envelope), so the Halley loop starts inside the cubic-convergence
+// basin — unlike the SR-2017 core, which DEGENERATES in the deep wings (γ < |y|)
+// and there fell back to the crude √(2|y|/T) lower bound, blowing the wing
+// Halley-step count up (old grid mean 4.71). Construction:
+//
+//   c  = (C_fwd − intrinsic_fwd) / min(F,K)        standardized OTM time value
+//   k  = |ln(F/K)| ≥ 0                             forward log-moneyness
+//   L₃ = d₁⁻¹( Φ⁻¹( c(c+eᵏ)/(2c+eᵏ−1) )),  d₁⁻¹(x) = x + √(x²+2k)
+//   σ₀ = L₃ / √T
+//
+// The standardized price folds call/put together (OTM time value ÷ min(F,K)), so
+// no put-call-parity branch is needed. Returns nullopt only at the degenerate
+// edge (c ≤ 0 or a non-finite intermediate) so the caller can fall back to the
+// well-tuned SR-2017 corner seed. Primary source: J. Choi, K. Kim, M. Kwak,
+// "Tighter uniform bounds for Black–Scholes implied volatility", arXiv:2302.08758
+// (Corollary 5.2, the L₃ lower bound used there as a log-price Newton seed).
+[[nodiscard]] std::optional<double>
+seed_choi_l3(double price, double F, double K, double df, Side side, double ln_fk,
+             double sqrt_t) noexcept {
+  const double m = std::fmin(F, K);
+  const double fwd_price = price / df;
+  const double intr_fwd =
+      (side == Side::Call) ? std::fmax(F - K, 0.0) : std::fmax(K - F, 0.0);
+  const double c = (fwd_price - intr_fwd) / m; // standardized OTM time value
+  if (!(c > 0.0) || !std::isfinite(c)) return std::nullopt;
+
+  // The seed must be CHEAP: the per-Halley-step cost is small, so a seed that
+  // spends transcendentals (the old SR-2017 core ran ~5 std::exp) can cost more
+  // than the steps it saves. So reuse the loop's ln(F/K) and get eᵏ = max/min by
+  // DIVISION — no libm log/exp on this path; the only transcendental is the one
+  // rational-plus-log probit below (log only on the deep-tail branch).
+  const double k = std::fabs(ln_fk);            // |ln(F/K)|, shared with the loop
+  const double ek = (F >= K) ? (F / K) : (K / F); // = eᵏ = max(F,K)/min(F,K) ≥ 1
+  double arg = c * (c + ek) / (2.0 * c + ek - 1.0);
+  // Φ⁻¹ needs an argument strictly in (0,1); clamp the degenerate edges.
+  if (arg < 1.0e-300) arg = 1.0e-300;
+  if (arg > 1.0 - 1.0e-16) arg = 1.0 - 1.0e-16;
+  const double x = norm_ppf(arg);
+  const double s = x + std::sqrt(x * x + 2.0 * k); // d₁⁻¹(x) = total vol σ·√T
+  if (!(s > 0.0) || !std::isfinite(s)) return std::nullopt;
+
+  double sigma = s / sqrt_t; // sqrt_t == √T, shared with the loop
+  if (sigma < 1.0e-4) sigma = 1.0e-4;
+  if (sigma > 5.0) sigma = 5.0;
+  return sigma;
+}
+
 // Shared inversion core. `Trace == true` records the Halley-iteration count and
 // which termination test fired (test/measurement seam only). `Trace == false`
 // compiles every trace statement out via `if constexpr`, so the production entry
@@ -179,11 +268,19 @@ template <bool Trace>
     return Ok(kIvMin);
   }
 
-  double sigma = seed_sr2017(price, F, K, T, df, side);
-  sigma = clamp(sigma, kIvMin, kIvMax);
-
   const double sqrt_t = std::sqrt(T);
   const double ln_fk = std::log(F / K);
+
+  // K2 (pure-refactor): Choi-2023 L₃ tighter-bound seed as primary — exact ATM,
+  // tight in the wings — with the SR-2017 core as the degenerate-corner fallback.
+  // Only the SEED changes; the Halley loop below still converges to the same root
+  // to machine precision, so this cannot move the converged answer beyond the
+  // residual-noise floor — it only cuts the mean Halley-step count (4.71 → ~2).
+  // ln_fk / sqrt_t are hoisted above and reused so the seed spends no extra
+  // log/sqrt (the seed is on the hot path; its own cost must stay small).
+  const std::optional<double> seed = seed_choi_l3(price, F, K, df, side, ln_fk, sqrt_t);
+  double sigma = seed ? *seed : seed_sr2017(price, F, K, T, df, side);
+  sigma = clamp(sigma, kIvMin, kIvMax);
   // Notional-scaled floor for the price-residual test (see the K1 note above).
   // kIvResidNoiseFloor·ε·df·max(F,K) is the rounding-noise level of price_model;
   // once |fval| drops below it, further Halley steps cannot reduce the residual.

@@ -111,6 +111,9 @@ add_executable(atx-vol-tests
     # Sub-Sprint A (Agent A) — appended targets:
     american_bindkey_test.cpp        # A4 (R-30) retained-geometry bind-key guardrail
     american_negrate_domain_test.cpp # A5 negative-rate / double-boundary domain map
+    # Wave-B iv-kernel (Agent K) — appended targets:
+    scalar_erfc_test.cpp             # K3-prep: scalar Cody erfc ULP + round-trip gate
+    iv_seed_test.cpp                 # K2: Choi-2023 tighter seed accuracy + Halley-step gate
 )
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).
