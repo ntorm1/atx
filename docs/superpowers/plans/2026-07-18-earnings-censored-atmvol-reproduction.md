@@ -292,11 +292,16 @@ git commit -m "feat(vol): censored term-curve fit lt+(st-lt)exp(-decay*T) via de
   model read = a SECONDARY summary. The PRIMARY `atmCenI_Nd` reproduction target is the RAW
   censored-space interpolation produced in Tasks 7/8 (censor listed-expiry ATM variance with this
   `emove`, interpolate censored total variance to each tenor's T, `atmCenI=sqrt(w_cen(T)/T)`).
-  `fit_code`: `LeftBound`/`RightBound` if the optimum sits on a bound, `MaxSteps`
-  if the cap hit, `CenterFlat` if the objective is ~flat in emove (event-underidentified — e.g.
-  all `n` equal), else `Minimum`. `Err(InvalidArgument)` if `obs.size() < 2`, any non-finite/
-  non-positive `T`/`w_dirty`, or all `n==0` (no event to identify — caller wants the ex-event
-  curve only, still returns Ok with emove=0 and `CenterFlat`). Decide: all-n-zero ⇒ Ok, emove=0.
+  `fit_code`: `LeftBound`/`RightBound` if the optimum sits on a bound, `MaxSteps` if the cap hit,
+  `CenterFlat` ONLY when the objective is GENUINELY numerically flat near the optimum (measured with
+  a LOCAL scale — the optimum's neighborhood — NOT the whole-bracket worst point, which the emove=0
+  endpoint dominates). all-`n`-equal-nonzero is WEAKLY IDENTIFIED (a constant event lump is separable
+  from the T-scaled curve) ⇒ classifies as `Minimum`, not CenterFlat. Else `Minimum`.
+  `Err(InvalidArgument)` if `obs.size() < 2`, any non-finite/non-positive `T`/`w_dirty`. all `n==0`
+  (no event to identify) ⇒ Ok with emove=0 and `CenterFlat` (special-cased).
+  FLOOR-EXCLUSION (outer objective): rank a candidate `+inf` ONLY in the degenerate case where fewer
+  than 2 event-bearing observations remain NON-floored (the identification minimum) — NOT when a
+  single observation floors, which would bias emove downward on real front-expiry event censoring.
 
 - [ ] **Step 1: Write the failing test** (recover planted eMove + curve from event-bearing obs)
 ```cpp
