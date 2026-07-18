@@ -21,16 +21,19 @@
 //   * Each lane keeps its own quadrature reduction order (serial add over the
 //     shared GL nodes), matching the scalar accumulation order per lane.
 //   * PATCH lanes to the exact scalar andersen_lake — degenerate (T≤1e-12 ∨
-//     σ≤1e-8), non-American regime, boundary-collapse, deep-wing (any Φ argument
-//     |d|>kNormCdfWing where the Chebyshev-Φ loses accuracy), and any non-finite
+//     σ≤1e-8), non-American regime, boundary-collapse, and any non-finite
 //     result — exactly the idiom every *_batch_avx2.cpp uses for its scalar tail.
+//     A4 [S1]: Φ is now the full-range Cody rational-erfc norm_cdf_erfc_pd2
+//     (~1e-16 across the whole line, saturating to exactly 1.0/0.0 in the deep
+//     wings), so NO deep-wing (|d|>kNormCdfWing) patch is needed — the earlier
+//     degree-48 Chebyshev-Φ, accurate only on |x|≤~7, is no longer used here and
+//     the boundary path is single-source with the scalar andersen_lake's erfc Φ.
 
 #include "american_boundary_avx2.hpp"
 
 #include "../american_boundary.hpp" // amer:: seam (AlScheme/AlBoundary/al_solve_put_boundary...)
 #include "atx/vol/american.hpp"     // andersen_lake, classify_regime, ExerciseRegime
-#include "atx/vol/detail/norm_cdf_cheb.hpp"
-#include "atx/vol/detail/vector_math.hpp" // log_pd/exp_pd/norm_cdf_pd/norm_pdf_pd (+ __AVX2__ guard)
+#include "atx/vol/detail/vector_math.hpp" // log_pd/exp_pd/norm_cdf_erfc_pd2/norm_pdf_pd (+ __AVX2__ guard)
 
 #include <cmath>
 #include <cstddef>
@@ -48,8 +51,7 @@ namespace atx::vol::simd::detail {
 
 using atx::vol::detail::exp_pd;
 using atx::vol::detail::log_pd;
-using atx::vol::detail::norm_cdf_pd;
-using atx::vol::detail::norm_cdf_pd2;
+using atx::vol::detail::norm_cdf_erfc_pd2;
 using atx::vol::detail::norm_pdf_pd;
 
 namespace {
@@ -77,7 +79,14 @@ void american_put_boundary_batch_avx2(const double* S, const double* K,
                                       double* price_out, std::size_t n,
                                       const std::optional<AlOpts>& opts) noexcept {
     const amer::AlScheme sch = amer::scheme_from_opts(opts);
-    const double* coefs = atx::vol::detail::norm_cdf_cheb_coefs().data();
+    // A4 [S1] accuracy-improving: Φ(d1),Φ(d2) come from the full-range Cody
+    // rational-erfc norm_cdf_erfc_pd2 (vector_math.hpp) instead of the degree-48
+    // Chebyshev norm_cdf_pd2 that clamped |x|>7 and needed a Φ-coefficient table.
+    // Numerically Φ improves from ~1e-11 interior / clamped wings to ~1e-16 full
+    // range; the boundary PRICE stays within the economic parity gate (kNormalGate
+    // 1e-6, stress 1e-3) — the swept price output moved by ≤ a few 1e-9 (see
+    // AvxBoundary parity tests) — and the AVX2 Φ is now single-source with the
+    // scalar andersen_lake's erfc Φ, the prerequisite for A1's de-Am vectorization.
 
     // ── Broadcast constants ──────────────────────────────────────────────
     const __m256d zero = _mm256_setzero_pd();
@@ -222,7 +231,7 @@ void american_put_boundary_batch_avx2(const double* S, const double* K,
             const __m256d dpv_tip = _mm256_add_pd(base_tip, hv_tip);
             const __m256d dmv_tip = _mm256_sub_pd(base_tip, hv_tip);
             __m256d tip_p, tip_m;
-            norm_cdf_pd2(dpv_tip, dmv_tip, coefs, tip_p, tip_m);
+            norm_cdf_erfc_pd2(dpv_tip, dmv_tip, tip_p, tip_m);
 
             const __m256d half_tau = _mm256_mul_pd(half, tau);
             __m256d n_int = zero;
@@ -250,7 +259,7 @@ void american_put_boundary_batch_avx2(const double* S, const double* K,
                 const __m256d dpv = _mm256_add_pd(base, hvq);
                 const __m256d dmv = _mm256_sub_pd(base, hvq);
                 __m256d ncdf_p, ncdf_m;
-                norm_cdf_pd2(dpv, dmv, coefs, ncdf_p, ncdf_m);
+                norm_cdf_erfc_pd2(dpv, dmv, ncdf_p, ncdf_m);
                 __m256d term_n = _mm256_mul_pd(
                     _mm256_mul_pd(wv, exp_pd(_mm256_mul_pd(Rv, u))), ncdf_m);
                 __m256d term_d = _mm256_mul_pd(
@@ -365,7 +374,7 @@ void american_put_boundary_batch_avx2(const double* S, const double* K,
             vT);
         const __m256d d2 = _mm256_sub_pd(d1, vT);
         __m256d Nd1, Nd2;
-        norm_cdf_pd2(d1, d2, coefs, Nd1, Nd2);
+        norm_cdf_erfc_pd2(d1, d2, Nd1, Nd2);
         const __m256d euro = _mm256_mul_pd(
             df, _mm256_sub_pd(
                     _mm256_mul_pd(Kv, _mm256_sub_pd(one, Nd2)),
@@ -400,7 +409,7 @@ void american_put_boundary_batch_avx2(const double* S, const double* K,
             const __m256d arg1 = _mm256_add_pd(_mm256_sub_pd(zero, dp), v);
             const __m256d arg2 = _mm256_sub_pd(zero, dp);
             __m256d P1, P2;
-            norm_cdf_pd2(arg1, arg2, coefs, P1, P2);
+            norm_cdf_erfc_pd2(arg1, arg2, P1, P2);
             const __m256d termA =
                 _mm256_mul_pd(_mm256_mul_pd(Rv, Kv), _mm256_mul_pd(dr, P1));
             const __m256d termB =

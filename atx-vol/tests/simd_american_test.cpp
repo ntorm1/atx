@@ -42,6 +42,17 @@ namespace {
 // stable across Debug/Release.
 inline constexpr double kNormalGate = 1e-6;
 
+// A4 [S1] single-source-Φ regression lock. Before A4 the AVX2 boundary Φ was a
+// degree-48 Chebyshev (norm_cdf_pd2), leaving max |AVX2−scalar| ≈ 6.7e-9 (normal)
+// / 3.3e-9 (stress) — Φ's ~1e-11 interior error compounded through the sweep.
+// Migrating to the full-range Cody rational-erfc norm_cdf_erfc_pd2 — the SAME
+// erfc the scalar andersen_lake reference evaluates — single-sources Φ and drops
+// the gap ~4 orders to ~1e-13 (now bounded by log_pd/exp_pd ULP, not Φ). This
+// bound is RED on the retired Chebyshev path (6.7e-9 > 1e-10) and GREEN on erfc
+// (~4e-13, ~240× headroom), so it proves the accuracy-improving swap AND guards
+// against any regression back to a coarser Φ. Class: accuracy-improving.
+inline constexpr double kErfcSingleSourceGate = 1e-10;
+
 // SoA batch of American puts.
 struct PutBatch {
     std::vector<double> S, K, T, sigma, r, q;
@@ -194,6 +205,35 @@ TEST(AvxBoundary, StressGrid_WithinTol) {
         EXPECT_LE(std::abs(out4[0] - pde), 5e-3)
             << "AVX2 vs PDE K=" << p.K << " got=" << out4[0] << " pde=" << pde;
     }
+}
+
+// ── A4 [S1]: single-source Cody-erfc Φ tightens boundary parity ~4 orders ──
+TEST(AvxBoundary, ErfcSingleSource_TightParity) {
+    if (!simd::have_avx2()) {
+        GTEST_SKIP() << "no AVX2 on this host";
+    }
+    IsaGuard g;
+    simd::set_simd_isa_override(simd::SimdIsa::ForceAvx2);
+
+    auto max_gap = [](const PutBatch& b) {
+        const std::vector<double> got = run_batch(b);
+        double m = 0.0;
+        for (std::size_t i = 0; i < b.size(); ++i) {
+            const double want = ref_put(b.S[i], b.K[i], b.T[i], b.sigma[i], b.r[i], b.q[i]);
+            if (std::isfinite(want)) {
+                m = std::max(m, std::abs(got[i] - want));
+            }
+        }
+        return m;
+    };
+
+    const double gap_normal = max_gap(normal_grid());
+    const double gap_stress = max_gap(stress_grid());
+    std::printf("[AvxBoundary] erfc single-source max |AVX2-scalar|: normal=%.3e stress=%.3e\n",
+                gap_normal, gap_stress);
+    // RED on the retired Chebyshev Φ (~6.7e-9 / ~3.3e-9); GREEN on erfc (~4e-13 / ~1e-13).
+    EXPECT_LE(gap_normal, kErfcSingleSourceGate) << "normal-grid parity regressed vs erfc Φ";
+    EXPECT_LE(gap_stress, kErfcSingleSourceGate) << "stress-grid parity regressed vs erfc Φ";
 }
 
 // ── P3.1 force seam: ForceScalar is bit-identical + Scalar route ──────────
