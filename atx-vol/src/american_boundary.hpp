@@ -124,17 +124,15 @@ enum class AlSolveStatus { Ok, Collapsed, TableMissing };
                                                   AlBoundary& bnd, AlWorkspace& ws,
                                                   bool specialize = true) noexcept;
 
-// Seed-ONLY variant for the AVX2 boundary batch (Task A1). Does exactly what
-// al_solve_put_boundary does BEFORE its sweep loop — init the node grid, bind the
-// Gauss-Legendre quadrature pointers, and lay down the cold Barone-Adesi-Whaley seed
-// y[] — but SKIPS al_bind_geometry (the sweep-invariant geometry precompute: ~n·nq
-// exp+sqrt per solve). The AVX2 kernel recomputes all geometry inline per lane and
-// never reads ws.geo_*, so that precompute is pure waste on the batch seed path.
-// The seed y[] and node/quadrature state are bit-identical to al_solve_put_boundary
-// with the sweep budget zeroed, so the caller's own (vector) sweeps reach the same
-// converged boundary. The caller runs the sweeps; this only seeds.
-[[nodiscard]] AlSolveStatus al_seed_put_boundary(double K, double T, double sigma, double r,
-                                                 double q, const AlScheme& sch, AlBoundary& bnd,
+// Init-ONLY variant for the AVX2 boundary batch (Task A5; supersedes A1's
+// al_seed_put_boundary). Runs al_solve_put_boundary's pre-sweep prefix — init the
+// node grid + bind the Gauss-Legendre quadrature pointers — but does NEITHER the
+// cold Barone-Adesi-Whaley seed NOR al_bind_geometry (the kernel recomputes geometry
+// inline and lays down the BAW seed 4-wide itself). Leaves bnd.y[] at 0 for the
+// caller's vector seed; ws.specialize is false. No sigma argument (the seed is the
+// only sigma-dependent step, and the caller owns it).
+[[nodiscard]] AlSolveStatus al_init_put_boundary(double K, double T, double r, double q,
+                                                 const AlScheme& sch, AlBoundary& bnd,
                                                  AlWorkspace& ws) noexcept;
 
 // Warm variant: seed from an already-converged boundary a small (sigma,r,T) bump

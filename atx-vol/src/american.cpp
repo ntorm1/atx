@@ -1196,18 +1196,16 @@ namespace amer {
   return AlSolveStatus::Ok;
 }
 
-// Seed-only path for the AVX2 boundary batch (Task A1, pure-refactor). Runs exactly
-// the pre-sweep prefix of al_solve_put_boundary — node init, quadrature binding, and
-// the cold Barone-Adesi-Whaley seed — but SKIPS al_bind_geometry. The AVX2 kernel
-// recomputes every geometry term inline per lane (it mirrors the generic <0,0>
-// kernel) and never reads ws.geo_*, so binding the ~n·nq exp+sqrt sweep-invariant
-// geometry on the seed is pure waste that serialized the 4-lane batch. Skipping it
-// leaves bnd.y[]/nodes/quadrature bit-identical to al_solve_put_boundary with the
-// sweep budget zeroed, so the AVX2 output is unchanged (parity preserved); only the
-// wasted per-lane bind is gone. ws.specialize is set false: no specialized ws
-// geometry exists, and the caller owns the sweeps.
-[[nodiscard]] AlSolveStatus al_seed_put_boundary(double K, double T, double sigma, double r,
-                                                 double q, const AlScheme &sch, AlBoundary &bnd,
+// Init-ONLY path for the AVX2 boundary batch (Task A5; supersedes A1's
+// al_seed_put_boundary). Runs the pre-sweep prefix of al_solve_put_boundary — node
+// init (z/wbary/x/tau/xmax) + Gauss-Legendre binding — but does NEITHER the cold BAW
+// seed NOR al_bind_geometry. The AVX2 kernel recomputes geometry inline per lane and
+// now lays down the BAW seed 4-wide itself (american_boundary_avx2.cpp), so the
+// scalar per-lane Barone-Adesi-Whaley Newton — the dominant serialization that capped
+// the pack speedup at ~1.6× — is gone from the seed path. bnd.y[] is left at 0 (the
+// caller's vector seed fills it); ws.specialize is false (the kernel owns geometry).
+[[nodiscard]] AlSolveStatus al_init_put_boundary(double K, double T, double r, double q,
+                                                 const AlScheme &sch, AlBoundary &bnd,
                                                  AlWorkspace &ws) noexcept {
   al_init_nodes(bnd, sch.n_boundary, T, K, r, q);
   if (!(bnd.xmax > 0.0)) {
@@ -1225,7 +1223,6 @@ namespace amer {
   ws.qx_price = pr->nodes.data();
   ws.qw_price = pr->weights.data();
   ws.n_quad_price = sch.n_quad_price;
-  al_seed_boundary(bnd, sigma, r, q);
   return AlSolveStatus::Ok;
 }
 

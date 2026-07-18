@@ -44,26 +44,32 @@ void put_batch_scalar(const double* S, const double* K, const double* T,
 // scalar, so only the sweep + premium quadrature are vectorized. That unvectorized
 // seed caps the blended speedup well under the 4× lane width, landing at ~1.6×.
 //
-// Sub-Sprint A / Task A1 update (pure-refactor, bit-parity preserved): the AVX2 seed
-// no longer pays the sweep-invariant geometry precompute (al_bind_geometry) — it
-// seeds via al_seed_put_boundary, which lays down the identical node grid + cold BAW
-// y[] but SKIPS the ~n·nq exp+sqrt geometry bind the kernel never reads (it recomputes
-// geometry inline). That removed wasted per-lane serial work with the AVX2 output
-// bit-identical (AvxBoundary.ForceAvx2_MatchesScalar still green). But the DOMINANT
-// seed serialization is the 12-node scalar Barone-Adesi-Whaley Newton root-finds,
-// which stay scalar (vectorizing them alters the seed y[] via vector transcendentals
-// and would break the bit-parity gate). Best-of-3 gate measurement under concurrent
-// load (agent-k paused) was BORDERLINE and thermal-dominated: median ratios 2.21× /
-// 1.46× / 1.94× / 1.66× across four samples, warm steady-state ~1.6–1.7× (the scalar
-// baseline alone swung 566–930 ms median run-to-run). NOT all runs clear 2.0×, so
-// per the ship-gate rule Auto stays SCALAR. See bench JSON:
-// bench/baselines/i7-1260p-clang18-avx2-american-shootout-boundary-gate.json.
+// Sub-Sprint A / Task A1 update (pure-refactor): the AVX2 seed stopped paying the
+// sweep-invariant geometry precompute (al_bind_geometry) but kept the DOMINANT
+// serialization — the per-node scalar Barone-Adesi-Whaley Newton root-finds — scalar,
+// so the blended speedup stayed capped at ~1.6×.
 //
-// The kernel, the ISA-override seam, and the validated-parity tests still ship;
-// ForceAvx2 routes to the kernel so those tests exercise it every run. Remaining lever
-// to clear 2.0×: vectorize the 12-node BAW Newton seed (breaks bit-parity → economic-
-// bound parity + gate re-verification) AND re-measure on a quiet host — deferred to
-// Sprint I. Flip this to true only when a quiet-host best-of-3 clears 2.0×.
+// Sub-Sprint A / Task A5 update: that scalar per-lane BAW Newton is now VECTORIZED
+// 4-wide (american_boundary_avx2.cpp step 2.5; al_init_put_boundary supplies the node
+// grid, the kernel lays down the seed itself). This BREAKS bit-parity with the scalar
+// seed, so the gate is now ECONOMIC-BOUND, not byte-identical — and it holds with
+// margin to spare: AvxBoundary parity max |AVX2−scalar| = 4.1e-13 normal / 1.1e-13
+// stress (« kNormalGate 1e-6 / stress 1e-3); ForceScalar-vs-ForceAvx2 parity green
+// across all AmericanBoundaryBatchSchemeMapping schemes.
+//
+// SPEED gate — STILL DEFERRED (this host stays contended). Best-of-3 on the 4096-put
+// batch: pre-A5 (scalar seed) 1.77× / 2.15× / 2.04×; post-A5 (vector seed) 2.15× /
+// 2.90× / 2.36× — BUT the post-A5 runs landed under heavy concurrent load (absolute
+// scalar 375–455 µs/op vs ~140 µs/op minutes earlier; avx2 132–193 µs/op vs ~69),
+// which inflates the ratio because the scalar baseline suffers disproportionately.
+// That is NOT the required quiet-host, robust ≥2.0× (Sprint I measured 1.87× quiet).
+// So per the ship-gate rule Auto stays SCALAR. The vector seed is the durable value:
+// on a quiet host it should push the honest ratio from ~1.6–1.87× toward/over 2.0×;
+// flip this to true only when a quiet-host best-of-3 robustly clears 2.0×.
+//
+// The kernel, the ISA-override seam, and the validated economic-parity tests all ship;
+// ForceAvx2 routes to the kernel so those tests exercise it (incl. the vector seed)
+// every run. The scalar put_batch_scalar path below is the untouched source of truth.
 inline constexpr bool kShipAvx2Boundary = false;
 
 } // namespace
