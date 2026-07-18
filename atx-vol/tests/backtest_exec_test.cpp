@@ -935,3 +935,95 @@ TEST(BacktestExec, HeldToExpiryDailyCohortsComposeAtScale) {
               "det(1 vs 4 threads)=OK\n",
               kNames, kDates, max_lots, settle_rows);
 }
+
+// ── B5. Whole-loop parity + determinism gate ─────────────────────────────────
+//
+// The full B1..B4 hot loop on the M2 universe shape (kNames 40Δ strangles,
+// EveryStep entry, HoldToExpiry, DeltaToZero DAILY hedge — subset-deser + batched
+// settlement marks + O(1) hedge ledger + daily overlapping cohorts) must be:
+//   (a) bit-identical across two runs (determinism), and
+//   (b) bit-identical across thread counts (thread-invariant reductions).
+// This is the §3 determinism gate for the whole loop. (Economic parity vs the
+// pre-optimization path is carried by the per-task gates: B1/B3 are bit-identical
+// refactors and B2 is economic parity ~1e-9, pinned by ExpirySettlement.)
+TEST(BacktestExec, UniverseLoopParityAndDeterminism) {
+  const fs::path dir = fresh_dir("b5-universe");
+  constexpr int kNames = 4;
+  constexpr int kDates = 12;
+  static const char* kSyms[] = {"AAA", "BBB", "CCC", "DDD"};
+
+  std::vector<std::pair<std::string, std::string>> dp;
+  for (int d = 0; d < kDates; ++d) {
+    const std::int64_t now = kBaseNow + static_cast<std::int64_t>(d) * kDayNs;
+    std::vector<PricedSurface> surfaces;
+    surfaces.reserve(kNames);
+    for (int u = 0; u < kNames; ++u) {
+      const double S =
+          (100.0 + 10.0 * static_cast<double>(u)) * (1.0 + 0.004 * static_cast<double>(d));
+      surfaces.push_back(make_surface(kUid + static_cast<std::uint32_t>(u), S, S, now,
+                                      0.001 * static_cast<double>(d) + 0.002 * static_cast<double>(u)));
+    }
+    std::vector<SurfaceArchiveItem> items;
+    for (int u = 0; u < kNames; ++u) {
+      items.push_back(SurfaceArchiveItem{kSyms[u], &surfaces[u]});
+    }
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "2026-08-%02d", d + 1);
+    const std::string path = (dir / (std::string(buf) + ".atxvsa")).string();
+    ASSERT_TRUE(write_surface_archive_v2_file(path, items).has_value());
+    dp.emplace_back(buf, path);
+  }
+  auto clock = Clock::from_manifest(make_manifest(dp, "AAA"));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  StrategySpec spec;
+  spec.name = "b5-universe-strangle-hedged";
+  for (int u = 0; u < kNames; ++u) {
+    LegSpec leg;
+    leg.uid = kUid + static_cast<std::uint32_t>(u);
+    leg.tenor.target_T = 0.25; // 3M, in-grid across the run
+    leg.tenor.snap_to_listed = false;
+    leg.structure.kind = StructureSpec::Kind::Strangle;
+    leg.structure.call_leg = StrikeSelector{StrikeSelector::Kind::Delta, 0.40};
+    leg.structure.put_leg = StrikeSelector{StrikeSelector::Kind::Delta, 0.40};
+    leg.size = SizeSpec{SizeSpec::Kind::FixedContracts, 1.0, +1.0};
+    spec.legs.push_back(leg);
+  }
+  spec.lifecycle.entry = LifecycleSpec::Entry::EveryStep;
+  spec.lifecycle.holding = LifecycleSpec::Holding::HoldToExpiry;
+  spec.hedge = HedgeSpec{HedgeSpec::Kind::DeltaToZero, HedgeSpec::Cadence::Daily, 0.0};
+
+  const auto run = [&](unsigned n_threads) {
+    DeclarativeStrategy strat{spec};
+    RunConfig cfg;
+    cfg.price.n_threads = n_threads;
+    return run_backtest(*clock, strat, cfg);
+  };
+
+  auto a = run(1);
+  auto b = run(1); // same config, second run — determinism
+  auto c = run(4); // different thread count — thread-invariance
+  ASSERT_TRUE(a.has_value()) << a.error().to_string();
+  ASSERT_TRUE(b.has_value()) << b.error().to_string();
+  ASSERT_TRUE(c.has_value()) << c.error().to_string();
+  ASSERT_EQ(a->size(), static_cast<std::size_t>(kDates));
+
+  const auto all_cols = [](const BacktestResult& r, std::size_t i) {
+    return std::array<double, 8>{r.nav[i],        r.pnl_total[i], r.pnl_vega[i],  r.pnl_settlement[i],
+                                 r.pnl_shares[i],  r.cost[i],      r.cash[i],      r.gross_delta[i]};
+  };
+  for (std::size_t i = 0; i < a->size(); ++i) {
+    const auto ca = all_cols(*a, i);
+    const auto cb = all_cols(*b, i);
+    const auto cc = all_cols(*c, i);
+    for (std::size_t k = 0; k < ca.size(); ++k) {
+      EXPECT_TRUE(bits_equal(ca[k], cb[k])) << "two-run determinism col " << k << " row " << i;
+      EXPECT_TRUE(bits_equal(ca[k], cc[k])) << "thread-invariance col " << k << " row " << i;
+    }
+  }
+  std::printf("[btexec] B5 whole-loop: %d names x %d dates hedged; bit-identical over 2 runs and "
+              "1-vs-4 threads\n",
+              kNames, kDates);
+}
