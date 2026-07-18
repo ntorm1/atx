@@ -284,12 +284,12 @@ void run_deserialize(benchmark::State &state, Payload payload, int count, DeserM
   for (auto _ : state) {
     switch (mode) {
     case DeserMode::OpenReconstructAll: {
-      // The full bytes-in-memory -> ready-to-price path. open() consumes its buffer,
-      // so copy first (under PauseTiming — the copy is not part of the deserialize).
-      state.PauseTiming();
-      std::vector<std::byte> copy = fx.bytes;
-      state.ResumeTiming();
-      Result<SurfaceArchive> arch = SurfaceArchive::open(std::move(copy));
+      // The full source-buffer -> ready-to-price path. open() consumes its buffer, so
+      // copy inline (a few-KB memcpy, dwarfed by the reconstruct at count>=4). Kept in
+      // the timed region rather than PauseTiming/ResumeTiming, whose per-iteration
+      // overhead is a known antipattern at the µs scale of the small-count rows; the
+      // clean per-blob reconstruct number is `reconstruct_all` (pre-opened, no copy).
+      Result<SurfaceArchive> arch = SurfaceArchive::open(std::vector<std::byte>(fx.bytes));
       if (!arch.has_value()) {
         state.SkipWithError(arch.error().to_string().c_str());
         return;
@@ -361,6 +361,12 @@ constexpr int kCounts[] = {1, 4, 16, 50, 100};
   return "unknown";
 }
 
+// Repetitions override (review fix, finding #2): apply_common's default 5 reps is
+// too few for a stable CV under shared-host contention. These rows are fast (µs),
+// so more repetition-means is cheap and makes the CV estimate robust — two noisy
+// reps can no longer swing it. Overrides apply_common's Repetitions(5) (last wins).
+constexpr int kSurfaceArchiveReps = 15;
+
 void register_serialize(Payload payload, int count) {
   const std::string name =
       std::string("surface_archive/serialize/") + payload_name(payload) + "/count:" +
@@ -368,6 +374,7 @@ void register_serialize(Payload payload, int count) {
   apply_common(benchmark::RegisterBenchmark(
                    name, [payload, count](benchmark::State &st) { run_serialize(st, payload, count); }))
       ->Unit(benchmark::kMicrosecond)
+      ->Repetitions(kSurfaceArchiveReps)
       ->UseRealTime();
 }
 
@@ -378,6 +385,7 @@ void register_deserialize(Payload payload, int count, DeserMode mode) {
     run_deserialize(st, payload, count, mode);
   }))
       ->Unit(benchmark::kMicrosecond)
+      ->Repetitions(kSurfaceArchiveReps)
       ->UseRealTime();
 }
 
