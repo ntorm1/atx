@@ -15,13 +15,16 @@
 # VCPKG_ROOT set, and ATX_DEPS_DIR set. Run scripts\dev-setup.ps1 once first.
 #
 # Example: scripts\new-worktree.ps1 -Name s8 -Branch feat/s8 -Base main
+# Parallel agents (isolated per-worktree deps, no shared spdlog-build race):
+#   scripts\new-worktree.ps1 -Name wt-measure -Branch feat/ns-measure -Base main -NoConfigure -Isolated
 
 param(
   [Parameter(Mandatory = $true)][string]$Name,
   [string]$Branch = $Name,
   [string]$Base = 'main',
   [switch]$NoConfigure,
-  [switch]$Shared   # configure the `dev-shared` preset (atx libs as DLLs: smaller artifacts, faster relinks)
+  [switch]$Shared,   # configure the `dev-shared` preset (atx libs as DLLs: smaller artifacts, faster relinks)
+  [switch]$Isolated  # per-worktree FETCHCONTENT_BASE_DIR so parallel agents (and Debug/Release in one tree) never share a spdlog-build object tree -> no _ITERATOR_DEBUG_LEVEL race
 )
 $ErrorActionPreference = 'Stop'
 
@@ -39,22 +42,35 @@ git worktree add $wt -b $Branch $Base
 Push-Location $wt
 try { git submodule update --init --recursive } finally { Pop-Location }
 
-if (-not $env:ATX_DEPS_DIR) {
-  Write-Warning 'ATX_DEPS_DIR is not set in this shell - the dev preset falls back to a per-worktree _deps. Run scripts\dev-setup.ps1 and open a new shell.'
-}
-
 $preset = if ($Shared) { 'dev-shared' } else { 'dev' }
 
+# M6: -Isolated gives this worktree its OWN per-preset FetchContent deps dir, so
+# N parallel agents (and a Debug vs Release build inside one worktree) never share
+# a spdlog-build object tree -> no _ITERATOR_DEBUG_LEVEL race (plan §3). The build
+# scripts pass the same -DFETCHCONTENT_BASE_DIR at every configure of this tree.
+$isoArgs = @()
+$isoDepsBase = ''
+if ($Isolated) {
+  $isoDepsBase = (Join-Path (Join-Path $wt 'deps') $preset).Replace('\', '/')
+  $isoArgs = @('-DFETCHCONTENT_BASE_DIR=' + $isoDepsBase)
+} elseif (-not $env:ATX_DEPS_DIR) {
+  # Shared-deps mode only: ATX_DEPS_DIR drives the shared FetchContent dir.
+  Write-Warning 'ATX_DEPS_DIR is not set in this shell - the dev preset falls back to a per-worktree _deps. Run scripts\dev-setup.ps1 and open a new shell (or pass -Isolated for a deliberate per-worktree deps dir).'
+}
+
 if ($NoConfigure) {
-  Write-Host ('skipped configure (-NoConfigure). Run: cd ' + $wt + '; cmake --preset ' + $preset) -ForegroundColor Yellow
+  $cfgHint = 'cmake --preset ' + $preset
+  if ($Isolated) { $cfgHint += ' -DFETCHCONTENT_BASE_DIR=' + $isoDepsBase }
+  Write-Host ('skipped configure (-NoConfigure). Run: cd ' + $wt + '; ' + $cfgHint) -ForegroundColor Yellow
+  if ($Isolated) { Write-Host ('  isolated deps: pass  -DFETCHCONTENT_BASE_DIR=' + $isoDepsBase + '  at EVERY configure of this tree (per preset).') -ForegroundColor Yellow }
   return
 }
 
 Push-Location $wt
 try {
-  $note = if ($Shared) { 'sccache + shared deps + atx DLLs' } else { 'sccache + shared deps' }
+  $note = if ($Isolated) { 'sccache + ISOLATED per-worktree deps' } elseif ($Shared) { 'sccache + shared deps + atx DLLs' } else { 'sccache + shared deps' }
   Write-Host ('cmake --preset ' + $preset + '  (' + $note + ')') -ForegroundColor Cyan
-  cmake --preset $preset
+  cmake --preset $preset @isoArgs
   Write-Host ''
   Write-Host ('ready: ' + $wt) -ForegroundColor Green
   Write-Host ('  build : cmake --build --preset ' + $preset + ' --target atx-engine-<group>-tests   (groups: alpha risk data factory parallel learn eval library combine fund book core regime store)')
@@ -62,6 +78,7 @@ try {
   Write-Host ('  test  : ctest --preset ' + $preset + ' -R <Suite>')
   Write-Host '  clangd: auto-loads build/compile_commands.json (no setup)'
   if (-not $Shared) { Write-Host '  smaller artifacts / faster relinks: re-run with -Shared (or cmake --preset dev-shared) to build atx libs as DLLs' }
+  if ($Isolated) { Write-Host ('  ISOLATED deps at ' + $isoDepsBase + ' — pass -DFETCHCONTENT_BASE_DIR=<that> at EVERY configure (per preset) of this tree.') -ForegroundColor Yellow }
   if (Get-Command ccache -ErrorAction SilentlyContinue) { ccache -s | Select-Object -First 10 }
   elseif (Get-Command sccache -ErrorAction SilentlyContinue) { sccache --show-stats | Select-Object -First 12 }
 }
