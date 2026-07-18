@@ -205,39 +205,47 @@ graph TD
 
 ## 7. Git-SHA tracker *(filled during execution — one row per task, one commit-or-more each)*
 
+**Wave A LANDED + MERGED to `main @ 99cde52`** (2026-07-18, local only, nothing pushed). Merge path: `feat/ns-integration` off `7603fd2` merged exec→amdeam→sched→fit→measure (all clean, 0 conflicts), then fast-forwarded main `7603fd2..99cde52`. **Debug/`rel` correctness gate: PASS** — 5 pre-existing v2 known-red fails (SurfaceV2Provenance, PricerFitterTest.LocalRiskRefit, PreparedPortfolio.Grouped, SurfaceV2Qualification/{Latency,Balanced}); **0 new failures** from any Wave-A merge; 6th known (OpraBreadthCorpus) data-gated/absent. Integration diff = 50 files, disjoint from ⚠︎R **source** (`calib.cpp`/`boundary_interp.cpp` untouched; only R-adjacent *test* files american_test/deamer_test/simd_american_test owned by M4/F7/A4).
+
 | Task | Branch | Status | SHA(s) | Gate result |
 |---|---|---|---|---|
-| M1 | `feat/ns-measure` | ☐ todo | — | — |
-| M2 | `feat/ns-measure` | ☐ todo | — | — |
-| M3 | `feat/ns-measure` | ☐ todo | — | — |
-| M4 | `feat/ns-measure` | ☐ todo | — | — |
-| M5 | `feat/ns-measure` | ☐ todo | — | — |
-| M6 | `feat/ns-measure` | ☐ todo | — | — |
-| E1 | `feat/ns-exec` | ☐ todo | — | — |
-| E2 | `feat/ns-exec` | ☐ todo | — | — |
-| E3 | `feat/ns-exec` | ☐ todo | — | — |
-| K1 | `feat/ns-iv` | ☐ todo | — | ns/op vs 180 |
-| K2 | `feat/ns-iv` | ☐ todo | — | — |
-| K3 | `feat/ns-iv` | ☐ todo | — | AVX2 ×scalar |
+| M1 | `feat/ns-measure` | ☑ landed | `1a14397` | compare_baseline.py + test; e2e bench doc |
+| M2 | `feat/ns-measure` | ☑ landed | `1d6cb4f` | iv_shootout_bench + vendored LBR + baseline JSON; atx mean 4.7 Halley steps |
+| M3 | `feat/ns-measure` | ☐ todo (Wave B) | — | quiet-window protocol |
+| M4 | `feat/ns-measure` | ☑ landed | `694f56e` | isa_golden_tol.hpp (__FMA__-gated); 4 test files toleranced; 5 residual ISA-drift left to F1/F7/surface owners |
+| M5 | `feat/ns-measure` | ☑ landed | `dc5f5d2` | counters.hpp unbiased + counters_test |
+| M6 | `feat/ns-measure` | ☑ landed | `e7c749b` | atx-build wrong-tree guard; new-worktree -Isolated; presets |
+| E1 | `feat/ns-exec` | ☑ landed | `385c79a` | NestState budget; determinism byte-id 6×7; deadlock-free; 17/17 exec tests; 0 new fails |
+| E2 | `feat/ns-exec` | ☐ todo (Wave B) | — | work-stealing (unblocks U5) |
+| E3 | `feat/ns-exec` | ☐ todo (Wave B) | — | — |
+| K1 | `feat/ns-iv` | ⚠ shelved (NOT merged) | `92d00b8` (on branch) | NEGATIVE: scalar Cody erfc perf-neutral 866→839ns. Header `scalar_erfc.hpp` retained for K3. Real lever = K2 seed |
+| K2 | `feat/ns-iv` | ☐ todo (Wave B) | — | Radoicic–Stefanica seed → fewer Halley steps |
+| K3 | `feat/ns-iv` | ☐ todo (Wave B) | — | AVX2 ×scalar (consumes scalar_erfc.hpp) |
 | K4 | `feat/ns-iv` | ☐ todo | — | Sprint-X gate |
-| A0 | `feat/ns-am-deam` | ☐ todo | — | wall vs CPU |
-| A4 | `feat/ns-am-deam` | ☐ todo | — | boundary parity |
-| A1 | `feat/ns-am-deam` | ☐ todo | — | de-Am ms/board |
-| A2 | `feat/ns-am-deam` | ☐ todo | — | — |
-| A3 | `feat/ns-am-deam` | ☐ todo | — | — |
-| A5 | `feat/ns-am-price` | ☐ todo | — | 2.0× gate |
-| A6 | `feat/ns-am-price` | ☐ todo | — | µs vs ALO |
-| A7 | `feat/ns-am-price` | ☐ todo | — | warm-IV µs |
-| A8 | `feat/ns-am-price` | ☐ todo | — | — |
-| F1 | `feat/ns-fit` | ☐ todo | — | — |
-| F2..F7 | `feat/ns-fit` | ☐ todo | — | — |
-| U1 | `feat/ns-sched` | ☐ todo | — | peak RSS |
-| U2..U4 | `feat/ns-sched` | ☐ todo | — | — |
-| U5 | `feat/ns-sched` | ☐ todo | — | deadlock-free |
-| U6 | `feat/ns-sched` | ☐ todo | — | wall vs 45 s |
-| V1..V3 | `feat/ns-surf` | ☐ todo | — | in-band % |
+| A0 | `feat/ns-am-deam` | ☑ landed | `a9b8696` | VERDICT: ≤200ms=WALL-WIN via E1 parallel de-Am prepass; A1 DEFERRED. Knob ATX_BENCH_FIT_WORKERS |
+| A4 | `feat/ns-am-deam` | ☑ landed | `2d54ded` | boundary Φ norm_cdf_erfc_pd2; parity 6.75e-9→4.12e-13 |
+| A1 | `feat/ns-am-deam` | ☐ DEFERRED (A0 verdict) | — | de-Am ms/board — only pull if single-expiry residue >~120ms |
+| A2 | `feat/ns-am-deam` | ☐ todo (Wave C) | — | — |
+| A3 | `feat/ns-am-deam` | ☐ todo (Wave C) | — | — |
+| A5 | `feat/ns-am-price` | ☐ todo (Wave C) | — | 2.0× gate |
+| A6 | `feat/ns-am-price` | ☐ todo (Wave C) | — | µs vs ALO |
+| A7 | `feat/ns-am-price` | ☐ todo (Wave C) | — | warm-IV µs |
+| A8 | `feat/ns-am-price` | ☐ todo (Wave D) | — | — |
+| F1 | `feat/ns-fit` | ☐ todo (Wave B, ⚠︎R) | — | R-01p2 wiring |
+| F3 | `feat/ns-fit` | ☑ landed | `886645c` | SlicePrepOutcome + per_slice_legacy_prep_fallback; rescue 4/4 slices |
+| F4 | `feat/ns-fit` | ☑ landed | `453910e` | ExpiryFitReport/Outcome; fail_board_on_hard_slice_error; honest partial-board |
+| F6 | `feat/ns-fit` | ☑ landed | `c925431` | snapshot_cache + ArchiveContentIdentity/metadata_crc32c; no stale serve |
+| F7 | `feat/ns-fit` | ☑ landed | `7c08438` | corpus_board_fit/dividend/curve_selector/backtest/deamer_test P3 cleanups |
+| F2,F5 | `feat/ns-fit` | ☐ todo (Wave B, ⚠︎R) | — | R-02 floor / seam-gated |
+| U1 | `feat/ns-sched` | ☑ landed | `0d55d6e` | streaming populate; RSS O(all)→O(in-flight); determinism bit-id; 11/11 |
+| U2..U4 | `feat/ns-sched` | ☐ todo (Wave B/C) | — | — |
+| U5 | `feat/ns-sched` | ☐ todo (Wave C) | — | deadlock-free — RE-TAGGED dep E2 (not just E1) |
+| U6 | `feat/ns-sched` | ☐ todo (Wave C) | — | wall vs 45 s |
+| V1..V3 | `feat/ns-surf` | ☐ todo (Wave C/D) | — | in-band % |
 
 Update convention: `☐ todo → ◐ in-progress → ☑ landed`; paste the commit SHA(s) and the one-line gate result (measured number). The dispatching session owns merges (order: WS-0 → WS-1 → WS-2/WS-3/WS-5 in parallel → WS-4 → WS-6), each gate re-run on merge.
+
+**Wave-A pivots (recorded):** (1) **K1 negative** → WS-2 beat-Jäckel path pivots to **K2** (tighter seed → fewer Halley steps; M2 confirms atx mean 4.7 Halley steps, so the 329ns-vs-180ns gap is Halley-count not erfc-cost) + **K3** (vectorized, region-specialized erfc). Wave-B iv brief: keep `scalar_erfc.hpp`, **REVERT** the implied_vol/black76 erfc swap (kills 4 golden drifts), then K2, then K3. (2) **A0 verdict**: ≤200ms is a **wall-win** via E1 parallel de-Am prepass (de-Am is 79% of wall but sits in a fit_workers-driven parallel prepass, serial only because the gate pins fit_workers=1) → **A1 DEFERRED** (was highest-risk ⚠︎R). (3) **E1 nested_budget()** parallelizes only when the outer is itself a pricing_executor dispatch → **U5 re-tagged to depend on E2 work-stealing**, not just E1; U4 can use E1's nested budget directly. (4) **Chebyshev-table retirement** (`detail/norm_cdf_cheb.*`) deferred to a coordinated follow-up AFTER iv K3 removes `norm_cdf_pd/pd2`+`kNormCdfWing` from `vector_math.hpp`+`iv_batch_avx2.cpp` (amdeam A4 already removed its refs).
 
 ---
 
