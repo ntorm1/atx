@@ -1,9 +1,12 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <functional>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -388,6 +391,53 @@ TEST(AdjointGreeksAmerican, FallbackMatchesFd) {
     EXPECT_NEAR(g->delta, fd->delta, 1.0e-4);
     EXPECT_NEAR(g->vega, fd->vega, 1.0e-3);
   }
+}
+
+// Informal perf sanity (DISABLED — run with --gtest_also_run_disabled_tests on a
+// rel-avx2 quiet host). NOT an official number: the sprint's headline throughput
+// lands in wave-2 P5 against the measure agent's baseline. Best-of-3, genuine
+// early-exercise puts (the adjoint path). Prices delta+full greeks per solve.
+TEST(AdjointGreeksAmerican, DISABLED_PerfSanity) {
+  const double S = 100.0;
+  std::vector<APt> pts;
+  for (double K : {90.0, 95.0, 100.0, 105.0}) {
+    for (double T : {0.1, 0.5, 1.0}) {
+      for (double sigma : {0.2, 0.35}) {
+        pts.push_back({K, T, sigma, 0.05, 0.01});
+      }
+    }
+  }
+  const int reps = 200;
+  auto bench = [&](auto fn) {
+    double best = 1e300;
+    for (int t = 0; t < 3; ++t) {
+      const auto t0 = std::chrono::steady_clock::now();
+      double acc = 0.0;
+      for (int r = 0; r < reps; ++r) {
+        for (const APt& p : pts) {
+          acc += fn(p);
+        }
+      }
+      const auto t1 = std::chrono::steady_clock::now();
+      volatile double sink = acc;
+      (void)sink;
+      const double s = std::chrono::duration<double>(t1 - t0).count();
+      best = std::min(best, s);
+    }
+    return static_cast<double>(reps * (int)pts.size()) / best; // items/s
+  };
+  const double aad = bench([&](const APt& p) {
+    const auto g = american_greeks_adjoint(S, p.K, p.T, p.sigma, p.r, p.q, Side::Put);
+    return g.has_value() ? g->vega + g->delta : 0.0;
+  });
+  const double fdw = bench([&](const APt& p) {
+    const auto g = american_greeks_fd(S, p.K, p.T, p.sigma, p.r, p.q, Side::Put,
+                                      atx::vol::AmericanMethod::AndersenLake, std::nullopt, true);
+    return g.has_value() ? g->vega + g->delta : 0.0;
+  });
+  std::cout << "[perf sanity] american_greeks: aad=" << aad << " items/s  fd_warm=" << fdw
+            << " items/s  speedup=" << (aad / fdw) << "x\n";
+  SUCCEED();
 }
 
 TEST(AdjointGreeksAmerican, InvalidArgument) {
