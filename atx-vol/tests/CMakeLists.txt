@@ -118,6 +118,8 @@ add_executable(atx-vol-tests
     surface_archive_v2_test.cpp      # S1-S3: ATXVSA2 zero-copy view parity + subset-map isolation
     # Wave-P AAD greeks (Agent greeks) — appended target:
     adjoint_greeks_test.cpp          # P2: adjoint/IFT American greeks parity vs central-diff FD
+    # Earnings-censored atmCen reproduction (Task 1) — appended target:
+    earnings_term_fit_test.cpp       # T1: censored_atm_vol per-expiry primitive
 )
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).

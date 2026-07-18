@@ -108,6 +108,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/analytics_density.cpp
     src/analytics_aggregate.cpp
     src/analytics_io.cpp
+    src/earnings_term_fit.cpp
 )
 add_library(atx::vol ALIAS atx-vol)
 
