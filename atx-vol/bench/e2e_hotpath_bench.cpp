@@ -7,10 +7,12 @@
 // cannot win on time alone.
 
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -45,6 +47,43 @@ constexpr std::string_view kUniverseSnapshot = "2026-07-01T19:55:00Z";
 
 [[nodiscard]] double elapsed_ms(StageClock::time_point start) noexcept {
   return std::chrono::duration<double, std::milli>(StageClock::now() - start).count();
+}
+
+// A0 (WS-3) measurement knob — NOT a production default. The de-Am prepass
+// (curve_fit.cpp:run_deam_prepass / essvi_calib.cpp) fans the per-expiry work
+// across `PricerConfig::fit_workers`; the canonical gate pins it to 1 (serial),
+// which is what the 347 ms SPY / 272.9 ms-per-board de-Am number was measured at.
+// This env override lets the wall-vs-CPU disambiguation sweep fit_workers>1
+// WITHOUT touching the production/gate default (unset => 1, byte-unchanged gate).
+// 0 => hardware_concurrency (matches the fit_workers=0 auto semantics).
+// The value is read with _dupenv_s under MSVC/clang-cl: plain std::getenv trips
+// /WX (-Wdeprecated-declarations) here — matches parallel_for.hpp's env-read.
+[[nodiscard]] unsigned bench_fit_workers() noexcept {
+  constexpr unsigned kGateDefault = 1u; // canonical gate — production unchanged.
+#if defined(_MSC_VER)
+  char *raw = nullptr;
+  std::size_t n = 0;
+  if (::_dupenv_s(&raw, &n, "ATX_BENCH_FIT_WORKERS") != 0 || raw == nullptr) {
+    return kGateDefault;
+  }
+#else
+  const char *raw = std::getenv("ATX_BENCH_FIT_WORKERS");
+  if (raw == nullptr || raw[0] == '\0') {
+    return kGateDefault;
+  }
+#endif
+  const char *end = raw;
+  while (*end != '\0') {
+    ++end;
+  }
+  unsigned value = 0u;
+  const auto res = std::from_chars(raw, end, value);
+  // Accept 0 (=> hardware_concurrency auto) through 1024; else fall back.
+  const bool ok = (res.ec == std::errc{}) && (res.ptr == end) && (value <= 1024u);
+#if defined(_MSC_VER)
+  std::free(raw);
+#endif
+  return ok ? value : kGateDefault;
 }
 
 [[nodiscard]] fs::path first_existing(std::initializer_list<fs::path> candidates) {
@@ -181,7 +220,9 @@ void record_value_contract(FitIterationReport &report, const FittedSurface &surf
     // actual profile and curve family.
     config.preset = FitPreset::Robust;
     config.context = board.panel.fit_context;
-    config.fit_workers = 1u;
+    // A0 measurement: fit_workers is 1 by default (canonical gate, unchanged),
+    // overridable via ATX_BENCH_FIT_WORKERS for the wall-vs-CPU sweep only.
+    config.fit_workers = bench_fit_workers();
     config.n_threads = 0u;
     config.collect_stage_timings = true;
     PricerFitter fitter{config};
@@ -232,7 +273,7 @@ void publish_fit_counters(benchmark::State &state, const FitCorpus &corpus,
   state.counters["requested_band_inversions"] = 0.0;
   state.counters["configured_value_workers"] = 0.0;
   state.counters["value_worker_policy_auto"] = 1.0;
-  state.counters["configured_fit_workers"] = 1.0;
+  state.counters["configured_fit_workers"] = static_cast<double>(bench_fit_workers());
   state.counters["auto_value_worker_boards"] = static_cast<double>(report.auto_value_worker_boards);
   state.counters["legacy_compatible_boards"] = static_cast<double>(report.legacy_compatible_boards);
   state.counters["stored_query_cache_boards"] =
