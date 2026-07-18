@@ -24,7 +24,10 @@
 // (because `pnl_total = axes + unexplained + settlement + shares + financing -
 // cost` per step, so its running sum equals the attribution sum).
 
+#include <span>
+#include <string>
 #include <string_view>
+#include <utility>
 
 #include "atx/vol/backtest.hpp"  // BacktestResult
 #include "atx/vol/types.hpp"     // Status
@@ -87,5 +90,21 @@ struct TearSheet {
 // trailing tab. Signal series are appended as one column each, by name, in
 // `r.signals` order. Returns `IoError` if the file cannot be opened/written.
 [[nodiscard]] Status write_backtest_tsv(const BacktestResult& r, std::string_view path);
+
+// WS-D D5 acceptance emit: the PnL-track TSV consumed by the Python renderer
+// `tools/spy_dispersion_pnl_report.py`. Identical column layout to
+// `write_backtest_tsv` (date, ts_ns, every pnl/greek/turnover column, then one
+// column per signal), but PREFIXED by a `# key=value` metadata header — one
+// line per `meta` entry, in the given order, each written verbatim as `# k=v`.
+// `meta` carries the run's identity + headline stats + engine timing + surface
+// stats (the renderer titles the chart and fills its stats box from these
+// keys), so ONE self-describing TSV is the whole acceptance artifact. Series
+// doubles use `%.17g` (bit-exact round-trip); `\n` line endings, `\t`
+// separators, no trailing tab. Deterministic (snprintf into a fixed buffer, no
+// stream/locale state). `IoError` if the file cannot be opened/written.
+[[nodiscard]] Status
+write_backtest_pnl_tsv(const BacktestResult& r,
+                       std::span<const std::pair<std::string, std::string>> meta,
+                       std::string_view path);
 
 }  // namespace atx::vol

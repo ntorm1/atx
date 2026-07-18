@@ -4,7 +4,9 @@
 #include <cstdio>
 #include <fstream>
 #include <ios>
+#include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "atx/core/error.hpp"    // Err, Ok, ErrorCode
@@ -161,17 +163,14 @@ TearSheet tearsheet(const BacktestResult& r, double periods_per_year) {
   return ts;
 }
 
-Status write_backtest_tsv(const BacktestResult& r, std::string_view path) {
-  // Binary mode: no CRLF translation so the byte stream is deterministic and
-  // uses `\n` line endings on every platform.
-  std::ofstream os(std::string(path), std::ios::binary | std::ios::trunc);
-  if (!os) {
-    return Err(ErrorCode::IoError, "write_backtest_tsv: cannot open file");
-  }
+namespace {
 
-  // Fixed column order (must match the header). `date` and `ts_ns` are special;
-  // the rest are plain double columns written with %.17g for a bit-exact
-  // round-trip, followed by one column per signal series.
+// Build the deterministic TSV series (header + one row per recorded step) into
+// `out`. Shared by `write_backtest_tsv` and `write_backtest_pnl_tsv` so the two
+// entry points never drift in column set/order/formatting. `date` and `ts_ns`
+// are special; the rest are plain double columns written with %.17g for a
+// bit-exact round-trip, followed by one column per signal series.
+void append_backtest_series_tsv(std::string& out, const BacktestResult& r) {
   const std::pair<const char*, const std::vector<double>*> dbl_cols[] = {
       {"pnl_total", &r.pnl_total},
       {"pnl_delta", &r.pnl_delta},
@@ -200,8 +199,7 @@ Status write_backtest_tsv(const BacktestResult& r, std::string_view path) {
       {"n_unpriced_greeks", &r.n_unpriced_greeks},
   };
 
-  std::string out;
-  out.reserve(r.size() * 640 + 256);
+  out.reserve(out.size() + r.size() * 640 + 256);
 
   char buf[64];
   const auto put_double = [&](double v) {
@@ -239,12 +237,50 @@ Status write_backtest_tsv(const BacktestResult& r, std::string_view path) {
     }
     out += '\n';
   }
+}
 
-  os.write(out.data(), static_cast<std::streamsize>(out.size()));
+// Append the `# key=value` meta header (one line per entry, verbatim, in order).
+void append_meta_header(std::string& out,
+                        std::span<const std::pair<std::string, std::string>> meta) {
+  for (const auto& [k, v] : meta) {
+    out += "# ";
+    out += k;
+    out += '=';
+    out += v;
+    out += '\n';
+  }
+}
+
+// Deterministic `\n`-terminated write of `payload` to `path` in binary mode (no
+// CRLF translation), shared by both TSV entry points.
+[[nodiscard]] Status write_payload(std::string_view path, const std::string& payload,
+                                   const char* who) {
+  std::ofstream os(std::string(path), std::ios::binary | std::ios::trunc);
   if (!os) {
-    return Err(ErrorCode::IoError, "write_backtest_tsv: write failed");
+    return Err(ErrorCode::IoError, std::string(who) + ": cannot open file");
+  }
+  os.write(payload.data(), static_cast<std::streamsize>(payload.size()));
+  if (!os) {
+    return Err(ErrorCode::IoError, std::string(who) + ": write failed");
   }
   return Ok();
+}
+
+}  // namespace
+
+Status write_backtest_tsv(const BacktestResult& r, std::string_view path) {
+  std::string out;
+  append_backtest_series_tsv(out, r);
+  return write_payload(path, out, "write_backtest_tsv");
+}
+
+Status write_backtest_pnl_tsv(const BacktestResult& r,
+                              std::span<const std::pair<std::string, std::string>> meta,
+                              std::string_view path) {
+  std::string out;
+  append_meta_header(out, meta);
+  append_backtest_series_tsv(out, r);
+  return write_payload(path, out, "write_backtest_pnl_tsv");
 }
 
 }  // namespace atx::vol
