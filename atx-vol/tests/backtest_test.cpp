@@ -1161,6 +1161,58 @@ TEST(Backtest, SnapshotCacheIdentityIncludesNormalizedPathAndQueryTier) {
   EXPECT_EQ(stats.retained_entries, 3u);
 }
 
+// R-19 (F6): a cache keyed only on (path, tier) served a rewritten archive's
+// stale snapshot indefinitely. The cache now keys/evicts on the archive's content
+// identity, so rewriting the SAME path with different content (here at the SAME
+// byte length and SAME created_ts_ns — only the blob CRC changes) evicts the
+// stale entry and reloads the new bytes instead of serving the old snapshot.
+TEST(Backtest, SnapshotCacheEvictsStaleEntryWhenArchiveRewrittenSameLength) {
+  const fs::path dir = fresh_dir("snapshot-cache-rewrite");
+  std::error_code mkdir_ec;
+  fs::create_directories(dir, mkdir_ec);
+  const std::string path = (dir / "2026-08-01.atxvsa").string();
+
+  // Pin created_ts_ns so the two archives differ ONLY in blob content — the
+  // same-byte-length / different-CRC case (§6.5), never a timestamp change.
+  SurfaceArchiveWriteOpts opts;
+  opts.created_ts_ns = 1'000;
+  const auto write_forward = [&](double forward) {
+    const PricedSurface s = make_surface(kUid, 100.0, forward, kBaseNow);
+    const SurfaceArchiveItem item{"SPX", &s, std::nullopt};
+    const std::span<const SurfaceArchiveItem> items(&item, 1);
+    const Status st = write_surface_archive_file(path, items, opts);
+    ASSERT_TRUE(st.has_value()) << st.error().to_string();
+  };
+
+  write_forward(100.0);
+  const auto size_v1 = fs::file_size(path);
+
+  MarketSnapshot::reset_open_count();
+  SnapshotCache cache;
+  auto first = cache.load(path);
+  ASSERT_TRUE(first.has_value()) << first.error().to_string();
+  EXPECT_EQ(MarketSnapshot::open_count(), 1u);
+
+  // Rewrite the SAME path with different blob content but identical framing.
+  write_forward(101.0);
+  ASSERT_EQ(fs::file_size(path), size_v1);  // same byte length: only the CRC moved
+
+  auto second = cache.load(path);
+  ASSERT_TRUE(second.has_value()) << second.error().to_string();
+  // No stale serve: a fresh snapshot object was reloaded from disk, not the
+  // cached one, and the stale entry was evicted.
+  EXPECT_NE(first->get(), second->get());
+  EXPECT_EQ(MarketSnapshot::open_count(), 2u);
+  EXPECT_GE(cache.stats().evictions, 1u);
+
+  // A third load of the now-unchanged archive is a clean cache hit (no re-open,
+  // no further eviction).
+  auto third = cache.load(path);
+  ASSERT_TRUE(third.has_value()) << third.error().to_string();
+  EXPECT_EQ(second->get(), third->get());
+  EXPECT_EQ(MarketSnapshot::open_count(), 2u);
+}
+
 TEST(Backtest, ReuseOnlyFastMissLoadsColdAndLaterReusesEagerFastSnapshot) {
   const fs::path dir = fresh_dir("snapshot-cache-reuse-only");
   const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
