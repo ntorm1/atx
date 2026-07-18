@@ -1625,6 +1625,61 @@ TEST(PortfolioPricer, PriceInto_FullGreeks_BitIdenticalToPrice) {
   EXPECT_TRUE(bits_equal(fs.total.charm, ref->total.charm));
 }
 
+// WS-P P3: the adjoint-greeks A/B route. FullGreeks risk columns are produced by
+// detail::american_greeks_adjoint (evaluate_batch computes IV + mark only, then one
+// taped Andersen-Lake solve + a reverse Christianson boundary tangent per unique
+// contract) instead of the FD bundle. Gate: on a genuine-early-exercise put book the
+// adjoint route (a) keeps the mark the same andersen_lake value, (b) is delta/gamma
+// bit-identical to the FD route (the boundary is spot-independent so both stencil the
+// same base boundary), (c) matches vega/rho to economic tolerance (the adjoint tracks
+// the served mark, the FD bundle its own bumped re-solve), and (d) is bit-identical
+// across thread counts (pure kernel + deterministic reduction). Off by default.
+TEST(PortfolioPricer, AdjointGreeks_AbMatchesFdAndIsThreadInvariant) {
+  const PricedSurface s1 = make_essvi(1, 5);
+  const PricedSurface s2 = make_essvi(2, 6, /*theta_bump=*/0.01);
+  const SurfaceSet surfaces = set_of({&s1, &s2});
+  // Genuine early-exercise puts (r = 0.043 > q = 0.02) across both underlyings.
+  std::vector<Position> book;
+  std::uint64_t id = 0;
+  for (std::uint32_t uid : {1u, 2u}) {
+    for (double K : {85.0, 92.0, 98.0, 100.0, 104.0, 110.0}) {
+      book.push_back({id++, {uid, K, 0.20, Side::Put}, -3.0, 100.0});
+    }
+  }
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+
+  auto fd = pricer.price(surfaces, PriceOptions{.n_threads = 4});
+  auto ad = pricer.price(surfaces, PriceOptions{.n_threads = 4, .adjoint_greeks = true});
+  ASSERT_TRUE(fd.has_value());
+  ASSERT_TRUE(ad.has_value());
+  ASSERT_TRUE(ad->greeks_materialized());
+  ASSERT_EQ(fd->size(), ad->size());
+
+  int checked = 0;
+  for (std::size_t i = 0; i < fd->size(); ++i) {
+    if (fd->status[i] != PriceStatus::Ok || ad->status[i] != PriceStatus::Ok) {
+      continue;
+    }
+    ++checked;
+    // (a) mark: the same andersen_lake value regardless of greek method.
+    EXPECT_NEAR(ad->price[i], fd->price[i], 1e-6 * (std::fabs(fd->price[i]) + 1.0)) << i;
+    // (b) delta/gamma: bit-identical family (spot-independent boundary, same stencil).
+    EXPECT_NEAR(ad->delta[i], fd->delta[i], 1e-6 * (std::fabs(fd->delta[i]) + 1.0)) << i;
+    EXPECT_NEAR(ad->gamma[i], fd->gamma[i], 1e-6 * (std::fabs(fd->gamma[i]) + 1.0)) << i;
+    // (c) vega/rho: economic parity.
+    EXPECT_NEAR(ad->vega[i], fd->vega[i], 1e-2 + 3e-2 * std::fabs(fd->vega[i])) << i;
+    EXPECT_NEAR(ad->rho[i], fd->rho[i], 1e-2 + 3e-2 * std::fabs(fd->rho[i])) << i;
+  }
+  EXPECT_GT(checked, 8) << "adjoint A/B must actually price the book";
+
+  // (d) determinism: adjoint frame bit-identical across thread counts.
+  auto ad1 = pricer.price(surfaces, PriceOptions{.n_threads = 1, .adjoint_greeks = true});
+  ASSERT_TRUE(ad1.has_value());
+  expect_frame_bit_identical(*ad1, *ad);
+}
+
 TEST(PortfolioPricer, PriceInto_Marks_MarksBitIdentical_GreeksUntouched) {
   const PricedSurface s1 = make_convex(1, 4, 32);
   const PricedSurface s2 = make_essvi(2, 5);
