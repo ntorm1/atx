@@ -284,6 +284,14 @@ private:
   std::unique_ptr<State> st_;
 };
 
+// R-30 observability: number of times the Andersen-Lake specialized sigma-bind hit
+// its safety fallback (retained static geometry unexpectedly unbound, forcing the
+// generic runtime-trip-count kernel). Monotonic, process-wide, thread-safe. Expected
+// to stay 0 on every production flow; a non-zero value flags a retained-workspace
+// lifecycle bug. Available in all build configs (the Debug bind-key assert is the
+// louder Debug-only counterpart).
+[[nodiscard]] std::uint64_t al_geometry_specialize_off_fallback_count() noexcept;
+
 // Cold-path method selector for the unified entry point.
 enum class AmericanMethod : std::uint8_t {
   AndersenLake = 0,

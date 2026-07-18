@@ -4,6 +4,7 @@
 #include <bit>
 #include <charconv>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <filesystem>
 #include <limits>
@@ -12,11 +13,13 @@
 #include <system_error>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include "atx/core/error.hpp"       // Ok, Err, ErrorCode
 #include "atx/core/hash.hpp"        // hash_bytes
 #include "atx/vol/curve.hpp"        // YieldCurve
 #include "atx/vol/data.hpp"         // iso_to_ns
+#include "atx/vol/parallel_for.hpp" // parallel_for_dynamic (W4.3 per-file fan-out)
 
 namespace atx::vol {
 
@@ -330,17 +333,38 @@ Result<OpraBatchResult> load_opra_daterange(const OpraBatchSpec& spec,
   }
 
   OpraBatchResult result;
+  const std::size_t n_symbols = spec.symbols.size();
   const std::size_t n_dates = static_cast<std::size_t>(serial_hi - serial_lo + 1);
-  result.n_total = spec.symbols.size() * n_dates;
-  result.entries.reserve(result.n_total);
+  // Checked size arithmetic: n_symbols * n_dates must not wrap size_t (a
+  // pathological date range × symbol list would otherwise under-allocate the
+  // pre-sized entries vector and corrupt the disjoint-slot invariant below).
+  if (n_dates != 0 &&
+      n_symbols > std::numeric_limits<std::size_t>::max() / n_dates) {
+    return Err(ErrorCode::InvalidArgument,
+               "OpraBatchSpec: symbols × dates overflows size_t");
+  }
+  result.n_total = n_symbols * n_dates;
+  // Pre-size so the parallel per-file reads below write DISJOINT slots by index
+  // (no push_back, no ordering dependency). Each slot is finalized either in the
+  // serial pre-pass (quarantine) or by exactly one worker (the file read).
+  result.entries.resize(result.n_total);
 
+  // ── Serial pre-pass: resolve every cell, queue the files that need a read ──
   // Memoize date+suffix -> ts_ns: the symbols of one date share a single snapshot
   // stamp, so the M distinct stamps are parsed once (iso_to_ns) instead of N*M
-  // times. Per-contract OSI parsing remains inside load_opra_cbbo_parquet — its
-  // signature is left untouched.
+  // times. Per-contract OSI parsing remains inside load_opra_cbbo_parquet. The
+  // Error policy is a top-level Err detected HERE, before any parallel work; a
+  // Quarantine cell is finalized in place (no read queued).
   std::unordered_map<std::string, std::int64_t> snap_ts_cache;
 
-  std::size_t done = 0;
+  struct LoadTask {
+    std::size_t idx;    // slot in result.entries this task finalizes
+    OpraLoadSpec load;  // fully resolved read spec (built serially, read parallel)
+  };
+  std::vector<LoadTask> load_plan;
+  load_plan.reserve(result.n_total);
+
+  std::size_t slot = 0;
   for (std::int64_t serial = serial_lo; serial <= serial_hi; ++serial) {
     const std::string date = format_civil(civil_from_days(serial));
     const std::string snapshot_iso = date + spec.snapshot_suffix;
@@ -354,7 +378,7 @@ Result<OpraBatchResult> load_opra_daterange(const OpraBatchSpec& spec,
     }
 
     for (const std::string& symbol : spec.symbols) {
-      OpraBatchEntry entry;
+      OpraBatchEntry& entry = result.entries[slot];
       entry.symbol = symbol;
       entry.date = date;
       entry.snapshot_ts_ns = snap_ts;
@@ -371,55 +395,72 @@ Result<OpraBatchResult> load_opra_daterange(const OpraBatchSpec& spec,
         if (spec.missing_market_inputs == MissingMarketInputPolicy::Quarantine) {
           entry.panel =
               Err(ErrorCode::Unavailable, "missing market inputs for " + date + " " + symbol);
-          ++result.n_error;
-          ++done;
-          result.entries.push_back(std::move(entry));
-          if (progress) {
-            progress(done, result.n_total, result.entries.back());
-          }
-          continue;
+          ++slot;
+          continue;  // finalized in place; no parquet read queued
         }
       } else {
         entry.market_input_fingerprint = market->provenance.fingerprint;
       }
 
-      std::error_code ec;
-      const bool present = fs::exists(path, ec) && !ec;
-      if (!present) {
-        entry.panel = Err(ErrorCode::NotFound, "no parquet at '" + entry.path + "'");
-        ++result.n_missing;
+      OpraLoadSpec load;
+      load.path = entry.path;
+      load.underlying = symbol;
+      load.snapshot_iso = snapshot_iso;
+      load.r = spec.r;
+      load.provenance_mode = spec.provenance_mode;
+      if (market != nullptr) {
+        load.spot_override = market->spot_override.value_or(0.0);
+        load.yc_pillar_t = market->yc_pillar_t.empty() ? spec.yc_pillar_t : market->yc_pillar_t;
+        load.yc_pillar_r = market->yc_pillar_r.empty() ? spec.yc_pillar_r : market->yc_pillar_r;
+        load.cash_divs = market->cash_divs;
+        load.fit_context = market->fit_context;
+        load.market_input_provenance = market->provenance;
       } else {
-        OpraLoadSpec load;
-        load.path = entry.path;
-        load.underlying = symbol;
-        load.snapshot_iso = snapshot_iso;
-        load.r = spec.r;
-        load.provenance_mode = spec.provenance_mode;
-        if (market != nullptr) {
-          load.spot_override = market->spot_override.value_or(0.0);
-          load.yc_pillar_t = market->yc_pillar_t.empty() ? spec.yc_pillar_t : market->yc_pillar_t;
-          load.yc_pillar_r = market->yc_pillar_r.empty() ? spec.yc_pillar_r : market->yc_pillar_r;
-          load.cash_divs = market->cash_divs;
-          load.fit_context = market->fit_context;
-          load.market_input_provenance = market->provenance;
-        } else {
-          load.yc_pillar_t = spec.yc_pillar_t;
-          load.yc_pillar_r = spec.yc_pillar_r;
-        }
-        Result<OpraPanel> loaded = load_opra_cbbo_parquet(load);
-        if (loaded.has_value()) {
-          ++result.n_loaded;
-        } else {
-          ++result.n_error;
-        }
-        entry.panel = std::move(loaded);
+        load.yc_pillar_t = spec.yc_pillar_t;
+        load.yc_pillar_r = spec.yc_pillar_r;
       }
+      load_plan.push_back(LoadTask{slot, std::move(load)});
+      ++slot;
+    }
+  }
 
-      ++done;
-      result.entries.push_back(std::move(entry));
-      if (progress) {
-        progress(done, result.n_total, result.entries.back());
-      }
+  // ── Parallel per-file read (W4.3) ─────────────────────────────────────────
+  // Each task finalizes exactly one pre-sized entry slot (disjoint) after pure
+  // reads of its own resolved OpraLoadSpec. load_opra_cbbo_parquet reads a
+  // DISTINCT file per task and holds no shared mutable state (a fresh Arrow
+  // reader per call; the date/OSI parse helpers are pure), so the outcome is
+  // independent of worker count / claim order. n_threads: 0 = auto, 1 = serial.
+  parallel_for_dynamic(load_plan.size(), spec.n_threads, [&](std::size_t k) {
+    const LoadTask& task = load_plan[k];
+    OpraBatchEntry& entry = result.entries[task.idx];
+    std::error_code ec;
+    const bool present = fs::exists(fs::path(task.load.path), ec) && !ec;
+    if (!present) {
+      entry.panel = Err(ErrorCode::NotFound, "no parquet at '" + entry.path + "'");
+    } else {
+      entry.panel = load_opra_cbbo_parquet(task.load);
+    }
+  });
+
+  // ── Serial post-join: deterministic counters + in-order progress ──────────
+  // Counters are counted FROM the completed slots (never mutated in the parallel
+  // loop), so they are independent of worker count / completion order and
+  // partition the entries: n_loaded + n_missing + n_error == n_total. A NotFound
+  // panel is a missing file; any other Err (quarantine / load failure) is
+  // n_error. Progress fires once per cell in monotonic index order, preserving
+  // the callback's `done` contract.
+  std::size_t done = 0;
+  for (const OpraBatchEntry& entry : result.entries) {
+    if (entry.panel.has_value()) {
+      ++result.n_loaded;
+    } else if (entry.panel.error().code() == ErrorCode::NotFound) {
+      ++result.n_missing;
+    } else {
+      ++result.n_error;
+    }
+    ++done;
+    if (progress) {
+      progress(done, result.n_total, entry);
     }
   }
 

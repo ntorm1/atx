@@ -149,8 +149,8 @@ ATX_FORCE_INLINE __m256d sr2017_seed_pd(__m256d price, __m256d F, __m256d K, __m
 // σ (bounded + clamped exactly as the scalar). Pre-computed sqrtT / lnFK are
 // shared across the two passes.
 ATX_FORCE_INLINE __m256d iv_halley_step_pd(__m256d sigma, __m256d price, __m256d F, __m256d K,
-                                           __m256d df, __m256d is_put, __m256d sqrtT, __m256d lnFK,
-                                           const double *coefs) noexcept {
+                                           __m256d df, __m256d is_put, __m256d sqrtT,
+                                           __m256d lnFK) noexcept {
   const __m256d zero = _mm256_setzero_pd();
   const __m256d half = _mm256_set1_pd(0.5);
   const __m256d two = _mm256_set1_pd(2.0);
@@ -160,7 +160,9 @@ ATX_FORCE_INLINE __m256d iv_halley_step_pd(__m256d sigma, __m256d price, __m256d
   const __m256d d1 = _mm256_div_pd(_mm256_add_pd(lnFK, half_v2), v);
   const __m256d d2 = _mm256_sub_pd(d1, v);
   __m256d Nd1, Nd2;
-  norm_cdf_pd2(d1, d2, coefs, Nd1, Nd2);
+  // K2 (accuracy-improving): full-range Cody rational-erfc Φ replaces the
+  // degree-48 Chebyshev–Clenshaw. The lane accept/patch gate below is unchanged.
+  norm_cdf_erfc_pd2(d1, d2, Nd1, Nd2);
   const __m256d phi1 = norm_pdf_pd(d1);
 
   // Call: df·(F·Φ(d1) − K·Φ(d2)). Put = call + df·(K − F) (put-call parity).
@@ -193,16 +195,15 @@ ATX_FORCE_INLINE __m256d iv_halley_step_pd(__m256d sigma, __m256d price, __m256d
 // Evaluate d1, d2, vega and the price residual at the final σ, for the accept /
 // patch gate (the residual from the last Halley step is one σ stale).
 ATX_FORCE_INLINE void iv_evaluate_pd(__m256d sigma, __m256d price, __m256d F, __m256d K, __m256d df,
-                                     __m256d is_put, __m256d sqrtT, __m256d lnFK,
-                                     const double *coefs, __m256d &d1o, __m256d &d2o,
-                                     __m256d &vegao, __m256d &resido) noexcept {
+                                     __m256d is_put, __m256d sqrtT, __m256d lnFK, __m256d &d1o,
+                                     __m256d &d2o, __m256d &vegao, __m256d &resido) noexcept {
   const __m256d half = _mm256_set1_pd(0.5);
   const __m256d v = _mm256_mul_pd(sigma, sqrtT);
   const __m256d half_v2 = _mm256_mul_pd(half, _mm256_mul_pd(v, v));
   const __m256d d1 = _mm256_div_pd(_mm256_add_pd(lnFK, half_v2), v);
   const __m256d d2 = _mm256_sub_pd(d1, v);
   __m256d Nd1, Nd2;
-  norm_cdf_pd2(d1, d2, coefs, Nd1, Nd2);
+  norm_cdf_erfc_pd2(d1, d2, Nd1, Nd2); // K2: full-range Cody erfc Φ
   const __m256d phi1 = norm_pdf_pd(d1);
   const __m256d call_pr =
       _mm256_mul_pd(df, _mm256_sub_pd(_mm256_mul_pd(F, Nd1), _mm256_mul_pd(K, Nd2)));
@@ -241,7 +242,6 @@ ATX_FORCE_INLINE __m256d nonfinite_mask(__m256d value) noexcept {
 void implied_vol_batch_avx2(const double *price, const double *F, const double *K, const double *T,
                             const double *df, const Side *side, double *iv_out,
                             std::uint8_t *ok_out, std::size_t n) noexcept {
-  const double *coefs = norm_cdf_cheb_coefs().data();
   const __m256d zero = _mm256_setzero_pd();
   const __m256d one = _mm256_set1_pd(1.0);
   const __m256d all_ones = _mm256_cmp_pd(zero, zero, _CMP_EQ_OQ);
@@ -285,11 +285,11 @@ void implied_vol_batch_avx2(const double *price, const double *F, const double *
 
     const __m256d sqrtT = _mm256_sqrt_pd(safeT);
     const __m256d lnFK = log_pd(_mm256_div_pd(Fv, Kv));
-    sigma = iv_halley_step_pd(sigma, Pv, Fv, Kv, dfv, is_put, sqrtT, lnFK, coefs);
-    sigma = iv_halley_step_pd(sigma, Pv, Fv, Kv, dfv, is_put, sqrtT, lnFK, coefs);
+    sigma = iv_halley_step_pd(sigma, Pv, Fv, Kv, dfv, is_put, sqrtT, lnFK);
+    sigma = iv_halley_step_pd(sigma, Pv, Fv, Kv, dfv, is_put, sqrtT, lnFK);
 
     __m256d d1, d2, vega, resid;
-    iv_evaluate_pd(sigma, Pv, Fv, Kv, dfv, is_put, sqrtT, lnFK, coefs, d1, d2, vega, resid);
+    iv_evaluate_pd(sigma, Pv, Fv, Kv, dfv, is_put, sqrtT, lnFK, d1, d2, vega, resid);
 
     // Assemble the patch mask (true → this lane goes to scalar).
     const __m256d abs_d1 = _mm256_andnot_pd(abs_mask, d1);

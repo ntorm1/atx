@@ -140,6 +140,40 @@
 
 **Sub-sprint K exit gate:** strict Debug+Release green; full suite green in worktree; shootout JSON checked in showing (a) IV inversion ns/op and error vs LBR, (b) Φ accuracy ≥ current with fewer FMAs, (c) batch price ns/op progress toward the ≤2× envelope DoD row.
 
+### Sub-Sprint K — completion ledger (Agent K)
+
+Branch `feat/sota-k-inversion` (base main@7fca341). Strict Debug (`dev`) and Release (`rel-avx2`) builds both green under `/W4 /WX`; all K1–K6 tests pass in both (IvConvergence grid max rel-err 3.7e-12 Debug / 2.9e-12 Release; K2 batch-price max abs 5.68e-13). Benchmark numbers are **provisional (concurrent host)** — the sibling agents were building/benching on the same laptop (26 s↔64 s-class variance); definitive numbers re-measured on a quiet host at Sprint I.
+
+**Full-suite status — zero regressions from K1–K6 (verified).** The full Debug run (`ctest -L atx_vol`, ~2600 tests) shows 7 gtest failures + 1 CTest failure, **all confirmed NOT caused by K**:
+- 6 pre-existing Sprint-R "in-flight" pipeline failures, each verified RED at base main@7fca341 with K1+K2 reverted: `SurfaceV2Provenance.ValidationFallbackAdmissionRecordsTheServedFamily`, `PricerFitterTest.LocalRiskRefitPublishesCopyOnWriteGeneration`, `PreparedPortfolio.GroupedPriceEqualsIndependentOracleAndPinnedFingerprint`, `SurfaceV2Qualification.RiskBuildRunsTheModeCarryAndInversionBudgets/{Latency,Balanced}`, `OpraBreadthCorpus.UnifiedPolicyFitsEveryAvailableBoard`.
+- 1 concurrent-load flake: `MultinamePipeline.CorpusWithMissingNameOnOneDateRunsToCompletion` — passed at base AND passes cleanly (~0.6 s, ×2) isolated at HEAD; failed only under the full `-j16` run while a 208 s corpus test and a sibling agent's bench contended for the box.
+- 1 environmental CTest: `atx-vol-e2e-benchmark-name-coverage` — `FileNotFoundError` because the `atx-vol-e2e-hotpath-bench` exe was not built in this scoped Debug config (I build only atx-vol-scoped targets); a full bench build resolves it. Orthogonal to K's TUs.
+
+| Task | Status | Commit | Key numbers | Class |
+|---|---|---|---|---|
+| K1 vega/notional IV tolerance | done | `89891f8` | worst-case round-trip σ rel-err **1.736e-10 → 3.709e-12 (47×)** over notional×moneyness×maturity×vol grid; the price-residual test now fires (was burning to the vol-step test on high-notional options) | accuracy-improving |
+| K2 Cody rational-erfc Φ | done | `99b58a6` | batch B76 price vs scalar std::erfc: **~1e-6 → 5.68e-13 abs / 1.43e-15 rel (~1e6×)**, full-range incl. correct denormal wings; scalar Φ prototype vs std::erfc max abs 1.1e-16. Greeks AVX2 batch stays **~2.2× scalar**; IV batch → ~parity (erfc adds exp+div ×2 Halley steps) | accuracy-improving |
+| K3 per-lane Halley step-2 mask | **shelved (evidence)** | — | SR-2017 seed + 1 Halley does not reach the batch's ~1e-9 accept contract (needs 2 steps); block-level all-4-lane SIMD requirement caps the *safe* skip rate at ~7% (0.67⁴), making it net-neutral (~2% throughput, within thermal noise). Reverted to the clean 2-step kernel. | pure-refactor (evaluated, not adopted) |
+| K4 / R-22 NaN-d escape | done | `b0a6319` | unordered self-compare routes NaN-d lanes (F/K under/overflow + σ²T overflow) to scalar in black76+greeks patch_bits. K2's erfc already propagates NaN → symptom pre-resolved; this is explicit defense-in-depth + regression test | correctness hardening |
+| K4 / R-23 identity aliasing | done (flag option) | `f1f1592` | "Permit identity aliasing" is blocked by 5 `Batch.*_OutputAliasesInput_InvalidArgument` assertions in the **forbidden** `batch_test.cpp` (STOP-and-record-blocker rule). Took the finding's second option — documented the pre-W1 break in-code with the exact Sprint-I remediation (permit + update 5 assertions). No behavior change | documentation (flagged limitation) |
+| K4 / R-24 IV batch routing | done | `a4ff576` | measured (rel-avx2, best-of-3): AVX2 IV batch **never ≥1.2× scalar** (best 2.5 vs 2.7 Mitems/s — decisive). Routed `simd::implied_vol_batch` **scalar** to match the span API (one rationale, both entries). AVX2 kernel retained off-dispatch (shootout + future AVX-512) under a direct parity test | pure-refactor (routing) |
+| K5 Jäckel LBR shootout | done | `20ba783` | `atx-vol-iv-shootout-bench` + `bench/baselines/iv-shootout.json` (906 rows, long-double bisection oracle): atx-vol scalar **~330 ns/op**, median rel err **1.04e-15**, max **2.05e-11**; AVX2 ~parity, max 8.24e-8. Standing vs Jäckel LBR published **~180 ns/op** → ~1.9× slower (provisional host), to tighter-than-LBR accuracy | infrastructure |
+| K6 ~60 ns explicit formula | **shelved (evidence)** | — | see the evidence note below | research → shelved |
+
+**K6 evidence note (shelve).** Primary source located: **W. Schadner, "An Explicit Solution to Black–Scholes Implied Volatility", arXiv:2604.24480 (posted 2026-04-27)** — the plan's first cited ID; the second (2606.17065) did not resolve to a distinct IV paper. Mechanism: the call price is written as the survival probability of an inverse-Gaussian (IG) distribution and IV is read off the IG **quantile function**, so variance is the natural inversion coordinate. It is *not* a closed-form single evaluation — the reference implementation uses a **Sankaran-Wald + Lévy-blend seed then Halley on the IG CDF, ~4–5 iterations average**, recovering IV to machine precision at **~3.4× a SOTA reference** (≈53 ns vs the Jäckel LBR ~180 ns benchmark). Gate assessment against the K5 shootout (current atx-vol scalar ~330 ns/op, median 1.04e-15): the formula **plausibly clears** "median ≤ 1.6e-16 at < current ns/op" and is a strong **Sprint X** adoption candidate (the roadmap already lists "~60 ns IV adoption (K6 outcome)" under Sprint X). A faithful port (IG CDF, the specific seed blend, IG-space Halley, deep-OTM/short-T edge cases) is a multi-day effort with real correctness risk drawn from a post-cutoff 2026 paper — out of scope for this stretch task, so it is shelved with this evidence per the plan's "shelving is a valid, complete outcome."
+
+### Sprint I step 3 — kernel loose ends ledger (Agent I-K, branch `feat/sota-i-kernels`, base `main@c3a8ebe`)
+
+Finished the three open kernel items left by Sub-Sprint K. Strict Debug (`dev`, `/W4 /WX`) build green; the full `atx-vol-tests` binary ran 1699 tests → **1683 pass, 6 fail** (remainder skipped, e.g. AVX2-gated). Those 6 are **exactly the documented pre-existing Sprint-R v2-path/pipeline failures** (`SurfaceV2Provenance.ValidationFallbackAdmissionRecordsTheServedFamily`, `PricerFitterTest.LocalRiskRefitPublishesCopyOnWriteGeneration`, `OpraBreadthCorpus.UnifiedPolicyFitsEveryAvailableBoard`, `PreparedPortfolio.GroupedPriceEqualsIndependentOracleAndPinnedFingerprint`, `SurfaceV2Qualification.RiskBuild…/{Latency,Balanced}`) — **zero introduced** (every kernel/batch suite passes). Bench numbers rel-avx2, best-of-3, concurrent-host caveat.
+
+| Task | Status | Commit | Key numbers / evidence | Class |
+|---|---|---|---|---|
+| K4-R23 identity aliasing | **done (lifted)** | `90d2e77` | Permitted exact in==out identity aliasing at the public batch boundary (same first+one-past-end byte); kept staggered/partial and output↔output rejection. Added 6 `*_ExactInPlaceAliasing_MatchesDisjoint` positive tests (price/from-lnfk/value+vega/IV/greeks/essvi) — in-place == disjoint bit-for-bit — + a Price partial-overlap rejection test; replaced the 5 `*_OutputAliasesInput_InvalidArgument` assertions, kept the value+vega output↔output rejection. Pre-W1 behavior restored. | pure-refactor |
+| K2-wing wing-patch deletion | **done** | `a1cb9ab` | Removed the finite `|d| > kNormCdfWing` scalar detour from black76 + greeks `patch_bits` (erfc Φ is machine-accurate in the wings). Removal exposed **two latent bugs the patch had masked, both fixed**: (1) **exp_pd underflow** — its 2^N step built only normalized doubles, emitting ~1e+290 garbage for x < ln(DBL_MIN); now flushes those lanes to 0.0 (matches std::exp within a denormal), which is what lets `\|d\| ~ 165` lanes price correctly; (2) **non-finite d** — the retired ORDERED wing compares had also caught ±inf d (log_pd of an under/overflowed F/K + ½v² overflow), which the R-22 NaN self-compare missed, so broadened the escape to `nonfinite_mask` (NaN **and** ±inf). Split `PatchedLanesAreBitExact` → `DegenerateLanesAreBitExact` (still scalar-patched) + `DeepWingLanesMatchScalarTightly` (vector erfc; observed max abs err **0.0** — Φ saturates to exactly 1.0/0.0). Full suite green ⇒ Φ swap held every consumer. `kNormCdfWing` kept (american_boundary + iv_batch still use it). | accuracy-improving |
+| K4-R24 IV batch routing | **done — no flip (stays scalar)** | `c0df506` | Re-measured `detail::implied_vol_batch_avx2` vs the scalar loop, rel-avx2 best-of-3: **scalar ≈ 3.38 M items/s** (best rep 3.50) vs **AVX2 ≈ 3.28 M/s → ~0.95–0.97×** (parity-to-slightly-slower; exp_pd guard adds a hair to the Φ chain). **Not ≥1.2× in any run — decisive, no flip.** Both public entries stay SCALAR; AVX2 kernel retained off-dispatch (shootout + direct parity test) for AVX-512. Also fixed the bench: `simd_iv_bench.cpp`'s "avx2" case was calling the scalar-routed public entry (scalar-vs-scalar); now calls the AVX2 kernel directly. Provisional number logged for the dispatcher's quiet-host re-measure. | pure-refactor |
+
+**Deferred / notes:** the `iv_batch_avx2.cpp` `|d| > kNormCdfWing` accept-gate is intentionally LEFT in place — it is a per-lane IV accept/reject conditioning gate in the off-dispatch (scalar-routed) kernel, not the black76/greeks price Φ-accuracy patch this task retired; touching it changes the parity-test expectations with no dispatch benefit. No merge/push/rebase performed. One process note: an early CONFIGURE ran against the live tree `C:/atx/build` via a relative-path invocation (PowerShell cwd defaulted to `C:\atx`); reported immediately and remediated by the dispatcher — no source touched, all subsequent builds used the absolute worktree script path.
+
 ---
 
 ## 5. Sub-Sprint A — American engine: beat Andersen–Lake *(Agent A)*
@@ -204,6 +238,20 @@
 - [ ] Commit (implementation or domain-map-with-evidence).
 
 **Sub-sprint A exit gate:** strict Debug+Release green; boundary batch shipped at ≥2.0× with parity evidence; slice-σ node solves batched with counter proof; shootout JSON checked in with the µs/op-vs-error frontier and standing vs the ALO envelope.
+
+### Sub-Sprint A — completion ledger (Agent A)
+
+Branch `feat/sota-a-american`, base `main@7fca341`. Strict Debug (dev, counters-on) + Release (rel-avx2) builds green (`/W4 /WX`), sequential. Numbers are **provisional (concurrent host)**; the A1 gate is flagged for quiet-host re-measure at Sprint I.
+
+| Task | Status | Commit | Key numbers | Class |
+|---|---|---|---|---|
+| **A1** — vectorize/cheapen the per-lane BAW seed; ship gate | **done, flag stays OFF** | `f9f5896` | AVX2 seed now skips the wasted `al_bind_geometry` precompute (new `amer::al_seed_put_boundary`); AVX2 output **bit-identical** (`AvxBoundary.ForceAvx2_MatchesScalar` green both configs). Gate best-of-3 under load: median 2.21×/1.46×/1.94×/1.66×, warm steady-state **~1.6–1.7×** (scalar baseline swung 566–930 ms) — NOT all runs ≥2.0×, so `kShipAvx2Boundary=false`. Remaining lever: BAW-Newton vectorization (breaks bit-parity) + quiet-host re-measure → Sprint I. JSON: `bench/baselines/…-boundary-gate.json`. | pure-refactor |
+| **A2** — batch slice-σ node solves through the A1 batch | **done (entry+proof); wiring → Sprint I** | `d482e83` | `american_price_batch_resolved` proven: N=128 genuine puts → **32 AVX2 packs** (`AmericanAvxPackDispatches`, counters-on) within immateriality gate of scalar; ForceScalar bit-identical; <4 tail flushes scalar. **Blocker:** `slice_sigma_impl`/`SigmaBoundaryInterp::build` live in `boundary_interp.cpp` (Sprint R, forbidden) — the plan's "modify `src/american.cpp`" premise is stale at HEAD; the batch entry + ⌈N/4⌉ counter proof are the Sprint-I-consumable deliverable, the actual routing is Sprint I. | pure-refactor |
+| **A3** — American price/IV shootout harness | **done** | `d7f1930` | `bench/american_shootout_bench.cpp` (cites SSRN 2547027) + self-gating name-coverage CTest (green Release, independent of `compare_baseline.py`). Frontier JSON checked in. Standing (median-of-5, provisional): price/fast **~37 µs/op** (med err $6e-7), price/accurate **~138 µs/op** (med err $1e-8), IV/accurate **~0.68 ms/op** cold (med round-trip **1e-12** vol pts), corners 2 European + 2 double-continuation NotImplemented. Cold single-op AL is ~2–8× the ALO ~10–22 µs envelope on this ISA (warm/cached/batched paths are the production levers). | infrastructure |
+| **A4** — R-30 Debug bind-key assert + Release counter | **done** | `f9f5896` | `{T,r,q,n,nq}` Debug bind key stored in `al_bind_geometry_static`, asserted in `al_bind_geometry_sigma`; all-config `al_geometry_specialize_off_fallback_count()` tallies the specialize-off fallback (0 on production flow). `ResetAcrossContractsSidesAndSchemesMatchesFreshColdState` + `StaticGeometryExpCallsArePaidOncePerReset` green both configs (exp accounting unchanged). | correctness-hardening |
+| **A5** — Healy negative-rate / double-boundary | **done (domain map + evidence; no impl needed)** | `cabe8d7` | Per-side capability-predicate map vs a Crank-Nicolson FD oracle across the full (r,q) plane: American/European price and match FD to 5e-3 rel; the `yield<rate≤0` double-continuation region returns explicit `NotImplemented` while FD confirms real early-exercise value (bail correct, not over-conservative). **No silent mis-price anywhere → no second-boundary implementation warranted** (valid complete outcome). Sources: Healy arXiv 2109.15157 / 2203.08794. | accuracy-improving |
+
+**For Sprint I:** (1) A1 batch is ready to wire into the shared-boundary 9-node build + slice-σ cold-fallback; flip `kShipAvx2Boundary` only after a quiet-host best-of-3 clears 2.0× (consider vectorizing the BAW Newton seed first). (2) Cross-agent numeric drift: Agent K's K2 Φ (Cody rational-erfc) leaves my Chebyshev `norm_cdf_pd`/`pd2` untouched — no conflict; drift resolves on the full accuracy panel per §2. (3) A2's slice wiring lands in `boundary_interp.cpp` (Sprint R territory), not attempted here.
 
 ---
 
@@ -274,6 +322,36 @@
 
 **Sub-sprint S exit gate:** strict Debug+Release green; CStar correctness fixtures green (projection propagates failure, analytic butterfly gate, no false flags); 10–50× projection bench recorded; ingest parallel+projected with frame-identical proof; CStar evidence panel + recommendation checked in.
 
+### Sub-Sprint S — ledger (Agent S, branch `feat/sota-s-surface`)
+
+| Task | Status | Commit | Key numbers | Class |
+|---|---|---|---|---|
+| S1 CStar correctness prerequisites | done | `eeae918` | reversed `c2` bisection fixed; projection propagates `Err` (`OutOfRange` raw-shape / `Unavailable` butterfly) vs the prior unconditional `Ok`; raw-shape validity split from the public floor; closed-form analytic `w''` replaces FD /1e-8; **zero false butterfly flags** on the fixture set; 44/44 CStar tests | correctness + accuracy-improving |
+| S2 Analytic Jacobian + fused w/grad + fixed-cap Eigen | done | `195d959` | closed-form `f'(z)` in the θ-partial (only grad[0] moves; rest bit-identical); single-pass `cstar_slice_w_and_grad`; `NormalEq` H/g are fixed-cap `Eigen::Matrix<double,16,16>` (no per-LM-iter heap); `fit/cstar/normal_eq` legacy 8837 → fused 4811 ns (~1.8×, provisional/concurrent host — fusion+FD-removal; H accumulation dilutes) | accuracy-improving |
+| S3 Table-driven division-free no-arb projection | done | `7d8a8ca` | static window/basis table + division-free `w²·g` sign predicate + incremental group damping (precompute fixed/scalable part once per bisection); `arb/cstar/project` 928,891 → **62,662 ns = ~14.8×** best-of-3 (provisional, concurrent host, CV~13%) — inside the 10–50× gate; equivalence to per-point reference to the ULP | pure-refactor |
+| S4 Parallel + projected OPRA ingest | done | `a0db885` | new `read_parquet(path, columns)` (Arrow internal threads OFF) frame-equal (atx-core test + proven byte-equal on **real** vxx-close board, 9/9); opra_panel projects the 8 consumed columns; `load_opra_daterange` parallel via `parallel_for_dynamic` (`n_threads`), `DateRange_ParallelEqualsSerial` green; checked size arithmetic; wall-clock speedup → Sprint I quiet host | pure-refactor |
+| S5 CStar vs eSSVI evidence panel | done | `82750a5` | modal-feature board: vol-RMSE 0.0028 → 0.0005 (**5.6×**), in-band 59% → 100%, χ² 1.23 → 0.00; no regression on smooth smiles; **0 false arb flags** everywhere; ~60–90× eSSVI fit cost; steep-skew admission rejects rho≈−0.60. **Rec: KEEP R&D** (conditional selective ladder entry, real-OPRA validation at Sprint I) — `docs/reviews/2026-07-16-cstar-vs-essvi-evidence-panel.md` | infrastructure / R&D evidence |
+| S6 Whole-universe cycle harness | done | `f53e70d` | `bench/universe_cycle_bench.cpp` ingest→fit→archive per-stage JSON (Iterations(1)); 3-name synthetic smoke, 3/3 loaded/fitted/archived (ingest ~15 / fit ~236 / archive ~1.4 ms, indicative only); **no baseline** recorded (per plan) | infrastructure |
+
+**Exit status:** strict Debug green — full `atx_vol_fast` 1469/1470 and `atx-core` Parquet 61/61 pass; the only Debug failures, `SurfaceV2Provenance.ValidationFallbackAdmissionRecordsTheServedFamily` (fast) and `OpraBreadthCorpus.UnifiedPolicyFitsEveryAvailableBoard` (slow), are **proven pre-existing** (both fail identically with S4 reverted / at the pre-sub-sprint baseline; production eSSVI/v2 path, Sprint-R territory, not touched by this sub-sprint). CStar is isolated R&D throughout — no `curve_selector.cpp` / production wiring.
+
+### Sprint I — step S5 real-OPRA outcome (panel agent, branch `feat/sota-i-panel`, base c3a8ebe)
+
+`atx-vol-cstar-panel` builds clean (`/W4 /WX`) in the worktree; `--synthetic` runs on any checkout (table reproduces the S5 A/B). The `--real` mode was generalized **inside `examples/cstar_panel.cpp` only** (new `discover_opra_boards` + `--symbols`/CSV; read-only reuse of `load_opra_cbbo_parquet` → `data_install` → `Universe` chains + read-only `VolaSession` forward/carry; **no pipeline/library TU touched**) and **ran on real Databento OPRA**.
+
+**Data note:** the PLAN's 25-name recovery cohort (`CZR,RPRX,…,GGG`) is **data-gated — not on disk**. The only real OPRA present is `C:\atx-data\spy-dispersion\opra\<SYM>\<date>.parquet` = **SPY + 10 mega-caps (AAPL,AMZN,AVGO,GOOGL,JPM,LLY,META,MSFT,NVDA,XOM), 2026-01-02/-05/-06**, which the run used instead.
+
+| Item | Result |
+|---|---|
+| Real boards run | SPY×3 dates (81 exp) + 10 mega-caps×3 dates (555 exp); 636 expiries, ~29k paired obs |
+| Coverage (CStar admits) | SPY **9/81 (89% gap)**; cohort 478/555 (14% gap) — vs eSSVI 100% both |
+| Vol-RMSE (CStar/eSSVI) | SPY 0.0325/0.0218 (1.49×); cohort 0.0258/0.0110 (**2.35× WORSE**) — fails `vol-RMSE ≤ prior` |
+| In-band | SPY 15.6% vs 3.6%; cohort **70.9% vs 42.8%** (CStar better) |
+| Price-χ² | SPY 1068 vs 1711; cohort **21.5 vs 34.4** (CStar better) |
+| Butterfly-arb flags | CStar SPY **3**, cohort 1; eSSVI **0** both. gneg: SPY 3, cohort 2 |
+| Fit wall | eSSVI 1.5–3.2 ms/slice, CStar 12–16 ms (**5–8×**) |
+| **Recommendation** | **KEEP R&D — do NOT include, do NOT kill.** Synthetic modal win does not generalize: vol-RMSE regresses, SPY admission collapses, new arb flags. Narrow single-name-only R&D path (GOOGL/META/MSFT/JPM/XOM show real price-χ²/in-band gains) once vol-RMSE regression + admission fragility are fixed. Evidence + blockers in `docs/reviews/2026-07-16-cstar-vs-essvi-evidence-panel.md`. No `curve_selector.cpp` change — dispatcher owns the ladder call. |
+
 ---
 
 ## 7. Multi-sprint roadmap
@@ -326,3 +404,25 @@ Sprint X  (leadership, optional) SplineVol/SRCubic candidate in the selector lad
 5. **Bit-identity is a telltale, not a gate** — the §Global economic bound governs; goldens update with documented justification.
 6. **CStar stays off the production path** until the S5 evidence panel and the Sprint I decision — no selector edits from any sub-sprint.
 7. **Merge conflicts in `bench/CMakeLists.txt`** are expected and trivial: keep all targets (precedent: the analytics merge resolution).
+
+---
+
+## 9. Sprint I execution ledger (2026-07-17)
+
+Full write-up: `sprints/2026-07-16-sprint-i-results.md`. Branch
+`feat/sota-integration@3ecc3e3` (on `main@51df565`). Not pushed; not merged to main.
+
+| Sprint I item | Outcome |
+|---|---|
+| Merge R→K→A→S→I-S→I-K | Done; disjointness held; I-K never touched `american_boundary_avx2.cpp` |
+| I-K R-23 aliasing | Exact `in==out` identity aliasing permitted; positive tests added |
+| I-K K2 wing-patch | Retired; **surfaced+fixed 2 latent bugs** (`exp_pd` >`ln(DBL_MIN)` garbage; `±inf` d past R-22 NaN guard) |
+| I-K R-24 IV routing | AVX2 ~0.95× scalar + looser → **no-flip**, both entries scalar; kernel off-dispatch |
+| I-S CStar real-OPRA panel | Ran on SPY+10 mega-caps (25-name cohort data-gated); real data does NOT generalize the synthetic win → **KEEP R&D** |
+| Correctness gate (Debug/`rel`) | **PASS** — only the 6 pre-existing v2 failures; zero new |
+| rel-avx2 suite | 6 + 11 bit-identity/rounding failures; **11 verified ISA-only** (pass under Debug, LSB ~2e-15) — not a regression; per-ISA golden tolerance is the fix if rel-avx2 must gate |
+| Boundary ship gate | quiet 1.87× (<2.0×) → `kShipAvx2Boundary` **stays false**; ship path = BAW-seed vectorization (Sprint X) |
+| K5 IV / A3 American / S3 fusion | ~329 ns/op (tighter than LBR) / fast ~47.5 µs (above ALO) / normal_eq **1.96×** |
+| SPY e2e one-op | **347 ms** (from 492); ≤200 ms **not met** — `observation_deam` 272.9 ms/board dominates → needs the deferred de-Am boundary wiring |
+| Φ-swap accuracy panel | **data-gated** here; validated at economic-bound by in-repo parity gates; run command in results doc |
+| **BLOCKED on user** | de-Am wiring into `boundary_interp.cpp::build` + R→integration merge (calib/boundary_interp conflicts, user present) — the path from 347 ms toward ≤200 ms |

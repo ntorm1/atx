@@ -210,3 +210,106 @@ target_link_libraries(atx-vol-surface-v2-bench
         atx_warnings
         Threads::Threads
 )
+
+# K5 — IV inversion shootout: atx-vol scalar + AVX2 ns/op and σ error vs a
+# long-double bisection oracle, standing vs the Jäckel LBR ~180 ns/op reference.
+add_executable(atx-vol-iv-shootout-bench
+    bench_main.cpp
+    iv_shootout_bench.cpp
+)
+target_link_libraries(atx-vol-iv-shootout-bench
+    PRIVATE
+        atx::vol
+        atx::core
+        benchmark::benchmark
+        atx_warnings
+        Threads::Threads
+)
+
+# ── Sub-Sprint A (Agent A) — appended targets ─────────────────────────────
+# American price/IV shootout: the µs/op-vs-error frontier across the standardized
+# grid vs the ALO envelope (SSRN 2547027). Task A3.
+add_executable(atx-vol-american-shootout-bench
+    bench_main.cpp
+    american_shootout_bench.cpp
+)
+target_link_libraries(atx-vol-american-shootout-bench
+    PRIVATE
+        atx::vol
+        atx::core
+        benchmark::benchmark
+        atx_warnings
+        Threads::Threads
+)
+
+# Self-gating name-coverage CTest (mirrors the W0.1 pattern; does NOT rely on
+# compare_baseline.py, which another sprint owns): fail loud if the shootout ever
+# drops a tier row.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_test(
+        NAME atx-vol-american-shootout-name-coverage
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/check_benchmark_names.py
+            --exe $<TARGET_FILE:atx-vol-american-shootout-bench>
+            --required american/price/fast
+            --required american/price/accurate
+            --required american/price/reference
+            --required american/iv/accurate
+            --required american/corners/resolve
+            --required american/boundary_batch/scalar
+            --required american/boundary_batch/avx2
+    )
+    set_tests_properties(atx-vol-american-shootout-name-coverage PROPERTIES LABELS atx_vol)
+endif()
+
+# ── Sub-Sprint S (Agent S) — appended targets ─────────────────────────────
+# CStar (C16M) calibration + no-arb hot path (Sub-Sprint S: W5.1 table-driven
+# arb projection, W5.2 analytic Jacobian + fused w/gradient). normal_eq/{legacy,
+# fused} bracket the S2 fusion win; arb/cstar/{project,min_roper_g} baseline the
+# S3 table-driven projection.
+add_executable(atx-vol-cstar-bench
+    bench_main.cpp
+    cstar_bench.cpp
+)
+target_link_libraries(atx-vol-cstar-bench
+    PRIVATE
+        atx::vol
+        atx::core
+        benchmark::benchmark
+        atx_warnings
+        Threads::Threads
+)
+
+# Whole-universe cycle-time harness (Sub-Sprint S / S6). Ingest -> fit -> archive
+# per-stage breakdown over a self-contained 3-name smoke universe, Iterations(1)
+# corpus-style. Harness only — no baseline recorded this sprint.
+add_executable(atx-vol-universe-cycle-bench
+    bench_main.cpp
+    universe_cycle_bench.cpp
+)
+target_link_libraries(atx-vol-universe-cycle-bench
+    PRIVATE
+        atx::vol
+        atx::core
+        benchmark::benchmark
+        atx_warnings
+        Threads::Threads
+)
+
+# CStar vs eSSVI evidence panel (Sub-Sprint S / S5). A standalone tool (its own
+# main(), no benchmark::benchmark) that fits both engines to identical per-board
+# observations and prints the ladder-decision metrics. Sourced from examples/ but
+# wired here so it builds under the already-on ATX_BUILD_BENCH without pulling in
+# the full ATX_BUILD_EXAMPLES set.
+add_executable(atx-vol-cstar-panel
+    ${CMAKE_CURRENT_SOURCE_DIR}/../examples/cstar_panel.cpp
+)
+target_link_libraries(atx-vol-cstar-panel
+    PRIVATE
+        atx::vol
+        atx::core
+        atx_warnings
+        Threads::Threads
+)

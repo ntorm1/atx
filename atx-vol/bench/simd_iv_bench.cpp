@@ -10,8 +10,6 @@
 // speedup evidence. A one-shot max-abs σ cross-check is printed via a label so
 // the run also documents that the two agree.
 
-#include "atx/vol/simd/iv_batch.hpp"
-
 #include "atx/vol/black76.hpp"
 #include "atx/vol/implied_vol.hpp"
 #include "atx/vol/simd/cpu.hpp"
@@ -25,6 +23,16 @@
 #include <benchmark/benchmark.h>
 
 #include "bench_util.hpp"
+
+namespace atx::vol::simd::detail {
+// Defined in src/simd/iv_batch_avx2.cpp; the AVX2 4-lane IV batch kernel. R-24
+// routed the PUBLIC simd::implied_vol_batch to scalar, so this bench calls the
+// kernel DIRECTLY (same pattern as tests/simd_iv_avx2_direct_test.cpp) to time
+// the true vector path — going through the public entry would measure scalar.
+void implied_vol_batch_avx2(const double *price, const double *F, const double *K, const double *T,
+                            const double *df, const Side *side, double *iv_out,
+                            std::uint8_t *ok_out, std::size_t n) noexcept;
+} // namespace atx::vol::simd::detail
 
 namespace atx::vol::bench {
 namespace {
@@ -92,9 +100,8 @@ void BM_ImpliedVol_Avx2(benchmark::State& state) {
   std::vector<double> iv(kN);
   std::vector<std::uint8_t> ok(kN);
   for (auto _ : state) {
-    simd::implied_vol_batch(s.price.data(), s.F.data(), s.K.data(), s.T.data(),
-                            s.df.data(), s.side.data(), iv.data(), ok.data(),
-                            kN);
+    simd::detail::implied_vol_batch_avx2(s.price.data(), s.F.data(), s.K.data(), s.T.data(),
+                                         s.df.data(), s.side.data(), iv.data(), ok.data(), kN);
     benchmark::DoNotOptimize(iv.data());
     benchmark::DoNotOptimize(ok.data());
     benchmark::ClobberMemory();

@@ -2,22 +2,23 @@
 //
 // Built with -mavx2 -mfma (see atx-vol/CMakeLists.txt). Called only when the
 // dispatch layer confirms AVX2+FMA at runtime. Lane-parallel across 4 contracts;
-// the n % 4 tail and any degenerate/deep-wing lanes fall through to the exact
-// scalar kernels in atx/vol/black76.hpp, which keeps the batch bit-for-bit with
-// the scalar source of truth wherever the Chebyshev-Φ core would lose accuracy.
+// the n % 4 tail and any degenerate lanes fall through to the exact scalar
+// kernels in atx/vol/black76.hpp. Φ is the full-range Cody rational-erfc form
+// (detail/vector_math.hpp), machine-accurate on the entire real line, so the
+// vector price tracks the scalar source of truth to ≈1e-16 everywhere — deep
+// wings included — and no |d| wing patch is needed (K2).
 //
 // Per 4-lane pass:
 //   v    = σ·√T,  d1 = (ln(F/K) + ½v²)/v,  d2 = d1 - v
-//   Φ(·) = Chebyshev-Clenshaw (detail/vector_math.hpp)
+//   Φ(·) = ½·erfc(−·/√2), Cody rational erfc (detail/vector_math.hpp)
 //   C    = df·(F·Φ(d1) - K·Φ(d2));  P = df·(K·(1-Φ(d2)) - F·(1-Φ(d1)))
 //   vega = F·df·φ(d1)·√T                       (same for calls and puts)
 // Degenerate lanes (T ≤ 0 or σ ≤ 0) get dummy finite inputs to stay branchless,
-// then are patched; deep-wing lanes (|d1|,|d2| > kNormCdfWing) are patched too.
+// then are patched, as are the rare NaN-d lanes (R-22).
 
 #include "black76_batch_avx2.hpp"
 
 #include "atx/vol/black76.hpp"
-#include "atx/vol/detail/norm_cdf_cheb.hpp"
 #include "atx/vol/detail/vector_math.hpp"
 
 #include <cmath>
@@ -26,8 +27,8 @@
 
 namespace atx::vol::simd::detail {
 
-// Pull in the shared 4-lane transcendentals (log_pd/exp_pd/norm_cdf_pd/
-// norm_pdf_pd) and Chebyshev table, which live in atx::vol::detail.
+// Pull in the shared 4-lane transcendentals (log_pd/exp_pd/norm_cdf_erfc_pd2/
+// norm_pdf_pd), which live in atx::vol::detail.
 using namespace atx::vol::detail;
 
 namespace {
@@ -63,15 +64,29 @@ ATX_FORCE_INLINE __m256d input_patch_mask(__m256d F, __m256d K, __m256d T, __m25
   return _mm256_or_pd(patch, _mm256_cmp_pd(df, zero, _CMP_LE_OQ));
 }
 
-// Lanes needing the exact scalar path: degenerate (T ≤ 0 or σ ≤ 0) OR deep-wing
-// (either d exceeds the Chebyshev-accurate interior). Returns a 4-bit movemask.
+// Lanes needing the exact scalar path: degenerate (T ≤ 0 or σ ≤ 0) OR a
+// NON-FINITE d (±inf or NaN). Returns a 4-bit movemask.
+//
+// K2 wing-patch removal (accuracy-improving): the deep-wing |d| > kNormCdfWing
+// escape for FINITE d is GONE. It existed only because the degree-48
+// Chebyshev–Clenshaw Φ lost accuracy past |d| ≈ 6 and the F·Φ(d1)−K·Φ(d2)
+// cancellation amplified that absolute error. The Cody rational-erfc Φ
+// (norm_cdf_erfc_pd2) that now feeds this kernel is full double precision across
+// the ENTIRE real line — correct denormal wings included, and exp_pd flushes its
+// deep-underflow tail to 0 — so a finite deep-wing lane prices on the vector path
+// to ≈1e-16 instead of detouring through scalar. tests/simd_norm_cdf_erfc_test
+// gates the Φ accuracy and tests/simd_greeks_test the wing Greeks.
+//
+// Non-finite d (retained, correctness — NOT accuracy): d can be NaN (R-22: FINITE
+// F/K under/overflow with a σ²T overflow → ±inf cancellation) or ±inf (log_pd of
+// an under/overflowed F/K plus a ½v² overflow). The retired ORDERED wing compares
+// caught the ±inf case but not NaN; an unordered self-compare caught NaN but not
+// ±inf. `nonfinite_mask` (magnitude > DBL_MAX, unordered-true) catches BOTH in one
+// test, routing such a lane to the scalar source of truth for an exact match —
+// independent of Φ accuracy, so it stays now the finite-wing patch is gone.
 ATX_FORCE_INLINE int patch_bits(__m256d degen, __m256d d1, __m256d d2) noexcept {
-  const __m256d w = _mm256_set1_pd(kNormCdfWing);
-  const __m256d nw = _mm256_set1_pd(-kNormCdfWing);
-  const __m256d wing = _mm256_or_pd(
-      _mm256_or_pd(_mm256_cmp_pd(d1, w, _CMP_GT_OQ), _mm256_cmp_pd(d1, nw, _CMP_LT_OQ)),
-      _mm256_or_pd(_mm256_cmp_pd(d2, w, _CMP_GT_OQ), _mm256_cmp_pd(d2, nw, _CMP_LT_OQ)));
-  return _mm256_movemask_pd(_mm256_or_pd(degen, wing));
+  const __m256d nonfinite_d = _mm256_or_pd(nonfinite_mask(d1), nonfinite_mask(d2));
+  return _mm256_movemask_pd(_mm256_or_pd(degen, nonfinite_d));
 }
 
 struct PerLaneExpiry {
@@ -112,7 +127,6 @@ template <typename Expiry>
 void value_vega_batch_avx2_impl(const double *F, const double *K, const double *sigma,
                                 const double *df, const Side *side, double *price_out,
                                 double *vega_out, std::size_t n, const Expiry &expiry) noexcept {
-  const double *coefs = norm_cdf_cheb_coefs().data();
   const __m256d half = _mm256_set1_pd(0.5);
   const __m256d one = _mm256_set1_pd(1.0);
   const __m256d zero = _mm256_setzero_pd();
@@ -139,7 +153,7 @@ void value_vega_batch_avx2_impl(const double *F, const double *K, const double *
     const __m256d d2 = _mm256_sub_pd(d1, v);
 
     __m256d nd1, nd2;
-    norm_cdf_pd2(d1, d2, coefs, nd1, nd2);
+    norm_cdf_erfc_pd2(d1, d2, nd1, nd2); // K2: full-range Cody erfc Φ (see price batch)
     const __m256d call = _mm256_mul_pd(
         safe_df, _mm256_sub_pd(_mm256_mul_pd(safe_f, nd1), _mm256_mul_pd(safe_k, nd2)));
     const __m256d put =
@@ -181,7 +195,6 @@ void value_vega_batch_avx2_impl(const double *F, const double *K, const double *
 void black76_price_batch_avx2(const double *F, const double *K, const double *T,
                               const double *sigma, const double *df, const Side *side,
                               double *price_out, std::size_t n) noexcept {
-  const double *coefs = norm_cdf_cheb_coefs().data();
   const __m256d half = _mm256_set1_pd(0.5);
   const __m256d one = _mm256_set1_pd(1.0);
   const __m256d zero = _mm256_setzero_pd();
@@ -208,7 +221,11 @@ void black76_price_batch_avx2(const double *F, const double *K, const double *T,
     const __m256d d2 = _mm256_sub_pd(d1, v);
 
     __m256d Nd1, Nd2;
-    norm_cdf_pd2(d1, d2, coefs, Nd1, Nd2); // fused: hides Clenshaw latency
+    // K2 (accuracy-improving): full-range Cody rational-erfc Φ (≈1e-16, correct
+    // wings) replaces the degree-48 Chebyshev–Clenshaw (~1e-11, |d|≤7 only), so
+    // the deep-wing |d| escape is gone — only degenerate and NaN-d lanes patch to
+    // scalar now (see patch_bits). Deep-wing lanes price on this vector path.
+    norm_cdf_erfc_pd2(d1, d2, Nd1, Nd2);
 
     const __m256d call =
         _mm256_mul_pd(safeDf, _mm256_sub_pd(_mm256_mul_pd(safeF, Nd1), _mm256_mul_pd(safeK, Nd2)));

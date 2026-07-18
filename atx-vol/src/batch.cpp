@@ -2,8 +2,24 @@
 // The vector routes use the existing scalar patch-through for degenerate,
 // deep-wing, and ill-conditioned lanes. Scalar fallback remains authoritative
 // on hosts without AVX2+FMA and for the from-lnFK kernel, which has no vector
-// implementation. Outputs are required to be disjoint from every input because
-// the vector kernels load and store in four-lane blocks.
+// implementation.
+//
+// R-23 (identity aliasing permitted; Sprint I). Aliasing policy at this public
+// boundary:
+//   • output == input, EXACT identity (same first byte AND same one-past-end
+//     byte): PERMITTED. Every kernel here processes strictly forward, loading a
+//     4-lane block (or a scalar element) fully before its same-index store, so
+//     an output that exactly coincides with an input reads each value before it
+//     is overwritten — the in-place result is bit-identical to the disjoint one.
+//     The pre-W1 scalar batch supported this; W1 over-rejected it.
+//   • output ↔ input, STAGGERED / partial overlap: REJECTED. A shifted output
+//     would read an already-overwritten input element; the forward-block
+//     invariant does not cover it.
+//   • output ↔ output overlap (any, including exact): REJECTED. Two result
+//     streams writing the same storage is always a caller bug.
+// Class: pure-refactor — no computed value changes; only the accepted-input set
+// widens back to the pre-W1 contract. The batch_test.cpp cases assert both the
+// permitted in-place path and the still-rejected staggered/output-output paths.
 
 #include "atx/vol/batch.hpp"
 
@@ -56,9 +72,34 @@ template <typename L, typename R>
   return less(lhs_begin, rhs_end) && less(rhs_begin, lhs_end);
 }
 
+// True iff `lhs` and `rhs` denote the EXACT same byte range: identical first
+// byte AND identical one-past-the-end byte. This is the only aliasing the batch
+// kernels support in place — a full-span exact overlap of an output onto an
+// input. (Two spans of different element types compare equal here only if their
+// byte extents coincide exactly, which the length-matched public APIs never
+// produce for distinct buffers.)
+template <typename L, typename R>
+[[nodiscard]] bool spans_exact_same_range(std::span<L> lhs, std::span<R> rhs) noexcept {
+  const void *const lhs_begin = static_cast<const void *>(lhs.data());
+  const void *const lhs_end = static_cast<const void *>(lhs.data() + lhs.size());
+  const void *const rhs_begin = static_cast<const void *>(rhs.data());
+  const void *const rhs_end = static_cast<const void *>(rhs.data() + rhs.size());
+  return lhs_begin == rhs_begin && lhs_end == rhs_end;
+}
+
+// An output↔input aliasing CONFLICT: the two spans overlap but are NOT the exact
+// same byte range. Exact in==out identity is permitted (safe in-place, see the
+// file header); any staggered/partial overlap is a conflict and is rejected.
+template <typename Output, typename Input>
+[[nodiscard]] bool input_alias_conflict(std::span<Output> output,
+                                        std::span<Input> input) noexcept {
+  return spans_overlap(output, input) && !spans_exact_same_range(output, input);
+}
+
 template <typename Output, typename... Inputs>
-[[nodiscard]] bool overlaps_any(std::span<Output> output, std::span<Inputs>... inputs) noexcept {
-  return (spans_overlap(output, inputs) || ...);
+[[nodiscard]] bool any_input_alias_conflict(std::span<Output> output,
+                                            std::span<Inputs>... inputs) noexcept {
+  return (input_alias_conflict(output, inputs) || ...);
 }
 
 constexpr std::size_t kAvx2LaneWidth = 4;
@@ -77,8 +118,10 @@ Status black76_price_batch(std::span<const double> F, std::span<const double> K,
           {F.size(), K.size(), T.size(), sigma.size(), df.size(), side.size(), price_out.size()})) {
     return Err(ErrorCode::InvalidArgument, "black76_price_batch: span length mismatch");
   }
-  if (overlaps_any(price_out, F, K, T, sigma, df, side)) {
-    return Err(ErrorCode::InvalidArgument, "black76_price_batch: output aliases input");
+  if (any_input_alias_conflict(price_out, F, K, T, sigma, df, side)) {
+    return Err(ErrorCode::InvalidArgument,
+               "black76_price_batch: output overlaps an input (only exact in-place aliasing is "
+               "permitted)");
   }
   const std::size_t n = F.size();
   if (n >= kAvx2LaneWidth && simd::have_avx2()) {
@@ -100,8 +143,10 @@ Status black76_price_from_lnfk_batch(std::span<const double> F, std::span<const 
           {F.size(), K.size(), sigma.size(), ln_fk.size(), side.size(), price_out.size()})) {
     return Err(ErrorCode::InvalidArgument, "black76_price_from_lnfk_batch: span length mismatch");
   }
-  if (overlaps_any(price_out, F, K, sigma, ln_fk, side)) {
-    return Err(ErrorCode::InvalidArgument, "black76_price_from_lnfk_batch: output aliases input");
+  if (any_input_alias_conflict(price_out, F, K, sigma, ln_fk, side)) {
+    return Err(ErrorCode::InvalidArgument,
+               "black76_price_from_lnfk_batch: output overlaps an input (only exact in-place "
+               "aliasing is permitted)");
   }
   const std::size_t n = F.size();
   for (std::size_t i = 0; i < n; ++i) {
@@ -118,11 +163,12 @@ Status black76_value_and_vega_batch(std::span<const double> F, std::span<const d
                     vega_out.size()})) {
     return Err(ErrorCode::InvalidArgument, "black76_value_and_vega_batch: span length mismatch");
   }
-  if (overlaps_any(value_out, F, K, sigma, df, side, vega_out) ||
-      overlaps_any(vega_out, F, K, sigma, df, side)) {
+  if (any_input_alias_conflict(value_out, F, K, sigma, df, side) ||
+      any_input_alias_conflict(vega_out, F, K, sigma, df, side) ||
+      spans_overlap(value_out, vega_out)) {
     return Err(ErrorCode::InvalidArgument,
-               "black76_value_and_vega_batch: outputs alias input or each "
-               "other");
+               "black76_value_and_vega_batch: outputs overlap each other or partially overlap an "
+               "input (only exact in-place aliasing is permitted)");
   }
   const std::size_t n = F.size();
   // A caller-supplied zero sqrt(T) intentionally produces the scalar kernel's
@@ -150,9 +196,12 @@ Status implied_vol_batch(std::span<const double> price, std::span<const double> 
                     iv_out.size(), status_out.size()})) {
     return Err(ErrorCode::InvalidArgument, "implied_vol_batch: span length mismatch");
   }
-  if (overlaps_any(iv_out, price, F, K, T, df, side, status_out) ||
-      overlaps_any(status_out, price, F, K, T, df, side)) {
-    return Err(ErrorCode::InvalidArgument, "implied_vol_batch: outputs alias input or each other");
+  if (any_input_alias_conflict(iv_out, price, F, K, T, df, side) ||
+      any_input_alias_conflict(status_out, price, F, K, T, df, side) ||
+      spans_overlap(iv_out, status_out)) {
+    return Err(ErrorCode::InvalidArgument,
+               "implied_vol_batch: outputs overlap each other or partially overlap an input (only "
+               "exact in-place aliasing is permitted)");
   }
   const std::size_t n = price.size();
   for (std::size_t i = 0; i < n; ++i) {
@@ -182,10 +231,12 @@ Status black76_greeks_batch(std::span<const double> F, std::span<const double> K
   if (want_price && price_out.size() != F.size()) {
     return Err(ErrorCode::InvalidArgument, "black76_greeks_batch: price_out length mismatch");
   }
-  if (overlaps_any(greeks_out, F, K, T, sigma, r, df, side, price_out) ||
-      overlaps_any(price_out, F, K, T, sigma, r, df, side)) {
+  if (any_input_alias_conflict(greeks_out, F, K, T, sigma, r, df, side) ||
+      any_input_alias_conflict(price_out, F, K, T, sigma, r, df, side) ||
+      spans_overlap(greeks_out, price_out)) {
     return Err(ErrorCode::InvalidArgument,
-               "black76_greeks_batch: outputs alias input or each other");
+               "black76_greeks_batch: outputs overlap each other or partially overlap an input "
+               "(only exact in-place aliasing is permitted)");
   }
   const std::size_t n = F.size();
   if (n >= kAvx2LaneWidth && simd::have_avx2()) {
@@ -209,8 +260,10 @@ Status essvi_w_batch(const EssviSlice &slice, std::span<const double> k_log,
   if (k_log.size() != w_out.size()) {
     return Err(ErrorCode::InvalidArgument, "essvi_w_batch: span length mismatch");
   }
-  if (spans_overlap(k_log, w_out)) {
-    return Err(ErrorCode::InvalidArgument, "essvi_w_batch: output aliases input");
+  if (input_alias_conflict(w_out, k_log)) {
+    return Err(ErrorCode::InvalidArgument,
+               "essvi_w_batch: output overlaps the input (only exact in-place aliasing is "
+               "permitted)");
   }
   const std::size_t n = k_log.size();
   if (n >= kEssviAvx2MinBatch && simd::have_avx2()) {

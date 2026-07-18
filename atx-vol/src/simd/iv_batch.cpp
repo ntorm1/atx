@@ -1,9 +1,6 @@
 #include "atx/vol/simd/iv_batch.hpp"
 
 #include "atx/vol/implied_vol.hpp"
-#include "atx/vol/simd/cpu.hpp"
-
-#include "iv_batch_avx2.hpp"
 
 #include <limits>
 
@@ -38,12 +35,23 @@ void implied_vol_batch(const double* price, const double* F, const double* K,
                        const double* T, const double* df, const Side* side,
                        double* iv_out, std::uint8_t* ok_out,
                        std::size_t n) noexcept {
-    if (have_avx2()) {
-        detail::implied_vol_batch_avx2(price, F, K, T, df, side, iv_out, ok_out,
-                                       n);
-    } else {
-        iv_batch_scalar(price, F, K, T, df, side, iv_out, ok_out, n);
-    }
+    // R-24 (routing decision). The 4-lane AVX2 IV batch is NOT ≥1.2× the scalar
+    // per-contract loop, so both public IV-batch entry points route SCALAR under
+    // one rationale: this raw-pointer entry, and the span-based
+    // atx::vol::implied_vol_batch. The SR-2017 seed plus two Halley steps plus the
+    // machine-accurate but exp+division-bearing Cody-erfc Φ leave no vector
+    // headroom, and every degenerate / non-finite / ill-conditioned lane patches
+    // back to scalar.
+    //
+    // Re-measured at Sprint I after the K2 wing-patch tail (finite-wing patch
+    // retired + exp_pd deep-underflow flush) — bench/simd_iv_bench.cpp,
+    // rel-avx2, best-of-3, concurrent-host caveat: AVX2 ≈ 3.28 M items/s vs scalar
+    // ≈ 3.38 M/s → ~0.95–0.97× (parity to slightly slower; the exp_pd guard adds a
+    // hair to the Φ chain). Decisive: AVX2 never approached 1.2× in any run, so no
+    // flip. detail::implied_vol_batch_avx2 is retained (IV shootout bench + a
+    // direct parity test) for a future wider ISA (AVX-512), where the 8-lane batch
+    // is expected to win; the dispatcher may re-confirm on a quiet host.
+    iv_batch_scalar(price, F, K, T, df, side, iv_out, ok_out, n);
 }
 
 } // namespace atx::vol::simd

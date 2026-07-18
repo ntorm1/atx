@@ -1,8 +1,10 @@
 #include "atx/vol/american.hpp"
 
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <vector>
@@ -36,6 +38,17 @@ namespace {
 
 using atx::core::norm_cdf;
 using atx::core::norm_pdf;
+
+// R-30: Release-mode observability for the al_bind_geometry_sigma safety fallback.
+// When a specialized scheme reaches sigma-bind with the sweep-invariant static
+// geometry unexpectedly unbound, the kernel drops to the generic runtime-trip-count
+// path (ws.specialize = false) rather than consume indeterminate geometry. That path
+// must never fire on a production flow — reset() always binds before price() reuses —
+// so a non-zero tally flags a retained-workspace lifecycle bug (the obs-23864 shape).
+// Relaxed ordering: a monotonic diagnostic counter with no cross-thread invariant.
+// Not part of the ATX_VOL_COUNTERS enum (counters.hpp is owned by another sprint);
+// exposed via al_geometry_specialize_off_fallback_count() for tests/observability.
+std::atomic<std::uint64_t> g_specialize_off_fallbacks{0};
 
 // clang-cl / MSVC do not define M_PI; carry the extended literal explicitly.
 inline constexpr double kPi = 3.14159265358979323846;
@@ -727,20 +740,43 @@ void al_bind_geometry_static(const AlBoundary &bnd, AlWorkspace &ws, double r,
     }
   }
   ws.geo_static_bound = true;
+#ifndef NDEBUG
+  // R-30: record the contract this static geometry was bound for so any later reuse
+  // through al_bind_geometry_sigma can prove it still matches (Debug-only guardrail).
+  ws.geo_bind_key = AlWorkspace::GeoBindKey{bnd.T, r, q, bnd.n, ws.n_quad_fp, true};
+#endif
 }
 
 // Bind only sigma*sqrt(t_u). A missing static bind is an internal invariant
 // violation: assert in Debug and select the generic kernel in Release so no
-// indeterminate geometry can ever be consumed.
-void al_bind_geometry_sigma(const AlBoundary &bnd, AlWorkspace &ws, double sigma) noexcept {
+// indeterminate geometry can ever be consumed. r/q are passed only so the Debug
+// bind-key assert (R-30) can prove the retained static geometry still matches this
+// contract; the sigma-bind math itself is r/q-independent.
+void al_bind_geometry_sigma(const AlBoundary &bnd, AlWorkspace &ws, double sigma,
+                            [[maybe_unused]] double r, [[maybe_unused]] double q) noexcept {
   if (!ws.specialize || !al_fp_specialized(bnd.n, ws.n_quad_fp)) {
     return;
   }
   assert(ws.geo_static_bound);
   if (!ws.geo_static_bound) {
     ws.specialize = false;
+    // R-30: the safety fallback fired — a specialized reuse found no bound geometry.
+    // Never expected on a production flow; tally it (Release observability).
+    g_specialize_off_fallbacks.fetch_add(1, std::memory_order_relaxed);
     return;
   }
+#ifndef NDEBUG
+  // R-30: retained static geometry must belong to THIS contract. A mismatch means a
+  // caller reused a workspace across a (T, r, q, node-grid) change without rebinding
+  // (the obs-23864 revalidation-trust regression) — fail loud in Debug.
+  assert(ws.geo_bind_key.set && "al_bind_geometry_sigma: static geometry reused but never bound");
+  assert(ws.geo_bind_key.T == bnd.T && "al_bind_geometry_sigma: retained geometry T mismatch");
+  assert(ws.geo_bind_key.r == r && "al_bind_geometry_sigma: retained geometry r mismatch");
+  assert(ws.geo_bind_key.q == q && "al_bind_geometry_sigma: retained geometry q mismatch");
+  assert(ws.geo_bind_key.n == bnd.n && "al_bind_geometry_sigma: retained geometry node-count mismatch");
+  assert(ws.geo_bind_key.nq == ws.n_quad_fp &&
+         "al_bind_geometry_sigma: retained geometry quad-order mismatch");
+#endif
   const double *xs = ws.qx_fp;
   const unsigned nq = ws.n_quad_fp;
   for (std::uint16_t j = 1; j < bnd.n; ++j) {
@@ -768,7 +804,7 @@ void al_bind_geometry(const AlBoundary &bnd, AlWorkspace &ws, double sigma, doub
                       double q) noexcept {
   ws.geo_static_bound = false;
   al_bind_geometry_static(bnd, ws, r, q);
-  al_bind_geometry_sigma(bnd, ws, sigma);
+  al_bind_geometry_sigma(bnd, ws, sigma, r, q);
 }
 
 // Equation B kernel: N(τ,b), D(τ,b). Templated on the fixed-scheme trip counts
@@ -1128,6 +1164,39 @@ namespace amer {
       }
     }
   }
+  return AlSolveStatus::Ok;
+}
+
+// Seed-only path for the AVX2 boundary batch (Task A1, pure-refactor). Runs exactly
+// the pre-sweep prefix of al_solve_put_boundary — node init, quadrature binding, and
+// the cold Barone-Adesi-Whaley seed — but SKIPS al_bind_geometry. The AVX2 kernel
+// recomputes every geometry term inline per lane (it mirrors the generic <0,0>
+// kernel) and never reads ws.geo_*, so binding the ~n·nq exp+sqrt sweep-invariant
+// geometry on the seed is pure waste that serialized the 4-lane batch. Skipping it
+// leaves bnd.y[]/nodes/quadrature bit-identical to al_solve_put_boundary with the
+// sweep budget zeroed, so the AVX2 output is unchanged (parity preserved); only the
+// wasted per-lane bind is gone. ws.specialize is set false: no specialized ws
+// geometry exists, and the caller owns the sweeps.
+[[nodiscard]] AlSolveStatus al_seed_put_boundary(double K, double T, double sigma, double r,
+                                                 double q, const AlScheme &sch, AlBoundary &bnd,
+                                                 AlWorkspace &ws) noexcept {
+  al_init_nodes(bnd, sch.n_boundary, T, K, r, q);
+  if (!(bnd.xmax > 0.0)) {
+    return AlSolveStatus::Collapsed;
+  }
+  const detail::GaussLegendre *fp = gl_find(sch.n_quad_fp);
+  const detail::GaussLegendre *pr = gl_find(sch.n_quad_price);
+  if (!fp || !fp->ok || !pr || !pr->ok) {
+    return AlSolveStatus::TableMissing;
+  }
+  ws.specialize = false; // AVX2 kernel owns geometry; no ws.geo_* is bound or read
+  ws.qx_fp = fp->nodes.data();
+  ws.qw_fp = fp->weights.data();
+  ws.n_quad_fp = sch.n_quad_fp;
+  ws.qx_price = pr->nodes.data();
+  ws.qw_price = pr->weights.data();
+  ws.n_quad_price = sch.n_quad_price;
+  al_seed_boundary(bnd, sigma, r, q);
   return AlSolveStatus::Ok;
 }
 
@@ -1515,7 +1584,7 @@ double AloPricer::price(double sigma) noexcept {
   }
   // reset() retained zc and the weighted rate/yield exponentials. Only the
   // sigma-dependent diffusion scale changes between residual evaluations.
-  al_bind_geometry_sigma(s.bnd, s.ws, sigma);
+  al_bind_geometry_sigma(s.bnd, s.ws, sigma, s.rp, s.qp);
   // Warm start skips ONLY the ~12-node Barone-Adesi-Whaley re-seed (the dominant
   // cold cost — 12 nested Newton root-finds), then runs the SAME sweep budget as a
   // cold solve (andersen_lake's n_iter_jn JN + n_iter_fp FP, early break at tol).
@@ -1555,6 +1624,11 @@ double AloPricer::price(double sigma) noexcept {
 }
 
 // ── Public API ──────────────────────────────────────────────────────────
+
+// R-30: read the file-local specialize-off fallback tally (see g_specialize_off_fallbacks).
+std::uint64_t al_geometry_specialize_off_fallback_count() noexcept {
+  return g_specialize_off_fallbacks.load(std::memory_order_relaxed);
+}
 
 AlOpts al_default_opts() noexcept { return AlOpts{12, 24, 8, 1.0e-10}; }
 

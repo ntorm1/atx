@@ -100,9 +100,12 @@ void american_put_boundary_batch_avx2(const double* S, const double* K,
     std::size_t i = 0;
     for (; i + 4 <= n; i += 4) {
         // ── 1. Per-lane SCALAR seed (init nodes + BAW seed, no sweeps) ────
-        amer::AlScheme seed_sch = sch;
-        seed_sch.n_iter_jn = 0;
-        seed_sch.n_iter_fp = 0;
+        // Task A1: the seed lays down node geometry + quadrature pointers + the cold
+        // BAW y[] via al_seed_put_boundary, which SKIPS al_bind_geometry — the
+        // sweep-invariant geometry precompute this kernel never reads (it recomputes
+        // every geometry term inline below). Dropping that per-lane bind removes the
+        // dominant scalar serialization on the seed while leaving the seed y[]
+        // bit-identical, so the vectorized sweeps + price are unchanged (parity held).
         amer::AlBoundary bnd[4];
         amer::AlWorkspace ws[4];
         bool eligible[4];
@@ -116,9 +119,8 @@ void american_put_boundary_batch_avx2(const double* S, const double* K,
             bool ok = !degen && american && std::isfinite(r[idx]) &&
                       std::isfinite(q[idx]) && K[idx] > 0.0 && S[idx] > 0.0;
             if (ok) {
-                const amer::AlSolveStatus st = amer::al_solve_put_boundary(
-                    K[idx], T[idx], sigma[idx], r[idx], q[idx], seed_sch, bnd[l],
-                    ws[l], /*specialize=*/true);
+                const amer::AlSolveStatus st = amer::al_seed_put_boundary(
+                    K[idx], T[idx], sigma[idx], r[idx], q[idx], sch, bnd[l], ws[l]);
                 ok = (st == amer::AlSolveStatus::Ok);
             }
             eligible[l] = ok;
