@@ -189,8 +189,12 @@ struct Fixture {
   std::vector<PricedSurface> surfaces; // owns the reconstruction inputs
   std::vector<std::string> symbols;    // stable storage backing the item symbol_views
   std::vector<SurfaceArchiveItem> items;
-  std::vector<std::byte> bytes;         // the serialized partition
-  std::unique_ptr<SurfaceArchive> opened; // pre-opened for reconstruct_* modes
+  std::vector<std::byte> bytes;         // the serialized v1 partition
+  std::unique_ptr<SurfaceArchive> opened; // pre-opened v1 for reconstruct_* modes
+  // WS-S v2: the same items serialized to ATXVSA2 + a pre-opened v2 archive for the
+  // zero-copy deserialize modes (mmap_open whole-board views / subset_map_zero_copy).
+  std::vector<std::byte> bytes_v2;
+  std::unique_ptr<SurfaceArchiveV2> opened_v2;
   std::size_t count{0};
 };
 
@@ -236,6 +240,29 @@ struct Fixture {
     }
     fx.opened = std::make_unique<SurfaceArchive>(std::move(*arch));
   }
+
+  // WS-S v2: serialize the SAME items to ATXVSA2 and pre-open a v2 archive, self-
+  // verifying the round-trip (count + a subset map) before any timing is taken.
+  {
+    Result<std::vector<std::byte>> serialized_v2 = write_surface_archive_v2(fx.items);
+    if (!serialized_v2.has_value()) {
+      bench_fatal("v2 serialize failed: " + serialized_v2.error().to_string());
+    }
+    fx.bytes_v2 = std::move(*serialized_v2);
+    std::vector<std::byte> copy = fx.bytes_v2;
+    Result<SurfaceArchiveV2> arch = SurfaceArchiveV2::open(std::move(copy));
+    if (!arch.has_value()) {
+      bench_fatal("v2 round-trip open failed: " + arch.error().to_string());
+    }
+    if (arch->count() != fx.count) {
+      bench_fatal("v2 round-trip surface-count mismatch");
+    }
+    Result<PricedSurfaceView> one = arch->map_symbol(fx.symbols.front());
+    if (!one.has_value()) {
+      bench_fatal("v2 round-trip map_symbol failed: " + one.error().to_string());
+    }
+    fx.opened_v2 = std::make_unique<SurfaceArchiveV2>(std::move(*arch));
+  }
   return fx;
 }
 
@@ -272,6 +299,29 @@ void run_serialize(benchmark::State &state, Payload payload, int count) {
   state.counters["archive_bytes"] = static_cast<double>(fx.bytes.size());
   state.counters["bytes_per_surface"] =
       static_cast<double>(fx.bytes.size()) / static_cast<double>(count);
+}
+
+// WS-S: the v2 serialize row (write_surface_archive_v2, memcpy-bound). Same shape
+// as run_serialize; reports µs/surface + partition write MB/s so the v1-vs-v2
+// serialize ratio is a same-run comparison. v2 packs surfaces on 64 B (no 4096 B
+// blob pad), so bytes_per_surface here is the amplification WS-S removes.
+void run_serialize_v2(benchmark::State &state, Payload payload, int count) {
+  const Fixture &fx = fixture(payload, count);
+  for (auto _ : state) {
+    Result<std::vector<std::byte>> out = write_surface_archive_v2(fx.items);
+    if (!out.has_value()) {
+      state.SkipWithError(out.error().to_string().c_str());
+      break;
+    }
+    benchmark::DoNotOptimize(out->data());
+    benchmark::ClobberMemory();
+  }
+  state.SetItemsProcessed(state.iterations() * static_cast<std::int64_t>(count));
+  state.SetBytesProcessed(state.iterations() * static_cast<std::int64_t>(fx.bytes_v2.size()));
+  state.counters["surfaces"] = static_cast<double>(count);
+  state.counters["archive_bytes"] = static_cast<double>(fx.bytes_v2.size());
+  state.counters["bytes_per_surface"] =
+      static_cast<double>(fx.bytes_v2.size()) / static_cast<double>(count);
 }
 
 // ── Deserialize ──────────────────────────────────────────────────────────────
@@ -323,14 +373,38 @@ void run_deserialize(benchmark::State &state, Payload payload, int count, DeserM
       benchmark::DoNotOptimize(one->n_slices());
       break;
     }
-    // ── WS-S EXTENSION SEAM ──────────────────────────────────────────────────
-    // v2 zero-copy modes land here on the format branch. They are NOT registered at
-    // this base (v2 does not exist yet), so these cases are unreachable today; the
-    // format agent implements the body and appends the registration lines below.
-    case DeserMode::MmapOpen:
-    case DeserMode::SubsetMapZeroCopy:
-      state.SkipWithError("v2 deserialize mode not implemented at this base (WS-S seam)");
-      return;
+    // ── WS-S EXTENSION SEAM (filled by the format agent, S4/S5) ──────────────
+    case DeserMode::MmapOpen: {
+      // v2 analogue of open_reconstruct_all: bytes -> N ready-to-price zero-copy
+      // views (SurfaceArchiveV2::open + map_all). No per-surface reconstruct;
+      // parametric surfaces allocate nothing, the heavy kinds materialize once.
+      Result<SurfaceArchiveV2> arch = SurfaceArchiveV2::open(std::vector<std::byte>(fx.bytes_v2));
+      if (!arch.has_value()) {
+        state.SkipWithError(arch.error().to_string().c_str());
+        return;
+      }
+      Result<std::vector<PricedSurfaceView>> all = arch->map_all();
+      if (!all.has_value()) {
+        state.SkipWithError(all.error().to_string().c_str());
+        return;
+      }
+      surfaces_per_iter = all->size();
+      benchmark::DoNotOptimize(all->data());
+      break;
+    }
+    case DeserMode::SubsetMapZeroCopy: {
+      // v2 analogue of reconstruct_one: map ONE symbol on a pre-opened archive —
+      // an O(1) hash-probe + a PricedSurfaceView over only that record's extent,
+      // touching no other surface's bytes. The headline subset-map row.
+      Result<PricedSurfaceView> one = fx.opened_v2->map_symbol(fx.symbols.front());
+      if (!one.has_value()) {
+        state.SkipWithError(one.error().to_string().c_str());
+        return;
+      }
+      surfaces_per_iter = 1;
+      benchmark::DoNotOptimize(one->n_slices());
+      break;
+    }
     }
     benchmark::ClobberMemory();
   }
@@ -378,6 +452,16 @@ void register_serialize(Payload payload, int count) {
       ->UseRealTime();
 }
 
+void register_serialize_v2(Payload payload, int count) {
+  const std::string name = std::string("surface_archive/serialize_v2/") + payload_name(payload) +
+                           "/count:" + std::to_string(count);
+  apply_common(benchmark::RegisterBenchmark(
+                   name, [payload, count](benchmark::State &st) { run_serialize_v2(st, payload, count); }))
+      ->Unit(benchmark::kMicrosecond)
+      ->Repetitions(kSurfaceArchiveReps)
+      ->UseRealTime();
+}
+
 void register_deserialize(Payload payload, int count, DeserMode mode) {
   const std::string name = std::string("surface_archive/deserialize/") + payload_name(payload) +
                            "/" + deser_mode_name(mode) + "/count:" + std::to_string(count);
@@ -393,12 +477,15 @@ const int kRegistered = [] {
   for (const Payload payload : {Payload::Essvi, Payload::ConvexDense}) {
     for (const int count : kCounts) {
       register_serialize(payload, count);
+      register_serialize_v2(payload, count);
       register_deserialize(payload, count, DeserMode::OpenReconstructAll);
       register_deserialize(payload, count, DeserMode::ReconstructAll);
       register_deserialize(payload, count, DeserMode::ReconstructOne);
-      // WS-S appends the v2 rows here:
-      //   register_deserialize(payload, count, DeserMode::MmapOpen);
-      //   register_deserialize(payload, count, DeserMode::SubsetMapZeroCopy);
+      // WS-S v2 zero-copy rows (S4/S5): the headline deserialize win. mmap_open is
+      // the v2 open+map_all vs OpenReconstructAll; subset_map_zero_copy is the
+      // one-symbol view vs ReconstructOne.
+      register_deserialize(payload, count, DeserMode::MmapOpen);
+      register_deserialize(payload, count, DeserMode::SubsetMapZeroCopy);
     }
   }
   return 0;
