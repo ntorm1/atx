@@ -209,6 +209,8 @@ graph TD
 
 **Wave B LANDED + MERGED to `main @ 66280d8`** (2026-07-18, local only, nothing pushed). Staged on `feat/ns-integration` off `58ed90c`: sched U2/U3 → measure M3 → dataregen (E1 wall-win proof) → exec E2 → iv scalar_erfc/K2/K3 (all clean, 0 conflicts) + 1 merge-fixup golden, fast-forwarded main `58ed90c..66280d8`. **Debug/`rel` gate: PASS** — exactly the 5 pre-existing v2 known-red, **0 new failures** (one transient regression — PreparedFitting legacy-seam IV golden drifting 4.9e-11 under the K2 seed — reconciled at the seam by relaxing its 1e-12 bit-pin to a 1e-9 economic tol, commit `66280d8`). **Three headline results:** (1) ★ **SPY one-op e2e ≤200 ms PROVEN** by the fit_workers sweep — 408→235→**139 (fw=4, ≤150 stretch too)**→104→96 ms — so **A1 de-Am vectorization stays DEFERRED**; (2) ★ **IV scalar 324→218 ns/op, beats same-host Jäckel LBR (237 ns)** — the beat-Jäckel gate met on this host; (3) ★ **IV AVX2 0.92→1.27× scalar** (K3), reversing the R-24 off-dispatch call. All perf numbers provisional on a contended laptop; clean-host M3-protocol re-measure would firm the absolutes (deterministic metrics — Halley counts, parity max|Δσ|=0, wall-scaling monotonicity — are contention-free).
 
+**Wave C (ready subset) LANDED + MERGED to `main @ ddaea1a`** (2026-07-18, local only, nothing pushed). U4 (small-book worker budget) + isatol (rel-avx2 residual ISA-drift toleranced — `752c441`) + A5 (BAW-seed AVX2 vectorization, economic-parity green, ship-flag deferred) + A6 (QD+ seed NEGATIVE, document-defer). Debug gate: 5 v2 known-red, **0 new**. **rel-avx2 now green to only the 5 v2 known-red** (isatol closed the 4 residual ISA-drift telltales incl. the priced_surface 1-ULP hexbits-delta, not a route hash) → **§10 "M4 = Release green under rel-avx2" DoD item CLOSED**. Wave-C gated remainder (A2/A3/A7 dep deferred-A1; U5 dep Sprint-R R-14/R-15; U6/V1 need the 519/100 OPRA cohort; E3 cross-owner) and F1/F2/F5 (⚠︎R Sprint-R seam) await user decisions.
+
 | Task | Branch | Status | SHA(s) | Gate result |
 |---|---|---|---|---|
 | M1 | `feat/ns-measure` | ☑ landed | `1a14397` | compare_baseline.py + test; e2e bench doc |
@@ -229,8 +231,8 @@ graph TD
 | A1 | `feat/ns-am-deam` | ☐ DEFERRED (A0 verdict) | — | de-Am ms/board — only pull if single-expiry residue >~120ms |
 | A2 | `feat/ns-am-deam` | ☐ todo (Wave C) | — | — |
 | A3 | `feat/ns-am-deam` | ☐ todo (Wave C) | — | — |
-| A5 | `feat/ns-am-price` | ☐ todo (Wave C) | — | 2.0× gate |
-| A6 | `feat/ns-am-price` | ☐ todo (Wave C) | — | µs vs ALO |
+| A5 | `feat/ns-am-price` | ☑ landed (vec; flag deferred) | `cb9b9aa` | 4-wide BAW seed; ForceScalar-vs-Avx2 economic parity 4.1e-13≪1e-6; kShipAvx2Boundary stays false (2.15–2.90× contention-inflated, not robust quiet ≥2.0×); build() wiring ⚠︎R-deferred |
+| A6 | `feat/ns-am-price` | ☑ landed (NEGATIVE / doc-defer) | `24accb1` | QD+ seed regresses fast-tier acc 3.2× (1.44e-3→4.62e-3), no speed win; prod seed stays BAW byte-unchanged; A/B infra + in-code negative finding (Li 2010 / SSRN 2547027 cited) |
 | A7 | `feat/ns-am-price` | ☐ todo (Wave C) | — | warm-IV µs |
 | A8 | `feat/ns-am-price` | ☐ todo (Wave D) | — | — |
 | F1 | `feat/ns-fit` | ☐ todo (Wave B, ⚠︎R) | — | R-01p2 wiring |
@@ -242,7 +244,7 @@ graph TD
 | U1 | `feat/ns-sched` | ☑ landed | `0d55d6e` | streaming populate; RSS O(all)→O(in-flight); determinism bit-id; 11/11 |
 | U2 | `feat/ns-sched-b` | ☑ landed | `13dff09` | LPT outer claim order (desc by frame rows, deterministic tie-break); byte-identical output |
 | U3 | `feat/ns-sched-b` | ☑ landed | `3661564` | date-granular durability across a worker throw; crash-resume test (fresh open) passes |
-| U4 | `feat/ns-sched` | ☐ todo (Wave C, ready — E1 landed) | — | shared worker budget (small-book) |
+| U4 | `feat/ns-sched-c` | ☑ landed | `6ee2d63` | shared small-book worker budget (n=1→12/2→6/3→4/4→3 inner, all cores busy); byte-identical; uses E1 nested + E2 work-stealing |
 | U5 | `feat/ns-sched` | ☐ todo (Wave C) | — | deadlock-free — RE-TAGGED dep E2 (not just E1) |
 | U6 | `feat/ns-sched` | ☐ todo (Wave C) | — | wall vs 45 s |
 | V1..V3 | `feat/ns-surf` | ☐ todo (Wave C/D) | — | in-band % |
