@@ -812,6 +812,124 @@ TEST(SurfaceDbPopulate, SymbolConfigOverlayReachesFit) {
   std::filesystem::remove_all(root_c);
 }
 
+// U4 (R-14) [pure-refactor]: shared worker budget for small books. When a book
+// is smaller than the worker budget, the outer fans every board across the pool
+// but the OLD fixed split pinned each board's inner fit to a single worker
+// (fit_workers = 1), leaving budget - n_boards cores idle (2 boards on a 12-wide
+// pool used 2 cores, 10 idle). U4 instead sizes each board's inner budget as
+// budget / min(budget, n_boards), so the per-board slices sum to the whole
+// budget: a 1-board run claims all 12, a 4-board run gets 3 each -- every core
+// busy. This asserts the resolved per-board budget (observed via the
+// on_inner_fit_workers hook) for books of 1..4 boards under a 12-wide budget,
+// and that outer_threads * inner_budget covers the pool (no idle cores).
+TEST(SurfaceDbPopulate, SharedWorkerBudgetSizesInnerFromSharedPool) {
+  struct Spec {
+    const char *symbol;
+    double spot;
+    double sigma0;
+  };
+  const Spec specs[] = {
+      {"AAA", 100.0, 0.28},
+      {"BBB", 60.0, 0.34},
+      {"CCC", 80.0, 0.30},
+      {"DDD", 120.0, 0.26},
+  };
+  constexpr unsigned kBudget = 12u; // wider than any book below -> a real split
+
+  // budget / min(budget, n): 12/1, 12/2, 12/3, 12/4.
+  const unsigned expected_inner[] = {12u, 6u, 4u, 3u};
+
+  for (std::size_t n = 1u; n <= 4u; ++n) {
+    const auto root = test_root(std::string("shared_budget_n") + std::to_string(n));
+    auto db = SurfaceDb::create(root.string());
+    ASSERT_TRUE(db.has_value());
+
+    std::vector<CorpusBoard> boards;
+    for (std::size_t b = 0u; b < n; ++b) {
+      boards.push_back(make_board(kDate0, specs[b].symbol, specs[b].spot, specs[b].sigma0));
+    }
+
+    unsigned captured_inner = 0u; // hook fires once on the caller thread
+    bool hook_seen = false;
+    PopulateTestHooks hooks;
+    hooks.on_inner_fit_workers = [&](unsigned inner) {
+      captured_inner = inner;
+      hook_seen = true;
+    };
+
+    SurfaceDbPopulateConfig cfg;
+    cfg.n_threads = kBudget;
+    auto result = populate_surface_db(*db, boards, cfg, &hooks);
+    ASSERT_TRUE(result.has_value()) << (result ? "" : result.error().to_string());
+    EXPECT_EQ(result->n_ok, static_cast<std::uint32_t>(n));
+
+    ASSERT_TRUE(hook_seen) << "on_inner_fit_workers never fired for n=" << n;
+    // Each board's inner fit is offered the shared-pool slice, strictly more
+    // than the old fixed split of 1 -- the recovered idle cores.
+    EXPECT_EQ(captured_inner, expected_inner[n - 1u]) << "n=" << n;
+    EXPECT_GT(captured_inner, 1u) << "n=" << n;
+
+    // The outer runs min(budget, n_boards) boards concurrently; each takes an
+    // inner slice, and the slices cover the whole pool -- no idle cores.
+    const unsigned outer_threads = std::min<unsigned>(kBudget, static_cast<unsigned>(n));
+    EXPECT_EQ(outer_threads * captured_inner, kBudget) << "n=" << n;
+
+    std::filesystem::remove_all(root);
+  }
+}
+
+// U4 (R-14) [pure-refactor]: sizing the inner budget from the shared pool is a
+// SCHEDULING change, never a numeric one. A 2-board book fit under a split
+// budget (each board's inner fit offered 4 workers) must produce surfaces
+// bit-identical to the serial reference (one outer worker, inner auto-sized).
+// This is the same determinism-across-worker-counts contract that
+// GlobalParallelQueuePreservesDeterministicPartitions locks in for the
+// fit_workers = 1 case (a book at/above the budget); here the book is SMALLER
+// than the budget, so U4 takes the new split path (inner = 4, not 1) -- the
+// captured budget proves the comparison is not vacuously two identical runs.
+TEST(SurfaceDbPopulate, SharedWorkerBudgetKeepsOutputByteIdentical) {
+  const std::vector<CorpusBoard> boards = {
+      make_board(kDate0, "AAA", 100.0, 0.28),
+      make_board(kDate0, "BBB", 60.0, 0.34),
+  };
+
+  // Reference: serial outer (budget 1) -> inner auto-sized.
+  const auto ref_root = test_root("shared_budget_identity_ref");
+  auto ref_db = SurfaceDb::create(ref_root.string());
+  ASSERT_TRUE(ref_db.has_value());
+  SurfaceDbPopulateConfig ref_cfg;
+  ref_cfg.n_threads = 1u;
+  auto ref = populate_surface_db(*ref_db, boards, ref_cfg);
+  ASSERT_TRUE(ref.has_value()) << (ref ? "" : ref.error().to_string());
+  ASSERT_EQ(ref->n_ok, 2u);
+
+  // U4 split path: 2 boards on an 8-wide budget -> 8 / min(8, 2) = 4 each.
+  const auto split_root = test_root("shared_budget_identity_split");
+  auto split_db = SurfaceDb::create(split_root.string());
+  ASSERT_TRUE(split_db.has_value());
+  unsigned captured_inner = 0u;
+  PopulateTestHooks hooks;
+  hooks.on_inner_fit_workers = [&](unsigned inner) { captured_inner = inner; };
+  SurfaceDbPopulateConfig split_cfg;
+  split_cfg.n_threads = 8u;
+  auto split = populate_surface_db(*split_db, boards, split_cfg, &hooks);
+  ASSERT_TRUE(split.has_value()) << (split ? "" : split.error().to_string());
+  ASSERT_EQ(split->n_ok, 2u);
+  ASSERT_EQ(captured_inner, 4u) << "expected the small-book split path (inner = 4), not the "
+                                   "fixed split of 1 -- else the identity check is vacuous";
+
+  for (const char *symbol : {"AAA", "BBB"}) {
+    const auto ref_surface = ref_db->load_surface(kDate0, symbol);
+    const auto split_surface = split_db->load_surface(kDate0, symbol);
+    ASSERT_TRUE(ref_surface.has_value()) << symbol;
+    ASSERT_TRUE(split_surface.has_value()) << symbol;
+    expect_surface_bits_equal(*split_surface, *ref_surface);
+  }
+
+  std::filesystem::remove_all(ref_root);
+  std::filesystem::remove_all(split_root);
+}
+
 TEST(SurfaceDbPopulate, PinnedConfigHonored) {
   const auto root = test_root("pinned");
   auto db = SurfaceDb::create(root.string());

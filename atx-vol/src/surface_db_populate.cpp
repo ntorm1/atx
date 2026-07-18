@@ -234,10 +234,38 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
     fit_task_range = std::move(claim_ranges);
   }
 
-  // SurfaceDb defines n_threads=0 as outer-serial. A real multi-board outer
-  // fan-out pins each fit to one worker to avoid nested H^2 parallelism.
+  // SurfaceDb defines n_threads=0 as outer-serial. When several boards fan out
+  // across the shared pool (worker_budget > 1) each board must NOT also claim the
+  // whole pool -- that nests H^2 workers and oversubscribes.
   const unsigned worker_budget = cfg.n_threads != 0u ? cfg.n_threads : 1u;
-  const bool parallel_outer = fit_positions.size() > 1u && worker_budget > 1u;
+  const std::size_t n_fit_boards = fit_positions.size();
+
+  // ── U4 (R-14) [pure-refactor]: shared worker budget for small books ─────────
+  // The prior fix pinned every board to a single inner worker (fit_workers = 1).
+  // That is right once the book is at least as large as the budget, but strands
+  // cores on a SMALL book: 2 boards on a 12-wide pool used 2 cores and left 10
+  // idle. Instead, SPLIT the shared budget across the boards -- each board's
+  // inner fit gets budget / min(budget, n_boards) workers (>= 1). A 1-board run
+  // claims the whole budget; a 4-board run on a 12-wide pool gets 3 each (12
+  // cores busy, not 4); a book at or above the budget still gets 1 each -- so the
+  // slices sum to the budget and never nest-oversubscribe. The per-board fan-out
+  // reaches E1's nested-budget executor through fit_board, so the concurrent
+  // inner dispatches share the one pool cooperatively (E2 help-first
+  // work-stealing) rather than spawning bare threads that re-enter it. This
+  // changes ONLY how many workers each fit is offered: every fit_board is
+  // deterministic and writes disjoint slots, so each surface is bit-identical for
+  // any worker count -- proved byte-for-byte against the serial reference by
+  // SurfaceDbPopulate.SharedWorkerBudgetKeepsOutputByteIdentical and the existing
+  // GlobalParallelQueuePreservesDeterministicPartitions. worker_budget <= 1 is
+  // the documented outer-serial mode: inner fits keep auto sizing (0).
+  const unsigned inner_fit_workers =
+      (worker_budget > 1u && n_fit_boards > 0u)
+          ? std::max<unsigned>(1u, worker_budget / static_cast<unsigned>(std::min<std::size_t>(
+                                                       worker_budget, n_fit_boards)))
+          : 0u;
+  if (test_hooks != nullptr && test_hooks->on_inner_fit_workers) {
+    test_hooks->on_inner_fit_workers(inner_fit_workers);
+  }
 
   const auto fit_task = [&](std::size_t task_index) -> Status {
     const std::size_t pos = fit_positions[task_index];
@@ -263,9 +291,8 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
     }
     const SymbolFitConfig &resolved = resolved_cfgs[pos];
     PricerConfig pc = pricer_config_for_symbol(resolved);
-    if (parallel_outer) {
-      pc.fit_workers = 1u;
-    }
+    // Per-board slice of the shared budget (0 = auto, the outer-serial mode).
+    pc.fit_workers = inner_fit_workers;
     slots[pos] = fit_board(board, pc, /*admission=*/nullptr, [&resolved](SessionInputs &in) {
       apply_symbol_config(resolved, in);
     });
