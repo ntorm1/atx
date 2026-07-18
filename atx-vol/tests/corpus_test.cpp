@@ -57,6 +57,7 @@
 #include "atx/vol/market_env.hpp"           // MarketEnv
 #include "atx/vol/panel.hpp"                // make_synthetic_american_panel, SynthPanelSpec
 #include "atx/vol/priced_surface.hpp"       // PricedSurface
+#include "atx/vol/priced_surface_view.hpp"  // PricedSurfaceView (v2 zero-copy view)
 #include "atx/vol/pricer_fitter.hpp"        // PricerFitter, PricerConfig
 #include "atx/vol/session.hpp"              // VolaSession::to_priced_surface
 #include "atx/vol/spy_fixture.hpp"          // make_spy_synthetic_spec
@@ -392,6 +393,100 @@ void expect_surfaces_bit_identical(const PricedSurface &a, const PricedSurface &
   }
 }
 
+// F-a end-to-end proof (WS-F): assert the ZERO-COPY v2 view (map_symbol ->
+// PricedSurfaceView — the deserialize path the backtest hot loop actually takes,
+// per the priced-surface-view seam) reproduces a fresh fit of the same board
+// bit-for-bit. This closes the leg the RoundTrip test above only proves
+// transitively: RoundTrip compares the OWNED reconstruct (reconstruct_symbol) to a
+// fresh fit; surface_archive_v2_test compares a view to its source PricedSurface;
+// this test compares the view DIRECTLY to the freshly-fitted surface, driven by
+// the real fit PIPELINE (build_corpus -> write_surface_archive_v2_file). The view
+// exposes no context() accessor, so the (K,T) grid is driven off the fresh
+// surface's slice contexts (same grid as expect_surfaces_bit_identical). uid is
+// intentionally NOT compared: build_corpus restamps the archived surface with a
+// symbol-derived uid (uid_for_symbol) while the fresh single-symbol fit keeps
+// uid=1 — pricing math is uid-independent (as the RoundTrip gate already relies on).
+void expect_view_reproduces_fresh_fit_bit_identical(const PricedSurface &fresh,
+                                                    const PricedSurfaceView &v, std::size_t &n_fv) {
+  ASSERT_EQ(fresh.n_slices(), v.n_slices());
+  for (const SliceContext &c : fresh.context()) {
+    const double T = c.T;
+    const double F = c.forward;
+    EXPECT_TRUE(bits_equal(fresh.forward_at(T), v.forward_at(T))) << "fwd T=" << T;
+    EXPECT_TRUE(bits_equal(fresh.q_eff_at(T), v.q_eff_at(T))) << "qeff T=" << T;
+    EXPECT_TRUE(bits_equal(fresh.rate_at(T), v.rate_at(T))) << "rate T=" << T;
+    for (const double m : {0.90, 0.95, 0.98, 1.0, 1.02, 1.05, 1.10}) {
+      const double K = F * m;
+      const Side side = (m <= 1.0) ? Side::Put : Side::Call;
+
+      EXPECT_TRUE(bits_equal(fresh.iv(K, T), v.iv(K, T))) << "iv K=" << K << " T=" << T;
+      EXPECT_TRUE(bits_equal(fresh.total_variance(K, T), v.total_variance(K, T)))
+          << "w K=" << K << " T=" << T;
+      if (!std::isfinite(fresh.iv(K, T))) {
+        continue;
+      }
+      const auto fa = fresh.fair_value(K, T, side);
+      const auto fv = v.fair_value(K, T, side);
+      ASSERT_EQ(fa.has_value(), fv.has_value());
+      if (fa.has_value()) {
+        EXPECT_TRUE(bits_equal(*fa, *fv)) << "fv K=" << K << " T=" << T;
+        ++n_fv;
+      }
+      const auto ga = fresh.greeks(K, T, side);
+      const auto gv = v.greeks(K, T, side);
+      ASSERT_EQ(ga.has_value(), gv.has_value());
+      if (ga.has_value()) {
+        EXPECT_TRUE(bits_equal(ga->price, gv->price)) << "price K=" << K;
+        EXPECT_TRUE(bits_equal(ga->delta, gv->delta)) << "delta K=" << K;
+        EXPECT_TRUE(bits_equal(ga->gamma, gv->gamma)) << "gamma K=" << K;
+        EXPECT_TRUE(bits_equal(ga->vega, gv->vega)) << "vega K=" << K;
+        EXPECT_TRUE(bits_equal(ga->theta, gv->theta)) << "theta K=" << K;
+        EXPECT_TRUE(bits_equal(ga->rho, gv->rho)) << "rho K=" << K;
+        EXPECT_TRUE(bits_equal(ga->vanna, gv->vanna)) << "vanna K=" << K;
+        EXPECT_TRUE(bits_equal(ga->volga, gv->volga)) << "volga K=" << K;
+        EXPECT_TRUE(bits_equal(ga->charm, gv->charm)) << "charm K=" << K;
+      }
+    }
+  }
+}
+
+// evaluate_batch parity (the pricer's primary hot kernel) through the v2 view:
+// the fused-batch SoA path a portfolio price/greeks call takes must match the
+// fresh surface bit-for-bit. Grid is built off the fresh surface's slice forwards.
+void expect_view_batch_reproduces_fresh_fit(const PricedSurface &fresh, const PricedSurfaceView &v) {
+  using EF = PricedSurface::EvalField;
+  std::vector<double> K, T;
+  std::vector<Side> side;
+  bool flip = false;
+  for (const SliceContext &c : fresh.context()) {
+    for (const double m : {0.95, 1.0, 1.05}) {
+      K.push_back(c.forward * m);
+      T.push_back(c.T);
+      side.push_back(flip ? Side::Call : Side::Put);
+      flip = !flip;
+    }
+  }
+  const std::size_t n = K.size();
+  ASSERT_GT(n, 0u);
+  std::vector<double> iv_a(n), iv_v(n), px_a(n), px_v(n);
+  std::vector<AmericanGreeks> gr_a(n), gr_v(n);
+  std::vector<atx::vol::Status> st_a(n), st_v(n);
+  PricedSurface::EvaluationSoA out_a{iv_a, px_a, gr_a, st_a, {}, {}};
+  PricedSurface::EvaluationSoA out_v{iv_v, px_v, gr_v, st_v, {}, {}};
+  const EF fields = EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder;
+  const auto sa = fresh.evaluate_batch(K, T, side, fields, false, out_a);
+  const auto sv = v.evaluate_batch(K, T, side, fields, false, out_v);
+  ASSERT_EQ(sa.has_value(), sv.has_value());
+  for (std::size_t i = 0; i < n; ++i) {
+    EXPECT_EQ(st_a[i].has_value(), st_v[i].has_value()) << "batch status i=" << i;
+    EXPECT_TRUE(bits_equal(iv_a[i], iv_v[i])) << "batch iv i=" << i;
+    EXPECT_TRUE(bits_equal(px_a[i], px_v[i])) << "batch px i=" << i;
+    EXPECT_TRUE(bits_equal(gr_a[i].delta, gr_v[i].delta)) << "batch delta i=" << i;
+    EXPECT_TRUE(bits_equal(gr_a[i].gamma, gr_v[i].gamma)) << "batch gamma i=" << i;
+    EXPECT_TRUE(bits_equal(gr_a[i].vega, gr_v[i].vega)) << "batch vega i=" << i;
+  }
+}
+
 // The layout board set: 2 dates x 2 symbols. "SPY" pins ConvexDense (dense index
 // recipe); "XOM" auto-selects (=> eSSVI on the smooth truth). A genuine mix of
 // curve families in the archive.
@@ -486,6 +581,53 @@ TEST(Corpus, RoundTrip_ReloadedSurfaceReproducesFreshFitBitIdentical) {
     ASSERT_NE(board, nullptr);
     const PricedSurface fresh = fit_reference(*board);
     expect_surfaces_bit_identical(*reloaded, fresh, n_points);
+    ++n_checked;
+  }
+  EXPECT_EQ(n_checked, 2u);
+  EXPECT_GT(n_points, 20u) << "too few priced points to be a meaningful gate";
+}
+
+// ── F-a (WS-F): fit PIPELINE output re-opened through the v2 ZERO-COPY VIEW ──
+// The end-to-end proof the sprint's F-a task asks for: fit a board through the
+// real pipeline (build_corpus -> write_surface_archive_v2_file), re-open the
+// serialized partition, and read each surface via map_symbol -> PricedSurfaceView
+// (the reconstruct-FREE deserialize the backtest hot loop uses), asserting the
+// view prices bit-for-bit with a fresh fit. Both curve families (ConvexDense pin +
+// eSSVI auto) so the parametric zero-heap view path AND the eager-materialize view
+// path (ConvexDense) are both proven off genuine fit output.
+TEST(Corpus, FitPipelineOutput_ReadThroughV2View_ReproducesFreshFitBitIdentical) {
+  const fs::path out = fresh_out_dir("v2view");
+  const std::vector<CorpusBoard> boards = make_mixed_boards({"2026-06-17"});
+
+  auto man_res = build_corpus(boards, out.string());
+  ASSERT_TRUE(man_res.has_value()) << man_res.error().to_string();
+  const CorpusManifest &man = *man_res;
+
+  std::size_t n_checked = 0;
+  std::size_t n_points = 0;
+  for (const CorpusEntry &e : man.entries) {
+    if (e.status != CorpusFitStatus::Ok) {
+      continue;
+    }
+    // Re-open the date's v2 partition and map ONLY this symbol's record (subset
+    // map — no whole-board reconstruct).
+    auto arch = SurfaceArchiveV2::open_file(e.archive_path);
+    ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
+    auto view = arch->map_symbol(e.symbol);
+    ASSERT_TRUE(view.has_value()) << view.error().to_string();
+
+    const CorpusBoard *board = nullptr;
+    for (const CorpusBoard &b : boards) {
+      if (b.date == e.date && b.symbol == e.symbol) {
+        board = &b;
+        break;
+      }
+    }
+    ASSERT_NE(board, nullptr);
+    const PricedSurface fresh = fit_reference(*board);
+    EXPECT_EQ(view->kind_at(0), e.chosen_kind) << e.symbol;
+    expect_view_reproduces_fresh_fit_bit_identical(fresh, *view, n_points);
+    expect_view_batch_reproduces_fresh_fit(fresh, *view);
     ++n_checked;
   }
   EXPECT_EQ(n_checked, 2u);
