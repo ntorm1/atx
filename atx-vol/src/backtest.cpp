@@ -964,13 +964,9 @@ std::uint64_t MarketSnapshot::open_count() noexcept { return g_open_count.load()
 void MarketSnapshot::reset_open_count() noexcept { g_open_count.store(0); }
 
 Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
-                                            QueryPricingTier query_pricing_tier) {
+                                            QueryPricingTier query_pricing_tier,
+                                            std::span<const std::uint32_t> referenced_uids) {
   ATX_VOL_PROFILE_SCOPE(SnapshotLoad);
-  // S4 clean-break cutover: the whole board is deserialized from the v2 zero-copy
-  // format. `reconstruct_all_with_provenance` rebuilds OWNED PricedSurfaces (kept
-  // whole-board here on purpose) — the subset-map/PricedSurfaceView zero-copy win
-  // reaching this loop is B1 (seam §6), not this format swap. The reconstructed
-  // surfaces are bit-identical to what the old v1 reader produced.
   auto arch = [&]() {
     ATX_VOL_PROFILE_SCOPE(ArchiveOpen);
     return SurfaceArchiveV2::open_file(archive_path);
@@ -981,20 +977,68 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
   // One archive-open event (the load-once gate asserts N loads => N opens).
   g_open_count.fetch_add(1, std::memory_order_relaxed);
 
-  auto mapped = [&]() {
-    ATX_VOL_PROFILE_SCOPE(ArchiveMap);
-    return arch->reconstruct_all_with_provenance();
-  }();
-  if (!mapped) {
-    return Err(mapped.error());
-  }
+  const std::span<const ArchiveV2DirEntry> dir = arch->directory();
   std::vector<PricedSurface> surfaces;
   std::vector<SurfaceProvenance> provenance;
-  surfaces.reserve(mapped->size());
-  provenance.reserve(mapped->size());
-  for (ArchivedSurface &record : *mapped) {
-    surfaces.push_back(std::move(record.surface));
-    provenance.push_back(std::move(record.provenance));
+
+  // B1 subset-deserialize (bottleneck #1 at the reader): when the caller names the
+  // uids its book references, reconstruct ONLY those directory entries
+  // (`reconstruct_symbol` per referenced uid) and DROP the whole-board
+  // `reconstruct_all_with_provenance`. An empty referenced set (the strategy
+  // overload — its touched names are not known before on_step — and any shared-cache
+  // caller) keeps the whole-board load. If the subset matches no directory entry
+  // (e.g. a book naming only names absent from this partition) fall back to the
+  // whole board so the valuation timestamp and unpriced-lot handling are unchanged.
+  //
+  // Seam note (§6, out of WS-B lane): the PortfolioPricer's SurfaceSet still takes
+  // `const PricedSurface*`, so the subset is reconstructed (owned) rather than served
+  // as zero-copy PricedSurfaceViews. Re-pointing SurfaceSet/PortfolioPricer at views
+  // is a greeks-owned change (portfolio_pricer.{hpp,cpp}); until it lands the
+  // deserialize win here is the subset (fewer surfaces reconstructed), not zero-copy.
+  bool loaded_subset = false;
+  if (!referenced_uids.empty()) {
+    ATX_VOL_PROFILE_SCOPE(ArchiveMap);
+    surfaces.reserve(referenced_uids.size());
+    provenance.reserve(referenced_uids.size());
+    for (const ArchiveV2DirEntry &e : dir) {
+      bool wanted = false;
+      for (const std::uint32_t u : referenced_uids) {
+        if (u == e.uid) {
+          wanted = true;
+          break;
+        }
+      }
+      if (!wanted) {
+        continue;
+      }
+      const std::string_view sym{e.symbol, e.symbol_len};
+      auto ps = arch->reconstruct_symbol(sym);
+      if (!ps) {
+        return Err(ps.error());
+      }
+      auto prov = arch->provenance(sym);
+      if (!prov) {
+        return Err(prov.error());
+      }
+      surfaces.push_back(std::move(*ps));
+      provenance.push_back(std::move(*prov));
+    }
+    loaded_subset = !surfaces.empty();
+  }
+  if (!loaded_subset) {
+    ATX_VOL_PROFILE_SCOPE(ArchiveMap);
+    auto mapped = arch->reconstruct_all_with_provenance();
+    if (!mapped) {
+      return Err(mapped.error());
+    }
+    surfaces.clear();
+    provenance.clear();
+    surfaces.reserve(mapped->size());
+    provenance.reserve(mapped->size());
+    for (ArchivedSurface &record : *mapped) {
+      surfaces.push_back(std::move(record.surface));
+      provenance.push_back(std::move(record.provenance));
+    }
   }
   if (surfaces.empty()) {
     return Err(ErrorCode::InvalidArgument, "MarketSnapshot::load: archive holds no surfaces");
@@ -1031,9 +1075,10 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
     return Err(set.error());
   }
 
-  // symbol -> uid from the archive directory (canonical symbol bytes).
+  // symbol -> uid from the WHOLE archive directory (canonical symbol bytes) even
+  // under a subset load: uid_of must still resolve any archived name (a strategy may
+  // query a name its current book does not hold); this is cheap (strings, no surfaces).
   std::vector<std::pair<std::string, std::uint32_t>> syms;
-  const std::span<const ArchiveV2DirEntry> dir = arch->directory();
   syms.reserve(dir.size());
   for (const ArchiveV2DirEntry &e : dir) {
     syms.emplace_back(std::string(e.symbol, e.symbol_len), e.uid);
@@ -1192,9 +1237,22 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
   };
 
   // base = load(refs[0]) — the inception snapshot.
+  // B1 subset-deserialize: a PRIVATE per-run cache deserializes only the fixed book's
+  // referenced uids (the book is known up front and never grows in this overload), so
+  // an archive/partition holding more names than the book references drops the
+  // whole-board reconstruct (bottleneck #1). A caller-supplied (shared) cache stays
+  // whole-board — it may be reused across books with different referenced sets.
+  std::vector<std::uint32_t> book_uids;
+  book_uids.reserve(book.lots.size());
+  for (const Lot &lot : book.lots) {
+    if (std::find(book_uids.begin(), book_uids.end(), lot.contract.uid) == book_uids.end()) {
+      book_uids.push_back(lot.contract.uid);
+    }
+  }
   const std::shared_ptr<SnapshotCache> snapshot_cache =
-      cfg.snapshot_cache ? cfg.snapshot_cache
-                         : std::make_shared<SnapshotCache>(kPrivateSnapshotCacheCapacity);
+      cfg.snapshot_cache
+          ? cfg.snapshot_cache
+          : std::make_shared<SnapshotCache>(kPrivateSnapshotCacheCapacity, std::move(book_uids));
   auto base_res = snapshot_cache->load(refs[0].archive_path, cfg.query_pricing_tier,
                                        cfg.query_cache_build_policy);
   if (!base_res) {

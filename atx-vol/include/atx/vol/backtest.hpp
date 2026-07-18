@@ -94,14 +94,23 @@ private:
 // after `set_` is built).
 class MarketSnapshot {
 public:
-  // Open `archive_path`, map every surface, prepare its runtime-only query tier,
-  // build the `SurfaceSet`, and take the valuation timestamp from the surfaces'
+  // Open `archive_path`, deserialize its surfaces, prepare their runtime-only query
+  // tier, build the `SurfaceSet`, and take the valuation timestamp from the surfaces'
   // `now_ts_ns` (validating they agree). The archive wire format is unchanged.
   // Errors propagate from open/map/query preparation or `SurfaceSet::create`;
   // InvalidArgument if the archive is empty or its surfaces disagree on the ts.
+  //
+  // B1 subset-deserialize: `referenced_uids`, when non-empty, restricts the
+  // deserialize to the archive directory entries whose uid is referenced (dropping
+  // the whole-board `reconstruct_all_with_provenance`); if none match, the whole
+  // board is loaded. Empty (the default) keeps the whole-board load. `uid_of` still
+  // resolves every archived name regardless. NB: while the pricer's SurfaceSet takes
+  // `const PricedSurface*` (seam §6), the subset is reconstructed owned, not served
+  // zero-copy — the win is the reduced surface count, not zero-allocation.
   [[nodiscard]] static Result<MarketSnapshot>
   load(std::string_view archive_path,
-       QueryPricingTier query_pricing_tier = QueryPricingTier::LegacyCompatible);
+       QueryPricingTier query_pricing_tier = QueryPricingTier::LegacyCompatible,
+       std::span<const std::uint32_t> referenced_uids = {});
 
   MarketSnapshot(MarketSnapshot &&) noexcept = default;
   MarketSnapshot &operator=(MarketSnapshot &&) noexcept = default;
@@ -179,6 +188,13 @@ public:
   SnapshotCache();
   // Bounded LRU mode. A zero capacity is defensively normalized to one entry.
   explicit SnapshotCache(std::size_t max_retained_entries);
+  // B1: bounded LRU + subset-deserialize. Every load/prefetch through this cache
+  // deserializes ONLY the archive surfaces whose uid appears in `referenced_uids`
+  // (empty => whole board). Intended for a PRIVATE per-run cache whose single book's
+  // referenced uids are known up front (the fixed-book run_backtest overload); do NOT
+  // share such a cache across books with different referenced sets (a subset snapshot
+  // cached under one book would be missing another's uids).
+  SnapshotCache(std::size_t max_retained_entries, std::vector<std::uint32_t> referenced_uids);
   ~SnapshotCache();
   SnapshotCache(const SnapshotCache &) noexcept = default;
   SnapshotCache &operator=(const SnapshotCache &) noexcept = default;

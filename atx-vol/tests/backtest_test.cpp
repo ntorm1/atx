@@ -2260,3 +2260,121 @@ TEST(Backtest, DefaultPolicyIsBitIdenticalToBaseline) {
   }
   std::printf("[s1-3b] default policy equals explicit ExcludeAndReport over 5 rows\n");
 }
+
+// ── B1. Subset-deserialize: the loader deserializes only referenced uids ──────
+//
+// MarketSnapshot::load(..., referenced_uids) reconstructs ONLY the archive
+// directory entries the book references, dropping the whole-board
+// reconstruct_all_with_provenance (bottleneck #1). uid_of still resolves every
+// archived name, and a subset-reconstructed surface prices bit-identically to the
+// whole-board one (v2 reconstruct is bit-exact to the source surface, S4 seam).
+TEST(Backtest, SubsetDeserializeLoadsOnlyReferencedUids) {
+  const fs::path dir = fresh_dir("b1-subset");
+  std::error_code ec;
+  fs::create_directories(dir, ec);
+  const std::string path = (dir / "2026-08-01.atxvsa").string();
+
+  std::vector<PricedSurface> surfaces;
+  surfaces.reserve(4);
+  for (std::uint32_t i = 0; i < 4; ++i) {
+    const double S = 100.0 + 5.0 * static_cast<double>(i);
+    surfaces.push_back(make_surface(kUid + i, S, S, kBaseNow, 0.002 * static_cast<double>(i)));
+  }
+  std::vector<SurfaceArchiveItem> items;
+  for (std::uint32_t i = 0; i < 4; ++i) {
+    static const char* kNames[] = {"AAA", "BBB", "CCC", "DDD"};
+    items.push_back(SurfaceArchiveItem{kNames[i], &surfaces[i]});
+  }
+  ASSERT_TRUE(write_surface_archive_v2_file(path, items).has_value());
+
+  auto whole = MarketSnapshot::load(path);
+  ASSERT_TRUE(whole.has_value()) << whole.error().to_string();
+  EXPECT_EQ(whole->surfaces().size(), 4u);
+
+  const std::uint32_t subset_uids[] = {kUid, kUid + 2};
+  auto subset = MarketSnapshot::load(path, QueryPricingTier::LegacyCompatible,
+                                     std::span<const std::uint32_t>{subset_uids});
+  ASSERT_TRUE(subset.has_value()) << subset.error().to_string();
+  EXPECT_EQ(subset->surfaces().size(), 2u) << "whole-board reconstruct was not dropped";
+  EXPECT_NE(subset->find(kUid), nullptr);
+  EXPECT_NE(subset->find(kUid + 2), nullptr);
+  EXPECT_EQ(subset->find(kUid + 1), nullptr) << "unreferenced uid must not be deserialized";
+  EXPECT_EQ(subset->find(kUid + 3), nullptr) << "unreferenced uid must not be deserialized";
+
+  // uid_of resolves every archived name even under the subset load.
+  auto u1 = subset->uid_of("BBB");
+  auto u3 = subset->uid_of("DDD");
+  ASSERT_TRUE(u1.has_value());
+  ASSERT_TRUE(u3.has_value());
+  EXPECT_EQ(*u1, kUid + 1);
+  EXPECT_EQ(*u3, kUid + 3);
+
+  // A subset-reconstructed surface prices bit-identically to the whole-board one.
+  const PricedSurface *ws = whole->find(kUid);
+  const PricedSurface *ss = subset->find(kUid);
+  ASSERT_NE(ws, nullptr);
+  ASSERT_NE(ss, nullptr);
+  auto wv = ws->fair_value(100.0, 0.25, Side::Call);
+  auto sv = ss->fair_value(100.0, 0.25, Side::Call);
+  ASSERT_TRUE(wv.has_value());
+  ASSERT_TRUE(sv.has_value());
+  EXPECT_TRUE(bits_equal(*wv, *sv)) << "subset reconstruct must match whole-board bit-for-bit";
+  std::printf("[b1] subset-deser: 2 of 4 surfaces loaded; uid_of resolves all; marks bit-identical\n");
+}
+
+// The fixed-book overload's private cache subset-deserializes the book's uids; the
+// run is bit-identical to the whole-board path (a supplied shared cache), proving
+// the subset load is economically exact while touching fewer surfaces.
+TEST(Backtest, SubsetDeserializeFixedBookParity) {
+  const fs::path dir = fresh_dir("b1-parity");
+  std::error_code ec;
+  fs::create_directories(dir, ec);
+  std::vector<std::pair<std::string, std::string>> dp;
+  for (int d = 0; d < 3; ++d) {
+    const std::int64_t now = kBaseNow + static_cast<std::int64_t>(d) * kDayNs;
+    std::vector<PricedSurface> surfaces;
+    surfaces.reserve(4);
+    for (std::uint32_t i = 0; i < 4; ++i) {
+      const double S =
+          (100.0 + 5.0 * static_cast<double>(i)) * (1.0 + 0.003 * static_cast<double>(d));
+      surfaces.push_back(make_surface(kUid + i, S, S, now,
+                                      0.001 * static_cast<double>(d) + 0.002 * static_cast<double>(i)));
+    }
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "2026-08-%02d", d + 1);
+    const std::string path = (dir / (std::string(buf) + ".atxvsa")).string();
+    std::vector<SurfaceArchiveItem> items;
+    for (std::uint32_t i = 0; i < 4; ++i) {
+      static const char* kNames[] = {"AAA", "BBB", "CCC", "DDD"};
+    items.push_back(SurfaceArchiveItem{kNames[i], &surfaces[i]});
+    }
+    ASSERT_TRUE(write_surface_archive_v2_file(path, items).has_value());
+    dp.emplace_back(buf, path);
+  }
+  auto clock = Clock::from_manifest(make_manifest(dp, "AAA"));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t expiry = kBaseNow + 120 * kDayNs; // held past the clock
+  const auto make_book = [&]() {
+    PortfolioState b;
+    b.lots.push_back(
+        Lot{1, OptionContract{kUid, 100.0, 0.0, Side::Call}, +2.0, 100.0, expiry, 0, 0.0});
+    b.lots.push_back(
+        Lot{2, OptionContract{kUid + 2, 110.0, 0.0, Side::Put}, -1.0, 100.0, expiry, 0, 0.0});
+    return b;
+  };
+
+  // Default cfg => private cache => subset-deserialize (2 of the 4 archived names).
+  auto subset_res = run_backtest(*clock, make_book());
+  ASSERT_TRUE(subset_res.has_value()) << subset_res.error().to_string();
+
+  // Supplied (shared) cache => whole-board load. Must be bit-identical.
+  RunConfig whole_cfg;
+  whole_cfg.snapshot_cache = std::make_shared<SnapshotCache>();
+  auto whole_res = run_backtest(*clock, make_book(), whole_cfg);
+  ASSERT_TRUE(whole_res.has_value()) << whole_res.error().to_string();
+
+  expect_result_bit_identical(*subset_res, *whole_res);
+  std::printf("[b1] fixed-book subset-deser bit-identical to whole-board over %zu rows\n",
+              subset_res->size());
+}
