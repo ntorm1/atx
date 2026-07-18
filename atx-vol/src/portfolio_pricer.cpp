@@ -661,6 +661,16 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
       }
       return;
     }
+    // V1 solve ledger: one full-Greek bundle per unique in this group, split by route.
+    // Marks-only (!want_greeks) spends no bundle. Boundary solves themselves are
+    // counted always-on at al_seed_boundary (american.cpp); this attributes the route.
+    if (want_greeks) {
+      using counters::ledger::Solve;
+      counters::ledger::bump(adjoint_greeks ? Solve::GreeksBundlesAdjoint
+                             : analytic     ? Solve::GreeksBundlesAnalytic
+                                            : Solve::GreeksBundlesFd,
+                             gsz);
+    }
     PricedSurface::EvaluationSoA soa{std::span<double>(b_iv).subspan(s, gsz),
                                      std::span<double>(b_price).subspan(s, gsz),
                                      (want_greeks && !adjoint_greeks)
@@ -1259,6 +1269,13 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
     }
 
     if (!reuse_base) {
+      // V1 solve ledger: the pnl base solve is a full-Greek bundle per unique. Route by
+      // the analytic flag (the pnl path never takes the adjoint route). When the base
+      // risk stamp survives (reuse_base) NO bundle is spent — this is the 11 (expiry
+      // day) vs 6 (no-churn) solve-economy split the L1 gate moves.
+      counters::ledger::bump(analytic ? counters::ledger::Solve::GreeksBundlesAnalytic
+                                      : counters::ledger::Solve::GreeksBundlesFd,
+                             gsz);
       // Base surface at T_b: greeks + mark + iv (sig_b), analytic route as requested.
       PricedSurface::EvaluationSoA base_soa{std::span<double>(b_iv).subspan(s, gsz),
                                             std::span<double>(b_price).subspan(s, gsz),
