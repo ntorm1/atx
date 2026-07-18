@@ -26,6 +26,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/vol_surface.cpp
     src/american.cpp
     src/american_batch.cpp
+    src/detail/adjoint_greeks.cpp
     src/boundary_interp.cpp
     src/correction.cpp
     src/arb.cpp

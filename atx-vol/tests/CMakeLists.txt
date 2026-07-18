@@ -114,6 +114,8 @@ add_executable(atx-vol-tests
     # Wave-B iv-kernel (Agent K) — appended targets:
     scalar_erfc_test.cpp             # K3-prep: scalar Cody erfc ULP + round-trip gate
     iv_seed_test.cpp                 # K2: Choi-2023 tighter seed accuracy + Halley-step gate
+    # Wave-P AAD greeks (Agent greeks) — appended target:
+    adjoint_greeks_test.cpp          # P2: adjoint/IFT American greeks parity vs central-diff FD
 )
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).
