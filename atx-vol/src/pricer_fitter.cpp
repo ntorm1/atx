@@ -1281,9 +1281,22 @@ Status PricerFitter::fit(const OptionChain &chain,
   // default = the WP12 Mark-serving numerical floor, strict risk policy is the
   // caller's opt-in). The policy verdict is folded into the digest BEFORE the
   // oracle decision so served health can never disagree with publication.
+  //
+  // F2 (R-02): SERVED-BREADTH FLOOR on the risk rebuild, all routes. The mark
+  // consumer raises its quote-coverage floor to the selector's served breadth
+  // (`selector_served_admission_policy`) ONLY when a selector routed the board
+  // (fit(), :640). A risk surface is the safety-critical consumer, so here we
+  // apply that same floor on EVERY route — selector-routed, caller-pinned, or a
+  // fallback rung — and UNCONDITIONALLY, making it a strict superset of the mark
+  // path. Without it a narrow-coverage rebuild that the mark gate would reject
+  // under a selector could still slip into the risk surface through a
+  // non-selector route. min_quote_coverage becomes
+  // max(cfg_.admission.min_quote_coverage, cfg_.selector.min_served_quote_coverage).
+  const FitAdmissionPolicy risk_admission_policy =
+      detail::selector_served_admission_policy(cfg_.admission, cfg_.selector);
   const auto admission_attempt = [&](const VolaSession &candidate, ValidationDigest &digest) {
     SurfaceBuildAttemptReport attempt =
-        completed_attempt_report(under, in.curve, candidate, cfg_.admission);
+        completed_attempt_report(under, in.curve, candidate, risk_admission_policy);
     if (!attempt.admission.admitted) {
       digest.failures |= ValidationFailure::InvalidDomain;
     }
