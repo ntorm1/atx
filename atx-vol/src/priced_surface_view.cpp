@@ -167,6 +167,14 @@ PricedSurfaceView::create_over_record(std::span<const std::byte> record) {
   if (record.size() < sizeof(ArchiveV2SurfaceHeader)) {
     return Err(ErrorCode::ParseError, "PricedSurfaceView: record smaller than header");
   }
+  // The f64/u64 columns are indexed via reinterpret_cast (Arrow mmap idiom), which
+  // requires the record base to be >= 8-B aligned (columns are 8-B aligned RELATIVE
+  // to it). The archive guarantees this (records are 64-B aligned in-file, backing
+  // base is >= 16-B), but a corrupt/hand-rolled file or a misaligned open_borrowed
+  // span could break it — reject rather than risk an unaligned/UB typed read (§11.3).
+  if ((reinterpret_cast<std::uintptr_t>(record.data()) % kArchiveV2ColumnAlign) != 0) {
+    return Err(ErrorCode::ParseError, "PricedSurfaceView: record base not 8-B aligned");
+  }
   ArchiveV2SurfaceHeader h;
   std::memcpy(&h, record.data(), sizeof h);
   if (std::memcmp(h.magic, kSurfaceRecordMagic, 8) != 0) {
@@ -302,8 +310,11 @@ PricedSurfaceView::create_over_record(std::span<const std::byte> record) {
       break;
     }
     case VolCurveKind::SplineVol: {
-      // atm_vol,z_lo,z_hi f64x3 | n u32 | pad u32 | z[n] f64 | mult[n] f64 | viol u32.
-      const std::uint64_t need = 32ull + 16ull * nc + 4ull;
+      // atm_vol,z_lo,z_hi f64x3 | n u32 | pad u32 | z[n] f64 | mult[n] f64 |
+      // mult_cap f64 | w_offset f64 | viol u32.  mult_cap (served-multiple clamp)
+      // and w_offset (calendar-cone additive lift) are LIVE in SplineVolCurve::w();
+      // dropping them silently misprices (review C1).
+      const std::uint64_t need = 52ull + 16ull * nc;
       if (need > avail) {
         return Err(ErrorCode::ParseError, "PricedSurfaceView: spline payload out of bounds");
       }
@@ -319,7 +330,9 @@ PricedSurfaceView::create_over_record(std::span<const std::byte> record) {
       const std::size_t nb = static_cast<std::size_t>(nc) * sizeof(double);
       std::memcpy(sp.z.data(), p + 32, nb);
       std::memcpy(sp.mult.data(), p + 32 + nb, nb);
-      sp.n_butterfly_viol = load_pod<std::uint32_t>(p + 32 + 2 * nb);
+      sp.mult_cap = load_pod<double>(p + 32 + 2 * nb);
+      sp.w_offset = load_pod<double>(p + 40 + 2 * nb);
+      sp.n_butterfly_viol = load_pod<std::uint32_t>(p + 48 + 2 * nb);
       v.heavy_curves_[i] =
           std::make_unique<SplineVolCurve>(std::move(sp), v.col_T_[i], v.col_forward_[i], v.col_df_[i]);
       break;

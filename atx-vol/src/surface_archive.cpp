@@ -1239,7 +1239,10 @@ constexpr char kSurfaceRecordMagicBytes[8] = {'A', 'T', 'X', 'V', 'S', 'R', '2',
 // pin; we pay no vtable indirection because the schema is fixed).
 [[nodiscard]] std::uint64_t schema_hash_v2() noexcept {
   constexpr std::uint64_t kFnvPrime = 0x100000001b3ull;
-  constexpr std::uint64_t kV2Salt = 0xA7C3'5F04'2E1F'0100ull;
+  // Salt 0101 (was 0100): the SplineVol payload gained mult_cap + w_offset. That
+  // layout is not captured by the sizeof-fold (SplineVol has no fixed serialized
+  // POD struct), so bump the salt to reject any older v2 file. Pre-release (§0).
+  constexpr std::uint64_t kV2Salt = 0xA7C3'5F04'2E1F'0101ull;
   std::uint64_t h = 0x9e3779b97f4a7c15ull ^ kV2Salt;
   h ^= static_cast<std::uint64_t>(sizeof(ArchiveV2Header)) * kFnvPrime;
   h ^= static_cast<std::uint64_t>(sizeof(ArchiveV2LookupSlot)) * kFnvPrime;
@@ -1284,7 +1287,8 @@ constexpr char kSurfaceRecordMagicBytes[8] = {'A', 'T', 'X', 'V', 'S', 'R', '2',
   case VolCurveKind::C8:
     return sizeof(C8Params);
   case VolCurveKind::SplineVol:
-    return 32ull + 16ull * static_cast<std::uint64_t>(node_count) + 4ull;
+    // atm/z_lo/z_hi/n/pad (32) + z[n]+mult[n] (16n) + mult_cap+w_offset (16) + viol (4).
+    return 52ull + 16ull * static_cast<std::uint64_t>(node_count);
   }
   return 0;
 }
@@ -1342,6 +1346,13 @@ write_surface_archive_v2(std::span<const SurfaceArchiveItem> items,
   }
   const std::uint64_t surf_align =
       opts.surface_alignment != 0 ? opts.surface_alignment : kArchiveV2SurfaceAlign;
+  // surf_align flows into align_up (which assumes a power of two) and must not be
+  // finer than the natural column alignment, else record offsets silently corrupt.
+  if (!atx::core::is_pow2(static_cast<std::uint32_t>(surf_align)) ||
+      surf_align < kArchiveV2ColumnAlign || surf_align > 0xFFFFFFFFull) {
+    return Err(ErrorCode::InvalidArgument,
+               "write_surface_archive_v2: surface_alignment must be a power of two >= 8");
+  }
   const auto n_items = static_cast<std::uint32_t>(items.size());
   constexpr std::uint64_t A = kArchiveV2ColumnAlign;
 
@@ -1628,7 +1639,12 @@ write_surface_archive_v2(std::span<const SurfaceArchiveItem> items,
         const std::size_t nb = static_cast<std::size_t>(sp.node_count) * sizeof(double);
         std::memcpy(p + 32, sv.z.data(), nb);
         std::memcpy(p + 32 + nb, sv.mult.data(), nb);
-        std::memcpy(p + 32 + 2 * nb, &viol, 4);
+        // mult_cap + w_offset are LIVE terms of SplineVolCurve::w() (served-multiple
+        // clamp + additive calendar-cone lift); serialize both so the view is
+        // bit-exact (review C1).
+        std::memcpy(p + 32 + 2 * nb, &sv.mult_cap, 8);
+        std::memcpy(p + 40 + 2 * nb, &sv.w_offset, 8);
+        std::memcpy(p + 48 + 2 * nb, &viol, 4);
         break;
       }
       }
@@ -1816,6 +1832,13 @@ Result<SurfaceArchiveV2> SurfaceArchiveV2::open_impl(std::span<const std::byte> 
     }
     if (de.surface_size < sizeof(ArchiveV2SurfaceHeader)) {
       return Err(ErrorCode::ParseError, "SurfaceArchiveV2::open: record smaller than header");
+    }
+    // Record start must be >= 8-B aligned in-file so the view's typed column reads
+    // are aligned relative to a >= 8-B backing base (§11.3 hardening for untrusted
+    // files). Records are packed on kArchiveV2SurfaceAlign (>= 8), so any entry not
+    // so aligned is corrupt.
+    if ((de.surface_offset % kArchiveV2ColumnAlign) != 0u) {
+      return Err(ErrorCode::ParseError, "SurfaceArchiveV2::open: record offset misaligned");
     }
   }
   return Ok(std::move(a));

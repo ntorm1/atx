@@ -14,9 +14,11 @@
 
 #include "atx/vol/american.hpp"
 #include "atx/vol/black76.hpp"
+#include "atx/vol/calib.hpp" // FitObs
 #include "atx/vol/dense_slice.hpp"
 #include "atx/vol/priced_surface.hpp"
 #include "atx/vol/priced_surface_view.hpp"
+#include "atx/vol/spline_curve.hpp" // SplineVolParams, fit_spline_vol_slice
 #include "atx/vol/surface_archive.hpp"
 #include "atx/vol/vol_curve.hpp"
 #include "atx/vol/vol_surface.hpp"
@@ -42,8 +44,13 @@ using atx::vol::CurveSurface;
 using atx::vol::ErrorCode;
 using atx::vol::EssviCurve;
 using atx::vol::EssviParams;
+using atx::vol::fit_spline_vol_slice;
+using atx::vol::FitObs;
 using atx::vol::FitQualityMode;
 using atx::vol::LinearVarianceCurve;
+using atx::vol::SplineVolCurve;
+using atx::vol::SplineVolParams;
+using atx::vol::svi_total_w;
 using atx::vol::PricedSurface;
 using atx::vol::PricedSurfaceView;
 using atx::vol::PricingContext;
@@ -222,6 +229,57 @@ constexpr double kR = 0.043;
   return std::move(*ps);
 }
 
+// SVI-generated observations for the SplineVol fitter (mirrors the existing v1
+// surface_archive_test.cpp fixture).
+[[nodiscard]] std::vector<FitObs> svi_smile_obs(const SviParams &p, double T, int n,
+                                                double k_half_width) {
+  std::vector<FitObs> obs(static_cast<std::size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    const double t = (n > 1) ? static_cast<double>(i) / static_cast<double>(n - 1) : 0.5;
+    const double k = -k_half_width + t * (2.0 * k_half_width);
+    const double w = svi_total_w(p, k);
+    FitObs o;
+    o.k = k;
+    o.sigma_mkt = std::sqrt(w / T);
+    o.weight_w = 1.0;
+    obs[static_cast<std::size_t>(i)] = o;
+  }
+  return obs;
+}
+
+// SplineVol priced surface. C1 regression fixture: each fitted slice's params are
+// overridden with a LOW mult_cap (clamps the fitted wing multiples at the queried
+// wings) and a NONZERO w_offset (the calendar-cone additive lift) — both are live
+// eval-time terms of SplineVolCurve::w(). A view that drops either field
+// misprices, so this is the gate that C1's fix must turn green.
+[[nodiscard]] PricedSurface make_spline(std::uint32_t uid, int n) {
+  CurveSurface cs;
+  std::vector<SliceContext> ctx;
+  for (int i = 0; i < n; ++i) {
+    const double T = 0.05 + 0.10 * static_cast<double>(i);
+    const double F = kS;
+    const double df = std::exp(-kR * T);
+    SviParams svi{};
+    svi.a = 0.02 + 0.001 * static_cast<double>(i);
+    svi.b = 0.4;
+    svi.rho = -0.3;
+    svi.m = 0.0;
+    svi.sigma = 0.4;
+    const std::vector<FitObs> obs = svi_smile_obs(svi, T, 25, 0.6);
+    auto fitted = fit_spline_vol_slice(obs, F, T, df);
+    EXPECT_TRUE(fitted.has_value()) << (fitted.has_value() ? "" : fitted.error().to_string());
+    auto *svc = static_cast<SplineVolCurve *>(fitted->get());
+    SplineVolParams p = svc->params(); // deep copy (owns z/mult vectors)
+    p.mult_cap = 1.1;                  // low: clamps the fitted put/call wing multiples
+    p.w_offset = 0.015 + 0.002 * static_cast<double>(i); // nonzero calendar lift
+    cs.push(std::make_unique<SplineVolCurve>(std::move(p), T, F, df));
+    ctx.push_back(SliceContext{T, F, 0.0, 0.02, 25, 0});
+  }
+  auto ps = PricedSurface::create(std::move(cs), std::move(ctx), make_pricing(uid));
+  EXPECT_TRUE(ps.has_value());
+  return std::move(*ps);
+}
+
 // The core economic gate: a view over the v2 record prices bit-identically to the
 // source PricedSurface across a (K,T,side) grid — iv, total variance, term carry,
 // fair_value, greeks, greeks_analytic, delta, vega, AND evaluate_batch.
@@ -352,6 +410,19 @@ TEST(SurfaceArchiveV2, ViewBitIdentical_C8) {
   expect_view_bit_identical(orig, *v);
 }
 
+// C1 gate: SplineVol (the 6th kind) with a clamping mult_cap and a nonzero
+// w_offset must round-trip bit-exact. This is RED unless both fields are
+// serialized in the v2 payload and rebuilt by the view.
+TEST(SurfaceArchiveV2, ViewBitIdentical_SplineVol) {
+  const PricedSurface orig = make_spline(23, 5);
+  auto arch = SurfaceArchiveV2::open(build_v2(orig, "spl"));
+  ASSERT_TRUE(arch.has_value());
+  auto v = arch->map_symbol("spl");
+  ASSERT_TRUE(v.has_value());
+  EXPECT_EQ(v->kind_at(0), VolCurveKind::SplineVol);
+  expect_view_bit_identical(orig, *v);
+}
+
 // ── evaluate_batch parity (the primary hot kernel) ────────────────────────────
 
 TEST(SurfaceArchiveV2, EvaluateBatchBitIdentical) {
@@ -376,6 +447,28 @@ TEST(SurfaceArchiveV2, EvaluateBatchBitIdentical) {
   expect_batch_bit_identical(essvi, *v2, EF::Iv | EF::Price, false);
   expect_batch_bit_identical(essvi, *v2, EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder,
                              false);
+
+  // SplineVol batch (heavy materialize path with mult_cap clamp + w_offset).
+  const PricedSurface spline = make_spline(24, 5);
+  auto arch3 = SurfaceArchiveV2::open(build_v2(spline, "s"));
+  ASSERT_TRUE(arch3.has_value());
+  auto v3 = arch3->map_symbol("s");
+  ASSERT_TRUE(v3.has_value());
+  expect_batch_bit_identical(spline, *v3, EF::Iv | EF::Price, false);
+  expect_batch_bit_identical(spline, *v3, EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder,
+                             false);
+}
+
+// A big SplineVol fixture (its own record with many slices) — mirrors the
+// ConvexDense big-fixture alignment exercise for the other heavy kind.
+TEST(SurfaceArchiveV2, BigSplineFixtureParity) {
+  const PricedSurface big = make_spline(25, 16);
+  auto arch = SurfaceArchiveV2::open(build_v2(big, "bigspl"));
+  ASSERT_TRUE(arch.has_value());
+  auto v = arch->map_symbol("bigspl");
+  ASSERT_TRUE(v.has_value());
+  ASSERT_EQ(v->n_slices(), 16u);
+  expect_view_bit_identical(big, *v);
 }
 
 // ── Big-fixture alignment (S1 trap §11.3: reads must respect alignment) ───────
@@ -395,17 +488,20 @@ TEST(SurfaceArchiveV2, BigFixtureAlignmentAndParity) {
 // ── Multi-symbol map_all + provenance ─────────────────────────────────────────
 
 namespace {
+// A mixed 6-kind board so map_all / subset-isolation cover EVERY dispatch path,
+// incl. both heavy (eager-materialize) kinds ConvexDense + SplineVol.
 [[nodiscard]] std::vector<std::byte> build_multi() {
   static const PricedSurface s_spy = make_convex(100, 6, 25);
   static const PricedSurface s_aaa = make_essvi(101, 5);
   static const PricedSurface s_bbb = make_c8(102, 4);
   static const PricedSurface s_ccc = make_linear(103, 4, 13);
   static const PricedSurface s_ddd = make_svi(104, 5);
+  static const PricedSurface s_eee = make_spline(105, 5);
   const SurfaceProvenance prov = make_provenance();
-  const std::array<SurfaceArchiveItem, 5> items{
+  const std::array<SurfaceArchiveItem, 6> items{
       SurfaceArchiveItem{"SPY", &s_spy, prov}, SurfaceArchiveItem{"AAA", &s_aaa, prov},
       SurfaceArchiveItem{"BBB", &s_bbb, prov}, SurfaceArchiveItem{"CCC", &s_ccc, prov},
-      SurfaceArchiveItem{"DDD", &s_ddd, prov}};
+      SurfaceArchiveItem{"DDD", &s_ddd, prov}, SurfaceArchiveItem{"EEE", &s_eee, prov}};
   auto built = write_surface_archive_v2(items);
   EXPECT_TRUE(built.has_value()) << (built.has_value() ? "" : built.error().to_string());
   return built.has_value() ? std::move(*built) : std::vector<std::byte>{};
@@ -415,10 +511,10 @@ namespace {
 TEST(SurfaceArchiveV2, MapAllAndProvenance) {
   auto arch = SurfaceArchiveV2::open(build_multi());
   ASSERT_TRUE(arch.has_value());
-  EXPECT_EQ(arch->count(), 5u);
+  EXPECT_EQ(arch->count(), 6u);
   auto all = arch->map_all_with_provenance();
   ASSERT_TRUE(all.has_value()) << all.error().to_string();
-  ASSERT_EQ(all->size(), 5u);
+  ASSERT_EQ(all->size(), 6u);
   const SurfaceProvenance expected = make_provenance();
   for (const auto &av : *all) {
     EXPECT_EQ(av.provenance.purpose, expected.purpose);
@@ -440,20 +536,22 @@ TEST(SurfaceArchiveV2, SubsetMapIsolation) {
   std::vector<std::byte> bytes = build_multi();
   ASSERT_FALSE(bytes.empty());
 
-  // Learn each record's extent from an intact copy.
+  // Target the SplineVol record (highest-risk eager-materialize kind); learn its
+  // extent from an intact copy.
   auto probe = SurfaceArchiveV2::open(std::vector<std::byte>(bytes));
   ASSERT_TRUE(probe.has_value());
-  auto tgt = probe->find("BBB");
+  auto tgt = probe->find("EEE");
   ASSERT_TRUE(tgt.has_value());
   const std::size_t tgt_off = static_cast<std::size_t>(tgt->surface_offset);
   const std::size_t tgt_end = tgt_off + static_cast<std::size_t>(tgt->surface_size);
 
   // The source, priced through an INTACT archive (the parity oracle).
-  const PricedSurface bbb_src = make_c8(102, 4);
+  const PricedSurface eee_src = make_spline(105, 5);
 
-  // POISON every byte that is NOT part of BBB's record extent — every sibling
-  // record's payload, plus the inter-record gaps — with 0xFF. If map_symbol(BBB)
-  // touched any of them, its prices would change or it would fault.
+  // POISON every byte that is NOT part of EEE's record extent — every sibling
+  // record's payload (the other five kinds), plus the inter-record gaps — with
+  // 0xFF. If map_symbol(EEE) touched any of them, its prices would change or it
+  // would fault.
   const std::size_t data_off = static_cast<std::size_t>(probe->header().data_offset);
   for (std::size_t i = data_off; i < bytes.size(); ++i) {
     if (i >= tgt_off && i < tgt_end) {
@@ -464,12 +562,12 @@ TEST(SurfaceArchiveV2, SubsetMapIsolation) {
 
   auto arch = SurfaceArchiveV2::open(std::move(bytes)); // lazy CRC -> still opens
   ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
-  auto v = arch->map_symbol("BBB");
+  auto v = arch->map_symbol("EEE");
   ASSERT_TRUE(v.has_value()) << v.error().to_string();
-  expect_view_bit_identical(bbb_src, *v); // bit-exact despite poisoned siblings
+  expect_view_bit_identical(eee_src, *v); // bit-exact despite poisoned siblings
 
-  // Lazy integrity: BBB validates; the corrupted board as a whole does not.
-  EXPECT_TRUE(arch->validate_symbol("BBB").has_value());
+  // Lazy integrity: EEE validates; the corrupted board as a whole does not.
+  EXPECT_TRUE(arch->validate_symbol("EEE").has_value());
   EXPECT_FALSE(arch->validate_all().has_value());
 }
 

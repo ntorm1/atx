@@ -143,7 +143,15 @@ re-pack (no numeric change). `n = node_count`.
 | `C8` (4) | 0 | `C8Params` verbatim |
 | `ConvexDense` (0) | #nodes | `rmse_price` f64 · `n_obs` u64 · `n_active` u64 · `u[n]` f64 · `C[n]` f64 |
 | `LinearVariance` (3) | #nodes | `k[n]` f64 · `w[n]` f64 |
-| `SplineVol` (5) | #knots | `atm_vol,z_lo,z_hi` f64×3 · `n` u32 · pad u32 · `z[n]` f64 · `mult[n]` f64 · `n_butterfly_viol` u32 |
+| `SplineVol` (5) | #knots | `atm_vol,z_lo,z_hi` f64×3 · `n` u32 · pad u32 · `z[n]` f64 · `mult[n]` f64 · **`mult_cap` f64 · `w_offset` f64** · `n_butterfly_viol` u32 |
+
+**`mult_cap` and `w_offset` are load-bearing** — both are live eval-time terms of
+`SplineVolCurve::w()` (`mult_cap` clamps the served multiple; `w_offset` is the
+calendar-cone additive total-variance lift). Dropping them (the pre-review v2
+layout, and v1's ATXVSA v3, both did) silently misprices any SplineVol slice with
+a clamping multiple or a projected offset — the view rebuilds them as their 0.0
+struct defaults. They are serialized here so the view is bit-exact; the change
+bumped `schema_hash_v2`'s salt (minor→1) so any older v2 file is rejected.
 
 The ConvexDense fit diagnostics (`rmse_price/n_obs/n_active`) live **inline** in
 its payload (only that kind needs them) rather than as a mostly-zero column.

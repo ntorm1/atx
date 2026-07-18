@@ -434,7 +434,7 @@ private:
 // ═══════════════════════════════════════════════════════════════════════════
 
 inline constexpr std::uint16_t kArchiveV2Major = 4; // distinct from v1 (major 3)
-inline constexpr std::uint16_t kArchiveV2Minor = 0;
+inline constexpr std::uint16_t kArchiveV2Minor = 1; // minor 1: SplineVol payload gained mult_cap+w_offset
 
 // Surfaces pack on this file alignment (cache line / SIMD headroom) — replaces
 // v1's 4096-B kArchiveBlobAlign (bottleneck #6). Columns inside a record align to
@@ -555,6 +555,39 @@ struct ArchiveV2SurfaceHeader {
 static_assert(sizeof(ArchiveV2SurfaceHeader) == 256, "ArchiveV2SurfaceHeader layout drift");
 static_assert(std::is_trivially_copyable_v<ArchiveV2SurfaceHeader>);
 static_assert(std::is_standard_layout_v<ArchiveV2SurfaceHeader>);
+
+// Per-field offsets pinned explicitly (not just sizeof): this is an on-disk ABI,
+// so a field reorder that preserved sizeof would still silently corrupt readers.
+static_assert(offsetof(ArchiveV2Header, file_size) == 8);
+static_assert(offsetof(ArchiveV2Header, lookup_offset) == 40);
+static_assert(offsetof(ArchiveV2Header, directory_offset) == 48);
+static_assert(offsetof(ArchiveV2Header, data_offset) == 56);
+static_assert(offsetof(ArchiveV2Header, header_crc32c) == 84);
+static_assert(offsetof(ArchiveV2Header, metadata_crc32c) == 88);
+static_assert(offsetof(ArchiveV2LookupSlot, symbol_hash) == 0);
+static_assert(offsetof(ArchiveV2LookupSlot, surface_offset) == 8);
+static_assert(offsetof(ArchiveV2LookupSlot, surface_size) == 16);
+static_assert(offsetof(ArchiveV2DirEntry, surface_offset) == 0);
+static_assert(offsetof(ArchiveV2DirEntry, surface_size) == 8);
+static_assert(offsetof(ArchiveV2DirEntry, symbol_hash) == 16);
+static_assert(offsetof(ArchiveV2SurfaceHeader, record_size) == 8);
+static_assert(offsetof(ArchiveV2SurfaceHeader, S) == 16);
+static_assert(offsetof(ArchiveV2SurfaceHeader, r) == 24);
+static_assert(offsetof(ArchiveV2SurfaceHeader, now_ts_ns) == 32);
+static_assert(offsetof(ArchiveV2SurfaceHeader, al_tol) == 40);
+static_assert(offsetof(ArchiveV2SurfaceHeader, col_kind_off) == 72);
+static_assert(offsetof(ArchiveV2SurfaceHeader, col_T_off) == 80);
+static_assert(offsetof(ArchiveV2SurfaceHeader, col_forward_off) == 88);
+static_assert(offsetof(ArchiveV2SurfaceHeader, col_qeff_off) == 96);
+static_assert(offsetof(ArchiveV2SurfaceHeader, col_df_off) == 104);
+static_assert(offsetof(ArchiveV2SurfaceHeader, col_borrow_off) == 112);
+static_assert(offsetof(ArchiveV2SurfaceHeader, col_nused_off) == 120);
+static_assert(offsetof(ArchiveV2SurfaceHeader, col_ndropped_off) == 128);
+static_assert(offsetof(ArchiveV2SurfaceHeader, col_nodecount_off) == 136);
+static_assert(offsetof(ArchiveV2SurfaceHeader, col_payload_off_off) == 144);
+static_assert(offsetof(ArchiveV2SurfaceHeader, uid) == 152);
+static_assert(offsetof(ArchiveV2SurfaceHeader, n_slices) == 156);
+static_assert(offsetof(ArchiveV2SurfaceHeader, payload_crc32c) == 168);
 
 // ── v2 writer ────────────────────────────────────────────────────────────────
 
