@@ -21,12 +21,17 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <memory>
+#include <new>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -47,6 +52,33 @@
 
 using namespace atx::vol;
 namespace fs = std::filesystem;
+
+// B3 zero-alloc proof: a counting passthrough for the global allocator, armed only
+// around the measured run_backtest calls (see HedgeLedgerAllocationIsStepInvariant).
+// Replacing global operator new here affects only this test binary; the count is a
+// deterministic tally of ::operator new calls while armed. Aligned/over-aligned
+// allocations route to their own operators (not replaced) — irrelevant here because
+// the hedge ledger/scratch are plain std::vector / std::unordered_map allocations.
+namespace atx_b3_alloc {
+std::atomic<std::uint64_t> g_count{0};
+std::atomic<bool> g_armed{false};
+}  // namespace atx_b3_alloc
+
+void* operator new(std::size_t sz) {
+  if (atx_b3_alloc::g_armed.load(std::memory_order_relaxed)) {
+    atx_b3_alloc::g_count.fetch_add(1, std::memory_order_relaxed);
+  }
+  void* p = std::malloc(sz != 0 ? sz : 1);
+  if (p == nullptr) {
+    throw std::bad_alloc();
+  }
+  return p;
+}
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+void* operator new[](std::size_t sz) { return ::operator new(sz); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
 
 namespace {
 
@@ -723,4 +755,390 @@ TEST(BacktestExec, FrictionMonotonicity) {
   EXPECT_GT(navs[1], navs[2]);
   std::printf("[btexec] monotonicity nav={%.4f,%.4f,%.4f} cost={%.4f,%.4f,%.4f}\n", navs[0], navs[1],
               navs[2], costs[0], costs[1], costs[2]);
+}
+
+// ── B3. Daily delta-hedge + O(1) share ledger is allocation-free in steady state ──
+//
+// The hedge overlay's HEAP footprint must not grow with the step count: after
+// warm-up (every hedged uid resident in the ledger) the pass reuses its per-uid
+// delta aggregate, uid-order, and dedup scratch and touches the O(1) share index,
+// so it allocates nothing per step. Proof by isolation: hedge-on vs hedge-off runs
+// are identical except for the hedge (same entries, same book growth, same output,
+// same snapshot loads), so (armed alloc count)_on - _off is exactly the hedge's
+// heap cost. We measure it at D and 2D dates and assert it does NOT grow with the
+// step count. Pre-B3 the overlay heap-allocated a fresh `uids` vector on EVERY
+// hedge step, so the isolated count grew with D; this test is that regression's gate.
+//
+// n_threads=1 + prefetch off ⇒ the whole run is single-threaded, so the armed
+// global-new tally is deterministic (no worker-pool / async-prefetch allocations).
+TEST(BacktestExec, HedgeLedgerAllocationIsStepInvariant) {
+  const fs::path dir = fresh_dir("allocsteady");
+
+  // A daily ATM-put clip, held to expiry (cohorts accumulate), hedged daily to a
+  // tight band so a trade fires every step over the drifting spot.
+  const auto make_daily_hedged = [](bool hedge_on) {
+    StrategySpec spec;
+    spec.name = "daily-put-htx";
+    LegSpec leg;
+    leg.uid = kUid;
+    leg.tenor.target_T = 0.25;  // 3M: no expiries over the short run (book only grows)
+    leg.structure.kind = StructureSpec::Kind::Single;
+    leg.structure.single_side = Side::Put;
+    leg.strike = StrikeSelector{StrikeSelector::Kind::AtmForward, 0.0};
+    leg.size = SizeSpec{SizeSpec::Kind::FixedContracts, 1.0, +1.0};
+    spec.legs.push_back(leg);
+    spec.lifecycle.entry = LifecycleSpec::Entry::EveryStep;
+    spec.lifecycle.holding = LifecycleSpec::Holding::HoldToExpiry;
+    if (hedge_on) {
+      spec.hedge = HedgeSpec{HedgeSpec::Kind::DeltaToZero, HedgeSpec::Cadence::Daily, 1e-9};
+    }
+    return spec;
+  };
+
+  // Single-threaded, no async prefetch ⇒ the armed tally counts only this thread.
+  const auto run_counted = [&](const StrategySpec& spec, int n_dates) -> std::uint64_t {
+    const Corpus c = make_corpus(dir, "SPX", n_dates, 100.0, 0.006, 0.001);
+    auto clock = Clock::from_manifest(c.manifest);
+    EXPECT_TRUE(clock.has_value()) << (clock.has_value() ? std::string{} : clock.error().to_string());
+    DeclarativeStrategy strat{spec};
+    RunConfig cfg;
+    cfg.price.n_threads = 1;
+    cfg.prefetch_snapshots = false;
+    atx_b3_alloc::g_count.store(0, std::memory_order_relaxed);
+    atx_b3_alloc::g_armed.store(true, std::memory_order_relaxed);
+    auto res = run_backtest(*clock, strat, cfg);
+    atx_b3_alloc::g_armed.store(false, std::memory_order_relaxed);
+    EXPECT_TRUE(res.has_value()) << (res.has_value() ? std::string{} : res.error().to_string());
+    return atx_b3_alloc::g_count.load(std::memory_order_relaxed);
+  };
+
+  constexpr int kD = 8;
+  const StrategySpec on = make_daily_hedged(true);
+  const StrategySpec off = make_daily_hedged(false);
+
+  const std::uint64_t on_d = run_counted(on, kD);
+  const std::uint64_t off_d = run_counted(off, kD);
+  const std::uint64_t on_2d = run_counted(on, 2 * kD);
+  const std::uint64_t off_2d = run_counted(off, 2 * kD);
+
+  ASSERT_GE(on_d, off_d);
+  ASSERT_GE(on_2d, off_2d);
+  const std::uint64_t hedge_extra_d = on_d - off_d;
+  const std::uint64_t hedge_extra_2d = on_2d - off_2d;
+
+  // The hedge/ledger heap cost is one-time (ledger + scratch grow to the resident
+  // uid set during warm-up) and does NOT grow with the step count: doubling the
+  // dates does not increase the hedge-attributable allocation count.
+  EXPECT_LE(hedge_extra_2d, hedge_extra_d)
+      << "hedge allocation grew with step count — a per-step heap allocation regressed the "
+         "zero-alloc steady state (hedge_extra_d=" << hedge_extra_d
+      << " hedge_extra_2d=" << hedge_extra_2d << ")";
+  std::printf("[btexec] B3 zero-alloc: hedge-attributable allocs D=%llu 2D=%llu (on_d=%llu off_d=%llu "
+              "on_2d=%llu off_2d=%llu)\n",
+              static_cast<unsigned long long>(hedge_extra_d),
+              static_cast<unsigned long long>(hedge_extra_2d),
+              static_cast<unsigned long long>(on_d), static_cast<unsigned long long>(off_d),
+              static_cast<unsigned long long>(on_2d), static_cast<unsigned long long>(off_2d));
+}
+
+// ── B4. Held-to-expiry daily overlapping cohorts compose + settle at scale ───────
+//
+// EveryStep entry + HoldToExpiry over kNames 40Δ strangles builds many overlapping
+// daily cohorts; a ~20-clock-day tenor (target_T = 20*kDayNs/kNsPerYear, which
+// rounds to exactly 20 clock-days so expiries land ON clock dates) makes cohorts
+// reach expiry MID-RUN — exercising the expiry sweep + engine settlement (B2
+// batched marks) at scale, not just accumulation. Verifies the composition is
+// correct (overlapping cohorts accumulate, cohorts settle, the book never empties)
+// and bit-identical across thread counts (determinism at scale).
+TEST(BacktestExec, HeldToExpiryDailyCohortsComposeAtScale) {
+  const fs::path dir = fresh_dir("b4-cohorts");
+  constexpr int kNames = 4;
+  constexpr int kDates = 24;
+  static const char* kSyms[] = {"AAA", "BBB", "CCC", "DDD"};
+
+  std::vector<std::pair<std::string, std::string>> dp;
+  for (int d = 0; d < kDates; ++d) {
+    const std::int64_t now = kBaseNow + static_cast<std::int64_t>(d) * kDayNs;
+    std::vector<PricedSurface> surfaces;
+    surfaces.reserve(kNames);
+    for (int u = 0; u < kNames; ++u) {
+      const double S = (100.0 + 10.0 * static_cast<double>(u)) * (1.0 + 0.003 * static_cast<double>(d));
+      surfaces.push_back(make_surface(kUid + static_cast<std::uint32_t>(u), S, S, now,
+                                      0.001 * static_cast<double>(d) + 0.002 * static_cast<double>(u)));
+    }
+    std::vector<SurfaceArchiveItem> items;
+    for (int u = 0; u < kNames; ++u) {
+      items.push_back(SurfaceArchiveItem{kSyms[u], &surfaces[u]});
+    }
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "2026-08-%02d", d + 1);
+    const std::string path = (dir / (std::string(buf) + ".atxvsa")).string();
+    ASSERT_TRUE(write_surface_archive_v2_file(path, items).has_value());
+    dp.emplace_back(buf, path);
+  }
+  auto clock = Clock::from_manifest(make_manifest(dp, "AAA"));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const double tenor_T = static_cast<double>(20 * kDayNs) / kNsPerYear; // -> exactly 20 clock-days
+  StrategySpec spec;
+  spec.name = "b4-daily-strangle-htx";
+  for (int u = 0; u < kNames; ++u) {
+    LegSpec leg;
+    leg.uid = kUid + static_cast<std::uint32_t>(u);
+    leg.tenor.target_T = tenor_T;
+    leg.tenor.snap_to_listed = false;
+    leg.structure.kind = StructureSpec::Kind::Strangle;
+    leg.structure.call_leg = StrikeSelector{StrikeSelector::Kind::Delta, 0.40};
+    leg.structure.put_leg = StrikeSelector{StrikeSelector::Kind::Delta, 0.40};
+    leg.size = SizeSpec{SizeSpec::Kind::FixedContracts, 1.0, +1.0};
+    spec.legs.push_back(leg);
+  }
+  spec.lifecycle.entry = LifecycleSpec::Entry::EveryStep;
+  spec.lifecycle.holding = LifecycleSpec::Holding::HoldToExpiry;
+
+  const auto run = [&](unsigned n_threads) {
+    DeclarativeStrategy strat{spec};
+    RunConfig cfg;
+    cfg.price.n_threads = n_threads;
+    return run_backtest(*clock, strat, cfg);
+  };
+
+  auto r1 = run(1);
+  ASSERT_TRUE(r1.has_value()) << r1.error().to_string();
+  ASSERT_EQ(r1->size(), static_cast<std::size_t>(kDates));
+
+  double max_lots = 0.0;
+  int settle_rows = 0;
+  for (std::size_t i = 0; i < r1->size(); ++i) {
+    max_lots = std::max(max_lots, r1->n_open_lots[i]);
+    if (std::fabs(r1->pnl_settlement[i]) > 0.0) {
+      ++settle_rows;
+    }
+    EXPECT_GT(r1->n_open_lots[i], 0.0) << "book emptied at row " << i;
+  }
+  // Overlapping cohorts accumulate to many legs; cohorts reach expiry mid-run.
+  EXPECT_GT(max_lots, static_cast<double>(kNames * 2 * 10)) << "cohorts did not overlap at scale";
+  EXPECT_GT(settle_rows, 0) << "no cohort reached expiry/settlement within the run";
+
+  // Determinism at scale: bit-identical across thread counts.
+  auto r4 = run(4);
+  ASSERT_TRUE(r4.has_value()) << r4.error().to_string();
+  ASSERT_EQ(r1->size(), r4->size());
+  for (std::size_t i = 0; i < r1->size(); ++i) {
+    EXPECT_TRUE(bits_equal(r1->nav[i], r4->nav[i])) << "nav row " << i;
+    EXPECT_TRUE(bits_equal(r1->pnl_total[i], r4->pnl_total[i])) << "pnl_total row " << i;
+    EXPECT_TRUE(bits_equal(r1->pnl_settlement[i], r4->pnl_settlement[i])) << "settle row " << i;
+    EXPECT_TRUE(bits_equal(r1->gross_vega[i], r4->gross_vega[i])) << "gross_vega row " << i;
+    EXPECT_EQ(r1->n_open_lots[i], r4->n_open_lots[i]) << "n_open_lots row " << i;
+  }
+  std::printf("[btexec] B4 cohorts: %d names, %d dates, max_open_lots=%.0f, settle_rows=%d, "
+              "det(1 vs 4 threads)=OK\n",
+              kNames, kDates, max_lots, settle_rows);
+}
+
+// ── B5a. Strategy-overload hedge + cohort determinism (B3 + B4) ───────────────
+//
+// EXACT coverage: the STRATEGY overload on the M2 universe shape (kNames 40Δ
+// strangles, EveryStep entry, HoldToExpiry, DeltaToZero DAILY hedge). This exercises
+// B3 (the O(1) daily delta-hedge ledger, band 0.0 so it fires every step) and B4
+// (daily overlapping cohort accumulation). It does NOT exercise B1 subset-deser (the
+// strategy overload's private cache carries no referenced_uids => whole-board load)
+// nor B2 batched settlement (target_T=0.25 over kDates => no mid-run expiries,
+// pnl_settlement == 0 every row); those composed paths are gated by
+// FixedBookComposedSubsetAndSettlement_Deterministic (B1+B2) below and by B4's
+// HeldToExpiryDailyCohortsComposeAtScale (settlement at scale). Asserts:
+//   (a) bit-identical across two runs (determinism), and
+//   (b) bit-identical across thread counts (thread-invariant reductions).
+TEST(BacktestExec, StrategyLoopHedgeAndCohorts_Deterministic) {
+  const fs::path dir = fresh_dir("b5-universe");
+  constexpr int kNames = 4;
+  constexpr int kDates = 12;
+  static const char* kSyms[] = {"AAA", "BBB", "CCC", "DDD"};
+
+  std::vector<std::pair<std::string, std::string>> dp;
+  for (int d = 0; d < kDates; ++d) {
+    const std::int64_t now = kBaseNow + static_cast<std::int64_t>(d) * kDayNs;
+    std::vector<PricedSurface> surfaces;
+    surfaces.reserve(kNames);
+    for (int u = 0; u < kNames; ++u) {
+      const double S =
+          (100.0 + 10.0 * static_cast<double>(u)) * (1.0 + 0.004 * static_cast<double>(d));
+      surfaces.push_back(make_surface(kUid + static_cast<std::uint32_t>(u), S, S, now,
+                                      0.001 * static_cast<double>(d) + 0.002 * static_cast<double>(u)));
+    }
+    std::vector<SurfaceArchiveItem> items;
+    for (int u = 0; u < kNames; ++u) {
+      items.push_back(SurfaceArchiveItem{kSyms[u], &surfaces[u]});
+    }
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "2026-08-%02d", d + 1);
+    const std::string path = (dir / (std::string(buf) + ".atxvsa")).string();
+    ASSERT_TRUE(write_surface_archive_v2_file(path, items).has_value());
+    dp.emplace_back(buf, path);
+  }
+  auto clock = Clock::from_manifest(make_manifest(dp, "AAA"));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  StrategySpec spec;
+  spec.name = "b5-universe-strangle-hedged";
+  for (int u = 0; u < kNames; ++u) {
+    LegSpec leg;
+    leg.uid = kUid + static_cast<std::uint32_t>(u);
+    leg.tenor.target_T = 0.25; // 3M, in-grid across the run
+    leg.tenor.snap_to_listed = false;
+    leg.structure.kind = StructureSpec::Kind::Strangle;
+    leg.structure.call_leg = StrikeSelector{StrikeSelector::Kind::Delta, 0.40};
+    leg.structure.put_leg = StrikeSelector{StrikeSelector::Kind::Delta, 0.40};
+    leg.size = SizeSpec{SizeSpec::Kind::FixedContracts, 1.0, +1.0};
+    spec.legs.push_back(leg);
+  }
+  spec.lifecycle.entry = LifecycleSpec::Entry::EveryStep;
+  spec.lifecycle.holding = LifecycleSpec::Holding::HoldToExpiry;
+  spec.hedge = HedgeSpec{HedgeSpec::Kind::DeltaToZero, HedgeSpec::Cadence::Daily, 0.0};
+
+  const auto run = [&](unsigned n_threads) {
+    DeclarativeStrategy strat{spec};
+    RunConfig cfg;
+    cfg.price.n_threads = n_threads;
+    return run_backtest(*clock, strat, cfg);
+  };
+
+  auto a = run(1);
+  auto b = run(1); // same config, second run — determinism
+  auto c = run(4); // different thread count — thread-invariance
+  ASSERT_TRUE(a.has_value()) << a.error().to_string();
+  ASSERT_TRUE(b.has_value()) << b.error().to_string();
+  ASSERT_TRUE(c.has_value()) << c.error().to_string();
+  ASSERT_EQ(a->size(), static_cast<std::size_t>(kDates));
+
+  const auto all_cols = [](const BacktestResult& r, std::size_t i) {
+    return std::array<double, 8>{r.nav[i],        r.pnl_total[i], r.pnl_vega[i],  r.pnl_settlement[i],
+                                 r.pnl_shares[i],  r.cost[i],      r.cash[i],      r.gross_delta[i]};
+  };
+  for (std::size_t i = 0; i < a->size(); ++i) {
+    const auto ca = all_cols(*a, i);
+    const auto cb = all_cols(*b, i);
+    const auto cc = all_cols(*c, i);
+    for (std::size_t k = 0; k < ca.size(); ++k) {
+      EXPECT_TRUE(bits_equal(ca[k], cb[k])) << "two-run determinism col " << k << " row " << i;
+      EXPECT_TRUE(bits_equal(ca[k], cc[k])) << "thread-invariance col " << k << " row " << i;
+    }
+  }
+  std::printf("[btexec] B5a strategy hedge+cohorts (B3+B4): %d names x %d dates hedged; bit-identical "
+              "over 2 runs and 1-vs-4 threads\n",
+              kNames, kDates);
+}
+
+// ── B5b. Fixed-book composed subset-deser + batched settlement determinism (B1 + B2) ─
+//
+// The strategy gate above cannot exercise B1 (strategy overload = whole board) nor
+// B2 (no expiries), so this companion gates the composed FIXED-BOOK path where BOTH
+// run. The archive holds 4 names; the fixed book references only 2 (book ⊂ archive),
+// so the fixed-book overload's private cache subset-deserializes. To PROVE the
+// subset path is load-bearing (not merely present), the 2 UNREFERENCED surfaces are
+// written with a MISMATCHED now_ts_ns: a whole-board load then fails the
+// surfaces-agree-on-ts check (asserted as a positive control), while the subset load
+// of the 2 referenced (matching-ts) names succeeds — so a run that succeeds MUST have
+// taken the subset path. One book lot expires exactly on a mid-window clock date, so
+// B2 batched settlement fires (asserted: exactly one settling row). Then 2-run +
+// 1-vs-4-thread bit-identity over the composed run.
+TEST(BacktestExec, FixedBookComposedSubsetAndSettlement_Deterministic) {
+  const fs::path dir = fresh_dir("b5-composed");
+  constexpr int kDates = 6;
+  const std::int64_t kExpiry = kBaseNow + 3 * kDayNs; // settles at date index 3
+  static const char* kSyms[] = {"AAA", "BBB", "CCC", "DDD"};
+  const std::uint32_t ref_uids[] = {kUid, kUid + 2}; // referenced (AAA, CCC)
+
+  std::vector<std::pair<std::string, std::string>> dp;
+  for (int d = 0; d < kDates; ++d) {
+    const std::int64_t now = kBaseNow + static_cast<std::int64_t>(d) * kDayNs;
+    std::vector<PricedSurface> surfaces;
+    surfaces.reserve(4);
+    for (int u = 0; u < 4; ++u) {
+      const bool referenced = (u == 0 || u == 2);
+      // Unreferenced surfaces carry a DIFFERENT now_ts so a WHOLE-board load fails.
+      const std::int64_t ts = referenced ? now : now + 1000000;
+      const double S = (100.0 + 10.0 * static_cast<double>(u)) * (1.0 + 0.003 * static_cast<double>(d));
+      surfaces.push_back(make_surface(kUid + static_cast<std::uint32_t>(u), S, S, ts,
+                                      0.001 * static_cast<double>(d) + 0.002 * static_cast<double>(u)));
+    }
+    std::vector<SurfaceArchiveItem> items;
+    for (int u = 0; u < 4; ++u) {
+      items.push_back(SurfaceArchiveItem{kSyms[u], &surfaces[u]});
+    }
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "2026-08-%02d", d + 1);
+    const std::string path = (dir / (std::string(buf) + ".atxvsa")).string();
+    ASSERT_TRUE(write_surface_archive_v2_file(path, items).has_value());
+    dp.emplace_back(buf, path);
+  }
+  auto clock = Clock::from_manifest(make_manifest(dp, "AAA"));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  // Positive control: a WHOLE-BOARD load fails (mixed now_ts across the 4 surfaces).
+  auto whole = MarketSnapshot::load(dp.front().second);
+  EXPECT_FALSE(whole.has_value()) << "whole-board load should fail on mismatched now_ts_ns — the "
+                                     "subset path is what makes the run below succeed";
+  // The subset load of the 2 referenced (matching-ts) names succeeds with 2 surfaces.
+  auto sub = MarketSnapshot::load(dp.front().second, QueryPricingTier::LegacyCompatible,
+                                  std::span<const std::uint32_t>{ref_uids});
+  ASSERT_TRUE(sub.has_value()) << sub.error().to_string();
+  EXPECT_EQ(sub->surfaces().size(), 2u);
+
+  const auto make_book = [&]() {
+    PortfolioState b;
+    // kUid lot expires mid-window (settles at date 3); kUid+2 lot held past the window.
+    b.lots.push_back(
+        Lot{1, OptionContract{kUid, 100.0, 0.0, Side::Call}, +2.0, 100.0, kExpiry, 0, 0.0});
+    b.lots.push_back(Lot{2, OptionContract{kUid + 2, 120.0, 0.0, Side::Put}, -1.0, 100.0,
+                         kBaseNow + 120 * kDayNs, 0, 0.0});
+    return b;
+  };
+  const auto run = [&](unsigned n_threads) {
+    RunConfig cfg;
+    cfg.price.n_threads = n_threads; // default (null) cache => private subset cache (B1)
+    return run_backtest(*clock, make_book(), cfg);
+  };
+
+  auto a = run(1);
+  ASSERT_TRUE(a.has_value()) << (a.has_value() ? std::string{} : a.error().to_string())
+                             << " (the fixed-book subset run must succeed even though the "
+                                "whole-board load fails — proof the B1 subset path ran)";
+  // B2 batched settlement ran: exactly one lot expired mid-window and settled.
+  int settle_rows = 0;
+  for (std::size_t i = 0; i < a->size(); ++i) {
+    if (std::fabs(a->pnl_settlement[i]) > 0.0) {
+      ++settle_rows;
+    }
+  }
+  EXPECT_EQ(settle_rows, 1) << "B2 batched settlement did not fire in the composed run";
+
+  auto b = run(1); // determinism (second run)
+  auto c = run(4); // thread-invariance
+  ASSERT_TRUE(b.has_value()) << b.error().to_string();
+  ASSERT_TRUE(c.has_value()) << c.error().to_string();
+  ASSERT_EQ(a->size(), b->size());
+  ASSERT_EQ(a->size(), c->size());
+  const auto cols = [](const BacktestResult& r, std::size_t i) {
+    return std::array<double, 6>{r.nav[i],   r.pnl_total[i],  r.pnl_settlement[i],
+                                 r.pnl_delta[i], r.gross_vega[i], r.gross_delta[i]};
+  };
+  for (std::size_t i = 0; i < a->size(); ++i) {
+    const auto ca = cols(*a, i);
+    const auto cb = cols(*b, i);
+    const auto cc = cols(*c, i);
+    for (std::size_t k = 0; k < ca.size(); ++k) {
+      EXPECT_TRUE(bits_equal(ca[k], cb[k])) << "two-run determinism col " << k << " row " << i;
+      EXPECT_TRUE(bits_equal(ca[k], cc[k])) << "thread-invariance col " << k << " row " << i;
+    }
+  }
+  std::printf("[btexec] B5b composed fixed-book (B1 subset + B2 settle): whole-board load fails, "
+              "subset run succeeds, settle_rows=%d, bit-identical over 2 runs and 1-vs-4 threads\n",
+              settle_rows);
 }

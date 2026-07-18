@@ -15,6 +15,8 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -376,6 +378,146 @@ private:
   std::size_t active_size_{0};
 };
 
+// B3: O(1) per-uid hedge-share ledger + allocation-free daily delta-hedge pass.
+//
+// Replaces the pre-B3 hot loop's three linear scans — the `shares` vector's
+// O(book) get/add/sum, and the per-uid whole-frame delta rescan (O(book) per uid
+// => O(book^2) per hedge step) plus the fresh `uids` vector heap-allocated on
+// every hedge step (bottleneck #7). Share counts live in an insertion-ordered
+// vector (deterministic iteration for sum() / financing / the hedge trade order)
+// with a parallel hash index for O(1) get/add; the per-step scratch (per-uid
+// option-delta aggregate, uid iteration order, dedup set) is retained and only
+// clear()ed, so after warm-up (every hedged uid already resident) the pass makes
+// no heap allocation.
+//
+// Class: pure-refactor. Determinism/parity: sum(), entries() and the hedge trade
+// loop iterate in the SAME order the pre-B3 code did (book.lots dedup order, then
+// shares insertion order), and per-uid option delta is summed in frame order
+// (i ascending) exactly as the pre-B3 inner loop did, so the emitted hedge trades,
+// cash, and net delta are BIT-IDENTICAL to the pre-B3 path (B5 parity + n_threads
+// determinism gates verify this).
+class HedgeLedger {
+public:
+  [[nodiscard]] double get(std::uint32_t uid) const noexcept {
+    const auto it = index_.find(uid);
+    return it == index_.end() ? 0.0 : shares_[it->second].second;
+  }
+
+  void add(std::uint32_t uid, double dn) {
+    const auto it = index_.find(uid);
+    if (it != index_.end()) {
+      shares_[it->second].second += dn;
+      return;
+    }
+    index_.emplace(uid, shares_.size());
+    shares_.emplace_back(uid, dn);
+  }
+
+  // Sum of held shares across every uid, in insertion order (matches the pre-B3
+  // shares_sum linear scan bit-for-bit).
+  [[nodiscard]] double sum() const noexcept {
+    double s = 0.0;
+    for (const auto &kv : shares_) {
+      s += kv.second;
+    }
+    return s;
+  }
+
+  // The share ledger in insertion order (the financing loop reads it; iteration
+  // order is the pre-B3 `shares` order, so shares P&L / financing are unchanged).
+  [[nodiscard]] std::span<const std::pair<std::uint32_t, double>> entries() const noexcept {
+    return {shares_.data(), shares_.size()};
+  }
+
+  // One allocation-free daily delta-hedge pass. `frame` is the full-book risk frame
+  // aligned to `lots`. For each uid — book.lots dedup order, then any remaining
+  // ledger uids — net = summed-Ok-option-delta + held shares; when |net| > band,
+  // trade -net shares at that uid's base spot (`spot_of(uid)`), charge slippage into
+  // `cost`, settle the notional into `cash`, and record the shares. Bit-identical to
+  // the pre-B3 overlay (same uid order, same per-uid frame-order delta sum, same
+  // cash accumulation order).
+  //
+  // Steady-state allocation-free: the per-uid delta aggregate and the dedup set are
+  // held as DENSE, generation-STAMPED vectors (not node-based unordered_map/set that
+  // reallocate a node per key on every clear()+reinsert). A per-pass `generation_`
+  // bump invalidates last pass's stamps in O(1) with no clears, so after warm-up
+  // (every uid resident in `scratch_index_`) the pass performs no heap allocation.
+  template <typename SpotOf>
+  void hedge_daily(const std::vector<Lot> &lots, const PriceFrame &frame, double band,
+                   double hedge_slippage_bps, SpotOf &&spot_of, double &cash, double &cost) {
+    ++generation_;
+    order_.clear(); // vector clear keeps capacity (no per-element deallocation)
+    // 1. Aggregate Ok option delta per uid in ONE frame pass (frame order per uid).
+    for (std::size_t i = 0; i < frame.size(); ++i) {
+      if (frame.status[i] != PriceStatus::Ok) {
+        continue;
+      }
+      const std::size_t s = scratch_slot(frame.uid[i]);
+      if (agg_gen_[s] != generation_) {
+        agg_gen_[s] = generation_;
+        agg_val_[s] = 0.0;
+      }
+      agg_val_[s] += frame.delta[i];
+    }
+    // 2. uid iteration order: book.lots dedup, then ledger uids not yet seen.
+    for (const Lot &lot : lots) {
+      const std::size_t s = scratch_slot(lot.contract.uid);
+      if (seen_gen_[s] != generation_) {
+        seen_gen_[s] = generation_;
+        order_.push_back(lot.contract.uid);
+      }
+    }
+    for (const auto &kv : shares_) {
+      const std::size_t s = scratch_slot(kv.first);
+      if (seen_gen_[s] != generation_) {
+        seen_gen_[s] = generation_;
+        order_.push_back(kv.first);
+      }
+    }
+    // 3. Trade each uid whose net delta breaches the band.
+    for (const std::uint32_t uid : order_) {
+      const std::size_t s = scratch_slot(uid);
+      const double option_delta = (agg_gen_[s] == generation_) ? agg_val_[s] : 0.0;
+      const double net = option_delta + get(uid);
+      if (std::fabs(net) > band) {
+        const double shares_to_trade = -net;
+        const double spot = spot_of(uid);
+        cost += std::fabs(shares_to_trade) * spot * (hedge_slippage_bps / 1.0e4);
+        cash -= shares_to_trade * spot;
+        add(uid, shares_to_trade);
+      }
+    }
+  }
+
+private:
+  // Dense scratch slot for `uid`; grows once per newly-seen uid and is never cleared,
+  // so steady state allocates nothing. A freshly-grown slot's stamps are 0 (< any
+  // live generation_, which starts at 1 after the first ++), i.e. "not this pass".
+  [[nodiscard]] std::size_t scratch_slot(std::uint32_t uid) {
+    const auto it = scratch_index_.find(uid);
+    if (it != scratch_index_.end()) {
+      return it->second;
+    }
+    const std::size_t s = agg_val_.size();
+    scratch_index_.emplace(uid, s);
+    agg_val_.push_back(0.0);
+    agg_gen_.push_back(0);
+    seen_gen_.push_back(0);
+    return s;
+  }
+
+  std::vector<std::pair<std::uint32_t, double>> shares_;   // insertion order (traded uids)
+  std::unordered_map<std::uint32_t, std::size_t> index_;   // uid -> slot in shares_
+
+  // Per-step hedge scratch — dense, generation-stamped, allocation-free in steady state.
+  std::unordered_map<std::uint32_t, std::size_t> scratch_index_; // uid -> dense scratch slot
+  std::vector<double> agg_val_;         // per-uid summed option delta (valid iff agg_gen_==gen)
+  std::vector<std::uint64_t> agg_gen_;  // stamp: agg_val_ valid this pass
+  std::vector<std::uint64_t> seen_gen_; // stamp: uid already emitted into order_ this pass
+  std::vector<std::uint32_t> order_;    // uid iteration order (dedup)
+  std::uint64_t generation_{0};
+};
+
 [[nodiscard]] Status validate_strategy_transition(std::span<const Lot> before,
                                                   std::span<const Lot> after,
                                                   std::uint64_t next_id_before,
@@ -460,6 +602,33 @@ struct ReusablePriceFrame {
                           frame.delta, frame.gamma, frame.vega,  frame.theta,  frame.rho,
                           frame.vanna, frame.volga, frame.charm, frame.status, &frame.total};
   }
+
+  // Marks-only sizing (B2 settlement): marks columns to n, greek columns emptied so
+  // a PriceFieldMask::Marks price_into stays off the greek path (the seam leaves the
+  // eight greek spans EMPTY under the Marks mask). clear() keeps capacity, so this is
+  // allocation-free once warm.
+  void resize_marks(std::size_t n) {
+    frame.id.resize(n);
+    frame.uid.resize(n);
+    frame.pv.resize(n);
+    frame.price.resize(n);
+    frame.iv.resize(n);
+    frame.status.resize(n);
+    frame.delta.clear();
+    frame.gamma.clear();
+    frame.vega.clear();
+    frame.theta.clear();
+    frame.rho.clear();
+    frame.vanna.clear();
+    frame.volga.clear();
+    frame.charm.clear();
+  }
+
+  [[nodiscard]] PriceFrameView marks_view() noexcept {
+    return PriceFrameView{frame.id, frame.uid, frame.pv,     frame.price, frame.iv, {}, {}, {},
+                          {},       {},        {},           {},          {},       frame.status,
+                          &frame.total};
+  }
 };
 
 // Price the current lots against `snap` at its residual T and report how many
@@ -517,9 +686,21 @@ struct StepPnl {
                                            const MarketSnapshot &shifted,
                                            const std::vector<Lot> &lots, const PriceOptions &opts,
                                            RetainedBookPricer &retained,
-                                           ReusableTargetMarkFrame *target_marks = nullptr) {
+                                           ReusableTargetMarkFrame *target_marks = nullptr,
+                                           RetainedBookPricer *settle = nullptr,
+                                           ReusablePriceFrame *settle_frame = nullptr) {
   ATX_VOL_PROFILE_SCOPE(StepPnl);
   std::vector<Lot> &alive = retained.reset_alive_scratch(lots.size());
+  // B2: batch the expiry-settlement base marks (bottleneck #3). When a settlement
+  // pricer is supplied, expiring lots are collected and their base marks come from
+  // ONE PortfolioPricer Marks pass below, replacing the per-lot scalar fair_value.
+  // The batched mark equals the scalar fair_value to the andersen_lake tolerance
+  // (~1e-9 — economic parity per §3, checked by the ExpirySettlement gate); the
+  // settlement is accumulated in the SAME lot order and the pricer reduction is
+  // thread-invariant, so the result is deterministic and thread-count-invariant.
+  // With no settle pricer (settle==nullptr) the exact per-lot scalar path is kept.
+  const bool batch_settle = settle != nullptr && settle_frame != nullptr;
+  std::vector<Lot> *expiring = batch_settle ? &settle->reset_alive_scratch(lots.size()) : nullptr;
   double settlement = 0.0;
   for (const Lot &lot : lots) {
     if (lot.expiry_ts_ns <= shifted.ts_ns()) {
@@ -530,12 +711,16 @@ struct StepPnl {
                 " (expiry_ts_ns=" + std::to_string(lot.expiry_ts_ns) +
                 ", next_snapshot_ts_ns=" + std::to_string(shifted.ts_ns()) + ")");
       }
-      const double T_base = residual_T(lot.expiry_ts_ns, base.ts_ns());
       const PricedSurface *bs = base.find(lot.contract.uid);
       const PricedSurface *ss = shifted.find(lot.contract.uid);
       if (bs == nullptr || ss == nullptr) {
         return Err(ErrorCode::NotFound, "run_backtest: no surface for settling lot");
       }
+      if (expiring != nullptr) {
+        expiring->push_back(lot); // base mark supplied by the batched pass below
+        continue;
+      }
+      const double T_base = residual_T(lot.expiry_ts_ns, base.ts_ns());
       auto mark = bs->fair_value(lot.contract.K, T_base, lot.contract.side, opts.query_execution);
       if (!mark) {
         return Err(mark.error());
@@ -547,6 +732,38 @@ struct StepPnl {
       settlement += lot.qty * lot.multiplier * (intrinsic - *mark);
     } else {
       alive.push_back(lot);
+    }
+  }
+  // B2 batched settlement: one Marks pass over all expiring lots at the base-date
+  // residual T, then accumulate settlement in expiring (input) order. `bs`/`ss`
+  // were validated non-null in the partition loop above.
+  if (expiring != nullptr && !expiring->empty()) {
+    ATX_TRY(PortfolioPricer * sp, settle->prepare(*expiring, base.ts_ns()));
+    settle_frame->resize_marks(sp->portfolio().n_positions());
+    ATX_TRY_VOID(sp->price_into(base.set(), PriceFieldMask::Marks, settle_frame->marks_view(),
+                                settle->workspace(), opts));
+    const PriceFrame &sf = settle_frame->frame;
+    for (std::size_t i = 0; i < expiring->size(); ++i) {
+      const Lot &lot = (*expiring)[i];
+      // price_into writes one row per position in input order == expiring order.
+      if (i >= sf.size() || sf.id[i] != lot.id) {
+        return Err(ErrorCode::Internal,
+                   "run_backtest: settlement frame misaligned with expiring lot id=" +
+                       std::to_string(lot.id));
+      }
+      if (sf.status[i] != PriceStatus::Ok) {
+        // Settlement requires an economically valid base mark; fail closed exactly
+        // as the scalar path's fair_value error would.
+        return Err(ErrorCode::NotFound,
+                   "run_backtest: no valid base mark for settling lot id=" +
+                       std::to_string(lot.id));
+      }
+      const PricedSurface *ss = shifted.find(lot.contract.uid);
+      const double S = ss->pricing().S;
+      const double K = lot.contract.K;
+      const double intrinsic =
+          (lot.contract.side == Side::Call) ? std::max(0.0, S - K) : std::max(0.0, K - S);
+      settlement += lot.qty * lot.multiplier * (intrinsic - sf.price[i]);
     }
   }
 
@@ -748,13 +965,9 @@ std::uint64_t MarketSnapshot::open_count() noexcept { return g_open_count.load()
 void MarketSnapshot::reset_open_count() noexcept { g_open_count.store(0); }
 
 Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
-                                            QueryPricingTier query_pricing_tier) {
+                                            QueryPricingTier query_pricing_tier,
+                                            std::span<const std::uint32_t> referenced_uids) {
   ATX_VOL_PROFILE_SCOPE(SnapshotLoad);
-  // S4 clean-break cutover: the whole board is deserialized from the v2 zero-copy
-  // format. `reconstruct_all_with_provenance` rebuilds OWNED PricedSurfaces (kept
-  // whole-board here on purpose) — the subset-map/PricedSurfaceView zero-copy win
-  // reaching this loop is B1 (seam §6), not this format swap. The reconstructed
-  // surfaces are bit-identical to what the old v1 reader produced.
   auto arch = [&]() {
     ATX_VOL_PROFILE_SCOPE(ArchiveOpen);
     return SurfaceArchiveV2::open_file(archive_path);
@@ -765,20 +978,65 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
   // One archive-open event (the load-once gate asserts N loads => N opens).
   g_open_count.fetch_add(1, std::memory_order_relaxed);
 
-  auto mapped = [&]() {
-    ATX_VOL_PROFILE_SCOPE(ArchiveMap);
-    return arch->reconstruct_all_with_provenance();
-  }();
-  if (!mapped) {
-    return Err(mapped.error());
-  }
+  const std::span<const ArchiveV2DirEntry> dir = arch->directory();
   std::vector<PricedSurface> surfaces;
   std::vector<SurfaceProvenance> provenance;
-  surfaces.reserve(mapped->size());
-  provenance.reserve(mapped->size());
-  for (ArchivedSurface &record : *mapped) {
-    surfaces.push_back(std::move(record.surface));
-    provenance.push_back(std::move(record.provenance));
+
+  // B1 subset-deserialize (bottleneck #1 at the reader): when the caller names the
+  // uids its book references, reconstruct ONLY those directory entries
+  // (`reconstruct_symbol` per referenced uid) and DROP the whole-board
+  // `reconstruct_all_with_provenance`. An empty referenced set (the strategy
+  // overload — its touched names are not known before on_step — and any shared-cache
+  // caller) keeps the whole-board load. If the subset matches no directory entry
+  // (e.g. a book naming only names absent from this partition) fall back to the
+  // whole board so the valuation timestamp and unpriced-lot handling are unchanged.
+  //
+  // Seam note (§6, out of WS-B lane): the PortfolioPricer's SurfaceSet still takes
+  // `const PricedSurface*`, so the subset is reconstructed (owned) rather than served
+  // as zero-copy PricedSurfaceViews. Re-pointing SurfaceSet/PortfolioPricer at views
+  // is a greeks-owned change (portfolio_pricer.{hpp,cpp}); until it lands the
+  // deserialize win here is the subset (fewer surfaces reconstructed), not zero-copy.
+  bool loaded_subset = false;
+  if (!referenced_uids.empty()) {
+    ATX_VOL_PROFILE_SCOPE(ArchiveMap);
+    // O(dir) match via a hash set of the referenced uids (built once) instead of an
+    // O(dir x subset) nested scan.
+    const std::unordered_set<std::uint32_t> wanted_uids(referenced_uids.begin(),
+                                                        referenced_uids.end());
+    surfaces.reserve(referenced_uids.size());
+    provenance.reserve(referenced_uids.size());
+    for (const ArchiveV2DirEntry &e : dir) {
+      if (wanted_uids.find(e.uid) == wanted_uids.end()) {
+        continue;
+      }
+      const std::string_view sym{e.symbol, e.symbol_len};
+      auto ps = arch->reconstruct_symbol(sym);
+      if (!ps) {
+        return Err(ps.error());
+      }
+      auto prov = arch->provenance(sym);
+      if (!prov) {
+        return Err(prov.error());
+      }
+      surfaces.push_back(std::move(*ps));
+      provenance.push_back(std::move(*prov));
+    }
+    loaded_subset = !surfaces.empty();
+  }
+  if (!loaded_subset) {
+    ATX_VOL_PROFILE_SCOPE(ArchiveMap);
+    auto mapped = arch->reconstruct_all_with_provenance();
+    if (!mapped) {
+      return Err(mapped.error());
+    }
+    surfaces.clear();
+    provenance.clear();
+    surfaces.reserve(mapped->size());
+    provenance.reserve(mapped->size());
+    for (ArchivedSurface &record : *mapped) {
+      surfaces.push_back(std::move(record.surface));
+      provenance.push_back(std::move(record.provenance));
+    }
   }
   if (surfaces.empty()) {
     return Err(ErrorCode::InvalidArgument, "MarketSnapshot::load: archive holds no surfaces");
@@ -815,9 +1073,10 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
     return Err(set.error());
   }
 
-  // symbol -> uid from the archive directory (canonical symbol bytes).
+  // symbol -> uid from the WHOLE archive directory (canonical symbol bytes) even
+  // under a subset load: uid_of must still resolve any archived name (a strategy may
+  // query a name its current book does not hold); this is cheap (strings, no surfaces).
   std::vector<std::pair<std::string, std::uint32_t>> syms;
-  const std::span<const ArchiveV2DirEntry> dir = arch->directory();
   syms.reserve(dir.size());
   for (const ArchiveV2DirEntry &e : dir) {
     syms.emplace_back(std::string(e.symbol, e.symbol_len), e.uid);
@@ -934,6 +1193,8 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
   BacktestResult out;
   PortfolioState book = std::move(initial);
   RetainedBookPricer retained_pricer;
+  RetainedBookPricer settle_pricer;      // B2: retained batched-settlement pricer
+  ReusablePriceFrame settle_frame;       // B2: retained Marks frame for settlement
   ReusableLotIdIndex initial_lot_index;
   ATX_TRY_VOID(initial_lot_index.rebuild(book.lots, "initial fixed book"));
 
@@ -974,9 +1235,22 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
   };
 
   // base = load(refs[0]) — the inception snapshot.
+  // B1 subset-deserialize: a PRIVATE per-run cache deserializes only the fixed book's
+  // referenced uids (the book is known up front and never grows in this overload), so
+  // an archive/partition holding more names than the book references drops the
+  // whole-board reconstruct (bottleneck #1). A caller-supplied (shared) cache stays
+  // whole-board — it may be reused across books with different referenced sets.
+  std::vector<std::uint32_t> book_uids;
+  book_uids.reserve(book.lots.size());
+  for (const Lot &lot : book.lots) {
+    if (std::find(book_uids.begin(), book_uids.end(), lot.contract.uid) == book_uids.end()) {
+      book_uids.push_back(lot.contract.uid);
+    }
+  }
   const std::shared_ptr<SnapshotCache> snapshot_cache =
-      cfg.snapshot_cache ? cfg.snapshot_cache
-                         : std::make_shared<SnapshotCache>(kPrivateSnapshotCacheCapacity);
+      cfg.snapshot_cache
+          ? cfg.snapshot_cache
+          : std::make_shared<SnapshotCache>(kPrivateSnapshotCacheCapacity, std::move(book_uids));
   auto base_res = snapshot_cache->load(refs[0].archive_path, cfg.query_pricing_tier,
                                        cfg.query_cache_build_policy);
   if (!base_res) {
@@ -1030,7 +1304,8 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
     // Partition + Taylor PnL-explain: byte-identical arithmetic to the strategy
     // overload's step (shared `compute_step`), which now also reports the count of
     // held lots the pricer could not value this step.
-    auto step = compute_step(*base, *shifted, book.lots, cfg.price, retained_pricer);
+    auto step = compute_step(*base, *shifted, book.lots, cfg.price, retained_pricer,
+                             /*target_marks=*/nullptr, &settle_pricer, &settle_frame);
     if (!step) {
       return Err(step.error());
     }
@@ -1107,37 +1382,17 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
   ReusablePriceFrame risk_frame;
   ReusableTargetMarkFrame target_marks;
   RetainedBookPricer retained_pricer;
+  RetainedBookPricer settle_pricer;      // B2: retained batched-settlement pricer
+  ReusablePriceFrame settle_frame;       // B2: retained Marks frame for settlement
   ReusableLotIdIndex before_lot_index;
   ReusableLotIdIndex after_lot_index;
   std::vector<Lot> before_lots;
 
-  // ── Engine-internal cash + per-uid share ledger (B2) ──────────────────────
+  // ── Engine-internal cash + per-uid share ledger (B2/B3) ────────────────────
   double cash = cfg.financing.initial_cash;
-  std::vector<std::pair<std::uint32_t, double>> shares; // per-uid delta-hedge share count
-  const auto shares_get = [&shares](std::uint32_t uid) -> double {
-    for (const auto &kv : shares) {
-      if (kv.first == uid) {
-        return kv.second;
-      }
-    }
-    return 0.0;
-  };
-  const auto shares_add = [&shares](std::uint32_t uid, double dn) {
-    for (auto &kv : shares) {
-      if (kv.first == uid) {
-        kv.second += dn;
-        return;
-      }
-    }
-    shares.push_back({uid, dn});
-  };
-  const auto shares_sum = [&shares]() -> double {
-    double s = 0.0;
-    for (const auto &kv : shares) {
-      s += kv.second;
-    }
-    return s;
-  };
+  // B3: O(1) get/add/sum + allocation-free daily hedge pass (was a linear-scan
+  // `shares` vector + a per-uid whole-frame delta rescan). Bit-identical output.
+  HedgeLedger hedge_ledger;
 
   // Per-share half-spread under the friction model (0 when SpreadKind::None).
   const auto half_spread = [&cfg](double mark, double vega) -> double {
@@ -1335,43 +1590,19 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
       ex.turnover_vega += std::fabs(lot.qty * lot.multiplier * vega);
     }
 
-    // Hedge overlay: aggregate every uid from the one full-book frame above.
-    if (hedge_fires) {
-      std::vector<std::uint32_t> uids;
-      const auto add_uid = [&uids](std::uint32_t u) {
-        for (std::uint32_t x : uids) {
-          if (x == u) {
-            return;
-          }
-        }
-        uids.push_back(u);
-      };
-      for (const Lot &lot : book.lots) {
-        add_uid(lot.contract.uid);
-      }
-      for (const auto &item : shares) {
-        add_uid(item.first);
-      }
-      for (const std::uint32_t uid : uids) {
-        ATX_VOL_PROFILE_SCOPE(HedgeRisk);
-        double option_delta = 0.0;
-        if (current_risk != nullptr) {
-          for (std::size_t i = 0; i < current_risk->size(); ++i) {
-            if (current_risk->uid[i] == uid && current_risk->status[i] == PriceStatus::Ok) {
-              option_delta += current_risk->delta[i];
-            }
-          }
-        }
-        const double net = option_delta + shares_get(uid);
-        if (std::fabs(net) > hedge_spec.band) {
-          const double shares_to_trade = -net;
-          const PricedSurface *surface = base_snap.find(uid);
-          const double spot = surface != nullptr ? surface->pricing().S : 0.0;
-          ex.cost += std::fabs(shares_to_trade) * spot * (cfg.frictions.hedge_slippage_bps / 1.0e4);
-          cash -= shares_to_trade * spot;
-          shares_add(uid, shares_to_trade);
-        }
-      }
+    // Hedge overlay (B3): O(book) single-pass per-uid delta aggregation + O(1)
+    // ledger, allocation-free after warm-up. `current_risk` is the full-book frame
+    // priced above (non-null whenever hedge_fires). Bit-identical to the pre-B3
+    // per-uid whole-frame rescan (see HedgeLedger::hedge_daily).
+    if (hedge_fires && current_risk != nullptr) {
+      ATX_VOL_PROFILE_SCOPE(HedgeRisk);
+      hedge_ledger.hedge_daily(
+          book.lots, *current_risk, hedge_spec.band, cfg.frictions.hedge_slippage_bps,
+          [&base_snap](std::uint32_t uid) -> double {
+            const PricedSurface *surface = base_snap.find(uid);
+            return surface != nullptr ? surface->pricing().S : 0.0;
+          },
+          cash, ex.cost);
     }
 
     cash -= ex.cost; // realized frictions hit cash at fill
@@ -1432,7 +1663,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
       return Err(ErrorCode::NotFound,
                  unpriced_greeks_error_message(g->n_unpriced, g->first_unpriced_uid, refs[0].date));
     }
-    const double g_delta = g->total.delta + shares_sum();
+    const double g_delta = g->total.delta + hedge_ledger.sum();
     // Opening fills are the first economic event of the run. execute() already
     // deducted their friction from cash; stamp the same loss into row-0 PnL/NAV
     // so total return and attribution include every paid dollar.
@@ -1460,7 +1691,8 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     }
 
     // 1. PnL of the current book (resolved on base) forward to shifted (unchanged B1).
-    auto step = compute_step(*base, *shifted, book.lots, cfg.price, retained_pricer, &target_marks);
+    auto step = compute_step(*base, *shifted, book.lots, cfg.price, retained_pricer, &target_marks,
+                             &settle_pricer, &settle_frame);
     if (!step) {
       return Err(step.error());
     }
@@ -1482,7 +1714,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
       financing += cash * (growth - 1.0); // cash carry on the pre-step balance
       cash *= growth;                     // apply to the ledger
     }
-    for (const auto &[uid, n] : shares) {
+    for (const auto &[uid, n] : hedge_ledger.entries()) {
       const PricedSurface *bs = base->find(uid);
       const PricedSurface *ss = shifted->find(uid);
       if (bs == nullptr || ss == nullptr) {
@@ -1566,7 +1798,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
         return Err(ErrorCode::NotFound, unpriced_greeks_error_message(
                                             g->n_unpriced, g->first_unpriced_uid, refs[i].date));
       }
-      const double g_delta = g->total.delta + shares_sum();
+      const double g_delta = g->total.delta + hedge_ledger.sum();
       push_row(refs[i].date, base->ts_ns(), step_total, t.pnl_delta, t.pnl_gamma, t.pnl_vega,
                t.pnl_vanna, t.pnl_volga, t.pnl_theta, t.pnl_rho, t.pnl_charm, t.pnl_unexplained,
                settlement, shares_pnl, financing, ex->cost, nav, cash, g_delta, g->total,
