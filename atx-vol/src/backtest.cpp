@@ -15,6 +15,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -374,6 +375,146 @@ public:
 private:
   std::vector<std::size_t> order_;
   std::size_t active_size_{0};
+};
+
+// B3: O(1) per-uid hedge-share ledger + allocation-free daily delta-hedge pass.
+//
+// Replaces the pre-B3 hot loop's three linear scans — the `shares` vector's
+// O(book) get/add/sum, and the per-uid whole-frame delta rescan (O(book) per uid
+// => O(book^2) per hedge step) plus the fresh `uids` vector heap-allocated on
+// every hedge step (bottleneck #7). Share counts live in an insertion-ordered
+// vector (deterministic iteration for sum() / financing / the hedge trade order)
+// with a parallel hash index for O(1) get/add; the per-step scratch (per-uid
+// option-delta aggregate, uid iteration order, dedup set) is retained and only
+// clear()ed, so after warm-up (every hedged uid already resident) the pass makes
+// no heap allocation.
+//
+// Class: pure-refactor. Determinism/parity: sum(), entries() and the hedge trade
+// loop iterate in the SAME order the pre-B3 code did (book.lots dedup order, then
+// shares insertion order), and per-uid option delta is summed in frame order
+// (i ascending) exactly as the pre-B3 inner loop did, so the emitted hedge trades,
+// cash, and net delta are BIT-IDENTICAL to the pre-B3 path (B5 parity + n_threads
+// determinism gates verify this).
+class HedgeLedger {
+public:
+  [[nodiscard]] double get(std::uint32_t uid) const noexcept {
+    const auto it = index_.find(uid);
+    return it == index_.end() ? 0.0 : shares_[it->second].second;
+  }
+
+  void add(std::uint32_t uid, double dn) {
+    const auto it = index_.find(uid);
+    if (it != index_.end()) {
+      shares_[it->second].second += dn;
+      return;
+    }
+    index_.emplace(uid, shares_.size());
+    shares_.emplace_back(uid, dn);
+  }
+
+  // Sum of held shares across every uid, in insertion order (matches the pre-B3
+  // shares_sum linear scan bit-for-bit).
+  [[nodiscard]] double sum() const noexcept {
+    double s = 0.0;
+    for (const auto &kv : shares_) {
+      s += kv.second;
+    }
+    return s;
+  }
+
+  // The share ledger in insertion order (the financing loop reads it; iteration
+  // order is the pre-B3 `shares` order, so shares P&L / financing are unchanged).
+  [[nodiscard]] std::span<const std::pair<std::uint32_t, double>> entries() const noexcept {
+    return {shares_.data(), shares_.size()};
+  }
+
+  // One allocation-free daily delta-hedge pass. `frame` is the full-book risk frame
+  // aligned to `lots`. For each uid — book.lots dedup order, then any remaining
+  // ledger uids — net = summed-Ok-option-delta + held shares; when |net| > band,
+  // trade -net shares at that uid's base spot (`spot_of(uid)`), charge slippage into
+  // `cost`, settle the notional into `cash`, and record the shares. Bit-identical to
+  // the pre-B3 overlay (same uid order, same per-uid frame-order delta sum, same
+  // cash accumulation order).
+  //
+  // Steady-state allocation-free: the per-uid delta aggregate and the dedup set are
+  // held as DENSE, generation-STAMPED vectors (not node-based unordered_map/set that
+  // reallocate a node per key on every clear()+reinsert). A per-pass `generation_`
+  // bump invalidates last pass's stamps in O(1) with no clears, so after warm-up
+  // (every uid resident in `scratch_index_`) the pass performs no heap allocation.
+  template <typename SpotOf>
+  void hedge_daily(const std::vector<Lot> &lots, const PriceFrame &frame, double band,
+                   double hedge_slippage_bps, SpotOf &&spot_of, double &cash, double &cost) {
+    ++generation_;
+    order_.clear(); // vector clear keeps capacity (no per-element deallocation)
+    // 1. Aggregate Ok option delta per uid in ONE frame pass (frame order per uid).
+    for (std::size_t i = 0; i < frame.size(); ++i) {
+      if (frame.status[i] != PriceStatus::Ok) {
+        continue;
+      }
+      const std::size_t s = scratch_slot(frame.uid[i]);
+      if (agg_gen_[s] != generation_) {
+        agg_gen_[s] = generation_;
+        agg_val_[s] = 0.0;
+      }
+      agg_val_[s] += frame.delta[i];
+    }
+    // 2. uid iteration order: book.lots dedup, then ledger uids not yet seen.
+    for (const Lot &lot : lots) {
+      const std::size_t s = scratch_slot(lot.contract.uid);
+      if (seen_gen_[s] != generation_) {
+        seen_gen_[s] = generation_;
+        order_.push_back(lot.contract.uid);
+      }
+    }
+    for (const auto &kv : shares_) {
+      const std::size_t s = scratch_slot(kv.first);
+      if (seen_gen_[s] != generation_) {
+        seen_gen_[s] = generation_;
+        order_.push_back(kv.first);
+      }
+    }
+    // 3. Trade each uid whose net delta breaches the band.
+    for (const std::uint32_t uid : order_) {
+      const std::size_t s = scratch_slot(uid);
+      const double option_delta = (agg_gen_[s] == generation_) ? agg_val_[s] : 0.0;
+      const double net = option_delta + get(uid);
+      if (std::fabs(net) > band) {
+        const double shares_to_trade = -net;
+        const double spot = spot_of(uid);
+        cost += std::fabs(shares_to_trade) * spot * (hedge_slippage_bps / 1.0e4);
+        cash -= shares_to_trade * spot;
+        add(uid, shares_to_trade);
+      }
+    }
+  }
+
+private:
+  // Dense scratch slot for `uid`; grows once per newly-seen uid and is never cleared,
+  // so steady state allocates nothing. A freshly-grown slot's stamps are 0 (< any
+  // live generation_, which starts at 1 after the first ++), i.e. "not this pass".
+  [[nodiscard]] std::size_t scratch_slot(std::uint32_t uid) {
+    const auto it = scratch_index_.find(uid);
+    if (it != scratch_index_.end()) {
+      return it->second;
+    }
+    const std::size_t s = agg_val_.size();
+    scratch_index_.emplace(uid, s);
+    agg_val_.push_back(0.0);
+    agg_gen_.push_back(0);
+    seen_gen_.push_back(0);
+    return s;
+  }
+
+  std::vector<std::pair<std::uint32_t, double>> shares_;   // insertion order (traded uids)
+  std::unordered_map<std::uint32_t, std::size_t> index_;   // uid -> slot in shares_
+
+  // Per-step hedge scratch — dense, generation-stamped, allocation-free in steady state.
+  std::unordered_map<std::uint32_t, std::size_t> scratch_index_; // uid -> dense scratch slot
+  std::vector<double> agg_val_;         // per-uid summed option delta (valid iff agg_gen_==gen)
+  std::vector<std::uint64_t> agg_gen_;  // stamp: agg_val_ valid this pass
+  std::vector<std::uint64_t> seen_gen_; // stamp: uid already emitted into order_ this pass
+  std::vector<std::uint32_t> order_;    // uid iteration order (dedup)
+  std::uint64_t generation_{0};
 };
 
 [[nodiscard]] Status validate_strategy_transition(std::span<const Lot> before,
@@ -1111,33 +1252,11 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
   ReusableLotIdIndex after_lot_index;
   std::vector<Lot> before_lots;
 
-  // ── Engine-internal cash + per-uid share ledger (B2) ──────────────────────
+  // ── Engine-internal cash + per-uid share ledger (B2/B3) ────────────────────
   double cash = cfg.financing.initial_cash;
-  std::vector<std::pair<std::uint32_t, double>> shares; // per-uid delta-hedge share count
-  const auto shares_get = [&shares](std::uint32_t uid) -> double {
-    for (const auto &kv : shares) {
-      if (kv.first == uid) {
-        return kv.second;
-      }
-    }
-    return 0.0;
-  };
-  const auto shares_add = [&shares](std::uint32_t uid, double dn) {
-    for (auto &kv : shares) {
-      if (kv.first == uid) {
-        kv.second += dn;
-        return;
-      }
-    }
-    shares.push_back({uid, dn});
-  };
-  const auto shares_sum = [&shares]() -> double {
-    double s = 0.0;
-    for (const auto &kv : shares) {
-      s += kv.second;
-    }
-    return s;
-  };
+  // B3: O(1) get/add/sum + allocation-free daily hedge pass (was a linear-scan
+  // `shares` vector + a per-uid whole-frame delta rescan). Bit-identical output.
+  HedgeLedger hedge_ledger;
 
   // Per-share half-spread under the friction model (0 when SpreadKind::None).
   const auto half_spread = [&cfg](double mark, double vega) -> double {
@@ -1335,43 +1454,19 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
       ex.turnover_vega += std::fabs(lot.qty * lot.multiplier * vega);
     }
 
-    // Hedge overlay: aggregate every uid from the one full-book frame above.
-    if (hedge_fires) {
-      std::vector<std::uint32_t> uids;
-      const auto add_uid = [&uids](std::uint32_t u) {
-        for (std::uint32_t x : uids) {
-          if (x == u) {
-            return;
-          }
-        }
-        uids.push_back(u);
-      };
-      for (const Lot &lot : book.lots) {
-        add_uid(lot.contract.uid);
-      }
-      for (const auto &item : shares) {
-        add_uid(item.first);
-      }
-      for (const std::uint32_t uid : uids) {
-        ATX_VOL_PROFILE_SCOPE(HedgeRisk);
-        double option_delta = 0.0;
-        if (current_risk != nullptr) {
-          for (std::size_t i = 0; i < current_risk->size(); ++i) {
-            if (current_risk->uid[i] == uid && current_risk->status[i] == PriceStatus::Ok) {
-              option_delta += current_risk->delta[i];
-            }
-          }
-        }
-        const double net = option_delta + shares_get(uid);
-        if (std::fabs(net) > hedge_spec.band) {
-          const double shares_to_trade = -net;
-          const PricedSurface *surface = base_snap.find(uid);
-          const double spot = surface != nullptr ? surface->pricing().S : 0.0;
-          ex.cost += std::fabs(shares_to_trade) * spot * (cfg.frictions.hedge_slippage_bps / 1.0e4);
-          cash -= shares_to_trade * spot;
-          shares_add(uid, shares_to_trade);
-        }
-      }
+    // Hedge overlay (B3): O(book) single-pass per-uid delta aggregation + O(1)
+    // ledger, allocation-free after warm-up. `current_risk` is the full-book frame
+    // priced above (non-null whenever hedge_fires). Bit-identical to the pre-B3
+    // per-uid whole-frame rescan (see HedgeLedger::hedge_daily).
+    if (hedge_fires && current_risk != nullptr) {
+      ATX_VOL_PROFILE_SCOPE(HedgeRisk);
+      hedge_ledger.hedge_daily(
+          book.lots, *current_risk, hedge_spec.band, cfg.frictions.hedge_slippage_bps,
+          [&base_snap](std::uint32_t uid) -> double {
+            const PricedSurface *surface = base_snap.find(uid);
+            return surface != nullptr ? surface->pricing().S : 0.0;
+          },
+          cash, ex.cost);
     }
 
     cash -= ex.cost; // realized frictions hit cash at fill
@@ -1432,7 +1527,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
       return Err(ErrorCode::NotFound,
                  unpriced_greeks_error_message(g->n_unpriced, g->first_unpriced_uid, refs[0].date));
     }
-    const double g_delta = g->total.delta + shares_sum();
+    const double g_delta = g->total.delta + hedge_ledger.sum();
     // Opening fills are the first economic event of the run. execute() already
     // deducted their friction from cash; stamp the same loss into row-0 PnL/NAV
     // so total return and attribution include every paid dollar.
@@ -1482,7 +1577,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
       financing += cash * (growth - 1.0); // cash carry on the pre-step balance
       cash *= growth;                     // apply to the ledger
     }
-    for (const auto &[uid, n] : shares) {
+    for (const auto &[uid, n] : hedge_ledger.entries()) {
       const PricedSurface *bs = base->find(uid);
       const PricedSurface *ss = shifted->find(uid);
       if (bs == nullptr || ss == nullptr) {
@@ -1566,7 +1661,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
         return Err(ErrorCode::NotFound, unpriced_greeks_error_message(
                                             g->n_unpriced, g->first_unpriced_uid, refs[i].date));
       }
-      const double g_delta = g->total.delta + shares_sum();
+      const double g_delta = g->total.delta + hedge_ledger.sum();
       push_row(refs[i].date, base->ts_ns(), step_total, t.pnl_delta, t.pnl_gamma, t.pnl_vega,
                t.pnl_vanna, t.pnl_volga, t.pnl_theta, t.pnl_rho, t.pnl_charm, t.pnl_unexplained,
                settlement, shares_pnl, financing, ex->cost, nav, cash, g_delta, g->total,

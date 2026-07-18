@@ -21,12 +21,15 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <memory>
+#include <new>
 #include <string>
 #include <utility>
 #include <vector>
@@ -47,6 +50,33 @@
 
 using namespace atx::vol;
 namespace fs = std::filesystem;
+
+// B3 zero-alloc proof: a counting passthrough for the global allocator, armed only
+// around the measured run_backtest calls (see HedgeLedgerAllocationIsStepInvariant).
+// Replacing global operator new here affects only this test binary; the count is a
+// deterministic tally of ::operator new calls while armed. Aligned/over-aligned
+// allocations route to their own operators (not replaced) — irrelevant here because
+// the hedge ledger/scratch are plain std::vector / std::unordered_map allocations.
+namespace atx_b3_alloc {
+std::atomic<std::uint64_t> g_count{0};
+std::atomic<bool> g_armed{false};
+}  // namespace atx_b3_alloc
+
+void* operator new(std::size_t sz) {
+  if (atx_b3_alloc::g_armed.load(std::memory_order_relaxed)) {
+    atx_b3_alloc::g_count.fetch_add(1, std::memory_order_relaxed);
+  }
+  void* p = std::malloc(sz != 0 ? sz : 1);
+  if (p == nullptr) {
+    throw std::bad_alloc();
+  }
+  return p;
+}
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+void* operator new[](std::size_t sz) { return ::operator new(sz); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
 
 namespace {
 
@@ -723,4 +753,88 @@ TEST(BacktestExec, FrictionMonotonicity) {
   EXPECT_GT(navs[1], navs[2]);
   std::printf("[btexec] monotonicity nav={%.4f,%.4f,%.4f} cost={%.4f,%.4f,%.4f}\n", navs[0], navs[1],
               navs[2], costs[0], costs[1], costs[2]);
+}
+
+// ── B3. Daily delta-hedge + O(1) share ledger is allocation-free in steady state ──
+//
+// The hedge overlay's HEAP footprint must not grow with the step count: after
+// warm-up (every hedged uid resident in the ledger) the pass reuses its per-uid
+// delta aggregate, uid-order, and dedup scratch and touches the O(1) share index,
+// so it allocates nothing per step. Proof by isolation: hedge-on vs hedge-off runs
+// are identical except for the hedge (same entries, same book growth, same output,
+// same snapshot loads), so (armed alloc count)_on - _off is exactly the hedge's
+// heap cost. We measure it at D and 2D dates and assert it does NOT grow with the
+// step count. Pre-B3 the overlay heap-allocated a fresh `uids` vector on EVERY
+// hedge step, so the isolated count grew with D; this test is that regression's gate.
+//
+// n_threads=1 + prefetch off ⇒ the whole run is single-threaded, so the armed
+// global-new tally is deterministic (no worker-pool / async-prefetch allocations).
+TEST(BacktestExec, HedgeLedgerAllocationIsStepInvariant) {
+  const fs::path dir = fresh_dir("allocsteady");
+
+  // A daily ATM-put clip, held to expiry (cohorts accumulate), hedged daily to a
+  // tight band so a trade fires every step over the drifting spot.
+  const auto make_daily_hedged = [](bool hedge_on) {
+    StrategySpec spec;
+    spec.name = "daily-put-htx";
+    LegSpec leg;
+    leg.uid = kUid;
+    leg.tenor.target_T = 0.25;  // 3M: no expiries over the short run (book only grows)
+    leg.structure.kind = StructureSpec::Kind::Single;
+    leg.structure.single_side = Side::Put;
+    leg.strike = StrikeSelector{StrikeSelector::Kind::AtmForward, 0.0};
+    leg.size = SizeSpec{SizeSpec::Kind::FixedContracts, 1.0, +1.0};
+    spec.legs.push_back(leg);
+    spec.lifecycle.entry = LifecycleSpec::Entry::EveryStep;
+    spec.lifecycle.holding = LifecycleSpec::Holding::HoldToExpiry;
+    if (hedge_on) {
+      spec.hedge = HedgeSpec{HedgeSpec::Kind::DeltaToZero, HedgeSpec::Cadence::Daily, 1e-9};
+    }
+    return spec;
+  };
+
+  // Single-threaded, no async prefetch ⇒ the armed tally counts only this thread.
+  const auto run_counted = [&](const StrategySpec& spec, int n_dates) -> std::uint64_t {
+    const Corpus c = make_corpus(dir, "SPX", n_dates, 100.0, 0.006, 0.001);
+    auto clock = Clock::from_manifest(c.manifest);
+    EXPECT_TRUE(clock.has_value()) << (clock.has_value() ? std::string{} : clock.error().to_string());
+    DeclarativeStrategy strat{spec};
+    RunConfig cfg;
+    cfg.price.n_threads = 1;
+    cfg.prefetch_snapshots = false;
+    atx_b3_alloc::g_count.store(0, std::memory_order_relaxed);
+    atx_b3_alloc::g_armed.store(true, std::memory_order_relaxed);
+    auto res = run_backtest(*clock, strat, cfg);
+    atx_b3_alloc::g_armed.store(false, std::memory_order_relaxed);
+    EXPECT_TRUE(res.has_value()) << (res.has_value() ? std::string{} : res.error().to_string());
+    return atx_b3_alloc::g_count.load(std::memory_order_relaxed);
+  };
+
+  constexpr int kD = 8;
+  const StrategySpec on = make_daily_hedged(true);
+  const StrategySpec off = make_daily_hedged(false);
+
+  const std::uint64_t on_d = run_counted(on, kD);
+  const std::uint64_t off_d = run_counted(off, kD);
+  const std::uint64_t on_2d = run_counted(on, 2 * kD);
+  const std::uint64_t off_2d = run_counted(off, 2 * kD);
+
+  ASSERT_GE(on_d, off_d);
+  ASSERT_GE(on_2d, off_2d);
+  const std::uint64_t hedge_extra_d = on_d - off_d;
+  const std::uint64_t hedge_extra_2d = on_2d - off_2d;
+
+  // The hedge/ledger heap cost is one-time (ledger + scratch grow to the resident
+  // uid set during warm-up) and does NOT grow with the step count: doubling the
+  // dates does not increase the hedge-attributable allocation count.
+  EXPECT_LE(hedge_extra_2d, hedge_extra_d)
+      << "hedge allocation grew with step count — a per-step heap allocation regressed the "
+         "zero-alloc steady state (hedge_extra_d=" << hedge_extra_d
+      << " hedge_extra_2d=" << hedge_extra_2d << ")";
+  std::printf("[btexec] B3 zero-alloc: hedge-attributable allocs D=%llu 2D=%llu (on_d=%llu off_d=%llu "
+              "on_2d=%llu off_2d=%llu)\n",
+              static_cast<unsigned long long>(hedge_extra_d),
+              static_cast<unsigned long long>(hedge_extra_2d),
+              static_cast<unsigned long long>(on_d), static_cast<unsigned long long>(off_d),
+              static_cast<unsigned long long>(on_2d), static_cast<unsigned long long>(off_2d));
 }
