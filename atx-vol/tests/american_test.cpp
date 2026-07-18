@@ -2610,7 +2610,7 @@ TEST(SigmaInterp, MeetsPdeGreekGates) {
 // caught it at 3.1e-05 (flat box) / 1.3e-04 (smile box) against the cold build's
 // 7.1e-15. See the rationale block in SigmaBoundaryInterp::build(). Any future
 // attempt to warm-seed the node grid must clear this bound first.
-TEST(SigmaInterp, WarmNodeBuildMatchesColdBuild) {
+TEST(SigmaInterp, NodeBuildMatchesColdSolve) {
   const double S = 100.0, T = 1.0, r = 0.05, q = 0.02;
   const double sigma_lo = 0.15, sigma_hi = 0.80; // the steep-smile box, ~15x wide
   constexpr std::uint16_t kNodes = 9;

@@ -28,19 +28,23 @@
 
 namespace atx::vol::detail {
 
-// R-31. The McDonald-Schroder internal-put coordinates of a (side, S, K) option —
-// the ONE place this duality is written down.
+// R-31. The McDonald-Schroder internal-put duality of a (side, S, K, r, q)
+// option, single-sourced in the two functions below — the ONE place both halves
+// of this duality are written down.
 //
-// Put:  the put itself           -> Sp = S, Kp = K.
+// Put:  the put itself           -> Sp = S, Kp = K;  rp = r, qp = q.
 // Call: C(S,K,r,q) = P(K,S,q,r)  -> the internal put has FIXED strike Kp = S and
-//       varying spot Sp = K.
-// The (rate, yield) half of the same duality (rp/qp swapped for a call) is a
-// BUILD input rather than a per-price one, so it stays with the build() callers.
+//       varying spot Sp = K;        and its (rate, yield) are the SWAPPED
+//                                   (rp, qp) = (q, r).
 //
 // Single-sourced because this mapping was independently re-derived at each call
 // site — slice_sigma_impl and the shared-boundary de-Am lanes in calib.cpp — and
 // two hand-copies of a duality this easy to invert are two chances to silently
-// price a call as a put.
+// price a call as a put. The (Sp, Kp) half is a per-price input (build() callers
+// pass a per-slice rp/qp already and call price_side per strike, so only the
+// coordinate half varies per price); the (rp, qp) half is a per-slice BUILD
+// input. They are separate functions for that reason, but both are single-
+// sourced here.
 struct InternalPutCoords {
   double Sp{0.0};
   double Kp{0.0};
@@ -49,6 +53,16 @@ struct InternalPutCoords {
 [[nodiscard]] constexpr InternalPutCoords internal_put_coords(Side side, double S,
                                                               double K) noexcept {
   return side == Side::Call ? InternalPutCoords{K, S} : InternalPutCoords{S, K};
+}
+
+struct InternalPutRates {
+  double rp{0.0};
+  double qp{0.0};
+};
+
+[[nodiscard]] constexpr InternalPutRates internal_put_rates(Side side, double r,
+                                                            double q) noexcept {
+  return side == Side::Call ? InternalPutRates{q, r} : InternalPutRates{r, q};
 }
 
 // One (τ, rp, qp) internal-put slice's σ-Chebyshev boundary interpolant.

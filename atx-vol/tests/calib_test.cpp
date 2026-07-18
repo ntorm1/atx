@@ -660,10 +660,13 @@ TEST(BuildObservationsEuropean, SharedSigmaBoundaryHoldsEconomicBoundOnSteepSmil
   //     of the SIGMA axis — deep-ITM saturation at intrinsic, inside a lane's own
   //     bracket — not in low-vega STRIKES. There is no "wing row" to observe fall
   //     back.
-  //   * On this board, vega over admitted rows spans ~15.3 to ~37.6: a
-  //     vega-collapsed row does not survive to become a lane at all, because the
-  //     upstream quote cascade (mid > 0, the IV band, max_spread_vol) drops it
-  //     before de-Americanization ever sees it.
+  //   * This strike range (72-128) at T=1 cannot produce a vega-collapsed row to
+  //     begin with: vega over admitted rows spans ~15.3 to ~37.6, well clear of
+  //     collapse. That is a geometry fact of the fixture, not a gate observed to
+  //     catch one — this fixture sets max_spread_vol = 1.0 and min_vega_weight =
+  //     0.0 above, deliberately DISABLING the two gates that would drop a
+  //     vega-collapsed row upstream under production defaults, to isolate the
+  //     shared route. So the upstream cascade cannot be credited here.
   // So the wing defense is real but sits one layer earlier than the brief placed
   // it, and asserting it here would have been a permanently-true test. What
   // actually keeps the wiggles away from an accepted price is (a) above plus the

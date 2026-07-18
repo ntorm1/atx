@@ -601,7 +601,11 @@ void prepare_shared_boundary_side(std::vector<FitObs> &observations,
       max_seed = std::max(max_seed, observation.sigma_mkt);
     }
   }
-  const double internal_rate = side == Side::Call ? q_eff : r;
+  // (rate, yield) half of the McDonald-Schroder duality, single-sourced via
+  // detail::internal_put_rates (see boundary_interp.hpp) alongside the
+  // (Sp, Kp) half that price_side/price_side_embedded already use.
+  const detail::InternalPutRates rates = detail::internal_put_rates(side, r, q_eff);
+  const double internal_rate = rates.rp;
   if (side_rows < kSharedMinSideRows || !(T >= kSharedMinT) || !(internal_rate > 0.0)) {
     return;
   }
@@ -610,7 +614,7 @@ void prepare_shared_boundary_side(std::vector<FitObs> &observations,
   if (!(sigma_hi > sigma_lo) || sigma_hi / sigma_lo > 20.0) {
     return;
   }
-  const double internal_yield = side == Side::Call ? r : q_eff;
+  const double internal_yield = rates.qp;
   detail::SigmaBoundaryInterp interp;
   const amer::AlScheme scheme = amer::scheme_from_opts(al_opts);
   if (!interp.build(S, T, internal_rate, internal_yield, sigma_lo, sigma_hi, kSharedSigmaNodes,
@@ -731,6 +735,13 @@ double SharedLaneBracket::next_sigma() const noexcept {
 }
 
 void SharedLaneBracket::update(double sigma, double residual) noexcept {
+  // PRECONDITION: `residual` must be finite. `residual < 0.0` is false for NaN,
+  // so a non-finite residual falls into the `else` (hi) branch below and writes
+  // NaN over `f_hi`, breaking the `f_lo < 0 <= f_hi` invariant this type does not
+  // itself re-check. The sole production caller (iterate_shared_lanes, above)
+  // already gates on std::isfinite(residual) before calling update; any other
+  // caller of this exposed detail:: type must do the same.
+  //
   // R-11a. Numerically: the retained endpoint's stored residual is now HALVED
   // whenever that same endpoint survives two updates in a row (the Illinois
   // modification of false position); previously both stored residuals were always
@@ -790,10 +801,22 @@ void SharedLaneBracket::update(double sigma, double residual) noexcept {
   // deflated step and costs more than it saves.
   //
   // The bound the guard carried is re-established by kMaxSecantSteps' bisection
-  // backstop (see calib.hpp) rather than by a per-step trust region: 24 + 33 = 57
-  // evaluations worst case against the unchanged max_iter = 64, versus the 25%
-  // guard's own ceil(log(1.33e-7)/log(0.75)) = 55. So the worst case is
-  // materially unchanged while the typical case is ~4.4x cheaper.
+  // backstop (see calib.hpp) rather than by a per-step trust region. Compared
+  // under MATCHED premises (same w0, same solve_tol -- the old guard's own
+  // shrink-per-step is w-independent, so its count is exact, not a bound), the
+  // new backstop is tighter on every premise, not merely "unchanged":
+  //     worst case  (w0 = kObsIvMax - kSharedMinSigma = 4.99, tol = 1e-9):
+  //         new 24 + ceil(log2(4.99/1e-9))   = 24 + 33 = 57
+  //         old ceil(log(1e-9/4.99)/log(0.75))    = 78   <- EXCEEDS max_iter = 64
+  //     default config (tol = 1e-7, same w0 = 4.99):
+  //         new 24 + ceil(log2(4.99/1e-7))   = 24 + 26 = 50
+  //         old ceil(log(1e-7/4.99)/log(0.75))    = 62
+  //     typical bracket (w0 = 0.75, tol = 1e-7):
+  //         new 24 + ceil(log2(0.75/1e-7))   = 24 + 23 = 47
+  //         old ceil(log(1e-7/0.75)/log(0.75))    = 56
+  // So the old guard did not actually deliver a bound inside max_iter = 64 at the
+  // true worst case; the new backstop does, with margin, and is cheaper at every
+  // matched premise besides.
   //
   // Nothing about acceptance moves: the bracket still encloses the root, the loop
   // still terminates on `hi - lo <= solve_tol`, and a lane that somehow fails to

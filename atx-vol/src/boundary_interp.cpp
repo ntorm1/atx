@@ -122,13 +122,14 @@ constexpr const char *kDoubleContinuationMsg =
   const std::size_t n = strikes.size();
   const amer::AlScheme sch = amer::scheme_from_opts(opts);
 
-  // Internal-put mapping. The per-strike (Sp, Kp) half is single-sourced in
-  // detail::internal_put_coords (see boundary_interp.hpp); Kp_ref = S is a
-  // homogeneity choice, and the (rate, yield) swap below is the build-input half
-  // of the same duality.
+  // Internal-put mapping, both halves single-sourced (see boundary_interp.hpp):
+  // the per-strike (Sp, Kp) half via detail::internal_put_coords, the build-input
+  // (rate, yield) half via detail::internal_put_rates. Kp_ref = S is a
+  // homogeneity choice, not part of the duality itself.
   const Side side = is_call ? Side::Call : Side::Put;
-  const double rp = is_call ? q : r;
-  const double qp = is_call ? r : q;
+  const detail::InternalPutRates rates = detail::internal_put_rates(side, r, q);
+  const double rp = rates.rp;
+  const double qp = rates.qp;
   const double Kp_ref = S;
 
   SigmaSliceStats st{};
@@ -265,7 +266,7 @@ bool SigmaBoundaryInterp::build(double Kp_ref, double T, double rp, double qp, d
   // (min(0.005, 0.1 x vega x 1e-4, half-spread)), and the 9-vs-5 embedded gate
   // could not catch it because both estimators would share the same wrong y[].
   // It bought ~3.5% of retained-arm throughput — far under the noise floor of the
-  // measurement, let alone the accuracy. SigmaInterp.WarmNodeBuildMatchesColdBuild
+  // measurement, let alone the accuracy. SigmaInterp.NodeBuildMatchesColdSolve
   // pins the cold build's 7.1e-15 and is the guard on any future attempt.
   const double half_span = 0.5 * (sigma_hi - sigma_lo);
   bool captured = false;
