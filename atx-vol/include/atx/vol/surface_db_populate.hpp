@@ -71,6 +71,13 @@ struct SurfaceDbPopulateStats {
 struct PopulateTestHooks {
   std::function<void(const std::string &date, const std::string &symbol)> before_board_fit{};
   std::function<void(const std::string &date)> after_partition_write{};
+  // U4 (R-14): observe the per-board inner fit-worker budget resolved from the
+  // shared pool (budget / min(budget, n_boards); 0 = auto sizing, the
+  // outer-serial mode). Called once on the caller thread before the fit
+  // fan-out, so the test needs no synchronization. The sole use is the
+  // shared-worker-budget test asserting a small book splits the pool across
+  // boards instead of pinning each board to one worker.
+  std::function<void(unsigned inner_fit_workers)> on_inner_fit_workers{};
 };
 
 // Fit every board and store one partition per distinct board date (key =
