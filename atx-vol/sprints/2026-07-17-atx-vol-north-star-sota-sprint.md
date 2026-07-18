@@ -16,12 +16,12 @@
 
 | Axis | Metric | Current (main @ 4efe80a) | SOTA target | Gap | Owning WS |
 |---|---|---|---|---|---|
-| **IV inversion** | scalar ns/op @ machine-precision | **~329 ns** (median err 1e-15, max 2e-11) | Jäckel LBR **180 ns**; stretch Schadner **~53 ns** | ~1.8× slower (accuracy already tighter) | WS-2 |
-| IV inversion | AVX2 batch vs scalar | **0.95×** (looser, 8e-8) → off-dispatch (R-24) | ≥1.2× and machine-precise | route disabled | WS-2 |
+| **IV inversion** | scalar ns/op @ machine-precision | **~329 ns** → **★218 ns (K2, beats same-host LBR 237)** | Jäckel LBR **180 ns**; stretch Schadner **~53 ns** | GATE MET on-host (abs vs 180 is HW-relative) | WS-2 ✅ |
+| IV inversion | AVX2 batch vs scalar | **0.95×** → **★1.27× (K3, machine-precise 4.18e-11)** | ≥1.2× and machine-precise | GATE MET; R-24 off-dispatch reversible | WS-2 ✅ |
 | **American price** | fast / accurate µs/op | **~37–47 / ~158 µs** (err 1.4e-3 / 8.3e-5) | ALO **10–22 µs** | fast ~2× over | WS-3 |
 | American IV | cold single-op µs/op | **~691 µs** (no warm/cache) | ALO **~60 µs** | ~11× over | WS-3 |
 | American boundary batch | AVX2 vs scalar | **1.87×** (< 2.0× gate → `kShipAvx2Boundary=false`) | ≥2.0× shipped | gate not cleared | WS-3 |
-| **SPY one-op e2e** | ms/op | **347 ms** (de-Am 272.9/board) | **≤200 ms** (stretch ≤150) | de-Am is 84 % of wall | WS-1+WS-3 |
+| **SPY one-op e2e** | ms/op | **347 ms** → **★139 ms @ fit_workers=4** (96 ms @ 8) | **≤200 ms** (stretch ≤150) | GATE MET via E1 parallelism → A1 DEFERRED | WS-1 ✅ |
 | **100-name fit CPU** | ×-reduction vs W0 | **unmeasured** (bench is latency×N, not parallel) | **≥10×** (waypoint ≥4×) | no parallel executor | WS-1 |
 | **519-name / universe** | full-cycle wall vs 45 s | **unmeasured** (no baseline; OOM-at-risk) | **< 45 s @ ≥6 eff cores** | scheduler R-03/12/13/14 open | WS-5 |
 | **Surface accuracy** | in-band fraction (519) | **unmeasured on cohort** (SPY dense ~99.5 % via ConvexDense) | **~90 %** universe-wide | data-gated + eSSVI wing tune | WS-6 |
@@ -207,20 +207,22 @@ graph TD
 
 **Wave A LANDED + MERGED to `main @ 99cde52`** (2026-07-18, local only, nothing pushed). Merge path: `feat/ns-integration` off `7603fd2` merged exec→amdeam→sched→fit→measure (all clean, 0 conflicts), then fast-forwarded main `7603fd2..99cde52`. **Debug/`rel` correctness gate: PASS** — 5 pre-existing v2 known-red fails (SurfaceV2Provenance, PricerFitterTest.LocalRiskRefit, PreparedPortfolio.Grouped, SurfaceV2Qualification/{Latency,Balanced}); **0 new failures** from any Wave-A merge; 6th known (OpraBreadthCorpus) data-gated/absent. Integration diff = 50 files, disjoint from ⚠︎R **source** (`calib.cpp`/`boundary_interp.cpp` untouched; only R-adjacent *test* files american_test/deamer_test/simd_american_test owned by M4/F7/A4).
 
+**Wave B LANDED + MERGED to `main @ 66280d8`** (2026-07-18, local only, nothing pushed). Staged on `feat/ns-integration` off `58ed90c`: sched U2/U3 → measure M3 → dataregen (E1 wall-win proof) → exec E2 → iv scalar_erfc/K2/K3 (all clean, 0 conflicts) + 1 merge-fixup golden, fast-forwarded main `58ed90c..66280d8`. **Debug/`rel` gate: PASS** — exactly the 5 pre-existing v2 known-red, **0 new failures** (one transient regression — PreparedFitting legacy-seam IV golden drifting 4.9e-11 under the K2 seed — reconciled at the seam by relaxing its 1e-12 bit-pin to a 1e-9 economic tol, commit `66280d8`). **Three headline results:** (1) ★ **SPY one-op e2e ≤200 ms PROVEN** by the fit_workers sweep — 408→235→**139 (fw=4, ≤150 stretch too)**→104→96 ms — so **A1 de-Am vectorization stays DEFERRED**; (2) ★ **IV scalar 324→218 ns/op, beats same-host Jäckel LBR (237 ns)** — the beat-Jäckel gate met on this host; (3) ★ **IV AVX2 0.92→1.27× scalar** (K3), reversing the R-24 off-dispatch call. All perf numbers provisional on a contended laptop; clean-host M3-protocol re-measure would firm the absolutes (deterministic metrics — Halley counts, parity max|Δσ|=0, wall-scaling monotonicity — are contention-free).
+
 | Task | Branch | Status | SHA(s) | Gate result |
 |---|---|---|---|---|
 | M1 | `feat/ns-measure` | ☑ landed | `1a14397` | compare_baseline.py + test; e2e bench doc |
 | M2 | `feat/ns-measure` | ☑ landed | `1d6cb4f` | iv_shootout_bench + vendored LBR + baseline JSON; atx mean 4.7 Halley steps |
-| M3 | `feat/ns-measure` | ☐ todo (Wave B) | — | quiet-window protocol |
+| M3 | `feat/ns-measure` | ☑ landed | `ce49727` | quiet-window protocol: P-core pin + CV≤5% gate + per-ISA baseline naming; self-check 8/8 |
 | M4 | `feat/ns-measure` | ☑ landed | `694f56e` | isa_golden_tol.hpp (__FMA__-gated); 4 test files toleranced; 5 residual ISA-drift left to F1/F7/surface owners |
 | M5 | `feat/ns-measure` | ☑ landed | `dc5f5d2` | counters.hpp unbiased + counters_test |
 | M6 | `feat/ns-measure` | ☑ landed | `e7c749b` | atx-build wrong-tree guard; new-worktree -Isolated; presets |
 | E1 | `feat/ns-exec` | ☑ landed | `385c79a` | NestState budget; determinism byte-id 6×7; deadlock-free; 17/17 exec tests; 0 new fails |
-| E2 | `feat/ns-exec` | ☐ todo (Wave B) | — | work-stealing (unblocks U5) |
+| E2 | `feat/ns-exec-b` | ☑ landed | `20b055d` | work-stealing help-first; byte-id across worker counts + concurrent drivers; 2 deadlock-timeout tests pass; **U5 unblocked**; 0 new fails |
 | E3 | `feat/ns-exec` | ☐ todo (Wave B) | — | — |
 | K1 | `feat/ns-iv` | ⚠ shelved (NOT merged) | `92d00b8` (on branch) | NEGATIVE: scalar Cody erfc perf-neutral 866→839ns. Header `scalar_erfc.hpp` retained for K3. Real lever = K2 seed |
-| K2 | `feat/ns-iv` | ☐ todo (Wave B) | — | Radoicic–Stefanica seed → fewer Halley steps |
-| K3 | `feat/ns-iv` | ☐ todo (Wave B) | — | AVX2 ×scalar (consumes scalar_erfc.hpp) |
+| K2 | `feat/ns-iv-b` | ☑ landed | `e34e3bb` (+ scalar_erfc restore `f2e1967`) | **Choi–Kim–Kwak 2023 L₃ seed** (arXiv:2302.08758): scalar **324→218 ns/op, beats same-host LBR 237**; Halley 4.71→2.94 mean; acc held 9.9e-16 |
+| K3 | `feat/ns-iv-b` | ☑ landed | `b5b95ff` | AVX2 **0.92→1.27× scalar** (≥1.2 gate; reverses R-24); parity max\|Δσ\|=0; max_rel 8.24e-8→4.18e-11 |
 | K4 | `feat/ns-iv` | ☐ todo | — | Sprint-X gate |
 | A0 | `feat/ns-am-deam` | ☑ landed | `a9b8696` | VERDICT: ≤200ms=WALL-WIN via E1 parallel de-Am prepass; A1 DEFERRED. Knob ATX_BENCH_FIT_WORKERS |
 | A4 | `feat/ns-am-deam` | ☑ landed | `2d54ded` | boundary Φ norm_cdf_erfc_pd2; parity 6.75e-9→4.12e-13 |
@@ -238,7 +240,9 @@ graph TD
 | F7 | `feat/ns-fit` | ☑ landed | `7c08438` | corpus_board_fit/dividend/curve_selector/backtest/deamer_test P3 cleanups |
 | F2,F5 | `feat/ns-fit` | ☐ todo (Wave B, ⚠︎R) | — | R-02 floor / seam-gated |
 | U1 | `feat/ns-sched` | ☑ landed | `0d55d6e` | streaming populate; RSS O(all)→O(in-flight); determinism bit-id; 11/11 |
-| U2..U4 | `feat/ns-sched` | ☐ todo (Wave B/C) | — | — |
+| U2 | `feat/ns-sched-b` | ☑ landed | `13dff09` | LPT outer claim order (desc by frame rows, deterministic tie-break); byte-identical output |
+| U3 | `feat/ns-sched-b` | ☑ landed | `3661564` | date-granular durability across a worker throw; crash-resume test (fresh open) passes |
+| U4 | `feat/ns-sched` | ☐ todo (Wave C, ready — E1 landed) | — | shared worker budget (small-book) |
 | U5 | `feat/ns-sched` | ☐ todo (Wave C) | — | deadlock-free — RE-TAGGED dep E2 (not just E1) |
 | U6 | `feat/ns-sched` | ☐ todo (Wave C) | — | wall vs 45 s |
 | V1..V3 | `feat/ns-surf` | ☐ todo (Wave C/D) | — | in-band % |
