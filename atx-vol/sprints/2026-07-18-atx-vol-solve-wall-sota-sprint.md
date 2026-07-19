@@ -197,9 +197,9 @@ graph TD
 | V2 | `feat/sw-verify` | ☐ todo | — | cache-build + diag stamped; attribution decomposed |
 | V3 | `feat/sw-verify` | ☐ todo | — | provisional rows re-captured CV≤5% |
 | V4 | `feat/sw-verify` | ☐ todo (PM) | — | absolutes frozen |
-| K1 | `feat/sw-kernel` | ☐ todo | — | ladder bench + tier policy table + citations |
-| K2 | `feat/sw-kernel` | ☐ todo | — | ≥2.0 honest quiet-window; Auto flipped |
-| K3 | `feat/sw-kernel` | ☐ todo | — | laned bundle parity + ≥2.5× vs scalar |
+| K1 | `feat/sw-kernel` | ☑ landed | `033899f` | ladder bench + tier policy + al_opts audit (docs/al-preset-ladder.md) |
+| K2 | `feat/sw-kernel` | ◐ prov. landed (flag OFF, PM quiet-window pending) | `f30abdf`, `b48d4e9`, `73bcaf3` | AlOpts l≠p + specialize (7,8) + ql_fast batch gate rows; ql_fast tier **2.4–3.8× PROVISIONAL** (clears ≥2.5×); accurate 1.4–2.7×; levers 1/5 dead, 4 deferred-to-caller; `kShipAvx2Boundary` left OFF for PM A/B (report kernel-stage1.md) |
+| K3 | `feat/sw-kernel` | ◐ seam published | `2ffda57` | seam doc docs/seams/laned-greeks.md published for L4; laned bundle impl pending |
 | K4 | `feat/sw-kernel` | ☐ todo | — | first-order path + new vega guard green |
 | K5 | `feat/sw-kernel` | ☐ todo | — | `american_greeks/*` A/B rows; ≥5× composite |
 | C1 | `feat/sw-fit` | ☐ todo | — | de-Am passes 2→1; outputs bit-identical |
