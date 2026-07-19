@@ -181,10 +181,10 @@ Rules: american.cpp/american.hpp/american_iv.cpp/deamer.cpp are single-owner per
 | P6 | pending | | |
 | P7 | pending | | |
 | W1 | **done** | 79abd68 | scatter_pnl_rows → ONE serial pnl_taylor_explain_batch (qty=nullptr, weight at call site preserves bit-identical unexplained). Scalar-tail/non-AVX2 bit-identical; AVX2 2nd-order terms within 1e-7/1e-12 kernel bound. Grouped-vs-ungrouped repin justified (SIMD routing, not math). 4 new SimdPnlWiring tests. have_avx2() gate left for W4. |
-| W2 | in-flight | | build-counters dir; deletions staged in shared index |
+| W2 | **done** | fc3f10c (+deletions swept into 750a465) | norm_cdf_pd AND norm_cdf_pd2 deleted (zero live callers — bit-identical for all shipped paths). Probe/tests retargeted to Cody-erfc, full-range Φ gate, kFastDeterministicPhiBound 5e-11→1e-14 (measured 1.665e-15). Stale wing-patch docs scrubbed. 60/60 affected green. Leftover: 2 historical kNormCdfWing comment tokens (black76_batch_avx2.cpp:77, greeks_batch_avx2.cpp:85) — cosmetic, W4 may sweep. |
 | W3 | pending | | blocked on P4 fingerprint-red resolution (american.* ownership) |
 | W4 | in-flight | | dispatched (build-rel-avx2, freed by W1); pnl_batch gate handoff from W1 |
-| G1 | pending | | |
+| G1 | in-flight | | dispatched (build-counters, freed by W2); pre-landing PM checkpoint required (fixture repins) |
 | G2 | pending | | |
 | G4 | pending | | |
 | G-DATA | pending | | spend: $0 |
