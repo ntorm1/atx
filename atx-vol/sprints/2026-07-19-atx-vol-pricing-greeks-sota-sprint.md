@@ -165,7 +165,9 @@ Rules: american.cpp/american.hpp/american_iv.cpp/deamer.cpp are single-owner per
 |---|---|---|---|
 | plan+reviews committed | done | 7e42f7c | |
 | A1 | **done** | 51fc212 | Newton iters 16(exhausted)→mean 6.17/max 10 on 240-grid; JN sweeps mean 21.78→18.99; repins justified in commit body. 2 new known-reds handed to fix-up agent: PricerFitter.LocalRiskRefitPublishesCopyOnWriteGeneration (cache-certification flip), SurfaceV2Provenance.ValidationFallbackAdmissionRecordsTheServedFamily (fixture premise broken at HEAD post-b118439 — needs injected-surface redesign, not S3 re-tune). A6 QD+/BAW A/B re-run = report item. |
-| A2/A5/A9 | pending | | |
+| A2/A5/A9 | **done** | a9890c7, 57a2e2d, 6ca2d99 | A2 floor: fixture fingerprints bit-unchanged (no sub-intrinsic marks in fixtures). A5 one-sided rho at regime boundary. A9 batch: quad floor, QD+ doc-vs-code reconciled, essvi guards, null-check, GreekNeeds rho-gate, log_pd escape, carry debug-assert ([[maybe_unused]] tol for NDEBUG). Calendar365 decision: see agent report. |
+| P2 | **done** | 0b47315 | warm-start carry default ON. Boundary solves/slice 474→139 (0.293 ratio, ~3.4×). Δborrow 5.9e-10 ≪ 1e-8 premise. New counter gate test. |
+| fixup r2 (Provenance) | **done** | f99d796 | Fixture on discrete InsufficientExpiryCoverage gate (genuine calendar arb, QP-infeasible 4m lift, 2-of-3 < floor=1.0). Margin ~10⁴× drift scale; 5/5 deterministic; reason-code asserted. Geometric gates proven capped at ~2-4e-10 for validly-built ConvexDense. |
 | A3/A6 | **done** | 46a9ae4, 3c43c90 | polish bracket-clamped + traced seam; floor unified at kIvMin=0.005; A1 vega-gate retained (measured: K=110/120 T=2 σ=0.1 puts sit at inverter's fundamental vega=3e-3 floor ~1.2e-5 rel, not polish artifact) |
 | A4 | **done** | b5baa18 | tolerances scaled kIvResidNoiseFloor·ε·max(F,K); index-scale at-intrinsic now clamps |
 | A7 | **done** | f84e72a | static parallel_for capture/rethrow; no more terminate-on-throw |
