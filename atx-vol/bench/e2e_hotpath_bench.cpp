@@ -188,6 +188,11 @@ void add_stage_timings(SurfaceFitStageTimings &sum, const SurfaceFitStageTimings
   sum.slice_fit_ms += sample.slice_fit_ms;
   sum.audit_ms += sample.audit_ms;
   sum.calendar_validation_ms += sample.calendar_validation_ms;
+  // V2: the two previously-invisible session-level fit costs.
+  sum.correction_cache_ms += sample.correction_cache_ms;
+  sum.input_diagnostics_ms += sample.input_diagnostics_ms;
+  sum.correction_cache_solves += sample.correction_cache_solves;
+  sum.input_diagnostics_solves += sample.input_diagnostics_solves;
   sum.total_wall_ms += sample.total_wall_ms;
   sum.collected = sum.collected || sample.collected;
 }
@@ -306,6 +311,35 @@ void publish_fit_counters(benchmark::State &state, const FitCorpus &corpus,
   state.counters["audit_ms_per_board"] = report.internal.audit_ms / denominator;
   state.counters["calendar_validation_ms_per_board"] =
       report.internal.calendar_validation_ms / denominator;
+  // V2 blind-spot closure: the two previously-invisible fit costs, per board, in
+  // both wall-ms and AL-boundary-solve terms (solve counts exact under this bench's
+  // serial per-board fit loop).
+  state.counters["correction_cache_ms_per_board"] =
+      report.internal.correction_cache_ms / denominator;
+  state.counters["input_diagnostics_ms_per_board"] =
+      report.internal.input_diagnostics_ms / denominator;
+  state.counters["correction_cache_solves_per_board"] =
+      static_cast<double>(report.internal.correction_cache_solves) / denominator;
+  state.counters["input_diagnostics_solves_per_board"] =
+      static_cast<double>(report.internal.input_diagnostics_solves) / denominator;
+  // Fit fraction decomposed into carry / de-Am / cache / calib / diag / parity —
+  // the six attributable stages of a board fit. Fractions of the summed stage CPU
+  // (audit rolls into parity), so the C-lane wins (C1 kills diag, C2/C5 kill
+  // cache+carry, C3 shrinks calib+de-Am) are now individually attributable.
+  const double carry = report.internal.carry_solve_ms;
+  const double deam = report.internal.observation_deam_ms;
+  const double cache = report.internal.correction_cache_ms;
+  const double calib = report.internal.slice_fit_ms;
+  const double diag = report.internal.input_diagnostics_ms;
+  const double parity = report.internal.calendar_validation_ms + report.internal.audit_ms;
+  const double stage_sum = carry + deam + cache + calib + diag + parity;
+  const double frac_denom = stage_sum > 0.0 ? stage_sum : 1.0;
+  state.counters["fit_frac_carry"] = carry / frac_denom;
+  state.counters["fit_frac_deam"] = deam / frac_denom;
+  state.counters["fit_frac_cache"] = cache / frac_denom;
+  state.counters["fit_frac_calib"] = calib / frac_denom;
+  state.counters["fit_frac_diag"] = diag / frac_denom;
+  state.counters["fit_frac_parity"] = parity / frac_denom;
   state.counters["fit_wall_ms_per_board"] = report.internal.total_wall_ms / denominator;
   state.counters["value_ms_per_board"] = report.value_ms / denominator;
   state.counters["snapshot_ms_per_board"] = report.snapshot_ms / denominator;

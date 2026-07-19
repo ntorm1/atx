@@ -204,6 +204,8 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
   // price surfaces as an Internal error rather than an unbounded bracket.
   const auto residual = [&](double sigma) -> Result<double> {
     counters::lightweight::record_residual_evaluation();
+    counters::ledger::bump(counters::ledger::Solve::IvNewtonIters); // V1 always-on: one IV
+                                                                    // inversion residual/Newton step
     if (use_cache) {
       const double p = cached_price(S, K, T, sigma, r, q, side, active_correction);
       if (!std::isfinite(p)) {

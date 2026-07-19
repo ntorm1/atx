@@ -37,14 +37,13 @@
 //   const auto snap = atx::vol::counters::snapshot();
 //   if (snap.enabled) { use snap.get(Counter::BoundarySolves); }
 
+#include <array>  // solve-ledger per-thread block (always on) + gated exact counters
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <limits>
-
-#if defined(ATX_VOL_COUNTERS)
-#include <array>
-#endif
+#include <mutex>  // solve ledger registry lock (register/scrape only; never the hot path)
+#include <vector> // solve-ledger per-step trace sink
 
 namespace atx::vol::counters {
 
@@ -654,5 +653,202 @@ private:
 };
 
 } // namespace timing
+
+// ── Solve ledger (WS-V V1) — always-on, per-thread, merged-at-read ────────────
+//
+// The exact `ATX_VOL_COUNT*` counters above are the DIAGNOSTIC plane: shared
+// atomics gated OFF by default (they are only compiled in a special counters
+// build). The sprint's fewer-solves gates must instead be assertable on the
+// SHIPPING `rel`/`rel-avx2` builds — so the solve ledger is a SECOND, always-on
+// plane with a contention-free discipline:
+//
+//   * Each thread owns a `Block` of plain per-counter cells (relaxed atomics used
+//     only to keep the concurrent scrape data-race-free — on x86 a relaxed
+//     load/store is a plain mov, so a `bump` is load+add+store with NO lock prefix
+//     and NO cross-thread cache-line sharing). A counter that perturbs the timing
+//     it measures is a bug; this one writes only the calling thread's own line.
+//   * Blocks self-register in a global intrusive list at thread start and fold
+//     their tally into `g_retired` at thread exit, so a worker that dies mid-run
+//     never loses counts. The registry mutex is taken ONLY on register / unregister
+//     / snapshot / reset — never on `bump`.
+//   * `snapshot()` merges retired + every live block into a plain-value `Counts`.
+//     A backtest step or a fit board reads deltas of these snapshots; a `StepTrace`
+//     records one delta per step for the per-step gate.
+//
+// Counter meanings (a "solve-equiv" = one AL boundary solve; analytic greeks
+// bundle = 5, FD bundle = 7, a Marks price = 1, adjoint bundle = 1 taped solve):
+//   al_boundary_solves — every al_seed_boundary cold seed (the gate metric)
+//   al_premium_evals   — early-exercise premium quadrature node evaluations
+//   greeks_bundles{fd,analytic,adjoint} — full-Greek bundles by route
+//   iv_newton_iters    — American-IV inversion Newton iterations
+namespace ledger {
+
+enum class Solve : unsigned {
+  AlBoundarySolves = 0,  // al_seed_boundary cold seeds (mirrors Counter::BoundarySolves, always-on)
+  AlPremiumEvals,        // early-exercise premium quadrature evaluations
+  GreeksBundlesFd,       // full-Greek bundles via the FD stencil route (~7 boundary solves each)
+  GreeksBundlesAnalytic, // full-Greek bundles via the analytic AL route (~5 boundary solves each)
+  GreeksBundlesAdjoint,  // full-Greek bundles via the adjoint route (1 taped AL solve each)
+  IvNewtonIters,         // American-IV inversion Newton iterations
+  Count_
+};
+
+inline constexpr unsigned kCount = static_cast<unsigned>(Solve::Count_);
+
+// Stable machine-readable names (bench JSON keys). `sl_` distinguishes the always-on
+// solve ledger from the gated `cnt_` exact counters.
+inline constexpr const char *kNames[kCount] = {
+    "sl_al_boundary_solves", "sl_al_premium_evals", "sl_greeks_fd",
+    "sl_greeks_analytic",    "sl_greeks_adjoint",   "sl_iv_newton_iters",
+};
+
+// A merged, point-in-time copy. Plain values (not atomics) so it is trivially
+// copyable, subtractable, and cheap to store per step.
+struct Counts {
+  std::uint64_t v[kCount] = {};
+
+  [[nodiscard]] std::uint64_t get(Solve s) const noexcept { return v[static_cast<unsigned>(s)]; }
+
+  // Saturating per-counter difference (after - before). Saturation guards a scrape
+  // that straddles a reset(); a well-ordered delta never underflows.
+  [[nodiscard]] Counts operator-(const Counts &before) const noexcept {
+    Counts d;
+    for (unsigned i = 0; i < kCount; ++i) {
+      d.v[i] = v[i] >= before.v[i] ? v[i] - before.v[i] : 0u;
+    }
+    return d;
+  }
+};
+
+namespace detail {
+
+// One thread's tally. `v` is value-initialized to zero (C++20 atomic value-init is
+// zero); only the owning thread writes it, so there is no contention.
+struct Block {
+  std::array<std::atomic<std::uint64_t>, kCount> v{};
+  Block *next{nullptr};
+};
+
+inline std::mutex g_mutex;               // guards g_head + g_retired (register/scrape only)
+inline Block *g_head{nullptr};           // intrusive list of live per-thread blocks
+inline std::array<std::uint64_t, kCount> g_retired{}; // exited threads' folded tallies
+
+// RAII owner of a thread's Block: links on construction, folds+unlinks on exit so
+// counts survive a thread's death (thread-pool workers persist, but a mid-run join
+// must not drop its tally).
+struct Registrar {
+  Block block;
+
+  Registrar() noexcept {
+    std::lock_guard<std::mutex> lk(g_mutex);
+    block.next = g_head;
+    g_head = &block;
+  }
+
+  ~Registrar() {
+    std::lock_guard<std::mutex> lk(g_mutex);
+    for (unsigned i = 0; i < kCount; ++i) {
+      g_retired[i] += block.v[i].load(std::memory_order_relaxed);
+    }
+    Block **p = &g_head;
+    while (*p != nullptr && *p != &block) {
+      p = &(*p)->next;
+    }
+    if (*p == &block) {
+      *p = block.next;
+    }
+  }
+
+  Registrar(const Registrar &) = delete;
+  Registrar &operator=(const Registrar &) = delete;
+};
+
+inline thread_local Registrar t_reg;
+
+// Per-step trace sink armed on the calling (driver) thread. thread_local so a
+// StepScope on the producer path is a single TLS-null check when unarmed.
+inline thread_local std::vector<Counts> *t_step_sink{nullptr};
+
+} // namespace detail
+
+// Hot path: the calling thread bumps its OWN block. Relaxed load+store (a plain mov
+// on x86) — no lock prefix, no shared cache line, no timing perturbation.
+inline void bump(Solve s, std::uint64_t n = 1) noexcept {
+  std::atomic<std::uint64_t> &cell = detail::t_reg.block.v[static_cast<unsigned>(s)];
+  cell.store(cell.load(std::memory_order_relaxed) + n, std::memory_order_relaxed);
+}
+
+// Merge retired + every live block into a plain-value Counts. Takes the registry
+// lock; call at a step/board boundary, never inside the priced fan-out.
+[[nodiscard]] inline Counts snapshot() noexcept {
+  Counts c;
+  std::lock_guard<std::mutex> lk(detail::g_mutex);
+  for (unsigned i = 0; i < kCount; ++i) {
+    c.v[i] = detail::g_retired[i];
+  }
+  for (detail::Block *b = detail::g_head; b != nullptr; b = b->next) {
+    for (unsigned i = 0; i < kCount; ++i) {
+      c.v[i] += b->v[i].load(std::memory_order_relaxed);
+    }
+  }
+  return c;
+}
+
+// Test/measurement seam. Precondition: no concurrent producer (quiescent host).
+inline void reset() noexcept {
+  std::lock_guard<std::mutex> lk(detail::g_mutex);
+  for (unsigned i = 0; i < kCount; ++i) {
+    detail::g_retired[i] = 0u;
+  }
+  for (detail::Block *b = detail::g_head; b != nullptr; b = b->next) {
+    for (unsigned i = 0; i < kCount; ++i) {
+      b->v[i].store(0u, std::memory_order_relaxed);
+    }
+  }
+}
+
+// Test/bench seam: arm a per-step trace on the calling thread. While alive, a
+// producer's StepScope records one Counts delta per step into steps(). RAII;
+// nesting restores the prior sink. Off by default => zero producer cost.
+class StepTrace {
+public:
+  StepTrace() noexcept : prev_(detail::t_step_sink) { detail::t_step_sink = &steps_; }
+  ~StepTrace() noexcept { detail::t_step_sink = prev_; }
+  StepTrace(const StepTrace &) = delete;
+  StepTrace &operator=(const StepTrace &) = delete;
+
+  [[nodiscard]] const std::vector<Counts> &steps() const noexcept { return steps_; }
+  [[nodiscard]] std::size_t size() const noexcept { return steps_.size(); }
+
+private:
+  std::vector<Counts> steps_;
+  std::vector<Counts> *prev_{nullptr};
+};
+
+// Producer-side per-step scope (the backtest loop wraps each step in one). When a
+// StepTrace is armed on this thread it records (snapshot_after - snapshot_before)
+// as one step delta; otherwise it is two TLS-null checks and nothing else.
+class StepScope {
+public:
+  StepScope() noexcept {
+    if (detail::t_step_sink != nullptr) {
+      armed_ = true;
+      before_ = snapshot();
+    }
+  }
+  ~StepScope() noexcept {
+    if (armed_ && detail::t_step_sink != nullptr) {
+      detail::t_step_sink->push_back(snapshot() - before_);
+    }
+  }
+  StepScope(const StepScope &) = delete;
+  StepScope &operator=(const StepScope &) = delete;
+
+private:
+  Counts before_{};
+  bool armed_{false};
+};
+
+} // namespace ledger
 
 } // namespace atx::vol::counters

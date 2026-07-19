@@ -106,6 +106,22 @@ struct SurfaceFitStageTimings {
   double slice_fit_ms{0.0};
   double audit_ms{0.0};
   double calendar_validation_ms{0.0};
+  // V2 blind-spot closure (WS-V). Two session-level fit costs that live in
+  // VolaSession::build — OUTSIDE run_surface_parity / fit_curve_surface — so they
+  // were previously invisible to this breakdown:
+  //   correction_cache_ms  — per-board correction-cache rebuild (build_session_caches,
+  //                          ~192 AL boundary solves/board). Stamped on both routes.
+  //   input_diagnostics_ms — the eSSVI certification/diagnostics de-Am recompute
+  //                          (collect_input_diagnostics -> build_observations_european),
+  //                          a full duplicate board de-Am. eSSVI route only (0 for curve).
+  // The *_solves are the AL-boundary-solve ledger deltas attributable to each stage
+  // (atx::vol::counters::ledger). EXACT under serial / single-board fit (the e2e
+  // bench, populate at fit_workers=1); under concurrent populate they are a global
+  // ledger delta over the build window and read as an upper attribution.
+  double correction_cache_ms{0.0};
+  double input_diagnostics_ms{0.0};
+  std::uint64_t correction_cache_solves{0u};
+  std::uint64_t input_diagnostics_solves{0u};
   double total_wall_ms{0.0};
   bool collected{false};
 };

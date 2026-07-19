@@ -20,6 +20,7 @@
 #include "atx/vol/american.hpp"         // american_price, american_price_cached, american_greeks
 #include "atx/vol/arb.hpp"              // arb_check_calendar (post-refit recheck)
 #include "atx/vol/correction.hpp"       // CorrectionCache, AmericanCorrectionCaches
+#include "atx/vol/counters.hpp"         // counters::ledger — V2 per-board solve attribution
 #include "atx/vol/curve_fit.hpp"        // fit_curve_surface (curve-agnostic driver)
 #include "atx/vol/data.hpp"             // data_install
 #include "atx/vol/dividend.hpp"         // hybrid_forward (representative carry)
@@ -753,6 +754,18 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
   const bool time_build = in.collect_stage_timings;
   const BuildClock::time_point build_start =
       time_build ? BuildClock::now() : BuildClock::time_point{};
+  // V2 blind-spot closure: two session-level fit costs invisible to the parity/curve
+  // fit_timings — the correction-cache rebuild (both routes) and the eSSVI
+  // certification de-Am recompute (eSSVI route) — timed and solve-attributed here,
+  // then stamped into the final fit_timings alongside total_wall_ms. Zero cost off
+  // the measured path (time_build == collect_stage_timings, default false).
+  double correction_cache_ms = 0.0;
+  double input_diagnostics_ms = 0.0;
+  std::uint64_t correction_cache_solves = 0u;
+  std::uint64_t input_diagnostics_solves = 0u;
+  const auto al_solves_now = []() noexcept {
+    return counters::ledger::snapshot().get(counters::ledger::Solve::AlBoundarySolves);
+  };
   // The session is the fast production fit path: de-Americanize and sample the
   // correction cache with the fast ALO preset unless the caller pinned an
   // explicit accuracy. IV inversion / cache sampling only need ~1e-4 price
@@ -814,7 +827,15 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
   // the cold Andersen-Lake path, transparently.
   BuiltCaches caches;
   if (should_build_session_caches(eff)) {
+    const BuildClock::time_point cache_start =
+        time_build ? BuildClock::now() : BuildClock::time_point{};
+    const std::uint64_t cache_al_before = time_build ? al_solves_now() : 0u;
     caches = build_session_caches(under, eff);
+    if (time_build) {
+      correction_cache_ms =
+          std::chrono::duration<double, std::milli>(BuildClock::now() - cache_start).count();
+      correction_cache_solves = al_solves_now() - cache_al_before;
+    }
     // RepresentativeFast/CarryBank may serve cached corrections, but never use
     // a representative-rate cache to de-Americanize a term-rate fit. The fitted
     // curve therefore remains on the cold reference even when its query tier is
@@ -984,6 +1005,10 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
     if (time_build) {
       session.diag_.fit_timings.total_wall_ms =
           std::chrono::duration<double, std::milli>(BuildClock::now() - build_start).count();
+      // Curve route runs no duplicate de-Am (input_certification consumed directly),
+      // so input_diagnostics_* stay 0; only the correction-cache rebuild applies.
+      session.diag_.fit_timings.correction_cache_ms = correction_cache_ms;
+      session.diag_.fit_timings.correction_cache_solves = correction_cache_solves;
       session.diag_.fit_timings.collected = true;
     }
     return Ok(std::move(session));
@@ -1082,11 +1107,19 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
   const std::span<const CarryDiagnostics> certification_carry =
       fit_carry_matches_certification ? std::span<const CarryDiagnostics>(rep.carry)
                                       : std::span<const CarryDiagnostics>{};
+  const BuildClock::time_point diag_start =
+      time_build ? BuildClock::now() : BuildClock::time_point{};
+  const std::uint64_t diag_al_before = time_build ? al_solves_now() : 0u;
   std::vector<SessionSliceDiagnostics> slice_diag = collect_input_diagnostics(
       under, eff, rep.context, sp.deam.caches,
       /*fit_rows_audited=*/eff.deam.audit_fit_inversions, certification_carry, &incremental_obs,
       &incremental_mids, &incremental_flags, &incremental_chain_mids, &incremental_chain_flags,
       &incremental_chain_bids, &incremental_chain_asks, &incremental_chain_ts);
+  if (time_build) {
+    input_diagnostics_ms =
+        std::chrono::duration<double, std::milli>(BuildClock::now() - diag_start).count();
+    input_diagnostics_solves = al_solves_now() - diag_al_before;
+  }
   aggregate_input_diagnostics(slice_diag, diag);
   diag.n_carry_skipped_expiries = rep.n_carry_skipped;
   diag.n_audit_starved_expiries = rep.n_audit_starved;
@@ -1111,6 +1144,10 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
   if (time_build) {
     session.diag_.fit_timings.total_wall_ms =
         std::chrono::duration<double, std::milli>(BuildClock::now() - build_start).count();
+    session.diag_.fit_timings.correction_cache_ms = correction_cache_ms;
+    session.diag_.fit_timings.input_diagnostics_ms = input_diagnostics_ms;
+    session.diag_.fit_timings.correction_cache_solves = correction_cache_solves;
+    session.diag_.fit_timings.input_diagnostics_solves = input_diagnostics_solves;
     session.diag_.fit_timings.collected = true;
   }
   return Ok(std::move(session));

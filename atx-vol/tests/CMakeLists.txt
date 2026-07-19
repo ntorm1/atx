@@ -119,6 +119,8 @@ add_executable(atx-vol-tests
     surface_archive_v2_test.cpp      # S1-S3: ATXVSA2 zero-copy view parity + subset-map isolation
     # Wave-P AAD greeks (Agent greeks) — appended target:
     adjoint_greeks_test.cpp          # P2: adjoint/IFT American greeks parity vs central-diff FD
+    # solve-wall SOTA WS-V (verify agent) — appended target:
+    solve_ledger_test.cpp            # V1: always-on solve-ledger cost-model gate (11/6 s/u)
 )
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).

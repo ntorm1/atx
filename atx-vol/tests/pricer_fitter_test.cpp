@@ -1857,6 +1857,12 @@ TEST_F(PricerFitterTest, StageTimingsAreOptInAndReportedByTheBuiltSession) {
   EXPECT_EQ(disabled.slice_fit_ms, 0.0);
   EXPECT_EQ(disabled.audit_ms, 0.0);
   EXPECT_EQ(disabled.calendar_validation_ms, 0.0);
+  // V2 blind-spot fields are equally zero-cost-off: no steady_clock read, no
+  // ledger snapshot, when collection is not requested.
+  EXPECT_EQ(disabled.correction_cache_ms, 0.0);
+  EXPECT_EQ(disabled.input_diagnostics_ms, 0.0);
+  EXPECT_EQ(disabled.correction_cache_solves, 0u);
+  EXPECT_EQ(disabled.input_diagnostics_solves, 0u);
 
   PricerConfig config = essvi_config();
   config.collect_stage_timings = true;
@@ -1873,6 +1879,73 @@ TEST_F(PricerFitterTest, StageTimingsAreOptInAndReportedByTheBuiltSession) {
   EXPECT_GT(reported.slice_fit_ms, 0.0);
   EXPECT_GE(reported.audit_ms, 0.0);
   EXPECT_GE(reported.calendar_validation_ms, 0.0);
+}
+
+// WS-V V2 gate — the two session-level fit costs the FitTimings breakdown used to
+// miss are now stamped and solve-attributed, and the attribution is internally
+// consistent. Both live in VolaSession::build OUTSIDE run_surface_parity, so the
+// pre-V2 breakdown left them invisible:
+//   * correction_cache_ms/_solves — the per-board correction-cache rebuild
+//     (build_session_caches; the finding's ~192 cold AL boundary solves/board),
+//   * input_diagnostics_ms/_solves — the eSSVI certification/diagnostics de-Am
+//     recompute (collect_input_diagnostics -> build_observations_european).
+// The consistency invariants are what make the number trustworthy as a gate:
+// each stamped stage is a sub-interval of the build, so its ms is <= total wall
+// and the two stamped ms sum to <= total wall; and, measured against an
+// always-on solve-ledger delta bracketing the SAME build (fit_workers=1 => the
+// stamped stages run on the driver thread, so the ledger delta over each window
+// is exactly its attribution), the stamped solves sum to <= the build's total AL
+// boundary solves. Determinism note: the ledger is process-global; a
+// snapshot-delta (not reset) tolerates whatever prior tests left behind.
+TEST_F(PricerFitterTest, V2SessionBlindSpotFitCostsArePopulatedAndConsistent) {
+  namespace led = atx::vol::counters::ledger;
+
+  PricerConfig config = essvi_config(); // Fast preset keeps use_correction_cache=true
+  config.collect_stage_timings = true;
+  config.fit_workers = 1u; // serial => ledger deltas are an exact per-stage attribution
+
+  PricerFitter fitter{config};
+  const led::Counts al_before = led::snapshot();
+  ASSERT_TRUE(fitter.fit(*chain_).has_value());
+  const led::Counts al_after = led::snapshot();
+  ASSERT_NE(fitter.surface(), nullptr);
+
+  const atx::vol::SurfaceFitStageTimings &t = fitter.surface()->diagnostics().fit_timings;
+  ASSERT_TRUE(t.collected);
+
+  // ── Populated. The correction-cache rebuild always runs on this pinned-Essvi,
+  // cache-enabled config and always costs cold AL boundary solves, so both its
+  // wall and its solve count are strictly positive. The eSSVI route additionally
+  // runs the duplicate certification de-Am, a genuine board-wide recompute whose
+  // wall is measurable (its solves may be cache-served, hence only >= 0). ──
+  EXPECT_GT(t.correction_cache_ms, 0.0) << "correction-cache rebuild was not stamped";
+  EXPECT_GT(t.correction_cache_solves, 0u) << "cache build performs cold AL boundary solves";
+  EXPECT_GT(t.input_diagnostics_ms, 0.0) << "eSSVI certification de-Am recompute was not stamped";
+
+  // ── Consistent (wall): each stamped stage is a build sub-interval, and the two
+  // are disjoint (cache build precedes run_surface_parity; diagnostics follow it),
+  // so their sum cannot exceed the total build wall. ──
+  EXPECT_LE(t.correction_cache_ms, t.total_wall_ms);
+  EXPECT_LE(t.input_diagnostics_ms, t.total_wall_ms);
+  EXPECT_LE(t.correction_cache_ms + t.input_diagnostics_ms, t.total_wall_ms)
+      << "stamped session-level costs must sum to <= the build wall";
+
+  // ── Consistent (solves): the two stamped windows attribute a subset of the
+  // build's total AL boundary solves; run_surface_parity's own fit de-Am makes
+  // up the remainder, so the stamped sum is <= the bracketing ledger delta. ──
+  const std::uint64_t build_al_solves =
+      al_after.get(led::Solve::AlBoundarySolves) - al_before.get(led::Solve::AlBoundarySolves);
+  EXPECT_GT(build_al_solves, 0u) << "a cold board fit must perform AL boundary solves";
+  EXPECT_LE(t.correction_cache_solves + t.input_diagnostics_solves, build_al_solves)
+      << "stamped stage solves cannot exceed the build's total AL boundary solves";
+  EXPECT_LE(t.correction_cache_solves, build_al_solves);
+
+  std::printf("[V2 attribution] cache=%.3f ms (%llu solves)  diag=%.3f ms (%llu solves)  "
+              "stamped_sum=%.3f ms  total_wall=%.3f ms  build_al_solves=%llu\n",
+              t.correction_cache_ms, static_cast<unsigned long long>(t.correction_cache_solves),
+              t.input_diagnostics_ms, static_cast<unsigned long long>(t.input_diagnostics_solves),
+              t.correction_cache_ms + t.input_diagnostics_ms, t.total_wall_ms,
+              static_cast<unsigned long long>(build_al_solves));
 }
 
 // Task 2d (carry I5): an expiry whose quotes are all crossed fails the carry

@@ -655,6 +655,7 @@ void al_init_nodes(AlBoundary &b, std::uint16_t n, double T, double K, double r,
 
 void al_seed_boundary(AlBoundary &b, double sigma, double r, double q) noexcept {
   ATX_VOL_COUNT(BoundarySolves); // one cold boundary seed (BAW re-seed per node)
+  counters::ledger::bump(counters::ledger::Solve::AlBoundarySolves); // V1 always-on gate metric
   counters::lightweight::record_boundary_solves();
   b.y[0] = 0.0;
   for (std::uint16_t i = 1; i < b.n; ++i) {
@@ -1080,6 +1081,7 @@ template <unsigned NB, unsigned NQ>
   const double dr = std::exp(-r * t);
   const double dp = std::log(S * dq / (b_t * dr)) / v + 0.5 * v;
   ATX_VOL_COUNT(PremiumQuadEvals);
+  counters::ledger::bump(counters::ledger::Solve::AlPremiumEvals); // V1 always-on
   ATX_VOL_COUNT(LogCalls);
   ATX_VOL_COUNT_N(ExpCalls, 2);
   counters::lightweight::record_exp_calls(2u);

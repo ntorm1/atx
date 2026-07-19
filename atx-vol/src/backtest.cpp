@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
+#include "atx/vol/counters.hpp"      // counters::ledger — V1 always-on solve ledger (per-step scrape)
 #include "atx/vol/phase_profile.hpp"
 #include "atx/vol/strategy.hpp"        // IStrategy
 #include "atx/vol/surface_archive.hpp" // SurfaceArchive
@@ -1301,6 +1302,10 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
       }
     }
 
+    // V1 solve ledger: per-step solve deltas when a StepTrace is armed (fixed-book
+    // overload has no execute/entry work — just compute_step). Zero cost otherwise.
+    counters::ledger::StepScope step_ledger_scope;
+
     // Partition + Taylor PnL-explain: byte-identical arithmetic to the strategy
     // overload's step (shared `compute_step`), which now also reports the count of
     // held lots the pricer could not value this step.
@@ -1689,6 +1694,12 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
         return Err(prefetch_status.error());
       }
     }
+
+    // V1 solve ledger: record this step's per-unique solve deltas (pnl-base + target +
+    // execute) when a StepTrace is armed. Spans to the end of the loop body, so it
+    // captures execute()'s risk-frame solves too. Zero cost (two TLS-null checks) when
+    // no trace is armed — never on the shipping hot path.
+    counters::ledger::StepScope step_ledger_scope;
 
     // 1. PnL of the current book (resolved on base) forward to shifted (unchanged B1).
     auto step = compute_step(*base, *shifted, book.lots, cfg.price, retained_pricer, &target_marks,
