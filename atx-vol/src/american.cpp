@@ -688,14 +688,10 @@ namespace { // reopen the file's anonymous namespace
   return xmax * std::exp(-std::sqrt(yv));
 }
 
-[[nodiscard]] double d_plus(double t, double z, double sigma, double r, double q) noexcept {
-  const double v = sigma * std::sqrt(t);
-  return (std::log(z) + (r - q) * t) / v + 0.5 * v;
-}
-[[nodiscard]] double d_minus(double t, double z, double sigma, double r, double q) noexcept {
-  const double v = sigma * std::sqrt(t);
-  return (std::log(z) + (r - q) * t) / v - 0.5 * v;
-}
+// F7: the former d_plus/d_minus helpers were only ever called in adjacent pairs
+// that recomputed sigma*sqrt(tau) and log(z) twice; both call sites (the eqn_b tip
+// and eqn_b_NDd) now compute the shared base once and take base +/- v/2 inline, so
+// the standalone helpers are gone (no other consumer — they were file-local).
 
 void al_init_nodes(AlBoundary &b, std::uint16_t n, double T, double K, double r,
                    double q) noexcept {
@@ -929,8 +925,13 @@ void eqn_b_ND_impl(const AlBoundary &bnd, const AlWorkspace &ws, unsigned node_i
     }
     return;
   }
-  const double tip_p = norm_cdf(d_plus(tau, b_val / K, sigma, r, q));
-  const double tip_m = norm_cdf(d_minus(tau, b_val / K, sigma, r, q));
+  // F7 (perf finding 7): d_plus and d_minus at the tip both recompute
+  // sigma*sqrt(tau) and log(b_val/K). Share them once as base +/- v/2 — bit-identical
+  // to the two d_plus/d_minus calls (same op order), saving one log + one sqrt/node.
+  const double tip_v = sigma * std::sqrt(tau);
+  const double tip_base = (std::log(b_val / K) + (r - q) * tau) / tip_v;
+  const double tip_p = norm_cdf(tip_base + 0.5 * tip_v);
+  const double tip_m = norm_cdf(tip_base - 0.5 * tip_v);
   ATX_VOL_COUNT_N(NormCdfCalls, 2); // tip_p, tip_m
 
   const double *xs = ws.qx_fp;
@@ -1019,8 +1020,12 @@ void eqn_b_NDd(const AlBoundary &bnd, double tau, double b_val, double sigma, do
   }
   const double K = bnd.K;
   const double v = sigma * std::sqrt(tau);
-  const double dpv = d_plus(tau, b_val / K, sigma, r, q);
-  const double dmv = d_minus(tau, b_val / K, sigma, r, q);
+  // F7: reuse the local v and share log(b_val/K) between d_plus/d_minus as
+  // base +/- v/2 — bit-identical to the two d_plus/d_minus calls (each of which
+  // recomputed v and log), saving two sqrt + one log per node.
+  const double base = (std::log(b_val / K) + (r - q) * tau) / v;
+  const double dpv = base + 0.5 * v;
+  const double dmv = base - 0.5 * v;
   Nd_out = norm_pdf(dmv) / (b_val * v);
   Dd_out = norm_pdf(dpv) / (b_val * v);
 }
