@@ -366,6 +366,17 @@ american_put_adjoint(double S, double K, double T, double sigma, double r, doubl
       (2.0 * hSv);
   const double vanna = (dvp - dvm) / (2.0 * hsv);
 
+  // ── K5 adjoint first-order-deferral cite (WS-K solve-wall sprint) ─────────
+  // The two COLD σ± re-solves below are this adjoint bundle's volga tail; a
+  // `first_order_only` adjoint tier would DEFER them. That deferral is CLEAN for
+  // production: the backtest resolves FullGreeks to the ANALYTIC route
+  // (american_greeks_al), never this adjoint route — RunConfig.price sets
+  // analytic_greeks=true (backtest.hpp:309) while PriceOptions::adjoint_greeks
+  // defaults false (portfolio_pricer.hpp:513, no production setter); dispatch at
+  // portfolio_pricer.cpp:1026-1028 reaches american_greeks_adjoint only when
+  // adjoint_greeks==true. The first-order win instead lands on the analytic
+  // route's K4 mask (need_vega=false ⇒ σ± solves skipped). See
+  // docs/seams/laned-greeks.md ("production route trace").
   // ── volga = ∂²P/∂σ²: COLD σ± boundary RE-SOLVE (captures y_σσ exactly and to
   // full tol — a warm re-solve's residual is amplified by 1/hvol² in the 2nd
   // difference), then 2nd price difference — the proven american_greeks_al route.
