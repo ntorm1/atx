@@ -729,6 +729,63 @@ void al_init_nodes(AlBoundary &b, std::uint16_t n, double T, double K, double r,
   return b_from_y(y_val, b.xmax);
 }
 
+// F5: the strike-INVARIANT part of al_boundary_at — everything except the final
+// xmax multiply. al_boundary_at(b, u) == b.xmax * al_boundary_factor_at(b, u)
+// bit-for-bit (b_from_y is xmax * exp(-sqrt(y)); the guard branches return xmax ==
+// xmax * 1.0). The boundary's live state y[] is K-independent (homogeneity), so when
+// one solved boundary reprices many strikes/spots — with xmax rescaling LINEARLY in
+// K — the factor is shared and only the xmax multiply moves per strike.
+[[nodiscard]] double al_boundary_factor_at(const AlBoundary &b, double u) noexcept {
+  if (b.T <= 0.0 || u <= 0.0) {
+    return 1.0;
+  }
+  const double u_eff = (u >= b.T) ? b.T : u;
+  const double z = 2.0 * std::sqrt(u_eff / b.T) - 1.0;
+  const double zc = atx::core::clamp(z, -1.0, 1.0);
+  const double y_val = al_cheb_eval(b.z.data(), b.wbary.data(), b.y.data(), b.n, zc);
+  const double yv = (y_val > 0.0) ? y_val : 0.0;
+  return std::exp(-std::sqrt(yv));
+}
+
+// F5 (perf finding 5): per-boundary premium precompute. premium_integrand_put's
+// per-node work — the barycentric boundary factor, sigma*sqrt(t), exp(-q*t),
+// exp(-r*t) — depends on (boundary, sigma, r, q, t) but NOT on the spot/strike being
+// priced. When ONE solved boundary prices MANY strikes/spots (the two slice engines
+// and american_greeks_fd's spot stencils) these are bound once and reused, leaving
+// just log + 2 norm_cdf per (node, strike). Stored as `bfac` (pre-xmax factor) so
+// b_t = xmax * bfac reconstructs bit-identically under the linear-in-K rescale.
+// euro_fwd / euro_df hoist the two European-leg (euro_put_sk) exps out of the loop.
+//
+// Deliberately a SEPARATE object, NOT a member of AlWorkspace: american_greeks_fd
+// stack-bundles seven AlWorkspaces and this must not multiply into that budget.
+// One AlPremiumCache is ~2.6 KB (4 * 64 doubles + scalars); the slice engines keep
+// one on the stack, the greeks bundle keeps ONE shared instance keyed to whichever
+// boundary is active. Arrays are left uninitialised (filled [0,nq) before any read),
+// matching the AlWorkspace geo-array convention.
+struct AlPremiumCache {
+  const void *bnd_id = nullptr; // boundary this was bound from (validity key)
+  bool valid = false;
+  unsigned nq = 0;
+  double sigma_bound = 0.0;
+  double r_bound = 0.0;
+  double q_bound = 0.0;
+  double euro_fwd = 0.0; // exp((r-q)*T) — European-leg forward factor
+  double euro_df = 0.0;  // exp(-r*T)    — European-leg discount factor
+  double bfac[kAlMaxQuad]; // boundary factor: b_t = xmax * bfac[i]
+  double vv[kAlMaxQuad];   // sigma * sqrt(t_i)
+  double dq[kAlMaxQuad];   // exp(-q * t_i)
+  double dr[kAlMaxQuad];   // exp(-r * t_i)
+};
+
+// Is pc bound for exactly this (boundary, quadrature, sigma, r, q)? A miss falls the
+// consumer back to the bit-identical inline path, so this is the only reuse guard.
+[[nodiscard]] bool al_premium_cache_matches(const AlPremiumCache &pc, const AlBoundary &b,
+                                            const AlWorkspace &ws, double sigma, double r,
+                                            double q) noexcept {
+  return pc.valid && pc.bnd_id == &b && pc.nq == ws.n_quad_price && pc.sigma_bound == sigma &&
+         pc.r_bound == r && pc.q_bound == q;
+}
+
 void al_seed_boundary(AlBoundary &b, double sigma, double r, double q) noexcept {
   ATX_VOL_COUNT(BoundarySolves); // one cold boundary seed (BAW re-seed per node)
   counters::ledger::bump(counters::ledger::Solve::AlBoundarySolves); // V1 always-on gate metric
@@ -1156,35 +1213,55 @@ template <unsigned NB, unsigned NQ>
   return al_fp_sweep_impl<0, 0>(b, ws, sigma, r, q);
 }
 
+// pc == nullptr: the original inline path (recompute the boundary factor + the two
+// exps + v per node). pc != nullptr (bound for this boundary at (sigma,r,q)): read
+// the strike-invariant terms from the precompute and rescale b_t by the LIVE xmax —
+// b.xmax * pc->bfac[i] == al_boundary_at(b, rem) bit-for-bit — so the shared dp/return
+// below produce identical bits. The exp counters live only on the inline branch; the
+// cached exps are counted once at al_bind_premium.
 [[nodiscard]] double premium_integrand_put(double z, const AlBoundary &b, double S, double sigma,
-                                           double r, double q) noexcept {
+                                           double r, double q, const AlPremiumCache *pc,
+                                           unsigned i) noexcept {
   const double t = z * z;
   if (t <= 1.0e-14) {
     return 0.0;
   }
-  const double rem = b.T - t;
-  const double b_t = (rem > 0.0) ? al_boundary_at(b, rem) : b.K;
-  if (!(b_t > 0.0)) {
-    return 0.0;
+  double b_t;
+  double v;
+  double dq;
+  double dr;
+  if (pc != nullptr) {
+    b_t = b.xmax * pc->bfac[i];
+    v = pc->vv[i];
+    dq = pc->dq[i];
+    dr = pc->dr[i];
+  } else {
+    const double rem = b.T - t;
+    b_t = (rem > 0.0) ? al_boundary_at(b, rem) : b.K;
+    if (!(b_t > 0.0)) {
+      return 0.0;
+    }
+    v = sigma * std::sqrt(t);
+    dq = std::exp(-q * t);
+    dr = std::exp(-r * t);
+    ATX_VOL_COUNT_N(ExpCalls, 2);
+    counters::lightweight::record_exp_calls(2u);
   }
-  const double v = sigma * std::sqrt(t);
-  const double dq = std::exp(-q * t);
-  const double dr = std::exp(-r * t);
   const double dp = std::log(S * dq / (b_t * dr)) / v + 0.5 * v;
   ATX_VOL_COUNT(PremiumQuadEvals);
   counters::ledger::bump(counters::ledger::Solve::AlPremiumEvals); // V1 always-on
   ATX_VOL_COUNT(LogCalls);
-  ATX_VOL_COUNT_N(ExpCalls, 2);
-  counters::lightweight::record_exp_calls(2u);
   ATX_VOL_COUNT_N(NormCdfCalls, 2);
   return 2.0 * z * (r * b.K * dr * norm_cdf(-dp + v) - q * S * dq * norm_cdf(-dp));
 }
 
 // Premium quadrature, templated on the fixed premium trip count NP (P2.2 §3);
-// NP==0 is the generic runtime path. Single body, so bit-identical across NP.
+// NP==0 is the generic runtime path. Single body, so bit-identical across NP. A
+// non-null pc supplies the F5 per-boundary precompute.
 template <unsigned NP>
 [[nodiscard]] double al_put_premium_impl(const AlBoundary &b, const AlWorkspace &ws, double S,
-                                         double sigma, double r, double q) noexcept {
+                                         double sigma, double r, double q,
+                                         const AlPremiumCache *pc) noexcept {
   const double sqrtT = std::sqrt(b.T);
   const double half_sqrtT = 0.5 * sqrtT;
   double total = 0.0;
@@ -1193,29 +1270,108 @@ template <unsigned NP>
   const unsigned nq = (NP != 0) ? NP : ws.n_quad_price;
   for (unsigned i = 0; i < nq; ++i) {
     const double zi = half_sqrtT * (1.0 + xs[i]);
-    total += wv[i] * premium_integrand_put(zi, b, S, sigma, r, q);
+    total += wv[i] * premium_integrand_put(zi, b, S, sigma, r, q, pc, i);
   }
   total *= half_sqrtT;
   return (total > 0.0) ? total : 0.0;
 }
 
 [[nodiscard]] double al_put_premium(const AlBoundary &b, const AlWorkspace &ws, double S,
-                                    double sigma, double r, double q) noexcept {
+                                    double sigma, double r, double q,
+                                    const AlPremiumCache *pc = nullptr) noexcept {
+  // Reuse the precompute only when it was bound for exactly this (boundary, nq,
+  // sigma, r, q); any miss uses the bit-identical inline path.
+  const AlPremiumCache *use =
+      (pc != nullptr && al_premium_cache_matches(*pc, b, ws, sigma, r, q)) ? pc : nullptr;
   if (ws.specialize) {
     switch (ws.n_quad_price) {
     case 8:
-      return al_put_premium_impl<8>(b, ws, S, sigma, r, q);
+      return al_put_premium_impl<8>(b, ws, S, sigma, r, q, use);
     case 16:
-      return al_put_premium_impl<16>(b, ws, S, sigma, r, q);
+      return al_put_premium_impl<16>(b, ws, S, sigma, r, q, use);
     case 24:
-      return al_put_premium_impl<24>(b, ws, S, sigma, r, q);
+      return al_put_premium_impl<24>(b, ws, S, sigma, r, q, use);
     case 48:
-      return al_put_premium_impl<48>(b, ws, S, sigma, r, q);
+      return al_put_premium_impl<48>(b, ws, S, sigma, r, q, use);
     default:
       break;
     }
   }
-  return al_put_premium_impl<0>(b, ws, S, sigma, r, q);
+  return al_put_premium_impl<0>(b, ws, S, sigma, r, q, use);
+}
+
+// F5: bind the per-boundary premium precompute for a solved boundary at (sigma,r,q).
+// The caller rebinds when any of (boundary, sigma, r, q) changes across a reuse loop.
+// If a quadrature node hits premium_integrand_put's degenerate guards (t<=1e-14 or
+// b_t<=0 — unreachable for interior Gauss-Legendre price nodes, but guarded) the
+// cache is left invalid so consumers fall back to the inline path. Counts the 2
+// exps/node here — the exact spot the per-strike loop no longer pays them.
+void al_bind_premium(const AlBoundary &b, const AlWorkspace &ws, double sigma, double r, double q,
+                     AlPremiumCache &pc) noexcept {
+  pc.valid = false;
+  pc.bnd_id = nullptr;
+  const unsigned nq = ws.n_quad_price;
+  if (nq == 0 || nq > kAlMaxQuad || !(b.xmax > 0.0) || ws.qx_price == nullptr) {
+    return;
+  }
+  const double half_sqrtT = 0.5 * std::sqrt(b.T);
+  const double *xs = ws.qx_price;
+  for (unsigned i = 0; i < nq; ++i) {
+    const double zi = half_sqrtT * (1.0 + xs[i]);
+    const double t = zi * zi;
+    const double rem = b.T - t;
+    if (t <= 1.0e-14 || !(rem > 0.0)) {
+      return; // degenerate guard: inline path handles it (never hit for GL nodes)
+    }
+    const double bfac = al_boundary_factor_at(b, rem);
+    if (!(b.xmax * bfac > 0.0)) {
+      return;
+    }
+    pc.bfac[i] = bfac;
+    pc.vv[i] = sigma * std::sqrt(t);
+    pc.dq[i] = std::exp(-q * t);
+    pc.dr[i] = std::exp(-r * t);
+    ATX_VOL_COUNT_N(ExpCalls, 2);
+    counters::lightweight::record_exp_calls(2u);
+  }
+  // European-leg forward/discount exps, hoisted out of the per-strike price (F5
+  // rider). euro_put_sk never counted these, so they stay off ExpCalls.
+  pc.euro_fwd = std::exp((r - q) * b.T);
+  pc.euro_df = std::exp(-r * b.T);
+  pc.nq = nq;
+  pc.sigma_bound = sigma;
+  pc.r_bound = r;
+  pc.q_bound = q;
+  pc.bnd_id = &b;
+  pc.valid = true;
+}
+
+// F5: al_put_price_from_boundary with the premium precompute + hoisted euro leg.
+// ALWAYS correct: when pc is bound for this (boundary, sigma, r, q) it uses the
+// precomputed euro exps + cached premium; otherwise it recomputes both inline. Both
+// paths are bit-identical to al_put_price_from_boundary(bnd, ws, S, K, T, sigma, r,
+// q) — the euro factors equal euro_put_sk's own exps and the premium reuse is proven
+// bit-exact — so the reuse is a pure throughput win, never a correctness dependency.
+[[nodiscard]] double al_put_price_from_boundary_cached(const AlBoundary &bnd, const AlWorkspace &ws,
+                                                       const AlPremiumCache &pc, double S, double K,
+                                                       double T, double sigma, double r,
+                                                       double q) noexcept {
+  const bool hit = al_premium_cache_matches(pc, bnd, ws, sigma, r, q);
+  const double euro = hit ? black76_price(S * pc.euro_fwd, K, T, sigma, pc.euro_df, Side::Put)
+                          : euro_put_sk(S, K, T, sigma, r, q);
+  const double prem = al_put_premium(bnd, ws, S, sigma, r, q, hit ? &pc : nullptr);
+  double price = euro + prem;
+  const double intr = K - S;
+  if (intr > price) {
+    price = intr;
+  }
+  if (euro > price) {
+    price = euro;
+  }
+  if (price < 0.0) {
+    price = 0.0;
+  }
+  return price;
 }
 
 // ── Boundary solve / price split (S-independence seam) ───────────────────
@@ -2043,11 +2199,20 @@ Status andersen_lake_call_slice(double S, std::span<const double> strikes, doubl
     }
   }
 
+  // F5: the boundary is fixed (Kp = S) across every strike, so the premium's
+  // strike-invariant node terms and the euro forward/discount are bound ONCE here
+  // and reused — leaving log + 2 norm_cdf per (node, strike). Bit-identical: the
+  // cached euro factor equals euro_put_sk's exp and b_t = xmax*bfac == al_boundary_at.
+  AlPremiumCache pc;
+  al_bind_premium(bnd, ws, sigma, rp, qp, pc);
+  const bool pc_ok = al_premium_cache_matches(pc, bnd, ws, sigma, rp, qp);
   // Per-strike premium: only the internal-put spot Sp = K_i changes.
   for (std::size_t i = 0; i < n; ++i) {
     const double Ki = strikes[i];
-    const double euro = euro_put_sk(/*S=*/Ki, /*K=*/S, T, sigma, rp, qp);
-    const double prem = al_put_premium(bnd, ws, /*S=*/Ki, sigma, rp, qp);
+    const double euro = pc_ok
+                            ? black76_price(Ki * pc.euro_fwd, S, T, sigma, pc.euro_df, Side::Put)
+                            : euro_put_sk(/*S=*/Ki, /*K=*/S, T, sigma, rp, qp);
+    const double prem = al_put_premium(bnd, ws, /*S=*/Ki, sigma, rp, qp, pc_ok ? &pc : nullptr);
     double px = euro + prem;
     const double intr = S - Ki; // internal-put intrinsic Kp - Sp == call intrinsic
     if (intr > px) {
@@ -2144,11 +2309,18 @@ Status andersen_lake_put_slice(double S, std::span<const double> strikes, double
     break;
   }
 
+  // F5: y[] is homogeneity-invariant, so only bnd.xmax rescales per strike — the
+  // premium's pre-xmax boundary factor (and v/dq/dr, euro exps) are bound ONCE and
+  // reused, with b_t = xmax_i * bfac reconstructed per strike. Bit-identical to the
+  // per-strike al_put_price_from_boundary (same reused y[]; the T16a ~1e-7 boundary-
+  // reuse gap is unchanged — the hoist re-derives the SAME b_t bit-for-bit).
+  AlPremiumCache pc;
+  al_bind_premium(bnd, ws, sigma, r, q, pc);
   for (std::size_t i = 0; i < n; ++i) {
     const double Ki = strikes[i];
     bnd.K = Ki;                       // homogeneity rescale: strike …
     bnd.xmax = al_xmax_put(Ki, r, q); // … and asymptotic level B(∞), same y[]
-    price_out[i] = al_put_price_from_boundary(bnd, ws, S, Ki, T, sigma, r, q);
+    price_out[i] = al_put_price_from_boundary_cached(bnd, ws, pc, S, Ki, T, sigma, r, q);
   }
   return Ok();
 }
@@ -2558,6 +2730,13 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
   };
   std::array<BndCache, 7> memo{};
   std::size_t n_memo = 0;
+  // F5: ONE shared premium precompute for the whole bundle — rebound whenever the
+  // active (dsig,dr,dT) boundary changes, reused across a state's spot stencils.
+  // Held here (not in BndCache) so the seven-workspace memo bundle does not pay 7x
+  // this ~2.6 KB (trap 7: american_greeks_fd's stack budget). Consecutive same-state
+  // spot bumps (the p0/p_Sp/p_Sm run and each vega/time state's crosses) hit it;
+  // interleaved states rebind, which merely re-pays the inline cost — never more.
+  AlPremiumCache prem_cache;
   auto Pput = [&](double dS, double dsig, double dr, double dT) -> double {
     if (failed) {
       return std::numeric_limits<double>::quiet_NaN();
@@ -2609,7 +2788,13 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
     if (!c->ok) {
       return P(dS, dsig, dr, dT); // boundary collapsed: exact scalar fallback
     }
-    return al_put_price_from_boundary(c->bnd, c->ws, S2, K, T2, sig2, r2, q);
+    // F5: bind the premium precompute for this boundary/state if the shared cache is
+    // pointing elsewhere; the spot stencils of a state then reuse it. Put boundary is
+    // FIXED across spot bumps (only S2 moves), so a bound cache stays valid.
+    if (!al_premium_cache_matches(prem_cache, c->bnd, c->ws, sig2, r2, q)) {
+      al_bind_premium(c->bnd, c->ws, sig2, r2, q, prem_cache);
+    }
+    return al_put_price_from_boundary_cached(c->bnd, c->ws, prem_cache, S2, K, T2, sig2, r2, q);
   };
   // Call fast path evaluator. McDonald-Schroder: C(S,K,r,q) prices via an internal
   // put with spot = K (the call strike, FIXED across every stencil), strike = the
@@ -2687,8 +2872,14 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
     // K (the fixed call strike), strike = S2 (the bumped call spot).
     c->bnd.K = S2;
     c->bnd.xmax = al_xmax_put(S2, /*r=*/q, /*q=*/r2);
-    const double price = al_put_price_from_boundary(c->bnd, c->ws, /*spot=*/K, /*strike=*/S2, T2,
-                                                    sig2, /*r=*/q, /*q=*/r2);
+    // F5: the internal-put boundary's y[] is fixed across this state's spot stencils
+    // (only xmax rescales with S2), so bind the premium precompute once per state and
+    // let b_t = xmax*bfac follow the rescale — bit-identical to the per-stencil price.
+    if (!al_premium_cache_matches(prem_cache, c->bnd, c->ws, sig2, /*r=*/q, /*q=*/r2)) {
+      al_bind_premium(c->bnd, c->ws, sig2, /*r=*/q, /*q=*/r2, prem_cache);
+    }
+    const double price = al_put_price_from_boundary_cached(
+        c->bnd, c->ws, prem_cache, /*spot=*/K, /*strike=*/S2, T2, sig2, /*r=*/q, /*q=*/r2);
     // T9a-M1: restore the canonical base scaling so the in-place rescale above never
     // leaves a ~0.1%-off xmax in the memoized boundary. Without this, a subsequent
     // warm_start state seeds al_solve_put_boundary_warm from memo[0].bnd whose xmax

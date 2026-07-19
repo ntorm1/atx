@@ -1882,6 +1882,71 @@ TEST(AndersenLakeCallSlice, MatchesPerStrikeAndersenLakeBitIdentical) {
   }
 }
 
+// F5 (perf finding 5): the premium quadrature's strike-INVARIANT per-node exps
+// (exp(-q t), exp(-r t)) are bound ONCE per solved boundary and reused across every
+// strike, so a slice's ExpCalls no longer scale with the strike count — an N-strike
+// slice pays the SAME exps as a 1-strike slice (one boundary solve + one premium
+// bind). Before F5 each strike re-paid n_quad_price*2 premium exps (48*2=96 for the
+// ACCURATE preset), so an 8-strike slice paid 7*96=672 more than a 1-strike slice.
+// The counter is the perf gate (G-COUNTER); the strike-independence is the proof.
+TEST(AndersenLakeCallSlice, PremiumExpsHoistedOncePerBoundary_F5) {
+  using atx::vol::counters::Counter;
+  if constexpr (!atx::vol::counters::counters_enabled()) {
+    GTEST_SKIP() << "ATX_VOL_COUNTERS off: rebuild with -DATX_VOL_COUNTERS=ON for the counter proof";
+  }
+  const double S = 100.0, T = 0.5, sigma = 0.30, r = 0.043, q = 0.06; // American call (q>0)
+  const std::vector<double> one{100.0};
+  const std::vector<double> many{80.0, 88.0, 96.0, 104.0, 112.0, 120.0, 128.0, 136.0};
+
+  std::vector<double> px1(one.size(), 0.0);
+  atx::vol::counters::reset();
+  ASSERT_TRUE(andersen_lake_call_slice(S, std::span<const double>(one), T, sigma, r, q,
+                                       std::span<double>(px1), std::nullopt)
+                  .has_value());
+  const auto e1 = atx::vol::counters::snapshot().get(Counter::ExpCalls);
+
+  std::vector<double> px8(many.size(), 0.0);
+  atx::vol::counters::reset();
+  ASSERT_TRUE(andersen_lake_call_slice(S, std::span<const double>(many), T, sigma, r, q,
+                                       std::span<double>(px8), std::nullopt)
+                  .has_value());
+  const auto e8 = atx::vol::counters::snapshot().get(Counter::ExpCalls);
+
+  std::printf("[F5 call-slice ExpCalls] n=1 -> %llu   n=8 -> %llu (premium hoisted once)\n",
+              static_cast<unsigned long long>(e1), static_cast<unsigned long long>(e8));
+  EXPECT_EQ(e1, e8) << "premium exps must be bound once per boundary, not once per strike";
+}
+
+// F5 put-slice mirror: y[] is homogeneity-invariant across strikes, so the premium
+// exps bind once even though bnd.xmax rescales per strike.
+TEST(AndersenLakePutSlice, PremiumExpsHoistedOncePerBoundary_F5) {
+  using atx::vol::counters::Counter;
+  if constexpr (!atx::vol::counters::counters_enabled()) {
+    GTEST_SKIP() << "ATX_VOL_COUNTERS off: rebuild with -DATX_VOL_COUNTERS=ON for the counter proof";
+  }
+  const double S = 100.0, T = 0.75, sigma = 0.25, r = 0.05, q = 0.01; // American put (r>0)
+  const std::vector<double> one{100.0};
+  const std::vector<double> many{80.0, 88.0, 96.0, 104.0, 112.0, 120.0, 128.0, 136.0};
+
+  std::vector<double> px1(one.size(), 0.0);
+  atx::vol::counters::reset();
+  ASSERT_TRUE(andersen_lake_put_slice(S, std::span<const double>(one), T, sigma, r, q,
+                                      std::span<double>(px1), std::nullopt)
+                  .has_value());
+  const auto e1 = atx::vol::counters::snapshot().get(Counter::ExpCalls);
+
+  std::vector<double> px8(many.size(), 0.0);
+  atx::vol::counters::reset();
+  ASSERT_TRUE(andersen_lake_put_slice(S, std::span<const double>(many), T, sigma, r, q,
+                                      std::span<double>(px8), std::nullopt)
+                  .has_value());
+  const auto e8 = atx::vol::counters::snapshot().get(Counter::ExpCalls);
+
+  std::printf("[F5 put-slice ExpCalls] n=1 -> %llu   n=8 -> %llu (premium hoisted once)\n",
+              static_cast<unsigned long long>(e1), static_cast<unsigned long long>(e8));
+  EXPECT_EQ(e1, e8) << "premium exps must be bound once per boundary, not once per strike";
+}
+
 TEST(AndersenLakeCallSlice, FastPresetDegenerateEuroAndValidation) {
   const double S = 600.0, T = 0.5, r = 0.03, q = 0.02;
   std::vector<double> strikes{540.0, 600.0, 660.0};
