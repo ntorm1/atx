@@ -1242,6 +1242,88 @@ DispersionBacktestConfig dispersion_backtest_config_from(const DispersionRunConf
   return backtest;
 }
 
+Status verify_projected_var_artifacts(const fs::path &run_dir, std::size_t n_sessions) {
+  const fs::path summary_path = run_dir / "projected_var.tsv";
+  std::error_code error;
+  if (!fs::is_regular_file(summary_path, error)) {
+    return Ok(); // the stage was not run; nothing to gate
+  }
+  // Present => the whole triple must be present, non-empty and consistent.
+  for (const char *leaf : {"projected_risk_scenarios.tsv", "projected_risk_legs.tsv"}) {
+    const fs::path companion = run_dir / leaf;
+    if (!fs::is_regular_file(companion, error) || fs::file_size(companion, error) == 0u) {
+      return Err(ErrorCode::NotFound,
+                 "projected VaR summary present but companion missing: " + companion.string());
+    }
+  }
+  ATX_TRY(std::string summary_text, [&]() -> Result<std::string> {
+    std::ifstream stream(summary_path, std::ios::binary);
+    if (!stream) {
+      return Err(ErrorCode::IoError, "cannot read projected_var.tsv");
+    }
+    return Ok(std::string((std::istreambuf_iterator<char>(stream)),
+                          std::istreambuf_iterator<char>()));
+  }());
+  constexpr std::string_view kHeader =
+      "confidence\treference_value\tvalue_at_risk\texpected_shortfall\tn_scenarios\t"
+      "n_positions\tprojections_per_second\tprepared_fingerprint";
+  std::size_t line_start = 0;
+  std::size_t n_rows = 0;
+  bool header_seen = false;
+  while (line_start < summary_text.size()) {
+    const std::size_t line_end = summary_text.find('\n', line_start);
+    std::string_view line{summary_text.data() + line_start,
+                          (line_end == std::string::npos ? summary_text.size() : line_end) -
+                              line_start};
+    line_start = line_end == std::string::npos ? summary_text.size() : line_end + 1;
+    if (!line.empty() && line.back() == '\r') {
+      line.remove_suffix(1);
+    }
+    if (line.empty()) {
+      continue;
+    }
+    if (!header_seen) {
+      if (line != kHeader) {
+        return Err(ErrorCode::ParseError, "projected_var.tsv header does not match the contract");
+      }
+      header_seen = true;
+      continue;
+    }
+    // Field 5 (0-based 4) is n_scenarios: every confidence row must cover the
+    // whole clock, which is what catches a truncated or stale run.
+    std::size_t field = 0;
+    std::size_t cursor = 0;
+    while (field < 4 && cursor != std::string_view::npos) {
+      cursor = line.find('\t', cursor);
+      if (cursor != std::string_view::npos) {
+        ++cursor;
+      }
+      ++field;
+    }
+    if (cursor == std::string_view::npos) {
+      return Err(ErrorCode::ParseError, "projected_var.tsv row is malformed");
+    }
+    const std::size_t end = line.find('\t', cursor);
+    const std::string_view text =
+        line.substr(cursor, end == std::string_view::npos ? std::string_view::npos : end - cursor);
+    std::size_t n_scenarios = 0;
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), n_scenarios);
+    if (parsed.ec != std::errc{}) {
+      return Err(ErrorCode::ParseError, "projected_var.tsv n_scenarios is not a number");
+    }
+    if (n_sessions != 0 && n_scenarios != n_sessions) {
+      return Err(ErrorCode::InvalidArgument,
+                 "projected VaR covers " + std::to_string(n_scenarios) + " scenarios but the run has " +
+                     std::to_string(n_sessions) + " sessions");
+    }
+    ++n_rows;
+  }
+  if (!header_seen || n_rows == 0) {
+    return Err(ErrorCode::InvalidArgument, "projected_var.tsv has no rows");
+  }
+  return Ok();
+}
+
 // ── Public: native reference reconciliation (M1) ────────────────────────────
 
 Result<std::vector<ReferenceReconRecord>>
@@ -1736,6 +1818,10 @@ Result<DispersionVerifyReport> dispersion_verify(const fs::path &run_dir) {
   if (quality.n_admitted != manifest.n_ok) {
     return Err(ErrorCode::InvalidArgument, "quality/manifest admitted count mismatch");
   }
+  // `run-projected-var` is an OPTIONAL stage, so its artifacts are gated only
+  // when present — but they ARE now gated. Previously the command could emit a
+  // truncated or stale projected_var.tsv and `verify` would pass it silently.
+  ATX_TRY_VOID(verify_projected_var_artifacts(run_dir, clock.size()));
   if (spec.core_mode) {
     if (clock.size() < 60u || schedule.rolls.size() < 3u) {
       return Err(ErrorCode::Unavailable, "core date/roll acceptance gate failed");

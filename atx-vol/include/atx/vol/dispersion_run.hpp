@@ -260,6 +260,15 @@ struct DispersionVerifyReport {
 [[nodiscard]] Status dispersion_run_backtest(const std::filesystem::path &run_dir);
 [[nodiscard]] Status dispersion_run_surface_backtest(const std::filesystem::path &run_dir);
 [[nodiscard]] Status dispersion_run_projected_var(const std::filesystem::path &run_dir);
+
+// Envelope gate for the OPTIONAL projected-VaR stage, folded into
+// `dispersion_verify`. Absent artifacts are fine (the stage need not have run);
+// a PRESENT summary must have its two companions, the contract header, and a
+// scenario count matching the run's session count — so a truncated or stale
+// projected-VaR run can no longer pass verify silently. `n_sessions == 0` skips
+// the count check. Exposed separately so it is testable without a full run dir.
+[[nodiscard]] Status verify_projected_var_artifacts(const std::filesystem::path &run_dir,
+                                                    std::size_t n_sessions);
 // Verifies the artifact envelope AND folds in the native reference reconciliation
 // (M1): it recomputes + numerically compares the persisted arithmetic and writes
 // run_dir/reference_reconciliation.tsv.

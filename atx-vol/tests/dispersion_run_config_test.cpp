@@ -349,3 +349,77 @@ TEST(DispersionRunConfigStrict, CostKeysReachTheEngineAsAnAddedHalfSpread) {
   EXPECT_NEAR(backtest.run.frictions.half_spread_bps,
               1.0e4 * 0.02 * std::pow(0.04, 0.6), 1e-9);
 }
+
+
+// ── Small item: the optional projected-VaR stage is now gated by verify ──────
+//
+// `run-projected-var` was half-wired: it wrote three artifacts and `verify`
+// checked none of them, so a truncated or stale projected-VaR run passed
+// silently. The gate is deliberately CONDITIONAL — the stage is optional — but
+// once the summary exists the whole envelope is checked.
+
+namespace {
+
+[[nodiscard]] fs::path pv_dir(const char *leaf) {
+  const fs::path dir = fs::temp_directory_path() / leaf;
+  std::error_code error;
+  fs::remove_all(dir, error);
+  fs::create_directories(dir, error);
+  return dir;
+}
+
+void write_file(const fs::path &path, const std::string &body) {
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  out << body;
+}
+
+constexpr const char *kPvHeader =
+    "confidence\treference_value\tvalue_at_risk\texpected_shortfall\tn_scenarios\t"
+    "n_positions\tprojections_per_second\tprepared_fingerprint\n";
+
+constexpr const char *kPvRow95 = "0.95\t1\t2\t3\t82\t8\t100\t7\n";
+constexpr const char *kPvRow99 = "0.99\t1\t2\t3\t82\t8\t100\t7\n";
+
+} // namespace
+
+TEST(DispersionProjectedVarGate, AbsentStageIsNotAnError) {
+  // The stage is optional: a run that never invoked it must still verify.
+  EXPECT_TRUE(verify_projected_var_artifacts(pv_dir("atx-disp-pv-absent"), 82));
+}
+
+TEST(DispersionProjectedVarGate, SummaryWithoutCompanionsIsRejected) {
+  const fs::path dir = pv_dir("atx-disp-pv-orphan");
+  write_file(dir / "projected_var.tsv", std::string(kPvHeader) + kPvRow95);
+  EXPECT_FALSE(verify_projected_var_artifacts(dir, 82)) << "an orphaned summary must not verify";
+}
+
+TEST(DispersionProjectedVarGate, TruncatedScenarioCoverageIsRejected) {
+  const fs::path dir = pv_dir("atx-disp-pv-truncated");
+  write_file(dir / "projected_risk_scenarios.tsv", "x\n");
+  write_file(dir / "projected_risk_legs.tsv", "x\n");
+  // 40 scenarios recorded for an 82-session run: exactly the stale/truncated
+  // case that used to pass verify silently.
+  write_file(dir / "projected_var.tsv",
+             std::string(kPvHeader) + "0.95\t1\t2\t3\t40\t8\t100\t7\n");
+  const Status status = verify_projected_var_artifacts(dir, 82);
+  ASSERT_FALSE(status);
+  EXPECT_NE(status.error().to_string().find("82"), std::string::npos)
+      << status.error().to_string();
+}
+
+TEST(DispersionProjectedVarGate, WellFormedCompleteRunPasses) {
+  const fs::path dir = pv_dir("atx-disp-pv-ok");
+  write_file(dir / "projected_risk_scenarios.tsv", "x\n");
+  write_file(dir / "projected_risk_legs.tsv", "x\n");
+  write_file(dir / "projected_var.tsv", std::string(kPvHeader) + kPvRow95 + kPvRow99);
+  const Status status = verify_projected_var_artifacts(dir, 82);
+  EXPECT_TRUE(status) << status.error().to_string();
+}
+
+TEST(DispersionProjectedVarGate, WrongHeaderIsRejected) {
+  const fs::path dir = pv_dir("atx-disp-pv-header");
+  write_file(dir / "projected_risk_scenarios.tsv", "x\n");
+  write_file(dir / "projected_risk_legs.tsv", "x\n");
+  write_file(dir / "projected_var.tsv", "confidence\tvar\n0.95\t1\n");
+  EXPECT_FALSE(verify_projected_var_artifacts(dir, 82));
+}
