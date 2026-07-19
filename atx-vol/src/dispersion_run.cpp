@@ -25,7 +25,9 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <initializer_list>
 #include <tuple>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -776,6 +778,552 @@ run_dispersion_surface_backtest(const Clock &clock, DispersionUniverse universe,
   return Ok(std::move(outcome));
 }
 
+namespace {
+
+// X3 DRAWDOWN STOP. The engine never shows a strategy its NAV, so this limit
+// cannot be enforced inside on_step like the sizing limits are. Instead: find the
+// first step whose peak-to-trough loss breaches the stop.
+//
+// MEASURED AGAINST CAPITAL, not against peak NAV. `BacktestResult::nav` is
+// cumulative P&L from an inception of ZERO, not an equity curve, so
+// "fraction of peak NAV" is degenerate here — peak NAV is 0 on a losing run and
+// the ratio is meaningless. A capital base is also what a real risk system
+// stops on ("halt after losing 20% of capital"), so `read_dispersion_run_config`
+// requires `limit_capital` whenever `limit_drawdown_stop` is set.
+//
+// Enforcing it needs exactly ONE replay, not a fixed point. Halting only ever
+// suppresses entries at or AFTER the breach step, and NAV up to that step is a
+// function of trades made strictly before it — so the first breach index is
+// invariant under the halt. Any later breach is moot: there is no new risk left
+// to stop.
+[[nodiscard]] std::optional<std::size_t> first_drawdown_breach(const BacktestResult &track,
+                                                               const DispersionRiskLimits &limits) {
+  if (!(limits.drawdown_stop > 0.0) || !(limits.capital > 0.0)) {
+    return std::nullopt;
+  }
+  const double allowed = limits.drawdown_stop * limits.capital;
+  double peak = 0.0; // inception NAV
+  for (std::size_t i = 0; i < track.nav.size(); ++i) {
+    const double nav = track.nav[i];
+    peak = std::max(peak, nav);
+    if (peak - nav > allowed) {
+      return i;
+    }
+  }
+  return std::nullopt;
+}
+
+} // namespace
+
+Result<DispersionBacktestOutcome>
+run_dispersion_surface_backtest(const Clock &clock, std::vector<UniverseRow> schedule,
+                                const DispersionBacktestConfig &config,
+                                std::string_view index_symbol) {
+  DispersionStrategy strategy =
+      make_dispersion_backtest_strategy(schedule, config, index_symbol);
+  ATX_TRY(BacktestResult backtest, run_backtest(clock, strategy, config.run));
+
+  if (config.limits.drawdown_stop > 0.0) {
+    if (const std::optional<std::size_t> breach = first_drawdown_breach(backtest, config.limits)) {
+      DispersionStrategy stopped =
+          make_dispersion_backtest_strategy(std::move(schedule), config, index_symbol);
+      stopped.halt_from_step(*breach);
+      ATX_TRY(BacktestResult halted, run_backtest(clock, stopped, config.run));
+      backtest = std::move(halted);
+    }
+  }
+
+  DispersionBacktestOutcome outcome;
+  outcome.track = std::move(backtest);
+  outcome.sheet = tearsheet(outcome.track);
+  return Ok(std::move(outcome));
+}
+
+// ── Public: X1 strict typed run config ──────────────────────────────────────
+
+namespace {
+
+// Alias so the comma in the template argument list does not split the ATX_TRY
+// macro's argument list at the call site.
+using KvMap = std::map<std::string, std::string>;
+
+// A key/value TSV read into an ordered map, with duplicate keys rejected. Shared
+// shape with read_run_spec, but this reader OWNS the key vocabulary: anything it
+// does not consume is an error, so the "silently ignored key" class of bug is
+// structurally impossible rather than merely discouraged.
+Result<KvMap> read_kv_tsv(const fs::path &path) {
+  std::ifstream stream(path, std::ios::binary);
+  if (!stream) {
+    return Err(ErrorCode::NotFound, "cannot open " + path.string());
+  }
+  std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+  if (!stream.good() && !stream.eof()) {
+    return Err(ErrorCode::IoError, "cannot read " + path.string());
+  }
+  KvMap values;
+  std::size_t start = 0;
+  while (start < text.size()) {
+    const std::size_t end = text.find('\n', start);
+    std::string_view line{text.data() + start,
+                          (end == std::string::npos ? text.size() : end) - start};
+    if (!line.empty() && line.back() == '\r') {
+      line.remove_suffix(1);
+    }
+    start = end == std::string::npos ? text.size() : end + 1;
+    if (line.empty() || line.starts_with('#')) {
+      continue;
+    }
+    const std::size_t tab = line.find('\t');
+    if (tab == std::string_view::npos || line.find('\t', tab + 1) != std::string_view::npos) {
+      return Err(ErrorCode::ParseError, "run config must contain key/value TSV rows");
+    }
+    const std::string key{line.substr(0, tab)};
+    if (key == "key") { // the header row
+      continue;
+    }
+    if (!values.emplace(key, std::string(line.substr(tab + 1))).second) {
+      return Err(ErrorCode::AlreadyExists, "duplicate run config key '" + key + "'");
+    }
+  }
+  return Ok(std::move(values));
+}
+
+// Binds keys to typed fields and tracks which were consumed, so the leftovers can
+// be reported BY NAME.
+class StrictBinder {
+public:
+  StrictBinder(KvMap values, fs::path base)
+      : values_{std::move(values)}, base_{std::move(base)} {}
+
+  [[nodiscard]] const std::string *find(std::string_view key) {
+    const auto found = values_.find(std::string(key));
+    if (found == values_.end()) {
+      return nullptr;
+    }
+    consumed_.insert(found->first);
+    return &found->second;
+  }
+
+  Status text(std::string_view key, std::string &out) {
+    if (const std::string *value = find(key)) {
+      out = *value;
+    }
+    return Ok();
+  }
+
+  Status path_key(std::string_view key, fs::path &out) {
+    if (const std::string *value = find(key)) {
+      if (!value->empty()) {
+        fs::path candidate{*value};
+        out = candidate.is_absolute() ? candidate.lexically_normal()
+                                      : (base_ / candidate).lexically_normal();
+      }
+    }
+    return Ok();
+  }
+
+  template <class T> Status number(std::string_view key, T &out) {
+    const std::string *value = find(key);
+    if (value == nullptr) {
+      return Ok();
+    }
+    T parsed{};
+    const char *first = value->data();
+    const char *last = first + value->size();
+    std::from_chars_result result{};
+    if constexpr (std::is_floating_point_v<T>) {
+      result = std::from_chars(first, last, parsed, std::chars_format::general);
+    } else {
+      result = std::from_chars(first, last, parsed);
+    }
+    if (result.ec != std::errc{} || result.ptr != last) {
+      return Err(ErrorCode::ParseError, "run config key '" + std::string(key) +
+                                            "' is not a valid number: '" + *value + "'");
+    }
+    if constexpr (std::is_floating_point_v<T>) {
+      if (!std::isfinite(parsed)) {
+        return Err(ErrorCode::ParseError,
+                   "run config key '" + std::string(key) + "' must be finite");
+      }
+    }
+    out = parsed;
+    return Ok();
+  }
+
+  Status boolean(std::string_view key, bool &out) {
+    const std::string *value = find(key);
+    if (value == nullptr) {
+      return Ok();
+    }
+    if (*value == "1" || *value == "true") {
+      out = true;
+    } else if (*value == "0" || *value == "false") {
+      out = false;
+    } else {
+      return Err(ErrorCode::ParseError, "run config key '" + std::string(key) +
+                                            "' must be 0/1/true/false, got '" + *value + "'");
+    }
+    return Ok();
+  }
+
+  // Enumerated key: only the listed spellings are accepted, and the error lists
+  // them, so an unimplemented mode fails loudly instead of being ignored.
+  template <class T>
+  Status enumerated(std::string_view key, T &out,
+                    std::initializer_list<std::pair<std::string_view, T>> options) {
+    const std::string *value = find(key);
+    if (value == nullptr) {
+      return Ok();
+    }
+    std::string allowed;
+    for (const auto &option : options) {
+      if (*value == option.first) {
+        out = option.second;
+        return Ok();
+      }
+      allowed += (allowed.empty() ? "" : ", ");
+      allowed += option.first;
+    }
+    return Err(ErrorCode::InvalidArgument, "run config key '" + std::string(key) +
+                                               "' has unsupported value '" + *value +
+                                               "'; supported: " + allowed);
+  }
+
+  // THE strict check. Any key never bound above is a hard error naming the key.
+  [[nodiscard]] Status reject_unknown() const {
+    std::string unknown;
+    for (const auto &entry : values_) {
+      if (consumed_.find(entry.first) == consumed_.end()) {
+        unknown += (unknown.empty() ? "" : ", ");
+        unknown += entry.first;
+      }
+    }
+    if (!unknown.empty()) {
+      return Err(ErrorCode::InvalidArgument, "unknown run config key(s): " + unknown);
+    }
+    return Ok();
+  }
+
+private:
+  KvMap values_;
+  std::set<std::string> consumed_;
+  fs::path base_;
+};
+
+} // namespace
+
+FrictionModel dispersion_friction_preset(DispersionFrictionPreset preset) {
+  FrictionModel model;
+  switch (preset) {
+  case DispersionFrictionPreset::None:
+    return model; // frictionless mid — exactly the pinned golden
+  case DispersionFrictionPreset::RetailListedOptions:
+    // A documented, deliberately conservative listed-options execution setting:
+    // 25 bps half-spread on the option premium (a ~0.5% round-trip, typical of a
+    // liquid ATM single-name straddle), $0.65/contract commission, and 1 bp of
+    // slippage on the delta-hedge shares. These are ILLUSTRATIVE opt-in defaults,
+    // NOT a fitted calibration.
+    model.spread_kind = FrictionModel::SpreadKind::PriceBps;
+    model.half_spread_bps = 25.0;
+    model.per_contract_cost = 0.65;
+    model.hedge_slippage_bps = 1.0;
+    return model;
+  }
+  return model;
+}
+
+Result<DispersionRunConfig> read_dispersion_run_config(const fs::path &path) {
+  ATX_TRY(KvMap values, read_kv_tsv(path));
+  StrictBinder binder{std::move(values), path.parent_path()};
+  DispersionRunConfig config;
+
+  const auto required_text = [&](std::string_view key, std::string &out) -> Status {
+    const std::string *value = binder.find(key);
+    if (value == nullptr || value->empty()) {
+      return Err(ErrorCode::ParseError, "missing run config key '" + std::string(key) + "'");
+    }
+    out = *value;
+    return Ok();
+  };
+  ATX_TRY_VOID(required_text("date_lo", config.dates.lo));
+  ATX_TRY_VOID(required_text("date_hi", config.dates.hi));
+  std::string opra_root_text;
+  std::string universe_text;
+  ATX_TRY_VOID(required_text("opra_root", opra_root_text));
+  ATX_TRY_VOID(required_text("universe_schedule", universe_text));
+  {
+    const fs::path base = path.parent_path();
+    const auto resolve = [&](const std::string &text) {
+      fs::path candidate{text};
+      return candidate.is_absolute() ? candidate.lexically_normal()
+                                     : (base / candidate).lexically_normal();
+    };
+    config.opra_root = resolve(opra_root_text);
+    config.universe.schedule_path = resolve(universe_text);
+  }
+
+  ATX_TRY_VOID(binder.text("label", config.label));
+  ATX_TRY_VOID(binder.text("snapshot_suffix", config.snapshot_suffix));
+  ATX_TRY_VOID(binder.text("path_template", config.path_template));
+  ATX_TRY_VOID(binder.path_key("definitions", config.definitions));
+  ATX_TRY_VOID(binder.path_key("occ_ess_root", config.occ_ess_root));
+
+  ATX_TRY_VOID(binder.text("index_symbol", config.universe.index_symbol));
+  ATX_TRY_VOID(binder.number("min_names", config.universe.min_names));
+  ATX_TRY_VOID(binder.number("min_weight_coverage", config.universe.min_weight_coverage));
+
+  ATX_TRY_VOID(binder.number("flat_rate", config.rate.flat_rate));
+  ATX_TRY_VOID(binder.boolean("rate_applies_to_financing", config.rate.apply_to_financing));
+
+  ATX_TRY_VOID(binder.enumerated("side", config.side,
+                                 {{"short_index_long_names", DispersionSide::ShortIndexLongNames},
+                                  {"long_index_short_names", DispersionSide::LongIndexShortNames}}));
+  ATX_TRY_VOID(binder.enumerated("weighting", config.weighting,
+                                 {{"vega_neutral", DispersionWeighting::VegaNeutral}}));
+  ATX_TRY_VOID(binder.enumerated(
+      "strike", config.strike,
+      {{"atm_forward_straddle", DispersionStrikeRule::AtmForwardStraddle}}));
+
+  ATX_TRY_VOID(binder.number("target_dte_days", config.dte.target_days));
+  ATX_TRY_VOID(binder.number("min_dte_days", config.dte.min_days));
+  ATX_TRY_VOID(binder.number("max_dte_days", config.dte.max_days));
+  ATX_TRY_VOID(binder.number("roll_dte_days", config.roll_dte_days));
+  ATX_TRY_VOID(binder.number("gross_index_vega", config.gross_index_vega));
+  ATX_TRY_VOID(binder.number("multiplier", config.multiplier));
+  ATX_TRY_VOID(binder.number("entry_every_n", config.entry_every_n));
+  ATX_TRY_VOID(binder.boolean("record_diagnostics", config.record_diagnostics));
+
+  ATX_TRY_VOID(binder.enumerated("hedge", config.hedge.kind,
+                                 {{"none", HedgeSpec::Kind::None},
+                                  {"delta_to_zero", HedgeSpec::Kind::DeltaToZero}}));
+  ATX_TRY_VOID(binder.enumerated("hedge_cadence", config.hedge.cadence,
+                                 {{"at_entry", HedgeSpec::Cadence::AtEntry},
+                                  {"daily", HedgeSpec::Cadence::Daily}}));
+  ATX_TRY_VOID(binder.number("delta_band", config.hedge.band));
+
+  // X2 frictions. A preset is applied first so explicit keys can refine it.
+  DispersionFrictionPreset preset = DispersionFrictionPreset::None;
+  ATX_TRY_VOID(binder.enumerated(
+      "friction_preset", preset,
+      {{"none", DispersionFrictionPreset::None},
+       {"retail_listed_options", DispersionFrictionPreset::RetailListedOptions}}));
+  config.frictions = dispersion_friction_preset(preset);
+  ATX_TRY_VOID(binder.enumerated("friction_spread_kind", config.frictions.spread_kind,
+                                 {{"none", FrictionModel::SpreadKind::None},
+                                  {"price_bps", FrictionModel::SpreadKind::PriceBps},
+                                  {"vol_ticks", FrictionModel::SpreadKind::VolTicks}}));
+  ATX_TRY_VOID(binder.number("friction_half_spread_bps", config.frictions.half_spread_bps));
+  ATX_TRY_VOID(binder.number("friction_vol_tick", config.frictions.vol_tick));
+  ATX_TRY_VOID(binder.number("friction_per_contract_cost", config.frictions.per_contract_cost));
+  ATX_TRY_VOID(binder.number("friction_hedge_slippage_bps", config.frictions.hedge_slippage_bps));
+
+  // X2 financing.
+  ATX_TRY_VOID(binder.number("financing_borrow_rate", config.financing.borrow_rate));
+  ATX_TRY_VOID(binder.boolean("financing_finance_premium", config.financing.finance_premium));
+  ATX_TRY_VOID(binder.boolean("financing_shares_carry", config.financing.shares_carry));
+  ATX_TRY_VOID(binder.number("financing_initial_cash", config.financing.initial_cash));
+
+  // X6 costs.
+  ATX_TRY_VOID(binder.number("cost_impact_k", config.costs.k));
+  ATX_TRY_VOID(binder.number("cost_impact_beta", config.costs.beta));
+  ATX_TRY_VOID(binder.number("cost_adv_fraction", config.costs.adv_fraction));
+
+  // X3 limits.
+  ATX_TRY_VOID(binder.number("limit_max_gross_vega", config.limits.max_gross_vega));
+  ATX_TRY_VOID(binder.number("limit_max_gross_notional", config.limits.max_gross_notional));
+  ATX_TRY_VOID(binder.number("limit_capital", config.limits.capital));
+  ATX_TRY_VOID(binder.number("limit_drawdown_stop", config.limits.drawdown_stop));
+  ATX_TRY_VOID(binder.enumerated(
+      "limit_action", config.limits.action,
+      {{"clamp", RiskBreachAction::Clamp}, {"halt", RiskBreachAction::Halt}}));
+
+  ATX_TRY_VOID(binder.number("fit_workers", config.fit.workers));
+  ATX_TRY_VOID(binder.boolean("core_mode", config.fit.core_mode));
+  ATX_TRY_VOID(binder.enumerated(
+      "provenance", config.provenance,
+      {{"compatibility", SurfaceProvenancePolicy::Compatibility},
+       {"require_admitted_risk", SurfaceProvenancePolicy::RequireAdmittedRisk}}));
+
+  // Strictness: everything not bound above is rejected, by name.
+  ATX_TRY_VOID(binder.reject_unknown());
+
+  // Contract validation — the invariants read_run_spec enforced, plus the ones
+  // the new knobs need.
+  if (config.dates.lo > config.dates.hi || config.universe.min_names == 0 ||
+      config.universe.min_weight_coverage <= 0.0 || config.universe.min_weight_coverage > 1.0 ||
+      config.dte.min_days <= 0.0 || config.dte.target_days < config.dte.min_days ||
+      config.dte.max_days < config.dte.target_days || config.roll_dte_days < 0.0 ||
+      config.gross_index_vega <= 0.0 || config.hedge.band < 0.0) {
+    return Err(ErrorCode::InvalidArgument, "invalid run config contract");
+  }
+  if (config.fit.core_mode &&
+      (config.universe.min_names < 40 || config.universe.min_weight_coverage < 0.8)) {
+    return Err(ErrorCode::InvalidArgument, "core mode requires >=40 names and >=80% weight");
+  }
+  if (config.multiplier <= 0.0) {
+    return Err(ErrorCode::InvalidArgument, "multiplier must be positive");
+  }
+  if (config.entry_every_n == 0u) {
+    return Err(ErrorCode::InvalidArgument, "entry_every_n must be positive");
+  }
+  if (config.costs.k < 0.0 || config.costs.beta <= 0.0 || config.costs.adv_fraction < 0.0) {
+    return Err(ErrorCode::InvalidArgument, "invalid transaction-cost model");
+  }
+  if (config.limits.max_gross_vega < 0.0 || config.limits.max_gross_notional < 0.0 ||
+      config.limits.capital < 0.0 || config.limits.drawdown_stop < 0.0 ||
+      config.limits.drawdown_stop >= 1.0) {
+    return Err(ErrorCode::InvalidArgument,
+               "invalid risk limits (drawdown_stop is a fraction in [0, 1))");
+  }
+  if (config.limits.drawdown_stop > 0.0 && !(config.limits.capital > 0.0)) {
+    // The track's NAV is cumulative P&L from zero, not an equity curve, so a
+    // drawdown stop is only well defined against a capital base. Refuse rather
+    // than silently measuring against a meaningless peak.
+    return Err(ErrorCode::InvalidArgument,
+               "limit_drawdown_stop requires limit_capital (the drawdown base)");
+  }
+  if (config.universe.index_symbol.empty()) {
+    return Err(ErrorCode::InvalidArgument, "index_symbol must not be empty");
+  }
+  return Ok(std::move(config));
+}
+
+RunSpec run_spec_from(const DispersionRunConfig &config) {
+  RunSpec spec;
+  spec.label = config.label;
+  spec.date_lo = config.dates.lo;
+  spec.date_hi = config.dates.hi;
+  spec.snapshot_suffix = config.snapshot_suffix;
+  spec.opra_root = config.opra_root;
+  spec.path_template = config.path_template;
+  spec.universe_path = config.universe.schedule_path;
+  spec.definitions_path = config.definitions;
+  spec.occ_ess_root = config.occ_ess_root;
+  spec.flat_rate = config.rate.flat_rate;
+  spec.min_names = config.universe.min_names;
+  spec.min_weight_coverage = config.universe.min_weight_coverage;
+  spec.target_dte_days = config.dte.target_days;
+  spec.min_dte_days = config.dte.min_days;
+  spec.max_dte_days = config.dte.max_days;
+  spec.roll_dte_days = config.roll_dte_days;
+  spec.gross_index_vega = config.gross_index_vega;
+  spec.delta_band = config.hedge.band;
+  spec.fit_workers = config.fit.workers;
+  spec.core_mode = config.fit.core_mode;
+  return spec;
+}
+
+DispersionBacktestConfig dispersion_backtest_config_from(const DispersionRunConfig &config) {
+  DispersionBacktestConfig backtest;
+  backtest.target_dte_days = config.dte.target_days;
+  backtest.roll_dte_days = config.roll_dte_days;
+  backtest.gross_index_vega = config.gross_index_vega;
+  backtest.delta_band = config.hedge.band;
+  backtest.min_names = config.universe.min_names;
+  backtest.entry_every_n = config.entry_every_n;
+  backtest.record_diagnostics = config.record_diagnostics;
+  backtest.side = config.side;
+  backtest.multiplier = config.multiplier;
+  backtest.hedge_kind = config.hedge.kind;
+  backtest.hedge_cadence = config.hedge.cadence;
+  backtest.limits = config.limits;
+  backtest.run.unpriced = UnpricedLotPolicy::Error;
+  // X2/X6: the wiring that never existed. The dispersion path built a RunConfig
+  // that left `frictions` and `financing` default-constructed, so every fill was a
+  // frictionless mid and no carry ever accrued, regardless of the run spec.
+  backtest.run.frictions = dispersion_effective_frictions(config.frictions, config.costs);
+  backtest.run.financing = config.financing;
+  if (config.rate.apply_to_financing) {
+    // `flat_rate` previously reached the fit batch ONLY. Opting in routes the same
+    // rate into the cash/borrow ledger so a declared r actually accrues carry.
+    backtest.run.financing.borrow_rate = config.rate.flat_rate;
+    backtest.run.financing.finance_premium = true;
+  }
+  return backtest;
+}
+
+Status verify_projected_var_artifacts(const fs::path &run_dir, std::size_t n_sessions) {
+  const fs::path summary_path = run_dir / "projected_var.tsv";
+  std::error_code error;
+  if (!fs::is_regular_file(summary_path, error)) {
+    return Ok(); // the stage was not run; nothing to gate
+  }
+  // Present => the whole triple must be present, non-empty and consistent.
+  for (const char *leaf : {"projected_risk_scenarios.tsv", "projected_risk_legs.tsv"}) {
+    const fs::path companion = run_dir / leaf;
+    if (!fs::is_regular_file(companion, error) || fs::file_size(companion, error) == 0u) {
+      return Err(ErrorCode::NotFound,
+                 "projected VaR summary present but companion missing: " + companion.string());
+    }
+  }
+  ATX_TRY(std::string summary_text, [&]() -> Result<std::string> {
+    std::ifstream stream(summary_path, std::ios::binary);
+    if (!stream) {
+      return Err(ErrorCode::IoError, "cannot read projected_var.tsv");
+    }
+    return Ok(std::string((std::istreambuf_iterator<char>(stream)),
+                          std::istreambuf_iterator<char>()));
+  }());
+  constexpr std::string_view kHeader =
+      "confidence\treference_value\tvalue_at_risk\texpected_shortfall\tn_scenarios\t"
+      "n_positions\tprojections_per_second\tprepared_fingerprint";
+  std::size_t line_start = 0;
+  std::size_t n_rows = 0;
+  bool header_seen = false;
+  while (line_start < summary_text.size()) {
+    const std::size_t line_end = summary_text.find('\n', line_start);
+    std::string_view line{summary_text.data() + line_start,
+                          (line_end == std::string::npos ? summary_text.size() : line_end) -
+                              line_start};
+    line_start = line_end == std::string::npos ? summary_text.size() : line_end + 1;
+    if (!line.empty() && line.back() == '\r') {
+      line.remove_suffix(1);
+    }
+    if (line.empty()) {
+      continue;
+    }
+    if (!header_seen) {
+      if (line != kHeader) {
+        return Err(ErrorCode::ParseError, "projected_var.tsv header does not match the contract");
+      }
+      header_seen = true;
+      continue;
+    }
+    // Field 5 (0-based 4) is n_scenarios: every confidence row must cover the
+    // whole clock, which is what catches a truncated or stale run.
+    std::size_t field = 0;
+    std::size_t cursor = 0;
+    while (field < 4 && cursor != std::string_view::npos) {
+      cursor = line.find('\t', cursor);
+      if (cursor != std::string_view::npos) {
+        ++cursor;
+      }
+      ++field;
+    }
+    if (cursor == std::string_view::npos) {
+      return Err(ErrorCode::ParseError, "projected_var.tsv row is malformed");
+    }
+    const std::size_t end = line.find('\t', cursor);
+    const std::string_view text =
+        line.substr(cursor, end == std::string_view::npos ? std::string_view::npos : end - cursor);
+    std::size_t n_scenarios = 0;
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), n_scenarios);
+    if (parsed.ec != std::errc{}) {
+      return Err(ErrorCode::ParseError, "projected_var.tsv n_scenarios is not a number");
+    }
+    if (n_sessions != 0 && n_scenarios != n_sessions) {
+      return Err(ErrorCode::InvalidArgument,
+                 "projected VaR covers " + std::to_string(n_scenarios) + " scenarios but the run has " +
+                     std::to_string(n_sessions) + " sessions");
+    }
+    ++n_rows;
+  }
+  if (!header_seen || n_rows == 0) {
+    return Err(ErrorCode::InvalidArgument, "projected_var.tsv has no rows");
+  }
+  return Ok();
+}
+
 // ── Public: native reference reconciliation (M1) ────────────────────────────
 
 Result<std::vector<ReferenceReconRecord>>
@@ -1050,16 +1598,26 @@ Status dispersion_run_backtest(const fs::path &run_dir) {
 }
 
 Status dispersion_run_surface_backtest(const fs::path &run_dir) {
-  ATX_TRY(RunSpec spec, read_run_spec(run_dir / "run_spec.tsv"));
+  // X1. The surface path now reads the STRICT typed config, so an unknown or
+  // misspelled key fails the run by name instead of being silently dropped, and
+  // every knob it declares (frictions, financing, limits, costs, multiplier,
+  // side, hedge, entry cadence, diagnostics) actually reaches the engine.
+  ATX_TRY(DispersionRunConfig run_config, read_dispersion_run_config(run_dir / "run_spec.tsv"));
   ATX_TRY(std::vector<UniverseRow> universe_rows, read_universe(run_dir / "universe_schedule.tsv"));
   ATX_TRY(CorpusManifest manifest, read_manifest_file((run_dir / "surface_manifest.tsv").string()));
   ATX_TRY(Clock clock, Clock::from_manifest(manifest));
   if (clock.size() == 0u) {
     return Err(ErrorCode::Unavailable, "surface backtest: empty qualified clock");
   }
-  ATX_TRY(DispersionUniverse universe, universe_at(universe_rows, clock.refs().front().date));
+  // C1-ACTIVATE. Validate that SOME block is effective on the first session (a
+  // schedule that only starts mid-window is an authoring error we still want to
+  // fail fast on), then hand the WHOLE schedule to the point-in-time overload
+  // instead of freezing this first-day resolution for all 82 sessions. WS-C made
+  // DispersionStrategy PIT-capable; this is the call site that switches it on.
+  ATX_TRY_VOID(
+      universe_at(universe_rows, clock.refs().front().date, run_config.universe.index_symbol));
 
-  const DispersionBacktestConfig config = dispersion_backtest_config_from_run_spec(spec);
+  const DispersionBacktestConfig config = dispersion_backtest_config_from(run_config);
 #if defined(ATX_VOL_PROFILE)
   phase_profile::reset();
 #endif
@@ -1067,7 +1625,8 @@ Status dispersion_run_surface_backtest(const fs::path &run_dir) {
   counters::reset();
 #endif
   ATX_TRY(DispersionBacktestOutcome outcome,
-          run_dispersion_surface_backtest(clock, std::move(universe), config));
+          run_dispersion_surface_backtest(clock, universe_rows, config,
+                                          run_config.universe.index_symbol));
   const BacktestResult &backtest = outcome.track;
 #if defined(ATX_VOL_PROFILE)
   {
@@ -1126,7 +1685,18 @@ Status dispersion_run_projected_var(const fs::path &run_dir) {
     scenarios.push_back({snapshots.back()->ts_ns(), &snapshots.back()->set()});
   }
 
-  ATX_TRY(DispersionUniverse authored, universe_at(universe_rows, clock.refs().front().date));
+  // C1-ACTIVATE (projected VaR). The book this VaR is measured on is built from
+  // ONE anchor snapshot, so "point-in-time" here means resolving the basket from
+  // the schedule at THAT snapshot's own timestamp rather than string-matching the
+  // manifest's first session date. Routing it through the shared PIT resolver
+  // removes the day-1 freeze and the manifest-string coupling in one move; with a
+  // single-block schedule the resolved basket is identical to before.
+  //
+  // NOTE for the PM: the anchor remains the FIRST session while the VaR reference
+  // value is `frames.back().value` (the LAST session). That first/last mismatch is
+  // a separate modeling question from PIT membership and is left as-is here.
+  const auto pit = make_pit_universe_resolver(universe_rows);
+  ATX_TRY(DispersionUniverse authored, pit(snapshots.front()->ts_ns()));
   ATX_TRY(ResolvedUniverse resolved,
           resolve_universe_uids(
               authored, [&](std::string_view symbol) { return snapshots.front()->uid_of(symbol); },
@@ -1248,6 +1818,10 @@ Result<DispersionVerifyReport> dispersion_verify(const fs::path &run_dir) {
   if (quality.n_admitted != manifest.n_ok) {
     return Err(ErrorCode::InvalidArgument, "quality/manifest admitted count mismatch");
   }
+  // `run-projected-var` is an OPTIONAL stage, so its artifacts are gated only
+  // when present — but they ARE now gated. Previously the command could emit a
+  // truncated or stale projected_var.tsv and `verify` would pass it silently.
+  ATX_TRY_VOID(verify_projected_var_artifacts(run_dir, clock.size()));
   if (spec.core_mode) {
     if (clock.size() < 60u || schedule.rolls.size() < 3u) {
       return Err(ErrorCode::Unavailable, "core date/roll acceptance gate failed");

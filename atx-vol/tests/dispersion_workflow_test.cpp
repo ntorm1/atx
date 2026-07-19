@@ -25,8 +25,10 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/backtest.hpp"  // MarketSnapshot, PortfolioState, Lot
+#include "atx/vol/backtest.hpp" // MarketSnapshot, PortfolioState, Lot, Clock
+#include "atx/vol/corpus.hpp"   // CorpusManifest, CorpusEntry, CorpusFitStatus
 #include "atx/vol/dispersion.hpp"
+#include "atx/vol/dispersion_run.hpp" // run_dispersion_surface_backtest (the seam)
 #include "atx/vol/dispersion_workflow.hpp"
 #include "atx/vol/portfolio_pricer.hpp"
 #include "atx/vol/priced_surface.hpp"
@@ -395,4 +397,366 @@ TEST(DispersionWorkflow, PitBasketRemainsVegaFlatAfterReconstitution) {
 
   std::error_code error;
   fs::remove_all(dir, error);
+}
+
+// ── C1-ACTIVATE: the SEAM entry point, not just the strategy ─────────────────
+//
+// The tests above prove DispersionStrategy is PIT-CAPABLE when a resolver is
+// handed to its constructor. They do NOT prove the shipping path uses one: WS-C
+// left the resolver defaulted-empty and `dispersion_run_surface_backtest` still
+// resolved the universe once and passed a frozen `DispersionUniverse`, so the
+// flagship surface backtest was capable-but-inert. These two tests pin the
+// activation itself at `run_dispersion_surface_backtest`'s schedule overload.
+
+namespace {
+
+// Hand-build an Ok-only manifest over (date, archive_path), one entry per
+// (date, symbol) — the shape Clock::from_manifest consumes.
+[[nodiscard]] CorpusManifest pit_manifest(
+    const std::vector<std::pair<std::string, std::string>> &date_paths) {
+  CorpusManifest manifest;
+  for (const auto &[date, path] : date_paths) {
+    manifest.dates.push_back(date);
+    for (const char *symbol : {"SPY", "N0", "N1", "N2"}) {
+      CorpusEntry entry;
+      entry.date = date;
+      entry.symbol = symbol;
+      entry.status = CorpusFitStatus::Ok;
+      entry.archive_path = path;
+      manifest.entries.push_back(std::move(entry));
+    }
+  }
+  return manifest;
+}
+
+struct PitFixture {
+  fs::path dir;
+  Clock clock;
+  std::string d0;
+  std::string d1;
+  std::string d2;
+};
+
+// THREE sessions, deliberately. With only two, the reconstituted basket is opened
+// on the final step and never held across a P&L interval, so NAV stays identical
+// and only lot COMPOSITION diverges. The third session lets the post-
+// reconstitution basket actually earn/lose, which is the economically meaningful
+// consequence of activation.
+[[nodiscard]] PitFixture make_pit_fixture(const char *leaf) {
+  const fs::path dir = fresh_dir(leaf);
+  const std::int64_t ts0 = 1'700'000'000'000'000'000LL;
+  const std::int64_t ts1 = ts0 + 3 * kDayNs;
+  const std::int64_t ts2 = ts0 + 6 * kDayNs;
+  const std::string d0 = utc_date_from_ns(ts0);
+  const std::string d1 = utc_date_from_ns(ts1);
+  const std::string d2 = utc_date_from_ns(ts2);
+  const std::string a0 = write_pit_archive(dir, d0, pit_surfaces(ts0, 0.0));
+  const std::string a1 = write_pit_archive(dir, d1, pit_surfaces(ts1, 1.5));
+  const std::string a2 = write_pit_archive(dir, d2, pit_surfaces(ts2, 3.0));
+  auto clock = Clock::from_manifest(pit_manifest({{d0, a0}, {d1, a1}, {d2, a2}}));
+  EXPECT_TRUE(clock) << (clock ? std::string{} : clock.error().to_string());
+  return PitFixture{dir, clock ? std::move(*clock) : Clock{}, d0, d1, d2};
+}
+
+[[nodiscard]] DispersionBacktestConfig pit_backtest_config() {
+  DispersionBacktestConfig config;
+  config.target_dte_days = 36.525; // 0.10y, matching the boards' 0.05-0.50 terms
+  config.gross_index_vega = 1000.0;
+  config.min_names = 2;
+  config.entry_every_n = 1;
+  config.project_to_calendar_expiry = false;
+  // A PIT membership change only reaches the BOOK at the next roll (the resolver
+  // updates the basket every step; the lots are rebuilt when the front cohort is
+  // rolled). The fixture's sessions are 3 days apart, so the roll horizon must sit
+  // just inside the entry tenor for a roll to fire on the reconstitution date —
+  // with the production 7-day default no roll happens in a 3-session window and
+  // the test would prove nothing.
+  config.roll_dte_days = 34.0; // residual at d1 = 36.525 - 3 = 33.525 < 34 => roll
+  return config;
+}
+
+} // namespace
+
+// A schedule that reconstitutes mid-window must produce a DIFFERENT track than
+// the same schedule's frozen day-1 basket. Before C1-ACTIVATE both paths went
+// through the frozen overload and this difference was unobservable.
+TEST(DispersionWorkflow, SurfaceBacktestSeamHonorsMidWindowReconstitution) {
+  const PitFixture fixture = make_pit_fixture("atx-disp-seam-pit");
+  ASSERT_EQ(fixture.clock.size(), 3u);
+
+  // N2 leaves at d1 (its board is still archived, so this is membership, not a
+  // missing-surface drop).
+  const std::vector<UniverseRow> schedule = {
+      row(fixture.d0, "N0", 0.5), row(fixture.d0, "N1", 0.3), row(fixture.d0, "N2", 0.2),
+      row(fixture.d1, "N0", 0.6), row(fixture.d1, "N1", 0.4),
+  };
+  const DispersionBacktestConfig config = pit_backtest_config();
+
+  auto frozen_universe = universe_at(schedule, fixture.d0, "SPY");
+  ASSERT_TRUE(frozen_universe) << frozen_universe.error().to_string();
+  ASSERT_EQ(frozen_universe->names.size(), 3u);
+
+  auto frozen = run_dispersion_surface_backtest(fixture.clock, *frozen_universe, config);
+  auto pit = run_dispersion_surface_backtest(fixture.clock, schedule, config, "SPY");
+  ASSERT_TRUE(frozen) << frozen.error().to_string();
+  ASSERT_TRUE(pit) << pit.error().to_string();
+  ASSERT_EQ(frozen->track.size(), 3u);
+  ASSERT_EQ(pit->track.size(), 3u);
+
+  // Day 0 is the same 3-name basket under both paths (index + 3 names, one
+  // straddle each => 8 lots) ...
+  EXPECT_EQ(pit->track.n_open_lots.front(), 8u);
+  EXPECT_EQ(frozen->track.n_open_lots.front(), 8u);
+  // ... and from the reconstitution onward the PIT path has genuinely dropped N2
+  // (index + 2 names => 6 lots) while the frozen path still carries all three.
+  EXPECT_EQ(frozen->track.n_open_lots.back(), 8u);
+  EXPECT_EQ(pit->track.n_open_lots.back(), 6u);
+  // The dropped name stops contributing P&L, so the tracks diverge economically —
+  // not merely in composition. This is the assertion that fails if the seam is
+  // reverted to the frozen overload.
+  EXPECT_NE(pit->track.nav.back(), frozen->track.nav.back());
+
+  std::error_code error;
+  fs::remove_all(fixture.dir, error);
+}
+
+// GOLDEN GUARD. The pinned 82-session fixture's schedule has a SINGLE
+// effective_date block, so activation must be a no-op there. This pins that
+// property structurally (single-block schedule => bit-identical to frozen) so a
+// future resolver change cannot silently move the reproducibility pin.
+TEST(DispersionWorkflow, SingleBlockScheduleIsBitIdenticalToTheFrozenPath) {
+  const PitFixture fixture = make_pit_fixture("atx-disp-seam-single");
+  ASSERT_EQ(fixture.clock.size(), 3u);
+
+  const std::vector<UniverseRow> schedule = {
+      row(fixture.d0, "N0", 0.5), row(fixture.d0, "N1", 0.3), row(fixture.d0, "N2", 0.2)};
+  const DispersionBacktestConfig config = pit_backtest_config();
+
+  auto frozen_universe = universe_at(schedule, fixture.d0, "SPY");
+  ASSERT_TRUE(frozen_universe) << frozen_universe.error().to_string();
+
+  auto frozen = run_dispersion_surface_backtest(fixture.clock, *frozen_universe, config);
+  auto pit = run_dispersion_surface_backtest(fixture.clock, schedule, config, "SPY");
+  ASSERT_TRUE(frozen) << frozen.error().to_string();
+  ASSERT_TRUE(pit) << pit.error().to_string();
+  ASSERT_EQ(frozen->track.size(), pit->track.size());
+
+  for (std::size_t i = 0; i < frozen->track.size(); ++i) {
+    EXPECT_EQ(pit->track.nav[i], frozen->track.nav[i]) << "nav diverged at step " << i;
+    EXPECT_EQ(pit->track.pnl_total[i], frozen->track.pnl_total[i]) << "pnl diverged at step " << i;
+    EXPECT_EQ(pit->track.n_open_lots[i], frozen->track.n_open_lots[i]);
+  }
+
+  std::error_code error;
+  fs::remove_all(fixture.dir, error);
+}
+
+// ── WS-X integration: frictions (X2) and risk limits (X3) at the seam ────────
+//
+// These ride the same PIT fixture as the C1-ACTIVATE tests because they need a
+// real (small) surface backtest, not a mock: the point is that the knobs reach
+// the ENGINE, which only a real run can demonstrate.
+
+namespace {
+
+[[nodiscard]] const std::vector<double> *signal_series(const BacktestResult &track,
+                                                       std::string_view name) {
+  for (const auto &entry : track.signals) {
+    if (entry.first == name) {
+      return &entry.second;
+    }
+  }
+  return nullptr;
+}
+
+[[nodiscard]] std::vector<UniverseRow> static_schedule(const std::string &d0) {
+  return {row(d0, "N0", 0.5), row(d0, "N1", 0.3), row(d0, "N2", 0.2)};
+}
+
+[[nodiscard]] double sum_of(const std::vector<double> &values) {
+  double total = 0.0;
+  for (const double v : values) {
+    total += v;
+  }
+  return total;
+}
+
+} // namespace
+
+// X2. Frictions were never wired into the dispersion path — RunConfig carried
+// them, the config assembly never set them, so every fill was a frictionless
+// mid. Assert the SIGN and rough MAGNITUDE of the cost, not a new golden.
+TEST(DispersionWorkflow, FrictionedRunCostsTheSpreadOnTradedNotional) {
+  const PitFixture fixture = make_pit_fixture("atx-disp-x2-frictions");
+  const std::vector<UniverseRow> schedule = static_schedule(fixture.d0);
+
+  const DispersionBacktestConfig frictionless = pit_backtest_config();
+  auto base = run_dispersion_surface_backtest(fixture.clock, schedule, frictionless, "SPY");
+  ASSERT_TRUE(base) << base.error().to_string();
+  // The pinned default really is frictionless: not one cent of cost.
+  EXPECT_EQ(sum_of(base->track.cost), 0.0);
+
+  constexpr double kHalfSpreadBps = 50.0;
+  DispersionBacktestConfig costed = pit_backtest_config();
+  costed.run.frictions.spread_kind = FrictionModel::SpreadKind::PriceBps;
+  costed.run.frictions.half_spread_bps = kHalfSpreadBps;
+  auto with_costs = run_dispersion_surface_backtest(fixture.clock, schedule, costed, "SPY");
+  ASSERT_TRUE(with_costs) << with_costs.error().to_string();
+
+  const double total_cost = sum_of(with_costs->track.cost);
+  const double traded = sum_of(with_costs->track.turnover_notional);
+  ASSERT_GT(traded, 0.0) << "the fixture must actually trade for this to mean anything";
+
+  // SIGN: costs are strictly positive and strictly reduce NAV.
+  EXPECT_GT(total_cost, 0.0);
+  EXPECT_LT(with_costs->track.nav.back(), base->track.nav.back());
+
+  // MAGNITUDE: a half-spread of B bps charged on traded notional. Allow a wide
+  // band — turnover accounting and the hedge leg differ in detail — but pin the
+  // order of magnitude so a mis-scaled bps (a factor of 100) cannot pass.
+  const double expected = traded * kHalfSpreadBps / 1.0e4;
+  EXPECT_GT(total_cost, 0.2 * expected);
+  EXPECT_LT(total_cost, 5.0 * expected);
+
+  std::error_code error;
+  fs::remove_all(fixture.dir, error);
+}
+
+// X3. A deliberately tight gross-vega limit must clamp the book down to the
+// limit and RECORD why — a silent clamp would be worse than no limit at all.
+TEST(DispersionWorkflow, TightGrossVegaLimitClampsTheBookAndRecordsTheReason) {
+  const PitFixture fixture = make_pit_fixture("atx-disp-x3-clamp");
+  const std::vector<UniverseRow> schedule = static_schedule(fixture.d0);
+
+  auto unlimited =
+      run_dispersion_surface_backtest(fixture.clock, schedule, pit_backtest_config(), "SPY");
+  ASSERT_TRUE(unlimited) << unlimited.error().to_string();
+  const double natural_vega = std::fabs(unlimited->track.gross_vega.front());
+  ASSERT_GT(natural_vega, 0.0);
+  // Default limits are unlimited => no risk telemetry columns at all, which is
+  // what keeps the pinned golden's schema unchanged.
+  EXPECT_EQ(signal_series(unlimited->track, "risk_clamp_scale"), nullptr);
+
+  DispersionBacktestConfig limited = pit_backtest_config();
+  limited.limits.max_gross_vega = 0.25 * natural_vega; // deliberately tight
+  limited.limits.action = RiskBreachAction::Clamp;
+  auto clamped = run_dispersion_surface_backtest(fixture.clock, schedule, limited, "SPY");
+  ASSERT_TRUE(clamped) << clamped.error().to_string();
+
+  // The book is scaled down toward the limit, not left oversized.
+  EXPECT_LT(std::fabs(clamped->track.gross_vega.front()), 0.5 * natural_vega);
+  // Still trading — a clamp is not a halt.
+  EXPECT_GT(clamped->track.n_open_lots.front(), 0u);
+
+  // The reason is in the output.
+  const std::vector<double> *scale = signal_series(clamped->track, "risk_clamp_scale");
+  const std::vector<double> *reason = signal_series(clamped->track, "risk_breach_reason");
+  ASSERT_NE(scale, nullptr) << "a configured limit must emit its telemetry";
+  ASSERT_NE(reason, nullptr);
+  ASSERT_FALSE(scale->empty());
+  EXPECT_LT(scale->front(), 1.0) << "the clamp factor must be recorded";
+  EXPECT_GT(scale->front(), 0.0);
+  EXPECT_EQ(reason->front(), static_cast<double>(RiskBreachReason::GrossVega));
+  EXPECT_EQ(to_string(RiskBreachReason::GrossVega), "max_gross_vega");
+
+  std::error_code error;
+  fs::remove_all(fixture.dir, error);
+}
+
+// X3. The same breach under the Halt action must open NO risk and say so.
+TEST(DispersionWorkflow, HaltActionOpensNoRiskAndIsNeverSilent) {
+  const PitFixture fixture = make_pit_fixture("atx-disp-x3-halt");
+  const std::vector<UniverseRow> schedule = static_schedule(fixture.d0);
+
+  auto unlimited =
+      run_dispersion_surface_backtest(fixture.clock, schedule, pit_backtest_config(), "SPY");
+  ASSERT_TRUE(unlimited) << unlimited.error().to_string();
+  const double natural_vega = std::fabs(unlimited->track.gross_vega.front());
+
+  DispersionBacktestConfig halting = pit_backtest_config();
+  halting.limits.max_gross_vega = 0.25 * natural_vega;
+  halting.limits.action = RiskBreachAction::Halt;
+  auto halted = run_dispersion_surface_backtest(fixture.clock, schedule, halting, "SPY");
+  ASSERT_TRUE(halted) << halted.error().to_string();
+
+  // Nothing was ever opened, so the run stays flat throughout.
+  for (const std::uint32_t lots : halted->track.n_open_lots) {
+    EXPECT_EQ(lots, 0u);
+  }
+
+  const std::vector<double> *scale = signal_series(halted->track, "risk_clamp_scale");
+  const std::vector<double> *reason = signal_series(halted->track, "risk_breach_reason");
+  ASSERT_NE(scale, nullptr);
+  ASSERT_NE(reason, nullptr);
+  EXPECT_EQ(scale->front(), 0.0) << "a halt records scale 0, not a missing row";
+  EXPECT_EQ(reason->front(), static_cast<double>(RiskBreachReason::GrossVega));
+
+  std::error_code error;
+  fs::remove_all(fixture.dir, error);
+}
+
+// X3. Unlimited (default) limits must leave the track bit-identical — this is
+// the property that protects the 82-session reproducibility pin.
+TEST(DispersionWorkflow, DefaultRiskLimitsLeaveTheTrackBitIdentical) {
+  const PitFixture fixture = make_pit_fixture("atx-disp-x3-default");
+  const std::vector<UniverseRow> schedule = static_schedule(fixture.d0);
+
+  auto ungated =
+      run_dispersion_surface_backtest(fixture.clock, schedule, pit_backtest_config(), "SPY");
+  DispersionBacktestConfig explicit_unlimited = pit_backtest_config();
+  explicit_unlimited.limits = DispersionRiskLimits{}; // all zero == unlimited
+  auto gated = run_dispersion_surface_backtest(fixture.clock, schedule, explicit_unlimited, "SPY");
+  ASSERT_TRUE(ungated) << ungated.error().to_string();
+  ASSERT_TRUE(gated) << gated.error().to_string();
+  ASSERT_EQ(ungated->track.size(), gated->track.size());
+
+  for (std::size_t i = 0; i < ungated->track.size(); ++i) {
+    EXPECT_EQ(gated->track.nav[i], ungated->track.nav[i]) << "step " << i;
+    EXPECT_EQ(gated->track.gross_vega[i], ungated->track.gross_vega[i]) << "step " << i;
+  }
+  EXPECT_EQ(signal_series(gated->track, "risk_clamp_scale"), nullptr);
+
+  std::error_code error;
+  fs::remove_all(fixture.dir, error);
+}
+
+// X3. The drawdown stop is enforced at the SEAM (the engine never shows a
+// strategy its NAV). A stop tight enough to bind must halt trading and record it.
+TEST(DispersionWorkflow, DrawdownStopHaltsTradingAndRecordsTheReason) {
+  const PitFixture fixture = make_pit_fixture("atx-disp-x3-drawdown");
+  const std::vector<UniverseRow> schedule = static_schedule(fixture.d0);
+
+  auto unstopped =
+      run_dispersion_surface_backtest(fixture.clock, schedule, pit_backtest_config(), "SPY");
+  ASSERT_TRUE(unstopped) << unstopped.error().to_string();
+
+  // The stop is measured in CURRENCY against a capital base (NAV is cumulative
+  // P&L from zero, not an equity curve). Find the fixture's worst peak-to-trough
+  // loss and put the stop strictly inside it so it is guaranteed to bind.
+  double peak = 0.0;
+  double worst_loss = 0.0;
+  for (const double nav : unstopped->track.nav) {
+    peak = std::max(peak, nav);
+    worst_loss = std::max(worst_loss, peak - nav);
+  }
+  ASSERT_GT(worst_loss, 0.0) << "fixture must lose money somewhere for a stop to bind";
+
+  DispersionBacktestConfig stopped = pit_backtest_config();
+  // Capital high enough that the OUTLAY limit cannot bind — this test is about
+  // the drawdown stop alone, not about capital-based sizing.
+  stopped.limits.capital = 1.0e12;
+  stopped.limits.drawdown_stop = 0.5 * worst_loss / stopped.limits.capital;
+  auto result = run_dispersion_surface_backtest(fixture.clock, schedule, stopped, "SPY");
+  ASSERT_TRUE(result) << result.error().to_string();
+
+  const std::vector<double> *reason = signal_series(result->track, "risk_breach_reason");
+  ASSERT_NE(reason, nullptr) << "a configured drawdown stop must emit telemetry";
+  const bool recorded = std::any_of(reason->begin(), reason->end(), [](double value) {
+    return value == static_cast<double>(RiskBreachReason::DrawdownStop);
+  });
+  EXPECT_TRUE(recorded) << "the halt must name drawdown_stop in the output";
+  EXPECT_EQ(to_string(RiskBreachReason::DrawdownStop), "drawdown_stop");
+
+  std::error_code error;
+  fs::remove_all(fixture.dir, error);
 }

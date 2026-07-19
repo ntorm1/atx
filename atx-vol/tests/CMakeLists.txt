@@ -139,6 +139,8 @@ add_executable(atx-vol-tests
     amzn_earnings_test.cpp           # real OPRA board -> two-pass C8 fit: front c2_eff<-1, arb-free
     # SPY-dispersion hot-path WS-C (correctness cluster) — appended target:
     dispersion_workflow_test.cpp     # C1 point-in-time universe, C3 removals, M2 dup keys, M4 index symbol
+    # SPY-dispersion hot-path WS-X (config + execution realism) — appended target:
+    dispersion_run_config_test.cpp   # X1 strict typed run config, X2 frictions/financing, X6 cost model
 )
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).
