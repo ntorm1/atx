@@ -2524,7 +2524,15 @@ TEST(PortfolioPricer, PnlExplain_Grouped_BitIdenticalToUngrouped) {
     if (st_expect != PriceStatus::Ok) {
       continue;
     }
-    // Recompute the w-scaled decomposition exactly as the scatter does.
+    // Recompute the w-scaled decomposition with the reference (ungrouped) scalar
+    // formula. scatter_pnl_rows now routes the eight components through the AVX2
+    // simd::pnl_taylor_explain_batch kernel (wiring finding 1). Single-product terms
+    // (delta/vega/theta/rho), the reprice residual pnl_total, and the pv / state-move
+    // columns are BIT-identical to this reference on every lane (grouping-invariant,
+    // and a single IEEE mul is scalar==AVX2). The regrouped second-order terms
+    // (gamma/volga/vanna/charm) and the FMA-summed unexplained are bit-identical on
+    // scalar-tail lanes / non-AVX2 hosts and match to the simd_pnl_test parity bound
+    // (1e-7 abs + 1e-12 rel) on AVX2 main lanes.
     const double pnl_total_ps = price_target - price_base;
     const double pd = gb.delta * dS;
     const double pg = 0.5 * gb.gamma * dS * dS;
@@ -2536,18 +2544,22 @@ TEST(PortfolioPricer, PnlExplain_Grouped_BitIdenticalToUngrouped) {
     const double pcharm = gb.charm * dS * dt;
     const double explained = pd + pg + pv + pvol + pvanna + pth + prho + pcharm;
     const double unexpl = pnl_total_ps - explained;
+    const auto near_kernel = [&](double got, double want, const char *col) {
+      EXPECT_LE(std::abs(got - want), 1e-7 + 1e-12 * std::abs(want))
+          << col << " i=" << i << " got=" << got << " want=" << want;
+    };
     EXPECT_TRUE(bits_equal(f.pv_base[i], w * price_base)) << i;
     EXPECT_TRUE(bits_equal(f.pv_target[i], w * price_target)) << i;
     EXPECT_TRUE(bits_equal(f.pnl_total[i], w * pnl_total_ps)) << i;
     EXPECT_TRUE(bits_equal(f.pnl_delta[i], w * pd)) << i;
-    EXPECT_TRUE(bits_equal(f.pnl_gamma[i], w * pg)) << i;
+    near_kernel(f.pnl_gamma[i], w * pg, "gamma");
     EXPECT_TRUE(bits_equal(f.pnl_vega[i], w * pv)) << i;
-    EXPECT_TRUE(bits_equal(f.pnl_volga[i], w * pvol)) << i;
-    EXPECT_TRUE(bits_equal(f.pnl_vanna[i], w * pvanna)) << i;
+    near_kernel(f.pnl_volga[i], w * pvol, "volga");
+    near_kernel(f.pnl_vanna[i], w * pvanna, "vanna");
     EXPECT_TRUE(bits_equal(f.pnl_theta[i], w * pth)) << i;
     EXPECT_TRUE(bits_equal(f.pnl_rho[i], w * prho)) << i;
-    EXPECT_TRUE(bits_equal(f.pnl_charm[i], w * pcharm)) << i;
-    EXPECT_TRUE(bits_equal(f.pnl_unexplained[i], w * unexpl)) << i;
+    near_kernel(f.pnl_charm[i], w * pcharm, "charm");
+    near_kernel(f.pnl_unexplained[i], w * unexpl, "unexplained");
     EXPECT_TRUE(bits_equal(f.d_spot[i], dS)) << i;
     EXPECT_TRUE(bits_equal(f.d_vol[i], dvol)) << i;
     EXPECT_TRUE(bits_equal(f.d_time[i], dt)) << i;

@@ -24,6 +24,7 @@
 #include "atx/vol/detail/adjoint_greeks.hpp" // WS-P P3: american_greeks_adjoint A/B route
 #include "atx/vol/prepared_portfolio.hpp" // PreparedPortfolio (grouped exec substrate)
 #include "atx/vol/pricing_executor.hpp"   // pricing_executor(): the persistent P1.4 pool
+#include "atx/vol/simd/pnl_batch.hpp"     // simd::pnl_taylor_explain_batch (wiring finding 1)
 
 namespace atx::vol {
 
@@ -42,6 +43,36 @@ template <class T>
 template <class T> [[nodiscard]] ByteRange byte_range(T &value) noexcept {
   return std::as_bytes(std::span<T>{&value, 1u});
 }
+
+// SoA scratch for routing the per-position second-order Taylor P&L decomposition
+// through the vectorized simd::pnl_taylor_explain_batch kernel (wiring finding 1).
+// Position-sized, warmed once and reused allocation-free across snapshots: the
+// gather lifts each position's base Greeks + state moves out of the deduped
+// ContractPnl bundle into these contiguous columns, the kernel consumes them, and
+// `explained` receives the (unweighted) Taylor-explained sum the call site turns
+// into the reprice residual.
+struct PnlTaylorSoa {
+  std::vector<double> delta, gamma, vega, volga, vanna, theta, rho, charm; // base Greeks
+  std::vector<double> dS, dSigma, dt, dr;                                  // state moves
+  std::vector<double> explained;                                          // Σ components, w=1
+
+  void reserve(std::size_t n) {
+    for (std::vector<double> *v : columns()) {
+      v->reserve(n);
+    }
+  }
+  void resize(std::size_t n) {
+    for (std::vector<double> *v : columns()) {
+      v->resize(n);
+    }
+  }
+
+private:
+  std::array<std::vector<double> *, 13> columns() {
+    return {&delta, &gamma, &vega, &volga, &vanna, &theta, &rho, &charm,
+            &dS,    &dSigma, &dt,   &dr,    &explained};
+  }
+};
 
 [[nodiscard]] bool byte_ranges_overlap(ByteRange lhs, ByteRange rhs) noexcept {
   if (lhs.empty() || rhs.empty()) {
@@ -949,6 +980,7 @@ struct PortfolioWorkspace::Impl {
   std::vector<Status> pnl_s_status;          // shifted-price batch status
   std::vector<double> pnl_junk;              // throwaway span for the batch's unused output
   std::vector<Status> pnl_junk_status;       // throwaway status span
+  PnlTaylorSoa pnl_soa;                       // position-sized SoA scratch for the Taylor P&L kernel
   std::optional<PreparedPortfolio> prepared; // retained across snapshots (built once)
   std::uint64_t prepared_logical_id{0};      // exact book identity the substrate is for
   std::uint64_t prepared_revision{0};        // exact retime revision the substrate is for
@@ -991,6 +1023,9 @@ void PortfolioWorkspace::reserve(std::size_t n_unique, std::size_t n_positions) 
   impl_->pnl_s_status.reserve(n_unique);
   impl_->pnl_junk.reserve(n_unique);
   impl_->pnl_junk_status.reserve(n_unique);
+  // The Taylor P&L kernel runs one lane per POSITION (the pnl-explain frame is
+  // position-indexed), so its SoA scratch follows the position count.
+  impl_->pnl_soa.reserve(n_positions);
   impl_->base_surface_instance_ids.reserve(n_unique);
 }
 
@@ -1368,13 +1403,70 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
 }
 
 // Cache-line-disjoint SoA scatter of the P&L decomposition into the caller's view.
-// Each `i` writes only its own row slots from pnl[pf.contract_ix(i)] (disjoint
-// writes, pure const reads → bit-identical for any worker count). The per-row math
-// is the ungrouped fused loop's, verbatim (no reassociation).
+//
+// The eight Taylor components come from the vectorized simd::pnl_taylor_explain_batch
+// kernel (wiring finding 1). A serial gather lifts each position's base AMERICAN
+// (cold-FD) Greeks + state moves out of the deduped ContractPnl bundle into the
+// SoA scratch; ONE serial kernel call over the full [0,n) writes the UNWEIGHTED
+// components straight into the frame's eight component columns and the
+// Taylor-explained sum into `soa.explained`; then a per-row scatter applies the
+// position weight, forms pnl_total / pnl_unexplained (the reprice residual the
+// kernel deliberately leaves to the call site), and copies the state-move columns.
+//
+// Determinism: the kernel runs the whole batch in a single call, so its 4-lane
+// grouping — and therefore every bit — is independent of worker count, and each
+// scatter index writes only its own frame slots. So the frame stays bit-identical
+// for any worker count. Parity: on a non-AVX2 host and on every n%4 scalar-tail
+// lane the kernel reproduces the previous fused scalar decomposition bit-for-bit;
+// on AVX2 main lanes the second-order terms regroup and the total is an FMA chain,
+// matching the scalar reference to the simd_pnl_test bound (~1e-12 rel). The scatter
+// keeps the fused loop's `w * component` association, so weighting adds no drift.
 void scatter_pnl_rows(std::span<const Position> positions, const Portfolio &pf,
-                      std::span<const ContractPnl> pnl, unsigned n_threads,
+                      std::span<const ContractPnl> pnl, PnlTaylorSoa &soa, unsigned n_threads,
                       const PnlFrameView &out) {
   const std::size_t n = positions.size();
+  soa.resize(n);
+
+  // Gather (serial): AoS ContractPnl -> SoA kernel inputs, one lane per position.
+  // Non-Ok lanes are gathered too (their default-zero Greeks feed the kernel and the
+  // computed components are simply overwritten with NaN in the scatter below).
+  for (std::size_t i = 0; i < n; ++i) {
+    const ContractPnl &c = pnl[pf.contract_ix(i)];
+    const AmericanGreeks &g = c.gb;
+    soa.delta[i] = g.delta;
+    soa.gamma[i] = g.gamma;
+    soa.vega[i] = g.vega;
+    soa.volga[i] = g.volga;
+    soa.vanna[i] = g.vanna;
+    soa.theta[i] = g.theta;
+    soa.rho[i] = g.rho;
+    soa.charm[i] = g.charm;
+    soa.dS[i] = c.dS;
+    soa.dSigma[i] = c.dvol;
+    soa.dt[i] = c.dt;
+    soa.dr[i] = c.dr;
+  }
+
+  // Kernel (serial, full range, UNWEIGHTED): eight unweighted components straight
+  // into the frame's component columns; the Taylor-explained sum into soa.explained.
+  // qty is null (weight is applied per-row below, so the reprice residual keeps the
+  // fused loop's exact `w * (pnl_total_ps - explained)` association).
+  const simd::PnlExplainInputs in{
+      .delta = soa.delta.data(),   .gamma = soa.gamma.data(),   .vega = soa.vega.data(),
+      .volga = soa.volga.data(),   .vanna = soa.vanna.data(),   .theta = soa.theta.data(),
+      .rho = soa.rho.data(),       .charm = soa.charm.data(),   .qty = nullptr,
+      .dS = soa.dS.data(),         .dSigma = soa.dSigma.data(),  .dt = soa.dt.data(),
+      .dr = soa.dr.data()};
+  const simd::PnlExplainOutputs kout{
+      .delta_pnl = out.pnl_delta.data(), .gamma_pnl = out.pnl_gamma.data(),
+      .vega_pnl = out.pnl_vega.data(),   .volga_pnl = out.pnl_volga.data(),
+      .vanna_pnl = out.pnl_vanna.data(), .theta_pnl = out.pnl_theta.data(),
+      .rho_pnl = out.pnl_rho.data(),     .charm_pnl = out.pnl_charm.data(),
+      .total = soa.explained.data()};
+  simd::pnl_taylor_explain_batch(in, kout, n);
+
+  // Scatter (per position, disjoint writes): weight the components in place, form the
+  // reprice residual, copy the state-move columns; failed lanes become all-NaN.
   pricing_executor().run_blocks(n, n_threads, [&](std::size_t i) {
     const Position &p = positions[i];
     const ContractPnl &c = pnl[pf.contract_ix(i)];
@@ -1391,33 +1483,22 @@ void scatter_pnl_rows(std::span<const Position> positions, const Portfolio &pf,
       out.d_spot[i] = out.d_vol[i] = out.d_time[i] = out.d_rate[i] = kNaN;
       return;
     }
-    const AmericanGreeks &g = c.gb;
-    // The full American PnL, decomposed by the base AMERICAN (cold-FD) Greeks. The
-    // coefficients carry the early-exercise premium (delta/gamma finite-differenced
-    // through american_price), so `unexpl` is the pure higher-order Taylor tail.
+    // The kernel wrote the UNWEIGHTED components into the eight frame columns and the
+    // Taylor-explained sum into soa.explained. `unexpl` is the higher-order tail the
+    // base American Greeks (early-exercise premium inside delta/gamma) do not capture.
     const double pnl_total_ps = c.price_target - c.price_base;
-    const double pd = g.delta * c.dS;
-    const double pg = 0.5 * g.gamma * c.dS * c.dS;
-    const double pv = g.vega * c.dvol;
-    const double pvol = 0.5 * g.volga * c.dvol * c.dvol;
-    const double pvanna = g.vanna * c.dS * c.dvol;
-    const double pth = g.theta * c.dt;
-    const double prho = g.rho * c.dr;
-    const double pcharm = g.charm * c.dS * c.dt;
-    const double explained = pd + pg + pv + pvol + pvanna + pth + prho + pcharm;
-    const double unexpl = pnl_total_ps - explained;
-
+    const double unexpl = pnl_total_ps - soa.explained[i];
+    out.pnl_delta[i] *= w;
+    out.pnl_gamma[i] *= w;
+    out.pnl_vega[i] *= w;
+    out.pnl_volga[i] *= w;
+    out.pnl_vanna[i] *= w;
+    out.pnl_theta[i] *= w;
+    out.pnl_rho[i] *= w;
+    out.pnl_charm[i] *= w;
     out.pv_base[i] = w * c.price_base;
     out.pv_target[i] = w * c.price_target;
     out.pnl_total[i] = w * pnl_total_ps;
-    out.pnl_delta[i] = w * pd;
-    out.pnl_gamma[i] = w * pg;
-    out.pnl_vega[i] = w * pv;
-    out.pnl_volga[i] = w * pvol;
-    out.pnl_vanna[i] = w * pvanna;
-    out.pnl_theta[i] = w * pth;
-    out.pnl_rho[i] = w * prho;
-    out.pnl_charm[i] = w * pcharm;
     out.pnl_unexplained[i] = w * unexpl;
     out.d_spot[i] = c.dS;
     out.d_vol[i] = c.dvol;
@@ -1445,8 +1526,12 @@ void scatter_target_mark_rows(std::span<const Position> positions, const Portfol
 // Fixed-input-order totals reduction over the Ok lanes — the deterministic sum
 // (same order, same operand association) the ungrouped fused loop used, so totals
 // are bit-identical across thread counts AND across pnl_explain/pnl_explain_into/
-// pnl_totals. Recomputing `w * pd` etc. here yields the same bits the scatter stored
-// (IEEE double round-trips losslessly), so pnl_totals (no frame) reduces identically.
+// pnl_totals: every one of those reduces through THIS scalar loop, so they agree
+// bit-for-bit. It is the bit-stable source of PnlTotals and stays independent of
+// the frame's scatter path. NOTE: scatter_pnl_rows now routes the per-row components
+// through the AVX2 Taylor kernel, so on an AVX2 host the frame's main-lane component
+// columns differ from this scalar recomputation by the kernel's parity bound
+// (~1e-12 rel); the scalar-tail lanes and non-AVX2 hosts remain bit-identical to it.
 // `t` must be zero-initialized by the caller. Keep `i` ascending: IEEE add is
 // association-order-sensitive.
 void reduce_pnl_totals(std::span<const Position> positions, const Portfolio &pf,
@@ -1554,7 +1639,7 @@ Status PortfolioPricer::pnl_explain_into(const SurfaceSet &base, const SurfaceSe
   // the output spans are caller-owned and the scratch was reserved.
   ATX_VOL_COUNT_N(FrameBytes, n * 141);
 
-  scatter_pnl_rows(positions, pf_, w.pnl, opts.n_threads, out);
+  scatter_pnl_rows(positions, pf_, w.pnl, w.pnl_soa, opts.n_threads, out);
   *out.total = PnlTotals{};
   reduce_pnl_totals(positions, pf_, w.pnl, *out.total);
   return atx::core::Ok();
