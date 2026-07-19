@@ -346,11 +346,10 @@ decode_symbol_provenance(const DbSymbolRecord &rec) noexcept;
 // refresh(), partition IO ─────────────────────────────────────────────────
 
 // Default LRU bound for the S5 partition view cache. Each resident entry pins a
-// partition's mapping: SurfaceArchiveV2::open_mapped (S2/WS-S) maps the file
-// read-only via `atx::tsdb::Mapping`, so resident bytes are page-cache-backed
-// (shared across processes, reclaimable) rather than a private whole-file heap
-// buffer — but an UNBOUNDED cache would still keep one partition's pages pinned
-// per distinct key the reader touches. The
+// whole partition file's bytes in RAM: SurfaceArchiveV2::open_file reads the
+// entire file into an owned buffer (the real-mmap `atx::tsdb::Mapping` seam is
+// deferred to a later wave — see surface_archive.hpp), so an UNBOUNDED cache
+// would grow RSS by one full partition per distinct key the reader touches. The
 // backtest hot loop (B1) sweeps ~135 daily partitions, which without a bound
 // would keep every day's bytes resident for the SurfaceDb's lifetime and break
 // the sprint's RSS = O(in-flight) invariant. 16 keeps a working set of recent
