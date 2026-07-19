@@ -360,6 +360,12 @@ duplicate_maturity_report(const Underlying &under, const CurveConfig &curve) {
                                         std::isfinite(diagnostics.mean_rmse_vol);
 
   const std::span<const SliceContext> fitted = session.expiries();
+  // Per-expiry re-Americanized parity, parallel to `fitted`: n = admitted
+  // (two-sided, de-Am-survived) quotes SCORED for this slice, n_within = those
+  // the built surface reprices inside [bid, ask]. This IS the serve-check that
+  // produced worst_frac_within_bidask; the F2 quote-coverage numerator/denominator
+  // are its board-level count.
+  const std::span<const ParityReport> parity = session.parity();
   std::vector<bool> consumed(fitted.size(), false);
   std::size_t consecutive_gaps = 0u;
   for (std::size_t i = 0u; i < under.chains.size(); ++i) {
@@ -368,14 +374,6 @@ duplicate_maturity_report(const Underlying &under, const CurveConfig &curve) {
       continue;
     }
     ++attempt.evidence.attempted_expiries;
-    // UNIT ASSUMPTION (paired with the fitted_quotes += below): attempted is
-    // counted in STRIKES, fitted in fit OBSERVATIONS. quote_coverage and the
-    // ImpossibleEvidence (fitted <= attempted) check in evaluate_surface_admission
-    // are only meaningful because the OTM-one-per-strike preparation yields at
-    // most one observation per strike, so observations <= strikes. A future
-    // family that keeps BOTH legs per strike would break this equivalence; the
-    // debug assert before finalization guards the invariant loudly.
-    attempt.evidence.attempted_quotes += chain.n_strikes();
     const auto context = std::find_if(fitted.begin(), fitted.end(), [&](const SliceContext &slice) {
       const std::size_t index = static_cast<std::size_t>(&slice - fitted.data());
       return !consumed[index] && slice.T == chain.T;
@@ -394,18 +392,30 @@ duplicate_maturity_report(const Underlying &under, const CurveConfig &curve) {
     const std::size_t context_index = static_cast<std::size_t>(context - fitted.begin());
     consumed[context_index] = true;
     ++attempt.evidence.fitted_expiries;
-    // Counted in fit OBSERVATIONS (see the attempted_quotes UNIT ASSUMPTION
-    // above): <= attempted_quotes only under OTM-one-per-strike preparation.
-    attempt.evidence.fitted_quotes += context->n_used;
+    // F2 SERVED-quote coverage (fit_policy.hpp InsufficientQuoteCoverage): the
+    // floor's intent is the fraction of admitted-universe quotes the BUILT surface
+    // reprices in-band — NOT the node-capped fit-observation count, which on a
+    // wide board a dense fit caps far below the strikes it actually serves. Count
+    // this expiry's scored quotes (attempted_quotes) and those the surface serves
+    // in-band (fitted_quotes) from its parity report. One metric, every family: an
+    // eSSVI slice's n_within is scored the same way. When parity was not scored
+    // (score_parity off — only ever with the serve floor disabled), fall back to
+    // the fit-observation count on both sides (an unmeasured serve cannot gate).
+    if (context_index < parity.size() && parity[context_index].n > 0u) {
+      attempt.evidence.attempted_quotes += parity[context_index].n;
+      attempt.evidence.fitted_quotes += parity[context_index].n_within;
+    } else {
+      attempt.evidence.attempted_quotes += context->n_used;
+      attempt.evidence.fitted_quotes += context->n_used;
+    }
     attempt.expiries.push_back(
         ExpiryBuildReport{i, chain.T, ExpiryBuildOutcome::Fitted, context->n_used});
   }
-  // Fail loud in debug if the strike/observation unit assumption above is ever
-  // violated: fitted (observations) must not exceed attempted (strikes). In
-  // release this is the ImpossibleEvidence admission check's job (fail safe).
+  // Fail loud in debug if the served/attempted invariant is ever violated: served
+  // (in-band) quotes must not exceed the admitted quotes scored. In release this
+  // is the ImpossibleEvidence admission check's job (fail safe).
   assert(attempt.evidence.fitted_quotes <= attempt.evidence.attempted_quotes &&
-         "completed_attempt_report: fitted observations exceeded attempted strikes -- the "
-         "OTM-one-per-strike unit assumption no longer holds");
+         "completed_attempt_report: served (in-band) quotes exceeded admitted scored quotes");
   evaluate_independent_invariants(session, attempt.evidence);
   attempt.admission = evaluate_surface_admission(attempt.evidence, policy);
   return attempt;
@@ -1316,11 +1326,23 @@ Status PricerFitter::fit(const OptionChain &chain,
   // the complete admission contract before it can replace the candidate.
   if (!admission.publish_candidate && auto_routed) {
     const CurveConfig rejected_curve = in.curve;
-    for (const VolCurveKind rung : fallback_curve_rungs(rejected_curve.kind)) {
-      if (rung == VolCurveKind::LinearVariance)
+    for (const VolCurveKind rung0 : fallback_curve_rungs(rejected_curve.kind)) {
+      // The risk path serves ConvexDense as its dense model, so its fallback
+      // ladder must REACH the dense fit where the generic ladder names
+      // LinearVariance — the same substitution routing already applies
+      // (pricer_fitter.cpp:~1109/1156). Without it a parametric primary that a
+      // real board serves poorly (e.g. an eSSVI whose in-band served coverage
+      // trips the F2 floor) dead-ends at the skipped LinearVariance rung instead
+      // of falling to the dense model that fits the same board. Never re-fit the
+      // rejected primary's own family.
+      const VolCurveKind rung =
+          (rung0 == VolCurveKind::LinearVariance) ? VolCurveKind::ConvexDense : rung0;
+      if (rung == rejected_curve.kind)
         continue;
       SessionInputs retry_inputs = in;
       retry_inputs.curve.kind = rung;
+      if (rung == VolCurveKind::ConvexDense)
+        retry_inputs.curve.convex.node_cap = retry_inputs.calib.max_obs_per_slice;
       const auto retry_start = Clock::now();
       Result<VolaSession> retry = VolaSession::build(chain.underlying(), retry_inputs);
       timings_.risk_build_ms += elapsed_ms(retry_start);

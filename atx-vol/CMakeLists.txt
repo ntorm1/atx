@@ -183,6 +183,11 @@ if(ATX_BUILD_EXAMPLES)
     add_executable(spy_diag examples/spy_diag.cpp)
     target_link_libraries(spy_diag PRIVATE atx::vol atx::core atx_warnings)
 
+    # bt-spyfit-rca DIAGNOSTIC: reproduce the SPY/XOM populate fit failure with
+    # full risk-admission rejection detail. See examples/spy_fit_rca.cpp.
+    add_executable(spy_fit_rca examples/spy_fit_rca.cpp)
+    target_link_libraries(spy_fit_rca PRIVATE atx::vol atx::core atx_warnings)
+
     # SOTA %-within-bid-ask acceptance: eSSVI (3 DoF) vs dense C16 (16 DoF) on the
     # real SPY board, scored through the same re-Americanization. See
     # examples/spy_bidask_bench.cpp.
