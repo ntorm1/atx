@@ -710,6 +710,19 @@ void CorrectionCache::eval_partials(double k_log, double T, double sigma, double
   }
 }
 
+double CorrectionCache::eval_value_and_dsigma(double k_log, double T, double sigma,
+                                              double *out_dsigma) const noexcept {
+  // Stage (a) [F1]: the value + sigma partial the IV Newton step needs, as the
+  // literal composition of eval() (value) and eval_partials() (dsigma only). This
+  // is bit-identical to eval_grad(k_log, T, sigma, nullptr, nullptr, out_dsigma),
+  // so the fused hot-path caller drops the separate price-traversal + eval_grad
+  // value-traversal down to eval + one partial (3 -> 2). Stage (b) will replace
+  // this body with a single value+∂sigma Clenshaw pass (~1 traversal).
+  const double v = eval(k_log, T, sigma);
+  eval_partials(k_log, T, sigma, nullptr, nullptr, out_dsigma);
+  return v;
+}
+
 CorrSecondOrder CorrectionCache::eval_second_order(double k_log, double T,
                                                    double sigma) const noexcept {
   if (!populated_) {
@@ -851,6 +864,57 @@ double CorrectionBlend::eval_dsigma(double k_log, double T, double sigma) const 
     hi = 0.0;
   }
   return lo + upper_weight * (hi - lo);
+}
+
+double CorrectionBlend::eval_value_and_dsigma(double k_log, double T, double sigma,
+                                              double *out_dsigma) const noexcept {
+  // Bit-identical to {eval(), eval_dsigma()} but sharing each endpoint's fused
+  // value+dsigma kernel: the value blends as (1-w)*lower + w*upper and the sigma
+  // partial applies the SAME per-endpoint max(0, .) gate as eval_dsigma() before
+  // blending. Exact endpoints / identical pointers evaluate one cache only, so a
+  // single-cache blend reproduces the CorrectionCache path byte-for-byte.
+  if (!valid()) {
+    if (out_dsigma != nullptr) {
+      *out_dsigma = std::numeric_limits<double>::quiet_NaN();
+    }
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  if (upper_weight == 0.0 || lower == upper) {
+    double lo = 0.0;
+    const double value = lower->eval_value_and_dsigma(k_log, T, sigma, &lo);
+    if (!(value > 0.0)) {
+      lo = 0.0;
+    }
+    if (out_dsigma != nullptr) {
+      *out_dsigma = lo;
+    }
+    return value;
+  }
+  if (upper_weight == 1.0) {
+    double hi = 0.0;
+    const double value = upper->eval_value_and_dsigma(k_log, T, sigma, &hi);
+    if (!(value > 0.0)) {
+      hi = 0.0;
+    }
+    if (out_dsigma != nullptr) {
+      *out_dsigma = hi;
+    }
+    return value;
+  }
+  double lo = 0.0;
+  double hi = 0.0;
+  const double lo_value = lower->eval_value_and_dsigma(k_log, T, sigma, &lo);
+  const double hi_value = upper->eval_value_and_dsigma(k_log, T, sigma, &hi);
+  if (!(lo_value > 0.0)) {
+    lo = 0.0;
+  }
+  if (!(hi_value > 0.0)) {
+    hi = 0.0;
+  }
+  if (out_dsigma != nullptr) {
+    *out_dsigma = lo + upper_weight * (hi - lo);
+  }
+  return lo_value + upper_weight * (hi_value - lo_value);
 }
 
 double CorrectionBlend::eval_value_dk(double k_log, double T, double sigma,

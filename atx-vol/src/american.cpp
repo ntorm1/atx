@@ -2330,6 +2330,96 @@ double american_price_cached(double S, double K, double T, double sigma, double 
   return floor_cached_price(euro + F * corr, euro, intr);
 }
 
+// ── Fused cached price + vega (perf review F1 + F8) ───────────────────────────
+// The IV-inversion Newton step evaluates the correction tensor 3x at the same
+// (k_log, T, sigma): once for the residual (american_price_cached's value) and
+// twice for the vega (american_vega -> eval_grad = value + dsigma partial). These
+// entries collapse that to ONE shared value traversal + one dsigma partial (stage
+// a: 3 -> 2), and — once eval_value_and_dsigma fuses them — to ~1 traversal.
+AmericanPriceVega american_price_and_vega_cached(double S, double K, double T, double sigma,
+                                                 double r, double q, Side side,
+                                                 const CorrectionCache *correction) {
+  const double df = std::exp(-r * T);
+  const double F = S * std::exp((r - q) * T);
+  const double ln_fk = std::log(F / K);
+  const double sqrt_t = (T > 0.0) ? std::sqrt(T) : 0.0;
+  // Black-76 vega leg (F8: two-output kernel, bit-identical to the greeks bundle's
+  // vega; √T and ln(F/K) are shared with the price leg below).
+  const double euro_vega = black76_value_and_vega(F, K, T, sigma, df, side, sqrt_t).vega;
+
+  if (correction == nullptr || !correction->populated() || correction->side() != side) {
+    // Split cold contract, mirroring the two separate entries: the price falls
+    // back to the cold Andersen-Lake solve (american_price_cached), the vega is
+    // the Black-76 European leg only (american_vega's null-cache path).
+    ATX_VOL_COUNT(CacheColdFallbacks);
+    const Result<double> p = andersen_lake(S, K, T, sigma, r, q, side, std::nullopt);
+    return AmericanPriceVega{p ? *p : std::numeric_limits<double>::quiet_NaN(), euro_vega};
+  }
+
+  // ONE shared value traversal + the sigma partial, at the price path's
+  // k_log = -ln(F/K) (so the American price and its vega are mutually consistent).
+  double dc_ds = 0.0;
+  const double corr = correction->eval_value_and_dsigma(-ln_fk, T, sigma, &dc_ds);
+  // Served-correction max(0, .) gate on the derivative (see american_vega): the
+  // clamped branch has zero derivative too, keeping Newton's vega consistent with
+  // the served forward map.
+  if (!(corr > 0.0)) {
+    dc_ds = 0.0;
+  }
+  const double vega = euro_vega + F * dc_ds;
+
+  // Price: NaN on the double-continuation corner (as american_price_cached). The
+  // vega is still returned, but the inverter reads the NaN price and bails before
+  // consuming it.
+  if (classify_regime(/*rate=*/(side == Side::Put) ? r : q,
+                      /*yield=*/(side == Side::Put) ? q : r) == ExerciseRegime::Unsupported) {
+    return AmericanPriceVega{std::numeric_limits<double>::quiet_NaN(), vega};
+  }
+  ATX_VOL_COUNT(CacheHits);
+  const double euro = black76_price_from_lnfk(F, K, T, sigma, df, ln_fk, sqrt_t, side);
+  const double intr = (side == Side::Put) ? (K - S) : (S - K);
+  const double price = floor_cached_price(euro + F * corr, euro, intr);
+  return AmericanPriceVega{price, vega};
+}
+
+AmericanPriceVega american_price_and_vega_cached(double S, double K, double T, double sigma,
+                                                 double r, double q, Side side,
+                                                 const CorrectionBlend &correction) {
+  // Delegate the degenerate / single-cache cases to the CorrectionCache overload,
+  // byte-for-byte as american_price_cached / american_vega do — so a single-cache
+  // blend reproduces the CorrectionCache path exactly (IV blend==single pin).
+  if (!correction.usable(side)) {
+    return american_price_and_vega_cached(S, K, T, sigma, r, q, side,
+                                          static_cast<const CorrectionCache *>(nullptr));
+  }
+  if (correction.upper_weight == 0.0 || correction.lower == correction.upper) {
+    return american_price_and_vega_cached(S, K, T, sigma, r, q, side, correction.lower);
+  }
+  if (correction.upper_weight == 1.0) {
+    return american_price_and_vega_cached(S, K, T, sigma, r, q, side, correction.upper);
+  }
+  const double df = std::exp(-r * T);
+  const double F = S * std::exp((r - q) * T);
+  const double ln_fk = std::log(F / K);
+  const double sqrt_t = (T > 0.0) ? std::sqrt(T) : 0.0;
+  const double euro_vega = black76_value_and_vega(F, K, T, sigma, df, side, sqrt_t).vega;
+  // The blend's fused value+dsigma applies the SAME per-endpoint max(0, .) gate as
+  // eval_dsigma, so (unlike the single-cache path) no outer gate is applied here —
+  // this matches american_vega's blend overload.
+  double dc_ds = 0.0;
+  const double corr = correction.eval_value_and_dsigma(-ln_fk, T, sigma, &dc_ds);
+  const double vega = euro_vega + F * dc_ds;
+  if (classify_regime(/*rate=*/(side == Side::Put) ? r : q,
+                      /*yield=*/(side == Side::Put) ? q : r) == ExerciseRegime::Unsupported) {
+    return AmericanPriceVega{std::numeric_limits<double>::quiet_NaN(), vega};
+  }
+  ATX_VOL_COUNT(CacheHits);
+  const double euro = black76_price_from_lnfk(F, K, T, sigma, df, ln_fk, sqrt_t, side);
+  const double intr = (side == Side::Put) ? (K - S) : (S - K);
+  const double price = floor_cached_price(euro + F * corr, euro, intr);
+  return AmericanPriceVega{price, vega};
+}
+
 Result<AmericanGreeks> american_greeks(double S, double K, double T, double sigma, double r,
                                        double q, Side side, const CorrectionCache *correction) {
   // Degenerate-input contract: SURFACE an error. This is deliberately asymmetric
@@ -2672,8 +2762,11 @@ double american_vega(double S, double K, double T, double sigma, double r, doubl
   const double df = std::exp(-r * T);
   // Black-76 vega is closed-form (no early-exercise FD); the correction adds only
   // its first-order sigma partial — one cache eval_grad instead of the seven the
-  // full american_greeks bundle runs for its second-order FD terms.
-  const double euro_vega = black76_greeks(F, K, T, sigma, r, df, side).greeks.vega;
+  // full american_greeks bundle runs for its second-order FD terms. F8: the vega
+  // comes from the two-output black76_value_and_vega, not the 9-output
+  // black76_greeks bundle (its vega is bit-identical — same d1, φ(d1)=norm_pdf(d1),
+  // and F·df·φ(d1)·√T with commutative F·df).
+  const double euro_vega = black76_value_and_vega(F, K, T, sigma, df, side).vega;
   double dc_ds = 0.0;
   if (correction != nullptr && correction->populated() && correction->side() == side) {
     const double correction_value =
@@ -2704,7 +2797,8 @@ double american_vega(double S, double K, double T, double sigma, double r, doubl
   }
   const double F = S * std::exp((r - q) * T);
   const double df = std::exp(-r * T);
-  const double euro_vega = black76_greeks(F, K, T, sigma, r, df, side).greeks.vega;
+  // F8: cheap two-output vega kernel (bit-identical to black76_greeks(...).vega).
+  const double euro_vega = black76_value_and_vega(F, K, T, sigma, df, side).vega;
   const double dc_ds = correction.eval_dsigma(std::log(K / F), T, sigma);
   return euro_vega + F * dc_ds;
 }

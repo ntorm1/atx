@@ -894,6 +894,68 @@ TEST(CorrectionBlend, EndpointsAndMidpointBlendEveryDerivative) {
   EXPECT_NEAR(got.dT, finite_difference, 1.0e-7);
 }
 
+// Perf review F1 stage (a): eval_value_and_dsigma is the value+σ-partial pair the
+// IV Newton step consumes, and in stage (a) it must be BYTE-for-byte the
+// composition of eval() (value) and eval_grad()/eval_partials() (dsigma) — the
+// only change is that the fused hot-path caller shares one value traversal instead
+// of running a separate residual sweep. Assert exact equality across the box
+// interior AND out of every axis (where the value clamps and the partial zeroes).
+TEST(CorrectionCache, EvalValueAndDsigmaBitIdenticalToEvalAndPartials) {
+  auto built = CorrectionCache::build(
+      /*n_k=*/16, /*n_T=*/8, /*n_s=*/12, /*r=*/0.05, /*q=*/0.00,
+      /*k_log_min=*/-0.5, /*k_log_max=*/0.5,
+      /*T_min=*/0.05, /*T_max=*/2.0,
+      /*sigma_min=*/0.10, /*sigma_max=*/0.80, Side::Put);
+  ASSERT_TRUE(built.has_value());
+  const CorrectionCache cache = std::move(*built);
+
+  // Interior points, plus deliberately out-of-box on each axis (k_log, T, sigma).
+  for (double k : {-0.6, -0.2, 0.0, 0.15, 0.55}) {
+    for (double T : {0.02, 0.2, 0.9, 2.4}) {
+      for (double sigma : {0.05, 0.18, 0.5, 0.9}) {
+        double ds_ref = 0.0;
+        const double v_ref = cache.eval_grad(k, T, sigma, nullptr, nullptr, &ds_ref);
+        double ds_fused = 0.0;
+        const double v_fused = cache.eval_value_and_dsigma(k, T, sigma, &ds_fused);
+        EXPECT_EQ(v_fused, v_ref) << "k=" << k << " T=" << T << " sig=" << sigma;
+        EXPECT_EQ(ds_fused, ds_ref) << "k=" << k << " T=" << T << " sig=" << sigma;
+        // And the value equals the standalone eval() exactly.
+        EXPECT_EQ(v_fused, cache.eval(k, T, sigma));
+      }
+    }
+  }
+}
+
+// The blend fused entry must equal {eval(), eval_dsigma()} byte-for-byte, for the
+// single-cache (weight 0/1, identical pointers) and the interior-blend cases —
+// this underwrites the IV "blend endpoint == single cache exactly" pin.
+TEST(CorrectionBlend, EvalValueAndDsigmaBitIdenticalToEvalAndEvalDsigma) {
+  auto lower_result =
+      CorrectionCache::build(16, 8, 12, 0.04, 0.00, -0.5, 0.5, 0.05, 2.0, 0.10, 0.80, Side::Put);
+  auto upper_result =
+      CorrectionCache::build(16, 8, 12, 0.06, 0.03, -0.5, 0.5, 0.05, 2.0, 0.10, 0.80, Side::Put);
+  ASSERT_TRUE(lower_result.has_value());
+  ASSERT_TRUE(upper_result.has_value());
+  const CorrectionCache lower = std::move(*lower_result);
+  const CorrectionCache upper = std::move(*upper_result);
+
+  const CorrectionBlend single = CorrectionBlend::single(&lower);
+  const CorrectionBlend hi_endpoint{&lower, &upper, 1.0};
+  const CorrectionBlend interior{&lower, &upper, 0.35};
+  for (const CorrectionBlend *blend : {&single, &hi_endpoint, &interior}) {
+    for (double k : {-0.6, -0.1, 0.0, 0.2, 0.55}) {
+      for (double T : {0.02, 0.35, 1.5}) {
+        for (double sigma : {0.05, 0.25, 0.9}) {
+          double ds_fused = 0.0;
+          const double v_fused = blend->eval_value_and_dsigma(k, T, sigma, &ds_fused);
+          EXPECT_EQ(v_fused, blend->eval(k, T, sigma)) << "k=" << k << " T=" << T;
+          EXPECT_EQ(ds_fused, blend->eval_dsigma(k, T, sigma)) << "k=" << k << " T=" << T;
+        }
+      }
+    }
+  }
+}
+
 TEST(CorrectionBlend, RejectsInvalidWeightMissingEndpointAndMixedSide) {
   auto put_result =
       CorrectionCache::build(8, 6, 6, 0.04, 0.0, -0.3, 0.3, 0.05, 1.0, 0.1, 0.8, Side::Put);

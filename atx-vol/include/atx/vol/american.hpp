@@ -335,6 +335,38 @@ enum class AmericanMethod : std::uint8_t {
 [[nodiscard]] double american_price_cached(double S, double K, double T, double sigma, double r,
                                            double q, Side side, const CorrectionBlend &correction);
 
+// Fused cached price + American vega for the IV-inversion Newton step (perf
+// review F1 + F8). The residual and the vega both need the correction at the SAME
+// (k_log, T, sigma), so this shares ONE correction value traversal between them:
+//   price = american_price_cached(...)                              (bit-identical)
+//   vega  = black76_value_and_vega(...).vega + F * ∂correction/∂σ    (F8 cheap leg)
+// cutting the Newton step's tensor traversals from 3 (price eval + vega eval_grad's
+// eval + its dsigma partial) to 2 in stage (a), and to ~1 once eval_value_and_dsigma
+// fuses the value+∂σ pass in stage (b).
+//
+// The price leg is byte-for-byte american_price_cached (same Φ(−d) direct legs,
+// same intrinsic floor, same NaN on the double-continuation regime / cold
+// fallback). The vega leg is american_vega's Black-76 leg plus the served
+// correction's gated sigma partial; because the shared value is taken at the price
+// path's k_log = -ln(F/K), the vega's correction partial is evaluated at that same
+// point (a sub-ULP shift from the standalone american_vega's ln(K/F)), making the
+// American price and its vega mutually consistent. Vega carries the 0-on-degenerate
+// scale the inverter reads as "force bisection".
+struct AmericanPriceVega {
+  double price;
+  double vega;
+};
+
+[[nodiscard]] AmericanPriceVega american_price_and_vega_cached(double S, double K, double T,
+                                                              double sigma, double r, double q,
+                                                              Side side,
+                                                              const CorrectionCache *correction);
+
+[[nodiscard]] AmericanPriceVega american_price_and_vega_cached(double S, double K, double T,
+                                                              double sigma, double r, double q,
+                                                              Side side,
+                                                              const CorrectionBlend &correction);
+
 // ── American Greeks ─────────────────────────────────────────────────────
 //
 // First-order (delta, vega, rho, theta) are exact chain-rule on the Black-76

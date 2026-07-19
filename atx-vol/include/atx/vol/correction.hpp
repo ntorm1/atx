@@ -160,6 +160,22 @@ public:
   void eval_partials(double k_log, double T, double sigma, double *out_dk_log, double *out_dT,
                      double *out_dsigma) const noexcept;
 
+  // Value + the sigma partial ONLY — the exact pair the IV-inversion Newton step
+  // consumes (perf review F1). Returns the value (== eval()); writes ∂C/∂sigma to
+  // *out_dsigma (== eval_partials()'s dsigma / eval_grad()'s dsigma). Applies the
+  // same max(0, polynomial) value clamp and out-of-box sigma-partial zeroing.
+  //
+  // The value is NOT gated into the partial here (it mirrors eval_grad, whose
+  // sigma partial is likewise un-gated by the value); the served-correction
+  // max(0, .) gate on the derivative is applied by the caller (american_vega /
+  // american_price_and_vega_cached), matching the existing split.
+  //
+  // Stage (a) [F1 bit-identical]: the value and the partial come from two tensor
+  // traversals (eval + the dsigma partial) — one fewer than the price+eval_grad
+  // pair it replaces. Stage (b) fuses them into a single value+∂sigma pass.
+  double eval_value_and_dsigma(double k_log, double T, double sigma,
+                               double *out_dsigma) const noexcept;
+
   // Fused value/gradient/Hessian evaluation for the cached-American Greek
   // bundle. A single traversal of the coefficient tensor differentiates the
   // nested Clenshaw recurrences directly; no finite-difference stencil and no
@@ -247,6 +263,12 @@ struct CorrectionBlend {
   // Sigma partial only, for IV-inversion Newton steps. Uses each endpoint's
   // partial-only kernel and never constructs the full second-order jet.
   [[nodiscard]] double eval_dsigma(double k_log, double T, double sigma) const noexcept;
+  // Value + sigma partial in one call — {eval(), eval_dsigma()} sharing each
+  // endpoint's fused value+dsigma kernel (perf review F1). The value blends as
+  // (1-w)*lower + w*upper; the partial applies the per-endpoint max(0, .) gate
+  // exactly as eval_dsigma() before blending.
+  double eval_value_and_dsigma(double k_log, double T, double sigma,
+                               double *out_dsigma) const noexcept;
   double eval_value_dk(double k_log, double T, double sigma, double *out_dk_log) const noexcept;
   [[nodiscard]] CorrSecondOrder eval_second_order(double k_log, double T,
                                                   double sigma) const noexcept;

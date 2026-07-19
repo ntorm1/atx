@@ -121,6 +121,21 @@ template <typename Correction>
   return american_price_cached(S, K, T, sigma, r, q, side, *correction);
 }
 
+// Fused cached price + vega for the Newton step (perf F1): ONE shared correction
+// traversal feeds both the residual and the vega, replacing the separate
+// cached_price (1 traversal) + american_vega (2 traversals) pair.
+[[nodiscard]] AmericanPriceVega cached_price_and_vega(double S, double K, double T, double sigma,
+                                                      double r, double q, Side side,
+                                                      const CorrectionCache *correction) noexcept {
+  return american_price_and_vega_cached(S, K, T, sigma, r, q, side, correction);
+}
+
+[[nodiscard]] AmericanPriceVega cached_price_and_vega(double S, double K, double T, double sigma,
+                                                      double r, double q, Side side,
+                                                      const CorrectionBlend *correction) noexcept {
+  return american_price_and_vega_cached(S, K, T, sigma, r, q, side, *correction);
+}
+
 } // namespace
 
 namespace {
@@ -254,6 +269,30 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
       return p; // propagate the pricer's Error
     }
     return Ok(*p - price);
+  };
+
+  // Fused residual + vega for the safeguarded-Newton refinement (perf F1). On the
+  // CACHED path a single american_price_and_vega_cached call shares ONE correction
+  // tensor traversal between the residual and the vega — the exact 3->2 (stage a),
+  // ~3->1 (stage b) cut this task banks. On the cold/BAW path it is the previous
+  // residual() + american_vega() pair, unchanged. Counter accounting matches the
+  // residual lambda: one residual/Newton-step bump per call.
+  const auto residual_and_vega = [&](double sigma) -> Result<std::pair<double, double>> {
+    if (use_cache) {
+      counters::lightweight::record_residual_evaluation();
+      counters::ledger::bump(counters::ledger::Solve::IvNewtonIters);
+      const AmericanPriceVega pv =
+          cached_price_and_vega(S, K, T, sigma, r, q, side, active_correction);
+      if (!std::isfinite(pv.price)) {
+        return Err(ErrorCode::Internal,
+                   "american_implied_vol: cached pricer produced a non-finite price");
+      }
+      const double v = (std::isfinite(pv.vega) && pv.vega > 0.0) ? pv.vega : 0.0;
+      return Ok(std::pair<double, double>{pv.price - price, v});
+    }
+    ATX_TRY(double f_cold, residual(sigma)); // bumps the counters on the cold/BAW path
+    const double v = newton_vega(S, K, T, sigma, r, q, side, active_correction);
+    return Ok(std::pair<double, double>{f_cold, v});
   };
 
   // ── Bracket the root so f(xl) < 0 <= f(xh) ──────────────────────────────
@@ -438,9 +477,11 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
       break;
     }
 
-    ATX_TRY(double f_next, residual(rts));
-    f = f_next;
-    df = newton_vega(S, K, T, rts, r, q, side, active_correction);
+    // Fused residual + vega: one shared correction traversal per Newton step on
+    // the cached path (perf F1). The residual is bit-identical to residual(rts).
+    ATX_TRY(auto fv, residual_and_vega(rts));
+    f = fv.first;
+    df = fv.second;
     if (f < 0.0) {
       xl = rts;
     } else if (f > 0.0) {

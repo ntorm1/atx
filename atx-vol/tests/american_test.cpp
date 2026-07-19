@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <iostream>
 #include <limits>
 #include <optional>
 #include <span>
@@ -42,9 +43,12 @@ using atx::vol::american_greeks;
 using atx::vol::american_greeks_al;
 using atx::vol::american_greeks_fd;
 using atx::vol::american_price;
+using atx::vol::american_price_and_vega_cached;
 using atx::vol::american_price_cached;
 using atx::vol::american_vega;
 using atx::vol::AmericanGreeks;
+using atx::vol::AmericanPriceVega;
+using atx::vol::black76_value_and_vega;
 using atx::vol::AmericanMethod;
 using atx::vol::andersen_lake;
 using atx::vol::andersen_lake_call_slice;
@@ -464,6 +468,135 @@ CorrectionCache make_correction(Side side, double r, double q) {
                                       /*sigma_min=*/0.10, /*sigma_max=*/0.60, side, opts);
   EXPECT_TRUE(built.has_value());
   return built ? std::move(*built) : CorrectionCache{};
+}
+
+// Perf review F1 + F8: american_price_and_vega_cached fuses the IV Newton step's
+// price + vega into ONE shared correction traversal. The PRICE leg is byte-for-byte
+// american_price_cached (the root-defining residual), so the IV pins cannot move.
+// The VEGA leg is the Black-76 leg (F8 two-output kernel) plus the served
+// correction's gated σ-partial, evaluated at the price path's k_log = -ln(F/K) — so
+// it equals a recomposition from the exact same primitives, and matches the
+// standalone american_vega to ~1e-12 relative (the only difference is
+// american_vega's ln(K/F) vs the shared -ln(F/K), sub-ULP).
+TEST(AmericanFusedCached, PriceBitIdenticalVegaConsistent) {
+  for (Side side : {Side::Put, Side::Call}) {
+    const double r = (side == Side::Put) ? 0.05 : 0.04;
+    const double q = (side == Side::Put) ? 0.00 : 0.02;
+    const CorrectionCache tbl = make_correction(side, r, q);
+    for (double S : {80.0, 100.0, 120.0}) {
+      for (double K : {85.0, 100.0, 115.0}) {
+        for (double T : {0.1, 0.5, 0.9}) {
+          for (double sigma : {0.12, 0.25, 0.5}) {
+            const AmericanPriceVega fused =
+                american_price_and_vega_cached(S, K, T, sigma, r, q, side, &tbl);
+            // Price: bit-identical to the standalone cached pricer.
+            EXPECT_EQ(fused.price, american_price_cached(S, K, T, sigma, r, q, side, &tbl))
+                << "side=" << static_cast<int>(side) << " S=" << S << " K=" << K << " T=" << T;
+            // Vega: recompose from the same primitives at k_log = -ln(F/K).
+            const double F = S * std::exp((r - q) * T);
+            const double df = std::exp(-r * T);
+            const double sqrt_t = std::sqrt(T);
+            const double euro_vega = black76_value_and_vega(F, K, T, sigma, df, side, sqrt_t).vega;
+            double dc_ds = 0.0;
+            const double corr = tbl.eval_value_and_dsigma(-std::log(F / K), T, sigma, &dc_ds);
+            if (!(corr > 0.0)) {
+              dc_ds = 0.0;
+            }
+            EXPECT_EQ(fused.vega, euro_vega + F * dc_ds);
+            // Economically equal to the standalone american_vega: they differ only
+            // by the shared k_log = -ln(F/K) vs american_vega's ln(K/F), a ~1-ULP
+            // input shift propagated through F·∂C/∂σ (~1e-15 absolute here). The
+            // 1e-13 floor keeps the check meaningful for near-zero American vegas
+            // (deep ITM) while catching any real regression (O(vega) ~ 1e-8..50).
+            const double standalone = american_vega(S, K, T, sigma, r, q, side, &tbl);
+            EXPECT_NEAR(fused.vega, standalone, 1.0e-9 * std::fabs(standalone) + 1.0e-13);
+          }
+        }
+      }
+    }
+  }
+}
+
+// The fused blend overload delegates single-cache cases (weight 0/1, identical
+// pointers) to the CorrectionCache overload byte-for-byte, and blends the interior
+// case as american_price_cached (price) + american_vega (vega).
+TEST(AmericanFusedCached, BlendMatchesCachedPriceAndVega) {
+  const CorrectionCache lower = make_correction(Side::Put, 0.04, 0.00);
+  const CorrectionCache upper = make_correction(Side::Put, 0.06, 0.03);
+  const CorrectionBlend single = CorrectionBlend::single(&lower);
+  const CorrectionBlend hi{&lower, &upper, 1.0};
+  const CorrectionBlend interior{&lower, &upper, 0.4};
+  const double S = 100.0, K = 103.0, T = 0.5, sigma = 0.27, r = 0.05, q = 0.01;
+  for (const CorrectionBlend *b : {&single, &hi, &interior}) {
+    const AmericanPriceVega fused =
+        american_price_and_vega_cached(S, K, T, sigma, r, q, Side::Put, *b);
+    EXPECT_EQ(fused.price, american_price_cached(S, K, T, sigma, r, q, Side::Put, *b));
+    EXPECT_NEAR(fused.vega, american_vega(S, K, T, sigma, r, q, Side::Put, *b),
+                1.0e-9 * std::fabs(fused.vega) + 1.0e-13);
+  }
+  // Single-cache blend byte-identical to the direct cache path (IV blend==single).
+  const AmericanPriceVega fb =
+      american_price_and_vega_cached(S, K, T, sigma, r, q, Side::Put, single);
+  const AmericanPriceVega fc =
+      american_price_and_vega_cached(S, K, T, sigma, r, q, Side::Put, &lower);
+  EXPECT_EQ(fb.price, fc.price);
+  EXPECT_EQ(fb.vega, fc.vega);
+}
+
+// Perf review F1 counter gate (ATX_VOL_COUNTERS-only). One IV Newton step evaluates
+// the correction tensor 3x with the separate entries — american_price_cached's value
+// sweep + american_vega -> eval_grad (a value sweep + a dsigma partial). The fused
+// entry shares ONE value sweep, so stage (a) is 3 -> 2 ClenshawSweeps per step (and
+// the fused single-pass in stage (b) drops it to 1). Measured directly, and summed
+// over a 200-step fixture for the commit-message before/after.
+TEST(AmericanFusedCached, ClenshawTraversalsPerNewtonStep) {
+  using atx::vol::counters::Counter;
+  if constexpr (!atx::vol::counters::counters_enabled()) {
+    GTEST_SKIP() << "ATX_VOL_COUNTERS off: rebuild with -DATX_VOL_COUNTERS=ON";
+  }
+  const double r = 0.05, q = 0.0;
+  const CorrectionCache tbl = make_correction(Side::Put, r, q);
+  const auto sweeps = [] { return atx::vol::counters::snapshot().get(Counter::ClenshawSweeps); };
+
+  // Single Newton step: separate price + vega vs the fused entry.
+  const double S = 100.0, K = 101.0, T = 0.4, sigma = 0.25;
+  atx::vol::counters::reset();
+  (void)american_price_cached(S, K, T, sigma, r, q, Side::Put, &tbl);
+  (void)american_vega(S, K, T, sigma, r, q, Side::Put, &tbl);
+  const std::uint64_t separate_step = sweeps();
+  atx::vol::counters::reset();
+  (void)american_price_and_vega_cached(S, K, T, sigma, r, q, Side::Put, &tbl);
+  const std::uint64_t fused_step = sweeps();
+  EXPECT_EQ(separate_step, 3u);
+  EXPECT_EQ(fused_step, 2u); // stage (a): 3 -> 2 (stage (b) fuses value+dsigma -> 1)
+
+  // 200-step fixture: one price+vega per grid point, separate vs fused totals.
+  std::uint64_t separate_total = 0;
+  std::uint64_t fused_total = 0;
+  int steps = 0;
+  for (double Sx : {90.0, 100.0, 110.0, 120.0, 130.0}) {
+    for (double Kx : {85.0, 95.0, 100.0, 110.0, 120.0}) {
+      for (double Tx : {0.1, 0.3, 0.6, 0.9}) {
+        for (double sig : {0.15, 0.30}) {
+          atx::vol::counters::reset();
+          (void)american_price_cached(Sx, Kx, Tx, sig, r, q, Side::Put, &tbl);
+          (void)american_vega(Sx, Kx, Tx, sig, r, q, Side::Put, &tbl);
+          separate_total += sweeps();
+          atx::vol::counters::reset();
+          (void)american_price_and_vega_cached(Sx, Kx, Tx, sig, r, q, Side::Put, &tbl);
+          fused_total += sweeps();
+          ++steps;
+        }
+      }
+    }
+  }
+  EXPECT_EQ(steps, 200);
+  EXPECT_EQ(separate_total, 3u * static_cast<std::uint64_t>(steps));
+  EXPECT_EQ(fused_total, 2u * static_cast<std::uint64_t>(steps)); // stage (b): 1u * steps
+  std::cout << "[P1 F1 counters] " << steps << "-step fixture: separate=" << separate_total
+            << " fused=" << fused_total << " ClenshawSweeps ("
+            << static_cast<double>(separate_total) / steps << " -> "
+            << static_cast<double>(fused_total) / steps << " per Newton step)\n";
 }
 
 TEST(AmericanGreeks, Delta_MatchesFd_Put) {

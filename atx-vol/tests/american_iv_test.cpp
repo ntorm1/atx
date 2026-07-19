@@ -3,11 +3,13 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <iostream>
 #include <optional>
 #include <span>
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include "atx/vol/american.hpp"
 #include "atx/vol/american_iv.hpp"
@@ -598,4 +600,58 @@ TEST(AmericanIv, BawAndCachedMapsBypassThreadLocalAloState) {
   EXPECT_TRUE(baw_ok);
   EXPECT_TRUE(cache_ok);
   EXPECT_EQ(atx::vol::counters::snapshot().get(Counter::AloStateAllocations), 0u);
+}
+
+// Perf review F1 (ATX_VOL_COUNTERS-only): on a fitter-style cache-backed inversion
+// fixture (~200 quotes), the fused Newton step shrinks the correction-tensor
+// traversal count. Each bracketing residual is one value sweep (price only); each
+// Newton refinement step is the fused price+vega — stage (a) 2 sweeps (was 3), and
+// the fused single pass in stage (b) drops it to 1. Reports totals at the inversion
+// granularity and bounds sweeps/residual-step at the fused-path ceiling.
+TEST(AmericanIv, FusedCachedInversionTraversalCount) {
+  using atx::vol::counters::Counter;
+  if constexpr (!atx::vol::counters::counters_enabled()) {
+    GTEST_SKIP() << "ATX_VOL_COUNTERS off: rebuild with -DATX_VOL_COUNTERS=ON";
+  }
+  auto built = CorrectionCache::build(/*n_k=*/16, /*n_T=*/12, /*n_s=*/8, /*r=*/0.05, /*q=*/0.0,
+                                      -0.4, 0.4, 0.05, 1.0, 0.10, 0.60, Side::Put);
+  ASSERT_TRUE(built.has_value());
+  const CorrectionCache tbl = std::move(*built);
+  const double S = 100.0, r = 0.05, q = 0.0;
+
+  // 25 strikes × 4 maturities × 2 vols = 200 quotes, priced by the cached map so
+  // each inverts to a known root through the fused Newton loop.
+  struct Quote {
+    double K, T, sigma, price;
+  };
+  std::vector<Quote> quotes;
+  for (double K = 80.0; K <= 128.5; K += 2.0) {
+    for (double T : {0.15, 0.40, 0.75, 0.90}) {
+      for (double sig : {0.18, 0.35}) {
+        quotes.push_back({K, T, sig, american_price_cached(S, K, T, sig, r, q, Side::Put, &tbl)});
+      }
+    }
+  }
+
+  atx::vol::counters::reset();
+  atx::vol::counters::ledger::reset();
+  int ok = 0;
+  for (const Quote &qt : quotes) {
+    const auto iv = american_implied_vol(qt.price, S, qt.K, qt.T, r, q, Side::Put,
+                                         AmericanMethod::AndersenLake, 1.0e-7, 64, std::nullopt, &tbl);
+    if (iv) {
+      ++ok;
+    }
+  }
+  const std::uint64_t sweeps = atx::vol::counters::snapshot().get(Counter::ClenshawSweeps);
+  const std::uint64_t newton =
+      atx::vol::counters::ledger::snapshot().get(atx::vol::counters::ledger::Solve::IvNewtonIters);
+  ASSERT_GT(newton, 0u);
+  std::cout << "[P1 F1 counters] " << ok << " cached inversions: " << sweeps
+            << " ClenshawSweeps over " << newton << " residual/Newton steps ("
+            << static_cast<double>(sweeps) / static_cast<double>(newton) << " sweeps/step)\n";
+  EXPECT_EQ(ok, static_cast<int>(quotes.size()));
+  // Fused-path ceiling: bracketing residual = 1 sweep, refinement = 2 (stage a),
+  // plus one initial-df vega (2 sweeps) per inversion. So sweeps <= 2·steps + 2·N.
+  EXPECT_LE(sweeps, 2u * newton + 2u * static_cast<std::uint64_t>(ok));
 }
