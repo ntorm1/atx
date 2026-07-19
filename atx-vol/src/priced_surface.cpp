@@ -791,6 +791,29 @@ PricedSurface::FusedResult PricedSurface::evaluate_resolved(const ResolvedSurfac
     r.greeks.vega = kNaN;
   }
 
+  // H2 [WS-H STRETCH — DEFERRED]: first-order greek tier end-to-end. Today
+  // FirstOrder and SecondOrder COLLAPSE to the same full bundle here (both set
+  // want_greeks and call greeks_resolved -> the full american_greeks_al 5-solve /
+  // american_greeks_fd 17-solve bundle). A delta-only hedge cadence therefore pays
+  // the full second-order bundle. The kernel primitives already exist and are
+  // wired-but-unused for this narrowing:
+  //   * american_greeks_al(...,need_vega,need_rho,need_charm) skips the sigma+/-
+  //     (vega/volga/vanna), r+/- (rho) and wide-speed (charm) boundary solves — a
+  //     {delta} bundle is 1 boundary solve vs 5 (see american.hpp; K4 selectors).
+  //   * simd::american_put_greeks_batch takes the same need_* selectors (H1 already
+  //     forwards all-true; a first-order caller would pass need_*=false).
+  // TO FINISH (design): (1) add a first-order request bit to EvalField-consuming
+  // callers — either a granular GreekNeeds on PriceOptions or a PriceFieldMask
+  // FirstOrder bit (portfolio_pricer.hpp) mapped to EvalField::FirstOrder-only;
+  // (2) here, derive need_vega = has(SecondOrder) || <vega requested>, need_rho,
+  // need_charm from the requested axes and forward them into greeks_resolved ->
+  // american_greeks_al(...,need_*) AND the H1 laned path; leave price+delta+gamma+
+  // theta on the base solve. (3) prove a delta-only request drops the sigma/r/speed
+  // solves via the BoundarySolves ledger. NOTE: this does NOT move the dispersion
+  // benchmark (it prices FullGreeks every step) — it is a general hedge-cadence win.
+  // The EvalField::Delta / EvalField::Vega selective primitives + american_delta
+  // (1-2 solves) already exist in evaluate_resolved below (honored) but have no
+  // portfolio caller — the same wiring exposes them.
   const bool want_greeks =
       has_field(fields, EvalField::FirstOrder) || has_field(fields, EvalField::SecondOrder);
   if (want_greeks) {
