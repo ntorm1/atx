@@ -12,6 +12,8 @@
 
 #include "atx/core/error.hpp"
 #include "atx/vol/black76.hpp"
+#include "atx/vol/correction.hpp" // CorrectionCache::populated/side (C1 route attribution)
+#include "atx/vol/detail/deam_pass_counter.hpp" // C1 proof: fit de-Am pass tally
 #include "atx/vol/surface_parity.hpp"
 
 namespace atx::vol {
@@ -294,6 +296,8 @@ Result<PreparedSlice> PreparedSliceBuilder::prepare_configured(const Chain &chai
 
 Result<PreparedSlice> PreparedSliceBuilder::prepare_legacy(const Chain &chain,
                                                            const PreparedSliceInputs &inputs) {
+  // C1 proof instrumentation: the Legacy/eSSVI fit's own per-slice de-Am pass.
+  note_fit_deam_slice_pass();
   PreparedSlice out;
   out.expiry_index_ = inputs.expiry_index;
   out.maturity_ = chain.T;
@@ -399,14 +403,17 @@ Result<PreparedSlice> PreparedSliceBuilder::prepare_legacy(const Chain &chain,
       batch_row_strike.push_back(index);
     }
     if (!batch_rows.empty()) {
-      DeAmAuditDiagnostics batch_audit{};
-      // Certified count is consumed per-row via score_sigma_mkt below (NaN = fall
-      // through to the scalar oracle), so the aggregate return is intentionally
-      // discarded here.
+      // C1 (accuracy-improving): CAPTURE the shared-boundary batch's de-Am audit
+      // into the slice's own `deam_audit_` instead of discarding it. The eSSVI
+      // certification/diagnostics layer reuses THIS audit — the rows the fit
+      // actually de-Americanized — instead of re-running a second, independent
+      // Configured de-Am pass (session.cpp; finding 10). The batch records its
+      // shared-lane counters + residual quantiles here; the main loop below adds
+      // the row ledger (n_deam_rows/accepted) and the per-route proposal tally.
       static_cast<void>(shared_boundary_deam_batch(
           batch_rows, inputs.S, inputs.r, inputs.F, chain.T, inputs.df, inputs.calib, inputs.caches,
           inputs.al_opts, inputs.iv_tolerance, inputs.iv_max_iterations, inputs.method,
-          &batch_audit));
+          &out.deam_audit_));
       for (std::size_t j = 0; j < batch_rows.size(); ++j) {
         batch_iv[batch_row_strike[j]] = batch_rows[j].score_sigma_mkt;
       }
@@ -435,6 +442,11 @@ Result<PreparedSlice> PreparedSliceBuilder::prepare_legacy(const Chain &chain,
       // strictly binds, so the uncapped path never reaches this branch.
       observation.rejection = ObservationRejectionReason::ObservationCap;
     } else {
+      // C1: this valid candidate enters the de-Am inversion stage — count it in
+      // the row ledger the reused certification consumes (guardrail: the audit
+      // must describe the rows the FIT actually de-Americanized).
+      ++out.deam_audit_.n_deam_rows;
+      bool row_audited = false;
       // F1 (R-01p2): take the shared-boundary batch IV when this row was certified
       // above; otherwise invert it with the byte-identical per-row scalar oracle.
       // The scalar call, arguments unchanged, remains the parity oracle for every
@@ -454,6 +466,7 @@ Result<PreparedSlice> PreparedSliceBuilder::prepare_legacy(const Chain &chain,
       // Default-off keeps the historical (unaudited-fit) path bit-identical.
       if (market_iv.has_value() && inputs.audit_fit_inversions &&
           inputs.method == AmericanMethod::AndersenLake) {
+        row_audited = true; // this row is repriced against the cold reference below
         const double audit_spread = chain.asks[quote_index] - chain.bids[quote_index];
         Result<IvRepricingAudit> audit = audit_european_equiv_iv(
             chain.mids[quote_index], audit_spread, *market_iv, inputs.S, strike, chain.T, inputs.r,
@@ -517,6 +530,33 @@ Result<PreparedSlice> PreparedSliceBuilder::prepare_legacy(const Chain &chain,
         }
         observation.european_iv = *market_iv;
         observation.weight_w = weight;
+
+        // C1: attribute the accepted row to a proposal route so the reused
+        // certification carries an honest per-route ledger (the shared-boundary
+        // batch fills only its own shared-lane counters). Route mirrors
+        // build_observations_european's choice: the cache route when a populated
+        // same-side correction cache served the inversion, else the fast/accurate
+        // cold Andersen-Lake preset. n_audited/n_reference_reprices are recorded
+        // ONLY when audit_fit_inversions actually repriced the row against the
+        // cold reference; otherwise the fit ran un-audited (the honest,
+        // uncertifiable eSSVI default) and this route accepts more than it
+        // audited — which deam_inversion_certified correctly refuses to certify.
+        ++out.deam_audit_.n_deam_accepted;
+        const CorrectionCache *const route_cache = inputs.caches.for_side(side);
+        const bool cache_route =
+            route_cache != nullptr && route_cache->populated() && route_cache->side() == side;
+        InversionRouteDiagnostics &route =
+            cache_route
+                ? out.deam_audit_.cache
+                : ((inputs.method == AmericanMethod::AndersenLake && inputs.al_opts.has_value())
+                       ? out.deam_audit_.fast
+                       : out.deam_audit_.accurate);
+        ++route.n_proposed;
+        ++route.n_accepted;
+        if (row_audited) {
+          ++route.n_audited;
+          ++route.n_reference_reprices;
+        }
       }
     }
 

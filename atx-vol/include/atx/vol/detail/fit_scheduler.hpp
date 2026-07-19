@@ -12,6 +12,28 @@ namespace atx::vol::detail {
 
 using IndexedFitTask = std::function<Status(std::size_t)>;
 
+// C4 (perf): outer-fit-worker affinity policy. The fit path is mutex-free and its
+// parallel scaling regresses past the physical P-core count on a hybrid P/E-core
+// host (finding 13: 4 P-cores + 8 E-cores; unpinned outer jthreads spill onto the
+// E-cores and oversubscribe them, which the OS scheduler + E-core parking then
+// serialize). `PerformanceCores` pins each outer worker to a discovered
+// performance-core logical CPU so the compute-bound board fits stay on the
+// P-cores. Pinning changes only WHERE a task runs, never the numbers, so fit
+// results stay byte-identical across affinity and worker count. Best-effort: falls
+// back to unpinned when P-core discovery or the affinity API is unavailable.
+enum class FitAffinity : unsigned char {
+  None = 0,         // no pinning — the historical default
+  PerformanceCores, // pin outer workers to discovered P-core logical CPUs
+};
+
+// Performance-core logical CPU count on this host (Windows: logical CPUs of the
+// highest-EfficiencyClass physical cores; 0 when discovery is unavailable — e.g.
+// non-Windows or an API failure). Exposed so the populate scheduler can cap its
+// outer worker budget at the P-core count (the measured scaling knee). Uses the
+// SAME discovery the pricing executor's Topology::PerformanceCores machinery uses
+// (see fit_scheduler.cpp; mirrors pricing_executor.cpp).
+[[nodiscard]] unsigned performance_core_count() noexcept;
+
 // Deterministic fault-injection seam for scheduler tests. Production callers
 // omit it. The callback runs on the caller immediately before each background
 // jthread construction and receives the zero-based background-worker ordinal.
@@ -27,6 +49,12 @@ struct FitSchedulerTestHooks {
 // immutable captures require no synchronization, while shared mutable state
 // must be synchronized by the caller.
 //
+// `affinity` (C4): when `PerformanceCores`, each execution context (the caller
+// acting as worker 0 plus every background jthread) pins itself to a distinct
+// discovered P-core logical CPU (wrapping when workers exceed P-cores), best-effort
+// — the caller's original affinity is restored on return. Pinning never changes
+// which index a context runs, so results stay byte-identical to the `None` path.
+//
 // The function joins every started worker before returning. Task exceptions and
 // thread-start failures are translated to ErrorCode::Internal on the caller
 // thread; no exception escapes a jthread body. When multiple tasks fail, the
@@ -34,6 +62,7 @@ struct FitSchedulerTestHooks {
 // and message, independent of scheduling.
 [[nodiscard]] Status run_bounded_fit_tasks(std::size_t task_count, unsigned worker_budget,
                                            const IndexedFitTask &task,
+                                           FitAffinity affinity = FitAffinity::None,
                                            const FitSchedulerTestHooks *test_hooks = nullptr);
 
 } // namespace atx::vol::detail

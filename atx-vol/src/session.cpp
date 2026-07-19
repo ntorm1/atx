@@ -23,6 +23,7 @@
 #include "atx/vol/counters.hpp"         // counters::ledger — V2 per-board solve attribution
 #include "atx/vol/curve_fit.hpp"        // fit_curve_surface (curve-agnostic driver)
 #include "atx/vol/data.hpp"             // data_install
+#include "atx/vol/detail/deam_pass_counter.hpp" // C1 proof: cert de-Am pass tally
 #include "atx/vol/dividend.hpp"         // hybrid_forward (representative carry)
 #include "atx/vol/essvi_calib.hpp"      // essvi_fit_slice (warm-start refit)
 #include "atx/vol/event_vol.hpp"        // EventSchedule, count_events_at, implied_emove
@@ -300,6 +301,7 @@ collect_input_diagnostics(const Underlying &under, const SessionInputs &in,
                           std::span<const SliceContext> context,
                           const AmericanCorrectionCaches &deam_caches, bool fit_rows_audited,
                           std::span<const CarryDiagnostics> precomputed_carry = {},
+                          std::span<const EssviInputCertification> precomputed_certs = {},
                           std::vector<std::vector<FitObs>> *observation_cache = nullptr,
                           std::vector<std::vector<double>> *source_mid_cache = nullptr,
                           std::vector<std::vector<std::uint8_t>> *source_flag_cache = nullptr,
@@ -327,6 +329,12 @@ collect_input_diagnostics(const Underlying &under, const SessionInputs &in,
   if (chain_ts_cache != nullptr)
     chain_ts_cache->reserve(context.size());
   const bool use_precomputed_carry = precomputed_carry.size() == context.size();
+  // Perf C1: when the eSSVI fit's own per-slice de-Am certification is handed in
+  // (‖ context), REUSE it instead of running a second, independent de-Am pass
+  // (build_observations_european) here. The carry logic below is unchanged (it
+  // still reuses/recomputes carry exactly as before); only the obs + audit +
+  // source columns are taken from the fit. See the reuse guard in the loop.
+  const bool use_precomputed_certs = precomputed_certs.size() == context.size();
   std::size_t chain_pos = 0;
   // Indexed loop: `slice_idx` is the ‖-vector ordinal into both `context` and
   // `precomputed_carry`, advanced unconditionally per iteration (review fix:
@@ -383,6 +391,42 @@ collect_input_diagnostics(const Underlying &under, const SessionInputs &in,
     }
 
     const double df = std::exp(-rate * slice.T);
+    if (use_precomputed_certs) {
+      // Perf C1: REUSE the fit's own per-slice de-Am — no second de-Am pass. The
+      // audit + European obs + source columns are exactly what the eSSVI fit
+      // de-Americanized for this slice (`run_surface_parity`). The certificate
+      // gate is unchanged: it still requires the fit to have run the audited
+      // route (`fit_rows_audited`), so this reuse is engaged only where the fit's
+      // rows can honestly vouch for themselves. `note_cert_deam_slice_pass()` is
+      // intentionally NOT called here — the second de-Am is gone (proof counter).
+      const EssviInputCertification &cert = precomputed_certs[slice_idx];
+      sd.inversion = cert.inversion;
+      sd.inversion_available = true;
+      sd.inversion_certified =
+          fit_rows_audited &&
+          deam_inversion_certified(sd.inversion, in.calib.max_certified_deam_drop_fraction);
+      if (observation_cache != nullptr && source_mid_cache != nullptr &&
+          source_flag_cache != nullptr) {
+        // C1 recipe change (gate 4), POINT OF CHANGE for the incremental refit-seed
+        // store: `cert.obs` are the fit's own LegacyEssviCompatibility rows
+        // (otm_side predicate + Legacy weights + de-Am cap), NOT the Configured
+        // `build_observations_european` rows the pre-C1 recompute produced here.
+        // The `incremental_observations_` store (built from observation_cache by
+        // VolaSession::build) therefore now seeds cross-refits from Legacy rows —
+        // consistent with the SERVED surface, which the fit built from these same
+        // rows. C2's cross-date quality-parity suite covers the seed quality later.
+        observation_cache->back() = cert.obs;
+        source_mid_cache->back() = cert.source_mids;
+        source_flag_cache->back() = cert.source_flags;
+      }
+      out.push_back(std::move(sd));
+      continue;
+    }
+    // C1 proof instrumentation: the certification/diagnostics de-Am pass — the
+    // SECOND per-slice de-Am the eSSVI route historically ran (finding 10). C1
+    // eliminates this call by reusing the fit's own de-Am (above), so this
+    // counter drops to zero on the reuse path.
+    detail::note_cert_deam_slice_pass();
     const auto obs = build_observations_european(
         chain, in.S, rate, slice.forward, slice.T, df, in.calib, deam_caches, in.deam.al_opts,
         in.deam.iv_tol, in.deam.iv_max_iter, in.deam.method);
@@ -553,11 +597,18 @@ struct FixedCacheCarry {
     return out; // degenerate box -> cold path everywhere
   }
 
-  // Pad the box and keep T strictly ordered even for a single expiry.
-  k_min -= 0.05;
-  k_max += 0.05;
-  const double T_min = 0.9 * T_lo;
-  const double T_max = (T_hi > T_lo) ? (1.1 * T_hi) : (1.5 * T_lo);
+  // Pad the box and keep T strictly ordered even for a single expiry. C2: in
+  // chain-cache mode WIDEN the box so it survives several forward dates of a symbol
+  // chain (front expiry shrinks below 0.9*T_lo; strikes drift with spot) — the
+  // amortized wider cache is what makes cross-date reuse admissible. The wider box
+  // spreads the fixed 16x8x12 Chebyshev nodes over more range, so it is opt-in and
+  // gated by the C2 quality-parity suite; the default (tight) box is byte-identical.
+  const bool chain = in.deam.chain_cache_mode;
+  k_min -= chain ? 0.15 : 0.05;
+  k_max += chain ? 0.15 : 0.05;
+  const double T_min = chain ? std::min(0.9 * T_lo, 0.0055) : (0.9 * T_lo);
+  const double T_max =
+      chain ? ((T_hi > T_lo) ? (1.25 * T_hi) : (1.6 * T_lo)) : ((T_hi > T_lo) ? (1.1 * T_hi) : (1.5 * T_lo));
   constexpr double kSigMin = 0.05;
   constexpr double kSigMax = 1.5;
 
@@ -592,6 +643,118 @@ struct FixedCacheCarry {
     out.put = std::move(*pp);
   }
   return out;
+}
+
+// ── C2: cross-date correction-cache reuse — stale-gate ───────────────────────
+//
+// The warm-start chain (corpus.cpp) carries a symbol's prior-date correction
+// caches and re-supplies them on the next date via `deam.caches` +
+// `deam.reuse_supplied_caches`. Reuse is admissible ONLY when the supplied caches
+// still cover THIS board without extrapolation and at a compatible baked carry —
+// exactly the two conditions the cache's own self-consistency (build_session_
+// caches note) already requires, so a passing gate keeps the fit in-band. When it
+// fails, the fit falls back to a full cold rebuild (byte-identical to pre-C2).
+//
+// `session_cache_geometry` MIRRORS the RAW (unpadded) box + representative carry
+// build_session_caches derives — keep the two in sync.
+struct SessionCacheGeom {
+  double k_min = 0.0, k_max = 0.0, T_lo = 0.0, T_hi = 0.0, cache_rate = 0.0, q_rep = 0.0;
+  bool valid = false;
+};
+
+[[nodiscard]] SessionCacheGeom session_cache_geometry(const Underlying &under,
+                                                      const SessionInputs &in) {
+  SessionCacheGeom g;
+  if (under.chains.empty() || !(in.S > 0.0)) {
+    return g;
+  }
+  const double S = in.S;
+  double k_min = std::numeric_limits<double>::infinity();
+  double k_max = -std::numeric_limits<double>::infinity();
+  double T_lo = std::numeric_limits<double>::infinity();
+  double T_hi = -std::numeric_limits<double>::infinity();
+  for (const Chain &c : under.chains) {
+    if (!(c.T > 0.0)) {
+      continue;
+    }
+    T_lo = std::min(T_lo, c.T);
+    T_hi = std::max(T_hi, c.T);
+    for (const double K : c.strikes) {
+      if (!(K > 0.0)) {
+        continue;
+      }
+      const double k = std::log(K / S);
+      k_min = std::min(k_min, k);
+      k_max = std::max(k_max, k);
+    }
+  }
+  if (!std::isfinite(k_min) || !std::isfinite(k_max) || !(k_max > k_min) || !std::isfinite(T_lo) ||
+      !(T_lo > 0.0)) {
+    return g;
+  }
+  const Chain &mid = under.chains[under.chains.size() / 2];
+  double cache_rate = in.r;
+  double q_rep = in.r;
+  if (mid.T > 0.0) {
+    const double F_rep =
+        hybrid_forward(S, in.r, 0.0, mid.T, in.cash_divs, mid.expiry_ns, in.now_ts_ns, in.deam.hyb);
+    if (F_rep > 0.0 && std::isfinite(F_rep)) {
+      q_rep = in.r - std::log(F_rep / S) / mid.T;
+    }
+  }
+  g = SessionCacheGeom{k_min, k_max, T_lo, T_hi, cache_rate, q_rep, true};
+  return g;
+}
+
+[[nodiscard]] bool cache_side_covers(const CorrectionCache *c, const SessionCacheGeom &g,
+                                     double tol_r, double tol_q) noexcept {
+  if (c == nullptr || !c->populated()) {
+    return false;
+  }
+  // No extrapolation: the board's raw queried (k_log, T) box lies inside the cache.
+  if (!(g.k_min >= c->k_log_min() && g.k_max <= c->k_log_max())) {
+    return false;
+  }
+  if (!(g.T_lo >= c->T_min() && g.T_hi <= c->T_max())) {
+    return false;
+  }
+  // Compatible baked carry: representative-carry mismatch stays small (a dividend
+  // event or rate jump exceeds tol -> cold rebuild).
+  if (std::fabs(g.cache_rate - c->baked_r()) > tol_r) {
+    return false;
+  }
+  if (std::fabs(g.q_rep - c->baked_q()) > tol_q) {
+    return false;
+  }
+  return true;
+}
+
+// True iff every POPULATED side of the supplied caches covers this board. Empty
+// caches (neither side populated) never satisfy the gate. Tolerances are
+// deliberately conservative: reuse only when the surface stays in-band; when in
+// doubt, cold.
+[[nodiscard]] bool supplied_caches_cover_board(const Underlying &under, const SessionInputs &in) {
+  const SessionCacheGeom g = session_cache_geometry(under, in);
+  if (!g.valid) {
+    return false;
+  }
+  constexpr double kTolR = 0.0025; // 25 bps rate drift
+  constexpr double kTolQ = 0.0025; // 25 bps representative-carry / borrow drift
+  const AmericanCorrectionCaches &sc = in.deam.caches;
+  bool any_side = false;
+  if (sc.call != nullptr) {
+    if (!cache_side_covers(sc.call, g, kTolR, kTolQ)) {
+      return false;
+    }
+    any_side = true;
+  }
+  if (sc.put != nullptr) {
+    if (!cache_side_covers(sc.put, g, kTolR, kTolQ)) {
+      return false;
+    }
+    any_side = true;
+  }
+  return any_side;
 }
 
 } // namespace
@@ -737,6 +900,25 @@ void apply_fit_preset(SessionInputs &in, FitPreset preset) noexcept {
     in.calendar_repair =
         (preset == FitPreset::Robust) ? CalendarRepair::MonotoneFit : CalendarRepair::None;
     break;
+  case FitPreset::Populate:
+    // C3 tier-honesty policy (docs/al-preset-ladder.md sec 5-6): the cheap AL
+    // preset is allowed ONLY on the populate lanes it governs — de-Am inversion,
+    // correction-cache sampling, and the baked cold-mark preset — where ~1e-3
+    // price accuracy is absorbed by the ~1e-2 surface RMSE and the quote
+    // half-spread. It bakes al_fast_opts (specialized (7,16) FP block, ~47 us)
+    // instead of Robust's al_default_opts (~200 us pseudo-accurate) and matches
+    // the inversion tol to that floor (1e-5). Everything that sets the fitted
+    // surface's QUALITY stays Robust-grade: MonotoneFit calendar repair (surface
+    // calendar-arb-free near-money), 3 ATM carry pairs, parity scoring,
+    // correction-cache-served fit. The eSSVI backbone is unchanged; only the
+    // de-Am rows shift < ~1e-3 IV (well inside RMSE). Robust remains the final-
+    // fit / certification / oracle preset. Gated vs Robust on real OPRA boards.
+    in.deam.al_opts = al_fast_opts();
+    in.deam.iv_tol = 1.0e-5;
+    in.deam.n_atm = 3;
+    in.use_deam_cache_for_fit = true;
+    in.calendar_repair = CalendarRepair::MonotoneFit;
+    break;
   }
 }
 
@@ -826,7 +1008,25 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
   // into the session for the const queries. Empty (build failed / disabled) =>
   // the cold Andersen-Lake path, transparently.
   BuiltCaches caches;
-  if (should_build_session_caches(eff)) {
+  // C2 (perf): the cross-date warm-start chain (corpus.cpp) hands in a symbol's
+  // prior-date correction caches via deam.caches + deam.reuse_supplied_caches. The
+  // stale-gate here (session_cache_geometry / supplied_caches_cover_board) admits
+  // reuse ONLY when those caches still cover THIS board without extrapolation at a
+  // compatible baked carry. On reuse we SKIP the per-board rebuild — sp.deam was
+  // copied from eff.deam above, so sp.deam.caches already points at the supplied
+  // caches and the fit de-Ams through them (the ~192-solve/board saving, finding
+  // 11, on dates 2+ of a chain). The session's own corr_call_/corr_put_ stay empty
+  // on reuse (nothing built to move in) — correct: the caches live in the chain.
+  const bool want_reuse = eff.deam.reuse_supplied_caches && eff.deam.caches.any();
+  const bool reuse_supplied_caches = want_reuse && supplied_caches_cover_board(under, eff);
+  if (want_reuse && !reuse_supplied_caches) {
+    // Stale-gate REJECTED the supplied caches -> full cold rebuild below. Clear the
+    // supplied caches so the fit AND the certification layer see the exact pre-C2
+    // cold path (byte-identical fallback; the chain then re-carries the fresh cache).
+    eff.deam.caches = AmericanCorrectionCaches{};
+    sp.deam.caches = AmericanCorrectionCaches{};
+  }
+  if (!reuse_supplied_caches && should_build_session_caches(eff)) {
     const BuildClock::time_point cache_start =
         time_build ? BuildClock::now() : BuildClock::time_point{};
     const std::uint64_t cache_al_before = time_build ? al_solves_now() : 0u;
@@ -1089,19 +1289,33 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
   std::vector<std::vector<double>> incremental_chain_bids;
   std::vector<std::vector<double>> incremental_chain_asks;
   std::vector<std::vector<std::int64_t>> incremental_chain_ts;
-  // The eSSVI path fits from build_aligned_obs: its inversions run the audited
-  // route only when deam.audit_fit_inversions is set (the risk serving
-  // policy); otherwise the certificate must stay false — the diagnostic
-  // builder's audits describe rows the fit never used (carry C1). The obs/
-  // audit recompute below is therefore genuinely independent of the fit (no
-  // prepass to reuse), but the CARRY resolution IS a literal duplicate of what
-  // `run_surface_parity` already computed per chain — pass `rep.carry` (perf
-  // C1) so collect_input_diagnostics skips that one redundant
-  // resolve_chain_forward call per chain. Review fix: the reuse is only valid
-  // when the fit resolved carry with EXACTLY the caches the certification
-  // layer uses (eff.deam's — the caller's, never the session-built hot-path
-  // caches on sp.deam). When they differ, pass an empty span so the fallback
-  // recompute runs — the historical serial path, bit-for-bit.
+  // Perf C1 (class accuracy-improving): the eSSVI fit already de-Americanized
+  // every expiry once (`run_surface_parity` -> prepare_legacy), exporting its
+  // per-slice rows + audit as `rep.input_certification`. REUSE that here instead
+  // of running a SECOND, independent Configured de-Am pass (finding 10). This is
+  // more correct, not just cheaper: the certification/diagnostics now describe
+  // the rows the fit ACTUALLY consumed — the old recompute audited a different
+  // (Configured-recipe) row set the eSSVI fit never used. The reused rows are the
+  // LegacyEssviCompatibility recipe, so this changes the reported de-Am audit
+  // counts and the incremental refit-seed store (now Legacy rows, consistent with
+  // the served surface); the SERVED SURFACE and admission are unaffected on this
+  // path (see below).
+  //
+  // HYBRID GATE: reuse ONLY when the fit ran UN-audited (`!audit_fit_inversions`,
+  // the default bulk-populate path). There `inversion_certified` is false BEFORE
+  // and AFTER C1 (the certificate gate requires audited fit rows), so admission is
+  // byte-identical — only the diagnostic counts move. When the fit DID audit (the
+  // risk-serving path, rare), fall back to the full Configured recompute so the
+  // certificate that gates admission stays byte-identical to pre-C1. Zero admission
+  // flips by construction on both paths.
+  const bool reuse_fit_deam =
+      rep.input_certification.size() == rep.context.size() && !eff.deam.audit_fit_inversions;
+  const std::span<const EssviInputCertification> certification_certs =
+      reuse_fit_deam ? std::span<const EssviInputCertification>(rep.input_certification)
+                     : std::span<const EssviInputCertification>{};
+  // Carry handling is unchanged (bit-identical): reuse the fit's carry diagnostics
+  // only when the fit resolved carry with EXACTLY the certification caches;
+  // otherwise recompute cold, the historical serial path bit-for-bit.
   const bool fit_carry_matches_certification =
       sp.deam.caches.call == eff.deam.caches.call && sp.deam.caches.put == eff.deam.caches.put;
   const std::span<const CarryDiagnostics> certification_carry =
@@ -1112,9 +1326,15 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
   const std::uint64_t diag_al_before = time_build ? al_solves_now() : 0u;
   std::vector<SessionSliceDiagnostics> slice_diag = collect_input_diagnostics(
       under, eff, rep.context, sp.deam.caches,
-      /*fit_rows_audited=*/eff.deam.audit_fit_inversions, certification_carry, &incremental_obs,
-      &incremental_mids, &incremental_flags, &incremental_chain_mids, &incremental_chain_flags,
-      &incremental_chain_bids, &incremental_chain_asks, &incremental_chain_ts);
+      /*fit_rows_audited=*/eff.deam.audit_fit_inversions, certification_carry, certification_certs,
+      &incremental_obs, &incremental_mids, &incremental_flags, &incremental_chain_mids,
+      &incremental_chain_flags, &incremental_chain_bids, &incremental_chain_asks,
+      &incremental_chain_ts);
+  // V2 (WS-V) FitTimings attribution, preserved across the C1 rebase: stamp the
+  // certification/diagnostics de-Am cost. With C1's reuse engaged (certification_
+  // certs non-empty on the un-audited populate path) the second de-Am pass is gone,
+  // so input_diagnostics_solves collapses toward zero — the ledger corroboration of
+  // the deam_pass_counter 2->1 proof.
   if (time_build) {
     input_diagnostics_ms =
         std::chrono::duration<double, std::milli>(BuildClock::now() - diag_start).count();

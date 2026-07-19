@@ -229,7 +229,8 @@ std::uint32_t saturated_u32(std::size_t value) noexcept {
 
 FitSlot fit_board(const CorpusBoard &board, const PricerConfig &tmpl,
                   const CorpusAdmissionPolicy *admission,
-                  const std::function<void(SessionInputs &)> &session_overlay) {
+                  const std::function<void(SessionInputs &)> &session_overlay,
+                  WarmCacheExport *out_caches) {
   FitSlot slot{};
   slot.quality.n_raw_quotes = saturated_u32(board.frame.rows.size());
   slot.quality.n_two_sided = count_two_sided_quotes(board.frame);
@@ -323,6 +324,20 @@ FitSlot fit_board(const CorpusBoard &board, const PricerConfig &tmpl,
     slot.provenance = provenance_from_health(fitted->purpose() == SurfacePurpose::Risk
                                                  ? bundle.risk_health
                                                  : bundle.market_mark_health);
+    // C2 (perf): export the per-side correction caches this fit BUILT so the
+    // cross-date chain can carry them forward. correction_caches() returns nulls
+    // when the fit REUSED supplied caches (built nothing) — the export then stays
+    // empty and the chain keeps its carried caches. Copied while the session (owned
+    // by `fitter`, a stack local) is still alive.
+    if (out_caches != nullptr) {
+      const AmericanCorrectionCaches built = fitted->session().correction_caches();
+      if (built.call != nullptr && built.call->populated()) {
+        out_caches->call = *built.call;
+      }
+      if (built.put != nullptr && built.put->populated()) {
+        out_caches->put = *built.put;
+      }
+    }
     slot.surface = std::move(*ps);
     slot.status = CorpusFitStatus::Ok;
     return slot;

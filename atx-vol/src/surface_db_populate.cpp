@@ -237,7 +237,23 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
   // SurfaceDb defines n_threads=0 as outer-serial. When several boards fan out
   // across the shared pool (worker_budget > 1) each board must NOT also claim the
   // whole pool -- that nests H^2 workers and oversubscribes.
-  const unsigned worker_budget = cfg.n_threads != 0u ? cfg.n_threads : 1u;
+  const unsigned requested_budget = cfg.n_threads != 0u ? cfg.n_threads : 1u;
+  // C4 wave-2 (perf, finding 13): the compute-bound fit path scales to the physical
+  // P-cores and REGRESSES past them on a hybrid P/E host (unpinned outer workers
+  // spill onto E-cores and oversubscribe them; own baseline peaks at 8 = the P-core
+  // logical CPUs on the i7-1260P). Cap the outer budget at the discovered P-core
+  // count and pin each worker to a P-core (below), so the fan-out stays on the
+  // cores that scale. Best-effort: performance_core_count() is 0 when discovery is
+  // unavailable (non-Windows / API failure) -> no cap, historical behaviour.
+  // Pinning never changes which board a worker fits, so every surface stays
+  // byte-identical across the cap AND across worker counts (the existing
+  // SharedWorkerBudgetKeepsOutputByteIdentical gate still holds).
+  const unsigned p_cores = cfg.pin_outer_workers ? detail::performance_core_count() : 0u;
+  const unsigned worker_budget =
+      (p_cores > 0u && requested_budget > p_cores) ? p_cores : requested_budget;
+  const detail::FitAffinity outer_affinity =
+      (cfg.pin_outer_workers && p_cores > 0u) ? detail::FitAffinity::PerformanceCores
+                                              : detail::FitAffinity::None;
   const std::size_t n_fit_boards = fit_positions.size();
 
   // ── U4 (R-14) [pure-refactor]: shared worker budget for small books ─────────
@@ -313,7 +329,10 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
   Status fit_status = Ok();
   {
     std::jthread fit_runner([&] {
-      fit_status = detail::run_bounded_fit_tasks(fit_positions.size(), worker_budget, fit_task);
+      // C4 wave-2: pin outer workers to the discovered P-cores (byte-identical to
+      // the unpinned path — pinning only steers WHICH logical CPU a worker runs on).
+      fit_status =
+          detail::run_bounded_fit_tasks(fit_positions.size(), worker_budget, fit_task, outer_affinity);
     });
 
     for (std::size_t r = 0; r < date_ranges.size(); ++r) {

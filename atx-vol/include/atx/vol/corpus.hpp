@@ -306,6 +306,17 @@ struct CorpusConfig {
   // Worker count for the ACROSS-board fan-out. 0 => hardware_concurrency (>= 1),
   // clamped to the board count.
   unsigned n_threads{0};
+  // C2 (perf): cross-date warm-start chain. Default false keeps the historical
+  // per-board parallel fan-out (each board independent, bit-identical). When true,
+  // boards are grouped into per-SYMBOL chains fit in chronological (date-ascending)
+  // order, and each date carries the prior date's correction caches forward; the
+  // session's stale-gate (session.cpp supplied_caches_cover_board) reuses them only
+  // when they still cover the board at a compatible baked carry, else cold-rebuilds.
+  // Chains shard across workers (symbol-sharded), so determinism is preserved:
+  // each chain's output depends only on its own date sequence, not on worker count.
+  // The fit changes (warm de-Am caches) are IN-BAND, not bit-identical — gated by
+  // the C2 quality-parity suite; hence opt-in.
+  bool warm_start_chain{false};
   // Options forwarded verbatim to every per-date archive write (ATXVSA2, S4).
   ArchiveV2WriteOpts write_opts{};
 };

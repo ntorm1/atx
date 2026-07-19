@@ -227,6 +227,20 @@ enum class FitPreset : std::uint8_t {
   // selective fast de-Am, no diagnostic parity pass, and independent slices.
   // Optimizes SPY-style penny-tight fit latency and in-band coverage.
   Hft = 3,
+  // C3 (populate tier): the RIGHT-SIZED bulk-populate preset. Keeps Robust's
+  // eSSVI FIT quality (MonotoneFit calendar repair, 3 ATM carry pairs, parity
+  // scored) but drops the de-Americanization / correction-cache-sampling / baked
+  // cold-mark Andersen-Lake preset from Robust's al_default_opts {12,24,8,1e-10}
+  // (~200 us "pseudo-accurate", ~1e-5) to the fast preset al_fast_opts
+  // {7,16,4,1e-8} (~47 us, ~1e-3) with the inversion tol matched to its accuracy
+  // floor. Rationale (docs/al-preset-ladder.md sec 5-6, the K1 audit): inversion /
+  // cache sampling only need ~1e-4 PRICE accuracy vs the ~1e-2 surface RMSE, and
+  // the Robust default was never validated as the populate choice — it over-pays
+  // 4-8x on every de-Am solve, cache sample, and cache-miss cold mark. Robust
+  // stays the FINAL-FIT / CERTIFICATION / oracle preset; Populate is for the
+  // populate / cache-sampling lane only. Economic parity vs Robust (surface RMSE,
+  // arb, served-coverage) is gated on real OPRA boards (C3 characterization).
+  Populate = 4,
 };
 
 // Populate the fit-policy fields of `in` for `preset` (Andersen-Lake opts,

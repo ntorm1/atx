@@ -4,7 +4,10 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <filesystem>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #include "atx/vol/american.hpp"
@@ -13,6 +16,8 @@
 #include "atx/vol/counters.hpp"
 #include "atx/vol/curve.hpp"
 #include "atx/vol/data.hpp"
+#include "atx/vol/detail/deam_pass_counter.hpp" // C1 duplicate-de-Am proof
+#include "atx/vol/opra_panel.hpp"               // OpraLoadSpec (C1 real-OPRA characterization)
 #include "atx/vol/panel.hpp"
 #include "atx/vol/query_pricing.hpp"
 #include "atx/vol/s3.hpp"
@@ -181,13 +186,21 @@ TEST(VolaSession, Build_KnownTruthPanel_SucceedsWithFourArbFreeSlices) {
   EXPECT_TRUE(diag.carry_confident);
   EXPECT_EQ(diag.n_inversion_slices, diag.n_slices);
   EXPECT_GT(diag.n_iv_proposed, std::size_t{0});
-  EXPECT_EQ(diag.n_iv_audited, diag.n_iv_proposed);
+  // C1 (class accuracy-improving): the input-diagnostics de-Am is no longer a
+  // SECOND independent (Configured, always-audited) pass — it now REUSES the
+  // eSSVI fit's own de-Am (finding 10). This build does NOT set
+  // deam.audit_fit_inversions, so the FIT ran the UN-audited Legacy route: the
+  // proposal ledger reflects the rows the fit actually de-Americanized
+  // (n_iv_proposed > 0), but n_iv_audited is 0 because the fit never repriced
+  // them against the cold reference. Pre-C1 this diagnostic re-run audited every
+  // proposal (n_iv_audited == n_iv_proposed) — describing rows the fit never
+  // used. The honest audited-fit variant is AuditedEssviFitCertifiesInversions.
+  EXPECT_EQ(diag.n_iv_audited, std::size_t{0});
   EXPECT_EQ(diag.n_iv_rejected_residual, std::size_t{0});
-  // Honest certificate (task 2a / carry C1): this build does NOT set
-  // deam.audit_fit_inversions, so the eSSVI FIT rows never ran the audited
-  // route — only the diagnostic re-run above did. A certificate may not vouch
-  // for rows the fit never used, so it must stay false here (the audited
-  // variant is covered by AuditedEssviFitCertifiesInversions below).
+  // Honest certificate (§5.3/§8.1): with audit-off fit rows the certificate must
+  // stay false (a certificate may not vouch for un-audited rows). Unchanged by
+  // C1 — the certificate gate still requires audited fit rows, so admission is
+  // byte-identical on this path (the audited variant certifies below).
   EXPECT_FALSE(diag.inversion_certified);
   EXPECT_EQ(diag.n_carry_skipped_expiries, std::size_t{0});
 
@@ -207,6 +220,506 @@ TEST(VolaSession, Build_KnownTruthPanel_SucceedsWithFourArbFreeSlices) {
   for (std::size_t i = 1; i < exps.size(); ++i) {
     EXPECT_LT(exps[i - 1].T, exps[i].T);
   }
+}
+
+// C1 (perf, class accuracy-improving): the eSSVI session build must de-Americanize
+// each expiry EXACTLY ONCE — the fit's own pass. Historically it ran a SECOND
+// full de-Am per slice in the certification/diagnostics layer
+// (collect_input_diagnostics -> build_observations_european, finding 10). This
+// proves the reduction with the provisional deam-pass counters (folded into
+// WS-V's ledger at merge): the CERT pass drops to zero while the FIT pass is
+// unchanged (one per fitted slice). The fit path itself stays byte-identical
+// (covered by Build_KnownTruthPanel above).
+TEST(VolaSession, EssviBuild_DeAmericanizesEachExpiryExactlyOnce) {
+  const SynthPanelSpec spec = make_spec();
+  Universe u;
+  const Underlying *under = install(spec, u);
+  ASSERT_NE(under, nullptr);
+  ASSERT_EQ(under->chains.size(), std::size_t{4});
+
+  atx::vol::detail::reset_deam_slice_passes();
+  const auto sess = VolaSession::build(*under, make_inputs(spec));
+  ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
+  const std::size_t n_slices = sess->diagnostics().n_slices;
+  ASSERT_EQ(n_slices, std::size_t{4});
+
+  // The fit de-Ams every fitted slice once (unchanged by C1).
+  EXPECT_EQ(atx::vol::detail::fit_deam_slice_passes(), n_slices);
+  // C1: the certification/diagnostics layer must no longer run its own de-Am —
+  // it reuses the fit's. Pre-C1 this was == n_slices (the duplicate pass).
+  EXPECT_EQ(atx::vol::detail::cert_deam_slice_passes(), std::size_t{0});
+}
+
+// C1 (perf, class accuracy-improving) — real-OPRA de-Am characterization / gate 3.
+// Loads real Databento OPRA boards from the shared developer cache and fits each
+// with the Populate-representative Robust preset. Robust leaves
+// `deam.audit_fit_inversions` at its false default (deamer.hpp:270), so the fit
+// runs UN-audited and C1's cert-de-Am reuse (session.cpp VolaSession::build HYBRID
+// GATE) engages — the exact bulk-populate regime C1 targets.
+//
+// Emits one "C1CHAR" TSV line per board (de-Am diagnostic counts +
+// inversion_certified + surface quality) so a before/after run (git-stash the C1
+// src, rebuild, re-run) fills the audit-count-delta column of the characterization
+// table. Asserts the two zero-flip invariants that gate C1 admission (PM gate 3),
+// which hold IDENTICALLY before and after C1: (1) the certificate stays FALSE on an
+// un-audited fit (a certificate may not vouch for rows the fit never audited — the
+// gate is `fit_rows_audited && …`, and the fit ran un-audited), so C1 causes zero
+// `inversion_certified` flips; (2) a usable, finite-quality surface is still
+// produced (the served surface is byte-identical — C1 only changes which rows the
+// diagnostics DESCRIBE, never the fit). Skips cleanly when the OPRA cache is absent.
+TEST(VolaSession, C1RealBoardDeAmCharacterization) {
+  using atx::vol::FitPreset;
+  using atx::vol::load_opra_cbbo_parquet;
+  using atx::vol::make_session_inputs;
+  using atx::vol::OpraLoadSpec;
+
+  struct RealBoard {
+    const char *sym;
+    const char *date;
+  };
+  // XOM/AAPL multi-date real boards (the fixture family the corpus tests cite).
+  const RealBoard boards[] = {
+      {"AAPL", "2026-01-02"}, {"AAPL", "2026-01-05"}, {"AAPL", "2026-01-06"},
+      {"XOM", "2026-01-02"},  {"XOM", "2026-01-05"},  {"XOM", "2026-01-06"},
+  };
+  const std::string root = "C:/atx-data/spy-dispersion/opra/";
+  const double r = 0.043;
+
+  std::size_t n_fit = 0;
+  for (const RealBoard &b : boards) {
+    const std::string path = root + b.sym + "/" + b.date + ".parquet";
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) {
+      continue;
+    }
+    OpraLoadSpec spec;
+    spec.path = path;
+    spec.underlying = b.sym;
+    spec.snapshot_iso = std::string(b.date) + "T14:00:00Z"; // cosmetic; frame carries the real ts
+    spec.r = r;
+    auto panel = load_opra_cbbo_parquet(spec);
+    if (!panel.has_value()) {
+      continue;
+    }
+    const auto in =
+        make_session_inputs(FitPreset::Robust, panel->implied_spot, r, panel->frame.snapshot_ts_ns);
+    auto sess = VolaSession::from_frame(panel->frame, in);
+    if (!sess.has_value()) {
+      continue;
+    }
+    const auto &d = sess->diagnostics();
+    ++n_fit;
+    std::printf("C1CHAR\t%-4s\t%s\tS=%.2f\tn_slices=%zu\tn_prop=%zu\tn_aud=%zu\tn_fb=%zu\t"
+                "n_rej=%zu\tcert=%d\trmse_vol=%.6f\tworst_frac=%.4f\n",
+                b.sym, b.date, panel->implied_spot, d.n_slices, d.n_iv_proposed, d.n_iv_audited,
+                d.n_iv_fallback, d.n_iv_rejected_residual, static_cast<int>(d.inversion_certified),
+                d.mean_rmse_vol, d.worst_frac_within_bidask);
+
+    // Gate-3 zero-flip invariants (identical before and after C1):
+    EXPECT_FALSE(d.inversion_certified) << b.sym << " " << b.date << ": un-audited fit must not certify";
+    EXPECT_GT(d.n_slices, std::size_t{0}) << b.sym << " " << b.date << ": no usable slice";
+    EXPECT_TRUE(std::isfinite(d.mean_rmse_vol)) << b.sym << " " << b.date << ": non-finite fit RMSE";
+  }
+
+  if (n_fit == 0) {
+    GTEST_SKIP() << "no real OPRA boards under " << root << " (shared developer cache absent)";
+  }
+  std::printf("C1CHAR\tTOTAL_BOARDS_FIT=%zu\n", n_fit);
+}
+
+// C2 (perf) — cross-date correction-cache reuse: ledger + quality-parity +
+// determinism + positive-control, on the real AAPL Jan-2026 chain (the fixtures
+// the warm-start chain drives). Validates the SESSION-level mechanism the
+// corpus.cpp chain driver composes: date 1 builds caches cold; a later date
+// supplies them via deam.caches + deam.reuse_supplied_caches, and the session's
+// stale-gate (supplied_caches_cover_board) reuses them — skipping the ~192-solve/
+// board rebuild (finding 11) — only when they still cover the board at a
+// compatible baked carry, else cold-rebuilds (byte-identical fallback).
+TEST(VolaSession, C2CrossDateCacheReuseCutsSolvesInBand) {
+  using atx::vol::AmericanCorrectionCaches;
+  using atx::vol::CorrectionCache;
+  using atx::vol::FitPreset;
+  using atx::vol::load_opra_cbbo_parquet;
+  using atx::vol::make_session_inputs;
+  using atx::vol::OpraLoadSpec;
+  using atx::vol::OpraPanel;
+  namespace led = atx::vol::counters::ledger;
+
+  const std::string root = "C:/atx-data/spy-dispersion/opra/";
+  const double r = 0.043;
+  const auto load = [&](const char *sym, const char *date) -> std::optional<OpraPanel> {
+    const std::string path = std::string(root) + sym + "/" + date + ".parquet";
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) {
+      return std::nullopt;
+    }
+    OpraLoadSpec spec;
+    spec.path = path;
+    spec.underlying = sym;
+    spec.snapshot_iso = std::string(date) + "T14:00:00Z";
+    spec.r = r;
+    auto p = load_opra_cbbo_parquet(spec);
+    if (!p.has_value()) {
+      return std::nullopt;
+    }
+    return std::move(*p);
+  };
+
+  auto d1 = load("AAPL", "2026-01-02");
+  auto d2 = load("AAPL", "2026-01-05");
+  if (!d1.has_value() || !d2.has_value()) {
+    GTEST_SKIP() << "AAPL OPRA chain not available under " << root;
+  }
+
+  const auto make_in = [&](double spot, std::int64_t ts, double rate, bool chain) {
+    auto in = make_session_inputs(FitPreset::Robust, spot, rate, ts);
+    in.fit_workers = 1u;                       // single-threaded => deterministic solve ledger
+    in.deam.chain_cache_mode = chain;          // wide, reusable cache for the chain path
+    return in;
+  };
+  const auto solves_now = []() {
+    return led::snapshot().get(led::Solve::AlBoundarySolves);
+  };
+  const auto fingerprint = [](const VolaSession &s, double spot) {
+    const auto ps = s.to_priced_surface();
+    std::vector<double> fp;
+    const double Ts[] = {0.03, 0.08, 0.16, 0.30};
+    const double ms[] = {0.85, 0.95, 1.0, 1.05, 1.15};
+    for (const double T : Ts) {
+      for (const double m : ms) {
+        fp.push_back(ps.has_value() ? ps->iv(spot * m, T) : std::nan(""));
+      }
+    }
+    return fp;
+  };
+
+  // Date 1: cold fit; copy out its built per-side correction caches.
+  auto s1 = VolaSession::from_frame(d1->frame, make_in(d1->implied_spot, d1->frame.snapshot_ts_ns, r, /*chain=*/true));
+  ASSERT_TRUE(s1.has_value()) << s1.error().to_string();
+  const AmericanCorrectionCaches c1 = s1->correction_caches();
+  if (c1.call == nullptr || c1.put == nullptr) {
+    GTEST_SKIP() << "date-1 fit built no correction caches (nothing to reuse)";
+  }
+  const CorrectionCache cache_call = *c1.call;
+  const CorrectionCache cache_put = *c1.put;
+
+  // Date 2 COLD baseline.
+  const auto in2 = make_in(d2->implied_spot, d2->frame.snapshot_ts_ns, r, /*chain=*/false); // production cold baseline
+  led::reset();
+  auto s2_cold = VolaSession::from_frame(d2->frame, in2);
+  const std::uint64_t cold_solves = solves_now();
+  ASSERT_TRUE(s2_cold.has_value()) << s2_cold.error().to_string();
+  const auto fp_cold = fingerprint(*s2_cold, d2->implied_spot);
+  const auto cold_diag = s2_cold->diagnostics();
+
+  // Date 2 WARM: reuse date-1 caches (same symbol, adjacent date -> gate admits).
+  auto in2w = in2;
+  in2w.deam.chain_cache_mode = true; // reuse; a gate miss rebuilds a wide chain cache
+  in2w.deam.caches = AmericanCorrectionCaches{&cache_call, &cache_put};
+  in2w.deam.reuse_supplied_caches = true;
+  led::reset();
+  auto s2_warm = VolaSession::from_frame(d2->frame, in2w);
+  const std::uint64_t warm_solves = solves_now();
+  ASSERT_TRUE(s2_warm.has_value()) << s2_warm.error().to_string();
+  const auto fp_warm = fingerprint(*s2_warm, d2->implied_spot);
+  const auto warm_diag = s2_warm->diagnostics();
+
+  std::printf("C2CHAR\tAAPL 01-05\tcold_solves=%llu\twarm_solves=%llu\tcold_frac=%.4f\twarm_frac=%.4f\t"
+              "cold_rmse=%.5f\twarm_rmse=%.5f\n",
+              static_cast<unsigned long long>(cold_solves),
+              static_cast<unsigned long long>(warm_solves), cold_diag.mean_frac_within_bidask,
+              warm_diag.mean_frac_within_bidask, cold_diag.mean_rmse_vol, warm_diag.mean_rmse_vol);
+
+  // GATE 1 (ledger): reuse must cut AL boundary solves >= 40% on the reuse date
+  // (the eliminated correction-cache rebuild, finding 11).
+  ASSERT_GT(cold_solves, 0u);
+  EXPECT_LE(warm_solves, cold_solves * 6u / 10u)
+      << "warm=" << warm_solves << " cold=" << cold_solves << " (<40% reduction)";
+
+  // GATE 2 (quality-parity, ECONOMIC): the served surface must price the market as
+  // well as the cold fit. The admission-relevant metric is bid-ask coverage (the
+  // fraction of quotes the re-Americanized surface prices in-band — what corpus
+  // admission actually gates on), NOT raw interpolated-IV distance. Warm coverage
+  // must not degrade vs cold beyond a small tolerance; the fit RMSE stays in-band.
+  EXPECT_GE(warm_diag.mean_frac_within_bidask, cold_diag.mean_frac_within_bidask - 0.01)
+      << "cross-date warm de-Am degraded bid-ask coverage";
+  EXPECT_GE(warm_diag.worst_frac_within_bidask, cold_diag.worst_frac_within_bidask - 0.03)
+      << "cross-date warm de-Am degraded worst-expiry coverage";
+  EXPECT_LE(warm_diag.mean_rmse_vol, cold_diag.mean_rmse_vol + 2.0e-3)
+      << "cross-date warm de-Am raised the surface fit RMSE out of band";
+  // Informational: max served-IV deviation. Largest at deep-wing / short-T grid
+  // points where vega -> 0 (price impact within the half-spread), so this is a
+  // loose sanity bound, not the economic gate.
+  ASSERT_EQ(fp_warm.size(), fp_cold.size());
+  double max_iv_diff = 0.0;
+  for (std::size_t i = 0; i < fp_warm.size(); ++i) {
+    if (std::isfinite(fp_warm[i]) && std::isfinite(fp_cold[i])) {
+      max_iv_diff = std::max(max_iv_diff, std::fabs(fp_warm[i] - fp_cold[i]));
+    }
+  }
+  EXPECT_LT(max_iv_diff, 1.5e-2) << "served IV moved implausibly far (>1.5 vol pts)";
+  std::printf("C2CHAR\tmax_iv_diff=%.6f\n", max_iv_diff);
+
+  // GATE 3 (determinism): the warm fit repeated is bit-identical (solves + IV grid).
+  led::reset();
+  auto s2_warm2 = VolaSession::from_frame(d2->frame, in2w);
+  const std::uint64_t warm_solves2 = solves_now();
+  ASSERT_TRUE(s2_warm2.has_value());
+  EXPECT_EQ(warm_solves2, warm_solves);
+  const auto fp_warm2 = fingerprint(*s2_warm2, d2->implied_spot);
+  for (std::size_t i = 0; i < fp_warm.size(); ++i) {
+    EXPECT_TRUE((std::isnan(fp_warm[i]) && std::isnan(fp_warm2[i])) || fp_warm[i] == fp_warm2[i])
+        << "warm fit non-deterministic at grid " << i;
+  }
+
+  // POSITIVE CONTROL: a rate far from the cache's baked carry (0.20 vs 0.043) must
+  // FAIL the stale-gate -> cold rebuild -> byte-identical to the pure cold fit
+  // (same solve count), proving reuse is refused when it would be wrong.
+  const auto in_off = make_in(d2->implied_spot, d2->frame.snapshot_ts_ns, 0.20, /*chain=*/true);
+  led::reset();
+  auto off_cold = VolaSession::from_frame(d2->frame, in_off);
+  const std::uint64_t off_cold_solves = solves_now();
+  ASSERT_TRUE(off_cold.has_value());
+  auto in_off_w = in_off;
+  in_off_w.deam.caches = AmericanCorrectionCaches{&cache_call, &cache_put}; // baked at r=0.043
+  in_off_w.deam.reuse_supplied_caches = true;
+  led::reset();
+  auto off_warm = VolaSession::from_frame(d2->frame, in_off_w);
+  const std::uint64_t off_warm_solves = solves_now();
+  ASSERT_TRUE(off_warm.has_value());
+  EXPECT_EQ(off_warm_solves, off_cold_solves)
+      << "stale-gate must refuse a cache baked at a far carry (cold-rebuild fallback)";
+}
+
+// C3 (accuracy-trading) — Populate-tier per-knob characterization + economic gate
+// on real AAPL/XOM boards. The Populate tier keeps Robust's eSSVI fit quality
+// (MonotoneFit, 3 ATM pairs, parity) but bakes al_fast_opts (not al_default_opts)
+// for de-Am / cache-sampling / cold marks (K1 audit, docs/al-preset-ladder.md §6).
+// Measures each knob individually vs the Robust baseline and gates the composed
+// tier: AL boundary solves must drop, and surface RMSE / bid-ask coverage / calendar
+// arb must stay in-band (§3 tier-honesty — no silent budget cut). Knob C (drop
+// MonotoneFit) is reported to justify the policy choice to KEEP it in Populate.
+TEST(VolaSession, C3PopulateTierEconomicParityVsRobust) {
+  using atx::vol::al_default_opts;
+  using atx::vol::al_fast_opts;
+  using atx::vol::CalendarRepair;
+  using atx::vol::FitPreset;
+  using atx::vol::load_opra_cbbo_parquet;
+  using atx::vol::make_session_inputs;
+  using atx::vol::OpraLoadSpec;
+  using atx::vol::OpraPanel;
+  namespace led = atx::vol::counters::ledger;
+
+  const std::string root = "C:/atx-data/spy-dispersion/opra/";
+  const double r = 0.043;
+  const auto load = [&](const char *sym, const char *date) -> std::optional<OpraPanel> {
+    const std::string path = std::string(root) + sym + "/" + date + ".parquet";
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) {
+      return std::nullopt;
+    }
+    OpraLoadSpec spec;
+    spec.path = path;
+    spec.underlying = sym;
+    spec.snapshot_iso = std::string(date) + "T14:00:00Z";
+    spec.r = r;
+    auto p = load_opra_cbbo_parquet(spec);
+    return p.has_value() ? std::optional<OpraPanel>(std::move(*p)) : std::nullopt;
+  };
+
+  struct Board {
+    const char *sym;
+    const char *date;
+  };
+  const Board boards[] = {{"AAPL", "2026-01-02"}, {"AAPL", "2026-01-06"}, {"XOM", "2026-01-02"},
+                          {"XOM", "2026-01-06"}};
+
+  struct Metrics {
+    std::uint64_t solves = 0;      // AL boundary solves (COUNT — preset-invariant)
+    std::uint64_t prem_evals = 0;  // premium quadrature evaluations (moves with the preset)
+    double cache_ms = 0.0;         // correction-cache build wall (V2 attribution)
+    double wall_ms = 0.0;          // total fit wall (V2)
+    double rmse = 0.0, mean_frac = 0.0, worst_frac = 0.0;
+    bool arb_free = false;
+    bool ok = false;
+  };
+  const auto measure = [&](const OpraPanel &p, FitPreset base,
+                           const std::function<void(SessionInputs &)> &knob) -> Metrics {
+    auto in = make_session_inputs(base, p.implied_spot, r, p.frame.snapshot_ts_ns);
+    in.fit_workers = 1u;
+    in.collect_stage_timings = true; // V2 FitTimings attribution (cache/wall ms)
+    if (knob) {
+      knob(in);
+    }
+    led::reset();
+    auto s = VolaSession::from_frame(p.frame, in);
+    const auto snap = led::snapshot();
+    if (!s.has_value()) {
+      return Metrics{};
+    }
+    const auto &d = s->diagnostics();
+    return Metrics{snap.get(led::Solve::AlBoundarySolves),
+                   snap.get(led::Solve::AlPremiumEvals),
+                   d.fit_timings.correction_cache_ms,
+                   d.fit_timings.total_wall_ms,
+                   d.mean_rmse_vol,
+                   d.mean_frac_within_bidask,
+                   d.worst_frac_within_bidask,
+                   d.calendar_arb_free,
+                   true};
+  };
+
+  std::size_t n = 0;
+  for (const Board &b : boards) {
+    auto p = load(b.sym, b.date);
+    if (!p.has_value()) {
+      continue;
+    }
+    const Metrics robust = measure(*p, FitPreset::Robust, {});
+    const Metrics knobA = measure(*p, FitPreset::Robust,
+                                  [](SessionInputs &in) { in.deam.al_opts = al_fast_opts(); });
+    const Metrics knobB = measure(*p, FitPreset::Robust,
+                                  [](SessionInputs &in) { in.deam.iv_tol = 1.0e-5; });
+    const Metrics knobC = measure(*p, FitPreset::Robust, [](SessionInputs &in) {
+      in.calendar_repair = CalendarRepair::None; // drop MonotoneFit (informational)
+    });
+    const Metrics pop = measure(*p, FitPreset::Populate, {});
+    if (!robust.ok || !pop.ok) {
+      continue;
+    }
+    ++n;
+    // Premium-eval reduction and cache-build speedup are the C3 win (the AL solve
+    // COUNT is preset-invariant — the preset makes each solve CHEAPER, not fewer).
+    const double cache_speedup =
+        pop.cache_ms > 0.0 ? robust.cache_ms / pop.cache_ms : 0.0;
+    std::printf("C3CHAR\t%-4s %s\tRobust[prem=%llu cache_ms=%.2f wall_ms=%.2f rmse=%.5f frac=%.4f arb=%d]"
+                "\tPOP[prem=%llu cache_ms=%.2f wall_ms=%.2f rmse=%.5f frac=%.4f worst=%.4f arb=%d]"
+                "\tcache_speedup=%.2fx\tC_nomono[arb=%d frac=%.4f]\n",
+                b.sym, b.date, (unsigned long long)robust.prem_evals, robust.cache_ms, robust.wall_ms,
+                robust.rmse, robust.mean_frac, robust.arb_free ? 1 : 0,
+                (unsigned long long)pop.prem_evals, pop.cache_ms, pop.wall_ms, pop.rmse, pop.mean_frac,
+                pop.worst_frac, pop.arb_free ? 1 : 0, cache_speedup, knobC.arb_free ? 1 : 0,
+                knobC.mean_frac);
+
+    // COST (deterministic): the fast preset does fewer premium quadrature evals per
+    // solve — Populate < Robust. (Solve COUNT is invariant; this is the cheaper-solve
+    // proxy that is contention-free, unlike wall time.)
+    EXPECT_LT(knobA.prem_evals, robust.prem_evals)
+        << b.sym << " " << b.date << ": al_fast did not reduce premium evals";
+    EXPECT_LT(pop.prem_evals, robust.prem_evals)
+        << b.sym << " " << b.date << ": Populate did not reduce premium evals";
+    // COST (provisional, timing): the correction-cache build should be materially
+    // cheaper (al_fast ~47us/node vs al_default ~200us/node). Loose bound — shared host.
+    EXPECT_LT(pop.cache_ms, robust.cache_ms)
+        << b.sym << " " << b.date << ": Populate cache build not faster";
+
+    // ECONOMIC PARITY (deterministic, §3 tier-honesty) — each knob + composed tier:
+    EXPECT_LE(knobA.rmse, robust.rmse + 2.0e-3) << b.sym << " " << b.date << ": al_fast RMSE out of band";
+    EXPECT_LE(knobB.rmse, robust.rmse + 2.0e-3) << b.sym << " " << b.date << ": iv_tol RMSE out of band";
+    EXPECT_LE(pop.rmse, robust.rmse + 2.0e-3) << b.sym << " " << b.date << ": Populate RMSE out of band";
+    EXPECT_GE(pop.mean_frac, robust.mean_frac - 0.02)
+        << b.sym << " " << b.date << ": Populate degraded bid-ask coverage";
+    EXPECT_GE(pop.worst_frac, robust.worst_frac - 0.03)
+        << b.sym << " " << b.date << ": Populate degraded worst-expiry coverage";
+    EXPECT_EQ(pop.arb_free, robust.arb_free)
+        << b.sym << " " << b.date << ": Populate changed calendar-arb-free status";
+  }
+  if (n == 0) {
+    GTEST_SKIP() << "no real OPRA boards under " << root;
+  }
+  std::printf("C3CHAR\tTOTAL_BOARDS=%zu\n", n);
+}
+
+// C6 — COMPOSED production-populate-lane parity gate (§11 trap 2: per-stage in-band
+// does not prove composed in-band). The production lane composes C2 (cross-date
+// warm-start cache reuse) AND C3 (Populate preset) — this test fits a real AAPL
+// date chain under that composed config (Populate + reuse the prior date's wide
+// chain cache) and gates it against the Robust COLD oracle on the reuse date:
+// surface RMSE / bid-ask coverage / calendar-arb must stay in-band. STOP condition
+// (PM): a composed-config parity breach vs Robust cold.
+TEST(VolaSession, C6ComposedPopulateLaneParityVsRobustCold) {
+  using atx::vol::AmericanCorrectionCaches;
+  using atx::vol::CorrectionCache;
+  using atx::vol::FitPreset;
+  using atx::vol::load_opra_cbbo_parquet;
+  using atx::vol::make_session_inputs;
+  using atx::vol::OpraLoadSpec;
+  using atx::vol::OpraPanel;
+
+  const std::string root = "C:/atx-data/spy-dispersion/opra/";
+  const double r = 0.043;
+  const auto load = [&](const char *sym, const char *date) -> std::optional<OpraPanel> {
+    const std::string path = std::string(root) + sym + "/" + date + ".parquet";
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) {
+      return std::nullopt;
+    }
+    OpraLoadSpec spec;
+    spec.path = path;
+    spec.underlying = sym;
+    spec.snapshot_iso = std::string(date) + "T14:00:00Z";
+    spec.r = r;
+    auto p = load_opra_cbbo_parquet(spec);
+    return p.has_value() ? std::optional<OpraPanel>(std::move(*p)) : std::nullopt;
+  };
+
+  auto d1 = load("AAPL", "2026-01-02");
+  auto d2 = load("AAPL", "2026-01-05");
+  if (!d1.has_value() || !d2.has_value()) {
+    GTEST_SKIP() << "AAPL OPRA chain not available under " << root;
+  }
+
+  const auto make_in = [&](FitPreset preset, double spot, std::int64_t ts) {
+    auto in = make_session_inputs(preset, spot, r, ts);
+    in.fit_workers = 1u;
+    return in;
+  };
+
+  // Date 1 of the chain: Populate preset + chain-cache mode (build the wide,
+  // reusable cache); copy it out.
+  auto in1 = make_in(FitPreset::Populate, d1->implied_spot, d1->frame.snapshot_ts_ns);
+  in1.deam.chain_cache_mode = true;
+  auto s1 = VolaSession::from_frame(d1->frame, in1);
+  ASSERT_TRUE(s1.has_value()) << s1.error().to_string();
+  const AmericanCorrectionCaches c1 = s1->correction_caches();
+  if (c1.call == nullptr || c1.put == nullptr) {
+    GTEST_SKIP() << "date-1 Populate fit built no caches";
+  }
+  const CorrectionCache cache_call = *c1.call;
+  const CorrectionCache cache_put = *c1.put;
+
+  // Date 2 COMPOSED: the full production lane — Populate preset + reuse date-1's
+  // wide chain cache (warm).
+  auto in2c = make_in(FitPreset::Populate, d2->implied_spot, d2->frame.snapshot_ts_ns);
+  in2c.deam.chain_cache_mode = true;
+  in2c.deam.caches = AmericanCorrectionCaches{&cache_call, &cache_put};
+  in2c.deam.reuse_supplied_caches = true;
+  auto s2c = VolaSession::from_frame(d2->frame, in2c);
+  ASSERT_TRUE(s2c.has_value()) << s2c.error().to_string();
+  const auto composed = s2c->diagnostics();
+
+  // Date 2 REFERENCE: Robust cold (the oracle the composed lane must match in-band).
+  auto s2r = VolaSession::from_frame(
+      d2->frame, make_in(FitPreset::Robust, d2->implied_spot, d2->frame.snapshot_ts_ns));
+  ASSERT_TRUE(s2r.has_value()) << s2r.error().to_string();
+  const auto robust = s2r->diagnostics();
+
+  std::printf("C6CHAR\tAAPL 01-05 composed(Populate+warm) vs Robust-cold\t"
+              "rmse %.5f/%.5f\tfrac %.4f/%.4f\tworst %.4f/%.4f\tarb %d/%d\n",
+              composed.mean_rmse_vol, robust.mean_rmse_vol, composed.mean_frac_within_bidask,
+              robust.mean_frac_within_bidask, composed.worst_frac_within_bidask,
+              robust.worst_frac_within_bidask, composed.calendar_arb_free ? 1 : 0,
+              robust.calendar_arb_free ? 1 : 0);
+
+  // Composed-config parity gate vs Robust cold (the STOP condition):
+  EXPECT_LE(composed.mean_rmse_vol, robust.mean_rmse_vol + 2.0e-3)
+      << "composed populate lane RMSE out of band vs Robust cold";
+  EXPECT_GE(composed.mean_frac_within_bidask, robust.mean_frac_within_bidask - 0.02)
+      << "composed populate lane degraded bid-ask coverage vs Robust cold";
+  EXPECT_GE(composed.worst_frac_within_bidask, robust.worst_frac_within_bidask - 0.03)
+      << "composed populate lane degraded worst-expiry coverage vs Robust cold";
+  EXPECT_EQ(composed.calendar_arb_free, robust.calendar_arb_free)
+      << "composed populate lane changed calendar-arb-free status vs Robust cold";
 }
 
 TEST(VolaSession, Iv_OnSliceAtm_IsSaneVol) {
