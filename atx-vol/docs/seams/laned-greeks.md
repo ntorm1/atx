@@ -64,6 +64,42 @@ no "vega without its volga cross-check" state to guard. A tangent-vs-Richardson 
 cross-check would only matter for a hypothetical "vega at fewer-than-σ± solves" tier, which
 this design does not create.
 
+### The production (scalar Auto) route — mask IS honored at the solve site; L4 wires the frame
+
+**Answered (PM crux):** `GreekFieldMask` narrowing skips the σ±/r± solves on the SCALAR
+`american_greeks_al` path too, NOT just the dark laned kernel. `american_greeks_al` gained
+`need_vega/need_rho/need_charm` (default full) and skips whole boundary solves — **proven by
+the `BoundarySolves` ledger** (`AlGreeksFirstOrder.SolveCountByMask_LedgerProof`, counters
+ON): hedge `{delta}` = **1** solve, `{delta,vega}` = **3**, full = **5**. So L4's ledger gate
+(≤3 s/u) is paid on the route production takes, independent of the dark AVX2 flag.
+
+**Backtest greeks route (traced, cite):** `RunConfig.price{analytic_greeks=true}`
+(`backtest.hpp:309`) and `adjoint_greeks=false` (`PriceOptions`, `portfolio_pricer.hpp:513`
+— default; **no production caller sets it true**) ⇒ the non-adjoint analytic path:
+`PortfolioPricer::price_group_impl` (loop) → `PricedSurface::evaluate_batch(k,t,side,
+EvalField fields, analytic, …)` (kernel, `portfolio_pricer.cpp:672`) → `greeks_resolved` →
+`american_greeks_al`. The adjoint route (`american_greeks_adjoint`, its 2 cold σ± volga
+re-solves at `adjoint_greeks.cpp:374-403`) is an **opt-in A/B reached by NO production
+caller** — so its `first_order_only` deferral is CLEAN and K4's row closes on the analytic
+route the backtest uses.
+
+**What L4 wires (the remaining last mile):** the kernel exposes the mask-honoring
+`american_greeks_al(…, need_vega, need_rho, need_charm)`. To get the win end-to-end through
+the backtest, L4 (owns `portfolio_pricer.cpp`) narrows the **`EvalField`** it requests per
+frame and the kernel's `evaluate_batch`/`greeks_resolved` (kernel-owned, `priced_surface.cpp`)
+maps `EvalField → need_*` when it calls `american_greeks_al`. Recipe + caveat:
+- `fields = EF::Iv|EF::Price|EF::Delta` (hedge) ⇒ `need_vega=need_rho=need_charm=false` ⇒ 1
+  solve; `+EF::Vega` (risk) ⇒ `need_vega=true` ⇒ 3 solves; `EF::FirstOrder|EF::SecondOrder`
+  (pnl-explain) ⇒ full 5.
+- **CAVEAT (design point L4 owns):** today `want_greeks = has(FirstOrder)∨has(SecondOrder)`
+  (`portfolio_pricer.cpp:625`), so a bare `EF::Delta` does NOT currently trigger the greeks
+  path. L4's frame wiring must either (a) route hedge/risk through `EF::Delta`/`EF::Delta|
+  Vega` AND extend `want_greeks` + the `evaluate_batch` `EvalField→need_*` map accordingly,
+  or (b) thread `GreekNeeds` directly. This is the L4 "wire the first-order mask into the
+  execute risk frame" task (sprint §4 L4); the kernel side (`american_greeks_al` needs +
+  the `evaluate_batch` mapping hook) is ready for it. The kernel does NOT hardcode a frame
+  policy — that is the loop's.
+
 ---
 
 ## 0. What exists today (the substrate L4 already has)
