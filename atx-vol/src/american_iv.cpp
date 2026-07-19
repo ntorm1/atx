@@ -29,6 +29,13 @@ constexpr double kSigmaHi = 5.0;
 constexpr double kSigmaHiCap = 40.0; // hard ceiling for hi expansion
 constexpr unsigned kMaxExpand = 8;   // bounded hi-doubling budget
 
+// A3 (core-review finding 3): the cold IV polish must stay near the rtsafe root.
+// A polished iterate that would land more than this many× the final tolerance
+// outside the sign-change bracket is a collapsed-vega artifact (pre-fix it could
+// run past kSigmaHiCap and be returned as a wild IV) and is dropped in favour of
+// the converged rtsafe iterate.
+constexpr double kPolishMaxDriftTols = 4.0;
+
 // American immediate-exercise value (undiscounted) and the price ceiling.
 struct NoArbBand {
   double intrinsic; // max(0, S-K) call / max(0, K-S) put
@@ -109,6 +116,16 @@ template <typename Correction>
 
 namespace {
 
+// A3 test/measurement seam: the cold IV polish records the sign-change bracket
+// [xl, xh] captured at polish entry and whether the bracket-clamp engaged on any
+// polish iterate. Production callers pass nullptr and pay nothing.
+struct PolishTrace {
+  double xl{0.0};
+  double xh{0.0};
+  bool ran{false};     // the cold-AL polish path executed
+  bool clamped{false}; // a polish iterate was clamped/rejected back into [xl, xh]
+};
+
 struct ThreadAloSlot {
   std::optional<AloPricer> pricer;
   bool busy{false};
@@ -161,7 +178,8 @@ template <typename Correction>
 Result<double> american_implied_vol_impl(double price, double S, double K, double T, double r,
                                          double q, Side side, AmericanMethod method, double tol,
                                          std::uint16_t max_iter, const std::optional<AlOpts> &opts,
-                                         const Correction *correction, double warm_start) noexcept {
+                                         const Correction *correction, double warm_start,
+                                         PolishTrace *trace = nullptr) noexcept {
   counters::lightweight::AmericanIvSample telemetry_sample;
   // Route price + vega through the cached hot path when the cache matches side.
   const bool use_cache = cache_usable(correction, side);
@@ -442,6 +460,12 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
   // bracket (one cold seed, not two far extremes) keeps the inversion well below
   // the cold-per-residual baseline.
   if (alo) {
+    if (trace != nullptr) {
+      trace->ran = true;
+      trace->xl = xl;
+      trace->xh = xh;
+    }
+    const double rts0 = rts; // the converged rtsafe root; the polish stays near it
     for (int k = 0; k < 2; ++k) {
       ATX_TRY(double pc, american_price(S, K, T, rts, r, q, side, method, opts));
       const double v = newton_vega(S, K, T, rts, r, q, side, active_correction);
@@ -450,10 +474,28 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
       }
       const double step = (pc - price) / v;
       const double prev = rts;
-      rts -= step;
-      if (!(rts > 0.0)) {
-        rts = prev; // keep the last valid iterate
-        break;
+      const double cand = rts - step;
+      if (cand >= xl && cand <= xh) {
+        // In-bracket: apply the Newton step exactly as the pre-fix polish did —
+        // bit-identical for every quote whose polish already stayed inside the
+        // sign-change bracket.
+        rts = cand;
+      } else {
+        // [A3 core-review finding 3] The raw Newton iterate left the bracket. On
+        // the cold reference map a genuine polish moves the iterate << the
+        // bracket width; a step that bolts more than a few× the final tol past
+        // the rtsafe root is a collapsed-vega artifact (pre-fix this could run
+        // past kSigmaHiCap and be returned as a wild IV) — drop it and keep the
+        // converged iterate. Otherwise clamp to the near bracket edge so the
+        // polish never leaves [xl, xh].
+        if (trace != nullptr) {
+          trace->clamped = true;
+        }
+        if (std::fabs(cand - rts0) > kPolishMaxDriftTols * tol) {
+          rts = prev;
+          break;
+        }
+        rts = (cand < xl) ? xl : xh;
       }
       if (std::fabs(step) < tol) {
         break;
@@ -479,6 +521,28 @@ Result<double> american_implied_vol(double price, double S, double K, double T, 
                                     const std::optional<AlOpts> &opts, double warm_start) noexcept {
   return american_implied_vol_impl(price, S, K, T, r, q, side, method, tol, max_iter, opts,
                                    &correction, warm_start);
+}
+
+// Test/measurement seam (declared in american_iv_test.cpp, not the public
+// header). Runs the cold Andersen-Lake inversion and additionally reports the
+// polish bracket [xl, xh] captured at polish entry and whether the A3
+// bracket-clamp engaged on any polish iterate, so the test can pin that the
+// polished IV never leaves the sign-change bracket.
+Result<double> american_implied_vol_polish_traced(double price, double S, double K, double T,
+                                                  double r, double q, Side side, double tol,
+                                                  std::uint16_t max_iter,
+                                                  const std::optional<AlOpts> &opts,
+                                                  double warm_start, double &xl_out, double &xh_out,
+                                                  bool &polish_ran_out, bool &polish_clamped_out) {
+  PolishTrace tr;
+  Result<double> iv = american_implied_vol_impl<CorrectionCache>(
+      price, S, K, T, r, q, side, AmericanMethod::AndersenLake, tol, max_iter, opts,
+      static_cast<const CorrectionCache *>(nullptr), warm_start, &tr);
+  xl_out = tr.xl;
+  xh_out = tr.xh;
+  polish_ran_out = tr.ran;
+  polish_clamped_out = tr.clamped;
+  return iv;
 }
 
 Status american_implied_vol_batch(std::span<const double> price, double S,

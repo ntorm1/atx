@@ -29,6 +29,16 @@
 // floor; at the deep-wing / short-maturity corners vega collapses and sigma is
 // not identifiable, so only the price round-trip is checked there.
 
+namespace atx::vol {
+// Test seam defined in src/american_iv.cpp (not the public header).
+Result<double> american_implied_vol_polish_traced(double price, double S, double K, double T,
+                                                  double r, double q, Side side, double tol,
+                                                  std::uint16_t max_iter,
+                                                  const std::optional<AlOpts> &opts,
+                                                  double warm_start, double &xl_out, double &xh_out,
+                                                  bool &polish_ran_out, bool &polish_clamped_out);
+} // namespace atx::vol
+
 namespace {
 
 using atx::vol::AlOpts;
@@ -134,6 +144,63 @@ void grid_round_trip(AmericanMethod method) {
 } // namespace
 
 // ── Round-trip over the full grid, both pricers ──────────────────────────
+
+// A3 (core-review finding 3): the cold Andersen-Lake IV polish must never return
+// an iterate outside the sign-change bracket [xl, xh]. Pre-fix the polish ran raw
+// Newton steps on the cold reference map with only a `rts > 0` guard, so at hard
+// corners (long-dated / low-vol / near-intrinsic, where the warm search map and
+// the cold reference map disagree and vega collapses) the iterate could bolt out
+// of the (tol-narrow) bracket — past kSigmaHiCap in the worst case — and be
+// returned as a wild IV. The fix clamps each polish iterate into [xl, xh] and
+// drops a step that bolts many× the final tol past the rtsafe root.
+//
+// This sweeps ITM corners on the cold-AL path (the exact path check_round_trip
+// uses) and asserts the returned IV stays inside the bracket the inverter
+// reported, and that the clamp actually engaged on at least one corner (so the
+// invariant is not vacuously satisfied by a sweep that never leaves the bracket).
+TEST(AmericanIv, ColdPolishStaysInBracket) {
+  const double S = 100.0;
+  int checked = 0;
+  int clamped_count = 0;
+  for (double K : {105.0, 110.0, 115.0, 120.0}) {
+    for (double T : {1.0, 2.0}) {
+      for (double sig : {0.05, 0.08, 0.10}) {
+        for (double r : {0.05, 0.08}) {
+          for (double q : {0.0, 0.02}) {
+            for (Side side : {Side::Put, Side::Call}) {
+              const double p = value_or_fail(
+                  american_price(S, K, T, sig, r, q, side, AmericanMethod::AndersenLake));
+              if (!std::isfinite(p)) {
+                continue;
+              }
+              double xl = 0.0, xh = 0.0;
+              bool ran = false, clamped = false;
+              const auto iv = atx::vol::american_implied_vol_polish_traced(
+                  p, S, K, T, r, q, side, 1.0e-7, 64, std::nullopt, /*warm_start=*/0.0, xl, xh, ran,
+                  clamped);
+              if (!iv.has_value() || !ran) {
+                // Early-return quotes (at-intrinsic clamp, exact seed hit) never
+                // reach the polish and have no bracket to check.
+                continue;
+              }
+              ++checked;
+              // The polished IV must lie inside the bracket the inverter converged.
+              EXPECT_GE(*iv, xl) << "K=" << K << " T=" << T << " sig=" << sig << " r=" << r
+                                 << " q=" << q << " " << side_tag(side);
+              EXPECT_LE(*iv, xh) << "K=" << K << " T=" << T << " sig=" << sig << " r=" << r
+                                 << " q=" << q << " " << side_tag(side);
+              if (clamped) {
+                ++clamped_count;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  EXPECT_GT(checked, 0);
+  EXPECT_GT(clamped_count, 0) << "sweep never exercised the polish bracket-clamp path";
+}
 
 TEST(AmericanIv, RoundTrip_GridAndersenLake_RecoversSigma) {
   grid_round_trip(AmericanMethod::AndersenLake);
