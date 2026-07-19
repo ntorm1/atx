@@ -70,7 +70,10 @@ struct PutPackBoundary {
 // geometry `out` borrows. `eligible[l]` (out) is false for a degenerate / non-American
 // / collapse lane the caller must patch to scalar; `ref` (out) is the first eligible
 // lane index, or -1 if none (then `out` is not filled and the caller patches all 4).
-ATX_FORCE_INLINE void solve_put_boundary_pack_avx2(
+// NOT force-inline: the K3 greeks kernel calls this 5x + price 13x per pack; forcing
+// all 18 into one frame overflows the Debug stack. Plain `inline` (ODR across the two
+// *_avx2.cpp TUs) lets Debug keep them as real calls with reused frames.
+inline void solve_put_boundary_pack_avx2(
     const double* S_unused, const double* K, const double* T, const double* sigma,
     const double* r, const double* q, std::size_t n, const amer::AlScheme& sch,
     amer::AlBoundary* bnd, amer::AlWorkspace* ws, PutPackBoundary& out,
@@ -432,7 +435,7 @@ ATX_FORCE_INLINE void solve_put_boundary_pack_avx2(
 // Price a pack at an arbitrary `spot` vector against the solved boundary `b`. Returns
 // the 4-wide American put price (euro floor + intrinsic + non-negativity clamps), a
 // line-for-line port of the K2 kernel's step 4 with S generalised to `spot`.
-ATX_FORCE_INLINE __m256d price_put_pack_avx2(const PutPackBoundary& b, __m256d spot) noexcept {
+inline __m256d price_put_pack_avx2(const PutPackBoundary& b, __m256d spot) noexcept {
     const __m256d zero = _mm256_setzero_pd();
     const __m256d one = _mm256_set1_pd(1.0);
     const __m256d two = _mm256_set1_pd(2.0);

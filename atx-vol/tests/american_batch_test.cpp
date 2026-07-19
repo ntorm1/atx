@@ -961,6 +961,94 @@ INSTANTIATE_TEST_SUITE_P(
       return info.param.name;
     });
 
+// ── K3: laned analytic PUT Greeks bundle (american_put_greeks_batch, AVX2) ────
+//
+// The laned kernel solves the 5 analytic boundaries (base, sigma+/-, r+/-) 4-wide per
+// pack and re-prices the spot stencils, matching scalar american_greeks_al. Parity:
+//  * ForceScalar route == american_greeks_al per contract, BIT-identical (it IS the
+//    scalar oracle, no AVX2 path);
+//  * ForceAvx2 route == american_greeks_al within the economic gate — the only
+//    difference is the AVX2 transcendentals in the 13 stencil prices (~1e-13 USD),
+//    amplified by the FD denominators (documented per-greek below).
+TEST(AmericanPutGreeksBatchAvx2, MatchesScalarAl) {
+  // Genuine early-exercise American puts (r>0), a moneyness x maturity x vol grid.
+  struct C { double S, K, T, sigma, r, q; };
+  std::vector<C> g;
+  const double S = 100.0;
+  for (double m : {0.80, 0.90, 0.95, 1.00, 1.05, 1.10, 1.20}) {
+    for (double t : {0.08, 0.25, 0.75, 2.0}) {
+      for (double v : {0.15, 0.25, 0.40}) {
+        for (double r : {0.03, 0.06}) {
+          g.push_back(C{S, S / m, t, v, r, 0.01});
+        }
+      }
+    }
+  }
+  const std::size_t n = g.size();
+  std::vector<double> vS(n), vK(n), vT(n), vsig(n), vr(n), vq(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    vS[i] = g[i].S; vK[i] = g[i].K; vT[i] = g[i].T;
+    vsig[i] = g[i].sigma; vr[i] = g[i].r; vq[i] = g[i].q;
+  }
+
+  // ForceScalar route == american_greeks_al, bit-identical.
+  std::vector<AmericanGreeks> scl(n);
+  const simd::SimdRoute sroute = simd::american_put_greeks_batch(
+      vS.data(), vK.data(), vT.data(), vsig.data(), vr.data(), vq.data(), n,
+      std::nullopt, scl.data(), simd::SimdIsa::ForceScalar);
+  EXPECT_EQ(sroute, simd::SimdRoute::Scalar);
+  for (std::size_t i = 0; i < n; ++i) {
+    const auto al = american_greeks_al(vS[i], vK[i], vT[i], vsig[i], vr[i], vq[i], Side::Put);
+    ASSERT_TRUE(al.has_value()) << "i=" << i;
+    EXPECT_EQ(scl[i], *al) << "ForceScalar must equal american_greeks_al bit-for-bit, i=" << i;
+  }
+
+  if (!simd::have_avx2()) {
+    GTEST_SKIP() << "no AVX2 on host (scalar parity checked above)";
+  }
+
+  // ForceAvx2 route == american_greeks_al within the economic gate.
+  std::vector<AmericanGreeks> avx(n);
+  const simd::SimdRoute aroute = simd::american_put_greeks_batch(
+      vS.data(), vK.data(), vT.data(), vsig.data(), vr.data(), vq.data(), n,
+      std::nullopt, avx.data(), simd::SimdIsa::ForceAvx2);
+  EXPECT_EQ(aroute, simd::SimdRoute::Avx2);
+
+  auto reld = [](double a, double b, double floor) {
+    return std::abs(a - b) / std::max({std::abs(a), std::abs(b), floor});
+  };
+  double mp = 0, md = 0, mg = 0, mv = 0, mvl = 0, mr = 0, mvn = 0, mt = 0, mc = 0;
+  for (std::size_t i = 0; i < n; ++i) {
+    const AmericanGreeks a = avx[i], s = scl[i];
+    mp = std::max(mp, reld(a.price, s.price, 1e-6));
+    md = std::max(md, reld(a.delta, s.delta, 1e-6));
+    mg = std::max(mg, reld(a.gamma, s.gamma, 1e-6));
+    mv = std::max(mv, reld(a.vega, s.vega, 1e-4));
+    mvl = std::max(mvl, reld(a.volga, s.volga, 1e-3));
+    mr = std::max(mr, reld(a.rho, s.rho, 1e-4));
+    mvn = std::max(mvn, reld(a.vanna, s.vanna, 1e-5));
+    mt = std::max(mt, reld(a.theta, s.theta, 1e-4));
+    mc = std::max(mc, reld(a.charm, s.charm, 1e-4));
+  }
+  std::printf("[K3 laned-greeks parity] rel-dev vs american_greeks_al (n=%zu): "
+              "price=%.2e delta=%.2e gamma=%.2e vega=%.2e volga=%.2e rho=%.2e "
+              "vanna=%.2e theta=%.2e charm=%.2e\n",
+              n, mp, md, mg, mv, mvl, mr, mvn, mt, mc);
+  // Economic gate (measured deviations far under; all are the AVX2-transcendental
+  // ~1e-13 USD price delta amplified by the FD denominators, economically negligible —
+  // e.g. a 3e-5 RELATIVE charm move). price/delta ride one boundary's spot stencils so
+  // stay near machine; gamma/volga (÷h^2) and charm (÷h^3 speed) carry the most amp.
+  EXPECT_LT(mp, 1e-9) << "price";    // measured ~1.6e-10
+  EXPECT_LT(md, 1e-8) << "delta";    // measured ~5.7e-9
+  EXPECT_LT(mg, 1e-5) << "gamma";    // measured ~2.1e-6
+  EXPECT_LT(mv, 1e-7) << "vega";     // measured ~1.4e-8
+  EXPECT_LT(mvl, 1e-4) << "volga";   // measured ~4.7e-6
+  EXPECT_LT(mr, 1e-6) << "rho";      // measured ~3.1e-7
+  EXPECT_LT(mvn, 1e-5) << "vanna";   // measured ~5.6e-7
+  EXPECT_LT(mt, 1e-5) << "theta";    // measured ~1.5e-7
+  EXPECT_LT(mc, 1e-4) << "charm";    // measured ~3.0e-5
+}
+
 // Greeks batch: bit-identical to per-contract american_greeks_fd.
 Book make_american_greeks_book() {
   Book b;
