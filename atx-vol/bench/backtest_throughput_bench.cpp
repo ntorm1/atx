@@ -75,6 +75,13 @@ constexpr int kUnivN = 10;              // universe names
 constexpr std::uint32_t kUnivUidBase = 200;
 constexpr double kUnivTargetT = 0.25;   // 3M strangle tenor (in-grid all run)
 
+// ── L3 entry-resolve wall dimensions ─────────────────────────────────────────
+// The 51-name delta-strangle entry day (finding-3 #1 wall): one resolve_spec pass
+// resolves 51 names × 2 sides of 40Δ strikes (Illinois iterations) + a full_greek
+// seed per resolved strike. L3 fans this across the shared pool.
+constexpr int kEntryN = 51;             // 51-name entry-resolve config (L3 gate)
+constexpr std::uint32_t kEntryUidBase = 400;
+
 // Setup failures happen once, outside the timed region (static fixture init), so an
 // abort is the honest response — a benchmark of an error return measures nothing.
 [[noreturn]] void bench_fatal(const std::string& msg) {
@@ -360,6 +367,77 @@ void BM_UniverseStrangleHedged(benchmark::State& state) {
   state.counters["final_open_lots"] = final_open_lots;
 }
 
+// A kEntryN-name 40Δ Strangle spec — one entry day's resolution workload.
+[[nodiscard]] StrategySpec make_entry_spec() {
+  StrategySpec spec;
+  spec.name = "l3-entry-resolve-51name";
+  for (int u = 0; u < kEntryN; ++u) {
+    LegSpec leg;
+    leg.uid = kEntryUidBase + static_cast<std::uint32_t>(u);
+    leg.tenor.target_T = kUnivTargetT;
+    leg.tenor.snap_to_listed = false;
+    leg.structure.kind = StructureSpec::Kind::Strangle;
+    leg.structure.call_leg = StrikeSelector{StrikeSelector::Kind::Delta, 0.40};
+    leg.structure.put_leg = StrikeSelector{StrikeSelector::Kind::Delta, 0.40};
+    leg.size = SizeSpec{SizeSpec::Kind::FixedContracts, 1.0, +1.0};
+    spec.legs.push_back(std::move(leg));
+  }
+  spec.lifecycle.entry = LifecycleSpec::Entry::EveryStep;
+  spec.lifecycle.holding = LifecycleSpec::Holding::HoldToExpiry;
+  return spec;
+}
+
+// One loaded kEntryN-name snapshot (built once; a 2-date corpus, date 0 loaded).
+[[nodiscard]] const MarketSnapshot& entry_snapshot() {
+  static const MarketSnapshot snap = [] {
+    const Clock clock = build_corpus_impl(2, kEntryN, kEntryUidBase, "atx-l3-entry-resolve-bench");
+    auto s = MarketSnapshot::load(clock.refs()[0].archive_path);
+    if (!s.has_value()) {
+      bench_fatal(s.error().to_string());
+    }
+    return std::move(*s);
+  }();
+  return snap;
+}
+
+// ── L3: entry-day strike-resolve + full_greek-seed wall (finding-3 #1) ──────────
+// One resolve_spec over kEntryN 40Δ-strangle legs = the per-name Illinois strike
+// solves + the full_greek seed per resolved strike, the 0.75-4.5 s single-threaded
+// entry-day wall. L3 fans this across the shared pool. Arg(0) = price.n_threads:
+// 1 = serial-equivalent (single pool worker == the pre-L3 wall), 0 = full pool (the
+// L3 fanned path). Headline: ms per resolve == one entry day's resolve+seed wall
+// (gate: <= 50 ms fanned). PROVISIONAL — cite only under the quiet-window
+// (rel-avx2, P-core lease); the deterministic bit-identity of entries is the hard
+// gate (backtest/strategy tests), this row is the timing follow-up.
+void BM_EntryResolve(benchmark::State& state) {
+  const MarketSnapshot& snap = entry_snapshot();
+  const StrategySpec spec = make_entry_spec();
+  PriceOptions po;
+  po.n_threads = static_cast<unsigned>(state.range(0));
+  {
+    auto warm = resolve_spec(snap, spec, po);  // prime the pool + surfaces
+    if (!warm.has_value()) {
+      state.SkipWithError(warm.error().to_string().c_str());
+      return;
+    }
+    benchmark::DoNotOptimize(warm->data());
+  }
+  std::size_t n_sized = 0;
+  for (auto _ : state) {
+    auto sized = resolve_spec(snap, spec, po);
+    if (!sized.has_value()) {
+      state.SkipWithError(sized.error().to_string().c_str());
+      break;
+    }
+    n_sized = sized->size();
+    benchmark::DoNotOptimize(sized->data());
+    benchmark::ClobberMemory();
+  }
+  state.SetItemsProcessed(state.iterations() * static_cast<std::int64_t>(kEntryN));
+  state.counters["names"] = static_cast<double>(kEntryN);
+  state.counters["legs_resolved"] = static_cast<double>(n_sized);
+}
+
 // Sample-count override (review fix, finding #2). These are heavy sub-second
 // backtests: apply_common's default (5 reps, and with a ~0.3 s op only ~1-2 auto
 // iterations/rep) gives only ~5-10 timed executions, so two outlier reps swing the
@@ -395,6 +473,16 @@ const int kRegistered = [] {
                                             BM_UniverseStrangleHedged))
       ->MinWarmUpTime(0.0)  // clear apply_common's GB warm-up (illegal with Iterations); warm-up is in-body
       ->Unit(benchmark::kMillisecond)
+      ->Iterations(kBtItersPerRep)
+      ->Repetitions(kBtReps)
+      ->UseRealTime();
+  // L3 entry-resolve wall: Arg 1 = serial-equivalent (single pool worker), Arg 0 =
+  // full pool (fanned). Compare the two rows for the L3 speedup on the 51-name day.
+  apply_common(benchmark::RegisterBenchmark("strategy/entry_resolve/51name", BM_EntryResolve))
+      ->MinWarmUpTime(0.0)  // clear apply_common's GB warm-up (illegal with Iterations); warm-up is in-body
+      ->Unit(benchmark::kMillisecond)
+      ->Arg(1)  // serial-equivalent (single pool worker == pre-L3 wall)
+      ->Arg(0)  // full pool (L3 fanned)
       ->Iterations(kBtItersPerRep)
       ->Repetitions(kBtReps)
       ->UseRealTime();
