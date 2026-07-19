@@ -1196,6 +1196,29 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
   auto arch = [&]() {
     ATX_VOL_PROFILE_SCOPE(ArchiveOpen);
     if (borrow) {
+      // MEASUREMENT LEVER (see the backing note above): `ATX_VOL_ZC_BACKING=map` keeps
+      // the mapping alive instead of copying. That is materially faster — the copy is
+      // proportional to archive BYTES while the reconstruction it replaces is
+      // proportional to SURFACES, so the copy's cost overtakes the saving as a run
+      // grows — but it blocks atomic partition republish for the snapshot's lifetime.
+      // `copy` (the default) is the safe choice; this switch exists so the trade-off
+      // can be re-measured rather than taken on description.
+      static const bool backing_is_map = []() {
+#if defined(_WIN32)
+        std::size_t sz = 0;
+        char buf[8] = {};
+        if (getenv_s(&sz, buf, sizeof(buf), "ATX_VOL_ZC_BACKING") != 0 || sz == 0) {
+          return false;
+        }
+        return std::string_view{buf} == "map";
+#else
+        const char *e = std::getenv("ATX_VOL_ZC_BACKING");
+        return e != nullptr && std::string_view{e} == "map";
+#endif
+      }();
+      if (backing_is_map) {
+        return SurfaceArchiveV2::open_mapped(archive_path);
+      }
       // Map + one memcpy into an owned buffer, mapping dropped (see the note above).
       return SurfaceArchiveV2::open_copied(archive_path);
     }
