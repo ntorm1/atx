@@ -39,6 +39,52 @@ constexpr std::int64_t kUnsetPx = std::numeric_limits<std::int64_t>::min();
 // Fixed-point price scale: raw fields are 1e-9 dollars.
 constexpr double kPxScale = 1e-9;
 
+// Days since the Unix epoch for a civil date (Howard Hinnant; matches
+// data.cpp's `days_since_epoch`). Used only for the U.S.-Eastern DST rule below.
+[[nodiscard]] std::int64_t days_since_epoch(int yy, int mm, int dd) noexcept {
+  yy -= (mm <= 2) ? 1 : 0;
+  const int era = (yy >= 0 ? yy : yy - 399) / 400;
+  const unsigned yoe = static_cast<unsigned>(yy - era * 400);
+  const int mp_int = ((mm > 2 ? mm - 3 : mm + 9) * 153 + 2) / 5;
+  const unsigned doy = static_cast<unsigned>(mp_int) + static_cast<unsigned>(dd) - 1u;
+  const unsigned doe = yoe * 365u + yoe / 4u - yoe / 100u + doy;
+  return static_cast<std::int64_t>(era) * 146097 + static_cast<std::int64_t>(doe) - 719468;
+}
+
+// Civil weekday, 0 = Sunday .. 6 = Saturday (1970-01-01 was a Thursday = 4).
+[[nodiscard]] int civil_weekday(int yy, int mm, int dd) noexcept {
+  const std::int64_t days = days_since_epoch(yy, mm, dd);
+  int wd = static_cast<int>((days + 4) % 7);
+  if (wd < 0) {
+    wd += 7;
+  }
+  return wd;
+}
+
+// Day-of-month of the `nth` (1-based) Sunday of month `mm` in year `yy`.
+[[nodiscard]] int nth_sunday(int yy, int mm, int nth) noexcept {
+  const int first_wd = civil_weekday(yy, mm, 1);       // 0 = Sunday
+  const int first_sunday = 1 + ((7 - first_wd) % 7);   // first Sunday's day-of-month
+  return first_sunday + 7 * (nth - 1);
+}
+
+// Is a U.S.-Eastern civil DATE in daylight saving time (EDT)? EDT runs from the
+// 2nd Sunday of March to the 1st Sunday of November; the 16:00-ET option close is
+// always after the 02:00 transition, so the boundary Sundays resolve by date
+// alone (2nd-Sun-Mar = EDT, 1st-Sun-Nov = EST). Pure integer arithmetic.
+[[nodiscard]] bool us_eastern_is_dst(int yy, int mm, int dd) noexcept {
+  if (mm < 3 || mm > 11) {
+    return false;  // Dec, Jan, Feb -> EST
+  }
+  if (mm > 3 && mm < 11) {
+    return true;  // Apr .. Oct -> EDT
+  }
+  if (mm == 3) {
+    return dd >= nth_sunday(yy, 3, 2);  // on/after the 2nd Sunday
+  }
+  return dd < nth_sunday(yy, 11, 1);    // mm == 11: before the 1st Sunday
+}
+
 [[nodiscard]] std::string_view trim(std::string_view s) noexcept {
   std::size_t b = 0;
   std::size_t e = s.size();
@@ -58,6 +104,26 @@ constexpr double kPxScale = 1e-9;
   const char* last = s.data() + s.size();
   const std::from_chars_result res = std::from_chars(first, last, out);
   return res.ec == std::errc{} && res.ptr == last;
+}
+
+// Rewrite a bare "YYYY-MM-DD" expiry into the U.S.-equity PM close instant
+// "YYYY-MM-DDT16:00:00-04:00" (EDT) or "-05:00" (EST). No-op for any string that
+// is not exactly a 10-char bare date (already carries a time, or malformed).
+[[nodiscard]] std::string to_us_equity_pm_close(std::string_view date_iso) {
+  if (date_iso.size() != 10) {
+    return std::string(date_iso);
+  }
+  int yy = 0;
+  int mm = 0;
+  int dd = 0;
+  if (!parse_field(date_iso.substr(0, 4), yy) || !parse_field(date_iso.substr(5, 2), mm) ||
+      !parse_field(date_iso.substr(8, 2), dd)) {
+    return std::string(date_iso);
+  }
+  std::string out(date_iso);
+  out.append("T16:00:00");
+  out.append(us_eastern_is_dst(yy, mm, dd) ? "-04:00" : "-05:00");
+  return out;
 }
 
 [[nodiscard]] bool numeric_symbol_fallback(std::string_view symbol,
@@ -479,6 +545,14 @@ Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
     if (!osi.has_value()) {
       ++n_dropped;
       continue;
+    }
+    // Opt-in PM-close convention: stamp the DST-correct 16:00-ET close onto the
+    // bare expiry date so every downstream instant (the 0DTE filter and drop
+    // below, the PCP spot T, per-expiry rate T, and data_install's Chain::T /
+    // expiry_ns) carries the true PM-settled time-to-expiry. Default MidnightUtc
+    // leaves the bare date untouched -> bit-identical to the historical load.
+    if (spec.expiry_close == ExpiryCloseConvention::UsEquityPmClose) {
+      osi->expiry_iso = to_us_equity_pm_close(osi->expiry_iso);
     }
     // Drop expired / same-day (0DTE) contracts: with a 19:55Z snapshot and a
     // midnight-UTC expiry parse, an expiry on/before the snapshot date yields a

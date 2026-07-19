@@ -134,6 +134,8 @@ add_executable(atx-vol-tests
     earnings_repro_smoke_test.cpp    # T7: OPRA -> fit -> atmCenI/iEMove end-to-end (real NVDA board)
     # Earnings-censored atmCen reproduction (Task 9) — appended target:
     earnings_validation_test.cpp     # T9: cohort truth CSV -> validate_cohort_name RMSE + nEarnCnt gate
+    # AMZN-around-earnings CStar reproduction (WS-4) — appended target:
+    amzn_earnings_test.cpp           # real OPRA board -> two-pass C8 fit: front c2_eff<-1, arb-free
 )
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).
@@ -158,6 +160,14 @@ target_link_libraries(atx-vol-tests
 # that includes the header without this define is a hard compile error, so the
 # dead driver cannot silently re-enter the shipped library.
 target_compile_definitions(atx-vol-tests PRIVATE ATX_VOL_CALIB_POOL_TEST_ONLY)
+
+# AMZN-earnings correctness gate (amzn_earnings_test.cpp) shares the report's fit
+# via the header-only examples/amzn_earnings_fit.hpp — add examples/ as a PRIVATE
+# quoted-include root (mirrors how bench adds ../tests) — and bake the committed
+# fixture's absolute path so the test finds it regardless of the ctest CWD.
+target_include_directories(atx-vol-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../examples)
+target_compile_definitions(atx-vol-tests PRIVATE
+    "ATX_AMZN_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/data/amzn_earnings_2018/amzn_opra_cbbo1m_2018-04-26T1945Z.parquet\"")
 
 # Precompiled header (opt-in: ATX_USE_PCH; ON in the ninja/dev/rel presets, OFF
 # in `hygiene`). GoogleTest is #included by ~79 of the test TUs and is by far the
@@ -191,7 +201,7 @@ include(GoogleTest)
 # "atx_vol" label. `ctest --print-labels` will list atx_vol_fast/atx_vol_slow
 # only, not a standalone "atx_vol" entry.
 set(ATX_VOL_SLOW_FILTER
-    "MultinamePipeline.*:Corpus.*:CorpusGeneratedProperty.*:CorpusBuildSession.*:QualifiedCorpus.*:OpraBreadthCorpus.*:SpyFitCorpus.*:SigmaInterpCorpus.*:CallGreeksAl.*:CallGreeksFd.*:AndersenLake.*:AndersenLakeRegime.*:ImplicitDiff.*:SigmaInterp.*:CurveFitParallel.*:CurveFitParity.*:CurveSurfaceNoArb.*:SpyBidAskRegression.*:SpyPortfolioPnl.*:PnlGreeksConsistency.*:SpyArchiveRoundTrip.*:SpyRealCalendarReporting.*:SpyRealOpra.*:BacktestReal.*:BreadthRegime.*:WarmAcrossTime.*:BoundaryHoist.*:Dispersion.*:CorrectionCache.*:PricerFitterTest.*:PreparedPortfolio.*:AmericanGreeks.*:*SurfaceV2Qualification*:*SurfaceV2Fallback*:EarningsReproSmoke.*:EarningsValidation.*")
+    "MultinamePipeline.*:Corpus.*:CorpusGeneratedProperty.*:CorpusBuildSession.*:QualifiedCorpus.*:OpraBreadthCorpus.*:SpyFitCorpus.*:SigmaInterpCorpus.*:CallGreeksAl.*:CallGreeksFd.*:AndersenLake.*:AndersenLakeRegime.*:ImplicitDiff.*:SigmaInterp.*:CurveFitParallel.*:CurveFitParity.*:CurveSurfaceNoArb.*:SpyBidAskRegression.*:SpyPortfolioPnl.*:PnlGreeksConsistency.*:SpyArchiveRoundTrip.*:SpyRealCalendarReporting.*:SpyRealOpra.*:BacktestReal.*:BreadthRegime.*:WarmAcrossTime.*:BoundaryHoist.*:Dispersion.*:CorrectionCache.*:PricerFitterTest.*:PreparedPortfolio.*:AmericanGreeks.*:*SurfaceV2Qualification*:*SurfaceV2Fallback*:EarningsReproSmoke.*:EarningsValidation.*:AmznEarnings.*")
 
 # PRE_TEST: enumerate at ctest time, not as a POST_BUILD step -- relinking no longer
 # pays TWO test-enumeration runs of this ~2600-test binary (one per call below), and a

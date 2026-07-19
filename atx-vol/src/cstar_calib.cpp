@@ -314,7 +314,7 @@ void fit_modes_from_essvi_residuals(CStarParams& dst, const EssviParams& src) {
 
 }  // namespace
 
-Result<CStarParams> cstar_seed_from_essvi(const EssviParams& src) {
+Result<CStarParams> cstar_seed_from_essvi(const EssviParams& src, CStarTier tier) {
   if (!(src.theta > 0.0)) {
     return Err(ErrorCode::InvalidArgument,
                "cstar_seed_from_essvi: eSSVI theta must be > 0");
@@ -325,8 +325,8 @@ Result<CStarParams> cstar_seed_from_essvi(const EssviParams& src) {
   dst.F = src.F;
   dst.expiry_ns = src.expiry_ns;
   dst.expiry_id = src.expiry_id;
-  dst.active_modes = cstar_tier_mask(CStarTier::C16);
-  dst.fit_tier = CStarTier::C16;
+  dst.active_modes = cstar_tier_mask(tier);
+  dst.fit_tier = tier;
   dst.arb_damping = 1.0;
 
   if (!fit_base_from_essvi(src, dst)) {
@@ -334,6 +334,16 @@ Result<CStarParams> cstar_seed_from_essvi(const EssviParams& src) {
                "cstar_seed_from_essvi: eSSVI ATM variance not positive");
   }
   fit_modes_from_essvi_residuals(dst, src);
+  // Zero the betas of modes this tier does not carry: the ridge-LSQ above solves
+  // all 11 coefficients against the eSSVI residual, but only the active set is
+  // refit by cstar_calibrate_slice, so an inactive mode must not leak a nonzero
+  // seed coefficient (cstar_slice_w would still evaluate it). For C16 the mask is
+  // full and this loop is a no-op — the historical seed is preserved bitwise.
+  for (std::size_t j = 0; j < kCStarNModes; ++j) {
+    if ((dst.active_modes & static_cast<std::uint16_t>(1u << j)) == 0u) {
+      dst.beta[j] = 0.0;
+    }
+  }
   // The base shape alone is arb-free for sane (θ, s2, c2, C_L, C_R); the modes
   // can violate. Projection is best-effort here: it now propagates a residual
   // no-arb failure (Err), but the seed remains usable as a fallback baseline —
@@ -633,8 +643,8 @@ void fit_slice_block_lm_irls(CStarParams& slice, std::span<const FitObs> obs,
 
 Result<CStarParams> cstar_calibrate_slice(const EssviParams& essvi_seed,
                                           const Chain& chain, double df,
-                                          const CalibOpts& opts) {
-  ATX_TRY(CStarParams dst, cstar_seed_from_essvi(essvi_seed));
+                                          const CalibOpts& opts, CStarTier tier) {
+  ATX_TRY(CStarParams dst, cstar_seed_from_essvi(essvi_seed, tier));
   const CStarParams seed_snapshot = dst;
 
   const double F = essvi_seed.F;

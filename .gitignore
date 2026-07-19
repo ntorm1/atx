@@ -90,3 +90,11 @@ __pycache__/
 # Parquet lakehouse exports are reproducible from the DuckDB warehouse
 atx-impl/db/lake/
 *.csv
+
+# Vendor option-chain data (Databento OPRA) is NOT committed — licensing +
+# repo policy ("commits no vendor option-chain data"). Real-data tests
+# skip-if-absent; regenerate fixtures per the committed README/manifest.
+atx-vol/tests/data/**/*.parquet
+atx-vol/tests/data/**/*.dbn.zst
+# Generated report artifacts (figures/html) — reproducible from the tool + script.
+atx-vol/python/report_out_real/

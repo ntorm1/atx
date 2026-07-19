@@ -76,16 +76,23 @@ enum class CStarLmStatus : std::uint8_t {
 // Seed a CStar slice from an eSSVI slice: match θ = w_essvi(0), the ATM
 // derivatives (→ s2, c2) and asymptotic wing slopes (→ C_left, C_right) in
 // closed form, ridge-LSQ the 11 modal coefficients against (w_essvi − w_base)
-// on 41 z-knots, then project to no-arb. Tags the slice C16 (all modes active).
+// on 41 z-knots, then project to no-arb. `tier` selects the active-mode set
+// (`cstar_tier_mask`) and is stamped into `fit_tier`; inactive modes are zeroed,
+// so a lower tier concentrates curvature in the base (θ, s2, c2, wings) rather
+// than the modes. Default C16 (all modes) is bit-identical to the historical seed.
 //
 // @return InvalidArgument if the eSSVI ATM variance w_essvi(0) is not > 0.
-[[nodiscard]] Result<CStarParams> cstar_seed_from_essvi(const EssviParams& src);
+[[nodiscard]] Result<CStarParams> cstar_seed_from_essvi(
+    const EssviParams& src, CStarTier tier = CStarTier::C16);
 
 // Price-domain per-slice calibration (Black-76 European; see the AL PORT NOTE).
-// Seeds from `essvi_seed`, builds the filtered observation set for `chain`
-// (using F/T from the eSSVI slice and the caller-supplied discount factor
-// `df`), runs the IRLS-Huber block LM, projects to no-arb, and quality-gates
-// against the seed (reverting when the fit is worse than its own seed by > 5%).
+// Seeds from `essvi_seed` at `tier`, builds the filtered observation set for
+// `chain` (using F/T from the eSSVI slice and the caller-supplied discount factor
+// `df`), runs the IRLS-Huber block LM over that tier's active modes, projects to
+// no-arb, and quality-gates against the seed (reverting when the fit is worse than
+// its own seed by > 5%). `tier` defaults to C16 (bit-identical to the historical
+// call); a near-term W-shape slice fits better at C8 (base + shoulder/ATM modes),
+// which loads the frown curvature into the base c2 instead of the wing modes.
 //
 // @return whatever `build_observations` returns on failure (NotFound when
 //         fewer than 5 quotes survive, InvalidArgument on a malformed chain),
@@ -93,6 +100,6 @@ enum class CStarLmStatus : std::uint8_t {
 //         (or seed-reverted) slice.
 [[nodiscard]] Result<CStarParams> cstar_calibrate_slice(
     const EssviParams& essvi_seed, const Chain& chain, double df,
-    const CalibOpts& opts);
+    const CalibOpts& opts, CStarTier tier = CStarTier::C16);
 
 }  // namespace atx::vol

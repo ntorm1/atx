@@ -57,6 +57,26 @@ enum class OpraProvenanceMode : std::uint8_t {
   Strict = 1,
 };
 
+// Convention for turning a bare OSI expiry DATE into an expiry INSTANT.
+//
+//   MidnightUtc     — the historical behavior: the bare "YYYY-MM-DD" is parsed as
+//                     00:00:00Z, so a same-afternoon snapshot sees the front
+//                     expiry only a few hours out. DEFAULT (bit-identical to every
+//                     existing OPRA load / golden).
+//   UsEquityPmClose — U.S. listed equity/ETF options are PM-settled: they expire
+//                     at 16:00 America/New_York on the expiry date. When selected,
+//                     the loader stamps each expiry ISO with the DST-correct
+//                     Eastern close offset (EDT = UTC-4 from the 2nd Sunday of
+//                     March to the 1st Sunday of November, else EST = UTC-5), e.g.
+//                     "2018-04-27T16:00:00-04:00" -> 2018-04-27T20:00:00Z. This is
+//                     the correct time-to-expiry for near-dated slices (a 1-DTE
+//                     earnings expiry becomes ~1.0 day out, not ~4 hours). Opt-in
+//                     so existing loads keep their exact expiry instants.
+enum class ExpiryCloseConvention : std::uint8_t {
+  MidnightUtc = 0,
+  UsEquityPmClose = 1,
+};
+
 // One date-scoped Databento source identity. Raw OSI text is dictionary-owned
 // once per instrument id; observations carry only the aligned numeric id plane.
 struct OpraInstrumentIdentity {
@@ -121,6 +141,11 @@ struct OpraLoadSpec {
   std::vector<double> yc_pillar_t; // pillar year-fractions (empty => flat r)
   std::vector<double> yc_pillar_r; // pillar zero rates (same length as _t)
   OpraProvenanceMode provenance_mode{OpraProvenanceMode::Compatibility};
+  // Expiry-instant convention (see ExpiryCloseConvention). Default MidnightUtc
+  // is bit-identical to every historical OPRA load; UsEquityPmClose stamps the
+  // DST-correct 16:00-ET close onto each expiry so near-dated slices carry their
+  // true (PM-settled) time-to-expiry.
+  ExpiryCloseConvention expiry_close{ExpiryCloseConvention::MidnightUtc};
   FitContext fit_context{};
   OpraMarketInputProvenance market_input_provenance{};
   // T convention governing every year-fraction this loader computes: the PCP
