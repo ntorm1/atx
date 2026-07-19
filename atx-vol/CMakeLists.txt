@@ -367,4 +367,14 @@ if(ATX_BUILD_EXAMPLES)
     # SR-tenor atmCenI_{Nd} values. See examples/earnings_repro.cpp.
     add_executable(earnings-repro examples/earnings_repro.cpp)
     target_link_libraries(earnings-repro PRIVATE atx::vol atx::core atx_warnings)
+
+    # Earnings-censored atmCen cohort VALIDATION driver (Task 9): batch the
+    # shared harness (atx/vol/earnings_repro_config.hpp) over the checked-in
+    # SpiderRock truth CSV -- per name, OPRA board -> run_earnings_repro under an
+    # EarningsReproConfig -> per-tenor + cohort atmCenI RMSE + iEMove residual +
+    # the nEarnCnt schedule-alignment gate. Task 10 sweeps conventions with it.
+    # A name whose parquet is absent is SKIPPED, not fatal. See
+    # tools/earnings_validation.cpp.
+    add_executable(earnings-validation tools/earnings_validation.cpp)
+    target_link_libraries(earnings-validation PRIVATE atx::vol atx::core atx_warnings)
 endif()

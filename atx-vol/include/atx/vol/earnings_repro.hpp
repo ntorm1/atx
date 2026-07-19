@@ -79,6 +79,12 @@ namespace atx::vol {
 
 class VolaSession;
 
+// Convention knob-carrier (atx/vol/earnings_repro_config.hpp). Forward-declared
+// here so the 3-arg `run_earnings_repro` consumers (the Task 7 smoke test, the
+// `earnings-repro` CLI) stay decoupled from the config header's heavier include
+// graph; a caller of the 4-arg overload includes the config header itself.
+struct EarningsReproConfig;
+
 // Result of the full earnings-repro pipeline for one underlying's fitted
 // session at one valuation instant.
 struct EarningsReproResult {
@@ -132,5 +138,35 @@ struct EarningsReproResult {
 [[nodiscard]] Result<EarningsReproResult> run_earnings_repro(const VolaSession &sess,
                                                               const EventSchedule &sched,
                                                               std::int64_t now_ns);
+
+// Config-driven overload (Task 9): runs the same pipeline but under an explicit
+// `EarningsReproConfig` so the cohort-validation harness + Task 10 sweep can
+// vary convention knobs. Only the WIRED knobs affect the result:
+//   - `cfg.time`               -> the 12 SR tenor year-fractions' time
+//                                 convention (`tenor_years`), replacing the
+//                                 session's own `sess.inputs().time`.
+//   - `cfg.clock_days_per_year`-> when > 0, the tenor year-fraction is the
+//                                 fixed-clock `N_trading_days /
+//                                 clock_days_per_year` instead of the
+//                                 calendar-aware `tenor_years` advance (0 = the
+//                                 calendar-aware default).
+//   - `cfg.censor_space`       -> true: censor each bracketing pillar BEFORE
+//                                 interpolating (SR FLEX); false: interpolate a
+//                                 single plain cross-pillar variance/vol, then
+//                                 censor once with the query's own event count.
+//   - `cfg.interp`             -> Variance: interpolate (censored) TOTAL
+//                                 VARIANCE linearly in T; Vol: interpolate
+//                                 (censored) VOL linearly in T.
+// The remaining `EarningsReproConfig` fields (`atm_mode`, `deam_pricer`,
+// `implied_borrow`) are carried for Task 10/M5 but have no wiring seam in this
+// pipeline yet -- they DO NOT affect the result (see the config header).
+//
+// The 3-arg overload above is exactly this one called with a config whose
+// `time == sess.inputs().time` and every other field default -- i.e. the
+// historical behavior is bit-preserved.
+[[nodiscard]] Result<EarningsReproResult> run_earnings_repro(const VolaSession &sess,
+                                                              const EventSchedule &sched,
+                                                              std::int64_t now_ns,
+                                                              const EarningsReproConfig &cfg);
 
 } // namespace atx::vol

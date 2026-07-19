@@ -124,6 +124,8 @@ add_executable(atx-vol-tests
     earnings_forecast_loader_test.cpp # T5: forecast TSV -> sorted epoch-ns events
     # Earnings-censored atmCen reproduction (Task 7) — appended target:
     earnings_repro_smoke_test.cpp    # T7: OPRA -> fit -> atmCenI/iEMove end-to-end (real NVDA board)
+    # Earnings-censored atmCen reproduction (Task 9) — appended target:
+    earnings_validation_test.cpp     # T9: cohort truth CSV -> validate_cohort_name RMSE + nEarnCnt gate
 )
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).
@@ -174,7 +176,7 @@ include(GoogleTest)
 # "atx_vol" label. `ctest --print-labels` will list atx_vol_fast/atx_vol_slow
 # only, not a standalone "atx_vol" entry.
 set(ATX_VOL_SLOW_FILTER
-    "MultinamePipeline.*:Corpus.*:CorpusGeneratedProperty.*:CorpusBuildSession.*:QualifiedCorpus.*:OpraBreadthCorpus.*:SpyFitCorpus.*:SigmaInterpCorpus.*:CallGreeksAl.*:CallGreeksFd.*:AndersenLake.*:AndersenLakeRegime.*:ImplicitDiff.*:SigmaInterp.*:CurveFitParallel.*:CurveFitParity.*:CurveSurfaceNoArb.*:SpyBidAskRegression.*:SpyPortfolioPnl.*:PnlGreeksConsistency.*:SpyArchiveRoundTrip.*:SpyRealCalendarReporting.*:SpyRealOpra.*:BacktestReal.*:BreadthRegime.*:WarmAcrossTime.*:BoundaryHoist.*:Dispersion.*:CorrectionCache.*:PricerFitterTest.*:PreparedPortfolio.*:AmericanGreeks.*:*SurfaceV2Qualification*:*SurfaceV2Fallback*:EarningsReproSmoke.*")
+    "MultinamePipeline.*:Corpus.*:CorpusGeneratedProperty.*:CorpusBuildSession.*:QualifiedCorpus.*:OpraBreadthCorpus.*:SpyFitCorpus.*:SigmaInterpCorpus.*:CallGreeksAl.*:CallGreeksFd.*:AndersenLake.*:AndersenLakeRegime.*:ImplicitDiff.*:SigmaInterp.*:CurveFitParallel.*:CurveFitParity.*:CurveSurfaceNoArb.*:SpyBidAskRegression.*:SpyPortfolioPnl.*:PnlGreeksConsistency.*:SpyArchiveRoundTrip.*:SpyRealCalendarReporting.*:SpyRealOpra.*:BacktestReal.*:BreadthRegime.*:WarmAcrossTime.*:BoundaryHoist.*:Dispersion.*:CorrectionCache.*:PricerFitterTest.*:PreparedPortfolio.*:AmericanGreeks.*:*SurfaceV2Qualification*:*SurfaceV2Fallback*:EarningsReproSmoke.*:EarningsValidation.*")
 
 # PRE_TEST: enumerate at ctest time, not as a POST_BUILD step -- relinking no longer
 # pays TWO test-enumeration runs of this ~2600-test binary (one per call below), and a
