@@ -70,6 +70,16 @@ SimdRoute american_put_boundary_batch(const double* S, const double* K,
                                       const double* r, const double* q,
                                       double* price_out, std::size_t n) noexcept;
 
+// Whether the AVX2 boundary route is selected for `isa` on this host (ForceAvx2 =>
+// AVX2 iff supported; Auto => the kShipAvx2Boundary ship gate; ForceScalar => never).
+// Mirrors avx2_greeks_selected. Exposed so a threaded MARKS caller (portfolio_pricer)
+// can gate its invariant-pack-membership tile schedule on the SAME predicate the
+// dispatch uses: with kShipAvx2Boundary now ON, Auto marks ride AVX2, whose 4-lane pack
+// composition must stay independent of the thread partition to remain thread-count
+// bit-identical. A range-split (per-thread) marks batch is NOT thread-invariant under
+// AVX2 — use the tile schedule whenever this predicate is true, not just for ForceAvx2.
+[[nodiscard]] bool avx2_boundary_selected(SimdIsa isa) noexcept;
+
 // ── K3: laned ANALYTIC American-PUT Greeks bundle (call-local ISA) ──────────
 //
 // Fills out_greeks[i] (length n) with the full 8-Greek analytic bundle + price for a

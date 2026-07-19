@@ -12,17 +12,20 @@
 // patch through the exact scalar andersen_lake so the batch is bit-identical to a
 // per-contract scalar loop. Public output order is always preserved.
 //
-// ## Honest scope (READ THIS)
-//   * american_price_batch dispatches T13's REAL vectorized boundary kernel. That
-//     kernel's AVX2 path is GATED OFF by default (kShipAvx2Boundary=false: measured
-//     ~1.7× < the 2.0× ship gate, seed-bound), so under PricingKernel{isa=Auto}
-//     every lane runs the scalar boundary solve — the batch INHERITS T13's scalar
-//     default. Under isa=ForceAvx2 on an AVX2 host the genuine-American lanes run
-//     the vector kernel (provably exercised, validated to T13's ~6.4e-7 gate).
-//   * american_greeks_batch is a SoA surface + grouping + boundary-reuse over the
-//     EXISTING scalar T9 Greek routes (american_greeks_fd / american_greeks_al).
-//     There is NO vectorized American Greek STENCIL — greek-stencil vectorization
-//     beyond the price boundary is future work. Every Greek lane's route is Scalar.
+// ## Scope (READ THIS) — updated 2026-07-19 (WS-K AVX2 default-ON flip)
+//   * american_price_batch dispatches the REAL vectorized boundary kernel. The AVX2
+//     path is now DEFAULT ON (kShipAvx2Boundary=true): under PricingKernel{isa=Auto}
+//     the genuine early-exercise American lanes run the 4-wide vector boundary pack on
+//     an AVX2-capable host (validated within the economic gate; ForceScalar and non-AVX2
+//     hosts keep the exact scalar solve). isa=ForceScalar/ForceAvx2 override per call.
+//   * american_greeks_batch: the FD route (analytic_greeks=false) is the scalar
+//     american_greeks_fd fan. The ANALYTIC route (analytic_greeks=true) dispatches PUT
+//     lanes through the K3 LANED AVX2 Greeks bundle (american_put_greeks_batch: 5
+//     boundaries 4-wide/pack) when AVX2 is selected (kShipAvx2Greeks=true, so Auto uses
+//     it on capable hosts; ForceAvx2 opts in explicitly), matching scalar
+//     american_greeks_al within the documented economic gate. CALL lanes, the FD route,
+//     and every non-early-exercise / non-finite lane stay on the scalar oracle. Per-lane
+//     route is reported via ws.lane_route_view().
 //
 // PricingKernel::isa is a call-local dispatch choice. Concurrent batch calls may
 // select different ISAs without reading or mutating the legacy process-global
@@ -268,12 +271,16 @@ enum class GreekFieldMask : std::uint32_t {
     const ResolvedAmericanPriceBatchRequest& request);
 
 // American Greeks for a book into the SoA columns of `greeks` (only the fields in
-// `fields` — and only non-null columns — are written). Each lane's Greeks come
-// from the EXISTING scalar T9 route (american_greeks_fd or, if kernel.analytic_greeks,
-// american_greeks_al); this is grouping + SoA + boundary-reuse, NOT a vectorized
-// Greek stencil (every lane's route is Scalar). Per-lane status/route land in the
-// workspace (ws.lane_status_view()/lane_route_view()). Returns InvalidArgument on
-// a span-length mismatch.
+// `fields` — and only non-null columns — are written). FD route (analytic_greeks=false)
+// fans scalar american_greeks_fd per lane. Analytic route (analytic_greeks=true)
+// dispatches PUT lanes through the K3 laned AVX2 bundle when AVX2 is selected
+// (kShipAvx2Greeks — Auto on capable hosts, or ForceAvx2), matching scalar
+// american_greeks_al within the documented economic gate, and patches CALL /
+// non-early-exercise / non-finite lanes to the scalar oracle; ForceScalar reproduces the
+// bit-identical scalar bundle. `fields` also drives the K4 first-order solve-skip
+// (need_vega = Vega|Volga|Vanna, need_rho = Rho, need_charm = Charm). Per-lane
+// status/route land in the workspace (ws.lane_status_view()/lane_route_view()). Returns
+// InvalidArgument on a span-length mismatch.
 [[nodiscard]] Status american_greeks_batch(const AmericanBatchInput& in,
                                            GreekFieldMask fields,
                                            simd::GreeksBatchSoA& greeks,
