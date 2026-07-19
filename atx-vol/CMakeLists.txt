@@ -110,6 +110,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/analytics_io.cpp
     src/earnings_term_fit.cpp
     src/sr_tenor_grid.cpp
+    src/earnings_forecast_loader.cpp
 )
 add_library(atx::vol ALIAS atx-vol)
 

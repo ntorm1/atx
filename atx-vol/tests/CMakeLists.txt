@@ -120,6 +120,8 @@ add_executable(atx-vol-tests
     adjoint_greeks_test.cpp          # P2: adjoint/IFT American greeks parity vs central-diff FD
     # Earnings-censored atmCen reproduction (Task 1) — appended target:
     earnings_term_fit_test.cpp       # T1: censored_atm_vol per-expiry primitive
+    # Earnings-censored atmCen reproduction (Task 5) — appended target:
+    earnings_forecast_loader_test.cpp # T5: forecast TSV -> sorted epoch-ns events
 )
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).
