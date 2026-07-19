@@ -201,11 +201,45 @@ TEST(FitScheduler, PartialWorkerLaunchFailureAbortsWaitingWorkersWithoutRunningT
         visits.fetch_add(1u);
         return atx::core::Ok();
       },
-      &hooks);
+      detail::FitAffinity::None, &hooks);
 
   ASSERT_FALSE(status);
   EXPECT_EQ(status.error().code(), ErrorCode::Internal);
   EXPECT_EQ(visits.load(), 0u);
+}
+
+// C4 (perf): the PerformanceCores affinity path must be a pure scheduling steer —
+// every index still runs exactly once and produces the SAME per-index output as the
+// unpinned None path (pinning changes only WHICH logical CPU a context runs on).
+// performance_core_count() must be queryable without crashing (it is 0 when P-core
+// discovery is unavailable, in which case the pinned path transparently runs
+// unpinned). This is the byte-identity gate for C4's affinity primitive.
+TEST(FitScheduler, PerformanceCoresAffinityIsAPureSchedulingSteer) {
+  // Discovery must never throw or crash; 0 is a valid answer (unavailable).
+  const unsigned p_cores = detail::performance_core_count();
+  EXPECT_GE(p_cores, 0u);
+
+  constexpr std::size_t kTaskCount = 32u;
+  constexpr unsigned kBudget = 8u;
+  const auto run = [](detail::FitAffinity affinity,
+                      std::array<std::size_t, kTaskCount> &output) -> Status {
+    return detail::run_bounded_fit_tasks(
+        kTaskCount, kBudget,
+        [&output](std::size_t index) -> Status {
+          output[index] = (index * 2654435761u) ^ (index + 1u); // deterministic per-index value
+          return atx::core::Ok();
+        },
+        affinity);
+  };
+
+  std::array<std::size_t, kTaskCount> unpinned{};
+  std::array<std::size_t, kTaskCount> pinned{};
+  const Status s_unpinned = run(detail::FitAffinity::None, unpinned);
+  const Status s_pinned = run(detail::FitAffinity::PerformanceCores, pinned);
+
+  ASSERT_TRUE(s_unpinned) << s_unpinned.error().to_string();
+  ASSERT_TRUE(s_pinned) << s_pinned.error().to_string();
+  EXPECT_EQ(pinned, unpinned); // byte-identical per-index outputs across affinity
 }
 
 // Bit-for-bit double equality via the raw uint64 pattern (the round-trip gate is
