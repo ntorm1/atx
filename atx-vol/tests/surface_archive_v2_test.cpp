@@ -343,11 +343,41 @@ void expect_batch_bit_identical(const PricedSurface &a, const PricedSurfaceView 
   const auto sa = a.evaluate_batch(K, T, side, fields, analytic, out_a);
   const auto sv = v.evaluate_batch(K, T, side, fields, analytic, out_v);
   ASSERT_EQ(sa.has_value(), sv.has_value());
+  // WS-P1a GOLDEN REFRESH (ANALYTIC route only): PricedSurface::evaluate_batch now
+  // dispatches LANED (AVX2) analytic Greeks under Auto (P1a) for both sides (P1b), while
+  // PricedSurfaceView::evaluate_batch still runs the scalar per-contract fan — the view has
+  // no laned path at all. The two implementations therefore differ on the ANALYTIC route by
+  // the AVX2 laned-vs-scalar delta (~1e-13/greek, sub-economic), so price/greeks are
+  // re-gated there from bit-identity to the same economic tolerance the laned kernels are
+  // validated against. IV (from the resolution, no pricer solve) and status stay
+  // bit-identical, and the NON-analytic (FD) route — where neither side lanes — keeps the
+  // full bit-identity contract that proves the archive round-trip is exact.
+  // FOLLOW-UP for the PM: wiring the same laned path into PricedSurfaceView would restore
+  // bit-identity here AND extend the P1 speedup to reloaded/archived surfaces.
+  const auto rel_close = [](double x, double y, double rtol, double atol) {
+    if (!std::isfinite(x) || !std::isfinite(y)) {
+      return std::isnan(x) == std::isnan(y);
+    }
+    return std::fabs(x - y) <= atol + rtol * std::fabs(y);
+  };
   for (std::size_t i = 0; i < n; ++i) {
     EXPECT_EQ(st_a[i].has_value(), st_v[i].has_value()) << "batch i=" << i;
     EXPECT_TRUE(bits_equal(iv_a[i], iv_v[i])) << "batch iv i=" << i;
-    EXPECT_TRUE(bits_equal(px_a[i], px_v[i])) << "batch px i=" << i;
-    EXPECT_TRUE(greeks_bits_equal(gr_a[i], gr_v[i])) << "batch gr i=" << i;
+    if (!analytic) {
+      EXPECT_TRUE(bits_equal(px_a[i], px_v[i])) << "batch px i=" << i;
+      EXPECT_TRUE(greeks_bits_equal(gr_a[i], gr_v[i])) << "batch gr i=" << i;
+      continue;
+    }
+    EXPECT_TRUE(rel_close(px_a[i], px_v[i], 1e-6, 1e-8)) << "batch px i=" << i;
+    EXPECT_TRUE(rel_close(gr_a[i].price, gr_v[i].price, 1e-6, 1e-8)) << "batch gr.price i=" << i;
+    EXPECT_TRUE(rel_close(gr_a[i].delta, gr_v[i].delta, 1e-5, 1e-7)) << "batch gr.delta i=" << i;
+    EXPECT_TRUE(rel_close(gr_a[i].gamma, gr_v[i].gamma, 1e-3, 1e-7)) << "batch gr.gamma i=" << i;
+    EXPECT_TRUE(rel_close(gr_a[i].vega, gr_v[i].vega, 1e-5, 1e-7)) << "batch gr.vega i=" << i;
+    EXPECT_TRUE(rel_close(gr_a[i].theta, gr_v[i].theta, 1e-4, 1e-6)) << "batch gr.theta i=" << i;
+    EXPECT_TRUE(rel_close(gr_a[i].rho, gr_v[i].rho, 1e-4, 1e-6)) << "batch gr.rho i=" << i;
+    EXPECT_TRUE(rel_close(gr_a[i].vanna, gr_v[i].vanna, 1e-3, 1e-6)) << "batch gr.vanna i=" << i;
+    EXPECT_TRUE(rel_close(gr_a[i].volga, gr_v[i].volga, 1e-2, 1e-5)) << "batch gr.volga i=" << i;
+    EXPECT_TRUE(rel_close(gr_a[i].charm, gr_v[i].charm, 1e-3, 1e-6)) << "batch gr.charm i=" << i;
   }
 }
 
