@@ -203,6 +203,14 @@ struct LegacyPresetMapping {
     return {FitQualityMode::Latency, SurfacePurpose::Risk};
   case FitPreset::Accurate:
     return {FitQualityMode::Accuracy, SurfacePurpose::Risk};
+  case FitPreset::Populate:
+    // C3 bulk-populate tier (F3): a Robust-GRADE risk request — Balanced quality
+    // mode (MonotoneFit, parity, audited inversions, carry confidence) with the
+    // cheaper Andersen-Lake de-Am preset honored downstream via the preset-keyed
+    // tier in PricerFitter::apply_risk_policy (F1). Made explicit so it no longer
+    // silently falls through `default:`; the quality contract is deliberate, not
+    // an accident of the fall-through.
+    return {FitQualityMode::Balanced, SurfacePurpose::Risk};
   case FitPreset::Robust:
   default:
     return {FitQualityMode::Balanced, SurfacePurpose::Risk};
