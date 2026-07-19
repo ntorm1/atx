@@ -182,7 +182,12 @@ Result<std::vector<UniverseRow>> read_universe(const fs::path &path) {
   ATX_TRY(std::string text, read_text(path));
   constexpr std::string_view header = "effective_date\tsymbol\traw_weight\tsource\tas_of";
   const std::size_t first_end = text.find('\n');
-  if (first_end == std::string::npos || std::string_view{text}.substr(0, first_end) != header)
+  if (first_end == std::string::npos)
+    return Err(ErrorCode::ParseError, "bad universe schedule header");
+  std::string_view header_line = std::string_view{text}.substr(0, first_end);
+  if (!header_line.empty() && header_line.back() == '\r')
+    header_line.remove_suffix(1);  // tolerate CRLF headers (data rows already CR-stripped below)
+  if (header_line != header)
     return Err(ErrorCode::ParseError, "bad universe schedule header");
   std::vector<UniverseRow> rows;
   std::size_t start = first_end + 1;
