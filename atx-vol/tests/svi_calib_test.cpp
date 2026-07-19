@@ -525,4 +525,131 @@ TEST(SviMmCalibSurface, FitsSyntheticSlice_Admissible) {
   EXPECT_EQ(adm.n_violations, 0u);
 }
 
+// Build a synthetic single-expiry chain over a WIDE log-moneyness range whose
+// OTM legs price a known raw-SVI slice at F = 100, df = 1. Same construction as
+// make_svi_underlying but with a caller-chosen k-range and strike count so a
+// steep-wing (Lee-violating) truth is well sampled on both wings.
+[[nodiscard]] Underlying make_svi_underlying_range(double a, double b, double rho,
+                                                   double m, double sigma,
+                                                   double T, double k_lo,
+                                                   double k_hi, int n,
+                                                   std::int64_t expiry_ns) {
+  constexpr double F = 100.0;
+  constexpr double df = 1.0;
+  Underlying under{};
+  under.uid = 1u;
+  Chain c{};
+  c.uid = 1u;
+  c.expiry_id = 0u;
+  c.expiry_ns = expiry_ns;
+  c.T = T;
+  for (int i = 0; i < n; ++i) {
+    const double k =
+        k_lo + (k_hi - k_lo) * static_cast<double>(i) / static_cast<double>(n - 1);
+    c.strikes.push_back(F * std::exp(k));
+  }
+  const std::size_t two_n = 2u * c.strikes.size();
+  c.bids.assign(two_n, 0.0);
+  c.asks.assign(two_n, 0.0);
+  c.mids.assign(two_n, 0.0);
+  c.flags.assign(two_n, 0u);
+  for (std::size_t s = 0; s < c.strikes.size(); ++s) {
+    const double K = c.strikes[s];
+    const double k = std::log(K / F);
+    const double sig = std::sqrt(svi_w(a, b, rho, m, sigma, k) / T);
+    for (int side_i = 0; side_i < 2; ++side_i) {
+      const Side side = static_cast<Side>(static_cast<std::uint8_t>(side_i));
+      const std::size_t idx = chain_index(static_cast<std::uint16_t>(s), side);
+      const double price = black76_price(F, K, T, sig, df, side);
+      c.bids[idx] = price * 0.999;
+      c.asks[idx] = price * 1.001;
+      c.mids[idx] = price;
+    }
+  }
+  under.chains.push_back(std::move(c));
+  return under;
+}
+
+// C-1 regression (WS-C): a butterfly-arbitrage SVI smile must NEVER be served by
+// the surface driver. `calib_pool` builds a Parametrization::Svi VolSurface via
+// this driver and serves it DIRECTLY (VolSurface::w -> svi_total_w), bypassing
+// the fit_slice_curve butterfly gate. The driver must therefore repair-or-drop a
+// violating slice at the source, not merely tally it.
+TEST(SviCalibSurface, ButterflyInadmissibleFit_IsRepairedOrDropped_NeverServed) {
+  // Steep-wing truth well past the Lee wing-slope bound: b*(1+|rho|) = 6*1.4 =
+  // 8.4 >> 4/T = 4. The quasi-explicit raw-SVI fit reproduces the steepness and
+  // lands OUTSIDE the Martini-Mingone polytope.
+  const double a = 0.04;
+  const double b = 6.0;
+  const double rho = -0.40;
+  const double m = 0.0;
+  const double sigma = 0.06;
+  const double T = 1.0;
+  const std::int64_t expiry_ns = 1'700'000'000'000'000'000LL;
+
+  // Disable the post-fit sigma clamp so the steep slice reaches the butterfly
+  // gate rather than being dropped for wing vol.
+  CalibOpts opts = permissive_opts();
+  opts.max_post_fit_sigma = 0.0;
+
+  // (1) Non-vacuity: the RAW per-slice fitter really does produce a butterfly-arb
+  //     slice for this data — so the driver's gate has something to catch.
+  const std::vector<FitObs> obs =
+      build_obs_from_svi(41, -0.55, 0.55, a, b, rho, m, sigma, T);
+  FitDiag raw_diag{};
+  const auto raw = svi_fit_slice(std::span<const FitObs>(obs), T, 100.0, opts,
+                                 &raw_diag);
+  ASSERT_TRUE(raw.has_value());
+  EXPECT_GT(arb_check_butterfly_svi_mm(raw.value(), T).n_violations, 0u)
+      << "fixture no longer induces a raw butterfly violation; make the wing "
+         "steeper";
+
+  // (2) The surface driver serves NOTHING arbitrageable, whether it repaired the
+  //     slice onto the polytope or dropped it.
+  const Underlying under =
+      make_svi_underlying_range(a, b, rho, m, sigma, T, -0.55, 0.55, 41, expiry_ns);
+  const CurveSet cs = make_flat_curve(100.0, T, expiry_ns);
+  auto surf_res = VolSurface::create(1u, Parametrization::Svi, 4);
+  ASSERT_TRUE(surf_res.has_value());
+  VolSurface surf = std::move(surf_res).value();
+
+  FitDiag diag{};
+  const auto rc = svi_calib_surface(surf, under, cs, opts, &diag);
+  (void)rc;  // Ok (repaired+served) or NotFound (dropped) — both are arb-free.
+  for (std::size_t i = 0; i < surf.n_slices(); ++i) {
+    const SviParams served = surf.svi_slices()[i];
+    EXPECT_EQ(arb_check_butterfly_svi_mm(served, served.T).n_violations, 0u)
+        << "served SVI slice " << i << " is butterfly-inadmissible";
+  }
+  // The gate was actually exercised: the raw fit's pre-repair violation was
+  // recorded before the driver repaired/dropped it.
+  EXPECT_GT(diag.n_butterfly_viol, 0u);
+}
+
+// C-2 sanity (WS-C): with the quasi-explicit Nelder-Mead simplex budget restored
+// to the C-parity 200 (was collapsing to max_inner_iter = 12), a wide, skewed
+// smile fits to depth. Loose bound — the exact RMSE delta vs the 12-cap is
+// reported in the sprint notes, not pinned here (it would be brittle).
+TEST(SviCalib, WideSkewedSmile_FitsToDepth) {
+  const double a = 0.02;
+  const double b = 0.30;
+  const double rho = -0.60;  // strong skew
+  const double m = 0.0;
+  const double sigma = 0.50;  // wide
+  const double T = 1.0;
+
+  const std::vector<FitObs> obs =
+      build_uniform_obs(61, -1.00, 1.00, a, b, rho, m, sigma, T);
+  FitDiag diag{};
+  const auto res =
+      svi_fit_slice(std::span<const FitObs>(obs), T, 100.0, calib_default_opts(),
+                    &diag);
+  ASSERT_TRUE(res.has_value());
+  const double max_rel = max_rel_w_error(res.value(), a, b, rho, m, sigma, -80, 80);
+  // At the old max_inner_iter=12 cap this wide/skewed smile under-fits to
+  // max_rel_w ~ 3.2e-4 (vega-wtd vol RMSE ~ 3.5e-5); at the restored 200-move
+  // C-parity budget it fits to ~4e-9 / ~5e-10 — well within this bound.
+  EXPECT_LT(max_rel, 0.02);
+}
+
 }  // namespace
