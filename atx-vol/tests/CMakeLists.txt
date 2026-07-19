@@ -144,6 +144,7 @@ target_link_libraries(atx-vol-tests
     PRIVATE
         atx::vol
         atx::core
+        atx-vol-archive-v1  # WS-G G2: v1 archive read/write pulled from the isolated TU
         GTest::gtest_main
         atx_warnings
 )
