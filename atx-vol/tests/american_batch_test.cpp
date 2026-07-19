@@ -121,7 +121,9 @@ TEST(AmericanBoundaryBatch, PerCallIsaDoesNotMutateProcessOverride) {
 
 TEST(AmericanBoundaryBatch, PerCallAutoUsesShipGateWithoutMutatingGlobalOverride) {
   IsaGuard g;
-  simd::set_simd_isa_override(simd::SimdIsa::ForceAvx2);
+  // Set the process override to the OPPOSITE of what Auto will pick, to prove the
+  // per-call Auto route is call-local (reads the ship gate, NOT the global override).
+  simd::set_simd_isa_override(simd::SimdIsa::ForceScalar);
   const Book b = make_book();
   constexpr std::size_t n = 1;
   ASSERT_GE(b.size(), n);
@@ -131,8 +133,11 @@ TEST(AmericanBoundaryBatch, PerCallAutoUsesShipGateWithoutMutatingGlobalOverride
       b.S.data(), b.K.data(), b.T.data(), b.sigma.data(), b.r.data(), b.q.data(), price.data(), n,
       simd::SimdIsa::Auto);
 
-  EXPECT_EQ(route, simd::SimdRoute::Scalar);
-  EXPECT_EQ(simd::simd_isa_override(), simd::SimdIsa::ForceAvx2);
+  // WS-K flipped kShipAvx2Boundary ON (2026-07-19): Auto now selects AVX2 on an
+  // AVX2-capable host (scalar otherwise) — the shipped ship gate — without reading or
+  // mutating the process override.
+  EXPECT_EQ(route, simd::have_avx2() ? simd::SimdRoute::Avx2 : simd::SimdRoute::Scalar);
+  EXPECT_EQ(simd::simd_isa_override(), simd::SimdIsa::ForceScalar);
 }
 
 TEST(AmericanBoundaryBatch, ForceAvx2IsCapabilityGuarded) {
@@ -244,9 +249,11 @@ TEST(AmericanPriceBatch, MatchesScalarBitIdentical) {
   EXPECT_EQ(out.scalar_fallback_rate(), 1.0);
 }
 
-TEST(AmericanPriceBatch, DefaultKernelReportsZeroAvx2Lanes) {
+TEST(AmericanPriceBatch, DefaultKernelDispatchesAvx2OnCapableHost) {
   IsaGuard g;
-  simd::set_simd_isa_override(simd::SimdIsa::ForceAvx2);
+  // Global override set to ForceScalar to prove the default kernel's Auto route is
+  // call-local: it follows the (now-ON) ship gate, not this global knob.
+  simd::set_simd_isa_override(simd::SimdIsa::ForceScalar);
   const Book b = make_book();
   PricingKernel kernel;
   ASSERT_EQ(kernel.isa, simd::SimdIsa::Auto);
@@ -255,11 +262,21 @@ TEST(AmericanPriceBatch, DefaultKernelReportsZeroAvx2Lanes) {
 
   ASSERT_TRUE(american_price_batch(b.view(), out, kernel, ws).has_value());
   ASSERT_EQ(out.size(), b.size());
-  for (std::size_t i = 0; i < out.size(); ++i) {
-    EXPECT_EQ(out.route[i], simd::SimdRoute::Scalar) << "i=" << i;
+  // WS-K flipped kShipAvx2Boundary ON (2026-07-19, review P1): the DEFAULT (Auto)
+  // kernel now dispatches the genuine early-exercise American lanes through the AVX2
+  // boundary pack on an AVX2-capable host; every other lane patches to exact scalar
+  // andersen_lake. On a non-AVX2 host it stays fully scalar.
+  if (simd::have_avx2()) {
+    std::size_t n_avx2 = 0;
+    for (std::size_t i = 0; i < out.size(); ++i) {
+      if (out.route[i] == simd::SimdRoute::Avx2) ++n_avx2;
+    }
+    EXPECT_GT(n_avx2, 0u);
+    EXPECT_LT(out.scalar_fallback_rate(), 1.0);
+  } else {
+    EXPECT_EQ(out.scalar_fallback_rate(), 1.0);
   }
-  EXPECT_EQ(out.scalar_fallback_rate(), 1.0);
-  EXPECT_EQ(simd::simd_isa_override(), simd::SimdIsa::ForceAvx2);
+  EXPECT_EQ(simd::simd_isa_override(), simd::SimdIsa::ForceScalar);
 }
 
 // ── ForceAvx2: Scalar lanes bit-exact, Avx2 lanes within T13's stress gate ─
@@ -1047,6 +1064,103 @@ TEST(AmericanPutGreeksBatchAvx2, MatchesScalarAl) {
   EXPECT_LT(mvn, 1e-5) << "vanna";   // measured ~5.6e-7
   EXPECT_LT(mt, 1e-5) << "theta";    // measured ~1.5e-7
   EXPECT_LT(mc, 1e-4) << "charm";    // measured ~3.0e-5
+}
+
+// WS-K stress-corner parity: the laned analytic PUT greeks bundle vs scalar
+// american_greeks_al on the HARD corners the flip must survive — deep ITM/OTM wings,
+// near-expiry (down to 1/365), low vol (0.05) and high vol (1.20), and higher rates.
+// Genuine early-exercise lanes ride the AVX2 kernel; corners that fall out of the
+// American regime or error are patched to (and asserted against) the exact scalar oracle,
+// so the comparison holds within the economic gate on every finite lane. This closes the
+// "grid incl. deep wings, near-expiry, hi/lo vol" requirement for greeks (marks already
+// have normal_grid + stress_grid in simd_american_test.cpp).
+TEST(AmericanPutGreeksBatchAvx2, MatchesScalarAl_StressCorners) {
+  struct C { double S, K, T, sigma, r, q; };
+  std::vector<C> g;
+  const double S = 100.0;
+  // Deep wings x near-to-long expiry x lo/hi vol x higher rates. Puts, r>0.
+  for (double K : {40.0, 55.0, 70.0, 130.0, 160.0, 200.0}) {   // deep OTM..deep ITM puts
+    for (double t : {1.0 / 365.0, 3.0 / 365.0, 0.02, 0.10, 1.0, 3.0}) { // incl. near-expiry
+      for (double v : {0.05, 0.08, 0.60, 1.20}) {              // lo + hi vol
+        for (double r : {0.02, 0.08, 0.12}) {
+          g.push_back(C{S, K, t, v, r, 0.0});
+        }
+      }
+    }
+  }
+  const std::size_t n = g.size();
+  std::vector<double> vS(n), vK(n), vT(n), vsig(n), vr(n), vq(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    vS[i] = g[i].S; vK[i] = g[i].K; vT[i] = g[i].T;
+    vsig[i] = g[i].sigma; vr[i] = g[i].r; vq[i] = g[i].q;
+  }
+
+  // ForceScalar route == american_greeks_al, bit-identical (finite lanes).
+  std::vector<AmericanGreeks> scl(n);
+  const simd::SimdRoute sroute = simd::american_put_greeks_batch(
+      vS.data(), vK.data(), vT.data(), vsig.data(), vr.data(), vq.data(), n,
+      std::nullopt, scl.data(), simd::SimdIsa::ForceScalar);
+  EXPECT_EQ(sroute, simd::SimdRoute::Scalar);
+  for (std::size_t i = 0; i < n; ++i) {
+    const auto al = american_greeks_al(vS[i], vK[i], vT[i], vsig[i], vr[i], vq[i], Side::Put);
+    if (!al.has_value()) {
+      continue; // corner the scalar oracle itself rejects; batch NaN-fills to match
+    }
+    EXPECT_EQ(scl[i], *al) << "ForceScalar must equal american_greeks_al bit-for-bit, i=" << i;
+  }
+
+  if (!simd::have_avx2()) {
+    GTEST_SKIP() << "no AVX2 on host (scalar parity checked above)";
+  }
+
+  // ForceAvx2 route == american_greeks_al within the economic gate on every finite lane.
+  std::vector<AmericanGreeks> avx(n);
+  const simd::SimdRoute aroute = simd::american_put_greeks_batch(
+      vS.data(), vK.data(), vT.data(), vsig.data(), vr.data(), vq.data(), n,
+      std::nullopt, avx.data(), simd::SimdIsa::ForceAvx2);
+  EXPECT_EQ(aroute, simd::SimdRoute::Avx2);
+
+  auto reld = [](double a, double b, double floor) {
+    return std::abs(a - b) / std::max({std::abs(a), std::abs(b), floor});
+  };
+  double mp = 0, md = 0, mg = 0, mv = 0, mvl = 0, mr = 0, mvn = 0, mt = 0, mc = 0;
+  std::size_t n_cmp = 0;
+  for (std::size_t i = 0; i < n; ++i) {
+    const AmericanGreeks a = avx[i], s = scl[i];
+    if (!std::isfinite(s.price) || !std::isfinite(a.price)) {
+      continue; // patched/rejected corner; scalar-parity handled above
+    }
+    ++n_cmp;
+    mp = std::max(mp, reld(a.price, s.price, 1e-6));
+    md = std::max(md, reld(a.delta, s.delta, 1e-6));
+    mg = std::max(mg, reld(a.gamma, s.gamma, 1e-6));
+    mv = std::max(mv, reld(a.vega, s.vega, 1e-4));
+    mvl = std::max(mvl, reld(a.volga, s.volga, 1e-3));
+    mr = std::max(mr, reld(a.rho, s.rho, 1e-4));
+    mvn = std::max(mvn, reld(a.vanna, s.vanna, 1e-5));
+    mt = std::max(mt, reld(a.theta, s.theta, 1e-4));
+    mc = std::max(mc, reld(a.charm, s.charm, 1e-4));
+  }
+  std::printf("[K3 laned-greeks STRESS parity] rel-dev vs american_greeks_al "
+              "(n_cmp=%zu/%zu): price=%.2e delta=%.2e gamma=%.2e vega=%.2e volga=%.2e "
+              "rho=%.2e vanna=%.2e theta=%.2e charm=%.2e\n",
+              n_cmp, n, mp, md, mg, mv, mvl, mr, mvn, mt, mc);
+  EXPECT_GT(n_cmp, 0u); // at least some corners ride the vector kernel
+  // Stress-corner economic gate. Measured on this dev box (n_cmp=432): price 7.6e-9,
+  // delta 4.9e-8, gamma 2.8e-6, vega 1.4e-7, volga 2.8e-5, rho 1.4e-6, vanna 1.1e-5,
+  // theta 1.2e-4, charm 5.7e-4 — all the AVX2-transcendental ~1e-13 USD price delta
+  // amplified by the FD denominators (near-expiry drives ÷h^2/÷h^3 hardest; theta/charm
+  // ride the continuation-region PDE at 1/365). Gates are set with headroom over measured
+  // for cross-host robustness, still orders under any order-1 formula/sign bug.
+  EXPECT_LT(mp, 5e-8) << "price";
+  EXPECT_LT(md, 1e-7) << "delta";
+  EXPECT_LT(mg, 1e-4) << "gamma";
+  EXPECT_LT(mv, 1e-6) << "vega";
+  EXPECT_LT(mvl, 1e-3) << "volga";
+  EXPECT_LT(mr, 1e-5) << "rho";
+  EXPECT_LT(mvn, 1e-4) << "vanna";
+  EXPECT_LT(mt, 3e-4) << "theta";
+  EXPECT_LT(mc, 2e-3) << "charm";
 }
 
 // Greeks batch: bit-identical to per-contract american_greeks_fd.

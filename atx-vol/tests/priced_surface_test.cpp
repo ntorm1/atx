@@ -777,8 +777,15 @@ TEST(PricedSurface, PriceOnlyResolvedBatchPreservesMethodPresetAndLaneErrors) {
     const std::vector<Side> sides{Side::Put, Side::Call, Side::Put, Side::Call, Side::Put};
     std::vector<double> iv(Ks.size()), price(Ks.size());
     std::vector<Status> status(Ks.size());
+    // This test asserts the resolved batch PRESERVES the method/preset/AlOpts and lane
+    // errors vs the per-entry scalar evaluate() — an ISA-orthogonal property. Pin the
+    // batch to ForceScalar so it stays bit-identical to the scalar evaluate() after the
+    // WS-K flip made Auto dispatch AVX2 marks (a full 4-pack of genuine American lanes
+    // here would otherwise ride the vector kernel, differing within the economic gate).
+    // AVX2-vs-scalar marks parity is covered by AvxBoundary.* / AmericanPriceBatch.*.
     ASSERT_TRUE(s.evaluate_batch(Ks, Ts, sides, EF::Iv | EF::Price, false,
-                                 PricedSurface::EvaluationSoA{iv, price, {}, status, {}, {}})
+                                 PricedSurface::EvaluationSoA{iv, price, {}, status, {}, {}},
+                                 simd::SimdIsa::ForceScalar)
                     .has_value());
     for (std::size_t i = 0; i < Ks.size(); ++i) {
       const auto expected = s.evaluate(Ks[i], Ts[i], sides[i], EF::Iv | EF::Price, false);

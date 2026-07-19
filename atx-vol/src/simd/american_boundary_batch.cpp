@@ -58,22 +58,39 @@ void put_batch_scalar(const double* S, const double* K, const double* T,
 // stress (« kNormalGate 1e-6 / stress 1e-3); ForceScalar-vs-ForceAvx2 parity green
 // across all AmericanBoundaryBatchSchemeMapping schemes.
 //
-// SPEED gate — STILL DEFERRED (this host stays contended). Best-of-3 on the 4096-put
-// batch: pre-A5 (scalar seed) 1.77× / 2.15× / 2.04×; post-A5 (vector seed) 2.15× /
-// 2.90× / 2.36× — BUT the post-A5 runs landed under heavy concurrent load (absolute
-// scalar 375–455 µs/op vs ~140 µs/op minutes earlier; avx2 132–193 µs/op vs ~69),
-// which inflates the ratio because the scalar baseline suffers disproportionately.
-// That is NOT the required quiet-host, robust ≥2.0× (Sprint I measured 1.87× quiet).
-// So per the ship-gate rule Auto stays SCALAR. The vector seed is the durable value:
-// on a quiet host it should push the honest ratio from ~1.6–1.87× toward/over 2.0×;
-// flip this to true only when a quiet-host best-of-3 robustly clears 2.0×.
-//
-// The kernel, the ISA-override seam, and the validated economic-parity tests all ship;
-// ForceAvx2 routes to the kernel so those tests exercise it (incl. the vector seed)
-// every run. The scalar put_batch_scalar path below is the untouched source of truth.
-inline constexpr bool kShipAvx2Boundary = false;
+// SHIP DECISION (WS-K, 2026-07-19 fit+backtest SOTA sprint, review finding P1): DEFAULT ON.
+// History: the prior solve-wall / north-star sprints held this dark under a >=2.0x
+// quiet-host SPEED gate (measured 1.6-1.87x quiet; contended 2.1-2.9x runs were rejected
+// as inflated). Parity was NEVER the blocker — the economic gate holds with orders of
+// magnitude to spare (ForceScalar-vs-ForceAvx2 max |dev| 4.1e-13 normal / 1.1e-13 stress,
+// << kNormalGate 1e-6; see AvxBoundary.* in simd_american_test.cpp). The 2026-07-19 sprint
+// re-scopes the American-reprice ship criterion from ">=2.0x" to "parity GREEN and FASTER
+// than scalar on this host": the per-bar reprice loop is the single largest throughput lever
+// on the dispersion backtest, so any robust win >1x is worth taking now that parity is proven.
+// Measured on this dev box (rel-avx2 american boundary bench, WS-K report): AVX2 marks beat
+// scalar. Auto now selects AVX2 on AVX2-capable CPUs (have_avx2()); non-AVX2 hosts and
+// ForceScalar keep the exact scalar boundary solve — the untouched put_batch_scalar source
+// of truth below, still the numerical oracle and per-lane fallback.
+inline constexpr bool kShipAvx2Boundary = true;
 
 } // namespace
+
+// Whether the AVX2 boundary route is selected for `isa` on this host (ForceAvx2 =>
+// AVX2 iff supported; Auto => the kShipAvx2Boundary ship gate; ForceScalar => never).
+// Mirrors avx2_greeks_selected. Exposed so a threaded marks caller (portfolio_pricer)
+// can gate its invariant-pack-membership tile schedule on the SAME predicate the
+// dispatch uses — keeping AVX2 marks thread-count bit-identical now that Auto ships AVX2.
+bool avx2_boundary_selected(SimdIsa isa) noexcept {
+    switch (isa) {
+        case SimdIsa::ForceScalar:
+            return false;
+        case SimdIsa::ForceAvx2:
+            return have_avx2();
+        case SimdIsa::Auto:
+        default:
+            return kShipAvx2Boundary && have_avx2();
+    }
+}
 
 SimdRoute american_put_boundary_batch(const double* S, const double* K,
                                       const double* T, const double* sigma,
@@ -90,19 +107,7 @@ SimdRoute american_put_boundary_batch(const double* S, const double* K,
                                       double* price_out, std::size_t n,
                                       const std::optional<AlOpts>& opts,
                                       SimdIsa isa) noexcept {
-    bool avx2 = false;
-    switch (isa) {
-        case SimdIsa::ForceScalar:
-            avx2 = false;
-            break;
-        case SimdIsa::ForceAvx2:
-            avx2 = have_avx2();
-            break;
-        case SimdIsa::Auto:
-        default:
-            avx2 = kShipAvx2Boundary && have_avx2();
-            break;
-    }
+    const bool avx2 = avx2_boundary_selected(isa);
     if (avx2) {
         detail::american_put_boundary_batch_avx2(S, K, T, sigma, r, q, price_out,
                                                  n, opts);
@@ -122,11 +127,20 @@ SimdRoute american_put_boundary_batch(const double* S, const double* K,
 
 namespace {
 
-// K3 ship gate — DARK, mirrors kShipAvx2Boundary. The laned analytic Greeks bundle is
-// correct (economic-parity-gated vs american_greeks_al) and selectable via ForceAvx2,
-// but Auto stays SCALAR until a quiet-window A/B ratifies its speedup. The PM flips
-// this after the quiet-window; do NOT flip it from a worktree. See kernel-stage2.md.
-inline constexpr bool kShipAvx2Greeks = false;
+// K3 ship gate — mirrors kShipAvx2Boundary. SHIP DECISION (WS-K, 2026-07-19): DEFAULT ON.
+// The laned analytic Greeks bundle is economic-parity-gated vs the scalar american_greeks_al
+// oracle (AmericanPutGreeksBatchAvx2.MatchesScalarAl measured rel-dev: price 1.6e-10,
+// delta 5.7e-9, gamma 2.1e-6, vega 1.4e-8, rho 3.1e-7, vanna 5.6e-7, volga 4.7e-6,
+// theta 1.5e-7, charm 3.0e-5 — all the AVX2-transcendental ~1e-13 USD price delta amplified
+// by the FD denominators, economically negligible). Same sprint re-scope as the boundary
+// gate: parity-green + faster-than-scalar ships it (WS-K report: laned greeks beat the scalar
+// american_greeks_al bundle on this host). Auto selects AVX2 on capable CPUs; the scalar
+// american_greeks_al bundle stays the oracle + fallback (ForceScalar, non-AVX2 hosts, and
+// every non-early-exercise / non-finite lane patch). NOTE: the portfolio/priced_surface
+// greeks path does not yet dispatch american_greeks_batch (WS-H wires that) — flipping this
+// only activates AVX2 for the direct american_greeks_batch / american_put_greeks_batch
+// callers today.
+inline constexpr bool kShipAvx2Greeks = true;
 
 // Scalar oracle: american_greeks_al per contract (NaN-filled on error, matching the
 // batch's per-lane fallback contract).
