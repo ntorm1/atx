@@ -9,6 +9,7 @@
 #include "atx/vol/spline_curve.hpp"  // SplineVolParams
 #include "atx/vol/vol_curve.hpp"     // Convex/Spline/Essvi/Svi/C8/LinearVariance curves, VolCurveKind
 #include "atx/vol/vol_surface.hpp"   // EssviParams, SviParams, essvi_total_w, svi_total_w
+#include "laned_greek_run.hpp"      // WS-P1v: the shared laned analytic-Greek batch driver
 #include "term_carry.hpp"            // interpolate_positive_log, coherent_q_eff
 
 #include "atx/core/error.hpp"
@@ -873,6 +874,32 @@ Status PricedSurfaceView::evaluate_batch(std::span<const double> K, std::span<co
       if (!batch_status.has_value()) {
         return batch_status;
       }
+      i = j;
+      continue;
+    }
+    // WS-P1v: the laned analytic-Greek route, shared verbatim with
+    // PricedSurface::evaluate_batch via detail::laned_greek_run. BEFORE this change the
+    // view evaluated Greeks one entry at a time through evaluate_resolved, so a book
+    // priced off a mapped `.atxvsa` record paid the scalar per-contract
+    // american_greeks_al fan while an identical freshly-fit PricedSurface rode the
+    // 4-lane AVX2 kernel. That asymmetry — not any real modelling difference — was why
+    // the SurfaceArchiveV2 `expect_batch_bit_identical` golden had to be relaxed on the
+    // analytic route by WS-P1a; sharing the driver restores exact surface==view batch
+    // agreement and the golden is re-tightened accordingly.
+    //
+    // The view carries NO QueryAccelerator (it is always the cold reference tier), so the
+    // accelerator half of PricedSurface's guard is unconditionally satisfied here. It also
+    // carries no GreekNeeds parameter, so the full bundle is requested — exactly what the
+    // scalar greeks_resolved() it replaces computed.
+    if (detail::laned_greek_route_selected(want_greeks, selective_only, want_delta, want_vega,
+                                           analytic, t_valid, pricing_.method,
+                                           resolved_price_isa)) {
+      detail::laned_greek_run(
+          pricing_.S, i, j, side, std::optional<AlOpts>{pricing_.al_opts}, resolved_price_isa,
+          GreekNeeds{}, out, [&](std::size_t e) { return resolve_with_carry(K[e], t, fc); },
+          [&](std::size_t e, Side sd) {
+            return evaluate_resolved(resolve_with_carry(K[e], t, fc), sd, fields, analytic);
+          });
       i = j;
       continue;
     }
