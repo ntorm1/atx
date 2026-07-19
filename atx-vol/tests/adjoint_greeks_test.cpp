@@ -626,14 +626,13 @@ TEST(AdjointGreeksAmerican, DISABLED_PerfSanity) {
 }
 
 // P3-pre DECISION DIAGNOSTIC (DISABLED). Measures, on a realistic backtest-shaped
-// put grid, (a) the fixed-point-IFT-domain engagement fraction (took==true), and
-// (b) how far the fixed-point IFT vega (al_implicit_diff_put_greeks — differentiates
-// the EXACT fixed point y_fp) is from the budget-limited MARK vega (rich_d1 of the
+// put grid, (a) the through-iterations adjoint domain engagement fraction
+// (took==true), and (b) how far the through-iters adjoint vega and the 5-solve
+// american_greeks_al vega each sit from the budget-limited MARK vega (rich_d1 of the
 // ACCURATE-preset andersen_lake — differentiates y*(θ) the solver actually returns),
 // split by convergence. Answers: can we widen by simply loosening the ‖R‖ guard, or
 // must we differentiate through the iterations (Christianson)?
 TEST(AdjointGreeksAmerican, DISABLED_DomainRealityScan) {
-  using atx::vol::detail::al_implicit_diff_put_greeks;
   const double S = 100.0;
   int n_total = 0, n_took = 0;
   // through-iters (american_greeks_adjoint) vs the two mark estimates, RELATIVE gaps.
