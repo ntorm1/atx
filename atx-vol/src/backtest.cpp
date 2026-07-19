@@ -1154,18 +1154,23 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
   // which `Backtest.SnapshotCacheEvictsStaleEntryWhenArchiveRewrittenSameLength`
   // pins as a supported workflow.
   //
-  // So a BORROWING load reads the archive into an OWNED buffer instead. The views then
-  // borrow that buffer (kept alive by the same archive shared_ptr) and no mapping is
-  // held, so republish keeps working. This costs one sequential whole-file read, which
-  // is a wash here: a whole-board borrow touches every record anyway, so the
-  // demand-paging that motivated `open_mapped` (WS-S S2) has nothing left to skip. The
-  // reconstruction that actually dominated the profile is gone either way.
+  // So a BORROWING load uses `open_copied`: map, ONE memcpy into an owned buffer, drop
+  // the mapping. Views then borrow that buffer (kept alive by the same archive
+  // shared_ptr), no section stays open against the file, and republish keeps working.
+  // The copy runs at memory bandwidth out of pages the OS cache already holds, so it
+  // keeps nearly all of the mapped open's speed — `open_file`'s stream read, the
+  // obvious alternative, measured ~210 ms over this replay versus ~8 ms to map. A
+  // whole-board borrow touches every record anyway, so the demand-paging that motivated
+  // `open_mapped` (WS-S S2) has nothing left to skip here.
   //
   // The owned (non-borrowing) path keeps `open_mapped`: it reconstructs and then drops
   // the archive inside this function, so it never holds a mapping past the load and
   // still benefits from faulting in only the subset it reconstructs.
-  // TEMPORARY (WS-ZC1 bring-up): `ATX_VOL_ZC_BORROW=0` forces the owned path so the
-  // two backings can be A/B'd inside ONE binary. Remove before merge.
+  // ESCAPE HATCH / MEASUREMENT LEVER: `ATX_VOL_ZC_BORROW=0` forces the owned
+  // reconstruct path. It exists so the two backings can be A/B'd inside ONE binary on
+  // ONE host — which is how the WS-ZC1 numbers were taken, and how they should be
+  // re-taken — and so a borrow-specific regression can be bisected without a rebuild.
+  // Read once; it cannot change mid-run, so it cannot make a run non-deterministic.
   static const bool borrow_allowed = []() {
 #if defined(_WIN32)
     std::size_t sz = 0;
@@ -1191,8 +1196,8 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
   auto arch = [&]() {
     ATX_VOL_PROFILE_SCOPE(ArchiveOpen);
     if (borrow) {
-      // Read into an OWNED buffer rather than mapping (see the backing note above).
-      return SurfaceArchiveV2::open_file(archive_path);
+      // Map + one memcpy into an owned buffer, mapping dropped (see the note above).
+      return SurfaceArchiveV2::open_copied(archive_path);
     }
     // S2 (WS-S): mmap the partition instead of reading the whole file into an owned
     // heap buffer. open_impl CRC-validates only the header/lookup/directory (small),
