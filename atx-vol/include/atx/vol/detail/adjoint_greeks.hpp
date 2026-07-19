@@ -34,8 +34,15 @@ namespace atx::vol::detail {
 // is the TDD rung 1 for the adjoint machinery AND the exact American price in the
 // no-early-exercise regime (American == European). Always succeeds for positive
 // inputs; degenerate T~0 / σ~0 collapses to intrinsic greeks.
+//
+// @param dP_dq optional out: the reverse sweep's ∂P/∂q carry sensitivity — the
+//        6th gradient component the returned AmericanGreeks has no field for (G2).
+//        Written iff non-null; the machine-exact BSM ∂P/∂q (= -T·S·e^{-qT}·Φ(±d1))
+//        on the non-degenerate branch, 0 in the intrinsic limit. Pure (writes only
+//        through the caller's pointer).
 [[nodiscard]] AmericanGreeks european_greeks_adjoint(double S, double K, double T, double sigma,
-                                                     double r, double q, Side side) noexcept;
+                                                     double r, double q, Side side,
+                                                     double *dP_dq = nullptr) noexcept;
 
 // American greeks via the Christianson through-iterations adjoint. Claims genuine
 // early-exercise PUTS only (r > 0, non-degenerate, single-boundary American

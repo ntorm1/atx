@@ -518,6 +518,75 @@ american_greeks_al(double S, double K, double T, double sigma, double r, double 
                                               const std::optional<AlOpts> &opts = std::nullopt);
 // ─────────────────────────────────────────────────────────────────────────
 
+// ── Carry / dividend sensitivities (G2, gaps-review finding 2) ────────────
+//
+// The carry axis `AmericanGreeks` omits: ∂P/∂q (continuous-yield sensitivity,
+// "q-rho") and the per-event ∂P/∂Div vector. Kept in a SEPARATE struct rather
+// than widening `AmericanGreeks` — that 8-greek SoA struct threads a large
+// consumer ecosystem (surface archive fingerprints, laned SIMD greek kernels,
+// the python binding, bit-pinned `operator==` comparisons), none of which the
+// carry axis belongs in, and the ∂P/∂Div vector is variable-length.
+struct CarryGreeks {
+  double price = 0.0;       // the mark == american_greeks(...).price / fair_value
+  double dP_dq = 0.0;       // ∂P/∂q  (continuous dividend-yield / carry sensitivity)
+  bool q_one_sided = false; // A5: the q down-bump used a one-sided forward stencil
+};
+
+// American ∂P/∂q via q± early-exercise boundary re-solves — the analytic AL tier,
+// symmetric to `american_greeks_al`'s r± (rho) machinery under the McDonald-
+// Schroder map. For a PUT, q is the internal-put YIELD (internal rate = r > 0 is
+// held fixed), so the q-stencil is ALWAYS central. For a CALL, q is the internal-
+// put RATE; when the down-bump q - hq leaves the American regime the A5 pattern
+// switches to a one-sided FORWARD stencil (mirroring `american_greeks_fd`'s
+// rho_forward and near-expiry theta) rather than solving an unpriceable boundary.
+// Because carry greeks bump only q (no spot stencil), NO homogeneity rescale is
+// needed on either side — the result is bit-identical to `american_carry_greeks_fd`
+// (both sides). `price` == `american_greeks_al(...).price`. Degenerate corners
+// (T~0/σ~0) and the no-early-exercise regime defer to the exact FD reference.
+// InvalidArgument on non-positive S/K/T/sigma; propagates any pricing error.
+[[nodiscard]] Result<CarryGreeks>
+american_carry_greeks_al(double S, double K, double T, double sigma, double r, double q, Side side,
+                         const std::optional<AlOpts> &opts = std::nullopt);
+
+// FD reference for ∂P/∂q: central (A5 one-sided) q± bumps of the cold
+// `american_price` (the same method/opts the mark is priced with) — the q-analogue
+// of `american_greeks_fd`'s rho and the FD-parity reference for the AL tier.
+// `price` == fair_value(). InvalidArgument on non-positive S/K/T/sigma; propagates
+// any american_price error (e.g. NotImplemented double-continuation corner).
+[[nodiscard]] Result<CarryGreeks>
+american_carry_greeks_fd(double S, double K, double T, double sigma, double r, double q, Side side,
+                         AmericanMethod method = AmericanMethod::AndersenLake,
+                         const std::optional<AlOpts> &opts = std::nullopt);
+
+// Cached fixed-carry ∂P/∂q. The correction term is held FIXED across the carry
+// bump exactly as the cached rho does (`american_greeks`): analytically
+//   ∂P/∂q = -T·F·D,   D = ∂P/∂F = gB.delta + c - dc_dk   (the cached forward delta),
+// which is the through-forward part of the fixed-carry rho with q's sign and
+// without rho's discount-factor leg (q does not enter the discount). A null,
+// unpopulated, or opposite-side cache degrades to the Black-76 (European) leg.
+// Same InvalidArgument / double-continuation NotImplemented contract as
+// `american_greeks`.
+[[nodiscard]] Result<CarryGreeks>
+american_carry_greeks(double S, double K, double T, double sigma, double r, double q, Side side,
+                      const CorrectionCache *correction);
+[[nodiscard]] Result<CarryGreeks>
+american_carry_greeks(double S, double K, double T, double sigma, double r, double q, Side side,
+                      const CorrectionBlend &correction);
+
+// Compose per-event dividend sensitivities ∂P/∂D_i from the carry sensitivity and
+// the escrowed-forward Jacobian, via the q_eff-bridge chain rule the discrete-
+// dividend fit uses (discrete cash divs fold into F, absorbed as an effective
+// continuous carry q_eff = r - ln(F/S)/T):
+//   ∂P/∂D_i = (∂P/∂q)·(∂q_eff/∂D_i) = (-∂P/∂q / (F·T))·(∂F/∂D_i).
+// @param dP_dq   american_carry_greeks_*(...).dP_dq evaluated at that q_eff.
+// @param F, T    the forward the option was priced on and its year-fraction (> 0).
+// @param dF_dDiv ∂F/∂D_i per event (dividend.hpp `hybrid_forward_div_jacobian`).
+// @param dP_dDiv_out written out[i] = (-dP_dq/(F·T))·dF_dDiv[i]; must match dF_dDiv
+//        in size. A non-finite / zero F·T writes zeros (no sensitivity available).
+void american_dividend_sensitivities(double dP_dq, double F, double T,
+                                     std::span<const double> dF_dDiv,
+                                     std::span<double> dP_dDiv_out) noexcept;
+
 namespace detail {
 
 // ── Early-exercise regime classification (Healy 2021 §2.2) ───────────────

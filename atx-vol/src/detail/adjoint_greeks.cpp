@@ -429,7 +429,7 @@ american_put_adjoint(double S, double K, double T, double sigma, double r, doubl
 } // namespace
 
 AmericanGreeks european_greeks_adjoint(double S, double K, double T, double sigma, double r,
-                                       double q, Side side) noexcept {
+                                       double q, Side side, double *dP_dq) noexcept {
   AmericanGreeks g{};
   // Degenerate: collapse to intrinsic to avoid a v=0 division. Matches the
   // pricer's T~0/σ~0 intrinsic policy.
@@ -438,6 +438,9 @@ AmericanGreeks european_greeks_adjoint(double S, double K, double T, double sigm
     g.price = intr > 0.0 ? intr : 0.0;
     if (intr > 0.0) {
       g.delta = (side == Side::Put) ? -1.0 : 1.0;
+    }
+    if (dP_dq != nullptr) {
+      *dP_dq = 0.0; // intrinsic has no carry sensitivity
     }
     return g;
   }
@@ -452,6 +455,10 @@ AmericanGreeks european_greeks_adjoint(double S, double K, double T, double sigm
   g.vanna = so.vanna;
   g.volga = so.volga;
   g.charm = so.charm;
+  // G2: expose the reverse sweep's ∂P/∂q — the carry component AmericanGreeks omits.
+  if (dP_dq != nullptr) {
+    *dP_dq = fo.dq;
+  }
   return g;
 }
 

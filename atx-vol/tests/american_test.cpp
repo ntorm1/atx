@@ -17,6 +17,9 @@
 #include "atx/vol/black76.hpp"
 #include "atx/vol/correction.hpp"
 #include "atx/vol/counters.hpp"
+#include "atx/vol/curve.hpp"    // DividendEvent, forward_div_corrected (G2 dDiv)
+#include "atx/vol/detail/adjoint_greeks.hpp" // european_greeks_adjoint dP/dq (G2)
+#include "atx/vol/dividend.hpp" // hybrid_forward, hybrid_forward_div_jacobian (G2)
 #include "atx/vol/greeks.hpp"
 #include "support/isa_golden_tol.hpp"
 #include "support/oracle_pde_golden.hpp"
@@ -65,6 +68,17 @@ using atx::vol::SigmaInterpOptions;
 using atx::vol::SigmaSliceStats;
 using atx::vol::test::oracle_pde_american;
 using atx::vol::test::oracle_pde_golden;
+// G2 carry sensitivities.
+using atx::vol::american_carry_greeks;
+using atx::vol::american_carry_greeks_al;
+using atx::vol::american_carry_greeks_fd;
+using atx::vol::american_dividend_sensitivities;
+using atx::vol::CarryGreeks;
+using atx::vol::DividendEvent;
+using atx::vol::hybrid_forward;
+using atx::vol::hybrid_forward_div_jacobian;
+using atx::vol::HybridDivParams;
+using atx::vol::detail::european_greeks_adjoint;
 
 // Unwrap a Result<double> in a test, failing loudly on an unexpected error.
 double value_or_fail(const atx::core::Result<double> &r) {
@@ -3321,6 +3335,261 @@ TEST(AlPresetLadder, SubMinimumQuadratureFloorsToEight) {
   }
   EXPECT_GT(max_8_vs_24_gap, 0.0)
       << "the 8-node and 24-node schemes must genuinely differ (floor has teeth)";
+}
+
+// ══ G2: carry sensitivities ∂P/∂q and ∂P/∂Div (gaps-review finding 2) ══════
+
+// The AL analytic-tier ∂P/∂q (q± boundary re-solves) matches the FD reference
+// (q± cold american_price bumps) across the American-regime grid. Because carry
+// greeks bump only q (no spot stencil / homogeneity rescale), the two tiers are
+// BIT-IDENTICAL on BOTH sides. Signs: ∂P/∂q >= 0 for puts (a higher yield lowers
+// the forward, raising the put), <= 0 for calls.
+TEST(CarryGreeks, QBumpFdParity_AlVsFd_RegimeGrid) {
+  bool put_bit = true, call_bit = true;
+  int n = 0;
+  for (Side side : {Side::Put, Side::Call}) {
+    for (double S : {85.0, 100.0, 115.0}) {
+      for (double K : {90.0, 100.0, 110.0}) {
+        for (double T : {0.1, 0.5, 1.5}) {
+          for (double sigma : {0.20, 0.40}) {
+            for (double r : {0.03, 0.06}) {
+              for (double q : {0.0, 0.03}) {
+                if (classify_spec(r, q, side) != Regime::American) {
+                  continue;
+                }
+                const auto al = american_carry_greeks_al(S, K, T, sigma, r, q, side);
+                const auto fd = american_carry_greeks_fd(S, K, T, sigma, r, q, side);
+                ASSERT_TRUE(al.has_value());
+                ASSERT_TRUE(fd.has_value());
+                ++n;
+                // price == fair_value (bit-identical for puts, ~1e-12 for the call
+                // internal-put path — same as the AL greeks bundle).
+                const double pref = value_or_fail(andersen_lake(S, K, T, sigma, r, q, side));
+                EXPECT_LT(std::fabs(al->price - pref), 1e-10 * (1.0 + std::fabs(pref)));
+                const bool same = bits_equal(al->dP_dq, fd->dP_dq);
+                // Sign is broadly ∂P/∂q >= 0 (put) / <= 0 (call), but the AMERICAN
+                // exercise boundary breaks the pointwise sign for deep-ITM options
+                // near intrinsic (the price is pinned/kinked at the boundary, so the
+                // central FD can dip slightly wrong-side). Gate the sign only where
+                // the option carries meaningful time value; a generous floor still
+                // catches a gross sign error (~O(T·S)) everywhere else.
+                const double intrinsic =
+                    (side == Side::Put) ? std::max(K - S, 0.0) : std::max(S - K, 0.0);
+                const bool has_time_value = (pref - intrinsic) > 0.05 * (1.0 + std::fabs(pref));
+                if (side == Side::Put) {
+                  put_bit = put_bit && same;
+                  if (has_time_value) {
+                    EXPECT_GT(al->dP_dq, -1e-6 * (1.0 + pref)) << "put dP/dq sign (time value)";
+                  }
+                } else {
+                  call_bit = call_bit && same;
+                  if (has_time_value) {
+                    EXPECT_LT(al->dP_dq, 1e-6 * (1.0 + pref)) << "call dP/dq sign (time value)";
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  std::printf("[G2 q-parity] N=%d put bit-identical=%d call bit-identical=%d\n", n, (int)put_bit,
+              (int)call_bit);
+  EXPECT_GT(n, 100);
+  EXPECT_TRUE(put_bit) << "put AL dP/dq must be bit-identical to the FD reference";
+  EXPECT_TRUE(call_bit) << "call AL dP/dq must be bit-identical to the FD reference";
+}
+
+// Cached fixed-carry ∂P/∂q: the correction term is held fixed across the carry
+// bump, so ∂P/∂q = -T·F·D reproduces -T·S·(cached spot delta) (fixed-carry
+// consistency with the cached delta), and the NULL-cache path equals the exact
+// Black-76 ∂P/∂q the adjoint European reverse sweep computes.
+TEST(CarryGreeks, CachedFixedCarryDq) {
+  for (Side side : {Side::Put, Side::Call}) {
+    const double r = 0.05;
+    const double q = (side == Side::Put) ? 0.0 : 0.02;
+    const CorrectionCache tbl = make_correction(side, r, q);
+    double max_rel_delta = 0.0, max_rel_euro = 0.0;
+    for (double S : {88.0, 100.0, 112.0}) {
+      for (double K : {92.0, 100.0, 108.0}) {
+        for (double T : {0.1, 0.5, 0.9}) {
+          for (double sigma : {0.15, 0.30, 0.50}) {
+            const auto cg = american_carry_greeks(S, K, T, sigma, r, q, side, &tbl);
+            const auto g = american_greeks(S, K, T, sigma, r, q, side, &tbl);
+            ASSERT_TRUE(cg.has_value());
+            ASSERT_TRUE(g.has_value());
+            const double dq_from_delta = -T * S * g->delta;
+            max_rel_delta = std::max(max_rel_delta, std::fabs(cg->dP_dq - dq_from_delta) /
+                                                        (std::fabs(dq_from_delta) + 1e-6));
+            double euro_dq = 0.0;
+            (void)european_greeks_adjoint(S, K, T, sigma, r, q, side, &euro_dq);
+            const auto cg0 = american_carry_greeks(S, K, T, sigma, r, q, side,
+                                                   static_cast<const CorrectionCache *>(nullptr));
+            ASSERT_TRUE(cg0.has_value());
+            max_rel_euro = std::max(max_rel_euro,
+                                    std::fabs(cg0->dP_dq - euro_dq) / (std::fabs(euro_dq) + 1e-6));
+          }
+        }
+      }
+    }
+    std::printf("[G2 cached] side=%d rel(dq vs -TSdelta)=%.2e rel(null vs adjoint-euro)=%.2e\n",
+                (int)side, max_rel_delta, max_rel_euro);
+    EXPECT_LT(max_rel_delta, 1e-9) << "cached dP/dq consistent with -T*S*delta (fixed carry)";
+    EXPECT_LT(max_rel_euro, 1e-9) << "null-cache dP/dq == adjoint European Black-76 dP/dq";
+  }
+}
+
+// A5 one-sided stencil at the regime edge: a CALL with q < hq drives the q down-
+// bump (which bumps the internal-put RATE) out of the American regime, so both the
+// AL and FD tiers switch to a one-sided forward stencil and still agree. A put's
+// internal rate is r (untouched by the q-bump), so a put never goes one-sided.
+TEST(CarryGreeks, OneSidedStencilAtRegimeEdge) {
+  const double S = 100.0, K = 100.0, T = 0.5, sigma = 0.30, r = 0.05;
+  const double q = 5.0e-5; // q - hq(1e-4) < 0
+  const auto al = american_carry_greeks_al(S, K, T, sigma, r, q, Side::Call);
+  const auto fd = american_carry_greeks_fd(S, K, T, sigma, r, q, Side::Call);
+  ASSERT_TRUE(al.has_value());
+  ASSERT_TRUE(fd.has_value());
+  EXPECT_TRUE(al->q_one_sided) << "call q-hq<0 must use the one-sided forward stencil";
+  EXPECT_TRUE(fd->q_one_sided);
+  EXPECT_TRUE(std::isfinite(al->dP_dq));
+  EXPECT_TRUE(bits_equal(al->dP_dq, fd->dP_dq)) << "one-sided AL vs FD dP/dq";
+  const auto alp = american_carry_greeks_al(S, K, T, sigma, r, q, Side::Put);
+  ASSERT_TRUE(alp.has_value());
+  EXPECT_FALSE(alp->q_one_sided) << "a put's internal rate is r; never one-sided";
+}
+
+// Adjoint-vs-bump consistency: the European reverse-sweep ∂P/∂q matches a central
+// bump of the BSM price, and (in the European-exact American regime, r<=0<=q) the
+// FD American ∂P/∂q equals the adjoint European rung.
+TEST(CarryGreeks, AdjointEuropeanRungDqVsBump) {
+  double max_rel = 0.0;
+  const double h = 1.0e-5;
+  for (Side side : {Side::Put, Side::Call}) {
+    for (double S : {80.0, 100.0, 120.0}) {
+      for (double K : {90.0, 100.0, 110.0}) {
+        for (double T : {0.1, 0.5, 1.0}) {
+          for (double sigma : {0.15, 0.30}) {
+            const double r = 0.03, q = 0.04;
+            double dq = 0.0;
+            (void)european_greeks_adjoint(S, K, T, sigma, r, q, side, &dq);
+            const double pp = european_greeks_adjoint(S, K, T, sigma, r, q + h, side).price;
+            const double pm = european_greeks_adjoint(S, K, T, sigma, r, q - h, side).price;
+            const double fd = (pp - pm) / (2.0 * h);
+            max_rel = std::max(max_rel, std::fabs(dq - fd) / (std::fabs(fd) + 1e-6));
+          }
+        }
+      }
+    }
+  }
+  // European-regime American (put, r <= 0 <= q => American == European): the FD
+  // American ∂P/∂q must equal the adjoint European rung.
+  double euro_dq = 0.0;
+  (void)european_greeks_adjoint(100.0, 100.0, 0.7, 0.25, -0.01, 0.03, Side::Put, &euro_dq);
+  const auto amer_fd = american_carry_greeks_fd(100.0, 100.0, 0.7, 0.25, -0.01, 0.03, Side::Put);
+  ASSERT_TRUE(amer_fd.has_value());
+  const double rel_amer = std::fabs(euro_dq - amer_fd->dP_dq) / (std::fabs(euro_dq) + 1e-6);
+  std::printf("[G2 adjoint] euro dq vs bump max_rel=%.2e ; euro-regime amer FD rel=%.2e\n", max_rel,
+              rel_amer);
+  EXPECT_LT(max_rel, 1e-6) << "adjoint European dP/dq matches central bump";
+  EXPECT_LT(rel_amer, 1e-4) << "European-regime American FD dP/dq == adjoint European rung";
+}
+
+// The analytic escrowed-forward Jacobian ∂F/∂D_i matches a central bump of
+// hybrid_forward, across blend / borrow / proportional-yield settings and the
+// in-window / already-paid / after-expiry event cases.
+TEST(CarryGreeks, DividendForwardJacobianFdParity) {
+  const double S = 100.0, r = 0.04, T = 0.75;
+  const auto year_ns = static_cast<std::int64_t>(365.25 * 86400.0 * 1.0e9);
+  const std::int64_t now = 0;
+  const auto expiry = static_cast<std::int64_t>(T * static_cast<double>(year_ns));
+  const std::vector<DividendEvent> divs = {
+      {static_cast<std::int64_t>(0.10 * static_cast<double>(year_ns)), 1.5},
+      {static_cast<std::int64_t>(0.40 * static_cast<double>(year_ns)), 2.0},
+      {static_cast<std::int64_t>(0.70 * static_cast<double>(year_ns)), 1.0},
+      {static_cast<std::int64_t>(0.90 * static_cast<double>(year_ns)), 3.0},  // after expiry
+      {-static_cast<std::int64_t>(0.05 * static_cast<double>(year_ns)), 1.0}, // already paid
+  };
+  double max_abs = 0.0;
+  for (double borrow : {0.0, 0.01, -0.02}) {
+    for (double beta : {0.0, 0.5, 1.0}) {
+      for (double propq : {0.0, 0.02}) {
+        const HybridDivParams hyb{propq, beta};
+        std::vector<double> jac(divs.size(), -1.0);
+        hybrid_forward_div_jacobian(r, borrow, T, divs, expiry, now, hyb, jac);
+        for (std::size_t i = 0; i < divs.size(); ++i) {
+          const double amt = divs[i].amount;
+          const double hh = 1.0e-3;
+          std::vector<DividendEvent> dp = divs, dm = divs;
+          dp[i].amount = amt + hh;
+          dm[i].amount = amt - hh;
+          const double Fp = hybrid_forward(S, r, borrow, T, dp, expiry, now, hyb);
+          const double Fm = hybrid_forward(S, r, borrow, T, dm, expiry, now, hyb);
+          const double fd = (Fp - Fm) / (2.0 * hh);
+          max_abs = std::max(max_abs, std::fabs(jac[i] - fd));
+          EXPECT_LT(std::fabs(jac[i] - fd), 1e-7 * (1.0 + std::fabs(fd)))
+              << "beta=" << beta << " borrow=" << borrow << " i=" << i;
+        }
+        if (beta == 1.0) {
+          for (double v : jac) {
+            EXPECT_EQ(v, 0.0) << "pure-proportional blend has no cash-dividend sensitivity";
+          }
+        }
+      }
+    }
+  }
+  std::printf("[G2 dFdDiv] max|analytic - FD| = %.3e\n", max_abs);
+}
+
+// End-to-end ∂P/∂D_i FD parity through the q_eff bridge: the composed sensitivity
+// (american_carry_greeks_al ∂P/∂q × the escrowed-forward Jacobian) matches a full
+// finite-difference bump of each dividend re-priced through the rebuilt forward.
+TEST(CarryGreeks, DividendSensitivityEndToEndFdParity) {
+  const double S = 100.0, K = 100.0, T = 0.75, sigma = 0.28, r = 0.05;
+  const auto year_ns = static_cast<std::int64_t>(365.25 * 86400.0 * 1.0e9);
+  const std::int64_t now = 0;
+  const auto expiry = static_cast<std::int64_t>(T * static_cast<double>(year_ns));
+  const std::vector<DividendEvent> divs = {
+      {static_cast<std::int64_t>(0.15 * static_cast<double>(year_ns)), 1.5},
+      {static_cast<std::int64_t>(0.50 * static_cast<double>(year_ns)), 2.0},
+  };
+  const double borrow = 0.0;
+  const HybridDivParams hyb{0.0, 0.0}; // pure escrowed cash
+  for (Side side : {Side::Put, Side::Call}) {
+    const double F = hybrid_forward(S, r, borrow, T, divs, expiry, now, hyb);
+    ASSERT_GT(F, 0.0);
+    const double q_eff = r - std::log(F / S) / T;
+    const auto cg = american_carry_greeks_al(S, K, T, sigma, r, q_eff, side);
+    ASSERT_TRUE(cg.has_value());
+    std::vector<double> jac(divs.size(), 0.0);
+    hybrid_forward_div_jacobian(r, borrow, T, divs, expiry, now, hyb, jac);
+    std::vector<double> dPdDiv(divs.size(), 0.0);
+    american_dividend_sensitivities(cg->dP_dq, F, T, jac, dPdDiv);
+    for (std::size_t i = 0; i < divs.size(); ++i) {
+      const double amt = divs[i].amount;
+      const double hh = 1.0e-3;
+      std::vector<DividendEvent> dp = divs, dm = divs;
+      dp[i].amount = amt + hh;
+      dm[i].amount = amt - hh;
+      const double Fp = hybrid_forward(S, r, borrow, T, dp, expiry, now, hyb);
+      const double Fm = hybrid_forward(S, r, borrow, T, dm, expiry, now, hyb);
+      const double qp = r - std::log(Fp / S) / T;
+      const double qm = r - std::log(Fm / S) / T;
+      const double Pp = value_or_fail(andersen_lake(S, K, T, sigma, r, qp, side));
+      const double Pm = value_or_fail(andersen_lake(S, K, T, sigma, r, qm, side));
+      const double fd = (Pp - Pm) / (2.0 * hh);
+      EXPECT_LT(std::fabs(dPdDiv[i] - fd), 2e-3 * (1.0 + std::fabs(fd)))
+          << "side=" << static_cast<int>(side) << " i=" << i;
+      if (side == Side::Put) {
+        EXPECT_GT(dPdDiv[i], 0.0) << "bigger dividend lowers F, raises the put";
+      } else {
+        EXPECT_LT(dPdDiv[i], 0.0) << "bigger dividend lowers F, lowers the call";
+      }
+    }
+    std::printf("[G2 dDiv] side=%d q_eff=%.5f dPdDiv=[%.5f, %.5f]\n", static_cast<int>(side), q_eff,
+                dPdDiv[0], dPdDiv[1]);
+  }
 }
 
 } // namespace

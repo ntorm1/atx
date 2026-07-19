@@ -1847,7 +1847,8 @@ constexpr const char *kDoubleContinuationMsg =
 // differentiated Clenshaw traversal; no off-point finite differences remain.
 template <typename Correction>
 void american_greeks_first_order(double S, double K, double T, double sigma, double r, double q,
-                                 Side side, const Correction *correction, AmericanGreeks &out) {
+                                 Side side, const Correction *correction, AmericanGreeks &out,
+                                 double *dP_dq_out = nullptr) {
   const double m = std::exp((r - q) * T); // F/S
   const double F = S * m;
   const double df = std::exp(-r * T);
@@ -1884,6 +1885,14 @@ void american_greeks_first_order(double S, double K, double T, double sigma, dou
 
   const double D = gB.delta + c_val - dc_dk; // ∂A/∂F
   out.delta = m * D;                         // spot-delta convention
+  // G2: fixed-carry ∂P/∂q. q enters ONLY through F (S·e^{(r-q)T}, ∂F/∂q = -T·F);
+  // the fixed-baked correction is held constant across the carry bump (same
+  // contract as rho above), so ∂P/∂q = ∂P/∂F · ∂F/∂q = D·(-T·F). This is rho's
+  // through-forward leg (T·F·D) with q's opposite sign and WITHOUT rho's discount-
+  // factor leg (q does not enter the discount df = e^{-rT}).
+  if (dP_dq_out != nullptr) {
+    *dP_dq_out = -T * F * D;
+  }
   out.vega = gB.vega + F * dc_ds;
   out.rho = gB.rho + T * F * D;
   out.theta = gB.theta - (r - q) * F * D - F * dc_dT;
@@ -3148,6 +3157,180 @@ Result<AmericanGreeks> american_greeks_al(double S, double K, double T, double s
     }
   }
   return Ok(out);
+}
+
+// ── Carry sensitivities: ∂P/∂q and ∂P/∂Div (G2, gaps-review finding 2) ────
+
+Result<CarryGreeks> american_carry_greeks_fd(double S, double K, double T, double sigma, double r,
+                                             double q, Side side, AmericanMethod method,
+                                             const std::optional<AlOpts> &opts) {
+  if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !(sigma > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "american_carry_greeks_fd: S, K, T, sigma must be > 0");
+  }
+  const double hq = 1.0e-4; // match american_greeks_fd's hr
+  // A5 regime guard for the q down-bump. Under McDonald-Schroder q is the internal-
+  // put YIELD for a put (internal rate = r, untouched by the q-bump) and the
+  // internal-put RATE for a call. Only a CALL can leave the American regime: a
+  // down-bump q - hq that drops the internal rate out of the American regime has no
+  // early-exercise boundary, so use a one-sided FORWARD stencil (mirroring
+  // american_greeks_fd's rho_forward / near-expiry theta). A put is always central.
+  const bool is_call = (side == Side::Call);
+  const bool q_forward =
+      is_call && (classify_regime(/*rate=*/q - hq, /*yield=*/r) != ExerciseRegime::American);
+
+  bool failed = false;
+  atx::core::Error first_err;
+  auto P = [&](double dq) -> double {
+    if (failed) {
+      return std::numeric_limits<double>::quiet_NaN();
+    }
+    const Result<double> p = american_price(S, K, T, sigma, r, q + dq, side, method, opts);
+    if (!p) {
+      failed = true;
+      first_err = p.error();
+      return std::numeric_limits<double>::quiet_NaN();
+    }
+    return *p;
+  };
+  const double p0 = P(0.0);
+  const double pqp = P(+hq);
+  const double pqm = q_forward ? p0 : P(-hq);
+  if (failed) {
+    return Err(std::move(first_err));
+  }
+  CarryGreeks out;
+  out.price = p0;
+  out.dP_dq = q_forward ? (pqp - p0) / hq : (pqp - pqm) / (2.0 * hq);
+  out.q_one_sided = q_forward;
+  return Ok(out);
+}
+
+Result<CarryGreeks> american_carry_greeks_al(double S, double K, double T, double sigma, double r,
+                                             double q, Side side,
+                                             const std::optional<AlOpts> &opts) {
+  if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !(sigma > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "american_carry_greeks_al: S, K, T, sigma must be > 0");
+  }
+  const bool is_call = (side == Side::Call);
+  const double al_rate = is_call ? q : r; // internal-put short rate
+  // Degenerate / no-early-exercise corners take the exact FD reference (which itself
+  // short-circuits to the European Black-76 leg where the regime demands it).
+  if (al_rate <= 0.0 || T <= 1.0e-12 || sigma <= 1.0e-8) {
+    return american_carry_greeks_fd(S, K, T, sigma, r, q, side, AmericanMethod::AndersenLake, opts);
+  }
+  const AlScheme sch = scheme_from_opts(opts);
+  const double hq = 1.0e-4;
+  // A5: for a CALL, q is the internal-put RATE; a down-bump q - hq that leaves the
+  // American regime has no boundary to solve -> one-sided forward stencil. For a PUT,
+  // q is the internal YIELD (internal rate = r > 0 fixed) -> always central.
+  const bool q_forward =
+      is_call && (classify_regime(/*rate=*/q - hq, /*yield=*/r) != ExerciseRegime::American);
+
+  // Boundaries: base + q+ (+ q- unless one-sided). q bumps the internal RATE for a
+  // call, the internal YIELD for a put; the internal strike is S (call) / K (put).
+  const double Kb = is_call ? S : K;
+  const auto solve = [&](AlBoundary &b, AlWorkspace &w, double dq) -> AlSolveStatus {
+    const double rate = is_call ? (q + dq) : r;
+    const double yield = is_call ? r : (q + dq);
+    return al_solve_put_boundary(Kb, T, sigma, rate, yield, sch, b, w);
+  };
+  AlBoundary b0, bqp, bqm;
+  AlWorkspace w0, wqp, wqm;
+  bool ok =
+      (solve(b0, w0, 0.0) == AlSolveStatus::Ok) && (solve(bqp, wqp, +hq) == AlSolveStatus::Ok);
+  if (ok && !q_forward) {
+    ok = (solve(bqm, wqm, -hq) == AlSolveStatus::Ok);
+  }
+  if (!ok) {
+    return american_carry_greeks_fd(S, K, T, sigma, r, q, side, AmericanMethod::AndersenLake, opts);
+  }
+  // Price from a solved boundary at the option's fixed spot/strike. Carry greeks bump
+  // ONLY q (no spot stencil), so no homogeneity rescale is needed on either side, and
+  // al_solve_put(S,K,..) == al_solve_put_boundary + this price call makes v0/vq± bit-
+  // identical to american_carry_greeks_fd for BOTH sides.
+  const auto px = [&](const AlBoundary &b, const AlWorkspace &w, double q2) -> double {
+    const double rate = is_call ? q2 : r;
+    const double yield = is_call ? r : q2;
+    const double spot = is_call ? K : S;
+    const double strike = is_call ? S : K;
+    return al_put_price_from_boundary(b, w, spot, strike, T, sigma, rate, yield);
+  };
+  const double v0 = px(b0, w0, q);
+  const double vqp = px(bqp, wqp, q + hq);
+  CarryGreeks out;
+  out.price = v0;
+  out.q_one_sided = q_forward;
+  if (q_forward) {
+    out.dP_dq = (vqp - v0) / hq;
+  } else {
+    const double vqm = px(bqm, wqm, q - hq);
+    out.dP_dq = (vqp - vqm) / (2.0 * hq);
+  }
+  return Ok(out);
+}
+
+Result<CarryGreeks> american_carry_greeks(double S, double K, double T, double sigma, double r,
+                                          double q, Side side, const CorrectionCache *correction) {
+  if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !(sigma > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "american_carry_greeks: S, K, T, sigma must be > 0");
+  }
+  if (correction != nullptr && (!correction->populated() || correction->side() != side)) {
+    correction = nullptr;
+  }
+  if (classify_regime(/*rate=*/(side == Side::Put) ? r : q,
+                      /*yield=*/(side == Side::Put) ? q : r) == ExerciseRegime::Unsupported) {
+    return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
+  }
+  AmericanGreeks g;
+  double dq = 0.0;
+  american_greeks_first_order(S, K, T, sigma, r, q, side, correction, g, &dq);
+  CarryGreeks out;
+  out.price = g.price;
+  out.dP_dq = dq;
+  return Ok(out);
+}
+
+Result<CarryGreeks> american_carry_greeks(double S, double K, double T, double sigma, double r,
+                                          double q, Side side, const CorrectionBlend &correction) {
+  if (!correction.usable(side)) {
+    return american_carry_greeks(S, K, T, sigma, r, q, side,
+                                 static_cast<const CorrectionCache *>(nullptr));
+  }
+  if (correction.upper_weight == 0.0 || correction.lower == correction.upper) {
+    return american_carry_greeks(S, K, T, sigma, r, q, side, correction.lower);
+  }
+  if (correction.upper_weight == 1.0) {
+    return american_carry_greeks(S, K, T, sigma, r, q, side, correction.upper);
+  }
+  if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !(sigma > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "american_carry_greeks: S, K, T, sigma must be > 0");
+  }
+  if (classify_regime(/*rate=*/(side == Side::Put) ? r : q,
+                      /*yield=*/(side == Side::Put) ? q : r) == ExerciseRegime::Unsupported) {
+    return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
+  }
+  AmericanGreeks g;
+  double dq = 0.0;
+  american_greeks_first_order(S, K, T, sigma, r, q, side, &correction, g, &dq);
+  CarryGreeks out;
+  out.price = g.price;
+  out.dP_dq = dq;
+  return Ok(out);
+}
+
+void american_dividend_sensitivities(double dP_dq, double F, double T,
+                                     std::span<const double> dF_dDiv,
+                                     std::span<double> dP_dDiv_out) noexcept {
+  // dP/dD_i = (∂P/∂q)·(∂q_eff/∂D_i); q_eff = r - ln(F/S)/T so ∂q_eff/∂D_i =
+  // (-1/(F·T))·∂F/∂D_i. A degenerate F·T (non-finite / zero) yields no sensitivity.
+  const double ft = F * T;
+  const bool ok = std::isfinite(dP_dq) && std::isfinite(ft) && ft != 0.0;
+  const double scale = ok ? (-dP_dq / ft) : 0.0;
+  const std::size_t n =
+      (dF_dDiv.size() < dP_dDiv_out.size()) ? dF_dDiv.size() : dP_dDiv_out.size();
+  for (std::size_t i = 0; i < n; ++i) {
+    dP_dDiv_out[i] = scale * dF_dDiv[i];
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────

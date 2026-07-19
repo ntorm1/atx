@@ -184,6 +184,12 @@ void bind_pricing(py::module_ &m) {
       .def_readonly("charm", &AmericanGreeks::charm)
       .def_readonly("price", &AmericanGreeks::price);
 
+  // G2: carry sensitivities (∂P/∂q; ∂P/∂Div via the chain rule at the C++ layer).
+  py::class_<CarryGreeks>(m, "CarryGreeks")
+      .def_readonly("price", &CarryGreeks::price)
+      .def_readonly("dP_dq", &CarryGreeks::dP_dq)
+      .def_readonly("q_one_sided", &CarryGreeks::q_one_sided);
+
   py::class_<AloPricer>(m, "AloPricer")
       .def(py::init<double, double, double, double, double, Side, const std::optional<AlOpts> &>(),
            py::arg("spot"), py::arg("strike"), py::arg("T"), py::arg("r"), py::arg("q"),
@@ -275,6 +281,25 @@ void bind_pricing(py::module_ &m) {
       py::arg("spot"), py::arg("strike"), py::arg("T"), py::arg("sigma"), py::arg("r"),
       py::arg("q"), py::arg("side"), py::arg("opts") = std::nullopt,
       py::call_guard<py::gil_scoped_release>());
+  m.def(
+      "american_carry_greeks_al",
+      [](double s, double k, double t, double sigma, double r, double q, Side side,
+         const std::optional<AlOpts> &opts) {
+        return atxvol::python::unwrap(american_carry_greeks_al(s, k, t, sigma, r, q, side, opts));
+      },
+      py::arg("spot"), py::arg("strike"), py::arg("T"), py::arg("sigma"), py::arg("r"),
+      py::arg("q"), py::arg("side"), py::arg("opts") = std::nullopt,
+      py::call_guard<py::gil_scoped_release>());
+  m.def(
+      "american_carry_greeks_fd",
+      [](double s, double k, double t, double sigma, double r, double q, Side side,
+         AmericanMethod method, const std::optional<AlOpts> &opts) {
+        return atxvol::python::unwrap(
+            american_carry_greeks_fd(s, k, t, sigma, r, q, side, method, opts));
+      },
+      py::arg("spot"), py::arg("strike"), py::arg("T"), py::arg("sigma"), py::arg("r"),
+      py::arg("q"), py::arg("side"), py::arg("method") = AmericanMethod::AndersenLake,
+      py::arg("opts") = std::nullopt, py::call_guard<py::gil_scoped_release>());
   m.def(
       "american_implied_vol",
       [](double price, double s, double k, double t, double r, double q, Side side,
