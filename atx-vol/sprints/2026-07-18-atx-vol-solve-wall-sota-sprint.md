@@ -199,9 +199,9 @@ graph TD
 | V4 | `feat/sw-verify` | ☐ todo (PM) | — | absolutes frozen |
 | K1 | `feat/sw-kernel` | ☑ landed | `033899f` | ladder bench + tier policy + al_opts audit (docs/al-preset-ladder.md) |
 | K2 | `feat/sw-kernel` | ◐ prov. landed (flag OFF, PM quiet-window pending) | `f30abdf`, `b48d4e9`, `73bcaf3` | AlOpts l≠p + specialize (7,8) + ql_fast batch gate rows; ql_fast tier **2.4–3.8× PROVISIONAL** (clears ≥2.5×); accurate 1.4–2.7×; levers 1/5 dead, 4 deferred-to-caller; `kShipAvx2Boundary` left OFF for PM A/B (report kernel-stage1.md) |
-| K3 | `feat/sw-kernel` | ◐ seam published | `2ffda57` | seam doc docs/seams/laned-greeks.md published for L4; laned bundle impl pending |
-| K4 | `feat/sw-kernel` | ☐ todo | — | first-order path + new vega guard green |
-| K5 | `feat/sw-kernel` | ☐ todo | — | `american_greeks/*` A/B rows; ≥5× composite |
+| K3 | `feat/sw-kernel` | ◐ prov. landed (flag OFF, PM quiet-window pending) | `8fc6360`, `3c7e256`, `d53dd4b`, `9e6fa30` | laned analytic put greeks bundle (5 solves/pack 4-wide) parity-gated vs american_greeks_al (economic gate); wired into american_greeks_batch; **~2.5–2.9× PROVISIONAL** vs scalar; `kShipAvx2Greeks` OFF (report kernel-stage2.md) |
+| K4 | `feat/sw-kernel` | ◐ prov. landed | `8480b18` | first-order tier via GreekFieldMask solve-skip (hedge=1 solve/pack vs 5); first-order bit-matches full bundle; **~3.4× vs full laned, ~6× vs scalar PROVISIONAL**; vega-guard resolved moot in analytic path; seam doc updated `39f7881` |
+| K5 | `feat/sw-kernel` | ◐ partial | `9e6fa30`, `8480b18` | A/B rows american_greeks/{laned,laned_scalar,laned_first_order} + gate-flip candidate list (kernel-stage2.md §5); port/price/adjoint baseline + priced_surface arms deferred (§6 follow-ups) |
 | C1 | `feat/sw-fit` | ☐ todo | — | de-Am passes 2→1; outputs bit-identical |
 | C2 | `feat/sw-fit` | ☐ todo | — | solves/board −≥40% dates 2+; quality in-band |
 | C3 | `feat/sw-fit` | ☐ todo | — | Populate tier gated vs Robust |

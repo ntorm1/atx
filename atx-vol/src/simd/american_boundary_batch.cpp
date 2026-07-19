@@ -4,6 +4,7 @@
 #include "atx/vol/simd/cpu.hpp"
 
 #include "american_boundary_avx2.hpp"
+#include "american_greeks_avx2.hpp"
 
 #include <limits>
 
@@ -117,6 +118,83 @@ SimdRoute american_put_boundary_batch(const double* S, const double* K,
                                       double* price_out, std::size_t n) noexcept {
     return american_put_boundary_batch(S, K, T, sigma, r, q, price_out, n,
                                        simd_isa_override());
+}
+
+namespace {
+
+// K3 ship gate — DARK, mirrors kShipAvx2Boundary. The laned analytic Greeks bundle is
+// correct (economic-parity-gated vs american_greeks_al) and selectable via ForceAvx2,
+// but Auto stays SCALAR until a quiet-window A/B ratifies its speedup. The PM flips
+// this after the quiet-window; do NOT flip it from a worktree. See kernel-stage2.md.
+inline constexpr bool kShipAvx2Greeks = false;
+
+// Scalar oracle: american_greeks_al per contract (NaN-filled on error, matching the
+// batch's per-lane fallback contract).
+void greeks_scalar_lane(const double* S, const double* K, const double* T,
+                        const double* sigma, const double* r, const double* q,
+                        const std::optional<AlOpts>& opts, AmericanGreeks* out,
+                        std::size_t i) noexcept {
+    const Result<AmericanGreeks> g =
+        american_greeks_al(S[i], K[i], T[i], sigma[i], r[i], q[i], Side::Put, opts);
+    if (g.has_value()) {
+        out[i] = *g;
+    } else {
+        const double kNaN = std::numeric_limits<double>::quiet_NaN();
+        out[i] = AmericanGreeks{kNaN, kNaN, kNaN, kNaN, kNaN, kNaN, kNaN, kNaN, kNaN};
+    }
+}
+
+} // namespace
+
+bool avx2_greeks_selected(SimdIsa isa) noexcept {
+    switch (isa) {
+        case SimdIsa::ForceScalar:
+            return false;
+        case SimdIsa::ForceAvx2:
+            return have_avx2();
+        case SimdIsa::Auto:
+        default:
+            return kShipAvx2Greeks && have_avx2();
+    }
+}
+
+SimdRoute american_put_greeks_batch(const double* S, const double* K, const double* T,
+                                    const double* sigma, const double* r, const double* q,
+                                    std::size_t n, const std::optional<AlOpts>& opts,
+                                    AmericanGreeks* out_greeks, SimdIsa isa,
+                                    bool need_vega, bool need_rho,
+                                    bool need_charm) noexcept {
+    const bool avx2 = avx2_greeks_selected(isa);
+    if (n == 0) {
+        return avx2 ? SimdRoute::Avx2 : SimdRoute::Scalar;
+    }
+    if (!avx2) {
+        // Scalar oracle stays the full american_greeks_al bundle (correctness first; the
+        // first-order solve-skip win is on the laned majority, not the scalar patch).
+        for (std::size_t i = 0; i < n; ++i) {
+            greeks_scalar_lane(S, K, T, sigma, r, q, opts, out_greeks, i);
+        }
+        return SimdRoute::Scalar;
+    }
+    const detail::GreekNeeds needs{need_vega, need_rho, need_charm};
+    // AVX2 route: lane the bundle, then patch the lanes the kernel could not handle
+    // (non-early-exercise on any needed bump state, or non-finite) through the scalar
+    // oracle. Chunked with a stack `handled` buffer to stay allocation-free.
+    constexpr std::size_t kChunk = 512;
+    for (std::size_t off = 0; off < n; off += kChunk) {
+        const std::size_t cn = (n - off < kChunk) ? (n - off) : kChunk;
+        bool handled[kChunk];
+        detail::american_put_greeks_batch_avx2(S + off, K + off, T + off, sigma + off,
+                                               r + off, q + off, cn, opts,
+                                               out_greeks + off, handled, needs);
+        for (std::size_t i = 0; i < cn; ++i) {
+            if (!handled[i]) {
+                greeks_scalar_lane(S + off, K + off, T + off, sigma + off, r + off, q + off,
+                                   opts, out_greeks + off, i);
+            }
+        }
+    }
+    return SimdRoute::Avx2;
 }
 
 } // namespace atx::vol::simd

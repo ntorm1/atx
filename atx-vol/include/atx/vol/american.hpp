@@ -411,9 +411,18 @@ american_greeks_fd(double S, double K, double T, double sigma, double r, double 
 // non-degenerate) only; calls, the r<=0 European put, the degenerate corners, and
 // any bumped-boundary collapse defer to american_greeks_fd. greeks().price ==
 // fair_value(). InvalidArgument on non-positive S/K/T/sigma.
+//
+// K4 first-order tier: need_vega/need_rho/need_charm skip the boundary solves the
+// requested greeks don't need — price+delta+gamma+theta ride the BASE solve alone;
+// vega/volga/vanna gate the sigma+/- solves; rho the r+/- solves; charm the wide speed
+// stencils. A hedge caller ({delta}) does ONE boundary solve (1 BoundarySolves ledger
+// count) instead of five; unrequested greeks are left 0. Defaults keep the full 5-solve
+// bundle, so every existing call site is byte-unchanged. The columns a reduced request
+// returns are BIT-IDENTICAL to the full-bundle run (same base boundary + stencils).
 [[nodiscard]] Result<AmericanGreeks>
 american_greeks_al(double S, double K, double T, double sigma, double r, double q, Side side,
-                   const std::optional<AlOpts> &opts = std::nullopt);
+                   const std::optional<AlOpts> &opts = std::nullopt, bool need_vega = true,
+                   bool need_rho = true, bool need_charm = true);
 
 // American delta ONLY (∂price/∂S) — the single sensitivity the strike-from-delta
 // solver's bisection consumes, WITHOUT the full american_greeks_fd bundle's other

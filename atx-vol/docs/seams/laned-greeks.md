@@ -13,6 +13,95 @@ does NOT edit the kernel TUs; it consumes the entry points below.
 
 ---
 
+## STATUS — K3 + K4 SHIPPED (dark), what L4 wires against
+
+The seam below is now IMPLEMENTED (SHAs in `.superpowers/sdd/sw-solve-wall/reports/
+kernel-stage2.md`); this section is the authoritative entry-point + mask contract; the
+sections after it are the original design rationale.
+
+- **Laned kernel:** `src/simd/american_greeks_avx2.cpp`
+  `detail::american_put_greeks_batch_avx2(...)` — the analytic PUT bundle 4-wide (5
+  boundary solves/pack: base, σ±, r±), parity-gated vs scalar `american_greeks_al`
+  (economic gate; transcendental-level deviations, see report). Rides the shared K2
+  solve/price primitives (`american_boundary_avx2_kernel.hpp`).
+- **Dispatch (what L4 calls, kernel-owned):**
+  `simd::american_put_greeks_batch(S,K,T,σ,r,q, n, opts, AmericanGreeks* out, isa,
+  need_vega=true, need_rho=true, need_charm=true)` — ISA-selected (ForceScalar = the
+  `american_greeks_al` oracle; ForceAvx2/Auto-when-shipped = laned + scalar patch for
+  non-early-exercise / non-finite lanes). Returns `SimdRoute`.
+- **SoA surface (kernel-owned):** `american_greeks_batch(in, GreekFieldMask fields, ...)`
+  already routes analytic PUT lanes through the dispatch when `simd::avx2_greeks_selected`
+  (Auto respects the dark `kShipAvx2Greeks` gate); CALL lanes stay on the scalar analytic
+  fan. **L4 does not change this function — it sets `kernel.isa` and the mask.**
+- **Ship gate:** `kShipAvx2Greeks` (false, dark) in `american_boundary_batch.cpp`, mirror
+  of `kShipAvx2Boundary`. The PM flips it after a quiet-window A/B. L4 wires the tier; it
+  does not flip the gate.
+
+### K4 first-order tier — the mask IS the tier (no separate function)
+
+`need_vega`/`need_rho`/`need_charm` skip whole boundary solves:
+
+| L4 request (`GreekFieldMask`) | selectors | solves/pack | greeks returned |
+|---|---|---|---|
+| **hedge** `Delta` (+`Gamma`,`Theta`,`Price`) | vega=rho=charm=**false** | **1** (base) | delta, gamma, theta, price |
+| **risk** `Delta\|Vega` (+`Price`) | vega=**true**, rho=charm=false | **3** (base, σ±) | + vega, volga, vanna |
+| + `Rho` | rho=**true** | +2 (r±) | + rho |
+| **pnl-explain** `All` | all true | **5** | full 8-greek bundle |
+
+`american_greeks_batch` derives the selectors from `fields` (`need_vega = Vega∨Volga∨
+Vanna`, `need_rho = Rho`, `need_charm = Charm`). Guarantee (test
+`FirstOrderMaskBitMatchesFullBundle`): the columns a reduced request returns are
+**bit-identical** to the full-bundle run — the skipped solves never fed them. Measured
+(PROVISIONAL): hedge first-order ~3.4× the full laned bundle, ~6× the scalar full bundle.
+
+**Vega self-consistency guard — resolved, no replacement needed in this path.** In the
+analytic bundle `volga = (v_σ+ − 2v₀ + v_σ−)/h²` is formed from the SAME σ± boundary
+solves as `vega`, so volga costs **zero extra solves** and there is no volga-only re-solve
+to drop (unlike the adjoint route's 2 cold σ± volga re-solves, `adjoint_greeks.cpp:374-403`
+— a separate optimization L4 avoids by not requesting Volga through the adjoint path). The
+first-order tier omits vega AND volga together (drops the σ± solves entirely), so there is
+no "vega without its volga cross-check" state to guard. A tangent-vs-Richardson vega
+cross-check would only matter for a hypothetical "vega at fewer-than-σ± solves" tier, which
+this design does not create.
+
+### The production (scalar Auto) route — mask IS honored at the solve site; L4 wires the frame
+
+**Answered (PM crux):** `GreekFieldMask` narrowing skips the σ±/r± solves on the SCALAR
+`american_greeks_al` path too, NOT just the dark laned kernel. `american_greeks_al` gained
+`need_vega/need_rho/need_charm` (default full) and skips whole boundary solves — **proven by
+the `BoundarySolves` ledger** (`AlGreeksFirstOrder.SolveCountByMask_LedgerProof`, counters
+ON): hedge `{delta}` = **1** solve, `{delta,vega}` = **3**, full = **5**. So L4's ledger gate
+(≤3 s/u) is paid on the route production takes, independent of the dark AVX2 flag.
+
+**Backtest greeks route (traced, cite):** `RunConfig.price{analytic_greeks=true}`
+(`backtest.hpp:309`) and `adjoint_greeks=false` (`PriceOptions`, `portfolio_pricer.hpp:513`
+— default; **no production caller sets it true**) ⇒ the non-adjoint analytic path:
+`PortfolioPricer::price_group_impl` (loop) → `PricedSurface::evaluate_batch(k,t,side,
+EvalField fields, analytic, …)` (kernel, `portfolio_pricer.cpp:672`) → `greeks_resolved` →
+`american_greeks_al`. The adjoint route (`american_greeks_adjoint`, its 2 cold σ± volga
+re-solves at `adjoint_greeks.cpp:374-403`) is an **opt-in A/B reached by NO production
+caller** — so its `first_order_only` deferral is CLEAN and K4's row closes on the analytic
+route the backtest uses.
+
+**What L4 wires (the remaining last mile):** the kernel exposes the mask-honoring
+`american_greeks_al(…, need_vega, need_rho, need_charm)`. To get the win end-to-end through
+the backtest, L4 (owns `portfolio_pricer.cpp`) narrows the **`EvalField`** it requests per
+frame and the kernel's `evaluate_batch`/`greeks_resolved` (kernel-owned, `priced_surface.cpp`)
+maps `EvalField → need_*` when it calls `american_greeks_al`. Recipe + caveat:
+- `fields = EF::Iv|EF::Price|EF::Delta` (hedge) ⇒ `need_vega=need_rho=need_charm=false` ⇒ 1
+  solve; `+EF::Vega` (risk) ⇒ `need_vega=true` ⇒ 3 solves; `EF::FirstOrder|EF::SecondOrder`
+  (pnl-explain) ⇒ full 5.
+- **CAVEAT (design point L4 owns):** today `want_greeks = has(FirstOrder)∨has(SecondOrder)`
+  (`portfolio_pricer.cpp:625`), so a bare `EF::Delta` does NOT currently trigger the greeks
+  path. L4's frame wiring must either (a) route hedge/risk through `EF::Delta`/`EF::Delta|
+  Vega` AND extend `want_greeks` + the `evaluate_batch` `EvalField→need_*` map accordingly,
+  or (b) thread `GreekNeeds` directly. This is the L4 "wire the first-order mask into the
+  execute risk frame" task (sprint §4 L4); the kernel side (`american_greeks_al` needs +
+  the `evaluate_batch` mapping hook) is ready for it. The kernel does NOT hardcode a frame
+  policy — that is the loop's.
+
+---
+
 ## 0. What exists today (the substrate L4 already has)
 
 - **`GreekFieldMask`** (`american_batch.hpp:215`) — per-greek granular selector:

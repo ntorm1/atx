@@ -2581,7 +2581,8 @@ double american_vega(double S, double K, double T, double sigma, double r, doubl
 }
 
 Result<AmericanGreeks> american_greeks_al(double S, double K, double T, double sigma, double r,
-                                          double q, Side side, const std::optional<AlOpts> &opts) {
+                                          double q, Side side, const std::optional<AlOpts> &opts,
+                                          bool need_vega, bool need_rho, bool need_charm) {
   if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !(sigma > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "american_greeks_al: S, K, T, sigma must be > 0");
   }
@@ -2621,7 +2622,9 @@ Result<AmericanGreeks> american_greeks_al(double S, double K, double T, double s
   // stays American for every stencil — no regime crossing is possible and al_xmax_put
   // (rate q > 0) stays > 0. The only bumped-boundary failure a call can hit is a
   // numeric collapse, caught by the 5-solve `!= Ok` guard below.
-  if (!is_call && r - hr <= 0.0) {
+  // Only the r± stencils bump the put short rate, so this regime guard only matters when
+  // rho is requested (K4 first-order tier: a hedge {delta} bundle skips r± entirely).
+  if (need_rho && !is_call && r - hr <= 0.0) {
     return american_greeks_fd(S, K, T, sigma, r, q, side, AmericanMethod::AndersenLake, opts,
                               /*warm_start=*/false);
   }
@@ -2630,6 +2633,13 @@ Result<AmericanGreeks> american_greeks_al(double S, double K, double T, double s
   // = K fixed, rate = r±, yield = q). For a CALL it is solved at the BASE internal-
   // strike = S (the unbumped call spot) with rate = q fixed, yield = r± bumped, then
   // rescaled per spot stencil by strike homogeneity in `px`.
+  //
+  // K4 first-order tier: skip the boundary solves the requested greeks don't need.
+  // sigma+/- (2 solves) feed only vega/volga/vanna; r+/- (2 solves) only rho; the base
+  // solve (delta/gamma/theta/price) always runs. A hedge {delta} bundle thus does ONE
+  // boundary solve (1 BoundarySolves ledger count) instead of five — honored on the
+  // SCALAR production route, not just the dark laned kernel. Any NEEDED bumped-boundary
+  // corner (collapse, or r-hr crossing) still falls the whole bundle back to exact FD.
   const double Kb = is_call ? S : K; // base internal-strike
   const auto solve = [&](AlBoundary &b, AlWorkspace &w, double sig_s, double dr) -> AlSolveStatus {
     const double rate = is_call ? q : (r + dr);
@@ -2638,11 +2648,16 @@ Result<AmericanGreeks> american_greeks_al(double S, double K, double T, double s
   };
   AlBoundary b0, bvp, bvm, brp, brm;
   AlWorkspace w0, wvp, wvm, wrp, wrm;
-  if (solve(b0, w0, sigma, 0.0) != AlSolveStatus::Ok ||
-      solve(bvp, wvp, sigma + hv, 0.0) != AlSolveStatus::Ok ||
-      solve(bvm, wvm, sigma - hv, 0.0) != AlSolveStatus::Ok ||
-      solve(brp, wrp, sigma, +hr) != AlSolveStatus::Ok ||
-      solve(brm, wrm, sigma, -hr) != AlSolveStatus::Ok) {
+  bool bundle_ok = (solve(b0, w0, sigma, 0.0) == AlSolveStatus::Ok);
+  if (bundle_ok && need_vega) {
+    bundle_ok = (solve(bvp, wvp, sigma + hv, 0.0) == AlSolveStatus::Ok) &&
+                (solve(bvm, wvm, sigma - hv, 0.0) == AlSolveStatus::Ok);
+  }
+  if (bundle_ok && need_rho) {
+    bundle_ok = (solve(brp, wrp, sigma, +hr) == AlSolveStatus::Ok) &&
+                (solve(brm, wrm, sigma, -hr) == AlSolveStatus::Ok);
+  }
+  if (!bundle_ok) {
     return american_greeks_fd(S, K, T, sigma, r, q, side, AmericanMethod::AndersenLake, opts,
                               /*warm_start=*/false);
   }
@@ -2665,45 +2680,54 @@ Result<AmericanGreeks> american_greeks_al(double S, double K, double T, double s
     return al_put_price_from_boundary(b, w, S2, K, T, sig2, r2, q);
   };
 
-  // Spot stencils on the base boundary (exact — boundary independent of S).
+  // Spot stencils on the base boundary (exact — boundary independent of S). v0/vSp/vSm
+  // (price/delta/gamma) always; the wide S+/-2h speed stencils only for charm.
   const double v0 = px(b0, w0, S, sigma, r);
   const double vSp = px(b0, w0, S + hS, sigma, r), vSm = px(b0, w0, S - hS, sigma, r);
-  const double vS2p = px(b0, w0, S + 2.0 * hS, sigma, r);
-  const double vS2m = px(b0, w0, S - 2.0 * hS, sigma, r);
-  // Vol stencils on the re-solved sigma+/- boundaries (incl. the vanna cross).
-  const double vvp = px(bvp, wvp, S, sigma + hv, r), vvm = px(bvm, wvm, S, sigma - hv, r);
-  const double vSpVp = px(bvp, wvp, S + hS, sigma + hv, r);
-  const double vSmVp = px(bvp, wvp, S - hS, sigma + hv, r);
-  const double vSpVm = px(bvm, wvm, S + hS, sigma - hv, r);
-  const double vSmVm = px(bvm, wvm, S - hS, sigma - hv, r);
-  // Rate stencils on the re-solved r+/- boundaries.
-  const double vrp = px(brp, wrp, S, sigma, r + hr), vrm = px(brm, wrm, S, sigma, r - hr);
 
-  AmericanGreeks out;
+  AmericanGreeks out; // unrequested greeks stay 0 (default-initialised)
   out.price = v0;
   out.delta = (vSp - vSm) / (2.0 * hS);
   out.gamma = (vSp - 2.0 * v0 + vSm) / (hS * hS);
-  out.vega = (vvp - vvm) / (2.0 * hv);
-  out.volga = (vvp - 2.0 * v0 + vvm) / (hv * hv);
-  out.rho = (vrp - vrm) / (2.0 * hr);
-  out.vanna = (vSpVp - vSpVm - vSmVp + vSmVm) / (4.0 * hS * hv);
+  if (need_vega) {
+    // Vol stencils on the re-solved sigma+/- boundaries (incl. the vanna cross).
+    const double vvp = px(bvp, wvp, S, sigma + hv, r), vvm = px(bvm, wvm, S, sigma - hv, r);
+    const double vSpVp = px(bvp, wvp, S + hS, sigma + hv, r);
+    const double vSmVp = px(bvp, wvp, S - hS, sigma + hv, r);
+    const double vSpVm = px(bvm, wvm, S + hS, sigma - hv, r);
+    const double vSmVm = px(bvm, wvm, S - hS, sigma - hv, r);
+    out.vega = (vvp - vvm) / (2.0 * hv);
+    out.volga = (vvp - 2.0 * v0 + vvm) / (hv * hv);
+    out.vanna = (vSpVp - vSpVm - vSmVp + vSmVm) / (4.0 * hS * hv);
+  }
+  if (need_rho) {
+    const double vrp = px(brp, wrp, S, sigma, r + hr), vrm = px(brm, wrm, S, sigma, r - hr);
+    out.rho = (vrp - vrm) / (2.0 * hr);
+  }
 
   // theta / charm from the continuation-region PDE. In the exercise region the
   // frozen price is at intrinsic (put delta -> -1 / call delta -> +1, gamma -> 0);
   // there the intrinsic (K - S for a put, S - K for a call) has no time value, so
   // theta = charm = 0. The PDE relations below are in the ORIGINAL option's (S,r,q)
-  // and are side-agnostic given the correct V/delta/gamma/speed — no sign flip.
+  // and are side-agnostic given the correct V/delta/gamma/speed — no sign flip. theta
+  // rides the base boundary (v0/delta/gamma), so it is always available; charm's speed
+  // term needs the wide base spot stencils, gated on need_charm.
   const double intr0 = is_call ? (S - K) : (K - S);
   const bool exercised = (v0 <= intr0 + 1.0e-9 * K) && (intr0 > 0.0);
-  if (exercised) {
-    out.theta = 0.0;
-    out.charm = 0.0;
-  } else {
-    // speed = d3V/dS3 (5-point), for charm = d(theta)/dS.
-    const double speed = (vS2p - 2.0 * vSp + 2.0 * vSm - vS2m) / (2.0 * hS * hS * hS);
-    out.theta = r * v0 - (r - q) * S * out.delta - 0.5 * sigma * sigma * S * S * out.gamma;
-    out.charm = r * out.delta - (r - q) * (out.delta + S * out.gamma) -
-                0.5 * sigma * sigma * (2.0 * S * out.gamma + S * S * speed);
+  out.theta = exercised
+                  ? 0.0
+                  : r * v0 - (r - q) * S * out.delta - 0.5 * sigma * sigma * S * S * out.gamma;
+  if (need_charm) {
+    if (exercised) {
+      out.charm = 0.0;
+    } else {
+      const double vS2p = px(b0, w0, S + 2.0 * hS, sigma, r);
+      const double vS2m = px(b0, w0, S - 2.0 * hS, sigma, r);
+      // speed = d3V/dS3 (5-point), for charm = d(theta)/dS.
+      const double speed = (vS2p - 2.0 * vSp + 2.0 * vSm - vS2m) / (2.0 * hS * hS * hS);
+      out.charm = r * out.delta - (r - q) * (out.delta + S * out.gamma) -
+                  0.5 * sigma * sigma * (2.0 * S * out.gamma + S * S * speed);
+    }
   }
   return Ok(out);
 }
