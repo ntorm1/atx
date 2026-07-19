@@ -58,28 +58,29 @@ void put_batch_scalar(const double* S, const double* K, const double* T,
 // stress (« kNormalGate 1e-6 / stress 1e-3); ForceScalar-vs-ForceAvx2 parity green
 // across all AmericanBoundaryBatchSchemeMapping schemes.
 //
-// SHIP DECISION (WS-K, 2026-07-19 fit+backtest SOTA sprint, review finding P1): DEFAULT ON.
-// History: the prior solve-wall / north-star sprints held this dark under a >=2.0x
-// quiet-host SPEED gate (measured 1.6-1.87x quiet; contended 2.1-2.9x runs were rejected
-// as inflated). Parity was NEVER the blocker — the economic gate holds with orders of
-// magnitude to spare (ForceScalar-vs-ForceAvx2 max |dev| 4.1e-13 normal / 1.1e-13 stress,
-// << kNormalGate 1e-6; see AvxBoundary.* in simd_american_test.cpp). The 2026-07-19 sprint
-// re-scopes the American-reprice ship criterion from ">=2.0x" to "parity GREEN and FASTER
-// than scalar on this host": the per-bar reprice loop is the single largest throughput lever
-// on the dispersion backtest, so any robust win >1x is worth taking now that parity is proven.
-// Measured on this dev box (rel-avx2 american boundary bench, WS-K report): AVX2 marks beat
-// scalar. Auto now selects AVX2 on AVX2-capable CPUs (have_avx2()); non-AVX2 hosts and
-// ForceScalar keep the exact scalar boundary solve — the untouched put_batch_scalar source
-// of truth below, still the numerical oracle and per-lane fallback.
-inline constexpr bool kShipAvx2Boundary = true;
+// SHIP DECISION (2026-07-19 fit+backtest SOTA sprint, PM integration ruling): OPT-IN,
+// NOT default-on. atx-vol is bit-reproducible-by-default, so the DEFAULT Auto path must
+// return the exact scalar boundary solve — the grouped-price fingerprint and the
+// evaluate_batch == per-entry evaluate contracts must hold bit-for-bit on AVX2 and
+// non-AVX2 hosts alike, which an Auto->AVX2 (~1e-13-shifted, 4-lane-pack-dependent) mark
+// route silently breaks. The AVX2 marks kernel stays a validated PERF opt-in engaged ONLY
+// under ForceAvx2: it clears parity with orders of magnitude to spare (ForceScalar-vs-
+// ForceAvx2 max |dev| 4.1e-13 normal / 1.1e-13 stress, << kNormalGate 1e-6; see AvxBoundary.*
+// in simd_american_test.cpp) and wins ~2.5-3.1x on this dev box (WS-K bench), so a caller
+// that accepts the shift opts in explicitly. This mirrors the greeks posture (the laned
+// analytic greeks engage only under an explicit ForceAvx2 request, gated at their
+// priced_surface caller) and main (kShipAvx2Boundary == false there). WS-K briefly flipped
+// this ON (Auto->AVX2); the PM reverted it to opt-in to restore cross-host reproducibility.
+inline constexpr bool kShipAvx2Boundary = false;
 
 } // namespace
 
 // Whether the AVX2 boundary route is selected for `isa` on this host (ForceAvx2 =>
-// AVX2 iff supported; Auto => the kShipAvx2Boundary ship gate; ForceScalar => never).
+// AVX2 iff supported; Auto => scalar, the bit-reproducible default; ForceScalar => never).
 // Mirrors avx2_greeks_selected. Exposed so a threaded marks caller (portfolio_pricer)
-// can gate its invariant-pack-membership tile schedule on the SAME predicate the
-// dispatch uses — keeping AVX2 marks thread-count bit-identical now that Auto ships AVX2.
+// can gate its H0 invariant-pack-membership tile schedule on the SAME predicate the
+// dispatch uses — the tile schedule engages exactly when this is true (i.e. under the
+// opt-in ForceAvx2), keeping the AVX2 marks pack membership thread-count bit-identical.
 bool avx2_boundary_selected(SimdIsa isa) noexcept {
     switch (isa) {
         case SimdIsa::ForceScalar:

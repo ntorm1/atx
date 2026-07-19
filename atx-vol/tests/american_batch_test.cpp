@@ -121,9 +121,10 @@ TEST(AmericanBoundaryBatch, PerCallIsaDoesNotMutateProcessOverride) {
 
 TEST(AmericanBoundaryBatch, PerCallAutoUsesShipGateWithoutMutatingGlobalOverride) {
   IsaGuard g;
-  // Set the process override to the OPPOSITE of what Auto will pick, to prove the
-  // per-call Auto route is call-local (reads the ship gate, NOT the global override).
-  simd::set_simd_isa_override(simd::SimdIsa::ForceScalar);
+  // Set the process override to the OPPOSITE of what Auto picks (AVX2 marks are opt-in,
+  // so Auto picks scalar), proving the per-call Auto route is call-local: it neither
+  // reads nor mutates the global override, and follows the opt-in gate (scalar).
+  simd::set_simd_isa_override(simd::SimdIsa::ForceAvx2);
   const Book b = make_book();
   constexpr std::size_t n = 1;
   ASSERT_GE(b.size(), n);
@@ -133,11 +134,11 @@ TEST(AmericanBoundaryBatch, PerCallAutoUsesShipGateWithoutMutatingGlobalOverride
       b.S.data(), b.K.data(), b.T.data(), b.sigma.data(), b.r.data(), b.q.data(), price.data(), n,
       simd::SimdIsa::Auto);
 
-  // WS-K flipped kShipAvx2Boundary ON (2026-07-19): Auto now selects AVX2 on an
-  // AVX2-capable host (scalar otherwise) — the shipped ship gate — without reading or
-  // mutating the process override.
-  EXPECT_EQ(route, simd::have_avx2() ? simd::SimdRoute::Avx2 : simd::SimdRoute::Scalar);
-  EXPECT_EQ(simd::simd_isa_override(), simd::SimdIsa::ForceScalar);
+  // AVX2 marks are opt-in (ForceAvx2 only, PM 2026-07-19); the DEFAULT Auto route returns
+  // the exact, cross-host bit-reproducible scalar solve, without reading or mutating the
+  // ForceAvx2 process override set above.
+  EXPECT_EQ(route, simd::SimdRoute::Scalar);
+  EXPECT_EQ(simd::simd_isa_override(), simd::SimdIsa::ForceAvx2);
 }
 
 TEST(AmericanBoundaryBatch, ForceAvx2IsCapabilityGuarded) {
@@ -249,11 +250,12 @@ TEST(AmericanPriceBatch, MatchesScalarBitIdentical) {
   EXPECT_EQ(out.scalar_fallback_rate(), 1.0);
 }
 
-TEST(AmericanPriceBatch, DefaultKernelDispatchesAvx2OnCapableHost) {
+TEST(AmericanPriceBatch, DefaultKernelReportsZeroAvx2Lanes) {
   IsaGuard g;
-  // Global override set to ForceScalar to prove the default kernel's Auto route is
-  // call-local: it follows the (now-ON) ship gate, not this global knob.
-  simd::set_simd_isa_override(simd::SimdIsa::ForceScalar);
+  // AVX2 marks are opt-in (ForceAvx2 only, PM 2026-07-19): prove the DEFAULT (Auto)
+  // kernel stays call-local scalar even with the global override forced to AVX2 — it
+  // follows the opt-in gate, not this knob.
+  simd::set_simd_isa_override(simd::SimdIsa::ForceAvx2);
   const Book b = make_book();
   PricingKernel kernel;
   ASSERT_EQ(kernel.isa, simd::SimdIsa::Auto);
@@ -262,21 +264,13 @@ TEST(AmericanPriceBatch, DefaultKernelDispatchesAvx2OnCapableHost) {
 
   ASSERT_TRUE(american_price_batch(b.view(), out, kernel, ws).has_value());
   ASSERT_EQ(out.size(), b.size());
-  // WS-K flipped kShipAvx2Boundary ON (2026-07-19, review P1): the DEFAULT (Auto)
-  // kernel now dispatches the genuine early-exercise American lanes through the AVX2
-  // boundary pack on an AVX2-capable host; every other lane patches to exact scalar
-  // andersen_lake. On a non-AVX2 host it stays fully scalar.
-  if (simd::have_avx2()) {
-    std::size_t n_avx2 = 0;
-    for (std::size_t i = 0; i < out.size(); ++i) {
-      if (out.route[i] == simd::SimdRoute::Avx2) ++n_avx2;
-    }
-    EXPECT_GT(n_avx2, 0u);
-    EXPECT_LT(out.scalar_fallback_rate(), 1.0);
-  } else {
-    EXPECT_EQ(out.scalar_fallback_rate(), 1.0);
+  // The DEFAULT (Auto) kernel takes the exact scalar boundary solve on every lane —
+  // cross-host bit-reproducible — regardless of the ForceAvx2 global override.
+  for (std::size_t i = 0; i < out.size(); ++i) {
+    EXPECT_EQ(out.route[i], simd::SimdRoute::Scalar) << "i=" << i;
   }
-  EXPECT_EQ(simd::simd_isa_override(), simd::SimdIsa::ForceScalar);
+  EXPECT_EQ(out.scalar_fallback_rate(), 1.0);
+  EXPECT_EQ(simd::simd_isa_override(), simd::SimdIsa::ForceAvx2);
 }
 
 // ── ForceAvx2: Scalar lanes bit-exact, Avx2 lanes within T13's stress gate ─
