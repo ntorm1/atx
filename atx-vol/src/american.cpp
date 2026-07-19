@@ -2379,6 +2379,19 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
   const double hr = 1.0e-4;
   const double hT = 1.0e-3;
   const bool near_expiry = (T - hT <= 1.0e-8);
+  // A5 (core-review finding 5): the rho DOWN-bump r - hr can cross OUT of the
+  // American regime into double-continuation for a PRICEABLE base contract (a put
+  // with 0 < r <= hr and q < r - hr; a call bumps the internal-put YIELD, not its
+  // rate). The regime is classified in the internal-put's (rate, yield) — the SAME
+  // order Pput/Pcall use below (put: rate=r2, yield=q; call: rate=q, yield=r2). When
+  // the down-bump is Unsupported the whole bundle used to fail with NotImplemented;
+  // fall back to a one-sided FORWARD rho stencil (mirroring the near-expiry theta
+  // treatment) so no bump reaches the unpriceable regime.
+  const bool rho_is_call = (side == Side::Call);
+  const double rho_dn_rate = rho_is_call ? q : (r - hr);
+  const double rho_dn_yield = rho_is_call ? (r - hr) : q;
+  const bool rho_forward =
+      (classify_regime(rho_dn_rate, rho_dn_yield) == ExerciseRegime::Unsupported);
 
   // Bumped cold price. Captures the FIRST american_price error and short-circuits;
   // the poisoned NaN it returns afterwards is never consumed once `failed` is set.
@@ -2581,9 +2594,9 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
   // Vol stencils.
   const double p_vp = EV(0.0, +hv, 0.0, 0.0);
   const double p_vm = EV(0.0, -hv, 0.0, 0.0);
-  // Rate stencils.
+  // Rate stencils (one-sided forward when the down-bump exits the American regime).
   const double p_rp = EV(0.0, 0.0, +hr, 0.0);
-  const double p_rm = EV(0.0, 0.0, -hr, 0.0);
+  const double p_rm = rho_forward ? p0 : EV(0.0, 0.0, -hr, 0.0);
   // Time stencils (one-sided forward near expiry).
   const double p_Tp = EV(0.0, 0.0, 0.0, +hT);
   const double p_Tm = near_expiry ? p0 : EV(0.0, 0.0, 0.0, -hT);
@@ -2604,6 +2617,8 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
 
   // Time denominator collapses to hT for the one-sided forward stencils.
   const double dT_den = near_expiry ? hT : (2.0 * hT);
+  // Rate denominator collapses to hr for the one-sided forward rho stencil (A5).
+  const double dr_den = rho_forward ? hr : (2.0 * hr);
 
   AmericanGreeks out;
   out.price = p0;
@@ -2611,7 +2626,7 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
   out.gamma = (p_Sp - 2.0 * p0 + p_Sm) / (hS * hS);
   out.vega = (p_vp - p_vm) / (2.0 * hv);
   out.volga = (p_vp - 2.0 * p0 + p_vm) / (hv * hv);
-  out.rho = (p_rp - p_rm) / (2.0 * hr);
+  out.rho = (p_rp - p_rm) / dr_den;
   // theta = dP/dt = -dP/dT (calendar convention).
   out.theta = -(p_Tp - p_Tm) / dT_den;
   out.vanna = (p_SpVp - p_SpVm - p_SmVp + p_SmVm) / (4.0 * hS * hv);

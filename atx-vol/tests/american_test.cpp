@@ -2479,6 +2479,49 @@ TEST(AmericanGreeksRegime, UnsupportedRegime_PropagatesNotImplemented) {
   ASSERT_TRUE(ge.has_value());
 }
 
+// A5 (core-review finding 5): a PRICEABLE American base contract whose rho DOWN-
+// bump r - hr crosses OUT of the American regime (into double-continuation) must
+// still return a full greeks bundle. The FD/AL rho stencil switches to a one-
+// sided FORWARD difference (mirroring the near-expiry theta treatment) so no bump
+// reaches the Unsupported regime. Pre-fix this failed the WHOLE bundle with
+// NotImplemented for a perfectly priceable base contract.
+TEST(AmericanGreeksRegime, RhoStencilOneSidedForwardAtRegimeBoundary_Put) {
+  // Base American put: r > 0 (5e-5) but q (-0.02) < r - hr, so the down-bump
+  // r - hr = -5e-5 lands in the double-continuation regime.
+  const double S = 100.0, K = 100.0, T = 0.5, sigma = 0.30, r = 5.0e-5, q = -0.02;
+  const double hr = 1.0e-4;
+  ASSERT_EQ(classify_spec(r, q, Side::Put), Regime::American);          // base priceable
+  ASSERT_EQ(classify_spec(r - hr, q, Side::Put), Regime::Unsupported);  // down-bump exits
+
+  // Native analytic route (re-routes r - hr <= 0 puts to the FD path).
+  const auto ga = american_greeks_al(S, K, T, sigma, r, q, Side::Put);
+  ASSERT_TRUE(ga.has_value());
+  EXPECT_TRUE(std::isfinite(ga->rho));
+
+  // Direct FD route.
+  const auto gf = american_greeks_fd(S, K, T, sigma, r, q, Side::Put, AmericanMethod::AndersenLake,
+                                     std::nullopt, /*warm_start=*/false);
+  ASSERT_TRUE(gf.has_value());
+  EXPECT_TRUE(std::isfinite(gf->rho));
+
+  // FD-consistency: the returned rho IS the one-sided forward stencil
+  // (p(r+hr) - p(r)) / hr, and stays close to a smaller forward bump.
+  const auto base =
+      american_price(S, K, T, sigma, r, q, Side::Put, AmericanMethod::AndersenLake);
+  const auto up_hr =
+      american_price(S, K, T, sigma, r + hr, q, Side::Put, AmericanMethod::AndersenLake);
+  ASSERT_TRUE(base.has_value() && up_hr.has_value());
+  const double rho_hr = (*up_hr - *base) / hr;
+  EXPECT_NEAR(gf->rho, rho_hr, 1.0e-6 * std::fmax(std::fabs(rho_hr), 1.0));
+
+  const double h2 = 2.5e-5;
+  const auto up_h2 =
+      american_price(S, K, T, sigma, r + h2, q, Side::Put, AmericanMethod::AndersenLake);
+  ASSERT_TRUE(up_h2.has_value());
+  const double rho_h2 = (*up_h2 - *base) / h2;
+  EXPECT_NEAR(gf->rho, rho_h2, 5.0e-3 * std::fmax(std::fabs(rho_h2), 1.0));
+}
+
 // Fix-wave 1c: the CorrectionCache Greeks route (`american_greeks`) must ALSO
 // surface NotImplemented in the Unsupported regime, not a Black-76+correction
 // bundle built on a wrong European price.
