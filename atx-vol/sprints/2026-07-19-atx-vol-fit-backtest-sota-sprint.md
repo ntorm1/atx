@@ -1,5 +1,12 @@
 # atx-vol — Fitting + Backtesting SOTA Sprint (2026-07-19)
 
+> ## ✅ ACCEPTANCE (2026-07-19, complete)
+> **Gate:** `atx_vol` label **1865/1869 pass**. The 4 remaining failures — `SurfaceV2Provenance.ValidationFallbackAdmission...` (#308), `PricerFitterTest.LocalRiskRefit...` (#1755), `SurfaceV2Qualification...InversionBudgets/{Latency,Balanced}` (#1869/#1870) — were **each independently rebuilt-and-confirmed failing at the merge-base `main` 99f332f**. **Zero sprint-introduced gate regressions;** `feat/bt-sota` is one *better* than the base (synced main's #1804 golden re-pin).
+> **Reproducibility:** dispersion golden **`final_nav = 247.4065016443293` byte-identical** before→after the entire sprint (default Auto ISA).
+> **Delivered:** WS-C static-arb SVI rejection (HIGH) + wide-smile fit RMSE 3.5e-5→4.6e-10 · WS-B `record_every_n` metric-corruption fix (HIGH) + stride-invariant stats · WS-K/WS-H AVX2 American **marks 2.5–3.1×** + **greeks 3.84×** validated, gated **ForceAvx2** (Auto stays scalar + cross-host bit-reproducible, mirroring the greeks contract) · WS-H thread-count determinism restored + workspace reuse + two-pass fusion verified already-realized · WS-F populate al_fast tier (~3–5× less AL work/seed, Populate-only) + `calib_pool` quarantined · CRLF universe-header robustness fix.
+> **Benchmark wall:** best 0.414 s vs baseline 0.66 s but **noise-dominated / load-bound** — the dispersion book is tiny (22 lots/step) and American lanes are non-early-exercise (`avx_pack_dispatches=0`), so pricing is not the bottleneck. **The real throughput lever for this benchmark is WS-S (zero-copy surface load + mmap)** — see §2 WS-S; that is the #1 next-sprint item.
+> **Not merged to main** (4 pre-existing reds are unrelated debt; left for owner review). Branch `feat/bt-sota` is review-ready.
+
 **Branch:** `feat/bt-sota`  ·  **Worktree:** `C:/atx-wt/wt-bt-sota`  ·  **Base:** local `main` @ 99f332f
 **PM:** primary session (context-preserving).  **Implementers:** Opus 4.8 subagents, one per workstream.
 **North star:** the fastest and most robust options backtesting platform.
