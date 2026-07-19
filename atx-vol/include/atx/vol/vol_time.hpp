@@ -160,6 +160,23 @@ class VolTimeCalendar {
 // `time_to_expiry_years` (default `TimeSpec`) rather than re-deriving it, so
 // `Calendar365` and the legacy ISO-string `year_fraction` can never drift
 // apart.
+//
+// KNOWN NAME/VALUE DISCREPANCY — INTENTIONALLY LEFT AS 365.25 (core-review
+// finding 10, A9 item 2). The `Calendar365` name promises an ACT/365 year, but
+// the value is the Julian 365.25-day year, so every default-clock maturity's T is
+// ~0.07% short and IVs sit ~3 bp below an ACT/365 vendor. It is INTERNALLY
+// self-consistent (inverse `ns_from_year_fraction` uses the same constant), so
+// only external comparisons inherit the bias. It is NOT changed to 365.0 here
+// because Calendar365 is the DEFAULT convention for the ENTIRE fit/serve/backtest/
+// earnings pipeline: a 0.07% T shift repins hundreds of bit/tight-tolerance
+// values (earnings-repro ATM vols, surface-archive CRCs, backtest PnL, fitted
+// slices) — far beyond the ~dozen-pin budget the A9 task set for an in-batch
+// change — AND it would desync this copy from the mirrored 365.25 in
+// portfolio_pricer.hpp/curve.cpp (explicitly out of scope), creating a NEW
+// internal inconsistency worse than the naming one. A deliberate re-derivation is
+// a standalone coordinated sweep (change all three mirrored constants together,
+// or rename the convention to Julian365, then full-corpus repin), tracked for the
+// PM — not this cleanup batch.
 inline constexpr double kCalendarYearNs = 365.25 * 86400.0 * 1.0e9;
 
 // Which clock governs a maturity's year-fraction.
