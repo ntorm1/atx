@@ -506,13 +506,25 @@ TEST(SurfaceV2LegacyCompat, LegacyRiskPresetsRouteThroughTheSharedMappingTable) 
   EXPECT_EQ(legacy.surface()->quality_mode(), FitQualityMode::Latency);
 }
 
-// A board whose quoted ±10% strikes are calendar-clean everywhere, but whose 3m
-// slice carries a much steeper put wing than the flat 4m smile above it: the
-// served ConvexDense slices extend total variance linearly beyond the last
-// quoted strike, so the term structure crosses INSIDE the ±0.5 validation band
-// while the fit's own shared-k calendar lattice (NaN beyond the inversion
-// boundary) cannot see it. The primary therefore builds, fails independent
-// admission, and a parametric fallback rung is admitted in its place.
+// An adversarial board that forces a served ConvexDense risk primary to build
+// cleanly yet FAIL independent admission, so the validation-rejection ladder
+// must fire. The quoted ±10% strikes are calendar-clean, but the 3m slice
+// carries a much steeper put wing than the near-flat 4m smile above it. The
+// strict calendar floor (fit_slice_curve, [-0.6,0.6] shared-k lattice) lifts the
+// flat 4m wing UP to hug the steep 3m wing at the fit nodes; beyond the last
+// quoted strike ConvexDense extends total variance LINEARLY, and that
+// floor-distorted 4m wing reconstructs to a NON-CONVEX European call price in the
+// deep extrapolation region (k≈-0.55). The family-neutral risk-admission gate
+// (evaluate_independent_invariants, 97-pt [-0.6,0.6] grid) samples that region
+// and rejects the primary with SurfaceAdmissionReason::StrikeConvexity — a
+// structural, geometry-grounded failure (NOT the fragile sub-1e-8 butterfly kink
+// the geometric oracle sees at ±0.5, which flips on any ~1e-6 pricing nudge). The
+// parametric SVI fallback rung fits the same board convexly and is admitted in
+// its place. NB: a validly-built ConvexDense CANNOT be made to trip the geometric
+// calendar/butterfly oracle robustly by S3 tuning (the QP + calendar floor keep
+// it arb-free over a superset of the checked band); the robust rejection lives in
+// the strict family-neutral convexity gate, which is why this test opts into
+// risk_admission_policy() below.
 [[nodiscard]] std::optional<OptionChain> make_extension_crossed_chain() {
   SynthPanelSpec spec = make_spy_synthetic_spec();
   spec.expiries.clear();
@@ -552,6 +564,14 @@ TEST(SurfaceV2Provenance, ValidationFallbackAdmissionRecordsTheServedFamily) {
   auto chain = make_extension_crossed_chain();
   ASSERT_TRUE(chain.has_value());
   PricerConfig config = config_for(FitQualityMode::Balanced);
+  // Opt into the strict risk-serving admission contract. This is the realistic
+  // policy for a risk consumer AND the source of a ROBUST rejection: the
+  // family-neutral gate enforces strike-convexity over the full [-0.6,0.6] grid,
+  // so it deterministically rejects the primary's floor-distorted deep-wing
+  // (see make_extension_crossed_chain). Under the default relaxed Mark contract
+  // the only rejection signal is a sub-1e-8 butterfly kink in the geometric
+  // oracle, which is numerically fragile (it flips on any ~1e-6 pricing change).
+  config.admission = atx::vol::risk_admission_policy();
   // Deterministic direct route: the SPY ticker prior pins the primary to the
   // rewritten ConvexDense with no out-of-sample cross-validation pass.
   config.policy.sparse_validation_floor = 0;
@@ -569,6 +589,16 @@ TEST(SurfaceV2Provenance, ValidationFallbackAdmissionRecordsTheServedFamily) {
   EXPECT_TRUE(decision.used_fallback);
   EXPECT_EQ(decision.primary_curve.kind, VolCurveKind::ConvexDense);
   EXPECT_NE(decision.curve.kind, VolCurveKind::ConvexDense);
+
+  // The fallback fired because the ConvexDense primary genuinely FAILED
+  // independent admission (not because the fallback was preferred): the primary
+  // attempt is recorded first and is not admitted, and the served rung is.
+  ASSERT_TRUE(fitter.published_report().has_value());
+  ASSERT_GT(fitter.published_report()->attempts.size(), 1u);
+  const auto &primary_attempt = fitter.published_report()->attempts.front();
+  EXPECT_EQ(primary_attempt.curve.kind, VolCurveKind::ConvexDense);
+  EXPECT_FALSE(primary_attempt.admission.admitted);
+  EXPECT_TRUE(fitter.published_report()->attempts.back().admission.admitted);
 
   // Persisted provenance must match the served model family.
   auto priced = bundle.risk->session().to_priced_surface();
