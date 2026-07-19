@@ -175,12 +175,13 @@ Rules: american.cpp/american.hpp/american_iv.cpp/deamer.cpp are single-owner per
 | fixup (A1 known-reds) | **done** | 231e798 | test-only. PricerFitter: post-A1 cache REUSE correct (Δlog-F 1.8e-11 ≪ 1e-5 gate; old refusal = buggy-seed accident). Provenance: redesigned onto family-neutral convexity admission gate (was riding 1.3e-8 vs 1.42e-8 butterfly-kink knife edge) |
 | P1 | **done** | 6965f85 (a), d0682b2 (b) | Traversals/Newton-step 3→2→1 (counter-asserted); 200-inversion fixture 2353→1343 ClenshawSweeps (~43% fewer); stage a bit-identical + F8 vega; stage b max|ΔIV| 5.6e-15 (197/198 bit-identical). Flagged suspect red: QualifiedCorpus.QuarantinedFitStaysReportedAndCannotLeakIntoADateArchive (triage dispatched). |
 | P3 | **done** | 8f32798 | Audit AL solves per (expiry,side) 24→8 via slice-sigma (same ACCURATE premium quad); identical audit verdicts; residual shift ≤3.8e-5. Backlog: prepared_fitting.cpp audit site (default-off) left per-row. |
+| QC triage | **done** | 09640c7 | Root cause: latent FP bug, NOT fit regression. XOM board 100% in-band → in-band vs total vega sums grouped differently → oos_vw=1.0+2ULP trips strict guards (select_candidate_index oos_vw>1.0; corpus.cpp:1635 in_band>total) → NotFound → empty oos_score. Debug red / Release green = FMA contraction straddles 1.0 exactly. Exposer ~8f32798 (rewrites de-Am reprice vega); fix commit-independent. Fix: clamp in_band=min(win,total), oos_vw derived — definitional subset invariant, bit-identical no-op where invariant holds. 54 affected-suite green + invariant pin added. |
 | P4 | pending | | |
 | P5 | pending | | |
 | P6 | pending | | |
 | P7 | pending | | |
 | W1 | pending | | |
-| W2 | pending | | |
+| W2 | in-flight | | dispatched solo (build-counters dir); W3 blocked on P4 (american.*), W4 blocked on W1 (simd/pnl_batch) |
 | W3 | pending | | |
 | W4 | pending | | |
 | G1 | pending | | |
