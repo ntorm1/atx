@@ -298,11 +298,14 @@ struct DeAmOptions {
   //       hybrid_forward(converged borrow) — bit-identical to that step's forward
   //       — so only the diagnostic rmse_pcp / returned warm-seed vols move by
   //       < kBorrowFpTol=1e-8.
-  // Default false keeps the configured carry solve bit-identical (both paths
-  // shift sub-1e-8 values that move bit-exact pins); a perf-oriented caller opts
-  // in. The pricer stays uncached Andersen-Lake and the converged root is
-  // unchanged.
-  bool warm_start_carry = false;
+  // Default TRUE (P2 / perf F2): both reductions ship on by the default carry
+  // solve. Cross-pair seeds change only the fixed-point/Newton starting guesses,
+  // so the converged borrow, forward, and per-leg vols move by < kBorrowFpTol=1e-8
+  // (the fixed-point tolerance) — a sub-tolerance shift in load-bearing outputs and
+  // in the diagnostic rmse_pcp / warm-seed vols. A caller that needs the exact
+  // legacy carry diagnostics (bit-exact rmse_pcp / seed vols / same iteration path)
+  // opts back out with false. The pricer stays uncached Andersen-Lake throughout.
+  bool warm_start_carry = true;
   // C2 (perf): reuse caller-supplied `caches` for the eSSVI FIT de-Am instead of
   // building fresh per-side session caches. Set by the cross-date warm-start chain
   // (corpus.cpp) after its stale-gate confirms the prior date's cache covers this

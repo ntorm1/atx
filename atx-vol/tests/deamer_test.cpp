@@ -3,11 +3,13 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <string>
 #include <vector>
 
 #include "atx/vol/american.hpp"
 #include "atx/vol/american_iv.hpp"
+#include "atx/vol/counters.hpp" // counters::ledger — always-on AL boundary-solve gate
 #include "atx/vol/curve.hpp"
 #include "atx/vol/deamer.hpp"
 #include "atx/vol/dividend.hpp"
@@ -267,6 +269,66 @@ TEST(DeAmer, HighDividendCarryHoldsFastVsAccurateWithinEconomicBound) {
   EXPECT_NEAR(accurate->forward, f_true, 1e-4 * sc.S);
   // Fast and accurate presets must agree with each other, not just with truth.
   EXPECT_NEAR(fast->borrow, accurate->borrow, 1e-4);
+}
+
+// P2 (perf F2): the robust carry solve's cross-pair warm start + skip-redundant-
+// final now ship ON by default (DeAmOptions::warm_start_carry). The proof is the
+// DETERMINISTIC solve ledger (G-COUNTER), NOT wall-clock: warm start must cut the
+// AL boundary solves the multi-pair carry solve spends, while leaving the
+// converged borrow/forward within the fixed-point tolerance (< kBorrowFpTol=1e-8).
+// The ledger is always-on (compiled into rel/rel-avx2), so this gate runs on the
+// shipping binary with no special counters build.
+TEST(DeAmer, WarmStartCarryCutsBoundarySolvesConvergedRootUnchanged) {
+  namespace led = atx::vol::counters::ledger;
+
+  const Scenario sc;
+  const double b_true = 0.021;
+  // A full near-ATM ladder so the ascending-|K-S| chain has neighbours to warm
+  // from (single-pair solves share the first pair's cold seed and can't chain).
+  const std::vector<double> strikes{92.0, 94.0,  96.0,  98.0, 100.0,
+                                    102.0, 104.0, 106.0, 108.0};
+  const Chain chain = make_synthetic_chain(sc, b_true, strikes);
+
+  const auto resolve_with = [&](bool warm) {
+    DeAmOptions opts;
+    opts.hyb = sc.hyb;
+    opts.n_atm = strikes.size();
+    opts.max_borrow_pairs = strikes.size();
+    opts.warm_start_carry = warm;
+    return resolve_chain_forward(chain, sc.S, sc.r, sc.divs, sc.now_ns, opts);
+  };
+
+  // The P2 flip: a freshly constructed DeAmOptions carries warm start ON.
+  EXPECT_TRUE(DeAmOptions{}.warm_start_carry);
+
+  led::reset();
+  const auto off = resolve_with(false);
+  const std::uint64_t solves_off = led::snapshot().get(led::Solve::AlBoundarySolves);
+
+  led::reset();
+  const auto on = resolve_with(true);
+  const std::uint64_t solves_on = led::snapshot().get(led::Solve::AlBoundarySolves);
+
+  ASSERT_TRUE(off.has_value()) << (off ? std::string{} : off.error().to_string());
+  ASSERT_TRUE(on.has_value()) << (on ? std::string{} : on.error().to_string());
+
+  // Converged root unchanged: borrow (load-bearing) moves by < the fixed-point
+  // tolerance the review bounds it to; the forward is hybrid_forward(borrow) so it
+  // tracks that shift scaled by ~F·T (∂F/∂borrow).
+  EXPECT_NEAR(on->borrow, off->borrow, 1e-8);
+  EXPECT_NEAR(on->forward, off->forward, 1e-8 * sc.S * sc.T * 2.0);
+
+  // The gate: warm start spends strictly fewer AL boundary solves per slice.
+  EXPECT_GT(solves_off, 0u);
+  EXPECT_LT(solves_on, solves_off) << "warm start must cut per-slice boundary solves";
+
+  std::printf("[deamer-carry] AL boundary solves/slice: OFF=%llu ON=%llu (ratio %.3f); "
+              "borrow OFF=%.12f ON=%.12f |d|=%.2e; forward |d|=%.2e\n",
+              static_cast<unsigned long long>(solves_off),
+              static_cast<unsigned long long>(solves_on),
+              solves_off ? static_cast<double>(solves_on) / static_cast<double>(solves_off) : 0.0,
+              off->borrow, on->borrow, std::fabs(on->borrow - off->borrow),
+              std::fabs(on->forward - off->forward));
 }
 
 TEST(DeAmer, RobustCarryRejectsOneBadAtmPairAndReportsSensitivity) {

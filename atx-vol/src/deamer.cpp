@@ -221,7 +221,8 @@ namespace {
     // vols are read off the loop's last step, evaluated one iterate
     // (< kBorrowFpTol = 1e-8) before the converged borrow — a sub-1e-8 shift in a
     // diagnostic / warm-seed value. Load-bearing outputs (borrow, forward) are
-    // unchanged. Gated with warm_start_carry, so the default path is untouched.
+    // unchanged. Gated with warm_start_carry (default on); a caller opting out
+    // with warm_start_carry=false restores the redundant final step exactly.
     const double F_final = hybrid_forward_from_base(forward_base, borrow, T);
     const double residual = (last_step.call_eu - last_step.put_eu) - df * (F_final - K);
     TermBorrow result{borrow, F_final, std::fabs(residual)};
@@ -471,10 +472,11 @@ struct CarryPairSelection {
         chain.mids[ci], chain.mids[pi], S, K, T, r, forward_base, opts.method, opts.carry_al_opts,
         cold_caches, seed_borrow, seed_sc, seed_sp, opts.warm_start_carry);
     if (tb) {
-      // Opt-in only: keep the default carry solve on the cold `borrow=0` /
-      // cold-Newton seed so the reference de-Am stays bit-identical (mirrors
-      // build_observations_european's `warm_start_deam` gate). When enabled,
-      // thread this pair's converged state into the next pair's solve.
+      // Default-on (P2 / perf F2): thread this pair's converged state into the
+      // next pair's solve so the ascending-|K-S| neighbour starts near its root.
+      // Seeds change only the fixed-point/Newton trajectory (converged borrow/vols
+      // shift < kBorrowFpTol=1e-8); a caller can opt back out with
+      // warm_start_carry=false to restore the cold `borrow=0` / cold-Newton seed.
       if (opts.warm_start_carry) {
         seed_borrow = tb->borrow;
         seed_sc = tb->sigma_call;
