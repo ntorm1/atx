@@ -91,9 +91,19 @@ ATX_FORCE_INLINE __m256d input_patch_mask(__m256d F, __m256d K, __m256d T, __m25
 // ±inf. `nonfinite_mask` (magnitude > DBL_MAX, unordered-true) catches BOTH in one
 // test, routing such a lane to the scalar source of truth for an exact match —
 // independent of Φ accuracy, so it stays now the finite-wing patch is gone.
-ATX_FORCE_INLINE int patch_bits(__m256d degen, __m256d d1, __m256d d2) noexcept {
+//
+// A9 (simd-review finding 4): log_pd assumes a positive-NORMAL argument, so an F/K
+// ratio that underflows to a denormal/0 or overflows to +inf decodes to FINITE
+// garbage near ±709 (log of the min/max normal) instead of ±inf — which nonfinite_
+// mask(d) then cannot catch. `|lnFK| >= 708` brackets exactly that garbage band (and
+// any genuine deep wing, which is Φ-saturated and priced exactly by scalar anyway),
+// routing the lane to the scalar source of truth.
+ATX_FORCE_INLINE int patch_bits(__m256d degen, __m256d lnfk, __m256d d1, __m256d d2) noexcept {
+  const __m256d abs_mask = _mm256_set1_pd(-0.0);
+  const __m256d abs_lnfk = _mm256_andnot_pd(abs_mask, lnfk);
+  const __m256d lnfk_escape = _mm256_cmp_pd(abs_lnfk, _mm256_set1_pd(708.0), _CMP_GE_OQ);
   const __m256d nonfinite_d = _mm256_or_pd(nonfinite_mask(d1), nonfinite_mask(d2));
-  return _mm256_movemask_pd(_mm256_or_pd(degen, nonfinite_d));
+  return _mm256_movemask_pd(_mm256_or_pd(degen, _mm256_or_pd(lnfk_escape, nonfinite_d)));
 }
 
 struct PerLaneExpiry {
@@ -175,7 +185,7 @@ void value_vega_batch_avx2_impl(const double *F, const double *K, const double *
     __m256d vega =
         _mm256_mul_pd(_mm256_mul_pd(_mm256_mul_pd(safe_f, safe_df), norm_pdf_pd(d1)), sqrt_t);
 
-    const int patch = patch_bits(input_patch, d1, d2);
+    const int patch = patch_bits(input_patch, ln_fk, d1, d2);
     if (patch != 0) {
       alignas(32) double price_buffer[4];
       alignas(32) double vega_buffer[4];
@@ -255,7 +265,7 @@ void black76_price_batch_avx2(const double *F, const double *K, const double *T,
         _mm256_mul_pd(safeDf, _mm256_sub_pd(_mm256_mul_pd(safeK, Nm2), _mm256_mul_pd(safeF, Nm1)));
     __m256d price = _mm256_blendv_pd(call, put, side_blend_mask(side, i));
 
-    const int patch = patch_bits(input_patch, d1, d2);
+    const int patch = patch_bits(input_patch, lnFK, d1, d2);
     if (patch != 0) {
       alignas(32) double pb[4];
       _mm256_store_pd(pb, price);

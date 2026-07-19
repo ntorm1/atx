@@ -112,6 +112,63 @@ TEST(SimdBlack76GreeksBatch, MatchesScalarAcrossGrid) {
   EXPECT_LT(m_delta, kAbs);
 }
 
+// A9 (simd-review finding 8): a nullptr price_out is a valid "greeks only" request.
+// The AVX2 AoS sink already null-checks px; the SCALAR fallback (non-AVX2 hosts)
+// dereferenced it unconditionally and crashed. This exercises the null contract
+// through the public dispatcher (the AVX2 sink on this host, the fixed scalar loop
+// on a non-AVX2 host) and confirms the greeks are still filled.
+TEST(SimdBlack76GreeksBatch, NullPriceOutFillsGreeksWithoutCrash) {
+  const Batch b = make_grid();
+  const std::size_t n = b.size();
+  std::vector<Greeks> got(n);
+  simd::black76_greeks_batch(b.F.data(), b.K.data(), b.T.data(), b.sigma.data(), b.r.data(),
+                             b.df.data(), b.side.data(), got.data(), /*price_out=*/nullptr, n);
+  bool checked = false;
+  for (std::size_t i = 0; i < n && !checked; ++i) {
+    if (b.T[i] > 0.0 && b.sigma[i] > 0.0) {
+      const Black76Greeks w =
+          black76_greeks(b.F[i], b.K[i], b.T[i], b.sigma[i], b.r[i], b.df[i], b.side[i]);
+      EXPECT_NEAR(got[i].delta, w.greeks.delta, 1e-6);
+      EXPECT_NEAR(got[i].vega, w.greeks.vega, 1e-6);
+      checked = true;
+    }
+  }
+  EXPECT_TRUE(checked);
+}
+
+// A9 (simd-review finding 4): log_pd assumes a positive-NORMAL argument, so an F/K
+// ratio that underflows to a denormal/0 or overflows to +inf decodes to finite
+// GARBAGE near ±709 (not ±inf), which nonfinite_mask(d) cannot catch. The |lnFK|
+// >= 708 escape now routes those lanes to scalar. The economic impact is masked (Φ
+// saturates at such |d|), so this locks the by-construction fix: the batch must
+// match the per-contract scalar kernel BIT-FOR-BIT on such rows.
+TEST(SimdBlack76GreeksBatch, ExtremeFKRatioMatchesScalarExactly) {
+  Batch b;
+  const double df = std::exp(-0.03 * 1.0);
+  // F/K underflows toward 0/denormal, and overflows toward +inf; both sides.
+  b.push(1.0e-300, 1.0e300, 1.0, 0.20, 0.03, df, Side::Call); // F/K -> 0
+  b.push(1.0e-300, 1.0e300, 1.0, 0.20, 0.03, df, Side::Put);
+  b.push(1.0e300, 1.0e-300, 1.0, 0.20, 0.03, df, Side::Call); // F/K -> +inf
+  b.push(1.0e300, 1.0e-300, 1.0, 0.20, 0.03, df, Side::Put);
+  b.push(1.0e-8, 1.0e300, 1.0, 0.20, 0.03, df, Side::Call); // F/K denormal
+  b.push(100.0, 100.0, 1.0, 0.20, 0.03, df, Side::Call);    // a normal lane alongside
+  const std::size_t n = b.size();
+  std::vector<Greeks> got(n);
+  std::vector<double> price(n, 0.0);
+  simd::black76_greeks_batch(b.F.data(), b.K.data(), b.T.data(), b.sigma.data(), b.r.data(),
+                             b.df.data(), b.side.data(), got.data(), price.data(), n);
+  auto bit_eq = [](double a, double c) {
+    return (std::isnan(a) && std::isnan(c)) || a == c;
+  };
+  for (std::size_t i = 0; i < n; ++i) {
+    const Black76Greeks w =
+        black76_greeks(b.F[i], b.K[i], b.T[i], b.sigma[i], b.r[i], b.df[i], b.side[i]);
+    EXPECT_TRUE(bit_eq(price[i], w.price)) << "price i=" << i;
+    EXPECT_TRUE(bit_eq(got[i].delta, w.greeks.delta)) << "delta i=" << i;
+    EXPECT_TRUE(bit_eq(got[i].vega, w.greeks.vega)) << "vega i=" << i;
+  }
+}
+
 // The five special rows sit at the tail of make_grid(): the first THREE are
 // degenerate (expired / zero-vol), the last TWO are deep-wing. They straddle a
 // full SIMD group and the scalar tail.

@@ -63,6 +63,13 @@ ATX_FORCE_INLINE __m256d nonfinite_mask(__m256d value) noexcept {
 // One 4-lane eSSVI backbone step at constant effective rho.
 //   c_v        = 1 - rho²          (broadcast)
 //   halfTheta_v= ½·theta           (broadcast)
+//
+// A9 (simd-review finding 6) — fma policy, DOCUMENTED not changed: the a² + (1-rho²)
+// step below (and svi_total_w_batch_avx2's a + b·(…)) use _mm256_fmadd_pd where the
+// scalar source (vol_surface.cpp) rounds mul-then-add, so w can diverge from scalar
+// by <=1 ulp across hosts. This is accepted for the eSSVI/SVI value batches (unlike
+// svi_qe_basis_batch_avx2, which deliberately forbids fma for bit-exact fit parity);
+// the per-strike ~1e-12 parity gate already tolerates it. Left as-is by design.
 ATX_FORCE_INLINE __m256d essvi_backbone_w4(__m256d kv, __m256d phi_v, __m256d rho_v, __m256d c_v,
                                            __m256d halfTheta_v, __m256d one) noexcept {
   const __m256d pk = _mm256_mul_pd(phi_v, kv);
@@ -132,7 +139,11 @@ void essvi_backbone_w_batch_avx2(const EssviParams &slice, const double *k_log, 
 void essvi_backbone_w_grad_batch_avx2(const EssviParams &slice, const double *k_log, double *w_out,
                                       double *dw_dtheta, double *dw_dphi, double *dw_drho,
                                       std::size_t n) noexcept {
-  if (blend_active(slice)) {
+  // A9 (simd-review finding 6): mirror the w-batch's refusal — a non-admissible
+  // slice (|rho| >= 1, non-positive theta/phi, non-finite params) would propagate
+  // NaN through the vector path only by accident, so route the WHOLE batch to the
+  // exact scalar kernels, exactly as essvi_backbone_w_batch_avx2 does.
+  if (blend_active(slice) || !slice_vector_admissible(slice)) {
     for (std::size_t i = 0; i < n; ++i) {
       w_out[i] = essvi_backbone_w(slice, k_log[i]);
       const std::array<double, 3> g = essvi_w_grad3(slice, k_log[i]);
@@ -150,30 +161,61 @@ void essvi_backbone_w_grad_batch_avx2(const EssviParams &slice, const double *k_
   const __m256d halfTheta_v = _mm256_set1_pd(0.5 * slice.theta);
   const __m256d half_v = _mm256_set1_pd(0.5);
   const __m256d one = _mm256_set1_pd(1.0);
+  const __m256d zero = _mm256_setzero_pd();
 
   std::size_t i = 0;
   for (; i + 4 <= n; i += 4) {
     const __m256d kv = _mm256_loadu_pd(k_log + i);
-    const __m256d pk = _mm256_mul_pd(phi_v, kv);
+    // A9 (simd-review finding 6): non-finite k lanes patched from scalar (mirrors
+    // the w-batch). safe_k == kv on every finite lane, so those stay bit-identical.
+    const __m256d invalid = nonfinite_mask(kv);
+    const __m256d safe_k = _mm256_blendv_pd(kv, zero, invalid);
+    const __m256d pk = _mm256_mul_pd(phi_v, safe_k);
     const __m256d a = _mm256_add_pd(pk, rho_v);
     const __m256d inner = _mm256_fmadd_pd(a, a, c_v); // a² + (1 - rho²)
     const __m256d r = _mm256_sqrt_pd(inner);
     // Shared term (1 + rho·pk + r): drives both w (·½θ) and ∂w/∂θ (·½).
     const __m256d rho_pk = _mm256_mul_pd(rho_v, pk);
     const __m256d term = _mm256_add_pd(_mm256_add_pd(one, rho_pk), r);
-    _mm256_storeu_pd(w_out + i, _mm256_mul_pd(halfTheta_v, term));
-    _mm256_storeu_pd(dw_dtheta + i, _mm256_mul_pd(half_v, term));
+    __m256d w = _mm256_mul_pd(halfTheta_v, term);
+    __m256d dth = _mm256_mul_pd(half_v, term);
     // ∂w/∂φ = ½θ·(rho·k + (a·k)/r).
-    const __m256d rho_k = _mm256_mul_pd(rho_v, kv);
-    const __m256d ak = _mm256_mul_pd(a, kv);
+    const __m256d rho_k = _mm256_mul_pd(rho_v, safe_k);
+    const __m256d ak = _mm256_mul_pd(a, safe_k);
     const __m256d ak_r = _mm256_div_pd(ak, r);
     const __m256d in_phi = _mm256_add_pd(rho_k, ak_r);
-    _mm256_storeu_pd(dw_dphi + i, _mm256_mul_pd(halfTheta_v, in_phi));
+    __m256d dph = _mm256_mul_pd(halfTheta_v, in_phi);
     // ∂w/∂ρ = ½θ·(pk + (a - rho)/r).
     const __m256d amr = _mm256_sub_pd(a, rho_v);
     const __m256d amr_r = _mm256_div_pd(amr, r);
     const __m256d in_rho = _mm256_add_pd(pk, amr_r);
-    _mm256_storeu_pd(dw_drho + i, _mm256_mul_pd(halfTheta_v, in_rho));
+    __m256d drh = _mm256_mul_pd(halfTheta_v, in_rho);
+    const int patch = _mm256_movemask_pd(invalid);
+    if (patch != 0) {
+      alignas(32) double wv[4], dthv[4], dphv[4], drhv[4];
+      _mm256_store_pd(wv, w);
+      _mm256_store_pd(dthv, dth);
+      _mm256_store_pd(dphv, dph);
+      _mm256_store_pd(drhv, drh);
+      for (int lane = 0; lane < 4; ++lane) {
+        if (patch & (1 << lane)) {
+          const std::size_t index = i + static_cast<std::size_t>(lane);
+          wv[lane] = essvi_backbone_w(slice, k_log[index]);
+          const std::array<double, 3> g = essvi_w_grad3(slice, k_log[index]);
+          dthv[lane] = g[0];
+          dphv[lane] = g[1];
+          drhv[lane] = g[2];
+        }
+      }
+      w = _mm256_load_pd(wv);
+      dth = _mm256_load_pd(dthv);
+      dph = _mm256_load_pd(dphv);
+      drh = _mm256_load_pd(drhv);
+    }
+    _mm256_storeu_pd(w_out + i, w);
+    _mm256_storeu_pd(dw_dtheta + i, dth);
+    _mm256_storeu_pd(dw_dphi + i, dph);
+    _mm256_storeu_pd(dw_drho + i, drh);
   }
   for (; i < n; ++i) {
     w_out[i] = essvi_backbone_w(slice, k_log[i]);
@@ -247,7 +289,10 @@ void svi_qe_basis_batch_avx2(double m, double sigma, const double *k, double *u_
 
 void essvi_backbone_sigma_batch_avx2(const EssviParams &slice, const double *k_log,
                                      double *sigma_out, std::size_t n) noexcept {
-  if (blend_active(slice)) {
+  // A9 (simd-review finding 6): mirror the w-batch's admissibility refusal (see
+  // essvi_backbone_w_grad_batch_avx2) so a |rho| >= 1 / non-positive-theta/phi
+  // slice routes to the exact scalar kernel instead of leaking a NaN by accident.
+  if (blend_active(slice) || !slice_vector_admissible(slice)) {
     for (std::size_t i = 0; i < n; ++i) {
       const double w = essvi_backbone_w(slice, k_log[i]);
       sigma_out[i] = std::sqrt(std::max(w, 0.0) / slice.T);
@@ -267,9 +312,26 @@ void essvi_backbone_sigma_batch_avx2(const EssviParams &slice, const double *k_l
   std::size_t i = 0;
   for (; i + 4 <= n; i += 4) {
     const __m256d kv = _mm256_loadu_pd(k_log + i);
-    const __m256d w = essvi_backbone_w4(kv, phi_v, rho_v, c_v, halfTheta_v, one);
+    // A9 (simd-review finding 6): non-finite k lanes patched from scalar (mirrors
+    // the w-batch). safe_k == kv on every finite lane, so those stay bit-identical.
+    const __m256d invalid = nonfinite_mask(kv);
+    const __m256d safe_k = _mm256_blendv_pd(kv, zero, invalid);
+    const __m256d w = essvi_backbone_w4(safe_k, phi_v, rho_v, c_v, halfTheta_v, one);
     const __m256d wmax = _mm256_max_pd(w, zero);
-    const __m256d sig = _mm256_sqrt_pd(_mm256_div_pd(wmax, T_v));
+    __m256d sig = _mm256_sqrt_pd(_mm256_div_pd(wmax, T_v));
+    const int patch = _mm256_movemask_pd(invalid);
+    if (patch != 0) {
+      alignas(32) double values[4];
+      _mm256_store_pd(values, sig);
+      for (int lane = 0; lane < 4; ++lane) {
+        if (patch & (1 << lane)) {
+          const std::size_t index = i + static_cast<std::size_t>(lane);
+          const double w_s = essvi_backbone_w(slice, k_log[index]);
+          values[lane] = std::sqrt(std::max(w_s, 0.0) / slice.T);
+        }
+      }
+      sig = _mm256_load_pd(values);
+    }
     _mm256_storeu_pd(sigma_out + i, sig);
   }
   for (; i < n; ++i) {

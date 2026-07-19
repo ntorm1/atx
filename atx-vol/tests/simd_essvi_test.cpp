@@ -20,6 +20,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -208,6 +209,111 @@ TEST(SimdEssviBatch, GradBatchZeroLengthIsNoOp) {
   EXPECT_EQ(dth, 2.0);
   EXPECT_EQ(dphi, 3.0);
   EXPECT_EQ(drho, 4.0);
+}
+
+// ── A9 (simd-review finding 6): grad/sigma batch guard coverage ─────────────
+//
+// The w-batch refuses the vector path on a non-admissible slice (|rho| >= 1,
+// non-positive theta/phi) and patches non-finite-k lanes from scalar. The grad and
+// sigma batches only checked blend_active, so a non-admissible slice / non-finite k
+// leaked NaN by accident. These tests lock the mirrored guards: a non-admissible
+// slice must reproduce the scalar per-strike kernel BIT-FOR-BIT (the whole-batch
+// scalar fallback), and a non-finite-k lane must match scalar exactly (patched).
+
+// Exact match with NaN treated as equal (both paths produce the SAME NaN once they
+// route to the scalar kernel).
+[[nodiscard]] bool bit_match(double a, double b) noexcept {
+  if (std::isnan(a) && std::isnan(b)) {
+    return true;
+  }
+  return a == b;
+}
+
+// A non-admissible slice: |rho| >= 1 (blend inactive). The vector path would use an
+// fmadd where the scalar rounds mul-then-add — a 1-ulp divergence on the finite
+// lanes — so a bit-exact check is RED without the admissibility refusal and GREEN
+// with it (the batch runs the exact scalar loop).
+EssviParams make_non_admissible_slice() {
+  EssviParams s;
+  s.theta = 0.04; s.phi = 1.2; s.rho = 1.5; s.T = 0.25; s.F = 100.0;
+  return s;
+}
+
+// A grid mixing finite k with +inf/-inf/NaN, length 10 (two vector blocks + a tail).
+std::vector<double> make_nonfinite_k_grid() {
+  const double inf = std::numeric_limits<double>::infinity();
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  return {0.10, inf, -0.20, -inf, 0.30, nan, 0.05, -0.15, 0.20, inf};
+}
+
+TEST(SimdEssviBatch, GradBatchNonAdmissibleRhoMatchesScalarBitExact) {
+  const EssviParams s = make_non_admissible_slice();
+  const std::vector<double> k = make_k_grid();
+  const std::size_t n = k.size();
+  std::vector<double> w(n, 0.0), dth(n, 0.0), dphi(n, 0.0), drho(n, 0.0);
+  simd::essvi_backbone_w_grad_batch(s, k.data(), w.data(), dth.data(), dphi.data(), drho.data(), n);
+  for (std::size_t i = 0; i < n; ++i) {
+    const std::array<double, 3> g = essvi_w_grad3(s, k[i]);
+    EXPECT_TRUE(bit_match(w[i], essvi_backbone_w(s, k[i]))) << "w i=" << i;
+    EXPECT_TRUE(bit_match(dth[i], g[0])) << "dtheta i=" << i;
+    EXPECT_TRUE(bit_match(dphi[i], g[1])) << "dphi i=" << i;
+    EXPECT_TRUE(bit_match(drho[i], g[2])) << "drho i=" << i;
+  }
+}
+
+TEST(SimdEssviBatch, SigmaBatchNonAdmissibleRhoMatchesScalarBitExact) {
+  const EssviParams s = make_non_admissible_slice();
+  const std::vector<double> k = make_k_grid();
+  const std::size_t n = k.size();
+  std::vector<double> sig(n, 0.0);
+  simd::essvi_backbone_sigma_batch(s, k.data(), sig.data(), n);
+  for (std::size_t i = 0; i < n; ++i) {
+    const double w = essvi_backbone_w(s, k[i]);
+    const double want = std::sqrt(std::max(w, 0.0) / s.T);
+    EXPECT_TRUE(bit_match(sig[i], want)) << "sigma i=" << i;
+  }
+}
+
+TEST(SimdEssviBatch, GradBatchNonFiniteKMatchesScalar) {
+  EssviParams s;
+  s.theta = 0.05; s.phi = 1.8; s.rho = -0.3; s.T = 0.5; s.F = 100.0; // admissible
+  const std::vector<double> k = make_nonfinite_k_grid();
+  const std::size_t n = k.size();
+  std::vector<double> w(n, 0.0), dth(n, 0.0), dphi(n, 0.0), drho(n, 0.0);
+  simd::essvi_backbone_w_grad_batch(s, k.data(), w.data(), dth.data(), dphi.data(), drho.data(), n);
+  for (std::size_t i = 0; i < n; ++i) {
+    const std::array<double, 3> g = essvi_w_grad3(s, k[i]);
+    if (std::isfinite(k[i])) {
+      expect_close(w[i], essvi_backbone_w(s, k[i]), "nfk.w", i);
+      expect_close(dth[i], g[0], "nfk.dtheta", i);
+      expect_close(dphi[i], g[1], "nfk.dphi", i);
+      expect_close(drho[i], g[2], "nfk.drho", i);
+    } else {
+      // Non-finite lane must be patched exactly from scalar.
+      EXPECT_TRUE(bit_match(w[i], essvi_backbone_w(s, k[i]))) << "nfk.w i=" << i;
+      EXPECT_TRUE(bit_match(dth[i], g[0])) << "nfk.dtheta i=" << i;
+      EXPECT_TRUE(bit_match(dphi[i], g[1])) << "nfk.dphi i=" << i;
+      EXPECT_TRUE(bit_match(drho[i], g[2])) << "nfk.drho i=" << i;
+    }
+  }
+}
+
+TEST(SimdEssviBatch, SigmaBatchNonFiniteKMatchesScalar) {
+  EssviParams s;
+  s.theta = 0.05; s.phi = 1.8; s.rho = -0.3; s.T = 0.5; s.F = 100.0; // admissible
+  const std::vector<double> k = make_nonfinite_k_grid();
+  const std::size_t n = k.size();
+  std::vector<double> sig(n, 0.0);
+  simd::essvi_backbone_sigma_batch(s, k.data(), sig.data(), n);
+  for (std::size_t i = 0; i < n; ++i) {
+    const double w = essvi_backbone_w(s, k[i]);
+    const double want = std::sqrt(std::max(w, 0.0) / s.T);
+    if (std::isfinite(k[i])) {
+      expect_close(sig[i], want, "nfk.sigma", i);
+    } else {
+      EXPECT_TRUE(bit_match(sig[i], want)) << "nfk.sigma i=" << i;
+    }
+  }
 }
 
 // ── Quasi-explicit rotated basis (svi_qe_basis_batch) ───────────────────────

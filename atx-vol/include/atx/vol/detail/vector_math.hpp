@@ -41,6 +41,19 @@ inline constexpr double kInvSqrt2Pi = 0.398942280401432677939946059934381868;
 // Natural log, 4-lane. Full double accuracy on positive normals; the caller
 // guarantees x > 0 (pricing feeds F/K > 0). Cody-Waite range reduction to
 // m ∈ [√½, √2), then an odd-power series in s = (m-1)/(m+1).
+//
+// DOMAIN (A9, simd-review finding 4): valid ONLY for a positive NORMAL argument.
+// The exponent/mantissa decode above assumes a normalized IEEE double, so:
+//   • a DENORMAL x (e.g. an F/K ratio that underflowed) decodes its subnormal
+//     exponent field as if normalized → a FINITE result near -709 (log of the
+//     smallest normal), not the true (more negative) value;
+//   • x == 0 likewise returns ~-709 rather than -inf;
+//   • x == +inf returns ~+710 rather than +inf;
+//   • x < 0 / NaN are undefined.
+// Crucially the garbage is FINITE, so a downstream nonfinite_mask(d) cannot see it.
+// Consumers that can feed a denormal/0/inf ratio (black76/greeks batches) therefore
+// add an |log(F/K)| >= 708 escape to their patch mask — that band brackets exactly
+// this garbage (and any genuine deep wing, priced exactly by the scalar fallback).
 ATX_FORCE_INLINE __m256d log_pd(__m256d x) noexcept {
     const __m256i ix = _mm256_castpd_si256(x);
     __m256i exp_bits = _mm256_srli_epi64(ix, 52);

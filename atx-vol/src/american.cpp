@@ -269,11 +269,18 @@ inline constexpr double kBawCriticalResidualGate = 1.0e2;
 // ── QD+ critical-price seed (Li 2010) ─────────────────────────────────────
 //
 // The QD+ approximation refines the QD/Barone-Adesi-Whaley quadratic exponent with
-// the leading Li (2010) "+" correction c = (1−h)·M / (h·√disc), which vanishes as
-// τ→∞ (h→1, QD/BAW recovered) and grows near expiry (h→0) where the frozen-θ QD
-// approximation is worst. The corrected exponent q1⁺ = q1 + c drives the SAME
-// smooth-pasting root find (put_residual with q1⁺ in place of q1), so this reuses
-// newton_critical_put unchanged.
+// the leading Li (2010) "+" correction. In Li's derivation the SIGNED correction is
+// (1−h)·M / (h·(2·q1 + N − 1)); since 2·q1 + N − 1 == −√disc (the residual-derivative
+// denominator, see the code below), it equals −(1−h)·M / (h·√disc). Writing the
+// positive MAGNITUDE c = (1−h)·M / (h·√disc), the corrected exponent is q1⁺ = q1 − c
+// (A9 core-review finding 7: the code's q1 − c is correct; an earlier version of THIS
+// comment said "q1 + c", dropping the sign of the 2·q1+N−1 = −√disc denominator).
+// It STEEPENS the exponent (drives q1 more negative) near expiry (h→0), where the
+// frozen-θ QD approximation is worst and the true boundary S* → K, and vanishes as
+// τ→∞ (h→1, QD/BAW recovered). q1⁺ drives the SAME smooth-pasting root find
+// (put_residual with q1⁺ in place of q1), so this reuses newton_critical_put
+// unchanged. Measurement-only path (QdPlus is not on any production solve), so this
+// is a pure doc reconciliation — no behavior change, no A6 shootout re-run implied.
 //
 // Reference: M. Li, "Analytical Approximations for the Critical Stock Price of
 // American Options: A Performance Comparison" (2010), Review of Derivatives
@@ -606,7 +613,11 @@ namespace amer {
     s.n_quad_fp = 24;
   } else if (n >= 16) {
     s.n_quad_fp = 16;
-  } else if (n >= 8) {
+  } else {
+    // A9 (core-review finding 9): a sub-minimum request (n_quadrature < 8, incl. 0)
+    // FLOORS to the cheapest supported Gauss-Legendre order (8) instead of falling
+    // through the ladder and silently keeping the ACCURATE default (24) — a caller
+    // asking for cheaper must not get more expensive.
     s.n_quad_fp = 8;
   }
   // Premium (pricing) Gauss-Legendre order. K2 (class: pure-refactor + new
@@ -2245,6 +2256,12 @@ Result<double> american_price(double S, double K, double T, double sigma, double
   return Err(ErrorCode::Internal, "american_price: unhandled method"); // unreachable
 }
 
+// A9 (core-review finding 11): the debug-only carry-consistency tolerance for the
+// cached hot path. Kept in lockstep with the C2 cross-date stale-gate tolerances
+// (kTolR/kTolQ in session.cpp supplied_caches_cover_board = 25 bps). [[maybe_unused]]
+// because the sole consumer is an assert() that NDEBUG (Release) compiles out.
+[[maybe_unused]] constexpr double kCachedCarryStaleTol = 0.0025;
+
 double american_price_cached(double S, double K, double T, double sigma, double r, double q,
                              Side side, const CorrectionCache *correction) {
   if (!correction || !correction->populated() || correction->side() != side) {
@@ -2260,6 +2277,16 @@ double american_price_cached(double S, double K, double T, double sigma, double 
                       /*yield=*/(side == Side::Put) ? q : r) == ExerciseRegime::Unsupported) {
     return std::numeric_limits<double>::quiet_NaN();
   }
+  // A9 (core-review finding 11): the correction is baked at a FIXED (r, q); its
+  // early-exercise premium is only valid near that carry. C2's cross-date
+  // stale-gate (session.cpp cache_side_covers) refuses cache reuse once the
+  // representative carry drifts past 25 bps. Assert the SAME invariant at the
+  // kernel so a cache accidentally used far from its baked carry trips in debug
+  // builds. Assert only — NDEBUG compiles it out, so zero release-path change.
+  assert(std::fabs(r - correction->baked_r()) <= kCachedCarryStaleTol &&
+         std::fabs(q - correction->baked_q()) <= kCachedCarryStaleTol &&
+         "american_price_cached: query carry (r,q) drifted past the C2 stale-gate "
+         "tolerance (25 bps) from the cache's baked (r,q)");
   const double df = std::exp(-r * T);
   const double F = S * std::exp((r - q) * T);
   // Share one log-moneyness evaluation between Black-76 and the correction

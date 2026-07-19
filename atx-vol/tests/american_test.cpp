@@ -3330,4 +3330,37 @@ TEST(AlPresetLadder, NQuadPriceDecouple_BackwardCompatAndSeamEquivalent) {
       << "decoupling the premium order (8 vs 32) must change at least one price";
 }
 
+// A9 (core-review finding 9): scheme_from_opts must FLOOR a sub-minimum
+// n_quadrature (< 8) to the cheapest supported Gauss-Legendre order (8), not fall
+// through the ladder and silently keep the ACCURATE default (24). Observable
+// through pricing: a request with n_quadrature=4 must price BIT-IDENTICALLY to an
+// explicit 8 (same resolved scheme), and the 8-node scheme must genuinely differ
+// from the 24-node ACCURATE one it used to fall through to (so the test has teeth).
+TEST(AlPresetLadder, SubMinimumQuadratureFloorsToEight) {
+  struct C {
+    double S, K, T, sigma, r, q;
+    Side side;
+  };
+  const C grid[] = {
+      {100, 90, 0.5, 0.20, 0.05, 0.02, Side::Put},
+      {100, 100, 1.0, 0.30, 0.04, 0.01, Side::Put},
+      {100, 110, 0.25, 0.25, 0.06, 0.03, Side::Put},
+      {100, 105, 0.75, 0.22, 0.03, 0.05, Side::Call},
+      {100, 95, 1.5, 0.35, 0.02, 0.06, Side::Call},
+  };
+  double max_8_vs_24_gap = 0.0;
+  for (const C& c : grid) {
+    // n_quadrature 4 (< 8) and explicit 8 must resolve to the SAME scheme.
+    const auto p4 = andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, AlOpts{7, 4, 6, 1.0e-8});
+    const auto p8 = andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, AlOpts{7, 8, 6, 1.0e-8});
+    const auto p24 =
+        andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, AlOpts{7, 24, 6, 1.0e-8});
+    ASSERT_TRUE(p4.has_value() && p8.has_value() && p24.has_value());
+    EXPECT_EQ(*p4, *p8) << "n_quadrature=4 must resolve to the 8-node scheme, not the 24 default";
+    max_8_vs_24_gap = std::max(max_8_vs_24_gap, std::abs(*p8 - *p24));
+  }
+  EXPECT_GT(max_8_vs_24_gap, 0.0)
+      << "the 8-node and 24-node schemes must genuinely differ (floor has teeth)";
+}
+
 } // namespace

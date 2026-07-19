@@ -100,11 +100,16 @@ void american_put_greeks_batch_avx2(const double* S, const double* K, const doub
             // american_greeks_al eligibility: genuine early exercise (r>0, T, sigma) AND
             // r-hr>0 (else the down-rate stencil crosses out of the American regime and
             // the scalar bundle falls back to FD). Bump states stay American for r>hr.
+            // A9 (simd-review finding 9): the r-hr>0 requirement only matters when rho is
+            // requested — only the r± stencils bump the short rate. Condition it on
+            // need_rho so a hedge {delta} batch with 0 < r <= hr stays on the vector path
+            // instead of needlessly patching to scalar (mirrors american_greeks_al's own
+            // `need_rho && r - hr <= 0` guard).
             const bool amer_regime =
                 atx::vol::detail::classify_regime(rl[l], ql[l]) ==
                 atx::vol::detail::ExerciseRegime::American;
             lane_ok[l] = (Sl[l] > 0.0) && (Kl[l] > 0.0) && (Tl[l] > 1.0e-12) &&
-                         (sigl[l] > 1.0e-8) && amer_regime && (rl[l] - hr[l] > 0.0);
+                         (sigl[l] > 1.0e-8) && amer_regime && (!need_rho || (rl[l] - hr[l] > 0.0));
         }
 
         // The 13 stencil prices (per lane), stored from the 4-wide solves/prices.

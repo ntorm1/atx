@@ -1049,6 +1049,54 @@ TEST(AmericanPutGreeksBatchAvx2, MatchesScalarAl) {
   EXPECT_LT(mc, 1e-4) << "charm";    // measured ~3.0e-5
 }
 
+// A9 (simd-review finding 9): (1) the vector r-hr>0 eligibility is now conditional
+// on need_rho, so a delta-only bundle with 0 < r <= hr stays on the vector path
+// instead of needlessly patching; (2) the scalar patch path zeroes the unrequested
+// greek columns (american_greeks_al can itself route to american_greeks_fd, which
+// ignores the needs mask and fills the full bundle), so the laned bundle is
+// internally consistent — EVERY lane, vector-handled OR scalar-patched, leaves the
+// unrequested greeks at 0.
+TEST(AmericanPutGreeksBatchAvx2, DeltaOnlyZeroesUnrequestedAcrossHandledAndPatchedLanes) {
+  if (!simd::have_avx2()) {
+    GTEST_SKIP() << "no AVX2 on host";
+  }
+  // Lane 0: r=0.05 American put (r>hr, vector-handled).
+  // Lane 1: r=5e-5 American put (r<hr; with need_rho=false, now vector-handled).
+  // Lane 2: European put r=-0.01, q=0.02 (not American -> scalar patch via al->fd,
+  //         which fills the FULL bundle -> the RED-before lane).
+  const std::vector<double> S = {100, 100, 100};
+  const std::vector<double> K = {100, 100, 100};
+  const std::vector<double> T = {0.5, 0.5, 0.5};
+  const std::vector<double> sig = {0.25, 0.25, 0.25};
+  const std::vector<double> r = {0.05, 5.0e-5, -0.01};
+  const std::vector<double> q = {0.01, 0.01, 0.02};
+  const std::size_t n = S.size();
+  std::vector<AmericanGreeks> g(n);
+  const simd::SimdRoute route = simd::american_put_greeks_batch(
+      S.data(), K.data(), T.data(), sig.data(), r.data(), q.data(), n, std::nullopt, g.data(),
+      simd::SimdIsa::ForceAvx2, /*need_vega=*/false, /*need_rho=*/false, /*need_charm=*/false);
+  EXPECT_EQ(route, simd::SimdRoute::Avx2);
+  for (std::size_t i = 0; i < n; ++i) {
+    // Requested columns finite (all three lanes are priceable at their base).
+    EXPECT_TRUE(std::isfinite(g[i].price)) << "i=" << i;
+    EXPECT_TRUE(std::isfinite(g[i].delta)) << "i=" << i;
+    EXPECT_TRUE(std::isfinite(g[i].gamma)) << "i=" << i;
+    EXPECT_TRUE(std::isfinite(g[i].theta)) << "i=" << i;
+    // Unrequested columns are exactly 0 in EVERY lane (handled and patched).
+    EXPECT_EQ(g[i].vega, 0.0) << "i=" << i;
+    EXPECT_EQ(g[i].volga, 0.0) << "i=" << i;
+    EXPECT_EQ(g[i].vanna, 0.0) << "i=" << i;
+    EXPECT_EQ(g[i].rho, 0.0) << "i=" << i;
+    EXPECT_EQ(g[i].charm, 0.0) << "i=" << i;
+  }
+  // The r=5e-5 delta-only lane succeeds and matches the scalar analytic delta.
+  const auto ref =
+      american_greeks_al(S[1], K[1], T[1], sig[1], r[1], q[1], Side::Put, std::nullopt,
+                         /*need_vega=*/false, /*need_rho=*/false, /*need_charm=*/false);
+  ASSERT_TRUE(ref.has_value());
+  EXPECT_NEAR(g[1].delta, ref->delta, 1e-6);
+}
+
 // Greeks batch: bit-identical to per-contract american_greeks_fd.
 Book make_american_greeks_book() {
   Book b;
