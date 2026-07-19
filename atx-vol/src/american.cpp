@@ -516,7 +516,13 @@ template <unsigned NB>
 // hoist)? Kept in ONE place so the sweep dispatch, premium dispatch, and geometry
 // bind agree on exactly which schemes take the hoisted path.
 [[nodiscard]] constexpr bool al_fp_specialized(unsigned nb, unsigned nq) noexcept {
-  return (nb == 7 && nq == 16) || (nb == 12 && nq == 24);
+  // (7,8) is the K2 ql_fast marks rung (docs/al-preset-ladder.md §4): a cheap
+  // fixed-point quadrature (l=8) with a decoupled rich premium (p=32). Hoisting it
+  // gives the scalar marks path compile-time trip counts + the geometry precompute,
+  // removing the generic-path tax the ladder note §4 flagged so the AVX2-batch ship
+  // gate compares against an honest (specialized) scalar baseline at the tier that
+  // actually ships. (7,8) fits kGeoNodeMax=16 / kGeoQuadStride=32 (american_boundary.hpp).
+  return (nb == 7 && nq == 8) || (nb == 7 && nq == 16) || (nb == 12 && nq == 24);
 }
 
 // AlWorkspace now lives in namespace amer (american_boundary.hpp).
@@ -553,11 +559,24 @@ namespace amer {
   } else if (n >= 8) {
     s.n_quad_fp = 8;
   }
-  // Premium integral uses the SAME Gauss-Legendre order as the fixed-point
-  // integral. The nullopt (ACCURATE) path returned above keeps its 48-node
-  // premium quad; an explicit AlOpts drives both integrals off n_quadrature, so
-  // a fast preset can genuinely lower the dominant premium-quad cost.
-  s.n_quad_price = s.n_quad_fp;
+  // Premium (pricing) Gauss-Legendre order. K2 (class: pure-refactor + new
+  // capability): n_quad_price DECOUPLES the pricing quadrature from the fixed-point
+  // quadrature — QuantLib QdFpAmericanEngine's l != p axis (docs/al-preset-ladder.md;
+  // ALO SSRN 2547027). o.n_quad_price == 0 (the default) ties price to fp — the
+  // historical behavior, so every existing / serialized AlOpts resolves to the SAME
+  // scheme; a non-zero value quantizes to an available GL order {8,16,24,32,48,64}.
+  // The nullopt (ACCURATE) path returned above keeps its 48-node premium quad.
+  if (o.n_quad_price >= 8) {
+    const unsigned p = o.n_quad_price;
+    s.n_quad_price = (p >= 64)   ? std::uint16_t{64}
+                     : (p >= 48) ? std::uint16_t{48}
+                     : (p >= 32) ? std::uint16_t{32}
+                     : (p >= 24) ? std::uint16_t{24}
+                     : (p >= 16) ? std::uint16_t{16}
+                                 : std::uint16_t{8};
+  } else {
+    s.n_quad_price = s.n_quad_fp;
+  }
   if (o.max_newton_iter > 0) {
     const std::uint16_t total = o.max_newton_iter;
     s.n_iter_jn = (total >= 2) ? std::uint16_t{2} : std::uint16_t{1};
@@ -1000,6 +1019,9 @@ template <unsigned NB, unsigned NQ>
                                             double q) noexcept {
   ATX_VOL_COUNT(JacobiNewtonSweeps);
   if (ws.specialize) {
+    if (b.n == 7 && ws.n_quad_fp == 8) {
+      return al_jn_sweep_impl<7, 8>(b, ws, sigma, r, q);
+    }
     if (b.n == 7 && ws.n_quad_fp == 16) {
       return al_jn_sweep_impl<7, 16>(b, ws, sigma, r, q);
     }
@@ -1055,6 +1077,9 @@ template <unsigned NB, unsigned NQ>
                                           double q) noexcept {
   ATX_VOL_COUNT(FixedPointSweeps);
   if (ws.specialize) {
+    if (b.n == 7 && ws.n_quad_fp == 8) {
+      return al_fp_sweep_impl<7, 8>(b, ws, sigma, r, q);
+    }
     if (b.n == 7 && ws.n_quad_fp == 16) {
       return al_fp_sweep_impl<7, 16>(b, ws, sigma, r, q);
     }

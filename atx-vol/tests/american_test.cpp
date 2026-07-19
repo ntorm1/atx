@@ -2001,6 +2001,10 @@ TEST(BoundaryHoist, SpecializedMatchesGeneric) {
   const AlOpts fast = al_fast_opts();                  // {7,16} specialized
   const std::optional<AlOpts> accurate = std::nullopt; // {12,24} specialized (nullopt)
   const std::optional<AlOpts> fast_opt = fast;
+  // K2: (7,8) ql_fast marks rung — now al_fp_specialized. Decoupled premium (32)
+  // stays generic; only the (nb=7, n_quad_fp=8) FP block is hoisted, so the
+  // specialized kernel must be bit-identical to the generic runtime path here too.
+  const std::optional<AlOpts> qlfast = AlOpts{7, 8, 2, 1.0e-8, 32};
 
   const double S = 100.0;
   int checked = 0;
@@ -2011,7 +2015,7 @@ TEST(BoundaryHoist, SpecializedMatchesGeneric) {
           for (const double q : {0.0, 0.03, 0.06}) {
             for (const Side side : {Side::Put, Side::Call}) {
               const double K = m * S;
-              for (const std::optional<AlOpts> &opts : {fast_opt, accurate}) {
+              for (const std::optional<AlOpts> &opts : {fast_opt, accurate, qlfast}) {
                 const auto spec = andersen_lake(S, K, T, sigma, r, q, side, opts);
                 const auto gen = andersen_lake_generic_kernel(S, K, T, sigma, r, q, side, opts);
                 ASSERT_EQ(spec.has_value(), gen.has_value());
@@ -3024,6 +3028,62 @@ TEST(ImplicitDiff, Cost) {
   // number is the report evidence; a fully-analytic one-pass J/R_θ is the path to
   // the gate (documented in the report), not implemented here.
   EXPECT_GT(cost_be, 1.8) << "central-diff implicit-diff exceeds the 1.8 cost gate";
+}
+
+// K2 (class: pure-refactor + new capability): AlOpts::n_quad_price decouples the
+// pricing (premium) Gauss-Legendre order from the fixed-point order — QuantLib
+// QdFpAmericanEngine's l != p axis (docs/al-preset-ladder.md). Three guarantees:
+//  (1) BACKWARD COMPAT — n_quad_price == 0 (the default) resolves to the SAME
+//      scheme as before (premium TIED to the fixed-point order), so every existing
+//      AlOpts / serialized opts prices bit-identically. {7,16,4,tol} (0 -> price=16)
+//      == {7,16,4,tol,16} (explicit 16).
+//  (2) SEAM EQUIVALENCE — a decoupled public AlOpts routes exactly where the
+//      pre-existing A6 premium-override bench seam did:
+//      andersen_lake(..., {7,8,2,tol,32}) == andersen_lake_seeded(..., {7,8,2,tol}, Baw, 32).
+//  (3) LIVE — the decoupling actually moves the price: price=32 != tied price=8.
+TEST(AlPresetLadder, NQuadPriceDecouple_BackwardCompatAndSeamEquivalent) {
+  using atx::vol::detail::andersen_lake_seeded;
+  using Seed = atx::vol::detail::AlSeedMode;
+  struct C {
+    double S, K, T, sigma, r, q;
+    Side side;
+  };
+  const C grid[] = {
+      {100, 90, 0.5, 0.20, 0.05, 0.02, Side::Put},
+      {100, 100, 1.0, 0.30, 0.04, 0.01, Side::Put},
+      {100, 110, 0.25, 0.25, 0.06, 0.03, Side::Put},
+      {100, 105, 0.75, 0.22, 0.03, 0.05, Side::Call}, // q>r: dividend-driven early ex
+      {100, 95, 1.5, 0.35, 0.02, 0.06, Side::Call},
+  };
+  double max_decoupled_gap = 0.0;
+  for (const C& c : grid) {
+    // (1) default (tied) == explicit-tied-to-16.
+    const auto p_tied0 =
+        andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, AlOpts{7, 16, 4, 1.0e-8});
+    const auto p_tied16 =
+        andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, AlOpts{7, 16, 4, 1.0e-8, 16});
+    ASSERT_TRUE(p_tied0.has_value());
+    ASSERT_TRUE(p_tied16.has_value());
+    EXPECT_EQ(*p_tied0, *p_tied16) << "n_quad_price=0 must tie to n_quad_fp (backward compat)";
+
+    // (2) decoupled public field == the A6 premium-override seam (both fp=8, price=32).
+    const auto p_field =
+        andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, AlOpts{7, 8, 2, 1.0e-8, 32});
+    const auto p_seam =
+        andersen_lake_seeded(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, AlOpts{7, 8, 2, 1.0e-8},
+                             Seed::Baw, /*n_quad_price=*/32);
+    ASSERT_TRUE(p_field.has_value());
+    ASSERT_TRUE(p_seam.has_value());
+    EXPECT_EQ(*p_field, *p_seam) << "public n_quad_price must match the andersen_lake_seeded seam";
+
+    // (3) accumulate the decoupled-vs-tied gap (price=32 vs tied price=8).
+    const auto p_tied8 =
+        andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, AlOpts{7, 8, 2, 1.0e-8});
+    ASSERT_TRUE(p_tied8.has_value());
+    max_decoupled_gap = std::max(max_decoupled_gap, std::abs(*p_field - *p_tied8));
+  }
+  EXPECT_GT(max_decoupled_gap, 0.0)
+      << "decoupling the premium order (8 vs 32) must change at least one price";
 }
 
 } // namespace

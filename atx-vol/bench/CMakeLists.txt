@@ -264,6 +264,8 @@ if(Python3_Interpreter_FOUND)
             --required american/corners/resolve
             --required american/boundary_batch/scalar
             --required american/boundary_batch/avx2
+            --required american/boundary_batch/scalar_qlfast
+            --required american/boundary_batch/avx2_qlfast
     )
     set_tests_properties(atx-vol-american-shootout-name-coverage PROPERTIES LABELS atx_vol)
 endif()
@@ -359,6 +361,32 @@ target_link_libraries(atx-vol-surface-archive-bench
         benchmark::benchmark
         atx_warnings
         Threads::Threads
+)
+
+# ── WS-K K1 (kernel) — AL preset ladder accuracy x cost frontier ───────────────
+# One row per QuantLib-QdFpAmericanEngine-mapped preset rung (accurate / fast /
+# ql_fast / ql_accurate / interpolated), scored on a real (or representative)
+# SPY-OPRA strike/T/vol grid: us/solve + price abs err vs the richest in-repo
+# scheme. Reaches the testkit SPY-fit fixture via `support/spy_fit_fixture.hpp`
+# (real-board harvest when the parquet is present; representative fallback in
+# source-only CI), so — like atx-vol-fitting-bench — it needs ../tests as an
+# extra PRIVATE quoted-include root. Own target so it appends cleanly (one owner
+# per TU).
+add_executable(atx-vol-al-preset-ladder-bench
+    bench_main.cpp
+    al_preset_ladder_bench.cpp
+)
+target_link_libraries(atx-vol-al-preset-ladder-bench
+    PRIVATE
+        atx::vol
+        atx::core
+        benchmark::benchmark
+        atx_warnings
+        Threads::Threads
+)
+target_include_directories(atx-vol-al-preset-ladder-bench
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../tests
 )
 
 # ── WS-F F-b (fit) — fused streaming fit->serialize throughput ─────────────────

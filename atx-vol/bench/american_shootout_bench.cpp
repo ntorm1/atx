@@ -391,7 +391,8 @@ void american_corners_resolve(benchmark::State& state) {
   return g;
 }
 
-void run_boundary_batch(benchmark::State& state, atx::vol::simd::SimdIsa isa) {
+void run_boundary_batch(benchmark::State& state, atx::vol::simd::SimdIsa isa,
+                        const std::optional<AlOpts>& opts) {
   const std::vector<Contract>& g = boundary_grid();
   const std::size_t n = g.size();
   std::vector<double> S(n), K(n), T(n), sig(n), r(n), q(n), out(n);
@@ -401,7 +402,7 @@ void run_boundary_batch(benchmark::State& state, atx::vol::simd::SimdIsa isa) {
   }
   for (auto _ : state) {
     atx::vol::simd::american_put_boundary_batch(S.data(), K.data(), T.data(), sig.data(),
-                                                r.data(), q.data(), out.data(), n, isa);
+                                                r.data(), q.data(), out.data(), n, opts, isa);
     benchmark::DoNotOptimize(out.data());
   }
   benchmark::ClobberMemory();
@@ -412,14 +413,35 @@ void run_boundary_batch(benchmark::State& state, atx::vol::simd::SimdIsa isa) {
       benchmark::Counter(ops * 1e-6, benchmark::Counter::kIsRate | benchmark::Counter::kInvert);
 }
 void american_boundary_batch_scalar(benchmark::State& state) {
-  run_boundary_batch(state, atx::vol::simd::SimdIsa::ForceScalar);
+  run_boundary_batch(state, atx::vol::simd::SimdIsa::ForceScalar, std::nullopt);
 }
 void american_boundary_batch_avx2(benchmark::State& state) {
   if (!atx::vol::simd::have_avx2()) {
     state.SkipWithError("no AVX2 on host");
     return;
   }
-  run_boundary_batch(state, atx::vol::simd::SimdIsa::ForceAvx2);
+  run_boundary_batch(state, atx::vol::simd::SimdIsa::ForceAvx2, std::nullopt);
+}
+
+// K2 marks-tier gate: the SAME 4096-put grid priced on the ql_fast rung
+// (nb=7, fp=8, price=32, 2 sweeps — docs/al-preset-ladder.md §4), the scheme the
+// backtest/live marks path is intended to adopt (marks-tier, K1 §5). The scalar
+// baseline is the (7,8) specialized kernel (american.cpp al_fp_specialized), so the
+// ratio is the HONEST best-scalar-vs-avx2 at the tier that actually ships, not the
+// accurate (12,24,48) gate above. n_quad_price=32 exercises the decoupled premium.
+[[nodiscard]] const std::optional<AlOpts>& qlfast_opts() {
+  static const std::optional<AlOpts> o = AlOpts{7, 8, 2, 1.0e-8, 32};
+  return o;
+}
+void american_boundary_batch_scalar_qlfast(benchmark::State& state) {
+  run_boundary_batch(state, atx::vol::simd::SimdIsa::ForceScalar, qlfast_opts());
+}
+void american_boundary_batch_avx2_qlfast(benchmark::State& state) {
+  if (!atx::vol::simd::have_avx2()) {
+    state.SkipWithError("no AVX2 on host");
+    return;
+  }
+  run_boundary_batch(state, atx::vol::simd::SimdIsa::ForceAvx2, qlfast_opts());
 }
 
 // Register the shootout rows (data-driven, at static-init). Stable names are pinned
@@ -454,6 +476,13 @@ void register_all() {
       ->Unit(benchmark::kMicrosecond);
   apply_common(
       benchmark::RegisterBenchmark("american/boundary_batch/avx2", american_boundary_batch_avx2))
+      ->Unit(benchmark::kMicrosecond);
+  // K2 marks-tier (ql_fast rung) rows — see qlfast_opts() above.
+  apply_common(benchmark::RegisterBenchmark("american/boundary_batch/scalar_qlfast",
+                                            american_boundary_batch_scalar_qlfast))
+      ->Unit(benchmark::kMicrosecond);
+  apply_common(benchmark::RegisterBenchmark("american/boundary_batch/avx2_qlfast",
+                                            american_boundary_batch_avx2_qlfast))
       ->Unit(benchmark::kMicrosecond);
 }
 

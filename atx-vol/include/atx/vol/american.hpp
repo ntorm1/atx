@@ -51,6 +51,22 @@ struct AlOpts {
   std::uint16_t n_quadrature = 24;   // Gauss-Legendre fixed-point order
   std::uint16_t max_newton_iter = 8; // total Jacobi-Newton + fixed-point sweeps
   double tol = 1.0e-10;              // convergence tol on the boundary residual
+  // Premium (pricing) Gauss-Legendre order, DECOUPLED from the fixed-point order.
+  // 0 (the default) ties it to n_quadrature — the historical behavior, so every
+  // existing in-memory / serialized AlOpts resolves to the SAME scheme (K2,
+  // class: pure-refactor). A non-zero value expresses QuantLib QdFpAmericanEngine's
+  // l != p axis: a cheap boundary-locating fixed-point quadrature (l = n_quadrature)
+  // paired with a rich final pricing quadrature (p = n_quad_price). The fixed-point
+  // integral runs l*n*sweeps times per solve while the pricing integral runs once,
+  // so pricing accuracy is cheap and fixed-point cost is where the time is — the
+  // "ql_fast" rung (n_quadrature=8, n_quad_price=32) is ~1.8x cheaper than the
+  // tied fast preset at equal accuracy. Quantized to {8,16,24,32,48,64}. See
+  // docs/al-preset-ladder.md (QuantLib QdFpLegendreScheme; ALO SSRN 2547027).
+  // NOTE: appended last so 4-arg positional aggregate init (AlOpts{nb,nq,it,tol})
+  // is unchanged; the surface archive decomposes AlOpts field-by-field and does not
+  // (yet) persist this knob, so archived surfaces read it back as 0 (tied) — a
+  // populate tier that bakes a decoupled premium (C3) would extend the archive.
+  std::uint16_t n_quad_price = 0;
 };
 
 // The C `ats_pricer_al_default_opts()`: {12, 24, 8, 1e-10}.
