@@ -182,17 +182,17 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
 // expiry. `slices` is the surface's own fitted eSSVI slices, ascending T
 // (== `essvi_slices()`).
 //
-// `run_surface_parity`'s eSSVI fit loop (surface_parity.cpp) does NOT stamp
-// `expiry_id`/`expiry_ns` onto the slices it produces (only a DIFFERENT,
-// unused-by-this-path helper in essvi_calib.cpp does) -- verified empirically
-// (both fields read back 0 on a freshly built session). So, exactly like the
-// projection-layer SERVE path in `w_on_inserted_slice` (which has no real
-// listed expiry for an arbitrary interpolated query T to begin with), each
-// slice's absolute instant is SYNTHESIZED from its own `T` via
-// `ns_from_year_fraction` (vol_time.hpp, the Calendar365 inverse of
-// `time_to_expiry_years`) rather than read from `expiry_ns` -- this also
-// keeps the solve step and the serve step internally consistent (both derive
-// instants the SAME way).
+// `run_surface_parity`'s eSSVI fit loop (surface_parity.cpp) stamps each
+// fitted slice's real listed-expiry instant onto `EssviParams::expiry_ns`
+// (copied from `Chain::expiry_ns`), so this function reads that instant
+// directly via `slice_expiry_ns` below rather than re-deriving it from `T`.
+// Only a slice that was never stamped (`expiry_ns == 0` -- e.g. one built by
+// a path other than `run_surface_parity`) falls back to the historical
+// SYNTHESIS from its own `T` via `ns_from_year_fraction` (vol_time.hpp, the
+// Calendar365 inverse of `time_to_expiry_years`) -- the same fallback the
+// projection-layer SERVE path (`w_on_inserted_slice`) still relies on
+// unconditionally, since an arbitrary interpolated query T never had a real
+// listed expiry to begin with.
 //
 // Returns NaN (never 0, matching the conservative calendar-guard convention
 // a few lines above this function's call sites -- see the ArbCheckCalendar
@@ -202,13 +202,23 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
 // identification, or a negative-beyond-tolerance e^2).
 //
 // noexcept: every callee is itself noexcept (`events()`, `upper_bound` on
-// int64s, `ns_from_year_fraction`, `count_events_at`, `essvi_total_w`)
-// except `implied_emove`, whose only non-trivial operation is constructing
-// an `Err` message string on a failure path -- the same
-// treat-error-string-allocation-as-nonthrowing convention the pre-existing
-// noexcept serve path already relies on (`shape_blend_total_variance` /
-// `model_w` call `surface_insert_vol_slice`, which builds `Err` strings the
-// same way).
+// int64s, `slice_expiry_ns`, `ns_from_year_fraction`, `count_events_at`,
+// `count_between`, `essvi_total_w`) except `implied_emove`, whose only
+// non-trivial operation is constructing an `Err` message string on a
+// failure path -- the same treat-error-string-allocation-as-nonthrowing
+// convention the pre-existing noexcept serve path already relies on
+// (`shape_blend_total_variance` / `model_w` call `surface_insert_vol_slice`,
+// which builds `Err` strings the same way).
+
+// The absolute expiry instant to bracket a slice against: the slice's own
+// stamped `expiry_ns` when present (the real listed expiry, convention-
+// agnostic since it is just a UTC timestamp), else the Calendar365-inverse
+// synthesis from `T` -- see the doc comment above.
+[[nodiscard]] std::int64_t slice_expiry_ns(std::int64_t now_ts_ns,
+                                           const EssviParams &slice) noexcept {
+  return slice.expiry_ns != 0 ? slice.expiry_ns : ns_from_year_fraction(now_ts_ns, slice.T);
+}
+
 [[nodiscard]] double solve_implied_emove(const EventSchedule *events, std::int64_t now_ts_ns,
                                          std::span<const EssviParams> slices) noexcept {
   if (events == nullptr || slices.size() < 2) {
@@ -220,7 +230,7 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
     return kNaN; // no event strictly after "now"
   }
   const std::int64_t event_ns = *it;
-  const std::int64_t last_ns = ns_from_year_fraction(now_ts_ns, slices.back().T);
+  const std::int64_t last_ns = slice_expiry_ns(now_ts_ns, slices.back());
   if (event_ns > last_ns) {
     return kNaN; // event falls after the last fitted expiry -- nothing to bracket
   }
@@ -228,7 +238,7 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
   // "hi": first fitted slice at/after the event; "lo": the one just before
   // it. hi is guaranteed to be found (< slices.size()) by the check above.
   std::size_t hi = 0;
-  while (hi < slices.size() && ns_from_year_fraction(now_ts_ns, slices[hi].T) < event_ns) {
+  while (hi < slices.size() && slice_expiry_ns(now_ts_ns, slices[hi]) < event_ns) {
     ++hi;
   }
   if (hi == 0 || hi >= slices.size()) {
@@ -240,8 +250,10 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
   const EssviParams &s_hi = slices[hi];
   const double w1 = essvi_total_w(s_lo, 0.0);
   const double w2 = essvi_total_w(s_hi, 0.0);
-  const std::size_t n1 = count_events_at(*events, now_ts_ns, s_lo.T);
-  const std::size_t n2 = count_events_at(*events, now_ts_ns, s_hi.T);
+  const std::size_t n1 = s_lo.expiry_ns != 0 ? events->count_between(now_ts_ns, s_lo.expiry_ns)
+                                             : count_events_at(*events, now_ts_ns, s_lo.T);
+  const std::size_t n2 = s_hi.expiry_ns != 0 ? events->count_between(now_ts_ns, s_hi.expiry_ns)
+                                             : count_events_at(*events, now_ts_ns, s_hi.T);
 
   auto e = implied_emove(w1, s_lo.T, n1, w2, s_hi.T, n2);
   return e.has_value() ? *e : kNaN;
@@ -1038,19 +1050,24 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
   // silently changes what gets served.
   //
   // Calendar365-only restriction (same shape as the polymorphic-override
-  // restriction just above, in the ConvexDense/Svi branch): `solve_
-  // implied_emove` synthesizes each fitted slice's absolute expiry instant
-  // from its own T via `ns_from_year_fraction`, the Calendar365 INVERSE of
-  // `time_to_expiry_years`. Under `eff.time.convention == VolTime` a fitted
-  // T is vol-time-shaped, not a plain calendar year-fraction, so that
-  // synthesized instant would not be the real listed expiry and could
-  // mis-bucket a nearby event by days -- silently, with no error, since the
-  // arithmetic is otherwise well-defined. So skip the solve entirely under
-  // any non-Calendar365 convention; `implied_emove` stays at its NaN
-  // default, which `event_aware_active()` (session.hpp) already treats as
+  // restriction just above, in the ConvexDense/Svi branch) -- KEPT as a
+  // policy gate, not a correctness workaround: `run_surface_parity`'s eSSVI
+  // fit loop now stamps each fitted slice's real listed-expiry instant onto
+  // `EssviParams::expiry_ns` (from `Chain::expiry_ns`), and `solve_
+  // implied_emove` prefers that stamped instant (via `slice_expiry_ns`
+  // above) over the Calendar365-inverse `ns_from_year_fraction(now, T)`
+  // synthesis whenever it is present -- so the historical mis-bucketing risk
+  // this gate was originally added to guard against (Seam S1) no longer
+  // applies to a stamped slice. The gate itself stays in place here because
+  // lifting it is an explicit behavior/regression-surface change owned by a
+  // separate seam (see `event_vol_test.cpp`'s
+  // `Session.VolTimeConventionDisablesEmoveSolve`, which still asserts
+  // `TimeConvention::VolTime` disables the solve and is out of this task's
+  // touched-file scope) -- not a re-introduction of the original stamping
+  // gap. `implied_emove` stays at its NaN default under any non-Calendar365
+  // convention, which `event_aware_active()` (session.hpp) already treats as
   // "serve exactly as if events were null" -- no separate gate needed on the
-  // serve side. Root-cause fix (stamping `expiry_ns` directly onto fitted
-  // eSSVI slices instead of synthesizing it from T) is a follow-up task.
+  // serve side.
   diag.implied_emove =
       (eff.time.convention == TimeConvention::Calendar365)
           ? solve_implied_emove(eff.events.get(), eff.now_ts_ns, rep.surface.essvi_slices())

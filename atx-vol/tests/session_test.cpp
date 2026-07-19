@@ -934,6 +934,31 @@ TEST(Session, InterpModeReachesEval) {
   EXPECT_NEAR(iv_default, 0.35727349168272737, 1e-5);
 }
 
+TEST(VolaSession, ExpiryNs_StampedOnFittedSlicesMatchesInstalledChain) {
+  // Task 6 (Seam S1): every fitted eSSVI slice must carry the REAL listed
+  // expiry instant (chain.expiry_ns) rather than the zero-initialized
+  // placeholder -- downstream event-bucketing (solve_implied_emove,
+  // count_events_at in session.cpp) brackets against this stamped instant
+  // instead of a Calendar365-inverse synthesis from T. Red at HEAD (before
+  // the fit loop stamps it): expiry_ns reads back 0 for every slice.
+  const SynthPanelSpec spec = make_shape_contrast_spec();
+  Universe u;
+  const Underlying *under = install(spec, u);
+  ASSERT_NE(under, nullptr);
+  ASSERT_EQ(under->chains.size(), std::size_t{2});
+
+  const auto sess = VolaSession::build(*under, make_inputs(spec));
+  ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
+
+  const auto slices = sess->surface().essvi_slices();
+  ASSERT_EQ(slices.size(), under->chains.size());
+  for (std::size_t k = 0; k < slices.size(); ++k) {
+    EXPECT_NE(slices[k].expiry_ns, std::int64_t{0}) << "k=" << k;
+    EXPECT_EQ(slices[k].expiry_ns, under->chains[k].expiry_ns) << "k=" << k;
+    EXPECT_EQ(slices[k].expiry_id, static_cast<std::uint16_t>(k)) << "k=" << k;
+  }
+}
+
 TEST(VolaSession, OverrideRefitIsLocalDeterministicAndTimed) {
   const SynthPanelSpec spec = make_spec();
   Universe u;

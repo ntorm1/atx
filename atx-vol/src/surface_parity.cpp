@@ -342,6 +342,14 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
     expiry_reports.push_back(ExpiryFitReport{
         chain_index, T, ExpiryFitOutcome::Fitted, prepared.fit_observations().size(),
         ErrorCode::Unknown});
+
+    // Stamp this slice's real listed-expiry instant (+ its dense surface
+    // write index) so downstream event-bucketing (solve_implied_emove,
+    // count_events_at in session.cpp) can bracket against the actual
+    // expiry instead of a Calendar365-inverse synthesis from T.
+    slice_res->expiry_ns = chain.expiry_ns;
+    slice_res->expiry_id = static_cast<std::uint16_t>(idx);
+
     prev_slice = *slice_res; // carry forward for the next slice's calendar floor
     has_prev = true;
 
