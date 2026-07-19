@@ -23,8 +23,9 @@
 #include <thread>
 #include <vector>
 
-#include "atx/vol/american.hpp" // AlOpts
+#include "atx/vol/american.hpp" // AlOpts, al_fast_opts, al_default_opts
 #include "atx/vol/corpus.hpp"
+#include "atx/vol/counters.hpp" // F1: AlBoundarySolves ledger (fast-AL tier quantification)
 #include "atx/vol/data.hpp" // iso_to_ns, year_fraction
 #include "atx/vol/market_env.hpp"
 #include "atx/vol/opra_batch.hpp" // load_opra_daterange, corpus_board_from_opra (F-c real hive)
@@ -1279,6 +1280,97 @@ TEST(SurfaceDbPopulate, SharedWorkerBudgetKeepsOutputByteIdentical) {
 
   std::filesystem::remove_all(ref_root);
   std::filesystem::remove_all(split_root);
+}
+
+// F1 (WS-F): the bulk `Populate` preset must honor the cheaper Andersen-Lake
+// de-Am block (al_fast_opts) on the served RISK surface, while the reference
+// `Robust` preset keeps al_default_opts — the C3 tier gap that apply_risk_policy
+// silently collapsed until the preset-keyed `risk_deam_al` was added. Both presets
+// map to the SAME quality mode (Balanced/Risk via map_legacy_fit_preset), so the
+// ONLY intended difference between the two served surfaces is the AL de-Am block.
+// Also asserts served-surface determinism: same inputs + same config => identical
+// archive bytes on a re-populate.
+TEST(SurfaceDbPopulate, PopulatePresetHonorsFastAlDeAmTierAndStaysDeterministic) {
+  namespace led = atx::vol::counters::ledger;
+  const std::vector<CorpusBoard> boards = {
+      make_board(kDate0, "AAA", 100.0, 0.28),
+      make_board(kDate0, "BBB", 60.0, 0.34),
+  };
+
+  // ── Populate tier: F1 routes the de-Am inversions through al_fast_opts ──
+  const auto pop_root = test_root("fastal_populate");
+  auto pop_db = SurfaceDb::create(pop_root.string());
+  ASSERT_TRUE(pop_db.has_value());
+  SurfaceDbPopulateConfig pop_cfg;
+  pop_cfg.fallback = symbol_config_from_preset(FitPreset::Populate); // canonical bulk config
+  pop_cfg.n_threads = 1u; // serial => the ledger delta is an exact per-run attribution
+  const led::Counts pop_before = led::snapshot();
+  auto pop = populate_surface_db(*pop_db, boards, pop_cfg);
+  const led::Counts pop_after = led::snapshot();
+  ASSERT_TRUE(pop.has_value()) << (pop ? "" : pop.error().to_string());
+  ASSERT_EQ(pop->n_ok, 2u);
+  const std::uint64_t pop_solves =
+      pop_after.get(led::Solve::AlBoundarySolves) - pop_before.get(led::Solve::AlBoundarySolves);
+
+  // ── Robust tier: reference al_default_opts on the de-Am inversions ──
+  const auto rob_root = test_root("fastal_robust");
+  auto rob_db = SurfaceDb::create(rob_root.string());
+  ASSERT_TRUE(rob_db.has_value());
+  SurfaceDbPopulateConfig rob_cfg;
+  rob_cfg.fallback = symbol_config_from_preset(FitPreset::Robust);
+  rob_cfg.n_threads = 1u;
+  const led::Counts rob_before = led::snapshot();
+  auto rob = populate_surface_db(*rob_db, boards, rob_cfg);
+  const led::Counts rob_after = led::snapshot();
+  ASSERT_TRUE(rob.has_value()) << (rob ? "" : rob.error().to_string());
+  ASSERT_EQ(rob->n_ok, 2u);
+  const std::uint64_t rob_solves =
+      rob_after.get(led::Solve::AlBoundarySolves) - rob_before.get(led::Solve::AlBoundarySolves);
+
+  // The served bytes carry the resolved SessionInputs::deam.al_opts. Populate now
+  // stamps the FAST block {7,16,4,1e-8}; Robust the reference block {12,24,8,1e-10}.
+  const AlOpts fast = al_fast_opts();
+  const AlOpts ref = al_default_opts();
+  ASSERT_NE(fast.n_collocation, ref.n_collocation); // guards the fixtures are distinct
+  for (const char *sym : {"AAA", "BBB"}) {
+    const auto ps_pop = pop_db->load_surface(kDate0, sym);
+    const auto ps_rob = rob_db->load_surface(kDate0, sym);
+    ASSERT_TRUE(ps_pop.has_value()) << sym;
+    ASSERT_TRUE(ps_rob.has_value()) << sym;
+    EXPECT_EQ(ps_pop->pricing().al_opts.n_collocation, fast.n_collocation) << sym;
+    EXPECT_EQ(ps_pop->pricing().al_opts.n_quadrature, fast.n_quadrature) << sym;
+    EXPECT_EQ(ps_pop->pricing().al_opts.max_newton_iter, fast.max_newton_iter) << sym;
+    EXPECT_EQ(ps_rob->pricing().al_opts.n_collocation, ref.n_collocation) << sym;
+    EXPECT_EQ(ps_rob->pricing().al_opts.n_quadrature, ref.n_quadrature) << sym;
+  }
+
+  // Per-seed AL work: al_fast does 7 collocation x <=4 Newton per boundary seed vs
+  // al_default's 12 x <=8 (~3.4x fewer boundary-node solves) and 16 vs 24 quadrature
+  // nodes. The ledger counts SEEDS (carry/inversion budget), so the seed COUNT is
+  // preserved; the win is per-seed work plus Populate's looser iv_tol (1e-5).
+  std::printf("[F1 fast-AL tier] Populate(al_fast 7x16x4) AlBoundarySolves=%llu  "
+              "Robust(al_default 12x24x8)=%llu\n",
+              static_cast<unsigned long long>(pop_solves),
+              static_cast<unsigned long long>(rob_solves));
+
+  // ── Determinism: same inputs + same Populate config => byte-identical archive ──
+  const auto repro_root = test_root("fastal_populate_repro");
+  auto repro_db = SurfaceDb::create(repro_root.string());
+  ASSERT_TRUE(repro_db.has_value());
+  auto repro = populate_surface_db(*repro_db, boards, pop_cfg);
+  ASSERT_TRUE(repro.has_value()) << (repro ? "" : repro.error().to_string());
+  ASSERT_EQ(repro->n_ok, 2u);
+  for (const char *sym : {"AAA", "BBB"}) {
+    const auto a = pop_db->load_surface(kDate0, sym);
+    const auto b = repro_db->load_surface(kDate0, sym);
+    ASSERT_TRUE(a.has_value()) << sym;
+    ASSERT_TRUE(b.has_value()) << sym;
+    expect_surface_bits_equal(*b, *a);
+  }
+
+  std::filesystem::remove_all(pop_root);
+  std::filesystem::remove_all(rob_root);
+  std::filesystem::remove_all(repro_root);
 }
 
 TEST(SurfaceDbPopulate, PinnedConfigHonored) {

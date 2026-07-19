@@ -1076,13 +1076,29 @@ Status PricerFitter::fit(const OptionChain &chain,
     // separately audited in calibration, so skipping this dead cache is both
     // faster and semantically cleaner.
     in.use_correction_cache = false;
-    // Every risk mode pins the ACCURATE Andersen-Lake reference preset
-    // EXPLICITLY. An unset al_opts is the legacy-compat signal that lets
-    // VolaSession::build substitute the fast preset, a loosened iv_tol, and a
-    // single-pair carry floor — which would silently undo every per-mode carry
-    // and inversion budget set below.
+    // Every risk mode pins an EXPLICIT Andersen-Lake de-Am preset. An unset
+    // al_opts is the legacy-compat signal that lets VolaSession::build substitute
+    // the fast preset, a loosened iv_tol, and a single-pair carry floor — which
+    // would silently undo every per-mode carry and inversion budget set below.
+    //
+    // F1 (C3 tier honesty, docs/al-preset-ladder.md §5-6): the bulk `Populate`
+    // preset is authorized to run the CHEAPER Andersen-Lake block (`al_fast_opts`,
+    // the specialized (7,16,4) FP block) on the de-Am inversion lane — the exact
+    // lever the C3 sprint created it for, defeated until now because this policy
+    // re-pinned `al_default_opts` AFTER the Populate overlay applied it. Keyed on
+    // the PRESET, never the quality mode: it lowers ONLY the American boundary
+    // precision (< ~1e-3 IV, well inside the ~1e-2 surface RMSE and the quote
+    // half-spread), while the risk GEOMETRY — audited inversions
+    // (audit_fit_inversions), calendar Project, require_carry_confidence, the
+    // per-mode carry anchors (n_atm/max_borrow_pairs) and the validation oracle —
+    // stays fully accurate. Accuracy mode never permits it (its contract IS the
+    // reference AL). Non-Populate presets are byte-identical to the prior pin.
+    const auto risk_deam_al = (cfg_.preset == FitPreset::Populate &&
+                               quality_mode != FitQualityMode::Accuracy)
+                                  ? al_fast_opts()
+                                  : al_default_opts();
     if (quality_mode == FitQualityMode::Accuracy) {
-      in.deam.al_opts = al_default_opts();
+      in.deam.al_opts = risk_deam_al; // == al_default_opts() for Accuracy
       in.use_correction_cache = false;
       in.use_deam_cache_for_fit = false;
     }
@@ -1091,7 +1107,7 @@ Status PricerFitter::fit(const OptionChain &chain,
       // A fast proposal plus mandatory cold audit costs more than solving the
       // smaller Latency node set accurately once. Latency comes from bounded
       // work and narrower validation, never from publishing an unaudited IV.
-      in.deam.al_opts = al_default_opts();
+      in.deam.al_opts = risk_deam_al;
       in.deam.n_atm = 3;
       in.deam.max_borrow_pairs = 5;
       in.calib.max_obs_per_slice = cfg_.max_obs_per_slice.value_or(40u);
@@ -1103,8 +1119,9 @@ Status PricerFitter::fit(const OptionChain &chain,
       in.deam.max_borrow_pairs = 5;
       // Certified fast proposals frequently require a cold fallback on dense
       // boards, paying for both paths. The direct accurate reference is faster
-      // in that regime and is the correctness-first Balanced default.
-      in.deam.al_opts = al_default_opts();
+      // in that regime and is the correctness-first Balanced default; the
+      // Populate preset instead honors the cheaper de-Am block via risk_deam_al.
+      in.deam.al_opts = risk_deam_al;
       in.calib.max_obs_per_slice = cfg_.max_obs_per_slice.value_or(60u);
       in.calib.max_otm_shortcut_premium_spread_frac =
           cfg_.max_otm_shortcut_premium_spread_frac.value_or(0.0);

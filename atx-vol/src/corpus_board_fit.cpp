@@ -73,7 +73,8 @@ admission_reason_mask(CorpusAdmissionReason reason) noexcept {
 [[nodiscard]] CorpusQualityMetrics
 collect_quality(const CorpusBoard &board, const OptionChain &chain, const PricerConfig &cfg,
                 const PricerFitter &fitter, const PricedSurface &surface,
-                const CorpusAdmissionPolicy *admission) {
+                const CorpusAdmissionPolicy *admission,
+                const std::optional<FitDecision> &precomputed_classification) {
   CorpusQualityMetrics quality;
   quality.n_raw_quotes = saturated_u32(board.frame.rows.size());
   quality.n_two_sided = count_two_sided_quotes(board.frame);
@@ -93,8 +94,18 @@ collect_quality(const CorpusBoard &board, const OptionChain &chain, const Pricer
     quality.final_kind = actual->curve.kind;
     quality.used_fallback = actual->used_fallback;
   } else {
+    // L1: reuse the pre-fit classification `retain_consumed_fit_parity` already
+    // computed for this board when it is available (a caller-pinned curve leaves
+    // the fitter's `decision()` empty, so this else-branch runs). select_fit_policy
+    // is a pure function of (underlying, ticker, context, policy) — none mutated by
+    // the fit — so the retained decision is byte-identical to a recomputation. Only
+    // fall back to a fresh scan when no pre-fit decision was carried (e.g. admission
+    // disabled but quality still collected).
     const FitDecision classified =
-        select_fit_policy(chain.underlying(), chain.underlying().ticker, cfg.context, cfg.policy);
+        precomputed_classification.has_value()
+            ? *precomputed_classification
+            : select_fit_policy(chain.underlying(), chain.underlying().ticker, cfg.context,
+                                cfg.policy);
     quality.profile = classified.profile.kind;
     quality.decision_source = classified.source;
     quality.preset = cfg.preset;
@@ -196,10 +207,16 @@ collect_quality(const CorpusBoard &board, const OptionChain &chain, const Pricer
          rule.max_mean_reduced_chi2.has_value();
 }
 
-void retain_consumed_fit_parity(const OptionChain &chain, const CorpusAdmissionPolicy *admission,
-                                PricerConfig &cfg) {
+// L1: computes the board classification ONCE (pre-fit) and RETURNS it so the
+// post-fit `collect_quality` can reuse it instead of re-running the O(quotes)
+// select_fit_policy scan for a pinned-curve board. Returns nullopt only when no
+// classification was needed (admission absent/disabled) — the caller then lets
+// collect_quality classify lazily on the rare path that still needs it.
+[[nodiscard]] std::optional<FitDecision>
+retain_consumed_fit_parity(const OptionChain &chain, const CorpusAdmissionPolicy *admission,
+                           PricerConfig &cfg) {
   if (admission == nullptr || !admission->enabled) {
-    return;
+    return std::nullopt;
   }
   const FitDecision decision =
       select_fit_policy(chain.underlying(), chain.underlying().ticker, cfg.context, cfg.policy);
@@ -217,6 +234,7 @@ void retain_consumed_fit_parity(const OptionChain &chain, const CorpusAdmissionP
       cfg.score_parity = true;
     }
   }
+  return decision;
 }
 
 } // namespace
@@ -262,7 +280,8 @@ FitSlot fit_board(const CorpusBoard &board, const PricerConfig &tmpl,
     if (board.curve.has_value()) {
       cfg.curve = *board.curve; // per-board pin overrides the template policy
     }
-    retain_consumed_fit_parity(*chain, admission, cfg);
+    const std::optional<FitDecision> board_classification =
+        retain_consumed_fit_parity(*chain, admission, cfg);
     PricerFitter fitter{cfg};
     const Status st = fitter.fit(*chain, session_overlay);
     if (!st) {
@@ -303,7 +322,8 @@ FitSlot fit_board(const CorpusBoard &board, const PricerConfig &tmpl,
       slot.chosen_kind = ps->kind_at(0); // curve was pinned; no OOS score
     }
     if (admission != nullptr) {
-      slot.quality = collect_quality(board, *chain, cfg, fitter, *ps, admission);
+      slot.quality =
+          collect_quality(board, *chain, cfg, fitter, *ps, admission, board_classification);
       if (admission->enabled) {
         const std::size_t profile_index = static_cast<std::size_t>(slot.quality.profile);
         if (profile_index >= admission->by_profile.size()) {
