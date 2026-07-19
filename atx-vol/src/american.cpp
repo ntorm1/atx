@@ -516,7 +516,13 @@ template <unsigned NB>
 // hoist)? Kept in ONE place so the sweep dispatch, premium dispatch, and geometry
 // bind agree on exactly which schemes take the hoisted path.
 [[nodiscard]] constexpr bool al_fp_specialized(unsigned nb, unsigned nq) noexcept {
-  return (nb == 7 && nq == 16) || (nb == 12 && nq == 24);
+  // (7,8) is the K2 ql_fast marks rung (docs/al-preset-ladder.md §4): a cheap
+  // fixed-point quadrature (l=8) with a decoupled rich premium (p=32). Hoisting it
+  // gives the scalar marks path compile-time trip counts + the geometry precompute,
+  // removing the generic-path tax the ladder note §4 flagged so the AVX2-batch ship
+  // gate compares against an honest (specialized) scalar baseline at the tier that
+  // actually ships. (7,8) fits kGeoNodeMax=16 / kGeoQuadStride=32 (american_boundary.hpp).
+  return (nb == 7 && nq == 8) || (nb == 7 && nq == 16) || (nb == 12 && nq == 24);
 }
 
 // AlWorkspace now lives in namespace amer (american_boundary.hpp).
@@ -1012,6 +1018,9 @@ template <unsigned NB, unsigned NQ>
                                             double q) noexcept {
   ATX_VOL_COUNT(JacobiNewtonSweeps);
   if (ws.specialize) {
+    if (b.n == 7 && ws.n_quad_fp == 8) {
+      return al_jn_sweep_impl<7, 8>(b, ws, sigma, r, q);
+    }
     if (b.n == 7 && ws.n_quad_fp == 16) {
       return al_jn_sweep_impl<7, 16>(b, ws, sigma, r, q);
     }
@@ -1067,6 +1076,9 @@ template <unsigned NB, unsigned NQ>
                                           double q) noexcept {
   ATX_VOL_COUNT(FixedPointSweeps);
   if (ws.specialize) {
+    if (b.n == 7 && ws.n_quad_fp == 8) {
+      return al_fp_sweep_impl<7, 8>(b, ws, sigma, r, q);
+    }
     if (b.n == 7 && ws.n_quad_fp == 16) {
       return al_fp_sweep_impl<7, 16>(b, ws, sigma, r, q);
     }

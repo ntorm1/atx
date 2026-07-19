@@ -2001,6 +2001,10 @@ TEST(BoundaryHoist, SpecializedMatchesGeneric) {
   const AlOpts fast = al_fast_opts();                  // {7,16} specialized
   const std::optional<AlOpts> accurate = std::nullopt; // {12,24} specialized (nullopt)
   const std::optional<AlOpts> fast_opt = fast;
+  // K2: (7,8) ql_fast marks rung — now al_fp_specialized. Decoupled premium (32)
+  // stays generic; only the (nb=7, n_quad_fp=8) FP block is hoisted, so the
+  // specialized kernel must be bit-identical to the generic runtime path here too.
+  const std::optional<AlOpts> qlfast = AlOpts{7, 8, 2, 1.0e-8, 32};
 
   const double S = 100.0;
   int checked = 0;
@@ -2011,7 +2015,7 @@ TEST(BoundaryHoist, SpecializedMatchesGeneric) {
           for (const double q : {0.0, 0.03, 0.06}) {
             for (const Side side : {Side::Put, Side::Call}) {
               const double K = m * S;
-              for (const std::optional<AlOpts> &opts : {fast_opt, accurate}) {
+              for (const std::optional<AlOpts> &opts : {fast_opt, accurate, qlfast}) {
                 const auto spec = andersen_lake(S, K, T, sigma, r, q, side, opts);
                 const auto gen = andersen_lake_generic_kernel(S, K, T, sigma, r, q, side, opts);
                 ASSERT_EQ(spec.has_value(), gen.has_value());

@@ -264,6 +264,8 @@ if(Python3_Interpreter_FOUND)
             --required american/corners/resolve
             --required american/boundary_batch/scalar
             --required american/boundary_batch/avx2
+            --required american/boundary_batch/scalar_qlfast
+            --required american/boundary_batch/avx2_qlfast
     )
     set_tests_properties(atx-vol-american-shootout-name-coverage PROPERTIES LABELS atx_vol)
 endif()
