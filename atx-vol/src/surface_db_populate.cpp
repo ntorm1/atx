@@ -310,6 +310,22 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
     PricerConfig pc = pricer_config_for_symbol(resolved);
     // Per-board slice of the shared budget (0 = auto, the outer-serial mode).
     pc.fit_workers = inner_fit_workers;
+    // F4 (C2 warm-start chain — deliberately OFF for populate). fit_board's
+    // `out_caches` is left nullptr here (no cross-date correction-cache carry),
+    // unlike build_corpus's per-symbol chain (corpus.cpp). This is NOT an
+    // oversight: every populate board is a v2 RISK request (map_legacy_fit_preset
+    // -> {Balanced,Risk}; is_v2_request() true), and the risk pipeline pins
+    // `use_correction_cache = false` (pricer_fitter.cpp apply_risk_policy) because
+    // a served risk surface is priced by the ACCURATE cold Andersen-Lake path, not
+    // by an interpolated correction cache. With the cache disabled the fit builds
+    // NONE, so fit_board's `out_caches` would come back empty every board and the
+    // chain would carry nothing — engaging it would add per-symbol chain
+    // bookkeeping and P-core chain-sharding for zero reuse (and, if the cache were
+    // force-built solely to warm the chain, it would spend hundreds of ms per board
+    // on an artifact the served path never reads). The determinism gate is also
+    // preserved trivially: nullptr caches => byte-identical across worker budgets.
+    // Re-engaging it is only worthwhile if a future mark-grade populate tier turns
+    // `use_correction_cache` back on for the SERVED surface (report M1/F4).
     slots[pos] = fit_board(board, pc, /*admission=*/nullptr, [&resolved](SessionInputs &in) {
       apply_symbol_config(resolved, in);
     });
