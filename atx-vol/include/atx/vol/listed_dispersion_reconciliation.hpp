@@ -92,8 +92,10 @@ struct ListedReconciliationConfig {
   // so a benign 1-ULP route divergence no longer hard-aborts a valid run, while a
   // genuine economic mismatch (schedule vs archive disagree) is still caught. The
   // previous float-exact `0.0` was an absolute tolerance; set this to 0.0 to
-  // restore that strict bit-for-bit check.
-  double entry_mark_tolerance{1.0e-12};
+  // restore that strict bit-for-bit check. Shared with the strategy's identical
+  // guard via kListedEntryMarkTolerance / listed_entry_mark_agrees — the two must
+  // never diverge (listed_dispersion_schedule.hpp).
+  double entry_mark_tolerance{kListedEntryMarkTolerance};
 };
 
 // Reprice the exact scheduled contracts, independently join daily raw quotes,
