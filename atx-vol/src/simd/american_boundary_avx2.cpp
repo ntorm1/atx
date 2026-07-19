@@ -58,6 +58,19 @@ namespace {
 
 namespace amer = atx::vol::amer;
 
+// The 4-wide BAW critical-price Newton cap. Mirrors the scalar seed cap
+// (american.cpp newton_critical_put uses 16), and like it, exits early once every
+// lane converges (movemask(done)==0xF), so a COHERENT pack already stops well before
+// 16 — the early-exit is the adaptive "trim where there's slack".
+//
+// K2 lever-1 (fixed-cap seed trim) — MEASURED DEAD, do not re-litigate. Trimming the
+// static cap to 4 sped avx2_qlfast ~15-20% (contended) but BROKE the economic parity
+// gate in 17 boundary tests, including schemes with a 32-sweep budget: a seed
+// truncated before convergence lands lanes in a different basin the sweeps cannot
+// recover within tol. The seed must genuinely converge; the movemask early-exit is
+// the correct mechanism and it is already in place. See kernel-stage1.md lever table.
+inline constexpr int kBawSeedIters = 16;
+
 // select: return t where mask's sign bit is set, else f (blendv order is (f,t,mask)).
 ATX_FORCE_INLINE __m256d sel(__m256d mask, __m256d t, __m256d f) noexcept {
     return _mm256_blendv_pd(f, t, mask);
@@ -298,7 +311,7 @@ void american_put_boundary_batch_avx2(const double* S, const double* K,
                 __m256d lo = loK;
                 __m256d hi = hiK;
                 __m256d done = notm(nl); // non-Newton lanes start frozen at S* = K
-                for (int it = 0; it < 16; ++it) {
+                for (int it = 0; it < kBawSeedIters; ++it) {
                     if (_mm256_movemask_pd(done) == 0xF) {
                         break;
                     }

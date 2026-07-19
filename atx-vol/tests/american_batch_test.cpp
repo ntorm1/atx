@@ -951,7 +951,12 @@ INSTANTIATE_TEST_SUITE_P(
         AlSchemeMappingCase{"n6_q24_i1_mid", AlOpts{6, 24, 1, 1.0e-9}},
         AlSchemeMappingCase{"n7_q32_i32_tight", AlOpts{7, 32, 32, 1.0e-14}},
         AlSchemeMappingCase{"n12_q48_i1_loose", AlOpts{12, 48, 1, 1.0e-4}},
-        AlSchemeMappingCase{"n16_q64_i32_mid", AlOpts{16, 64, 32, 1.0e-9}}),
+        AlSchemeMappingCase{"n16_q64_i32_mid", AlOpts{16, 64, 32, 1.0e-9}},
+        // K2 ql_fast marks rung: nb=7, fp=8, 2 sweeps, DECOUPLED premium p=32. The
+        // AVX2 batch's intended ship tier — a low sweep budget makes it the most
+        // seed-sensitive production scheme, so it pins the 4-wide BAW seed's economic
+        // parity vs the specialized scalar (7,8) baseline (kernel-stage1.md).
+        AlSchemeMappingCase{"n7_q8_i2_p32_qlfast", AlOpts{7, 8, 2, 1.0e-8, 32}}),
     [](const ::testing::TestParamInfo<AlSchemeMappingCase>& info) {
       return info.param.name;
     });
