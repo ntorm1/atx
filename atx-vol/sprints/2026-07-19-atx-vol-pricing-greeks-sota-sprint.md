@@ -166,10 +166,11 @@ Rules: american.cpp/american.hpp/american_iv.cpp/deamer.cpp are single-owner per
 | plan+reviews committed | done | 7e42f7c | |
 | A1 | **done** | 51fc212 | Newton iters 16(exhausted)→mean 6.17/max 10 on 240-grid; JN sweeps mean 21.78→18.99; repins justified in commit body. 2 new known-reds handed to fix-up agent: PricerFitter.LocalRiskRefitPublishesCopyOnWriteGeneration (cache-certification flip), SurfaceV2Provenance.ValidationFallbackAdmissionRecordsTheServedFamily (fixture premise broken at HEAD post-b118439 — needs injected-surface redesign, not S3 re-tune). A6 QD+/BAW A/B re-run = report item. |
 | A2/A5/A9 | pending | | |
-| A3/A6 | pending | | |
-| A4 | pending | | |
-| A7 | pending | | |
-| A8 | pending | | |
+| A3/A6 | **done** | 46a9ae4, 3c43c90 | polish bracket-clamped + traced seam; floor unified at kIvMin=0.005; A1 vega-gate retained (measured: K=110/120 T=2 σ=0.1 puts sit at inverter's fundamental vega=3e-3 floor ~1.2e-5 rel, not polish artifact) |
+| A4 | **done** | b5baa18 | tolerances scaled kIvResidNoiseFloor·ε·max(F,K); index-scale at-intrinsic now clamps |
+| A7 | **done** | f84e72a | static parallel_for capture/rethrow; no more terminate-on-throw |
+| A8 | **done** | 6d64a4b | put legs via Φ(−d) direct; deep-OTM rel err 1.0 → 1.7e-13; no pins moved |
+| fixup (A1 known-reds) | **done** | 231e798 | test-only. PricerFitter: post-A1 cache REUSE correct (Δlog-F 1.8e-11 ≪ 1e-5 gate; old refusal = buggy-seed accident). Provenance: redesigned onto family-neutral convexity admission gate (was riding 1.3e-8 vs 1.42e-8 butterfly-kink knife edge) |
 | P1 | pending | | |
 | P2 | pending | | |
 | P3 | pending | | |
