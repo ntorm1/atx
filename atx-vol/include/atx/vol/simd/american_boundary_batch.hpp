@@ -84,4 +84,10 @@ SimdRoute american_put_greeks_batch(const double* S, const double* K, const doub
                                     std::size_t n, const std::optional<AlOpts>& opts,
                                     AmericanGreeks* out_greeks, SimdIsa isa) noexcept;
 
+// Whether the laned AVX2 Greeks route is selected for `isa` on this host (ForceAvx2 =>
+// AVX2 iff supported; Auto => the dark ship gate; ForceScalar => never). Exposed so the
+// american_greeks_batch SoA surface routes its analytic PUT lanes the SAME way the
+// direct dispatch does, honoring one ship-gate constant.
+[[nodiscard]] bool avx2_greeks_selected(SimdIsa isa) noexcept;
+
 } // namespace atx::vol::simd

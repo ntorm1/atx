@@ -293,6 +293,64 @@ Status american_greeks_batch(const AmericanBatchInput& in, GreekFieldMask fields
     ws.lane_route[i] = simd::SimdRoute::Scalar; // scalar Greek stencil (honest)
   };
 
+  // K3 laned fast path: when the AVX2 Greeks route is selected (Auto respects the dark
+  // ship gate, so this is dark in production until the PM flips it — ForceAvx2 opts in
+  // for the bench/A-B), the analytic PUT lanes go through the laned bundle
+  // (american_put_greeks_batch), which solves the 5 boundaries 4-wide per pack and
+  // patches any non-early-exercise / non-finite lane through scalar american_greeks_al.
+  // CALL lanes stay on the scalar analytic route (the laned kernel is put-native).
+  if (analytic && simd::avx2_greeks_selected(kernel.isa)) {
+    // Chunked gather of PUT lanes -> laned dispatch -> scatter (allocation-free).
+    constexpr std::size_t kC = 256;
+    double cs[kC], ck[kC], ct[kC], cv[kC], cr[kC], cq[kC];
+    std::size_t oidx[kC];
+    AmericanGreeks gbuf[kC];
+    std::size_t cnt = 0;
+    const auto flush = [&]() noexcept {
+      if (cnt == 0) {
+        return;
+      }
+      const simd::SimdRoute route = simd::american_put_greeks_batch(
+          cs, ck, ct, cv, cr, cq, cnt, std::nullopt, gbuf, kernel.isa);
+      for (std::size_t j = 0; j < cnt; ++j) {
+        const std::size_t oi = oidx[j];
+        const bool ok = std::isfinite(gbuf[j].price);
+        write_masked(greeks, oi, gbuf[j], fields);
+        ws.lane_status[oi] = ok ? LaneStatus::Ok : LaneStatus::Unsupported;
+        ws.lane_route[oi] = route;
+      }
+      cnt = 0;
+    };
+    for (std::size_t i = 0; i < n; ++i) {
+      if (in.side[i] != Side::Put) {
+        continue; // calls handled by the scalar analytic fan below
+      }
+      cs[cnt] = in.S[i]; ck[cnt] = in.K[i]; ct[cnt] = in.T[i];
+      cv[cnt] = in.sigma[i]; cr[cnt] = in.r[i]; cq[cnt] = in.q[i];
+      oidx[cnt] = i;
+      if (++cnt == kC) {
+        flush();
+      }
+    }
+    flush();
+    // Scalar analytic route for the remaining CALL lanes only.
+    const auto call_lane = [&](std::size_t i) noexcept {
+      if (in.side[i] == Side::Put) {
+        return;
+      }
+      price_lane(i);
+    };
+    if (kernel.executor != nullptr) {
+      kernel.executor->run_blocks(n, /*n_threads=*/0,
+                                  [&](std::size_t i) { call_lane(i); });
+    } else {
+      for (std::size_t i = 0; i < n; ++i) {
+        call_lane(i);
+      }
+    }
+    return Ok();
+  }
+
   if (kernel.executor != nullptr) {
     kernel.executor->run_blocks(n, /*n_threads=*/0,
                                 [&](std::size_t i) { price_lane(i); });

@@ -1064,6 +1064,49 @@ Book make_american_greeks_book() {
   return b;
 }
 
+// american_greeks_batch SoA surface routes analytic PUT lanes through the K3 laned
+// bundle when AVX2 is selected; CALL lanes + FD route stay scalar. ForceAvx2(analytic)
+// must match ForceScalar(analytic) within the economic gate (puts) / bit (calls).
+TEST(AmericanGreeksBatchLaned, AnalyticAvx2MatchesScalar) {
+  if (!simd::have_avx2()) {
+    GTEST_SKIP() << "no AVX2 on host";
+  }
+  const Book b = make_american_greeks_book(); // mixed puts + American calls
+  const std::size_t n = b.size();
+  auto run = [&](simd::SimdIsa isa, std::vector<double>& dl, std::vector<double>& gm,
+                 std::vector<double>& vg, std::vector<double>& th, std::vector<double>& rh,
+                 std::vector<double>& vn, std::vector<double>& vl, std::vector<double>& cm,
+                 std::vector<double>& px) {
+    dl.assign(n, 0); gm.assign(n, 0); vg.assign(n, 0); th.assign(n, 0); rh.assign(n, 0);
+    vn.assign(n, 0); vl.assign(n, 0); cm.assign(n, 0); px.assign(n, 0);
+    simd::GreeksBatchSoA out{dl.data(), gm.data(), vg.data(), th.data(), rh.data(),
+                             vn.data(), vl.data(), cm.data(), px.data()};
+    PricingKernel kernel;
+    kernel.analytic_greeks = true;
+    kernel.isa = isa;
+    PricingWorkspace ws;
+    ASSERT_TRUE(american_greeks_batch(b.view(), GreekFieldMask::All, out, kernel, ws).has_value());
+  };
+  std::vector<double> ad, ag, av_, at, ar, avn, avl, ac, ap;
+  std::vector<double> sd, sg, sv, st, sr, svn, svl, sc, sp;
+  run(simd::SimdIsa::ForceAvx2, ad, ag, av_, at, ar, avn, avl, ac, ap);
+  run(simd::SimdIsa::ForceScalar, sd, sg, sv, st, sr, svn, svl, sc, sp);
+  auto reld = [](double a, double c, double floor) {
+    return std::abs(a - c) / std::max({std::abs(a), std::abs(c), floor});
+  };
+  for (std::size_t i = 0; i < n; ++i) {
+    EXPECT_LT(reld(ap[i], sp[i], 1e-6), 1e-9) << "price i=" << i;
+    EXPECT_LT(reld(ad[i], sd[i], 1e-6), 1e-8) << "delta i=" << i;
+    EXPECT_LT(reld(ag[i], sg[i], 1e-6), 1e-5) << "gamma i=" << i;
+    EXPECT_LT(reld(av_[i], sv[i], 1e-4), 1e-7) << "vega i=" << i;
+    EXPECT_LT(reld(ar[i], sr[i], 1e-4), 1e-6) << "rho i=" << i;
+    EXPECT_LT(reld(avn[i], svn[i], 1e-5), 1e-5) << "vanna i=" << i;
+    EXPECT_LT(reld(avl[i], svl[i], 1e-3), 1e-4) << "volga i=" << i;
+    EXPECT_LT(reld(at[i], st[i], 1e-4), 1e-5) << "theta i=" << i;
+    EXPECT_LT(reld(ac[i], sc[i], 1e-4), 1e-4) << "charm i=" << i;
+  }
+}
+
 TEST(AmericanGreeksBatch, MatchesScalarFd) {
   const Book b = make_american_greeks_book();
   const std::size_t n = b.size();

@@ -146,23 +146,23 @@ void greeks_scalar_lane(const double* S, const double* K, const double* T,
 
 } // namespace
 
+bool avx2_greeks_selected(SimdIsa isa) noexcept {
+    switch (isa) {
+        case SimdIsa::ForceScalar:
+            return false;
+        case SimdIsa::ForceAvx2:
+            return have_avx2();
+        case SimdIsa::Auto:
+        default:
+            return kShipAvx2Greeks && have_avx2();
+    }
+}
+
 SimdRoute american_put_greeks_batch(const double* S, const double* K, const double* T,
                                     const double* sigma, const double* r, const double* q,
                                     std::size_t n, const std::optional<AlOpts>& opts,
                                     AmericanGreeks* out_greeks, SimdIsa isa) noexcept {
-    bool avx2 = false;
-    switch (isa) {
-        case SimdIsa::ForceScalar:
-            avx2 = false;
-            break;
-        case SimdIsa::ForceAvx2:
-            avx2 = have_avx2();
-            break;
-        case SimdIsa::Auto:
-        default:
-            avx2 = kShipAvx2Greeks && have_avx2();
-            break;
-    }
+    const bool avx2 = avx2_greeks_selected(isa);
     if (n == 0) {
         return avx2 ? SimdRoute::Avx2 : SimdRoute::Scalar;
     }
