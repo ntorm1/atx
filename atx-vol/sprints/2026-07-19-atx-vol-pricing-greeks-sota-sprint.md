@@ -176,14 +176,14 @@ Rules: american.cpp/american.hpp/american_iv.cpp/deamer.cpp are single-owner per
 | P1 | **done** | 6965f85 (a), d0682b2 (b) | Traversals/Newton-step 3→2→1 (counter-asserted); 200-inversion fixture 2353→1343 ClenshawSweeps (~43% fewer); stage a bit-identical + F8 vega; stage b max|ΔIV| 5.6e-15 (197/198 bit-identical). Flagged suspect red: QualifiedCorpus.QuarantinedFitStaysReportedAndCannotLeakIntoADateArchive (triage dispatched). |
 | P3 | **done** | 8f32798 | Audit AL solves per (expiry,side) 24→8 via slice-sigma (same ACCURATE premium quad); identical audit verdicts; residual shift ≤3.8e-5. Backlog: prepared_fitting.cpp audit site (default-off) left per-row. |
 | QC triage | **done** | 09640c7 | Root cause: latent FP bug, NOT fit regression. XOM board 100% in-band → in-band vs total vega sums grouped differently → oos_vw=1.0+2ULP trips strict guards (select_candidate_index oos_vw>1.0; corpus.cpp:1635 in_band>total) → NotFound → empty oos_score. Debug red / Release green = FMA contraction straddles 1.0 exactly. Exposer ~8f32798 (rewrites de-Am reprice vega); fix commit-independent. Fix: clamp in_band=min(win,total), oos_vw derived — definitional subset invariant, bit-identical no-op where invariant holds. 54 affected-suite green + invariant pin added. |
-| P4 | pending | | |
+| P4 | commits in, red owned | 6fc48da (F7), 409607a (F5) | Both claim bit-identical, but PreparedPortfolio.GroupedPriceEqualsIndependentOracleAndPinnedFingerprint RED at HEAD (price-frame pin; W1 proven-not-theirs by revert; QC clamp implausible). P4 owns: bisect F5 vs F7 via reverse-apply (no checkout in shared tree), restore bit-identity or justified repin per trap 4. |
 | P5 | pending | | |
 | P6 | pending | | |
 | P7 | pending | | |
-| W1 | pending | | |
-| W2 | in-flight | | dispatched solo (build-counters dir); W3 blocked on P4 (american.*), W4 blocked on W1 (simd/pnl_batch) |
-| W3 | pending | | |
-| W4 | pending | | |
+| W1 | **done** | 79abd68 | scatter_pnl_rows → ONE serial pnl_taylor_explain_batch (qty=nullptr, weight at call site preserves bit-identical unexplained). Scalar-tail/non-AVX2 bit-identical; AVX2 2nd-order terms within 1e-7/1e-12 kernel bound. Grouped-vs-ungrouped repin justified (SIMD routing, not math). 4 new SimdPnlWiring tests. have_avx2() gate left for W4. |
+| W2 | in-flight | | build-counters dir; deletions staged in shared index |
+| W3 | pending | | blocked on P4 fingerprint-red resolution (american.* ownership) |
+| W4 | in-flight | | dispatched (build-rel-avx2, freed by W1); pnl_batch gate handoff from W1 |
 | G1 | pending | | |
 | G2 | pending | | |
 | G4 | pending | | |
