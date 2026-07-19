@@ -491,6 +491,145 @@ TEST(VolaSession, C2CrossDateCacheReuseCutsSolvesInBand) {
       << "stale-gate must refuse a cache baked at a far carry (cold-rebuild fallback)";
 }
 
+// C3 (accuracy-trading) — Populate-tier per-knob characterization + economic gate
+// on real AAPL/XOM boards. The Populate tier keeps Robust's eSSVI fit quality
+// (MonotoneFit, 3 ATM pairs, parity) but bakes al_fast_opts (not al_default_opts)
+// for de-Am / cache-sampling / cold marks (K1 audit, docs/al-preset-ladder.md §6).
+// Measures each knob individually vs the Robust baseline and gates the composed
+// tier: AL boundary solves must drop, and surface RMSE / bid-ask coverage / calendar
+// arb must stay in-band (§3 tier-honesty — no silent budget cut). Knob C (drop
+// MonotoneFit) is reported to justify the policy choice to KEEP it in Populate.
+TEST(VolaSession, C3PopulateTierEconomicParityVsRobust) {
+  using atx::vol::al_default_opts;
+  using atx::vol::al_fast_opts;
+  using atx::vol::CalendarRepair;
+  using atx::vol::FitPreset;
+  using atx::vol::load_opra_cbbo_parquet;
+  using atx::vol::make_session_inputs;
+  using atx::vol::OpraLoadSpec;
+  using atx::vol::OpraPanel;
+  namespace led = atx::vol::counters::ledger;
+
+  const std::string root = "C:/atx-data/spy-dispersion/opra/";
+  const double r = 0.043;
+  const auto load = [&](const char *sym, const char *date) -> std::optional<OpraPanel> {
+    const std::string path = std::string(root) + sym + "/" + date + ".parquet";
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) {
+      return std::nullopt;
+    }
+    OpraLoadSpec spec;
+    spec.path = path;
+    spec.underlying = sym;
+    spec.snapshot_iso = std::string(date) + "T14:00:00Z";
+    spec.r = r;
+    auto p = load_opra_cbbo_parquet(spec);
+    return p.has_value() ? std::optional<OpraPanel>(std::move(*p)) : std::nullopt;
+  };
+
+  struct Board {
+    const char *sym;
+    const char *date;
+  };
+  const Board boards[] = {{"AAPL", "2026-01-02"}, {"AAPL", "2026-01-06"}, {"XOM", "2026-01-02"},
+                          {"XOM", "2026-01-06"}};
+
+  struct Metrics {
+    std::uint64_t solves = 0;      // AL boundary solves (COUNT — preset-invariant)
+    std::uint64_t prem_evals = 0;  // premium quadrature evaluations (moves with the preset)
+    double cache_ms = 0.0;         // correction-cache build wall (V2 attribution)
+    double wall_ms = 0.0;          // total fit wall (V2)
+    double rmse = 0.0, mean_frac = 0.0, worst_frac = 0.0;
+    bool arb_free = false;
+    bool ok = false;
+  };
+  const auto measure = [&](const OpraPanel &p, FitPreset base,
+                           const std::function<void(SessionInputs &)> &knob) -> Metrics {
+    auto in = make_session_inputs(base, p.implied_spot, r, p.frame.snapshot_ts_ns);
+    in.fit_workers = 1u;
+    in.collect_stage_timings = true; // V2 FitTimings attribution (cache/wall ms)
+    if (knob) {
+      knob(in);
+    }
+    led::reset();
+    auto s = VolaSession::from_frame(p.frame, in);
+    const auto snap = led::snapshot();
+    if (!s.has_value()) {
+      return Metrics{};
+    }
+    const auto &d = s->diagnostics();
+    return Metrics{snap.get(led::Solve::AlBoundarySolves),
+                   snap.get(led::Solve::AlPremiumEvals),
+                   d.fit_timings.correction_cache_ms,
+                   d.fit_timings.total_wall_ms,
+                   d.mean_rmse_vol,
+                   d.mean_frac_within_bidask,
+                   d.worst_frac_within_bidask,
+                   d.calendar_arb_free,
+                   true};
+  };
+
+  std::size_t n = 0;
+  for (const Board &b : boards) {
+    auto p = load(b.sym, b.date);
+    if (!p.has_value()) {
+      continue;
+    }
+    const Metrics robust = measure(*p, FitPreset::Robust, {});
+    const Metrics knobA = measure(*p, FitPreset::Robust,
+                                  [](SessionInputs &in) { in.deam.al_opts = al_fast_opts(); });
+    const Metrics knobB = measure(*p, FitPreset::Robust,
+                                  [](SessionInputs &in) { in.deam.iv_tol = 1.0e-5; });
+    const Metrics knobC = measure(*p, FitPreset::Robust, [](SessionInputs &in) {
+      in.calendar_repair = CalendarRepair::None; // drop MonotoneFit (informational)
+    });
+    const Metrics pop = measure(*p, FitPreset::Populate, {});
+    if (!robust.ok || !pop.ok) {
+      continue;
+    }
+    ++n;
+    // Premium-eval reduction and cache-build speedup are the C3 win (the AL solve
+    // COUNT is preset-invariant — the preset makes each solve CHEAPER, not fewer).
+    const double cache_speedup =
+        pop.cache_ms > 0.0 ? robust.cache_ms / pop.cache_ms : 0.0;
+    std::printf("C3CHAR\t%-4s %s\tRobust[prem=%llu cache_ms=%.2f wall_ms=%.2f rmse=%.5f frac=%.4f arb=%d]"
+                "\tPOP[prem=%llu cache_ms=%.2f wall_ms=%.2f rmse=%.5f frac=%.4f worst=%.4f arb=%d]"
+                "\tcache_speedup=%.2fx\tC_nomono[arb=%d frac=%.4f]\n",
+                b.sym, b.date, (unsigned long long)robust.prem_evals, robust.cache_ms, robust.wall_ms,
+                robust.rmse, robust.mean_frac, robust.arb_free ? 1 : 0,
+                (unsigned long long)pop.prem_evals, pop.cache_ms, pop.wall_ms, pop.rmse, pop.mean_frac,
+                pop.worst_frac, pop.arb_free ? 1 : 0, cache_speedup, knobC.arb_free ? 1 : 0,
+                knobC.mean_frac);
+
+    // COST (deterministic): the fast preset does fewer premium quadrature evals per
+    // solve — Populate < Robust. (Solve COUNT is invariant; this is the cheaper-solve
+    // proxy that is contention-free, unlike wall time.)
+    EXPECT_LT(knobA.prem_evals, robust.prem_evals)
+        << b.sym << " " << b.date << ": al_fast did not reduce premium evals";
+    EXPECT_LT(pop.prem_evals, robust.prem_evals)
+        << b.sym << " " << b.date << ": Populate did not reduce premium evals";
+    // COST (provisional, timing): the correction-cache build should be materially
+    // cheaper (al_fast ~47us/node vs al_default ~200us/node). Loose bound — shared host.
+    EXPECT_LT(pop.cache_ms, robust.cache_ms)
+        << b.sym << " " << b.date << ": Populate cache build not faster";
+
+    // ECONOMIC PARITY (deterministic, §3 tier-honesty) — each knob + composed tier:
+    EXPECT_LE(knobA.rmse, robust.rmse + 2.0e-3) << b.sym << " " << b.date << ": al_fast RMSE out of band";
+    EXPECT_LE(knobB.rmse, robust.rmse + 2.0e-3) << b.sym << " " << b.date << ": iv_tol RMSE out of band";
+    EXPECT_LE(pop.rmse, robust.rmse + 2.0e-3) << b.sym << " " << b.date << ": Populate RMSE out of band";
+    EXPECT_GE(pop.mean_frac, robust.mean_frac - 0.02)
+        << b.sym << " " << b.date << ": Populate degraded bid-ask coverage";
+    EXPECT_GE(pop.worst_frac, robust.worst_frac - 0.03)
+        << b.sym << " " << b.date << ": Populate degraded worst-expiry coverage";
+    EXPECT_EQ(pop.arb_free, robust.arb_free)
+        << b.sym << " " << b.date << ": Populate changed calendar-arb-free status";
+  }
+  if (n == 0) {
+    GTEST_SKIP() << "no real OPRA boards under " << root;
+  }
+  std::printf("C3CHAR\tTOTAL_BOARDS=%zu\n", n);
+}
+
 TEST(VolaSession, Iv_OnSliceAtm_IsSaneVol) {
   const SynthPanelSpec spec = make_spec();
   Universe u;

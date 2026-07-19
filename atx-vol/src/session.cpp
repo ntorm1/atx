@@ -900,6 +900,25 @@ void apply_fit_preset(SessionInputs &in, FitPreset preset) noexcept {
     in.calendar_repair =
         (preset == FitPreset::Robust) ? CalendarRepair::MonotoneFit : CalendarRepair::None;
     break;
+  case FitPreset::Populate:
+    // C3 tier-honesty policy (docs/al-preset-ladder.md sec 5-6): the cheap AL
+    // preset is allowed ONLY on the populate lanes it governs — de-Am inversion,
+    // correction-cache sampling, and the baked cold-mark preset — where ~1e-3
+    // price accuracy is absorbed by the ~1e-2 surface RMSE and the quote
+    // half-spread. It bakes al_fast_opts (specialized (7,16) FP block, ~47 us)
+    // instead of Robust's al_default_opts (~200 us pseudo-accurate) and matches
+    // the inversion tol to that floor (1e-5). Everything that sets the fitted
+    // surface's QUALITY stays Robust-grade: MonotoneFit calendar repair (surface
+    // calendar-arb-free near-money), 3 ATM carry pairs, parity scoring,
+    // correction-cache-served fit. The eSSVI backbone is unchanged; only the
+    // de-Am rows shift < ~1e-3 IV (well inside RMSE). Robust remains the final-
+    // fit / certification / oracle preset. Gated vs Robust on real OPRA boards.
+    in.deam.al_opts = al_fast_opts();
+    in.deam.iv_tol = 1.0e-5;
+    in.deam.n_atm = 3;
+    in.use_deam_cache_for_fit = true;
+    in.calendar_repair = CalendarRepair::MonotoneFit;
+    break;
   }
 }
 

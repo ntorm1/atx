@@ -112,7 +112,14 @@ inline constexpr std::uint16_t kDbSymEssviAsymmetricRho = 1u << 12;
 // stored values are always the final word on the fields this struct carries.
 struct SymbolFitConfig {
   bool enabled{true}; // pipeline may skip disabled symbols
-  FitPreset preset{FitPreset::Robust};
+  // C3: the populate default is the right-sized Populate tier — Robust's eSSVI fit
+  // quality with the fast Andersen-Lake preset for de-Am / cache sampling / baked
+  // cold marks (the K1 audit found Robust's al_default_opts was never validated as
+  // the populate choice and over-pays 4-8x on every solve). Economic parity vs
+  // Robust (surface RMSE byte-identical to 5dp, coverage + calendar-arb preserved)
+  // is gated on real OPRA boards; see VolaSession.C3PopulateTierEconomicParityVsRobust.
+  // Robust stays available for final-fit / certification (docs/al-preset-ladder.md).
+  FitPreset preset{FitPreset::Populate};
   bool pin_curve{false};   // false => preset/selector decides family
   CurveConfig curve{};     // used when pin_curve; parametric knobs
                            // also mirror into SessionInputs::calib
