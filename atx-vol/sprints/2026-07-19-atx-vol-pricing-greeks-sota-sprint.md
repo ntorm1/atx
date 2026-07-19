@@ -173,9 +173,8 @@ Rules: american.cpp/american.hpp/american_iv.cpp/deamer.cpp are single-owner per
 | A7 | **done** | f84e72a | static parallel_for capture/rethrow; no more terminate-on-throw |
 | A8 | **done** | 6d64a4b | put legs via Φ(−d) direct; deep-OTM rel err 1.0 → 1.7e-13; no pins moved |
 | fixup (A1 known-reds) | **done** | 231e798 | test-only. PricerFitter: post-A1 cache REUSE correct (Δlog-F 1.8e-11 ≪ 1e-5 gate; old refusal = buggy-seed accident). Provenance: redesigned onto family-neutral convexity admission gate (was riding 1.3e-8 vs 1.42e-8 butterfly-kink knife edge) |
-| P1 | pending | | |
-| P2 | pending | | |
-| P3 | pending | | |
+| P1 | **done** | 6965f85 (a), d0682b2 (b) | Traversals/Newton-step 3→2→1 (counter-asserted); 200-inversion fixture 2353→1343 ClenshawSweeps (~43% fewer); stage a bit-identical + F8 vega; stage b max|ΔIV| 5.6e-15 (197/198 bit-identical). Flagged suspect red: QualifiedCorpus.QuarantinedFitStaysReportedAndCannotLeakIntoADateArchive (triage dispatched). |
+| P3 | **done** | 8f32798 | Audit AL solves per (expiry,side) 24→8 via slice-sigma (same ACCURATE premium quad); identical audit verdicts; residual shift ≤3.8e-5. Backlog: prepared_fitting.cpp audit site (default-off) left per-row. |
 | P4 | pending | | |
 | P5 | pending | | |
 | P6 | pending | | |
