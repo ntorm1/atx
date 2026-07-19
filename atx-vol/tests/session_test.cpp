@@ -1347,12 +1347,16 @@ TEST(Session, DiagnosticsAggregateBandStats_CurveSurfacePath) {
   // the fitting-pipeline sprint tightened it, fits each smooth s3 slice to well
   // inside a 1 bp band (zero violations at any band width -- verified). Raw SVI
   // is parsimonious (5 params) and structurally cannot reproduce the s3
-  // hyperbola smile exactly, so it crosses the tight band on ~40 held quotes --
+  // hyperbola smile exactly, so it crosses the band on some held quotes --
   // giving the CurveSurface-path aggregation loop genuine non-zero band stats
-  // to roll up.
+  // to roll up. NOTE: the WS-C fit-correctness fixes (quasi-explicit NM budget
+  // restored to the C-parity 200; q90-robust IRLS scale) tightened raw SVI
+  // enough that the former 1 bp band caught zero misses on this panel, so the
+  // band is pulled in to ~0.1 bp, where SVI's irreducible s3-approximation error
+  // still crosses it on ~15 quotes (worst residual ~4e-5, ~4x the band).
   SynthPanelSpec spec = make_spec();
-  spec.half_spread_frac = 0.0001;
-  spec.min_half_spread = 0.0001;
+  spec.half_spread_frac = 0.00001;
+  spec.min_half_spread = 0.00001;
   Universe u;
   const Underlying *under = install(spec, u);
   ASSERT_NE(under, nullptr);
