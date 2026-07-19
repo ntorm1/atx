@@ -126,9 +126,23 @@ struct AnalyticsConfig {
 // Earnings context for the bare-`PricedSurface` path. `schedule` is the sorted
 // earnings instants; `implied_emove` is the per-event move vol (eMove). When
 // `schedule` is null the earnings-dependent fields are left NaN / zero.
+//
+// `censor_space` selects how `atmf_vol_ex_earnings` strips earnings across a
+// tenor that STRADDLES an earnings date (its two bracketing pillars carry
+// different event counts):
+//   - true  (default): CENSORED-space interpolation (SpiderRock FLEX). Censor
+//            each bracket pillar's ATM total variance separately, interpolate
+//            the censored variance linearly in T (via `event_aware_w`), and
+//            return the event-free vol — the same censored path the live
+//            projection surface uses.
+//   - false: the legacy PLAIN-space path — censor a single plain cross-pillar
+//            interpolated total variance once. Kept reachable for A/B. The two
+//            agree at/away from an earnings straddle and differ only across one.
+// (Task 9's `EarningsReproConfig::censor_space` maps onto this field.)
 struct EventContext {
   const EventSchedule *schedule = nullptr;
   double implied_emove = 0.0;
+  bool censor_space = true;
 };
 
 // ── Fine-grained outputs ────────────────────────────────────────────────────
