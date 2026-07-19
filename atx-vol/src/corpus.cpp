@@ -606,7 +606,11 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
             }
           }
           return Ok();
-        });
+        },
+        // C4 wave-2 (perf, finding 13): pin the per-symbol chains to discovered
+        // P-cores. Byte-identical to the unpinned path (pinning only steers WHICH
+        // logical CPU runs a chain); composes with C2's symbol-shard determinism.
+        detail::FitAffinity::PerformanceCores);
   } else {
     schedule_status = detail::run_bounded_fit_tasks(
         n, cfg.n_threads, [&boards, &slots, &cfg, admission, n](std::size_t index) -> Status {

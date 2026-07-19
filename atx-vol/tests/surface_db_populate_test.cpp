@@ -34,6 +34,7 @@
 #include "atx/vol/session.hpp"    // FitPreset
 #include "atx/vol/surface_archive.hpp"
 #include "atx/vol/surface_db.hpp"
+#include "atx/vol/detail/fit_scheduler.hpp" // performance_core_count (C4 wave-2 scaling diagnostic)
 #include "atx/vol/surface_db_populate.hpp"
 #include "atx/vol/types.hpp"
 #include "atx/vol/vol_curve.hpp"
@@ -312,6 +313,90 @@ TEST(SurfaceDbPopulate, GlobalParallelQueuePreservesDeterministicPartitions) {
 
   std::filesystem::remove_all(serial_root);
   std::filesystem::remove_all(parallel_root);
+}
+
+// C4 wave-2: pinning the outer workers to P-cores (+ capping the budget at the
+// P-core count) is a pure scheduling steer — it changes only WHICH logical CPU a
+// board fits on, never which board or how it is fit. The served surfaces must be
+// byte-identical to the unpinned/uncapped populate. This is the C4 wave-2 hard
+// gate (the speedup itself is provisional / quiet-window; byte-identity is not).
+TEST(SurfaceDbPopulate, PinnedOuterWorkersByteIdenticalToUnpinned) {
+  const auto pinned_root = test_root("pin_on");
+  const auto unpinned_root = test_root("pin_off");
+  auto pinned_db = SurfaceDb::create(pinned_root.string());
+  auto unpinned_db = SurfaceDb::create(unpinned_root.string());
+  ASSERT_TRUE(pinned_db.has_value());
+  ASSERT_TRUE(unpinned_db.has_value());
+
+  const std::vector<CorpusBoard> boards = make_boards();
+  SurfaceDbPopulateConfig pinned_cfg;
+  pinned_cfg.n_threads = 8u;
+  pinned_cfg.pin_outer_workers = true; // cap at P-cores + pin (the C4 wave-2 default)
+  SurfaceDbPopulateConfig unpinned_cfg;
+  unpinned_cfg.n_threads = 8u;
+  unpinned_cfg.pin_outer_workers = false; // historical: no cap, no pin
+
+  auto pinned = populate_surface_db(*pinned_db, boards, pinned_cfg);
+  auto unpinned = populate_surface_db(*unpinned_db, boards, unpinned_cfg);
+  ASSERT_TRUE(pinned.has_value()) << (pinned ? "" : pinned.error().to_string());
+  ASSERT_TRUE(unpinned.has_value()) << (unpinned ? "" : unpinned.error().to_string());
+
+  EXPECT_EQ(pinned->n_ok, unpinned->n_ok);
+  for (const char *date : {kDate0, kDate1}) {
+    for (const char *symbol : {"AAA", "BBB"}) {
+      const auto ps = pinned_db->load_surface(date, symbol);
+      const auto us = unpinned_db->load_surface(date, symbol);
+      ASSERT_TRUE(ps.has_value());
+      ASSERT_TRUE(us.has_value());
+      expect_surface_bits_equal(*ps, *us);
+    }
+  }
+
+  std::filesystem::remove_all(pinned_root);
+  std::filesystem::remove_all(unpinned_root);
+}
+
+// C4 wave-2 scaling-curve DIAGNOSTIC (DISABLED — run with
+// --gtest_also_run_disabled_tests; PROVISIONAL, shared host). Populates a modest
+// multi-symbol multi-date universe at workers 1/2/4/8 with pinning ON, plus 8
+// unpinned, printing the median wall so the P-core cap/pin scaling knee is
+// observable. The RATIFIED curve is quiet-window domain (G4 / V3); the hard gate
+// is byte-identity above, not these numbers.
+TEST(SurfaceDbPopulate, DISABLED_ScalingCurveDiagnostic) {
+  const char *dates[] = {"2026-03-02", "2026-03-03", "2026-03-04"};
+  std::vector<CorpusBoard> boards;
+  for (const char *d : dates) {
+    for (int s = 0; s < 16; ++s) {
+      const std::string sym = "S" + std::to_string(s);
+      boards.push_back(make_board(d, sym, 80.0 + 4.0 * s, 0.24 + 0.01 * (s % 5)));
+    }
+  }
+  const auto run = [&](unsigned threads, bool pin) -> double {
+    double best = std::numeric_limits<double>::infinity();
+    for (int rep = 0; rep < 3; ++rep) {
+      const auto root = test_root("scale_t" + std::to_string(threads) + (pin ? "_pin" : "_nopin") +
+                                  "_r" + std::to_string(rep));
+      auto db = SurfaceDb::create(root.string());
+      SurfaceDbPopulateConfig cfg;
+      cfg.n_threads = threads;
+      cfg.pin_outer_workers = pin;
+      const auto t0 = std::chrono::steady_clock::now();
+      auto res = populate_surface_db(*db, boards, cfg);
+      const auto t1 = std::chrono::steady_clock::now();
+      EXPECT_TRUE(res.has_value());
+      best = std::min(best, std::chrono::duration<double, std::milli>(t1 - t0).count());
+      std::filesystem::remove_all(root);
+    }
+    return best;
+  };
+  const double serial = run(1u, true);
+  for (const unsigned t : {1u, 2u, 4u, 8u}) {
+    const double ms = run(t, true);
+    std::printf("C4SCALE\tthreads=%u\tpin=1\tms=%.1f\tspeedup=%.2fx\n", t, ms, serial / ms);
+  }
+  const double t8_nopin = run(8u, false);
+  std::printf("C4SCALE\tthreads=8\tpin=0\tms=%.1f\tspeedup=%.2fx\n", t8_nopin, serial / t8_nopin);
+  std::printf("C4SCALE\tp_cores=%u\n", atx::vol::detail::performance_core_count());
 }
 
 // U2 (R-13) [pure-refactor]: the outer fit queue claims boards in
@@ -923,6 +1008,10 @@ TEST(SurfaceDbPopulate, SharedWorkerBudgetSizesInnerFromSharedPool) {
 
     SurfaceDbPopulateConfig cfg;
     cfg.n_threads = kBudget;
+    // C4 wave-2: this test verifies the inner-worker SIZING math from the requested
+    // outer budget; disable the P-core cap so `worker_budget` stays at kBudget=12
+    // (the cap, tested separately, would otherwise clamp it to the P-core count).
+    cfg.pin_outer_workers = false;
     auto result = populate_surface_db(*db, boards, cfg, &hooks);
     ASSERT_TRUE(result.has_value()) << (result ? "" : result.error().to_string());
     EXPECT_EQ(result->n_ok, static_cast<std::uint32_t>(n));

@@ -36,6 +36,12 @@ struct SurfaceDbPopulateConfig {
   SymbolFitConfig fallback{};
   unsigned n_threads{0};    // 0 = serial; determinism must hold regardless
   bool skip_existing{true}; // date key already in db.partitions() -> skip whole date
+  // C4 wave-2 (perf, finding 13): cap the outer worker budget at the physical
+  // P-cores and pin outer workers to them (the compute-bound fit path regresses
+  // past the P-core count on a hybrid P/E host). Default ON. Set false to measure
+  // the unpinned/uncapped scaling curve or on hosts where the pin is unwanted;
+  // results are byte-identical either way (pinning only steers scheduling).
+  bool pin_outer_workers{true};
 };
 
 struct PopulateSymbolStats {
