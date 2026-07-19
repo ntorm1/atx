@@ -109,13 +109,29 @@ enum class DeAmPricer : std::uint8_t {
   Crr = 1, // Cox-Ross-Rubinstein binomial (no wiring seam)
 };
 
-// Convention knobs threaded into `run_earnings_repro` (config overload). A
-// default-constructed value reproduces the historical pipeline behavior EXACTLY
-// when its `time` is set to the session's own (`sess.inputs().time`) -- which
-// is precisely what the 3-arg `run_earnings_repro` overload does.
+// Convention knobs threaded into `run_earnings_repro` (config overload). Since
+// the Task 10 sweep, a DEFAULT-constructed value carries the LOCKED reproduction
+// convention (`time = VolTime`, censor-then-interp in variance space) -- the
+// combination that best reproduces SpiderRock's censored-term columns. The
+// historical Calendar365 pipeline behavior is still reproduced EXACTLY when the
+// `time` field is overwritten with the session's own (`sess.inputs().time`) --
+// which is precisely what the 3-arg `run_earnings_repro` overload does, so its
+// callers (the Task 7 smoke test, the `earnings-repro` CLI's default) are
+// unaffected by the new default.
 struct EarningsReproConfig {
   // ── WIRED ────────────────────────────────────────────────────────────────
-  TimeSpec time{};                            // -> tenor_years convention
+  // Task 10 convention sweep LOCKED VolTime as the default `time`: SpiderRock
+  // builds its censored-term `atmCenI_{Nd}` columns in the hybrid
+  // volatility-time clock, so the 12 SR tenor year-fractions must accrue in
+  // VolTime (not Calendar365). Flipping this default cut the cohort atmCenI
+  // pooled RMSE from 0.0301 -> 0.0121 and moved NVDA iEMove 0.045 -> 0.063 (vs
+  // truth 0.0665, ~6% low) with the term-fit's `decay` no longer pinned at its
+  // bound (fit_error 0.0437 -> 0.0074). See
+  // docs/reviews/2026-07-18-atmcen-reproduction-convention-sweep.md. NOTE: the
+  // 3-arg `run_earnings_repro` overload still OVERRIDES this with
+  // `sess.inputs().time`, so the historical calendar smoke path is bit-preserved;
+  // only the config-driven (4-arg) default picks VolTime up.
+  TimeSpec time{TimeConvention::VolTime};     // -> tenor_years convention (Task 10 sweep: VolTime)
   double clock_days_per_year{0.0};            // >0: T = N_td / this; 0: calendar-aware
   bool censor_space{true};                    // censor-then-interp (true) vs interp-then-censor
   InterpSpace interp{InterpSpace::Variance};  // variance- vs vol-space interpolation
