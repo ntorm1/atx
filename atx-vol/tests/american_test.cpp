@@ -1060,6 +1060,62 @@ TEST(CallGreeksAl, SolveCount_5) {
   }
 }
 
+// K4 first-order tier on the SCALAR production route (american_greeks_al): the mask
+// narrowing skips whole boundary solves, PROVEN by the BoundarySolves ledger counter —
+// a hedge {delta} bundle does 1 solve, {delta,vega} does 3, the full bundle 5. This is
+// the count-then-cut honesty gate: the backtest's hedge/risk path pays the cut on the
+// route production actually takes, NOT dependent on the dark AVX2 flag.
+TEST(AlGreeksFirstOrder, SolveCountByMask_LedgerProof) {
+  const double S = 100.0, K = 100.0, T = 1.0, sigma = 0.25, r = 0.05, q = 0.01; // American put
+  if constexpr (!atx::vol::counters::counters_enabled()) {
+    const auto g = american_greeks_al(S, K, T, sigma, r, q, Side::Put, std::nullopt,
+                                      /*need_vega=*/false, /*need_rho=*/false,
+                                      /*need_charm=*/false);
+    ASSERT_TRUE(g.has_value());
+    GTEST_SKIP() << "ATX_VOL_COUNTERS off: rebuild with -DATX_VOL_COUNTERS=ON to run the count";
+  } else {
+    using atx::vol::counters::Counter;
+    auto solves = [&](bool nv, bool nr, bool nc) {
+      atx::vol::counters::reset();
+      const auto g = american_greeks_al(S, K, T, sigma, r, q, Side::Put, std::nullopt, nv, nr, nc);
+      EXPECT_TRUE(g.has_value());
+      return atx::vol::counters::snapshot().get(Counter::BoundarySolves);
+    };
+    EXPECT_EQ(solves(false, false, false), 1u); // hedge {delta,gamma,theta} -> base only
+    EXPECT_EQ(solves(false, false, true), 1u);  // charm reuses base spots, no extra solve
+    EXPECT_EQ(solves(true, false, false), 3u);  // {delta,vega} -> base + sigma+/-
+    EXPECT_EQ(solves(false, true, false), 3u);  // {delta,rho}  -> base + r+/-
+    EXPECT_EQ(solves(true, true, true), 5u);    // full bundle -> all five
+  }
+}
+
+// The columns a reduced american_greeks_al request returns are BIT-IDENTICAL to the
+// full-bundle run — the skipped solves never fed price/delta/gamma/theta.
+TEST(AlGreeksFirstOrder, FirstOrderColumnsBitMatchFull) {
+  const double S = 100.0;
+  for (double m : {0.85, 0.95, 1.0, 1.05, 1.2}) {
+    for (double T : {0.1, 0.5, 1.5}) {
+      for (double sigma : {0.15, 0.35}) {
+        for (double r : {0.03, 0.06}) {
+          const double K = m * S;
+          const auto full = american_greeks_al(S, K, T, sigma, r, 0.01, Side::Put);
+          const auto fo = american_greeks_al(S, K, T, sigma, r, 0.01, Side::Put, std::nullopt,
+                                             /*need_vega=*/false, /*need_rho=*/false,
+                                             /*need_charm=*/false);
+          ASSERT_TRUE(full.has_value() && fo.has_value());
+          EXPECT_TRUE(bits_equal(fo->price, full->price)) << "K=" << K << " T=" << T;
+          EXPECT_TRUE(bits_equal(fo->delta, full->delta)) << "K=" << K << " T=" << T;
+          EXPECT_TRUE(bits_equal(fo->gamma, full->gamma)) << "K=" << K << " T=" << T;
+          EXPECT_TRUE(bits_equal(fo->theta, full->theta)) << "K=" << K << " T=" << T;
+          EXPECT_EQ(fo->vega, 0.0);  // unrequested -> left 0
+          EXPECT_EQ(fo->rho, 0.0);
+          EXPECT_EQ(fo->charm, 0.0);
+        }
+      }
+    }
+  }
+}
+
 // Non-American call corners route to the exact cold FD path, byte-for-byte: the
 // European (q<=0 && q<=r) and degenerate (T~0 / sigma~0) corners return the SAME
 // bundle american_greeks_fd would; the Unsupported (r<q<=0) corner surfaces the SAME

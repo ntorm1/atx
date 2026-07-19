@@ -273,11 +273,22 @@ Status american_greeks_batch(const AmericanBatchInput& in, GreekFieldMask fields
   // across their bumped solves. Lanes are independent, so an optional executor
   // fans them across the pool with disjoint per-lane writes (bit-identical).
   const bool analytic = kernel.analytic_greeks;
+  // K4 first-order tier: the column mask -> the analytic path's solve-skip selectors, so
+  // a hedge ({delta}) bundle does 1 boundary solve instead of 5 ON THE SCALAR PRODUCTION
+  // ROUTE (american_greeks_al), independent of the dark AVX2 gate. FD route is unaffected
+  // (american_greeks_fd is the full reference; the analytic route is what production
+  // uses under analytic_greeks=true).
+  const bool need_vega = has_field(fields, GreekFieldMask::Vega) ||
+                         has_field(fields, GreekFieldMask::Volga) ||
+                         has_field(fields, GreekFieldMask::Vanna);
+  const bool need_rho = has_field(fields, GreekFieldMask::Rho);
+  const bool need_charm = has_field(fields, GreekFieldMask::Charm);
   const auto price_lane = [&](std::size_t i) noexcept {
     const Side side = in.side[i];
     const Result<AmericanGreeks> g =
         analytic ? american_greeks_al(in.S[i], in.K[i], in.T[i], in.sigma[i],
-                                      in.r[i], in.q[i], side)
+                                      in.r[i], in.q[i], side, std::nullopt, need_vega,
+                                      need_rho, need_charm)
                  : american_greeks_fd(in.S[i], in.K[i], in.T[i], in.sigma[i],
                                       in.r[i], in.q[i], side);
     if (g.has_value()) {
@@ -306,13 +317,8 @@ Status american_greeks_batch(const AmericanBatchInput& in, GreekFieldMask fields
     std::size_t oidx[kC];
     AmericanGreeks gbuf[kC];
     std::size_t cnt = 0;
-    // K4: translate the column mask into the first-order solve-skip selectors so a
-    // hedge caller ({delta}) pays 1 boundary solve/pack instead of 5.
-    const bool need_vega = has_field(fields, GreekFieldMask::Vega) ||
-                           has_field(fields, GreekFieldMask::Volga) ||
-                           has_field(fields, GreekFieldMask::Vanna);
-    const bool need_rho = has_field(fields, GreekFieldMask::Rho);
-    const bool need_charm = has_field(fields, GreekFieldMask::Charm);
+    // (need_vega/need_rho/need_charm hoisted above — the same K4 mask selectors drive
+    // both the scalar analytic route and the laned dispatch.)
     const auto flush = [&]() noexcept {
       if (cnt == 0) {
         return;
