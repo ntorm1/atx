@@ -285,6 +285,23 @@ struct DeAmOptions {
   // in. The pricer stays uncached Andersen-Lake and the converged root is
   // unchanged.
   bool warm_start_carry = false;
+  // C2 (perf): reuse caller-supplied `caches` for the eSSVI FIT de-Am instead of
+  // building fresh per-side session caches. Set by the cross-date warm-start chain
+  // (corpus.cpp) after its stale-gate confirms the prior date's cache covers this
+  // board's (k_log, T) box at a compatible baked carry; VolaSession::build then
+  // SKIPS build_session_caches (the ~192-solve/board rebuild, finding 11) and uses
+  // the supplied caches. Default false keeps every fit building its own caches
+  // (bit-identical to pre-C2). Ignored unless `caches` has a populated side.
+  bool reuse_supplied_caches = false;
+  // C2 (perf): build the per-side correction cache over a WIDER (k_log, T) box so
+  // it stays reusable across a symbol's date chain — a later date's front expiry
+  // shrinks below the default tight T box (0.9*T_lo) and its strikes drift with
+  // spot, which would otherwise fail the reuse stale-gate. Only the FIRST cold
+  // build of a chain (and any stale-gate-miss rebuild) sets this; the amortized
+  // wider cache then covers several forward dates. Default false keeps the tight
+  // production box (bit-identical cold path). The wider box is gated by the C2
+  // quality-parity suite (it must keep every date in-band vs the tight cold fit).
+  bool chain_cache_mode = false;
   // Optional per-side hot-path caches for the per-strike chain driver. Carry
   // inference deliberately stays uncached and uses carry_al_opts so query-cache
   // approximation error cannot bias the term forward.

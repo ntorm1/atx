@@ -905,6 +905,63 @@ TEST(Corpus, Deterministic_AcrossThreadCounts) {
   EXPECT_GT(n_points, 20u);
 }
 
+// C2 (perf): the cross-date warm-start chain (CorpusConfig::warm_start_chain)
+// groups boards into per-SYMBOL chains fit in date order, carrying correction
+// caches forward. Determinism must survive: each chain runs on ONE worker over its
+// own date sequence, so the result is INDEPENDENT of worker count. Build the same
+// multi-date corpus with warm chains at 1 vs 8 workers and assert bit-identical
+// reconstructed surfaces (the C2 chain-determinism gate). This also exercises the
+// chain driver end-to-end (grouping, sequencing, reuse via the session stale-gate).
+TEST(Corpus, WarmChain_DeterministicAcrossThreadCounts) {
+  const std::vector<std::string> dates = {"2026-06-17", "2026-06-18", "2026-06-19"};
+
+  CorpusConfig serial;
+  serial.n_threads = 1;
+  serial.warm_start_chain = true;
+  CorpusConfig parallel;
+  parallel.n_threads = 8;
+  parallel.warm_start_chain = true;
+
+  const fs::path out1 = fresh_out_dir("warm-serial");
+  const fs::path out8 = fresh_out_dir("warm-parallel");
+  auto m1 = build_corpus(make_mixed_boards(dates), out1.string(), serial);
+  auto m8 = build_corpus(make_mixed_boards(dates), out8.string(), parallel);
+  ASSERT_TRUE(m1.has_value()) << m1.error().to_string();
+  ASSERT_TRUE(m8.has_value()) << m8.error().to_string();
+
+  EXPECT_EQ(m1->n_boards, m8->n_boards);
+  EXPECT_EQ(m1->n_ok, m8->n_ok);
+  EXPECT_EQ(m1->dates, m8->dates);
+  ASSERT_EQ(m1->entries.size(), m8->entries.size());
+  for (std::size_t i = 0; i < m1->entries.size(); ++i) {
+    const CorpusEntry &a = m1->entries[i];
+    const CorpusEntry &b = m8->entries[i];
+    EXPECT_EQ(a.date, b.date);
+    EXPECT_EQ(a.symbol, b.symbol);
+    EXPECT_EQ(a.status, b.status);
+    EXPECT_EQ(a.chosen_kind, b.chosen_kind);
+    EXPECT_EQ(a.n_slices, b.n_slices);
+    EXPECT_TRUE(bits_equal(a.oos_in_band, b.oos_in_band)) << i;
+  }
+
+  std::size_t n_points = 0;
+  for (std::size_t i = 0; i < m1->entries.size(); ++i) {
+    const CorpusEntry &a = m1->entries[i];
+    const CorpusEntry &b = m8->entries[i];
+    if (a.status != CorpusFitStatus::Ok) {
+      continue;
+    }
+    auto arch_a = SurfaceArchiveV2::open_file(a.archive_path);
+    auto arch_b = SurfaceArchiveV2::open_file(b.archive_path);
+    ASSERT_TRUE(arch_a.has_value() && arch_b.has_value());
+    auto sa = arch_a->reconstruct_symbol(a.symbol);
+    auto sb = arch_b->reconstruct_symbol(b.symbol);
+    ASSERT_TRUE(sa.has_value() && sb.has_value());
+    expect_surfaces_bit_identical(*sa, *sb, n_points);
+  }
+  EXPECT_GT(n_points, 20u);
+}
+
 // ── 5. Throughput smoke ─────────────────────────────────────────────────────
 // -- Qualified-corpus admission policy ------------------------------------
 

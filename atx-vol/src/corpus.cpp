@@ -543,19 +543,85 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
 
   // ── Fan out board fits; each worker writes its own disjoint slot ───────────
   std::vector<FitSlot> slots(n);
-  const Status schedule_status = detail::run_bounded_fit_tasks(
-      n, cfg.n_threads, [&boards, &slots, &cfg, admission, n](std::size_t index) -> Status {
-        PricerConfig fit_config = cfg.fit_template;
-        // Auto or explicit multi-worker outer scheduling owns the machine
-        // budget. Keep each non-eSSVI board's expiry preparation serial so the
-        // two levels cannot multiply into H^2 runnable threads. An explicitly
-        // serial outer scheduler retains the caller's inner budget.
-        if (n > 1u && cfg.n_threads != 1u) {
-          fit_config.fit_workers = 1u;
-        }
-        slots[index] = fit_board(boards[index], fit_config, admission);
-        return Ok();
-      });
+  Status schedule_status = Ok();
+  if (cfg.warm_start_chain) {
+    // C2 (perf): cross-date warm-start chains. Group boards into per-symbol chains
+    // fit in chronological (date-ascending) order; each date carries the prior
+    // date's correction caches forward, and the session's stale-gate reuses them
+    // when they still cover the board (else cold-rebuilds — the fallback). Chains
+    // shard across workers (symbol-sharded), so each chain's result depends ONLY on
+    // its own date sequence — determinism is preserved across worker counts.
+    std::vector<std::size_t> order_sd(n);
+    for (std::size_t i = 0; i < n; ++i) {
+      order_sd[i] = i;
+    }
+    std::sort(order_sd.begin(), order_sd.end(), [&boards](std::size_t a, std::size_t b) noexcept {
+      if (boards[a].symbol != boards[b].symbol) {
+        return boards[a].symbol < boards[b].symbol;
+      }
+      if (boards[a].date != boards[b].date) {
+        return boards[a].date < boards[b].date;
+      }
+      return a < b;
+    });
+    // Contiguous per-symbol runs of `order_sd` are the chains.
+    std::vector<std::pair<std::size_t, std::size_t>> chains; // [begin,end) into order_sd
+    for (std::size_t s = 0; s < n;) {
+      std::size_t e = s + 1;
+      while (e < n && boards[order_sd[e]].symbol == boards[order_sd[s]].symbol) {
+        ++e;
+      }
+      chains.emplace_back(s, e);
+      s = e;
+    }
+    schedule_status = detail::run_bounded_fit_tasks(
+        chains.size(), cfg.n_threads,
+        [&boards, &slots, &cfg, admission, n, &order_sd, &chains](std::size_t chain_idx) -> Status {
+          WarmCacheExport carried; // prior-date caches carried down this symbol's chain
+          const std::pair<std::size_t, std::size_t> range = chains[chain_idx];
+          for (std::size_t p = range.first; p < range.second; ++p) {
+            const std::size_t board_idx = order_sd[p];
+            PricerConfig fit_config = cfg.fit_template;
+            if (n > 1u && cfg.n_threads != 1u) {
+              fit_config.fit_workers = 1u; // outer parallelism is ACROSS chains
+            }
+            // Every chain board builds/uses a WIDE (chain-cache-mode) cache so it
+            // stays reusable across forward dates; when a prior date's cache is in
+            // hand, also offer it for reuse (the session stale-gate has final say —
+            // a miss cold-rebuilds a fresh wide cache the chain re-anchors on).
+            std::function<void(SessionInputs &)> overlay = [&carried](SessionInputs &in) {
+              in.deam.chain_cache_mode = true;
+              if (carried.any()) {
+                in.deam.caches = AmericanCorrectionCaches{carried.call ? &*carried.call : nullptr,
+                                                          carried.put ? &*carried.put : nullptr};
+                in.deam.reuse_supplied_caches = true;
+              }
+            };
+            WarmCacheExport fresh;
+            slots[board_idx] = fit_board(boards[board_idx], fit_config, admission, overlay, &fresh);
+            // Re-anchor the chain on freshly-built caches (date 1, or a stale-gate
+            // miss that cold-rebuilt); a reuse hit builds nothing and keeps `carried`.
+            if (fresh.any()) {
+              carried = std::move(fresh);
+            }
+          }
+          return Ok();
+        });
+  } else {
+    schedule_status = detail::run_bounded_fit_tasks(
+        n, cfg.n_threads, [&boards, &slots, &cfg, admission, n](std::size_t index) -> Status {
+          PricerConfig fit_config = cfg.fit_template;
+          // Auto or explicit multi-worker outer scheduling owns the machine
+          // budget. Keep each non-eSSVI board's expiry preparation serial so the
+          // two levels cannot multiply into H^2 runnable threads. An explicitly
+          // serial outer scheduler retains the caller's inner budget.
+          if (n > 1u && cfg.n_threads != 1u) {
+            fit_config.fit_workers = 1u;
+          }
+          slots[index] = fit_board(boards[index], fit_config, admission);
+          return Ok();
+        });
+  }
 
   if (!schedule_status) {
     return Err(schedule_status.error());

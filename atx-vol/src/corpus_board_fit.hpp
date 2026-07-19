@@ -17,6 +17,7 @@
 #include <functional>
 #include <optional>
 
+#include "atx/vol/correction.hpp"      // CorrectionCache (C2 cross-date cache export)
 #include "atx/vol/corpus.hpp"          // CorpusBoard, CorpusFitStatus, CorpusAdmissionPolicy, ...
 #include "atx/vol/priced_surface.hpp"  // PricedSurface
 #include "atx/vol/pricer_fitter.hpp"   // PricerConfig
@@ -26,6 +27,17 @@
 #include "atx/vol/vol_curve.hpp"       // VolCurveKind
 
 namespace atx::vol {
+
+// C2 (perf): the per-side correction caches the fit ACTUALLY built for a board,
+// exported so the cross-date warm-start chain can carry them to the next date.
+// Populated only when the fit built fresh caches (cold path); left empty when the
+// fit reused supplied caches (nothing new to carry) or built none. The two
+// optionals OWN the caches (copied out before the fitter leaves scope).
+struct WarmCacheExport {
+  std::optional<CorrectionCache> call{};
+  std::optional<CorrectionCache> put{};
+  [[nodiscard]] bool any() const noexcept { return call.has_value() || put.has_value(); }
+};
 
 // Per-board fit outcome (worker output slot). Move-only: owns the fitted
 // (move-only) `PricedSurface`. Workers write disjoint slots (one per board),
@@ -65,8 +77,13 @@ struct FitSlot {
 // Pure w.r.t. shared state: reads only its own `board` + `tmpl` (const),
 // constructs its own chain / fitter. Safe to run concurrently on distinct
 // boards.
+// `out_caches` (C2), when non-null, receives a COPY of the per-side correction
+// caches this fit built — for the cross-date warm-start chain to carry forward.
+// Populated only on a successful fit that BUILT caches (cold path); left empty
+// when the fit reused supplied caches or built none. Never populated on failure.
 [[nodiscard]] FitSlot fit_board(const CorpusBoard &board, const PricerConfig &tmpl,
                                 const CorpusAdmissionPolicy *admission,
-                                const std::function<void(SessionInputs &)> &session_overlay = {});
+                                const std::function<void(SessionInputs &)> &session_overlay = {},
+                                WarmCacheExport *out_caches = nullptr);
 
 } // namespace atx::vol

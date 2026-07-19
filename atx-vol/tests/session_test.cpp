@@ -327,6 +327,170 @@ TEST(VolaSession, C1RealBoardDeAmCharacterization) {
   std::printf("C1CHAR\tTOTAL_BOARDS_FIT=%zu\n", n_fit);
 }
 
+// C2 (perf) — cross-date correction-cache reuse: ledger + quality-parity +
+// determinism + positive-control, on the real AAPL Jan-2026 chain (the fixtures
+// the warm-start chain drives). Validates the SESSION-level mechanism the
+// corpus.cpp chain driver composes: date 1 builds caches cold; a later date
+// supplies them via deam.caches + deam.reuse_supplied_caches, and the session's
+// stale-gate (supplied_caches_cover_board) reuses them — skipping the ~192-solve/
+// board rebuild (finding 11) — only when they still cover the board at a
+// compatible baked carry, else cold-rebuilds (byte-identical fallback).
+TEST(VolaSession, C2CrossDateCacheReuseCutsSolvesInBand) {
+  using atx::vol::AmericanCorrectionCaches;
+  using atx::vol::CorrectionCache;
+  using atx::vol::FitPreset;
+  using atx::vol::load_opra_cbbo_parquet;
+  using atx::vol::make_session_inputs;
+  using atx::vol::OpraLoadSpec;
+  using atx::vol::OpraPanel;
+  namespace led = atx::vol::counters::ledger;
+
+  const std::string root = "C:/atx-data/spy-dispersion/opra/";
+  const double r = 0.043;
+  const auto load = [&](const char *sym, const char *date) -> std::optional<OpraPanel> {
+    const std::string path = std::string(root) + sym + "/" + date + ".parquet";
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) {
+      return std::nullopt;
+    }
+    OpraLoadSpec spec;
+    spec.path = path;
+    spec.underlying = sym;
+    spec.snapshot_iso = std::string(date) + "T14:00:00Z";
+    spec.r = r;
+    auto p = load_opra_cbbo_parquet(spec);
+    if (!p.has_value()) {
+      return std::nullopt;
+    }
+    return std::move(*p);
+  };
+
+  auto d1 = load("AAPL", "2026-01-02");
+  auto d2 = load("AAPL", "2026-01-05");
+  if (!d1.has_value() || !d2.has_value()) {
+    GTEST_SKIP() << "AAPL OPRA chain not available under " << root;
+  }
+
+  const auto make_in = [&](double spot, std::int64_t ts, double rate, bool chain) {
+    auto in = make_session_inputs(FitPreset::Robust, spot, rate, ts);
+    in.fit_workers = 1u;                       // single-threaded => deterministic solve ledger
+    in.deam.chain_cache_mode = chain;          // wide, reusable cache for the chain path
+    return in;
+  };
+  const auto solves_now = []() {
+    return led::snapshot().get(led::Solve::AlBoundarySolves);
+  };
+  const auto fingerprint = [](const VolaSession &s, double spot) {
+    const auto ps = s.to_priced_surface();
+    std::vector<double> fp;
+    const double Ts[] = {0.03, 0.08, 0.16, 0.30};
+    const double ms[] = {0.85, 0.95, 1.0, 1.05, 1.15};
+    for (const double T : Ts) {
+      for (const double m : ms) {
+        fp.push_back(ps.has_value() ? ps->iv(spot * m, T) : std::nan(""));
+      }
+    }
+    return fp;
+  };
+
+  // Date 1: cold fit; copy out its built per-side correction caches.
+  auto s1 = VolaSession::from_frame(d1->frame, make_in(d1->implied_spot, d1->frame.snapshot_ts_ns, r, /*chain=*/true));
+  ASSERT_TRUE(s1.has_value()) << s1.error().to_string();
+  const AmericanCorrectionCaches c1 = s1->correction_caches();
+  if (c1.call == nullptr || c1.put == nullptr) {
+    GTEST_SKIP() << "date-1 fit built no correction caches (nothing to reuse)";
+  }
+  const CorrectionCache cache_call = *c1.call;
+  const CorrectionCache cache_put = *c1.put;
+
+  // Date 2 COLD baseline.
+  const auto in2 = make_in(d2->implied_spot, d2->frame.snapshot_ts_ns, r, /*chain=*/false); // production cold baseline
+  led::reset();
+  auto s2_cold = VolaSession::from_frame(d2->frame, in2);
+  const std::uint64_t cold_solves = solves_now();
+  ASSERT_TRUE(s2_cold.has_value()) << s2_cold.error().to_string();
+  const auto fp_cold = fingerprint(*s2_cold, d2->implied_spot);
+  const auto cold_diag = s2_cold->diagnostics();
+
+  // Date 2 WARM: reuse date-1 caches (same symbol, adjacent date -> gate admits).
+  auto in2w = in2;
+  in2w.deam.chain_cache_mode = true; // reuse; a gate miss rebuilds a wide chain cache
+  in2w.deam.caches = AmericanCorrectionCaches{&cache_call, &cache_put};
+  in2w.deam.reuse_supplied_caches = true;
+  led::reset();
+  auto s2_warm = VolaSession::from_frame(d2->frame, in2w);
+  const std::uint64_t warm_solves = solves_now();
+  ASSERT_TRUE(s2_warm.has_value()) << s2_warm.error().to_string();
+  const auto fp_warm = fingerprint(*s2_warm, d2->implied_spot);
+  const auto warm_diag = s2_warm->diagnostics();
+
+  std::printf("C2CHAR\tAAPL 01-05\tcold_solves=%llu\twarm_solves=%llu\tcold_frac=%.4f\twarm_frac=%.4f\t"
+              "cold_rmse=%.5f\twarm_rmse=%.5f\n",
+              static_cast<unsigned long long>(cold_solves),
+              static_cast<unsigned long long>(warm_solves), cold_diag.mean_frac_within_bidask,
+              warm_diag.mean_frac_within_bidask, cold_diag.mean_rmse_vol, warm_diag.mean_rmse_vol);
+
+  // GATE 1 (ledger): reuse must cut AL boundary solves >= 40% on the reuse date
+  // (the eliminated correction-cache rebuild, finding 11).
+  ASSERT_GT(cold_solves, 0u);
+  EXPECT_LE(warm_solves, cold_solves * 6u / 10u)
+      << "warm=" << warm_solves << " cold=" << cold_solves << " (<40% reduction)";
+
+  // GATE 2 (quality-parity, ECONOMIC): the served surface must price the market as
+  // well as the cold fit. The admission-relevant metric is bid-ask coverage (the
+  // fraction of quotes the re-Americanized surface prices in-band — what corpus
+  // admission actually gates on), NOT raw interpolated-IV distance. Warm coverage
+  // must not degrade vs cold beyond a small tolerance; the fit RMSE stays in-band.
+  EXPECT_GE(warm_diag.mean_frac_within_bidask, cold_diag.mean_frac_within_bidask - 0.01)
+      << "cross-date warm de-Am degraded bid-ask coverage";
+  EXPECT_GE(warm_diag.worst_frac_within_bidask, cold_diag.worst_frac_within_bidask - 0.03)
+      << "cross-date warm de-Am degraded worst-expiry coverage";
+  EXPECT_LE(warm_diag.mean_rmse_vol, cold_diag.mean_rmse_vol + 2.0e-3)
+      << "cross-date warm de-Am raised the surface fit RMSE out of band";
+  // Informational: max served-IV deviation. Largest at deep-wing / short-T grid
+  // points where vega -> 0 (price impact within the half-spread), so this is a
+  // loose sanity bound, not the economic gate.
+  ASSERT_EQ(fp_warm.size(), fp_cold.size());
+  double max_iv_diff = 0.0;
+  for (std::size_t i = 0; i < fp_warm.size(); ++i) {
+    if (std::isfinite(fp_warm[i]) && std::isfinite(fp_cold[i])) {
+      max_iv_diff = std::max(max_iv_diff, std::fabs(fp_warm[i] - fp_cold[i]));
+    }
+  }
+  EXPECT_LT(max_iv_diff, 1.5e-2) << "served IV moved implausibly far (>1.5 vol pts)";
+  std::printf("C2CHAR\tmax_iv_diff=%.6f\n", max_iv_diff);
+
+  // GATE 3 (determinism): the warm fit repeated is bit-identical (solves + IV grid).
+  led::reset();
+  auto s2_warm2 = VolaSession::from_frame(d2->frame, in2w);
+  const std::uint64_t warm_solves2 = solves_now();
+  ASSERT_TRUE(s2_warm2.has_value());
+  EXPECT_EQ(warm_solves2, warm_solves);
+  const auto fp_warm2 = fingerprint(*s2_warm2, d2->implied_spot);
+  for (std::size_t i = 0; i < fp_warm.size(); ++i) {
+    EXPECT_TRUE((std::isnan(fp_warm[i]) && std::isnan(fp_warm2[i])) || fp_warm[i] == fp_warm2[i])
+        << "warm fit non-deterministic at grid " << i;
+  }
+
+  // POSITIVE CONTROL: a rate far from the cache's baked carry (0.20 vs 0.043) must
+  // FAIL the stale-gate -> cold rebuild -> byte-identical to the pure cold fit
+  // (same solve count), proving reuse is refused when it would be wrong.
+  const auto in_off = make_in(d2->implied_spot, d2->frame.snapshot_ts_ns, 0.20, /*chain=*/true);
+  led::reset();
+  auto off_cold = VolaSession::from_frame(d2->frame, in_off);
+  const std::uint64_t off_cold_solves = solves_now();
+  ASSERT_TRUE(off_cold.has_value());
+  auto in_off_w = in_off;
+  in_off_w.deam.caches = AmericanCorrectionCaches{&cache_call, &cache_put}; // baked at r=0.043
+  in_off_w.deam.reuse_supplied_caches = true;
+  led::reset();
+  auto off_warm = VolaSession::from_frame(d2->frame, in_off_w);
+  const std::uint64_t off_warm_solves = solves_now();
+  ASSERT_TRUE(off_warm.has_value());
+  EXPECT_EQ(off_warm_solves, off_cold_solves)
+      << "stale-gate must refuse a cache baked at a far carry (cold-rebuild fallback)";
+}
+
 TEST(VolaSession, Iv_OnSliceAtm_IsSaneVol) {
   const SynthPanelSpec spec = make_spec();
   Universe u;

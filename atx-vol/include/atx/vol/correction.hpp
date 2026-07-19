@@ -112,6 +112,20 @@ public:
   [[nodiscard]] std::uint16_t n_T() const noexcept { return n_T_; }
   [[nodiscard]] std::uint16_t n_s() const noexcept { return n_s_; }
 
+  // Interpolation-box bounds and baked carry (C2 cross-date cache-reuse stale-gate:
+  // a reused cache is valid for a new board only when the new board's queried
+  // (k_log, T) box lies INSIDE this box — no extrapolation — and the new board's
+  // representative carry is within tolerance of this baked (r, q), the two
+  // conditions the cache's own self-consistency already requires).
+  [[nodiscard]] double k_log_min() const noexcept { return k_log_min_; }
+  [[nodiscard]] double k_log_max() const noexcept { return k_log_max_; }
+  [[nodiscard]] double T_min() const noexcept { return T_min_; }
+  [[nodiscard]] double T_max() const noexcept { return T_max_; }
+  [[nodiscard]] double sigma_min() const noexcept { return sigma_min_; }
+  [[nodiscard]] double sigma_max() const noexcept { return sigma_max_; }
+  [[nodiscard]] double baked_r() const noexcept { return r_; }
+  [[nodiscard]] double baked_q() const noexcept { return q_; }
+
   // True only for a finite point inside the closed interpolation box of a
   // populated cache. Fast serving code uses this before the raw evaluators,
   // whose intentional low-level contract is to clamp outside the box.

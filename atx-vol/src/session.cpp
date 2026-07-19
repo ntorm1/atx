@@ -597,11 +597,18 @@ struct FixedCacheCarry {
     return out; // degenerate box -> cold path everywhere
   }
 
-  // Pad the box and keep T strictly ordered even for a single expiry.
-  k_min -= 0.05;
-  k_max += 0.05;
-  const double T_min = 0.9 * T_lo;
-  const double T_max = (T_hi > T_lo) ? (1.1 * T_hi) : (1.5 * T_lo);
+  // Pad the box and keep T strictly ordered even for a single expiry. C2: in
+  // chain-cache mode WIDEN the box so it survives several forward dates of a symbol
+  // chain (front expiry shrinks below 0.9*T_lo; strikes drift with spot) — the
+  // amortized wider cache is what makes cross-date reuse admissible. The wider box
+  // spreads the fixed 16x8x12 Chebyshev nodes over more range, so it is opt-in and
+  // gated by the C2 quality-parity suite; the default (tight) box is byte-identical.
+  const bool chain = in.deam.chain_cache_mode;
+  k_min -= chain ? 0.15 : 0.05;
+  k_max += chain ? 0.15 : 0.05;
+  const double T_min = chain ? std::min(0.9 * T_lo, 0.0055) : (0.9 * T_lo);
+  const double T_max =
+      chain ? ((T_hi > T_lo) ? (1.25 * T_hi) : (1.6 * T_lo)) : ((T_hi > T_lo) ? (1.1 * T_hi) : (1.5 * T_lo));
   constexpr double kSigMin = 0.05;
   constexpr double kSigMax = 1.5;
 
@@ -636,6 +643,118 @@ struct FixedCacheCarry {
     out.put = std::move(*pp);
   }
   return out;
+}
+
+// ── C2: cross-date correction-cache reuse — stale-gate ───────────────────────
+//
+// The warm-start chain (corpus.cpp) carries a symbol's prior-date correction
+// caches and re-supplies them on the next date via `deam.caches` +
+// `deam.reuse_supplied_caches`. Reuse is admissible ONLY when the supplied caches
+// still cover THIS board without extrapolation and at a compatible baked carry —
+// exactly the two conditions the cache's own self-consistency (build_session_
+// caches note) already requires, so a passing gate keeps the fit in-band. When it
+// fails, the fit falls back to a full cold rebuild (byte-identical to pre-C2).
+//
+// `session_cache_geometry` MIRRORS the RAW (unpadded) box + representative carry
+// build_session_caches derives — keep the two in sync.
+struct SessionCacheGeom {
+  double k_min = 0.0, k_max = 0.0, T_lo = 0.0, T_hi = 0.0, cache_rate = 0.0, q_rep = 0.0;
+  bool valid = false;
+};
+
+[[nodiscard]] SessionCacheGeom session_cache_geometry(const Underlying &under,
+                                                      const SessionInputs &in) {
+  SessionCacheGeom g;
+  if (under.chains.empty() || !(in.S > 0.0)) {
+    return g;
+  }
+  const double S = in.S;
+  double k_min = std::numeric_limits<double>::infinity();
+  double k_max = -std::numeric_limits<double>::infinity();
+  double T_lo = std::numeric_limits<double>::infinity();
+  double T_hi = -std::numeric_limits<double>::infinity();
+  for (const Chain &c : under.chains) {
+    if (!(c.T > 0.0)) {
+      continue;
+    }
+    T_lo = std::min(T_lo, c.T);
+    T_hi = std::max(T_hi, c.T);
+    for (const double K : c.strikes) {
+      if (!(K > 0.0)) {
+        continue;
+      }
+      const double k = std::log(K / S);
+      k_min = std::min(k_min, k);
+      k_max = std::max(k_max, k);
+    }
+  }
+  if (!std::isfinite(k_min) || !std::isfinite(k_max) || !(k_max > k_min) || !std::isfinite(T_lo) ||
+      !(T_lo > 0.0)) {
+    return g;
+  }
+  const Chain &mid = under.chains[under.chains.size() / 2];
+  double cache_rate = in.r;
+  double q_rep = in.r;
+  if (mid.T > 0.0) {
+    const double F_rep =
+        hybrid_forward(S, in.r, 0.0, mid.T, in.cash_divs, mid.expiry_ns, in.now_ts_ns, in.deam.hyb);
+    if (F_rep > 0.0 && std::isfinite(F_rep)) {
+      q_rep = in.r - std::log(F_rep / S) / mid.T;
+    }
+  }
+  g = SessionCacheGeom{k_min, k_max, T_lo, T_hi, cache_rate, q_rep, true};
+  return g;
+}
+
+[[nodiscard]] bool cache_side_covers(const CorrectionCache *c, const SessionCacheGeom &g,
+                                     double tol_r, double tol_q) noexcept {
+  if (c == nullptr || !c->populated()) {
+    return false;
+  }
+  // No extrapolation: the board's raw queried (k_log, T) box lies inside the cache.
+  if (!(g.k_min >= c->k_log_min() && g.k_max <= c->k_log_max())) {
+    return false;
+  }
+  if (!(g.T_lo >= c->T_min() && g.T_hi <= c->T_max())) {
+    return false;
+  }
+  // Compatible baked carry: representative-carry mismatch stays small (a dividend
+  // event or rate jump exceeds tol -> cold rebuild).
+  if (std::fabs(g.cache_rate - c->baked_r()) > tol_r) {
+    return false;
+  }
+  if (std::fabs(g.q_rep - c->baked_q()) > tol_q) {
+    return false;
+  }
+  return true;
+}
+
+// True iff every POPULATED side of the supplied caches covers this board. Empty
+// caches (neither side populated) never satisfy the gate. Tolerances are
+// deliberately conservative: reuse only when the surface stays in-band; when in
+// doubt, cold.
+[[nodiscard]] bool supplied_caches_cover_board(const Underlying &under, const SessionInputs &in) {
+  const SessionCacheGeom g = session_cache_geometry(under, in);
+  if (!g.valid) {
+    return false;
+  }
+  constexpr double kTolR = 0.0025; // 25 bps rate drift
+  constexpr double kTolQ = 0.0025; // 25 bps representative-carry / borrow drift
+  const AmericanCorrectionCaches &sc = in.deam.caches;
+  bool any_side = false;
+  if (sc.call != nullptr) {
+    if (!cache_side_covers(sc.call, g, kTolR, kTolQ)) {
+      return false;
+    }
+    any_side = true;
+  }
+  if (sc.put != nullptr) {
+    if (!cache_side_covers(sc.put, g, kTolR, kTolQ)) {
+      return false;
+    }
+    any_side = true;
+  }
+  return any_side;
 }
 
 } // namespace
@@ -870,7 +989,25 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
   // into the session for the const queries. Empty (build failed / disabled) =>
   // the cold Andersen-Lake path, transparently.
   BuiltCaches caches;
-  if (should_build_session_caches(eff)) {
+  // C2 (perf): the cross-date warm-start chain (corpus.cpp) hands in a symbol's
+  // prior-date correction caches via deam.caches + deam.reuse_supplied_caches. The
+  // stale-gate here (session_cache_geometry / supplied_caches_cover_board) admits
+  // reuse ONLY when those caches still cover THIS board without extrapolation at a
+  // compatible baked carry. On reuse we SKIP the per-board rebuild — sp.deam was
+  // copied from eff.deam above, so sp.deam.caches already points at the supplied
+  // caches and the fit de-Ams through them (the ~192-solve/board saving, finding
+  // 11, on dates 2+ of a chain). The session's own corr_call_/corr_put_ stay empty
+  // on reuse (nothing built to move in) — correct: the caches live in the chain.
+  const bool want_reuse = eff.deam.reuse_supplied_caches && eff.deam.caches.any();
+  const bool reuse_supplied_caches = want_reuse && supplied_caches_cover_board(under, eff);
+  if (want_reuse && !reuse_supplied_caches) {
+    // Stale-gate REJECTED the supplied caches -> full cold rebuild below. Clear the
+    // supplied caches so the fit AND the certification layer see the exact pre-C2
+    // cold path (byte-identical fallback; the chain then re-carries the fresh cache).
+    eff.deam.caches = AmericanCorrectionCaches{};
+    sp.deam.caches = AmericanCorrectionCaches{};
+  }
+  if (!reuse_supplied_caches && should_build_session_caches(eff)) {
     const BuildClock::time_point cache_start =
         time_build ? BuildClock::now() : BuildClock::time_point{};
     const std::uint64_t cache_al_before = time_build ? al_solves_now() : 0u;
