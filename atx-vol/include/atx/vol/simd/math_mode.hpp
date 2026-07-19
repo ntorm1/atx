@@ -8,9 +8,10 @@
 //                        the numerical source of truth every fast path is graded on.
 //   FastDeterministic  — ONE fixed vector approximation per ISA: the hand-tuned AVX2
 //                        transcendentals in detail/vector_math.hpp (Cody-Waite log/exp
-//                        + a 48-term Chebyshev-Clenshaw Φ with a scalar wing patch).
-//                        Deterministic for a given ISA (no /fp:fast, no reassociation
-//                        knobs), with a STATED, TESTED bound vs Reference (below).
+//                        + a full-range Cody rational-erfc Φ, accurate across the whole
+//                        real line, no wing patch). Deterministic for a given ISA (no
+//                        /fp:fast, no reassociation knobs), with a STATED, TESTED bound
+//                        vs Reference (below).
 //
 // This is a *formalization* of the seam T13 already shipped, NOT a new dispatch: the
 // process-global SimdIsa override (cpu.hpp) is exactly the knob that chooses scalar
@@ -40,16 +41,13 @@ enum class MathMode {
 //    VectorMath_FastDeterministic_BoundedVsReference; see the T14 report) ──────
 //
 // These are the CONTRACT the FastDeterministic mode promises and the tests enforce.
-// Interior means |x| ≤ kNormCdfWing; beyond it the pricing kernels patch a lane
-// through the exact scalar path, so the *kernel* stays scalar-exact on the wing even
-// though the raw Chebyshev-Φ degrades there.
 
-// Max |Φ_fast(x) − Φ_ref(x)| for |x| ≤ kNormCdfWing (the interior the kernels trust).
-// MEASURED ≈3.03e-11 across [-7,7] (the 48-term Chebyshev-Φ's uniform absolute error;
-// notably it is NOT larger on the wing — the kernels patch |d| > kNormCdfWing because
-// the price formula's Φ(d1)−Φ(d2) subtraction amplifies RELATIVE error there, not
-// because the absolute Φ error blows up). Asserted with a little headroom.
-inline constexpr double kFastDeterministicPhiBound = 5e-11;
+// Max |Φ_fast(x) − Φ_ref(x)| across the FULL real line. The Cody rational-erfc Φ is
+// full double precision everywhere — there is no wing exemption: the vector Cody erfc
+// and the scalar libm erfc (atx::core::norm_cdf) differ by only a few ULP of Φ.
+// MEASURED ≈1.7e-15 over [-40,40] (vs the retired 48-term Chebyshev-Φ's ≈3e-11 interior
+// error, which additionally needed a scalar wing patch). Asserted with headroom.
+inline constexpr double kFastDeterministicPhiBound = 1e-14;
 
 // Max relative error of log_pd/exp_pd vs std::log/std::exp on positive normals /
 // the exp domain — the Cody-Waite kernels are a few ULP, comfortably inside this.

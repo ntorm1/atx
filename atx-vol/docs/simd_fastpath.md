@@ -22,15 +22,15 @@ machine-precision-scale error.
   `src/simd/*.cpp` (with `*_avx2.cpp` getting the ISA flags), so new kernels need
   no build wiring.
 - **Shared 4-lane transcendentals** (`atx/vol/detail/vector_math.hpp`): `log_pd`,
-  `exp_pd`, `norm_pdf_pd`, and `norm_cdf_pd` — Φ via a 48-term Chebyshev–Clenshaw
-  expansion built once from `atx::core::norm_cdf` (erfc), so the vector path
-  tracks the scalar source of truth with no hand-transcribed constants.
-  `norm_cdf_pd2` fuses the two independent Chebyshev recurrences for Φ(d₁),Φ(d₂)
-  into one loop, hiding the latency-bound Clenshaw dependency chain.
-- **Economically-exact parity**: degenerate (T≤0 or σ≤0) and deep-wing
-  (|d|>6, where the Chebyshev Φ loses relative accuracy under the F·Φ(d₁)−K·Φ(d₂)
-  cancellation) lanes are patched through the exact scalar kernel, so parity is
-  bit-exact there and ≤1e-6 absolute everywhere else.
+  `exp_pd`, `norm_pdf_pd`, and `norm_cdf_erfc_pd` — Φ via a full-range Cody
+  rational-erfc (Φ(x)=½·erfc(−x/√2)), the same erfc the scalar `atx::core::norm_cdf`
+  evaluates, so the vector path tracks the scalar source of truth to ~1e-16 across
+  the entire real line. `norm_cdf_erfc_pd2` runs two independent erfc chains so they
+  overlap in the out-of-order window, hiding the div/exp latency for Φ(d₁),Φ(d₂).
+- **Economically-exact parity**: only degenerate (T≤0 or σ≤0) or non-finite lanes
+  are patched through the exact scalar kernel; the Cody erfc Φ is full precision into
+  the deep wings, so finite wing lanes stay on the vector path. Parity is bit-exact
+  on patched lanes and ≤1e-6 absolute everywhere else.
 
 ## Measured speedups
 
