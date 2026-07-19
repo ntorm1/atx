@@ -242,6 +242,60 @@ TEST(FitScheduler, PerformanceCoresAffinityIsAPureSchedulingSteer) {
   EXPECT_EQ(pinned, unpinned); // byte-identical per-index outputs across affinity
 }
 
+// P3.1 regression guard #1 — the DEFAULT-OFF contract for the E-core second tier.
+//
+// This is the gate that keeps the tier from silently appearing underneath a
+// benchmark holding the P-core lease. `efficiency_core_tier_enabled()` must be
+// false unless ATX_VOL_FIT_ECORE_TIER is explicitly armed in the environment, and
+// the test suite never arms it — so on every CI host, hybrid or not, the answer is
+// false and FitAffinity::PerformanceThenEfficiencyCores degrades to exactly
+// FitAffinity::PerformanceCores. efficiency_core_count() must be queryable without
+// crashing; 0 is a valid answer (homogeneous host or discovery unavailable).
+TEST(FitScheduler, EfficiencyCoreTierIsOptInAndOffByDefault) {
+  EXPECT_GE(detail::efficiency_core_count(), 0u);
+  EXPECT_FALSE(detail::efficiency_core_tier_enabled())
+      << "the E-core tier must stay disarmed unless ATX_VOL_FIT_ECORE_TIER is set; "
+         "an armed default would oversubscribe a P-core-pinned benchmark";
+}
+
+// P3.1 regression guard #2 — the two-tier affinity is a pure scheduling steer.
+//
+// Mirrors PerformanceCoresAffinityIsAPureSchedulingSteer for the P-then-E value:
+// every index runs exactly once and yields the SAME per-index output as both the
+// unpinned and the P-core-only paths, at three different worker budgets. Core
+// assignment, worker count, and (when armed) thread priority must never reach a
+// task's value. This holds whether or not the tier is armed on the host running
+// the test, which is what makes it a usable gate on both hybrid and homogeneous CI.
+TEST(FitScheduler, EfficiencyTierAffinityIsAPureSchedulingSteerAcrossWorkerCounts) {
+  constexpr std::size_t kTaskCount = 64u;
+  const auto run = [](detail::FitAffinity affinity, unsigned budget,
+                      std::array<std::size_t, kTaskCount> &output) -> Status {
+    return detail::run_bounded_fit_tasks(
+        kTaskCount, budget,
+        [&output](std::size_t index) -> Status {
+          output[index] = (index * 2654435761u) ^ (index + 1u); // deterministic per-index value
+          return atx::core::Ok();
+        },
+        affinity);
+  };
+
+  std::array<std::size_t, kTaskCount> reference{};
+  const Status s_reference = run(detail::FitAffinity::None, 4u, reference);
+  ASSERT_TRUE(s_reference) << s_reference.error().to_string();
+
+  for (const unsigned budget : {1u, 4u, 16u}) {
+    std::array<std::size_t, kTaskCount> pcore{};
+    std::array<std::size_t, kTaskCount> two_tier{};
+    const Status s_pcore = run(detail::FitAffinity::PerformanceCores, budget, pcore);
+    const Status s_two_tier =
+        run(detail::FitAffinity::PerformanceThenEfficiencyCores, budget, two_tier);
+    ASSERT_TRUE(s_pcore) << s_pcore.error().to_string();
+    ASSERT_TRUE(s_two_tier) << s_two_tier.error().to_string();
+    EXPECT_EQ(pcore, reference) << "P-core affinity changed output at budget " << budget;
+    EXPECT_EQ(two_tier, reference) << "P-then-E affinity changed output at budget " << budget;
+  }
+}
+
 // Bit-for-bit double equality via the raw uint64 pattern (the round-trip gate is
 // BIT-identical, not merely close).
 [[nodiscard]] bool bits_equal(double a, double b) noexcept {

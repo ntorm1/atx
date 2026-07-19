@@ -24,6 +24,32 @@ using IndexedFitTask = std::function<Status(std::size_t)>;
 enum class FitAffinity : unsigned char {
   None = 0,         // no pinning — the historical default
   PerformanceCores, // pin outer workers to discovered P-core logical CPUs
+  // P3.1 (perf): two-tier P-then-E schedule. Worker ordinals [0, n_pcore) pin to
+  // P-core logical CPUs exactly as `PerformanceCores` does; ordinals at or past
+  // n_pcore spill onto the discovered EFFICIENCY cores (one worker per E-core
+  // logical CPU, at THREAD_PRIORITY_BELOW_NORMAL) instead of WRAPPING back onto
+  // the P-cores. The wrap is what this fixes: `run_bounded_fit_tasks` clamps the
+  // worker count only at `task_count`, so a ~60-board date with an auto budget
+  // launches hardware_concurrency() == 16 workers on an i7-1260P and
+  // `PerformanceCores` folds all 16 onto the 8 P-core logical CPUs -- 2x
+  // oversubscribed -- while the 8 E-cores sit idle for the whole build.
+  //
+  // OPT-IN: engaged only when the `ATX_VOL_FIT_ECORE_TIER` environment variable is
+  // set to a non-zero value (read once, process-wide) -- "1" arms the tier with the
+  // below-normal priority drop, "2" arms it without. Unset (the default) makes
+  // this value behave EXACTLY like `PerformanceCores` -- same masks, same worker
+  // count, same priorities -- so a benchmark holding the P-core lease
+  // (`configure_pricing_executor` with Topology::PerformanceCores) can never have a
+  // background E-tier appear underneath it. Below-normal priority additionally
+  // yields the E-cores to any foreground work rather than competing with it.
+  //
+  // Determinism is structural, not incidental: which worker claims which task index
+  // is ALREADY nondeterministic under the existing shared-`next` counter, and every
+  // task writes only its own indexed slot from inputs it does not share. Core
+  // assignment, worker count, and thread priority therefore steer only WHERE and
+  // WHEN a task runs, never its value -- the same argument that licenses the
+  // existing C4 pin and the LPT claim reorder.
+  PerformanceThenEfficiencyCores,
 };
 
 // Performance-core logical CPU count on this host (Windows: logical CPUs of the
@@ -33,6 +59,19 @@ enum class FitAffinity : unsigned char {
 // SAME discovery the pricing executor's Topology::PerformanceCores machinery uses
 // (see fit_scheduler.cpp; mirrors pricing_executor.cpp).
 [[nodiscard]] unsigned performance_core_count() noexcept;
+
+// P3.1: efficiency-core logical CPU count on this host (Windows: logical CPUs of
+// every physical core BELOW the highest EfficiencyClass; 0 when discovery is
+// unavailable or the host is homogeneous). Companion to performance_core_count();
+// same one-time discovery pass.
+[[nodiscard]] unsigned efficiency_core_count() noexcept;
+
+// P3.1: whether the opt-in E-core second tier is armed for this process, i.e.
+// `ATX_VOL_FIT_ECORE_TIER` is set to a non-zero value AND E-core discovery found
+// at least one E-core. When false, `PerformanceThenEfficiencyCores` degrades to
+// `PerformanceCores` exactly. Read once and cached; exposed so tests and callers
+// can assert the default-off contract without duplicating the env parsing.
+[[nodiscard]] bool efficiency_core_tier_enabled() noexcept;
 
 // Deterministic fault-injection seam for scheduler tests. Production callers
 // omit it. The callback runs on the caller immediately before each background
@@ -54,6 +93,14 @@ struct FitSchedulerTestHooks {
 // discovered P-core logical CPU (wrapping when workers exceed P-cores), best-effort
 // — the caller's original affinity is restored on return. Pinning never changes
 // which index a context runs, so results stay byte-identical to the `None` path.
+// `PerformanceThenEfficiencyCores` (P3.1) additionally spills the wrap-around
+// ordinals onto E-cores at below-normal priority when the opt-in env flag is
+// armed; see the enum comment. It too never changes which index a context runs.
+//
+// `worker_budget` semantics are UNCHANGED by the affinity: a zero budget still
+// resolves to hardware_concurrency() and is still clamped to task_count. The
+// E-tier only redistributes the workers that would otherwise double up on a
+// P-core; it never raises the worker count.
 //
 // The function joins every started worker before returning. Task exceptions and
 // thread-start failures are translated to ErrorCode::Internal on the caller

@@ -610,7 +610,20 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
         // C4 wave-2 (perf, finding 13): pin the per-symbol chains to discovered
         // P-cores. Byte-identical to the unpinned path (pinning only steers WHICH
         // logical CPU runs a chain); composes with C2's symbol-shard determinism.
-        detail::FitAffinity::PerformanceCores);
+        //
+        // P3.1 (perf): upgraded to the two-tier P-then-E affinity. This is the
+        // build-corpus fan-out that dispersion_build_corpus drives one date at a
+        // time, so `chains.size()` is ~the symbol count (~60) while the auto budget
+        // (cfg.n_threads == 0 -> hardware_concurrency()) is 16 on the reference
+        // i7-1260P. The C4 pin therefore wrapped all 16 chain workers onto the 8
+        // P-core logical CPUs and left the 8 E-cores idle for the entire build; the
+        // two-tier value spills ordinals 8..15 onto the E-cores at below-normal
+        // priority instead. OPT-IN via ATX_VOL_FIT_ECORE_TIER (see FitAffinity):
+        // unset, this is schedule-identical to PerformanceCores, so benches holding
+        // the P-core lease are unaffected. Determinism is unchanged either way --
+        // each chain writes only its own boards' slots and carries only its own
+        // warm cache, so which core runs a chain cannot change a fitted surface.
+        detail::FitAffinity::PerformanceThenEfficiencyCores);
   } else {
     schedule_status = detail::run_bounded_fit_tasks(
         n, cfg.n_threads, [&boards, &slots, &cfg, admission, n](std::size_t index) -> Status {
@@ -624,7 +637,25 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
           }
           slots[index] = fit_board(boards[index], fit_config, admission);
           return Ok();
-        });
+        },
+        // P3.1 (perf): this -- NOT the warm_start_chain branch above -- is the
+        // branch `dispersion_build_corpus` actually drives: CorpusConfig's
+        // `warm_start_chain` defaults to false and dispersion_corpus_config never
+        // sets it. It has always run with the DEFAULT FitAffinity::None, so the C4
+        // wave-2 P-core pin never applied here and the fan-out was already free to
+        // use every logical CPU including the E-cores. The E-tier's value on this
+        // path is therefore not "wake the idle E-cores" (they were never idle) but
+        // "stop the 16 unpinned workers migrating": with the flag armed each worker
+        // gets ONE dedicated logical CPU -- 8 on P-cores, 8 on E-cores at
+        // below-normal priority -- instead of being shuffled by the OS scheduler.
+        //
+        // Selected at the CALL SITE rather than inside the scheduler so the
+        // disarmed default stays exactly FitAffinity::None. Naming the two-tier
+        // value unconditionally would silently convert this path to the P-core-only
+        // wrap (16 workers folded onto 8 P-core CPUs) whenever the flag was unset --
+        // a real, unmeasured behaviour change on the default build path. Off is off.
+        detail::efficiency_core_tier_enabled() ? detail::FitAffinity::PerformanceThenEfficiencyCores
+                                               : detail::FitAffinity::None);
   }
 
   if (!schedule_status) {
