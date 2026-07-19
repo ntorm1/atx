@@ -31,6 +31,7 @@ using atx::vol::american_implied_vol;
 using atx::vol::american_price;
 using atx::vol::AmericanMethod;
 using atx::vol::audit_european_equiv_iv;
+using atx::vol::audit_european_equiv_iv_batch;
 using atx::vol::Chain;
 using atx::vol::chain_index;
 using atx::vol::de_americanize_chain;
@@ -329,6 +330,142 @@ TEST(DeAmer, WarmStartCarryCutsBoundarySolvesConvergedRootUnchanged) {
               solves_off ? static_cast<double>(solves_on) / static_cast<double>(solves_off) : 0.0,
               off->borrow, on->borrow, std::fabs(on->borrow - off->borrow),
               std::fabs(on->forward - off->forward));
+}
+
+// P3 (perf F3): the per-row de-Am audit reprice (audit_european_equiv_iv — ONE
+// ACCURATE-preset cold Andersen-Lake solve per audited row) is batched per
+// (expiry, side) through the σ-boundary interpolant slice route
+// (audit_european_equiv_iv_batch). Two claims, proven here without wall-clock:
+//   (1) EQUIVALENCE — the batched verdict matches the per-row verdict on every
+//       row (identical pass/fail set; residual within the Task-11 σ-interpolant
+//       gap of 3.8e-5/share, far under the half-spread budget the audit scores
+//       against). The audit still certifies IV-inversion consistency; it never
+//       claimed boundary-PATH independence, so the σ-interpolant is admissible.
+//   (2) G-COUNTER — the always-on solve ledger shows the audited side's AL
+//       boundary solves drop from O(strikes) to O(n_σ)=8.
+TEST(DeAmer, AuditBatchMatchesPerRowVerdictAndCutsBoundarySolves) {
+  namespace led = atx::vol::counters::ledger;
+  using atx::vol::IvRepricingAudit;
+
+  // One (expiry, side) slice: fixed (S, T, r, q_eff), many strikes each carrying
+  // its own smile σ. More strikes than σ-nodes so the interpolant is built (a
+  // ≤ n_σ side stays per-row cold, which is bit-identical anyway).
+  const double S = 100.0, T = 0.25, r = 0.03, q_eff = 0.01;
+  const Side side = Side::Put;
+  const double budget = 0.25; // DeAmOptions default half-spread budget
+  std::vector<double> strikes, sigmas, mids, spreads;
+  for (int i = 0; i < 24; ++i) {
+    const double K = 70.0 + 2.5 * static_cast<double>(i); // 70 .. 127.5
+    const double k = std::log(K / S);
+    double audit_sigma = 0.20 + 0.35 * k * k; // convex smile => non-degenerate σ box
+    // The mid is the American price at the true smile σ, so a row audited at that
+    // σ passes with ~0 residual. Two rows are audited at a badly wrong σ so their
+    // reprice misses the mid by dollars — a COMFORTABLE fail on both paths, which
+    // proves the pass/fail SET (not just the pass rows) is preserved.
+    const double mid = value_or_fail(
+        american_price(S, K, T, audit_sigma, r, q_eff, side, AmericanMethod::AndersenLake));
+    if (i == 5 || i == 15) {
+      audit_sigma *= 1.6; // deliberate mispricing => residual >> budget
+    }
+    strikes.push_back(K);
+    sigmas.push_back(audit_sigma);
+    mids.push_back(mid);
+    spreads.push_back(std::fmax(0.02, 0.02 * mid)); // realistic strictly-positive spread
+  }
+  const std::size_t n = strikes.size();
+
+  // Per-row audit (the pre-P3 path): one ACCURATE cold solve per row.
+  std::vector<atx::core::Result<IvRepricingAudit>> per_row;
+  per_row.reserve(n);
+  led::reset();
+  for (std::size_t i = 0; i < n; ++i) {
+    per_row.push_back(audit_european_equiv_iv(mids[i], spreads[i], sigmas[i], S, strikes[i], T, r,
+                                              q_eff, side, budget));
+  }
+  const std::uint64_t solves_per_row = led::snapshot().get(led::Solve::AlBoundarySolves);
+
+  // Batched audit (P3): one σ-interpolant shared by the whole side.
+  std::vector<atx::core::Result<IvRepricingAudit>> batch(n);
+  led::reset();
+  const auto st = audit_european_equiv_iv_batch(S, T, r, q_eff, side, strikes, sigmas, mids, spreads,
+                                                budget, batch);
+  const std::uint64_t solves_batch = led::snapshot().get(led::Solve::AlBoundarySolves);
+  ASSERT_TRUE(st.has_value()) << (st ? std::string{} : st.error().to_string());
+
+  // (1) EQUIVALENCE — identical ok/err and pass/fail; residual within the σ gap.
+  std::size_t n_pass = 0, n_fail = 0;
+  for (std::size_t i = 0; i < n; ++i) {
+    ASSERT_EQ(per_row[i].has_value(), batch[i].has_value()) << "row " << i;
+    if (per_row[i].has_value()) {
+      EXPECT_EQ(per_row[i]->passed, batch[i]->passed) << "verdict flip at row " << i;
+      per_row[i]->passed ? ++n_pass : ++n_fail;
+      // σ-interpolant price gap ≤ 3.8e-5/share => residual-half-spread gap ≤ that
+      // over half the spread. Stay comfortably under that ceiling on every row.
+      const double gap =
+          std::fabs(per_row[i]->residual_half_spreads - batch[i]->residual_half_spreads);
+      EXPECT_LT(gap, 3.8e-5 / (0.5 * spreads[i]) + 1.0e-9) << "row " << i;
+    }
+  }
+  EXPECT_EQ(n_fail, 2u) << "the two deliberately-mispriced rows must fail on both paths";
+  EXPECT_EQ(n_pass, n - 2u);
+
+  // (2) G-COUNTER — audited side O(strikes) -> O(n_σ)=8.
+  EXPECT_EQ(solves_per_row, static_cast<std::uint64_t>(n)); // one cold solve per row
+  EXPECT_LE(solves_batch, 8u);                              // n_σ interpolant node solves
+  EXPECT_LT(solves_batch, solves_per_row);
+  std::printf(
+      "[deamer-audit-batch] AL boundary solves/side: per-row=%llu batch=%llu (ratio %.3f); "
+      "pass=%zu fail=%zu\n",
+      static_cast<unsigned long long>(solves_per_row),
+      static_cast<unsigned long long>(solves_batch),
+      solves_per_row ? static_cast<double>(solves_batch) / static_cast<double>(solves_per_row) : 0.0,
+      n_pass, n_fail);
+}
+
+// P3 integration: de_americanize_chain routes EVERY approximate-proposal row's
+// audit through audit_european_equiv_iv_batch. With the fast preset every OTM leg
+// is an audited row, and a > n_σ-per-side board builds the σ-interpolant — the
+// wired batched path. The round-trip must still recover the injected smile, every
+// row must survive (its batched verdict passes, exactly as the per-row audit
+// would on exact-American mids), and the audited-row count must equal the used
+// count.
+TEST(DeAmer, ChainAuditBatchRoundTripsFastPresetOverEightPerSide) {
+  const Scenario sc;
+  const double b_true = 0.019;
+  // 24 strikes around F≈100 so BOTH OTM sides clear n_σ=8 and take the interpolant.
+  std::vector<double> strikes;
+  for (int i = 0; i < 24; ++i) {
+    strikes.push_back(78.0 + 2.0 * static_cast<double>(i)); // 78 .. 124
+  }
+  const Chain chain = make_synthetic_chain(sc, b_true, strikes);
+  const double f_true =
+      hybrid_forward(sc.S, sc.r, b_true, sc.T, sc.divs, sc.expiry_ns, sc.now_ns, sc.hyb);
+
+  DeAmOptions opts;
+  opts.hyb = sc.hyb;
+  opts.imply_borrow = true;
+  opts.n_atm = 6;
+  opts.max_borrow_pairs = 6;
+  opts.al_opts = al_fast_opts(); // fast inversion => every OTM leg is audited
+
+  const auto res = de_americanize_chain(chain, sc.S, sc.r, sc.divs, sc.now_ns, opts);
+  ASSERT_TRUE(res.has_value()) << (res ? std::string{} : res.error().to_string());
+  const DeAmResult &out = *res;
+
+  // Every strike survived: each row's batched audit verdict passed.
+  EXPECT_EQ(out.n_used, strikes.size());
+  EXPECT_EQ(out.n_dropped, 0u);
+  EXPECT_EQ(out.n_iv_audited, strikes.size()); // fast preset audits every row
+  EXPECT_EQ(out.n_iv_fallback, 0u);            // exact mids => no verdict misses
+  ASSERT_EQ(out.iv.size(), strikes.size());
+
+  // Round-trip: the batched-audit path recovers the injected European smile.
+  for (std::size_t i = 0; i < strikes.size(); ++i) {
+    EXPECT_NEAR(out.iv[i], true_sigma(std::log(strikes[i] / f_true)), 1e-3) << "K=" << strikes[i];
+  }
+  // The audit reprice only scores a verdict; the served residual stays far inside
+  // the half-spread budget on every audited row.
+  EXPECT_LT(out.max_iv_residual_half_spreads, opts.max_iv_residual_half_spreads);
 }
 
 TEST(DeAmer, RobustCarryRejectsOneBadAtmPairAndReportsSensitivity) {

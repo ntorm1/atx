@@ -100,13 +100,43 @@ Result<double> european_equiv_iv(double american_mid, double S, double K, double
                               correction);
 }
 
+namespace {
+
+// The audit verdict, single-sourced so the scalar and batched entries below
+// score a reprice identically. `price` is the accurate (or σ-interpolant)
+// American reprice at the audited (K, σ); the row PASSES when its absolute
+// residual sits inside `max_residual_half_spreads` half-spreads of the mid.
+[[nodiscard]] IvRepricingAudit iv_repricing_verdict(double price, double american_mid,
+                                                    double bid_ask_spread,
+                                                    double max_residual_half_spreads) noexcept {
+  const double residual = std::fabs(price - american_mid);
+  const double normalized = residual / (0.5 * bid_ask_spread);
+  return IvRepricingAudit{price, residual, normalized, normalized <= max_residual_half_spreads};
+}
+
+// The per-row input contract shared by the scalar and batched audits. A row that
+// fails it gets the scalar entry's InvalidArgument verdict (batched path) or an
+// early return (scalar path).
+[[nodiscard]] bool audit_row_inputs_valid(double american_mid, double bid_ask_spread, double sigma,
+                                          double K) noexcept {
+  return (american_mid > 0.0) && (bid_ask_spread > 0.0) && (sigma > 0.0) && (K > 0.0);
+}
+
+// The shared (per-side) input contract for the audit.
+[[nodiscard]] bool audit_shared_inputs_valid(double S, double T, double r, double q_eff,
+                                             double max_residual_half_spreads) noexcept {
+  return (S > 0.0) && (T > 0.0) && std::isfinite(r) && std::isfinite(q_eff) &&
+         (max_residual_half_spreads >= 0.0);
+}
+
+} // namespace
+
 Result<IvRepricingAudit> audit_european_equiv_iv(double american_mid, double bid_ask_spread,
                                                  double sigma, double S, double K, double T,
                                                  double r, double q_eff, Side side,
                                                  double max_residual_half_spreads) noexcept {
-  if (!(american_mid > 0.0) || !(bid_ask_spread > 0.0) || !(sigma > 0.0) || !(S > 0.0) ||
-      !(K > 0.0) || !(T > 0.0) || !std::isfinite(r) || !std::isfinite(q_eff) ||
-      !(max_residual_half_spreads >= 0.0)) {
+  if (!audit_row_inputs_valid(american_mid, bid_ask_spread, sigma, K) ||
+      !audit_shared_inputs_valid(S, T, r, q_eff, max_residual_half_spreads)) {
     return Err(ErrorCode::InvalidArgument,
                "audit_european_equiv_iv: invalid price/model/budget input");
   }
@@ -116,9 +146,86 @@ Result<IvRepricingAudit> audit_european_equiv_iv(double american_mid, double bid
     return Err(ErrorCode::Internal,
                "audit_european_equiv_iv: accurate pricer returned non-finite price");
   }
-  const double residual = std::fabs(price - american_mid);
-  const double normalized = residual / (0.5 * bid_ask_spread);
-  return Ok(IvRepricingAudit{price, residual, normalized, normalized <= max_residual_half_spreads});
+  return Ok(iv_repricing_verdict(price, american_mid, bid_ask_spread, max_residual_half_spreads));
+}
+
+Status audit_european_equiv_iv_batch(double S, double T, double r, double q_eff, Side side,
+                                     std::span<const double> strikes,
+                                     std::span<const double> sigmas,
+                                     std::span<const double> american_mids,
+                                     std::span<const double> bid_ask_spreads,
+                                     double max_residual_half_spreads,
+                                     std::span<Result<IvRepricingAudit>> out) noexcept {
+  const std::size_t n = strikes.size();
+  if (sigmas.size() != n || american_mids.size() != n || bid_ask_spreads.size() != n ||
+      out.size() != n) {
+    return Err(ErrorCode::InvalidArgument,
+               "audit_european_equiv_iv_batch: strikes/sigmas/mids/spreads/out length mismatch");
+  }
+  if (!audit_shared_inputs_valid(S, T, r, q_eff, max_residual_half_spreads)) {
+    return Err(ErrorCode::InvalidArgument,
+               "audit_european_equiv_iv_batch: invalid shared model/budget input");
+  }
+  if (n == 0) {
+    return Ok();
+  }
+
+  // Compact the rows whose per-row inputs clear the audit contract; an invalid
+  // row gets the scalar entry's InvalidArgument verdict and never enters the
+  // slice-sigma reprice (which requires every strike > 0). `compact_row[j]` is
+  // the original row index of the j-th valid row.
+  std::vector<double> compact_K;
+  std::vector<double> compact_sig;
+  std::vector<std::size_t> compact_row;
+  compact_K.reserve(n);
+  compact_sig.reserve(n);
+  compact_row.reserve(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    if (audit_row_inputs_valid(american_mids[i], bid_ask_spreads[i], sigmas[i], strikes[i])) {
+      compact_K.push_back(strikes[i]);
+      compact_sig.push_back(sigmas[i]);
+      compact_row.push_back(i);
+    } else {
+      out[i] = Err(ErrorCode::InvalidArgument,
+                   "audit_european_equiv_iv: invalid price/model/budget input");
+    }
+  }
+
+  const std::size_t m = compact_row.size();
+  if (m > 0) {
+    // Reprice the whole side through ONE σ-Chebyshev boundary interpolant
+    // (O(n_σ) cold solves, ACCURATE 48-node premium quadrature via nullopt opts —
+    // see the header). A whole-batch reject falls back per-row to the same
+    // ACCURATE cold solve the scalar audit uses, so a slice-sigma corner never
+    // changes a verdict — it only spends more solves.
+    std::vector<double> prices(m, std::numeric_limits<double>::quiet_NaN());
+    const std::span<const double> ck{compact_K.data(), m};
+    const std::span<const double> cs{compact_sig.data(), m};
+    const std::span<double> cp{prices.data(), m};
+    const SigmaInterpOptions interp{};
+    const Status status =
+        side == Side::Call
+            ? andersen_lake_call_slice_sigma(S, ck, cs, T, r, q_eff, cp, interp, std::nullopt)
+            : andersen_lake_put_slice_sigma(S, ck, cs, T, r, q_eff, cp, interp, std::nullopt);
+    if (!status.has_value()) {
+      for (std::size_t j = 0; j < m; ++j) {
+        const auto scalar = american_price(S, compact_K[j], T, compact_sig[j], r, q_eff, side,
+                                           AmericanMethod::AndersenLake, std::nullopt);
+        prices[j] = scalar.has_value() ? *scalar : std::numeric_limits<double>::quiet_NaN();
+      }
+    }
+    for (std::size_t j = 0; j < m; ++j) {
+      const std::size_t i = compact_row[j];
+      if (!std::isfinite(prices[j])) {
+        out[i] = Err(ErrorCode::Internal,
+                     "audit_european_equiv_iv: accurate pricer returned non-finite price");
+        continue;
+      }
+      out[i] = Ok(iv_repricing_verdict(prices[j], american_mids[i], bid_ask_spreads[i],
+                                       max_residual_half_spreads));
+    }
+  }
+  return Ok();
 }
 
 namespace {
@@ -623,6 +730,32 @@ Result<DeAmResult> de_americanize_chain(const Chain &chain, double S, double r,
   out.iv.reserve(n);
   out.weight.reserve(n);
 
+  // P3 (perf F3): the audited rows of one (expiry, side) share (S, T, r, q_eff)
+  // and differ only in (K, σ) — exactly the shape audit_european_equiv_iv_batch
+  // reprices through the σ-boundary interpolant slice route. So the loop is
+  // restructured into a collect pass (invert every OTM leg, gather the audited
+  // rows per side) + one batched reprice per side + a finalize pass (apply the
+  // verdicts in strike order). Each audited side now costs O(n_σ)=8 AL boundary
+  // solves instead of one ACCURATE cold solve per audited row. The chain driver
+  // never warm-chains its per-strike inversions, so this reorder leaves every
+  // recovered IV bit-identical; only the audit reprice PATH changes.
+  struct PendingRow {
+    std::size_t idx;        // chain quote index of the chosen OTM leg
+    Side side;              // OTM side
+    double K;               // strike
+    double k;               // ln(K / F)
+    double spread;          // ask − bid
+    double iv;              // recovered European-equivalent vol (updated on fallback)
+    bool audited;           // approximate proposal -> needs the reference reprice
+    std::size_t audit_slot; // index into this side's audit span (audited rows only)
+  };
+
+  std::vector<PendingRow> rows;
+  rows.reserve(n);
+  // Per-side batched-audit inputs (only rows whose proposal must be audited).
+  std::vector<double> call_K, call_sig, call_mid, call_spread;
+  std::vector<double> put_K, put_sig, put_mid, put_spread;
+
   for (std::size_t i = 0; i < n; ++i) {
     const double K = chain.strikes[i];
     if (!(K > 0.0)) {
@@ -640,8 +773,9 @@ Result<DeAmResult> de_americanize_chain(const Chain &chain, double S, double r,
 
     const double spread = chain.asks[idx] - chain.bids[idx];
     const CorrectionCache *cache = opts.caches.for_side(side);
-    Result<double> iv = european_equiv_iv(chain.mids[idx], S, K, T, r, q_eff, side, opts.method,
-                                          opts.al_opts, cache, opts.iv_tol, opts.iv_max_iter);
+    const Result<double> iv = european_equiv_iv(chain.mids[idx], S, K, T, r, q_eff, side,
+                                                opts.method, opts.al_opts, cache, opts.iv_tol,
+                                                opts.iv_max_iter);
     if (!iv) {
       ++out.n_dropped;
       continue;
@@ -650,41 +784,75 @@ Result<DeAmResult> de_americanize_chain(const Chain &chain, double S, double r,
         opts.method == AmericanMethod::AndersenLake &&
         (opts.al_opts.has_value() ||
          (cache != nullptr && cache->populated() && cache->side() == side));
+    PendingRow row{idx, side, K, k, spread, *iv, approximate_proposal, 0};
     if (approximate_proposal) {
       ++out.n_iv_audited;
-      Result<IvRepricingAudit> audit = audit_european_equiv_iv(
-          chain.mids[idx], spread, *iv, S, K, T, r, q_eff, side, opts.max_iv_residual_half_spreads);
-      if (audit && audit->passed) {
+      std::vector<double> &bk = (side == Side::Call) ? call_K : put_K;
+      std::vector<double> &bs = (side == Side::Call) ? call_sig : put_sig;
+      std::vector<double> &bm = (side == Side::Call) ? call_mid : put_mid;
+      std::vector<double> &bsp = (side == Side::Call) ? call_spread : put_spread;
+      row.audit_slot = bk.size();
+      bk.push_back(K);
+      bs.push_back(*iv);
+      bm.push_back(chain.mids[idx]);
+      bsp.push_back(spread);
+    }
+    rows.push_back(row);
+  }
+
+  // Batched primary reprice per side (O(n_σ) boundary solves each).
+  std::vector<Result<IvRepricingAudit>> call_audit(call_K.size());
+  std::vector<Result<IvRepricingAudit>> put_audit(put_K.size());
+  if (!call_K.empty()) {
+    ATX_TRY_VOID(audit_european_equiv_iv_batch(S, T, r, q_eff, Side::Call, call_K, call_sig,
+                                               call_mid, call_spread,
+                                               opts.max_iv_residual_half_spreads, call_audit));
+  }
+  if (!put_K.empty()) {
+    ATX_TRY_VOID(audit_european_equiv_iv_batch(S, T, r, q_eff, Side::Put, put_K, put_sig, put_mid,
+                                               put_spread, opts.max_iv_residual_half_spreads,
+                                               put_audit));
+  }
+
+  for (PendingRow &row : rows) {
+    double iv = row.iv;
+    if (row.audited) {
+      const Result<IvRepricingAudit> &audit =
+          (row.side == Side::Call) ? call_audit[row.audit_slot] : put_audit[row.audit_slot];
+      if (audit.has_value() && audit->passed) {
         out.max_iv_residual_half_spreads =
             std::fmax(out.max_iv_residual_half_spreads, audit->residual_half_spreads);
-      }
-      if (!audit || !audit->passed) {
+      } else {
+        // A missed proposal is recomputed accurately (per-row, rare) and
+        // re-audited against the same cold reference the scalar audit uses.
         ++out.n_iv_fallback;
-        iv = american_implied_vol(chain.mids[idx], S, K, T, r, q_eff, side,
-                                  AmericanMethod::AndersenLake, 1.0e-7, 64, std::nullopt, nullptr,
-                                  *iv);
-        if (!iv) {
+        const Result<double> refit = american_implied_vol(
+            chain.mids[row.idx], S, row.K, T, r, q_eff, row.side, AmericanMethod::AndersenLake,
+            1.0e-7, 64, std::nullopt, nullptr, row.iv);
+        if (!refit) {
           ++out.n_dropped;
           continue;
         }
-        audit = audit_european_equiv_iv(chain.mids[idx], spread, *iv, S, K, T, r, q_eff, side,
-                                        opts.max_iv_residual_half_spreads);
-        if (!audit || !audit->passed) {
+        iv = *refit;
+        const Result<IvRepricingAudit> reaudit =
+            audit_european_equiv_iv(chain.mids[row.idx], row.spread, iv, S, row.K, T, r, q_eff,
+                                    row.side, opts.max_iv_residual_half_spreads);
+        if (!reaudit || !reaudit->passed) {
           ++out.n_dropped;
           continue;
         }
         out.max_iv_residual_half_spreads =
-            std::fmax(out.max_iv_residual_half_spreads, audit->residual_half_spreads);
+            std::fmax(out.max_iv_residual_half_spreads, reaudit->residual_half_spreads);
       }
     }
 
     // Weight hint: Black-76 vega / bid-ask spread — rewards tight, high-vega
     // quotes. Optional and not load-bearing; the caller may ignore it.
-    const double vega = black76_value_and_vega(F, K, T, *iv, df, side).vega;
-    const double weight = vega / std::fmax(spread, kMinSpread);
+    const double vega = black76_value_and_vega(F, row.K, T, iv, df, row.side).vega;
+    const double weight = vega / std::fmax(row.spread, kMinSpread);
 
-    out.k_log.push_back(k);
-    out.iv.push_back(*iv);
+    out.k_log.push_back(row.k);
+    out.iv.push_back(iv);
     out.weight.push_back(weight);
     ++out.n_used;
   }
