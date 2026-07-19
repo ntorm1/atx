@@ -153,13 +153,14 @@ namespace {
 inline constexpr bool kShipAvx2Greeks = true;
 
 // Scalar oracle: american_greeks_al per contract (NaN-filled on error, matching the
-// batch's per-lane fallback contract).
+// batch's per-lane fallback contract). `side` selects the put or call oracle so the
+// put and call batches share one patch path.
 void greeks_scalar_lane(const double* S, const double* K, const double* T,
                         const double* sigma, const double* r, const double* q,
-                        const std::optional<AlOpts>& opts, AmericanGreeks* out,
+                        const std::optional<AlOpts>& opts, Side side, AmericanGreeks* out,
                         std::size_t i) noexcept {
     const Result<AmericanGreeks> g =
-        american_greeks_al(S[i], K[i], T[i], sigma[i], r[i], q[i], Side::Put, opts);
+        american_greeks_al(S[i], K[i], T[i], sigma[i], r[i], q[i], side, opts);
     if (g.has_value()) {
         out[i] = *g;
     } else {
@@ -196,7 +197,7 @@ SimdRoute american_put_greeks_batch(const double* S, const double* K, const doub
         // Scalar oracle stays the full american_greeks_al bundle (correctness first; the
         // first-order solve-skip win is on the laned majority, not the scalar patch).
         for (std::size_t i = 0; i < n; ++i) {
-            greeks_scalar_lane(S, K, T, sigma, r, q, opts, out_greeks, i);
+            greeks_scalar_lane(S, K, T, sigma, r, q, opts, Side::Put, out_greeks, i);
         }
         return SimdRoute::Scalar;
     }
@@ -214,7 +215,45 @@ SimdRoute american_put_greeks_batch(const double* S, const double* K, const doub
         for (std::size_t i = 0; i < cn; ++i) {
             if (!handled[i]) {
                 greeks_scalar_lane(S + off, K + off, T + off, sigma + off, r + off, q + off,
-                                   opts, out_greeks + off, i);
+                                   opts, Side::Put, out_greeks + off, i);
+            }
+        }
+    }
+    return SimdRoute::Avx2;
+}
+
+// Call-native mirror of american_put_greeks_batch (P1b). Same engagement gate
+// (avx2_greeks_selected) and scalar-patch contract, but the AVX2 route dispatches the
+// american_call_greeks_batch_avx2 kernel and every fallback lane goes through the exact
+// scalar american_greeks_al(...,Side::Call) oracle.
+SimdRoute american_call_greeks_batch(const double* S, const double* K, const double* T,
+                                     const double* sigma, const double* r, const double* q,
+                                     std::size_t n, const std::optional<AlOpts>& opts,
+                                     AmericanGreeks* out_greeks, SimdIsa isa,
+                                     bool need_vega, bool need_rho,
+                                     bool need_charm) noexcept {
+    const bool avx2 = avx2_greeks_selected(isa);
+    if (n == 0) {
+        return avx2 ? SimdRoute::Avx2 : SimdRoute::Scalar;
+    }
+    if (!avx2) {
+        for (std::size_t i = 0; i < n; ++i) {
+            greeks_scalar_lane(S, K, T, sigma, r, q, opts, Side::Call, out_greeks, i);
+        }
+        return SimdRoute::Scalar;
+    }
+    const detail::GreekNeeds needs{need_vega, need_rho, need_charm};
+    constexpr std::size_t kChunk = 512;
+    for (std::size_t off = 0; off < n; off += kChunk) {
+        const std::size_t cn = (n - off < kChunk) ? (n - off) : kChunk;
+        bool handled[kChunk];
+        detail::american_call_greeks_batch_avx2(S + off, K + off, T + off, sigma + off,
+                                                r + off, q + off, cn, opts,
+                                                out_greeks + off, handled, needs);
+        for (std::size_t i = 0; i < cn; ++i) {
+            if (!handled[i]) {
+                greeks_scalar_lane(S + off, K + off, T + off, sigma + off, r + off, q + off,
+                                   opts, Side::Call, out_greeks + off, i);
             }
         }
     }

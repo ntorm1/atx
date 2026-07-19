@@ -36,4 +36,21 @@ void american_put_greeks_batch_avx2(const double* S, const double* K, const doub
                                     AmericanGreeks* out_greeks, bool* handled,
                                     GreekNeeds needs = {}) noexcept;
 
+// Call-native mirror (P1b). Same contract as american_put_greeks_batch_avx2 but for a
+// span of genuine early-exercise American CALLS, matching scalar american_greeks_al(...,
+// Side::Call). Under the McDonald-Schroder map C(S,K,r,q)=P(K,S,q,r) each call reduces to
+// an internal put solved at internal-strike=S (the call spot), internal-rate=q, internal-
+// yield=r, priced at internal-spot=K (the fixed call strike). The call's spot stencils
+// vary the internal STRIKE (rescaled by strike homogeneity, one solve per bump state), and
+// theta/charm come from the continuation-region PDE in the ORIGINAL (S,r,q) with the call
+// intrinsic S-K. Eligibility is governed by the internal-put short rate q (American iff
+// q>0); the r± stencils bump the internal YIELD only, so no rate-regime crossing is
+// possible on a call (unlike the put's r-hr guard). Lanes not genuine early-exercise on
+// every needed bump state, or non-finite, are left handled[l]=false for the scalar patch.
+void american_call_greeks_batch_avx2(const double* S, const double* K, const double* T,
+                                     const double* sigma, const double* r, const double* q,
+                                     std::size_t n, const std::optional<AlOpts>& opts,
+                                     AmericanGreeks* out_greeks, bool* handled,
+                                     GreekNeeds needs = {}) noexcept;
+
 } // namespace atx::vol::simd::detail

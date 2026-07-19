@@ -733,9 +733,21 @@ TEST(PricedSurface, EvaluateBatchLadderBitIdenticalToPerEntry) {
   }
 }
 
-// A MIXED batch: interleaved T runs + singletons + a degenerate entry. Each
-// entry must be bit-identical to the standalone evaluate() for that entry,
-// regardless of whether it fell in a reuse run or resolved on its own.
+// A MIXED batch: interleaved T runs + singletons + a degenerate entry. Status + IV
+// stay bit-identical to the standalone evaluate() for every entry; price/greeks match
+// within the economic gate.
+//
+// WS-P1a GOLDEN REFRESH (bit-identity -> economic tolerance): before P1a, the analytic
+// batch under the DEFAULT (Auto) ISA fell to the scalar per-contract loop, so the
+// analytic Greek columns were bit-identical to per-entry evaluate(). P1a flips the gate
+// to avx2_greeks_selected, so on an AVX2 host the batch now lanes BOTH put and call
+// analytic bundles (P1b), while a single-contract evaluate() still runs scalar
+// american_greeks_al. The two therefore differ by the AVX2 laned-vs-scalar delta
+// (~1e-13/greek, sub-economic; documented at the priced_surface gate) — price/vega/charm
+// are re-gated from bits_equal to rel_close. IV comes from the resolution (no pricer
+// solve) so it stays bit-identical; status stays exact. On a non-AVX2 host the gate falls
+// back to scalar and the tolerance is met with |a-b| == 0 (bit-identical), so this test
+// still proves exact ladder reuse there.
 TEST(PricedSurface, EvaluateBatchMixedTBitIdenticalToPerEntry) {
   const PricedSurface s = make_essvi_varycarry(1);
   const EF fields = EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder;
@@ -753,28 +765,38 @@ TEST(PricedSurface, EvaluateBatchMixedTBitIdenticalToPerEntry) {
       s.evaluate_batch(Ks, Ts, sides, fields, /*analytic=*/true,
                        PricedSurface::EvaluationSoA{out_iv, out_px, out_gk, out_st, {}, {}});
   ASSERT_TRUE(rc.has_value());
+  const auto rel_close = [](double a, double b, double rtol, double atol) {
+    if (!std::isfinite(a) || !std::isfinite(b)) {
+      return std::isnan(a) == std::isnan(b);
+    }
+    return std::fabs(a - b) <= atol + rtol * std::fabs(b);
+  };
   for (std::size_t i = 0; i < n; ++i) {
     const auto e = s.evaluate(Ks[i], Ts[i], sides[i], fields, /*analytic=*/true);
     EXPECT_EQ(out_st[i].has_value(), e.status.has_value()) << i;
-    EXPECT_TRUE(bits_equal(out_iv[i], e.iv)) << i;
-    EXPECT_TRUE(bits_equal(out_px[i], e.price)) << i;
-    EXPECT_TRUE(bits_equal(out_gk[i].vega, e.greeks.vega)) << i;
-    EXPECT_TRUE(bits_equal(out_gk[i].charm, e.greeks.charm)) << i;
+    EXPECT_TRUE(bits_equal(out_iv[i], e.iv)) << i; // IV is from the resolution (exact)
+    EXPECT_TRUE(rel_close(out_px[i], e.price, 1e-6, 1e-8)) << i;
+    EXPECT_TRUE(rel_close(out_gk[i].vega, e.greeks.vega, 1e-5, 1e-7)) << i;
+    EXPECT_TRUE(rel_close(out_gk[i].charm, e.greeks.charm, 1e-3, 1e-6)) << i;
   }
   // The degenerate last entry is a per-entry error, not a crash / fabricated number.
   EXPECT_FALSE(out_st[n - 1].has_value());
   EXPECT_TRUE(std::isnan(out_px[n - 1]));
 }
 
-// H1 (WS-H): the ForceAvx2 laned analytic-PUT Greeks fast path in evaluate_batch.
-// PUT lanes ride simd::american_put_greeks_batch (this surface's al_opts threaded
-// through); CALL / invalid lanes stay scalar. On an AVX2 host the genuine
-// early-exercise put lanes match the per-entry scalar american_greeks_al bundle
-// within the same economic gate the marks AVX2 flip uses (NOT bit-identical — that
-// is exactly why the production Auto path stays scalar, gated ForceAvx2-only). On a
-// non-AVX2 host the guard falls back to the scalar loop, so the same comparison is
-// bit-identical. Either way the laned path must produce finite, close greeks and
-// preserve per-lane errors.
+// WS-P1 (P1a+P1b): the laned analytic Greeks fast path in evaluate_batch, BOTH sides.
+// PUT lanes ride simd::american_put_greeks_batch and CALL lanes ride the P1b mirror
+// simd::american_call_greeks_batch (this surface's al_opts threaded through); invalid
+// lanes stay scalar. On an AVX2 host the genuine early-exercise lanes match the per-entry
+// scalar american_greeks_al bundle within the economic gate the marks AVX2 flip uses
+// (NOT bit-identical — that is the sub-economic AVX2 laned-vs-scalar delta P1a's gate
+// flip accepts). On a non-AVX2 host the guard falls back to the scalar loop, so the same
+// comparison is bit-identical. Either way the laned path must produce finite, close
+// greeks and preserve per-lane errors.
+//
+// WS-P1b GOLDEN REFRESH: the pre-P1b call-lane bit-identity assertions (calls were routed
+// scalar in the laned path) are removed — call lanes are now laned too, so both sides are
+// gated to the same rel_close tolerance.
 TEST(PricedSurface, EvaluateBatchGreeksForceAvx2MatchesScalarWithinGate) {
   const PricedSurface s = make_essvi_varycarry(1);
   const EF fields = EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder;
@@ -812,14 +834,73 @@ TEST(PricedSurface, EvaluateBatchGreeksForceAvx2MatchesScalarWithinGate) {
     EXPECT_TRUE(rel_close(out_gk[i].gamma, e.greeks.gamma, 1e-3, 1e-7)) << i;
     EXPECT_TRUE(rel_close(out_gk[i].theta, e.greeks.theta, 1e-4, 1e-6)) << i;
     EXPECT_TRUE(rel_close(out_gk[i].charm, e.greeks.charm, 1e-3, 1e-6)) << i;
-    // CALL lanes stay on the scalar route in the laned path → bit-identical.
-    if (sides[i] == Side::Call) {
-      EXPECT_TRUE(bits_equal(out_px[i], e.price)) << i;
-      EXPECT_TRUE(bits_equal(out_gk[i].vega, e.greeks.vega)) << i;
-    }
+    // Both PUT and CALL lanes now ride the laned bundle (P1b), matching scalar within
+    // the same economic gate above — no side-specific bit-identity assertion remains.
   }
   EXPECT_FALSE(out_st[n - 1].has_value()); // degenerate strike is a per-entry error
   EXPECT_TRUE(std::isnan(out_px[n - 1]));
+}
+
+// WS-P1 DETERMINISM: with the Auto gate now dispatching laned (AVX2) greeks, a lane's
+// result must NOT depend on which other contracts share its 4-wide pack — otherwise a
+// pricing-executor that partitions a name's strikes across threads would produce
+// thread-count-dependent greeks. This is exactly that invariance: evaluating a single-
+// expiry ladder as ONE batch (packs of 4) must be BIT-identical to evaluating the same
+// strikes as singletons (each a pack of 1) — i.e. pack membership does not change any
+// output. Runs under Auto (production ISA); on a non-AVX2 host both routes are scalar and
+// the identity is trivial.
+TEST(PricedSurface, EvaluateBatchLanedGreeksPackCompositionInvariant) {
+  const PricedSurface s = make_essvi_varycarry(1);
+  const EF fields = EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder;
+  const double T = 0.35;
+  std::vector<double> Ks;
+  std::vector<double> Ts;
+  std::vector<Side> sides;
+  for (int i = 0; i < 23; ++i) { // 23 => full 4-packs + a ragged tail
+    const double K = 82.0 + 40.0 * (static_cast<double>(i) + 0.5) / 23.0;
+    Ks.push_back(K);
+    Ts.push_back(T);
+    sides.push_back((K <= kS) ? Side::Put : Side::Call); // mixed put/call ladder
+  }
+  const std::size_t n = Ks.size();
+
+  // One batch: strikes pack 4-wide (and a tail) exactly as the hot path does.
+  std::vector<double> whole_iv(n), whole_px(n);
+  std::vector<AmericanGreeks> whole_gk(n);
+  std::vector<Status> whole_st(n);
+  ASSERT_TRUE(s.evaluate_batch(Ks, Ts, sides, fields, /*analytic=*/true,
+                               PricedSurface::EvaluationSoA{whole_iv, whole_px, whole_gk,
+                                                            whole_st, {}, {}},
+                               simd::SimdIsa::Auto)
+                  .has_value());
+
+  // Same strikes evaluated as singletons: every lane is a pack of 1 (different pack
+  // membership). Bit-identical output proves the laned greeks are pack-composition- (hence
+  // thread-count-) invariant.
+  for (std::size_t i = 0; i < n; ++i) {
+    std::vector<double> one_iv(1), one_px(1);
+    std::vector<AmericanGreeks> one_gk(1);
+    std::vector<Status> one_st(1);
+    const std::vector<double> k1{Ks[i]}, t1{Ts[i]};
+    const std::vector<Side> s1{sides[i]};
+    ASSERT_TRUE(s.evaluate_batch(k1, t1, s1, fields, /*analytic=*/true,
+                                 PricedSurface::EvaluationSoA{one_iv, one_px, one_gk, one_st,
+                                                              {}, {}},
+                                 simd::SimdIsa::Auto)
+                    .has_value());
+    ASSERT_EQ(whole_st[i].has_value(), one_st[0].has_value()) << i;
+    EXPECT_TRUE(bits_equal(whole_iv[i], one_iv[0])) << i;
+    EXPECT_TRUE(bits_equal(whole_px[i], one_px[0])) << i;
+    EXPECT_TRUE(bits_equal(whole_gk[i].price, one_gk[0].price)) << i;
+    EXPECT_TRUE(bits_equal(whole_gk[i].delta, one_gk[0].delta)) << i;
+    EXPECT_TRUE(bits_equal(whole_gk[i].gamma, one_gk[0].gamma)) << i;
+    EXPECT_TRUE(bits_equal(whole_gk[i].vega, one_gk[0].vega)) << i;
+    EXPECT_TRUE(bits_equal(whole_gk[i].theta, one_gk[0].theta)) << i;
+    EXPECT_TRUE(bits_equal(whole_gk[i].rho, one_gk[0].rho)) << i;
+    EXPECT_TRUE(bits_equal(whole_gk[i].vanna, one_gk[0].vanna)) << i;
+    EXPECT_TRUE(bits_equal(whole_gk[i].volga, one_gk[0].volga)) << i;
+    EXPECT_TRUE(bits_equal(whole_gk[i].charm, one_gk[0].charm)) << i;
+  }
 }
 
 TEST(PricedSurface, PriceOnlyResolvedBatchPreservesMethodPresetAndLaneErrors) {
