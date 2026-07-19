@@ -159,10 +159,12 @@ Rules: american.cpp/american.hpp/american_iv.cpp/deamer.cpp are single-owner per
 
 ## §5 Git tracker (PM updates SHAs)
 
+**Baseline @ 7e42f7c (dev preset):** 1858 tests, 1823 pass, 30 skip, **2 pre-existing FAILs** (not this sprint's debt, do not fix, do not count against tasks): `AllQualityModes/SurfaceV2Qualification.RiskBuildRunsTheModeCarryAndInversionBudgets/{Latency,Balanced}` — test expects max_borrow_pairs 6/12, code implements 5 (inherited from main @ 99f332f). Full suite ≈ 8 min.
+
 | Task | Status | SHA | Notes |
 |---|---|---|---|
-| plan+reviews committed | — | — | |
-| A1 | pending | | |
+| plan+reviews committed | done | 7e42f7c | |
+| A1 | **done** | 51fc212 | Newton iters 16(exhausted)→mean 6.17/max 10 on 240-grid; JN sweeps mean 21.78→18.99; repins justified in commit body. 2 new known-reds handed to fix-up agent: PricerFitter.LocalRiskRefitPublishesCopyOnWriteGeneration (cache-certification flip), SurfaceV2Provenance.ValidationFallbackAdmissionRecordsTheServedFamily (fixture premise broken at HEAD post-b118439 — needs injected-surface redesign, not S3 re-tune). A6 QD+/BAW A/B re-run = report item. |
 | A2/A5/A9 | pending | | |
 | A3/A6 | pending | | |
 | A4 | pending | | |
