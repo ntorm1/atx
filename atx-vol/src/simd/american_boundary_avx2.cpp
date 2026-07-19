@@ -16,6 +16,7 @@
 #include "american_boundary_avx2_kernel.hpp"
 
 #include "atx/vol/american.hpp" // andersen_lake
+#include "atx/vol/counters.hpp" // BoundarySolves / AlBoundarySolves — per-contract ledger
 
 #include <cstddef>
 #include <limits>
@@ -78,9 +79,24 @@ void american_put_boundary_batch_avx2(const double* S, const double* K,
         for (int l = 0; l < 4; ++l) {
             const std::size_t idx = i + static_cast<std::size_t>(l);
             const bool patch = !eligible[l] || !std::isfinite(pr[l]);
-            price_out[idx] =
-                patch ? scalar_put(S[idx], K[idx], T[idx], sigma[idx], r[idx], q[idx], opts)
-                      : pr[l];
+            if (patch) {
+                // Scalar patch: scalar_put -> andersen_lake -> al_seed_boundary already
+                // bumps BoundarySolves + AlBoundarySolves for this lane.
+                price_out[idx] =
+                    scalar_put(S[idx], K[idx], T[idx], sigma[idx], r[idx], q[idx], opts);
+            } else {
+                // A lane the vectorized boundary solve actually priced. Count it as ONE
+                // boundary solve so the solve ledger is SIMD-invariant: the 4-wide pack
+                // does not call al_seed_boundary (it lays the BAW seed down itself), so
+                // without this bump an AVX2-routed mark would under-count the boundary
+                // work vs. the per-contract scalar path (ledger 10 -> 2 per the flip
+                // triage). Bumping per active lane keeps BoundarySolves == #contracts
+                // whether the mark routed scalar or AVX2 — the sprint's solve-economy
+                // thesis (11 -> 6 s/u) must read the same on both routes.
+                ATX_VOL_COUNT(BoundarySolves);
+                counters::ledger::bump(counters::ledger::Solve::AlBoundarySolves);
+                price_out[idx] = pr[l];
+            }
         }
     }
 
