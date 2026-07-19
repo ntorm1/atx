@@ -74,7 +74,84 @@ struct CanonicalTenor {
   return Ok(CanonicalTenor{valuation_ts_ns + tenor_ns, static_cast<double>(tenor_ns) / kNsPerYear});
 }
 
+// ── X3 risk gate ────────────────────────────────────────────────────────────
+//
+// The dispersion book is LINEAR in `target_vega`: every leg quantity scales by
+// the same factor, so gross vega, gross premium notional and net premium outlay
+// are all proportional to the requested size. That linearity is what makes a
+// single probe build plus an analytic rescale EXACTLY equivalent to iterating a
+// pre-sizing solve — and far cheaper. So the gate measures the book the config
+// asked for, derives the binding scale, and applies it before the lots are
+// committed; no partially-sized book is ever written into the portfolio.
+
+struct RiskProbe {
+  double gross_vega{0.0};
+  double gross_notional{0.0};
+  double net_outlay{0.0};
+};
+
+[[nodiscard]] RiskProbe measure_book(const DispersionBook &book,
+                                     std::span<const double> entry_marks, double multiplier) {
+  RiskProbe probe;
+  probe.gross_vega = std::fabs(book.index_leg.straddle_vega * book.index_leg.straddle_qty);
+  for (const DispersionLeg &leg : book.name_legs) {
+    probe.gross_vega += std::fabs(leg.straddle_vega * leg.straddle_qty);
+  }
+  for (std::size_t i = 0; i < book.positions.size() && i < entry_marks.size(); ++i) {
+    const double notional = book.positions[i].qty * multiplier * entry_marks[i];
+    probe.gross_notional += std::fabs(notional);
+    probe.net_outlay += notional;
+  }
+  (void)multiplier;
+  return probe;
+}
+
+// Binding scale in (0, 1], plus which limit bound. `measured <= limit` => 1.0.
+struct BindingLimit {
+  double scale{1.0};
+  RiskBreachReason reason{RiskBreachReason::None};
+  double limit{0.0};
+  double requested{0.0};
+};
+
+[[nodiscard]] BindingLimit binding_limit(const RiskProbe &probe,
+                                         const DispersionRiskLimits &limits) {
+  BindingLimit binding;
+  const auto consider = [&](double measured, double limit, RiskBreachReason reason) {
+    if (!(limit > 0.0) || !(measured > limit)) {
+      return;
+    }
+    const double scale = limit / measured;
+    if (scale < binding.scale) {
+      binding.scale = scale;
+      binding.reason = reason;
+      binding.limit = limit;
+      binding.requested = measured;
+    }
+  };
+  consider(probe.gross_vega, limits.max_gross_vega, RiskBreachReason::GrossVega);
+  consider(probe.gross_notional, limits.max_gross_notional, RiskBreachReason::GrossNotional);
+  consider(std::fabs(probe.net_outlay), limits.capital, RiskBreachReason::Capital);
+  return binding;
+}
+
 } // namespace
+
+std::string_view to_string(RiskBreachReason reason) noexcept {
+  switch (reason) {
+  case RiskBreachReason::None:
+    return "none";
+  case RiskBreachReason::GrossVega:
+    return "max_gross_vega";
+  case RiskBreachReason::GrossNotional:
+    return "max_gross_notional";
+  case RiskBreachReason::Capital:
+    return "capital";
+  case RiskBreachReason::DrawdownStop:
+    return "drawdown_stop";
+  }
+  return "unknown";
+}
 
 Status DispersionStrategy::on_step(const MarketSnapshot &base, std::size_t step_index,
                                    PortfolioState &book, std::uint64_t &next_lot_id) {
@@ -91,6 +168,9 @@ Status DispersionStrategy::on_step_impl(const MarketSnapshot &base, std::size_t 
                                         PortfolioState &book, std::uint64_t &next_lot_id,
                                         const PriceOptions *price_options) {
   last_entry_seeds_.clear();
+  // Per-step risk telemetry, reset each step so `signals()` reports THIS step.
+  last_risk_scale_ = 1.0;
+  last_risk_reason_ = RiskBreachReason::None;
   // C1 POINT-IN-TIME UNIVERSE. Re-resolve the basket for THIS step's date before
   // any sizing so a mid-backtest reconstitution is honored (the next roll rebuilds
   // vega-flat legs from the fresh membership; a dropped name actually exits — this
@@ -104,6 +184,23 @@ Status DispersionStrategy::on_step_impl(const MarketSnapshot &base, std::size_t 
       universe_ = std::move(*pit);
     }
   }
+  // X3 DRAWDOWN HALT. Armed by the run seam once it has seen the NAV track (a
+  // strategy is never shown its own NAV by the engine). Once halted we open no
+  // further risk; the existing book is left untouched and simply ages out.
+  if (step_index >= halt_from_step_) {
+    if (!halted_) {
+      halted_ = true;
+      risk_events_.push_back(RiskEvent{step_index, RiskBreachReason::DrawdownStop,
+                                       RiskBreachAction::Halt, limits_.drawdown_stop, 0.0, 0.0});
+    }
+    last_risk_scale_ = 0.0;
+    last_risk_reason_ = RiskBreachReason::DrawdownStop;
+    return Ok();
+  }
+  if (halted_) {
+    return Ok();
+  }
+
   const LifecycleDecision d = lifecycle_decide(lifecycle_, step_index, book.lots.empty(),
                                                base.ts_ns(), front_expiry_, have_front_);
   if (!d.open) {
@@ -180,6 +277,30 @@ Status DispersionStrategy::on_step_impl(const MarketSnapshot &base, std::size_t 
     return Err(ErrorCode::Internal, "DispersionStrategy: nonpositive entry expiry");
   }
 
+  // X3 PRE-COMMIT RISK GATE. The book is sized but NOT yet in the portfolio, so
+  // this still runs before any risk is taken. Under the default (all-zero =
+  // unlimited) limits `any_sizing_limit()` is false and this whole block is
+  // skipped — the golden path never even measures.
+  double risk_scale = 1.0;
+  if (limits_.any_sizing_limit()) {
+    const RiskProbe probe = measure_book(*built, built->entry_marks, effective_cfg.multiplier);
+    const BindingLimit binding = binding_limit(probe, limits_);
+    if (binding.reason != RiskBreachReason::None) {
+      const bool halt = limits_.action == RiskBreachAction::Halt;
+      risk_scale = halt ? 0.0 : binding.scale;
+      risk_events_.push_back(RiskEvent{step_index, binding.reason, limits_.action, binding.limit,
+                                       binding.requested, risk_scale});
+      last_risk_scale_ = risk_scale;
+      last_risk_reason_ = binding.reason;
+      if (halt) {
+        // Halt means "take no more risk", not "liquidate": the held book is left
+        // exactly as found (the no-trade contract) and no new cohort is opened.
+        halted_ = true;
+        return Ok();
+      }
+    }
+  }
+
   const std::uint32_t cohort = cohort_counter_;
   std::vector<Lot> replacement;
   replacement.reserve(built->positions.size());
@@ -191,7 +312,7 @@ Status DispersionStrategy::on_step_impl(const MarketSnapshot &base, std::size_t 
       Lot lot;
       lot.id = staged_next_lot_id++;
       lot.contract = p.contract;
-      lot.qty = p.qty;
+      lot.qty = risk_scale == 1.0 ? p.qty : p.qty * risk_scale;
       lot.multiplier = p.multiplier;
       lot.expiry_ts_ns = expiry;
       lot.cohort = cohort;
@@ -218,13 +339,24 @@ Status DispersionStrategy::on_step_impl(const MarketSnapshot &base, std::size_t 
 
 std::vector<std::pair<std::string, double>>
 DispersionStrategy::signals(const MarketSnapshot &base) const {
+  // X3. Risk telemetry is emitted EXACTLY when a limit is configured. That
+  // conditionality is deliberate: signals become columns in the persisted track,
+  // so emitting these unconditionally would change the pinned golden's schema.
+  // With limits configured, every clamp and every halt lands in the output —
+  // `risk_clamp_scale` < 1 marks a clamped step, 0 marks a suppressed one, and
+  // `risk_breach_reason` names which limit bound (see `to_string`).
+  std::vector<std::pair<std::string, double>> risk;
+  if (limits_.any()) {
+    risk.emplace_back("risk_clamp_scale", last_risk_scale_);
+    risk.emplace_back("risk_breach_reason", static_cast<double>(last_risk_reason_));
+  }
   if (!cfg_.record_diagnostics) {
-    return {};
+    return risk;
   }
   const Result<ResolvedUniverse> ru = resolve_universe_uids(
       universe_, [&](std::string_view s) { return base.uid_of(s); }, cfg_.missing);
   if (!ru) {
-    return {}; // universe can't bind (index missing / authoring bug): no signal, as pre-S1-3
+    return risk; // universe can't bind (index missing / authoring bug): no signal, as pre-S1-3
   }
   const double n_resolve_dropped = static_cast<double>(ru->dropped.size());
   const Result<DispersionSignal> sig =
@@ -233,11 +365,14 @@ DispersionStrategy::signals(const MarketSnapshot &base) const {
     // No tradeable signal this snapshot (e.g. too few survivors => Unavailable):
     // emit implied_corr as NaN but still surface the drops we know about, so the
     // series stay full-length and the drop shows up in the run diagnostics.
-    return {{"implied_corr", std::numeric_limits<double>::quiet_NaN()},
-            {"n_names_dropped", n_resolve_dropped}};
+    risk.emplace_back("implied_corr", std::numeric_limits<double>::quiet_NaN());
+    risk.emplace_back("n_names_dropped", n_resolve_dropped);
+    return risk;
   }
-  return {{"implied_corr", sig->implied_corr},
-          {"n_names_dropped", n_resolve_dropped + static_cast<double>(sig->dropped.size())}};
+  risk.emplace_back("implied_corr", sig->implied_corr);
+  risk.emplace_back("n_names_dropped",
+                    n_resolve_dropped + static_cast<double>(sig->dropped.size()));
+  return risk;
 }
 
 Result<DispersionBook> DispersionStrategy::build_book(const MarketSnapshot &base) const {

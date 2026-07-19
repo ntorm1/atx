@@ -24,8 +24,8 @@ struct DispersionSpecs {
   DispersionSpecs specs;
   specs.dispersion.target_T = config.target_dte_days / 365.25;
   specs.dispersion.target_vega = config.gross_index_vega;
-  specs.dispersion.side = DispersionSide::ShortIndexLongNames;
-  specs.dispersion.multiplier = 100.0;
+  specs.dispersion.side = config.side;
+  specs.dispersion.multiplier = config.multiplier;
   specs.dispersion.missing = MissingNameSpec{MissingNamePolicy::DropRenormalize, config.min_names};
   specs.dispersion.record_diagnostics = config.record_diagnostics;
   if (config.project_to_calendar_expiry) {
@@ -36,18 +36,48 @@ struct DispersionSpecs {
   specs.lifecycle.holding = LifecycleSpec::Holding::RollAtHorizon;
   specs.lifecycle.entry_every_n = config.entry_every_n;
   specs.lifecycle.roll_at_T = config.roll_dte_days / 365.25;
-  specs.hedge.kind = HedgeSpec::Kind::DeltaToZero;
-  specs.hedge.cadence = HedgeSpec::Cadence::Daily;
+  specs.hedge.kind = config.hedge_kind;
+  specs.hedge.cadence = config.hedge_cadence;
   specs.hedge.band = config.delta_band;
   return specs;
 }
 
 } // namespace
 
+double fill_price(double signed_qty, double mid, double half_spread, double adv_frac,
+                  const DispersionCostModel &m) noexcept {
+  // Direction comes from the sign of the traded quantity: a BUY (qty > 0) lifts
+  // the offer and pays impact, a SELL hits the bid and pays it too. `Side` in this
+  // codebase is the option's Call/Put, NOT a trade direction, so it deliberately
+  // plays no part here.
+  const double direction = signed_qty >= 0.0 ? 1.0 : -1.0;
+  const double impact = mid * m.k * std::pow(std::max(adv_frac, 0.0), m.beta);
+  return mid + direction * (half_spread + impact);
+}
+
+FrictionModel dispersion_effective_frictions(const FrictionModel &base,
+                                             const DispersionCostModel &costs) {
+  FrictionModel effective = base;
+  if (!costs.active()) {
+    return effective; // exact mid-fill reproduction
+  }
+  const double impact_fraction = costs.k * std::pow(std::max(costs.adv_fraction, 0.0), costs.beta);
+  // The impact is a fraction of price, so it adds directly to the price-bps
+  // half-spread lane. If the spec configured no spread kind, selecting PriceBps
+  // here is what turns the impact on at all.
+  effective.spread_kind = FrictionModel::SpreadKind::PriceBps;
+  effective.half_spread_bps = base.spread_kind == FrictionModel::SpreadKind::PriceBps
+                                  ? base.half_spread_bps + 1.0e4 * impact_fraction
+                                  : 1.0e4 * impact_fraction;
+  return effective;
+}
+
 DispersionStrategy make_dispersion_backtest_strategy(DispersionUniverse universe,
                                                      const DispersionBacktestConfig &config) {
   const DispersionSpecs specs = make_specs(config);
-  return DispersionStrategy{std::move(universe), specs.dispersion, specs.lifecycle, specs.hedge};
+  DispersionStrategy strategy{std::move(universe), specs.dispersion, specs.lifecycle, specs.hedge};
+  strategy.set_risk_limits(config.limits);
+  return strategy;
 }
 
 DispersionStrategy make_dispersion_backtest_strategy(std::vector<UniverseRow> schedule,
@@ -66,8 +96,10 @@ DispersionStrategy make_dispersion_backtest_strategy(std::vector<UniverseRow> sc
     }
   }
   auto resolver = make_pit_universe_resolver(std::move(schedule), std::string(index_symbol));
-  return DispersionStrategy{std::move(seed), specs.dispersion, specs.lifecycle, specs.hedge,
-                            std::move(resolver)};
+  DispersionStrategy strategy{std::move(seed), specs.dispersion, specs.lifecycle, specs.hedge,
+                              std::move(resolver)};
+  strategy.set_risk_limits(config.limits);
+  return strategy;
 }
 
 Result<BacktestResult> run_dispersion_backtest(const Clock &clock, DispersionUniverse universe,

@@ -20,9 +20,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -441,6 +443,64 @@ private:
   std::vector<FullGreekSeed> last_entry_seeds_;
 };
 
+// ── X3: risk limits / capital / drawdown stop ────────────────────────────────
+//
+// Before this there was NO capital, gross exposure or drawdown control anywhere
+// in the dispersion loop: the book sized to `gross_index_vega` unconditionally,
+// every step, forever. These limits are checked on the ENTRY path before the
+// sized book is committed, and every clamp or halt is recorded so it can never be
+// silent.
+//
+// ALL DEFAULTS ARE UNLIMITED (0 == no limit), so a default config reproduces the
+// pinned 82-session golden bit-for-bit.
+
+enum class RiskBreachAction : std::uint8_t {
+  Clamp = 0, // scale the entry down to the binding limit and keep trading
+  Halt = 1,  // open no further risk for the remainder of the run
+};
+
+enum class RiskBreachReason : std::uint8_t {
+  None = 0,
+  GrossVega = 1,
+  GrossNotional = 2,
+  Capital = 3,
+  DrawdownStop = 4,
+};
+
+[[nodiscard]] std::string_view to_string(RiskBreachReason reason) noexcept;
+
+struct DispersionRiskLimits {
+  double max_gross_vega{0.0};     // book gross vega cap; 0 => unlimited
+  double max_gross_notional{0.0}; // gross premium notional cap; 0 => unlimited
+  double capital{0.0};            // net premium outlay cap; 0 => unlimited
+  // Fraction of CAPITAL (0.2 == halt after losing 20% of capital), so it requires
+  // `capital` to be set. Deliberately not a fraction of peak NAV: the track's NAV
+  // is cumulative P&L from an inception of zero, not an equity curve, which makes
+  // a peak-relative ratio degenerate. 0 => no stop. This limit is NOT enforceable
+  // inside on_step — the engine never shows a strategy its NAV — so it is enforced
+  // at the run seam; see `halt_from_step`.
+  double drawdown_stop{0.0};
+  RiskBreachAction action{RiskBreachAction::Clamp};
+
+  [[nodiscard]] bool any_sizing_limit() const noexcept {
+    return max_gross_vega > 0.0 || max_gross_notional > 0.0 || capital > 0.0;
+  }
+  [[nodiscard]] bool any() const noexcept {
+    return any_sizing_limit() || drawdown_stop > 0.0;
+  }
+};
+
+// One recorded breach. `scale` is the factor actually applied to the entry
+// (1.0 == untouched, 0.0 == the entry was suppressed entirely).
+struct RiskEvent {
+  std::size_t step_index{0};
+  RiskBreachReason reason{RiskBreachReason::None};
+  RiskBreachAction action{RiskBreachAction::Clamp};
+  double limit{0.0};
+  double requested{0.0};
+  double scale{1.0};
+};
+
 // ── DispersionStrategy (adapter over build_dispersion_book) ──────────────────
 
 // An IStrategy over a dispersion universe. On entry it calls the existing
@@ -496,6 +556,21 @@ public:
   [[nodiscard]] std::vector<DroppedName> dropped_on(const MarketSnapshot &base) const;
   [[nodiscard]] HedgeSpec hedge_spec() const override { return hedge_; }
 
+  // X3. Install the pre-sizing risk gate. Default-constructed limits (all zero =
+  // unlimited) leave on_step bit-identical to the ungated path.
+  void set_risk_limits(DispersionRiskLimits limits) noexcept { limits_ = limits; }
+  [[nodiscard]] const DispersionRiskLimits &risk_limits() const noexcept { return limits_; }
+
+  // Suppress every entry from `step` onward. This is how the seam enforces a
+  // drawdown stop: the engine never shows a strategy its NAV, so the seam runs
+  // the track, finds the first breaching step, and replays with the halt armed.
+  // NAV before the breach is unaffected by the halt, so one replay is exact.
+  void halt_from_step(std::size_t step) noexcept { halt_from_step_ = step; }
+
+  // Every clamp/halt applied, in step order. Empty when no limit was configured
+  // or none bound — so a halt is never silent, and neither is a clamp.
+  [[nodiscard]] std::span<const RiskEvent> risk_events() const noexcept { return risk_events_; }
+
 private:
   // `price_options == nullptr` preserves the documented legacy 4-arg/build_book
   // construction exactly. A non-null route is the engine seed-producing path.
@@ -513,6 +588,14 @@ private:
   std::int64_t front_expiry_{0};
   bool have_front_{false};
   std::vector<FullGreekSeed> last_entry_seeds_;
+  // X3 risk gate. All-zero limits => the gate is inert and never allocates.
+  DispersionRiskLimits limits_{};
+  std::size_t halt_from_step_{std::numeric_limits<std::size_t>::max()};
+  bool halted_{false};
+  std::vector<RiskEvent> risk_events_;
+  // Per-step telemetry mirrored into `signals()` (which does not see step_index).
+  double last_risk_scale_{1.0};
+  RiskBreachReason last_risk_reason_{RiskBreachReason::None};
 };
 
 } // namespace atx::vol
