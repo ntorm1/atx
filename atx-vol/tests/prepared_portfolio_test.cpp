@@ -29,6 +29,7 @@
 #include "atx/vol/priced_surface.hpp"
 #include "atx/vol/vol_curve.hpp"
 #include "atx/vol/vol_surface.hpp"
+#include "support/isa_golden_tol.hpp"
 
 using namespace atx::vol;
 
@@ -467,8 +468,23 @@ TEST(PreparedPortfolio, GroupedPriceEqualsIndependentOracleAndPinnedFingerprint)
   // A1 REPIN (core-review finding 1): the American book reprices through the cold
   // andersen_lake path whose BAW seed sign was fixed, shifting the marks ~1e-6 and
   // thus every hashed bit — the FNV fingerprint moves wholesale (a hash has no
-  // "small" delta). Grouped==oracle economic equality above is unchanged. New value
-  // captured on the SSE2 reference ISA (dev preset).
-  constexpr std::uint64_t kGoldenFingerprint = 718570745730299145ULL;
+  // "small" delta). Grouped==oracle economic equality above is unchanged.
+  //
+  // ISA-KEYED PIN (pg-sota sprint, 2026-07): the SSE2 value below was captured on
+  // the dev preset (source-of-truth ISA). Under FMA contraction (the rel-avx2
+  // acceptance preset, /arch:AVX2 → -mfma) the American book reprices ~1 ULP through
+  // the fused `a*b+c` in andersen_lake, and because a whole-frame FNV hash admits NO
+  // tolerance band — a single last-place bit rehashes the entire frame — the pin
+  // moves wholesale to a distinct-but-correct value. A per-ISA `golden_close` band
+  // (as BoundaryHoist uses for its scalar pins) is therefore meaningless on a hash.
+  // So we pin BOTH goldens and select on the active ISA (kFmaContraction, from
+  // support/isa_golden_tol.hpp): the SSE2 gate keeps its exact byte-identity
+  // guarantee untouched, and rel-avx2 stays a green acceptance gate. Neither pin is
+  // loosened; both are exact equalities on their own ISA. See the FMA-divergence
+  // rationale in support/isa_golden_tol.hpp.
+  constexpr std::uint64_t kGoldenFingerprintSse2 = 718570745730299145ULL;
+  constexpr std::uint64_t kGoldenFingerprintFma = 8754310291975640041ULL;
+  constexpr std::uint64_t kGoldenFingerprint =
+      atx::vol::test::kFmaContraction ? kGoldenFingerprintFma : kGoldenFingerprintSse2;
   EXPECT_EQ(h4, kGoldenFingerprint);
 }
