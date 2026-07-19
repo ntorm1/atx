@@ -187,6 +187,8 @@ struct Row {
     return "robust";
   case FitPreset::Hft:
     return "hft";
+  case FitPreset::Populate:
+    return "populate";
   }
   return "unknown";
 }
