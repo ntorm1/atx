@@ -22,9 +22,18 @@ using atx::core::Ok;
 
 namespace {
 
-// Volatility search bracket. The spec's [1e-4, 5]; `hi` is expanded
-// geometrically for the rare quote implying a vol above 500%.
-constexpr double kSigmaLo = 1.0e-4;
+// Volatility search bracket. `hi` is expanded geometrically for the rare quote
+// implying a vol above 500%.
+//
+// A6 (core-review finding 6): the bracket floor IS the reported floor, kIvMin.
+// Previously the bracket floored at 1e-4 while quotes were reported no lower than
+// kIvMin=0.005, so a root found in (1e-4, kIvMin) was returned as-is (below the
+// documented floor) and a root below 1e-4 snapped up to kIvMin — a sub-floor
+// band plus a 50x discontinuity as a quote decayed toward intrinsic. Unifying the
+// two removes both: no representable IV sits below kIvMin, and a quote whose true
+// vol is at/below the floor is reported as kIvMin with the existing at-floor
+// status. Interacts with the A3 polish clamp, whose bracket lo (xl) is now kIvMin.
+constexpr double kSigmaLo = kIvMin;
 constexpr double kSigmaHi = 5.0;
 constexpr double kSigmaHiCap = 40.0; // hard ceiling for hi expansion
 constexpr unsigned kMaxExpand = 8;   // bounded hi-doubling budget

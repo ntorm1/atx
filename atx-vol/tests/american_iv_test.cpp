@@ -103,14 +103,20 @@ void check_round_trip(double S, double K, double T, double sigma, double r, doub
   const double vega = american_vega_fd(S, K, T, sigma, r, q, side, method);
   const bool vega_resolvable = vega > 0.5;
 
-  // A1 NOTE (core-review finding 1 + 3 + 6): at near-intrinsic / on-boundary corners
-  // vega collapses (e.g. K=110,T=2,sig=0.1 put: vega~3e-3, time value ~1.5e-4) so
-  // sigma is unidentifiable and the ill-conditioned inversion closes only to the
-  // inverter's residual floor (~1e-4 here). The BAW-seed sign fix shifted the cold-AL
-  // map ~1e-6, nudging that residual just over the former 1e-5 pin. Tight-bracketing
-  // the polish residual is A3/A6 (IV cold-polish clamp + floor unification); until
-  // then hold a strict 1e-5 where vega is resolvable and a relaxed 1e-4 at the
-  // collapsed corners, which still trips any gross inversion break.
+  // A1/A3/A6 NOTE (core-review findings 1 + 3 + 6): at near-intrinsic / on-boundary
+  // corners vega collapses (e.g. K=110,T=2,sig=0.1 put: vega~3e-3) so sigma is
+  // genuinely UNidentifiable — a 1e-5 vol move there changes the price by ~3e-8, far
+  // below the cold pricer's noise. A3 (polish bracket-clamp) + A6 (floor unification)
+  // have landed; with both in, the price round-trip at every collapsed corner was
+  // MEASURED and all but two put corners close to <=2.6e-6 relative or machine
+  // precision. The exception is the A1-flagged K=110,T=2 (and K=120,T=2) sig=0.1 q=0
+  // puts, which still close only to ~1.2e-4 absolute (~1.2e-5 relative): that residual
+  // is the inverter's fundamental floor in the collapsed-vega regime, NOT a polish
+  // artifact A3 could remove (A3 correctly bounds the iterate to [xl,xh] but cannot
+  // manufacture identifiability where vega has vanished). So the vega gate stays:
+  // strict 1e-5 where vega is resolvable, relaxed 1e-4 at the collapsed corners
+  // (still trips any gross inversion break). Restoring a uniform strict 1e-5 was
+  // checked and fails exactly at those two puts.
   const double px_tol = vega_resolvable ? 1.0e-5 : 1.0e-4;
   EXPECT_NEAR(reprice, p, px_tol * std::fmax(1.0, p))
       << "price round-trip [K=" << K << " T=" << T << " sig=" << sigma << " vega=" << vega << "]";
@@ -344,6 +350,33 @@ TEST(AmericanIv, PriceAtIntrinsic_ClampsToFloor) {
   const auto iv = american_implied_vol(40.0, S, K, T, r, q, Side::Put);
   ASSERT_TRUE(iv.has_value()) << (iv ? std::string{} : iv.error().to_string());
   EXPECT_DOUBLE_EQ(*iv, atx::vol::kIvMin);
+}
+
+// A6 (core-review finding 6): the IV bracket floor and the reported floor are the
+// SAME constant (kIvMin). Pre-fix the search bracket floored at kSigmaLo=1e-4
+// while the reported floor was kIvMin=0.005, so a quote decaying toward intrinsic
+// produced IVs stepping DOWN through the (1e-4, 0.005) gap (0.004, 0.002, …,
+// below the documented floor) and then a 50x SNAP up to 0.005 once the root fell
+// below 1e-4 — a non-monotone cliff that poisons vega-weighted fitters. With the
+// bracket floor unified to kIvMin the IV decreases monotonically to the floor and
+// clamps there, with no sub-floor values and no cliff.
+TEST(AmericanIv, DecayTowardIntrinsic_MonotoneNonIncreasingIvNoFloorCliff) {
+  const double S = 100.0, K = 100.0, T = 0.25, r = 0.05, q = 0.0;
+  const Side side = Side::Call; // ATM, q=0: time value stays resolvable at tiny vol
+  // Decreasing sigma: some land in the old (1e-4, 0.005) gap, the last below 1e-4.
+  const double sigmas[] = {0.05, 0.02, 0.01, 0.006, 0.004, 0.002, 0.001, 0.00005};
+  double prev_iv = 1.0e9;
+  for (double sig : sigmas) {
+    const double p =
+        value_or_fail(american_price(S, K, T, sig, r, q, side, AmericanMethod::AndersenLake));
+    const auto iv = american_implied_vol(p, S, K, T, r, q, side);
+    ASSERT_TRUE(iv.has_value()) << "sig=" << sig << ": "
+                                << (iv ? std::string{} : iv.error().to_string());
+    EXPECT_GE(*iv, atx::vol::kIvMin) << "sig=" << sig << ": IV below the unified floor";
+    EXPECT_LE(*iv, prev_iv + 1.0e-12)
+        << "sig=" << sig << ": IV rose as the quote decayed toward intrinsic (floor cliff)";
+    prev_iv = *iv;
+  }
 }
 
 // ── R-05: seeded fast path evaluates the floor/ceiling BEFORE clamping/rejecting

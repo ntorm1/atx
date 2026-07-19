@@ -61,7 +61,10 @@ enum class PricingRoute : std::uint8_t {
 inline constexpr double kTMinEval = 1.0 / 525600.0;
 
 // Implied-vol search bounds. Equity options effectively never sit outside
-// [0.5%, 1000%] annualized lognormal vol.
+// [0.5%, 1000%] annualized lognormal vol. kIvMin is the unified IV floor (A6,
+// core-review finding 6): it is BOTH the reported floor of every inverter and the
+// lower bound of the American IV search bracket (american_iv.cpp kSigmaLo), so no
+// representable IV sits below it and there is no bracket-vs-report discontinuity.
 inline constexpr double kIvMin = 0.005;
 inline constexpr double kIvMax = 10.0;
 
