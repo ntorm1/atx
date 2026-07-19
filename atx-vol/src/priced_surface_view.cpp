@@ -122,7 +122,8 @@ PricedSurfaceView::PricedSurfaceView(PricedSurfaceView &&other) noexcept
       col_forward_(other.col_forward_), col_qeff_(other.col_qeff_), col_df_(other.col_df_),
       col_borrow_(other.col_borrow_), col_payload_off_(other.col_payload_off_),
       col_node_count_(other.col_node_count_), n_slices_(other.n_slices_), pricing_(other.pricing_),
-      term_rates_(other.term_rates_), heavy_curves_(std::move(other.heavy_curves_)),
+      term_rates_(other.term_rates_), query_pricing_tier_(other.query_pricing_tier_),
+      heavy_curves_(std::move(other.heavy_curves_)),
       instance_id_(std::exchange(other.instance_id_, allocate_view_instance_id())) {}
 
 PricedSurfaceView &PricedSurfaceView::operator=(PricedSurfaceView &&other) noexcept {
@@ -141,6 +142,7 @@ PricedSurfaceView &PricedSurfaceView::operator=(PricedSurfaceView &&other) noexc
   n_slices_ = other.n_slices_;
   pricing_ = other.pricing_;
   term_rates_ = other.term_rates_;
+  query_pricing_tier_ = other.query_pricing_tier_;
   heavy_curves_ = std::move(other.heavy_curves_);
   instance_id_ = std::exchange(other.instance_id_, allocate_view_instance_id());
   return *this;
@@ -966,6 +968,21 @@ Status PricedSurfaceView::evaluate_batch(std::span<const double> K, std::span<co
     i = j;
   }
   return Ok();
+}
+
+Status PricedSurfaceView::set_cold_query_pricing_tier(QueryPricingTier tier) noexcept {
+  switch (tier) {
+  case QueryPricingTier::LegacyCompatible:
+  case QueryPricingTier::ColdReference:
+    query_pricing_tier_ = tier;
+    return Ok();
+  case QueryPricingTier::RepresentativeFast:
+  case QueryPricingTier::CarryBank:
+    break;
+  }
+  return Err(ErrorCode::InvalidArgument,
+             "PricedSurfaceView::set_cold_query_pricing_tier: a view carries no accelerator "
+             "and cannot serve a fast tier");
 }
 
 VolCurveKind PricedSurfaceView::kind_at(std::size_t i) const noexcept {

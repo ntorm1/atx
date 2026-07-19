@@ -1090,7 +1090,7 @@ TEST(BacktestExec, FixedBookComposedSubsetAndSettlement_Deterministic) {
   auto sub = MarketSnapshot::load(dp.front().second, QueryPricingTier::LegacyCompatible,
                                   std::span<const std::uint32_t>{ref_uids});
   ASSERT_TRUE(sub.has_value()) << sub.error().to_string();
-  EXPECT_EQ(sub->surfaces().size(), 2u);
+  EXPECT_EQ(sub->n_surfaces(), 2u);
 
   const auto make_book = [&]() {
     PortfolioState b;

@@ -278,6 +278,11 @@ public:
   [[nodiscard]] QueryPricingTier query_pricing_tier() const noexcept {
     ATX_VOL_SURFACE_REF_FWD(query_pricing_tier());
   }
+  // Prepared query-accelerator size. A borrowed view carries NO accelerator by
+  // construction (it is the cold route), so its pair count is structurally 0.
+  [[nodiscard]] std::size_t query_cache_pair_count() const noexcept {
+    return owned_ != nullptr ? owned_->query_cache_pair_count() : std::size_t{0};
+  }
 
   [[nodiscard]] double iv(double K, double T) const noexcept { ATX_VOL_SURFACE_REF_FWD(iv(K, T)); }
   [[nodiscard]] double total_variance(double K, double T) const noexcept {

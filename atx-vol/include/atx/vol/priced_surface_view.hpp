@@ -131,10 +131,17 @@ public:
   [[nodiscard]] std::uint32_t uid() const noexcept { return pricing_.uid; }
   [[nodiscard]] std::uint64_t instance_id() const noexcept { return instance_id_; }
   [[nodiscard]] VolCurveKind kind_at(std::size_t i) const noexcept;
-  // The view is always the cold reference tier (no accelerator).
+  // A view carries no accelerator, so it can only ever BE a cold tier. Both cache-free
+  // tiers (LegacyCompatible, ColdReference) are served identically; this reports WHICH
+  // of the two the loader asked for so a borrowed snapshot is indistinguishable from an
+  // owned one prepared at the same tier (WS-ZC1).
   [[nodiscard]] QueryPricingTier query_pricing_tier() const noexcept {
-    return QueryPricingTier::LegacyCompatible;
+    return query_pricing_tier_;
   }
+  // Record the cold tier this view is serving. InvalidArgument for a FAST tier: those
+  // require a real QueryAccelerator, which a view cannot have — such a caller must
+  // reconstruct an owned surface instead.
+  [[nodiscard]] Status set_cold_query_pricing_tier(QueryPricingTier tier) noexcept;
 
 private:
   PricedSurfaceView() = default;
@@ -181,6 +188,7 @@ private:
   std::size_t n_slices_{0};
   PricingContext pricing_{};
   bool term_rates_{false};
+  QueryPricingTier query_pricing_tier_{QueryPricingTier::LegacyCompatible};
 
   // Materialized concrete curves for the two derived-state kinds (ConvexDense,
   // SplineVol). Empty (no heap) for parametric-only surfaces; otherwise sized

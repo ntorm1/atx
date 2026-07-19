@@ -1146,39 +1146,24 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
                                             QueryPricingTier query_pricing_tier,
                                             std::span<const std::uint32_t> referenced_uids) {
   ATX_VOL_PROFILE_SCOPE(SnapshotLoad);
-  auto arch = [&]() {
-    ATX_VOL_PROFILE_SCOPE(ArchiveOpen);
-    // S2 (WS-S): mmap the partition instead of reading the whole file into an owned
-    // heap buffer. open_impl CRC-validates only the header/lookup/directory (small),
-    // so this open faults in only metadata pages; a subset load (below) then faults
-    // in only the referenced records' pages via the OS page cache — the whole-file
-    // read amplification (67% of backtest wall in the profile) is eliminated. The
-    // archive co-owns the Mapping, and this snapshot owns the archive-derived
-    // surfaces, so the mapped pages outlive every reader.
-    return SurfaceArchiveV2::open_mapped(archive_path);
-  }();
-  if (!arch) {
-    return Err(arch.error());
-  }
-  // One archive-open event (the load-once gate asserts N loads => N opens).
-  g_open_count.fetch_add(1, std::memory_order_relaxed);
-
-  // WS-ZC1: the snapshot now co-owns the archive (and therefore the Mapping) for its
-  // whole lifetime, which is what makes borrowing its records safe. See the lifetime
-  // note on MarketSnapshot's members.
-  auto archive = std::make_shared<const SurfaceArchiveV2>(std::move(*arch));
-
-  const std::span<const ArchiveV2DirEntry> dir = archive->directory();
-  std::vector<PricedSurface> surfaces;
-  std::vector<PricedSurfaceView> views;
-  std::vector<SurfaceProvenance> provenance;
-
-  // WS-ZC1 — BORROW INSTEAD OF RECONSTRUCT. `PricedSurfaceView` carries no query
-  // accelerator: it IS the cold reference route. So it can serve the two cache-free
-  // tiers (LegacyCompatible, ColdReference) bit-for-bit, and only those — a fast tier
-  // must still reconstruct owned surfaces because `with_query_pricing` has to build a
-  // real accelerator. Since WS-P1v both forms drive the same laned analytic-Greek
-  // kernels, so borrowing costs no pricing performance on the tiers it serves.
+  // WS-ZC1: which BACKING the borrowed views read from. `open_mapped` is demand-paged
+  // and copy-free, but on Windows a file with an active mapped section CANNOT be
+  // deleted or replaced (ERROR_USER_MAPPED_FILE) regardless of share mode — and a
+  // borrowed snapshot holds its archive for its whole lifetime. That would break
+  // atomic republish of a partition (write .tmp + rename) while any reader is live,
+  // which `Backtest.SnapshotCacheEvictsStaleEntryWhenArchiveRewrittenSameLength`
+  // pins as a supported workflow.
+  //
+  // So a BORROWING load reads the archive into an OWNED buffer instead. The views then
+  // borrow that buffer (kept alive by the same archive shared_ptr) and no mapping is
+  // held, so republish keeps working. This costs one sequential whole-file read, which
+  // is a wash here: a whole-board borrow touches every record anyway, so the
+  // demand-paging that motivated `open_mapped` (WS-S S2) has nothing left to skip. The
+  // reconstruction that actually dominated the profile is gone either way.
+  //
+  // The owned (non-borrowing) path keeps `open_mapped`: it reconstructs and then drops
+  // the archive inside this function, so it never holds a mapping past the load and
+  // still benefits from faulting in only the subset it reconstructs.
   // TEMPORARY (WS-ZC1 bring-up): `ATX_VOL_ZC_BORROW=0` forces the owned path so the
   // two backings can be A/B'd inside ONE binary. Remove before merge.
   static const bool borrow_allowed = []() {
@@ -1194,8 +1179,45 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
     return e == nullptr || std::string_view{e} != "0";
 #endif
   }();
+  // BORROW INSTEAD OF RECONSTRUCT. `PricedSurfaceView` carries no query accelerator: it
+  // IS the cold reference route. So it can serve the two cache-free tiers
+  // (LegacyCompatible, ColdReference) bit-for-bit, and only those — a fast tier must
+  // still reconstruct owned surfaces because `with_query_pricing` has to build a real
+  // accelerator. Since WS-P1v, both forms drive the same laned analytic-Greek kernels,
+  // so borrowing costs no pricing performance on the tiers it serves.
   const bool borrow = borrow_allowed && (query_pricing_tier == QueryPricingTier::LegacyCompatible ||
                                          query_pricing_tier == QueryPricingTier::ColdReference);
+
+  auto arch = [&]() {
+    ATX_VOL_PROFILE_SCOPE(ArchiveOpen);
+    if (borrow) {
+      // Read into an OWNED buffer rather than mapping (see the backing note above).
+      return SurfaceArchiveV2::open_file(archive_path);
+    }
+    // S2 (WS-S): mmap the partition instead of reading the whole file into an owned
+    // heap buffer. open_impl CRC-validates only the header/lookup/directory (small),
+    // so this open faults in only metadata pages; a subset load (below) then faults
+    // in only the referenced records' pages via the OS page cache — the whole-file
+    // read amplification (67% of backtest wall in the profile) is eliminated. The
+    // owned path reconstructs and drops this archive before returning, so it never
+    // holds a mapping past the load.
+    return SurfaceArchiveV2::open_mapped(archive_path);
+  }();
+  if (!arch) {
+    return Err(arch.error());
+  }
+  // One archive-open event (the load-once gate asserts N loads => N opens).
+  g_open_count.fetch_add(1, std::memory_order_relaxed);
+
+  // WS-ZC1: the snapshot co-owns the archive — and therefore the buffer every borrowed
+  // view reads — for its whole lifetime. See the lifetime note on MarketSnapshot's
+  // members.
+  auto archive = std::make_shared<const SurfaceArchiveV2>(std::move(*arch));
+
+  const std::span<const ArchiveV2DirEntry> dir = archive->directory();
+  std::vector<PricedSurface> surfaces;
+  std::vector<PricedSurfaceView> views;
+  std::vector<SurfaceProvenance> provenance;
 
   // B1 subset-deserialize (bottleneck #1 at the reader): when the caller names the
   // uids its book references, reconstruct ONLY those directory entries
@@ -1303,6 +1325,14 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
       return Err(prepared.error());
     }
     surface = std::move(*prepared);
+  }
+  // A borrowed view has nothing to prepare (it IS the cold route), but it still
+  // records WHICH cold tier it is serving so a borrowed snapshot reports the same
+  // tier an owned one prepared at would.
+  for (PricedSurfaceView &v : views) {
+    if (Status s = v.set_cold_query_pricing_tier(query_pricing_tier); !s.has_value()) {
+      return Err(s.error());
+    }
   }
 
   // Non-owning resolver over the surfaces' stable addresses. Neither vector is
