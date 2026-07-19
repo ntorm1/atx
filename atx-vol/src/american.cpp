@@ -1647,6 +1647,31 @@ constexpr const char *kDoubleContinuationMsg =
 
 // ── American Greeks (chain rule + analytic correction derivatives) ───────
 
+// A2 (core-review finding 2): floor a SERVED cached price at max(intrinsic, euro,
+// 0), matching the cold clamp chain (al_put_price_from_boundary :1376-1393,
+// AloPricer::price :1813-). The cached euro + F*corr carries no floor of its own,
+// so it can dip below intrinsic — from Chebyshev interpolation error in-box, or
+// (worse) from the correction clamping to its k_log-box EDGE value OUT-of-box,
+// where the shortfall grows ~linearly with moneyness — producing arbitrageable
+// sub-intrinsic marks. Applied to the served mark only; the analytic greek
+// sensitivities are deliberately left untouched. The floor introduces a kink, so
+// delta/gamma are technically discontinuous where it binds, but the cached greeks
+// are already fixed-carry approximations and consumers read out.price for the
+// mark, so keeping the smooth sensitivities is the intended contract.
+[[nodiscard]] inline double floor_cached_price(double price, double euro,
+                                               double intrinsic) noexcept {
+  if (intrinsic > price) {
+    price = intrinsic;
+  }
+  if (euro > price) {
+    price = euro;
+  }
+  if (price < 0.0) {
+    price = 0.0;
+  }
+  return price;
+}
+
 // Cached routes obtain the full correction gradient/Hessian from one
 // differentiated Clenshaw traversal; no off-point finite differences remain.
 template <typename Correction>
@@ -1681,7 +1706,10 @@ void american_greeks_first_order(double S, double K, double T, double sigma, dou
     d2c_ds2 = corr.dsigma2;
   }
 
-  out.price = euro_price + F * c_val;
+  // A2: served mark is floored; the sensitivity fields below are NOT (see
+  // floor_cached_price — the kink at the floor is intentional).
+  const double intrinsic = (side == Side::Put) ? (K - S) : (S - K);
+  out.price = floor_cached_price(euro_price + F * c_val, euro_price, intrinsic);
 
   const double D = gB.delta + c_val - dc_dk; // ∂A/∂F
   out.delta = m * D;                         // spot-delta convention
@@ -2243,7 +2271,11 @@ double american_price_cached(double S, double K, double T, double sigma, double 
   const double k_log = -ln_fk;
   const double corr = correction->eval(k_log, T, sigma);
   ATX_VOL_COUNT(CacheHits);
-  return euro + F * corr;
+  // A2 (core-review finding 2): floor at max(intrinsic, euro, 0), matching the
+  // cold clamp chain — the correction clamps to its box edge out-of-box, so the
+  // raw euro + F*corr can print below intrinsic (arbitrageable) otherwise.
+  const double intr = (side == Side::Put) ? (K - S) : (S - K);
+  return floor_cached_price(euro + F * corr, euro, intr);
 }
 
 double american_price_cached(double S, double K, double T, double sigma, double r, double q,
@@ -2269,7 +2301,10 @@ double american_price_cached(double S, double K, double T, double sigma, double 
   const double euro = black76_price_from_lnfk(F, K, T, sigma, df, ln_fk, sqrt_t, side);
   const double corr = correction.eval(-ln_fk, T, sigma);
   ATX_VOL_COUNT(CacheHits);
-  return euro + F * corr;
+  // A2 (core-review finding 2): floor at max(intrinsic, euro, 0) — see the
+  // single-cache overload above.
+  const double intr = (side == Side::Put) ? (K - S) : (S - K);
+  return floor_cached_price(euro + F * corr, euro, intr);
 }
 
 Result<AmericanGreeks> american_greeks(double S, double K, double T, double sigma, double r,

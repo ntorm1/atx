@@ -598,6 +598,82 @@ TEST(CorrectionCache, CachedPrice_UnsupportedRegime_ReturnsNaN) {
   EXPECT_TRUE(std::isnan(px));
 }
 
+// ── A2 (core-review finding 2): intrinsic floor on the cached hot path ───────
+//
+// Every COLD path clamps its served price to max(price, intrinsic, euro, 0)
+// (al_put_price_from_boundary :1376-1393, AloPricer::price). The cached path
+// returned raw euro + F*corr with NO floor. Deep-ITM puts (r>0) whose k_log lands
+// OUTSIDE the correction box get a correction CLAMPED to the box-edge value; the
+// shortfall vs the true early-exercise premium grows ~linearly with moneyness, so
+// the served mark dips below intrinsic — an arbitrageable sub-intrinsic price.
+// The floor removes it. Only marks that were previously BELOW intrinsic change.
+TEST(CorrectionCache, CachedPrice_DeepItmPutBeyondBox_FlooredAtIntrinsic) {
+  const double r = 0.08, q = 0.0;
+  auto built = CorrectionCache::build(24, 16, 12, r, q, /*k_log_min=*/-0.5, /*k_log_max=*/0.5,
+                                      /*T_min=*/0.1, /*T_max=*/2.0, /*sigma_min=*/0.10,
+                                      /*sigma_max=*/0.80, Side::Put);
+  ASSERT_TRUE(built.has_value());
+  const CorrectionCache tbl = std::move(*built);
+  EXPECT_EQ(tbl.extrap_policy(), ExtrapPolicy::Clamp); // default: raw eval clamps to the box edge
+
+  // Deep-ITM put: S << K puts k_log = log(K/F) well beyond k_log_max = 0.5.
+  const double K = 100.0, T = 1.5, sigma = 0.20;
+  for (const double S : {40.0, 30.0, 20.0, 12.0}) {
+    const double F = S * std::exp((r - q) * T);
+    const double k_log = std::log(K / F);
+    ASSERT_GT(k_log, tbl.k_log_max()); // genuinely out of the box (Clamp region)
+    const double intr = K - S;
+    const double hot = atx::vol::american_price_cached(S, K, T, sigma, r, q, Side::Put, &tbl);
+    EXPECT_GE(hot, intr) << "sub-intrinsic cached mark at S=" << S;
+  }
+}
+
+// The greeks-bundle SERVED price (out.price) is floored identically; the greek
+// sensitivity fields are left at their smooth analytic values (documented kink).
+TEST(CorrectionCache, CachedGreeksPrice_DeepItmPutBeyondBox_FlooredAtIntrinsic) {
+  const double r = 0.08, q = 0.0;
+  auto built = CorrectionCache::build(24, 16, 12, r, q, -0.5, 0.5, 0.1, 2.0, 0.10, 0.80, Side::Put);
+  ASSERT_TRUE(built.has_value());
+  const CorrectionCache tbl = std::move(*built);
+  const double S = 20.0, K = 100.0, T = 1.5, sigma = 0.20;
+  const auto g = atx::vol::american_greeks(S, K, T, sigma, r, q, Side::Put, &tbl);
+  ASSERT_TRUE(g.has_value());
+  EXPECT_GE(g->price, K - S);
+}
+
+// In-box property sweep: no served cached mark may sit below intrinsic anywhere
+// inside the interpolation box, for either side (interpolation error can dip a
+// raw euro+F*corr fractionally below intrinsic near the ITM edge).
+TEST(CorrectionCache, CachedPrice_InBoxSweep_NoSubIntrinsicMarks) {
+  const double r = 0.06, q = 0.0;
+  auto put_built = CorrectionCache::build(24, 16, 12, r, q, -0.5, 0.5, 0.1, 2.0, 0.10, 0.80,
+                                          Side::Put);
+  ASSERT_TRUE(put_built.has_value());
+  const CorrectionCache put = std::move(*put_built);
+  auto call_built = CorrectionCache::build(24, 16, 12, r, q, -0.5, 0.5, 0.1, 2.0, 0.10, 0.80,
+                                           Side::Call);
+  ASSERT_TRUE(call_built.has_value());
+  const CorrectionCache call = std::move(*call_built);
+
+  const double K = 100.0;
+  for (const double T : {0.15, 0.5, 1.0, 1.8}) {
+    for (const double sigma : {0.12, 0.25, 0.5, 0.75}) {
+      for (const double k_log : {-0.45, -0.2, 0.0, 0.2, 0.45}) { // strictly inside [-0.5, 0.5]
+        // k_log = log(K/F) => F = K*exp(-k_log); S = F*exp(-(r-q)T).
+        const double F = K * std::exp(-k_log);
+        const double S = F * std::exp(-(r - q) * T);
+        ASSERT_LE(std::fabs(std::log(K / (S * std::exp((r - q) * T)))), put.k_log_max());
+        const double put_px =
+            atx::vol::american_price_cached(S, K, T, sigma, r, q, Side::Put, &put);
+        EXPECT_GE(put_px, K - S) << "put sub-intrinsic S=" << S << " T=" << T << " sig=" << sigma;
+        const double call_px =
+            atx::vol::american_price_cached(S, K, T, sigma, r, q, Side::Call, &call);
+        EXPECT_GE(call_px, S - K) << "call sub-intrinsic S=" << S << " T=" << T << " sig=" << sigma;
+      }
+    }
+  }
+}
+
 // ── Fused second-order correction jet ───────────────────────────────────────
 TEST(CorrectionCache, SecondOrderJet_MatchesIndependentFiniteDifferences) {
   auto built = CorrectionCache::build(/*n_k=*/16, /*n_T=*/8, /*n_s=*/12,
