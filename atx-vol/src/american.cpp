@@ -553,11 +553,24 @@ namespace amer {
   } else if (n >= 8) {
     s.n_quad_fp = 8;
   }
-  // Premium integral uses the SAME Gauss-Legendre order as the fixed-point
-  // integral. The nullopt (ACCURATE) path returned above keeps its 48-node
-  // premium quad; an explicit AlOpts drives both integrals off n_quadrature, so
-  // a fast preset can genuinely lower the dominant premium-quad cost.
-  s.n_quad_price = s.n_quad_fp;
+  // Premium (pricing) Gauss-Legendre order. K2 (class: pure-refactor + new
+  // capability): n_quad_price DECOUPLES the pricing quadrature from the fixed-point
+  // quadrature — QuantLib QdFpAmericanEngine's l != p axis (docs/al-preset-ladder.md;
+  // ALO SSRN 2547027). o.n_quad_price == 0 (the default) ties price to fp — the
+  // historical behavior, so every existing / serialized AlOpts resolves to the SAME
+  // scheme; a non-zero value quantizes to an available GL order {8,16,24,32,48,64}.
+  // The nullopt (ACCURATE) path returned above keeps its 48-node premium quad.
+  if (o.n_quad_price >= 8) {
+    const unsigned p = o.n_quad_price;
+    s.n_quad_price = (p >= 64)   ? std::uint16_t{64}
+                     : (p >= 48) ? std::uint16_t{48}
+                     : (p >= 32) ? std::uint16_t{32}
+                     : (p >= 24) ? std::uint16_t{24}
+                     : (p >= 16) ? std::uint16_t{16}
+                                 : std::uint16_t{8};
+  } else {
+    s.n_quad_price = s.n_quad_fp;
+  }
   if (o.max_newton_iter > 0) {
     const std::uint16_t total = o.max_newton_iter;
     s.n_iter_jn = (total >= 2) ? std::uint16_t{2} : std::uint16_t{1};
