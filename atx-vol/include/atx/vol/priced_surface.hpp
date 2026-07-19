@@ -122,6 +122,36 @@ private:
   AmericanGreeks greeks_;
 };
 
+// ── K4 first-order tier selector (WS-L L4 wiring) ────────────────────────────
+//
+// Which σ/rate-bumped boundary solves a Greek request needs. Defaults to the full
+// analytic bundle, so EVERY existing call site is byte-unchanged. A reduced request
+// threads straight into `american_greeks_al`'s `need_vega`/`need_rho`/`need_charm`
+// (american.hpp:422): `vega=false` drops the σ± solves feeding vega/volga/vanna;
+// `rho=false` drops the r± solves feeding rho; `charm=false` drops the wide speed
+// stencils. Solve counts (BoundarySolves ledger): full = 5, {vega only, i.e.
+// rho=charm=false} = 3, {none} = 1 (base). The columns a reduced request DOES return
+// are BIT-IDENTICAL to the full bundle (same base boundary + σ± stencils —
+// docs/seams/laned-greeks.md K4 guarantee); the unrequested greeks come back 0. This
+// is the missing K4 batch-arm seam L4 wires (PM standing license, sprint §4 L4 + §5
+// contention-note (2)); the cached correction and FD fallback routes ignore it and
+// stay the full oracle (a correctness-preserving superset — the rare guard corners,
+// not the backtest's analytic AL hot path).
+//
+// Namespace scope (not nested in PricedSurface) so the `= {}` default argument on the
+// query methods does not trip clang's "default member initializer needed within the
+// enclosing class outside a member function" rule; PricedSurface aliases it back as
+// `PricedSurface::GreekNeeds`, the name every caller uses.
+struct GreekNeeds {
+  bool vega{true};
+  bool rho{true};
+  bool charm{true};
+  [[nodiscard]] constexpr bool full() const noexcept { return vega && rho && charm; }
+  [[nodiscard]] friend constexpr bool operator==(GreekNeeds a, GreekNeeds b) noexcept {
+    return a.vega == b.vega && a.rho == b.rho && a.charm == b.charm;
+  }
+};
+
 // A fitted, serialization-ready surface with optional transient query caches.
 // Move-only (owns a move-only `CurveSurface`). Construct via `create` (validating)
 // or receive one from `VolaSession::to_priced_surface` /
@@ -174,6 +204,10 @@ public:
   fair_value(double K, double T, Side side,
              QueryExecution execution = QueryExecution::Configured) const;
 
+  // K4 first-order tier selector — namespace-scope type (see above), aliased here so
+  // callers keep writing `PricedSurface::GreekNeeds`.
+  using GreekNeeds = ::atx::vol::GreekNeeds;
+
   // Model Greeks + price at (K, T, side). Cold tiers use `american_greeks` with no
   // cache. Fast tiers differentiate the cached surrogate directly and retain the
   // cold route as their certified-box fallback.
@@ -188,9 +222,15 @@ public:
   // bit-stable greeks() default). The pricer enables it via PriceOptions. On a
   // fast query tier both methods intentionally return the same cached jet, so the
   // analytic flag has no effect while the cache route is active.
+  // `needs` narrows the analytic bundle (K4 tier): the DEFAULT `{}` (all true) is the
+  // full 5-solve bundle, BIT-IDENTICAL to the pre-L4 maskless call; a reduced request
+  // (e.g. {vega=true,rho=false,charm=false} for a mark+vega friction consumer) skips
+  // the r±/charm solves and returns those columns 0. Only honored on the cold analytic
+  // AL route; the fast cached-surrogate tier returns its full internally-consistent jet.
   [[nodiscard]] Result<AmericanGreeks>
   greeks_analytic(double K, double T, Side side,
-                  QueryExecution execution = QueryExecution::Configured) const;
+                  QueryExecution execution = QueryExecution::Configured,
+                  GreekNeeds needs = {}) const;
 
   // Produce an immutable full-Greek handoff seed through one fused surface
   // resolution and one full American-Greek evaluation. The seed is valid only
@@ -288,8 +328,10 @@ public:
     Status status{};         // default-constructed == Ok
   };
 
+  // (GreekNeeds is declared earlier, before greeks(), so greeks_analytic() can name it.)
   [[nodiscard]] FusedResult evaluate(double K, double T, Side side, EvalField fields, bool analytic,
-                                     QueryExecution execution = QueryExecution::Configured) const;
+                                     QueryExecution execution = QueryExecution::Configured,
+                                     GreekNeeds needs = {}) const;
 
   // Caller-provided, one-entry-per-query output spans for `evaluate_batch`.
   // On the legacy path (no Delta/Vega bit), the original iv/price/status sizing
@@ -320,11 +362,17 @@ public:
   //         neither 0 (where permitted) nor the query count, when any input span
   //         overlaps any output span, or when any nonempty output spans overlap
   //         each other. Overlap is rejected before any write.
+  // `needs` narrows the analytic Greek bundle when FirstOrder/SecondOrder is requested
+  // (K4 tier). DEFAULT `{}` (all true) is the full 5-solve bundle, BIT-IDENTICAL to the
+  // pre-L4 maskless batch; the reduced requested columns stay bit-identical and the
+  // unrequested greeks come back 0. Ignored on the price-only / cached-correction / FD
+  // routes (those stay the full oracle).
   [[nodiscard]] Status evaluate_batch(std::span<const double> K, std::span<const double> T,
                                       std::span<const Side> side, EvalField fields, bool analytic,
                                       EvaluationSoA out,
                                       simd::SimdIsa resolved_price_isa = simd::SimdIsa::Auto,
-                                      QueryExecution execution = QueryExecution::Configured) const;
+                                      QueryExecution execution = QueryExecution::Configured,
+                                      GreekNeeds needs = {}) const;
 
   // ── Term carry accessors (the query re-pricing forward / effective yield) ──
   //
@@ -390,13 +438,13 @@ private:
   // point — the single place the field bitmask drives the pricer calls.
   [[nodiscard]] FusedResult evaluate_resolved(const ResolvedSurfacePoint &p, Side side,
                                               EvalField fields, bool analytic,
-                                              QueryExecution execution) const;
+                                              QueryExecution execution, GreekNeeds needs = {}) const;
 
   [[nodiscard]] Result<double> price_resolved(const ResolvedSurfacePoint &p, Side side,
                                               QueryExecution execution) const;
   [[nodiscard]] Result<AmericanGreeks> greeks_resolved(const ResolvedSurfacePoint &p, Side side,
-                                                       bool analytic,
-                                                       QueryExecution execution) const;
+                                                       bool analytic, QueryExecution execution,
+                                                       GreekNeeds needs = {}) const;
   [[nodiscard]] Result<double> delta_resolved(const ResolvedSurfacePoint &p, Side side,
                                               QueryExecution execution) const;
   [[nodiscard]] Result<double> vega_resolved(const ResolvedSurfacePoint &p, Side side,
