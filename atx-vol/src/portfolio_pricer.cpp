@@ -24,6 +24,7 @@
 #include "atx/vol/detail/adjoint_greeks.hpp" // WS-P P3: american_greeks_adjoint A/B route
 #include "atx/vol/prepared_portfolio.hpp" // PreparedPortfolio (grouped exec substrate)
 #include "atx/vol/pricing_executor.hpp"   // pricing_executor(): the persistent P1.4 pool
+#include "atx/vol/simd/american_boundary_batch.hpp" // simd::avx2_boundary_selected (invariant tile-schedule gate)
 
 namespace atx::vol {
 
@@ -778,12 +779,14 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
     return;
   }
 
-  if (!want_greeks && resolved_price_isa == simd::SimdIsa::ForceAvx2) {
-    // Only the explicit AVX2 Marks route needs invariant pack membership. Each
-    // immutable tile (up to kPreparedPriceTileLanes, a multiple of the four-lane
-    // pack) is one work unit; evaluate_batch packs whole four-lane groups within
-    // it, so changing n_threads changes only tile ownership, never the packs or
-    // final tail.
+  if (!want_greeks && simd::avx2_boundary_selected(resolved_price_isa)) {
+    // Any AVX2 Marks route (ForceAvx2 OR Auto→AVX2 now that WS-K ships it by
+    // default) needs invariant pack membership. Each immutable tile (up to
+    // kPreparedPriceTileLanes, a multiple of the four-lane pack) is one work unit;
+    // evaluate_batch packs whole four-lane groups within it, so changing n_threads
+    // changes only tile ownership, never the packs or final tail. Gating on
+    // avx2_boundary_selected (the SAME predicate the boundary dispatch uses) closes
+    // the latent Auto→AVX2 thread-count non-determinism the run_ranges split left.
     pricing_executor().run_blocks(tiles.size(), n_threads, [&](std::size_t i) {
       const PreparedPriceTile &tile = tiles[i];
       solve_span(tile.uid, tile.begin, tile.end);
@@ -1213,7 +1216,8 @@ namespace {
 // per-entry bit-identical regardless of where a sub-call begins).
 void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
                        const SurfaceSet &shifted, std::span<const OptionContract> contracts,
-                       bool analytic, QueryExecution query_execution, unsigned n_threads,
+                       bool analytic, simd::SimdIsa resolved_price_isa,
+                       QueryExecution query_execution, unsigned n_threads,
                        std::span<const ContractPx> cached_base, std::vector<ContractPnl> &pnl,
                        std::vector<double> &b_iv, std::vector<double> &b_price,
                        std::vector<AmericanGreeks> &b_greeks, std::vector<Status> &b_status,
@@ -1237,15 +1241,16 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
   s_junk_status.resize(n_unique);
 
   const std::span<const ContractGroup> groups = pp.groups();
+  const std::span<const PreparedPriceTile> tiles = pp.price_tiles();
   const std::span<const std::uint32_t> oci = pp.original_contract_index();
   const std::span<const double> kcol = pp.k();
   const std::span<const double> tcol = pp.t();
   const std::span<const Side> scol = pp.side();
 
-  const auto solve_span = [&](const ContractGroup &g, std::uint32_t s, std::uint32_t e) {
+  const auto solve_span = [&](std::uint32_t uid, std::uint32_t s, std::uint32_t e) {
     const std::size_t gsz = static_cast<std::size_t>(e - s);
-    const PricedSurface *sb = base.find(g.uid);    // one base find per group
-    const PricedSurface *st = shifted.find(g.uid); // one shifted find per group
+    const PricedSurface *sb = base.find(uid);    // one base find per (uid,side) span
+    const PricedSurface *st = shifted.find(uid); // one shifted find per (uid,side) span
     if (sb == nullptr || st == nullptr) {
       // Degenerate is checked FIRST (an invalid contract is InvalidContract even when
       // its uid has no surface) — matching the ungrouped precedence.
@@ -1285,7 +1290,7 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
                                             {}};
       (void)sb->evaluate_batch(kcol.subspan(s, gsz), tcol.subspan(s, gsz), scol.subspan(s, gsz),
                                EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder, analytic,
-                               base_soa, simd::SimdIsa::Auto, query_execution);
+                               base_soa, resolved_price_isa, query_execution);
     }
     // Shifted surface at the COMMON base maturity T_b: iv only (sig_t).
     PricedSurface::EvaluationSoA sig_soa{std::span<double>(s_iv).subspan(s, gsz),
@@ -1295,7 +1300,7 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
                                          {},
                                          {}};
     (void)st->evaluate_batch(kcol.subspan(s, gsz), tcol.subspan(s, gsz), scol.subspan(s, gsz),
-                             EF::Iv, /*analytic=*/false, sig_soa, simd::SimdIsa::Auto,
+                             EF::Iv, /*analytic=*/false, sig_soa, resolved_price_isa,
                              query_execution);
     // Shifted surface at the rolled maturity T_t: American mark only (price_target).
     PricedSurface::EvaluationSoA px_soa{std::span<double>(s_junk).subspan(s, gsz),
@@ -1306,7 +1311,7 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
                                         {}};
     (void)st->evaluate_batch(kcol.subspan(s, gsz), std::span<double>(s_tt).subspan(s, gsz),
                              scol.subspan(s, gsz), EF::Price, /*analytic=*/false, px_soa,
-                             simd::SimdIsa::Auto, query_execution);
+                             resolved_price_isa, query_execution);
 
     for (std::uint32_t p = s; p < e; ++p) {
       const std::uint32_t orig = oci[p];
@@ -1349,10 +1354,28 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
     }
   };
 
-  // Fan out over the FLATTENED permuted unique-contract index [0, n_unique); each
-  // worker walks the group boundaries its contiguous [lo,hi) overlaps (mirrors
-  // solve_uniques). Disjoint slot writes + per-entry-bit-identical batches ⇒
-  // bit-identical across worker counts.
+  // H0/H5: the shifted-price leg (EF::Price) rides the SAME cold-American marks
+  // route price_into uses, so when AVX2 is selected (ForceAvx2 OR Auto→AVX2 now
+  // that WS-K ships it) it must schedule by IMMUTABLE tiles, not the run_ranges
+  // split. Each tile is a 4-lane-pack multiple within a single (uid,side) group,
+  // so pack membership — hence the ~1e-13 AVX2-vs-scalar per-mark delta — is fixed
+  // regardless of worker count. This restores thread-count bit-identity of the P&L
+  // decomposition (PnlExplain*/PortfolioPricerTargetMarks) after the WS-K flip.
+  // solve_span reads dt/dS/dr per (uid) surface pair, so a per-tile call over a
+  // split group reproduces the whole-group result exactly.
+  if (simd::avx2_boundary_selected(resolved_price_isa)) {
+    pricing_executor().run_blocks(tiles.size(), n_threads, [&](std::size_t ti) {
+      const PreparedPriceTile &tile = tiles[ti];
+      solve_span(tile.uid, tile.begin, tile.end);
+    });
+    return;
+  }
+
+  // Scalar (ForceScalar / non-AVX2 host): keep the established flattened-unique
+  // schedule. Fan out over the FLATTENED permuted unique-contract index
+  // [0, n_unique); each worker walks the group boundaries its contiguous [lo,hi)
+  // overlaps (mirrors solve_uniques). Disjoint slot writes + per-entry-bit-identical
+  // scalar batches ⇒ bit-identical across worker counts.
   pricing_executor().run_ranges(n_unique, n_threads, [&](std::size_t lo, std::size_t hi) {
     const std::uint32_t lo32 = static_cast<std::uint32_t>(lo);
     const std::uint32_t hi32 = static_cast<std::uint32_t>(hi);
@@ -1362,7 +1385,7 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
     for (; git != groups.end() && git->begin < hi32; ++git) {
       const std::uint32_t s = std::max<std::uint32_t>(git->begin, lo32);
       const std::uint32_t e = std::min<std::uint32_t>(git->end, hi32);
-      solve_span(*git, s, e);
+      solve_span(git->uid, s, e);
     }
   });
 }
@@ -1546,9 +1569,9 @@ Status PortfolioPricer::pnl_explain_into(const SurfaceSet &base, const SurfaceSe
   const std::span<const ContractPx> cached_base =
       reuse_base ? std::span<const ContractPx>{w.px} : std::span<const ContractPx>{};
   solve_pnl_uniques(*w.prepared, base, shifted, contracts, opts.analytic_greeks,
-                    opts.query_execution, opts.n_threads, cached_base, w.pnl, w.b_iv, w.b_price,
-                    w.b_greeks, w.b_status, w.pnl_tt, w.pnl_s_iv, w.pnl_s_price, w.pnl_s_status,
-                    w.pnl_junk, w.pnl_junk_status);
+                    opts.resolved_price_isa, opts.query_execution, opts.n_threads, cached_base,
+                    w.pnl, w.b_iv, w.b_price, w.b_greeks, w.b_status, w.pnl_tt, w.pnl_s_iv,
+                    w.pnl_s_price, w.pnl_s_status, w.pnl_junk, w.pnl_junk_status);
 
   // 19 per-row columns = 141 bytes/position (8 + 4 + 16*8 + 1). No FrameAllocations:
   // the output spans are caller-owned and the scratch was reserved.
@@ -1596,9 +1619,9 @@ Result<PnlTotals> PortfolioPricer::pnl_totals(const SurfaceSet &base, const Surf
   const std::span<const ContractPx> cached_base =
       reuse_base ? std::span<const ContractPx>{w.px} : std::span<const ContractPx>{};
   solve_pnl_uniques(*w.prepared, base, shifted, contracts, opts.analytic_greeks,
-                    opts.query_execution, opts.n_threads, cached_base, w.pnl, w.b_iv, w.b_price,
-                    w.b_greeks, w.b_status, w.pnl_tt, w.pnl_s_iv, w.pnl_s_price, w.pnl_s_status,
-                    w.pnl_junk, w.pnl_junk_status);
+                    opts.resolved_price_isa, opts.query_execution, opts.n_threads, cached_base,
+                    w.pnl, w.b_iv, w.b_price, w.b_greeks, w.b_status, w.pnl_tt, w.pnl_s_iv,
+                    w.pnl_s_price, w.pnl_s_status, w.pnl_junk, w.pnl_junk_status);
 
   // No scatter, no per-row frame: reduce the weighted per-row decomposition over
   // positions in fixed input order — bit-identical to pnl_explain(...).total.
