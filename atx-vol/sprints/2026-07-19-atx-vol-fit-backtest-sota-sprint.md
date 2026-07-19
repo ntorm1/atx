@@ -148,7 +148,19 @@ Route production `MarketSnapshot::load` through zero-copy `PricedSurfaceView` + 
 4. Final: full `atx_vol_fast` label suite green on `dev`; dispersion benchmark PnL byte-identical to baseline with improved throughput; write acceptance note (baseline vs final ns/op + boards/sec + reprice throughput).
 5. Leave `WS-S` + backlog (G1–G9 feature gaps, interval-loss objective, intraday backtest) documented for the next sprint.
 
-## 4. Baseline (filled by PM before Wave 1)
-- Dispersion benchmark target: `atxvol_spy_dispersion_backtest` (rel-avx2).
-- Recipe: reuse a prebuilt `C:/atx-data/spy-dispersion/runs/*` (archives+manifest+run_spec+universe) via `run-surface-backtest --run <dir>`, else `build-corpus --spec examples/spy_dispersion_run_spec.tsv --out <dir>` first.
-- Baseline numbers: _TBD (PM measuring)._
+## 4. Baseline (ESTABLISHED 2026-07-19) — full record in `.agents/research/atx-vol-review/BASELINE.md`
+- Target: `atxvol_spy_dispersion_backtest` (rel-avx2).
+- **Working recipe** (Git Bash, prebuilt exe, no MSVC env):
+  ```
+  EXE=/c/atx-wt/wt-bt-sota/build-rel-avx2/bin/atxvol_spy_dispersion_backtest.exe
+  $EXE build-corpus --spec C:/atx-data/spy-dispersion/scratch-bt-sota/run_spec.tsv --out C:/atx-data/spy-dispersion/runs/bt-sota-baseline
+  $EXE run-surface-backtest --run C:/atx-data/spy-dispersion/runs/bt-sota-baseline
+  ```
+  Two INPUT fixes were required (no source edited; scratch inputs at `C:/atx-data/spy-dispersion/scratch-bt-sota/`): (1) universe TSV must be **LF** (CRLF header is rejected — see robustness bug below); (2) drop `occ_ess_root` from the spec (occ-ess covers only 3 dates and is not read by run-surface-backtest).
+- Corpus: `runs/bt-sota-baseline` — admitted=902, 85 date archives, 82 backtest steps.
+- **GOLDEN PnL (assert byte-identical after every perf change):** `final_nav = 247.4065016443293` (entry NAV 0; "surface-only projected backtest complete: dates=82"). Held identical across 4 runs.
+- Throughput anchor (host-insensitive): 82 steps × 22 lots = **1,804 lot-repricings** (11 straddles × 2 legs). Wall (PROVISIONAL, host busy): best 0.66 s, median 0.76 s ⇒ ≈2,700 lot-repricings/s, ≈123 steps/s.
+- NOTE for clean acceptance numbers: rebuild rel-avx2 with `-DATX_VOL_PROFILE=ON -DATX_VOL_COUNTERS=ON` (the baseline exe lacked them, so per-op counters were unavailable). Measure final delta on a QUIET host (P-core lease).
+
+## 5. Robustness quick-wins found during baseline (backlog / opportunistic)
+- **CRLF universe header rejected**: `read_universe` (dispersion_workflow.cpp:181) compares the header via `substr(0, first_end)` keeping a trailing `\r`; CRLF-header universe files fail "bad universe schedule header" while data rows are CR-stripped. One-line strip fix. (Not in any Wave-0 ownership set — PM or a follow-up handles it.)
