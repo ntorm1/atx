@@ -76,11 +76,25 @@ public:
                                                   std::int64_t valuation_ts) {
     if (!same_book(lots)) {
       ATX_TRY(Portfolio portfolio, Portfolio::create(positions_at(lots, valuation_ts)));
-      pricer_.emplace(std::move(portfolio));
+      PortfolioPricer next(std::move(portfolio));
       // PortfolioWorkspace is grow-only and validates its retained substrate by
       // logical book identity. Preserve its buffers across book changes instead
       // of destroying and reallocating the high-water mark.
-      workspace_.reserve(pricer_->portfolio().n_contracts(), pricer_->portfolio().n_positions());
+      workspace_.reserve(next.portfolio().n_contracts(), next.portfolio().n_positions());
+      // L1 (AL-solve-wall sprint, fewer-solves): when the new book is a SUBSET of the
+      // outgoing one — an expiry/roll settlement shrinks the alive set — re-home the
+      // surviving uniques' retained base-risk bundle onto `next` so the following
+      // pnl solve REUSES it instead of re-solving a full-Greek bundle per survivor
+      // across the membership change (the expiry-day 11 -> 6 solve-equivs/unit win).
+      // Bit-identical by construction (the retained row is the same per-lane solve a
+      // fresh path would produce); fails closed to the ordinary full solve on an
+      // add / field change / first book, and the pnl reuse guard independently
+      // re-validates the base surface, so a stale carry can only fall back, never
+      // serve wrong risk.
+      if (pricer_.has_value()) {
+        (void)next.carry_base_risk_subset(*pricer_, workspace_);
+      }
+      pricer_ = std::move(next);
       key_ = lots;
     } else {
       tenors_.resize(lots.size());

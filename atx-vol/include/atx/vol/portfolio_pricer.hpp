@@ -646,6 +646,31 @@ public:
                                     TargetMarkView out, PortfolioWorkspace &ws,
                                     const PriceOptions &opts = {}) const;
 
+  // L1 (AL-solve-wall sprint, fewer-solves): carry a retained base-risk bundle
+  // across a book MEMBERSHIP SHRINK. When THIS pricer's book is a subset of `prev`'s
+  // book (every unique (uid,K,T,side) of THIS book present in `prev`, at bit-exact
+  // identity), each surviving unique's retained per-contract risk row (in `ws`) is
+  // remapped into THIS book's contract order and the workspace's base-risk stamp is
+  // re-homed to THIS book — so a following `pnl_totals`/`pnl_explain` for the SAME
+  // base surface reuses the survivors' base bundle instead of re-solving it.
+  //
+  // Bit-identical BY CONSTRUCTION: the retained row is the SAME per-(uid,K,T,side)
+  // solve the fresh path would produce (each unique's American solve is independent
+  // of the book's composition — the exact per-lane invariance the no-churn-day reuse
+  // and thread-count invariance already rely on), so removing an UNRELATED contract
+  // cannot change a survivor's row. Precedent: QuantLib's `LazyObject` dirty-bit —
+  // a cached result is invalidated by the delta that actually changed it, never by
+  // wholesale recreation of the object.
+  //
+  // Fails CLOSED: returns false (and leaves the stamp NOT reusable for THIS book, so
+  // the caller's next solve recomputes) on any identity gap — a superset/added
+  // unique, a changed (uid,K,T,side), a stamp that does not correspond to `prev`, or
+  // no live stamp. It NEVER weakens the `pnl_*` reuse guard: the base-surface
+  // instance/identity checks there still independently re-validate every reuse, so a
+  // stale carry can only ever fall back to a fresh solve, never serve wrong risk.
+  [[nodiscard]] bool carry_base_risk_subset(const PortfolioPricer &prev,
+                                            PortfolioWorkspace &ws) const;
+
 private:
   Portfolio pf_;
 };

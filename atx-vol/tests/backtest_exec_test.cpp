@@ -41,6 +41,7 @@
 #include "atx/vol/american.hpp"          // al_fast_opts, AmericanMethod, AmericanGreeks
 #include "atx/vol/backtest.hpp"          // Clock, run_backtest, RunConfig, FrictionModel, ...
 #include "atx/vol/corpus.hpp"            // CorpusManifest, CorpusEntry, CorpusFitStatus
+#include "atx/vol/counters.hpp"          // counters::ledger — L1 solve-economy gate
 #include "atx/vol/portfolio_pricer.hpp"  // OptionContract, kNsPerYear
 #include "atx/vol/priced_surface.hpp"    // PricedSurface, PricingContext
 #include "atx/vol/strategy.hpp"          // DeclarativeStrategy, StrategySpec, HedgeSpec
@@ -1141,4 +1142,286 @@ TEST(BacktestExec, FixedBookComposedSubsetAndSettlement_Deterministic) {
   std::printf("[btexec] B5b composed fixed-book (B1 subset + B2 settle): whole-board load fails, "
               "subset run succeeds, settle_rows=%d, bit-identical over 2 runs and 1-vs-4 threads\n",
               settle_rows);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// L1 (AL-solve-wall sprint, fewer-solves): base-risk stamp survives a membership
+// change. See portfolio_pricer.cpp PortfolioPricer::carry_base_risk_subset and
+// backtest.cpp RetainedBookPricer::prepare. The solve-economy gate below is the
+// POST-L1 counterpart of solve_ledger_test's ExpiryDayReSolvesPnlBaseStampEleven-
+// PerUnit (which pins the PRE-L1 11 s/u expiry-day cost): after L1 the survivor's
+// expiry-day pnl-base bundle is REUSED across the settlement shrink, dropping the
+// A-attributable expiry-day cost 11 -> 6 (== the no-churn day).
+// ─────────────────────────────────────────────────────────────────────────────
+namespace led = atx::vol::counters::ledger;
+
+namespace {
+
+// A clock at explicit day offsets from kBaseNow (mirrors solve_ledger_test's
+// make_clock): a settling lot's expiry_ts_ns must equal kBaseNow + offset*kDayNs
+// exactly. Spot/vol drift each date so marks actually move.
+[[nodiscard]] Clock offset_clock(const fs::path& dir, const std::string& symbol,
+                                 const std::vector<int>& offset_days) {
+  std::vector<std::pair<std::string, std::string>> dp;
+  for (std::size_t d = 0; d < offset_days.size(); ++d) {
+    const std::int64_t now = kBaseNow + static_cast<std::int64_t>(offset_days[d]) * kDayNs;
+    const double S = 100.0 * (1.0 + 0.004 * static_cast<double>(d));
+    const double vb = 0.001 * static_cast<double>(d);
+    const PricedSurface s = make_surface(kUid, S, S, now, vb);
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "2026-08-%02d", static_cast<int>(d) + 1);
+    dp.emplace_back(buf, write_one(dir, buf, symbol, s));
+  }
+  auto clock = Clock::from_manifest(make_manifest(dp, symbol));
+  EXPECT_TRUE(clock.has_value()) << (clock.has_value() ? std::string{} : clock.error().to_string());
+  return std::move(*clock);
+}
+
+[[nodiscard]] std::uint64_t al(const led::Counts& c) noexcept {
+  return c.get(led::Solve::AlBoundarySolves);
+}
+[[nodiscard]] std::uint64_t analytic(const led::Counts& c) noexcept {
+  return c.get(led::Solve::GreeksBundlesAnalytic);
+}
+
+[[nodiscard]] RunConfig det_config() {
+  RunConfig cfg;
+  cfg.price.n_threads = 1u;         // boundary-solve counts are thread-invariant
+  cfg.prefetch_snapshots = false;   // remove async-prefetch nondeterminism
+  return cfg;
+}
+
+}  // namespace
+
+// Gate: the survivor's expiry-day cost drops 11 -> 6 s/u; warm and no-churn steps
+// are unchanged. Same fixed book as solve_ledger_test's expiry-day scenario.
+TEST(BacktestExec, L1ExpiryDaySurvivorReusesBaseRiskAcrossSettlement) {
+  const fs::path dir = fresh_dir("l1-expiry");
+  const Clock clock = offset_clock(dir, "SPX", {0, 20, 40, 60, 80});
+  const std::int64_t exp_B = kBaseNow + 60 * kDayNs;   // settles on date index 3
+  const std::int64_t exp_A = kBaseNow + 200 * kDayNs;  // survives the whole run
+
+  PortfolioState book;
+  book.lots.push_back(
+      Lot{1, OptionContract{kUid, 100.0, 0.0, Side::Put}, +1.0, 100.0, exp_A, 0, 0.0});
+  book.lots.push_back(
+      Lot{2, OptionContract{kUid, 95.0, 0.0, Side::Call}, +1.0, 100.0, exp_B, 0, 0.0});
+
+  led::reset();
+  led::StepTrace trace;
+  const auto result = run_backtest(clock, std::move(book), det_config());
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  ASSERT_EQ(result->size(), 5u);
+  ASSERT_EQ(trace.size(), 4u);
+
+  const led::Counts& warm1 = trace.steps()[0];
+  const led::Counts& warm2 = trace.steps()[1];
+  const led::Counts& expiry = trace.steps()[2];   // B settles, A survives (membership shrink)
+  const led::Counts& nochurn = trace.steps()[3];  // A only, stamp intact
+
+  // Warm two-unit steps are unchanged by L1 (no membership change): 2 book bundles
+  // + 2 target marks = 12, pnl-base reused.
+  EXPECT_EQ(al(warm1), 12u);
+  EXPECT_EQ(analytic(warm1), 2u);
+  EXPECT_EQ(al(warm2), 12u);
+  EXPECT_EQ(analytic(warm2), 2u);
+
+  // No-churn survivor step: 0 pnl-base + 1 target + 5 book bundle = 6.
+  EXPECT_EQ(al(nochurn), 6u);
+  EXPECT_EQ(analytic(nochurn), 1u);
+
+  // POST-L1 expiry step: A's pnl-base bundle is now REUSED across the shrink, so the
+  // step costs 1 (B settlement mark) + 1 (A target mark) + 5 (A book bundle) = 7,
+  // with only ONE analytic bundle (the book-greeks pass), down from 2 pre-L1.
+  EXPECT_EQ(al(expiry), 7u) << "expiry step: B settle(1) + A target(1) + A book bundle(5)";
+  EXPECT_EQ(analytic(expiry), 1u) << "pnl-base re-solve removed by L1 (was 2 bundles)";
+
+  // The A-attributable expiry-day cost (total minus B's one settlement mark) is now 6
+  // == the no-churn day — the 11 -> 6 solve-economy win, and it exceeds no-churn by
+  // exactly B's settlement mark, no extra pnl-base bundle.
+  const std::uint64_t a_expiry_cost = al(expiry) - 1u;
+  EXPECT_EQ(a_expiry_cost, 6u) << "expiry-day steady state 11 -> 6 solve-equivs/unit (L1 gate)";
+  EXPECT_EQ(al(expiry) - al(nochurn), 1u) << "only B's settlement mark separates expiry from no-churn";
+
+  std::printf("[btexec] L1 expiry-day AL solves = [%llu,%llu,%llu,%llu] "
+              "(warm,warm,expiry,no-churn); A-attributable expiry cost 11 -> %llu\n",
+              static_cast<unsigned long long>(al(warm1)), static_cast<unsigned long long>(al(warm2)),
+              static_cast<unsigned long long>(al(expiry)),
+              static_cast<unsigned long long>(al(nochurn)),
+              static_cast<unsigned long long>(a_expiry_cost));
+}
+
+// Bit-identity (B3 style, by construction, now empirically): the survivor A's PnL
+// after B's settlement is BIT-IDENTICAL whether B was ever in the book. Run {A} vs
+// {A,B} over the SAME clock; for every date from B's expiry onward the alive set is
+// {A} in both runs, so A's Taylor PnL and the book greeks must match to the bit.
+// This is the exact invariant the carry-over relies on: A's per-lane solve is
+// independent of the book's composition.
+TEST(BacktestExec, L1SurvivorPnlBitIdenticalAcrossMembershipChange) {
+  const fs::path dir = fresh_dir("l1-diff");
+  const Clock clock = offset_clock(dir, "SPX", {0, 20, 40, 60, 80});
+  const std::int64_t exp_B = kBaseNow + 60 * kDayNs;   // settles on date index 3
+  const std::int64_t exp_A = kBaseNow + 200 * kDayNs;
+
+  const auto book_A = [&] {
+    PortfolioState b;
+    b.lots.push_back(
+        Lot{1, OptionContract{kUid, 100.0, 0.0, Side::Put}, +1.0, 100.0, exp_A, 0, 0.0});
+    return b;
+  };
+  const auto book_AB = [&] {
+    PortfolioState b = book_A();
+    b.lots.push_back(
+        Lot{2, OptionContract{kUid, 95.0, 0.0, Side::Call}, +1.0, 100.0, exp_B, 0, 0.0});
+    return b;
+  };
+
+  const auto r_a = run_backtest(clock, book_A(), det_config());
+  const auto r_ab = run_backtest(clock, book_AB(), det_config());
+  ASSERT_TRUE(r_a.has_value()) << r_a.error().to_string();
+  ASSERT_TRUE(r_ab.has_value()) << r_ab.error().to_string();
+  ASSERT_EQ(r_a->size(), 5u);
+  ASSERT_EQ(r_ab->size(), 5u);
+
+  // Confirm the scenario: B settles on row 3 of the {A,B} run only.
+  EXPECT_NE(r_ab->pnl_settlement[3], 0.0) << "B should settle on row 3 of the {A,B} run";
+  EXPECT_EQ(r_a->pnl_settlement[3], 0.0) << "no settlement in the {A}-only run";
+
+  // Rows 3 (B's expiry day, where the carry fires) and 4 (a following no-churn day)
+  // have alive == {A} in BOTH runs: A's Taylor PnL COMPONENTS + book greeks must be
+  // bit-equal. (`pnl_total` is EXCLUDED: the fixed-book overload folds B's settlement
+  // into row 3's aggregate — step_total = t.pnl_total + settlement — so the aggregate
+  // legitimately differs; every per-axis component below is settlement-free pure-A.)
+  const auto a_cols = [](const BacktestResult& r, std::size_t i) {
+    return std::array<double, 13>{
+        r.pnl_delta[i], r.pnl_gamma[i],  r.pnl_vega[i],   r.pnl_vanna[i],   r.pnl_volga[i],
+        r.pnl_theta[i], r.pnl_rho[i],    r.pnl_charm[i],  r.pnl_unexplained[i],
+        r.gross_delta[i], r.gross_gamma[i], r.gross_vega[i], r.gross_theta[i]};
+  };
+  for (const std::size_t i : {std::size_t{3}, std::size_t{4}}) {
+    const auto ca = a_cols(*r_a, i);
+    const auto cb = a_cols(*r_ab, i);
+    for (std::size_t k = 0; k < ca.size(); ++k) {
+      EXPECT_TRUE(bits_equal(ca[k], cb[k]))
+          << "survivor A PnL/greeks diverged at row " << i << " col " << k
+          << " ({A}=" << ca[k] << " vs {A,B}=" << cb[k] << ") — the carry-over is NOT bit-identical";
+    }
+  }
+  // Row 4 has NO settlement in either run, so the aggregate pnl_total is pure-A too.
+  EXPECT_TRUE(bits_equal(r_a->pnl_total[4], r_ab->pnl_total[4]))
+      << "survivor A aggregate PnL diverged on the post-expiry no-churn row";
+  std::printf("[btexec] L1 survivor bit-identity: {A} vs {A,B} match to the bit on rows 3-4\n");
+}
+
+// Positive control (Trap 3): the carry re-homes the stamp, but it must NOT weaken the
+// pnl reuse's base-surface guard. Stamp base risk at surface v1, carry onto the
+// subset book, then run pnl against a DIFFERENT base surface v2 — the guard must
+// REFUSE the (now surface-mismatched) reuse and RE-SOLVE. The re-solve is observable
+// on the ledger AND its result must equal a cold pnl on the subset at v2 (it would be
+// the WRONG v1 risk if the carry silently defeated the guard).
+TEST(BacktestExec, L1CarryStillHonorsSurfaceGuard) {
+  const std::int64_t ts = kBaseNow;
+  const PricedSurface sv1 = make_surface(kUid, 100.0, 100.0, ts, 0.000);
+  const PricedSurface sv2 = make_surface(kUid, 103.0, 103.0, ts, 0.010);  // different base surface
+  const PricedSurface sv3 = make_surface(kUid, 104.0, 104.0, ts, 0.012);  // shifted surface
+  const auto make_set = [](const PricedSurface& s) {
+    const PricedSurface* ptrs[] = {&s};
+    auto set = SurfaceSet::create(std::span<const PricedSurface* const>{ptrs});
+    EXPECT_TRUE(set.has_value());
+    return std::move(*set);
+  };
+  const SurfaceSet set_v1 = make_set(sv1);
+  const SurfaceSet set_v2 = make_set(sv2);
+  const SurfaceSet set_v3 = make_set(sv3);
+
+  const double T = 0.35;
+  const Position pa{1, OptionContract{kUid, 100.0, T, Side::Put}, +1.0, 100.0};
+  const Position pb{2, OptionContract{kUid, 95.0, T, Side::Call}, +1.0, 100.0};
+
+  PriceOptions opts;
+  opts.n_threads = 1u;
+  opts.analytic_greeks = true;
+
+  // prev {A,B} stamps base risk at v1.
+  auto prev_pf = Portfolio::create(std::array<Position, 2>{pa, pb});
+  ASSERT_TRUE(prev_pf.has_value());
+  PortfolioPricer prev(std::move(*prev_pf));
+  PortfolioWorkspace ws;
+  ws.reserve(2, 2);
+  ASSERT_TRUE(prev.price_totals(set_v1, PriceFieldMask::FullGreeks, ws, opts).has_value());
+
+  // Subset {A}: the carry succeeds (same-surface subset), re-homing the stamp onto next.
+  auto next_pf = Portfolio::create(std::array<Position, 1>{pa});
+  ASSERT_TRUE(next_pf.has_value());
+  PortfolioPricer next(std::move(*next_pf));
+  EXPECT_TRUE(next.carry_base_risk_subset(prev, ws)) << "same-surface subset carry should succeed";
+
+  // pnl at a DIFFERENT base surface v2: the guard must refuse the carried stamp.
+  led::reset();
+  const auto got = next.pnl_totals(set_v2, set_v3, ws, opts);
+  ASSERT_TRUE(got.has_value()) << got.error().to_string();
+  EXPECT_GE(analytic(led::snapshot()), 1u)
+      << "base-surface guard failed to refuse a surface-mismatched carried stamp (no re-solve)";
+
+  // Cold reference: a fresh pricer with no carry, same surfaces.
+  auto cold_pf = Portfolio::create(std::array<Position, 1>{pa});
+  ASSERT_TRUE(cold_pf.has_value());
+  PortfolioPricer cold(std::move(*cold_pf));
+  PortfolioWorkspace ws_cold;
+  ws_cold.reserve(1, 1);
+  const auto ref = cold.pnl_totals(set_v2, set_v3, ws_cold, opts);
+  ASSERT_TRUE(ref.has_value()) << ref.error().to_string();
+
+  EXPECT_TRUE(bits_equal(got->pv_base, ref->pv_base))
+      << "guard-refused re-solve did not match the cold v2 base price (stale v1 risk served?)";
+  EXPECT_TRUE(bits_equal(got->pnl_total, ref->pnl_total));
+  EXPECT_TRUE(bits_equal(got->pnl_vega, ref->pnl_vega));
+  std::printf("[btexec] L1 positive control: surface-mismatched carry refused + re-solved to the "
+              "cold v2 value (pv_base=%.10g)\n", got->pv_base);
+}
+
+// Positive control: a survivor whose INPUT changed (tenor T) is a different
+// (uid,K,T,side) key, so carry_base_risk_subset must REFUSE (return false) — reuse
+// would serve stale risk. The subsequent solve then recomputes at the new tenor.
+TEST(BacktestExec, L1SubsetCarryRefusesOnChangedInput) {
+  const std::int64_t ts = kBaseNow;
+  const PricedSurface sv1 = make_surface(kUid, 100.0, 100.0, ts, 0.0);
+  const PricedSurface* ptrs[] = {&sv1};
+  auto set_v1 = SurfaceSet::create(std::span<const PricedSurface* const>{ptrs});
+  ASSERT_TRUE(set_v1.has_value());
+
+  PriceOptions opts;
+  opts.n_threads = 1u;
+  opts.analytic_greeks = true;
+
+  const Position pa1{1, OptionContract{kUid, 100.0, 0.35, Side::Put}, +1.0, 100.0};
+  const Position pb{2, OptionContract{kUid, 95.0, 0.35, Side::Call}, +1.0, 100.0};
+  auto prev_pf = Portfolio::create(std::array<Position, 2>{pa1, pb});
+  ASSERT_TRUE(prev_pf.has_value());
+  PortfolioPricer prev(std::move(*prev_pf));
+  PortfolioWorkspace ws;
+  ws.reserve(2, 2);
+  ASSERT_TRUE(prev.price_totals(*set_v1, PriceFieldMask::FullGreeks, ws, opts).has_value());
+
+  // Survivor A's tenor changed 0.35 -> 0.30: NOT a bit-exact subset key.
+  const Position pa2{1, OptionContract{kUid, 100.0, 0.30, Side::Put}, +1.0, 100.0};
+  auto next_pf = Portfolio::create(std::array<Position, 1>{pa2});
+  ASSERT_TRUE(next_pf.has_value());
+  PortfolioPricer next(std::move(*next_pf));
+  EXPECT_FALSE(next.carry_base_risk_subset(prev, ws))
+      << "carry must refuse a survivor whose (uid,K,T,side) changed";
+
+  // The refusal is load-bearing: the following pnl re-solves at T=0.30 and matches a
+  // cold reference (a wrongly-reused T=0.35 bundle would give a different base price).
+  const auto got = next.pnl_totals(*set_v1, *set_v1, ws, opts);  // dt=0: pure base reprice
+  ASSERT_TRUE(got.has_value()) << got.error().to_string();
+  PortfolioPricer cold(std::move(*Portfolio::create(std::array<Position, 1>{pa2})));
+  PortfolioWorkspace ws_cold;
+  ws_cold.reserve(1, 1);
+  const auto ref = cold.pnl_totals(*set_v1, *set_v1, ws_cold, opts);
+  ASSERT_TRUE(ref.has_value()) << ref.error().to_string();
+  EXPECT_TRUE(bits_equal(got->pv_base, ref->pv_base))
+      << "changed-tenor refusal did not recompute at the new T (stale T=0.35 risk served?)";
+  std::printf("[btexec] L1 positive control: changed-tenor survivor carry refused, re-solved at "
+              "the new tenor\n");
 }

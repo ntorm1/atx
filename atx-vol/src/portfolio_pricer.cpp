@@ -930,6 +930,10 @@ void reduce_price_totals(std::span<const Position> positions, const Portfolio &p
 
 struct PortfolioWorkspace::Impl {
   std::vector<ContractPx> px; // per unique contract, ORIGINAL-index order
+  // L1: grow-only scratch for carry_base_risk_subset — remaps `px` (superset book
+  // order) into a subset book's contract order without disturbing `px` mid-remap.
+  std::vector<ContractPx> carry_px;
+  std::vector<std::uint64_t> carry_instances;
   // Full-Greek seed validation is staged separately so stale/conflicting
   // candidates cannot partially overwrite the live retained-risk bundle.
   std::vector<ContractPx> seed_px;
@@ -1672,6 +1676,90 @@ Result<PnlFrame> PortfolioPricer::pnl_explain(const SurfaceSet &base, const Surf
     return Err(s.error());
   }
   return f;
+}
+
+bool PortfolioPricer::carry_base_risk_subset(const PortfolioPricer &prev,
+                                             PortfolioWorkspace &ws) const {
+  // L1 (AL-solve-wall sprint). Re-home `prev`'s retained base-risk bundle onto THIS
+  // (subset) book so a following pnl solve reuses the survivors instead of paying a
+  // fresh full-Greek bundle for every one of them across the membership change.
+  //
+  // Precedent — QuantLib `LazyObject` (ql/patterns/lazyobject.hpp): a cached value is
+  // invalidated only by the observable delta that actually changed it (`update()` on
+  // a dependency), not by reconstructing the object. Here the "dependency" of a
+  // survivor's cached risk is that survivor's own (uid,K,T,side) + base surface —
+  // NOT the book's membership — so removing an unrelated contract must leave the
+  // survivor's cache valid. This function is that selective invalidation: it keeps
+  // the survivors' rows and drops only the departed ones.
+  PortfolioWorkspace::Impl &w = *ws.impl_;
+
+  // 1. The stamp must be LIVE and must belong to EXACTLY `prev` — the O(1) book
+  //    identity key proves `w.px` is `prev`'s per-contract bundle in `prev`'s
+  //    original-contract order (the order the remap below indexes through).
+  if (!w.base_risk_valid || w.base_book_logical_id != prev.pf_.logical_id_ ||
+      w.base_book_revision != prev.pf_.revision_) {
+    return false;
+  }
+  const std::span<const OptionContract> prev_contracts = prev.pf_.contracts();
+  const std::span<const std::uint32_t> prev_uids = prev.pf_.uids();
+  if (w.px.size() != prev_contracts.size() ||
+      w.base_surface_instance_ids.size() != prev_uids.size()) {
+    return false;
+  }
+
+  const std::span<const OptionContract> cur = pf_.contracts();
+  const std::span<const std::uint32_t> cur_uids = pf_.uids();
+  // A carry only helps a SHRINK (or a pure reorder): a superset has added uniques
+  // that must be solved fresh anyway (and the caller's price_into re-stamps that
+  // path). An empty current book has nothing to reuse.
+  if (cur.empty() || cur.size() > prev_contracts.size()) {
+    return false;
+  }
+
+  // 2. Every current unique must be present in `prev` at BIT-EXACT (uid,K,T,side).
+  //    A changed tenor/strike/side is a DIFFERENT key -> not found -> fail closed,
+  //    so a survivor whose inputs actually changed is never reused (positive control
+  //    L1SubsetCarryRefusesOnChangedInput pins this). Build prev's key->row index.
+  std::unordered_map<ContractKey, std::uint32_t, ContractKeyHash> prev_row;
+  prev_row.reserve(prev_contracts.size());
+  for (std::size_t k = 0; k < prev_contracts.size(); ++k) {
+    prev_row.emplace(key_of(prev_contracts[k]), static_cast<std::uint32_t>(k));
+  }
+  w.carry_px.resize(cur.size());
+  for (std::size_t j = 0; j < cur.size(); ++j) {
+    const auto it = prev_row.find(key_of(cur[j]));
+    if (it == prev_row.end()) {
+      return false; // not a subset — leave the (prev-tagged, now-stale) stamp be
+    }
+    w.carry_px[j] = w.px[it->second]; // survivor's retained row, verbatim bits
+  }
+
+  // 3. Remap the base-surface instance-id guard array from prev's uid set to THIS
+  //    book's uid set (a shrink may drop a whole uid). Each current uid MUST exist
+  //    in prev's uid set (guaranteed once every current contract was found above,
+  //    but re-checked so the guard array can never carry a wrong instance id).
+  w.carry_instances.resize(cur_uids.size());
+  for (std::size_t i = 0; i < cur_uids.size(); ++i) {
+    const auto uit = std::lower_bound(prev_uids.begin(), prev_uids.end(), cur_uids[i]);
+    if (uit == prev_uids.end() || *uit != cur_uids[i]) {
+      return false;
+    }
+    w.carry_instances[i] =
+        w.base_surface_instance_ids[static_cast<std::size_t>(uit - prev_uids.begin())];
+  }
+
+  // 4. Commit: adopt the remapped bundle + guard array and re-home the book identity
+  //    to THIS pricer. base_surface_logical_id / analytic / query_execution are left
+  //    UNCHANGED — they describe how the bundle was computed, and the pnl reuse guard
+  //    re-checks them against the actual base surface + opts, so a base-surface change
+  //    between stamp and reuse still forces a fresh solve (positive control
+  //    L1CarryStillHonorsSurfaceGuard pins this).
+  w.px.swap(w.carry_px);
+  w.base_surface_instance_ids.swap(w.carry_instances);
+  w.base_book_logical_id = pf_.logical_id_;
+  w.base_book_revision = pf_.revision_;
+  // w.base_risk_valid stays true.
+  return true;
 }
 
 } // namespace atx::vol
