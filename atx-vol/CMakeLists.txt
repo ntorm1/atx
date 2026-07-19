@@ -108,6 +108,10 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/analytics_density.cpp
     src/analytics_aggregate.cpp
     src/analytics_io.cpp
+    src/earnings_term_fit.cpp
+    src/sr_tenor_grid.cpp
+    src/earnings_forecast_loader.cpp
+    src/earnings_repro.cpp
 )
 add_library(atx::vol ALIAS atx-vol)
 
@@ -378,4 +382,21 @@ if(ATX_BUILD_EXAMPLES)
     # Wave 2 (S4) runs it over the committed fixtures, then v1 read is deleted.
     add_executable(migrate_atxvsa_v1_to_v2 tools/migrate_atxvsa_v1_to_v2.cpp)
     target_link_libraries(migrate_atxvsa_v1_to_v2 PRIVATE atx::vol atx::core atx_warnings)
+
+    # Earnings-censored atmCen reproduction (Task 7): thin CLI over the shared
+    # run_earnings_repro library pipeline (atx/vol/earnings_repro.hpp) -- OPRA
+    # parquet -> fitted VolaSession -> Task 5 earnings TSV -> iEMove + the 12
+    # SR-tenor atmCenI_{Nd} values. See examples/earnings_repro.cpp.
+    add_executable(earnings-repro examples/earnings_repro.cpp)
+    target_link_libraries(earnings-repro PRIVATE atx::vol atx::core atx_warnings)
+
+    # Earnings-censored atmCen cohort VALIDATION driver (Task 9): batch the
+    # shared harness (atx/vol/earnings_repro_config.hpp) over the checked-in
+    # SpiderRock truth CSV -- per name, OPRA board -> run_earnings_repro under an
+    # EarningsReproConfig -> per-tenor + cohort atmCenI RMSE + iEMove residual +
+    # the nEarnCnt schedule-alignment gate. Task 10 sweeps conventions with it.
+    # A name whose parquet is absent is SKIPPED, not fatal. See
+    # tools/earnings_validation.cpp.
+    add_executable(earnings-validation tools/earnings_validation.cpp)
+    target_link_libraries(earnings-validation PRIVATE atx::vol atx::core atx_warnings)
 endif()

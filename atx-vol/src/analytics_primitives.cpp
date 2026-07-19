@@ -10,6 +10,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <span>
 
@@ -118,7 +119,62 @@ double atmf_vol_ex_earnings(const PricedSurface &ps, double T, const EventContex
   if (ctx.schedule == nullptr || !(ctx.implied_emove > 0.0) || !(T > 0.0)) {
     return kNaN;
   }
-  const std::size_t n = count_events_at(*ctx.schedule, ps.pricing().now_ts_ns, T);
+  const std::int64_t now_ns = ps.pricing().now_ts_ns;
+  const double emove = ctx.implied_emove;
+
+  // CENSORED-space (SpiderRock FLEX) default: for a tenor that straddles an
+  // earnings date its two bracketing pillars carry DIFFERENT event counts, so
+  // censoring must happen pillar-by-pillar BEFORE the cross-pillar interpolation
+  // — not once on a single plain cross-pillar interpolated variance. Locate the
+  // bracket pillars around T (the served surface interpolates total variance
+  // linearly in T, so this mirrors the live projection ATM-anchor step), read
+  // each pillar's forward-ATM total variance, count events at each, and reuse
+  // `event_aware_w`: it censors both pillars separately, interpolates the
+  // censored variance in T, and re-adds n_query·eMove². Because this entry point
+  // returns the EX-earnings (event-free) vol, n_query = 0 here — the query lump
+  // is NOT re-added (the only difference from the live serve path, which re-adds
+  // it). This changes ONLY the interpolation space, not the ex-earnings contract.
+  if (ctx.censor_space) {
+    const auto slices = ps.context();
+    // First pillar with T_pillar >= T; the interior bracket is (hi-1, hi). No
+    // interior bracket (T at/below the front pillar, at/above the back pillar,
+    // or a single-slice surface) ⇒ fall through to the legacy single-pillar
+    // censor below, which is exact there (the interpolation weight collapses).
+    std::size_t hi = slices.size();
+    for (std::size_t i = 0; i < slices.size(); ++i) {
+      if (slices[i].T >= T) {
+        hi = i;
+        break;
+      }
+    }
+    if (hi > 0 && hi < slices.size()) {
+      const double T_lo = slices[hi - 1].T;
+      const double T_hi = slices[hi].T;
+      const double w_lo = ps.total_variance(ps.forward_at(T_lo), T_lo);
+      const double w_hi = ps.total_variance(ps.forward_at(T_hi), T_hi);
+      if (std::isfinite(w_lo) && std::isfinite(w_hi)) {
+        const std::size_t n_lo = count_events_at(*ctx.schedule, now_ns, T_lo);
+        const std::size_t n_hi = count_events_at(*ctx.schedule, now_ns, T_hi);
+        // n_query = 0: keep the EX-earnings contract (interpolated censored
+        // variance, no query lump re-added). `event_aware_w` floors each
+        // pillar's censored variance at kWCenFloor, so an eMove that overshoots a
+        // pillar's smile yields a floored (near-zero), not NaN, variance; the
+        // finite/positive guard below rejects only a non-finite/non-positive blend.
+        const double wc =
+            event_aware_w(w_lo, T_lo, n_lo, w_hi, T_hi, n_hi, T, /*n_query=*/0, emove);
+        if (!(std::isfinite(wc) && wc > 0.0)) {
+          return kNaN;
+        }
+        return std::sqrt(wc / T);
+      }
+    }
+    // No usable bracket: degrade to the legacy single-pillar censor below.
+  }
+
+  // Legacy PLAIN-space path (ctx.censor_space == false, or the degraded
+  // no-bracket case above): censor a SINGLE plain cross-pillar interpolated
+  // total variance once with the query expiry's own event count.
+  const std::size_t n = count_events_at(*ctx.schedule, now_ns, T);
   const double w = ps.total_variance(ps.forward_at(T), T);
   if (!std::isfinite(w)) {
     return kNaN;
@@ -128,11 +184,11 @@ double atmf_vol_ex_earnings(const PricedSurface &ps, double T, const EventContex
   // (eMove-overshoots-the-smile) input. Report NaN rather than a fabricated
   // number. `!(lump < w)` is NaN-safe (w is finite here), so this fires only on a
   // genuine overshoot, never on a comparison with NaN.
-  const double lump = static_cast<double>(n) * ctx.implied_emove * ctx.implied_emove;
+  const double lump = static_cast<double>(n) * emove * emove;
   if (!(lump < w)) {
     return kNaN;
   }
-  const double wc = censored_total_variance(w, n, ctx.implied_emove);
+  const double wc = censored_total_variance(w, n, emove);
   return std::sqrt(wc / T);
 }
 

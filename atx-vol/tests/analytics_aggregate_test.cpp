@@ -300,5 +300,83 @@ TEST(AnalyticsAggregate, EarningsImpliedMoveNullScheduleIsError) {
   EXPECT_EQ(e.error().code(), ErrorCode::InvalidArgument);
 }
 
+// ── Term-structure ex-earnings uses censored-SPACE interpolation (Seam S2) ────
+
+// A tenor straddling one earnings date: the two bracket pillars carry n_lo = 0
+// (T_lo = 0.05) and n_hi = 1 (T_hi = 0.10, one eMove = 0.06 lump embedded), and a
+// mid tenor T_q = 0.08 (> the 0.075 event) has n_query = 1. The censored-space
+// path (the new default) must censor the two pillars SEPARATELY and interpolate
+// the CENSORED variance in T (recovering σ_C exactly), NOT censor a single plain
+// cross-pillar interpolated variance once. The two disagree by exactly
+// eMove²·[n_lo + α(n_hi − n_lo) − n_query] in total-variance space.
+TEST(AnalyticsAggregate, AtmVolExEarnUsesCensoredSpaceInterpolation) {
+  constexpr double kSigmaC = 0.20; // common censored (event-free) diffusive vol
+  constexpr double kEmove = 0.06;  // per-event move embedded in the long slice
+  constexpr double kTlo = 0.05;
+  constexpr double kThi = 0.10;
+  constexpr double kTq = 0.08; // mid tenor, strictly inside (T_lo, T_hi)
+
+  const std::vector<double> Ts = {kTlo, kThi};
+  const std::vector<double> thetas = {
+      kSigmaC * kSigmaC * kTlo,                   // n_lo = 0: pure diffusion
+      kSigmaC * kSigmaC * kThi + kEmove * kEmove, // n_hi = 1: + one eMove lump
+  };
+  const PricedSurface ps = make_theta_surface(5, 100.0, 100.0, Ts, thetas);
+  const EventSchedule sched = testkit::make_event_schedule(0.075);
+
+  EventContext ctx_cen; // censored-space (the new default)
+  ctx_cen.schedule = &sched;
+  ctx_cen.implied_emove = kEmove;
+  ctx_cen.censor_space = true;
+
+  EventContext ctx_plain = ctx_cen; // legacy plain-space (A/B flag off)
+  ctx_plain.censor_space = false;
+
+  const std::int64_t now_ns = ps.pricing().now_ts_ns;
+  const std::size_t n_lo = count_events_at(sched, now_ns, kTlo);
+  const std::size_t n_hi = count_events_at(sched, now_ns, kThi);
+  const std::size_t n_q = count_events_at(sched, now_ns, kTq);
+  ASSERT_EQ(n_lo, 0u);
+  ASSERT_EQ(n_hi, 1u);
+  ASSERT_EQ(n_q, 1u);
+
+  // Reference: censor the two bracket pillars separately, interpolate the
+  // censored variance in T, and — because this entry point returns the
+  // EX-earnings (event-free) vol — do NOT re-add the query lump (n_query = 0).
+  // Pillar variances are read from the SAME surface the implementation reads.
+  const double w_lo = ps.total_variance(ps.forward_at(kTlo), kTlo);
+  const double w_hi = ps.total_variance(ps.forward_at(kThi), kThi);
+  const double w_cen_query =
+      event_aware_w(w_lo, kTlo, n_lo, w_hi, kThi, n_hi, kTq, /*n_query=*/0, kEmove);
+  const double ref_vol = std::sqrt(w_cen_query / kTq);
+
+  const double vol_cen = atmf_vol_ex_earnings(ps, kTq, ctx_cen);
+  const double vol_plain = atmf_vol_ex_earnings(ps, kTq, ctx_plain);
+
+  // Both branches produce a finite vol.
+  ASSERT_TRUE(std::isfinite(vol_cen));
+  ASSERT_TRUE(std::isfinite(vol_plain));
+
+  // (a) censored-space equals the event_aware_w reference and recovers σ_C.
+  EXPECT_NEAR(vol_cen, ref_vol, 1e-9);
+  EXPECT_NEAR(vol_cen, kSigmaC, 1e-9);
+
+  // (b) it DIFFERS from the legacy plain-space (censor-the-interpolated-w) value.
+  EXPECT_GT(std::fabs(vol_cen - vol_plain), 1e-3);
+
+  // (c) the two total-variance FORMS differ by exactly
+  //     eMove²·[n_lo + α(n_hi − n_lo) − n_query], with α the T-interpolation
+  //     weight of T_q between the pillars. Plain form: w_surf(T_q) − n_q·eMove²
+  //     (== vol_plain²·T_q); censored form: w_cen_query (== vol_cen²·T_q).
+  const double alpha = (kTq - kTlo) / (kThi - kTlo);
+  const double wc_plain = vol_plain * vol_plain * kTq;
+  const double diff_term =
+      kEmove * kEmove *
+      (static_cast<double>(n_lo) +
+       alpha * (static_cast<double>(n_hi) - static_cast<double>(n_lo)) -
+       static_cast<double>(n_q));
+  EXPECT_NEAR(wc_plain - w_cen_query, diff_term, 1e-12);
+}
+
 } // namespace
 } // namespace atx::vol

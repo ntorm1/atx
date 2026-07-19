@@ -108,6 +108,22 @@ class VolTimeCalendar {
   std::vector<std::int32_t> days_;  // sorted, unique
 };
 
+// Day-of-week for a proleptic-Gregorian days-since-epoch index (Howard
+// Hinnant's `weekday_from_days` identity, same numbering as
+// `VolTimeCalendar`'s `day_since_epoch`): 1970-01-01 = day 0 = Thursday.
+// Promoted to the public `atx::vol` surface (out of vol_time.cpp's anonymous
+// namespace) so other TUs needing the same weekday primitive (e.g.
+// sr_tenor_grid.cpp's trading-day stepper) can call it directly instead of
+// re-deriving it.
+//
+// @param day_since_epoch  days-since-epoch (1970-01-01 = 0)
+// @return                 weekday index, 0=Sunday .. 6=Saturday
+[[nodiscard]] int weekday_from_days(std::int32_t day_since_epoch) noexcept;
+
+// True if `day_since_epoch` falls on a Saturday or Sunday (see
+// `weekday_from_days` for the day-index convention).
+[[nodiscard]] bool is_weekend_day(std::int32_t day_since_epoch) noexcept;
+
 // Trading hours (fractional) accrued in `[start_ns, end_ns)`, under the ET
 // session window in `p`, skipping weekends and `cal` holidays. Returns 0 if
 // `end_ns <= start_ns`.
