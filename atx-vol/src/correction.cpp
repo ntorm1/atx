@@ -675,6 +675,80 @@ double CorrectionCache::eval(double k_log, double T, double sigma) const noexcep
   return (v > 0.0) ? v : 0.0;
 }
 
+void CorrectionCache::collapse_T_plane(double T, double *plane_out) const noexcept {
+  // Perf review F4: pre-collapse the T (j) axis for an equal-T ladder so every
+  // strike thereafter is a 2-D (k_log, sigma) Clenshaw. plane_out[k*n_k + i] =
+  // Σ_j coefs[i,j,k] T_j(xj), the Clenshaw collapse of the T column at fixed
+  // (i, k). coefs[i,j,k] lives at j*n_s*n_k + k*n_k + i (cheb_idx), so the T
+  // column for a fixed (i, k) strides by n_s*n_k; the plane keeps i innermost so
+  // eval_plane's k_log collapse reads a contiguous row plane + k*n_k, exactly as
+  // cheb_clenshaw3d's first collapse reads a fixed-j sub-block.
+  const std::size_t live = static_cast<std::size_t>(n_k_) * static_cast<std::size_t>(n_s_);
+  if (!populated_) {
+    std::fill(plane_out, plane_out + live, 0.0);
+    return;
+  }
+  ATX_VOL_COUNT(ClenshawSweeps); // one full-tensor T-axis collapse (reads every coef once)
+  T = atx::core::clamp(T, T_min_, T_max_);
+  const double xj = detail::cheb_to_unit(T, T_min_, T_max_);
+  const double two_xj = 2.0 * xj;
+  const std::size_t nk = n_k_;
+  const std::size_t ns = n_s_;
+  const double *coefs = coefs_.data();
+  for (std::size_t k = 0; k < ns; ++k) {
+    for (std::size_t i = 0; i < nk; ++i) {
+      const double *col = coefs + k * nk + i;
+      double bk1 = 0.0;
+      double bk2 = 0.0;
+      for (int j = static_cast<int>(n_T_) - 1; j >= 1; --j) {
+        const double bk = col[static_cast<std::size_t>(j) * ns * nk] + two_xj * bk1 - bk2;
+        bk2 = bk1;
+        bk1 = bk;
+      }
+      plane_out[k * nk + i] = col[0] + xj * bk1 - bk2;
+    }
+  }
+}
+
+double CorrectionCache::eval_plane(const double *plane, double k_log, double sigma) const noexcept {
+  if (!populated_) {
+    return 0.0;
+  }
+  // Same box clamp / unit map as eval(); T was already clamped and collapsed away
+  // in collapse_T_plane. 2-D Clenshaw over the plane: k_log (i) then sigma (k).
+  k_log = atx::core::clamp(k_log, k_log_min_, k_log_max_);
+  sigma = atx::core::clamp(sigma, sigma_min_, sigma_max_);
+  const double xi = detail::cheb_to_unit(k_log, k_log_min_, k_log_max_);
+  const double xk = detail::cheb_to_unit(sigma, sigma_min_, sigma_max_);
+  const std::size_t nk = n_k_;
+  const std::size_t ns = n_s_;
+  const double two_xi = 2.0 * xi;
+  // tmp_k[k] is written for every k < n_s_ by the k_log collapse before the sigma
+  // collapse reads it; value-initialized to match the codebase's scratch style.
+  std::array<double, detail::kChebMaxNodes> tmp_k{};
+  for (std::size_t k = 0; k < ns; ++k) {
+    const double *row = plane + k * nk;
+    double bk1 = 0.0;
+    double bk2 = 0.0;
+    for (int i = static_cast<int>(n_k_) - 1; i >= 1; --i) {
+      const double bk = row[i] + two_xi * bk1 - bk2;
+      bk2 = bk1;
+      bk1 = bk;
+    }
+    tmp_k[k] = row[0] + xi * bk1 - bk2;
+  }
+  double bk1 = 0.0;
+  double bk2 = 0.0;
+  const double two_xk = 2.0 * xk;
+  for (int k = static_cast<int>(n_s_) - 1; k >= 1; --k) {
+    const double bk = tmp_k[static_cast<std::size_t>(k)] + two_xk * bk1 - bk2;
+    bk2 = bk1;
+    bk1 = bk;
+  }
+  const double v = tmp_k[0] + xk * bk1 - bk2;
+  return (v > 0.0) ? v : 0.0; // max(0, polynomial), as eval()
+}
+
 double CorrectionCache::eval_value_dk(double k_log, double T, double sigma,
                                       double *out_dk_log) const noexcept {
   if (!populated_) {
@@ -1092,6 +1166,112 @@ Status CorrectionCache::set_extrap_policy(ExtrapPolicy policy) noexcept {
     return Err(ErrorCode::InvalidArgument, "CorrectionCache::set_extrap_policy: unknown policy");
   }
   extrap_policy_ = policy;
+  return Ok();
+}
+
+// ── Equal-T cached ladder batch (perf review F4) ─────────────────────────────
+
+namespace {
+
+// Mirror american.cpp's file-local floor_cached_price (not exported there): the
+// cached served mark is floored at max(price, intrinsic, euro, 0). Reproduced so
+// the ladder batch's per-strike assembly is byte-identical to the scalar cached
+// entry apart from the (economic-parity) correction reorder.
+[[nodiscard]] inline double ladder_floor_price(double price, double euro,
+                                               double intrinsic) noexcept {
+  if (intrinsic > price) {
+    price = intrinsic;
+  }
+  if (euro > price) {
+    price = euro;
+  }
+  if (price < 0.0) {
+    price = 0.0;
+  }
+  return price;
+}
+
+} // namespace
+
+Status american_price_cached_ladder(double S, std::span<const double> strikes,
+                                    std::span<const double> sigmas, double T, double r, double q,
+                                    Side side, const CorrectionBlend &correction,
+                                    std::span<double> price_out) {
+  const std::size_t n = strikes.size();
+  if (sigmas.size() != n || price_out.size() != n) {
+    return Err(ErrorCode::InvalidArgument,
+               "american_price_cached_ladder: strikes/sigmas/price_out length mismatch");
+  }
+  if (!std::isfinite(T) || !(T > 0.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               "american_price_cached_ladder: non-finite or non-positive T");
+  }
+
+  // Degenerate / rare inputs delegate to the scalar cached entry so the batch is a
+  // pure fast-path specialization: an unusable blend (cold Andersen-Lake fallback)
+  // or a double-continuation query regime (NaN) reproduce the scalar path exactly.
+  const bool unsupported = detail::classify_regime(/*rate=*/(side == Side::Put) ? r : q,
+                                                   /*yield=*/(side == Side::Put) ? q : r) ==
+                           detail::ExerciseRegime::Unsupported;
+  if (!correction.usable(side) || unsupported) {
+    for (std::size_t i = 0; i < n; ++i) {
+      const double K = strikes[i];
+      price_out[i] = (std::isfinite(K) && K > 0.0)
+                         ? american_price_cached(S, K, T, sigmas[i], r, q, side, correction)
+                         : std::numeric_limits<double>::quiet_NaN();
+    }
+    return Ok();
+  }
+
+  // T-invariant hoists (S, r, q, T fixed across the ladder): F, the discount, and
+  // √T are all strike-invariant, so they are computed ONCE for the whole ladder.
+  const double df = std::exp(-r * T);
+  const double F = S * std::exp((r - q) * T);
+  const double sqrt_t = std::sqrt(T);
+
+  // Resolve up to two active endpoints + the blend weight, mirroring
+  // CorrectionBlend::eval's exact-endpoint / interior split, then collapse each
+  // usable endpoint's T (j) axis into its (k_log, sigma) plane ONCE.
+  const CorrectionCache *lo_cache = nullptr;
+  const CorrectionCache *hi_cache = nullptr;
+  double weight = 0.0;
+  if (correction.upper_weight == 0.0 || correction.lower == correction.upper) {
+    lo_cache = correction.lower;
+  } else if (correction.upper_weight == 1.0) {
+    lo_cache = correction.upper;
+  } else {
+    lo_cache = correction.lower;
+    hi_cache = correction.upper;
+    weight = correction.upper_weight;
+  }
+
+  std::array<double, kTmpSize> lo_plane;
+  std::array<double, kTmpSize> hi_plane;
+  lo_cache->collapse_T_plane(T, lo_plane.data());
+  if (hi_cache != nullptr) {
+    hi_cache->collapse_T_plane(T, hi_plane.data());
+  }
+
+  for (std::size_t i = 0; i < n; ++i) {
+    const double K = strikes[i];
+    if (!(std::isfinite(K) && K > 0.0)) {
+      price_out[i] = std::numeric_limits<double>::quiet_NaN();
+      continue;
+    }
+    const double sigma = sigmas[i];
+    const double ln_fk = std::log(F / K);
+    const double euro = black76_price_from_lnfk(F, K, T, sigma, df, ln_fk, sqrt_t, side);
+    const double k_log = -ln_fk;
+    // Correction: per-endpoint max(0, .) then (1-w)·lo + w·hi (matches
+    // CorrectionBlend::eval), evaluated over the pre-collapsed T planes.
+    double corr = lo_cache->eval_plane(lo_plane.data(), k_log, sigma);
+    if (hi_cache != nullptr) {
+      const double hi = hi_cache->eval_plane(hi_plane.data(), k_log, sigma);
+      corr = corr + weight * (hi - corr);
+    }
+    const double intr = (side == Side::Put) ? (K - S) : (S - K);
+    price_out[i] = ladder_floor_price(euro + F * corr, euro, intr);
+  }
   return Ok();
 }
 

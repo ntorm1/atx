@@ -28,6 +28,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <vector>
 
 #include "atx/vol/american.hpp" // AlOpts
@@ -136,6 +137,28 @@ public:
   // unpopulated. The correction is non-negative by construction; tiny negatives
   // from interpolation noise are clamped to 0.
   [[nodiscard]] double eval(double k_log, double T, double sigma) const noexcept;
+
+  // ── Equal-T ladder batch (perf review F4) ──────────────────────────────────
+  //
+  // Every contract in an equal-T ladder shares one T, so the correction tensor's
+  // T (j) axis collapses ONCE into a (k_log, sigma) coefficient plane and each
+  // strike is a 2-D Clenshaw over that plane instead of a full 3-D sweep.
+  //
+  // collapse_T_plane writes n_k()*n_s() doubles to `plane_out`, laid out
+  // plane[k*n_k + i] (i innermost, matching a fixed-T sub-block of coefs_). T is
+  // clamped to the box exactly as eval(). It reads every coefficient once, so it
+  // counts as ONE tensor traversal (ClenshawSweeps); the per-strike eval_plane
+  // calls that follow are sub-tensor and uncounted. An unpopulated cache zeroes
+  // the live n_k()*n_s() prefix and leaves the plane a zero surface.
+  void collapse_T_plane(double T, double *plane_out) const noexcept;
+
+  // Per-strike value over a plane produced by collapse_T_plane at the SAME T: a
+  // 2-D Clenshaw (k_log then sigma) with the same box clamp and max(0, .) value
+  // gate as eval(). Economic-parity to eval(k_log, T, sigma) — the T-first
+  // collapse reorders the tensor summation (ULP-level), so this is NOT
+  // bit-identical (gated by the P5 |Δprice| < 1e-12·K ladder-parity test).
+  [[nodiscard]] double eval_plane(const double *plane, double k_log,
+                                  double sigma) const noexcept;
 
   // Value + selected first-order partials. Partials whose axis is out of the box
   // are zeroed (the value still clamps). Pass nullptr to skip a partial. The
@@ -285,6 +308,26 @@ struct AmericanCorrectionCaches {
   // True iff at least one side is cached.
   [[nodiscard]] bool any() const noexcept { return call != nullptr || put != nullptr; }
 };
+
+// ── Equal-T cached ladder batch entry (perf review F4) ───────────────────────
+//
+// Price a whole equal-T strike ladder through the cached graph in one call. Every
+// contract shares T, so the forward F = S·e^{(r-q)T}, discount e^{-rT}, and √T are
+// hoisted ONCE, and each usable correction endpoint's T (j) axis is collapsed into
+// a (k_log, sigma) plane ONCE — each strike then pays a 2-D Clenshaw over the plane
+// plus a Black-76 leg and the intrinsic/euro/0 floor, instead of a full 3-D sweep.
+//
+// price_out[i] is economic-parity to
+//   american_price_cached(S, strikes[i], T, sigmas[i], r, q, side, correction)
+// (a summation reorder on the correction value; |Δprice| < 1e-12·K), with the same
+// floor. A non-finite / non-positive strike yields NaN for that row; an unusable
+// blend or a double-continuation query regime delegates every row to the scalar
+// cached entry (identical values). strikes, sigmas and price_out share one length.
+[[nodiscard]] Status american_price_cached_ladder(double S, std::span<const double> strikes,
+                                                  std::span<const double> sigmas, double T, double r,
+                                                  double q, Side side,
+                                                  const CorrectionBlend &correction,
+                                                  std::span<double> price_out);
 
 // ── Chebyshev primitives (first-kind / roots grid) ──────────────────────
 //

@@ -158,6 +158,16 @@ void bulk_price_engine(const std::vector<ContractId>& ids,
     double price = kPortNaN;
     std::uint8_t route = static_cast<std::uint8_t>(PricingRoute::B76Only);
 
+    // F4 (P5) NOT wired here — shape differs from the equal-T ladder batch:
+    //   1. This engine walks a flat contract-id list resolving ctx PER LANE, not a
+    //      grouped equal-T ladder; the correction cache/T only recur across a chain
+    //      run, so a T-collapse would need run-detection the scalar engine lacks.
+    //   2. PriceOnly here is raw euro + F·corr with NO intrinsic/euro floor, unlike
+    //      american_price_cached_ladder — so that batch is not a drop-in.
+    //   3. The B76Greeks / AmericanFirstOrder routes below consume eval_grad's dT
+    //      (theta), and a T-collapsed plane has no T axis to differentiate.
+    // bulk_price is also perf-review F12 (LOW, "only if on measured hot path"); the
+    // F4 win lands on the fitter's board pricing via session::evaluate_ladder.
     if (req.risk_mode == BulkRiskMode::PriceOnly) {
       price = black76_price_from_lnfk(ctx.F, K, ctx.T, sigma, ctx.df, -k_log,
                                       ctx.sqrt_t, side);

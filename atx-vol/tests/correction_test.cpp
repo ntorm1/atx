@@ -4,8 +4,11 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <iostream>
 #include <limits>
+#include <span>
 #include <utility>
+#include <vector>
 
 #include "atx/vol/american.hpp"
 #include "atx/vol/black76.hpp"
@@ -984,6 +987,182 @@ TEST(CorrectionBlend, RejectsInvalidWeightMissingEndpointAndMixedSide) {
   EXPECT_FALSE((CorrectionBlend{&put, &put, -0.1}).usable(Side::Put));
   EXPECT_FALSE(
       (CorrectionBlend{&put, &put, std::numeric_limits<double>::quiet_NaN()}).usable(Side::Put));
+}
+
+// ── P5 (perf review F4): equal-T cached ladder batch ─────────────────────────
+//
+// american_price_cached_ladder pre-collapses the correction tensor's T (j) axis
+// ONCE per usable endpoint and prices each strike with a 2-D Clenshaw over the
+// (k_log, sigma) plane. The T-first collapse reorders the tensor summation, so it
+// is ECONOMIC-parity — not bit-identical — to the per-strike american_price_cached:
+// |Δprice| < 1e-12·K (the sprint's ladder-parity budget).
+
+// A smile-ish per-strike vol that stays inside the caches' [sigma_min, sigma_max].
+[[nodiscard]] double p5_ladder_sigma(double k_log) noexcept { return 0.28 + 0.12 * k_log * k_log; }
+
+TEST(CorrectionCache, LadderBatchEconomicParityToPerStrikeCached) {
+  struct Case {
+    double r, q;
+    Side side;
+  };
+  const std::array<Case, 2> cases = {Case{0.05, 0.00, Side::Put}, Case{0.045, 0.02, Side::Call}};
+  const double S = 100.0;
+
+  double worst_rel = 0.0;
+  for (const Case c : cases) {
+    auto built =
+        CorrectionCache::build(16, 12, 8, c.r, c.q, -0.4, 0.4, 0.05, 1.0, 0.10, 0.60, c.side);
+    ASSERT_TRUE(built.has_value());
+    const CorrectionCache cache = std::move(*built);
+    const CorrectionBlend blend = CorrectionBlend::single(&cache);
+
+    // Strikes span in-box AND beyond both wings (exercising the k_log clamp region,
+    // where scalar and batch clamp identically so parity must still hold).
+    std::vector<double> strikes;
+    for (double K = 55.0; K <= 175.0; K += 2.5) {
+      strikes.push_back(K);
+    }
+    for (const double T : {0.12, 0.55, 0.98}) {
+      const double F = S * std::exp((c.r - c.q) * T);
+      std::vector<double> sigmas;
+      sigmas.reserve(strikes.size());
+      for (const double K : strikes) {
+        sigmas.push_back(p5_ladder_sigma(std::log(K / F)));
+      }
+      std::vector<double> batch(strikes.size(), 0.0);
+      const auto st = atx::vol::american_price_cached_ladder(S, strikes, sigmas, T, c.r, c.q, c.side,
+                                                             blend, batch);
+      ASSERT_TRUE(st.has_value()) << st.error().to_string();
+
+      for (std::size_t i = 0; i < strikes.size(); ++i) {
+        const double scalar = atx::vol::american_price_cached(S, strikes[i], T, sigmas[i], c.r, c.q,
+                                                              c.side, blend);
+        ASSERT_TRUE(std::isfinite(batch[i])) << "non-finite batch price @ K=" << strikes[i];
+        const double rel = std::fabs(batch[i] - scalar) / strikes[i];
+        worst_rel = std::max(worst_rel, rel);
+        EXPECT_LT(rel, 1.0e-12) << "side=" << (c.side == Side::Put ? "put" : "call") << " T=" << T
+                                << " K=" << strikes[i];
+      }
+    }
+  }
+  std::cout << "[P5 F4 parity] single-cache ladder max|Δprice|/K = " << worst_rel << "\n";
+}
+
+TEST(CorrectionCache, LadderBatchInteriorBlendParityAndFallbacks) {
+  const double S = 100.0, T = 0.5, r = 0.05, q = 0.0;
+  // Two put caches at neighbouring baked carries -> an interior (0<w<1) blend, the
+  // C2 cross-carry cache-reuse shape. Query carry sits between the two.
+  auto lo = CorrectionCache::build(16, 12, 8, 0.04, 0.0, -0.4, 0.4, 0.05, 1.0, 0.10, 0.60, Side::Put);
+  auto hi = CorrectionCache::build(16, 12, 8, 0.06, 0.0, -0.4, 0.4, 0.05, 1.0, 0.10, 0.60, Side::Put);
+  ASSERT_TRUE(lo.has_value() && hi.has_value());
+  const CorrectionCache lo_c = std::move(*lo);
+  const CorrectionCache hi_c = std::move(*hi);
+  const CorrectionBlend blend{&lo_c, &hi_c, 0.5};
+  ASSERT_TRUE(blend.usable(Side::Put));
+
+  std::vector<double> strikes;
+  for (double K = 70.0; K <= 135.0; K += 2.5) {
+    strikes.push_back(K);
+  }
+  const double F = S * std::exp((r - q) * T);
+  std::vector<double> sigmas;
+  for (const double K : strikes) {
+    sigmas.push_back(p5_ladder_sigma(std::log(K / F)));
+  }
+  std::vector<double> batch(strikes.size(), 0.0);
+  ASSERT_TRUE(
+      atx::vol::american_price_cached_ladder(S, strikes, sigmas, T, r, q, Side::Put, blend, batch)
+          .has_value());
+  double worst_rel = 0.0;
+  for (std::size_t i = 0; i < strikes.size(); ++i) {
+    const double scalar =
+        atx::vol::american_price_cached(S, strikes[i], T, sigmas[i], r, q, Side::Put, blend);
+    worst_rel = std::max(worst_rel, std::fabs(batch[i] - scalar) / strikes[i]);
+  }
+  EXPECT_LT(worst_rel, 1.0e-12) << "interior blend max|Δprice|/K=" << worst_rel;
+  std::cout << "[P5 F4 parity] interior-blend ladder max|Δprice|/K = " << worst_rel << "\n";
+
+  // Bad strikes (<=0 / NaN) become NaN in place, preserving row order.
+  const std::vector<double> mixed_strikes = {90.0, -1.0, 110.0,
+                                             std::numeric_limits<double>::quiet_NaN()};
+  const std::vector<double> mixed_sigmas = {0.30, 0.30, 0.30, 0.30};
+  std::vector<double> mixed_out(4, 0.0);
+  ASSERT_TRUE(atx::vol::american_price_cached_ladder(S, mixed_strikes, mixed_sigmas, T, r, q,
+                                                     Side::Put, blend, mixed_out)
+                  .has_value());
+  EXPECT_TRUE(std::isfinite(mixed_out[0]));
+  EXPECT_TRUE(std::isnan(mixed_out[1]));
+  EXPECT_TRUE(std::isfinite(mixed_out[2]));
+  EXPECT_TRUE(std::isnan(mixed_out[3]));
+
+  // An unusable blend (wrong side) delegates to the scalar cached entry, so the
+  // batch is BIT-for-bit the scalar there (same function, no plane path taken).
+  const CorrectionBlend put_only = CorrectionBlend::single(&lo_c);
+  ASSERT_FALSE(put_only.usable(Side::Call));
+  std::vector<double> call_out(strikes.size(), 0.0);
+  ASSERT_TRUE(atx::vol::american_price_cached_ladder(S, strikes, sigmas, T, r, q, Side::Call,
+                                                     put_only, call_out)
+                  .has_value());
+  for (std::size_t i = 0; i < strikes.size(); ++i) {
+    const double scalar =
+        atx::vol::american_price_cached(S, strikes[i], T, sigmas[i], r, q, Side::Call, put_only);
+    if (std::isnan(scalar)) {
+      EXPECT_TRUE(std::isnan(call_out[i]));
+    } else {
+      EXPECT_DOUBLE_EQ(call_out[i], scalar);
+    }
+  }
+
+  // Structural rejection: strikes/price length mismatch.
+  std::vector<double> short_out(strikes.size() - 1, 0.0);
+  EXPECT_FALSE(atx::vol::american_price_cached_ladder(S, strikes, sigmas, T, r, q, Side::Put, blend,
+                                                      short_out)
+                   .has_value());
+}
+
+// Counter gate (perf review F4): the equal-T ladder does ONE full-tensor traversal
+// (the T-collapse) per usable endpoint regardless of strike count, where the
+// per-strike scalar path does one full 3-D Clenshaw sweep PER strike. Cite the
+// ClenshawSweeps delta; skip on an OFF build so the counters-owner confirms on ON.
+TEST(CorrectionCache, LadderBatchClenshawSweepCountIsStrikeCountIndependent) {
+  using atx::vol::counters::Counter;
+  if constexpr (!atx::vol::counters::counters_enabled()) {
+    GTEST_SKIP() << "ATX_VOL_COUNTERS off: rebuild with -DATX_VOL_COUNTERS=ON";
+  }
+  auto built = CorrectionCache::build(16, 12, 8, 0.05, 0.0, -0.4, 0.4, 0.05, 1.0, 0.10, 0.60,
+                                      Side::Put);
+  ASSERT_TRUE(built.has_value());
+  const CorrectionCache cache = std::move(*built);
+  const CorrectionBlend blend = CorrectionBlend::single(&cache);
+  const double S = 100.0, r = 0.05, q = 0.0, T = 0.5;
+  const double F = S * std::exp((r - q) * T);
+  std::vector<double> strikes;
+  std::vector<double> sigmas;
+  for (double K = 70.0; K <= 130.0; K += 2.0) {
+    strikes.push_back(K);
+    sigmas.push_back(p5_ladder_sigma(std::log(K / F)));
+  }
+  const std::uint64_t n = strikes.size();
+
+  atx::vol::counters::reset();
+  std::vector<double> scalar(n, 0.0);
+  for (std::size_t i = 0; i < n; ++i) {
+    scalar[i] = atx::vol::american_price_cached(S, strikes[i], T, sigmas[i], r, q, Side::Put, blend);
+  }
+  const std::uint64_t scalar_sweeps = atx::vol::counters::snapshot().get(Counter::ClenshawSweeps);
+
+  atx::vol::counters::reset();
+  std::vector<double> batch(n, 0.0);
+  ASSERT_TRUE(
+      atx::vol::american_price_cached_ladder(S, strikes, sigmas, T, r, q, Side::Put, blend, batch)
+          .has_value());
+  const std::uint64_t batch_sweeps = atx::vol::counters::snapshot().get(Counter::ClenshawSweeps);
+
+  std::cout << "[P5 F4 counters] " << n << " single-cache strikes: scalar " << scalar_sweeps
+            << " ClenshawSweeps vs ladder " << batch_sweeps
+            << " (per-strike 3-D sweep -> one T-collapse per ladder)\n";
+  EXPECT_EQ(scalar_sweeps, n); // one full 3-D Clenshaw sweep per strike
+  EXPECT_EQ(batch_sweeps, 1u); // one T-collapse per (ladder, endpoint); plane evals uncounted
 }
 
 // Frozen value/first-partial pins remain rounding-scale references. Their live
