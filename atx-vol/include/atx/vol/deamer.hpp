@@ -193,6 +193,20 @@ struct CarryPairDiagnostic {
   bool retained{false};
 };
 
+// Provenance of a per-expiry carry (borrow). A `Solved` carry is inferred
+// directly from THIS expiry's own co-terminal put/call pairs. The two fallback
+// values are stamped by the board-level term-structure repair pass (Decision B,
+// bt-hotpath sprint): when an expiry's own solve is not confident under the risk
+// build, its borrow is DERIVED from the borrow-vs-T structure of the board's
+// CONFIDENT expiries rather than the expiry being dropped. The distinction is
+// load-bearing — a fallback carry must never be laundered downstream as a solved
+// one (certificates read `source`, not just `confident`).
+enum class CarrySource : std::uint8_t {
+  Solved = 0,          // borrow inferred from this expiry's own co-terminal pairs
+  TermStructureInterp, // fallback: linearly interpolated between bracketing confident expiries
+  TermStructureExtrap, // fallback: flat-extended from the nearest confident expiry
+};
+
 // Carry is a measured input, not an invisible scalar.  These diagnostics make
 // the robustness and single-pair sensitivity available to the admission layer.
 struct CarryDiagnostics {
@@ -207,6 +221,10 @@ struct CarryDiagnostics {
   double confidence_half_width{0.0};
   double max_pcp_residual{0.0};
   bool confident{false};
+  // Decision B provenance. Defaults to Solved so every existing construction /
+  // serialized carry keeps its meaning; only the board-level repair pass stamps
+  // a fallback value. `confident` is NEVER set true for a fallback carry.
+  CarrySource source{CarrySource::Solved};
 };
 
 struct ChainForward {
