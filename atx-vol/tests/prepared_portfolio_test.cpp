@@ -462,9 +462,13 @@ TEST(PreparedPortfolio, GroupedPriceEqualsIndependentOracleAndPinnedFingerprint)
   EXPECT_EQ(h4, fingerprint(*fr1));
   EXPECT_EQ(h4, fingerprint(*fr8));
 
-  // The pin: this fingerprint was captured from the PRE-substrate price() (the
-  // per-contract evaluate() path, before the grouped substrate was wired in) and
-  // must never move. Bit-for-bit identity across the change is the acceptance gate.
-  constexpr std::uint64_t kGoldenFingerprint = 7301012345543018204ULL;
+  // The pin: a whole-frame bit fingerprint. It guards the grouped substrate against
+  // the per-contract evaluate() path (thread-invariance above is the live gate).
+  // A1 REPIN (core-review finding 1): the American book reprices through the cold
+  // andersen_lake path whose BAW seed sign was fixed, shifting the marks ~1e-6 and
+  // thus every hashed bit — the FNV fingerprint moves wholesale (a hash has no
+  // "small" delta). Grouped==oracle economic equality above is unchanged. New value
+  // captured on the SSE2 reference ISA (dev preset).
+  constexpr std::uint64_t kGoldenFingerprint = 718570745730299145ULL;
   EXPECT_EQ(h4, kGoldenFingerprint);
 }

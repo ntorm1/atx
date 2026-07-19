@@ -1980,10 +1980,15 @@ TEST(Backtest, DailyTwoLegRollReusesExactPnlTargetMarksWithoutChangingEconomics)
   // contraction telltale, not an economics change. golden_isa_accum_tol keeps the
   // 4-ULP EXPECT_DOUBLE_EQ gate on the SSE2 reference ISA and opens a relative
   // economic band under FMA. See support/isa_golden_tol.hpp.
-  constexpr std::array<double, 4> expected_cash{-3.0734556197676284, -3.548979869780851,
-                                                -4.0009109642776366, -4.4307747789998757};
-  constexpr std::array<double, 4> expected_turnover{2200.5417380996087, 4444.3187954021723,
-                                                    4493.5146516456771, 4543.6617275559584};
+  // A1 REPIN (core-review finding 1): the backtest reprices through the cold
+  // andersen_lake path whose BAW critical-price seed sign was fixed; every close
+  // mark shifted deterministically ~1e-6 (cash) / ~1e-6 (turnover). Recaptured on
+  // the dev (Debug, reference-ISA) build — golden_isa_accum_tol keeps the 4-ULP
+  // gate here and the relative economic band under rel-avx2/FMA.
+  constexpr std::array<double, 4> expected_cash{-3.0734592640139908, -3.5489832955311158,
+                                                -4.0009154520034826, -4.4307759090513628};
+  constexpr std::array<double, 4> expected_turnover{2200.5417344553625, 4444.318791516017,
+                                                    4493.5146508026201, 4543.6617284600488};
   for (std::size_t i = 0; i < result->size(); ++i) {
     EXPECT_NEAR(result->cash[i], expected_cash[i],
                 atx::vol::test::golden_isa_accum_tol(expected_cash[i]))
@@ -2027,12 +2032,14 @@ TEST(Backtest, PriceBpsRollCloseReusesPnlMarkWithoutASecondSurfaceSolve) {
   // infra / test-tolerance (WS-0): same accumulated-FMA-contraction telltale as
   // above — `cash` drifts ~1.9e-12 off the SSE2 pin under rel-avx2. SSE2 keeps its
   // 4-ULP EXPECT_DOUBLE_EQ gate; FMA gets the relative economic band.
-  EXPECT_NEAR(result->cost[1], 44.443187954021731,
-              atx::vol::test::golden_isa_accum_tol(44.443187954021731));
-  EXPECT_NEAR(result->cash[1], -69.997585204798639,
-              atx::vol::test::golden_isa_accum_tol(-69.997585204798639));
-  EXPECT_NEAR(result->turnover_notional[1], 4444.3187954021723,
-              atx::vol::test::golden_isa_accum_tol(4444.3187954021723));
+  // A1 REPIN (core-review finding 1): same deterministic ~1e-6 close-mark shift from
+  // the corrected BAW seed. Recaptured on dev (Debug, reference ISA).
+  EXPECT_NEAR(result->cost[1], 44.443187915160173,
+              atx::vol::test::golden_isa_accum_tol(44.443187915160173));
+  EXPECT_NEAR(result->cash[1], -69.997588555245017,
+              atx::vol::test::golden_isa_accum_tol(-69.997588555245017));
+  EXPECT_NEAR(result->turnover_notional[1], 4444.318791516017,
+              atx::vol::test::golden_isa_accum_tol(4444.318791516017));
   EXPECT_TRUE(std::isfinite(result->turnover_vega[1]));
   EXPECT_GT(result->turnover_vega[1], 0.0);
   if constexpr (counters_enabled()) {

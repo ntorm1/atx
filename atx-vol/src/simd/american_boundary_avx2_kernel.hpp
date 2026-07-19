@@ -215,9 +215,11 @@ inline void solve_put_boundary_pack_avx2(
             const __m256d bit = _mm256_sub_pd(one, dqN);
             f = _mm256_add_pd(_mm256_sub_pd(_mm256_sub_pd(Kv, Sx), pE),
                               _mm256_div_pd(_mm256_mul_pd(Sx, bit), q1));
+            // A1 (finding 1): mirror the scalar put_residual_deriv sign fix — the
+            // phi-term is ADDED, not subtracted (bit-parity pair with american.cpp).
             fp = _mm256_add_pd(
                 _mm256_add_pd(neg_one, dqN),
-                _mm256_sub_pd(_mm256_div_pd(bit, q1),
+                _mm256_add_pd(_mm256_div_pd(bit, q1),
                               _mm256_div_pd(_mm256_mul_pd(dq, phim),
                                             _mm256_mul_pd(q1, v))));
         };

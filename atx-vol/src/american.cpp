@@ -94,7 +94,10 @@ inline constexpr unsigned kAlMaxQuad = detail::kMaxQuadNodes; // 64
   const double Nm = norm_cdf(-d1);
   const double phim = norm_pdf(-d1);
   const double dq = std::exp(-q * T);
-  return -1.0 + dq * Nm + (1.0 - dq * Nm) / q1 - dq * phim / (q1 * v);
+  // A1 (finding 1): the phi-term is +, not -. put_residual = K - Sx - pE + Sx*bit/q1
+  // with bit = 1 - e^{-qT}N(-d1); d(bit)/dSx = +e^{-qT}phi(d1)/(Sx*v) (N(-d1) falls
+  // as Sx rises), so d/dSx[Sx*bit/q1] contributes +dq*phim/(q1*v). FD-verified.
+  return -1.0 + dq * Nm + (1.0 - dq * Nm) / q1 + dq * phim / (q1 * v);
 }
 [[nodiscard]] double call_residual(double Sx, double K, double T, double sigma, double r, double q,
                                    double q2) noexcept {
@@ -110,18 +113,43 @@ inline constexpr unsigned kAlMaxQuad = detail::kMaxQuadNodes; // 64
   const double Np = norm_cdf(d1);
   const double phip = norm_pdf(d1);
   const double dq = std::exp(-q * T);
-  return 1.0 - dq * Np - (1.0 - dq * Np) / q2 - dq * phip / (q2 * v);
+  // A1 (finding 1): the phi-term is +, not - (McDonald-Schroder symmetric to the
+  // put). call_residual = Sx - K - cE - Sx*bit/q2 with bit = 1 - e^{-qT}N(d1);
+  // d(bit)/dSx = -e^{-qT}phi(d1)/(Sx*v), so -d/dSx[Sx*bit/q2] gives +dq*phip/(q2*v).
+  return 1.0 - dq * Np - (1.0 - dq * Np) / q2 + dq * phip / (q2 * v);
 }
 
+// A1 convergence contract (finding 8). Reports how the safeguarded critical-price
+// Newton terminated so callers can reject a silently non-converged root and tests
+// can pin the iteration count. `converged` is true iff a Newton/step tolerance
+// test fired INSIDE the loop (NOT max_iter bisection exhaustion); `iters` counts
+// executed iterations; `residual` is the signed residual f at the returned Sx.
+// The fields are populated only when a non-null `stats` is passed, so the
+// production seed/pricer paths (nullptr) are numerically and performance-identical
+// to before — the only behavior change on those paths is the finding-1 sign fix.
+struct NewtonCriticalStats {
+  std::uint16_t iters = 0;
+  double residual = 0.0;
+  bool converged = false;
+};
+
+// A1 (finding 8): baw_american accepts a critical price only if its residual is
+// within this multiple of the solve tolerance scale (tol*K). Generous margin
+// (Newton converges to << tol*K post-fix) that still rejects the off-root
+// bisection midpoint the pre-fix loop returned on max_iter exhaustion.
+inline constexpr double kBawCriticalResidualGate = 1.0e2;
+
 [[nodiscard]] double newton_critical_put(double K, double T, double sigma, double r, double q,
-                                         double q1, std::uint16_t max_iter, double tol) noexcept {
+                                         double q1, std::uint16_t max_iter, double tol,
+                                         NewtonCriticalStats *stats = nullptr) noexcept {
   double lo = 1.0e-3 * K;
   double hi = K * (1.0 - 1.0e-6);
   double Sx = K * q1 / (q1 - 1.0);
   if (!(Sx > lo && Sx < hi)) {
     Sx = 0.5 * (lo + hi);
   }
-  for (std::uint16_t it = 0; it < max_iter; ++it) {
+  std::uint16_t it = 0;
+  for (; it < max_iter; ++it) {
     const double f = put_residual(Sx, K, T, sigma, r, q, q1);
     const double fp = put_residual_deriv(Sx, K, T, sigma, r, q, q1);
     if (f > 0.0) {
@@ -130,6 +158,9 @@ inline constexpr unsigned kAlMaxQuad = detail::kMaxQuadNodes; // 64
       hi = Sx;
     }
     if (std::fabs(f) < tol * K) {
+      if (stats) {
+        *stats = {static_cast<std::uint16_t>(it + 1), f, true};
+      }
       return Sx;
     }
     double Sx_new = (std::fabs(fp) > 1.0e-15) ? (Sx - f / fp) : 0.5 * (lo + hi);
@@ -139,20 +170,29 @@ inline constexpr unsigned kAlMaxQuad = detail::kMaxQuadNodes; // 64
     const double dS = Sx_new - Sx;
     Sx = Sx_new;
     if (std::fabs(dS) < tol * K) {
+      if (stats) {
+        *stats = {static_cast<std::uint16_t>(it + 1),
+                  put_residual(Sx, K, T, sigma, r, q, q1), true};
+      }
       return Sx;
     }
+  }
+  if (stats) {
+    *stats = {it, put_residual(Sx, K, T, sigma, r, q, q1), false};
   }
   return Sx;
 }
 [[nodiscard]] double newton_critical_call(double K, double T, double sigma, double r, double q,
-                                          double q2, std::uint16_t max_iter, double tol) noexcept {
+                                          double q2, std::uint16_t max_iter, double tol,
+                                          NewtonCriticalStats *stats = nullptr) noexcept {
   double lo = K * (1.0 + 1.0e-6);
   double hi = K * 50.0;
   double Sx = K * q2 / (q2 - 1.0);
   if (!(Sx > lo && Sx < hi)) {
     Sx = 0.5 * (lo + hi);
   }
-  for (std::uint16_t it = 0; it < max_iter; ++it) {
+  std::uint16_t it = 0;
+  for (; it < max_iter; ++it) {
     const double f = call_residual(Sx, K, T, sigma, r, q, q2);
     const double fp = call_residual_deriv(Sx, K, T, sigma, r, q, q2);
     if (f < 0.0) {
@@ -161,6 +201,9 @@ inline constexpr unsigned kAlMaxQuad = detail::kMaxQuadNodes; // 64
       hi = Sx;
     }
     if (std::fabs(f) < tol * K) {
+      if (stats) {
+        *stats = {static_cast<std::uint16_t>(it + 1), f, true};
+      }
       return Sx;
     }
     double Sx_new = (std::fabs(fp) > 1.0e-15) ? (Sx - f / fp) : 0.5 * (lo + hi);
@@ -170,8 +213,15 @@ inline constexpr unsigned kAlMaxQuad = detail::kMaxQuadNodes; // 64
     const double dS = Sx_new - Sx;
     Sx = Sx_new;
     if (std::fabs(dS) < tol * K) {
+      if (stats) {
+        *stats = {static_cast<std::uint16_t>(it + 1),
+                  call_residual(Sx, K, T, sigma, r, q, q2), true};
+      }
       return Sx;
     }
+  }
+  if (stats) {
+    *stats = {it, call_residual(Sx, K, T, sigma, r, q, q2), false};
   }
   return Sx;
 }
@@ -2116,8 +2166,12 @@ Result<double> baw_american(double S, double K, double T, double sigma, double r
     if (!(q1 < 0.0)) {
       return Ok(euro);
     }
-    const double Sx = newton_critical_put(K, T, sigma, r, q, q1, mi, tt);
-    if (!(Sx > 0.0 && Sx < K)) {
+    NewtonCriticalStats st;
+    const double Sx = newton_critical_put(K, T, sigma, r, q, q1, mi, tt, &st);
+    // A1 (finding 8): reject a silently non-converged root — the range check alone
+    // masked finding 1 (a bisection-exhausted midpoint stays in (0,K) but is not at
+    // the smooth-pasting root).
+    if (!(Sx > 0.0 && Sx < K) || !(std::fabs(st.residual) <= kBawCriticalResidualGate * tt * K)) {
       return Err(ErrorCode::Unavailable, "baw_american: put critical-price did not converge");
     }
     if (S <= Sx) {
@@ -2135,8 +2189,10 @@ Result<double> baw_american(double S, double K, double T, double sigma, double r
   if (!(q2 > 1.0)) {
     return Ok(euro);
   }
-  const double Sx = newton_critical_call(K, T, sigma, r, q, q2, mi, tt);
-  if (!(Sx > K)) {
+  NewtonCriticalStats st;
+  const double Sx = newton_critical_call(K, T, sigma, r, q, q2, mi, tt, &st);
+  // A1 (finding 8): reject a silently non-converged root (see the put branch).
+  if (!(Sx > K) || !(std::fabs(st.residual) <= kBawCriticalResidualGate * tt * K)) {
     return Err(ErrorCode::Unavailable, "baw_american: call critical-price did not converge");
   }
   if (S >= Sx) {
@@ -2919,6 +2975,96 @@ namespace detail {
 GaussLegendre gauss_legendre(unsigned n) {
   const GaussLegendre *t = gl_find(n);
   return t ? *t : GaussLegendre{};
+}
+
+BawResidualEval baw_residual_eval(double Sx, double K, double T, double sigma, double r, double q,
+                                  Side side) noexcept {
+  BawResidualEval out;
+  if (!(K > 0.0 && T > 0.0 && sigma > 0.0 && Sx > 0.0)) {
+    return out;
+  }
+  // Same regime gate as baw_american: only the standard single-boundary
+  // American regime has an interior smooth-pasting critical price.
+  if (classify_regime(/*rate=*/(side == Side::Put) ? r : q,
+                      /*yield=*/(side == Side::Put) ? q : r) != ExerciseRegime::American) {
+    return out;
+  }
+  const double sigma2 = sigma * sigma;
+  const double M = 2.0 * r / sigma2;
+  const double N = 2.0 * (r - q) / sigma2;
+  const double h = 1.0 - std::exp(-r * T);
+  if (!(h > 0.0)) {
+    return out;
+  }
+  const double disc = (N - 1.0) * (N - 1.0) + 4.0 * M / h;
+  if (!(disc >= 0.0)) {
+    return out;
+  }
+  const double sqrt_disc = std::sqrt(disc);
+  if (side == Side::Put) {
+    const double q1 = 0.5 * (-(N - 1.0) - sqrt_disc);
+    if (!(q1 < 0.0)) {
+      return out;
+    }
+    out.q_exp = q1;
+    out.f = put_residual(Sx, K, T, sigma, r, q, q1);
+    out.fprime = put_residual_deriv(Sx, K, T, sigma, r, q, q1);
+  } else {
+    const double q2 = 0.5 * (-(N - 1.0) + sqrt_disc);
+    if (!(q2 > 1.0)) {
+      return out;
+    }
+    out.q_exp = q2;
+    out.f = call_residual(Sx, K, T, sigma, r, q, q2);
+    out.fprime = call_residual_deriv(Sx, K, T, sigma, r, q, q2);
+  }
+  out.ok = true;
+  return out;
+}
+
+BawCriticalSolve baw_critical_solve(double K, double T, double sigma, double r, double q, Side side,
+                                    std::uint16_t max_iter, double tol) noexcept {
+  BawCriticalSolve out;
+  if (!(K > 0.0 && T > 0.0 && sigma > 0.0)) {
+    return out;
+  }
+  if (classify_regime(/*rate=*/(side == Side::Put) ? r : q,
+                      /*yield=*/(side == Side::Put) ? q : r) != ExerciseRegime::American) {
+    return out;
+  }
+  const double sigma2 = sigma * sigma;
+  const double M = 2.0 * r / sigma2;
+  const double N = 2.0 * (r - q) / sigma2;
+  const double h = 1.0 - std::exp(-r * T);
+  if (!(h > 0.0)) {
+    return out;
+  }
+  const double disc = (N - 1.0) * (N - 1.0) + 4.0 * M / h;
+  if (!(disc >= 0.0)) {
+    return out;
+  }
+  const double sqrt_disc = std::sqrt(disc);
+  const std::uint16_t mi = max_iter ? max_iter : std::uint16_t{16};
+  const double tt = (tol > 0.0) ? tol : 1.0e-10;
+  NewtonCriticalStats st;
+  if (side == Side::Put) {
+    const double q1 = 0.5 * (-(N - 1.0) - sqrt_disc);
+    if (!(q1 < 0.0)) {
+      return out;
+    }
+    out.Sx = newton_critical_put(K, T, sigma, r, q, q1, mi, tt, &st);
+  } else {
+    const double q2 = 0.5 * (-(N - 1.0) + sqrt_disc);
+    if (!(q2 > 1.0)) {
+      return out;
+    }
+    out.Sx = newton_critical_call(K, T, sigma, r, q, q2, mi, tt, &st);
+  }
+  out.residual = st.residual;
+  out.iters = st.iters;
+  out.converged = st.converged;
+  out.ok = true;
+  return out;
 }
 
 Result<double> andersen_lake_generic_kernel(double S, double K, double T, double sigma, double r,

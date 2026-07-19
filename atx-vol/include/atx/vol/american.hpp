@@ -633,6 +633,46 @@ struct ImplicitDiffGreeks {
                                                              bool validate,
                                                              double &j_max_rel_err) noexcept;
 
+// ── A1 test seam: BAW smooth-pasting critical-price root-find ─────────────
+//
+// The Barone-Adesi-Whaley smooth-pasting residual and its analytic derivative
+// (put_residual/put_residual_deriv, call_residual/call_residual_deriv) are
+// file-static in american.cpp. These seams expose them for the A1 FD-parity and
+// convergence tests WITHOUT widening the production surface. Not production
+// entry points.
+
+// Evaluate the BAW smooth-pasting residual `f` and its analytic derivative
+// `fprime = df/dSx` at a trial critical price Sx, with the quadratic exponent
+// q1 (put) / q2 (call) derived internally from (K,T,sigma,r,q) exactly as
+// baw_american does. `ok == false` on the European / degenerate / no-valid-
+// exponent corners (f, fprime, q_exp left 0). Lets the test central-difference
+// `f` and pin the analytic derivative's sign and magnitude (finding 1).
+struct BawResidualEval {
+  double f = 0.0;
+  double fprime = 0.0;
+  double q_exp = 0.0; // q1 (put) or q2 (call)
+  bool ok = false;
+};
+[[nodiscard]] BawResidualEval baw_residual_eval(double Sx, double K, double T, double sigma,
+                                                double r, double q, Side side) noexcept;
+
+// Run the safeguarded critical-price Newton (newton_critical_put/call) and report
+// its convergence contract (finding 8): `iters` executed, `converged` == a
+// Newton/step tolerance test fired INSIDE the loop (NOT max_iter bisection
+// exhaustion), `residual` == the signed residual f at the returned Sx. `ok ==
+// false` on the European / degenerate corners with no interior early-exercise
+// boundary.
+struct BawCriticalSolve {
+  double Sx = 0.0;
+  double residual = 0.0;
+  std::uint16_t iters = 0;
+  bool converged = false;
+  bool ok = false;
+};
+[[nodiscard]] BawCriticalSolve baw_critical_solve(double K, double T, double sigma, double r,
+                                                  double q, Side side, std::uint16_t max_iter,
+                                                  double tol) noexcept;
+
 } // namespace detail
 
 } // namespace atx::vol
