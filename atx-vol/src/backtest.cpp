@@ -1742,6 +1742,14 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
                      "run_backtest: no surface for roll-close lot id=" + std::to_string(lot.id) +
                          " uid=" + std::to_string(lot.contract.uid));
         }
+        // L4 note: this per-lot roll-close friction bundle consumes ONLY `price` and
+        // `vega` (below) and is NOT reused by any later P&L, so it is a genuine
+        // first-order-tier site — `greeks_analytic(..., GreekNeeds{vega=true,rho=false,
+        // charm=false})` would drop it 5 -> 3 boundary solves, price/vega BIT-IDENTICAL.
+        // Left at the full bundle here because the VolTicks roll-close solve-count pin
+        // lives in backtest_test.cpp (Backtest.VolTicksRollCloseUsesConfiguredFdOr-
+        // AnalyticGreekRoute, BoundarySolves==32) — a non-loop-owned test whose pin a
+        // narrowing would move (32 -> 28); flipping it needs a PM license (loop-stage3).
         const Result<AmericanGreeks> risk =
             cfg.price.analytic_greeks
                 ? s->greeks_analytic(lot.contract.K, T_res, lot.contract.side,

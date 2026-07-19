@@ -559,6 +559,21 @@ struct PriceOptions {
   // tier; ColdReference bypasses transient correction accelerators for marks,
   // Greeks, totals, and every P&L leg without rebuilding the surface.
   QueryExecution query_execution{QueryExecution::Configured};
+  // L4 first-order tier (K4 seam): which analytic-AL boundary solves the FullGreeks
+  // bundle actually needs. DEFAULT `{}` (all true) is the full 5-solve bundle —
+  // BIT-IDENTICAL to the pre-L4 maskless path — so every existing price_into /
+  // price_totals / backtest frame is byte-unchanged. A reduced request (e.g. a
+  // hedge frame that consumes only delta, or a risk frame that consumes delta+vega)
+  // narrows the solves the analytic bundle spends (full=5, {delta,vega}=3, {delta}=1).
+  //
+  // CORRECTNESS COUPLING (base-risk stamp, L1): a bundle computed under a reduced
+  // `greek_needs` is stamped with those needs; the base-risk REUSE guard in
+  // pnl_totals/pnl_explain requires the stamped needs to be full() before a P&L
+  // Taylor decomposition (which reads all eight base greeks) may reuse it. A narrowed
+  // base therefore NEVER silently feeds a full P&L attribution — it forces a fresh
+  // full solve. So narrowing a frame that a later P&L reuses (L1) is a NET LOSS; only
+  // narrow frames whose bundle no P&L reuses (see loop-stage3.md §economy).
+  PricedSurface::GreekNeeds greek_needs{};
 };
 
 class PortfolioPricer {

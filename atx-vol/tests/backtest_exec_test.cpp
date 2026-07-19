@@ -1642,3 +1642,198 @@ TEST(BacktestExec, L2StrategyCohortSettlementMemoBitIdentical) {
               "bit-identical\n",
               settle_rows);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// L4 (AL-solve-wall sprint) — first-order tier wiring (the K4 last-mile seam).
+//
+// Edit B threads `PricedSurface::GreekNeeds` from evaluate/evaluate_batch/
+// greeks_analytic down into `american_greeks_al(..., need_vega, need_rho, need_charm)`,
+// so a reduced Greek request skips whole boundary solves. Edit A carries it on
+// `PriceOptions::greek_needs` through PortfolioPricer::price_* -> solve_uniques, and
+// adds the base-risk stamp guard (`base_greek_needs.full()`) so a narrowed frame is
+// never reused for a full P&L attribution.
+//
+// The tests below are the L4 gates: (1) the bit-identity proof (default = full = the
+// pre-L4 maskless bundle; a reduced request returns its columns BIT-IDENTICAL and the
+// unrequested greeks 0), (2) the per-role ledger economy (full=5, risk=3, hedge=1
+// boundary solves/unique), and (3) the stamp-guard safety (a narrowed base is
+// re-solved, never served, by a following pnl).
+// ─────────────────────────────────────────────────────────────────────────────
+
+// (1) Edit-B bit-identity / K4 guarantee. `greeks_analytic` with the DEFAULT
+// GreekNeeds{} reproduces the pre-L4 maskless bundle bit-for-bit; a reduced request
+// returns its requested columns BIT-IDENTICAL to the full bundle (same base boundary +
+// sigma+/- stencils) with the unrequested greeks left exactly 0 on the native put AL
+// route. (Calls / degenerate corners defer to american_greeks_fd, the full oracle,
+// which ignores the mask — a correctness-preserving superset; the "==0" drop is
+// asserted only on puts, which take the analytic route this fixture is built for.)
+TEST(BacktestExec, L4EditBReducedColumnsBitIdenticalToFullBundle) {
+  const PricedSurface s = make_surface(kUid, 100.0, 100.0, kBaseNow, 0.0);
+  using GN = PricedSurface::GreekNeeds;
+  const GN full{};                                                // pre-L4 maskless bundle
+  const GN risk{/*vega=*/true, /*rho=*/false, /*charm=*/false};   // delta+vega (3 solves)
+  const GN hedge{/*vega=*/false, /*rho=*/false, /*charm=*/false}; // delta only (1 solve)
+
+  std::size_t n_ok = 0;
+  std::size_t n_put_masked = 0;
+  for (const double K : {90.0, 95.0, 100.0, 105.0, 110.0}) {
+    for (const Side side : {Side::Call, Side::Put}) {
+      for (const double T : {0.10, 0.35, 0.75}) {
+        const auto gf = s.greeks_analytic(K, T, side);  // old signature -> default {}
+        const auto ge = s.greeks_analytic(K, T, side, QueryExecution::Configured, full);
+        const auto gr = s.greeks_analytic(K, T, side, QueryExecution::Configured, risk);
+        const auto gh = s.greeks_analytic(K, T, side, QueryExecution::Configured, hedge);
+        ASSERT_EQ(gf.has_value(), ge.has_value());
+        if (!gf.has_value()) {
+          continue;
+        }
+        ++n_ok;
+        // Default arg == explicit full, to the bit (proves GreekNeeds{} is the maskless path).
+        EXPECT_TRUE(bits_equal(gf->price, ge->price));
+        EXPECT_TRUE(bits_equal(gf->delta, ge->delta));
+        EXPECT_TRUE(bits_equal(gf->vega, ge->vega));
+        EXPECT_TRUE(bits_equal(gf->rho, ge->rho));
+        EXPECT_TRUE(bits_equal(gf->charm, ge->charm));
+        // Requested columns BIT-IDENTICAL to the full bundle on BOTH routes.
+        ASSERT_TRUE(gr.has_value());
+        ASSERT_TRUE(gh.has_value());
+        EXPECT_TRUE(bits_equal(gr->price, gf->price)) << "risk price K=" << K << " T=" << T;
+        EXPECT_TRUE(bits_equal(gr->delta, gf->delta));
+        EXPECT_TRUE(bits_equal(gr->gamma, gf->gamma));
+        EXPECT_TRUE(bits_equal(gr->theta, gf->theta));
+        EXPECT_TRUE(bits_equal(gr->vega, gf->vega)) << "risk vega K=" << K << " T=" << T;
+        EXPECT_TRUE(bits_equal(gr->vanna, gf->vanna));
+        EXPECT_TRUE(bits_equal(gr->volga, gf->volga));
+        EXPECT_TRUE(bits_equal(gh->price, gf->price)) << "hedge price K=" << K << " T=" << T;
+        EXPECT_TRUE(bits_equal(gh->delta, gf->delta)) << "hedge delta K=" << K << " T=" << T;
+        EXPECT_TRUE(bits_equal(gh->gamma, gf->gamma));
+        EXPECT_TRUE(bits_equal(gh->theta, gf->theta));
+        // Unrequested greeks == 0 on the native put AL route (the mask skipped their solves).
+        if (side == Side::Put && gr->rho == 0.0) {
+          ++n_put_masked;
+          EXPECT_EQ(gr->rho, 0.0);
+          EXPECT_EQ(gr->charm, 0.0);
+          EXPECT_EQ(gh->vega, 0.0);
+          EXPECT_EQ(gh->rho, 0.0);
+          EXPECT_EQ(gh->charm, 0.0);
+          EXPECT_EQ(gh->vanna, 0.0);
+          EXPECT_EQ(gh->volga, 0.0);
+        }
+      }
+    }
+  }
+  ASSERT_GT(n_ok, 20u);
+  EXPECT_GT(n_put_masked, 5u) << "no puts took the masked analytic AL route — fixture invalid";
+  std::printf("[btexec] L4 Edit-B: reduced columns bit-identical to full on %zu lots; "
+              "%zu puts masked rho/charm/vega to 0\n",
+              n_ok, n_put_masked);
+}
+
+// (2) Per-role ledger economy: a single-unique FullGreeks/analytic price spends 5
+// boundary solves at full needs, 3 at the risk role ({delta,vega}, r+/- skipped), 1 at
+// the hedge role ({delta}, sigma+/- and r+/- skipped) — the K4 tier, on the SCALAR
+// analytic production route (american_greeks_al), independent of any dark AVX2 flag.
+TEST(BacktestExec, L4PerRoleBundleSolveEconomy) {
+  const PricedSurface s = make_surface(kUid, 100.0, 100.0, kBaseNow, 0.0);
+  const PricedSurface* ptrs[] = {&s};
+  auto set = SurfaceSet::create(std::span<const PricedSurface* const>{ptrs});
+  ASSERT_TRUE(set.has_value());
+
+  // One genuinely-early-exercise put -> the analytic AL bundle route.
+  const Position p{1, OptionContract{kUid, 100.0, 0.35, Side::Put}, +1.0, 100.0};
+  auto pf = Portfolio::create(std::array<Position, 1>{p});
+  ASSERT_TRUE(pf.has_value());
+  PortfolioPricer pricer(std::move(*pf));
+
+  using GN = PricedSurface::GreekNeeds;
+  const auto count = [&](GN needs) -> std::pair<std::uint64_t, std::uint64_t> {
+    PriceOptions opts;
+    opts.n_threads = 1u;
+    opts.analytic_greeks = true;
+    opts.greek_needs = needs;
+    PortfolioWorkspace ws;
+    ws.reserve(1, 1);
+    led::reset();
+    const auto t = pricer.price_totals(*set, PriceFieldMask::FullGreeks, ws, opts);
+    EXPECT_TRUE(t.has_value()) << (t.has_value() ? std::string{} : t.error().to_string());
+    const led::Counts c = led::snapshot();
+    return {al(c), analytic(c)};
+  };
+
+  const auto [al_full, an_full] = count(GN{});                        // 5
+  const auto [al_risk, an_risk] = count(GN{true, false, false});     // 3
+  const auto [al_hedge, an_hedge] = count(GN{false, false, false});  // 1
+
+  EXPECT_EQ(an_full, 1u) << "one analytic bundle per unique (the AL route fired)";
+  EXPECT_EQ(an_risk, 1u);
+  EXPECT_EQ(an_hedge, 1u);
+  EXPECT_EQ(al_full, 5u) << "full bundle = base + sigma+/- + r+/- = 5 boundary solves";
+  EXPECT_EQ(al_risk, 3u) << "risk {delta,vega} = base + sigma+/- = 3 (r+/- skipped)";
+  EXPECT_EQ(al_hedge, 1u) << "hedge {delta} = base only = 1 (sigma+/-, r+/- skipped)";
+  std::printf("[btexec] L4 per-role bundle solves/unique: full=%llu risk=%llu hedge=%llu\n",
+              static_cast<unsigned long long>(al_full), static_cast<unsigned long long>(al_risk),
+              static_cast<unsigned long long>(al_hedge));
+}
+
+// (3) Stamp-guard safety (correctness). A P&L Taylor decomposition reads ALL EIGHT base
+// greeks, so a base bundle computed under a REDUCED greek_needs (missing rho/charm) must
+// NEVER be reused for it. The guard (`base_greek_needs.full()`) forces a fresh full
+// solve; a FULL base is still reused (no fresh bundle). This is L4's "stamp support so
+// L1 composes": the narrowed frame cannot silently corrupt a downstream P&L.
+TEST(BacktestExec, L4NarrowedBaseNeverReusedByPnlStamp) {
+  const std::int64_t ts = kBaseNow;
+  const PricedSurface s_base = make_surface(kUid, 100.0, 100.0, ts, 0.000);
+  const PricedSurface s_shift = make_surface(kUid, 102.0, 102.0, ts, 0.010);  // spot+vol moved
+  const auto make_set = [](const PricedSurface& s) {
+    const PricedSurface* ptrs[] = {&s};
+    auto set = SurfaceSet::create(std::span<const PricedSurface* const>{ptrs});
+    EXPECT_TRUE(set.has_value());
+    return std::move(*set);
+  };
+  const SurfaceSet set_base = make_set(s_base);
+  const SurfaceSet set_shift = make_set(s_shift);
+  const Position pa{1, OptionContract{kUid, 100.0, 0.35, Side::Put}, +1.0, 100.0};
+
+  using GN = PricedSurface::GreekNeeds;
+  PriceOptions opts_full;
+  opts_full.n_threads = 1u;
+  opts_full.analytic_greeks = true;  // greek_needs default {} = full
+  PriceOptions opts_risk = opts_full;
+  opts_risk.greek_needs = GN{true, false, false};  // narrowed base (rho/charm dropped)
+
+  // Cold full reference.
+  PortfolioPricer cold(std::move(*Portfolio::create(std::array<Position, 1>{pa})));
+  PortfolioWorkspace ws_cold;
+  ws_cold.reserve(1, 1);
+  const auto ref = cold.pnl_totals(set_base, set_shift, ws_cold, opts_full);
+  ASSERT_TRUE(ref.has_value()) << ref.error().to_string();
+
+  // (a) Narrowed base -> pnl MUST refuse reuse (guard) and re-solve full.
+  PortfolioPricer p_narrow(std::move(*Portfolio::create(std::array<Position, 1>{pa})));
+  PortfolioWorkspace ws;
+  ws.reserve(1, 1);
+  ASSERT_TRUE(p_narrow.price_totals(set_base, PriceFieldMask::FullGreeks, ws, opts_risk).has_value());
+  led::reset();
+  const auto got = p_narrow.pnl_totals(set_base, set_shift, ws, opts_full);
+  ASSERT_TRUE(got.has_value()) << got.error().to_string();
+  EXPECT_GE(analytic(led::snapshot()), 1u)
+      << "L4 STAMP GUARD FAILED: a narrowed (risk-role) base bundle was reused for a full "
+         "P&L attribution — pnl_rho/pnl_charm would be silently wrong. STOP + report.";
+  EXPECT_TRUE(bits_equal(got->pnl_total, ref->pnl_total)) << "guard re-solve != cold full pnl";
+  EXPECT_TRUE(bits_equal(got->pv_base, ref->pv_base));
+  EXPECT_TRUE(bits_equal(got->pnl_vega, ref->pnl_vega));
+
+  // (b) Positive control: a FULL base IS reused (guard allows it) — no fresh bundle.
+  PortfolioPricer p_full(std::move(*Portfolio::create(std::array<Position, 1>{pa})));
+  PortfolioWorkspace ws2;
+  ws2.reserve(1, 1);
+  ASSERT_TRUE(p_full.price_totals(set_base, PriceFieldMask::FullGreeks, ws2, opts_full).has_value());
+  led::reset();
+  const auto reuse = p_full.pnl_totals(set_base, set_shift, ws2, opts_full);
+  ASSERT_TRUE(reuse.has_value()) << reuse.error().to_string();
+  EXPECT_EQ(analytic(led::snapshot()), 0u)
+      << "a FULL base bundle should be reused by pnl (no fresh analytic bundle)";
+  EXPECT_TRUE(bits_equal(reuse->pnl_total, ref->pnl_total));
+  std::printf("[btexec] L4 stamp guard: narrowed base re-solved (analytic>=1), full base reused "
+              "(analytic==0); both pnl bit-match the cold full reference\n");
+}
