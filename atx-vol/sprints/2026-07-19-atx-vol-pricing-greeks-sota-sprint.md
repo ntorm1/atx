@@ -188,8 +188,8 @@ Rules: american.cpp/american.hpp/american_iv.cpp/deamer.cpp are single-owner per
 | G1 | in-flight | | dispatched (build-counters, freed by W2); pre-landing PM checkpoint required (fixture repins) |
 | G2 | **done** | 55cd3ca | New CarryGreeks{price, dP_dq, q_one_sided} struct (AmericanGreeks NOT widened — 69-file ecosystem, no API break; python additive). No-spot-stencil insight ⇒ carry_al = carry_fd BIT-IDENTICAL both sides on 324-pt regime grid (no homogeneity rescale needed). Cached dP/dq=−T·F·D fixed-carry (rel 2.7e-16 vs −T·S·delta); adjoint ∂P/∂q exposed (4.5e-9 vs bump); analytic ∂F/∂Div escrowed-blend Jacobian (8.6e-12 vs bump); dP/dDiv composed via q_eff bridge, decoupled from dividend.hpp. Focused 3-boundary function (trap 7 ok). 151 pass/0 fail. Deep-ITM negative dP/dq near boundary = shipped-pricer FD kink, sign assertion gated to meaningful time value. Watch item SpyDispersionPnl: not run (outside suites). |
 | G2/G4 watch | open | | SpyDispersionPnl.DailyDeltaHedgeBandsNetDelta flagged once in build/ during concurrent G1 WIP (green rel-avx2 @79abd68) — triage on clean tree at final gate. |
-| G4 | in-flight | | dispatched (build/, freed by G2; owns american.*) |
-| G-DATA | pending | | spend: $0 |
+| G4 | **done** | 3869ec7 | exercise_boundary(K,T,σ,r,q,side): put via al_boundary_at, call via McDonald-Schroder K²/B_put(swap); European regime → OutOfRange sentinel (distinct from double-cont NotImplemented — glance at final review), degenerate → al_xmax_put analytic. AssignmentRisk{at_risk,margin,carry_benefit,time_value} screen (call q·S·T, put r·K·T vs time value). Limit table green: perpetual 7e-5, T→0 exact both regimes (B(0+)=K·min(1,r/q) — task prose had labels reversed, derived from code), symmetry <1e-12. 156 pass/0 fail; bindings additive. |
+| G-DATA | **done** | | spend: $0 total. SPY 2026-07-17 0DTE session slices in fixtures (G1 validated end-to-end: 249 strikes, T 6.42h→5min monotone, all boards fit). |
 
 ## §6 Traps (hard-won, read before building)
 
