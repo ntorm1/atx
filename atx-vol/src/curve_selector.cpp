@@ -597,10 +597,22 @@ Result<SelectorResult> select_curve(const Underlying &under, const SurfaceParity
     score.n_successful_holdout = accum.n;
     score.n_required_holdout = required_holdout;
     score.n_in_band = accum.in_band;
-    score.vega_weight_in_band = accum.win;
+    // The in-band vega weight is a subset sum of the total holdout vega weight
+    // (the in-band rows are a subset of all scored holdout rows), so
+    // vega_weight_in_band <= vega_weight_total holds by construction. When every
+    // holdout row is in-band the two are mathematically equal but accumulated in
+    // different groupings (per-expiry `required_vega_weight` vs. the running
+    // `accum.win`), so floating-point round-off can leave `accum.win` a few ULP
+    // above the total. Clamp to the definitional bound so the invariant survives:
+    // both the selector admission guard (oos_vw in [0,1], curve_selector.cpp
+    // select_candidate_index) and the quality-report round-trip
+    // (oos_vega_weight_in_band <= oos_vega_weight_total, corpus.cpp
+    // quality_evidence_consistent) reject a candidate whose weight overshoots.
+    const double vega_weight_in_band = std::min(accum.win, required_vega_weight);
+    score.vega_weight_in_band = vega_weight_in_band;
     score.vega_weight_total = required_vega_weight;
     score.oos_in_band = static_cast<double>(accum.in_band) / static_cast<double>(required_holdout);
-    score.oos_vw = required_vega_weight > 0.0 ? accum.win / required_vega_weight : 0.0;
+    score.oos_vw = required_vega_weight > 0.0 ? vega_weight_in_band / required_vega_weight : 0.0;
     score.expiry_coverage =
         static_cast<double>(accum.n_slices) / static_cast<double>(score.n_required_slices);
     score.holdout_coverage =

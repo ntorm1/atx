@@ -203,6 +203,17 @@ TEST(CurveSelector, SamplesLiquidityWithinDeterministicTenorStrataOnCommonKeys) 
   for (const CandidateScore &score : first->scores) {
     EXPECT_EQ(score.n_holdout, score.n_required_holdout);
     EXPECT_LE(score.n_successful_holdout, score.n_holdout);
+    // In-band vega weight is a SUBSET sum of the total holdout vega weight, so it
+    // can never exceed the total and oos_vw must stay in [0, 1]. When every
+    // holdout row is in-band the two sums are mathematically equal but grouped
+    // differently (per-expiry total vs. running in-band accumulator), so
+    // floating-point round-off can push the raw in-band sum a few ULP over the
+    // total. select_curve clamps to the definitional bound; both the selector
+    // admission guard (oos_vw > 1 disqualifies) and the quality-report round-trip
+    // (in_band > total is rejected) depend on this invariant holding.
+    EXPECT_LE(score.vega_weight_in_band, score.vega_weight_total);
+    EXPECT_GE(score.oos_vw, 0.0);
+    EXPECT_LE(score.oos_vw, 1.0);
   }
   EXPECT_DOUBLE_EQ(first->scores[0].vega_weight_total, first->scores[1].vega_weight_total);
 }
