@@ -2256,12 +2256,6 @@ Result<double> american_price(double S, double K, double T, double sigma, double
   return Err(ErrorCode::Internal, "american_price: unhandled method"); // unreachable
 }
 
-// A9 (core-review finding 11): the debug-only carry-consistency tolerance for the
-// cached hot path. Kept in lockstep with the C2 cross-date stale-gate tolerances
-// (kTolR/kTolQ in session.cpp supplied_caches_cover_board = 25 bps). [[maybe_unused]]
-// because the sole consumer is an assert() that NDEBUG (Release) compiles out.
-[[maybe_unused]] constexpr double kCachedCarryStaleTol = 0.0025;
-
 double american_price_cached(double S, double K, double T, double sigma, double r, double q,
                              Side side, const CorrectionCache *correction) {
   if (!correction || !correction->populated() || correction->side() != side) {
@@ -2277,16 +2271,18 @@ double american_price_cached(double S, double K, double T, double sigma, double 
                       /*yield=*/(side == Side::Put) ? q : r) == ExerciseRegime::Unsupported) {
     return std::numeric_limits<double>::quiet_NaN();
   }
-  // A9 (core-review finding 11): the correction is baked at a FIXED (r, q); its
-  // early-exercise premium is only valid near that carry. C2's cross-date
-  // stale-gate (session.cpp cache_side_covers) refuses cache reuse once the
-  // representative carry drifts past 25 bps. Assert the SAME invariant at the
-  // kernel so a cache accidentally used far from its baked carry trips in debug
-  // builds. Assert only — NDEBUG compiles it out, so zero release-path change.
-  assert(std::fabs(r - correction->baked_r()) <= kCachedCarryStaleTol &&
-         std::fabs(q - correction->baked_q()) <= kCachedCarryStaleTol &&
-         "american_price_cached: query carry (r,q) drifted past the C2 stale-gate "
-         "tolerance (25 bps) from the cache's baked (r,q)");
+  // A9 (core-review finding 11): NO carry-consistency assert here — INVESTIGATED
+  // and deliberately omitted. The kernel is carry-agnostic BY CONTRACT: the query
+  // (r, q) drives F and the Black-76 leg, while the correction is a fixed-baked-
+  // carry Chebyshev interpolation. A single cache is baked at ONE representative
+  // carry (session build_session_caches) yet legitimately serves the WHOLE surface,
+  // so short tenors query at a q_eff that drifts well past 25 bps from baked_q()
+  // (see essvi_deam_test EssviDeAm.CachedDeAmMatchesCold: the residual concentrates
+  // exactly there and the served path accepts it). The 25-bps figure is C2's
+  // cross-DATE cache-REUSE stale-gate (session.cpp cache_side_covers) — a SESSION-
+  // level opt-in, NOT a kernel invariant. An assert on baked_r()/baked_q() at 25 bps
+  // therefore fires on legitimate in-fit usage (it aborted the suite when first
+  // tried), so the finding's proposed check does not hold at this layer.
   const double df = std::exp(-r * T);
   const double F = S * std::exp((r - q) * T);
   // Share one log-moneyness evaluation between Black-76 and the correction
