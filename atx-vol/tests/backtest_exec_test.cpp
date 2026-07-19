@@ -41,6 +41,7 @@
 #include "atx/vol/american.hpp"          // al_fast_opts, AmericanMethod, AmericanGreeks
 #include "atx/vol/backtest.hpp"          // Clock, run_backtest, RunConfig, FrictionModel, ...
 #include "atx/vol/corpus.hpp"            // CorpusManifest, CorpusEntry, CorpusFitStatus
+#include "atx/vol/counters.hpp"          // counters::ledger — L1 solve-economy gate
 #include "atx/vol/portfolio_pricer.hpp"  // OptionContract, kNsPerYear
 #include "atx/vol/priced_surface.hpp"    // PricedSurface, PricingContext
 #include "atx/vol/strategy.hpp"          // DeclarativeStrategy, StrategySpec, HedgeSpec
@@ -1141,4 +1142,698 @@ TEST(BacktestExec, FixedBookComposedSubsetAndSettlement_Deterministic) {
   std::printf("[btexec] B5b composed fixed-book (B1 subset + B2 settle): whole-board load fails, "
               "subset run succeeds, settle_rows=%d, bit-identical over 2 runs and 1-vs-4 threads\n",
               settle_rows);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// L1 (AL-solve-wall sprint, fewer-solves): base-risk stamp survives a membership
+// change. See portfolio_pricer.cpp PortfolioPricer::carry_base_risk_subset and
+// backtest.cpp RetainedBookPricer::prepare. The solve-economy gate below is the
+// POST-L1 counterpart of solve_ledger_test's ExpiryDayReSolvesPnlBaseStampEleven-
+// PerUnit (which pins the PRE-L1 11 s/u expiry-day cost): after L1 the survivor's
+// expiry-day pnl-base bundle is REUSED across the settlement shrink, dropping the
+// A-attributable expiry-day cost 11 -> 6 (== the no-churn day).
+// ─────────────────────────────────────────────────────────────────────────────
+namespace led = atx::vol::counters::ledger;
+
+namespace {
+
+// A clock at explicit day offsets from kBaseNow (mirrors solve_ledger_test's
+// make_clock): a settling lot's expiry_ts_ns must equal kBaseNow + offset*kDayNs
+// exactly. Spot/vol drift each date so marks actually move.
+[[nodiscard]] Clock offset_clock(const fs::path& dir, const std::string& symbol,
+                                 const std::vector<int>& offset_days) {
+  std::vector<std::pair<std::string, std::string>> dp;
+  for (std::size_t d = 0; d < offset_days.size(); ++d) {
+    const std::int64_t now = kBaseNow + static_cast<std::int64_t>(offset_days[d]) * kDayNs;
+    const double S = 100.0 * (1.0 + 0.004 * static_cast<double>(d));
+    const double vb = 0.001 * static_cast<double>(d);
+    const PricedSurface s = make_surface(kUid, S, S, now, vb);
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "2026-08-%02d", static_cast<int>(d) + 1);
+    dp.emplace_back(buf, write_one(dir, buf, symbol, s));
+  }
+  auto clock = Clock::from_manifest(make_manifest(dp, symbol));
+  EXPECT_TRUE(clock.has_value()) << (clock.has_value() ? std::string{} : clock.error().to_string());
+  return std::move(*clock);
+}
+
+[[nodiscard]] std::uint64_t al(const led::Counts& c) noexcept {
+  return c.get(led::Solve::AlBoundarySolves);
+}
+[[nodiscard]] std::uint64_t analytic(const led::Counts& c) noexcept {
+  return c.get(led::Solve::GreeksBundlesAnalytic);
+}
+
+[[nodiscard]] RunConfig det_config() {
+  RunConfig cfg;
+  cfg.price.n_threads = 1u;         // boundary-solve counts are thread-invariant
+  cfg.prefetch_snapshots = false;   // remove async-prefetch nondeterminism
+  return cfg;
+}
+
+}  // namespace
+
+// Gate: the survivor's expiry-day cost drops 11 -> 6 s/u; warm and no-churn steps
+// are unchanged. Same fixed book as solve_ledger_test's expiry-day scenario.
+TEST(BacktestExec, L1ExpiryDaySurvivorReusesBaseRiskAcrossSettlement) {
+  const fs::path dir = fresh_dir("l1-expiry");
+  const Clock clock = offset_clock(dir, "SPX", {0, 20, 40, 60, 80});
+  const std::int64_t exp_B = kBaseNow + 60 * kDayNs;   // settles on date index 3
+  const std::int64_t exp_A = kBaseNow + 200 * kDayNs;  // survives the whole run
+
+  PortfolioState book;
+  book.lots.push_back(
+      Lot{1, OptionContract{kUid, 100.0, 0.0, Side::Put}, +1.0, 100.0, exp_A, 0, 0.0});
+  book.lots.push_back(
+      Lot{2, OptionContract{kUid, 95.0, 0.0, Side::Call}, +1.0, 100.0, exp_B, 0, 0.0});
+
+  led::reset();
+  led::StepTrace trace;
+  // Isolate L1: disable the L2 settlement-mark memo so the expiry step still SOLVES
+  // B's settlement mark (the [12,12,7,6] pre-L2 economy). L2's further 7->6 drop is
+  // pinned by L2SettlementMarkMemoDropsExpirySolve below.
+  RunConfig config = det_config();
+  config.settlement_mark_memo = false;
+  const auto result = run_backtest(clock, std::move(book), config);
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  ASSERT_EQ(result->size(), 5u);
+  ASSERT_EQ(trace.size(), 4u);
+
+  const led::Counts& warm1 = trace.steps()[0];
+  const led::Counts& warm2 = trace.steps()[1];
+  const led::Counts& expiry = trace.steps()[2];   // B settles, A survives (membership shrink)
+  const led::Counts& nochurn = trace.steps()[3];  // A only, stamp intact
+
+  // Warm two-unit steps are unchanged by L1 (no membership change): 2 book bundles
+  // + 2 target marks = 12, pnl-base reused.
+  EXPECT_EQ(al(warm1), 12u);
+  EXPECT_EQ(analytic(warm1), 2u);
+  EXPECT_EQ(al(warm2), 12u);
+  EXPECT_EQ(analytic(warm2), 2u);
+
+  // No-churn survivor step: 0 pnl-base + 1 target + 5 book bundle = 6.
+  EXPECT_EQ(al(nochurn), 6u);
+  EXPECT_EQ(analytic(nochurn), 1u);
+
+  // POST-L1 expiry step: A's pnl-base bundle is now REUSED across the shrink, so the
+  // step costs 1 (B settlement mark) + 1 (A target mark) + 5 (A book bundle) = 7,
+  // with only ONE analytic bundle (the book-greeks pass), down from 2 pre-L1.
+  EXPECT_EQ(al(expiry), 7u) << "expiry step: B settle(1) + A target(1) + A book bundle(5)";
+  EXPECT_EQ(analytic(expiry), 1u) << "pnl-base re-solve removed by L1 (was 2 bundles)";
+
+  // The A-attributable expiry-day cost (total minus B's one settlement mark) is now 6
+  // == the no-churn day — the 11 -> 6 solve-economy win, and it exceeds no-churn by
+  // exactly B's settlement mark, no extra pnl-base bundle.
+  const std::uint64_t a_expiry_cost = al(expiry) - 1u;
+  EXPECT_EQ(a_expiry_cost, 6u) << "expiry-day steady state 11 -> 6 solve-equivs/unit (L1 gate)";
+  EXPECT_EQ(al(expiry) - al(nochurn), 1u) << "only B's settlement mark separates expiry from no-churn";
+
+  std::printf("[btexec] L1 expiry-day AL solves = [%llu,%llu,%llu,%llu] "
+              "(warm,warm,expiry,no-churn); A-attributable expiry cost 11 -> %llu\n",
+              static_cast<unsigned long long>(al(warm1)), static_cast<unsigned long long>(al(warm2)),
+              static_cast<unsigned long long>(al(expiry)),
+              static_cast<unsigned long long>(al(nochurn)),
+              static_cast<unsigned long long>(a_expiry_cost));
+}
+
+// Bit-identity (B3 style, by construction, now empirically): the survivor A's PnL
+// after B's settlement is BIT-IDENTICAL whether B was ever in the book. Run {A} vs
+// {A,B} over the SAME clock; for every date from B's expiry onward the alive set is
+// {A} in both runs, so A's Taylor PnL and the book greeks must match to the bit.
+// This is the exact invariant the carry-over relies on: A's per-lane solve is
+// independent of the book's composition.
+TEST(BacktestExec, L1SurvivorPnlBitIdenticalAcrossMembershipChange) {
+  const fs::path dir = fresh_dir("l1-diff");
+  const Clock clock = offset_clock(dir, "SPX", {0, 20, 40, 60, 80});
+  const std::int64_t exp_B = kBaseNow + 60 * kDayNs;   // settles on date index 3
+  const std::int64_t exp_A = kBaseNow + 200 * kDayNs;
+
+  const auto book_A = [&] {
+    PortfolioState b;
+    b.lots.push_back(
+        Lot{1, OptionContract{kUid, 100.0, 0.0, Side::Put}, +1.0, 100.0, exp_A, 0, 0.0});
+    return b;
+  };
+  const auto book_AB = [&] {
+    PortfolioState b = book_A();
+    b.lots.push_back(
+        Lot{2, OptionContract{kUid, 95.0, 0.0, Side::Call}, +1.0, 100.0, exp_B, 0, 0.0});
+    return b;
+  };
+
+  const auto r_a = run_backtest(clock, book_A(), det_config());
+  const auto r_ab = run_backtest(clock, book_AB(), det_config());
+  ASSERT_TRUE(r_a.has_value()) << r_a.error().to_string();
+  ASSERT_TRUE(r_ab.has_value()) << r_ab.error().to_string();
+  ASSERT_EQ(r_a->size(), 5u);
+  ASSERT_EQ(r_ab->size(), 5u);
+
+  // Confirm the scenario: B settles on row 3 of the {A,B} run only.
+  EXPECT_NE(r_ab->pnl_settlement[3], 0.0) << "B should settle on row 3 of the {A,B} run";
+  EXPECT_EQ(r_a->pnl_settlement[3], 0.0) << "no settlement in the {A}-only run";
+
+  // Rows 3 (B's expiry day, where the carry fires) and 4 (a following no-churn day)
+  // have alive == {A} in BOTH runs: A's Taylor PnL COMPONENTS + book greeks must be
+  // bit-equal. (`pnl_total` is EXCLUDED: the fixed-book overload folds B's settlement
+  // into row 3's aggregate — step_total = t.pnl_total + settlement — so the aggregate
+  // legitimately differs; every per-axis component below is settlement-free pure-A.)
+  const auto a_cols = [](const BacktestResult& r, std::size_t i) {
+    return std::array<double, 13>{
+        r.pnl_delta[i], r.pnl_gamma[i],  r.pnl_vega[i],   r.pnl_vanna[i],   r.pnl_volga[i],
+        r.pnl_theta[i], r.pnl_rho[i],    r.pnl_charm[i],  r.pnl_unexplained[i],
+        r.gross_delta[i], r.gross_gamma[i], r.gross_vega[i], r.gross_theta[i]};
+  };
+  for (const std::size_t i : {std::size_t{3}, std::size_t{4}}) {
+    const auto ca = a_cols(*r_a, i);
+    const auto cb = a_cols(*r_ab, i);
+    for (std::size_t k = 0; k < ca.size(); ++k) {
+      EXPECT_TRUE(bits_equal(ca[k], cb[k]))
+          << "survivor A PnL/greeks diverged at row " << i << " col " << k
+          << " ({A}=" << ca[k] << " vs {A,B}=" << cb[k] << ") — the carry-over is NOT bit-identical";
+    }
+  }
+  // Row 4 has NO settlement in either run, so the aggregate pnl_total is pure-A too.
+  EXPECT_TRUE(bits_equal(r_a->pnl_total[4], r_ab->pnl_total[4]))
+      << "survivor A aggregate PnL diverged on the post-expiry no-churn row";
+  std::printf("[btexec] L1 survivor bit-identity: {A} vs {A,B} match to the bit on rows 3-4\n");
+}
+
+// Positive control (Trap 3): the carry re-homes the stamp, but it must NOT weaken the
+// pnl reuse's base-surface guard. Stamp base risk at surface v1, carry onto the
+// subset book, then run pnl against a DIFFERENT base surface v2 — the guard must
+// REFUSE the (now surface-mismatched) reuse and RE-SOLVE. The re-solve is observable
+// on the ledger AND its result must equal a cold pnl on the subset at v2 (it would be
+// the WRONG v1 risk if the carry silently defeated the guard).
+TEST(BacktestExec, L1CarryStillHonorsSurfaceGuard) {
+  const std::int64_t ts = kBaseNow;
+  const PricedSurface sv1 = make_surface(kUid, 100.0, 100.0, ts, 0.000);
+  const PricedSurface sv2 = make_surface(kUid, 103.0, 103.0, ts, 0.010);  // different base surface
+  const PricedSurface sv3 = make_surface(kUid, 104.0, 104.0, ts, 0.012);  // shifted surface
+  const auto make_set = [](const PricedSurface& s) {
+    const PricedSurface* ptrs[] = {&s};
+    auto set = SurfaceSet::create(std::span<const PricedSurface* const>{ptrs});
+    EXPECT_TRUE(set.has_value());
+    return std::move(*set);
+  };
+  const SurfaceSet set_v1 = make_set(sv1);
+  const SurfaceSet set_v2 = make_set(sv2);
+  const SurfaceSet set_v3 = make_set(sv3);
+
+  const double T = 0.35;
+  const Position pa{1, OptionContract{kUid, 100.0, T, Side::Put}, +1.0, 100.0};
+  const Position pb{2, OptionContract{kUid, 95.0, T, Side::Call}, +1.0, 100.0};
+
+  PriceOptions opts;
+  opts.n_threads = 1u;
+  opts.analytic_greeks = true;
+
+  // prev {A,B} stamps base risk at v1.
+  auto prev_pf = Portfolio::create(std::array<Position, 2>{pa, pb});
+  ASSERT_TRUE(prev_pf.has_value());
+  PortfolioPricer prev(std::move(*prev_pf));
+  PortfolioWorkspace ws;
+  ws.reserve(2, 2);
+  ASSERT_TRUE(prev.price_totals(set_v1, PriceFieldMask::FullGreeks, ws, opts).has_value());
+
+  // Subset {A}: the carry succeeds (same-surface subset), re-homing the stamp onto next.
+  auto next_pf = Portfolio::create(std::array<Position, 1>{pa});
+  ASSERT_TRUE(next_pf.has_value());
+  PortfolioPricer next(std::move(*next_pf));
+  EXPECT_TRUE(next.carry_base_risk_subset(prev, ws)) << "same-surface subset carry should succeed";
+
+  // pnl at a DIFFERENT base surface v2: the guard must refuse the carried stamp.
+  led::reset();
+  const auto got = next.pnl_totals(set_v2, set_v3, ws, opts);
+  ASSERT_TRUE(got.has_value()) << got.error().to_string();
+  EXPECT_GE(analytic(led::snapshot()), 1u)
+      << "base-surface guard failed to refuse a surface-mismatched carried stamp (no re-solve)";
+
+  // Cold reference: a fresh pricer with no carry, same surfaces.
+  auto cold_pf = Portfolio::create(std::array<Position, 1>{pa});
+  ASSERT_TRUE(cold_pf.has_value());
+  PortfolioPricer cold(std::move(*cold_pf));
+  PortfolioWorkspace ws_cold;
+  ws_cold.reserve(1, 1);
+  const auto ref = cold.pnl_totals(set_v2, set_v3, ws_cold, opts);
+  ASSERT_TRUE(ref.has_value()) << ref.error().to_string();
+
+  EXPECT_TRUE(bits_equal(got->pv_base, ref->pv_base))
+      << "guard-refused re-solve did not match the cold v2 base price (stale v1 risk served?)";
+  EXPECT_TRUE(bits_equal(got->pnl_total, ref->pnl_total));
+  EXPECT_TRUE(bits_equal(got->pnl_vega, ref->pnl_vega));
+  std::printf("[btexec] L1 positive control: surface-mismatched carry refused + re-solved to the "
+              "cold v2 value (pv_base=%.10g)\n", got->pv_base);
+}
+
+// Positive control: a survivor whose INPUT changed (tenor T) is a different
+// (uid,K,T,side) key, so carry_base_risk_subset must REFUSE (return false) — reuse
+// would serve stale risk. The subsequent solve then recomputes at the new tenor.
+TEST(BacktestExec, L1SubsetCarryRefusesOnChangedInput) {
+  const std::int64_t ts = kBaseNow;
+  const PricedSurface sv1 = make_surface(kUid, 100.0, 100.0, ts, 0.0);
+  const PricedSurface* ptrs[] = {&sv1};
+  auto set_v1 = SurfaceSet::create(std::span<const PricedSurface* const>{ptrs});
+  ASSERT_TRUE(set_v1.has_value());
+
+  PriceOptions opts;
+  opts.n_threads = 1u;
+  opts.analytic_greeks = true;
+
+  const Position pa1{1, OptionContract{kUid, 100.0, 0.35, Side::Put}, +1.0, 100.0};
+  const Position pb{2, OptionContract{kUid, 95.0, 0.35, Side::Call}, +1.0, 100.0};
+  auto prev_pf = Portfolio::create(std::array<Position, 2>{pa1, pb});
+  ASSERT_TRUE(prev_pf.has_value());
+  PortfolioPricer prev(std::move(*prev_pf));
+  PortfolioWorkspace ws;
+  ws.reserve(2, 2);
+  ASSERT_TRUE(prev.price_totals(*set_v1, PriceFieldMask::FullGreeks, ws, opts).has_value());
+
+  // Survivor A's tenor changed 0.35 -> 0.30: NOT a bit-exact subset key.
+  const Position pa2{1, OptionContract{kUid, 100.0, 0.30, Side::Put}, +1.0, 100.0};
+  auto next_pf = Portfolio::create(std::array<Position, 1>{pa2});
+  ASSERT_TRUE(next_pf.has_value());
+  PortfolioPricer next(std::move(*next_pf));
+  EXPECT_FALSE(next.carry_base_risk_subset(prev, ws))
+      << "carry must refuse a survivor whose (uid,K,T,side) changed";
+
+  // The refusal is load-bearing: the following pnl re-solves at T=0.30 and matches a
+  // cold reference (a wrongly-reused T=0.35 bundle would give a different base price).
+  const auto got = next.pnl_totals(*set_v1, *set_v1, ws, opts);  // dt=0: pure base reprice
+  ASSERT_TRUE(got.has_value()) << got.error().to_string();
+  PortfolioPricer cold(std::move(*Portfolio::create(std::array<Position, 1>{pa2})));
+  PortfolioWorkspace ws_cold;
+  ws_cold.reserve(1, 1);
+  const auto ref = cold.pnl_totals(*set_v1, *set_v1, ws_cold, opts);
+  ASSERT_TRUE(ref.has_value()) << ref.error().to_string();
+  EXPECT_TRUE(bits_equal(got->pv_base, ref->pv_base))
+      << "changed-tenor refusal did not recompute at the new T (stale T=0.35 risk served?)";
+  std::printf("[btexec] L1 positive control: changed-tenor survivor carry refused, re-solved at "
+              "the new tenor\n");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// L2 (AL-solve-wall sprint) — per-(contract,date) settlement-mark memo.
+//
+// CRUX (PM adjudication): the settlement-mark memo serves the settlement path a
+// mark that was computed by the FullGreeks/analytic book-greeks pass, in place of
+// the Marks-mask solve the settle path would otherwise run. That substitution is
+// bit-identical ONLY if the FullGreeks-analytic mark equals the Marks mark
+// bit-for-bit. This test PROVES that equality before the memo relies on it. If it
+// ever fails, the memo must NOT be reconciled numerically — STOP and report.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST(BacktestExec, L2MarkMemoCruxFullGreeksMarkEqualsMarksMark) {
+  const PricedSurface s = make_surface(kUid, 100.0, 100.0, kBaseNow, 0.0);
+  const PricedSurface* ptrs[] = {&s};
+  auto set = SurfaceSet::create(std::span<const PricedSurface* const>{ptrs});
+  ASSERT_TRUE(set.has_value());
+
+  // A spread of strikes/sides/tenors — a representative settling-lot population.
+  std::vector<Position> pos;
+  std::uint64_t id = 1;
+  for (const double K : {80.0, 95.0, 100.0, 105.0, 120.0}) {
+    for (const Side side : {Side::Call, Side::Put}) {
+      for (const double T : {0.10, 0.35, 0.75}) {
+        pos.push_back(Position{id++, OptionContract{kUid, K, T, side}, +1.0, 100.0});
+      }
+    }
+  }
+  auto pf = Portfolio::create(pos);
+  ASSERT_TRUE(pf.has_value());
+  PortfolioPricer pricer(std::move(*pf));
+
+  PriceOptions marks_opts;
+  marks_opts.n_threads = 1u;
+  marks_opts.prices_only = true;  // Marks mask == the settlement solve
+  PriceOptions greeks_opts;
+  greeks_opts.n_threads = 1u;
+  greeks_opts.analytic_greeks = true;  // FullGreeks analytic == the book-greeks memo source
+
+  const auto marks = pricer.price(*set, marks_opts);
+  const auto greeks = pricer.price(*set, greeks_opts);
+  ASSERT_TRUE(marks.has_value()) << marks.error().to_string();
+  ASSERT_TRUE(greeks.has_value()) << greeks.error().to_string();
+  ASSERT_EQ(marks->size(), greeks->size());
+  std::size_t n_ok = 0;
+  for (std::size_t i = 0; i < marks->size(); ++i) {
+    ASSERT_EQ(marks->status[i], greeks->status[i]);
+    if (marks->status[i] != PriceStatus::Ok) {
+      continue;
+    }
+    ++n_ok;
+    EXPECT_TRUE(bits_equal(marks->price[i], greeks->price[i]))
+        << "CRUX FAIL: Marks mark != FullGreeks-analytic mark for lot " << marks->id[i]
+        << " (Marks=" << marks->price[i] << " FullGreeks=" << greeks->price[i]
+        << ") — the L2 settlement-mark memo would NOT be bit-identical; STOP + report.";
+  }
+  ASSERT_GT(n_ok, 20u) << "crux population too small to be meaningful";
+  std::printf("[btexec] L2 crux: FullGreeks-analytic mark == Marks mark bit-for-bit on %zu lots\n",
+              n_ok);
+}
+
+// L2 gate: the settlement-mark memo serves B's expiry-day base mark from the prior
+// step's book-greeks pass instead of re-solving it — expiry al 7 -> 6, and the new
+// DuplicateMarkSolves counter goes 0 (memo on) / >=1 (memo off, proving the counter
+// sees the duplication). Memo ON is BIT-IDENTICAL to memo OFF (the pre-L2 behavior).
+TEST(BacktestExec, L2SettlementMarkMemoDropsExpirySolve) {
+  const fs::path dir = fresh_dir("l2-settle");
+  const Clock clock = offset_clock(dir, "SPX", {0, 20, 40, 60, 80});
+  const std::int64_t exp_B = kBaseNow + 60 * kDayNs;   // settles on date index 3
+  const std::int64_t exp_A = kBaseNow + 200 * kDayNs;  // survives
+  const auto make_book = [&] {
+    PortfolioState b;
+    b.lots.push_back(
+        Lot{1, OptionContract{kUid, 100.0, 0.0, Side::Put}, +1.0, 100.0, exp_A, 0, 0.0});
+    b.lots.push_back(
+        Lot{2, OptionContract{kUid, 95.0, 0.0, Side::Call}, +1.0, 100.0, exp_B, 0, 0.0});
+    return b;
+  };
+  const auto dup = [](const led::Counts& c) { return c.get(led::Solve::DuplicateMarkSolves); };
+
+  // Memo OFF: pre-L2 economy — the expiry step still solves B's settlement (al 7), and
+  // the counter observes that duplicate (B's mark was already in the memo).
+  RunConfig off = det_config();
+  off.settlement_mark_memo = false;
+  led::reset();
+  led::StepTrace trace_off;
+  const auto r_off = run_backtest(clock, make_book(), off);
+  ASSERT_TRUE(r_off.has_value()) << r_off.error().to_string();
+  const led::Counts total_off = led::snapshot();
+  ASSERT_EQ(trace_off.size(), 4u);
+  EXPECT_EQ(al(trace_off.steps()[2]), 7u) << "memo off: expiry step still solves B's settlement";
+  EXPECT_EQ(dup(total_off), 1u) << "counter must see the one duplicate settlement solve (memo off)";
+
+  // Memo ON (default): B's settlement served from the memo -> expiry al 7->6, 0 dups.
+  RunConfig on = det_config();  // settlement_mark_memo defaults true
+  led::reset();
+  led::StepTrace trace_on;
+  const auto r_on = run_backtest(clock, make_book(), on);
+  ASSERT_TRUE(r_on.has_value()) << r_on.error().to_string();
+  const led::Counts total_on = led::snapshot();
+  ASSERT_EQ(trace_on.size(), 4u);
+  EXPECT_EQ(al(trace_on.steps()[2]), 6u) << "L2: expiry step 7->6 (B settlement served from memo)";
+  EXPECT_EQ(analytic(trace_on.steps()[2]), 1u);
+  EXPECT_EQ(dup(total_on), 0u) << "L2 gate: DuplicateMarkSolves == 0 with the memo on";
+  EXPECT_EQ(al(trace_on.steps()[0]), 12u) << "warm steps unchanged";
+  EXPECT_EQ(al(trace_on.steps()[1]), 12u);
+  EXPECT_EQ(al(trace_on.steps()[3]), 6u) << "no-churn step unchanged";
+
+  // Bit-identity: memo ON == memo OFF, full result (settlement mark served == solved).
+  ASSERT_EQ(r_on->size(), r_off->size());
+  const auto cols = [](const BacktestResult& r, std::size_t i) {
+    return std::array<double, 8>{r.nav[i],      r.pnl_total[i],   r.pnl_settlement[i],
+                                 r.pnl_delta[i], r.pnl_vega[i],    r.gross_vega[i],
+                                 r.gross_delta[i], r.gross_theta[i]};
+  };
+  for (std::size_t i = 0; i < r_on->size(); ++i) {
+    const auto con = cols(*r_on, i);
+    const auto cof = cols(*r_off, i);
+    for (std::size_t k = 0; k < con.size(); ++k) {
+      EXPECT_TRUE(bits_equal(con[k], cof[k]))
+          << "L2 memo ON != OFF at row " << i << " col " << k
+          << " — the settlement memo is NOT bit-identical to the solve";
+    }
+  }
+  std::printf("[btexec] L2 settlement memo: expiry al 7->6, dup=%llu (on)/%llu (off), memo on==off\n",
+              static_cast<unsigned long long>(dup(total_on)),
+              static_cast<unsigned long long>(dup(total_off)));
+}
+
+// L2 strategy-path bit-identity: over a daily-cohort strangle that settles cohorts
+// mid-run (the B4 shape), memo ON == memo OFF, full result bit-for-bit — proving the
+// settlement memo is bit-identical in the STRATEGY overload too (where it is
+// populated only from the non-seeded book-greeks pass and falls closed on stale/
+// execute-fired steps).
+TEST(BacktestExec, L2StrategyCohortSettlementMemoBitIdentical) {
+  const fs::path dir = fresh_dir("l2-strat-cohorts");
+  constexpr int kNames = 4;
+  constexpr int kDates = 24;
+  static const char* kSyms[] = {"AAA", "BBB", "CCC", "DDD"};
+  std::vector<std::pair<std::string, std::string>> dp;
+  for (int d = 0; d < kDates; ++d) {
+    const std::int64_t now = kBaseNow + static_cast<std::int64_t>(d) * kDayNs;
+    std::vector<PricedSurface> surfaces;
+    surfaces.reserve(kNames);
+    for (int u = 0; u < kNames; ++u) {
+      const double S = (100.0 + 10.0 * static_cast<double>(u)) * (1.0 + 0.003 * static_cast<double>(d));
+      surfaces.push_back(make_surface(kUid + static_cast<std::uint32_t>(u), S, S, now,
+                                      0.001 * static_cast<double>(d) + 0.002 * static_cast<double>(u)));
+    }
+    std::vector<SurfaceArchiveItem> items;
+    for (int u = 0; u < kNames; ++u) {
+      items.push_back(SurfaceArchiveItem{kSyms[u], &surfaces[u]});
+    }
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "2026-08-%02d", d + 1);
+    const std::string path = (dir / (std::string(buf) + ".atxvsa")).string();
+    ASSERT_TRUE(write_surface_archive_v2_file(path, items).has_value());
+    dp.emplace_back(buf, path);
+  }
+  auto clock = Clock::from_manifest(make_manifest(dp, "AAA"));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const double tenor_T = static_cast<double>(20 * kDayNs) / kNsPerYear;  // -> settles at 20 days
+  StrategySpec spec;
+  spec.name = "l2-daily-strangle-htx";
+  for (int u = 0; u < kNames; ++u) {
+    LegSpec leg;
+    leg.uid = kUid + static_cast<std::uint32_t>(u);
+    leg.tenor.target_T = tenor_T;
+    leg.tenor.snap_to_listed = false;
+    leg.structure.kind = StructureSpec::Kind::Strangle;
+    leg.structure.call_leg = StrikeSelector{StrikeSelector::Kind::Delta, 0.40};
+    leg.structure.put_leg = StrikeSelector{StrikeSelector::Kind::Delta, 0.40};
+    leg.size = SizeSpec{SizeSpec::Kind::FixedContracts, 1.0, +1.0};
+    spec.legs.push_back(leg);
+  }
+  spec.lifecycle.entry = LifecycleSpec::Entry::EveryStep;
+  spec.lifecycle.holding = LifecycleSpec::Holding::HoldToExpiry;
+
+  const auto run = [&](bool memo) {
+    DeclarativeStrategy strat{spec};
+    RunConfig cfg;
+    cfg.price.n_threads = 1u;
+    cfg.settlement_mark_memo = memo;
+    return run_backtest(*clock, strat, cfg);
+  };
+  const auto r_on = run(true);
+  const auto r_off = run(false);
+  ASSERT_TRUE(r_on.has_value()) << r_on.error().to_string();
+  ASSERT_TRUE(r_off.has_value()) << r_off.error().to_string();
+  ASSERT_EQ(r_on->size(), r_off->size());
+
+  int settle_rows = 0;
+  for (std::size_t i = 0; i < r_off->size(); ++i) {
+    if (std::fabs(r_off->pnl_settlement[i]) > 0.0) {
+      ++settle_rows;
+    }
+  }
+  EXPECT_GT(settle_rows, 0) << "no cohort settled — the strategy memo path is not exercised";
+  for (std::size_t i = 0; i < r_on->size(); ++i) {
+    EXPECT_TRUE(bits_equal(r_on->nav[i], r_off->nav[i])) << "nav row " << i;
+    EXPECT_TRUE(bits_equal(r_on->pnl_total[i], r_off->pnl_total[i])) << "pnl_total row " << i;
+    EXPECT_TRUE(bits_equal(r_on->pnl_settlement[i], r_off->pnl_settlement[i])) << "settle row " << i;
+    EXPECT_TRUE(bits_equal(r_on->gross_vega[i], r_off->gross_vega[i])) << "gross_vega row " << i;
+    EXPECT_TRUE(bits_equal(r_on->cash[i], r_off->cash[i])) << "cash row " << i;
+    EXPECT_EQ(r_on->n_open_lots[i], r_off->n_open_lots[i]) << "n_open_lots row " << i;
+  }
+  std::printf("[btexec] L2 strategy cohort settlement: memo on==off over %d settle rows, "
+              "bit-identical\n",
+              settle_rows);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// L4 (AL-solve-wall sprint) — first-order tier wiring (the K4 last-mile seam).
+//
+// Edit B threads `PricedSurface::GreekNeeds` from evaluate/evaluate_batch/
+// greeks_analytic down into `american_greeks_al(..., need_vega, need_rho, need_charm)`,
+// so a reduced Greek request skips whole boundary solves. Edit A carries it on
+// `PriceOptions::greek_needs` through PortfolioPricer::price_* -> solve_uniques, and
+// adds the base-risk stamp guard (`base_greek_needs.full()`) so a narrowed frame is
+// never reused for a full P&L attribution.
+//
+// The tests below are the L4 gates: (1) the bit-identity proof (default = full = the
+// pre-L4 maskless bundle; a reduced request returns its columns BIT-IDENTICAL and the
+// unrequested greeks 0), (2) the per-role ledger economy (full=5, risk=3, hedge=1
+// boundary solves/unique), and (3) the stamp-guard safety (a narrowed base is
+// re-solved, never served, by a following pnl).
+// ─────────────────────────────────────────────────────────────────────────────
+
+// (1) Edit-B bit-identity / K4 guarantee. `greeks_analytic` with the DEFAULT
+// GreekNeeds{} reproduces the pre-L4 maskless bundle bit-for-bit; a reduced request
+// returns its requested columns BIT-IDENTICAL to the full bundle (same base boundary +
+// sigma+/- stencils) with the unrequested greeks left exactly 0 on the native put AL
+// route. (Calls / degenerate corners defer to american_greeks_fd, the full oracle,
+// which ignores the mask — a correctness-preserving superset; the "==0" drop is
+// asserted only on puts, which take the analytic route this fixture is built for.)
+TEST(BacktestExec, L4EditBReducedColumnsBitIdenticalToFullBundle) {
+  const PricedSurface s = make_surface(kUid, 100.0, 100.0, kBaseNow, 0.0);
+  using GN = PricedSurface::GreekNeeds;
+  const GN full{};                                                // pre-L4 maskless bundle
+  const GN risk{/*vega=*/true, /*rho=*/false, /*charm=*/false};   // delta+vega (3 solves)
+  const GN hedge{/*vega=*/false, /*rho=*/false, /*charm=*/false}; // delta only (1 solve)
+
+  std::size_t n_ok = 0;
+  std::size_t n_put_masked = 0;
+  for (const double K : {90.0, 95.0, 100.0, 105.0, 110.0}) {
+    for (const Side side : {Side::Call, Side::Put}) {
+      for (const double T : {0.10, 0.35, 0.75}) {
+        const auto gf = s.greeks_analytic(K, T, side);  // old signature -> default {}
+        const auto ge = s.greeks_analytic(K, T, side, QueryExecution::Configured, full);
+        const auto gr = s.greeks_analytic(K, T, side, QueryExecution::Configured, risk);
+        const auto gh = s.greeks_analytic(K, T, side, QueryExecution::Configured, hedge);
+        ASSERT_EQ(gf.has_value(), ge.has_value());
+        if (!gf.has_value()) {
+          continue;
+        }
+        ++n_ok;
+        // Default arg == explicit full, to the bit (proves GreekNeeds{} is the maskless path).
+        EXPECT_TRUE(bits_equal(gf->price, ge->price));
+        EXPECT_TRUE(bits_equal(gf->delta, ge->delta));
+        EXPECT_TRUE(bits_equal(gf->vega, ge->vega));
+        EXPECT_TRUE(bits_equal(gf->rho, ge->rho));
+        EXPECT_TRUE(bits_equal(gf->charm, ge->charm));
+        // Requested columns BIT-IDENTICAL to the full bundle on BOTH routes.
+        ASSERT_TRUE(gr.has_value());
+        ASSERT_TRUE(gh.has_value());
+        EXPECT_TRUE(bits_equal(gr->price, gf->price)) << "risk price K=" << K << " T=" << T;
+        EXPECT_TRUE(bits_equal(gr->delta, gf->delta));
+        EXPECT_TRUE(bits_equal(gr->gamma, gf->gamma));
+        EXPECT_TRUE(bits_equal(gr->theta, gf->theta));
+        EXPECT_TRUE(bits_equal(gr->vega, gf->vega)) << "risk vega K=" << K << " T=" << T;
+        EXPECT_TRUE(bits_equal(gr->vanna, gf->vanna));
+        EXPECT_TRUE(bits_equal(gr->volga, gf->volga));
+        EXPECT_TRUE(bits_equal(gh->price, gf->price)) << "hedge price K=" << K << " T=" << T;
+        EXPECT_TRUE(bits_equal(gh->delta, gf->delta)) << "hedge delta K=" << K << " T=" << T;
+        EXPECT_TRUE(bits_equal(gh->gamma, gf->gamma));
+        EXPECT_TRUE(bits_equal(gh->theta, gf->theta));
+        // Unrequested greeks == 0 on the native put AL route (the mask skipped their solves).
+        if (side == Side::Put && gr->rho == 0.0) {
+          ++n_put_masked;
+          EXPECT_EQ(gr->rho, 0.0);
+          EXPECT_EQ(gr->charm, 0.0);
+          EXPECT_EQ(gh->vega, 0.0);
+          EXPECT_EQ(gh->rho, 0.0);
+          EXPECT_EQ(gh->charm, 0.0);
+          EXPECT_EQ(gh->vanna, 0.0);
+          EXPECT_EQ(gh->volga, 0.0);
+        }
+      }
+    }
+  }
+  ASSERT_GT(n_ok, 20u);
+  EXPECT_GT(n_put_masked, 5u) << "no puts took the masked analytic AL route — fixture invalid";
+  std::printf("[btexec] L4 Edit-B: reduced columns bit-identical to full on %zu lots; "
+              "%zu puts masked rho/charm/vega to 0\n",
+              n_ok, n_put_masked);
+}
+
+// (2) Per-role ledger economy: a single-unique FullGreeks/analytic price spends 5
+// boundary solves at full needs, 3 at the risk role ({delta,vega}, r+/- skipped), 1 at
+// the hedge role ({delta}, sigma+/- and r+/- skipped) — the K4 tier, on the SCALAR
+// analytic production route (american_greeks_al), independent of any dark AVX2 flag.
+TEST(BacktestExec, L4PerRoleBundleSolveEconomy) {
+  const PricedSurface s = make_surface(kUid, 100.0, 100.0, kBaseNow, 0.0);
+  const PricedSurface* ptrs[] = {&s};
+  auto set = SurfaceSet::create(std::span<const PricedSurface* const>{ptrs});
+  ASSERT_TRUE(set.has_value());
+
+  // One genuinely-early-exercise put -> the analytic AL bundle route.
+  const Position p{1, OptionContract{kUid, 100.0, 0.35, Side::Put}, +1.0, 100.0};
+  auto pf = Portfolio::create(std::array<Position, 1>{p});
+  ASSERT_TRUE(pf.has_value());
+  PortfolioPricer pricer(std::move(*pf));
+
+  using GN = PricedSurface::GreekNeeds;
+  const auto count = [&](GN needs) -> std::pair<std::uint64_t, std::uint64_t> {
+    PriceOptions opts;
+    opts.n_threads = 1u;
+    opts.analytic_greeks = true;
+    opts.greek_needs = needs;
+    PortfolioWorkspace ws;
+    ws.reserve(1, 1);
+    led::reset();
+    const auto t = pricer.price_totals(*set, PriceFieldMask::FullGreeks, ws, opts);
+    EXPECT_TRUE(t.has_value()) << (t.has_value() ? std::string{} : t.error().to_string());
+    const led::Counts c = led::snapshot();
+    return {al(c), analytic(c)};
+  };
+
+  const auto [al_full, an_full] = count(GN{});                        // 5
+  const auto [al_risk, an_risk] = count(GN{true, false, false});     // 3
+  const auto [al_hedge, an_hedge] = count(GN{false, false, false});  // 1
+
+  EXPECT_EQ(an_full, 1u) << "one analytic bundle per unique (the AL route fired)";
+  EXPECT_EQ(an_risk, 1u);
+  EXPECT_EQ(an_hedge, 1u);
+  EXPECT_EQ(al_full, 5u) << "full bundle = base + sigma+/- + r+/- = 5 boundary solves";
+  EXPECT_EQ(al_risk, 3u) << "risk {delta,vega} = base + sigma+/- = 3 (r+/- skipped)";
+  EXPECT_EQ(al_hedge, 1u) << "hedge {delta} = base only = 1 (sigma+/-, r+/- skipped)";
+  std::printf("[btexec] L4 per-role bundle solves/unique: full=%llu risk=%llu hedge=%llu\n",
+              static_cast<unsigned long long>(al_full), static_cast<unsigned long long>(al_risk),
+              static_cast<unsigned long long>(al_hedge));
+}
+
+// (3) Stamp-guard safety (correctness). A P&L Taylor decomposition reads ALL EIGHT base
+// greeks, so a base bundle computed under a REDUCED greek_needs (missing rho/charm) must
+// NEVER be reused for it. The guard (`base_greek_needs.full()`) forces a fresh full
+// solve; a FULL base is still reused (no fresh bundle). This is L4's "stamp support so
+// L1 composes": the narrowed frame cannot silently corrupt a downstream P&L.
+TEST(BacktestExec, L4NarrowedBaseNeverReusedByPnlStamp) {
+  const std::int64_t ts = kBaseNow;
+  const PricedSurface s_base = make_surface(kUid, 100.0, 100.0, ts, 0.000);
+  const PricedSurface s_shift = make_surface(kUid, 102.0, 102.0, ts, 0.010);  // spot+vol moved
+  const auto make_set = [](const PricedSurface& s) {
+    const PricedSurface* ptrs[] = {&s};
+    auto set = SurfaceSet::create(std::span<const PricedSurface* const>{ptrs});
+    EXPECT_TRUE(set.has_value());
+    return std::move(*set);
+  };
+  const SurfaceSet set_base = make_set(s_base);
+  const SurfaceSet set_shift = make_set(s_shift);
+  const Position pa{1, OptionContract{kUid, 100.0, 0.35, Side::Put}, +1.0, 100.0};
+
+  using GN = PricedSurface::GreekNeeds;
+  PriceOptions opts_full;
+  opts_full.n_threads = 1u;
+  opts_full.analytic_greeks = true;  // greek_needs default {} = full
+  PriceOptions opts_risk = opts_full;
+  opts_risk.greek_needs = GN{true, false, false};  // narrowed base (rho/charm dropped)
+
+  // Cold full reference.
+  PortfolioPricer cold(std::move(*Portfolio::create(std::array<Position, 1>{pa})));
+  PortfolioWorkspace ws_cold;
+  ws_cold.reserve(1, 1);
+  const auto ref = cold.pnl_totals(set_base, set_shift, ws_cold, opts_full);
+  ASSERT_TRUE(ref.has_value()) << ref.error().to_string();
+
+  // (a) Narrowed base -> pnl MUST refuse reuse (guard) and re-solve full.
+  PortfolioPricer p_narrow(std::move(*Portfolio::create(std::array<Position, 1>{pa})));
+  PortfolioWorkspace ws;
+  ws.reserve(1, 1);
+  ASSERT_TRUE(p_narrow.price_totals(set_base, PriceFieldMask::FullGreeks, ws, opts_risk).has_value());
+  led::reset();
+  const auto got = p_narrow.pnl_totals(set_base, set_shift, ws, opts_full);
+  ASSERT_TRUE(got.has_value()) << got.error().to_string();
+  EXPECT_GE(analytic(led::snapshot()), 1u)
+      << "L4 STAMP GUARD FAILED: a narrowed (risk-role) base bundle was reused for a full "
+         "P&L attribution — pnl_rho/pnl_charm would be silently wrong. STOP + report.";
+  EXPECT_TRUE(bits_equal(got->pnl_total, ref->pnl_total)) << "guard re-solve != cold full pnl";
+  EXPECT_TRUE(bits_equal(got->pv_base, ref->pv_base));
+  EXPECT_TRUE(bits_equal(got->pnl_vega, ref->pnl_vega));
+
+  // (b) Positive control: a FULL base IS reused (guard allows it) — no fresh bundle.
+  PortfolioPricer p_full(std::move(*Portfolio::create(std::array<Position, 1>{pa})));
+  PortfolioWorkspace ws2;
+  ws2.reserve(1, 1);
+  ASSERT_TRUE(p_full.price_totals(set_base, PriceFieldMask::FullGreeks, ws2, opts_full).has_value());
+  led::reset();
+  const auto reuse = p_full.pnl_totals(set_base, set_shift, ws2, opts_full);
+  ASSERT_TRUE(reuse.has_value()) << reuse.error().to_string();
+  EXPECT_EQ(analytic(led::snapshot()), 0u)
+      << "a FULL base bundle should be reused by pnl (no fresh analytic bundle)";
+  EXPECT_TRUE(bits_equal(reuse->pnl_total, ref->pnl_total));
+  std::printf("[btexec] L4 stamp guard: narrowed base re-solved (analytic>=1), full base reused "
+              "(analytic==0); both pnl bit-match the cold full reference\n");
 }

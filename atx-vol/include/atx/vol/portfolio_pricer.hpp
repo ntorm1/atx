@@ -485,6 +485,21 @@ struct TargetMarkView {
   std::span<double> base_vega_proxy;
 };
 
+// L2 (AL-solve-wall sprint): one retained per-unique-contract base mark exported
+// from the most recent FullGreeks solve, for populating a per-(contract,date)
+// settlement-mark memo. `mark` is the raw per-share American mark (`fair_value`,
+// bit-identical to a Marks-mask solve of the same contract — pinned by
+// BacktestExec.L2MarkMemoCruxFullGreeksMarkEqualsMarksMark). `T` is the contract's
+// retained residual tenor at the last solve's valuation.
+struct RetainedMark {
+  std::uint32_t uid{0};
+  double K{0.0};
+  double T{0.0};
+  Side side{Side::Call};
+  double mark{0.0};
+  PriceStatus status{PriceStatus::ModelUnavailable};
+};
+
 // ── The pricer ────────────────────────────────────────────────────────────
 
 struct PriceOptions {
@@ -544,6 +559,21 @@ struct PriceOptions {
   // tier; ColdReference bypasses transient correction accelerators for marks,
   // Greeks, totals, and every P&L leg without rebuilding the surface.
   QueryExecution query_execution{QueryExecution::Configured};
+  // L4 first-order tier (K4 seam): which analytic-AL boundary solves the FullGreeks
+  // bundle actually needs. DEFAULT `{}` (all true) is the full 5-solve bundle —
+  // BIT-IDENTICAL to the pre-L4 maskless path — so every existing price_into /
+  // price_totals / backtest frame is byte-unchanged. A reduced request (e.g. a
+  // hedge frame that consumes only delta, or a risk frame that consumes delta+vega)
+  // narrows the solves the analytic bundle spends (full=5, {delta,vega}=3, {delta}=1).
+  //
+  // CORRECTNESS COUPLING (base-risk stamp, L1): a bundle computed under a reduced
+  // `greek_needs` is stamped with those needs; the base-risk REUSE guard in
+  // pnl_totals/pnl_explain requires the stamped needs to be full() before a P&L
+  // Taylor decomposition (which reads all eight base greeks) may reuse it. A narrowed
+  // base therefore NEVER silently feeds a full P&L attribution — it forces a fresh
+  // full solve. So narrowing a frame that a later P&L reuses (L1) is a NET LOSS; only
+  // narrow frames whose bundle no P&L reuses (see loop-stage3.md §economy).
+  PricedSurface::GreekNeeds greek_needs{};
 };
 
 class PortfolioPricer {
@@ -645,6 +675,39 @@ public:
   pnl_totals_with_target_marks_into(const SurfaceSet &base, const SurfaceSet &shifted,
                                     TargetMarkView out, PortfolioWorkspace &ws,
                                     const PriceOptions &opts = {}) const;
+
+  // L1 (AL-solve-wall sprint, fewer-solves): carry a retained base-risk bundle
+  // across a book MEMBERSHIP SHRINK. When THIS pricer's book is a subset of `prev`'s
+  // book (every unique (uid,K,T,side) of THIS book present in `prev`, at bit-exact
+  // identity), each surviving unique's retained per-contract risk row (in `ws`) is
+  // remapped into THIS book's contract order and the workspace's base-risk stamp is
+  // re-homed to THIS book — so a following `pnl_totals`/`pnl_explain` for the SAME
+  // base surface reuses the survivors' base bundle instead of re-solving it.
+  //
+  // Bit-identical BY CONSTRUCTION: the retained row is the SAME per-(uid,K,T,side)
+  // solve the fresh path would produce (each unique's American solve is independent
+  // of the book's composition — the exact per-lane invariance the no-churn-day reuse
+  // and thread-count invariance already rely on), so removing an UNRELATED contract
+  // cannot change a survivor's row. Precedent: QuantLib's `LazyObject` dirty-bit —
+  // a cached result is invalidated by the delta that actually changed it, never by
+  // wholesale recreation of the object.
+  //
+  // Fails CLOSED: returns false (and leaves the stamp NOT reusable for THIS book, so
+  // the caller's next solve recomputes) on any identity gap — a superset/added
+  // unique, a changed (uid,K,T,side), a stamp that does not correspond to `prev`, or
+  // no live stamp. It NEVER weakens the `pnl_*` reuse guard: the base-surface
+  // instance/identity checks there still independently re-validate every reuse, so a
+  // stale carry can only ever fall back to a fresh solve, never serve wrong risk.
+  [[nodiscard]] bool carry_base_risk_subset(const PortfolioPricer &prev,
+                                            PortfolioWorkspace &ws) const;
+
+  // L2 (AL-solve-wall sprint): export each unique contract's retained base mark
+  // (from the most recent FullGreeks `price_into`/`price_totals` on `ws`) into
+  // `out` — cleared then filled, one row per unique contract in contract order.
+  // `out` is left EMPTY when `ws` holds no matching retained bundle (size gate),
+  // so a caller memo fails closed. Reads only; no solve. Used by the backtest to
+  // populate a per-(contract,date) settlement-mark memo without a second pass.
+  void retained_marks(const PortfolioWorkspace &ws, std::vector<RetainedMark> &out) const;
 
 private:
   Portfolio pf_;

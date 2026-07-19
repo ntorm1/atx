@@ -690,6 +690,13 @@ enum class Solve : unsigned {
   GreeksBundlesAnalytic, // full-Greek bundles via the analytic AL route (~5 boundary solves each)
   GreeksBundlesAdjoint,  // full-Greek bundles via the adjoint route (1 taped AL solve each)
   IvNewtonIters,         // American-IV inversion Newton iterations
+  // WS-L L2 (append-only per PM narrow license; verify workstream complete — this
+  // adds an enum entry + name, changes nothing existing). A duplicate mark
+  // COMPUTATION: a per-(unique-contract, base-date) mark the backtest re-solves
+  // although that exact mark was already computed this step-cycle and is available
+  // in the per-step mark memo. The L2 settlement-mark memo drives this to 0;
+  // tapped ONLY from loop-owned backtest.cpp.
+  DuplicateMarkSolves,
   Count_
 };
 
@@ -698,8 +705,9 @@ inline constexpr unsigned kCount = static_cast<unsigned>(Solve::Count_);
 // Stable machine-readable names (bench JSON keys). `sl_` distinguishes the always-on
 // solve ledger from the gated `cnt_` exact counters.
 inline constexpr const char *kNames[kCount] = {
-    "sl_al_boundary_solves", "sl_al_premium_evals", "sl_greeks_fd",
-    "sl_greeks_analytic",    "sl_greeks_adjoint",   "sl_iv_newton_iters",
+    "sl_al_boundary_solves", "sl_al_premium_evals",     "sl_greeks_fd",
+    "sl_greeks_analytic",    "sl_greeks_adjoint",       "sl_iv_newton_iters",
+    "sl_duplicate_mark_solves",
 };
 
 // A merged, point-in-time copy. Plain values (not atomics) so it is trivially

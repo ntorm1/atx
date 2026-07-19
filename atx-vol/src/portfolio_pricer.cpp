@@ -606,7 +606,8 @@ stage_full_greek_seeds(const SurfaceSet &surfaces, std::span<const OptionContrac
 // across a raw-bit-equal-T ladder (bit-identical to per-contract evaluate).
 void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
                    std::span<const OptionContract> contracts, bool want_greeks, bool analytic,
-                   bool adjoint_greeks, bool skew_adjusted_delta, const StickyParams &sticky,
+                   bool adjoint_greeks, PricedSurface::GreekNeeds greek_needs,
+                   bool skew_adjusted_delta, const StickyParams &sticky,
                    simd::SimdIsa resolved_price_isa, QueryExecution query_execution,
                    unsigned n_threads, std::vector<ContractPx> &px, std::vector<double> &b_iv,
                    std::vector<double> &b_price, std::vector<AmericanGreeks> &b_greeks,
@@ -679,9 +680,14 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
                                      std::span<Status>(b_status).subspan(s, gsz),
                                      {},
                                      {}};
+    // L4 K4 tier: `greek_needs` narrows the analytic bundle's boundary solves
+    // (default {} = full 5-solve bundle, bit-identical to pre-L4). The FullGreeks
+    // `fields` request is unchanged (so want_greeks stays true and the bundle route
+    // fires); `greek_needs` decides how many σ±/r±/charm solves the bundle spends.
     const Status batch_status =
         surf->evaluate_batch(kcol.subspan(s, gsz), tcol.subspan(s, gsz), scol.subspan(s, gsz),
-                             fields, analytic, soa, resolved_price_isa, query_execution);
+                             fields, analytic, soa, resolved_price_isa, query_execution,
+                             greek_needs);
     if (!batch_status.has_value()) {
       for (std::uint32_t p = s; p < e; ++p) {
         b_iv[p] = kNaN;
@@ -930,6 +936,10 @@ void reduce_price_totals(std::span<const Position> positions, const Portfolio &p
 
 struct PortfolioWorkspace::Impl {
   std::vector<ContractPx> px; // per unique contract, ORIGINAL-index order
+  // L1: grow-only scratch for carry_base_risk_subset — remaps `px` (superset book
+  // order) into a subset book's contract order without disturbing `px` mid-remap.
+  std::vector<ContractPx> carry_px;
+  std::vector<std::uint64_t> carry_instances;
   // Full-Greek seed validation is staged separately so stale/conflicting
   // candidates cannot partially overwrite the live retained-risk bundle.
   std::vector<ContractPx> seed_px;
@@ -962,6 +972,12 @@ struct PortfolioWorkspace::Impl {
   std::uint64_t base_book_revision{0};
   bool base_analytic_greeks{false};
   QueryExecution base_query_execution{QueryExecution::Configured};
+  // L4: which analytic-AL solves this `px` bundle actually spent. A P&L Taylor
+  // decomposition reads ALL eight base greeks, so its base-risk REUSE guard requires
+  // `base_greek_needs.full()`: a bundle narrowed under a reduced greek_needs (missing
+  // rho/charm/…) can NEVER be reused for a full P&L attribution — the guard forces a
+  // fresh full solve instead. Marks-only pricing invalidates the stamp before solving.
+  PricedSurface::GreekNeeds base_greek_needs{};
 };
 
 PortfolioWorkspace::PortfolioWorkspace() : impl_(std::make_unique<Impl>()) {}
@@ -1068,7 +1084,7 @@ Status PortfolioPricer::price_into(const SurfaceSet &surfaces, PriceFieldMask fi
   }
 
   solve_uniques(*w.prepared, surfaces, contracts, want_greeks, analytic, use_adjoint,
-                opts.skew_adjusted_delta, opts.sticky, opts.resolved_price_isa,
+                opts.greek_needs, opts.skew_adjusted_delta, opts.sticky, opts.resolved_price_isa,
                 opts.query_execution, opts.n_threads, w.px, w.b_iv, w.b_price, w.b_greeks,
                 w.b_status, staged_seeds, accepted_seeds);
 
@@ -1094,6 +1110,7 @@ Status PortfolioPricer::price_into(const SurfaceSet &surfaces, PriceFieldMask fi
     w.base_book_revision = pf_.revision_;
     w.base_analytic_greeks = analytic;
     w.base_query_execution = opts.query_execution;
+    w.base_greek_needs = opts.greek_needs; // L4: how many greeks this bundle carries
     w.base_risk_valid = true;
   }
   return atx::core::Ok();
@@ -1117,7 +1134,7 @@ Result<PriceTotals> PortfolioPricer::price_totals(const SurfaceSet &surfaces, Pr
   }
 
   solve_uniques(*w.prepared, surfaces, contracts, want_greeks, analytic, use_adjoint,
-                opts.skew_adjusted_delta, opts.sticky, opts.resolved_price_isa,
+                opts.greek_needs, opts.skew_adjusted_delta, opts.sticky, opts.resolved_price_isa,
                 opts.query_execution, opts.n_threads, w.px, w.b_iv, w.b_price, w.b_greeks,
                 w.b_status);
 
@@ -1137,6 +1154,7 @@ Result<PriceTotals> PortfolioPricer::price_totals(const SurfaceSet &surfaces, Pr
     w.base_book_revision = pf_.revision_;
     w.base_analytic_greeks = analytic;
     w.base_query_execution = opts.query_execution;
+    w.base_greek_needs = opts.greek_needs; // L4: how many greeks this bundle carries
     w.base_risk_valid = true;
   }
   return t;
@@ -1542,7 +1560,11 @@ Status PortfolioPricer::pnl_explain_into(const SurfaceSet &base, const SurfaceSe
                           w.base_book_revision == pf_.revision_ &&
                           w.base_analytic_greeks == opts.analytic_greeks &&
                           w.base_query_execution == opts.query_execution &&
-                          w.px.size() == contracts.size() && surface_instances_match();
+                          // L4: a P&L Taylor decomposition reads all 8 base greeks, so
+                          // only a FULL base bundle may be reused (a narrowed frame is
+                          // re-solved fresh, never served as if complete).
+                          w.base_greek_needs.full() && w.px.size() == contracts.size() &&
+                          surface_instances_match();
   const std::span<const ContractPx> cached_base =
       reuse_base ? std::span<const ContractPx>{w.px} : std::span<const ContractPx>{};
   solve_pnl_uniques(*w.prepared, base, shifted, contracts, opts.analytic_greeks,
@@ -1592,7 +1614,11 @@ Result<PnlTotals> PortfolioPricer::pnl_totals(const SurfaceSet &base, const Surf
                           w.base_book_revision == pf_.revision_ &&
                           w.base_analytic_greeks == opts.analytic_greeks &&
                           w.base_query_execution == opts.query_execution &&
-                          w.px.size() == contracts.size() && surface_instances_match();
+                          // L4: a P&L Taylor decomposition reads all 8 base greeks, so
+                          // only a FULL base bundle may be reused (a narrowed frame is
+                          // re-solved fresh, never served as if complete).
+                          w.base_greek_needs.full() && w.px.size() == contracts.size() &&
+                          surface_instances_match();
   const std::span<const ContractPx> cached_base =
       reuse_base ? std::span<const ContractPx>{w.px} : std::span<const ContractPx>{};
   solve_pnl_uniques(*w.prepared, base, shifted, contracts, opts.analytic_greeks,
@@ -1672,6 +1698,111 @@ Result<PnlFrame> PortfolioPricer::pnl_explain(const SurfaceSet &base, const Surf
     return Err(s.error());
   }
   return f;
+}
+
+bool PortfolioPricer::carry_base_risk_subset(const PortfolioPricer &prev,
+                                             PortfolioWorkspace &ws) const {
+  // L1 (AL-solve-wall sprint). Re-home `prev`'s retained base-risk bundle onto THIS
+  // (subset) book so a following pnl solve reuses the survivors instead of paying a
+  // fresh full-Greek bundle for every one of them across the membership change.
+  //
+  // Precedent — QuantLib `LazyObject` (ql/patterns/lazyobject.hpp): a cached value is
+  // invalidated only by the observable delta that actually changed it (`update()` on
+  // a dependency), not by reconstructing the object. Here the "dependency" of a
+  // survivor's cached risk is that survivor's own (uid,K,T,side) + base surface —
+  // NOT the book's membership — so removing an unrelated contract must leave the
+  // survivor's cache valid. This function is that selective invalidation: it keeps
+  // the survivors' rows and drops only the departed ones.
+  PortfolioWorkspace::Impl &w = *ws.impl_;
+
+  // 1. The stamp must be LIVE and must belong to EXACTLY `prev` — the O(1) book
+  //    identity key proves `w.px` is `prev`'s per-contract bundle in `prev`'s
+  //    original-contract order (the order the remap below indexes through).
+  if (!w.base_risk_valid || w.base_book_logical_id != prev.pf_.logical_id_ ||
+      w.base_book_revision != prev.pf_.revision_) {
+    return false;
+  }
+  const std::span<const OptionContract> prev_contracts = prev.pf_.contracts();
+  const std::span<const std::uint32_t> prev_uids = prev.pf_.uids();
+  if (w.px.size() != prev_contracts.size() ||
+      w.base_surface_instance_ids.size() != prev_uids.size()) {
+    return false;
+  }
+
+  const std::span<const OptionContract> cur = pf_.contracts();
+  const std::span<const std::uint32_t> cur_uids = pf_.uids();
+  // A carry only helps a SHRINK (or a pure reorder): a superset has added uniques
+  // that must be solved fresh anyway (and the caller's price_into re-stamps that
+  // path). An empty current book has nothing to reuse.
+  if (cur.empty() || cur.size() > prev_contracts.size()) {
+    return false;
+  }
+
+  // 2. Every current unique must be present in `prev` at BIT-EXACT (uid,K,T,side).
+  //    A changed tenor/strike/side is a DIFFERENT key -> not found -> fail closed,
+  //    so a survivor whose inputs actually changed is never reused (positive control
+  //    L1SubsetCarryRefusesOnChangedInput pins this). Build prev's key->row index.
+  std::unordered_map<ContractKey, std::uint32_t, ContractKeyHash> prev_row;
+  prev_row.reserve(prev_contracts.size());
+  for (std::size_t k = 0; k < prev_contracts.size(); ++k) {
+    prev_row.emplace(key_of(prev_contracts[k]), static_cast<std::uint32_t>(k));
+  }
+  w.carry_px.resize(cur.size());
+  for (std::size_t j = 0; j < cur.size(); ++j) {
+    const auto it = prev_row.find(key_of(cur[j]));
+    if (it == prev_row.end()) {
+      return false; // not a subset — leave the (prev-tagged, now-stale) stamp be
+    }
+    w.carry_px[j] = w.px[it->second]; // survivor's retained row, verbatim bits
+  }
+
+  // 3. Remap the base-surface instance-id guard array from prev's uid set to THIS
+  //    book's uid set (a shrink may drop a whole uid). Each current uid MUST exist
+  //    in prev's uid set (guaranteed once every current contract was found above,
+  //    but re-checked so the guard array can never carry a wrong instance id).
+  w.carry_instances.resize(cur_uids.size());
+  for (std::size_t i = 0; i < cur_uids.size(); ++i) {
+    const auto uit = std::lower_bound(prev_uids.begin(), prev_uids.end(), cur_uids[i]);
+    if (uit == prev_uids.end() || *uit != cur_uids[i]) {
+      return false;
+    }
+    w.carry_instances[i] =
+        w.base_surface_instance_ids[static_cast<std::size_t>(uit - prev_uids.begin())];
+  }
+
+  // 4. Commit: adopt the remapped bundle + guard array and re-home the book identity
+  //    to THIS pricer. base_surface_logical_id / analytic / query_execution /
+  //    base_greek_needs are left UNCHANGED — they describe how the bundle was computed,
+  //    and the pnl reuse guard re-checks them against the actual base surface + opts, so
+  //    a base-surface change between stamp and reuse still forces a fresh solve (positive
+  //    control L1CarryStillHonorsSurfaceGuard pins this). In particular the carried
+  //    bundle keeps its `base_greek_needs`, so a narrowed survivor bundle is never reused
+  //    for a full P&L attribution (L4 stamp composition).
+  w.px.swap(w.carry_px);
+  w.base_surface_instance_ids.swap(w.carry_instances);
+  w.base_book_logical_id = pf_.logical_id_;
+  w.base_book_revision = pf_.revision_;
+  // w.base_risk_valid stays true.
+  return true;
+}
+
+void PortfolioPricer::retained_marks(const PortfolioWorkspace &ws,
+                                     std::vector<RetainedMark> &out) const {
+  // L2: `w.px` holds one ContractPx per unique contract in ORIGINAL-contract order,
+  // written by the last price_into/price_totals solve_uniques. `fair_value` is the
+  // raw American mark (bit-identical to a Marks-mask solve — L2 crux). Export it
+  // keyed by the retained (uid,K,T,side) so the backtest can memo it per date.
+  const PortfolioWorkspace::Impl &w = *ws.impl_;
+  out.clear();
+  const std::span<const OptionContract> cur = pf_.contracts();
+  if (w.px.size() != cur.size()) {
+    return; // no matching retained bundle -> caller memo fails closed
+  }
+  out.reserve(cur.size());
+  for (std::size_t i = 0; i < cur.size(); ++i) {
+    out.push_back(RetainedMark{cur[i].uid, cur[i].K, cur[i].T, cur[i].side, w.px[i].fair_value,
+                               w.px[i].status});
+  }
 }
 
 } // namespace atx::vol

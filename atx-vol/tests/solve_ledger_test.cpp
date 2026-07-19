@@ -280,13 +280,21 @@ TEST(SolveLedger, NoChurnDayIsSixSolvesPerUnit) {
   }
 }
 
-// ── 3. Expiry day = 11 solve-equivs / unique (stamp death re-solves pnl-base) ─
+// ── 3. Expiry day = 6 solve-equivs / unique (POST L1+L2; the pre-sprint baseline
+//      was 11 — the test NAME preserves that historical figure) ────────────────
 //
 // Fixed book: a far-dated survivor A (put) + a mid-run expiring B (call). On the
-// step where B settles, the alive set shrinks {A,B} -> {A}, so RetainedBookPricer
-// mints a fresh pricer id and the base-risk stamp dies: A's pnl-base bundle
-// re-solves. The SAME unit A then pays only 6 on the very next (no-churn) step, so
-// both headline numbers are pinned against identical risk.
+// step where B settles, the alive set shrinks {A,B} -> {A}. HISTORICALLY (pre-L1)
+// this killed the base-risk stamp and re-solved A's pnl-base bundle => 11 s/u. The
+// fewer-solves sprint moves that baseline (deliberate pin move, PM-adjudicated):
+//   * L1 (feat/sw-loop d07792f) carries A's base risk across the membership shrink,
+//     so the pnl-base bundle is REUSED (no re-solve): 11 -> 7.
+//   * L2 (feat/sw-loop 4121b7b) serves B's settlement mark from the per-step mark
+//     memo (the prior book-greeks pass) instead of re-solving it: 7 -> 6.
+// With the shipping default config (settlement_mark_memo on) the survivor A now
+// pays the SAME 6 on the expiry step as on the following no-churn step — pinned
+// against identical risk. (backtest_exec_test's L1/L2 tests isolate each lever;
+// this pins the composite steady state.)
 TEST(SolveLedger, ExpiryDayReSolvesPnlBaseStampElevenPerUnit) {
   const fs::path dir = fresh_dir("expiry-day");
   // 20-day spacing keeps every residual T >= the surface's 0.05 min slice.
@@ -324,26 +332,26 @@ TEST(SolveLedger, ExpiryDayReSolvesPnlBaseStampElevenPerUnit) {
   EXPECT_EQ(analytic(nochurn), 1u);
   EXPECT_EQ(marks(nochurn), 1u);
 
-  // Expiry step: the alive set is the SAME lone unit A, but the stamp died, so A's
-  // pnl-base bundle re-solves. A pays 11 (5 pnl-base + 1 target + 5 book-greeks);
-  // the expiring B adds one settlement Marks solve => 12 total, 2 analytic bundles.
-  EXPECT_EQ(analytic(expiry), 2u) << "pnl-base re-solve + book bundle for A";
-  EXPECT_EQ(al(expiry), 12u) << "A's 11 + B's 1 settlement mark";
+  // Expiry step (POST L1+L2): the alive set is the SAME lone unit A. L1 carries A's
+  // base risk across the shrink so its pnl-base bundle is REUSED (0), and L2 serves
+  // B's settlement mark from the memo (0 solve), so the whole step is A's
+  // 6 = 0 pnl-base + 1 target + 5 book-greeks bundle. One analytic bundle (A's book).
+  EXPECT_EQ(analytic(expiry), 1u) << "L1: pnl-base reused; only A's book bundle";
+  EXPECT_EQ(al(expiry), 6u) << "L1+L2: A's 6 (pnl-base reused, B settlement memo'd)";
 
-  // The A-attributable expiry-day cost is exactly 11 (total minus B's settlement),
-  // and it exceeds the no-churn 6 by precisely one analytic bundle (5) — the L1
-  // pnl-base re-solve the sprint removes (target: 11 -> <=6).
-  const std::uint64_t a_expiry_cost = al(expiry) - 1u; // subtract B's settlement mark
-  EXPECT_EQ(a_expiry_cost, 11u) << "expiry-day steady state = 11 solve-equivs/unit";
-  EXPECT_EQ(a_expiry_cost - al(nochurn), kAnalyticBundleSolves)
-      << "expiry-day pays exactly one extra pnl-base bundle vs no-churn";
-  EXPECT_EQ(analytic(expiry) - analytic(nochurn), 1u);
+  // The whole expiry step is A-attributable now (B's settlement mark is memo'd to 0),
+  // and it EQUALS the no-churn step: the survivor pays the same on the expiry step as
+  // on a quiet day — the 11 -> 6 fewer-solves win the sprint targeted.
+  const std::uint64_t a_expiry_cost = al(expiry); // B's settlement is now 0 (memo'd)
+  EXPECT_EQ(a_expiry_cost, 6u) << "expiry-day steady state 11 -> 6 solve-equivs/unit";
+  EXPECT_EQ(a_expiry_cost, al(nochurn)) << "expiry-day == no-churn (no extra pnl-base bundle)";
+  EXPECT_EQ(analytic(expiry) - analytic(nochurn), 0u);
 
-  // Duplicate marks (L2 target): every step pays a target/settlement Marks solve
-  // that a per-(contract,date) memo would eliminate. Warm steps: 2 targets; the
-  // no-churn step: 1 target; the expiry step: 1 target (A) + 1 settlement (B) = 2.
+  // Marks: L1 removes A's pnl-base re-solve; L2 removes B's settlement Marks solve.
+  // Warm steps still pay their 2 (un-memoized) pnl-target marks; the expiry step now
+  // pays just A's 1 target (B's settlement served from the memo, no longer a solve).
   EXPECT_EQ(marks(warm1), 2u);
-  EXPECT_EQ(marks(expiry), 2u);
+  EXPECT_EQ(marks(expiry), 1u);
 
   std::printf("[solve-ledger] expiry-day per-step AL solves = [%llu, %llu, %llu, %llu] "
               "(warm,warm,expiry,no-churn); analytic bundles = [%llu, %llu, %llu, %llu]\n",
