@@ -1049,29 +1049,33 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
   // failure (see solve_implied_emove's doc) so a bad/absent schedule never
   // silently changes what gets served.
   //
-  // Calendar365-only restriction (same shape as the polymorphic-override
-  // restriction just above, in the ConvexDense/Svi branch) -- KEPT as a
-  // policy gate, not a correctness workaround: `run_surface_parity`'s eSSVI
-  // fit loop now stamps each fitted slice's real listed-expiry instant onto
-  // `EssviParams::expiry_ns` (from `Chain::expiry_ns`), and `solve_
-  // implied_emove` prefers that stamped instant (via `slice_expiry_ns`
-  // above) over the Calendar365-inverse `ns_from_year_fraction(now, T)`
-  // synthesis whenever it is present -- so the historical mis-bucketing risk
-  // this gate was originally added to guard against (Seam S1) no longer
-  // applies to a stamped slice. The gate itself stays in place here because
-  // lifting it is an explicit behavior/regression-surface change owned by a
-  // separate seam (see `event_vol_test.cpp`'s
-  // `Session.VolTimeConventionDisablesEmoveSolve`, which still asserts
-  // `TimeConvention::VolTime` disables the solve and is out of this task's
-  // touched-file scope) -- not a re-introduction of the original stamping
-  // gap. `implied_emove` stays at its NaN default under any non-Calendar365
-  // convention, which `event_aware_active()` (session.hpp) already treats as
-  // "serve exactly as if events were null" -- no separate gate needed on the
-  // serve side.
+  // No time-convention restriction (Seam S1 gate flip, second half): the
+  // historical Calendar365-only gate here existed solely because `solve_
+  // implied_emove` used to synthesize each fitted slice's absolute expiry
+  // instant from its own T via `ns_from_year_fraction`, the Calendar365
+  // INVERSE of `time_to_expiry_years` -- wrong under `VolTime`, where a
+  // fitted T is trading-hours-shaped, not a plain calendar year-fraction.
+  // `run_surface_parity`'s eSSVI fit loop now stamps each fitted slice's
+  // REAL listed-expiry instant onto `EssviParams::expiry_ns` (from
+  // `Chain::expiry_ns` -- a plain UTC timestamp, independent of T
+  // convention), and `solve_implied_emove` prefers that stamped instant
+  // (via `slice_expiry_ns` above) for both the bracketing search and the
+  // `count_between` event count whenever it is present. Bracketing and
+  // counting therefore no longer depend on reversing T at all, so the
+  // convention it happens to be expressed in cannot mis-bucket an event --
+  // the gate is unconditionally correct to drop. `event_vol_test.cpp`'s
+  // `Session.VolTimeConventionSolvesEmoveViaStampedExpiry` (formerly
+  // `...DisablesEmoveSolve`) now asserts the solve RUNS and yields a finite
+  // eMove under VolTime, identical to the Calendar365 result on the same
+  // underlying. `implied_emove` still stays at its NaN default whenever
+  // `solve_implied_emove` itself declines (no schedule, fewer than two
+  // fitted slices, no event in the bracketing window, or `implied_emove`'s
+  // own solve failure) -- see that function's doc -- which
+  // `event_aware_active()` (session.hpp) already treats as "serve exactly
+  // as if events were null", so no separate gate is needed on the serve
+  // side either.
   diag.implied_emove =
-      (eff.time.convention == TimeConvention::Calendar365)
-          ? solve_implied_emove(eff.events.get(), eff.now_ts_ns, rep.surface.essvi_slices())
-          : kNaN;
+      solve_implied_emove(eff.events.get(), eff.now_ts_ns, rep.surface.essvi_slices());
 
   std::vector<std::vector<FitObs>> incremental_obs;
   std::vector<std::vector<double>> incremental_mids;

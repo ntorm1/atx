@@ -167,11 +167,12 @@ struct SessionInputs {
   // event contribution. Restricted to the default eSSVI path, same as
   // ShapeBlend above: a session built with a polymorphic curve override
   // (ConvexDense / Svi) leaves `implied_emove` at its NaN default and never
-  // consults `events`. ALSO restricted to `time.convention == Calendar365`
-  // (v1): the solve derives each fitted slice's absolute expiry instant from
-  // its T, which is only a real calendar instant under Calendar365 -- see
-  // `time`'s doc below. Under VolTime, `build` skips the solve and falls
-  // back to the plain (non-event) blend, same NaN convention.
+  // consults `events`. NOT restricted by `time.convention`: the solve reads
+  // each fitted slice's stamped `EssviParams::expiry_ns` (the real listed
+  // expiry, a plain UTC instant `run_surface_parity` copies from
+  // `Chain::expiry_ns` -- independent of T convention) rather than deriving
+  // an instant from T, so it runs identically under Calendar365 and VolTime
+  // -- see `time`'s doc below.
   std::shared_ptr<const EventSchedule> events{};
   // The session's retained copy of the T convention its chains were built
   // under (see vol_time.hpp `TimeSpec`; default Calendar365 is BIT-IDENTICAL
@@ -185,14 +186,14 @@ struct SessionInputs {
   // `OpraPanel::time`, into this field). `build(under, in)` installs nothing
   // itself (`under` is pre-installed), so there the match with whatever frame
   // produced `under` remains a documented caller contract. NOTE: events-
-  // censoring (`events` above) requires this to be Calendar365 in v1 -- the
-  // eMove solve synthesizes a fitted slice's absolute expiry instant from its
-  // T (`ns_from_year_fraction`, the Calendar365 inverse of
-  // `time_to_expiry_years`), which is only correct when T itself is a plain
-  // calendar year-fraction. Under VolTime, `build` skips the solve and
-  // `SessionDiagnostics::implied_emove` stays NaN (plain-blend fallback); the
-  // root-cause fix -- stamping `expiry_ns` directly onto fitted eSSVI slices
-  // instead of synthesizing it from T -- is a follow-up task.
+  // censoring (`events` above) is NOT restricted by this field -- the eMove
+  // solve reads each fitted slice's stamped `EssviParams::expiry_ns`
+  // (`run_surface_parity`'s copy of `Chain::expiry_ns`, a plain UTC instant)
+  // instead of deriving one from T, so a `VolTime`-shaped T no longer risks
+  // mis-bucketing a nearby event the way the historical `ns_from_year_
+  // fraction` (Calendar365-inverse) synthesis could. That synthesis is
+  // still used as a fallback for any slice that was never stamped
+  // (`expiry_ns == 0`) -- see `solve_implied_emove`'s doc (session.cpp).
   TimeSpec time{};
   // Appended for positional aggregate source compatibility. True only when the
   // caller selected `curve` explicitly and the fitter will not substitute

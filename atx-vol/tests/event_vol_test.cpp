@@ -405,35 +405,67 @@ TEST(Session, NoBracketingExpiriesLeavesEmoveNaN) {
   EXPECT_EQ(sess->total_variance(100.0, T_mid), sess_plain->total_variance(100.0, T_mid));
 }
 
-TEST(Session, VolTimeConventionDisablesEmoveSolve) {
-  // eMove policy v1 is Calendar365-only (see SessionInputs::time / ::events
-  // docs). `solve_implied_emove` synthesizes each fitted slice's absolute
-  // expiry instant from its own T via `ns_from_year_fraction` -- the
-  // Calendar365 INVERSE of time_to_expiry_years. Under VolTime a fitted T is
-  // vol-time-shaped, so that synthesized instant is not the real listed
-  // expiry and could mis-bucket a nearby event by days with no error. Reuse
-  // the EXACT bracketing fixture from ImpliedEmoveSolvedAndServed (which
-  // solves a finite eMove under the default Calendar365) to prove the
-  // VolTime guard -- not some other fixture difference -- is what disables
-  // the solve here.
+TEST(Session, VolTimeConventionSolvesEmoveViaStampedExpiry) {
+  // Seam S1 gate flip: eMove policy v1 USED TO BE Calendar365-only because
+  // `solve_implied_emove` synthesized each fitted slice's absolute expiry
+  // instant from its own T via `ns_from_year_fraction` -- the Calendar365
+  // INVERSE of `time_to_expiry_years` -- which is wrong once T is
+  // trading-hours-shaped (VolTime): the synthesized instant would not be the
+  // real listed expiry and could mis-bucket a nearby event by days with no
+  // error. `run_surface_parity` now stamps each fitted slice's REAL
+  // listed-expiry instant onto `EssviParams::expiry_ns` (a plain UTC
+  // timestamp copied from `Chain::expiry_ns`, independent of T convention),
+  // and `solve_implied_emove` prefers that stamped instant for both the
+  // bracketing search and the `count_between` event count -- so the solve no
+  // longer needs to reverse T at all, and `VolaSession::build` no longer
+  // gates it on `time.convention`. Reuse the EXACT bracketing fixture from
+  // `ImpliedEmoveSolvedAndServed` (formerly used to prove the OLD guard
+  // disabled the solve) to prove the NEW behavior: the solve now RUNS under
+  // VolTime and lands on the SAME finite eMove as the Calendar365 build of
+  // the identical underlying -- not just "some finite number" -- since
+  // nothing about the fitted surface or the stamped expiry instants differs
+  // between the two builds; only the `time.convention` label does, and that
+  // label must now be provably inert to the bracketing/count arithmetic.
   const EventPanelFixture fx = make_event_panel("2026-09-01");  // between the two expiries
   Universe u;
   const Underlying* under = install_event_panel(fx.spec, u);
   ASSERT_NE(under, nullptr);
   ASSERT_EQ(under->chains.size(), std::size_t{2});
 
-  SessionInputs in_events = make_event_inputs(fx);
-  in_events.events =
+  SessionInputs in_events_voltime = make_event_inputs(fx);
+  in_events_voltime.events =
       std::make_shared<EventSchedule>(std::vector<std::int64_t>{fx.event_ns});
-  in_events.time.convention = TimeConvention::VolTime;
-  const auto sess = VolaSession::build(*under, in_events);
+  in_events_voltime.time.convention = TimeConvention::VolTime;
+  const auto sess = VolaSession::build(*under, in_events_voltime);
   ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
-  EXPECT_TRUE(std::isnan(sess->diagnostics().implied_emove))
-      << "got=" << sess->diagnostics().implied_emove;
 
-  // A NaN emove must make serving inert, bit-identical to events == nullptr
-  // (event_aware_active() gates on isfinite(implied_emove)) -- same
-  // no-fabricated-fallback contract as NoBracketingExpiriesLeavesEmoveNaN.
+  const double got_emove = sess->diagnostics().implied_emove;
+  ASSERT_TRUE(std::isfinite(got_emove)) << "implied_emove was NaN/inf under VolTime";
+  // Same tolerance as ImpliedEmoveSolvedAndServed (de-Am + eSSVI LM fit
+  // noise around the S3-truth ATM vols, not exact recombination).
+  EXPECT_NEAR(got_emove, fx.emove, fx.emove * 0.10) << "got=" << got_emove;
+
+  // Reference build: the SAME underlying/events, default (Calendar365)
+  // convention. `events` plays no part in the fit itself (SurfaceParityInputs
+  // has no such field), and `run_surface_parity` never reads
+  // `SessionInputs::time` either -- both fitted surfaces are byte-identical
+  // -- so a genuinely convention-independent solve must land on the EXACT
+  // same eMove, not merely "close".
+  SessionInputs in_events_cal = make_event_inputs(fx);
+  in_events_cal.events =
+      std::make_shared<EventSchedule>(std::vector<std::int64_t>{fx.event_ns});
+  const auto sess_cal = VolaSession::build(*under, in_events_cal);
+  ASSERT_TRUE(sess_cal.has_value()) << sess_cal.error().to_string();
+  EXPECT_EQ(got_emove, sess_cal->diagnostics().implied_emove)
+      << "VolTime-labeled solve must be bit-identical to the Calendar365 "
+         "solve on the same underlying -- the convention label no longer "
+         "changes the bracketing/count arithmetic (slice_expiry_ns, "
+         "session.cpp)";
+
+  // Serving activates too, exactly like ImpliedEmoveSolvedAndServed: a query
+  // strictly between expiry1 and the event date reports LESS total variance
+  // than the plain (non-event) blend, proving the event-aware path is
+  // actually reached under VolTime, not just the diagnostic solve.
   SessionInputs in_plain = make_event_inputs(fx);
   in_plain.time.convention = TimeConvention::VolTime;
   const auto sess_plain = VolaSession::build(*under, in_plain);
@@ -441,9 +473,18 @@ TEST(Session, VolTimeConventionDisablesEmoveSolve) {
 
   const auto exps = sess->expiries();
   ASSERT_EQ(exps.size(), std::size_t{2});
-  const double T_mid = 0.5 * (exps[0].T + exps[1].T);
-  EXPECT_EQ(sess->iv(100.0, T_mid), sess_plain->iv(100.0, T_mid));
-  EXPECT_EQ(sess->total_variance(100.0, T_mid), sess_plain->total_variance(100.0, T_mid));
+  const double T1 = exps[0].T;
+  const double T_event =
+      static_cast<double>(fx.event_ns - fx.now_ns) / atx::vol::kCalendarYearNs;
+  const double T_mid = T1 + 0.3 * (T_event - T1);
+  ASSERT_GT(T_mid, T1);
+  ASSERT_LT(T_mid, T_event);
+
+  const double w_events = sess->total_variance(100.0, T_mid);
+  const double w_plain = sess_plain->total_variance(100.0, T_mid);
+  ASSERT_TRUE(std::isfinite(w_events));
+  ASSERT_TRUE(std::isfinite(w_plain));
+  EXPECT_LT(w_events, w_plain) << "w_events=" << w_events << " w_plain=" << w_plain;
 }
 
 }  // namespace
