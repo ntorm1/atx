@@ -131,6 +131,16 @@ struct ChainPrepass {
   // certification resolve does not).
   CarryDiagnostics carry;
   bool carry_available = false;
+  // Decision B (board-level term-structure carry fallback). `carry_confident` is
+  // this expiry's OWN carry-solve confidence — a confident expiry anchors the
+  // borrow-vs-T structure the repair pass interpolates. `needs_carry_repair`
+  // marks an expiry deferred by the board-level confidence gate (non-confident
+  // under require_carry_confidence) awaiting a fallback borrow instead of the
+  // historical hard-drop. `carry_source` is the provenance of the (F, borrow)
+  // finally committed for this slice (Solved / TermStructureInterp/Extrap).
+  bool carry_confident = false;
+  bool needs_carry_repair = false;
+  CarrySource carry_source = CarrySource::Solved;
   std::vector<double> source_mids;        // ‖ prepared fit rows; raw chain.mids at (K, side)
   std::vector<std::uint8_t> source_flags; // ‖ prepared fit rows; raw chain.flags at (K, side)
   std::vector<double> chain_mids;         // full-chain snapshot
@@ -210,6 +220,148 @@ void source_quote_lookup(const Chain &chain, std::span<const FitObs> obs,
          kind != VolCurveKind::ConvexDense;
 }
 
+// ── Decision B: board-level term-structure carry fallback ────────────────
+
+// One confident expiry's (maturity, solved borrow) — a node of the board's
+// borrow term structure the repair pass reads off.
+struct CarryAnchor {
+  double T{0.0};
+  double borrow{0.0};
+};
+
+struct CarryFallback {
+  double borrow{0.0};
+  CarrySource source{CarrySource::Solved};
+};
+
+// Derive a non-confident expiry's borrow from the borrow-vs-T term structure of
+// the board's CONFIDENT expiries. INTERIOR (a confident anchor brackets its T on
+// both sides): LINEAR interpolation of the borrow in maturity. EDGE (no
+// confident anchor on one side): FLAT extension of the nearest confident borrow.
+//
+// A per-maturity borrow (equivalently the option-implied forward / carry) is
+// identified from put-call parity exactly as in van Binsbergen, Diamond &
+// Grotteria, "Risk-Free Interest Rates," Journal of Financial Economics
+// 143(1):1-29 (2022). Linear-in-rate interpolation across maturities with flat
+// (constant-rate) extrapolation beyond the first/last identified node is the
+// market-standard curve-construction choice analysed in Hagan & West,
+// "Interpolation Methods for Curve Construction," Applied Mathematical Finance
+// 13(2):89-129 (2006) — §3 (linear on rates) and their treatment of the curve
+// past the extreme nodes (held flat). `anchors` MUST be non-empty and sorted
+// ascending in T (guaranteed here: chains are loaded ascending-T).
+[[nodiscard]] CarryFallback term_structure_fallback_borrow(double T,
+                                                           std::span<const CarryAnchor> anchors) {
+  if (T <= anchors.front().T) {
+    return CarryFallback{anchors.front().borrow, CarrySource::TermStructureExtrap};
+  }
+  if (T >= anchors.back().T) {
+    return CarryFallback{anchors.back().borrow, CarrySource::TermStructureExtrap};
+  }
+  std::size_t hi = 0;
+  while (hi < anchors.size() && anchors[hi].T <= T) {
+    ++hi; // first anchor strictly beyond T (exists: T < anchors.back().T here)
+  }
+  const CarryAnchor &a_lo = anchors[hi - 1];
+  const CarryAnchor &a_hi = anchors[hi];
+  const double span = a_hi.T - a_lo.T;
+  const double alpha = span > 0.0 ? (T - a_lo.T) / span : 0.0;
+  return CarryFallback{a_lo.borrow + alpha * (a_hi.borrow - a_lo.borrow),
+                       CarrySource::TermStructureInterp};
+}
+
+// Build the European de-Am fit strip for a chain whose carry is already resolved
+// into slot.{rate, F, q_eff, df}, committing the PreparedSlice + per-chain
+// snapshot data into `slot` (usable=true) or stamping the truthful non-fit
+// outcome (Starved / Failed). SHARED by the confident phase-1 path and the
+// phase-1.5 carry-fallback repair so both de-Americanize through ONE preparation
+// body. Does NOT touch slot.carry / slot.borrow: the caller owns the
+// certification carry (which differs between a solved and a fallback expiry) and
+// the committed borrow.
+void prepare_fit_slice_into_slot(const Chain &chain, const SurfaceParityInputs &in,
+                                 VolCurveKind kind, bool use_fit_cache, bool time_stages,
+                                 std::size_t i, ChainPrepass &slot) {
+  (void)kind;
+  const AmericanCorrectionCaches fit_caches =
+      use_fit_cache ? in.deam.caches : AmericanCorrectionCaches{};
+  PreparedSliceInputs prepare_inputs;
+  prepare_inputs.expiry_index = static_cast<std::uint32_t>(i);
+  prepare_inputs.S = in.S;
+  prepare_inputs.r = slot.rate;
+  prepare_inputs.F = slot.F;
+  prepare_inputs.q_eff = slot.q_eff;
+  prepare_inputs.df = slot.df;
+  prepare_inputs.calib = in.calib;
+  prepare_inputs.caches = fit_caches;
+  prepare_inputs.al_opts = in.deam.al_opts;
+  prepare_inputs.iv_tolerance = in.deam.iv_tol;
+  prepare_inputs.iv_max_iterations = in.deam.iv_max_iter;
+  prepare_inputs.method = in.deam.method;
+  prepare_inputs.policy = in.fit_prep_policy;
+  prepare_inputs.audit_fit_inversions = in.deam.audit_fit_inversions;
+  prepare_inputs.max_iv_residual_half_spreads = in.deam.max_iv_residual_half_spreads;
+  prepare_inputs.prepare_scoring = in.score_parity;
+  const ProfileClock::time_point t_obs0 =
+      time_stages ? ProfileClock::now() : ProfileClock::time_point{};
+  Result<PreparedSlice> prepared = PreparedSlice::create(chain, prepare_inputs);
+  if (time_stages) {
+    slot.ms_obs_eu += elapsed_ms(t_obs0, ProfileClock::now());
+  }
+
+  const bool primary_ok =
+      prepared.has_value() && prepared->fit_observations().size() >= kMinPreparedFitRows;
+  if (!primary_ok) {
+    if (!prepared.has_value() && !prep_error_is_expected(prepared.error().code())) {
+      slot.prep_outcome = SlicePrepOutcome::Failed;
+      slot.prep_error = prepared.error();
+      return;
+    }
+    const bool rescue_eligible =
+        in.per_slice_legacy_prep_fallback &&
+        in.fit_prep_policy != PreparedObservationPolicy::LegacyEssviCompatibility;
+    if (!rescue_eligible) {
+      slot.prep_outcome = SlicePrepOutcome::Starved;
+      return;
+    }
+    PreparedSliceInputs rescue_inputs = prepare_inputs;
+    rescue_inputs.policy = PreparedObservationPolicy::LegacyEssviCompatibility;
+    rescue_inputs.audit_fit_inversions = true;
+    rescue_inputs.out_legacy_fit_rows = &slot.legacy_fit_rows;
+    rescue_inputs.out_legacy_audit_dropped = &slot.legacy_audit_dropped;
+    const ProfileClock::time_point t_rescue0 =
+        time_stages ? ProfileClock::now() : ProfileClock::time_point{};
+    Result<PreparedSlice> rescued = PreparedSlice::create(chain, rescue_inputs);
+    if (time_stages) {
+      slot.ms_obs_eu += elapsed_ms(t_rescue0, ProfileClock::now());
+    }
+    if (!rescued.has_value()) {
+      if (!prep_error_is_expected(rescued.error().code())) {
+        slot.prep_outcome = SlicePrepOutcome::Failed;
+        slot.prep_error = rescued.error();
+      } else {
+        slot.prep_outcome = SlicePrepOutcome::Starved;
+      }
+      return;
+    }
+    if (rescued->fit_observations().size() < kMinPreparedFitRows) {
+      slot.prep_outcome = SlicePrepOutcome::Starved;
+      return;
+    }
+    prepared = std::move(rescued);
+    slot.prep_outcome = SlicePrepOutcome::PreparedLegacyRescue;
+  } else {
+    slot.prep_outcome = SlicePrepOutcome::Prepared;
+  }
+
+  slot.prepared.emplace(std::move(*prepared));
+  slot.chain_mids = chain.mids;
+  slot.chain_flags = chain.flags;
+  slot.chain_bids = chain.bids;
+  slot.chain_asks = chain.asks;
+  slot.chain_ts = chain.ts_ns;
+  source_quote_lookup(chain, slot.prepared->fit_observations(), slot.source_mids, slot.source_flags);
+  slot.usable = true;
+}
+
 // Phase 1: per-chain de-Am (resolve_chain_forward + the European observation
 // build) fanned out over `n_threads` workers. Pure per-chain work, disjoint
 // output slots — see `ChainPrepass` above.
@@ -218,6 +370,14 @@ void source_quote_lookup(const Chain &chain, std::span<const FitObs> obs,
                                                          VolCurveKind kind, unsigned n_threads,
                                                          bool time_stages) {
   const bool use_fit_cache = allow_fit_cache(in, kind);
+  // Decision B: resolve every expiry's carry WITHOUT the per-expiry hard-drop.
+  // The confidence gate is re-applied at BOARD level below (defer, not drop) so a
+  // non-confident expiry can be repaired from the term structure of the confident
+  // ones. For a CONFIDENT expiry the probe returns a byte-identical ChainForward
+  // (require_carry_confidence only gates the Err path, never the computed
+  // borrow/forward/diagnostics) — the confident path stays bit-identical.
+  DeAmOptions probe_deam = in.deam;
+  probe_deam.require_carry_confidence = false;
   std::vector<ChainPrepass> prepass(under.chains.size());
   // Long/dense expiries have highly variable Andersen-Lake cost. Run the
   // largest boards first and let workers dynamically claim the next chain;
@@ -239,11 +399,13 @@ void source_quote_lookup(const Chain &chain, std::span<const FitObs> obs,
     const ProfileClock::time_point t_forward0 =
         time_stages ? ProfileClock::now() : ProfileClock::time_point{};
     const auto d_res =
-        resolve_chain_forward(chain, in.S, rate, in.cash_divs, in.now_ts_ns, in.deam);
+        resolve_chain_forward(chain, in.S, rate, in.cash_divs, in.now_ts_ns, probe_deam);
     if (time_stages) {
       slot.ms_forward_borrow = elapsed_ms(t_forward0, ProfileClock::now());
     }
     if (!d_res) {
+      // A real carry failure (no quotable co-terminal pair / degenerate forward /
+      // non-convergence) — NOT the confidence gate, which the probe disarmed.
       slot.carry_failed = true;
       slot.prep_outcome = SlicePrepOutcome::CarryFailed;
       return;
@@ -257,107 +419,36 @@ void source_quote_lookup(const Chain &chain, std::span<const FitObs> obs,
     const double q_eff = rate - std::log(F / in.S) / T;
     const double df = std::exp(-rate * T);
 
-    // Use the cache only as an audited proposal on eligible scalar-rate curve
-    // families. allow_fit_cache() keeps sensitive and incompatible paths cold.
-    const AmericanCorrectionCaches fit_caches =
-        use_fit_cache ? in.deam.caches : AmericanCorrectionCaches{};
-    PreparedSliceInputs prepare_inputs;
-    prepare_inputs.expiry_index = static_cast<std::uint32_t>(i);
-    prepare_inputs.S = in.S;
-    prepare_inputs.r = rate;
-    prepare_inputs.F = F;
-    prepare_inputs.q_eff = q_eff;
-    prepare_inputs.df = df;
-    prepare_inputs.calib = in.calib;
-    prepare_inputs.caches = fit_caches;
-    prepare_inputs.al_opts = in.deam.al_opts;
-    prepare_inputs.iv_tolerance = in.deam.iv_tol;
-    prepare_inputs.iv_max_iterations = in.deam.iv_max_iter;
-    prepare_inputs.method = in.deam.method;
-    // Opt-in lenient preparation (default Configured => bit-identical). Under
-    // LegacyEssviCompatibility the builder honours the audit knobs below, so the
-    // lenient path still repriced-audits its fitted inversions (risk contract).
-    prepare_inputs.policy = in.fit_prep_policy;
-    prepare_inputs.audit_fit_inversions = in.deam.audit_fit_inversions;
-    prepare_inputs.max_iv_residual_half_spreads = in.deam.max_iv_residual_half_spreads;
-    prepare_inputs.prepare_scoring = in.score_parity;
-    const ProfileClock::time_point t_obs0 =
-        time_stages ? ProfileClock::now() : ProfileClock::time_point{};
-    Result<PreparedSlice> prepared = PreparedSlice::create(chain, prepare_inputs);
-    if (time_stages) {
-      slot.ms_obs_eu = elapsed_ms(t_obs0, ProfileClock::now());
+    slot.carry_confident = d_res->carry.confident;
+    // Decision B: board-level confidence gate. Under the risk build
+    // (require_carry_confidence), a NON-confident expiry is DEFERRED to the
+    // phase-1.5 term-structure repair pass (borrow derived from the confident
+    // expiries) instead of being hard-dropped here. Its own (unreliable) solve is
+    // NOT used as a term-structure anchor.
+    if (in.deam.require_carry_confidence && !d_res->carry.confident) {
+      slot.T = T;
+      slot.rate = rate;
+      slot.carry = d_res->carry; // raw solve tallies, restamped as fallback later
+      slot.needs_carry_repair = true;
+      return;
     }
 
-    // W3.3 (F3): classify the primary preparation and, when eligible, rescue.
-    const bool primary_ok =
-        prepared.has_value() && prepared->fit_observations().size() >= kMinPreparedFitRows;
-    if (!primary_ok) {
-      // A HARD create() error (Internal / InvalidArgument / OutOfRange / …) is a
-      // real defect: retain it and mark Failed so phase 2 can surface it truthfully
-      // rather than convert a QP/certification failure into missing coverage. A
-      // below-floor SUCCESS and an EXPECTED error (NotFound / Unavailable) are
-      // genuinely thin — eligible for the opt-in Legacy-prep rescue.
-      if (!prepared.has_value() && !prep_error_is_expected(prepared.error().code())) {
-        slot.prep_outcome = SlicePrepOutcome::Failed;
-        slot.prep_error = prepared.error();
-        return;
-      }
-      const bool rescue_eligible =
-          in.per_slice_legacy_prep_fallback &&
-          in.fit_prep_policy != PreparedObservationPolicy::LegacyEssviCompatibility;
-      if (!rescue_eligible) {
-        // No rescue (flag off, or already Legacy): truthfully Starved — the
-        // byte-identical historical drop.
-        slot.prep_outcome = SlicePrepOutcome::Starved;
-        return;
-      }
-      // Re-prepare under the permissive eSSVI cold-driver predicate, forcing the
-      // fit-inversion audit ON (correctness-first serving, charter §8.1) so a
-      // rescued row is still repriced-audited. The rescued slice truthfully
-      // carries LegacyEssviCompatibility provenance with a default (never-
-      // certified) de-Am audit — certification must not claim Configured-grade
-      // de-Am for it.
-      PreparedSliceInputs rescue_inputs = prepare_inputs;
-      rescue_inputs.policy = PreparedObservationPolicy::LegacyEssviCompatibility;
-      rescue_inputs.audit_fit_inversions = true;
-      rescue_inputs.out_legacy_fit_rows = &slot.legacy_fit_rows;
-      rescue_inputs.out_legacy_audit_dropped = &slot.legacy_audit_dropped;
-      const ProfileClock::time_point t_rescue0 =
-          time_stages ? ProfileClock::now() : ProfileClock::time_point{};
-      Result<PreparedSlice> rescued = PreparedSlice::create(chain, rescue_inputs);
-      if (time_stages) {
-        // Both create() calls fold into observation_deam_ms so the timing stays
-        // honest about the total de-Am work this rescue cost.
-        slot.ms_obs_eu += elapsed_ms(t_rescue0, ProfileClock::now());
-      }
-      if (!rescued.has_value()) {
-        // A HARD rescue error also propagates; an expected rescue failure leaves
-        // the slice truthfully Starved (the historical drop).
-        if (!prep_error_is_expected(rescued.error().code())) {
-          slot.prep_outcome = SlicePrepOutcome::Failed;
-          slot.prep_error = rescued.error();
-        } else {
-          slot.prep_outcome = SlicePrepOutcome::Starved;
-        }
-        return;
-      }
-      if (rescued->fit_observations().size() < kMinPreparedFitRows) {
-        slot.prep_outcome = SlicePrepOutcome::Starved;
-        return;
-      }
-      prepared = std::move(rescued);
-      slot.prep_outcome = SlicePrepOutcome::PreparedLegacyRescue;
-    } else {
-      slot.prep_outcome = SlicePrepOutcome::Prepared;
-    }
-
+    // Confident (or the gate is off): byte-identical to the pre-change path.
+    // Record the anchor fields up front so a confident expiry still contributes
+    // to the borrow term structure even if its OWN preparation later starves.
     slot.T = T;
     slot.rate = rate;
     slot.F = F;
     slot.borrow = d_res->borrow;
     slot.q_eff = q_eff;
     slot.df = df;
-    slot.prepared.emplace(std::move(*prepared));
+
+    prepare_fit_slice_into_slot(chain, in, kind, use_fit_cache, time_stages, i, slot);
+    if (!slot.usable) {
+      return; // Starved / Failed already stamped; a confident anchor is still recorded
+    }
+    slot.carry_source = CarrySource::Solved;
+
     // Perf C1 + review fix: the CERTIFICATION carry must be bit-identical to
     // what the historical serial certification pass produced — a resolve with
     // the CALLER's caches (in.deam_cert_caches), never the session-built
@@ -388,21 +479,6 @@ void source_quote_lookup(const Chain &chain, std::span<const FitObs> obs,
         slot.carry_available = true;
       }
     }
-    // Perf C1: capture the certification layer's derived inputs HERE (same
-    // task, same `chain`) instead of a second serial pass in
-    // VolaSession::build. Source-quote lookup reads the prepared fit rows, so
-    // it must run after the emplace above settles the rows into the slot.
-    // (The old S0-3 second cold de-Am — `build_parity_data` — is superseded by
-    // the PreparedSlice score columns, which score the SAME keyed population
-    // as the fit rows; no separate market-side board re-inversion remains.)
-    slot.chain_mids = chain.mids;
-    slot.chain_flags = chain.flags;
-    slot.chain_bids = chain.bids;
-    slot.chain_asks = chain.asks;
-    slot.chain_ts = chain.ts_ns;
-    source_quote_lookup(chain, slot.prepared->fit_observations(), slot.source_mids,
-                        slot.source_flags);
-    slot.usable = true;
   });
   return prepass;
 }
@@ -459,6 +535,80 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
     return Err(ErrorCode::Internal, "fit_curve_surface: de-Am prepass failed (unknown exception)");
   }
   const double ms_prepass = time_stages ? elapsed_ms(t_pre0, ProfileClock::now()) : 0.0;
+
+  // Phase 1.5 (Decision B — board-level term-structure carry fallback). An
+  // expiry deferred by the board confidence gate (needs_carry_repair) is admitted
+  // with a borrow DERIVED from the borrow-vs-T structure of the board's CONFIDENT
+  // expiries, then de-Americanized/prepared like any other slice — instead of the
+  // historical hard-drop that cost thin boards most of their term structure. With
+  // ZERO confident anchors nothing is fabricated: the deferred expiries stay
+  // dropped (behaviour unchanged). This runs BEFORE the skip/starve tally below so
+  // the counts reflect the post-repair board.
+  {
+    std::vector<CarryAnchor> anchors; // ascending T (chains load ascending-T)
+    for (const ChainPrepass &pre : prepass) {
+      if (pre.carry_confident) {
+        anchors.push_back(CarryAnchor{pre.T, pre.borrow});
+      }
+    }
+    std::vector<std::size_t> repair_idx;
+    for (std::size_t i = 0; i < prepass.size(); ++i) {
+      ChainPrepass &pre = prepass[i];
+      if (!pre.needs_carry_repair) {
+        continue;
+      }
+      if (anchors.empty()) {
+        pre.carry_failed = true; // no confident expiry to borrow a carry from
+        pre.prep_outcome = SlicePrepOutcome::CarryFailed;
+        continue;
+      }
+      const Chain &chain = under.chains[i];
+      const double rate = expiry_rate(in, i);
+      const CarryFallback fb = term_structure_fallback_borrow(chain.T, anchors);
+      const double F = hybrid_forward(in.S, rate, fb.borrow, chain.T, in.cash_divs, chain.expiry_ns,
+                                      in.now_ts_ns, in.deam.hyb);
+      if (!(F > 0.0) || !std::isfinite(F)) {
+        pre.carry_failed = true;
+        pre.prep_outcome = SlicePrepOutcome::CarryFailed;
+        continue;
+      }
+      pre.T = chain.T;
+      pre.rate = rate;
+      pre.F = F;
+      pre.borrow = fb.borrow;
+      pre.q_eff = rate - std::log(F / in.S) / chain.T;
+      pre.df = std::exp(-rate * chain.T);
+      pre.carry_source = fb.source;
+      repair_idx.push_back(i);
+    }
+    // De-Americanize + prepare each repaired expiry (disjoint slots; same parallel
+    // pattern as phase 1). A slice too thin even with a valid fallback carry still
+    // starves truthfully.
+    const bool use_fit_cache = allow_fit_cache(in, cfg.kind);
+    parallel_for_dynamic(repair_idx.size(), in.fit_workers, [&](std::size_t task) {
+      const std::size_t i = repair_idx[task];
+      ChainPrepass &pre = prepass[i];
+      // Stamp the fallback certification carry FIRST (retain the raw solve's
+      // tallies for diagnostics), marked available but NEVER confident and NEVER
+      // Solved — a fallback carry must not be laundered as a solved one.
+      CarryDiagnostics fb_carry;
+      fb_carry.n_candidates = pre.carry.n_candidates;
+      fb_carry.n_attempted = pre.carry.n_attempted;
+      fb_carry.n_solved = pre.carry.n_solved;
+      fb_carry.n_retained = pre.carry.n_retained;
+      fb_carry.effective_pair_count = pre.carry.effective_pair_count;
+      fb_carry.dispersion = pre.carry.dispersion;
+      fb_carry.max_leave_one_out_shift = pre.carry.max_leave_one_out_shift;
+      fb_carry.confidence_half_width = pre.carry.confidence_half_width;
+      fb_carry.max_pcp_residual = pre.carry.max_pcp_residual;
+      fb_carry.confident = false;
+      fb_carry.source = pre.carry_source;
+      pre.carry = std::move(fb_carry);
+      pre.carry_available = true;
+      prepare_fit_slice_into_slot(under.chains[i], in, cfg.kind, use_fit_cache, time_stages, i, pre);
+    });
+  }
+
   for (const ChainPrepass &pre : prepass) {
     if (pre.carry_failed) {
       ++out.n_carry_skipped; // §5.2: carry-dropped expiries are surfaced
@@ -484,6 +634,7 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
       ExpiryFitReport rep{};
       rep.chain_index = ci;
       rep.maturity = under.chains[ci].T;
+      rep.carry_source = pre.carry_source; // Decision B provenance (surfaced even on drop)
       switch (pre.prep_outcome) {
       case SlicePrepOutcome::CarryFailed:
         rep.outcome = ExpiryFitOutcome::CarryFailed;
@@ -624,6 +775,7 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
         rep.n_observations = prepared.fit_observations().size();
         rep.outcome = ExpiryFitOutcome::FitFailed;
         rep.error = fit_code;
+        rep.carry_source = pre.carry_source;
         out.expiry_reports.push_back(rep);
         if (in.fail_board_on_hard_slice_error && !prep_error_is_expected(fit_code)) {
           return Err(fit_code, "fit_curve_surface: expiry " + std::to_string(ci) +
@@ -694,6 +846,7 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
                     : (pre.prep_outcome == SlicePrepOutcome::PreparedLegacyRescue)
                         ? ExpiryFitOutcome::FittedLegacyPrep
                         : ExpiryFitOutcome::Fitted;
+      rep.carry_source = pre.carry_source; // Decision B: Solved / TermStructureInterp/Extrap
       out.expiry_reports.push_back(rep);
     }
     out.surface.push(std::move(*slice_res));

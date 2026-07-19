@@ -260,7 +260,8 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
                                  carry.confidence_half_width,
                                  carry.max_pcp_residual,
                                  true,
-                                 carry.confident};
+                                 carry.confident,
+                                 carry.source};
 }
 
 [[nodiscard]] std::size_t route_proposed(const DeAmAuditDiagnostics &d) noexcept {
@@ -485,6 +486,11 @@ void aggregate_input_diagnostics(std::span<const SessionSliceDiagnostics> slices
       ++diag.n_carry_slices;
       if (slice.carry.confident)
         ++diag.n_carry_confident;
+      // Decision B: a carry borrowed from the board term structure is available
+      // but not confident — surfaced so admission publishes Degraded (CarryGap)
+      // rather than hard-rejecting the board (merge_session_failure_context).
+      if (slice.carry.source != CarrySource::Solved)
+        ++diag.n_carry_fallback_expiries;
       min_effective = std::min(min_effective, slice.carry.effective_pair_count);
       diag.max_carry_dispersion = std::max(diag.max_carry_dispersion, slice.carry.dispersion);
       diag.max_carry_leave_one_out =

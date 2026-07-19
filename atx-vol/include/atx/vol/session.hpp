@@ -320,6 +320,14 @@ struct SessionDiagnostics {
   // must surface the gap (§5.2); risk admission maps a non-zero count to a
   // Degraded health state with a CarryGap reason.
   std::size_t n_carry_skipped_expiries{0};
+  // Decision B: expiries ADMITTED with a carry DERIVED from the board's
+  // borrow-vs-T term structure (interpolated / flat-extended from the confident
+  // expiries) rather than solved from their own co-terminal pairs. A fallback
+  // carry is honest — it does NOT count toward n_carry_confident — so it is
+  // surfaced through the same publish-with-Degraded CarryGap reason as a skipped
+  // expiry, NOT the hard InsufficientData reject (the whole point of Decision B
+  // is to keep the term structure, published Degraded, rather than drop it).
+  std::size_t n_carry_fallback_expiries{0};
   // Expiries the fit DROPPED because the fit-inversion audit starved the
   // slice below the usable-observation floor (eSSVI aligned-obs path under
   // deam.audit_fit_inversions). The audit-created analogue of a carry skip;
@@ -368,6 +376,9 @@ struct SessionCarryDiagnostics {
   double max_pcp_residual{0.0};
   bool available{false};
   bool confident{false};
+  // Decision B provenance: Solved for a directly-inferred carry; a TermStructure*
+  // value marks a slice whose carry was borrowed from the board term structure.
+  CarrySource source{CarrySource::Solved};
 };
 
 // Parallel to expiries(). DeAmAuditDiagnostics contains counts/quantiles only;

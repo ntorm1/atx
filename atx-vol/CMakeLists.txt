@@ -183,6 +183,11 @@ if(ATX_BUILD_EXAMPLES)
     add_executable(spy_diag examples/spy_diag.cpp)
     target_link_libraries(spy_diag PRIVATE atx::vol atx::core atx_warnings)
 
+    # bt-spyfit-rca DIAGNOSTIC: reproduce the SPY/XOM populate fit failure with
+    # full risk-admission rejection detail. See examples/spy_fit_rca.cpp.
+    add_executable(spy_fit_rca examples/spy_fit_rca.cpp)
+    target_link_libraries(spy_fit_rca PRIVATE atx::vol atx::core atx_warnings)
+
     # SOTA %-within-bid-ask acceptance: eSSVI (3 DoF) vs dense C16 (16 DoF) on the
     # real SPY board, scored through the same re-Americanization. See
     # examples/spy_bidask_bench.cpp.
@@ -286,6 +291,13 @@ if(ATX_BUILD_EXAMPLES)
     # (tests/surface_db_populate_test.cpp). See examples/mag7_surfdb_populate.cpp.
     add_executable(mag7_surfdb_populate examples/mag7_surfdb_populate.cpp)
     target_link_libraries(mag7_surfdb_populate PRIVATE atx::vol atx::core atx_warnings)
+
+    # WS-F F-c: fit + serialize the SPY-dispersion universe (SPY + top-N) across a
+    # YTD date range from the real OPRA hive into a SurfaceDb via the fused
+    # streaming populate_universe_streaming (cell-aware idempotent resume). Gate
+    # test: SurfaceDbPopulate.UniverseStreamingResumeOverRealHive.
+    add_executable(universe_surfdb_populate examples/universe_surfdb_populate.cpp)
+    target_link_libraries(universe_surfdb_populate PRIVATE atx::vol atx::core atx_warnings)
 
     # Whole-universe auto-select fit stress harness: one OPRA snapshot minute,
     # N thousand underliers, PricerConfig::curve unset (unified policy +

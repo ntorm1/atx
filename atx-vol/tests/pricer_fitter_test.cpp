@@ -1820,7 +1820,29 @@ TEST_F(PricerFitterTest, RiskRebuildRejectedBelowServedBreadthFloor) {
   curve.kind = atx::vol::VolCurveKind::Essvi;
   config.curve = curve; // pin the family: isolate admission from the fallback ladder
 
-  // Control: under the production served floor (0.50) this board admits on risk.
+  // The clean synthetic board reprices every scored quote in-band, so the served
+  // metric (n_within / n) would be exactly 1.0 — no room for a floor to sit below.
+  // Tighten every quote's band symmetrically around its UNCHANGED mid: the mids
+  // (and thus the arbitrage-free fit) are untouched, but the parsimonious eSSVI's
+  // small smoothing residual now exceeds the narrowed band on the strikes where
+  // the true smile bends away from it. Served drops below 1.0 with no expiry
+  // dropped and no arbitrage introduced — a genuine below-floor case.
+  std::vector<OptionId> ids;
+  std::vector<double> bids;
+  std::vector<double> asks;
+  for (const OptionId id : chain_->ids()) {
+    const auto option = chain_->at(id);
+    ASSERT_TRUE(option.has_value());
+    const double mid = option->mid;
+    const double half = 0.20 * (option->ask - option->bid); // 40% of the original spread
+    ids.push_back(id);
+    bids.push_back(mid - half);
+    asks.push_back(mid + half);
+  }
+  ASSERT_FALSE(ids.empty());
+  ASSERT_TRUE(chain_->update_quotes(ids, bids, asks).has_value());
+
+  // Control: under the production served floor (0.50) this board still admits.
   PricerFitter admits{config};
   ASSERT_TRUE(admits.fit(*chain_).has_value());
   EXPECT_EQ(admits.bundle().risk_health.state, atx::vol::SurfaceState::Healthy);
@@ -1833,7 +1855,8 @@ TEST_F(PricerFitterTest, RiskRebuildRejectedBelowServedBreadthFloor) {
   ASSERT_GT(evidence.attempted_quotes, 0u);
   const double served_coverage =
       static_cast<double>(evidence.fitted_quotes) / static_cast<double>(evidence.attempted_quotes);
-  ASSERT_LT(served_coverage, 1.0) << "a real board always drops some wing strikes";
+  ASSERT_LT(served_coverage, 1.0) << "the perturbed quotes must be served out of band";
+  ASSERT_GE(served_coverage, 0.50) << "the robust fit must still clear the production floor";
   config.selector.min_served_quote_coverage = 0.5 * (served_coverage + 1.0);
 
   // Below-floor: the risk rebuild must now be rejected and publish no surface.
@@ -1842,6 +1865,73 @@ TEST_F(PricerFitterTest, RiskRebuildRejectedBelowServedBreadthFloor) {
   EXPECT_FALSE(result.has_value());
   EXPECT_EQ(rejects.bundle().risk, nullptr);
   EXPECT_NE(rejects.bundle().risk_health.state, atx::vol::SurfaceState::Healthy);
+}
+
+// F2 metric gate (bt-spyfit-rca): the quote-coverage numerator/denominator must
+// measure SERVED quotes — the admitted-universe quotes the built surface reprices
+// in-band, counted from the parity serve-check (n_within over n) — NOT the
+// node-capped fit-observation count over raw board strikes. On a wide board a
+// dense fit capped to `max_obs_per_slice` nodes serves far more of its scored
+// quotes than the node/strikes ratio suggests; the old numerator understated
+// coverage and wrongly rejected a healthy surface. This gate pins the served
+// semantics so the metric can never regress to node-counting.
+TEST_F(PricerFitterTest, QuoteCoverageMeasuresServedQuotesNotCappedFitNodes) {
+  PricerConfig config;
+  config.preset = FitPreset::Fast;
+  config.curve = atx::vol::CurveConfig{atx::vol::VolCurveKind::ConvexDense};
+  config.max_obs_per_slice = 10u; // bind the node cap hard vs the 25-strike ladder
+  config.use_correction_cache = false;
+  config.use_deam_cache_for_fit = false;
+  config.score_parity = true;                 // the serve-check must run
+  config.admission.min_quote_coverage = 0.50; // production served-breadth floor
+
+  PricerFitter fitter{config};
+  (void)fitter.fit(*chain_);
+  ASSERT_TRUE(fitter.last_attempt_report().has_value());
+  const atx::vol::SurfaceBuildAttemptReport &attempt =
+      fitter.last_attempt_report()->attempts.front();
+  ASSERT_TRUE(attempt.build_succeeded);
+  const atx::vol::SurfaceAdmissionEvidence &ev = attempt.evidence;
+  ASSERT_GT(ev.attempted_quotes, 0u);
+
+  // The node cap binds, and the OLD (buggy) numerator/denominator — fit NODES over
+  // raw board STRIKES — sits below the production served floor.
+  std::size_t node_sum = 0u;
+  std::size_t strike_sum = 0u;
+  bool node_cap_bound = false;
+  for (const atx::vol::ExpiryBuildReport &e : attempt.expiries) {
+    if (e.outcome == atx::vol::ExpiryBuildOutcome::Fitted) {
+      node_sum += e.n_used;
+      node_cap_bound = node_cap_bound || e.n_used <= config.max_obs_per_slice.value();
+      strike_sum += chain_->underlying().chains[e.expiry_index].n_strikes();
+    }
+  }
+  ASSERT_TRUE(node_cap_bound) << "the node cap must actually bind for this gate";
+  ASSERT_GT(strike_sum, 0u);
+  const double node_over_strikes =
+      static_cast<double>(node_sum) / static_cast<double>(strike_sum);
+  EXPECT_LT(node_over_strikes, 0.50) << "node cap did not bind hard enough to prove the point";
+
+  // The metric instead measures SERVED (in-band) over ADMITTED-scored quotes,
+  // which clears the floor — so the node-capped surface is NOT rejected.
+  const double served =
+      static_cast<double>(ev.fitted_quotes) / static_cast<double>(ev.attempted_quotes);
+  EXPECT_GT(served, node_over_strikes) << "served=" << served << " node=" << node_over_strikes;
+  EXPECT_GE(served, 0.50) << "served coverage must clear the production floor";
+  EXPECT_FALSE(atx::vol::has_admission_failure(
+      attempt.admission, atx::vol::SurfaceAdmissionReason::InsufficientQuoteCoverage));
+
+  // Pin the numerator/denominator to the serve-check itself: they are exactly the
+  // parity n_within / n board-level sums, never the node count.
+  ASSERT_NE(fitter.surface(), nullptr);
+  std::size_t within_sum = 0u;
+  std::size_t scored_sum = 0u;
+  for (const atx::vol::ParityReport &p : fitter.surface()->session().parity()) {
+    within_sum += p.n_within;
+    scored_sum += p.n;
+  }
+  EXPECT_EQ(ev.fitted_quotes, within_sum);
+  EXPECT_EQ(ev.attempted_quotes, scored_sum);
 }
 
 TEST_F(PricerFitterTest, StageTimingsAreOptInAndReportedByTheBuiltSession) {

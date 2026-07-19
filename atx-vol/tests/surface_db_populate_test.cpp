@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -26,6 +27,7 @@
 #include "atx/vol/corpus.hpp"
 #include "atx/vol/data.hpp" // iso_to_ns, year_fraction
 #include "atx/vol/market_env.hpp"
+#include "atx/vol/opra_batch.hpp" // load_opra_daterange, corpus_board_from_opra (F-c real hive)
 #include "atx/vol/panel.hpp" // SynthPanelSpec, make_synthetic_american_panel
 #include "atx/vol/priced_surface.hpp"
 #include "atx/vol/priced_surface_view.hpp" // PricedSurfaceView (S5 map_surface)
@@ -240,6 +242,202 @@ TEST(SurfaceDbPopulate, MapSurfaceViewReproducesReconstructedFitOutput) {
     }
   }
   EXPECT_EQ(n_checked, 4u);
+}
+
+// ── F-c: universe populate driver over the REAL OPRA hive ───────────────────
+// Drives populate_universe_streaming (the F-c driver core) over the WS-D parquet
+// hive. GTEST_SKIPs cleanly when the hive (or the requested cells) is absent, so it
+// is safe in every environment and develops against whatever the pull has written.
+namespace fc {
+
+constexpr const char *kHiveRoot = "C:/atx-data/spy-dispersion/opra";
+
+// Load the available boards for `symbols` over [lo,hi] from the read-only hive.
+// Missing/partial cells are silently dropped (load_opra_daterange non-fatal), so
+// the returned vector is exactly the cells on disk right now.
+[[nodiscard]] std::vector<CorpusBoard> load_hive_boards(const std::vector<std::string> &symbols,
+                                                        const std::string &lo,
+                                                        const std::string &hi) {
+  OpraBatchSpec spec;
+  spec.symbols = symbols;
+  spec.date_lo = lo;
+  spec.date_hi = hi;
+  spec.root_dir = kHiveRoot;
+  spec.r = 0.043;
+  std::vector<CorpusBoard> boards;
+  const Result<OpraBatchResult> batch = load_opra_daterange(spec);
+  if (!batch.has_value()) {
+    return boards; // malformed spec -> treat as no data (test SKIPs)
+  }
+  for (const OpraBatchEntry &e : batch->entries) {
+    if (e.panel.has_value()) {
+      boards.push_back(corpus_board_from_opra(e.date, e.symbol, *e.panel));
+    }
+  }
+  return boards;
+}
+
+[[nodiscard]] std::size_t count_distinct_dates(const std::vector<CorpusBoard> &boards) {
+  std::vector<std::string> d;
+  for (const CorpusBoard &b : boards) {
+    if (std::find(d.begin(), d.end(), b.date) == d.end()) {
+      d.push_back(b.date);
+    }
+  }
+  return d.size();
+}
+
+} // namespace fc
+
+// Deterministic core gate (no hive, synthetic boards that reliably fit): the
+// cell-aware resume mechanism — run 1 fits every cell, run 2 fits ZERO and finds
+// all present. Runs everywhere (no GTEST_SKIP).
+TEST(SurfaceDbPopulate, UniverseStreamingIdempotentSynthetic) {
+  const auto root = test_root("universe_synth");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  const std::vector<CorpusBoard> boards = make_boards(); // AAA,BBB x kDate0,kDate1 = 4
+  UniversePopulateSpec spec;
+  spec.index_symbol = ""; // no index pin — let the auto-selector fit both
+  spec.preset = FitPreset::Fast;
+  spec.fit_workers = 0;
+
+  auto cov1 = populate_universe_streaming(*db, boards, spec);
+  ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+  EXPECT_EQ(cov1->cells_loaded, 4u);
+  EXPECT_EQ(cov1->cells_to_fit, 4u);
+  EXPECT_EQ(cov1->cells_ok, 4u) << "synthetic boards must all fit";
+  EXPECT_EQ(cov1->cells_failed, 0u);
+  EXPECT_EQ(cov1->dates_written, 2u);
+
+  auto cov2 = populate_universe_streaming(*db, boards, spec);
+  ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
+  EXPECT_EQ(cov2->cells_to_fit, 0u) << "idempotent: nothing new to fit";
+  EXPECT_EQ(cov2->cells_already_present, 4u);
+  EXPECT_EQ(cov2->dates_written, 0u);
+  EXPECT_EQ(cov2->dates_skipped_complete, 2u);
+
+  // Round-trip every produced surface through the zero-copy view.
+  std::size_t n_checked = 0;
+  for (const CorpusBoard &b : boards) {
+    auto owned = db->load_surface(b.date, b.symbol);
+    ASSERT_TRUE(owned.has_value()) << (owned ? "" : owned.error().to_string());
+    auto loaded = db->map_surface(b.date, b.symbol);
+    ASSERT_TRUE(loaded.has_value()) << (loaded ? "" : loaded.error().to_string());
+    expect_view_matches_reconstruct(**loaded, *owned);
+    ++n_checked;
+  }
+  EXPECT_EQ(n_checked, 4u);
+}
+
+// Main F-c gate: fit the universe into a SurfaceDb, prove idempotent resume (second
+// run fits ZERO), coverage accounting, and that every produced surface round-trips
+// through the zero-copy map_surface view bit-exactly (reuses the F-a machinery).
+TEST(SurfaceDbPopulate, UniverseStreamingResumeOverRealHive) {
+  // Single trading day + reliably-fitting, cleanly-loading large caps (no SPY: the
+  // dense-pinned index leg legitimately fails admission on some real snapshots; no
+  // XOM: it also fails on this day — both are logged skips, not test flakes). This
+  // keeps the idempotency accounting deterministic on live data. index_symbol="" so
+  // every symbol uses the auto-selector (which fits these penny-dense names).
+  const std::vector<std::string> symbols{"AAPL", "GOOGL", "NVDA"};
+  const std::vector<CorpusBoard> boards = fc::load_hive_boards(symbols, "2026-01-02", "2026-01-02");
+  if (boards.empty()) {
+    GTEST_SKIP() << "OPRA hive not found under " << fc::kHiveRoot;
+  }
+  const std::size_t n = boards.size();
+
+  const auto root = test_root("universe_resume");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  UniversePopulateSpec spec;
+  spec.index_symbol = ""; // no index pin
+  spec.preset = FitPreset::Fast;
+  spec.fit_workers = 0;
+
+  // ── Run 1: cold populate. Every loaded cell is NEW work. ──
+  auto cov1 = populate_universe_streaming(*db, boards, spec);
+  ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+  EXPECT_EQ(cov1->cells_loaded, n);
+  EXPECT_EQ(cov1->cells_to_fit, n);
+  EXPECT_EQ(cov1->cells_already_present, 0u);
+  EXPECT_EQ(cov1->cells_ok + cov1->cells_failed, n);
+  EXPECT_GT(cov1->cells_ok, 0u) << "no real board fit — check the hive/preset";
+  std::printf("[F-c universe] run1 loaded=%u to_fit=%u ok=%u failed=%u dates_written=%u\n",
+              cov1->cells_loaded, cov1->cells_to_fit, cov1->cells_ok, cov1->cells_failed,
+              cov1->dates_written);
+
+  // ── Run 2: idempotent resume. Every SUCCESSFUL cell is found present; only the
+  //    cells that FAILED to fit are re-attempted (a failed cell is never in the db,
+  //    so a resume legitimately retries it). This is the exact idempotency invariant. ──
+  auto cov2 = populate_universe_streaming(*db, boards, spec);
+  ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
+  EXPECT_EQ(cov2->cells_already_present, cov1->cells_ok) << "successes must resume as present";
+  EXPECT_EQ(cov2->cells_to_fit, cov1->cells_failed) << "only failures are retried";
+  if (cov1->cells_failed == 0u) {
+    EXPECT_EQ(cov2->dates_written, 0u); // all cells fit -> nothing to rewrite -> true no-op
+  }
+
+  // ── Every produced surface round-trips through the zero-copy view bit-exactly. ──
+  std::size_t n_checked = 0;
+  for (const CorpusBoard &b : boards) {
+    auto owned = db->load_surface(b.date, b.symbol);
+    if (!owned.has_value()) {
+      continue; // a cell that failed to fit is absent — accounted by cells_failed
+    }
+    auto loaded = db->map_surface(b.date, b.symbol);
+    ASSERT_TRUE(loaded.has_value()) << (loaded ? "" : loaded.error().to_string());
+    expect_view_matches_reconstruct(**loaded, *owned);
+    ++n_checked;
+  }
+  EXPECT_EQ(n_checked, cov1->cells_ok);
+  EXPECT_GT(n_checked, 0u);
+}
+
+// Cell-aware incremental resume: populate a SUBSET of a date, then re-run with the
+// full set — only the newly-arrived symbol is NEW work; the already-present cells
+// are re-fit by the whole-date rewrite (never dropped), and the new one lands.
+TEST(SurfaceDbPopulate, UniverseStreamingCellAwareIncrementalResume) {
+  // GOOGL is the newly-arrived cell (all three fit + load cleanly on this day; no
+  // SPY, whose dense-pinned fit fails admission).
+  const std::vector<CorpusBoard> sub = fc::load_hive_boards({"AAPL", "NVDA"}, "2026-01-02", "2026-01-02");
+  const std::vector<CorpusBoard> full =
+      fc::load_hive_boards({"AAPL", "NVDA", "GOOGL"}, "2026-01-02", "2026-01-02");
+  if (sub.size() != 2u || full.size() != 3u) {
+    GTEST_SKIP() << "OPRA hive (AAPL/NVDA/GOOGL 2026-01-02) not fully available under "
+                 << fc::kHiveRoot;
+  }
+
+  const auto root = test_root("universe_incremental");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  UniversePopulateSpec spec;
+  spec.index_symbol = ""; // no index pin
+  spec.preset = FitPreset::Fast;
+  spec.fit_workers = 0;
+
+  auto cov_a = populate_universe_streaming(*db, sub, spec);
+  ASSERT_TRUE(cov_a.has_value()) << (cov_a ? "" : cov_a.error().to_string());
+  EXPECT_EQ(cov_a->cells_to_fit, 2u);
+  EXPECT_EQ(cov_a->dates_written, 1u);
+  ASSERT_EQ(cov_a->cells_failed, 0u) << "AAPL/NVDA must fit on this day";
+
+  // GOOGL is the one full-set symbol not in the subset (the newly-arrived cell).
+  auto cov_b = populate_universe_streaming(*db, full, spec);
+  ASSERT_TRUE(cov_b.has_value()) << (cov_b ? "" : cov_b.error().to_string());
+  EXPECT_EQ(cov_b->cells_to_fit, 1u);        // only GOOGL is new work
+  EXPECT_EQ(cov_b->cells_refit, 2u);         // AAPL/NVDA re-fit by the same-date rewrite
+  EXPECT_EQ(cov_b->dates_written, 1u);       // the one date is rewritten
+  EXPECT_EQ(cov_b->dates_skipped_complete, 0u);
+
+  // The newly-arrived symbol (GOOGL) is now present and round-trips through the view.
+  auto owned = db->load_surface("2026-01-02", "GOOGL");
+  ASSERT_TRUE(owned.has_value()) << (owned ? "" : owned.error().to_string());
+  auto loaded = db->map_surface("2026-01-02", "GOOGL");
+  ASSERT_TRUE(loaded.has_value()) << (loaded ? "" : loaded.error().to_string());
+  expect_view_matches_reconstruct(**loaded, *owned);
 }
 
 TEST(SurfaceDbPopulate, FitsAndStoresPartitionsPerDate) {

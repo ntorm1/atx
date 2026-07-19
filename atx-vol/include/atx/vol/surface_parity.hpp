@@ -277,6 +277,11 @@ struct ExpiryFitReport {
   std::size_t n_observations{0};
   // Meaningful for PrepFailed / FitFailed: the code the failed step returned.
   atx::core::ErrorCode error{atx::core::ErrorCode::Unknown};
+  // Decision B: provenance of the carry (borrow) used for this expiry. `Solved`
+  // for a directly-inferred carry; a TermStructure* value marks a slice admitted
+  // by the board-level term-structure carry fallback (surfaced so admission can
+  // distinguish a solved from a borrowed carry).
+  CarrySource carry_source{CarrySource::Solved};
 };
 
 // Perf C1: per-fitted-slice de-Am INPUT certification captured by the eSSVI fit
