@@ -37,6 +37,22 @@ struct CanonicalTenor {
   double T{0.0};
 };
 
+// M5 SYNTHETIC-EXPIRY / SETTLEMENT INVARIANT. When `cfg.projected_maturity` is
+// unset the entry expiry is SYNTHETIC — `valuation_ts_ns + round(target_T *
+// kNsPerYear)` — an instant that need NOT coincide with any later snapshot's
+// timestamp. The engine settles an expiring lot ONLY at a snapshot whose ts_ns
+// matches the lot's expiry EXACTLY (run_backtest hard-errors "no exact expiry
+// observation" otherwise — the guard is engine-side and never silent). Under the
+// canonical RollAtHorizon lifecycle a cohort is roll-CLOSED at marks once its
+// residual T falls below `roll_at_T` (= roll_dte), so it is retired BEFORE its
+// synthetic expiry and settlement is never reached. That safety holds only while
+// consecutive snapshots are spaced closer than `roll_at_T`: a clock GAP wider
+// than roll_dte can step a lot from residual-T > roll_at_T straight past its
+// synthetic expiry, skipping the roll window and tripping the engine's exact-ts
+// settlement guard. Keep roll_dte comfortably above the largest expected
+// inter-snapshot gap, or pin an exact projected expiry via `projected_maturity`
+// (which lands on a real snapshot instant) to remove the synthetic-expiry risk.
+
 [[nodiscard]] Result<CanonicalTenor> canonical_tenor(std::int64_t valuation_ts_ns,
                                                      double requested_T) {
   if (!std::isfinite(requested_T) || requested_T <= 0.0) {
@@ -75,6 +91,19 @@ Status DispersionStrategy::on_step_impl(const MarketSnapshot &base, std::size_t 
                                         PortfolioState &book, std::uint64_t &next_lot_id,
                                         const PriceOptions *price_options) {
   last_entry_seeds_.clear();
+  // C1 POINT-IN-TIME UNIVERSE. Re-resolve the basket for THIS step's date before
+  // any sizing so a mid-backtest reconstitution is honored (the next roll rebuilds
+  // vega-flat legs from the fresh membership; a dropped name actually exits — this
+  // is also where C3's removals take effect end-to-end). A resolve failure (e.g. a
+  // date before the first effective block) keeps the last-known-good universe. With
+  // no resolver installed (the frozen ctor) this is a no-op and the run is
+  // bit-identical to pre-C1 — the reproducibility golden is unaffected.
+  if (pit_resolver_) {
+    Result<DispersionUniverse> pit = pit_resolver_(base.ts_ns());
+    if (pit) {
+      universe_ = std::move(*pit);
+    }
+  }
   const LifecycleDecision d = lifecycle_decide(lifecycle_, step_index, book.lots.empty(),
                                                base.ts_ns(), front_expiry_, have_front_);
   if (!d.open) {

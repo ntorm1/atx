@@ -1,7 +1,9 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -47,9 +49,34 @@ struct UniverseRow {
 [[nodiscard]] Result<RunSpec> read_run_spec(const std::filesystem::path &path);
 [[nodiscard]] Status write_resolved_spec(const std::filesystem::path &path, const RunSpec &spec);
 [[nodiscard]] Result<std::vector<UniverseRow>> read_universe(const std::filesystem::path &path);
-[[nodiscard]] std::vector<std::string> all_symbols(std::span<const UniverseRow> rows);
+[[nodiscard]] std::vector<std::string> all_symbols(std::span<const UniverseRow> rows,
+                                                   std::string_view index_symbol = "SPY");
+
+// Point-in-time constituent snapshot effective on `date`. Each `effective_date`
+// block is treated as a FULL vendor-style snapshot: membership is EXACTLY the
+// rows carrying the latest effective_date on/before `date` — so a name present in
+// an earlier block but absent from that latest block has LEFT the basket
+// (removals/reweights are expressible; the basket is not append-only). The index
+// leg is `index_symbol` (default "SPY"), which is never a constituent.
+// @return Unavailable if no block is effective on/before `date`.
 [[nodiscard]] Result<DispersionUniverse> universe_at(std::span<const UniverseRow> rows,
-                                                     std::string_view date);
+                                                     std::string_view date,
+                                                     std::string_view index_symbol = "SPY");
+
+// UTC calendar date ("YYYY-MM-DD") of a nanosecond-since-epoch timestamp, via
+// pure integer civil-from-days arithmetic (no locale / no platform time zone).
+// This is the basis on which a snapshot's `ts_ns()` is matched against a
+// schedule's `effective_date` for point-in-time re-resolution.
+[[nodiscard]] std::string utc_date_from_ns(std::int64_t ts_ns);
+
+// Build a point-in-time universe resolver over an owned `schedule`: given a
+// valuation timestamp (UTC ns) it returns `universe_at(schedule,
+// utc_date_from_ns(ts), index_symbol)`. This is the seam `DispersionStrategy`
+// uses to re-resolve its basket for each backtest step so a mid-window
+// reconstitution is honored (fix C1), instead of freezing day-1 membership.
+[[nodiscard]] std::function<Result<DispersionUniverse>(std::int64_t)>
+make_pit_universe_resolver(std::vector<UniverseRow> schedule, std::string index_symbol = "SPY");
+
 [[nodiscard]] OpraBatchSpec batch_spec(const RunSpec &spec, std::span<const std::string> symbols,
                                        std::string_view date_lo, std::string_view date_hi);
 

@@ -84,7 +84,16 @@ struct ListedReconciliationSnapshot {
 
 struct ListedReconciliationConfig {
   bool strict_model{true};
-  double entry_mark_tolerance{0.0};
+  // M3: RELATIVE tolerance for the entry-mark cross-check. On a roll date the
+  // reconcile route reprices the entry with `PricedSurface::fair_value`, while the
+  // schedule stored `leg.model_mark` from the build route `PricedSurface::evaluate`
+  // — two American-pricing entry points that can differ by a few ULPs on a real
+  // board. The check now allows |fair_value - evaluate| <= tol * max(|a|, |b|, 1),
+  // so a benign 1-ULP route divergence no longer hard-aborts a valid run, while a
+  // genuine economic mismatch (schedule vs archive disagree) is still caught. The
+  // previous float-exact `0.0` was an absolute tolerance; set this to 0.0 to
+  // restore that strict bit-for-bit check.
+  double entry_mark_tolerance{1.0e-12};
 };
 
 // Reprice the exact scheduled contracts, independently join daily raw quotes,
