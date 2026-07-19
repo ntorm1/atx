@@ -14,6 +14,8 @@
 #include "atx/vol/curve_fit.hpp"      // fit_curve_surface, CurveSurfaceReport
 #include "atx/vol/deamer.hpp"         // CarrySource, DeAmOptions
 #include "atx/vol/dividend.hpp"       // hybrid_forward, HybridDivParams
+#include "atx/vol/pricer_fitter.hpp"  // merge_session_failure_context, ValidationDigest
+#include "atx/vol/session.hpp"        // SessionDiagnostics
 #include "atx/vol/surface_parity.hpp" // SurfaceParityInputs, ExpiryFitOutcome
 #include "atx/vol/types.hpp"          // Side
 #include "atx/vol/universe.hpp"       // Underlying, Chain, chain_index
@@ -292,4 +294,49 @@ TEST(CurveFitCarryFallback, ConfidentBoardBitIdenticalRegardlessOfGate) {
       EXPECT_EQ(ga->iv(k), op->iv(k)) << "slice " << si << " k=" << k;
     }
   }
+}
+
+// Stage B (session admission gate). A board whose non-confident expiries were
+// ADMITTED via the term-structure fallback must publish DEGRADED (CarryGap), not
+// be hard-rejected (InsufficientData) — otherwise Decision B would REGRESS thin
+// risk boards from today's Degraded-publish-with-missing-expiries to a full
+// reject. A fully-confident board is untouched, and a genuine carry hole (no
+// fallback) still hard-rejects (fail-closed).
+TEST(CarryFallbackAdmission, FallbackCarryPublishesDegradedNotInsufficientData) {
+  using atx::vol::has_validation_failure;
+  using atx::vol::merge_session_failure_context;
+  using atx::vol::SessionDiagnostics;
+  using atx::vol::ValidationDigest;
+  using atx::vol::ValidationFailure;
+
+  // Fallback-carry board: honest carry_confident=false, but every expiry is
+  // admissible because one was borrowed from the board term structure.
+  SessionDiagnostics fallback;
+  fallback.n_slices = 4;
+  fallback.carry_confident = false;
+  fallback.n_carry_fallback_expiries = 1;
+  fallback.inversion_certified = true; // isolate the carry path
+  ValidationDigest d;
+  merge_session_failure_context(fallback, d);
+  EXPECT_FALSE(has_validation_failure(d.failures, ValidationFailure::InsufficientData));
+  EXPECT_TRUE(has_validation_failure(d.failures, ValidationFailure::CarryGap));
+
+  // Fully-confident board: no InsufficientData, no fallback CarryGap.
+  SessionDiagnostics confident;
+  confident.n_slices = 4;
+  confident.carry_confident = true;
+  confident.inversion_certified = true;
+  ValidationDigest dc;
+  merge_session_failure_context(confident, dc);
+  EXPECT_TRUE(dc.admitted());
+
+  // Genuine carry hole (not confident, NO fallback): still hard-rejects.
+  SessionDiagnostics hole;
+  hole.n_slices = 4;
+  hole.carry_confident = false;
+  hole.n_carry_fallback_expiries = 0;
+  hole.inversion_certified = true;
+  ValidationDigest dh;
+  merge_session_failure_context(hole, dh);
+  EXPECT_TRUE(has_validation_failure(dh.failures, ValidationFailure::InsufficientData));
 }

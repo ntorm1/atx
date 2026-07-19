@@ -76,17 +76,25 @@ risk_validation_config(FitQualityMode quality_mode) noexcept;
 // directly testable; strictly OR-only / additive-only either way.
 void merge_session_failure_context(const SessionDiagnostics &diagnostics,
                                    ValidationDigest &digest) noexcept {
-  if (!diagnostics.carry_confident) {
+  // Decision B: a term-structure-fallback carry is honestly NOT confident, but a
+  // board whose only carry shortfall is fallback-admitted expiries is still
+  // ADMISSIBLE — it publishes Degraded via CarryGap below, NOT a hard reject.
+  // InsufficientData is reserved for a genuine carry deficiency: a board that is
+  // not confident AND has no fallback carry to account for the shortfall (e.g. a
+  // committed slice with no usable carry at all). A fully-confident board keeps
+  // its exact prior behaviour (n_carry_fallback_expiries == 0).
+  if (!diagnostics.carry_confident && diagnostics.n_carry_fallback_expiries == 0) {
     digest.failures |= ValidationFailure::InsufficientData;
   }
   if (!diagnostics.inversion_certified) {
     digest.failures |= ValidationFailure::InversionResidual;
   }
-  if (diagnostics.n_carry_skipped_expiries > 0 || diagnostics.n_audit_starved_expiries > 0) {
-    // §5.2: expiries dropped by the carry gate or starved by the fit audit
-    // must be surfaced. CarryGap is the one publish-with-Degraded reason
-    // (decide_risk_surface_admission); combined with any other failure it
-    // still rejects.
+  if (diagnostics.n_carry_skipped_expiries > 0 || diagnostics.n_audit_starved_expiries > 0 ||
+      diagnostics.n_carry_fallback_expiries > 0) {
+    // §5.2 + Decision B: expiries dropped by the carry gate, starved by the fit
+    // audit, OR admitted with a term-structure-fallback carry all surface as the
+    // one publish-with-Degraded reason. CarryGap (decide_risk_surface_admission);
+    // combined with any other failure it still rejects.
     digest.failures |= ValidationFailure::CarryGap;
   }
   if (diagnostics.n_price_bound_violations > 0) {
