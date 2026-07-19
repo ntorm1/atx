@@ -9,6 +9,8 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
+#include <utility>
 #include <bit>
 #include <cmath>
 #include <cstdint>
@@ -119,6 +121,96 @@ TEST(ZcViewParity, RealArchiveReconstructVsMapAgreeOnResolution) {
   EXPECT_EQ(qeff_mismatch, 0u);
   EXPECT_EQ(rate_mismatch, 0u);
   EXPECT_EQ(sigma_mismatch, 0u);
+}
+
+// REGRESSION GUARD for the WS-ZC1 seed fix.
+//
+// `PricedSurface::full_greek_seed` produces its seed through a ONE-ELEMENT
+// `evaluate_batch` so the seed rides the same LANED analytic-Greek kernel the batch
+// uses. `PricedSurfaceView`'s was left on the scalar `evaluate()`, which was invisible
+// until the replay path started borrowing views — then seeds were solved SCALAR inside
+// a LANED book and `seeded == fresh` silently degraded from bit-identity to the
+// ~1e-13 AVX2-vs-scalar delta, which the P&L amplified to ~1e-8 in run output.
+//
+// This asserts BIT-identity between each type's `full_greek_seed` and its OWN
+// one-element `evaluate_batch`. Putting either type's seed back on the scalar route
+// fails this immediately, on real archive surfaces and on both Greek routes.
+TEST(ZcViewParity, FullGreekSeedRidesTheBatchSeamOnBothSurfaceTypes) {
+  if (!std::filesystem::exists(kArchive)) {
+    GTEST_SKIP() << "reference archive not present";
+  }
+  auto arch = SurfaceArchiveV2::open_mapped(kArchive);
+  ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
+
+  using EF = PricedSurface::EvalField;
+  constexpr EF kSeedFields = EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder;
+
+  // One element through evaluate_batch — exactly what a correct seed must reproduce.
+  const auto batch_of_one = [&](const auto &surface, double K, double T, Side side,
+                                bool analytic) {
+    std::array<double, 1> Ks{K};
+    std::array<double, 1> Ts{T};
+    std::array<Side, 1> sides{side};
+    std::array<double, 1> iv{};
+    std::array<double, 1> px{};
+    std::array<AmericanGreeks, 1> gk{};
+    std::array<atx::vol::Status, 1> st{};
+    const auto rc = surface.evaluate_batch(Ks, Ts, sides, kSeedFields, analytic,
+                                           PricedSurface::EvaluationSoA{iv, px, gk, st, {}, {}});
+    EXPECT_TRUE(rc.has_value());
+    return std::pair{iv[0], gk[0]};
+  };
+
+  const auto gk_eq = [](const AmericanGreeks &a, const AmericanGreeks &b) {
+    return bits_equal(a.delta, b.delta) && bits_equal(a.gamma, b.gamma) &&
+           bits_equal(a.vega, b.vega) && bits_equal(a.theta, b.theta) &&
+           bits_equal(a.rho, b.rho) && bits_equal(a.vanna, b.vanna) &&
+           bits_equal(a.volga, b.volga) && bits_equal(a.charm, b.charm);
+  };
+
+  std::size_t checked = 0;
+  for (const auto &e : arch->directory()) {
+    auto owned = arch->reconstruct_entry(e);
+    ASSERT_TRUE(owned.has_value());
+    auto borrowed = arch->map_entry(e);
+    ASSERT_TRUE(borrowed.has_value());
+    const PricedSurface &a = owned->surface;
+    const PricedSurfaceView &v = borrowed->view;
+
+    for (const double T : {0.0833, 0.25}) {
+      const double f = a.forward_at(T);
+      if (!(f > 0.0)) {
+        continue;
+      }
+      for (const double m : {0.9, 1.0, 1.1}) {
+        for (const Side side : {Side::Call, Side::Put}) {
+          for (const bool analytic : {true, false}) {
+            const double K = f * m;
+            ++checked;
+            const auto seed_a = a.full_greek_seed(K, T, side, analytic);
+            const auto seed_v = v.full_greek_seed(K, T, side, analytic);
+            ASSERT_EQ(seed_a.has_value(), seed_v.has_value());
+            if (!seed_a.has_value()) {
+              continue;
+            }
+            const auto [biv_a, bgk_a] = batch_of_one(a, K, T, side, analytic);
+            const auto [biv_v, bgk_v] = batch_of_one(v, K, T, side, analytic);
+
+            // Each type's seed == its OWN batch (neither may take a second route).
+            EXPECT_TRUE(bits_equal(seed_a->iv(), biv_a)) << "owned seed iv off batch seam";
+            EXPECT_TRUE(gk_eq(seed_a->greeks(), bgk_a)) << "owned seed greeks off batch seam";
+            EXPECT_TRUE(bits_equal(seed_v->iv(), biv_v)) << "view seed iv off batch seam";
+            EXPECT_TRUE(gk_eq(seed_v->greeks(), bgk_v)) << "view seed greeks off batch seam";
+            // ...and therefore owned seed == borrowed seed.
+            EXPECT_TRUE(gk_eq(seed_a->greeks(), seed_v->greeks()))
+                << "owned and borrowed seeds disagree";
+          }
+        }
+      }
+    }
+  }
+  EXPECT_GT(checked, 0u);
+  std::printf("[zc-seed] seeds checked=%zu\n", checked);
 }
 
 // Same two objects, but through the HOT batch seam the pricer actually uses.

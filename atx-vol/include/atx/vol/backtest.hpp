@@ -85,6 +85,35 @@ private:
   std::vector<SnapshotRef> refs_;
 };
 
+// ── Archive backing (WS-ZC1) ────────────────────────────────────────────────
+//
+// How a snapshot that BORROWS its surfaces obtains the archive bytes those views
+// read. It is a statement about the FILE'S LIFECYCLE, made by the caller, because
+// only the caller knows it — not something the loader can infer.
+//
+//   Mutable (default, safe): map, copy once into an owned buffer, DROP the mapping.
+//     For any archive something may still rewrite, evict, or delete — above all the
+//     `SurfaceDb` store path (write -> reopen -> rewrite/evict/delete). A resident
+//     `atx::tsdb::Mapping` keeps the file open, and on Windows those operations then
+//     fail with a sharing violation; commit 8627ccb reverted exactly that regression
+//     (~22 SurfaceDb/SurfaceDbPopulate tests) and `SnapshotCacheEvictsStaleEntry-
+//     WhenArchiveRewrittenSameLength` pins it. This backing costs a whole-archive
+//     copy, which scales with archive BYTES while the reconstruction it replaces
+//     scales with SURFACES — so it is a net loss on short runs.
+//
+//   Sealed: keep the mapping for the snapshot's lifetime — no copy at all. ONLY for
+//     an immutable, read-only corpus: a historical replay, where nothing rewrites or
+//     deletes a partition mid-run. This is where the WS-ZC1 win actually lives
+//     (~9x on snapshot_load); it is opt-in precisely because it pins the file.
+//
+// Choosing Sealed for a partition the store may mutate does not corrupt data — the
+// mapped bytes stay coherent — but it WILL make the store's rewrite/delete fail. Ask
+// for Sealed only when the corpus is genuinely read-only for the snapshot's lifetime.
+enum class ArchiveBacking : std::uint8_t {
+  Mutable = 0,
+  Sealed = 1,
+};
+
 // ── Snapshot loader ─────────────────────────────────────────────────────────
 
 // A single loaded market date: owns the archive's `PricedSurface`s and their
@@ -107,10 +136,15 @@ public:
   // resolves every archived name regardless. NB: while the pricer's SurfaceSet takes
   // `const PricedSurface*` (seam §6), the subset is reconstructed owned, not served
   // zero-copy — the win is the reduced surface count, not zero-allocation.
+  // `backing` states this archive's lifecycle (see ArchiveBacking). It affects only
+  // HOW the borrowed bytes are obtained — the resulting snapshot is byte-identical
+  // either way. Defaults to Mutable: safe for every caller, including the SurfaceDb
+  // store path; a read-only replay corpus opts into Sealed.
   [[nodiscard]] static Result<MarketSnapshot>
   load(std::string_view archive_path,
        QueryPricingTier query_pricing_tier = QueryPricingTier::LegacyCompatible,
-       std::span<const std::uint32_t> referenced_uids = {});
+       std::span<const std::uint32_t> referenced_uids = {},
+       ArchiveBacking backing = ArchiveBacking::Mutable);
 
   MarketSnapshot(MarketSnapshot &&) noexcept = default;
   MarketSnapshot &operator=(MarketSnapshot &&) noexcept = default;
@@ -256,6 +290,13 @@ public:
   [[nodiscard]] Result<std::shared_ptr<const MarketSnapshot>>
   load(std::string_view archive_path, QueryPricingTier query_pricing_tier,
        QueryCacheBuildPolicy build_policy);
+  // Declare the lifecycle of the archives this cache will load (see ArchiveBacking).
+  // Applies to loads issued AFTER this call; the backing is part of the cache key, so
+  // an entry loaded under one backing is never served under the other. Defaults to
+  // Mutable — a caller must opt in to Sealed, and only for a read-only corpus.
+  void set_archive_backing(ArchiveBacking backing) noexcept;
+  [[nodiscard]] ArchiveBacking archive_backing() const noexcept;
+
   [[nodiscard]] SnapshotCacheStats stats() const noexcept;
   void clear();
 

@@ -1144,7 +1144,8 @@ void MarketSnapshot::reset_open_count() noexcept { g_open_count.store(0); }
 
 Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
                                             QueryPricingTier query_pricing_tier,
-                                            std::span<const std::uint32_t> referenced_uids) {
+                                            std::span<const std::uint32_t> referenced_uids,
+                                            ArchiveBacking backing) {
   ATX_VOL_PROFILE_SCOPE(SnapshotLoad);
   // WS-ZC1: which BACKING the borrowed views read from. `open_mapped` is demand-paged
   // and copy-free, but on Windows a file with an active mapped section CANNOT be
@@ -1196,27 +1197,36 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
   auto arch = [&]() {
     ATX_VOL_PROFILE_SCOPE(ArchiveOpen);
     if (borrow) {
-      // MEASUREMENT LEVER (see the backing note above): `ATX_VOL_ZC_BACKING=map` keeps
-      // the mapping alive instead of copying. That is materially faster — the copy is
-      // proportional to archive BYTES while the reconstruction it replaces is
-      // proportional to SURFACES, so the copy's cost overtakes the saving as a run
-      // grows — but it blocks atomic partition republish for the snapshot's lifetime.
-      // `copy` (the default) is the safe choice; this switch exists so the trade-off
-      // can be re-measured rather than taken on description.
-      static const bool backing_is_map = []() {
+      // The CALLER declares the archive's lifecycle; the loader never guesses.
+      // `ATX_VOL_ZC_BACKING=map|copy` is an override/escape hatch for measurement and
+      // for forcing either backing without a rebuild. Read once, so it cannot make a
+      // run non-deterministic.
+      static const std::optional<ArchiveBacking> backing_override = []() {
+        auto parse = [](std::string_view v) -> std::optional<ArchiveBacking> {
+          if (v == "map") {
+            return ArchiveBacking::Sealed;
+          }
+          if (v == "copy") {
+            return ArchiveBacking::Mutable;
+          }
+          return std::nullopt;
+        };
 #if defined(_WIN32)
         std::size_t sz = 0;
         char buf[8] = {};
         if (getenv_s(&sz, buf, sizeof(buf), "ATX_VOL_ZC_BACKING") != 0 || sz == 0) {
-          return false;
+          return std::optional<ArchiveBacking>{};
         }
-        return std::string_view{buf} == "map";
+        return parse(std::string_view{buf});
 #else
         const char *e = std::getenv("ATX_VOL_ZC_BACKING");
-        return e != nullptr && std::string_view{e} == "map";
+        return e != nullptr ? parse(std::string_view{e}) : std::optional<ArchiveBacking>{};
 #endif
       }();
-      if (backing_is_map) {
+      const ArchiveBacking effective = backing_override.value_or(backing);
+      if (effective == ArchiveBacking::Sealed) {
+        // Read-only corpus: keep the mapping, copy nothing. No section is ever closed,
+        // so this must not be used for a partition the store may rewrite or delete.
         return SurfaceArchiveV2::open_mapped(archive_path);
       }
       // Map + one memcpy into an owned buffer, mapping dropped (see the note above).
@@ -1569,6 +1579,12 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
       cfg.snapshot_cache
           ? cfg.snapshot_cache
           : std::make_shared<SnapshotCache>(kPrivateSnapshotCacheCapacity, std::move(book_uids));
+  // WS-ZC1: a backtest replays a SEALED corpus — the clock's partitions are historical
+  // and nothing in a run rewrites, evicts, or deletes them — so its snapshots may keep
+  // the archive mapped and skip the whole-archive copy entirely. This is the explicit
+  // caller declaration ArchiveBacking documents; the store path never makes it, so the
+  // SurfaceDb write -> reopen -> rewrite/delete cycle keeps its buffered backing.
+  snapshot_cache->set_archive_backing(ArchiveBacking::Sealed);
   auto base_res = snapshot_cache->load(refs[0].archive_path, cfg.query_pricing_tier,
                                        cfg.query_cache_build_policy);
   if (!base_res) {
@@ -1973,6 +1989,9 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
   const std::shared_ptr<SnapshotCache> snapshot_cache =
       cfg.snapshot_cache ? cfg.snapshot_cache
                          : std::make_shared<SnapshotCache>(kPrivateSnapshotCacheCapacity);
+  // WS-ZC1: a backtest replays a SEALED corpus — see the note on the fixed-book
+  // overload above.
+  snapshot_cache->set_archive_backing(ArchiveBacking::Sealed);
   auto base_res = snapshot_cache->load(refs[0].archive_path, cfg.query_pricing_tier,
                                        cfg.query_cache_build_policy);
   if (!base_res) {

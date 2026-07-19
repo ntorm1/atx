@@ -32,6 +32,9 @@ namespace {
 struct SnapshotCacheKey {
   std::string path;
   QueryPricingTier query_pricing_tier{QueryPricingTier::LegacyCompatible};
+  // WS-ZC1: the backing is part of the identity so an entry loaded as Sealed (holding
+  // a mapping) is never handed to a caller that asked for Mutable, and vice versa.
+  ArchiveBacking backing{ArchiveBacking::Mutable};
 
   [[nodiscard]] bool operator==(const SnapshotCacheKey &) const noexcept = default;
 };
@@ -40,14 +43,16 @@ struct SnapshotCacheKeyHash {
   [[nodiscard]] std::size_t operator()(const SnapshotCacheKey &key) const noexcept {
     const std::size_t path_hash = std::hash<std::string>{}(key.path);
     const std::size_t tier_hash = static_cast<std::size_t>(key.query_pricing_tier);
-    return path_hash ^ (tier_hash << 1u);
+    const std::size_t backing_hash = static_cast<std::size_t>(key.backing);
+    return path_hash ^ (tier_hash << 1u) ^ (backing_hash << 5u);
   }
 };
 
 [[nodiscard]] SnapshotCacheKey cache_key(std::string_view path,
-                                         QueryPricingTier query_pricing_tier) {
+                                         QueryPricingTier query_pricing_tier,
+                                         ArchiveBacking backing) {
   return SnapshotCacheKey{std::filesystem::path{path}.lexically_normal().string(),
-                          query_pricing_tier};
+                          query_pricing_tier, backing};
 }
 
 [[nodiscard]] bool is_fast_tier(QueryPricingTier tier) noexcept {
@@ -66,20 +71,24 @@ struct SnapshotCacheKeyHash {
 using UidSubset = std::shared_ptr<const std::vector<std::uint32_t>>;
 
 [[nodiscard]] SnapshotResult load_snapshot(std::string path, QueryPricingTier query_pricing_tier,
-                                           const UidSubset &referenced_uids) {
+                                           const UidSubset &referenced_uids,
+                                           ArchiveBacking backing) {
   const std::span<const std::uint32_t> subset =
       referenced_uids ? std::span<const std::uint32_t>{*referenced_uids}
                       : std::span<const std::uint32_t>{};
-  ATX_TRY(MarketSnapshot snapshot, MarketSnapshot::load(path, query_pricing_tier, subset));
+  ATX_TRY(MarketSnapshot snapshot,
+          MarketSnapshot::load(path, query_pricing_tier, subset, backing));
   return std::make_shared<const MarketSnapshot>(std::move(snapshot));
 }
 
 [[nodiscard]] std::shared_future<SnapshotResult> start_load(const std::string &path,
                                                             QueryPricingTier query_pricing_tier,
-                                                            UidSubset referenced_uids) {
+                                                            UidSubset referenced_uids,
+                                                            ArchiveBacking backing) {
   return std::async(std::launch::async,
-                    [path, query_pricing_tier, referenced_uids = std::move(referenced_uids)] {
-                      return load_snapshot(path, query_pricing_tier, referenced_uids);
+                    [path, query_pricing_tier, referenced_uids = std::move(referenced_uids),
+                     backing] {
+                      return load_snapshot(path, query_pricing_tier, referenced_uids, backing);
                     })
       .share();
 }
@@ -126,6 +135,10 @@ struct SnapshotCache::Impl {
   explicit Impl(std::optional<std::size_t> max_entries_in = std::nullopt,
                 UidSubset referenced_uids_in = nullptr)
       : max_entries{max_entries_in}, referenced_uids{std::move(referenced_uids_in)} {}
+
+  // WS-ZC1: the archive lifecycle this cache's loads declare. Mutable by default —
+  // Sealed is opt-in and only valid for a read-only corpus.
+  ArchiveBacking backing{ArchiveBacking::Mutable};
 
   using EntryMap = std::unordered_map<SnapshotCacheKey, Entry, SnapshotCacheKeyHash>;
 
@@ -186,7 +199,7 @@ struct SnapshotCache::Impl {
     retained_entries.store(static_cast<std::uint64_t>(entries.size()), std::memory_order_relaxed);
   }
 
-  std::mutex mutex;
+  mutable std::mutex mutex;
   EntryMap entries;
   std::list<SnapshotCacheKey> recency; // least-recently-used at front
   std::optional<std::size_t> max_entries;
@@ -217,6 +230,16 @@ SnapshotCache::SnapshotCache(std::size_t max_retained_entries,
               : std::make_shared<const std::vector<std::uint32_t>>(std::move(referenced_uids)))} {}
 SnapshotCache::~SnapshotCache() = default;
 
+void SnapshotCache::set_archive_backing(ArchiveBacking backing) noexcept {
+  std::lock_guard lock{impl_->mutex};
+  impl_->backing = backing;
+}
+
+ArchiveBacking SnapshotCache::archive_backing() const noexcept {
+  std::lock_guard lock{impl_->mutex};
+  return impl_->backing;
+}
+
 void SnapshotCache::prefetch(std::string archive_path, QueryPricingTier query_pricing_tier) {
   (void)prefetch(std::move(archive_path), query_pricing_tier, QueryCacheBuildPolicy::Eager);
 }
@@ -227,7 +250,7 @@ Status SnapshotCache::prefetch(std::string archive_path, QueryPricingTier query_
     return atx::core::Err(ErrorCode::InvalidArgument,
                           "SnapshotCache::prefetch: invalid query-cache build policy");
   }
-  const SnapshotCacheKey requested_key = cache_key(archive_path, query_pricing_tier);
+  const SnapshotCacheKey requested_key = cache_key(archive_path, query_pricing_tier, impl_->backing);
   // R-19: read the archive's content identity before the lock (small header read).
   const ArchiveContentIdentity identity = current_identity(requested_key.path);
   std::lock_guard lock{impl_->mutex};
@@ -255,7 +278,7 @@ Status SnapshotCache::prefetch(std::string archive_path, QueryPricingTier query_
   impl_->entries.emplace(
       effective_key,
       Impl::Entry{start_load(effective_key.path, effective_key.query_pricing_tier,
-                             impl_->referenced_uids),
+                             impl_->referenced_uids, effective_key.backing),
                   recency, 0u, impl_->next_generation++, identity});
   if (is_fast_tier(effective_key.query_pricing_tier)) {
     impl_->fast_build_loads.fetch_add(1u, std::memory_order_relaxed);
@@ -278,7 +301,7 @@ Result<SnapshotPtr> SnapshotCache::load(std::string_view archive_path,
     return atx::core::Err(ErrorCode::InvalidArgument,
                           "SnapshotCache::load: invalid query-cache build policy");
   }
-  const SnapshotCacheKey requested_key = cache_key(archive_path, query_pricing_tier);
+  const SnapshotCacheKey requested_key = cache_key(archive_path, query_pricing_tier, impl_->backing);
   // R-19: read the archive's content identity before the lock (small header read).
   const ArchiveContentIdentity identity = current_identity(requested_key.path);
   SnapshotCacheKey effective_key = requested_key;
@@ -305,7 +328,7 @@ Result<SnapshotPtr> SnapshotCache::load(std::string_view archive_path,
     } else {
       impl_->loads.fetch_add(1u, std::memory_order_relaxed);
       future = start_load(effective_key.path, effective_key.query_pricing_tier,
-                          impl_->referenced_uids);
+                          impl_->referenced_uids, effective_key.backing);
       impl_->recency.push_back(effective_key);
       const auto recency = std::prev(impl_->recency.end());
       generation = impl_->next_generation++;
