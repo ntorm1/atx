@@ -19,6 +19,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -459,9 +460,21 @@ private:
 // bit-identical to pre-S1-3.
 class DispersionStrategy : public IStrategy {
 public:
+  // C1 POINT-IN-TIME UNIVERSE. `pit_resolver`, when set, is invoked at the top of
+  // every `on_step` with the step snapshot's `ts_ns()` and must return the
+  // constituent basket effective on THAT date; the strategy adopts it before the
+  // build so a mid-backtest reconstitution (membership add/drop/reweight) is
+  // honored at the next roll instead of freezing day-1 membership for the whole
+  // run. `universe` is the seed/fallback used before the first successful resolve
+  // and whenever a resolve fails (e.g. a date before the first effective block).
+  // The DEFAULT (empty resolver) leaves the universe frozen — behaviour, and the
+  // dispersion golden, are byte-identical to pre-C1. Typically built from a
+  // schedule via `make_pit_universe_resolver` (dispersion_workflow.hpp).
   DispersionStrategy(DispersionUniverse universe, DispersionConfig cfg,
-                     LifecycleSpec lifecycle = {}, HedgeSpec hedge = {})
-      : universe_{std::move(universe)}, cfg_{cfg}, lifecycle_{lifecycle}, hedge_{hedge} {}
+                     LifecycleSpec lifecycle = {}, HedgeSpec hedge = {},
+                     std::function<Result<DispersionUniverse>(std::int64_t)> pit_resolver = {})
+      : universe_{std::move(universe)}, cfg_{cfg}, lifecycle_{lifecycle}, hedge_{hedge},
+        pit_resolver_{std::move(pit_resolver)} {}
 
   Status on_step(const MarketSnapshot &base, std::size_t step_index, PortfolioState &book,
                  std::uint64_t &next_lot_id) override;
@@ -493,6 +506,9 @@ private:
   DispersionConfig cfg_;
   LifecycleSpec lifecycle_;
   HedgeSpec hedge_{};
+  // C1: point-in-time basket resolver keyed on the step snapshot's ts_ns. Empty =>
+  // frozen universe (pre-C1 behaviour, bit-identical golden).
+  std::function<Result<DispersionUniverse>(std::int64_t)> pit_resolver_{};
   std::uint32_t cohort_counter_{0};
   std::int64_t front_expiry_{0};
   bool have_front_{false};
