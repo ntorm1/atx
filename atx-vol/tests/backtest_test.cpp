@@ -442,6 +442,10 @@ void expect_result_bit_identical(const BacktestResult &a, const BacktestResult &
       EXPECT_TRUE(bits_equal((*va)[i], (*vb)[i])) << i;
     }
   }
+  ASSERT_EQ(a.step_pnl_total.size(), b.step_pnl_total.size());
+  for (std::size_t k = 0; k < a.step_pnl_total.size(); ++k) {
+    EXPECT_TRUE(bits_equal(a.step_pnl_total[k], b.step_pnl_total[k])) << k;
+  }
 }
 
 } // namespace
@@ -1809,7 +1813,40 @@ TEST(Backtest, Granularity) {
   ASSERT_TRUE(rc.has_value()) << rc.error().to_string();
   EXPECT_LT(rc->size(), rf->size()); // coarse genuinely downsampled
 
-  // Every coarse row matches the fine row at the same timestamp, bit-for-bit.
+  // The FULL-RESOLUTION per-step series is retained at any stride and is bit-for-bit
+  // identical between the fine and coarse runs — this is what makes the downsampled
+  // risk metrics stride-invariant.
+  ASSERT_EQ(rc->step_pnl_total.size(), rf->step_pnl_total.size());
+  for (std::size_t k = 0; k < rf->step_pnl_total.size(); ++k) {
+    EXPECT_TRUE(bits_equal(rc->step_pnl_total[k], rf->step_pnl_total[k])) << k;
+  }
+
+  const auto col_sum = [](const std::vector<double> &v) {
+    double s = 0.0;
+    for (const double x : v) {
+      s += x;
+    }
+    return s;
+  };
+  // Column TOTALS survive downsampling: block-summing the skipped steps into the
+  // recorded rows keeps Σ column == the fine run's Σ (attribution totals exact).
+  const double tol = 1e-9;
+  EXPECT_NEAR(col_sum(rc->pnl_total), col_sum(rf->pnl_total),
+              tol * (std::fabs(col_sum(rf->pnl_total)) + 1.0));
+  EXPECT_NEAR(col_sum(rc->pnl_delta), col_sum(rf->pnl_delta),
+              tol * (std::fabs(col_sum(rf->pnl_delta)) + 1.0));
+  EXPECT_NEAR(col_sum(rc->pnl_theta), col_sum(rf->pnl_theta),
+              tol * (std::fabs(col_sum(rf->pnl_theta)) + 1.0));
+  EXPECT_NEAR(col_sum(rc->pnl_settlement), col_sum(rf->pnl_settlement),
+              tol * (std::fabs(col_sum(rf->pnl_settlement)) + 1.0));
+  // Σ recorded pnl_total reconstructs the final NAV at either stride.
+  EXPECT_NEAR(col_sum(rc->pnl_total), rf->nav.back(),
+              tol * (std::fabs(rf->nav.back()) + 1.0));
+
+  // Every coarse row lands on a fine timestamp; its STATE columns match that fine
+  // row bit-for-bit, and its block-summed pnl_total equals the fine NAV increment
+  // over the block since the previous recorded row.
+  std::size_t prev_fi = 0;
   for (std::size_t j = 0; j < rc->size(); ++j) {
     std::size_t fi = rf->size();
     for (std::size_t k = 0; k < rf->size(); ++k) {
@@ -1819,11 +1856,13 @@ TEST(Backtest, Granularity) {
       }
     }
     ASSERT_LT(fi, rf->size()) << "no fine row at coarse ts row " << j;
-    EXPECT_TRUE(bits_equal(rc->nav[j], rf->nav[fi])) << j;
-    EXPECT_TRUE(bits_equal(rc->pnl_total[j], rf->pnl_total[fi])) << j;
-    EXPECT_TRUE(bits_equal(rc->pnl_delta[j], rf->pnl_delta[fi])) << j;
-    EXPECT_TRUE(bits_equal(rc->pnl_theta[j], rf->pnl_theta[fi])) << j;
-    EXPECT_TRUE(bits_equal(rc->gross_vega[j], rf->gross_vega[fi])) << j;
+    EXPECT_TRUE(bits_equal(rc->nav[j], rf->nav[fi])) << j;              // cumulative state
+    EXPECT_TRUE(bits_equal(rc->gross_vega[j], rf->gross_vega[fi])) << j; // recorded-row state
+    if (j > 0) {
+      const double block = rf->nav[fi] - rf->nav[prev_fi];
+      EXPECT_NEAR(rc->pnl_total[j], block, tol * (std::fabs(block) + 1.0)) << j;
+    }
+    prev_fi = fi;
   }
 }
 

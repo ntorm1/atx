@@ -231,6 +231,10 @@ void expect_result_bit_identical(const BacktestResult &a, const BacktestResult &
       EXPECT_TRUE(bits_equal((*va)[i], (*vb)[i])) << i;
     }
   }
+  ASSERT_EQ(a.step_pnl_total.size(), b.step_pnl_total.size());
+  for (std::size_t k = 0; k < a.step_pnl_total.size(); ++k) {
+    EXPECT_TRUE(bits_equal(a.step_pnl_total[k], b.step_pnl_total[k])) << k;
+  }
   ASSERT_EQ(a.signals.size(), b.signals.size());
   for (std::size_t s = 0; s < a.signals.size(); ++s) {
     EXPECT_EQ(a.signals[s].first, b.signals[s].first);
@@ -648,4 +652,102 @@ TEST(TearSheet, WorkedExampleB) {
   std::printf("[tearsheet] Example B: total_return=%.4f sharpe=%.4f avg_gross_vega=%.2f "
               "pnl_per_vega_traded=%.6f closure_resid=%.3e (det=OK)\n",
               t.total_return, t.sharpe, t.avg_gross_vega, t.pnl_per_vega_traded, resid);
+}
+
+// ── 5. record_every_n stride-invariance of annualized statistics (C1 regression) ─
+//
+// The corruption: with record_every_n>1 each recorded row stored only its OWN
+// step's pnl_*, so the tearsheet computed Sharpe / ann_return / ann_vol / hit_rate
+// and the attribution totals off a 1-in-stride SAMPLE — silently wrong, while
+// `nav` stayed correct. The fix retains the TRUE per-step series (`step_pnl_total`)
+// for the risk statistics and block-sums the flow columns into the recorded rows
+// for the attribution totals. This test proves a run's headline statistics are
+// IDENTICAL across record strides (the property the old code violated).
+TEST(TearSheet, StrideInvariantAnnualizedStats) {
+  const fs::path dir = fresh_dir("stride-invariance");
+  const Corpus c = make_corpus(dir, "SPX", 16, 100.0, 0.004, 0.0008);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  // A 25-delta put, delta-hedged daily, WITH frictions + financing so the shares /
+  // financing / cost flow columns are all exercised through the block-sum path.
+  StrategySpec spec;
+  spec.name = "stride-invariance-put";
+  LegSpec leg;
+  leg.uid = kUid;
+  leg.tenor.target_T = 0.5;
+  leg.structure.kind = StructureSpec::Kind::Single;
+  leg.structure.single_side = Side::Put;
+  leg.strike = StrikeSelector{StrikeSelector::Kind::Delta, 0.25};
+  leg.size = SizeSpec{SizeSpec::Kind::FixedContracts, 1.0, +1.0};
+  spec.legs.push_back(leg);
+  spec.lifecycle.entry = LifecycleSpec::Entry::EveryStep;
+  spec.lifecycle.holding = LifecycleSpec::Holding::HoldToExpiry;
+  spec.hedge = HedgeSpec{HedgeSpec::Kind::DeltaToZero, HedgeSpec::Cadence::Daily, 1e-6};
+
+  const auto run_stride = [&](unsigned k) {
+    DeclarativeStrategy strat{spec};
+    RunConfig cfg;
+    cfg.record_every_n = k;
+    cfg.frictions.spread_kind = FrictionModel::SpreadKind::PriceBps;
+    cfg.frictions.half_spread_bps = 10.0;
+    cfg.frictions.per_contract_cost = 0.5;
+    cfg.financing.finance_premium = true;
+    cfg.financing.borrow_rate = 0.02;
+    cfg.financing.initial_cash = 1'000'000.0;
+    return run_backtest(*clock, strat, cfg);
+  };
+
+  auto r1 = run_stride(1);
+  auto r2 = run_stride(2);
+  auto r3 = run_stride(3);
+  ASSERT_TRUE(r1.has_value()) << r1.error().to_string();
+  ASSERT_TRUE(r2.has_value()) << r2.error().to_string();
+  ASSERT_TRUE(r3.has_value()) << r3.error().to_string();
+  EXPECT_LT(r2->size(), r1->size()); // downsampling really happened
+  EXPECT_LT(r3->size(), r1->size());
+  // The full-resolution per-step series is stride-independent.
+  ASSERT_EQ(r1->step_pnl_total.size(), r2->step_pnl_total.size());
+  ASSERT_EQ(r1->step_pnl_total.size(), r3->step_pnl_total.size());
+  for (std::size_t k = 0; k < r1->step_pnl_total.size(); ++k) {
+    EXPECT_TRUE(bits_equal(r2->step_pnl_total[k], r1->step_pnl_total[k])) << k;
+    EXPECT_TRUE(bits_equal(r3->step_pnl_total[k], r1->step_pnl_total[k])) << k;
+  }
+
+  const TearSheet t1 = tearsheet(*r1);
+  const TearSheet t2 = tearsheet(*r2);
+  const TearSheet t3 = tearsheet(*r3);
+
+  // Headline annualized statistics: computed off the TRUE per-step series, hence
+  // bit-for-bit identical regardless of the record stride. (Pre-fix these were a
+  // 1-in-stride sample and diverged.)
+  for (const TearSheet *tk : {&t2, &t3}) {
+    EXPECT_TRUE(bits_equal(tk->ann_return, t1.ann_return));
+    EXPECT_TRUE(bits_equal(tk->ann_vol, t1.ann_vol));
+    EXPECT_TRUE(bits_equal(tk->sharpe, t1.sharpe));
+    EXPECT_TRUE(bits_equal(tk->hit_rate, t1.hit_rate));
+    EXPECT_TRUE(bits_equal(tk->total_return, t1.total_return));
+  }
+
+  // Attribution + cost/financing TOTALS: block-summed columns, so equal to the
+  // stride-1 totals within a tight tolerance (block grouping reorders the sum).
+  const double tol = 1e-9;
+  const auto near = [&](double a, double b) { EXPECT_NEAR(a, b, tol * (std::fabs(b) + 1.0)); };
+  for (const TearSheet *tk : {&t2, &t3}) {
+    near(tk->attr_delta, t1.attr_delta);
+    near(tk->attr_gamma, t1.attr_gamma);
+    near(tk->attr_vega, t1.attr_vega);
+    near(tk->attr_theta, t1.attr_theta);
+    near(tk->attr_settlement, t1.attr_settlement);
+    near(tk->attr_shares, t1.attr_shares);
+    near(tk->attr_financing, t1.attr_financing);
+    near(tk->attr_cost, t1.attr_cost);
+    near(tk->total_cost, t1.total_cost);
+    near(tk->total_financing, t1.total_financing);
+  }
+
+  std::printf("[tearsheet] stride-invariance: sharpe(s1/s2/s3)=%.10f/%.10f/%.10f "
+              "ann_return=%.6f ann_vol=%.6f hit=%.4f (rows %zu/%zu/%zu)\n",
+              t1.sharpe, t2.sharpe, t3.sharpe, t1.ann_return, t1.ann_vol, t1.hit_rate, r1->size(),
+              r2->size(), r3->size());
 }

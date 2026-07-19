@@ -191,11 +191,22 @@ MetaKv result_summary_metrics(const BacktestResult &r) {
   const std::size_t n = r.size();
   const double total_pnl = n > 0 ? r.nav.back() : 0.0;
 
+  // True per-step average: `step_pnl_total` is the full per-step series retained at
+  // any record stride (the recorded `pnl_total` rows are block sums when
+  // record_every_n>1). Hand-built results fall back to the pnl_total rows.
   double daily_sum = 0.0;
-  for (std::size_t i = 1; i < n; ++i) {
-    daily_sum += r.pnl_total[i];
+  double avg_daily_pnl = 0.0;
+  if (!r.step_pnl_total.empty()) {
+    for (const double p : r.step_pnl_total) {
+      daily_sum += p;
+    }
+    avg_daily_pnl = daily_sum / static_cast<double>(r.step_pnl_total.size());
+  } else {
+    for (std::size_t i = 1; i < n; ++i) {
+      daily_sum += r.pnl_total[i];
+    }
+    avg_daily_pnl = n > 1 ? daily_sum / static_cast<double>(n - 1) : 0.0;
   }
-  const double avg_daily_pnl = n > 1 ? daily_sum / static_cast<double>(n - 1) : 0.0;
 
   double vega_sum = 0.0;
   double theta_sum = 0.0;

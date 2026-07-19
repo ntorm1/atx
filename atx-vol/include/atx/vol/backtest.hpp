@@ -313,8 +313,7 @@ struct RunConfig {
   QueryPricingTier query_pricing_tier{QueryPricingTier::LegacyCompatible};
   FrictionModel frictions{};          // execution frictions (B2; default: frictionless)
   FinancingConfig financing{};        // cash/borrow ledger (B2; default: off => B1-identity)
-  unsigned record_every_n{1};         // positive; persist every Nth step (1 = every step)
-  bool retain_position_frames{false}; // reserved for B1 (per-position frames)
+  unsigned record_every_n{1}; // positive; persist every Nth step (1 = every step)
   // Policy for held P&L/Greek valuation only. Strategy close execution always
   // requires an economically valid mark regardless of this setting.
   UnpricedLotPolicy unpriced{UnpricedLotPolicy::ExcludeAndReport};
@@ -371,9 +370,15 @@ private:
 };
 
 // SoA time series. Row 0 is inception (opening friction in PnL/NAV, otherwise
-// zero PnL, book greeks on the first date); each later recorded row is one priced step, downsampled by
-// `record_every_n` (the final step is always recorded). `pnl_*` are per-step;
-// `nav` is the cumulative Σ pnl_total (incl. settlement) from inception = 0.
+// zero PnL, book greeks on the first date); each later recorded row is one priced
+// step, downsampled by `record_every_n` (the final step is always recorded). When
+// `record_every_n>1` the per-step FLOW columns (`pnl_*`, `pnl_settlement`,
+// `pnl_shares`, `financing`, `cost`, `turnover_*`, `n_unpriced_lots`) hold the
+// BLOCK SUM over every step since the previous recorded row — not the last step
+// alone — so `Σ column == nav.back()` and the attribution totals are exact at any
+// stride. STATE columns (`nav`, `cash`, `gross_*`, `n_open_lots`,
+// `n_unpriced_greeks`) are the value AT the recorded row. `nav` is the cumulative
+// Σ step_total (incl. settlement) from inception = 0.
 struct BacktestResult {
   std::vector<std::string> date;
   std::vector<std::int64_t> ts_ns;
@@ -402,6 +407,15 @@ struct BacktestResult {
   // inception computes book greeks, so its count is a real measurement, not 0.0 by
   // convention. Under RunConfig::unpriced == Error a row with a non-zero count aborts.
   std::vector<double> n_unpriced_greeks;
+  // FULL-RESOLUTION per-step total PnL: one entry per priced step (steps 1..N-1),
+  // retained regardless of `record_every_n`. This is the TRUE per-step return
+  // series the risk/return statistics (Sharpe, ann_return, ann_vol, hit_rate,
+  // avg_daily_pnl) are computed from, so those stats are invariant to the record
+  // stride — block-summed recorded rows would destroy the per-step variance and
+  // win/loss distribution. Length == refs-1 at any stride (NOT parallel to `date`,
+  // which is downsampled). Empty for hand-built results, in which case the
+  // consumers fall back to the recorded `pnl_total` rows (i.e. stride-1 behavior).
+  std::vector<double> step_pnl_total;
   // Strategy diagnostics: name -> per-recorded-row series (parallel to `date`).
   // Empty for the fixed-book overload; populated by the IStrategy overload.
   std::vector<std::pair<std::string, std::vector<double>>> signals;
