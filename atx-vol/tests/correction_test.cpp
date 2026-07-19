@@ -894,13 +894,14 @@ TEST(CorrectionBlend, EndpointsAndMidpointBlendEveryDerivative) {
   EXPECT_NEAR(got.dT, finite_difference, 1.0e-7);
 }
 
-// Perf review F1 stage (a): eval_value_and_dsigma is the value+σ-partial pair the
-// IV Newton step consumes, and in stage (a) it must be BYTE-for-byte the
-// composition of eval() (value) and eval_grad()/eval_partials() (dsigma) — the
-// only change is that the fused hot-path caller shares one value traversal instead
-// of running a separate residual sweep. Assert exact equality across the box
-// interior AND out of every axis (where the value clamps and the partial zeroes).
-TEST(CorrectionCache, EvalValueAndDsigmaBitIdenticalToEvalAndPartials) {
+// Perf review F1 stage (b): eval_value_and_dsigma is a SINGLE fused Clenshaw pass
+// (sigma is the last collapse axis). The VALUE stays byte-for-byte eval() (so the
+// Newton residual is unchanged), while the sigma partial is the value+derivative
+// recurrence — bit-identical to eval_second_order()'s dsigma (same recurrence) and
+// economically equal to eval_partials()'s differentiate-then-evaluate dsigma (same
+// analytic derivative, different accumulation). Interior points plus out-of-box on
+// each axis (value clamps, partial zeroes out of the sigma box).
+TEST(CorrectionCache, EvalValueAndDsigmaFusedPass_ValueExact_DsigmaParity) {
   auto built = CorrectionCache::build(
       /*n_k=*/16, /*n_T=*/8, /*n_s=*/12, /*r=*/0.05, /*q=*/0.00,
       /*k_log_min=*/-0.5, /*k_log_max=*/0.5,
@@ -909,27 +910,37 @@ TEST(CorrectionCache, EvalValueAndDsigmaBitIdenticalToEvalAndPartials) {
   ASSERT_TRUE(built.has_value());
   const CorrectionCache cache = std::move(*built);
 
-  // Interior points, plus deliberately out-of-box on each axis (k_log, T, sigma).
   for (double k : {-0.6, -0.2, 0.0, 0.15, 0.55}) {
     for (double T : {0.02, 0.2, 0.9, 2.4}) {
       for (double sigma : {0.05, 0.18, 0.5, 0.9}) {
-        double ds_ref = 0.0;
-        const double v_ref = cache.eval_grad(k, T, sigma, nullptr, nullptr, &ds_ref);
+        double ds_partials = 0.0;
+        const double v_ref = cache.eval_grad(k, T, sigma, nullptr, nullptr, &ds_partials);
         double ds_fused = 0.0;
         const double v_fused = cache.eval_value_and_dsigma(k, T, sigma, &ds_fused);
+        // Value: bit-identical to eval()/eval_grad (the residual cannot move).
         EXPECT_EQ(v_fused, v_ref) << "k=" << k << " T=" << T << " sig=" << sigma;
-        EXPECT_EQ(ds_fused, ds_ref) << "k=" << k << " T=" << T << " sig=" << sigma;
-        // And the value equals the standalone eval() exactly.
         EXPECT_EQ(v_fused, cache.eval(k, T, sigma));
+        // dsigma: economic-parity with eval_partials' differentiate-then-evaluate.
+        EXPECT_NEAR(ds_fused, ds_partials, 1.0e-9 * std::fabs(ds_partials) + 1.0e-12)
+            << "k=" << k << " T=" << T << " sig=" << sigma;
+        // dsigma is bit-identical to the second-order jet's dsigma (same recurrence)
+        // where both are served (correction active AND sigma in the box).
+        const bool sigma_in_box = (sigma >= 0.10 && sigma <= 0.80);
+        if (v_fused > 0.0 && sigma_in_box) {
+          EXPECT_EQ(ds_fused, cache.eval_second_order(k, T, sigma).dsigma)
+              << "k=" << k << " T=" << T << " sig=" << sigma;
+        }
       }
     }
   }
 }
 
-// The blend fused entry must equal {eval(), eval_dsigma()} byte-for-byte, for the
-// single-cache (weight 0/1, identical pointers) and the interior-blend cases —
-// this underwrites the IV "blend endpoint == single cache exactly" pin.
-TEST(CorrectionBlend, EvalValueAndDsigmaBitIdenticalToEvalAndEvalDsigma) {
+// The blend fused entry's VALUE equals eval() byte-for-byte (underwrites the IV
+// "blend endpoint == single cache exactly" pin); its dsigma economically matches
+// eval_dsigma() (stage b: the fused derivative recurrence, ULP-different accumulation
+// of the same analytic derivative). Single-cache (weight 0/1, identical pointers)
+// and interior-blend cases.
+TEST(CorrectionBlend, EvalValueAndDsigmaFusedPass_ValueExact_DsigmaParity) {
   auto lower_result =
       CorrectionCache::build(16, 8, 12, 0.04, 0.00, -0.5, 0.5, 0.05, 2.0, 0.10, 0.80, Side::Put);
   auto upper_result =
@@ -949,7 +960,9 @@ TEST(CorrectionBlend, EvalValueAndDsigmaBitIdenticalToEvalAndEvalDsigma) {
           double ds_fused = 0.0;
           const double v_fused = blend->eval_value_and_dsigma(k, T, sigma, &ds_fused);
           EXPECT_EQ(v_fused, blend->eval(k, T, sigma)) << "k=" << k << " T=" << T;
-          EXPECT_EQ(ds_fused, blend->eval_dsigma(k, T, sigma)) << "k=" << k << " T=" << T;
+          const double ds_ref = blend->eval_dsigma(k, T, sigma);
+          EXPECT_NEAR(ds_fused, ds_ref, 1.0e-9 * std::fabs(ds_ref) + 1.0e-12)
+              << "k=" << k << " T=" << T;
         }
       }
     }

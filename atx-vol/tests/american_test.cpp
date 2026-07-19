@@ -546,9 +546,9 @@ TEST(AmericanFusedCached, BlendMatchesCachedPriceAndVega) {
 // Perf review F1 counter gate (ATX_VOL_COUNTERS-only). One IV Newton step evaluates
 // the correction tensor 3x with the separate entries — american_price_cached's value
 // sweep + american_vega -> eval_grad (a value sweep + a dsigma partial). The fused
-// entry shares ONE value sweep, so stage (a) is 3 -> 2 ClenshawSweeps per step (and
-// the fused single-pass in stage (b) drops it to 1). Measured directly, and summed
-// over a 200-step fixture for the commit-message before/after.
+// single-pass entry (stage b) emits value + dsigma from ONE sweep, so 3 -> 1
+// ClenshawSweeps per step. Measured directly, and summed over a 200-step fixture
+// for the commit-message before/after.
 TEST(AmericanFusedCached, ClenshawTraversalsPerNewtonStep) {
   using atx::vol::counters::Counter;
   if constexpr (!atx::vol::counters::counters_enabled()) {
@@ -568,7 +568,7 @@ TEST(AmericanFusedCached, ClenshawTraversalsPerNewtonStep) {
   (void)american_price_and_vega_cached(S, K, T, sigma, r, q, Side::Put, &tbl);
   const std::uint64_t fused_step = sweeps();
   EXPECT_EQ(separate_step, 3u);
-  EXPECT_EQ(fused_step, 2u); // stage (a): 3 -> 2 (stage (b) fuses value+dsigma -> 1)
+  EXPECT_EQ(fused_step, 1u); // stage (b): fused value+dsigma single pass, 3 -> 1
 
   // 200-step fixture: one price+vega per grid point, separate vs fused totals.
   std::uint64_t separate_total = 0;
@@ -592,7 +592,7 @@ TEST(AmericanFusedCached, ClenshawTraversalsPerNewtonStep) {
   }
   EXPECT_EQ(steps, 200);
   EXPECT_EQ(separate_total, 3u * static_cast<std::uint64_t>(steps));
-  EXPECT_EQ(fused_total, 2u * static_cast<std::uint64_t>(steps)); // stage (b): 1u * steps
+  EXPECT_EQ(fused_total, 1u * static_cast<std::uint64_t>(steps)); // stage (b): fused single pass
   std::cout << "[P1 F1 counters] " << steps << "-step fixture: separate=" << separate_total
             << " fused=" << fused_total << " ClenshawSweeps ("
             << static_cast<double>(separate_total) / steps << " -> "

@@ -3,6 +3,9 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <iomanip>
 #include <iostream>
 #include <optional>
 #include <span>
@@ -605,9 +608,9 @@ TEST(AmericanIv, BawAndCachedMapsBypassThreadLocalAloState) {
 // Perf review F1 (ATX_VOL_COUNTERS-only): on a fitter-style cache-backed inversion
 // fixture (~200 quotes), the fused Newton step shrinks the correction-tensor
 // traversal count. Each bracketing residual is one value sweep (price only); each
-// Newton refinement step is the fused price+vega — stage (a) 2 sweeps (was 3), and
-// the fused single pass in stage (b) drops it to 1. Reports totals at the inversion
-// granularity and bounds sweeps/residual-step at the fused-path ceiling.
+// Newton refinement step is the fused price+vega single pass — 1 sweep (was 3).
+// Reports totals at the inversion granularity and bounds sweeps/residual-step at
+// the fused-path ceiling.
 TEST(AmericanIv, FusedCachedInversionTraversalCount) {
   using atx::vol::counters::Counter;
   if constexpr (!atx::vol::counters::counters_enabled()) {
@@ -651,7 +654,70 @@ TEST(AmericanIv, FusedCachedInversionTraversalCount) {
             << " ClenshawSweeps over " << newton << " residual/Newton steps ("
             << static_cast<double>(sweeps) / static_cast<double>(newton) << " sweeps/step)\n";
   EXPECT_EQ(ok, static_cast<int>(quotes.size()));
-  // Fused-path ceiling: bracketing residual = 1 sweep, refinement = 2 (stage a),
-  // plus one initial-df vega (2 sweeps) per inversion. So sweeps <= 2·steps + 2·N.
-  EXPECT_LE(sweeps, 2u * newton + 2u * static_cast<std::uint64_t>(ok));
+  // Fused-path ceiling: every residual step (bracketing OR fused refinement) is 1
+  // sweep, plus one initial-df vega (2 sweeps) per inversion. So sweeps <= steps + 2·N.
+  EXPECT_LE(sweeps, newton + 2u * static_cast<std::uint64_t>(ok));
+}
+
+// Perf review F1 stage (b) economic-parity fixture. The fused single-pass
+// value+dsigma keeps the correction VALUE (hence the Newton residual) bit-identical
+// to stage (a); only the sigma partial (vega) changes its floating-point
+// accumulation, and where vega collapses the safeguarded Newton falls to bisection
+// (vega-independent), so the recovered IV moves at most sub-ULP. Recover IV for a
+// fixed ~200-quote grid (both sides); set ATX_P1B_DUMP=1 to print each IV to full
+// precision so a diff of the stage-(a) and stage-(b) builds bounds |dIV| directly.
+TEST(AmericanIv, FusedTraversalIvEconomicParityFixture) {
+  auto put = CorrectionCache::build(16, 12, 8, 0.05, 0.00, -0.4, 0.4, 0.05, 1.0, 0.10, 0.60,
+                                    Side::Put);
+  auto call = CorrectionCache::build(16, 12, 8, 0.045, 0.02, -0.4, 0.4, 0.05, 1.0, 0.10, 0.60,
+                                     Side::Call);
+  ASSERT_TRUE(put.has_value());
+  ASSERT_TRUE(call.has_value());
+  const CorrectionCache put_c = std::move(*put);
+  const CorrectionCache call_c = std::move(*call);
+  // Opt-in per-IV dump (ATX_P1B_DUMP): _dupenv_s on Windows — plain std::getenv
+  // trips /WX (-Wdeprecated-declarations) under clang-cl.
+  const auto dump_enabled = []() noexcept -> bool {
+#if defined(_WIN32)
+    char *value = nullptr;
+    std::size_t size = 0u;
+    const bool present = ::_dupenv_s(&value, &size, "ATX_P1B_DUMP") == 0 && value != nullptr;
+    const bool on = present && value[0] != '\0' && std::strcmp(value, "0") != 0;
+    std::free(value);
+    return on;
+#else
+    const char *value = std::getenv("ATX_P1B_DUMP");
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+#endif
+  };
+  const bool dump = dump_enabled();
+  const double S = 100.0;
+  int n = 0;
+  for (Side side : {Side::Put, Side::Call}) {
+    const double r = (side == Side::Put) ? 0.05 : 0.045;
+    const double q = (side == Side::Put) ? 0.00 : 0.02;
+    const CorrectionCache &c = (side == Side::Put) ? put_c : call_c;
+    for (double K = 85.0; K <= 115.5; K += 3.0) {
+      for (double T : {0.15, 0.40, 0.75}) {
+        for (double sig : {0.18, 0.30, 0.45}) {
+          const double price = american_price_cached(S, K, T, sig, r, q, side, &c);
+          const auto iv = american_implied_vol(price, S, K, T, r, q, side,
+                                                AmericanMethod::AndersenLake, 1.0e-8, 64,
+                                                std::nullopt, &c);
+          ASSERT_TRUE(iv.has_value()) << "K=" << K << " T=" << T << " s=" << sig;
+          // The forward map is bit-identical across stage a/b, so the recovered IV
+          // is stable and always finite and inside the search bracket.
+          EXPECT_TRUE(std::isfinite(*iv));
+          EXPECT_GE(*iv, atx::vol::kIvMin);
+          EXPECT_LE(*iv, 40.0);
+          if (dump) {
+            std::cout << "[P1b IV] " << static_cast<int>(side) << " K=" << K << " T=" << T
+                      << " s=" << sig << " iv=" << std::setprecision(17) << *iv << "\n";
+          }
+          ++n;
+        }
+      }
+    }
+  }
+  EXPECT_EQ(n, 198);
 }

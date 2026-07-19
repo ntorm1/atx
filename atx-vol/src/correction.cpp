@@ -376,6 +376,64 @@ struct ClenshawD2 {
   return out;
 }
 
+// Fused value + sigma-partial single pass (perf review F1 stage b). Sigma is the
+// LAST collapse axis of the 3D Clenshaw, so its value AND d/dxk fall out of ONE
+// derivative-recurrence sweep. The i (k_log) and j (T) collapses are byte-for-byte
+// cheb_clenshaw3d — so the returned VALUE is bit-identical to cheb_clenshaw3d /
+// eval() — and only the final sigma collapse changes: clenshaw_d1 emits value + the
+// unit-space derivative together, replacing eval_partials()'s separate
+// differentiate-coefficients-then-evaluate pass. The dsigma therefore differs from
+// eval_partials() at the ULP level (a different accumulation of the SAME analytic
+// derivative); it IS bit-identical to eval_second_order()'s dsigma (same recurrence).
+// Counts as ONE Clenshaw sweep (vs eval + eval_partials' two).
+[[nodiscard]] ClenshawD1 cheb_clenshaw3d_value_dsigma(const double *coefs, std::uint16_t n_k,
+                                                      std::uint16_t n_T, std::uint16_t n_s, double xi,
+                                                      double xj, double xk,
+                                                      double *tmp_jk) noexcept {
+  if (n_k == 0u || n_T == 0u || n_s == 0u) {
+    return ClenshawD1{0.0, 0.0};
+  }
+  ATX_VOL_COUNT(ClenshawSweeps); // one fused value+dsigma sweep (opt-in P0.2)
+  const std::size_t nk = n_k;
+  const std::size_t nT = n_T;
+  const std::size_t ns = n_s;
+  const double two_xi = 2.0 * xi;
+  const double two_xj = 2.0 * xj;
+
+  // 1st collapse: i-axis (k_log). Byte-for-byte cheb_clenshaw3d.
+  for (std::size_t j = 0; j < nT; ++j) {
+    for (std::size_t k = 0; k < ns; ++k) {
+      const double *row = coefs + j * ns * nk + k * nk;
+      double bk1 = 0.0;
+      double bk2 = 0.0;
+      for (int i = static_cast<int>(n_k) - 1; i >= 1; --i) {
+        const double bk = row[i] + two_xi * bk1 - bk2;
+        bk2 = bk1;
+        bk1 = bk;
+      }
+      tmp_jk[j * ns + k] = row[0] + xi * bk1 - bk2;
+    }
+  }
+
+  // 2nd collapse: j-axis (T). Byte-for-byte cheb_clenshaw3d — leaves the sigma-axis
+  // vector in tmp_jk[0..n_s-1].
+  for (std::size_t k = 0; k < ns; ++k) {
+    double bk1 = 0.0;
+    double bk2 = 0.0;
+    for (int j = static_cast<int>(n_T) - 1; j >= 1; --j) {
+      const double bk = tmp_jk[static_cast<std::size_t>(j) * ns + k] + two_xj * bk1 - bk2;
+      bk2 = bk1;
+      bk1 = bk;
+    }
+    const double a0 = tmp_jk[k]; // j = 0 row, before overwrite
+    tmp_jk[k] = a0 + xj * bk1 - bk2;
+  }
+
+  // 3rd collapse: k-axis (sigma). Value + d/dxk in one sweep. The value recurrence
+  // is identical to cheb_clenshaw3d's, so tmp_jk[0] + xk*bk1 - bk2 is bit-identical.
+  return clenshaw_d1_strided(tmp_jk, 1u, n_s, xk);
+}
+
 } // namespace
 
 Result<CorrectionCache> CorrectionCache::build(std::uint16_t n_log_moneyness,
@@ -712,15 +770,46 @@ void CorrectionCache::eval_partials(double k_log, double T, double sigma, double
 
 double CorrectionCache::eval_value_and_dsigma(double k_log, double T, double sigma,
                                               double *out_dsigma) const noexcept {
-  // Stage (a) [F1]: the value + sigma partial the IV Newton step needs, as the
-  // literal composition of eval() (value) and eval_partials() (dsigma only). This
-  // is bit-identical to eval_grad(k_log, T, sigma, nullptr, nullptr, out_dsigma),
-  // so the fused hot-path caller drops the separate price-traversal + eval_grad
-  // value-traversal down to eval + one partial (3 -> 2). Stage (b) will replace
-  // this body with a single value+∂sigma Clenshaw pass (~1 traversal).
-  const double v = eval(k_log, T, sigma);
-  eval_partials(k_log, T, sigma, nullptr, nullptr, out_dsigma);
-  return v;
+  // Stage (b) [F1]: value + sigma-partial from ONE fused Clenshaw sweep (sigma is
+  // the last collapse axis). The VALUE is bit-identical to eval() — the i/j collapses
+  // and the sigma-value recurrence are byte-for-byte cheb_clenshaw3d — so the Newton
+  // residual is unchanged. The dsigma is the SAME analytic derivative eval_partials()
+  // returns, computed by the value+derivative recurrence instead of
+  // differentiate-then-evaluate: ULP-different from eval_partials(), bit-identical to
+  // eval_second_order()'s dsigma (economic-parity, gated by the P1 |dIV| < 1e-12
+  // test). Un-gated by the value here (mirrors eval_partials/eval_grad); the caller
+  // applies the served-correction max(0, .) derivative gate.
+  if (!populated_) {
+    if (out_dsigma != nullptr) {
+      *out_dsigma = 0.0;
+    }
+    return 0.0;
+  }
+#if defined(ATX_VOL_COUNTERS)
+  if ((k_log < k_log_min_) || (k_log > k_log_max_) || (T < T_min_) || (T > T_max_) ||
+      (sigma < sigma_min_) || (sigma > sigma_max_)) {
+    ATX_VOL_COUNT(CacheOutOfBoxClamps);
+  }
+#endif
+  const bool oob_s = (sigma < sigma_min_) || (sigma > sigma_max_);
+  k_log = atx::core::clamp(k_log, k_log_min_, k_log_max_);
+  T = atx::core::clamp(T, T_min_, T_max_);
+  sigma = atx::core::clamp(sigma, sigma_min_, sigma_max_);
+
+  const double xi = detail::cheb_to_unit(k_log, k_log_min_, k_log_max_);
+  const double xj = detail::cheb_to_unit(T, T_min_, T_max_);
+  const double xk = detail::cheb_to_unit(sigma, sigma_min_, sigma_max_);
+  std::array<double, kTmpSize> tmp_jk;
+  std::fill(tmp_jk.data(), tmp_jk.data() + static_cast<std::size_t>(n_T_) * n_s_, 0.0);
+  const ClenshawD1 jet =
+      cheb_clenshaw3d_value_dsigma(coefs_.data(), n_k_, n_T_, n_s_, xi, xj, xk, tmp_jk.data());
+  if (out_dsigma != nullptr) {
+    // Out-of-box on sigma nulls the partial (matches eval_partials); the value still
+    // clamps. The derivative is in unit (Chebyshev) space -> scale to the physical σ.
+    *out_dsigma = oob_s ? 0.0 : jet.d1 * scale_s_;
+  }
+  // max(0, polynomial): bit-identical to eval().
+  return (jet.value > 0.0) ? jet.value : 0.0;
 }
 
 CorrSecondOrder CorrectionCache::eval_second_order(double k_log, double T,
