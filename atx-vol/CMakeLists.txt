@@ -255,6 +255,12 @@ if(ATX_BUILD_EXAMPLES)
     add_executable(portfolio_pricer_bench examples/portfolio_pricer_bench.cpp)
     target_link_libraries(portfolio_pricer_bench PRIVATE atx::vol atx::core atx_warnings)
 
+    # H1 (WS-H) microbench: scalar per-contract american_greeks_al vs the 4-wide
+    # laned american_put_greeks_batch bundle the FullGreeks risk loop dispatches
+    # under ForceAvx2. Prints ns/contract + speedup. Reporting harness only.
+    add_executable(american_laned_greeks_bench examples/american_laned_greeks_bench.cpp)
+    target_link_libraries(american_laned_greeks_bench PRIVATE atx::vol atx::core atx_warnings)
+
     # Backtest engine (Phase B3) worked examples on a synthetic corpus: build ->
     # run_backtest -> tearsheet headline metrics -> write_backtest_tsv. Both are
     # OFF-by-default demonstrations; the worked-example GATE lives in the test
