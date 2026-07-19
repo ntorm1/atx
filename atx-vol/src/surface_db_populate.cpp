@@ -250,11 +250,23 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
   // byte-identical across the cap AND across worker counts (the existing
   // SharedWorkerBudgetKeepsOutputByteIdentical gate still holds).
   const unsigned p_cores = cfg.pin_outer_workers ? detail::performance_core_count() : 0u;
+  // P3.1 (perf): when the opt-in E-core tier is armed, the scaling knee moves from
+  // "the P-cores" to "the P-cores plus the E-cores", because the second tier gives
+  // each spilled worker its OWN E-core logical CPU instead of double-booking a
+  // P-core. Raise the cap accordingly so the budget can actually reach the E-tier;
+  // with the flag unset `e_cores` is 0 and both the cap and the affinity collapse
+  // to the exact C4 wave-2 behaviour above.
+  const unsigned e_cores = (cfg.pin_outer_workers && detail::efficiency_core_tier_enabled())
+                               ? detail::efficiency_core_count()
+                               : 0u;
+  const unsigned core_cap = p_cores + e_cores;
   const unsigned worker_budget =
-      (p_cores > 0u && requested_budget > p_cores) ? p_cores : requested_budget;
+      (core_cap > 0u && requested_budget > core_cap) ? core_cap : requested_budget;
   const detail::FitAffinity outer_affinity =
-      (cfg.pin_outer_workers && p_cores > 0u) ? detail::FitAffinity::PerformanceCores
-                                              : detail::FitAffinity::None;
+      (cfg.pin_outer_workers && p_cores > 0u)
+          ? (e_cores > 0u ? detail::FitAffinity::PerformanceThenEfficiencyCores
+                          : detail::FitAffinity::PerformanceCores)
+          : detail::FitAffinity::None;
   const std::size_t n_fit_boards = fit_positions.size();
 
   // ── U4 (R-14) [pure-refactor]: shared worker budget for small books ─────────
@@ -275,10 +287,23 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
   // SurfaceDbPopulate.SharedWorkerBudgetKeepsOutputByteIdentical and the existing
   // GlobalParallelQueuePreservesDeterministicPartitions. worker_budget <= 1 is
   // the documented outer-serial mode: inner fits keep auto sizing (0).
+  //
+  // P3.1: the inner slice is deliberately derived from `inner_budget` -- the
+  // OUTER budget MINUS the E-core tier -- not from `worker_budget`. Inner fan-out
+  // is dispatched to the shared pricing executor, which is itself pinned to the
+  // P-cores (configure_pricing_executor / Topology::PerformanceCores). Sizing the
+  // inner slice off an E-core-widened outer budget would hand a small book more
+  // inner workers than there are P-cores to run them on and re-create exactly the
+  // nested oversubscription this block exists to prevent. The E-tier widens
+  // across-board concurrency only; per-board inner concurrency is unchanged, so
+  // this stays a pure no-op whenever the tier is disarmed.
+  const unsigned inner_budget = (e_cores > 0u && worker_budget > e_cores)
+                                    ? worker_budget - e_cores
+                                    : worker_budget;
   const unsigned inner_fit_workers =
-      (worker_budget > 1u && n_fit_boards > 0u)
-          ? std::max<unsigned>(1u, worker_budget / static_cast<unsigned>(std::min<std::size_t>(
-                                                       worker_budget, n_fit_boards)))
+      (inner_budget > 1u && n_fit_boards > 0u)
+          ? std::max<unsigned>(1u, inner_budget / static_cast<unsigned>(std::min<std::size_t>(
+                                                      inner_budget, n_fit_boards)))
           : 0u;
   if (test_hooks != nullptr && test_hooks->on_inner_fit_workers) {
     test_hooks->on_inner_fit_workers(inner_fit_workers);
