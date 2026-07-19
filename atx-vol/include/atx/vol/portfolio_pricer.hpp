@@ -648,6 +648,19 @@ public:
 
 private:
   Portfolio pf_;
+  // H4 (WS-H): retained workspace for the RETURNING convenience API (price() /
+  // pnl_explain()). Without it each returning call built a one-shot local
+  // PortfolioWorkspace, so ensure_prepared re-ran PreparedPortfolio::create (a
+  // stable_sort + tile partition over the uniques) and re-resized the scratch SoA
+  // EVERY call, silently losing the cross-snapshot reuse the _into variants keep.
+  // Reused across calls, ensure_prepared rebuilds only on an actual book change.
+  // NOT for concurrent returning-API calls on the SAME pricer (the shared scratch
+  // would race) — the caller-owned-workspace _into variants remain the
+  // concurrent-safe / allocation-transparent path. A unique_ptr (not a value) so
+  // PortfolioPricer stays trivially/noexcept-movable and a moved-from pricer stays
+  // callable (the returning API lazily re-creates it on next use). mutable: the
+  // returning wrappers are const but legitimately reuse this private scratch.
+  mutable std::unique_ptr<PortfolioWorkspace> returning_ws_;
 };
 
 } // namespace atx::vol
