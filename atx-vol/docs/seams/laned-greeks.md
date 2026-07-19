@@ -13,6 +13,59 @@ does NOT edit the kernel TUs; it consumes the entry points below.
 
 ---
 
+## STATUS — K3 + K4 SHIPPED (dark), what L4 wires against
+
+The seam below is now IMPLEMENTED (SHAs in `.superpowers/sdd/sw-solve-wall/reports/
+kernel-stage2.md`); this section is the authoritative entry-point + mask contract; the
+sections after it are the original design rationale.
+
+- **Laned kernel:** `src/simd/american_greeks_avx2.cpp`
+  `detail::american_put_greeks_batch_avx2(...)` — the analytic PUT bundle 4-wide (5
+  boundary solves/pack: base, σ±, r±), parity-gated vs scalar `american_greeks_al`
+  (economic gate; transcendental-level deviations, see report). Rides the shared K2
+  solve/price primitives (`american_boundary_avx2_kernel.hpp`).
+- **Dispatch (what L4 calls, kernel-owned):**
+  `simd::american_put_greeks_batch(S,K,T,σ,r,q, n, opts, AmericanGreeks* out, isa,
+  need_vega=true, need_rho=true, need_charm=true)` — ISA-selected (ForceScalar = the
+  `american_greeks_al` oracle; ForceAvx2/Auto-when-shipped = laned + scalar patch for
+  non-early-exercise / non-finite lanes). Returns `SimdRoute`.
+- **SoA surface (kernel-owned):** `american_greeks_batch(in, GreekFieldMask fields, ...)`
+  already routes analytic PUT lanes through the dispatch when `simd::avx2_greeks_selected`
+  (Auto respects the dark `kShipAvx2Greeks` gate); CALL lanes stay on the scalar analytic
+  fan. **L4 does not change this function — it sets `kernel.isa` and the mask.**
+- **Ship gate:** `kShipAvx2Greeks` (false, dark) in `american_boundary_batch.cpp`, mirror
+  of `kShipAvx2Boundary`. The PM flips it after a quiet-window A/B. L4 wires the tier; it
+  does not flip the gate.
+
+### K4 first-order tier — the mask IS the tier (no separate function)
+
+`need_vega`/`need_rho`/`need_charm` skip whole boundary solves:
+
+| L4 request (`GreekFieldMask`) | selectors | solves/pack | greeks returned |
+|---|---|---|---|
+| **hedge** `Delta` (+`Gamma`,`Theta`,`Price`) | vega=rho=charm=**false** | **1** (base) | delta, gamma, theta, price |
+| **risk** `Delta\|Vega` (+`Price`) | vega=**true**, rho=charm=false | **3** (base, σ±) | + vega, volga, vanna |
+| + `Rho` | rho=**true** | +2 (r±) | + rho |
+| **pnl-explain** `All` | all true | **5** | full 8-greek bundle |
+
+`american_greeks_batch` derives the selectors from `fields` (`need_vega = Vega∨Volga∨
+Vanna`, `need_rho = Rho`, `need_charm = Charm`). Guarantee (test
+`FirstOrderMaskBitMatchesFullBundle`): the columns a reduced request returns are
+**bit-identical** to the full-bundle run — the skipped solves never fed them. Measured
+(PROVISIONAL): hedge first-order ~3.4× the full laned bundle, ~6× the scalar full bundle.
+
+**Vega self-consistency guard — resolved, no replacement needed in this path.** In the
+analytic bundle `volga = (v_σ+ − 2v₀ + v_σ−)/h²` is formed from the SAME σ± boundary
+solves as `vega`, so volga costs **zero extra solves** and there is no volga-only re-solve
+to drop (unlike the adjoint route's 2 cold σ± volga re-solves, `adjoint_greeks.cpp:374-403`
+— a separate optimization L4 avoids by not requesting Volga through the adjoint path). The
+first-order tier omits vega AND volga together (drops the σ± solves entirely), so there is
+no "vega without its volga cross-check" state to guard. A tangent-vs-Richardson vega
+cross-check would only matter for a hypothetical "vega at fewer-than-σ± solves" tier, which
+this design does not create.
+
+---
+
 ## 0. What exists today (the substrate L4 already has)
 
 - **`GreekFieldMask`** (`american_batch.hpp:215`) — per-greek granular selector:
