@@ -423,3 +423,51 @@ TEST(DispersionProjectedVarGate, WrongHeaderIsRejected) {
   write_file(dir / "projected_var.tsv", "confidence\tvar\n0.95\t1\n");
   EXPECT_FALSE(verify_projected_var_artifacts(dir, 82));
 }
+
+// ── Small items: knobs that existed in the code but not in the spec ──────────
+
+// `entry_every_n` reached the lifecycle spec but was NOT readable from the run
+// spec, so every run silently used the 21-step default no matter what an
+// operator intended.
+TEST(DispersionRunConfigStrict, EntryCadenceIsSettableFromTheSpec) {
+  const std::string body = std::string(kBaselineSpec) + "entry_every_n\t5\n";
+  const Result<DispersionRunConfig> config =
+      read_dispersion_run_config(write_spec("atx-disp-cfg-entry", body));
+  ASSERT_TRUE(config) << config.error().to_string();
+  EXPECT_EQ(config->entry_every_n, 5u);
+  EXPECT_EQ(dispersion_backtest_config_from(*config).entry_every_n, 5u);
+
+  // Zero would silently disable entries; reject it rather than accept nonsense.
+  const std::string zero = std::string(kBaselineSpec) + "entry_every_n\t0\n";
+  EXPECT_FALSE(read_dispersion_run_config(write_spec("atx-disp-cfg-entry0", zero)));
+}
+
+// `record_diagnostics` gates the implied-correlation signal. The CLI never
+// enabled it, so the diagnostic was dead code on the file-driven path.
+TEST(DispersionRunConfigStrict, DiagnosticsAreEnableableFromTheSpec) {
+  const Result<DispersionRunConfig> off =
+      read_dispersion_run_config(write_spec("atx-disp-cfg-diag-off", kBaselineSpec));
+  ASSERT_TRUE(off) << off.error().to_string();
+  EXPECT_FALSE(off->record_diagnostics);
+  EXPECT_FALSE(dispersion_backtest_config_from(*off).record_diagnostics);
+
+  const std::string body = std::string(kBaselineSpec) + "record_diagnostics\t1\n";
+  const Result<DispersionRunConfig> on =
+      read_dispersion_run_config(write_spec("atx-disp-cfg-diag-on", body));
+  ASSERT_TRUE(on) << on.error().to_string();
+  EXPECT_TRUE(on->record_diagnostics);
+  EXPECT_TRUE(dispersion_backtest_config_from(*on).record_diagnostics);
+}
+
+// The contract multiplier was a hardcoded 100.0 at every construction site.
+TEST(DispersionRunConfigStrict, MultiplierIsSettableAndValidated) {
+  const std::string body = std::string(kBaselineSpec) + "multiplier\t50\n";
+  const Result<DispersionRunConfig> config =
+      read_dispersion_run_config(write_spec("atx-disp-cfg-mult", body));
+  ASSERT_TRUE(config) << config.error().to_string();
+  EXPECT_EQ(config->multiplier, 50.0);
+  EXPECT_EQ(dispersion_backtest_config_from(*config).multiplier, 50.0);
+
+  const std::string bad = std::string(kBaselineSpec) + "multiplier\t0\n";
+  EXPECT_FALSE(read_dispersion_run_config(write_spec("atx-disp-cfg-mult0", bad)));
+}
