@@ -506,26 +506,38 @@ TEST(SurfaceV2LegacyCompat, LegacyRiskPresetsRouteThroughTheSharedMappingTable) 
   EXPECT_EQ(legacy.surface()->quality_mode(), FitQualityMode::Latency);
 }
 
-// An adversarial board that forces a served ConvexDense risk primary to build
-// cleanly yet FAIL independent admission, so the validation-rejection ladder
-// must fire. The quoted ±10% strikes are calendar-clean, but the 3m slice
-// carries a much steeper put wing than the near-flat 4m smile above it. The
-// strict calendar floor (fit_slice_curve, [-0.6,0.6] shared-k lattice) lifts the
-// flat 4m wing UP to hug the steep 3m wing at the fit nodes; beyond the last
-// quoted strike ConvexDense extends total variance LINEARLY, and that
-// floor-distorted 4m wing reconstructs to a NON-CONVEX European call price in the
-// deep extrapolation region (k≈-0.55). The family-neutral risk-admission gate
-// (evaluate_independent_invariants, 97-pt [-0.6,0.6] grid) samples that region
-// and rejects the primary with SurfaceAdmissionReason::StrikeConvexity — a
-// structural, geometry-grounded failure (NOT the fragile sub-1e-8 butterfly kink
-// the geometric oracle sees at ±0.5, which flips on any ~1e-6 pricing nudge). The
-// parametric SVI fallback rung fits the same board convexly and is admitted in
-// its place. NB: a validly-built ConvexDense CANNOT be made to trip the geometric
-// calendar/butterfly oracle robustly by S3 tuning (the QP + calendar floor keep
-// it arb-free over a superset of the checked band); the robust rejection lives in
-// the strict family-neutral convexity gate, which is why this test opts into
-// risk_admission_policy() below.
-[[nodiscard]] std::optional<OptionChain> make_extension_crossed_chain() {
+// An adversarial board carrying a GENUINE calendar arbitrage that the served
+// ConvexDense dense model structurally cannot repair — so it drops an expiry and
+// fails independent admission, while the parametric SVI fallback repairs the arb
+// and is admitted. This forces the validation-rejection ladder on a DISCRETE,
+// drift-proof failure (an expiry either fits or it does not), NOT on a geometric
+// convexity/calendar margin: a validly-built ConvexDense on smooth truth is
+// arb-free by construction (QP + calendar floor + Roger-Lee clamp), so any
+// convexity/butterfly/calendar violation it leaks is a sub-1e-8 seam artifact in
+// the near-zero-density deep wing that flips on any ~1e-6 pricing nudge — the
+// exact fragility A1 (BAW sign fix) and P2 (warm-start carry) kept re-flipping.
+//
+// Mechanism. Truth total variance theta = sigma0^2 * T is NON-monotone across
+// tenor: the 3m slice (sigma0=0.28) carries ~4x the ATM variance of the 4m slice
+// above it (sigma0=0.12) — a real 3m>4m calendar inversion. ConvexDense's
+// node-wise QP calendar floor (fit_slice_curve) must lift the ENTIRE 4m slice
+// >=4x onto the 3m to serve it arb-free; that lift is QP-infeasible against the
+// 4m's own convex price shape, so the 4m slice fit fails and the expiry is
+// dropped. Strict risk admission (min_expiry_coverage=1.0) then rejects the
+// 2-of-3 surface with SurfaceAdmissionReason::InsufficientExpiryCoverage. SVI
+// fits each slice parametrically and repairs the calendar (arb_project_calendar_
+// svi_pair), serving all three expiries -> admitted Healthy.
+//
+// MARGIN / ROBUSTNESS (round-2 budget). The failure is a DISCRETE expiry count:
+// ConvexDense serves fitted_expiries=2, the floor requires 3 (one WHOLE expiry
+// short) — not a numeric margin. Verified deterministic 5/5 and stable across the
+// +-14%..+-18% strike band and >=0.01-vol parameter jitter; the drop/no-drop
+// boundary sits ~0.01 in vol (~1% in price) = ~10^4 x the ~1e-6 pricing-drift
+// scale that flipped the old convexity gate. Served SVI quote-coverage is 0.60 vs
+// the 0.50 floor (structural deep-wing drops, stable under drift). If a future
+// de-Am/fit change disarms the drop, the explicit reason assertion below fails
+// LOUDLY rather than silently re-greening.
+[[nodiscard]] std::optional<OptionChain> make_calendar_arb_dense_reject_chain() {
   SynthPanelSpec spec = make_spy_synthetic_spec();
   spec.expiries.clear();
   struct Row {
@@ -536,8 +548,8 @@ TEST(SurfaceV2LegacyCompat, LegacyRiskPresetsRouteThroughTheSharedMappingTable) 
   };
   const Row rows[] = {
       {"2026-07-17", 0.10, -0.40, 0.10}, // ~1m calm base
-      {"2026-09-18", 0.16, -0.55, 0.15}, // ~3m steep put wing
-      {"2026-10-16", 0.19, -0.03, 0.02}, // ~4m flat smile hugging the 3m wing
+      {"2026-09-18", 0.28, -0.25, 0.08}, // ~3m variance PEAK (calendar-arb source)
+      {"2026-10-16", 0.12, -0.25, 0.08}, // ~4m low-variance slice BELOW the 3m
   };
   for (const Row &row : rows) {
     SynthExpiry expiry;
@@ -547,6 +559,11 @@ TEST(SurfaceV2LegacyCompat, LegacyRiskPresetsRouteThroughTheSharedMappingTable) 
     expiry.truth = S3Params{row.sigma0, s2, row.c2};
     spec.expiries.push_back(expiry);
   }
+  // +-16% strike ladder (504..694 on a 600 spot): wide enough that the dense QP
+  // sees the full arb and drops the 4m; the drop is stable across +-14%..+-18%.
+  spec.strikes.clear();
+  for (double K = 504.0; K <= 696.0 + 1e-9; K += 5.0)
+    spec.strikes.push_back(K);
   auto panel = make_synthetic_american_panel(spec);
   if (!panel)
     return std::nullopt;
@@ -561,16 +578,18 @@ TEST(SurfaceV2LegacyCompat, LegacyRiskPresetsRouteThroughTheSharedMappingTable) 
 // primary_curve preserving the rejected policy choice, and decision()->curve
 // equal to the model actually served.
 TEST(SurfaceV2Provenance, ValidationFallbackAdmissionRecordsTheServedFamily) {
-  auto chain = make_extension_crossed_chain();
+  auto chain = make_calendar_arb_dense_reject_chain();
   ASSERT_TRUE(chain.has_value());
   PricerConfig config = config_for(FitQualityMode::Balanced);
-  // Opt into the strict risk-serving admission contract. This is the realistic
-  // policy for a risk consumer AND the source of a ROBUST rejection: the
-  // family-neutral gate enforces strike-convexity over the full [-0.6,0.6] grid,
-  // so it deterministically rejects the primary's floor-distorted deep-wing
-  // (see make_extension_crossed_chain). Under the default relaxed Mark contract
-  // the only rejection signal is a sub-1e-8 butterfly kink in the geometric
-  // oracle, which is numerically fragile (it flips on any ~1e-6 pricing change).
+  // Opt into the strict risk-serving admission contract (min_expiry_coverage=1.0).
+  // This is the realistic policy for a risk consumer AND the source of a ROBUST,
+  // DISCRETE rejection: the ConvexDense dense model cannot node-wise repair the
+  // board's genuine 3m>4m calendar inversion, so it drops the 4m expiry and this
+  // gate rejects the 2-of-3 surface (InsufficientExpiryCoverage). The parametric
+  // SVI fallback repairs the calendar and serves all three -> admitted. See
+  // make_calendar_arb_dense_reject_chain for why a discrete expiry-count failure
+  // is used instead of a geometric convexity margin (the latter is a sub-1e-8
+  // seam artifact that A1/P2 kept flipping).
   config.admission = atx::vol::risk_admission_policy();
   // Deterministic direct route: the SPY ticker prior pins the primary to the
   // rewritten ConvexDense with no out-of-sample cross-validation pass.
@@ -590,15 +609,27 @@ TEST(SurfaceV2Provenance, ValidationFallbackAdmissionRecordsTheServedFamily) {
   EXPECT_EQ(decision.primary_curve.kind, VolCurveKind::ConvexDense);
   EXPECT_NE(decision.curve.kind, VolCurveKind::ConvexDense);
 
-  // The fallback fired because the ConvexDense primary genuinely FAILED
-  // independent admission (not because the fallback was preferred): the primary
-  // attempt is recorded first and is not admitted, and the served rung is.
+  // The fallback fired because the ConvexDense primary GENUINELY failed
+  // independent admission (not because the fallback was preferred). Assert the
+  // primary attempt is recorded, ConvexDense, and rejected for the SPECIFIC,
+  // drift-proof reason — dropping the arb-conflicting expiry — so a future
+  // fit/de-Am change that re-admits the primary fails this test LOUDLY instead of
+  // silently re-greening it.
   ASSERT_TRUE(fitter.published_report().has_value());
   ASSERT_GT(fitter.published_report()->attempts.size(), 1u);
   const auto &primary_attempt = fitter.published_report()->attempts.front();
   EXPECT_EQ(primary_attempt.curve.kind, VolCurveKind::ConvexDense);
   EXPECT_FALSE(primary_attempt.admission.admitted);
-  EXPECT_TRUE(fitter.published_report()->attempts.back().admission.admitted);
+  EXPECT_TRUE(atx::vol::has_admission_failure(
+      primary_attempt.admission, atx::vol::SurfaceAdmissionReason::InsufficientExpiryCoverage));
+  // The discrete margin: the dense primary served strictly fewer expiries than the
+  // board attempted (one WHOLE expiry short of the 1.0 floor), while the served
+  // fallback covers all of them.
+  EXPECT_LT(primary_attempt.evidence.fitted_expiries,
+            primary_attempt.evidence.attempted_expiries);
+  const auto &served_attempt = fitter.published_report()->attempts.back();
+  EXPECT_TRUE(served_attempt.admission.admitted);
+  EXPECT_EQ(served_attempt.evidence.fitted_expiries, served_attempt.evidence.attempted_expiries);
 
   // Persisted provenance must match the served model family.
   auto priced = bundle.risk->session().to_priced_surface();
