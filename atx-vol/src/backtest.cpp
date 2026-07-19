@@ -1286,6 +1286,14 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
              0.0, g->total, book.lots.size(), 0.0, static_cast<double>(g->n_unpriced));
   }
 
+  // Block accumulators for record_every_n>1: each non-recorded step's per-axis PnL
+  // is summed here and flushed into the next recorded row, so a recorded row carries
+  // the WHOLE block's flow (not just its last step). At stride 1 each block is one
+  // step, reproducing the per-step columns bit-for-bit. `nav` is unaffected — it
+  // already accumulates every step below.
+  double b_total = 0.0, b_delta = 0.0, b_gamma = 0.0, b_vega = 0.0, b_vanna = 0.0, b_volga = 0.0;
+  double b_theta = 0.0, b_rho = 0.0, b_charm = 0.0, b_unexpl = 0.0, b_settle = 0.0, b_nunpriced = 0.0;
+
   for (std::size_t i = 1; i < refs.size(); ++i) {
     auto shifted_res = snapshot_cache->load(refs[i].archive_path, cfg.query_pricing_tier,
                                             cfg.query_cache_build_policy);
@@ -1323,6 +1331,21 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
 
     const double step_total = t.pnl_total + settlement;
     nav += step_total; // cumulative every step, regardless of recording
+    out.step_pnl_total.push_back(step_total); // full-res per-step series (metrics)
+
+    // Accrue this step's flow into the pending block (flushed on the next record).
+    b_total += step_total;
+    b_delta += t.pnl_delta;
+    b_gamma += t.pnl_gamma;
+    b_vega += t.pnl_vega;
+    b_vanna += t.pnl_vanna;
+    b_volga += t.pnl_volga;
+    b_theta += t.pnl_theta;
+    b_rho += t.pnl_rho;
+    b_charm += t.pnl_charm;
+    b_unexpl += t.pnl_unexplained;
+    b_settle += settlement;
+    b_nunpriced += static_cast<double>(step->n_unpriced);
 
     // Adopt the shifted snapshot as the next base (no reload) and drop expiries.
     base = std::move(shifted);
@@ -1339,10 +1362,11 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
         return Err(ErrorCode::NotFound, unpriced_greeks_error_message(
                                             g->n_unpriced, g->first_unpriced_uid, refs[i].date));
       }
-      push_row(refs[i].date, base->ts_ns(), step_total, t.pnl_delta, t.pnl_gamma, t.pnl_vega,
-               t.pnl_vanna, t.pnl_volga, t.pnl_theta, t.pnl_rho, t.pnl_charm, t.pnl_unexplained,
-               settlement, nav, g->total, book.lots.size(), static_cast<double>(step->n_unpriced),
-               static_cast<double>(g->n_unpriced));
+      push_row(refs[i].date, base->ts_ns(), b_total, b_delta, b_gamma, b_vega, b_vanna, b_volga,
+               b_theta, b_rho, b_charm, b_unexpl, b_settle, nav, g->total, book.lots.size(),
+               b_nunpriced, static_cast<double>(g->n_unpriced));
+      b_total = b_delta = b_gamma = b_vega = b_vanna = b_volga = 0.0;
+      b_theta = b_rho = b_charm = b_unexpl = b_settle = b_nunpriced = 0.0;
     }
   }
 
@@ -1679,6 +1703,15 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     record_signals(*base);
   }
 
+  // Block accumulators for record_every_n>1: sum each non-recorded step's flow and
+  // flush into the next recorded row (see fixed-book overload). `nav`/`cash` and the
+  // book greeks stay AT the recorded row; every additive flow column is block-summed.
+  // At stride 1 each block is one step, reproducing the per-step columns bit-for-bit.
+  double b_total = 0.0, b_delta = 0.0, b_gamma = 0.0, b_vega = 0.0, b_vanna = 0.0, b_volga = 0.0;
+  double b_theta = 0.0, b_rho = 0.0, b_charm = 0.0, b_unexpl = 0.0, b_settle = 0.0;
+  double b_shares = 0.0, b_fin = 0.0, b_cost = 0.0, b_turn_notl = 0.0, b_turn_vega = 0.0;
+  double b_nunpriced = 0.0;
+
   for (std::size_t i = 1; i < refs.size(); ++i) {
     auto shifted_res = snapshot_cache->load(refs[i].archive_path, cfg.query_pricing_tier,
                                             cfg.query_cache_build_policy);
@@ -1790,6 +1823,26 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     step_total += financing;
     step_total -= ex->cost;
     nav += step_total;
+    out.step_pnl_total.push_back(step_total); // full-res per-step series (metrics)
+
+    // Accrue this step's flow into the pending block (flushed on the next record).
+    b_total += step_total;
+    b_delta += t.pnl_delta;
+    b_gamma += t.pnl_gamma;
+    b_vega += t.pnl_vega;
+    b_vanna += t.pnl_vanna;
+    b_volga += t.pnl_volga;
+    b_theta += t.pnl_theta;
+    b_rho += t.pnl_rho;
+    b_charm += t.pnl_charm;
+    b_unexpl += t.pnl_unexplained;
+    b_settle += settlement;
+    b_shares += shares_pnl;
+    b_fin += financing;
+    b_cost += ex->cost;
+    b_turn_notl += ex->turnover_notional;
+    b_turn_vega += ex->turnover_vega;
+    b_nunpriced += static_cast<double>(step->n_unpriced);
 
     // 7. Record @ granularity: book greeks (net delta incl. shares) + B2 columns.
     const bool is_last = (i + 1 == refs.size());
@@ -1810,12 +1863,14 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
                                             g->n_unpriced, g->first_unpriced_uid, refs[i].date));
       }
       const double g_delta = g->total.delta + hedge_ledger.sum();
-      push_row(refs[i].date, base->ts_ns(), step_total, t.pnl_delta, t.pnl_gamma, t.pnl_vega,
-               t.pnl_vanna, t.pnl_volga, t.pnl_theta, t.pnl_rho, t.pnl_charm, t.pnl_unexplained,
-               settlement, shares_pnl, financing, ex->cost, nav, cash, g_delta, g->total,
-               ex->turnover_notional, ex->turnover_vega, book.lots.size(),
-               static_cast<double>(step->n_unpriced), static_cast<double>(g->n_unpriced));
+      push_row(refs[i].date, base->ts_ns(), b_total, b_delta, b_gamma, b_vega, b_vanna, b_volga,
+               b_theta, b_rho, b_charm, b_unexpl, b_settle, b_shares, b_fin, b_cost, nav, cash,
+               g_delta, g->total, b_turn_notl, b_turn_vega, book.lots.size(), b_nunpriced,
+               static_cast<double>(g->n_unpriced));
       record_signals(*base);
+      b_total = b_delta = b_gamma = b_vega = b_vanna = b_volga = 0.0;
+      b_theta = b_rho = b_charm = b_unexpl = b_settle = 0.0;
+      b_shares = b_fin = b_cost = b_turn_notl = b_turn_vega = b_nunpriced = 0.0;
     }
   }
 

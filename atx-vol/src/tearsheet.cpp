@@ -73,14 +73,30 @@ TearSheet tearsheet(const BacktestResult& r, double periods_per_year) {
   // ── Standard: total return + return-series stats (rows 1..n-1) ──
   ts.total_return = r.nav.back();
 
-  std::vector<double> returns;  // pnl_total over rows 1..n-1
-  returns.reserve(n > 0 ? n - 1 : 0);
+  // Return series: the TRUE per-step PnL. Under record_every_n>1 the recorded
+  // `pnl_total` rows are BLOCK SUMS, so mean/std/hit_rate off them would be
+  // stride-dependent; `step_pnl_total` is the full per-step series (steps 1..N-1)
+  // retained at any stride, making Sharpe/ann_return/ann_vol/hit_rate stride-
+  // invariant. Hand-built results leave it empty and fall back to the pnl_total
+  // rows (identical to the stride-1 path).
+  std::vector<double> returns;
   std::size_t wins = 0;
-  for (std::size_t i = 1; i < n; ++i) {
-    const double p = r.pnl_total[i];
-    returns.push_back(p);
-    if (p > 0.0) {
-      ++wins;
+  if (!r.step_pnl_total.empty()) {
+    returns.reserve(r.step_pnl_total.size());
+    for (const double p : r.step_pnl_total) {
+      returns.push_back(p);
+      if (p > 0.0) {
+        ++wins;
+      }
+    }
+  } else {
+    returns.reserve(n > 0 ? n - 1 : 0);
+    for (std::size_t i = 1; i < n; ++i) {
+      const double p = r.pnl_total[i];
+      returns.push_back(p);
+      if (p > 0.0) {
+        ++wins;
+      }
     }
   }
   const MeanStd ret = mean_std(returns);
