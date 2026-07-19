@@ -190,6 +190,13 @@ void bind_pricing(py::module_ &m) {
       .def_readonly("dP_dq", &CarryGreeks::dP_dq)
       .def_readonly("q_one_sided", &CarryGreeks::q_one_sided);
 
+  // G4: early-assignment risk screen (heuristic — carry benefit vs remaining time value).
+  py::class_<AssignmentRisk>(m, "AssignmentRisk")
+      .def_readonly("at_risk", &AssignmentRisk::at_risk)
+      .def_readonly("margin", &AssignmentRisk::margin)
+      .def_readonly("carry_benefit", &AssignmentRisk::carry_benefit)
+      .def_readonly("time_value", &AssignmentRisk::time_value);
+
   py::class_<AloPricer>(m, "AloPricer")
       .def(py::init<double, double, double, double, double, Side, const std::optional<AlOpts> &>(),
            py::arg("spot"), py::arg("strike"), py::arg("T"), py::arg("r"), py::arg("q"),
@@ -300,6 +307,24 @@ void bind_pricing(py::module_ &m) {
       py::arg("spot"), py::arg("strike"), py::arg("T"), py::arg("sigma"), py::arg("r"),
       py::arg("q"), py::arg("side"), py::arg("method") = AmericanMethod::AndersenLake,
       py::arg("opts") = std::nullopt, py::call_guard<py::gil_scoped_release>());
+  // G4: early-exercise (critical) price B(T) + assignment-risk screen.
+  m.def(
+      "exercise_boundary",
+      [](double k, double t, double sigma, double r, double q, Side side,
+         const std::optional<AlOpts> &opts) {
+        return atxvol::python::unwrap(exercise_boundary(k, t, sigma, r, q, side, opts));
+      },
+      py::arg("strike"), py::arg("T"), py::arg("sigma"), py::arg("r"), py::arg("q"),
+      py::arg("side"), py::arg("opts") = std::nullopt, py::call_guard<py::gil_scoped_release>());
+  m.def(
+      "assignment_risk",
+      [](double s, double k, double t, double sigma, double r, double q, Side side,
+         const std::optional<AlOpts> &opts) {
+        return atxvol::python::unwrap(assignment_risk(s, k, t, sigma, r, q, side, opts));
+      },
+      py::arg("spot"), py::arg("strike"), py::arg("T"), py::arg("sigma"), py::arg("r"),
+      py::arg("q"), py::arg("side"), py::arg("opts") = std::nullopt,
+      py::call_guard<py::gil_scoped_release>());
   m.def(
       "american_implied_vol",
       [](double price, double s, double k, double t, double r, double q, Side side,

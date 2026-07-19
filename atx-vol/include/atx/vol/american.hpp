@@ -587,6 +587,70 @@ void american_dividend_sensitivities(double dP_dq, double F, double T,
                                      std::span<const double> dF_dDiv,
                                      std::span<double> dP_dDiv_out) noexcept;
 
+// ── Early-exercise boundary + assignment-risk screen (G4, gaps finding 5) ─
+//
+// The Andersen-Lake early-exercise (critical) price B(T): the spot at which
+// immediate exercise first becomes optimal for an option with time-to-expiry T.
+// A PUT is exercised when spot <= B; a CALL when spot >= B. This exposes the SAME
+// retained boundary state the pricer solves — the put boundary directly, the call
+// boundary via the McDonald-Schroder reflection
+//   B_call(T; K, r, q) = K^2 / B_put(T; K, q, r)   (swap rate<->yield on the
+// internal put; verified: B_call * B_put(swapped) == K^2). The value returned is
+// the boundary evaluated at the FULL time-to-expiry T (the internal Chebyshev
+// node z = +1), so andersen_lake(B, K, T, sigma, r, q, side) sits exactly on the
+// smooth-paste seam between the exercise and continuation regions.
+//
+// The near-expiry limit is the homogeneity scale the solver already carries
+// (al_xmax_put); DERIVED FROM THE CODE'S regime math, NOT a textbook mnemonic:
+//   put : B(0+) = K*min(1, r/q)   == K when r >= q,  else K*(r/q) < K
+//   call: B(0+) = K*max(1, r/q)   == K when r <= q,  else K*(r/q) > K
+// B(T) is monotone in T (DECREASING for the put toward the perpetual level B∞,
+// INCREASING for the call). As T -> infinity B(T) approaches the perpetual
+// boundary K*γ/(γ-1) (γ the in-regime root of the characteristic quadratic).
+//
+// @param K,T,sigma  strike / time-to-expiry / vol (K > 0; T,sigma ~ 0 collapse to
+//                   the near-expiry limit above)
+// @param r,q        continuously-compounded rate and dividend yield (finite)
+// @return the critical price, or an Error:
+//   InvalidArgument — K <= 0, non-finite/negative T or sigma, or non-finite r/q
+//   OutOfRange      — the EUROPEAN regime (put r<=0 && r<=q / call q<=0 && q<=r):
+//                     early exercise is never optimal, so NO finite boundary exists
+//                     (it sits at S=0 for the put / S=+inf for the call). This is a
+//                     documented sentinel: no fabricated price is returned.
+//   NotImplemented  — the double-continuation regime (put q<r<=0 / call r<q<=0),
+//                     matching andersen_lake, or an asymptotic-boundary collapse
+//   Internal        — the Gauss-Legendre quadrature table was unavailable
+[[nodiscard]] Result<double> exercise_boundary(double K, double T, double sigma, double r, double q,
+                                               Side side,
+                                               const std::optional<AlOpts> &opts = std::nullopt);
+
+// A fast HEURISTIC screen (NOT a pricing statement) for whether a deep-ITM American
+// option is a candidate for early exercise / assignment. It compares the carry
+// BENEFIT of exercising now against the remaining time (extrinsic) value forfeited:
+//   deep-ITM CALL: benefit = pending dividend income  q*S*T (an option holder
+//                  forgoes dividends the stock pays; exercising captures them)
+//   deep-ITM PUT : benefit = interest on the strike    r*K*T (received early on
+//                  exercise and reinvested)
+// `at_risk` is set when `carry_benefit > time_value` AND the option is in the money.
+// This is a COARSE screen: it uses the linear (undiscounted) carry term r*K*T /
+// q*S*T over the remaining life T and ignores the second-order carry cross term —
+// for the exact early-exercise decision compare the spot to `exercise_boundary()`.
+// `time_value` is measured against the cold Andersen-Lake mark (the same method
+// `american_price` serves).
+struct AssignmentRisk {
+  bool at_risk = false;       // carry_benefit > time_value, and the option is ITM
+  double margin = 0.0;        // carry_benefit - time_value  (signed; > 0 when flagged)
+  double carry_benefit = 0.0; // q*S*T (call) / r*K*T (put) — the linear carry term
+  double time_value = 0.0;    // american_price - intrinsic (>= 0)
+};
+
+// @return the assignment-risk screen, or the same error `american_price` surfaces
+//         for these inputs (InvalidArgument on non-positive S/K/T/sigma;
+//         NotImplemented on the double-continuation corner; etc.).
+[[nodiscard]] Result<AssignmentRisk>
+assignment_risk(double S, double K, double T, double sigma, double r, double q, Side side,
+                const std::optional<AlOpts> &opts = std::nullopt);
+
 namespace detail {
 
 // ── Early-exercise regime classification (Healy 2021 §2.2) ───────────────

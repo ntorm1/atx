@@ -3333,6 +3333,111 @@ void american_dividend_sensitivities(double dP_dq, double F, double T,
   }
 }
 
+// ── Early-exercise boundary (G4, gaps finding 5) ─────────────────────────
+//
+// Exposes the retained Andersen-Lake boundary state: the critical price B(T) at
+// time-to-expiry T. The put boundary is solved directly (internal rate=r, yield=q);
+// the call boundary is the McDonald-Schroder reflection B_call = K^2/B_put(rate=q,
+// yield=r) of the internal put solved with (rate,yield) swapped. The internal put's
+// boundary is read at u = T (al_boundary_at's z=+1 node), i.e. the critical price
+// for the FULL time-to-expiry, so it lands on the smooth-paste seam of andersen_lake.
+Result<double> exercise_boundary(double K, double T, double sigma, double r, double q, Side side,
+                                 const std::optional<AlOpts> &opts) {
+  if (!(K > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "exercise_boundary: K must be > 0");
+  }
+  if (!(T >= 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "exercise_boundary: T must be >= 0");
+  }
+  if (!(sigma >= 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "exercise_boundary: sigma must be >= 0");
+  }
+  if (!(std::isfinite(r) && std::isfinite(q))) {
+    return Err(ErrorCode::InvalidArgument, "exercise_boundary: r and q must be finite");
+  }
+
+  // Internal-put (rate, yield): a put solves directly; a call is the McDonald-
+  // Schroder put P(K,S,q,r), so it classifies and solves with (rate=q, yield=r).
+  const double rp = (side == Side::Put) ? r : q;
+  const double qp = (side == Side::Put) ? q : r;
+
+  switch (classify_regime(/*rate=*/rp, /*yield=*/qp)) {
+  case ExerciseRegime::European:
+    // No early exercise is ever optimal, so there is NO finite boundary (it sits
+    // at S=0 for the put / S=+inf for the call). Documented sentinel — no
+    // fabricated price. (put r<=0 && r<=q; call q<=0 && q<=r.)
+    return Err(ErrorCode::OutOfRange,
+               "exercise_boundary: European regime (early exercise never optimal) — no "
+               "finite early-exercise boundary (S=0 for the put / S=+inf for the call)");
+  case ExerciseRegime::Unsupported:
+    return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
+  case ExerciseRegime::American:
+    break;
+  }
+
+  // xmax = K*min(1, rp/qp): the homogeneity scale AND the near-expiry limit B(0+)
+  // of the internal put. Guaranteed > 0 in the American regime classified above.
+  const double xmax = al_xmax_put(K, rp, qp);
+
+  // Degenerate T ~ 0 / sigma ~ 0 -> the analytic near-expiry limit. Put: B(0+) =
+  // xmax = K*min(1,r/q). Call: reflect, B_call(0+) = K^2/xmax = K*max(1,r/q).
+  if (T <= 1.0e-12 || sigma <= 1.0e-8) {
+    const double b = (side == Side::Put) ? xmax : (K * K / xmax);
+    return Ok(b);
+  }
+
+  const AlScheme sch = scheme_from_opts(opts);
+  AlBoundary bnd;
+  AlWorkspace ws;
+  switch (al_solve_put_boundary(K, T, sigma, rp, qp, sch, bnd, ws, /*specialize=*/true)) {
+  case AlSolveStatus::Collapsed:
+    return Err(ErrorCode::NotImplemented,
+               "exercise_boundary: asymptotic boundary collapsed (xmax <= 0)");
+  case AlSolveStatus::TableMissing:
+    return Err(ErrorCode::Internal, "exercise_boundary: Gauss-Legendre table unavailable");
+  case AlSolveStatus::Ok:
+    break;
+  }
+  const double bp = al_boundary_at(bnd, T); // internal-put critical price at u = T
+  const double b = (side == Side::Put) ? bp : (K * K / bp);
+  return Ok(b);
+}
+
+// ── Early-assignment risk screen (G4) ────────────────────────────────────
+//
+// HEURISTIC screen (not a pricing statement): the carry benefit of exercising a
+// deep-ITM American option now vs. the remaining time (extrinsic) value forfeited.
+// CALL benefit = pending dividend income q*S*T; PUT benefit = interest on the
+// strike r*K*T (both linear/undiscounted over the remaining life T). Flagged when
+// the benefit exceeds the time value AND the option is in the money.
+Result<AssignmentRisk> assignment_risk(double S, double K, double T, double sigma, double r,
+                                       double q, Side side, const std::optional<AlOpts> &opts) {
+  const Result<double> mark =
+      american_price(S, K, T, sigma, r, q, side, AmericanMethod::AndersenLake, opts);
+  if (!mark) {
+    return Err(mark.error());
+  }
+
+  const bool is_call = (side == Side::Call);
+  const double raw_intr = is_call ? (S - K) : (K - S);
+  const double intrinsic = (raw_intr > 0.0) ? raw_intr : 0.0;
+  double time_value = *mark - intrinsic;
+  if (time_value < 0.0) {
+    time_value = 0.0; // American mark is floored at intrinsic; guard FP noise
+  }
+  // Linear carry benefit over the remaining life: dividend income for the call
+  // (holder forgoes divs), interest on the strike for the put.
+  const double carry_benefit = is_call ? (q * S * T) : (r * K * T);
+
+  AssignmentRisk out;
+  out.carry_benefit = carry_benefit;
+  out.time_value = time_value;
+  out.margin = carry_benefit - time_value;
+  // Only an in-the-money option can be assigned; the margin decides deep-ITM cases.
+  out.at_risk = (intrinsic > 0.0) && (carry_benefit > time_value);
+  return Ok(out);
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // C1.7 (additive-only; see FILE-OWNERSHIP RULE in the 07-09 sprint doc) — a
 // vega-ONLY mirror of american_greeks_al's vega branch just above, declared in

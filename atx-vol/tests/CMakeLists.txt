@@ -130,6 +130,8 @@ add_executable(atx-vol-tests
     earnings_repro_smoke_test.cpp    # T7: OPRA -> fit -> atmCenI/iEMove end-to-end (real NVDA board)
     # Earnings-censored atmCen reproduction (Task 9) — appended target:
     earnings_validation_test.cpp     # T9: cohort truth CSV -> validate_cohort_name RMSE + nEarnCnt gate
+    # pricing-greeks SOTA (Agent G4) — appended target:
+    american_exercise_boundary_test.cpp # G4: public exercise_boundary + assignment_risk screen
 )
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).
