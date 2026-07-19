@@ -784,11 +784,19 @@ Result<SviParams> svi_fit_slice(std::span<const FitObs> obs, double T, double F,
   std::uint16_t inner_total_iters = 0;
 
   const std::uint16_t max_outer = detail::outer_cap(opts);
-  const std::uint16_t max_inner = static_cast<std::uint16_t>(
-      (opts.max_inner_iter > 0) ? opts.max_inner_iter : 200);
+  // The quasi-explicit (m, sigma) search is a 2-D Nelder-Mead simplex, NOT the
+  // Newton/LM inner loop that opts.max_inner_iter (default 12) is sized for.
+  // Sizing this NM budget at 12 collapses the simplex to ~12 moves per outer
+  // pass, truncating the search on wide/skewed smiles far from the optimum
+  // (review M4); the C reference runs 200 moves. The simplex is cheap (each eval
+  // is a strided BLLS solve) and hard-bounded, so restore the 200-move C-parity
+  // budget instead of double-duty-ing the LM inner count here.
+  constexpr std::uint16_t kQuasiExplicitNmMaxIter = 200u;
+  const std::uint16_t max_inner = kQuasiExplicitNmMaxIter;
   const double tol = (opts.tol_residual > 0.0) ? opts.tol_residual : 1.0e-10;
 
   std::vector<double> resid_scratch(n, 0.0);
+  std::vector<double> rabs_scratch(n, 0.0);  // |resid| copy for the q90 scale
   double prev_sse = std::numeric_limits<double>::infinity();
 
   // Quasi-explicit inner-solve scratch: gather k ONCE (it is constant across the
@@ -815,9 +823,7 @@ Result<SviParams> svi_fit_slice(std::span<const FitObs> obs, double T, double F,
     inner_total_iters =
         static_cast<std::uint16_t>(inner_total_iters + nm_iters_this_pass);
 
-    // IRLS Huber reweight on sigma-space residuals.
-    double sumw = 0.0;
-    double sumwr2 = 0.0;
+    // Sigma-space residuals for this IRLS pass.
     for (std::size_t i = 0; i < n; ++i) {
       const FitObs &o = work[i];
       const double yi = (o.k - m_cur) / sigma_cur;
@@ -829,12 +835,26 @@ Result<SviParams> svi_fit_slice(std::span<const FitObs> obs, double T, double F,
         w_pred = 1.0e-12;
       }
       const double sig_pred = std::sqrt(w_pred / T);
-      const double r_sig = sig_pred - o.sigma_mkt;
-      resid_scratch[i] = r_sig;
-      sumw += o.weight_w;
-      sumwr2 += o.weight_w * r_sig * r_sig;
+      resid_scratch[i] = sig_pred - o.sigma_mkt;
     }
-    const double sigma_resid = (sumw > 1.0e-15) ? std::sqrt(sumwr2 / sumw) : 0.0;
+
+    // Robust IRLS scale: anchor the Huber threshold on the q90 order statistic of
+    // the |residual| distribution, NOT a weighted RMS. A weighted-RMS scale is
+    // itself inflated by the very outliers Huber is meant to down-weight, so a few
+    // bad quotes weaken the whole slice's rejection (review M5). The q90 anchor is
+    // the same robust scale the SVI-MM (svi_mm_fit_slice) and eSSVI/C8 reweighters
+    // use. nth_element yields the exact lower-index q90 in O(n).
+    for (std::size_t i = 0; i < n; ++i) {
+      rabs_scratch[i] = std::fabs(resid_scratch[i]);
+    }
+    std::size_t q_idx = static_cast<std::size_t>(0.90 * static_cast<double>(n));
+    if (q_idx >= n) {
+      q_idx = n - 1;
+    }
+    std::nth_element(rabs_scratch.begin(),
+                     rabs_scratch.begin() + static_cast<std::ptrdiff_t>(q_idx),
+                     rabs_scratch.end());
+    const double sigma_resid = rabs_scratch[q_idx];
 
     double sse_sigma = 0.0;
     for (std::size_t i = 0; i < n; ++i) {
@@ -1396,6 +1416,24 @@ Status svi_calib_surface(VolSurface &surface, const Underlying &under,
       continue;
     }
 
+    // Butterfly no-arb gate (moved here from the fit_slice_curve serving seam,
+    // vol_curve.cpp). The quasi-explicit raw-SVI fit only promises w >= 0, NOT
+    // the Martini-Mingone butterfly polytope. This driver writes the slice into a
+    // VolSurface that calib_pool serves DIRECTLY (VolSurface::w evaluates the
+    // stored SVI slice via svi_total_w), so a smile stored here reaches
+    // pricing/risk without ever passing through fit_slice_curve's gate. Enforce
+    // admissibility at the source: on a violation, project onto the polytope (the
+    // same repair svi_mm_fit_slice applies to every LM iterate) and re-check; if
+    // it STILL violates, DROP the slice rather than serve a static-arb smile.
+    const auto adm_raw = arb_check_butterfly_svi_mm(slice, T);
+    if (adm_raw.n_violations > 0) {
+      acc.n_butterfly_viol += adm_raw.n_violations;  // pre-repair demand (diag)
+      (void)svi_project_mm(slice, T);
+      if (arb_check_butterfly_svi_mm(slice, T).n_violations > 0) {
+        continue;  // unrepairable — refuse to serve an arbitrageable slice
+      }
+    }
+
     slice.F = F;
     slice.expiry_id = c.expiry_id;
     slice.expiry_ns = c.expiry_ns;
@@ -1414,9 +1452,6 @@ Status svi_calib_surface(VolSurface &surface, const Underlying &under,
     }
     acc.agg_outer += sd.outer_iters;
     acc.agg_inner += sd.inner_iters_total;
-    // Diagnostic: closed-form Martini-Mingone butterfly tally on the served
-    // slice (no rejection here — the serving-seam gate does that).
-    acc.n_butterfly_viol += arb_check_butterfly_svi_mm(slice, T).n_violations;
     ++acc.n_fit_ok;
   }
 
@@ -1478,6 +1513,21 @@ Status svi_mm_calib_surface(VolSurface &surface, const Underlying &under,
     if (!svi_slice_variance_positive(slice, std::span<const FitObs>(os.obs))) {
       continue;
     }
+    // Butterfly no-arb gate (same source-side enforcement as svi_calib_surface).
+    // svi_mm_fit_slice projects every LM iterate onto the Mingone polytope, so a
+    // converged SVI-MM slice is admissible by construction; this is defense-in-
+    // depth making the served VolSurface admissible independent of the fit path
+    // (calib_pool serves it directly). A residual violation is repaired-or-dropped
+    // rather than tallied-and-served.
+    const auto adm_raw = arb_check_butterfly_svi_mm(slice, T);
+    if (adm_raw.n_violations > 0) {
+      acc.n_butterfly_viol += adm_raw.n_violations;  // pre-repair demand (diag)
+      (void)svi_project_mm(slice, T);
+      if (arb_check_butterfly_svi_mm(slice, T).n_violations > 0) {
+        continue;  // unrepairable — refuse to serve an arbitrageable slice
+      }
+    }
+
     slice.F = F;
     slice.expiry_id = c.expiry_id;
     slice.expiry_ns = c.expiry_ns;
@@ -1496,9 +1546,6 @@ Status svi_mm_calib_surface(VolSurface &surface, const Underlying &under,
     }
     acc.agg_outer += sd.outer_iters;
     acc.agg_inner += sd.inner_iters_total;
-    // Diagnostic: closed-form Martini-Mingone butterfly tally on the served
-    // slice (no rejection here — the serving-seam gate does that).
-    acc.n_butterfly_viol += arb_check_butterfly_svi_mm(slice, T).n_violations;
     ++acc.n_fit_ok;
   }
 
