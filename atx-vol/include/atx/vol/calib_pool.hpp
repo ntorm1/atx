@@ -1,5 +1,22 @@
 #pragma once
 
+// ┌──────────────────────────────────────────────────────────────────────────┐
+// │ F2 QUARANTINE — TEST-ONLY. This driver has NO production caller: the       │
+// │ corpus/populate hot path deliberately bypasses `calibrate_pool`            │
+// │ (corpus_board_fit.hpp / corpus.cpp). Its TU is compiled ONLY into          │
+// │ atx-vol-tests (see atx-vol/tests/CMakeLists.txt), NOT the shipped          │
+// │ atx::vol library. Including this header outside that target is a hard      │
+// │ error so the unreachable universe-refit driver cannot silently re-enter    │
+// │ the product. To promote it back to production: wire a live universe-refit  │
+// │ driver, restore `src/calib_pool.cpp` to atx-vol/CMakeLists.txt, and delete │
+// │ both this guard and the ATX_VOL_CALIB_POOL_TEST_ONLY define.               │
+// └──────────────────────────────────────────────────────────────────────────┘
+#ifndef ATX_VOL_CALIB_POOL_TEST_ONLY
+#error "atx/vol/calib_pool.hpp is quarantined test-only code (F2): it has no \
+production caller. Define ATX_VOL_CALIB_POOL_TEST_ONLY (the atx-vol-tests target \
+does) to use it, or wire a real universe-refit driver and lift the quarantine."
+#endif
+
 // Multi-underlier calibration pool + refit-cadence scheduler — the parallel
 // universe-rebuild driver for atx-vol.
 //

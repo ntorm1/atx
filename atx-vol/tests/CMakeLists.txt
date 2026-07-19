@@ -41,6 +41,10 @@ add_executable(atx-vol-tests
     batch_test.cpp
     portfolio_test.cpp
     bulk_test.cpp
+    # F2 quarantine: calib_pool has no production caller, so its TU lives with its
+    # test rather than in the shipped atx::vol library. Both are gated by the
+    # ATX_VOL_CALIB_POOL_TEST_ONLY define below (the header #errors without it).
+    ../src/calib_pool.cpp
     calib_pool_test.cpp
     projection_test.cpp
     contract_projection_test.cpp
@@ -147,6 +151,12 @@ target_link_libraries(atx-vol-tests
         GTest::gtest_main
         atx_warnings
 )
+
+# F2 quarantine: unlocks atx/vol/calib_pool.hpp (test-only guard) for both the
+# relocated ../src/calib_pool.cpp TU and calib_pool_test.cpp. Any production TU
+# that includes the header without this define is a hard compile error, so the
+# dead driver cannot silently re-enter the shipped library.
+target_compile_definitions(atx-vol-tests PRIVATE ATX_VOL_CALIB_POOL_TEST_ONLY)
 
 # Precompiled header (opt-in: ATX_USE_PCH; ON in the ninja/dev/rel presets, OFF
 # in `hygiene`). GoogleTest is #included by ~79 of the test TUs and is by far the

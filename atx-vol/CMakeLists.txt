@@ -51,7 +51,13 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/portfolio_price.cpp
     src/bulk.cpp
     src/portfolio_greeks.cpp
-    src/calib_pool.cpp
+    # F2 quarantine: src/calib_pool.cpp (calibrate_pool + CadenceQueue) has NO
+    # production caller — the corpus/populate hot path deliberately bypasses it
+    # (see corpus_board_fit.hpp / corpus.cpp). It is compiled into the test target
+    # ONLY (atx-vol/tests/CMakeLists.txt) so the shipped atx::vol library no longer
+    # carries this unreachable multi-underlier universe-refit driver on its attack
+    # surface. Re-add here (and drop the header's test-only guard) when a live
+    # universe-refit driver is wired.
     src/projection.cpp
     src/contract_projection.cpp
     src/historical_projection.cpp
