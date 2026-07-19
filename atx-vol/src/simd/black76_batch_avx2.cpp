@@ -4,14 +4,21 @@
 // dispatch layer confirms AVX2+FMA at runtime. Lane-parallel across 4 contracts;
 // the n % 4 tail and any degenerate lanes fall through to the exact scalar
 // kernels in atx/vol/black76.hpp. Φ is the full-range Cody rational-erfc form
-// (detail/vector_math.hpp), machine-accurate on the entire real line, so the
-// vector price tracks the scalar source of truth to ≈1e-16 everywhere — deep
-// wings included — and no |d| wing patch is needed (K2).
+// (detail/vector_math.hpp), machine-accurate on the entire real line, so no |d|
+// wing patch is needed (K2). The PRICE kernel computes the put leg from
+// Φ(−d1),Φ(−d2) directly, matching the scalar black76_price and tracking it to
+// ≈1e-16 RELATIVE across the whole line, deep wings included (A8). The value+vega
+// kernel deliberately keeps the 1−Φ(d) complement for the put leg to stay
+// bit-consistent with its scalar ref black76_value_and_vega — absolute-accurate
+// everywhere but, like that ref, only absolute (not relative) accurate deep in the
+// put wing where 1−Φ(d) cancels.
 //
 // Per 4-lane pass:
 //   v    = σ·√T,  d1 = (ln(F/K) + ½v²)/v,  d2 = d1 - v
 //   Φ(·) = ½·erfc(−·/√2), Cody rational erfc (detail/vector_math.hpp)
-//   C    = df·(F·Φ(d1) - K·Φ(d2));  P = df·(K·(1-Φ(d2)) - F·(1-Φ(d1)))
+//   C    = df·(F·Φ(d1) - K·Φ(d2))
+//   P    = df·(K·Φ(−d2) - F·Φ(−d1))       [price kernel]
+//        = df·(K·(1-Φ(d2)) - F·(1-Φ(d1))) [value+vega kernel, complement — see above]
 //   vega = F·df·φ(d1)·√T                       (same for calls and puts)
 // Degenerate lanes (T ≤ 0 or σ ≤ 0) get dummy finite inputs to stay branchless,
 // then are patched, as are the rare NaN-d lanes (R-22).
@@ -156,6 +163,11 @@ void value_vega_batch_avx2_impl(const double *F, const double *K, const double *
     norm_cdf_erfc_pd2(d1, d2, nd1, nd2); // K2: full-range Cody erfc Φ (see price batch)
     const __m256d call = _mm256_mul_pd(
         safe_df, _mm256_sub_pd(_mm256_mul_pd(safe_f, nd1), _mm256_mul_pd(safe_k, nd2)));
+    // A8 (simd-review finding 1): this value+vega kernel deliberately KEEPS the
+    // 1−Φ(d) complement for the put leg (unlike the price kernel above, which uses
+    // Φ(−d)) to stay bit-consistent with its scalar ref black76_value_and_vega,
+    // which also uses the complement — so batch and scalar agree EXACTLY (both 0.0)
+    // deep in the put wing rather than one being accurate and one not.
     const __m256d put =
         _mm256_mul_pd(safe_df, _mm256_sub_pd(_mm256_mul_pd(safe_k, _mm256_sub_pd(one, nd2)),
                                              _mm256_mul_pd(safe_f, _mm256_sub_pd(one, nd1))));
@@ -227,11 +239,20 @@ void black76_price_batch_avx2(const double *F, const double *K, const double *T,
     // scalar now (see patch_bits). Deep-wing lanes price on this vector path.
     norm_cdf_erfc_pd2(d1, d2, Nd1, Nd2);
 
+    // A8 (simd-review finding 1): compute the put leg from Φ(−d1),Φ(−d2) DIRECTLY
+    // — negate the args, the Cody erfc kernel is symmetric and accurate for
+    // negatives — matching the scalar black76_price (which uses Φ(−d)). The
+    // 1−Φ(d) complement suffers catastrophic cancellation deep in the put wing
+    // (d ≫ 0 ⇒ Φ(d) rounds to exactly 1.0 ⇒ 1−Φ(d) = 0.0), zeroing a genuine
+    // ~1e-26 premium; Φ(−d) resolves it to full RELATIVE precision. The call leg
+    // keeps Φ(d1),Φ(d2) (no cancellation there).
+    __m256d Nm1, Nm2;
+    norm_cdf_erfc_pd2(_mm256_sub_pd(zero, d1), _mm256_sub_pd(zero, d2), Nm1, Nm2);
+
     const __m256d call =
         _mm256_mul_pd(safeDf, _mm256_sub_pd(_mm256_mul_pd(safeF, Nd1), _mm256_mul_pd(safeK, Nd2)));
     const __m256d put =
-        _mm256_mul_pd(safeDf, _mm256_sub_pd(_mm256_mul_pd(safeK, _mm256_sub_pd(one, Nd2)),
-                                            _mm256_mul_pd(safeF, _mm256_sub_pd(one, Nd1))));
+        _mm256_mul_pd(safeDf, _mm256_sub_pd(_mm256_mul_pd(safeK, Nm2), _mm256_mul_pd(safeF, Nm1)));
     __m256d price = _mm256_blendv_pd(call, put, side_blend_mask(side, i));
 
     const int patch = patch_bits(input_patch, d1, d2);

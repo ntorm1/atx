@@ -18,6 +18,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -86,6 +87,38 @@ TEST(SimdBlack76Batch, PriceMatchesScalarAcrossGrid) {
   }
   // Absolute error stays sub-microdollar across the whole grid.
   EXPECT_LT(max_abs, kAbs);
+}
+
+// A8 (simd-review finding 1): deep-OTM put legs must match the scalar
+// black76_price to RELATIVE precision, not merely absolute. Pre-fix the batch put
+// leg used the 1−Φ(d) complement, so for a deep-OTM put (d2 ≫ 0, Φ(d2) rounds to
+// exactly 1.0) it returned exactly 0.0 while the scalar Φ(−d) form returns the
+// genuine ~1e-26·df wing premium — a 100% relative error the absolute-tolerance
+// grid test above cannot see. The batch now computes the put leg from
+// Φ(−d1),Φ(−d2) directly (Cody erfc is accurate for negative args), matching the
+// scalar source of truth (which already uses Φ(−d)) to machine relative precision.
+TEST(SimdBlack76Batch, DeepOtmPutMatchesScalarToRelativePrecision) {
+  // The finding's exact case (F=100,K=50) plus deeper 2:1 wings, all on a full
+  // 4-lane pass so the AVX2 vector path (not the scalar tail) computes each lane.
+  const std::vector<double> F{100.0, 200.0, 150.0, 100.0};
+  const std::vector<double> K{50.0, 100.0, 75.0, 48.0};
+  const std::vector<double> T{0.1, 0.1, 0.12, 0.1};
+  const std::vector<double> sigma{0.20, 0.22, 0.20, 0.20};
+  const std::vector<double> df{0.995, 0.99, 0.99, 0.995};
+  const std::vector<Side> sd(4, Side::Put);
+  const std::size_t n = F.size();
+  std::vector<double> got(n, -1.0);
+  simd::black76_price_batch(F.data(), K.data(), T.data(), sigma.data(), df.data(), sd.data(),
+                            got.data(), n);
+  double max_rel = 0.0;
+  for (std::size_t i = 0; i < n; ++i) {
+    const double want = black76_price(F[i], K[i], T[i], sigma[i], df[i], sd[i]);
+    ASSERT_GT(want, 0.0) << "i=" << i; // a genuine, tiny wing premium
+    const double rel = std::abs(got[i] - want) / want;
+    max_rel = std::max(max_rel, rel);
+    EXPECT_LT(rel, 1e-12) << "i=" << i << " got=" << got[i] << " want=" << want;
+  }
+  std::printf("[SimdBlack76Batch] deep-OTM-put max_rel=%.3e\n", max_rel);
 }
 
 TEST(SimdBlack76Batch, ValueVegaMatchesScalarAcrossGrid) {

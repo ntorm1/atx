@@ -477,11 +477,16 @@ inline __m256d price_put_pack_avx2(const PutPackBoundary& b, __m256d spot) noexc
                       _mm256_mul_pd(half, _mm256_mul_pd(vT, vT))),
         vT);
     const __m256d d2 = _mm256_sub_pd(d1, vT);
-    __m256d Nd1, Nd2;
-    norm_cdf_erfc_pd2(d1, d2, Nd1, Nd2);
-    const __m256d euro = _mm256_mul_pd(
-        df, _mm256_sub_pd(_mm256_mul_pd(Kv, _mm256_sub_pd(one, Nd2)),
-                          _mm256_mul_pd(F, _mm256_sub_pd(one, Nd1))));
+    // A8 (simd-review finding 1): the European put leg is computed from
+    // Φ(−d1),Φ(−d2) DIRECTLY (negate the args — the Cody erfc kernel is accurate
+    // for negatives), matching the scalar euro_put_sk → black76_price (Φ(−d))
+    // instead of the 1−Φ(d) complement, which cancels to 0.0 deep in the put wing.
+    // The scalar reference already uses Φ(−d), so this IMPROVES AVX2-vs-scalar
+    // economic parity.
+    __m256d Nm1, Nm2;
+    norm_cdf_erfc_pd2(_mm256_sub_pd(zero, d1), _mm256_sub_pd(zero, d2), Nm1, Nm2);
+    const __m256d euro =
+        _mm256_mul_pd(df, _mm256_sub_pd(_mm256_mul_pd(Kv, Nm2), _mm256_mul_pd(F, Nm1)));
 
     const __m256d sqrtT = _mm256_sqrt_pd(Tv);
     const __m256d half_sqrtT = _mm256_mul_pd(half, sqrtT);
