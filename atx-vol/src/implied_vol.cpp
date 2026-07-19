@@ -25,9 +25,22 @@ constexpr double kPi = 3.141592653589793238462643383279502884;
 struct NoArbBand {
   bool inside;
   double intrinsic; // discounted intrinsic (df·max(intr,0))
+  double tol;       // discounted no-arb acceptance tolerance (df · forward tol)
 };
 
 // No-arbitrage band: for a call max(0,F-K) <= C/df <= F; for a put analogously.
+//
+// A4 (core-review finding 4): the acceptance tolerance is NOTIONAL-scaled, not
+// an absolute 1e-15. The band test is on `pn = price/df` and the boundaries
+// `intr`/`upper`, all of magnitude ~max(F,K); a legitimately at-band quote can
+// only be resolved to the rounding-noise floor of those terms, ~ε·max(F,K). The
+// absolute 1e-15 was below that floor at index notional (F≈5000: floor ~1e-12),
+// so a rounded at-intrinsic quote was rejected OutOfRange with an effectively
+// zero-width clamp band. Scaling by max(F,K) — the same scaling as the American
+// inverter's front door (american_iv.cpp) and the K1 residual noise floor below
+// — makes the band track the price's own precision at every notional. The
+// discounted tolerance (df · forward tol) is returned so the intrinsic clamp in
+// the caller stays consistent with the acceptance test.
 [[nodiscard]] NoArbBand no_arb_band(double price, double F, double K, double df,
                                     Side side) noexcept {
   double intr, upper;
@@ -38,9 +51,11 @@ struct NoArbBand {
     intr = (K > F) ? (K - F) : 0.0;
     upper = K;
   }
+  const double band_tol =
+      kIvResidNoiseFloor * std::numeric_limits<double>::epsilon() * std::fmax(F, K);
   const double pn = price / df;
-  const bool inside = (pn > intr - 1e-15) && (pn < upper + 1e-15);
-  return NoArbBand{inside, df * intr};
+  const bool inside = (pn > intr - band_tol) && (pn < upper + band_tol);
+  return NoArbBand{inside, df * intr, df * band_tol};
 }
 
 // Defense-in-depth Brenner-Subrahmanyam + |k|/T fallback seed for the corners
@@ -263,8 +278,11 @@ template <bool Trace>
   if (!band.inside) {
     return Err(ErrorCode::OutOfRange, "implied_vol: price outside no-arb band");
   }
-  // A price at intrinsic implies σ→0 (no finite IV); clamp to the floor.
-  if (price <= band.intrinsic + 1e-15) {
+  // A price at intrinsic implies σ→0 (no finite IV); clamp to the floor. The
+  // clamp uses the SAME notional-scaled tolerance (in discounted units) as the
+  // acceptance band above (A4), so an at-intrinsic index-scale quote that the
+  // band admits is clamped rather than driven into the solver.
+  if (price <= band.intrinsic + band.tol) {
     return Ok(kIvMin);
   }
 

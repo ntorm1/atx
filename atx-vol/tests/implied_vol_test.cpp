@@ -1,9 +1,11 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <string>
 
 #include "atx/vol/black76.hpp"
 #include "atx/vol/implied_vol.hpp"
+#include "atx/vol/types.hpp" // kIvMin
 
 // Implied-vol round-trip coverage, ported from the C ats-vol test_pricer_iv.c:
 // price with B76, invert, expect σ recovered to near-machine precision across
@@ -56,6 +58,44 @@ TEST(ImpliedVol, RejectBelowIntrinsic) {
   const auto iv = implied_vol(10.0, F, K, T, df, Side::Call);
   ASSERT_FALSE(iv.has_value());
   EXPECT_EQ(iv.error().code(), ErrorCode::OutOfRange);
+}
+
+// A4 (core-review finding 4): notional-scaled no-arb tolerances.
+//
+// At index notional (F≈5000) a legitimately at-intrinsic quote carries ~1e-12
+// forward-unit rounding noise (the price/df division of a ~1e3-magnitude value).
+// The pre-fix absolute 1e-15 no-arb band could never admit it — the acceptance
+// band was effectively zero-width at this scale — so the quote was rejected
+// OutOfRange instead of clamped to the vol floor. The band and the intrinsic
+// clamp now scale with the price's own rounding-noise floor (ε·max(F,K), the
+// same max(F,K) scaling the American front door and the K1 residual floor use),
+// so the quote is admitted and clamps to kIvMin.
+TEST(ImpliedVol, IndexScaleAtIntrinsic_ClampsToFloor) {
+  const double F = 5000.0, K = 4000.0, T = 1.0, df = std::exp(-0.03);
+  const double intr = F - K; // forward intrinsic = 1000
+  // A quote 1e-12 (forward units) below intrinsic: inside the notional-scaled
+  // band (ε·max(F,K) ≈ 8.9e-12) but far outside the old absolute 1e-15 band.
+  const double price = df * (intr - 1.0e-12);
+  const auto iv = implied_vol(price, F, K, T, df, Side::Call);
+  ASSERT_TRUE(iv.has_value()) << (iv ? std::string{} : iv.error().to_string());
+  EXPECT_DOUBLE_EQ(*iv, atx::vol::kIvMin);
+}
+
+// A4: the notional-scaled band must leave tiny-notional quotes unchanged. At
+// F≈0.5 the band ε·max(F,K) ≈ 9e-16 tracks the old 1e-15 floor, so a genuine
+// in-the-money quote still round-trips and a clearly sub-intrinsic quote is
+// still rejected OutOfRange.
+TEST(ImpliedVol, SmallNotionalBehaviorUnchanged) {
+  const double F = 0.5, K = 0.45, T = 0.5, df = 0.99, sigma = 0.30;
+  const double price = black76_price(F, K, T, sigma, df, Side::Call);
+  const auto iv = implied_vol(price, F, K, T, df, Side::Call);
+  ASSERT_TRUE(iv.has_value()) << (iv ? std::string{} : iv.error().to_string());
+  EXPECT_NEAR(*iv, sigma, 1.0e-7);
+
+  const double intr_disc = df * (F - K); // discounted intrinsic ≈ 0.0495
+  const auto bad = implied_vol(intr_disc - 0.01, F, K, T, df, Side::Call);
+  ASSERT_FALSE(bad.has_value());
+  EXPECT_EQ(bad.error().code(), ErrorCode::OutOfRange);
 }
 
 TEST(ImpliedVol, RejectNonPositiveInputs) {
