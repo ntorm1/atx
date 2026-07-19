@@ -121,10 +121,11 @@ TEST(AmericanBoundaryBatch, PerCallIsaDoesNotMutateProcessOverride) {
 
 TEST(AmericanBoundaryBatch, PerCallAutoUsesShipGateWithoutMutatingGlobalOverride) {
   IsaGuard g;
-  // Set the process override to the OPPOSITE of what Auto picks (AVX2 marks are opt-in,
-  // so Auto picks scalar), proving the per-call Auto route is call-local: it neither
-  // reads nor mutates the global override, and follows the opt-in gate (scalar).
-  simd::set_simd_isa_override(simd::SimdIsa::ForceAvx2);
+  // Set the process override to the OPPOSITE of what Auto now picks. With the ship gate ON
+  // (kShipAvx2Boundary=true, PM 2026-07-19) Auto routes AVX2 on an AVX2-capable host, so we
+  // force the global override to Scalar and prove the per-call Auto route is call-local: it
+  // neither reads nor mutates the global override, and follows the ship gate (AVX2).
+  simd::set_simd_isa_override(simd::SimdIsa::ForceScalar);
   const Book b = make_book();
   constexpr std::size_t n = 1;
   ASSERT_GE(b.size(), n);
@@ -134,11 +135,10 @@ TEST(AmericanBoundaryBatch, PerCallAutoUsesShipGateWithoutMutatingGlobalOverride
       b.S.data(), b.K.data(), b.T.data(), b.sigma.data(), b.r.data(), b.q.data(), price.data(), n,
       simd::SimdIsa::Auto);
 
-  // AVX2 marks are opt-in (ForceAvx2 only, PM 2026-07-19); the DEFAULT Auto route returns
-  // the exact, cross-host bit-reproducible scalar solve, without reading or mutating the
-  // ForceAvx2 process override set above.
-  EXPECT_EQ(route, simd::SimdRoute::Scalar);
-  EXPECT_EQ(simd::simd_isa_override(), simd::SimdIsa::ForceAvx2);
+  // Ship gate ON: the DEFAULT Auto route follows the gate — AVX2 on an AVX2-capable host,
+  // scalar otherwise — without reading or mutating the ForceScalar process override set above.
+  EXPECT_EQ(route, simd::have_avx2() ? simd::SimdRoute::Avx2 : simd::SimdRoute::Scalar);
+  EXPECT_EQ(simd::simd_isa_override(), simd::SimdIsa::ForceScalar);
 }
 
 TEST(AmericanBoundaryBatch, ForceAvx2IsCapabilityGuarded) {
@@ -250,27 +250,47 @@ TEST(AmericanPriceBatch, MatchesScalarBitIdentical) {
   EXPECT_EQ(out.scalar_fallback_rate(), 1.0);
 }
 
-TEST(AmericanPriceBatch, DefaultKernelReportsZeroAvx2Lanes) {
+TEST(AmericanPriceBatch, DefaultKernelRoutesShipGatedAvx2Lanes) {
+  if (!simd::have_avx2()) {
+    GTEST_SKIP() << "no AVX2 on this host";
+  }
   IsaGuard g;
-  // AVX2 marks are opt-in (ForceAvx2 only, PM 2026-07-19): prove the DEFAULT (Auto)
-  // kernel stays call-local scalar even with the global override forced to AVX2 — it
-  // follows the opt-in gate, not this knob.
-  simd::set_simd_isa_override(simd::SimdIsa::ForceAvx2);
+  // Ship gate ON (kShipAvx2Boundary=true, PM 2026-07-19): the DEFAULT (Auto) kernel follows
+  // the gate — AVX2 on the regular whole-pack lanes, exact scalar on the irregular / patched /
+  // n%4 tail lanes. Prove it is call-local too: it neither reads nor mutates the global
+  // override, set here to the OPPOSITE (ForceScalar).
+  simd::set_simd_isa_override(simd::SimdIsa::ForceScalar);
   const Book b = make_book();
+  const std::size_t n = b.size();
   PricingKernel kernel;
   ASSERT_EQ(kernel.isa, simd::SimdIsa::Auto);
   PricingWorkspace ws;
   PriceBatchOutput out;
 
   ASSERT_TRUE(american_price_batch(b.view(), out, kernel, ws).has_value());
-  ASSERT_EQ(out.size(), b.size());
-  // The DEFAULT (Auto) kernel takes the exact scalar boundary solve on every lane —
-  // cross-host bit-reproducible — regardless of the ForceAvx2 global override.
-  for (std::size_t i = 0; i < out.size(); ++i) {
-    EXPECT_EQ(out.route[i], simd::SimdRoute::Scalar) << "i=" << i;
+  ASSERT_EQ(out.size(), n);
+
+  std::size_t n_avx2 = 0;
+  for (std::size_t i = 0; i < n; ++i) {
+    const double want = ref_price(b, i);
+    if (out.route[i] == simd::SimdRoute::Avx2) {
+      ++n_avx2;  // regular whole-pack lane rode the AVX2 boundary kernel
+      ASSERT_FALSE(std::isnan(want)) << "i=" << i;
+      EXPECT_LE(std::abs(out.price[i] - want), 1e-3) << "i=" << i;  // T13 stress gate
+      EXPECT_EQ(out.status[i], LaneStatus::Ok) << "i=" << i;
+    } else {
+      // Irregular / patched / n%4 tail lanes take the exact scalar andersen_lake.
+      EXPECT_EQ(out.route[i], simd::SimdRoute::Scalar) << "i=" << i;
+      if (std::isnan(want)) {
+        EXPECT_TRUE(std::isnan(out.price[i])) << "i=" << i;
+      } else {
+        EXPECT_EQ(out.price[i], want) << "i=" << i;
+      }
+    }
   }
-  EXPECT_EQ(out.scalar_fallback_rate(), 1.0);
-  EXPECT_EQ(simd::simd_isa_override(), simd::SimdIsa::ForceAvx2);
+  EXPECT_GT(n_avx2, 0u);                          // genuine American lanes exercised the vector kernel
+  EXPECT_LT(out.scalar_fallback_rate(), 1.0);
+  EXPECT_EQ(simd::simd_isa_override(), simd::SimdIsa::ForceScalar);  // untouched
 }
 
 // ── ForceAvx2: Scalar lanes bit-exact, Avx2 lanes within T13's stress gate ─

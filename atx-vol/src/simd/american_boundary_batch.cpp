@@ -71,7 +71,16 @@ void put_batch_scalar(const double* S, const double* K, const double* T,
 // analytic greeks engage only under an explicit ForceAvx2 request, gated at their
 // priced_surface caller) and main (kShipAvx2Boundary == false there). WS-K briefly flipped
 // this ON (Auto->AVX2); the PM reverted it to opt-in to restore cross-host reproducibility.
-inline constexpr bool kShipAvx2Boundary = false;
+//
+// USER OVERRIDE (2026-07-19, solve-wall sprint): the above opt-in ruling is EXPLICITLY
+// overridden by the user, who elected Auto default-ON after being shown the cross-host
+// reproducibility cost. The quiet-window A/B ratified the marks speedup (ql_fast 3.97x,
+// CV 3.92/4.67%, best-of-5). The thread-count non-determinism is fixed (the H0/H5 tile
+// schedule keeps AVX2 pack membership worker-count-invariant). The RESIDUAL cost the user
+// accepted: default results are AVX2-host-dependent at ~1e-13 (differ from the scalar oracle
+// and across microarchitectures) — economically nil (10+ orders below a tick) but it relaxes
+// bit-reproducible-by-default to reproducible-per-host. Documented per the PM epsilon license.
+inline constexpr bool kShipAvx2Boundary = true;
 
 } // namespace
 

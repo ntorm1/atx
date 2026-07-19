@@ -30,6 +30,7 @@
 #include "atx/vol/counters.hpp"
 #include "atx/vol/portfolio_pricer.hpp"
 #include "atx/vol/priced_surface.hpp"
+#include "atx/vol/simd/cpu.hpp"  // simd::have_avx2 — ship-gate route expectations
 #include "support/isa_golden_tol.hpp"
 #include "atx/vol/vol_curve.hpp"
 #include "atx/vol/vol_surface.hpp"
@@ -1948,8 +1949,16 @@ TEST(PortfolioPricer, PriceInto_ZeroAllocation_And_PreparedReuse) {
     EXPECT_EQ(sm.get(Counter::PreparedBuilds), 0u);
     EXPECT_GT(sm.get(Counter::ResolvedPriceWrapperCalls), 0u);
     EXPECT_GE(sm.get(Counter::ResolvedPriceWrapperLanes), nu);
-    EXPECT_EQ(sm.get(Counter::AmericanAvxPackDispatches), 0u);
-    EXPECT_GE(sm.get(Counter::AmericanWrapperKnownScalarLanes), nu);
+    if (simd::have_avx2()) {
+      // Ship gate ON (kShipAvx2Boundary=true, PM 2026-07-19): the Auto Marks path routes the
+      // regular whole-pack American lanes through the AVX2 boundary kernel; only the n%4 tail /
+      // irregular / non-finite lanes fall back to the exact scalar solve. So we see >0 AVX2 pack
+      // dispatches, and known-scalar lanes drop below nu (no longer the whole book).
+      EXPECT_GT(sm.get(Counter::AmericanAvxPackDispatches), 0u);
+    } else {
+      EXPECT_EQ(sm.get(Counter::AmericanAvxPackDispatches), 0u);
+      EXPECT_GE(sm.get(Counter::AmericanWrapperKnownScalarLanes), nu);
+    }
   } else {
     EXPECT_FALSE(atx::vol::counters::snapshot().enabled);
     SUCCEED();
