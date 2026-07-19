@@ -570,10 +570,15 @@ Result<double> PricedSurfaceView::price_resolved(const ResolvedSurfacePoint &p, 
 }
 
 Result<AmericanGreeks> PricedSurfaceView::greeks_resolved(const ResolvedSurfacePoint &p, Side side,
-                                                          bool analytic) const {
+                                                          bool analytic, GreekNeeds needs) const {
   if (analytic && pricing_.method == AmericanMethod::AndersenLake) {
+    // K4 first-order tier, identical mapping to PricedSurface::greeks_resolved's cold
+    // AL lane: a reduced request skips whole boundary solves and zeroes the columns it
+    // did not ask for. Default GreekNeeds{} (all true) is the full 5-solve bundle and
+    // reproduces the pre-WS-ZC1 maskless call exactly.
     return american_greeks_al(pricing_.S, p.K, p.T, p.sigma, p.rate, p.q_eff, side,
-                              std::optional<AlOpts>{pricing_.al_opts});
+                              std::optional<AlOpts>{pricing_.al_opts}, needs.vega, needs.rho,
+                              needs.charm);
   }
   return american_greeks_fd(pricing_.S, p.K, p.T, p.sigma, p.rate, p.q_eff, side, pricing_.method,
                             std::optional<AlOpts>{pricing_.al_opts});
@@ -619,13 +624,14 @@ Result<AmericanGreeks> PricedSurfaceView::greeks(double K, double T, Side side,
 }
 
 Result<AmericanGreeks> PricedSurfaceView::greeks_analytic(double K, double T, Side side,
-                                                          QueryExecution /*execution*/) const {
+                                                          QueryExecution /*execution*/,
+                                                          GreekNeeds needs) const {
   const ResolvedSurfacePoint p = resolve(K, T);
   if (!p.valid) {
     return Err(ErrorCode::InvalidArgument,
                "PricedSurfaceView::greeks_analytic: non-finite or non-positive K/T");
   }
-  return greeks_resolved(p, side, true);
+  return greeks_resolved(p, side, true, needs);
 }
 
 Result<double> PricedSurfaceView::delta(double K, double T, Side side,
@@ -649,7 +655,7 @@ Result<double> PricedSurfaceView::vega(double K, double T, Side side,
 
 PricedSurfaceView::FusedResult
 PricedSurfaceView::evaluate_resolved(const ResolvedSurfacePoint &p, Side side, EvalField fields,
-                                     bool analytic) const {
+                                     bool analytic, GreekNeeds needs) const {
   FusedResult r;
   if (!p.valid) {
     r.iv = kNaN;
@@ -669,7 +675,7 @@ PricedSurfaceView::evaluate_resolved(const ResolvedSurfacePoint &p, Side side, E
   const bool want_greeks =
       has_field(fields, EvalField::FirstOrder) || has_field(fields, EvalField::SecondOrder);
   if (want_greeks) {
-    Result<AmericanGreeks> g = greeks_resolved(p, side, analytic);
+    Result<AmericanGreeks> g = greeks_resolved(p, side, analytic, needs);
     if (!g.has_value()) {
       r.iv = kNaN;
       r.price = kNaN;
@@ -719,8 +725,9 @@ PricedSurfaceView::evaluate_resolved(const ResolvedSurfacePoint &p, Side side, E
 
 PricedSurfaceView::FusedResult PricedSurfaceView::evaluate(double K, double T, Side side,
                                                            EvalField fields, bool analytic,
-                                                           QueryExecution /*execution*/) const {
-  return evaluate_resolved(resolve(K, T), side, fields, analytic);
+                                                           QueryExecution /*execution*/,
+                                                           GreekNeeds needs) const {
+  return evaluate_resolved(resolve(K, T), side, fields, analytic, needs);
 }
 
 Result<FullGreekSeed> PricedSurfaceView::full_greek_seed(double K, double T, Side side, bool analytic,
@@ -738,7 +745,7 @@ Result<FullGreekSeed> PricedSurfaceView::full_greek_seed(double K, double T, Sid
 Status PricedSurfaceView::evaluate_batch(std::span<const double> K, std::span<const double> T,
                                          std::span<const Side> side, EvalField fields, bool analytic,
                                          EvaluationSoA out, simd::SimdIsa resolved_price_isa,
-                                         QueryExecution /*execution*/) const {
+                                         QueryExecution /*execution*/, GreekNeeds needs) const {
   const std::size_t n = K.size();
   if (T.size() != n || side.size() != n) {
     return Err(ErrorCode::InvalidArgument,
@@ -810,7 +817,7 @@ Status PricedSurfaceView::evaluate_batch(std::span<const double> K, std::span<co
           ResolvedSurfacePoint p;
           p.K = K[e];
           p.T = t;
-          const FusedResult fr = evaluate_resolved(p, side[e], fields, analytic);
+          const FusedResult fr = evaluate_resolved(p, side[e], fields, analytic, needs);
           out.iv[e] = fr.iv;
           out.price[e] = fr.price;
           out.status[e] = fr.status;
@@ -864,7 +871,7 @@ Status PricedSurfaceView::evaluate_batch(std::span<const double> K, std::span<co
         if (!batch_status.has_value()) {
           return batch_status;
         }
-        const FusedResult fr = evaluate_resolved(p, side[e], fields, analytic);
+        const FusedResult fr = evaluate_resolved(p, side[e], fields, analytic, needs);
         out.iv[e] = fr.iv;
         out.price[e] = fr.price;
         out.status[e] = fr.status;
@@ -889,16 +896,17 @@ Status PricedSurfaceView::evaluate_batch(std::span<const double> K, std::span<co
     //
     // The view carries NO QueryAccelerator (it is always the cold reference tier), so the
     // accelerator half of PricedSurface's guard is unconditionally satisfied here. It also
-    // carries no GreekNeeds parameter, so the full bundle is requested — exactly what the
-    // scalar greeks_resolved() it replaces computed.
+    // now carries the SAME GreekNeeds parameter as PricedSurface (WS-ZC1), so a reduced
+    // request skips the same boundary solves on both types and the default {} full bundle
+    // is exactly what the scalar greeks_resolved() it replaces computed.
     if (detail::laned_greek_route_selected(want_greeks, selective_only, want_delta, want_vega,
                                            analytic, t_valid, pricing_.method,
                                            resolved_price_isa)) {
       detail::laned_greek_run(
           pricing_.S, i, j, side, std::optional<AlOpts>{pricing_.al_opts}, resolved_price_isa,
-          GreekNeeds{}, out, [&](std::size_t e) { return resolve_with_carry(K[e], t, fc); },
+          needs, out, [&](std::size_t e) { return resolve_with_carry(K[e], t, fc); },
           [&](std::size_t e, Side sd) {
-            return evaluate_resolved(resolve_with_carry(K[e], t, fc), sd, fields, analytic);
+            return evaluate_resolved(resolve_with_carry(K[e], t, fc), sd, fields, analytic, needs);
           });
       i = j;
       continue;
@@ -911,7 +919,7 @@ Status PricedSurfaceView::evaluate_batch(std::span<const double> K, std::span<co
         p.K = K[e];
         p.T = t;
       }
-      const FusedResult fr = evaluate_resolved(p, side[e], fields, analytic);
+      const FusedResult fr = evaluate_resolved(p, side[e], fields, analytic, needs);
       if (!selective_only || want_iv) {
         out.iv[e] = fr.iv;
       }

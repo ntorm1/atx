@@ -118,9 +118,10 @@ public:
   MarketSnapshot &operator=(const MarketSnapshot &) = delete;
 
   [[nodiscard]] const SurfaceSet &set() const noexcept { return set_; }
-  [[nodiscard]] const PricedSurface *find(std::uint32_t uid) const noexcept {
-    return set_.find(uid);
-  }
+  // WS-ZC1: a `SurfaceRef` handle — the resolved surface may be OWNED (a freshly
+  // fit board) or a zero-copy BORROW of this snapshot's mapped archive record.
+  // Pointer-style use (`s->pricing()`, `s != nullptr`) is unchanged.
+  [[nodiscard]] SurfaceRef find(std::uint32_t uid) const noexcept { return set_.find(uid); }
   // Same-archive provenance for uid. Pointer lifetime matches this snapshot;
   // lookup performs no allocation and returns nullptr for an unknown uid.
   [[nodiscard]] const SurfaceProvenance *provenance(std::uint32_t uid) const noexcept;

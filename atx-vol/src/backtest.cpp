@@ -163,7 +163,7 @@ public:
       if (m.status != PriceStatus::Ok) {
         continue; // only Ok marks are servable; a failed one must re-solve / fail closed
       }
-      const PricedSurface *s = snap.find(m.uid);
+      const SurfaceRef s = snap.find(m.uid);
       const std::uint64_t inst = s != nullptr ? s->instance_id() : 0u;
       entries_[key_of(m.uid, m.K, m.T, m.side)] = Val{inst, m.mark};
     }
@@ -816,8 +816,8 @@ struct StepPnl {
                 " (expiry_ts_ns=" + std::to_string(lot.expiry_ts_ns) +
                 ", next_snapshot_ts_ns=" + std::to_string(shifted.ts_ns()) + ")");
       }
-      const PricedSurface *bs = base.find(lot.contract.uid);
-      const PricedSurface *ss = shifted.find(lot.contract.uid);
+      const SurfaceRef bs = base.find(lot.contract.uid);
+      const SurfaceRef ss = shifted.find(lot.contract.uid);
       if (bs == nullptr || ss == nullptr) {
         return Err(ErrorCode::NotFound, "run_backtest: no surface for settling lot");
       }
@@ -874,7 +874,7 @@ struct StepPnl {
                      "run_backtest: no valid base mark for settling lot id=" +
                          std::to_string(lot.id));
         }
-        const PricedSurface *ss = shifted.find(lot.contract.uid);
+        const SurfaceRef ss = shifted.find(lot.contract.uid);
         const double S = ss->pricing().S;
         const double K = lot.contract.K;
         const double intrinsic =
@@ -888,7 +888,7 @@ struct StepPnl {
       for (std::size_t i = 0; i < n_exp; ++i) {
         const Lot &lot = (*expiring)[i];
         const double T_base = residual_T(lot.expiry_ts_ns, base.ts_ns());
-        const PricedSurface *bs = base.find(lot.contract.uid); // non-null (partition loop)
+        const SurfaceRef bs = base.find(lot.contract.uid); // non-null (partition loop)
         const std::uint64_t inst = bs->instance_id();
         const std::optional<double> mm =
             mark_memo->find(lot.contract.uid, lot.contract.K, T_base, lot.contract.side, inst);
@@ -931,7 +931,7 @@ struct StepPnl {
           mark = sf.price[solve_ix];
           ++solve_ix;
         }
-        const PricedSurface *ss = shifted.find(lot.contract.uid);
+        const SurfaceRef ss = shifted.find(lot.contract.uid);
         const double S = ss->pricing().S;
         const double K = lot.contract.K;
         const double intrinsic =
@@ -1757,7 +1757,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
         continue;
       }
       const double T_res = residual_T(lot.expiry_ts_ns, base_snap.ts_ns());
-      const PricedSurface *s = base_snap.find(lot.contract.uid);
+      const SurfaceRef s = base_snap.find(lot.contract.uid);
       const std::optional<ReusableTargetMarkFrame::Match> exact_mark =
           close_marks != nullptr ? close_marks->find_ok(lot.id) : std::nullopt;
       double mark = exact_mark.has_value() ? exact_mark->raw_mark : 0.0;
@@ -1823,7 +1823,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
       hedge_ledger.hedge_daily(
           book.lots, *current_risk, hedge_spec.band, cfg.frictions.hedge_slippage_bps,
           [&base_snap](std::uint32_t uid) -> double {
-            const PricedSurface *surface = base_snap.find(uid);
+            const SurfaceRef surface = base_snap.find(uid);
             return surface != nullptr ? surface->pricing().S : 0.0;
           },
           cash, ex.cost);
@@ -1954,8 +1954,8 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
       cash *= growth;                     // apply to the ledger
     }
     for (const auto &[uid, n] : hedge_ledger.entries()) {
-      const PricedSurface *bs = base->find(uid);
-      const PricedSurface *ss = shifted->find(uid);
+      const SurfaceRef bs = base->find(uid);
+      const SurfaceRef ss = shifted->find(uid);
       if (bs == nullptr || ss == nullptr) {
         continue;
       }
@@ -1979,7 +1979,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
       if (lot.expiry_ts_ns > base->ts_ns()) {
         continue;
       }
-      const PricedSurface *bs = base->find(lot.contract.uid);
+      const SurfaceRef bs = base->find(lot.contract.uid);
       if (bs == nullptr) {
         continue;
       }

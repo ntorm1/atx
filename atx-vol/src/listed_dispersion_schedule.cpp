@@ -96,7 +96,7 @@ template <class T> [[nodiscard]] bool parse_integer(std::string_view text, T &ou
 [[nodiscard]] Result<ListedOptionRisk> surface_risk(const ListedDispersionSelection &selection,
                                                     const SurfaceSet &surfaces, std::uint32_t uid,
                                                     const ListedOptionQuote &quote) {
-  const PricedSurface *surface = surfaces.find(uid);
+  const SurfaceRef surface = surfaces.find(uid);
   if (surface == nullptr) {
     return Err(ErrorCode::NotFound,
                "build_listed_dispersion_roll: selected surface is unavailable");

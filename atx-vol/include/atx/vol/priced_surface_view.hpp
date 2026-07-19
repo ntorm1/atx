@@ -96,9 +96,14 @@ public:
   [[nodiscard]] Result<AmericanGreeks>
   greeks(double K, double T, Side side,
          QueryExecution execution = QueryExecution::Configured) const;
+  // `needs` mirrors PricedSurface::greeks_analytic's K4 first-order tier so ONE
+  // `SurfaceRef` call signature forwards to either type (WS-ZC1). The view is always
+  // the cold analytic route, where a reduced bundle skips whole boundary solves and
+  // leaves the unrequested Greeks 0 — bit-identical to PricedSurface's cold AL lane.
   [[nodiscard]] Result<AmericanGreeks>
   greeks_analytic(double K, double T, Side side,
-                  QueryExecution execution = QueryExecution::Configured) const;
+                  QueryExecution execution = QueryExecution::Configured,
+                  GreekNeeds needs = {}) const;
   [[nodiscard]] Result<double> delta(double K, double T, Side side,
                                      QueryExecution execution = QueryExecution::Configured) const;
   [[nodiscard]] Result<double> vega(double K, double T, Side side,
@@ -109,13 +114,15 @@ public:
                   QueryExecution execution = QueryExecution::Configured) const;
 
   [[nodiscard]] FusedResult evaluate(double K, double T, Side side, EvalField fields, bool analytic,
-                                     QueryExecution execution = QueryExecution::Configured) const;
+                                     QueryExecution execution = QueryExecution::Configured,
+                                     GreekNeeds needs = {}) const;
 
   [[nodiscard]] Status evaluate_batch(std::span<const double> K, std::span<const double> T,
                                       std::span<const Side> side, EvalField fields, bool analytic,
                                       EvaluationSoA out,
                                       simd::SimdIsa resolved_price_isa = simd::SimdIsa::Auto,
-                                      QueryExecution execution = QueryExecution::Configured) const;
+                                      QueryExecution execution = QueryExecution::Configured,
+                                      GreekNeeds needs = {}) const;
 
   // ── Introspection (mirrors PricedSurface) ────────────────────────────────────
 
@@ -153,11 +160,12 @@ private:
 
   [[nodiscard]] Result<double> price_resolved(const ResolvedSurfacePoint &p, Side side) const;
   [[nodiscard]] Result<AmericanGreeks> greeks_resolved(const ResolvedSurfacePoint &p, Side side,
-                                                       bool analytic) const;
+                                                       bool analytic, GreekNeeds needs = {}) const;
   [[nodiscard]] Result<double> delta_resolved(const ResolvedSurfacePoint &p, Side side) const;
   [[nodiscard]] Result<double> vega_resolved(const ResolvedSurfacePoint &p, Side side) const;
   [[nodiscard]] FusedResult evaluate_resolved(const ResolvedSurfacePoint &p, Side side,
-                                              EvalField fields, bool analytic) const;
+                                              EvalField fields, bool analytic,
+                                              GreekNeeds needs = {}) const;
 
   // ── Borrowed columnar views into the mapped record (non-owning) ──────────────
   std::span<const std::byte> record_{};        // the whole surface record extent

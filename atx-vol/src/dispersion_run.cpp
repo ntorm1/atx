@@ -940,7 +940,7 @@ Status dispersion_build_schedule(const fs::path &run_dir) {
     selection_config.min_names = spec.min_names;
     const ListedForwardLookup forward = [&](const DispersionMember &member,
                                             std::int64_t expiry) -> Result<double> {
-      const PricedSurface *surface = snapshot.find(member.uid);
+      const SurfaceRef surface = snapshot.find(member.uid);
       if (surface == nullptr) {
         return Err(ErrorCode::NotFound, "surface missing");
       }

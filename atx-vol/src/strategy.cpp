@@ -70,7 +70,7 @@ struct CanonicalTenor {
   return Ok(CanonicalTenor{expiry_ts_ns, static_cast<double>(delta_ns) / kNsPerYear});
 }
 
-[[nodiscard]] Result<double> resolve_strike_by_delta_routed(const PricedSurface &s, double T,
+[[nodiscard]] Result<double> resolve_strike_by_delta_routed(const SurfaceRef &s, double T,
                                                             Side side, double target_abs_delta,
                                                             QueryExecution execution,
                                                             double final_tolerance) {
@@ -213,7 +213,7 @@ struct DeltaPoint {
   double residual{0.0};
 };
 
-[[nodiscard]] std::optional<DeltaPoint> delta_point(const PricedSurface &surface, double forward,
+[[nodiscard]] std::optional<DeltaPoint> delta_point(const SurfaceRef &surface, double forward,
                                                     double T, Side side, double target_abs_delta,
                                                     double k, QueryExecution execution) {
   const double K = forward * std::exp(k);
@@ -227,7 +227,7 @@ struct DeltaPoint {
   return DeltaPoint{k, std::fabs(*delta) - target_abs_delta};
 }
 
-[[nodiscard]] Result<double> resolve_strike_by_delta_adaptive(const PricedSurface &s, double T,
+[[nodiscard]] Result<double> resolve_strike_by_delta_adaptive(const SurfaceRef &s, double T,
                                                               Side side, double target_abs_delta,
                                                               const ResolutionOptions &options) {
   const Status valid_options = validate_resolution_options(options);
@@ -305,13 +305,13 @@ struct DeltaPoint {
 
 } // namespace
 
-Result<double> resolve_strike_by_delta(const PricedSurface &s, double T, Side side,
+Result<double> resolve_strike_by_delta(const SurfaceRef &s, double T, Side side,
                                        double target_abs_delta) {
   return resolve_strike_by_delta_routed(s, T, side, target_abs_delta, QueryExecution::Configured,
                                         kLegacyDeltaTolerance);
 }
 
-Result<double> resolve_strike_by_delta(const PricedSurface &s, double T, Side side,
+Result<double> resolve_strike_by_delta(const SurfaceRef &s, double T, Side side,
                                        double target_abs_delta, const ResolutionOptions &options) {
   if (!options.fast_screen_cold_confirm) {
     return resolve_strike_by_delta(s, T, side, target_abs_delta);
@@ -361,7 +361,7 @@ namespace {
 
 } // namespace
 
-Result<double> resolve_strike(const PricedSurface &s, const TenorSpec &tenor, Side side,
+Result<double> resolve_strike(const SurfaceRef &s, const TenorSpec &tenor, Side side,
                               const StrikeSelector &sel) {
   const Status tenor_status = validate_model_tenor(tenor);
   if (!tenor_status) {
@@ -394,12 +394,12 @@ Result<double> resolve_strike(const PricedSurface &s, const TenorSpec &tenor, Si
   return Err(ErrorCode::InvalidArgument, "resolve_strike: unknown selector kind");
 }
 
-Result<double> resolve_strike(const PricedSurface &s, const TenorSpec &tenor, Side side,
+Result<double> resolve_strike(const SurfaceRef &s, const TenorSpec &tenor, Side side,
                               const StrikeSelector &sel, const ResolutionOptions &options) {
   return resolve_strike(s, tenor, side, sel, options, PriceOptions{});
 }
 
-Result<double> resolve_strike(const PricedSurface &s, const TenorSpec &tenor, Side side,
+Result<double> resolve_strike(const SurfaceRef &s, const TenorSpec &tenor, Side side,
                               const StrikeSelector &sel, const ResolutionOptions &options,
                               const PriceOptions &price_options) {
   const Status tenor_status = validate_model_tenor(tenor);
@@ -433,7 +433,7 @@ Result<std::vector<ResolvedLeg>> expand_leg(const MarketSnapshot &snap, const Le
     }
     uid = *u;
   }
-  const PricedSurface *surf = snap.find(uid);
+  const SurfaceRef surf = snap.find(uid);
   if (surf == nullptr) {
     return Err(ErrorCode::NotFound, "expand_leg: no surface for leg's uid");
   }

@@ -211,14 +211,14 @@ struct SizedLeg {
 // (fixed bracket, fixed iteration cap). Widens the bracket [-1.5,1.5] -> [-3,3] ->
 // [-5,5] to catch extreme deltas; validates the repriced delta at the root.
 // @return InvalidArgument if the target is outside (0,1) or unreachable.
-[[nodiscard]] Result<double> resolve_strike_by_delta(const PricedSurface &s, double T, Side side,
+[[nodiscard]] Result<double> resolve_strike_by_delta(const SurfaceRef &s, double T, Side side,
                                                      double target_abs_delta);
 
 // Adaptive overload. When enabled, every successful return has been validated
 // by `PricedSurface::delta(..., QueryExecution::ColdReference)` within
 // `cold_delta_tolerance`; local refinement is bounded and exhaustion falls back
 // to the robust solver running entirely ColdReference.
-[[nodiscard]] Result<double> resolve_strike_by_delta(const PricedSurface &s, double T, Side side,
+[[nodiscard]] Result<double> resolve_strike_by_delta(const SurfaceRef &s, double T, Side side,
                                                      double target_abs_delta,
                                                      const ResolutionOptions &options);
 
@@ -257,12 +257,12 @@ resolve_strikes_by_delta_batched(std::span<const DeltaResolveLane> lanes, unsign
 // F(target_T); Delta = the solver; Moneyness = F * exp(value); AbsStrike = value).
 // NotImplemented when `tenor.snap_to_listed` is true; this API has no listed
 // contract or quote provenance and never pretends a model strike is tradeable.
-[[nodiscard]] Result<double> resolve_strike(const PricedSurface &s, const TenorSpec &tenor,
+[[nodiscard]] Result<double> resolve_strike(const SurfaceRef &s, const TenorSpec &tenor,
                                             Side side, const StrikeSelector &sel);
-[[nodiscard]] Result<double> resolve_strike(const PricedSurface &s, const TenorSpec &tenor,
+[[nodiscard]] Result<double> resolve_strike(const SurfaceRef &s, const TenorSpec &tenor,
                                             Side side, const StrikeSelector &sel,
                                             const ResolutionOptions &options);
-[[nodiscard]] Result<double> resolve_strike(const PricedSurface &s, const TenorSpec &tenor,
+[[nodiscard]] Result<double> resolve_strike(const SurfaceRef &s, const TenorSpec &tenor,
                                             Side side, const StrikeSelector &sel,
                                             const ResolutionOptions &options,
                                             const PriceOptions &price_options);

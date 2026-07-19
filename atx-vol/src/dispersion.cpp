@@ -32,7 +32,7 @@ namespace {
 // marks or Greeks.
 [[nodiscard]] Result<double> resolve_atm_iv(const SurfaceSet &surfaces, const DispersionMember &m,
                                             double T) {
-  const PricedSurface *surf = surfaces.find(m.uid);
+  const SurfaceRef surf = surfaces.find(m.uid);
   if (surf == nullptr) {
     return Err(ErrorCode::NotFound,
                "dispersion: no surface registered for symbol '" + m.symbol + "'");
@@ -76,7 +76,7 @@ struct ResolvedDispersionLeg {
 [[nodiscard]] Result<ResolvedDispersionLeg> resolve_leg(const SurfaceSet &surfaces,
                                                         const DispersionMember &m, double T,
                                                         const PriceOptions *price_options) {
-  const PricedSurface *surf = surfaces.find(m.uid);
+  const SurfaceRef surf = surfaces.find(m.uid);
   if (surf == nullptr) {
     return Err(ErrorCode::NotFound,
                "dispersion: no surface registered for symbol '" + m.symbol + "'");
@@ -165,7 +165,7 @@ struct ResolvedDispersionLeg {
 resolve_projected_leg(const SurfaceSet &surfaces, const DispersionMember &member,
                       const ProjectedMaturitySpec &maturity, double multiplier,
                       const PriceOptions *price_options) {
-  const PricedSurface *surface = surfaces.find(member.uid);
+  const SurfaceRef surface = surfaces.find(member.uid);
   if (surface == nullptr) {
     return Err(ErrorCode::NotFound,
                "dispersion: no surface registered for symbol '" + member.symbol + "'");
