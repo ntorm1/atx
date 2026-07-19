@@ -91,11 +91,25 @@ TEST(EarningsReproSmoke, NvdaRealBoard_TwelveFiniteAtmCenI_FiniteNonnegativeEmov
   EXPECT_TRUE(std::isfinite(repro->fit.emove));
   EXPECT_GE(repro->fit.emove, 0.0);
 
+  // Per-step "monotone-ish" tolerance: the real censored-space interpolation
+  // wiggles by ~1 vol point step-to-step near mid tenors (e.g. the NVDA
+  // 84d/105d/126d run observed 0.441160 -> 0.440098 -> 0.441233), which is
+  // real interp noise, not a modeling bug -- so a step is allowed to dip by
+  // up to kMonotoneTol before it is flagged, while a grossly inverted term
+  // structure (a dip far larger than one vol point) still fails.
+  constexpr double kMonotoneTol = 0.01;
+
   for (std::size_t i = 0; i < repro->atm_cen_i.size(); ++i) {
     const double v = repro->atm_cen_i[i];
     EXPECT_TRUE(std::isfinite(v)) << "atm_cen_i[" << i << "] not finite";
     EXPECT_GT(v, 0.0) << "atm_cen_i[" << i << "] not > 0";
     EXPECT_LT(v, 3.0) << "atm_cen_i[" << i << "] not < 3";
+    if (i > 0) {
+      EXPECT_GE(v, repro->atm_cen_i[i - 1] - kMonotoneTol)
+          << "atm_cen_i[" << i << "]=" << v << " dips more than " << kMonotoneTol
+          << " below atm_cen_i[" << i - 1 << "]=" << repro->atm_cen_i[i - 1]
+          << " -- not monotone-ish";
+    }
   }
 }
 
