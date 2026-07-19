@@ -776,6 +776,18 @@ run_dispersion_surface_backtest(const Clock &clock, DispersionUniverse universe,
   return Ok(std::move(outcome));
 }
 
+Result<DispersionBacktestOutcome>
+run_dispersion_surface_backtest(const Clock &clock, std::vector<UniverseRow> schedule,
+                                const DispersionBacktestConfig &config,
+                                std::string_view index_symbol) {
+  ATX_TRY(BacktestResult backtest,
+          run_dispersion_backtest(clock, std::move(schedule), config, index_symbol));
+  DispersionBacktestOutcome outcome;
+  outcome.track = std::move(backtest);
+  outcome.sheet = tearsheet(outcome.track);
+  return Ok(std::move(outcome));
+}
+
 // ── Public: native reference reconciliation (M1) ────────────────────────────
 
 Result<std::vector<ReferenceReconRecord>>
@@ -1057,7 +1069,12 @@ Status dispersion_run_surface_backtest(const fs::path &run_dir) {
   if (clock.size() == 0u) {
     return Err(ErrorCode::Unavailable, "surface backtest: empty qualified clock");
   }
-  ATX_TRY(DispersionUniverse universe, universe_at(universe_rows, clock.refs().front().date));
+  // C1-ACTIVATE. Validate that SOME block is effective on the first session (a
+  // schedule that only starts mid-window is an authoring error we still want to
+  // fail fast on), then hand the WHOLE schedule to the point-in-time overload
+  // instead of freezing this first-day resolution for all 82 sessions. WS-C made
+  // DispersionStrategy PIT-capable; this is the call site that switches it on.
+  ATX_TRY_VOID(universe_at(universe_rows, clock.refs().front().date));
 
   const DispersionBacktestConfig config = dispersion_backtest_config_from_run_spec(spec);
 #if defined(ATX_VOL_PROFILE)
@@ -1067,7 +1084,7 @@ Status dispersion_run_surface_backtest(const fs::path &run_dir) {
   counters::reset();
 #endif
   ATX_TRY(DispersionBacktestOutcome outcome,
-          run_dispersion_surface_backtest(clock, std::move(universe), config));
+          run_dispersion_surface_backtest(clock, std::move(universe_rows), config));
   const BacktestResult &backtest = outcome.track;
 #if defined(ATX_VOL_PROFILE)
   {
@@ -1126,7 +1143,18 @@ Status dispersion_run_projected_var(const fs::path &run_dir) {
     scenarios.push_back({snapshots.back()->ts_ns(), &snapshots.back()->set()});
   }
 
-  ATX_TRY(DispersionUniverse authored, universe_at(universe_rows, clock.refs().front().date));
+  // C1-ACTIVATE (projected VaR). The book this VaR is measured on is built from
+  // ONE anchor snapshot, so "point-in-time" here means resolving the basket from
+  // the schedule at THAT snapshot's own timestamp rather than string-matching the
+  // manifest's first session date. Routing it through the shared PIT resolver
+  // removes the day-1 freeze and the manifest-string coupling in one move; with a
+  // single-block schedule the resolved basket is identical to before.
+  //
+  // NOTE for the PM: the anchor remains the FIRST session while the VaR reference
+  // value is `frames.back().value` (the LAST session). That first/last mismatch is
+  // a separate modeling question from PIT membership and is left as-is here.
+  const auto pit = make_pit_universe_resolver(universe_rows);
+  ATX_TRY(DispersionUniverse authored, pit(snapshots.front()->ts_ns()));
   ATX_TRY(ResolvedUniverse resolved,
           resolve_universe_uids(
               authored, [&](std::string_view symbol) { return snapshots.front()->uid_of(symbol); },

@@ -85,9 +85,25 @@ dispersion_backtest_config_from_run_spec(const RunSpec &spec);
 // Run the canonical surface-only dispersion backtest over an already-qualified
 // Clock and bundle the track + tearsheet. Wraps the existing
 // run_dispersion_backtest(); artifact persistence stays with the caller.
+//
+// FROZEN-UNIVERSE overload: the passed membership is held for the whole run. Kept
+// for callers that genuinely own a single static basket; the flagship file-driven
+// path uses the schedule overload below.
 [[nodiscard]] Result<DispersionBacktestOutcome>
 run_dispersion_surface_backtest(const Clock &clock, DispersionUniverse universe,
                                 const DispersionBacktestConfig &config);
+
+// C1-ACTIVATE point-in-time overload. Threads the raw constituent `schedule` down
+// to WS-C's PIT resolver so the basket is re-resolved on every step and a
+// mid-window reconstitution (add / reweight / REMOVE) is honored at the next roll.
+// This is what `dispersion_run_surface_backtest` now calls: before activation the
+// file-driven path resolved the universe once at the first session date and froze
+// it, so a schedule with more than one `effective_date` block was silently ignored.
+// With a single-block schedule this is byte-identical to the frozen overload.
+[[nodiscard]] Result<DispersionBacktestOutcome>
+run_dispersion_surface_backtest(const Clock &clock, std::vector<UniverseRow> schedule,
+                                const DispersionBacktestConfig &config,
+                                std::string_view index_symbol = "SPY");
 
 // ── Native reference reconciliation (M1) ────────────────────────────────────
 //

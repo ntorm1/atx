@@ -25,8 +25,10 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/backtest.hpp"  // MarketSnapshot, PortfolioState, Lot
+#include "atx/vol/backtest.hpp" // MarketSnapshot, PortfolioState, Lot, Clock
+#include "atx/vol/corpus.hpp"   // CorpusManifest, CorpusEntry, CorpusFitStatus
 #include "atx/vol/dispersion.hpp"
+#include "atx/vol/dispersion_run.hpp" // run_dispersion_surface_backtest (the seam)
 #include "atx/vol/dispersion_workflow.hpp"
 #include "atx/vol/portfolio_pricer.hpp"
 #include "atx/vol/priced_surface.hpp"
@@ -395,4 +397,156 @@ TEST(DispersionWorkflow, PitBasketRemainsVegaFlatAfterReconstitution) {
 
   std::error_code error;
   fs::remove_all(dir, error);
+}
+
+// ── C1-ACTIVATE: the SEAM entry point, not just the strategy ─────────────────
+//
+// The tests above prove DispersionStrategy is PIT-CAPABLE when a resolver is
+// handed to its constructor. They do NOT prove the shipping path uses one: WS-C
+// left the resolver defaulted-empty and `dispersion_run_surface_backtest` still
+// resolved the universe once and passed a frozen `DispersionUniverse`, so the
+// flagship surface backtest was capable-but-inert. These two tests pin the
+// activation itself at `run_dispersion_surface_backtest`'s schedule overload.
+
+namespace {
+
+// Hand-build an Ok-only manifest over (date, archive_path), one entry per
+// (date, symbol) — the shape Clock::from_manifest consumes.
+[[nodiscard]] CorpusManifest pit_manifest(
+    const std::vector<std::pair<std::string, std::string>> &date_paths) {
+  CorpusManifest manifest;
+  for (const auto &[date, path] : date_paths) {
+    manifest.dates.push_back(date);
+    for (const char *symbol : {"SPY", "N0", "N1", "N2"}) {
+      CorpusEntry entry;
+      entry.date = date;
+      entry.symbol = symbol;
+      entry.status = CorpusFitStatus::Ok;
+      entry.archive_path = path;
+      manifest.entries.push_back(std::move(entry));
+    }
+  }
+  return manifest;
+}
+
+struct PitFixture {
+  fs::path dir;
+  Clock clock;
+  std::string d0;
+  std::string d1;
+  std::string d2;
+};
+
+// THREE sessions, deliberately. With only two, the reconstituted basket is opened
+// on the final step and never held across a P&L interval, so NAV stays identical
+// and only lot COMPOSITION diverges. The third session lets the post-
+// reconstitution basket actually earn/lose, which is the economically meaningful
+// consequence of activation.
+[[nodiscard]] PitFixture make_pit_fixture(const char *leaf) {
+  const fs::path dir = fresh_dir(leaf);
+  const std::int64_t ts0 = 1'700'000'000'000'000'000LL;
+  const std::int64_t ts1 = ts0 + 3 * kDayNs;
+  const std::int64_t ts2 = ts0 + 6 * kDayNs;
+  const std::string d0 = utc_date_from_ns(ts0);
+  const std::string d1 = utc_date_from_ns(ts1);
+  const std::string d2 = utc_date_from_ns(ts2);
+  const std::string a0 = write_pit_archive(dir, d0, pit_surfaces(ts0, 0.0));
+  const std::string a1 = write_pit_archive(dir, d1, pit_surfaces(ts1, 1.5));
+  const std::string a2 = write_pit_archive(dir, d2, pit_surfaces(ts2, 3.0));
+  auto clock = Clock::from_manifest(pit_manifest({{d0, a0}, {d1, a1}, {d2, a2}}));
+  EXPECT_TRUE(clock) << (clock ? std::string{} : clock.error().to_string());
+  return PitFixture{dir, clock ? std::move(*clock) : Clock{}, d0, d1, d2};
+}
+
+[[nodiscard]] DispersionBacktestConfig pit_backtest_config() {
+  DispersionBacktestConfig config;
+  config.target_dte_days = 36.525; // 0.10y, matching the boards' 0.05-0.50 terms
+  config.gross_index_vega = 1000.0;
+  config.min_names = 2;
+  config.entry_every_n = 1;
+  config.project_to_calendar_expiry = false;
+  // A PIT membership change only reaches the BOOK at the next roll (the resolver
+  // updates the basket every step; the lots are rebuilt when the front cohort is
+  // rolled). The fixture's sessions are 3 days apart, so the roll horizon must sit
+  // just inside the entry tenor for a roll to fire on the reconstitution date —
+  // with the production 7-day default no roll happens in a 3-session window and
+  // the test would prove nothing.
+  config.roll_dte_days = 34.0; // residual at d1 = 36.525 - 3 = 33.525 < 34 => roll
+  return config;
+}
+
+} // namespace
+
+// A schedule that reconstitutes mid-window must produce a DIFFERENT track than
+// the same schedule's frozen day-1 basket. Before C1-ACTIVATE both paths went
+// through the frozen overload and this difference was unobservable.
+TEST(DispersionWorkflow, SurfaceBacktestSeamHonorsMidWindowReconstitution) {
+  const PitFixture fixture = make_pit_fixture("atx-disp-seam-pit");
+  ASSERT_EQ(fixture.clock.size(), 3u);
+
+  // N2 leaves at d1 (its board is still archived, so this is membership, not a
+  // missing-surface drop).
+  const std::vector<UniverseRow> schedule = {
+      row(fixture.d0, "N0", 0.5), row(fixture.d0, "N1", 0.3), row(fixture.d0, "N2", 0.2),
+      row(fixture.d1, "N0", 0.6), row(fixture.d1, "N1", 0.4),
+  };
+  const DispersionBacktestConfig config = pit_backtest_config();
+
+  auto frozen_universe = universe_at(schedule, fixture.d0, "SPY");
+  ASSERT_TRUE(frozen_universe) << frozen_universe.error().to_string();
+  ASSERT_EQ(frozen_universe->names.size(), 3u);
+
+  auto frozen = run_dispersion_surface_backtest(fixture.clock, *frozen_universe, config);
+  auto pit = run_dispersion_surface_backtest(fixture.clock, schedule, config, "SPY");
+  ASSERT_TRUE(frozen) << frozen.error().to_string();
+  ASSERT_TRUE(pit) << pit.error().to_string();
+  ASSERT_EQ(frozen->track.size(), 3u);
+  ASSERT_EQ(pit->track.size(), 3u);
+
+  // Day 0 is the same 3-name basket under both paths (index + 3 names, one
+  // straddle each => 8 lots) ...
+  EXPECT_EQ(pit->track.n_open_lots.front(), 8u);
+  EXPECT_EQ(frozen->track.n_open_lots.front(), 8u);
+  // ... and from the reconstitution onward the PIT path has genuinely dropped N2
+  // (index + 2 names => 6 lots) while the frozen path still carries all three.
+  EXPECT_EQ(frozen->track.n_open_lots.back(), 8u);
+  EXPECT_EQ(pit->track.n_open_lots.back(), 6u);
+  // The dropped name stops contributing P&L, so the tracks diverge economically —
+  // not merely in composition. This is the assertion that fails if the seam is
+  // reverted to the frozen overload.
+  EXPECT_NE(pit->track.nav.back(), frozen->track.nav.back());
+
+  std::error_code error;
+  fs::remove_all(fixture.dir, error);
+}
+
+// GOLDEN GUARD. The pinned 82-session fixture's schedule has a SINGLE
+// effective_date block, so activation must be a no-op there. This pins that
+// property structurally (single-block schedule => bit-identical to frozen) so a
+// future resolver change cannot silently move the reproducibility pin.
+TEST(DispersionWorkflow, SingleBlockScheduleIsBitIdenticalToTheFrozenPath) {
+  const PitFixture fixture = make_pit_fixture("atx-disp-seam-single");
+  ASSERT_EQ(fixture.clock.size(), 3u);
+
+  const std::vector<UniverseRow> schedule = {
+      row(fixture.d0, "N0", 0.5), row(fixture.d0, "N1", 0.3), row(fixture.d0, "N2", 0.2)};
+  const DispersionBacktestConfig config = pit_backtest_config();
+
+  auto frozen_universe = universe_at(schedule, fixture.d0, "SPY");
+  ASSERT_TRUE(frozen_universe) << frozen_universe.error().to_string();
+
+  auto frozen = run_dispersion_surface_backtest(fixture.clock, *frozen_universe, config);
+  auto pit = run_dispersion_surface_backtest(fixture.clock, schedule, config, "SPY");
+  ASSERT_TRUE(frozen) << frozen.error().to_string();
+  ASSERT_TRUE(pit) << pit.error().to_string();
+  ASSERT_EQ(frozen->track.size(), pit->track.size());
+
+  for (std::size_t i = 0; i < frozen->track.size(); ++i) {
+    EXPECT_EQ(pit->track.nav[i], frozen->track.nav[i]) << "nav diverged at step " << i;
+    EXPECT_EQ(pit->track.pnl_total[i], frozen->track.pnl_total[i]) << "pnl diverged at step " << i;
+    EXPECT_EQ(pit->track.n_open_lots[i], frozen->track.n_open_lots[i]);
+  }
+
+  std::error_code error;
+  fs::remove_all(fixture.dir, error);
 }
