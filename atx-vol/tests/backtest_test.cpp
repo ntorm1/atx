@@ -1623,7 +1623,7 @@ TEST(Backtest, AdaptiveStrategyHandlesFreshFullAndPartialFastResidency) {
       const auto resolved = resolve_spec(**snapshot, spec);
       ASSERT_TRUE(resolved.has_value()) << resolved.error().to_string();
       for (const SizedLeg &resolved_leg : *resolved) {
-        const PricedSurface *surface = (*snapshot)->find(resolved_leg.leg.uid);
+        const SurfaceRef surface = (*snapshot)->find(resolved_leg.leg.uid);
         ASSERT_NE(surface, nullptr);
         const auto delta = surface->delta(resolved_leg.leg.K, resolved_leg.leg.T,
                                           resolved_leg.leg.side, QueryExecution::ColdReference);
@@ -2349,8 +2349,8 @@ TEST(Backtest, SubsetDeserializeLoadsOnlyReferencedUids) {
   EXPECT_EQ(*u3, kUid + 3);
 
   // A subset-reconstructed surface prices bit-identically to the whole-board one.
-  const PricedSurface *ws = whole->find(kUid);
-  const PricedSurface *ss = subset->find(kUid);
+  const SurfaceRef ws = whole->find(kUid);
+  const SurfaceRef ss = subset->find(kUid);
   ASSERT_NE(ws, nullptr);
   ASSERT_NE(ss, nullptr);
   auto wv = ws->fair_value(100.0, 0.25, Side::Call);

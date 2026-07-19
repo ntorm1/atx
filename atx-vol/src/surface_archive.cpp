@@ -943,6 +943,28 @@ Result<std::vector<PricedSurfaceView>> SurfaceArchiveV2::map_all() const {
   return Ok(std::move(out));
 }
 
+Result<ArchivedSurfaceView> SurfaceArchiveV2::map_entry(const ArchiveV2DirEntry &e) const {
+  // Exactly `reconstruct_entry`'s bounds contract, but building a BORROWED view over
+  // the record extent instead of an owned PricedSurface (WS-ZC1).
+  if (e.surface_size < sizeof(ArchiveV2SurfaceHeader) || e.surface_offset > bytes_.size() ||
+      e.surface_size > bytes_.size() - e.surface_offset) {
+    return Err(ErrorCode::ParseError, "SurfaceArchiveV2::map_entry: record out of bounds");
+  }
+  const std::span<const std::byte> rec = bytes_.subspan(
+      static_cast<std::size_t>(e.surface_offset), static_cast<std::size_t>(e.surface_size));
+  ArchiveV2SurfaceHeader h;
+  std::memcpy(&h, rec.data(), sizeof h);
+  auto prov = provenance_from_v2_header(h);
+  if (!prov) {
+    return tl::unexpected<atx::core::Error>(std::move(prov).error());
+  }
+  auto v = PricedSurfaceView::create_over_record(rec);
+  if (!v) {
+    return tl::unexpected<atx::core::Error>(std::move(v).error());
+  }
+  return Ok(ArchivedSurfaceView{std::move(*v), std::move(*prov)});
+}
+
 Result<std::vector<ArchivedSurfaceView>> SurfaceArchiveV2::map_all_with_provenance() const {
   std::vector<ArchivedSurfaceView> out;
   out.reserve(directory_.size());

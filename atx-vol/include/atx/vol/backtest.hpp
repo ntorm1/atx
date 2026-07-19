@@ -130,10 +130,25 @@ public:
   [[nodiscard]] std::span<const SurfaceProvenance> provenances() const noexcept {
     return provenance_;
   }
-  // Read-only view of the owned surfaces (archive order; always non-empty after a
-  // successful load). Used by the financing ledger to read a representative
-  // base-date rate. Safe across a move (vector move preserves element addresses).
+  // Read-only view of the OWNED surfaces (archive order). EMPTY on a borrowed
+  // (zero-copy) load — use `n_surfaces()` / `surface_at()` for backing-agnostic
+  // access. Safe across a move (vector move preserves element addresses).
   [[nodiscard]] std::span<const PricedSurface> surfaces() const noexcept { return surfaces_; }
+  // Read-only view of the BORROWED surfaces (archive order). Empty on an owned load.
+  [[nodiscard]] std::span<const PricedSurfaceView> views() const noexcept { return views_; }
+  // True when this snapshot borrows its archive's mapped records rather than owning
+  // reconstructed surfaces (WS-ZC1).
+  [[nodiscard]] bool borrows_views() const noexcept { return !views_.empty(); }
+
+  // Backing-agnostic surface access (archive order). Always non-empty after a
+  // successful load, whichever backing was chosen.
+  [[nodiscard]] std::size_t n_surfaces() const noexcept {
+    return views_.empty() ? surfaces_.size() : views_.size();
+  }
+  [[nodiscard]] SurfaceRef surface_at(std::size_t i) const noexcept {
+    return views_.empty() ? SurfaceRef{&surfaces_[i]} : SurfaceRef{&views_[i]};
+  }
+
   [[nodiscard]] std::int64_t ts_ns() const noexcept { return ts_ns_; }
   [[nodiscard]] std::optional<std::uint32_t> uid_of(std::string_view symbol) const;
 
@@ -143,13 +158,36 @@ public:
   static void reset_open_count() noexcept;
 
 private:
-  MarketSnapshot(std::vector<PricedSurface> &&surfaces, std::vector<SurfaceProvenance> &&provenance,
-                 SurfaceSet &&set, std::int64_t ts,
+  MarketSnapshot(std::shared_ptr<const SurfaceArchiveV2> archive,
+                 std::vector<PricedSurface> &&surfaces, std::vector<PricedSurfaceView> &&views,
+                 std::vector<SurfaceProvenance> &&provenance, SurfaceSet &&set, std::int64_t ts,
                  std::vector<std::pair<std::string, std::uint32_t>> &&syms) noexcept;
 
-  std::vector<PricedSurface> surfaces_;       // owned (archive directory order)
-  std::vector<SurfaceProvenance> provenance_; // same-blob, parallel to surfaces_
-  SurfaceSet set_;                            // non-owning over surfaces_
+  // ── LIFETIME (WS-ZC1) ──────────────────────────────────────────────────────
+  // On the borrowed path each `PricedSurfaceView` in `views_` points into the
+  // memory mapping that `archive_` co-owns, and `set_` holds `SurfaceRef`s to the
+  // `views_` elements. That makes the ownership a strict chain:
+  //
+  //     archive_ (owns the Mapping)  <--  views_ (borrow its bytes)  <--  set_
+  //
+  // DECLARATION ORDER BELOW IS THE ENFORCEMENT. Members are destroyed in reverse
+  // declaration order, so `set_` dies first, then `views_`, and `archive_` — the
+  // mapping — dies LAST. A view therefore cannot outlive the bytes it reads, and
+  // the snapshot cannot hand out a `SurfaceRef` into a released mapping. Do not
+  // reorder these four members.
+  //
+  // The archive is held by `shared_ptr<const ...>` so a snapshot is movable while
+  // keeping the mapping pinned for every copy of the handle. It is null on the
+  // owned path, where `surfaces_` is self-contained.
+  //
+  // Move safety: moving a vector transfers its heap buffer, so element ADDRESSES
+  // are preserved and `set_`'s refs stay valid across a `MarketSnapshot` move.
+  // Neither `surfaces_` nor `views_` is ever mutated after `set_` is built.
+  std::shared_ptr<const SurfaceArchiveV2> archive_; // mapping owner (borrowed path only)
+  std::vector<PricedSurface> surfaces_;             // owned path (archive directory order)
+  std::vector<PricedSurfaceView> views_;            // borrowed path (archive directory order)
+  std::vector<SurfaceProvenance> provenance_;       // same-blob, parallel to whichever is populated
+  SurfaceSet set_;                                  // non-owning over surfaces_ OR views_
   std::int64_t ts_ns_{0};
   std::vector<std::pair<std::string, std::uint32_t>> syms_; // symbol -> uid
 };

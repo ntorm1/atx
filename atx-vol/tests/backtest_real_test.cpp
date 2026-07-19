@@ -258,7 +258,7 @@ TEST_F(BacktestReal, RealSpyPutDeltaHedged) {
   ASSERT_TRUE(base.has_value()) << base.error().to_string();
   const std::optional<std::uint32_t> spy_uid = base->uid_of("SPY");
   ASSERT_TRUE(spy_uid.has_value());
-  const PricedSurface* surf = base->find(*spy_uid);
+  const SurfaceRef surf = base->find(*spy_uid);
   ASSERT_NE(surf, nullptr);
 
   const Result<double> K = resolve_strike_by_delta(*surf, kTargetT, Side::Put, 0.25);

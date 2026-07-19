@@ -699,6 +699,11 @@ public:
   // Whole-board views paired with per-record provenance, in directory order.
   [[nodiscard]] Result<std::vector<ArchivedSurfaceView>> map_all_with_provenance() const;
 
+  // WS-ZC1: the zero-copy analogue of `reconstruct_entry` — build a view plus its
+  // provenance from a directory entry the caller already holds, in ONE pass over
+  // that record's extent and with no hash re-probe. This is the subset-load seam.
+  [[nodiscard]] Result<ArchivedSurfaceView> map_entry(const ArchiveV2DirEntry &e) const;
+
   // ── Owned reconstruct (whole-board deserialize keeping v1 semantics) ─────────
   //
   // S4 clean-break cutover: these rebuild an OWNED `PricedSurface` from a v2
