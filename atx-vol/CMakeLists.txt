@@ -150,6 +150,7 @@ target_link_libraries(atx-vol
     PUBLIC
         atx::core
     PRIVATE
+        atx::tsdb  # read-only mmap (tsdb::Mapping) for the S2 zero-read surface open
         atx_warnings
 )
 

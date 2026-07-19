@@ -1146,7 +1146,9 @@ Result<SurfaceArchiveV2> SurfaceDb::open_partition(std::string_view key) const {
   if (snap->find_partition(*canon) == nullptr) {
     return Err(ErrorCode::NotFound, "SurfaceDb::open_partition: partition not present");
   }
-  return SurfaceArchiveV2::open_file(partition_path(*canon));
+  // S2 (WS-S): mmap the partition (metadata-only fault-in) rather than a whole-file
+  // heap read; the returned archive co-owns the Mapping.
+  return SurfaceArchiveV2::open_mapped(partition_path(*canon));
 }
 
 namespace {
@@ -1195,7 +1197,10 @@ SurfaceDb::cached_partition(std::string_view canonical_key) const {
     }
   }
   // Miss or stale: open fresh OUTSIDE the lock (no whole-file I/O under cache_mu_).
-  auto opened = SurfaceArchiveV2::open_file(path);
+  // S2 (WS-S): mmap-backed open — the cached archive co-owns a read-only Mapping,
+  // so a resident entry pins page-cache-backed (shared, reclaimable) pages rather
+  // than a private whole-file heap buffer.
+  auto opened = SurfaceArchiveV2::open_mapped(path);
   if (!opened) {
     return Err(opened.error());
   }

@@ -21,6 +21,7 @@
 #include "atx/core/bit.hpp" // next_pow2, is_pow2
 #include "atx/core/error.hpp"
 #include "atx/core/hash.hpp"               // hash_bytes
+#include "atx/tsdb/mapping.hpp"            // tsdb::Mapping (read-only mmap owner, S2)
 #include "atx/vol/american.hpp"            // AlOpts, AmericanMethod
 #include "atx/vol/dense_slice.hpp"         // ConvexSliceFit
 #include "atx/vol/detail/archive_util.hpp" // crc32c, crc32c_update, align_up, canonicalize_symbol
@@ -814,6 +815,26 @@ Result<SurfaceArchiveV2> SurfaceArchiveV2::open_file(std::string_view path) {
   return open(std::move(bytes));
 }
 
+Result<SurfaceArchiveV2> SurfaceArchiveV2::open_mapped(std::string_view path) {
+  // S2 (WS-S): map the partition read-only instead of reading the whole file
+  // into an owned heap buffer. `open_impl` only CRC-validates the header, lookup,
+  // and directory sections (never the data records), so opening touches just the
+  // metadata pages; each surface record's bytes are faulted in lazily by the OS
+  // page cache when (and only when) a reader reconstructs/maps it. A subset load
+  // therefore never pays for the whole file. The `Mapping` is kept alive for the
+  // archive's whole lifetime via the type-erased `owner` handed to `open_borrowed`
+  // — every returned `PricedSurfaceView` (and the archive's own `bytes_` span)
+  // borrows into these mapped pages, so the mapping MUST outlive them.
+  auto mapping = atx::tsdb::Mapping::map_file_ro(std::string(path));
+  if (!mapping) {
+    return tl::unexpected<atx::core::Error>(std::move(mapping).error());
+  }
+  auto owner = std::make_shared<atx::tsdb::Mapping>(std::move(*mapping));
+  const std::span<const std::byte> span{reinterpret_cast<const std::byte *>(owner->base()),
+                                        static_cast<std::size_t>(owner->size())};
+  return open_borrowed(span, std::static_pointer_cast<const void>(owner));
+}
+
 const ArchiveV2LookupSlot *SurfaceArchiveV2::find_slot(std::string_view symbol) const noexcept {
   if (lookup_.empty()) {
     return nullptr;
@@ -1167,6 +1188,33 @@ Result<PricedSurface> SurfaceArchiveV2::reconstruct_symbol(std::string_view symb
   }
   return reconstruct_v2_record(bytes_.subspan(static_cast<std::size_t>(s->surface_offset),
                                               static_cast<std::size_t>(s->surface_size)));
+}
+
+Result<ArchivedSurface> SurfaceArchiveV2::reconstruct_entry(const ArchiveV2DirEntry &e) const {
+  // S3 (WS-S): reconstruct + read provenance directly from a directory entry the
+  // caller already holds (its record extent is in `e`), in ONE pass. The subset
+  // load path previously called reconstruct_symbol(sym) THEN provenance(sym),
+  // each re-running find_slot (hash probe + canonicalize_symbol string alloc)
+  // despite `e` already carrying surface_offset/surface_size — two redundant
+  // probes per referenced surface. Here there is no probe: both the surface and
+  // its provenance come off the same record header/payload extent.
+  if (e.surface_size < sizeof(ArchiveV2SurfaceHeader) || e.surface_offset > bytes_.size() ||
+      e.surface_size > bytes_.size() - e.surface_offset) {
+    return Err(ErrorCode::ParseError, "SurfaceArchiveV2::reconstruct_entry: record out of bounds");
+  }
+  const std::span<const std::byte> rec = bytes_.subspan(
+      static_cast<std::size_t>(e.surface_offset), static_cast<std::size_t>(e.surface_size));
+  ArchiveV2SurfaceHeader h;
+  std::memcpy(&h, rec.data(), sizeof h);
+  auto prov = provenance_from_v2_header(h);
+  if (!prov) {
+    return tl::unexpected<atx::core::Error>(std::move(prov).error());
+  }
+  auto ps = reconstruct_v2_record(rec);
+  if (!ps) {
+    return tl::unexpected<atx::core::Error>(std::move(ps).error());
+  }
+  return Ok(ArchivedSurface{std::move(*ps), std::move(*prov)});
 }
 
 Result<std::vector<PricedSurface>> SurfaceArchiveV2::reconstruct_all() const {

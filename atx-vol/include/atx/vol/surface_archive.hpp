@@ -658,8 +658,18 @@ public:
   // Read `path` fully into a buffer and `open` it. Adds IoError / NotFound.
   [[nodiscard]] static Result<SurfaceArchiveV2> open_file(std::string_view path);
 
-  // The MMAP SEAM (wave 2). View over externally-owned bytes; `owner` keeps the
-  // backing (e.g. an `atx::tsdb::Mapping`-owning shared_ptr) alive for the
+  // MMAP OPEN (S2/WS-S): map `path` read-only and `open_borrowed` it, so opening
+  // faults in only the metadata pages (header/lookup/directory that framing +
+  // CRC validation reads) — NOT the surface records. A reader that then maps or
+  // reconstructs a subset of records faults in only those records' pages via the
+  // OS page cache, never the whole file. The owning `atx::tsdb::Mapping` is kept
+  // alive by the archive for its whole lifetime; every returned `PricedSurfaceView`
+  // borrows into the mapped pages and must not outlive the archive. Adds
+  // IoError / NotFound / InvalidArgument (empty file).
+  [[nodiscard]] static Result<SurfaceArchiveV2> open_mapped(std::string_view path);
+
+  // The MMAP SEAM. View over externally-owned bytes; `owner` keeps the backing
+  // (an `atx::tsdb::Mapping`-owning shared_ptr under `open_mapped`) alive for the
   // archive's lifetime. Same framing validation as `open`.
   [[nodiscard]] static Result<SurfaceArchiveV2>
   open_borrowed(std::span<const std::byte> bytes, std::shared_ptr<const void> owner);
@@ -702,6 +712,11 @@ public:
   // win reaches the hot path via `map_symbol` (B1), not here. Slower than the
   // views (per-surface allocation), but only used off the hot path.
   [[nodiscard]] Result<PricedSurface> reconstruct_symbol(std::string_view symbol) const;
+  // S3 (WS-S): reconstruct one surface + its provenance from a directory entry the
+  // caller already holds — one pass over `e`'s record extent, NO hash re-probe
+  // (unlike reconstruct_symbol + provenance, which each re-run find_slot). Used by
+  // the subset load path, which iterates `directory()` and already has each `e`.
+  [[nodiscard]] Result<ArchivedSurface> reconstruct_entry(const ArchiveV2DirEntry &e) const;
   [[nodiscard]] Result<std::vector<PricedSurface>> reconstruct_all() const;
   [[nodiscard]] Result<std::vector<ArchivedSurface>> reconstruct_all_with_provenance() const;
 

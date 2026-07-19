@@ -1144,7 +1144,14 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
   ATX_VOL_PROFILE_SCOPE(SnapshotLoad);
   auto arch = [&]() {
     ATX_VOL_PROFILE_SCOPE(ArchiveOpen);
-    return SurfaceArchiveV2::open_file(archive_path);
+    // S2 (WS-S): mmap the partition instead of reading the whole file into an owned
+    // heap buffer. open_impl CRC-validates only the header/lookup/directory (small),
+    // so this open faults in only metadata pages; a subset load (below) then faults
+    // in only the referenced records' pages via the OS page cache — the whole-file
+    // read amplification (67% of backtest wall in the profile) is eliminated. The
+    // archive co-owns the Mapping, and this snapshot owns the archive-derived
+    // surfaces, so the mapped pages outlive every reader.
+    return SurfaceArchiveV2::open_mapped(archive_path);
   }();
   if (!arch) {
     return Err(arch.error());
@@ -1183,17 +1190,16 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
       if (wanted_uids.find(e.uid) == wanted_uids.end()) {
         continue;
       }
-      const std::string_view sym{e.symbol, e.symbol_len};
-      auto ps = arch->reconstruct_symbol(sym);
-      if (!ps) {
-        return Err(ps.error());
+      // S3 (WS-S): reconstruct the surface AND its provenance from the directory
+      // entry `e` already in hand — ONE pass over the record extent, no hash
+      // re-probe. (Previously reconstruct_symbol(sym) + provenance(sym) each
+      // re-ran find_slot: two redundant probes + canonicalize_symbol allocs.)
+      auto rec = arch->reconstruct_entry(e);
+      if (!rec) {
+        return Err(rec.error());
       }
-      auto prov = arch->provenance(sym);
-      if (!prov) {
-        return Err(prov.error());
-      }
-      surfaces.push_back(std::move(*ps));
-      provenance.push_back(std::move(*prov));
+      surfaces.push_back(std::move(rec->surface));
+      provenance.push_back(std::move(rec->provenance));
     }
     loaded_subset = !surfaces.empty();
   }
