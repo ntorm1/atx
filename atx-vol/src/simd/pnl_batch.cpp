@@ -49,7 +49,7 @@ void pnl_taylor_explain_batch_scalar(const PnlExplainInputs& in,
 void pnl_taylor_explain_batch(const PnlExplainInputs& in,
                               const PnlExplainOutputs& out,
                               std::size_t n) noexcept {
-    if (have_avx2()) {
+    if (use_avx2()) {
         detail::pnl_taylor_explain_batch_avx2(in, out, n);
     } else {
         pnl_taylor_explain_batch_scalar(in, out, n);

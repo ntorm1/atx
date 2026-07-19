@@ -54,7 +54,7 @@ void black76_greeks_batch_soa(const double* F, const double* K, const double* T,
                               const double* sigma, const double* r,
                               const double* df, const Side* side,
                               const GreeksBatchSoA& out, std::size_t n) noexcept {
-    if (have_avx2()) {
+    if (use_avx2()) {
         detail::black76_greeks_batch_soa_avx2(F, K, T, sigma, r, df, side, out,
                                               n);
     } else {
@@ -67,7 +67,7 @@ void black76_greeks_batch(const double* F, const double* K, const double* T,
                           const double* df, const Side* side,
                           Greeks* greeks_out, double* price_out,
                           std::size_t n) noexcept {
-    if (have_avx2()) {
+    if (use_avx2()) {
         detail::black76_greeks_batch_avx2(F, K, T, sigma, r, df, side,
                                           greeks_out, price_out, n);
     } else {

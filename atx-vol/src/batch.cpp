@@ -124,7 +124,7 @@ Status black76_price_batch(std::span<const double> F, std::span<const double> K,
                "permitted)");
   }
   const std::size_t n = F.size();
-  if (n >= kAvx2LaneWidth && simd::have_avx2()) {
+  if (n >= kAvx2LaneWidth && simd::use_avx2()) {
     simd::detail::black76_price_batch_avx2(F.data(), K.data(), T.data(), sigma.data(), df.data(),
                                            side.data(), price_out.data(), n);
     return Ok();
@@ -173,7 +173,7 @@ Status black76_value_and_vega_batch(std::span<const double> F, std::span<const d
   const std::size_t n = F.size();
   // A caller-supplied zero sqrt(T) intentionally produces the scalar kernel's
   // degenerate arithmetic. Keep that unusual sentinel off the vector route.
-  if (n >= kAvx2LaneWidth && sqrt_t_in != 0.0 && simd::have_avx2()) {
+  if (n >= kAvx2LaneWidth && sqrt_t_in != 0.0 && simd::use_avx2()) {
     simd::detail::black76_value_vega_shared_t_batch_avx2(F.data(), K.data(), T, sqrt_t_in,
                                                          sigma.data(), df.data(), side.data(),
                                                          value_out.data(), vega_out.data(), n);
@@ -239,7 +239,7 @@ Status black76_greeks_batch(std::span<const double> F, std::span<const double> K
                "(only exact in-place aliasing is permitted)");
   }
   const std::size_t n = F.size();
-  if (n >= kAvx2LaneWidth && simd::have_avx2()) {
+  if (n >= kAvx2LaneWidth && simd::use_avx2()) {
     simd::detail::black76_greeks_batch_avx2(F.data(), K.data(), T.data(), sigma.data(), r.data(),
                                             df.data(), side.data(), greeks_out.data(),
                                             want_price ? price_out.data() : nullptr, n);
@@ -266,7 +266,7 @@ Status essvi_w_batch(const EssviSlice &slice, std::span<const double> k_log,
                "permitted)");
   }
   const std::size_t n = k_log.size();
-  if (n >= kEssviAvx2MinBatch && simd::have_avx2()) {
+  if (n >= kEssviAvx2MinBatch && simd::use_avx2()) {
     EssviParams params{};
     params.theta = slice.theta;
     params.phi = slice.phi;

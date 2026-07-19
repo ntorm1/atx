@@ -35,7 +35,7 @@ void black76_price_batch(const double* F, const double* K, const double* T,
                          const double* sigma, const double* df,
                          const Side* side, double* price_out,
                          std::size_t n) noexcept {
-    if (have_avx2()) {
+    if (use_avx2()) {
         detail::black76_price_batch_avx2(F, K, T, sigma, df, side, price_out, n);
     } else {
         price_batch_scalar(F, K, T, sigma, df, side, price_out, n);
@@ -46,7 +46,7 @@ void black76_value_vega_batch(const double* F, const double* K, const double* T,
                               const double* sigma, const double* df,
                               const Side* side, double* price_out,
                               double* vega_out, std::size_t n) noexcept {
-    if (have_avx2()) {
+    if (use_avx2()) {
         detail::black76_value_vega_batch_avx2(F, K, T, sigma, df, side,
                                               price_out, vega_out, n);
     } else {
