@@ -618,13 +618,18 @@ Result<double> PricedSurface::price_resolved(const ResolvedSurfacePoint &p, Side
 }
 
 Result<AmericanGreeks> PricedSurface::greeks_resolved(const ResolvedSurfacePoint &p, Side side,
-                                                      bool analytic,
-                                                      QueryExecution execution) const {
+                                                      bool analytic, QueryExecution execution,
+                                                      GreekNeeds needs) const {
   counters::lightweight::QuerySample telemetry_sample{execution == QueryExecution::Configured &&
                                                       query_accelerator_ != nullptr};
   if (execution == QueryExecution::Configured && query_accelerator_ != nullptr) {
     const CorrectionBlend correction = query_accelerator_->blend_at(p, side, query_pricing_tier_);
     if (correction.usable(side)) {
+      // L4/K4: the cached-correction route ignores `needs` and returns its full
+      // internally-consistent jet — a correctness-preserving superset (a reduced
+      // caller reads only the columns it asked for; the extra columns are correct,
+      // never stale). This is the rare fast-tier guard corner, not the backtest's
+      // cold analytic AL hot path.
       auto cached =
           american_greeks(pricing_.S, p.K, p.T, p.sigma, p.rate, p.q_eff, side, correction);
       if (cached.has_value()) {
@@ -635,9 +640,17 @@ Result<AmericanGreeks> PricedSurface::greeks_resolved(const ResolvedSurfacePoint
     }
   }
   if (analytic && pricing_.method == AmericanMethod::AndersenLake) {
+    // K4 first-order tier (the L4 hot path): map GreekNeeds onto american_greeks_al's
+    // need_vega/need_rho/need_charm so a reduced request skips whole boundary solves
+    // (full=5, {vega only}=3, {none}=1). The requested columns are BIT-IDENTICAL to the
+    // full-bundle values (same base boundary + σ± stencils); unrequested greeks are 0.
+    // Default GreekNeeds{} (all true) reproduces the pre-L4 maskless call exactly.
     return american_greeks_al(pricing_.S, p.K, p.T, p.sigma, p.rate, p.q_eff, side,
-                              std::optional<AlOpts>{pricing_.al_opts});
+                              std::optional<AlOpts>{pricing_.al_opts}, needs.vega, needs.rho,
+                              needs.charm);
   }
+  // FD fallback route: the full oracle (american_greeks_fd is the reference bundle);
+  // it ignores `needs` and stays the correctness-preserving superset.
   return american_greeks_fd(pricing_.S, p.K, p.T, p.sigma, p.rate, p.q_eff, side, pricing_.method,
                             std::optional<AlOpts>{pricing_.al_opts});
 }
@@ -721,7 +734,8 @@ Result<AmericanGreeks> PricedSurface::greeks(double K, double T, Side side,
 }
 
 Result<AmericanGreeks> PricedSurface::greeks_analytic(double K, double T, Side side,
-                                                      QueryExecution execution) const {
+                                                      QueryExecution execution,
+                                                      GreekNeeds needs) const {
   const ResolvedSurfacePoint p = resolve(K, T);
   if (!p.valid) {
     return Err(ErrorCode::InvalidArgument,
@@ -732,8 +746,8 @@ Result<AmericanGreeks> PricedSurface::greeks_analytic(double K, double T, Side s
   // BAW / degenerate corners fall back to the cold FD path inside american_greeks_al.
   // Fast tiers differentiate their cached surrogate directly, so the analytic
   // flag has no alternate numerical meaning there. Cold serving retains the
-  // Andersen-Lake/PDE route.
-  return greeks_resolved(p, side, true, execution);
+  // Andersen-Lake/PDE route. `needs` narrows that cold AL bundle (K4 tier).
+  return greeks_resolved(p, side, true, execution, needs);
 }
 
 Result<FullGreekSeed> PricedSurface::full_greek_seed(double K, double T, Side side, bool analytic,
@@ -769,8 +783,8 @@ Result<double> PricedSurface::vega(double K, double T, Side side, QueryExecution
 
 PricedSurface::FusedResult PricedSurface::evaluate_resolved(const ResolvedSurfacePoint &p,
                                                             Side side, EvalField fields,
-                                                            bool analytic,
-                                                            QueryExecution execution) const {
+                                                            bool analytic, QueryExecution execution,
+                                                            GreekNeeds needs) const {
   FusedResult r;
   if (!p.valid) {
     r.iv = kNaN;
@@ -820,7 +834,10 @@ PricedSurface::FusedResult PricedSurface::evaluate_resolved(const ResolvedSurfac
     // Route exactly as greeks() / greeks_analytic() do; american_greeks_*().price
     // IS the fair value (bit-identical), so Greeks yield the mark for free.
     ATX_VOL_COUNT(SurfaceFullGreekRoutes);
-    Result<AmericanGreeks> g = greeks_resolved(p, side, analytic, execution);
+    // K4 tier: `needs` skips the σ±/r±/charm solves the requested columns don't need
+    // (default {} = full 5-solve bundle, bit-identical to pre-L4). `price` (== fair
+    // value) still rides the base boundary, so a reduced request keeps `r.price`.
+    Result<AmericanGreeks> g = greeks_resolved(p, side, analytic, execution, needs);
     if (!g.has_value()) {
       r.iv = kNaN;
       r.price = kNaN;
@@ -873,14 +890,15 @@ PricedSurface::FusedResult PricedSurface::evaluate_resolved(const ResolvedSurfac
 }
 
 PricedSurface::FusedResult PricedSurface::evaluate(double K, double T, Side side, EvalField fields,
-                                                   bool analytic, QueryExecution execution) const {
-  return evaluate_resolved(resolve(K, T), side, fields, analytic, execution);
+                                                   bool analytic, QueryExecution execution,
+                                                   GreekNeeds needs) const {
+  return evaluate_resolved(resolve(K, T), side, fields, analytic, execution, needs);
 }
 
 Status PricedSurface::evaluate_batch(std::span<const double> K, std::span<const double> T,
                                      std::span<const Side> side, EvalField fields, bool analytic,
                                      EvaluationSoA out, simd::SimdIsa resolved_price_isa,
-                                     QueryExecution execution) const {
+                                     QueryExecution execution, GreekNeeds needs) const {
   const std::size_t n = K.size();
   if (T.size() != n || side.size() != n) {
     return Err(ErrorCode::InvalidArgument,
@@ -959,7 +977,7 @@ Status PricedSurface::evaluate_batch(std::span<const double> K, std::span<const 
           ResolvedSurfacePoint p;
           p.K = K[e];
           p.T = t;
-          const FusedResult fr = evaluate_resolved(p, side[e], fields, analytic, execution);
+          const FusedResult fr = evaluate_resolved(p, side[e], fields, analytic, execution, needs);
           out.iv[e] = fr.iv;
           out.price[e] = fr.price;
           out.status[e] = fr.status;
@@ -1016,7 +1034,7 @@ Status PricedSurface::evaluate_batch(std::span<const double> K, std::span<const 
         if (!batch_status.has_value()) {
           return batch_status;
         }
-        const FusedResult fr = evaluate_resolved(p, side[e], fields, analytic, execution);
+        const FusedResult fr = evaluate_resolved(p, side[e], fields, analytic, execution, needs);
         out.iv[e] = fr.iv;
         out.price[e] = fr.price;
         out.status[e] = fr.status;
@@ -1130,7 +1148,7 @@ Status PricedSurface::evaluate_batch(std::span<const double> K, std::span<const 
         p.K = K[e];
         p.T = t; // valid == false
       }
-      const FusedResult fr = evaluate_resolved(p, side[e], fields, analytic, execution);
+      const FusedResult fr = evaluate_resolved(p, side[e], fields, analytic, execution, needs);
       if (!selective_only || want_iv) {
         out.iv[e] = fr.iv;
       }

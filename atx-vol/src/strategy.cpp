@@ -677,11 +677,43 @@ namespace {
   }
   const bool has_constraint = c.kind != CrossLegConstraint::Kind::None;
 
+  // L3 (AL-solve-wall sprint, fewer-solves entry wall): fan the per-leg entry
+  // resolution across the shared pricing_executor pool. Each leg's work — the
+  // delta-strike Illinois iterations + the full_greek_seed American solve, the
+  // entry-day wall of finding 3 (~0.75-4.5 s single-threaded on the 51-name config)
+  // — is POOL-FREE SCALAR work (resolve_strike_by_delta_routed and
+  // full_greek_seed->evaluate never dispatch to the pool), so fanning at LEG
+  // granularity nests no pool dispatch and batches BOTH the strike solve AND the
+  // per-leg seed in one pass at name granularity (the parallelism that matters for
+  // a per-name universe). expand_and_size_leg is a pure function of (const snap, ls,
+  // options) with no shared mutable state, and run_blocks writes each slot exactly
+  // once (disjoint per-leg writes), so `per_leg` — and therefore the in-order
+  // assembly below — is BIT-IDENTICAL to the old serial resolve for any worker
+  // count (same drop/constraint bookkeeping, same error propagation order).
+  //
+  // [Approach note vs the sprint plan's L3 row: the plan suggested routing delta
+  // strikes through resolve_strikes_by_delta_batched (strike granularity). Leg-
+  // granularity fan-out subsumes it — it batches the strike solve AND the seed
+  // together at name granularity — without a second pool dispatch or restructuring
+  // the expand_leg resolve+seed pipeline, and stays bit-identical by the same
+  // disjoint-slot argument the batched resolver relies on.]
+  std::vector<Result<std::vector<SizedLeg>>> per_leg;
+  per_leg.reserve(spec.legs.size());
+  for (std::size_t i = 0; i < spec.legs.size(); ++i) {
+    per_leg.emplace_back(Err(ErrorCode::Internal, "resolve_spec: leg not resolved"));
+  }
+  if (!spec.legs.empty()) {
+    pricing_executor().run_blocks(
+        spec.legs.size(), price_options.n_threads, [&](std::size_t i) {
+          per_leg[i] = expand_and_size_leg(snap, spec.legs[i], spec.resolution, price_options);
+        });
+  }
+
   std::vector<SizedLeg> sized;
   std::size_t group_a_survivors = 0;
-  for (const LegSpec &ls : spec.legs) {
-    Result<std::vector<SizedLeg>> leg_sized =
-        expand_and_size_leg(snap, ls, spec.resolution, price_options);
+  for (std::size_t leg_ix = 0; leg_ix < spec.legs.size(); ++leg_ix) {
+    const LegSpec &ls = spec.legs[leg_ix];
+    Result<std::vector<SizedLeg>> &leg_sized = per_leg[leg_ix];
     if (!leg_sized) {
       const ErrorCode code = leg_sized.error().code();
       const bool droppable_market_failure =
