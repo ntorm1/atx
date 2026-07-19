@@ -766,6 +766,62 @@ TEST(PricedSurface, EvaluateBatchMixedTBitIdenticalToPerEntry) {
   EXPECT_TRUE(std::isnan(out_px[n - 1]));
 }
 
+// H1 (WS-H): the ForceAvx2 laned analytic-PUT Greeks fast path in evaluate_batch.
+// PUT lanes ride simd::american_put_greeks_batch (this surface's al_opts threaded
+// through); CALL / invalid lanes stay scalar. On an AVX2 host the genuine
+// early-exercise put lanes match the per-entry scalar american_greeks_al bundle
+// within the same economic gate the marks AVX2 flip uses (NOT bit-identical — that
+// is exactly why the production Auto path stays scalar, gated ForceAvx2-only). On a
+// non-AVX2 host the guard falls back to the scalar loop, so the same comparison is
+// bit-identical. Either way the laned path must produce finite, close greeks and
+// preserve per-lane errors.
+TEST(PricedSurface, EvaluateBatchGreeksForceAvx2MatchesScalarWithinGate) {
+  const PricedSurface s = make_essvi_varycarry(1);
+  const EF fields = EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder;
+  // Puts (genuine early-exercise candidates) interleaved with calls, an equal-T run,
+  // and a degenerate trailing strike, mirroring the bit-identity mixed-T test.
+  const std::vector<double> Ks{95.0, 100.0, 105.0, 96.0, 90.0, 110.0, 98.0, -3.0};
+  const std::vector<double> Ts{0.30, 0.30, 0.30, 0.55, 0.55, 0.17, 0.30, 0.40};
+  const std::vector<Side> sides{Side::Put,  Side::Call, Side::Put, Side::Put,
+                                Side::Put,  Side::Call, Side::Put, Side::Put};
+  const std::size_t n = Ks.size();
+  std::vector<double> out_iv(n), out_px(n);
+  std::vector<AmericanGreeks> out_gk(n);
+  std::vector<Status> out_st(n);
+  const Status rc = s.evaluate_batch(Ks, Ts, sides, fields, /*analytic=*/true,
+                                     PricedSurface::EvaluationSoA{out_iv, out_px, out_gk, out_st,
+                                                                  {}, {}},
+                                     simd::SimdIsa::ForceAvx2);
+  ASSERT_TRUE(rc.has_value());
+  const auto rel_close = [](double a, double b, double rtol, double atol) {
+    if (!std::isfinite(a) || !std::isfinite(b)) {
+      return std::isnan(a) == std::isnan(b);
+    }
+    return std::fabs(a - b) <= atol + rtol * std::fabs(b);
+  };
+  for (std::size_t i = 0; i + 1 < n; ++i) { // last entry is the degenerate error lane
+    const auto e = s.evaluate(Ks[i], Ts[i], sides[i], fields, /*analytic=*/true);
+    ASSERT_EQ(out_st[i].has_value(), e.status.has_value()) << i;
+    if (!e.status.has_value()) {
+      continue;
+    }
+    EXPECT_TRUE(bits_equal(out_iv[i], e.iv)) << i;             // IV is from the resolution (exact)
+    EXPECT_TRUE(rel_close(out_px[i], e.price, 1e-6, 1e-8)) << i;
+    EXPECT_TRUE(rel_close(out_gk[i].delta, e.greeks.delta, 1e-5, 1e-7)) << i;
+    EXPECT_TRUE(rel_close(out_gk[i].vega, e.greeks.vega, 1e-5, 1e-7)) << i;
+    EXPECT_TRUE(rel_close(out_gk[i].gamma, e.greeks.gamma, 1e-3, 1e-7)) << i;
+    EXPECT_TRUE(rel_close(out_gk[i].theta, e.greeks.theta, 1e-4, 1e-6)) << i;
+    EXPECT_TRUE(rel_close(out_gk[i].charm, e.greeks.charm, 1e-3, 1e-6)) << i;
+    // CALL lanes stay on the scalar route in the laned path → bit-identical.
+    if (sides[i] == Side::Call) {
+      EXPECT_TRUE(bits_equal(out_px[i], e.price)) << i;
+      EXPECT_TRUE(bits_equal(out_gk[i].vega, e.greeks.vega)) << i;
+    }
+  }
+  EXPECT_FALSE(out_st[n - 1].has_value()); // degenerate strike is a per-entry error
+  EXPECT_TRUE(std::isnan(out_px[n - 1]));
+}
+
 TEST(PricedSurface, PriceOnlyResolvedBatchPreservesMethodPresetAndLaneErrors) {
   const AlOpts custom{/*n_collocation=*/9, /*n_quadrature=*/32,
                       /*max_newton_iter=*/6, /*tol=*/3.0e-9};

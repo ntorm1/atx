@@ -791,6 +791,29 @@ PricedSurface::FusedResult PricedSurface::evaluate_resolved(const ResolvedSurfac
     r.greeks.vega = kNaN;
   }
 
+  // H2 [WS-H STRETCH — DEFERRED]: first-order greek tier end-to-end. Today
+  // FirstOrder and SecondOrder COLLAPSE to the same full bundle here (both set
+  // want_greeks and call greeks_resolved -> the full american_greeks_al 5-solve /
+  // american_greeks_fd 17-solve bundle). A delta-only hedge cadence therefore pays
+  // the full second-order bundle. The kernel primitives already exist and are
+  // wired-but-unused for this narrowing:
+  //   * american_greeks_al(...,need_vega,need_rho,need_charm) skips the sigma+/-
+  //     (vega/volga/vanna), r+/- (rho) and wide-speed (charm) boundary solves — a
+  //     {delta} bundle is 1 boundary solve vs 5 (see american.hpp; K4 selectors).
+  //   * simd::american_put_greeks_batch takes the same need_* selectors (H1 already
+  //     forwards all-true; a first-order caller would pass need_*=false).
+  // TO FINISH (design): (1) add a first-order request bit to EvalField-consuming
+  // callers — either a granular GreekNeeds on PriceOptions or a PriceFieldMask
+  // FirstOrder bit (portfolio_pricer.hpp) mapped to EvalField::FirstOrder-only;
+  // (2) here, derive need_vega = has(SecondOrder) || <vega requested>, need_rho,
+  // need_charm from the requested axes and forward them into greeks_resolved ->
+  // american_greeks_al(...,need_*) AND the H1 laned path; leave price+delta+gamma+
+  // theta on the base solve. (3) prove a delta-only request drops the sigma/r/speed
+  // solves via the BoundarySolves ledger. NOTE: this does NOT move the dispersion
+  // benchmark (it prices FullGreeks every step) — it is a general hedge-cadence win.
+  // The EvalField::Delta / EvalField::Vega selective primitives + american_delta
+  // (1-2 solves) already exist in evaluate_resolved below (honored) but have no
+  // portfolio caller — the same wiring exposes them.
   const bool want_greeks =
       has_field(fields, EvalField::FirstOrder) || has_field(fields, EvalField::SecondOrder);
   if (want_greeks) {
@@ -1003,6 +1026,97 @@ Status PricedSurface::evaluate_batch(std::span<const double> K, std::span<const 
       if (!batch_status.has_value()) {
         return batch_status;
       }
+      i = j;
+      continue;
+    }
+    // H1 (WS-H): laned ANALYTIC American-PUT Greeks. Under an EXPLICIT ForceAvx2
+    // request, dispatch this run's valid PUT lanes through the 4-wide
+    // simd::american_put_greeks_batch bundle instead of the per-contract scalar
+    // american_greeks_al fan. THIS surface's al_opts is threaded through — the
+    // higher-level american_greeks_batch cannot (it forces std::nullopt, which
+    // resolves to a DIFFERENT, more expensive AlScheme than the reloaded surfaces'
+    // al_fast_opts, so it is NOT a byte-identical drop-in). The kernel patches every
+    // non-early-exercise / non-finite lane through the exact scalar
+    // american_greeks_al(...,al_opts) — byte-identical to greeks_resolved's cold
+    // put branch; genuine early-exercise put lanes ride the 4-wide vector bundle,
+    // matching scalar within the same economic gate the marks AVX2 flip uses.
+    // IMPORTANT — the gate is ForceAvx2 ONLY, NOT Auto: unlike marks, the greeks
+    // path carries pervasive BIT-IDENTITY contracts (evaluate_batch == per-entry
+    // evaluate; a single-contract FullGreekSeed produced via evaluate() must equal
+    // the batch solve). A single-contract seed can never match a 4-wide AVX2 pack,
+    // so Auto→AVX2 greeks would silently break seed reuse and the batch==scalar
+    // invariant. Auto/ForceScalar therefore keep the established scalar loop
+    // (production dispersion path stays byte-identical); ForceAvx2 opts a caller
+    // (bench / A-B) into the laned bundle. Cold path only (mirror the marks arm's
+    // accelerator guard).
+    if (want_greeks && !selective_only && !want_delta && !want_vega && analytic && t_valid &&
+        pricing_.method == AmericanMethod::AndersenLake &&
+        resolved_price_isa == simd::SimdIsa::ForceAvx2 &&
+        simd::avx2_greeks_selected(resolved_price_isa) &&
+        (execution == QueryExecution::ColdReference || query_accelerator_ == nullptr)) {
+      constexpr std::size_t kGreekChunk = 256;
+      double gs[kGreekChunk], gk[kGreekChunk], gt[kGreekChunk];
+      double gsig[kGreekChunk], gr[kGreekChunk], gq[kGreekChunk];
+      AmericanGreeks gg[kGreekChunk];
+      std::size_t gidx[kGreekChunk];
+      std::size_t cnt = 0;
+      const std::optional<AlOpts> al{pricing_.al_opts};
+      const auto scatter_put = [&](std::size_t e, const AmericanGreeks &g) {
+        if (std::isfinite(g.price)) {
+          // american_greeks_al().price IS the American mark (cold-FD invariant),
+          // exactly as evaluate_resolved returns g->price for a want_greeks lane.
+          out.greeks[e] = g;
+          out.price[e] = g.price;
+          out.status[e] = Ok();
+          return;
+        }
+        // Byte-identical failure fallback: reproduce evaluate_resolved's exact
+        // Err + poison (the kernel exposes no per-lane ErrorCode).
+        const ResolvedSurfacePoint p = resolve_with_carry_and_bracket(K[e], t, fc, surface_bracket);
+        const FusedResult fr = evaluate_resolved(p, Side::Put, fields, analytic, execution);
+        out.iv[e] = fr.iv;
+        out.price[e] = fr.price;
+        out.greeks[e] = fr.greeks;
+        out.status[e] = fr.status;
+      };
+      const auto flush = [&]() {
+        if (cnt == 0) {
+          return;
+        }
+        (void)simd::american_put_greeks_batch(gs, gk, gt, gsig, gr, gq, cnt, al, gg,
+                                              resolved_price_isa, /*need_vega=*/true,
+                                              /*need_rho=*/true, /*need_charm=*/true);
+        for (std::size_t m = 0; m < cnt; ++m) {
+          scatter_put(gidx[m], gg[m]);
+        }
+        cnt = 0;
+      };
+      for (std::size_t e = i; e < j; ++e) {
+        const ResolvedSurfacePoint p = resolve_with_carry_and_bracket(K[e], t, fc, surface_bracket);
+        if (p.valid && side[e] == Side::Put) {
+          ATX_VOL_COUNT(SurfaceFullGreekRoutes); // one greek bundle, laned or patched
+          gs[cnt] = pricing_.S;
+          gk[cnt] = p.K;
+          gt[cnt] = p.T;
+          gsig[cnt] = p.sigma;
+          gr[cnt] = p.rate;
+          gq[cnt] = p.q_eff;
+          gidx[cnt] = e;
+          out.iv[e] = p.sigma; // IV is free from the resolution (matches evaluate_resolved)
+          if (++cnt == kGreekChunk) {
+            flush();
+          }
+        } else {
+          // CALL lanes (put-native kernel) and invalid resolutions: exact scalar
+          // routing, byte-identical to the unlanced path.
+          const FusedResult fr = evaluate_resolved(p, side[e], fields, analytic, execution);
+          out.iv[e] = fr.iv;
+          out.price[e] = fr.price;
+          out.greeks[e] = fr.greeks;
+          out.status[e] = fr.status;
+        }
+      }
+      flush();
       i = j;
       continue;
     }
