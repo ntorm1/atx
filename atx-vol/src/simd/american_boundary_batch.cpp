@@ -161,27 +161,32 @@ bool avx2_greeks_selected(SimdIsa isa) noexcept {
 SimdRoute american_put_greeks_batch(const double* S, const double* K, const double* T,
                                     const double* sigma, const double* r, const double* q,
                                     std::size_t n, const std::optional<AlOpts>& opts,
-                                    AmericanGreeks* out_greeks, SimdIsa isa) noexcept {
+                                    AmericanGreeks* out_greeks, SimdIsa isa,
+                                    bool need_vega, bool need_rho,
+                                    bool need_charm) noexcept {
     const bool avx2 = avx2_greeks_selected(isa);
     if (n == 0) {
         return avx2 ? SimdRoute::Avx2 : SimdRoute::Scalar;
     }
     if (!avx2) {
+        // Scalar oracle stays the full american_greeks_al bundle (correctness first; the
+        // first-order solve-skip win is on the laned majority, not the scalar patch).
         for (std::size_t i = 0; i < n; ++i) {
             greeks_scalar_lane(S, K, T, sigma, r, q, opts, out_greeks, i);
         }
         return SimdRoute::Scalar;
     }
+    const detail::GreekNeeds needs{need_vega, need_rho, need_charm};
     // AVX2 route: lane the bundle, then patch the lanes the kernel could not handle
-    // (non-early-exercise on any bump state, or non-finite) through the scalar oracle.
-    // Chunked with a stack `handled` buffer to stay allocation-free.
+    // (non-early-exercise on any needed bump state, or non-finite) through the scalar
+    // oracle. Chunked with a stack `handled` buffer to stay allocation-free.
     constexpr std::size_t kChunk = 512;
     for (std::size_t off = 0; off < n; off += kChunk) {
         const std::size_t cn = (n - off < kChunk) ? (n - off) : kChunk;
         bool handled[kChunk];
         detail::american_put_greeks_batch_avx2(S + off, K + off, T + off, sigma + off,
                                                r + off, q + off, cn, opts,
-                                               out_greeks + off, handled);
+                                               out_greeks + off, handled, needs);
         for (std::size_t i = 0; i < cn; ++i) {
             if (!handled[i]) {
                 greeks_scalar_lane(S + off, K + off, T + off, sigma + off, r + off, q + off,

@@ -183,7 +183,8 @@ void BM_AndersenLake(benchmark::State& state) {
 // the per-contract american_greeks_al oracle; ForceAvx2 lanes 4 puts/pack through the
 // K3 kernel. laned_scalar / laned = the honest laned-bundle speedup at the shipping
 // tier (composes with K1's preset ladder for the >=5x greeks close). PROVISIONAL.
-void run_laned_greeks(benchmark::State& state, atx::vol::simd::SimdIsa isa) {
+void run_laned_greeks(benchmark::State& state, atx::vol::simd::SimdIsa isa,
+                      bool need_vega, bool need_rho, bool need_charm) {
   const std::vector<Pt> grid = make_grid();
   const std::size_t n = grid.size();
   std::vector<double> S(n, kS), K(n), T(n), sig(n), r(n, kR), q(n, kQ);
@@ -195,21 +196,31 @@ void run_laned_greeks(benchmark::State& state, atx::vol::simd::SimdIsa isa) {
   for (auto _ : state) {
     atx::vol::simd::american_put_greeks_batch(S.data(), K.data(), T.data(), sig.data(),
                                               r.data(), q.data(), n, std::nullopt,
-                                              out.data(), isa);
-    for (const auto& g : out) sink += g.delta + g.vega + g.gamma;
+                                              out.data(), isa, need_vega, need_rho,
+                                              need_charm);
+    for (const auto& g : out) sink += g.delta + g.gamma;
     benchmark::DoNotOptimize(sink);
   }
   state.SetItemsProcessed(state.iterations() * static_cast<std::int64_t>(n));
 }
 void BM_LanedScalar(benchmark::State& state) {
-  run_laned_greeks(state, atx::vol::simd::SimdIsa::ForceScalar);
+  run_laned_greeks(state, atx::vol::simd::SimdIsa::ForceScalar, true, true, true);
 }
 void BM_LanedAvx2(benchmark::State& state) {
   if (!atx::vol::simd::have_avx2()) {
     state.SkipWithError("no AVX2 on host");
     return;
   }
-  run_laned_greeks(state, atx::vol::simd::SimdIsa::ForceAvx2);
+  run_laned_greeks(state, atx::vol::simd::SimdIsa::ForceAvx2, true, true, true);
+}
+// K4 first-order tier: {delta,gamma,theta} only -> 1 boundary solve/pack (skips the
+// sigma+/-, r+/- and speed solves). The hedge/risk path's win over the full bundle.
+void BM_LanedFirstOrder(benchmark::State& state) {
+  if (!atx::vol::simd::have_avx2()) {
+    state.SkipWithError("no AVX2 on host");
+    return;
+  }
+  run_laned_greeks(state, atx::vol::simd::SimdIsa::ForceAvx2, false, false, false);
 }
 
 // Register with the mandated common knobs (warm-up, 5 reps, p95 + CV).
@@ -227,6 +238,9 @@ const int kRegistered = [] {
                                             BM_LanedScalar))
       ->Unit(benchmark::kMicrosecond);
   apply_common(benchmark::RegisterBenchmark("american_greeks/laned", BM_LanedAvx2))
+      ->Unit(benchmark::kMicrosecond);
+  apply_common(benchmark::RegisterBenchmark("american_greeks/laned_first_order",
+                                            BM_LanedFirstOrder))
       ->Unit(benchmark::kMicrosecond);
   return 0;
 }();

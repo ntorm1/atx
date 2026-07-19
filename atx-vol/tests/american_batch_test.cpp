@@ -1107,6 +1107,43 @@ TEST(AmericanGreeksBatchLaned, AnalyticAvx2MatchesScalar) {
   }
 }
 
+// K4 first-order tier: requesting only base-boundary greeks (delta/gamma/theta/price)
+// skips the sigma+/-, r+/- and speed solves, but the columns it DOES return must be
+// BIT-IDENTICAL to the full-bundle run (same base boundary, same stencils, same PDE).
+TEST(AmericanGreeksBatchLaned, FirstOrderMaskBitMatchesFullBundle) {
+  if (!simd::have_avx2()) {
+    GTEST_SKIP() << "no AVX2 on host";
+  }
+  const Book b = make_american_greeks_book();
+  const std::size_t n = b.size();
+  auto run = [&](GreekFieldMask fields, std::vector<double>& dl, std::vector<double>& gm,
+                 std::vector<double>& th, std::vector<double>& px) {
+    dl.assign(n, -1); gm.assign(n, -1); th.assign(n, -1); px.assign(n, -1);
+    simd::GreeksBatchSoA out{dl.data(), gm.data(), nullptr, th.data(),
+                             nullptr, nullptr, nullptr, nullptr, px.data()};
+    PricingKernel kernel;
+    kernel.analytic_greeks = true;
+    kernel.isa = simd::SimdIsa::ForceAvx2;
+    PricingWorkspace ws;
+    ASSERT_TRUE(american_greeks_batch(b.view(), fields, out, kernel, ws).has_value());
+  };
+  std::vector<double> fd, fg, ft, fp; // first-order request
+  std::vector<double> ad, ag, at, ap; // full bundle
+  run(GreekFieldMask::Delta | GreekFieldMask::Gamma | GreekFieldMask::Theta |
+          GreekFieldMask::Price,
+      fd, fg, ft, fp);
+  run(GreekFieldMask::All, ad, ag, at, ap);
+  for (std::size_t i = 0; i < n; ++i) {
+    if (b.side[i] != Side::Put) {
+      continue; // calls go through the scalar fan either way
+    }
+    EXPECT_EQ(fp[i], ap[i]) << "price i=" << i;
+    EXPECT_EQ(fd[i], ad[i]) << "delta i=" << i;
+    EXPECT_EQ(fg[i], ag[i]) << "gamma i=" << i;
+    EXPECT_EQ(ft[i], at[i]) << "theta i=" << i;
+  }
+}
+
 TEST(AmericanGreeksBatch, MatchesScalarFd) {
   const Book b = make_american_greeks_book();
   const std::size_t n = b.size();

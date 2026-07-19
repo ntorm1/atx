@@ -56,9 +56,17 @@ struct SolveScratch {
 void american_put_greeks_batch_avx2(const double* S, const double* K, const double* T,
                                     const double* sigma, const double* r, const double* q,
                                     std::size_t n, const std::optional<AlOpts>& opts,
-                                    AmericanGreeks* out_greeks, bool* handled) noexcept {
+                                    AmericanGreeks* out_greeks, bool* handled,
+                                    GreekNeeds needs) noexcept {
     const amer::AlScheme sch = amer::scheme_from_opts(opts);
     const double kNaN = std::numeric_limits<double>::quiet_NaN();
+    // K4 first-order tier: skip whole boundary solves the requested greeks don't need.
+    // sigma+/- (2 solves) feed only vega/volga/vanna; r+/- (2 solves) only rho; the
+    // wide S+/-2h stencils only charm's speed term. A hedge caller ({delta}) thus pays
+    // 1 boundary solve instead of 5; a risk caller ({delta,vega}) pays 3.
+    const bool need_vega = needs.vega;   // vega, volga, vanna
+    const bool need_rho = needs.rho;
+    const bool need_charm = needs.charm; // needs the 5-point speed stencil
 
     for (std::size_t base = 0; base < n; base += 4) {
         const std::size_t m = (n - base < 4) ? (n - base) : 4;
@@ -128,40 +136,46 @@ void american_put_greeks_batch_avx2(const double* S, const double* K, const doub
         _mm256_store_pd(v0, price_put_pack_avx2(pk, spot_vec(0.0)));
         _mm256_store_pd(vSp, price_put_pack_avx2(pk, spot_vec(+1.0)));
         _mm256_store_pd(vSm, price_put_pack_avx2(pk, spot_vec(-1.0)));
-        _mm256_store_pd(vS2p, price_put_pack_avx2(pk, spot_vec(+2.0)));
-        _mm256_store_pd(vS2m, price_put_pack_avx2(pk, spot_vec(-2.0)));
-
-        // sigma+ boundary: price at S, S+hS, S-hS (vega, vanna+ leg).
-        solve_put_boundary_pack_avx2(Sl, Kl, Tl, sig_p, rl, ql, m, sch, sc.bnd, sc.ws, pk, elig, ref);
-        for (std::size_t l = 0; l < m; ++l) {
-            lane_ok[l] = lane_ok[l] && elig[l];
+        if (need_charm) { // wide S+/-2h speed stencils feed only charm
+            _mm256_store_pd(vS2p, price_put_pack_avx2(pk, spot_vec(+2.0)));
+            _mm256_store_pd(vS2m, price_put_pack_avx2(pk, spot_vec(-2.0)));
         }
-        _mm256_store_pd(vvp, price_put_pack_avx2(pk, spot_vec(0.0)));
-        _mm256_store_pd(vSpVp, price_put_pack_avx2(pk, spot_vec(+1.0)));
-        _mm256_store_pd(vSmVp, price_put_pack_avx2(pk, spot_vec(-1.0)));
 
-        // sigma- boundary.
-        solve_put_boundary_pack_avx2(Sl, Kl, Tl, sig_m, rl, ql, m, sch, sc.bnd, sc.ws, pk, elig, ref);
-        for (std::size_t l = 0; l < m; ++l) {
-            lane_ok[l] = lane_ok[l] && elig[l];
-        }
-        _mm256_store_pd(vvm, price_put_pack_avx2(pk, spot_vec(0.0)));
-        _mm256_store_pd(vSpVm, price_put_pack_avx2(pk, spot_vec(+1.0)));
-        _mm256_store_pd(vSmVm, price_put_pack_avx2(pk, spot_vec(-1.0)));
+        if (need_vega) {
+            // sigma+ boundary: price at S, S+hS, S-hS (vega, vanna+ leg).
+            solve_put_boundary_pack_avx2(Sl, Kl, Tl, sig_p, rl, ql, m, sch, sc.bnd, sc.ws, pk, elig, ref);
+            for (std::size_t l = 0; l < m; ++l) {
+                lane_ok[l] = lane_ok[l] && elig[l];
+            }
+            _mm256_store_pd(vvp, price_put_pack_avx2(pk, spot_vec(0.0)));
+            _mm256_store_pd(vSpVp, price_put_pack_avx2(pk, spot_vec(+1.0)));
+            _mm256_store_pd(vSmVp, price_put_pack_avx2(pk, spot_vec(-1.0)));
 
-        // r+ boundary: price at S.
-        solve_put_boundary_pack_avx2(Sl, Kl, Tl, sigl, r_p, ql, m, sch, sc.bnd, sc.ws, pk, elig, ref);
-        for (std::size_t l = 0; l < m; ++l) {
-            lane_ok[l] = lane_ok[l] && elig[l];
+            // sigma- boundary.
+            solve_put_boundary_pack_avx2(Sl, Kl, Tl, sig_m, rl, ql, m, sch, sc.bnd, sc.ws, pk, elig, ref);
+            for (std::size_t l = 0; l < m; ++l) {
+                lane_ok[l] = lane_ok[l] && elig[l];
+            }
+            _mm256_store_pd(vvm, price_put_pack_avx2(pk, spot_vec(0.0)));
+            _mm256_store_pd(vSpVm, price_put_pack_avx2(pk, spot_vec(+1.0)));
+            _mm256_store_pd(vSmVm, price_put_pack_avx2(pk, spot_vec(-1.0)));
         }
-        _mm256_store_pd(vrp, price_put_pack_avx2(pk, spot_vec(0.0)));
 
-        // r- boundary: price at S.
-        solve_put_boundary_pack_avx2(Sl, Kl, Tl, sigl, r_m, ql, m, sch, sc.bnd, sc.ws, pk, elig, ref);
-        for (std::size_t l = 0; l < m; ++l) {
-            lane_ok[l] = lane_ok[l] && elig[l];
+        if (need_rho) {
+            // r+ boundary: price at S.
+            solve_put_boundary_pack_avx2(Sl, Kl, Tl, sigl, r_p, ql, m, sch, sc.bnd, sc.ws, pk, elig, ref);
+            for (std::size_t l = 0; l < m; ++l) {
+                lane_ok[l] = lane_ok[l] && elig[l];
+            }
+            _mm256_store_pd(vrp, price_put_pack_avx2(pk, spot_vec(0.0)));
+
+            // r- boundary: price at S.
+            solve_put_boundary_pack_avx2(Sl, Kl, Tl, sigl, r_m, ql, m, sch, sc.bnd, sc.ws, pk, elig, ref);
+            for (std::size_t l = 0; l < m; ++l) {
+                lane_ok[l] = lane_ok[l] && elig[l];
+            }
+            _mm256_store_pd(vrm, price_put_pack_avx2(pk, spot_vec(0.0)));
         }
-        _mm256_store_pd(vrm, price_put_pack_avx2(pk, spot_vec(0.0)));
 
         // ── Combine per lane — EXACT american_greeks_al formulas (scalar) ──
         for (std::size_t l = 0; l < m; ++l) {
@@ -170,31 +184,50 @@ void american_put_greeks_batch_avx2(const double* S, const double* K, const doub
             }
             const double hSl = hS[l], hvl = hv[l], hrl = hr[l];
             const double Sc = Sl[l], Kc = Kl[l], sc_ = sigl[l], rc = rl[l], qc = ql[l];
-            AmericanGreeks g;
+            AmericanGreeks g; // unrequested greeks stay 0 (the caller's mask skips them)
             g.price = v0[l];
             g.delta = (vSp[l] - vSm[l]) / (2.0 * hSl);
             g.gamma = (vSp[l] - 2.0 * v0[l] + vSm[l]) / (hSl * hSl);
-            g.vega = (vvp[l] - vvm[l]) / (2.0 * hvl);
-            g.volga = (vvp[l] - 2.0 * v0[l] + vvm[l]) / (hvl * hvl);
-            g.rho = (vrp[l] - vrm[l]) / (2.0 * hrl);
-            g.vanna = (vSpVp[l] - vSpVm[l] - vSmVp[l] + vSmVm[l]) / (4.0 * hSl * hvl);
+            // theta rides the base boundary (v0/delta/gamma) via the continuation-region
+            // PDE — always available, no extra solve. charm additionally needs speed.
             const double intr0 = Kc - Sc; // put intrinsic
             const bool exercised = (v0[l] <= intr0 + 1.0e-9 * Kc) && (intr0 > 0.0);
-            if (exercised) {
-                g.theta = 0.0;
-                g.charm = 0.0;
-            } else {
-                const double speed =
-                    (vS2p[l] - 2.0 * vSp[l] + 2.0 * vSm[l] - vS2m[l]) / (2.0 * hSl * hSl * hSl);
-                g.theta = rc * v0[l] - (rc - qc) * Sc * g.delta -
-                          0.5 * sc_ * sc_ * Sc * Sc * g.gamma;
-                g.charm = rc * g.delta - (rc - qc) * (g.delta + Sc * g.gamma) -
-                          0.5 * sc_ * sc_ * (2.0 * Sc * g.gamma + Sc * Sc * speed);
+            g.theta = exercised ? 0.0
+                                : rc * v0[l] - (rc - qc) * Sc * g.delta -
+                                      0.5 * sc_ * sc_ * Sc * Sc * g.gamma;
+            if (need_vega) {
+                g.vega = (vvp[l] - vvm[l]) / (2.0 * hvl);
+                g.volga = (vvp[l] - 2.0 * v0[l] + vvm[l]) / (hvl * hvl);
+                g.vanna = (vSpVp[l] - vSpVm[l] - vSmVp[l] + vSmVm[l]) / (4.0 * hSl * hvl);
             }
-            // Non-finite guard: fall back to the scalar patch rather than store NaN.
-            if (!(std::isfinite(g.price) && std::isfinite(g.delta) && std::isfinite(g.gamma) &&
-                  std::isfinite(g.vega) && std::isfinite(g.volga) && std::isfinite(g.rho) &&
-                  std::isfinite(g.vanna) && std::isfinite(g.theta) && std::isfinite(g.charm))) {
+            if (need_rho) {
+                g.rho = (vrp[l] - vrm[l]) / (2.0 * hrl);
+            }
+            if (need_charm) {
+                if (exercised) {
+                    g.charm = 0.0;
+                } else {
+                    const double speed =
+                        (vS2p[l] - 2.0 * vSp[l] + 2.0 * vSm[l] - vS2m[l]) / (2.0 * hSl * hSl * hSl);
+                    g.charm = rc * g.delta - (rc - qc) * (g.delta + Sc * g.gamma) -
+                              0.5 * sc_ * sc_ * (2.0 * Sc * g.gamma + Sc * Sc * speed);
+                }
+            }
+            // Non-finite guard on the COMPUTED greeks only: fall back to the scalar patch
+            // rather than store NaN in a requested column.
+            bool ok = std::isfinite(g.price) && std::isfinite(g.delta) &&
+                      std::isfinite(g.gamma) && std::isfinite(g.theta);
+            if (need_vega) {
+                ok = ok && std::isfinite(g.vega) && std::isfinite(g.volga) &&
+                     std::isfinite(g.vanna);
+            }
+            if (need_rho) {
+                ok = ok && std::isfinite(g.rho);
+            }
+            if (need_charm) {
+                ok = ok && std::isfinite(g.charm);
+            }
+            if (!ok) {
                 continue;
             }
             out_greeks[base + l] = g;

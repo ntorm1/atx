@@ -79,10 +79,18 @@ SimdRoute american_put_boundary_batch(const double* S, const double* K,
 // state — or non-finite — through scalar american_greeks_al, so parity holds
 // everywhere within the documented economic gate. Auto respects the (dark) ship gate.
 // `opts` has andersen_lake engagement semantics. noexcept + allocation-free.
+//
+// `need_vega`/`need_rho`/`need_charm` (K4 first-order tier) skip the boundary solves the
+// requested greeks don't need: price+delta+gamma+theta ride the base solve alone; vega/
+// volga/vanna gate the sigma+/- solves; rho the r+/- solves; charm the wide speed
+// stencils. A hedge caller ({delta}) thus pays 1 boundary solve instead of 5. Defaults
+// keep the full bundle. Unrequested greeks are left 0 in out_greeks (the caller masks).
 SimdRoute american_put_greeks_batch(const double* S, const double* K, const double* T,
                                     const double* sigma, const double* r, const double* q,
                                     std::size_t n, const std::optional<AlOpts>& opts,
-                                    AmericanGreeks* out_greeks, SimdIsa isa) noexcept;
+                                    AmericanGreeks* out_greeks, SimdIsa isa,
+                                    bool need_vega = true, bool need_rho = true,
+                                    bool need_charm = true) noexcept;
 
 // Whether the laned AVX2 Greeks route is selected for `isa` on this host (ForceAvx2 =>
 // AVX2 iff supported; Auto => the dark ship gate; ForceScalar => never). Exposed so the

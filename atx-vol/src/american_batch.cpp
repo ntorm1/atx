@@ -306,12 +306,20 @@ Status american_greeks_batch(const AmericanBatchInput& in, GreekFieldMask fields
     std::size_t oidx[kC];
     AmericanGreeks gbuf[kC];
     std::size_t cnt = 0;
+    // K4: translate the column mask into the first-order solve-skip selectors so a
+    // hedge caller ({delta}) pays 1 boundary solve/pack instead of 5.
+    const bool need_vega = has_field(fields, GreekFieldMask::Vega) ||
+                           has_field(fields, GreekFieldMask::Volga) ||
+                           has_field(fields, GreekFieldMask::Vanna);
+    const bool need_rho = has_field(fields, GreekFieldMask::Rho);
+    const bool need_charm = has_field(fields, GreekFieldMask::Charm);
     const auto flush = [&]() noexcept {
       if (cnt == 0) {
         return;
       }
       const simd::SimdRoute route = simd::american_put_greeks_batch(
-          cs, ck, ct, cv, cr, cq, cnt, std::nullopt, gbuf, kernel.isa);
+          cs, ck, ct, cv, cr, cq, cnt, std::nullopt, gbuf, kernel.isa, need_vega,
+          need_rho, need_charm);
       for (std::size_t j = 0; j < cnt; ++j) {
         const std::size_t oi = oidx[j];
         const bool ok = std::isfinite(gbuf[j].price);
