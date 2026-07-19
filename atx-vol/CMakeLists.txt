@@ -423,6 +423,15 @@ if(ATX_BUILD_EXAMPLES)
     add_executable(earnings-repro examples/earnings_repro.cpp)
     target_link_libraries(earnings-repro PRIVATE atx::vol atx::core atx_warnings)
 
+    # AMZN-around-earnings CStar surface report (WS-2): load the committed real
+    # OPRA cbbo-1m fixture, fit every expiry (eSSVI seed -> cstar_calibrate_slice),
+    # and emit the per-slice CStar base params (theta,s2,c2,C_left,C_right), fit
+    # RMSE, and butterfly no-arb margin to stdout + <out>/slices.csv. Proves the
+    # front-expiry W-shape negative-curvature (c2<0) fit. See
+    # examples/amzn_earnings_report.cpp.
+    add_executable(amzn_earnings_report examples/amzn_earnings_report.cpp)
+    target_link_libraries(amzn_earnings_report PRIVATE atx::vol atx::core atx_warnings)
+
     # Earnings-censored atmCen cohort VALIDATION driver (Task 9): batch the
     # shared harness (atx/vol/earnings_repro_config.hpp) over the checked-in
     # SpiderRock truth CSV -- per name, OPRA board -> run_earnings_repro under an
