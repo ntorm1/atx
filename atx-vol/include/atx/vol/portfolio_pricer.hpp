@@ -485,6 +485,21 @@ struct TargetMarkView {
   std::span<double> base_vega_proxy;
 };
 
+// L2 (AL-solve-wall sprint): one retained per-unique-contract base mark exported
+// from the most recent FullGreeks solve, for populating a per-(contract,date)
+// settlement-mark memo. `mark` is the raw per-share American mark (`fair_value`,
+// bit-identical to a Marks-mask solve of the same contract — pinned by
+// BacktestExec.L2MarkMemoCruxFullGreeksMarkEqualsMarksMark). `T` is the contract's
+// retained residual tenor at the last solve's valuation.
+struct RetainedMark {
+  std::uint32_t uid{0};
+  double K{0.0};
+  double T{0.0};
+  Side side{Side::Call};
+  double mark{0.0};
+  PriceStatus status{PriceStatus::ModelUnavailable};
+};
+
 // ── The pricer ────────────────────────────────────────────────────────────
 
 struct PriceOptions {
@@ -670,6 +685,14 @@ public:
   // stale carry can only ever fall back to a fresh solve, never serve wrong risk.
   [[nodiscard]] bool carry_base_risk_subset(const PortfolioPricer &prev,
                                             PortfolioWorkspace &ws) const;
+
+  // L2 (AL-solve-wall sprint): export each unique contract's retained base mark
+  // (from the most recent FullGreeks `price_into`/`price_totals` on `ws`) into
+  // `out` — cleared then filled, one row per unique contract in contract order.
+  // `out` is left EMPTY when `ws` holds no matching retained bundle (size gate),
+  // so a caller memo fails closed. Reads only; no solve. Used by the backtest to
+  // populate a per-(contract,date) settlement-mark memo without a second pass.
+  void retained_marks(const PortfolioWorkspace &ws, std::vector<RetainedMark> &out) const;
 
 private:
   Portfolio pf_;

@@ -144,6 +144,86 @@ private:
   PortfolioWorkspace workspace_;
 };
 
+// L2 (AL-solve-wall sprint): per-step per-(unique-contract, base-surface) mark memo.
+// A book-greeks pass at a base date POPULATES it (via PortfolioPricer::retained_marks);
+// the NEXT step's settlement (same base date, the expiring lot still priced by that
+// pass) READS the lot's base mark instead of re-solving it. Keyed by bit-exact
+// (uid,K,T,side) and validated against the uid's base-surface instance id, so a
+// stale/mismatched entry fails closed to a fresh solve. Reset+repopulated on every
+// populated step (holds ONE date). The served mark is bit-identical to the
+// settlement solve (FullGreeks mark == Marks mark, L2 crux gate).
+class StepMarkMemo {
+public:
+  void populate_from(const PortfolioPricer &pricer, const PortfolioWorkspace &ws,
+                     const MarketSnapshot &snap) {
+    pricer.retained_marks(ws, marks_scratch_);
+    entries_.clear();
+    entries_.reserve(marks_scratch_.size());
+    for (const RetainedMark &m : marks_scratch_) {
+      if (m.status != PriceStatus::Ok) {
+        continue; // only Ok marks are servable; a failed one must re-solve / fail closed
+      }
+      const PricedSurface *s = snap.find(m.uid);
+      const std::uint64_t inst = s != nullptr ? s->instance_id() : 0u;
+      entries_[key_of(m.uid, m.K, m.T, m.side)] = Val{inst, m.mark};
+    }
+  }
+
+  [[nodiscard]] std::optional<double> find(std::uint32_t uid, double K, double T, Side side,
+                                           std::uint64_t base_surface_instance) const {
+    const auto it = entries_.find(key_of(uid, K, T, side));
+    if (it == entries_.end() || it->second.instance != base_surface_instance) {
+      return std::nullopt;
+    }
+    return it->second.mark;
+  }
+
+  // Reusable settlement scratch (grow-only; keeps compute_step allocation-free after
+  // warm even on settlement steps).
+  [[nodiscard]] std::vector<Lot> &solve_scratch() {
+    solve_lots_.clear();
+    return solve_lots_;
+  }
+  [[nodiscard]] std::vector<double> &served_scratch(std::size_t n) {
+    served_.assign(n, std::numeric_limits<double>::quiet_NaN());
+    return served_;
+  }
+
+private:
+  struct Key {
+    std::uint32_t uid;
+    std::uint64_t kbits;
+    std::uint64_t tbits;
+    std::uint8_t side;
+    bool operator==(const Key &) const noexcept = default;
+  };
+  struct KeyHash {
+    [[nodiscard]] std::size_t operator()(const Key &k) const noexcept {
+      std::size_t h = std::hash<std::uint32_t>{}(k.uid);
+      const auto mix = [&h](std::uint64_t v) {
+        h ^= std::hash<std::uint64_t>{}(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+      };
+      mix(k.kbits);
+      mix(k.tbits);
+      mix(static_cast<std::uint64_t>(k.side));
+      return h;
+    }
+  };
+  struct Val {
+    std::uint64_t instance;
+    double mark;
+  };
+  [[nodiscard]] static Key key_of(std::uint32_t uid, double K, double T, Side side) noexcept {
+    return Key{uid, std::bit_cast<std::uint64_t>(K), std::bit_cast<std::uint64_t>(T),
+               static_cast<std::uint8_t>(side)};
+  }
+
+  std::unordered_map<Key, Val, KeyHash> entries_;
+  std::vector<RetainedMark> marks_scratch_;
+  std::vector<Lot> solve_lots_;
+  std::vector<double> served_;
+};
+
 [[nodiscard]] bool same_double_bits(double lhs, double rhs) noexcept {
   return std::bit_cast<std::uint64_t>(lhs) == std::bit_cast<std::uint64_t>(rhs);
 }
@@ -651,13 +731,21 @@ struct ReusablePriceFrame {
 // empty portfolio prices to an empty frame).
 [[nodiscard]] Result<BookGreeks> book_greeks(const MarketSnapshot &snap,
                                              const std::vector<Lot> &lots, const PriceOptions &opts,
-                                             RetainedBookPricer &retained) {
+                                             RetainedBookPricer &retained,
+                                             StepMarkMemo *mark_memo = nullptr) {
   ATX_VOL_PROFILE_SCOPE(BookGreeks);
   ATX_TRY(PortfolioPricer * pricer, retained.prepare(lots, snap.ts_ns()));
   PortfolioWorkspace &workspace = retained.workspace();
   auto totals = pricer->price_totals(snap.set(), PriceFieldMask::FullGreeks, workspace, opts);
   if (!totals) {
     return Err(totals.error());
+  }
+  // L2: publish this pass's per-unique base marks into the mark memo so the NEXT
+  // step's settlement (same base date) reads an expiring lot's base mark instead of
+  // re-solving it. Reads the retained bundle (no extra solve). Bit-identical: the
+  // marks are the same andersen_lake values a Marks-mask solve would produce.
+  if (mark_memo != nullptr) {
+    mark_memo->populate_from(*pricer, workspace, snap);
   }
   BookGreeks result;
   result.total = *totals;
@@ -703,7 +791,9 @@ struct StepPnl {
                                            RetainedBookPricer &retained,
                                            ReusableTargetMarkFrame *target_marks = nullptr,
                                            RetainedBookPricer *settle = nullptr,
-                                           ReusablePriceFrame *settle_frame = nullptr) {
+                                           ReusablePriceFrame *settle_frame = nullptr,
+                                           StepMarkMemo *mark_memo = nullptr,
+                                           bool memo_enabled = false) {
   ATX_VOL_PROFILE_SCOPE(StepPnl);
   std::vector<Lot> &alive = retained.reset_alive_scratch(lots.size());
   // B2: batch the expiry-settlement base marks (bottleneck #3). When a settlement
@@ -752,33 +842,102 @@ struct StepPnl {
   // B2 batched settlement: one Marks pass over all expiring lots at the base-date
   // residual T, then accumulate settlement in expiring (input) order. `bs`/`ss`
   // were validated non-null in the partition loop above.
+  //
+  // L2 (AL-solve-wall sprint): when a mark memo is supplied and enabled, an expiring
+  // lot's base mark that the PRIOR step's book-greeks pass already computed (same
+  // base date, matching uid surface instance) is SERVED from the memo instead of
+  // re-solved — only the memo MISSES go into the Marks batch. The served mark is
+  // bit-identical to the solve (FullGreeks mark == Marks mark, L2 crux; per-lane
+  // solve independence makes the misses' marks batch-composition-invariant), and the
+  // settlement is summed in the SAME expiring order, so memo ON == memo OFF ==
+  // legacy, bit-for-bit. When the memo is present but DISABLED, every expiring lot
+  // still solves (legacy behavior), and each solve of a memo-available mark bumps
+  // DuplicateMarkSolves — the counter L2 drives to 0.
   if (expiring != nullptr && !expiring->empty()) {
-    ATX_TRY(PortfolioPricer * sp, settle->prepare(*expiring, base.ts_ns()));
-    settle_frame->resize_marks(sp->portfolio().n_positions());
-    ATX_TRY_VOID(sp->price_into(base.set(), PriceFieldMask::Marks, settle_frame->marks_view(),
-                                settle->workspace(), opts));
-    const PriceFrame &sf = settle_frame->frame;
-    for (std::size_t i = 0; i < expiring->size(); ++i) {
-      const Lot &lot = (*expiring)[i];
-      // price_into writes one row per position in input order == expiring order.
-      if (i >= sf.size() || sf.id[i] != lot.id) {
-        return Err(ErrorCode::Internal,
-                   "run_backtest: settlement frame misaligned with expiring lot id=" +
-                       std::to_string(lot.id));
+    const std::size_t n_exp = expiring->size();
+    if (mark_memo == nullptr) {
+      // Legacy path (no memo supplied): one Marks pass over ALL expiring lots.
+      ATX_TRY(PortfolioPricer * sp, settle->prepare(*expiring, base.ts_ns()));
+      settle_frame->resize_marks(sp->portfolio().n_positions());
+      ATX_TRY_VOID(sp->price_into(base.set(), PriceFieldMask::Marks, settle_frame->marks_view(),
+                                  settle->workspace(), opts));
+      const PriceFrame &sf = settle_frame->frame;
+      for (std::size_t i = 0; i < n_exp; ++i) {
+        const Lot &lot = (*expiring)[i];
+        if (i >= sf.size() || sf.id[i] != lot.id) {
+          return Err(ErrorCode::Internal,
+                     "run_backtest: settlement frame misaligned with expiring lot id=" +
+                         std::to_string(lot.id));
+        }
+        if (sf.status[i] != PriceStatus::Ok) {
+          return Err(ErrorCode::NotFound,
+                     "run_backtest: no valid base mark for settling lot id=" +
+                         std::to_string(lot.id));
+        }
+        const PricedSurface *ss = shifted.find(lot.contract.uid);
+        const double S = ss->pricing().S;
+        const double K = lot.contract.K;
+        const double intrinsic =
+            (lot.contract.side == Side::Call) ? std::max(0.0, S - K) : std::max(0.0, K - S);
+        settlement += lot.qty * lot.multiplier * (intrinsic - sf.price[i]);
       }
-      if (sf.status[i] != PriceStatus::Ok) {
-        // Settlement requires an economically valid base mark; fail closed exactly
-        // as the scalar path's fair_value error would.
-        return Err(ErrorCode::NotFound,
-                   "run_backtest: no valid base mark for settling lot id=" +
-                       std::to_string(lot.id));
+    } else {
+      // L2 path: served[i] holds a lot's memo mark, or NaN when it must be solved.
+      std::vector<double> &served = mark_memo->served_scratch(n_exp);
+      std::vector<Lot> &to_solve = mark_memo->solve_scratch();
+      for (std::size_t i = 0; i < n_exp; ++i) {
+        const Lot &lot = (*expiring)[i];
+        const double T_base = residual_T(lot.expiry_ts_ns, base.ts_ns());
+        const PricedSurface *bs = base.find(lot.contract.uid); // non-null (partition loop)
+        const std::uint64_t inst = bs->instance_id();
+        const std::optional<double> mm =
+            mark_memo->find(lot.contract.uid, lot.contract.K, T_base, lot.contract.side, inst);
+        if (mm.has_value() && memo_enabled) {
+          served[i] = *mm; // duplicate settlement solve avoided
+        } else {
+          if (mm.has_value()) {
+            // Memo has it, but consumption is disabled -> the solve below duplicates it.
+            counters::ledger::bump(counters::ledger::Solve::DuplicateMarkSolves);
+          }
+          to_solve.push_back(lot); // served[i] stays NaN -> solved below
+        }
       }
-      const PricedSurface *ss = shifted.find(lot.contract.uid);
-      const double S = ss->pricing().S;
-      const double K = lot.contract.K;
-      const double intrinsic =
-          (lot.contract.side == Side::Call) ? std::max(0.0, S - K) : std::max(0.0, K - S);
-      settlement += lot.qty * lot.multiplier * (intrinsic - sf.price[i]);
+      const PriceFrame *sf_ptr = nullptr;
+      if (!to_solve.empty()) {
+        ATX_TRY(PortfolioPricer * sp, settle->prepare(to_solve, base.ts_ns()));
+        settle_frame->resize_marks(sp->portfolio().n_positions());
+        ATX_TRY_VOID(sp->price_into(base.set(), PriceFieldMask::Marks, settle_frame->marks_view(),
+                                    settle->workspace(), opts));
+        sf_ptr = &settle_frame->frame;
+      }
+      std::size_t solve_ix = 0;
+      for (std::size_t i = 0; i < n_exp; ++i) {
+        const Lot &lot = (*expiring)[i];
+        double mark = 0.0;
+        if (!std::isnan(served[i])) {
+          mark = served[i];
+        } else {
+          const PriceFrame &sf = *sf_ptr; // non-null: this lot is a memo miss to solve
+          if (solve_ix >= sf.size() || sf.id[solve_ix] != lot.id) {
+            return Err(ErrorCode::Internal,
+                       "run_backtest: settlement frame misaligned with expiring lot id=" +
+                           std::to_string(lot.id));
+          }
+          if (sf.status[solve_ix] != PriceStatus::Ok) {
+            return Err(ErrorCode::NotFound,
+                       "run_backtest: no valid base mark for settling lot id=" +
+                           std::to_string(lot.id));
+          }
+          mark = sf.price[solve_ix];
+          ++solve_ix;
+        }
+        const PricedSurface *ss = shifted.find(lot.contract.uid);
+        const double S = ss->pricing().S;
+        const double K = lot.contract.K;
+        const double intrinsic =
+            (lot.contract.side == Side::Call) ? std::max(0.0, S - K) : std::max(0.0, K - S);
+        settlement += lot.qty * lot.multiplier * (intrinsic - mark);
+      }
     }
   }
 
@@ -1210,6 +1369,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
   RetainedBookPricer retained_pricer;
   RetainedBookPricer settle_pricer;      // B2: retained batched-settlement pricer
   ReusablePriceFrame settle_frame;       // B2: retained Marks frame for settlement
+  StepMarkMemo mark_memo;                // L2: per-step settlement-mark memo
   ReusableLotIdIndex initial_lot_index;
   ATX_TRY_VOID(initial_lot_index.rebuild(book.lots, "initial fixed book"));
 
@@ -1288,7 +1448,9 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
   // no step has run, book_greeks is a real measurement here — an inception book with
   // an unpriced held lot aborts under the Error policy (an empty book prices to 0).
   {
-    auto g = book_greeks(*base, book.lots, cfg.price, retained_pricer);
+    // L2: inception book-greeks seeds the mark memo for date 0, so a lot expiring on
+    // step 1 settles from the memo instead of re-solving.
+    auto g = book_greeks(*base, book.lots, cfg.price, retained_pricer, &mark_memo);
     if (!g) {
       return Err(g.error());
     }
@@ -1324,7 +1486,8 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
     // overload's step (shared `compute_step`), which now also reports the count of
     // held lots the pricer could not value this step.
     auto step = compute_step(*base, *shifted, book.lots, cfg.price, retained_pricer,
-                             /*target_marks=*/nullptr, &settle_pricer, &settle_frame);
+                             /*target_marks=*/nullptr, &settle_pricer, &settle_frame, &mark_memo,
+                             cfg.settlement_mark_memo);
     if (!step) {
       return Err(step.error());
     }
@@ -1345,7 +1508,10 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
     const bool is_last = (i + 1 == refs.size());
     const bool record = ((i % stride) == 0) || is_last;
     if (record) {
-      auto g = book_greeks(*base, book.lots, cfg.price, retained_pricer);
+      // L2: repopulate the memo for the new base date so the NEXT step's settlement
+      // reads from it. (On a non-recorded step the memo is left stale; the surface-
+      // instance guard then forces settlement to solve — fail-closed.)
+      auto g = book_greeks(*base, book.lots, cfg.price, retained_pricer, &mark_memo);
       if (!g) {
         return Err(g.error());
       }
@@ -1403,6 +1569,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
   RetainedBookPricer retained_pricer;
   RetainedBookPricer settle_pricer;      // B2: retained batched-settlement pricer
   ReusablePriceFrame settle_frame;       // B2: retained Marks frame for settlement
+  StepMarkMemo mark_memo;                // L2: per-step settlement-mark memo
   ReusableLotIdIndex before_lot_index;
   ReusableLotIdIndex after_lot_index;
   std::vector<Lot> before_lots;
@@ -1670,7 +1837,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     }
     Result<BookGreeks> g = ex->book_greeks.has_value()
                                ? Ok(*ex->book_greeks)
-                               : book_greeks(*base, book.lots, cfg.price, retained_pricer);
+                               : book_greeks(*base, book.lots, cfg.price, retained_pricer, &mark_memo);
     if (!g) {
       return Err(g.error());
     }
@@ -1717,7 +1884,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
 
     // 1. PnL of the current book (resolved on base) forward to shifted (unchanged B1).
     auto step = compute_step(*base, *shifted, book.lots, cfg.price, retained_pricer, &target_marks,
-                             &settle_pricer, &settle_frame);
+                             &settle_pricer, &settle_frame, &mark_memo, cfg.settlement_mark_memo);
     if (!step) {
       return Err(step.error());
     }
@@ -1811,7 +1978,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     if (record) {
       Result<BookGreeks> g = ex->book_greeks.has_value()
                                  ? Ok(*ex->book_greeks)
-                                 : book_greeks(*base, book.lots, cfg.price, retained_pricer);
+                                 : book_greeks(*base, book.lots, cfg.price, retained_pricer, &mark_memo);
       if (!g) {
         return Err(g.error());
       }

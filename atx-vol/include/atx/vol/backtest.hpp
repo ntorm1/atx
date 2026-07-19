@@ -331,6 +331,14 @@ struct RunConfig {
   // Appended for positional aggregate source compatibility. Strict production
   // backtests opt in; the default deliberately preserves legacy archives.
   SurfaceProvenancePolicy surface_provenance_policy{SurfaceProvenancePolicy::Compatibility};
+  // L2 (AL-solve-wall sprint, fewer-solves): serve an expiring lot's base
+  // settlement mark from the per-step mark memo (populated by the prior step's
+  // book-greeks pass at the SAME base date) instead of re-solving it. The memo'd
+  // mark is bit-identical to the settlement solve (FullGreeks mark == Marks mark,
+  // pinned by the L2 crux gate), so ON vs OFF is bit-for-bit identical output; OFF
+  // reproduces the pre-L2 solve-every-settlement behavior (and makes the
+  // DuplicateMarkSolves ledger counter observe the duplication it removes).
+  bool settlement_mark_memo{true};
 };
 
 // Reusable caller-owned handoff from a step's P&L target solve to the strategy

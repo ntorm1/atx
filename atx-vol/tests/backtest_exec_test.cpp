@@ -1209,7 +1209,12 @@ TEST(BacktestExec, L1ExpiryDaySurvivorReusesBaseRiskAcrossSettlement) {
 
   led::reset();
   led::StepTrace trace;
-  const auto result = run_backtest(clock, std::move(book), det_config());
+  // Isolate L1: disable the L2 settlement-mark memo so the expiry step still SOLVES
+  // B's settlement mark (the [12,12,7,6] pre-L2 economy). L2's further 7->6 drop is
+  // pinned by L2SettlementMarkMemoDropsExpirySolve below.
+  RunConfig config = det_config();
+  config.settlement_mark_memo = false;
+  const auto result = run_backtest(clock, std::move(book), config);
   ASSERT_TRUE(result.has_value()) << result.error().to_string();
   ASSERT_EQ(result->size(), 5u);
   ASSERT_EQ(trace.size(), 4u);
@@ -1424,4 +1429,216 @@ TEST(BacktestExec, L1SubsetCarryRefusesOnChangedInput) {
       << "changed-tenor refusal did not recompute at the new T (stale T=0.35 risk served?)";
   std::printf("[btexec] L1 positive control: changed-tenor survivor carry refused, re-solved at "
               "the new tenor\n");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// L2 (AL-solve-wall sprint) — per-(contract,date) settlement-mark memo.
+//
+// CRUX (PM adjudication): the settlement-mark memo serves the settlement path a
+// mark that was computed by the FullGreeks/analytic book-greeks pass, in place of
+// the Marks-mask solve the settle path would otherwise run. That substitution is
+// bit-identical ONLY if the FullGreeks-analytic mark equals the Marks mark
+// bit-for-bit. This test PROVES that equality before the memo relies on it. If it
+// ever fails, the memo must NOT be reconciled numerically — STOP and report.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST(BacktestExec, L2MarkMemoCruxFullGreeksMarkEqualsMarksMark) {
+  const PricedSurface s = make_surface(kUid, 100.0, 100.0, kBaseNow, 0.0);
+  const PricedSurface* ptrs[] = {&s};
+  auto set = SurfaceSet::create(std::span<const PricedSurface* const>{ptrs});
+  ASSERT_TRUE(set.has_value());
+
+  // A spread of strikes/sides/tenors — a representative settling-lot population.
+  std::vector<Position> pos;
+  std::uint64_t id = 1;
+  for (const double K : {80.0, 95.0, 100.0, 105.0, 120.0}) {
+    for (const Side side : {Side::Call, Side::Put}) {
+      for (const double T : {0.10, 0.35, 0.75}) {
+        pos.push_back(Position{id++, OptionContract{kUid, K, T, side}, +1.0, 100.0});
+      }
+    }
+  }
+  auto pf = Portfolio::create(pos);
+  ASSERT_TRUE(pf.has_value());
+  PortfolioPricer pricer(std::move(*pf));
+
+  PriceOptions marks_opts;
+  marks_opts.n_threads = 1u;
+  marks_opts.prices_only = true;  // Marks mask == the settlement solve
+  PriceOptions greeks_opts;
+  greeks_opts.n_threads = 1u;
+  greeks_opts.analytic_greeks = true;  // FullGreeks analytic == the book-greeks memo source
+
+  const auto marks = pricer.price(*set, marks_opts);
+  const auto greeks = pricer.price(*set, greeks_opts);
+  ASSERT_TRUE(marks.has_value()) << marks.error().to_string();
+  ASSERT_TRUE(greeks.has_value()) << greeks.error().to_string();
+  ASSERT_EQ(marks->size(), greeks->size());
+  std::size_t n_ok = 0;
+  for (std::size_t i = 0; i < marks->size(); ++i) {
+    ASSERT_EQ(marks->status[i], greeks->status[i]);
+    if (marks->status[i] != PriceStatus::Ok) {
+      continue;
+    }
+    ++n_ok;
+    EXPECT_TRUE(bits_equal(marks->price[i], greeks->price[i]))
+        << "CRUX FAIL: Marks mark != FullGreeks-analytic mark for lot " << marks->id[i]
+        << " (Marks=" << marks->price[i] << " FullGreeks=" << greeks->price[i]
+        << ") — the L2 settlement-mark memo would NOT be bit-identical; STOP + report.";
+  }
+  ASSERT_GT(n_ok, 20u) << "crux population too small to be meaningful";
+  std::printf("[btexec] L2 crux: FullGreeks-analytic mark == Marks mark bit-for-bit on %zu lots\n",
+              n_ok);
+}
+
+// L2 gate: the settlement-mark memo serves B's expiry-day base mark from the prior
+// step's book-greeks pass instead of re-solving it — expiry al 7 -> 6, and the new
+// DuplicateMarkSolves counter goes 0 (memo on) / >=1 (memo off, proving the counter
+// sees the duplication). Memo ON is BIT-IDENTICAL to memo OFF (the pre-L2 behavior).
+TEST(BacktestExec, L2SettlementMarkMemoDropsExpirySolve) {
+  const fs::path dir = fresh_dir("l2-settle");
+  const Clock clock = offset_clock(dir, "SPX", {0, 20, 40, 60, 80});
+  const std::int64_t exp_B = kBaseNow + 60 * kDayNs;   // settles on date index 3
+  const std::int64_t exp_A = kBaseNow + 200 * kDayNs;  // survives
+  const auto make_book = [&] {
+    PortfolioState b;
+    b.lots.push_back(
+        Lot{1, OptionContract{kUid, 100.0, 0.0, Side::Put}, +1.0, 100.0, exp_A, 0, 0.0});
+    b.lots.push_back(
+        Lot{2, OptionContract{kUid, 95.0, 0.0, Side::Call}, +1.0, 100.0, exp_B, 0, 0.0});
+    return b;
+  };
+  const auto dup = [](const led::Counts& c) { return c.get(led::Solve::DuplicateMarkSolves); };
+
+  // Memo OFF: pre-L2 economy — the expiry step still solves B's settlement (al 7), and
+  // the counter observes that duplicate (B's mark was already in the memo).
+  RunConfig off = det_config();
+  off.settlement_mark_memo = false;
+  led::reset();
+  led::StepTrace trace_off;
+  const auto r_off = run_backtest(clock, make_book(), off);
+  ASSERT_TRUE(r_off.has_value()) << r_off.error().to_string();
+  const led::Counts total_off = led::snapshot();
+  ASSERT_EQ(trace_off.size(), 4u);
+  EXPECT_EQ(al(trace_off.steps()[2]), 7u) << "memo off: expiry step still solves B's settlement";
+  EXPECT_EQ(dup(total_off), 1u) << "counter must see the one duplicate settlement solve (memo off)";
+
+  // Memo ON (default): B's settlement served from the memo -> expiry al 7->6, 0 dups.
+  RunConfig on = det_config();  // settlement_mark_memo defaults true
+  led::reset();
+  led::StepTrace trace_on;
+  const auto r_on = run_backtest(clock, make_book(), on);
+  ASSERT_TRUE(r_on.has_value()) << r_on.error().to_string();
+  const led::Counts total_on = led::snapshot();
+  ASSERT_EQ(trace_on.size(), 4u);
+  EXPECT_EQ(al(trace_on.steps()[2]), 6u) << "L2: expiry step 7->6 (B settlement served from memo)";
+  EXPECT_EQ(analytic(trace_on.steps()[2]), 1u);
+  EXPECT_EQ(dup(total_on), 0u) << "L2 gate: DuplicateMarkSolves == 0 with the memo on";
+  EXPECT_EQ(al(trace_on.steps()[0]), 12u) << "warm steps unchanged";
+  EXPECT_EQ(al(trace_on.steps()[1]), 12u);
+  EXPECT_EQ(al(trace_on.steps()[3]), 6u) << "no-churn step unchanged";
+
+  // Bit-identity: memo ON == memo OFF, full result (settlement mark served == solved).
+  ASSERT_EQ(r_on->size(), r_off->size());
+  const auto cols = [](const BacktestResult& r, std::size_t i) {
+    return std::array<double, 8>{r.nav[i],      r.pnl_total[i],   r.pnl_settlement[i],
+                                 r.pnl_delta[i], r.pnl_vega[i],    r.gross_vega[i],
+                                 r.gross_delta[i], r.gross_theta[i]};
+  };
+  for (std::size_t i = 0; i < r_on->size(); ++i) {
+    const auto con = cols(*r_on, i);
+    const auto cof = cols(*r_off, i);
+    for (std::size_t k = 0; k < con.size(); ++k) {
+      EXPECT_TRUE(bits_equal(con[k], cof[k]))
+          << "L2 memo ON != OFF at row " << i << " col " << k
+          << " — the settlement memo is NOT bit-identical to the solve";
+    }
+  }
+  std::printf("[btexec] L2 settlement memo: expiry al 7->6, dup=%llu (on)/%llu (off), memo on==off\n",
+              static_cast<unsigned long long>(dup(total_on)),
+              static_cast<unsigned long long>(dup(total_off)));
+}
+
+// L2 strategy-path bit-identity: over a daily-cohort strangle that settles cohorts
+// mid-run (the B4 shape), memo ON == memo OFF, full result bit-for-bit — proving the
+// settlement memo is bit-identical in the STRATEGY overload too (where it is
+// populated only from the non-seeded book-greeks pass and falls closed on stale/
+// execute-fired steps).
+TEST(BacktestExec, L2StrategyCohortSettlementMemoBitIdentical) {
+  const fs::path dir = fresh_dir("l2-strat-cohorts");
+  constexpr int kNames = 4;
+  constexpr int kDates = 24;
+  static const char* kSyms[] = {"AAA", "BBB", "CCC", "DDD"};
+  std::vector<std::pair<std::string, std::string>> dp;
+  for (int d = 0; d < kDates; ++d) {
+    const std::int64_t now = kBaseNow + static_cast<std::int64_t>(d) * kDayNs;
+    std::vector<PricedSurface> surfaces;
+    surfaces.reserve(kNames);
+    for (int u = 0; u < kNames; ++u) {
+      const double S = (100.0 + 10.0 * static_cast<double>(u)) * (1.0 + 0.003 * static_cast<double>(d));
+      surfaces.push_back(make_surface(kUid + static_cast<std::uint32_t>(u), S, S, now,
+                                      0.001 * static_cast<double>(d) + 0.002 * static_cast<double>(u)));
+    }
+    std::vector<SurfaceArchiveItem> items;
+    for (int u = 0; u < kNames; ++u) {
+      items.push_back(SurfaceArchiveItem{kSyms[u], &surfaces[u]});
+    }
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "2026-08-%02d", d + 1);
+    const std::string path = (dir / (std::string(buf) + ".atxvsa")).string();
+    ASSERT_TRUE(write_surface_archive_v2_file(path, items).has_value());
+    dp.emplace_back(buf, path);
+  }
+  auto clock = Clock::from_manifest(make_manifest(dp, "AAA"));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const double tenor_T = static_cast<double>(20 * kDayNs) / kNsPerYear;  // -> settles at 20 days
+  StrategySpec spec;
+  spec.name = "l2-daily-strangle-htx";
+  for (int u = 0; u < kNames; ++u) {
+    LegSpec leg;
+    leg.uid = kUid + static_cast<std::uint32_t>(u);
+    leg.tenor.target_T = tenor_T;
+    leg.tenor.snap_to_listed = false;
+    leg.structure.kind = StructureSpec::Kind::Strangle;
+    leg.structure.call_leg = StrikeSelector{StrikeSelector::Kind::Delta, 0.40};
+    leg.structure.put_leg = StrikeSelector{StrikeSelector::Kind::Delta, 0.40};
+    leg.size = SizeSpec{SizeSpec::Kind::FixedContracts, 1.0, +1.0};
+    spec.legs.push_back(leg);
+  }
+  spec.lifecycle.entry = LifecycleSpec::Entry::EveryStep;
+  spec.lifecycle.holding = LifecycleSpec::Holding::HoldToExpiry;
+
+  const auto run = [&](bool memo) {
+    DeclarativeStrategy strat{spec};
+    RunConfig cfg;
+    cfg.price.n_threads = 1u;
+    cfg.settlement_mark_memo = memo;
+    return run_backtest(*clock, strat, cfg);
+  };
+  const auto r_on = run(true);
+  const auto r_off = run(false);
+  ASSERT_TRUE(r_on.has_value()) << r_on.error().to_string();
+  ASSERT_TRUE(r_off.has_value()) << r_off.error().to_string();
+  ASSERT_EQ(r_on->size(), r_off->size());
+
+  int settle_rows = 0;
+  for (std::size_t i = 0; i < r_off->size(); ++i) {
+    if (std::fabs(r_off->pnl_settlement[i]) > 0.0) {
+      ++settle_rows;
+    }
+  }
+  EXPECT_GT(settle_rows, 0) << "no cohort settled — the strategy memo path is not exercised";
+  for (std::size_t i = 0; i < r_on->size(); ++i) {
+    EXPECT_TRUE(bits_equal(r_on->nav[i], r_off->nav[i])) << "nav row " << i;
+    EXPECT_TRUE(bits_equal(r_on->pnl_total[i], r_off->pnl_total[i])) << "pnl_total row " << i;
+    EXPECT_TRUE(bits_equal(r_on->pnl_settlement[i], r_off->pnl_settlement[i])) << "settle row " << i;
+    EXPECT_TRUE(bits_equal(r_on->gross_vega[i], r_off->gross_vega[i])) << "gross_vega row " << i;
+    EXPECT_TRUE(bits_equal(r_on->cash[i], r_off->cash[i])) << "cash row " << i;
+    EXPECT_EQ(r_on->n_open_lots[i], r_off->n_open_lots[i]) << "n_open_lots row " << i;
+  }
+  std::printf("[btexec] L2 strategy cohort settlement: memo on==off over %d settle rows, "
+              "bit-identical\n",
+              settle_rows);
 }

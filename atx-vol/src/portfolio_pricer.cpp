@@ -1762,4 +1762,23 @@ bool PortfolioPricer::carry_base_risk_subset(const PortfolioPricer &prev,
   return true;
 }
 
+void PortfolioPricer::retained_marks(const PortfolioWorkspace &ws,
+                                     std::vector<RetainedMark> &out) const {
+  // L2: `w.px` holds one ContractPx per unique contract in ORIGINAL-contract order,
+  // written by the last price_into/price_totals solve_uniques. `fair_value` is the
+  // raw American mark (bit-identical to a Marks-mask solve — L2 crux). Export it
+  // keyed by the retained (uid,K,T,side) so the backtest can memo it per date.
+  const PortfolioWorkspace::Impl &w = *ws.impl_;
+  out.clear();
+  const std::span<const OptionContract> cur = pf_.contracts();
+  if (w.px.size() != cur.size()) {
+    return; // no matching retained bundle -> caller memo fails closed
+  }
+  out.reserve(cur.size());
+  for (std::size_t i = 0; i < cur.size(); ++i) {
+    out.push_back(RetainedMark{cur[i].uid, cur[i].K, cur[i].T, cur[i].side, w.px[i].fair_value,
+                               w.px[i].status});
+  }
+}
+
 } // namespace atx::vol
