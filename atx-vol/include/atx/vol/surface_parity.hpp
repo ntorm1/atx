@@ -279,6 +279,31 @@ struct ExpiryFitReport {
   atx::core::ErrorCode error{atx::core::ErrorCode::Unknown};
 };
 
+// Perf C1: per-fitted-slice de-Am INPUT certification captured by the eSSVI fit
+// itself (`run_surface_parity` -> `prepare_expiry` under LegacyEssviCompatibility),
+// ‖ `context`. The analogue of `CurveSurfaceReport::SliceInputCertification` for
+// the eSSVI path: it lets `VolaSession::build` construct the per-slice
+// `SessionSliceDiagnostics` + the incremental observation cache directly from the
+// rows the FIT actually de-Americanized, instead of re-running a SECOND,
+// independent Configured de-Am pass (finding 10). Every field is exactly what the
+// fit's `PreparedSlice` produced for this slice — never resampled. NOTE (class
+// accuracy-improving): the reused rows are the LegacyEssviCompatibility recipe
+// (what the surface was fit from), NOT the Configured `build_observations_european`
+// recipe the old certification pass ran; the certification/diagnostics therefore
+// now describe the fit's own rows (more correct — the old pass audited rows the
+// fit never used), and the incremental refit-seed store carries Legacy rows.
+struct EssviInputCertification {
+  DeAmAuditDiagnostics inversion{};       // the fit's own de-Am audit (deam_audit())
+  std::vector<FitObs> obs;                // the fit rows (fit_observations())
+  std::vector<double> source_mids;        // ‖ obs; raw chain.mids at (K, side)
+  std::vector<std::uint8_t> source_flags; // ‖ obs; raw chain.flags at (K, side)
+  std::vector<double> chain_mids;         // full-chain snapshot (incremental cache)
+  std::vector<std::uint8_t> chain_flags;
+  std::vector<double> chain_bids;
+  std::vector<double> chain_asks;
+  std::vector<std::int64_t> chain_ts;
+};
+
 // The whole-surface acceptance bundle. `surface` OWNS the fitted eSSVI surface
 // (movable); the vectors are parallel per fitted slice (ascending T).
 struct SurfaceParityReport {
@@ -294,6 +319,10 @@ struct SurfaceParityReport {
   // cache-free recompute so certification stays bit-identical to the
   // historical serial pass (perf C1 review fix).
   std::vector<CarryDiagnostics> carry;
+  // Perf C1: per-fitted-slice de-Am input certification captured by the fit,
+  // ‖ context/carry. Empty unless populated by run_surface_parity; consumed by
+  // VolaSession::build to skip the second (certification) de-Am pass.
+  std::vector<EssviInputCertification> input_certification;
   double worst_frac_within_bidask{0.0}; // min over expiries of frac in bid-ask
   bool calendar_arb_free{false};        // arb.hpp calendar check on the surface
   std::size_t n_slices{0};              // fitted slice count (== expiry_T.size())

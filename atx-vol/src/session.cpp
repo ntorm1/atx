@@ -23,6 +23,7 @@
 #include "atx/vol/counters.hpp"         // counters::ledger — V2 per-board solve attribution
 #include "atx/vol/curve_fit.hpp"        // fit_curve_surface (curve-agnostic driver)
 #include "atx/vol/data.hpp"             // data_install
+#include "atx/vol/detail/deam_pass_counter.hpp" // C1 proof: cert de-Am pass tally
 #include "atx/vol/dividend.hpp"         // hybrid_forward (representative carry)
 #include "atx/vol/essvi_calib.hpp"      // essvi_fit_slice (warm-start refit)
 #include "atx/vol/event_vol.hpp"        // EventSchedule, count_events_at, implied_emove
@@ -300,6 +301,7 @@ collect_input_diagnostics(const Underlying &under, const SessionInputs &in,
                           std::span<const SliceContext> context,
                           const AmericanCorrectionCaches &deam_caches, bool fit_rows_audited,
                           std::span<const CarryDiagnostics> precomputed_carry = {},
+                          std::span<const EssviInputCertification> precomputed_certs = {},
                           std::vector<std::vector<FitObs>> *observation_cache = nullptr,
                           std::vector<std::vector<double>> *source_mid_cache = nullptr,
                           std::vector<std::vector<std::uint8_t>> *source_flag_cache = nullptr,
@@ -327,6 +329,12 @@ collect_input_diagnostics(const Underlying &under, const SessionInputs &in,
   if (chain_ts_cache != nullptr)
     chain_ts_cache->reserve(context.size());
   const bool use_precomputed_carry = precomputed_carry.size() == context.size();
+  // Perf C1: when the eSSVI fit's own per-slice de-Am certification is handed in
+  // (‖ context), REUSE it instead of running a second, independent de-Am pass
+  // (build_observations_european) here. The carry logic below is unchanged (it
+  // still reuses/recomputes carry exactly as before); only the obs + audit +
+  // source columns are taken from the fit. See the reuse guard in the loop.
+  const bool use_precomputed_certs = precomputed_certs.size() == context.size();
   std::size_t chain_pos = 0;
   // Indexed loop: `slice_idx` is the ‖-vector ordinal into both `context` and
   // `precomputed_carry`, advanced unconditionally per iteration (review fix:
@@ -383,6 +391,42 @@ collect_input_diagnostics(const Underlying &under, const SessionInputs &in,
     }
 
     const double df = std::exp(-rate * slice.T);
+    if (use_precomputed_certs) {
+      // Perf C1: REUSE the fit's own per-slice de-Am — no second de-Am pass. The
+      // audit + European obs + source columns are exactly what the eSSVI fit
+      // de-Americanized for this slice (`run_surface_parity`). The certificate
+      // gate is unchanged: it still requires the fit to have run the audited
+      // route (`fit_rows_audited`), so this reuse is engaged only where the fit's
+      // rows can honestly vouch for themselves. `note_cert_deam_slice_pass()` is
+      // intentionally NOT called here — the second de-Am is gone (proof counter).
+      const EssviInputCertification &cert = precomputed_certs[slice_idx];
+      sd.inversion = cert.inversion;
+      sd.inversion_available = true;
+      sd.inversion_certified =
+          fit_rows_audited &&
+          deam_inversion_certified(sd.inversion, in.calib.max_certified_deam_drop_fraction);
+      if (observation_cache != nullptr && source_mid_cache != nullptr &&
+          source_flag_cache != nullptr) {
+        // C1 recipe change (gate 4), POINT OF CHANGE for the incremental refit-seed
+        // store: `cert.obs` are the fit's own LegacyEssviCompatibility rows
+        // (otm_side predicate + Legacy weights + de-Am cap), NOT the Configured
+        // `build_observations_european` rows the pre-C1 recompute produced here.
+        // The `incremental_observations_` store (built from observation_cache by
+        // VolaSession::build) therefore now seeds cross-refits from Legacy rows —
+        // consistent with the SERVED surface, which the fit built from these same
+        // rows. C2's cross-date quality-parity suite covers the seed quality later.
+        observation_cache->back() = cert.obs;
+        source_mid_cache->back() = cert.source_mids;
+        source_flag_cache->back() = cert.source_flags;
+      }
+      out.push_back(std::move(sd));
+      continue;
+    }
+    // C1 proof instrumentation: the certification/diagnostics de-Am pass — the
+    // SECOND per-slice de-Am the eSSVI route historically ran (finding 10). C1
+    // eliminates this call by reusing the fit's own de-Am (above), so this
+    // counter drops to zero on the reuse path.
+    detail::note_cert_deam_slice_pass();
     const auto obs = build_observations_european(
         chain, in.S, rate, slice.forward, slice.T, df, in.calib, deam_caches, in.deam.al_opts,
         in.deam.iv_tol, in.deam.iv_max_iter, in.deam.method);
@@ -1089,19 +1133,33 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
   std::vector<std::vector<double>> incremental_chain_bids;
   std::vector<std::vector<double>> incremental_chain_asks;
   std::vector<std::vector<std::int64_t>> incremental_chain_ts;
-  // The eSSVI path fits from build_aligned_obs: its inversions run the audited
-  // route only when deam.audit_fit_inversions is set (the risk serving
-  // policy); otherwise the certificate must stay false — the diagnostic
-  // builder's audits describe rows the fit never used (carry C1). The obs/
-  // audit recompute below is therefore genuinely independent of the fit (no
-  // prepass to reuse), but the CARRY resolution IS a literal duplicate of what
-  // `run_surface_parity` already computed per chain — pass `rep.carry` (perf
-  // C1) so collect_input_diagnostics skips that one redundant
-  // resolve_chain_forward call per chain. Review fix: the reuse is only valid
-  // when the fit resolved carry with EXACTLY the caches the certification
-  // layer uses (eff.deam's — the caller's, never the session-built hot-path
-  // caches on sp.deam). When they differ, pass an empty span so the fallback
-  // recompute runs — the historical serial path, bit-for-bit.
+  // Perf C1 (class accuracy-improving): the eSSVI fit already de-Americanized
+  // every expiry once (`run_surface_parity` -> prepare_legacy), exporting its
+  // per-slice rows + audit as `rep.input_certification`. REUSE that here instead
+  // of running a SECOND, independent Configured de-Am pass (finding 10). This is
+  // more correct, not just cheaper: the certification/diagnostics now describe
+  // the rows the fit ACTUALLY consumed — the old recompute audited a different
+  // (Configured-recipe) row set the eSSVI fit never used. The reused rows are the
+  // LegacyEssviCompatibility recipe, so this changes the reported de-Am audit
+  // counts and the incremental refit-seed store (now Legacy rows, consistent with
+  // the served surface); the SERVED SURFACE and admission are unaffected on this
+  // path (see below).
+  //
+  // HYBRID GATE: reuse ONLY when the fit ran UN-audited (`!audit_fit_inversions`,
+  // the default bulk-populate path). There `inversion_certified` is false BEFORE
+  // and AFTER C1 (the certificate gate requires audited fit rows), so admission is
+  // byte-identical — only the diagnostic counts move. When the fit DID audit (the
+  // risk-serving path, rare), fall back to the full Configured recompute so the
+  // certificate that gates admission stays byte-identical to pre-C1. Zero admission
+  // flips by construction on both paths.
+  const bool reuse_fit_deam =
+      rep.input_certification.size() == rep.context.size() && !eff.deam.audit_fit_inversions;
+  const std::span<const EssviInputCertification> certification_certs =
+      reuse_fit_deam ? std::span<const EssviInputCertification>(rep.input_certification)
+                     : std::span<const EssviInputCertification>{};
+  // Carry handling is unchanged (bit-identical): reuse the fit's carry diagnostics
+  // only when the fit resolved carry with EXACTLY the certification caches;
+  // otherwise recompute cold, the historical serial path bit-for-bit.
   const bool fit_carry_matches_certification =
       sp.deam.caches.call == eff.deam.caches.call && sp.deam.caches.put == eff.deam.caches.put;
   const std::span<const CarryDiagnostics> certification_carry =
@@ -1112,9 +1170,15 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
   const std::uint64_t diag_al_before = time_build ? al_solves_now() : 0u;
   std::vector<SessionSliceDiagnostics> slice_diag = collect_input_diagnostics(
       under, eff, rep.context, sp.deam.caches,
-      /*fit_rows_audited=*/eff.deam.audit_fit_inversions, certification_carry, &incremental_obs,
-      &incremental_mids, &incremental_flags, &incremental_chain_mids, &incremental_chain_flags,
-      &incremental_chain_bids, &incremental_chain_asks, &incremental_chain_ts);
+      /*fit_rows_audited=*/eff.deam.audit_fit_inversions, certification_carry, certification_certs,
+      &incremental_obs, &incremental_mids, &incremental_flags, &incremental_chain_mids,
+      &incremental_chain_flags, &incremental_chain_bids, &incremental_chain_asks,
+      &incremental_chain_ts);
+  // V2 (WS-V) FitTimings attribution, preserved across the C1 rebase: stamp the
+  // certification/diagnostics de-Am cost. With C1's reuse engaged (certification_
+  // certs non-empty on the un-audited populate path) the second de-Am pass is gone,
+  // so input_diagnostics_solves collapses toward zero — the ledger corroboration of
+  // the deam_pass_counter 2->1 proof.
   if (time_build) {
     input_diagnostics_ms =
         std::chrono::duration<double, std::milli>(BuildClock::now() - diag_start).count();

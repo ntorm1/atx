@@ -4,7 +4,10 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <filesystem>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #include "atx/vol/american.hpp"
@@ -13,6 +16,8 @@
 #include "atx/vol/counters.hpp"
 #include "atx/vol/curve.hpp"
 #include "atx/vol/data.hpp"
+#include "atx/vol/detail/deam_pass_counter.hpp" // C1 duplicate-de-Am proof
+#include "atx/vol/opra_panel.hpp"               // OpraLoadSpec (C1 real-OPRA characterization)
 #include "atx/vol/panel.hpp"
 #include "atx/vol/query_pricing.hpp"
 #include "atx/vol/s3.hpp"
@@ -181,13 +186,21 @@ TEST(VolaSession, Build_KnownTruthPanel_SucceedsWithFourArbFreeSlices) {
   EXPECT_TRUE(diag.carry_confident);
   EXPECT_EQ(diag.n_inversion_slices, diag.n_slices);
   EXPECT_GT(diag.n_iv_proposed, std::size_t{0});
-  EXPECT_EQ(diag.n_iv_audited, diag.n_iv_proposed);
+  // C1 (class accuracy-improving): the input-diagnostics de-Am is no longer a
+  // SECOND independent (Configured, always-audited) pass — it now REUSES the
+  // eSSVI fit's own de-Am (finding 10). This build does NOT set
+  // deam.audit_fit_inversions, so the FIT ran the UN-audited Legacy route: the
+  // proposal ledger reflects the rows the fit actually de-Americanized
+  // (n_iv_proposed > 0), but n_iv_audited is 0 because the fit never repriced
+  // them against the cold reference. Pre-C1 this diagnostic re-run audited every
+  // proposal (n_iv_audited == n_iv_proposed) — describing rows the fit never
+  // used. The honest audited-fit variant is AuditedEssviFitCertifiesInversions.
+  EXPECT_EQ(diag.n_iv_audited, std::size_t{0});
   EXPECT_EQ(diag.n_iv_rejected_residual, std::size_t{0});
-  // Honest certificate (task 2a / carry C1): this build does NOT set
-  // deam.audit_fit_inversions, so the eSSVI FIT rows never ran the audited
-  // route — only the diagnostic re-run above did. A certificate may not vouch
-  // for rows the fit never used, so it must stay false here (the audited
-  // variant is covered by AuditedEssviFitCertifiesInversions below).
+  // Honest certificate (§5.3/§8.1): with audit-off fit rows the certificate must
+  // stay false (a certificate may not vouch for un-audited rows). Unchanged by
+  // C1 — the certificate gate still requires audited fit rows, so admission is
+  // byte-identical on this path (the audited variant certifies below).
   EXPECT_FALSE(diag.inversion_certified);
   EXPECT_EQ(diag.n_carry_skipped_expiries, std::size_t{0});
 
@@ -207,6 +220,111 @@ TEST(VolaSession, Build_KnownTruthPanel_SucceedsWithFourArbFreeSlices) {
   for (std::size_t i = 1; i < exps.size(); ++i) {
     EXPECT_LT(exps[i - 1].T, exps[i].T);
   }
+}
+
+// C1 (perf, class accuracy-improving): the eSSVI session build must de-Americanize
+// each expiry EXACTLY ONCE — the fit's own pass. Historically it ran a SECOND
+// full de-Am per slice in the certification/diagnostics layer
+// (collect_input_diagnostics -> build_observations_european, finding 10). This
+// proves the reduction with the provisional deam-pass counters (folded into
+// WS-V's ledger at merge): the CERT pass drops to zero while the FIT pass is
+// unchanged (one per fitted slice). The fit path itself stays byte-identical
+// (covered by Build_KnownTruthPanel above).
+TEST(VolaSession, EssviBuild_DeAmericanizesEachExpiryExactlyOnce) {
+  const SynthPanelSpec spec = make_spec();
+  Universe u;
+  const Underlying *under = install(spec, u);
+  ASSERT_NE(under, nullptr);
+  ASSERT_EQ(under->chains.size(), std::size_t{4});
+
+  atx::vol::detail::reset_deam_slice_passes();
+  const auto sess = VolaSession::build(*under, make_inputs(spec));
+  ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
+  const std::size_t n_slices = sess->diagnostics().n_slices;
+  ASSERT_EQ(n_slices, std::size_t{4});
+
+  // The fit de-Ams every fitted slice once (unchanged by C1).
+  EXPECT_EQ(atx::vol::detail::fit_deam_slice_passes(), n_slices);
+  // C1: the certification/diagnostics layer must no longer run its own de-Am —
+  // it reuses the fit's. Pre-C1 this was == n_slices (the duplicate pass).
+  EXPECT_EQ(atx::vol::detail::cert_deam_slice_passes(), std::size_t{0});
+}
+
+// C1 (perf, class accuracy-improving) — real-OPRA de-Am characterization / gate 3.
+// Loads real Databento OPRA boards from the shared developer cache and fits each
+// with the Populate-representative Robust preset. Robust leaves
+// `deam.audit_fit_inversions` at its false default (deamer.hpp:270), so the fit
+// runs UN-audited and C1's cert-de-Am reuse (session.cpp VolaSession::build HYBRID
+// GATE) engages — the exact bulk-populate regime C1 targets.
+//
+// Emits one "C1CHAR" TSV line per board (de-Am diagnostic counts +
+// inversion_certified + surface quality) so a before/after run (git-stash the C1
+// src, rebuild, re-run) fills the audit-count-delta column of the characterization
+// table. Asserts the two zero-flip invariants that gate C1 admission (PM gate 3),
+// which hold IDENTICALLY before and after C1: (1) the certificate stays FALSE on an
+// un-audited fit (a certificate may not vouch for rows the fit never audited — the
+// gate is `fit_rows_audited && …`, and the fit ran un-audited), so C1 causes zero
+// `inversion_certified` flips; (2) a usable, finite-quality surface is still
+// produced (the served surface is byte-identical — C1 only changes which rows the
+// diagnostics DESCRIBE, never the fit). Skips cleanly when the OPRA cache is absent.
+TEST(VolaSession, C1RealBoardDeAmCharacterization) {
+  using atx::vol::FitPreset;
+  using atx::vol::load_opra_cbbo_parquet;
+  using atx::vol::make_session_inputs;
+  using atx::vol::OpraLoadSpec;
+
+  struct RealBoard {
+    const char *sym;
+    const char *date;
+  };
+  // XOM/AAPL multi-date real boards (the fixture family the corpus tests cite).
+  const RealBoard boards[] = {
+      {"AAPL", "2026-01-02"}, {"AAPL", "2026-01-05"}, {"AAPL", "2026-01-06"},
+      {"XOM", "2026-01-02"},  {"XOM", "2026-01-05"},  {"XOM", "2026-01-06"},
+  };
+  const std::string root = "C:/atx-data/spy-dispersion/opra/";
+  const double r = 0.043;
+
+  std::size_t n_fit = 0;
+  for (const RealBoard &b : boards) {
+    const std::string path = root + b.sym + "/" + b.date + ".parquet";
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) {
+      continue;
+    }
+    OpraLoadSpec spec;
+    spec.path = path;
+    spec.underlying = b.sym;
+    spec.snapshot_iso = std::string(b.date) + "T14:00:00Z"; // cosmetic; frame carries the real ts
+    spec.r = r;
+    auto panel = load_opra_cbbo_parquet(spec);
+    if (!panel.has_value()) {
+      continue;
+    }
+    const auto in =
+        make_session_inputs(FitPreset::Robust, panel->implied_spot, r, panel->frame.snapshot_ts_ns);
+    auto sess = VolaSession::from_frame(panel->frame, in);
+    if (!sess.has_value()) {
+      continue;
+    }
+    const auto &d = sess->diagnostics();
+    ++n_fit;
+    std::printf("C1CHAR\t%-4s\t%s\tS=%.2f\tn_slices=%zu\tn_prop=%zu\tn_aud=%zu\tn_fb=%zu\t"
+                "n_rej=%zu\tcert=%d\trmse_vol=%.6f\tworst_frac=%.4f\n",
+                b.sym, b.date, panel->implied_spot, d.n_slices, d.n_iv_proposed, d.n_iv_audited,
+                d.n_iv_fallback, d.n_iv_rejected_residual, static_cast<int>(d.inversion_certified),
+                d.mean_rmse_vol, d.worst_frac_within_bidask);
+
+    // Gate-3 zero-flip invariants (identical before and after C1):
+    EXPECT_FALSE(d.inversion_certified) << b.sym << " " << b.date << ": un-audited fit must not certify";
+    EXPECT_GT(d.n_slices, std::size_t{0}) << b.sym << " " << b.date << ": no usable slice";
+    EXPECT_TRUE(std::isfinite(d.mean_rmse_vol)) << b.sym << " " << b.date << ": non-finite fit RMSE";
+  }
+
+  if (n_fit == 0) {
+    GTEST_SKIP() << "no real OPRA boards under " << root << " (shared developer cache absent)";
+  }
+  std::printf("C1CHAR\tTOTAL_BOARDS_FIT=%zu\n", n_fit);
 }
 
 TEST(VolaSession, Iv_OnSliceAtm_IsSaneVol) {

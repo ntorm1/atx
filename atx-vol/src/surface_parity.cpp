@@ -9,6 +9,7 @@
 #include <cstdlib> // getenv (ATX_VOL_PROFILE)
 #include <limits>
 #include <optional> // std::nullopt (cold accurate re-inversion on audit failure)
+#include <span>     // prepared.fit_observations() view (C1 input certification)
 #include <utility>
 #include <vector>
 
@@ -162,6 +163,42 @@ constexpr double kMonotoneKMax = 0.7;
   return res;
 }
 
+// Perf C1: capture the de-Am input certification for one committed slice from the
+// fit's own `PreparedSlice`, so `VolaSession::build` reuses it instead of running
+// a SECOND, independent de-Am pass (finding 10). The obs are the exact rows the
+// fit de-Americanized; source_mids/flags are the raw chain quotes at each row's
+// (strike, side); the chain snapshot lets the incremental refit cache detect a
+// carry-coordinate change. A malformed row index (should not happen for a fitted
+// slice) leaves the obs cache EMPTY, so the consumer's size checks fall back to
+// the full certified path rather than reading out of range.
+[[nodiscard]] EssviInputCertification make_input_certification(const PreparedSlice &prepared,
+                                                              const Chain &chain) {
+  EssviInputCertification cert;
+  cert.inversion = prepared.deam_audit();
+  const std::span<const FitObs> rows = prepared.fit_observations();
+  cert.obs.assign(rows.begin(), rows.end());
+  cert.source_mids.reserve(rows.size());
+  cert.source_flags.reserve(rows.size());
+  for (const FitObs &row : rows) {
+    const std::size_t quote_index =
+        chain_index(static_cast<std::uint16_t>(row.source_strike_index), row.side);
+    if (quote_index >= chain.mids.size() || quote_index >= chain.flags.size()) {
+      cert.obs.clear();
+      cert.source_mids.clear();
+      cert.source_flags.clear();
+      break;
+    }
+    cert.source_mids.push_back(chain.mids[quote_index]);
+    cert.source_flags.push_back(chain.flags[quote_index]);
+  }
+  cert.chain_mids = chain.mids;
+  cert.chain_flags = chain.flags;
+  cert.chain_bids = chain.bids;
+  cert.chain_asks = chain.asks;
+  cert.chain_ts = chain.ts_ns;
+  return cert;
+}
+
 } // namespace
 
 Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
@@ -190,10 +227,12 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
   std::vector<ParityReport> per_expiry;
   std::vector<SliceContext> context;
   std::vector<CarryDiagnostics> carry_diag;
+  std::vector<EssviInputCertification> input_certs; // C1: ‖ context/carry_diag
   expiry_T.reserve(n_chains);
   per_expiry.reserve(n_chains);
   context.reserve(n_chains);
   carry_diag.reserve(n_chains);
+  input_certs.reserve(n_chains);
 
   // Everything a slice needs to be SCORED after the surface is fully assembled
   // (and possibly calendar-repaired). We defer scoring out of the fit loop so
@@ -359,6 +398,9 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
     // `VolaSession::build`'s certification layer can reuse it instead of a
     // second, identical `resolve_chain_forward` call.
     carry_diag.push_back(prep_diag.carry);
+    // Perf C1: capture the fit's own de-Am certification for this slice BEFORE
+    // `prepared` is moved into `pending`, so VolaSession::build reuses it.
+    input_certs.push_back(make_input_certification(prepared, chain));
     pending.push_back(
         PendingSlice{std::move(prepared), T, rate, q_eff, static_cast<std::uint16_t>(idx)});
 
@@ -458,10 +500,10 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
   SurfaceParityReport out{
       std::move(surface),    std::move(expiry_T),
       std::move(per_expiry), std::move(context),
-      std::move(carry_diag), worst,
-      calendar_arb_free,     idx,
-      n_calendar_viol_pre,   n_carry_skipped,
-      n_audit_starved,
+      std::move(carry_diag), std::move(input_certs),
+      worst,                 calendar_arb_free,
+      idx,                   n_calendar_viol_pre,
+      n_carry_skipped,       n_audit_starved,
   };
   out.expiry_reports = std::move(expiry_reports); // W3.4 (F4): ‖ under.chains, chain order
   if (in.collect_stage_timings) {
