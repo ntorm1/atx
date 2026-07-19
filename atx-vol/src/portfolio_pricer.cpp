@@ -1312,9 +1312,21 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
                                             std::span<Status>(b_status).subspan(s, gsz),
                                             {},
                                             {}};
+      // WS-P2 rho tier: the ONLY consumer of this bundle's `rho` is the Taylor term
+      // `prho = g.rho * c.dr` below (and its pnl_totals twin). `dr` is a per-(uid)
+      // surface-pair constant already in hand here, and when the P&L step carries NO
+      // rate shift it is exactly 0.0 — so every rho the r± boundary solves produce is
+      // multiplied by zero and discarded. Requesting needs.rho = false makes the kernel
+      // skip that solve pair and leave rho at 0, driving the identical `0.0 * 0.0` term:
+      // a 5-solve bundle becomes 3 with no change to any output column. When dr != 0 the
+      // full bundle is requested exactly as before. `dr` depends only on the two
+      // surfaces, never on the thread partition, so the narrowing is deterministic and
+      // pack-composition invariant.
+      PricedSurface::GreekNeeds base_needs{};
+      base_needs.rho = (dr != 0.0);
       (void)sb->evaluate_batch(kcol.subspan(s, gsz), tcol.subspan(s, gsz), scol.subspan(s, gsz),
                                EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder, analytic,
-                               base_soa, resolved_price_isa, query_execution);
+                               base_soa, resolved_price_isa, query_execution, base_needs);
     }
     // Shifted surface at the COMMON base maturity T_b: iv only (sig_t).
     PricedSurface::EvaluationSoA sig_soa{std::span<double>(s_iv).subspan(s, gsz),
