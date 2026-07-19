@@ -81,16 +81,20 @@ TEST(EarningsValidation, NvdaCohortRow_TwelveResiduals_FiniteRmse_ExactNEarnMatc
     GTEST_SKIP() << "NVDA fixture parquet not found at " << kNvdaParquet;
   }
 
+  const EarningsReproConfig cfg; // default convention set
+
   OpraLoadSpec load;
   load.path = kNvdaParquet;
   load.underlying = "NVDA";
   load.snapshot_iso = "2026-02-10T14:00:00Z";
   load.r = 0.043;
+  load.time = cfg.time;
   const auto panel = load_opra_cbbo_parquet(load);
   ASSERT_TRUE(panel.has_value()) << panel.error().to_string();
 
-  const auto in = make_session_inputs(FitPreset::Fast, panel->implied_spot, load.r,
-                                      panel->frame.snapshot_ts_ns);
+  auto in = make_session_inputs(FitPreset::Fast, panel->implied_spot, load.r,
+                                 panel->frame.snapshot_ts_ns);
+  in.time = cfg.time;
   auto sess = VolaSession::from_frame(panel->frame, in);
   ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
 
@@ -101,7 +105,6 @@ TEST(EarningsValidation, NvdaCohortRow_TwelveResiduals_FiniteRmse_ExactNEarnMatc
 
   const std::int64_t now_ns = panel->frame.snapshot_ts_ns;
 
-  const EarningsReproConfig cfg; // default convention set
   const auto res = validate_cohort_name(*sess, sched, now_ns, *nvda, cfg);
   ASSERT_TRUE(res.has_value()) << res.error().to_string();
 
