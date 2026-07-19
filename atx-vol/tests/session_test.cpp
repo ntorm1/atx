@@ -630,6 +630,98 @@ TEST(VolaSession, C3PopulateTierEconomicParityVsRobust) {
   std::printf("C3CHAR\tTOTAL_BOARDS=%zu\n", n);
 }
 
+// C6 — COMPOSED production-populate-lane parity gate (§11 trap 2: per-stage in-band
+// does not prove composed in-band). The production lane composes C2 (cross-date
+// warm-start cache reuse) AND C3 (Populate preset) — this test fits a real AAPL
+// date chain under that composed config (Populate + reuse the prior date's wide
+// chain cache) and gates it against the Robust COLD oracle on the reuse date:
+// surface RMSE / bid-ask coverage / calendar-arb must stay in-band. STOP condition
+// (PM): a composed-config parity breach vs Robust cold.
+TEST(VolaSession, C6ComposedPopulateLaneParityVsRobustCold) {
+  using atx::vol::AmericanCorrectionCaches;
+  using atx::vol::CorrectionCache;
+  using atx::vol::FitPreset;
+  using atx::vol::load_opra_cbbo_parquet;
+  using atx::vol::make_session_inputs;
+  using atx::vol::OpraLoadSpec;
+  using atx::vol::OpraPanel;
+
+  const std::string root = "C:/atx-data/spy-dispersion/opra/";
+  const double r = 0.043;
+  const auto load = [&](const char *sym, const char *date) -> std::optional<OpraPanel> {
+    const std::string path = std::string(root) + sym + "/" + date + ".parquet";
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) {
+      return std::nullopt;
+    }
+    OpraLoadSpec spec;
+    spec.path = path;
+    spec.underlying = sym;
+    spec.snapshot_iso = std::string(date) + "T14:00:00Z";
+    spec.r = r;
+    auto p = load_opra_cbbo_parquet(spec);
+    return p.has_value() ? std::optional<OpraPanel>(std::move(*p)) : std::nullopt;
+  };
+
+  auto d1 = load("AAPL", "2026-01-02");
+  auto d2 = load("AAPL", "2026-01-05");
+  if (!d1.has_value() || !d2.has_value()) {
+    GTEST_SKIP() << "AAPL OPRA chain not available under " << root;
+  }
+
+  const auto make_in = [&](FitPreset preset, double spot, std::int64_t ts) {
+    auto in = make_session_inputs(preset, spot, r, ts);
+    in.fit_workers = 1u;
+    return in;
+  };
+
+  // Date 1 of the chain: Populate preset + chain-cache mode (build the wide,
+  // reusable cache); copy it out.
+  auto in1 = make_in(FitPreset::Populate, d1->implied_spot, d1->frame.snapshot_ts_ns);
+  in1.deam.chain_cache_mode = true;
+  auto s1 = VolaSession::from_frame(d1->frame, in1);
+  ASSERT_TRUE(s1.has_value()) << s1.error().to_string();
+  const AmericanCorrectionCaches c1 = s1->correction_caches();
+  if (c1.call == nullptr || c1.put == nullptr) {
+    GTEST_SKIP() << "date-1 Populate fit built no caches";
+  }
+  const CorrectionCache cache_call = *c1.call;
+  const CorrectionCache cache_put = *c1.put;
+
+  // Date 2 COMPOSED: the full production lane — Populate preset + reuse date-1's
+  // wide chain cache (warm).
+  auto in2c = make_in(FitPreset::Populate, d2->implied_spot, d2->frame.snapshot_ts_ns);
+  in2c.deam.chain_cache_mode = true;
+  in2c.deam.caches = AmericanCorrectionCaches{&cache_call, &cache_put};
+  in2c.deam.reuse_supplied_caches = true;
+  auto s2c = VolaSession::from_frame(d2->frame, in2c);
+  ASSERT_TRUE(s2c.has_value()) << s2c.error().to_string();
+  const auto composed = s2c->diagnostics();
+
+  // Date 2 REFERENCE: Robust cold (the oracle the composed lane must match in-band).
+  auto s2r = VolaSession::from_frame(
+      d2->frame, make_in(FitPreset::Robust, d2->implied_spot, d2->frame.snapshot_ts_ns));
+  ASSERT_TRUE(s2r.has_value()) << s2r.error().to_string();
+  const auto robust = s2r->diagnostics();
+
+  std::printf("C6CHAR\tAAPL 01-05 composed(Populate+warm) vs Robust-cold\t"
+              "rmse %.5f/%.5f\tfrac %.4f/%.4f\tworst %.4f/%.4f\tarb %d/%d\n",
+              composed.mean_rmse_vol, robust.mean_rmse_vol, composed.mean_frac_within_bidask,
+              robust.mean_frac_within_bidask, composed.worst_frac_within_bidask,
+              robust.worst_frac_within_bidask, composed.calendar_arb_free ? 1 : 0,
+              robust.calendar_arb_free ? 1 : 0);
+
+  // Composed-config parity gate vs Robust cold (the STOP condition):
+  EXPECT_LE(composed.mean_rmse_vol, robust.mean_rmse_vol + 2.0e-3)
+      << "composed populate lane RMSE out of band vs Robust cold";
+  EXPECT_GE(composed.mean_frac_within_bidask, robust.mean_frac_within_bidask - 0.02)
+      << "composed populate lane degraded bid-ask coverage vs Robust cold";
+  EXPECT_GE(composed.worst_frac_within_bidask, robust.worst_frac_within_bidask - 0.03)
+      << "composed populate lane degraded worst-expiry coverage vs Robust cold";
+  EXPECT_EQ(composed.calendar_arb_free, robust.calendar_arb_free)
+      << "composed populate lane changed calendar-arb-free status vs Robust cold";
+}
+
 TEST(VolaSession, Iv_OnSliceAtm_IsSaneVol) {
   const SynthPanelSpec spec = make_spec();
   Universe u;
