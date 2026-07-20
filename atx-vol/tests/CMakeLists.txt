@@ -102,6 +102,7 @@ add_executable(atx-vol-tests
     dispersion_strangle_test.cpp
     backtest_exec_test.cpp
     tearsheet_test.cpp
+    benchmark_stats_test.cpp         # X5 IR / alpha / beta / tracking error
     run_report_test.cpp
     backtest_real_test.cpp
     spy_strangle_backtest_test.cpp

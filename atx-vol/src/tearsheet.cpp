@@ -1,6 +1,8 @@
 #include "atx/vol/tearsheet.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <fstream>
 #include <ios>
@@ -59,6 +61,92 @@ struct MeanStd {
 }
 
 }  // namespace
+
+std::vector<double> backtest_return_series(const BacktestResult& r) {
+  // Mirrors the fallback rule inside `tearsheet` EXACTLY (see the comment there):
+  // the full per-step series when retained, else the recorded pnl_total rows
+  // 1..n-1. Kept as one definition so a benchmark can be aligned to the same
+  // observations the absolute statistics are computed over.
+  std::vector<double> returns;
+  if (!r.step_pnl_total.empty()) {
+    returns.assign(r.step_pnl_total.begin(), r.step_pnl_total.end());
+    return returns;
+  }
+  const std::size_t n = r.size();
+  returns.reserve(n > 0 ? n - 1 : 0);
+  for (std::size_t i = 1; i < n; ++i) {
+    returns.push_back(r.pnl_total[i]);
+  }
+  return returns;
+}
+
+BenchmarkStats benchmark_stats(std::span<const double> strategy,
+                               std::span<const double> benchmark, double periods_per_year) {
+  BenchmarkStats out;
+  if (benchmark.empty()) {
+    return out;  // no benchmark supplied => nothing is claimed
+  }
+  out.has_benchmark = true;
+  const std::size_t m = std::min(strategy.size(), benchmark.size());
+  out.n_obs = m;
+  if (m < 2) {
+    return out;  // every ratio below needs a sample variance
+  }
+  const double count = static_cast<double>(m);
+  const double ppy = periods_per_year;
+  const double sqrt_ppy = ppy > 0.0 ? std::sqrt(ppy) : 0.0;
+
+  double sum_s = 0.0;
+  double sum_b = 0.0;
+  for (std::size_t i = 0; i < m; ++i) {
+    sum_s += strategy[i];
+    sum_b += benchmark[i];
+  }
+  const double mean_s = sum_s / count;
+  const double mean_b = sum_b / count;
+
+  // One pass for the three central moments plus the active series' sum of
+  // squares. Sample (n-1) denominators throughout, matching `mean_std`.
+  double cov = 0.0;
+  double var_b = 0.0;
+  double var_s = 0.0;
+  double ss_active = 0.0;
+  const double mean_a = mean_s - mean_b;
+  for (std::size_t i = 0; i < m; ++i) {
+    const double ds = strategy[i] - mean_s;
+    const double db = benchmark[i] - mean_b;
+    cov += ds * db;
+    var_b += db * db;
+    var_s += ds * ds;
+    const double da = (strategy[i] - benchmark[i]) - mean_a;
+    ss_active += da * da;
+  }
+  const double denominator = count - 1.0;
+  cov /= denominator;
+  var_b /= denominator;
+  var_s /= denominator;
+
+  out.beta = var_b > 0.0 ? cov / var_b : 0.0;
+  out.alpha = (mean_s - out.beta * mean_b) * ppy;
+  out.active_return = mean_a * ppy;
+  out.tracking_error = std::sqrt(ss_active / denominator) * sqrt_ppy;
+  out.information_ratio =
+      out.tracking_error > 0.0 ? out.active_return / out.tracking_error : 0.0;
+  const double sd_product = std::sqrt(var_s) * std::sqrt(var_b);
+  out.correlation = sd_product > 0.0 ? cov / sd_product : 0.0;
+  return out;
+}
+
+TearSheet tearsheet_with_benchmark(const BacktestResult& r, std::span<const double> benchmark,
+                                   double periods_per_year) {
+  TearSheet ts = tearsheet(r, periods_per_year);
+  if (benchmark.empty()) {
+    return ts;  // strict superset: an absent benchmark changes nothing
+  }
+  const std::vector<double> returns = backtest_return_series(r);
+  ts.benchmark = benchmark_stats(returns, benchmark, periods_per_year);
+  return ts;
+}
 
 TearSheet tearsheet(const BacktestResult& r, double periods_per_year) {
   TearSheet ts;
