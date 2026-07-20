@@ -520,6 +520,96 @@ Status run_backtest_command(const fs::path &run_dir) {
   return Ok();
 }
 
+// Projected replay of the frozen listed schedule: reprice the SAME contracts through
+// the fast cached-surrogate tier under QueryExecution::Configured (genuine
+// interpolation), the projected counterpart to run-backtest's cold ExactArchive
+// replay. Records per-roll mark divergence between the frozen schedule marks and the
+// live interpolated seed marks.
+Status run_projected_backtest_command(const fs::path &run_dir) {
+  ATX_TRY(RunSpec spec, read_run_spec(run_dir / "run_spec.tsv"));
+  ATX_TRY(CorpusManifest manifest, read_manifest_file((run_dir / "surface_manifest.tsv").string()));
+  ATX_TRY(Clock clock, Clock::from_manifest(manifest));
+  ATX_TRY(ListedDispersionSchedule schedule,
+          read_listed_dispersion_schedule_file((run_dir / "trade_schedule.tsv").string()));
+
+  // Shared query route for the divergence replay and the priced run. Attaching the
+  // prepared fast tier (with_query_pricing, propagated by MarketSnapshot::load with
+  // no silent cold fallback) makes the Configured queries genuinely interpolate the
+  // cached surrogate instead of reproducing the cold archive marks.
+  RunConfig config;
+  config.unpriced = UnpricedLotPolicy::Error;
+  config.snapshot_cache = std::make_shared<SnapshotCache>();
+  config.query_pricing_tier = QueryPricingTier::RepresentativeFast;
+  config.price.query_execution = QueryExecution::Configured;
+
+  // mark_divergence.tsv: last_mark_divergences() is cleared every step and the
+  // engine's run_backtest loop hides per-step strategy state, so drive a separate
+  // Record replay here and snapshot the record after each roll step.
+  ATX_TRY(ListedDispersionStrategy divergence_strategy,
+          ListedDispersionStrategy::create(schedule, spec.delta_band, ScheduleMarkPolicy::Record));
+  PortfolioState divergence_book;
+  std::uint64_t divergence_next_id = 1;
+  std::ofstream div_out(run_dir / "mark_divergence.tsv", std::ios::binary | std::ios::trunc);
+  if (!div_out) {
+    return Err(ErrorCode::IoError, "cannot write mark divergence");
+  }
+  div_out << std::setprecision(17)
+          << "date\tsymbol\traw_symbol\tstrike\texpiry_ts_ns\tside\tschedule_mark\tlive_mark\t"
+             "diff\tabs_diff_bps_of_mark\n";
+  for (std::size_t i = 0; i < clock.size(); ++i) {
+    const SnapshotRef &ref = clock.refs()[i];
+    ATX_TRY(MarketSnapshot snapshot,
+            MarketSnapshot::load(ref.archive_path, config.query_pricing_tier));
+    ATX_TRY_VOID(divergence_strategy.on_step(snapshot, i, divergence_book, divergence_next_id,
+                                             config.price));
+    const std::vector<MarkDivergence> &divergences = divergence_strategy.last_mark_divergences();
+    if (divergences.empty()) {
+      continue;
+    }
+    // Divergences are populated only on a roll step; the roll that just fired owns
+    // the legs carrying each contract's symbol/raw_symbol.
+    const ListedScheduleRoll &roll = schedule.rolls[divergence_strategy.next_roll_index() - 1u];
+    for (const MarkDivergence &divergence : divergences) {
+      const ListedScheduleLeg *matched = nullptr;
+      for (const ListedScheduleLeg &leg : roll.legs) {
+        if (leg.uid == divergence.uid && leg.strike == divergence.strike &&
+            leg.expiry_ts_ns == divergence.expiry_ts_ns && leg.side == divergence.side) {
+          matched = &leg;
+          break;
+        }
+      }
+      if (matched == nullptr) {
+        return Err(ErrorCode::NotFound, "mark divergence leg not found in roll");
+      }
+      const double diff = divergence.live_mark - divergence.schedule_mark;
+      const double denom = std::abs(divergence.schedule_mark);
+      const double abs_diff_bps_of_mark = denom > 0.0 ? std::abs(diff) / denom * 1.0e4 : 0.0;
+      div_out << ref.date << '\t' << matched->symbol << '\t' << matched->raw_symbol << '\t'
+              << divergence.strike << '\t' << divergence.expiry_ts_ns << '\t'
+              << (divergence.side == Side::Call ? "Call" : "Put") << '\t' << divergence.schedule_mark
+              << '\t' << divergence.live_mark << '\t' << diff << '\t' << abs_diff_bps_of_mark
+              << '\n';
+    }
+  }
+  if (!div_out) {
+    return Err(ErrorCode::IoError, "cannot flush mark divergence");
+  }
+
+  // Primary priced run: the same strategy-aware engine as run-backtest, under the
+  // Record policy so the interpolated live seed marks (not the frozen schedule
+  // marks) seed each entry, and Configured economics end to end.
+  ATX_TRY(ListedDispersionStrategy strategy,
+          ListedDispersionStrategy::create(schedule, spec.delta_band, ScheduleMarkPolicy::Record));
+  ATX_TRY(BacktestResult backtest, run_backtest(clock, strategy, config));
+  if (!strategy.all_rolls_consumed()) {
+    return Err(ErrorCode::Unavailable, "projected backtest did not consume every scheduled roll");
+  }
+  ATX_TRY_VOID(write_backtest_tsv(backtest, (run_dir / "projected_backtest.tsv").string()));
+  std::printf("projected backtest complete: dates=%zu rolls=%zu final_nav=%.10g\n", backtest.size(),
+              schedule.rolls.size(), backtest.nav.back());
+  return Ok();
+}
+
 Status run_surface_backtest_command(const fs::path &run_dir) {
   ATX_TRY(RunSpec spec, read_run_spec(run_dir / "run_spec.tsv"));
   ATX_TRY(std::vector<UniverseRow> universe_rows, read_universe(run_dir / "universe_schedule.tsv"));
@@ -533,7 +623,10 @@ Status run_surface_backtest_command(const fs::path &run_dir) {
   DispersionBacktestConfig config;
   config.target_dte_days = spec.target_dte_days;
   config.roll_dte_days = spec.roll_dte_days;
-  config.gross_index_vega = spec.gross_index_vega;
+  // spec.gross_index_vega is dollars vega per VOL POINT per side; the library
+  // dispersion configs take dollars vega per UNIT vol (a unit vol is 100 vol
+  // points), so scale by 100 at this boundary.
+  config.gross_index_vega = spec.gross_index_vega * 100.0;
   config.delta_band = spec.delta_band;
   config.min_names = spec.min_names;
   config.run.unpriced = UnpricedLotPolicy::Error;
@@ -608,7 +701,10 @@ Status run_projected_var_command(const fs::path &run_dir) {
               MissingNameSpec{MissingNamePolicy::DropRenormalize, spec.min_names}));
   DispersionConfig dispersion;
   dispersion.target_T = spec.target_dte_days / 365.25;
-  dispersion.target_vega = spec.gross_index_vega;
+  // spec.gross_index_vega is dollars vega per VOL POINT per side; the library
+  // dispersion configs take dollars vega per UNIT vol (a unit vol is 100 vol
+  // points), so scale by 100 at this boundary.
+  dispersion.target_vega = spec.gross_index_vega * 100.0;
   dispersion.side = DispersionSide::ShortIndexLongNames;
   dispersion.multiplier = 100.0;
   dispersion.missing = MissingNameSpec{MissingNamePolicy::DropRenormalize, spec.min_names};
@@ -706,6 +802,7 @@ void usage() {
                        "  atxvol_spy_dispersion_backtest build-corpus --spec FILE --out DIR\n"
                        "  atxvol_spy_dispersion_backtest build-schedule --run DIR\n"
                        "  atxvol_spy_dispersion_backtest run-backtest --run DIR\n"
+                       "  atxvol_spy_dispersion_backtest run-projected-backtest --run DIR\n"
                        "  atxvol_spy_dispersion_backtest run-surface-backtest --run DIR\n"
                        "  atxvol_spy_dispersion_backtest run-projected-var --run DIR\n"
                        "  atxvol_spy_dispersion_backtest verify --run DIR\n");
@@ -743,6 +840,8 @@ int main(int argc, char **argv) {
     status = build_schedule_command(run);
   } else if (command == "run-backtest" && !run.empty()) {
     status = run_backtest_command(run);
+  } else if (command == "run-projected-backtest" && !run.empty()) {
+    status = run_projected_backtest_command(run);
   } else if (command == "run-surface-backtest" && !run.empty()) {
     status = run_surface_backtest_command(run);
   } else if (command == "run-projected-var" && !run.empty()) {
