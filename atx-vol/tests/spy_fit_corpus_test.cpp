@@ -312,4 +312,87 @@ TEST(SigmaInterpCorpus, DISABLED_BoardThroughput) {
               ladders.size(), total_strikes, cold_ms, interp_ms, cold_ms / interp_ms, s1, s2);
 }
 
+// ── G1 real-data 0DTE validation (SPY 2026-07-17 intraday session sweep) ─────
+
+// The four real SPY slices on a genuine SPY expiration day each ingest the
+// same-session (0DTE) 2026-07-17 expiry the old midnight-UTC parse hard-dropped,
+// stamp it at the TRUE 16:00 ET (20:00Z) PM settle, carry a small POSITIVE
+// intraday T that shrinks monotonically through the session, and fit end-to-end
+// to a sane surface. Skips cleanly when the git-ignored payloads are absent
+// (source-only CI). See data/fixtures/pg-sota-gdata-manifest.md (Fixture 1).
+TEST(SpyFitCorpus, G1ZeroDteSessionSweepIngestsFitsAndTMonotone) {
+  struct Slice {
+    const char *file;
+    const char *snapshot;  // load-bearing: the loader computes every T from it
+    double manifest_T;     // 0DTE year-fraction to 16:00 ET, per the manifest
+  };
+  const std::array<Slice, 4> slices{{
+      {"SPY_2026-07-17T1335Z.parquet", "2026-07-17T13:35:00Z", 0.000732},  // 09:35 ET
+      {"SPY_2026-07-17T1600Z.parquet", "2026-07-17T16:00:00Z", 0.000457},  // 12:00 ET
+      {"SPY_2026-07-17T1800Z.parquet", "2026-07-17T18:00:00Z", 0.000228},  // 14:00 ET
+      {"SPY_2026-07-17T1955Z.parquet", "2026-07-17T19:55:00Z", 0.000010},  // 15:55 ET
+  }};
+  const std::int64_t settle = expiry_instant_ns("2026-07-17", SettlementSession::Pm);
+  ASSERT_EQ(settle, iso_to_ns("2026-07-17T20:00:00Z"));  // 16:00 EDT == 20:00Z
+
+  std::size_t loaded = 0;
+  double prev_T = std::numeric_limits<double>::infinity();
+  for (const auto &s : slices) {
+    const testkit::SpyFitFixture fx{"0dte", s.file, s.snapshot, "0dte"};
+    auto board = testkit::load_spy_fit_fixture(fx);
+    if (!board.has_value()) {
+      continue;
+    }
+    ++loaded;
+    SCOPED_TRACE(std::string(s.file));
+
+    // (1) The 0DTE expiry survives ingest, stamped at the TRUE 16:00 ET instant,
+    //     with a small positive intraday T matching the manifest value.
+    const Underlying &U = board->underlying();
+    const Chain *zdte = nullptr;
+    for (const Chain &ch : U.chains) {
+      if (ch.expiry_ns == settle) {
+        zdte = &ch;
+        break;
+      }
+    }
+    ASSERT_NE(zdte, nullptr) << "0DTE (2026-07-17) expiry not ingested";
+    const double expected_T = time_to_expiry_years(iso_to_ns(s.snapshot), settle, TimeSpec{});
+    EXPECT_DOUBLE_EQ(zdte->T, expected_T);
+    EXPECT_GT(zdte->T, 0.0);
+    EXPECT_NEAR(zdte->T, s.manifest_T, 5.0e-6) << "0DTE T vs manifest";
+    EXPECT_GT(zdte->strikes.size(), std::size_t{50}) << "front chain should be liquid";
+
+    // (2) The board fits end-to-end with the 0DTE front expiry included.
+    auto chain = OptionChain::from_frame(board->panel.frame, board->env());
+    ASSERT_TRUE(chain.has_value()) << chain.error().to_string();
+    PricerFitter fitter{PricerConfig{.preset = FitPreset::Hft}};
+    const Status fit = fitter.fit(*chain);
+    EXPECT_TRUE(fit.has_value()) << fit.error().to_string();
+
+    // (3) Sane surface at T ~ hours: a finite, positive, plausible ATM IV at the
+    //     0DTE tenor when the fitted session serves it.
+    double atm_iv = std::numeric_limits<double>::quiet_NaN();
+    if (fit.has_value()) {
+      const VolaSession &sess = fitter.surface()->session();
+      atm_iv = sess.iv(board->spot(), zdte->T);
+      if (std::isfinite(atm_iv)) {
+        EXPECT_GT(atm_iv, 0.01);
+        EXPECT_LT(atm_iv, 5.0);
+      }
+    }
+    std::printf("[G1 0DTE] %-30s T=%.6f (%.2fh) strikes=%zu fit=%s atmIV=%.4f\n", s.file, zdte->T,
+                zdte->T * 365.25 * 24.0, zdte->strikes.size(), fit.has_value() ? "ok" : "FAIL",
+                atm_iv);
+
+    // (4) T strictly shrinks toward the settle as the session advances.
+    EXPECT_LT(zdte->T, prev_T);
+    prev_T = zdte->T;
+  }
+  if (loaded == 0) {
+    GTEST_SKIP() << "SPY 0DTE session slices not found under data/spy_fit_slices";
+  }
+  EXPECT_LT(prev_T, 5.0e-5) << "final (15:55 ET) slice should leave only minutes to settle";
+}
+
 } // namespace

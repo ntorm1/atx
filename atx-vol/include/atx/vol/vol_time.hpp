@@ -124,6 +124,29 @@ class VolTimeCalendar {
 // `weekday_from_days` for the day-index convention).
 [[nodiscard]] bool is_weekend_day(std::int32_t day_since_epoch) noexcept;
 
+// ── Option settlement instants ──────────────────────────────────────────────
+//
+// Which intraday wall-clock instant a listed option's expiry lands on. The
+// entire US single-name / ETF equity-option universe is PM-settled (16:00 ET,
+// the regular-session close); a handful of cash-settled index series (e.g. the
+// SPX/NDX "AM" specials) settle on the 09:30 ET opening print. Default PM.
+enum class SettlementSession : std::uint8_t {
+  Pm = 0,  // 16:00 ET regular-session close — the equity/ETF default
+  Am = 1,  // 09:30 ET opening print — AM-settled cash index series
+};
+
+// UTC epoch-ns of the settlement instant for an option expiring on ET calendar
+// day `et_day_since_epoch` (days-since-epoch, the same civil-day numbering as
+// `VolTimeCalendar` / `weekday_from_days`): 16:00 ET for `SettlementSession::Pm`,
+// 09:30 ET for `SettlementSession::Am`. ET->UTC uses the modern (2007+) DST rule
+// (EDT = UTC-4 / EST = UTC-5), so the SAME 16:00 ET expiry is 20:00Z in summer
+// and 21:00Z in winter — the reason a midnight-UTC expiry parse mis-states front
+// T by ~0.8 trading day. Half-day early closes are NOT modelled (the instant is
+// the nominal 16:00/09:30 ET regardless), consistent with `VolTimeCalendar`,
+// which likewise carries no early-close table.
+[[nodiscard]] std::int64_t settlement_instant_ns(std::int32_t et_day_since_epoch,
+                                                 SettlementSession settle) noexcept;
+
 // Trading hours (fractional) accrued in `[start_ns, end_ns)`, under the ET
 // session window in `p`, skipping weekends and `cal` holidays. Returns 0 if
 // `end_ns <= start_ns`.

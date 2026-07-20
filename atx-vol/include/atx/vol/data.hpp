@@ -149,6 +149,20 @@ struct QuoteRow {
   double atm_vol_source = kDataNaN; // SR `atmVol` — fitted ATM IV
   double vega_source = kDataNaN;    // SR `ve`     — feed-reported vega
   double delta_source = kDataNaN;   // SR `de`     — feed-reported delta
+
+  // ── True expiry instant (G1) ─────────────────────────────────────────────
+  // Settlement session for the contract (the AM/PM hook): PM = 16:00 ET is the
+  // entire single-name/ETF universe; AM = 09:30 ET is reserved for cash-settled
+  // index series. Default PM.
+  SettlementSession settle = SettlementSession::Pm;
+  // The TRUE expiry instant in UTC epoch-ns when a dated-contract loader has
+  // stamped it (16:00/09:30 ET per `settle`, via `expiry_instant_ns`). 0 means
+  // "derive at install from `expiry_iso`": `data_install` then falls back to the
+  // legacy midnight-UTC parse, keeping every hand-built / synthetic frame
+  // BIT-IDENTICAL to its historical `year_fraction`-derived T. The real OPRA
+  // loader always stamps it, so its front / 0DTE (same-session) expiries carry
+  // the correct intraday T instead of a ~0.8-trading-day-short midnight one.
+  std::int64_t expiry_ns = 0;
 };
 
 // ── Per-(uid, expiry) source inputs (AtsVolDataExpiryInputs) ────────────────
@@ -226,6 +240,18 @@ struct QuoteFrame {
 // civil-from-days install uses to key the source-input table). Truncates to
 // the UTC calendar day.
 [[nodiscard]] std::string ns_to_iso_date(std::int64_t ns);
+
+// TRUE expiry instant in UTC epoch-ns for an OSI/listed expiry DATE
+// ("YYYY-MM-DD") under settlement session `settle` (default PM = 16:00 ET; AM =
+// 09:30 ET). This is the settlement instant a dated-contract loader stamps onto
+// `QuoteRow::expiry_ns` so `data_install` derives `Chain::T` from it — replacing
+// the legacy `iso_to_ns(expiry_iso)` midnight-UTC parse that under-states front T
+// by ~0.8 trading day and hard-drops same-session (0DTE) contracts. ET->UTC via
+// `settlement_instant_ns` (modern-DST, vol_time.hpp). Returns 0 on parse failure
+// (matching `iso_to_ns`).
+[[nodiscard]] std::int64_t expiry_instant_ns(
+    std::string_view expiry_iso,
+    SettlementSession settle = SettlementSession::Pm) noexcept;
 
 // ── Frame helpers ───────────────────────────────────────────────────────────
 
