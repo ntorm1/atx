@@ -924,7 +924,9 @@ TEST(DispersionX4, GammaThetaIdentities_MatchHandComputedValues) {
   //   gamma  = 12 / (2500 * 0.4 * 0.25) = 12 / 250 = 0.048
   //   |theta| = 0.5 * 0.4 * 12 / 0.25 = 9.6
   EXPECT_NEAR(straddle_gamma_from_vega(12.0, 50.0, 0.4, 0.25), 0.048, 1e-15);
-  EXPECT_NEAR(straddle_theta_magnitude_from_vega(12.0, 0.4, 0.25), 9.6, 1e-15);
+  // 9.6 is not exactly representable, so the tolerance is one ULP at that
+  // magnitude rather than an absolute 1e-15 (which would be below it).
+  EXPECT_NEAR(straddle_theta_magnitude_from_vega(12.0, 0.4, 0.25), 9.6, 1e-14);
 
   // Degenerate inputs yield 0 (no risk is defined), never a NaN or a negative.
   const double nan_value = std::numeric_limits<double>::quiet_NaN();

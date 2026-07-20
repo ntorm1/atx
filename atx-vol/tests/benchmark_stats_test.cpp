@@ -21,7 +21,9 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <span>
+#include <string>
 #include <vector>
 
 #include "atx/vol/backtest.hpp"  // BacktestResult
@@ -58,6 +60,32 @@ constexpr double kBenchmark[] = {2.0, -1.0, 3.0, 1.0, 0.0};
 }
 [[nodiscard]] std::span<const double> benchmark_span() {
   return std::span<const double>(kBenchmark, 5);
+}
+
+// A 6-row BacktestResult whose return series (rows 1..5) is exactly `kStrategy`.
+// EVERY SoA column `tearsheet` folds is populated -- the struct is a parallel
+// column set with no internal length invariant, so a partially-filled result
+// indexes out of range rather than reporting a shape error.
+[[nodiscard]] BacktestResult make_track() {
+  BacktestResult r;
+  constexpr std::size_t n = 6;
+  const double pnl[n] = {0.0, 4.0, -2.0, 6.0, 0.0, 2.0};
+  for (std::size_t i = 0; i < n; ++i) {
+    r.date.push_back("2026-01-0" + std::to_string(i + 1));
+    r.ts_ns.push_back(static_cast<std::int64_t>(i));
+    r.pnl_total.push_back(pnl[i]);
+    r.nav.push_back(i == 0 ? 0.0 : r.nav.back() + pnl[i]);
+  }
+  const std::vector<double> zeros(n, 0.0);
+  for (std::vector<double> *column :
+       {&r.pnl_delta, &r.pnl_gamma, &r.pnl_vega, &r.pnl_vanna, &r.pnl_volga, &r.pnl_theta,
+        &r.pnl_rho, &r.pnl_charm, &r.pnl_unexplained, &r.pnl_settlement, &r.pnl_shares,
+        &r.financing, &r.cost, &r.cash, &r.gross_delta, &r.gross_gamma, &r.gross_theta,
+        &r.turnover_notional, &r.turnover_vega, &r.n_open_lots}) {
+    *column = zeros;
+  }
+  r.gross_vega = std::vector<double>(n, 1000.0); // nonzero so the vega-scaled block is live
+  return r;
 }
 
 } // namespace
@@ -177,14 +205,7 @@ TEST(BenchmarkStats, Guards_EmptySingleAndConstantBenchmark) {
 
 // ── 6. The benchmark block is a strict superset of the absolute sheet ───────
 TEST(BenchmarkStats, TearsheetWithBenchmark_IsAStrictSuperset) {
-  BacktestResult r;
-  const double pnl[] = {0.0, 4.0, -2.0, 6.0, 0.0, 2.0};
-  for (std::size_t i = 0; i < 6; ++i) {
-    r.date.push_back("2026-01-0" + std::to_string(i + 1));
-    r.ts_ns.push_back(static_cast<std::int64_t>(i));
-    r.pnl_total.push_back(pnl[i]);
-    r.nav.push_back(i == 0 ? 0.0 : r.nav.back() + pnl[i]);
-  }
+  const BacktestResult r = make_track();
 
   const TearSheet plain = tearsheet(r, 252.0);
   const TearSheet no_bench = tearsheet_with_benchmark(r, {}, 252.0);
@@ -207,14 +228,7 @@ TEST(BenchmarkStats, TearsheetWithBenchmark_IsAStrictSuperset) {
 
 // ── 7. The benchmark aligns to the SAME return series the sheet folds ───────
 TEST(BenchmarkStats, BenchmarkAlignsToTheTearsheetReturnSeries) {
-  BacktestResult r;
-  const double pnl[] = {0.0, 4.0, -2.0, 6.0, 0.0, 2.0};
-  for (std::size_t i = 0; i < 6; ++i) {
-    r.date.push_back("2026-01-0" + std::to_string(i + 1));
-    r.ts_ns.push_back(static_cast<std::int64_t>(i));
-    r.pnl_total.push_back(pnl[i]);
-    r.nav.push_back(i == 0 ? 0.0 : r.nav.back() + pnl[i]);
-  }
+  const BacktestResult r = make_track();
 
   // Row 0 is inception and carries NO return, so the folded series is rows 1..5
   // — which is exactly `kStrategy`. If the implementation accidentally included

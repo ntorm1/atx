@@ -162,10 +162,10 @@ def build(meta: dict, df: pd.DataFrame, out: Path) -> None:
     # ── title ───────────────────────────────────────────────────────────────
     fig.suptitle(
         f"{meta.get('index_symbol', 'SPY')} dispersion — tearsheet",
-        x=0.055, y=0.975, ha="left", fontsize=19, fontweight="bold", color=INK,
+        x=0.055, y=0.982, ha="left", va="top", fontsize=19, fontweight="bold", color=INK,
     )
     fig.text(
-        0.055, 0.951,
+        0.055, 0.947,
         f"{meta.get('label', 'surface-path dispersion')}   |   "
         f"{meta.get('date_lo', '?')} → {meta.get('date_hi', '?')}   |   "
         f"{meta.get('n_sessions', '?')} sessions   |   "
