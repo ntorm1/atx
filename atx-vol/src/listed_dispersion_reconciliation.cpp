@@ -166,11 +166,9 @@ mark_leg(const ListedScheduleLeg &leg, const ListedReconciliationSnapshot &snaps
       // route (fair_value) can disagree by a handful of ULPs on a real board; a
       // relative bound absorbs that benign divergence while still rejecting a true
       // schedule/archive economic mismatch. (tol == 0 => strict bit-for-bit.)
-      const double entry_diff = std::fabs(mark.model_mark - leg.model_mark);
-      const double entry_scale =
-          std::max({std::fabs(mark.model_mark), std::fabs(leg.model_mark), 1.0});
       if (role == ListedMarkRole::Entry &&
-          entry_diff > config.entry_mark_tolerance * entry_scale) {
+          !listed_entry_mark_agrees(mark.model_mark, leg.model_mark,
+                                    config.entry_mark_tolerance)) {
         return Err(ErrorCode::InvalidArgument,
                    "listed reconciliation: entry archive mark differs from schedule");
       }

@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -12,6 +13,7 @@
 #include "atx/vol/backtest.hpp"
 #include "atx/vol/corpus.hpp"
 #include "atx/vol/listed_dispersion.hpp"
+#include "atx/vol/listed_dispersion_reconciliation.hpp" // ListedReconciliationConfig (shared tol)
 #include "atx/vol/listed_dispersion_schedule.hpp"
 #include "atx/vol/listed_dispersion_strategy.hpp"
 #include "atx/vol/portfolio_pricer.hpp"
@@ -310,6 +312,76 @@ TEST(ListedDispersionStrategy, MarkMismatchLeavesBookCounterAndCursorUntouched) 
   EXPECT_EQ(next_id, 100u);
   EXPECT_EQ(strategy->next_roll_index(), 0u);
   EXPECT_TRUE(strategy->entry_risk_seeds().empty());
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+}
+
+// WS-FIX regression. The entry-mark guard was a bit-exact `!=`, so the ~1e-10
+// relative divergence between the schedule's BUILD-route mark and the seed route's
+// re-price (laned analytic greeks, WS-P1a) made the SHIPPING strategy fail CLOSED —
+// Unavailable on every roll of a perfectly valid run. The guard is now the same
+// relative-tolerance compare the reconciliation guard uses. This pins BOTH ends:
+// a sub-tolerance divergence must be ACCEPTED, and a genuine economic mismatch must
+// still be REJECTED — a tolerance that swallows real breaks is not a fix.
+TEST(ListedDispersionStrategy, SubToleranceMarkDriftIsAcceptedButRealMismatchStillRejected) {
+  const std::vector<PricedSurface> source = surfaces();
+  const fs::path dir = fresh_dir("entry-mark-tol");
+  auto snapshot = MarketSnapshot::load(write_archive(dir, source));
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+
+  const auto run = [&](double rel_perturb) {
+    ListedDispersionSchedule schedule = schedule_from(source);
+    double &mark = schedule.rolls.front().legs.front().model_mark;
+    // Perturb RELATIVE to the mark's own scale, matching the guard's scale formula.
+    mark += rel_perturb * std::max(std::fabs(mark), 1.0);
+    auto strategy = ListedDispersionStrategy::create(schedule);
+    EXPECT_TRUE(strategy.has_value());
+    PortfolioState book;
+    std::uint64_t next_id = 100u;
+    return strategy->on_step(*snapshot, 0u, book, next_id);
+  };
+
+  // The default knob is the SHARED constant — the two guards cannot drift apart.
+  {
+    auto s = ListedDispersionStrategy::create(schedule_from(source));
+    ASSERT_TRUE(s.has_value());
+    EXPECT_DOUBLE_EQ(s->entry_mark_tolerance(), kListedEntryMarkTolerance);
+    EXPECT_DOUBLE_EQ(ListedReconciliationConfig{}.entry_mark_tolerance,
+                     s->entry_mark_tolerance());
+  }
+
+  // Accepted: a divergence an order of magnitude INSIDE the tolerance. This is the
+  // case that was failing closed before the fix.
+  EXPECT_TRUE(run(0.1 * kListedEntryMarkTolerance).has_value())
+      << "sub-tolerance route divergence must not abort the roll";
+
+  // Rejected: a genuine economic mismatch (1 cent on a ~1e2 mark), and also a
+  // divergence just past the band — the guard is still a guard.
+  const Status economic = run(1.0e-2);
+  ASSERT_FALSE(economic.has_value());
+  EXPECT_EQ(economic.error().code(), ErrorCode::Unavailable);
+
+  const Status past_band = run(1.0e3 * kListedEntryMarkTolerance);
+  ASSERT_FALSE(past_band.has_value()) << "a divergence past the band must still reject";
+  EXPECT_EQ(past_band.error().code(), ErrorCode::Unavailable);
+
+  // tol = 0.0 restores the historical bit-exact compare.
+  {
+    ListedDispersionSchedule schedule = schedule_from(source);
+    // Exactly ONE ULP up — the smallest representable divergence. (A fixed
+    // absolute epsilon like 1e-15 is below one ULP at this mark's ~1e2 scale and
+    // would be absorbed, silently testing nothing.)
+    double &mark = schedule.rolls.front().legs.front().model_mark;
+    mark = std::nextafter(mark, std::numeric_limits<double>::infinity());
+    auto strategy = ListedDispersionStrategy::create(schedule);
+    ASSERT_TRUE(strategy.has_value());
+    strategy->set_entry_mark_tolerance(0.0);
+    PortfolioState book;
+    std::uint64_t next_id = 100u;
+    EXPECT_FALSE(strategy->on_step(*snapshot, 0u, book, next_id).has_value())
+        << "tol=0 must reject any nonzero divergence";
+  }
+
   std::error_code ec;
   fs::remove_all(dir, ec);
 }

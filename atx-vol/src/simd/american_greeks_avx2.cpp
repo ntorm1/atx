@@ -25,8 +25,10 @@
 #include "american_boundary_avx2_kernel.hpp"
 
 #include "atx/vol/american.hpp" // AmericanGreeks, classify_regime, ExerciseRegime
+#include "atx/vol/counters.hpp" // ledger::AlBoundarySolves — SIMD-invariant solve ledger
 
 #include <cstddef>
+#include <cstdint>
 #include <cmath>
 #include <limits>
 #include <optional>
@@ -67,6 +69,19 @@ void american_put_greeks_batch_avx2(const double* S, const double* K, const doub
     const bool need_vega = needs.vega;   // vega, volga, vanna
     const bool need_rho = needs.rho;
     const bool need_charm = needs.charm; // needs the 5-point speed stencil
+
+    // Solve-ledger accounting (SIMD-invariance). This laned bundle performs the SAME
+    // K4-tiered boundary solves as the scalar american_greeks_al oracle — base, plus
+    // sigma+/- when vega is needed, plus r+/- when rho is needed (5/3/1) — but it drives
+    // solve_put_boundary_pack_avx2, which lays its own BAW seed and therefore never
+    // reaches al_seed_boundary's ledger tap. Without an explicit bump an AVX2-routed
+    // bundle reads as ZERO boundary solves while doing identical work, silently voiding
+    // the sprint's solve-economy gate (observed: full/risk/hedge 5/3/1 -> 0/0/0, and the
+    // backtest ledger 12/12/6/6 -> 2/2/1/1). Mirrors the marks kernel's per-active-lane
+    // bump in american_boundary_avx2.cpp. Bumped ONLY for lanes this kernel actually
+    // completed: a lane left to the scalar patch is counted by that patch's own solves.
+    const std::uint64_t bundle_solves =
+        1u + (need_vega ? 2u : 0u) + (need_rho ? 2u : 0u);
 
     for (std::size_t base = 0; base < n; base += 4) {
         const std::size_t m = (n - base < 4) ? (n - base) : 4;
@@ -232,6 +247,7 @@ void american_put_greeks_batch_avx2(const double* S, const double* K, const doub
             }
             out_greeks[base + l] = g;
             handled[base + l] = true;
+            counters::ledger::bump(counters::ledger::Solve::AlBoundarySolves, bundle_solves);
         }
         (void)kNaN;
     }
@@ -261,6 +277,11 @@ void american_call_greeks_batch_avx2(const double* S, const double* K, const dou
     const bool need_vega = needs.vega;
     const bool need_rho = needs.rho;
     const bool need_charm = needs.charm;
+
+    // Solve-ledger accounting — see the put kernel above (same 5/3/1 K4 tier, same
+    // per-completed-lane bump so the ledger stays SIMD-invariant).
+    const std::uint64_t bundle_solves =
+        1u + (need_vega ? 2u : 0u) + (need_rho ? 2u : 0u);
 
     for (std::size_t base = 0; base < n; base += 4) {
         const std::size_t m = (n - base < 4) ? (n - base) : 4;
@@ -433,6 +454,7 @@ void american_call_greeks_batch_avx2(const double* S, const double* K, const dou
             }
             out_greeks[base + l] = g;
             handled[base + l] = true;
+            counters::ledger::bump(counters::ledger::Solve::AlBoundarySolves, bundle_solves);
         }
     }
 }

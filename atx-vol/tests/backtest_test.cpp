@@ -2135,12 +2135,17 @@ TEST(Backtest, DailyTwoLegRollReusesExactPnlTargetMarksWithoutChangingEconomics)
   EXPECT_EQ(result->n_open_lots, (std::vector<double>{2.0, 2.0, 2.0, 2.0}));
   // Bit pins captured before the target-mark handoff. Close cash and notional
   // remain numerically identical while their redundant Greek solves disappear.
-  // infra / test-tolerance (WS-0): the running `cash` accumulator sums ~1-ULP
-  // FMA-contraction drift over the run's surface solves, landing ~2.4e-12 (rel
-  // ~5e-13) off the SSE2-captured pin under rel-avx2 (/arch:AVX2) — an accumulated
-  // contraction telltale, not an economics change. golden_isa_accum_tol keeps the
-  // 4-ULP EXPECT_DOUBLE_EQ gate on the SSE2 reference ISA and opens a relative
-  // economic band under FMA. See support/isa_golden_tol.hpp.
+  // infra / test-tolerance (WS-0, retuned WS-P1a): the running `cash` accumulator
+  // sums sub-ULP drift over the run's surface solves and lands off the
+  // SSE2-captured pin — an accumulated rounding telltale, not an economics change.
+  // TWO sources feed it now: FMA contraction under rel-avx2 (compile-time), and
+  // the laned AVX2 greeks kernel selected at RUNTIME by CPU capability. Because
+  // the second is runtime-selected, golden_isa_accum_tol no longer branches on
+  // __FMA__ — the old "SSE2 keeps a 4-ULP gate" branch was failing on the very
+  // shipping configuration it exists to gate. It is now one unconditional
+  // relative band (1e-11), ~20x the worst measured drift on THIS array (step 3:
+  // 2.2737367544323206e-12 abs / 5.13e-13 rel; steps 0-2 run 5.68e-14..7.40e-14)
+  // and 2 orders TIGHTER than the 1e-9 it replaced. See support/isa_golden_tol.hpp.
   constexpr std::array<double, 4> expected_cash{-3.0734556197676284, -3.548979869780851,
                                                 -4.0009109642776366, -4.4307747789998757};
   constexpr std::array<double, 4> expected_turnover{2200.5417380996087, 4444.3187954021723,
@@ -2185,9 +2190,12 @@ TEST(Backtest, PriceBpsRollCloseReusesPnlMarkWithoutASecondSurfaceSolve) {
   const auto result = run_backtest(*clock, strategy, config);
   ASSERT_TRUE(result.has_value()) << result.error().to_string();
   ASSERT_EQ(result->size(), 2u);
-  // infra / test-tolerance (WS-0): same accumulated-FMA-contraction telltale as
-  // above — `cash` drifts ~1.9e-12 off the SSE2 pin under rel-avx2. SSE2 keeps its
-  // 4-ULP EXPECT_DOUBLE_EQ gate; FMA gets the relative economic band.
+  // infra / test-tolerance (WS-0, retuned WS-P1a): same accumulated-rounding
+  // telltale as above, one unconditional 1e-11 relative band rather than an
+  // __FMA__-keyed branch — see the sibling call site above for why. Measured on
+  // the dev preset with laned greeks on, only `cash[1]` drifts at all
+  // (2.2737367544323206e-13 abs on -69.997585204798639, ~3.2e-15 relative);
+  // `cost[1]` and `turnover_notional[1]` are exactly equal here.
   EXPECT_NEAR(result->cost[1], 44.443187954021731,
               atx::vol::test::golden_isa_accum_tol(44.443187954021731));
   EXPECT_NEAR(result->cash[1], -69.997585204798639,
@@ -2239,10 +2247,17 @@ TEST(Backtest, VolTicksRollCloseUsesConfiguredFdOrAnalyticGreekRoute) {
   auto [analytic, analytic_counts] = run(true);
   ASSERT_TRUE(fd.has_value()) << fd.error().to_string();
   ASSERT_TRUE(analytic.has_value()) << analytic.error().to_string();
-  EXPECT_TRUE(bits_equal(fd->cost[1], analytic->cost[1]));
-  EXPECT_TRUE(bits_equal(fd->cash[1], analytic->cash[1]));
-  EXPECT_TRUE(bits_equal(fd->turnover_notional[1], analytic->turnover_notional[1]));
-  EXPECT_TRUE(bits_equal(fd->turnover_vega[1], analytic->turnover_vega[1]));
+  // Route parity, not a value pin: the configured greek route must not change the
+  // economics. Since WS-P1a the ANALYTIC route runs the laned AVX2 greeks kernel
+  // while the FD route stays scalar, so the two now agree to the documented
+  // economic band rather than to the bit. Measured here (dev preset): cost and
+  // turnover_notional are exactly equal, cash differs by 6.3664629124104977e-12
+  // on -69.36 (9.18e-14 relative). See support/isa_golden_tol.hpp.
+  using atx::vol::test::laned_greeks_close;
+  EXPECT_TRUE(laned_greeks_close(fd->cost[1], analytic->cost[1]));
+  EXPECT_TRUE(laned_greeks_close(fd->cash[1], analytic->cash[1]));
+  EXPECT_TRUE(laned_greeks_close(fd->turnover_notional[1], analytic->turnover_notional[1]));
+  EXPECT_TRUE(laned_greeks_close(fd->turnover_vega[1], analytic->turnover_vega[1]));
   if constexpr (counters_enabled()) {
     // FD: 14 inception + (2 target + 14 close + 14 new-entry) = 44.
     EXPECT_EQ(fd_counts.get(Counter::BoundarySolves), 44u);
