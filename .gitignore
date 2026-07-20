@@ -98,3 +98,8 @@ atx-vol/tests/data/**/*.parquet
 atx-vol/tests/data/**/*.dbn.zst
 # Generated report artifacts (figures/html) — reproducible from the tool + script.
 atx-vol/python/report_out_real/
+
+# FetchContent isolated dependency trees (per-worktree, never committed).
+# Set via -DFETCHCONTENT_BASE_DIR to keep parallel worktrees from sharing a
+# build object tree and racing on _ITERATOR_DEBUG_LEVEL.
+deps/
