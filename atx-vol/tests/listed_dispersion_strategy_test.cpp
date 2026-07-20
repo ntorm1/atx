@@ -287,6 +287,60 @@ TEST(ListedDispersionStrategy, ColdAuthoredScheduleRejectsFastConfiguredBeforeAr
   fs::remove_all(dir, ec);
 }
 
+TEST(ListedDispersionStrategy, RequiredEconomicExecutionIsPolicyAware) {
+  const std::vector<PricedSurface> source = surfaces();
+  const ListedDispersionSchedule schedule = schedule_from(source);
+
+  // Default and ExactArchive replay the cold archive marks exactly, so their
+  // economics must stay ColdReference (the engine gate keeps them off any fast
+  // tier). Record deliberately reprices the frozen definitions through the
+  // interpolated Configured route, so it requires Configured economics.
+  auto def = ListedDispersionStrategy::create(schedule);
+  ASSERT_TRUE(def.has_value()) << def.error().to_string();
+  EXPECT_EQ(def->required_economic_execution(), QueryExecution::ColdReference);
+
+  auto exact = ListedDispersionStrategy::create(schedule, 0.0, ScheduleMarkPolicy::ExactArchive);
+  ASSERT_TRUE(exact.has_value()) << exact.error().to_string();
+  EXPECT_EQ(exact->required_economic_execution(), QueryExecution::ColdReference);
+
+  auto record = ListedDispersionStrategy::create(schedule, 0.0, ScheduleMarkPolicy::Record);
+  ASSERT_TRUE(record.has_value()) << record.error().to_string();
+  EXPECT_EQ(record->required_economic_execution(), QueryExecution::Configured);
+}
+
+TEST(ListedDispersionStrategy, RecordPolicyAcceptsFastConfiguredRun) {
+  const std::vector<PricedSurface> source = surfaces();
+  const ListedDispersionSchedule schedule = schedule_from(source);
+  const fs::path dir = fresh_dir("record-fast-configured-accept");
+  const std::string archive_path = write_archive(dir, source);
+  CorpusManifest manifest;
+  manifest.dates.push_back("2026-07-10");
+  CorpusEntry entry;
+  entry.date = "2026-07-10";
+  entry.symbol = "SPY";
+  entry.status = CorpusFitStatus::Ok;
+  entry.archive_path = archive_path;
+  manifest.entries.push_back(std::move(entry));
+  auto clock = Clock::from_manifest(manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  auto strategy = ListedDispersionStrategy::create(schedule, 0.0, ScheduleMarkPolicy::Record);
+  ASSERT_TRUE(strategy.has_value()) << strategy.error().to_string();
+  EXPECT_EQ(strategy->required_economic_execution(), QueryExecution::Configured);
+
+  // The cold-authored ExactArchive strategy is gated off [fast tier + Configured]
+  // (see ColdAuthoredScheduleRejectsFastConfiguredBeforeArchiveLoad); the Record
+  // strategy relaxes that requirement and the same run is accepted and consumed.
+  RunConfig fast_configured;
+  fast_configured.query_pricing_tier = QueryPricingTier::RepresentativeFast;
+  fast_configured.price.query_execution = QueryExecution::Configured;
+  fast_configured.prefetch_snapshots = false;
+  const auto accepted = run_backtest(*clock, *strategy, fast_configured);
+  ASSERT_TRUE(accepted.has_value()) << accepted.error().to_string();
+  EXPECT_TRUE(strategy->all_rolls_consumed());
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+}
+
 TEST(ListedDispersionStrategy, MarkMismatchLeavesBookCounterAndCursorUntouched) {
   const std::vector<PricedSurface> source = surfaces();
   ListedDispersionSchedule schedule = schedule_from(source);

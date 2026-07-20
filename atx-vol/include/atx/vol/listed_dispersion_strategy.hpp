@@ -65,8 +65,13 @@ public:
   [[nodiscard]] const std::vector<MarkDivergence> &last_mark_divergences() const noexcept {
     return last_mark_divergences_;
   }
+  // ExactArchive replays the frozen archive marks exactly, so its economics stay
+  // ColdReference (the engine gate keeps it off any fast query tier). Record
+  // deliberately reprices the same frozen definitions through the interpolated
+  // Configured route, so it requires — and permits — Configured economics.
   [[nodiscard]] QueryExecution required_economic_execution() const noexcept override {
-    return QueryExecution::ColdReference;
+    return policy_ == ScheduleMarkPolicy::Record ? QueryExecution::Configured
+                                                 : QueryExecution::ColdReference;
   }
 
   [[nodiscard]] HedgeSpec hedge_spec() const override { return hedge_; }
