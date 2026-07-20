@@ -715,6 +715,37 @@ Status verify_backtest(const fs::path &backtest_path, const fs::path &reconcilia
   return Ok();
 }
 
+// B1 (perf): how many dates share ONE corpus fit fan-out. Read once.
+//
+// 1 reproduces the historical per-date behaviour exactly (one pool per date).
+// The default is a compromise: large enough that the pool always has several
+// dates' worth of big boards to overlap across a date boundary, small enough
+// that peak live fitted surfaces -- and the work a crash between checkpoint
+// commits discards -- stay bounded. Output bytes do NOT depend on this value;
+// it is a scheduling knob, which is exactly what makes it safe to tune.
+[[nodiscard]] std::size_t corpus_date_batch_size() noexcept {
+  static const std::size_t value = []() noexcept -> std::size_t {
+    constexpr std::size_t kDefault = 8u;
+#if defined(_MSC_VER)
+    char *raw = nullptr;
+    std::size_t size = 0;
+    if (::_dupenv_s(&raw, &size, "ATX_VOL_CORPUS_DATE_BATCH") != 0 || raw == nullptr) {
+      return kDefault;
+    }
+    const unsigned long parsed = std::strtoul(raw, nullptr, 10);
+    std::free(raw);
+#else
+    const char *raw = std::getenv("ATX_VOL_CORPUS_DATE_BATCH");
+    if (raw == nullptr) {
+      return kDefault;
+    }
+    const unsigned long parsed = std::strtoul(raw, nullptr, 10);
+#endif
+    return parsed == 0u ? kDefault : static_cast<std::size_t>(parsed);
+  }();
+  return value;
+}
+
 } // namespace
 
 // ── Public: fingerprints + corpus config ────────────────────────────────────
@@ -1404,6 +1435,45 @@ Status dispersion_build_corpus(const fs::path &source_spec_path, const fs::path 
       dispersion_corpus_config(policy, spec.fit_workers, input_fingerprint);
   ATX_TRY(CorpusBuildSession session,
           CorpusBuildSession::create((run_dir / "archives").string(), config));
+  // B1 (perf): fit several dates per fan-out instead of one.
+  //
+  // `append_date` spawns and joins a worker pool per date. A date is ~60 boards
+  // whose costs are heavily skewed -- the index board dwarfs the single names --
+  // so the date's makespan is set by that one board while the rest of the pool
+  // sits idle; measured average parallelism was ~3.4 of 16 workers. No amount of
+  // intra-date scheduling fixes that, because within a date there is simply no
+  // work left to hand the idle workers. Batching `kDateBatch` dates into ONE
+  // fan-out gives the pool that many independent big boards to overlap.
+  //
+  // Bit-identity is preserved, not assumed: the fit of a board depends only on
+  // that board and the config (`fit_board` is pure w.r.t. shared state and this
+  // path sets no warm-start chain), and output order is re-established by an
+  // explicit (date asc, symbol asc) sort rather than by completion order.
+  //
+  // The window is bounded rather than "all dates" so peak live fitted surfaces
+  // (and the work a crash discards) stay bounded; checkpoints still commit per
+  // date. Override with ATX_VOL_CORPUS_DATE_BATCH for measurement.
+  const std::size_t date_batch = corpus_date_batch_size();
+  std::vector<std::string> window_dates;
+  std::vector<std::vector<CorpusCellInput>> window_cells;
+  window_dates.reserve(date_batch);
+  window_cells.reserve(date_batch);
+
+  const auto flush_window = [&]() -> Status {
+    if (window_dates.empty()) {
+      return Ok();
+    }
+    std::vector<CorpusBuildSession::DateCells> batched;
+    batched.reserve(window_dates.size());
+    for (std::size_t i = 0; i < window_dates.size(); ++i) {
+      batched.push_back(CorpusBuildSession::DateCells{window_dates[i], window_cells[i]});
+    }
+    ATX_TRY_VOID(session.append_dates(batched));
+    window_dates.clear();
+    window_cells.clear();
+    return Ok();
+  };
+
   std::size_t cursor = 0;
   while (cursor < batch.entries.size()) {
     const std::string date = batch.entries[cursor].date;
@@ -1424,8 +1494,13 @@ Status dispersion_build_corpus(const fs::path &source_spec_path, const fs::path 
         cells.emplace_back(std::move(failure));
       }
     }
-    ATX_TRY_VOID(session.append_date(date, cells));
+    window_dates.push_back(date);
+    window_cells.push_back(std::move(cells));
+    if (window_dates.size() >= date_batch) {
+      ATX_TRY_VOID(flush_window());
+    }
   }
+  ATX_TRY_VOID(flush_window());
   ATX_TRY(QualifiedCorpusManifest built, session.finish());
   ATX_TRY_VOID(write_manifest_file((run_dir / "surface_manifest.tsv").string(), built.manifest));
   ATX_TRY_VOID(write_quality_report_file((run_dir / "quality.tsv").string(), built.quality));

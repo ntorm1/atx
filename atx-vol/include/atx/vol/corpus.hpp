@@ -360,6 +360,38 @@ public:
   // canonical symbols must be unique within the batch.
   [[nodiscard]] Status append_date(std::string_view date, std::span<const CorpusCellInput> cells);
 
+  // One date's cells, for the batched `append_dates` entry point below.
+  struct DateCells {
+    std::string_view date{};
+    std::span<const CorpusCellInput> cells{};
+  };
+
+  // B1 (perf): append SEVERAL dates in ONE fit fan-out.
+  //
+  // Semantically identical to calling `append_date` once per element in order --
+  // same archives, same manifest/quality entries in the same order, same
+  // per-date checkpoints -- but the boards of every not-yet-checkpointed date in
+  // the batch are fitted by a SINGLE `run_bounded_fit_tasks` pool instead of one
+  // pool per date. `append_date` drains its pool at every date boundary, so the
+  // tail of each date runs near-serial while most workers idle; a date's board
+  // costs are heavily skewed (the index board dwarfs the single names), so the
+  // per-date makespan is set by that one board no matter how many workers exist.
+  // Batching gives the pool independent big boards from OTHER dates to overlap
+  // with, which is the only way to fill that tail.
+  //
+  // Byte-identity: `fit_board` is pure w.r.t. shared state (see
+  // corpus_board_fit.hpp) and this session's fit path sets no warm-start chain
+  // (`CorpusConfig::warm_start_chain` is false here), so a board's fitted bytes
+  // depend only on the board and the config -- never on which other boards share
+  // its pool, nor on worker count or completion order. Output ordering is
+  // re-established by an explicit (date asc, symbol asc) sort downstream, not by
+  // the order tasks happen to finish.
+  //
+  // Batch size trades pool saturation against peak live fitted surfaces (memory)
+  // and against how much work a crash discards -- checkpoints still commit per
+  // date, but only after the whole batch's fan-out completes.
+  [[nodiscard]] Status append_dates(std::span<const DateCells> dates);
+
   [[nodiscard]] Result<QualifiedCorpusManifest> finish();
 
 private:

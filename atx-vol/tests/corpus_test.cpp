@@ -1799,6 +1799,133 @@ TEST(CorpusBuildSession, StreamsDatesRetainsSourceFailuresAndBoundsLiveSurfaces)
   EXPECT_FALSE(session->append_date("2026-06-19", second).has_value());
 }
 
+// ── B1 (perf): batched multi-date fan-out ───────────────────────────────────
+namespace {
+
+// Whole-file bytes, for archive-level identity assertions. Byte comparison is
+// deliberate: the entries/manifest agreeing is NOT evidence the fitted surface
+// bytes agree, and an iterative solver reaching a value "to tolerance" is
+// exactly the failure this gate exists to catch.
+[[nodiscard]] std::string read_all_bytes(const fs::path &path) {
+  std::ifstream in(path, std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+// Drive a session over `dates`, `per_flush` dates per append_dates call.
+// per_flush == 1 is exactly the historical one-pool-per-date path.
+[[nodiscard]] Result<QualifiedCorpusManifest>
+build_batched(const fs::path &out, const std::vector<std::string> &dates, std::size_t per_flush,
+              unsigned n_threads) {
+  QualifiedCorpusConfig cfg;
+  cfg.build.n_threads = n_threads;
+  cfg.build.write_opts.created_ts_ns = 1; // archives must not carry a wall clock
+  auto session = CorpusBuildSession::create(out.string(), cfg);
+  if (!session) {
+    return Err(session.error());
+  }
+  const std::vector<CorpusBoard> boards = make_mixed_boards(dates);
+  std::vector<std::vector<CorpusCellInput>> cells_by_date(dates.size());
+  for (const CorpusBoard &board : boards) {
+    const std::size_t d = static_cast<std::size_t>(
+        std::find(dates.begin(), dates.end(), board.date) - dates.begin());
+    cells_by_date[d].emplace_back(board);
+  }
+  for (std::size_t first = 0; first < dates.size(); first += per_flush) {
+    const std::size_t last = std::min(first + per_flush, dates.size());
+    std::vector<CorpusBuildSession::DateCells> window;
+    for (std::size_t i = first; i < last; ++i) {
+      window.push_back(CorpusBuildSession::DateCells{dates[i], cells_by_date[i]});
+    }
+    const Status appended = session->append_dates(window);
+    if (!appended) {
+      return Err(appended.error());
+    }
+  }
+  return session->finish();
+}
+
+void expect_corpora_byte_identical(const fs::path &lhs_dir, const fs::path &rhs_dir,
+                                   const std::vector<std::string> &dates) {
+  for (const std::string &date : dates) {
+    const fs::path a = lhs_dir / (date + ".atxvsa");
+    const fs::path b = rhs_dir / (date + ".atxvsa");
+    ASSERT_TRUE(fs::exists(a)) << a.string();
+    ASSERT_TRUE(fs::exists(b)) << b.string();
+    const std::string bytes_a = read_all_bytes(a);
+    const std::string bytes_b = read_all_bytes(b);
+    EXPECT_FALSE(bytes_a.empty()) << date;
+    EXPECT_EQ(bytes_a, bytes_b) << "archive bytes diverged on " << date;
+  }
+  EXPECT_EQ(read_all_bytes(lhs_dir / "manifest.tsv"), read_all_bytes(rhs_dir / "manifest.tsv"));
+  EXPECT_EQ(read_all_bytes(lhs_dir / "quality.tsv"), read_all_bytes(rhs_dir / "quality.tsv"));
+}
+
+} // namespace
+
+// B1: batching several dates into ONE fit fan-out must not move a single output
+// byte. `fit_board` is pure w.r.t. shared state and this path arms no warm-start
+// chain, so a board's bytes cannot depend on which other boards share its pool --
+// but that is an argument, not a measurement, so assert the archive bytes.
+TEST(CorpusBuildSession, BatchedAppendIsByteIdenticalToPerDate) {
+  const std::vector<std::string> dates = {"2026-06-17", "2026-06-18", "2026-06-19", "2026-06-22"};
+  const fs::path per_date = fresh_out_dir("batch-per-date");
+  const fs::path batched = fresh_out_dir("batch-all-dates");
+
+  auto one = build_batched(per_date, dates, 1u, 4u);           // one pool per date
+  auto all = build_batched(batched, dates, dates.size(), 4u);  // one pool, all dates
+  ASSERT_TRUE(one.has_value()) << one.error().to_string();
+  ASSERT_TRUE(all.has_value()) << all.error().to_string();
+
+  EXPECT_EQ(one->manifest, all->manifest);
+  EXPECT_EQ(one->quality, all->quality);
+  EXPECT_EQ(one->quality.input_fingerprint, all->quality.input_fingerprint);
+  expect_corpora_byte_identical(per_date, batched, dates);
+}
+
+// B1: the sprint's headline guarantee -- output is invariant to worker count --
+// must survive the restructuring. With a batched fan-out the pool now interleaves
+// boards from DIFFERENT dates, so if any cross-board state had leaked in, worker
+// count would change completion order and therefore the bytes. 1 vs 8 workers.
+TEST(CorpusBuildSession, BatchedAppendDeterministicAcrossThreadCounts) {
+  const std::vector<std::string> dates = {"2026-06-17", "2026-06-18", "2026-06-19", "2026-06-22"};
+  const fs::path serial = fresh_out_dir("batch-serial");
+  const fs::path parallel = fresh_out_dir("batch-parallel");
+
+  auto s = build_batched(serial, dates, dates.size(), 1u);
+  auto p = build_batched(parallel, dates, dates.size(), 8u);
+  ASSERT_TRUE(s.has_value()) << s.error().to_string();
+  ASSERT_TRUE(p.has_value()) << p.error().to_string();
+
+  EXPECT_EQ(s->manifest, p->manifest);
+  EXPECT_EQ(s->quality, p->quality);
+  expect_corpora_byte_identical(serial, parallel, dates);
+}
+
+// B1: a partial window must still resume from per-date checkpoints. Build the
+// first two dates, then re-drive the WHOLE range in one batch: the already-built
+// dates come back from their checkpoints (not refitted) and the result still
+// matches a clean single-pass build byte for byte.
+TEST(CorpusBuildSession, BatchedAppendResumesFromPerDateCheckpoints) {
+  const std::vector<std::string> dates = {"2026-06-17", "2026-06-18", "2026-06-19", "2026-06-22"};
+  const std::vector<std::string> prefix = {"2026-06-17", "2026-06-18"};
+  const fs::path resumed = fresh_out_dir("batch-resume");
+  const fs::path clean = fresh_out_dir("batch-clean");
+
+  auto partial = build_batched(resumed, prefix, 1u, 4u);
+  ASSERT_TRUE(partial.has_value()) << partial.error().to_string();
+  // A fresh session over the same out_dir picks the checkpoints up.
+  fs::remove(resumed / "manifest.tsv");
+  fs::remove(resumed / "quality.tsv");
+  auto full = build_batched(resumed, dates, dates.size(), 4u);
+  ASSERT_TRUE(full.has_value()) << full.error().to_string();
+
+  auto reference = build_batched(clean, dates, dates.size(), 4u);
+  ASSERT_TRUE(reference.has_value()) << reference.error().to_string();
+  EXPECT_EQ(full->manifest, reference->manifest);
+  EXPECT_EQ(full->quality, reference->quality);
+  expect_corpora_byte_identical(resumed, clean, dates);
+}
+
 TEST(CorpusBuildSession, RejectsDuplicateCanonicalSymbolsBeforeFitting) {
   const fs::path out = fresh_out_dir("streaming-duplicate");
   QualifiedCorpusConfig cfg;
