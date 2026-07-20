@@ -196,7 +196,7 @@ TEST(DispersionStrangle, EntryMath_EqualTheta_VegaFlat_FortyDelta) {
   // (mirror spy_strangle_backtest_test::FortyDeltaEntry: reprice via
   // surf->delta(K, T, side), tolerance 1e-3; call K above forward, put below).
   for (const auto &sl : *legs) {
-    const PricedSurface *surf = snap->find(sl.leg.uid);
+    const SurfaceRef surf = snap->find(sl.leg.uid);
     ASSERT_NE(surf, nullptr);
     auto d = surf->delta(sl.leg.K, sl.leg.T, sl.leg.side);
     ASSERT_TRUE(d.has_value());

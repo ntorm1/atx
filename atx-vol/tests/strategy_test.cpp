@@ -376,7 +376,7 @@ TEST(Strategy, AdaptiveResolutionColdSizesEverySelectorAndStoresColdEntryMark) {
         << i;
     EXPECT_NEAR(actual.qty, expected.qty, 1.0e-3 * (1.0 + std::fabs(expected.qty))) << i;
 
-    const PricedSurface *surface = fast_snapshot->find(actual.leg.uid);
+    const SurfaceRef surface = fast_snapshot->find(actual.leg.uid);
     ASSERT_NE(surface, nullptr);
     const auto cold_greeks =
         surface->greeks(actual.leg.K, actual.leg.T, actual.leg.side, QueryExecution::ColdReference);
@@ -393,7 +393,7 @@ TEST(Strategy, AdaptiveResolutionColdSizesEverySelectorAndStoresColdEntryMark) {
   ASSERT_TRUE(opened.has_value()) << opened.error().to_string();
   ASSERT_EQ(book.lots.size(), adaptive->size());
   for (const Lot &lot : book.lots) {
-    const PricedSurface *surface = fast_snapshot->find(lot.contract.uid);
+    const SurfaceRef surface = fast_snapshot->find(lot.contract.uid);
     ASSERT_NE(surface, nullptr);
     const auto cold_mark = surface->fair_value(lot.contract.K, lot.contract.T, lot.contract.side,
                                                QueryExecution::ColdReference);
@@ -460,7 +460,7 @@ TEST(Strategy, PriceOptionsAnalyticGreeksDriveTargetThetaSizing) {
   ASSERT_TRUE(sized.has_value()) << sized.error().to_string();
   ASSERT_EQ(sized->size(), 2u);
 
-  const PricedSurface *resolved_surface = snapshot->find(kUid);
+  const SurfaceRef resolved_surface = snapshot->find(kUid);
   ASSERT_NE(resolved_surface, nullptr);
   double book_theta = 0.0;
   double structure_theta = 0.0;
@@ -809,7 +809,7 @@ TEST(Strategy, AdaptivePriceOptionsKeepFinalAnalyticSizingCold) {
   ASSERT_TRUE(sized.has_value()) << sized.error().to_string();
   ASSERT_EQ(sized->size(), 1u);
   const SizedLeg &sl = sized->front();
-  const PricedSurface *resolved_surface = snapshot->find(kUid);
+  const SurfaceRef resolved_surface = snapshot->find(kUid);
   ASSERT_NE(resolved_surface, nullptr);
   const auto expected = resolved_surface->greeks_analytic(sl.leg.K, sl.leg.T, sl.leg.side,
                                                           QueryExecution::ColdReference);

@@ -105,7 +105,7 @@ Status ListedDispersionStrategy::on_step(const MarketSnapshot &base, std::size_t
   std::vector<FullGreekSeed> seeds;
   seeds.reserve(roll.legs.size());
   for (const ListedScheduleLeg &leg : roll.legs) {
-    const PricedSurface *surface = base.find(leg.uid);
+    const SurfaceRef surface = base.find(leg.uid);
     if (surface == nullptr) {
       return Err(ErrorCode::NotFound, "ListedDispersionStrategy: scheduled surface is unavailable");
     }

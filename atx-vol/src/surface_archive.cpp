@@ -815,6 +815,33 @@ Result<SurfaceArchiveV2> SurfaceArchiveV2::open_file(std::string_view path) {
   return open(std::move(bytes));
 }
 
+Result<SurfaceArchiveV2> SurfaceArchiveV2::open_copied(std::string_view path) {
+  // WS-ZC1: the backing for readers that BORROW records (PricedSurfaceView) for longer
+  // than the open call. They cannot hold the mapping — on Windows a file with a live
+  // mapped section cannot be replaced, which would break atomic partition republish —
+  // but they also must not pay `open_file`'s stream read, which measured ~210 ms over
+  // the 82-session replay (~585 MB/s through ifstream) versus ~8 ms to map.
+  //
+  // So: MAP, one memcpy into an owned buffer, then DROP the mapping. The copy runs at
+  // memory bandwidth out of pages the OS cache already holds, so this keeps nearly all
+  // of the mapped open's speed while leaving no section open against the file.
+  auto mapping = atx::tsdb::Mapping::map_file_ro(std::string(path));
+  if (!mapping) {
+    return tl::unexpected<atx::core::Error>(std::move(mapping).error());
+  }
+  const auto *base = reinterpret_cast<const std::byte *>(mapping->base());
+  const auto size = static_cast<std::size_t>(mapping->size());
+  // reserve + insert, NOT `vector<std::byte> bytes(size)`: the sized constructor
+  // VALUE-INITIALIZES (zeroes) the whole buffer and the memcpy then overwrites it, so
+  // the archive is walked twice. Inserting a contiguous range is a single memcpy into
+  // uninitialized storage.
+  std::vector<std::byte> bytes;
+  bytes.reserve(size);
+  bytes.insert(bytes.end(), base, base + size);
+  // `mapping` is destroyed here, before `open` — the archive owns only `bytes` now.
+  return open(std::move(bytes));
+}
+
 Result<SurfaceArchiveV2> SurfaceArchiveV2::open_mapped(std::string_view path) {
   // S2 (WS-S): map the partition read-only instead of reading the whole file
   // into an owned heap buffer. `open_impl` only CRC-validates the header, lookup,
@@ -941,6 +968,28 @@ Result<std::vector<PricedSurfaceView>> SurfaceArchiveV2::map_all() const {
     out.push_back(std::move(*v));
   }
   return Ok(std::move(out));
+}
+
+Result<ArchivedSurfaceView> SurfaceArchiveV2::map_entry(const ArchiveV2DirEntry &e) const {
+  // Exactly `reconstruct_entry`'s bounds contract, but building a BORROWED view over
+  // the record extent instead of an owned PricedSurface (WS-ZC1).
+  if (e.surface_size < sizeof(ArchiveV2SurfaceHeader) || e.surface_offset > bytes_.size() ||
+      e.surface_size > bytes_.size() - e.surface_offset) {
+    return Err(ErrorCode::ParseError, "SurfaceArchiveV2::map_entry: record out of bounds");
+  }
+  const std::span<const std::byte> rec = bytes_.subspan(
+      static_cast<std::size_t>(e.surface_offset), static_cast<std::size_t>(e.surface_size));
+  ArchiveV2SurfaceHeader h;
+  std::memcpy(&h, rec.data(), sizeof h);
+  auto prov = provenance_from_v2_header(h);
+  if (!prov) {
+    return tl::unexpected<atx::core::Error>(std::move(prov).error());
+  }
+  auto v = PricedSurfaceView::create_over_record(rec);
+  if (!v) {
+    return tl::unexpected<atx::core::Error>(std::move(v).error());
+  }
+  return Ok(ArchivedSurfaceView{std::move(*v), std::move(*prov)});
 }
 
 Result<std::vector<ArchivedSurfaceView>> SurfaceArchiveV2::map_all_with_provenance() const {

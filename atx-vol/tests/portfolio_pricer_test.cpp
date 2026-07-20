@@ -2494,8 +2494,8 @@ TEST(PortfolioPricer, PnlExplain_Grouped_BitIdenticalToUngrouped) {
     if (!(std::isfinite(c.K) && c.K > 0.0 && std::isfinite(c.T) && c.T > 0.0)) {
       st_expect = PriceStatus::InvalidContract;
     } else {
-      const PricedSurface *sb = base.find(c.uid);
-      const PricedSurface *sh = shifted.find(c.uid);
+      const SurfaceRef sb = base.find(c.uid);
+      const SurfaceRef sh = shifted.find(c.uid);
       if (sb == nullptr || sh == nullptr) {
         st_expect = PriceStatus::ModelUnavailable;
       } else {

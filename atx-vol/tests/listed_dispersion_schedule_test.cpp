@@ -169,7 +169,7 @@ TEST(ListedDispersionSchedule, SurfaceAdapterUsesOnlyMarkDeltaVegaRoutes) {
   const double tenor = static_cast<double>(kExpiry - kValuation) / kNsPerYear;
   ASSERT_EQ(roll->legs.size(), 6u);
   for (const ListedScheduleLeg &leg : roll->legs) {
-    const PricedSurface *priced = set->find(leg.uid);
+    const SurfaceRef priced = set->find(leg.uid);
     ASSERT_NE(priced, nullptr);
     const auto oracle = priced->greeks_analytic(leg.strike, tenor, leg.side);
     ASSERT_TRUE(oracle.has_value()) << oracle.error().to_string();

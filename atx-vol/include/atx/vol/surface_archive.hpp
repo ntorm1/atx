@@ -668,6 +668,13 @@ public:
   // IoError / NotFound / InvalidArgument (empty file).
   [[nodiscard]] static Result<SurfaceArchiveV2> open_mapped(std::string_view path);
 
+  // COPIED OPEN (WS-ZC1): map, memcpy once into an OWNED buffer, drop the mapping.
+  // For readers that BORROW records (`PricedSurfaceView`) beyond the open call and so
+  // cannot keep a mapping alive — on Windows a file with a live mapped section cannot
+  // be replaced, which would break atomic partition republish — but which should not
+  // pay `open_file`'s much slower stream read. Adds IoError / NotFound.
+  [[nodiscard]] static Result<SurfaceArchiveV2> open_copied(std::string_view path);
+
   // The MMAP SEAM. View over externally-owned bytes; `owner` keeps the backing
   // (an `atx::tsdb::Mapping`-owning shared_ptr under `open_mapped`) alive for the
   // archive's lifetime. Same framing validation as `open`.
@@ -698,6 +705,11 @@ public:
 
   // Whole-board views paired with per-record provenance, in directory order.
   [[nodiscard]] Result<std::vector<ArchivedSurfaceView>> map_all_with_provenance() const;
+
+  // WS-ZC1: the zero-copy analogue of `reconstruct_entry` — build a view plus its
+  // provenance from a directory entry the caller already holds, in ONE pass over
+  // that record's extent and with no hash re-probe. This is the subset-load seam.
+  [[nodiscard]] Result<ArchivedSurfaceView> map_entry(const ArchiveV2DirEntry &e) const;
 
   // ── Owned reconstruct (whole-board deserialize keeping v1 semantics) ─────────
   //

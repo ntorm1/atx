@@ -899,16 +899,21 @@ TEST(Backtest, ArchivedSnapshotDefaultsColdAndPreparesEverySurfaceForRequestedTi
 
   auto legacy = MarketSnapshot::load(path);
   ASSERT_TRUE(legacy.has_value()) << legacy.error().to_string();
-  ASSERT_EQ(legacy->surfaces().size(), items.size());
+  ASSERT_EQ(legacy->n_surfaces(), items.size());
+  // WS-ZC1: a cache-free tier is served by BORROWED views, so assert through the
+  // backing-agnostic accessor. `query_pricing_route` is a PricedSurface-only
+  // introspection hook, so it is checked on whichever backing owns surfaces.
+  for (std::size_t i = 0; i < legacy->n_surfaces(); ++i) {
+    EXPECT_EQ(legacy->surface_at(i).query_pricing_tier(), QueryPricingTier::LegacyCompatible);
+  }
   for (const PricedSurface &surface : legacy->surfaces()) {
-    EXPECT_EQ(surface.query_pricing_tier(), QueryPricingTier::LegacyCompatible);
     EXPECT_EQ(surface.query_pricing_route(100.0, 0.25, Side::Put),
               QueryPricingRoute::ColdReference);
   }
 
   auto fast = MarketSnapshot::load(path, QueryPricingTier::RepresentativeFast);
   ASSERT_TRUE(fast.has_value()) << fast.error().to_string();
-  ASSERT_EQ(fast->surfaces().size(), items.size());
+  ASSERT_EQ(fast->n_surfaces(), items.size());
   for (const PricedSurface &surface : fast->surfaces()) {
     EXPECT_EQ(surface.query_pricing_tier(), QueryPricingTier::RepresentativeFast);
   }
@@ -934,10 +939,10 @@ TEST(Backtest, MarketSnapshotPreservesSameBlobProvenanceByDirectoryUid) {
 
   auto snapshot = MarketSnapshot::load(path);
   ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
-  ASSERT_EQ(snapshot->surfaces().size(), 2u);
-  ASSERT_EQ(snapshot->provenances().size(), snapshot->surfaces().size());
-  EXPECT_EQ(snapshot->surfaces()[0].uid(), 7u);
-  EXPECT_EQ(snapshot->surfaces()[1].uid(), 42u);
+  ASSERT_EQ(snapshot->n_surfaces(), 2u);
+  ASSERT_EQ(snapshot->provenances().size(), snapshot->n_surfaces());
+  EXPECT_EQ(snapshot->surface_at(0).uid(), 7u);
+  EXPECT_EQ(snapshot->surface_at(1).uid(), 42u);
   EXPECT_EQ(snapshot->provenances()[0].validation.validation_id, 70u);
   EXPECT_EQ(snapshot->provenances()[1].validation.validation_id, 420u);
   const SurfaceProvenance *aaa_got = snapshot->provenance(7u);
@@ -1156,9 +1161,9 @@ TEST(Backtest, SnapshotCacheIdentityIncludesNormalizedPathAndQueryTier) {
   EXPECT_EQ(legacy->get(), same_legacy->get());
   EXPECT_NE(legacy->get(), cold->get());
   EXPECT_NE(cold->get(), fast->get());
-  EXPECT_EQ((*legacy)->surfaces().front().query_pricing_tier(), QueryPricingTier::LegacyCompatible);
-  EXPECT_EQ((*cold)->surfaces().front().query_pricing_tier(), QueryPricingTier::ColdReference);
-  EXPECT_EQ((*fast)->surfaces().front().query_pricing_tier(), QueryPricingTier::RepresentativeFast);
+  EXPECT_EQ((*legacy)->surface_at(0).query_pricing_tier(), QueryPricingTier::LegacyCompatible);
+  EXPECT_EQ((*cold)->surface_at(0).query_pricing_tier(), QueryPricingTier::ColdReference);
+  EXPECT_EQ((*fast)->surface_at(0).query_pricing_tier(), QueryPricingTier::RepresentativeFast);
   EXPECT_EQ(MarketSnapshot::open_count(), 3u);
   const SnapshotCacheStats stats = cache.stats();
   EXPECT_EQ(stats.loads, 3u);
@@ -1232,10 +1237,10 @@ TEST(Backtest, ReuseOnlyFastMissLoadsColdAndLaterReusesEagerFastSnapshot) {
   auto cold_on_miss =
       cache.load(path, QueryPricingTier::RepresentativeFast, QueryCacheBuildPolicy::ReuseOnly);
   ASSERT_TRUE(cold_on_miss.has_value()) << cold_on_miss.error().to_string();
-  ASSERT_EQ((*cold_on_miss)->surfaces().size(), 1u);
-  EXPECT_EQ((*cold_on_miss)->surfaces().front().query_pricing_tier(),
+  ASSERT_EQ((*cold_on_miss)->n_surfaces(), 1u);
+  EXPECT_EQ((*cold_on_miss)->surface_at(0).query_pricing_tier(),
             QueryPricingTier::ColdReference);
-  EXPECT_EQ((*cold_on_miss)->surfaces().front().query_cache_pair_count(), 0u);
+  EXPECT_EQ((*cold_on_miss)->surface_at(0).query_cache_pair_count(), 0u);
   EXPECT_EQ(MarketSnapshot::open_count(), 1u);
 
   auto same_cold =
@@ -1247,10 +1252,10 @@ TEST(Backtest, ReuseOnlyFastMissLoadsColdAndLaterReusesEagerFastSnapshot) {
   auto eager_fast =
       cache.load(path, QueryPricingTier::RepresentativeFast, QueryCacheBuildPolicy::Eager);
   ASSERT_TRUE(eager_fast.has_value()) << eager_fast.error().to_string();
-  ASSERT_EQ((*eager_fast)->surfaces().size(), 1u);
-  EXPECT_EQ((*eager_fast)->surfaces().front().query_pricing_tier(),
+  ASSERT_EQ((*eager_fast)->n_surfaces(), 1u);
+  EXPECT_EQ((*eager_fast)->surface_at(0).query_pricing_tier(),
             QueryPricingTier::RepresentativeFast);
-  EXPECT_EQ((*eager_fast)->surfaces().front().query_cache_pair_count(), 1u);
+  EXPECT_EQ((*eager_fast)->surface_at(0).query_cache_pair_count(), 1u);
   EXPECT_NE(eager_fast->get(), cold_on_miss->get());
   EXPECT_EQ(MarketSnapshot::open_count(), 2u);
 
@@ -1286,7 +1291,7 @@ TEST(Backtest, ConcurrentReuseOnlyFastMissesCoalesceOnOneColdSnapshot) {
     ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
     first = first == nullptr ? snapshot->get() : first;
     EXPECT_EQ(snapshot->get(), first);
-    EXPECT_EQ((*snapshot)->surfaces().front().query_pricing_tier(),
+    EXPECT_EQ((*snapshot)->surface_at(0).query_pricing_tier(),
               QueryPricingTier::ColdReference);
   }
   EXPECT_EQ(MarketSnapshot::open_count(), 1u);
@@ -1314,8 +1319,8 @@ TEST(Backtest, ReuseOnlyFailedFastEntryFallsBackToColdRegardlessOfCacheHistory) 
   const auto reuse =
       cache.load(path, QueryPricingTier::RepresentativeFast, QueryCacheBuildPolicy::ReuseOnly);
   ASSERT_TRUE(reuse.has_value()) << reuse.error().to_string();
-  EXPECT_EQ((*reuse)->surfaces().front().query_pricing_tier(), QueryPricingTier::ColdReference);
-  EXPECT_EQ((*reuse)->surfaces().front().query_cache_pair_count(), 0u);
+  EXPECT_EQ((*reuse)->surface_at(0).query_pricing_tier(), QueryPricingTier::ColdReference);
+  EXPECT_EQ((*reuse)->surface_at(0).query_cache_pair_count(), 0u);
   EXPECT_EQ(MarketSnapshot::open_count(), 2u);
 
   // Eager retains its original requested-tier error contract even after a cold
@@ -1366,14 +1371,14 @@ TEST(Backtest, RunConfigPropagatesQueryTierThroughPrefetchAndLoad) {
   for (const SnapshotRef &ref : clock->refs()) {
     auto snapshot = config.snapshot_cache->load(ref.archive_path, config.query_pricing_tier);
     ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
-    EXPECT_EQ((*snapshot)->surfaces().front().query_pricing_tier(),
+    EXPECT_EQ((*snapshot)->surface_at(0).query_pricing_tier(),
               QueryPricingTier::RepresentativeFast);
   }
   EXPECT_EQ(config.snapshot_cache->stats().loads, after_run.loads);
 
   auto legacy = config.snapshot_cache->load(clock->refs().front().archive_path);
   ASSERT_TRUE(legacy.has_value()) << legacy.error().to_string();
-  EXPECT_EQ((*legacy)->surfaces().front().query_pricing_tier(), QueryPricingTier::LegacyCompatible);
+  EXPECT_EQ((*legacy)->surface_at(0).query_pricing_tier(), QueryPricingTier::LegacyCompatible);
   EXPECT_EQ(config.snapshot_cache->stats().loads, after_run.loads + 1u);
 }
 
@@ -1397,9 +1402,9 @@ TEST(Backtest, ReuseOnlyRunUsesColdOnMissAndPreparedFastAfterExplicitPreload) {
     auto snapshot = fresh_config.snapshot_cache->load(
         ref.archive_path, QueryPricingTier::RepresentativeFast, QueryCacheBuildPolicy::ReuseOnly);
     ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
-    EXPECT_EQ((*snapshot)->surfaces().front().query_pricing_tier(),
+    EXPECT_EQ((*snapshot)->surface_at(0).query_pricing_tier(),
               QueryPricingTier::ColdReference);
-    EXPECT_EQ((*snapshot)->surfaces().front().query_cache_pair_count(), 0u);
+    EXPECT_EQ((*snapshot)->surface_at(0).query_cache_pair_count(), 0u);
   }
   EXPECT_EQ(fresh_config.snapshot_cache->stats().loads, fresh_stats.loads);
 
@@ -1418,9 +1423,9 @@ TEST(Backtest, ReuseOnlyRunUsesColdOnMissAndPreparedFastAfterExplicitPreload) {
     auto snapshot = preloaded_config.snapshot_cache->load(
         ref.archive_path, QueryPricingTier::RepresentativeFast, QueryCacheBuildPolicy::ReuseOnly);
     ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
-    EXPECT_EQ((*snapshot)->surfaces().front().query_pricing_tier(),
+    EXPECT_EQ((*snapshot)->surface_at(0).query_pricing_tier(),
               QueryPricingTier::RepresentativeFast);
-    EXPECT_EQ((*snapshot)->surfaces().front().query_cache_pair_count(), 1u);
+    EXPECT_EQ((*snapshot)->surface_at(0).query_cache_pair_count(), 1u);
   }
   EXPECT_EQ(preloaded_config.snapshot_cache->stats().loads, preload_stats.loads);
   expect_result_bit_identical(*fresh, *preloaded);
@@ -1533,8 +1538,8 @@ TEST(Backtest, AdaptiveStrategyRejectsFastEconomicsUnlessColdIsExplicit) {
       config.snapshot_cache->load(clock->refs().front().archive_path, config.query_pricing_tier,
                                   QueryCacheBuildPolicy::ReuseOnly);
   ASSERT_TRUE(actual.has_value()) << actual.error().to_string();
-  EXPECT_EQ((*actual)->surfaces().front().query_pricing_tier(), QueryPricingTier::ColdReference);
-  EXPECT_EQ((*actual)->surfaces().front().query_cache_pair_count(), 0u);
+  EXPECT_EQ((*actual)->surface_at(0).query_pricing_tier(), QueryPricingTier::ColdReference);
+  EXPECT_EQ((*actual)->surface_at(0).query_cache_pair_count(), 0u);
 }
 
 TEST(Backtest, AdaptiveStrategyHandlesFreshFullAndPartialFastResidency) {
@@ -1623,7 +1628,7 @@ TEST(Backtest, AdaptiveStrategyHandlesFreshFullAndPartialFastResidency) {
       const auto resolved = resolve_spec(**snapshot, spec);
       ASSERT_TRUE(resolved.has_value()) << resolved.error().to_string();
       for (const SizedLeg &resolved_leg : *resolved) {
-        const PricedSurface *surface = (*snapshot)->find(resolved_leg.leg.uid);
+        const SurfaceRef surface = (*snapshot)->find(resolved_leg.leg.uid);
         ASSERT_NE(surface, nullptr);
         const auto delta = surface->delta(resolved_leg.leg.K, resolved_leg.leg.T,
                                           resolved_leg.leg.side, QueryExecution::ColdReference);
@@ -2328,13 +2333,13 @@ TEST(Backtest, SubsetDeserializeLoadsOnlyReferencedUids) {
 
   auto whole = MarketSnapshot::load(path);
   ASSERT_TRUE(whole.has_value()) << whole.error().to_string();
-  EXPECT_EQ(whole->surfaces().size(), 4u);
+  EXPECT_EQ(whole->n_surfaces(), 4u);
 
   const std::uint32_t subset_uids[] = {kUid, kUid + 2};
   auto subset = MarketSnapshot::load(path, QueryPricingTier::LegacyCompatible,
                                      std::span<const std::uint32_t>{subset_uids});
   ASSERT_TRUE(subset.has_value()) << subset.error().to_string();
-  EXPECT_EQ(subset->surfaces().size(), 2u) << "whole-board reconstruct was not dropped";
+  EXPECT_EQ(subset->n_surfaces(), 2u) << "whole-board reconstruct was not dropped";
   EXPECT_NE(subset->find(kUid), nullptr);
   EXPECT_NE(subset->find(kUid + 2), nullptr);
   EXPECT_EQ(subset->find(kUid + 1), nullptr) << "unreferenced uid must not be deserialized";
@@ -2349,8 +2354,8 @@ TEST(Backtest, SubsetDeserializeLoadsOnlyReferencedUids) {
   EXPECT_EQ(*u3, kUid + 3);
 
   // A subset-reconstructed surface prices bit-identically to the whole-board one.
-  const PricedSurface *ws = whole->find(kUid);
-  const PricedSurface *ss = subset->find(kUid);
+  const SurfaceRef ws = whole->find(kUid);
+  const SurfaceRef ss = subset->find(kUid);
   ASSERT_NE(ws, nullptr);
   ASSERT_NE(ss, nullptr);
   auto wv = ws->fair_value(100.0, 0.25, Side::Call);

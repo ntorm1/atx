@@ -144,7 +144,7 @@ mark_leg(const ListedScheduleLeg &leg, const ListedReconciliationSnapshot &snaps
   mark.quantity = leg.quantity;
   mark.multiplier = leg.multiplier;
 
-  const PricedSurface *surface = snapshot.surfaces->find(leg.uid);
+  const SurfaceRef surface = snapshot.surfaces->find(leg.uid);
   if (surface == nullptr) {
     mark.status = ListedMarkStatus::NoSurface;
     if (config.strict_model) {
