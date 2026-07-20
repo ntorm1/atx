@@ -372,12 +372,11 @@ public:
   // same archives, same manifest/quality entries in the same order, same
   // per-date checkpoints -- but the boards of every not-yet-checkpointed date in
   // the batch are fitted by a SINGLE `run_bounded_fit_tasks` pool instead of one
-  // pool per date. `append_date` drains its pool at every date boundary, so the
-  // tail of each date runs near-serial while most workers idle; a date's board
-  // costs are heavily skewed (the index board dwarfs the single names), so the
-  // per-date makespan is set by that one board no matter how many workers exist.
-  // Batching gives the pool independent big boards from OTHER dates to overlap
-  // with, which is the only way to fill that tail.
+  // pool per date. `append_date` drains its pool at every date boundary, so once
+  // a date has fewer tasks left than workers its tail runs with idle cores, and
+  // no intra-date scheduling can fill them because within a date there is no
+  // work left. Batching supplies that work from a LATER date -- which is only
+  // legal because no warm-start chain couples the dates on this path.
   //
   // Byte-identity: `fit_board` is pure w.r.t. shared state (see
   // corpus_board_fit.hpp) and this session's fit path sets no warm-start chain

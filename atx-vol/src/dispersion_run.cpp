@@ -1437,13 +1437,21 @@ Status dispersion_build_corpus(const fs::path &source_spec_path, const fs::path 
           CorpusBuildSession::create((run_dir / "archives").string(), config));
   // B1 (perf): fit several dates per fan-out instead of one.
   //
-  // `append_date` spawns and joins a worker pool per date. A date is ~60 boards
-  // whose costs are heavily skewed -- the index board dwarfs the single names --
-  // so the date's makespan is set by that one board while the rest of the pool
-  // sits idle; measured average parallelism was ~3.4 of 16 workers. No amount of
-  // intra-date scheduling fixes that, because within a date there is simply no
-  // work left to hand the idle workers. Batching `kDateBatch` dates into ONE
-  // fan-out gives the pool that many independent big boards to overlap.
+  // `append_date` spawns and joins a worker pool per date, so the pool drains at
+  // every date boundary: once fewer tasks remain than there are workers, the
+  // tail of the date runs with idle cores, and no intra-date scheduling can fix
+  // that because within a date there is no work left to hand them. Batching
+  // `date_batch` dates into ONE fan-out is the only way to give those workers
+  // independent work -- boards from a LATER date, which this path is free to
+  // start early precisely because no warm-start chain couples the dates.
+  //
+  // Sizing the win needs the per-board cost distribution and the split between
+  // this fan-out and the serial phases around it (parquet ingest, archive write,
+  // checkpoint I/O); see the sprint report for the measured figures. Note the
+  // board-size skew is milder than a "one dominant board" story suggests: the
+  // index board is ~6x the median single name by input bytes but still only
+  // ~9% of a date's total, so the drain is the shape of the tail, not one
+  // board setting the makespan.
   //
   // Bit-identity is preserved, not assumed: the fit of a board depends only on
   // that board and the config (`fit_board` is pure w.r.t. shared state and this
