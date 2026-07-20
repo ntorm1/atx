@@ -259,15 +259,19 @@ class SnapshotCache {
 public:
   // Reusable/unbounded mode.
   SnapshotCache();
+  // Reusable/unbounded mode over an explicitly-declared archive lifecycle.
+  explicit SnapshotCache(ArchiveBacking backing);
   // Bounded LRU mode. A zero capacity is defensively normalized to one entry.
-  explicit SnapshotCache(std::size_t max_retained_entries);
+  explicit SnapshotCache(std::size_t max_retained_entries,
+                         ArchiveBacking backing = ArchiveBacking::Mutable);
   // B1: bounded LRU + subset-deserialize. Every load/prefetch through this cache
   // deserializes ONLY the archive surfaces whose uid appears in `referenced_uids`
   // (empty => whole board). Intended for a PRIVATE per-run cache whose single book's
   // referenced uids are known up front (the fixed-book run_backtest overload); do NOT
   // share such a cache across books with different referenced sets (a subset snapshot
   // cached under one book would be missing another's uids).
-  SnapshotCache(std::size_t max_retained_entries, std::vector<std::uint32_t> referenced_uids);
+  SnapshotCache(std::size_t max_retained_entries, std::vector<std::uint32_t> referenced_uids,
+                ArchiveBacking backing = ArchiveBacking::Mutable);
   ~SnapshotCache();
   SnapshotCache(const SnapshotCache &) noexcept = default;
   SnapshotCache &operator=(const SnapshotCache &) noexcept = default;
@@ -290,11 +294,23 @@ public:
   [[nodiscard]] Result<std::shared_ptr<const MarketSnapshot>>
   load(std::string_view archive_path, QueryPricingTier query_pricing_tier,
        QueryCacheBuildPolicy build_policy);
-  // Declare the lifecycle of the archives this cache will load (see ArchiveBacking).
-  // Applies to loads issued AFTER this call; the backing is part of the cache key, so
-  // an entry loaded under one backing is never served under the other. Defaults to
-  // Mutable — a caller must opt in to Sealed, and only for a read-only corpus.
-  void set_archive_backing(ArchiveBacking backing) noexcept;
+  // The lifecycle this cache's loads declare (see ArchiveBacking). FIXED AT
+  // CONSTRUCTION and immutable thereafter — there is deliberately no setter.
+  //
+  // WHY NO SETTER (WS-ZC regression). The backing is part of the cache key, so an
+  // entry loaded under one backing is never served under the other. A mid-flight
+  // `set_archive_backing` therefore does not "retune" a cache — it ORPHANS every
+  // entry already in it. `run_backtest` used to call exactly that, unconditionally,
+  // on a cache the CALLER owned and had preloaded: the run silently re-loaded every
+  // preloaded snapshot, and a ReuseOnly fast request then missed and silently
+  // resolved down to ColdReference. Because copies of a SnapshotCache share one
+  // Impl, a setter is reachable from any handle and can retarget a cache the caller
+  // is still using. Binding the backing to construction makes that class of bug
+  // unrepresentable, and makes the field a plain immutable read for `cache_key`
+  // (which reads it off the mutex).
+  //
+  // Opt into Sealed by CONSTRUCTING a cache with it, and only for a corpus that is
+  // read-only for the cache's whole lifetime.
   [[nodiscard]] ArchiveBacking archive_backing() const noexcept;
 
   [[nodiscard]] SnapshotCacheStats stats() const noexcept;

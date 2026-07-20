@@ -1575,16 +1575,25 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
       book_uids.push_back(lot.contract.uid);
     }
   }
-  const std::shared_ptr<SnapshotCache> snapshot_cache =
-      cfg.snapshot_cache
-          ? cfg.snapshot_cache
-          : std::make_shared<SnapshotCache>(kPrivateSnapshotCacheCapacity, std::move(book_uids));
   // WS-ZC1: a backtest replays a SEALED corpus — the clock's partitions are historical
   // and nothing in a run rewrites, evicts, or deletes them — so its snapshots may keep
   // the archive mapped and skip the whole-archive copy entirely. This is the explicit
   // caller declaration ArchiveBacking documents; the store path never makes it, so the
   // SurfaceDb write -> reopen -> rewrite/delete cycle keeps its buffered backing.
-  snapshot_cache->set_archive_backing(ArchiveBacking::Sealed);
+  //
+  // ONLY THE PRIVATE CACHE MAY BE SEALED (WS-ZC regression fix). The backing is part
+  // of the snapshot-cache key, so declaring Sealed on a cache we did not create does
+  // not merely re-tune it — it orphans every entry the CALLER preloaded under the
+  // default Mutable backing, silently re-loading them and silently downgrading a
+  // ReuseOnly fast request to ColdReference. A caller-supplied cache is therefore
+  // used exactly as the caller configured it; the Sealed win is taken on the cache
+  // this function constructs and exclusively owns, which is the replay path the
+  // optimization was built for and the one no caller can observe.
+  const std::shared_ptr<SnapshotCache> snapshot_cache =
+      cfg.snapshot_cache ? cfg.snapshot_cache
+                         : std::make_shared<SnapshotCache>(kPrivateSnapshotCacheCapacity,
+                                                           std::move(book_uids),
+                                                           ArchiveBacking::Sealed);
   auto base_res = snapshot_cache->load(refs[0].archive_path, cfg.query_pricing_tier,
                                        cfg.query_cache_build_policy);
   if (!base_res) {
@@ -1986,12 +1995,12 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     return Ok(ex);
   };
 
+  // WS-ZC1: a backtest replays a SEALED corpus, and only the PRIVATE cache may be
+  // sealed — see the note on the fixed-book overload above.
   const std::shared_ptr<SnapshotCache> snapshot_cache =
       cfg.snapshot_cache ? cfg.snapshot_cache
-                         : std::make_shared<SnapshotCache>(kPrivateSnapshotCacheCapacity);
-  // WS-ZC1: a backtest replays a SEALED corpus — see the note on the fixed-book
-  // overload above.
-  snapshot_cache->set_archive_backing(ArchiveBacking::Sealed);
+                         : std::make_shared<SnapshotCache>(kPrivateSnapshotCacheCapacity,
+                                                           ArchiveBacking::Sealed);
   auto base_res = snapshot_cache->load(refs[0].archive_path, cfg.query_pricing_tier,
                                        cfg.query_cache_build_policy);
   if (!base_res) {

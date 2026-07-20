@@ -906,16 +906,33 @@ TEST(Backtest, ArchivedSnapshotDefaultsColdAndPreparesEverySurfaceForRequestedTi
   for (std::size_t i = 0; i < legacy->n_surfaces(); ++i) {
     EXPECT_EQ(legacy->surface_at(i).query_pricing_tier(), QueryPricingTier::LegacyCompatible);
   }
-  for (const PricedSurface &surface : legacy->surfaces()) {
-    EXPECT_EQ(surface.query_pricing_route(100.0, 0.25, Side::Put),
-              QueryPricingRoute::ColdReference);
+  // WS-ZC1 made this cache-free tier BORROW its surfaces, which left `surfaces()`
+  // EMPTY — so the `query_pricing_route` loop that used to stand here iterated zero
+  // times and asserted nothing while still reading as protection. "Defaults cold" is
+  // asserted through the backing-agnostic handle instead: a cold tier is exactly a
+  // surface with no query accelerator, which is what makes its route ColdReference.
+  EXPECT_TRUE(legacy->borrows_views());
+  for (std::size_t i = 0; i < legacy->n_surfaces(); ++i) {
+    EXPECT_EQ(legacy->surface_at(i).query_cache_pair_count(), 0u);
   }
 
   auto fast = MarketSnapshot::load(path, QueryPricingTier::RepresentativeFast);
   ASSERT_TRUE(fast.has_value()) << fast.error().to_string();
   ASSERT_EQ(fast->n_surfaces(), items.size());
+  // A fast tier cannot be served by a view (a view carries no accelerator), so it
+  // reconstructs OWNED surfaces and `surfaces()` is genuinely populated here. Assert
+  // that explicitly: it is what keeps this `PricedSurface`-only loop from silently
+  // going vacuous the way the cold one above did.
+  EXPECT_FALSE(fast->borrows_views());
+  ASSERT_EQ(fast->surfaces().size(), items.size());
   for (const PricedSurface &surface : fast->surfaces()) {
     EXPECT_EQ(surface.query_pricing_tier(), QueryPricingTier::RepresentativeFast);
+    EXPECT_GT(surface.query_cache_pair_count(), 0u);
+    // Real route introspection, on the owned path that actually exercises it. Query
+    // at each surface's OWN spot so the resolved point is inside its certified
+    // correction box (the two archived surfaces sit at S=100 and S=25).
+    EXPECT_EQ(surface.query_pricing_route(surface.pricing().S, 0.25, Side::Put),
+              QueryPricingRoute::RepresentativeFast);
   }
 }
 
@@ -1429,6 +1446,106 @@ TEST(Backtest, ReuseOnlyRunUsesColdOnMissAndPreparedFastAfterExplicitPreload) {
   }
   EXPECT_EQ(preloaded_config.snapshot_cache->stats().loads, preload_stats.loads);
   expect_result_bit_identical(*fresh, *preloaded);
+}
+
+// WS-ZC regression (the test whose absence let this ship). `run_backtest` used to
+// call `snapshot_cache->set_archive_backing(ArchiveBacking::Sealed)` UNCONDITIONALLY,
+// including on a cache the CALLER supplied and owns. WS-ZC1 correctly made the
+// backing part of the snapshot-cache key, so flipping a live cache to Sealed does not
+// re-tune it — it ORPHANS every entry the caller preloaded under the default Mutable
+// backing. The run then silently re-loaded all of them, and the follow-up ReuseOnly
+// fast request missed and silently resolved down to ColdReference: a quieter pricing
+// tier with no error anywhere.
+//
+// THE INVARIANT: a caller who warms a cache and then runs a backtest keeps BOTH its
+// preload (no new loads) and its pricing tier. Note that saving and restoring the
+// caller's backing around the run does NOT satisfy this — the run's own loads would
+// still be keyed Sealed and would still miss the Mutable preload. Only leaving a
+// caller-owned cache alone does. The Sealed win is retained on the cache
+// `run_backtest` privately owns, which is asserted separately below.
+TEST(Backtest, RunBacktestLeavesCallerOwnedCachePreloadAndBackingIntact) {
+  const fs::path dir = fresh_dir("caller-cache-backing-preserved");
+  const CorpusManifest manifest = make_evolving_corpus(dir, "SPX", 3);
+  auto clock = Clock::from_manifest(manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  const std::int64_t expiry = kBaseNow + 120 * kDayNs;
+
+  auto cache = std::make_shared<SnapshotCache>();
+  ASSERT_EQ(cache->archive_backing(), ArchiveBacking::Mutable);
+
+  // Warm every session at the FAST tier, under the cache's own default backing.
+  for (const SnapshotRef &ref : clock->refs()) {
+    auto snapshot = cache->load(ref.archive_path, QueryPricingTier::RepresentativeFast,
+                                QueryCacheBuildPolicy::Eager);
+    ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+  }
+  const std::uint64_t preload_loads = cache->stats().loads;
+  ASSERT_EQ(preload_loads, static_cast<std::uint64_t>(clock->size()));
+
+  RunConfig config;
+  config.query_pricing_tier = QueryPricingTier::RepresentativeFast;
+  config.query_cache_build_policy = QueryCacheBuildPolicy::ReuseOnly;
+  config.price.query_execution = QueryExecution::ColdReference;
+  config.snapshot_cache = cache;
+
+  // BOTH overloads set the backing, so both must leave the caller's cache alone.
+  const auto fixed = run_backtest(*clock, survivor_book(expiry), config);
+  ASSERT_TRUE(fixed.has_value()) << fixed.error().to_string();
+  const auto after_fixed_loads = cache->stats().loads;
+  PriceOptionsSpyStrategy strategy;
+  const auto declarative = run_backtest(*clock, strategy, config);
+  ASSERT_TRUE(declarative.has_value()) << declarative.error().to_string();
+
+  // 1. The runs CONSUMED the preload rather than orphaning it: no new loads at all.
+  //    Pre-fix this went 3 -> 6 on the first overload alone.
+  EXPECT_EQ(after_fixed_loads, preload_loads);
+  EXPECT_EQ(cache->stats().loads, preload_loads);
+  // 2. Neither run retargeted the caller's cache.
+  EXPECT_EQ(cache->archive_backing(), ArchiveBacking::Mutable);
+  // 3. The preloaded FAST tier is still what the cache serves — no silent
+  //    RepresentativeFast(02) -> ColdReference(01) downgrade, and the query
+  //    accelerator that makes it the fast tier is still attached (pair count 1 -> 0
+  //    was the pre-fix symptom).
+  for (const SnapshotRef &ref : clock->refs()) {
+    auto snapshot = cache->load(ref.archive_path, QueryPricingTier::RepresentativeFast,
+                                QueryCacheBuildPolicy::ReuseOnly);
+    ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+    EXPECT_EQ((*snapshot)->surface_at(0).query_pricing_tier(),
+              QueryPricingTier::RepresentativeFast);
+    EXPECT_GT((*snapshot)->surface_at(0).query_cache_pair_count(), 0u);
+    // A fast tier reconstructs OWNED surfaces; a Sealed-orphaned reload would have
+    // come back as a borrowed cold view instead.
+    EXPECT_FALSE((*snapshot)->borrows_views());
+  }
+  EXPECT_EQ(cache->stats().loads, preload_loads);
+}
+
+// The other half of the contract: when NO cache is supplied, `run_backtest` builds a
+// private one and DOES seal it — that private replay path is the entire point of
+// WS-ZC1 (snapshot_load ~1008 -> ~44 ms). Fixing the caller-owned-cache bug must not
+// be done by abandoning the optimization, so pin that the sealed private path still
+// produces bit-identical results to an explicitly Mutable caller-supplied cache.
+TEST(Backtest, PrivateSnapshotCacheStillSealsAndMatchesMutableCallerCacheBitForBit) {
+  const fs::path dir = fresh_dir("private-cache-sealed");
+  const CorpusManifest manifest = make_evolving_corpus(dir, "SPX", 3);
+  auto clock = Clock::from_manifest(manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  const std::int64_t expiry = kBaseNow + 120 * kDayNs;
+
+  // No snapshot_cache => private, sealed.
+  RunConfig private_config;
+  const auto sealed_run = run_backtest(*clock, survivor_book(expiry), private_config);
+  ASSERT_TRUE(sealed_run.has_value()) << sealed_run.error().to_string();
+
+  // An explicitly Mutable caller-supplied cache takes the copied backing instead.
+  RunConfig mutable_config;
+  mutable_config.snapshot_cache = std::make_shared<SnapshotCache>(ArchiveBacking::Mutable);
+  const auto mutable_run = run_backtest(*clock, survivor_book(expiry), mutable_config);
+  ASSERT_TRUE(mutable_run.has_value()) << mutable_run.error().to_string();
+  EXPECT_EQ(mutable_config.snapshot_cache->archive_backing(), ArchiveBacking::Mutable);
+
+  // The backing changes only HOW the borrowed bytes are obtained, never the numbers.
+  expect_result_bit_identical(*sealed_run, *mutable_run);
 }
 
 TEST(Backtest, ReuseOnlyFastConfiguredEconomicsRejectsAllResidencyBeforeIoInBothOverloads) {
