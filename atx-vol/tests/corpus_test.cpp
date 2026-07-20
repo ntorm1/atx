@@ -66,6 +66,10 @@
 #include "atx/vol/types.hpp"                // Side
 #include "atx/vol/vol_curve.hpp"            // CurveConfig, VolCurveKind, to_string
 
+#include "support/isa_golden_tol.hpp" // kLanedGreeksRelBand (WS-P1a route band)
+
+#include <iomanip> // std::setprecision (route-parity failure messages)
+
 using namespace atx::vol;
 namespace fs = std::filesystem;
 
@@ -2110,29 +2114,73 @@ TEST(CorpusBuildSession, SyntheticThirteenNameThreeDateBreadthScoreboard) {
   auto parallel = run_backtest(*clock, parallel_strategy, parallel_cfg);
   ASSERT_TRUE(parallel.has_value()) << parallel.error().to_string();
 
-  const auto expect_column_bits_equal = [](const std::vector<double> &lhs,
+  // Labelled so a failure names WHICH claim broke: the two blocks below assert
+  // different things and only one of them may ever be relaxed.
+  const auto expect_column_bits_equal = [](const char *what, const std::vector<double> &lhs,
                                            const std::vector<double> &rhs) {
-    ASSERT_EQ(lhs.size(), rhs.size());
+    ASSERT_EQ(lhs.size(), rhs.size()) << what;
     for (std::size_t i = 0u; i < lhs.size(); ++i) {
-      EXPECT_TRUE(bits_equal(lhs[i], rhs[i])) << "row " << i;
+      EXPECT_TRUE(bits_equal(lhs[i], rhs[i])) << what << " row " << i;
     }
   };
-  expect_column_bits_equal(serial->pnl_total, parallel->pnl_total);
-  expect_column_bits_equal(serial->nav, parallel->nav);
-  expect_column_bits_equal(serial->gross_vega, parallel->gross_vega);
-  expect_column_bits_equal(serial->n_unpriced_lots, parallel->n_unpriced_lots);
-  expect_column_bits_equal(serial->n_unpriced_greeks, parallel->n_unpriced_greeks);
+
+  // (1) THREAD-COUNT DETERMINISM: 1 thread vs 4 threads on the SAME greek route.
+  // Laned greeks cannot move this — both runs take the identical route — so this
+  // stays BIT-EXACT. It is a headline guarantee of the sprint; never relax it.
+  expect_column_bits_equal("serial-vs-parallel pnl_total", serial->pnl_total, parallel->pnl_total);
+  expect_column_bits_equal("serial-vs-parallel nav", serial->nav, parallel->nav);
+  expect_column_bits_equal("serial-vs-parallel gross_vega", serial->gross_vega,
+                           parallel->gross_vega);
+  expect_column_bits_equal("serial-vs-parallel n_unpriced_lots", serial->n_unpriced_lots,
+                           parallel->n_unpriced_lots);
+  expect_column_bits_equal("serial-vs-parallel n_unpriced_greeks", serial->n_unpriced_greeks,
+                           parallel->n_unpriced_greeks);
 
   RunConfig fd_cfg = parallel_cfg;
   fd_cfg.price.analytic_greeks = false;
   DispersionStrategy fd_strategy{universe, dispersion_cfg};
   auto fd = run_backtest(*clock, fd_strategy, fd_cfg);
   ASSERT_TRUE(fd.has_value()) << fd.error().to_string();
-  expect_column_bits_equal(parallel->pnl_total, fd->pnl_total);
-  expect_column_bits_equal(parallel->nav, fd->nav);
-  expect_column_bits_equal(parallel->gross_delta, fd->gross_delta);
-  expect_column_bits_equal(parallel->gross_gamma, fd->gross_gamma);
-  expect_column_bits_equal(parallel->gross_vega, fd->gross_vega);
+  // (2) GREEK-ROUTE PARITY: analytic vs FD. Since WS-P1a the analytic route runs
+  // the laned AVX2 greeks kernel while FD stays scalar, so these agree to the
+  // documented economic band rather than to the bit (support/isa_golden_tol.hpp).
+  // Scaled by the COLUMN's magnitude, not the element's. These columns are
+  // portfolio aggregates: at inception the book is empty, so gross_vega row 0 is
+  // numerically zero (-1.6e-12 vs +1.1e-12 — pure float noise) and an
+  // element-relative test on it is meaningless. The column scale is the honest
+  // denominator for an aggregate.
+  //
+  // KNOWN LIMITATION — this is an AGGREGATE band, NOT an element-wise guarantee.
+  // Because every row is measured against the column's max, a numerically SMALL
+  // row may absorb up to tol * (column scale) in absolute terms, which can be an
+  // arbitrarily large RELATIVE move on that row alone. That is deliberate and is
+  // the price of having a meaningful denominator for a book that starts empty:
+  // the claim being made here is "the two greek routes produce the same portfolio
+  // trajectory to within a band set by the trajectory's own size", not "every
+  // individual cell agrees to 1e-9 relative".
+  //
+  // Consequently: do NOT reuse this column band anywhere the compared values are
+  // not aggregates. For per-contract / per-element quantities use the element-wise
+  // laned_greeks_close(), whose scale is max(|a|,|b|) of the pair being compared.
+  const auto expect_column_route_close = [](const char *what, const std::vector<double> &lhs,
+                                            const std::vector<double> &rhs) {
+    ASSERT_EQ(lhs.size(), rhs.size()) << what;
+    double col = 0.0;
+    for (std::size_t i = 0u; i < lhs.size(); ++i) {
+      col = std::fmax(col, std::fmax(std::fabs(lhs[i]), std::fabs(rhs[i])));
+    }
+    const double tol = atx::vol::test::kLanedGreeksRelBand * std::fmax(col, 1.0);
+    for (std::size_t i = 0u; i < lhs.size(); ++i) {
+      EXPECT_LE(std::fabs(lhs[i] - rhs[i]), tol)
+          << what << " row " << i << ": " << std::setprecision(17) << lhs[i] << " vs " << rhs[i]
+          << " (column scale " << col << ")";
+    }
+  };
+  expect_column_route_close("analytic-vs-fd pnl_total", parallel->pnl_total, fd->pnl_total);
+  expect_column_route_close("analytic-vs-fd nav", parallel->nav, fd->nav);
+  expect_column_route_close("analytic-vs-fd gross_delta", parallel->gross_delta, fd->gross_delta);
+  expect_column_route_close("analytic-vs-fd gross_gamma", parallel->gross_gamma, fd->gross_gamma);
+  expect_column_route_close("analytic-vs-fd gross_vega", parallel->gross_vega, fd->gross_vega);
 }
 
 // Throughput relocated to bench/corpus_build_bench.cpp.

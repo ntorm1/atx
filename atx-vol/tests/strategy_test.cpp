@@ -43,6 +43,8 @@
 #include "atx/vol/vol_curve.hpp"        // CurveSurface, EssviCurve
 #include "atx/vol/vol_surface.hpp"      // EssviParams
 
+#include "support/isa_golden_tol.hpp" // laned_greeks_close (WS-P1a route band)
+
 using namespace atx::vol;
 namespace fs = std::filesystem;
 
@@ -478,10 +480,17 @@ TEST(Strategy, PriceOptionsAnalyticGreeksDriveTargetThetaSizing) {
     const auto expected = resolved_surface->greeks_analytic(sl.leg.K, sl.leg.T, sl.leg.side,
                                                             QueryExecution::ColdReference);
     ASSERT_TRUE(expected.has_value()) << expected.error().to_string();
-    EXPECT_EQ(sl.leg.model_price, expected->price);
-    EXPECT_EQ(sl.leg.vega, expected->vega);
-    EXPECT_EQ(sl.leg.theta, expected->theta);
-    EXPECT_EQ(sl.leg.gamma, expected->gamma);
+    // Route parity, not a value pin: sl.leg.* comes from resolve_spec's BATCHED
+    // path (laned AVX2 greeks under Auto ISA since WS-P1a) while `expected` is a
+    // single-contract re-query that can land on the scalar oracle. Relative
+    // agreement is the invariant; see support/isa_golden_tol.hpp. These are the
+    // call sites carrying the band's measured worst cases (gamma 1.34e-10,
+    // theta 1.23e-10 relative).
+    using atx::vol::test::laned_greeks_close;
+    EXPECT_TRUE(laned_greeks_close(sl.leg.model_price, expected->price));
+    EXPECT_TRUE(laned_greeks_close(sl.leg.vega, expected->vega));
+    EXPECT_TRUE(laned_greeks_close(sl.leg.theta, expected->theta));
+    EXPECT_TRUE(laned_greeks_close(sl.leg.gamma, expected->gamma));
     structure_theta += seed.greeks().theta;
     book_theta += sl.qty * sl.multiplier * sl.leg.theta;
   }
@@ -814,10 +823,12 @@ TEST(Strategy, AdaptivePriceOptionsKeepFinalAnalyticSizingCold) {
   const auto expected = resolved_surface->greeks_analytic(sl.leg.K, sl.leg.T, sl.leg.side,
                                                           QueryExecution::ColdReference);
   ASSERT_TRUE(expected.has_value()) << expected.error().to_string();
-  EXPECT_EQ(sl.leg.model_price, expected->price);
-  EXPECT_EQ(sl.leg.vega, expected->vega);
-  EXPECT_EQ(sl.leg.theta, expected->theta);
-  EXPECT_EQ(sl.leg.gamma, expected->gamma);
+  // Route parity (batched laned-AVX2 vs single-contract re-query) — see above.
+  using atx::vol::test::laned_greeks_close;
+  EXPECT_TRUE(laned_greeks_close(sl.leg.model_price, expected->price));
+  EXPECT_TRUE(laned_greeks_close(sl.leg.vega, expected->vega));
+  EXPECT_TRUE(laned_greeks_close(sl.leg.theta, expected->theta));
+  EXPECT_TRUE(laned_greeks_close(sl.leg.gamma, expected->gamma));
 }
 
 TEST(Strategy, AdaptiveColdSeedReusesUnderConfiguredLegacyAndColdSurfaceTiers) {

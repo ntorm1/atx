@@ -3409,7 +3409,15 @@ TEST(PortfolioPricerTargetMarks, RawMarksMatchWeightedPnlFrameForLongShortZeroAn
     const auto base_risk =
         base_surface.greeks_analytic(book[i].contract.K, book[i].contract.T, book[i].contract.side);
     ASSERT_TRUE(base_risk.has_value()) << base_risk.error().to_string();
-    EXPECT_TRUE(bits_equal(marks.base_vega_proxy[i], base_risk->vega)) << i;
+    // Route parity, not a value pin: base_vega_proxy comes from the BATCHED
+    // pricing path (laned AVX2 greeks under Auto ISA since WS-P1a) while
+    // base_risk is a single-contract re-query that can land on the scalar
+    // oracle. See support/isa_golden_tol.hpp. The neighbouring price_target
+    // assertions below stay bits_equal on purpose: those compare three elements
+    // produced by the SAME call on the SAME route, where bit-equality IS the
+    // claim being made.
+    EXPECT_TRUE(atx::vol::test::laned_greeks_close(marks.base_vega_proxy[i], base_risk->vega))
+        << i;
   }
   EXPECT_TRUE(bits_equal(marks.price_target[0], marks.price_target[1]));
   EXPECT_TRUE(bits_equal(marks.price_target[0], marks.price_target[2]));
