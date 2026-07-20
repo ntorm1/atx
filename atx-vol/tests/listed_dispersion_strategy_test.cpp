@@ -314,6 +314,78 @@ TEST(ListedDispersionStrategy, MarkMismatchLeavesBookCounterAndCursorUntouched) 
   fs::remove_all(dir, ec);
 }
 
+TEST(ListedDispersionStrategy, ExactArchivePolicyStillRejectsPerturbedMark) {
+  const std::vector<PricedSurface> source = surfaces();
+  ListedDispersionSchedule schedule = schedule_from(source);
+  schedule.rolls.front().legs.front().model_mark += 0.01;
+  const fs::path dir = fresh_dir("exact-archive-reject");
+  auto snapshot = MarketSnapshot::load(write_archive(dir, source));
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+  auto strategy =
+      ListedDispersionStrategy::create(schedule, 0.0, ScheduleMarkPolicy::ExactArchive);
+  ASSERT_TRUE(strategy.has_value()) << strategy.error().to_string();
+
+  PortfolioState book;
+  std::uint64_t next_id = 100u;
+  const Status status = strategy->on_step(*snapshot, 0u, book, next_id);
+  ASSERT_FALSE(status.has_value());
+  EXPECT_EQ(status.error().code(), ErrorCode::Unavailable);
+  EXPECT_NE(status.error().message().find("archive mark differs from schedule"), std::string::npos);
+  EXPECT_TRUE(strategy->last_mark_divergences().empty());
+  EXPECT_EQ(strategy->next_roll_index(), 0u);
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+}
+
+TEST(ListedDispersionStrategy, RecordPolicyAcceptsPerturbedMarkAndRecordsDivergence) {
+  const std::vector<PricedSurface> source = surfaces();
+  ListedDispersionSchedule schedule = schedule_from(source);
+  // Live mark from the archive equals the un-perturbed schedule mark bit-for-bit
+  // (see AtomicallyOpens*). Perturb one leg so exactly that leg diverges.
+  const double live_mark = schedule.rolls.front().legs.front().model_mark;
+  schedule.rolls.front().legs.front().model_mark += 0.01;
+  const ListedScheduleLeg perturbed = schedule.rolls.front().legs.front();
+
+  const fs::path dir = fresh_dir("record-divergence");
+  auto snapshot = MarketSnapshot::load(write_archive(dir, source));
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+  auto strategy = ListedDispersionStrategy::create(schedule, 0.0, ScheduleMarkPolicy::Record);
+  ASSERT_TRUE(strategy.has_value()) << strategy.error().to_string();
+
+  PortfolioState book;
+  std::uint64_t next_id = 100u;
+  const Status status = strategy->on_step(*snapshot, 0u, book, next_id);
+  ASSERT_TRUE(status.has_value()) << status.error().to_string();
+  EXPECT_TRUE(strategy->all_rolls_consumed());
+  ASSERT_EQ(book.lots.size(), schedule.rolls.front().legs.size());
+
+  // Exactly the perturbed leg is recorded, with correct schedule/live values.
+  const std::vector<MarkDivergence> &divs = strategy->last_mark_divergences();
+  ASSERT_EQ(divs.size(), 1u);
+  EXPECT_EQ(divs.front().uid, perturbed.uid);
+  EXPECT_DOUBLE_EQ(divs.front().strike, perturbed.strike);
+  EXPECT_EQ(divs.front().expiry_ts_ns, perturbed.expiry_ts_ns);
+  EXPECT_EQ(divs.front().side, perturbed.side);
+  EXPECT_DOUBLE_EQ(divs.front().schedule_mark, perturbed.model_mark);
+  EXPECT_DOUBLE_EQ(divs.front().live_mark, live_mark);
+
+  // entry_price is the live seed price under Record: the perturbed lot uses the
+  // live mark (not the perturbed schedule mark); untouched legs are self-equal.
+  EXPECT_DOUBLE_EQ(book.lots.front().entry_price, live_mark);
+  EXPECT_NE(book.lots.front().entry_price, perturbed.model_mark);
+  for (std::size_t i = 1; i < book.lots.size(); ++i) {
+    EXPECT_DOUBLE_EQ(book.lots[i].entry_price,
+                     schedule.rolls.front().legs[i].model_mark)
+        << i;
+  }
+
+  // Cleared per step: the second (no-op) step leaves no divergences behind.
+  ASSERT_TRUE(strategy->on_step(*snapshot, 1u, book, next_id).has_value());
+  EXPECT_TRUE(strategy->last_mark_divergences().empty());
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+}
+
 TEST(ListedDispersionStrategy, RejectsInvalidScheduleOrDeltaBand) {
   ListedDispersionSchedule empty;
   auto bad_schedule = ListedDispersionStrategy::create(std::move(empty));

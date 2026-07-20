@@ -66,7 +66,8 @@ Result<std::vector<Lot>> materialize_listed_dispersion_roll(const ListedSchedule
 }
 
 Result<ListedDispersionStrategy> ListedDispersionStrategy::create(ListedDispersionSchedule schedule,
-                                                                  double delta_band) {
+                                                                  double delta_band,
+                                                                  ScheduleMarkPolicy policy) {
   if (!std::isfinite(delta_band) || delta_band < 0.0) {
     return Err(ErrorCode::InvalidArgument, "ListedDispersionStrategy::create: invalid delta band");
   }
@@ -75,7 +76,7 @@ Result<ListedDispersionStrategy> ListedDispersionStrategy::create(ListedDispersi
   hedge.kind = HedgeSpec::Kind::DeltaToZero;
   hedge.cadence = HedgeSpec::Cadence::Daily;
   hedge.band = delta_band;
-  return Ok(ListedDispersionStrategy{std::move(schedule), hedge});
+  return Ok(ListedDispersionStrategy{std::move(schedule), hedge, policy});
 }
 
 Status ListedDispersionStrategy::on_step(const MarketSnapshot &base, std::size_t step_index,
@@ -88,6 +89,7 @@ Status ListedDispersionStrategy::on_step(const MarketSnapshot &base, std::size_t
                                          const PriceOptions &price_options) {
   (void)step_index;
   last_entry_seeds_.clear();
+  last_mark_divergences_.clear();
   if (next_roll_ == schedule_.rolls.size()) {
     return Ok();
   }
@@ -114,12 +116,28 @@ Status ListedDispersionStrategy::on_step(const MarketSnapshot &base, std::size_t
             surface->full_greek_seed(leg.strike, T, leg.side, price_options.analytic_greeks,
                                      price_options.query_execution));
     if (seed.greeks().price != leg.model_mark) {
-      return Err(ErrorCode::Unavailable,
-                 "ListedDispersionStrategy: archive mark differs from schedule");
+      if (policy_ == ScheduleMarkPolicy::ExactArchive) {
+        return Err(ErrorCode::Unavailable,
+                   "ListedDispersionStrategy: archive mark differs from schedule");
+      }
+      // Record: accept the live mark, log the divergence instead of failing.
+      last_mark_divergences_.push_back(MarkDivergence{leg.uid, leg.strike, leg.expiry_ts_ns,
+                                                      leg.side, leg.model_mark,
+                                                      seed.greeks().price});
     }
     seeds.push_back(std::move(seed));
   }
   ATX_TRY(auto replacement, materialize_listed_dispersion_roll(roll, base.ts_ns(), next_lot_id));
+
+  // ExactArchive keeps the bit-identical entry_price = leg.model_mark set by
+  // materialize. Record reprices under its own route, so pin each entry to the
+  // live seed price (schedule order is 1:1 with the seeds and the lots) to keep
+  // the replay self-consistent.
+  if (policy_ == ScheduleMarkPolicy::Record) {
+    for (std::size_t i = 0; i < replacement.size(); ++i) {
+      replacement[i].entry_price = seeds[i].greeks().price;
+    }
+  }
 
   book.lots = std::move(replacement);
   next_lot_id += static_cast<std::uint64_t>(roll.legs.size());
