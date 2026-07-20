@@ -230,6 +230,9 @@ def build(meta: dict, df: pd.DataFrame, out: Path) -> None:
     axc.bar(labels, values, color=[POS if v >= 0 else NEG for v in values],
             width=0.62, linewidth=0)
     axc.axhline(0.0, color=MUTE, linewidth=0.9, alpha=0.7)
+    # Headroom for the direct labels at both ends; without it the label on the
+    # most-negative bar lands on top of the category tick label.
+    axc.margins(y=0.20)
     for i, v in enumerate(values):  # direct labels — no legend needed
         axc.annotate(f"{v:,.0f}", (i, v), textcoords="offset points",
                      xytext=(0, 5 if v >= 0 else -12), ha="center",
@@ -268,7 +271,9 @@ def build(meta: dict, df: pd.DataFrame, out: Path) -> None:
                  fontsize=8.6, color=MUTE, style="italic")
 
     # ── cumulative greek attribution (diverging, direct-labeled ends) ───────
-    axa = fig.add_axes([0.055, 0.055, 0.90, 0.155])
+    # Left margin is wider than the other panels': these are y-axis CATEGORY
+    # labels ("unexplained" is the longest) and clip against a 0.055 margin.
+    axa = fig.add_axes([0.105, 0.055, 0.85, 0.155])
     _style_axis(axa)
     axes_cols = [("pnl_theta", "theta"), ("pnl_vega", "vega"), ("pnl_gamma", "gamma"),
                  ("pnl_delta", "delta"), ("pnl_unexplained", "unexplained")]
