@@ -133,12 +133,19 @@ struct SnapshotCache::Impl {
   };
 
   explicit Impl(std::optional<std::size_t> max_entries_in = std::nullopt,
-                UidSubset referenced_uids_in = nullptr)
-      : max_entries{max_entries_in}, referenced_uids{std::move(referenced_uids_in)} {}
+                UidSubset referenced_uids_in = nullptr,
+                ArchiveBacking backing_in = ArchiveBacking::Mutable)
+      : backing{backing_in}, max_entries{max_entries_in},
+        referenced_uids{std::move(referenced_uids_in)} {}
 
   // WS-ZC1: the archive lifecycle this cache's loads declare. Mutable by default —
   // Sealed is opt-in and only valid for a read-only corpus.
-  ArchiveBacking backing{ArchiveBacking::Mutable};
+  //
+  // CONST BY CONSTRUCTION (WS-ZC regression fix). This is part of the cache key, so
+  // mutating it mid-flight orphans every entry already cached under the old backing
+  // rather than retuning them — see the note on SnapshotCache::archive_backing().
+  // Being immutable also makes the unlocked reads in `cache_key` below race-free.
+  const ArchiveBacking backing{ArchiveBacking::Mutable};
 
   using EntryMap = std::unordered_map<SnapshotCacheKey, Entry, SnapshotCacheKeyHash>;
 
@@ -219,26 +226,23 @@ struct SnapshotCache::Impl {
 };
 
 SnapshotCache::SnapshotCache() : impl_{std::make_shared<Impl>()} {}
-SnapshotCache::SnapshotCache(std::size_t max_retained_entries)
-    : impl_{std::make_shared<Impl>(std::max<std::size_t>(1u, max_retained_entries))} {}
+SnapshotCache::SnapshotCache(ArchiveBacking backing)
+    : impl_{std::make_shared<Impl>(std::nullopt, nullptr, backing)} {}
+SnapshotCache::SnapshotCache(std::size_t max_retained_entries, ArchiveBacking backing)
+    : impl_{std::make_shared<Impl>(std::max<std::size_t>(1u, max_retained_entries), nullptr,
+                                   backing)} {}
 SnapshotCache::SnapshotCache(std::size_t max_retained_entries,
-                             std::vector<std::uint32_t> referenced_uids)
+                             std::vector<std::uint32_t> referenced_uids, ArchiveBacking backing)
     : impl_{std::make_shared<Impl>(
           std::max<std::size_t>(1u, max_retained_entries),
           referenced_uids.empty()
               ? nullptr
-              : std::make_shared<const std::vector<std::uint32_t>>(std::move(referenced_uids)))} {}
+              : std::make_shared<const std::vector<std::uint32_t>>(std::move(referenced_uids)),
+          backing)} {}
 SnapshotCache::~SnapshotCache() = default;
 
-void SnapshotCache::set_archive_backing(ArchiveBacking backing) noexcept {
-  std::lock_guard lock{impl_->mutex};
-  impl_->backing = backing;
-}
-
-ArchiveBacking SnapshotCache::archive_backing() const noexcept {
-  std::lock_guard lock{impl_->mutex};
-  return impl_->backing;
-}
+// Immutable after construction, so this needs no lock.
+ArchiveBacking SnapshotCache::archive_backing() const noexcept { return impl_->backing; }
 
 void SnapshotCache::prefetch(std::string archive_path, QueryPricingTier query_pricing_tier) {
   (void)prefetch(std::move(archive_path), query_pricing_tier, QueryCacheBuildPolicy::Eager);
