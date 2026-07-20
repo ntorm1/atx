@@ -98,3 +98,7 @@ atx-vol/tests/data/**/*.parquet
 atx-vol/tests/data/**/*.dbn.zst
 # Generated report artifacts (figures/html) — reproducible from the tool + script.
 atx-vol/python/report_out_real/
+.replay-xb/
+
+# Per-worktree FetchContent dependency tree (-DFETCHCONTENT_BASE_DIR)
+deps/

@@ -471,3 +471,272 @@ TEST(DispersionRunConfigStrict, MultiplierIsSettableAndValidated) {
   const std::string bad = std::string(kBaselineSpec) + "multiplier\t0\n";
   EXPECT_FALSE(read_dispersion_run_config(write_spec("atx-disp-cfg-mult0", bad)));
 }
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// WS-X-B â€” X4 policy knobs + X5 reporting, at the strict-config seam.
+//
+// The governing constraint for this workstream is that EVERY new knob defaults
+// to today's behaviour, so a spec written before the change produces identical
+// output after it. The first test below pins that at the config level; the
+// end-to-end byte-identity is measured separately by replaying the reference run.
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+// â”€â”€ The pinned baseline spec still parses, and every X4/X5 field defaults â”€â”€â”€
+TEST(DispersionRunConfigXB, BaselineSpec_LeavesEveryNewKnobAtTheShippedDefault) {
+  const fs::path path = write_spec("atx_xb_defaults", kBaselineSpec);
+  auto config = read_dispersion_run_config(path);
+  ASSERT_TRUE(config.has_value()) << config.error().to_string();
+
+  // X4: the shipped construction.
+  EXPECT_EQ(config->weighting, WeightingScheme::VegaNeutral);
+  EXPECT_EQ(config->strike.rule, StrikeRule::AtmForwardStraddle);
+  EXPECT_EQ(config->strike.log_moneyness, 0.0);
+
+  // X5: no benchmark claimed, 252-period annualization.
+  EXPECT_TRUE(config->benchmark_series.empty());
+  EXPECT_EQ(config->periods_per_year, 252.0);
+
+  // And the regime the baseline describes is FRICTIONLESS â€” the pin's regime.
+  EXPECT_EQ(dispersion_friction_regime(*config), DispersionFrictionRegime::Frictionless);
+
+  // Those defaults must survive the trip into the backtest config, or the knob
+  // would be typed at the seam and dropped on the way to the engine.
+  const DispersionBacktestConfig backtest = dispersion_backtest_config_from(*config);
+  EXPECT_EQ(backtest.weighting, WeightingScheme::VegaNeutral);
+  EXPECT_EQ(backtest.strike.rule, StrikeRule::AtmForwardStraddle);
+  EXPECT_EQ(backtest.strike.log_moneyness, 0.0);
+}
+
+// â”€â”€ X4: every nameable scheme parses AND reaches the engine config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+TEST(DispersionRunConfigXB, WeightingSchemes_ParseAndReachTheEngine) {
+  const struct {
+    const char *spelling;
+    WeightingScheme expected;
+  } cases[] = {
+      {"vega_neutral", WeightingScheme::VegaNeutral},
+      {"equal_vega", WeightingScheme::EqualVega},
+      {"gamma_neutral", WeightingScheme::GammaNeutral},
+      {"theta_neutral", WeightingScheme::ThetaNeutral},
+  };
+  for (const auto &c : cases) {
+    const std::string body = std::string(kBaselineSpec) + "weighting\t" + c.spelling + "\n";
+    const fs::path path = write_spec("atx_xb_weighting", body);
+    auto config = read_dispersion_run_config(path);
+    ASSERT_TRUE(config.has_value()) << c.spelling << ": " << config.error().to_string();
+    EXPECT_EQ(config->weighting, c.expected) << c.spelling;
+    // The knob must survive into the engine config â€” a scheme parsed and then
+    // dropped at the seam is exactly the silent-no-op this workstream forbids.
+    EXPECT_EQ(dispersion_backtest_config_from(*config).weighting, c.expected) << c.spelling;
+  }
+}
+
+TEST(DispersionRunConfigXB, StrikeRules_ParseAndReachTheEngine) {
+  {
+    const std::string body =
+        std::string(kBaselineSpec) + "strike\tfixed_moneyness\nstrike_log_moneyness\t0.05\n";
+    const fs::path path = write_spec("atx_xb_strike_fm", body);
+    auto config = read_dispersion_run_config(path);
+    ASSERT_TRUE(config.has_value()) << config.error().to_string();
+    EXPECT_EQ(config->strike.rule, StrikeRule::FixedMoneyness);
+    EXPECT_NEAR(config->strike.log_moneyness, 0.05, 1e-15);
+    const DispersionBacktestConfig backtest = dispersion_backtest_config_from(*config);
+    EXPECT_EQ(backtest.strike.rule, StrikeRule::FixedMoneyness);
+    EXPECT_NEAR(backtest.strike.log_moneyness, 0.05, 1e-15);
+  }
+  {
+    const std::string body =
+        std::string(kBaselineSpec) + "strike\tdelta_strangle\nstrike_abs_delta\t0.25\n";
+    const fs::path path = write_spec("atx_xb_strike_ds", body);
+    auto config = read_dispersion_run_config(path);
+    ASSERT_TRUE(config.has_value()) << config.error().to_string();
+    EXPECT_EQ(config->strike.rule, StrikeRule::DeltaStrangle);
+    EXPECT_NEAR(config->strike.target_abs_delta, 0.25, 1e-15);
+    EXPECT_EQ(dispersion_backtest_config_from(*config).strike.rule, StrikeRule::DeltaStrangle);
+  }
+}
+
+// â”€â”€ X4: out-of-contract combinations are refused, naming the key â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+TEST(DispersionRunConfigXB, StrikeParameters_AreRefusedUnderARuleThatIgnoresThem) {
+  // A moneyness offset under the default rule would silently do nothing â€” which
+  // is the failure mode the strict seam exists to prevent.
+  {
+    const std::string body = std::string(kBaselineSpec) + "strike_log_moneyness\t0.05\n";
+    const fs::path path = write_spec("atx_xb_moneyness_orphan", body);
+    auto config = read_dispersion_run_config(path);
+    ASSERT_FALSE(config.has_value()) << "an inert strike_log_moneyness was accepted";
+    EXPECT_NE(config.error().message().find("strike_log_moneyness"), std::string::npos)
+        << "the error must name the offending key: " << config.error().message();
+  }
+  // An out-of-range delta is refused rather than clamped.
+  for (const char *bad : {"0", "1", "1.5", "-0.25"}) {
+    const std::string body =
+        std::string(kBaselineSpec) + "strike\tdelta_strangle\nstrike_abs_delta\t" + bad + "\n";
+    const fs::path path = write_spec("atx_xb_delta_bad", body);
+    auto config = read_dispersion_run_config(path);
+    EXPECT_FALSE(config.has_value()) << "strike_abs_delta=" << bad << " was accepted";
+  }
+  // An unimplemented scheme fails loudly AND the message lists the legal ones.
+  {
+    const std::string body = std::string(kBaselineSpec) + "weighting\tcorrelation_neutral\n";
+    const fs::path path = write_spec("atx_xb_weighting_bad", body);
+    auto config = read_dispersion_run_config(path);
+    ASSERT_FALSE(config.has_value());
+    const std::string message = config.error().message();
+    EXPECT_NE(message.find("weighting"), std::string::npos) << message;
+    EXPECT_NE(message.find("gamma_neutral"), std::string::npos)
+        << "the error must enumerate the supported values: " << message;
+  }
+}
+
+// â”€â”€ X5: the friction/impact regime is classified from what reaches the engine â”€
+TEST(DispersionRunConfigXB, FrictionRegime_ClassifiesTheThreeRegimes) {
+  // Frictionless â€” the pin.
+  {
+    const fs::path path = write_spec("atx_xb_regime_none", kBaselineSpec);
+    auto config = read_dispersion_run_config(path);
+    ASSERT_TRUE(config.has_value()) << config.error().to_string();
+    EXPECT_EQ(dispersion_friction_regime(*config), DispersionFrictionRegime::Frictionless);
+    EXPECT_EQ(to_string(dispersion_friction_regime(*config)), "frictionless");
+    // The detail line must say so in words, not merely omit the parameters.
+    EXPECT_NE(dispersion_regime_detail(config->frictions, config->costs).find("mid fills"),
+              std::string::npos);
+  }
+  // Frictioned â€” a spread/commission, but no impact term.
+  {
+    const std::string body =
+        std::string(kBaselineSpec) + "friction_preset\tretail_listed_options\n";
+    const fs::path path = write_spec("atx_xb_regime_fric", body);
+    auto config = read_dispersion_run_config(path);
+    ASSERT_TRUE(config.has_value()) << config.error().to_string();
+    EXPECT_EQ(dispersion_friction_regime(*config), DispersionFrictionRegime::Frictioned);
+    EXPECT_EQ(to_string(dispersion_friction_regime(*config)), "frictioned");
+    const std::string detail = dispersion_regime_detail(config->frictions, config->costs);
+    EXPECT_NE(detail.find("half-spread"), std::string::npos) << detail;
+    EXPECT_NE(detail.find("/contract"), std::string::npos) << detail;
+  }
+  // Frictioned + impact â€” the regime in which the pinned result flips sign.
+  {
+    const std::string body = std::string(kBaselineSpec) +
+                             "friction_preset\tretail_listed_options\n"
+                             "cost_impact_k\t0.4\ncost_adv_fraction\t0.02\n";
+    const fs::path path = write_spec("atx_xb_regime_impact", body);
+    auto config = read_dispersion_run_config(path);
+    ASSERT_TRUE(config.has_value()) << config.error().to_string();
+    EXPECT_EQ(dispersion_friction_regime(*config),
+              DispersionFrictionRegime::FrictionedWithImpact);
+    EXPECT_EQ(to_string(dispersion_friction_regime(*config)), "frictioned+impact");
+    EXPECT_NE(dispersion_regime_detail(config->frictions, config->costs).find("sqrt-impact"),
+              std::string::npos);
+  }
+  // An impact model with ZERO participation is inert, so it must NOT be reported
+  // as an impact regime â€” overstating the realism of a run is the same class of
+  // error as understating it.
+  {
+    const std::string body = std::string(kBaselineSpec) + "cost_impact_k\t0.4\n";
+    const fs::path path = write_spec("atx_xb_regime_inert_impact", body);
+    auto config = read_dispersion_run_config(path);
+    ASSERT_TRUE(config.has_value()) << config.error().to_string();
+    EXPECT_EQ(dispersion_friction_regime(*config), DispersionFrictionRegime::Frictionless);
+  }
+}
+
+// â”€â”€ X5: the report metadata leads with the regime and never fakes a benchmark â”€
+TEST(DispersionRunConfigXB, ReportMetadata_LeadsWithTheRegime) {
+  const std::string body = std::string(kBaselineSpec) +
+                           "friction_preset\tretail_listed_options\n"
+                           "cost_impact_k\t0.4\ncost_adv_fraction\t0.02\n";
+  const fs::path path = write_spec("atx_xb_meta", body);
+  auto config = read_dispersion_run_config(path);
+  ASSERT_TRUE(config.has_value()) << config.error().to_string();
+
+  TearSheet sheet;
+  sheet.total_return = -64.60;
+  sheet.total_cost = 312.01;
+
+  const auto meta = dispersion_report_metadata(*config, sheet, 82u);
+  ASSERT_FALSE(meta.empty());
+  // REGIME FIRST: a truncated read must still carry which assumptions produced
+  // the numbers below it.
+  EXPECT_EQ(meta[0].first, "friction_regime");
+  EXPECT_EQ(meta[0].second, "frictioned+impact");
+  EXPECT_EQ(meta[1].first, "friction_detail");
+
+  const auto find = [&](const char *key) -> const std::string * {
+    for (const auto &kv : meta) {
+      if (kv.first == key) {
+        return &kv.second;
+      }
+    }
+    return nullptr;
+  };
+  // The cost drag and the pre-cost figure are both present, so a reader can see
+  // the cost share of the headline without a second artifact.
+  ASSERT_NE(find("total_return"), nullptr);
+  ASSERT_NE(find("total_cost"), nullptr);
+  ASSERT_NE(find("gross_return"), nullptr);
+  EXPECT_NEAR(std::stod(*find("gross_return")), -64.60 + 312.01, 1e-6);
+  // The X4 construction is stated too.
+  ASSERT_NE(find("weighting"), nullptr);
+  EXPECT_EQ(*find("weighting"), "vega_neutral");
+  ASSERT_NE(find("strike_rule"), nullptr);
+  EXPECT_EQ(*find("strike_rule"), "atm_forward_straddle");
+
+  // NO BENCHMARK SUPPLIED => no benchmark keys at all. An absent benchmark must
+  // never be reported as a zero alpha or a zero beta.
+  EXPECT_EQ(find("benchmark_beta"), nullptr);
+  EXPECT_EQ(find("benchmark_alpha"), nullptr);
+  EXPECT_EQ(find("benchmark_information_ratio"), nullptr);
+
+  // With a benchmark, the block appears.
+  sheet.benchmark.has_benchmark = true;
+  sheet.benchmark.n_obs = 81;
+  sheet.benchmark.beta = 1.8;
+  sheet.benchmark.information_ratio = 0.53;
+  const auto with_bench = dispersion_report_metadata(*config, sheet, 82u);
+  bool saw_beta = false;
+  for (const auto &kv : with_bench) {
+    if (kv.first == "benchmark_beta") {
+      saw_beta = true;
+      EXPECT_EQ(kv.second, "1.8");
+    }
+  }
+  EXPECT_TRUE(saw_beta);
+}
+
+// â”€â”€ X5: the benchmark series reader â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+TEST(DispersionRunConfigXB, BenchmarkSeriesReader_ParsesAndRefusesMalformedRows) {
+  const fs::path dir = fs::temp_directory_path() / "atx_xb_bench";
+  std::error_code error;
+  fs::remove_all(dir, error);
+  fs::create_directories(dir, error);
+
+  // A header row is tolerated; rows are read in file order.
+  {
+    const fs::path path = dir / "good.tsv";
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out << "date\tpnl\n2026-01-02\t4\n2026-01-05\t-2\n2026-01-06\t6\n";
+    out.close();
+    auto series = read_dispersion_benchmark_series(path);
+    ASSERT_TRUE(series.has_value()) << series.error().to_string();
+    ASSERT_EQ(series->size(), 3u);
+    EXPECT_EQ((*series)[0], 4.0);
+    EXPECT_EQ((*series)[1], -2.0);
+    EXPECT_EQ((*series)[2], 6.0);
+  }
+  // A malformed row mid-file is an ERROR: a benchmark that silently half-loads
+  // would corrupt every statistic derived from it.
+  {
+    const fs::path path = dir / "bad.tsv";
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out << "date\tpnl\n2026-01-02\t4\n2026-01-05\tnot-a-number\n";
+    out.close();
+    auto series = read_dispersion_benchmark_series(path);
+    EXPECT_FALSE(series.has_value()) << "a malformed benchmark row was silently skipped";
+  }
+  // An absent file is NotFound, not an empty series.
+  {
+    auto series = read_dispersion_benchmark_series(dir / "missing.tsv");
+    ASSERT_FALSE(series.has_value());
+    EXPECT_EQ(series.error().code(), ErrorCode::NotFound);
+  }
+}

@@ -146,10 +146,15 @@ struct DispersionDteBands {
   double max_days{60.0};
 };
 
-// Only the schemes the sizing path actually implements are nameable. An
+// X4. `WeightingScheme` / `StrikeRule` (dispersion.hpp) are the vocabulary; only
+// the values the sizing path actually implements are nameable in a spec, and an
 // unimplemented value is a parse error rather than a silently-ignored key.
-enum class DispersionWeighting : std::uint8_t { VegaNeutral = 0 };
-enum class DispersionStrikeRule : std::uint8_t { AtmForwardStraddle = 0 };
+//
+// Spec keys, all defaulting to the shipped construction:
+//   weighting            vega_neutral (default) | equal_vega | gamma_neutral | theta_neutral
+//   strike               atm_forward_straddle (default) | fixed_moneyness | delta_strangle
+//   strike_log_moneyness fixed_moneyness only; 0 (default) == ATM forward
+//   strike_abs_delta     delta_strangle only; default 0.25
 
 // `DispersionCostModel` (X6) is declared in dispersion_backtest.hpp and
 // `DispersionRiskLimits` / `RiskBreachAction` (X3) in strategy.hpp — they live
@@ -159,6 +164,33 @@ struct DispersionFitConfig {
   unsigned workers{0}; // 0 => all hardware cores
   bool core_mode{false};
 };
+
+// ── X5: the friction/impact regime, as a first-class reported dimension ─────
+//
+// THIS IS NOT COSMETIC. Measured on the pinned 82-session run, the SAME strategy
+// over the SAME surfaces returns:
+//
+//   Frictionless           +247.41     (the reproducibility pin)
+//   Frictioned             + 12.81     (cost 234.60 — 95% of the gross result)
+//   FrictionedWithImpact   - 64.60     (cost 312.01 — the SIGN FLIPS)
+//
+// A headline number is therefore meaningless without its regime, and a tearsheet
+// that reports only the frictionless figure is actively misleading. Every
+// artifact the reporting path emits carries the regime in its metadata, and the
+// renderer refuses to draw a run without one.
+enum class DispersionFrictionRegime : std::uint8_t {
+  Frictionless = 0,        // mid fills, no commission, no impact — the pin
+  Frictioned = 1,          // a spread and/or per-contract cost, but no impact term
+  FrictionedWithImpact = 2 // the above plus an active square-root impact model
+};
+
+[[nodiscard]] std::string_view to_string(DispersionFrictionRegime regime) noexcept;
+
+// A one-line, human-readable description of the regime's actual parameters
+// (e.g. "frictionless (mid fills, no commission, no impact)"), so a report can
+// state WHICH frictions produced a number, not merely that some were applied.
+[[nodiscard]] std::string dispersion_regime_detail(const FrictionModel &frictions,
+                                                   const DispersionCostModel &costs);
 
 struct DispersionRunConfig {
   std::string label{"SPY listed-options dispersion proxy"};
@@ -171,8 +203,8 @@ struct DispersionRunConfig {
   DispersionUniverseSpec universe{};
   DispersionRateSource rate{};
   DispersionSide side{DispersionSide::ShortIndexLongNames};
-  DispersionWeighting weighting{DispersionWeighting::VegaNeutral};
-  DispersionStrikeRule strike{DispersionStrikeRule::AtmForwardStraddle};
+  WeightingScheme weighting{WeightingScheme::VegaNeutral};
+  StrikePolicy strike{};
   DispersionDteBands dte{};
   double roll_dte_days{7.0};
   double gross_index_vega{10'000.0};
@@ -186,7 +218,27 @@ struct DispersionRunConfig {
   DispersionFitConfig fit{};
   SurfaceProvenancePolicy provenance{SurfaceProvenancePolicy::Compatibility};
   double multiplier{100.0}; // was hardcoded at every construction site
+  // X5. Optional benchmark P&L series for the benchmark-relative block, as a
+  // `date<TAB>pnl` TSV in the SAME units as the track ($ P&L). EMPTY BY DEFAULT:
+  // absent => the tearsheet reports absolute statistics only and claims no
+  // alpha/beta/IR/TE. Spec key `benchmark_series`.
+  std::filesystem::path benchmark_series{};
+  // Periods per year for annualizing. 252 is the shipped convention.
+  double periods_per_year{252.0};
 };
+
+// Classify a run config's execution assumptions. Purely a function of the
+// frictions + cost model that actually reach the engine.
+[[nodiscard]] DispersionFrictionRegime
+dispersion_friction_regime(const DispersionRunConfig &config) noexcept;
+
+// Read a `date<TAB>pnl` benchmark series, returning the P&L column in file
+// order. Header row optional (a first row whose second field does not parse as a
+// number is treated as a header). `NotFound` if the file is absent, `ParseError`
+// on a malformed row — a benchmark that silently half-loads would corrupt every
+// statistic derived from it.
+[[nodiscard]] Result<std::vector<double>>
+read_dispersion_benchmark_series(const std::filesystem::path &path);
 
 // Named friction presets selectable from the spec via `friction_preset`. `None`
 // is the default and is exactly the frictionless golden; `RetailListedOptions`
@@ -212,6 +264,35 @@ read_dispersion_run_config(const std::filesystem::path &path);
 // multiplier actually reach the engine.
 [[nodiscard]] DispersionBacktestConfig
 dispersion_backtest_config_from(const DispersionRunConfig &config);
+
+// ── X5: tearsheet emission ──────────────────────────────────────────────────
+//
+// The surface path emitted raw SoA and never produced headline statistics. These
+// two writers add them WITHOUT touching `surface_backtest.tsv`: both are new
+// files, so the pinned artifact is byte-for-byte unchanged and the reproducibility
+// pin is measured on exactly the bytes it always was.
+//
+//   surface_tearsheet.tsv   `metric<TAB>value` table (%.10g), regime block FIRST
+//   surface_pnl_track.tsv   the self-describing `# key=value` + series TSV the
+//                           Python renderer consumes (write_backtest_pnl_tsv
+//                           layout, matching examples/spy_dispersion_pnl.cpp)
+//
+// THE REGIME IS NOT OPTIONAL METADATA. Both files lead with `friction_regime`
+// and `friction_detail`, and the renderer refuses a track that carries neither —
+// see `DispersionFrictionRegime` for why a bare headline number is misleading.
+
+// Ordered `# key=value` metadata describing the run's identity, its friction /
+// impact regime, its X4 policies, and its headline + benchmark-relative stats.
+// The regime keys are emitted FIRST so a truncated read still carries them.
+[[nodiscard]] std::vector<std::pair<std::string, std::string>>
+dispersion_report_metadata(const DispersionRunConfig &config, const TearSheet &sheet,
+                           std::size_t n_sessions);
+
+// Write both reporting artifacts into `run_dir`. Never writes
+// `surface_backtest.tsv`.
+[[nodiscard]] Status write_dispersion_tearsheet(const std::filesystem::path &run_dir,
+                                                const DispersionRunConfig &config,
+                                                const DispersionBacktestOutcome &outcome);
 
 // ── Native reference reconciliation (M1) ────────────────────────────────────
 //
