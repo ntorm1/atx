@@ -75,16 +75,37 @@ struct ResolvedDispersionLeg {
 
 [[nodiscard]] Result<ResolvedDispersionLeg> resolve_leg(const SurfaceSet &surfaces,
                                                         const DispersionMember &m, double T,
-                                                        const PriceOptions *price_options) {
+                                                        const PriceOptions *price_options,
+                                                        const StrikePolicy &strike) {
   const SurfaceRef surf = surfaces.find(m.uid);
   if (surf == nullptr) {
     return Err(ErrorCode::NotFound,
                "dispersion: no surface registered for symbol '" + m.symbol + "'");
   }
-  const double K = surf->forward_at(T);
-  if (!(K > 0.0)) {
+  const double forward = surf->forward_at(T);
+  if (!(forward > 0.0)) {
     return Err(ErrorCode::Unavailable,
                "dispersion: no ATM forward for symbol '" + m.symbol + "' at the tenor");
+  }
+  // X4 STRIKE RULE (legacy synthetic-tenor path). The default assigns the forward
+  // through UNCHANGED — no arithmetic — so the pinned golden's strike is bit-for-bit
+  // what it was. A strangle needs two distinct strikes on one leg, which this path
+  // cannot express, so it is refused rather than silently downgraded to a straddle.
+  double K = forward;
+  switch (strike.rule) {
+  case StrikeRule::AtmForwardStraddle:
+    break;
+  case StrikeRule::FixedMoneyness:
+    K = forward * std::exp(strike.log_moneyness);
+    if (!(K > 0.0) || !std::isfinite(K)) {
+      return Err(ErrorCode::InvalidArgument,
+                 "dispersion: fixed-moneyness strike is degenerate for symbol '" + m.symbol + "'");
+    }
+    break;
+  case StrikeRule::DeltaStrangle:
+    return Err(ErrorCode::InvalidArgument,
+               "dispersion: the delta-strangle strike rule requires the projected-maturity "
+               "path (a synthetic-tenor leg carries only a single strike)");
   }
   double sigma = 0.0;
   if (price_options == nullptr) {
@@ -147,6 +168,7 @@ struct ResolvedDispersionLeg {
   resolved.leg.symbol = m.symbol;
   resolved.leg.uid = m.uid;
   resolved.leg.K = K;
+  resolved.leg.forward = forward;
   resolved.leg.T = T;
   resolved.leg.sigma = sigma;
   resolved.leg.straddle_vega = straddle_vega;
@@ -164,7 +186,7 @@ struct ResolvedDispersionLeg {
 [[nodiscard]] Result<ResolvedDispersionLeg>
 resolve_projected_leg(const SurfaceSet &surfaces, const DispersionMember &member,
                       const ProjectedMaturitySpec &maturity, double multiplier,
-                      const PriceOptions *price_options) {
+                      const PriceOptions *price_options, const StrikePolicy &strike) {
   const SurfaceRef surface = surfaces.find(member.uid);
   if (surface == nullptr) {
     return Err(ErrorCode::NotFound,
@@ -176,24 +198,51 @@ resolve_projected_leg(const SurfaceSet &surfaces, const DispersionMember &member
   config.analytic_greeks = price_options == nullptr || price_options->analytic_greeks;
   config.query_execution =
       price_options == nullptr ? QueryExecution::Configured : price_options->query_execution;
+  // X4 STRIKE RULE. The default branch constructs `atm_forward()` exactly as
+  // before, so the pinned golden's projection spec is unchanged.
+  const auto call_strike_spec = [&]() -> Result<ProjectedStrikeSpec> {
+    switch (strike.rule) {
+    case StrikeRule::AtmForwardStraddle:
+      return Ok(ProjectedStrikeSpec::atm_forward());
+    case StrikeRule::FixedMoneyness:
+      return Ok(ProjectedStrikeSpec::log_moneyness(strike.log_moneyness));
+    case StrikeRule::DeltaStrangle:
+      if (!(strike.target_abs_delta > 0.0) || !(strike.target_abs_delta < 1.0)) {
+        return Err(ErrorCode::InvalidArgument,
+                   "dispersion: delta-strangle target_abs_delta must lie in (0, 1)");
+      }
+      return Ok(ProjectedStrikeSpec::delta(strike.target_abs_delta));
+    }
+    return Ok(ProjectedStrikeSpec::atm_forward());
+  }();
+  if (!call_strike_spec) {
+    return Err(call_strike_spec.error());
+  }
   const auto project = [&](Side side) {
     OptionProjectionSpec spec;
     spec.uid = member.uid;
     spec.maturity = maturity;
-    spec.strike = ProjectedStrikeSpec::atm_forward();
+    spec.strike = *call_strike_spec;
     spec.side = side;
     spec.multiplier = multiplier;
     return project_option_contract(*surface, spec, config);
   };
   ATX_TRY(ProjectedOption call, project(Side::Call));
 
-  // Force the put onto the call's exact strike and expiry: a dispersion
-  // straddle is one concrete listed-style K/expiry pair, not two independently
-  // re-resolved ATM coordinates.
+  // STRADDLE rules force the put onto the call's exact strike and expiry: a
+  // dispersion straddle is one concrete listed-style K/expiry pair, not two
+  // independently re-resolved ATM coordinates.
+  //
+  // The STRANGLE rule is the deliberate exception — its two legs are two
+  // different strikes by definition — so the put re-resolves its own strike at
+  // the same target |delta|, pinned to the call's expiry so the leg still has one
+  // maturity.
   OptionProjectionSpec put_spec;
   put_spec.uid = member.uid;
   put_spec.maturity = ProjectedMaturitySpec::absolute(call.definition.expiry_ts_ns);
-  put_spec.strike = ProjectedStrikeSpec::absolute(call.definition.contract.K);
+  put_spec.strike = strike.rule == StrikeRule::DeltaStrangle
+                        ? ProjectedStrikeSpec::delta(strike.target_abs_delta)
+                        : ProjectedStrikeSpec::absolute(call.definition.contract.K);
   put_spec.side = Side::Put;
   put_spec.multiplier = multiplier;
   ATX_TRY(ProjectedOption put, project_option_contract(*surface, put_spec, config));
@@ -235,6 +284,7 @@ resolve_projected_leg(const SurfaceSet &surfaces, const DispersionMember &member
   resolved.leg.symbol = member.symbol;
   resolved.leg.uid = member.uid;
   resolved.leg.K = call.definition.contract.K;
+  resolved.leg.forward = call.forward;
   resolved.leg.T = call.definition.contract.T;
   resolved.leg.sigma = resolved_sigma;
   resolved.leg.straddle_vega = straddle_vega;
@@ -245,6 +295,35 @@ resolve_projected_leg(const SurfaceSet &surfaces, const DispersionMember &member
   resolved.call_seed = std::move(resolved_call_seed);
   resolved.put_seed = std::move(resolved_put_seed);
   return Ok(std::move(resolved));
+}
+
+// X4. The per-straddle risk on a scheme's matched axis, always POSITIVE for a
+// usable leg. Gamma and theta ride the exact Black-Scholes identities that tie
+// them to the vega already resolved, so no scheme issues an extra solve.
+[[nodiscard]] double leg_matched_risk(const DispersionLeg &leg, WeightingScheme scheme) noexcept {
+  switch (scheme) {
+  case WeightingScheme::VegaNeutral:
+  case WeightingScheme::EqualVega:
+    return leg.straddle_vega;
+  case WeightingScheme::GammaNeutral:
+    return straddle_gamma_from_vega(leg.straddle_vega, leg.forward, leg.sigma, leg.T);
+  case WeightingScheme::ThetaNeutral:
+    return straddle_theta_magnitude_from_vega(leg.straddle_vega, leg.sigma, leg.T);
+  }
+  return leg.straddle_vega;
+}
+
+[[nodiscard]] std::string_view matched_axis_name(WeightingScheme scheme) noexcept {
+  switch (scheme) {
+  case WeightingScheme::VegaNeutral:
+  case WeightingScheme::EqualVega:
+    return "straddle vega";
+  case WeightingScheme::GammaNeutral:
+    return "straddle gamma";
+  case WeightingScheme::ThetaNeutral:
+    return "straddle theta";
+  }
+  return "straddle risk";
 }
 
 // Emit the two positions (Call then Put, same K/T/qty) of one sized straddle,
@@ -266,6 +345,35 @@ void emit_straddle(const DispersionLeg &leg, double multiplier, std::uint64_t &n
 }
 
 } // namespace
+
+double straddle_gamma_from_vega(double vega, double forward, double sigma, double T) noexcept {
+  if (!std::isfinite(vega) || !std::isfinite(forward) || !std::isfinite(sigma) ||
+      !std::isfinite(T) || vega <= 0.0 || forward <= 0.0 || sigma <= 0.0 || T <= 0.0) {
+    return 0.0;
+  }
+  const double gamma = vega / (forward * forward * sigma * T);
+  return std::isfinite(gamma) ? gamma : 0.0;
+}
+
+double straddle_theta_magnitude_from_vega(double vega, double sigma, double T) noexcept {
+  if (!std::isfinite(vega) || !std::isfinite(sigma) || !std::isfinite(T) || vega <= 0.0 ||
+      sigma <= 0.0 || T <= 0.0) {
+    return 0.0;
+  }
+  const double theta = 0.5 * sigma * vega / T;
+  return std::isfinite(theta) ? theta : 0.0;
+}
+
+double correlation_vega(const DispersionSignal &sig, double index_signed_vega) noexcept {
+  return index_signed_vega * sig.d_sigma_d_rho;
+}
+
+double correlation_gamma(const DispersionSignal &sig, double index_signed_vega, double T) noexcept {
+  // volga / vega at the ATM forward == -sigma * T / 4 (d1 * d2 = -sigma^2 T / 4).
+  const double volga_over_vega = -0.25 * sig.sigma_index * T;
+  return index_signed_vega *
+         (volga_over_vega * sig.d_sigma_d_rho * sig.d_sigma_d_rho + sig.d2_sigma_d_rho2);
+}
 
 Result<DispersionSignal> dispersion_signal(const DispersionUniverse &universe,
                                            const SurfaceSet &surfaces, double T,
@@ -386,6 +494,15 @@ Result<DispersionSignal> dispersion_signal(const DispersionUniverse &universe,
   sig.sum_w_sigma = sum_w_sigma;
   sig.sum_w2_sigma2 = sum_w2_sigma2;
   sig.implied_corr = (sig.sigma_index * sig.sigma_index - sum_w2_sigma2) / denom;
+  // X4 correlation-gamma primitives. sigma_idx(rho) = sqrt(A + rho * B) with
+  // B == `denom` (already guarded > 0), so the two derivatives below are exact
+  // and need no extra market data. Both are appended AFTER `implied_corr` so the
+  // existing computation is untouched.
+  if (sig.sigma_index > 0.0) {
+    sig.d_sigma_d_rho = denom / (2.0 * sig.sigma_index);
+    sig.d2_sigma_d_rho2 =
+        -(denom * denom) / (4.0 * sig.sigma_index * sig.sigma_index * sig.sigma_index);
+  }
   return Ok(std::move(sig));
 }
 
@@ -426,10 +543,10 @@ namespace {
 
   std::optional<ProjectedMaturitySpec> common_maturity;
   Result<ResolvedDispersionLeg> index_leg =
-      resolve_leg(surfaces, universe.index, cfg.target_T, price_options);
+      resolve_leg(surfaces, universe.index, cfg.target_T, price_options, cfg.strike);
   if (cfg.projected_maturity.has_value()) {
     index_leg = resolve_projected_leg(surfaces, universe.index, *cfg.projected_maturity,
-                                      cfg.multiplier, price_options);
+                                      cfg.multiplier, price_options, cfg.strike);
   }
   if (!index_leg) {
     return Err(index_leg.error());
@@ -451,8 +568,9 @@ namespace {
     const DispersionMember &name = universe.names[i];
     Result<ResolvedDispersionLeg> leg =
         common_maturity.has_value()
-            ? resolve_projected_leg(surfaces, name, *common_maturity, cfg.multiplier, price_options)
-            : resolve_leg(surfaces, name, cfg.target_T, price_options);
+            ? resolve_projected_leg(surfaces, name, *common_maturity, cfg.multiplier,
+                                    price_options, cfg.strike)
+            : resolve_leg(surfaces, name, cfg.target_T, price_options, cfg.strike);
     if (!leg) {
       const ErrorCode ec = leg.error().code();
       if (cfg.missing.policy == MissingNamePolicy::DropRenormalize &&
@@ -489,10 +607,48 @@ namespace {
   const double name_sign = -index_sign;
   index_leg->leg.straddle_qty =
       index_sign * cfg.target_vega / (index_leg->leg.straddle_vega * cfg.multiplier);
-  for (std::size_t k = 0; k < used_names.size(); ++k) {
-    const double normalized_weight = universe.names[used_names[k]].weight / sum_w;
-    name_legs[k].straddle_qty = name_sign * normalized_weight * cfg.target_vega /
-                                (name_legs[k].straddle_vega * cfg.multiplier);
+
+  // ── X4 WEIGHTING POLICY ───────────────────────────────────────────────────
+  //
+  // VegaNeutral is evaluated by the LITERAL pre-X4 expression, not as a special
+  // case of the generic branch below. The generic branch recovers the matched
+  // risk as |q_index| * risk_index * multiplier, which equals `target_vega` only
+  // up to a divide-then-multiply round-trip — enough to move the pinned golden
+  // in the last ulp. Keeping the two paths textually separate is what makes
+  // "the default is bit-identical" a property of the code rather than a hope.
+  if (cfg.weighting == WeightingScheme::VegaNeutral) {
+    for (std::size_t k = 0; k < used_names.size(); ++k) {
+      const double normalized_weight = universe.names[used_names[k]].weight / sum_w;
+      name_legs[k].straddle_qty = name_sign * normalized_weight * cfg.target_vega /
+                                  (name_legs[k].straddle_vega * cfg.multiplier);
+    }
+  } else {
+    // Every non-default scheme matches the basket to the INDEX leg on the
+    // scheme's risk axis. The index leg keeps its target_vega sizing, so
+    // `gross_index_vega` retains its meaning under every scheme.
+    const double index_risk = leg_matched_risk(index_leg->leg, cfg.weighting);
+    if (!std::isfinite(index_risk) || index_risk <= 0.0) {
+      return Err(ErrorCode::Unavailable,
+                 "dispersion: index leg has no usable " + std::string(matched_axis_name(cfg.weighting)) +
+                     " to match the basket against");
+    }
+    const double target_risk = std::fabs(index_leg->leg.straddle_qty) * index_risk * cfg.multiplier;
+    const double survivor_count = static_cast<double>(used_names.size());
+    for (std::size_t k = 0; k < used_names.size(); ++k) {
+      // EqualVega allocates uniformly across SURVIVORS (so a drop reweights the
+      // rest); every other scheme allocates by renormalized index weight.
+      const double allocation = cfg.weighting == WeightingScheme::EqualVega
+                                    ? 1.0 / survivor_count
+                                    : universe.names[used_names[k]].weight / sum_w;
+      const double leg_risk = leg_matched_risk(name_legs[k], cfg.weighting);
+      if (!std::isfinite(leg_risk) || leg_risk <= 0.0) {
+        return Err(ErrorCode::Unavailable, "dispersion: no usable " +
+                                               std::string(matched_axis_name(cfg.weighting)) +
+                                               " for symbol '" + name_legs[k].symbol + "'");
+      }
+      name_legs[k].straddle_qty =
+          name_sign * allocation * target_risk / (leg_risk * cfg.multiplier);
+    }
   }
 
   DispersionBook book;

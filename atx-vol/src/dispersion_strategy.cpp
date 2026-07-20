@@ -367,11 +367,24 @@ DispersionStrategy::signals(const MarketSnapshot &base) const {
     // series stay full-length and the drop shows up in the run diagnostics.
     risk.emplace_back("implied_corr", std::numeric_limits<double>::quiet_NaN());
     risk.emplace_back("n_names_dropped", n_resolve_dropped);
+    // Keep the diagnostic block a FIXED width regardless of tradeability, so the
+    // persisted columns stay aligned across dates.
+    risk.emplace_back("corr_vega", std::numeric_limits<double>::quiet_NaN());
+    risk.emplace_back("corr_gamma", std::numeric_limits<double>::quiet_NaN());
     return risk;
   }
   risk.emplace_back("implied_corr", sig->implied_corr);
   risk.emplace_back("n_names_dropped",
                     n_resolve_dropped + static_cast<double>(sig->dropped.size()));
+  // X4 CORRELATION GAMMA. A vega-neutral dispersion book is short correlation
+  // CONVEXITY, not correlation-flat — the exposure the headline implied-corr
+  // signal cannot show. The book's rho sensitivity runs entirely through the
+  // index leg, whose signed total vega is `target_vega` carried with the index
+  // side's sign, so both derivatives follow from the signal alone.
+  const double index_signed_vega =
+      (cfg_.side == DispersionSide::ShortIndexLongNames ? -1.0 : 1.0) * cfg_.target_vega;
+  risk.emplace_back("corr_vega", correlation_vega(*sig, index_signed_vega));
+  risk.emplace_back("corr_gamma", correlation_gamma(*sig, index_signed_vega, sig->T_used));
   return risk;
 }
 

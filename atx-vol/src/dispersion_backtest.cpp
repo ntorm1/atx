@@ -28,6 +28,10 @@ struct DispersionSpecs {
   specs.dispersion.multiplier = config.multiplier;
   specs.dispersion.missing = MissingNameSpec{MissingNamePolicy::DropRenormalize, config.min_names};
   specs.dispersion.record_diagnostics = config.record_diagnostics;
+  // X4 policies. Both default to the shipped construction, so a spec that names
+  // neither builds exactly the book it always did.
+  specs.dispersion.weighting = config.weighting;
+  specs.dispersion.strike = config.strike;
   if (config.project_to_calendar_expiry) {
     specs.dispersion.projected_maturity = ProjectedMaturitySpec::days(
         static_cast<std::int32_t>(std::llround(config.target_dte_days)));

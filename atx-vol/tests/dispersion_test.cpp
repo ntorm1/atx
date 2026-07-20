@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -896,4 +897,340 @@ TEST(Dispersion, ErrorPolicyIsBitIdenticalToBaseline) {
   ASSERT_EQ(book->name_legs.size(), 2u);
   EXPECT_EQ(book->positions.size(), 2u * (1u + 2u));
   EXPECT_EQ(book->used_names.size(), 2u);
+}
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// WS-X-B / X4 â€” weighting-scheme + strike-rule policies, correlation gamma
+//
+// Each policy gets TWO kinds of test: the default must reproduce the shipped
+// behaviour BIT-for-bit, and each non-default setting must be shown to change
+// the specific thing it claims to change. A knob that silently does nothing is
+// worse than no knob, so "it parsed" is never the assertion.
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+// â”€â”€ The vega/gamma/theta identities, against hand-computed arithmetic â”€â”€â”€â”€â”€â”€â”€
+//
+// Checked against numbers worked out BY HAND from the closed forms, not against
+// a second call into the implementation.
+TEST(DispersionX4, GammaThetaIdentities_MatchHandComputedValues) {
+  // vega = 40, F = 100, sigma = 0.25, T = 0.5
+  //   gamma  = vega / (F^2 sigma T) = 40 / (10000 * 0.25 * 0.5) = 40 / 1250 = 0.032
+  //   |theta| = 0.5 * sigma * vega / T = 0.5 * 0.25 * 40 / 0.5 = 10
+  EXPECT_NEAR(straddle_gamma_from_vega(40.0, 100.0, 0.25, 0.5), 0.032, 1e-15);
+  EXPECT_NEAR(straddle_theta_magnitude_from_vega(40.0, 0.25, 0.5), 10.0, 1e-15);
+
+  // A second, independently hand-worked point:
+  // vega = 12, F = 50, sigma = 0.4, T = 0.25
+  //   gamma  = 12 / (2500 * 0.4 * 0.25) = 12 / 250 = 0.048
+  //   |theta| = 0.5 * 0.4 * 12 / 0.25 = 9.6
+  EXPECT_NEAR(straddle_gamma_from_vega(12.0, 50.0, 0.4, 0.25), 0.048, 1e-15);
+  // 9.6 is not exactly representable, so the tolerance is one ULP at that
+  // magnitude rather than an absolute 1e-15 (which would be below it).
+  EXPECT_NEAR(straddle_theta_magnitude_from_vega(12.0, 0.4, 0.25), 9.6, 1e-14);
+
+  // Degenerate inputs yield 0 (no risk is defined), never a NaN or a negative.
+  const double nan_value = std::numeric_limits<double>::quiet_NaN();
+  for (const double bad : {0.0, -1.0, nan_value}) {
+    EXPECT_EQ(straddle_gamma_from_vega(bad, 100.0, 0.25, 0.5), 0.0);
+    EXPECT_EQ(straddle_gamma_from_vega(40.0, bad, 0.25, 0.5), 0.0);
+    EXPECT_EQ(straddle_gamma_from_vega(40.0, 100.0, bad, 0.5), 0.0);
+    EXPECT_EQ(straddle_gamma_from_vega(40.0, 100.0, 0.25, bad), 0.0);
+    EXPECT_EQ(straddle_theta_magnitude_from_vega(bad, 0.25, 0.5), 0.0);
+  }
+}
+
+// â”€â”€ DEFAULT IS INERT: the X4 fields default to the shipped construction â”€â”€â”€â”€â”€
+TEST(DispersionX4, DefaultPolicies_ReproduceShippedBookBitForBit) {
+  const std::vector<PricedSurface> surfaces = build_surfaces();
+  auto set = SurfaceSet::create(as_ptrs(surfaces));
+  ASSERT_TRUE(set.has_value()) << set.error().to_string();
+  const DispersionUniverse u = make_universe();
+
+  DispersionConfig implicit_cfg; // X4 fields left at their defaults
+  DispersionConfig explicit_cfg;
+  explicit_cfg.weighting = WeightingScheme::VegaNeutral;
+  explicit_cfg.strike = StrikePolicy{StrikeRule::AtmForwardStraddle, 0.0, 0.25};
+
+  auto a = build_dispersion_book(u, *set, implicit_cfg);
+  auto b = build_dispersion_book(u, *set, explicit_cfg);
+  ASSERT_TRUE(a.has_value()) << a.error().to_string();
+  ASSERT_TRUE(b.has_value()) << b.error().to_string();
+
+  EXPECT_TRUE(bits_equal(a->index_leg.straddle_qty, b->index_leg.straddle_qty));
+  EXPECT_TRUE(bits_equal(a->index_leg.K, b->index_leg.K));
+  // Pin the COUNT, not merely that the two agree. `size(a) == size(b)` is
+  // satisfied by two EMPTY baskets, which would make both loops below skip and
+  // let this -- the test that pins "the default is bit-identical" -- pass green
+  // having compared nothing. The fixture universe has exactly two names.
+  ASSERT_EQ(a->name_legs.size(), 2u);
+  ASSERT_EQ(b->name_legs.size(), 2u);
+  for (std::size_t i = 0; i < a->name_legs.size(); ++i) {
+    EXPECT_TRUE(bits_equal(a->name_legs[i].straddle_qty, b->name_legs[i].straddle_qty))
+        << "leg " << i << " qty diverged under an explicitly-defaulted policy";
+    EXPECT_TRUE(bits_equal(a->name_legs[i].K, b->name_legs[i].K)) << "leg " << i << " strike";
+  }
+  // The default strike rule is ATM-forward, so each leg's strike IS its forward â€”
+  // assigned through with no arithmetic, which is what keeps the pin exact.
+  EXPECT_TRUE(bits_equal(a->index_leg.K, a->index_leg.forward));
+  for (const DispersionLeg &leg : a->name_legs) {
+    EXPECT_TRUE(bits_equal(leg.K, leg.forward));
+  }
+}
+
+// â”€â”€ EqualVega: allocation source changes; equal weights collapse it back â”€â”€â”€â”€
+TEST(DispersionX4, EqualVega_ChangesAllocation_AndCollapsesAtEqualWeights) {
+  const std::vector<PricedSurface> surfaces = build_surfaces();
+  auto set = SurfaceSet::create(as_ptrs(surfaces));
+  ASSERT_TRUE(set.has_value()) << set.error().to_string();
+
+  // (a) UNEQUAL index weights (0.6 / 0.4): EqualVega must move both legs, and in
+  //     the predictable direction â€” the underweight name gets MORE.
+  {
+    const DispersionUniverse u = make_universe_w(kW0, kW1);
+    DispersionConfig vega_cfg;
+    DispersionConfig equal_cfg;
+    equal_cfg.weighting = WeightingScheme::EqualVega;
+    auto v = build_dispersion_book(u, *set, vega_cfg);
+    auto e = build_dispersion_book(u, *set, equal_cfg);
+    ASSERT_TRUE(v.has_value()) << v.error().to_string();
+    ASSERT_TRUE(e.has_value()) << e.error().to_string();
+
+    // The index leg is sized identically under every scheme.
+    EXPECT_TRUE(bits_equal(v->index_leg.straddle_qty, e->index_leg.straddle_qty));
+    // 0.6-weight name loses size (0.6 -> 0.5); 0.4-weight name gains (0.4 -> 0.5).
+    EXPECT_LT(std::fabs(e->name_legs[0].straddle_qty), std::fabs(v->name_legs[0].straddle_qty));
+    EXPECT_GT(std::fabs(e->name_legs[1].straddle_qty), std::fabs(v->name_legs[1].straddle_qty));
+    // Quantitatively: under EqualVega both legs carry the SAME gross vega.
+    const double lhs = std::fabs(e->name_legs[0].straddle_qty) * e->name_legs[0].straddle_vega;
+    const double rhs = std::fabs(e->name_legs[1].straddle_qty) * e->name_legs[1].straddle_vega;
+    EXPECT_NEAR(lhs, rhs, 1e-9 * std::max(lhs, rhs));
+  }
+
+  // (b) EQUAL index weights: EqualVega and VegaNeutral describe the same book, so
+  //     the two must agree to round-off (they differ only by the documented
+  //     divide/multiply round-trip the default path deliberately avoids).
+  {
+    const DispersionUniverse u = make_universe_w(0.5, 0.5);
+    DispersionConfig vega_cfg;
+    DispersionConfig equal_cfg;
+    equal_cfg.weighting = WeightingScheme::EqualVega;
+    auto v = build_dispersion_book(u, *set, vega_cfg);
+    auto e = build_dispersion_book(u, *set, equal_cfg);
+    ASSERT_TRUE(v.has_value());
+    ASSERT_TRUE(e.has_value());
+    ASSERT_EQ(v->name_legs.size(), 2u); // else the comparison below is vacuous
+    ASSERT_EQ(e->name_legs.size(), 2u);
+    for (std::size_t i = 0; i < v->name_legs.size(); ++i) {
+      EXPECT_NEAR(e->name_legs[i].straddle_qty, v->name_legs[i].straddle_qty,
+                  1e-9 * std::fabs(v->name_legs[i].straddle_qty))
+          << "leg " << i;
+    }
+  }
+}
+
+// â”€â”€ GammaNeutral: the basket matches the index on GAMMA, not on vega â”€â”€â”€â”€â”€â”€â”€â”€
+TEST(DispersionX4, GammaNeutral_MatchesGammaNotVega) {
+  const std::vector<PricedSurface> surfaces = build_surfaces();
+  auto set = SurfaceSet::create(as_ptrs(surfaces));
+  ASSERT_TRUE(set.has_value()) << set.error().to_string();
+  const DispersionUniverse u = make_universe();
+
+  DispersionConfig vega_cfg;
+  DispersionConfig gamma_cfg;
+  gamma_cfg.weighting = WeightingScheme::GammaNeutral;
+  auto v = build_dispersion_book(u, *set, vega_cfg);
+  auto g = build_dispersion_book(u, *set, gamma_cfg);
+  ASSERT_TRUE(v.has_value()) << v.error().to_string();
+  ASSERT_TRUE(g.has_value()) << g.error().to_string();
+
+  // THE KNOB DOES SOMETHING: the names' sizes actually move. (The index spot is
+  // 500 against names at 100/120, so the gamma-per-vega ratios differ sharply.)
+  bool any_moved = false;
+  for (std::size_t i = 0; i < v->name_legs.size(); ++i) {
+    if (!bits_equal(v->name_legs[i].straddle_qty, g->name_legs[i].straddle_qty)) {
+      any_moved = true;
+    }
+  }
+  EXPECT_TRUE(any_moved) << "gamma_neutral produced the vega_neutral book â€” the knob is inert";
+
+  // THE KNOB DOES THE RIGHT THING: gross basket gamma == gross index gamma.
+  const auto leg_gamma = [](const DispersionLeg &leg) {
+    return straddle_gamma_from_vega(leg.straddle_vega, leg.forward, leg.sigma, leg.T);
+  };
+  const double index_gamma =
+      std::fabs(g->index_leg.straddle_qty) * leg_gamma(g->index_leg) * gamma_cfg.multiplier;
+  double basket_gamma = 0.0;
+  for (const DispersionLeg &leg : g->name_legs) {
+    basket_gamma += std::fabs(leg.straddle_qty) * leg_gamma(leg) * gamma_cfg.multiplier;
+  }
+  ASSERT_GT(index_gamma, 0.0);
+  EXPECT_NEAR(basket_gamma, index_gamma, 1e-9 * index_gamma)
+      << "gamma_neutral did not equalize gross gamma";
+
+  // And it is genuinely NOT the vega-neutral book: gross basket vega now differs
+  // from the target vega (which vega_neutral matches by construction).
+  double basket_vega = 0.0;
+  for (const DispersionLeg &leg : g->name_legs) {
+    basket_vega += std::fabs(leg.straddle_qty) * leg.straddle_vega * gamma_cfg.multiplier;
+  }
+  EXPECT_GT(std::fabs(basket_vega - gamma_cfg.target_vega), 1e-6 * gamma_cfg.target_vega)
+      << "gamma_neutral coincidentally reproduced vega neutrality â€” test is not discriminating";
+}
+
+// â”€â”€ ThetaNeutral: the basket matches the index on THETA â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+TEST(DispersionX4, ThetaNeutral_MatchesTheta) {
+  const std::vector<PricedSurface> surfaces = build_surfaces();
+  auto set = SurfaceSet::create(as_ptrs(surfaces));
+  ASSERT_TRUE(set.has_value()) << set.error().to_string();
+  const DispersionUniverse u = make_universe();
+
+  DispersionConfig vega_cfg;
+  DispersionConfig theta_cfg;
+  theta_cfg.weighting = WeightingScheme::ThetaNeutral;
+  auto v = build_dispersion_book(u, *set, vega_cfg);
+  auto t = build_dispersion_book(u, *set, theta_cfg);
+  ASSERT_TRUE(v.has_value()) << v.error().to_string();
+  ASSERT_TRUE(t.has_value()) << t.error().to_string();
+
+  const auto leg_theta = [](const DispersionLeg &leg) {
+    return straddle_theta_magnitude_from_vega(leg.straddle_vega, leg.sigma, leg.T);
+  };
+  const double index_theta =
+      std::fabs(t->index_leg.straddle_qty) * leg_theta(t->index_leg) * theta_cfg.multiplier;
+  double basket_theta = 0.0;
+  for (const DispersionLeg &leg : t->name_legs) {
+    basket_theta += std::fabs(leg.straddle_qty) * leg_theta(leg) * theta_cfg.multiplier;
+  }
+  ASSERT_GT(index_theta, 0.0);
+  EXPECT_NEAR(basket_theta, index_theta, 1e-9 * index_theta)
+      << "theta_neutral did not equalize gross theta";
+
+  bool any_moved = false;
+  for (std::size_t i = 0; i < v->name_legs.size(); ++i) {
+    if (!bits_equal(v->name_legs[i].straddle_qty, t->name_legs[i].straddle_qty)) {
+      any_moved = true;
+    }
+  }
+  EXPECT_TRUE(any_moved) << "theta_neutral produced the vega_neutral book â€” the knob is inert";
+}
+
+// â”€â”€ Strike rule: fixed moneyness actually moves the strike â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+TEST(DispersionX4, FixedMoneyness_MovesTheStrikeOffTheForward) {
+  const std::vector<PricedSurface> surfaces = build_surfaces();
+  auto set = SurfaceSet::create(as_ptrs(surfaces));
+  ASSERT_TRUE(set.has_value()) << set.error().to_string();
+  const DispersionUniverse u = make_universe();
+
+  DispersionConfig atm_cfg;
+  auto atm = build_dispersion_book(u, *set, atm_cfg);
+  ASSERT_TRUE(atm.has_value()) << atm.error().to_string();
+
+  // k = 0 under the FixedMoneyness rule is ATM-forward by construction: K = F*e^0.
+  DispersionConfig zero_cfg;
+  zero_cfg.strike = StrikePolicy{StrikeRule::FixedMoneyness, 0.0, 0.25};
+  auto zero = build_dispersion_book(u, *set, zero_cfg);
+  ASSERT_TRUE(zero.has_value()) << zero.error().to_string();
+  EXPECT_NEAR(zero->index_leg.K, atm->index_leg.K, 1e-12 * atm->index_leg.K);
+
+  // A 5% log-moneyness must move every strike by exactly e^0.05.
+  DispersionConfig otm_cfg;
+  otm_cfg.strike = StrikePolicy{StrikeRule::FixedMoneyness, 0.05, 0.25};
+  auto otm = build_dispersion_book(u, *set, otm_cfg);
+  ASSERT_TRUE(otm.has_value()) << otm.error().to_string();
+
+  EXPECT_GT(otm->index_leg.K, atm->index_leg.K)
+      << "fixed_moneyness left the strike at the forward â€” the knob is inert";
+  EXPECT_NEAR(otm->index_leg.K, atm->index_leg.forward * std::exp(0.05), 1e-9 * atm->index_leg.K);
+  ASSERT_EQ(otm->name_legs.size(), 2u); // else the per-leg check below is vacuous
+  ASSERT_EQ(atm->name_legs.size(), 2u);
+  for (std::size_t i = 0; i < otm->name_legs.size(); ++i) {
+    EXPECT_NEAR(otm->name_legs[i].K, atm->name_legs[i].forward * std::exp(0.05),
+                1e-9 * atm->name_legs[i].K)
+        << "leg " << i;
+  }
+}
+
+// â”€â”€ The delta-strangle rule is refused where it cannot be expressed â”€â”€â”€â”€â”€â”€â”€â”€â”€
+TEST(DispersionX4, DeltaStrangle_RefusedOnTheSyntheticTenorPath) {
+  const std::vector<PricedSurface> surfaces = build_surfaces();
+  auto set = SurfaceSet::create(as_ptrs(surfaces));
+  ASSERT_TRUE(set.has_value()) << set.error().to_string();
+  const DispersionUniverse u = make_universe();
+
+  DispersionConfig cfg; // no projected_maturity => the legacy single-strike path
+  cfg.strike = StrikePolicy{StrikeRule::DeltaStrangle, 0.0, 0.25};
+  auto book = build_dispersion_book(u, *set, cfg);
+  ASSERT_FALSE(book.has_value())
+      << "a strangle silently degraded to a straddle instead of being refused";
+  EXPECT_EQ(book.error().code(), ErrorCode::InvalidArgument);
+}
+
+// â”€â”€ Correlation gamma, against hand-computed arithmetic â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+TEST(DispersionX4, CorrelationGamma_MatchesHandComputedDerivatives) {
+  // A fully hand-worked two-name case. Weights 0.5/0.5, both names at sigma=0.40,
+  // index at sigma=0.30.
+  //   A = Sum w^2 sigma^2 = 2 * 0.25 * 0.16       = 0.08
+  //   Sum w sigma         = 0.5*0.4 + 0.5*0.4     = 0.40
+  //   B = (Sum w sigma)^2 - A = 0.16 - 0.08       = 0.08
+  //   dsigma/drho   =  B / (2 sigma)     = 0.08 / 0.6        = 0.13333333333333333
+  //   d2sigma/drho2 = -B^2 / (4 sigma^3) = -0.0064 / 0.108   = -0.05925925925925926
+  DispersionSignal sig;
+  sig.sigma_index = 0.30;
+  const double B = 0.08;
+  sig.d_sigma_d_rho = B / (2.0 * 0.30);
+  sig.d2_sigma_d_rho2 = -(B * B) / (4.0 * 0.30 * 0.30 * 0.30);
+  EXPECT_NEAR(sig.d_sigma_d_rho, 0.13333333333333333, 1e-15);
+  EXPECT_NEAR(sig.d2_sigma_d_rho2, -0.05925925925925926, 1e-15);
+
+  // Index leg SHORT 10,000 vega (the classic long-dispersion book).
+  const double index_signed_vega = -10000.0;
+  //   dP/drho = -10000 * 0.13333333333333333 = -1333.3333333333333
+  EXPECT_NEAR(correlation_vega(sig, index_signed_vega), -1333.3333333333333, 1e-9);
+
+  // Second derivative, T = 0.5:
+  //   volga/vega = -sigma * T / 4 = -0.30 * 0.5 / 4 = -0.0375
+  //   bracket    = -0.0375 * (0.13333333333333333^2) + (-0.05925925925925926)
+  //              = -0.0006666666666666667 - 0.05925925925925926
+  //              = -0.05992592592592593
+  //   d2P/drho2  = -10000 * -0.05992592592592593 = 599.2592592592593
+  const double T = 0.5;
+  EXPECT_NEAR(correlation_gamma(sig, index_signed_vega, T), 599.2592592592593, 1e-8);
+
+  // SIGN CONTRACT. Index vol is CONCAVE in correlation, so the short-index leg is
+  // long that convexity: correlation_gamma > 0 here. Flipping the side flips it.
+  EXPECT_GT(correlation_gamma(sig, index_signed_vega, T), 0.0);
+  EXPECT_LT(correlation_gamma(sig, -index_signed_vega, T), 0.0);
+  EXPECT_NEAR(correlation_gamma(sig, index_signed_vega, T),
+              -correlation_gamma(sig, -index_signed_vega, T), 1e-9);
+}
+
+// The signal's derivative fields must satisfy the closed form on real surfaces,
+// AND agree with a finite difference of the function they differentiate â€” which
+// validates them against sigma(rho) itself, not against their own formulas.
+TEST(DispersionX4, CorrelationDerivatives_SatisfyTheClosedFormOnRealSurfaces) {
+  const std::vector<PricedSurface> surfaces = build_surfaces();
+  auto set = SurfaceSet::create(as_ptrs(surfaces));
+  ASSERT_TRUE(set.has_value()) << set.error().to_string();
+  const DispersionUniverse u = make_universe();
+
+  auto sig = dispersion_signal(u, *set, kTargetT);
+  ASSERT_TRUE(sig.has_value()) << sig.error().to_string();
+
+  const double B = sig->sum_w_sigma * sig->sum_w_sigma - sig->sum_w2_sigma2;
+  ASSERT_GT(B, 0.0);
+  EXPECT_NEAR(sig->d_sigma_d_rho, B / (2.0 * sig->sigma_index), 1e-14);
+  EXPECT_NEAR(sig->d2_sigma_d_rho2, -(B * B) / (4.0 * std::pow(sig->sigma_index, 3.0)), 1e-14);
+  // Index vol is concave in rho whenever the cross-term sum is positive.
+  EXPECT_LT(sig->d2_sigma_d_rho2, 0.0);
+  EXPECT_GT(sig->d_sigma_d_rho, 0.0);
+
+  // FINITE-DIFFERENCE CHECK against sigma(rho) = sqrt(A + rho B).
+  const double A = sig->sum_w2_sigma2;
+  const double rho = sig->implied_corr;
+  const double h = 1e-5;
+  const auto sigma_of = [&](double r) { return std::sqrt(A + r * B); };
+  const double fd1 = (sigma_of(rho + h) - sigma_of(rho - h)) / (2.0 * h);
+  const double fd2 = (sigma_of(rho + h) - 2.0 * sigma_of(rho) + sigma_of(rho - h)) / (h * h);
+  EXPECT_NEAR(sig->d_sigma_d_rho, fd1, 1e-7);
+  EXPECT_NEAR(sig->d2_sigma_d_rho2, fd2, 1e-4);
 }

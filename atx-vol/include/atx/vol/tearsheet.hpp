@@ -24,15 +24,59 @@
 // (because `pnl_total = axes + unexplained + settlement + shares + financing -
 // cost` per step, so its running sum equals the attribution sum).
 
+#include <cstddef>
 #include <span>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "atx/vol/backtest.hpp"  // BacktestResult
 #include "atx/vol/types.hpp"     // Status
 
 namespace atx::vol {
+
+// ── X5: benchmark-relative statistics (Goodwin FAJ 1998 / Grinold-Kahn) ─────
+//
+// All four are computed over two PAIRED per-step series — the strategy's and the
+// benchmark's — truncated to their common length. Definitions, with `rs`/`rb` the
+// two series, `ra = rs - rb` the ACTIVE series, and `ppy` the periods per year:
+//
+//   beta              = cov(rs, rb) / var(rb)                 [sample, n-1]
+//   alpha             = (mean(rs) - beta * mean(rb)) * ppy    [ANNUALIZED]
+//   active_return     = mean(ra) * ppy                        [ANNUALIZED]
+//   tracking_error    = samplestd(ra) * sqrt(ppy)             [ANNUALIZED]
+//   information_ratio = active_return / tracking_error
+//
+// IR is the DIFFERENCE form (active return over tracking error), which is
+// Goodwin's standard and the one Grinold-Kahn's IR = IC * sqrt(breadth) targets —
+// NOT the regression-residual form. They differ whenever beta != 1; the choice is
+// recorded here because the two are routinely conflated.
+//
+// UNITS ARE THE CALLER'S RESPONSIBILITY. `BacktestResult` carries $ PnL, not
+// fractional returns, so a benchmark series must be supplied in the SAME units
+// ($ PnL of the benchmark at a comparable risk scale) for beta to be meaningful.
+// Feeding a fractional-return benchmark against a $ strategy yields a beta off by
+// the notional — arithmetically valid, economically nonsense.
+struct BenchmarkStats {
+  bool has_benchmark{false}; // false => every field below is 0 and must not be reported
+  std::size_t n_obs{0};      // paired observations actually used
+  double beta{0};
+  double alpha{0};
+  double active_return{0};
+  double tracking_error{0};
+  double information_ratio{0};
+  double correlation{0}; // corr(rs, rb); 0 when either series is constant
+};
+
+// Pure, allocation-light fold over two paired series. Uses the common prefix
+// length min(strategy.size(), benchmark.size()); fewer than 2 paired
+// observations, or a benchmark with zero variance, yields `has_benchmark = true`
+// with the undefined ratios left at 0 (every divide is guarded). Deterministic:
+// all accumulation is in element order.
+[[nodiscard]] BenchmarkStats benchmark_stats(std::span<const double> strategy,
+                                             std::span<const double> benchmark,
+                                             double periods_per_year = 252.0);
 
 // Headline analytics for a completed backtest. All fields default to 0 so an
 // empty or degenerate run yields a well-defined (all-zero) sheet. Every divide
@@ -70,6 +114,10 @@ struct TearSheet {
   double pnl_per_vega_traded{0};   // total_return / Σ turnover_vega
   double avg_gross_vega{0};        // mean(gross_vega over all rows)
   double avg_gross_gamma{0};       // mean(gross_gamma over all rows)
+
+  // ── X5 benchmark-relative block. `has_benchmark` is false unless the sheet was
+  // built by `tearsheet_with_benchmark`, so plain `tearsheet()` is unchanged. ──
+  BenchmarkStats benchmark{};
 };
 
 // Fold a `BacktestResult` into a `TearSheet`. Statistics over the return series
@@ -78,6 +126,20 @@ struct TearSheet {
 // 0 when fewer than 2 observations). Every divide is guarded. Deterministic:
 // all accumulation is in row order.
 [[nodiscard]] TearSheet tearsheet(const BacktestResult& r, double periods_per_year = 252.0);
+
+// `tearsheet(r, ppy)` with the benchmark-relative block filled in against
+// `benchmark`, a per-step series ALIGNED to the same return series `tearsheet`
+// folds (i.e. `r.step_pnl_total` when present, else `pnl_total` rows 1..n-1 —
+// row 0 is inception and carries no return). An empty `benchmark` returns
+// exactly `tearsheet(r, ppy)`, so this is a strict superset and never perturbs
+// the absolute statistics.
+[[nodiscard]] TearSheet tearsheet_with_benchmark(const BacktestResult& r,
+                                                 std::span<const double> benchmark,
+                                                 double periods_per_year = 252.0);
+
+// The per-step return series `tearsheet` folds, exposed so a caller can align a
+// benchmark to it without duplicating the `step_pnl_total` fallback rule.
+[[nodiscard]] std::vector<double> backtest_return_series(const BacktestResult& r);
 
 // Write `r` to `path` as a deterministic, tab-separated file: one header row
 // naming every column, then one data row per recorded step. Doubles are written

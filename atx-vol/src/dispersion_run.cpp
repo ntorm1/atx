@@ -1012,6 +1012,125 @@ private:
 
 } // namespace
 
+// ── X5: friction/impact regime ──────────────────────────────────────────────
+
+std::string_view to_string(DispersionFrictionRegime regime) noexcept {
+  switch (regime) {
+  case DispersionFrictionRegime::Frictionless:
+    return "frictionless";
+  case DispersionFrictionRegime::Frictioned:
+    return "frictioned";
+  case DispersionFrictionRegime::FrictionedWithImpact:
+    return "frictioned+impact";
+  }
+  return "unknown";
+}
+
+namespace {
+
+// True when the model actually charges something. `spread_kind == None` with a
+// nonzero half_spread is still frictionless — the engine reads the kind — so the
+// classification follows the KIND, not the bare parameter, and cannot overstate.
+[[nodiscard]] bool frictions_active(const FrictionModel &f) noexcept {
+  const bool spread = f.spread_kind == FrictionModel::SpreadKind::PriceBps
+                          ? f.half_spread_bps != 0.0
+                          : (f.spread_kind == FrictionModel::SpreadKind::VolTicks
+                                 ? f.vol_tick != 0.0
+                                 : false);
+  return spread || f.per_contract_cost != 0.0 || f.hedge_slippage_bps != 0.0;
+}
+
+} // namespace
+
+DispersionFrictionRegime dispersion_friction_regime(const DispersionRunConfig &config) noexcept {
+  if (config.costs.active()) {
+    return DispersionFrictionRegime::FrictionedWithImpact;
+  }
+  return frictions_active(config.frictions) ? DispersionFrictionRegime::Frictioned
+                                            : DispersionFrictionRegime::Frictionless;
+}
+
+std::string dispersion_regime_detail(const FrictionModel &frictions,
+                                     const DispersionCostModel &costs) {
+  const auto number = [](double value) {
+    std::array<char, 32> buffer{};
+    const int written = std::snprintf(buffer.data(), buffer.size(), "%.10g", value);
+    return std::string(buffer.data(), written > 0 ? static_cast<std::size_t>(written) : 0u);
+  };
+  std::vector<std::string> parts;
+  switch (frictions.spread_kind) {
+  case FrictionModel::SpreadKind::None:
+    break;
+  case FrictionModel::SpreadKind::PriceBps:
+    parts.push_back(number(frictions.half_spread_bps) + " bps half-spread");
+    break;
+  case FrictionModel::SpreadKind::VolTicks:
+    parts.push_back(number(frictions.vol_tick) + " vol-tick half-spread");
+    break;
+  }
+  if (frictions.per_contract_cost != 0.0) {
+    parts.push_back("$" + number(frictions.per_contract_cost) + "/contract");
+  }
+  if (frictions.hedge_slippage_bps != 0.0) {
+    parts.push_back(number(frictions.hedge_slippage_bps) + " bps hedge slippage");
+  }
+  if (costs.active()) {
+    parts.push_back("sqrt-impact k=" + number(costs.k) + " beta=" + number(costs.beta) +
+                    " participation=" + number(costs.adv_fraction));
+  }
+  if (parts.empty()) {
+    return "mid fills, no commission, no impact";
+  }
+  std::string detail;
+  for (std::size_t i = 0; i < parts.size(); ++i) {
+    detail += (i == 0 ? "" : ", ");
+    detail += parts[i];
+  }
+  return detail;
+}
+
+Result<std::vector<double>> read_dispersion_benchmark_series(const fs::path &path) {
+  std::ifstream stream(path, std::ios::binary);
+  if (!stream) {
+    return Err(ErrorCode::NotFound, "cannot open benchmark series " + path.string());
+  }
+  std::vector<double> series;
+  std::string line;
+  std::size_t row = 0;
+  while (std::getline(stream, line)) {
+    ++row;
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+    if (line.empty() || line.front() == '#') {
+      continue;
+    }
+    const std::size_t tab = line.find('\t');
+    if (tab == std::string::npos) {
+      return Err(ErrorCode::ParseError, "benchmark series row " + std::to_string(row) +
+                                            " is not date<TAB>pnl: '" + line + "'");
+    }
+    const std::string value = line.substr(tab + 1);
+    double parsed = 0.0;
+    const char *first = value.data();
+    const char *last = first + value.size();
+    const std::from_chars_result result =
+        std::from_chars(first, last, parsed, std::chars_format::general);
+    if (result.ec != std::errc{} || result.ptr != last) {
+      // A first unparseable row is a header; anywhere else it is a malformed file.
+      // A benchmark that silently half-loads would corrupt every statistic
+      // derived from it, so this is an error rather than a skip.
+      if (row == 1 && series.empty()) {
+        continue;
+      }
+      return Err(ErrorCode::ParseError, "benchmark series row " + std::to_string(row) +
+                                            " has a non-numeric value: '" + value + "'");
+    }
+    series.push_back(parsed);
+  }
+  return Ok(std::move(series));
+}
+
 FrictionModel dispersion_friction_preset(DispersionFrictionPreset preset) {
   FrictionModel model;
   switch (preset) {
@@ -1078,11 +1197,31 @@ Result<DispersionRunConfig> read_dispersion_run_config(const fs::path &path) {
   ATX_TRY_VOID(binder.enumerated("side", config.side,
                                  {{"short_index_long_names", DispersionSide::ShortIndexLongNames},
                                   {"long_index_short_names", DispersionSide::LongIndexShortNames}}));
+  // X4 policies. Every spelling below maps to a scheme the sizing path really
+  // implements; a knob that silently did nothing would be worse than no knob.
   ATX_TRY_VOID(binder.enumerated("weighting", config.weighting,
-                                 {{"vega_neutral", DispersionWeighting::VegaNeutral}}));
-  ATX_TRY_VOID(binder.enumerated(
-      "strike", config.strike,
-      {{"atm_forward_straddle", DispersionStrikeRule::AtmForwardStraddle}}));
+                                 {{"vega_neutral", WeightingScheme::VegaNeutral},
+                                  {"equal_vega", WeightingScheme::EqualVega},
+                                  {"gamma_neutral", WeightingScheme::GammaNeutral},
+                                  {"theta_neutral", WeightingScheme::ThetaNeutral}}));
+  ATX_TRY_VOID(binder.enumerated("strike", config.strike.rule,
+                                 {{"atm_forward_straddle", StrikeRule::AtmForwardStraddle},
+                                  {"fixed_moneyness", StrikeRule::FixedMoneyness},
+                                  {"delta_strangle", StrikeRule::DeltaStrangle}}));
+  // PRESENCE, not value. A strike parameter belonging to a rule that ignores it
+  // must be REJECTED, and that has to key off whether the SPEC NAMED the key:
+  // testing the parsed value against its default cannot distinguish "explicitly
+  // set to the default" from "absent", so `strike_abs_delta = 0.25` under the
+  // default rule would sail through as exactly the inert knob this seam exists
+  // to prevent. `find` marks the key consumed; the `number` call still parses it.
+  const bool strike_log_moneyness_named = binder.find("strike_log_moneyness") != nullptr;
+  const bool strike_abs_delta_named = binder.find("strike_abs_delta") != nullptr;
+  ATX_TRY_VOID(binder.number("strike_log_moneyness", config.strike.log_moneyness));
+  ATX_TRY_VOID(binder.number("strike_abs_delta", config.strike.target_abs_delta));
+
+  // X5 reporting.
+  ATX_TRY_VOID(binder.path_key("benchmark_series", config.benchmark_series));
+  ATX_TRY_VOID(binder.number("periods_per_year", config.periods_per_year));
 
   ATX_TRY_VOID(binder.number("target_dte_days", config.dte.target_days));
   ATX_TRY_VOID(binder.number("min_dte_days", config.dte.min_days));
@@ -1185,6 +1324,28 @@ Result<DispersionRunConfig> read_dispersion_run_config(const fs::path &path) {
   if (config.universe.index_symbol.empty()) {
     return Err(ErrorCode::InvalidArgument, "index_symbol must not be empty");
   }
+  // X4 strike contract. Each rule validates only the parameter it reads, and a
+  // parameter set for a rule that ignores it is refused — otherwise a spec could
+  // carry `strike_abs_delta=0.4` under the default rule and quietly do nothing.
+  if (config.strike.rule == StrikeRule::DeltaStrangle &&
+      (!(config.strike.target_abs_delta > 0.0) || !(config.strike.target_abs_delta < 1.0))) {
+    return Err(ErrorCode::InvalidArgument, "strike_abs_delta must lie in (0, 1)");
+  }
+  if (config.strike.rule != StrikeRule::FixedMoneyness && strike_log_moneyness_named) {
+    return Err(ErrorCode::InvalidArgument,
+               "strike_log_moneyness applies only to strike=fixed_moneyness");
+  }
+  if (config.strike.rule != StrikeRule::DeltaStrangle && strike_abs_delta_named) {
+    return Err(ErrorCode::InvalidArgument,
+               "strike_abs_delta applies only to strike=delta_strangle");
+  }
+  if (config.strike.rule == StrikeRule::FixedMoneyness &&
+      !(std::fabs(config.strike.log_moneyness) < 5.0)) {
+    return Err(ErrorCode::InvalidArgument, "strike_log_moneyness is implausibly large");
+  }
+  if (!(config.periods_per_year > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "periods_per_year must be positive");
+  }
   return Ok(std::move(config));
 }
 
@@ -1227,6 +1388,8 @@ DispersionBacktestConfig dispersion_backtest_config_from(const DispersionRunConf
   backtest.hedge_kind = config.hedge.kind;
   backtest.hedge_cadence = config.hedge.cadence;
   backtest.limits = config.limits;
+  backtest.weighting = config.weighting; // X4
+  backtest.strike = config.strike;       // X4
   backtest.run.unpriced = UnpricedLotPolicy::Error;
   // X2/X6: the wiring that never existed. The dispersion path built a RunConfig
   // that left `frictions` and `financing` default-constructed, so every fill was a
@@ -1597,6 +1760,142 @@ Status dispersion_run_backtest(const fs::path &run_dir) {
   return Ok();
 }
 
+// ── X5: tearsheet emission ──────────────────────────────────────────────────
+
+namespace {
+
+[[nodiscard]] std::string metric_text(double value) {
+  std::array<char, 40> buffer{};
+  const int written = std::snprintf(buffer.data(), buffer.size(), "%.10g", value);
+  return std::string(buffer.data(), written > 0 ? static_cast<std::size_t>(written) : 0u);
+}
+
+[[nodiscard]] std::string_view weighting_text(WeightingScheme scheme) noexcept {
+  switch (scheme) {
+  case WeightingScheme::VegaNeutral:
+    return "vega_neutral";
+  case WeightingScheme::EqualVega:
+    return "equal_vega";
+  case WeightingScheme::GammaNeutral:
+    return "gamma_neutral";
+  case WeightingScheme::ThetaNeutral:
+    return "theta_neutral";
+  }
+  return "unknown";
+}
+
+[[nodiscard]] std::string_view strike_text(StrikeRule rule) noexcept {
+  switch (rule) {
+  case StrikeRule::AtmForwardStraddle:
+    return "atm_forward_straddle";
+  case StrikeRule::FixedMoneyness:
+    return "fixed_moneyness";
+  case StrikeRule::DeltaStrangle:
+    return "delta_strangle";
+  }
+  return "unknown";
+}
+
+} // namespace
+
+std::vector<std::pair<std::string, std::string>>
+dispersion_report_metadata(const DispersionRunConfig &config, const TearSheet &sheet,
+                           std::size_t n_sessions) {
+  std::vector<std::pair<std::string, std::string>> meta;
+  const DispersionFrictionRegime regime = dispersion_friction_regime(config);
+  // REGIME FIRST, ALWAYS. A reader (human or renderer) that sees only the head of
+  // this block still knows which execution assumptions produced every number
+  // below it. `gross_return` is the pre-cost figure and `total_cost` the drag, so
+  // the cost share of the headline is checkable without a second artifact.
+  meta.emplace_back("friction_regime", std::string(to_string(regime)));
+  meta.emplace_back("friction_detail", dispersion_regime_detail(config.frictions, config.costs));
+  meta.emplace_back("total_return", metric_text(sheet.total_return));
+  meta.emplace_back("total_cost", metric_text(sheet.total_cost));
+  meta.emplace_back("total_financing", metric_text(sheet.total_financing));
+  meta.emplace_back("gross_return", metric_text(sheet.total_return + sheet.total_cost));
+
+  meta.emplace_back("label", config.label);
+  meta.emplace_back("date_lo", config.dates.lo);
+  meta.emplace_back("date_hi", config.dates.hi);
+  meta.emplace_back("n_sessions", std::to_string(n_sessions));
+  meta.emplace_back("index_symbol", config.universe.index_symbol);
+  meta.emplace_back("gross_index_vega", metric_text(config.gross_index_vega));
+  // X4 policies, so a report states the construction it describes.
+  meta.emplace_back("weighting", std::string(weighting_text(config.weighting)));
+  meta.emplace_back("strike_rule", std::string(strike_text(config.strike.rule)));
+  if (config.strike.rule == StrikeRule::FixedMoneyness) {
+    meta.emplace_back("strike_log_moneyness", metric_text(config.strike.log_moneyness));
+  }
+  if (config.strike.rule == StrikeRule::DeltaStrangle) {
+    meta.emplace_back("strike_abs_delta", metric_text(config.strike.target_abs_delta));
+  }
+
+  meta.emplace_back("sharpe", metric_text(sheet.sharpe));
+  meta.emplace_back("ann_return", metric_text(sheet.ann_return));
+  meta.emplace_back("ann_vol", metric_text(sheet.ann_vol));
+  meta.emplace_back("max_drawdown", metric_text(sheet.max_drawdown));
+  meta.emplace_back("hit_rate", metric_text(sheet.hit_rate));
+  meta.emplace_back("return_on_gross_vega", metric_text(sheet.return_on_gross_vega));
+  meta.emplace_back("avg_gross_vega", metric_text(sheet.avg_gross_vega));
+
+  // Benchmark-relative keys appear ONLY when a benchmark was actually supplied,
+  // so an absent benchmark cannot be misread as a zero alpha / zero beta.
+  if (sheet.benchmark.has_benchmark) {
+    meta.emplace_back("benchmark_n_obs", std::to_string(sheet.benchmark.n_obs));
+    meta.emplace_back("benchmark_beta", metric_text(sheet.benchmark.beta));
+    meta.emplace_back("benchmark_alpha", metric_text(sheet.benchmark.alpha));
+    meta.emplace_back("benchmark_active_return", metric_text(sheet.benchmark.active_return));
+    meta.emplace_back("benchmark_tracking_error", metric_text(sheet.benchmark.tracking_error));
+    meta.emplace_back("benchmark_information_ratio",
+                      metric_text(sheet.benchmark.information_ratio));
+    meta.emplace_back("benchmark_correlation", metric_text(sheet.benchmark.correlation));
+  }
+  return meta;
+}
+
+Status write_dispersion_tearsheet(const fs::path &run_dir, const DispersionRunConfig &config,
+                                  const DispersionBacktestOutcome &outcome) {
+  const std::vector<std::pair<std::string, std::string>> meta =
+      dispersion_report_metadata(config, outcome.sheet, outcome.track.size());
+
+  // The renderer's input: one self-describing TSV carrying the whole series plus
+  // the regime-led metadata header.
+  ATX_TRY_VOID(
+      write_backtest_pnl_tsv(outcome.track, meta, (run_dir / "surface_pnl_track.tsv").string()));
+
+  // The metrics table. Same `metric<TAB>value` shape as the rest of the run's
+  // artifacts, and it opens with the regime for the same reason the meta does.
+  std::ofstream out(run_dir / "surface_tearsheet.tsv", std::ios::binary | std::ios::trunc);
+  if (!out) {
+    return Err(ErrorCode::IoError, "cannot write surface tearsheet");
+  }
+  out << "metric\tvalue\n";
+  for (const auto &[key, value] : meta) {
+    out << key << '\t' << value << '\n';
+  }
+  const TearSheet &sheet = outcome.sheet;
+  const std::pair<const char *, double> attribution[] = {
+      {"attr_delta", sheet.attr_delta},   {"attr_gamma", sheet.attr_gamma},
+      {"attr_vega", sheet.attr_vega},     {"attr_vanna", sheet.attr_vanna},
+      {"attr_volga", sheet.attr_volga},   {"attr_theta", sheet.attr_theta},
+      {"attr_rho", sheet.attr_rho},       {"attr_charm", sheet.attr_charm},
+      {"attr_unexplained", sheet.attr_unexplained},
+      {"attr_settlement", sheet.attr_settlement},
+      {"attr_shares", sheet.attr_shares}, {"attr_financing", sheet.attr_financing},
+      {"attr_cost", sheet.attr_cost},     {"avg_turnover", sheet.avg_turnover},
+      {"vega_adj_sharpe", sheet.vega_adj_sharpe},
+      {"pnl_per_vega_traded", sheet.pnl_per_vega_traded},
+      {"avg_gross_gamma", sheet.avg_gross_gamma},
+  };
+  for (const auto &[key, value] : attribution) {
+    out << key << '\t' << metric_text(value) << '\n';
+  }
+  if (!out) {
+    return Err(ErrorCode::IoError, "cannot flush surface tearsheet");
+  }
+  return Ok();
+}
+
 Status dispersion_run_surface_backtest(const fs::path &run_dir) {
   // X1. The surface path now reads the STRICT typed config, so an unknown or
   // misspelled key fails the run by name instead of being silently dropped, and
@@ -1627,6 +1926,17 @@ Status dispersion_run_surface_backtest(const fs::path &run_dir) {
   ATX_TRY(DispersionBacktestOutcome outcome,
           run_dispersion_surface_backtest(clock, universe_rows, config,
                                           run_config.universe.index_symbol));
+  // X5. Fold in the benchmark-relative block when — and only when — the spec
+  // supplied a benchmark. Absent (the default) this is skipped entirely and the
+  // sheet stays exactly the absolute one `run_dispersion_surface_backtest` built.
+  if (!run_config.benchmark_series.empty()) {
+    ATX_TRY(std::vector<double> benchmark,
+            read_dispersion_benchmark_series(run_config.benchmark_series));
+    outcome.sheet =
+        tearsheet_with_benchmark(outcome.track, benchmark, run_config.periods_per_year);
+  } else if (run_config.periods_per_year != 252.0) {
+    outcome.sheet = tearsheet(outcome.track, run_config.periods_per_year);
+  }
   const BacktestResult &backtest = outcome.track;
 #if defined(ATX_VOL_PROFILE)
   {
@@ -1662,8 +1972,18 @@ Status dispersion_run_surface_backtest(const fs::path &run_dir) {
   }
 #endif
   ATX_TRY_VOID(write_backtest_tsv(backtest, (run_dir / "surface_backtest.tsv").string()));
-  std::printf("surface-only projected backtest complete: dates=%zu final_nav=%.10g\n",
-              backtest.size(), backtest.nav.back());
+  // X5. Two ADDITIONAL artifacts; `surface_backtest.tsv` above is untouched, so
+  // the reproducibility pin is measured on exactly the bytes it always was.
+  ATX_TRY_VOID(write_dispersion_tearsheet(run_dir, run_config, outcome));
+  const DispersionFrictionRegime regime = dispersion_friction_regime(run_config);
+  // The console line names the regime too: the single most common way to
+  // misread this run is to quote its final_nav without knowing which
+  // execution assumptions produced it.
+  std::printf("surface-only projected backtest complete: dates=%zu final_nav=%.10g "
+              "regime=%s (%s) cost=%.10g\n",
+              backtest.size(), backtest.nav.back(), std::string(to_string(regime)).c_str(),
+              dispersion_regime_detail(run_config.frictions, run_config.costs).c_str(),
+              outcome.sheet.total_cost);
   return Ok();
 }
 
