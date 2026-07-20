@@ -581,13 +581,14 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
   // ── Fan out board fits; each worker writes its own disjoint slot ───────────
   std::vector<FitSlot> slots(n);
   Status schedule_status = Ok();
-  // B1: one PhaseTimer spans BOTH scheduler arms -- this is the pool whose
-  // per-date draining the batching change exists to eliminate, and
-  // `fanout_calls` counts exactly those drains.
+  // B1: time BOTH scheduler arms as one span -- this is the pool whose per-date
+  // draining the batching change exists to eliminate, and `fanout_calls` counts
+  // exactly those drains, so the number of drains is an OBSERVED quantity rather
+  // than something inferred from the shape of the code. Explicit timestamps
+  // rather than a scoped guard, so the fan-out below keeps its indentation.
   g_fanout_calls.fetch_add(1u, std::memory_order_relaxed);
   g_boards_fitted.fetch_add(static_cast<std::uint64_t>(n), std::memory_order_relaxed);
-  {
-    PhaseTimer fanout_timer(g_fit_fanout_s);
+  const auto t_fanout_begin = std::chrono::steady_clock::now();
   if (cfg.warm_start_chain) {
     // C2 (perf): cross-date warm-start chains. Group boards into per-symbol chains
     // fit in chronological (date-ascending) order; each date carries the prior
@@ -702,7 +703,9 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
                                                : detail::FitAffinity::None);
   }
 
-  } // end fan-out timing scope
+  add_seconds(g_fit_fanout_s,
+              std::chrono::duration<double>(std::chrono::steady_clock::now() - t_fanout_begin)
+                  .count());
 
   if (!schedule_status) {
     return Err(schedule_status.error());
