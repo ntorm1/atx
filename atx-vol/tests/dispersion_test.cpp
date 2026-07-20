@@ -958,7 +958,12 @@ TEST(DispersionX4, DefaultPolicies_ReproduceShippedBookBitForBit) {
 
   EXPECT_TRUE(bits_equal(a->index_leg.straddle_qty, b->index_leg.straddle_qty));
   EXPECT_TRUE(bits_equal(a->index_leg.K, b->index_leg.K));
-  ASSERT_EQ(a->name_legs.size(), b->name_legs.size());
+  // Pin the COUNT, not merely that the two agree. `size(a) == size(b)` is
+  // satisfied by two EMPTY baskets, which would make both loops below skip and
+  // let this -- the test that pins "the default is bit-identical" -- pass green
+  // having compared nothing. The fixture universe has exactly two names.
+  ASSERT_EQ(a->name_legs.size(), 2u);
+  ASSERT_EQ(b->name_legs.size(), 2u);
   for (std::size_t i = 0; i < a->name_legs.size(); ++i) {
     EXPECT_TRUE(bits_equal(a->name_legs[i].straddle_qty, b->name_legs[i].straddle_qty))
         << "leg " << i << " qty diverged under an explicitly-defaulted policy";
@@ -1013,6 +1018,8 @@ TEST(DispersionX4, EqualVega_ChangesAllocation_AndCollapsesAtEqualWeights) {
     auto e = build_dispersion_book(u, *set, equal_cfg);
     ASSERT_TRUE(v.has_value());
     ASSERT_TRUE(e.has_value());
+    ASSERT_EQ(v->name_legs.size(), 2u); // else the comparison below is vacuous
+    ASSERT_EQ(e->name_legs.size(), 2u);
     for (std::size_t i = 0; i < v->name_legs.size(); ++i) {
       EXPECT_NEAR(e->name_legs[i].straddle_qty, v->name_legs[i].straddle_qty,
                   1e-9 * std::fabs(v->name_legs[i].straddle_qty))
@@ -1134,6 +1141,8 @@ TEST(DispersionX4, FixedMoneyness_MovesTheStrikeOffTheForward) {
   EXPECT_GT(otm->index_leg.K, atm->index_leg.K)
       << "fixed_moneyness left the strike at the forward â€” the knob is inert";
   EXPECT_NEAR(otm->index_leg.K, atm->index_leg.forward * std::exp(0.05), 1e-9 * atm->index_leg.K);
+  ASSERT_EQ(otm->name_legs.size(), 2u); // else the per-leg check below is vacuous
+  ASSERT_EQ(atm->name_legs.size(), 2u);
   for (std::size_t i = 0; i < otm->name_legs.size(); ++i) {
     EXPECT_NEAR(otm->name_legs[i].K, atm->name_legs[i].forward * std::exp(0.05),
                 1e-9 * atm->name_legs[i].K)
