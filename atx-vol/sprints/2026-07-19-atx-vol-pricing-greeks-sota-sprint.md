@@ -211,3 +211,80 @@ Rules: american.cpp/american.hpp/american_iv.cpp/deamer.cpp are single-owner per
 3. G1 validated on real 0DTE data (G-DATA fixture) end-to-end: ingest → carry solve → fit → serve, front expiry included.
 4. Sprint report appended to this doc: findings fixed, counters table, repin log, bench best-of-3 (informational), spend, deferred-backlog confirmation.
 5. PM merges `feat/pg-sota` → local `main` after final whole-branch review (no push to origin).
+
+---
+
+## §8 Sprint report (PM, 2026-07-20)
+
+**Branch:** `feat/pg-sota` (base `main @ 99f332f`, tracker baseline `7e42f7c`, report HEAD `46338a9`). Executed by Opus 4.8 implementation subagents, one task = one agent = one commit series, dispatched by a PM agent that preserved its own context window. All builds `/W4 /WX`. Merge target: **local `main` only, no push to origin.**
+
+**North star delivered:** every verified correctness defect from the five-lens review fixed; the fitter's hottest inner loops banked counter-verified throughput wins; dark code wired or deleted; the three "any-underlying" capability gaps closed (true PM/AM expiry instants + 0DTE ingest, carry sensitivities, exercise-boundary API).
+
+### 8.1 Findings fixed (by lens)
+
+**Correctness (WS-A):** A1 `51fc212` BAW Newton derivative sign (scalar+AVX2 mirror, cold-seed iters 16→6.17 mean); A2/A5/A9 `a9890c7,57a2e2d,6ca2d99` cached intrinsic floor + one-sided rho + batch hardening; A3/A6 `46a9ae4,3c43c90` polish bracket-clamp + IV floor unified `kIvMin=0.005`; A4 `b5baa18` notional-scaled no-arb tol; A7 `f84e72a` parallel_for capture/rethrow; A8 `6d64a4b` put legs via Φ(−d) (deep-OTM 1.0→1.7e-13). QC triage `09640c7` curve_selector subset-sum clamp. Fixups `f99d796`, `231e798` (test-only).
+
+**Performance (WS-P) — all counter-verified (§8.2):** P1 `6965f85,d0682b2` fused Clenshaw value+dsigma; P2 `0b47315` warm-start carry default ON; P3 `8f32798` audit slice-sigma; P4 `6fc48da,409607a` premium-exp reuse (bit-identical); P5 `49b797e` T-plane collapse; P6 `fa37848` public-batch warm chaining (opt-in, chain-driver measured-and-deleted); P7 `32161ad` observability bench + always-on `sl_*` ledger.
+
+**Wiring/SIMD (WS-W):** W1 `79abd68` pnl scatter→serial batch; W2 `fc3f10c` dead `norm_cdf_pd*` deleted, Φ→Cody-erfc sole source; W3 `19e4c78` dead spikes deleted (792 lines); W4 `5619b6a` `have_avx2()`→`use_avx2()` ISA-override; FP-fix `7d56ef0` PreparedPortfolio dual golden.
+
+**Gaps (WS-G):** G1 `798dcf0` true PM/AM expiry instants (Design B) + 0DTE ingest, real-data validated on SPY 2026-07-17; G2 `55cd3ca` CarryGreeks (carry_al=carry_fd bit-identical) + analytic ∂F/∂Div; G4 `3869ec7` exercise_boundary + assignment_risk API; G-DATA spend **$0**.
+
+### 8.2 Counter table (authoritative perf evidence — trap #6: wall-clock does not gate)
+
+Reproduced EXACTLY under a genuine `ATX_VOL_COUNTERS=ON` build at HEAD `443dfcf` (skip-canary confirmed the flag; gated blocks ran, none skipped):
+
+| Task | Counter | Before → After |
+|---|---|---|
+| A1 | cold-seed Newton iters (240-grid) | 16 (exhausted) → mean 6.17 / max 10 |
+| A1 | JN boundary sweeps | 21.78 → 18.99 |
+| P1 | tensor traversals / Newton step | 3 → 2 → 1 |
+| P1 | ClenshawSweeps (200-inversion fixture) | 2353 → 1343 (~43%) |
+| P2 | AL boundary solves / slice | 474 → 139 (~3.4×) |
+| P3 | audit AL solves / (expiry,side) | 24 → 8 |
+| P4 | slice ExpCalls (n=1 vs n=8) | 1296 → 624/624 (strike-count-independent) |
+| P5 | ClenshawSweeps (31 strikes) | scalar 31 → ladder 1 (strike-count-independent) |
+| P6 | IvNewtonIters (11-lane cached ladder, warm-chain) | 65 → 42 (−35%) |
+| P7 bench | cnt_clenshaw_sweeps / sl_iv_newton_iters | 1343 / 983 |
+| P7 bench | carry legacy→warm solves / build put+call | 474→139 / 96 |
+
+### 8.3 Repin log (every bit-pin moved, with justification — trap #4)
+
+| Task | Pin | Justification |
+|---|---|---|
+| A1 | BAW seed values (~1e-4·K shift) | φ-term sign was wrong; new values are the FD-verified derivative root |
+| P1 | 1/198 inversion pins (stage b) | fused dsigma reorders ops; max\|ΔIV\| 5.6e-15, 197/198 bit-identical |
+| P4 | ExpCalls counter pins | premium-exp reuse changes the counter, not the math (reverse-apply byte-identical) |
+| P5 | 2 pins `EXPECT_DOUBLE_EQ`→`1e-12·K` | T is the middle collapse axis; reorder inherent, economic parity 2.84e-17/K |
+| P6 | dual parity budgets | cached map <1e-9 (production hot path); cold-AL <1e-5 (measured 1.17e-6; matches shipped WarmStartResultInvariantToSeed 1e-6 + calib.cpp 1e-4) |
+| FP-fix | PreparedPortfolio dual golden | SSE2 `718570745730299145` preserved; FMA `8754310291975640041` added (whole-frame hash has no tolerance band) |
+| W1 | grouped-vs-ungrouped | SIMD routing change, not math |
+| W2 | `kFastDeterministicPhiBound` 5e-11→1e-14 | Cody-erfc measured 1.665e-15; old bound loose |
+| G1 | 4 pins in `opra_panel_test.cpp` | recomputed from the same `pm_year_fraction`/`expiry_instant_ns(...,Pm)` production now uses; +16:00-ET shift IS the fix (no golden/DCT/CRC/archive moved, source_fingerprint untouched) |
+
+Proven bit-identical (not repinned): P2 (Δborrow 5.9e-10), P4 (reverse-apply byte-identical), G2 (carry_al=carry_fd), W3/W4 (dead-code + routing).
+
+### 8.4 Wall-clock bench
+Not recorded as a best-of-3 this cycle. Per trap #6 / G-BENCH, wall-clock does not hold CV≤5% on this host and **never gates** — the counter table (§8.2) is the perf evidence of record. `pg_observability_bench` builds+runs clean under both counters-ON and OFF. A6 QD+/BAW `american_shootout_bench` A/B re-run (post-A1 sign fix) deferred to backlog (§8.6).
+
+### 8.5 Spend
+**$0 total.** databento budget ($100 cap, >$40-single-pull stop) untouched — the SPY 2026-07-17 0DTE slices for G1 end-to-end validation were already materialized in fixtures. G-DATA closed at $0.
+
+### 8.6 Deferred backlog (documented in-file, out of sprint scope)
+- `bulk.cpp` not wired for P5 T-plane collapse (per-lane resolve, unfloored PriceOnly, dT partial — F12 LOW, documented in-file).
+- `price_internal_put` not wired for P4 (per-strike sigma, no reuse — documented).
+- `prepared_fitting.cpp` audit site left per-row (P3, default-off).
+- `atx-build.ps1 -Ctest`/`configure`/`build` hardcode `$RepoRoot\build` — cannot target build-counters/build-rel-avx2; agents used raw cmake pass-through + direct `ctest --test-dir`. Tooling gap.
+- A6 QD+/BAW A/B re-run (`american_shootout_bench`) — measurement item, not a ship decision.
+- **Pre-existing non-sprint issues surfaced by the final gate** (all byte-identical base↔HEAD, fail identically on `main @ 99f332f` — filed as separate cleanup, do NOT block this sprint): (i) `atx-engine/tests/core/phase4_integration_test.cpp` `-Werror,-Wunused-parameter` compile break that blocks whole-monorepo `all`; (ii) the two atx-vol bench name-coverage reds that cascade from (i) and go green once the bench exes are linked; (iii) `atx-vol/bench/check_benchmark_names_test.py` source-pin drift (`config.fit_workers = 1u;` vs `bench_fit_workers()`).
+- 2 pre-existing `SurfaceV2Qualification` borrow-pairs reds (max_borrow_pairs 6/12 vs code's 5) — inherited from `main @ 99f332f`.
+
+### 8.7 Final acceptance gate — VERDICT: CLEAN
+
+Production config **build-rel-avx2 (Release + /arch:AVX2, FMA active)**, full atx-vol fast+slow suite from worktree root at HEAD `46338a9`:
+- **Tally:** 1938 counted / 5 failed / 86 expected-skips (data-gated real-OPRA + counter-gated ledger under ATX_VOL_COUNTERS=OFF; the ON-gated counter tests were exercised on build-counters, §8.2).
+- **The 5 reds:** 2 are the allowed pre-existing SurfaceV2 borrow-pairs; the other 3 are pre-existing non-sprint (§8.6). **PM independently verified** all three flagged files (`phase4_integration_test.cpp`, `e2e_hotpath_bench.cpp`, `check_benchmark_names_test.py`) are **byte-identical `99f332f` ↔ `46338a9`** and absent from the sprint diff — they fail identically on `main`. **Zero reds attributable to sprint code.**
+- **Named-test confirmation (all GREEN):** `PreparedPortfolio.GroupedPriceEqualsIndependentOracleAndPinnedFingerprint` 8.11s (FMA golden selected), `SpyDispersionPnl.DailyDeltaHedgeBandsNetDelta` 1.63s, `VolaSession.C3PopulateTierEconomicParityVsRobust` 15.51s under `-j16` load (no wall-clock flake).
+- **Python bindings smoke-build (trap 9):** configure + build `_core.cp312-win_amd64.pyd` exit 0, 0 warnings-as-errors, linked against `atx-vol.lib`; `import _core` OK, exposes additive `CarryGreeks`/`AssignmentRisk`/`AmericanGreeks`/`ExerciseStyle`. No signature drift.
+
+**Acceptance: feat/pg-sota @ 46338a9 is clean. Merge to local `main` approved (no push to origin).**
