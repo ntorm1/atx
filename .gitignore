@@ -102,3 +102,4 @@ atx-vol/python/report_out_real/
 
 # Per-worktree FetchContent dependency tree (-DFETCHCONTENT_BASE_DIR)
 deps/
+build-rel-avx2/
