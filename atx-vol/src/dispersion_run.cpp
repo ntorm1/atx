@@ -1208,6 +1208,14 @@ Result<DispersionRunConfig> read_dispersion_run_config(const fs::path &path) {
                                  {{"atm_forward_straddle", StrikeRule::AtmForwardStraddle},
                                   {"fixed_moneyness", StrikeRule::FixedMoneyness},
                                   {"delta_strangle", StrikeRule::DeltaStrangle}}));
+  // PRESENCE, not value. A strike parameter belonging to a rule that ignores it
+  // must be REJECTED, and that has to key off whether the SPEC NAMED the key:
+  // testing the parsed value against its default cannot distinguish "explicitly
+  // set to the default" from "absent", so `strike_abs_delta = 0.25` under the
+  // default rule would sail through as exactly the inert knob this seam exists
+  // to prevent. `find` marks the key consumed; the `number` call still parses it.
+  const bool strike_log_moneyness_named = binder.find("strike_log_moneyness") != nullptr;
+  const bool strike_abs_delta_named = binder.find("strike_abs_delta") != nullptr;
   ATX_TRY_VOID(binder.number("strike_log_moneyness", config.strike.log_moneyness));
   ATX_TRY_VOID(binder.number("strike_abs_delta", config.strike.target_abs_delta));
 
@@ -1323,9 +1331,13 @@ Result<DispersionRunConfig> read_dispersion_run_config(const fs::path &path) {
       (!(config.strike.target_abs_delta > 0.0) || !(config.strike.target_abs_delta < 1.0))) {
     return Err(ErrorCode::InvalidArgument, "strike_abs_delta must lie in (0, 1)");
   }
-  if (config.strike.rule != StrikeRule::FixedMoneyness && config.strike.log_moneyness != 0.0) {
+  if (config.strike.rule != StrikeRule::FixedMoneyness && strike_log_moneyness_named) {
     return Err(ErrorCode::InvalidArgument,
                "strike_log_moneyness applies only to strike=fixed_moneyness");
+  }
+  if (config.strike.rule != StrikeRule::DeltaStrangle && strike_abs_delta_named) {
+    return Err(ErrorCode::InvalidArgument,
+               "strike_abs_delta applies only to strike=delta_strangle");
   }
   if (config.strike.rule == StrikeRule::FixedMoneyness &&
       !(std::fabs(config.strike.log_moneyness) < 5.0)) {

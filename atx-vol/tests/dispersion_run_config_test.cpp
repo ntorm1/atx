@@ -567,6 +567,26 @@ TEST(DispersionRunConfigXB, StrikeParameters_AreRefusedUnderARuleThatIgnoresThem
     EXPECT_NE(config.error().message().find("strike_log_moneyness"), std::string::npos)
         << "the error must name the offending key: " << config.error().message();
   }
+  // Same for a delta under a rule that never reads one. The check keys off the
+  // key being NAMED, not off its value, so setting it to its own default is
+  // still refused -- otherwise `strike_abs_delta=0.25` under the default rule
+  // would be silently inert, exactly the bug class this seam exists to prevent.
+  for (const char *value : {"0.4", "0.25"}) {
+    const std::string body = std::string(kBaselineSpec) + "strike_abs_delta\t" + value + "\n";
+    const fs::path path = write_spec("atx_xb_delta_orphan", body);
+    auto config = read_dispersion_run_config(path);
+    ASSERT_FALSE(config.has_value()) << "an inert strike_abs_delta=" << value << " was accepted";
+    EXPECT_NE(config.error().message().find("strike_abs_delta"), std::string::npos)
+        << "the error must name the offending key: " << config.error().message();
+  }
+  // Explicitly setting a moneyness of 0 under the default rule is ALSO refused:
+  // it is inert regardless of being numerically harmless.
+  {
+    const std::string body = std::string(kBaselineSpec) + "strike_log_moneyness\t0\n";
+    const fs::path path = write_spec("atx_xb_moneyness_zero", body);
+    auto config = read_dispersion_run_config(path);
+    EXPECT_FALSE(config.has_value()) << "an inert strike_log_moneyness=0 was accepted";
+  }
   // An out-of-range delta is refused rather than clamped.
   for (const char *bad : {"0", "1", "1.5", "-0.25"}) {
     const std::string body =
