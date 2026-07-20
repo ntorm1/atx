@@ -600,17 +600,41 @@ Status american_implied_vol_batch(std::span<const double> price, double S,
                                   Side side, std::span<double> iv_out, std::span<Status> status_out,
                                   AmericanMethod method, double tol, std::uint16_t max_iter,
                                   const std::optional<AlOpts> &opts,
-                                  const CorrectionCache *correction) {
+                                  const CorrectionCache *correction, bool warm_start_chain) {
   const std::size_t n = price.size();
   if (K.size() != n || iv_out.size() != n || status_out.size() != n) {
     return Err(ErrorCode::InvalidArgument, "american_implied_vol_batch: span length mismatch");
   }
+  // P6 (perf F9): adjacent-lane warm-start chaining. All lanes share one side and
+  // (S, T, r, q); only (price, K) vary. On a strike-sorted batch the previous
+  // lane's converged root is a near-exact seed for the next (adjacent-strike IVs
+  // are near-equal). The seed is used only when the previous lane converged AND
+  // its strike is within one documented log-moneyness step (guards an unsorted or
+  // gapped batch); otherwise the per-quote European seed is used. The seed only
+  // shifts the Newton path, so iv_out is economic-parity to the cold path (bounded
+  // by the inverter's warm_start invariance: < 1e-9 cached, ~1e-6 cold-AL).
+  constexpr double kWarmChainMaxMoneynessStep = 0.15; // ln(K/K_prev) band; a smile step this
+                                                      // wide keeps the prior root in the
+                                                      // pricer's warm-reseed band
+  double warm = 0.0;     // previous lane's converged root (0 = cold seed)
+  double warm_lnK = 0.0; // its ln(K)
+  bool have_warm = false;
   for (std::size_t i = 0; i < n; ++i) {
+    double warm_seed = 0.0;
+    if (warm_start_chain && have_warm && K[i] > 0.0 &&
+        std::fabs(std::log(K[i]) - warm_lnK) <= kWarmChainMaxMoneynessStep) {
+      warm_seed = warm;
+    }
     Result<double> iv = american_implied_vol(price[i], S, K[i], T, r, q, side, method, tol,
-                                             max_iter, opts, correction);
+                                             max_iter, opts, correction, warm_seed);
     if (iv) {
       iv_out[i] = *iv;
       status_out[i] = Ok();
+      if (warm_start_chain && K[i] > 0.0) {
+        warm = *iv;
+        warm_lnK = std::log(K[i]);
+        have_warm = true;
+      }
     } else {
       // Match the library batch convention: NaN value slot + parallel status.
       iv_out[i] = std::numeric_limits<double>::quiet_NaN();

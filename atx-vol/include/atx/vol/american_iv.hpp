@@ -92,6 +92,19 @@ american_implied_vol(double price, double S, double K, double T, double r, doubl
 // inverted vol (or NaN on a lane failure) and each `status_out[i]` the per-lane
 // Status. `price`, `K`, `iv_out`, and `status_out` must all have equal length.
 //
+// @param warm_start_chain  P6 / perf F9. When true, each lane seeds its Newton
+//                 search from the previous lane's converged root (all lanes share
+//                 one side), falling back to the per-quote European seed when the
+//                 previous lane failed or its strike is more than a documented
+//                 log-moneyness step away. On a strike-sorted CACHED batch this
+//                 chains near-equal adjacent-strike IVs and cuts residual evals
+//                 materially (measured 65 -> 42 on an 11-lane put ladder). The seed
+//                 only shifts the Newton PATH: `iv_out` is economic-parity to the
+//                 false (cold) path — bounded by the inverter's warm_start
+//                 invariance (< 1e-9 on the cached map, ~1e-6 on the cold
+//                 Andersen-Lake map, whose 2-step polish is seed-dependent), far
+//                 below any economic budget. Default false.
+//
 // @return InvalidArgument on a span-length mismatch; otherwise Ok() with every
 //         lane written (a lane's own failure lives in status_out[i]).
 [[nodiscard]] Status american_implied_vol_batch(
@@ -99,6 +112,6 @@ american_implied_vol(double price, double S, double K, double T, double r, doubl
     double q, Side side, std::span<double> iv_out, std::span<Status> status_out,
     AmericanMethod method = AmericanMethod::AndersenLake, double tol = 1.0e-7,
     std::uint16_t max_iter = 64, const std::optional<AlOpts> &opts = std::nullopt,
-    const CorrectionCache *correction = nullptr);
+    const CorrectionCache *correction = nullptr, bool warm_start_chain = false);
 
 } // namespace atx::vol

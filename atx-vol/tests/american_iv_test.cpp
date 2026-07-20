@@ -501,6 +501,146 @@ TEST(AmericanIv, Batch_SpanLengthMismatch_ReturnsInvalidArgument) {
   EXPECT_EQ(s.error().code(), atx::vol::ErrorCode::InvalidArgument);
 }
 
+// ── P6 (perf F9): warm-start chaining on the public IV batch ──────────────
+//
+// ECONOMIC-PARITY gate (PM ruling, reclassified from bit-identity). Warm chaining
+// changes only the Newton SEED, but the safeguarded (rtsafe) inversion converges
+// on |dx| < tol (1e-7), NOT on the machine root, so two seeds land on roots that
+// agree only to ~tol; the cold Andersen-Lake path's 2-step post-convergence polish
+// (american_iv.cpp:512-553) is likewise seed-dependent and widens the gap on the
+// short-dated put wing. Measured max |ΔIV| on this COLD-AL grid is ~1.2e-6 — the
+// same order the pre-existing WarmStartResultInvariantToSeed test bounds the cold
+// warm_start at (1e-6), and ~4 orders below calib.cpp's 1e-4 de-Am economic budget.
+// This grid pins the cold-AL path < 1e-5; the CACHED production hot path (no polish)
+// is far tighter and pinned < 1e-9 in Batch_WarmChain_EconomicParityCachedPath.
+TEST(AmericanIv, Batch_WarmChain_EconomicParityToColdAcrossGrid) {
+  // A gentle smile so every quote is genuinely invertible with a sigma root.
+  const auto smile = [](double k_log) { return 0.20 + 0.15 * k_log * k_log; };
+  const double S = 100.0;
+  const std::array<double, 13> K{70.0, 75.0,  80.0,  85.0,  90.0,  95.0, 100.0,
+                                 105.0, 110.0, 115.0, 120.0, 125.0, 130.0};
+
+  struct Regime {
+    double T, r, q;
+  };
+  int checked = 0;
+  double max_drift = 0.0;
+  for (const Regime g : {Regime{0.25, 0.05, 0.00}, Regime{0.75, 0.03, 0.015},
+                         Regime{1.50, 0.02, 0.04}}) {
+    for (const Side side : {Side::Call, Side::Put}) {
+      std::array<double, 13> price{};
+      for (std::size_t i = 0; i < K.size(); ++i) {
+        price[i] = value_or_fail(american_price(S, K[i], g.T, smile(std::log(K[i] / S)), g.r, g.q,
+                                                side, AmericanMethod::AndersenLake));
+      }
+      std::array<double, 13> iv_cold{}, iv_warm{};
+      std::array<atx::vol::Status, 13> st_cold{}, st_warm{};
+      const auto sc = american_implied_vol_batch(price, S, K, g.T, g.r, g.q, side, iv_cold, st_cold,
+                                                 AmericanMethod::AndersenLake, 1.0e-7, 64,
+                                                 std::nullopt, nullptr, /*warm_start_chain=*/false);
+      const auto sw = american_implied_vol_batch(price, S, K, g.T, g.r, g.q, side, iv_warm, st_warm,
+                                                 AmericanMethod::AndersenLake, 1.0e-7, 64,
+                                                 std::nullopt, nullptr, /*warm_start_chain=*/true);
+      ASSERT_TRUE(sc.has_value());
+      ASSERT_TRUE(sw.has_value());
+      for (std::size_t i = 0; i < K.size(); ++i) {
+        ASSERT_EQ(st_cold[i].has_value(), st_warm[i].has_value()) << "K=" << K[i];
+        if (st_cold[i].has_value()) {
+          const double drift = std::fabs(iv_warm[i] - iv_cold[i]);
+          max_drift = std::fmax(max_drift, drift);
+          EXPECT_LT(drift, 1.0e-5)
+              << "warm-chain moved a root beyond the cold-AL parity budget: side=" << side_tag(side)
+              << " T=" << g.T << " K=" << K[i] << " cold=" << iv_cold[i] << " warm=" << iv_warm[i];
+          ++checked;
+        }
+      }
+    }
+  }
+  std::cout << "[P6 F9 parity] batch cold-AL cold-vs-warm max |dIV| = " << max_drift
+            << " (budget 1e-5; cached path pinned < 1e-9 separately)\n";
+  EXPECT_GT(checked, 0);
+}
+
+// Same economic-parity gate on the CACHED (correction-cache) forward map — the hot
+// path the fitter actually uses. No cold polish here, so the drift is tighter (a
+// few ULP), still bounded < 1e-9.
+TEST(AmericanIv, Batch_WarmChain_EconomicParityCachedPath) {
+  const double r = 0.05, q = 0.0, S = 100.0, T = 0.75;
+  const CorrectionCache cache = make_iv_correction(r, q); // Put cache
+  const std::array<double, 11> K{80.0, 84.0, 88.0, 92.0, 96.0,  100.0,
+                                 104.0, 108.0, 112.0, 116.0, 120.0};
+  std::array<double, 11> price{};
+  for (std::size_t i = 0; i < K.size(); ++i) {
+    price[i] = american_price_cached(S, K[i], T, 0.20 + 0.15 * std::log(K[i] / S) * std::log(K[i] / S),
+                                     r, q, Side::Put, &cache);
+  }
+  std::array<double, 11> iv_cold{}, iv_warm{};
+  std::array<atx::vol::Status, 11> st_cold{}, st_warm{};
+  ASSERT_TRUE(american_implied_vol_batch(price, S, K, T, r, q, Side::Put, iv_cold, st_cold,
+                                         AmericanMethod::AndersenLake, 1.0e-7, 64, std::nullopt,
+                                         &cache, /*warm_start_chain=*/false)
+                  .has_value());
+  ASSERT_TRUE(american_implied_vol_batch(price, S, K, T, r, q, Side::Put, iv_warm, st_warm,
+                                         AmericanMethod::AndersenLake, 1.0e-7, 64, std::nullopt,
+                                         &cache, /*warm_start_chain=*/true)
+                  .has_value());
+  for (std::size_t i = 0; i < K.size(); ++i) {
+    ASSERT_TRUE(st_cold[i].has_value() && st_warm[i].has_value()) << "K=" << K[i];
+    EXPECT_LT(std::fabs(iv_warm[i] - iv_cold[i]), 1.0e-9)
+        << "cached warm-chain moved a root beyond the parity budget at K=" << K[i];
+  }
+}
+
+// Counter proof (perf F9). Warm chaining seeds each lane from the previous lane's
+// root, so the batch spends FEWER residual/Newton evaluations than the cold
+// per-quote-seed batch for the (economic-parity) roots. `IvNewtonIters` is the always-on
+// solve-ledger plane, so the delta is proven on the shipping (counters-OFF)
+// binary; the gated `ClenshawSweeps` block adds the exact traversal delta for the
+// sprint-end counters-ON sweep. The exact cold vs warm counts are printed by the
+// test (see the [P6 F9 counters] line); the gate only requires warm < cold.
+TEST(AmericanIv, Batch_WarmChain_CutsResidualEvals) {
+  namespace led = atx::vol::counters::ledger;
+  using atx::vol::counters::Counter;
+  const double r = 0.05, q = 0.0, S = 100.0, T = 0.75;
+  const CorrectionCache cache = make_iv_correction(r, q); // Put cache
+  const std::array<double, 11> K{80.0, 84.0, 88.0, 92.0, 96.0,  100.0,
+                                 104.0, 108.0, 112.0, 116.0, 120.0};
+  std::array<double, 11> price{};
+  for (std::size_t i = 0; i < K.size(); ++i) {
+    price[i] = american_price_cached(S, K[i], T, 0.20 + 0.15 * std::log(K[i] / S) * std::log(K[i] / S),
+                                     r, q, Side::Put, &cache);
+  }
+  std::array<double, 11> iv{};
+  std::array<atx::vol::Status, 11> st{};
+
+  const auto run = [&](bool warm) -> std::pair<std::uint64_t, std::uint64_t> {
+    led::reset();
+    atx::vol::counters::reset();
+    const led::Counts before_led = led::snapshot();
+    const std::uint64_t before_sweeps = atx::vol::counters::snapshot().get(Counter::ClenshawSweeps);
+    EXPECT_TRUE(american_implied_vol_batch(price, S, K, T, r, q, Side::Put, iv, st,
+                                           AmericanMethod::AndersenLake, 1.0e-7, 64, std::nullopt,
+                                           &cache, warm)
+                    .has_value());
+    const std::uint64_t iters = (led::snapshot() - before_led).get(led::Solve::IvNewtonIters);
+    const std::uint64_t sweeps =
+        atx::vol::counters::snapshot().get(Counter::ClenshawSweeps) - before_sweeps;
+    return std::pair<std::uint64_t, std::uint64_t>{iters, sweeps};
+  };
+
+  const auto [cold_iters, cold_sweeps] = run(false);
+  const auto [warm_iters, warm_sweeps] = run(true);
+  std::cout << "[P6 F9 counters] batch IvNewtonIters cold=" << cold_iters << " warm=" << warm_iters
+            << " (always-on ledger)\n";
+  ASSERT_GT(cold_iters, 0u);
+  EXPECT_LT(warm_iters, cold_iters) << "warm chaining must reduce residual/Newton evaluations";
+  if constexpr (atx::vol::counters::counters_enabled()) {
+    std::cout << "[P6 F9 counters] batch ClenshawSweeps cold=" << cold_sweeps
+              << " warm=" << warm_sweeps << " (gated cnt_)\n";
+    EXPECT_LT(warm_sweeps, cold_sweeps);
+  }
+}
+
 TEST(AmericanIv, LightweightTelemetryMeasuresCompleteInversionKernel) {
   namespace lw = atx::vol::counters::lightweight;
   constexpr double S = 100.0;
