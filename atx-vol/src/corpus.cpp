@@ -10,6 +10,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <atomic>  // phase-timing counters
+#include <chrono>  // phase-timing clock
 #include <fstream>
 #include <iterator> // std::make_move_iterator
 #include <limits>
@@ -511,6 +513,39 @@ struct CorpusBuildArtifacts {
 
 void count_disposition(CorpusQualityReport &report, CorpusDisposition disposition) noexcept;
 
+
+// B1: process-global phase accumulators. Relaxed ordering throughout -- these are
+// diagnostics, never read to make a decision, and the only correctness
+// requirement is that concurrent adds do not tear.
+std::atomic<double> g_fit_fanout_s{0.0};
+std::atomic<double> g_archive_write_s{0.0};
+std::atomic<double> g_checkpoint_s{0.0};
+std::atomic<std::uint64_t> g_fanout_calls{0};
+std::atomic<std::uint64_t> g_boards_fitted{0};
+
+void add_seconds(std::atomic<double> &sink, double value) noexcept {
+  double expected = sink.load(std::memory_order_relaxed);
+  while (!sink.compare_exchange_weak(expected, expected + value, std::memory_order_relaxed)) {
+  }
+}
+
+// Scoped wall-clock accumulator.
+class PhaseTimer {
+public:
+  explicit PhaseTimer(std::atomic<double> &sink) noexcept
+      : sink_(sink), start_(std::chrono::steady_clock::now()) {}
+  ~PhaseTimer() {
+    const std::chrono::duration<double> elapsed = std::chrono::steady_clock::now() - start_;
+    add_seconds(sink_, elapsed.count());
+  }
+  PhaseTimer(const PhaseTimer &) = delete;
+  PhaseTimer &operator=(const PhaseTimer &) = delete;
+
+private:
+  std::atomic<double> &sink_;
+  std::chrono::steady_clock::time_point start_;
+};
+
 [[nodiscard]] bool admitted_surface(const FitSlot &slot, bool qualified) noexcept {
   return slot.status == CorpusFitStatus::Ok &&
          (!qualified || slot.admission.disposition == CorpusDisposition::Admitted);
@@ -542,9 +577,17 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
   }
   const bool qualified = admission != nullptr;
 
+
   // ── Fan out board fits; each worker writes its own disjoint slot ───────────
   std::vector<FitSlot> slots(n);
   Status schedule_status = Ok();
+  // B1: one PhaseTimer spans BOTH scheduler arms -- this is the pool whose
+  // per-date draining the batching change exists to eliminate, and
+  // `fanout_calls` counts exactly those drains.
+  g_fanout_calls.fetch_add(1u, std::memory_order_relaxed);
+  g_boards_fitted.fetch_add(static_cast<std::uint64_t>(n), std::memory_order_relaxed);
+  {
+    PhaseTimer fanout_timer(g_fit_fanout_s);
   if (cfg.warm_start_chain) {
     // C2 (perf): cross-date warm-start chains. Group boards into per-symbol chains
     // fit in chronological (date-ascending) order; each date carries the prior
@@ -658,6 +701,8 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
         detail::efficiency_core_tier_enabled() ? detail::FitAffinity::PerformanceThenEfficiencyCores
                                                : detail::FitAffinity::None);
   }
+
+  } // end fan-out timing scope
 
   if (!schedule_status) {
     return Err(schedule_status.error());
@@ -797,6 +842,7 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
                                              slots[idx].provenance});
         }
       }
+      PhaseTimer write_timer(g_archive_write_s);
       const Status w = write_surface_archive_v2_file(apath, items, cfg.write_opts);
       if (!w) {
         return Err(w.error()); // propagate IoError / AlreadyExists
@@ -990,6 +1036,25 @@ read_date_checkpoint(std::string_view out_dir, std::string_view date,
 
 } // namespace
 
+
+CorpusPhaseTimings corpus_phase_timings() noexcept {
+  CorpusPhaseTimings out;
+  out.fit_fanout_s = g_fit_fanout_s.load(std::memory_order_relaxed);
+  out.archive_write_s = g_archive_write_s.load(std::memory_order_relaxed);
+  out.checkpoint_s = g_checkpoint_s.load(std::memory_order_relaxed);
+  out.fanout_calls = g_fanout_calls.load(std::memory_order_relaxed);
+  out.boards_fitted = g_boards_fitted.load(std::memory_order_relaxed);
+  return out;
+}
+
+void reset_corpus_phase_timings() noexcept {
+  g_fit_fanout_s.store(0.0, std::memory_order_relaxed);
+  g_archive_write_s.store(0.0, std::memory_order_relaxed);
+  g_checkpoint_s.store(0.0, std::memory_order_relaxed);
+  g_fanout_calls.store(0u, std::memory_order_relaxed);
+  g_boards_fitted.store(0u, std::memory_order_relaxed);
+}
+
 CorpusBuildSession::CorpusBuildSession(std::string out_dir, QualifiedCorpusConfig cfg)
     : out_dir_{std::move(out_dir)}, cfg_{std::move(cfg)} {
   quality_.input_fingerprint = cfg_.input_fingerprint;
@@ -1154,9 +1219,14 @@ Status CorpusBuildSession::append_dates(std::span<const DateCells> dates) {
 
   // ── Phase 2: resume from per-date checkpoints (unchanged, still per date) ───
   for (PreparedDate &one : prepared) {
-    ATX_TRY(std::optional<CorpusDateCheckpoint> checkpoint,
-            read_date_checkpoint(out_dir_, one.date, one.symbols, one.input_fingerprint,
-                                 quality_.policy_fingerprint));
+    std::optional<CorpusDateCheckpoint> checkpoint;
+    {
+      PhaseTimer ckpt_timer(g_checkpoint_s);
+      ATX_TRY(std::optional<CorpusDateCheckpoint> read,
+              read_date_checkpoint(out_dir_, one.date, one.symbols, one.input_fingerprint,
+                                   quality_.policy_fingerprint));
+      checkpoint = std::move(read);
+    }
     if (checkpoint.has_value()) {
       one.manifest_entries = std::move(checkpoint->manifest.entries);
       one.quality_entries = std::move(checkpoint->quality.entries);
@@ -1261,9 +1331,12 @@ Status CorpusBuildSession::append_dates(std::span<const DateCells> dates) {
               [](const QualifiedCorpusEntry &lhs, const QualifiedCorpusEntry &rhs) {
                 return lhs.symbol < rhs.symbol;
               });
-    ATX_TRY_VOID(write_date_checkpoint(out_dir_, one.date, one.input_fingerprint,
-                                       quality_.policy_fingerprint, one.manifest_entries,
-                                       one.quality_entries));
+    {
+      PhaseTimer ckpt_timer(g_checkpoint_s);
+      ATX_TRY_VOID(write_date_checkpoint(out_dir_, one.date, one.input_fingerprint,
+                                         quality_.policy_fingerprint, one.manifest_entries,
+                                         one.quality_entries));
+    }
   }
 
   // ── Phase 5: fold into session state, strictly in date order ───────────────

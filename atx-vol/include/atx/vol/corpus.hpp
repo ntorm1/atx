@@ -328,6 +328,32 @@ struct QualifiedCorpusConfig {
   std::uint64_t policy_fingerprint{0};
 };
 
+// B1 (perf): cumulative wall time spent inside the corpus build, split by phase,
+// so a speedup can be attributed instead of guessed.
+//
+// This exists because the sprint's "3.4 of 16 average parallelism" is a
+// WHOLE-PROCESS figure covering an up-front 1.15 GB parquet ingest as well as the
+// fit fan-out. Those have opposite profiles -- bulk file reads bank almost no
+// CPU-seconds per wall-second, a CPU-bound fan-out banks many -- so a single
+// blended average cannot tell you which one to fix, and improving the fan-out can
+// move the blended number very little if ingest dominates the wall clock.
+//
+// Wall time per phase, summed across threads only where noted. Process-global and
+// monotonic; call `reset_corpus_phase_timings` to zero between measured regions.
+// Collected unconditionally (a handful of clock reads against multi-second
+// phases) but never printed unless a caller asks, and it cannot affect output
+// bytes.
+struct CorpusPhaseTimings {
+  double fit_fanout_s{0.0};    // run_bounded_fit_tasks, wall (not thread-summed)
+  double archive_write_s{0.0}; // uid restamp + write_surface_archive_v2_file
+  double checkpoint_s{0.0};    // per-date checkpoint read + write
+  std::uint64_t fanout_calls{0};   // pools spawned == date-boundary drains
+  std::uint64_t boards_fitted{0};  // boards handed to those pools
+};
+
+[[nodiscard]] CorpusPhaseTimings corpus_phase_timings() noexcept;
+void reset_corpus_phase_timings() noexcept;
+
 struct QualifiedCorpusManifest {
   CorpusManifest manifest{};
   CorpusQualityReport quality{};
