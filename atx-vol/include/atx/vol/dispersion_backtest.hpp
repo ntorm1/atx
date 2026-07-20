@@ -72,6 +72,9 @@ struct DispersionBacktestConfig {
   HedgeSpec::Kind hedge_kind{HedgeSpec::Kind::DeltaToZero};
   HedgeSpec::Cadence hedge_cadence{HedgeSpec::Cadence::Daily};
   DispersionRiskLimits limits{}; // X3; default unlimited
+  // X4 sizing/strike policies; both default to exactly the shipped construction.
+  WeightingScheme weighting{WeightingScheme::VegaNeutral};
+  StrikePolicy strike{};
 };
 
 // Construct the canonical surface-only dispersion strategy used by research
