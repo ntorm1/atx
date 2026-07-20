@@ -140,7 +140,11 @@ TEST(DispersionRunConfigStrict, SeveralUnknownKeysAreAllNamed) {
 }
 
 TEST(DispersionRunConfigStrict, UnsupportedEnumValueIsRejectedAndLostsTheLegalOnes) {
-  const std::string body = std::string(kBaselineSpec) + "weighting\tequal_vega\n";
+  // `equal_vega` was the unimplemented probe here; WS-X4 (bb5a144) shipped it as
+  // a real weighting scheme, so it now parses. Probe with a value genuinely
+  // outside the legal set {vega_neutral, equal_vega, gamma_neutral,
+  // theta_neutral} so this still exercises the reject-and-list-the-legal-ones path.
+  const std::string body = std::string(kBaselineSpec) + "weighting\tinverse_vega\n";
   const fs::path path = write_spec("atx-disp-cfg-enum", body);
 
   const Result<DispersionRunConfig> config = read_dispersion_run_config(path);
