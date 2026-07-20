@@ -247,3 +247,77 @@ Sizing is already pure/stateless and missing-name handling already degrades clea
 **Per-workstream deliverable:** compressed report (change, files, gate result, perf delta, determinism), conventional commits, PM integrates + gates each merge. Add `dispersion_replay_bench` + `surfdb_build_bench` as CI perf guards. Every correctness fix ships with a regression test; every perf lever ships a before/after ns/op and a parity/determinism proof.
 
 **Projected outcome if Wave 0–2 land:** replay **~2.5–3×** (packing + rho-tier), build-corpus **~2×** (the real wall for long runs), realistic PnL (costs+financing), point-in-time universe, and a typed, testable, live-reusable dispersion library API — with the golden reproducibility pin preserved (or explicitly, auditably refreshed).
+
+---
+
+## 7. WS-B1 corpus-build parallelism — outcome, falsified premises, and WS-B2 scope
+
+### 7.1 Two premises this workstream falsified
+
+**"Cross-date batching trades away bit-identity, because fitted surfaces
+warm-start from the previous date."** False on the path the sprint actually
+runs. `CorpusConfig::warm_start_chain` defaults to `false`,
+`dispersion_corpus_config` never sets it, and the only `true` assignments in the
+repo are in `corpus_test.cpp`. The production build takes the else-branch in
+`build_corpus_core`, where `fit_board` is pure w.r.t. shared state. There is no
+cross-date data dependency to preserve, so saturating the pool across dates costs
+nothing numerically — the "hard tradeoff" framing was an artifact of reading the
+warm-chain branch as if it were live.
+
+**"A date's makespan is set by one dominant board (the index board dwarfs the
+single names), so intra-date scheduling could never help."** Also false, and this
+one was introduced by WS-B1 itself before being measured. Over the real OPRA tree
+(51 symbols x 135 dates, input bytes as the cost proxy): the index board is the
+largest at ~337 KB mean vs a ~56 KB median single name — 6x the median — but only
+**9.3%** of a date's total bytes, with the top three at ~19%. A board at 9% of the
+work cannot pin average parallelism at 3.4/16; a schedule bounded only by that
+board still reaches ~10. The defensible statement is narrower: `append_date`
+joins its pool per date, so a date's tail necessarily runs with idle workers, and
+the only source of more independent work is a later date.
+
+### 7.2 What WS-B1 changed
+
+`CorpusBuildSession::append_dates` fits N dates' boards in ONE
+`run_bounded_fit_tasks` instead of one pool per date; `append_date` is a
+one-element call into it, so there is a single implementation.
+`dispersion_build_corpus` drives a bounded window
+(`ATX_VOL_CORPUS_DATE_BATCH`, default 8) so peak live fitted surfaces and the
+work a crash discards stay bounded; checkpoints still commit per date.
+Byte-identity is gated by tests comparing archive BYTES (batched vs per-date, 1
+vs 8 workers, checkpoint-resume), not argued.
+
+### 7.3 The open question that sizes WS-B2
+
+`3.4/16` is a WHOLE-PROCESS average and has not been decomposed.
+`dispersion_build_corpus` calls `load_opra_daterange` for the entire range up
+front — 7021 parquet files, 1.15 GB — before the append loop begins. Those reads
+are parallel but I/O-bound, banking few CPU-seconds per wall-second, which
+depresses the whole-process average with no date-boundary drain required. **If
+ingest is a large share of wall time, WS-B1 improves the fan-out substantially
+while moving end-to-end wall time much less.** Fan-out speedup and end-to-end
+speedup are therefore reported as two separate numbers; a fit-phase win must not
+be presented as a corpus-build win.
+
+### 7.4 WS-B2 (ingest/fit overlap) — scoped, NOT started
+
+Make ingest yield dates incrementally so fitting starts on date 1 while date 40
+is still being read, feeding the WS-B1 window from a bounded ready-queue. The
+read side already fans out into pre-sized disjoint slots, so this is a new
+streaming entry point beside the existing batch one, not a rewrite. Cost is
+dominated not by the plumbing but by the error policy: today a malformed spec is
+a top-level `Err` raised before any parallel work, and a streaming version must
+decide what happens when date 3 fails after date 1 is already fitted and
+checkpointed.
+
+> **PRIMARY INVARIANT, ahead of any performance goal.** Ingest currently
+> establishes the complete date list up front, and `session.finish()` plus the
+> input fingerprint accumulate over dates **in order**. A streaming version that
+> commits dates as they become *ready* rather than in *date order* changes the
+> corpus fingerprint **without changing a single fitted surface**. That is a
+> byte-identity break with no numerical cause, and it is the hardest kind to
+> diagnose after the fact, because every surface still compares equal and only
+> the index disagrees. Order-preservation gets its own byte gate BEFORE any
+> timing is measured.
+
+Proceed only if the WS-B1 phase split shows ingest to be a large share of wall
+time; otherwise the lever is not worth its risk.

@@ -715,6 +715,58 @@ Status verify_backtest(const fs::path &backtest_path, const fs::path &reconcilia
   return Ok();
 }
 
+// B1 (perf): how many dates share ONE corpus fit fan-out. Read once.
+//
+// 1 reproduces the historical per-date behaviour exactly (one pool per date).
+// The default is a compromise: large enough that the pool always has several
+// dates' worth of big boards to overlap across a date boundary, small enough
+// that peak live fitted surfaces -- and the work a crash between checkpoint
+// commits discards -- stay bounded. Output bytes do NOT depend on this value;
+// it is a scheduling knob, which is exactly what makes it safe to tune.
+// B1: print the phase split when ATX_VOL_CORPUS_PHASE_TIMING is set to anything
+// other than "0". Collection is unconditional and cheap; only the report is gated.
+[[nodiscard]] bool corpus_phase_timing_enabled() noexcept {
+  static const bool value = []() noexcept -> bool {
+#if defined(_MSC_VER)
+    char *raw = nullptr;
+    std::size_t size = 0;
+    if (::_dupenv_s(&raw, &size, "ATX_VOL_CORPUS_PHASE_TIMING") != 0 || raw == nullptr) {
+      return false;
+    }
+    const bool on = raw[0] != '\0' && raw[0] != '0';
+    std::free(raw);
+    return on;
+#else
+    const char *raw = std::getenv("ATX_VOL_CORPUS_PHASE_TIMING");
+    return raw != nullptr && raw[0] != '\0' && raw[0] != '0';
+#endif
+  }();
+  return value;
+}
+
+[[nodiscard]] std::size_t corpus_date_batch_size() noexcept {
+  static const std::size_t value = []() noexcept -> std::size_t {
+    constexpr std::size_t kDefault = 8u;
+#if defined(_MSC_VER)
+    char *raw = nullptr;
+    std::size_t size = 0;
+    if (::_dupenv_s(&raw, &size, "ATX_VOL_CORPUS_DATE_BATCH") != 0 || raw == nullptr) {
+      return kDefault;
+    }
+    const unsigned long parsed = std::strtoul(raw, nullptr, 10);
+    std::free(raw);
+#else
+    const char *raw = std::getenv("ATX_VOL_CORPUS_DATE_BATCH");
+    if (raw == nullptr) {
+      return kDefault;
+    }
+    const unsigned long parsed = std::strtoul(raw, nullptr, 10);
+#endif
+    return parsed == 0u ? kDefault : static_cast<std::size_t>(parsed);
+  }();
+  return value;
+}
+
 } // namespace
 
 // ── Public: fingerprints + corpus config ────────────────────────────────────
@@ -1549,8 +1601,20 @@ Status dispersion_build_corpus(const fs::path &source_spec_path, const fs::path 
   if (spec.core_mode && symbols.size() < 51u) {
     return Err(ErrorCode::InvalidArgument, "core mode requires SPY plus at least 50 names");
   }
+  // B1: time the up-front ingest separately from everything after it. This is
+  // the measurement that decides whether cross-date batching is worth anything
+  // END-TO-END: `load_opra_daterange` reads the whole date range (thousands of
+  // parquet files) BEFORE any fitting starts, and bulk file reads bank very few
+  // CPU-seconds per wall-second. A whole-process parallelism average blends that
+  // with the CPU-bound fan-out and can look low for reasons no scheduler change
+  // can fix.
+  reset_corpus_phase_timings();
+  const auto t_ingest_begin = std::chrono::steady_clock::now();
   ATX_TRY(OpraBatchResult batch,
           load_opra_daterange(batch_spec(spec, symbols, spec.date_lo, spec.date_hi)));
+  const double ingest_s =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t_ingest_begin).count();
+  const auto t_build_begin = std::chrono::steady_clock::now();
 
   std::error_code fs_error;
   fs::create_directories(run_dir / "archives", fs_error);
@@ -1567,6 +1631,53 @@ Status dispersion_build_corpus(const fs::path &source_spec_path, const fs::path 
       dispersion_corpus_config(policy, spec.fit_workers, input_fingerprint);
   ATX_TRY(CorpusBuildSession session,
           CorpusBuildSession::create((run_dir / "archives").string(), config));
+  // B1 (perf): fit several dates per fan-out instead of one.
+  //
+  // `append_date` spawns and joins a worker pool per date, so the pool drains at
+  // every date boundary: once fewer tasks remain than there are workers, the
+  // tail of the date runs with idle cores, and no intra-date scheduling can fix
+  // that because within a date there is no work left to hand them. Batching
+  // `date_batch` dates into ONE fan-out is the only way to give those workers
+  // independent work -- boards from a LATER date, which this path is free to
+  // start early precisely because no warm-start chain couples the dates.
+  //
+  // Sizing the win needs the per-board cost distribution and the split between
+  // this fan-out and the serial phases around it (parquet ingest, archive write,
+  // checkpoint I/O); see the sprint report for the measured figures. Note the
+  // board-size skew is milder than a "one dominant board" story suggests: the
+  // index board is ~6x the median single name by input bytes but still only
+  // ~9% of a date's total, so the drain is the shape of the tail, not one
+  // board setting the makespan.
+  //
+  // Bit-identity is preserved, not assumed: the fit of a board depends only on
+  // that board and the config (`fit_board` is pure w.r.t. shared state and this
+  // path sets no warm-start chain), and output order is re-established by an
+  // explicit (date asc, symbol asc) sort rather than by completion order.
+  //
+  // The window is bounded rather than "all dates" so peak live fitted surfaces
+  // (and the work a crash discards) stay bounded; checkpoints still commit per
+  // date. Override with ATX_VOL_CORPUS_DATE_BATCH for measurement.
+  const std::size_t date_batch = corpus_date_batch_size();
+  std::vector<std::string> window_dates;
+  std::vector<std::vector<CorpusCellInput>> window_cells;
+  window_dates.reserve(date_batch);
+  window_cells.reserve(date_batch);
+
+  const auto flush_window = [&]() -> Status {
+    if (window_dates.empty()) {
+      return Ok();
+    }
+    std::vector<CorpusBuildSession::DateCells> batched;
+    batched.reserve(window_dates.size());
+    for (std::size_t i = 0; i < window_dates.size(); ++i) {
+      batched.push_back(CorpusBuildSession::DateCells{window_dates[i], window_cells[i]});
+    }
+    ATX_TRY_VOID(session.append_dates(batched));
+    window_dates.clear();
+    window_cells.clear();
+    return Ok();
+  };
+
   std::size_t cursor = 0;
   while (cursor < batch.entries.size()) {
     const std::string date = batch.entries[cursor].date;
@@ -1587,9 +1698,16 @@ Status dispersion_build_corpus(const fs::path &source_spec_path, const fs::path 
         cells.emplace_back(std::move(failure));
       }
     }
-    ATX_TRY_VOID(session.append_date(date, cells));
+    window_dates.push_back(date);
+    window_cells.push_back(std::move(cells));
+    if (window_dates.size() >= date_batch) {
+      ATX_TRY_VOID(flush_window());
+    }
   }
+  ATX_TRY_VOID(flush_window());
   ATX_TRY(QualifiedCorpusManifest built, session.finish());
+  const double build_s =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t_build_begin).count();
   ATX_TRY_VOID(write_manifest_file((run_dir / "surface_manifest.tsv").string(), built.manifest));
   ATX_TRY_VOID(write_quality_report_file((run_dir / "quality.tsv").string(), built.quality));
   fs::copy_file(spec.universe_path, run_dir / "universe_schedule.tsv",
@@ -1610,6 +1728,21 @@ Status dispersion_build_corpus(const fs::path &source_spec_path, const fs::path 
   ATX_TRY_VOID(write_resolved_spec(run_dir / "run_spec.tsv", persisted_spec));
   std::printf("built qualified corpus: admitted=%u quarantined=%u source_failed=%u\n",
               built.quality.n_admitted, built.quality.n_quarantined, built.quality.n_source_failed);
+  if (corpus_phase_timing_enabled()) {
+    const CorpusPhaseTimings phases = corpus_phase_timings();
+    // "other" is build-phase wall NOT attributed to a named phase: board
+    // construction from the OPRA panels, manifest/quality assembly, and the
+    // session bookkeeping between dates. Printed rather than hidden so the parts
+    // sum to the whole and a large residual stays visible instead of being
+    // silently absorbed into a phase it does not belong to.
+    const double named = phases.fit_fanout_s + phases.archive_write_s + phases.checkpoint_s;
+    std::printf("PHASE ingest_s=%.2f build_s=%.2f fit_fanout_s=%.2f archive_write_s=%.2f "
+                "checkpoint_s=%.2f other_s=%.2f fanout_calls=%llu boards=%llu date_batch=%zu\n",
+                ingest_s, build_s, phases.fit_fanout_s, phases.archive_write_s,
+                phases.checkpoint_s, build_s - named,
+                static_cast<unsigned long long>(phases.fanout_calls),
+                static_cast<unsigned long long>(phases.boards_fitted), date_batch);
+  }
   return Ok();
 }
 

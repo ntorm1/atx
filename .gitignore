@@ -107,6 +107,8 @@ atx-vol/tests/data/**/*.dbn.zst
 atx-vol/python/report_out_real/
 .replay-xb/
 
-# Per-worktree FetchContent dependency tree (-DFETCHCONTENT_BASE_DIR)
+# FetchContent isolated dependency trees (per-worktree, never committed).
+# Set via -DFETCHCONTENT_BASE_DIR to keep parallel worktrees from sharing a
+# build object tree and racing on _ITERATOR_DEBUG_LEVEL.
 deps/
 build-rel-avx2/

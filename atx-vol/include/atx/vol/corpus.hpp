@@ -328,6 +328,32 @@ struct QualifiedCorpusConfig {
   std::uint64_t policy_fingerprint{0};
 };
 
+// B1 (perf): cumulative wall time spent inside the corpus build, split by phase,
+// so a speedup can be attributed instead of guessed.
+//
+// This exists because the sprint's "3.4 of 16 average parallelism" is a
+// WHOLE-PROCESS figure covering an up-front 1.15 GB parquet ingest as well as the
+// fit fan-out. Those have opposite profiles -- bulk file reads bank almost no
+// CPU-seconds per wall-second, a CPU-bound fan-out banks many -- so a single
+// blended average cannot tell you which one to fix, and improving the fan-out can
+// move the blended number very little if ingest dominates the wall clock.
+//
+// Wall time per phase, summed across threads only where noted. Process-global and
+// monotonic; call `reset_corpus_phase_timings` to zero between measured regions.
+// Collected unconditionally (a handful of clock reads against multi-second
+// phases) but never printed unless a caller asks, and it cannot affect output
+// bytes.
+struct CorpusPhaseTimings {
+  double fit_fanout_s{0.0};    // run_bounded_fit_tasks, wall (not thread-summed)
+  double archive_write_s{0.0}; // uid restamp + write_surface_archive_v2_file
+  double checkpoint_s{0.0};    // per-date checkpoint read + write
+  std::uint64_t fanout_calls{0};   // pools spawned == date-boundary drains
+  std::uint64_t boards_fitted{0};  // boards handed to those pools
+};
+
+[[nodiscard]] CorpusPhaseTimings corpus_phase_timings() noexcept;
+void reset_corpus_phase_timings() noexcept;
+
 struct QualifiedCorpusManifest {
   CorpusManifest manifest{};
   CorpusQualityReport quality{};
@@ -359,6 +385,37 @@ public:
   // Dates must be strictly ascending. Every cell key must match `date`, and
   // canonical symbols must be unique within the batch.
   [[nodiscard]] Status append_date(std::string_view date, std::span<const CorpusCellInput> cells);
+
+  // One date's cells, for the batched `append_dates` entry point below.
+  struct DateCells {
+    std::string_view date{};
+    std::span<const CorpusCellInput> cells{};
+  };
+
+  // B1 (perf): append SEVERAL dates in ONE fit fan-out.
+  //
+  // Semantically identical to calling `append_date` once per element in order --
+  // same archives, same manifest/quality entries in the same order, same
+  // per-date checkpoints -- but the boards of every not-yet-checkpointed date in
+  // the batch are fitted by a SINGLE `run_bounded_fit_tasks` pool instead of one
+  // pool per date. `append_date` drains its pool at every date boundary, so once
+  // a date has fewer tasks left than workers its tail runs with idle cores, and
+  // no intra-date scheduling can fill them because within a date there is no
+  // work left. Batching supplies that work from a LATER date -- which is only
+  // legal because no warm-start chain couples the dates on this path.
+  //
+  // Byte-identity: `fit_board` is pure w.r.t. shared state (see
+  // corpus_board_fit.hpp) and this session's fit path sets no warm-start chain
+  // (`CorpusConfig::warm_start_chain` is false here), so a board's fitted bytes
+  // depend only on the board and the config -- never on which other boards share
+  // its pool, nor on worker count or completion order. Output ordering is
+  // re-established by an explicit (date asc, symbol asc) sort downstream, not by
+  // the order tasks happen to finish.
+  //
+  // Batch size trades pool saturation against peak live fitted surfaces (memory)
+  // and against how much work a crash discards -- checkpoints still commit per
+  // date, but only after the whole batch's fan-out completes.
+  [[nodiscard]] Status append_dates(std::span<const DateCells> dates);
 
   [[nodiscard]] Result<QualifiedCorpusManifest> finish();
 
