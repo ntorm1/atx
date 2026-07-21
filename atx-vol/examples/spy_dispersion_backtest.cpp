@@ -703,9 +703,10 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
   config.snapshot_cache = std::make_shared<SnapshotCache>();
   if (cold) {
     // Route P canonical: cold certified economics both sides, no fast tier attached.
-    // Record policy reprices the projected definitions through the ColdReference route;
-    // the engine gate permits the strategy's Configured-required economics with a cold
-    // price execution precisely because no fast query tier is prepared.
+    // Record policy reprices the projected definitions through the ColdReference route.
+    // required_economic_execution() == Configured means "no cold requirement": the
+    // engine gate only enforces anything when a strategy requires ColdReference, so a
+    // Record strategy runs under any execution, including this explicit cold override.
     config.price.query_execution = QueryExecution::ColdReference;
   } else {
     // Attaching the prepared fast tier (with_query_pricing, propagated by
@@ -767,6 +768,12 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
   }
   if (!div_out) {
     return Err(ErrorCode::IoError, "cannot flush mark divergence");
+  }
+  // An empty mark_divergence.tsv must mean "every roll fired and none diverged",
+  // never "the replay silently skipped rolls" — this file is the evidence channel
+  // for the parity report's zero-divergence claim.
+  if (!divergence_strategy.all_rolls_consumed()) {
+    return Err(ErrorCode::Unavailable, "divergence replay did not consume every scheduled roll");
   }
 
   // Primary priced run: the same strategy-aware engine as run-backtest, under the

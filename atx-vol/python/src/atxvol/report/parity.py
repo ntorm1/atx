@@ -91,14 +91,6 @@ def _read_tsv(path: str) -> tuple[list[str], list[dict[str, str]]]:
     return header, rows
 
 
-def _floats(rows: Sequence[dict[str, str]], name: str) -> list[float]:
-    out = []
-    for r in rows:
-        v = r.get(name, "")
-        out.append(float(v) if v not in ("", None) else float("nan"))
-    return out
-
-
 # ── Stats ────────────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
@@ -155,14 +147,6 @@ def _money(v: float, dp: int = 0) -> str:
     if v is None or not math.isfinite(v):
         return "--"
     return f"{'-' if v < 0 else ''}${abs(v):,.{dp}f}"
-
-
-def _cum(values: Sequence[float]) -> list[float]:
-    out, run = [], 0.0
-    for v in values:
-        run += v if math.isfinite(v) else 0.0
-        out.append(run)
-    return out
 
 
 def _short(dates: Sequence[str]) -> list[str]:

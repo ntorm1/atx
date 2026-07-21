@@ -67,8 +67,11 @@ public:
   }
   // ExactArchive replays the frozen archive marks exactly, so its economics stay
   // ColdReference (the engine gate keeps it off any fast query tier). Record
-  // deliberately reprices the same frozen definitions through the interpolated
-  // Configured route, so it requires — and permits — Configured economics.
+  // reprices the same frozen definitions live; returning Configured means "no
+  // cold requirement" — the engine gate (backtest.cpp) only enforces anything
+  // when this returns ColdReference, so a Record run may execute under ANY
+  // QueryExecution, including an explicit ColdReference override (the canonical
+  // projected-cold route relies on exactly that).
   [[nodiscard]] QueryExecution required_economic_execution() const noexcept override {
     return policy_ == ScheduleMarkPolicy::Record ? QueryExecution::Configured
                                                  : QueryExecution::ColdReference;
