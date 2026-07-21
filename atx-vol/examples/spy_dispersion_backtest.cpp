@@ -827,66 +827,16 @@ Status project_schedule_command(const fs::path &run_dir) {
   return Ok();
 }
 
-// Projected replay of a listed-format schedule. `--execution configured` (default) is
-// the Task 2 diagnostic: reprice through the fast cached-surrogate tier under
-// QueryExecution::Configured (genuine interpolation) — its fast-tier accuracy gap is
-// under separate investigation. `--execution cold` is route P canonical: no fast tier,
-// QueryExecution::ColdReference with ScheduleMarkPolicy::Record (Configured-required
-// economics permitted with a cold price execution while no fast tier is prepared).
-// Records per-roll mark divergence between the frozen schedule marks and the live seed
-// marks. `--schedule` selects the input schedule (default trade_schedule.tsv);
-// `--out` the backtest output (default projected_backtest.tsv).
-Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &schedule_file,
-                                      const std::string &execution, const fs::path &out_file) {
-  const auto cmd_start = PhaseTimer::now();
-  PhaseTimer timer(
-      {"setup_read", "divergence_replay", "archive_load", "priced_run", "write_outputs"});
-
-  if (execution != "configured" && execution != "cold") {
-    return Err(ErrorCode::InvalidArgument,
-               "run-projected-backtest: --execution must be 'configured' or 'cold'");
-  }
-  const bool cold = execution == "cold";
-  auto phase = PhaseTimer::now();
-  ATX_TRY(RunSpec spec, read_run_spec(run_dir / "run_spec.tsv"));
-  ATX_TRY(CorpusManifest manifest, read_manifest_file((run_dir / "surface_manifest.tsv").string()));
-  ATX_TRY(Clock clock, Clock::from_manifest(manifest));
-  ATX_TRY(ListedDispersionSchedule schedule,
-          read_listed_dispersion_schedule_file((run_dir / schedule_file).string()));
-
-  // Shared query route for the divergence replay and the priced run.
-  RunConfig config;
-  config.unpriced = UnpricedLotPolicy::Error;
-  config.snapshot_cache = std::make_shared<SnapshotCache>();
-  if (cold) {
-    // Route P canonical: cold certified economics both sides, no fast tier attached.
-    // Record policy reprices the projected definitions through the ColdReference route.
-    // required_economic_execution() == Configured means "no cold requirement": the
-    // engine gate only enforces anything when a strategy requires ColdReference, so a
-    // Record strategy runs under any execution, including this explicit cold override.
-    config.price.query_execution = QueryExecution::ColdReference;
-  } else {
-    // Attaching the prepared fast tier (with_query_pricing, propagated by
-    // MarketSnapshot::load with no silent cold fallback) makes the Configured queries
-    // genuinely interpolate the cached surrogate instead of reproducing the cold
-    // archive marks.
-    config.query_pricing_tier = QueryPricingTier::RepresentativeFast;
-    config.price.query_execution = QueryExecution::Configured;
-  }
-  timer.add("setup_read", phase);
-
-  // mark_divergence.tsv: last_mark_divergences() is cleared every step and the
-  // engine's run_backtest loop hides per-step strategy state, so drive a separate
-  // Record replay here and snapshot the record after each roll step.
-  //
-  // divergence_replay (count=sessions) times this whole replay; the per-session
-  // MarketSnapshot::load inside it is ALSO accumulated into archive_load
-  // (count=loads), so archive_load is a measured subset of divergence_replay. The
-  // priced run's loads go through the snapshot cache inside run_backtest and are
-  // not separately measurable here.
+// Drive the separate Record replay that produces mark_divergence.tsv: the engine's
+// run_backtest loop hides per-step strategy state, so replay here and snapshot
+// last_mark_divergences() after each roll step. The per-session MarketSnapshot::load is
+// accumulated into archive_load (count=loads), a measured subset of divergence_replay.
+Status write_mark_divergence_replay(const fs::path &run_dir,
+                                    const ListedDispersionSchedule &schedule, const Clock &clock,
+                                    const RunConfig &config, double delta_band, PhaseTimer &timer) {
   const auto div_start = PhaseTimer::now();
   ATX_TRY(ListedDispersionStrategy divergence_strategy,
-          ListedDispersionStrategy::create(schedule, spec.delta_band, ScheduleMarkPolicy::Record));
+          ListedDispersionStrategy::create(schedule, delta_band, ScheduleMarkPolicy::Record));
   PortfolioState divergence_book;
   std::uint64_t divergence_next_id = 1;
   std::ofstream div_out(run_dir / "mark_divergence.tsv", std::ios::binary | std::ios::trunc);
@@ -943,6 +893,70 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
     return Err(ErrorCode::Unavailable, "divergence replay did not consume every scheduled roll");
   }
   timer.add("divergence_replay", div_start, clock.size());
+  return Ok();
+}
+
+// Projected replay of a listed-format schedule. `--execution configured` (default) is
+// the Task 2 diagnostic: reprice through the fast cached-surrogate tier under
+// QueryExecution::Configured (genuine interpolation) — its fast-tier accuracy gap is
+// under separate investigation. `--execution cold` is route P canonical: no fast tier,
+// QueryExecution::ColdReference with ScheduleMarkPolicy::Record (Configured-required
+// economics permitted with a cold price execution while no fast tier is prepared).
+// Records per-roll mark divergence between the frozen schedule marks and the live seed
+// marks. `--schedule` selects the input schedule (default trade_schedule.tsv);
+// `--out` the backtest output (default projected_backtest.tsv). `--no-divergence` skips
+// the mark-divergence replay pass (and its mark_divergence.tsv output), leaving only the
+// priced backtest — the bare-backtest wall-time path. The priced run is independent of
+// the replay, so the backtest output is byte-identical either way.
+Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &schedule_file,
+                                      const std::string &execution, const fs::path &out_file,
+                                      bool skip_divergence) {
+  const auto cmd_start = PhaseTimer::now();
+  PhaseTimer timer(
+      {"setup_read", "divergence_replay", "archive_load", "priced_run", "write_outputs"});
+
+  if (execution != "configured" && execution != "cold") {
+    return Err(ErrorCode::InvalidArgument,
+               "run-projected-backtest: --execution must be 'configured' or 'cold'");
+  }
+  const bool cold = execution == "cold";
+  auto phase = PhaseTimer::now();
+  ATX_TRY(RunSpec spec, read_run_spec(run_dir / "run_spec.tsv"));
+  ATX_TRY(CorpusManifest manifest, read_manifest_file((run_dir / "surface_manifest.tsv").string()));
+  ATX_TRY(Clock clock, Clock::from_manifest(manifest));
+  ATX_TRY(ListedDispersionSchedule schedule,
+          read_listed_dispersion_schedule_file((run_dir / schedule_file).string()));
+
+  // Shared query route for the divergence replay and the priced run.
+  RunConfig config;
+  config.unpriced = UnpricedLotPolicy::Error;
+  config.snapshot_cache = std::make_shared<SnapshotCache>();
+  if (cold) {
+    // Route P canonical: cold certified economics both sides, no fast tier attached.
+    // Record policy reprices the projected definitions through the ColdReference route.
+    // required_economic_execution() == Configured means "no cold requirement": the
+    // engine gate only enforces anything when a strategy requires ColdReference, so a
+    // Record strategy runs under any execution, including this explicit cold override.
+    config.price.query_execution = QueryExecution::ColdReference;
+  } else {
+    // Attaching the prepared fast tier (with_query_pricing, propagated by
+    // MarketSnapshot::load with no silent cold fallback) makes the Configured queries
+    // genuinely interpolate the cached surrogate instead of reproducing the cold
+    // archive marks.
+    config.query_pricing_tier = QueryPricingTier::RepresentativeFast;
+    config.price.query_execution = QueryExecution::Configured;
+  }
+  timer.add("setup_read", phase);
+
+  // mark_divergence.tsv comes from a separate Record replay (write_mark_divergence_replay):
+  // divergence_replay (count=sessions) times the whole replay and archive_load (count=loads)
+  // is a measured subset of it. --no-divergence skips the replay entirely, leaving only the
+  // priced backtest; the divergence_replay/archive_load phases then read 0 and the priced run
+  // absorbs its own cold snapshot-cache loads.
+  if (!skip_divergence) {
+    ATX_TRY_VOID(write_mark_divergence_replay(run_dir, schedule, clock, config, spec.delta_band,
+                                              timer));
+  }
 
   // Primary priced run: the same strategy-aware engine as run-backtest, under the
   // Record policy so the interpolated live seed marks (not the frozen schedule
@@ -1161,7 +1175,8 @@ void usage() {
                        "  atxvol_spy_dispersion_backtest run-backtest --run DIR\n"
                        "  atxvol_spy_dispersion_backtest project-schedule --run DIR\n"
                        "  atxvol_spy_dispersion_backtest run-projected-backtest --run DIR "
-                       "[--schedule FILE] [--execution cold|configured] [--out FILE]\n"
+                       "[--schedule FILE] [--execution cold|configured] [--out FILE] "
+                       "[--no-divergence]\n"
                        "  atxvol_spy_dispersion_backtest run-surface-backtest --run DIR\n"
                        "  atxvol_spy_dispersion_backtest run-projected-var --run DIR\n"
                        "  atxvol_spy_dispersion_backtest verify --run DIR\n");
@@ -1180,8 +1195,13 @@ int main(int argc, char **argv) {
   fs::path out;
   fs::path schedule;
   std::string execution;
+  bool no_divergence = false;
   for (int i = 2; i < argc; ++i) {
     const std::string_view argument = argv[i];
+    if (argument == "--no-divergence") {  // value-less flag, checked before the value guard
+      no_divergence = true;
+      continue;
+    }
     if (i + 1 >= argc) {
       usage();
       return 2;
@@ -1214,7 +1234,7 @@ int main(int argc, char **argv) {
     status = run_projected_backtest_command(
         run, schedule.empty() ? fs::path("trade_schedule.tsv") : schedule,
         execution.empty() ? std::string("configured") : execution,
-        out.empty() ? fs::path("projected_backtest.tsv") : out);
+        out.empty() ? fs::path("projected_backtest.tsv") : out, no_divergence);
   } else if (command == "run-surface-backtest" && !run.empty()) {
     status = run_surface_backtest_command(run);
   } else if (command == "run-projected-var" && !run.empty()) {
