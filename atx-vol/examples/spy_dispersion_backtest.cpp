@@ -94,6 +94,92 @@ Result<std::uint64_t> hash_file(const fs::path &path) {
   return Ok(hash_text(bytes));
 }
 
+// ── Runtime diagnostics ──────────────────────────────────────────────────────
+// Local phase-timing helper for the instrumented subcommands. Accumulates named
+// phases (wall time plus a unit count) in a fixed, pre-declared order and — via
+// write_diagnostics — emits diagnostics_<subcommand>.tsv (truncated per
+// invocation) alongside a one-line stderr summary. steady_clock only; always on,
+// since the overhead is negligible next to the surface solves it measures. It
+// writes a NEW file and touches only stderr: no economic output, no existing
+// artifact, and no stdout line is affected (tooling may parse stdout).
+class PhaseTimer {
+public:
+  using Clock = std::chrono::steady_clock;
+  using Duration = Clock::duration;
+
+  struct Phase {
+    std::string name;
+    Duration elapsed{Duration::zero()};
+    std::uint64_t count{0u};
+  };
+
+  // Pre-declaring the phase order fixes the output row order regardless of when
+  // each region is first timed. Some phases accumulate across a loop, and one
+  // (archive_load) is timed inside a region also charged to another phase, so
+  // first-seen order would not match the intended reading order otherwise.
+  explicit PhaseTimer(std::initializer_list<std::string_view> order) {
+    for (std::string_view name : order) {
+      phases_.push_back(Phase{std::string(name), Duration::zero(), 0u});
+    }
+  }
+
+  static Clock::time_point now() { return Clock::now(); }
+
+  // Charge (now - start) wall time and `count` units to `phase` (created if it
+  // was not pre-declared). Repeated calls to the same phase accumulate.
+  void add(std::string_view phase, Clock::time_point start, std::uint64_t count = 0u) {
+    const Duration elapsed = Clock::now() - start;
+    for (Phase &entry : phases_) {
+      if (entry.name == phase) {
+        entry.elapsed += elapsed;
+        entry.count += count;
+        return;
+      }
+    }
+    phases_.push_back(Phase{std::string(phase), elapsed, count});
+  }
+
+  const std::vector<Phase> &phases() const { return phases_; }
+
+private:
+  std::vector<Phase> phases_;
+};
+
+double phase_ms(PhaseTimer::Duration d) {
+  return std::chrono::duration<double, std::milli>(d).count();
+}
+
+// Write diagnostics_<subcommand>.tsv and print the one-line stderr summary. The
+// `total` wall time is measured over the whole command independently of the
+// phase sum (which carries per-region slack); `unit`/`units` name the natural
+// count denominator ("session"/"sessions" for backtests, "roll"/"rolls" for the
+// schedule builders).
+Status write_diagnostics(const fs::path &run_dir, const char *subcommand,
+                         const PhaseTimer &timer, PhaseTimer::Duration total,
+                         std::uint64_t total_count, const char *unit, const char *units) {
+  const fs::path path = run_dir / (std::string("diagnostics_") + subcommand + ".tsv");
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  if (!out) {
+    return Err(ErrorCode::IoError, "cannot write diagnostics");
+  }
+  out << "ATX_DISPERSION_DIAGNOSTICS\t1\n";
+  out << "subcommand\tphase\twall_ms\tcount\n";
+  out << std::fixed << std::setprecision(3);
+  for (const PhaseTimer::Phase &phase : timer.phases()) {
+    out << subcommand << '\t' << phase.name << '\t' << phase_ms(phase.elapsed) << '\t'
+        << phase.count << '\n';
+  }
+  const double total_ms = phase_ms(total);
+  out << subcommand << "\ttotal\t" << total_ms << '\t' << total_count << '\n';
+  if (!out) {
+    return Err(ErrorCode::IoError, "cannot flush diagnostics");
+  }
+  const double per_unit = total_count > 0u ? total_ms / static_cast<double>(total_count) : 0.0;
+  std::fprintf(stderr, "diag %s: total=%.3fms %s=%llu (%.3f ms/%s)\n", subcommand, total_ms, units,
+               static_cast<unsigned long long>(total_count), per_unit, unit);
+  return Ok();
+}
+
 Status write_input_inventory(const fs::path &path, const OpraBatchResult &batch) {
   std::ofstream out(path, std::ios::binary | std::ios::trunc);
   if (!out) {
@@ -344,6 +430,10 @@ Result<std::vector<ListedOptionQuote>> load_listed_quotes(const RunSpec &spec,
 }
 
 Status build_schedule_command(const fs::path &run_dir) {
+  const auto cmd_start = PhaseTimer::now();
+  PhaseTimer timer({"setup_read", "selection", "quote_join", "write_outputs"});
+
+  auto phase = PhaseTimer::now();
   ATX_TRY(RunSpec spec, read_run_spec(run_dir / "run_spec.tsv"));
   ATX_TRY(std::vector<UniverseRow> universe_rows, read_universe(run_dir / "universe_schedule.tsv"));
   ATX_TRY(ListedDefinitionTable definitions,
@@ -357,13 +447,19 @@ Status build_schedule_command(const fs::path &run_dir) {
   const std::vector<std::string> symbols = all_symbols(universe_rows);
   ListedDispersionSchedule schedule;
   std::int64_t active_expiry = 0;
+  timer.add("setup_read", phase);
   for (const SnapshotRef &ref : clock.refs()) {
+    // selection: snapshot load + universe resolve. count=1 is charged once per
+    // evaluated roll date (a date that reaches selection, deferrals included);
+    // DTE-skip dates below charge only their load time, with no evaluation count.
+    const auto sel_start = PhaseTimer::now();
     ATX_TRY(MarketSnapshot snapshot, MarketSnapshot::load(ref.archive_path));
     const double active_dte =
         active_expiry == 0
             ? 0.0
             : static_cast<double>(active_expiry - snapshot.ts_ns()) / kListedNsPerDay;
     if (active_expiry != 0 && active_dte > spec.roll_dte_days) {
+      timer.add("selection", sel_start);
       continue;
     }
     ATX_TRY(DispersionUniverse authored, universe_at(universe_rows, ref.date));
@@ -372,8 +468,15 @@ Status build_schedule_command(const fs::path &run_dir) {
         ResolvedUniverse resolved,
         resolve_universe_uids(
             authored, [&](std::string_view symbol) { return snapshot.uid_of(symbol); }, missing));
+    timer.add("selection", sel_start, 1u);
+
+    // quote_join: the OPRA parquet join re-marking the roll-date universe.
+    const auto join_start = PhaseTimer::now();
     ATX_TRY(std::vector<ListedOptionQuote> quotes,
             load_listed_quotes(spec, definitions, symbols, ref.date));
+    timer.add("quote_join", join_start, 1u);
+
+    const auto eval_start = PhaseTimer::now();
     ListedDispersionSelectionConfig selection_config;
     selection_config.target_dte_days = spec.target_dte_days;
     selection_config.min_dte_days = spec.min_dte_days;
@@ -393,6 +496,7 @@ Status build_schedule_command(const fs::path &run_dir) {
     };
     const auto selected = select_listed_dispersion(ref.date, snapshot.ts_ns(), resolved.universe,
                                                    quotes, forward, selection_config);
+    timer.add("selection", eval_start);
     if (!selected) {
       if (active_expiry == 0) {
         continue;
@@ -418,6 +522,7 @@ Status build_schedule_command(const fs::path &run_dir) {
                    coverage);
       continue;
     }
+    const auto build_start = PhaseTimer::now();
     ListedScheduleBuildConfig build;
     build.gross_index_vega_target_per_vol_point = spec.gross_index_vega;
     build.cohort = static_cast<std::uint32_t>(schedule.rolls.size() + 1u);
@@ -427,14 +532,20 @@ Status build_schedule_command(const fs::path &run_dir) {
             build_listed_dispersion_roll(*selected, snapshot.set(), build));
     active_expiry = roll.expiry_ts_ns;
     schedule.rolls.push_back(std::move(roll));
+    timer.add("selection", build_start);
   }
   if (schedule.rolls.empty() || (spec.core_mode && schedule.rolls.size() < 3u)) {
     return Err(ErrorCode::Unavailable,
                "schedule does not satisfy entry/three-roll acceptance gate");
   }
+  const auto write_start = PhaseTimer::now();
   ATX_TRY_VOID(
       write_listed_dispersion_schedule_file((run_dir / "trade_schedule.tsv").string(), schedule));
+  timer.add("write_outputs", write_start);
   std::printf("built immutable schedule: rolls=%zu\n", schedule.rolls.size());
+  ATX_TRY_VOID(write_diagnostics(run_dir, "build_schedule", timer,
+                                 PhaseTimer::now() - cmd_start, schedule.rolls.size(), "roll",
+                                 "rolls"));
   return Ok();
 }
 
@@ -476,6 +587,10 @@ Status verify_command(const fs::path &run_dir) {
 }
 
 Status run_backtest_command(const fs::path &run_dir) {
+  const auto cmd_start = PhaseTimer::now();
+  PhaseTimer timer({"setup_read", "engine_run", "reconciliation", "write_outputs"});
+
+  auto phase = PhaseTimer::now();
   ATX_TRY(RunSpec spec, read_run_spec(run_dir / "run_spec.tsv"));
   ATX_TRY(std::vector<UniverseRow> universe_rows, read_universe(run_dir / "universe_schedule.tsv"));
   ATX_TRY(ListedDefinitionTable definitions,
@@ -489,12 +604,24 @@ Status run_backtest_command(const fs::path &run_dir) {
   RunConfig config;
   config.unpriced = UnpricedLotPolicy::Error;
   config.snapshot_cache = std::make_shared<SnapshotCache>();
+  timer.add("setup_read", phase);
+
+  phase = PhaseTimer::now();
   ATX_TRY(BacktestResult backtest, run_backtest(clock, strategy, config));
   if (!strategy.all_rolls_consumed()) {
     return Err(ErrorCode::Unavailable, "backtest did not consume every scheduled roll");
   }
-  ATX_TRY_VOID(write_backtest_tsv(backtest, (run_dir / "backtest.tsv").string()));
+  timer.add("engine_run", phase, backtest.size());
 
+  phase = PhaseTimer::now();
+  ATX_TRY_VOID(write_backtest_tsv(backtest, (run_dir / "backtest.tsv").string()));
+  timer.add("write_outputs", phase);
+
+  // reconciliation: the OPRA parquet join re-marking every session against the
+  // exchange tape (load_listed_quotes per date), then folding those marks into
+  // the reconciliation. This phase's cost dominating the subcommand is the claim
+  // the diagnostics prove.
+  phase = PhaseTimer::now();
   const std::vector<std::string> symbols = all_symbols(universe_rows);
   std::vector<std::shared_ptr<const MarketSnapshot>> snapshot_owners;
   std::vector<std::vector<ListedOptionQuote>> quote_owners;
@@ -518,12 +645,20 @@ Status run_backtest_command(const fs::path &run_dir) {
   ATX_TRY(ListedDispersionReconciliation reconciliation,
           reconcile_listed_dispersion(schedule, reconciliation_snapshots));
   ATX_TRY_VOID(validate_listed_reconciliation_backtest(reconciliation, backtest));
+  timer.add("reconciliation", phase, clock.size());
+
+  phase = PhaseTimer::now();
   ATX_TRY_VOID(
       write_listed_contract_marks_file((run_dir / "contract_marks.tsv").string(), reconciliation));
   ATX_TRY_VOID(
       write_listed_reconciliation_file((run_dir / "reconciliation.tsv").string(), reconciliation));
+  timer.add("write_outputs", phase);
+
   std::printf("backtest complete: dates=%zu rolls=%zu final_nav=%.10g\n", backtest.size(),
               schedule.rolls.size(), backtest.nav.back());
+  ATX_TRY_VOID(write_diagnostics(run_dir, "run_backtest", timer,
+                                 PhaseTimer::now() - cmd_start, backtest.size(), "session",
+                                 "sessions"));
   return Ok();
 }
 
@@ -538,6 +673,10 @@ Status run_backtest_command(const fs::path &run_dir) {
 // validator (net vega ~ 0, gross = 2x target); only per-member strike and its cold
 // greeks differ from trade_schedule.tsv.
 Status project_schedule_command(const fs::path &run_dir) {
+  const auto cmd_start = PhaseTimer::now();
+  PhaseTimer timer({"setup_read", "archive_load", "cold_solve", "validate_write"});
+
+  auto phase = PhaseTimer::now();
   ATX_TRY(CorpusManifest manifest, read_manifest_file((run_dir / "surface_manifest.tsv").string()));
   ATX_TRY(Clock clock, Clock::from_manifest(manifest));
   ATX_TRY(ListedDispersionSchedule listed,
@@ -557,13 +696,20 @@ Status project_schedule_command(const fs::path &run_dir) {
 
   ListedDispersionSchedule projected;
   projected.rolls.reserve(listed.rolls.size());
+  timer.add("setup_read", phase);
   for (const ListedScheduleRoll &roll : listed.rolls) {
     const auto archive = archive_of.find(roll.roll_date);
     if (archive == archive_of.end()) {
       return Err(ErrorCode::NotFound,
                  "project-schedule: no qualified archive for roll date " + roll.roll_date);
     }
+    // archive_load: one snapshot deserialize per roll (count=archives loaded).
+    const auto load_start = PhaseTimer::now();
     ATX_TRY(MarketSnapshot snapshot, MarketSnapshot::load(archive->second));
+    timer.add("archive_load", load_start, 1u);
+    // cold_solve: cold per-leg pricing + straddle rebuild + vega sizing for this
+    // roll (count=legs solved).
+    const auto solve_start = PhaseTimer::now();
     if (snapshot.ts_ns() != roll.valuation_ts_ns) {
       return Err(ErrorCode::InvalidArgument,
                  "project-schedule: archive valuation timestamp differs from roll");
@@ -666,12 +812,18 @@ Status project_schedule_command(const fs::path &run_dir) {
                 projected_roll.net_vega_per_vol_point, projected_roll.gross_vega_per_vol_point,
                 projected_roll.legs.front().strike, roll.legs.front().strike);
     projected.rolls.push_back(std::move(projected_roll));
+    timer.add("cold_solve", solve_start, roll.legs.size());
   }
 
+  const auto write_start = PhaseTimer::now();
   ATX_TRY_VOID(validate_listed_dispersion_schedule(projected));
   ATX_TRY_VOID(write_listed_dispersion_schedule_file(
       (run_dir / "projected_schedule.tsv").string(), projected));
+  timer.add("validate_write", write_start);
   std::printf("projected schedule built: rolls=%zu\n", projected.rolls.size());
+  ATX_TRY_VOID(write_diagnostics(run_dir, "project_schedule", timer,
+                                 PhaseTimer::now() - cmd_start, listed.rolls.size(), "roll",
+                                 "rolls"));
   return Ok();
 }
 
@@ -686,11 +838,16 @@ Status project_schedule_command(const fs::path &run_dir) {
 // `--out` the backtest output (default projected_backtest.tsv).
 Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &schedule_file,
                                       const std::string &execution, const fs::path &out_file) {
+  const auto cmd_start = PhaseTimer::now();
+  PhaseTimer timer(
+      {"setup_read", "divergence_replay", "archive_load", "priced_run", "write_outputs"});
+
   if (execution != "configured" && execution != "cold") {
     return Err(ErrorCode::InvalidArgument,
                "run-projected-backtest: --execution must be 'configured' or 'cold'");
   }
   const bool cold = execution == "cold";
+  auto phase = PhaseTimer::now();
   ATX_TRY(RunSpec spec, read_run_spec(run_dir / "run_spec.tsv"));
   ATX_TRY(CorpusManifest manifest, read_manifest_file((run_dir / "surface_manifest.tsv").string()));
   ATX_TRY(Clock clock, Clock::from_manifest(manifest));
@@ -716,10 +873,18 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
     config.query_pricing_tier = QueryPricingTier::RepresentativeFast;
     config.price.query_execution = QueryExecution::Configured;
   }
+  timer.add("setup_read", phase);
 
   // mark_divergence.tsv: last_mark_divergences() is cleared every step and the
   // engine's run_backtest loop hides per-step strategy state, so drive a separate
   // Record replay here and snapshot the record after each roll step.
+  //
+  // divergence_replay (count=sessions) times this whole replay; the per-session
+  // MarketSnapshot::load inside it is ALSO accumulated into archive_load
+  // (count=loads), so archive_load is a measured subset of divergence_replay. The
+  // priced run's loads go through the snapshot cache inside run_backtest and are
+  // not separately measurable here.
+  const auto div_start = PhaseTimer::now();
   ATX_TRY(ListedDispersionStrategy divergence_strategy,
           ListedDispersionStrategy::create(schedule, spec.delta_band, ScheduleMarkPolicy::Record));
   PortfolioState divergence_book;
@@ -733,8 +898,10 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
              "diff\tabs_diff_bps_of_mark\n";
   for (std::size_t i = 0; i < clock.size(); ++i) {
     const SnapshotRef &ref = clock.refs()[i];
+    const auto load_start = PhaseTimer::now();
     ATX_TRY(MarketSnapshot snapshot,
             MarketSnapshot::load(ref.archive_path, config.query_pricing_tier));
+    timer.add("archive_load", load_start, 1u);
     ATX_TRY_VOID(divergence_strategy.on_step(snapshot, i, divergence_book, divergence_next_id,
                                              config.price));
     const std::vector<MarkDivergence> &divergences = divergence_strategy.last_mark_divergences();
@@ -775,19 +942,28 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
   if (!divergence_strategy.all_rolls_consumed()) {
     return Err(ErrorCode::Unavailable, "divergence replay did not consume every scheduled roll");
   }
+  timer.add("divergence_replay", div_start, clock.size());
 
   // Primary priced run: the same strategy-aware engine as run-backtest, under the
   // Record policy so the interpolated live seed marks (not the frozen schedule
   // marks) seed each entry, and Configured economics end to end.
+  const auto priced_start = PhaseTimer::now();
   ATX_TRY(ListedDispersionStrategy strategy,
           ListedDispersionStrategy::create(schedule, spec.delta_band, ScheduleMarkPolicy::Record));
   ATX_TRY(BacktestResult backtest, run_backtest(clock, strategy, config));
   if (!strategy.all_rolls_consumed()) {
     return Err(ErrorCode::Unavailable, "projected backtest did not consume every scheduled roll");
   }
+  timer.add("priced_run", priced_start, backtest.size());
+
+  const auto write_start = PhaseTimer::now();
   ATX_TRY_VOID(write_backtest_tsv(backtest, (run_dir / out_file).string()));
+  timer.add("write_outputs", write_start);
   std::printf("projected backtest complete [%s]: dates=%zu rolls=%zu final_nav=%.10g\n",
               execution.c_str(), backtest.size(), schedule.rolls.size(), backtest.nav.back());
+  ATX_TRY_VOID(write_diagnostics(run_dir, "run_projected_backtest", timer,
+                                 PhaseTimer::now() - cmd_start, backtest.size(), "session",
+                                 "sessions"));
   return Ok();
 }
 
