@@ -196,6 +196,95 @@ TEST(ListedOpra, SameSessionSkipIsDateGatedNotRootGated) {
   EXPECT_TRUE(quotes->empty());
 }
 
+TEST(ListedOpra, UnlistedContractFatalUnderErrorButDroppedUnderSkipUnlisted) {
+  using atx::vol::MissingDefinitionPolicy;
+  // Full-window blocker repro (2026-04-28): the OPRA panel quotes a standard-root,
+  // non-0DTE contract that was listed intraday, so the point-in-time definition
+  // authority has NO row for it. Under the default Error policy this is a fatal
+  // NotFound; under the consumer-scoped SkipUnlisted policy the un-authoritative
+  // quote is dropped and every defined contract still joins.
+  OpraPanel source = panel(); // rows 101/102: standard 2026-07-17, both defined
+  source.frame.rows.push_back(QuoteRow{.uid = "SPY",
+                                       .expiry_iso = "2026-08-21", // ~non-0DTE, standard root
+                                       .strike = 650.0,
+                                       .side = Side::Call,
+                                       .bid = 5.0,
+                                       .ask = 5.2});
+  source.source_instrument_ids.push_back(103);
+  source.source_identities.push_back(OpraInstrumentIdentity{103, "SPY   260821C00650000"});
+
+  auto table = ListedDefinitionTable::create(definitions()); // only 101, 102 defined
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+
+  // Default argument and explicit Error: the missing definition is fatal.
+  EXPECT_FALSE(
+      atx::vol::listed_quotes_from_opra(kDate, source.frame.snapshot_ts_ns, source, *table));
+  EXPECT_FALSE(atx::vol::listed_quotes_from_opra(kDate, source.frame.snapshot_ts_ns, source, *table,
+                                                 MissingDefinitionPolicy::Error));
+
+  // SkipUnlisted: the two defined contracts survive; the unlisted one is dropped.
+  auto quotes = atx::vol::listed_quotes_from_opra(kDate, source.frame.snapshot_ts_ns, source, *table,
+                                                  MissingDefinitionPolicy::SkipUnlisted);
+  ASSERT_TRUE(quotes) << (quotes ? std::string{} : quotes.error().to_string());
+  ASSERT_EQ(quotes->size(), 2u);
+  EXPECT_EQ((*quotes)[0].instrument_id, 101u);
+  EXPECT_EQ((*quotes)[0].raw_symbol, "SPY   260717C00600000");
+  EXPECT_EQ((*quotes)[1].instrument_id, 102u);
+  EXPECT_EQ((*quotes)[1].raw_symbol, "SPY   260717P00600000");
+}
+
+TEST(ListedOpra, NumericRootAndSameSessionSkippedUnderBothPolicies) {
+  using atx::vol::MissingDefinitionPolicy;
+  // The structural skips in the nullptr branch (numeric-root adjustments and
+  // same-session/0DTE contracts) fire BEFORE the policy check, so they drop
+  // identically under Error and SkipUnlisted — the policy only governs the
+  // genuine missing-authority fall-through, never these structural exclusions.
+  OpraPanel source = panel();
+  source.frame.rows = {
+      QuoteRow{.uid = "SPY",
+               .expiry_iso = "2026-07-17", // non-0DTE: skipped purely on numeric root
+               .strike = 600.0,
+               .side = Side::Call,
+               .bid = 1.0,
+               .ask = 1.2},
+      QuoteRow{.uid = "SPY",
+               .expiry_iso = kDate, // expiry == trade date => same-session (0DTE)
+               .strike = 600.0,
+               .side = Side::Put,
+               .bid = 0.5,
+               .ask = 0.7},
+  };
+  source.source_instrument_ids = {301, 302};
+  source.source_identities = {
+      OpraInstrumentIdentity{301, "SPY1  260717C00600000"}, // numeric root
+      OpraInstrumentIdentity{302, "SPY   260605P00600000"}, // same-session
+  };
+  auto empty = ListedDefinitionTable::create({});
+  ASSERT_TRUE(empty);
+  for (const MissingDefinitionPolicy policy :
+       {MissingDefinitionPolicy::Error, MissingDefinitionPolicy::SkipUnlisted}) {
+    auto quotes = atx::vol::listed_quotes_from_opra(kDate, source.frame.snapshot_ts_ns, source,
+                                                    *empty, policy);
+    ASSERT_TRUE(quotes) << (quotes ? std::string{} : quotes.error().to_string());
+    EXPECT_TRUE(quotes->empty());
+  }
+}
+
+TEST(ListedOpra, LookAheadViolationFatalUnderSkipUnlisted) {
+  using atx::vol::MissingDefinitionPolicy;
+  // A definition that EXISTS but post-dates the valuation instant is corrupted
+  // authority, not absent authority. SkipUnlisted softens only the nullptr
+  // branch, so the look-ahead/expiry guard stays fatal even under SkipUnlisted.
+  const OpraPanel source = panel();
+  auto future = definitions();
+  future[0].definition_ts_ns = source.frame.snapshot_ts_ns + 1; // look-ahead
+  auto future_table = ListedDefinitionTable::create(std::move(future));
+  ASSERT_TRUE(future_table);
+  EXPECT_FALSE(atx::vol::listed_quotes_from_opra(kDate, source.frame.snapshot_ts_ns, source,
+                                                 *future_table,
+                                                 MissingDefinitionPolicy::SkipUnlisted));
+}
+
 TEST(ListedOpra, RejectsDailyIdentityAndAlignmentViolations) {
   auto table = ListedDefinitionTable::create(definitions());
   ASSERT_TRUE(table);

@@ -87,13 +87,40 @@ standard_monthly_sessions(std::span<const std::int64_t> expiry_ts_ns);
 [[nodiscard]] bool is_standard_monthly_expiry(std::span<const std::int64_t> sessions,
                                               std::int64_t expiry_ts_ns);
 
+// Caller policy for an OPRA quote whose contract has NO row in the point-in-time
+// definition authority (i.e. ListedDefinitionTable::find returns nullptr).
+//
+//   Error (default): a missing definition is a fatal NotFound. This is the
+//     strict, fail-closed default — every existing caller keeps the exact prior
+//     behavior without opting in.
+//   SkipUnlisted: drop the quote and continue past it. This is consumer-scoped
+//     for workflows whose universe is standard-monthly, 21-60 DTE contracts,
+//     which are defined well in advance. An OPRA row with no definition on the
+//     valuation date is a contract listed intraday — the point-in-time authority
+//     correctly does not yet know it — and is un-tradeable by such a workflow on
+//     its listing day. It is panel noise outside the consumer's universe, not a
+//     data defect, so it must not be fatal for these consumers.
+//
+// SkipUnlisted narrows ONLY the definition==nullptr fall-through. It does NOT
+// weaken any authority guarantee:
+//   - the structural numeric-root skip and the same-session (0DTE) skip in the
+//     nullptr branch already fire unconditionally under BOTH policies;
+//   - once a definition IS found, the look-ahead/expiry guard and the
+//     quote/OSI/definition economics-agreement check remain fatal under BOTH
+//     policies. Those signal a definition that exists but contradicts the quote
+//     (corrupted authority), never an absent one, and no policy softens them.
+enum class MissingDefinitionPolicy : std::uint8_t { Error = 0, SkipUnlisted = 1 };
+
 // Join one single-symbol OPRA panel to the point-in-time definition table.
 // Exact OSI economics must agree with the definition, every aligned instrument
 // id must resolve on the same trade date, and neither quote nor definition may
 // be later than valuation_ts_ns. No default multiplier or synthetic expiry is
-// introduced on this path.
+// introduced on this path. `policy` governs only the missing-definition
+// fall-through (see MissingDefinitionPolicy); it defaults to the strict Error
+// behavior so existing callers are unaffected.
 [[nodiscard]] Result<std::vector<ListedOptionQuote>>
 listed_quotes_from_opra(std::string_view trade_date, std::int64_t valuation_ts_ns,
-                        const OpraPanel &panel, const ListedDefinitionTable &definitions);
+                        const OpraPanel &panel, const ListedDefinitionTable &definitions,
+                        MissingDefinitionPolicy policy = MissingDefinitionPolicy::Error);
 
 } // namespace atx::vol

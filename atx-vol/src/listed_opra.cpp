@@ -316,7 +316,8 @@ bool is_standard_monthly_expiry(std::span<const std::int64_t> sessions,
 
 Result<std::vector<ListedOptionQuote>>
 listed_quotes_from_opra(std::string_view trade_date, std::int64_t valuation_ts_ns,
-                        const OpraPanel &panel, const ListedDefinitionTable &definitions) {
+                        const OpraPanel &panel, const ListedDefinitionTable &definitions,
+                        MissingDefinitionPolicy policy) {
   if (trade_date.empty() || valuation_ts_ns <= 0 || panel.frame.uid.empty() ||
       panel.frame.snapshot_ts_ns != valuation_ts_ns || panel.source_schema_version < 2 ||
       !panel.provenance_complete || panel.source_fingerprint == 0u ||
@@ -364,6 +365,15 @@ listed_quotes_from_opra(std::string_view trade_date, std::int64_t valuation_ts_n
       // ever selects 21-60 DTE, so these are pure noise here. Invariant: on this
       // path every kept quote has expiry strictly after the trade date.
       if (missing_osi.expiry_iso == trade_date) {
+        continue;
+      }
+      // No point-in-time definition for a standard-root, non-0DTE contract. By
+      // default this is a fatal missing authority; a caller may opt into
+      // SkipUnlisted to treat it as panel noise (an intraday-listed contract the
+      // authority does not yet know) outside its universe. This is the ONLY
+      // behavior the policy alters — the look-ahead/expiry and economics-agreement
+      // checks below stay fatal for any contract that DOES have a definition.
+      if (policy == MissingDefinitionPolicy::SkipUnlisted) {
         continue;
       }
       return Err(ErrorCode::NotFound, "listed OPRA join: contract definition missing");

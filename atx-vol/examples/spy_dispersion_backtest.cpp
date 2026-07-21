@@ -327,9 +327,16 @@ Result<std::vector<ListedOptionQuote>> load_listed_quotes(const RunSpec &spec,
     if (!entry.panel) {
       continue;
     }
+    // SkipUnlisted: both consumers of this helper (build-schedule roll-date
+    // selection and run-backtest reconciliation) only ever act on defined,
+    // standard-monthly 21-60 DTE contracts. A quote with no point-in-time
+    // definition is an intraday-listed contract outside that universe on its
+    // listing day; dropping it is a no-op on every date where the join already
+    // succeeds (the skip can only fire where the strict Error policy would have
+    // hard-failed), so currently-passing runs stay bit-for-bit unchanged.
     ATX_TRY(std::vector<ListedOptionQuote> joined,
             listed_quotes_from_opra(date, entry.panel->frame.snapshot_ts_ns, *entry.panel,
-                                    definitions));
+                                    definitions, MissingDefinitionPolicy::SkipUnlisted));
     quotes.insert(quotes.end(), std::make_move_iterator(joined.begin()),
                   std::make_move_iterator(joined.end()));
   }
