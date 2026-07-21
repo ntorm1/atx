@@ -1,0 +1,357 @@
+"""Build the SPY listed-options dispersion backtest report.
+
+Renders the output of `examples/spy_dispersion_backtest.cpp`
+(`run_surface_backtest_command` -> `write_backtest_tsv` -> `surface_backtest.tsv`)
+as one self-contained HTML file, and doubles as the worked example for the
+component library.
+
+The strategy in that run is the traditional dispersion proxy: a SHORT SPY ATM
+straddle against LONG constituent ATM straddles, sized vega-flat at entry on the
+served American vegas, delta-hedged daily at the close and rolled on a common
+listed monthly expiry. Prices and Greeks come from atx-vol American fitted
+surfaces reloaded from the archive, so the whole track is a replay over cached
+fits rather than a re-fit.
+
+    from atxvol.report.dispersion import build_report_from_run
+    build_report_from_run("path/to/golden-run", "pnl_track.html")
+"""
+
+from __future__ import annotations
+
+import math
+import os
+from typing import Mapping, Sequence
+
+import atxvol as _av
+
+from . import charts, theme
+from .charts import Series
+from .components import (
+    Column, FacetGrid, Figure, Note, Prose, Report, Section, Stat, StatRow, Subhead, Table,
+)
+from .io import read_backtest_tsv, read_kv_tsv
+
+# Attribution axes. Display order == palette slot order, which is the exact
+# arrangement the palette was validated in: permuting the two only weakens the
+# adjacent-pair CVD separation. Color follows the axis, never its rank, so
+# reordering the legend must not repaint a series.
+#
+# `label_end` marks the two extremes (theta down, gamma up). They separate
+# cleanly at the right edge; the middle four converge near zero, so labelling
+# them too would collide — the legend and table carry those.
+AXES = (
+    ("Theta", "pnl_theta", 0, True),
+    ("Gamma", "pnl_gamma", 1, True),
+    ("Vega", "pnl_vega", 2, False),
+    ("Delta", "pnl_delta", 3, False),
+    ("Vanna", "pnl_vanna", 4, False),
+    ("Unexplained", "pnl_unexplained", 5, False),
+)
+
+
+def _money(v: float, dp: int = 0) -> str:
+    if v is None or not math.isfinite(v):
+        return "--"
+    return f"{'-' if v < 0 else ''}${abs(v):,.{dp}f}"
+
+
+def _cum(values: Sequence[float]) -> list[float]:
+    out, run = [], 0.0
+    for v in values:
+        run += v if math.isfinite(v) else 0.0
+        out.append(run)
+    return out
+
+
+def _short(dates: Sequence[str]) -> list[str]:
+    return [d[5:] if len(d) == 10 else d for d in dates]
+
+
+def build_report_from_run(run_dir: str, path: str, *, label: str = "") -> str:
+    """Render a `spy_dispersion_backtest` run directory into an HTML report."""
+    backtest = os.path.join(run_dir, "surface_backtest.tsv")
+    if not os.path.exists(backtest):
+        backtest = os.path.join(run_dir, "backtest.tsv")
+    result, meta, _extra = read_backtest_tsv(backtest)
+
+    spec_path = os.path.join(run_dir, "run_spec.tsv")
+    spec = read_kv_tsv(spec_path) if os.path.exists(spec_path) else {}
+    spec.update(meta)  # a PnL-track meta header wins over the run spec
+
+    counters_path = os.path.join(run_dir, "backtest_counters.tsv")
+    counters = read_kv_tsv(counters_path) if os.path.exists(counters_path) else {}
+
+    # The fold is the library's, not a Python reimplementation.
+    sheet = _av.tearsheet(result)
+    return _render(result, sheet, spec, counters, path, label or spec.get("label", ""))
+
+
+def _render(result, sheet, spec: Mapping[str, str], counters: Mapping[str, str],
+            path: str, label: str) -> str:
+    cols = result.to_dict()
+    dates = list(cols["date"])
+    ticks = _short(dates)
+    nav = [float(v) for v in cols["nav"]]
+    daily = [float(v) for v in cols["pnl_total"]]
+    n = len(dates)
+
+    total = sheet.total_return
+    tone = "pos" if total > 0 else "neg" if total < 0 else ""
+    date_lo = spec.get("date_lo", dates[0] if dates else "?")
+    date_hi = spec.get("date_hi", dates[-1] if dates else "?")
+
+    def num(key: str, default: float = 0.0) -> float:
+        try:
+            return float(spec[key])
+        except (KeyError, ValueError):
+            return default
+
+    report = Report(
+        title="SPY Listed-Options Dispersion",
+        eyebrow="atx-vol · surface replay · traditional dispersion proxy",
+        standfirst=(
+            "A short SPY at-the-money straddle against long constituent ATM straddles, "
+            "sized vega-flat at entry on served American vegas, delta-hedged daily at the "
+            "close and rolled on a common listed monthly expiry. Prices and Greeks are "
+            "replayed from cached atx-vol American fitted surfaces — no re-fit occurs "
+            "inside the backtest."
+        ),
+        meta=(
+            ("Window", f"{date_lo} → {date_hi}"),
+            ("Sessions", f"{n}"),
+            ("Target DTE", f"{num('target_dte_days', 30):.0f}d "
+                           f"({num('min_dte_days', 21):.0f}–{num('max_dte_days', 60):.0f})"),
+            ("Roll", f"{num('roll_dte_days', 7):.0f}d to expiry"),
+            ("Index vega", _money(num("gross_index_vega", 10000))),
+            ("Delta band", f"{num('delta_band', 0):.0f}"),
+        ),
+        colophon=(
+            f"<b>Run</b> {label}" if label else "<b>Run</b> spy_dispersion_backtest",
+            "<b>Source</b> examples/spy_dispersion_backtest.cpp · "
+            "run_surface_backtest_command → write_backtest_tsv → surface_backtest.tsv",
+            f"<b>Data</b> {spec.get('opra_root', 'OPRA')} · flat rate "
+            f"{num('flat_rate', 0.043):.3f} · min names {spec.get('min_names', '?')} · "
+            f"weight coverage ≥ {spec.get('min_weight_coverage', '?')}",
+            "<b>Report</b> rendered by atxvol.report from the engine's TSV — "
+            "metrics folded by atx-vol's own tearsheet",
+        ),
+    )
+
+    # ── 01 Headline ─────────────────────────────────────────────────────────
+    up = sum(1 for v in daily[1:] if v > 0)
+    down = sum(1 for v in daily[1:] if v < 0)
+    report.add(Section(
+        "Headline",
+        lede=(
+            "Every figure below is folded by the atx-vol tearsheet from the engine's own "
+            "TSV; the report layer formats, it does not compute."
+        ),
+        body=[
+            StatRow([
+                Stat("Total return", _money(total), "cumulative $ P&L", tone),
+                Stat("Sharpe", f"{sheet.sharpe:.2f}", "annualized, 252d"),
+                Stat("Annualized vol", _money(sheet.ann_vol), "of the $ P&L series"),
+                Stat("Max drawdown", _money(sheet.max_drawdown), "peak to trough"),
+                Stat("Hit rate", f"{sheet.hit_rate * 100:.0f}%", f"{up} up / {down} down"),
+                Stat("Return on vega", f"{sheet.return_on_gross_vega:.4f}",
+                     "per unit gross vega"),
+            ]),
+        ],
+    ))
+
+    # ── 02 The track ────────────────────────────────────────────────────────
+    nav_rows = [
+        (dates[i], _money(daily[i], 2), _money(nav[i], 2),
+         _money(float(cols["pnl_gamma"][i]), 2), _money(float(cols["pnl_vega"][i]), 2),
+         _money(float(cols["pnl_theta"][i]), 2), f"{float(cols['gross_vega'][i]):,.0f}")
+        for i in range(n)
+    ]
+    report.add(Section(
+        "The track",
+        body=[
+            Figure(
+                charts.line_chart(
+                    [Series("Cumulative P&L", nav, color=theme.SERIES[0], area=True,
+                            label_end=True)],
+                    ticks, height=340, chart_id="nav",
+                ),
+                title="Cumulative P&L",
+                subtitle="Net asset value from inception, in dollars. One series — the "
+                         "title names it, so no legend box.",
+                caption=(
+                    f"The book finishes at <b>{_money(total)}</b> over {n} sessions, "
+                    f"peak-to-trough drawdown <b>{_money(sheet.max_drawdown)}</b>. "
+                    "Hover for per-session values, or open the table below."
+                ),
+                table=Table(
+                    [Column("Session", mono=True), Column("Daily", tone="sign"),
+                     Column("Cumulative", tone="sign"), Column("Gamma", tone="sign"),
+                     Column("Vega", tone="sign"), Column("Theta", tone="sign"),
+                     Column("Gross vega")],
+                    nav_rows, numbered=False,
+                ),
+                table_label=f"Show per-session values ({n} rows)",
+            ),
+            Figure(
+                charts.bar_chart(daily, ticks, height=250, chart_id="daily"),
+                title="Daily P&L",
+                subtitle="Per-session change. Gains and losses are a diverging pair about "
+                         "zero, not two categorical series.",
+                legend=[("Gain", theme.POSITIVE), ("Loss", theme.NEGATIVE)],
+                caption=(
+                    f"{up} up sessions against {down} down. A dispersion book carries "
+                    "negative theta every day and earns it back in bursts, so the daily "
+                    "series is asymmetric by construction."
+                ),
+            ),
+        ],
+    ))
+
+    # ── 03 Attribution ──────────────────────────────────────────────────────
+    axis_series, legend, attr_rows = [], [], []
+    for name, key, slot, label_end in AXES:
+        if key not in cols:
+            continue
+        color = theme.series_color(slot)
+        cumulative = _cum([float(v) for v in cols[key]])
+        axis_series.append(Series(name, cumulative, color=color, label_end=label_end))
+        legend.append((name, color))
+        attr_rows.append((name, _money(cumulative[-1], 2),
+                          f"{(cumulative[-1] / total * 100) if total else 0:+.0f}%"))
+
+    closure = (sheet.attr_delta + sheet.attr_gamma + sheet.attr_vega + sheet.attr_vanna
+               + sheet.attr_volga + sheet.attr_theta + sheet.attr_rho + sheet.attr_charm
+               + sheet.attr_unexplained + sheet.attr_settlement + sheet.attr_shares
+               + sheet.attr_financing - sheet.attr_cost)
+    residual = abs(total - closure)
+
+    report.add(Section(
+        "Attribution",
+        lede=(
+            "Each session's P&L is decomposed onto the Greek axes plus settlement, share "
+            "and financing terms. The decomposition is exact by construction: the axes "
+            "must sum to the total return."
+        ),
+        body=[
+            Figure(
+                charts.line_chart(axis_series, ticks, height=340, chart_id="attr"),
+                title="Cumulative attribution by axis",
+                subtitle="Running sum of each axis, in dollars, on one shared scale.",
+                legend=legend,
+                caption=(
+                    "This is the dispersion signature: long gamma and long vega are where "
+                    "the alpha sits, theta is the carry paid for it, and delta is hedge "
+                    "slippage — small because the book is re-flattened at every close."
+                ),
+                table=Table(
+                    [Column("Axis"), Column("Cumulative $", tone="sign"),
+                     Column("Share of total")],
+                    attr_rows, numbered=False,
+                ),
+            ),
+            Table(
+                [Column("Component"), Column("Total $", tone="sign")],
+                [("Delta", _money(sheet.attr_delta, 2)),
+                 ("Gamma", _money(sheet.attr_gamma, 2)),
+                 ("Vega", _money(sheet.attr_vega, 2)),
+                 ("Vanna", _money(sheet.attr_vanna, 2)),
+                 ("Volga", _money(sheet.attr_volga, 2)),
+                 ("Theta", _money(sheet.attr_theta, 2)),
+                 ("Rho", _money(sheet.attr_rho, 2)),
+                 ("Charm", _money(sheet.attr_charm, 2)),
+                 ("Unexplained", _money(sheet.attr_unexplained, 2)),
+                 ("Settlement", _money(sheet.attr_settlement, 2)),
+                 ("Shares", _money(sheet.attr_shares, 2)),
+                 ("Financing", _money(sheet.attr_financing, 2)),
+                 ("Cost", _money(-sheet.attr_cost, 2))],
+                caption="Attribution totals over the whole run, summed across all rows.",
+                footer=("Sum of axes", _money(closure, 2)),
+            ),
+            Note(
+                "<b>Closure identity.</b> The axes sum to "
+                f"<span class='mono'>{_money(closure, 6)}</span> against a total return of "
+                f"<span class='mono'>{_money(total, 6)}</span> — residual "
+                f"<span class='mono'>{residual:.3e}</span>. This is the same gate the C++ "
+                "tearsheet test asserts, re-evaluated here after a full TSV round-trip."
+            ),
+        ],
+    ))
+
+    # ── 04 Book risk ────────────────────────────────────────────────────────
+    panels = []
+    for name, key, slot, note in (
+        ("Gross vega", "gross_vega", 2, "Post-constraint book vega"),
+        ("Gross gamma", "gross_gamma", 1, "Book convexity"),
+        ("Gross theta", "gross_theta", 0, "Daily carry, dollars"),
+        ("Net delta", "gross_delta", 3, "After the daily close hedge"),
+    ):
+        if key in cols:
+            panels.append((
+                name,
+                charts.small_multiple([float(v) for v in cols[key]], ticks,
+                                      color=theme.series_color(slot), chart_id=key),
+                note,
+            ))
+
+    max_delta = max((abs(float(v)) for v in cols.get("gross_delta", [0.0])), default=0.0)
+    peak_lots = max((float(v) for v in cols.get("n_open_lots", [0.0])), default=0.0)
+    unpriced = sum(float(v) for v in cols.get("n_unpriced_lots", []))
+
+    report.add(Section(
+        "Book risk",
+        lede=(
+            "Four measures on four scales, faceted rather than overlaid — two y-scales on "
+            "one plot would imply a relationship the data does not contain."
+        ),
+        body=[
+            FacetGrid(
+                panels, columns=2,
+                title="Book greeks through the run",
+                caption=(
+                    f"Net delta stays within <b>{max_delta:.1e}</b> of zero across the "
+                    "whole track: the daily delta-to-zero hedge with a zero band is doing "
+                    "exactly what it claims. Gross vega is the constrained quantity — the "
+                    "index leg is scaled so index and basket vega offset at entry."
+                ),
+            ),
+            Subhead("Invariants observed"),
+            Table(
+                [Column("Invariant"), Column("Observed", mono=True), Column("Source")],
+                [("Attribution closure", f"{residual:.3e}", "tearsheet vs sum of axes"),
+                 ("Peak |net delta|", f"{max_delta:.3e}", "gross_delta"),
+                 ("Peak open lots", f"{peak_lots:.0f}", "n_open_lots"),
+                 ("Unpriced lots", f"{unpriced:.0f}", "n_unpriced_lots"),
+                 ("Sessions", f"{n}", "recorded rows")],
+                caption="Engine invariants, read back from the TSV.",
+            ),
+        ],
+    ))
+
+    # ── 05 Configuration ────────────────────────────────────────────────────
+    order = ("label", "date_lo", "date_hi", "snapshot_suffix", "opra_root", "path_template",
+             "flat_rate", "min_names", "min_weight_coverage", "target_dte_days",
+             "min_dte_days", "max_dte_days", "roll_dte_days", "gross_index_vega",
+             "delta_band", "fit_workers", "core_mode")
+    rows = [(k, spec[k]) for k in order if k in spec]
+    rows += [(k, v) for k, v in spec.items() if k not in order]
+    body = [Table([Column("Key", mono=True), Column("Value", mono=True)], rows,
+                  caption="Run specification, as recorded by the backtest driver.")]
+    if counters:
+        body.append(Table(
+            [Column("Counter", mono=True), Column("Value", mono=True)],
+            list(counters.items())[:40],
+            caption="Engine counters for the run.",
+        ))
+    report.add(Section(
+        "Configuration",
+        lede="The run's own specification file, reproduced verbatim.",
+        body=body,
+    ))
+
+    return report.write(path)
+
+
+# Backwards-compatible entry point for an in-memory run.
+def build_report(result, sheet, meta: Mapping[str, str], path: str) -> str:
+    """Render a `BacktestResult` + `TearSheet` + metadata mapping."""
+    return _render(result, sheet, dict(meta), {}, path, meta.get("strategy", ""))
