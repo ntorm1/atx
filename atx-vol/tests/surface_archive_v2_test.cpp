@@ -633,3 +633,55 @@ TEST(SurfaceArchiveV2, InstanceIdSemantics) {
   PricedSurfaceView moved = std::move(*a);
   EXPECT_EQ(moved.instance_id(), id); // move transfers identity
 }
+
+// ── Corpus reproducibility: content-derived created_ts_ns ─────────────────────
+// The production corpus path leaves ArchiveV2WriteOpts::created_ts_ns == 0. That 0
+// sentinel used to be filled from the WALL CLOCK, so two identical builds produced
+// containers differing only in the header timestamp -> corpus builds were not
+// byte-reproducible run-to-run. The writer now fills the sentinel from a
+// deterministic CRC-32C of the archive CONTENT. This gate observes all three
+// required properties at once.
+TEST(SurfaceArchiveV2, ContentDerivedCreatedTsIsReproducible) {
+  const PricedSurface a = make_essvi(42, 5);
+  const std::array<SurfaceArchiveItem, 1> items{SurfaceArchiveItem{"SPY", &a, std::nullopt}};
+
+  // Default opts => created_ts_ns left at the 0 sentinel (the production path).
+  auto first = write_surface_archive_v2(items);
+  auto second = write_surface_archive_v2(items);
+  ASSERT_TRUE(first.has_value() && second.has_value());
+
+  // (1) Determinism: two identical builds are byte-identical containers, header
+  //     timestamp included. Under the old wall-clock fill this diverged.
+  EXPECT_EQ(*first, *second);
+
+  auto arch1 = SurfaceArchiveV2::open(std::vector<std::byte>(*first));
+  ASSERT_TRUE(arch1.has_value()) << arch1.error().to_string();
+  const std::uint64_t ts1 = arch1->header().created_ts_ns;
+
+  // (2) Non-vacuous: the sentinel was actually filled (not left at 0), so (1) is
+  //     not passing trivially over two zero-stamped headers.
+  EXPECT_NE(ts1, 0u);
+
+  // (3) Content-sensitivity (staleness property): a DIFFERENT surface must get a
+  //     DIFFERENT stamp, else two distinct builds at one path would share an
+  //     ArchiveContentIdentity and SnapshotCache would serve a stale surface --
+  //     exactly why a constant stamp is wrong.
+  const PricedSurface b = make_essvi(42, 6); // one more slice => different content
+  const std::array<SurfaceArchiveItem, 1> items_b{SurfaceArchiveItem{"SPY", &b, std::nullopt}};
+  auto third = write_surface_archive_v2(items_b);
+  ASSERT_TRUE(third.has_value());
+  EXPECT_NE(*first, *third);
+  auto arch3 = SurfaceArchiveV2::open(std::vector<std::byte>(*third));
+  ASSERT_TRUE(arch3.has_value()) << arch3.error().to_string();
+  EXPECT_NE(ts1, arch3->header().created_ts_ns);
+
+  // (4) The explicit-nonzero path is UNCHANGED: a caller-supplied stamp is honored
+  //     verbatim (unit tests pin created_ts_ns and must keep working).
+  ArchiveV2WriteOpts pinned;
+  pinned.created_ts_ns = 12345;
+  auto fixed = write_surface_archive_v2(items, pinned);
+  ASSERT_TRUE(fixed.has_value());
+  auto archf = SurfaceArchiveV2::open(std::vector<std::byte>(*fixed));
+  ASSERT_TRUE(archf.has_value()) << archf.error().to_string();
+  EXPECT_EQ(archf->header().created_ts_ns, 12345u);
+}
