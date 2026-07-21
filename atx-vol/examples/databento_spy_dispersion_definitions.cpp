@@ -201,14 +201,6 @@ void usage() {
              days_from_civil(end.year, end.month, end.day);
 }
 
-[[nodiscard]] bool is_third_friday(std::int64_t expiry_ns) {
-  const time::CivilTime expiry = time::to_civil_utc(time::Timestamp::from_unix_nanos(expiry_ns));
-  const std::int64_t serial = days_from_civil(expiry.date.year, expiry.date.month, expiry.date.day);
-  // 1970-01-01 was Thursday; Friday maps to 4 with Sunday=0.
-  const unsigned weekday = static_cast<unsigned>((serial + 4) % 7);
-  return weekday == 5u && expiry.date.day >= 15u && expiry.date.day <= 21u;
-}
-
 [[nodiscard]] std::uint64_t source_fingerprint(const databento::InstrumentDefMsg &definition) {
   const std::uint64_t hash = atx::core::hash_bytes(&definition, sizeof definition);
   return hash == 0u ? 1u : hash;
@@ -405,7 +397,9 @@ int main(int argc, char **argv) {
       definition.definition_ts_ns = definition_ts;
       definition.expiry_ts_ns = expiry_ts;
       definition.multiplier = multiplier;
-      definition.standard_monthly = is_third_friday(expiry_ts);
+      // standard_monthly is left at its default (false) here and assigned in a
+      // per-trade-date pass below, once the full expiry set for each date is
+      // known (holiday-aware classification needs the whole set, not one row).
       definition.standard_deliverable = standard_deliverable;
       // Bind the Databento definition and the daily OCC authority into the
       // contract provenance. The rule tag prevents collision with native
@@ -498,6 +492,29 @@ int main(int argc, char **argv) {
                    "no table written\n",
                    missing_occ_authority);
       return 1;
+    }
+
+    // Holiday-aware standard_monthly classification. US listed-equity monthlies
+    // settle the third Friday, or the Thursday before when that Friday is an
+    // exchange holiday (e.g. Juneteenth). The classifier reads each trade date's
+    // full observed expiry set — available only now, after all rows are buffered
+    // — and never a hardcoded calendar. `latest` is keyed with trade_date first,
+    // so entries are already grouped by date.
+    {
+      std::map<std::string, std::vector<std::int64_t>> expiries_by_date;
+      for (const auto &[key, definition] : latest) {
+        (void)key;
+        expiries_by_date[definition.trade_date].push_back(definition.expiry_ts_ns);
+      }
+      std::map<std::string, std::vector<std::int64_t>> sessions_by_date;
+      for (const auto &[date, expiries] : expiries_by_date) {
+        sessions_by_date.emplace(date, atx::vol::standard_monthly_sessions(expiries));
+      }
+      for (auto &[key, definition] : latest) {
+        (void)key;
+        definition.standard_monthly = atx::vol::is_standard_monthly_expiry(
+            sessions_by_date.at(definition.trade_date), definition.expiry_ts_ns);
+      }
     }
 
     std::vector<atx::vol::ListedContractDefinition> definitions;

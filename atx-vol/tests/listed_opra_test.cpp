@@ -216,6 +216,128 @@ TEST(ListedOpra, RejectsDailyIdentityAndAlignmentViolations) {
       atx::vol::listed_quotes_from_opra(kDate, source.frame.snapshot_ts_ns, source, *table));
 }
 
+// --- Calendar-free standard-monthly classifier ---------------------------
+//
+// standard_monthly_sessions derives each month's monthly settlement date from
+// one trade date's full observed expiry set; is_standard_monthly_expiry tests
+// membership. The rule: a month's monthly session is the third Friday if any
+// observed contract expires then, else the Thursday immediately before it, else
+// nothing. All dates are 2026 (weekday-verified in the task brief): third Friday
+// is Apr-17, May-15, Jun-19, Aug-21; the Thursday before is Apr-16/May-14/
+// Jun-18/Aug-20 respectively.
+
+using atx::vol::is_standard_monthly_expiry;
+using atx::vol::standard_monthly_sessions;
+
+// Midnight-UTC expiry stamp for a "YYYY-MM-DD" date (matches the pulled
+// definitions, which stamp expiration at midnight-UTC of the expiry date).
+std::int64_t expiry_at(const char *date) { return iso_to_ns(std::string(date) + "T00:00:00Z"); }
+
+TEST(StandardMonthlyClassifier, NormalMonthFlagsThirdFridayNotThursdayBefore) {
+  // April 2026: third Friday Apr-17 present -> it is the monthly session. The
+  // Apr-16 weekly Thursday and the Apr-10 (2nd) weekly Friday must NOT be
+  // flagged when the Friday is in the set.
+  const std::vector<std::int64_t> expiries = {
+      expiry_at("2026-04-10"), expiry_at("2026-04-16"), expiry_at("2026-04-17"),
+      expiry_at("2026-04-24")};
+  const std::vector<std::int64_t> sessions = standard_monthly_sessions(expiries);
+  ASSERT_EQ(sessions.size(), 1u);
+  EXPECT_TRUE(is_standard_monthly_expiry(sessions, expiry_at("2026-04-17")));
+  EXPECT_FALSE(is_standard_monthly_expiry(sessions, expiry_at("2026-04-16")));
+  EXPECT_FALSE(is_standard_monthly_expiry(sessions, expiry_at("2026-04-10")));
+  EXPECT_FALSE(is_standard_monthly_expiry(sessions, expiry_at("2026-04-24")));
+}
+
+TEST(StandardMonthlyClassifier, HolidayMonthShiftsToThursdayBefore) {
+  // June 2026: the third Friday (Jun-19) is Juneteenth, an exchange holiday, so
+  // NO contract expires then; monthlies settle Thursday Jun-18. The classifier
+  // must flag Jun-18 (present) and never Jun-19 (absent), with no external
+  // calendar. Jun-18 midnight-UTC ns is 1781740800000000000, Jun-19 is
+  // 1781827200000000000 (task brief).
+  const std::vector<std::int64_t> expiries = {
+      expiry_at("2026-06-05"), expiry_at("2026-06-12"), expiry_at("2026-06-18"),
+      expiry_at("2026-06-26")};
+  ASSERT_EQ(expiry_at("2026-06-18"), 1781740800000000000LL);
+  ASSERT_EQ(expiry_at("2026-06-19"), 1781827200000000000LL);
+  const std::vector<std::int64_t> sessions = standard_monthly_sessions(expiries);
+  ASSERT_EQ(sessions.size(), 1u);
+  EXPECT_TRUE(is_standard_monthly_expiry(sessions, expiry_at("2026-06-18")));
+  EXPECT_FALSE(is_standard_monthly_expiry(sessions, expiry_at("2026-06-19")));
+  EXPECT_FALSE(is_standard_monthly_expiry(sessions, expiry_at("2026-06-12")));
+}
+
+TEST(StandardMonthlyClassifier, MonthWithNeitherFridayNorThursdayFlagsNothing) {
+  // June 2026 with only weeklies that are neither Jun-19 (Friday) nor Jun-18
+  // (Thursday before): no monthly session exists in this set, flag nothing.
+  const std::vector<std::int64_t> expiries = {expiry_at("2026-06-05"), expiry_at("2026-06-12"),
+                                              expiry_at("2026-06-26")};
+  const std::vector<std::int64_t> sessions = standard_monthly_sessions(expiries);
+  EXPECT_TRUE(sessions.empty());
+  EXPECT_FALSE(is_standard_monthly_expiry(sessions, expiry_at("2026-06-18")));
+  EXPECT_FALSE(is_standard_monthly_expiry(sessions, expiry_at("2026-06-19")));
+}
+
+TEST(StandardMonthlyClassifier, HolidayShiftHandledAtDay14Boundary) {
+  // May 2026 starts on a Friday, so the third Friday is May-15 and the Thursday
+  // before is May-14 (the lower day-of-month boundary). Holiday sub-case:
+  // May-15 absent, May-14 present -> May-14 is the session (day-14 Thursday
+  // paired with a day-15 third Friday). Normal sub-case: May-15 present ->
+  // May-15 is the session and May-14 is not flagged.
+  const std::vector<std::int64_t> holiday = {expiry_at("2026-05-08"), expiry_at("2026-05-14"),
+                                             expiry_at("2026-05-22")};
+  const std::vector<std::int64_t> holiday_sessions = standard_monthly_sessions(holiday);
+  ASSERT_EQ(holiday_sessions.size(), 1u);
+  EXPECT_TRUE(is_standard_monthly_expiry(holiday_sessions, expiry_at("2026-05-14")));
+  EXPECT_FALSE(is_standard_monthly_expiry(holiday_sessions, expiry_at("2026-05-15")));
+
+  const std::vector<std::int64_t> normal = {expiry_at("2026-05-08"), expiry_at("2026-05-14"),
+                                            expiry_at("2026-05-15"), expiry_at("2026-05-22")};
+  const std::vector<std::int64_t> normal_sessions = standard_monthly_sessions(normal);
+  ASSERT_EQ(normal_sessions.size(), 1u);
+  EXPECT_TRUE(is_standard_monthly_expiry(normal_sessions, expiry_at("2026-05-15")));
+  EXPECT_FALSE(is_standard_monthly_expiry(normal_sessions, expiry_at("2026-05-14")));
+}
+
+TEST(StandardMonthlyClassifier, ThirdFridayHandledAtDay21Boundary) {
+  // August 2026 starts on a Saturday, so the third Friday is Aug-21 (the upper
+  // day-of-month boundary). Aug-21 present -> it is the session; Aug-20 (the
+  // Thursday before) must not be flagged when the Friday is present.
+  const std::vector<std::int64_t> expiries = {expiry_at("2026-08-14"), expiry_at("2026-08-20"),
+                                              expiry_at("2026-08-21"), expiry_at("2026-08-28")};
+  const std::vector<std::int64_t> sessions = standard_monthly_sessions(expiries);
+  ASSERT_EQ(sessions.size(), 1u);
+  EXPECT_TRUE(is_standard_monthly_expiry(sessions, expiry_at("2026-08-21")));
+  EXPECT_FALSE(is_standard_monthly_expiry(sessions, expiry_at("2026-08-20")));
+}
+
+TEST(StandardMonthlyClassifier, MultiMonthSetClassifiedPerMonthIndependently) {
+  // One trade date observes many months at once (as the exporter passes them):
+  // a normal April (Friday session) and a holiday-shifted June (Thursday
+  // session) in the same set must each resolve on their own evidence.
+  const std::vector<std::int64_t> expiries = {
+      expiry_at("2026-04-16"), expiry_at("2026-04-17"), // April: Friday present
+      expiry_at("2026-06-18")};                         // June: only Thursday (holiday)
+  const std::vector<std::int64_t> sessions = standard_monthly_sessions(expiries);
+  ASSERT_EQ(sessions.size(), 2u);
+  EXPECT_TRUE(is_standard_monthly_expiry(sessions, expiry_at("2026-04-17")));
+  EXPECT_FALSE(is_standard_monthly_expiry(sessions, expiry_at("2026-04-16")));
+  EXPECT_TRUE(is_standard_monthly_expiry(sessions, expiry_at("2026-06-18")));
+  EXPECT_FALSE(is_standard_monthly_expiry(sessions, expiry_at("2026-06-19")));
+}
+
+TEST(StandardMonthlyClassifier, ClassificationIsByUtcDateNotTimeOfDay) {
+  // Expiry instants are canonicalized to their UTC date: the pulled definitions
+  // stamp midnight-UTC while quote-derived stamps use 16:00 ET (20:00Z). Both
+  // must classify identically. Here the session is built from a 20:00Z Jun-18
+  // stamp and a midnight-UTC Jun-18 stamp must still be flagged.
+  const std::vector<std::int64_t> expiries = {iso_to_ns("2026-06-18T20:00:00Z"),
+                                              iso_to_ns("2026-06-05T20:00:00Z")};
+  const std::vector<std::int64_t> sessions = standard_monthly_sessions(expiries);
+  ASSERT_EQ(sessions.size(), 1u);
+  EXPECT_TRUE(is_standard_monthly_expiry(sessions, expiry_at("2026-06-18")));
+  EXPECT_TRUE(is_standard_monthly_expiry(sessions, iso_to_ns("2026-06-18T23:30:00Z")));
+}
+
 TEST(ListedOpra, DefinitionTableRejectsDuplicateAndFutureDateScopedRows) {
   auto duplicate = definitions();
   duplicate.push_back(duplicate.front());

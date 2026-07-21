@@ -62,6 +62,31 @@ private:
                                                    const ListedDefinitionTable &table);
 [[nodiscard]] Result<ListedDefinitionTable> read_listed_definitions_file(std::string_view path);
 
+// Calendar-free classification of US listed-equity standard-monthly expiries.
+//
+// Standard monthlies settle the third Friday of the month, but shift to the
+// immediately preceding Thursday when that Friday is an exchange holiday (e.g.
+// Juneteenth on the third Friday of June 2026). Rather than carry a holiday
+// calendar, these functions use the market's own listing evidence for ONE trade
+// date: no contract of any root expires on an exchange holiday, so a month's
+// standard-monthly session is
+//   - the third Friday, if any observed contract expires on it; else
+//   - the Thursday immediately before it, if any observed contract expires then;
+//   - else the month has no standard-monthly session in this universe.
+//
+// standard_monthly_sessions derives the session dates from the full expiry set
+// observed on one trade date; is_standard_monthly_expiry tests membership. Both
+// operate on UTC dates (expiry instants are canonicalized to their UTC date, so
+// the exact time-of-day of an expiry stamp is irrelevant). Session dates are
+// returned/consumed as day serials (days since 1970-01-01 UTC), sorted
+// ascending. This keeps normal months exact — a weekly Thursday is NOT flagged
+// when the third Friday exists in the set — while flagging holiday-shifted
+// monthlies without an external calendar.
+[[nodiscard]] std::vector<std::int64_t>
+standard_monthly_sessions(std::span<const std::int64_t> expiry_ts_ns);
+[[nodiscard]] bool is_standard_monthly_expiry(std::span<const std::int64_t> sessions,
+                                              std::int64_t expiry_ts_ns);
+
 // Join one single-symbol OPRA panel to the point-in-time definition table.
 // Exact OSI economics must agree with the definition, every aligned instrument
 // id must resolve on the same trade date, and neither quote nor definition may
