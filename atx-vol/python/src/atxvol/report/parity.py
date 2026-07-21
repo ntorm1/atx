@@ -171,16 +171,31 @@ def build_parity_report(
     out_html: str,
     *,
     projected_label: str = "projected (cold)",
+    listed_diagnostics_tsv: str | None = None,
+    projected_diagnostics_tsv: str | None = None,
+    schedule_diagnostics_tsv: str | None = None,
 ) -> ParityStats:
     """Render the two-route comparison to ``out_html`` and return its stats.
 
     ``projected_tsv`` may be either the canonical cold run or the diagnostic
     fast-tier run; ``projected_label`` names it in every legend and caption.
+
+    The three optional ``*_diagnostics_tsv`` arguments are the per-subcommand
+    ``diagnostics_<subcommand>.tsv`` phase-timing files the example emits
+    (``run-backtest``, ``run-projected-backtest``, ``project-schedule``
+    respectively). When any is supplied a "Runtime diagnostics" section is
+    rendered between mark divergence and methodology; when all are ``None`` the
+    document is byte-for-byte what it was before (existing callers unaffected).
+    The returned :class:`ParityStats` never depends on the diagnostics inputs.
     """
     _, listed_rows = _read_tsv(listed_tsv)
     _, projected_rows = _read_tsv(projected_tsv)
     _, divergence_rows = _read_tsv(mark_divergence_tsv)
     _, schedule_rows = _read_tsv(schedule_tsv)
+
+    diag_listed = _read_tsv(listed_diagnostics_tsv)[1] if listed_diagnostics_tsv else None
+    diag_projected = _read_tsv(projected_diagnostics_tsv)[1] if projected_diagnostics_tsv else None
+    diag_schedule = _read_tsv(schedule_diagnostics_tsv)[1] if schedule_diagnostics_tsv else None
 
     # Align session-for-session on date (listed order wins).
     proj_by_date = {r["date"]: r for r in projected_rows}
@@ -199,13 +214,15 @@ def build_parity_report(
     report = _assemble(
         projected_label, dates, ticks, l_daily, p_daily, l_nav, p_nav, residual,
         aligned, divergence_rows, schedule_rows, stats,
+        diag_listed, diag_projected, diag_schedule,
     )
     report.write(out_html)
     return stats
 
 
 def _assemble(projected_label, dates, ticks, l_daily, p_daily, l_nav, p_nav,
-              residual, aligned, divergence_rows, schedule_rows, stats) -> Report:
+              residual, aligned, divergence_rows, schedule_rows, stats,
+              diag_listed=None, diag_projected=None, diag_schedule=None) -> Report:
     n = len(dates)
     date_lo = dates[0] if dates else "?"
     date_hi = dates[-1] if dates else "?"
@@ -250,6 +267,8 @@ def _assemble(projected_label, dates, ticks, l_daily, p_daily, l_nav, p_nav,
     _add_scatter(report, projected_label, ticks, l_daily, p_daily, dates)
     _add_attribution(report, projected_label, aligned)
     _add_divergence(report, divergence_rows)
+    if diag_listed or diag_projected or diag_schedule:
+        _add_diagnostics(report, diag_listed, diag_projected, diag_schedule)
     _add_methodology(report, projected_label, date_lo, date_hi, n, index_sym, names,
                      n_names, index_vega, expiry)
     return report
@@ -495,6 +514,100 @@ def _add_divergence(report, divergence_rows) -> None:
                 table_label=f"Show worst offenders ({len(offenders)} rows)",
             ),
         ],
+    ))
+
+
+def _phase_count(row) -> int:
+    try:
+        return int(row["count"])
+    except (KeyError, ValueError):
+        return 0
+
+
+def _diag_table(rows) -> Table:
+    """A per-route phase table: phase, wall ms, unit count, ms per unit.
+
+    ``ms / unit`` is the phase's wall time divided by its unit count; it is left
+    blank (an em dash) for phases whose count is 0 (n/a), so a rate is only ever
+    shown where dividing is meaningful.
+    """
+    body = []
+    for row in rows:
+        wall = _num(row.get("wall_ms", ""))
+        count = _phase_count(row)
+        per = wall / count if count > 0 else None
+        body.append((
+            row.get("phase", "?"),
+            f"{wall:,.3f}",
+            f"{count:,}" if count > 0 else "—",
+            f"{per:,.3f}" if per is not None else "—",
+        ))
+    return Table(
+        [Column("Phase", mono=True), Column("Wall (ms)"), Column("Count"),
+         Column("ms / unit")],
+        body, numbered=False,
+    )
+
+
+def _phase(rows, name):
+    return next((r for r in rows if r.get("phase") == name), None)
+
+
+def _add_diagnostics(report, diag_listed, diag_projected, diag_schedule) -> None:
+    body: list = []
+
+    # Hero: the projected route's throughput, so the ms/session claim is
+    # self-documenting from the artifact rather than shell `time` folklore.
+    total = _phase(diag_projected, "total") if diag_projected else None
+    if total is not None:
+        total_ms = _num(total.get("wall_ms", ""))
+        sessions = _phase_count(total)
+        per = total_ms / sessions if sessions > 0 else float("nan")
+        body.append(StatRow([
+            Stat("Projected route wall", f"{total_ms:,.1f} ms",
+                 "run-projected-backtest, end to end"),
+            Stat("Priced sessions", f"{sessions:,}", "one re-mark per session"),
+            Stat("Per session", f"{per:,.2f} ms" if math.isfinite(per) else "--",
+                 "wall time ÷ sessions"),
+        ]))
+
+    # One phase table per supplied route, in execution order (schedule builder,
+    # then the two priced routes).
+    for label, rows in (
+        ("Route P builder — project-schedule", diag_schedule),
+        ("Listed route — run-backtest", diag_listed),
+        ("Projected route — run-projected-backtest", diag_projected),
+    ):
+        if not rows:
+            continue
+        body.append(Subhead(label))
+        body.append(_diag_table(rows))
+
+    # Surface the reconciliation-dominates claim when the listed route is present.
+    recon = _phase(diag_listed, "reconciliation") if diag_listed else None
+    listed_total = _phase(diag_listed, "total") if diag_listed else None
+    if recon is not None and listed_total is not None:
+        denom = _num(listed_total.get("wall_ms", ""))
+        share = (_num(recon.get("wall_ms", "")) / denom * 100.0) if denom > 0 else float("nan")
+        if math.isfinite(share):
+            body.append(Note(
+                "The listed route's wall time is dominated by <b>reconciliation</b> — the "
+                "OPRA parquet join that re-marks every session against the exchange tape — "
+                f"at <b>{share:.0f}%</b> of the subcommand. That join is the cost the two-route "
+                "design isolates behind the frozen schedule; the projected route replaces it "
+                "with surface re-marks."
+            ))
+
+    report.add(Section(
+        "Runtime diagnostics",
+        lede=(
+            "Phase-level wall time for each route, taken on a monotonic clock and written next "
+            "to the run artifacts, so the performance claims are provable from the run itself "
+            "rather than shell timing. Each phase carries its own unit count (sessions, rolls, "
+            "legs, or archive loads); <span class='mono'>ms / unit</span> is that phase's wall "
+            "time divided by its count, shown only where a count applies."
+        ),
+        body=body,
     ))
 
 

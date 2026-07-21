@@ -179,6 +179,104 @@ def test_projected_label_is_configurable_for_the_diagnostic_fast_tier(tmp_path):
     assert isinstance(stats, ParityStats)
 
 
+# ── Runtime diagnostics section (Task 10) ────────────────────────────────────
+
+LISTED_DIAG = DATA / "diagnostics_run_backtest.tsv"
+PROJECTED_DIAG = DATA / "diagnostics_run_projected_backtest.tsv"
+SCHEDULE_DIAG = DATA / "diagnostics_project_schedule.tsv"
+
+
+def _diag_total(path: Path) -> tuple[float, int]:
+    _, rows = parity._read_tsv(str(path))
+    total = next(r for r in rows if r["phase"] == "total")
+    return float(total["wall_ms"]), int(total["count"])
+
+
+def _diag_phase(path: Path, phase: str) -> tuple[float, int]:
+    _, rows = parity._read_tsv(str(path))
+    row = next(r for r in rows if r["phase"] == phase)
+    return float(row["wall_ms"]), int(row["count"])
+
+
+def test_diagnostics_fixture_parses_with_magic_skipped():
+    # The ATX_DISPERSION_DIAGNOSTICS\t1 sentinel is skipped by the shared reader,
+    # so the header is the real column row and every phase (incl. the final total)
+    # is a data record.
+    header, rows = parity._read_tsv(str(PROJECTED_DIAG))
+    assert header == ["subcommand", "phase", "wall_ms", "count"]
+    assert rows[0]["phase"] == "setup_read"
+    assert rows[-1]["phase"] == "total"
+    assert rows[-1]["count"] == "3"
+
+
+def test_diagnostics_section_absent_by_default(tmp_path):
+    # Existing callers pass no diagnostics -> no new section, section count unchanged.
+    out = tmp_path / "parity.html"
+    build_parity_report(str(LISTED), str(COLD), str(DIVERGENCE), str(SCHEDULE), str(out))
+    html = out.read_text(encoding="utf-8")
+    assert "Runtime diagnostics" not in html
+    assert html.count("<section>") == 6
+
+
+def test_diagnostics_section_renders_with_computed_per_unit(tmp_path):
+    out = tmp_path / "parity.html"
+    build_parity_report(
+        str(LISTED), str(COLD), str(DIVERGENCE), str(SCHEDULE), str(out),
+        listed_diagnostics_tsv=str(LISTED_DIAG),
+        projected_diagnostics_tsv=str(PROJECTED_DIAG),
+        schedule_diagnostics_tsv=str(SCHEDULE_DIAG),
+    )
+    html = out.read_text(encoding="utf-8")
+    assert "Runtime diagnostics" in html
+    # One extra section, placed before methodology -> 7 balanced sections.
+    assert html.count("<section>") == html.count("</section>") == 7
+
+    # Projected hero: total wall time and the computed ms/session (900 / 3 = 300).
+    total_ms, sessions = _diag_total(PROJECTED_DIAG)
+    assert sessions == 3
+    assert f"{total_ms / sessions:.2f}" in html   # 300.00 ms/session
+    assert f"{total_ms:,.1f}" in html              # 900.0 ms total
+
+    # Listed reconciliation dominates: its computed per-session (510 / 3 = 170.000).
+    recon_ms, recon_n = _diag_phase(LISTED_DIAG, "reconciliation")
+    assert f"{recon_ms / recon_n:,.3f}" in html    # 170.000
+
+    # Schedule cold_solve per-leg (230 / 46 = 5.000).
+    cold_ms, cold_n = _diag_phase(SCHEDULE_DIAG, "cold_solve")
+    assert f"{cold_ms / cold_n:,.3f}" in html      # 5.000
+
+    # Still self-contained (tables only, no new external assets).
+    assert "http://" not in html and "https://" not in html
+    assert html.count("<svg") == html.count("</svg>")
+
+
+def test_diagnostics_section_renders_with_only_projected(tmp_path):
+    # Any one of the three files is enough to raise the section.
+    out = tmp_path / "parity.html"
+    build_parity_report(
+        str(LISTED), str(COLD), str(DIVERGENCE), str(SCHEDULE), str(out),
+        projected_diagnostics_tsv=str(PROJECTED_DIAG),
+    )
+    html = out.read_text(encoding="utf-8")
+    assert "Runtime diagnostics" in html
+    total_ms, sessions = _diag_total(PROJECTED_DIAG)
+    assert f"{total_ms / sessions:.2f}" in html    # 300.00 hero even alone
+
+
+def test_diagnostics_returns_unchanged_parity_stats(tmp_path):
+    # ParityStats shape/values are untouched by the diagnostics params.
+    out1 = tmp_path / "a.html"
+    out2 = tmp_path / "b.html"
+    base = build_parity_report(str(LISTED), str(COLD), str(DIVERGENCE), str(SCHEDULE), str(out1))
+    withd = build_parity_report(
+        str(LISTED), str(COLD), str(DIVERGENCE), str(SCHEDULE), str(out2),
+        listed_diagnostics_tsv=str(LISTED_DIAG),
+        projected_diagnostics_tsv=str(PROJECTED_DIAG),
+        schedule_diagnostics_tsv=str(SCHEDULE_DIAG),
+    )
+    assert base == withd
+
+
 # ── Amendment 7: no binding import ──────────────────────────────────────────
 
 def test_parity_module_carries_no_binding_import():
