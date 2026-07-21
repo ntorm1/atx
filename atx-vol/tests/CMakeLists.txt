@@ -102,6 +102,7 @@ add_executable(atx-vol-tests
     dispersion_strangle_test.cpp
     backtest_exec_test.cpp
     tearsheet_test.cpp
+    benchmark_stats_test.cpp         # X5 IR / alpha / beta / tracking error
     run_report_test.cpp
     backtest_real_test.cpp
     spy_strangle_backtest_test.cpp
@@ -109,6 +110,7 @@ add_executable(atx-vol-tests
     surface_db_populate_test.cpp
     mag7_dispersion_backtest_test.cpp
     spy_dispersion_pnl_test.cpp
+    dispersion_run_test.cpp
     analytics_primitives_test.cpp
     analytics_density_test.cpp
     analytics_aggregate_test.cpp
@@ -122,6 +124,7 @@ add_executable(atx-vol-tests
     iv_seed_test.cpp                 # K2: Choi-2023 tighter seed accuracy + Halley-step gate
     # bt-hotpath WS-S (format agent) — appended targets:
     surface_archive_v2_test.cpp      # S1-S3: ATXVSA2 zero-copy view parity + subset-map isolation
+    zc_view_parity_diag_test.cpp     # WS-ZC1: owned-reconstruct vs borrowed-view parity on a real archive
     # Wave-P AAD greeks (Agent greeks) — appended target:
     adjoint_greeks_test.cpp          # P2: adjoint/IFT American greeks parity vs central-diff FD
     # solve-wall SOTA WS-V (verify agent) — appended target:
@@ -138,6 +141,10 @@ add_executable(atx-vol-tests
     amzn_earnings_test.cpp           # real OPRA board -> two-pass C8 fit: front c2_eff<-1, arb-free
     # pricing-greeks SOTA (Agent G4) — appended target:
     american_exercise_boundary_test.cpp # G4: public exercise_boundary + assignment_risk screen
+    # SPY-dispersion hot-path WS-C (correctness cluster) — appended target:
+    dispersion_workflow_test.cpp     # C1 point-in-time universe, C3 removals, M2 dup keys, M4 index symbol
+    # SPY-dispersion hot-path WS-X (config + execution realism) — appended target:
+    dispersion_run_config_test.cpp   # X1 strict typed run config, X2 frictions/financing, X6 cost model
 )
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).

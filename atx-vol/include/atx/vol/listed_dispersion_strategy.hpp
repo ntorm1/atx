@@ -81,6 +81,12 @@ public:
   }
   [[nodiscard]] std::size_t next_roll_index() const noexcept { return next_roll_; }
 
+  // Relative tolerance for the entry-mark cross-check against the loaded archive.
+  // Defaults to the SHARED kListedEntryMarkTolerance so this guard and the
+  // reconciliation guard agree by construction; 0.0 restores a bit-exact compare.
+  [[nodiscard]] double entry_mark_tolerance() const noexcept { return entry_mark_tolerance_; }
+  void set_entry_mark_tolerance(double tol) noexcept { entry_mark_tolerance_ = tol; }
+
 private:
   ListedDispersionStrategy(ListedDispersionSchedule schedule, HedgeSpec hedge,
                            ScheduleMarkPolicy policy) noexcept
@@ -90,6 +96,7 @@ private:
   HedgeSpec hedge_{};
   ScheduleMarkPolicy policy_{ScheduleMarkPolicy::ExactArchive};
   std::size_t next_roll_{0};
+  double entry_mark_tolerance_{kListedEntryMarkTolerance};
   std::vector<FullGreekSeed> last_entry_seeds_{};
   std::vector<MarkDivergence> last_mark_divergences_{};
 };

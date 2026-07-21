@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <span>
@@ -13,6 +15,33 @@
 #include "atx/vol/types.hpp"             // Result, Side
 
 namespace atx::vol {
+
+// ── Entry-mark cross-check: ONE tolerance, ONE scale formula ────────────────
+//
+// A scheduled leg stores `model_mark` from the BUILD route. Two independent
+// guards later re-price that same contract and compare against the stored value:
+//   * listed_dispersion_reconciliation.cpp — via PricedSurface::fair_value
+//   * listed_dispersion_strategy.cpp       — via PricedSurface::full_greek_seed
+// These are different American-pricing entry points, so they can disagree by a
+// few ULPs on a real board; under the laned analytic-greeks route the observed
+// divergence is ~1e-10 relative. A bit-exact `!=` therefore fails CLOSED on a
+// perfectly good happy path (the strategy returned Unavailable on every roll).
+//
+// Both guards MUST share this constant and this scale, or they disagree about
+// what counts as the same mark. Do not introduce a second local tolerance.
+// `tol == 0.0` restores the strict bit-for-bit compare.
+inline constexpr double kListedEntryMarkTolerance = 1.0e-12;
+
+// Relative agreement on the entry-mark scale: |a-b| <= tol * max(|a|,|b|,1).
+// Non-finite NEVER agrees — a NaN mark must stay a hard error on both routes
+// (the bit-exact `!=` this replaces rejected NaN, and so does this).
+[[nodiscard]] inline bool listed_entry_mark_agrees(double a, double b, double tol) noexcept {
+  if (!std::isfinite(a) || !std::isfinite(b) || !std::isfinite(tol) || tol < 0.0) {
+    return false;
+  }
+  const double scale = std::max(std::max(std::fabs(a), std::fabs(b)), 1.0);
+  return std::fabs(a - b) <= tol * scale;
+}
 
 struct ListedOptionRisk {
   double model_mark{0.0};

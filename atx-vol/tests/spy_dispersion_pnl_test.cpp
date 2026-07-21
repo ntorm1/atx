@@ -267,7 +267,7 @@ TEST(SpyDispersionPnl, FortyDeltaReprice) {
   ASSERT_EQ(legs->size(), 16u); // 8 symbols x {call, put}
 
   for (const auto &sl : *legs) {
-    const PricedSurface *surf = snap->find(sl.leg.uid);
+    const SurfaceRef surf = snap->find(sl.leg.uid);
     ASSERT_NE(surf, nullptr);
     auto d = surf->delta(sl.leg.K, sl.leg.T, sl.leg.side);
     ASSERT_TRUE(d.has_value());

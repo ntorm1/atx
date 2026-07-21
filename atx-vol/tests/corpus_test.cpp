@@ -66,6 +66,10 @@
 #include "atx/vol/types.hpp"                // Side
 #include "atx/vol/vol_curve.hpp"            // CurveConfig, VolCurveKind, to_string
 
+#include "support/isa_golden_tol.hpp" // kLanedGreeksRelBand (WS-P1a route band)
+
+#include <iomanip> // std::setprecision (route-parity failure messages)
+
 using namespace atx::vol;
 namespace fs = std::filesystem;
 
@@ -240,6 +244,60 @@ TEST(FitScheduler, PerformanceCoresAffinityIsAPureSchedulingSteer) {
   ASSERT_TRUE(s_unpinned) << s_unpinned.error().to_string();
   ASSERT_TRUE(s_pinned) << s_pinned.error().to_string();
   EXPECT_EQ(pinned, unpinned); // byte-identical per-index outputs across affinity
+}
+
+// P3.1 regression guard #1 — the DEFAULT-OFF contract for the E-core second tier.
+//
+// This is the gate that keeps the tier from silently appearing underneath a
+// benchmark holding the P-core lease. `efficiency_core_tier_enabled()` must be
+// false unless ATX_VOL_FIT_ECORE_TIER is explicitly armed in the environment, and
+// the test suite never arms it — so on every CI host, hybrid or not, the answer is
+// false and FitAffinity::PerformanceThenEfficiencyCores degrades to exactly
+// FitAffinity::PerformanceCores. efficiency_core_count() must be queryable without
+// crashing; 0 is a valid answer (homogeneous host or discovery unavailable).
+TEST(FitScheduler, EfficiencyCoreTierIsOptInAndOffByDefault) {
+  EXPECT_GE(detail::efficiency_core_count(), 0u);
+  EXPECT_FALSE(detail::efficiency_core_tier_enabled())
+      << "the E-core tier must stay disarmed unless ATX_VOL_FIT_ECORE_TIER is set; "
+         "an armed default would oversubscribe a P-core-pinned benchmark";
+}
+
+// P3.1 regression guard #2 — the two-tier affinity is a pure scheduling steer.
+//
+// Mirrors PerformanceCoresAffinityIsAPureSchedulingSteer for the P-then-E value:
+// every index runs exactly once and yields the SAME per-index output as both the
+// unpinned and the P-core-only paths, at three different worker budgets. Core
+// assignment, worker count, and (when armed) thread priority must never reach a
+// task's value. This holds whether or not the tier is armed on the host running
+// the test, which is what makes it a usable gate on both hybrid and homogeneous CI.
+TEST(FitScheduler, EfficiencyTierAffinityIsAPureSchedulingSteerAcrossWorkerCounts) {
+  constexpr std::size_t kTaskCount = 64u;
+  const auto run = [](detail::FitAffinity affinity, unsigned budget,
+                      std::array<std::size_t, kTaskCount> &output) -> Status {
+    return detail::run_bounded_fit_tasks(
+        kTaskCount, budget,
+        [&output](std::size_t index) -> Status {
+          output[index] = (index * 2654435761u) ^ (index + 1u); // deterministic per-index value
+          return atx::core::Ok();
+        },
+        affinity);
+  };
+
+  std::array<std::size_t, kTaskCount> reference{};
+  const Status s_reference = run(detail::FitAffinity::None, 4u, reference);
+  ASSERT_TRUE(s_reference) << s_reference.error().to_string();
+
+  for (const unsigned budget : {1u, 4u, 16u}) {
+    std::array<std::size_t, kTaskCount> pcore{};
+    std::array<std::size_t, kTaskCount> two_tier{};
+    const Status s_pcore = run(detail::FitAffinity::PerformanceCores, budget, pcore);
+    const Status s_two_tier =
+        run(detail::FitAffinity::PerformanceThenEfficiencyCores, budget, two_tier);
+    ASSERT_TRUE(s_pcore) << s_pcore.error().to_string();
+    ASSERT_TRUE(s_two_tier) << s_two_tier.error().to_string();
+    EXPECT_EQ(pcore, reference) << "P-core affinity changed output at budget " << budget;
+    EXPECT_EQ(two_tier, reference) << "P-then-E affinity changed output at budget " << budget;
+  }
 }
 
 // Bit-for-bit double equality via the raw uint64 pattern (the round-trip gate is
@@ -1745,6 +1803,216 @@ TEST(CorpusBuildSession, StreamsDatesRetainsSourceFailuresAndBoundsLiveSurfaces)
   EXPECT_FALSE(session->append_date("2026-06-19", second).has_value());
 }
 
+// ── B1 (perf): batched multi-date fan-out ───────────────────────────────────
+namespace {
+
+// Whole-file bytes, for archive-level identity assertions. Byte comparison is
+// deliberate: the entries/manifest agreeing is NOT evidence the fitted surface
+// bytes agree, and an iterative solver reaching a value "to tolerance" is
+// exactly the failure this gate exists to catch.
+[[nodiscard]] std::string read_all_bytes(const fs::path &path) {
+  std::ifstream in(path, std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+// Drive a session over `dates`, `per_flush` dates per append_dates call.
+// per_flush == 1 is exactly the historical one-pool-per-date path.
+[[nodiscard]] Result<QualifiedCorpusManifest>
+build_batched(const fs::path &out, const std::vector<std::string> &dates, std::size_t per_flush,
+              unsigned n_threads, std::int64_t created_ts = 1) {
+  QualifiedCorpusConfig cfg;
+  cfg.build.n_threads = n_threads;
+  // 1 pins an explicit stamp (the historical byte-identity tests); 0 leaves the
+  // production sentinel, which the writer now fills from an archive-content hash.
+  cfg.build.write_opts.created_ts_ns = created_ts;
+  auto session = CorpusBuildSession::create(out.string(), cfg);
+  if (!session) {
+    return Err(session.error());
+  }
+  const std::vector<CorpusBoard> boards = make_mixed_boards(dates);
+  std::vector<std::vector<CorpusCellInput>> cells_by_date(dates.size());
+  for (const CorpusBoard &board : boards) {
+    const std::size_t d = static_cast<std::size_t>(
+        std::find(dates.begin(), dates.end(), board.date) - dates.begin());
+    cells_by_date[d].emplace_back(board);
+  }
+  for (std::size_t first = 0; first < dates.size(); first += per_flush) {
+    const std::size_t last = std::min(first + per_flush, dates.size());
+    std::vector<CorpusBuildSession::DateCells> window;
+    for (std::size_t i = first; i < last; ++i) {
+      window.push_back(CorpusBuildSession::DateCells{dates[i], cells_by_date[i]});
+    }
+    const Status appended = session->append_dates(window);
+    if (!appended) {
+      return Err(appended.error());
+    }
+  }
+  return session->finish();
+}
+
+// Replace every occurrence of `dir` with a fixed token. The manifest and quality
+// indexes embed each archive's ABSOLUTE path, so two builds of identical content
+// into different out_dirs necessarily differ in those bytes -- a difference that
+// says nothing about the fit. Normalizing the directory (and only the directory)
+// keeps the comparison honest: the archive FILENAME, and every other field, still
+// has to match exactly.
+[[nodiscard]] std::string with_dir_normalized(const std::string &text, const fs::path &dir) {
+  const std::string needle = dir.generic_string();
+  std::string out = text;
+  for (std::size_t at = out.find(needle); at != std::string::npos;
+       at = out.find(needle, at + 5u)) {
+    out.replace(at, needle.size(), "<OUT>");
+  }
+  return out;
+}
+
+void expect_corpora_byte_identical(const fs::path &lhs_dir, const fs::path &rhs_dir,
+                                   const std::vector<std::string> &dates) {
+  // The archives carry the fitted surfaces; these are the bytes that matter and
+  // they are compared raw, with no normalization of any kind.
+  for (const std::string &date : dates) {
+    const fs::path a = lhs_dir / (date + ".atxvsa");
+    const fs::path b = rhs_dir / (date + ".atxvsa");
+    ASSERT_TRUE(fs::exists(a)) << a.string();
+    ASSERT_TRUE(fs::exists(b)) << b.string();
+    const std::string bytes_a = read_all_bytes(a);
+    const std::string bytes_b = read_all_bytes(b);
+    EXPECT_FALSE(bytes_a.empty()) << date;
+    EXPECT_EQ(bytes_a, bytes_b) << "archive bytes diverged on " << date;
+  }
+  for (const char *index : {"manifest.tsv", "quality.tsv"}) {
+    EXPECT_EQ(with_dir_normalized(read_all_bytes(lhs_dir / index), lhs_dir),
+              with_dir_normalized(read_all_bytes(rhs_dir / index), rhs_dir))
+        << index << " diverged beyond its out_dir prefix";
+  }
+}
+
+// In-memory manifest/quality equality with the same out_dir caveat: compare every
+// field, but compare archive paths by FILENAME rather than absolute path.
+void expect_manifests_equivalent(const QualifiedCorpusManifest &lhs,
+                                 const QualifiedCorpusManifest &rhs) {
+  EXPECT_EQ(lhs.manifest.dates, rhs.manifest.dates);
+  EXPECT_EQ(lhs.manifest.n_boards, rhs.manifest.n_boards);
+  EXPECT_EQ(lhs.manifest.n_ok, rhs.manifest.n_ok);
+  EXPECT_EQ(lhs.manifest.n_failed, rhs.manifest.n_failed);
+  EXPECT_EQ(lhs.manifest.n_skipped, rhs.manifest.n_skipped);
+  EXPECT_EQ(lhs.quality.input_fingerprint, rhs.quality.input_fingerprint);
+  EXPECT_EQ(lhs.quality.policy_fingerprint, rhs.quality.policy_fingerprint);
+  EXPECT_EQ(lhs.quality.n_admitted, rhs.quality.n_admitted);
+  EXPECT_EQ(lhs.quality.n_quarantined, rhs.quality.n_quarantined);
+  EXPECT_EQ(lhs.quality.n_source_failed, rhs.quality.n_source_failed);
+
+  ASSERT_EQ(lhs.manifest.entries.size(), rhs.manifest.entries.size());
+  for (std::size_t i = 0; i < lhs.manifest.entries.size(); ++i) {
+    const CorpusEntry &a = lhs.manifest.entries[i];
+    const CorpusEntry &b = rhs.manifest.entries[i];
+    EXPECT_EQ(a.date, b.date) << i;
+    EXPECT_EQ(a.symbol, b.symbol) << i;
+    EXPECT_EQ(a.status, b.status) << i;
+    EXPECT_EQ(a.chosen_kind, b.chosen_kind) << i;
+    EXPECT_EQ(a.n_slices, b.n_slices) << i;
+    EXPECT_EQ(a.error_code, b.error_code) << i;
+    EXPECT_TRUE(bits_equal(a.oos_in_band, b.oos_in_band)) << i;
+    EXPECT_EQ(fs::path(a.archive_path).filename(), fs::path(b.archive_path).filename()) << i;
+  }
+  ASSERT_EQ(lhs.quality.entries.size(), rhs.quality.entries.size());
+  for (std::size_t i = 0; i < lhs.quality.entries.size(); ++i) {
+    const QualifiedCorpusEntry &a = lhs.quality.entries[i];
+    const QualifiedCorpusEntry &b = rhs.quality.entries[i];
+    EXPECT_EQ(a.date, b.date) << i;
+    EXPECT_EQ(a.symbol, b.symbol) << i;
+    EXPECT_EQ(a.disposition, b.disposition) << i;
+    EXPECT_EQ(a.primary_reason, b.primary_reason) << i;
+    EXPECT_EQ(a.failed_checks, b.failed_checks) << i;
+  }
+}
+
+} // namespace
+
+// B1: batching several dates into ONE fit fan-out must not move a single output
+// byte. `fit_board` is pure w.r.t. shared state and this path arms no warm-start
+// chain, so a board's bytes cannot depend on which other boards share its pool --
+// but that is an argument, not a measurement, so assert the archive bytes.
+TEST(CorpusBuildSession, BatchedAppendIsByteIdenticalToPerDate) {
+  const std::vector<std::string> dates = {"2026-06-17", "2026-06-18", "2026-06-19", "2026-06-22"};
+  const fs::path per_date = fresh_out_dir("batch-per-date");
+  const fs::path batched = fresh_out_dir("batch-all-dates");
+
+  auto one = build_batched(per_date, dates, 1u, 4u);           // one pool per date
+  auto all = build_batched(batched, dates, dates.size(), 4u);  // one pool, all dates
+  ASSERT_TRUE(one.has_value()) << one.error().to_string();
+  ASSERT_TRUE(all.has_value()) << all.error().to_string();
+
+  expect_manifests_equivalent(*one, *all);
+  expect_corpora_byte_identical(per_date, batched, dates);
+}
+
+// B1: the sprint's headline guarantee -- output is invariant to worker count --
+// must survive the restructuring. With a batched fan-out the pool now interleaves
+// boards from DIFFERENT dates, so if any cross-board state had leaked in, worker
+// count would change completion order and therefore the bytes. 1 vs 8 workers.
+TEST(CorpusBuildSession, BatchedAppendDeterministicAcrossThreadCounts) {
+  const std::vector<std::string> dates = {"2026-06-17", "2026-06-18", "2026-06-19", "2026-06-22"};
+  const fs::path serial = fresh_out_dir("batch-serial");
+  const fs::path parallel = fresh_out_dir("batch-parallel");
+
+  auto s = build_batched(serial, dates, dates.size(), 1u);
+  auto p = build_batched(parallel, dates, dates.size(), 8u);
+  ASSERT_TRUE(s.has_value()) << s.error().to_string();
+  ASSERT_TRUE(p.has_value()) << p.error().to_string();
+
+  expect_manifests_equivalent(*s, *p);
+  expect_corpora_byte_identical(serial, parallel, dates);
+}
+
+// Corpus reproducibility on the PRODUCTION path: write_opts.created_ts_ns left at
+// the 0 sentinel. Before the content-derived fill, that sentinel stamped each
+// container from the WALL CLOCK, so two identical builds diverged in the archive
+// header timestamp (and ONLY there) -> corpus builds were not byte-reproducible
+// run-to-run. The writer now fills the sentinel from a deterministic hash of the
+// archive content, so two identical builds are byte-identical AND share a policy
+// fingerprint. This fails on the pre-fix writer and passes on the fixed one.
+TEST(CorpusBuildSession, DefaultStampBuildsAreByteReproducible) {
+  const std::vector<std::string> dates = {"2026-06-17", "2026-06-18", "2026-06-19", "2026-06-22"};
+  const fs::path a = fresh_out_dir("repro-default-a");
+  const fs::path b = fresh_out_dir("repro-default-b");
+
+  auto first = build_batched(a, dates, dates.size(), 4u, 0);  // 0 => production sentinel
+  auto second = build_batched(b, dates, dates.size(), 4u, 0);
+  ASSERT_TRUE(first.has_value()) << first.error().to_string();
+  ASSERT_TRUE(second.has_value()) << second.error().to_string();
+
+  // Archive containers (created_ts_ns header field included) are byte-identical.
+  expect_corpora_byte_identical(a, b, dates);
+  // And the corpus policy fingerprint is stable run-to-run (and non-trivial).
+  EXPECT_EQ(first->quality.policy_fingerprint, second->quality.policy_fingerprint);
+  EXPECT_NE(first->quality.policy_fingerprint, 0u);
+}
+
+// B1: a partial window must still resume from per-date checkpoints. Build the
+// first two dates, then re-drive the WHOLE range in one batch: the already-built
+// dates come back from their checkpoints (not refitted) and the result still
+// matches a clean single-pass build byte for byte.
+TEST(CorpusBuildSession, BatchedAppendResumesFromPerDateCheckpoints) {
+  const std::vector<std::string> dates = {"2026-06-17", "2026-06-18", "2026-06-19", "2026-06-22"};
+  const std::vector<std::string> prefix = {"2026-06-17", "2026-06-18"};
+  const fs::path resumed = fresh_out_dir("batch-resume");
+  const fs::path clean = fresh_out_dir("batch-clean");
+
+  auto partial = build_batched(resumed, prefix, 1u, 4u);
+  ASSERT_TRUE(partial.has_value()) << partial.error().to_string();
+  // A fresh session over the same out_dir picks the checkpoints up.
+  fs::remove(resumed / "manifest.tsv");
+  fs::remove(resumed / "quality.tsv");
+  auto full = build_batched(resumed, dates, dates.size(), 4u);
+  ASSERT_TRUE(full.has_value()) << full.error().to_string();
+
+  auto reference = build_batched(clean, dates, dates.size(), 4u);
+  ASSERT_TRUE(reference.has_value()) << reference.error().to_string();
+  expect_manifests_equivalent(*full, *reference);
+  expect_corpora_byte_identical(resumed, clean, dates);
+}
+
 TEST(CorpusBuildSession, RejectsDuplicateCanonicalSymbolsBeforeFitting) {
   const fs::path out = fresh_out_dir("streaming-duplicate");
   QualifiedCorpusConfig cfg;
@@ -2056,29 +2324,73 @@ TEST(CorpusBuildSession, SyntheticThirteenNameThreeDateBreadthScoreboard) {
   auto parallel = run_backtest(*clock, parallel_strategy, parallel_cfg);
   ASSERT_TRUE(parallel.has_value()) << parallel.error().to_string();
 
-  const auto expect_column_bits_equal = [](const std::vector<double> &lhs,
+  // Labelled so a failure names WHICH claim broke: the two blocks below assert
+  // different things and only one of them may ever be relaxed.
+  const auto expect_column_bits_equal = [](const char *what, const std::vector<double> &lhs,
                                            const std::vector<double> &rhs) {
-    ASSERT_EQ(lhs.size(), rhs.size());
+    ASSERT_EQ(lhs.size(), rhs.size()) << what;
     for (std::size_t i = 0u; i < lhs.size(); ++i) {
-      EXPECT_TRUE(bits_equal(lhs[i], rhs[i])) << "row " << i;
+      EXPECT_TRUE(bits_equal(lhs[i], rhs[i])) << what << " row " << i;
     }
   };
-  expect_column_bits_equal(serial->pnl_total, parallel->pnl_total);
-  expect_column_bits_equal(serial->nav, parallel->nav);
-  expect_column_bits_equal(serial->gross_vega, parallel->gross_vega);
-  expect_column_bits_equal(serial->n_unpriced_lots, parallel->n_unpriced_lots);
-  expect_column_bits_equal(serial->n_unpriced_greeks, parallel->n_unpriced_greeks);
+
+  // (1) THREAD-COUNT DETERMINISM: 1 thread vs 4 threads on the SAME greek route.
+  // Laned greeks cannot move this — both runs take the identical route — so this
+  // stays BIT-EXACT. It is a headline guarantee of the sprint; never relax it.
+  expect_column_bits_equal("serial-vs-parallel pnl_total", serial->pnl_total, parallel->pnl_total);
+  expect_column_bits_equal("serial-vs-parallel nav", serial->nav, parallel->nav);
+  expect_column_bits_equal("serial-vs-parallel gross_vega", serial->gross_vega,
+                           parallel->gross_vega);
+  expect_column_bits_equal("serial-vs-parallel n_unpriced_lots", serial->n_unpriced_lots,
+                           parallel->n_unpriced_lots);
+  expect_column_bits_equal("serial-vs-parallel n_unpriced_greeks", serial->n_unpriced_greeks,
+                           parallel->n_unpriced_greeks);
 
   RunConfig fd_cfg = parallel_cfg;
   fd_cfg.price.analytic_greeks = false;
   DispersionStrategy fd_strategy{universe, dispersion_cfg};
   auto fd = run_backtest(*clock, fd_strategy, fd_cfg);
   ASSERT_TRUE(fd.has_value()) << fd.error().to_string();
-  expect_column_bits_equal(parallel->pnl_total, fd->pnl_total);
-  expect_column_bits_equal(parallel->nav, fd->nav);
-  expect_column_bits_equal(parallel->gross_delta, fd->gross_delta);
-  expect_column_bits_equal(parallel->gross_gamma, fd->gross_gamma);
-  expect_column_bits_equal(parallel->gross_vega, fd->gross_vega);
+  // (2) GREEK-ROUTE PARITY: analytic vs FD. Since WS-P1a the analytic route runs
+  // the laned AVX2 greeks kernel while FD stays scalar, so these agree to the
+  // documented economic band rather than to the bit (support/isa_golden_tol.hpp).
+  // Scaled by the COLUMN's magnitude, not the element's. These columns are
+  // portfolio aggregates: at inception the book is empty, so gross_vega row 0 is
+  // numerically zero (-1.6e-12 vs +1.1e-12 — pure float noise) and an
+  // element-relative test on it is meaningless. The column scale is the honest
+  // denominator for an aggregate.
+  //
+  // KNOWN LIMITATION — this is an AGGREGATE band, NOT an element-wise guarantee.
+  // Because every row is measured against the column's max, a numerically SMALL
+  // row may absorb up to tol * (column scale) in absolute terms, which can be an
+  // arbitrarily large RELATIVE move on that row alone. That is deliberate and is
+  // the price of having a meaningful denominator for a book that starts empty:
+  // the claim being made here is "the two greek routes produce the same portfolio
+  // trajectory to within a band set by the trajectory's own size", not "every
+  // individual cell agrees to 1e-9 relative".
+  //
+  // Consequently: do NOT reuse this column band anywhere the compared values are
+  // not aggregates. For per-contract / per-element quantities use the element-wise
+  // laned_greeks_close(), whose scale is max(|a|,|b|) of the pair being compared.
+  const auto expect_column_route_close = [](const char *what, const std::vector<double> &lhs,
+                                            const std::vector<double> &rhs) {
+    ASSERT_EQ(lhs.size(), rhs.size()) << what;
+    double col = 0.0;
+    for (std::size_t i = 0u; i < lhs.size(); ++i) {
+      col = std::fmax(col, std::fmax(std::fabs(lhs[i]), std::fabs(rhs[i])));
+    }
+    const double tol = atx::vol::test::kLanedGreeksRelBand * std::fmax(col, 1.0);
+    for (std::size_t i = 0u; i < lhs.size(); ++i) {
+      EXPECT_LE(std::fabs(lhs[i] - rhs[i]), tol)
+          << what << " row " << i << ": " << std::setprecision(17) << lhs[i] << " vs " << rhs[i]
+          << " (column scale " << col << ")";
+    }
+  };
+  expect_column_route_close("analytic-vs-fd pnl_total", parallel->pnl_total, fd->pnl_total);
+  expect_column_route_close("analytic-vs-fd nav", parallel->nav, fd->nav);
+  expect_column_route_close("analytic-vs-fd gross_delta", parallel->gross_delta, fd->gross_delta);
+  expect_column_route_close("analytic-vs-fd gross_gamma", parallel->gross_gamma, fd->gross_gamma);
+  expect_column_route_close("analytic-vs-fd gross_vega", parallel->gross_vega, fd->gross_vega);
 }
 
 // Throughput relocated to bench/corpus_build_bench.cpp.

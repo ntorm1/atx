@@ -184,7 +184,9 @@ int main(int argc, char **argv) {
     std::uint64_t sink = 0;
     const double t0 = now_ns();
     for (const OptionContract &c : contracts) {
-      const PricedSurface *s = surfaces.find(c.uid);
+      // WS-ZC1: `find` returns a SurfaceRef handle (owned or borrowed); the
+      // pointer-style calls below are unchanged.
+      const SurfaceRef s = surfaces.find(c.uid);
       auto fv = s->fair_value(c.K, c.T, c.side);
       auto g = s->greeks(c.K, c.T, c.side);
       if (fv && g) {

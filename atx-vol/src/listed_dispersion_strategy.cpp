@@ -107,7 +107,7 @@ Status ListedDispersionStrategy::on_step(const MarketSnapshot &base, std::size_t
   std::vector<FullGreekSeed> seeds;
   seeds.reserve(roll.legs.size());
   for (const ListedScheduleLeg &leg : roll.legs) {
-    const PricedSurface *surface = base.find(leg.uid);
+    const SurfaceRef surface = base.find(leg.uid);
     if (surface == nullptr) {
       return Err(ErrorCode::NotFound, "ListedDispersionStrategy: scheduled surface is unavailable");
     }
@@ -115,7 +115,11 @@ Status ListedDispersionStrategy::on_step(const MarketSnapshot &base, std::size_t
     ATX_TRY(FullGreekSeed seed,
             surface->full_greek_seed(leg.strike, T, leg.side, price_options.analytic_greeks,
                                      price_options.query_execution));
-    if (seed.greeks().price != leg.model_mark) {
+    // Same cross-check, same tolerance, same scale as the reconciliation guard
+    // (listed_dispersion_reconciliation.cpp). This was a bit-exact `!=`, which
+    // fails CLOSED — Unavailable on the happy path — as soon as the seed route
+    // and the build route disagree by even one ULP. NaN still hard-rejects.
+    if (!listed_entry_mark_agrees(seed.greeks().price, leg.model_mark, entry_mark_tolerance_)) {
       if (policy_ == ScheduleMarkPolicy::ExactArchive) {
         return Err(ErrorCode::Unavailable,
                    "ListedDispersionStrategy: archive mark differs from schedule");

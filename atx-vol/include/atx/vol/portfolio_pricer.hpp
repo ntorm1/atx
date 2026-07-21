@@ -79,10 +79,11 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/adjusted_greeks.hpp" // StickyParams
-#include "atx/vol/priced_surface.hpp"  // PricedSurface, PricingContext
-#include "atx/vol/query_pricing.hpp"   // QueryExecution
-#include "atx/vol/types.hpp"           // Result, Status, Side
+#include "atx/vol/adjusted_greeks.hpp"     // StickyParams
+#include "atx/vol/priced_surface.hpp"      // PricedSurface, PricingContext
+#include "atx/vol/priced_surface_view.hpp" // PricedSurfaceView (WS-ZC1 borrowed surfaces)
+#include "atx/vol/query_pricing.hpp"       // QueryExecution
+#include "atx/vol/types.hpp"               // Result, Status, Side
 
 namespace atx::vol {
 
@@ -202,7 +203,163 @@ private:
   std::uint64_t revision_{0};                  // advances after each successful retime commit
 };
 
-// ── SurfaceSet (uid -> PricedSurface, non-owning) ────────────────────────
+// ── SurfaceRef (a borrowed OWNED-or-VIEW surface handle) ──────────────────
+//
+// WS-ZC1. `SurfaceSet` used to resolve a uid to a `const PricedSurface *`, so the
+// replay path had to RECONSTRUCT owned `PricedSurface` objects out of the mapped
+// `.atxvsa` bytes on every step even though `SurfaceArchiveV2`/`SurfaceDb` already
+// serve zero-copy `PricedSurfaceView`s over those same bytes. That reconstruction
+// was ~49% of replay wall-clock (`archive_map`). `SurfaceRef` is the seam that lets
+// the resolver hold EITHER form.
+//
+// It is a two-pointer (16 B) tagged handle, NOT a virtual base: every accessor is a
+// non-virtual inline that branches on which pointer is set, so the hot loop stays
+// devirtualized and inlinable. Nothing in the pricer resolves a surface per CONTRACT
+// — resolution is per unique-uid GROUP (`solve_span`) or per unique uid — so the
+// branch is amortized over a whole batch and is perfectly predicted besides.
+//
+// `operator->` returns `this` (the self-proxy idiom), so existing call sites that
+// were written against a raw pointer (`surf->iv(K, T)`, `surf != nullptr`) keep
+// their exact syntax and only their DECLARED TYPE changes.
+//
+// LIFETIME. A view-backed `SurfaceRef` borrows into a memory mapping. It is only
+// valid while the mapping that backs it is alive. `SurfaceSet` never owns either
+// form; the owner (`MarketSnapshot`) is what keeps the archive — and therefore the
+// mapping — alive for at least as long as the set. See `MarketSnapshot` in
+// backtest.hpp for the enforced ordering.
+class SurfaceRef {
+public:
+  SurfaceRef() noexcept = default;
+  // Implicit on purpose: every existing `SurfaceSet::create(ptrs)` caller and every
+  // `const PricedSurface *` still converts with no source change.
+  SurfaceRef(const PricedSurface *owned) noexcept : owned_{owned} {}       // NOLINT
+  SurfaceRef(const PricedSurfaceView *view) noexcept : view_{view} {}      // NOLINT
+  SurfaceRef(std::nullptr_t) noexcept {}                                   // NOLINT
+  // Reference forms so a function taking `const SurfaceRef &` still accepts a plain
+  // `PricedSurface` / `PricedSurfaceView` lvalue with no call-site change. Binding a
+  // temporary is rejected: the handle would outlive what it borrows.
+  SurfaceRef(const PricedSurface &owned) noexcept : owned_{&owned} {}      // NOLINT
+  SurfaceRef(const PricedSurfaceView &view) noexcept : view_{&view} {}     // NOLINT
+  SurfaceRef(const PricedSurface &&) = delete;
+  SurfaceRef(const PricedSurfaceView &&) = delete;
+
+  [[nodiscard]] bool valid() const noexcept { return owned_ != nullptr || view_ != nullptr; }
+  explicit operator bool() const noexcept { return valid(); }
+  [[nodiscard]] bool operator==(std::nullptr_t) const noexcept { return !valid(); }
+  [[nodiscard]] bool operator!=(std::nullptr_t) const noexcept { return valid(); }
+  [[nodiscard]] bool operator==(const SurfaceRef &other) const noexcept {
+    return owned_ == other.owned_ && view_ == other.view_;
+  }
+
+  // Self-proxy: `ref->method(...)` and `(*ref).method(...)` both land on SurfaceRef's
+  // own forwarding methods below, so pointer-style call sites need no rewrite.
+  [[nodiscard]] const SurfaceRef *operator->() const noexcept { return this; }
+  [[nodiscard]] const SurfaceRef &operator*() const noexcept { return *this; }
+
+  // True when this handle borrows a mapped record rather than owning storage.
+  [[nodiscard]] bool is_view() const noexcept { return view_ != nullptr; }
+  // The owned surface, or nullptr when this handle is view-backed. Only for the few
+  // call sites that genuinely need `PricedSurface`-only state (e.g. `surface()`,
+  // `context()`); prefer the forwarding accessors.
+  [[nodiscard]] const PricedSurface *owned() const noexcept { return owned_; }
+  [[nodiscard]] const PricedSurfaceView *view() const noexcept { return view_; }
+
+  // ── Forwarding accessors (identical contract on either form) ──────────────
+#define ATX_VOL_SURFACE_REF_FWD(expr) return owned_ != nullptr ? owned_->expr : view_->expr
+
+  [[nodiscard]] const PricingContext &pricing() const noexcept {
+    ATX_VOL_SURFACE_REF_FWD(pricing());
+  }
+  [[nodiscard]] std::uint32_t uid() const noexcept { ATX_VOL_SURFACE_REF_FWD(uid()); }
+  [[nodiscard]] std::uint64_t instance_id() const noexcept {
+    ATX_VOL_SURFACE_REF_FWD(instance_id());
+  }
+  [[nodiscard]] std::size_t n_slices() const noexcept { ATX_VOL_SURFACE_REF_FWD(n_slices()); }
+  [[nodiscard]] QueryPricingTier query_pricing_tier() const noexcept {
+    ATX_VOL_SURFACE_REF_FWD(query_pricing_tier());
+  }
+  // Prepared query-accelerator size. A borrowed view carries NO accelerator by
+  // construction (it is the cold route), so its pair count is structurally 0.
+  [[nodiscard]] std::size_t query_cache_pair_count() const noexcept {
+    return owned_ != nullptr ? owned_->query_cache_pair_count() : std::size_t{0};
+  }
+
+  [[nodiscard]] double iv(double K, double T) const noexcept { ATX_VOL_SURFACE_REF_FWD(iv(K, T)); }
+  [[nodiscard]] double total_variance(double K, double T) const noexcept {
+    ATX_VOL_SURFACE_REF_FWD(total_variance(K, T));
+  }
+  [[nodiscard]] double forward_at(double T) const noexcept {
+    ATX_VOL_SURFACE_REF_FWD(forward_at(T));
+  }
+  [[nodiscard]] double q_eff_at(double T) const noexcept { ATX_VOL_SURFACE_REF_FWD(q_eff_at(T)); }
+  [[nodiscard]] double rate_at(double T) const noexcept { ATX_VOL_SURFACE_REF_FWD(rate_at(T)); }
+
+  [[nodiscard]] PricedSurface::ResolvedSurfacePoint resolve(double K, double T) const noexcept {
+    ATX_VOL_SURFACE_REF_FWD(resolve(K, T));
+  }
+
+  [[nodiscard]] Result<double>
+  fair_value(double K, double T, Side side,
+             QueryExecution execution = QueryExecution::Configured) const {
+    ATX_VOL_SURFACE_REF_FWD(fair_value(K, T, side, execution));
+  }
+  [[nodiscard]] Result<AmericanGreeks>
+  greeks(double K, double T, Side side,
+         QueryExecution execution = QueryExecution::Configured) const {
+    ATX_VOL_SURFACE_REF_FWD(greeks(K, T, side, execution));
+  }
+  [[nodiscard]] Result<AmericanGreeks>
+  greeks_analytic(double K, double T, Side side,
+                  QueryExecution execution = QueryExecution::Configured,
+                  GreekNeeds needs = {}) const {
+    ATX_VOL_SURFACE_REF_FWD(greeks_analytic(K, T, side, execution, needs));
+  }
+  [[nodiscard]] Result<double> delta(double K, double T, Side side,
+                                     QueryExecution execution = QueryExecution::Configured) const {
+    ATX_VOL_SURFACE_REF_FWD(delta(K, T, side, execution));
+  }
+  [[nodiscard]] Result<double> vega(double K, double T, Side side,
+                                    QueryExecution execution = QueryExecution::Configured) const {
+    ATX_VOL_SURFACE_REF_FWD(vega(K, T, side, execution));
+  }
+  [[nodiscard]] Result<FullGreekSeed>
+  full_greek_seed(double K, double T, Side side, bool analytic,
+                  QueryExecution execution = QueryExecution::Configured) const {
+    ATX_VOL_SURFACE_REF_FWD(full_greek_seed(K, T, side, analytic, execution));
+  }
+  [[nodiscard]] PricedSurface::FusedResult
+  evaluate(double K, double T, Side side, PricedSurface::EvalField fields, bool analytic,
+           QueryExecution execution = QueryExecution::Configured, GreekNeeds needs = {}) const {
+    ATX_VOL_SURFACE_REF_FWD(evaluate(K, T, side, fields, analytic, execution, needs));
+  }
+  // The hot batch seam. Both forms route the SAME laned analytic-Greek kernels
+  // (src/laned_greek_run.hpp, WS-P1v), so borrowing costs no pricing performance and
+  // is bit-identical to the owned form.
+  [[nodiscard]] Status evaluate_batch(std::span<const double> K, std::span<const double> T,
+                                      std::span<const Side> side, PricedSurface::EvalField fields,
+                                      bool analytic, PricedSurface::EvaluationSoA out,
+                                      simd::SimdIsa resolved_price_isa = simd::SimdIsa::Auto,
+                                      QueryExecution execution = QueryExecution::Configured,
+                                      GreekNeeds needs = {}) const {
+    ATX_VOL_SURFACE_REF_FWD(
+        evaluate_batch(K, T, side, fields, analytic, out, resolved_price_isa, execution, needs));
+  }
+
+#undef ATX_VOL_SURFACE_REF_FWD
+
+private:
+  const PricedSurface *owned_{nullptr};
+  const PricedSurfaceView *view_{nullptr};
+};
+
+[[nodiscard]] inline bool operator==(std::nullptr_t, const SurfaceRef &ref) noexcept {
+  return !ref.valid();
+}
+[[nodiscard]] inline bool operator!=(std::nullptr_t, const SurfaceRef &ref) noexcept {
+  return ref.valid();
+}
+
+// ── SurfaceSet (uid -> surface, non-owning) ──────────────────────────────
 
 class SurfaceSet {
 public:
@@ -215,21 +372,37 @@ public:
   // @return InvalidArgument on a null pointer or a duplicate uid.
   [[nodiscard]] static Result<SurfaceSet> create(std::span<const PricedSurface *const> surfaces);
 
-  // The surface for `uid`, or nullptr if none was registered.
-  [[nodiscard]] const PricedSurface *find(std::uint32_t uid) const noexcept;
+  // WS-ZC1: the zero-copy form. Identical contract, but each entry BORROWS a mapped
+  // archive record. The caller must keep the backing mapping alive for at least as
+  // long as this set and everything derived from it.
+  [[nodiscard]] static Result<SurfaceSet>
+  create_from_views(std::span<const PricedSurfaceView *const> views);
+
+  // The surface for `uid`, or a null handle if none was registered. Compare against
+  // `nullptr` exactly as before.
+  [[nodiscard]] SurfaceRef find(std::uint32_t uid) const noexcept;
 
   [[nodiscard]] std::size_t size() const noexcept { return by_uid_.size(); }
+
+  // True when every registered entry borrows a mapped record (WS-ZC1 replay path).
+  [[nodiscard]] bool borrows_views() const noexcept { return borrows_views_; }
 
 private:
   friend class PortfolioPricer;
 
   SurfaceSet() noexcept;
-  std::vector<std::pair<std::uint32_t, const PricedSurface *>> by_uid_; // sorted by uid
+  // One shared builder for both `create` overloads: sorts, rejects null handles and
+  // duplicate uids, and stamps a fresh logical id.
+  [[nodiscard]] static Result<SurfaceSet>
+  create_from_refs(std::vector<std::pair<std::uint32_t, SurfaceRef>> &&entries, bool borrows_views);
+
+  std::vector<std::pair<std::uint32_t, SurfaceRef>> by_uid_; // sorted by uid
   // Process-unique identity for exact retained-valuation provenance. Copies keep
   // the identity because they resolve the same immutable surface objects; moves
   // transfer it, empty the moved-from resolver, and refresh its identity to
   // close same-address ABA.
   std::uint64_t logical_id_{0};
+  bool borrows_views_{false};
 };
 
 // ── Price field mask (which PriceFrame columns to materialize) ─────────────

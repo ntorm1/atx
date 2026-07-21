@@ -114,7 +114,7 @@ Result<ScenarioGridResult> scenario_grid(const std::vector<Position> &book, cons
       continue;
     }
     pos_w[i] = positions[i].qty * eff_multiplier(positions[i].multiplier);
-    const PricedSurface *surf = base.find(positions[i].contract.uid);
+    const SurfaceRef surf = base.find(positions[i].contract.uid);
     // Ok implies the surface was found during the solve; guard defensively anyway.
     pos_spot[i] = (surf != nullptr) ? surf->pricing().S : kNaN;
     pos_greeks[i] = AmericanGreeks{frame.delta[i], frame.gamma[i], frame.vega[i],
@@ -151,7 +151,7 @@ Result<ScenarioGridResult> scenario_grid(const std::vector<Position> &book, cons
         continue; // already a n_failed lane; excluded from every cell
       }
       const OptionContract &oc = contracts[u];
-      const PricedSurface *surf = base.find(oc.uid);
+      const SurfaceRef surf = base.find(oc.uid);
       if (surf == nullptr) {
         continue; // defensive: uni_ok implies a registered surface
       }

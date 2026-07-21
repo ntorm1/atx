@@ -85,6 +85,35 @@ private:
   std::vector<SnapshotRef> refs_;
 };
 
+// ── Archive backing (WS-ZC1) ────────────────────────────────────────────────
+//
+// How a snapshot that BORROWS its surfaces obtains the archive bytes those views
+// read. It is a statement about the FILE'S LIFECYCLE, made by the caller, because
+// only the caller knows it — not something the loader can infer.
+//
+//   Mutable (default, safe): map, copy once into an owned buffer, DROP the mapping.
+//     For any archive something may still rewrite, evict, or delete — above all the
+//     `SurfaceDb` store path (write -> reopen -> rewrite/evict/delete). A resident
+//     `atx::tsdb::Mapping` keeps the file open, and on Windows those operations then
+//     fail with a sharing violation; commit 8627ccb reverted exactly that regression
+//     (~22 SurfaceDb/SurfaceDbPopulate tests) and `SnapshotCacheEvictsStaleEntry-
+//     WhenArchiveRewrittenSameLength` pins it. This backing costs a whole-archive
+//     copy, which scales with archive BYTES while the reconstruction it replaces
+//     scales with SURFACES — so it is a net loss on short runs.
+//
+//   Sealed: keep the mapping for the snapshot's lifetime — no copy at all. ONLY for
+//     an immutable, read-only corpus: a historical replay, where nothing rewrites or
+//     deletes a partition mid-run. This is where the WS-ZC1 win actually lives
+//     (~9x on snapshot_load); it is opt-in precisely because it pins the file.
+//
+// Choosing Sealed for a partition the store may mutate does not corrupt data — the
+// mapped bytes stay coherent — but it WILL make the store's rewrite/delete fail. Ask
+// for Sealed only when the corpus is genuinely read-only for the snapshot's lifetime.
+enum class ArchiveBacking : std::uint8_t {
+  Mutable = 0,
+  Sealed = 1,
+};
+
 // ── Snapshot loader ─────────────────────────────────────────────────────────
 
 // A single loaded market date: owns the archive's `PricedSurface`s and their
@@ -107,10 +136,15 @@ public:
   // resolves every archived name regardless. NB: while the pricer's SurfaceSet takes
   // `const PricedSurface*` (seam §6), the subset is reconstructed owned, not served
   // zero-copy — the win is the reduced surface count, not zero-allocation.
+  // `backing` states this archive's lifecycle (see ArchiveBacking). It affects only
+  // HOW the borrowed bytes are obtained — the resulting snapshot is byte-identical
+  // either way. Defaults to Mutable: safe for every caller, including the SurfaceDb
+  // store path; a read-only replay corpus opts into Sealed.
   [[nodiscard]] static Result<MarketSnapshot>
   load(std::string_view archive_path,
        QueryPricingTier query_pricing_tier = QueryPricingTier::LegacyCompatible,
-       std::span<const std::uint32_t> referenced_uids = {});
+       std::span<const std::uint32_t> referenced_uids = {},
+       ArchiveBacking backing = ArchiveBacking::Mutable);
 
   MarketSnapshot(MarketSnapshot &&) noexcept = default;
   MarketSnapshot &operator=(MarketSnapshot &&) noexcept = default;
@@ -118,9 +152,10 @@ public:
   MarketSnapshot &operator=(const MarketSnapshot &) = delete;
 
   [[nodiscard]] const SurfaceSet &set() const noexcept { return set_; }
-  [[nodiscard]] const PricedSurface *find(std::uint32_t uid) const noexcept {
-    return set_.find(uid);
-  }
+  // WS-ZC1: a `SurfaceRef` handle — the resolved surface may be OWNED (a freshly
+  // fit board) or a zero-copy BORROW of this snapshot's mapped archive record.
+  // Pointer-style use (`s->pricing()`, `s != nullptr`) is unchanged.
+  [[nodiscard]] SurfaceRef find(std::uint32_t uid) const noexcept { return set_.find(uid); }
   // Same-archive provenance for uid. Pointer lifetime matches this snapshot;
   // lookup performs no allocation and returns nullptr for an unknown uid.
   [[nodiscard]] const SurfaceProvenance *provenance(std::uint32_t uid) const noexcept;
@@ -129,10 +164,25 @@ public:
   [[nodiscard]] std::span<const SurfaceProvenance> provenances() const noexcept {
     return provenance_;
   }
-  // Read-only view of the owned surfaces (archive order; always non-empty after a
-  // successful load). Used by the financing ledger to read a representative
-  // base-date rate. Safe across a move (vector move preserves element addresses).
+  // Read-only view of the OWNED surfaces (archive order). EMPTY on a borrowed
+  // (zero-copy) load — use `n_surfaces()` / `surface_at()` for backing-agnostic
+  // access. Safe across a move (vector move preserves element addresses).
   [[nodiscard]] std::span<const PricedSurface> surfaces() const noexcept { return surfaces_; }
+  // Read-only view of the BORROWED surfaces (archive order). Empty on an owned load.
+  [[nodiscard]] std::span<const PricedSurfaceView> views() const noexcept { return views_; }
+  // True when this snapshot borrows its archive's mapped records rather than owning
+  // reconstructed surfaces (WS-ZC1).
+  [[nodiscard]] bool borrows_views() const noexcept { return !views_.empty(); }
+
+  // Backing-agnostic surface access (archive order). Always non-empty after a
+  // successful load, whichever backing was chosen.
+  [[nodiscard]] std::size_t n_surfaces() const noexcept {
+    return views_.empty() ? surfaces_.size() : views_.size();
+  }
+  [[nodiscard]] SurfaceRef surface_at(std::size_t i) const noexcept {
+    return views_.empty() ? SurfaceRef{&surfaces_[i]} : SurfaceRef{&views_[i]};
+  }
+
   [[nodiscard]] std::int64_t ts_ns() const noexcept { return ts_ns_; }
   [[nodiscard]] std::optional<std::uint32_t> uid_of(std::string_view symbol) const;
 
@@ -142,13 +192,36 @@ public:
   static void reset_open_count() noexcept;
 
 private:
-  MarketSnapshot(std::vector<PricedSurface> &&surfaces, std::vector<SurfaceProvenance> &&provenance,
-                 SurfaceSet &&set, std::int64_t ts,
+  MarketSnapshot(std::shared_ptr<const SurfaceArchiveV2> archive,
+                 std::vector<PricedSurface> &&surfaces, std::vector<PricedSurfaceView> &&views,
+                 std::vector<SurfaceProvenance> &&provenance, SurfaceSet &&set, std::int64_t ts,
                  std::vector<std::pair<std::string, std::uint32_t>> &&syms) noexcept;
 
-  std::vector<PricedSurface> surfaces_;       // owned (archive directory order)
-  std::vector<SurfaceProvenance> provenance_; // same-blob, parallel to surfaces_
-  SurfaceSet set_;                            // non-owning over surfaces_
+  // ── LIFETIME (WS-ZC1) ──────────────────────────────────────────────────────
+  // On the borrowed path each `PricedSurfaceView` in `views_` points into the
+  // memory mapping that `archive_` co-owns, and `set_` holds `SurfaceRef`s to the
+  // `views_` elements. That makes the ownership a strict chain:
+  //
+  //     archive_ (owns the Mapping)  <--  views_ (borrow its bytes)  <--  set_
+  //
+  // DECLARATION ORDER BELOW IS THE ENFORCEMENT. Members are destroyed in reverse
+  // declaration order, so `set_` dies first, then `views_`, and `archive_` — the
+  // mapping — dies LAST. A view therefore cannot outlive the bytes it reads, and
+  // the snapshot cannot hand out a `SurfaceRef` into a released mapping. Do not
+  // reorder these four members.
+  //
+  // The archive is held by `shared_ptr<const ...>` so a snapshot is movable while
+  // keeping the mapping pinned for every copy of the handle. It is null on the
+  // owned path, where `surfaces_` is self-contained.
+  //
+  // Move safety: moving a vector transfers its heap buffer, so element ADDRESSES
+  // are preserved and `set_`'s refs stay valid across a `MarketSnapshot` move.
+  // Neither `surfaces_` nor `views_` is ever mutated after `set_` is built.
+  std::shared_ptr<const SurfaceArchiveV2> archive_; // mapping owner (borrowed path only)
+  std::vector<PricedSurface> surfaces_;             // owned path (archive directory order)
+  std::vector<PricedSurfaceView> views_;            // borrowed path (archive directory order)
+  std::vector<SurfaceProvenance> provenance_;       // same-blob, parallel to whichever is populated
+  SurfaceSet set_;                                  // non-owning over surfaces_ OR views_
   std::int64_t ts_ns_{0};
   std::vector<std::pair<std::string, std::uint32_t>> syms_; // symbol -> uid
 };
@@ -186,15 +259,19 @@ class SnapshotCache {
 public:
   // Reusable/unbounded mode.
   SnapshotCache();
+  // Reusable/unbounded mode over an explicitly-declared archive lifecycle.
+  explicit SnapshotCache(ArchiveBacking backing);
   // Bounded LRU mode. A zero capacity is defensively normalized to one entry.
-  explicit SnapshotCache(std::size_t max_retained_entries);
+  explicit SnapshotCache(std::size_t max_retained_entries,
+                         ArchiveBacking backing = ArchiveBacking::Mutable);
   // B1: bounded LRU + subset-deserialize. Every load/prefetch through this cache
   // deserializes ONLY the archive surfaces whose uid appears in `referenced_uids`
   // (empty => whole board). Intended for a PRIVATE per-run cache whose single book's
   // referenced uids are known up front (the fixed-book run_backtest overload); do NOT
   // share such a cache across books with different referenced sets (a subset snapshot
   // cached under one book would be missing another's uids).
-  SnapshotCache(std::size_t max_retained_entries, std::vector<std::uint32_t> referenced_uids);
+  SnapshotCache(std::size_t max_retained_entries, std::vector<std::uint32_t> referenced_uids,
+                ArchiveBacking backing = ArchiveBacking::Mutable);
   ~SnapshotCache();
   SnapshotCache(const SnapshotCache &) noexcept = default;
   SnapshotCache &operator=(const SnapshotCache &) noexcept = default;
@@ -217,6 +294,25 @@ public:
   [[nodiscard]] Result<std::shared_ptr<const MarketSnapshot>>
   load(std::string_view archive_path, QueryPricingTier query_pricing_tier,
        QueryCacheBuildPolicy build_policy);
+  // The lifecycle this cache's loads declare (see ArchiveBacking). FIXED AT
+  // CONSTRUCTION and immutable thereafter — there is deliberately no setter.
+  //
+  // WHY NO SETTER (WS-ZC regression). The backing is part of the cache key, so an
+  // entry loaded under one backing is never served under the other. A mid-flight
+  // `set_archive_backing` therefore does not "retune" a cache — it ORPHANS every
+  // entry already in it. `run_backtest` used to call exactly that, unconditionally,
+  // on a cache the CALLER owned and had preloaded: the run silently re-loaded every
+  // preloaded snapshot, and a ReuseOnly fast request then missed and silently
+  // resolved down to ColdReference. Because copies of a SnapshotCache share one
+  // Impl, a setter is reachable from any handle and can retarget a cache the caller
+  // is still using. Binding the backing to construction makes that class of bug
+  // unrepresentable, and makes the field a plain immutable read for `cache_key`
+  // (which reads it off the mutex).
+  //
+  // Opt into Sealed by CONSTRUCTING a cache with it, and only for a corpus that is
+  // read-only for the cache's whole lifetime.
+  [[nodiscard]] ArchiveBacking archive_backing() const noexcept;
+
   [[nodiscard]] SnapshotCacheStats stats() const noexcept;
   void clear();
 

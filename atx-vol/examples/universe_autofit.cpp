@@ -84,6 +84,7 @@ const char *preset_name(FitPreset p) {
   case FitPreset::Accurate: return "accurate";
   case FitPreset::Robust: return "robust";
   case FitPreset::Hft: return "hft";
+  case FitPreset::Populate: return "populate";
   }
   return "?";
 }

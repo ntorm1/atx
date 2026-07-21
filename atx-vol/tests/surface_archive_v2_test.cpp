@@ -343,6 +343,16 @@ void expect_batch_bit_identical(const PricedSurface &a, const PricedSurfaceView 
   const auto sa = a.evaluate_batch(K, T, side, fields, analytic, out_a);
   const auto sv = v.evaluate_batch(K, T, side, fields, analytic, out_v);
   ASSERT_EQ(sa.has_value(), sv.has_value());
+  // WS-P1v GOLDEN RESTORED (relaxed by WS-P1a, re-tightened here): PricedSurface and
+  // PricedSurfaceView now drive the SAME laned analytic-Greek kernel through the one
+  // shared driver (src/laned_greek_run.hpp). WS-P1a had to re-gate the ANALYTIC route
+  // from bit-identity to an economic tolerance for exactly one reason — the surface had
+  // a laned path and the view did not, so the two ran different kernels and drifted by
+  // the ~1e-13/greek AVX2-vs-scalar delta. With the seam unified there is no second
+  // implementation left to drift against, so the FULL bit-identity contract is reinstated
+  // on BOTH routes (analytic and FD). That is what actually proves the archive round-trip
+  // is exact: a mapped view and its source surface must be the same pricer, not merely
+  // two pricers that agree to a tolerance.
   for (std::size_t i = 0; i < n; ++i) {
     EXPECT_EQ(st_a[i].has_value(), st_v[i].has_value()) << "batch i=" << i;
     EXPECT_TRUE(bits_equal(iv_a[i], iv_v[i])) << "batch iv i=" << i;
@@ -622,4 +632,56 @@ TEST(SurfaceArchiveV2, InstanceIdSemantics) {
   const std::uint64_t id = a->instance_id();
   PricedSurfaceView moved = std::move(*a);
   EXPECT_EQ(moved.instance_id(), id); // move transfers identity
+}
+
+// ── Corpus reproducibility: content-derived created_ts_ns ─────────────────────
+// The production corpus path leaves ArchiveV2WriteOpts::created_ts_ns == 0. That 0
+// sentinel used to be filled from the WALL CLOCK, so two identical builds produced
+// containers differing only in the header timestamp -> corpus builds were not
+// byte-reproducible run-to-run. The writer now fills the sentinel from a
+// deterministic CRC-32C of the archive CONTENT. This gate observes all three
+// required properties at once.
+TEST(SurfaceArchiveV2, ContentDerivedCreatedTsIsReproducible) {
+  const PricedSurface a = make_essvi(42, 5);
+  const std::array<SurfaceArchiveItem, 1> items{SurfaceArchiveItem{"SPY", &a, std::nullopt}};
+
+  // Default opts => created_ts_ns left at the 0 sentinel (the production path).
+  auto first = write_surface_archive_v2(items);
+  auto second = write_surface_archive_v2(items);
+  ASSERT_TRUE(first.has_value() && second.has_value());
+
+  // (1) Determinism: two identical builds are byte-identical containers, header
+  //     timestamp included. Under the old wall-clock fill this diverged.
+  EXPECT_EQ(*first, *second);
+
+  auto arch1 = SurfaceArchiveV2::open(std::vector<std::byte>(*first));
+  ASSERT_TRUE(arch1.has_value()) << arch1.error().to_string();
+  const std::uint64_t ts1 = arch1->header().created_ts_ns;
+
+  // (2) Non-vacuous: the sentinel was actually filled (not left at 0), so (1) is
+  //     not passing trivially over two zero-stamped headers.
+  EXPECT_NE(ts1, 0u);
+
+  // (3) Content-sensitivity (staleness property): a DIFFERENT surface must get a
+  //     DIFFERENT stamp, else two distinct builds at one path would share an
+  //     ArchiveContentIdentity and SnapshotCache would serve a stale surface --
+  //     exactly why a constant stamp is wrong.
+  const PricedSurface b = make_essvi(42, 6); // one more slice => different content
+  const std::array<SurfaceArchiveItem, 1> items_b{SurfaceArchiveItem{"SPY", &b, std::nullopt}};
+  auto third = write_surface_archive_v2(items_b);
+  ASSERT_TRUE(third.has_value());
+  EXPECT_NE(*first, *third);
+  auto arch3 = SurfaceArchiveV2::open(std::vector<std::byte>(*third));
+  ASSERT_TRUE(arch3.has_value()) << arch3.error().to_string();
+  EXPECT_NE(ts1, arch3->header().created_ts_ns);
+
+  // (4) The explicit-nonzero path is UNCHANGED: a caller-supplied stamp is honored
+  //     verbatim (unit tests pin created_ts_ns and must keep working).
+  ArchiveV2WriteOpts pinned;
+  pinned.created_ts_ns = 12345;
+  auto fixed = write_surface_archive_v2(items, pinned);
+  ASSERT_TRUE(fixed.has_value());
+  auto archf = SurfaceArchiveV2::open(std::vector<std::byte>(*fixed));
+  ASSERT_TRUE(archf.has_value()) << archf.error().to_string();
+  EXPECT_EQ(archf->header().created_ts_ns, 12345u);
 }

@@ -163,7 +163,7 @@ public:
       if (m.status != PriceStatus::Ok) {
         continue; // only Ok marks are servable; a failed one must re-solve / fail closed
       }
-      const PricedSurface *s = snap.find(m.uid);
+      const SurfaceRef s = snap.find(m.uid);
       const std::uint64_t inst = s != nullptr ? s->instance_id() : 0u;
       entries_[key_of(m.uid, m.K, m.T, m.side)] = Val{inst, m.mark};
     }
@@ -816,8 +816,8 @@ struct StepPnl {
                 " (expiry_ts_ns=" + std::to_string(lot.expiry_ts_ns) +
                 ", next_snapshot_ts_ns=" + std::to_string(shifted.ts_ns()) + ")");
       }
-      const PricedSurface *bs = base.find(lot.contract.uid);
-      const PricedSurface *ss = shifted.find(lot.contract.uid);
+      const SurfaceRef bs = base.find(lot.contract.uid);
+      const SurfaceRef ss = shifted.find(lot.contract.uid);
       if (bs == nullptr || ss == nullptr) {
         return Err(ErrorCode::NotFound, "run_backtest: no surface for settling lot");
       }
@@ -874,7 +874,7 @@ struct StepPnl {
                      "run_backtest: no valid base mark for settling lot id=" +
                          std::to_string(lot.id));
         }
-        const PricedSurface *ss = shifted.find(lot.contract.uid);
+        const SurfaceRef ss = shifted.find(lot.contract.uid);
         const double S = ss->pricing().S;
         const double K = lot.contract.K;
         const double intrinsic =
@@ -888,7 +888,7 @@ struct StepPnl {
       for (std::size_t i = 0; i < n_exp; ++i) {
         const Lot &lot = (*expiring)[i];
         const double T_base = residual_T(lot.expiry_ts_ns, base.ts_ns());
-        const PricedSurface *bs = base.find(lot.contract.uid); // non-null (partition loop)
+        const SurfaceRef bs = base.find(lot.contract.uid); // non-null (partition loop)
         const std::uint64_t inst = bs->instance_id();
         const std::optional<double> mm =
             mark_memo->find(lot.contract.uid, lot.contract.K, T_base, lot.contract.side, inst);
@@ -931,7 +931,7 @@ struct StepPnl {
           mark = sf.price[solve_ix];
           ++solve_ix;
         }
-        const PricedSurface *ss = shifted.find(lot.contract.uid);
+        const SurfaceRef ss = shifted.find(lot.contract.uid);
         const double S = ss->pricing().S;
         const double K = lot.contract.K;
         const double intrinsic =
@@ -1043,21 +1043,22 @@ struct StepPnl {
     return Ok();
   }
 
-  const std::span<const PricedSurface> surfaces = snapshot.surfaces();
+  // Backing-agnostic (WS-ZC1): a borrowed snapshot exposes the same uid per index.
+  const std::size_t n_surfaces = snapshot.n_surfaces();
   const std::span<const SurfaceProvenance> provenances = snapshot.provenances();
-  if (provenances.size() != surfaces.size()) {
+  if (provenances.size() != n_surfaces) {
     return Err(ErrorCode::InvalidArgument,
                "run_backtest: snapshot provenance is not aligned with surfaces");
   }
-  for (std::size_t index = 0; index < surfaces.size(); ++index) {
-    const PricedSurface &surface = surfaces[index];
+  for (std::size_t index = 0; index < n_surfaces; ++index) {
+    const SurfaceRef surface = snapshot.surface_at(index);
     const SurfaceProvenance &provenance = provenances[index];
     const bool admitted =
         !provenance.legacy_format && provenance.purpose == SurfacePurpose::Risk &&
         provenance.served_generation != 0u &&
         (provenance.state == SurfaceState::Healthy || provenance.state == SurfaceState::Degraded);
     if (!admitted) {
-      const std::string uid = std::to_string(surface.uid());
+      const std::string uid = std::to_string(surface->uid());
       const std::string purpose{purpose_name(provenance.purpose)};
       const std::string state{state_name(provenance.state)};
       const std::string legacy = provenance.legacy_format ? "true" : "false";
@@ -1128,29 +1129,116 @@ Result<Clock> Clock::from_surface_db(const SurfaceDb &db) {
 
 // ── MarketSnapshot ──────────────────────────────────────────────────────────
 
-MarketSnapshot::MarketSnapshot(std::vector<PricedSurface> &&surfaces,
+MarketSnapshot::MarketSnapshot(std::shared_ptr<const SurfaceArchiveV2> archive,
+                               std::vector<PricedSurface> &&surfaces,
+                               std::vector<PricedSurfaceView> &&views,
                                std::vector<SurfaceProvenance> &&provenance, SurfaceSet &&set,
                                std::int64_t ts,
                                std::vector<std::pair<std::string, std::uint32_t>> &&syms) noexcept
-    : surfaces_{std::move(surfaces)}, provenance_{std::move(provenance)}, set_{std::move(set)},
-      ts_ns_{ts}, syms_{std::move(syms)} {}
+    : archive_{std::move(archive)}, surfaces_{std::move(surfaces)}, views_{std::move(views)},
+      provenance_{std::move(provenance)}, set_{std::move(set)}, ts_ns_{ts},
+      syms_{std::move(syms)} {}
 
 std::uint64_t MarketSnapshot::open_count() noexcept { return g_open_count.load(); }
 void MarketSnapshot::reset_open_count() noexcept { g_open_count.store(0); }
 
 Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
                                             QueryPricingTier query_pricing_tier,
-                                            std::span<const std::uint32_t> referenced_uids) {
+                                            std::span<const std::uint32_t> referenced_uids,
+                                            ArchiveBacking backing) {
   ATX_VOL_PROFILE_SCOPE(SnapshotLoad);
+  // WS-ZC1: which BACKING the borrowed views read from. `open_mapped` is demand-paged
+  // and copy-free, but on Windows a file with an active mapped section CANNOT be
+  // deleted or replaced (ERROR_USER_MAPPED_FILE) regardless of share mode — and a
+  // borrowed snapshot holds its archive for its whole lifetime. That would break
+  // atomic republish of a partition (write .tmp + rename) while any reader is live,
+  // which `Backtest.SnapshotCacheEvictsStaleEntryWhenArchiveRewrittenSameLength`
+  // pins as a supported workflow.
+  //
+  // So a BORROWING load uses `open_copied`: map, ONE memcpy into an owned buffer, drop
+  // the mapping. Views then borrow that buffer (kept alive by the same archive
+  // shared_ptr), no section stays open against the file, and republish keeps working.
+  // The copy runs at memory bandwidth out of pages the OS cache already holds, so it
+  // keeps nearly all of the mapped open's speed — `open_file`'s stream read, the
+  // obvious alternative, measured ~210 ms over this replay versus ~8 ms to map. A
+  // whole-board borrow touches every record anyway, so the demand-paging that motivated
+  // `open_mapped` (WS-S S2) has nothing left to skip here.
+  //
+  // The owned (non-borrowing) path keeps `open_mapped`: it reconstructs and then drops
+  // the archive inside this function, so it never holds a mapping past the load and
+  // still benefits from faulting in only the subset it reconstructs.
+  // ESCAPE HATCH / MEASUREMENT LEVER: `ATX_VOL_ZC_BORROW=0` forces the owned
+  // reconstruct path. It exists so the two backings can be A/B'd inside ONE binary on
+  // ONE host — which is how the WS-ZC1 numbers were taken, and how they should be
+  // re-taken — and so a borrow-specific regression can be bisected without a rebuild.
+  // Read once; it cannot change mid-run, so it cannot make a run non-deterministic.
+  static const bool borrow_allowed = []() {
+#if defined(_WIN32)
+    std::size_t sz = 0;
+    char buf[8] = {};
+    if (getenv_s(&sz, buf, sizeof(buf), "ATX_VOL_ZC_BORROW") != 0 || sz == 0) {
+      return true;
+    }
+    return std::string_view{buf} != "0";
+#else
+    const char *e = std::getenv("ATX_VOL_ZC_BORROW");
+    return e == nullptr || std::string_view{e} != "0";
+#endif
+  }();
+  // BORROW INSTEAD OF RECONSTRUCT. `PricedSurfaceView` carries no query accelerator: it
+  // IS the cold reference route. So it can serve the two cache-free tiers
+  // (LegacyCompatible, ColdReference) bit-for-bit, and only those — a fast tier must
+  // still reconstruct owned surfaces because `with_query_pricing` has to build a real
+  // accelerator. Since WS-P1v, both forms drive the same laned analytic-Greek kernels,
+  // so borrowing costs no pricing performance on the tiers it serves.
+  const bool borrow = borrow_allowed && (query_pricing_tier == QueryPricingTier::LegacyCompatible ||
+                                         query_pricing_tier == QueryPricingTier::ColdReference);
+
   auto arch = [&]() {
     ATX_VOL_PROFILE_SCOPE(ArchiveOpen);
+    if (borrow) {
+      // The CALLER declares the archive's lifecycle; the loader never guesses.
+      // `ATX_VOL_ZC_BACKING=map|copy` is an override/escape hatch for measurement and
+      // for forcing either backing without a rebuild. Read once, so it cannot make a
+      // run non-deterministic.
+      static const std::optional<ArchiveBacking> backing_override = []() {
+        auto parse = [](std::string_view v) -> std::optional<ArchiveBacking> {
+          if (v == "map") {
+            return ArchiveBacking::Sealed;
+          }
+          if (v == "copy") {
+            return ArchiveBacking::Mutable;
+          }
+          return std::nullopt;
+        };
+#if defined(_WIN32)
+        std::size_t sz = 0;
+        char buf[8] = {};
+        if (getenv_s(&sz, buf, sizeof(buf), "ATX_VOL_ZC_BACKING") != 0 || sz == 0) {
+          return std::optional<ArchiveBacking>{};
+        }
+        return parse(std::string_view{buf});
+#else
+        const char *e = std::getenv("ATX_VOL_ZC_BACKING");
+        return e != nullptr ? parse(std::string_view{e}) : std::optional<ArchiveBacking>{};
+#endif
+      }();
+      const ArchiveBacking effective = backing_override.value_or(backing);
+      if (effective == ArchiveBacking::Sealed) {
+        // Read-only corpus: keep the mapping, copy nothing. No section is ever closed,
+        // so this must not be used for a partition the store may rewrite or delete.
+        return SurfaceArchiveV2::open_mapped(archive_path);
+      }
+      // Map + one memcpy into an owned buffer, mapping dropped (see the note above).
+      return SurfaceArchiveV2::open_copied(archive_path);
+    }
     // S2 (WS-S): mmap the partition instead of reading the whole file into an owned
     // heap buffer. open_impl CRC-validates only the header/lookup/directory (small),
     // so this open faults in only metadata pages; a subset load (below) then faults
     // in only the referenced records' pages via the OS page cache — the whole-file
     // read amplification (67% of backtest wall in the profile) is eliminated. The
-    // archive co-owns the Mapping, and this snapshot owns the archive-derived
-    // surfaces, so the mapped pages outlive every reader.
+    // owned path reconstructs and drops this archive before returning, so it never
+    // holds a mapping past the load.
     return SurfaceArchiveV2::open_mapped(archive_path);
   }();
   if (!arch) {
@@ -1159,8 +1247,14 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
   // One archive-open event (the load-once gate asserts N loads => N opens).
   g_open_count.fetch_add(1, std::memory_order_relaxed);
 
-  const std::span<const ArchiveV2DirEntry> dir = arch->directory();
+  // WS-ZC1: the snapshot co-owns the archive — and therefore the buffer every borrowed
+  // view reads — for its whole lifetime. See the lifetime note on MarketSnapshot's
+  // members.
+  auto archive = std::make_shared<const SurfaceArchiveV2>(std::move(*arch));
+
+  const std::span<const ArchiveV2DirEntry> dir = archive->directory();
   std::vector<PricedSurface> surfaces;
+  std::vector<PricedSurfaceView> views;
   std::vector<SurfaceProvenance> provenance;
 
   // B1 subset-deserialize (bottleneck #1 at the reader): when the caller names the
@@ -1172,11 +1266,12 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
   // (e.g. a book naming only names absent from this partition) fall back to the
   // whole board so the valuation timestamp and unpriced-lot handling are unchanged.
   //
-  // Seam note (§6, out of WS-B lane): the PortfolioPricer's SurfaceSet still takes
-  // `const PricedSurface*`, so the subset is reconstructed (owned) rather than served
-  // as zero-copy PricedSurfaceViews. Re-pointing SurfaceSet/PortfolioPricer at views
-  // is a greeks-owned change (portfolio_pricer.{hpp,cpp}); until it lands the
-  // deserialize win here is the subset (fewer surfaces reconstructed), not zero-copy.
+  // WS-ZC1 lands the seam §6 note that used to sit here: `SurfaceSet` now holds
+  // `SurfaceRef`, so on the two cache-free tiers the subset AND the whole board are
+  // served as zero-copy `PricedSurfaceView`s over the mapped records. The archive
+  // reconstruction that dominated replay (`archive_map`, ~49% of wall) disappears on
+  // those tiers; a fast tier still reconstructs owned surfaces below.
+  const auto n_surfaces = [&]() { return borrow ? views.size() : surfaces.size(); };
   bool loaded_subset = false;
   if (!referenced_uids.empty()) {
     ATX_VOL_PROFILE_SCOPE(ArchiveMap);
@@ -1184,48 +1279,74 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
     // O(dir x subset) nested scan.
     const std::unordered_set<std::uint32_t> wanted_uids(referenced_uids.begin(),
                                                         referenced_uids.end());
-    surfaces.reserve(referenced_uids.size());
+    surfaces.reserve(borrow ? 0u : referenced_uids.size());
+    views.reserve(borrow ? referenced_uids.size() : 0u);
     provenance.reserve(referenced_uids.size());
     for (const ArchiveV2DirEntry &e : dir) {
       if (wanted_uids.find(e.uid) == wanted_uids.end()) {
         continue;
       }
-      // S3 (WS-S): reconstruct the surface AND its provenance from the directory
-      // entry `e` already in hand — ONE pass over the record extent, no hash
-      // re-probe. (Previously reconstruct_symbol(sym) + provenance(sym) each
-      // re-ran find_slot: two redundant probes + canonicalize_symbol allocs.)
-      auto rec = arch->reconstruct_entry(e);
-      if (!rec) {
-        return Err(rec.error());
+      // S3 (WS-S): build the surface AND its provenance from the directory entry `e`
+      // already in hand — ONE pass over the record extent, no hash re-probe.
+      if (borrow) {
+        auto rec = archive->map_entry(e);
+        if (!rec) {
+          return Err(rec.error());
+        }
+        views.push_back(std::move(rec->view));
+        provenance.push_back(std::move(rec->provenance));
+      } else {
+        auto rec = archive->reconstruct_entry(e);
+        if (!rec) {
+          return Err(rec.error());
+        }
+        surfaces.push_back(std::move(rec->surface));
+        provenance.push_back(std::move(rec->provenance));
       }
-      surfaces.push_back(std::move(rec->surface));
-      provenance.push_back(std::move(rec->provenance));
     }
-    loaded_subset = !surfaces.empty();
+    loaded_subset = n_surfaces() != 0u;
   }
   if (!loaded_subset) {
     ATX_VOL_PROFILE_SCOPE(ArchiveMap);
-    auto mapped = arch->reconstruct_all_with_provenance();
-    if (!mapped) {
-      return Err(mapped.error());
-    }
     surfaces.clear();
+    views.clear();
     provenance.clear();
-    surfaces.reserve(mapped->size());
-    provenance.reserve(mapped->size());
-    for (ArchivedSurface &record : *mapped) {
-      surfaces.push_back(std::move(record.surface));
-      provenance.push_back(std::move(record.provenance));
+    if (borrow) {
+      auto mapped = archive->map_all_with_provenance();
+      if (!mapped) {
+        return Err(mapped.error());
+      }
+      views.reserve(mapped->size());
+      provenance.reserve(mapped->size());
+      for (ArchivedSurfaceView &record : *mapped) {
+        views.push_back(std::move(record.view));
+        provenance.push_back(std::move(record.provenance));
+      }
+    } else {
+      auto mapped = archive->reconstruct_all_with_provenance();
+      if (!mapped) {
+        return Err(mapped.error());
+      }
+      surfaces.reserve(mapped->size());
+      provenance.reserve(mapped->size());
+      for (ArchivedSurface &record : *mapped) {
+        surfaces.push_back(std::move(record.surface));
+        provenance.push_back(std::move(record.provenance));
+      }
     }
   }
-  if (surfaces.empty()) {
+  if (n_surfaces() == 0u) {
     return Err(ErrorCode::InvalidArgument, "MarketSnapshot::load: archive holds no surfaces");
   }
 
-  // Valuation timestamp: the surfaces of one date agree on now_ts_ns.
-  const std::int64_t ts = surfaces.front().pricing().now_ts_ns;
-  for (const PricedSurface &s : surfaces) {
-    if (s.pricing().now_ts_ns != ts) {
+  // Valuation timestamp: the surfaces of one date agree on now_ts_ns. Read through
+  // whichever backing was populated.
+  const auto pricing_at = [&](std::size_t i) -> const PricingContext & {
+    return borrow ? views[i].pricing() : surfaces[i].pricing();
+  };
+  const std::int64_t ts = pricing_at(0).now_ts_ns;
+  for (std::size_t i = 0; i < n_surfaces(); ++i) {
+    if (pricing_at(i).now_ts_ns != ts) {
       return Err(ErrorCode::InvalidArgument,
                  "MarketSnapshot::load: surfaces disagree on now_ts_ns within a date");
     }
@@ -1233,7 +1354,9 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
 
   // Query caches are runtime accelerators, not archive state. Prepare every
   // mapped surface under the caller's tier before building the pointer set, so
-  // no partially-prepared snapshot can become observable.
+  // no partially-prepared snapshot can become observable. A borrowed view carries no
+  // accelerator by construction (it IS the cold route), so this is the owned path
+  // only — and `borrow` is false for exactly the tiers that need one.
   for (PricedSurface &surface : surfaces) {
     auto prepared = std::move(surface).with_query_pricing(query_pricing_tier);
     if (!prepared) {
@@ -1241,14 +1364,34 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
     }
     surface = std::move(*prepared);
   }
-
-  // Non-owning resolver over the owned surfaces' stable addresses.
-  std::vector<const PricedSurface *> ptrs;
-  ptrs.reserve(surfaces.size());
-  for (const PricedSurface &s : surfaces) {
-    ptrs.push_back(&s);
+  // A borrowed view has nothing to prepare (it IS the cold route), but it still
+  // records WHICH cold tier it is serving so a borrowed snapshot reports the same
+  // tier an owned one prepared at would.
+  for (PricedSurfaceView &v : views) {
+    if (Status s = v.set_cold_query_pricing_tier(query_pricing_tier); !s.has_value()) {
+      return Err(s.error());
+    }
   }
-  auto set = SurfaceSet::create(ptrs);
+
+  // Non-owning resolver over the surfaces' stable addresses. Neither vector is
+  // mutated after this point, so the refs stay valid for the snapshot's lifetime
+  // (and across a move, which preserves element addresses).
+  auto set = [&]() {
+    if (borrow) {
+      std::vector<const PricedSurfaceView *> ptrs;
+      ptrs.reserve(views.size());
+      for (const PricedSurfaceView &v : views) {
+        ptrs.push_back(&v);
+      }
+      return SurfaceSet::create_from_views(ptrs);
+    }
+    std::vector<const PricedSurface *> ptrs;
+    ptrs.reserve(surfaces.size());
+    for (const PricedSurface &s : surfaces) {
+      ptrs.push_back(&s);
+    }
+    return SurfaceSet::create(ptrs);
+  }();
   if (!set) {
     return Err(set.error());
   }
@@ -1262,16 +1405,20 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
     syms.emplace_back(std::string(e.symbol, e.symbol_len), e.uid);
   }
 
-  return MarketSnapshot{std::move(surfaces), std::move(provenance), std::move(*set), ts,
+  // The snapshot co-owns `archive` — the Mapping every borrowed view reads — so the
+  // mapping outlives the views, which outlive nothing else. See MarketSnapshot's
+  // member lifetime note.
+  return MarketSnapshot{std::move(archive),   std::move(surfaces), std::move(views),
+                        std::move(provenance), std::move(*set),    ts,
                         std::move(syms)};
 }
 
 const SurfaceProvenance *MarketSnapshot::provenance(std::uint32_t uid) const noexcept {
-  if (provenance_.size() != surfaces_.size()) {
+  if (provenance_.size() != n_surfaces()) {
     return nullptr;
   }
-  for (std::size_t i = 0; i < surfaces_.size(); ++i) {
-    if (surfaces_[i].uid() == uid) {
+  for (std::size_t i = 0; i < n_surfaces(); ++i) {
+    if (surface_at(i).uid() == uid) {
       return &provenance_[i];
     }
   }
@@ -1428,10 +1575,25 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
       book_uids.push_back(lot.contract.uid);
     }
   }
+  // WS-ZC1: a backtest replays a SEALED corpus — the clock's partitions are historical
+  // and nothing in a run rewrites, evicts, or deletes them — so its snapshots may keep
+  // the archive mapped and skip the whole-archive copy entirely. This is the explicit
+  // caller declaration ArchiveBacking documents; the store path never makes it, so the
+  // SurfaceDb write -> reopen -> rewrite/delete cycle keeps its buffered backing.
+  //
+  // ONLY THE PRIVATE CACHE MAY BE SEALED (WS-ZC regression fix). The backing is part
+  // of the snapshot-cache key, so declaring Sealed on a cache we did not create does
+  // not merely re-tune it — it orphans every entry the CALLER preloaded under the
+  // default Mutable backing, silently re-loading them and silently downgrading a
+  // ReuseOnly fast request to ColdReference. A caller-supplied cache is therefore
+  // used exactly as the caller configured it; the Sealed win is taken on the cache
+  // this function constructs and exclusively owns, which is the replay path the
+  // optimization was built for and the one no caller can observe.
   const std::shared_ptr<SnapshotCache> snapshot_cache =
-      cfg.snapshot_cache
-          ? cfg.snapshot_cache
-          : std::make_shared<SnapshotCache>(kPrivateSnapshotCacheCapacity, std::move(book_uids));
+      cfg.snapshot_cache ? cfg.snapshot_cache
+                         : std::make_shared<SnapshotCache>(kPrivateSnapshotCacheCapacity,
+                                                           std::move(book_uids),
+                                                           ArchiveBacking::Sealed);
   auto base_res = snapshot_cache->load(refs[0].archive_path, cfg.query_pricing_tier,
                                        cfg.query_cache_build_policy);
   if (!base_res) {
@@ -1757,7 +1919,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
         continue;
       }
       const double T_res = residual_T(lot.expiry_ts_ns, base_snap.ts_ns());
-      const PricedSurface *s = base_snap.find(lot.contract.uid);
+      const SurfaceRef s = base_snap.find(lot.contract.uid);
       const std::optional<ReusableTargetMarkFrame::Match> exact_mark =
           close_marks != nullptr ? close_marks->find_ok(lot.id) : std::nullopt;
       double mark = exact_mark.has_value() ? exact_mark->raw_mark : 0.0;
@@ -1823,7 +1985,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
       hedge_ledger.hedge_daily(
           book.lots, *current_risk, hedge_spec.band, cfg.frictions.hedge_slippage_bps,
           [&base_snap](std::uint32_t uid) -> double {
-            const PricedSurface *surface = base_snap.find(uid);
+            const SurfaceRef surface = base_snap.find(uid);
             return surface != nullptr ? surface->pricing().S : 0.0;
           },
           cash, ex.cost);
@@ -1833,9 +1995,12 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     return Ok(ex);
   };
 
+  // WS-ZC1: a backtest replays a SEALED corpus, and only the PRIVATE cache may be
+  // sealed — see the note on the fixed-book overload above.
   const std::shared_ptr<SnapshotCache> snapshot_cache =
       cfg.snapshot_cache ? cfg.snapshot_cache
-                         : std::make_shared<SnapshotCache>(kPrivateSnapshotCacheCapacity);
+                         : std::make_shared<SnapshotCache>(kPrivateSnapshotCacheCapacity,
+                                                           ArchiveBacking::Sealed);
   auto base_res = snapshot_cache->load(refs[0].archive_path, cfg.query_pricing_tier,
                                        cfg.query_cache_build_policy);
   if (!base_res) {
@@ -1948,14 +2113,16 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     double shares_pnl = 0.0;
     double financing = 0.0;
     if (cfg.financing.finance_premium) {
-      const double r = base->surfaces().front().pricing().r; // base-date rate
+      // Backing-agnostic (WS-ZC1): index 0 is the first archive-order surface whether
+      // this snapshot owns its surfaces or borrows mapped views.
+      const double r = base->surface_at(0).pricing().r; // base-date rate
       const double growth = std::exp(r * dt);
       financing += cash * (growth - 1.0); // cash carry on the pre-step balance
       cash *= growth;                     // apply to the ledger
     }
     for (const auto &[uid, n] : hedge_ledger.entries()) {
-      const PricedSurface *bs = base->find(uid);
-      const PricedSurface *ss = shifted->find(uid);
+      const SurfaceRef bs = base->find(uid);
+      const SurfaceRef ss = shifted->find(uid);
       if (bs == nullptr || ss == nullptr) {
         continue;
       }
@@ -1979,7 +2146,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
       if (lot.expiry_ts_ns > base->ts_ns()) {
         continue;
       }
-      const PricedSurface *bs = base->find(lot.contract.uid);
+      const SurfaceRef bs = base->find(lot.contract.uid);
       if (bs == nullptr) {
         continue;
       }

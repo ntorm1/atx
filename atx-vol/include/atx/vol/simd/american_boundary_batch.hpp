@@ -102,6 +102,21 @@ SimdRoute american_put_greeks_batch(const double* S, const double* K, const doub
                                     bool need_vega = true, bool need_rho = true,
                                     bool need_charm = true) noexcept;
 
+// Call-native mirror of american_put_greeks_batch (P1b). Fills out_greeks[i] (length n)
+// with the full analytic bundle + price for a span of American CALLS, matching scalar
+// american_greeks_al(...,Side::Call) within the same documented economic gate. The AVX2
+// route lanes 4 calls through the McDonald-Schroder internal-put kernel (one solve per
+// bump state per pack, spot stencils vary the internal strike by homogeneity) and patches
+// any lane not genuine early-exercise on every needed state — or non-finite — through the
+// scalar call oracle. Auto respects the kShipAvx2Greeks ship gate. Same K4 first-order
+// tier (need_vega/need_rho/need_charm) as the put batch. noexcept + allocation-free.
+SimdRoute american_call_greeks_batch(const double* S, const double* K, const double* T,
+                                     const double* sigma, const double* r, const double* q,
+                                     std::size_t n, const std::optional<AlOpts>& opts,
+                                     AmericanGreeks* out_greeks, SimdIsa isa,
+                                     bool need_vega = true, bool need_rho = true,
+                                     bool need_charm = true) noexcept;
+
 // Whether the laned AVX2 Greeks route is selected for `isa` on this host (ForceAvx2 =>
 // AVX2 iff supported; Auto => the dark ship gate; ForceScalar => never). Exposed so the
 // american_greeks_batch SoA surface routes its analytic PUT lanes the SAME way the

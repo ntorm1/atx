@@ -104,6 +104,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/listed_dispersion_schedule.cpp
     src/listed_dispersion_reconciliation.cpp
     src/listed_dispersion_strategy.cpp
+    src/dispersion_run.cpp
     src/backtest.cpp
     src/snapshot_cache.cpp
     src/strategy.cpp

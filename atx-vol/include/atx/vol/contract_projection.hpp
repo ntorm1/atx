@@ -125,8 +125,11 @@ struct ProjectedOption {
 
 // Resolve one template directly against one surface. On success the output is a
 // concrete absolute-expiry definition plus the requested mark/risk materialization.
+// WS-ZC1: takes a `SurfaceRef`, so the surface may be OWNED or a BORROWED mapped
+// view. A `PricedSurface` / `PricedSurfaceView` lvalue converts implicitly, so
+// existing call sites are unchanged.
 [[nodiscard]] Result<ProjectedOption>
-project_option_contract(const PricedSurface &surface, const OptionProjectionSpec &spec,
+project_option_contract(const SurfaceRef &surface, const OptionProjectionSpec &spec,
                         const OptionProjectionConfig &config = {});
 
 // Prepared projection plan for repeated use across historical SurfaceSets. The

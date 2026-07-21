@@ -144,7 +144,7 @@ mark_leg(const ListedScheduleLeg &leg, const ListedReconciliationSnapshot &snaps
   mark.quantity = leg.quantity;
   mark.multiplier = leg.multiplier;
 
-  const PricedSurface *surface = snapshot.surfaces->find(leg.uid);
+  const SurfaceRef surface = snapshot.surfaces->find(leg.uid);
   if (surface == nullptr) {
     mark.status = ListedMarkStatus::NoSurface;
     if (config.strict_model) {
@@ -162,8 +162,13 @@ mark_leg(const ListedScheduleLeg &leg, const ListedReconciliationSnapshot &snaps
       }
     } else {
       mark.model_mark = *model;
+      // M3: relative few-ULP tolerance. The build route (evaluate) and reconcile
+      // route (fair_value) can disagree by a handful of ULPs on a real board; a
+      // relative bound absorbs that benign divergence while still rejecting a true
+      // schedule/archive economic mismatch. (tol == 0 => strict bit-for-bit.)
       if (role == ListedMarkRole::Entry &&
-          std::fabs(mark.model_mark - leg.model_mark) > config.entry_mark_tolerance) {
+          !listed_entry_mark_agrees(mark.model_mark, leg.model_mark,
+                                    config.entry_mark_tolerance)) {
         return Err(ErrorCode::InvalidArgument,
                    "listed reconciliation: entry archive mark differs from schedule");
       }
@@ -237,13 +242,18 @@ reconcile_listed_dispersion(const ListedDispersionSchedule &schedule,
       config.entry_mark_tolerance < 0.0) {
     return Err(ErrorCode::InvalidArgument, "listed reconciliation: invalid config or timeline");
   }
-  if (snapshots.front().date != schedule.rolls.front().roll_date) {
-    return Err(ErrorCode::InvalidArgument,
-               "listed reconciliation: first snapshot must be first entry date");
-  }
+  // C2: the schedule builder legitimately DEFERS the first roll past the first
+  // snapshot (coverage gate), so the first entry need not land on snapshots.front().
+  // Do NOT require snapshots.front().date == rolls.front().roll_date; instead the
+  // pre-entry snapshots are emitted as flat, position-free rows and the first entry
+  // is recorded when its roll_date is reached — one row per snapshot throughout, so
+  // the timeline stays aligned with the canonical backtest (which likewise emits a
+  // flat leading row per pre-entry date). The first roll_date must still appear in
+  // the timeline exactly (a missing entry date is a hard error, below).
 
   ListedDispersionReconciliation out;
   std::size_t active_roll = 0;
+  bool entered = false; // has the first roll's Entry been recorded yet
   std::map<LegKey, ListedContractMark> previous_marks;
   double model_nav = 0.0;
   double quote_nav = 0.0;
@@ -264,7 +274,21 @@ reconcile_listed_dispersion(const ListedDispersionSchedule &schedule,
     row.valuation_ts_ns = snapshot.valuation_ts_ns;
     row.held_cohort = schedule.rolls[active_roll].cohort;
 
-    if (date_index == 0) {
+    if (!entered) {
+      const std::string &first_roll_date = schedule.rolls.front().roll_date;
+      if (snapshot.date < first_roll_date) {
+        // Pre-entry flat date: no position is held yet. Emit an aligned zero row.
+        row.n_held_lots = 0u;
+        row.n_quote_mid_lots = 0u;
+        row.quote_mid_coverage = 0.0;
+        out.rows.push_back(std::move(row));
+        continue;
+      }
+      if (snapshot.date > first_roll_date) {
+        return Err(ErrorCode::InvalidArgument,
+                   "listed reconciliation: first scheduled roll date missing from timeline");
+      }
+      // snapshot.date == first_roll_date: record the first cohort's Entry marks.
       const ListedScheduleRoll &entry = schedule.rolls.front();
       for (const ListedScheduleLeg &leg : entry.legs) {
         ATX_TRY(ListedContractMark mark,
@@ -278,6 +302,7 @@ reconcile_listed_dispersion(const ListedDispersionSchedule &schedule,
       row.quote_mid_coverage = row.n_held_lots == 0 ? 0.0
                                                     : static_cast<double>(row.n_quote_mid_lots) /
                                                           static_cast<double>(row.n_held_lots);
+      entered = true;
       out.rows.push_back(std::move(row));
       continue;
     }
@@ -331,6 +356,10 @@ reconcile_listed_dispersion(const ListedDispersionSchedule &schedule,
     out.rows.push_back(std::move(row));
   }
 
+  if (!entered) {
+    return Err(ErrorCode::InvalidArgument,
+               "listed reconciliation: no snapshot on/after the first scheduled roll date");
+  }
   if (active_roll + 1 != schedule.rolls.size()) {
     return Err(ErrorCode::InvalidArgument,
                "listed reconciliation: timeline does not consume every scheduled roll");

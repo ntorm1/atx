@@ -10,7 +10,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <atomic>  // phase-timing counters
+#include <chrono>  // phase-timing clock
 #include <fstream>
+#include <iterator> // std::make_move_iterator
 #include <limits>
 #include <optional>
 #include <string>
@@ -510,6 +513,39 @@ struct CorpusBuildArtifacts {
 
 void count_disposition(CorpusQualityReport &report, CorpusDisposition disposition) noexcept;
 
+
+// B1: process-global phase accumulators. Relaxed ordering throughout -- these are
+// diagnostics, never read to make a decision, and the only correctness
+// requirement is that concurrent adds do not tear.
+std::atomic<double> g_fit_fanout_s{0.0};
+std::atomic<double> g_archive_write_s{0.0};
+std::atomic<double> g_checkpoint_s{0.0};
+std::atomic<std::uint64_t> g_fanout_calls{0};
+std::atomic<std::uint64_t> g_boards_fitted{0};
+
+void add_seconds(std::atomic<double> &sink, double value) noexcept {
+  double expected = sink.load(std::memory_order_relaxed);
+  while (!sink.compare_exchange_weak(expected, expected + value, std::memory_order_relaxed)) {
+  }
+}
+
+// Scoped wall-clock accumulator.
+class PhaseTimer {
+public:
+  explicit PhaseTimer(std::atomic<double> &sink) noexcept
+      : sink_(sink), start_(std::chrono::steady_clock::now()) {}
+  ~PhaseTimer() {
+    const std::chrono::duration<double> elapsed = std::chrono::steady_clock::now() - start_;
+    add_seconds(sink_, elapsed.count());
+  }
+  PhaseTimer(const PhaseTimer &) = delete;
+  PhaseTimer &operator=(const PhaseTimer &) = delete;
+
+private:
+  std::atomic<double> &sink_;
+  std::chrono::steady_clock::time_point start_;
+};
+
 [[nodiscard]] bool admitted_surface(const FitSlot &slot, bool qualified) noexcept {
   return slot.status == CorpusFitStatus::Ok &&
          (!qualified || slot.admission.disposition == CorpusDisposition::Admitted);
@@ -541,9 +577,18 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
   }
   const bool qualified = admission != nullptr;
 
+
   // ── Fan out board fits; each worker writes its own disjoint slot ───────────
   std::vector<FitSlot> slots(n);
   Status schedule_status = Ok();
+  // B1: time BOTH scheduler arms as one span -- this is the pool whose per-date
+  // draining the batching change exists to eliminate, and `fanout_calls` counts
+  // exactly those drains, so the number of drains is an OBSERVED quantity rather
+  // than something inferred from the shape of the code. Explicit timestamps
+  // rather than a scoped guard, so the fan-out below keeps its indentation.
+  g_fanout_calls.fetch_add(1u, std::memory_order_relaxed);
+  g_boards_fitted.fetch_add(static_cast<std::uint64_t>(n), std::memory_order_relaxed);
+  const auto t_fanout_begin = std::chrono::steady_clock::now();
   if (cfg.warm_start_chain) {
     // C2 (perf): cross-date warm-start chains. Group boards into per-symbol chains
     // fit in chronological (date-ascending) order; each date carries the prior
@@ -610,7 +655,20 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
         // C4 wave-2 (perf, finding 13): pin the per-symbol chains to discovered
         // P-cores. Byte-identical to the unpinned path (pinning only steers WHICH
         // logical CPU runs a chain); composes with C2's symbol-shard determinism.
-        detail::FitAffinity::PerformanceCores);
+        //
+        // P3.1 (perf): upgraded to the two-tier P-then-E affinity. This is the
+        // build-corpus fan-out that dispersion_build_corpus drives one date at a
+        // time, so `chains.size()` is ~the symbol count (~60) while the auto budget
+        // (cfg.n_threads == 0 -> hardware_concurrency()) is 16 on the reference
+        // i7-1260P. The C4 pin therefore wrapped all 16 chain workers onto the 8
+        // P-core logical CPUs and left the 8 E-cores idle for the entire build; the
+        // two-tier value spills ordinals 8..15 onto the E-cores at below-normal
+        // priority instead. OPT-IN via ATX_VOL_FIT_ECORE_TIER (see FitAffinity):
+        // unset, this is schedule-identical to PerformanceCores, so benches holding
+        // the P-core lease are unaffected. Determinism is unchanged either way --
+        // each chain writes only its own boards' slots and carries only its own
+        // warm cache, so which core runs a chain cannot change a fitted surface.
+        detail::FitAffinity::PerformanceThenEfficiencyCores);
   } else {
     schedule_status = detail::run_bounded_fit_tasks(
         n, cfg.n_threads, [&boards, &slots, &cfg, admission, n](std::size_t index) -> Status {
@@ -624,8 +682,30 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
           }
           slots[index] = fit_board(boards[index], fit_config, admission);
           return Ok();
-        });
+        },
+        // P3.1 (perf): this -- NOT the warm_start_chain branch above -- is the
+        // branch `dispersion_build_corpus` actually drives: CorpusConfig's
+        // `warm_start_chain` defaults to false and dispersion_corpus_config never
+        // sets it. It has always run with the DEFAULT FitAffinity::None, so the C4
+        // wave-2 P-core pin never applied here and the fan-out was already free to
+        // use every logical CPU including the E-cores. The E-tier's value on this
+        // path is therefore not "wake the idle E-cores" (they were never idle) but
+        // "stop the 16 unpinned workers migrating": with the flag armed each worker
+        // gets ONE dedicated logical CPU -- 8 on P-cores, 8 on E-cores at
+        // below-normal priority -- instead of being shuffled by the OS scheduler.
+        //
+        // Selected at the CALL SITE rather than inside the scheduler so the
+        // disarmed default stays exactly FitAffinity::None. Naming the two-tier
+        // value unconditionally would silently convert this path to the P-core-only
+        // wrap (16 workers folded onto 8 P-core CPUs) whenever the flag was unset --
+        // a real, unmeasured behaviour change on the default build path. Off is off.
+        detail::efficiency_core_tier_enabled() ? detail::FitAffinity::PerformanceThenEfficiencyCores
+                                               : detail::FitAffinity::None);
   }
+
+  add_seconds(g_fit_fanout_s,
+              std::chrono::duration<double>(std::chrono::steady_clock::now() - t_fanout_begin)
+                  .count());
 
   if (!schedule_status) {
     return Err(schedule_status.error());
@@ -765,6 +845,7 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
                                              slots[idx].provenance});
         }
       }
+      PhaseTimer write_timer(g_archive_write_s);
       const Status w = write_surface_archive_v2_file(apath, items, cfg.write_opts);
       if (!w) {
         return Err(w.error()); // propagate IoError / AlreadyExists
@@ -958,6 +1039,25 @@ read_date_checkpoint(std::string_view out_dir, std::string_view date,
 
 } // namespace
 
+
+CorpusPhaseTimings corpus_phase_timings() noexcept {
+  CorpusPhaseTimings out;
+  out.fit_fanout_s = g_fit_fanout_s.load(std::memory_order_relaxed);
+  out.archive_write_s = g_archive_write_s.load(std::memory_order_relaxed);
+  out.checkpoint_s = g_checkpoint_s.load(std::memory_order_relaxed);
+  out.fanout_calls = g_fanout_calls.load(std::memory_order_relaxed);
+  out.boards_fitted = g_boards_fitted.load(std::memory_order_relaxed);
+  return out;
+}
+
+void reset_corpus_phase_timings() noexcept {
+  g_fit_fanout_s.store(0.0, std::memory_order_relaxed);
+  g_archive_write_s.store(0.0, std::memory_order_relaxed);
+  g_checkpoint_s.store(0.0, std::memory_order_relaxed);
+  g_fanout_calls.store(0u, std::memory_order_relaxed);
+  g_boards_fitted.store(0u, std::memory_order_relaxed);
+}
+
 CorpusBuildSession::CorpusBuildSession(std::string out_dir, QualifiedCorpusConfig cfg)
     : out_dir_{std::move(out_dir)}, cfg_{std::move(cfg)} {
   quality_.input_fingerprint = cfg_.input_fingerprint;
@@ -978,25 +1078,41 @@ Result<CorpusBuildSession> CorpusBuildSession::create(std::string_view out_dir,
   return Ok(CorpusBuildSession{std::string(out_dir), cfg});
 }
 
-Status CorpusBuildSession::append_date(std::string_view date,
-                                       std::span<const CorpusCellInput> cells) {
-  if (finished_) {
-    return Err(ErrorCode::InvalidArgument,
-               "CorpusBuildSession::append_date: session already finished");
-  }
-  if (date.empty() || cells.empty() || (!last_date_.empty() && date <= last_date_)) {
-    return Err(ErrorCode::InvalidArgument,
-               "CorpusBuildSession::append_date: dates must be nonempty and strictly ascending");
-  }
+namespace {
 
-  std::vector<CorpusBoard> boards;
-  std::vector<CorpusSourceFailure> source_failures;
-  std::vector<std::string> symbols;
+// B1 (perf): one date's cells, validated + canonicalized, ready for the shared
+// fit fan-out. Splitting "prepare" from "fit" from "commit" is what lets several
+// dates share ONE worker pool while each date's archive, checkpoint and manifest
+// slice stay exactly what the per-date path produced.
+struct PreparedDate {
+  std::string date{};
+  std::vector<CorpusBoard> boards{};
+  std::vector<CorpusSourceFailure> source_failures{};
+  std::vector<std::string> symbols{};        // canonical, ascending
+  std::string fingerprint_material{};
+  std::uint64_t input_fingerprint{0};
+  std::size_t cell_count{0};
+  // Boards are MOVED into the shared fan-out buffer, so `boards` is emptied and
+  // this is the surviving record of how many entries this date owns.
+  std::size_t board_count{0};
+  std::vector<CorpusEntry> manifest_entries{};
+  std::vector<QualifiedCorpusEntry> quality_entries{};
+  bool from_checkpoint{false};
+};
+
+// Validate + canonicalize one date's cells. Byte-for-byte the same work the
+// per-date path did inline; extracted verbatim so both entry points share it.
+[[nodiscard]] Result<PreparedDate> prepare_date_cells(std::string_view date,
+                                                      std::span<const CorpusCellInput> cells) {
+  PreparedDate prepared;
+  prepared.date = std::string(date);
+  prepared.cell_count = cells.size();
+  prepared.boards.reserve(cells.size());
+  prepared.source_failures.reserve(cells.size());
+  prepared.symbols.reserve(cells.size());
   std::vector<std::pair<std::string, std::string>> fingerprint_cells;
-  std::string date_fingerprint_material;
-  boards.reserve(cells.size());
-  source_failures.reserve(cells.size());
-  symbols.reserve(cells.size());
+  fingerprint_cells.reserve(cells.size());
+
   for (const CorpusCellInput &cell : cells) {
     if (const CorpusBoard *board = std::get_if<CorpusBoard>(&cell)) {
       if (board->date != date) {
@@ -1009,7 +1125,7 @@ Status CorpusBuildSession::append_date(std::string_view date,
         return Err(ErrorCode::InvalidArgument,
                    "CorpusBuildSession::append_date: empty canonical symbol");
       }
-      symbols.push_back(copy.symbol);
+      prepared.symbols.push_back(copy.symbol);
       const std::uint64_t cell_fingerprint =
           fingerprint_corpus_inputs(std::span<const CorpusBoard>(&copy, 1u));
       std::string material;
@@ -1017,7 +1133,7 @@ Status CorpusBuildSession::append_date(std::string_view date,
       fingerprint_append_text(material, copy.symbol);
       fingerprint_append_u64(material, cell_fingerprint);
       fingerprint_cells.emplace_back(copy.symbol, std::move(material));
-      boards.push_back(std::move(copy));
+      prepared.boards.push_back(std::move(copy));
     } else {
       CorpusSourceFailure failure = std::get<CorpusSourceFailure>(cell);
       if (failure.date != date || !valid_source_failure_reason(failure.reason)) {
@@ -1029,7 +1145,7 @@ Status CorpusBuildSession::append_date(std::string_view date,
         return Err(ErrorCode::InvalidArgument,
                    "CorpusBuildSession::append_date: empty canonical symbol");
       }
-      symbols.push_back(failure.symbol);
+      prepared.symbols.push_back(failure.symbol);
       std::string material;
       fingerprint_append_text(material, date);
       fingerprint_append_text(material, failure.symbol);
@@ -1038,11 +1154,13 @@ Status CorpusBuildSession::append_date(std::string_view date,
       fingerprint_append_u64(material, failure.source_fingerprint);
       fingerprint_append_u64(material, failure.market_input_fingerprint);
       fingerprint_cells.emplace_back(failure.symbol, std::move(material));
-      source_failures.push_back(std::move(failure));
+      prepared.source_failures.push_back(std::move(failure));
     }
   }
-  std::sort(symbols.begin(), symbols.end());
-  if (std::adjacent_find(symbols.begin(), symbols.end()) != symbols.end()) {
+
+  std::sort(prepared.symbols.begin(), prepared.symbols.end());
+  if (std::adjacent_find(prepared.symbols.begin(), prepared.symbols.end()) !=
+      prepared.symbols.end()) {
     return Err(ErrorCode::AlreadyExists,
                "CorpusBuildSession::append_date: duplicate canonical symbol");
   }
@@ -1050,47 +1168,151 @@ Status CorpusBuildSession::append_date(std::string_view date,
             [](const auto &lhs, const auto &rhs) { return lhs.first < rhs.first; });
   for (const auto &[symbol, material] : fingerprint_cells) {
     (void)symbol;
-    date_fingerprint_material.append(material);
+    prepared.fingerprint_material.append(material);
   }
-  const std::uint64_t date_input_fingerprint = fingerprint_bytes(date_fingerprint_material);
-  if (cells.size() > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()) ||
-      static_cast<std::uint64_t>(manifest_.n_boards) + cells.size() >
-          std::numeric_limits<std::uint32_t>::max()) {
+  prepared.input_fingerprint = fingerprint_bytes(prepared.fingerprint_material);
+  prepared.board_count = prepared.boards.size();
+  return Ok(std::move(prepared));
+}
+
+} // namespace
+
+Status CorpusBuildSession::append_date(std::string_view date,
+                                       std::span<const CorpusCellInput> cells) {
+  const DateCells one{date, cells};
+  return append_dates(std::span<const DateCells>(&one, 1u));
+}
+
+Status CorpusBuildSession::append_dates(std::span<const DateCells> dates) {
+  if (finished_) {
     return Err(ErrorCode::InvalidArgument,
-               "CorpusBuildSession::append_date: too many planned cells");
+               "CorpusBuildSession::append_date: session already finished");
+  }
+  if (dates.empty()) {
+    return Ok();
   }
 
-  std::vector<CorpusEntry> manifest_entries;
-  std::vector<QualifiedCorpusEntry> quality_entries;
-  manifest_entries.reserve(cells.size());
-  quality_entries.reserve(cells.size());
-  std::uint32_t date_peak = 0u;
-  ATX_TRY(std::optional<CorpusDateCheckpoint> checkpoint,
-          read_date_checkpoint(out_dir_, date, symbols, date_input_fingerprint,
-                               quality_.policy_fingerprint));
-  if (checkpoint.has_value()) {
-    manifest_entries = std::move(checkpoint->manifest.entries);
-    quality_entries = std::move(checkpoint->quality.entries);
-  } else {
-    if (!boards.empty()) {
-      ATX_TRY(CorpusBuildArtifacts artifacts,
-              build_corpus_core(boards, out_dir_, cfg_.build, &cfg_.admission,
-                                quality_.input_fingerprint, quality_.policy_fingerprint, false));
-      date_peak = artifacts.peak_live_fitted_surfaces;
-      manifest_entries = std::move(artifacts.manifest.entries);
-      if (!artifacts.quality.has_value()) {
-        return Err(ErrorCode::Internal, "CorpusBuildSession::append_date: quality unavailable");
-      }
-      quality_entries = std::move(artifacts.quality->entries);
+  // ── Phase 1: validate + canonicalize every date, ascending across the batch ─
+  std::vector<PreparedDate> prepared;
+  prepared.reserve(dates.size());
+  std::string previous_date = last_date_;
+  for (const DateCells &entry : dates) {
+    if (entry.date.empty() || entry.cells.empty() ||
+        (!previous_date.empty() && entry.date <= previous_date)) {
+      return Err(ErrorCode::InvalidArgument,
+                 "CorpusBuildSession::append_date: dates must be nonempty and strictly ascending");
     }
+    ATX_TRY(PreparedDate one, prepare_date_cells(entry.date, entry.cells));
+    previous_date = one.date;
+    prepared.push_back(std::move(one));
+  }
 
-    for (const CorpusSourceFailure &failure : source_failures) {
+  std::uint64_t total_cells = static_cast<std::uint64_t>(manifest_.n_boards);
+  for (const PreparedDate &one : prepared) {
+    if (one.cell_count > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())) {
+      return Err(ErrorCode::InvalidArgument,
+                 "CorpusBuildSession::append_date: too many planned cells");
+    }
+    total_cells += one.cell_count;
+    if (total_cells > std::numeric_limits<std::uint32_t>::max()) {
+      return Err(ErrorCode::InvalidArgument,
+                 "CorpusBuildSession::append_date: too many planned cells");
+    }
+  }
+
+  // ── Phase 2: resume from per-date checkpoints (unchanged, still per date) ───
+  for (PreparedDate &one : prepared) {
+    std::optional<CorpusDateCheckpoint> checkpoint;
+    {
+      PhaseTimer ckpt_timer(g_checkpoint_s);
+      ATX_TRY(std::optional<CorpusDateCheckpoint> read,
+              read_date_checkpoint(out_dir_, one.date, one.symbols, one.input_fingerprint,
+                                   quality_.policy_fingerprint));
+      checkpoint = std::move(read);
+    }
+    if (checkpoint.has_value()) {
+      one.manifest_entries = std::move(checkpoint->manifest.entries);
+      one.quality_entries = std::move(checkpoint->quality.entries);
+      one.from_checkpoint = true;
+    }
+  }
+
+  // ── Phase 3: ONE fit fan-out across every un-checkpointed date's boards ─────
+  //
+  // This is the whole point of the batched path. `build_corpus_core` already
+  // groups its input by date and writes one archive per date, so handing it
+  // several dates at once needs no change there -- it simply gets a task list
+  // long enough to keep every worker busy across date boundaries instead of
+  // draining the pool 60 tasks in.
+  std::uint32_t batch_peak = 0u;
+  std::vector<CorpusBoard> batch_boards;
+  std::size_t batch_board_count = 0u;
+  for (const PreparedDate &one : prepared) {
+    if (!one.from_checkpoint) {
+      batch_board_count += one.board_count;
+    }
+  }
+  batch_boards.reserve(batch_board_count);
+  for (PreparedDate &one : prepared) {
+    if (one.from_checkpoint) {
+      continue;
+    }
+    for (CorpusBoard &board : one.boards) {
+      batch_boards.push_back(std::move(board));
+    }
+    one.boards.clear();
+  }
+
+  if (!batch_boards.empty()) {
+    ATX_TRY(CorpusBuildArtifacts artifacts,
+            build_corpus_core(batch_boards, out_dir_, cfg_.build, &cfg_.admission,
+                              quality_.input_fingerprint, quality_.policy_fingerprint, false));
+    batch_peak = artifacts.peak_live_fitted_surfaces;
+    if (!artifacts.quality.has_value()) {
+      return Err(ErrorCode::Internal, "CorpusBuildSession::append_date: quality unavailable");
+    }
+    // `build_corpus_core` emits entries in (date asc, symbol asc) order, so each
+    // date's slice is contiguous and in the same order the per-date path saw.
+    std::vector<CorpusEntry> &all_manifest = artifacts.manifest.entries;
+    std::vector<QualifiedCorpusEntry> &all_quality = artifacts.quality->entries;
+    if (all_manifest.size() != batch_boards.size() ||
+        all_quality.size() != batch_boards.size()) {
+      return Err(ErrorCode::Internal,
+                 "CorpusBuildSession::append_date: fan-out entry count mismatch");
+    }
+    std::size_t cursor = 0u;
+    for (PreparedDate &one : prepared) {
+      if (one.from_checkpoint) {
+        continue;
+      }
+      const std::size_t count = one.board_count;
+      for (std::size_t k = 0u; k < count; ++k) {
+        if (all_manifest[cursor + k].date != one.date ||
+            all_quality[cursor + k].date != one.date) {
+          return Err(ErrorCode::Internal,
+                     "CorpusBuildSession::append_date: fan-out date slice mismatch");
+        }
+      }
+      one.manifest_entries.assign(std::make_move_iterator(all_manifest.begin() + cursor),
+                                  std::make_move_iterator(all_manifest.begin() + cursor + count));
+      one.quality_entries.assign(std::make_move_iterator(all_quality.begin() + cursor),
+                                 std::make_move_iterator(all_quality.begin() + cursor + count));
+      cursor += count;
+    }
+  }
+
+  // ── Phase 4: per-date source failures, ordering, checkpoint commit ──────────
+  for (PreparedDate &one : prepared) {
+    if (one.from_checkpoint) {
+      continue;
+    }
+    for (const CorpusSourceFailure &failure : one.source_failures) {
       CorpusEntry legacy;
       legacy.date = failure.date;
       legacy.symbol = failure.symbol;
       legacy.status = CorpusFitStatus::Failed;
       legacy.error_code = failure.error_code;
-      manifest_entries.push_back(std::move(legacy));
+      one.manifest_entries.push_back(std::move(legacy));
 
       QualifiedCorpusEntry quality;
       quality.date = failure.date;
@@ -1102,45 +1324,55 @@ Status CorpusBuildSession::append_date(std::string_view date,
       quality.quality.source_schema_version = failure.source_schema_version;
       quality.quality.source_fingerprint = failure.source_fingerprint;
       quality.quality.market_input_fingerprint = failure.market_input_fingerprint;
-      quality_entries.push_back(std::move(quality));
+      one.quality_entries.push_back(std::move(quality));
     }
 
     std::sort(
-        manifest_entries.begin(), manifest_entries.end(),
+        one.manifest_entries.begin(), one.manifest_entries.end(),
         [](const CorpusEntry &lhs, const CorpusEntry &rhs) { return lhs.symbol < rhs.symbol; });
-    std::sort(quality_entries.begin(), quality_entries.end(),
+    std::sort(one.quality_entries.begin(), one.quality_entries.end(),
               [](const QualifiedCorpusEntry &lhs, const QualifiedCorpusEntry &rhs) {
                 return lhs.symbol < rhs.symbol;
               });
-    ATX_TRY_VOID(write_date_checkpoint(out_dir_, date, date_input_fingerprint,
-                                       quality_.policy_fingerprint, manifest_entries,
-                                       quality_entries));
+    {
+      PhaseTimer ckpt_timer(g_checkpoint_s);
+      ATX_TRY_VOID(write_date_checkpoint(out_dir_, one.date, one.input_fingerprint,
+                                         quality_.policy_fingerprint, one.manifest_entries,
+                                         one.quality_entries));
+    }
   }
 
-  manifest_.dates.emplace_back(date);
-  for (CorpusEntry &entry : manifest_entries) {
-    switch (entry.status) {
-    case CorpusFitStatus::Ok:
-      ++manifest_.n_ok;
-      break;
-    case CorpusFitStatus::Failed:
-      ++manifest_.n_failed;
-      break;
-    case CorpusFitStatus::Skipped:
-      ++manifest_.n_skipped;
-      break;
+  // ── Phase 5: fold into session state, strictly in date order ───────────────
+  for (PreparedDate &one : prepared) {
+    manifest_.dates.emplace_back(one.date);
+    for (CorpusEntry &entry : one.manifest_entries) {
+      switch (entry.status) {
+      case CorpusFitStatus::Ok:
+        ++manifest_.n_ok;
+        break;
+      case CorpusFitStatus::Failed:
+        ++manifest_.n_failed;
+        break;
+      case CorpusFitStatus::Skipped:
+        ++manifest_.n_skipped;
+        break;
+      }
+      manifest_.entries.push_back(std::move(entry));
     }
-    manifest_.entries.push_back(std::move(entry));
+    for (QualifiedCorpusEntry &entry : one.quality_entries) {
+      count_disposition(quality_, entry.disposition);
+      quality_.entries.push_back(std::move(entry));
+    }
+    manifest_.n_boards += saturated_u32(one.cell_count);
+    quality_.n_planned += saturated_u32(one.cell_count);
+    input_fingerprint_material_.append(one.fingerprint_material);
+    last_date_ = one.date;
   }
-  for (QualifiedCorpusEntry &entry : quality_entries) {
-    count_disposition(quality_, entry.disposition);
-    quality_.entries.push_back(std::move(entry));
-  }
-  manifest_.n_boards += saturated_u32(cells.size());
-  quality_.n_planned += saturated_u32(cells.size());
-  peak_live_fitted_surfaces_ = std::max(peak_live_fitted_surfaces_, date_peak);
-  input_fingerprint_material_.append(date_fingerprint_material);
-  last_date_ = std::string(date);
+  // Honest peak: a batched fan-out really does hold every date in the batch's
+  // fitted surfaces live at once. Diagnostic only -- never serialized, so it
+  // cannot move output bytes. A single-date batch reports exactly what the
+  // per-date path reported.
+  peak_live_fitted_surfaces_ = std::max(peak_live_fitted_surfaces_, batch_peak);
   return Ok();
 }
 

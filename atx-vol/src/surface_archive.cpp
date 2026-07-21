@@ -74,12 +74,6 @@ namespace {
   return b.data() + static_cast<std::size_t>(off);
 }
 
-[[nodiscard]] std::int64_t wall_clock_ns() noexcept {
-  return std::chrono::duration_cast<std::chrono::nanoseconds>(
-             std::chrono::system_clock::now().time_since_epoch())
-      .count();
-}
-
 // Bits 0..11 — includes ValidationFailure::CarryGap (1u << 11), the
 // publish-with-Degraded reason: a Degraded+CarryGap provenance is a routinely
 // SERVED state and must round-trip the archive, not be refused as unknown.
@@ -610,8 +604,27 @@ write_surface_archive_v2(std::span<const SurfaceArchiveItem> items,
   ArchiveV2Header hdr{};
   std::memcpy(hdr.magic, kArchiveV2MagicBytes, 8);
   hdr.file_size = file_size;
-  hdr.created_ts_ns = opts.created_ts_ns != 0 ? static_cast<std::uint64_t>(opts.created_ts_ns)
-                                              : static_cast<std::uint64_t>(wall_clock_ns());
+  // created_ts_ns: an explicit nonzero stamp is honored verbatim (unit tests pin
+  // it). The 0 sentinel is filled from a DETERMINISTIC CRC-32C of the archive
+  // CONTENT — the whole payload span [header, EOF): data ‖ lookup ‖ directory
+  // (every per-record payload_crc32c is mirrored into the directory, so any
+  // same-length rewrite changes this hash too) — folded with file_size. Two
+  // identical builds therefore produce byte-identical containers (run-to-run
+  // reproducibility), while two DIFFERENT builds still get distinct stamps, which
+  // preserves the (file_size, created_ts_ns, header_crc32c, metadata_crc32c)
+  // content-identity the SnapshotCache keys on for staleness. (A wall-clock read
+  // broke the former; a constant would break the latter.) The span excludes the
+  // header, so header_crc32c/created_ts_ns are not inputs to their own hash.
+  if (opts.created_ts_ns != 0) {
+    hdr.created_ts_ns = static_cast<std::uint64_t>(opts.created_ts_ns);
+  } else {
+    const std::uint32_t content_crc =
+        crc32c(buf_at(buffer, sizeof(ArchiveV2Header)),
+               static_cast<std::size_t>(file_size - sizeof(ArchiveV2Header)));
+    const std::uint64_t derived =
+        (static_cast<std::uint64_t>(content_crc) << 32) ^ static_cast<std::uint64_t>(file_size);
+    hdr.created_ts_ns = derived != 0 ? derived : 1u; // never re-hit the 0 sentinel
+  }
   hdr.schema_hash = schema_hash_v2();
   hdr.writer_version_hash = 0;
   hdr.lookup_offset = lookup_offset;
@@ -815,6 +828,33 @@ Result<SurfaceArchiveV2> SurfaceArchiveV2::open_file(std::string_view path) {
   return open(std::move(bytes));
 }
 
+Result<SurfaceArchiveV2> SurfaceArchiveV2::open_copied(std::string_view path) {
+  // WS-ZC1: the backing for readers that BORROW records (PricedSurfaceView) for longer
+  // than the open call. They cannot hold the mapping — on Windows a file with a live
+  // mapped section cannot be replaced, which would break atomic partition republish —
+  // but they also must not pay `open_file`'s stream read, which measured ~210 ms over
+  // the 82-session replay (~585 MB/s through ifstream) versus ~8 ms to map.
+  //
+  // So: MAP, one memcpy into an owned buffer, then DROP the mapping. The copy runs at
+  // memory bandwidth out of pages the OS cache already holds, so this keeps nearly all
+  // of the mapped open's speed while leaving no section open against the file.
+  auto mapping = atx::tsdb::Mapping::map_file_ro(std::string(path));
+  if (!mapping) {
+    return tl::unexpected<atx::core::Error>(std::move(mapping).error());
+  }
+  const auto *base = reinterpret_cast<const std::byte *>(mapping->base());
+  const auto size = static_cast<std::size_t>(mapping->size());
+  // reserve + insert, NOT `vector<std::byte> bytes(size)`: the sized constructor
+  // VALUE-INITIALIZES (zeroes) the whole buffer and the memcpy then overwrites it, so
+  // the archive is walked twice. Inserting a contiguous range is a single memcpy into
+  // uninitialized storage.
+  std::vector<std::byte> bytes;
+  bytes.reserve(size);
+  bytes.insert(bytes.end(), base, base + size);
+  // `mapping` is destroyed here, before `open` — the archive owns only `bytes` now.
+  return open(std::move(bytes));
+}
+
 Result<SurfaceArchiveV2> SurfaceArchiveV2::open_mapped(std::string_view path) {
   // S2 (WS-S): map the partition read-only instead of reading the whole file
   // into an owned heap buffer. `open_impl` only CRC-validates the header, lookup,
@@ -941,6 +981,28 @@ Result<std::vector<PricedSurfaceView>> SurfaceArchiveV2::map_all() const {
     out.push_back(std::move(*v));
   }
   return Ok(std::move(out));
+}
+
+Result<ArchivedSurfaceView> SurfaceArchiveV2::map_entry(const ArchiveV2DirEntry &e) const {
+  // Exactly `reconstruct_entry`'s bounds contract, but building a BORROWED view over
+  // the record extent instead of an owned PricedSurface (WS-ZC1).
+  if (e.surface_size < sizeof(ArchiveV2SurfaceHeader) || e.surface_offset > bytes_.size() ||
+      e.surface_size > bytes_.size() - e.surface_offset) {
+    return Err(ErrorCode::ParseError, "SurfaceArchiveV2::map_entry: record out of bounds");
+  }
+  const std::span<const std::byte> rec = bytes_.subspan(
+      static_cast<std::size_t>(e.surface_offset), static_cast<std::size_t>(e.surface_size));
+  ArchiveV2SurfaceHeader h;
+  std::memcpy(&h, rec.data(), sizeof h);
+  auto prov = provenance_from_v2_header(h);
+  if (!prov) {
+    return tl::unexpected<atx::core::Error>(std::move(prov).error());
+  }
+  auto v = PricedSurfaceView::create_over_record(rec);
+  if (!v) {
+    return tl::unexpected<atx::core::Error>(std::move(v).error());
+  }
+  return Ok(ArchivedSurfaceView{std::move(*v), std::move(*prov)});
 }
 
 Result<std::vector<ArchivedSurfaceView>> SurfaceArchiveV2::map_all_with_provenance() const {

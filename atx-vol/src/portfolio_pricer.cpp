@@ -359,7 +359,8 @@ SurfaceSet::SurfaceSet() noexcept : logical_id_(allocate_logical_id()) {}
 
 SurfaceSet::SurfaceSet(SurfaceSet &&other) noexcept
     : by_uid_(std::move(other.by_uid_)),
-      logical_id_(std::exchange(other.logical_id_, allocate_logical_id())) {
+      logical_id_(std::exchange(other.logical_id_, allocate_logical_id())),
+      borrows_views_(std::exchange(other.borrows_views_, false)) {
   other.by_uid_.clear();
 }
 
@@ -369,19 +370,17 @@ SurfaceSet &SurfaceSet::operator=(SurfaceSet &&other) noexcept {
   }
   by_uid_ = std::move(other.by_uid_);
   logical_id_ = std::exchange(other.logical_id_, allocate_logical_id());
+  borrows_views_ = std::exchange(other.borrows_views_, false);
   other.by_uid_.clear();
   return *this;
 }
 
-Result<SurfaceSet> SurfaceSet::create(std::span<const PricedSurface *const> surfaces) {
+Result<SurfaceSet>
+SurfaceSet::create_from_refs(std::vector<std::pair<std::uint32_t, SurfaceRef>> &&entries,
+                             bool borrows_views) {
   SurfaceSet ss;
-  ss.by_uid_.reserve(surfaces.size());
-  for (const PricedSurface *s : surfaces) {
-    if (s == nullptr) {
-      return Err(ErrorCode::InvalidArgument, "SurfaceSet: null surface pointer");
-    }
-    ss.by_uid_.emplace_back(s->uid(), s);
-  }
+  ss.by_uid_ = std::move(entries);
+  ss.borrows_views_ = borrows_views;
   std::sort(ss.by_uid_.begin(), ss.by_uid_.end(),
             [](const auto &a, const auto &b) { return a.first < b.first; });
   for (std::size_t i = 1; i < ss.by_uid_.size(); ++i) {
@@ -392,13 +391,37 @@ Result<SurfaceSet> SurfaceSet::create(std::span<const PricedSurface *const> surf
   return ss;
 }
 
-const PricedSurface *SurfaceSet::find(std::uint32_t uid) const noexcept {
+Result<SurfaceSet> SurfaceSet::create(std::span<const PricedSurface *const> surfaces) {
+  std::vector<std::pair<std::uint32_t, SurfaceRef>> entries;
+  entries.reserve(surfaces.size());
+  for (const PricedSurface *s : surfaces) {
+    if (s == nullptr) {
+      return Err(ErrorCode::InvalidArgument, "SurfaceSet: null surface pointer");
+    }
+    entries.emplace_back(s->uid(), SurfaceRef{s});
+  }
+  return create_from_refs(std::move(entries), /*borrows_views=*/false);
+}
+
+Result<SurfaceSet> SurfaceSet::create_from_views(std::span<const PricedSurfaceView *const> views) {
+  std::vector<std::pair<std::uint32_t, SurfaceRef>> entries;
+  entries.reserve(views.size());
+  for (const PricedSurfaceView *v : views) {
+    if (v == nullptr) {
+      return Err(ErrorCode::InvalidArgument, "SurfaceSet: null surface view pointer");
+    }
+    entries.emplace_back(v->uid(), SurfaceRef{v});
+  }
+  return create_from_refs(std::move(entries), /*borrows_views=*/true);
+}
+
+SurfaceRef SurfaceSet::find(std::uint32_t uid) const noexcept {
   auto it = std::lower_bound(by_uid_.begin(), by_uid_.end(), uid,
                              [](const auto &e, std::uint32_t u) { return e.first < u; });
   if (it != by_uid_.end() && it->first == uid) {
     return it->second;
   }
-  return nullptr;
+  return SurfaceRef{};
 }
 
 // ── Pricing ───────────────────────────────────────────────────────────────
@@ -461,7 +484,9 @@ struct ContractPnl {
 // conditions `surface_skew_slope` documents: T <= 0, non-positive/non-finite
 // sigma at k_log, a non-finite FD stencil point, or (the PricedSurface-
 // specific addition) a non-positive/non-finite forward at T.
-[[nodiscard]] double priced_surface_skew_slope(const PricedSurface &surf, double K,
+// WS-ZC1: takes a `SurfaceRef` so the identical FD stencil serves an owned surface
+// and a borrowed mapped view (both expose `forward_at`/`total_variance`).
+[[nodiscard]] double priced_surface_skew_slope(const SurfaceRef &surf, double K,
                                                double T) noexcept {
   // Source of truth: adjusted_greeks.cpp's TU-local kFdStep -- the h = 1e-4
   // documented on curve_skew_slope/surface_skew_slope in adjusted_greeks.hpp.
@@ -523,7 +548,7 @@ struct ContractPnl {
 [[nodiscard]] bool seed_route_matches(const FullGreekSeed &seed, const OptionContract &contract,
                                       const SurfaceSet &surfaces, bool analytic,
                                       QueryExecution query_execution) noexcept {
-  const PricedSurface *const surface = surfaces.find(contract.uid);
+  const SurfaceRef surface = surfaces.find(contract.uid);
   if (surface == nullptr) {
     return false;
   }
@@ -604,7 +629,7 @@ stage_full_greek_seeds(const SurfaceSet &surfaces, std::span<const OptionContrac
     out.iv = representative.iv();
     out.status = PriceStatus::Ok;
     if (skew_adjusted_delta) {
-      const PricedSurface *const surface = surfaces.find(contract.uid);
+      const SurfaceRef surface = surfaces.find(contract.uid);
       if (surface != nullptr) {
         const double slope = priced_surface_skew_slope(*surface, contract.K, contract.T);
         out.vega_slope = vega_slope_from_skew_slope(slope, surface->pricing().S, sticky);
@@ -683,7 +708,7 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
 
   const auto solve_span = [&](std::uint32_t uid, std::uint32_t s, std::uint32_t e) {
     const std::size_t gsz = static_cast<std::size_t>(e - s);
-    const PricedSurface *surf = surfaces.find(uid);
+    const SurfaceRef surf = surfaces.find(uid);
     if (surf == nullptr) {
       // Degenerate is checked FIRST (an invalid contract is InvalidContract even
       // when its uid has no surface) — matching the ungrouped precedence.
@@ -1141,7 +1166,7 @@ Status PortfolioPricer::price_into(const SurfaceSet &surfaces, PriceFieldMask fi
     w.base_surface_logical_id = surfaces.logical_id_;
     w.base_surface_instance_ids.resize(pf_.uids().size());
     for (std::size_t i = 0; i < pf_.uids().size(); ++i) {
-      const PricedSurface *const surface = surfaces.find(pf_.uids()[i]);
+      const SurfaceRef surface = surfaces.find(pf_.uids()[i]);
       w.base_surface_instance_ids[i] = surface != nullptr ? surface->instance_id() : 0u;
     }
     w.base_book_logical_id = pf_.logical_id_;
@@ -1185,7 +1210,7 @@ Result<PriceTotals> PortfolioPricer::price_totals(const SurfaceSet &surfaces, Pr
     w.base_surface_logical_id = surfaces.logical_id_;
     w.base_surface_instance_ids.resize(pf_.uids().size());
     for (std::size_t i = 0; i < pf_.uids().size(); ++i) {
-      const PricedSurface *const surface = surfaces.find(pf_.uids()[i]);
+      const SurfaceRef surface = surfaces.find(pf_.uids()[i]);
       w.base_surface_instance_ids[i] = surface != nullptr ? surface->instance_id() : 0u;
     }
     w.base_book_logical_id = pf_.logical_id_;
@@ -1308,8 +1333,8 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
 
   const auto solve_span = [&](std::uint32_t uid, std::uint32_t s, std::uint32_t e) {
     const std::size_t gsz = static_cast<std::size_t>(e - s);
-    const PricedSurface *sb = base.find(uid);    // one base find per (uid,side) span
-    const PricedSurface *st = shifted.find(uid); // one shifted find per (uid,side) span
+    const SurfaceRef sb = base.find(uid);    // one base find per (uid,side) span
+    const SurfaceRef st = shifted.find(uid); // one shifted find per (uid,side) span
     if (sb == nullptr || st == nullptr) {
       // Degenerate is checked FIRST (an invalid contract is InvalidContract even when
       // its uid has no surface) — matching the ungrouped precedence.
@@ -1347,9 +1372,21 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
                                             std::span<Status>(b_status).subspan(s, gsz),
                                             {},
                                             {}};
+      // WS-P2 rho tier: the ONLY consumer of this bundle's `rho` is the Taylor term
+      // `prho = g.rho * c.dr` below (and its pnl_totals twin). `dr` is a per-(uid)
+      // surface-pair constant already in hand here, and when the P&L step carries NO
+      // rate shift it is exactly 0.0 — so every rho the r± boundary solves produce is
+      // multiplied by zero and discarded. Requesting needs.rho = false makes the kernel
+      // skip that solve pair and leave rho at 0, driving the identical `0.0 * 0.0` term:
+      // a 5-solve bundle becomes 3 with no change to any output column. When dr != 0 the
+      // full bundle is requested exactly as before. `dr` depends only on the two
+      // surfaces, never on the thread partition, so the narrowing is deterministic and
+      // pack-composition invariant.
+      PricedSurface::GreekNeeds base_needs{};
+      base_needs.rho = (dr != 0.0);
       (void)sb->evaluate_batch(kcol.subspan(s, gsz), tcol.subspan(s, gsz), scol.subspan(s, gsz),
                                EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder, analytic,
-                               base_soa, resolved_price_isa, query_execution);
+                               base_soa, resolved_price_isa, query_execution, base_needs);
     }
     // Shifted surface at the COMMON base maturity T_b: iv only (sig_t).
     PricedSurface::EvaluationSoA sig_soa{std::span<double>(s_iv).subspan(s, gsz),
@@ -1661,7 +1698,7 @@ Status PortfolioPricer::pnl_explain_into(const SurfaceSet &base, const SurfaceSe
       return false;
     }
     for (std::size_t i = 0; i < uids.size(); ++i) {
-      const PricedSurface *const surface = base.find(uids[i]);
+      const SurfaceRef surface = base.find(uids[i]);
       const std::uint64_t instance_id = surface != nullptr ? surface->instance_id() : 0u;
       if (w.base_surface_instance_ids[i] != instance_id) {
         return false;
@@ -1715,7 +1752,7 @@ Result<PnlTotals> PortfolioPricer::pnl_totals(const SurfaceSet &base, const Surf
       return false;
     }
     for (std::size_t i = 0; i < uids.size(); ++i) {
-      const PricedSurface *const surface = base.find(uids[i]);
+      const SurfaceRef surface = base.find(uids[i]);
       const std::uint64_t instance_id = surface != nullptr ? surface->instance_id() : 0u;
       if (w.base_surface_instance_ids[i] != instance_id) {
         return false;

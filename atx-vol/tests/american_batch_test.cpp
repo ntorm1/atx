@@ -1225,6 +1225,101 @@ TEST(AmericanPutGreeksBatchAvx2, DeltaOnlyZeroesUnrequestedAcrossHandledAndPatch
   EXPECT_NEAR(g[1].delta, ref->delta, 1e-6);
 }
 
+// ── P1b: laned analytic CALL Greeks bundle (american_call_greeks_batch, AVX2) ──
+//
+// Call-native mirror of the K3 put parity gate. Under McDonald-Schroder C(S,K,r,q)=
+// P(K,S,q,r) the kernel solves the internal put (rate=q, yield=r, internal-strike=S) and
+// prices the call spot stencils by strike homogeneity. Parity:
+//  * ForceScalar route == american_greeks_al(Side::Call), BIT-identical (it IS the oracle);
+//  * ForceAvx2 route == american_greeks_al(Side::Call) within the economic gate — the AVX2
+//    transcendentals in the stencil prices + the ~1 ULP xmax strike-rescale, amplified by
+//    the FD denominators (documented per-greek below).
+TEST(AmericanCallGreeksBatchAvx2, MatchesScalarAl) {
+  // Genuine early-exercise American CALLS (q>0 drives early exercise), moneyness x
+  // maturity x vol x yield grid.
+  struct C { double S, K, T, sigma, r, q; };
+  std::vector<C> g;
+  const double S = 100.0;
+  for (double m : {0.80, 0.90, 0.95, 1.00, 1.05, 1.10, 1.20}) {
+    for (double t : {0.08, 0.25, 0.75, 2.0}) {
+      for (double v : {0.15, 0.25, 0.40}) {
+        for (double qy : {0.03, 0.06}) {
+          g.push_back(C{S, S / m, t, v, 0.01, qy});
+        }
+      }
+    }
+  }
+  const std::size_t n = g.size();
+  std::vector<double> vS(n), vK(n), vT(n), vsig(n), vr(n), vq(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    vS[i] = g[i].S; vK[i] = g[i].K; vT[i] = g[i].T;
+    vsig[i] = g[i].sigma; vr[i] = g[i].r; vq[i] = g[i].q;
+  }
+
+  // ForceScalar route == american_greeks_al(Side::Call), bit-identical.
+  std::vector<AmericanGreeks> scl(n);
+  const simd::SimdRoute sroute = simd::american_call_greeks_batch(
+      vS.data(), vK.data(), vT.data(), vsig.data(), vr.data(), vq.data(), n,
+      std::nullopt, scl.data(), simd::SimdIsa::ForceScalar);
+  EXPECT_EQ(sroute, simd::SimdRoute::Scalar);
+  for (std::size_t i = 0; i < n; ++i) {
+    const auto al = american_greeks_al(vS[i], vK[i], vT[i], vsig[i], vr[i], vq[i], Side::Call);
+    ASSERT_TRUE(al.has_value()) << "i=" << i;
+    EXPECT_EQ(scl[i], *al) << "ForceScalar must equal american_greeks_al(Call) bit-for-bit, i=" << i;
+  }
+
+  if (!simd::have_avx2()) {
+    GTEST_SKIP() << "no AVX2 on host (scalar parity checked above)";
+  }
+
+  // ForceAvx2 route == american_greeks_al(Side::Call) within the economic gate.
+  std::vector<AmericanGreeks> avx(n);
+  const simd::SimdRoute aroute = simd::american_call_greeks_batch(
+      vS.data(), vK.data(), vT.data(), vsig.data(), vr.data(), vq.data(), n,
+      std::nullopt, avx.data(), simd::SimdIsa::ForceAvx2);
+  EXPECT_EQ(aroute, simd::SimdRoute::Avx2);
+
+  auto reld = [](double a, double b, double floor) {
+    return std::abs(a - b) / std::max({std::abs(a), std::abs(b), floor});
+  };
+  double mp = 0, md = 0, mg = 0, mv = 0, mvl = 0, mr = 0, mvn = 0, mt = 0, mc = 0;
+  for (std::size_t i = 0; i < n; ++i) {
+    const AmericanGreeks a = avx[i], s = scl[i];
+    mp = std::max(mp, reld(a.price, s.price, 1e-6));
+    md = std::max(md, reld(a.delta, s.delta, 1e-6));
+    mg = std::max(mg, reld(a.gamma, s.gamma, 1e-6));
+    mv = std::max(mv, reld(a.vega, s.vega, 1e-4));
+    mvl = std::max(mvl, reld(a.volga, s.volga, 1e-3));
+    mr = std::max(mr, reld(a.rho, s.rho, 1e-4));
+    mvn = std::max(mvn, reld(a.vanna, s.vanna, 1e-5));
+    mt = std::max(mt, reld(a.theta, s.theta, 1e-4));
+    mc = std::max(mc, reld(a.charm, s.charm, 1e-4));
+  }
+  std::printf("[P1b laned-call-greeks parity] rel-dev vs american_greeks_al(Call) (n=%zu): "
+              "price=%.2e delta=%.2e gamma=%.2e vega=%.2e volga=%.2e rho=%.2e "
+              "vanna=%.2e theta=%.2e charm=%.2e\n",
+              n, mp, md, mg, mv, mvl, mr, mvn, mt, mc);
+  // Economic gate. Measured on this dev box (n=168): price 3.5e-9, delta 7.9e-8,
+  // gamma 2.0e-6, vega 7.1e-8, volga 4.7e-6, rho 6.0e-7, vanna 1.4e-6, theta 2.2e-6,
+  // charm 1.3e-5 — all RELATIVE. These sit ~1 order above the put kernel's (price 1.6e-10,
+  // delta 5.7e-9) because the call path carries the McDonald-Schroder strike-homogeneity
+  // rescale (xmax(S2)=XMAX·S2/S, ~1 ULP) and prices at spot=K/strike=S2 rather than the
+  // scalar's operand ordering — on top of the shared AVX2 stencil transcendentals, all
+  // amplified by the FD denominators. Economically nil: the worst column is a 1.3e-5
+  // RELATIVE charm move and price agrees to 3.5e-9 relative, 10+ orders below a tick.
+  // Gates set with headroom over measured for cross-host robustness, still orders under
+  // any order-1 formula/sign bug.
+  EXPECT_LT(mp, 5e-8) << "price";
+  EXPECT_LT(md, 1e-6) << "delta";
+  EXPECT_LT(mg, 1e-5) << "gamma";
+  EXPECT_LT(mv, 1e-6) << "vega";
+  EXPECT_LT(mvl, 1e-4) << "volga";
+  EXPECT_LT(mr, 1e-5) << "rho";
+  EXPECT_LT(mvn, 1e-5) << "vanna";
+  EXPECT_LT(mt, 5e-5) << "theta";
+  EXPECT_LT(mc, 2e-4) << "charm";
+}
+
 // Greeks batch: bit-identical to per-contract american_greeks_fd.
 Book make_american_greeks_book() {
   Book b;

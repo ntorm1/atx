@@ -434,18 +434,30 @@ inline void solve_put_boundary_pack_avx2(
     out.active = _mm256_cmp_pd(_mm256_load_pd(elig), _mm256_set1_pd(0.5), _CMP_GT_OQ);
 }
 
-// Price a pack at an arbitrary `spot` vector against the solved boundary `b`. Returns
-// the 4-wide American put price (euro floor + intrinsic + non-negativity clamps), a
-// line-for-line port of the K2 kernel's step 4 with S generalised to `spot`.
-inline __m256d price_put_pack_avx2(const PutPackBoundary& b, __m256d spot) noexcept {
+// Price a pack against the solved boundary `b` at an arbitrary (`spot`, `strike`,
+// `xmax`) triple. Returns the 4-wide American put price (euro floor + intrinsic +
+// non-negativity clamps), a line-for-line port of the K2 kernel's step 4 with S,
+// K, and xmax all generalised to explicit vectors.
+//
+// The put-greeks kernel prices spot stencils against the FIXED contract strike
+// (b.Kv) and xmax (b.XMAX) — see the price_put_pack_avx2 wrapper below. The
+// call-greeks kernel exploits the McDonald-Schroder map C(S,K,r,q)=P(K,S,q,r): a
+// call spot stencil is priced as the internal put at internal-spot=K_call (fixed),
+// internal-strike=S_stencil (the varying call spot), and xmax rescaled by strike
+// homogeneity (al_xmax_put is linear in strike, so xmax(S2)=XMAX_base·S2/S_base is
+// exact math; ~1 ULP from the scalar al_xmax_put(S2,q,r) direct evaluation, deep
+// inside the economic gate). One solved boundary therefore serves every stencil on
+// EITHER side — the K3 lever, unchanged.
+inline __m256d price_put_pack_at_avx2(const PutPackBoundary& b, __m256d spot,
+                                      __m256d strike, __m256d xmax) noexcept {
     const __m256d zero = _mm256_setzero_pd();
     const __m256d one = _mm256_set1_pd(1.0);
     const __m256d two = _mm256_set1_pd(2.0);
     const __m256d neg_one = _mm256_set1_pd(-1.0);
     const __m256d half = _mm256_set1_pd(0.5);
     const __m256d TINY = _mm256_set1_pd(1.0e-14);
-    const __m256d Kv = b.Kv, SIG = b.SIG, Rv = b.Rv, Qv = b.Qv, Tv = b.Tv, RmQ = b.RmQ;
-    const __m256d XMAX = b.XMAX;
+    const __m256d Kv = strike, SIG = b.SIG, Rv = b.Rv, Qv = b.Qv, Tv = b.Tv, RmQ = b.RmQ;
+    const __m256d XMAX = xmax;
     const unsigned nb = b.nb, np = b.np;
     const __m256d* Y = b.Y;
 
@@ -529,6 +541,13 @@ inline __m256d price_put_pack_avx2(const PutPackBoundary& b, __m256d spot) noexc
     price = _mm256_max_pd(price, euro);                  // euro floor
     price = _mm256_max_pd(price, zero);
     return price;
+}
+
+// Put spot-stencil pricer: the contract strike (b.Kv) and asymptotic level (b.XMAX)
+// are FIXED; only the spot varies. Bit-identical to the pre-refactor kernel (same ops,
+// same operands) — the K2/K3 put path is unchanged.
+inline __m256d price_put_pack_avx2(const PutPackBoundary& b, __m256d spot) noexcept {
+    return price_put_pack_at_avx2(b, spot, b.Kv, b.XMAX);
 }
 
 } // namespace atx::vol::simd::detail
