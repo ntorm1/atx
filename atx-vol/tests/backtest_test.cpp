@@ -2135,21 +2135,18 @@ TEST(Backtest, DailyTwoLegRollReusesExactPnlTargetMarksWithoutChangingEconomics)
   EXPECT_EQ(result->n_open_lots, (std::vector<double>{2.0, 2.0, 2.0, 2.0}));
   // Bit pins captured before the target-mark handoff. Close cash and notional
   // remain numerically identical while their redundant Greek solves disappear.
-  // infra / test-tolerance (WS-0, retuned WS-P1a): the running `cash` accumulator
-  // sums sub-ULP drift over the run's surface solves and lands off the
-  // SSE2-captured pin — an accumulated rounding telltale, not an economics change.
-  // TWO sources feed it now: FMA contraction under rel-avx2 (compile-time), and
-  // the laned AVX2 greeks kernel selected at RUNTIME by CPU capability. Because
-  // the second is runtime-selected, golden_isa_accum_tol no longer branches on
-  // __FMA__ — the old "SSE2 keeps a 4-ULP gate" branch was failing on the very
-  // shipping configuration it exists to gate. It is now one unconditional
-  // relative band (1e-11), ~20x the worst measured drift on THIS array (step 3:
-  // 2.2737367544323206e-12 abs / 5.13e-13 rel; steps 0-2 run 5.68e-14..7.40e-14)
-  // and 2 orders TIGHTER than the 1e-9 it replaced. See support/isa_golden_tol.hpp.
-  constexpr std::array<double, 4> expected_cash{-3.0734556197676284, -3.548979869780851,
-                                                -4.0009109642776366, -4.4307747789998757};
-  constexpr std::array<double, 4> expected_turnover{2200.5417380996087, 4444.3187954021723,
-                                                    4493.5146516456771, 4543.6617275559584};
+  // infra / test-tolerance: the running `cash` accumulator sums sub-ULP drift over the
+  // run's surface solves. Gate is golden_isa_accum_tol — one unconditional 1e-11
+  // relative band (WS-P1a re-band; no __FMA__ branch; see support/isa_golden_tol.hpp).
+  // [WS-M M1] These pins are MAIN's (pricing-greeks SOTA) captured values: the merged
+  // American greeks kernel is main's rewrite (incl. the A1 BAW critical-price seed-sign
+  // fix), so the marks reproduce main's numbers, not feat/disp-hotpath's pre-rewrite
+  // pins (which miss by ~3.6e-6). Observed merged-engine drift vs pin ~2.3e-13 rel
+  // (cost bit-identical), ~40x inside the band. (M2 owns any formal quiet-window re-pin.)
+  constexpr std::array<double, 4> expected_cash{-3.0734592640139908, -3.5489832955311158,
+                                                -4.0009154520034826, -4.4307759090513628};
+  constexpr std::array<double, 4> expected_turnover{2200.5417344553625, 4444.318791516017,
+                                                    4493.5146508026201, 4543.6617284600488};
   for (std::size_t i = 0; i < result->size(); ++i) {
     EXPECT_NEAR(result->cash[i], expected_cash[i],
                 atx::vol::test::golden_isa_accum_tol(expected_cash[i]))
@@ -2190,18 +2187,15 @@ TEST(Backtest, PriceBpsRollCloseReusesPnlMarkWithoutASecondSurfaceSolve) {
   const auto result = run_backtest(*clock, strategy, config);
   ASSERT_TRUE(result.has_value()) << result.error().to_string();
   ASSERT_EQ(result->size(), 2u);
-  // infra / test-tolerance (WS-0, retuned WS-P1a): same accumulated-rounding
-  // telltale as above, one unconditional 1e-11 relative band rather than an
-  // __FMA__-keyed branch — see the sibling call site above for why. Measured on
-  // the dev preset with laned greeks on, only `cash[1]` drifts at all
-  // (2.2737367544323206e-13 abs on -69.997585204798639, ~3.2e-15 relative);
-  // `cost[1]` and `turnover_notional[1]` are exactly equal here.
-  EXPECT_NEAR(result->cost[1], 44.443187954021731,
-              atx::vol::test::golden_isa_accum_tol(44.443187954021731));
-  EXPECT_NEAR(result->cash[1], -69.997585204798639,
-              atx::vol::test::golden_isa_accum_tol(-69.997585204798639));
-  EXPECT_NEAR(result->turnover_notional[1], 4444.3187954021723,
-              atx::vol::test::golden_isa_accum_tol(4444.3187954021723));
+  // infra / test-tolerance: same unconditional 1e-11 relative band as the sibling
+  // above. [WS-M M1] MAIN's captured values (merged greeks kernel = main's rewrite):
+  // cost[1] and turnover_notional[1] reproduce bit-identically, cash[1] ~2e-13 rel.
+  EXPECT_NEAR(result->cost[1], 44.443187915160173,
+              atx::vol::test::golden_isa_accum_tol(44.443187915160173));
+  EXPECT_NEAR(result->cash[1], -69.997588555245017,
+              atx::vol::test::golden_isa_accum_tol(-69.997588555245017));
+  EXPECT_NEAR(result->turnover_notional[1], 4444.318791516017,
+              atx::vol::test::golden_isa_accum_tol(4444.318791516017));
   EXPECT_TRUE(std::isfinite(result->turnover_vega[1]));
   EXPECT_GT(result->turnover_vega[1], 0.0);
   if constexpr (counters_enabled()) {
