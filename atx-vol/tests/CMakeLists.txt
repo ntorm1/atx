@@ -136,6 +136,8 @@ add_executable(atx-vol-tests
     earnings_validation_test.cpp     # T9: cohort truth CSV -> validate_cohort_name RMSE + nEarnCnt gate
     # AMZN-around-earnings CStar reproduction (WS-4) — appended target:
     amzn_earnings_test.cpp           # real OPRA board -> two-pass C8 fit: front c2_eff<-1, arb-free
+    # pricing-greeks SOTA (Agent G4) — appended target:
+    american_exercise_boundary_test.cpp # G4: public exercise_boundary + assignment_risk screen
 )
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).

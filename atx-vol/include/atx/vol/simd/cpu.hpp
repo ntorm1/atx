@@ -28,10 +28,6 @@ namespace atx::vol::simd {
 //     scalar reference to the accuracy gate. Only legal on an AVX2 host: callers
 //     (tests) must GTEST_SKIP when !have_avx2() before forcing it.
 // Auto (the default) resolves to have_avx2().
-//
-// NOTE (scope): only the NEW American boundary batch dispatch consults this seam
-// (via use_avx2()). The existing black76/greeks/iv/essvi/pnl batch kernels still
-// gate directly on have_avx2() and are intentionally NOT rewired here (T13 scope).
 enum class SimdIsa { Auto, ForceScalar, ForceAvx2 };
 
 // Install the override. Thread-safe (a relaxed atomic store); intended as coarse,
@@ -41,7 +37,7 @@ void set_simd_isa_override(SimdIsa isa) noexcept;
 // The currently-installed override (default Auto).
 [[nodiscard]] SimdIsa simd_isa_override() noexcept;
 
-// The effective dispatch decision the American boundary batch consults:
+// The effective dispatch decision every batch dispatcher consults:
 //   Auto        -> have_avx2()
 //   ForceScalar -> false
 //   ForceAvx2   -> true   (undefined on a non-AVX2 host; guard with have_avx2())

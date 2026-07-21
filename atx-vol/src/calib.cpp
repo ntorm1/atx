@@ -1037,17 +1037,53 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
   prepare_shared_boundary_proposals(am->obs, shortcut_mask, S, T, r, q_eff, opts, caches, al_opts,
                                     iv_tol, iv_max_iter, method, out.deam_audit);
   std::array<std::vector<double>, 4> audit_residuals;
+
+  // P3 (perf F3): the non-trusted rows of one (expiry, side) share (S, T, r,
+  // q_eff) and differ only in (K, σ), so their reference reprices batch through
+  // the σ-boundary interpolant slice route (audit_european_equiv_iv_batch) —
+  // O(n_σ)=8 AL boundary solves per side instead of one ACCURATE cold solve per
+  // audited row. The loop is split into a COLLECT pass (route + invert every row,
+  // warm-chain the inversions, gather the audited rows per side), one batched
+  // reprice per side, and a FINALIZE pass (apply verdicts + accurate fallback and
+  // emit obs in obs_index order — unchanged from the original body).
+  //
+  // POLICY (PM-decided, perf-review F3): admissible. The audit certifies
+  // IV-INVERSION consistency (does the recovered σ reprice the American mid
+  // inside the half-spread budget?), NOT boundary-PATH independence. The
+  // σ-interpolant's qualified max price gap vs a cold per-row solve is
+  // 3.8e-5/share (Task 11 §P2.5 ship gate), orders below the half-spread budget
+  // the audit scores against — no verdict the budget can resolve is affected. A
+  // row that passes keeps the SAME recovered σ, European premium, vega and
+  // weights; only the diagnostic residual_half_spreads shifts by ≤ that gap.
+  enum class ObsDisposition : std::uint8_t { RejectedInCollect, Trusted, Audited };
+  struct PreparedObs {
+    std::size_t obs_index;
+    std::size_t source_index;
+    IvRoute route;
+    double sig;             // recovered IV (primary; overwritten on accurate fallback)
+    double score_sigma;
+    bool independent_score;
+    ObsDisposition disp;
+    std::size_t audit_slot; // index into this side's audit span (Audited rows only)
+  };
+  const auto reject_row = [&](std::size_t si, ObsRejectionReason reason) {
+    ++out.n_dropped;
+    out.provenance[si].rejection = reason;
+  };
+
+  std::vector<PreparedObs> prepared;
+  prepared.reserve(am->obs.size());
+  std::vector<double> call_K, call_sig, call_mid, call_spread;
+  std::vector<double> put_K, put_sig, put_mid, put_spread;
+
+  // ── Collect pass: route + invert every row, warm-chaining the inversions ──
   for (std::size_t obs_index = 0; obs_index < am->obs.size(); ++obs_index) {
-    FitObs o = am->obs[obs_index];
+    const FitObs &o = am->obs[obs_index];
     const std::size_t source_index = o.source_strike_index;
     if (source_index >= chain.n_strikes() || source_index >= out.provenance.size()) {
       return Err(ErrorCode::Internal,
                  "build_observations_european: source strike key out of range");
     }
-    const auto reject = [&](ObsRejectionReason reason) {
-      ++out.n_dropped;
-      out.provenance[source_index].rejection = reason;
-    };
     ++out.deam_audit.n_deam_rows;
     // Same mask the prepare pass consumed — not a re-evaluation. Priority order
     // is unchanged: shortcut -> shared_proposal -> scalar.
@@ -1100,100 +1136,158 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
     InversionRouteDiagnostics &proposal_diag = route_diag(out.deam_audit, route);
     ++proposal_diag.n_proposed;
     const double warm = warm_start_deam ? ((o.side == Side::Call) ? warm_call : warm_put) : 0.0;
-    Result<double> sig =
+    const Result<double> sig_res =
         shortcut ? Ok(o.sigma_mkt)
                  : (shared_proposal
                         ? Ok(o.score_sigma_mkt)
                         : american_implied_vol(o.mid, S, o.K, T, r, q_eff, o.side, method, iv_tol,
                                                iv_max_iter, al_opts, correction, warm));
-    if (!sig.has_value() || !(*sig > kObsIvMin && *sig < kObsIvMax)) {
-      reject(ObsRejectionReason::Deamericanization);
+    if (!sig_res.has_value() || !(*sig_res > kObsIvMin && *sig_res < kObsIvMax)) {
+      reject_row(source_index, ObsRejectionReason::Deamericanization);
+      prepared.push_back(PreparedObs{obs_index, source_index, route, 0.0, score_sigma,
+                                     independent_score, ObsDisposition::RejectedInCollect, 0});
       continue;
     }
-    bool fit_sigma_converged = !shortcut;
+    const double sig = *sig_res;
+    // Warm chain: the original body advances warm_{call,put} from each accepted
+    // row's FINAL σ at the tail. Here it advances with the PRIMARY σ right after a
+    // successful inversion — identical for every row accepted without an accurate
+    // fallback (the common case), so the fitted surface is bit-identical there. A
+    // row that later falls back or is audit-rejected would have contributed its
+    // accurate σ (or nothing) to the chain; that is a warm-SEED difference only
+    // (safeguarded Newton's converged root is seed-independent to tolerance),
+    // consistent with this task's economic-parity contract.
+    if (warm_start_deam && !shortcut) {
+      (o.side == Side::Call ? warm_call : warm_put) = sig;
+    }
 
+    if (method != AmericanMethod::AndersenLake) {
+      ++proposal_diag.n_accepted;
+      prepared.push_back(PreparedObs{obs_index, source_index, route, sig, score_sigma,
+                                     independent_score, ObsDisposition::Trusted, 0});
+      continue;
+    }
     // A successful direct accurate inversion has already been cold-polished
     // against the exact map used by audit_european_equiv_iv. Repeating that map
     // cannot add independent evidence, so it is a logical audit with no reprice.
     // Approximate proposals still require an independent reference reprice and
     // an audited accurate fallback when they miss the budget.
-    if (method == AmericanMethod::AndersenLake) {
-      const bool trusted_accurate_controls = iv_tol <= 1.0e-7 && iv_max_iter >= 64;
-      if (shared_proposal) {
-        // W3.1 accuracy-trading route: every lane cleared the embedded 9-vs-5
-        // price estimator and its side cleared three higher-accuracy cold IV
-        // sentinels. Repricing every accepted lane would restore O(strikes)
-        // boundary work and erase the structural gain; the bounded sentinels
-        // are the independent audit for this side.
-        ++proposal_diag.n_audited;
-        ++proposal_diag.n_accepted;
-      } else if (route == IvRoute::Accurate && !opts.audit_accurate_inversions &&
-                 trusted_accurate_controls) {
-        ++proposal_diag.n_audited;
-        ++proposal_diag.n_accepted;
-      } else {
-        ++proposal_diag.n_audited;
-        ++proposal_diag.n_reference_reprices;
-        Result<IvRepricingAudit> audit =
-            audit_european_equiv_iv(o.mid, o.spread, *sig, S, o.K, T, r, q_eff, o.side,
-                                    opts.max_inversion_residual_half_spreads);
-        if (audit) {
-          audit_residuals[static_cast<std::size_t>(route)].push_back(audit->residual_half_spreads);
-        }
-        if (!audit || !audit->passed) {
-          if (route == IvRoute::Accurate) {
-            ++out.deam_audit.n_rejected_residual;
-            reject(ObsRejectionReason::Deamericanization);
-            continue;
-          }
-          ++proposal_diag.n_fallback;
-          ++out.deam_audit.n_accurate_fallback;
-          InversionRouteDiagnostics &accurate_diag = out.deam_audit.accurate;
-          ++accurate_diag.n_proposed;
-          sig =
-              american_implied_vol(o.mid, S, o.K, T, r, q_eff, o.side, AmericanMethod::AndersenLake,
-                                   1.0e-7, 64, std::nullopt, nullptr, *sig);
-          if (!sig || !(*sig > kObsIvMin && *sig < kObsIvMax)) {
-            reject(ObsRejectionReason::Deamericanization);
-            continue;
-          }
-          ++accurate_diag.n_audited;
-          ++accurate_diag.n_reference_reprices;
-          audit = audit_european_equiv_iv(o.mid, o.spread, *sig, S, o.K, T, r, q_eff, o.side,
-                                          opts.max_inversion_residual_half_spreads);
-          if (audit) {
-            audit_residuals[static_cast<std::size_t>(IvRoute::Accurate)].push_back(
-                audit->residual_half_spreads);
-          }
-          if (!audit || !audit->passed) {
-            ++out.deam_audit.n_rejected_residual;
-            reject(ObsRejectionReason::Deamericanization);
-            continue;
-          }
-          ++accurate_diag.n_accepted;
-          fit_sigma_converged = true;
-        } else {
-          ++proposal_diag.n_accepted;
-        }
-      }
-    } else {
+    const bool trusted_accurate_controls = iv_tol <= 1.0e-7 && iv_max_iter >= 64;
+    if (shared_proposal) {
+      // W3.1 accuracy-trading route: every lane cleared the embedded 9-vs-5
+      // price estimator and its side cleared three higher-accuracy cold IV
+      // sentinels. Repricing every accepted lane would restore O(strikes)
+      // boundary work and erase the structural gain; the bounded sentinels
+      // are the independent audit for this side.
+      ++proposal_diag.n_audited;
       ++proposal_diag.n_accepted;
+      prepared.push_back(PreparedObs{obs_index, source_index, route, sig, score_sigma,
+                                     independent_score, ObsDisposition::Trusted, 0});
+    } else if (route == IvRoute::Accurate && !opts.audit_accurate_inversions &&
+               trusted_accurate_controls) {
+      ++proposal_diag.n_audited;
+      ++proposal_diag.n_accepted;
+      prepared.push_back(PreparedObs{obs_index, source_index, route, sig, score_sigma,
+                                     independent_score, ObsDisposition::Trusted, 0});
+    } else {
+      // Non-trusted: needs the independent reference reprice. Collect it into its
+      // side's batch; the verdict + accurate fallback happen in the finalize pass.
+      ++proposal_diag.n_audited;
+      ++proposal_diag.n_reference_reprices;
+      std::vector<double> &bk = (o.side == Side::Call) ? call_K : put_K;
+      std::vector<double> &bs = (o.side == Side::Call) ? call_sig : put_sig;
+      std::vector<double> &bm = (o.side == Side::Call) ? call_mid : put_mid;
+      std::vector<double> &bsp = (o.side == Side::Call) ? call_spread : put_spread;
+      const std::size_t slot = bk.size();
+      bk.push_back(o.K);
+      bs.push_back(sig);
+      bm.push_back(o.mid);
+      bsp.push_back(o.spread);
+      prepared.push_back(PreparedObs{obs_index, source_index, route, sig, score_sigma,
+                                     independent_score, ObsDisposition::Audited, slot});
+    }
+  }
+
+  // ── Batched primary reprice per side (O(n_σ) boundary solves each) ─────────
+  std::vector<Result<IvRepricingAudit>> call_audit(call_K.size());
+  std::vector<Result<IvRepricingAudit>> put_audit(put_K.size());
+  if (!call_K.empty()) {
+    ATX_TRY_VOID(audit_european_equiv_iv_batch(S, T, r, q_eff, Side::Call, call_K, call_sig,
+                                               call_mid, call_spread,
+                                               opts.max_inversion_residual_half_spreads,
+                                               call_audit));
+  }
+  if (!put_K.empty()) {
+    ATX_TRY_VOID(audit_european_equiv_iv_batch(S, T, r, q_eff, Side::Put, put_K, put_sig, put_mid,
+                                               put_spread,
+                                               opts.max_inversion_residual_half_spreads, put_audit));
+  }
+
+  // ── Finalize pass: apply verdicts + accurate fallback, emit in obs order ───
+  for (const PreparedObs &prep : prepared) {
+    if (prep.disp == ObsDisposition::RejectedInCollect) {
+      continue; // already counted + provenance-stamped in the collect pass
+    }
+    FitObs o = am->obs[prep.obs_index];
+    const std::size_t source_index = prep.source_index;
+    double sig = prep.sig;
+    double score_sigma = prep.score_sigma;
+
+    if (prep.disp == ObsDisposition::Audited) {
+      const Result<IvRepricingAudit> &audit =
+          (o.side == Side::Call) ? call_audit[prep.audit_slot] : put_audit[prep.audit_slot];
+      InversionRouteDiagnostics &proposal_diag = route_diag(out.deam_audit, prep.route);
+      if (audit.has_value()) {
+        audit_residuals[static_cast<std::size_t>(prep.route)].push_back(
+            audit->residual_half_spreads);
+      }
+      if (!audit.has_value() || !audit->passed) {
+        if (prep.route == IvRoute::Accurate) {
+          ++out.deam_audit.n_rejected_residual;
+          reject_row(source_index, ObsRejectionReason::Deamericanization);
+          continue;
+        }
+        ++proposal_diag.n_fallback;
+        ++out.deam_audit.n_accurate_fallback;
+        InversionRouteDiagnostics &accurate_diag = out.deam_audit.accurate;
+        ++accurate_diag.n_proposed;
+        const Result<double> refit =
+            american_implied_vol(o.mid, S, o.K, T, r, q_eff, o.side, AmericanMethod::AndersenLake,
+                                 1.0e-7, 64, std::nullopt, nullptr, sig);
+        if (!refit || !(*refit > kObsIvMin && *refit < kObsIvMax)) {
+          reject_row(source_index, ObsRejectionReason::Deamericanization);
+          continue;
+        }
+        sig = *refit;
+        ++accurate_diag.n_audited;
+        ++accurate_diag.n_reference_reprices;
+        const Result<IvRepricingAudit> reaudit =
+            audit_european_equiv_iv(o.mid, o.spread, sig, S, o.K, T, r, q_eff, o.side,
+                                    opts.max_inversion_residual_half_spreads);
+        if (reaudit) {
+          audit_residuals[static_cast<std::size_t>(IvRoute::Accurate)].push_back(
+              reaudit->residual_half_spreads);
+        }
+        if (!reaudit || !reaudit->passed) {
+          ++out.deam_audit.n_rejected_residual;
+          reject_row(source_index, ObsRejectionReason::Deamericanization);
+          continue;
+        }
+        ++accurate_diag.n_accepted;
+      } else {
+        ++proposal_diag.n_accepted;
+      }
     }
 
-    const double sigma_eu = *sig;
-    if (!independent_score) {
+    const double sigma_eu = sig;
+    if (!prep.independent_score) {
       score_sigma = sigma_eu;
     }
-    if (warm_start_deam && fit_sigma_converged) {
-      if (o.side == Side::Call) {
-        warm_call = sigma_eu;
-      } else {
-        warm_put = sigma_eu;
-      }
-    }
+    // (warm_{call,put} were advanced with the primary σ in the collect pass; no
+    // inversion follows in this pass, so there is nothing left to chain here.)
     const double eu_px = black76_price(F, o.K, T, sigma_eu, df, o.side);
     if (!(eu_px > 0.0) || !std::isfinite(eu_px)) {
-      reject(ObsRejectionReason::EuropeanPrice);
+      reject_row(source_index, ObsRejectionReason::EuropeanPrice);
       continue;
     }
     const double vega = black76_value_and_vega(F, o.K, T, sigma_eu, df, o.side).vega;

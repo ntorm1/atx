@@ -43,7 +43,7 @@ namespace {
 inline constexpr double kNormalGate = 1e-6;
 
 // A4 [S1] single-source-Φ regression lock. Before A4 the AVX2 boundary Φ was a
-// degree-48 Chebyshev (norm_cdf_pd2), leaving max |AVX2−scalar| ≈ 6.7e-9 (normal)
+// degree-48 Chebyshev–Clenshaw Φ, leaving max |AVX2−scalar| ≈ 6.7e-9 (normal)
 // / 3.3e-9 (stress) — Φ's ~1e-11 interior error compounded through the sweep.
 // Migrating to the full-range Cody rational-erfc norm_cdf_erfc_pd2 — the SAME
 // erfc the scalar andersen_lake reference evaluates — single-sources Φ and drops

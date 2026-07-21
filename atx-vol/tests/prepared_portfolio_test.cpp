@@ -29,6 +29,7 @@
 #include "atx/vol/priced_surface.hpp"
 #include "atx/vol/vol_curve.hpp"
 #include "atx/vol/vol_surface.hpp"
+#include "support/isa_golden_tol.hpp"
 
 using namespace atx::vol;
 
@@ -462,12 +463,36 @@ TEST(PreparedPortfolio, GroupedPriceEqualsIndependentOracleAndPinnedFingerprint)
   EXPECT_EQ(h4, fingerprint(*fr1));
   EXPECT_EQ(h4, fingerprint(*fr8));
 
-  // The pin: this fingerprint was captured from the PRE-substrate price() (the
-  // per-contract evaluate() path, before the grouped substrate was wired in) and
-  // gates bit-for-bit identity of the grouped price() output. Re-pinned (WS-G G3)
-  // after the S4 fixture migration drifted the priced values while the grouped ==
-  // independent-oracle parity and thread-invariance checks above stayed green
-  // (economics unchanged; only the hash of the fixture-shifted values moved).
-  constexpr std::uint64_t kGoldenFingerprint = 10442169239612179642ULL;
+  // The pin: a whole-frame bit fingerprint. It guards the grouped substrate against
+  // the per-contract evaluate() path (thread-invariance above is the live gate).
+  // A1 REPIN (core-review finding 1): the American book reprices through the cold
+  // andersen_lake path whose BAW seed sign was fixed, shifting the marks ~1e-6 and
+  // thus every hashed bit — the FNV fingerprint moves wholesale (a hash has no
+  // "small" delta). Grouped==oracle economic equality above is unchanged.
+  //
+  // ISA-KEYED PIN (pg-sota sprint, 2026-07): the SSE2 value below was captured on
+  // the dev preset (source-of-truth ISA). Under FMA contraction (the rel-avx2
+  // acceptance preset, /arch:AVX2 → -mfma) the American book reprices ~1 ULP through
+  // the fused `a*b+c` in andersen_lake, and because a whole-frame FNV hash admits NO
+  // tolerance band — a single last-place bit rehashes the entire frame — the pin
+  // moves wholesale to a distinct-but-correct value. A per-ISA `golden_close` band
+  // (as BoundaryHoist uses for its scalar pins) is therefore meaningless on a hash.
+  // So we pin BOTH goldens and select on the active ISA (kFmaContraction, from
+  // support/isa_golden_tol.hpp): the SSE2 gate keeps its exact byte-identity
+  // guarantee untouched, and rel-avx2 stays a green acceptance gate. Neither pin is
+  // loosened; both are exact equalities on their own ISA. See the FMA-divergence
+  // rationale in support/isa_golden_tol.hpp.
+  // MERGE RE-PIN (feat/pg-sota -> main, 2026-07-20): the merged tree combines
+  // main's fixture/pricing state (incl. the S4 migration + parallel opra/greeks
+  // work) with the sprint's A1 BAW-seed sign fix. The priced marks therefore differ
+  // from EITHER branch alone, so the whole-frame FNV hash moves wholesale to a new
+  // correct value on each ISA. The grouped==independent-oracle economic-parity and
+  // thread-invariance gates above stayed green through the re-pin — only the hash of
+  // the (legitimately shifted) marks moved. Values measured on the merged tree:
+  // SSE2 on `rel` preset, FMA on `rel-avx2`.
+  constexpr std::uint64_t kGoldenFingerprintSse2 = 17305682487856730537ULL;
+  constexpr std::uint64_t kGoldenFingerprintFma = 8754310291975640041ULL;
+  constexpr std::uint64_t kGoldenFingerprint =
+      atx::vol::test::kFmaContraction ? kGoldenFingerprintFma : kGoldenFingerprintSse2;
   EXPECT_EQ(h4, kGoldenFingerprint);
 }

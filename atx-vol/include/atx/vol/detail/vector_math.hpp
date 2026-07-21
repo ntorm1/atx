@@ -1,11 +1,11 @@
 #pragma once
 
 // AVX2 (4-lane f64) vectorized transcendentals for the pricing/IV/greeks
-// kernels: log, exp, standard-normal Φ (Chebyshev-Clenshaw) and φ.
+// kernels: log, exp, standard-normal Φ (Cody rational-erfc) and φ.
 //
-// Ported from the C `ats-vol` library (ats_vol_math_simd.h) with the Φ kernel
-// re-expressed over atx-vol's runtime-built Chebyshev table (detail/
-// norm_cdf_cheb.hpp). Every function is a pure, allocation-free leaf.
+// Ported from the C `ats-vol` library (ats_vol_math_simd.h); the Φ kernel is a
+// full-range Cody rational-erfc (norm_cdf_erfc_pd, below) — the single Φ source
+// the batch kernels share. Every function is a pure, allocation-free leaf.
 //
 // COMPILE-TIME CONTRACT: this header emits AVX2+FMA intrinsics, so it must only
 // be included by translation units built with `-mavx2 -mfma` (the `*_avx2.cpp`
@@ -19,7 +19,6 @@
 #endif
 
 #include "atx/core/macro.hpp" // ATX_FORCE_INLINE
-#include "atx/vol/detail/norm_cdf_cheb.hpp"
 
 #include <immintrin.h>
 
@@ -41,6 +40,19 @@ inline constexpr double kInvSqrt2Pi = 0.398942280401432677939946059934381868;
 // Natural log, 4-lane. Full double accuracy on positive normals; the caller
 // guarantees x > 0 (pricing feeds F/K > 0). Cody-Waite range reduction to
 // m ∈ [√½, √2), then an odd-power series in s = (m-1)/(m+1).
+//
+// DOMAIN (A9, simd-review finding 4): valid ONLY for a positive NORMAL argument.
+// The exponent/mantissa decode above assumes a normalized IEEE double, so:
+//   • a DENORMAL x (e.g. an F/K ratio that underflowed) decodes its subnormal
+//     exponent field as if normalized → a FINITE result near -709 (log of the
+//     smallest normal), not the true (more negative) value;
+//   • x == 0 likewise returns ~-709 rather than -inf;
+//   • x == +inf returns ~+710 rather than +inf;
+//   • x < 0 / NaN are undefined.
+// Crucially the garbage is FINITE, so a downstream nonfinite_mask(d) cannot see it.
+// Consumers that can feed a denormal/0/inf ratio (black76/greeks batches) therefore
+// add an |log(F/K)| >= 708 escape to their patch mask — that band brackets exactly
+// this garbage (and any genuine deep wing, priced exactly by the scalar fallback).
 ATX_FORCE_INLINE __m256d log_pd(__m256d x) noexcept {
     const __m256i ix = _mm256_castpd_si256(x);
     __m256i exp_bits = _mm256_srli_epi64(ix, 52);
@@ -137,59 +149,6 @@ ATX_FORCE_INLINE __m256d norm_pdf_pd(__m256d x) noexcept {
     return _mm256_mul_pd(_mm256_set1_pd(kInvSqrt2Pi), exp_pd(arg));
 }
 
-// Standard-normal CDF Φ(x), 4-lane, via Clenshaw over the shared Chebyshev
-// table. `coefs` must be norm_cdf_cheb_coefs().data() (length kNormCdfChebN).
-// Accurate to ~1e-11 absolute on |x| ≤ HalfRange; callers patch wing lanes
-// (|d| > kNormCdfWing) through the exact scalar path for full price parity.
-ATX_FORCE_INLINE __m256d norm_cdf_pd(__m256d x, const double* coefs) noexcept {
-    const __m256d hr = _mm256_set1_pd(kNormCdfHalfRange);
-    const __m256d xc = _mm256_min_pd(_mm256_max_pd(x, _mm256_sub_pd(_mm256_setzero_pd(), hr)), hr);
-    const __m256d t = _mm256_mul_pd(xc, _mm256_set1_pd(1.0 / kNormCdfHalfRange));
-    const __m256d two_t = _mm256_add_pd(t, t);
-
-    __m256d bk1 = _mm256_setzero_pd();
-    __m256d bk2 = _mm256_setzero_pd();
-    for (std::size_t k = kNormCdfChebN - 1; k >= 1; --k) {
-        const __m256d ck = _mm256_set1_pd(coefs[k]);
-        const __m256d bk = _mm256_add_pd(_mm256_fmsub_pd(two_t, bk1, bk2), ck);
-        bk2 = bk1;
-        bk1 = bk;
-    }
-    const __m256d c0 = _mm256_set1_pd(coefs[0]);
-    return _mm256_add_pd(c0, _mm256_fmsub_pd(t, bk1, bk2));
-}
-
-// Φ for TWO independent vectors in a single fused Clenshaw loop. The Chebyshev
-// recurrence is a length-N serial FMA dependency chain (latency-bound), so a
-// lone norm_cdf_pd leaves the vector FMA units mostly idle. Black-76 always
-// needs Φ(d1) AND Φ(d2), which are independent — interleaving their two
-// recurrences in one loop issues two FMAs per step, hiding the latency and
-// nearly doubling Φ throughput. Same coefficients, so results are bit-identical
-// to two norm_cdf_pd calls.
-ATX_FORCE_INLINE void norm_cdf_pd2(__m256d x0, __m256d x1, const double* coefs,
-                                   __m256d& r0, __m256d& r1) noexcept {
-    const __m256d hr = _mm256_set1_pd(kNormCdfHalfRange);
-    const __m256d nhr = _mm256_sub_pd(_mm256_setzero_pd(), hr);
-    const __m256d inv = _mm256_set1_pd(1.0 / kNormCdfHalfRange);
-    const __m256d t0 = _mm256_mul_pd(_mm256_min_pd(_mm256_max_pd(x0, nhr), hr), inv);
-    const __m256d t1 = _mm256_mul_pd(_mm256_min_pd(_mm256_max_pd(x1, nhr), hr), inv);
-    const __m256d tt0 = _mm256_add_pd(t0, t0);
-    const __m256d tt1 = _mm256_add_pd(t1, t1);
-
-    __m256d a1 = _mm256_setzero_pd(), a2 = _mm256_setzero_pd();
-    __m256d b1 = _mm256_setzero_pd(), b2 = _mm256_setzero_pd();
-    for (std::size_t k = kNormCdfChebN - 1; k >= 1; --k) {
-        const __m256d ck = _mm256_set1_pd(coefs[k]);
-        const __m256d na = _mm256_add_pd(_mm256_fmsub_pd(tt0, a1, a2), ck);
-        const __m256d nb = _mm256_add_pd(_mm256_fmsub_pd(tt1, b1, b2), ck);
-        a2 = a1; a1 = na;
-        b2 = b1; b1 = nb;
-    }
-    const __m256d c0 = _mm256_set1_pd(coefs[0]);
-    r0 = _mm256_add_pd(c0, _mm256_fmsub_pd(t0, a1, a2));
-    r1 = _mm256_add_pd(c0, _mm256_fmsub_pd(t1, b1, b2));
-}
-
 // ── Full-range standard-normal CDF via Cody rational erfc (K2, W5.3) ───────
 //
 // Φ(x) = ½·erfc(−x/√2), with erfc evaluated by W. J. Cody's near-minimax
@@ -202,12 +161,13 @@ ATX_FORCE_INLINE void norm_cdf_pd2(__m256d x0, __m256d x1, const double* coefs,
 //   0.46875 < y ≤ 4 : erfc = e·N(y)/D(y), e = exp(−y²), degree-8/8.
 //   y > 4 : erfc = e·(1/√π − w·N(w)/D(w))/y, w = 1/y², degree-5/5 (asymptotic).
 //
-// vs. the degree-48 Chebyshev–Clenshaw norm_cdf_pd above: this is full
-// double-precision across the ENTIRE real line — including the deep wings the
-// Chebyshev fit (accurate only on |x| ≤ ~7, ~1e-11) could never reach — so the
-// pricing kernels no longer need a |d| > kNormCdfWing scalar wing patch. It
-// costs an exp(−y²) and two divisions the polynomial path avoids; the accuracy
-// (≈1e-16 vs 1e-11, and correct denormal wings) is the point. Class:
+// This is the ONLY Φ the batch kernels evaluate: full double-precision across
+// the ENTIRE real line — including the deep wings a degree-48 Chebyshev–Clenshaw
+// fit (accurate only on |x| ≤ ~7, ~1e-11) could never reach — so the pricing
+// kernels need no wing patch and route only genuinely degenerate lanes to
+// scalar. It costs an exp(−y²) and two divisions a polynomial path avoids; the
+// accuracy (≈1e-16 across the range, and correct denormal wings) is the point.
+// Class:
 // accuracy-improving. All lanes evaluate every region branchlessly and select
 // by y with blendv (a pure bitwise select), so the non-finite region-3 math on
 // small-y lanes is computed but never selected.
@@ -318,9 +278,9 @@ ATX_FORCE_INLINE __m256d norm_cdf_erfc_pd(__m256d x) noexcept {
 }
 
 // Φ for TWO independent vectors (Cody erfc). Same result as two norm_cdf_erfc_pd
-// calls; kept as a paired entry so the pricing kernels read like the fused
-// Chebyshev norm_cdf_pd2 they replace, and so the two independent erfc chains
-// overlap in the out-of-order window (hiding the div/exp latency).
+// calls; kept as a paired entry so the two independent erfc chains overlap in the
+// out-of-order window (hiding the div/exp latency), and so Black-76 (which always
+// needs Φ(d1) AND Φ(d2)) reads as one call.
 ATX_FORCE_INLINE void norm_cdf_erfc_pd2(__m256d x0, __m256d x1, __m256d &r0,
                                         __m256d &r1) noexcept {
     r0 = norm_cdf_erfc_pd(x0);

@@ -9,8 +9,7 @@
 
 #include "atx/vol/simd/vector_math_probe.hpp"
 
-#include "atx/vol/detail/norm_cdf_cheb.hpp"
-#include "atx/vol/detail/vector_math.hpp" // log_pd/exp_pd/norm_cdf_pd (+ __AVX2__ guard)
+#include "atx/vol/detail/vector_math.hpp" // log_pd/exp_pd/norm_cdf_erfc_pd (+ __AVX2__ guard)
 
 #include <cstddef>
 
@@ -26,7 +25,7 @@ namespace {
 
 using atx::vol::detail::exp_pd;
 using atx::vol::detail::log_pd;
-using atx::vol::detail::norm_cdf_pd;
+using atx::vol::detail::norm_cdf_erfc_pd;
 
 // Apply a 1-arg __m256d kernel over x[0..n) into out, padding a short tail.
 template <class Fn>
@@ -61,8 +60,7 @@ void fd_exp_batch(const double* x, double* out, std::size_t n) noexcept {
 }
 
 void fd_norm_cdf_batch(const double* x, double* out, std::size_t n) noexcept {
-    const double* coefs = atx::vol::detail::norm_cdf_cheb_coefs().data();
-    map4(x, out, n, [&](__m256d v) { return norm_cdf_pd(v, coefs); });
+    map4(x, out, n, [](__m256d v) { return norm_cdf_erfc_pd(v); });
 }
 
 } // namespace atx::vol::simd

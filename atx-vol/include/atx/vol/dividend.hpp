@@ -127,6 +127,26 @@ struct HybridDivParams {
                                     std::int64_t expiry_ns, std::int64_t now_ts_ns,
                                     const HybridDivParams &hyb) noexcept;
 
+// Analytic Jacobian ∂F/∂D_i of the escrowed hybrid forward w.r.t. each cash-
+// dividend AMOUNT. Cash dividends enter F only through the escrowed base
+// F_cash (LINEARLY: F_cash = (S − Σ Dᵢ·e^{−r·tᵢ})·e^{rT}), so for an event whose
+// ex-date lies in [now, expiry] — the SAME window `forward_div_corrected` sums —
+//   ∂F/∂Dᵢ = −(1 − blend)·e^{−borrow·T}·e^{−blend·prop_div_yield·T}·e^{r·(T − tᵢ)}
+// with tᵢ = (ex_date_ns − now_ts_ns) in 365.25-day years; out-of-window events get
+// 0. The coefficient is independent of S and of the amounts themselves (the map is
+// linear in each Dᵢ), so `S` is not a parameter. This is the analytic ground truth
+// a central-difference bump of `hybrid_forward` converges to, and the ∂F/∂Div leg
+// of the American ∂P/∂Div chain rule (see american.hpp
+// `american_dividend_sensitivities`).
+//
+// @param dF_dDiv_out written elementwise for each cash_divs[i] up to the smaller of
+//        the two spans; a non-finite scalar input writes NaN into every touched slot.
+void hybrid_forward_div_jacobian(double r, double borrow, double T,
+                                 std::span<const DividendEvent> cash_divs,
+                                 std::int64_t expiry_ns, std::int64_t now_ts_ns,
+                                 const HybridDivParams &hyb,
+                                 std::span<double> dF_dDiv_out) noexcept;
+
 // Imply the per-term borrow cost from a co-terminal (same K, T) European
 // call/put pair via European put-call parity:
 //

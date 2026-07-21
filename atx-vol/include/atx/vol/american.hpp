@@ -335,6 +335,38 @@ enum class AmericanMethod : std::uint8_t {
 [[nodiscard]] double american_price_cached(double S, double K, double T, double sigma, double r,
                                            double q, Side side, const CorrectionBlend &correction);
 
+// Fused cached price + American vega for the IV-inversion Newton step (perf
+// review F1 + F8). The residual and the vega both need the correction at the SAME
+// (k_log, T, sigma), so this shares ONE correction value traversal between them:
+//   price = american_price_cached(...)                              (bit-identical)
+//   vega  = black76_value_and_vega(...).vega + F * ∂correction/∂σ    (F8 cheap leg)
+// cutting the Newton step's tensor traversals from 3 (price eval + vega eval_grad's
+// eval + its dsigma partial) to 2 in stage (a), and to ~1 once eval_value_and_dsigma
+// fuses the value+∂σ pass in stage (b).
+//
+// The price leg is byte-for-byte american_price_cached (same Φ(−d) direct legs,
+// same intrinsic floor, same NaN on the double-continuation regime / cold
+// fallback). The vega leg is american_vega's Black-76 leg plus the served
+// correction's gated sigma partial; because the shared value is taken at the price
+// path's k_log = -ln(F/K), the vega's correction partial is evaluated at that same
+// point (a sub-ULP shift from the standalone american_vega's ln(K/F)), making the
+// American price and its vega mutually consistent. Vega carries the 0-on-degenerate
+// scale the inverter reads as "force bisection".
+struct AmericanPriceVega {
+  double price;
+  double vega;
+};
+
+[[nodiscard]] AmericanPriceVega american_price_and_vega_cached(double S, double K, double T,
+                                                              double sigma, double r, double q,
+                                                              Side side,
+                                                              const CorrectionCache *correction);
+
+[[nodiscard]] AmericanPriceVega american_price_and_vega_cached(double S, double K, double T,
+                                                              double sigma, double r, double q,
+                                                              Side side,
+                                                              const CorrectionBlend &correction);
+
 // ── American Greeks ─────────────────────────────────────────────────────
 //
 // First-order (delta, vega, rho, theta) are exact chain-rule on the Black-76
@@ -486,6 +518,139 @@ american_greeks_al(double S, double K, double T, double sigma, double r, double 
                                               const std::optional<AlOpts> &opts = std::nullopt);
 // ─────────────────────────────────────────────────────────────────────────
 
+// ── Carry / dividend sensitivities (G2, gaps-review finding 2) ────────────
+//
+// The carry axis `AmericanGreeks` omits: ∂P/∂q (continuous-yield sensitivity,
+// "q-rho") and the per-event ∂P/∂Div vector. Kept in a SEPARATE struct rather
+// than widening `AmericanGreeks` — that 8-greek SoA struct threads a large
+// consumer ecosystem (surface archive fingerprints, laned SIMD greek kernels,
+// the python binding, bit-pinned `operator==` comparisons), none of which the
+// carry axis belongs in, and the ∂P/∂Div vector is variable-length.
+struct CarryGreeks {
+  double price = 0.0;       // the mark == american_greeks(...).price / fair_value
+  double dP_dq = 0.0;       // ∂P/∂q  (continuous dividend-yield / carry sensitivity)
+  bool q_one_sided = false; // A5: the q down-bump used a one-sided forward stencil
+};
+
+// American ∂P/∂q via q± early-exercise boundary re-solves — the analytic AL tier,
+// symmetric to `american_greeks_al`'s r± (rho) machinery under the McDonald-
+// Schroder map. For a PUT, q is the internal-put YIELD (internal rate = r > 0 is
+// held fixed), so the q-stencil is ALWAYS central. For a CALL, q is the internal-
+// put RATE; when the down-bump q - hq leaves the American regime the A5 pattern
+// switches to a one-sided FORWARD stencil (mirroring `american_greeks_fd`'s
+// rho_forward and near-expiry theta) rather than solving an unpriceable boundary.
+// Because carry greeks bump only q (no spot stencil), NO homogeneity rescale is
+// needed on either side — the result is bit-identical to `american_carry_greeks_fd`
+// (both sides). `price` == `american_greeks_al(...).price`. Degenerate corners
+// (T~0/σ~0) and the no-early-exercise regime defer to the exact FD reference.
+// InvalidArgument on non-positive S/K/T/sigma; propagates any pricing error.
+[[nodiscard]] Result<CarryGreeks>
+american_carry_greeks_al(double S, double K, double T, double sigma, double r, double q, Side side,
+                         const std::optional<AlOpts> &opts = std::nullopt);
+
+// FD reference for ∂P/∂q: central (A5 one-sided) q± bumps of the cold
+// `american_price` (the same method/opts the mark is priced with) — the q-analogue
+// of `american_greeks_fd`'s rho and the FD-parity reference for the AL tier.
+// `price` == fair_value(). InvalidArgument on non-positive S/K/T/sigma; propagates
+// any american_price error (e.g. NotImplemented double-continuation corner).
+[[nodiscard]] Result<CarryGreeks>
+american_carry_greeks_fd(double S, double K, double T, double sigma, double r, double q, Side side,
+                         AmericanMethod method = AmericanMethod::AndersenLake,
+                         const std::optional<AlOpts> &opts = std::nullopt);
+
+// Cached fixed-carry ∂P/∂q. The correction term is held FIXED across the carry
+// bump exactly as the cached rho does (`american_greeks`): analytically
+//   ∂P/∂q = -T·F·D,   D = ∂P/∂F = gB.delta + c - dc_dk   (the cached forward delta),
+// which is the through-forward part of the fixed-carry rho with q's sign and
+// without rho's discount-factor leg (q does not enter the discount). A null,
+// unpopulated, or opposite-side cache degrades to the Black-76 (European) leg.
+// Same InvalidArgument / double-continuation NotImplemented contract as
+// `american_greeks`.
+[[nodiscard]] Result<CarryGreeks>
+american_carry_greeks(double S, double K, double T, double sigma, double r, double q, Side side,
+                      const CorrectionCache *correction);
+[[nodiscard]] Result<CarryGreeks>
+american_carry_greeks(double S, double K, double T, double sigma, double r, double q, Side side,
+                      const CorrectionBlend &correction);
+
+// Compose per-event dividend sensitivities ∂P/∂D_i from the carry sensitivity and
+// the escrowed-forward Jacobian, via the q_eff-bridge chain rule the discrete-
+// dividend fit uses (discrete cash divs fold into F, absorbed as an effective
+// continuous carry q_eff = r - ln(F/S)/T):
+//   ∂P/∂D_i = (∂P/∂q)·(∂q_eff/∂D_i) = (-∂P/∂q / (F·T))·(∂F/∂D_i).
+// @param dP_dq   american_carry_greeks_*(...).dP_dq evaluated at that q_eff.
+// @param F, T    the forward the option was priced on and its year-fraction (> 0).
+// @param dF_dDiv ∂F/∂D_i per event (dividend.hpp `hybrid_forward_div_jacobian`).
+// @param dP_dDiv_out written out[i] = (-dP_dq/(F·T))·dF_dDiv[i]; must match dF_dDiv
+//        in size. A non-finite / zero F·T writes zeros (no sensitivity available).
+void american_dividend_sensitivities(double dP_dq, double F, double T,
+                                     std::span<const double> dF_dDiv,
+                                     std::span<double> dP_dDiv_out) noexcept;
+
+// ── Early-exercise boundary + assignment-risk screen (G4, gaps finding 5) ─
+//
+// The Andersen-Lake early-exercise (critical) price B(T): the spot at which
+// immediate exercise first becomes optimal for an option with time-to-expiry T.
+// A PUT is exercised when spot <= B; a CALL when spot >= B. This exposes the SAME
+// retained boundary state the pricer solves — the put boundary directly, the call
+// boundary via the McDonald-Schroder reflection
+//   B_call(T; K, r, q) = K^2 / B_put(T; K, q, r)   (swap rate<->yield on the
+// internal put; verified: B_call * B_put(swapped) == K^2). The value returned is
+// the boundary evaluated at the FULL time-to-expiry T (the internal Chebyshev
+// node z = +1), so andersen_lake(B, K, T, sigma, r, q, side) sits exactly on the
+// smooth-paste seam between the exercise and continuation regions.
+//
+// The near-expiry limit is the homogeneity scale the solver already carries
+// (al_xmax_put); DERIVED FROM THE CODE'S regime math, NOT a textbook mnemonic:
+//   put : B(0+) = K*min(1, r/q)   == K when r >= q,  else K*(r/q) < K
+//   call: B(0+) = K*max(1, r/q)   == K when r <= q,  else K*(r/q) > K
+// B(T) is monotone in T (DECREASING for the put toward the perpetual level B∞,
+// INCREASING for the call). As T -> infinity B(T) approaches the perpetual
+// boundary K*γ/(γ-1) (γ the in-regime root of the characteristic quadratic).
+//
+// @param K,T,sigma  strike / time-to-expiry / vol (K > 0; T,sigma ~ 0 collapse to
+//                   the near-expiry limit above)
+// @param r,q        continuously-compounded rate and dividend yield (finite)
+// @return the critical price, or an Error:
+//   InvalidArgument — K <= 0, non-finite/negative T or sigma, or non-finite r/q
+//   OutOfRange      — the EUROPEAN regime (put r<=0 && r<=q / call q<=0 && q<=r):
+//                     early exercise is never optimal, so NO finite boundary exists
+//                     (it sits at S=0 for the put / S=+inf for the call). This is a
+//                     documented sentinel: no fabricated price is returned.
+//   NotImplemented  — the double-continuation regime (put q<r<=0 / call r<q<=0),
+//                     matching andersen_lake, or an asymptotic-boundary collapse
+//   Internal        — the Gauss-Legendre quadrature table was unavailable
+[[nodiscard]] Result<double> exercise_boundary(double K, double T, double sigma, double r, double q,
+                                               Side side,
+                                               const std::optional<AlOpts> &opts = std::nullopt);
+
+// A fast HEURISTIC screen (NOT a pricing statement) for whether a deep-ITM American
+// option is a candidate for early exercise / assignment. It compares the carry
+// BENEFIT of exercising now against the remaining time (extrinsic) value forfeited:
+//   deep-ITM CALL: benefit = pending dividend income  q*S*T (an option holder
+//                  forgoes dividends the stock pays; exercising captures them)
+//   deep-ITM PUT : benefit = interest on the strike    r*K*T (received early on
+//                  exercise and reinvested)
+// `at_risk` is set when `carry_benefit > time_value` AND the option is in the money.
+// This is a COARSE screen: it uses the linear (undiscounted) carry term r*K*T /
+// q*S*T over the remaining life T and ignores the second-order carry cross term —
+// for the exact early-exercise decision compare the spot to `exercise_boundary()`.
+// `time_value` is measured against the cold Andersen-Lake mark (the same method
+// `american_price` serves).
+struct AssignmentRisk {
+  bool at_risk = false;       // carry_benefit > time_value, and the option is ITM
+  double margin = 0.0;        // carry_benefit - time_value  (signed; > 0 when flagged)
+  double carry_benefit = 0.0; // q*S*T (call) / r*K*T (put) — the linear carry term
+  double time_value = 0.0;    // american_price - intrinsic (>= 0)
+};
+
+// @return the assignment-risk screen, or the same error `american_price` surfaces
+//         for these inputs (InvalidArgument on non-positive S/K/T/sigma;
+//         NotImplemented on the double-continuation corner; etc.).
+[[nodiscard]] Result<AssignmentRisk>
+assignment_risk(double S, double K, double T, double sigma, double r, double q, Side side,
+                const std::optional<AlOpts> &opts = std::nullopt);
+
 namespace detail {
 
 // ── Early-exercise regime classification (Healy 2021 §2.2) ───────────────
@@ -564,74 +729,45 @@ enum class AlSeedMode : std::uint8_t { Baw = 0, QdPlus = 1, Oracle = 2 };
                                                   AlSeedMode seed,
                                                   std::uint16_t n_quad_price = 0);
 
-// ── P2.3 (research spike): warm-start the boundary ACROSS TIME ────────────
+// ── A1 test seam: BAW smooth-pasting critical-price root-find ─────────────
 //
-// Price ONE American PUT contract (fixed strike K, spot S, yield q) over a temporal
-// sequence of `n_snap` snapshots: T decays by `dT` and (sigma, r) drift by
-// (dsigma, dr) per step from (T0, sigma0, r0). Each snapshot solves the boundary
-// TWICE and prices from each:
-//   * COLD  — a fresh Barone-Adesi-Whaley reseed every snapshot (the reference).
-//   * WARM  — seeded from the PREVIOUS snapshot's converged dimensionless boundary
-//             (remapped across the new residual T by al_boundary_at), UNLESS the
-//             move guard |dsigma/sigma| or |dT/T| exceeds `move_guard_frac` (or the
-//             warm seed's first-sweep residual fails the trend check), which forces
-//             a cold reseed so warm is never worse than cold.
-// Both runs execute the production two-stage sweep sequence (JN then FP) with an
-// early-exit at the scheme tol; the per-stage caps are the scheme's fixed budget
-// when `converge_to_tol` is false, or raised to `max_sweeps` when true (so the cost
-// of reaching tol from each seed is visible). The per-snapshot EXECUTED JN+FP sweep
-// counts are appended to `cold_sweeps` / `warm_sweeps`; `warm_hits` / `cold_reseeds`
-// accumulate; `max_price_gap` tracks max |warm_price − cold_price| over the sequence.
-// Returns false (nothing appended) for a collapsed / European / degenerate corner.
-[[nodiscard]] bool al_temporal_warm_probe(double S, double K, double q, double T0, double sigma0,
-                                          double r0, double dT, double dsigma, double dr,
-                                          int n_snap, const std::optional<AlOpts> &opts,
-                                          bool converge_to_tol, int max_sweeps,
-                                          double move_guard_frac, std::vector<int> &cold_sweeps,
-                                          std::vector<int> &warm_sweeps, int &warm_hits,
-                                          int &cold_reseeds, double &max_price_gap) noexcept;
+// The Barone-Adesi-Whaley smooth-pasting residual and its analytic derivative
+// (put_residual/put_residual_deriv, call_residual/call_residual_deriv) are
+// file-static in american.cpp. These seams expose them for the A1 FD-parity and
+// convergence tests WITHOUT widening the production surface. Not production
+// entry points.
 
-// ── P2.4 (research spike): implicit boundary-differentiation greeks ───────
-//
-// American PUT greeks from ONE converged early-exercise boundary by differentiating
-// the collocation fixed point implicitly. At convergence the pure collocation
-// residual R(y; θ) = 0 (θ = σ, r); J = ∂R/∂y (n×n) and R_θ = ∂R/∂θ are formed, and
-// J·y_θ = −R_θ is solved by dense pivoted LU. The boundary sensitivities y_σ, y_r
-// are propagated through the SAME premium quadrature (a moving-boundary central
-// difference — the boundary is DIFFERENTIATED, never frozen) to get vega / rho;
-// theta comes from the continuation-region Black-Scholes PDE (as american_greeks_al).
-// delta / gamma are exact spot stencils on the (spot-independent) base boundary.
-//
-// The Jacobian is built by central differences of the pure residual R with a checked
-// step (per the brief). When `validate` is true the base boundary is converged
-// tightly and the implicit-diff sensitivity y_σ is cross-checked against a
-// finite-difference of the RE-SOLVED boundary (the ground-truth ∂y/∂σ); the max
-// relative gap is returned in `j_max_rel_err` (0 when not validating — the cheap
-// production path). `cost_passes` returns the number of full-node residual-equivalent
-// passes the implicit-diff step costs ON TOP of the base solve (the boundary-
-// equivalent numerator, validation re-solves excluded); `base_sweeps` is the base
-// solve's executed JN+FP sweeps. Genuine early-exercise puts only (r > 0,
-// non-degenerate); `ok == false` on any other corner.
-struct ImplicitDiffGreeks {
-  double price = 0.0;
-  double delta = 0.0;
-  double gamma = 0.0;
-  double vega = 0.0;
-  double rho = 0.0;
-  double theta = 0.0;
-  double vanna = 0.0;
-  double charm = 0.0;
-  double volga = 0.0;
-  int cost_passes = 0; // residual-equivalent passes beyond the base solve
-  int base_sweeps = 0; // base solve executed JN+FP sweeps
-  int n_boundary = 0;  // collocation nodes (LU dimension)
+// Evaluate the BAW smooth-pasting residual `f` and its analytic derivative
+// `fprime = df/dSx` at a trial critical price Sx, with the quadratic exponent
+// q1 (put) / q2 (call) derived internally from (K,T,sigma,r,q) exactly as
+// baw_american does. `ok == false` on the European / degenerate / no-valid-
+// exponent corners (f, fprime, q_exp left 0). Lets the test central-difference
+// `f` and pin the analytic derivative's sign and magnitude (finding 1).
+struct BawResidualEval {
+  double f = 0.0;
+  double fprime = 0.0;
+  double q_exp = 0.0; // q1 (put) or q2 (call)
   bool ok = false;
 };
-[[nodiscard]] ImplicitDiffGreeks al_implicit_diff_put_greeks(double S, double K, double T,
-                                                             double sigma, double r, double q,
-                                                             const std::optional<AlOpts> &opts,
-                                                             bool validate,
-                                                             double &j_max_rel_err) noexcept;
+[[nodiscard]] BawResidualEval baw_residual_eval(double Sx, double K, double T, double sigma,
+                                                double r, double q, Side side) noexcept;
+
+// Run the safeguarded critical-price Newton (newton_critical_put/call) and report
+// its convergence contract (finding 8): `iters` executed, `converged` == a
+// Newton/step tolerance test fired INSIDE the loop (NOT max_iter bisection
+// exhaustion), `residual` == the signed residual f at the returned Sx. `ok ==
+// false` on the European / degenerate corners with no interior early-exercise
+// boundary.
+struct BawCriticalSolve {
+  double Sx = 0.0;
+  double residual = 0.0;
+  std::uint16_t iters = 0;
+  bool converged = false;
+  bool ok = false;
+};
+[[nodiscard]] BawCriticalSolve baw_critical_solve(double K, double T, double sigma, double r,
+                                                  double q, Side side, std::uint16_t max_iter,
+                                                  double tol) noexcept;
 
 } // namespace detail
 

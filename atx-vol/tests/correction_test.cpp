@@ -4,8 +4,11 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <iostream>
 #include <limits>
+#include <span>
 #include <utility>
+#include <vector>
 
 #include "atx/vol/american.hpp"
 #include "atx/vol/black76.hpp"
@@ -598,6 +601,82 @@ TEST(CorrectionCache, CachedPrice_UnsupportedRegime_ReturnsNaN) {
   EXPECT_TRUE(std::isnan(px));
 }
 
+// ── A2 (core-review finding 2): intrinsic floor on the cached hot path ───────
+//
+// Every COLD path clamps its served price to max(price, intrinsic, euro, 0)
+// (al_put_price_from_boundary :1376-1393, AloPricer::price). The cached path
+// returned raw euro + F*corr with NO floor. Deep-ITM puts (r>0) whose k_log lands
+// OUTSIDE the correction box get a correction CLAMPED to the box-edge value; the
+// shortfall vs the true early-exercise premium grows ~linearly with moneyness, so
+// the served mark dips below intrinsic — an arbitrageable sub-intrinsic price.
+// The floor removes it. Only marks that were previously BELOW intrinsic change.
+TEST(CorrectionCache, CachedPrice_DeepItmPutBeyondBox_FlooredAtIntrinsic) {
+  const double r = 0.08, q = 0.0;
+  auto built = CorrectionCache::build(24, 16, 12, r, q, /*k_log_min=*/-0.5, /*k_log_max=*/0.5,
+                                      /*T_min=*/0.1, /*T_max=*/2.0, /*sigma_min=*/0.10,
+                                      /*sigma_max=*/0.80, Side::Put);
+  ASSERT_TRUE(built.has_value());
+  const CorrectionCache tbl = std::move(*built);
+  EXPECT_EQ(tbl.extrap_policy(), ExtrapPolicy::Clamp); // default: raw eval clamps to the box edge
+
+  // Deep-ITM put: S << K puts k_log = log(K/F) well beyond k_log_max = 0.5.
+  const double K = 100.0, T = 1.5, sigma = 0.20;
+  for (const double S : {40.0, 30.0, 20.0, 12.0}) {
+    const double F = S * std::exp((r - q) * T);
+    const double k_log = std::log(K / F);
+    ASSERT_GT(k_log, tbl.k_log_max()); // genuinely out of the box (Clamp region)
+    const double intr = K - S;
+    const double hot = atx::vol::american_price_cached(S, K, T, sigma, r, q, Side::Put, &tbl);
+    EXPECT_GE(hot, intr) << "sub-intrinsic cached mark at S=" << S;
+  }
+}
+
+// The greeks-bundle SERVED price (out.price) is floored identically; the greek
+// sensitivity fields are left at their smooth analytic values (documented kink).
+TEST(CorrectionCache, CachedGreeksPrice_DeepItmPutBeyondBox_FlooredAtIntrinsic) {
+  const double r = 0.08, q = 0.0;
+  auto built = CorrectionCache::build(24, 16, 12, r, q, -0.5, 0.5, 0.1, 2.0, 0.10, 0.80, Side::Put);
+  ASSERT_TRUE(built.has_value());
+  const CorrectionCache tbl = std::move(*built);
+  const double S = 20.0, K = 100.0, T = 1.5, sigma = 0.20;
+  const auto g = atx::vol::american_greeks(S, K, T, sigma, r, q, Side::Put, &tbl);
+  ASSERT_TRUE(g.has_value());
+  EXPECT_GE(g->price, K - S);
+}
+
+// In-box property sweep: no served cached mark may sit below intrinsic anywhere
+// inside the interpolation box, for either side (interpolation error can dip a
+// raw euro+F*corr fractionally below intrinsic near the ITM edge).
+TEST(CorrectionCache, CachedPrice_InBoxSweep_NoSubIntrinsicMarks) {
+  const double r = 0.06, q = 0.0;
+  auto put_built = CorrectionCache::build(24, 16, 12, r, q, -0.5, 0.5, 0.1, 2.0, 0.10, 0.80,
+                                          Side::Put);
+  ASSERT_TRUE(put_built.has_value());
+  const CorrectionCache put = std::move(*put_built);
+  auto call_built = CorrectionCache::build(24, 16, 12, r, q, -0.5, 0.5, 0.1, 2.0, 0.10, 0.80,
+                                           Side::Call);
+  ASSERT_TRUE(call_built.has_value());
+  const CorrectionCache call = std::move(*call_built);
+
+  const double K = 100.0;
+  for (const double T : {0.15, 0.5, 1.0, 1.8}) {
+    for (const double sigma : {0.12, 0.25, 0.5, 0.75}) {
+      for (const double k_log : {-0.45, -0.2, 0.0, 0.2, 0.45}) { // strictly inside [-0.5, 0.5]
+        // k_log = log(K/F) => F = K*exp(-k_log); S = F*exp(-(r-q)T).
+        const double F = K * std::exp(-k_log);
+        const double S = F * std::exp(-(r - q) * T);
+        ASSERT_LE(std::fabs(std::log(K / (S * std::exp((r - q) * T)))), put.k_log_max());
+        const double put_px =
+            atx::vol::american_price_cached(S, K, T, sigma, r, q, Side::Put, &put);
+        EXPECT_GE(put_px, K - S) << "put sub-intrinsic S=" << S << " T=" << T << " sig=" << sigma;
+        const double call_px =
+            atx::vol::american_price_cached(S, K, T, sigma, r, q, Side::Call, &call);
+        EXPECT_GE(call_px, S - K) << "call sub-intrinsic S=" << S << " T=" << T << " sig=" << sigma;
+      }
+    }
+  }
+}
+
 // ── Fused second-order correction jet ───────────────────────────────────────
 TEST(CorrectionCache, SecondOrderJet_MatchesIndependentFiniteDifferences) {
   auto built = CorrectionCache::build(/*n_k=*/16, /*n_T=*/8, /*n_s=*/12,
@@ -818,6 +897,81 @@ TEST(CorrectionBlend, EndpointsAndMidpointBlendEveryDerivative) {
   EXPECT_NEAR(got.dT, finite_difference, 1.0e-7);
 }
 
+// Perf review F1 stage (b): eval_value_and_dsigma is a SINGLE fused Clenshaw pass
+// (sigma is the last collapse axis). The VALUE stays byte-for-byte eval() (so the
+// Newton residual is unchanged), while the sigma partial is the value+derivative
+// recurrence — bit-identical to eval_second_order()'s dsigma (same recurrence) and
+// economically equal to eval_partials()'s differentiate-then-evaluate dsigma (same
+// analytic derivative, different accumulation). Interior points plus out-of-box on
+// each axis (value clamps, partial zeroes out of the sigma box).
+TEST(CorrectionCache, EvalValueAndDsigmaFusedPass_ValueExact_DsigmaParity) {
+  auto built = CorrectionCache::build(
+      /*n_k=*/16, /*n_T=*/8, /*n_s=*/12, /*r=*/0.05, /*q=*/0.00,
+      /*k_log_min=*/-0.5, /*k_log_max=*/0.5,
+      /*T_min=*/0.05, /*T_max=*/2.0,
+      /*sigma_min=*/0.10, /*sigma_max=*/0.80, Side::Put);
+  ASSERT_TRUE(built.has_value());
+  const CorrectionCache cache = std::move(*built);
+
+  for (double k : {-0.6, -0.2, 0.0, 0.15, 0.55}) {
+    for (double T : {0.02, 0.2, 0.9, 2.4}) {
+      for (double sigma : {0.05, 0.18, 0.5, 0.9}) {
+        double ds_partials = 0.0;
+        const double v_ref = cache.eval_grad(k, T, sigma, nullptr, nullptr, &ds_partials);
+        double ds_fused = 0.0;
+        const double v_fused = cache.eval_value_and_dsigma(k, T, sigma, &ds_fused);
+        // Value: bit-identical to eval()/eval_grad (the residual cannot move).
+        EXPECT_EQ(v_fused, v_ref) << "k=" << k << " T=" << T << " sig=" << sigma;
+        EXPECT_EQ(v_fused, cache.eval(k, T, sigma));
+        // dsigma: economic-parity with eval_partials' differentiate-then-evaluate.
+        EXPECT_NEAR(ds_fused, ds_partials, 1.0e-9 * std::fabs(ds_partials) + 1.0e-12)
+            << "k=" << k << " T=" << T << " sig=" << sigma;
+        // dsigma is bit-identical to the second-order jet's dsigma (same recurrence)
+        // where both are served (correction active AND sigma in the box).
+        const bool sigma_in_box = (sigma >= 0.10 && sigma <= 0.80);
+        if (v_fused > 0.0 && sigma_in_box) {
+          EXPECT_EQ(ds_fused, cache.eval_second_order(k, T, sigma).dsigma)
+              << "k=" << k << " T=" << T << " sig=" << sigma;
+        }
+      }
+    }
+  }
+}
+
+// The blend fused entry's VALUE equals eval() byte-for-byte (underwrites the IV
+// "blend endpoint == single cache exactly" pin); its dsigma economically matches
+// eval_dsigma() (stage b: the fused derivative recurrence, ULP-different accumulation
+// of the same analytic derivative). Single-cache (weight 0/1, identical pointers)
+// and interior-blend cases.
+TEST(CorrectionBlend, EvalValueAndDsigmaFusedPass_ValueExact_DsigmaParity) {
+  auto lower_result =
+      CorrectionCache::build(16, 8, 12, 0.04, 0.00, -0.5, 0.5, 0.05, 2.0, 0.10, 0.80, Side::Put);
+  auto upper_result =
+      CorrectionCache::build(16, 8, 12, 0.06, 0.03, -0.5, 0.5, 0.05, 2.0, 0.10, 0.80, Side::Put);
+  ASSERT_TRUE(lower_result.has_value());
+  ASSERT_TRUE(upper_result.has_value());
+  const CorrectionCache lower = std::move(*lower_result);
+  const CorrectionCache upper = std::move(*upper_result);
+
+  const CorrectionBlend single = CorrectionBlend::single(&lower);
+  const CorrectionBlend hi_endpoint{&lower, &upper, 1.0};
+  const CorrectionBlend interior{&lower, &upper, 0.35};
+  for (const CorrectionBlend *blend : {&single, &hi_endpoint, &interior}) {
+    for (double k : {-0.6, -0.1, 0.0, 0.2, 0.55}) {
+      for (double T : {0.02, 0.35, 1.5}) {
+        for (double sigma : {0.05, 0.25, 0.9}) {
+          double ds_fused = 0.0;
+          const double v_fused = blend->eval_value_and_dsigma(k, T, sigma, &ds_fused);
+          EXPECT_EQ(v_fused, blend->eval(k, T, sigma)) << "k=" << k << " T=" << T;
+          const double ds_ref = blend->eval_dsigma(k, T, sigma);
+          EXPECT_NEAR(ds_fused, ds_ref, 1.0e-9 * std::fabs(ds_ref) + 1.0e-12)
+              << "k=" << k << " T=" << T;
+        }
+      }
+    }
+  }
+}
+
 TEST(CorrectionBlend, RejectsInvalidWeightMissingEndpointAndMixedSide) {
   auto put_result =
       CorrectionCache::build(8, 6, 6, 0.04, 0.0, -0.3, 0.3, 0.05, 1.0, 0.1, 0.8, Side::Put);
@@ -833,6 +987,182 @@ TEST(CorrectionBlend, RejectsInvalidWeightMissingEndpointAndMixedSide) {
   EXPECT_FALSE((CorrectionBlend{&put, &put, -0.1}).usable(Side::Put));
   EXPECT_FALSE(
       (CorrectionBlend{&put, &put, std::numeric_limits<double>::quiet_NaN()}).usable(Side::Put));
+}
+
+// ── P5 (perf review F4): equal-T cached ladder batch ─────────────────────────
+//
+// american_price_cached_ladder pre-collapses the correction tensor's T (j) axis
+// ONCE per usable endpoint and prices each strike with a 2-D Clenshaw over the
+// (k_log, sigma) plane. The T-first collapse reorders the tensor summation, so it
+// is ECONOMIC-parity — not bit-identical — to the per-strike american_price_cached:
+// |Δprice| < 1e-12·K (the sprint's ladder-parity budget).
+
+// A smile-ish per-strike vol that stays inside the caches' [sigma_min, sigma_max].
+[[nodiscard]] double p5_ladder_sigma(double k_log) noexcept { return 0.28 + 0.12 * k_log * k_log; }
+
+TEST(CorrectionCache, LadderBatchEconomicParityToPerStrikeCached) {
+  struct Case {
+    double r, q;
+    Side side;
+  };
+  const std::array<Case, 2> cases = {Case{0.05, 0.00, Side::Put}, Case{0.045, 0.02, Side::Call}};
+  const double S = 100.0;
+
+  double worst_rel = 0.0;
+  for (const Case c : cases) {
+    auto built =
+        CorrectionCache::build(16, 12, 8, c.r, c.q, -0.4, 0.4, 0.05, 1.0, 0.10, 0.60, c.side);
+    ASSERT_TRUE(built.has_value());
+    const CorrectionCache cache = std::move(*built);
+    const CorrectionBlend blend = CorrectionBlend::single(&cache);
+
+    // Strikes span in-box AND beyond both wings (exercising the k_log clamp region,
+    // where scalar and batch clamp identically so parity must still hold).
+    std::vector<double> strikes;
+    for (double K = 55.0; K <= 175.0; K += 2.5) {
+      strikes.push_back(K);
+    }
+    for (const double T : {0.12, 0.55, 0.98}) {
+      const double F = S * std::exp((c.r - c.q) * T);
+      std::vector<double> sigmas;
+      sigmas.reserve(strikes.size());
+      for (const double K : strikes) {
+        sigmas.push_back(p5_ladder_sigma(std::log(K / F)));
+      }
+      std::vector<double> batch(strikes.size(), 0.0);
+      const auto st = atx::vol::american_price_cached_ladder(S, strikes, sigmas, T, c.r, c.q, c.side,
+                                                             blend, batch);
+      ASSERT_TRUE(st.has_value()) << st.error().to_string();
+
+      for (std::size_t i = 0; i < strikes.size(); ++i) {
+        const double scalar = atx::vol::american_price_cached(S, strikes[i], T, sigmas[i], c.r, c.q,
+                                                              c.side, blend);
+        ASSERT_TRUE(std::isfinite(batch[i])) << "non-finite batch price @ K=" << strikes[i];
+        const double rel = std::fabs(batch[i] - scalar) / strikes[i];
+        worst_rel = std::max(worst_rel, rel);
+        EXPECT_LT(rel, 1.0e-12) << "side=" << (c.side == Side::Put ? "put" : "call") << " T=" << T
+                                << " K=" << strikes[i];
+      }
+    }
+  }
+  std::cout << "[P5 F4 parity] single-cache ladder max|Δprice|/K = " << worst_rel << "\n";
+}
+
+TEST(CorrectionCache, LadderBatchInteriorBlendParityAndFallbacks) {
+  const double S = 100.0, T = 0.5, r = 0.05, q = 0.0;
+  // Two put caches at neighbouring baked carries -> an interior (0<w<1) blend, the
+  // C2 cross-carry cache-reuse shape. Query carry sits between the two.
+  auto lo = CorrectionCache::build(16, 12, 8, 0.04, 0.0, -0.4, 0.4, 0.05, 1.0, 0.10, 0.60, Side::Put);
+  auto hi = CorrectionCache::build(16, 12, 8, 0.06, 0.0, -0.4, 0.4, 0.05, 1.0, 0.10, 0.60, Side::Put);
+  ASSERT_TRUE(lo.has_value() && hi.has_value());
+  const CorrectionCache lo_c = std::move(*lo);
+  const CorrectionCache hi_c = std::move(*hi);
+  const CorrectionBlend blend{&lo_c, &hi_c, 0.5};
+  ASSERT_TRUE(blend.usable(Side::Put));
+
+  std::vector<double> strikes;
+  for (double K = 70.0; K <= 135.0; K += 2.5) {
+    strikes.push_back(K);
+  }
+  const double F = S * std::exp((r - q) * T);
+  std::vector<double> sigmas;
+  for (const double K : strikes) {
+    sigmas.push_back(p5_ladder_sigma(std::log(K / F)));
+  }
+  std::vector<double> batch(strikes.size(), 0.0);
+  ASSERT_TRUE(
+      atx::vol::american_price_cached_ladder(S, strikes, sigmas, T, r, q, Side::Put, blend, batch)
+          .has_value());
+  double worst_rel = 0.0;
+  for (std::size_t i = 0; i < strikes.size(); ++i) {
+    const double scalar =
+        atx::vol::american_price_cached(S, strikes[i], T, sigmas[i], r, q, Side::Put, blend);
+    worst_rel = std::max(worst_rel, std::fabs(batch[i] - scalar) / strikes[i]);
+  }
+  EXPECT_LT(worst_rel, 1.0e-12) << "interior blend max|Δprice|/K=" << worst_rel;
+  std::cout << "[P5 F4 parity] interior-blend ladder max|Δprice|/K = " << worst_rel << "\n";
+
+  // Bad strikes (<=0 / NaN) become NaN in place, preserving row order.
+  const std::vector<double> mixed_strikes = {90.0, -1.0, 110.0,
+                                             std::numeric_limits<double>::quiet_NaN()};
+  const std::vector<double> mixed_sigmas = {0.30, 0.30, 0.30, 0.30};
+  std::vector<double> mixed_out(4, 0.0);
+  ASSERT_TRUE(atx::vol::american_price_cached_ladder(S, mixed_strikes, mixed_sigmas, T, r, q,
+                                                     Side::Put, blend, mixed_out)
+                  .has_value());
+  EXPECT_TRUE(std::isfinite(mixed_out[0]));
+  EXPECT_TRUE(std::isnan(mixed_out[1]));
+  EXPECT_TRUE(std::isfinite(mixed_out[2]));
+  EXPECT_TRUE(std::isnan(mixed_out[3]));
+
+  // An unusable blend (wrong side) delegates to the scalar cached entry, so the
+  // batch is BIT-for-bit the scalar there (same function, no plane path taken).
+  const CorrectionBlend put_only = CorrectionBlend::single(&lo_c);
+  ASSERT_FALSE(put_only.usable(Side::Call));
+  std::vector<double> call_out(strikes.size(), 0.0);
+  ASSERT_TRUE(atx::vol::american_price_cached_ladder(S, strikes, sigmas, T, r, q, Side::Call,
+                                                     put_only, call_out)
+                  .has_value());
+  for (std::size_t i = 0; i < strikes.size(); ++i) {
+    const double scalar =
+        atx::vol::american_price_cached(S, strikes[i], T, sigmas[i], r, q, Side::Call, put_only);
+    if (std::isnan(scalar)) {
+      EXPECT_TRUE(std::isnan(call_out[i]));
+    } else {
+      EXPECT_DOUBLE_EQ(call_out[i], scalar);
+    }
+  }
+
+  // Structural rejection: strikes/price length mismatch.
+  std::vector<double> short_out(strikes.size() - 1, 0.0);
+  EXPECT_FALSE(atx::vol::american_price_cached_ladder(S, strikes, sigmas, T, r, q, Side::Put, blend,
+                                                      short_out)
+                   .has_value());
+}
+
+// Counter gate (perf review F4): the equal-T ladder does ONE full-tensor traversal
+// (the T-collapse) per usable endpoint regardless of strike count, where the
+// per-strike scalar path does one full 3-D Clenshaw sweep PER strike. Cite the
+// ClenshawSweeps delta; skip on an OFF build so the counters-owner confirms on ON.
+TEST(CorrectionCache, LadderBatchClenshawSweepCountIsStrikeCountIndependent) {
+  using atx::vol::counters::Counter;
+  if constexpr (!atx::vol::counters::counters_enabled()) {
+    GTEST_SKIP() << "ATX_VOL_COUNTERS off: rebuild with -DATX_VOL_COUNTERS=ON";
+  }
+  auto built = CorrectionCache::build(16, 12, 8, 0.05, 0.0, -0.4, 0.4, 0.05, 1.0, 0.10, 0.60,
+                                      Side::Put);
+  ASSERT_TRUE(built.has_value());
+  const CorrectionCache cache = std::move(*built);
+  const CorrectionBlend blend = CorrectionBlend::single(&cache);
+  const double S = 100.0, r = 0.05, q = 0.0, T = 0.5;
+  const double F = S * std::exp((r - q) * T);
+  std::vector<double> strikes;
+  std::vector<double> sigmas;
+  for (double K = 70.0; K <= 130.0; K += 2.0) {
+    strikes.push_back(K);
+    sigmas.push_back(p5_ladder_sigma(std::log(K / F)));
+  }
+  const std::uint64_t n = strikes.size();
+
+  atx::vol::counters::reset();
+  std::vector<double> scalar(n, 0.0);
+  for (std::size_t i = 0; i < n; ++i) {
+    scalar[i] = atx::vol::american_price_cached(S, strikes[i], T, sigmas[i], r, q, Side::Put, blend);
+  }
+  const std::uint64_t scalar_sweeps = atx::vol::counters::snapshot().get(Counter::ClenshawSweeps);
+
+  atx::vol::counters::reset();
+  std::vector<double> batch(n, 0.0);
+  ASSERT_TRUE(
+      atx::vol::american_price_cached_ladder(S, strikes, sigmas, T, r, q, Side::Put, blend, batch)
+          .has_value());
+  const std::uint64_t batch_sweeps = atx::vol::counters::snapshot().get(Counter::ClenshawSweeps);
+
+  std::cout << "[P5 F4 counters] " << n << " single-cache strikes: scalar " << scalar_sweeps
+            << " ClenshawSweeps vs ladder " << batch_sweeps
+            << " (per-strike 3-D sweep -> one T-collapse per ladder)\n";
+  EXPECT_EQ(scalar_sweeps, n); // one full 3-D Clenshaw sweep per strike
+  EXPECT_EQ(batch_sweeps, 1u); // one T-collapse per (ladder, endpoint); plane evals uncounted
 }
 
 // Frozen value/first-partial pins remain rounding-scale references. Their live
@@ -909,34 +1239,49 @@ constexpr std::array<GPt, 3> kG = {{
 // and CachedPrice_MatchesColdAndersenLake (correction, vs cold andersen_lake),
 // and the AmericanGreeks.*_MatchesFd_* bundle-accuracy tests (american_test) —
 // all green with margin on the new cache.
+// A1 REPIN (core-review finding 1): the pin cache samples the cold andersen_lake
+// put, whose BAW critical-price seed sign was fixed; the more-accurate seed shifts
+// the sampled correction ~1e-7 (rel), so these eval/partial pins moved a few ULP
+// each (e.g. row-0 eval …7c52 -> …7856). The cache is still correct — the tolerance
+// anchors CorrectionCache.PopulateEval_MatchesAndersenLake_* and
+// CachedPrice_MatchesColdAndersenLake (vs cold andersen_lake) stay green on it.
+// Recaptured on the SSE2 reference ISA (dev preset).
 constexpr std::array<std::array<std::uint64_t, 5>, 6> kEvalPins = {{
-    {{0x3f53d821e0eb7c52, 0x3f53d821e0eb7c52, 0x3f8d4b35b7aa3c34, 0x3f77248f99846d58,
-      0xbf62bdf240536700}},
-    {{0x3f5ae5637f2e32a9, 0x3f5ae5637f2e32a9, 0x3f8026cccd3c2462, 0x3f69f6635748411c,
-      0x3f7085ebc3eda166}},
-    {{0x3f86c328003cc841, 0x3f86c328003cc841, 0x3f7a56efd8898000, 0x3fb32d46c233181f,
-      0x3f5ffdd6731a9f52}},
-    {{0x3f94f6c1485f287d, 0x3f94f6c1485f287d, 0x0000000000000000, 0x3fb4b71771002121,
-      0xbf401eec38c25338}},
-    {{0x3f31deddf8f2afd8, 0x3f31deddf8f2afd8, 0x3f7841a8f90cc72c, 0x0000000000000000,
-      0x3f674b203f881a5c}},
-    {{0x3f50fa36d6f1989c, 0x3f50fa36d6f1989c, 0x3f74c8b97424267c, 0x3f7597b918916db8,
+    {{0x3f53d82af89b7856, 0x3f53d82af89b7856, 0x3f8d4b33a257384e, 0x3f772527166308ae,
+      0xbf62be052db50530}},
+    {{0x3f5ae5631f0a9a20, 0x3f5ae5631f0a9a20, 0x3f8026c9eb79d812, 0x3f69f661e8a21785,
+      0x3f7085dfed71640e}},
+    {{0x3f86c3267b896d77, 0x3f86c3267b896d77, 0x3f7a56ab925bc3d4, 0x3fb32d452abf5401,
+      0x3f5ffd3e95176812}},
+    {{0x3f94f6c10e86dc8e, 0x3f94f6c10e86dc8e, 0x0000000000000000, 0x3fb4b7187e5644e4,
+      0xbf402073e933ef60}},
+    {{0x3f31df73a9da15d1, 0x3f31df73a9da15d1, 0x3f78419947faa0de, 0x0000000000000000,
+      0x3f6746ac5e5cee78}},
+    {{0x3f50fa372a2953b2, 0x3f50fa372a2953b2, 0x3f74c8b6e0179649, 0x3f7598068a6f8e6a,
       0x0000000000000000}},
 }};
 
 // american_greeks bundle bits: {delta,gamma,vega,theta,rho,vanna,volga,charm,price}.
 // T16a-repinned (see kEvalPins note); validated against the AmericanGreeks.*_MatchesFd_*
 // accuracy tests, which recompute the bundle vs finite differences on this same cache.
+// A1 REPIN (core-review finding 1, same cause as kEvalPins): the cached greek
+// bundle differentiates the shifted correction interpolant, so the pinned fields
+// moved — first-order greeks a few ULP, the second-order vanna/volga more (a mixed/
+// second sigma derivative amplifies the ~1e-7 cache shift, e.g. volga ~42 moved
+// ~2.6e-3, ~6e-5 rel, well inside its 1e-4 pin tol). Charm (col 7) is unpinned in
+// the test — its algorithmic contract is checked against a cross-difference of the
+// price served by THIS cache. Values recaptured on the SSE2 reference ISA and
+// corroborated by the AmericanGreeks.*_MatchesFd_* bundle-accuracy tests.
 constexpr std::array<std::array<std::uint64_t, 9>, 3> kGreekPins = {{
-    {{0xbfdcc1435ba70a4e, 0x3f9bc19fa8b9f349, 0x40338baa7f016d54, 0xc023a60cf9ad4fb9,
-      0xc029229e12ac2ed7, 0x3faa9866f415ee56, 0xbfeed34a5db9f3dc, 0x3f94d45e9eede270,
-      0x4015c8e2bbd78fd5}},
-    {{0xbfe15513b06efcdc, 0x3f8b8257a7c397d9, 0x403bbc10d4dc0673, 0xc023f8298c7d39bf,
-      0xc041ce3ecb7f9661, 0x3fd91d32f03b6ddd, 0x4022fbf470c613e7, 0xbfc3eea44a94656e,
-      0x403173bba4a7ef99}},
-    {{0xbfbd512b7c16460e, 0x3f94370020cc8635, 0x401d22186848da37, 0xc0164b736804f874,
-      0xbffcce2aabf1f2b8, 0xbfea6505d7bc7734, 0x40451252fa86eec7, 0x3fe6966c66d6a066,
-      0x3fe1e55a0dcb12ae}},
+    {{0xbfdcc14396d1f4dd, 0x3f9bc19bd999da7f, 0x40338baa061f4cab, 0xc023a6148a4d1e7c,
+      0xc029229e40e5b617, 0x3faa97f8de455e4f, 0xbfeed99e59e5b1c0, 0xbfb7bcb29e0073e4,
+      0x4015c8e2f34b2703}},
+    {{0xbfe15513afd342ae, 0x3f8b8257542f5e57, 0x403bbc0faf6e555a, 0xc023f8276667ba3e,
+      0xc041ce3ecb05eced, 0x3fd91d3883b1d011, 0x4022fbda8e00fdfb, 0xbfc90fcf4d746e0f,
+      0x403173bba96aedd1}},
+    {{0xbfbd51251392730b, 0x3f9436fbb7ba4035, 0x401d22055f3e865f, 0xc0164b73e077465b,
+      0xbffcce24a9f65ce5, 0xbfea64c976d97cb8, 0x404512a9813feb05, 0x3fe39cbbbebe53ae,
+      0x3fe1e55889976930}},
 }};
 
 TEST(Pin, EvalAndEvalGradMatchPinnedValuesWithinRounding) {

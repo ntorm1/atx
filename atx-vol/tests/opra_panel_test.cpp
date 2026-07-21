@@ -38,6 +38,21 @@ using atx::vol::VolTimeCalendar;
 using atx::vol::VolTimeParams;
 using atx::vol::year_fraction;
 using atx::vol::YieldCurve;
+using atx::vol::expiry_instant_ns;
+using atx::vol::SettlementSession;
+using atx::vol::settlement_instant_ns;
+
+// Calendar365 year-fraction from a pure-date snapshot to the TRUE PM-settled
+// (16:00 ET) expiry instant — the T the OPRA loader / data_install now compute
+// (G1 true expiry instants, gaps finding 3), replacing the legacy midnight-UTC
+// `year_fraction(snap, iso)`. The +16:00-ET (i.e. +20h EDT / +21h EST) shift is
+// THE FIX: it removes the ~0.8-trading-day front-T understatement.
+[[nodiscard]] inline double pm_year_fraction(const std::string &snap_iso,
+                                             const std::string &expiry_iso) {
+  return atx::vol::time_to_expiry_years(iso_to_ns(snap_iso),
+                                        expiry_instant_ns(expiry_iso, SettlementSession::Pm),
+                                        TimeSpec{});
+}
 
 // ── Shared fixture builders (P2-2 / P2-3) ──────────────────────────────────
 
@@ -182,7 +197,9 @@ TEST(OpraPanel, Load_SyntheticXomSlice_CountsAndImpliedSpot) {
   };
 
   for (const Expiry& e : expiries) {
-    const double t = year_fraction(snap, e.iso);
+    // Plant mids under the SAME true-instant T the loader now back-solves at
+    // (G1): C - P = e^{-r*T_true}(F - K), so the loader recovers F exactly.
+    const double t = pm_year_fraction(snap, e.iso);
     const double df = std::exp(-r * t);
     for (const double k : strikes) {
       const double diff = df * (e.fwd - k);
@@ -235,8 +252,9 @@ TEST(OpraPanel, Load_SyntheticXomSlice_CountsAndImpliedSpot) {
     EXPECT_NE(row.strike, 120.0);
   }
 
-  // Front expiry forward is planted at 111.0; implied spot = F * exp(-r*T).
-  const double t_front = year_fraction(snap, "2026-06-19");
+  // Front expiry forward is planted at 111.0; implied spot = F * exp(-r*T) at the
+  // TRUE 16:00 ET expiry instant (G1) the loader now discounts at.
+  const double t_front = pm_year_fraction(snap, "2026-06-19");
   const double expected_spot = 111.0 * std::exp(-r * t_front);
   EXPECT_NEAR(loaded->implied_spot, expected_spot, 1e-3);
   EXPECT_DOUBLE_EQ(loaded->frame.spot, loaded->implied_spot);
@@ -557,8 +575,9 @@ TEST(OpraPanel, TermCurve_PerExpiryRateInterpolated) {
   const auto yc = YieldCurve::create(std::span<const double>(pt),
                                      std::span<const double>(pr));
   ASSERT_TRUE(yc.has_value()) << yc.error().to_string();
-  const double t_short = year_fraction(snap, "2026-08-01");
-  const double t_long = year_fraction(snap, "2027-11-01");
+  // Per-expiry rate is stamped at the TRUE 16:00 ET expiry instant (G1).
+  const double t_short = pm_year_fraction(snap, "2026-08-01");
+  const double t_long = pm_year_fraction(snap, "2027-11-01");
 
   const auto* cell_short =
       atx::vol::find_expiry_inputs(loaded->frame, "XOM", "2026-08-01");
@@ -661,8 +680,9 @@ TEST(OpraPanel, VolTimeConvention_ChangesPcpSpotAndTermRateStamping) {
   const auto yc = YieldCurve::create(std::span<const double>(pt), std::span<const double>(pr));
   ASSERT_TRUE(yc.has_value()) << yc.error().to_string();
   const std::int64_t now_ns = iso_to_ns(snap);
-  const std::int64_t short_ns = iso_to_ns("2026-08-01");
-  const std::int64_t long_ns = iso_to_ns("2027-11-01");
+  // The loader routes the TRUE 16:00 ET PM expiry instant (G1) through VolTime.
+  const std::int64_t short_ns = expiry_instant_ns("2026-08-01", SettlementSession::Pm);
+  const std::int64_t long_ns = expiry_instant_ns("2027-11-01", SettlementSession::Pm);
   const auto& us_cal = VolTimeCalendar::us_default();
   const double vt_short = vol_time_years(now_ns, short_ns, VolTimeParams{}, us_cal);
   const double vt_long = vol_time_years(now_ns, long_ns, VolTimeParams{}, us_cal);
@@ -727,11 +747,145 @@ TEST(OpraPanel, VolTimePanelInstallsConsistentChainT_NoThreadingRequired) {
   const auto& us_cal = VolTimeCalendar::us_default();
   const char* expiries[] = {"2026-08-01", "2027-11-01"};
   for (std::size_t i = 0; i < 2; ++i) {
-    const double expected_T =
-        vol_time_years(now_ns, iso_to_ns(expiries[i]), VolTimeParams{}, us_cal);
+    // Chain::T is now the VolTime year-fraction to the TRUE 16:00 ET expiry
+    // instant (G1) — the same instant the loader's own PCP/rate math used.
+    const double expected_T = vol_time_years(
+        now_ns, expiry_instant_ns(expiries[i], SettlementSession::Pm), VolTimeParams{}, us_cal);
     EXPECT_DOUBLE_EQ((*under)->chains[i].T, expected_T) << expiries[i];
     EXPECT_NE((*under)->chains[i].T, year_fraction(snap, expiries[i])) << expiries[i];
   }
+}
+
+// ── G1: true expiry instants (16:00 ET PM / 09:30 ET AM) ────────────────────
+
+// expiry_instant_ns maps an OSI/listed expiry DATE to the correct UTC ns of the
+// 16:00 ET PM settlement across the modern-DST calendar 2024-2028: monthly
+// (3rd-Fri), quarterly, weekly, and half-day-session dates. Cross-checked against
+// iso_to_ns of the explicit-UTC datetime (EDT = 20:00Z summer, EST = 21:00Z
+// winter) — an independent conversion path from expiry_instant_ns's
+// days_since_epoch + settlement_instant_ns.
+TEST(OpraPanel, ExpiryInstant_PmSettle_UtcNsAcrossDstAndSessions) {
+  struct Case {
+    const char *date;  // OSI expiry date
+    const char *utc;   // expected 16:00 ET, as an explicit-UTC datetime
+    const char *note;
+  };
+  const Case cases[] = {
+      {"2024-01-19", "2024-01-19T21:00:00Z", "monthly, EST"},
+      {"2024-03-15", "2024-03-15T20:00:00Z", "monthly, EDT (DST began 03-10)"},
+      {"2024-06-21", "2024-06-21T20:00:00Z", "quarterly, EDT"},
+      {"2024-11-29", "2024-11-29T21:00:00Z", "half-day after Thanksgiving, EST (early close NOT modelled)"},
+      {"2025-03-07", "2025-03-07T21:00:00Z", "weekly, EST (Fri before DST 03-09)"},
+      {"2025-03-21", "2025-03-21T20:00:00Z", "weekly, EDT"},
+      {"2026-07-17", "2026-07-17T20:00:00Z", "0DTE session fixture, EDT"},
+      {"2026-12-18", "2026-12-18T21:00:00Z", "quarterly, EST"},
+      {"2027-11-05", "2027-11-05T20:00:00Z", "weekly, EDT (DST ends 11-07)"},
+      {"2028-03-17", "2028-03-17T20:00:00Z", "weekly, EDT (DST began 03-12)"},
+  };
+  for (const Case &c : cases) {
+    EXPECT_EQ(expiry_instant_ns(c.date, SettlementSession::Pm), iso_to_ns(c.utc))
+        << c.date << " (" << c.note << ")";
+  }
+  // AM-settled hook: 09:30 ET (EDT = 13:30Z / EST = 14:30Z).
+  EXPECT_EQ(expiry_instant_ns("2026-07-17", SettlementSession::Am),
+            iso_to_ns("2026-07-17T13:30:00Z"));
+  EXPECT_EQ(expiry_instant_ns("2026-12-18", SettlementSession::Am),
+            iso_to_ns("2026-12-18T14:30:00Z"));
+  // Default is PM.
+  EXPECT_EQ(expiry_instant_ns("2026-07-17"),
+            expiry_instant_ns("2026-07-17", SettlementSession::Pm));
+  // settlement_instant_ns and expiry_instant_ns agree for the same civil day.
+  EXPECT_EQ(expiry_instant_ns("2026-07-17", SettlementSession::Pm),
+            settlement_instant_ns(static_cast<std::int32_t>(iso_to_ns("2026-07-17") /
+                                                            (86400LL * 1000000000LL)),
+                                  SettlementSession::Pm));
+  // Unparseable date -> 0 sentinel (matches iso_to_ns).
+  EXPECT_EQ(expiry_instant_ns("not-a-date"), 0);
+  // DST-boundary exactness: the Fri before spring-forward is EST, the Fri after
+  // is EDT — the UTC step is one hour LESS than the seven-day calendar gap.
+  const std::int64_t before = expiry_instant_ns("2025-03-07", SettlementSession::Pm);  // 21:00Z
+  const std::int64_t after = expiry_instant_ns("2025-03-14", SettlementSession::Pm);   // 20:00Z
+  EXPECT_EQ(after - before,
+            iso_to_ns("2025-03-14T20:00:00Z") - iso_to_ns("2025-03-07T21:00:00Z"));
+}
+
+// G1 0DTE ingest: a same-session (0DTE) expiry survives ingest carrying a small
+// POSITIVE intraday T, and that T shrinks monotonically toward 0 as the snapshot
+// marches through the session to the 16:00 ET settle. Previously EVERY same-day
+// contract was hard-dropped at the midnight-UTC parse.
+TEST(OpraPanel, Ingest0DTE_SurvivesWithPositiveIntradayT_MonotoneThroughSession) {
+  // 0DTE co-terminal pairs near F≈600 (C - P = F - K) plus one far expiry so the
+  // board is a realistic front+back chain; spot is pinned so the test isolates
+  // 0DTE survival from PCP conditioning.
+  std::vector<RawRow> rows;
+  for (const double k : {595.0, 600.0, 605.0}) {
+    rows.push_back({"SPY", osi_sym("SPY", "260717", 'C', k), 0.5 + std::max(0.0, 600.0 - k),
+                    0.6 + std::max(0.0, 600.0 - k)});
+    rows.push_back({"SPY", osi_sym("SPY", "260717", 'P', k), 0.5 + std::max(0.0, k - 600.0),
+                    0.6 + std::max(0.0, k - 600.0)});
+  }
+  rows.push_back({"SPY", osi_sym("SPY", "261218", 'C', 600.0), 20.0, 20.2});
+  rows.push_back({"SPY", osi_sym("SPY", "261218", 'P', 600.0), 18.0, 18.2});
+  const std::string path = write_slice("zero_dte_session.parquet", rows);
+
+  // Snapshots marching toward the 16:00 ET (20:00Z) settle on the expiry day.
+  const std::vector<std::string> snaps = {
+      "2026-07-17T13:35:00Z",  // 09:35 ET  (~6.4h to settle)
+      "2026-07-17T18:00:00Z",  // 14:00 ET  (~2h)
+      "2026-07-17T19:55:00Z",  // 15:55 ET  (~5min)
+  };
+  const std::int64_t zdte_instant = expiry_instant_ns("2026-07-17", SettlementSession::Pm);
+
+  double prev_T = std::numeric_limits<double>::infinity();
+  for (const std::string &snap : snaps) {
+    SCOPED_TRACE(snap);
+    OpraLoadSpec spec;
+    spec.path = path;
+    spec.underlying = "SPY";
+    spec.snapshot_iso = snap;
+    spec.r = 0.043;
+    spec.spot_override = 600.0;
+
+    const auto loaded = load_opra_cbbo_parquet(spec);
+    ASSERT_TRUE(loaded.has_value()) << loaded.error().to_string();
+    // The 0DTE expiry SURVIVES: all 6 near legs + 2 far legs kept, none dropped.
+    EXPECT_EQ(loaded->n_dropped, std::size_t{0});
+    EXPECT_EQ(loaded->n_contracts, std::size_t{8});
+    std::size_t n_zdte = 0;
+    for (const auto &row : loaded->frame.rows) {
+      if (row.expiry_iso == "2026-07-17") {
+        ++n_zdte;
+        EXPECT_EQ(row.expiry_ns, zdte_instant);  // TRUE 16:00 ET instant stamped
+      }
+    }
+    EXPECT_EQ(n_zdte, std::size_t{6});
+
+    // Install and confirm the 0DTE chain carries a small POSITIVE intraday T.
+    atx::vol::Universe u;
+    const auto uid = atx::vol::data_install(u, loaded->frame);
+    ASSERT_TRUE(uid.has_value()) << uid.error().to_string();
+    const auto under = u.get_underlying(*uid);
+    ASSERT_TRUE(under.has_value());
+    const atx::vol::Chain *zdte = nullptr;
+    for (const atx::vol::Chain &ch : (*under)->chains) {
+      if (ch.expiry_ns == zdte_instant) {
+        zdte = &ch;
+        break;
+      }
+    }
+    ASSERT_NE(zdte, nullptr) << "0DTE chain not installed";
+    EXPECT_GT(zdte->T, 0.0);
+    EXPECT_LT(zdte->T, 0.01);  // hours, not days
+    EXPECT_TRUE(std::isfinite(zdte->T));
+    // T strictly shrinks toward 0 as the session advances.
+    EXPECT_LT(zdte->T, prev_T);
+    prev_T = zdte->T;
+  }
+  // Final snapshot (15:55 ET) leaves ~5 min: T ≈ 300s / (365.25*86400) ≈ 9.5e-6.
+  EXPECT_NEAR(prev_T, 9.5e-6, 2.0e-6);
+
+  const fs::path dir = fs::temp_directory_path() / "atx_opra_p2_test";
+  fs::remove_all(dir);
 }
 
 } // namespace

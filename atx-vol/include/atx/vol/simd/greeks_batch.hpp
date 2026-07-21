@@ -7,9 +7,9 @@
 // (atx::vol::Greeks) per contract. It dispatches to a 4-lane AVX2 kernel when
 // the host supports it (atx::vol::simd::have_avx2()) and to a scalar loop
 // otherwise. The scalar loop calls the exact per-contract atx::vol::black76_greeks,
-// so it is the numerical source of truth; the AVX2 path reproduces it to ~1e-9
-// absolute (degenerate and deep-wing lanes are patched through the scalar
-// kernel, so parity is exact there).
+// so it is the numerical source of truth; the AVX2 path (full-range Cody rational-erfc
+// Φ) reproduces it to ~1e-9 absolute and computes even the deep wings on the vector
+// path — only degenerate / non-finite lanes are patched through the scalar kernel.
 //
 // Layout: structure-of-arrays. Each input array has length n; F/K/T/sigma/r/df
 // are contiguous doubles, side is one Side per contract. greeks_out holds n

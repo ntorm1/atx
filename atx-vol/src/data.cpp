@@ -256,6 +256,20 @@ double year_fraction(std::string_view from_iso, std::string_view to_iso) noexcep
   return time_to_expiry_years(from_ns, to_ns, TimeSpec{});
 }
 
+std::int64_t expiry_instant_ns(std::string_view expiry_iso, SettlementSession settle) noexcept {
+  int yy = 0;
+  int mm = 0;
+  int dd = 0;
+  if (!parse_iso_date(expiry_iso, yy, mm, dd)) {
+    return 0;  // unparseable date -> 0, matching iso_to_ns's parse-failure sentinel
+  }
+  // `days_since_epoch` yields the plain civil-day index (timezone-agnostic); the
+  // OSI expiry date IS the ET calendar expiration day, so hand it straight to the
+  // ET->UTC settlement-instant conversion (16:00/09:30 ET per `settle`).
+  const std::int64_t et_day = days_since_epoch(yy, mm, dd);
+  return settlement_instant_ns(static_cast<std::int32_t>(et_day), settle);
+}
+
 std::string ns_to_iso_date(std::int64_t ns) {
   // Civil-from-days (Howard Hinnant), matching the inline block in the C
   // install's source-vol stamping.
@@ -434,9 +448,18 @@ Result<Uid> data_install(Universe &u, const QuoteFrame &frame) {
       under->spot_ts_ns = quote_ts;
     }
 
+    // The expiry_iso string is validated (and keyed on) as before; the INSTANT
+    // used for Chain::expiry_ns and Chain::T is the loader-stamped TRUE
+    // settlement instant (`row.expiry_ns`, 16:00/09:30 ET) when present, else the
+    // legacy midnight-UTC parse — so hand-built / synthetic frames that never set
+    // `row.expiry_ns` stay BIT-IDENTICAL to their historical T (see
+    // QuoteRow::expiry_ns).
     std::int64_t expiry_ns = 0;
     if (!parse_iso_ns(row.expiry_iso, expiry_ns)) {
       return Err(ErrorCode::InvalidArgument, "data_install: bad expiry");
+    }
+    if (row.expiry_ns != 0) {
+      expiry_ns = row.expiry_ns;
     }
 
     ATX_TRY(const ExpiryId expiry_id, u.add_expiry(uid, expiry_ns));

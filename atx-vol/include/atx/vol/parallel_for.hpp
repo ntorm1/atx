@@ -100,22 +100,41 @@ void parallel_for(std::size_t n, unsigned n_threads, F&& fn) {
     return;
   }
   const std::size_t chunk = (n + nt - 1u) / nt;
-  std::vector<std::jthread> workers;
-  workers.reserve(nt);
-  for (unsigned t = 0; t < nt; ++t) {
-    const std::size_t lo = static_cast<std::size_t>(t) * chunk;
-    if (lo >= n) {
-      break;
-    }
-    const std::size_t hi = (lo + chunk < n) ? (lo + chunk) : n;
-    workers.emplace_back([lo, hi, &fn] {
-      for (std::size_t i = lo; i < hi; ++i) {
-        fn(i);
+  // A worker body may throw (e.g. std::bad_alloc from an allocating `fn`). An
+  // exception escaping a std::jthread body calls std::terminate, so catch it,
+  // record the FIRST one, and rethrow on the calling thread after every worker
+  // has joined — the same capture-first/rethrow-after-join contract the dynamic
+  // overloads below use, and which the nt<=1 serial path above already gives for
+  // free. The happy path is unchanged: `fn(i)` runs identically, the catch is
+  // never taken, no exception_ptr is set, and results stay bit-identical for any
+  // worker count.
+  std::exception_ptr worker_exc;
+  std::atomic_flag exc_captured{};
+  {
+    std::vector<std::jthread> workers;
+    workers.reserve(nt);
+    for (unsigned t = 0; t < nt; ++t) {
+      const std::size_t lo = static_cast<std::size_t>(t) * chunk;
+      if (lo >= n) {
+        break;
       }
-    });
+      const std::size_t hi = (lo + chunk < n) ? (lo + chunk) : n;
+      workers.emplace_back([lo, hi, &fn, &worker_exc, &exc_captured] {
+        try {
+          for (std::size_t i = lo; i < hi; ++i) {
+            fn(i);
+          }
+        } catch (...) {
+          if (!exc_captured.test_and_set(std::memory_order_acq_rel)) {
+            worker_exc = std::current_exception();
+          }
+        }
+      });
+    }
+  } // std::jthread join here is the barrier + the happens-before for worker_exc.
+  if (worker_exc) {
+    std::rethrow_exception(worker_exc);
   }
-  // std::jthread joins on destruction — the loop below (scope exit) is the
-  // barrier; every worker has finished before parallel_for returns.
 }
 
 // Dynamic disjoint-index fan-out for irregular tasks. Results retain the same

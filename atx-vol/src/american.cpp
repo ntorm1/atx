@@ -94,7 +94,10 @@ inline constexpr unsigned kAlMaxQuad = detail::kMaxQuadNodes; // 64
   const double Nm = norm_cdf(-d1);
   const double phim = norm_pdf(-d1);
   const double dq = std::exp(-q * T);
-  return -1.0 + dq * Nm + (1.0 - dq * Nm) / q1 - dq * phim / (q1 * v);
+  // A1 (finding 1): the phi-term is +, not -. put_residual = K - Sx - pE + Sx*bit/q1
+  // with bit = 1 - e^{-qT}N(-d1); d(bit)/dSx = +e^{-qT}phi(d1)/(Sx*v) (N(-d1) falls
+  // as Sx rises), so d/dSx[Sx*bit/q1] contributes +dq*phim/(q1*v). FD-verified.
+  return -1.0 + dq * Nm + (1.0 - dq * Nm) / q1 + dq * phim / (q1 * v);
 }
 [[nodiscard]] double call_residual(double Sx, double K, double T, double sigma, double r, double q,
                                    double q2) noexcept {
@@ -110,18 +113,43 @@ inline constexpr unsigned kAlMaxQuad = detail::kMaxQuadNodes; // 64
   const double Np = norm_cdf(d1);
   const double phip = norm_pdf(d1);
   const double dq = std::exp(-q * T);
-  return 1.0 - dq * Np - (1.0 - dq * Np) / q2 - dq * phip / (q2 * v);
+  // A1 (finding 1): the phi-term is +, not - (McDonald-Schroder symmetric to the
+  // put). call_residual = Sx - K - cE - Sx*bit/q2 with bit = 1 - e^{-qT}N(d1);
+  // d(bit)/dSx = -e^{-qT}phi(d1)/(Sx*v), so -d/dSx[Sx*bit/q2] gives +dq*phip/(q2*v).
+  return 1.0 - dq * Np - (1.0 - dq * Np) / q2 + dq * phip / (q2 * v);
 }
 
+// A1 convergence contract (finding 8). Reports how the safeguarded critical-price
+// Newton terminated so callers can reject a silently non-converged root and tests
+// can pin the iteration count. `converged` is true iff a Newton/step tolerance
+// test fired INSIDE the loop (NOT max_iter bisection exhaustion); `iters` counts
+// executed iterations; `residual` is the signed residual f at the returned Sx.
+// The fields are populated only when a non-null `stats` is passed, so the
+// production seed/pricer paths (nullptr) are numerically and performance-identical
+// to before — the only behavior change on those paths is the finding-1 sign fix.
+struct NewtonCriticalStats {
+  std::uint16_t iters = 0;
+  double residual = 0.0;
+  bool converged = false;
+};
+
+// A1 (finding 8): baw_american accepts a critical price only if its residual is
+// within this multiple of the solve tolerance scale (tol*K). Generous margin
+// (Newton converges to << tol*K post-fix) that still rejects the off-root
+// bisection midpoint the pre-fix loop returned on max_iter exhaustion.
+inline constexpr double kBawCriticalResidualGate = 1.0e2;
+
 [[nodiscard]] double newton_critical_put(double K, double T, double sigma, double r, double q,
-                                         double q1, std::uint16_t max_iter, double tol) noexcept {
+                                         double q1, std::uint16_t max_iter, double tol,
+                                         NewtonCriticalStats *stats = nullptr) noexcept {
   double lo = 1.0e-3 * K;
   double hi = K * (1.0 - 1.0e-6);
   double Sx = K * q1 / (q1 - 1.0);
   if (!(Sx > lo && Sx < hi)) {
     Sx = 0.5 * (lo + hi);
   }
-  for (std::uint16_t it = 0; it < max_iter; ++it) {
+  std::uint16_t it = 0;
+  for (; it < max_iter; ++it) {
     const double f = put_residual(Sx, K, T, sigma, r, q, q1);
     const double fp = put_residual_deriv(Sx, K, T, sigma, r, q, q1);
     if (f > 0.0) {
@@ -130,6 +158,9 @@ inline constexpr unsigned kAlMaxQuad = detail::kMaxQuadNodes; // 64
       hi = Sx;
     }
     if (std::fabs(f) < tol * K) {
+      if (stats) {
+        *stats = {static_cast<std::uint16_t>(it + 1), f, true};
+      }
       return Sx;
     }
     double Sx_new = (std::fabs(fp) > 1.0e-15) ? (Sx - f / fp) : 0.5 * (lo + hi);
@@ -139,20 +170,29 @@ inline constexpr unsigned kAlMaxQuad = detail::kMaxQuadNodes; // 64
     const double dS = Sx_new - Sx;
     Sx = Sx_new;
     if (std::fabs(dS) < tol * K) {
+      if (stats) {
+        *stats = {static_cast<std::uint16_t>(it + 1),
+                  put_residual(Sx, K, T, sigma, r, q, q1), true};
+      }
       return Sx;
     }
+  }
+  if (stats) {
+    *stats = {it, put_residual(Sx, K, T, sigma, r, q, q1), false};
   }
   return Sx;
 }
 [[nodiscard]] double newton_critical_call(double K, double T, double sigma, double r, double q,
-                                          double q2, std::uint16_t max_iter, double tol) noexcept {
+                                          double q2, std::uint16_t max_iter, double tol,
+                                          NewtonCriticalStats *stats = nullptr) noexcept {
   double lo = K * (1.0 + 1.0e-6);
   double hi = K * 50.0;
   double Sx = K * q2 / (q2 - 1.0);
   if (!(Sx > lo && Sx < hi)) {
     Sx = 0.5 * (lo + hi);
   }
-  for (std::uint16_t it = 0; it < max_iter; ++it) {
+  std::uint16_t it = 0;
+  for (; it < max_iter; ++it) {
     const double f = call_residual(Sx, K, T, sigma, r, q, q2);
     const double fp = call_residual_deriv(Sx, K, T, sigma, r, q, q2);
     if (f < 0.0) {
@@ -161,6 +201,9 @@ inline constexpr unsigned kAlMaxQuad = detail::kMaxQuadNodes; // 64
       hi = Sx;
     }
     if (std::fabs(f) < tol * K) {
+      if (stats) {
+        *stats = {static_cast<std::uint16_t>(it + 1), f, true};
+      }
       return Sx;
     }
     double Sx_new = (std::fabs(fp) > 1.0e-15) ? (Sx - f / fp) : 0.5 * (lo + hi);
@@ -170,8 +213,15 @@ inline constexpr unsigned kAlMaxQuad = detail::kMaxQuadNodes; // 64
     const double dS = Sx_new - Sx;
     Sx = Sx_new;
     if (std::fabs(dS) < tol * K) {
+      if (stats) {
+        *stats = {static_cast<std::uint16_t>(it + 1),
+                  call_residual(Sx, K, T, sigma, r, q, q2), true};
+      }
       return Sx;
     }
+  }
+  if (stats) {
+    *stats = {it, call_residual(Sx, K, T, sigma, r, q, q2), false};
   }
   return Sx;
 }
@@ -219,11 +269,18 @@ inline constexpr unsigned kAlMaxQuad = detail::kMaxQuadNodes; // 64
 // ── QD+ critical-price seed (Li 2010) ─────────────────────────────────────
 //
 // The QD+ approximation refines the QD/Barone-Adesi-Whaley quadratic exponent with
-// the leading Li (2010) "+" correction c = (1−h)·M / (h·√disc), which vanishes as
-// τ→∞ (h→1, QD/BAW recovered) and grows near expiry (h→0) where the frozen-θ QD
-// approximation is worst. The corrected exponent q1⁺ = q1 + c drives the SAME
-// smooth-pasting root find (put_residual with q1⁺ in place of q1), so this reuses
-// newton_critical_put unchanged.
+// the leading Li (2010) "+" correction. In Li's derivation the SIGNED correction is
+// (1−h)·M / (h·(2·q1 + N − 1)); since 2·q1 + N − 1 == −√disc (the residual-derivative
+// denominator, see the code below), it equals −(1−h)·M / (h·√disc). Writing the
+// positive MAGNITUDE c = (1−h)·M / (h·√disc), the corrected exponent is q1⁺ = q1 − c
+// (A9 core-review finding 7: the code's q1 − c is correct; an earlier version of THIS
+// comment said "q1 + c", dropping the sign of the 2·q1+N−1 = −√disc denominator).
+// It STEEPENS the exponent (drives q1 more negative) near expiry (h→0), where the
+// frozen-θ QD approximation is worst and the true boundary S* → K, and vanishes as
+// τ→∞ (h→1, QD/BAW recovered). q1⁺ drives the SAME smooth-pasting root find
+// (put_residual with q1⁺ in place of q1), so this reuses newton_critical_put
+// unchanged. Measurement-only path (QdPlus is not on any production solve), so this
+// is a pure doc reconciliation — no behavior change, no A6 shootout re-run implied.
 //
 // Reference: M. Li, "Analytical Approximations for the Critical Stock Price of
 // American Options: A Performance Comparison" (2010), Review of Derivatives
@@ -556,7 +613,11 @@ namespace amer {
     s.n_quad_fp = 24;
   } else if (n >= 16) {
     s.n_quad_fp = 16;
-  } else if (n >= 8) {
+  } else {
+    // A9 (core-review finding 9): a sub-minimum request (n_quadrature < 8, incl. 0)
+    // FLOORS to the cheapest supported Gauss-Legendre order (8) instead of falling
+    // through the ladder and silently keeping the ACCURATE default (24) — a caller
+    // asking for cheaper must not get more expensive.
     s.n_quad_fp = 8;
   }
   // Premium (pricing) Gauss-Legendre order. K2 (class: pure-refactor + new
@@ -627,14 +688,10 @@ namespace { // reopen the file's anonymous namespace
   return xmax * std::exp(-std::sqrt(yv));
 }
 
-[[nodiscard]] double d_plus(double t, double z, double sigma, double r, double q) noexcept {
-  const double v = sigma * std::sqrt(t);
-  return (std::log(z) + (r - q) * t) / v + 0.5 * v;
-}
-[[nodiscard]] double d_minus(double t, double z, double sigma, double r, double q) noexcept {
-  const double v = sigma * std::sqrt(t);
-  return (std::log(z) + (r - q) * t) / v - 0.5 * v;
-}
+// F7: the former d_plus/d_minus helpers were only ever called in adjacent pairs
+// that recomputed sigma*sqrt(tau) and log(z) twice; both call sites (the eqn_b tip
+// and eqn_b_NDd) now compute the shared base once and take base +/- v/2 inline, so
+// the standalone helpers are gone (no other consumer — they were file-local).
 
 void al_init_nodes(AlBoundary &b, std::uint16_t n, double T, double K, double r,
                    double q) noexcept {
@@ -670,6 +727,63 @@ void al_init_nodes(AlBoundary &b, std::uint16_t n, double T, double K, double r,
   const double zc = atx::core::clamp(z, -1.0, 1.0);
   const double y_val = al_cheb_eval(b.z.data(), b.wbary.data(), b.y.data(), b.n, zc);
   return b_from_y(y_val, b.xmax);
+}
+
+// F5: the strike-INVARIANT part of al_boundary_at — everything except the final
+// xmax multiply. al_boundary_at(b, u) == b.xmax * al_boundary_factor_at(b, u)
+// bit-for-bit (b_from_y is xmax * exp(-sqrt(y)); the guard branches return xmax ==
+// xmax * 1.0). The boundary's live state y[] is K-independent (homogeneity), so when
+// one solved boundary reprices many strikes/spots — with xmax rescaling LINEARLY in
+// K — the factor is shared and only the xmax multiply moves per strike.
+[[nodiscard]] double al_boundary_factor_at(const AlBoundary &b, double u) noexcept {
+  if (b.T <= 0.0 || u <= 0.0) {
+    return 1.0;
+  }
+  const double u_eff = (u >= b.T) ? b.T : u;
+  const double z = 2.0 * std::sqrt(u_eff / b.T) - 1.0;
+  const double zc = atx::core::clamp(z, -1.0, 1.0);
+  const double y_val = al_cheb_eval(b.z.data(), b.wbary.data(), b.y.data(), b.n, zc);
+  const double yv = (y_val > 0.0) ? y_val : 0.0;
+  return std::exp(-std::sqrt(yv));
+}
+
+// F5 (perf finding 5): per-boundary premium precompute. premium_integrand_put's
+// per-node work — the barycentric boundary factor, sigma*sqrt(t), exp(-q*t),
+// exp(-r*t) — depends on (boundary, sigma, r, q, t) but NOT on the spot/strike being
+// priced. When ONE solved boundary prices MANY strikes/spots (the two slice engines
+// and american_greeks_fd's spot stencils) these are bound once and reused, leaving
+// just log + 2 norm_cdf per (node, strike). Stored as `bfac` (pre-xmax factor) so
+// b_t = xmax * bfac reconstructs bit-identically under the linear-in-K rescale.
+// euro_fwd / euro_df hoist the two European-leg (euro_put_sk) exps out of the loop.
+//
+// Deliberately a SEPARATE object, NOT a member of AlWorkspace: american_greeks_fd
+// stack-bundles seven AlWorkspaces and this must not multiply into that budget.
+// One AlPremiumCache is ~2.6 KB (4 * 64 doubles + scalars); the slice engines keep
+// one on the stack, the greeks bundle keeps ONE shared instance keyed to whichever
+// boundary is active. Arrays are left uninitialised (filled [0,nq) before any read),
+// matching the AlWorkspace geo-array convention.
+struct AlPremiumCache {
+  const void *bnd_id = nullptr; // boundary this was bound from (validity key)
+  bool valid = false;
+  unsigned nq = 0;
+  double sigma_bound = 0.0;
+  double r_bound = 0.0;
+  double q_bound = 0.0;
+  double euro_fwd = 0.0; // exp((r-q)*T) — European-leg forward factor
+  double euro_df = 0.0;  // exp(-r*T)    — European-leg discount factor
+  double bfac[kAlMaxQuad]; // boundary factor: b_t = xmax * bfac[i]
+  double vv[kAlMaxQuad];   // sigma * sqrt(t_i)
+  double dq[kAlMaxQuad];   // exp(-q * t_i)
+  double dr[kAlMaxQuad];   // exp(-r * t_i)
+};
+
+// Is pc bound for exactly this (boundary, quadrature, sigma, r, q)? A miss falls the
+// consumer back to the bit-identical inline path, so this is the only reuse guard.
+[[nodiscard]] bool al_premium_cache_matches(const AlPremiumCache &pc, const AlBoundary &b,
+                                            const AlWorkspace &ws, double sigma, double r,
+                                            double q) noexcept {
+  return pc.valid && pc.bnd_id == &b && pc.nq == ws.n_quad_price && pc.sigma_bound == sigma &&
+         pc.r_bound == r && pc.q_bound == q;
 }
 
 void al_seed_boundary(AlBoundary &b, double sigma, double r, double q) noexcept {
@@ -868,8 +982,13 @@ void eqn_b_ND_impl(const AlBoundary &bnd, const AlWorkspace &ws, unsigned node_i
     }
     return;
   }
-  const double tip_p = norm_cdf(d_plus(tau, b_val / K, sigma, r, q));
-  const double tip_m = norm_cdf(d_minus(tau, b_val / K, sigma, r, q));
+  // F7 (perf finding 7): d_plus and d_minus at the tip both recompute
+  // sigma*sqrt(tau) and log(b_val/K). Share them once as base +/- v/2 — bit-identical
+  // to the two d_plus/d_minus calls (same op order), saving one log + one sqrt/node.
+  const double tip_v = sigma * std::sqrt(tau);
+  const double tip_base = (std::log(b_val / K) + (r - q) * tau) / tip_v;
+  const double tip_p = norm_cdf(tip_base + 0.5 * tip_v);
+  const double tip_m = norm_cdf(tip_base - 0.5 * tip_v);
   ATX_VOL_COUNT_N(NormCdfCalls, 2); // tip_p, tip_m
 
   const double *xs = ws.qx_fp;
@@ -958,8 +1077,12 @@ void eqn_b_NDd(const AlBoundary &bnd, double tau, double b_val, double sigma, do
   }
   const double K = bnd.K;
   const double v = sigma * std::sqrt(tau);
-  const double dpv = d_plus(tau, b_val / K, sigma, r, q);
-  const double dmv = d_minus(tau, b_val / K, sigma, r, q);
+  // F7: reuse the local v and share log(b_val/K) between d_plus/d_minus as
+  // base +/- v/2 — bit-identical to the two d_plus/d_minus calls (each of which
+  // recomputed v and log), saving two sqrt + one log per node.
+  const double base = (std::log(b_val / K) + (r - q) * tau) / v;
+  const double dpv = base + 0.5 * v;
+  const double dmv = base - 0.5 * v;
   Nd_out = norm_pdf(dmv) / (b_val * v);
   Dd_out = norm_pdf(dpv) / (b_val * v);
 }
@@ -1090,35 +1213,55 @@ template <unsigned NB, unsigned NQ>
   return al_fp_sweep_impl<0, 0>(b, ws, sigma, r, q);
 }
 
+// pc == nullptr: the original inline path (recompute the boundary factor + the two
+// exps + v per node). pc != nullptr (bound for this boundary at (sigma,r,q)): read
+// the strike-invariant terms from the precompute and rescale b_t by the LIVE xmax —
+// b.xmax * pc->bfac[i] == al_boundary_at(b, rem) bit-for-bit — so the shared dp/return
+// below produce identical bits. The exp counters live only on the inline branch; the
+// cached exps are counted once at al_bind_premium.
 [[nodiscard]] double premium_integrand_put(double z, const AlBoundary &b, double S, double sigma,
-                                           double r, double q) noexcept {
+                                           double r, double q, const AlPremiumCache *pc,
+                                           unsigned i) noexcept {
   const double t = z * z;
   if (t <= 1.0e-14) {
     return 0.0;
   }
-  const double rem = b.T - t;
-  const double b_t = (rem > 0.0) ? al_boundary_at(b, rem) : b.K;
-  if (!(b_t > 0.0)) {
-    return 0.0;
+  double b_t;
+  double v;
+  double dq;
+  double dr;
+  if (pc != nullptr) {
+    b_t = b.xmax * pc->bfac[i];
+    v = pc->vv[i];
+    dq = pc->dq[i];
+    dr = pc->dr[i];
+  } else {
+    const double rem = b.T - t;
+    b_t = (rem > 0.0) ? al_boundary_at(b, rem) : b.K;
+    if (!(b_t > 0.0)) {
+      return 0.0;
+    }
+    v = sigma * std::sqrt(t);
+    dq = std::exp(-q * t);
+    dr = std::exp(-r * t);
+    ATX_VOL_COUNT_N(ExpCalls, 2);
+    counters::lightweight::record_exp_calls(2u);
   }
-  const double v = sigma * std::sqrt(t);
-  const double dq = std::exp(-q * t);
-  const double dr = std::exp(-r * t);
   const double dp = std::log(S * dq / (b_t * dr)) / v + 0.5 * v;
   ATX_VOL_COUNT(PremiumQuadEvals);
   counters::ledger::bump(counters::ledger::Solve::AlPremiumEvals); // V1 always-on
   ATX_VOL_COUNT(LogCalls);
-  ATX_VOL_COUNT_N(ExpCalls, 2);
-  counters::lightweight::record_exp_calls(2u);
   ATX_VOL_COUNT_N(NormCdfCalls, 2);
   return 2.0 * z * (r * b.K * dr * norm_cdf(-dp + v) - q * S * dq * norm_cdf(-dp));
 }
 
 // Premium quadrature, templated on the fixed premium trip count NP (P2.2 §3);
-// NP==0 is the generic runtime path. Single body, so bit-identical across NP.
+// NP==0 is the generic runtime path. Single body, so bit-identical across NP. A
+// non-null pc supplies the F5 per-boundary precompute.
 template <unsigned NP>
 [[nodiscard]] double al_put_premium_impl(const AlBoundary &b, const AlWorkspace &ws, double S,
-                                         double sigma, double r, double q) noexcept {
+                                         double sigma, double r, double q,
+                                         const AlPremiumCache *pc) noexcept {
   const double sqrtT = std::sqrt(b.T);
   const double half_sqrtT = 0.5 * sqrtT;
   double total = 0.0;
@@ -1127,29 +1270,108 @@ template <unsigned NP>
   const unsigned nq = (NP != 0) ? NP : ws.n_quad_price;
   for (unsigned i = 0; i < nq; ++i) {
     const double zi = half_sqrtT * (1.0 + xs[i]);
-    total += wv[i] * premium_integrand_put(zi, b, S, sigma, r, q);
+    total += wv[i] * premium_integrand_put(zi, b, S, sigma, r, q, pc, i);
   }
   total *= half_sqrtT;
   return (total > 0.0) ? total : 0.0;
 }
 
 [[nodiscard]] double al_put_premium(const AlBoundary &b, const AlWorkspace &ws, double S,
-                                    double sigma, double r, double q) noexcept {
+                                    double sigma, double r, double q,
+                                    const AlPremiumCache *pc = nullptr) noexcept {
+  // Reuse the precompute only when it was bound for exactly this (boundary, nq,
+  // sigma, r, q); any miss uses the bit-identical inline path.
+  const AlPremiumCache *use =
+      (pc != nullptr && al_premium_cache_matches(*pc, b, ws, sigma, r, q)) ? pc : nullptr;
   if (ws.specialize) {
     switch (ws.n_quad_price) {
     case 8:
-      return al_put_premium_impl<8>(b, ws, S, sigma, r, q);
+      return al_put_premium_impl<8>(b, ws, S, sigma, r, q, use);
     case 16:
-      return al_put_premium_impl<16>(b, ws, S, sigma, r, q);
+      return al_put_premium_impl<16>(b, ws, S, sigma, r, q, use);
     case 24:
-      return al_put_premium_impl<24>(b, ws, S, sigma, r, q);
+      return al_put_premium_impl<24>(b, ws, S, sigma, r, q, use);
     case 48:
-      return al_put_premium_impl<48>(b, ws, S, sigma, r, q);
+      return al_put_premium_impl<48>(b, ws, S, sigma, r, q, use);
     default:
       break;
     }
   }
-  return al_put_premium_impl<0>(b, ws, S, sigma, r, q);
+  return al_put_premium_impl<0>(b, ws, S, sigma, r, q, use);
+}
+
+// F5: bind the per-boundary premium precompute for a solved boundary at (sigma,r,q).
+// The caller rebinds when any of (boundary, sigma, r, q) changes across a reuse loop.
+// If a quadrature node hits premium_integrand_put's degenerate guards (t<=1e-14 or
+// b_t<=0 — unreachable for interior Gauss-Legendre price nodes, but guarded) the
+// cache is left invalid so consumers fall back to the inline path. Counts the 2
+// exps/node here — the exact spot the per-strike loop no longer pays them.
+void al_bind_premium(const AlBoundary &b, const AlWorkspace &ws, double sigma, double r, double q,
+                     AlPremiumCache &pc) noexcept {
+  pc.valid = false;
+  pc.bnd_id = nullptr;
+  const unsigned nq = ws.n_quad_price;
+  if (nq == 0 || nq > kAlMaxQuad || !(b.xmax > 0.0) || ws.qx_price == nullptr) {
+    return;
+  }
+  const double half_sqrtT = 0.5 * std::sqrt(b.T);
+  const double *xs = ws.qx_price;
+  for (unsigned i = 0; i < nq; ++i) {
+    const double zi = half_sqrtT * (1.0 + xs[i]);
+    const double t = zi * zi;
+    const double rem = b.T - t;
+    if (t <= 1.0e-14 || !(rem > 0.0)) {
+      return; // degenerate guard: inline path handles it (never hit for GL nodes)
+    }
+    const double bfac = al_boundary_factor_at(b, rem);
+    if (!(b.xmax * bfac > 0.0)) {
+      return;
+    }
+    pc.bfac[i] = bfac;
+    pc.vv[i] = sigma * std::sqrt(t);
+    pc.dq[i] = std::exp(-q * t);
+    pc.dr[i] = std::exp(-r * t);
+    ATX_VOL_COUNT_N(ExpCalls, 2);
+    counters::lightweight::record_exp_calls(2u);
+  }
+  // European-leg forward/discount exps, hoisted out of the per-strike price (F5
+  // rider). euro_put_sk never counted these, so they stay off ExpCalls.
+  pc.euro_fwd = std::exp((r - q) * b.T);
+  pc.euro_df = std::exp(-r * b.T);
+  pc.nq = nq;
+  pc.sigma_bound = sigma;
+  pc.r_bound = r;
+  pc.q_bound = q;
+  pc.bnd_id = &b;
+  pc.valid = true;
+}
+
+// F5: al_put_price_from_boundary with the premium precompute + hoisted euro leg.
+// ALWAYS correct: when pc is bound for this (boundary, sigma, r, q) it uses the
+// precomputed euro exps + cached premium; otherwise it recomputes both inline. Both
+// paths are bit-identical to al_put_price_from_boundary(bnd, ws, S, K, T, sigma, r,
+// q) — the euro factors equal euro_put_sk's own exps and the premium reuse is proven
+// bit-exact — so the reuse is a pure throughput win, never a correctness dependency.
+[[nodiscard]] double al_put_price_from_boundary_cached(const AlBoundary &bnd, const AlWorkspace &ws,
+                                                       const AlPremiumCache &pc, double S, double K,
+                                                       double T, double sigma, double r,
+                                                       double q) noexcept {
+  const bool hit = al_premium_cache_matches(pc, bnd, ws, sigma, r, q);
+  const double euro = hit ? black76_price(S * pc.euro_fwd, K, T, sigma, pc.euro_df, Side::Put)
+                          : euro_put_sk(S, K, T, sigma, r, q);
+  const double prem = al_put_premium(bnd, ws, S, sigma, r, q, hit ? &pc : nullptr);
+  double price = euro + prem;
+  const double intr = K - S;
+  if (intr > price) {
+    price = intr;
+  }
+  if (euro > price) {
+    price = euro;
+  }
+  if (price < 0.0) {
+    price = 0.0;
+  }
+  return price;
 }
 
 // ── Boundary solve / price split (S-independence seam) ───────────────────
@@ -1342,10 +1564,9 @@ namespace amer {
   return price;
 }
 
-// P2 (WS-P) seam — the PURE collocation residual R(y; sigma, r, q). Mirrors the
-// private `residual` lambda in detail::al_implicit_diff_put_greeks verbatim, but
-// as a linkable symbol the adjoint-greeks kernel (detail/adjoint_greeks.cpp) can
-// call to form J = dR/dy and R_sigma/R_r. Pure function of (y, sigma, r, q):
+// P2 (WS-P) seam — the PURE collocation residual R(y; sigma, r, q), exposed as a
+// linkable symbol so the adjoint-greeks kernel (detail/adjoint_greeks.cpp) can
+// call it to form J = dR/dy and R_sigma/R_r. Pure function of (y, sigma, r, q):
 // copies y into a scratch boundary, runs the generic inline-geometry kernel
 // eqn_b_ND_impl<0,0>, and returns the fixed-point residual per node. Does not
 // mutate bnd/ws state that any other caller observes (scr is a local copy).
@@ -1597,11 +1818,37 @@ constexpr const char *kDoubleContinuationMsg =
 
 // ── American Greeks (chain rule + analytic correction derivatives) ───────
 
+// A2 (core-review finding 2): floor a SERVED cached price at max(intrinsic, euro,
+// 0), matching the cold clamp chain (al_put_price_from_boundary :1376-1393,
+// AloPricer::price :1813-). The cached euro + F*corr carries no floor of its own,
+// so it can dip below intrinsic — from Chebyshev interpolation error in-box, or
+// (worse) from the correction clamping to its k_log-box EDGE value OUT-of-box,
+// where the shortfall grows ~linearly with moneyness — producing arbitrageable
+// sub-intrinsic marks. Applied to the served mark only; the analytic greek
+// sensitivities are deliberately left untouched. The floor introduces a kink, so
+// delta/gamma are technically discontinuous where it binds, but the cached greeks
+// are already fixed-carry approximations and consumers read out.price for the
+// mark, so keeping the smooth sensitivities is the intended contract.
+[[nodiscard]] inline double floor_cached_price(double price, double euro,
+                                               double intrinsic) noexcept {
+  if (intrinsic > price) {
+    price = intrinsic;
+  }
+  if (euro > price) {
+    price = euro;
+  }
+  if (price < 0.0) {
+    price = 0.0;
+  }
+  return price;
+}
+
 // Cached routes obtain the full correction gradient/Hessian from one
 // differentiated Clenshaw traversal; no off-point finite differences remain.
 template <typename Correction>
 void american_greeks_first_order(double S, double K, double T, double sigma, double r, double q,
-                                 Side side, const Correction *correction, AmericanGreeks &out) {
+                                 Side side, const Correction *correction, AmericanGreeks &out,
+                                 double *dP_dq_out = nullptr) {
   const double m = std::exp((r - q) * T); // F/S
   const double F = S * m;
   const double df = std::exp(-r * T);
@@ -1631,10 +1878,21 @@ void american_greeks_first_order(double S, double K, double T, double sigma, dou
     d2c_ds2 = corr.dsigma2;
   }
 
-  out.price = euro_price + F * c_val;
+  // A2: served mark is floored; the sensitivity fields below are NOT (see
+  // floor_cached_price — the kink at the floor is intentional).
+  const double intrinsic = (side == Side::Put) ? (K - S) : (S - K);
+  out.price = floor_cached_price(euro_price + F * c_val, euro_price, intrinsic);
 
   const double D = gB.delta + c_val - dc_dk; // ∂A/∂F
   out.delta = m * D;                         // spot-delta convention
+  // G2: fixed-carry ∂P/∂q. q enters ONLY through F (S·e^{(r-q)T}, ∂F/∂q = -T·F);
+  // the fixed-baked correction is held constant across the carry bump (same
+  // contract as rho above), so ∂P/∂q = ∂P/∂F · ∂F/∂q = D·(-T·F). This is rho's
+  // through-forward leg (T·F·D) with q's opposite sign and WITHOUT rho's discount-
+  // factor leg (q does not enter the discount df = e^{-rT}).
+  if (dP_dq_out != nullptr) {
+    *dP_dq_out = -T * F * D;
+  }
   out.vega = gB.vega + F * dc_ds;
   out.rho = gB.rho + T * F * D;
   out.theta = gB.theta - (r - q) * F * D - F * dc_dT;
@@ -1949,11 +2207,20 @@ Status andersen_lake_call_slice(double S, std::span<const double> strikes, doubl
     }
   }
 
+  // F5: the boundary is fixed (Kp = S) across every strike, so the premium's
+  // strike-invariant node terms and the euro forward/discount are bound ONCE here
+  // and reused — leaving log + 2 norm_cdf per (node, strike). Bit-identical: the
+  // cached euro factor equals euro_put_sk's exp and b_t = xmax*bfac == al_boundary_at.
+  AlPremiumCache pc;
+  al_bind_premium(bnd, ws, sigma, rp, qp, pc);
+  const bool pc_ok = al_premium_cache_matches(pc, bnd, ws, sigma, rp, qp);
   // Per-strike premium: only the internal-put spot Sp = K_i changes.
   for (std::size_t i = 0; i < n; ++i) {
     const double Ki = strikes[i];
-    const double euro = euro_put_sk(/*S=*/Ki, /*K=*/S, T, sigma, rp, qp);
-    const double prem = al_put_premium(bnd, ws, /*S=*/Ki, sigma, rp, qp);
+    const double euro = pc_ok
+                            ? black76_price(Ki * pc.euro_fwd, S, T, sigma, pc.euro_df, Side::Put)
+                            : euro_put_sk(/*S=*/Ki, /*K=*/S, T, sigma, rp, qp);
+    const double prem = al_put_premium(bnd, ws, /*S=*/Ki, sigma, rp, qp, pc_ok ? &pc : nullptr);
     double px = euro + prem;
     const double intr = S - Ki; // internal-put intrinsic Kp - Sp == call intrinsic
     if (intr > px) {
@@ -2050,11 +2317,18 @@ Status andersen_lake_put_slice(double S, std::span<const double> strikes, double
     break;
   }
 
+  // F5: y[] is homogeneity-invariant, so only bnd.xmax rescales per strike — the
+  // premium's pre-xmax boundary factor (and v/dq/dr, euro exps) are bound ONCE and
+  // reused, with b_t = xmax_i * bfac reconstructed per strike. Bit-identical to the
+  // per-strike al_put_price_from_boundary (same reused y[]; the T16a ~1e-7 boundary-
+  // reuse gap is unchanged — the hoist re-derives the SAME b_t bit-for-bit).
+  AlPremiumCache pc;
+  al_bind_premium(bnd, ws, sigma, r, q, pc);
   for (std::size_t i = 0; i < n; ++i) {
     const double Ki = strikes[i];
     bnd.K = Ki;                       // homogeneity rescale: strike …
     bnd.xmax = al_xmax_put(Ki, r, q); // … and asymptotic level B(∞), same y[]
-    price_out[i] = al_put_price_from_boundary(bnd, ws, S, Ki, T, sigma, r, q);
+    price_out[i] = al_put_price_from_boundary_cached(bnd, ws, pc, S, Ki, T, sigma, r, q);
   }
   return Ok();
 }
@@ -2116,8 +2390,12 @@ Result<double> baw_american(double S, double K, double T, double sigma, double r
     if (!(q1 < 0.0)) {
       return Ok(euro);
     }
-    const double Sx = newton_critical_put(K, T, sigma, r, q, q1, mi, tt);
-    if (!(Sx > 0.0 && Sx < K)) {
+    NewtonCriticalStats st;
+    const double Sx = newton_critical_put(K, T, sigma, r, q, q1, mi, tt, &st);
+    // A1 (finding 8): reject a silently non-converged root — the range check alone
+    // masked finding 1 (a bisection-exhausted midpoint stays in (0,K) but is not at
+    // the smooth-pasting root).
+    if (!(Sx > 0.0 && Sx < K) || !(std::fabs(st.residual) <= kBawCriticalResidualGate * tt * K)) {
       return Err(ErrorCode::Unavailable, "baw_american: put critical-price did not converge");
     }
     if (S <= Sx) {
@@ -2135,8 +2413,10 @@ Result<double> baw_american(double S, double K, double T, double sigma, double r
   if (!(q2 > 1.0)) {
     return Ok(euro);
   }
-  const double Sx = newton_critical_call(K, T, sigma, r, q, q2, mi, tt);
-  if (!(Sx > K)) {
+  NewtonCriticalStats st;
+  const double Sx = newton_critical_call(K, T, sigma, r, q, q2, mi, tt, &st);
+  // A1 (finding 8): reject a silently non-converged root (see the put branch).
+  if (!(Sx > K) || !(std::fabs(st.residual) <= kBawCriticalResidualGate * tt * K)) {
     return Err(ErrorCode::Unavailable, "baw_american: call critical-price did not converge");
   }
   if (S >= Sx) {
@@ -2176,6 +2456,18 @@ double american_price_cached(double S, double K, double T, double sigma, double 
                       /*yield=*/(side == Side::Put) ? q : r) == ExerciseRegime::Unsupported) {
     return std::numeric_limits<double>::quiet_NaN();
   }
+  // A9 (core-review finding 11): NO carry-consistency assert here — INVESTIGATED
+  // and deliberately omitted. The kernel is carry-agnostic BY CONTRACT: the query
+  // (r, q) drives F and the Black-76 leg, while the correction is a fixed-baked-
+  // carry Chebyshev interpolation. A single cache is baked at ONE representative
+  // carry (session build_session_caches) yet legitimately serves the WHOLE surface,
+  // so short tenors query at a q_eff that drifts well past 25 bps from baked_q()
+  // (see essvi_deam_test EssviDeAm.CachedDeAmMatchesCold: the residual concentrates
+  // exactly there and the served path accepts it). The 25-bps figure is C2's
+  // cross-DATE cache-REUSE stale-gate (session.cpp cache_side_covers) — a SESSION-
+  // level opt-in, NOT a kernel invariant. An assert on baked_r()/baked_q() at 25 bps
+  // therefore fires on legitimate in-fit usage (it aborted the suite when first
+  // tried), so the finding's proposed check does not hold at this layer.
   const double df = std::exp(-r * T);
   const double F = S * std::exp((r - q) * T);
   // Share one log-moneyness evaluation between Black-76 and the correction
@@ -2187,7 +2479,11 @@ double american_price_cached(double S, double K, double T, double sigma, double 
   const double k_log = -ln_fk;
   const double corr = correction->eval(k_log, T, sigma);
   ATX_VOL_COUNT(CacheHits);
-  return euro + F * corr;
+  // A2 (core-review finding 2): floor at max(intrinsic, euro, 0), matching the
+  // cold clamp chain — the correction clamps to its box edge out-of-box, so the
+  // raw euro + F*corr can print below intrinsic (arbitrageable) otherwise.
+  const double intr = (side == Side::Put) ? (K - S) : (S - K);
+  return floor_cached_price(euro + F * corr, euro, intr);
 }
 
 double american_price_cached(double S, double K, double T, double sigma, double r, double q,
@@ -2213,7 +2509,100 @@ double american_price_cached(double S, double K, double T, double sigma, double 
   const double euro = black76_price_from_lnfk(F, K, T, sigma, df, ln_fk, sqrt_t, side);
   const double corr = correction.eval(-ln_fk, T, sigma);
   ATX_VOL_COUNT(CacheHits);
-  return euro + F * corr;
+  // A2 (core-review finding 2): floor at max(intrinsic, euro, 0) — see the
+  // single-cache overload above.
+  const double intr = (side == Side::Put) ? (K - S) : (S - K);
+  return floor_cached_price(euro + F * corr, euro, intr);
+}
+
+// ── Fused cached price + vega (perf review F1 + F8) ───────────────────────────
+// The IV-inversion Newton step evaluates the correction tensor 3x at the same
+// (k_log, T, sigma): once for the residual (american_price_cached's value) and
+// twice for the vega (american_vega -> eval_grad = value + dsigma partial). These
+// entries collapse that to ONE shared value traversal + one dsigma partial (stage
+// a: 3 -> 2), and — once eval_value_and_dsigma fuses them — to ~1 traversal.
+AmericanPriceVega american_price_and_vega_cached(double S, double K, double T, double sigma,
+                                                 double r, double q, Side side,
+                                                 const CorrectionCache *correction) {
+  const double df = std::exp(-r * T);
+  const double F = S * std::exp((r - q) * T);
+  const double ln_fk = std::log(F / K);
+  const double sqrt_t = (T > 0.0) ? std::sqrt(T) : 0.0;
+  // Black-76 vega leg (F8: two-output kernel, bit-identical to the greeks bundle's
+  // vega; √T and ln(F/K) are shared with the price leg below).
+  const double euro_vega = black76_value_and_vega(F, K, T, sigma, df, side, sqrt_t).vega;
+
+  if (correction == nullptr || !correction->populated() || correction->side() != side) {
+    // Split cold contract, mirroring the two separate entries: the price falls
+    // back to the cold Andersen-Lake solve (american_price_cached), the vega is
+    // the Black-76 European leg only (american_vega's null-cache path).
+    ATX_VOL_COUNT(CacheColdFallbacks);
+    const Result<double> p = andersen_lake(S, K, T, sigma, r, q, side, std::nullopt);
+    return AmericanPriceVega{p ? *p : std::numeric_limits<double>::quiet_NaN(), euro_vega};
+  }
+
+  // ONE shared value traversal + the sigma partial, at the price path's
+  // k_log = -ln(F/K) (so the American price and its vega are mutually consistent).
+  double dc_ds = 0.0;
+  const double corr = correction->eval_value_and_dsigma(-ln_fk, T, sigma, &dc_ds);
+  // Served-correction max(0, .) gate on the derivative (see american_vega): the
+  // clamped branch has zero derivative too, keeping Newton's vega consistent with
+  // the served forward map.
+  if (!(corr > 0.0)) {
+    dc_ds = 0.0;
+  }
+  const double vega = euro_vega + F * dc_ds;
+
+  // Price: NaN on the double-continuation corner (as american_price_cached). The
+  // vega is still returned, but the inverter reads the NaN price and bails before
+  // consuming it.
+  if (classify_regime(/*rate=*/(side == Side::Put) ? r : q,
+                      /*yield=*/(side == Side::Put) ? q : r) == ExerciseRegime::Unsupported) {
+    return AmericanPriceVega{std::numeric_limits<double>::quiet_NaN(), vega};
+  }
+  ATX_VOL_COUNT(CacheHits);
+  const double euro = black76_price_from_lnfk(F, K, T, sigma, df, ln_fk, sqrt_t, side);
+  const double intr = (side == Side::Put) ? (K - S) : (S - K);
+  const double price = floor_cached_price(euro + F * corr, euro, intr);
+  return AmericanPriceVega{price, vega};
+}
+
+AmericanPriceVega american_price_and_vega_cached(double S, double K, double T, double sigma,
+                                                 double r, double q, Side side,
+                                                 const CorrectionBlend &correction) {
+  // Delegate the degenerate / single-cache cases to the CorrectionCache overload,
+  // byte-for-byte as american_price_cached / american_vega do — so a single-cache
+  // blend reproduces the CorrectionCache path exactly (IV blend==single pin).
+  if (!correction.usable(side)) {
+    return american_price_and_vega_cached(S, K, T, sigma, r, q, side,
+                                          static_cast<const CorrectionCache *>(nullptr));
+  }
+  if (correction.upper_weight == 0.0 || correction.lower == correction.upper) {
+    return american_price_and_vega_cached(S, K, T, sigma, r, q, side, correction.lower);
+  }
+  if (correction.upper_weight == 1.0) {
+    return american_price_and_vega_cached(S, K, T, sigma, r, q, side, correction.upper);
+  }
+  const double df = std::exp(-r * T);
+  const double F = S * std::exp((r - q) * T);
+  const double ln_fk = std::log(F / K);
+  const double sqrt_t = (T > 0.0) ? std::sqrt(T) : 0.0;
+  const double euro_vega = black76_value_and_vega(F, K, T, sigma, df, side, sqrt_t).vega;
+  // The blend's fused value+dsigma applies the SAME per-endpoint max(0, .) gate as
+  // eval_dsigma, so (unlike the single-cache path) no outer gate is applied here —
+  // this matches american_vega's blend overload.
+  double dc_ds = 0.0;
+  const double corr = correction.eval_value_and_dsigma(-ln_fk, T, sigma, &dc_ds);
+  const double vega = euro_vega + F * dc_ds;
+  if (classify_regime(/*rate=*/(side == Side::Put) ? r : q,
+                      /*yield=*/(side == Side::Put) ? q : r) == ExerciseRegime::Unsupported) {
+    return AmericanPriceVega{std::numeric_limits<double>::quiet_NaN(), vega};
+  }
+  ATX_VOL_COUNT(CacheHits);
+  const double euro = black76_price_from_lnfk(F, K, T, sigma, df, ln_fk, sqrt_t, side);
+  const double intr = (side == Side::Put) ? (K - S) : (S - K);
+  const double price = floor_cached_price(euro + F * corr, euro, intr);
+  return AmericanPriceVega{price, vega};
 }
 
 Result<AmericanGreeks> american_greeks(double S, double K, double T, double sigma, double r,
@@ -2288,6 +2677,19 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
   const double hr = 1.0e-4;
   const double hT = 1.0e-3;
   const bool near_expiry = (T - hT <= 1.0e-8);
+  // A5 (core-review finding 5): the rho DOWN-bump r - hr can cross OUT of the
+  // American regime into double-continuation for a PRICEABLE base contract (a put
+  // with 0 < r <= hr and q < r - hr; a call bumps the internal-put YIELD, not its
+  // rate). The regime is classified in the internal-put's (rate, yield) — the SAME
+  // order Pput/Pcall use below (put: rate=r2, yield=q; call: rate=q, yield=r2). When
+  // the down-bump is Unsupported the whole bundle used to fail with NotImplemented;
+  // fall back to a one-sided FORWARD rho stencil (mirroring the near-expiry theta
+  // treatment) so no bump reaches the unpriceable regime.
+  const bool rho_is_call = (side == Side::Call);
+  const double rho_dn_rate = rho_is_call ? q : (r - hr);
+  const double rho_dn_yield = rho_is_call ? (r - hr) : q;
+  const bool rho_forward =
+      (classify_regime(rho_dn_rate, rho_dn_yield) == ExerciseRegime::Unsupported);
 
   // Bumped cold price. Captures the FIRST american_price error and short-circuits;
   // the poisoned NaN it returns afterwards is never consumed once `failed` is set.
@@ -2336,6 +2738,13 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
   };
   std::array<BndCache, 7> memo{};
   std::size_t n_memo = 0;
+  // F5: ONE shared premium precompute for the whole bundle — rebound whenever the
+  // active (dsig,dr,dT) boundary changes, reused across a state's spot stencils.
+  // Held here (not in BndCache) so the seven-workspace memo bundle does not pay 7x
+  // this ~2.6 KB (trap 7: american_greeks_fd's stack budget). Consecutive same-state
+  // spot bumps (the p0/p_Sp/p_Sm run and each vega/time state's crosses) hit it;
+  // interleaved states rebind, which merely re-pays the inline cost — never more.
+  AlPremiumCache prem_cache;
   auto Pput = [&](double dS, double dsig, double dr, double dT) -> double {
     if (failed) {
       return std::numeric_limits<double>::quiet_NaN();
@@ -2387,7 +2796,13 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
     if (!c->ok) {
       return P(dS, dsig, dr, dT); // boundary collapsed: exact scalar fallback
     }
-    return al_put_price_from_boundary(c->bnd, c->ws, S2, K, T2, sig2, r2, q);
+    // F5: bind the premium precompute for this boundary/state if the shared cache is
+    // pointing elsewhere; the spot stencils of a state then reuse it. Put boundary is
+    // FIXED across spot bumps (only S2 moves), so a bound cache stays valid.
+    if (!al_premium_cache_matches(prem_cache, c->bnd, c->ws, sig2, r2, q)) {
+      al_bind_premium(c->bnd, c->ws, sig2, r2, q, prem_cache);
+    }
+    return al_put_price_from_boundary_cached(c->bnd, c->ws, prem_cache, S2, K, T2, sig2, r2, q);
   };
   // Call fast path evaluator. McDonald-Schroder: C(S,K,r,q) prices via an internal
   // put with spot = K (the call strike, FIXED across every stencil), strike = the
@@ -2465,8 +2880,14 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
     // K (the fixed call strike), strike = S2 (the bumped call spot).
     c->bnd.K = S2;
     c->bnd.xmax = al_xmax_put(S2, /*r=*/q, /*q=*/r2);
-    const double price = al_put_price_from_boundary(c->bnd, c->ws, /*spot=*/K, /*strike=*/S2, T2,
-                                                    sig2, /*r=*/q, /*q=*/r2);
+    // F5: the internal-put boundary's y[] is fixed across this state's spot stencils
+    // (only xmax rescales with S2), so bind the premium precompute once per state and
+    // let b_t = xmax*bfac follow the rescale — bit-identical to the per-stencil price.
+    if (!al_premium_cache_matches(prem_cache, c->bnd, c->ws, sig2, /*r=*/q, /*q=*/r2)) {
+      al_bind_premium(c->bnd, c->ws, sig2, /*r=*/q, /*q=*/r2, prem_cache);
+    }
+    const double price = al_put_price_from_boundary_cached(
+        c->bnd, c->ws, prem_cache, /*spot=*/K, /*strike=*/S2, T2, sig2, /*r=*/q, /*q=*/r2);
     // T9a-M1: restore the canonical base scaling so the in-place rescale above never
     // leaves a ~0.1%-off xmax in the memoized boundary. Without this, a subsequent
     // warm_start state seeds al_solve_put_boundary_warm from memo[0].bnd whose xmax
@@ -2490,9 +2911,9 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
   // Vol stencils.
   const double p_vp = EV(0.0, +hv, 0.0, 0.0);
   const double p_vm = EV(0.0, -hv, 0.0, 0.0);
-  // Rate stencils.
+  // Rate stencils (one-sided forward when the down-bump exits the American regime).
   const double p_rp = EV(0.0, 0.0, +hr, 0.0);
-  const double p_rm = EV(0.0, 0.0, -hr, 0.0);
+  const double p_rm = rho_forward ? p0 : EV(0.0, 0.0, -hr, 0.0);
   // Time stencils (one-sided forward near expiry).
   const double p_Tp = EV(0.0, 0.0, 0.0, +hT);
   const double p_Tm = near_expiry ? p0 : EV(0.0, 0.0, 0.0, -hT);
@@ -2513,6 +2934,8 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
 
   // Time denominator collapses to hT for the one-sided forward stencils.
   const double dT_den = near_expiry ? hT : (2.0 * hT);
+  // Rate denominator collapses to hr for the one-sided forward rho stencil (A5).
+  const double dr_den = rho_forward ? hr : (2.0 * hr);
 
   AmericanGreeks out;
   out.price = p0;
@@ -2520,7 +2943,7 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
   out.gamma = (p_Sp - 2.0 * p0 + p_Sm) / (hS * hS);
   out.vega = (p_vp - p_vm) / (2.0 * hv);
   out.volga = (p_vp - 2.0 * p0 + p_vm) / (hv * hv);
-  out.rho = (p_rp - p_rm) / (2.0 * hr);
+  out.rho = (p_rp - p_rm) / dr_den;
   // theta = dP/dt = -dP/dT (calendar convention).
   out.theta = -(p_Tp - p_Tm) / dT_den;
   out.vanna = (p_SpVp - p_SpVm - p_SmVp + p_SmVm) / (4.0 * hS * hv);
@@ -2543,8 +2966,11 @@ double american_vega(double S, double K, double T, double sigma, double r, doubl
   const double df = std::exp(-r * T);
   // Black-76 vega is closed-form (no early-exercise FD); the correction adds only
   // its first-order sigma partial — one cache eval_grad instead of the seven the
-  // full american_greeks bundle runs for its second-order FD terms.
-  const double euro_vega = black76_greeks(F, K, T, sigma, r, df, side).greeks.vega;
+  // full american_greeks bundle runs for its second-order FD terms. F8: the vega
+  // comes from the two-output black76_value_and_vega, not the 9-output
+  // black76_greeks bundle (its vega is bit-identical — same d1, φ(d1)=norm_pdf(d1),
+  // and F·df·φ(d1)·√T with commutative F·df).
+  const double euro_vega = black76_value_and_vega(F, K, T, sigma, df, side).vega;
   double dc_ds = 0.0;
   if (correction != nullptr && correction->populated() && correction->side() == side) {
     const double correction_value =
@@ -2575,7 +3001,8 @@ double american_vega(double S, double K, double T, double sigma, double r, doubl
   }
   const double F = S * std::exp((r - q) * T);
   const double df = std::exp(-r * T);
-  const double euro_vega = black76_greeks(F, K, T, sigma, r, df, side).greeks.vega;
+  // F8: cheap two-output vega kernel (bit-identical to black76_greeks(...).vega).
+  const double euro_vega = black76_value_and_vega(F, K, T, sigma, df, side).vega;
   const double dc_ds = correction.eval_dsigma(std::log(K / F), T, sigma);
   return euro_vega + F * dc_ds;
 }
@@ -2729,6 +3156,285 @@ Result<AmericanGreeks> american_greeks_al(double S, double K, double T, double s
                   0.5 * sigma * sigma * (2.0 * S * out.gamma + S * S * speed);
     }
   }
+  return Ok(out);
+}
+
+// ── Carry sensitivities: ∂P/∂q and ∂P/∂Div (G2, gaps-review finding 2) ────
+
+Result<CarryGreeks> american_carry_greeks_fd(double S, double K, double T, double sigma, double r,
+                                             double q, Side side, AmericanMethod method,
+                                             const std::optional<AlOpts> &opts) {
+  if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !(sigma > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "american_carry_greeks_fd: S, K, T, sigma must be > 0");
+  }
+  const double hq = 1.0e-4; // match american_greeks_fd's hr
+  // A5 regime guard for the q down-bump. Under McDonald-Schroder q is the internal-
+  // put YIELD for a put (internal rate = r, untouched by the q-bump) and the
+  // internal-put RATE for a call. Only a CALL can leave the American regime: a
+  // down-bump q - hq that drops the internal rate out of the American regime has no
+  // early-exercise boundary, so use a one-sided FORWARD stencil (mirroring
+  // american_greeks_fd's rho_forward / near-expiry theta). A put is always central.
+  const bool is_call = (side == Side::Call);
+  const bool q_forward =
+      is_call && (classify_regime(/*rate=*/q - hq, /*yield=*/r) != ExerciseRegime::American);
+
+  bool failed = false;
+  atx::core::Error first_err;
+  auto P = [&](double dq) -> double {
+    if (failed) {
+      return std::numeric_limits<double>::quiet_NaN();
+    }
+    const Result<double> p = american_price(S, K, T, sigma, r, q + dq, side, method, opts);
+    if (!p) {
+      failed = true;
+      first_err = p.error();
+      return std::numeric_limits<double>::quiet_NaN();
+    }
+    return *p;
+  };
+  const double p0 = P(0.0);
+  const double pqp = P(+hq);
+  const double pqm = q_forward ? p0 : P(-hq);
+  if (failed) {
+    return Err(std::move(first_err));
+  }
+  CarryGreeks out;
+  out.price = p0;
+  out.dP_dq = q_forward ? (pqp - p0) / hq : (pqp - pqm) / (2.0 * hq);
+  out.q_one_sided = q_forward;
+  return Ok(out);
+}
+
+Result<CarryGreeks> american_carry_greeks_al(double S, double K, double T, double sigma, double r,
+                                             double q, Side side,
+                                             const std::optional<AlOpts> &opts) {
+  if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !(sigma > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "american_carry_greeks_al: S, K, T, sigma must be > 0");
+  }
+  const bool is_call = (side == Side::Call);
+  const double al_rate = is_call ? q : r; // internal-put short rate
+  // Degenerate / no-early-exercise corners take the exact FD reference (which itself
+  // short-circuits to the European Black-76 leg where the regime demands it).
+  if (al_rate <= 0.0 || T <= 1.0e-12 || sigma <= 1.0e-8) {
+    return american_carry_greeks_fd(S, K, T, sigma, r, q, side, AmericanMethod::AndersenLake, opts);
+  }
+  const AlScheme sch = scheme_from_opts(opts);
+  const double hq = 1.0e-4;
+  // A5: for a CALL, q is the internal-put RATE; a down-bump q - hq that leaves the
+  // American regime has no boundary to solve -> one-sided forward stencil. For a PUT,
+  // q is the internal YIELD (internal rate = r > 0 fixed) -> always central.
+  const bool q_forward =
+      is_call && (classify_regime(/*rate=*/q - hq, /*yield=*/r) != ExerciseRegime::American);
+
+  // Boundaries: base + q+ (+ q- unless one-sided). q bumps the internal RATE for a
+  // call, the internal YIELD for a put; the internal strike is S (call) / K (put).
+  const double Kb = is_call ? S : K;
+  const auto solve = [&](AlBoundary &b, AlWorkspace &w, double dq) -> AlSolveStatus {
+    const double rate = is_call ? (q + dq) : r;
+    const double yield = is_call ? r : (q + dq);
+    return al_solve_put_boundary(Kb, T, sigma, rate, yield, sch, b, w);
+  };
+  AlBoundary b0, bqp, bqm;
+  AlWorkspace w0, wqp, wqm;
+  bool ok =
+      (solve(b0, w0, 0.0) == AlSolveStatus::Ok) && (solve(bqp, wqp, +hq) == AlSolveStatus::Ok);
+  if (ok && !q_forward) {
+    ok = (solve(bqm, wqm, -hq) == AlSolveStatus::Ok);
+  }
+  if (!ok) {
+    return american_carry_greeks_fd(S, K, T, sigma, r, q, side, AmericanMethod::AndersenLake, opts);
+  }
+  // Price from a solved boundary at the option's fixed spot/strike. Carry greeks bump
+  // ONLY q (no spot stencil), so no homogeneity rescale is needed on either side, and
+  // al_solve_put(S,K,..) == al_solve_put_boundary + this price call makes v0/vq± bit-
+  // identical to american_carry_greeks_fd for BOTH sides.
+  const auto px = [&](const AlBoundary &b, const AlWorkspace &w, double q2) -> double {
+    const double rate = is_call ? q2 : r;
+    const double yield = is_call ? r : q2;
+    const double spot = is_call ? K : S;
+    const double strike = is_call ? S : K;
+    return al_put_price_from_boundary(b, w, spot, strike, T, sigma, rate, yield);
+  };
+  const double v0 = px(b0, w0, q);
+  const double vqp = px(bqp, wqp, q + hq);
+  CarryGreeks out;
+  out.price = v0;
+  out.q_one_sided = q_forward;
+  if (q_forward) {
+    out.dP_dq = (vqp - v0) / hq;
+  } else {
+    const double vqm = px(bqm, wqm, q - hq);
+    out.dP_dq = (vqp - vqm) / (2.0 * hq);
+  }
+  return Ok(out);
+}
+
+Result<CarryGreeks> american_carry_greeks(double S, double K, double T, double sigma, double r,
+                                          double q, Side side, const CorrectionCache *correction) {
+  if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !(sigma > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "american_carry_greeks: S, K, T, sigma must be > 0");
+  }
+  if (correction != nullptr && (!correction->populated() || correction->side() != side)) {
+    correction = nullptr;
+  }
+  if (classify_regime(/*rate=*/(side == Side::Put) ? r : q,
+                      /*yield=*/(side == Side::Put) ? q : r) == ExerciseRegime::Unsupported) {
+    return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
+  }
+  AmericanGreeks g;
+  double dq = 0.0;
+  american_greeks_first_order(S, K, T, sigma, r, q, side, correction, g, &dq);
+  CarryGreeks out;
+  out.price = g.price;
+  out.dP_dq = dq;
+  return Ok(out);
+}
+
+Result<CarryGreeks> american_carry_greeks(double S, double K, double T, double sigma, double r,
+                                          double q, Side side, const CorrectionBlend &correction) {
+  if (!correction.usable(side)) {
+    return american_carry_greeks(S, K, T, sigma, r, q, side,
+                                 static_cast<const CorrectionCache *>(nullptr));
+  }
+  if (correction.upper_weight == 0.0 || correction.lower == correction.upper) {
+    return american_carry_greeks(S, K, T, sigma, r, q, side, correction.lower);
+  }
+  if (correction.upper_weight == 1.0) {
+    return american_carry_greeks(S, K, T, sigma, r, q, side, correction.upper);
+  }
+  if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !(sigma > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "american_carry_greeks: S, K, T, sigma must be > 0");
+  }
+  if (classify_regime(/*rate=*/(side == Side::Put) ? r : q,
+                      /*yield=*/(side == Side::Put) ? q : r) == ExerciseRegime::Unsupported) {
+    return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
+  }
+  AmericanGreeks g;
+  double dq = 0.0;
+  american_greeks_first_order(S, K, T, sigma, r, q, side, &correction, g, &dq);
+  CarryGreeks out;
+  out.price = g.price;
+  out.dP_dq = dq;
+  return Ok(out);
+}
+
+void american_dividend_sensitivities(double dP_dq, double F, double T,
+                                     std::span<const double> dF_dDiv,
+                                     std::span<double> dP_dDiv_out) noexcept {
+  // dP/dD_i = (∂P/∂q)·(∂q_eff/∂D_i); q_eff = r - ln(F/S)/T so ∂q_eff/∂D_i =
+  // (-1/(F·T))·∂F/∂D_i. A degenerate F·T (non-finite / zero) yields no sensitivity.
+  const double ft = F * T;
+  const bool ok = std::isfinite(dP_dq) && std::isfinite(ft) && ft != 0.0;
+  const double scale = ok ? (-dP_dq / ft) : 0.0;
+  const std::size_t n =
+      (dF_dDiv.size() < dP_dDiv_out.size()) ? dF_dDiv.size() : dP_dDiv_out.size();
+  for (std::size_t i = 0; i < n; ++i) {
+    dP_dDiv_out[i] = scale * dF_dDiv[i];
+  }
+}
+
+// ── Early-exercise boundary (G4, gaps finding 5) ─────────────────────────
+//
+// Exposes the retained Andersen-Lake boundary state: the critical price B(T) at
+// time-to-expiry T. The put boundary is solved directly (internal rate=r, yield=q);
+// the call boundary is the McDonald-Schroder reflection B_call = K^2/B_put(rate=q,
+// yield=r) of the internal put solved with (rate,yield) swapped. The internal put's
+// boundary is read at u = T (al_boundary_at's z=+1 node), i.e. the critical price
+// for the FULL time-to-expiry, so it lands on the smooth-paste seam of andersen_lake.
+Result<double> exercise_boundary(double K, double T, double sigma, double r, double q, Side side,
+                                 const std::optional<AlOpts> &opts) {
+  if (!(K > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "exercise_boundary: K must be > 0");
+  }
+  if (!(T >= 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "exercise_boundary: T must be >= 0");
+  }
+  if (!(sigma >= 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "exercise_boundary: sigma must be >= 0");
+  }
+  if (!(std::isfinite(r) && std::isfinite(q))) {
+    return Err(ErrorCode::InvalidArgument, "exercise_boundary: r and q must be finite");
+  }
+
+  // Internal-put (rate, yield): a put solves directly; a call is the McDonald-
+  // Schroder put P(K,S,q,r), so it classifies and solves with (rate=q, yield=r).
+  const double rp = (side == Side::Put) ? r : q;
+  const double qp = (side == Side::Put) ? q : r;
+
+  switch (classify_regime(/*rate=*/rp, /*yield=*/qp)) {
+  case ExerciseRegime::European:
+    // No early exercise is ever optimal, so there is NO finite boundary (it sits
+    // at S=0 for the put / S=+inf for the call). Documented sentinel — no
+    // fabricated price. (put r<=0 && r<=q; call q<=0 && q<=r.)
+    return Err(ErrorCode::OutOfRange,
+               "exercise_boundary: European regime (early exercise never optimal) — no "
+               "finite early-exercise boundary (S=0 for the put / S=+inf for the call)");
+  case ExerciseRegime::Unsupported:
+    return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
+  case ExerciseRegime::American:
+    break;
+  }
+
+  // xmax = K*min(1, rp/qp): the homogeneity scale AND the near-expiry limit B(0+)
+  // of the internal put. Guaranteed > 0 in the American regime classified above.
+  const double xmax = al_xmax_put(K, rp, qp);
+
+  // Degenerate T ~ 0 / sigma ~ 0 -> the analytic near-expiry limit. Put: B(0+) =
+  // xmax = K*min(1,r/q). Call: reflect, B_call(0+) = K^2/xmax = K*max(1,r/q).
+  if (T <= 1.0e-12 || sigma <= 1.0e-8) {
+    const double b = (side == Side::Put) ? xmax : (K * K / xmax);
+    return Ok(b);
+  }
+
+  const AlScheme sch = scheme_from_opts(opts);
+  AlBoundary bnd;
+  AlWorkspace ws;
+  switch (al_solve_put_boundary(K, T, sigma, rp, qp, sch, bnd, ws, /*specialize=*/true)) {
+  case AlSolveStatus::Collapsed:
+    return Err(ErrorCode::NotImplemented,
+               "exercise_boundary: asymptotic boundary collapsed (xmax <= 0)");
+  case AlSolveStatus::TableMissing:
+    return Err(ErrorCode::Internal, "exercise_boundary: Gauss-Legendre table unavailable");
+  case AlSolveStatus::Ok:
+    break;
+  }
+  const double bp = al_boundary_at(bnd, T); // internal-put critical price at u = T
+  const double b = (side == Side::Put) ? bp : (K * K / bp);
+  return Ok(b);
+}
+
+// ── Early-assignment risk screen (G4) ────────────────────────────────────
+//
+// HEURISTIC screen (not a pricing statement): the carry benefit of exercising a
+// deep-ITM American option now vs. the remaining time (extrinsic) value forfeited.
+// CALL benefit = pending dividend income q*S*T; PUT benefit = interest on the
+// strike r*K*T (both linear/undiscounted over the remaining life T). Flagged when
+// the benefit exceeds the time value AND the option is in the money.
+Result<AssignmentRisk> assignment_risk(double S, double K, double T, double sigma, double r,
+                                       double q, Side side, const std::optional<AlOpts> &opts) {
+  const Result<double> mark =
+      american_price(S, K, T, sigma, r, q, side, AmericanMethod::AndersenLake, opts);
+  if (!mark) {
+    return Err(mark.error());
+  }
+
+  const bool is_call = (side == Side::Call);
+  const double raw_intr = is_call ? (S - K) : (K - S);
+  const double intrinsic = (raw_intr > 0.0) ? raw_intr : 0.0;
+  double time_value = *mark - intrinsic;
+  if (time_value < 0.0) {
+    time_value = 0.0; // American mark is floored at intrinsic; guard FP noise
+  }
+  // Linear carry benefit over the remaining life: dividend income for the call
+  // (holder forgoes divs), interest on the strike for the put.
+  const double carry_benefit = is_call ? (q * S * T) : (r * K * T);
+
+  AssignmentRisk out;
+  out.carry_benefit = carry_benefit;
+  out.time_value = time_value;
+  out.margin = carry_benefit - time_value;
+  // Only an in-the-money option can be assigned; the margin decides deep-ITM cases.
+  out.at_risk = (intrinsic > 0.0) && (carry_benefit > time_value);
   return Ok(out);
 }
 
@@ -2921,6 +3627,96 @@ GaussLegendre gauss_legendre(unsigned n) {
   return t ? *t : GaussLegendre{};
 }
 
+BawResidualEval baw_residual_eval(double Sx, double K, double T, double sigma, double r, double q,
+                                  Side side) noexcept {
+  BawResidualEval out;
+  if (!(K > 0.0 && T > 0.0 && sigma > 0.0 && Sx > 0.0)) {
+    return out;
+  }
+  // Same regime gate as baw_american: only the standard single-boundary
+  // American regime has an interior smooth-pasting critical price.
+  if (classify_regime(/*rate=*/(side == Side::Put) ? r : q,
+                      /*yield=*/(side == Side::Put) ? q : r) != ExerciseRegime::American) {
+    return out;
+  }
+  const double sigma2 = sigma * sigma;
+  const double M = 2.0 * r / sigma2;
+  const double N = 2.0 * (r - q) / sigma2;
+  const double h = 1.0 - std::exp(-r * T);
+  if (!(h > 0.0)) {
+    return out;
+  }
+  const double disc = (N - 1.0) * (N - 1.0) + 4.0 * M / h;
+  if (!(disc >= 0.0)) {
+    return out;
+  }
+  const double sqrt_disc = std::sqrt(disc);
+  if (side == Side::Put) {
+    const double q1 = 0.5 * (-(N - 1.0) - sqrt_disc);
+    if (!(q1 < 0.0)) {
+      return out;
+    }
+    out.q_exp = q1;
+    out.f = put_residual(Sx, K, T, sigma, r, q, q1);
+    out.fprime = put_residual_deriv(Sx, K, T, sigma, r, q, q1);
+  } else {
+    const double q2 = 0.5 * (-(N - 1.0) + sqrt_disc);
+    if (!(q2 > 1.0)) {
+      return out;
+    }
+    out.q_exp = q2;
+    out.f = call_residual(Sx, K, T, sigma, r, q, q2);
+    out.fprime = call_residual_deriv(Sx, K, T, sigma, r, q, q2);
+  }
+  out.ok = true;
+  return out;
+}
+
+BawCriticalSolve baw_critical_solve(double K, double T, double sigma, double r, double q, Side side,
+                                    std::uint16_t max_iter, double tol) noexcept {
+  BawCriticalSolve out;
+  if (!(K > 0.0 && T > 0.0 && sigma > 0.0)) {
+    return out;
+  }
+  if (classify_regime(/*rate=*/(side == Side::Put) ? r : q,
+                      /*yield=*/(side == Side::Put) ? q : r) != ExerciseRegime::American) {
+    return out;
+  }
+  const double sigma2 = sigma * sigma;
+  const double M = 2.0 * r / sigma2;
+  const double N = 2.0 * (r - q) / sigma2;
+  const double h = 1.0 - std::exp(-r * T);
+  if (!(h > 0.0)) {
+    return out;
+  }
+  const double disc = (N - 1.0) * (N - 1.0) + 4.0 * M / h;
+  if (!(disc >= 0.0)) {
+    return out;
+  }
+  const double sqrt_disc = std::sqrt(disc);
+  const std::uint16_t mi = max_iter ? max_iter : std::uint16_t{16};
+  const double tt = (tol > 0.0) ? tol : 1.0e-10;
+  NewtonCriticalStats st;
+  if (side == Side::Put) {
+    const double q1 = 0.5 * (-(N - 1.0) - sqrt_disc);
+    if (!(q1 < 0.0)) {
+      return out;
+    }
+    out.Sx = newton_critical_put(K, T, sigma, r, q, q1, mi, tt, &st);
+  } else {
+    const double q2 = 0.5 * (-(N - 1.0) + sqrt_disc);
+    if (!(q2 > 1.0)) {
+      return out;
+    }
+    out.Sx = newton_critical_call(K, T, sigma, r, q, q2, mi, tt, &st);
+  }
+  out.residual = st.residual;
+  out.iters = st.iters;
+  out.converged = st.converged;
+  out.ok = true;
+  return out;
+}
+
 Result<double> andersen_lake_generic_kernel(double S, double K, double T, double sigma, double r,
                                             double q, Side side,
                                             const std::optional<AlOpts> &opts) {
@@ -2979,479 +3775,6 @@ int al_boundary_jn_sweeps_to_converge(double K, double T, double sigma, double r
     }
   }
   return max_sweeps;
-}
-
-// ── P2.3 temporal warm-start: counted two-stage boundary solve ────────────
-//
-// Bind quadrature + geometry, seed (cold BAW if `seed == nullptr`, else warm from
-// the supplied converged boundary remapped onto this grid), then run the production
-// two-stage sweep sequence (JN up to `jn_cap`, then FP up to `fp_cap`) with early
-// exit at `tol`. Returns the number of JN+FP sweeps actually executed (-1 on a
-// collapsed / table-missing corner); leaves `bnd`/`ws` holding the converged boundary
-// (ready for al_put_price_from_boundary or as the next snapshot's warm seed) and the
-// final residual in `resid_out`.
-[[nodiscard]] static int al_solve_put_counted(double K, double T, double sigma, double r, double q,
-                                              const AlScheme &sch, const AlBoundary *seed,
-                                              int jn_cap, int fp_cap, AlBoundary &bnd,
-                                              AlWorkspace &ws, double &resid_out) noexcept {
-  al_init_nodes(bnd, sch.n_boundary, T, K, r, q);
-  if (!(bnd.xmax > 0.0)) {
-    return -1;
-  }
-  const GaussLegendre *fp = gl_find(sch.n_quad_fp);
-  const GaussLegendre *pr = gl_find(sch.n_quad_price);
-  if (!fp || !fp->ok || !pr || !pr->ok) {
-    return -1;
-  }
-  ws.specialize = true;
-  ws.qx_fp = fp->nodes.data();
-  ws.qw_fp = fp->weights.data();
-  ws.n_quad_fp = sch.n_quad_fp;
-  ws.qx_price = pr->nodes.data();
-  ws.qw_price = pr->weights.data();
-  ws.n_quad_price = sch.n_quad_price;
-  al_bind_geometry(bnd, ws, sigma, r, q);
-
-  if (seed == nullptr) {
-    al_seed_boundary(bnd, sigma, r, q);
-  } else {
-    bnd.y[0] = 0.0;
-    for (std::uint16_t i = 1; i < bnd.n; ++i) {
-      const double tau_i = bnd.tau[i];
-      if (tau_i <= 1.0e-14) {
-        bnd.y[i] = 0.0;
-        continue;
-      }
-      double b_seed = al_boundary_at(*seed, tau_i);
-      if (b_seed > bnd.xmax) {
-        b_seed = bnd.xmax;
-      }
-      if (!(b_seed > 0.0)) {
-        b_seed = 1.0e-6 * K;
-      }
-      bnd.y[i] = y_from_b(b_seed, bnd.xmax);
-    }
-  }
-
-  int sweeps = 0;
-  double resid = 1.0;
-  for (int k = 0; k < jn_cap; ++k) {
-    resid = al_jacobi_newton_sweep(bnd, ws, sigma, r, q);
-    ++sweeps;
-    if (resid <= sch.tol) {
-      break;
-    }
-  }
-  if (resid > sch.tol) {
-    for (int k = 0; k < fp_cap; ++k) {
-      resid = al_fixed_point_sweep(bnd, ws, sigma, r, q);
-      ++sweeps;
-      if (resid <= sch.tol) {
-        break;
-      }
-    }
-  }
-  resid_out = resid;
-  return sweeps;
-}
-
-bool al_temporal_warm_probe(double S, double K, double q, double T0, double sigma0, double r0,
-                            double dT, double dsigma, double dr, int n_snap,
-                            const std::optional<AlOpts> &opts, bool converge_to_tol, int max_sweeps,
-                            double move_guard_frac, std::vector<int> &cold_sweeps,
-                            std::vector<int> &warm_sweeps, int &warm_hits, int &cold_reseeds,
-                            double &max_price_gap) noexcept {
-  const AlScheme sch = scheme_from_opts(opts);
-  // Genuine early-exercise put only (rate = r). The whole sequence must stay American.
-  if (!(r0 > 0.0) || !(K > 0.0) || !(S > 0.0)) {
-    return false;
-  }
-  const int jn_cap = converge_to_tol ? max_sweeps : static_cast<int>(sch.n_iter_jn);
-  const int fp_cap = converge_to_tol ? max_sweeps : static_cast<int>(sch.n_iter_fp);
-  // The stored converged WARM boundary (the temporal cache, one key = this contract).
-  AlBoundary store_bnd{};
-  AlWorkspace store_ws{};
-  bool have_store = false;
-  bool any = false;
-
-  for (int k = 0; k < n_snap; ++k) {
-    const double T = T0 - dT * static_cast<double>(k);
-    const double sigma = sigma0 + dsigma * static_cast<double>(k);
-    const double r = r0 + dr * static_cast<double>(k);
-    if (!(T > 1.0e-6) || !(sigma > 1.0e-6) || !(r > 0.0)) {
-      break;
-    }
-    // COLD reference: fresh BAW reseed, its own boundary/workspace.
-    AlBoundary cbnd{};
-    AlWorkspace cws{};
-    double cresid = 0.0;
-    const int cs =
-        al_solve_put_counted(K, T, sigma, r, q, sch, nullptr, jn_cap, fp_cap, cbnd, cws, cresid);
-    if (cs < 0) {
-      break; // collapsed corner — end the sequence
-    }
-    const double cold_px = al_put_price_from_boundary(cbnd, cws, S, K, T, sigma, r, q);
-
-    // WARM: seed from the stored boundary unless the move guard fires.
-    const bool guard_fire = have_store && (std::fabs(dsigma) > move_guard_frac * sigma ||
-                                           std::fabs(dT) > move_guard_frac * T);
-    const bool can_warm = have_store && !guard_fire;
-    AlBoundary wbnd{};
-    AlWorkspace wws{};
-    double wresid = 0.0;
-    int ws_sweeps = 0;
-    bool reseeded = false;
-    if (can_warm) {
-      ws_sweeps = al_solve_put_counted(K, T, sigma, r, q, sch, &store_bnd, jn_cap, fp_cap, wbnd,
-                                       wws, wresid);
-      // Residual-trend safety net: a stale warm seed that leaves the boundary far
-      // from converged after its sweep budget falls back to a cold reseed so the
-      // warm path is never worse than cold (charging the wasted warm sweeps).
-      const double kTrend = 1.0e-3;
-      if (ws_sweeps < 0 || wresid > kTrend) {
-        const int wasted = (ws_sweeps > 0) ? ws_sweeps : 0;
-        const int rs = al_solve_put_counted(K, T, sigma, r, q, sch, nullptr, jn_cap, fp_cap, wbnd,
-                                            wws, wresid);
-        if (rs < 0) {
-          break;
-        }
-        ws_sweeps = wasted + rs;
-        reseeded = true;
-      }
-    } else {
-      ws_sweeps =
-          al_solve_put_counted(K, T, sigma, r, q, sch, nullptr, jn_cap, fp_cap, wbnd, wws, wresid);
-      if (ws_sweeps < 0) {
-        break;
-      }
-      reseeded = have_store; // guard-forced cold reseed (not the first snapshot)
-    }
-    const double warm_px = al_put_price_from_boundary(wbnd, wws, S, K, T, sigma, r, q);
-
-    cold_sweeps.push_back(cs);
-    warm_sweeps.push_back(ws_sweeps);
-    if (can_warm && !reseeded) {
-      ++warm_hits;
-    }
-    if (reseeded) {
-      ++cold_reseeds;
-    }
-    const double gap = std::fabs(warm_px - cold_px);
-    if (gap > max_price_gap) {
-      max_price_gap = gap;
-    }
-    // Update the temporal cache with THIS snapshot's converged warm boundary.
-    store_bnd = wbnd;
-    store_ws = wws;
-    have_store = true;
-    any = true;
-  }
-  (void)store_ws;
-  return any;
-}
-
-// ── P2.4 implicit boundary differentiation ────────────────────────────────
-//
-// Dense pivoted LU solve of A·x = rhs for n <= kAlMaxNodes, stack-only. Overwrites
-// A and rhs; the solution is returned in rhs. Returns false on a (near-)singular
-// pivot.
-[[nodiscard]] static bool lu_solve_dense(double *A, double *rhs, int n) noexcept {
-  const int N = kAlMaxNodes; // row stride
-  for (int col = 0; col < n; ++col) {
-    // Partial pivot.
-    int piv = col;
-    double best = std::fabs(A[col * N + col]);
-    for (int rr = col + 1; rr < n; ++rr) {
-      const double v = std::fabs(A[rr * N + col]);
-      if (v > best) {
-        best = v;
-        piv = rr;
-      }
-    }
-    if (!(best > 1.0e-300)) {
-      return false;
-    }
-    if (piv != col) {
-      for (int c = 0; c < n; ++c) {
-        std::swap(A[col * N + c], A[piv * N + c]);
-      }
-      std::swap(rhs[col], rhs[piv]);
-    }
-    const double diag = A[col * N + col];
-    for (int rr = col + 1; rr < n; ++rr) {
-      const double f = A[rr * N + col] / diag;
-      if (f == 0.0) {
-        continue;
-      }
-      for (int c = col; c < n; ++c) {
-        A[rr * N + c] -= f * A[col * N + c];
-      }
-      rhs[rr] -= f * rhs[col];
-    }
-  }
-  for (int rr = n - 1; rr >= 0; --rr) {
-    double s = rhs[rr];
-    for (int c = rr + 1; c < n; ++c) {
-      s -= A[rr * N + c] * rhs[c];
-    }
-    rhs[rr] = s / A[rr * N + rr];
-  }
-  return true;
-}
-
-ImplicitDiffGreeks al_implicit_diff_put_greeks(double S, double K, double T, double sigma, double r,
-                                               double q, const std::optional<AlOpts> &opts,
-                                               bool validate, double &j_max_rel_err) noexcept {
-  ImplicitDiffGreeks out;
-  j_max_rel_err = 0.0;
-  if (!(S > 0.0) || !(K > 0.0) || !(T > 1.0e-6) || !(sigma > 1.0e-6) || !(r > 0.0)) {
-    return out; // genuine early-exercise put only
-  }
-  const AlScheme sch = scheme_from_opts(opts);
-
-  // Base boundary. Production path: the fixed two-stage budget (the honest "one
-  // converged solve" for the cost measurement). Validate path: converge tightly so
-  // the y_σ cross-check isolates the linear-algebra accuracy from base under-
-  // convergence.
-  AlBoundary base{};
-  AlWorkspace ws{};
-  double base_resid = 0.0;
-  const int base_jn = validate ? 60 : sch.n_iter_jn;
-  const int base_fp = validate ? 60 : sch.n_iter_fp;
-  const int base_sweeps =
-      al_solve_put_counted(K, T, sigma, r, q, sch, nullptr, base_jn, base_fp, base, ws, base_resid);
-  if (base_sweeps < 0) {
-    return out;
-  }
-  out.base_sweeps = base_sweeps;
-  const std::uint16_t n = base.n;
-  out.n_boundary = n;
-  const double xmax = base.xmax;
-  // Active interior nodes are 1..n-1 (node 0: tau=0, y fixed 0). Skip any degenerate
-  // tau<=0 node (only node 0 in practice).
-  const int m = static_cast<int>(n) - 1; // implicit-diff system dimension
-  if (m < 1 || n > kAlMaxNodes) {
-    return out;
-  }
-
-  int cost_passes = 0; // full-node residual-equivalent passes beyond the base solve
-
-  // Pure collocation residual R_i(y; σ, r) at a GIVEN y-vector (no sweep, no
-  // mutation of `base`): R_i = y_i − y_from_b(α_i·N_i/D_i, xmax), R_0 = 0. One call
-  // is ONE residual-equivalent pass.
-  AlBoundary scr = base; // scratch: only .y varies
-  auto residual = [&](const double *yv, double sig, double rr, double *Rout) noexcept {
-    for (std::uint16_t i = 0; i < n; ++i) {
-      scr.y[i] = yv[i];
-    }
-    Rout[0] = 0.0;
-    for (std::uint16_t i = 1; i < n; ++i) {
-      const double tau = scr.tau[i];
-      if (tau <= 1.0e-14) {
-        Rout[i] = 0.0;
-        continue;
-      }
-      const double b_val = b_from_y(yv[i], xmax);
-      double N = 0.0, D = 0.0;
-      eqn_b_ND_impl<0, 0>(scr, ws, i, tau, b_val, sig, rr, q, N, D);
-      double R = 0.0;
-      if (D > 1.0e-300) {
-        const double alpha = K * std::exp(-(rr - q) * tau);
-        double b_new = alpha * N / D;
-        if (b_new > xmax) {
-          b_new = xmax;
-        }
-        if (!(b_new > 0.0)) {
-          b_new = 1.0e-6 * K;
-        }
-        R = yv[i] - y_from_b(b_new, xmax);
-      }
-      Rout[i] = R;
-    }
-    ++cost_passes;
-  };
-
-  std::array<double, kAlMaxNodes> y0{};
-  for (std::uint16_t i = 0; i < n; ++i) {
-    y0[i] = base.y[i];
-  }
-
-  // Jacobian J = ∂R/∂y over the interior nodes (row/col index 0..m-1 maps to node
-  // 1..m). Central differences of R w.r.t. each y_j (validated, per the brief);
-  // `jac_central == false` additionally cross-checks against the analytic diagonal
-  // ∂R_i/∂y_i (eqn_b_NDd) and reports the max relative gap.
-  std::array<double, kAlMaxNodes * kAlMaxNodes> J{};
-  std::array<double, kAlMaxNodes> Rp{};
-  std::array<double, kAlMaxNodes> Rm{};
-  std::array<double, kAlMaxNodes> ywork{};
-  for (std::uint16_t i = 0; i < n; ++i) {
-    ywork[i] = y0[i];
-  }
-  for (int jcol = 0; jcol < m; ++jcol) {
-    const std::uint16_t jnode = static_cast<std::uint16_t>(jcol + 1);
-    const double yj = y0[jnode];
-    const double h = 1.0e-6 * std::fmax(std::fabs(yj), 1.0e-3);
-    ywork[jnode] = yj + h;
-    residual(ywork.data(), sigma, r, Rp.data());
-    ywork[jnode] = yj - h;
-    residual(ywork.data(), sigma, r, Rm.data());
-    ywork[jnode] = yj;
-    for (int irow = 0; irow < m; ++irow) {
-      const std::uint16_t inode = static_cast<std::uint16_t>(irow + 1);
-      J[irow * kAlMaxNodes + jcol] = (Rp[inode] - Rm[inode]) / (2.0 * h);
-    }
-  }
-  // R_θ = ∂R/∂θ at fixed y, θ ∈ {σ, r} (central differences; captures both the
-  // explicit (σ,r) dependence of N,D and, for r, the α = K·e^{−(r−q)τ} prefactor).
-  std::array<double, kAlMaxNodes> Rsig{};
-  std::array<double, kAlMaxNodes> Rrho{};
-  {
-    const double hs = 1.0e-5 * std::fmax(sigma, 1.0e-3);
-    residual(y0.data(), sigma + hs, r, Rp.data());
-    residual(y0.data(), sigma - hs, r, Rm.data());
-    for (int i = 0; i < static_cast<int>(n); ++i) {
-      Rsig[i] = (Rp[i] - Rm[i]) / (2.0 * hs);
-    }
-    const double hr = 1.0e-6;
-    residual(y0.data(), sigma, r + hr, Rp.data());
-    residual(y0.data(), sigma, r - hr, Rm.data());
-    for (int i = 0; i < static_cast<int>(n); ++i) {
-      Rrho[i] = (Rp[i] - Rm[i]) / (2.0 * hr);
-    }
-  }
-
-  // Solve J·y_σ = −R_σ and J·y_r = −R_r (two RHS, one factorization would suffice;
-  // the small n makes a per-RHS solve negligible and keeps the code simple).
-  std::array<double, kAlMaxNodes * kAlMaxNodes> Jfac = J;
-  std::array<double, kAlMaxNodes> ysig{};
-  std::array<double, kAlMaxNodes> yrho{};
-  std::array<double, kAlMaxNodes> rhs_s{};
-  std::array<double, kAlMaxNodes> rhs_r{};
-  for (int i = 0; i < m; ++i) {
-    rhs_s[i] = -Rsig[i + 1];
-    rhs_r[i] = -Rrho[i + 1];
-  }
-  if (!lu_solve_dense(Jfac.data(), rhs_s.data(), m)) {
-    return out;
-  }
-  Jfac = J;
-  if (!lu_solve_dense(Jfac.data(), rhs_r.data(), m)) {
-    return out;
-  }
-  ysig[0] = 0.0;
-  yrho[0] = 0.0;
-  for (int i = 0; i < m; ++i) {
-    ysig[i + 1] = rhs_s[i];
-    yrho[i + 1] = rhs_r[i];
-  }
-
-  // Validation (not on the production/cost path): cross-check the implicit-diff
-  // sensitivity y_σ against a finite difference of the RE-SOLVED boundary (the
-  // ground-truth ∂y/∂σ). A small gap proves J and R_σ (hence the whole LU pipeline)
-  // are correct. The re-solves are excluded from cost_passes.
-  if (validate) {
-    const double hval = 1.0e-3;
-    AlBoundary bp{}, bm{};
-    AlWorkspace wp{}, wm{};
-    double rp0 = 0.0, rm0 = 0.0;
-    const int sp =
-        al_solve_put_counted(K, T, sigma + hval, r, q, sch, nullptr, 60, 60, bp, wp, rp0);
-    const int sm =
-        al_solve_put_counted(K, T, sigma - hval, r, q, sch, nullptr, 60, 60, bm, wm, rm0);
-    if (sp > 0 && sm > 0) {
-      for (int i = 0; i < m; ++i) {
-        const std::uint16_t inode = static_cast<std::uint16_t>(i + 1);
-        const double yfd = (bp.y[inode] - bm.y[inode]) / (2.0 * hval);
-        const double denom = std::fmax(std::fabs(yfd), 1.0e-3);
-        const double rel = std::fabs(ysig[inode] - yfd) / denom;
-        if (rel > j_max_rel_err) {
-          j_max_rel_err = rel;
-        }
-      }
-    }
-  }
-
-  // Price at spot `spot` from a MOVED boundary (y-vector) at (sig, rr): euro +
-  // premium with the same clamps as al_put_price_from_boundary. One premium pass.
-  auto price_moved_spot = [&](const double *yv, double sig, double rr,
-                              double spot) noexcept -> double {
-    for (std::uint16_t i = 0; i < n; ++i) {
-      scr.y[i] = yv[i];
-    }
-    return al_put_price_from_boundary(scr, ws, spot, K, T, sig, rr, q);
-  };
-  auto price_moved = [&](const double *yv, double sig, double rr) noexcept -> double {
-    return price_moved_spot(yv, sig, rr, S);
-  };
-
-  out.price = al_put_price_from_boundary(base, ws, S, K, T, sigma, r, q);
-
-  // vega / rho by moving-boundary central differences: bump the parameter AND move
-  // the boundary by its implicit-diff sensitivity (never frozen).
-  {
-    const double hs = 1.0e-3 * std::fmax(sigma, 1.0e-3);
-    std::array<double, kAlMaxNodes> yp{};
-    std::array<double, kAlMaxNodes> ym{};
-    for (std::uint16_t i = 0; i < n; ++i) {
-      yp[i] = y0[i] + hs * ysig[i];
-      ym[i] = y0[i] - hs * ysig[i];
-    }
-    const double pvp = price_moved(yp.data(), sigma + hs, r);
-    const double pvm = price_moved(ym.data(), sigma - hs, r);
-    out.vega = (pvp - pvm) / (2.0 * hs);
-    // volga (second-order; moving-boundary — first-order boundary motion only).
-    out.volga = (pvp - 2.0 * out.price + pvm) / (hs * hs);
-    // vanna = ∂delta/∂σ: delta on the σ-moved boundaries.
-    const double hSv = 1.0e-3 * S;
-    const double dvp = (price_moved_spot(yp.data(), sigma + hs, r, S + hSv) -
-                        price_moved_spot(yp.data(), sigma + hs, r, S - hSv)) /
-                       (2.0 * hSv);
-    const double dvm = (price_moved_spot(ym.data(), sigma - hs, r, S + hSv) -
-                        price_moved_spot(ym.data(), sigma - hs, r, S - hSv)) /
-                       (2.0 * hSv);
-    out.vanna = (dvp - dvm) / (2.0 * hs);
-    cost_passes += 1; // premium-eval-equivalents for the σ propagation bundle
-  }
-  {
-    const double hr = 1.0e-4;
-    std::array<double, kAlMaxNodes> yp{};
-    std::array<double, kAlMaxNodes> ym{};
-    for (std::uint16_t i = 0; i < n; ++i) {
-      yp[i] = y0[i] + hr * yrho[i];
-      ym[i] = y0[i] - hr * yrho[i];
-    }
-    const double prp = price_moved(yp.data(), sigma, r + hr);
-    const double prm = price_moved(ym.data(), sigma, r - hr);
-    out.rho = (prp - prm) / (2.0 * hr);
-  }
-
-  // delta / gamma / speed — exact spot stencils on the spot-independent base boundary.
-  const double hS = 1.0e-3 * S;
-  const double v0 = out.price;
-  const double vSp = al_put_price_from_boundary(base, ws, S + hS, K, T, sigma, r, q);
-  const double vSm = al_put_price_from_boundary(base, ws, S - hS, K, T, sigma, r, q);
-  const double vS2p = al_put_price_from_boundary(base, ws, S + 2.0 * hS, K, T, sigma, r, q);
-  const double vS2m = al_put_price_from_boundary(base, ws, S - 2.0 * hS, K, T, sigma, r, q);
-  out.delta = (vSp - vSm) / (2.0 * hS);
-  out.gamma = (vSp - 2.0 * v0 + vSm) / (hS * hS);
-
-  // theta / charm from the continuation-region PDE (as american_greeks_al) — needs
-  // no time-bumped boundary solve.
-  const double intr0 = K - S;
-  const bool exercised = (v0 <= intr0 + 1.0e-9 * K) && (intr0 > 0.0);
-  if (exercised) {
-    out.theta = 0.0;
-    out.charm = 0.0;
-  } else {
-    const double speed = (vS2p - 2.0 * vSp + 2.0 * vSm - vS2m) / (2.0 * hS * hS * hS);
-    out.theta = r * v0 - (r - q) * S * out.delta - 0.5 * sigma * sigma * S * S * out.gamma;
-    out.charm = r * out.delta - (r - q) * (out.delta + S * out.gamma) -
-                0.5 * sigma * sigma * (2.0 * S * out.gamma + S * S * speed);
-  }
-
-  out.cost_passes = cost_passes;
-  out.ok = true;
-  return out;
 }
 
 } // namespace detail

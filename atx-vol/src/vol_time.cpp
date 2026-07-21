@@ -123,6 +123,15 @@ bool is_weekend_day(std::int32_t day_since_epoch) noexcept {
   return wd == 0 || wd == 6;
 }
 
+std::int64_t settlement_instant_ns(std::int32_t et_day_since_epoch,
+                                   SettlementSession settle) noexcept {
+  // 16:00 ET (Pm, the regular-session close) or 09:30 ET (Am, the opening
+  // print), converted ET->UTC through the same date-resolved modern-DST rule
+  // `et_local_to_utc_ns` applies to every session boundary this module computes.
+  const double hour_et = (settle == SettlementSession::Am) ? 9.5 : 16.0;
+  return et_local_to_utc_ns(static_cast<std::int64_t>(et_day_since_epoch), hour_et);
+}
+
 VolTimeCalendar::VolTimeCalendar(std::vector<std::int32_t> holiday_days)
     : days_(std::move(holiday_days)) {
   std::sort(days_.begin(), days_.end());

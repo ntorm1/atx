@@ -28,6 +28,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <vector>
 
 #include "atx/vol/american.hpp" // AlOpts
@@ -137,6 +138,28 @@ public:
   // from interpolation noise are clamped to 0.
   [[nodiscard]] double eval(double k_log, double T, double sigma) const noexcept;
 
+  // ── Equal-T ladder batch (perf review F4) ──────────────────────────────────
+  //
+  // Every contract in an equal-T ladder shares one T, so the correction tensor's
+  // T (j) axis collapses ONCE into a (k_log, sigma) coefficient plane and each
+  // strike is a 2-D Clenshaw over that plane instead of a full 3-D sweep.
+  //
+  // collapse_T_plane writes n_k()*n_s() doubles to `plane_out`, laid out
+  // plane[k*n_k + i] (i innermost, matching a fixed-T sub-block of coefs_). T is
+  // clamped to the box exactly as eval(). It reads every coefficient once, so it
+  // counts as ONE tensor traversal (ClenshawSweeps); the per-strike eval_plane
+  // calls that follow are sub-tensor and uncounted. An unpopulated cache zeroes
+  // the live n_k()*n_s() prefix and leaves the plane a zero surface.
+  void collapse_T_plane(double T, double *plane_out) const noexcept;
+
+  // Per-strike value over a plane produced by collapse_T_plane at the SAME T: a
+  // 2-D Clenshaw (k_log then sigma) with the same box clamp and max(0, .) value
+  // gate as eval(). Economic-parity to eval(k_log, T, sigma) — the T-first
+  // collapse reorders the tensor summation (ULP-level), so this is NOT
+  // bit-identical (gated by the P5 |Δprice| < 1e-12·K ladder-parity test).
+  [[nodiscard]] double eval_plane(const double *plane, double k_log,
+                                  double sigma) const noexcept;
+
   // Value + selected first-order partials. Partials whose axis is out of the box
   // are zeroed (the value still clamps). Pass nullptr to skip a partial. The
   // return (the value) may be discarded when only the partials are wanted; when
@@ -159,6 +182,22 @@ public:
   // allocation-free, like eval / eval_grad.
   void eval_partials(double k_log, double T, double sigma, double *out_dk_log, double *out_dT,
                      double *out_dsigma) const noexcept;
+
+  // Value + the sigma partial ONLY — the exact pair the IV-inversion Newton step
+  // consumes (perf review F1). Returns the value (== eval()); writes ∂C/∂sigma to
+  // *out_dsigma (== eval_partials()'s dsigma / eval_grad()'s dsigma). Applies the
+  // same max(0, polynomial) value clamp and out-of-box sigma-partial zeroing.
+  //
+  // The value is NOT gated into the partial here (it mirrors eval_grad, whose
+  // sigma partial is likewise un-gated by the value); the served-correction
+  // max(0, .) gate on the derivative is applied by the caller (american_vega /
+  // american_price_and_vega_cached), matching the existing split.
+  //
+  // Stage (a) [F1 bit-identical]: the value and the partial come from two tensor
+  // traversals (eval + the dsigma partial) — one fewer than the price+eval_grad
+  // pair it replaces. Stage (b) fuses them into a single value+∂sigma pass.
+  double eval_value_and_dsigma(double k_log, double T, double sigma,
+                               double *out_dsigma) const noexcept;
 
   // Fused value/gradient/Hessian evaluation for the cached-American Greek
   // bundle. A single traversal of the coefficient tensor differentiates the
@@ -247,6 +286,12 @@ struct CorrectionBlend {
   // Sigma partial only, for IV-inversion Newton steps. Uses each endpoint's
   // partial-only kernel and never constructs the full second-order jet.
   [[nodiscard]] double eval_dsigma(double k_log, double T, double sigma) const noexcept;
+  // Value + sigma partial in one call — {eval(), eval_dsigma()} sharing each
+  // endpoint's fused value+dsigma kernel (perf review F1). The value blends as
+  // (1-w)*lower + w*upper; the partial applies the per-endpoint max(0, .) gate
+  // exactly as eval_dsigma() before blending.
+  double eval_value_and_dsigma(double k_log, double T, double sigma,
+                               double *out_dsigma) const noexcept;
   double eval_value_dk(double k_log, double T, double sigma, double *out_dk_log) const noexcept;
   [[nodiscard]] CorrSecondOrder eval_second_order(double k_log, double T,
                                                   double sigma) const noexcept;
@@ -263,6 +308,26 @@ struct AmericanCorrectionCaches {
   // True iff at least one side is cached.
   [[nodiscard]] bool any() const noexcept { return call != nullptr || put != nullptr; }
 };
+
+// ── Equal-T cached ladder batch entry (perf review F4) ───────────────────────
+//
+// Price a whole equal-T strike ladder through the cached graph in one call. Every
+// contract shares T, so the forward F = S·e^{(r-q)T}, discount e^{-rT}, and √T are
+// hoisted ONCE, and each usable correction endpoint's T (j) axis is collapsed into
+// a (k_log, sigma) plane ONCE — each strike then pays a 2-D Clenshaw over the plane
+// plus a Black-76 leg and the intrinsic/euro/0 floor, instead of a full 3-D sweep.
+//
+// price_out[i] is economic-parity to
+//   american_price_cached(S, strikes[i], T, sigmas[i], r, q, side, correction)
+// (a summation reorder on the correction value; |Δprice| < 1e-12·K), with the same
+// floor. A non-finite / non-positive strike yields NaN for that row; an unusable
+// blend or a double-continuation query regime delegates every row to the scalar
+// cached entry (identical values). strikes, sigmas and price_out share one length.
+[[nodiscard]] Status american_price_cached_ladder(double S, std::span<const double> strikes,
+                                                  std::span<const double> sigmas, double T, double r,
+                                                  double q, Side side,
+                                                  const CorrectionBlend &correction,
+                                                  std::span<double> price_out);
 
 // ── Chebyshev primitives (first-kind / roots grid) ──────────────────────
 //

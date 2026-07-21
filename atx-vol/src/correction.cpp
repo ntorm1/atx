@@ -376,6 +376,64 @@ struct ClenshawD2 {
   return out;
 }
 
+// Fused value + sigma-partial single pass (perf review F1 stage b). Sigma is the
+// LAST collapse axis of the 3D Clenshaw, so its value AND d/dxk fall out of ONE
+// derivative-recurrence sweep. The i (k_log) and j (T) collapses are byte-for-byte
+// cheb_clenshaw3d — so the returned VALUE is bit-identical to cheb_clenshaw3d /
+// eval() — and only the final sigma collapse changes: clenshaw_d1 emits value + the
+// unit-space derivative together, replacing eval_partials()'s separate
+// differentiate-coefficients-then-evaluate pass. The dsigma therefore differs from
+// eval_partials() at the ULP level (a different accumulation of the SAME analytic
+// derivative); it IS bit-identical to eval_second_order()'s dsigma (same recurrence).
+// Counts as ONE Clenshaw sweep (vs eval + eval_partials' two).
+[[nodiscard]] ClenshawD1 cheb_clenshaw3d_value_dsigma(const double *coefs, std::uint16_t n_k,
+                                                      std::uint16_t n_T, std::uint16_t n_s, double xi,
+                                                      double xj, double xk,
+                                                      double *tmp_jk) noexcept {
+  if (n_k == 0u || n_T == 0u || n_s == 0u) {
+    return ClenshawD1{0.0, 0.0};
+  }
+  ATX_VOL_COUNT(ClenshawSweeps); // one fused value+dsigma sweep (opt-in P0.2)
+  const std::size_t nk = n_k;
+  const std::size_t nT = n_T;
+  const std::size_t ns = n_s;
+  const double two_xi = 2.0 * xi;
+  const double two_xj = 2.0 * xj;
+
+  // 1st collapse: i-axis (k_log). Byte-for-byte cheb_clenshaw3d.
+  for (std::size_t j = 0; j < nT; ++j) {
+    for (std::size_t k = 0; k < ns; ++k) {
+      const double *row = coefs + j * ns * nk + k * nk;
+      double bk1 = 0.0;
+      double bk2 = 0.0;
+      for (int i = static_cast<int>(n_k) - 1; i >= 1; --i) {
+        const double bk = row[i] + two_xi * bk1 - bk2;
+        bk2 = bk1;
+        bk1 = bk;
+      }
+      tmp_jk[j * ns + k] = row[0] + xi * bk1 - bk2;
+    }
+  }
+
+  // 2nd collapse: j-axis (T). Byte-for-byte cheb_clenshaw3d — leaves the sigma-axis
+  // vector in tmp_jk[0..n_s-1].
+  for (std::size_t k = 0; k < ns; ++k) {
+    double bk1 = 0.0;
+    double bk2 = 0.0;
+    for (int j = static_cast<int>(n_T) - 1; j >= 1; --j) {
+      const double bk = tmp_jk[static_cast<std::size_t>(j) * ns + k] + two_xj * bk1 - bk2;
+      bk2 = bk1;
+      bk1 = bk;
+    }
+    const double a0 = tmp_jk[k]; // j = 0 row, before overwrite
+    tmp_jk[k] = a0 + xj * bk1 - bk2;
+  }
+
+  // 3rd collapse: k-axis (sigma). Value + d/dxk in one sweep. The value recurrence
+  // is identical to cheb_clenshaw3d's, so tmp_jk[0] + xk*bk1 - bk2 is bit-identical.
+  return clenshaw_d1_strided(tmp_jk, 1u, n_s, xk);
+}
+
 } // namespace
 
 Result<CorrectionCache> CorrectionCache::build(std::uint16_t n_log_moneyness,
@@ -617,6 +675,80 @@ double CorrectionCache::eval(double k_log, double T, double sigma) const noexcep
   return (v > 0.0) ? v : 0.0;
 }
 
+void CorrectionCache::collapse_T_plane(double T, double *plane_out) const noexcept {
+  // Perf review F4: pre-collapse the T (j) axis for an equal-T ladder so every
+  // strike thereafter is a 2-D (k_log, sigma) Clenshaw. plane_out[k*n_k + i] =
+  // Σ_j coefs[i,j,k] T_j(xj), the Clenshaw collapse of the T column at fixed
+  // (i, k). coefs[i,j,k] lives at j*n_s*n_k + k*n_k + i (cheb_idx), so the T
+  // column for a fixed (i, k) strides by n_s*n_k; the plane keeps i innermost so
+  // eval_plane's k_log collapse reads a contiguous row plane + k*n_k, exactly as
+  // cheb_clenshaw3d's first collapse reads a fixed-j sub-block.
+  const std::size_t live = static_cast<std::size_t>(n_k_) * static_cast<std::size_t>(n_s_);
+  if (!populated_) {
+    std::fill(plane_out, plane_out + live, 0.0);
+    return;
+  }
+  ATX_VOL_COUNT(ClenshawSweeps); // one full-tensor T-axis collapse (reads every coef once)
+  T = atx::core::clamp(T, T_min_, T_max_);
+  const double xj = detail::cheb_to_unit(T, T_min_, T_max_);
+  const double two_xj = 2.0 * xj;
+  const std::size_t nk = n_k_;
+  const std::size_t ns = n_s_;
+  const double *coefs = coefs_.data();
+  for (std::size_t k = 0; k < ns; ++k) {
+    for (std::size_t i = 0; i < nk; ++i) {
+      const double *col = coefs + k * nk + i;
+      double bk1 = 0.0;
+      double bk2 = 0.0;
+      for (int j = static_cast<int>(n_T_) - 1; j >= 1; --j) {
+        const double bk = col[static_cast<std::size_t>(j) * ns * nk] + two_xj * bk1 - bk2;
+        bk2 = bk1;
+        bk1 = bk;
+      }
+      plane_out[k * nk + i] = col[0] + xj * bk1 - bk2;
+    }
+  }
+}
+
+double CorrectionCache::eval_plane(const double *plane, double k_log, double sigma) const noexcept {
+  if (!populated_) {
+    return 0.0;
+  }
+  // Same box clamp / unit map as eval(); T was already clamped and collapsed away
+  // in collapse_T_plane. 2-D Clenshaw over the plane: k_log (i) then sigma (k).
+  k_log = atx::core::clamp(k_log, k_log_min_, k_log_max_);
+  sigma = atx::core::clamp(sigma, sigma_min_, sigma_max_);
+  const double xi = detail::cheb_to_unit(k_log, k_log_min_, k_log_max_);
+  const double xk = detail::cheb_to_unit(sigma, sigma_min_, sigma_max_);
+  const std::size_t nk = n_k_;
+  const std::size_t ns = n_s_;
+  const double two_xi = 2.0 * xi;
+  // tmp_k[k] is written for every k < n_s_ by the k_log collapse before the sigma
+  // collapse reads it; value-initialized to match the codebase's scratch style.
+  std::array<double, detail::kChebMaxNodes> tmp_k{};
+  for (std::size_t k = 0; k < ns; ++k) {
+    const double *row = plane + k * nk;
+    double bk1 = 0.0;
+    double bk2 = 0.0;
+    for (int i = static_cast<int>(n_k_) - 1; i >= 1; --i) {
+      const double bk = row[i] + two_xi * bk1 - bk2;
+      bk2 = bk1;
+      bk1 = bk;
+    }
+    tmp_k[k] = row[0] + xi * bk1 - bk2;
+  }
+  double bk1 = 0.0;
+  double bk2 = 0.0;
+  const double two_xk = 2.0 * xk;
+  for (int k = static_cast<int>(n_s_) - 1; k >= 1; --k) {
+    const double bk = tmp_k[static_cast<std::size_t>(k)] + two_xk * bk1 - bk2;
+    bk2 = bk1;
+    bk1 = bk;
+  }
+  const double v = tmp_k[0] + xk * bk1 - bk2;
+  return (v > 0.0) ? v : 0.0; // max(0, polynomial), as eval()
+}
+
 double CorrectionCache::eval_value_dk(double k_log, double T, double sigma,
                                       double *out_dk_log) const noexcept {
   if (!populated_) {
@@ -708,6 +840,50 @@ void CorrectionCache::eval_partials(double k_log, double T, double sigma, double
                         : detail::cheb_clenshaw3d_partial(coefs_.data(), n_k_, n_T_, n_s_, xi, xj,
                                                           xk, 2, scale_s_, tmp_jk.data());
   }
+}
+
+double CorrectionCache::eval_value_and_dsigma(double k_log, double T, double sigma,
+                                              double *out_dsigma) const noexcept {
+  // Stage (b) [F1]: value + sigma-partial from ONE fused Clenshaw sweep (sigma is
+  // the last collapse axis). The VALUE is bit-identical to eval() — the i/j collapses
+  // and the sigma-value recurrence are byte-for-byte cheb_clenshaw3d — so the Newton
+  // residual is unchanged. The dsigma is the SAME analytic derivative eval_partials()
+  // returns, computed by the value+derivative recurrence instead of
+  // differentiate-then-evaluate: ULP-different from eval_partials(), bit-identical to
+  // eval_second_order()'s dsigma (economic-parity, gated by the P1 |dIV| < 1e-12
+  // test). Un-gated by the value here (mirrors eval_partials/eval_grad); the caller
+  // applies the served-correction max(0, .) derivative gate.
+  if (!populated_) {
+    if (out_dsigma != nullptr) {
+      *out_dsigma = 0.0;
+    }
+    return 0.0;
+  }
+#if defined(ATX_VOL_COUNTERS)
+  if ((k_log < k_log_min_) || (k_log > k_log_max_) || (T < T_min_) || (T > T_max_) ||
+      (sigma < sigma_min_) || (sigma > sigma_max_)) {
+    ATX_VOL_COUNT(CacheOutOfBoxClamps);
+  }
+#endif
+  const bool oob_s = (sigma < sigma_min_) || (sigma > sigma_max_);
+  k_log = atx::core::clamp(k_log, k_log_min_, k_log_max_);
+  T = atx::core::clamp(T, T_min_, T_max_);
+  sigma = atx::core::clamp(sigma, sigma_min_, sigma_max_);
+
+  const double xi = detail::cheb_to_unit(k_log, k_log_min_, k_log_max_);
+  const double xj = detail::cheb_to_unit(T, T_min_, T_max_);
+  const double xk = detail::cheb_to_unit(sigma, sigma_min_, sigma_max_);
+  std::array<double, kTmpSize> tmp_jk;
+  std::fill(tmp_jk.data(), tmp_jk.data() + static_cast<std::size_t>(n_T_) * n_s_, 0.0);
+  const ClenshawD1 jet =
+      cheb_clenshaw3d_value_dsigma(coefs_.data(), n_k_, n_T_, n_s_, xi, xj, xk, tmp_jk.data());
+  if (out_dsigma != nullptr) {
+    // Out-of-box on sigma nulls the partial (matches eval_partials); the value still
+    // clamps. The derivative is in unit (Chebyshev) space -> scale to the physical σ.
+    *out_dsigma = oob_s ? 0.0 : jet.d1 * scale_s_;
+  }
+  // max(0, polynomial): bit-identical to eval().
+  return (jet.value > 0.0) ? jet.value : 0.0;
 }
 
 CorrSecondOrder CorrectionCache::eval_second_order(double k_log, double T,
@@ -853,6 +1029,57 @@ double CorrectionBlend::eval_dsigma(double k_log, double T, double sigma) const 
   return lo + upper_weight * (hi - lo);
 }
 
+double CorrectionBlend::eval_value_and_dsigma(double k_log, double T, double sigma,
+                                              double *out_dsigma) const noexcept {
+  // Bit-identical to {eval(), eval_dsigma()} but sharing each endpoint's fused
+  // value+dsigma kernel: the value blends as (1-w)*lower + w*upper and the sigma
+  // partial applies the SAME per-endpoint max(0, .) gate as eval_dsigma() before
+  // blending. Exact endpoints / identical pointers evaluate one cache only, so a
+  // single-cache blend reproduces the CorrectionCache path byte-for-byte.
+  if (!valid()) {
+    if (out_dsigma != nullptr) {
+      *out_dsigma = std::numeric_limits<double>::quiet_NaN();
+    }
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  if (upper_weight == 0.0 || lower == upper) {
+    double lo = 0.0;
+    const double value = lower->eval_value_and_dsigma(k_log, T, sigma, &lo);
+    if (!(value > 0.0)) {
+      lo = 0.0;
+    }
+    if (out_dsigma != nullptr) {
+      *out_dsigma = lo;
+    }
+    return value;
+  }
+  if (upper_weight == 1.0) {
+    double hi = 0.0;
+    const double value = upper->eval_value_and_dsigma(k_log, T, sigma, &hi);
+    if (!(value > 0.0)) {
+      hi = 0.0;
+    }
+    if (out_dsigma != nullptr) {
+      *out_dsigma = hi;
+    }
+    return value;
+  }
+  double lo = 0.0;
+  double hi = 0.0;
+  const double lo_value = lower->eval_value_and_dsigma(k_log, T, sigma, &lo);
+  const double hi_value = upper->eval_value_and_dsigma(k_log, T, sigma, &hi);
+  if (!(lo_value > 0.0)) {
+    lo = 0.0;
+  }
+  if (!(hi_value > 0.0)) {
+    hi = 0.0;
+  }
+  if (out_dsigma != nullptr) {
+    *out_dsigma = lo + upper_weight * (hi - lo);
+  }
+  return lo_value + upper_weight * (hi_value - lo_value);
+}
+
 double CorrectionBlend::eval_value_dk(double k_log, double T, double sigma,
                                       double *out_dk_log) const noexcept {
   if (!valid()) {
@@ -939,6 +1166,112 @@ Status CorrectionCache::set_extrap_policy(ExtrapPolicy policy) noexcept {
     return Err(ErrorCode::InvalidArgument, "CorrectionCache::set_extrap_policy: unknown policy");
   }
   extrap_policy_ = policy;
+  return Ok();
+}
+
+// ── Equal-T cached ladder batch (perf review F4) ─────────────────────────────
+
+namespace {
+
+// Mirror american.cpp's file-local floor_cached_price (not exported there): the
+// cached served mark is floored at max(price, intrinsic, euro, 0). Reproduced so
+// the ladder batch's per-strike assembly is byte-identical to the scalar cached
+// entry apart from the (economic-parity) correction reorder.
+[[nodiscard]] inline double ladder_floor_price(double price, double euro,
+                                               double intrinsic) noexcept {
+  if (intrinsic > price) {
+    price = intrinsic;
+  }
+  if (euro > price) {
+    price = euro;
+  }
+  if (price < 0.0) {
+    price = 0.0;
+  }
+  return price;
+}
+
+} // namespace
+
+Status american_price_cached_ladder(double S, std::span<const double> strikes,
+                                    std::span<const double> sigmas, double T, double r, double q,
+                                    Side side, const CorrectionBlend &correction,
+                                    std::span<double> price_out) {
+  const std::size_t n = strikes.size();
+  if (sigmas.size() != n || price_out.size() != n) {
+    return Err(ErrorCode::InvalidArgument,
+               "american_price_cached_ladder: strikes/sigmas/price_out length mismatch");
+  }
+  if (!std::isfinite(T) || !(T > 0.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               "american_price_cached_ladder: non-finite or non-positive T");
+  }
+
+  // Degenerate / rare inputs delegate to the scalar cached entry so the batch is a
+  // pure fast-path specialization: an unusable blend (cold Andersen-Lake fallback)
+  // or a double-continuation query regime (NaN) reproduce the scalar path exactly.
+  const bool unsupported = detail::classify_regime(/*rate=*/(side == Side::Put) ? r : q,
+                                                   /*yield=*/(side == Side::Put) ? q : r) ==
+                           detail::ExerciseRegime::Unsupported;
+  if (!correction.usable(side) || unsupported) {
+    for (std::size_t i = 0; i < n; ++i) {
+      const double K = strikes[i];
+      price_out[i] = (std::isfinite(K) && K > 0.0)
+                         ? american_price_cached(S, K, T, sigmas[i], r, q, side, correction)
+                         : std::numeric_limits<double>::quiet_NaN();
+    }
+    return Ok();
+  }
+
+  // T-invariant hoists (S, r, q, T fixed across the ladder): F, the discount, and
+  // √T are all strike-invariant, so they are computed ONCE for the whole ladder.
+  const double df = std::exp(-r * T);
+  const double F = S * std::exp((r - q) * T);
+  const double sqrt_t = std::sqrt(T);
+
+  // Resolve up to two active endpoints + the blend weight, mirroring
+  // CorrectionBlend::eval's exact-endpoint / interior split, then collapse each
+  // usable endpoint's T (j) axis into its (k_log, sigma) plane ONCE.
+  const CorrectionCache *lo_cache = nullptr;
+  const CorrectionCache *hi_cache = nullptr;
+  double weight = 0.0;
+  if (correction.upper_weight == 0.0 || correction.lower == correction.upper) {
+    lo_cache = correction.lower;
+  } else if (correction.upper_weight == 1.0) {
+    lo_cache = correction.upper;
+  } else {
+    lo_cache = correction.lower;
+    hi_cache = correction.upper;
+    weight = correction.upper_weight;
+  }
+
+  std::array<double, kTmpSize> lo_plane;
+  std::array<double, kTmpSize> hi_plane;
+  lo_cache->collapse_T_plane(T, lo_plane.data());
+  if (hi_cache != nullptr) {
+    hi_cache->collapse_T_plane(T, hi_plane.data());
+  }
+
+  for (std::size_t i = 0; i < n; ++i) {
+    const double K = strikes[i];
+    if (!(std::isfinite(K) && K > 0.0)) {
+      price_out[i] = std::numeric_limits<double>::quiet_NaN();
+      continue;
+    }
+    const double sigma = sigmas[i];
+    const double ln_fk = std::log(F / K);
+    const double euro = black76_price_from_lnfk(F, K, T, sigma, df, ln_fk, sqrt_t, side);
+    const double k_log = -ln_fk;
+    // Correction: per-endpoint max(0, .) then (1-w)·lo + w·hi (matches
+    // CorrectionBlend::eval), evaluated over the pre-collapsed T planes.
+    double corr = lo_cache->eval_plane(lo_plane.data(), k_log, sigma);
+    if (hi_cache != nullptr) {
+      const double hi = hi_cache->eval_plane(hi_plane.data(), k_log, sigma);
+      corr = corr + weight * (hi - corr);
+    }
+    const double intr = (side == Side::Put) ? (K - S) : (S - K);
+    price_out[i] = ladder_floor_price(euro + F * corr, euro, intr);
+  }
   return Ok();
 }
 

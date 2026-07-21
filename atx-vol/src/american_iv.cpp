@@ -22,12 +22,28 @@ using atx::core::Ok;
 
 namespace {
 
-// Volatility search bracket. The spec's [1e-4, 5]; `hi` is expanded
-// geometrically for the rare quote implying a vol above 500%.
-constexpr double kSigmaLo = 1.0e-4;
+// Volatility search bracket. `hi` is expanded geometrically for the rare quote
+// implying a vol above 500%.
+//
+// A6 (core-review finding 6): the bracket floor IS the reported floor, kIvMin.
+// Previously the bracket floored at 1e-4 while quotes were reported no lower than
+// kIvMin=0.005, so a root found in (1e-4, kIvMin) was returned as-is (below the
+// documented floor) and a root below 1e-4 snapped up to kIvMin — a sub-floor
+// band plus a 50x discontinuity as a quote decayed toward intrinsic. Unifying the
+// two removes both: no representable IV sits below kIvMin, and a quote whose true
+// vol is at/below the floor is reported as kIvMin with the existing at-floor
+// status. Interacts with the A3 polish clamp, whose bracket lo (xl) is now kIvMin.
+constexpr double kSigmaLo = kIvMin;
 constexpr double kSigmaHi = 5.0;
 constexpr double kSigmaHiCap = 40.0; // hard ceiling for hi expansion
 constexpr unsigned kMaxExpand = 8;   // bounded hi-doubling budget
+
+// A3 (core-review finding 3): the cold IV polish must stay near the rtsafe root.
+// A polished iterate that would land more than this many× the final tolerance
+// outside the sign-change bracket is a collapsed-vega artifact (pre-fix it could
+// run past kSigmaHiCap and be returned as a wild IV) and is dropped in favour of
+// the converged rtsafe iterate.
+constexpr double kPolishMaxDriftTols = 4.0;
 
 // American immediate-exercise value (undiscounted) and the price ceiling.
 struct NoArbBand {
@@ -105,9 +121,34 @@ template <typename Correction>
   return american_price_cached(S, K, T, sigma, r, q, side, *correction);
 }
 
+// Fused cached price + vega for the Newton step (perf F1): ONE shared correction
+// traversal feeds both the residual and the vega, replacing the separate
+// cached_price (1 traversal) + american_vega (2 traversals) pair.
+[[nodiscard]] AmericanPriceVega cached_price_and_vega(double S, double K, double T, double sigma,
+                                                      double r, double q, Side side,
+                                                      const CorrectionCache *correction) noexcept {
+  return american_price_and_vega_cached(S, K, T, sigma, r, q, side, correction);
+}
+
+[[nodiscard]] AmericanPriceVega cached_price_and_vega(double S, double K, double T, double sigma,
+                                                      double r, double q, Side side,
+                                                      const CorrectionBlend *correction) noexcept {
+  return american_price_and_vega_cached(S, K, T, sigma, r, q, side, *correction);
+}
+
 } // namespace
 
 namespace {
+
+// A3 test/measurement seam: the cold IV polish records the sign-change bracket
+// [xl, xh] captured at polish entry and whether the bracket-clamp engaged on any
+// polish iterate. Production callers pass nullptr and pay nothing.
+struct PolishTrace {
+  double xl{0.0};
+  double xh{0.0};
+  bool ran{false};     // the cold-AL polish path executed
+  bool clamped{false}; // a polish iterate was clamped/rejected back into [xl, xh]
+};
 
 struct ThreadAloSlot {
   std::optional<AloPricer> pricer;
@@ -161,7 +202,8 @@ template <typename Correction>
 Result<double> american_implied_vol_impl(double price, double S, double K, double T, double r,
                                          double q, Side side, AmericanMethod method, double tol,
                                          std::uint16_t max_iter, const std::optional<AlOpts> &opts,
-                                         const Correction *correction, double warm_start) noexcept {
+                                         const Correction *correction, double warm_start,
+                                         PolishTrace *trace = nullptr) noexcept {
   counters::lightweight::AmericanIvSample telemetry_sample;
   // Route price + vega through the cached hot path when the cache matches side.
   const bool use_cache = cache_usable(correction, side);
@@ -227,6 +269,30 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
       return p; // propagate the pricer's Error
     }
     return Ok(*p - price);
+  };
+
+  // Fused residual + vega for the safeguarded-Newton refinement (perf F1). On the
+  // CACHED path a single american_price_and_vega_cached call shares ONE correction
+  // tensor traversal between the residual and the vega — the exact 3->2 (stage a),
+  // ~3->1 (stage b) cut this task banks. On the cold/BAW path it is the previous
+  // residual() + american_vega() pair, unchanged. Counter accounting matches the
+  // residual lambda: one residual/Newton-step bump per call.
+  const auto residual_and_vega = [&](double sigma) -> Result<std::pair<double, double>> {
+    if (use_cache) {
+      counters::lightweight::record_residual_evaluation();
+      counters::ledger::bump(counters::ledger::Solve::IvNewtonIters);
+      const AmericanPriceVega pv =
+          cached_price_and_vega(S, K, T, sigma, r, q, side, active_correction);
+      if (!std::isfinite(pv.price)) {
+        return Err(ErrorCode::Internal,
+                   "american_implied_vol: cached pricer produced a non-finite price");
+      }
+      const double v = (std::isfinite(pv.vega) && pv.vega > 0.0) ? pv.vega : 0.0;
+      return Ok(std::pair<double, double>{pv.price - price, v});
+    }
+    ATX_TRY(double f_cold, residual(sigma)); // bumps the counters on the cold/BAW path
+    const double v = newton_vega(S, K, T, sigma, r, q, side, active_correction);
+    return Ok(std::pair<double, double>{f_cold, v});
   };
 
   // ── Bracket the root so f(xl) < 0 <= f(xh) ──────────────────────────────
@@ -411,9 +477,11 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
       break;
     }
 
-    ATX_TRY(double f_next, residual(rts));
-    f = f_next;
-    df = newton_vega(S, K, T, rts, r, q, side, active_correction);
+    // Fused residual + vega: one shared correction traversal per Newton step on
+    // the cached path (perf F1). The residual is bit-identical to residual(rts).
+    ATX_TRY(auto fv, residual_and_vega(rts));
+    f = fv.first;
+    df = fv.second;
     if (f < 0.0) {
       xl = rts;
     } else if (f > 0.0) {
@@ -442,6 +510,12 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
   // bracket (one cold seed, not two far extremes) keeps the inversion well below
   // the cold-per-residual baseline.
   if (alo) {
+    if (trace != nullptr) {
+      trace->ran = true;
+      trace->xl = xl;
+      trace->xh = xh;
+    }
+    const double rts0 = rts; // the converged rtsafe root; the polish stays near it
     for (int k = 0; k < 2; ++k) {
       ATX_TRY(double pc, american_price(S, K, T, rts, r, q, side, method, opts));
       const double v = newton_vega(S, K, T, rts, r, q, side, active_correction);
@@ -450,10 +524,28 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
       }
       const double step = (pc - price) / v;
       const double prev = rts;
-      rts -= step;
-      if (!(rts > 0.0)) {
-        rts = prev; // keep the last valid iterate
-        break;
+      const double cand = rts - step;
+      if (cand >= xl && cand <= xh) {
+        // In-bracket: apply the Newton step exactly as the pre-fix polish did —
+        // bit-identical for every quote whose polish already stayed inside the
+        // sign-change bracket.
+        rts = cand;
+      } else {
+        // [A3 core-review finding 3] The raw Newton iterate left the bracket. On
+        // the cold reference map a genuine polish moves the iterate << the
+        // bracket width; a step that bolts more than a few× the final tol past
+        // the rtsafe root is a collapsed-vega artifact (pre-fix this could run
+        // past kSigmaHiCap and be returned as a wild IV) — drop it and keep the
+        // converged iterate. Otherwise clamp to the near bracket edge so the
+        // polish never leaves [xl, xh].
+        if (trace != nullptr) {
+          trace->clamped = true;
+        }
+        if (std::fabs(cand - rts0) > kPolishMaxDriftTols * tol) {
+          rts = prev;
+          break;
+        }
+        rts = (cand < xl) ? xl : xh;
       }
       if (std::fabs(step) < tol) {
         break;
@@ -481,22 +573,68 @@ Result<double> american_implied_vol(double price, double S, double K, double T, 
                                    &correction, warm_start);
 }
 
+// Test/measurement seam (declared in american_iv_test.cpp, not the public
+// header). Runs the cold Andersen-Lake inversion and additionally reports the
+// polish bracket [xl, xh] captured at polish entry and whether the A3
+// bracket-clamp engaged on any polish iterate, so the test can pin that the
+// polished IV never leaves the sign-change bracket.
+Result<double> american_implied_vol_polish_traced(double price, double S, double K, double T,
+                                                  double r, double q, Side side, double tol,
+                                                  std::uint16_t max_iter,
+                                                  const std::optional<AlOpts> &opts,
+                                                  double warm_start, double &xl_out, double &xh_out,
+                                                  bool &polish_ran_out, bool &polish_clamped_out) {
+  PolishTrace tr;
+  Result<double> iv = american_implied_vol_impl<CorrectionCache>(
+      price, S, K, T, r, q, side, AmericanMethod::AndersenLake, tol, max_iter, opts,
+      static_cast<const CorrectionCache *>(nullptr), warm_start, &tr);
+  xl_out = tr.xl;
+  xh_out = tr.xh;
+  polish_ran_out = tr.ran;
+  polish_clamped_out = tr.clamped;
+  return iv;
+}
+
 Status american_implied_vol_batch(std::span<const double> price, double S,
                                   std::span<const double> K, double T, double r, double q,
                                   Side side, std::span<double> iv_out, std::span<Status> status_out,
                                   AmericanMethod method, double tol, std::uint16_t max_iter,
                                   const std::optional<AlOpts> &opts,
-                                  const CorrectionCache *correction) {
+                                  const CorrectionCache *correction, bool warm_start_chain) {
   const std::size_t n = price.size();
   if (K.size() != n || iv_out.size() != n || status_out.size() != n) {
     return Err(ErrorCode::InvalidArgument, "american_implied_vol_batch: span length mismatch");
   }
+  // P6 (perf F9): adjacent-lane warm-start chaining. All lanes share one side and
+  // (S, T, r, q); only (price, K) vary. On a strike-sorted batch the previous
+  // lane's converged root is a near-exact seed for the next (adjacent-strike IVs
+  // are near-equal). The seed is used only when the previous lane converged AND
+  // its strike is within one documented log-moneyness step (guards an unsorted or
+  // gapped batch); otherwise the per-quote European seed is used. The seed only
+  // shifts the Newton path, so iv_out is economic-parity to the cold path (bounded
+  // by the inverter's warm_start invariance: < 1e-9 cached, ~1e-6 cold-AL).
+  constexpr double kWarmChainMaxMoneynessStep = 0.15; // ln(K/K_prev) band; a smile step this
+                                                      // wide keeps the prior root in the
+                                                      // pricer's warm-reseed band
+  double warm = 0.0;     // previous lane's converged root (0 = cold seed)
+  double warm_lnK = 0.0; // its ln(K)
+  bool have_warm = false;
   for (std::size_t i = 0; i < n; ++i) {
+    double warm_seed = 0.0;
+    if (warm_start_chain && have_warm && K[i] > 0.0 &&
+        std::fabs(std::log(K[i]) - warm_lnK) <= kWarmChainMaxMoneynessStep) {
+      warm_seed = warm;
+    }
     Result<double> iv = american_implied_vol(price[i], S, K[i], T, r, q, side, method, tol,
-                                             max_iter, opts, correction);
+                                             max_iter, opts, correction, warm_seed);
     if (iv) {
       iv_out[i] = *iv;
       status_out[i] = Ok();
+      if (warm_start_chain && K[i] > 0.0) {
+        warm = *iv;
+        warm_lnK = std::log(K[i]);
+        have_warm = true;
+      }
     } else {
       // Match the library batch convention: NaN value slot + parallel status.
       iv_out[i] = std::numeric_limits<double>::quiet_NaN();

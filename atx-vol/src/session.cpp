@@ -105,6 +105,45 @@ void flush_cold_price_batch(ColdPriceBatch &batch, Side side, double S, double T
   batch.size = 0u;
 }
 
+// Fixed-capacity cached-price scratch (perf review F4). Equal-T strikes served by
+// the correction cache are collected per side and flushed through the T-collapsed
+// ladder batch, which pre-collapses the correction tensor's T axis once per block
+// (F, discount, √T hoisted) instead of re-collapsing it inside every strike's
+// american_price_cached. Same block-and-flush discipline as ColdPriceBatch so
+// arbitrary public ladders stay allocation-free.
+struct CachedPriceBatch {
+  std::array<double, kColdPriceBlockRows> strikes;
+  std::array<double, kColdPriceBlockRows> sigmas;
+  std::array<double, kColdPriceBlockRows> prices;
+  std::array<std::size_t, kColdPriceBlockRows> rows;
+  std::size_t size{0u};
+};
+
+void flush_cached_price_batch(CachedPriceBatch &batch, Side side, double S, double T, double r,
+                              double q, const CorrectionBlend &correction,
+                              std::span<double> output) {
+  if (batch.size == 0u) {
+    return;
+  }
+  const std::span<const double> strikes{batch.strikes.data(), batch.size};
+  const std::span<const double> sigmas{batch.sigmas.data(), batch.size};
+  std::span<double> prices{batch.prices.data(), batch.size};
+  const Status status =
+      american_price_cached_ladder(S, strikes, sigmas, T, r, q, side, correction, prices);
+  if (!status.has_value()) {
+    // Defensive: the batch only rejects a length mismatch or a bad T, both ruled
+    // out at the call site — fall back to the scalar cached entry per strike.
+    for (std::size_t i = 0u; i < batch.size; ++i) {
+      batch.prices[i] =
+          american_price_cached(S, batch.strikes[i], T, batch.sigmas[i], r, q, side, correction);
+    }
+  }
+  for (std::size_t i = 0u; i < batch.size; ++i) {
+    output[batch.rows[i]] = batch.prices[i];
+  }
+  batch.size = 0u;
+}
+
 // A finite, strictly-positive query coordinate.
 [[nodiscard]] bool valid_query(double K, double T) noexcept {
   return std::isfinite(K) && (K > 0.0) && std::isfinite(T) && (T > 0.0);
@@ -1756,6 +1795,22 @@ Status VolaSession::fair_value_ladder(double T, std::span<const double> strikes,
   const ForwardCarry fc = interp_forward(T);
   const CorrectionBlend call_correction = correction_blend_at(T, Side::Call);
   const CorrectionBlend put_correction = correction_blend_at(T, Side::Put);
+  // F4: the cached (equal-T) strikes are batched per side and flushed through the
+  // T-collapsed ladder entry (economic-parity to the per-strike american_price_cached,
+  // |Δprice| < 1e-12·K); cold strikes stay on the per-strike scalar reprice.
+  CachedPriceBatch cached_calls;
+  CachedPriceBatch cached_puts;
+  const auto queue_cached = [&](std::size_t row, Side side, double sigma) {
+    CachedPriceBatch &batch = side == Side::Call ? cached_calls : cached_puts;
+    batch.strikes[batch.size] = strikes[row];
+    batch.sigmas[batch.size] = sigma;
+    batch.rows[batch.size] = row;
+    ++batch.size;
+    if (batch.size == kColdPriceBlockRows) {
+      flush_cached_price_batch(batch, side, in_.S, T, fc.rate, fc.q_eff,
+                               side == Side::Call ? call_correction : put_correction, out);
+    }
+  };
   for (std::size_t i = 0; i < strikes.size(); ++i) {
     const double K = strikes[i];
     if (!std::isfinite(K) || !(K > 0.0)) {
@@ -1767,13 +1822,16 @@ Status VolaSession::fair_value_ladder(double T, std::span<const double> strikes,
     const double sigma = model_iv(k, T);
     const CorrectionBlend &correction = side == Side::Call ? call_correction : put_correction;
     if (correction.usable(side)) {
-      out[i] = american_price_cached(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, correction);
+      queue_cached(i, side, sigma);
     } else {
       const auto p = american_price(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, in_.deam.method,
                                     in_.deam.al_opts);
       out[i] = p.has_value() ? *p : kNaN;
     }
   }
+  flush_cached_price_batch(cached_calls, Side::Call, in_.S, T, fc.rate, fc.q_eff, call_correction,
+                           out);
+  flush_cached_price_batch(cached_puts, Side::Put, in_.S, T, fc.rate, fc.q_eff, put_correction, out);
   return Ok();
 }
 
@@ -1849,6 +1907,11 @@ Status VolaSession::evaluate_ladder(double T, std::span<const double> strikes,
   // Fixed-capacity scratch keeps arbitrary public ladders allocation-free.
   ColdPriceBatch cold_calls;
   ColdPriceBatch cold_puts;
+  // F4: cached equal-T strikes are batched per side and flushed through the
+  // T-collapsed ladder entry (economic-parity to the per-strike american_price_cached,
+  // |Δprice| < 1e-12·K — the T-first collapse reorders the correction summation).
+  CachedPriceBatch cached_calls;
+  CachedPriceBatch cached_puts;
   const auto scalar_price = [&](std::size_t row, Side side, double sigma) {
     const auto result = american_price(in_.S, strikes[row], T, sigma, fc.rate, fc.q_eff, side,
                                        in_.deam.method, in_.deam.al_opts);
@@ -1863,6 +1926,17 @@ Status VolaSession::evaluate_ladder(double T, std::span<const double> strikes,
     if (batch.size == kColdPriceBlockRows) {
       flush_cold_price_batch(batch, side, in_.S, T, fc.rate, fc.q_eff, in_.deam.method,
                              in_.deam.al_opts, price_out);
+    }
+  };
+  const auto queue_cached = [&](std::size_t row, Side side, double sigma) {
+    CachedPriceBatch &batch = side == Side::Call ? cached_calls : cached_puts;
+    batch.strikes[batch.size] = strikes[row];
+    batch.sigmas[batch.size] = sigma;
+    batch.rows[batch.size] = row;
+    ++batch.size;
+    if (batch.size == kColdPriceBlockRows) {
+      flush_cached_price_batch(batch, side, in_.S, T, fc.rate, fc.q_eff,
+                               side == Side::Call ? call_correction : put_correction, price_out);
     }
   };
 
@@ -1914,7 +1988,7 @@ Status VolaSession::evaluate_ladder(double T, std::span<const double> strikes,
     }
 
     if (correction.usable(side)) {
-      price_out[i] = american_price_cached(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, correction);
+      queue_cached(i, side, sigma);
     } else if (in_.deam.method == AmericanMethod::AndersenLake && std::isfinite(sigma) &&
                sigma >= 0.0) {
       queue_cold(i, side, sigma);
@@ -1922,6 +1996,10 @@ Status VolaSession::evaluate_ladder(double T, std::span<const double> strikes,
       scalar_price(i, side, sigma);
     }
   }
+  flush_cached_price_batch(cached_calls, Side::Call, in_.S, T, fc.rate, fc.q_eff, call_correction,
+                           price_out);
+  flush_cached_price_batch(cached_puts, Side::Put, in_.S, T, fc.rate, fc.q_eff, put_correction,
+                           price_out);
   flush_cold_price_batch(cold_calls, Side::Call, in_.S, T, fc.rate, fc.q_eff, in_.deam.method,
                          in_.deam.al_opts, price_out);
   flush_cold_price_batch(cold_puts, Side::Put, in_.S, T, fc.rate, fc.q_eff, in_.deam.method,

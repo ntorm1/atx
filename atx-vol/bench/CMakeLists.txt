@@ -409,3 +409,47 @@ target_link_libraries(atx-vol-fit-serialize-bench
         atx_warnings
         Threads::Threads
 )
+
+# ── WS-P P7 (perf, bench-gaps 1-4) — pricing/greeks observability rows ─────────
+# Three deterministic-counter rows that isolate the fitter's boundary-solve-bound
+# hot loops so the sprint's fewer-solves wins are reportable + future-gateable:
+#   fit/american_iv/cached_newton — cached-inversion Newton kernel (F1/F8 Clenshaw
+#                                    traversal win; 200-inversion fixture)
+#   deam/carry/resolve/{legacy,warm} — de-Am carry solve (P2 warm-start boundary
+#                                    solves/slice, 474->139)
+#   correction/cache/build/{put,call} — per-side correction-cache build (96 AL
+#                                    boundary solves + DCT, perf gap 4)
+# Emits the always-on solve-ledger sl_* columns in every build (rel/rel-avx2) and
+# the gated cnt_* columns under -DATX_VOL_COUNTERS=ON. Own target (one owner per TU).
+add_executable(atx-vol-pg-observability-bench
+    bench_main.cpp
+    pg_observability_bench.cpp
+)
+target_link_libraries(atx-vol-pg-observability-bench
+    PRIVATE
+        atx::vol
+        atx::core
+        benchmark::benchmark
+        atx_warnings
+        Threads::Threads
+)
+
+# Self-gating name-coverage CTest (mirrors the shootout W0.1 pattern): fail loud if
+# any P7 observability row is ever dropped or renamed. Independent of
+# compare_baseline.py (a separate sprint owns the baselines).
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_test(
+        NAME atx-vol-pg-observability-name-coverage
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/check_benchmark_names.py
+            --exe $<TARGET_FILE:atx-vol-pg-observability-bench>
+            --required fit/american_iv/cached_newton
+            --required deam/carry/resolve/legacy
+            --required deam/carry/resolve/warm
+            --required correction/cache/build/put
+            --required correction/cache/build/call
+    )
+    set_tests_properties(atx-vol-pg-observability-name-coverage PROPERTIES LABELS atx_vol)
+endif()

@@ -51,6 +51,40 @@ double hybrid_forward(double S, double r, double borrow, double T,
   return hybrid_forward_from_base(base, borrow, T);
 }
 
+void hybrid_forward_div_jacobian(double r, double borrow, double T,
+                                 std::span<const DividendEvent> cash_divs, std::int64_t expiry_ns,
+                                 std::int64_t now_ts_ns, const HybridDivParams &hyb,
+                                 std::span<double> dF_dDiv_out) noexcept {
+  const std::size_t n =
+      (cash_divs.size() < dF_dDiv_out.size()) ? cash_divs.size() : dF_dDiv_out.size();
+  if (!(T > 0.0) || !std::isfinite(T) || !std::isfinite(r) || !std::isfinite(borrow) ||
+      !std::isfinite(hyb.prop_div_yield) || !std::isfinite(hyb.blend)) {
+    for (std::size_t i = 0; i < n; ++i) {
+      dF_dDiv_out[i] = kQuietNaN;
+    }
+    return;
+  }
+  const double beta = hyb.blend;
+  // Borrow/blend/proportional-yield prefactor shared by every event (matches
+  // hybrid_forward_base's e^{-borrow·T}·(1−β)·e^{−βqT} escrowed-leg coefficient).
+  const double coeff = -(1.0 - beta) * std::exp(-borrow * T) * std::exp(-beta * hyb.prop_div_yield * T);
+  for (std::size_t i = 0; i < n; ++i) {
+    const DividendEvent &ev = cash_divs[i];
+    if (ev.ex_date_ns < now_ts_ns || ev.ex_date_ns > expiry_ns) {
+      dF_dDiv_out[i] = 0.0; // paid already / after expiry — mirrors forward_div_corrected
+      continue;
+    }
+    const double t_i = static_cast<double>(ev.ex_date_ns - now_ts_ns) / (1.0e9 * 365.25 * 86400.0);
+    if (t_i < 0.0 || t_i > T) {
+      dF_dDiv_out[i] = 0.0;
+      continue;
+    }
+    // ∂F_cash/∂D_i = −e^{−r·t_i}·e^{rT} = −e^{r(T−t_i)}, scaled by the escrowed-leg
+    // prefactor above.
+    dF_dDiv_out[i] = coeff * std::exp(r * (T - t_i));
+  }
+}
+
 Result<double> imply_borrow_european_pcp_from_base(double call_price, double put_price, double K,
                                                    double T, double r, double base, double b_lo,
                                                    double b_hi, double tol) noexcept {

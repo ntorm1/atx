@@ -97,9 +97,19 @@ ATX_FORCE_INLINE __m256d input_patch_mask(__m256d F, __m256d K, __m256d T, __m25
 // `nonfinite_mask` (magnitude > DBL_MAX, unordered-true) catches BOTH in one test,
 // routing such a lane to the scalar source of truth — independent of Φ accuracy,
 // so it stays now the finite-wing patch is gone.
-ATX_FORCE_INLINE int patch_bits(__m256d degen, __m256d d1, __m256d d2) noexcept {
+//
+// A9 (simd-review finding 4): log_pd assumes a positive-NORMAL argument, so an F/K
+// ratio that underflows to a denormal/0 or overflows to +inf decodes to FINITE
+// garbage near ±709 (log of the min/max normal) instead of ±inf — which nonfinite_
+// mask(d) then cannot catch. `|lnFK| >= 708` brackets exactly that garbage band (and
+// any genuine deep wing, whose Greeks are Φ-saturated and computed exactly by scalar
+// anyway), routing the lane to the scalar source of truth.
+ATX_FORCE_INLINE int patch_bits(__m256d degen, __m256d lnfk, __m256d d1, __m256d d2) noexcept {
+  const __m256d abs_mask = _mm256_set1_pd(-0.0);
+  const __m256d abs_lnfk = _mm256_andnot_pd(abs_mask, lnfk);
+  const __m256d lnfk_escape = _mm256_cmp_pd(abs_lnfk, _mm256_set1_pd(708.0), _CMP_GE_OQ);
   const __m256d nonfinite_d = _mm256_or_pd(nonfinite_mask(d1), nonfinite_mask(d2));
-  return _mm256_movemask_pd(_mm256_or_pd(degen, nonfinite_d));
+  return _mm256_movemask_pd(_mm256_or_pd(degen, _mm256_or_pd(lnfk_escape, nonfinite_d)));
 }
 
 // One 4-lane block, computed into aligned stack columns. The eight Greeks + price
@@ -188,7 +198,7 @@ ATX_FORCE_INLINE int greeks_block(const double *F, const double *K, const double
   _mm256_store_pd(b.cm, charm);
   _mm256_store_pd(b.pr, price);
 
-  return patch_bits(input_patch, d1, d2);
+  return patch_bits(input_patch, lnFK, d1, d2);
 }
 
 // AoS scatter sink: writes lane j into greeks_out[idx] / price_out[idx].

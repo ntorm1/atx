@@ -150,6 +150,45 @@ audit_european_equiv_iv(double american_mid, double bid_ask_spread, double sigma
                         double K, double T, double r, double q_eff, Side side,
                         double max_residual_half_spreads = 0.25) noexcept;
 
+// Batched sibling of audit_european_equiv_iv (perf-review F3 / P3). Reprices
+// MANY audited rows that share one (S, T, r, q_eff, side) but each carry their
+// OWN recovered σ, in a single call.
+//
+// audit_european_equiv_iv does ONE ACCURATE-preset cold Andersen-Lake solve
+// (12-node boundary / 24 fp-quad / 48-node premium — the library's most
+// expensive scheme) PER row. Every row of one (expiry, side) shares
+// (S, T, r, q_eff) and differs only in (K, σ) — exactly the shape of the
+// σ-boundary-interpolant slice route. This entry routes the reprice through
+// andersen_lake_{call,put}_slice_sigma: ONE n_σ-node Chebyshev interpolant of
+// the dimensionless early-exercise boundary shared by the whole side, so the
+// per-side cost drops from O(strikes) cold solves to O(n_σ) (≈ 8). The premium
+// quadrature is UNCHANGED — the slice route runs the same ACCURATE-preset
+// 48-node quadrature (scheme_from_opts(nullopt)); only the boundary PATH becomes
+// σ-interpolated instead of per-row cold-solved. For a side with ≤ n_σ rows, or
+// any row whose σ falls outside the box/guards, the route degrades to the
+// bit-identical cold solve, so those verdicts are unchanged to the last bit.
+//
+// POLICY (PM-decided, perf-review F3): this remains a valid independence check.
+// The audit certifies IV-INVERSION consistency (does the recovered σ reprice the
+// American mid inside the half-spread budget?), NOT boundary-PATH independence.
+// The σ-interpolant's qualified maximum price gap versus a per-row cold solve is
+// 3.8e-5/share (Task 11 §P2.5 ship gate, american.hpp), orders of magnitude
+// below the half-spread economic budget the audit is measured against, so no
+// verdict the budget can resolve is affected.
+//
+// The verdict math is bit-identical to the scalar entry: per row `out[i]` is
+// Ok({price, |price − mid|, |price − mid| / (0.5·spread), passed}) or the same
+// Err the scalar returns on an invalid row / non-finite reprice. All spans must
+// have equal length; `out` is written one Result per input row.
+//
+// @return InvalidArgument on a shared-input or span-length problem (no row is
+//         written); otherwise Ok() with every `out[i]` populated.
+[[nodiscard]] atx::core::Status audit_european_equiv_iv_batch(
+    double S, double T, double r, double q_eff, Side side, std::span<const double> strikes,
+    std::span<const double> sigmas, std::span<const double> american_mids,
+    std::span<const double> bid_ask_spreads, double max_residual_half_spreads,
+    std::span<atx::core::Result<IvRepricingAudit>> out) noexcept;
+
 // @param call_mid,put_mid co-terminal American call/put mids at (K, T)
 // @param S,K,T            spot, strike, year-fraction (all > 0)
 // @param r                continuously-compounded rate (finite)
@@ -298,11 +337,14 @@ struct DeAmOptions {
   //       hybrid_forward(converged borrow) — bit-identical to that step's forward
   //       — so only the diagnostic rmse_pcp / returned warm-seed vols move by
   //       < kBorrowFpTol=1e-8.
-  // Default false keeps the configured carry solve bit-identical (both paths
-  // shift sub-1e-8 values that move bit-exact pins); a perf-oriented caller opts
-  // in. The pricer stays uncached Andersen-Lake and the converged root is
-  // unchanged.
-  bool warm_start_carry = false;
+  // Default TRUE (P2 / perf F2): both reductions ship on by the default carry
+  // solve. Cross-pair seeds change only the fixed-point/Newton starting guesses,
+  // so the converged borrow, forward, and per-leg vols move by < kBorrowFpTol=1e-8
+  // (the fixed-point tolerance) — a sub-tolerance shift in load-bearing outputs and
+  // in the diagnostic rmse_pcp / warm-seed vols. A caller that needs the exact
+  // legacy carry diagnostics (bit-exact rmse_pcp / seed vols / same iteration path)
+  // opts back out with false. The pricer stays uncached Andersen-Lake throughout.
+  bool warm_start_carry = true;
   // C2 (perf): reuse caller-supplied `caches` for the eSSVI FIT de-Am instead of
   // building fresh per-side session caches. Set by the cross-date warm-start chain
   // (corpus.cpp) after its stale-gate confirms the prior date's cache covers this

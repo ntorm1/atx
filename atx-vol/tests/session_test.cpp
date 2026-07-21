@@ -1046,8 +1046,11 @@ TEST(VolaSession, FairValueLadder_MatchesScalarAndHandlesBadStrikes) {
   const auto st = sess->fair_value_ladder(T, strikes, sides, out);
   ASSERT_TRUE(st.has_value()) << st.error().to_string();
 
-  // Each ladder entry is bit-identical to the scalar fair_value; the bad strike
-  // becomes NaN without sinking the ladder.
+  // Each ladder entry is economic-parity to the scalar fair_value; the bad strike
+  // becomes NaN without sinking the ladder. P5 (perf review F4) routes the cached
+  // ladder through the T-collapsed batch, which reorders the correction summation
+  // (T axis collapsed once, not per strike), so the cached entries match to the
+  // sprint's |Δprice| < 1e-12·K ladder budget rather than bit-for-bit.
   for (std::size_t i = 0; i < strikes.size(); ++i) {
     if (strikes[i] <= 0.0) {
       EXPECT_TRUE(std::isnan(out[i]));
@@ -1055,7 +1058,7 @@ TEST(VolaSession, FairValueLadder_MatchesScalarAndHandlesBadStrikes) {
     }
     const auto scalar = sess->fair_value(strikes[i], T, sides[i]);
     ASSERT_TRUE(scalar.has_value());
-    EXPECT_DOUBLE_EQ(out[i], *scalar);
+    EXPECT_NEAR(out[i], *scalar, 1.0e-12 * strikes[i]);
   }
 
   // Structural errors: length mismatch and a bad expiry.
@@ -1199,7 +1202,7 @@ TEST(VolaSession, EvaluateLadder_ColdPriceOnlyBatchesBySideWithinEconomicToleran
   }
 }
 
-TEST(VolaSession, EvaluateLadder_CachedPriceOnlyRetainsExactCachedRoute) {
+TEST(VolaSession, EvaluateLadder_CachedPriceOnlyEconomicParityToScalarCachedRoute) {
   const SynthPanelSpec spec = make_spec();
   const auto panel = make_synthetic_american_panel(spec);
   ASSERT_TRUE(panel.has_value()) << panel.error().to_string();
@@ -1213,10 +1216,15 @@ TEST(VolaSession, EvaluateLadder_CachedPriceOnlyRetainsExactCachedRoute) {
   std::vector<double> iv(strikes.size());
   std::vector<double> price(strikes.size());
   ASSERT_TRUE(sess->evaluate_ladder(T, strikes, sides, iv, price, {}).has_value());
+  // P5 (perf review F4): the cached price-only route now flows through the
+  // T-collapsed ladder batch. The correction tensor's T axis is collapsed once for
+  // the whole ladder instead of per strike, a summation reorder — so the cached
+  // mark is economic-parity (|Δprice| < 1e-12·K) to the scalar cached fair_value,
+  // not bit-for-bit. Greeks/cold routes are unaffected (covered elsewhere).
   for (std::size_t i = 0; i < strikes.size(); ++i) {
     const auto scalar = sess->fair_value(strikes[i], T, sides[i]);
     ASSERT_TRUE(scalar.has_value()) << scalar.error().to_string();
-    EXPECT_DOUBLE_EQ(price[i], *scalar);
+    EXPECT_NEAR(price[i], *scalar, 1.0e-12 * strikes[i]);
   }
 }
 

@@ -109,7 +109,11 @@ constexpr double kPxScale = 1e-9;
 // Rewrite a bare "YYYY-MM-DD" expiry into the U.S.-equity PM close instant
 // "YYYY-MM-DDT16:00:00-04:00" (EDT) or "-05:00" (EST). No-op for any string that
 // is not exactly a 10-char bare date (already carries a time, or malformed).
-[[nodiscard]] std::string to_us_equity_pm_close(std::string_view date_iso) {
+// [[maybe_unused]]: the OPRA loader was unified onto G1's always-on
+// expiry_instant_ns() path (merge 2026-07-20), so main's opt-in ExpiryCloseConvention
+// no longer calls this. Retained (not deleted) so ExpiryCloseConvention can be
+// re-wired later without reconstructing the DST-aware conversion.
+[[maybe_unused, nodiscard]] std::string to_us_equity_pm_close(std::string_view date_iso) {
   if (date_iso.size() != 10) {
     return std::string(date_iso);
   }
@@ -294,7 +298,10 @@ template <typename RateFn>
   // qualify here, so their implied spot is unchanged.
   for (const auto& [expiry, strikes] : by_expiry) {
     (void)strikes;
-    const double t_front = time_to_expiry_years(snapshot_ns, iso_to_ns(expiry), time);
+    // TRUE 16:00 ET PM-settled expiry instant (OPRA equity/ETF universe), so the
+    // front-expiry PCP back-out discounts at the same intraday T data_install uses.
+    const double t_front =
+        time_to_expiry_years(snapshot_ns, expiry_instant_ns(expiry, SettlementSession::Pm), time);
     if (!(t_front > kMinSpotT)) {
       continue;  // 0DTE / same-week: too ill-conditioned for a PCP spot back-out
     }
@@ -317,7 +324,10 @@ template <typename RateFn>
   double best_gap = std::numeric_limits<double>::infinity();
   for (const auto& [expiry, strikes] : by_expiry) {
     (void)strikes;
-    const double t_front = time_to_expiry_years(snapshot_ns, iso_to_ns(expiry), time);
+    // TRUE 16:00 ET PM-settled expiry instant (OPRA equity/ETF universe), so the
+    // front-expiry PCP back-out discounts at the same intraday T data_install uses.
+    const double t_front =
+        time_to_expiry_years(snapshot_ns, expiry_instant_ns(expiry, SettlementSession::Pm), time);
     if (!(t_front > kMinSpotTFallback)) {
       continue;  // sub-1-day: PCP forward back-out too ill-conditioned even here
     }
@@ -546,19 +556,22 @@ Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
       ++n_dropped;
       continue;
     }
-    // Opt-in PM-close convention: stamp the DST-correct 16:00-ET close onto the
-    // bare expiry date so every downstream instant (the 0DTE filter and drop
-    // below, the PCP spot T, per-expiry rate T, and data_install's Chain::T /
-    // expiry_ns) carries the true PM-settled time-to-expiry. Default MidnightUtc
-    // leaves the bare date untouched -> bit-identical to the historical load.
-    if (spec.expiry_close == ExpiryCloseConvention::UsEquityPmClose) {
-      osi->expiry_iso = to_us_equity_pm_close(osi->expiry_iso);
-    }
-    // Drop expired / same-day (0DTE) contracts: with a 19:55Z snapshot and a
-    // midnight-UTC expiry parse, an expiry on/before the snapshot date yields a
-    // non-positive year-fraction. A T <= 0 point is not a tradeable forward node —
-    // it would poison sqrt(T) IV/greeks and any slice fit that admits it.
-    if (!(time_to_expiry_years(snapshot_iso_ns, iso_to_ns(osi->expiry_iso), spec.time) > 0.0)) {
+    // TRUE PM-settled expiry instant (16:00 ET). The entire OPRA equity/ETF
+    // universe is PM-settled, so every row is stamped Pm (an AM-settled index
+    // loader would pass SettlementSession::Am). This instant — not the legacy
+    // midnight-UTC `iso_to_ns` — is what T, the drop filter, and every
+    // downstream consumer see (G1, gaps finding 3). Always-on on the OPRA path
+    // (merge decision 2026-07-20): the true instant is a correctness fix, not an
+    // opt-in; main's ExpiryCloseConvention flag is superseded here.
+    const std::int64_t expiry_instant =
+        expiry_instant_ns(osi->expiry_iso, SettlementSession::Pm);
+    // Drop only genuinely EXPIRED contracts: T <= 0 against the TRUE expiry
+    // instant. Same-session (0DTE) contracts are now KEPT — before 16:00 ET they
+    // carry a small positive intraday T (e.g. a 15:55 ET snapshot leaves ~5 min),
+    // which is a tradeable forward node; only after the 16:00 ET settle does T go
+    // non-positive and the contract drop. (Previously the midnight-UTC parse made
+    // every same-day expiry T <= 0 and hard-dropped the highest-volume segment.)
+    if (!(time_to_expiry_years(snapshot_iso_ns, expiry_instant, spec.time) > 0.0)) {
       ++n_dropped;
       continue;
     }
@@ -581,6 +594,8 @@ Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
     row.expiry_iso = std::move(osi->expiry_iso);
     row.strike = osi->strike;
     row.side = osi->side;
+    row.settle = SettlementSession::Pm;   // OPRA equity/ETF universe: PM-settled
+    row.expiry_ns = expiry_instant;       // TRUE 16:00 ET instant -> data_install T
     row.bid = bid;
     row.ask = ask;
     row.bid_size = static_cast<std::int32_t>(bid_sz[i]);
@@ -656,7 +671,9 @@ Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
   // absent) so that path's frame is byte-for-byte the historical one.
   if (!spec.yc_pillar_t.empty()) {
     for (QuoteRow& row : frame.rows) {
-      const double T = time_to_expiry_years(snapshot_iso_ns, iso_to_ns(row.expiry_iso), spec.time);
+      // Use the row's TRUE stamped expiry instant (16:00 ET), so the term-curve
+      // rate is queried at the same T `data_install` will assign to Chain::T.
+      const double T = time_to_expiry_years(snapshot_iso_ns, row.expiry_ns, spec.time);
       if (std::isfinite(T) && T > 0.0) {
         row.rate_source = rate_at(T);
       }

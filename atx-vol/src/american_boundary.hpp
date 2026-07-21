@@ -156,9 +156,8 @@ enum class AlSolveStatus { Ok, Collapsed, TableMissing };
 //
 // Adjoint / implicit-function-theorem greeks (detail/adjoint_greeks.cpp) need the
 // residual as a linkable symbol to form the Jacobian J = dR/dy and the parameter
-// sensitivities R_sigma/R_r. Until now R existed ONLY as a private lambda inside
-// detail::al_implicit_diff_put_greeks (american.cpp), over the file-static kernel
-// eqn_b_ND_impl<0,0>. This entry point exposes the SAME computation with no change
+// sensitivities R_sigma/R_r. This entry point exposes the pure fixed-point residual
+// R(y; sigma, r) over the file-static kernel eqn_b_ND_impl<0,0>, with no change
 // to any existing behaviour: it is a PURE function of (y, sigma, r) given an
 // already-initialised bnd (node grid / xmax / K / T fixed) and its bound ws.
 //

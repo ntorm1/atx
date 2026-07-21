@@ -88,6 +88,47 @@ TEST(ParallelFor, DynamicSchedulerVisitsEverySlotExactlyOnce) {
   }
 }
 
+// A7 (simd-review finding 3): the STATIC block-partitioned parallel_for owns the
+// same throughput hot paths as the dynamic overloads; its multithreaded path must
+// preserve the disjoint-write determinism contract. Sanity-check the happy path
+// under nt > 1 before exercising the exception behaviour below.
+TEST(ParallelFor, StaticSchedulerWritesEverySlotExactlyOnce) {
+  constexpr std::size_t kN = 257;
+  std::vector<std::size_t> got(kN, kN);
+  atx::vol::parallel_for(kN, 7, [&](std::size_t i) { got[i] = i * i; });
+  for (std::size_t i = 0; i < kN; ++i) {
+    EXPECT_EQ(got[i], i * i);
+  }
+}
+
+// A7 (simd-review finding 3): a throwing worker body in the STATIC block
+// scheduler must NOT std::terminate the process. Pre-fix the static variant had
+// no try/catch in its jthread bodies, so an exception escaping `fn` (e.g.
+// std::bad_alloc) escaped the jthread and called std::terminate — it would have
+// taken the whole test process down rather than failing cleanly, so this test
+// could not have been written as a plain EXPECT before the fix. Post-fix the
+// static variant matches the dynamic overloads: it captures the first exception,
+// joins every worker, and rethrows on the calling thread so the caller's normal
+// error handling applies. nt >= 2 forces the multithreaded jthread path (the
+// bug's blast radius). The schedule is contiguous [lo,hi) blocks — with kN=64,
+// nt=4 (chunk 16) index 17 lands in worker 1's block and is always processed, so
+// the throw is deterministic.
+TEST(ParallelFor, StaticWorkerExceptionPropagatesToCaller) {
+  constexpr std::size_t kN = 64;
+  bool threw = false;
+  try {
+    atx::vol::parallel_for(kN, 4, [](std::size_t i) {
+      if (i == 17) {
+        throw std::runtime_error("static worker boom");
+      }
+    });
+  } catch (const std::runtime_error& e) {
+    threw = true;
+    EXPECT_STREQ(e.what(), "static worker boom");
+  }
+  EXPECT_TRUE(threw) << "a throwing static worker must propagate, not terminate";
+}
+
 // WP7: a worker body that throws must NOT std::terminate the process. The
 // dynamic fan-out captures the first exception, joins every worker, and
 // rethrows on the calling thread so the caller's normal error handling applies.

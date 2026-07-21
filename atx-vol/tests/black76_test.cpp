@@ -3,6 +3,7 @@
 #include <cmath>
 
 #include "atx/vol/black76.hpp"
+#include "atx/vol/greeks.hpp" // black76_greeks — F8 vega bit-parity guard
 
 // Black-76 pricer coverage, ported from the C ats-vol test_pricer_b76.c:
 // put-call parity, intrinsic collapse, the aux/lnfk/value+vega variants
@@ -11,6 +12,7 @@
 namespace {
 
 using atx::vol::black76_aux;
+using atx::vol::black76_greeks;
 using atx::vol::black76_price;
 using atx::vol::black76_price_from_lnfk;
 using atx::vol::black76_value_and_vega;
@@ -76,6 +78,31 @@ TEST(Black76, ValueAndVega_MatchesFiniteDiff) {
   const double up = black76_price(F, K, T, sigma + h, df, Side::Call);
   const double dn = black76_price(F, K, T, sigma - h, df, Side::Call);
   EXPECT_LT(std::fabs(vv.vega - (up - dn) / (2.0 * h)), 1.0e-6);
+}
+
+// F8 (perf review): american_vega and the fused american_price_and_vega_cached
+// use black76_value_and_vega's vega instead of the 9-output black76_greeks
+// bundle's. That swap is only bit-identical if the two vegas agree to the last
+// bit — same d1, φ(d1) = norm_pdf(d1) = (1/√2π)·exp(-½d1²), and F·df·φ(d1)·√T with
+// F·df == df·F (IEEE commutative). Assert EXACT equality across a moneyness /
+// maturity / vol grid, both sides. r feeds only black76_greeks' rho/theta, never
+// its vega, so it is fixed arbitrarily here.
+TEST(Black76, ValueAndVega_VegaBitIdenticalToGreeksBundle) {
+  constexpr double r = 0.037;
+  for (double F : {50.0, 100.0, 250.0}) {
+    for (double K : {60.0, 100.0, 140.0, 300.0}) {
+      for (double T : {0.02, 0.25, 1.0, 2.5}) {
+        for (double sigma : {0.08, 0.20, 0.65}) {
+          const double df = std::exp(-r * T);
+          for (Side side : {Side::Call, Side::Put}) {
+            const double fused = black76_value_and_vega(F, K, T, sigma, df, side).vega;
+            const double bundle = black76_greeks(F, K, T, sigma, r, df, side).greeks.vega;
+            EXPECT_EQ(fused, bundle) << "F=" << F << " K=" << K << " T=" << T << " sig=" << sigma;
+          }
+        }
+      }
+    }
+  }
 }
 
 TEST(Black76, ValueAndVega_SqrtTSentinelMatches) {

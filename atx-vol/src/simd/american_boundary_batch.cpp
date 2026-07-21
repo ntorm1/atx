@@ -215,6 +215,22 @@ SimdRoute american_put_greeks_batch(const double* S, const double* K, const doub
             if (!handled[i]) {
                 greeks_scalar_lane(S + off, K + off, T + off, sigma + off, r + off, q + off,
                                    opts, out_greeks + off, i);
+                // A9 (simd-review finding 9): the vector-handled lanes leave the
+                // unrequested greeks at 0 (K4 first-order tier). The scalar oracle
+                // returns a FULL bundle — and american_greeks_al may itself route to
+                // american_greeks_fd, which ignores the needs mask — so zero the
+                // unrequested columns here to keep the laned bundle internally
+                // consistent across handled and patched lanes.
+                AmericanGreeks& gp = out_greeks[off + i];
+                if (!need_vega) {
+                    gp.vega = gp.volga = gp.vanna = 0.0;
+                }
+                if (!need_rho) {
+                    gp.rho = 0.0;
+                }
+                if (!need_charm) {
+                    gp.charm = 0.0;
+                }
             }
         }
     }

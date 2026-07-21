@@ -3,12 +3,12 @@
 // which path the kernels run.
 //
 //   VectorMath_FastDeterministic_BoundedVsReference
-//       Grades detail/vector_math.hpp's log_pd / exp_pd / norm_cdf_pd (via the
+//       Grades detail/vector_math.hpp's log_pd / exp_pd / norm_cdf_erfc_pd (via the
 //       vector_math_probe surface) against std::log / std::exp / atx::core::norm_cdf
-//       over a broad grid incl. the Φ wings. Asserts the FastDeterministic contract
-//       from math_mode.hpp: Φ interior (|x| ≤ kNormCdfWing) ≤ kFastDeterministicPhiBound,
-//       log/exp relative error ≤ kFastDeterministicLogExpRelBound. The Φ wing is only
-//       recorded (the kernels patch |d| > kNormCdfWing to the exact scalar path).
+//       over a broad grid incl. the deep Φ wings. Asserts the FastDeterministic
+//       contract from math_mode.hpp: Φ full-range |fd−ref| ≤ kFastDeterministicPhiBound,
+//       log/exp relative error ≤ kFastDeterministicLogExpRelBound. The Cody rational-erfc
+//       Φ is accurate across the entire real line, so there is no wing exemption.
 //
 //   VectorMath_ModeSelection
 //       The MathMode -> SimdIsa mapping is correct, and driving the American boundary
@@ -24,7 +24,6 @@
 
 #include "atx/core/math.hpp"                       // atx::core::norm_cdf (Reference Φ)
 #include "atx/vol/american.hpp"                    // andersen_lake
-#include "atx/vol/detail/norm_cdf_cheb.hpp"        // kNormCdfWing, kNormCdfHalfRange
 #include "atx/vol/simd/american_boundary_batch.hpp"
 #include "atx/vol/simd/cpu.hpp"
 
@@ -54,32 +53,26 @@ TEST(VectorMath, FastDeterministic_BoundedVsReference) {
         GTEST_SKIP() << "no AVX2 on this host — FastDeterministic == Reference here";
     }
 
-    // ---- Φ: interior (asserted) + wing (recorded) ----
-    // Fine sweep across the full clamped range so both the trusted interior and the
-    // patched wing are covered.
+    // ---- Φ: full range (asserted everywhere) ----
+    // The Cody rational-erfc Φ is accurate across the ENTIRE real line, so there is
+    // no wing exemption: fine sweep well past the old |x| ≤ 7 Chebyshev range, deep
+    // into the wings (|x| up to 40, where Φ saturates to 0/1), and assert the bound
+    // uniformly.
     std::vector<double> xs;
-    for (double x = -detail::kNormCdfHalfRange; x <= detail::kNormCdfHalfRange;
-         x += 1.0 / 512.0) {
+    for (double x = -40.0; x <= 40.0; x += 1.0 / 512.0) {
         xs.push_back(x);
     }
     std::vector<double> got(xs.size(), 0.0);
     simd::fd_norm_cdf_batch(xs.data(), got.data(), xs.size());
 
-    double max_interior = 0.0;
-    double max_wing = 0.0;
+    double max_abs = 0.0;
     for (std::size_t i = 0; i < xs.size(); ++i) {
         const double want = atx::core::norm_cdf(xs[i]);
-        const double e = std::abs(got[i] - want);
-        if (std::abs(xs[i]) <= detail::kNormCdfWing) {
-            max_interior = std::max(max_interior, e);
-        } else {
-            max_wing = std::max(max_wing, e);
-        }
+        max_abs = std::max(max_abs, std::abs(got[i] - want));
     }
-    std::printf("[VectorMath] Phi interior max|fd-ref|=%.3e (bound %.1e), "
-                "wing max=%.3e (recorded; kernels patch)\n",
-                max_interior, simd::kFastDeterministicPhiBound, max_wing);
-    EXPECT_LE(max_interior, simd::kFastDeterministicPhiBound);
+    std::printf("[VectorMath] Phi full-range max|fd-ref|=%.3e (bound %.1e)\n",
+                max_abs, simd::kFastDeterministicPhiBound);
+    EXPECT_LE(max_abs, simd::kFastDeterministicPhiBound);
 
     // ---- log: positive domain, log-spaced across many decades ----
     std::vector<double> lx;

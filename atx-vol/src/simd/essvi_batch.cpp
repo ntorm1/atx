@@ -71,7 +71,7 @@ void essvi_backbone_w_grad_batch_scalar(const EssviParams& slice,
 
 void essvi_backbone_w_batch(const EssviParams& slice, const double* k_log,
                             double* w_out, std::size_t n) noexcept {
-    if (have_avx2()) {
+    if (use_avx2()) {
         detail::essvi_backbone_w_batch_avx2(slice, k_log, w_out, n);
     } else {
         essvi_backbone_w_batch_scalar(slice, k_log, w_out, n);
@@ -82,7 +82,7 @@ void essvi_backbone_w_grad_batch(const EssviParams& slice, const double* k_log,
                                  double* w_out, double* dw_dtheta,
                                  double* dw_dphi, double* dw_drho,
                                  std::size_t n) noexcept {
-    if (have_avx2()) {
+    if (use_avx2()) {
         detail::essvi_backbone_w_grad_batch_avx2(slice, k_log, w_out, dw_dtheta,
                                                  dw_dphi, dw_drho, n);
     } else {
@@ -93,7 +93,7 @@ void essvi_backbone_w_grad_batch(const EssviParams& slice, const double* k_log,
 
 void svi_total_w_batch(const SviParams& slice, const double* k_log,
                        double* w_out, std::size_t n) noexcept {
-    if (have_avx2()) {
+    if (use_avx2()) {
         detail::svi_total_w_batch_avx2(slice, k_log, w_out, n);
     } else {
         svi_total_w_batch_scalar(slice, k_log, w_out, n);
@@ -102,7 +102,7 @@ void svi_total_w_batch(const SviParams& slice, const double* k_log,
 
 void svi_qe_basis_batch(double m, double sigma, const double* k, double* u_out,
                         double* v_out, std::size_t n) noexcept {
-    if (have_avx2()) {
+    if (use_avx2()) {
         detail::svi_qe_basis_batch_avx2(m, sigma, k, u_out, v_out, n);
     } else {
         svi_qe_basis_batch_scalar(m, sigma, k, u_out, v_out, n);
@@ -111,7 +111,7 @@ void svi_qe_basis_batch(double m, double sigma, const double* k, double* u_out,
 
 void essvi_backbone_sigma_batch(const EssviParams& slice, const double* k_log,
                                 double* sigma_out, std::size_t n) noexcept {
-    if (have_avx2()) {
+    if (use_avx2()) {
         detail::essvi_backbone_sigma_batch_avx2(slice, k_log, sigma_out, n);
     } else {
         essvi_backbone_sigma_batch_scalar(slice, k_log, sigma_out, n);

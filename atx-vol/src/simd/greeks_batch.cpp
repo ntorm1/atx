@@ -17,7 +17,12 @@ void greeks_batch_scalar(const double* F, const double* K, const double* T,
         const Black76Greeks g =
             black76_greeks(F[i], K[i], T[i], sigma[i], r[i], df[i], side[i]);
         greeks_out[i] = g.greeks;
-        price_out[i] = g.price;
+        // A9 (simd-review finding 8): null-check price_out like the AVX2 AoS sink
+        // (greeks_batch_avx2.cpp). A nullptr price_out is a valid "greeks only"
+        // request; dereferencing it unconditionally crashed on a non-AVX2 host.
+        if (price_out != nullptr) {
+            price_out[i] = g.price;
+        }
     }
 }
 
@@ -49,7 +54,7 @@ void black76_greeks_batch_soa(const double* F, const double* K, const double* T,
                               const double* sigma, const double* r,
                               const double* df, const Side* side,
                               const GreeksBatchSoA& out, std::size_t n) noexcept {
-    if (have_avx2()) {
+    if (use_avx2()) {
         detail::black76_greeks_batch_soa_avx2(F, K, T, sigma, r, df, side, out,
                                               n);
     } else {
@@ -62,7 +67,7 @@ void black76_greeks_batch(const double* F, const double* K, const double* T,
                           const double* df, const Side* side,
                           Greeks* greeks_out, double* price_out,
                           std::size_t n) noexcept {
-    if (have_avx2()) {
+    if (use_avx2()) {
         detail::black76_greeks_batch_avx2(F, K, T, sigma, r, df, side,
                                           greeks_out, price_out, n);
     } else {

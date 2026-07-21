@@ -889,19 +889,24 @@ TEST(MultinamePipeline, HeldLotWithoutSurfaceIsCountedNotHidden) {
   // byte-identical across compiler/cache generations. Exact count, settlement,
   // and lot-cardinality invariants remain strict below.
   const double base_settle[3] = {0.0, 0.0, 0.0};
+  // A1 REPIN (core-review finding 1): gross_vega is a near-cancelling net dispersion
+  // aggregate, so the corrected-BAW-seed per-leg vega shift (~1e-6) nets to ~0.025 on
+  // the small residual — only gross_vega[2] cleared the 0.02 economic band. Both ISA
+  // variants recaptured (NDEBUG from rel-avx2, #else from dev/Debug). pnl/nav stayed
+  // inside kMoneyTolerance and are left as-is.
 #if defined(NDEBUG)
   // The exact optimized-fit baseline differs from Debug because the surface and
   // finite-difference kernels are floating-point optimization sensitive.
   const double base_pnl[3] = {0.0, -23.744716582360475, -24.202360552831159};
   const double base_nav[3] = {0.0, -23.744716582360475, -47.947077135191634};
-  const double base_gvega[3] = {4.5474735088646412e-13, -2949.8114907762197, 0.2656329087570839};
+  const double base_gvega[3] = {-1.3119378473778653e-12, -2949.8154923379057, 0.29051315518298704};
   const double base_gdelta[3] = {15.146697780845908, 9.2260306540096977, 14.349744680261736};
   const double base_ggamma[3] = {26.41128251135758, 12.475918614420866, 27.348456305928352};
   const double base_gtheta[3] = {-15152.17270563155, -8707.6189957414917, -15696.856655668636};
 #else
   const double base_pnl[3] = {0.0, -23.744716582360294, -24.202360552831102};
   const double base_nav[3] = {0.0, -23.744716582360294, -47.947077135191392};
-  const double base_gvega[3] = {4.5474735088646412e-13, -2949.811490776257, 0.26563290860065081};
+  const double base_gvega[3] = {2.2737367544323206e-13, -2949.8154923409302, 0.2905131461535575};
   const double base_gdelta[3] = {15.146697780845923, 9.2260306540096408, 14.34974468026175};
   const double base_ggamma[3] = {26.411282511357911, 12.475918614421015, 27.348456305928316};
   const double base_gtheta[3] = {-15152.172705632258, -8707.6189957418119, -15696.856655668571};
@@ -993,12 +998,15 @@ TEST(MultinamePipeline, DefaultPolicyFullBasketBitIdentical) {
 #if defined(NDEBUG)
   const double base_pnl[3] = {0.0, -42.153969329712808, -42.921431468497737};
   const double base_nav[3] = {0.0, -42.153969329712808, -85.075400798210552};
-  const double base_gvega[3] = {4.5474735088646412e-13, 0.088506107249031629, 0.2656329087570839};
+  const double base_gvega[3] = {-1.3119378473778653e-12, 0.083957165928409322, 0.29051315518298704};
 #else
   const double base_pnl[3] = {0.0, -42.153969329712623, -42.92143146849768};
   const double base_nav[3] = {0.0, -42.153969329712623, -85.075400798210296};
-  const double base_gvega[3] = {4.5474735088646412e-13, 0.088506107177408921, 0.26563290860065081};
+  const double base_gvega[3] = {2.2737367544323206e-13, 0.083957163111676891, 0.2905131461535575};
 #endif
+  // A1 REPIN (core-review finding 1): gross_vega[2] shifted ~0.025 past the 0.02
+  // band from the corrected BAW seed (net-cancelling aggregate); both ISA variants
+  // recaptured. pnl/nav stayed inside kMoneyTolerance.
   for (std::size_t i = 0; i < dates.size(); ++i) {
     EXPECT_NEAR(res->pnl_total[i], base_pnl[i], kMoneyTolerance) << "pnl_total row " << i;
     EXPECT_NEAR(res->nav[i], base_nav[i], kMoneyTolerance) << "nav row " << i;
@@ -1263,12 +1271,14 @@ TEST(MultinamePipeline, DefaultPolicyStillBitIdentical) {
 #if defined(NDEBUG)
   const double base_pnl[3] = {0.0, -42.153969329712808, -42.921431468497737};
   const double base_nav[3] = {0.0, -42.153969329712808, -85.075400798210552};
-  const double base_gvega[3] = {4.5474735088646412e-13, 0.088506107249031629, 0.2656329087570839};
+  const double base_gvega[3] = {-1.3119378473778653e-12, 0.083957165928409322, 0.29051315518298704};
 #else
   const double base_pnl[3] = {0.0, -42.153969329712623, -42.92143146849768};
   const double base_nav[3] = {0.0, -42.153969329712623, -85.075400798210296};
-  const double base_gvega[3] = {4.5474735088646412e-13, 0.088506107177408921, 0.26563290860065081};
+  const double base_gvega[3] = {2.2737367544323206e-13, 0.083957163111676891, 0.2905131461535575};
 #endif
+  // A1 REPIN (core-review finding 1): same net-dispersion gross_vega[2] band clear
+  // as the full-basket test above; both ISA variants recaptured.
   for (std::size_t i = 0; i < dates.size(); ++i) {
     EXPECT_NEAR(res->pnl_total[i], base_pnl[i], kMoneyTolerance) << "pnl_total row " << i;
     EXPECT_NEAR(res->nav[i], base_nav[i], kMoneyTolerance) << "nav row " << i;

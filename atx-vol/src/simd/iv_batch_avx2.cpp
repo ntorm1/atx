@@ -6,25 +6,24 @@
 // fall through to the exact scalar atx::vol::implied_vol, which keeps the batch
 // bit-for-bit with the scalar source of truth on those lanes.
 //
-// Algorithm per 4-lane pass (mirrors the scalar implied_vol / the C ats-vol
-// ats_pricer_iv_avx2.c):
+// Algorithm per 4-lane pass (mirrors the scalar implied_vol):
 //
-//   1. Vectorized put-call parity: ITM lanes are rewritten to their OTM
-//      equivalent (price_eff, eps_eff) before the seed — SR-2017's Polya-CDF
-//      form is well conditioned only on the OTM tail.
-//   2. Vectorized Stefanica-Radoicic (2017) closed-form seed: one vector log +
-//      four vector exp, branchless; a validity mask (β>0, γ≥|y|, σ>0) flags
-//      lanes where the quadratic degenerates.
-//   3. Two Halley (order-3) steps on the *original* (price, side): fused
-//      norm_cdf_pd2 for Φ(d1),Φ(d2) and norm_pdf_pd for φ(d1). f = model-price,
-//      f' = vega = df·F·φ(d1)·√T, f'' = volga = vega·d1·d2/σ; step bounded to
-//      [-σ/2, σ] then σ clamped to [kIvMin, kIvMax] — identical to the scalar.
-//   4. Per-lane patch to scalar for: degenerate inputs (T/F/K/df ≤ 0), an
-//      invalid seed, a non-finite result, deep-wing d (|d| > kNormCdfWing, where
-//      Cheb-Φ loses accuracy), an ill-conditioned lane (vega too small, so the
-//      Cheb-Φ price bias would move σ more than the round-trip tolerance), or a
-//      non-converged residual. Patched lanes call implied_vol, matching scalar
-//      exactly; accepted lanes keep the vector σ (within ~1e-9 of scalar).
+//   1. Vectorized Choi-2023 L₃ closed-form seed (seed_choi_l3_pd — the same seed
+//      the scalar path uses): one vector log + a few vector exp, branchless; a
+//      validity mask flags lanes where the closed form degenerates.
+//   2. Three Halley (order-3) steps on the (price, side): fused
+//      norm_cdf_erfc_pd2 for Φ(d1),Φ(d2) — full-range Cody rational erfc — and
+//      norm_pdf_pd for φ(d1). f = model-price, f' = vega = df·F·φ(d1)·√T,
+//      f'' = volga = vega·d1·d2/σ; step bounded to [-σ/2, σ] then σ clamped to
+//      [kIvMin, kIvMax] — identical to the scalar. The final step also returns
+//      (vega, resid), so the accept gate needs no separate Φ/φ pass.
+//   3. Per-lane patch to scalar for: degenerate inputs (T/F/K/df ≤ 0), an
+//      invalid seed, a non-finite result, an ill-conditioned lane (vega below the
+//      notional-scaled floor, so the price→σ map is too flat), or a non-converged
+//      residual. There is NO wing patch: the Cody erfc Φ is full double precision
+//      into the deep wings, so finite wing lanes stay on the vector path. Patched
+//      lanes call implied_vol, matching scalar exactly; accepted lanes keep the
+//      vector σ (within ~1e-9 of scalar).
 
 #include "iv_batch_avx2.hpp"
 
