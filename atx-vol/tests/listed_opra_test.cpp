@@ -136,6 +136,66 @@ TEST(ListedOpra, MissingNumericRootAdjustmentsAreExcluded) {
   EXPECT_TRUE(quotes->empty());
 }
 
+TEST(ListedOpra, SkipsSameSessionZeroDteContractsMissingDefinition) {
+  // Post-merge regression repro: the OPRA panel now keeps same-session (0DTE)
+  // contracts (their 16:00-ET expiry instant is after the 19:55Z snapshot), but
+  // the frozen definition authority predates them. The join therefore saw a
+  // standard-root contract with NO definition row and hard-errored. Same-session
+  // contracts are outside this consumer's 21-60 DTE universe and must be skipped
+  // exactly like the numeric-root adjustments, not treated as a fatal gap.
+  OpraPanel source = panel();
+  source.frame.rows = {
+      QuoteRow{.uid = "SPY",
+               .expiry_iso = kDate, // expiry == trade date => same-session (0DTE)
+               .strike = 600.0,
+               .side = Side::Call,
+               .bid = 1.0,
+               .ask = 1.2},
+  };
+  source.source_instrument_ids = {201};
+  source.source_identities = {
+      OpraInstrumentIdentity{201, "SPY   260605C00600000"},
+  };
+  auto empty = ListedDefinitionTable::create({});
+  ASSERT_TRUE(empty);
+  auto quotes =
+      atx::vol::listed_quotes_from_opra(kDate, source.frame.snapshot_ts_ns, source, *empty);
+  ASSERT_TRUE(quotes) << (quotes ? std::string{} : quotes.error().to_string());
+  EXPECT_TRUE(quotes->empty());
+}
+
+TEST(ListedOpra, SameSessionSkipIsDateGatedNotRootGated) {
+  // The 0DTE skip is narrow: it keys on OSI expiry == trade date, NOT on the
+  // missing-definition condition itself. A NON-0DTE standard-root contract with
+  // no definition remains a hard error (a genuinely missing authority), while
+  // the identical missing-definition condition on a same-session contract is
+  // silently skipped.
+  auto empty = ListedDefinitionTable::create({});
+  ASSERT_TRUE(empty);
+
+  OpraPanel non_zero_dte = panel(); // panel() expiries are 2026-07-17 (~40 DTE)
+  EXPECT_FALSE(atx::vol::listed_quotes_from_opra(kDate, non_zero_dte.frame.snapshot_ts_ns,
+                                                 non_zero_dte, *empty));
+
+  OpraPanel same_session = panel();
+  same_session.frame.rows = {
+      QuoteRow{.uid = "SPY",
+               .expiry_iso = kDate,
+               .strike = 600.0,
+               .side = Side::Put,
+               .bid = 0.5,
+               .ask = 0.7},
+  };
+  same_session.source_instrument_ids = {202};
+  same_session.source_identities = {
+      OpraInstrumentIdentity{202, "SPY   260605P00600000"},
+  };
+  auto quotes = atx::vol::listed_quotes_from_opra(kDate, same_session.frame.snapshot_ts_ns,
+                                                  same_session, *empty);
+  ASSERT_TRUE(quotes) << (quotes ? std::string{} : quotes.error().to_string());
+  EXPECT_TRUE(quotes->empty());
+}
+
 TEST(ListedOpra, RejectsDailyIdentityAndAlignmentViolations) {
   auto table = ListedDefinitionTable::create(definitions());
   ASSERT_TRUE(table);

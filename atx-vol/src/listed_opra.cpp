@@ -290,6 +290,19 @@ listed_quotes_from_opra(std::string_view trade_date, std::int64_t valuation_ts_n
                       [](unsigned char ch) { return std::isdigit(ch) != 0; })) {
         continue;
       }
+      // Same-session (0DTE) contracts — OSI expiry date equal to the trade date
+      // — are structurally outside this consumer's universe and are skipped, not
+      // treated as a missing authority. The OPRA panel keeps them because their
+      // PM-settled (16:00 ET) expiry instant is after the intraday snapshot, but
+      // the point-in-time definition authority predates same-day rows and stamps
+      // expiration at midnight-UTC of the expiry date, so a 0DTE contract can
+      // never satisfy this join even when a definition row exists (it would trip
+      // the look-ahead/expiry guard below). The listed-dispersion workflow only
+      // ever selects 21-60 DTE, so these are pure noise here. Invariant: on this
+      // path every kept quote has expiry strictly after the trade date.
+      if (missing_osi.expiry_iso == trade_date) {
+        continue;
+      }
       return Err(ErrorCode::NotFound, "listed OPRA join: contract definition missing");
     }
     if (definition->definition_ts_ns > valuation_ts_ns ||
