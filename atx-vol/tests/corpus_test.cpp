@@ -1819,10 +1819,12 @@ namespace {
 // per_flush == 1 is exactly the historical one-pool-per-date path.
 [[nodiscard]] Result<QualifiedCorpusManifest>
 build_batched(const fs::path &out, const std::vector<std::string> &dates, std::size_t per_flush,
-              unsigned n_threads) {
+              unsigned n_threads, std::int64_t created_ts = 1) {
   QualifiedCorpusConfig cfg;
   cfg.build.n_threads = n_threads;
-  cfg.build.write_opts.created_ts_ns = 1; // archives must not carry a wall clock
+  // 1 pins an explicit stamp (the historical byte-identity tests); 0 leaves the
+  // production sentinel, which the writer now fills from an archive-content hash.
+  cfg.build.write_opts.created_ts_ns = created_ts;
   auto session = CorpusBuildSession::create(out.string(), cfg);
   if (!session) {
     return Err(session.error());
@@ -1961,6 +1963,30 @@ TEST(CorpusBuildSession, BatchedAppendDeterministicAcrossThreadCounts) {
 
   expect_manifests_equivalent(*s, *p);
   expect_corpora_byte_identical(serial, parallel, dates);
+}
+
+// Corpus reproducibility on the PRODUCTION path: write_opts.created_ts_ns left at
+// the 0 sentinel. Before the content-derived fill, that sentinel stamped each
+// container from the WALL CLOCK, so two identical builds diverged in the archive
+// header timestamp (and ONLY there) -> corpus builds were not byte-reproducible
+// run-to-run. The writer now fills the sentinel from a deterministic hash of the
+// archive content, so two identical builds are byte-identical AND share a policy
+// fingerprint. This fails on the pre-fix writer and passes on the fixed one.
+TEST(CorpusBuildSession, DefaultStampBuildsAreByteReproducible) {
+  const std::vector<std::string> dates = {"2026-06-17", "2026-06-18", "2026-06-19", "2026-06-22"};
+  const fs::path a = fresh_out_dir("repro-default-a");
+  const fs::path b = fresh_out_dir("repro-default-b");
+
+  auto first = build_batched(a, dates, dates.size(), 4u, 0);  // 0 => production sentinel
+  auto second = build_batched(b, dates, dates.size(), 4u, 0);
+  ASSERT_TRUE(first.has_value()) << first.error().to_string();
+  ASSERT_TRUE(second.has_value()) << second.error().to_string();
+
+  // Archive containers (created_ts_ns header field included) are byte-identical.
+  expect_corpora_byte_identical(a, b, dates);
+  // And the corpus policy fingerprint is stable run-to-run (and non-trivial).
+  EXPECT_EQ(first->quality.policy_fingerprint, second->quality.policy_fingerprint);
+  EXPECT_NE(first->quality.policy_fingerprint, 0u);
 }
 
 // B1: a partial window must still resume from per-date checkpoints. Build the

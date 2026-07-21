@@ -74,12 +74,6 @@ namespace {
   return b.data() + static_cast<std::size_t>(off);
 }
 
-[[nodiscard]] std::int64_t wall_clock_ns() noexcept {
-  return std::chrono::duration_cast<std::chrono::nanoseconds>(
-             std::chrono::system_clock::now().time_since_epoch())
-      .count();
-}
-
 // Bits 0..11 — includes ValidationFailure::CarryGap (1u << 11), the
 // publish-with-Degraded reason: a Degraded+CarryGap provenance is a routinely
 // SERVED state and must round-trip the archive, not be refused as unknown.
@@ -610,8 +604,27 @@ write_surface_archive_v2(std::span<const SurfaceArchiveItem> items,
   ArchiveV2Header hdr{};
   std::memcpy(hdr.magic, kArchiveV2MagicBytes, 8);
   hdr.file_size = file_size;
-  hdr.created_ts_ns = opts.created_ts_ns != 0 ? static_cast<std::uint64_t>(opts.created_ts_ns)
-                                              : static_cast<std::uint64_t>(wall_clock_ns());
+  // created_ts_ns: an explicit nonzero stamp is honored verbatim (unit tests pin
+  // it). The 0 sentinel is filled from a DETERMINISTIC CRC-32C of the archive
+  // CONTENT — the whole payload span [header, EOF): data ‖ lookup ‖ directory
+  // (every per-record payload_crc32c is mirrored into the directory, so any
+  // same-length rewrite changes this hash too) — folded with file_size. Two
+  // identical builds therefore produce byte-identical containers (run-to-run
+  // reproducibility), while two DIFFERENT builds still get distinct stamps, which
+  // preserves the (file_size, created_ts_ns, header_crc32c, metadata_crc32c)
+  // content-identity the SnapshotCache keys on for staleness. (A wall-clock read
+  // broke the former; a constant would break the latter.) The span excludes the
+  // header, so header_crc32c/created_ts_ns are not inputs to their own hash.
+  if (opts.created_ts_ns != 0) {
+    hdr.created_ts_ns = static_cast<std::uint64_t>(opts.created_ts_ns);
+  } else {
+    const std::uint32_t content_crc =
+        crc32c(buf_at(buffer, sizeof(ArchiveV2Header)),
+               static_cast<std::size_t>(file_size - sizeof(ArchiveV2Header)));
+    const std::uint64_t derived =
+        (static_cast<std::uint64_t>(content_crc) << 32) ^ static_cast<std::uint64_t>(file_size);
+    hdr.created_ts_ns = derived != 0 ? derived : 1u; // never re-hit the 0 sentinel
+  }
   hdr.schema_hash = schema_hash_v2();
   hdr.writer_version_hash = 0;
   hdr.lookup_offset = lookup_offset;

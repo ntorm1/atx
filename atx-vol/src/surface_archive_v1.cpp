@@ -123,12 +123,6 @@ constexpr char kBlobMagic[8] = {'A', 'T', 'X', 'V', 'S', 'B', '0', '3'};
   return crc32c(bytes.data(), bytes.size());
 }
 
-[[nodiscard]] std::int64_t wall_clock_ns() noexcept {
-  return std::chrono::duration_cast<std::chrono::nanoseconds>(
-             std::chrono::system_clock::now().time_since_epoch())
-      .count();
-}
-
 // Payload bytes for one slice of `kind` with `node_count` convex nodes.
 [[nodiscard]] std::uint32_t slice_payload_size(VolCurveKind kind,
                                                std::uint32_t node_count) noexcept {
@@ -669,8 +663,23 @@ Result<std::vector<std::byte>> write_surface_archive(std::span<const SurfaceArch
   hdr.alignment_log2 = 12;
   hdr.flags = opts.flags;
   hdr.file_size = file_size;
-  hdr.created_ts_ns = opts.created_ts_ns != 0 ? static_cast<std::uint64_t>(opts.created_ts_ns)
-                                              : static_cast<std::uint64_t>(wall_clock_ns());
+  // created_ts_ns: an explicit nonzero stamp is honored verbatim. The 0 sentinel
+  // is filled from a DETERMINISTIC CRC-32C of the archive CONTENT — the whole
+  // payload span [header, EOF): data ‖ lookup ‖ directory — folded with file_size,
+  // so two identical builds produce byte-identical containers while two DIFFERENT
+  // builds still get distinct stamps (preserving the SnapshotCache content-identity
+  // that keys on created_ts_ns). Mirrors the v2 writer; the span excludes the
+  // header, so header_crc32c/created_ts_ns are not inputs to their own hash.
+  if (opts.created_ts_ns != 0) {
+    hdr.created_ts_ns = static_cast<std::uint64_t>(opts.created_ts_ns);
+  } else {
+    const std::uint32_t content_crc =
+        crc32c(buf_at(buffer, sizeof(ArchiveHeader)),
+               static_cast<std::size_t>(file_size - sizeof(ArchiveHeader)));
+    const std::uint64_t derived =
+        (static_cast<std::uint64_t>(content_crc) << 32) ^ static_cast<std::uint64_t>(file_size);
+    hdr.created_ts_ns = derived != 0 ? derived : 1u; // never re-hit the 0 sentinel
+  }
   hdr.schema_hash = schema_hash();
   hdr.writer_version_hash = 0;
   hdr.surface_count = n_items;
