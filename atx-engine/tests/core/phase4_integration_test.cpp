@@ -332,8 +332,10 @@ private:
 //  on the ATX_ASSERT abort. This pins the DISCIPLINE; the structural firewall itself
 //  is proven by truncation-invariance (A).
 // ===========================================================================
-void apply_guard(const FactorModel &model, usize apply_date) {
+void apply_guard([[maybe_unused]] const FactorModel &model, [[maybe_unused]] usize apply_date) {
   // apply_date < fit_end() == applying a fitted object INSIDE its own fit window.
+  // Both params are consumed only by the ATX_ASSERT, which compiles out in Release;
+  // [[maybe_unused]] keeps the Release-only -Wunused-parameter (-Werror) leg green.
   ATX_ASSERT(apply_date >= model.fit_end());
 }
 
