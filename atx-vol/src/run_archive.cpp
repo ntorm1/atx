@@ -22,21 +22,29 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
+#include <memory>
 #include <numeric>
 #include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "atx/core/error.hpp"
 #include "atx/tsdb/mapping.hpp"            // tsdb::Mapping (read-only mmap seam)
+#include "atx/vol/backtest.hpp"            // BacktestResult (Task 5 encoders)
 #include "atx/vol/detail/archive_util.hpp" // crc32c, crc32c_update, align_up
-#include "atx/vol/surface_archive.hpp"     // ArchiveContentIdentity (F6 identity)
+#include "atx/vol/dispersion_workflow.hpp" // RunSpec (Task 5 meta encoder)
+#include "atx/vol/listed_dispersion_reconciliation.hpp"
+#include "atx/vol/listed_dispersion_schedule.hpp"
+#include "atx/vol/surface_archive.hpp" // ArchiveContentIdentity (F6 identity)
 
 namespace atx::vol {
 
@@ -456,6 +464,487 @@ Status write_run_archive_file(std::string_view path, std::span<const RaSectionDa
     return Err(ErrorCode::IoError, "write_run_archive_file: cannot publish file");
   }
   return Ok();
+}
+
+// ── Section encoders (Task 5): library type → staged RaSectionData ───────────
+//
+// RaColumnData is non-owning, so every array an encoder SYNTHESIZES (dict
+// codes, string/label tables, flattened per-leg columns, NA-substituted
+// doubles) lives in an EncoderArena parked on the returned section's
+// type-erased `storage`. Columns that already exist as columnar vectors on the
+// source object (the BacktestResult series) are spanned in place instead — the
+// caller keeps that source alive across the write, per the RaColumnData rule.
+
+namespace {
+
+// Arena of finished column vectors. The OUTER vectors may reallocate as
+// columns are appended, but spans point at the INNER vectors' heap blocks,
+// which vector moves preserve — so a span taken over an arena-resident vector
+// stays valid for the arena's lifetime.
+struct EncoderArena {
+  std::vector<std::vector<double>> f64;
+  std::vector<std::vector<std::int64_t>> i64;
+  std::vector<std::vector<std::uint32_t>> u32;
+  std::vector<std::vector<std::uint8_t>> u8;
+  std::vector<std::vector<std::string>> str;
+};
+
+RaColumnData arena_f64(EncoderArena &arena, std::vector<double> v) {
+  arena.f64.push_back(std::move(v));
+  return RaColumnData::of_f64(arena.f64.back());
+}
+
+RaColumnData arena_i64(EncoderArena &arena, std::vector<std::int64_t> v) {
+  arena.i64.push_back(std::move(v));
+  return RaColumnData::of_i64(arena.i64.back());
+}
+
+RaColumnData arena_u32(EncoderArena &arena, std::vector<std::uint32_t> v) {
+  arena.u32.push_back(std::move(v));
+  return RaColumnData::of_u32(arena.u32.back());
+}
+
+RaColumnData arena_u8enum(EncoderArena &arena, std::vector<std::uint8_t> codes,
+                          std::vector<std::string> labels) {
+  arena.u8.push_back(std::move(codes));
+  arena.str.push_back(std::move(labels));
+  return RaColumnData::of_u8enum(arena.u8.back(), arena.str.back());
+}
+
+RaColumnData arena_dict(EncoderArena &arena, std::vector<std::uint32_t> codes,
+                        std::vector<std::string> table) {
+  arena.u32.push_back(std::move(codes));
+  arena.str.push_back(std::move(table));
+  return RaColumnData::of_dict(arena.u32.back(), arena.str.back());
+}
+
+// Deterministic dict encoder: table entries in first-appearance order, so
+// identical input sequences always yield identical codes + table bytes (the
+// committed Python fixture depends on byte-stable output).
+class DictBuilder {
+public:
+  void reserve(std::size_t n) { codes_.reserve(n); }
+  void add(const std::string &value) {
+    const auto [it, inserted] =
+        index_.try_emplace(value, static_cast<std::uint32_t>(table_.size()));
+    if (inserted) {
+      table_.push_back(value);
+    }
+    codes_.push_back(it->second);
+  }
+  [[nodiscard]] RaColumnData finish(EncoderArena &arena) {
+    index_.clear();
+    return arena_dict(arena, std::move(codes_), std::move(table_));
+  }
+
+private:
+  std::vector<std::string> table_;
+  std::vector<std::uint32_t> codes_;
+  std::unordered_map<std::string, std::uint32_t> index_;
+};
+
+// Enum label vocabularies. Codes are the C++ enum values, so labels[code] ==
+// the exact token the mirrored TSV writer emits ('C'/'P', '0'/'1', or
+// to_string(...) for role/status).
+std::vector<std::string> bool_labels() { return {"0", "1"}; }
+std::vector<std::string> side_labels() { return {"C", "P"}; }
+std::vector<std::string> role_labels() { return {"Entry", "Held"}; }
+std::vector<std::string> status_labels() {
+  return {"Ok", "NoRawQuote", "CrossedQuote", "NoSurface", "PricingError"};
+}
+
+// "NA" in the mirrored TSV writers rides as quiet NaN in the pinned F64 dtype.
+constexpr double kRaNa = std::numeric_limits<double>::quiet_NaN();
+
+// Meta values are strings; doubles use %.17g (bit-exact round-trip decimal,
+// per the registry's meta contract).
+std::string format_meta_double(double v) {
+  char buf[64];
+  const int len = std::snprintf(buf, sizeof buf, "%.17g", v);
+  return std::string(buf, static_cast<std::size_t>(len > 0 ? len : 0));
+}
+
+} // namespace
+
+RaSectionData encode_backtest_section(std::string name, const BacktestResult &r) {
+  auto arena = std::make_shared<EncoderArena>();
+  RaSectionData sec;
+  sec.name = std::move(name);
+  sec.kind = RaSectionKind::TimeSeries;
+  sec.n_rows = r.size();
+  sec.columns.reserve(2 + 25 + r.signals.size());
+
+  DictBuilder dates;
+  dates.reserve(r.date.size());
+  for (const std::string &d : r.date) {
+    dates.add(d);
+  }
+  sec.columns.emplace_back("date", dates.finish(*arena));
+  sec.columns.emplace_back("ts_ns", RaColumnData::of_i64(r.ts_ns));
+
+  // EXACTLY the append_backtest_series_tsv member order (tearsheet.cpp), which
+  // is the kBacktestCols registry order — value-equality with the TSV is spans
+  // over the very vectors that writer serializes.
+  const std::pair<const char *, const std::vector<double> *> dbl_cols[] = {
+      {"pnl_total", &r.pnl_total},
+      {"pnl_delta", &r.pnl_delta},
+      {"pnl_gamma", &r.pnl_gamma},
+      {"pnl_vega", &r.pnl_vega},
+      {"pnl_vanna", &r.pnl_vanna},
+      {"pnl_volga", &r.pnl_volga},
+      {"pnl_theta", &r.pnl_theta},
+      {"pnl_rho", &r.pnl_rho},
+      {"pnl_charm", &r.pnl_charm},
+      {"pnl_unexplained", &r.pnl_unexplained},
+      {"pnl_settlement", &r.pnl_settlement},
+      {"pnl_shares", &r.pnl_shares},
+      {"financing", &r.financing},
+      {"cost", &r.cost},
+      {"nav", &r.nav},
+      {"cash", &r.cash},
+      {"gross_delta", &r.gross_delta},
+      {"gross_gamma", &r.gross_gamma},
+      {"gross_vega", &r.gross_vega},
+      {"gross_theta", &r.gross_theta},
+      {"turnover_notional", &r.turnover_notional},
+      {"turnover_vega", &r.turnover_vega},
+      {"n_open_lots", &r.n_open_lots},
+      {"n_unpriced_lots", &r.n_unpriced_lots},
+      {"n_unpriced_greeks", &r.n_unpriced_greeks},
+  };
+  for (const auto &[cname, col] : dbl_cols) {
+    sec.columns.emplace_back(cname, RaColumnData::of_f64(*col));
+  }
+  // Per-signal series are appended dynamically after the registry columns,
+  // exactly like the TSV writer appends them after the fixed header.
+  for (const auto &sig : r.signals) {
+    sec.columns.emplace_back(sig.first, RaColumnData::of_f64(sig.second));
+  }
+  sec.storage = std::move(arena);
+  return sec;
+}
+
+RaSectionData
+encode_reconciliation_section(const ListedDispersionReconciliation &reconciliation) {
+  const std::vector<ListedReconciliationRow> &rows = reconciliation.rows;
+  const std::size_t n = rows.size();
+  auto arena = std::make_shared<EncoderArena>();
+  RaSectionData sec;
+  sec.name = "reconciliation";
+  sec.kind = RaSectionKind::TimeSeries;
+  sec.n_rows = n;
+
+  DictBuilder date;
+  date.reserve(n);
+  std::vector<std::int64_t> valuation_ts(n);
+  std::vector<std::uint32_t> held_cohort(n);
+  std::vector<double> model_option_pnl(n);
+  std::vector<double> quote_mid_pnl(n);
+  std::vector<double> model_minus_quote_pnl(n);
+  std::vector<double> model_nav(n);
+  std::vector<double> quote_mid_nav(n);
+  std::vector<double> quote_mid_coverage(n);
+  std::vector<std::uint32_t> n_held_lots(n);
+  std::vector<std::uint32_t> n_quote_mid_lots(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    const ListedReconciliationRow &row = rows[i];
+    date.add(row.date);
+    valuation_ts[i] = row.valuation_ts_ns;
+    held_cohort[i] = row.held_cohort;
+    model_option_pnl[i] = row.model_option_pnl;
+    quote_mid_pnl[i] = row.quote_mid_pnl;
+    model_minus_quote_pnl[i] = row.model_minus_quote_pnl;
+    model_nav[i] = row.model_nav;
+    quote_mid_nav[i] = row.quote_mid_nav;
+    quote_mid_coverage[i] = row.quote_mid_coverage;
+    n_held_lots[i] = row.n_held_lots;
+    n_quote_mid_lots[i] = row.n_quote_mid_lots;
+  }
+
+  sec.columns.reserve(11);
+  sec.columns.emplace_back("date", date.finish(*arena));
+  sec.columns.emplace_back("valuation_ts_ns", arena_i64(*arena, std::move(valuation_ts)));
+  sec.columns.emplace_back("held_cohort", arena_u32(*arena, std::move(held_cohort)));
+  sec.columns.emplace_back("model_option_pnl", arena_f64(*arena, std::move(model_option_pnl)));
+  sec.columns.emplace_back("quote_mid_pnl", arena_f64(*arena, std::move(quote_mid_pnl)));
+  sec.columns.emplace_back("model_minus_quote_pnl",
+                           arena_f64(*arena, std::move(model_minus_quote_pnl)));
+  sec.columns.emplace_back("model_nav", arena_f64(*arena, std::move(model_nav)));
+  sec.columns.emplace_back("quote_mid_nav", arena_f64(*arena, std::move(quote_mid_nav)));
+  sec.columns.emplace_back("quote_mid_coverage",
+                           arena_f64(*arena, std::move(quote_mid_coverage)));
+  sec.columns.emplace_back("n_held_lots", arena_u32(*arena, std::move(n_held_lots)));
+  sec.columns.emplace_back("n_quote_mid_lots", arena_u32(*arena, std::move(n_quote_mid_lots)));
+  sec.storage = std::move(arena);
+  return sec;
+}
+
+RaSectionData encode_schedule_section(std::string name,
+                                      const ListedDispersionSchedule &schedule) {
+  std::size_t n = 0;
+  for (const ListedScheduleRoll &roll : schedule.rolls) {
+    n += roll.legs.size();
+  }
+  auto arena = std::make_shared<EncoderArena>();
+  RaSectionData sec;
+  sec.name = std::move(name);
+  sec.kind = RaSectionKind::SubTable;
+  sec.n_rows = n;
+
+  DictBuilder roll_date;
+  DictBuilder symbol;
+  DictBuilder raw_symbol;
+  roll_date.reserve(n);
+  symbol.reserve(n);
+  raw_symbol.reserve(n);
+  std::vector<std::int64_t> valuation_ts(n);
+  std::vector<std::uint32_t> cohort(n);
+  std::vector<std::int64_t> expiry_ts(n);
+  std::vector<double> gross_index_vega_target(n);
+  std::vector<double> net_vega(n);
+  std::vector<double> gross_vega(n);
+  std::vector<std::uint32_t> n_names(n);
+  std::vector<std::uint8_t> is_index(n);
+  std::vector<std::uint32_t> uid(n);
+  std::vector<std::uint32_t> instrument_id(n);
+  std::vector<double> strike(n);
+  std::vector<std::uint8_t> side(n);
+  std::vector<double> quantity(n);
+  std::vector<double> multiplier(n);
+  std::vector<double> raw_bid(n);
+  std::vector<double> raw_ask(n);
+  std::vector<double> raw_mid(n);
+  std::vector<double> model_mark(n);
+  std::vector<double> delta_per_share(n);
+  std::vector<double> vega_per_unit_vol(n);
+  std::vector<double> vega_per_contract(n);
+  std::vector<double> normalized_weight(n);
+  std::vector<double> target_straddle_vega(n);
+  std::vector<double> achieved_leg_vega(n);
+  std::vector<std::int64_t> source_fingerprint(n);
+  std::vector<std::int64_t> surface_fingerprint(n);
+
+  std::size_t i = 0;
+  for (const ListedScheduleRoll &roll : schedule.rolls) {
+    for (const ListedScheduleLeg &leg : roll.legs) {
+      // Roll fields repeat on every leg row — the flattened TSV shape.
+      roll_date.add(roll.roll_date);
+      valuation_ts[i] = roll.valuation_ts_ns;
+      cohort[i] = roll.cohort;
+      expiry_ts[i] = roll.expiry_ts_ns;
+      gross_index_vega_target[i] = roll.gross_index_vega_target_per_vol_point;
+      net_vega[i] = roll.net_vega_per_vol_point;
+      gross_vega[i] = roll.gross_vega_per_vol_point;
+      n_names[i] = roll.n_names;
+      is_index[i] = leg.is_index ? std::uint8_t{1} : std::uint8_t{0};
+      symbol.add(leg.symbol);
+      uid[i] = leg.uid;
+      instrument_id[i] = leg.instrument_id;
+      raw_symbol.add(leg.raw_symbol);
+      strike[i] = leg.strike;
+      side[i] = static_cast<std::uint8_t>(leg.side);
+      quantity[i] = leg.quantity;
+      multiplier[i] = leg.multiplier;
+      raw_bid[i] = leg.raw_bid;
+      raw_ask[i] = leg.raw_ask;
+      raw_mid[i] = leg.raw_mid;
+      model_mark[i] = leg.model_mark;
+      delta_per_share[i] = leg.delta_per_share;
+      vega_per_unit_vol[i] = leg.vega_per_unit_vol;
+      vega_per_contract[i] = leg.vega_per_contract_per_vol_point;
+      normalized_weight[i] = leg.normalized_weight;
+      target_straddle_vega[i] = leg.target_straddle_vega_per_vol_point;
+      achieved_leg_vega[i] = leg.achieved_leg_vega_per_vol_point;
+      // u64 fingerprints ride as I64 bit patterns (no U64 dtype by design).
+      source_fingerprint[i] = static_cast<std::int64_t>(leg.source_fingerprint);
+      surface_fingerprint[i] = static_cast<std::int64_t>(leg.surface_fingerprint);
+      ++i;
+    }
+  }
+
+  sec.columns.reserve(29);
+  sec.columns.emplace_back("roll_date", roll_date.finish(*arena));
+  sec.columns.emplace_back("valuation_ts_ns", arena_i64(*arena, std::move(valuation_ts)));
+  sec.columns.emplace_back("cohort", arena_u32(*arena, std::move(cohort)));
+  sec.columns.emplace_back("expiry_ts_ns", arena_i64(*arena, std::move(expiry_ts)));
+  sec.columns.emplace_back("gross_index_vega_target",
+                           arena_f64(*arena, std::move(gross_index_vega_target)));
+  sec.columns.emplace_back("net_vega", arena_f64(*arena, std::move(net_vega)));
+  sec.columns.emplace_back("gross_vega", arena_f64(*arena, std::move(gross_vega)));
+  sec.columns.emplace_back("n_names", arena_u32(*arena, std::move(n_names)));
+  sec.columns.emplace_back("is_index", arena_u8enum(*arena, std::move(is_index), bool_labels()));
+  sec.columns.emplace_back("symbol", symbol.finish(*arena));
+  sec.columns.emplace_back("uid", arena_u32(*arena, std::move(uid)));
+  sec.columns.emplace_back("instrument_id", arena_u32(*arena, std::move(instrument_id)));
+  sec.columns.emplace_back("raw_symbol", raw_symbol.finish(*arena));
+  sec.columns.emplace_back("strike", arena_f64(*arena, std::move(strike)));
+  sec.columns.emplace_back("side", arena_u8enum(*arena, std::move(side), side_labels()));
+  sec.columns.emplace_back("quantity", arena_f64(*arena, std::move(quantity)));
+  sec.columns.emplace_back("multiplier", arena_f64(*arena, std::move(multiplier)));
+  sec.columns.emplace_back("raw_bid", arena_f64(*arena, std::move(raw_bid)));
+  sec.columns.emplace_back("raw_ask", arena_f64(*arena, std::move(raw_ask)));
+  sec.columns.emplace_back("raw_mid", arena_f64(*arena, std::move(raw_mid)));
+  sec.columns.emplace_back("model_mark", arena_f64(*arena, std::move(model_mark)));
+  sec.columns.emplace_back("delta_per_share", arena_f64(*arena, std::move(delta_per_share)));
+  sec.columns.emplace_back("vega_per_unit_vol",
+                           arena_f64(*arena, std::move(vega_per_unit_vol)));
+  sec.columns.emplace_back("vega_per_contract_per_vol_point",
+                           arena_f64(*arena, std::move(vega_per_contract)));
+  sec.columns.emplace_back("normalized_weight",
+                           arena_f64(*arena, std::move(normalized_weight)));
+  sec.columns.emplace_back("target_straddle_vega",
+                           arena_f64(*arena, std::move(target_straddle_vega)));
+  sec.columns.emplace_back("achieved_leg_vega",
+                           arena_f64(*arena, std::move(achieved_leg_vega)));
+  sec.columns.emplace_back("source_fingerprint",
+                           arena_i64(*arena, std::move(source_fingerprint)));
+  sec.columns.emplace_back("surface_fingerprint",
+                           arena_i64(*arena, std::move(surface_fingerprint)));
+  sec.storage = std::move(arena);
+  return sec;
+}
+
+RaSectionData
+encode_contract_marks_section(const ListedDispersionReconciliation &reconciliation) {
+  const std::vector<ListedContractMark> &marks = reconciliation.marks;
+  const std::size_t n = marks.size();
+  auto arena = std::make_shared<EncoderArena>();
+  RaSectionData sec;
+  sec.name = "contract_marks";
+  sec.kind = RaSectionKind::SubTable;
+  sec.n_rows = n;
+
+  DictBuilder date;
+  DictBuilder symbol;
+  DictBuilder raw_symbol;
+  date.reserve(n);
+  symbol.reserve(n);
+  raw_symbol.reserve(n);
+  std::vector<std::int64_t> valuation_ts(n);
+  std::vector<std::uint8_t> role(n);
+  std::vector<std::uint32_t> cohort(n);
+  std::vector<std::uint32_t> uid(n);
+  std::vector<std::uint32_t> instrument_id(n);
+  std::vector<std::int64_t> expiry_ts(n);
+  std::vector<double> strike(n);
+  std::vector<std::uint8_t> side(n);
+  std::vector<double> quantity(n);
+  std::vector<double> multiplier(n);
+  std::vector<std::uint8_t> status(n);
+  std::vector<double> raw_bid(n);
+  std::vector<double> raw_ask(n);
+  std::vector<double> raw_mid(n);
+  std::vector<double> model_mark(n);
+  std::vector<std::uint8_t> model_in_spread(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    const ListedContractMark &m = marks[i];
+    date.add(m.date);
+    valuation_ts[i] = m.valuation_ts_ns;
+    role[i] = static_cast<std::uint8_t>(m.role);
+    cohort[i] = m.cohort;
+    symbol.add(m.symbol);
+    uid[i] = m.uid;
+    instrument_id[i] = m.instrument_id;
+    raw_symbol.add(m.raw_symbol);
+    expiry_ts[i] = m.expiry_ts_ns;
+    strike[i] = m.strike;
+    side[i] = static_cast<std::uint8_t>(m.side);
+    quantity[i] = m.quantity;
+    multiplier[i] = m.multiplier;
+    status[i] = static_cast<std::uint8_t>(m.status);
+    // NA convention mirrors serialize_listed_contract_marks: raw quote fields
+    // are meaningful only when status == Ok, the model mark only when a
+    // surface priced (neither NoSurface nor PricingError). The registry pins
+    // F64 for these, so "NA" rides as quiet NaN.
+    const bool raw = m.status == ListedMarkStatus::Ok;
+    const bool model =
+        m.status != ListedMarkStatus::NoSurface && m.status != ListedMarkStatus::PricingError;
+    raw_bid[i] = raw ? m.raw_bid : kRaNa;
+    raw_ask[i] = raw ? m.raw_ask : kRaNa;
+    raw_mid[i] = raw ? m.raw_mid : kRaNa;
+    model_mark[i] = model ? m.model_mark : kRaNa;
+    model_in_spread[i] = m.model_in_spread ? std::uint8_t{1} : std::uint8_t{0};
+  }
+
+  sec.columns.reserve(19);
+  sec.columns.emplace_back("date", date.finish(*arena));
+  sec.columns.emplace_back("valuation_ts_ns", arena_i64(*arena, std::move(valuation_ts)));
+  sec.columns.emplace_back("role", arena_u8enum(*arena, std::move(role), role_labels()));
+  sec.columns.emplace_back("cohort", arena_u32(*arena, std::move(cohort)));
+  sec.columns.emplace_back("symbol", symbol.finish(*arena));
+  sec.columns.emplace_back("uid", arena_u32(*arena, std::move(uid)));
+  sec.columns.emplace_back("instrument_id", arena_u32(*arena, std::move(instrument_id)));
+  sec.columns.emplace_back("raw_symbol", raw_symbol.finish(*arena));
+  sec.columns.emplace_back("expiry_ts_ns", arena_i64(*arena, std::move(expiry_ts)));
+  sec.columns.emplace_back("strike", arena_f64(*arena, std::move(strike)));
+  sec.columns.emplace_back("side", arena_u8enum(*arena, std::move(side), side_labels()));
+  sec.columns.emplace_back("quantity", arena_f64(*arena, std::move(quantity)));
+  sec.columns.emplace_back("multiplier", arena_f64(*arena, std::move(multiplier)));
+  sec.columns.emplace_back("status", arena_u8enum(*arena, std::move(status), status_labels()));
+  sec.columns.emplace_back("raw_bid", arena_f64(*arena, std::move(raw_bid)));
+  sec.columns.emplace_back("raw_ask", arena_f64(*arena, std::move(raw_ask)));
+  sec.columns.emplace_back("raw_mid", arena_f64(*arena, std::move(raw_mid)));
+  sec.columns.emplace_back("model_mark", arena_f64(*arena, std::move(model_mark)));
+  sec.columns.emplace_back("model_in_spread",
+                           arena_u8enum(*arena, std::move(model_in_spread), bool_labels()));
+  sec.storage = std::move(arena);
+  return sec;
+}
+
+RaSectionData encode_meta_section(const RunSpec &spec,
+                                  std::span<const std::pair<std::string, std::string>> extra) {
+  // The resolved-spec echo mirrors write_resolved_spec's key vocabulary and
+  // order (dispersion_workflow.cpp), including its conditional keys; doubles
+  // use %.17g per the registry's meta contract (write_resolved_spec's
+  // default iostream precision would truncate).
+  std::vector<std::pair<std::string, std::string>> pairs;
+  pairs.reserve(21 + extra.size());
+  pairs.emplace_back("label", spec.label);
+  pairs.emplace_back("date_lo", spec.date_lo);
+  pairs.emplace_back("date_hi", spec.date_hi);
+  pairs.emplace_back("snapshot_suffix", spec.snapshot_suffix);
+  pairs.emplace_back("opra_root", spec.opra_root.string());
+  pairs.emplace_back("path_template", spec.path_template);
+  pairs.emplace_back("universe_schedule", spec.universe_path.string());
+  if (!spec.definitions_path.empty()) {
+    pairs.emplace_back("definitions", spec.definitions_path.string());
+  }
+  if (!spec.occ_ess_root.empty()) {
+    pairs.emplace_back("occ_ess_root", spec.occ_ess_root.string());
+  }
+  pairs.emplace_back("flat_rate", format_meta_double(spec.flat_rate));
+  pairs.emplace_back("min_names", std::to_string(spec.min_names));
+  pairs.emplace_back("min_weight_coverage", format_meta_double(spec.min_weight_coverage));
+  pairs.emplace_back("target_dte_days", format_meta_double(spec.target_dte_days));
+  pairs.emplace_back("min_dte_days", format_meta_double(spec.min_dte_days));
+  pairs.emplace_back("max_dte_days", format_meta_double(spec.max_dte_days));
+  pairs.emplace_back("roll_dte_days", format_meta_double(spec.roll_dte_days));
+  pairs.emplace_back("gross_index_vega", format_meta_double(spec.gross_index_vega));
+  pairs.emplace_back("delta_band", format_meta_double(spec.delta_band));
+  pairs.emplace_back("fit_workers", std::to_string(spec.fit_workers));
+  pairs.emplace_back("core_mode", spec.core_mode ? "1" : "0");
+  for (const auto &kv : extra) {
+    pairs.push_back(kv);
+  }
+
+  auto arena = std::make_shared<EncoderArena>();
+  RaSectionData sec;
+  sec.name = "meta";
+  sec.kind = RaSectionKind::ScalarKV;
+  sec.n_rows = pairs.size();
+  DictBuilder keys;
+  DictBuilder values;
+  keys.reserve(pairs.size());
+  values.reserve(pairs.size());
+  for (const auto &[k, v] : pairs) {
+    keys.add(k);
+    values.add(v);
+  }
+  sec.columns.reserve(2);
+  sec.columns.emplace_back("key", keys.finish(*arena));
+  sec.columns.emplace_back("value", values.finish(*arena));
+  sec.storage = std::move(arena);
+  return sec;
 }
 
 // ── Reader ───────────────────────────────────────────────────────────────────

@@ -37,6 +37,13 @@ namespace atx::vol {
 // header light; callers of RunArchive::identity() include surface_archive.hpp).
 struct ArchiveContentIdentity;
 
+// Task 5 encoder sources — forward-declared to keep this header light (the
+// encoders' definitions include the owning headers).
+struct BacktestResult;                 // backtest.hpp
+struct ListedDispersionReconciliation; // listed_dispersion_reconciliation.hpp
+struct ListedDispersionSchedule;       // listed_dispersion_schedule.hpp
+struct RunSpec;                        // dispersion_workflow.hpp
+
 // Sections start 64-B aligned; column arrays inside a section align to 8.
 inline constexpr std::uint32_t kRaSectionAlign = 64;
 inline constexpr std::uint32_t kRaColumnAlign = 8;
@@ -247,6 +254,13 @@ struct RaSectionData {
   RaSectionKind kind{RaSectionKind::TimeSeries};
   std::uint64_t n_rows{0};
   std::vector<std::pair<std::string, RaColumnData>> columns{};
+  // Type-erased owned backing for encoder-synthesized arrays (dict codes and
+  // string tables, enum codes/labels, flattened per-leg columns): the Task 5
+  // encoders park their scratch here so a returned section's spans stay valid
+  // for the section's lifetime (copies/moves share it). The writer never reads
+  // this field; hand-staged sections may leave it null and manage lifetimes
+  // themselves.
+  std::shared_ptr<const void> storage{};
 };
 
 // ── Writer ───────────────────────────────────────────────────────────────────
@@ -274,6 +288,53 @@ write_run_archive(std::span<const RaSectionData> sections, std::int64_t created_
                                             std::span<const RaSectionData> sections,
                                             std::int64_t created_ts_ns,
                                             std::uint64_t run_identity_hash);
+
+// ── Section encoders (Task 5): library type → staged RaSectionData ───────────
+//
+// Each encoder mirrors the TSV writer that owns the section's output today,
+// column-for-column in registry order (registry Task 1 is authoritative for
+// name/dtype/order; the writer cross-checks). Synthesized arrays (dict codes,
+// string/label tables, flattened per-leg columns) live in the returned
+// section's `storage`; columns that already exist as columnar vectors on the
+// SOURCE object (the BacktestResult series) are spanned in place, so that
+// source must outlive the write call — the RaColumnData lifetime rule.
+//
+// Enum vocabulary (u8 code == the C++ enum value; labels in enum order):
+//   side            {"C", "P"}                  — the TSV 'C'/'P' convention
+//   role            {"Entry", "Held"}           — to_string(ListedMarkRole)
+//   status          {"Ok", "NoRawQuote", "CrossedQuote", "NoSurface",
+//                    "PricingError"}            — to_string(ListedMarkStatus)
+//   bools           {"0", "1"}                  — the TSV '0'/'1' convention
+// NA-able F64 fields (contract marks raw_bid/raw_ask/raw_mid when status !=
+// Ok; model_mark under NoSurface/PricingError) store quiet NaN where the TSV
+// writer emits "NA" — the registry pins those dtypes as F64.
+
+// `backtest` / `projected_cold` / `projected_nodiv` (pass the section name):
+// the 27 registry columns + one F64 column per r.signals entry, value-equal to
+// append_backtest_series_tsv (tearsheet.cpp). Spans borrow `r`.
+[[nodiscard]] RaSectionData encode_backtest_section(std::string name, const BacktestResult &r);
+
+// `reconciliation` over rows: serialize_listed_reconciliation column set.
+[[nodiscard]] RaSectionData
+encode_reconciliation_section(const ListedDispersionReconciliation &reconciliation);
+
+// `trade_schedule` / `projected_schedule` (pass the section name): rolls×legs
+// flattened one row per leg, roll fields repeated — the
+// serialize_listed_dispersion_schedule kHeader column set (fingerprints as
+// I64 bit patterns per the registry: there is no U64 dtype).
+[[nodiscard]] RaSectionData encode_schedule_section(std::string name,
+                                                    const ListedDispersionSchedule &schedule);
+
+// `contract_marks` over marks: serialize_listed_contract_marks column set.
+[[nodiscard]] RaSectionData
+encode_contract_marks_section(const ListedDispersionReconciliation &reconciliation);
+
+// `meta` ScalarKV: the resolved-spec echo (write_resolved_spec key vocabulary,
+// including the date_lo/date_hi window; doubles %.17g, bools "0"/"1") followed
+// by caller-supplied extra pairs (roll scalars, input hashes, counts) in order.
+[[nodiscard]] RaSectionData
+encode_meta_section(const RunSpec &spec,
+                    std::span<const std::pair<std::string, std::string>> extra = {});
 
 // ── Reader ───────────────────────────────────────────────────────────────────
 
