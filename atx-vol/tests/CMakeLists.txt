@@ -37,6 +37,7 @@ add_executable(atx-vol-tests
     curve_selector_test.cpp
     data_test.cpp
     run_archive_test.cpp
+    run_diagnostics_test.cpp
     surface_archive_test.cpp
     surface_db_test.cpp
     batch_test.cpp
