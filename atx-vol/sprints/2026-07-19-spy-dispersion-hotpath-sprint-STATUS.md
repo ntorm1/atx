@@ -61,10 +61,37 @@ fresh worktree and run 3×, deterministic):
 | `SurfaceV2Provenance.ValidationFallbackAdmissionRecordsTheServedFamily` | pre-existing (FAIL on 8cb4576) |
 | `PricerFitterTest.LocalRiskRefitPublishesCopyOnWriteGeneration` | pre-existing (FAIL 3/3 on 8cb4576) |
 
-### Byte-identity (rel-avx2 replay) — preserved
+### Byte-identity (rel-avx2 replay) — RE-PINNED post-merge 2026-07-21 (WS-M M2)
 
-- 82-session `0737660775601f1609690568d930c62c46a1dddd0d97784036916ba4c5484c3a` — **MATCH**
-- 135-session `ac97a643851fa9988880d85af3201ef39158aa7e054f8c74062f0c4e68970b33` — **MATCH**
+The golden pin is `sha256(surface_backtest.tsv)` — the surface-only replay payload
+(`dispersion_run_surface_backtest`; see the in-code note at `dispersion_run.cpp`
+"the reproducibility pin is measured on exactly the bytes it always was"). The two
+X5 companion artifacts the same replay writes (`surface_pnl_track.tsv`,
+`surface_tearsheet.tsv`) were also 3×-identical and are recorded below as
+supporting determinism evidence. `backtest_profile.tsv`/`backtest_counters.tsv`
+carry timing/counter data and are written only under `-DATX_VOL_PROFILE/COUNTERS`
+(OFF for the golden build) — NOT part of the pin.
+
+**Current pins** (re-pinned post-merge 2026-07-21, engine = main A9 kernel + branch
+tolerance re-band, 3×-stable; measured on `build-rel-avx2`, run-to-run identity
+verified via `sha256sum` + `cmp`):
+
+- 82-session (`bt-sota-baseline`, final_nav 247.4062412)
+  `5e7ca06514dfe121308643cc431c90858827c180fdbc9c84e906a49fe4715af4` — **3×-stable**
+- 135-session (`bt-sota-full`, final_nav 1283.615746)
+  `141173fdc35eed9fbb0263c87729c547e9f0eac144c1c336173c932ac69f2835` — **3×-stable**
+
+**They moved ONCE from the pre-merge pins** (82: `0737660775601f1609690568d930c62c46a1dddd0d97784036916ba4c5484c3a`,
+135: `ac97a643851fa9988880d85af3201ef39158aa7e054f8c74062f0c4e68970b33`) because the
+M1 keystone merge repriced the golden replay through the peer "pricing/greeks SOTA
+sprint" A9 American-greeks kernel — the deferred-integration note below predicted
+exactly this legitimate break. This is a one-time re-pin, NOT engine
+nondeterminism: the M2 gate ran each replay 3× serially and every artifact was
+byte-identical. Supporting artifact SHAs (each 3×-stable):
+82 pnl_track `94afbf8668d37053245e60e6fd52f665d6fd230f540813c929be83eda55c875b`,
+82 tearsheet `584a6ff4569ea5888210ba7c4f32b6922a9a4f4ed74c8a7ca54efcaab39d63cd`,
+135 pnl_track `20e6ee2c3319f37ea4c689f294c2c4a7559486545448c3d26bd0a375ce1d4619`,
+135 tearsheet `c41f7e07c19d6e068a18538e0efe183eda296eff87d2a704e7db1887040daa79`.
 
 WS-X-B's `dispersion_run.cpp` edits and the strike-param-by-presence fix (`ac8758e`)
 did **not** move the payload (the golden `run_spec` sets no strike field; `ac8758e`
@@ -527,9 +554,13 @@ Doing nothing strands four agents indefinitely.
 - **Universe:** single `effective_date` block (2026-01-02), 10 equal-weight names
   (AAPL AMZN AVGO LLY GOOGL JPM META MSFT NVDA XOM). **No reconstitution in-window**
   → PIT activation cannot move the golden on this fixture.
-- **Expected SHAs (rel-avx2):**
-  - 82-session `0737660775601f1609690568d930c62c46a1dddd0d97784036916ba4c5484c3a`
-  - 135-session `ac97a643851fa9988880d85af3201ef39158aa7e054f8c74062f0c4e68970b33`
+- **Expected SHAs (rel-avx2, `sha256(surface_backtest.tsv)`)** — re-pinned post-merge
+  2026-07-21 (WS-M M2), engine = main A9 kernel + branch tolerance re-band, 3×-stable
+  (pre-merge values in strikethrough moved once via the peer A9 greeks kernel):
+  - 82-session `5e7ca06514dfe121308643cc431c90858827c180fdbc9c84e906a49fe4715af4`
+    (was `0737660775601f1609690568d930c62c46a1dddd0d97784036916ba4c5484c3a`)
+  - 135-session `141173fdc35eed9fbb0263c87729c547e9f0eac144c1c336173c932ac69f2835`
+    (was `ac97a643851fa9988880d85af3201ef39158aa7e054f8c74062f0c4e68970b33`)
 
 ### Build incantation (per worktree)
 
