@@ -332,7 +332,7 @@ Shared-file rules:
 
 | WS | Branch | Worktree | Status | Tip SHA | Gate log |
 |---|---|---|---|---|---|
-| M | feat/pipeline-m | wt-pipe-m | NOT STARTED | — | — |
+| M | feat/pipeline-m | wt-pipe-m | GATED | a11ec71 | serial 0-unexplained; goldens 3×-stable (M2 SHAs); both presets clean; M1 reconcile→M2 re-pin→M3 known-reds→M4 regime pin→M5 doc sync |
 | A | feat/pipeline-a | wt-pipe-a | blocked on M | — | — |
 | B | feat/pipeline-b | wt-pipe-b | blocked on M | — | — |
 | C | feat/pipeline-c | wt-pipe-c | blocked on M | — | — |

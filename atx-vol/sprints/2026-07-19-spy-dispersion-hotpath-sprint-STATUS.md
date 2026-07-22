@@ -97,6 +97,12 @@ WS-X-B's `dispersion_run.cpp` edits and the strike-param-by-presence fix (`ac875
 did **not** move the payload (the golden `run_spec` sets no strike field; `ac8758e`
 gates only on `strike_log_moneyness` / `strike_abs_delta`).
 
+> **Note — superseded parity pins.** `docs/superpowers/plans/2026-07-20-dispersion-two-route-parity.md`
+> exists only as an **untracked** file in the main checkout (`C:\atx`; not committed
+> on this trunk or anywhere). Its golden SHAs predate the post-merge re-pin and are
+> **superseded by the values above.** Any two-route parity work must re-pin from THIS
+> document, not from that plan.
+
 ### 🔧 Correction to the prior record: PricerFitter was mis-bucketed
 
 The mid-sprint record counted `PricerFitterTest.LocalRiskRefitPublishesCopyOnWrite‑
@@ -123,7 +129,7 @@ keeping the reject-and-list-the-legal-ones assertion **non-vacuous**. `equal_veg
 acceptance is already covered (`dispersion_run_config_test.cpp:521`,
 `DispersionX4.EqualVega_ChangesAllocation…`).
 
-### ⏸ Deferred — final `disp-hotpath → main` integration (USER DECISION: defer)
+### ✅ DONE (WS-M) — `disp-hotpath` reconciliation landed on the integration trunk
 
 **This is a 57-commit cross-sprint engine reconciliation, not a localized conflict.**
 During this session `main` advanced from `8cb4576` to `3f7ba3f` — an **entire peer
@@ -145,14 +151,22 @@ During this session `main` advanced from `8cb4576` to `3f7ba3f` — an **entire 
   a regression here. A **new post-peer golden baseline** must be established as part of
   the reconciliation.
 
-**Decision (user): defer.** `feat/disp-hotpath` @ `30809a0` is complete, gated, and
-byte-identical to its base `8cb4576` — that is the shipped deliverable. The
-main-integration is a dedicated follow-up: with the peer sprint now reading COMPLETE,
-merge (or rebase) `disp-hotpath` onto the settled `main`, resolve the 7 conflicts
-against BOTH sprints' intent (watch for double-applied SIMD fixes — e.g. our
-`095be4a` greeks-ledger invariance vs the peer's own AVX2 kernel work), re-establish
-the golden on the post-peer engine, and re-gate. Not attempted this session because
-the approval to "merge now" had been given on a materially wrong scope (5 commits).
+**Resolution (WS-M): the reconciliation is DONE — onto the integration trunk, NOT
+local `main`.** Per the user directive to integrate on a dedicated trunk rather than
+touch local `main`, `feat/disp-hotpath` was merged into `feat/pipeline-m` at
+`71908ab` ("land feat/disp-hotpath reconciliation into pipeline-m [WS-M M1]"). The 7
+textual conflicts were resolved against BOTH sprints' intent (no double-applied SIMD
+fixes — our `095be4a` greeks-ledger invariance vs the peer's AVX2 kernel work were
+reconciled, not stacked). The golden dispersion replay was **re-established on the
+post-peer engine** and the SHAs re-pinned (WS-M M2 — see the byte-identity section
+above; not duplicated here), the branch's **tolerance re-band now lives on the trunk**
+(`isa_golden_tol.hpp`), and the remaining known-red gates were **resolved / re-pinned
+per WS-M M3** (`PreparedPortfolio` SSE2 fingerprint, backtest golden marks, the
+`SurfaceV2Qualification` carry-pair budget). The trunk gates clean at both presets.
+The prediction in the byte-identity note above — that the A9 greeks kernel would move
+the pins once — held exactly. **Still the user's call:** the final merge of the
+settled `feat/pipeline-m` trunk into local `main` is a separate, deliberate step and
+is NOT part of this closeout.
 
 ### Corpus batching lever — measured NEGATIVE (WS-BATCH, now settled)
 
@@ -556,7 +570,7 @@ Doing nothing strands four agents indefinitely.
   → PIT activation cannot move the golden on this fixture.
 - **Expected SHAs (rel-avx2, `sha256(surface_backtest.tsv)`)** — re-pinned post-merge
   2026-07-21 (WS-M M2), engine = main A9 kernel + branch tolerance re-band, 3×-stable
-  (pre-merge values in strikethrough moved once via the peer A9 greeks kernel):
+  (pre-merge values in parentheses moved once via the peer A9 greeks kernel):
   - 82-session `5e7ca06514dfe121308643cc431c90858827c180fdbc9c84e906a49fe4715af4`
     (was `0737660775601f1609690568d930c62c46a1dddd0d97784036916ba4c5484c3a`)
   - 135-session `141173fdc35eed9fbb0263c87729c547e9f0eac144c1c336173c932ac69f2835`
