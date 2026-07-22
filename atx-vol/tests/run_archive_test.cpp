@@ -9,12 +9,14 @@
 // write_diagnostics). `ra_schema_hash()` folds the whole registry into one
 // constexpr FNV-1a-64 value so a header can pin the schema at open time.
 
+#include "atx/vol/run_archive.hpp"
 #include "atx/vol/run_archive_schema.hpp"
 
 #include <gtest/gtest.h>
 
 #include <cstddef>
 #include <string_view>
+#include <type_traits>
 
 namespace atx::vol {
 namespace {
@@ -128,6 +130,56 @@ TEST(RunArchiveSchema, FormatConstants) {
   EXPECT_EQ(std::string_view(kRaMagic, sizeof kRaMagic), "ATXRUN01");
   EXPECT_EQ(kRaMajor, 1u);
   EXPECT_EQ(kRaMinor, 0u);
+}
+
+// ── Task 2: on-disk ABI (run_archive.hpp) ────────────────────────────────────
+// These are on-disk ABI structs, so beyond sizeof the load-bearing offsets are
+// pinned explicitly: a field reorder that preserved sizeof would still silently
+// corrupt readers (mirrors the ArchiveV2Header discipline).
+
+TEST(RunArchiveAbi, FileHeaderLayoutPinned) {
+  static_assert(sizeof(RunArchiveHeader) == 256);
+  static_assert(std::is_trivially_copyable_v<RunArchiveHeader>);
+  static_assert(std::is_standard_layout_v<RunArchiveHeader>);
+  static_assert(offsetof(RunArchiveHeader, file_size) == 8);
+  static_assert(offsetof(RunArchiveHeader, created_ts_ns) == 16);
+  static_assert(offsetof(RunArchiveHeader, schema_hash) == 24);
+  static_assert(offsetof(RunArchiveHeader, writer_version_hash) == 32);
+  static_assert(offsetof(RunArchiveHeader, run_identity_hash) == 40);
+  static_assert(offsetof(RunArchiveHeader, section_dir_offset) == 48);
+  static_assert(offsetof(RunArchiveHeader, data_offset) == 56);
+  static_assert(offsetof(RunArchiveHeader, section_count) == 64);
+  static_assert(offsetof(RunArchiveHeader, header_crc32c) == 68);
+  static_assert(offsetof(RunArchiveHeader, metadata_crc32c) == 72);
+  static_assert(offsetof(RunArchiveHeader, flags) == 76);
+  static_assert(offsetof(RunArchiveHeader, major) == 80);
+  SUCCEED();
+}
+
+TEST(RunArchiveAbi, SectionStructsPinned) {
+  static_assert(sizeof(RaSectionDescriptor) == 80);
+  static_assert(std::is_trivially_copyable_v<RaSectionDescriptor>);
+  static_assert(std::is_standard_layout_v<RaSectionDescriptor>);
+  static_assert(offsetof(RaSectionDescriptor, section_offset) == 0);
+  static_assert(offsetof(RaSectionDescriptor, section_size) == 8);
+  static_assert(offsetof(RaSectionDescriptor, n_rows) == 16);
+  static_assert(offsetof(RaSectionDescriptor, payload_crc32c) == 32);
+
+  static_assert(sizeof(RaSectionHeader) == 64);
+  static_assert(std::is_trivially_copyable_v<RaSectionHeader>);
+  static_assert(std::is_standard_layout_v<RaSectionHeader>);
+  static_assert(offsetof(RaSectionHeader, section_size) == 8);
+  static_assert(offsetof(RaSectionHeader, n_rows) == 16);
+  static_assert(offsetof(RaSectionHeader, payload_crc32c) == 36);
+
+  static_assert(sizeof(RaColumnDescriptor) == 96);
+  static_assert(std::is_trivially_copyable_v<RaColumnDescriptor>);
+  static_assert(std::is_standard_layout_v<RaColumnDescriptor>);
+  static_assert(offsetof(RaColumnDescriptor, data_offset) == 0);
+  static_assert(offsetof(RaColumnDescriptor, data_size) == 8);
+  static_assert(offsetof(RaColumnDescriptor, aux_offset) == 16);
+  static_assert(offsetof(RaColumnDescriptor, name) == 40);
+  SUCCEED();
 }
 
 }  // namespace
