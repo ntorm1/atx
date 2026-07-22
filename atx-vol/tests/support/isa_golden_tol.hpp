@@ -75,14 +75,14 @@ inline constexpr bool kFmaContraction = false;
 // MEASURED WORST CASE on this band's call sites (dev preset, laned greeks on),
 // from backtest_test's running `cash` accumulator in
 // Backtest.DailyTwoLegRollReusesExactPnlTargetMarksWithoutChangingEconomics:
-//   step 0  expected -3.0734556197676284   |delta| 2.2737367544323206e-13  7.40e-14 rel
-//   step 1  expected -3.548979869780851    |delta| 2.2737367544323206e-13  6.41e-14 rel
-//   step 2  expected -4.0009109642776366   |delta| 2.2737367544323206e-13  5.68e-14 rel
-//   step 3  expected -4.4307747789998757   |delta| 2.2737367544323206e-12  5.13e-13 rel
+//   step 0  expected -3.0734592640139908   |delta| 2.2737367544323206e-13  7.40e-14 rel
+//   step 1  expected -3.5489832955311158   |delta| 2.2737367544323206e-13  6.41e-14 rel
+//   step 2  expected -4.0009154520034826   |delta| 2.2737367544323206e-13  5.68e-14 rel
+//   step 3  expected -4.4307759090513628   |delta| 2.2737367544323206e-12  5.13e-13 rel
 // The last step is the compounded worst. `turnover_notional` peaks far lower
 // (9.0949470177292824e-13 abs on an O(4.4e3) total, ~2.0e-16 relative), and
 // Backtest.PriceBpsRollCloseReusesPnlMarkWithoutASecondSurfaceSolve's cash[1]
-// runs 2.2737367544323206e-13 abs on -69.997585204798639 (~3.2e-15 relative).
+// runs 2.2737367544323206e-13 abs on -69.997588555245017 (~3.2e-15 relative).
 // Measured by forcing this function to return 0 and reading the EXPECT_NEAR
 // differences gtest prints.
 //
