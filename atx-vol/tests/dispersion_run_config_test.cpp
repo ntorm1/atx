@@ -727,6 +727,75 @@ TEST(DispersionRunConfigXB, ReportMetadata_LeadsWithTheRegime) {
   EXPECT_TRUE(saw_beta);
 }
 
+// -- M4 [WS-M]: the EMITTED artifact FILES lead with the regime -----------------
+// `ReportMetadata_LeadsWithTheRegime` above pins the in-memory meta vector; this
+// pins the ON-DISK contract that the Python renderer actually consumes. The
+// renderer `tools/spy_dispersion_tearsheet_report.py` HARD-REFUSES a track with no
+// `friction_regime` key (see that file, and the "REGIME IS NOT OPTIONAL METADATA"
+// header contract in include/atx/vol/dispersion_run.hpp). So a writer that stopped
+// serializing the key -- e.g. someone deleting the emplace_back in
+// `dispersion_report_metadata`, or a new run path that never routed through
+// `write_dispersion_tearsheet` -- would silently break every downstream tearsheet
+// while the in-memory unit test above stayed green. This drives the real file
+// writer end to end and pins both emitted artifacts. (Python-side enforcement of
+// the same contract is task Y4, not this test.)
+TEST(DispersionRunConfigXB, SurfaceArtifacts_EmitFrictionRegimeFirst) {
+  // A frictioned+impact spec, so the emitted regime is a SPECIFIC non-default
+  // string ("frictioned+impact") rather than the frictionless default -- a deleted
+  // emission line therefore cannot be masked by a coincidental default/empty match.
+  const std::string body = std::string(kBaselineSpec) +
+                           "friction_preset\tretail_listed_options\n"
+                           "cost_impact_k\t0.4\ncost_adv_fraction\t0.02\n";
+  const fs::path spec = write_spec("atx_m4_regime_artifacts", body);
+  const fs::path run_dir = spec.parent_path();
+  auto config = read_dispersion_run_config(spec);
+  ASSERT_TRUE(config.has_value()) << config.error().to_string();
+
+  // A minimal outcome suffices: the regime is derived from the config, and the
+  // series body is irrelevant to the metadata-header contract under test. A
+  // default-constructed track writes a header-only series, which is fine.
+  DispersionBacktestOutcome outcome;
+  outcome.sheet.total_return = -64.60;
+  outcome.sheet.total_cost = 312.01;
+
+  ASSERT_TRUE(write_dispersion_tearsheet(run_dir, *config, outcome))
+      << "write_dispersion_tearsheet failed";
+
+  const auto slurp = [](const fs::path &p) {
+    std::ifstream in(p, std::ios::binary);
+    std::string content;
+    std::string line;
+    while (std::getline(in, line)) {
+      content += line;
+      content += '\n';
+    }
+    return content;
+  };
+
+  // surface_tearsheet.tsv: `metric<TAB>value` header, then meta rows REGIME FIRST.
+  {
+    const std::string tsv = slurp(run_dir / "surface_tearsheet.tsv");
+    ASSERT_FALSE(tsv.empty()) << "surface_tearsheet.tsv was not written";
+    // The FIRST metric row after the header must be the regime with a non-empty value.
+    EXPECT_EQ(tsv.rfind("metric\tvalue\nfriction_regime\t", 0), 0u)
+        << "surface_tearsheet.tsv does not lead with friction_regime:\n"
+        << tsv.substr(0, 128);
+    EXPECT_NE(tsv.find("friction_regime\tfrictioned+impact\n"), std::string::npos)
+        << tsv.substr(0, 128);
+  }
+
+  // surface_pnl_track.tsv: `# key=value` meta header, REGIME FIRST, non-empty value.
+  {
+    const std::string tsv = slurp(run_dir / "surface_pnl_track.tsv");
+    ASSERT_FALSE(tsv.empty()) << "surface_pnl_track.tsv was not written";
+    EXPECT_EQ(tsv.rfind("# friction_regime=", 0), 0u)
+        << "surface_pnl_track.tsv does not lead with '# friction_regime=':\n"
+        << tsv.substr(0, 128);
+    EXPECT_NE(tsv.find("# friction_regime=frictioned+impact\n"), std::string::npos)
+        << tsv.substr(0, 128);
+  }
+}
+
 // â”€â”€ X5: the benchmark series reader â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 TEST(DispersionRunConfigXB, BenchmarkSeriesReader_ParsesAndRefusesMalformedRows) {
   const fs::path dir = fs::temp_directory_path() / "atx_xb_bench";

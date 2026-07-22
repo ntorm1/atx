@@ -1940,6 +1940,11 @@ dispersion_report_metadata(const DispersionRunConfig &config, const TearSheet &s
   // this block still knows which execution assumptions produced every number
   // below it. `gross_return` is the pre-cost figure and `total_cost` the drag, so
   // the cost share of the headline is checkable without a second artifact.
+  // THE REGIME IS NOT OPTIONAL METADATA. This single emplace_back is the one and
+  // only source of the `friction_regime` key on the tearsheet artifacts
+  // (surface_tearsheet.tsv + surface_pnl_track.tsv); the Python renderer contract
+  // that HARD-REFUSES a track without it lives in
+  // tools/spy_dispersion_tearsheet_report.py (Python-side enforcement is task Y4).
   meta.emplace_back("friction_regime", std::string(to_string(regime)));
   meta.emplace_back("friction_detail", dispersion_regime_detail(config.frictions, config.costs));
   meta.emplace_back("total_return", metric_text(sheet.total_return));
