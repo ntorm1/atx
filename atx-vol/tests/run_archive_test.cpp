@@ -12,11 +12,21 @@
 #include "atx/vol/run_archive.hpp"
 #include "atx/vol/run_archive_schema.hpp"
 
+#include "atx/vol/detail/archive_util.hpp" // crc32c (independent CRC check)
+
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
+#include <vector>
 
 namespace atx::vol {
 namespace {
@@ -180,6 +190,196 @@ TEST(RunArchiveAbi, SectionStructsPinned) {
   static_assert(offsetof(RaColumnDescriptor, aux_offset) == 16);
   static_assert(offsetof(RaColumnDescriptor, name) == 40);
   SUCCEED();
+}
+
+// ── Task 3: writer (write_run_archive + atomic file write) ───────────────────
+// The writer must not depend on the Task 5 encoders, so the sections are built
+// BY HAND from small literal column vectors (a dict-str date column, an i64
+// ts_ns, a couple of registry f64 columns).
+
+// Two-row `backtest` slice (registry subset) + one-row `meta` ScalarKV section.
+// The literal vectors live in static storage so the returned RaSectionData's
+// non-owning spans stay valid for the whole test.
+std::vector<RaSectionData> make_test_sections() {
+  static const std::vector<std::string> date_dict = {"2026-07-11", "2026-07-12"};
+  static const std::vector<std::uint32_t> date_codes = {0, 1};
+  static const std::vector<std::int64_t> ts = {1, 2};
+  static const std::vector<double> nav = {100.0, 101.5};
+  static const std::vector<double> cash = {10.0, 11.25};
+  static const std::vector<std::uint8_t> flag_codes = {0, 1};
+  static const std::vector<std::string> flag_labels = {"no", "yes"};
+
+  RaSectionData bt;
+  bt.name = "backtest";
+  bt.kind = RaSectionKind::TimeSeries;
+  bt.n_rows = 2;
+  bt.columns.emplace_back("date", RaColumnData::of_dict(date_codes, date_dict));
+  bt.columns.emplace_back("ts_ns", RaColumnData::of_i64(ts));
+  bt.columns.emplace_back("nav", RaColumnData::of_f64(nav));
+  bt.columns.emplace_back("cash", RaColumnData::of_f64(cash));
+  // Dynamically-appended column (not in the registry) — the writer must accept
+  // it, like the per-signal backtest series appended at write time.
+  bt.columns.emplace_back("flag", RaColumnData::of_u8enum(flag_codes, flag_labels));
+
+  static const std::vector<std::string> kv_dict = {"schema", "1"};
+  static const std::vector<std::uint32_t> key_codes = {0};
+  static const std::vector<std::uint32_t> value_codes = {1};
+  RaSectionData meta;
+  meta.name = "meta";
+  meta.kind = RaSectionKind::ScalarKV;
+  meta.n_rows = 1;
+  meta.columns.emplace_back("key", RaColumnData::of_dict(key_codes, kv_dict));
+  meta.columns.emplace_back("value", RaColumnData::of_dict(value_codes, kv_dict));
+
+  std::vector<RaSectionData> sections;
+  sections.push_back(std::move(bt));
+  sections.push_back(std::move(meta));
+  return sections;
+}
+
+[[nodiscard]] std::uint32_t header_crc(RunArchiveHeader h) {
+  h.header_crc32c = 0;
+  std::array<std::byte, sizeof h> raw{};
+  std::memcpy(raw.data(), &h, sizeof h);
+  return detail::crc32c(raw.data(), raw.size());
+}
+
+TEST(RunArchiveWriter, WritesFramedBuffer) {
+  const std::vector<RaSectionData> sections = make_test_sections();
+  auto bytes = write_run_archive(sections, /*created_ts_ns=*/123, /*run_identity_hash=*/0xABCull);
+  ASSERT_TRUE(bytes.has_value()) << bytes.error().to_string();
+  ASSERT_GT(bytes->size(), sizeof(RunArchiveHeader));
+
+  RunArchiveHeader h{};
+  std::memcpy(&h, bytes->data(), sizeof h);
+  EXPECT_EQ(std::string_view(h.magic, 8), std::string_view(kRaMagic, 8));
+  EXPECT_EQ(h.major, kRaMajor);
+  EXPECT_EQ(h.minor, kRaMinor);
+  EXPECT_EQ(h.header_size, sizeof(RunArchiveHeader));
+  EXPECT_EQ(h.endian, 1u);
+  EXPECT_EQ(h.pointer_bits, 64u);
+  EXPECT_EQ(h.schema_hash, ra_schema_hash());
+  EXPECT_EQ(h.created_ts_ns, 123u);
+  EXPECT_EQ(h.run_identity_hash, 0xABCull);
+  EXPECT_EQ(h.section_count, 2u);
+  EXPECT_EQ(h.file_size, bytes->size());
+
+  // Header CRC verifies over the header bytes with its own field zeroed.
+  EXPECT_EQ(header_crc(h), h.header_crc32c);
+
+  // Directory: sorted by name ("backtest" < "meta"), metadata CRC covers it.
+  ASSERT_EQ(h.section_dir_offset, sizeof(RunArchiveHeader));
+  const std::uint64_t dir_bytes = 2ull * sizeof(RaSectionDescriptor);
+  ASSERT_LE(h.section_dir_offset + dir_bytes, bytes->size());
+  EXPECT_EQ(detail::crc32c(bytes->data() + h.section_dir_offset,
+                           static_cast<std::size_t>(dir_bytes)),
+            h.metadata_crc32c);
+  RaSectionDescriptor d0{};
+  RaSectionDescriptor d1{};
+  std::memcpy(&d0, bytes->data() + h.section_dir_offset, sizeof d0);
+  std::memcpy(&d1, bytes->data() + h.section_dir_offset + sizeof d0, sizeof d1);
+  EXPECT_EQ(std::string_view(d0.name, 8), "backtest");
+  EXPECT_EQ(d0.n_rows, 2u);
+  EXPECT_EQ(d0.n_cols, 5u);
+  EXPECT_EQ(d0.kind, RaSectionKind::TimeSeries);
+  EXPECT_EQ(d0.section_offset % kRaSectionAlign, 0u);
+  EXPECT_EQ(std::string_view(d1.name, 4), "meta");
+  EXPECT_EQ(d1.n_rows, 1u);
+  EXPECT_EQ(d1.n_cols, 2u);
+  EXPECT_EQ(d1.kind, RaSectionKind::ScalarKV);
+
+  // Section record framing: magic + descriptor agreement + CRC copy.
+  ASSERT_LE(d0.section_offset + d0.section_size, bytes->size());
+  RaSectionHeader sh{};
+  std::memcpy(&sh, bytes->data() + d0.section_offset, sizeof sh);
+  EXPECT_EQ(std::string_view(sh.magic, 8), std::string_view(kRaSectionMagic, 8));
+  EXPECT_EQ(sh.section_size, d0.section_size);
+  EXPECT_EQ(sh.n_rows, d0.n_rows);
+  EXPECT_EQ(sh.n_cols, d0.n_cols);
+  EXPECT_EQ(sh.payload_crc32c, d0.payload_crc32c);
+  EXPECT_NE(sh.payload_crc32c, 0u);
+}
+
+TEST(RunArchiveWriter, RejectsMalformedSections) {
+  // Empty section list.
+  EXPECT_FALSE(write_run_archive({}, 1, 1).has_value());
+
+  // Dict code out of range for its dict table.
+  {
+    static const std::vector<std::string> dict = {"only"};
+    static const std::vector<std::uint32_t> codes = {0, 7};
+    RaSectionData bad;
+    bad.name = "backtest";
+    bad.kind = RaSectionKind::TimeSeries;
+    bad.n_rows = 2;
+    bad.columns.emplace_back("date", RaColumnData::of_dict(codes, dict));
+    const auto out = write_run_archive(std::span(&bad, 1), 1, 1);
+    ASSERT_FALSE(out.has_value());
+    EXPECT_EQ(out.error().code(), atx::core::ErrorCode::InvalidArgument);
+  }
+
+  // Column length disagrees with n_rows.
+  {
+    static const std::vector<double> nav = {100.0};
+    RaSectionData bad;
+    bad.name = "backtest";
+    bad.kind = RaSectionKind::TimeSeries;
+    bad.n_rows = 2;
+    bad.columns.emplace_back("nav", RaColumnData::of_f64(nav));
+    EXPECT_FALSE(write_run_archive(std::span(&bad, 1), 1, 1).has_value());
+  }
+
+  // Registry dtype drift: `nav` is F64 in the registry, not I64.
+  {
+    static const std::vector<std::int64_t> nav = {100, 101};
+    RaSectionData bad;
+    bad.name = "backtest";
+    bad.kind = RaSectionKind::TimeSeries;
+    bad.n_rows = 2;
+    bad.columns.emplace_back("nav", RaColumnData::of_i64(nav));
+    EXPECT_FALSE(write_run_archive(std::span(&bad, 1), 1, 1).has_value());
+  }
+
+  // Duplicate section names.
+  {
+    static const std::vector<double> nav = {1.0};
+    std::vector<RaSectionData> dup(2);
+    for (RaSectionData& s : dup) {
+      s.name = "backtest";
+      s.kind = RaSectionKind::TimeSeries;
+      s.n_rows = 1;
+      s.columns.emplace_back("nav", RaColumnData::of_f64(nav));
+    }
+    const auto out = write_run_archive(dup, 1, 1);
+    ASSERT_FALSE(out.has_value());
+    EXPECT_EQ(out.error().code(), atx::core::ErrorCode::AlreadyExists);
+  }
+}
+
+TEST(RunArchiveWriter, AtomicFileWrite) {
+  const std::vector<RaSectionData> sections = make_test_sections();
+  const std::filesystem::path path =
+      std::filesystem::temp_directory_path() / "atx_run_archive_writer_test.runar";
+  std::filesystem::remove(path);
+
+  auto st = write_run_archive_file(path.string(), sections, 5, 7);
+  ASSERT_TRUE(st.has_value()) << st.error().to_string();
+  ASSERT_TRUE(std::filesystem::exists(path));
+  EXPECT_FALSE(std::filesystem::exists(path.string() + ".tmp"));
+
+  // Re-write over the existing destination (Windows: remove-then-rename).
+  auto st2 = write_run_archive_file(path.string(), sections, 6, 7);
+  ASSERT_TRUE(st2.has_value()) << st2.error().to_string();
+  EXPECT_FALSE(std::filesystem::exists(path.string() + ".tmp"));
+
+  // The published file leads with the RunArchive magic.
+  std::ifstream is(path, std::ios::binary);
+  ASSERT_TRUE(is.good());
+  char magic[8] = {};
+  is.read(magic, 8);
+  EXPECT_EQ(std::string_view(magic, 8), std::string_view(kRaMagic, 8));
+  is.close();
+  std::filesystem::remove(path);
 }
 
 }  // namespace

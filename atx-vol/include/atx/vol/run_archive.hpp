@@ -17,10 +17,16 @@
 // reorder that preserved sizeof would still silently corrupt readers.
 
 #include "atx/vol/run_archive_schema.hpp"
+#include "atx/vol/types.hpp" // Result / Status
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
+#include <string>
+#include <string_view>
 #include <type_traits>
+#include <utility>
+#include <vector>
 
 namespace atx::vol {
 
@@ -157,5 +163,109 @@ static_assert(offsetof(RaColumnDescriptor, dtype) == 36);
 static_assert(offsetof(RaColumnDescriptor, name_len) == 38);
 static_assert(offsetof(RaColumnDescriptor, name) == 40);
 static_assert(offsetof(RaColumnDescriptor, unit) == 80);
+
+// ── Writer inputs (in-memory staging; NOT on-disk ABI) ───────────────────────
+
+// Byte width of ONE stored element of `t`'s column array. Dict-str stores a u32
+// code per row (the string table is aux data); u8-enum stores a u8 code per row.
+[[nodiscard]] constexpr std::uint64_t ra_dtype_size(RaDType t) noexcept {
+  switch (t) {
+  case RaDType::F64:
+  case RaDType::I64:
+    return 8;
+  case RaDType::U32:
+  case RaDType::DictStr:
+    return 4;
+  case RaDType::U8Enum:
+    return 1;
+  }
+  return 0; // unreachable for a valid RaDType; writer rejects anything else
+}
+
+// One column's staged values. Value-semantic and NON-OWNING: exactly the span(s)
+// matching `dtype` are consumed by the writer and every span must outlive the
+// write call. `strings` carries the dict table (DictStr) or the label table
+// (U8Enum); codes index into it and must all be < strings.size().
+struct RaColumnData {
+  RaDType dtype{RaDType::F64};
+  std::span<const double> f64{};          // F64 values
+  std::span<const std::int64_t> i64{};    // I64 values
+  std::span<const std::uint32_t> u32{};   // U32 values, or DictStr codes
+  std::span<const std::uint8_t> u8{};     // U8Enum codes
+  std::span<const std::string> strings{}; // DictStr dict / U8Enum labels
+
+  [[nodiscard]] static RaColumnData of_f64(std::span<const double> v) noexcept {
+    RaColumnData c;
+    c.dtype = RaDType::F64;
+    c.f64 = v;
+    return c;
+  }
+  [[nodiscard]] static RaColumnData of_i64(std::span<const std::int64_t> v) noexcept {
+    RaColumnData c;
+    c.dtype = RaDType::I64;
+    c.i64 = v;
+    return c;
+  }
+  [[nodiscard]] static RaColumnData of_u32(std::span<const std::uint32_t> v) noexcept {
+    RaColumnData c;
+    c.dtype = RaDType::U32;
+    c.u32 = v;
+    return c;
+  }
+  [[nodiscard]] static RaColumnData of_u8enum(std::span<const std::uint8_t> codes,
+                                              std::span<const std::string> labels) noexcept {
+    RaColumnData c;
+    c.dtype = RaDType::U8Enum;
+    c.u8 = codes;
+    c.strings = labels;
+    return c;
+  }
+  [[nodiscard]] static RaColumnData of_dict(std::span<const std::uint32_t> codes,
+                                            std::span<const std::string> dict) noexcept {
+    RaColumnData c;
+    c.dtype = RaDType::DictStr;
+    c.u32 = codes;
+    c.strings = dict;
+    return c;
+  }
+};
+
+// One staged section: named (columns in caller order; the writer preserves it).
+// Registry-known (section, column) pairs are checked against the Task 1 registry
+// (dtype + section kind must match) and stamped with the registry unit; unknown
+// columns (the dynamically appended per-signal backtest series) pass through
+// with an empty unit.
+struct RaSectionData {
+  std::string name{};
+  RaSectionKind kind{RaSectionKind::TimeSeries};
+  std::uint64_t n_rows{0};
+  std::vector<std::pair<std::string, RaColumnData>> columns{};
+};
+
+// ── Writer ───────────────────────────────────────────────────────────────────
+
+// Serialize `sections` into an in-memory ATXRUN01 buffer:
+//   RunArchiveHeader → RaSectionDescriptor[] (sorted by name) → 64-B-aligned
+//   sections (RaSectionHeader + RaColumnDescriptor[] + 8-B-aligned arrays,
+//   dict/label tables at each column's aux offset).
+// Stamps schema_hash = ra_schema_hash(), the header CRC (own field zeroed), the
+// metadata CRC over the directory, and each section's payload CRC (own field
+// zeroed) mirrored into its directory descriptor — so ANY payload rewrite (even
+// same-length) changes metadata_crc32c and hence the archive identity.
+// `created_ts_ns` == 0 fills from the system clock.
+// Errors: InvalidArgument (empty input, name too long, span/n_rows mismatch,
+// code out of table range, registry dtype/kind drift); AlreadyExists (duplicate
+// section or column name).
+[[nodiscard]] Result<std::vector<std::byte>>
+write_run_archive(std::span<const RaSectionData> sections, std::int64_t created_ts_ns,
+                  std::uint64_t run_identity_hash);
+
+// As above, persisted atomically: build the full buffer in memory, write
+// "<path>.tmp", flush/close, then rename over `path` (destination removed first
+// — Windows rename does not replace). Adds IoError on filesystem failure.
+[[nodiscard]] Status write_run_archive_file(std::string_view path,
+                                            std::span<const RaSectionData> sections,
+                                            std::int64_t created_ts_ns,
+                                            std::uint64_t run_identity_hash);
 
 } // namespace atx::vol
