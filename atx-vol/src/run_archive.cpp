@@ -9,6 +9,11 @@
 // directory; per-section payload CRC with its own field zeroed, mirrored into
 // the directory descriptor so any payload rewrite changes the archive
 // identity — the F6 trick).
+//
+// The reader mirrors `SurfaceArchiveV2::open_impl`'s bounds discipline: every
+// offset/size is range-checked before any dereference, framing + header CRC +
+// metadata CRC validate on open, and per-section payload CRC is LAZY
+// (validate_section / validate_all only — never on the read path).
 
 #include "atx/vol/run_archive.hpp"
 
@@ -29,7 +34,9 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
+#include "atx/tsdb/mapping.hpp"            // tsdb::Mapping (read-only mmap seam)
 #include "atx/vol/detail/archive_util.hpp" // crc32c, crc32c_update, align_up
+#include "atx/vol/surface_archive.hpp"     // ArchiveContentIdentity (F6 identity)
 
 namespace atx::vol {
 
@@ -39,6 +46,7 @@ using atx::core::Ok;
 
 using detail::align_up;
 using detail::crc32c;
+using detail::crc32c_update;
 
 namespace {
 
@@ -78,6 +86,30 @@ constexpr std::size_t kRaUnitMax = sizeof(RaColumnDescriptor{}.unit);         //
   std::array<std::byte, sizeof(RunArchiveHeader)> raw{};
   std::memcpy(raw.data(), &h, sizeof h);
   return crc32c(raw.data(), raw.size());
+}
+
+// CRC-32C over a whole section record with its own payload_crc32c field forced
+// to 0 (the exact bytes the writer checksummed). Piecewise, no temp copy —
+// mirrors record_crc_v2 in surface_archive.cpp.
+[[nodiscard]] std::uint32_t ra_section_crc(const std::byte *base, std::uint64_t size) noexcept {
+  constexpr std::size_t crc_off = offsetof(RaSectionHeader, payload_crc32c);
+  const std::uint32_t zero = 0;
+  std::uint32_t c = crc32c_update(0xFFFFFFFFu, base, crc_off);
+  c = crc32c_update(c, reinterpret_cast<const std::byte *>(&zero), sizeof zero);
+  c = crc32c_update(c, base + crc_off + sizeof(std::uint32_t),
+                    static_cast<std::size_t>(size) - crc_off - sizeof(std::uint32_t));
+  return c ^ 0xFFFFFFFFu;
+}
+
+// Effective section name in a directory descriptor: the char[32] is
+// zero-padded and not NUL-terminated, so the name runs to the first NUL (or
+// the full 32 bytes).
+[[nodiscard]] std::string_view descriptor_name(const RaSectionDescriptor &d) noexcept {
+  std::size_t len = 0;
+  while (len < sizeof d.name && d.name[len] != '\0') {
+    ++len;
+  }
+  return {d.name, len};
 }
 
 // Number of staged values in the span that `dtype` selects.
@@ -424,6 +456,368 @@ Status write_run_archive_file(std::string_view path, std::span<const RaSectionDa
     return Err(ErrorCode::IoError, "write_run_archive_file: cannot publish file");
   }
   return Ok();
+}
+
+// ── Reader ───────────────────────────────────────────────────────────────────
+
+Result<RunArchive> RunArchive::open_impl(std::span<const std::byte> bytes,
+                                         std::shared_ptr<const void> owner) {
+  if (bytes.size() < sizeof(RunArchiveHeader)) {
+    return Err(ErrorCode::ParseError, "RunArchive::open: shorter than header");
+  }
+  RunArchiveHeader h;
+  std::memcpy(&h, bytes.data(), sizeof h);
+  if (std::memcmp(h.magic, kRaMagic, 8) != 0) {
+    return Err(ErrorCode::ParseError, "RunArchive::open: bad magic");
+  }
+  if (h.major != kRaMajor) {
+    return Err(ErrorCode::ParseError, "RunArchive::open: unsupported major version");
+  }
+  if (h.minor > kRaMinor) {
+    return Err(ErrorCode::ParseError, "RunArchive::open: unsupported minor version");
+  }
+  if (h.endian != 1) {
+    return Err(ErrorCode::ParseError, "RunArchive::open: non-little-endian archive");
+  }
+  if (h.pointer_bits != 64) {
+    return Err(ErrorCode::ParseError, "RunArchive::open: unsupported pointer width");
+  }
+  if (h.header_size != sizeof(RunArchiveHeader)) {
+    return Err(ErrorCode::ParseError, "RunArchive::open: header size mismatch");
+  }
+  if (h.schema_hash != ra_schema_hash()) {
+    return Err(ErrorCode::ParseError, "RunArchive::open: schema hash mismatch");
+  }
+  if (h.file_size != bytes.size()) {
+    return Err(ErrorCode::ParseError, "RunArchive::open: file size mismatch");
+  }
+  const std::uint64_t dir_bytes =
+      static_cast<std::uint64_t>(h.section_count) * sizeof(RaSectionDescriptor);
+  if (h.section_dir_offset < sizeof(RunArchiveHeader)) {
+    return Err(ErrorCode::ParseError, "RunArchive::open: directory overlaps header");
+  }
+  if (h.section_dir_offset > h.file_size || dir_bytes > h.file_size - h.section_dir_offset) {
+    return Err(ErrorCode::ParseError, "RunArchive::open: directory out of bounds");
+  }
+  if (h.section_dir_offset + dir_bytes > h.data_offset) {
+    return Err(ErrorCode::ParseError, "RunArchive::open: directory overlaps data");
+  }
+  if (h.data_offset > h.file_size) {
+    return Err(ErrorCode::ParseError, "RunArchive::open: data offset out of bounds");
+  }
+  if (ra_header_crc(h) != h.header_crc32c) {
+    return Err(ErrorCode::ParseError, "RunArchive::open: header checksum mismatch");
+  }
+  if (crc32c(bytes.data() + h.section_dir_offset, static_cast<std::size_t>(dir_bytes)) !=
+      h.metadata_crc32c) {
+    return Err(ErrorCode::ParseError, "RunArchive::open: metadata checksum mismatch");
+  }
+
+  RunArchive a;
+  a.bytes_ = bytes;
+  a.owner_ = std::move(owner);
+  a.header_ = h;
+  a.directory_.resize(h.section_count);
+  if (dir_bytes > 0) {
+    std::memcpy(a.directory_.data(), bytes.data() + h.section_dir_offset,
+                static_cast<std::size_t>(dir_bytes));
+  }
+  for (const RaSectionDescriptor &de : a.directory_) {
+    if (descriptor_name(de).empty()) {
+      return Err(ErrorCode::ParseError, "RunArchive::open: empty section name");
+    }
+    if (static_cast<std::uint8_t>(de.kind) > static_cast<std::uint8_t>(RaSectionKind::SubTable)) {
+      return Err(ErrorCode::ParseError, "RunArchive::open: invalid section kind");
+    }
+    if (de.section_offset < h.data_offset) {
+      return Err(ErrorCode::ParseError, "RunArchive::open: section precedes data");
+    }
+    if (de.section_offset > h.file_size || de.section_size > h.file_size - de.section_offset) {
+      return Err(ErrorCode::ParseError, "RunArchive::open: section out of bounds");
+    }
+    if (de.section_size < sizeof(RaSectionHeader)) {
+      return Err(ErrorCode::ParseError, "RunArchive::open: section smaller than header");
+    }
+    // Section starts must be >= 8-B aligned in-file so typed column reads are
+    // aligned relative to a >= 8-B backing base (mirrors the v2 §11.3
+    // hardening). Sections are packed on kRaSectionAlign (>= 8), so any entry
+    // not so aligned is corrupt.
+    if ((de.section_offset % kRaColumnAlign) != 0u) {
+      return Err(ErrorCode::ParseError, "RunArchive::open: section offset misaligned");
+    }
+  }
+  return Ok(std::move(a));
+}
+
+Result<RunArchive> RunArchive::open(std::vector<std::byte> bytes) {
+  auto owned = std::make_shared<std::vector<std::byte>>(std::move(bytes));
+  std::span<const std::byte> span{owned->data(), owned->size()};
+  return open_impl(span, std::static_pointer_cast<const void>(owned));
+}
+
+Result<RunArchive> RunArchive::open_borrowed(std::span<const std::byte> bytes,
+                                             std::shared_ptr<const void> owner) {
+  return open_impl(bytes, std::move(owner));
+}
+
+Result<RunArchive> RunArchive::open_file(std::string_view path) {
+  const std::filesystem::path p{std::string(path)};
+  std::error_code ec;
+  if (!std::filesystem::exists(p, ec) || ec) {
+    return Err(ErrorCode::NotFound, "RunArchive::open_file: file not found");
+  }
+  std::ifstream is(p, std::ios::binary | std::ios::ate);
+  if (!is) {
+    return Err(ErrorCode::IoError, "RunArchive::open_file: cannot open file");
+  }
+  const std::streamsize size = is.tellg();
+  if (size < 0) {
+    return Err(ErrorCode::IoError, "RunArchive::open_file: cannot size file");
+  }
+  std::vector<std::byte> bytes(static_cast<std::size_t>(size));
+  is.seekg(0);
+  is.read(reinterpret_cast<char *>(bytes.data()), size);
+  if (is.gcount() != size) {
+    return Err(ErrorCode::IoError, "RunArchive::open_file: short read");
+  }
+  return open(std::move(bytes));
+}
+
+Result<RunArchive> RunArchive::open_mapped(std::string_view path) {
+  // Same mmap seam as SurfaceArchiveV2::open_mapped: map read-only and validate
+  // through open_borrowed, so opening faults in only the metadata pages (header
+  // + directory); section bytes fault in lazily via the OS page cache when a
+  // view touches them. The Mapping is kept alive for the archive's whole
+  // lifetime via the type-erased owner — every RaSectionView borrows into the
+  // mapped pages and must not outlive the archive.
+  auto mapping = atx::tsdb::Mapping::map_file_ro(std::string(path));
+  if (!mapping) {
+    return tl::unexpected<atx::core::Error>(std::move(mapping).error());
+  }
+  auto owner = std::make_shared<atx::tsdb::Mapping>(std::move(*mapping));
+  const std::span<const std::byte> span{reinterpret_cast<const std::byte *>(owner->base()),
+                                        static_cast<std::size_t>(owner->size())};
+  return open_borrowed(span, std::static_pointer_cast<const void>(owner));
+}
+
+ArchiveContentIdentity RunArchive::identity() const noexcept {
+  return ArchiveContentIdentity{header_.file_size, header_.created_ts_ns, header_.header_crc32c,
+                                header_.metadata_crc32c};
+}
+
+const RaSectionDescriptor *RunArchive::find_descriptor(std::string_view name) const noexcept {
+  for (const RaSectionDescriptor &de : directory_) {
+    if (descriptor_name(de) == name) {
+      return &de;
+    }
+  }
+  return nullptr;
+}
+
+Result<RaSectionView> RunArchive::section(std::string_view name) const {
+  const RaSectionDescriptor *de = find_descriptor(name);
+  if (de == nullptr) {
+    return Err(ErrorCode::NotFound, "RunArchive::section: section not present");
+  }
+  // de's extent was bounds-checked against the file at open().
+  const std::byte *base = bytes_.data() + de->section_offset;
+  RaSectionHeader sh;
+  std::memcpy(&sh, base, sizeof sh);
+  if (std::memcmp(sh.magic, kRaSectionMagic, 8) != 0) {
+    return Err(ErrorCode::ParseError, "RunArchive::section: bad section magic");
+  }
+  if (sh.section_size != de->section_size || sh.n_rows != de->n_rows ||
+      sh.n_cols != de->n_cols || sh.kind != de->kind ||
+      sh.col_desc_offset != de->col_desc_offset) {
+    return Err(ErrorCode::ParseError, "RunArchive::section: descriptor disagreement");
+  }
+  if (sh.n_cols == 0) {
+    return Err(ErrorCode::ParseError, "RunArchive::section: section has no columns");
+  }
+  const std::uint64_t desc_bytes =
+      static_cast<std::uint64_t>(sh.n_cols) * sizeof(RaColumnDescriptor);
+  if (sh.col_desc_offset < sizeof(RaSectionHeader) || sh.col_desc_offset > sh.section_size ||
+      desc_bytes > sh.section_size - sh.col_desc_offset) {
+    return Err(ErrorCode::ParseError, "RunArchive::section: column descriptors out of bounds");
+  }
+
+  RaSectionView view;
+  view.base_ = base;
+  view.header_ = sh;
+  view.name_ = std::string(name);
+  view.cols_.resize(sh.n_cols);
+  std::memcpy(view.cols_.data(), base + sh.col_desc_offset,
+              static_cast<std::size_t>(desc_bytes));
+  for (const RaColumnDescriptor &cd : view.cols_) {
+    if (cd.name_len == 0 || cd.name_len > sizeof cd.name) {
+      return Err(ErrorCode::ParseError, "RunArchive::section: column name length out of bounds");
+    }
+    if (static_cast<std::uint8_t>(cd.dtype) > static_cast<std::uint8_t>(RaDType::DictStr)) {
+      return Err(ErrorCode::ParseError, "RunArchive::section: invalid column dtype");
+    }
+    if ((cd.data_offset % kRaColumnAlign) != 0u) {
+      return Err(ErrorCode::ParseError, "RunArchive::section: column data misaligned");
+    }
+    if (cd.data_offset > sh.section_size || cd.data_size > sh.section_size - cd.data_offset) {
+      return Err(ErrorCode::ParseError, "RunArchive::section: column data out of bounds");
+    }
+    if (cd.data_size != sh.n_rows * ra_dtype_size(cd.dtype)) {
+      return Err(ErrorCode::ParseError, "RunArchive::section: column size disagrees with n_rows");
+    }
+    if (dtype_has_aux(cd.dtype)) {
+      // Aux table framing: u32 offsets[aux_count + 1] then the string blob.
+      if (cd.aux_offset == 0 || (cd.aux_offset % 4u) != 0u) {
+        return Err(ErrorCode::ParseError, "RunArchive::section: aux table missing or misaligned");
+      }
+      if (cd.aux_offset > sh.section_size || cd.aux_size > sh.section_size - cd.aux_offset) {
+        return Err(ErrorCode::ParseError, "RunArchive::section: aux table out of bounds");
+      }
+      const std::uint64_t offsets_bytes = (static_cast<std::uint64_t>(cd.aux_count) + 1ull) * 4ull;
+      if (offsets_bytes > cd.aux_size) {
+        return Err(ErrorCode::ParseError, "RunArchive::section: aux offsets out of bounds");
+      }
+      const std::uint64_t blob_bytes = cd.aux_size - offsets_bytes;
+      const std::byte *offsets = base + cd.aux_offset;
+      std::uint32_t prev = 0;
+      std::memcpy(&prev, offsets, 4);
+      if (prev != 0) {
+        return Err(ErrorCode::ParseError, "RunArchive::section: aux table does not start at 0");
+      }
+      for (std::uint64_t k = 1; k <= cd.aux_count; ++k) {
+        std::uint32_t cur = 0;
+        std::memcpy(&cur, offsets + 4 * k, 4);
+        if (cur < prev) {
+          return Err(ErrorCode::ParseError, "RunArchive::section: aux offsets not monotone");
+        }
+        prev = cur;
+      }
+      if (prev != blob_bytes) {
+        return Err(ErrorCode::ParseError, "RunArchive::section: aux blob size disagreement");
+      }
+      // Every code must index the table so view accessors are unchecked-safe.
+      if (cd.dtype == RaDType::DictStr) {
+        const auto *codes = reinterpret_cast<const std::uint32_t *>(base + cd.data_offset);
+        for (std::uint64_t r = 0; r < sh.n_rows; ++r) {
+          if (codes[r] >= cd.aux_count) {
+            return Err(ErrorCode::ParseError, "RunArchive::section: dict code out of range");
+          }
+        }
+      } else {
+        const auto *codes = reinterpret_cast<const std::uint8_t *>(base + cd.data_offset);
+        for (std::uint64_t r = 0; r < sh.n_rows; ++r) {
+          if (codes[r] >= cd.aux_count) {
+            return Err(ErrorCode::ParseError, "RunArchive::section: enum code out of range");
+          }
+        }
+      }
+    } else if (cd.aux_offset != 0 || cd.aux_size != 0 || cd.aux_count != 0) {
+      return Err(ErrorCode::ParseError, "RunArchive::section: unexpected aux table");
+    }
+  }
+  return Ok(std::move(view));
+}
+
+Status RunArchive::validate_section(std::string_view name) const {
+  const RaSectionDescriptor *de = find_descriptor(name);
+  if (de == nullptr) {
+    return Err(ErrorCode::NotFound, "RunArchive::validate_section: section not present");
+  }
+  // Extent bounds-checked at open(); size >= sizeof(RaSectionHeader) too.
+  const std::byte *base = bytes_.data() + de->section_offset;
+  std::uint32_t stored = 0;
+  std::memcpy(&stored, base + offsetof(RaSectionHeader, payload_crc32c), sizeof stored);
+  if (stored != de->payload_crc32c) {
+    return Err(ErrorCode::ParseError,
+               "RunArchive::validate: section/directory checksum disagreement");
+  }
+  if (ra_section_crc(base, de->section_size) != stored) {
+    return Err(ErrorCode::ParseError, "RunArchive::validate: section checksum mismatch");
+  }
+  return Ok();
+}
+
+Status RunArchive::validate_all() const {
+  for (const RaSectionDescriptor &de : directory_) {
+    const Status st = validate_section(descriptor_name(de));
+    if (!st) {
+      return st;
+    }
+  }
+  return Ok();
+}
+
+// ── RaSectionView accessors ──────────────────────────────────────────────────
+
+const RaColumnDescriptor *RaSectionView::find_col(std::string_view name,
+                                                  RaDType dtype) const noexcept {
+  for (const RaColumnDescriptor &cd : cols_) {
+    if (cd.dtype == dtype && cd.name_len == name.size() &&
+        std::memcmp(cd.name, name.data(), name.size()) == 0) {
+      return &cd;
+    }
+  }
+  return nullptr;
+}
+
+RaStringTable RaSectionView::string_table(const RaColumnDescriptor &cd) const noexcept {
+  const std::byte *offsets = base_ + cd.aux_offset;
+  const std::byte *blob = offsets + (static_cast<std::uint64_t>(cd.aux_count) + 1ull) * 4ull;
+  return RaStringTable{offsets, blob, cd.aux_count};
+}
+
+std::span<const double> RaSectionView::f64_col(std::string_view name) const noexcept {
+  const RaColumnDescriptor *cd = find_col(name, RaDType::F64);
+  if (cd == nullptr) {
+    return {};
+  }
+  return {reinterpret_cast<const double *>(base_ + cd->data_offset),
+          static_cast<std::size_t>(header_.n_rows)};
+}
+
+std::span<const std::int64_t> RaSectionView::i64_col(std::string_view name) const noexcept {
+  const RaColumnDescriptor *cd = find_col(name, RaDType::I64);
+  if (cd == nullptr) {
+    return {};
+  }
+  return {reinterpret_cast<const std::int64_t *>(base_ + cd->data_offset),
+          static_cast<std::size_t>(header_.n_rows)};
+}
+
+std::span<const std::uint32_t> RaSectionView::u32_col(std::string_view name) const noexcept {
+  const RaColumnDescriptor *cd = find_col(name, RaDType::U32);
+  if (cd == nullptr) {
+    return {};
+  }
+  return {reinterpret_cast<const std::uint32_t *>(base_ + cd->data_offset),
+          static_cast<std::size_t>(header_.n_rows)};
+}
+
+std::span<const std::uint8_t> RaSectionView::u8enum_col(std::string_view name) const noexcept {
+  const RaColumnDescriptor *cd = find_col(name, RaDType::U8Enum);
+  if (cd == nullptr) {
+    return {};
+  }
+  return {reinterpret_cast<const std::uint8_t *>(base_ + cd->data_offset),
+          static_cast<std::size_t>(header_.n_rows)};
+}
+
+RaStringTable RaSectionView::u8enum_labels(std::string_view name) const noexcept {
+  const RaColumnDescriptor *cd = find_col(name, RaDType::U8Enum);
+  if (cd == nullptr) {
+    return {};
+  }
+  return string_table(*cd);
+}
+
+RaDictColumn RaSectionView::dict_col(std::string_view name) const noexcept {
+  const RaColumnDescriptor *cd = find_col(name, RaDType::DictStr);
+  if (cd == nullptr) {
+    return {};
+  }
+  const std::span<const std::uint32_t> codes{
+      reinterpret_cast<const std::uint32_t *>(base_ + cd->data_offset),
+      static_cast<std::size_t>(header_.n_rows)};
+  return RaDictColumn{codes, string_table(*cd)};
 }
 
 } // namespace atx::vol

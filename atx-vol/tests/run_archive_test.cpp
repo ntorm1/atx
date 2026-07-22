@@ -13,6 +13,7 @@
 #include "atx/vol/run_archive_schema.hpp"
 
 #include "atx/vol/detail/archive_util.hpp" // crc32c (independent CRC check)
+#include "atx/vol/surface_archive.hpp"     // ArchiveContentIdentity (identity())
 
 #include <gtest/gtest.h>
 
@@ -379,6 +380,164 @@ TEST(RunArchiveWriter, AtomicFileWrite) {
   is.read(magic, 8);
   EXPECT_EQ(std::string_view(magic, 8), std::string_view(kRaMagic, 8));
   is.close();
+  std::filesystem::remove(path);
+}
+
+// ── Task 4: reader (RunArchive open/section/validate + mmap) ─────────────────
+
+[[nodiscard]] std::vector<std::byte> make_test_bytes() {
+  const std::vector<RaSectionData> sections = make_test_sections();
+  auto bytes = write_run_archive(sections, /*created_ts_ns=*/123, /*run_identity_hash=*/0xABCull);
+  EXPECT_TRUE(bytes.has_value());
+  return std::move(*bytes);
+}
+
+TEST(RunArchiveReader, RoundTrip) {
+  auto ar = RunArchive::open(make_test_bytes());
+  ASSERT_TRUE(ar.has_value()) << ar.error().to_string();
+  EXPECT_EQ(ar->count(), 2u);
+  EXPECT_EQ(ar->header().run_identity_hash, 0xABCull);
+  ASSERT_EQ(ar->directory().size(), 2u);
+
+  const ArchiveContentIdentity id = ar->identity();
+  EXPECT_EQ(id.file_size, ar->header().file_size);
+  EXPECT_EQ(id.created_ts_ns, 123u);
+  EXPECT_EQ(id.header_crc32c, ar->header().header_crc32c);
+  EXPECT_EQ(id.metadata_crc32c, ar->header().metadata_crc32c);
+
+  auto sec = ar->section("backtest");
+  ASSERT_TRUE(sec.has_value()) << sec.error().to_string();
+  EXPECT_EQ(sec->name(), "backtest");
+  EXPECT_EQ(sec->kind(), RaSectionKind::TimeSeries);
+  EXPECT_EQ(sec->n_rows(), 2u);
+  EXPECT_EQ(sec->n_cols(), 5u);
+
+  const auto nav = sec->f64_col("nav");
+  ASSERT_EQ(nav.size(), 2u);
+  EXPECT_EQ(nav[0], 100.0);
+  EXPECT_EQ(nav[1], 101.5);
+  const auto cash = sec->f64_col("cash");
+  ASSERT_EQ(cash.size(), 2u);
+  EXPECT_EQ(cash[1], 11.25);
+  const auto ts = sec->i64_col("ts_ns");
+  ASSERT_EQ(ts.size(), 2u);
+  EXPECT_EQ(ts[0], 1);
+  EXPECT_EQ(ts[1], 2);
+
+  const RaDictColumn dates = sec->dict_col("date");
+  ASSERT_EQ(dates.size(), 2u);
+  EXPECT_EQ(dates.at(0), "2026-07-11");
+  EXPECT_EQ(dates.at(1), "2026-07-12");
+  EXPECT_EQ(dates.table().size(), 2u);
+  EXPECT_EQ(dates.codes()[1], 1u);
+
+  const auto flags = sec->u8enum_col("flag");
+  ASSERT_EQ(flags.size(), 2u);
+  EXPECT_EQ(flags[0], 0u);
+  EXPECT_EQ(flags[1], 1u);
+  const RaStringTable labels = sec->u8enum_labels("flag");
+  ASSERT_EQ(labels.size(), 2u);
+  EXPECT_EQ(labels.at(0), "no");
+  EXPECT_EQ(labels.at(1), "yes");
+
+  // Name/dtype misses are empty, not errors.
+  EXPECT_TRUE(sec->f64_col("no_such_column").empty());
+  EXPECT_TRUE(sec->f64_col("ts_ns").empty()); // ts_ns is I64, not F64
+  EXPECT_TRUE(sec->dict_col("nav").empty());
+
+  auto meta = ar->section("meta");
+  ASSERT_TRUE(meta.has_value());
+  EXPECT_EQ(meta->kind(), RaSectionKind::ScalarKV);
+  EXPECT_EQ(meta->dict_col("key").at(0), "schema");
+  EXPECT_EQ(meta->dict_col("value").at(0), "1");
+
+  const auto missing = ar->section("no_such_section");
+  ASSERT_FALSE(missing.has_value());
+  EXPECT_EQ(missing.error().code(), atx::core::ErrorCode::NotFound);
+
+  // Lazy integrity passes on an untampered archive.
+  EXPECT_TRUE(ar->validate_section("backtest").has_value());
+  EXPECT_TRUE(ar->validate_all().has_value());
+}
+
+TEST(RunArchiveReader, RejectsSchemaDrift) {
+  // (a) Flip schema_hash without repairing the header CRC: rejected (CRC).
+  {
+    auto bytes = make_test_bytes();
+    RunArchiveHeader h{};
+    std::memcpy(&h, bytes.data(), sizeof h);
+    h.schema_hash ^= 1;
+    std::memcpy(bytes.data(), &h, sizeof h);
+    EXPECT_FALSE(RunArchive::open(std::move(bytes)).has_value());
+  }
+  // (b) Flip schema_hash AND recompute the header CRC — a "valid-but-drifted"
+  // file (a column rename in a future writer): rejected on schema_hash.
+  {
+    auto bytes = make_test_bytes();
+    RunArchiveHeader h{};
+    std::memcpy(&h, bytes.data(), sizeof h);
+    h.schema_hash ^= 1;
+    h.header_crc32c = header_crc(h);
+    std::memcpy(bytes.data(), &h, sizeof h);
+    const auto out = RunArchive::open(std::move(bytes));
+    ASSERT_FALSE(out.has_value());
+    EXPECT_EQ(out.error().code(), atx::core::ErrorCode::ParseError);
+  }
+  // (c) Truncated buffer: file_size disagrees.
+  {
+    auto bytes = make_test_bytes();
+    bytes.pop_back();
+    EXPECT_FALSE(RunArchive::open(std::move(bytes)).has_value());
+  }
+}
+
+TEST(RunArchiveReader, LazyCrcCatchesPayloadTamper) {
+  auto bytes = make_test_bytes();
+  // Locate the `backtest` section (sorted first in the directory) and flip the
+  // last byte of its payload extent.
+  RunArchiveHeader h{};
+  std::memcpy(&h, bytes.data(), sizeof h);
+  RaSectionDescriptor d0{};
+  std::memcpy(&d0, bytes.data() + h.section_dir_offset, sizeof d0);
+  ASSERT_EQ(std::string_view(d0.name, 8), "backtest");
+  bytes[static_cast<std::size_t>(d0.section_offset + d0.section_size - 1)] ^= std::byte{0xFF};
+
+  // open() is lazy: framing still validates.
+  auto ar = RunArchive::open(std::move(bytes));
+  ASSERT_TRUE(ar.has_value()) << ar.error().to_string();
+  // The per-section CRC catches the tamper; the untouched section still passes.
+  EXPECT_FALSE(ar->validate_section("backtest").has_value());
+  EXPECT_TRUE(ar->validate_section("meta").has_value());
+  EXPECT_FALSE(ar->validate_all().has_value());
+}
+
+TEST(RunArchiveReader, OpenFileAndMapped) {
+  const std::vector<RaSectionData> sections = make_test_sections();
+  const std::filesystem::path path =
+      std::filesystem::temp_directory_path() / "atx_run_archive_reader_test.runar";
+  std::filesystem::remove(path);
+  ASSERT_TRUE(write_run_archive_file(path.string(), sections, 123, 0xABCull).has_value());
+
+  {
+    auto ar = RunArchive::open_file(path.string());
+    ASSERT_TRUE(ar.has_value()) << ar.error().to_string();
+    auto sec = ar->section("backtest");
+    ASSERT_TRUE(sec.has_value());
+    ASSERT_EQ(sec->f64_col("nav").size(), 2u);
+    EXPECT_EQ(sec->f64_col("nav")[0], 100.0);
+  }
+  {
+    auto ar = RunArchive::open_mapped(path.string());
+    ASSERT_TRUE(ar.has_value()) << ar.error().to_string();
+    auto sec = ar->section("backtest");
+    ASSERT_TRUE(sec.has_value());
+    ASSERT_EQ(sec->f64_col("nav").size(), 2u);
+    EXPECT_EQ(sec->f64_col("nav")[1], 101.5);
+    EXPECT_EQ(sec->dict_col("date").at(0), "2026-07-11");
+    EXPECT_TRUE(ar->validate_all().has_value());
+  } // archive (and its mapping) destroyed before the file is removed
+
+  EXPECT_FALSE(RunArchive::open_file((path.string() + ".does_not_exist")).has_value());
   std::filesystem::remove(path);
 }
 

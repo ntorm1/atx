@@ -21,6 +21,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
@@ -29,6 +31,11 @@
 #include <vector>
 
 namespace atx::vol {
+
+// Cheap content/build identity shared with the surface archives (the F6 trick;
+// full definition in surface_archive.hpp — forward-declared here to keep this
+// header light; callers of RunArchive::identity() include surface_archive.hpp).
+struct ArchiveContentIdentity;
 
 // Sections start 64-B aligned; column arrays inside a section align to 8.
 inline constexpr std::uint32_t kRaSectionAlign = 64;
@@ -267,5 +274,174 @@ write_run_archive(std::span<const RaSectionData> sections, std::int64_t created_
                                             std::span<const RaSectionData> sections,
                                             std::int64_t created_ts_ns,
                                             std::uint64_t run_identity_hash);
+
+// ── Reader ───────────────────────────────────────────────────────────────────
+
+// Zero-copy view over a dict/label string table (u32 offsets[count+1] + blob)
+// inside an opened archive's bytes. BORROWS the archive's bytes: like
+// PricedSurfaceView, it must not outlive the RunArchive (and, for open_mapped,
+// the mapping that archive owns). Framing (offset monotonicity / bounds) is
+// validated by RunArchive::section() before a table is handed out, so `at` is
+// noexcept and unchecked beyond the index guard.
+class RaStringTable {
+public:
+  RaStringTable() noexcept = default;
+
+  [[nodiscard]] std::size_t size() const noexcept { return count_; }
+  [[nodiscard]] bool empty() const noexcept { return count_ == 0; }
+
+  // Entry `i`, or "" when i >= size().
+  [[nodiscard]] std::string_view at(std::size_t i) const noexcept {
+    if (i >= count_) {
+      return {};
+    }
+    std::uint32_t lo = 0;
+    std::uint32_t hi = 0;
+    std::memcpy(&lo, offsets_ + 4 * i, 4);
+    std::memcpy(&hi, offsets_ + 4 * (i + 1), 4);
+    return {reinterpret_cast<const char *>(blob_) + lo, hi - lo};
+  }
+  [[nodiscard]] std::string_view operator[](std::size_t i) const noexcept { return at(i); }
+
+private:
+  friend class RaSectionView;
+  RaStringTable(const std::byte *offsets, const std::byte *blob, std::uint32_t count) noexcept
+      : offsets_(offsets), blob_(blob), count_(count) {}
+
+  const std::byte *offsets_{nullptr}; // u32[count_ + 1], offsets_[0] == 0
+  const std::byte *blob_{nullptr};    // concatenated string bytes
+  std::uint32_t count_{0};
+};
+
+// One dict-str column: the zero-copy u32 code span plus its string table.
+// Borrows the archive's bytes (same lifetime rule as RaStringTable).
+class RaDictColumn {
+public:
+  RaDictColumn() noexcept = default;
+
+  [[nodiscard]] std::span<const std::uint32_t> codes() const noexcept { return codes_; }
+  [[nodiscard]] const RaStringTable &table() const noexcept { return table_; }
+  [[nodiscard]] std::size_t size() const noexcept { return codes_.size(); }
+  [[nodiscard]] bool empty() const noexcept { return codes_.empty(); }
+
+  // Row `row` decoded through the dict, or "" when row >= size(). Codes are
+  // range-checked against the table at section() time.
+  [[nodiscard]] std::string_view at(std::size_t row) const noexcept {
+    if (row >= codes_.size()) {
+      return {};
+    }
+    return table_.at(codes_[row]);
+  }
+
+private:
+  friend class RaSectionView;
+  RaDictColumn(std::span<const std::uint32_t> codes, RaStringTable table) noexcept
+      : codes_(codes), table_(table) {}
+
+  std::span<const std::uint32_t> codes_{};
+  RaStringTable table_{};
+};
+
+// Zero-copy typed view over one section record. Column accessors return spans
+// straight over the archive's (possibly mapped) bytes — no copies. A view (and
+// everything it returns) BORROWS the owning RunArchive's bytes and must not
+// outlive it — the PricedSurfaceView lifetime rule. A name/dtype miss returns
+// an empty span/table (the section's framing was already validated, so a miss
+// is a lookup outcome, not corruption).
+class RaSectionView {
+public:
+  RaSectionView() = default;
+
+  [[nodiscard]] std::string_view name() const noexcept { return name_; }
+  [[nodiscard]] RaSectionKind kind() const noexcept { return header_.kind; }
+  [[nodiscard]] std::uint64_t n_rows() const noexcept { return header_.n_rows; }
+  [[nodiscard]] std::uint32_t n_cols() const noexcept { return header_.n_cols; }
+  [[nodiscard]] std::span<const RaColumnDescriptor> columns() const noexcept { return cols_; }
+
+  // Typed column accessors (empty on name/dtype miss).
+  [[nodiscard]] std::span<const double> f64_col(std::string_view name) const noexcept;
+  [[nodiscard]] std::span<const std::int64_t> i64_col(std::string_view name) const noexcept;
+  [[nodiscard]] std::span<const std::uint32_t> u32_col(std::string_view name) const noexcept;
+  // U8Enum: the u8 code column, and its label table.
+  [[nodiscard]] std::span<const std::uint8_t> u8enum_col(std::string_view name) const noexcept;
+  [[nodiscard]] RaStringTable u8enum_labels(std::string_view name) const noexcept;
+  // DictStr: code span + string table bundled.
+  [[nodiscard]] RaDictColumn dict_col(std::string_view name) const noexcept;
+
+private:
+  friend class RunArchive;
+  [[nodiscard]] const RaColumnDescriptor *find_col(std::string_view name,
+                                                   RaDType dtype) const noexcept;
+  [[nodiscard]] RaStringTable string_table(const RaColumnDescriptor &cd) const noexcept;
+
+  const std::byte *base_{nullptr}; // section record start inside the archive
+  RaSectionHeader header_{};
+  std::vector<RaColumnDescriptor> cols_{}; // parsed copies (metadata only)
+  std::string name_{};
+};
+
+// An opened ATXRUN01 archive. BACKING-AGNOSTIC like SurfaceArchiveV2: owns a
+// span over the region plus a type-erased owner keeping the backing (a resident
+// buffer, or an atx::tsdb::Mapping under open_mapped) alive. All query methods
+// are `const`; every returned RaSectionView borrows this archive's bytes and
+// must not outlive it. Integrity is LAZY: open() validates framing only
+// (magic, major/minor, endian == 1, pointer_bits == 64, schema_hash ==
+// ra_schema_hash(), header CRC, metadata CRC over the directory, directory
+// bounds); per-section payload CRC is validate_section / validate_all only.
+class RunArchive {
+public:
+  // Take ownership of `bytes` and validate framing. ParseError on any failure.
+  [[nodiscard]] static Result<RunArchive> open(std::vector<std::byte> bytes);
+
+  // Read `path` fully into a buffer and open it. Adds IoError / NotFound.
+  [[nodiscard]] static Result<RunArchive> open_file(std::string_view path);
+
+  // Map `path` read-only (atx::tsdb::Mapping) and open_borrowed it: opening
+  // faults in only the metadata pages; section bytes fault in lazily on access.
+  // The mapping is kept alive for the archive's whole lifetime. Adds IoError /
+  // NotFound / InvalidArgument (empty file).
+  [[nodiscard]] static Result<RunArchive> open_mapped(std::string_view path);
+
+  // The mmap seam: view over externally-owned bytes; `owner` keeps the backing
+  // alive for the archive's lifetime. Same framing validation as open().
+  [[nodiscard]] static Result<RunArchive> open_borrowed(std::span<const std::byte> bytes,
+                                                        std::shared_ptr<const void> owner);
+
+  [[nodiscard]] std::uint32_t count() const noexcept { return header_.section_count; }
+  [[nodiscard]] const RunArchiveHeader &header() const noexcept { return header_; }
+  [[nodiscard]] std::span<const RaSectionDescriptor> directory() const noexcept {
+    return directory_;
+  }
+  // Content identity (file_size, created_ts_ns, header/metadata CRCs). Every
+  // section's payload CRC is mirrored in the directory the metadata CRC covers,
+  // so ANY payload rewrite changes the identity (F6).
+  [[nodiscard]] ArchiveContentIdentity identity() const noexcept;
+
+  // Build a zero-copy typed view over section `name` (exact match). Validates
+  // the section record's framing (magic, descriptor agreement, per-column
+  // bounds/alignment/dtype sizes, dict/label table well-formedness, code
+  // ranges) — but NOT its payload CRC. NotFound if absent; ParseError on any
+  // framing failure.
+  [[nodiscard]] Result<RaSectionView> section(std::string_view name) const;
+
+  // Lazy integrity: verify one section's payload CRC (own field zeroed) against
+  // both the section header and its directory copy. NotFound if absent;
+  // ParseError on mismatch.
+  [[nodiscard]] Status validate_section(std::string_view name) const;
+  // Verify every section's payload CRC. Ok iff all pass.
+  [[nodiscard]] Status validate_all() const;
+
+private:
+  RunArchive() = default;
+
+  [[nodiscard]] static Result<RunArchive> open_impl(std::span<const std::byte> bytes,
+                                                    std::shared_ptr<const void> owner);
+  [[nodiscard]] const RaSectionDescriptor *find_descriptor(std::string_view name) const noexcept;
+
+  std::span<const std::byte> bytes_{};  // the whole archive region (borrowed)
+  std::shared_ptr<const void> owner_{}; // keeps the backing alive
+  RunArchiveHeader header_{};           // parsed copy
+  std::vector<RaSectionDescriptor> directory_{}; // parsed copy, sorted by name
+};
 
 } // namespace atx::vol
