@@ -1018,6 +1018,16 @@ Result<RunArchive> RunArchive::open_impl(std::span<const std::byte> bytes,
     if (static_cast<std::uint8_t>(de.kind) > static_cast<std::uint8_t>(RaSectionKind::SubTable)) {
       return Err(ErrorCode::ParseError, "RunArchive::open: invalid section kind");
     }
+    // Cap n_rows at the writer-side row limit (write_run_archive). Enforcing it
+    // on open makes every `n_rows * ra_dtype_size(dtype)` product in section() —
+    // which frames each column's byte extent — provably non-wrapping (<= 2^48 *
+    // 8 = 2^51), so a forged huge n_rows cannot wrap that product to alias a
+    // small data_size and slip past the size check into an out-of-bounds
+    // code-range scan. section() re-pins sh.n_rows == de.n_rows, so the section
+    // header inherits this cap.
+    if (de.n_rows > (1ull << 48)) {
+      return Err(ErrorCode::ParseError, "RunArchive::open: implausible row count");
+    }
     if (de.section_offset < h.data_offset) {
       return Err(ErrorCode::ParseError, "RunArchive::open: section precedes data");
     }
@@ -1150,7 +1160,12 @@ Result<RaSectionView> RunArchive::section(std::string_view name) const {
     if (cd.data_offset > sh.section_size || cd.data_size > sh.section_size - cd.data_offset) {
       return Err(ErrorCode::ParseError, "RunArchive::section: column data out of bounds");
     }
-    if (cd.data_size != sh.n_rows * ra_dtype_size(cd.dtype)) {
+    // Overflow-safe equality (division form): open() already caps n_rows, but
+    // check the byte extent without the wrapping `n_rows * dtype_size` multiply
+    // for defense in depth. ra_dtype_size is >= 1 for the dtypes cleared above,
+    // so the divide is safe.
+    const std::uint64_t elem_size = ra_dtype_size(cd.dtype);
+    if (cd.data_size % elem_size != 0 || cd.data_size / elem_size != sh.n_rows) {
       return Err(ErrorCode::ParseError, "RunArchive::section: column size disagrees with n_rows");
     }
     if (dtype_has_aux(cd.dtype)) {

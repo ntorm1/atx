@@ -516,6 +516,40 @@ TEST(RunArchiveReader, LazyCrcCatchesPayloadTamper) {
   EXPECT_FALSE(ar->validate_all().has_value());
 }
 
+TEST(RunArchiveReader, RejectsForgedRowCountOverflow) {
+  // C1 regression: a forged descriptor n_rows that WRAPS the
+  // `n_rows * ra_dtype_size(dtype)` byte-extent product. The `backtest`
+  // section's `date` column is DictStr (4-byte codes), so n_rows == 2^62 wraps
+  // the u64 product to 0 (2^64 mod 2^64). With a matching data_size == 0 that
+  // would have passed section()'s size check and then driven its eager dict
+  // code-range scan (for r in [0, n_rows)) off the end of the archive. open()
+  // must cap n_rows up front instead. The layered CRCs are recomputed so the
+  // file is otherwise valid (mirrors RejectsSchemaDrift case (b)) — the cap,
+  // not a checksum, is what rejects it.
+  auto bytes = make_test_bytes();
+  RunArchiveHeader h{};
+  std::memcpy(&h, bytes.data(), sizeof h);
+
+  RaSectionDescriptor d0{};
+  std::memcpy(&d0, bytes.data() + h.section_dir_offset, sizeof d0);
+  ASSERT_EQ(std::string_view(d0.name, 8), "backtest");
+  d0.n_rows = std::uint64_t{1} << 62; // > 2^48 cap; * 4 (DictStr) wraps to 0
+  std::memcpy(bytes.data() + h.section_dir_offset, &d0, sizeof d0);
+
+  // Repair framing so open reaches the directory validation loop: metadata CRC
+  // over the (patched) directory, then the header CRC over the new header.
+  const std::uint64_t dir_bytes =
+      static_cast<std::uint64_t>(h.section_count) * sizeof(RaSectionDescriptor);
+  h.metadata_crc32c = detail::crc32c(bytes.data() + h.section_dir_offset,
+                                     static_cast<std::size_t>(dir_bytes));
+  h.header_crc32c = header_crc(h);
+  std::memcpy(bytes.data(), &h, sizeof h);
+
+  const auto out = RunArchive::open(std::move(bytes));
+  ASSERT_FALSE(out.has_value());
+  EXPECT_EQ(out.error().code(), atx::core::ErrorCode::ParseError);
+}
+
 TEST(RunArchiveReader, OpenFileAndMapped) {
   const std::vector<RaSectionData> sections = make_test_sections();
   const std::filesystem::path path =
