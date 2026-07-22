@@ -268,7 +268,18 @@ TEST_P(SurfaceV2Qualification, RiskBuildRunsTheModeCarryAndInversionBudgets) {
   const std::size_t expected_n_atm = mode == FitQualityMode::Latency    ? 3u
                                      : mode == FitQualityMode::Balanced ? 8u
                                                                         : 12u;
-  const std::size_t expected_max_pairs = mode == FitQualityMode::Latency ? 6u : 12u;
+  // max_borrow_pairs re-pin (WS-M M3). Standing authorization: e7d5ebb "perf(vol):
+  // halve real OPRA de-Americanization time" (2026-07-15) capped Latency 6->5 and
+  // Balanced 12->5 at the evidence-based five-pair carry cap (deamer.hpp:302 "real-
+  // OPRA accuracy plateau"; matching apply_fit_preset in session.cpp and its
+  // deamer/session tests). That commit was NOT economically material: it only trims
+  // redundant borrow solves past the plateau — carry inference is a ~1e-4 input
+  // (deamer.hpp:295) and multi-pair coverage is unchanged (min_carry_effective_pairs
+  // >= 3.0, asserted below, above the 3-pair confidence floor). The perf commit
+  // updated the code + deamer/session tests but missed this budget (pinned 6:12 by
+  // 4b769dd ~1.5h earlier the same day), leaving it stale. Accuracy is the reference-
+  // fidelity contract and deliberately retains 12 (pricer_fitter.cpp:1131).
+  const std::size_t expected_max_pairs = mode == FitQualityMode::Accuracy ? 12u : 5u;
   EXPECT_EQ(inputs.deam.n_atm, expected_n_atm);
   EXPECT_EQ(inputs.deam.max_borrow_pairs, expected_max_pairs);
   ASSERT_TRUE(inputs.deam.al_opts.has_value());
