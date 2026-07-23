@@ -24,6 +24,8 @@
 #include "atx/core/hash.hpp"
 #include "atx/vol/backtest.hpp"
 #include "atx/vol/corpus.hpp"
+#include "atx/vol/run_archive.hpp"
+#include "atx/vol/run_diagnostics.hpp"
 #include "atx/vol/counters.hpp"
 #include "atx/vol/dispersion.hpp"
 #include "atx/vol/dispersion_backtest.hpp"
@@ -42,6 +44,11 @@
 #include "atx/vol/strategy.hpp"
 #include "atx/vol/tearsheet.hpp"
 #include "atx/vol/types.hpp"
+
+#ifdef _WIN32
+#include <fcntl.h> // _O_BINARY (runarchive dump: byte-exact stdout, no CRLF)
+#include <io.h>    // _setmode / _fileno
+#endif
 
 using namespace atx::vol;
 namespace fs = std::filesystem;
@@ -95,89 +102,77 @@ Result<std::uint64_t> hash_file(const fs::path &path) {
 }
 
 // ── Runtime diagnostics ──────────────────────────────────────────────────────
-// Local phase-timing helper for the instrumented subcommands. Accumulates named
-// phases (wall time plus a unit count) in a fixed, pre-declared order and — via
-// write_diagnostics — emits diagnostics_<subcommand>.tsv (truncated per
-// invocation) alongside a one-line stderr summary. steady_clock only; always on,
-// since the overhead is negligible next to the surface solves it measures. It
-// writes a NEW file and touches only stderr: no economic output, no existing
-// artifact, and no stdout line is affected (tooling may parse stdout).
-class PhaseTimer {
-public:
-  using Clock = std::chrono::steady_clock;
-  using Duration = Clock::duration;
+// PhaseTimer + the `diagnostics` section encoder now live in the library
+// (atx/vol/run_diagnostics.hpp), so the binary result container measures phases
+// exactly as the old loose diagnostics_<subcommand>.tsv did. `PhaseTimer` here
+// resolves to atx::vol::PhaseTimer via the `using namespace atx::vol` above.
 
-  struct Phase {
-    std::string name;
-    Duration elapsed{Duration::zero()};
-    std::uint64_t count{0u};
-  };
-
-  // Pre-declaring the phase order fixes the output row order regardless of when
-  // each region is first timed. Some phases accumulate across a loop, and one
-  // (archive_load) is timed inside a region also charged to another phase, so
-  // first-seen order would not match the intended reading order otherwise.
-  explicit PhaseTimer(std::initializer_list<std::string_view> order) {
-    for (std::string_view name : order) {
-      phases_.push_back(Phase{std::string(name), Duration::zero(), 0u});
-    }
-  }
-
-  static Clock::time_point now() { return Clock::now(); }
-
-  // Charge (now - start) wall time and `count` units to `phase` (created if it
-  // was not pre-declared). Repeated calls to the same phase accumulate.
-  void add(std::string_view phase, Clock::time_point start, std::uint64_t count = 0u) {
-    const Duration elapsed = Clock::now() - start;
-    for (Phase &entry : phases_) {
-      if (entry.name == phase) {
-        entry.elapsed += elapsed;
-        entry.count += count;
-        return;
-      }
-    }
-    phases_.push_back(Phase{std::string(phase), elapsed, count});
-  }
-
-  const std::vector<Phase> &phases() const { return phases_; }
-
-private:
-  std::vector<Phase> phases_;
-};
-
-double phase_ms(PhaseTimer::Duration d) {
-  return std::chrono::duration<double, std::milli>(d).count();
-}
-
-// Write diagnostics_<subcommand>.tsv and print the one-line stderr summary. The
-// `total` wall time is measured over the whole command independently of the
-// phase sum (which carries per-region slack); `unit`/`units` name the natural
-// count denominator ("session"/"sessions" for backtests, "roll"/"rolls" for the
-// schedule builders).
-Status write_diagnostics(const fs::path &run_dir, const char *subcommand,
-                         const PhaseTimer &timer, PhaseTimer::Duration total,
-                         std::uint64_t total_count, const char *unit, const char *units) {
-  const fs::path path = run_dir / (std::string("diagnostics_") + subcommand + ".tsv");
-  std::ofstream out(path, std::ios::binary | std::ios::trunc);
-  if (!out) {
-    return Err(ErrorCode::IoError, "cannot write diagnostics");
-  }
-  out << "ATX_DISPERSION_DIAGNOSTICS\t1\n";
-  out << "subcommand\tphase\twall_ms\tcount\n";
-  out << std::fixed << std::setprecision(3);
-  for (const PhaseTimer::Phase &phase : timer.phases()) {
-    out << subcommand << '\t' << phase.name << '\t' << phase_ms(phase.elapsed) << '\t'
-        << phase.count << '\n';
-  }
-  const double total_ms = phase_ms(total);
-  out << subcommand << "\ttotal\t" << total_ms << '\t' << total_count << '\n';
-  if (!out) {
-    return Err(ErrorCode::IoError, "cannot flush diagnostics");
-  }
+// One-line stderr telemetry summary (preserved verbatim from the old
+// write_diagnostics stderr line). `total` is measured over the whole command
+// independently of the phase sum; `unit`/`units` name the count denominator
+// ("session"/"sessions" for backtests, "roll"/"rolls" for the schedule builders).
+// Telemetry only: no economic output, no stdout line, no artifact.
+void print_diag_summary(const char *subcommand, PhaseTimer::Duration total,
+                        std::uint64_t total_count, const char *unit, const char *units) {
+  const double total_ms = std::chrono::duration<double, std::milli>(total).count();
   const double per_unit = total_count > 0u ? total_ms / static_cast<double>(total_count) : 0.0;
   std::fprintf(stderr, "diag %s: total=%.3fms %s=%llu (%.3f ms/%s)\n", subcommand, total_ms, units,
                static_cast<unsigned long long>(total_count), per_unit, unit);
-  return Ok();
+}
+
+// ── RunArchive staging helpers ───────────────────────────────────────────────
+
+// Intern `value` into a first-appearance dict column, returning its u32 code.
+// O(dict) per call — fine for the small mark-divergence set the only caller
+// builds. The dict/codes vectors grow in lockstep.
+std::uint32_t dict_intern(std::vector<std::string> &dict, std::string_view value) {
+  for (std::size_t i = 0; i < dict.size(); ++i) {
+    if (dict[i] == value) {
+      return static_cast<std::uint32_t>(i);
+    }
+  }
+  dict.emplace_back(value);
+  return static_cast<std::uint32_t>(dict.size() - 1u);
+}
+
+// Mark-divergence rows collected by the Record replay, staged for the
+// `mark_divergence` RunArchive section (there is no library encoder for it — it
+// is example-owned, so the section is hand-built here). Owns every array its
+// columns span (dict codes/tables + numeric columns), so the returned section is
+// self-contained via RaSectionData::storage.
+struct MarkDivergenceArena {
+  std::vector<std::string> date_dict, symbol_dict, raw_symbol_dict;
+  std::vector<std::uint32_t> date_codes, symbol_codes, raw_symbol_codes;
+  std::vector<std::uint8_t> side_codes;              // 0 = Call, 1 = Put
+  std::vector<std::string> side_labels{"Call", "Put"};
+  std::vector<double> strike, schedule_mark, live_mark, diff, abs_diff_bps_of_mark;
+  std::vector<std::int64_t> expiry_ts_ns;
+  std::uint64_t n_rows{0};
+};
+
+// Build the `mark_divergence` SubTable section in kMarkDivergenceCols registry
+// order from a filled arena. The arena is moved into the section's storage, so
+// every spanned array outlives the write.
+RaSectionData build_mark_divergence_section(std::shared_ptr<MarkDivergenceArena> arena) {
+  RaSectionData sec;
+  sec.name = "mark_divergence";
+  sec.kind = RaSectionKind::SubTable;
+  sec.n_rows = arena->n_rows;
+  sec.columns.emplace_back("date", RaColumnData::of_dict(arena->date_codes, arena->date_dict));
+  sec.columns.emplace_back("symbol",
+                           RaColumnData::of_dict(arena->symbol_codes, arena->symbol_dict));
+  sec.columns.emplace_back("raw_symbol",
+                           RaColumnData::of_dict(arena->raw_symbol_codes, arena->raw_symbol_dict));
+  sec.columns.emplace_back("strike", RaColumnData::of_f64(arena->strike));
+  sec.columns.emplace_back("expiry_ts_ns", RaColumnData::of_i64(arena->expiry_ts_ns));
+  sec.columns.emplace_back("side", RaColumnData::of_u8enum(arena->side_codes, arena->side_labels));
+  sec.columns.emplace_back("schedule_mark", RaColumnData::of_f64(arena->schedule_mark));
+  sec.columns.emplace_back("live_mark", RaColumnData::of_f64(arena->live_mark));
+  sec.columns.emplace_back("diff", RaColumnData::of_f64(arena->diff));
+  sec.columns.emplace_back("abs_diff_bps_of_mark",
+                           RaColumnData::of_f64(arena->abs_diff_bps_of_mark));
+  sec.storage = std::move(arena);
+  return sec;
 }
 
 Status write_input_inventory(const fs::path &path, const OpraBatchResult &batch) {
@@ -539,30 +534,44 @@ Status build_schedule_command(const fs::path &run_dir) {
                "schedule does not satisfy entry/three-roll acceptance gate");
   }
   const auto write_start = PhaseTimer::now();
+  // trade_schedule.tsv stays a text INPUT: run-backtest / project-schedule /
+  // run-projected-backtest read it back through read_listed_dispersion_schedule_
+  // file (the retained input read path). The schedule is ALSO folded into
+  // run.atxrun as the trade_schedule section (the result container). run-backtest
+  // later republishes run.atxrun with the full economic result set.
   ATX_TRY_VOID(
       write_listed_dispersion_schedule_file((run_dir / "trade_schedule.tsv").string(), schedule));
+  std::vector<RaSectionData> sections;
+  sections.push_back(encode_schedule_section("trade_schedule", schedule));
   timer.add("write_outputs", write_start);
+  sections.push_back(encode_diagnostics_section(timer, "build_schedule", schedule.rolls.size()));
+  ATX_TRY_VOID(RunDir(run_dir).write_run_archive(sections));
   std::printf("built immutable schedule: rolls=%zu\n", schedule.rolls.size());
-  ATX_TRY_VOID(write_diagnostics(run_dir, "build_schedule", timer,
-                                 PhaseTimer::now() - cmd_start, schedule.rolls.size(), "roll",
-                                 "rolls"));
+  print_diag_summary("build_schedule", PhaseTimer::now() - cmd_start, schedule.rolls.size(), "roll",
+                     "rolls");
   return Ok();
 }
 
 Status verify_command(const fs::path &run_dir) {
-  ATX_TRY(RunSpec spec, read_run_spec(run_dir / "run_spec.tsv"));
   ATX_TRY(CorpusManifest manifest, read_manifest_file((run_dir / "surface_manifest.tsv").string()));
   ATX_TRY(CorpusQualityReport quality,
           read_quality_report_file((run_dir / "quality.tsv").string()));
   ATX_TRY(Clock clock, Clock::from_manifest(manifest));
   ATX_TRY_VOID(verify_occ_ess_evidence(run_dir, clock));
-  ATX_TRY(ListedDispersionSchedule schedule,
-          read_listed_dispersion_schedule_file((run_dir / "trade_schedule.tsv").string()));
-  ATX_TRY_VOID(validate_listed_dispersion_schedule(schedule));
-  for (const fs::path &required :
-       {run_dir / "input_inventory.tsv", run_dir / "methodology_map.tsv", run_dir / "backtest.tsv",
-        run_dir / "occ_ess_inventory.tsv", run_dir / "contract_marks.tsv",
-        run_dir / "reconciliation.tsv", run_dir / "reference_reconciliation.tsv"}) {
+
+  // Result envelope: run.atxrun opens, every result section's payload CRC
+  // validates, the required result sections are present + framed, the retained
+  // text inputs parse, the backtest/reconciliation cardinalities agree, the
+  // schedule passes its structural + vega-arithmetic validation, and the
+  // core-mode date/roll/breadth floors hold. This is the example's old verify
+  // gate lifted into RunDir::verify — the loose backtest.tsv / contract_marks.tsv
+  // / reconciliation.tsv result files no longer exist, so their existence checks
+  // are now the layered-CRC envelope over run.atxrun's sections.
+  ATX_TRY_VOID(RunDir(run_dir).verify());
+
+  // Retained text inputs still required to exist and be non-empty.
+  for (const fs::path &required : {run_dir / "input_inventory.tsv", run_dir / "methodology_map.tsv",
+                                   run_dir / "occ_ess_inventory.tsv"}) {
     std::error_code error;
     if (!fs::is_regular_file(required, error) || fs::file_size(required, error) == 0u) {
       return Err(ErrorCode::NotFound, "missing final artifact " + required.string());
@@ -571,16 +580,8 @@ Status verify_command(const fs::path &run_dir) {
   if (quality.n_admitted != manifest.n_ok) {
     return Err(ErrorCode::InvalidArgument, "quality/manifest admitted count mismatch");
   }
-  if (spec.core_mode) {
-    if (clock.size() < 60u || schedule.rolls.size() < 3u) {
-      return Err(ErrorCode::Unavailable, "core date/roll acceptance gate failed");
-    }
-    for (const ListedScheduleRoll &roll : schedule.rolls) {
-      if (roll.n_names < 40u) {
-        return Err(ErrorCode::Unavailable, "core roll breadth acceptance gate failed");
-      }
-    }
-  }
+  ATX_TRY(ListedDispersionSchedule schedule,
+          read_listed_dispersion_schedule_file((run_dir / "trade_schedule.tsv").string()));
   std::printf("verified artifact envelope: dates=%zu admitted=%u rolls=%zu\n", clock.size(),
               quality.n_admitted, schedule.rolls.size());
   return Ok();
@@ -613,10 +614,6 @@ Status run_backtest_command(const fs::path &run_dir) {
   }
   timer.add("engine_run", phase, backtest.size());
 
-  phase = PhaseTimer::now();
-  ATX_TRY_VOID(write_backtest_tsv(backtest, (run_dir / "backtest.tsv").string()));
-  timer.add("write_outputs", phase);
-
   // reconciliation: the OPRA parquet join re-marking every session against the
   // exchange tape (load_listed_quotes per date), then folding those marks into
   // the reconciliation. This phase's cost dominating the subcommand is the claim
@@ -647,18 +644,27 @@ Status run_backtest_command(const fs::path &run_dir) {
   ATX_TRY_VOID(validate_listed_reconciliation_backtest(reconciliation, backtest));
   timer.add("reconciliation", phase, clock.size());
 
+  // Hard cutover: the loose backtest.tsv / reconciliation.tsv / contract_marks.tsv
+  // result files are replaced by the run.atxrun result container. The economic
+  // sections plus the resolved-spec echo (meta) and the schedule (so the report
+  // layer reads coverage straight from the archive) are staged and published
+  // atomically via RunDir. `backtest` is spanned in place by
+  // encode_backtest_section, so it must outlive the write — it is local here.
   phase = PhaseTimer::now();
-  ATX_TRY_VOID(
-      write_listed_contract_marks_file((run_dir / "contract_marks.tsv").string(), reconciliation));
-  ATX_TRY_VOID(
-      write_listed_reconciliation_file((run_dir / "reconciliation.tsv").string(), reconciliation));
+  std::vector<RaSectionData> sections;
+  sections.push_back(encode_schedule_section("trade_schedule", schedule));
+  sections.push_back(encode_backtest_section("backtest", backtest));
+  sections.push_back(encode_reconciliation_section(reconciliation));
+  sections.push_back(encode_contract_marks_section(reconciliation));
+  sections.push_back(encode_meta_section(spec));
   timer.add("write_outputs", phase);
+  sections.push_back(encode_diagnostics_section(timer, "run_backtest", backtest.size()));
+  ATX_TRY_VOID(RunDir(run_dir).write_run_archive(sections));
 
   std::printf("backtest complete: dates=%zu rolls=%zu final_nav=%.10g\n", backtest.size(),
               schedule.rolls.size(), backtest.nav.back());
-  ATX_TRY_VOID(write_diagnostics(run_dir, "run_backtest", timer,
-                                 PhaseTimer::now() - cmd_start, backtest.size(), "session",
-                                 "sessions"));
+  print_diag_summary("run_backtest", PhaseTimer::now() - cmd_start, backtest.size(), "session",
+                     "sessions");
   return Ok();
 }
 
@@ -817,35 +823,36 @@ Status project_schedule_command(const fs::path &run_dir) {
 
   const auto write_start = PhaseTimer::now();
   ATX_TRY_VOID(validate_listed_dispersion_schedule(projected));
+  // projected_schedule.tsv stays a text INPUT: run-projected-backtest reads it
+  // back via --schedule (the retained input read path). It is ALSO folded into
+  // run.atxrun as the projected_schedule section.
   ATX_TRY_VOID(write_listed_dispersion_schedule_file(
       (run_dir / "projected_schedule.tsv").string(), projected));
+  std::vector<RaSectionData> sections;
+  sections.push_back(encode_schedule_section("projected_schedule", projected));
   timer.add("validate_write", write_start);
+  sections.push_back(encode_diagnostics_section(timer, "project_schedule", listed.rolls.size()));
+  ATX_TRY_VOID(RunDir(run_dir).write_run_archive(sections));
   std::printf("projected schedule built: rolls=%zu\n", projected.rolls.size());
-  ATX_TRY_VOID(write_diagnostics(run_dir, "project_schedule", timer,
-                                 PhaseTimer::now() - cmd_start, listed.rolls.size(), "roll",
-                                 "rolls"));
+  print_diag_summary("project_schedule", PhaseTimer::now() - cmd_start, listed.rolls.size(), "roll",
+                     "rolls");
   return Ok();
 }
 
-// Drive the separate Record replay that produces mark_divergence.tsv: the engine's
-// run_backtest loop hides per-step strategy state, so replay here and snapshot
-// last_mark_divergences() after each roll step. The per-session MarketSnapshot::load is
-// accumulated into archive_load (count=loads), a measured subset of divergence_replay.
-Status write_mark_divergence_replay(const fs::path &run_dir,
-                                    const ListedDispersionSchedule &schedule, const Clock &clock,
-                                    const RunConfig &config, double delta_band, PhaseTimer &timer) {
+// Drive the separate Record replay that produces the mark_divergence section: the
+// engine's run_backtest loop hides per-step strategy state, so replay here and
+// snapshot last_mark_divergences() after each roll step, collecting the rows into
+// `arena` (the section is hand-built from it — mark_divergence is example-owned,
+// with no library encoder). The per-session MarketSnapshot::load is accumulated
+// into archive_load (count=loads), a measured subset of divergence_replay.
+Status collect_mark_divergence_replay(const ListedDispersionSchedule &schedule, const Clock &clock,
+                                      const RunConfig &config, double delta_band, PhaseTimer &timer,
+                                      MarkDivergenceArena &arena) {
   const auto div_start = PhaseTimer::now();
   ATX_TRY(ListedDispersionStrategy divergence_strategy,
           ListedDispersionStrategy::create(schedule, delta_band, ScheduleMarkPolicy::Record));
   PortfolioState divergence_book;
   std::uint64_t divergence_next_id = 1;
-  std::ofstream div_out(run_dir / "mark_divergence.tsv", std::ios::binary | std::ios::trunc);
-  if (!div_out) {
-    return Err(ErrorCode::IoError, "cannot write mark divergence");
-  }
-  div_out << std::setprecision(17)
-          << "date\tsymbol\traw_symbol\tstrike\texpiry_ts_ns\tside\tschedule_mark\tlive_mark\t"
-             "diff\tabs_diff_bps_of_mark\n";
   for (std::size_t i = 0; i < clock.size(); ++i) {
     const SnapshotRef &ref = clock.refs()[i];
     const auto load_start = PhaseTimer::now();
@@ -876,19 +883,22 @@ Status write_mark_divergence_replay(const fs::path &run_dir,
       const double diff = divergence.live_mark - divergence.schedule_mark;
       const double denom = std::abs(divergence.schedule_mark);
       const double abs_diff_bps_of_mark = denom > 0.0 ? std::abs(diff) / denom * 1.0e4 : 0.0;
-      div_out << ref.date << '\t' << matched->symbol << '\t' << matched->raw_symbol << '\t'
-              << divergence.strike << '\t' << divergence.expiry_ts_ns << '\t'
-              << (divergence.side == Side::Call ? "Call" : "Put") << '\t' << divergence.schedule_mark
-              << '\t' << divergence.live_mark << '\t' << diff << '\t' << abs_diff_bps_of_mark
-              << '\n';
+      arena.date_codes.push_back(dict_intern(arena.date_dict, ref.date));
+      arena.symbol_codes.push_back(dict_intern(arena.symbol_dict, matched->symbol));
+      arena.raw_symbol_codes.push_back(dict_intern(arena.raw_symbol_dict, matched->raw_symbol));
+      arena.strike.push_back(divergence.strike);
+      arena.expiry_ts_ns.push_back(divergence.expiry_ts_ns);
+      arena.side_codes.push_back(divergence.side == Side::Call ? std::uint8_t{0} : std::uint8_t{1});
+      arena.schedule_mark.push_back(divergence.schedule_mark);
+      arena.live_mark.push_back(divergence.live_mark);
+      arena.diff.push_back(diff);
+      arena.abs_diff_bps_of_mark.push_back(abs_diff_bps_of_mark);
+      ++arena.n_rows;
     }
   }
-  if (!div_out) {
-    return Err(ErrorCode::IoError, "cannot flush mark divergence");
-  }
-  // An empty mark_divergence.tsv must mean "every roll fired and none diverged",
-  // never "the replay silently skipped rolls" — this file is the evidence channel
-  // for the parity report's zero-divergence claim.
+  // An empty mark_divergence section must mean "every roll fired and none
+  // diverged", never "the replay silently skipped rolls" — it is the evidence
+  // channel for the parity report's zero-divergence claim.
   if (!divergence_strategy.all_rolls_consumed()) {
     return Err(ErrorCode::Unavailable, "divergence replay did not consume every scheduled roll");
   }
@@ -953,9 +963,10 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
   // is a measured subset of it. --no-divergence skips the replay entirely, leaving only the
   // priced backtest; the divergence_replay/archive_load phases then read 0 and the priced run
   // absorbs its own cold snapshot-cache loads.
+  auto divergence_arena = std::make_shared<MarkDivergenceArena>();
   if (!skip_divergence) {
-    ATX_TRY_VOID(write_mark_divergence_replay(run_dir, schedule, clock, config, spec.delta_band,
-                                              timer));
+    ATX_TRY_VOID(collect_mark_divergence_replay(schedule, clock, config, spec.delta_band, timer,
+                                                *divergence_arena));
   }
 
   // Primary priced run: the same strategy-aware engine as run-backtest, under the
@@ -970,14 +981,33 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
   }
   timer.add("priced_run", priced_start, backtest.size());
 
+  // Hard cutover: the loose projected_backtest.tsv / mark_divergence.tsv result
+  // files are replaced by the run.atxrun result container. The priced backtest is
+  // named for the divergence-pass presence — the registry's two projected
+  // variants: projected_cold (the canonical cold divergence route) or
+  // projected_nodiv (--no-divergence, the bare priced run). The execution tier
+  // (cold vs the diagnostic fast tier) and the requested --out name are recorded
+  // in meta so --out/--execution stay provenance-visible. `backtest` is spanned in
+  // place by encode_backtest_section (local, so it outlives the write).
   const auto write_start = PhaseTimer::now();
-  ATX_TRY_VOID(write_backtest_tsv(backtest, (run_dir / out_file).string()));
+  const std::string projected_section = skip_divergence ? "projected_nodiv" : "projected_cold";
+  const std::vector<std::pair<std::string, std::string>> meta_extra = {
+      {"projected_execution", execution},
+      {"skip_divergence", skip_divergence ? "1" : "0"},
+      {"requested_out", out_file.string()}};
+  std::vector<RaSectionData> sections;
+  sections.push_back(encode_backtest_section(projected_section, backtest));
+  if (!skip_divergence) {
+    sections.push_back(build_mark_divergence_section(divergence_arena));
+  }
+  sections.push_back(encode_meta_section(spec, meta_extra));
   timer.add("write_outputs", write_start);
+  sections.push_back(encode_diagnostics_section(timer, "run_projected_backtest", backtest.size()));
+  ATX_TRY_VOID(RunDir(run_dir).write_run_archive(sections));
   std::printf("projected backtest complete [%s]: dates=%zu rolls=%zu final_nav=%.10g\n",
               execution.c_str(), backtest.size(), schedule.rolls.size(), backtest.nav.back());
-  ATX_TRY_VOID(write_diagnostics(run_dir, "run_projected_backtest", timer,
-                                 PhaseTimer::now() - cmd_start, backtest.size(), "session",
-                                 "sessions"));
+  print_diag_summary("run_projected_backtest", PhaseTimer::now() - cmd_start, backtest.size(),
+                     "session", "sessions");
   return Ok();
 }
 
@@ -1168,6 +1198,83 @@ Status run_projected_var_command(const fs::path &run_dir) {
   return Ok();
 }
 
+// runarchive dump <run_dir> <section> [--tsv]: the escape hatch. Opens
+// <run_dir>/run.atxrun and either prints a one-line section summary (default) or,
+// with --tsv, streams the section back out in the legacy loose-TSV shape —
+// columns in stored order, %.17g doubles / %lld i64 / %u u32 / decoded dict and
+// enum strings. For the backtest section that reproduces write_backtest_tsv
+// byte-for-byte (date + ts_ns + the 25 registry doubles + any per-signal series).
+// stdout is switched to binary so the emitted \n line endings are not translated.
+Status runarchive_dump_command(const fs::path &run_dir, const std::string &section_name, bool tsv) {
+  ATX_TRY(RunArchive archive,
+          RunArchive::open_file((run_dir / std::string(kRunArchiveFile)).string()));
+  ATX_TRY(RaSectionView view, archive.section(section_name));
+  const std::span<const RaColumnDescriptor> cols = view.columns();
+
+  if (!tsv) {
+    std::printf("section %s: rows=%llu cols=%u\n", section_name.c_str(),
+                static_cast<unsigned long long>(view.n_rows()), view.n_cols());
+    for (const RaColumnDescriptor &cd : cols) {
+      std::printf("  %.*s\n", static_cast<int>(cd.name_len), cd.name);
+    }
+    return Ok();
+  }
+
+  std::string out;
+  for (std::size_t c = 0; c < cols.size(); ++c) {
+    if (c != 0) {
+      out += '\t';
+    }
+    out.append(cols[c].name, cols[c].name_len);
+  }
+  out += '\n';
+
+  char buf[64];
+  const std::uint64_t n = view.n_rows();
+  for (std::uint64_t i = 0; i < n; ++i) {
+    for (std::size_t c = 0; c < cols.size(); ++c) {
+      if (c != 0) {
+        out += '\t';
+      }
+      const std::string_view name(cols[c].name, cols[c].name_len);
+      switch (cols[c].dtype) {
+      case RaDType::F64: {
+        const int len = std::snprintf(buf, sizeof buf, "%.17g", view.f64_col(name)[i]);
+        out.append(buf, static_cast<std::size_t>(len > 0 ? len : 0));
+        break;
+      }
+      case RaDType::I64: {
+        const int len =
+            std::snprintf(buf, sizeof buf, "%lld", static_cast<long long>(view.i64_col(name)[i]));
+        out.append(buf, static_cast<std::size_t>(len > 0 ? len : 0));
+        break;
+      }
+      case RaDType::U32: {
+        const int len =
+            std::snprintf(buf, sizeof buf, "%u", static_cast<unsigned>(view.u32_col(name)[i]));
+        out.append(buf, static_cast<std::size_t>(len > 0 ? len : 0));
+        break;
+      }
+      case RaDType::DictStr:
+        out.append(view.dict_col(name).at(i));
+        break;
+      case RaDType::U8Enum:
+        out.append(view.u8enum_labels(name).at(view.u8enum_col(name)[i]));
+        break;
+      }
+    }
+    out += '\n';
+  }
+
+#ifdef _WIN32
+  std::fflush(stdout);
+  _setmode(_fileno(stdout), _O_BINARY);
+#endif
+  std::fwrite(out.data(), 1, out.size(), stdout);
+  std::fflush(stdout);
+  return Ok();
+}
+
 void usage() {
   std::fprintf(stderr, "usage:\n"
                        "  atxvol_spy_dispersion_backtest build-corpus --spec FILE --out DIR\n"
@@ -1179,7 +1286,8 @@ void usage() {
                        "[--no-divergence]\n"
                        "  atxvol_spy_dispersion_backtest run-surface-backtest --run DIR\n"
                        "  atxvol_spy_dispersion_backtest run-projected-var --run DIR\n"
-                       "  atxvol_spy_dispersion_backtest verify --run DIR\n");
+                       "  atxvol_spy_dispersion_backtest verify --run DIR\n"
+                       "  atxvol_spy_dispersion_backtest runarchive dump DIR SECTION [--tsv]\n");
 }
 
 } // namespace
@@ -1190,6 +1298,23 @@ int main(int argc, char **argv) {
     return 2;
   }
   const std::string command = argv[1];
+
+  // runarchive dump <run_dir> <section> [--tsv]: positional args (not --flags),
+  // so it is handled before the --flag parser below.
+  if (command == "runarchive") {
+    if (argc >= 5 && std::string_view(argv[2]) == "dump") {
+      const bool tsv = argc >= 6 && std::string_view(argv[5]) == "--tsv";
+      const Status st = runarchive_dump_command(argv[3], argv[4], tsv);
+      if (!st) {
+        std::fprintf(stderr, "%s\n", st.error().to_string().c_str());
+        return 1;
+      }
+      return 0;
+    }
+    usage();
+    return 2;
+  }
+
   fs::path spec;
   fs::path run;
   fs::path out;

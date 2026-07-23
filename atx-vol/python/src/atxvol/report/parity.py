@@ -39,8 +39,14 @@ from .charts import Series
 from .components import (
     Column, Figure, Note, Prose, Report, Section, Stat, StatRow, Subhead, Table,
 )
+from .runarchive import RunArchive
 
-__all__ = ["ParityStats", "compute_parity_stats", "build_parity_report"]
+__all__ = [
+    "ParityStats",
+    "compute_parity_stats",
+    "build_parity_report",
+    "build_parity_report_from_archive",
+]
 
 # Colour follows route identity, not chart or rank: the listed route is always
 # the first validated palette slot and the projected route the second, in every
@@ -197,6 +203,119 @@ def build_parity_report(
     diag_projected = _read_tsv(projected_diagnostics_tsv)[1] if projected_diagnostics_tsv else None
     diag_schedule = _read_tsv(schedule_diagnostics_tsv)[1] if schedule_diagnostics_tsv else None
 
+    return _render_parity(
+        listed_rows, projected_rows, divergence_rows, schedule_rows, out_html,
+        projected_label, diag_listed, diag_projected, diag_schedule,
+    )
+
+
+# ── RunArchive builder (reads run.atxrun instead of loose TSVs) ───────────────
+
+# Backtest-section columns the report consumes, pulled as ``{col: str}`` rows so
+# they slot straight into the same row-dict pipeline the TSV path feeds.
+_BACKTEST_ROW_COLS = ("pnl_total", "nav", "pnl_gamma", "pnl_vega", "pnl_theta",
+                      "pnl_unexplained")
+
+
+def _backtest_rows(archive: RunArchive, section: str) -> list[dict[str, str]]:
+    sec = archive.section(section)
+    date = sec.dict("date").tolist()
+    cols = {c: sec.f64(c) for c in _BACKTEST_ROW_COLS}
+    # repr(float(...)) round-trips the stored double exactly through float().
+    return [
+        {"date": date[i], **{c: repr(float(cols[c][i])) for c in _BACKTEST_ROW_COLS}}
+        for i in range(len(date))
+    ]
+
+
+def _schedule_rows(archive: RunArchive, section: str = "trade_schedule") -> list[dict[str, str]]:
+    if section not in archive:
+        return []
+    sec = archive.section(section)
+    symbol = sec.dict("symbol").tolist()
+    is_index = sec.u8enum("is_index").tolist()   # labels "0" / "1"
+    n_names = sec.u32("n_names")
+    gross_vega = sec.f64("gross_index_vega_target")
+    expiry = sec.i64("expiry_ts_ns")
+    return [
+        {"symbol": symbol[i], "is_index": is_index[i], "n_names": str(int(n_names[i])),
+         "gross_index_vega_target": repr(float(gross_vega[i])),
+         "expiry_ts_ns": str(int(expiry[i]))}
+        for i in range(len(symbol))
+    ]
+
+
+def _divergence_rows(archive: RunArchive, section: str = "mark_divergence") -> list[dict[str, str]]:
+    if section not in archive:
+        return []
+    sec = archive.section(section)
+    symbol = sec.dict("symbol").tolist()
+    side = sec.u8enum("side").tolist()           # labels "Call" / "Put"
+    strike = sec.f64("strike")
+    sched = sec.f64("schedule_mark")
+    live = sec.f64("live_mark")
+    diff = sec.f64("diff")
+    bps = sec.f64("abs_diff_bps_of_mark")
+    return [
+        {"symbol": symbol[i], "side": side[i], "strike": repr(float(strike[i])),
+         "schedule_mark": repr(float(sched[i])), "live_mark": repr(float(live[i])),
+         "diff": repr(float(diff[i])), "abs_diff_bps_of_mark": repr(float(bps[i]))}
+        for i in range(len(symbol))
+    ]
+
+
+def build_parity_report_from_archive(
+    listed_archive: str,
+    out_html: str,
+    *,
+    projected_archive: str | None = None,
+    listed_section: str = "backtest",
+    projected_section: str | None = None,
+    projected_label: str = "projected (cold)",
+) -> ParityStats:
+    """Render the two-route comparison by reading ``run.atxrun`` result containers.
+
+    The RunArchive counterpart of :func:`build_parity_report`: the listed track is
+    the ``listed_section`` (default ``backtest``) of ``listed_archive``; the
+    projected track is ``projected_section`` of ``projected_archive`` (defaulting
+    to the same archive). When no projected section is named, the first present of
+    ``projected_cold`` / ``projected_nodiv`` is used; if neither exists (a
+    listed-only run, as in the guarded 3-session fixture) the listed track stands
+    in as a self-parity so the document still renders. The schedule and
+    mark-divergence panels read the ``trade_schedule`` / ``mark_divergence``
+    sections when present, else render empty.
+    """
+    listed = RunArchive.open(listed_archive)
+    same = projected_archive is None or projected_archive == listed_archive
+    projected = listed if same else RunArchive.open(projected_archive)
+    try:
+        listed_rows = _backtest_rows(listed, listed_section)
+        schedule_rows = _schedule_rows(listed)
+        divergence_rows = _divergence_rows(projected)
+
+        psec = projected_section
+        if psec is None:
+            psec = next((s for s in ("projected_cold", "projected_nodiv") if s in projected), None)
+        projected_rows = _backtest_rows(projected, psec) if psec is not None else listed_rows
+
+        return _render_parity(
+            listed_rows, projected_rows, divergence_rows, schedule_rows, out_html,
+            projected_label, None, None, None,
+        )
+    finally:
+        if projected is not listed:
+            projected.close()
+        listed.close()
+
+
+def _render_parity(listed_rows, projected_rows, divergence_rows, schedule_rows, out_html,
+                   projected_label, diag_listed, diag_projected, diag_schedule) -> ParityStats:
+    """Fold aligned listed/projected row-dicts into the report + its stats.
+
+    Shared tail of :func:`build_parity_report` (TSV inputs) and
+    :func:`build_parity_report_from_archive` (RunArchive inputs): both produce the
+    four row-dict lists, this renders them identically.
+    """
     # Align session-for-session on date (listed order wins).
     proj_by_date = {r["date"]: r for r in projected_rows}
     aligned = [(l, proj_by_date[l["date"]]) for l in listed_rows if l["date"] in proj_by_date]

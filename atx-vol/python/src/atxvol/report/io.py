@@ -8,20 +8,22 @@ layer never reimplements a metric.
 
 from __future__ import annotations
 
-from typing import Iterable
+import numpy as np
 
-import atxvol as _av
+from .runarchive import BacktestSection, RunArchive, read_backtest_section
 
-__all__ = ["read_backtest_tsv", "read_kv_tsv"]
+__all__ = ["read_backtest_tsv", "read_backtest_archive", "read_kv_tsv"]
 
 # Columns `write_backtest_tsv` emits, in its order. Anything else in the file
-# (extra signal columns) is returned in the side dict rather than dropped.
+# (extra signal columns) is returned in the side dict rather than dropped. There
+# is deliberately no `step_pnl_total`: it was a phantom the reader looked for but
+# the C++ writer never emitted (append_backtest_series_tsv has no such column).
 _SERIES = (
     "pnl_total", "pnl_delta", "pnl_gamma", "pnl_vega", "pnl_vanna", "pnl_volga",
     "pnl_theta", "pnl_rho", "pnl_charm", "pnl_unexplained", "pnl_settlement",
     "pnl_shares", "financing", "cost", "nav", "cash", "gross_delta", "gross_gamma",
     "gross_vega", "gross_theta", "turnover_notional", "turnover_vega",
-    "n_open_lots", "n_unpriced_lots", "n_unpriced_greeks", "step_pnl_total",
+    "n_open_lots", "n_unpriced_lots", "n_unpriced_greeks",
 )
 
 
@@ -32,6 +34,8 @@ def read_backtest_tsv(path: str) -> tuple["_av.BacktestResult", dict[str, str], 
     (empty for `write_backtest_tsv` output, populated for the PnL-track variant)
     and `extra` holds any columns outside the standard schema.
     """
+    import atxvol as _av  # lazy: only the loose-TSV reader needs the binding.
+
     meta: dict[str, str] = {}
     header: list[str] = []
     rows: list[list[str]] = []
@@ -81,6 +85,38 @@ def read_backtest_tsv(path: str) -> tuple["_av.BacktestResult", dict[str, str], 
     known = {"date", "ts_ns", *_SERIES}
     extra = {name: column(name) for name in header if name not in known}
     return result, meta, extra
+
+
+def read_backtest_archive(
+    path: str, section: str = "backtest"
+) -> tuple[BacktestSection, dict[str, str], dict[str, np.ndarray]]:
+    """Load a backtest section from a ``run.atxrun`` RunArchive.
+
+    The binary-container counterpart of :func:`read_backtest_tsv`, returning the
+    same ``(result, meta, extra)`` shape via the binding-free
+    :func:`runarchive.read_backtest_section`. ``result`` is a
+    :class:`runarchive.BacktestSection` (``date`` / ``ts_ns`` plus every registry
+    F64 series as an attribute), ``meta`` is the archive's ``meta`` key/value
+    section, and ``extra`` holds any dynamically-appended per-signal columns.
+
+    The archive's mapped column views are materialized into owned numpy arrays
+    before the mapping is released, so the returned data outlives this call (no
+    dangling view over a closed mmap).
+    """
+    archive = RunArchive.open(path)
+    try:
+        result, meta, extra = read_backtest_section(archive, section)
+        owned_series = {name: np.array(arr) for name, arr in result.series.items()}
+        owned_extra = {name: np.array(arr) for name, arr in extra.items()}
+        result = BacktestSection(
+            date=list(result.date), ts_ns=list(result.ts_ns), series=owned_series
+        )
+        meta = dict(meta)
+    finally:
+        # Copies above are owned; if numpy still exports the original views close()
+        # no-ops (BufferError) and leaves the small mapping open for the process.
+        archive.close()
+    return result, meta, owned_extra
 
 
 def read_kv_tsv(path: str) -> dict[str, str]:
