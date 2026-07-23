@@ -201,6 +201,11 @@ PricedSurfaceView::create_over_record(std::span<const std::byte> record) {
       column_in_bounds(h.col_qeff_off, 8, n, rs, 8) &&
       column_in_bounds(h.col_df_off, 8, n, rs, 8) &&
       column_in_bounds(h.col_borrow_off, 8, n, rs, 8) &&
+      // col_nused/col_ndropped are not dereferenced by the view, but reconstruct
+      // validates all ten columns; keep the view reconstruct-equivalent so a
+      // CRC-unchecked offset past the record extent is rejected here too (SE-P1-3).
+      column_in_bounds(h.col_nused_off, 8, n, rs, 8) &&
+      column_in_bounds(h.col_ndropped_off, 8, n, rs, 8) &&
       column_in_bounds(h.col_nodecount_off, 4, n, rs, 4) &&
       column_in_bounds(h.col_payload_off_off, 8, n, rs, 8);
   if (!ok) {
@@ -232,6 +237,26 @@ PricedSurfaceView::create_over_record(std::span<const std::byte> record) {
   v.pricing_.al_opts.n_quadrature = h.al_n_quadrature;
   v.pricing_.al_opts.max_newton_iter = h.al_max_newton_iter;
   v.pricing_.al_opts.tol = h.al_tol;
+
+  // Semantic validation, mirroring PricedSurface::create (priced_surface.cpp):
+  // reject exactly the data the OWNED reconstruct path rejects so the zero-copy
+  // view is not a weaker parser than reconstruct (SE-P1-1). Under the lazy-CRC
+  // design the view is the de-facto untrusted-input parser, and without these a
+  // NaN/non-ascending T drives interp_forward's upper_bound off the column end
+  // (a one-element OOB read). O(n) at open, off the hot query path.
+  if (!(h.S > 0.0) || !std::isfinite(h.r)) {
+    return Err(ErrorCode::ParseError, "PricedSurfaceView: non-positive spot or non-finite rate");
+  }
+  for (std::size_t i = 0; i < v.n_slices_; ++i) {
+    const double Ti = v.col_T_[i];
+    if (!(Ti > 0.0) || !std::isfinite(Ti) || !(v.col_forward_[i] > 0.0) ||
+        !std::isfinite(v.col_forward_[i]) || !std::isfinite(v.col_qeff_[i])) {
+      return Err(ErrorCode::ParseError, "PricedSurfaceView: invalid slice carry context");
+    }
+    if (i > 0 && !(Ti > v.col_T_[i - 1])) {
+      return Err(ErrorCode::ParseError, "PricedSurfaceView: slice T's not strictly ascending");
+    }
+  }
 
   // term_rates_ mirrors PricedSurface::create: true iff ANY slice's df departs
   // from exp(-rT) beyond tolerance.
