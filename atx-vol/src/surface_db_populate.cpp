@@ -19,8 +19,8 @@
 #include "atx/vol/pricer_fitter.hpp"        // PricerConfig
 #include "atx/vol/session.hpp"              // SessionInputs
 #include "atx/vol/universe.hpp"             // uid_for_symbol
-#include "atx/vol/vol_curve.hpp"            // CurveConfig (index dense pin)
 #include "corpus_board_fit.hpp"             // FitSlot, fit_board (shared blessed fit path)
+#include "surface_db_seed.hpp"              // seed_symbol_config (shared index/preset seed recipe)
 
 namespace atx::vol {
 
@@ -517,11 +517,9 @@ populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
     if (!first || db.symbol_config(sym).has_value()) {
       continue;
     }
-    SymbolFitConfig c = symbol_config_from_preset(spec.preset);
-    if (!spec.index_symbol.empty() && sym == spec.index_symbol) {
-      c.pin_curve = true;
-      c.curve = CurveConfig{}; // default = the dense index recipe (node_cap 40)
-    }
+    // Seeding recipe shared bit-for-bit with generate_symbol_configs (Task 4):
+    // the preset's config, dense-index-pinned for the index leg.
+    const SymbolFitConfig c = seed_symbol_config(sym, spec.preset, spec.index_symbol);
     const Status up = db.upsert_symbol(sym, c);
     if (!up) {
       return Err(up.error());
