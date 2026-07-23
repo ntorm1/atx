@@ -292,6 +292,40 @@ the `ql_fast` `n_quadrature=8, n_quad_price=32`) records a non-zero
 `al_n_quad_price` and now round-trips to identical theo — previously it silently
 reverted to the tied order on reload.
 
+### 5.2 `created_ts_ns` is a content-derived identity, NOT a timestamp
+
+`ArchiveV2Header::created_ts_ns` (and the v1 `ArchiveHeader::created_ts_ns`) is
+**not a wall-clock time**. When the writer's `created_ts_ns` option is left at its
+`0` sentinel (the production path), the field is filled from a **deterministic
+content hash**: `(CRC32C(bytes[header_size, EOF)) << 32) ^ file_size`, clamped away
+from `0`. The hash span is the whole payload — data ‖ lookup ‖ directory — and
+excludes the header itself (so `created_ts_ns` / `header_crc32c` are never inputs to
+their own hash). An explicit non-zero `created_ts_ns` is honored verbatim (unit
+tests pin it).
+
+Why (and the caveats):
+
+- **Reproducibility.** Two byte-identical builds of identical content produce an
+  identical container, header included. Previously the wall clock forced a spurious
+  `SnapshotCache` evict+reload on every rebuild of identical content. This is the
+  settled answer (a *constant* stamp is wrong — it would make two DIFFERENT builds
+  share an `ArchiveContentIdentity` and serve a stale surface).
+- **It is not a time.** Bit 63 can be set, so as a signed `int64` it **may be
+  negative**; **ordering archives by `created_ts_ns` is meaningless**. Nothing in
+  the codebase orders by it (`run_report` prints the *manifest's*
+  `DbPartitionInfo.created_ts_ns`, which is a different, wall-clock field — see
+  below).
+- **Staleness only, never tamper evidence.** The derived stamp adds ~**32 bits** of
+  content entropy. It participates in `ArchiveContentIdentity` =
+  {file_size, created_ts_ns, header_crc32c, metadata_crc32c} purely as a local
+  cache-staleness signal; CRC-32C is linear and trivially forgeable, so this field
+  must **never** be relied on as authenticity / tamper evidence.
+- **The SurfaceDb manifest is different.** `SurfaceDbManifestHeader` /
+  `DbPartitionInfo::created_ts_ns` / `updated_ts_ns` **stay wall-clock** (filled
+  from `wall_clock_ns()` on the `0` sentinel). The manifest tracks *when* a
+  partition was written for operational bookkeeping; only the archive container's
+  own `created_ts_ns` is content-derived.
+
 ---
 
 ## 6. Reader/writer API surface (see surface_archive.hpp)

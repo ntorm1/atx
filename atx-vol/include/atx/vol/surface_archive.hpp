@@ -333,7 +333,16 @@ struct SurfaceArchiveWriteOpts {
   std::uint32_t lookup_load_pct{70};
   std::uint32_t blob_alignment{kArchiveBlobAlign};
   std::uint32_t array_alignment{kArchiveArrayAlign};
-  // Stamp for `ArchiveHeader::created_ts_ns`. 0 => fill from the system clock.
+  // Stamp for `ArchiveHeader::created_ts_ns`. A 0 sentinel is filled from a
+  // DETERMINISTIC content hash — CRC-32C of the payload span [header, EOF) folded
+  // with file_size — NOT the wall clock. It is therefore a content-derived
+  // IDENTITY, not a timestamp: it may be negative as int64, ordering by it is
+  // meaningless, it carries only ~32 bits of content entropy, and it is never
+  // tamper evidence (CRC is linear/forgeable). Two identical builds get identical
+  // stamps (SnapshotCache reproducibility); two different builds get distinct ones
+  // (staleness). An explicit nonzero value is honored verbatim (tests pin it). See
+  // docs/atxvsa2-format.md §5.2. (Both v1 and v2 archive writers behave this way;
+  // the SurfaceDb MANIFEST timestamps, by contrast, stay wall-clock.)
   std::int64_t created_ts_ns{0};
 };
 
@@ -629,7 +638,11 @@ struct ArchiveV2WriteOpts {
   std::uint32_t flags{0};
   std::uint32_t lookup_load_pct{70};                    // (0, 100]
   std::uint32_t surface_alignment{kArchiveV2SurfaceAlign};
-  std::int64_t created_ts_ns{0}; // 0 => system clock
+  // 0 => a DETERMINISTIC content hash (CRC-32C of [header,EOF) folded with
+  // file_size), NOT the wall clock: a content-derived identity, not a timestamp —
+  // may be negative int64, ~32-bit entropy, never tamper evidence. Explicit
+  // nonzero honored verbatim. See docs/atxvsa2-format.md §5.2.
+  std::int64_t created_ts_ns{0};
 };
 
 // Serialize `items` into an in-memory ATXVSA2 buffer (memcpy-bound). Same
