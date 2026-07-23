@@ -296,6 +296,29 @@ TEST(SviMmCalib, RecoverSyntheticAdmissibleSlice) {
   EXPECT_EQ(adm.n_violations, 0u);
 }
 
+// FT-P (B6b): the SVI-MM LM's solve_spd_dense per-call MatX(5,5)/VecX(5)
+// allocation is replaced with reused thread_local buffers (bit-identical solve —
+// no numerical change). Pin the fitted params on a fixed noiseless fixture so any
+// accidental numeric drift is caught bit-for-bit.
+TEST(SviMmCalib, FixedFixtureFit_IsBitIdentical) {
+  const double T = 0.5;
+  const std::vector<FitObs> obs =
+      build_obs_from_svi(41, -0.40, 0.40, 0.012, 0.060, -0.30, -0.02, 0.18, T);
+  CalibOpts opts = calib_default_opts();
+  opts.morozov_stop = false;
+  opts.wing_floor_alpha = 0.0;
+  const auto res = svi_mm_fit_slice(std::span<const FitObs>(obs), T, 100.0, opts);
+  ASSERT_TRUE(res.has_value());
+  const SviParams f = res.value();
+  // Goldens captured from the pre-refactor build (heap MatX(5,5)/VecX(5) per
+  // solve_spd_dense call); the thread_local-buffer refactor must preserve them.
+  EXPECT_EQ(f.a, 0.01200000000168963);
+  EXPECT_EQ(f.b, 0.059999999997054999);
+  EXPECT_EQ(f.rho, -0.30000000000922628);
+  EXPECT_EQ(f.m, -0.019999999998334177);
+  EXPECT_EQ(f.sigma, 0.17999999997839855);
+}
+
 TEST(SviMmCalib, FittedSlice_IsAlwaysAdmissible_EvenFromWideData) {
   // A steeper / higher-vol smile still projects into the polytope.
   const double T = 0.25;

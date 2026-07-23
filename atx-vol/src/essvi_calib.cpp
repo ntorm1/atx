@@ -308,9 +308,14 @@ void residuals_and_jac(std::span<const FitObs> obs, const ThetaBand& band,
     g2 += s * (lambda - prior->lambda);
   }
 
+  // FT-P: reuse the 3x3 damped-normal-matrix / rhs storage across damping trials
+  // (and across lm_step calls) instead of allocating MatX(3,3)/VecX(3) every
+  // trial. thread_local => race-free under the parallel per-slice fit fan-out;
+  // both are fully overwritten each trial, so the solve is bit-identical.
+  thread_local MatX hd(3, 3);
+  thread_local VecX ng(3);
   for (int trial = 0; trial < kLmTrialCap; ++trial) {
     const double d = 1.0 + lambda_lm;
-    MatX hd(3, 3);
     hd(0, 0) = h00 * d;
     hd(0, 1) = h01;
     hd(0, 2) = h02;
@@ -320,7 +325,6 @@ void residuals_and_jac(std::span<const FitObs> obs, const ThetaBand& band,
     hd(2, 0) = h02;
     hd(2, 1) = h12;
     hd(2, 2) = h22 * d;
-    VecX ng(3);
     ng(0) = -g0;
     ng(1) = -g1;
     ng(2) = -g2;

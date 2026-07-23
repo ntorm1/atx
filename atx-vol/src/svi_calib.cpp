@@ -66,8 +66,15 @@ constexpr double kMmSigmaFloor = 0.05;  // physical sigma floor (1 vol point ban
 // back to a degenerate handling exactly as the C did).
 [[nodiscard]] bool solve_spd_dense(const double *H, const double *rhs, int n,
                                    double *out) {
-  atx::core::linalg::MatX A(n, n);
-  atx::core::linalg::VecX b(n);
+  // FT-P: reuse the small dense system storage across LM steps instead of
+  // allocating MatX(n,n)/VecX(n) every call. thread_local => race-free under the
+  // parallel per-slice fit fan-out; Eigen::resize is a no-op when the size is
+  // unchanged (n is constant within a given LM loop), and every entry is
+  // overwritten below, so the atx-core solve is bit-identical.
+  thread_local atx::core::linalg::MatX A;
+  thread_local atx::core::linalg::VecX b;
+  A.resize(n, n);
+  b.resize(n);
   for (int i = 0; i < n; ++i) {
     b(i) = rhs[i];
     for (int j = 0; j < n; ++j) {

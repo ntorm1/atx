@@ -175,6 +175,34 @@ TEST(EssviFitSlice, LongDatedSteepWings_NotFlattenedByLeeProjection) {
   EXPECT_LT(max_dv, 3.0e-3) << "wing IV flattened below quotes (max dv=" << max_dv << ")";
 }
 
+// FT-P (B6b): the eSSVI LM lm_step's per-damping-trial MatX(3,3)/VecX(3)
+// allocation is replaced with reused thread_local buffers (bit-identical solve —
+// no numerical change). Pin the fitted cube params on a fixed fixture so any
+// accidental numeric drift is caught bit-for-bit.
+TEST(EssviFitSlice, FixedFixtureFit_IsBitIdentical) {
+  const double T = 0.5;
+  const double F = 100.0;
+  const EssviParams truth = backbone(0.040, 1.5, -0.30, T);
+  std::vector<FitObs> obs;
+  const int n = 41;
+  for (int i = 0; i < n; ++i) {
+    const double k = -0.40 + 0.80 * static_cast<double>(i) / static_cast<double>(n - 1);
+    const double w = essvi_backbone_w(truth, k);
+    FitObs o{};
+    o.k = k; o.w_mkt = w; o.sigma_mkt = std::sqrt(w / T);
+    o.weight_w = 1.0; o.active_weight_w = 1.0; o.F = F; o.K = F * std::exp(k); o.df = 1.0;
+    obs.push_back(o);
+  }
+  const auto res = essvi_fit_slice(obs, T, F, calib_default_opts());
+  ASSERT_TRUE(res.has_value());
+  const EssviParams f = *res;
+  // Goldens captured from the pre-refactor build (heap MatX(3,3)/VecX(3) per LM
+  // damping trial); the thread_local-buffer refactor must preserve them.
+  EXPECT_EQ(f.theta, 0.040000000000000001);
+  EXPECT_EQ(f.phi, 1.4999999999999996);
+  EXPECT_EQ(f.rho, -0.30000000000000004);
+}
+
 TEST(EssviFitSlice, ThetaFloor_RaisesAtmTotalVariance) {
   // Observations generated from a LOW ATM total variance (theta = 0.04).
   const double theta_true = 0.040;
