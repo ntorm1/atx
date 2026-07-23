@@ -226,7 +226,19 @@ Result<double> scenario_pnl(std::span<const PortfolioLeg> book,
       if (!(std::isfinite(sigma) && sigma > 0.0)) continue;
     }
 
-    const double p_base = black76_price(ctx.F, K, ctx.T, sigma, ctx.df, side);
+    // GR-P1-2: when a per-side correction cache is bound in this MarketBinding, the
+    // book's marks carry the American early-exercise premium F*c (the pricing engine
+    // prices with that overlay). Include the SAME overlay in BOTH scenario legs, or
+    // the scenario PnL of an American book silently excludes the EEP change and the
+    // base marks disagree with the pricing engine's. (Vol/spot roll stays sticky-
+    // strike: sigma is the base-strike IV under a spot shock — a documented modeling
+    // choice matching the C; scenario_grid is the smile-roll path.)
+    const CorrectionCache* corr =
+        (side == Side::Call) ? ctx.correction_call : ctx.correction_put;
+    double p_base = black76_price(ctx.F, K, ctx.T, sigma, ctx.df, side);
+    if (corr != nullptr) {
+      p_base += ctx.F * corr->eval(std::log(K / ctx.F), ctx.T, sigma);
+    }
 
     // Apply shocks. Relative vol first, then absolute; T subtracts elapsed.
     const double S_s = S * (1.0 + ds_pct);
@@ -240,7 +252,10 @@ Result<double> scenario_pnl(std::span<const PortfolioLeg> book,
     double sigma_eff = sigma_s;
     if (!(sigma_eff > 0.0)) sigma_eff = 1.0e-3;
 
-    const double p_shocked = black76_price(F_s, K, T_s, sigma_eff, df_s, side);
+    double p_shocked = black76_price(F_s, K, T_s, sigma_eff, df_s, side);
+    if (corr != nullptr) {
+      p_shocked += F_s * corr->eval(std::log(K / F_s), T_s, sigma_eff);
+    }
     pnl += leg.qty * (p_shocked - p_base);
   }
   return pnl;
@@ -585,10 +600,26 @@ void PricingPlan::price_group(const Group& g, PortfolioRiskMode risk_mode,
     if (risk_mode == PortfolioRiskMode::FirstOrder &&
         std::isfinite(iv) && iv > 0.0) {
       const Greeks bg = black76_greeks(F, K, T, iv, r, df, side).greeks;
-      const double d_fwd = bg.delta;
+      double d_fwd = bg.delta;
       vega = bg.vega;
-      rho = bg.rho + T * F * d_fwd;
-      theta = bg.theta - (r - q) * F * d_fwd;
+      // GR-P1-1: the served price carries the American early-exercise premium F*c
+      // (above) on the B76AlCache route, but the FirstOrder greeks were pure
+      // Black-76 — so a deep-ITM American put reported the American price with a
+      // EUROPEAN delta/vega/theta/rho, under-hedging by the full EEP delta
+      // (order c - c_k). Correct the four first-order axes with the SAME correction
+      // jet the sibling price_option (portfolio_price.cpp) uses (gamma stays the B76
+      // leg there too). No cache / non-B76AlCache route keeps the exact prior values.
+      if (g.resolved_route == RoutePolicy::B76AlCache && g.correction != nullptr) {
+        double dk = 0.0, d_t = 0.0, dsig = 0.0;
+        const double c_val = g.correction->eval_grad(k_log, T, iv, &dk, &d_t, &dsig);
+        d_fwd = bg.delta + c_val - dk;
+        vega = bg.vega + F * dsig;
+        theta = bg.theta - (r - q) * F * d_fwd - F * d_t;
+        rho = bg.rho + T * F * d_fwd;
+      } else {
+        theta = bg.theta - (r - q) * F * d_fwd;
+        rho = bg.rho + T * F * d_fwd;
+      }
       spot_delta = m * d_fwd;
       lv.delta = spot_delta;
       lv.gamma = m * m * bg.gamma;
@@ -599,7 +630,10 @@ void PricingPlan::price_group(const Group& g, PortfolioRiskMode risk_mode,
       lv.delta = 0.0;
     }
 
-    if (std::isfinite(price)) {
+    // GR-P2-5: status-gate the aggregate (the canonical path does). A
+    // ModelUnavailable/NumericError lane can carry a FINITE price (e.g. a sigma<=0
+    // intrinsic), and `isfinite(price)` used to let it pollute the buckets.
+    if (lv.status == LaneStatus::Ok) {
       PortfolioAggregate& slot = bucket(agg_key_theo(
           legs_[static_cast<std::size_t>(lane.input_ix)], agg_mode));
       const double v_d = std::isfinite(spot_delta) ? spot_delta : 0.0;
