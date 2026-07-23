@@ -469,6 +469,33 @@ struct ContractPnl {
   return !(std::isfinite(c.K) && c.K > 0.0 && std::isfinite(c.T) && c.T > 0.0);
 }
 
+// G1 (GR-P2-1): a finite mark no longer certifies an Ok Greek lane. The scalar
+// production bundles (american_greeks_fd / american_greeks_al) can return SUCCESS
+// with a NON-finite differenced Greek — e.g. an extreme spot where the FD gamma
+// denominator hS*hS underflows to 0 while the deep-ITM mark stays finite — yet
+// PriceTotals / reduce_pnl_totals gate on STATUS only, so one such lane poisons the
+// whole book's totals (violating the frame's "no NaN enters a total" contract). The
+// AVX2 laned kernel already guards exactly this (simd/american_greeks_avx2.cpp);
+// this sweeps every REQUESTED column finite at the scalar Ok-stamp before Ok:
+// price/delta/gamma/theta always, vega/volga/vanna, rho, charm per GreekNeeds. A
+// non-finite requested column demotes the lane to NumericError (NaN-isolated like
+// every other error lane).
+[[nodiscard]] bool greeks_all_finite(const AmericanGreeks &g,
+                                     PricedSurface::GreekNeeds needs) noexcept {
+  bool ok = std::isfinite(g.price) && std::isfinite(g.delta) && std::isfinite(g.gamma) &&
+            std::isfinite(g.theta);
+  if (needs.vega) {
+    ok = ok && std::isfinite(g.vega) && std::isfinite(g.volga) && std::isfinite(g.vanna);
+  }
+  if (needs.rho) {
+    ok = ok && std::isfinite(g.rho);
+  }
+  if (needs.charm) {
+    ok = ok && std::isfinite(g.charm);
+  }
+  return ok;
+}
+
 // dSigma/dk at k_log = ln(K / F(T)) off a served `PricedSurface`, central FD
 // (h = 1e-4) -- the same scheme adjusted_greeks.hpp's `surface_skew_slope`
 // applies to a `VolSurface`. Adapted here because `PricedSurface` is
@@ -804,7 +831,7 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
         }
         continue;
       }
-      if (!b_status[p].has_value() || !std::isfinite(b_greeks[p].price)) {
+      if (!b_status[p].has_value() || !greeks_all_finite(b_greeks[p], greek_needs)) {
         out.status = PriceStatus::NumericError;
         continue;
       }
@@ -1440,6 +1467,14 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
         continue;
       }
       out.gb = cached != nullptr ? cached->g : b_greeks[p];
+      // G1 (GR-P2-1): out.gb are the Taylor coefficients; a non-finite one would
+      // poison PnlTotals (reduce_pnl_totals gates on status only). The P&L base solve
+      // always requests the full bundle (EF::FirstOrder | EF::SecondOrder), so require
+      // all eight finite. (A cached base already passed this on its price Ok-stamp.)
+      if (!greeks_all_finite(out.gb, PricedSurface::GreekNeeds{})) {
+        out.status = PriceStatus::NumericError;
+        continue;
+      }
       out.price_base = cached != nullptr ? cached->fair_value : b_greeks[p].price;
       out.price_target = s_price[p];
       out.dS = dS;

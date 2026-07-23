@@ -26,6 +26,7 @@
 #include <utility>
 #include <vector>
 
+#include "atx/vol/american.hpp" // american_greeks_fd — G1 kernel-defect probe
 #include "atx/vol/black76.hpp"
 #include "atx/vol/counters.hpp"
 #include "atx/vol/portfolio_pricer.hpp"
@@ -3655,4 +3656,88 @@ TEST(PortfolioPricerTargetMarks, WarmPathAddsNoAllocationOrValuationWork) {
           << atx::vol::counters::kNames[i];
     }
   }
+}
+
+// ── G1 (GR-P2-1): a non-finite Greek on a FINITE-price lane must not poison totals ──
+//
+// The Ok-stamp used to require only isfinite(price). The scalar production Greek
+// bundle (american_greeks_fd, the default cold route) can return SUCCESS with a
+// non-finite differenced Greek: on an extreme spot the FD gamma denominator
+// hS*hS = (1e-3*S)^2 underflows to 0.0 while the deep-ITM American put mark stays
+// finite, so gamma = 0/0. Before the fix that lane is stamped Ok and its NaN gamma
+// flows into PriceTotals::gamma (reduce_price_totals gates on STATUS only),
+// breaking the frame's "no NaN enters a total" contract. The AVX2 laned kernel
+// already guards exactly this; the fix ports the same finite sweep to the scalar
+// Ok-stamp site so the lane is demoted to NumericError and the book total survives.
+//
+// A flat smile keeps the resolved sigma finite at the extreme (S -> 0 => huge
+// |log-moneyness|) so the ONLY pathology is the gamma-denominator underflow.
+constexpr double kG1TinyS = 1.0e-160; // hS*hS = (1e-3 * S)^2 = 1e-326 -> 0.0
+
+TEST(PortfolioPricer, G1_NonFiniteGreekOnFinitePriceLane_IsIsolatedFromTotals) {
+  // Kernel-level precondition: the differenced bundle SUCCEEDS yet carries a
+  // non-finite Greek at this extreme spot (documents the exact defect trigger and
+  // stays true regardless of the portfolio-layer fix — american.cpp is untouched).
+  const auto probe =
+      american_greeks_fd(kG1TinyS, 100.0, 0.05, 0.9, kR, 0.02, Side::Put);
+  ASSERT_TRUE(probe.has_value());            // a SUCCESSFUL solve ...
+  EXPECT_TRUE(std::isfinite(probe->price));   // ... with a finite mark ...
+  EXPECT_FALSE(std::isfinite(probe->gamma));  // ... but a non-finite gamma.
+
+  // uid 1 normal (S=100, finite Greeks); uid 2 extreme (S=1e-160, non-finite gamma).
+  const PricedSurface s_norm = make_essvi(1, 3);
+  const PricedSurface s_ext = make_essvi(2, 3, /*theta_bump=*/0.0, /*S=*/kG1TinyS, kR,
+                                         kNow, /*q_eff=*/0.02, /*flat_smile=*/true);
+  const SurfaceSet surfaces = set_of({&s_norm, &s_ext});
+
+  const std::vector<Position> book{
+      {/*id*/ 1, {1, 100.0, 0.15, Side::Call}, +5.0, 100.0}, // finite Greeks
+      {/*id*/ 2, {2, 100.0, 0.05, Side::Put}, +3.0, 100.0},  // non-finite gamma
+  };
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+  const auto fr = pricer.price(surfaces);
+  ASSERT_TRUE(fr.has_value());
+  const PriceFrame &f = *fr;
+  ASSERT_EQ(f.size(), 2u);
+
+  EXPECT_EQ(f.status[0], PriceStatus::Ok);
+  // The poisoned lane is quarantined (was silently Ok pre-fix).
+  EXPECT_EQ(f.status[1], PriceStatus::NumericError);
+
+  // The book totals stay finite: the NaN Greek is isolated, never summed.
+  EXPECT_TRUE(std::isfinite(f.total.gamma));
+  EXPECT_TRUE(std::isfinite(f.total.delta));
+  EXPECT_TRUE(std::isfinite(f.total.vega));
+  EXPECT_EQ(f.total.n_ok, 1u); // only the normal lane contributes
+}
+
+TEST(PortfolioPricer, G1_NonFiniteBaseGreek_IsIsolatedFromPnlTotals) {
+  // Same defect on the P&L base bundle: b_greeks are the Taylor coefficients, and a
+  // non-finite one would poison PnlTotals via reduce_pnl_totals (status-only gate).
+  const PricedSurface s_norm_b = make_essvi(1, 3);
+  const PricedSurface s_norm_t = make_essvi(1, 3, /*theta_bump=*/0.01); // vol move
+  const PricedSurface s_ext_b = make_essvi(2, 3, 0.0, kG1TinyS, kR, kNow, 0.02, true);
+  const PricedSurface s_ext_t = make_essvi(2, 3, 0.01, kG1TinyS, kR, kNow, 0.02, true);
+  const SurfaceSet base = set_of({&s_norm_b, &s_ext_b});
+  const SurfaceSet shifted = set_of({&s_norm_t, &s_ext_t});
+
+  const std::vector<Position> book{
+      {/*id*/ 1, {1, 100.0, 0.15, Side::Call}, +5.0, 100.0},
+      {/*id*/ 2, {2, 100.0, 0.05, Side::Put}, +3.0, 100.0}, // non-finite base gamma
+  };
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+  const auto pr = pricer.pnl_explain(base, shifted);
+  ASSERT_TRUE(pr.has_value());
+  const PnlFrame &f = *pr;
+  ASSERT_EQ(f.size(), 2u);
+
+  EXPECT_EQ(f.status[0], PriceStatus::Ok);
+  EXPECT_EQ(f.status[1], PriceStatus::NumericError);
+  EXPECT_TRUE(std::isfinite(f.total.pnl_gamma));
+  EXPECT_TRUE(std::isfinite(f.total.pnl_total));
+  EXPECT_EQ(f.total.n_ok, 1u);
 }
