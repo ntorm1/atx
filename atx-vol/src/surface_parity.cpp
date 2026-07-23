@@ -307,10 +307,16 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
     // 1-2. One shared carry + observation seam. Compatibility preparation
     // consumes in.deam.caches unconditionally, preserving this cold eSSVI
     // driver's historical cache behavior.
+    // FT-C8: honor the configured `fit_prep_policy` (the full CalibOpts filter
+    // cascade) when the flag-guarded rollout is enabled; default stays the
+    // permissive LegacyEssviCompatibility predicate (byte-identical).
+    const PreparedObservationPolicy prep_policy =
+        in.essvi_serve_configured_prep ? in.fit_prep_policy
+                                       : PreparedObservationPolicy::LegacyEssviCompatibility;
     PrepareExpiryDiagnostics prep_diag{};
     Result<CanonicalPreparedExpiry> prepared_result =
         prepare_expiry(chain, static_cast<std::uint32_t>(chain_index), in,
-                       PreparedObservationPolicy::LegacyEssviCompatibility, &prep_diag);
+                       prep_policy, &prep_diag);
     if (time_stages) {
       ms_carry += prep_diag.carry_solve_ms;
       ms_deam += prep_diag.observation_deam_ms;

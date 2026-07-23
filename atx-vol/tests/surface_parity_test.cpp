@@ -187,6 +187,68 @@ TEST(SurfaceParity, FourExpiryPanel_Essvi_InterpolatesAndCalendarArbFree) {
   }
 }
 
+// FT-C8 (B4): the served eSSVI path (`run_surface_parity`) historically prepared
+// its observation population under the permissive LegacyEssviCompatibility
+// predicate (strike>0 + quote_valid only), ignoring the configured CalibOpts
+// filter cascade — so a stale/flagged quote entered the DEFAULT-family fit while
+// every other family filtered it. The flag-guarded rollout
+// (`essvi_serve_configured_prep`) routes the served eSSVI path through the
+// configured `fit_prep_policy`. A quote flagged Stale must be EXCLUDED under
+// Configured prep and KEPT under the (default) Legacy prep.
+TEST(SurfaceParity, ConfiguredPrepExcludesFlaggedQuote_LegacyKeepsIt) {
+  const PanelBuild pb = make_panel_build();
+  const auto panel = make_synthetic_american_panel(pb.spec);
+  ASSERT_TRUE(panel.has_value()) << panel.error().to_string();
+
+  Universe u;
+  const auto uid = atx::vol::data_install(u, panel->frame);
+  ASSERT_TRUE(uid.has_value()) << uid.error().to_string();
+  const auto under = u.get_underlying(*uid);
+  ASSERT_TRUE(under.has_value());
+  ASSERT_EQ((*under)->chains.size(), std::size_t{4});
+
+  // Flag one mid-OTM strike's BOTH legs Stale on the front chain, so that strike
+  // contributes no usable OTM leg under a flag-aware (Configured) filter.
+  auto& chain0 = (*under)->chains[0];
+  const std::uint16_t flagged_strike = 2u;  // K = 78, OTM put vs spot 100
+  ASSERT_GT(chain0.strikes.size(), flagged_strike);
+  for (const atx::vol::Side side : {atx::vol::Side::Call, atx::vol::Side::Put}) {
+    const std::size_t qi = atx::vol::chain_index(flagged_strike, side);
+    chain0.flags[qi] = static_cast<std::uint8_t>(atx::vol::QuoteFlag::Stale);
+  }
+
+  SurfaceParityInputs base;
+  base.S = pb.spec.spot;
+  base.r = pb.spec.r;
+  base.cash_divs = pb.spec.cash_divs;
+  base.now_ts_ns = iso_to_ns(pb.snapshot);
+  base.deam.hyb = pb.spec.hyb;
+  base.deam.imply_borrow = true;
+  base.deam.n_atm = 3;
+
+  // (1) Default (Legacy prep): the stale flag is IGNORED, the quote is kept.
+  SurfaceParityInputs legacy_in = base;
+  legacy_in.essvi_serve_configured_prep = false;
+  const auto legacy = run_surface_parity(**under, legacy_in);
+  ASSERT_TRUE(legacy.has_value()) << legacy.error().to_string();
+  ASSERT_GT(legacy->context.size(), 0u);
+  const std::size_t legacy_n_used = legacy->context.front().n_used;
+
+  // (2) Configured prep (flag on): the stale quote is EXCLUDED by the cascade.
+  SurfaceParityInputs configured_in = base;
+  configured_in.essvi_serve_configured_prep = true;
+  configured_in.fit_prep_policy = atx::vol::PreparedObservationPolicy::Configured;
+  const auto configured = run_surface_parity(**under, configured_in);
+  ASSERT_TRUE(configured.has_value()) << configured.error().to_string();
+  ASSERT_GT(configured->context.size(), 0u);
+  const std::size_t configured_n_used = configured->context.front().n_used;
+
+  EXPECT_LT(configured_n_used, legacy_n_used)
+      << "Configured prep must exclude the flagged quote the Legacy prep keeps "
+         "(legacy n_used=" << legacy_n_used << " configured n_used="
+      << configured_n_used << ")";
+}
+
 TEST(SurfaceParity, CalendarRepair_HoldsQualityAndDefersScoring) {
   const PanelBuild pb = make_panel_build();
   const auto panel = make_synthetic_american_panel(pb.spec);
