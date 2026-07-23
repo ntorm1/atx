@@ -439,6 +439,9 @@ enum class PriceFieldMask : std::uint32_t {
 
 // ── Output frames (SoA, input order) ──────────────────────────────────────
 
+// "No value" sentinel for a column a request did not compute (GR-F1 carry axis).
+inline constexpr double kPriceColumnNaN = std::numeric_limits<double>::quiet_NaN();
+
 // Portfolio-level column sums over the Ok lanes of a price frame.
 struct PriceTotals {
   double pv{0.0};
@@ -450,6 +453,11 @@ struct PriceTotals {
   double vanna{0.0};
   double volga{0.0};
   double charm{0.0};
+  // GR-F1 carry/borrow axis: sum of position-scaled ∂P/∂q (continuous-yield
+  // sensitivity, "q-rho"). Populated ONLY when PriceOptions::carry_greeks is set
+  // on the returning `price()`; otherwise NaN (never 0.0 — a 0 would read as a
+  // genuinely carry-flat book). See PriceFrame::dP_dq.
+  double dP_dq{kPriceColumnNaN};
   std::uint32_t n_ok{0};
 };
 
@@ -469,6 +477,12 @@ struct PriceFrame {
   std::vector<double> vanna;
   std::vector<double> volga;
   std::vector<double> charm;
+  // GR-F1: position-scaled ∂P/∂q (continuous carry/borrow sensitivity). EMPTY
+  // unless PriceOptions::carry_greeks was set on `price()`; when present it is
+  // sized to the position count (NaN on non-Ok lanes). Kept off the PriceFrameView
+  // in-place API for now (additive on the returning path only), so no existing
+  // caller-owned view or backtest frame changes shape.
+  std::vector<double> dP_dq;
   std::vector<PriceStatus> status;
   PriceTotals total{};
 
@@ -478,7 +492,43 @@ struct PriceFrame {
   // the Marks mask they are left EMPTY, so a marks-only caller must gate any
   // Greek-column read on this. (Vacuously true for an empty frame — no rows.)
   [[nodiscard]] bool greeks_materialized() const noexcept { return delta.size() == id.size(); }
+
+  // True when the GR-F1 carry column is populated (carry_greeks was requested).
+  [[nodiscard]] bool carry_materialized() const noexcept { return dP_dq.size() == id.size(); }
 };
+
+// ── Bucketed risk (GR-F1) — per-underlier / per-expiry aggregation ─────────
+//
+// The canonical PriceTotals is a single whole-book bucket. Desks need risk sliced
+// per underlier and per expiry. `reduce_risk_buckets` is a deterministic, serial
+// post-process over an Ok-lane price frame: no hot-path cost for callers that do
+// not ask, and — because the source frame is bit-identical across thread counts —
+// the buckets are thread-count invariant too.
+enum class RiskBucketKey : std::uint8_t {
+  ByUnderlier, // key = contract uid
+  ByExpiry,    // key = the contract T (year-fraction), see RiskBucket::T
+};
+
+// One aggregation bucket: the per-key PriceTotals column sums over that bucket's
+// Ok lanes, accumulated in input order.
+struct RiskBucket {
+  std::uint64_t key{0}; // ByUnderlier: uid; ByExpiry: raw bits of T (monotone for T>0)
+  double T{0.0};        // ByExpiry: the expiry year-fraction (0 for ByUnderlier)
+  PriceTotals totals{};
+};
+
+// Reduce `frame`'s Ok lanes into per-key buckets, returned sorted ascending by
+// `key`; within each bucket, lanes accumulate in input order. `pf` supplies the
+// per-position contract (uid / T) — it must be the SAME book `frame` was priced
+// from. `grand` (if non-null) receives the sum of the bucket subtotals in that
+// sorted order, so `sum_k bucket[k] == *grand` holds BIT-EXACTLY by construction
+// (it is the bucket-consistent whole-book total; it agrees with PriceFrame::total
+// to floating-point rounding — the two use different summation associations).
+// pv and n_ok are always summed; the eight Greek columns only when the frame
+// materialized them; dP_dq only when the carry column is present.
+[[nodiscard]] std::vector<RiskBucket> reduce_risk_buckets(const PriceFrame &frame,
+                                                          const Portfolio &pf, RiskBucketKey by,
+                                                          PriceTotals *grand = nullptr);
 
 // ── In-place price API: caller-owned output view + reusable workspace ──────
 
@@ -699,6 +749,15 @@ struct PriceOptions {
   // base-risk stamp, so a later pnl_totals cannot reuse adjoint base risk under an FD
   // assumption (it recomputes, fail-safe). Supersedes analytic_greeks when both set.
   bool adjoint_greeks{false};
+  // GR-F1: also compute the carry/borrow axis ∂P/∂q per contract (via
+  // american_carry_greeks_al, the analytic-AL tier) and surface it as the
+  // returning `price()` frame's `dP_dq` column + `PriceTotals::dP_dq`. Off by
+  // default (every existing frame byte-unchanged; the column stays EMPTY / the
+  // total stays NaN). Currently honored on the returning `price()` path only —
+  // the caller-owned `price_into`/`price_totals` views carry no dP_dq span yet.
+  // Requires the FullGreeks mask (ignored under prices_only). The per-share axis
+  // is position-scaled (qty*multiplier) exactly like the other frame columns.
+  bool carry_greeks{false};
   // Quote-refresh mode: compute IV + American mark only (one solve per unique
   // contract) and leave risk columns NaN. Full Greeks remain the default for
   // backward compatibility; market-making quote loops should enable this and

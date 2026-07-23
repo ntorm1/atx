@@ -3741,3 +3741,214 @@ TEST(PortfolioPricer, G1_NonFiniteBaseGreek_IsIsolatedFromPnlTotals) {
   EXPECT_TRUE(std::isfinite(f.total.pnl_total));
   EXPECT_EQ(f.total.n_ok, 1u);
 }
+
+// ── G2 (GR-F1): bucketed risk + carry column ───────────────────────────────
+
+// All-column bit-exact equality of two PriceTotals (incl. the GR-F1 dP_dq axis).
+[[nodiscard]] bool totals_bits_equal(const PriceTotals &a, const PriceTotals &b) noexcept {
+  return bits_equal(a.pv, b.pv) && bits_equal(a.delta, b.delta) && bits_equal(a.gamma, b.gamma) &&
+         bits_equal(a.vega, b.vega) && bits_equal(a.theta, b.theta) && bits_equal(a.rho, b.rho) &&
+         bits_equal(a.vanna, b.vanna) && bits_equal(a.volga, b.volga) &&
+         bits_equal(a.charm, b.charm) && bits_equal(a.dP_dq, b.dP_dq) && a.n_ok == b.n_ok;
+}
+
+// A two-underlier, three-expiry book (uid {1,2} x T {0.05,0.15,0.25}).
+[[nodiscard]] std::vector<Position> two_by_three_book() {
+  return {
+      {/*id*/ 1, {1, 100.0, 0.05, Side::Call}, +4.0, 100.0},
+      {/*id*/ 2, {1, 98.0, 0.15, Side::Put}, -3.0, 100.0},
+      {/*id*/ 3, {1, 105.0, 0.25, Side::Call}, +2.0, 100.0},
+      {/*id*/ 4, {2, 100.0, 0.05, Side::Put}, +5.0, 100.0},
+      {/*id*/ 5, {2, 102.0, 0.15, Side::Call}, -1.0, 100.0},
+      {/*id*/ 6, {2, 97.0, 0.25, Side::Put}, +3.0, 100.0},
+  };
+}
+
+// Independent reconstruction of a bucket subtotal over `pred` rows, mirroring
+// reduce_risk_buckets' fresh()+add_row (same input order, same init) so a correct
+// bucketing is bit-for-bit reproducible.
+template <class Pred>
+[[nodiscard]] PriceTotals reconstruct_bucket(const PriceFrame &f, Pred pred) {
+  const bool greeks = f.greeks_materialized();
+  const bool carry = f.carry_materialized();
+  PriceTotals t{};
+  if (!greeks) {
+    t.delta = t.gamma = t.vega = t.theta = t.rho = t.vanna = t.volga = t.charm =
+        std::numeric_limits<double>::quiet_NaN();
+  }
+  if (carry) {
+    t.dP_dq = 0.0;
+  }
+  for (std::size_t i = 0; i < f.size(); ++i) {
+    if (f.status[i] != PriceStatus::Ok || !pred(i)) {
+      continue;
+    }
+    t.pv += f.pv[i];
+    if (greeks) {
+      t.delta += f.delta[i];
+      t.gamma += f.gamma[i];
+      t.vega += f.vega[i];
+      t.theta += f.theta[i];
+      t.rho += f.rho[i];
+      t.vanna += f.vanna[i];
+      t.volga += f.volga[i];
+      t.charm += f.charm[i];
+    }
+    if (carry) {
+      t.dP_dq += f.dP_dq[i];
+    }
+    ++t.n_ok;
+  }
+  return t;
+}
+
+TEST(PortfolioPricer, G2_RiskBuckets_ByUnderlierAndByExpiry_PartitionTotalsBitExact) {
+  const PricedSurface s1 = make_essvi(1, 3);
+  const PricedSurface s2 = make_essvi(2, 3);
+  const SurfaceSet surfaces = set_of({&s1, &s2});
+  const std::vector<Position> book = two_by_three_book();
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+  const auto fr = pricer.price(surfaces);
+  ASSERT_TRUE(fr.has_value());
+  const PriceFrame &f = *fr;
+  ASSERT_EQ(f.size(), 6u);
+  ASSERT_EQ(f.total.n_ok, 6u);
+
+  // ── ByUnderlier: two buckets {uid 1, uid 2}, sorted ascending by key ──
+  PriceTotals grand_u{};
+  const std::vector<RiskBucket> bu = reduce_risk_buckets(f, pricer.portfolio(),
+                                                         RiskBucketKey::ByUnderlier, &grand_u);
+  ASSERT_EQ(bu.size(), 2u);
+  EXPECT_EQ(bu[0].key, 1u);
+  EXPECT_EQ(bu[1].key, 2u);
+  for (const RiskBucket &b : bu) {
+    const std::uint32_t want_uid = static_cast<std::uint32_t>(b.key);
+    const PriceTotals rec = reconstruct_bucket(f, [&](std::size_t i) { return f.uid[i] == want_uid; });
+    EXPECT_TRUE(totals_bits_equal(b.totals, rec)) << "uid " << b.key;
+  }
+  // Sum the buckets in returned order and compare to the grand total: bit-exact
+  // by construction (grand == sum of buckets), and it partitions the whole book.
+  {
+    PriceTotals sum = reconstruct_bucket(f, [&](std::size_t) { return false; }); // fresh init
+    for (const RiskBucket &b : bu) {
+      sum.pv += b.totals.pv;
+      sum.delta += b.totals.delta;
+      sum.gamma += b.totals.gamma;
+      sum.vega += b.totals.vega;
+      sum.theta += b.totals.theta;
+      sum.rho += b.totals.rho;
+      sum.vanna += b.totals.vanna;
+      sum.volga += b.totals.volga;
+      sum.charm += b.totals.charm;
+      sum.n_ok += b.totals.n_ok;
+    }
+    EXPECT_TRUE(totals_bits_equal(sum, grand_u));
+  }
+  EXPECT_EQ(grand_u.n_ok, f.total.n_ok);
+  EXPECT_TRUE(close(grand_u.pv, f.total.pv));       // coverage (assoc differs)
+  EXPECT_TRUE(close(grand_u.delta, f.total.delta));
+
+  // ── ByExpiry: three buckets {0.05, 0.15, 0.25}, sorted ascending by T ──
+  PriceTotals grand_e{};
+  const std::vector<RiskBucket> be =
+      reduce_risk_buckets(f, pricer.portfolio(), RiskBucketKey::ByExpiry, &grand_e);
+  ASSERT_EQ(be.size(), 3u);
+  EXPECT_LT(be[0].T, be[1].T);
+  EXPECT_LT(be[1].T, be[2].T);
+  for (const RiskBucket &b : be) {
+    const double want_T = b.T;
+    const PriceTotals rec =
+        reconstruct_bucket(f, [&](std::size_t i) { return book[i].contract.T == want_T; });
+    EXPECT_TRUE(totals_bits_equal(b.totals, rec)) << "T " << b.T;
+  }
+  EXPECT_EQ(grand_e.n_ok, f.total.n_ok);
+  // Every Ok lane lands in exactly one bucket of each dimension.
+  std::uint32_t nu = 0, ne = 0;
+  for (const RiskBucket &b : bu) {
+    nu += b.totals.n_ok;
+  }
+  for (const RiskBucket &b : be) {
+    ne += b.totals.n_ok;
+  }
+  EXPECT_EQ(nu, 6u);
+  EXPECT_EQ(ne, 6u);
+}
+
+TEST(PortfolioPricer, G2_CarryColumn_dP_dq_MatchesDirectKernel) {
+  const PricedSurface s1 = make_essvi(1, 3);
+  const PricedSurface s2 = make_essvi(2, 3);
+  const SurfaceSet surfaces = set_of({&s1, &s2});
+  const std::vector<Position> book = two_by_three_book();
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+
+  // Without carry_greeks the column is EMPTY and the total NaN (opt-in gate).
+  {
+    const auto plain = pricer.price(surfaces);
+    ASSERT_TRUE(plain.has_value());
+    EXPECT_FALSE(plain->carry_materialized());
+    EXPECT_TRUE(plain->dP_dq.empty());
+    EXPECT_TRUE(std::isnan(plain->total.dP_dq));
+  }
+
+  const auto fr = pricer.price(surfaces, PriceOptions{.carry_greeks = true});
+  ASSERT_TRUE(fr.has_value());
+  const PriceFrame &f = *fr;
+  ASSERT_TRUE(f.carry_materialized());
+  ASSERT_EQ(f.dP_dq.size(), 6u);
+
+  const std::array<const PricedSurface *, 3> by_uid{nullptr, &s1, &s2};
+  double manual_total = 0.0;
+  bool any_nonzero = false;
+  for (std::size_t i = 0; i < book.size(); ++i) {
+    ASSERT_EQ(f.status[i], PriceStatus::Ok);
+    const Position &p = book[i];
+    const PricedSurface &s = *by_uid[p.contract.uid];
+    const auto rp = s.resolve(p.contract.K, p.contract.T);
+    const auto cg = american_carry_greeks_al(s.pricing().S, p.contract.K, p.contract.T, rp.sigma,
+                                             rp.rate, rp.q_eff, p.contract.side,
+                                             std::optional<AlOpts>{s.pricing().al_opts});
+    ASSERT_TRUE(cg.has_value());
+    const double w = p.qty * p.multiplier;
+    // The column is the position-scaled kernel value, BIT-for-BIT.
+    EXPECT_TRUE(bits_equal(f.dP_dq[i], w * cg->dP_dq)) << i;
+    any_nonzero = any_nonzero || (cg->dP_dq != 0.0);
+    manual_total += f.dP_dq[i];
+  }
+  EXPECT_TRUE(any_nonzero); // non-vacuous: the axis is actually computed
+  EXPECT_TRUE(bits_equal(f.total.dP_dq, manual_total));
+}
+
+TEST(PortfolioPricer, G2_RiskBuckets_And_Carry_ThreadCountInvariant) {
+  const PricedSurface s1 = make_essvi(1, 3);
+  const PricedSurface s2 = make_essvi(2, 3);
+  const SurfaceSet surfaces = set_of({&s1, &s2});
+  const std::vector<Position> book = two_by_three_book();
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+
+  const auto f1 = pricer.price(surfaces, PriceOptions{.n_threads = 1, .carry_greeks = true});
+  const auto f4 = pricer.price(surfaces, PriceOptions{.n_threads = 4, .carry_greeks = true});
+  ASSERT_TRUE(f1.has_value() && f4.has_value());
+  ASSERT_EQ(f1->size(), f4->size());
+
+  // The whole frame (incl. the serial carry column) is bit-identical across threads.
+  for (std::size_t i = 0; i < f1->size(); ++i) {
+    EXPECT_TRUE(bits_equal(f1->dP_dq[i], f4->dP_dq[i])) << i;
+  }
+  for (RiskBucketKey by : {RiskBucketKey::ByUnderlier, RiskBucketKey::ByExpiry}) {
+    PriceTotals g1{}, g4{};
+    const auto b1 = reduce_risk_buckets(*f1, pricer.portfolio(), by, &g1);
+    const auto b4 = reduce_risk_buckets(*f4, pricer.portfolio(), by, &g4);
+    ASSERT_EQ(b1.size(), b4.size());
+    for (std::size_t k = 0; k < b1.size(); ++k) {
+      EXPECT_EQ(b1[k].key, b4[k].key);
+      EXPECT_TRUE(totals_bits_equal(b1[k].totals, b4[k].totals)) << k;
+    }
+    EXPECT_TRUE(totals_bits_equal(g1, g4));
+  }
+}
