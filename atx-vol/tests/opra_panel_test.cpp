@@ -11,6 +11,7 @@
 
 #include <gtest/gtest.h>
 
+#include "atx/core/io/parquet.hpp"
 #include "atx/core/io/parquet_writer.hpp"
 #include "atx/vol/curve.hpp"     // YieldCurve
 #include "atx/vol/data.hpp"      // year_fraction, find_expiry_inputs, ExpiryInputs
@@ -27,6 +28,7 @@ namespace io = atx::core::io;
 namespace fs = std::filesystem;
 using atx::i64;
 using atx::vol::iso_to_ns;
+using atx::vol::load_opra_cbbo_from_table;
 using atx::vol::load_opra_cbbo_parquet;
 using atx::vol::OpraLoadSpec;
 using atx::vol::parse_osi_symbol;
@@ -545,6 +547,68 @@ TEST(OpraPanel, FilterSymbolNotFound_Rejected) {
       {"XOM", osi_sym("XOM", "271101", 'C', 110.0), 8.00, 8.10}, // long  (~1.50y)
       {"XOM", osi_sym("XOM", "271101", 'P', 110.0), 7.00, 7.10},
   };
+}
+
+// ── Task 1: in-memory table seam ────────────────────────────────────────────
+//
+// load_opra_cbbo_from_table must produce a BYTE-IDENTICAL panel to
+// load_opra_cbbo_parquet when handed a table holding the same rows the file
+// path would read. The fixture carries the full 8-column OPRA schema the seam
+// requires; the file loader reads it via projection, the seam reads the same
+// file fully — same rows in, identical panel out.
+TEST(OpraPanelTable, TableSeamMatchesFileLoad) {
+  const std::vector<i64> ids = {201, 202, 203, 204};
+  const std::string path = write_slice("table_seam.parquet", xom_two_expiry_rows(),
+                                        /*with_underlying=*/true, ids);
+
+  OpraLoadSpec spec;
+  spec.path = path;
+  spec.underlying = "XOM";
+  spec.snapshot_iso = "2026-05-01";
+  spec.r = 0.04;
+
+  const auto file_panel = load_opra_cbbo_parquet(spec);
+  ASSERT_TRUE(file_panel.has_value()) << file_panel.error().to_string();
+
+  const auto table = io::read_parquet(spec.path);
+  ASSERT_TRUE(table.has_value()) << table.error().to_string();
+
+  const auto tbl_panel = load_opra_cbbo_from_table(*table, spec);
+  ASSERT_TRUE(tbl_panel.has_value()) << tbl_panel.error().to_string();
+
+  // Cheap identities: counts, spot, snapshot stamp, uid, fingerprint, provenance.
+  EXPECT_EQ(tbl_panel->frame.rows.size(), file_panel->frame.rows.size());
+  EXPECT_EQ(tbl_panel->n_contracts, file_panel->n_contracts);
+  EXPECT_EQ(tbl_panel->n_expiries, file_panel->n_expiries);
+  EXPECT_EQ(tbl_panel->n_dropped, file_panel->n_dropped);
+  EXPECT_DOUBLE_EQ(tbl_panel->implied_spot, file_panel->implied_spot);
+  EXPECT_DOUBLE_EQ(tbl_panel->frame.spot, file_panel->frame.spot);
+  EXPECT_EQ(tbl_panel->frame.snapshot_ts_ns, file_panel->frame.snapshot_ts_ns);
+  EXPECT_EQ(tbl_panel->snapshot_iso, file_panel->snapshot_iso);
+  EXPECT_EQ(tbl_panel->frame.uid, file_panel->frame.uid);
+  EXPECT_EQ(tbl_panel->source_schema_version, file_panel->source_schema_version);
+  EXPECT_EQ(tbl_panel->source_fingerprint, file_panel->source_fingerprint);
+  EXPECT_EQ(tbl_panel->source_instrument_ids, file_panel->source_instrument_ids);
+
+  // First/last kept-quote fields match position-for-position.
+  ASSERT_FALSE(file_panel->frame.rows.empty());
+  const auto &tf = tbl_panel->frame.rows.front();
+  const auto &ff = file_panel->frame.rows.front();
+  EXPECT_EQ(tf.uid, ff.uid);
+  EXPECT_EQ(tf.expiry_iso, ff.expiry_iso);
+  EXPECT_TRUE(tf.side == ff.side);
+  EXPECT_DOUBLE_EQ(tf.strike, ff.strike);
+  EXPECT_DOUBLE_EQ(tf.bid, ff.bid);
+  EXPECT_DOUBLE_EQ(tf.ask, ff.ask);
+  const auto &tl = tbl_panel->frame.rows.back();
+  const auto &fl = file_panel->frame.rows.back();
+  EXPECT_EQ(tl.expiry_iso, fl.expiry_iso);
+  EXPECT_DOUBLE_EQ(tl.strike, fl.strike);
+  EXPECT_DOUBLE_EQ(tl.bid, fl.bid);
+  EXPECT_DOUBLE_EQ(tl.ask, fl.ask);
+
+  const fs::path dir = fs::temp_directory_path() / "atx_opra_p2_test";
+  fs::remove_all(dir);
 }
 
 TEST(OpraPanel, TermCurve_PerExpiryRateInterpolated) {

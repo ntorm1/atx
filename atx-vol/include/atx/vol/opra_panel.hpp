@@ -40,6 +40,13 @@
 #include "atx/vol/types.hpp" // Result, Side
 #include "atx/vol/vol_time.hpp" // TimeSpec
 
+// Forward-declared to keep this public header Arrow-free: the in-memory-table
+// seam (load_opra_cbbo_from_table) takes it by const reference. The full
+// definition lives in atx/core/io/parquet.hpp, included by opra_panel.cpp.
+namespace atx::core::io {
+class ParquetTable;
+} // namespace atx::core::io
+
 namespace atx::vol {
 
 // Parsed OSI/OCC option symbol: ROOT + YYMMDD + {C|P} + STRIKE(8 digits,
@@ -218,5 +225,33 @@ struct OpraPanel {
 //         precondition) failure; Unavailable when no co-terminal pair exists to
 //         imply the spot and no override was supplied.
 [[nodiscard]] Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec);
+
+// Load an OPRA cbbo-1m slice from an ALREADY-MATERIALIZED in-memory table.
+//
+// This is the table-driven seam under `load_opra_cbbo_parquet`: both delegate
+// to the identical panel-construction core, so a `table` holding the same rows
+// the file at `spec.path` would decode yields a BYTE-IDENTICAL `OpraPanel`
+// (rows, implied spot, snapshot stamp, source fingerprint, provenance). Use it
+// to feed an in-memory OPRA table — e.g. one date-partition file's rows split
+// by `underlying` — through the same validated path without re-reading parquet.
+// No file is read here: `spec.path` is consulted ONLY for error-message context.
+//
+// Behavior: first validates that `table` carries the 8 canonical OPRA columns
+// (`ts`, `underlying`, `symbol`, `instrument_id`, `bid_px`, `ask_px`, `bid_sz`,
+// `ask_sz` — the hive-v2 schema), then delegates to the shared core. Per-row
+// filtering, put-call-parity spot implication, term-curve rate stamping, and
+// frame assembly are exactly as documented for `load_opra_cbbo_parquet`.
+//
+// @return InvalidArgument if any required column is absent (the message names
+//         the missing column and `spec.path`), on an ambiguous multi-symbol
+//         input, a term-pillar length mismatch, or a frame-assembly failure;
+//         Unavailable when no co-terminal pair implies the spot and no
+//         `spec.spot_override` was supplied.
+//
+// Thread-safety: a pure function over borrowed inputs. It mutates no shared
+// state and returns an owning panel; concurrent calls on distinct arguments are
+// safe, and `table` is only read.
+[[nodiscard]] Result<OpraPanel>
+load_opra_cbbo_from_table(const atx::core::io::ParquetTable& table, const OpraLoadSpec& spec);
 
 } // namespace atx::vol

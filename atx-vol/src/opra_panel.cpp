@@ -345,6 +345,15 @@ template <typename RateFn>
              "no well-conditioned co-terminal expiry to imply spot; pass spot_override");
 }
 
+// The table-driven core shared by the file loader and the in-memory-table seam
+// (load_opra_cbbo_from_table): everything AFTER the OPRA cbbo-1m table is
+// materialized — column extraction, row filtering, OSI parse, PCP spot
+// implication, frame assembly. Both public entry points delegate here, so the
+// two paths are byte-identical on the same rows. `spec.path` is NOT read here
+// (the table is already decoded); it is unused by this core.
+[[nodiscard]] Result<OpraPanel> panel_from_table(const io::ParquetTable& table,
+                                                 const OpraLoadSpec& spec);
+
 } // namespace
 
 Result<OsiSymbol> parse_osi_symbol(std::string_view sym) {
@@ -421,6 +430,12 @@ Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
     return Err(ErrorCode::InvalidArgument, table_res.error().to_string());
   }
   const io::ParquetTable table = std::move(table_res.value());
+  return panel_from_table(table, spec);
+}
+
+namespace {
+
+Result<OpraPanel> panel_from_table(const io::ParquetTable& table, const OpraLoadSpec& spec) {
   const io::Schema& schema = table.schema();
   const std::size_t n_rows =
       static_cast<std::size_t>(std::max<std::int64_t>(0, table.num_rows()));
@@ -723,6 +738,29 @@ Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
   panel.market_input_provenance = spec.market_input_provenance;
   panel.time = spec.time;
   return Ok(std::move(panel));
+}
+
+} // namespace
+
+Result<OpraPanel> load_opra_cbbo_from_table(const io::ParquetTable& table,
+                                            const OpraLoadSpec& spec) {
+  // The in-memory-table seam requires the full canonical OPRA schema — the 8
+  // columns the hive v2 date partition guarantees. A missing column is a
+  // contract violation reported up front with the column name and spec.path
+  // context, rather than the opaque deep column_view failure the raw core would
+  // otherwise surface to a caller that never touched a file.
+  static constexpr std::array<std::string_view, 8> kRequiredColumns = {
+      "ts",     "underlying", "symbol", "instrument_id",
+      "bid_px", "ask_px",     "bid_sz", "ask_sz"};
+  const io::Schema& schema = table.schema();
+  for (const std::string_view name : kRequiredColumns) {
+    if (schema.find(name) == nullptr) {
+      return Err(ErrorCode::InvalidArgument,
+                 "OPRA table missing required column '" + std::string(name) +
+                     "' (from '" + spec.path + "')");
+    }
+  }
+  return panel_from_table(table, spec);
 }
 
 } // namespace atx::vol
