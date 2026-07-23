@@ -695,6 +695,23 @@ public:
   [[nodiscard]] std::uint32_t count() const noexcept { return header_.surface_count; }
   [[nodiscard]] const ArchiveV2Header &header() const noexcept { return header_; }
   [[nodiscard]] std::span<const ArchiveV2DirEntry> directory() const noexcept { return directory_; }
+
+  // ── Framing-only enumeration seam (C6 / SE-P2-6) ────────────────────────────
+  //
+  // `entries()` returns the parsed directory — one `ArchiveV2DirEntry` per surface,
+  // sorted by canonical symbol (offset/size/uid/symbol/n_slices/kind_bits/
+  // payload_crc32c) — and `entry_count()` its size. Both are O(1) and read ONLY the
+  // metadata parsed at `open()`; they touch NO surface record body, so they never
+  // materialize a `PricedSurfaceView` (nor the eager ConvexDense/SplineVol curves
+  // that `map_all()` builds per record). A checkpoint/resume counter that only needs
+  // "how many surfaces / which uids / which kinds" MUST use these, not `map_all()`,
+  // whose per-record view construction makes resume O(heavy-payload) instead of
+  // O(framing). This is the cross-workstream seam the corpus checkpoint consumes
+  // (sprint WS-T / T2); `entries()` is the WS-T-facing name for the same span
+  // `directory()` exposes.
+  [[nodiscard]] std::span<const ArchiveV2DirEntry> entries() const noexcept { return directory_; }
+  [[nodiscard]] std::size_t entry_count() const noexcept { return directory_.size(); }
+
   [[nodiscard]] ArchiveContentIdentity identity() const noexcept {
     return ArchiveContentIdentity{header_.file_size, header_.created_ts_ns, header_.header_crc32c,
                                   header_.metadata_crc32c};

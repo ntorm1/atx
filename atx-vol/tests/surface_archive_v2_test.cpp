@@ -784,3 +784,39 @@ TEST(SurfaceArchiveV2, OpensPriorSaltArchiveAsTiedNQuadPrice) {
   EXPECT_EQ(v->pricing().al_opts.n_quad_price, 0u); // prior-salt file reads tied
   expect_view_bit_identical(orig, *v);
 }
+
+// ── C6 (SE-P2-6): entries()/entry_count() are a FRAMING-ONLY enumeration ───────
+// The checkpoint/resume counter must not pay map_all()'s eager ConvexDense/
+// SplineVol materialization just to count surfaces. entries()/entry_count() read
+// ONLY the directory (parsed at open from the metadata section) and touch no
+// surface record body. Proof of non-materialization: poison every record body,
+// then entries()/entry_count() still enumerate correctly while map_all() (which
+// builds a PricedSurfaceView per record) fails. WS-T (corpus.cpp) consumes these.
+TEST(SurfaceArchiveV2, EntriesEnumerateWithoutMaterializingViews) {
+  auto arch = SurfaceArchiveV2::open(build_multi()); // 6 mixed-kind surfaces
+  ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
+
+  auto all = arch->map_all();
+  ASSERT_TRUE(all.has_value());
+  EXPECT_EQ(arch->entry_count(), all->size());
+  EXPECT_EQ(arch->entries().size(), all->size());
+  EXPECT_EQ(arch->entry_count(), static_cast<std::size_t>(arch->count()));
+  for (const auto &e : arch->entries()) {
+    EXPECT_GT(e.n_slices, 0u); // framing (uid/n_slices/kind_bits) with no view built
+  }
+
+  // Poison the whole data section (every record body). open stays lazy, so the
+  // directory (metadata section) is intact: framing enumeration keeps working,
+  // but map_all() — which materializes each record — now fails.
+  std::vector<std::byte> bytes = build_multi();
+  const std::size_t data_off = static_cast<std::size_t>(arch->header().data_offset);
+  ASSERT_LT(data_off, bytes.size());
+  for (std::size_t i = data_off; i < bytes.size(); ++i) {
+    bytes[i] = std::byte{0xFF};
+  }
+  auto poisoned = SurfaceArchiveV2::open(std::move(bytes));
+  ASSERT_TRUE(poisoned.has_value()) << poisoned.error().to_string(); // lazy CRC -> opens
+  EXPECT_EQ(poisoned->entry_count(), arch->entry_count());
+  EXPECT_EQ(poisoned->entries().size(), arch->entry_count());
+  EXPECT_FALSE(poisoned->map_all().has_value()); // materialization hits the poison
+}
