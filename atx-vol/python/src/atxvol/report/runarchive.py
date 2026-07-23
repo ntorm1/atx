@@ -278,7 +278,12 @@ class Section:
         off_base = self._base + cd.aux_offset
         offsets = struct.unpack_from(f"<{n + 1}I", self._buf, off_base)
         blob_base = off_base + 4 * (n + 1)
-        blob = self._buf[blob_base:blob_base + offsets[n]]
+        # Materialize bytes before slicing/decoding: on the mmap path a slice is
+        # already ``bytes``, but via ``from_bytes`` the backing is a memoryview
+        # whose slices are memoryviews (no ``.decode``). ``bytes(...)`` normalizes
+        # both paths; the numeric column views stay zero-copy (they never route
+        # through here).
+        blob = bytes(self._buf[blob_base:blob_base + offsets[n]])
         return [blob[offsets[i]:offsets[i + 1]].decode("utf-8") for i in range(n)]
 
 
