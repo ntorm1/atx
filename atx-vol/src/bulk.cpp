@@ -16,12 +16,29 @@
 
 #include <cmath>
 
+#include "atx/vol/american.hpp"
 #include "atx/vol/black76.hpp"
 #include "atx/vol/greeks.hpp"
 
 namespace atx::vol {
 
 namespace {
+
+// A2 (review-pricing-iv C3): floor a SERVED cached American mark at
+// max(intrinsic, euro, 0), matching the cold clamp chain (american.cpp
+// floor_cached_price). The raw euro + F*correction carries no floor of its own,
+// so out-of-box (clamped-correction) deep-ITM marks can print below intrinsic —
+// arbitrageable. Intrinsic is spot-settled (American exercise value).
+[[nodiscard]] double floor_american(double price, double euro, double intrinsic) noexcept {
+  double p = price;
+  if (intrinsic > p) {
+    p = intrinsic;
+  }
+  if (euro > p) {
+    p = euro;
+  }
+  return p < 0.0 ? 0.0 : p;
+}
 
 // ── Selection (ports bulk_select_count + bulk_select_emit) ───────────────
 
@@ -168,70 +185,65 @@ void bulk_price_engine(const std::vector<ContractId>& ids,
     //      (theta), and a T-collapsed plane has no T axis to differentiate.
     // bulk_price is also perf-review F12 (LOW, "only if on measured hot path"); the
     // F4 win lands on the fitter's board pricing via session::evaluate_ladder.
+    // Spot-settled American intrinsic used to floor every cached mark below
+    // (floor_american clamps a negative/OTM value to 0, so the raw signed
+    // intrinsic is fine here).
+    const double intrinsic = (side == Side::Put) ? (K - ctx.under->spot) : (ctx.under->spot - K);
     if (req.risk_mode == BulkRiskMode::PriceOnly) {
-      price = black76_price_from_lnfk(ctx.F, K, ctx.T, sigma, ctx.df, -k_log,
-                                      ctx.sqrt_t, side);
+      const double euro = black76_price_from_lnfk(ctx.F, K, ctx.T, sigma, ctx.df, -k_log,
+                                                  ctx.sqrt_t, side);
+      price = euro;
       if (use_corr) {
-        price += ctx.F * corr->eval(k_log, ctx.T, sigma);
+        // A2: floor the cached mark at max(intrinsic, euro, 0) — the raw
+        // euro + F*corr can print below intrinsic when the correction clamps
+        // out-of-box (deep-ITM / short-T), exactly the defect fixed elsewhere.
+        price = floor_american(euro + ctx.F * corr->eval(k_log, ctx.T, sigma), euro, intrinsic);
         route = static_cast<std::uint8_t>(PricingRoute::B76AlCache);
       }
-    } else {
+    } else if (req.risk_mode == BulkRiskMode::B76Greeks) {
       const Black76Greeks bg =
           black76_greeks(ctx.F, K, ctx.T, sigma, ctx.r, ctx.df, side);
-
-      if (req.risk_mode == BulkRiskMode::B76Greeks) {
-        price = bg.price;
-        if (use_corr) {
-          price += ctx.F * corr->eval(k_log, ctx.T, sigma);
-          route = static_cast<std::uint8_t>(PricingRoute::B76AlCache);
-        }
-        out.delta[i] = bg.greeks.delta;
-        out.gamma[i] = bg.greeks.gamma;
-        out.vega[i] = bg.greeks.vega;
-        out.theta[i] = bg.greeks.theta;
-        out.rho[i] = bg.greeks.rho;
-        out.vanna[i] = bg.greeks.vanna;
-        out.volga[i] = bg.greeks.volga;
-        out.charm[i] = bg.greeks.charm;
-      } else {  // AmericanFirstOrder
-        const double s_spot = ctx.under->spot;
-        const double m = std::exp((ctx.r - ctx.q) * ctx.T);
-        double d_fwd = bg.greeks.delta;
-        double vega = bg.greeks.vega;
-        double theta = bg.greeks.theta;
-        double rho = bg.greeks.rho;
-        double gamma = bg.greeks.gamma;
-
-        if (use_corr) {
-          double dk = 0.0;
-          double d_t = 0.0;
-          double dsig = 0.0;
-          const double c_val =
-              corr->eval_grad(k_log, ctx.T, sigma, &dk, &d_t, &dsig);
-          d_fwd = bg.greeks.delta + c_val - dk;
-          vega = bg.greeks.vega + ctx.F * dsig;
-          rho = bg.greeks.rho + ctx.T * ctx.F * d_fwd;
-          theta = bg.greeks.theta - (ctx.r - ctx.q) * ctx.F * d_fwd - ctx.F * d_t;
-          price = bg.price + ctx.F * c_val;
-          route = static_cast<std::uint8_t>(PricingRoute::B76AlCache);
-        } else {
-          rho = bg.greeks.rho + ctx.T * ctx.F * d_fwd;
-          theta = bg.greeks.theta - (ctx.r - ctx.q) * ctx.F * d_fwd;
-          if (s_spot > 0.0) {
-            gamma = bg.greeks.gamma * (m / s_spot) * ctx.F;
-          }
-          price = bg.price;
-          route = static_cast<std::uint8_t>(PricingRoute::B76AlCold);
-        }
-
-        out.delta[i] = m * d_fwd;  // spot delta
-        out.gamma[i] = gamma;
-        out.vega[i] = vega;
-        out.theta[i] = theta;
-        out.rho[i] = rho;
-        out.vanna[i] = bg.greeks.vanna;
-        out.volga[i] = bg.greeks.volga;
-        out.charm[i] = bg.greeks.charm;
+      price = bg.price;
+      if (use_corr) {
+        // A2: floor the cached B76+correction mark (the greeks stay European B76
+        // by this mode's contract; only the served price gains the American floor).
+        price = floor_american(bg.price + ctx.F * corr->eval(k_log, ctx.T, sigma), bg.price,
+                               intrinsic);
+        route = static_cast<std::uint8_t>(PricingRoute::B76AlCache);
+      }
+      out.delta[i] = bg.greeks.delta;
+      out.gamma[i] = bg.greeks.gamma;
+      out.vega[i] = bg.greeks.vega;
+      out.theta[i] = bg.greeks.theta;
+      out.rho[i] = bg.greeks.rho;
+      out.vanna[i] = bg.greeks.vanna;
+      out.volga[i] = bg.greeks.volga;
+      out.charm[i] = bg.greeks.charm;
+    } else {  // AmericanFirstOrder
+      // A2: route through the correct, unit-consistent analytic first-order jet
+      // (american.cpp american_greeks_first_order) rather than the hand-rolled
+      // block whose corr branch left gamma/vanna/volga in FORWARD space while the
+      // no-corr branch converted gamma to SPOT (an ~m^2 unit split), and whose
+      // price carried no intrinsic floor. A null correction degrades to the
+      // spot-converted Black-76 leg. F = spot*e^{(r-q)T} == ctx.F by construction
+      // of ctx.q, so the euro leg is preserved.
+      const auto ag = american_greeks(ctx.under->spot, K, ctx.T, sigma, ctx.r, ctx.q, side,
+                                      use_corr ? corr : nullptr);
+      route = static_cast<std::uint8_t>(use_corr ? PricingRoute::B76AlCache
+                                                 : PricingRoute::B76AlCold);
+      if (ag.has_value()) {
+        const AmericanGreeks& g = ag.value();
+        price = g.price; // already floored at intrinsic by american_greeks_first_order
+        out.delta[i] = g.delta;
+        out.gamma[i] = g.gamma;
+        out.vega[i] = g.vega;
+        out.theta[i] = g.theta;
+        out.rho[i] = g.rho;
+        out.vanna[i] = g.vanna;
+        out.volga[i] = g.volga;
+        out.charm[i] = g.charm;
+      } else {
+        price = kPortNaN; // -> NumericError below
       }
     }
 
