@@ -914,10 +914,12 @@ Status collect_mark_divergence_replay(const ListedDispersionSchedule &schedule, 
 // economics permitted with a cold price execution while no fast tier is prepared).
 // Records per-roll mark divergence between the frozen schedule marks and the live seed
 // marks. `--schedule` selects the input schedule (default trade_schedule.tsv);
-// `--out` the backtest output (default projected_backtest.tsv). `--no-divergence` skips
-// the mark-divergence replay pass (and its mark_divergence.tsv output), leaving only the
-// priced backtest — the bare-backtest wall-time path. The priced run is independent of
-// the replay, so the backtest output is byte-identical either way.
+// `--out` is a provenance label only — no file is written under it; the name is
+// recorded in the run.atxrun `meta` section (requested_out) so the request stays
+// visible. `--no-divergence` skips the mark-divergence replay pass (and its
+// `mark_divergence` section), leaving only the priced backtest — the
+// bare-backtest wall-time path. The priced run is independent of the replay, so
+// the backtest output is byte-identical either way.
 Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &schedule_file,
                                       const std::string &execution, const fs::path &out_file,
                                       bool skip_divergence) {
@@ -1200,10 +1202,14 @@ Status run_projected_var_command(const fs::path &run_dir) {
 
 // runarchive dump <run_dir> <section> [--tsv]: the escape hatch. Opens
 // <run_dir>/run.atxrun and either prints a one-line section summary (default) or,
-// with --tsv, streams the section back out in the legacy loose-TSV shape —
-// columns in stored order, %.17g doubles / %lld i64 / %u u32 / decoded dict and
-// enum strings. For the backtest section that reproduces write_backtest_tsv
-// byte-for-byte (date + ts_ns + the 25 registry doubles + any per-signal series).
+// with --tsv, streams the section back out in a loose-TSV shape — columns in
+// stored order, %.17g doubles / %lld i64 / %u u32 / decoded dict and enum
+// strings. The byte-identical legacy TSV shape holds only for the backtest-schema
+// sections (backtest / projected_cold / projected_nodiv): they reproduce
+// write_backtest_tsv byte-for-byte (date + ts_ns + the 25 registry doubles + any
+// per-signal series). Other sections (e.g. contract_marks / reconciliation) are
+// NOT byte-identical to their legacy writers — an NA-able F64 stored as quiet NaN
+// prints here as "nan", where those writers emit "NA".
 // stdout is switched to binary so the emitted \n line endings are not translated.
 Status runarchive_dump_command(const fs::path &run_dir, const std::string &section_name, bool tsv) {
   ATX_TRY(RunArchive archive,

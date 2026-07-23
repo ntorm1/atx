@@ -1345,6 +1345,74 @@ Result<std::string> read_run_dir_file(const std::filesystem::path &path) {
   return Ok(std::move(text));
 }
 
+// Deep-copy one already-framed section from an opened archive into an owned,
+// re-writable RaSectionData (its column spans park in a fresh EncoderArena on
+// `storage`, so the returned section outlives the source archive). Columns are
+// reconstructed in stored order and dtype; dict/enum tables are copied entry by
+// entry, so re-encoding reproduces the same layout. Used by the merge-write path
+// to carry forward sections a later same-inputs write does not itself supply.
+RaSectionData carry_forward_section(const RaSectionView &view) {
+  auto arena = std::make_shared<EncoderArena>();
+  RaSectionData sec;
+  sec.name = std::string(view.name());
+  sec.kind = view.kind();
+  sec.n_rows = view.n_rows();
+  sec.columns.reserve(view.columns().size());
+  for (const RaColumnDescriptor &cd : view.columns()) {
+    const std::string_view cname(cd.name, cd.name_len);
+    std::string name(cname);
+    switch (cd.dtype) {
+    case RaDType::F64: {
+      const std::span<const double> s = view.f64_col(cname);
+      sec.columns.emplace_back(std::move(name),
+                               arena_f64(*arena, std::vector<double>(s.begin(), s.end())));
+      break;
+    }
+    case RaDType::I64: {
+      const std::span<const std::int64_t> s = view.i64_col(cname);
+      sec.columns.emplace_back(std::move(name),
+                               arena_i64(*arena, std::vector<std::int64_t>(s.begin(), s.end())));
+      break;
+    }
+    case RaDType::U32: {
+      const std::span<const std::uint32_t> s = view.u32_col(cname);
+      sec.columns.emplace_back(std::move(name),
+                               arena_u32(*arena, std::vector<std::uint32_t>(s.begin(), s.end())));
+      break;
+    }
+    case RaDType::U8Enum: {
+      const std::span<const std::uint8_t> codes = view.u8enum_col(cname);
+      const RaStringTable labels = view.u8enum_labels(cname);
+      std::vector<std::string> label_vec;
+      label_vec.reserve(labels.size());
+      for (std::size_t k = 0; k < labels.size(); ++k) {
+        label_vec.emplace_back(labels.at(k));
+      }
+      sec.columns.emplace_back(
+          std::move(name), arena_u8enum(*arena, std::vector<std::uint8_t>(codes.begin(), codes.end()),
+                                        std::move(label_vec)));
+      break;
+    }
+    case RaDType::DictStr: {
+      const RaDictColumn dc = view.dict_col(cname);
+      const std::span<const std::uint32_t> codes = dc.codes();
+      const RaStringTable table = dc.table();
+      std::vector<std::string> table_vec;
+      table_vec.reserve(table.size());
+      for (std::size_t k = 0; k < table.size(); ++k) {
+        table_vec.emplace_back(table.at(k));
+      }
+      sec.columns.emplace_back(
+          std::move(name), arena_dict(*arena, std::vector<std::uint32_t>(codes.begin(), codes.end()),
+                                      std::move(table_vec)));
+      break;
+    }
+    }
+  }
+  sec.storage = std::move(arena);
+  return sec;
+}
+
 } // namespace
 
 Result<RunSpec> RunDir::spec() const { return read_run_spec(dir_ / std::string(kRunSpecFile)); }
@@ -1383,9 +1451,71 @@ Result<std::uint64_t> RunDir::run_identity_hash() const {
 
 Status RunDir::write_run_archive(std::span<const RaSectionData> sections) const {
   ATX_TRY(const std::uint64_t identity, run_identity_hash());
+  const std::filesystem::path archive_path = dir_ / std::string(kRunArchiveFile);
+
+  // MERGE-WRITE with an identity-hash staleness guard. Two result-producing
+  // routes (run-backtest and run-projected-backtest) can target the same run dir
+  // and each supplies only its own sections; a plain full-overwrite would
+  // silently destroy the other route's sections. Instead, when an existing
+  // run.atxrun in this dir opens cleanly AND its header run_identity_hash equals
+  // the recomputed identity (i.e. the inputs are unchanged), carry forward every
+  // existing section whose name is NOT in the incoming write set, so the archive
+  // accumulates the UNION of both routes' results. On a name collision the NEW
+  // section wins (meta and diagnostics collide across routes — the freshest
+  // write is authoritative). If the inputs changed (identity differs) or the
+  // existing archive is unreadable/corrupt, we start FRESH from only the new
+  // sections: stale results must never mix with new inputs.
+  //
+  // open_file (not open_mapped) reads the existing archive into an owned buffer,
+  // so no OS file mapping is held across the tmp+rename replace below — on
+  // Windows a live mapping would make the rename fail.
+  std::vector<RaSectionData> carried; // owns the deep-copied carried sections
+  bool merge = false;
+  std::error_code ec;
+  if (std::filesystem::exists(archive_path, ec) && !ec) {
+    if (auto existing = RunArchive::open_file(archive_path.string());
+        existing && existing->header().run_identity_hash == identity) {
+      std::vector<std::string_view> incoming;
+      incoming.reserve(sections.size());
+      for (const RaSectionData &sd : sections) {
+        incoming.push_back(sd.name);
+      }
+      merge = true;
+      for (const RaSectionDescriptor &de : existing->directory()) {
+        const std::string_view carried_name = descriptor_name(de);
+        if (std::find(incoming.begin(), incoming.end(), carried_name) != incoming.end()) {
+          continue; // superseded by the incoming write (new-wins)
+        }
+        auto view = existing->section(carried_name);
+        if (!view) {
+          // A carried section fails per-section framing (payload tamper the
+          // header/metadata CRC did not cover) -> treat the archive as corrupt
+          // and start fresh rather than mix a bad section into the new write.
+          merge = false;
+          carried.clear();
+          break;
+        }
+        carried.push_back(carry_forward_section(*view));
+      }
+    }
+  }
+
   // created_ts_ns == 0 -> the writer fills from the system clock. Identity, not
   // the timestamp, is what pins the producing run.
-  return write_run_archive_file((dir_ / std::string(kRunArchiveFile)).string(), sections,
+  if (!merge || carried.empty()) {
+    return write_run_archive_file(archive_path.string(), sections,
+                                  /*created_ts_ns=*/0, identity);
+  }
+
+  std::vector<RaSectionData> merged;
+  merged.reserve(carried.size() + sections.size());
+  for (RaSectionData &c : carried) {
+    merged.push_back(std::move(c));
+  }
+  for (const RaSectionData &sd : sections) {
+    merged.push_back(sd); // copies spans + shared storage ptr; sources outlive the call
+  }
+  return write_run_archive_file(archive_path.string(), merged,
                                 /*created_ts_ns=*/0, identity);
 }
 

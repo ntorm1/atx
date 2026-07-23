@@ -585,6 +585,17 @@ public:
   // Publish <dir>/run.atxrun atomically (write_run_archive_file's tmp+rename),
   // stamping the computed run_identity_hash. created_ts_ns fills from the system
   // clock. Propagates every write_run_archive validation error plus IoError.
+  //
+  // MERGE-WRITE: two result-producing routes (run-backtest and
+  // run-projected-backtest) may share a run dir, each supplying only its own
+  // sections. If an existing run.atxrun opens cleanly AND its run_identity_hash
+  // equals the recomputed one (unchanged inputs), every existing section whose
+  // name is NOT in `sections` is carried forward, so the archive accumulates the
+  // UNION of both routes' results. On a name collision the NEW section wins (meta
+  // and diagnostics collide across routes). If the inputs changed (identity
+  // differs) or the existing archive is unreadable/corrupt, the write starts
+  // FRESH from only `sections` — stale results never mix with new inputs. The
+  // on-disk format is unchanged; merge-write only affects WHICH sections persist.
   [[nodiscard]] Status write_run_archive(std::span<const RaSectionData> sections) const;
 
   // open_mapped(<dir>/run.atxrun).
