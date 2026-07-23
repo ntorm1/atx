@@ -19,9 +19,18 @@
 #include "atx/vol/run_archive_schema.hpp"
 #include "atx/vol/types.hpp" // Result / Status
 
+// RunDir (below) returns these by value in Result<...>, so their full
+// definitions are needed here (a Result<T> instantiation needs a complete T).
+// This is the one place run_archive.hpp is not "light" — the encoders above stay
+// forward-declared; only the run-directory handle pulls the input types in.
+#include "atx/vol/backtest.hpp"                   // Clock (RunDir::clock)
+#include "atx/vol/dispersion_workflow.hpp"        // RunSpec (RunDir::spec)
+#include "atx/vol/listed_dispersion_schedule.hpp" // ListedDispersionSchedule (RunDir::schedule)
+
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <span>
 #include <string>
@@ -503,6 +512,99 @@ private:
   std::shared_ptr<const void> owner_{}; // keeps the backing alive
   RunArchiveHeader header_{};           // parsed copy
   std::vector<RaSectionDescriptor> directory_{}; // parsed copy, sorted by name
+};
+
+// ── RunDir: typed handle over a backtest run directory ───────────────────────
+//
+// A "run directory" is the on-disk home of one backtest invocation. It pairs the
+// AUTHORED / derived inputs the pipeline deliberately keeps as text TSV (the run
+// spec, universe schedule, surface manifest, trade schedule) with the single
+// binary result container run.atxrun (the economic result sections). RunDir owns
+// the directory path and provides:
+//   * typed reads of the retained text inputs — spec() / clock() / schedule() —
+//     that REUSE the library's existing TSV parsers (read_run_spec,
+//     read_manifest_file + Clock::from_manifest, read_listed_dispersion_schedule_
+//     file); RunDir never reimplements a parser;
+//   * write_run_archive(sections) — atomically publishes <dir>/run.atxrun with a
+//     deterministic run_identity_hash stamped in the header;
+//   * archive() — open_mapped(<dir>/run.atxrun);
+//   * verify() — the example orchestrator's acceptance gates (the verify_command
+//     in spy_dispersion_backtest.cpp) lifted to library level, now over the
+//     archive's sections (checked through the layered CRC) plus the retained text
+//     inputs.
+
+// Canonical file names inside a run directory (fixed by the pipeline layout).
+inline constexpr std::string_view kRunSpecFile = "run_spec.tsv";
+inline constexpr std::string_view kUniverseScheduleFile = "universe_schedule.tsv";
+inline constexpr std::string_view kSurfaceManifestFile = "surface_manifest.tsv";
+inline constexpr std::string_view kTradeScheduleFile = "trade_schedule.tsv";
+inline constexpr std::string_view kRunArchiveFile = "run.atxrun";
+
+// Default existence gate for verify(): the result sections a run-backtest
+// invocation folds into run.atxrun (the loose result TSVs that moved into the
+// container). Static storage so RunVerifyOptions::required_sections can default
+// to a span over it.
+inline constexpr std::string_view kRunBacktestRequiredSections[] = {
+    "backtest", "reconciliation", "contract_marks", "meta"};
+
+// Acceptance policy for RunDir::verify — the "methodology" knob: which result
+// sections run.atxrun must carry, and the core-mode date/roll/breadth floors
+// (lifted verbatim from the example's verify gate). Defaults match run-backtest.
+struct RunVerifyOptions {
+  std::span<const std::string_view> required_sections{kRunBacktestRequiredSections};
+  bool enforce_core_mode{true};
+  std::size_t core_min_dates{60};
+  std::size_t core_min_rolls{3};
+  std::uint32_t core_min_names_per_roll{40};
+};
+
+// Typed handle over a run directory. Cheap to construct — it stores the path
+// only; every accessor touches the filesystem lazily. Copyable and movable.
+class RunDir {
+public:
+  RunDir() = default;
+  explicit RunDir(std::filesystem::path dir) noexcept : dir_(std::move(dir)) {}
+
+  [[nodiscard]] const std::filesystem::path &path() const noexcept { return dir_; }
+  // <dir>/run.atxrun — the binary result container.
+  [[nodiscard]] std::filesystem::path archive_path() const { return dir_ / kRunArchiveFile; }
+
+  // ── Retained text inputs (reuse the library's TSV parsers) ────────────────
+  [[nodiscard]] Result<RunSpec> spec() const;                      // run_spec.tsv
+  [[nodiscard]] Result<Clock> clock() const;                       // surface_manifest.tsv
+  [[nodiscard]] Result<ListedDispersionSchedule> schedule() const; // trade_schedule.tsv
+
+  // Deterministic identity of the producing run: a wyhash fold of the run_spec
+  // bytes and the authored input fingerprint(s) — the same atx::core::hash_bytes
+  // the orchestrator fingerprints inputs with (hash_file). run_spec.tsv is
+  // REQUIRED (a run dir without it is not a run); the universe schedule is folded
+  // in when present. Forced nonzero (0 == "unset" in the header). Deterministic
+  // for identical input bytes on one platform/binary.
+  [[nodiscard]] Result<std::uint64_t> run_identity_hash() const;
+
+  // Publish <dir>/run.atxrun atomically (write_run_archive_file's tmp+rename),
+  // stamping the computed run_identity_hash. created_ts_ns fills from the system
+  // clock. Propagates every write_run_archive validation error plus IoError.
+  [[nodiscard]] Status write_run_archive(std::span<const RaSectionData> sections) const;
+
+  // open_mapped(<dir>/run.atxrun).
+  [[nodiscard]] Result<RunArchive> archive() const;
+
+  // Acceptance gates over the archive sections + the retained text inputs:
+  //   envelope  — run.atxrun opens (framing + header/metadata CRC) and every
+  //               section's payload CRC validates (validate_all);
+  //   existence — every options.required_sections section is present + framed;
+  //   count     — the backtest section is non-empty and its row count matches the
+  //               reconciliation section's (the per-session cardinality the
+  //               pipeline cross-checks in validate_listed_reconciliation_backtest);
+  //   inputs    — spec / clock / schedule all parse, and the schedule passes its
+  //               structural + vega-arithmetic validation;
+  //   core-mode — when the resolved spec sets core_mode, the date / roll / breadth
+  //               floors hold (>= 60 dates, >= 3 rolls, >= 40 names per roll).
+  [[nodiscard]] Status verify(const RunVerifyOptions &options = {}) const;
+
+private:
+  std::filesystem::path dir_{};
 };
 
 } // namespace atx::vol

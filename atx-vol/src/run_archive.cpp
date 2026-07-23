@@ -38,10 +38,12 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
+#include "atx/core/hash.hpp"               // hash_bytes / hash_combine (RunDir identity)
 #include "atx/tsdb/mapping.hpp"            // tsdb::Mapping (read-only mmap seam)
-#include "atx/vol/backtest.hpp"            // BacktestResult (Task 5 encoders)
+#include "atx/vol/backtest.hpp"            // BacktestResult, Clock (Task 5 encoders / RunDir)
+#include "atx/vol/corpus.hpp"              // CorpusManifest, read_manifest_file (RunDir::clock)
 #include "atx/vol/detail/archive_util.hpp" // crc32c, crc32c_update, align_up
-#include "atx/vol/dispersion_workflow.hpp" // RunSpec (Task 5 meta encoder)
+#include "atx/vol/dispersion_workflow.hpp" // RunSpec, read_run_spec (Task 5 meta / RunDir::spec)
 #include "atx/vol/listed_dispersion_reconciliation.hpp"
 #include "atx/vol/listed_dispersion_schedule.hpp"
 #include "atx/vol/surface_archive.hpp" // ArchiveContentIdentity (F6 identity)
@@ -1322,6 +1324,130 @@ RaDictColumn RaSectionView::dict_col(std::string_view name) const noexcept {
       reinterpret_cast<const std::uint32_t *>(base_ + cd->data_offset),
       static_cast<std::size_t>(header_.n_rows)};
   return RaDictColumn{codes, string_table(*cd)};
+}
+
+// ── RunDir: typed run-directory handle ───────────────────────────────────────
+
+namespace {
+
+// Read a whole run-dir text file into a string (binary). NotFound if it cannot
+// be opened. Mirrors the orchestrator's read_text — the retained text inputs are
+// small (run spec / universe schedule), so a one-shot slurp is fine.
+Result<std::string> read_run_dir_file(const std::filesystem::path &path) {
+  std::ifstream stream(path, std::ios::binary);
+  if (!stream) {
+    return Err(ErrorCode::NotFound, "RunDir: cannot open " + path.string());
+  }
+  std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+  if (!stream.good() && !stream.eof()) {
+    return Err(ErrorCode::IoError, "RunDir: cannot read " + path.string());
+  }
+  return Ok(std::move(text));
+}
+
+} // namespace
+
+Result<RunSpec> RunDir::spec() const { return read_run_spec(dir_ / std::string(kRunSpecFile)); }
+
+Result<Clock> RunDir::clock() const {
+  // surface_manifest.tsv is the timeline source; Clock::from_manifest enumerates
+  // one ref per unique Ok date (the same path the orchestrator uses).
+  ATX_TRY(CorpusManifest manifest,
+          read_manifest_file((dir_ / std::string(kSurfaceManifestFile)).string()));
+  return Clock::from_manifest(manifest);
+}
+
+Result<ListedDispersionSchedule> RunDir::schedule() const {
+  return read_listed_dispersion_schedule_file((dir_ / std::string(kTradeScheduleFile)).string());
+}
+
+Result<std::uint64_t> RunDir::run_identity_hash() const {
+  // run_spec.tsv is the run's defining input — required. Fold the authored
+  // universe schedule when present (an input fingerprint). hash_bytes is the same
+  // wyhash the orchestrator fingerprints inputs with (hash_file), so a RunDir
+  // identity is comparable to those fingerprints; deterministic for identical
+  // input bytes on one platform/binary. 0 is reserved for "unset" in the header,
+  // so the result is forced nonzero.
+  ATX_TRY(std::string spec_bytes, read_run_dir_file(dir_ / std::string(kRunSpecFile)));
+  std::uint64_t identity = atx::core::hash_bytes(spec_bytes.data(), spec_bytes.size());
+  const std::filesystem::path universe = dir_ / std::string(kUniverseScheduleFile);
+  std::error_code ec;
+  if (std::filesystem::exists(universe, ec) && !ec) {
+    ATX_TRY(std::string universe_bytes, read_run_dir_file(universe));
+    identity = atx::core::hash_combine(
+        static_cast<std::size_t>(identity),
+        atx::core::hash_bytes(universe_bytes.data(), universe_bytes.size()));
+  }
+  return Ok(identity == 0 ? std::uint64_t{1} : identity);
+}
+
+Status RunDir::write_run_archive(std::span<const RaSectionData> sections) const {
+  ATX_TRY(const std::uint64_t identity, run_identity_hash());
+  // created_ts_ns == 0 -> the writer fills from the system clock. Identity, not
+  // the timestamp, is what pins the producing run.
+  return write_run_archive_file((dir_ / std::string(kRunArchiveFile)).string(), sections,
+                                /*created_ts_ns=*/0, identity);
+}
+
+Result<RunArchive> RunDir::archive() const {
+  return RunArchive::open_mapped((dir_ / std::string(kRunArchiveFile)).string());
+}
+
+Status RunDir::verify(const RunVerifyOptions &options) const {
+  // 1. Envelope: run.atxrun opens (framing + header/metadata CRC), and every
+  //    section's payload CRC validates against both its header and its directory
+  //    copy — the layered integrity check the loose result TSVs never had.
+  ATX_TRY(RunArchive archive, this->archive());
+  ATX_TRY_VOID(archive.validate_all());
+
+  // 2. Existence: every required result section is present AND framed. section()
+  //    validates the record's framing before returning a view, so a miss is
+  //    either NotFound (absent) or ParseError (corrupt framing).
+  for (const std::string_view name : options.required_sections) {
+    if (!archive.section(name)) {
+      return Err(ErrorCode::NotFound,
+                 "RunDir::verify: missing or unframed section '" + std::string(name) + "'");
+    }
+  }
+
+  // 3. Retained text inputs parse, and the schedule passes its structural +
+  //    vega-arithmetic validation (the example's validate_listed_dispersion_
+  //    schedule). spec drives the core-mode gate below; clock supplies the date
+  //    count.
+  ATX_TRY(RunSpec spec, this->spec());
+  ATX_TRY(Clock clock, this->clock());
+  ATX_TRY(ListedDispersionSchedule schedule, this->schedule());
+  ATX_TRY_VOID(validate_listed_dispersion_schedule(schedule));
+
+  // 4. Count: the backtest series is non-empty and matches the reconciliation
+  //    series row-for-row — the per-session cardinality the pipeline cross-checks
+  //    in validate_listed_reconciliation_backtest (now enforced over the archive
+  //    sections rather than the loose TSVs).
+  ATX_TRY(RaSectionView backtest, archive.section("backtest"));
+  if (backtest.n_rows() == 0) {
+    return Err(ErrorCode::InvalidArgument, "RunDir::verify: empty backtest section");
+  }
+  if (auto reconciliation = archive.section("reconciliation");
+      reconciliation && reconciliation->n_rows() != backtest.n_rows()) {
+    return Err(ErrorCode::InvalidArgument,
+               "RunDir::verify: backtest/reconciliation row-count disagreement");
+  }
+
+  // 5. Core-mode acceptance: the date / roll / breadth floors (lifted verbatim
+  //    from the example) when the resolved spec runs in core mode.
+  if (options.enforce_core_mode && spec.core_mode) {
+    if (clock.size() < options.core_min_dates ||
+        schedule.rolls.size() < options.core_min_rolls) {
+      return Err(ErrorCode::Unavailable, "RunDir::verify: core date/roll acceptance gate failed");
+    }
+    for (const ListedScheduleRoll &roll : schedule.rolls) {
+      if (roll.n_names < options.core_min_names_per_roll) {
+        return Err(ErrorCode::Unavailable,
+                   "RunDir::verify: core roll breadth acceptance gate failed");
+      }
+    }
+  }
+  return Ok();
 }
 
 } // namespace atx::vol

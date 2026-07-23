@@ -13,8 +13,10 @@
 #include "atx/vol/run_archive_schema.hpp"
 
 #include "atx/vol/backtest.hpp"            // BacktestResult (Task 5 encoders)
+#include "atx/vol/corpus.hpp"              // CorpusManifest (RunDir::clock via manifest)
 #include "atx/vol/detail/archive_util.hpp" // crc32c (independent CRC check)
 #include "atx/vol/dispersion_workflow.hpp" // RunSpec (Task 5 meta encoder)
+#include "atx/vol/listed_dispersion.hpp"   // ListedDispersionSelection (RunDir schedule fixture)
 #include "atx/vol/listed_dispersion_reconciliation.hpp"
 #include "atx/vol/listed_dispersion_schedule.hpp"
 #include "atx/vol/surface_archive.hpp" // ArchiveContentIdentity (identity())
@@ -30,6 +32,7 @@
 #include <fstream>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -1055,6 +1058,339 @@ TEST(RunArchiveEncoders, WritesPythonFixture) {
   EXPECT_EQ(mv->dict_col("key").at(2), "date_hi");
   EXPECT_EQ(mv->dict_col("value").at(2), "2026-07-12");
   EXPECT_TRUE(ar->validate_all().has_value());
+}
+
+// ── Task 7: RunDir (typed run-directory handle + verify) ─────────────────────
+//
+// verify() lifts the example orchestrator's acceptance gates to library level,
+// so the fixtures below reconstruct a well-formed run dir with the LIBRARY
+// writers: run_spec via write_resolved_spec, surface_manifest via
+// write_manifest_file, trade_schedule via write_listed_dispersion_schedule_file,
+// and run.atxrun via RunDir::write_run_archive.
+
+constexpr std::int64_t kRdValuation = 1'700'000'000'000'000'000LL;
+constexpr std::int64_t kRdExpiry = kRdValuation + 30 * static_cast<std::int64_t>(kListedNsPerDay);
+
+ListedOptionQuote rd_option(const std::string& symbol, std::uint32_t id, Side side) {
+  ListedOptionQuote q;
+  q.trade_date = "2026-07-10";
+  q.symbol = symbol;
+  q.instrument_id = id;
+  q.raw_symbol = symbol + std::to_string(id);
+  q.expiry_ts_ns = kRdExpiry;
+  q.strike = symbol == "SPY" ? 500.0 : 100.0;
+  q.side = side;
+  q.bid = 2.0 + static_cast<double>(id) * 0.01;
+  q.ask = q.bid + 0.2;
+  q.quote_ts_ns = kRdValuation;
+  q.multiplier = 100.0;
+  q.standard_monthly = true;
+  q.standard_deliverable = true;
+  q.source_fingerprint = 1000u + id;
+  return q;
+}
+
+ListedStraddle rd_straddle(std::string symbol, std::uint32_t uid, std::uint32_t id,
+                           double raw_weight, double normalized_weight) {
+  ListedStraddle s;
+  s.symbol = std::move(symbol);
+  s.uid = uid;
+  s.expiry_ts_ns = kRdExpiry;
+  s.strike = s.symbol == "SPY" ? 500.0 : 100.0;
+  s.call = rd_option(s.symbol, id, Side::Call);
+  s.put = rd_option(s.symbol, id + 1, Side::Put);
+  s.raw_weight = raw_weight;
+  s.normalized_weight = normalized_weight;
+  return s;
+}
+
+// A schedule with one valid roll (index straddle + one name straddle), built
+// through build_listed_dispersion_roll so it satisfies the vega arithmetic that
+// validate_listed_dispersion_schedule (called inside verify) re-checks. The
+// recipe mirrors listed_dispersion_schedule_test.cpp.
+ListedDispersionSchedule make_valid_schedule() {
+  ListedDispersionSelection sel;
+  sel.trade_date = "2026-07-10";
+  sel.valuation_ts_ns = kRdValuation;
+  sel.expiry_ts_ns = kRdExpiry;
+  sel.dte_days = 30.0;
+  sel.index = rd_straddle("SPY", 1u, 1u, 0.0, 0.0);
+  sel.names.push_back(rd_straddle("N0", 2u, 3u, 1.0, 1.0));
+
+  const ListedRiskLookup risks = [](std::uint32_t uid,
+                                    const ListedOptionQuote& q) -> Result<ListedOptionRisk> {
+    double vega = 0.0;
+    if (uid == 1u) {
+      vega = 10.0;
+    } else if (uid == 2u) {
+      vega = q.side == Side::Call ? 8.0 : 12.0;
+    } else {
+      return atx::core::Err(atx::core::ErrorCode::NotFound, "missing risk");
+    }
+    const double delta = q.side == Side::Call ? 0.55 : -0.45;
+    return atx::core::Ok(ListedOptionRisk{0.5 * (q.bid + q.ask), delta, vega});
+  };
+
+  ListedScheduleBuildConfig cfg;
+  cfg.gross_index_vega_target_per_vol_point = 10000.0;
+  cfg.cohort = 1u;
+  cfg.surface_fingerprint = 987654321u;
+  auto roll = build_listed_dispersion_roll(sel, risks, cfg);
+  EXPECT_TRUE(roll.has_value()) << (roll ? "" : roll.error().to_string());
+  ListedDispersionSchedule schedule;
+  if (roll) {
+    schedule.rolls.push_back(std::move(*roll));
+  }
+  return schedule;
+}
+
+// A manifest with `n_dates` Ok dates -> Clock::from_manifest yields n_dates refs.
+CorpusManifest make_manifest(std::size_t n_dates) {
+  CorpusManifest manifest;
+  for (std::size_t i = 0; i < n_dates; ++i) {
+    char date[16] = {};
+    std::snprintf(date, sizeof date, "2026-07-%02zu", i + 1);
+    manifest.dates.emplace_back(date);
+    CorpusEntry entry;
+    entry.date = date;
+    entry.symbol = "SPY";
+    entry.status = CorpusFitStatus::Ok;
+    entry.n_slices = 1u;
+    entry.archive_path = std::string(date) + ".atxvsa";
+    manifest.entries.push_back(std::move(entry));
+  }
+  manifest.n_boards = static_cast<std::uint32_t>(n_dates);
+  manifest.n_ok = static_cast<std::uint32_t>(n_dates);
+  return manifest;
+}
+
+// Two reconciliation rows + two contract marks (encode_* build the sections).
+ListedDispersionReconciliation make_reconciliation() {
+  ListedDispersionReconciliation rec;
+  for (int i = 0; i < 2; ++i) {
+    ListedReconciliationRow row;
+    row.date = i == 0 ? "2026-07-11" : "2026-07-12";
+    row.valuation_ts_ns = 100 + i;
+    row.held_cohort = 1;
+    row.model_option_pnl = 1.0 + i;
+    row.quote_mid_pnl = 1.0;
+    row.model_minus_quote_pnl = static_cast<double>(i);
+    row.model_nav = 10.0 + i;
+    row.quote_mid_nav = 9.0;
+    row.quote_mid_coverage = 0.5;
+    row.n_held_lots = 2;
+    row.n_quote_mid_lots = 1;
+    rec.rows.push_back(row);
+
+    ListedContractMark mark;
+    mark.date = row.date;
+    mark.valuation_ts_ns = row.valuation_ts_ns;
+    mark.role = ListedMarkRole::Entry;
+    mark.cohort = 1;
+    mark.symbol = "SPY";
+    mark.uid = 7;
+    mark.instrument_id = 77;
+    mark.raw_symbol = "SPY   260731C00500000";
+    mark.expiry_ts_ns = 999;
+    mark.strike = 500.0;
+    mark.side = Side::Call;
+    mark.quantity = 1.0;
+    mark.multiplier = 100.0;
+    mark.status = ListedMarkStatus::Ok;
+    mark.raw_bid = 1.0;
+    mark.raw_ask = 1.2;
+    mark.raw_mid = 1.1;
+    mark.model_mark = 1.05;
+    mark.model_in_spread = true;
+    rec.marks.push_back(mark);
+  }
+  return rec;
+}
+
+// Write the retained TEXT inputs of a run dir via the library writers.
+void write_run_dir_text_inputs(const std::filesystem::path& dir, bool core_mode,
+                               std::size_t n_dates) {
+  std::error_code ec;
+  std::filesystem::create_directories(dir, ec);
+  ASSERT_FALSE(ec) << ec.message();
+
+  RunSpec spec;
+  spec.label = "rundir-test";
+  spec.date_lo = "2026-07-10";
+  spec.date_hi = "2026-07-10";
+  spec.opra_root = "/data/opra";
+  spec.universe_path = dir / std::string(kUniverseScheduleFile);
+  // read_run_spec rejects a core-mode spec with < 40 names / < 80% coverage, so
+  // keep the spec valid in both modes.
+  spec.min_names = 40;
+  spec.min_weight_coverage = 0.8;
+  spec.core_mode = core_mode;
+  ASSERT_TRUE(write_resolved_spec(dir / std::string(kRunSpecFile), spec).has_value());
+
+  // universe_schedule.tsv is folded into the run identity (not parsed by RunDir).
+  {
+    std::ofstream u(dir / std::string(kUniverseScheduleFile), std::ios::binary | std::ios::trunc);
+    u << "effective_date\tsymbol\traw_weight\tsource\tas_of\n"
+      << "2026-07-10\tSPY\t1.0\tauthored\t2026-07-10\n";
+    ASSERT_TRUE(u.good());
+  }
+
+  ASSERT_TRUE(write_manifest_file((dir / std::string(kSurfaceManifestFile)).string(),
+                                  make_manifest(n_dates))
+                  .has_value());
+  ASSERT_TRUE(write_listed_dispersion_schedule_file(
+                  (dir / std::string(kTradeScheduleFile)).string(), make_valid_schedule())
+                  .has_value());
+}
+
+// Write run.atxrun via RunDir. The BacktestResult is spanned in place by
+// encode_backtest_section, so it MUST outlive the write call (RaColumnData rule);
+// keeping it local to this function guarantees that.
+void write_run_dir_archive(const std::filesystem::path& dir) {
+  const BacktestResult r = make_encoder_fixture_result();  // 2 rows; outlives write
+  const ListedDispersionReconciliation rec = make_reconciliation(); // 2 rows + 2 marks
+  RunSpec spec;
+  spec.label = "rundir-test";
+  spec.date_lo = "2026-07-10";
+  spec.date_hi = "2026-07-10";
+
+  std::vector<RaSectionData> sections;
+  sections.push_back(encode_backtest_section("backtest", r));  // borrows r
+  sections.push_back(encode_reconciliation_section(rec));      // arena-owned
+  sections.push_back(encode_contract_marks_section(rec));      // arena-owned
+  sections.push_back(encode_meta_section(spec));               // arena-owned
+
+  const RunDir run_dir(dir);
+  const auto st = run_dir.write_run_archive(sections);
+  ASSERT_TRUE(st.has_value()) << st.error().to_string();
+}
+
+std::filesystem::path fresh_run_dir(std::string_view name) {
+  const std::filesystem::path dir = std::filesystem::temp_directory_path() / name;
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+  return dir;
+}
+
+TEST(RunDir, ReadsInputsAndArchive) {
+  const std::filesystem::path dir = fresh_run_dir("atx_rundir_inputs_test");
+  write_run_dir_text_inputs(dir, /*core_mode=*/false, /*n_dates=*/1);
+  write_run_dir_archive(dir);
+
+  const RunDir run_dir(dir);
+  EXPECT_EQ(run_dir.path(), dir);
+  EXPECT_EQ(run_dir.archive_path(), dir / "run.atxrun");
+
+  // Retained text inputs read back through the library parsers.
+  auto spec = run_dir.spec();
+  ASSERT_TRUE(spec.has_value()) << spec.error().to_string();
+  EXPECT_EQ(spec->date_lo, "2026-07-10");
+  auto clock = run_dir.clock();
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  EXPECT_EQ(clock->size(), 1u);
+  auto schedule = run_dir.schedule();
+  ASSERT_TRUE(schedule.has_value()) << schedule.error().to_string();
+  EXPECT_EQ(schedule->rolls.size(), 1u);
+
+  // The binary result container opens (mapped) with the stamped identity.
+  auto id = run_dir.run_identity_hash();
+  ASSERT_TRUE(id.has_value()) << id.error().to_string();
+  EXPECT_NE(*id, 0u);
+  EXPECT_EQ(run_dir.run_identity_hash().value(), *id); // deterministic
+  auto archive = run_dir.archive();
+  ASSERT_TRUE(archive.has_value()) << archive.error().to_string();
+  EXPECT_EQ(archive->header().run_identity_hash, *id);
+  EXPECT_EQ(archive->section("backtest").value().f64_col("nav")[1], 101.5);
+
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+}
+
+TEST(RunDir, VerifyPassesOnWellFormedRun) {
+  const std::filesystem::path dir = fresh_run_dir("atx_rundir_verify_ok_test");
+  write_run_dir_text_inputs(dir, /*core_mode=*/false, /*n_dates=*/1);
+  write_run_dir_archive(dir);
+
+  const RunDir run_dir(dir);
+  const auto st = run_dir.verify();
+  EXPECT_TRUE(st.has_value()) << st.error().to_string();
+
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+}
+
+TEST(RunDir, VerifyFailsOnCorruptedSectionCrc) {
+  const std::filesystem::path dir = fresh_run_dir("atx_rundir_verify_crc_test");
+  write_run_dir_text_inputs(dir, /*core_mode=*/false, /*n_dates=*/1);
+  write_run_dir_archive(dir);
+  const std::filesystem::path archive_path = dir / "run.atxrun";
+
+  // Flip the last byte of the first section's payload extent (sorted first ->
+  // "backtest"), exactly the tamper LazyCrcCatchesPayloadTamper exercises. The
+  // framing / header / metadata CRCs are untouched, so open_mapped still
+  // succeeds; verify() must fail at the lazy per-section validate_all gate.
+  std::vector<char> bytes;
+  {
+    std::ifstream in(archive_path, std::ios::binary | std::ios::ate);
+    ASSERT_TRUE(in.good());
+    const std::streamsize size = in.tellg();
+    bytes.resize(static_cast<std::size_t>(size));
+    in.seekg(0);
+    in.read(bytes.data(), size);
+    ASSERT_EQ(in.gcount(), size);
+  }
+  RunArchiveHeader h{};
+  std::memcpy(&h, bytes.data(), sizeof h);
+  RaSectionDescriptor d0{};
+  std::memcpy(&d0, bytes.data() + h.section_dir_offset, sizeof d0);
+  ASSERT_EQ(std::string_view(d0.name, 8), "backtest");
+  bytes.at(static_cast<std::size_t>(d0.section_offset + d0.section_size - 1)) ^= static_cast<char>(0xFF);
+  {
+    std::ofstream out(archive_path, std::ios::binary | std::ios::trunc);
+    ASSERT_TRUE(out.good());
+    out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    ASSERT_TRUE(out.good());
+  }
+
+  const RunDir run_dir(dir);
+  const auto st = run_dir.verify();
+  ASSERT_FALSE(st.has_value());
+  EXPECT_EQ(st.error().code(), atx::core::ErrorCode::ParseError);
+
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+}
+
+TEST(RunDir, VerifyFailsOnMissingArchive) {
+  const std::filesystem::path dir = fresh_run_dir("atx_rundir_verify_missing_test");
+  write_run_dir_text_inputs(dir, /*core_mode=*/false, /*n_dates=*/1);
+  // Deliberately DO NOT write run.atxrun.
+  const RunDir run_dir(dir);
+  EXPECT_FALSE(run_dir.verify().has_value());
+  EXPECT_FALSE(run_dir.archive().has_value());
+
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+}
+
+TEST(RunDir, VerifyEnforcesCoreModeGate) {
+  // core_mode with only 1 admitted date fails the >= 60-date acceptance floor.
+  const std::filesystem::path dir = fresh_run_dir("atx_rundir_verify_core_test");
+  write_run_dir_text_inputs(dir, /*core_mode=*/true, /*n_dates=*/1);
+  write_run_dir_archive(dir);
+
+  const RunDir run_dir(dir);
+  const auto st = run_dir.verify();
+  ASSERT_FALSE(st.has_value());
+  EXPECT_EQ(st.error().code(), atx::core::ErrorCode::Unavailable);
+
+  // The same run passes when the core-mode gate is disabled by policy.
+  RunVerifyOptions relaxed;
+  relaxed.enforce_core_mode = false;
+  EXPECT_TRUE(run_dir.verify(relaxed).has_value());
+
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
 }
 
 }  // namespace
