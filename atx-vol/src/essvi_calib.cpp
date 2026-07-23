@@ -359,17 +359,21 @@ void residuals_and_jac(std::span<const FitObs> obs, const ThetaBand& band,
   return prev_sse;
 }
 
-// Lee (2004) wing-slope projection: if θ·φ·(1+|ρ|) > 4/T shrink `p` (which
-// scales φ) by bisection to the largest admissible value. Returns true if it
-// fired. The Mingone cube already enforces the (T-free) butterfly bound; this
-// adds Lee's tighter short-dated bound.
+// Lee (2004) wing-slope projection: if θ·φ·(1+|ρ|) > 4 shrink `p` (which scales
+// φ) by bisection to the largest admissible value. Returns true if it fired.
+// FT-C3: with θ = TOTAL variance the Lee/Gatheral wing-slope constraint is T-FREE
+// — θ·φ·(1+|ρ|) ≤ 4 — exactly the bound the Mingone cube's essvi_phi_max already
+// enforces (b1 = 4/(θ(1+|ρ|))). The previous 4/T form was a no-op for T<1 and
+// over-tight for T>1: a 2y high-vol steep-skew slice with θφ(1+|ρ|)≈2.7 ≤ 4 was
+// silently flattened to 4/T = 2. This projection is now redundant with the cube
+// clamp but harmless — kept as an explicit belt-and-braces wing gate.
 bool lee_project(double& psi, double& p, double& lambda, const ThetaBand& band,
                  double T) noexcept {
   const EssviNatural n = cube_to_natural(psi, p, lambda, band);
   if (!(T > 0.0) || !(n.theta > 0.0) || !(n.phi > 0.0)) {
     return false;
   }
-  const double rhs = 4.0 / T;
+  const double rhs = 4.0;
   if (n.theta * n.phi * (1.0 + std::fabs(n.rho)) <= rhs) {
     return false;
   }

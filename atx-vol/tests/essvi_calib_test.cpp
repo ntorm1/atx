@@ -123,6 +123,58 @@ TEST(EssviFitSlice, RecoversSyntheticSlice_WithinFewBps) {
   EXPECT_NEAR(fit.rho, rho_true, 3.0e-2);
 }
 
+// FT-C3 (B3a): eSSVI lee_project enforced theta*phi*(1+|rho|) <= 4/T with theta =
+// TOTAL variance. The true Lee/Gatheral wing constraint in total variance is
+// T-free (theta*phi*(1+|rho|) <= 4 — exactly the Mingone cube's own bound
+// essvi_phi_max). At T > 1 the 4/T form is over-tight (4/T = 2 at T = 2): a
+// high-vol steep-skew 2y slice whose wing slope is admissible (2.69 <= 4) but
+// exceeds 4/T gets its wings silently flattened below market. Post-fix the wings
+// track the quotes.
+TEST(EssviFitSlice, LongDatedSteepWings_NotFlattenedByLeeProjection) {
+  const double theta_true = 1.20;   // high ATM total variance (sigma_atm ~ 0.77 @ T=2)
+  const double phi_true = 1.40;
+  const double rho_true = -0.60;    // steep skew
+  const double T = 2.0;
+  const double F = 100.0;
+  // theta*phi*(1+|rho|) = 1.2*1.4*1.6 = 2.688 : admissible (<= 4) but > 4/T = 2.
+  const EssviParams truth = backbone(theta_true, phi_true, rho_true, T);
+
+  std::vector<FitObs> obs;
+  const int n = 41;
+  for (int i = 0; i < n; ++i) {
+    const double k = -0.80 + 1.60 * static_cast<double>(i) / static_cast<double>(n - 1);
+    const double w = essvi_backbone_w(truth, k);
+    FitObs o{};
+    o.k = k;
+    o.w_mkt = w;
+    o.sigma_mkt = std::sqrt(w / T);
+    o.weight_w = 1.0;
+    o.active_weight_w = 1.0;
+    o.F = F;
+    o.K = F * std::exp(k);
+    o.df = 1.0;
+    obs.push_back(o);
+  }
+
+  FitDiag diag{};
+  const auto res = essvi_fit_slice(obs, T, F, calib_default_opts(), &diag);
+  ASSERT_TRUE(res.has_value());
+  const EssviParams& fit = *res;
+
+  // The fitted wing slope must NOT be clamped to the over-tight 4/T = 2.
+  const double wing = fit.theta * fit.phi * (1.0 + std::fabs(fit.rho));
+  EXPECT_GT(wing, 2.3)
+      << "fitted wing slope clamped to the over-tight 4/T bound: " << wing;
+
+  // Deep-wing IV must track the quotes (a few bps), not be flattened below them.
+  double max_dv = 0.0;
+  for (int i = 0; i < n; ++i) {
+    const double dv = std::fabs(slice_iv(fit, obs[i].k, T) - obs[i].sigma_mkt);
+    max_dv = std::max(max_dv, dv);
+  }
+  EXPECT_LT(max_dv, 3.0e-3) << "wing IV flattened below quotes (max dv=" << max_dv << ")";
+}
+
 TEST(EssviFitSlice, ThetaFloor_RaisesAtmTotalVariance) {
   // Observations generated from a LOW ATM total variance (theta = 0.04).
   const double theta_true = 0.040;

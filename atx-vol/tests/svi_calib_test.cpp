@@ -716,4 +716,33 @@ TEST(SviCalib, KinkedShortDatedSmile_ReturnsBoxConsistentNonFlatSlice) {
       << " rmse_flat=" << rmse_flat << " b=" << fit.b;
 }
 
+// FT-C3 (B3b): the SVI-MM "Lee bound" used b*(1+|rho|) <= 4/T with w = TOTAL
+// variance. The correct total-variance wing-slope bound is T-free: b*(1+|rho|)
+// <= 4. At short T the 4/T form is huge (T=1wk -> 4/T ~ 208), so a
+// moment-exploding wing (b*(1+|rho|)=100) passed the "Lee" gate untouched. Both
+// the admissibility check and the projector must use the T-free bound.
+TEST(SviMmCalib, ShortDatedSteepWing_LeeBoundIsTFree) {
+  const double T = 1.0 / 52.0;  // ~1 week
+  // (1) The admissibility CHECK must flag it. Today 4/T ~ 208 >= 100 => 0 viol.
+  {
+    SviParams s{};
+    s.a = 0.01; s.b = 100.0; s.rho = 0.0; s.m = 0.0; s.sigma = 0.05; s.T = T;
+    EXPECT_GT(arb_check_butterfly_svi_mm(s, T).n_violations, 0u)
+        << "moment-exploding short-dated wing must be flagged (T-free Lee bound)";
+  }
+  // (2) The PROJECTOR must pull the wing back under the T-free bound. Today it
+  //     leaves b = 100 (4/T bound never binds), so nothing moves on the Lee axis.
+  {
+    SviParams s{};
+    s.a = 0.01; s.b = 100.0; s.rho = 0.0; s.m = 0.0; s.sigma = 0.05; s.T = T;
+    const bool moved = atx::vol::svi_project_mm(s, T);
+    EXPECT_TRUE(moved) << "steep short-dated wing must be projected";
+    EXPECT_LE(s.b * (1.0 + std::fabs(s.rho)), 4.0 + 1.0e-6)
+        << "projected wing slope still exceeds the T-free Lee bound: "
+        << s.b * (1.0 + std::fabs(s.rho));
+    EXPECT_EQ(arb_check_butterfly_svi_mm(s, T).n_violations, 0u)
+        << "projected slice must be admissible under the T-free bound";
+  }
+}
+
 }  // namespace

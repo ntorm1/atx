@@ -99,11 +99,12 @@ TEST(VolCurve, SviServedSliceIsButterflyAdmissible) {
 
 TEST(VolCurve, SviProjectMmRepairsLeeViolation) {
   // The gate PROJECTS an inadmissible fit before rejecting; verify that repair
-  // primitive directly. A steep-wing slice (b*(1+|rho|) far past 4/T) is Lee-
-  // inadmissible; svi_project_mm must move it back into the polytope.
+  // primitive directly. A steep-wing slice (b*(1+|rho|) past the T-free Lee bound
+  // of 4) is Lee-inadmissible; svi_project_mm must move it back into the polytope.
+  // FT-C3: the bound is T-free, so b*(1+|rho|)=6 > 4 is inadmissible at any T.
   SviParams s{};
   s.a = 0.04;
-  s.b = 4.0;  // b*(1+|rho|) = 4 >> 4/T = 2  (T = 2)
+  s.b = 6.0;  // b*(1+|rho|) = 6 > 4 (T-free Lee bound)
   s.rho = 0.0;
   s.m = 0.0;
   s.sigma = 0.1;

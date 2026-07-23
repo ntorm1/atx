@@ -489,9 +489,13 @@ bool mm_project_admissible(double T, double &a, double &b, double &rho,
     rho = -1.0 + edge_rho;
     touched = true;
   }
-  // Lee: shrink b if b*(1+|rho|) exceeds 4/T - edge_lee.
+  // Lee: shrink b if b*(1+|rho|) exceeds the T-free bound 4 - edge_lee.
+  // FT-C3: with w = TOTAL variance the wing-slope bound is T-FREE (b*(1+|rho|) <=
+  // 4), matching the eSSVI/Mingone-cube convention. The old 4/T form was a no-op
+  // for T>1 and vacuous for short T (T=1wk => bound ~208), so moment-exploding
+  // short-dated wings passed the "Lee" gate untouched.
   {
-    const double lee_max = (4.0 / T - edge_lee) / (1.0 + std::fabs(rho));
+    const double lee_max = (4.0 - edge_lee) / (1.0 + std::fabs(rho));
     if (lee_max > 0.0 && b > lee_max) {
       b = lee_max;
       touched = true;
