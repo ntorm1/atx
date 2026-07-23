@@ -471,3 +471,95 @@ TEST(ListedDispersionPipeline, BuildScheduleSymbolIsDeclared) {
   const BuilderFn fn = &build_listed_dispersion_schedule;
   EXPECT_NE(reinterpret_cast<const void *>(fn), nullptr);
 }
+
+// ── Task 4 — project_listed_schedule + I1 two-route cold parity (M6, I1) ──────
+//
+// project_listed_schedule authors the projected_schedule marks; run-projected-backtest
+// --execution cold recomputes replay marks. I1 requires the two routes to share ONE
+// asserted parity constant (analytic=true + QueryExecution::ColdReference) so the two
+// never drift — the I1 root cause was two hand-maintained copies. ProjectionConfig{}
+// is that single constant.
+
+// The single asserted parity constant is canonically cold: certified analytic greeks
+// on the ColdReference route, no fast tier. Both cold routes read THIS default.
+TEST(ListedDispersionPipeline, ProjectionConfigColdIsCanonical) {
+  const ProjectionConfig cfg{};
+  EXPECT_TRUE(cfg.analytic);
+  EXPECT_EQ(cfg.execution, QueryExecution::ColdReference);
+}
+
+// I1 (the headline gate): bit-exact leg-mark parity. project_listed_schedule reprices
+// each frozen listed roll onto surface ATM-forward strikes with COLD certified greeks
+// (make_listed_risk_lookup cold seed). The projected schedule's persisted leg marks
+// must equal the live cold seed marks the projected-backtest replay recomputes through
+// the SAME make_listed_risk_lookup / full_greek_seed(..., analytic=true, ColdReference)
+// — keyed on the SAME ProjectionConfig constant. Asserted on the raw doubles (EXPECT_EQ).
+TEST(ListedDispersionPipeline, TwoRouteColdParity_LegMarksEqual) {
+  const fs::path dir = fresh_dir();
+  const std::vector<PricedSurface> day0 = surfaces(kNow0, 0.0);
+  const std::string path = write_archive(dir, "2026-07-10", day0);
+
+  // One-roll listed schedule off the synthetic surfaces at kNow0 (built via the
+  // SurfaceSet/fair_value listed path — how the real listed build authors a roll).
+  ListedDispersionSchedule listed;
+  listed.rolls.push_back(roll(selection("2026-07-10", kNow0, kExpiry0, 1u), day0, 1u));
+  ASSERT_EQ(listed.rolls.front().valuation_ts_ns, kNow0);
+  ASSERT_EQ(listed.rolls.front().roll_date, "2026-07-10");
+
+  // Load the snapshot for the roll date; the per-roll archive lookup borrows it.
+  auto loaded = MarketSnapshot::load(path);
+  ASSERT_TRUE(loaded) << (loaded ? std::string{} : loaded.error().to_string());
+  const MarketSnapshot &snapshot = *loaded;
+  ASSERT_EQ(snapshot.ts_ns(), kNow0);
+
+  const ListedArchiveLookup archives =
+      [&](std::string_view roll_date) -> Result<const MarketSnapshot *> {
+    if (roll_date == "2026-07-10") {
+      return atx::core::Ok(&snapshot);
+    }
+    return atx::core::Err(ErrorCode::NotFound, "no archive for roll date");
+  };
+
+  // Route 1 — the cold projection authors the projected_schedule marks.
+  const ProjectionConfig cfg{}; // {analytic:true, execution:ColdReference} — I1 constant
+  auto projected = project_listed_schedule(listed, archives, cfg);
+  ASSERT_TRUE(projected) << (projected ? std::string{} : projected.error().to_string());
+  ASSERT_EQ(projected->rolls.size(), 1u);
+  const ListedScheduleRoll &proll = projected->rolls.front();
+  ASSERT_EQ(proll.legs.size(), 2u * (1u + proll.n_names));
+  ASSERT_FALSE(proll.legs.empty());
+  // Projection preserves roll identity; only per-member strike + cold greeks change.
+  EXPECT_EQ(proll.roll_date, listed.rolls.front().roll_date);
+  EXPECT_EQ(proll.valuation_ts_ns, listed.rolls.front().valuation_ts_ns);
+  EXPECT_EQ(proll.expiry_ts_ns, listed.rolls.front().expiry_ts_ns);
+  EXPECT_EQ(proll.cohort, listed.rolls.front().cohort);
+  EXPECT_EQ(proll.n_names, listed.rolls.front().n_names);
+
+  // Route 2 — independently recompute each leg's cold seed mark through the SAME
+  // make_listed_risk_lookup the projected-backtest replay uses, at the SAME residual T
+  // and the SAME ProjectionConfig knobs. residual_T derives from the projected roll,
+  // which preserves the listed valuation/expiry, so it equals the projection's residual.
+  const double residual_T =
+      static_cast<double>(proll.expiry_ts_ns - proll.valuation_ts_ns) / kNsPerYear;
+  const ListedRiskLookup replay_lookup =
+      make_listed_risk_lookup(snapshot, residual_T, cfg.analytic, cfg.execution);
+
+  for (const ListedScheduleLeg &leg : proll.legs) {
+    ListedOptionQuote quote;
+    quote.strike = leg.strike; // the projected surface ATM-forward strike
+    quote.side = leg.side;
+    auto replay = replay_lookup(leg.uid, quote);
+    ASSERT_TRUE(replay) << (replay ? std::string{} : replay.error().to_string());
+    // Bit-exact: the persisted projected mark equals the live cold seed mark.
+    EXPECT_EQ(leg.model_mark, replay->model_mark);
+    EXPECT_GT(leg.model_mark, 0.0); // marks are meaningful (nonzero), not vacuous parity
+  }
+
+  // A roll date with no archive propagates the lookup error (structural guard intact).
+  ListedDispersionSchedule orphan;
+  orphan.rolls.push_back(roll(selection("2099-01-01", kNow0, kExpiry0, 1u), day0, 1u));
+  EXPECT_FALSE(project_listed_schedule(orphan, archives, cfg));
+
+  std::error_code error;
+  fs::remove_all(dir, error);
+}

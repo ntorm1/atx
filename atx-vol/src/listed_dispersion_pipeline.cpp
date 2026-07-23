@@ -308,4 +308,135 @@ build_listed_dispersion_schedule(const Clock &clock, const ListedScheduleSpec &s
   return Ok(std::move(schedule));
 }
 
+Result<ListedDispersionSchedule> project_listed_schedule(const ListedDispersionSchedule &listed,
+                                                         const ListedArchiveLookup &archives,
+                                                         const ProjectionConfig &cfg) {
+  // Verbatim lift of project_schedule_command's cold reprice
+  // (spy_dispersion_backtest.cpp:700-825). Cold certified economics on both sides,
+  // matching the run-projected-backtest --execution cold replay route (RunConfig
+  // default analytic AL greeks + ColdReference), so the persisted schedule marks equal
+  // the live cold seed marks that replay recomputes. The knobs live in
+  // ProjectionConfig — the SINGLE asserted parity constant BOTH cold routes read (I1),
+  // not two hand-maintained copies that could drift.
+  const bool analytic = cfg.analytic;
+  const QueryExecution execution = cfg.execution;
+
+  ListedDispersionSchedule projected;
+  projected.rolls.reserve(listed.rolls.size());
+  for (const ListedScheduleRoll &roll : listed.rolls) {
+    // Resolve (load) the per-roll snapshot via the archive lookup, replacing the
+    // example's archive_of map + inline MarketSnapshot::load. A missing archive is
+    // the lookup's error (propagated); a null Ok is guarded explicitly to preserve
+    // the example's "no qualified archive for roll date" NotFound semantics.
+    ATX_TRY(const MarketSnapshot *snapshot, archives(roll.roll_date));
+    if (snapshot == nullptr) {
+      return Err(ErrorCode::NotFound,
+                 "project-schedule: no qualified archive for roll date " + roll.roll_date);
+    }
+    if (snapshot->ts_ns() != roll.valuation_ts_ns) {
+      return Err(ErrorCode::InvalidArgument,
+                 "project-schedule: archive valuation timestamp differs from roll");
+    }
+    const double residual_T =
+        static_cast<double>(roll.expiry_ts_ns - roll.valuation_ts_ns) / kNsPerYear;
+    if (!(residual_T > 0.0)) {
+      return Err(ErrorCode::InvalidArgument, "project-schedule: nonpositive residual tenor");
+    }
+    if (roll.legs.size() != 2u * (1u + roll.n_names) || roll.legs.size() < 2u) {
+      return Err(ErrorCode::InvalidArgument, "project-schedule: malformed frozen roll");
+    }
+
+    // Cold per-share greeks at (uid, projected strike, residual T, side) for sizing.
+    // This is exactly make_listed_risk_lookup (T1) — the SAME seam the projected-
+    // backtest replay recomputes marks through, so the two routes share one cold code
+    // path keyed on ProjectionConfig (I1), not two hand-copied lambdas.
+    const ListedRiskLookup cold_lookup =
+        make_listed_risk_lookup(*snapshot, residual_T, analytic, execution);
+
+    // Rebuild one member straddle from its frozen call/put legs, replacing the listed
+    // strike with the surface ATM forward at residual T. forward_at is the same accessor
+    // the synthetic dispersion route (resolve_leg / resolve_atm_iv) uses for its
+    // ATM-forward strike. The synthetic raw quote is priced at the cold model value
+    // (zero synthetic spread — there is no listed market at the interpolated strike);
+    // raw_symbol / instrument_id / source_fingerprint retain the listed contract each
+    // projected straddle idealizes (provenance + a unique per-leg source key).
+    const auto make_straddle =
+        [&](const ListedScheduleLeg &call_leg,
+            const ListedScheduleLeg &put_leg) -> Result<ListedStraddle> {
+      const PricedSurface *surface = snapshot->find(call_leg.uid);
+      if (surface == nullptr) {
+        return Err(ErrorCode::NotFound, "project-schedule: projected surface unavailable");
+      }
+      const double K = surface->forward_at(residual_T);
+      if (!(K > 0.0)) {
+        return Err(ErrorCode::Unavailable, "project-schedule: no ATM forward at residual tenor");
+      }
+      const auto make_quote = [&](const ListedScheduleLeg &leg,
+                                  Side side) -> Result<ListedOptionQuote> {
+        ATX_TRY(FullGreekSeed seed,
+                surface->full_greek_seed(K, residual_T, side, analytic, execution));
+        ListedOptionQuote quote;
+        quote.trade_date = roll.roll_date;
+        quote.symbol = leg.symbol;
+        quote.instrument_id = leg.instrument_id;
+        quote.raw_symbol = leg.raw_symbol;
+        quote.expiry_ts_ns = leg.expiry_ts_ns;
+        quote.strike = K;
+        quote.side = side;
+        quote.bid = seed.greeks().price;
+        quote.ask = seed.greeks().price;
+        quote.quote_ts_ns = roll.valuation_ts_ns;
+        quote.multiplier = leg.multiplier;
+        quote.standard_monthly = true;
+        quote.standard_deliverable = true;
+        quote.source_fingerprint = leg.source_fingerprint;
+        return Ok(std::move(quote));
+      };
+      ListedStraddle straddle;
+      straddle.symbol = call_leg.symbol;
+      straddle.uid = call_leg.uid;
+      straddle.expiry_ts_ns = call_leg.expiry_ts_ns;
+      straddle.strike = K;
+      ATX_TRY(straddle.call, make_quote(call_leg, Side::Call));
+      ATX_TRY(straddle.put, make_quote(put_leg, Side::Put));
+      straddle.raw_weight = call_leg.normalized_weight;
+      straddle.normalized_weight = call_leg.normalized_weight;
+      return Ok(std::move(straddle));
+    };
+
+    // Frozen roll legs are call/put pairs, index pair first.
+    ListedDispersionSelection selection;
+    selection.trade_date = roll.roll_date;
+    selection.valuation_ts_ns = roll.valuation_ts_ns;
+    selection.expiry_ts_ns = roll.expiry_ts_ns;
+    selection.dte_days =
+        static_cast<double>(roll.expiry_ts_ns - roll.valuation_ts_ns) / kListedNsPerDay;
+    ATX_TRY(selection.index, make_straddle(roll.legs[0], roll.legs[1]));
+    selection.names.reserve(roll.n_names);
+    for (std::size_t i = 2u; i + 1u < roll.legs.size(); i += 2u) {
+      ATX_TRY(ListedStraddle name, make_straddle(roll.legs[i], roll.legs[i + 1u]));
+      selection.names.push_back(std::move(name));
+    }
+
+    ListedScheduleBuildConfig build_cfg;
+    build_cfg.gross_index_vega_target_per_vol_point = roll.gross_index_vega_target_per_vol_point;
+    build_cfg.side = DispersionSide::ShortIndexLongNames;
+    build_cfg.cohort = roll.cohort;
+    build_cfg.surface_fingerprint = roll.legs.front().surface_fingerprint;
+    ATX_TRY(ListedScheduleRoll projected_roll,
+            build_listed_dispersion_roll(selection, cold_lookup, build_cfg));
+    std::printf("  roll %u %s: net_vega=%.10g gross_vega=%.10g index_K=%.6f (listed %.6f)\n",
+                projected_roll.cohort, projected_roll.roll_date.c_str(),
+                projected_roll.net_vega_per_vol_point, projected_roll.gross_vega_per_vol_point,
+                projected_roll.legs.front().strike, roll.legs.front().strike);
+    projected.rolls.push_back(std::move(projected_roll));
+  }
+
+  // The CLI keeps projected_schedule.tsv / section / diagnostics writes (T9); the
+  // pipeline owns the economics, including the shared validator (net vega ~ 0,
+  // gross = 2x target) the persisted schedule must pass.
+  ATX_TRY_VOID(validate_listed_dispersion_schedule(projected));
+  return Ok(std::move(projected));
+}
+
 } // namespace atx::vol

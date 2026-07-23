@@ -15,6 +15,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -165,5 +166,46 @@ build_listed_dispersion_schedule(const Clock &clock, const ListedScheduleSpec &s
                                  std::span<const UniverseRow> universe_rows,
                                  const ListedDefinitionTable &definitions,
                                  const RunSpec &quote_source);
+
+// ── Cold projection (M6, I1) ────────────────────────────────────────────────────
+
+// Per-roll snapshot provider for the cold projection: resolve (load) the surface
+// archive for a roll date and hand back a BORROWED MarketSnapshot. Replaces the
+// example's inline `archive_of` map + `MarketSnapshot::load` (spy_dispersion_backtest
+// .cpp:691-714). The returned pointer must stay valid for the duration of the
+// `project_listed_schedule` call — the caller owns snapshot lifetime, matching the
+// example where each per-roll snapshot lives across its member repricing.
+using ListedArchiveLookup =
+    std::function<Result<const MarketSnapshot *>(std::string_view roll_date)>;
+
+// The cold-idealization knobs shared by BOTH cold routes (I1 — the headline gate).
+// `project_listed_schedule` authors the persisted `projected_schedule` marks through
+// these, and `run-projected-backtest --execution cold` recomputes its replay marks
+// through the SAME constant (wired T9), so the two routes provably share ONE config
+// instead of two hand-maintained copies that could silently drift (the I1 root cause).
+// `analytic=true` + `QueryExecution::ColdReference` is the single asserted parity
+// constant: certified cold Andersen-Lake greeks on the ColdReference route, no fast
+// tier attached. Do NOT add drift here — every field participates in the parity.
+struct ProjectionConfig {
+  bool analytic{true};
+  QueryExecution execution{QueryExecution::ColdReference};
+};
+
+// Verbatim lift of `project_schedule_command`'s cold reprice
+// (spy_dispersion_backtest.cpp:700-825): for each frozen listed roll, resolve its
+// snapshot via `archives`, guard the valuation-ts match / residual tenor / roll shape,
+// rebuild each member straddle at the surface ATM-forward strike
+// (`surface->forward_at(residual_T)`) priced at the cold model value (zero synthetic
+// spread — there is no listed market at the interpolated strike) with cold certified
+// greeks (via `make_listed_risk_lookup`, the SAME cold seed the replay recomputes
+// through — the I1 shared path keyed on `cfg`), reuse the listed
+// `build_listed_dispersion_roll` sizing VERBATIM, then `validate_listed_dispersion_schedule`.
+// roll_date / valuation_ts_ns / cohort / expiry_ts_ns / n_names / weights / side are
+// preserved from the listed build; ONLY per-member strike and its cold greeks differ.
+// The CLI keeps the schedule-section + diagnostics + file writes (T9). The economic
+// output is pinned byte-identical at T10 (projected_schedule golden d6793d46...).
+[[nodiscard]] Result<ListedDispersionSchedule>
+project_listed_schedule(const ListedDispersionSchedule &listed, const ListedArchiveLookup &archives,
+                        const ProjectionConfig &cfg = {});
 
 } // namespace atx::vol
