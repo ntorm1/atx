@@ -427,8 +427,30 @@ void nm_search(const NmCtx &c, double &m, double &sigma, QeBasisScratch &sc,
     best = 2;
   }
   const auto ub = static_cast<std::size_t>(best);
-  m = v[ub][0];
-  sigma = v[ub][1];
+  // FT-C1: clamp the winning vertex into the (m, sigma) box before writing it
+  // back. `nm_eval` clamps (m, sigma) BY VALUE before the inner BLLS solve, so
+  // `lin[ub]` (the linear optimum) belongs to the CLAMPED point. Writing the raw,
+  // possibly out-of-box vertex would pair that clamped linear solution with an
+  // out-of-box sigma; the downstream (u,v)->(a,b,rho) map (b = c_raw / sigma)
+  // then flips b's sign or blows it up when a reflection/expansion step drove
+  // sigma below sigma_min (or negative). Store the clamped coordinates so the
+  // map is consistent with the objective actually minimized.
+  double best_m = v[ub][0];
+  double best_sigma = v[ub][1];
+  if (best_sigma < c.sigma_min) {
+    best_sigma = c.sigma_min;
+  }
+  if (best_sigma > c.sigma_max) {
+    best_sigma = c.sigma_max;
+  }
+  if (best_m < c.m_min) {
+    best_m = c.m_min;
+  }
+  if (best_m > c.m_max) {
+    best_m = c.m_max;
+  }
+  m = best_m;
+  sigma = best_sigma;
   linear = lin[ub];
   out_iters_used = iters_used;
 }

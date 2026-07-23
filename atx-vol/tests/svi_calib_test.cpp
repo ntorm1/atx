@@ -652,4 +652,68 @@ TEST(SviCalib, WideSkewedSmile_FitsToDepth) {
   EXPECT_LT(max_rel, 0.02);
 }
 
+// FT-C1 (B1): the quasi-explicit Nelder-Mead must return a BOX-CONSISTENT vertex.
+// A short-dated, sharply kinked smile drives the (m, sigma) optimum onto the
+// sigma_min = 1e-3 bound. `nm_eval` clamps (m, sigma) BY VALUE before the inner
+// BLLS solve, but the pre-fix `nm_search` wrote the RAW (unclamped) best vertex
+// back, so a reflection/expansion step that pushed sigma < 0 could win while its
+// recorded SSE belonged to the clamped sigma=1e-3 point. The (u,v)->(a,b,rho) map
+// then paired the clamped linear solution with an out-of-box sigma:
+// b_fit = c_raw / sigma_cur flips sign / blows up, and the downstream butterfly
+// gate launders the b<=0 slice into a near-flat one served Ok. Assert the returned
+// slice is in-box (sigma >= sigma_min, b > 0) and genuinely non-flat (fits the
+// kink far better than the best constant-variance slice).
+TEST(SviCalib, KinkedShortDatedSmile_ReturnsBoxConsistentNonFlatSlice) {
+  // Truth sigma (3e-4) is far BELOW the fitter's sigma_min = 1e-3, so the optimum
+  // saturates the bound — the exact FT-C1 trigger.
+  const double a = 5.0e-4;
+  const double b = 0.12;
+  const double rho = -0.30;
+  const double m = 0.0;
+  const double sigma_true = 3.0e-4;
+  const double T = 0.019;  // ~1 week
+
+  const std::vector<FitObs> obs =
+      build_uniform_obs(41, -0.30, 0.30, a, b, rho, m, sigma_true, T);
+  FitDiag diag{};
+  const auto res =
+      svi_fit_slice(std::span<const FitObs>(obs), T, 100.0, permissive_opts(), &diag);
+  ASSERT_TRUE(res.has_value());
+  const SviParams fit = res.value();
+
+  // (1) Box consistency: sigma must not have escaped the [sigma_min, sigma_max]
+  //     box, and b must keep its sign (b = c_raw / sigma; a negative sigma flips
+  //     it). sigma_min in the fitter is 1e-3.
+  EXPECT_GE(fit.sigma, 1.0e-3 - 1.0e-9)
+      << "returned sigma out of box (FT-C1 negative/under-min vertex won): sigma="
+      << fit.sigma << " b=" << fit.b;
+  EXPECT_GT(fit.b, 0.0)
+      << "returned b non-positive (sign flipped by out-of-box sigma): b=" << fit.b;
+
+  // (2) Non-flat: the fitted slice must track the kink far better than the best
+  //     constant-variance ("flat") slice. Flat baseline = weighted-mean total
+  //     variance, b = 0.
+  double sw = 0.0;
+  double sww = 0.0;
+  for (const FitObs& o : obs) {
+    sw += o.weight_w;
+    sww += o.weight_w * o.w_mkt;
+  }
+  const double w_flat = sww / sw;
+  double rmse_flat = 0.0;
+  double rmse_fit = 0.0;
+  for (const FitObs& o : obs) {
+    const double sig_flat = std::sqrt(std::max(w_flat, 1.0e-12) / T);
+    const double w_fit = svi_w(fit.a, fit.b, fit.rho, fit.m, fit.sigma, o.k);
+    const double sig_fit = std::sqrt(std::max(w_fit, 1.0e-12) / T);
+    rmse_flat += o.weight_w * (sig_flat - o.sigma_mkt) * (sig_flat - o.sigma_mkt);
+    rmse_fit += o.weight_w * (sig_fit - o.sigma_mkt) * (sig_fit - o.sigma_mkt);
+  }
+  rmse_flat = std::sqrt(rmse_flat / sw);
+  rmse_fit = std::sqrt(rmse_fit / sw);
+  EXPECT_LT(rmse_fit, 0.5 * rmse_flat)
+      << "fitted slice is ~flat (FT-C1 launder): rmse_fit=" << rmse_fit
+      << " rmse_flat=" << rmse_flat << " b=" << fit.b;
+}
+
 }  // namespace
