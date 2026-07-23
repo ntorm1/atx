@@ -56,7 +56,7 @@ Missing (this design):
 ### Layout
 
 ```
-<root>/date=YYYY-MM-DD/part-0.parquet     # ALL symbols for that session
+<root>/date=YYYY-MM-DD/data.parquet     # ALL symbols for that session
 ```
 
 - True hive partitioning (`date=` key) so DuckDB / pyarrow.dataset read the
@@ -66,9 +66,12 @@ Missing (this design):
 - Schema: the existing 8 columns, unchanged
   (`ts, underlying, symbol, instrument_id, bid_px, ask_px, bid_sz, ask_sz`;
   px int64 1e-9 fixed-point, unset side = INT64_MIN).
-- Rows sorted by `underlying`, then `symbol`; **one parquet row group per
-  underlying** (bounded above by row-group max) so a per-symbol read is
-  row-group pruned via column statistics — no full-file scan per name.
+- Rows sorted by `underlying`, then `symbol`, so `underlying` column
+  statistics support predicate pushdown for future selective readers. The
+  v1 C++ loader does **one materialized read per date file** and splits by
+  `underlying` in memory (one IO pass per date regardless of universe size);
+  per-symbol row-group pruning is a documented future optimization, not
+  built now.
 - Snapshot minute stays the fixed **19:55:00Z** hive convention (uniformity
   with the existing corpus; DST rationale documented in the v1 pull tool).
 
@@ -76,7 +79,7 @@ Missing (this design):
 
 The pull unit is (date, symbol-set). On resume:
 
-1. If `date=<d>/part-0.parquet` absent → pull all requested symbols for d.
+1. If `date=<d>/data.parquet` absent → pull all requested symbols for d.
 2. If present → read its parquet footer statistics (distinct `underlying`
    row-group stats — no data scan) to get the on-disk symbol set; pull only
    the missing symbols; rewrite the date file as the **union** (atomic).
@@ -191,7 +194,7 @@ in docs — no sharding built now (YAGNI).
 ## 7. Migration + pull tooling (Python)
 
 - `tools/migrate_opra_hive.py`: old `{symbol}/{date}.parquet` tree → new
-  `date=*/part-0.parquet` hive. Pure local IO, $0, atomic per date,
+  `date=*/data.parquet` hive. Pure local IO, $0, atomic per date,
   idempotent (existing complete date files skipped), verifies row counts and
   schema equality per date, writes a migration manifest CSV.
 - `tools/pull_opra_hive.py`: v2 pull targeting the new layout. Reuses the v1
