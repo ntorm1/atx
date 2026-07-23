@@ -4,7 +4,7 @@
 Port of ``tools/pull_opra_universe_batch.py`` targeting the redesigned layout
 (design §3): each session is ONE parquet file holding every symbol,
 
-    <root>/date=YYYY-MM-DD/part-0.parquet
+    <root>/date=YYYY-MM-DD/data.parquet
 
 with the exact 8-column schema the C++ loaders read (``ts, underlying, symbol,
 instrument_id, bid_px, ask_px, bid_sz, ask_sz``; px are 1e-9 fixed-point int64,
@@ -89,9 +89,11 @@ DBN_UNDEF = np.iinfo(np.int64).max  # databento UNDEF_PRICE
 DATASET = "OPRA.PILLAR"
 SCHEMA = "cbbo-1m"
 
-# One parquet file per session; true hive `date=` key (design §3). Matches the
-# migrate tool and the `load_opra_hive` C++ reader — keep in lockstep with them.
-DATE_FILE = "part-0.parquet"
+# One parquet file per session; true hive `date=` key (design §3). Frozen name
+# by the plan's Global Constraints (atx-core write_hive_parquet hard-codes
+# "/data.parquet"); the migrate tool and `load_opra_hive` reader use the same —
+# keep in lockstep with them.
+DATE_FILE = "data.parquet"
 
 # Exact column order + types the C++ loaders consume (design §3).
 COLUMNS = ["ts", "underlying", "symbol", "instrument_id",
