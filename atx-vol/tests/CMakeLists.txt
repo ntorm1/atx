@@ -65,6 +65,7 @@ add_executable(atx-vol-tests
     vola_parity_test.cpp
     surface_parity_test.cpp
     opra_panel_test.cpp
+    opra_hive_test.cpp
     opra_batch_test.cpp
     session_test.cpp
     vol_umbrella_test.cpp
