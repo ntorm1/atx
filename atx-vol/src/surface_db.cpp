@@ -263,6 +263,7 @@ decode_surface_policy_record(const DbSymbolRecord &record) noexcept {
   rec.al_n_collocation = cfg.al.n_collocation;
   rec.al_n_quadrature = cfg.al.n_quadrature;
   rec.al_max_newton_iter = cfg.al.max_newton_iter;
+  rec.al_n_quad_price = cfg.al.n_quad_price; // C2 (SE-P1-2): decoupled premium order
 
   rec.convex_node_cap = static_cast<std::int32_t>(cfg.curve.convex.node_cap);
   rec.convex_max_iter = static_cast<std::int32_t>(cfg.curve.convex.max_iter);
@@ -380,6 +381,7 @@ SymbolFitConfig decode_symbol_record(const DbSymbolRecord &rec) {
   cfg.al.n_collocation = rec.al_n_collocation;
   cfg.al.n_quadrature = rec.al_n_quadrature;
   cfg.al.max_newton_iter = rec.al_max_newton_iter;
+  cfg.al.n_quad_price = rec.al_n_quad_price; // C2 (SE-P1-2); 0 on pre-C2 manifests -> tied
   cfg.al.tol = rec.al_tol;
   cfg.band_k = rec.band_k;
   cfg.surface_policy = decode_surface_policy(rec);

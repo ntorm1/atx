@@ -224,6 +224,21 @@ to a `PricedSurface` reconstructed from the same bytes.
   build are all rejected with `ParseError`. (C8/SplineVol/LinearVariance kinds
   are frozen by `static_assert` on their sizes, as in v1, so a new kind is a new
   *kind byte*, not a layout change to the fold.)
+- **Salt history & the n_quad_price accept-list (C2 / SE-P1-2).** Salt low bits:
+  `0100` initial · `0101` SplineVol payload gained `mult_cap`+`w_offset` · `0102`
+  `AlOpts::n_quad_price` (the decoupled premium Gauss-Legendre order) now persists
+  in `ArchiveV2SurfaceHeader::al_n_quad_price` / `DbSymbolRecord::al_n_quad_price`,
+  each a formerly-zero **reserved u16**. Because that reuse is **layout-invariant**
+  (`sizeof` unchanged, so the fold is unchanged), a `0101` record is byte-identical
+  to a `0102` record whenever `n_quad_price == 0` (the tied default). The reader
+  therefore **accepts both `0102` and the immediately-prior `0101` salt** — every
+  existing archive still opens and reads `n_quad_price` back as `0` (tied). The
+  salt is bumped anyway so a **pre-C2 reader rejects** a NEW archive that sets a
+  genuinely decoupled premium order (it would otherwise silently reprice it with
+  the tied order — the SE-P1-2 round-trip-fidelity bug). Salts `<= 0100` stay
+  rejected (their payloads really are incompatible). The **DB manifest** side does
+  NOT bump its schema hash — a fit-config field cannot misprice already-stored
+  surfaces, and the reused reserved slot keeps every existing manifest openable.
 - Records are **host byte order**; the header stamps `endian=1` (little) /
   `pointer_bits=64` and the reader rejects any mismatch. Little-endian LP64 only
   (matches the rest of atx-vol).
@@ -233,6 +248,18 @@ to a `PricedSurface` reconstructed from the same bytes.
   **`open` verifies header + metadata + framing bounds only.** Per-record CRC is
   checked **only** by the explicit `validate_symbol` / `validate_all` API — never
   on the price path. This is the lazy-CRC win (#5).
+
+### 5.1 Migration (v2 `0101` → `0102`, n_quad_price)
+
+No migration action is required. Every `.atxvsa2` written before this change
+opens unchanged and prices identically (its surfaces were fit/priced with the
+premium order tied to `n_quadrature`, and `al_n_quad_price` reads back as `0`,
+which resolves to exactly that tied scheme). A rewrite through the current writer
+re-stamps the header with salt `0102`; the surface record bytes are unchanged for
+tied surfaces. Only a surface actually fit under a decoupled-premium rung (e.g.
+the `ql_fast` `n_quadrature=8, n_quad_price=32`) records a non-zero
+`al_n_quad_price` and now round-trips to identical theo — previously it silently
+reverted to the tied order on reload.
 
 ---
 

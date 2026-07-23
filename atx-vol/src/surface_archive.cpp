@@ -161,13 +161,9 @@ constexpr char kSurfaceRecordMagicBytes[8] = {'A', 'T', 'X', 'V', 'S', 'R', '2',
 // POD slice structs + a v2-specific salt so a v1 file, a drifted-struct v2 file,
 // and a different-build v2 file are all rejected (FlatBuffers-style hard schema
 // pin; we pay no vtable indirection because the schema is fixed).
-[[nodiscard]] std::uint64_t schema_hash_v2() noexcept {
+[[nodiscard]] std::uint64_t schema_hash_v2_salted(std::uint64_t salt) noexcept {
   constexpr std::uint64_t kFnvPrime = 0x100000001b3ull;
-  // Salt 0101 (was 0100): the SplineVol payload gained mult_cap + w_offset. That
-  // layout is not captured by the sizeof-fold (SplineVol has no fixed serialized
-  // POD struct), so bump the salt to reject any older v2 file. Pre-release (§0).
-  constexpr std::uint64_t kV2Salt = 0xA7C3'5F04'2E1F'0101ull;
-  std::uint64_t h = 0x9e3779b97f4a7c15ull ^ kV2Salt;
+  std::uint64_t h = 0x9e3779b97f4a7c15ull ^ salt;
   h ^= static_cast<std::uint64_t>(sizeof(ArchiveV2Header)) * kFnvPrime;
   h ^= static_cast<std::uint64_t>(sizeof(ArchiveV2LookupSlot)) * kFnvPrime;
   h ^= static_cast<std::uint64_t>(sizeof(ArchiveV2DirEntry)) * kFnvPrime;
@@ -175,6 +171,26 @@ constexpr char kSurfaceRecordMagicBytes[8] = {'A', 'T', 'X', 'V', 'S', 'R', '2',
   h ^= static_cast<std::uint64_t>(sizeof(EssviParams)) * kFnvPrime;
   h ^= static_cast<std::uint64_t>(sizeof(SviParams)) * kFnvPrime;
   return h;
+}
+
+// Salt history (low 16 bits): 0100 initial; 0101 SplineVol payload gained
+// mult_cap + w_offset (that layout is not captured by the sizeof-fold); 0102
+// AlOpts::n_quad_price now persists in the reused reserved u16 (C2 / SE-P1-2).
+// The 0100->0101 bump had to reject older files (the SplineVol payload actually
+// changed shape). The 0101->0102 bump is DIFFERENT: the record bytes are
+// UNCHANGED for the common tied case (n_quad_price==0 == the old reserved u16),
+// so a 0101 file is fully serviceable by this reader — it just reads tied. We
+// therefore bump the salt (so a PRE-C2 reader rejects a NEW archive that sets a
+// genuinely decoupled premium order, instead of silently mispricing it) AND
+// accept the immediately-prior 0101 salt here (open_impl) so every existing
+// archive still opens. Older salts (<=0100) stay rejected — their payloads really
+// are incompatible. See docs/atxvsa2-format.md §5.
+constexpr std::uint64_t kV2Salt = 0xA7C3'5F04'2E1F'0102ull;
+constexpr std::uint64_t kV2SaltPrev = 0xA7C3'5F04'2E1F'0101ull;
+
+[[nodiscard]] std::uint64_t schema_hash_v2() noexcept { return schema_hash_v2_salted(kV2Salt); }
+[[nodiscard]] std::uint64_t schema_hash_v2_prev() noexcept {
+  return schema_hash_v2_salted(kV2SaltPrev);
 }
 
 [[nodiscard]] std::uint32_t header_crc_v2(ArchiveV2Header h) noexcept {
@@ -477,6 +493,7 @@ write_surface_archive_v2(std::span<const SurfaceArchiveItem> items,
     sh.al_n_collocation = pc.al_opts.n_collocation;
     sh.al_n_quadrature = pc.al_opts.n_quadrature;
     sh.al_max_newton_iter = pc.al_opts.max_newton_iter;
+    sh.al_n_quad_price = pc.al_opts.n_quad_price; // C2 (SE-P1-2): decoupled premium order
     if (plan.provenance.has_value()) {
       const ArchiveSurfaceProvenanceRecord rec = to_provenance_record(*plan.provenance);
       sh.prov_marker = rec.marker;
@@ -709,7 +726,12 @@ Result<SurfaceArchiveV2> SurfaceArchiveV2::open_impl(std::span<const std::byte> 
       h.surface_header_size != sizeof(ArchiveV2SurfaceHeader)) {
     return Err(ErrorCode::ParseError, "SurfaceArchiveV2::open: record size mismatch");
   }
-  if (h.schema_hash != schema_hash_v2()) {
+  // Accept the current schema salt OR the immediately-prior one (C2 back-compat):
+  // 0101 and 0102 differ only in the SEMANTIC salt — the on-disk record layout is
+  // byte-identical (n_quad_price reuses a formerly-zero reserved u16), so a 0101
+  // archive is fully serviceable and reads n_quad_price back as 0 (tied). Older
+  // salts stay rejected.
+  if (h.schema_hash != schema_hash_v2() && h.schema_hash != schema_hash_v2_prev()) {
     return Err(ErrorCode::ParseError, "SurfaceArchiveV2::open: schema hash mismatch");
   }
   if (h.file_size != bytes.size()) {
@@ -1098,6 +1120,7 @@ namespace {
   pc.al_opts.n_collocation = h.al_n_collocation;
   pc.al_opts.n_quadrature = h.al_n_quadrature;
   pc.al_opts.max_newton_iter = h.al_max_newton_iter;
+  pc.al_opts.n_quad_price = h.al_n_quad_price; // C2 (SE-P1-2); 0 on pre-C2 archives -> tied
   pc.al_opts.tol = h.al_tol;
 
   CurveSurface surface;

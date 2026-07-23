@@ -571,7 +571,16 @@ struct ArchiveV2SurfaceHeader {
   std::uint16_t al_n_collocation{};
   std::uint16_t al_n_quadrature{};
   std::uint16_t al_max_newton_iter{};
-  std::uint16_t reserved_u16{};
+  // AlOpts::n_quad_price — the decoupled premium (pricing) Gauss-Legendre order
+  // (SE-P1-2). 0 ties it to al_n_quadrature (the historical behavior), so this
+  // field reads back as 0 on every pre-C2 archive (it occupied a zero-filled
+  // reserved u16), and the reader maps 0 -> tied. Reusing the reserved slot keeps
+  // the layout (and the sizeof-fold in schema_hash_v2) byte-identical; the salt
+  // is bumped ANYWAY so a pre-C2 reader rejects a NEW archive that actually sets a
+  // decoupled premium order (rather than silently mispricing it with the tied
+  // order), while this reader's prior-salt accept-list keeps every pre-C2 archive
+  // openable (see schema_hash_v2 / open_impl and docs/atxvsa2-format.md §5).
+  std::uint16_t al_n_quad_price{};
   std::uint8_t reserved[66]{}; // pad to 256
 };
 static_assert(sizeof(ArchiveV2SurfaceHeader) == 256, "ArchiveV2SurfaceHeader layout drift");
@@ -611,6 +620,8 @@ static_assert(offsetof(ArchiveV2SurfaceHeader, col_payload_off_off) == 144);
 static_assert(offsetof(ArchiveV2SurfaceHeader, uid) == 152);
 static_assert(offsetof(ArchiveV2SurfaceHeader, n_slices) == 156);
 static_assert(offsetof(ArchiveV2SurfaceHeader, payload_crc32c) == 168);
+// n_quad_price (C2): pins the reused reserved slot; a pre-C2 archive stored 0 here.
+static_assert(offsetof(ArchiveV2SurfaceHeader, al_n_quad_price) == 188);
 
 // ── v2 writer ────────────────────────────────────────────────────────────────
 

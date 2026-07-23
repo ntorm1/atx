@@ -236,6 +236,7 @@ PricedSurfaceView::create_over_record(std::span<const std::byte> record) {
   v.pricing_.al_opts.n_collocation = h.al_n_collocation;
   v.pricing_.al_opts.n_quadrature = h.al_n_quadrature;
   v.pricing_.al_opts.max_newton_iter = h.al_max_newton_iter;
+  v.pricing_.al_opts.n_quad_price = h.al_n_quad_price; // C2 (SE-P1-2); 0 -> tied
   v.pricing_.al_opts.tol = h.al_tol;
 
   // Semantic validation, mirroring PricedSurface::create (priced_surface.cpp):
