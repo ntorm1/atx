@@ -110,4 +110,60 @@ reconcile_listed_schedule(const ListedDispersionSchedule &schedule,
                           std::span<const ListedReconciliationSnapshot> full_timeline,
                           const ListedReconciliationConfig &config = {});
 
+// ── Schedule build (M7) ───────────────────────────────────────────────────────
+
+// The swept schedule knobs pulled out of `RunSpec` so the builder does not depend
+// on the `RunSpec` layout. A POD carrying exactly the fields the selection loop
+// reads; defaults mirror the `RunSpec` production defaults. The remaining `RunSpec`
+// (OPRA root / path template / snapshot suffix) is handed separately as the quote
+// source, since `listed_quotes_for_date` still needs the live parquet coordinates.
+struct ListedScheduleSpec {
+  double target_dte_days{30.0};
+  double min_dte_days{21.0};
+  double max_dte_days{60.0};
+  double roll_dte_days{7.0};
+  std::size_t min_names{10};
+  double min_weight_coverage{0.8};
+  double gross_index_vega{10000.0};
+  bool core_mode{false};
+};
+
+// The entry/three-roll acceptance gate, factored out of the schedule builder so it
+// is unit-testable without live parquet. Verbatim behavior of the example's final
+// gate (spy_dispersion_backtest.cpp:532-534): an empty roll set fails the entry
+// gate, and a core-mode schedule with fewer than `method.core_min_rolls` (3) rolls
+// fails the three-roll gate — both `Err(Unavailable, "…entry/three-roll acceptance
+// gate")`. It enforces NO other floor: in particular `core_min_names_per_roll` is
+// NOT consulted here (that methodology field is inert in the example's build path;
+// activating it would be a new gate). Returns `Ok()` when the schedule is accepted.
+[[nodiscard]] Status accept_listed_schedule(const ListedDispersionSchedule &schedule,
+                                            const ListedScheduleSpec &spec,
+                                            const ListedDispersionMethodology &method);
+
+// Verbatim lift of `build_schedule_command`'s selection loop
+// (spy_dispersion_backtest.cpp:446-535): per-date snapshot load, DTE roll-trigger,
+// per-date universe rebind (`DropRenormalize`, `spec.min_names` floor), forward
+// lookup (via `make_listed_forward_lookup`), the per-date OPRA quote join (via
+// `listed_quotes_for_date` over `quote_source`), `select_listed_dispersion`,
+// requested-vs-traded weight coverage gate, deferral (a failed/under-covered date
+// after entry is skipped, not fatal), cohort numbering, the archive
+// `surface_fingerprint`, `build_listed_dispersion_roll` sizing, and the entry/
+// three-roll acceptance gate (`accept_listed_schedule`). The CLI keeps the phase
+// timing, the `trade_schedule.tsv` write, and the section encoders (T9). The
+// economic output is pinned byte-identical at T10 (trade_schedule golden
+// b640b3ab...).
+//
+// M1 (design §3): after acceptance the builder validates that `clock` actually
+// carries `rolls.front().roll_date` — true by construction (every roll_date is a
+// clock ref date), but enforced here so the coupling run-backtest relies on
+// (`reconcile_listed_schedule` trimming the full clock timeline down to the first
+// roll date) is explicit rather than emergent. A first roll date absent from the
+// clock is `Err(InvalidArgument)`.
+[[nodiscard]] Result<ListedDispersionSchedule>
+build_listed_dispersion_schedule(const Clock &clock, const ListedScheduleSpec &spec,
+                                 const ListedDispersionMethodology &method,
+                                 std::span<const UniverseRow> universe_rows,
+                                 const ListedDefinitionTable &definitions,
+                                 const RunSpec &quote_source);
+
 } // namespace atx::vol

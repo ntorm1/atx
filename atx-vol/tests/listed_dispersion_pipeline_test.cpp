@@ -385,3 +385,89 @@ TEST(ListedDispersionPipeline, ReconcileListedSchedule_TrimsWarmupLeadIn) {
   EXPECT_FALSE(assemble_reconciliation_snapshots(no_roll, schedule));
   EXPECT_FALSE(reconcile_listed_schedule(schedule, no_roll));
 }
+
+// ── Task 3 — build_listed_dispersion_schedule + acceptance gate (M7) ──────────
+//
+// The full builder needs live OPRA parquet + surfaces, so its economic output is
+// pinned byte-identical at T10 (trade_schedule golden b640b3ab...). Here we drive
+// the *pure* acceptance logic that does not touch parquet, through the extracted
+// `accept_listed_schedule` seam.
+
+namespace {
+
+// Build a schedule with `count` real rolls off the synthetic surfaces. Each roll
+// carries only two names (N0, N1) — far below core_min_names_per_roll (40) — which
+// is exactly the shape that proves the acceptance gate does NOT enforce a
+// names-per-roll floor (that literal is inert in the example's build path).
+ListedDispersionSchedule schedule_with_rolls(std::size_t count) {
+  const std::vector<PricedSurface> day = surfaces(kNow0, 0.0);
+  ListedDispersionSchedule schedule;
+  for (std::size_t index = 0; index < count; ++index) {
+    const std::string date = "2026-07-" + std::to_string(10 + index);
+    const std::uint32_t cohort = static_cast<std::uint32_t>(index + 1u);
+    schedule.rolls.push_back(
+        roll(selection(date, kNow0, kExpiry0, 1u + 10u * cohort), day, cohort));
+  }
+  return schedule;
+}
+
+} // namespace
+
+// The acceptance gate is the verbatim entry/three-roll gate from
+// build_schedule_command (spy_dispersion_backtest.cpp:532-534): reject an empty
+// roll set, and in core mode reject fewer than core_min_rolls (3) rolls. It must
+// NOT introduce any new gate — in particular no <40 names-per-roll floor (that
+// methodology field is inert in the build path).
+TEST(ListedDispersionPipeline, BuildSchedule_RejectsEmptyAndSubThreshold) {
+  const ListedDispersionMethodology method{};
+  ASSERT_EQ(method.core_min_rolls, 3u);
+
+  ListedScheduleSpec loose{};   // core_mode == false (entry gate only)
+  ListedScheduleSpec strict{};  // core mode (three-roll gate)
+  strict.core_mode = true;
+
+  const ListedDispersionSchedule empty{};
+
+  // Empty roll set fails the entry gate under BOTH modes with Unavailable and the
+  // pinned message.
+  const auto empty_loose = accept_listed_schedule(empty, loose, method);
+  ASSERT_FALSE(empty_loose);
+  EXPECT_EQ(empty_loose.error().code(), ErrorCode::Unavailable);
+  EXPECT_NE(empty_loose.error().to_string().find("entry/three-roll acceptance gate"),
+            std::string::npos);
+  const auto empty_strict = accept_listed_schedule(empty, strict, method);
+  ASSERT_FALSE(empty_strict);
+  EXPECT_EQ(empty_strict.error().code(), ErrorCode::Unavailable);
+
+  // One roll: accepted in loose (non-core) mode, rejected in core mode
+  // (< core_min_rolls). Two rolls: still rejected in core mode.
+  const ListedDispersionSchedule one = schedule_with_rolls(1u);
+  EXPECT_TRUE(accept_listed_schedule(one, loose, method));
+  const auto one_core = accept_listed_schedule(one, strict, method);
+  ASSERT_FALSE(one_core);
+  EXPECT_EQ(one_core.error().code(), ErrorCode::Unavailable);
+
+  const ListedDispersionSchedule two = schedule_with_rolls(2u);
+  EXPECT_FALSE(accept_listed_schedule(two, strict, method));
+
+  // Three rolls satisfy the core-mode three-roll gate — even though every roll
+  // carries only two names (< core_min_names_per_roll = 40). This pins that the
+  // extraction did NOT silently activate a names-per-roll floor.
+  const ListedDispersionSchedule three = schedule_with_rolls(3u);
+  ASSERT_EQ(three.rolls.size(), 3u);
+  for (const ListedScheduleRoll &r : three.rolls) {
+    EXPECT_LT(r.n_names, method.core_min_names_per_roll);
+  }
+  EXPECT_TRUE(accept_listed_schedule(three, strict, method));
+  EXPECT_TRUE(accept_listed_schedule(three, loose, method));
+}
+
+// The full builder symbol exists with the planned signature. Its economic path is
+// parquet-backed (pinned at T10); here we only pin the declaration/link + contract.
+TEST(ListedDispersionPipeline, BuildScheduleSymbolIsDeclared) {
+  using BuilderFn = Result<ListedDispersionSchedule> (*)(
+      const Clock &, const ListedScheduleSpec &, const ListedDispersionMethodology &,
+      std::span<const UniverseRow>, const ListedDefinitionTable &, const RunSpec &);
+  const BuilderFn fn = &build_listed_dispersion_schedule;
+  EXPECT_NE(reinterpret_cast<const void *>(fn), nullptr);
+}
