@@ -24,6 +24,7 @@
 #include "atx/vol/corpus.hpp"                     // CorpusAdmissionRule
 #include "atx/vol/dispersion_workflow.hpp"        // RunSpec, batch_spec
 #include "atx/vol/listed_dispersion.hpp"          // ListedForwardLookup, DispersionMember, ListedOptionQuote
+#include "atx/vol/listed_dispersion_reconciliation.hpp" // ListedReconciliationSnapshot, reconcile_listed_dispersion
 #include "atx/vol/listed_dispersion_schedule.hpp" // ListedRiskLookup, ListedOptionRisk
 #include "atx/vol/listed_opra.hpp"                // ListedDefinitionTable, MissingDefinitionPolicy
 #include "atx/vol/types.hpp"                      // Result
@@ -81,5 +82,32 @@ listed_quotes_for_date(const RunSpec &spec, const ListedDefinitionTable &definit
 [[nodiscard]] ListedRiskLookup make_listed_risk_lookup(const MarketSnapshot &snapshot,
                                                        double residual_T, bool analytic,
                                                        QueryExecution execution);
+
+// M1 reconciliation-clock-coupling fix (design §3, review M1). The engine emits
+// zero reconciliation rows until the first roll date, so `run-backtest` feeds the
+// reconciler its FULL `clock.refs()` timeline — every session the clock spans,
+// including any leading warm-up / low-coverage session before the first roll. The
+// low-level `reconcile_listed_dispersion` hard-requires
+// `snapshots.front().date == schedule.rolls.front().roll_date` and aborts an
+// otherwise-valid corpus when a pre-roll session leads the timeline (it only
+// worked historically because `date_lo` happened to coincide with the first roll).
+//
+// `assemble_reconciliation_snapshots` trims those leading pre-roll sessions so the
+// returned span starts exactly at `schedule.rolls.front().roll_date`, mirroring the
+// strategy's pre-roll silence. The coupling is made explicit here (an error if the
+// first roll date is absent from the timeline) rather than left emergent; the
+// low-level precondition stays intact as a defensive invariant.
+[[nodiscard]] Result<std::vector<ListedReconciliationSnapshot>>
+assemble_reconciliation_snapshots(std::span<const ListedReconciliationSnapshot> full_timeline,
+                                  const ListedDispersionSchedule &schedule);
+
+// The single reconciliation entry point the CLI uses: assemble (trim the warm-up
+// lead-in) then reconcile. Feeds `reconcile_listed_dispersion` a timeline whose
+// front date is the first roll date by construction, so a leading pre-roll session
+// no longer aborts the stage.
+[[nodiscard]] Result<ListedDispersionReconciliation>
+reconcile_listed_schedule(const ListedDispersionSchedule &schedule,
+                          std::span<const ListedReconciliationSnapshot> full_timeline,
+                          const ListedReconciliationConfig &config = {});
 
 } // namespace atx::vol

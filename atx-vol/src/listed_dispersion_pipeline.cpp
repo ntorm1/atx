@@ -1,9 +1,11 @@
 #include "atx/vol/listed_dispersion_pipeline.hpp"
 
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <iterator>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -118,6 +120,47 @@ ListedRiskLookup make_listed_risk_lookup(const MarketSnapshot &snapshot, double 
             surface->full_greek_seed(quote.strike, residual_T, quote.side, analytic, execution));
     return Ok(ListedOptionRisk{seed.greeks().price, seed.greeks().delta, seed.greeks().vega});
   };
+}
+
+Result<std::vector<ListedReconciliationSnapshot>>
+assemble_reconciliation_snapshots(std::span<const ListedReconciliationSnapshot> full_timeline,
+                                  const ListedDispersionSchedule &schedule) {
+  // M1 fix. run-backtest hands the reconciler the FULL clock.refs() timeline; the
+  // engine (and ListedDispersionStrategy::on_step) emits zero rows before the first
+  // roll, so any leading warm-up / low-coverage session sits ahead of the first
+  // roll date. The low-level reconcile_listed_dispersion hard-requires
+  // snapshots.front().date == schedule.rolls.front().roll_date, so such a lead-in
+  // aborts an otherwise-valid corpus. Trim those pre-roll sessions here so the
+  // returned timeline starts exactly at the first roll date.
+  if (schedule.rolls.empty()) {
+    return Err(ErrorCode::InvalidArgument,
+               "assemble_reconciliation_snapshots: schedule has no rolls");
+  }
+  const std::string &first_roll_date = schedule.rolls.front().roll_date;
+  std::size_t start = full_timeline.size();
+  for (std::size_t index = 0; index < full_timeline.size(); ++index) {
+    if (full_timeline[index].date == first_roll_date) {
+      start = index;
+      break;
+    }
+  }
+  // The coupling is made explicit, not emergent: an absent first roll date is an
+  // error, never a silent empty reconcile.
+  if (start == full_timeline.size()) {
+    return Err(ErrorCode::InvalidArgument,
+               "assemble_reconciliation_snapshots: first roll date absent from timeline");
+  }
+  const std::span<const ListedReconciliationSnapshot> trimmed = full_timeline.subspan(start);
+  return Ok(std::vector<ListedReconciliationSnapshot>(trimmed.begin(), trimmed.end()));
+}
+
+Result<ListedDispersionReconciliation>
+reconcile_listed_schedule(const ListedDispersionSchedule &schedule,
+                          std::span<const ListedReconciliationSnapshot> full_timeline,
+                          const ListedReconciliationConfig &config) {
+  ATX_TRY(std::vector<ListedReconciliationSnapshot> timeline,
+          assemble_reconciliation_snapshots(full_timeline, schedule));
+  return reconcile_listed_dispersion(schedule, timeline, config);
 }
 
 } // namespace atx::vol

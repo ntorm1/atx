@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -11,6 +12,7 @@
 #include "atx/vol/dispersion.hpp"                 // DispersionMember
 #include "atx/vol/listed_dispersion.hpp"          // ListedOptionQuote
 #include "atx/vol/listed_dispersion_pipeline.hpp" // module under test
+#include "atx/vol/listed_dispersion_reconciliation.hpp" // ListedReconciliationSnapshot, reconcile_listed_dispersion
 #include "atx/vol/listed_dispersion_schedule.hpp" // ListedRiskLookup, ListedOptionRisk
 #include "atx/vol/portfolio_pricer.hpp"           // SurfaceSet, kNsPerYear
 #include "atx/vol/priced_surface.hpp"             // PricedSurface
@@ -26,8 +28,12 @@ namespace {
 
 // ── Synthetic-surface scaffolding (mirrors listed_dispersion_reconciliation_test.cpp:35-76) ──
 constexpr double kRate = 0.04;
+constexpr std::int64_t kDayNs = 86'400'000'000'000LL;
 constexpr std::int64_t kNow0 = 1'700'000'000'000'000'000LL;
+constexpr std::int64_t kNow1 = kNow0 + kDayNs;
+constexpr std::int64_t kNow2 = kNow1 + kDayNs;
 constexpr std::int64_t kExpiry0 = kNow0 + static_cast<std::int64_t>(0.10 * kNsPerYear);
+constexpr std::int64_t kExpiry1 = kNow1 + static_cast<std::int64_t>(0.10 * kNsPerYear);
 
 PricedSurface make_surface(std::uint32_t uid, double spot, std::int64_t now) {
   CurveSurface curves;
@@ -66,6 +72,107 @@ std::vector<PricedSurface> surfaces(std::int64_t now, double shift) {
   result.push_back(make_surface(2u, 100.0 + 0.3 * shift, now));
   result.push_back(make_surface(3u, 200.0 - 0.2 * shift, now));
   return result;
+}
+
+std::vector<const PricedSurface *> pointers(const std::vector<PricedSurface> &surfaces) {
+  std::vector<const PricedSurface *> result;
+  for (const PricedSurface &surface : surfaces) {
+    result.push_back(&surface);
+  }
+  return result;
+}
+
+// ── Schedule / reconciliation-snapshot scaffolding (mirrors
+//    listed_dispersion_reconciliation_test.cpp:82-171) ─────────────────────────
+ListedOptionQuote option(std::string symbol, std::uint32_t id, double strike, Side side,
+                         std::string date, std::int64_t now, std::int64_t expiry) {
+  ListedOptionQuote quote;
+  quote.trade_date = std::move(date);
+  quote.symbol = std::move(symbol);
+  quote.instrument_id = id;
+  quote.raw_symbol = quote.symbol + std::to_string(id);
+  quote.expiry_ts_ns = expiry;
+  quote.strike = strike;
+  quote.side = side;
+  quote.bid = 1.0;
+  quote.ask = 1.2;
+  quote.quote_ts_ns = now;
+  quote.multiplier = 100.0;
+  quote.standard_monthly = true;
+  quote.standard_deliverable = true;
+  quote.source_fingerprint = 1000u + id;
+  return quote;
+}
+
+ListedStraddle straddle(std::string symbol, std::uint32_t uid, std::uint32_t id, double strike,
+                        double weight, const std::string &date, std::int64_t now,
+                        std::int64_t expiry) {
+  ListedStraddle result;
+  result.symbol = std::move(symbol);
+  result.uid = uid;
+  result.expiry_ts_ns = expiry;
+  result.strike = strike;
+  result.call = option(result.symbol, id, strike, Side::Call, date, now, expiry);
+  result.put = option(result.symbol, id + 1u, strike, Side::Put, date, now, expiry);
+  result.raw_weight = weight;
+  result.normalized_weight = weight;
+  return result;
+}
+
+ListedDispersionSelection selection(const std::string &date, std::int64_t now, std::int64_t expiry,
+                                    std::uint32_t id_base) {
+  ListedDispersionSelection result;
+  result.trade_date = date;
+  result.valuation_ts_ns = now;
+  result.expiry_ts_ns = expiry;
+  result.dte_days = static_cast<double>(expiry - now) / kListedNsPerDay;
+  result.index = straddle("SPY", 1u, id_base, 500.0, 0.0, date, now, expiry);
+  result.names.push_back(straddle("N0", 2u, id_base + 2u, 100.0, 0.4, date, now, expiry));
+  result.names.push_back(straddle("N1", 3u, id_base + 4u, 200.0, 0.6, date, now, expiry));
+  return result;
+}
+
+ListedScheduleRoll roll(const ListedDispersionSelection &selected,
+                        const std::vector<PricedSurface> &source, std::uint32_t cohort) {
+  auto set = SurfaceSet::create(pointers(source));
+  EXPECT_TRUE(set) << (set ? std::string{} : set.error().to_string());
+  ListedScheduleBuildConfig config;
+  config.gross_index_vega_target_per_vol_point = 1000.0;
+  config.cohort = cohort;
+  config.surface_fingerprint = 9000u + cohort;
+  auto result = build_listed_dispersion_roll(selected, *set, config);
+  EXPECT_TRUE(result) << (result ? std::string{} : result.error().to_string());
+  return std::move(*result);
+}
+
+std::vector<ListedOptionQuote> quotes_for(const ListedScheduleRoll &roll,
+                                          const SurfaceSet &surfaces, const std::string &date,
+                                          std::int64_t now, std::uint32_t id_offset) {
+  std::vector<ListedOptionQuote> quotes;
+  for (const ListedScheduleLeg &leg : roll.legs) {
+    const PricedSurface *surface = surfaces.find(leg.uid);
+    EXPECT_NE(surface, nullptr);
+    const double term = static_cast<double>(leg.expiry_ts_ns - now) / kNsPerYear;
+    auto mark = surface->fair_value(leg.strike, term, leg.side);
+    EXPECT_TRUE(mark) << (mark ? std::string{} : mark.error().to_string());
+    ListedOptionQuote quote;
+    quote.trade_date = date;
+    quote.symbol = leg.symbol;
+    quote.instrument_id = leg.instrument_id + id_offset;
+    quote.raw_symbol = leg.raw_symbol;
+    quote.expiry_ts_ns = leg.expiry_ts_ns;
+    quote.strike = leg.strike;
+    quote.side = leg.side;
+    quote.bid = std::max(0.0, *mark - 0.1);
+    quote.ask = *mark + 0.1;
+    quote.quote_ts_ns = now;
+    quote.multiplier = leg.multiplier;
+    quote.standard_monthly = true;
+    quote.standard_deliverable = true;
+    quote.source_fingerprint = 7000u + quote.instrument_id;
+    quotes.push_back(std::move(quote));
+  }
+  return quotes;
 }
 
 // A synthetic MarketSnapshot: the forward/risk seams take a MarketSnapshot (they
@@ -182,4 +289,99 @@ TEST(ListedDispersionPipeline, ForwardAndRiskLookupsOverSyntheticSnapshot) {
 
   std::error_code error;
   fs::remove_all(dir, error);
+}
+
+// ── Task 2 — M1 reconciliation clock-coupling fix ─────────────────────────────
+//
+// Both tests build the offending timeline shape: a valid one-roll schedule whose
+// first roll date is day1 (2026-07-11), fed a FULL timeline that opens with a
+// warm-up / low-coverage session on day0 (2026-07-10), strictly before the first
+// roll — exactly what run-backtest hands the reconciler from clock.refs().
+
+// RED anchor (documents the defect; stays green forever as the defensive
+// invariant): feeding the FULL warm-up-led timeline straight into the low-level
+// reconciler aborts. The front-date hard-require at
+// listed_dispersion_reconciliation.cpp:240 fires before any pricing, so no
+// surfaces are dereferenced on this path.
+TEST(ListedDispersionPipeline, ReconcileClockCoupling_AbortsOnWarmupLeadIn) {
+  const std::vector<PricedSurface> day0 = surfaces(kNow0, 0.0);
+  const std::vector<PricedSurface> day1 = surfaces(kNow1, 2.0);
+  const std::vector<PricedSurface> day2 = surfaces(kNow2, -1.0);
+
+  ListedDispersionSchedule schedule;
+  schedule.rolls.push_back(roll(selection("2026-07-11", kNow1, kExpiry1, 1u), day1, 4u));
+  ASSERT_EQ(schedule.rolls.front().roll_date, "2026-07-11");
+
+  auto set0 = SurfaceSet::create(pointers(day0));
+  auto set1 = SurfaceSet::create(pointers(day1));
+  auto set2 = SurfaceSet::create(pointers(day2));
+  ASSERT_TRUE(set0 && set1 && set2);
+  const std::vector<ListedOptionQuote> quotes1 =
+      quotes_for(schedule.rolls[0], *set1, "2026-07-11", kNow1, 0u);
+  const std::vector<ListedOptionQuote> quotes2 =
+      quotes_for(schedule.rolls[0], *set2, "2026-07-12", kNow2, 1000u);
+
+  const std::vector<ListedReconciliationSnapshot> full = {
+      {"2026-07-10", kNow0, &*set0, {}},      // warm-up lead-in (before first roll)
+      {"2026-07-11", kNow1, &*set1, quotes1}, // first roll / entry
+      {"2026-07-12", kNow2, &*set2, quotes2}, // held
+  };
+
+  const auto aborted = reconcile_listed_dispersion(schedule, full);
+  ASSERT_FALSE(aborted);
+  EXPECT_EQ(aborted.error().code(), ErrorCode::InvalidArgument);
+}
+
+// GREEN target: the new seam trims the warm-up lead-in so reconciliation starts at
+// the first roll date and succeeds — bit-identical to a manually-trimmed reconcile
+// beginning at that roll. This is the M1 fix wired at assemble_reconciliation_snapshots.
+TEST(ListedDispersionPipeline, ReconcileListedSchedule_TrimsWarmupLeadIn) {
+  const std::vector<PricedSurface> day0 = surfaces(kNow0, 0.0);
+  const std::vector<PricedSurface> day1 = surfaces(kNow1, 2.0);
+  const std::vector<PricedSurface> day2 = surfaces(kNow2, -1.0);
+
+  ListedDispersionSchedule schedule;
+  schedule.rolls.push_back(roll(selection("2026-07-11", kNow1, kExpiry1, 1u), day1, 4u));
+  ASSERT_EQ(schedule.rolls.front().roll_date, "2026-07-11");
+
+  auto set0 = SurfaceSet::create(pointers(day0));
+  auto set1 = SurfaceSet::create(pointers(day1));
+  auto set2 = SurfaceSet::create(pointers(day2));
+  ASSERT_TRUE(set0 && set1 && set2);
+  const std::vector<ListedOptionQuote> quotes1 =
+      quotes_for(schedule.rolls[0], *set1, "2026-07-11", kNow1, 0u);
+  const std::vector<ListedOptionQuote> quotes2 =
+      quotes_for(schedule.rolls[0], *set2, "2026-07-12", kNow2, 1000u);
+
+  const std::vector<ListedReconciliationSnapshot> full = {
+      {"2026-07-10", kNow0, &*set0, {}},      // warm-up lead-in (before first roll)
+      {"2026-07-11", kNow1, &*set1, quotes1}, // first roll / entry
+      {"2026-07-12", kNow2, &*set2, quotes2}, // held
+  };
+  const std::size_t first_roll_index = 1u; // day1 is the first roll date in `full`
+
+  // The production pattern (full clock timeline) still aborts at the low level ...
+  EXPECT_FALSE(reconcile_listed_dispersion(schedule, full));
+
+  // ... but the seam trims the lead-in and succeeds.
+  auto trimmed = reconcile_listed_schedule(schedule, full);
+  ASSERT_TRUE(trimmed) << (trimmed ? std::string{} : trimmed.error().to_string());
+
+  // Equal to a manually-trimmed reconcile that starts at the first roll date.
+  auto manual = reconcile_listed_dispersion(
+      schedule, std::span<const ListedReconciliationSnapshot>(full).subspan(first_roll_index));
+  ASSERT_TRUE(manual) << (manual ? std::string{} : manual.error().to_string());
+  EXPECT_EQ(*trimmed, *manual);
+
+  // The assembler alone returns the same trimmed timeline (front date == first roll).
+  auto assembled = assemble_reconciliation_snapshots(full, schedule);
+  ASSERT_TRUE(assembled) << (assembled ? std::string{} : assembled.error().to_string());
+  ASSERT_EQ(assembled->size(), full.size() - first_roll_index);
+  EXPECT_EQ(assembled->front().date, schedule.rolls.front().roll_date);
+
+  // A timeline that never contains the first roll date is an explicit error, not a
+  // silent empty reconcile.
+  const std::vector<ListedReconciliationSnapshot> no_roll = {full.front()}; // day0 only
+  EXPECT_FALSE(assemble_reconciliation_snapshots(no_roll, schedule));
+  EXPECT_FALSE(reconcile_listed_schedule(schedule, no_roll));
 }
