@@ -249,6 +249,69 @@ TEST(SurfaceParity, ConfiguredPrepExcludesFlaggedQuote_LegacyKeepsIt) {
       << configured_n_used << ")";
 }
 
+// FT-P (B4): the per-expiry preparation prepass fans out over `fit_workers` while
+// the fit/scoring pass stays sequential, so the assembled surface must be
+// BIT-IDENTICAL for any worker count. Determinism gate: 1 vs 8 workers must
+// produce byte-for-byte identical eSSVI slices and per-expiry metrics.
+TEST(SurfaceParity, PrepassParallelIsBitIdenticalAcrossWorkers) {
+  const PanelBuild pb = make_panel_build();
+  const auto panel = make_synthetic_american_panel(pb.spec);
+  ASSERT_TRUE(panel.has_value()) << panel.error().to_string();
+
+  Universe u;
+  const auto uid = atx::vol::data_install(u, panel->frame);
+  ASSERT_TRUE(uid.has_value()) << uid.error().to_string();
+  const auto under = u.get_underlying(*uid);
+  ASSERT_TRUE(under.has_value());
+
+  const auto run_with = [&](unsigned workers) {
+    SurfaceParityInputs in;
+    in.S = pb.spec.spot;
+    in.r = pb.spec.r;
+    in.cash_divs = pb.spec.cash_divs;
+    in.now_ts_ns = iso_to_ns(pb.snapshot);
+    in.deam.hyb = pb.spec.hyb;
+    in.deam.imply_borrow = true;
+    in.deam.n_atm = 3;
+    in.fit_workers = workers;
+    return run_surface_parity(**under, in);
+  };
+
+  const auto r1 = run_with(1u);
+  const auto r8 = run_with(8u);
+  ASSERT_TRUE(r1.has_value()) << r1.error().to_string();
+  ASSERT_TRUE(r8.has_value()) << r8.error().to_string();
+
+  ASSERT_EQ(r1->n_slices, r8->n_slices);
+  ASSERT_EQ(r1->expiry_T.size(), r8->expiry_T.size());
+  EXPECT_EQ(r1->calendar_arb_free, r8->calendar_arb_free);
+  // Byte-for-byte on the reported worst-case bid-ask fraction.
+  EXPECT_EQ(r1->worst_frac_within_bidask, r8->worst_frac_within_bidask);
+
+  const auto s1 = r1->surface.essvi_slices();
+  const auto s8 = r8->surface.essvi_slices();
+  ASSERT_EQ(s1.size(), s8.size());
+  for (std::size_t i = 0; i < s1.size(); ++i) {
+    EXPECT_EQ(r1->expiry_T[i], r8->expiry_T[i]) << "expiry_T slice " << i;
+    // Raw eSSVI parameters must match bit-for-bit (==, not NEAR).
+    EXPECT_EQ(s1[i].theta, s8[i].theta) << "theta slice " << i;
+    EXPECT_EQ(s1[i].phi, s8[i].phi) << "phi slice " << i;
+    EXPECT_EQ(s1[i].rho, s8[i].rho) << "rho slice " << i;
+    EXPECT_EQ(s1[i].T, s8[i].T) << "T slice " << i;
+    // The served surface at a k-grid must be bit-identical too.
+    for (double k = -0.30; k <= 0.30 + 1e-9; k += 0.05) {
+      const double iv1 = r1->surface.iv_on_slice(static_cast<std::uint16_t>(i), k);
+      const double iv8 = r8->surface.iv_on_slice(static_cast<std::uint16_t>(i), k);
+      EXPECT_EQ(iv1, iv8) << "iv_on_slice mismatch slice " << i << " k=" << k;
+    }
+  }
+  // Per-slice used-observation counts identical.
+  ASSERT_EQ(r1->context.size(), r8->context.size());
+  for (std::size_t i = 0; i < r1->context.size(); ++i) {
+    EXPECT_EQ(r1->context[i].n_used, r8->context[i].n_used) << "n_used slice " << i;
+  }
+}
+
 TEST(SurfaceParity, CalendarRepair_HoldsQualityAndDefersScoring) {
   const PanelBuild pb = make_panel_build();
   const auto panel = make_synthetic_american_panel(pb.spec);
