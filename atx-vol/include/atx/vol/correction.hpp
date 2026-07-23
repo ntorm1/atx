@@ -280,6 +280,15 @@ struct CorrectionBlend {
   [[nodiscard]] bool valid() const noexcept;
   [[nodiscard]] bool usable(Side side) const noexcept;
 
+  // True only for a finite point inside the interpolation box(es) of every
+  // endpoint this blend actually evaluates (the same endpoint selection eval()
+  // uses: the single active endpoint at a 0/1 weight or identical pointers,
+  // otherwise BOTH). Serving code calls this before eval() to detect an
+  // out-of-box query the raw evaluators would silently clamp to the box edge —
+  // the seam that lets the session serve path fall back to the cold pricer
+  // (PR-C1) instead of serving a clamped correction.
+  [[nodiscard]] bool contains(double k_log, double T, double sigma) const noexcept;
+
   // Invalid blends return NaN (for every field in the second-order bundle).
   // Exact endpoints and identical pointers evaluate only one cache.
   [[nodiscard]] double eval(double k_log, double T, double sigma) const noexcept;

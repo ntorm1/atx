@@ -667,6 +667,16 @@ struct FixedCacheCarry {
   const double T_max =
       chain ? ((T_hi > T_lo) ? (1.25 * T_hi) : (1.6 * T_lo)) : ((T_hi > T_lo) ? (1.1 * T_hi) : (1.5 * T_lo));
   constexpr double kSigMin = 0.05;
+  // PR-C1: the sigma ceiling stays 1.5. Widening it to cover a high-vol board
+  // (earnings / meme / 0DTE panic) was implemented and MEASURED to be net-negative:
+  // spreading the fixed 16x8x12 Chebyshev nodes over a wider sigma box (e.g. up to
+  // 1.25*ATM ~ 2.4) degraded the deep-ITM-wing cached mark to ~1.9e-3/share vs cold
+  // — 100x the ~1e-5/share the tight-box cached serve holds and past the economic
+  // vega gate — i.e. it trades an EXACT cold value for a gate-violating cached one.
+  // Correctness is instead delivered by the serve path's contains()-gated cold
+  // fallback (cache_serves): any query above this ceiling (or below the T box / off
+  // the moneyness box) is priced by the exact cold Andersen-Lake pricer and flagged
+  // ColdFallback, rather than served a box-edge-clamped correction.
   constexpr double kSigMax = 1.5;
 
   // Representative carry q_rep from the mid expiry's zero-borrow hybrid forward
@@ -812,6 +822,19 @@ struct SessionCacheGeom {
     any_side = true;
   }
   return any_side;
+}
+
+// PR-C1: the fast cached serve is admissible only when the blend is usable for
+// this side AND the query point (k_log, T, sigma) lies inside the correction box.
+// CorrectionCache::eval CLAMPS an out-of-box query to the box edge, so serving it
+// prints a silently wrong early-exercise premium (over-stated below the T box,
+// vol-degraded above the sigma box). An out-of-box query instead falls back to the
+// cold Andersen-Lake pricer — mirroring the archived PricedSurface certified-box
+// ColdFallback route (query_pricing.hpp). Single source of truth for every serve
+// site and for VolaSession::query_route.
+[[nodiscard]] inline bool cache_serves(const CorrectionBlend &correction, Side side, double k_log,
+                                       double T, double sigma) noexcept {
+  return correction.usable(side) && correction.contains(k_log, T, sigma);
 }
 
 } // namespace
@@ -1744,9 +1767,10 @@ Result<double> VolaSession::fair_value(double K, double T, Side side) const {
   const double sigma = model_iv(k, T);
 
   // Resolve the explicit query tier: cached/blended correction for a fast tier,
-  // or cold Andersen-Lake when the tier/session policy requires it.
+  // or cold Andersen-Lake when the tier/session policy requires it OR the query
+  // is out of the correction box (PR-C1: out-of-box would clamp to the box edge).
   const CorrectionBlend correction = correction_blend_at(T, side);
-  if (correction.usable(side)) {
+  if (cache_serves(correction, side, k, T, sigma)) {
     const double fv =
         american_price_cached(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, correction);
     if (!std::isfinite(fv)) {
@@ -1768,15 +1792,35 @@ Result<AmericanGreeks> VolaSession::greeks(double K, double T, Side side) const 
   const double sigma = model_iv(k, T);
 
   // Cached hot path for the eSSVI default: differentiate the cached graph. A null
-  // cache (override surface, or a side on the cold path) uses American finite
-  // differences on the SAME cold american_price the fair_value branch prices with,
-  // so greeks().price == fair_value() bit-identical (American, not Black-76).
+  // cache (override surface, or a side on the cold path) OR an out-of-box query
+  // (PR-C1) uses American finite differences on the SAME cold american_price the
+  // fair_value branch prices with, so greeks().price == fair_value() bit-identical
+  // (American, not Black-76).
   const CorrectionBlend correction = correction_blend_at(T, side);
-  if (correction.usable(side)) {
+  if (cache_serves(correction, side, k, T, sigma)) {
     return american_greeks(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, correction);
   }
   return american_greeks_fd(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, in_.deam.method,
                             in_.deam.al_opts);
+}
+
+QueryPricingRoute VolaSession::query_route(double K, double T, Side side) const noexcept {
+  if (!valid_query(K, T)) {
+    return QueryPricingRoute::ColdReference;
+  }
+  const ForwardCarry fc = interp_forward(T);
+  const double k = std::log(K / fc.forward);
+  const double sigma = model_iv(k, T);
+  const CorrectionBlend correction = correction_blend_at(T, side);
+  if (!correction.usable(side)) {
+    return QueryPricingRoute::ColdReference;
+  }
+  if (!correction.contains(k, T, sigma)) {
+    return QueryPricingRoute::ColdFallback;
+  }
+  return (in_.query_pricing_tier == QueryPricingTier::CarryBank)
+             ? QueryPricingRoute::CarryBank
+             : QueryPricingRoute::RepresentativeFast;
 }
 
 Status VolaSession::fair_value_ladder(double T, std::span<const double> strikes,
@@ -1821,7 +1865,7 @@ Status VolaSession::fair_value_ladder(double T, std::span<const double> strikes,
     const double k = std::log(K / fc.forward);
     const double sigma = model_iv(k, T);
     const CorrectionBlend &correction = side == Side::Call ? call_correction : put_correction;
-    if (correction.usable(side)) {
+    if (cache_serves(correction, side, k, T, sigma)) {
       queue_cached(i, side, sigma);
     } else {
       const auto p = american_price(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, in_.deam.method,
@@ -1860,9 +1904,10 @@ Status VolaSession::greeks_ladder(double T, std::span<const double> strikes,
     const double k = std::log(K / fc.forward);
     const double sigma = model_iv(k, T);
     const CorrectionBlend &correction = side == Side::Call ? call_correction : put_correction;
-    // Cached hot path differentiates the cached graph; the null-cache cold path
-    // finite-differences american_price so greeks.price == the cold fair_value.
-    const auto g = correction.usable(side)
+    // Cached hot path differentiates the cached graph; the null-cache OR out-of-box
+    // (PR-C1) cold path finite-differences american_price so greeks.price == the
+    // cold fair_value.
+    const auto g = cache_serves(correction, side, k, T, sigma)
                        ? american_greeks(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, correction)
                        : american_greeks_fd(in_.S, K, T, sigma, fc.rate, fc.q_eff, side,
                                             in_.deam.method, in_.deam.al_opts);
@@ -1963,9 +2008,10 @@ Status VolaSession::evaluate_ladder(double T, std::span<const double> strikes,
       iv_out[i] = sigma;
     }
     const CorrectionBlend &correction = side == Side::Call ? call_correction : put_correction;
+    const bool serve_cached = cache_serves(correction, side, k, T, sigma);
     if (!greeks_out.empty()) {
       const auto result =
-          correction.usable(side)
+          serve_cached
               ? american_greeks(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, correction)
               : american_greeks_fd(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, in_.deam.method,
                                    in_.deam.al_opts);
@@ -1987,7 +2033,7 @@ Status VolaSession::evaluate_ladder(double T, std::span<const double> strikes,
       continue;
     }
 
-    if (correction.usable(side)) {
+    if (serve_cached) {
       queue_cached(i, side, sigma);
     } else if (in_.deam.method == AmericanMethod::AndersenLake && std::isfinite(sigma) &&
                sigma >= 0.0) {

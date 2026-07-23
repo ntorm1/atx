@@ -442,6 +442,21 @@ public:
   // error is propagated.
   [[nodiscard]] Result<AmericanGreeks> greeks(double K, double T, Side side) const;
 
+  // Per-query route introspection for the serve path (PR-C1), mirroring the
+  // archived PricedSurface's QueryPricingRoute. Reports, WITHOUT pricing, which
+  // route fair_value/greeks would take at (K, T, side):
+  //   ColdReference    — no usable correction (cold-configured tier, override
+  //                      surface, or a side with no built cache): the cold pricer.
+  //   RepresentativeFast / CarryBank — the query is inside the correction box and
+  //                      is served from the (single / carry-bank) cached graph.
+  //   ColdFallback     — a usable cache exists but the query is OUTSIDE its box
+  //                      (fitted vol above the sigma ceiling, or T/moneyness past
+  //                      the padded box): the serve path falls back to the cold
+  //                      Andersen-Lake pricer instead of a box-edge-clamped mark.
+  // Returns ColdReference for an invalid (non-finite / non-positive) K or T (the
+  // domain on which fair_value itself returns InvalidArgument).
+  [[nodiscard]] QueryPricingRoute query_route(double K, double T, Side side) const noexcept;
+
   // ── Strike-ladder queries (SoA; reprice a whole expiry in one call) ────────
   //
   // The HFT / market-maker shape: given one expiry `T` and a struct-of-arrays

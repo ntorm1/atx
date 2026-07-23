@@ -1907,3 +1907,132 @@ TEST(VolaSession, CarryCertificationMatchesSerialReferencePerSlice) {
     }
   }
 }
+
+// ── A1 (PR-C1): VolaSession serve path gated on the correction-cache box ─────
+//
+// build_session_caches fixes the correction cache over a hard sigma box
+// [0.05, 1.5] and a T box padded around the fitted expiries. CorrectionCache::
+// eval CLAMPS an out-of-box query to the box edge, and the legacy serve path
+// (fair_value / greeks / evaluate_ladder) never consults contains(): a board
+// whose fitted sigma exceeds 1.5 (earnings / meme / 0DTE panic) or a query below
+// the T box (front-expiry decay, projection) is served the box-EDGE correction —
+// a silently wrong early-exercise premium with no route flag (review-pricing-iv
+// C1). The fix gates the serve path on contains() with a cold Andersen-Lake
+// fallback and reports QueryPricingRoute::ColdFallback.
+
+namespace {
+
+// An earnings-style board whose ATF vol (~1.9) exceeds the correction cache's
+// hard sigma_max (1.5), so the ATM correction is served out-of-box today.
+[[nodiscard]] atx::vol::SynthPanelSpec make_high_vol_spec() {
+  const std::string snapshot = "2026-06-19";
+  const std::vector<std::string> isos = {
+      "2026-07-26", // ~0.10y
+      "2026-10-06", // ~0.30y
+  };
+  const std::vector<atx::vol::S3Params> truths = {
+      atx::vol::S3Params{1.90, -0.30, 0.30},
+      atx::vol::S3Params{1.70, -0.25, 0.25},
+  };
+  atx::vol::SynthPanelSpec spec;
+  spec.uid = "SYNTHHV";
+  spec.snapshot_iso = snapshot;
+  spec.spot = 100.0;
+  spec.r = 0.03;
+  spec.borrow = 0.0;
+  for (std::size_t i = 0; i < isos.size(); ++i) {
+    const double T = atx::vol::year_fraction(snapshot, isos[i]);
+    spec.expiries.push_back(atx::vol::SynthExpiry{isos[i], T, truths[i]});
+  }
+  for (double K = 30.0; K <= 250.0 + 1e-9; K += 10.0) {
+    spec.strikes.push_back(K);
+  }
+  spec.half_spread_frac = 0.02;
+  return spec;
+}
+
+} // namespace
+
+// A high-vol board (earnings-style, fitted vol ~1.9) sits above the correction
+// cache sigma ceiling (1.5). The legacy serve path clamped the correction to the
+// sigma=1.5 box edge — a silently wrong mark whose shortfall grows along the
+// moneyness axis (deep-ITM wing ~1e-2/share off cold). The fix detects the
+// out-of-box query via contains() and falls back to the exact cold Andersen-Lake
+// pricer, flagging the route ColdFallback.
+TEST(VolaSessionCacheBox, OutOfBoxSigma_FallsBackToColdWithRouteFlag) {
+  const atx::vol::SynthPanelSpec spec = make_high_vol_spec();
+  Universe u;
+  const Underlying *under = install(spec, u);
+  ASSERT_NE(under, nullptr);
+
+  const SessionInputs in = make_inputs(spec);
+  const auto sess = VolaSession::build(*under, in);
+  ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
+  const Side side = Side::Put;
+
+  // Precondition: the front ATM fitted vol is ~1.9 — above the cache sigma_max
+  // (1.5), so the ATM query is genuinely out of the sigma box.
+  const double T_atm = sess->expiries().front().T;
+  const double atm_sigma = sess->iv(100.0, T_atm);
+  ASSERT_TRUE(std::isfinite(atm_sigma));
+  ASSERT_GT(atm_sigma, 1.5) << "fixture must fit above the cache sigma box";
+  EXPECT_EQ(sess->query_route(100.0, T_atm, side), atx::vol::QueryPricingRoute::ColdFallback);
+
+  // Deep-ITM put on the far expiry: still above the sigma box AND far along the
+  // moneyness axis, where the box-edge clamp shortfall was worst (~1e-2/share).
+  const double T = sess->expiries().back().T;
+  const double K = 160.0;
+  const double sigma = sess->iv(K, T);
+  ASSERT_GT(sigma, 1.5) << "deep-ITM wing must be above the sigma box";
+  EXPECT_EQ(sess->query_route(K, T, side), atx::vol::QueryPricingRoute::ColdFallback);
+
+  const auto fv = sess->fair_value(K, T, side);
+  ASSERT_TRUE(fv.has_value()) << fv.error().to_string();
+  const auto cold = atx::vol::american_price(in.S, K, T, sigma, sess->rate_at(T), sess->q_eff_at(T),
+                                             side, atx::vol::AmericanMethod::AndersenLake);
+  ASSERT_TRUE(cold.has_value()) << cold.error().to_string();
+  // The out-of-box mark must be the cold AL price, not the sigma=1.5 box-edge
+  // clamp. 1e-3 is far below the ~1e-2 clamp error yet far above the cold-fallback
+  // residual (~1e-5, the pricer's own accuracy floor).
+  EXPECT_NEAR(*fv, *cold, 1.0e-3)
+      << "out-of-box fair_value must serve the cold AL price, not the sigma=1.5 "
+         "box-edge correction (fv=" << *fv << " cold=" << *cold << " sigma=" << sigma << ")";
+}
+
+TEST(VolaSessionCacheBox, ShortTenorBelowTBox_FallsBackToColdWithRouteFlag) {
+  const atx::vol::SynthPanelSpec spec = make_high_vol_spec();
+  Universe u;
+  const Underlying *under = install(spec, u);
+  ASSERT_NE(under, nullptr);
+
+  const SessionInputs in = make_inputs(spec);
+  const auto sess = VolaSession::build(*under, in);
+  ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
+  const Side side = Side::Put;
+
+  // A query below the correction T box (front-expiry decay / projection): out of
+  // the box on the T axis regardless of the sigma widening. The correction cache
+  // would clamp to the T_min edge (a longer-tenor, over-stated early-exercise
+  // premium — the box-edge American price differs by dollars here); the fix
+  // routes it to the cold pricer instead.
+  const double T_lo = sess->expiries().front().T;
+  const double T = 0.70 * T_lo; // below the tight box T_min = 0.9*T_lo, within surface extrapolation
+  const double K = 110.0;       // ITM put
+  const double sigma = sess->iv(K, T);
+  ASSERT_TRUE(std::isfinite(sigma));
+
+  EXPECT_EQ(sess->query_route(K, T, side), atx::vol::QueryPricingRoute::ColdFallback);
+
+  const auto fv = sess->fair_value(K, T, side);
+  ASSERT_TRUE(fv.has_value()) << fv.error().to_string();
+  // No sub-intrinsic mark.
+  EXPECT_GE(*fv, std::max(K - in.S, 0.0) - 1.0e-9);
+  // The served mark is the cold AL price at the true query tenor, not the box-
+  // edge-clamped correction.
+  const auto cold = atx::vol::american_price(in.S, K, T, sigma, sess->rate_at(T), sess->q_eff_at(T),
+                                             side, atx::vol::AmericanMethod::AndersenLake);
+  ASSERT_TRUE(cold.has_value()) << cold.error().to_string();
+  EXPECT_NEAR(*fv, *cold, 1.0e-3)
+      << "below-T-box fair_value must serve the cold AL price at the query tenor (fv=" << *fv
+      << " cold=" << *cold << ")";
+}

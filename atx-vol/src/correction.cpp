@@ -983,6 +983,21 @@ bool CorrectionBlend::usable(Side side) const noexcept {
   return lower->side() == side;
 }
 
+bool CorrectionBlend::contains(double k_log, double T, double sigma) const noexcept {
+  if (!valid()) {
+    return false;
+  }
+  // Mirror eval()'s endpoint selection: a query is in-box iff every cache eval()
+  // would actually read contains it (so nothing is clamped to a box edge).
+  if (upper_weight == 0.0 || lower == upper) {
+    return lower->contains(k_log, T, sigma);
+  }
+  if (upper_weight == 1.0) {
+    return upper->contains(k_log, T, sigma);
+  }
+  return lower->contains(k_log, T, sigma) && upper->contains(k_log, T, sigma);
+}
+
 double CorrectionBlend::eval(double k_log, double T, double sigma) const noexcept {
   if (!valid()) {
     return std::numeric_limits<double>::quiet_NaN();
