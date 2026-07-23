@@ -220,11 +220,18 @@ def _empty_decoded() -> pd.DataFrame:
 
 
 def date_file_underlyings(path: pathlib.Path) -> set[str]:
-    """Distinct ``underlying`` values in a date file, from footer statistics.
+    """Distinct ``underlying`` values in a date file.
 
-    The writer emits one row group per underlying, so each group's min == max ==
-    that underlying — no data scan. If a group lacks stats (older writer), fall
-    back to reading only the single ``underlying`` column."""
+    Fast path: when every row group holds a single underlying (min == max ==
+    that value), the footer statistics give the full set with no data scan. But
+    the one-row-group-per-underlying layout is NOT frozen (design §3 defers it),
+    so a file written by a generic writer may put several underlyings in one
+    sorted row group — then min/max are only the extremes and the middle names
+    would be silently missed. So if ANY row group lacks stats or spans a range
+    (min != max), fall back to a single-column full read of ``underlying`` for
+    the whole file — correct for any writer, still cheaper than reading data
+    columns. Getting this wrong would mark on-disk symbols as missing and
+    re-pull them for real money."""
     pf = pq.ParquetFile(path)
     md = pf.metadata
     idx = pf.schema_arrow.get_field_index("underlying")
@@ -233,10 +240,9 @@ def date_file_underlyings(path: pathlib.Path) -> set[str]:
     syms: set[str] = set()
     for rg in range(md.num_row_groups):
         st = md.row_group(rg).column(idx).statistics
-        if st is None or not st.has_min_max:
+        if st is None or not st.has_min_max or st.min != st.max:
             return set(pf.read(columns=["underlying"]).column(0).to_pylist())
         syms.add(st.min)
-        syms.add(st.max)
     return syms
 
 

@@ -25,6 +25,7 @@ import pathlib
 import sys
 
 import pandas as pd
+import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
@@ -167,6 +168,30 @@ def test_plan_missing_force_repulls_every_requested_symbol(tmp_path):
     ph.merge_date_file(None, _decoded(["SPY", "AAPL"]), tgt)
     plan = ph.plan_missing(tmp_path, ["SPY", "AAPL"], ["2026-07-20"], force=True)
     assert plan == {"2026-07-20": ["SPY", "AAPL"]}
+
+
+def test_plan_missing_handles_multi_underlying_row_group(tmp_path):
+    """A generic writer may pack several underlyings into ONE sorted row group
+    (the one-rg-per-underlying layout is not frozen). Footer min/max would then
+    be only {first, last} and drop the middle names — plan_missing must fall
+    back to the full underlying column and see them all present, not re-pull."""
+    tgt = tmp_path / "date=2026-07-20" / ph.DATE_FILE
+    tgt.parent.mkdir(parents=True, exist_ok=True)
+    frame = _decoded(["AAPL", "GOOG", "MSFT"]).sort_values("underlying")
+    tbl = pa.Table.from_pandas(frame[ph.COLUMNS], schema=ph.ARROW_SCHEMA,
+                               preserve_index=False)
+    pq.write_table(tbl, tgt, row_group_size=1_000_000)  # single big row group
+
+    # Precondition: exactly one row group whose stats span AAPL..MSFT (min != max),
+    # so the naive min/max path would miss GOOG.
+    md = pq.ParquetFile(tgt).metadata
+    assert md.num_row_groups == 1
+    st = md.row_group(0).column(ph.COLUMNS.index("underlying")).statistics
+    assert st.has_min_max and st.min != st.max
+
+    assert ph.date_file_underlyings(tgt) == {"AAPL", "GOOG", "MSFT"}
+    plan = ph.plan_missing(tmp_path, ["AAPL", "GOOG", "MSFT"], ["2026-07-20"])
+    assert plan == {}  # all present -> nothing to re-pull
 
 
 # ── merge_date_file ───────────────────────────────────────────────────────────
