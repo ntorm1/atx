@@ -3592,4 +3592,47 @@ TEST(CarryGreeks, DividendSensitivityEndToEndFdParity) {
   }
 }
 
+// ── A3 (GR-P2-3): baked-carry staleness tripwire ─────────────────────────────
+//
+// The cached first-order jet (american_greeks_first_order / american_price_cached)
+// evaluates a correction baked at (r0, q0) with the query's (r, q). A query rate
+// that has drifted from the baked rate by more than the C2 stale-gate (25 bps) —
+// an intraday-rate move, or a stale market cache — silently mixes old-carry early-
+// exercise sensitivities into fresh-carry Black-76 legs. The always-on solve
+// ledger now counts exactly this. RATE-ONLY: per-tenor q_eff drift from the
+// mid-expiry representative carry is a legitimate in-fit artifact and is not
+// counted (an assert on baked_q at 25 bps aborted the suite — american.cpp A9).
+TEST(AmericanCachedCarryDrift, CountsQueryVsBakedRateDriftOnly) {
+  namespace L = atx::vol::counters::ledger;
+  const double r0 = 0.05;
+  const double q0 = 0.02;
+  const CorrectionCache cache = make_correction(Side::Put, r0, q0);
+  ASSERT_TRUE(cache.populated());
+  const double S = 100.0;
+  const double K = 100.0;
+  const double T = 0.5;
+  const double sigma = 0.30;
+
+  // (a) query at the baked rate -> no drift counted.
+  L::reset();
+  const auto g0 = american_greeks(S, K, T, sigma, r0, q0, Side::Put, &cache);
+  ASSERT_TRUE(g0.has_value());
+  EXPECT_EQ(L::snapshot().get(L::Solve::CacheCarryDrift), std::uint64_t{0});
+
+  // (b) query rate drifted +100 bps (> the 25 bps stale-gate) -> counted.
+  L::reset();
+  const auto g1 = american_greeks(S, K, T, sigma, r0 + 0.01, q0, Side::Put, &cache);
+  ASSERT_TRUE(g1.has_value());
+  EXPECT_GT(L::snapshot().get(L::Solve::CacheCarryDrift), std::uint64_t{0})
+      << "a >25 bps query-vs-baked rate move through a fixed-carry cache must be flagged";
+
+  // (c) q_eff drifted +500 bps but the rate matches -> NOT counted (the per-tenor
+  // q_eff drift from the representative carry is a legitimate in-fit artifact).
+  L::reset();
+  const auto g2 = american_greeks(S, K, T, sigma, r0, q0 + 0.05, Side::Put, &cache);
+  ASSERT_TRUE(g2.has_value());
+  EXPECT_EQ(L::snapshot().get(L::Solve::CacheCarryDrift), std::uint64_t{0})
+      << "per-tenor q_eff drift is legitimate in-fit usage and must not be flagged";
+}
+
 } // namespace

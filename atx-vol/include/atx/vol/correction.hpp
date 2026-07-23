@@ -289,6 +289,13 @@ struct CorrectionBlend {
   // (PR-C1) instead of serving a clamped correction.
   [[nodiscard]] bool contains(double k_log, double T, double sigma) const noexcept;
 
+  // Baked risk-free rate of the endpoint eval() reads (the lower cache, or the
+  // upper at weight 1). NaN for an invalid blend. The two blended endpoints share
+  // the same baked r (a carry bank blends only q), so the lower endpoint's r is
+  // the blend's baked r. Used by the session serve path to flag a query whose
+  // rate has drifted from the fixed-carry cache (GR-P2-3 baked-carry staleness).
+  [[nodiscard]] double baked_r() const noexcept;
+
   // Invalid blends return NaN (for every field in the second-order bundle).
   // Exact endpoints and identical pointers evaluate only one cache.
   [[nodiscard]] double eval(double k_log, double T, double sigma) const noexcept;

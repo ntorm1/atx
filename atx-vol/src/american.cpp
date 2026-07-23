@@ -1843,6 +1843,22 @@ constexpr const char *kDoubleContinuationMsg =
   return price;
 }
 
+// GR-P2-3 baked-carry staleness tripwire. Counts a cached-jet serve whose query
+// risk-free rate has drifted from the fixed-carry cache's baked rate by more than
+// the C2 stale-gate (25 bps) into the always-on solve ledger. RATE-ONLY: the
+// per-tenor q_eff drift from the mid-expiry representative carry is a legitimate
+// in-fit artifact (see the american_price_cached A9 note below — an assert on
+// baked_q at 25 bps aborted the suite), so it is deliberately not counted. In-fit
+// de-Am and a flat-rate session serve query at the baked rate, so this stays 0
+// through a normal fit/serve; it fires only on a genuine query-vs-baked rate move.
+inline void count_cache_carry_drift(double baked_r, double query_r) noexcept {
+  constexpr double kCacheCarryDriftTol = 0.0025; // 25 bps, matches session cache_side_covers
+  if (std::isfinite(baked_r) && std::isfinite(query_r) &&
+      std::fabs(query_r - baked_r) > kCacheCarryDriftTol) {
+    counters::ledger::bump(counters::ledger::Solve::CacheCarryDrift);
+  }
+}
+
 // Cached routes obtain the full correction gradient/Hessian from one
 // differentiated Clenshaw traversal; no off-point finite differences remain.
 template <typename Correction>
@@ -1867,6 +1883,7 @@ void american_greeks_first_order(double S, double K, double T, double sigma, dou
   double d2c_ds2 = 0.0;
   double c_val = 0.0;
   if (correction) {
+    count_cache_carry_drift(correction->baked_r(), r); // GR-P2-3
     const CorrSecondOrder corr = correction->eval_second_order(k_log, T, sigma);
     c_val = corr.value;
     dc_dk = corr.dk_log;
@@ -2478,6 +2495,7 @@ double american_price_cached(double S, double K, double T, double sigma, double 
   const double euro = black76_price_from_lnfk(F, K, T, sigma, df, ln_fk, sqrt_t, side);
   const double k_log = -ln_fk;
   const double corr = correction->eval(k_log, T, sigma);
+  count_cache_carry_drift(correction->baked_r(), r); // GR-P2-3
   ATX_VOL_COUNT(CacheHits);
   // A2 (core-review finding 2): floor at max(intrinsic, euro, 0), matching the
   // cold clamp chain — the correction clamps to its box edge out-of-box, so the
@@ -2508,6 +2526,7 @@ double american_price_cached(double S, double K, double T, double sigma, double 
   const double sqrt_t = (T > 0.0) ? std::sqrt(T) : 0.0;
   const double euro = black76_price_from_lnfk(F, K, T, sigma, df, ln_fk, sqrt_t, side);
   const double corr = correction.eval(-ln_fk, T, sigma);
+  count_cache_carry_drift(correction.baked_r(), r); // GR-P2-3
   ATX_VOL_COUNT(CacheHits);
   // A2 (core-review finding 2): floor at max(intrinsic, euro, 0) — see the
   // single-cache overload above.
