@@ -74,7 +74,17 @@ namespace detail {
   switch (cv.kind()) {
   case VolCurveKind::Svi: {
     const auto &sp = static_cast<const SviCurve &>(cv).slice();
-    return arb_check_butterfly_svi_mm(sp, T).n_violations;
+    std::uint32_t nv = arb_check_butterfly_svi_mm(sp, T).n_violations;
+    // FT-C2: the 5-condition Martini-Mingone tally is necessary-only and blind to
+    // wing butterfly arb the closed form extrapolates past the tradeable band.
+    // Grid-scan the served w(k) over the padded quoted range too (same policy and
+    // grid as the C8 branch and the fit_slice_curve SVI serving gate).
+    const auto bf =
+        arb_check_butterfly_slice([&cv](double kk) { return cv.w(kk); }, T, k_lo, k_hi, 64u);
+    if (bf.has_value()) {
+      nv += static_cast<std::uint32_t>(bf->size());
+    }
+    return nv;
   }
   case VolCurveKind::C8: {
     const auto bf =
