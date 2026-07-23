@@ -20,6 +20,7 @@
 #include "atx/vol/curve.hpp"        // YieldCurve
 #include "atx/vol/data.hpp"         // iso_to_ns
 #include "atx/vol/parallel_for.hpp" // parallel_for_dynamic (W4.3 per-file fan-out)
+#include "opra_batch_detail.hpp"    // Civil kernel, memo_iso_to_ns, resolve_market_inputs
 
 namespace atx::vol {
 
@@ -30,79 +31,13 @@ using atx::core::ErrorCode;
 namespace {
 
 namespace fs = std::filesystem;
+namespace obd = atx::vol::opra_detail;
 
-// ── Civil-date kernel (Howard-Hinnant days-from-civil) ──────────────────────
-//
-// A serial day count keyed at 1970-01-01 = 0, so an inclusive date range becomes
-// a contiguous integer interval we walk one day at a time. Self-contained on
-// purpose: no external date library (chrono's year_month_day round-trip would do,
-// but the raw algorithm is a dozen lines and keeps the dependency surface flat).
-
-struct Civil {
-  int y = 0;
-  unsigned m = 0;
-  unsigned d = 0;
-};
-
-// Serial day number for a civil date (Howard Hinnant, "chrono-Compatible Low-Level
-// Date Algorithms"). Valid for the Gregorian calendar; m in [1,12], d in [1,31].
-[[nodiscard]] std::int64_t days_from_civil(int y, unsigned m, unsigned d) noexcept {
-  y -= (m <= 2);
-  const std::int64_t era = (y >= 0 ? y : y - 399) / 400;
-  const unsigned yoe = static_cast<unsigned>(y - era * 400);                  // [0, 399]
-  const unsigned doy = (153u * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1;      // [0, 365]
-  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;                 // [0, 146096]
-  return era * 146097 + static_cast<std::int64_t>(doe) - 719468;
-}
-
-// Inverse of days_from_civil.
-[[nodiscard]] Civil civil_from_days(std::int64_t z) noexcept {
-  z += 719468;
-  const std::int64_t era = (z >= 0 ? z : z - 146096) / 146097;
-  const unsigned doe = static_cast<unsigned>(z - era * 146097);               // [0, 146096]
-  const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
-  const int y = static_cast<int>(yoe) + static_cast<int>(era) * 400;
-  const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);               // [0, 365]
-  const unsigned mp = (5 * doy + 2) / 153;                                    // [0, 11]
-  const unsigned d = doy - (153 * mp + 2) / 5 + 1;                            // [1, 31]
-  const unsigned m = mp < 10 ? mp + 3 : mp - 9;                               // [1, 12]
-  return Civil{y + static_cast<int>(m <= 2), m, d};
-}
-
-// Parse a full-width unsigned decimal field, requiring the whole span be digits.
-[[nodiscard]] bool parse_uint(std::string_view s, int& out) noexcept {
-  const char* first = s.data();
-  const char* last = s.data() + s.size();
-  const std::from_chars_result res = std::from_chars(first, last, out);
-  return res.ec == std::errc{} && res.ptr == last;
-}
-
-// Parse exactly "YYYY-MM-DD". Rejects wrong length, missing dashes, non-numeric
-// fields, or an out-of-range month/day.
-[[nodiscard]] bool parse_civil(std::string_view s, Civil& out) noexcept {
-  if (s.size() != 10 || s[4] != '-' || s[7] != '-') {
-    return false;
-  }
-  int y = 0;
-  int m = 0;
-  int d = 0;
-  if (!parse_uint(s.substr(0, 4), y) || !parse_uint(s.substr(5, 2), m) ||
-      !parse_uint(s.substr(8, 2), d)) {
-    return false;
-  }
-  if (m < 1 || m > 12 || d < 1 || d > 31) {
-    return false;
-  }
-  out = Civil{y, static_cast<unsigned>(m), static_cast<unsigned>(d)};
-  return true;
-}
-
-// Format a civil date as "YYYY-MM-DD".
-[[nodiscard]] std::string format_civil(const Civil& c) {
-  char buf[11];
-  std::snprintf(buf, sizeof(buf), "%04d-%02u-%02u", c.y, c.m, c.d);
-  return std::string(buf);
-}
+// The civil-date kernel (Civil, days_from_civil / civil_from_days, parse_civil,
+// format_civil), the snapshot-stamp memoization, and the per-cell market-input
+// resolution now live in opra_batch_detail.hpp so load_opra_hive reuses them
+// VERBATIM instead of copy-pasting — the two loaders must resolve dates, stamps,
+// and market inputs identically. Referenced below via the `obd::` alias.
 
 // Substitute "{symbol}" and "{date}" tokens in a path template. Unknown text is
 // copied verbatim; a lone '{' that starts neither token is copied as-is.
@@ -145,13 +80,14 @@ struct Civil {
   if (tag.source.empty() || tag.as_of.size() < 10u) {
     return false;
   }
-  Civil cell;
-  Civil as_of;
-  if (!parse_civil(cell_date, cell) ||
-      !parse_civil(std::string_view(tag.as_of).substr(0u, 10u), as_of)) {
+  obd::Civil cell;
+  obd::Civil as_of;
+  if (!obd::parse_civil(cell_date, cell) ||
+      !obd::parse_civil(std::string_view(tag.as_of).substr(0u, 10u), as_of)) {
     return false;
   }
-  return days_from_civil(as_of.y, as_of.m, as_of.d) <= days_from_civil(cell.y, cell.m, cell.d);
+  return obd::days_from_civil(as_of.y, as_of.m, as_of.d) <=
+         obd::days_from_civil(cell.y, cell.m, cell.d);
 }
 
 void append_token(std::string &out, std::string_view value) {
@@ -228,8 +164,8 @@ void append_market_cell(std::string &out, const CorpusMarketInputCell &cell) {
 }
 
 [[nodiscard]] bool valid_market_cell(const CorpusMarketInputCell &cell) {
-  Civil date;
-  if (!parse_civil(cell.date, date) || cell.symbol.empty() ||
+  obd::Civil date;
+  if (!obd::parse_civil(cell.date, date) || cell.symbol.empty() ||
       (cell.spot_override.has_value() &&
        (!std::isfinite(*cell.spot_override) || *cell.spot_override <= 0.0)) ||
       cell.yc_pillar_t.size() != cell.yc_pillar_r.size() ||
@@ -314,16 +250,16 @@ Result<OpraBatchResult> load_opra_daterange(const OpraBatchSpec& spec,
   if (spec.symbols.empty()) {
     return Err(ErrorCode::InvalidArgument, "OpraBatchSpec.symbols is empty");
   }
-  Civil lo;
-  Civil hi;
-  if (!parse_civil(spec.date_lo, lo)) {
+  obd::Civil lo;
+  obd::Civil hi;
+  if (!obd::parse_civil(spec.date_lo, lo)) {
     return Err(ErrorCode::InvalidArgument, "unparseable date_lo '" + spec.date_lo + "'");
   }
-  if (!parse_civil(spec.date_hi, hi)) {
+  if (!obd::parse_civil(spec.date_hi, hi)) {
     return Err(ErrorCode::InvalidArgument, "unparseable date_hi '" + spec.date_hi + "'");
   }
-  const std::int64_t serial_lo = days_from_civil(lo.y, lo.m, lo.d);
-  const std::int64_t serial_hi = days_from_civil(hi.y, hi.m, hi.d);
+  const std::int64_t serial_lo = obd::days_from_civil(lo.y, lo.m, lo.d);
+  const std::int64_t serial_hi = obd::days_from_civil(hi.y, hi.m, hi.d);
   if (serial_hi < serial_lo) {
     return Err(ErrorCode::InvalidArgument,
                "date_hi '" + spec.date_hi + "' precedes date_lo '" + spec.date_lo + "'");
@@ -366,16 +302,9 @@ Result<OpraBatchResult> load_opra_daterange(const OpraBatchSpec& spec,
 
   std::size_t slot = 0;
   for (std::int64_t serial = serial_lo; serial <= serial_hi; ++serial) {
-    const std::string date = format_civil(civil_from_days(serial));
+    const std::string date = obd::format_civil(obd::civil_from_days(serial));
     const std::string snapshot_iso = date + spec.snapshot_suffix;
-
-    std::int64_t snap_ts = 0;
-    if (const auto it = snap_ts_cache.find(snapshot_iso); it != snap_ts_cache.end()) {
-      snap_ts = it->second;
-    } else {
-      snap_ts = iso_to_ns(snapshot_iso);
-      snap_ts_cache.emplace(snapshot_iso, snap_ts);
-    }
+    const std::int64_t snap_ts = obd::memo_iso_to_ns(snap_ts_cache, snapshot_iso);
 
     for (const std::string& symbol : spec.symbols) {
       OpraBatchEntry& entry = result.entries[slot];
@@ -386,38 +315,22 @@ Result<OpraBatchResult> load_opra_daterange(const OpraBatchSpec& spec,
       path.make_preferred();
       entry.path = path.string();
 
-      const CorpusMarketInputCell *market = spec.market_inputs.find(date, symbol);
-      if (market == nullptr) {
-        entry.used_market_input_fallback = true;
-        if (spec.missing_market_inputs == MissingMarketInputPolicy::Error) {
-          return Err(ErrorCode::Unavailable, "missing market inputs for " + date + " " + symbol);
-        }
-        if (spec.missing_market_inputs == MissingMarketInputPolicy::Quarantine) {
-          entry.panel =
-              Err(ErrorCode::Unavailable, "missing market inputs for " + date + " " + symbol);
-          ++slot;
-          continue;  // finalized in place; no parquet read queued
-        }
-      } else {
-        entry.market_input_fingerprint = market->provenance.fingerprint;
-      }
-
       OpraLoadSpec load;
       load.path = entry.path;
       load.underlying = symbol;
       load.snapshot_iso = snapshot_iso;
       load.r = spec.r;
       load.provenance_mode = spec.provenance_mode;
-      if (market != nullptr) {
-        load.spot_override = market->spot_override.value_or(0.0);
-        load.yc_pillar_t = market->yc_pillar_t.empty() ? spec.yc_pillar_t : market->yc_pillar_t;
-        load.yc_pillar_r = market->yc_pillar_r.empty() ? spec.yc_pillar_r : market->yc_pillar_r;
-        load.cash_divs = market->cash_divs;
-        load.fit_context = market->fit_context;
-        load.market_input_provenance = market->provenance;
-      } else {
-        load.yc_pillar_t = spec.yc_pillar_t;
-        load.yc_pillar_r = spec.yc_pillar_r;
+
+      const obd::MarketResolve mr =
+          obd::resolve_market_inputs(spec.market_inputs, spec.missing_market_inputs, date,
+                                        symbol, spec.yc_pillar_t, spec.yc_pillar_r, entry, load);
+      if (mr.kind == obd::MarketResolveKind::Fatal) {
+        return Err(ErrorCode::Unavailable, mr.message);
+      }
+      if (mr.kind == obd::MarketResolveKind::Quarantine) {
+        ++slot;
+        continue;  // finalized in place; no parquet read queued
       }
       load_plan.push_back(LoadTask{slot, std::move(load)});
       ++slot;
