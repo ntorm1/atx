@@ -1212,11 +1212,12 @@ struct ChainFitResult {
     }
   }
 
-  // Backbone calendar projection (no-op on an already-monotone surface). The
-  // sequential driver produces a theta-monotone term structure by construction,
-  // but the wing (φ, ρ) coupling can still induce small calendar crossings, so
-  // the projection is run for both drivers when validation is on.
-  if (n_fit_ok >= 2 && opts.validate_no_arb) {
+  // Backbone calendar projection (theta-scale "Project"-style bump). FT-C9a: this
+  // moves the ATM total-variance level to remove calendar crossings — the
+  // quality-destroying repair the README warns about. It is now an EXPLICIT
+  // opt-in (essvi_alt_driver_theta_project), NOT folded into validate_no_arb, so
+  // the default alternate-driver path leaves the fitted term structure untouched.
+  if (n_fit_ok >= 2 && opts.essvi_alt_driver_theta_project) {
     (void)arb_project_calendar_essvi(surface, -1.5, 1.5, 64u);
   }
 

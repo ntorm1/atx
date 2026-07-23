@@ -209,6 +209,51 @@ TEST(PreparedFitting, LegacyCompatibilityPreservesHistoricalPermissiveRowsAndWei
   EXPECT_DOUBLE_EQ(row.active_weight_w, expected_weight);
 }
 
+// FT-C6 (B5b): the Legacy observation builder set noise_sigma = 0.0 for a
+// vega <= 0 row, while the Configured builder (calib.cpp build_one_observation)
+// uses 1.0. noise_sigma feeds the C8 spread_w (2*sigma*T*max(noise_sigma,1e-7));
+// a 0.0 noise makes that ~1e4x smaller than a normal row -> ~1e8x the LM weight,
+// so one dead deep-wing quote can own the objective. The two builders must agree.
+// A deep low-vol board floors the de-Am IV so black76 vega underflows to exactly
+// 0.0 on the far wings — a deterministic vega==0 row that still survives Legacy's
+// permissive admission.
+TEST(PreparedFitting, LegacyVegaZeroRowNoiseSigmaMatchesConfiguredFallback) {
+  constexpr double T = 0.25, r = 0.01, q = 0.0;
+  const double F = 100.0 * std::exp((r - q) * T);
+  const double df = std::exp(-r * T);
+  const double q_eff = r - std::log(F / 100.0) / T;
+  std::vector<double> strikes;
+  for (int i = 0; i < 40; ++i) {
+    strikes.push_back(80.0 + 15.0 * static_cast<double>(i));  // out to K=665
+  }
+  const Chain chain = make_american_board(strikes, T, r, q, 0.05);
+
+  PreparedSliceInputs in;
+  in.expiry_index = 3u;
+  in.S = 100.0;
+  in.r = r;
+  in.F = F;
+  in.q_eff = q_eff;
+  in.df = df;
+  in.policy = PreparedObservationPolicy::LegacyEssviCompatibility;
+  in.calib = CalibOpts{};
+  const auto prep = PreparedSlice::create(chain, in);
+  ASSERT_TRUE(prep.has_value()) << prep.error().to_string();
+
+  int n_vega_zero = 0;
+  for (const auto &o : prep->fit_observations()) {
+    if (o.vega == 0.0) {
+      ++n_vega_zero;
+      // The unified fallback (matching the Configured builder, calib.cpp:198) is
+      // 1.0, NOT 0.0. Pre-fix: noise_sigma == 0.0 (RED).
+      EXPECT_DOUBLE_EQ(o.noise_sigma, 1.0)
+          << "Legacy vega<=0 noise_sigma must match the Configured builder's 1.0 "
+             "fallback (K=" << o.K << ")";
+    }
+  }
+  ASSERT_GT(n_vega_zero, 0) << "fixture must produce at least one vega==0 row";
+}
+
 TEST(PreparedFitting, LegacySharedBoundaryDeamMatchesScalarWithinEconomicBound) {
   // F1 (R-01p2): the Legacy/eSSVI de-Am now routes through the shared exercise-
   // boundary batch (one boundary solve per slice-side across strikes) instead of a

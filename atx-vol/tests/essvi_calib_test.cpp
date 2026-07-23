@@ -524,6 +524,93 @@ TEST(EssviCalibSurface, RecoversSyntheticSurface_WithinTolerance) {
   EXPECT_EQ(arb->n_butterfly, 0u);
 }
 
+// FT-C9a (B5c): the alternate eSSVI driver (essvi_calib_surface[_sequential])
+// ran arb_project_calendar_essvi — the quality-destroying "Project"-style theta
+// bump the README warns about — by DEFAULT whenever validate_no_arb was set
+// (true by default), silently moving the ATM total-variance level to remove a
+// calendar crossing. That theta bump must be an EXPLICIT opt-in, not folded into
+// validate_no_arb; the default must leave the ATM level unmoved.
+TEST(EssviCalibSurface, AlternateDriverDefault_DoesNotThetaBumpCrossing) {
+  const double kF = 100.0;
+  const double phi = 1.0;
+  const double rho = -0.25;
+  const std::array<double, 2> ts{0.25, 0.50};
+  const std::array<double, 2> thetas{0.060, 0.040};  // crossing: theta2 < theta1
+
+  Underlying u;
+  u.uid = 1u;
+  u.ticker = "X";
+  u.spot = kF;
+  std::vector<double> strikes;
+  for (double K = 84.0; K <= 116.0 + 1e-9; K += 2.0) {
+    strikes.push_back(K);
+  }
+  for (std::size_t si = 0; si < 2; ++si) {
+    const EssviParams tr = backbone(thetas[si], phi, rho, ts[si]);
+    Chain c;
+    c.uid = 1u;
+    c.expiry_id = static_cast<std::uint16_t>(si);
+    c.expiry_ns = static_cast<std::int64_t>(ts[si] * 3.15e16);
+    c.T = ts[si];
+    c.strikes = strikes;
+    const std::size_t n2 = strikes.size() * 2u;
+    c.bids.assign(n2, 0.0);
+    c.asks.assign(n2, 0.0);
+    c.mids.assign(n2, 0.0);
+    c.ivs.assign(n2, std::numeric_limits<double>::quiet_NaN());
+    c.bid_sizes.assign(n2, 1);
+    c.ask_sizes.assign(n2, 1);
+    c.ts_ns.assign(n2, 0);
+    c.flags.assign(n2, 0u);
+    for (std::size_t s = 0; s < strikes.size(); ++s) {
+      const double K = strikes[s];
+      const double k = std::log(K / kF);
+      const double sig = std::sqrt(essvi_backbone_w(tr, k) / ts[si]);
+      for (int side_i = 0; side_i < 2; ++side_i) {
+        const auto side = static_cast<Side>(static_cast<std::uint8_t>(side_i));
+        const std::size_t idx = chain_index(static_cast<std::uint16_t>(s), side);
+        const double mid = black76_price(kF, K, ts[si], sig, 1.0, side);
+        const double vega = black76_value_and_vega(kF, K, ts[si], sig, 1.0, side).vega;
+        const double half = std::min(0.005 * vega, 0.25 * mid);
+        c.mids[idx] = mid;
+        c.bids[idx] = mid - half;
+        c.asks[idx] = mid + half;
+      }
+    }
+    u.chains.push_back(std::move(c));
+  }
+  CurveSet cs;
+  cs.spot = kF;
+  std::vector<ForwardPoint> fps;
+  for (const Chain& c : u.chains) {
+    ForwardPoint fp{};
+    fp.expiry_ns = c.expiry_ns;
+    fp.T = c.T;
+    fp.F = kF;
+    fps.push_back(fp);
+  }
+  cs.forward.set(fps);
+
+  auto surf_res = VolSurface::create(1u, Parametrization::Essvi, u.chains.size());
+  ASSERT_TRUE(surf_res.has_value());
+  VolSurface surface = *surf_res;
+  const auto st = essvi_calib_surface(surface, u, cs, calib_default_opts());
+  ASSERT_TRUE(st.has_value()) << st.error().to_string();
+  ASSERT_EQ(surface.n_slices(), 2u);
+
+  const double iv1 = surface.iv_on_slice(0u, 0.0);
+  const double iv2 = surface.iv_on_slice(1u, 0.0);
+  const double theta1 = iv1 * iv1 * ts[0];
+  const double theta2 = iv2 * iv2 * ts[1];
+  // Default must NOT run the theta bump: the ATM crossing is preserved and the
+  // T2 ATM level stays near its raw independent fit (0.040).
+  EXPECT_LT(theta2, theta1)
+      << "default alternate driver theta-bumped the crossing (theta2=" << theta2
+      << " theta1=" << theta1 << ")";
+  EXPECT_NEAR(theta2, 0.040, 5.0e-3)
+      << "ATM level moved from its raw fit (theta2=" << theta2 << ")";
+}
+
 TEST(EssviCalibSurface, NonEssviSurface_ReturnsInvalidArgument) {
   const SurfaceFixture fx;
   const Underlying under = fx.make_under();

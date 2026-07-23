@@ -1288,6 +1288,13 @@ Result<SviParams> svi_jw_to_raw(const SviJwParams &jw) {
   if (std::fabs(beta) < 1.0e-12) {
     const double sigma =
         (v - v_min) * T / (b * (1.0 - std::sqrt(1.0 - rho * rho)) + 1.0e-18);
+    // FT-C5: reject sigma <= 0 (matches the asymmetric branch). With v == v_min
+    // the numerator is zero => sigma == 0, a total-variance kink at k=m with
+    // infinite density; the pre-fix symmetric branch laundered it out as Ok.
+    if (!(sigma > 0.0)) {
+      return Err(ErrorCode::OutOfRange,
+                 "svi_jw_to_raw: non-positive sigma (symmetric branch)");
+    }
     out.a = v_min * T - b * sigma * std::sqrt(1.0 - rho * rho);
     out.b = b;
     out.rho = rho;

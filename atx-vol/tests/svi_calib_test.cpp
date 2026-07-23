@@ -378,6 +378,25 @@ TEST(SviJw, JwToRaw_InfeasibleTuple_ReturnsOutOfRange) {
   EXPECT_EQ(res.error().code(), ErrorCode::OutOfRange);
 }
 
+// FT-C5 (B5a): the symmetric-smile branch (beta ~ 0) of svi_jw_to_raw computed
+// sigma = (v - v_min)*T / (...); with v == v_min the numerator is zero so
+// sigma == 0 was returned Ok. A sigma=0 raw-SVI slice has a total-variance kink
+// at k=m (infinite density). The asymmetric branch already rejects sigma <= 0;
+// the symmetric branch must too.
+TEST(SviJw, JwToRaw_SymmetricVEqualsVMin_RejectsZeroSigma) {
+  SviJwParams jw{};
+  jw.v = 0.05;
+  jw.v_min = 0.05;  // v_min == v => numerator zero => sigma == 0
+  jw.psi = 0.0;     // beta = 0 => symmetric branch
+  jw.p = 0.20;
+  jw.c = 0.20;      // p == c => rho = 0
+  jw.T = 0.5;
+  const auto res = svi_jw_to_raw(jw);
+  ASSERT_FALSE(res.has_value())
+      << "symmetric-branch sigma=0 must be rejected (infinite-density kink)";
+  EXPECT_EQ(res.error().code(), ErrorCode::OutOfRange);
+}
+
 // ── Surface drivers on a synthetic single-slice chain ────────────────────
 
 namespace {
