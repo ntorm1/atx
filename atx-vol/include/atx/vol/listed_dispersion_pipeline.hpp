@@ -22,8 +22,11 @@
 #include <vector>
 
 #include "atx/vol/backtest.hpp"                   // MarketSnapshot, QueryExecution (via query_pricing.hpp)
+#include "atx/vol/contract_projection.hpp"        // ProjectedMaturitySpec, ProjectedOption
 #include "atx/vol/corpus.hpp"                     // CorpusAdmissionRule
+#include "atx/vol/dispersion.hpp"                 // DispersionBook
 #include "atx/vol/dispersion_workflow.hpp"        // RunSpec, batch_spec
+#include "atx/vol/historical_projection.hpp"      // HistoricalProjection{Scenario,Frame,Config}, ProjectedHistoricalVar
 #include "atx/vol/listed_dispersion.hpp"          // ListedForwardLookup, DispersionMember, ListedOptionQuote
 #include "atx/vol/listed_dispersion_reconciliation.hpp" // ListedReconciliationSnapshot, reconcile_listed_dispersion
 #include "atx/vol/listed_dispersion_schedule.hpp" // ListedRiskLookup, ListedOptionRisk
@@ -207,5 +210,53 @@ struct ProjectionConfig {
 [[nodiscard]] Result<ListedDispersionSchedule>
 project_listed_schedule(const ListedDispersionSchedule &listed, const ListedArchiveLookup &archives,
                         const ProjectionConfig &cfg = {});
+
+// ── Projected relative-template VaR (M8) ────────────────────────────────────────
+
+// The materialized output of the book-projected historical VaR: the per-scenario
+// aggregate frames, the scenario-major per-leg projections, one risk summary per
+// requested confidence, and the position count. The CLI serializes these into its
+// three bespoke loose-TSV schemas (projected_risk_scenarios / projected_risk_legs /
+// projected_var) — out-of-archive per the design partition rule, so NOT folded into
+// run.atxrun this wave (no schema bump). The library owns the economics; the CLI the
+// serialization.
+struct DispersionBookVar {
+  std::vector<HistoricalProjectionFrame> frames; // one per scenario, scenario order
+  std::vector<ProjectedOption> legs;             // scenario-major: scenarios * n_positions
+  std::vector<ProjectedHistoricalVar> risks;     // one per requested confidence, input order
+  std::size_t n_positions{0};                    // == book.positions.size()
+};
+
+// Verbatim lift of run_projected_var_command's book -> OptionProjectionSpec synthesis
+// + PreparedHistoricalProjection::evaluate_into + projected_historical_var per
+// confidence (spy_dispersion_backtest.cpp:1119-1194). Each book position becomes a
+// relative template — same uid / side / multiplier / qty, ATM-forward strike, and the
+// caller's relative `maturity` — then the templates are re-projected onto every
+// historical `scenario` and the loss quantile is split per requested confidence.
+//
+// `maturity` is the CLI's `dispersion.projected_maturity` (spy_dispersion_backtest
+// .cpp:1124), which is defined at :1114 OUTSIDE the :1119-1194 lift range and so is a
+// required input here (the plan's book-only signature omitted it). It MUST be the
+// relative template (`ProjectedMaturitySpec::days(N)`), NOT an absolute expiry: the
+// point of relative-template historical VaR is that each scenario re-ages the option
+// to `scenario_valuation + maturity`; substituting the book's absolute projected
+// expiry would freeze the tenor and change every non-entry scenario's risk.
+//
+// M9 note: the per-vol-point gross vega * kVegaVolPointToUnitVol scaling lives in the
+// DispersionConfig builder that produces `book` (spy_dispersion_backtest.cpp:1110),
+// upstream of this lift — so this function applies no vega x100; the book handed in is
+// already sized. That boundary's `* 100.0 -> kVegaVolPointToUnitVol` replacement is a
+// CLI line-item wired at T9.
+//
+// Returns Err(Unavailable) if any scenario projected an incomplete frame
+// (n_failed != 0), matching the CLI's post-projection gate (:1175-1178); on that path
+// no VaR is meaningful. On success `risks` carries one summary per confidence (loss =
+// frames.back().value - scenario.value, the CLI's reference at :1188). The CLI keeps
+// the loose-TSV writes (T9).
+[[nodiscard]] Result<DispersionBookVar>
+dispersion_book_var(const DispersionBook &book, const ProjectedMaturitySpec &maturity,
+                    std::span<const HistoricalProjectionScenario> scenarios,
+                    std::span<const double> confidences,
+                    const HistoricalProjectionConfig &cfg = {});
 
 } // namespace atx::vol

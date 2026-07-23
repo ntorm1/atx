@@ -14,10 +14,12 @@
 
 #include "atx/core/error.hpp" // ATX_TRY, Err, Ok, ErrorCode
 #include "atx/core/hash.hpp"  // atx::core::hash_bytes
-#include "atx/vol/dispersion.hpp"         // DispersionUniverse, MissingNameSpec, resolve_universe_uids
+#include "atx/vol/contract_projection.hpp" // OptionProjectionSpec, ProjectedStrikeSpec, ProjectedOption
+#include "atx/vol/dispersion.hpp"         // DispersionUniverse, DispersionBook, MissingNameSpec, resolve_universe_uids
 #include "atx/vol/dispersion_workflow.hpp" // all_symbols, universe_at, UniverseRow, RunSpec
+#include "atx/vol/historical_projection.hpp" // RelativeOptionPosition, PreparedHistoricalProjection, projected_historical_var
 #include "atx/vol/opra_batch.hpp"        // OpraBatchResult, OpraBatchEntry, load_opra_daterange
-#include "atx/vol/portfolio_pricer.hpp"  // kNsPerYear
+#include "atx/vol/portfolio_pricer.hpp"  // kNsPerYear, Position
 #include "atx/vol/priced_surface.hpp"    // PricedSurface, FullGreekSeed
 
 namespace atx::vol {
@@ -437,6 +439,62 @@ Result<ListedDispersionSchedule> project_listed_schedule(const ListedDispersionS
   // gross = 2x target) the persisted schedule must pass.
   ATX_TRY_VOID(validate_listed_dispersion_schedule(projected));
   return Ok(std::move(projected));
+}
+
+Result<DispersionBookVar>
+dispersion_book_var(const DispersionBook &book, const ProjectedMaturitySpec &maturity,
+                    std::span<const HistoricalProjectionScenario> scenarios,
+                    std::span<const double> confidences, const HistoricalProjectionConfig &cfg) {
+  // Verbatim lift of run_projected_var_command's book -> OptionProjectionSpec
+  // synthesis + PreparedHistoricalProjection::evaluate_into + projected_historical_var
+  // per confidence (spy_dispersion_backtest.cpp:1119-1194), minus the loose-TSV
+  // emission the CLI keeps (T9). Each book position becomes a relative template with
+  // the same uid / side / multiplier / qty, an ATM-forward strike, and the caller's
+  // relative `maturity`; the templates re-project onto every scenario, then the loss
+  // quantile splits per requested confidence. No vega x100 here: the book handed in
+  // is already sized (the * kVegaVolPointToUnitVol boundary is upstream, at :1110).
+  std::vector<RelativeOptionPosition> relative_positions;
+  relative_positions.reserve(book.positions.size());
+  for (const Position &position : book.positions) {
+    OptionProjectionSpec option;
+    option.uid = position.contract.uid;
+    option.maturity = maturity;
+    option.strike = ProjectedStrikeSpec::atm_forward();
+    option.side = position.contract.side;
+    option.multiplier = position.multiplier;
+    relative_positions.push_back({option, position.qty});
+  }
+
+  ATX_TRY(PreparedHistoricalProjection prepared,
+          PreparedHistoricalProjection::create(relative_positions));
+
+  DispersionBookVar result;
+  result.n_positions = relative_positions.size();
+  result.frames.assign(scenarios.size(), HistoricalProjectionFrame{});
+  result.legs.assign(scenarios.size() * relative_positions.size(), ProjectedOption{});
+  ATX_TRY_VOID(prepared.evaluate_into(scenarios, result.frames, result.legs, cfg));
+
+  // Post-projection gate (spy_dispersion_backtest.cpp:1175-1178): any incomplete
+  // scenario aborts — a VaR over a partially-failed frame set is not meaningful. On
+  // this path no risk summary is produced (the CLI errors before writing its summary).
+  for (const HistoricalProjectionFrame &frame : result.frames) {
+    if (frame.n_failed != 0u) {
+      return Err(ErrorCode::Unavailable, "projected VaR: incomplete scenario projection");
+    }
+  }
+
+  // One risk summary per confidence, reference = the last scenario's value
+  // (spy_dispersion_backtest.cpp:1186-1188). frames is non-empty on any successful
+  // path (an empty scenario span yields no frames, so projected_historical_var below
+  // returns Err — the reference guard only avoids UB, it never feeds a real result).
+  result.risks.reserve(confidences.size());
+  const double reference_value = result.frames.empty() ? 0.0 : result.frames.back().value;
+  for (const double confidence : confidences) {
+    ATX_TRY(ProjectedHistoricalVar risk,
+            projected_historical_var(result.frames, reference_value, confidence));
+    result.risks.push_back(risk);
+  }
+  return Ok(std::move(result));
 }
 
 } // namespace atx::vol

@@ -9,7 +9,9 @@
 #include <vector>
 
 #include "atx/vol/backtest.hpp"                   // MarketSnapshot
-#include "atx/vol/dispersion.hpp"                 // DispersionMember
+#include "atx/vol/contract_projection.hpp"        // ProjectedMaturitySpec, ProjectedOption
+#include "atx/vol/dispersion.hpp"                 // DispersionMember, DispersionBook, build_dispersion_book
+#include "atx/vol/historical_projection.hpp"      // HistoricalProjectionScenario/Frame/Config, ProjectedHistoricalVar
 #include "atx/vol/listed_dispersion.hpp"          // ListedOptionQuote
 #include "atx/vol/listed_dispersion_pipeline.hpp" // module under test
 #include "atx/vol/listed_dispersion_reconciliation.hpp" // ListedReconciliationSnapshot, reconcile_listed_dispersion
@@ -562,4 +564,90 @@ TEST(ListedDispersionPipeline, TwoRouteColdParity_LegMarksEqual) {
 
   std::error_code error;
   fs::remove_all(dir, error);
+}
+
+// ── Task 5 — dispersion_book_var + kVegaVolPointToUnitVol routing (M8) ─────────
+//
+// dispersion_book_var lifts run_projected_var_command's book -> OptionProjectionSpec
+// synthesis + PreparedHistoricalProjection::evaluate_into + projected_historical_var
+// per confidence (spy_dispersion_backtest.cpp:1119-1194). The book is pre-built by
+// the caller: the per-vol-point vega * kVegaVolPointToUnitVol scaling lives in the
+// DispersionConfig builder (a CLI boundary wired at T9), so the lift itself carries
+// no vega x100. The library re-projects the book positions across historical
+// scenarios and splits the loss quantile per requested confidence; the CLI keeps the
+// three bespoke TSV emissions (out-of-archive per the partition rule).
+//
+// The lift reads dispersion.projected_maturity (:1124), defined at :1114 OUTSIDE the
+// :1119-1194 range, so the relative-template maturity is a required input here (the
+// plan's book-only signature omits it; days(N) is a relative template that MUST NOT
+// be reconstructed to an absolute expiry, or per-scenario aging would change).
+TEST(ListedDispersionPipeline, DispersionBookVar_SplitsConfidences) {
+  // A small dispersion book off the synthetic surfaces: SPY (uid 1) index + two
+  // names (uid 2, 3) => six positions (call/put per straddle across index + 2 names).
+  DispersionUniverse universe;
+  universe.index = DispersionMember{"SPY", 1u, 0.0};
+  universe.names.push_back(DispersionMember{"N0", 2u, 0.4});
+  universe.names.push_back(DispersionMember{"N1", 3u, 0.6});
+
+  const std::vector<PricedSurface> book_surfaces = surfaces(kNow0, 0.0);
+  auto book_set = SurfaceSet::create(pointers(book_surfaces));
+  ASSERT_TRUE(book_set) << (book_set ? std::string{} : book_set.error().to_string());
+
+  constexpr double kTargetDteDays = 30.0;
+  const ProjectedMaturitySpec maturity =
+      ProjectedMaturitySpec::days(static_cast<std::int32_t>(std::llround(kTargetDteDays)));
+
+  DispersionConfig dispersion;
+  dispersion.target_T = kTargetDteDays / 365.25;
+  // Mirror the CLI boundary (spy_dispersion_backtest.cpp:1110): per-vol-point gross
+  // vega scaled to per-unit-vol via the T1 constant that replaces the hand-applied
+  // * 100.0 (M9). The scaling is upstream of dispersion_book_var (which takes the
+  // built book), so the constant is exercised here, at the book-build boundary.
+  dispersion.target_vega = 100.0 * kVegaVolPointToUnitVol;
+  dispersion.side = DispersionSide::ShortIndexLongNames;
+  dispersion.multiplier = 100.0;
+  dispersion.missing = MissingNameSpec{MissingNamePolicy::DropRenormalize, 2u};
+  dispersion.projected_maturity = maturity;
+  auto book = build_dispersion_book(universe, *book_set, dispersion);
+  ASSERT_TRUE(book) << (book ? std::string{} : book.error().to_string());
+  ASSERT_EQ(book->positions.size(), 6u);
+
+  // Three historical scenarios (surfaces at distinct valuation timestamps). Keep the
+  // surface vectors + SurfaceSets alive for the whole dispersion_book_var call.
+  const std::vector<PricedSurface> s0 = surfaces(kNow0, 0.0);
+  const std::vector<PricedSurface> s1 = surfaces(kNow1, 5.0);
+  const std::vector<PricedSurface> s2 = surfaces(kNow2, -5.0);
+  auto set0 = SurfaceSet::create(pointers(s0));
+  auto set1 = SurfaceSet::create(pointers(s1));
+  auto set2 = SurfaceSet::create(pointers(s2));
+  ASSERT_TRUE(set0 && set1 && set2);
+  const std::vector<HistoricalProjectionScenario> scenarios = {
+      {kNow0, &*set0}, {kNow1, &*set1}, {kNow2, &*set2}};
+
+  const std::vector<double> confidences = {0.95, 0.99};
+  HistoricalProjectionConfig hp_cfg;
+  hp_cfg.n_threads = 1;
+
+  auto var = dispersion_book_var(*book, maturity, scenarios, confidences, hp_cfg);
+  ASSERT_TRUE(var) << (var ? std::string{} : var.error().to_string());
+
+  // n_positions matches the book; frames one-per-scenario; legs scenario-major.
+  EXPECT_EQ(var->n_positions, book->positions.size());
+  ASSERT_EQ(var->frames.size(), scenarios.size());
+  EXPECT_EQ(var->legs.size(), scenarios.size() * book->positions.size());
+
+  // Every scenario projected cleanly (no failed legs; all positions ok).
+  for (const HistoricalProjectionFrame &frame : var->frames) {
+    EXPECT_EQ(frame.n_failed, 0u);
+    EXPECT_EQ(frame.n_ok, book->positions.size());
+  }
+
+  // The confidences split into two risks carrying exactly 0.95 / 0.99, each over all
+  // three successful scenarios.
+  ASSERT_EQ(var->risks.size(), 2u);
+  EXPECT_EQ(var->risks[0].confidence, 0.95);
+  EXPECT_EQ(var->risks[1].confidence, 0.99);
+  for (const ProjectedHistoricalVar &risk : var->risks) {
+    EXPECT_EQ(risk.n_scenarios, scenarios.size());
+  }
 }
