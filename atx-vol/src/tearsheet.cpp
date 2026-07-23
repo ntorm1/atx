@@ -9,8 +9,9 @@
 #include <utility>
 #include <vector>
 
-#include "atx/core/error.hpp"    // Err, Ok, ErrorCode
-#include "atx/vol/backtest.hpp"  // BacktestResult
+#include "atx/core/error.hpp"                   // Err, Ok, ErrorCode
+#include "atx/vol/backtest.hpp"                 // BacktestResult
+#include "atx/vol/backtest_series_columns.hpp"  // backtest_series_columns() (single source)
 
 namespace atx::vol {
 
@@ -187,33 +188,11 @@ namespace {
 // are special; the rest are plain double columns written with %.17g for a
 // bit-exact round-trip, followed by one column per signal series.
 void append_backtest_series_tsv(std::string& out, const BacktestResult& r) {
-  const std::pair<const char*, const std::vector<double>*> dbl_cols[] = {
-      {"pnl_total", &r.pnl_total},
-      {"pnl_delta", &r.pnl_delta},
-      {"pnl_gamma", &r.pnl_gamma},
-      {"pnl_vega", &r.pnl_vega},
-      {"pnl_vanna", &r.pnl_vanna},
-      {"pnl_volga", &r.pnl_volga},
-      {"pnl_theta", &r.pnl_theta},
-      {"pnl_rho", &r.pnl_rho},
-      {"pnl_charm", &r.pnl_charm},
-      {"pnl_unexplained", &r.pnl_unexplained},
-      {"pnl_settlement", &r.pnl_settlement},
-      {"pnl_shares", &r.pnl_shares},
-      {"financing", &r.financing},
-      {"cost", &r.cost},
-      {"nav", &r.nav},
-      {"cash", &r.cash},
-      {"gross_delta", &r.gross_delta},
-      {"gross_gamma", &r.gross_gamma},
-      {"gross_vega", &r.gross_vega},
-      {"gross_theta", &r.gross_theta},
-      {"turnover_notional", &r.turnover_notional},
-      {"turnover_vega", &r.turnover_vega},
-      {"n_open_lots", &r.n_open_lots},
-      {"n_unpriced_lots", &r.n_unpriced_lots},
-      {"n_unpriced_greeks", &r.n_unpriced_greeks},
-  };
+  // The 25 F64 columns come from the single source of truth shared with the
+  // RunArchive encoder (backtest_series_columns.hpp), so the two serializers can
+  // never drift in column set / order. `date` and `ts_ns` are handled specially
+  // below; per-signal series are appended after the fixed columns.
+  const auto dbl_cols = backtest_series_columns();
 
   out.reserve(out.size() + r.size() * 640 + 256);
 
@@ -225,10 +204,9 @@ void append_backtest_series_tsv(std::string& out, const BacktestResult& r) {
 
   // ── Header ──
   out += "date\tts_ns";
-  for (const auto& [name, col] : dbl_cols) {
-    (void)col;
+  for (const auto& col : dbl_cols) {
     out += '\t';
-    out += name;
+    out += col.name;
   }
   for (const auto& sig : r.signals) {
     out += '\t';
@@ -242,10 +220,9 @@ void append_backtest_series_tsv(std::string& out, const BacktestResult& r) {
     out += '\t';
     const int len = std::snprintf(buf, sizeof buf, "%lld", static_cast<long long>(r.ts_ns[i]));
     out.append(buf, static_cast<std::size_t>(len > 0 ? len : 0));
-    for (const auto& [name, col] : dbl_cols) {
-      (void)name;
+    for (const auto& col : dbl_cols) {
       out += '\t';
-      put_double((*col)[i]);
+      put_double((r.*col.member)[i]);
     }
     for (const auto& sig : r.signals) {
       out += '\t';

@@ -13,6 +13,7 @@
 #include "atx/vol/run_archive_schema.hpp"
 
 #include "atx/vol/backtest.hpp"            // BacktestResult (Task 5 encoders)
+#include "atx/vol/backtest_series_columns.hpp" // backtest_series_columns() (T6 single source)
 #include "atx/vol/corpus.hpp"              // CorpusManifest (RunDir::clock via manifest)
 #include "atx/vol/detail/archive_util.hpp" // crc32c (independent CRC check)
 #include "atx/vol/dispersion_workflow.hpp" // RunSpec (Task 5 meta encoder)
@@ -20,6 +21,7 @@
 #include "atx/vol/listed_dispersion_reconciliation.hpp"
 #include "atx/vol/listed_dispersion_schedule.hpp"
 #include "atx/vol/surface_archive.hpp" // ArchiveContentIdentity (identity())
+#include "atx/vol/tearsheet.hpp"       // write_backtest_tsv (T6 TSV/encoder column parity)
 
 #include <gtest/gtest.h>
 
@@ -27,6 +29,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -716,6 +719,115 @@ TEST(RunArchiveEncoders, BacktestSectionRoundTripsValueExact) {
   ASSERT_EQ(dates.size(), 2u);
   EXPECT_EQ(dates.at(0), "2026-07-11");
   EXPECT_EQ(dates.at(1), "2026-07-12");
+}
+
+// ── T6: 25-double backtest column single-source-of-truth ─────────────────────
+// backtest_series_columns() is the ONE ordered {name, member-ptr} table that
+// BOTH append_backtest_series_tsv (tearsheet.cpp) and encode_backtest_section
+// (run_archive.cpp) iterate. It must never drift from the FROZEN registry
+// kBacktestCols[2..26] (whose fold feeds ra_schema_hash() == 0xdcce…): this test
+// pins the shared table's names/order to the registry, and the encoder side
+// carries a compile-time static_assert of the same invariant.
+TEST(RunArchiveEncoders, BacktestSeriesColumnsMatchRegistryOrder) {
+  const auto cols = backtest_series_columns();
+  ASSERT_EQ(cols.size(), 25u) << "the backtest series has exactly 25 F64 columns";
+
+  const RaSection* bt = find_section("backtest");
+  ASSERT_NE(bt, nullptr);
+  ASSERT_EQ(bt->columns.size(), 27u); // date + ts_ns + 25 doubles
+
+  // Shared-table names == registry backtest columns index 2..26, in order.
+  for (std::size_t i = 0; i < cols.size(); ++i) {
+    EXPECT_EQ(cols[i].name, bt->columns[i + 2].name) << "column " << i;
+  }
+  EXPECT_EQ(cols.front().name, "pnl_total");
+  EXPECT_EQ(cols.back().name, "n_unpriced_greeks");
+}
+
+// The whole point of the dedup: the TSV writer and the archive encoder emit the
+// SAME 25 columns, in the SAME order, with byte-identical values — because both
+// now iterate the single source. Prove it column-for-column: encode + TSV-write
+// the same BacktestResult, then for every shared column assert the TSV cell, the
+// decoded archive value, and the source member vector are all bit-identical.
+TEST(RunArchiveEncoders, BacktestSeriesColumnsTsvEncoderParity) {
+  const BacktestResult r = make_encoder_fixture_result();
+
+  // Archive side.
+  const RaSectionData sec = encode_backtest_section("backtest", r);
+  auto bytes = write_run_archive(std::span(&sec, 1), 1, 1);
+  ASSERT_TRUE(bytes.has_value()) << bytes.error().to_string();
+  auto ar = RunArchive::open(std::move(*bytes));
+  ASSERT_TRUE(ar.has_value()) << ar.error().to_string();
+  auto v = ar->section("backtest");
+  ASSERT_TRUE(v.has_value()) << v.error().to_string();
+
+  // TSV side.
+  const std::filesystem::path tsv_path =
+      std::filesystem::temp_directory_path() / "atx_t6_backtest_series.tsv";
+  std::error_code ec;
+  std::filesystem::remove(tsv_path, ec);
+  const Status st = write_backtest_tsv(r, tsv_path.string());
+  ASSERT_TRUE(st.has_value()) << st.error().to_string();
+
+  // Parse the TSV into a header + rows of tab-separated cells.
+  std::ifstream is(tsv_path, std::ios::binary);
+  ASSERT_TRUE(is.good());
+  const std::string content((std::istreambuf_iterator<char>(is)),
+                            std::istreambuf_iterator<char>());
+  std::vector<std::vector<std::string>> table;
+  for (std::size_t start = 0; start < content.size();) {
+    const std::size_t nl = content.find('\n', start);
+    if (nl == std::string::npos) break;
+    const std::string line = content.substr(start, nl - start);
+    std::vector<std::string> cells;
+    for (std::size_t cs = 0;;) {
+      const std::size_t tab = line.find('\t', cs);
+      if (tab == std::string::npos) {
+        cells.push_back(line.substr(cs));
+        break;
+      }
+      cells.push_back(line.substr(cs, tab - cs));
+      cs = tab + 1;
+    }
+    table.push_back(std::move(cells));
+    start = nl + 1;
+  }
+  ASSERT_EQ(table.size(), r.size() + 1); // header + one row per step
+  const std::vector<std::string>& header = table.front();
+
+  // Frozen leading header: date, ts_ns, then the 25 shared columns in order.
+  ASSERT_GE(header.size(), 27u);
+  EXPECT_EQ(header[0], "date");
+  EXPECT_EQ(header[1], "ts_ns");
+  const auto cols = backtest_series_columns();
+  for (std::size_t i = 0; i < cols.size(); ++i) {
+    EXPECT_EQ(header[i + 2], cols[i].name) << "header column " << (i + 2);
+  }
+
+  const auto col_index = [&](std::string_view name) -> std::size_t {
+    for (std::size_t i = 0; i < header.size(); ++i) {
+      if (header[i] == name) return i;
+    }
+    ADD_FAILURE() << "column not found in TSV: " << name;
+    return header.size();
+  };
+
+  // Column-for-column bit-parity: TSV cell == decoded archive == source member.
+  for (const auto& col : cols) {
+    const std::size_t ci = col_index(col.name);
+    ASSERT_LT(ci, header.size()) << col.name;
+    const auto archive = v->f64_col(col.name);
+    const std::vector<double>& src = r.*col.member;
+    ASSERT_EQ(archive.size(), r.size()) << col.name;
+    ASSERT_EQ(src.size(), r.size()) << col.name;
+    for (std::size_t row = 0; row < r.size(); ++row) {
+      const double from_tsv = std::strtod(table[row + 1][ci].c_str(), nullptr);
+      EXPECT_EQ(std::memcmp(&from_tsv, &src[row], sizeof(double)), 0)
+          << col.name << " TSV vs source, row " << row;
+      EXPECT_EQ(std::memcmp(&archive[row], &src[row], sizeof(double)), 0)
+          << col.name << " archive vs source, row " << row;
+    }
+  }
 }
 
 TEST(RunArchiveEncoders, ReconciliationSectionRoundTrips) {

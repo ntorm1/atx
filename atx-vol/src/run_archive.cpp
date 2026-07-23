@@ -41,6 +41,7 @@
 #include "atx/core/hash.hpp"               // hash_bytes / hash_combine (RunDir identity)
 #include "atx/tsdb/mapping.hpp"            // tsdb::Mapping (read-only mmap seam)
 #include "atx/vol/backtest.hpp"            // BacktestResult, Clock (Task 5 encoders / RunDir)
+#include "atx/vol/backtest_series_columns.hpp" // backtest_series_columns() (T6 single source)
 #include "atx/vol/corpus.hpp"              // CorpusManifest, read_manifest_file (RunDir::clock)
 #include "atx/vol/detail/archive_util.hpp" // crc32c, crc32c_update, align_up
 #include "atx/vol/dispersion_workflow.hpp" // RunSpec, read_run_spec (Task 5 meta / RunDir::spec)
@@ -566,6 +567,28 @@ std::string format_meta_double(double v) {
   return std::string(buf, static_cast<std::size_t>(len > 0 ? len : 0));
 }
 
+// FREEZE GUARD (T6): the shared backtest_series_columns() table MUST stay in
+// lockstep with the FROZEN RunArchive registry kBacktestCols[2..26] — the
+// registry fold feeds ra_schema_hash() (0xdcce47781ac8390d). This compile-time
+// check makes any name/order/dtype drift a build error, so the single-source
+// dedup can never silently change the on-disk schema.
+[[nodiscard]] constexpr bool backtest_series_matches_registry() noexcept {
+  const std::span<const BacktestSeriesColumn> cols = backtest_series_columns();
+  constexpr std::span<const RaColumn> reg = kBacktestCols;
+  if (cols.size() + 2 != reg.size()) {
+    return false;
+  }
+  for (std::size_t i = 0; i < cols.size(); ++i) {
+    if (cols[i].name != reg[i + 2].name || reg[i + 2].dtype != RaDType::F64) {
+      return false;
+    }
+  }
+  return true;
+}
+static_assert(backtest_series_matches_registry(),
+              "backtest_series_columns() drifted from the frozen kBacktestCols registry "
+              "(name/order/dtype) — a schema-hash break");
+
 } // namespace
 
 RaSectionData encode_backtest_section(std::string name, const BacktestResult &r) {
@@ -584,38 +607,12 @@ RaSectionData encode_backtest_section(std::string name, const BacktestResult &r)
   sec.columns.emplace_back("date", dates.finish(*arena));
   sec.columns.emplace_back("ts_ns", RaColumnData::of_i64(r.ts_ns));
 
-  // EXACTLY the append_backtest_series_tsv member order (tearsheet.cpp), which
-  // is the kBacktestCols registry order — value-equality with the TSV is spans
-  // over the very vectors that writer serializes.
-  const std::pair<const char *, const std::vector<double> *> dbl_cols[] = {
-      {"pnl_total", &r.pnl_total},
-      {"pnl_delta", &r.pnl_delta},
-      {"pnl_gamma", &r.pnl_gamma},
-      {"pnl_vega", &r.pnl_vega},
-      {"pnl_vanna", &r.pnl_vanna},
-      {"pnl_volga", &r.pnl_volga},
-      {"pnl_theta", &r.pnl_theta},
-      {"pnl_rho", &r.pnl_rho},
-      {"pnl_charm", &r.pnl_charm},
-      {"pnl_unexplained", &r.pnl_unexplained},
-      {"pnl_settlement", &r.pnl_settlement},
-      {"pnl_shares", &r.pnl_shares},
-      {"financing", &r.financing},
-      {"cost", &r.cost},
-      {"nav", &r.nav},
-      {"cash", &r.cash},
-      {"gross_delta", &r.gross_delta},
-      {"gross_gamma", &r.gross_gamma},
-      {"gross_vega", &r.gross_vega},
-      {"gross_theta", &r.gross_theta},
-      {"turnover_notional", &r.turnover_notional},
-      {"turnover_vega", &r.turnover_vega},
-      {"n_open_lots", &r.n_open_lots},
-      {"n_unpriced_lots", &r.n_unpriced_lots},
-      {"n_unpriced_greeks", &r.n_unpriced_greeks},
-  };
-  for (const auto &[cname, col] : dbl_cols) {
-    sec.columns.emplace_back(cname, RaColumnData::of_f64(*col));
+  // The 25 F64 columns come from the single source of truth shared with the TSV
+  // writer (backtest_series_columns.hpp) — pinned by the static_assert above to
+  // the frozen kBacktestCols registry order, so value-equality with the TSV is
+  // guaranteed and the emitted column set can never drift from the schema hash.
+  for (const auto &col : backtest_series_columns()) {
+    sec.columns.emplace_back(std::string(col.name), RaColumnData::of_f64(r.*col.member));
   }
   // Per-signal series are appended dynamically after the registry columns,
   // exactly like the TSV writer appends them after the fixed header.
