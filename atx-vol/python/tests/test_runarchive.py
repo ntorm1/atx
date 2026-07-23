@@ -294,6 +294,166 @@ def test_schema_py_not_stale_vs_cpp_header():
     )
 
 
+# ── reader hardening: forged descriptors, version gate, close(), utf-8 ───────
+#
+# These byte-patch a *temp-dir copy* of the committed fixture (never the
+# original) to prove the reader's documented failure taxonomy: forged/corrupt
+# descriptors and a non-utf8 string table raise a documented ``ValueError``
+# (not a raw ``UnicodeDecodeError`` or an unhandled crash), a version bump is
+# rejected at ``open()``, and ``close()`` never leaks the OS file handle when
+# numpy views are still exported over the mmap (``mmap.close()`` -> BufferError).
+
+# Header field byte offsets (fmt "<8sQQQQQQQIIIIHHHHHH164s").
+_HDR_CRC_OFF = 68
+_HDR_MAJOR_OFF = 80
+_HDR_MINOR_OFF = 82
+
+
+def _fixture_bytes() -> bytearray:
+    return bytearray(FIXTURE.read_bytes())
+
+
+def _recompute_header_crc(data: bytearray) -> None:
+    """Restamp the header CRC (own field zeroed) after patching a header field,
+    so a version/field test exercises the intended gate rather than tripping the
+    header CRC check first."""
+    head = bytearray(data[: ra._HEADER_FMT.size])
+    head[_HDR_CRC_OFF:_HDR_CRC_OFF + 4] = b"\x00\x00\x00\x00"
+    struct.pack_into("<I", data, _HDR_CRC_OFF, ra._crc32c(head))
+
+
+def _section_base(data: bytearray, section_name: str) -> int:
+    h = ra.Header(*ra._HEADER_FMT.unpack_from(data, 0)[:17])
+    for i in range(h.section_count):
+        d = ra._SECDESC_FMT.unpack_from(
+            data, h.section_dir_offset + i * ra._SECDESC_FMT.size)
+        if d[7].split(b"\x00", 1)[0].decode() == section_name:
+            return d[0]
+    raise AssertionError(f"section {section_name!r} not in fixture")
+
+
+def _dict_column_offsets(data: bytearray, section_name: str, col_name: str):
+    """Absolute (data, aux, aux_count, blob) offsets of a dict/enum column."""
+    h = ra.Header(*ra._HEADER_FMT.unpack_from(data, 0)[:17])
+    for i in range(h.section_count):
+        d = ra._SECDESC_FMT.unpack_from(
+            data, h.section_dir_offset + i * ra._SECDESC_FMT.size)
+        if d[7].split(b"\x00", 1)[0].decode() != section_name:
+            continue
+        base, cdo, ncols = d[0], d[4], d[3]
+        for c in range(ncols):
+            cr = ra._COLDESC_FMT.unpack_from(
+                data, base + cdo + c * ra._COLDESC_FMT.size)
+            if cr[8][: cr[7]].decode() == col_name:
+                data_off, aux_off, aux_count = cr[0], cr[2], cr[4]
+                return (base + data_off, base + aux_off, aux_count,
+                        base + aux_off + 4 * (aux_count + 1))
+    raise AssertionError(f"column {col_name!r} not in section {section_name!r}")
+
+
+def _write(tmp_path, name: str, data: bytearray) -> str:
+    q = tmp_path / name
+    q.write_bytes(data)
+    return str(q)
+
+
+# #10 — negative section()-framing: forged descriptors raise documented ValueError.
+
+def test_forged_section_magic_raises_valueerror(tmp_path):
+    # The section magic lives in the section payload (not covered by the header
+    # or metadata CRC), so open() still succeeds; section() must reject it.
+    data = _fixture_bytes()
+    data[_section_base(data, "backtest")] = ord("X")  # ATXRSC01 -> XTXRSC01
+    ar = ra.RunArchive.open(_write(tmp_path, "badsecmagic.atxrun", data))
+    with pytest.raises(ValueError, match="bad section magic"):
+        ar.section("backtest")
+
+
+def test_forged_dict_code_out_of_range_raises_valueerror(tmp_path):
+    data = _fixture_bytes()
+    data_abs, _aux_abs, aux_count, _blob_abs = _dict_column_offsets(
+        data, "backtest", "date")
+    struct.pack_into("<I", data, data_abs, aux_count)  # code == aux_count -> OOR
+    ar = ra.RunArchive.open(_write(tmp_path, "codeoob.atxrun", data))
+    with pytest.raises(ValueError, match="code out of range"):
+        ar.section("backtest")
+
+
+def test_forged_nonmonotone_aux_offsets_raises_valueerror(tmp_path):
+    data = _fixture_bytes()
+    _data_abs, aux_abs, _aux_count, _blob_abs = _dict_column_offsets(
+        data, "backtest", "date")
+    struct.pack_into("<I", data, aux_abs + 4, 0xFFFF)  # offsets[1] > offsets[2]
+    ar = ra.RunArchive.open(_write(tmp_path, "nonmono.atxrun", data))
+    with pytest.raises(ValueError, match="not monotone"):
+        ar.section("backtest")
+
+
+# #11 — version-mismatch: a bumped major/minor is rejected at open().
+
+def test_version_major_mismatch_raises_valueerror(tmp_path):
+    data = _fixture_bytes()
+    struct.pack_into("<H", data, _HDR_MAJOR_OFF, 2)  # major 1 -> 2
+    struct.pack_into("<H", data, _HDR_MINOR_OFF, 1)  # minor 0 -> 1
+    _recompute_header_crc(data)  # isolate the version gate from the CRC gate
+    with pytest.raises(ValueError, match="unsupported major version"):
+        ra.RunArchive.open(_write(tmp_path, "major2.atxrun", data))
+
+
+def test_version_minor_too_new_raises_valueerror(tmp_path):
+    data = _fixture_bytes()
+    struct.pack_into("<H", data, _HDR_MINOR_OFF, _schema.RA_MINOR + 1)
+    _recompute_header_crc(data)
+    with pytest.raises(ValueError, match="unsupported minor version"):
+        ra.RunArchive.open(_write(tmp_path, "minornew.atxrun", data))
+
+
+# #13 — forged non-utf8 string table: documented ValueError, not raw UnicodeDecodeError.
+
+def test_forged_non_utf8_string_table_raises_documented_valueerror(tmp_path):
+    data = _fixture_bytes()
+    _data_abs, _aux_abs, _aux_count, blob_abs = _dict_column_offsets(
+        data, "backtest", "date")
+    data[blob_abs] = 0xFF  # invalid utf-8 lead byte in the first table string
+    ar = ra.RunArchive.open(_write(tmp_path, "nonutf8.atxrun", data))
+    sec = ar.section("backtest")  # framing (offsets/bounds) intact -> section() ok
+    with pytest.raises(ValueError) as ei:
+        sec.dict("date")  # decode happens here (in _string_table)
+    # A documented ValueError must surface, NOT a raw UnicodeDecodeError bubbling up.
+    assert not isinstance(ei.value, UnicodeDecodeError)
+    assert "utf-8" in str(ei.value).lower()
+
+
+# #12 — close() must not leak the file handle on BufferError (live numpy views).
+
+def test_close_releases_file_handle_even_with_live_view(tmp_path):
+    ar = ra.RunArchive.open(_write(tmp_path, "live.atxrun", _fixture_bytes()))
+    nav = ar.section("backtest").f64("nav")  # exported view keeps the mmap open
+    fh = ar._fh
+    ar.close()  # mmap.close() raises BufferError internally; handle must still close
+    assert ar._fh is None, "file handle leaked on BufferError path"
+    assert fh.closed, "underlying OS file handle left open"
+    # The mapping is retained so the live view still resolves correctly.
+    assert list(nav[:2]) == [100.0, 101.5]
+    # Dropping the view lets a later close() release the retained mapping.
+    del nav
+    import gc
+    gc.collect()
+    ar.close()
+    assert ar._mm is None
+
+
+def test_close_is_idempotent_after_views_dropped(tmp_path):
+    ar = ra.RunArchive.open(_write(tmp_path, "idem.atxrun", _fixture_bytes()))
+    _ = ar.section("backtest").f64("nav")
+    del _
+    import gc
+    gc.collect()
+    ar.close()
+    assert ar._mm is None and ar._fh is None
+    ar.close()  # second close is a no-op and must not raise
+
+
 # ── standalone import (no compiled binding) ──────────────────────────────────
 
 def test_standalone_import_needs_no_compiled_extension():
